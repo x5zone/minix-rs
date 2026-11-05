@@ -5838,3 +5838,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `VmBootHandoff` 页由 `alloc_page()` 在分类点前分配、落在池区间已用后缀内，不单独 `push`，47 上界不变。
 - 门：973 行 / 83,061 字符、围栏 22 偶、表格 39 块列数不一致 0、破表 0、lint error 0、零丢失 lost 0；无代码改动。
 - 认领：`I-29 qorder105`（基线 `a764b98aa`），状态 ✅：第一百零五轮已 ff 合并为 `7e37ef58c`，认领已释放。
+
+### 第三百一十三笔（01 阶段 · I-29 第一百零六轮：来源记录跨第一跳；删除只写不读的 FREE_MEMMAP）
+
+- 代码（三笔，claim `I-29 qorder106`，基线 `537f5c16b`）：
+  - `c3208001e refactor(kernel)`：删除只写不读的 `FREE_MEMMAP`（Phase A.2、Phase F、两处模块回收、`dtb_blob_len`、`MEM_MAP_ENTRY_ZERO`）；删除前 grep 零读取点，三处 doc 提及同改。
+  - `6c2a26abb feat(handoff)`：v1 arena 新增来源分区（`WIRE_SOURCES_OFFSET = SEMANTIC_END`，40×48 B，信封 168→176 B，版本 1→2 精确比较），`KernelInfo.memmap_sources` + `validate` 第 6 步消费者边界复核；三条 DTB 腿交付（两条直启直接赋值、U-Boot 腿 `write_sources`/`decode_sources` 经 `SOURCE_RECORD_STORE`）；两个自引导链接脚本加 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)`（rust-lld 双例实测）；`classify` 取证打印按 `boot_stage!` 同款 cfg 门控，使宿主测试可驱动它。
+  - `3fef6483f docs(01)`：正文 975 行、02/03/todo 同改；门：围栏 22 偶、表格 39 块 0 不一致、破表 0、lint error 0、横幅 PASS、lost 0。
+- 测试：`minix-boot` 150、`boot-shim` 70（+5 集成）、`minix-kernel --features mock` 863 / 0 失败 / 8 忽略。新增用例 7 枚（毒化 arena、来源线上往返/超容量/坏记录、validate 覆盖与拒绝、交接帧按区间记账）。
+- **本轮未验证**：kernel-image / uboot 三架构交叉构建（镜像只装 host target，`E0463`）与 QEMU 腿（镜像无 qemu）；四个 faces 改动只有类型级核对。
+- 仍开放：UEFI 逐描述符来源记录（需 ≥256 条独立载体或快照引用）、aarch64 UEFI 配置表 DTB 三态、`VM_BOOT_HANDOFF_VA` 生命周期/字节序/版本失败语义合同、QEMU 腿。
+- 认领：`I-29 qorder106`，状态 ✅：第一百零六轮已 ff 合并为 `3fef6483f`，认领已释放。
