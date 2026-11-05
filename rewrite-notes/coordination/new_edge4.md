@@ -5736,3 +5736,16 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 数值证据状态四标签落地：`DtbMemoryMap` 不解析设备 `reg`（只处理 /memory、/reserved-memory、MRB），所以 PLIC 6 MiB 属编译期常量 + 离线 dump，2.25 MiB 保持候选；QEMU 版本四个有记录、accelerator 全无记录、x86_64 腿连 `-machine` 都没有。UEFI 来源记录容量按 `MemoryMapSize / DescriptorSize` 与 `MAX_MAP_DESCRIPTORS = 256` 具体化。
 - 门：简报 1089 行 / 93,922 字符（1686/136,442 → −31%，单文件重新可送审）、专项册 685 行 / 48,806 字符；围栏各自为偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
 - 认领：`I-29 qorder96`（基线 `5401f9ad0`），状态 ✅：第九十六轮已 ff 合并为 `6cf745eba`，认领已释放。简报回到 1090 行 / 93,922 字符（单文件可送审），硬件准入模型另立 `01-design-note-hardware-admission-model.md`。
+
+
+### 第三百零四笔（01 阶段 · I-29 第九十七轮：迁移补净、三条分配路径按代码对齐、容量与 ABI 可计算化）
+
+- 评审人指出第九十六轮迁移不彻底：正文仍留 `MemoryAdmissionContext` 架构证据槽位、`PmmBaseAvailable` 右侧交集串、`RoleAdmit`/`PmmRoleEligible`、`MappingIntent`/`MappingAudit`、`DenyStandardSystemMapping`/`DenyUncontrolledSpeculativeAccess` 与投影版本键。本轮逐字补迁到 `01-design-note-hardware-admission-model.md`（762 行 / 53,820 字符），本项只留三条公式与一段解释。
+- `FREE_MEMMAP` 读数推翻「三条路径共同保护」的想象：四处访问点全是 `&mut` 写入、**零只读**，而实际装载候选来自未裁剪的 `kernel_info.memmap()`（排除清单只有内核映像 + 启动模块）。穷举进 `03` 六十七节。
+- 两个核实问题按代码回答，其中一个纠正了我方上一轮的表述：DTB 在第一次交付时已不存活（最后读取点 Phase A.5 `minix_platform::init_from_kinfo` → `DeviceTreeDesc::parse` → `Fdt::from_ptr`），故「仍存活但未保护」不成立；bump 区在自引导两条腿取自固定 `MODULE_REGION_BASE` 池（DRAM+32M 起 32 MiB）落在 `/memory` 内、与候选**按构造相交**，`VmBootAllocator` 注释逐字「不做重叠检测」「不校验保留区排除」；UEFI 腿由 `assert_bootstrap_outside_memmap` 三处守卫挡住。定性：未证明的正确性风险，非已确认 bug；验收要求具名测试 `BootBumpRange ∩ VmBootRegionCandidates = ∅` 或显式排除 + 「谁是权威」裁决。
+- §2.9 措辞按提醒收紧：丢的是 `&'static [SourceRecord]` 引用，底层静态数组（40 = 8+8+16+8）仍在，但无后续消费者与交接所有权；补 `SourceRef { input_object, local_source }` 要求。
+- O-02a 与新版 §7 的正面冲突修掉（删「交付终点是授权计划与禁止投影」，四段链归属改为仅第一段属本项），拆 O-02a-src / O-02a-map，五项映射政策条款归 BootEntry／分页专项；§0 甲案行标注「分页专项背景」。§1.6 平台资源栏再切六行，把驱动访问点审计、`DeviceWindowPolicy`、PTE 审计移出本项（否则 O-07 会悄悄变成第七项阻塞）。
+- 容量与 ABI 可计算化：arena 载荷 2,048+4,096+384+64+1,024，`SEMANTIC_END 14016` 对 `ARENA_CAP 16384` → 只剩 2,368 B，**256 条 UEFI 来源记录不可能塞进现有布局**；`TooManyDescriptors` → panic 即「整体拒绝不截断」已实现，恰好达上限/超一枚两枚负控待补。ABI 六项核对表按读数填：第一跳有 `offset_of!` 逐字段偏移与尺寸/对齐断言、纯标量；第二跳只有 `size_of <= 4096`、无偏移断言，容量 32 的散文边界相加仅 22 → 人手余量，O-13b 需推导或写死 22。
+- no-map 补 `BootInputReadEligible` 五项准入（第五项 `uncontrolled_speculative_access_is_prevented` 是每条入口与架构的保证，机制归专项，证明不出即拒绝该输入布局）；MRB 侧四问 ABI 合同；UEFI 类型 12 独立成 `UefiMmioPortSpaceAddress`，不与 O-08 的 x86 端口策略共用类型。§6 证据身份三分（`CodeEvidenceCommit 53c44e846` / `DocumentRevision 第九十七轮` / `ReviewedRepositoryCommit 本轮分支头`）。
+- 门：简报 1090 → **1113 行** / 97,726 字符（单封可送）、围栏偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
+- 认领：`I-29 qorder97`（基线 `34027b8da`），状态 🔄。

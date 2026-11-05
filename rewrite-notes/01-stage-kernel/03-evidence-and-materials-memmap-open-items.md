@@ -1947,3 +1947,45 @@ ArchitectureAdmissionRejected {
 **两个阻塞组（已按射程剔除归属专项的条目）**：输入真实性、来源保真与生命周期（O-11、O-12h、O-12k、O-12j、DTB 节点准入、O-01、O-06、O-12f、O-12g）；投影、禁止集合与交棒清单（O-12d、O-12a/b、O-02a/b、O-03、O-04、O-07、O-12e、O-13）。**移给专项**：O-12i 的硬件准入与原子能力部分、O-12c 的映射覆盖观测、O-05 的冻结字段与时序。
 
 「禁止集合编译 + 引导根审计」有代码也只能作为第一轮实现复审的起点，不是第二层签字的条件——输入边界、来源完整性、PMM 资格与设备映射覆盖都是它的前置证明。在那之前，对 §5 的评审只需回答两个问题：问题是否成立、候选是否覆盖失败形态。
+
+
+## 六十七、第九十七轮：三条分配路径与交接 ABI 的代码读数、被替换的 §2.8
+
+> 读数由只读复核给出，绑定合并前的 `rewrite` 分支。行号会随代码漂移，核对以符号名为准。
+
+### `FREE_MEMMAP` 的访问点穷举（判「有没有读者」用）
+
+| 位置 | 形式 | 读还是写 |
+|---|---|---|
+| `os/kernel/src/globals.rs:286` | `static FREE_MEMMAP: SyncUnsafeCell<[MemMapEntry; MAXMEMMAP]>` | 声明 || `os/kernel/src/lib.rs:167` | `use globals::FREE_MEMMAP`（`#[cfg(not(feature = "mock"))]`） | 导入 || `os/kernel/src/lib.rs:1437` | `let mmap = &mut *FREE_MEMMAP.get();` | 写（Phase A.2 复制 memmap） || `os/kernel/src/lib.rs:1453`／`:1470`／`:1489` | `cut_memmap(...)` 模块／内核／DTB | 写 || `os/kernel/src/lib.rs:1617` | `add_memmap(..., bootstrap_start, ...)` | 写 || `os/kernel/src/lib.rs:2540`／`:2624` | `add_memmap(..., module.start, ...)` | 写 || `os/kernel/src/memmap.rs:99`／`:186` | 只暴露 `add_memmap`／`cut_memmap` | 无只读访问器 |
+穷举结论：四处 `&mut` 写入，零处不可变读取。`vm_handoff.rs:122` 提到 `FREE_MEMMAP` 只是拿它的「写一次读多次」约定作类比，不是读它。
+
+### 分配路径与 ABI 的行号
+
+| 事实 | 文件 | 行号 |
+|---|---|---|
+| `select_multi` 两处生产调用（排除清单构建） | `os/kernel/src/lib.rs` | 2498–2512、2574–2588 || 候选来源是未裁剪的 `kernel_info.memmap()` | 同上 | 2512、2588 || `VmBootAllocator::new` 只断言 regions 非空 | `os/arch/src/arch/frame.rs` | 613 || 「不做重叠检测」「不校验保留区排除」注释 | 同上 | 112–113、201–204 || 测试腿用分类后的 `vm_pmm_free_regions()` | `os/kernel/src/vm_handoff.rs` | 142（另见 `test-sysboot/src/main.rs:240`） || DTB 长度只读 header 8 字节算 `totalsize` | `os/kernel/src/lib.rs` | 1230–1234、1488 || 解析后 `Fdt` 借用释放；Phase A.5 是最后读取点 | `os/plat/src/kind.rs` 55 → `os/plat/src/device_tree.rs` 125（注释见 22） | — |`cut_memmap` 起点向下、终点向上取整 | `os/kernel/src/memmap.rs` | 146–148 || UEFI 腿 bump／根页／arena 三处相交断言 | `os/boot-shim/src/uefi_helpers.rs` | 259–260、984–986（断言体 565–580） || 自引导腿 bump 取自固定模块池 | `os/kernel-image/src/bootface.rs` | 244–246、255–260（内核回退选择逻辑 `lib.rs:737–748`） || VM 侧「整个 32 MiB bump 池都在扣减之列」 | `os/servers/vm/src/boot.rs` | 333–336 || `DTB_SOURCE_MAX = 8+8+16+8 = 40` 与静态记录数组 | `os/libs/minix-boot/src/memmap_source.rs` | 157–159、348（溢出 456–457） || UEFI 存储 256 条、最小 stride 40、缓冲动态计算 | `os/boot-shim/src/ebs_map.rs` 98–114、384–385、414–415；`uefi_helpers.rs` 697–699 | — || `BootHandoffV1` 编译期尺寸／偏移／对齐断言 | `os/libs/minix-boot/src/handoff_v1.rs` | 155–194（`offset_of!` 逐个钉偏移；arena 算术 WIRE_PARAM_OFFSET 6848、WIRE_END 7872、SEMANTIC_END 14016） || `VmBootHandoff` 只有 `size_of <= 4096`，**无字段偏移断言** | `os/libs/minix-types/src/types/boot.rs` | 435–438（容量 32 的散文边界 94–96，逐项相加为 22） || VM 消费侧 magic/version 相等断言（不等即 panic） | `os/servers/vm/src/boot.rs` | 314–316 → 387–396（reconcile 463–491） |
+<!-- 自正文 §2.8 第九十六轮版本 移入 -->
+
+### 2.8 第一次把普通物理页交出去的时刻，以及那之前扣了什么（代码读数）
+
+**已实现**：第一次面向一般对象的普通 RAM 交付发生在 `os/kernel/src/lib.rs:fn init_proc_and_boot` 里——`VmBootRegion::select_multi(kernel_info.memmap(), &exclusions)` 选出区域后 `VmBootAllocator::new(regions)`，紧接着由 `fn load_vm_elf` 消费。真正的 VM PMM 空闲表要到 `os/kernel/src/vm_handoff.rs:fn build_vm_handoff` 里的分类步骤才发布。测试：`test_classification_deducts_all_record_sources`、`test_classification_free_list_is_exact_complement`、`test_classification_clips_to_dm_window`、`test_classification_drops_out_of_window_region`。
+
+**该时点之前已经扣除的只有两项**：内核映像（`kernel_info.kern_phys_base()/kern_size()`）与启动模块（逐条 `kernel_info.boot_modules()`）。另一份消费者 `FREE_MEMMAP` 在更早的阶段单独扣过模块、内核与 DTB 原始长度。除此之外：
+
+| 仍存活的启动对象 | 在第一次交付前有没有保护 | 靠什么保护 |
+|---|---|---|
+| 四页交接 arena、UEFI `GetMemoryMap` 缓冲 | 不在这个排除表里 | UEFI 腿靠**分类**：两者都是 `LOADER_DATA`，天然不出现在 conventional 里 |
+| DTB 原始对象（非 UEFI 三条腿） | **没有** | 只由后来的扣减记录补偿 |
+| 启动 bump 区（含自举页表页） | **没有** | 只由后来的扣减记录补偿 |
+| DTB 自有副本 | 不适用——**今天没有独立的自有副本实现**，解析发生在固件递交的地址上 | 见 O-11 |
+
+`build_vm_handoff` 在这些分配**之后**才运行，所以那份五类范围的扣减记录证明的是「VM 收到的集合里没有仍被占用的页」，**不能倒推**「第一跳到第二跳之间没有发生过错误分配」。因此本项把两个集合显式命名并要求不得混用：**`ConventionalCandidateRanges`**（来源归一化后的候选范围，不承诺可立即分配）与 **`VmFreeRanges`**（扣除全部仍存活对象并经过接管政策处理后的实际交付集合）。「交接给内核的可用表」属于前者，把它称作最终可分配集合即是本合同的失败形态。
+
+**未设计（ADR）**：第一次可分配之前对所有仍存活对象的排除保护、以及 `ConventionalCandidateRanges` 到 `VmFreeRanges` 的转换点，目前没有具名接口——它属 I-29 的验收条款（§7 第 4 项）。
+
+
+
+<!-- 自正文 O-02a 交付终点段 移入 -->
+
+**建表机制不在本工作项内**。I-29 的交付终点是**交出一份可被消费的授权计划与禁止投影**：哪些范围可以映射、以什么属性、在哪个阶段、由哪条来源负责、哪些必须禁止。

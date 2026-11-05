@@ -682,3 +682,80 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 
 **设备窗口的边界页负控（必须有测试）**：资源 `[0x1003, 0x1fff)` 若直接向外量化成 `[0x1000, 0x2000)`，授权就扩张到了相邻地址。边界页只能三选一：拒绝非页对齐资源；明确授权整页并证明邻接区的属性/权限/别名兼容；拆分后仍无法表达则拒绝启动。
 
+
+
+### 第九十七轮补迁：`MemoryAdmissionContext`、投影版本键与映射审计判定
+
+> 这一段的归属与前面相同：它回答「这台机器允许这次访问吗、这一页能不能作为该树的叶子」，不回答「这段物理范围的来源事实是什么」。第九十七轮自 I-29 简报逐字迁入，公式未改。
+
+**页域与两层 PMM 的正式定义**（基底用补集，用途用子集——用途层不构成第二次划分）：
+
+```
+MemoryAdmissionContext {
+    phase,                        ← 阶段 p
+    participating_cpu_set_id,     ← 参与访问的 CPU 集合身份（不是数量）；RISC-V 成员叫 hart，该术语留在 adapter
+    platform_memory_profile_id,   ← 平台内存配置：QEMU/SoC 的实际窗口与硬件形状
+    isa_profile_id,               ← ISA Profile（如 RVA23U64/RVA23S64）；「不声明」= 未作合规声明，不等于已合规
+    uefi_attribute_profile_id,    ← 固件属性位编码 profile：实际采用哪一套位组解释
+    evidence_generation,          ← 架构准入证据的代次
+    source_snapshot_set_id,       ← 来源快照集合身份（O-12k 的 MapSnapshotId 属此），投影版本键的一部分
+    legal_starts_contract,        ← Page | Object；进 AdmissionContextId，切换必须重建全部投影
+    adapter_evidence              ← 各架构证据槽位：RISC-V 放 pte_update_scheme_id / PmpEvidence /
+                                    SystemHartInventoryId；共享层只要求 adapter 回答同一语义问题
+}
+ParticipatingCpuSet = Resolve(participating_cpu_set_id, inventory_snapshot)
+    ← 身份解析成成员集合：不可变，成员与 evidence_generation 绑定；共享公式只用 ParticipatingCpuSet，
+      `ctx.H` 只是 RISC-V adapter 内的写法，不是第二个隐含字段
+
+RamSourcePageDomain = FullPages(Union(ResolveCompatibleClaims(RamSourceDomain)))
+                                                           ← 先裁决兼容性主张，再并集，再取完整页
+
+PmmBaseAvailable(ctx) = RamSourcePageDomain
+    ∩ TypeAllocatablePages(ctx.phase)
+    ∩ OrdinaryCachePolicyRepresentablePages(ctx)      ← 预映射可行性，不读实际叶子
+    ∩ MemoryOrderingCompatiblePages(ctx)              ← 内存序 PMA（见下）
+    ∩ CommonCpuAccessEligiblePages(ctx)               ← 与用途无关的物理访问准入
+    ∩ ProfileMemoryEligiblePages(ctx)                 ← 声明 ISA Profile 时该 profile 对主存区域的强制义务
+    \ Outward(ExplicitAllocationReservations(ctx))
+    \ Outward(LiveObjectRanges(ctx))
+    \ PlatformAllocationDenials(ctx)
+
+PmmBaseExcluded(ctx) = RamSourcePageDomain \ PmmBaseAvailable(ctx)   ← 补集：不相交且覆盖整个页域
+
+RoleAdmit(role, page, ctx) = 该用途**在基底之上**的额外准入
+                              （页表遍历与 PTE 更新方案 / 取指 / 原子指令族、进展与预约集几何）
+                              ≡ RolePageEligible(page, role, ctx)   ← 唯一操作化定义，见下节
+
+PmmRoleEligible(page, U, ctx) = page ∈ PmmBaseAvailable(ctx)
+                                 ∧ U ≠ ∅                                   ← 空用途集合不得真空通过
+                                 ∧ ∀ role ∈ U : RoleAdmit(role, page, ctx)
+PMMAvailable(U, ctx)          = { page | PmmRoleEligible(page, U, ctx) }
+
+PmmRoleRejected(role, ctx) = { page ∈ PmmBaseAvailable(ctx) | ¬RoleAdmit(role, page, ctx) }
+
+MappingIntent = StandardSystemMapping | DriverControlledMapping(device_id, access_use_id) | OtherExplicitMapping(…)
+MappingAudit(leaf, tree, phase, intent)（对每个实际叶子，不是对物理范围）：
+    MappingAuthorizationCovers(leaf, tree, phase, intent)      ← 标准映射受 DenyStandardSystemMapping 约束
+    ∧ DenyMappingDoesNotIntersect(leaf, tree, phase, intent)   ← 驱动受控映射须有设备身份、范围、阶段、路径与例外授权
+    ∧ DenyUncontrolledSpeculativeAccessSatisfied(leaf, intent) ← 独立审计，不因一条受控授权整体豁免；
+        叶子被标成 DriverControlledMapping **不**证明所有实际访问都由该驱动控制，访问侧合同见 O-03
+    ∧ LeafCoverageHasCompatibleSources(leaf)
+    ∧ 映射属性符合目标语义 ∧ 物理范围属性允许该映射 ∧ 各 PE 属性一致 ∧ 别名兼容
+    ← 设备窗口 Coverage ⊆ AuthorizedRange 不能代替 Coverage ∩ DenyMapping = ∅；
+      `EfiReservedMemoryType` 的 `DenyOsUse` 第一版绝对禁止，不走驱动分支
+```
+
+**投影版本键**：`PolicyProjectionKey = SourceSnapshotSetId + AdmissionContextId + EvidenceGeneration`。同一 `ctx` 下**不得**复用上一次 `FinalMap` 派生的记录或投影；新 `MapSnapshotId` 即使描述符数量与布局完全相同，也必须重建——否则 O-12k 的快照绑定只是文字。`AdmissionContextId` 的构造必须覆盖 `phase`、`participating_cpu_set_id`（不是成员数量）、`SystemHartInventoryId` 或其证据代次、`platform_memory_profile_id`、ISA profile 的声明状态与版本、`uefi_attribute_profile_id`、`legal_starts_contract`、adapter 证据身份与代次——成员不变但 PMP/PMA 证据或 A/D 方案变化、或合同切换，都必须使旧投影失效。
+
+**`H` 是输入，不是背景**：参与 hart 集合会改变结论，所以它必须进签名。失败形态很具体——参与集合原本只有 hart 0，它对某区域具备普通读写；hart 1 入场后其 PMP 拒绝该区域，`CommonCpuAccessEligiblePages` 的旧结果立刻失效；若投影只由阶段 `p` 标识，缓存就会继续交付过期结论。因此**任何参与 hart 集合变化、架构证据换代或 `PteUpdateScheme` 变更，都必须使依赖它的证据与全部投影失效**——这与 O-12k 的 `MapSnapshotId` 是同一条版本化原则：结果绑定生成它的证据快照。`participating_cpu_set_id` **不能取成员数量**：数量相同的两个集合既可能是不同的成员，也可能 PMP 配置完全不同。此前签名只写 `(p)`、正文却用 `H` 取交集，等于把一个真实输入维度藏进口头描述。
+
+**公式里的第一步是裁决，不是并集**：`RamSourceDomain` 是未裁决的原始主张集合，冲突/不兼容来源必须先按 §3 的四层规则（来源事实层保留身份 → 冲突解析层裁决 → 纯集合投影层才允许 `Union`）处理，`Union` 只作用于**已裁决的兼容区间**。把公式写成「原样并集再取整页」会让读者以为冲突主张可以无条件合并，那是 §3 明令禁止的。
+
+**为什么要拆两层**：用途化以后，「可用 ⊍ 排除 = 页域」不再对单个 `PMMAvailable(U, ctx)` 成立——同一页可以 `GeneralData` 可用、`PageTable` 拒绝，若仍写成一张 `PMMExcluded(p)`，这一页会同时出现在可用与排除里，§3 的「同一页只排除一次、排除理由全部可追溯」也就无从记账。因此只有**基底层**保留补集性质：
+
+- `PmmBaseAvailable(ctx) ⊍ PmmBaseExcluded(ctx) = RamSourcePageDomain`；排除的唯一性、多重归属的可追溯性都在这一层成立。
+- `PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)`：**用途拒绝不缩小基底可用集合**，也不得计入 `PmmBaseExcluded`；它只表示「这段页不能承担该用途」，不是「这段页被排除出内存」。
+- 任何「可用」主张必须同时带用途集合与准入上下文：裸写 `PMMAvailable(·)` 不是良定义项。
+- 用途集合**可组合、不互斥**，不是页的分类：`U ⊆ U′ ⇒ PmmRoleEligible(page, U′, ctx) → PmmRoleEligible(page, U, ctx)`（单调），同一页可同时属于多个 `U` 的可用集合。
+- 分配时用途未知，只能保守取 `U = AllRoles`（等价于旧的「保守全局集合」）；这与用途化仍是二选一，**不得**同时声称「按用途准入」和「一页一用途类」。本项目选用途化 + 未知即 `AllRoles`。
+

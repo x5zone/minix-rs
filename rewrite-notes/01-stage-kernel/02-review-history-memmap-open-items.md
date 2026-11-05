@@ -12,6 +12,22 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第九十七轮（迁移补净、三条分配路径对齐、O-02a 归属同步、容量与 ABI 给出可计算结论）**
+
+- **上一轮的迁移不彻底**：第九十六轮只迁走 O-12i 后半节，正文仍留着 `MemoryAdmissionContext` 的架构证据槽位、`PmmBaseAvailable` 右侧那串交集（缓存可表达性／内存序／与用途无关的物理访问准入／ISA Profile 义务）、`RoleAdmit`／`PmmRoleEligible`、`MappingIntent`／`MappingAudit`、`DenyStandardSystemMapping`／`DenyUncontrolledSpeculativeAccess` 的叶子级判定与投影版本键。本轮把它们逐字补迁到专项册（现 762 行 / 53,820 字符），本项只留三条公式与一段解释。
+- **`FREE_MEMMAP` 的读数推翻了「三条路径共同保护」的想象**：它由 Phase A.2 从 `kernel_info.memmap()` 复制后再 cut 模块／内核／DTB，四处访问点**全是 `&mut` 写入，零处只读**；而实际装载路径的候选来自**未裁剪的** `kernel_info.memmap()`，排除清单只有内核映像 + 启动模块。结论：`FREE_MEMMAP` 里扣了 DTB，对第一次交付不提供任何保护证据。访问点穷举进 `03` 六十七节。
+- **评审人的两个核实问题按代码回答，其中一个把我上一轮的表述推翻了**：① DTB 在第一次交付时**已经不存活**——最后读取点是 Phase A.5 的 `minix_platform::init_from_kinfo` → `DeviceTreeDesc::parse` → `Fdt::from_ptr`，解析后释放借用；所以我上一轮写的「仍存活但没有保护」不成立，风险不在覆盖 DTB，而在**没有任何页级排除记录进入实际分配路径**。② bump 区相交：UEFI 两条腿由 `fn assert_bootstrap_outside_memmap` 三处守卫挡住（bump／根页／arena），**自引导两条腿的 bump 取自固定 `MODULE_REGION_BASE` 池（DRAM+32M 起 32 MiB），落在 `/memory` 内，相交按构造成立**，而 `VmBootAllocator` 注释逐字写着「不做重叠检测」「不校验保留区排除」。定性为**未证明的正确性风险**（不是已确认的内存破坏 bug，因为今天没有测试覆盖实际相交），验收要求是具名区间测试 `BootBumpRange ∩ VmBootRegionCandidates = ∅` 或显式排除，加一条「谁是权威」的裁决。
+- **§2.9 的措辞按他的提醒收紧**：丢的是 `&'static [SourceRecord]` 这个**引用**，底层静态数组（容量 40 = 8+8+16+8）仍然存在，但没有后续消费者也没有交接所有权。
+- **O-02a 与 §7 的冲突修掉**：四段依赖链原来仍写前三段属 I-29，还有「I-29 的交付终点是交出一份可被消费的授权计划与禁止投影」这句直接矛盾的话；现按职责拆成 **O-02a-src（来源完整性，本项）** 与 **O-02a-map（映射政策与消费，专项）**，`BootstrapRootDenyProjection`／`RequiredObjectAuthorizations`／`BootstrapRootAuthorizationPlan`／`EarlyExecutionClosure`／建表与 PTE 检查五项归专项，§0 的甲案行也标注「分页专项背景」。O-12a/b、O-03、O-04 同守这条边界。
+- **§1.6 的平台资源栏再切一刀**（否则 O-07 会悄悄变成第七项阻塞）：六行表——`reg`/`ranges` 解析、静态资源来源身份、`DeviceResource` 与 profile 对应属本项；驱动使用点的 VA/宽度/方向/CPU、`DeviceWindowPolicy`、`DeviceMappingCoverage`/PTE 审计不属。
+- **容量与 ABI 给出可计算结论**：第一跳 arena 的载荷算术是 2,048 + 4,096 + 384 + 64 + 1,024，`SEMANTIC_END = 14016` 对 `ARENA_CAP = 16384` → **只剩 2,368 B，256 条 UEFI 来源记录不可能塞进现有布局**；`MaxDescriptorCount` 与缓冲的关系仍是未实现要求，但「超限整体拒绝、不截断」**已实现**（`TooManyDescriptors` → panic），恰好达上限／超一枚的两枚负控待补（DTB 侧对等测试已在）。ABI 六项核对表按读数填：第一跳有 `offset_of!` 逐字段偏移与尺寸/对齐断言、纯标量、无 `usize`/枚举/`bool`/引用；第二跳**只有 `size_of <= 4096`、无偏移断言**，且 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32` 旁边的散文边界逐项相加只有 22 → 32 是人手余量，O-13b 要么给推导要么写死 22。
+- **no-map 的推测访问补准入式**：`BootInputReadEligible` 五项，前四项本项负责，第五项 `uncontrolled_speculative_access_is_prevented` 是每条入口与架构的实际保证——本项只把它列为准入条件并要求具名依据，机制归专项；证明不出来就拒绝该输入布局，不得因「这是启动读取」默认豁免。MRB 侧补四问 ABI 合同（是否说明递交地址就是 DTB／是否授权读全部内容／授权是否只覆盖本对象／复制到自有副本后失效）。
+- **UEFI 类型 12 再分一格**：`PortIoAddress` 改成 `UefiMmioPortSpaceAddress`，因为它不是 x86 的 `IN`/`OUT` 端口地址，不得与 O-08 的 `PortWindowPolicy` 共用类型。
+- **§6 证据身份三分**：`CodeEvidenceCommit = 53c44e846`（146/70 与交叉编译）、`DocumentRevision = 第九十七轮`、`ReviewedRepositoryCommit = 本轮合并后的 rewrite 分支头`；旧句「本文对应提交 `fe47471f1`」取消。
+- **读数**：简报 1090 → **1113 行**、93,922 → **97,726 字符**（仍在单封容量内）；专项册 762 行。门：围栏偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0。无代码改动，沿用 minix-boot **146** / boot-shim **70**。
+- **回写评审人**：他问的三个关键问题全部按代码回答（`FREE_MEMMAP` 不是候选输入且零读者；DTB 解析后无读者，故我上一轮「仍存活但未保护」写错；bump 与候选在自引导腿上按构造相交、UEFI 腿有断言），并采纳他对 §2.8 「选择 ≠ 交付」的定名纠正与 §2.9「引用丢弃 ≠ 记录丢失」的措辞纠正。
+
+
 **第九十六轮（硬件准入模型逐字迁出；§7 收紧成交付清单；三处过头措辞按代码读数更正）**
 
 - **迁出 672 行不是省版面，是执行射程**。简报 O-12i 的后半节（普通访问准入、页表用途、原子能力、对象访问三层、整页全称判定）逐字迁到新建的 `01-design-note-hardware-admission-model.md`（v1，篇头写明「非 I-29 验收条件」，并如实标注两条未闭合：共享原子合同仍按 LR/SC 分支、跨页源级访问的整体覆盖规则没进逐操作判定式）。公式一条没改，改的只有归属。
