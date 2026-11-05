@@ -1052,8 +1052,9 @@ AtomicRoleEligible(page, algorithm, ctx) =
     ∀ access ∈ algorithm.accesses : RoleAccessRequirementEligible(page, access, ctx)   ← 逐访问类别过 PhysicalAccessPermits
         ∧ ∀ cpu ∈ ctx.ParticipatingCpuSet : ReservationSetGeometryPermits(cpu, access.physical_range, access.reservation_set, ctx.isa_profile_id)
     ∧ ProgressRequirementSatisfied(page, algorithm, ctx) ∧ FallbackPlanSatisfied(algorithm, ctx)   ← 后者仅当声明依赖 fallback
-RoleAdmit(AtomicSharedState, page, ctx) = ∀ algorithm ∈ RegisteredAtomicAlgorithms(ctx) : AtomicRoleEligible(page, algorithm, ctx)
-    ← 没有这条派发式，AtomicRoleEligible 就是一个没人调用的谓词
+RoleAdmit(AtomicSharedState, page, ctx) = RegisteredAtomicAlgorithms(ctx) ≠ ∅
+    ∧ ∀ algorithm ∈ RegisteredAtomicAlgorithms(ctx) : AtomicRoleEligible(page, algorithm, ctx)
+    ← 没有这条派发式，AtomicRoleEligible 就是一个没人调用的谓词；集合为空同样是证据不足，不得真空通过
 ```
 
 **第一版策略（统一，不再两处说法不一）**：所有实际使用 LR/SC 的第一版算法一律要求 `RsrvEventual`；`RsrvNonEventual` 与 `AtomicFallbackPlan` 路径整体留待扩展，不进入第一版准入。规范允许「`RsrvNonEventual` + 检测到无进展时 fallback」，但那条要求 `FallbackPlanSatisfied` 真的检查计划完整性与 fallback 自身依赖的操作/宽度/内存——第一版没有这份证据，因此不开放该分支。
@@ -1674,7 +1675,7 @@ cd os && cargo test -p boot-shim --lib
 | PMP 证据稳定性与保护清单 | 同上；稳定性改为「不可变承诺（第一版）」或「变更前协调」二选一，`stability_until` 定义为承诺而非期限 | 无 provider、无协调协议、无 `evidence_generation` 递增路径 |
 | Profile 与有效方案 | 两者已分离，五档校验表已写；`Za64rs` 几何与基础页内约束分成两层并都有判定位置 | 第一版不声明任何 RVA Profile，profile 几何为「不适用」，**但基础页内约束不适用这条捷径不成立**；几何事实的 profile 来源未实现 |
 | PMP 权限映射与 Smepmp | 操作→许可位表逐行带规范锚点；第一版只接受 `MML=0 ∧ MMWP=0` | 硬件 A/D 隐式写查 W 的依据是遍历算法里那句无编号锚点的 store 条款，强度低于命名规范条目；`Absent` 的平台支持限制与 `mseccfg` 证据提供者未落地 |
-| 原子算法进展 | 合同已定形：基础页内约束 ∧ 进展要求（第一版一律 `RsrvEventual`）∧ profile 几何三项并列 | `AtomicFallbackPlan` 与 `ReservationSetGeometryPermits` 为实现预留 |
+| 原子算法进展 | 合同已定形：基础页内约束 ∧ 进展要求（第一版一律 `RsrvEventual`）∧ profile 几何三项并列；`RegisteredAtomicAlgorithms ≠ ∅` 也是前置 | `AtomicFallbackPlan` 与 `ReservationSetGeometryPermits` 为实现预留 |
 | 页表用途准入 | backing / 分配 / 既有对象已三分 | 既有对象须按 `ObjectAccessEligibility` **逐使用点**判定，不得引用页级谓词冒充；缺实现 |
 | ISA Profile 义务 | 第一版不声明任何 RVA Profile；义务表由本方直取核对，`Svade` 强制与 `Svadu` 扩展选项的关系已写进 profile 校验表 | 空集≠已满足；profile 合规判定与 `ReservationSetRequirement` 无实现 |
 | UEFI DTB 与 MapKey | 方向认可；三方组合（EFI DTB × MRB × `no-map`）与「类型按页 / 访问按原始字节」的粒度分工已定形 | 无实现与负控；UEFI 侧证据为评审人核对，本方未独立取到原文 |
