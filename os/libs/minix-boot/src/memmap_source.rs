@@ -224,9 +224,10 @@ pub enum SourceOrigin {
 /// `raw_*`. No page range is stored here — `/memory` projects inward
 /// (`FullPages`) while reservations project outward, so a single precomputed
 /// page extent would bake one consumer's rule into every consumer.
-/// `range_end` is exclusive; it cannot equal `2^64` because a DTB `reg` that
-/// wraps is rejected as `RangeOverflow` (the `u128` boundary rule belongs to
-/// the UEFI descriptor path).
+/// `range_end` is exclusive and therefore cannot be `2^64`: a range whose end lands
+/// there is refused as `UnsupportedPhysicalAddressEnd` (this project does not support the
+/// highest page), while `address + size` past `2^64` stays `RangeOverflow`. Accepting
+/// `end == 2^64` belongs to the `PhysicalRange` work, not to this field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRecord {
     /// Stable within one input object; cross-input references need
@@ -316,8 +317,9 @@ fn declared_page_range(start: u64, len: u64) -> Result<(u64, u64), DtbMemMapErro
     let start = start & !(PAGE_BYTES - 1);
     // Outward rounding can also land exactly on 2^64 (a range whose last byte
     // sits inside the top page). Same boundary case, same refusal.
+    // range_end < 2^64, so rounding outward can at most reach 2^64 exactly.
     let projected = ((range_end as u128) + (PAGE_BYTES - 1) as u128) & !((PAGE_BYTES - 1) as u128);
-    if projected >= PHYS_END {
+    if projected == PHYS_END {
         return Err(DtbMemMapError::UnsupportedPhysicalAddressEnd);
     }
     Ok((start, projected as u64))
