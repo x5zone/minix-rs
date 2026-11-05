@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 11:10 CST（`date` 实测）；**内容轮次：第一百零六轮——来源记录跨过第一跳，四项代码落地**（`KernelInfo.memmap_sources` 承载字段 + v1 arena 来源分区 wire v2 + `KernelInfo::validate` 消费者边界复核；删除只写不读的 `FREE_MEMMAP`；自引导腿 arena 归属定论与链接期 `KERN_SIZE` 断言；交接页归属的可执行证明）。§2.5／§2.9／O-13a／§7／§6 的读数同步刷新；逐字证据进 `03` 七十二节。
+> **重写**：2026-11-06 11:16 CST（`date` 实测）；**内容轮次：第一百零七轮——消费者边界与 UEFI 配置表 DTB**（VM 删除平台地址硬编码、空闲表按记录原样采纳，`reconcile` 成为唯一裁决点；aarch64 UEFI 配置表 DTB 三态接入：无／可解析且交叉校验通过／不可用即停）。§2.5／§2.8／§2.9／§7／§6 读数同步刷新；逐字证据进 `03` 七十三节。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -177,7 +177,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 第一跳：两张表经固定布局交接（可用表 128 项、保留表 256 段，另有模块表与标量）。内核 PMM 用可用表；保留表供诊断与查询接口使用。引导区相交守卫使用 `checked_add`，回绕输入直接失败（`test_bootstrap_outside_memmap_rejects_wrapping_region` / `_allocation`）。
 
-第二跳今天**已有实现且有测试**，它正是「bootloader／内核自己占了什么」这份记录的载体（`os/kernel/src/vm_handoff.rs:fn build_vm_handoff`）。扣减记录逐条可枚举，五类范围各有明确来源：内核映像（`KernelInfo.kern_phys_base()/kern_size()`）、VM 自己的根页（`arch_boot` 参数，即交接里的 `root_paddr`）、**启动 bump 区整段**（`os/kernel/src/boot_alloc.rs:fn boot_alloc_region`，已用页与剩余页都算内核保留）、引导期已用帧（`VmBootAllocator` 各池区间从尾部向前的已用后缀，**页表页就在这里**）、保留模块 blob（`KernelInfo.boot_modules()` 的**全部** blob，含 VM 自己的——因为 VM 的段帧在进入前就取自这份空闲表）。消费者侧的不变量写成 `LiveBootstrap ∩ VM-free = ∅`，且是在**消费边界**上核对，而不是相信内核自己的记账；PMM 可用集表达为 `conventional ∩ DM-representable − LiveBootstrap`。容量是固定的（`VM_BOOT_HANDOFF_MAX_DEDUCTED`），超出即当场失败并报「扣减记录不可在容量内枚举」——这是设计行为，不许放宽。测试：`test_classification_deducts_all_record_sources`、`test_classification_free_list_is_exact_complement`、`test_classification_clips_to_dm_window`、`test_classification_drops_out_of_window_region`、`test_boot_image_table_layout`。
+第二跳今天**已有实现且有测试**，它正是「bootloader／内核自己占了什么」这份记录的载体（`os/kernel/src/vm_handoff.rs:fn build_vm_handoff`）。扣减记录逐条可枚举，五类范围各有明确来源：内核映像（`KernelInfo.kern_phys_base()/kern_size()`）、VM 自己的根页（`arch_boot` 参数，即交接里的 `root_paddr`）、**启动 bump 区整段**（`os/kernel/src/boot_alloc.rs:fn boot_alloc_region`，已用页与剩余页都算内核保留）、引导期已用帧（`VmBootAllocator` 各池区间从尾部向前的已用后缀，**页表页就在这里**）、保留模块 blob（`KernelInfo.boot_modules()` 的**全部** blob，含 VM 自己的——因为 VM 的段帧在进入前就取自这份空闲表）。消费者侧的不变量写成 `LiveBootstrap ∩ VM-free = ∅`，且是在**消费边界**上核对，而不是相信内核自己的记账；PMM 可用集表达为 `conventional ∩ DM-representable − LiveBootstrap`。VM 侧现在**原样采纳**交接页里的空闲表（`adopt_free_regions`），不在自己的入口再切任何范围——包括此前按字面量 `0x8200_0000..0x8400_0000` 做的 32 MiB 修剪，那在 aarch64／UEFI 腿上指向普通 RAM，并且会掩盖真正的记账缺陷；唯一的裁决点是 `reconcile`（记录非空、根页与每个模块 blob 被覆盖、`free ∩ deducted = ∅`）。容量是固定的（`VM_BOOT_HANDOFF_MAX_DEDUCTED`），超出即当场失败并报「扣减记录不可在容量内枚举」——这是设计行为，不许放宽。测试：`test_classification_deducts_all_record_sources`、`test_classification_free_list_is_exact_complement`、`test_classification_clips_to_dm_window`、`test_classification_drops_out_of_window_region`、`test_boot_image_table_layout`。
 
 **这一跳与本项的关系**：交棒信息必须完整且无歧义，所以五类范围的来源清单、容量核算与失败形状属 I-29 的合同；至于 VM 拿到之后怎么映射、开不开大页，属分页侧。缺口见 O-13（固定布局 ABI 未开始）与 §7。
 
@@ -189,12 +189,12 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | 入口 | 采集器 | 采集接口 | `SourceRecord` 去向 |
 |---|---|---|---|
 | x86_64 UEFI | `ebs_map` | 无 DTB 记录接口 | 无（UEFI 描述符记录未做） |
-| aarch64 UEFI | `ebs_map` + 磁盘 DTB 覆盖对照 | 磁盘 `dumpdtb.dtb` 两处仍走 `collect()`（**只作覆盖对照诊断，不参与政策**） | 配置表 DTB 只登记物理地址，尚未解析 |
+| aarch64 UEFI | `ebs_map` + 磁盘 DTB 覆盖对照 | 磁盘 `dumpdtb.dtb` 两处仍走 `collect()`（**只作覆盖对照诊断，不参与政策**） | 配置表 DTB **三态接入**：无 → UEFI 唯一来源；有且可解析 → `/memory` 必须覆盖每条 conventional 跨度，否则 halt；有但不可用 → halt |
 | aarch64 直启 | `DtbMemoryMap`（`firmware_reserve_end = 0`） | `collect_with_sources()`（`bootface_a64.rs`） | **被持有、审计并交付**：记录写入 `KernelInfo.memmap_sources`，消费者边界复核 |
 | riscv64 自引导 | `DtbMemoryMap`（`= KERN_PHYS_BASE`） | **`collect_with_sources()`（`bootface.rs:203`）** | **被持有、审计并交付**：同上，记录与投影在同一映像的 `.bss` 内 |
 | riscv64 U-Boot | `DtbMemoryMap`（`= KERN_PHYS_BASE`） | `collect_with_sources()`（`opensbi_helpers.rs`） | **跨第一跳交付**：记录进入 v1 arena 的来源分区，接收端落进 `SOURCE_RECORD_STORE` 后再审计 |
 
-`grep -rn 'collect_with_sources' --include=*.rs os`（排除 `memmap_source.rs` 与其定义）现为 **3 处生产调用**：`os/kernel-image/src/bootface.rs`、`os/kernel-image/src/bootface_a64.rs`、`os/boot-shim/src/opensbi_helpers.rs`——三条 DTB 政策腿都在投影前运行 `audit_source_coverage`，失败即停。**持有之后是交付**：三条腿都把记录填进 `KernelInfo.memmap_sources`，`KernelInfo::validate` 的第 6 步在消费者边界重跑同一条覆盖审计（非空时才跑），所以内核侧拿到的不是承诺而是可复核的事实。仍未接入的是 aarch64 UEFI 的配置表 DTB（只登记地址、尚未解析），以及 UEFI 的逐描述符记录（需要独立的 256 条有界载体）。
+`grep -rn 'collect_with_sources' --include=*.rs os`（排除 `memmap_source.rs` 与其定义）现为 **3 处生产调用**：`os/kernel-image/src/bootface.rs`、`os/kernel-image/src/bootface_a64.rs`、`os/boot-shim/src/opensbi_helpers.rs`——三条 DTB 政策腿都在投影前运行 `audit_source_coverage`，失败即停。**持有之后是交付**：三条腿都把记录填进 `KernelInfo.memmap_sources`，`KernelInfo::validate` 的第 6 步在消费者边界重跑同一条覆盖审计（非空时才跑），所以内核侧拿到的不是承诺而是可复核的事实。aarch64 UEFI 的配置表 DTB 已按三态接入（解析并与 UEFI 快照交叉校验，不可用即停），所以四条 DTB 政策腿都有真实的 DTB 消费者。仍未闭合的是 **UEFI 的逐描述符来源记录**（需要独立的 ≥256 条有界载体，或「快照身份 + 索引」引用）。
 
 ### 2.6 明确不存在的机制
 
@@ -248,7 +248,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 | UEFI 两条腿 | `fn alloc_bump_region` 分配 `LOADER_DATA` 后 `init_boot_pt_alloc` | 由 `fn assert_bootstrap_outside_memmap` 三处守卫（bump、根页、arena）相交即 panic → **不相交由 shim 断言保证** |
 | riscv64 `bootface` / aarch64 直启 | 从固定 `MODULE_REGION_BASE` 池（注释写着「DRAM+32M 起 32 MiB」）切出 | 该池已列入 `vm_boot_exclusions`（bump 区）→ 不再进入候选；此前的风险点是它落在 DTB `/memory` 之内而排除清单只有内核 + 模块 → **相交按构造成立**，且分配器没有第二道防线 |
 
-`os/kernel/src/dm_coverage.rs` 里那几枚「bump inside memmap → dropped」的测试是**直接映射候选的过滤**，不是分配器排除，不能拿来当保护证据。VM 侧的文本（`os/servers/vm/src/boot.rs` 注释：整个 32 MiB bump 池都在扣减之列）说明风险在**分类之后**被补偿，但第一次真实交付发生在分类之前。
+`os/kernel/src/dm_coverage.rs` 里那几枚「bump inside memmap → dropped」的测试是**直接映射候选的过滤**，不是分配器排除，不能拿来当保护证据。VM 侧现在不做任何地址层面的补偿：空闲表原样采纳，`reconcile` 只核对记录——风险由内核的 `classify` 记录与 `vm_boot_exclusions` 在**第一次真实交付之前**处理，消费边界只负责当场发现不一致。
 
 **结论与判据**：本轮据此把 §7 第 4 项写成可验收的两件事——① 一个具名的区间关系测试：`BootBumpRange ∩ VmBootRegionCandidates = ∅`，或在 `select_multi` 的排除清单里显式加入 bump 池与根页；② `FREE_MEMMAP` 与 `kernel_info.memmap()` 谁是权威必须裁决，不得两条路径各自扣各自的。**这不等于已经证明当前运行路径存在内存破坏**：是否真的破坏取决于 bump 池与 VM 段页的实际相交情况，而今天没有测试覆盖它——所以它是**未证明的正确性风险**，不是已确认的 bug。
 
@@ -925,7 +925,7 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 
 | 证据 | 读数 |
 |---|---|
-| 宿主单测 | `minix-boot --lib` **150 通过**、`boot-shim --lib` **70 通过**（用例见 §2.1、§2.2）；`minix-types` **332 通过**；`minix-kernel --features mock` **863 通过 / 0 失败 / 8 忽略**（含扣减容量、排除清单、交接布局钉桩、来源记录线上往返与消费者边界审计）；**三架构交叉构建与 QEMU 腿本轮未重跑**（本机 CI 镜像只装 host target、无 qemu），上一次通过读数属第一百零一／一百零三轮，按未验证记录 |
+| 宿主单测 | `minix-boot --lib` **150 通过**、`boot-shim --lib` **70 通过**（用例见 §2.1、§2.2）；`minix-types` **332 通过**；`minix-kernel --features mock` **863 通过 / 0 失败 / 8 忽略**（含扣减容量、排除清单、交接布局钉桩、来源记录线上往返与消费者边界审计）；`minix-vm` **548 通过 / 0 失败**（含空闲表原样采纳与 `reconcile` 四类判定）；`boot-shim --features uefi` 编译通过；**三架构交叉构建与 QEMU 腿本轮未重跑**（本机 CI 镜像只装 host target、无 qemu），上一次通过读数属第一百零一／一百零三轮，按未验证记录 |
 | 落码提交 | `38668f843` 起：DTB 保留来源、来源记录层、`audit_source_coverage`、边界端点分名 |
 | 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`、`riscv64gc-unknown-none-elf`、`x86_64-unknown-uefi`、`aarch64-unknown-uefi` |
 | QEMU 启动腿 | riscv64 bootface PASS（三点位齐全，仅覆盖该入口）；aarch64 PASS（串口读到 `conv=13 dtb_regions=1` 与内核进入行）；x86 PASS 但该腿 ESP 上没有 `dumpdtb.dtb`，**采集器根本没被进入**，只证明启动未回归 |
@@ -951,7 +951,7 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 **第二层的验收内容已按 §1.6 收紧**，只保留真正属于「资源发现与交接」的五项（平台资源描述随射程移交 `04`，不再作为签字项）：
 
 1. **输入真实性**——**provenance 与 reachability 分开**：I-29 负责各启动 ABI 的**对象身份、地址域、授权范围、阶段与失效点**，以及可复核的来源依据（provenance）；「该地址在当前阶段是否端到端可达、是否满足非受控推测访问限制」（reachability）由 BootEntry 与各架构 adapter 负责。**配置表 DTB 指针存在，不能推出它可读**——即便 UEFI 规定该指针按物理地址解释且 DTB 必须位于 `EfiACPIReclaimMemory`，可达性仍要单独证明。aarch64 UEFI 配置表 DTB 的三态规则已裁定（不存在→仅按内存图；已解析→双来源交叉验证；存在但未接入或解析失败→拒绝启动），实现为零。
-2. **来源保真**：每条启动路径的 `SourceRecord` 生产、保存与**传递**。三条 DTB 政策路径（riscv bootface、aarch64 直启、riscv U-Boot）都生成记录、在投影前审计、并写入 `KernelInfo.memmap_sources`；U-Boot 腿的记录经 v1 来源分区跨镜像，接收端落进内核 `.bss` 后由 `KernelInfo::validate` 第 6 步在消费者边界重跑覆盖审计。**仍未闭合的是 UEFI**：aarch64 UEFI 配置表 DTB 只登记地址、尚未解析，UEFI 侧也没有逐描述符来源记录（连 `Attribute` 都没记录，模块头注释已改正），需要容量 ≥256 的独立有界载体或「快照身份 + 索引」引用。
+2. **来源保真**：每条启动路径的 `SourceRecord` 生产、保存与**传递**。三条 DTB 政策路径（riscv bootface、aarch64 直启、riscv U-Boot）都生成记录、在投影前审计、并写入 `KernelInfo.memmap_sources`；U-Boot 腿的记录经 v1 来源分区跨镜像，接收端落进内核 `.bss` 后由 `KernelInfo::validate` 第 6 步在消费者边界重跑覆盖审计。**仍未闭合的是 UEFI 的逐描述符记录**：配置表 DTB 已按三态接入并与 UEFI 快照交叉校验，但 UEFI 侧每条描述符的来源身份（连 `Attribute` 都没记录，模块头注释已改正）还没有载体，需要容量 ≥256 的独立有界载荷区或「快照身份 + 索引」引用。
 3. **冲突与生命周期**：DTB／UEFI 静态保留的交叉验证、MRB、`no-map`、类型政策各自语义独立；首读与解析后拒绝两个决定已分开（O-04／O-11 的冲突已消）；O-01 第一版采静态处置表 + 损失声明，`ReservedReusable` 保持独立类型。
 4. **分配所有权**：候选集与交付集不得混称。§2.8 的时间线已证明两件事——**候选集合包含 bump 池**、**首次分配早于任何扣减**；UEFI 腿的根页与 bump 靠 `assert_bootstrap_outside_memmap` 挡在候选之外，**自引导两腿的根页与页表 bump 都取自 `/memory` 内的固定池，按现有披露事实应视为已落入候选集合**（除非补出 `select_multi` 内部的过滤证据）。验收三枚：`BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅`、`BootRootPage ∩ FirstVmBootAllocatorCandidates = ∅`、`FirstVmAllocatedPages ∩ (BootBumpRange ∪ BootRootPage) = ∅`；第三枚是结果断言，前两枚替代不了。**第一百零四轮已补**：`test_first_vm_allocation_never_lands_in_bump_or_root` 走生产的 `select_multi` + `VmBootAllocator`，取尽 703 页并断言全部避开 bump 与根页。另加 `FREE_MEMMAP` 去留裁决（它零读者、也不是候选输入）。**第一百零一轮已落码**：排除清单从「内核 + 模块」扩成 `vm_boot_exclusions`（内核、模块、根页、bump，容量 `NR_BOOT_MODULES + 3`），真实与 mock 两个分支共用；单测 `test_vm_boot_exclusions_cover_kernel_root_and_bump` 覆盖四类来源与缺省情形。**仍未做**：第三枚结果断言（`FirstVmAllocatedPages ∩ …`）与 QEMU 腿复跑。
 5. **容量与 ABI**：接受上限是 `min(256, floor(缓冲/40)) = 256`，**不是**缓冲能装的 524；来源记录按两类拆分：`MemorySourceRecordCapacity`（UEFI ≥256、DTB 40 含 8 条固件前缀、40 槽之外的派生）与 `StartupObjectRecordCapacity`（内核映像／模块／页表池／根页／arena／其它）；启动对象与派生记录今天没有独立槽位。第一跳 arena 的余量 2,368 B 已开出 1,920 B 的来源分区（40 条 × 48 B，wire v2，余 448 B），DTB 腿因此装得下；UEFI 的 256 条记录仍装不进（12,288 B），必须另开有界载荷区或改成 `(MapSnapshotId, DescriptorIndex)` 引用（O-13a）。第二跳的 `deducted` 按来源记账（`push` 只做页取整，不交集、不合并），上界 `3 + 32 + 12 = 47`。**第一百零一轮已落码**：`VM_BOOT_HANDOFF_MAX_DEDUCTED` 由 32 提到 47、`VM_BOOT_HANDOFF_VERSION` 7→8，并加编译期断言 `>= 3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES` 与两枚边界测试（`test_deduction_capacity_accepts_full_bound`、`test_deduction_capacity_overflow_is_fail_stop`）；**第一百零三轮已落码**：`VmBootHandoff` 的尺寸、对齐与九个关键字段偏移已用 `test_vm_boot_handoff_layout_is_pinned` 钉死；仍未做的是、`VM_BOOT_HANDOFF_VA` 的地址与生命周期、线上字段字节序、以及 magic/version/size 不匹配的**明确失败语义**（fail-stop 可以，但要写成合同而不是实现细节）。「超限整体拒绝不截断」**已实现**。第一跳来源分区与 `KernelInfo` 承载字段已按上段落码（wire v2，版本号精确比较，超容量与坏记录都失败关闭）。

@@ -12,6 +12,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零七轮（消费者边界收口；aarch64 UEFI 配置表 DTB 三态）**
+
+- VM 侧删除两处入口处补偿：一是按字面量 `0x8200_0000..0x8400_0000` 修剪 32 MiB（riscv64 QEMU 的 bump 池地址，在 aarch64／UEFI 腿上指向普通 RAM），二是把每个模块 blob 再扣一遍。空闲表现在由 `adopt_free_regions` 原样采纳，`reconcile` 是唯一裁决点（记录非空、根页与模块 blob 被覆盖、`free ∩ deducted = ∅`）。预先修剪会把记账缺陷静默掩盖，正是消费边界不该做的事。
+- aarch64 UEFI 配置表 DTB 从“只登记地址”变为三态：无 DTB → UEFI 唯一来源；有且可解析 → `/memory` 全景必须覆盖每条 conventional 跨度，否则 halt；有但不可用 → halt。两个 UEFI 入口各调一次（内联路径在 `build_memmaps` 之后、跨镜像路径在 EBS 分类之后）；磁盘 `/dumpdtb.dtb` 仍是诊断输入。
+- 读数：`minix-vm` 548 / 0；`boot-shim --features uefi` 编译通过、70 + 5 测试通过；QEMU 腿未跑（“有 DTB 且可解析”分支只有真机/CI 才会执行）。
+
 **第一百零六轮（来源记录跨第一跳；删除只写不读的 FREE_MEMMAP）**
 
 - 来源记录不再停在采集器静态数组：v1 arena 新增来源分区（`WIRE_SOURCES_OFFSET = SEMANTIC_END`，40 条 × 48 B = 1,920 B，信封 168→176 B，`BOOT_HANDOFF_V1_VERSION` 1→2、精确比较），`KernelInfo` 新增 `memmap_sources`，`validate` 第 6 步在消费者边界重跑覆盖审计。

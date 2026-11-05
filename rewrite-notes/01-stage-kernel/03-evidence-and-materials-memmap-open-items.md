@@ -2590,6 +2590,43 @@ ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
 - `kernel-image`（aarch64/riscv64）与 `boot-shim`（riscv64）交叉构建：本机 CI 镜像只安装 `x86_64-unknown-linux-gnu` target，`cargo build --target …` 报 `E0463`（找不到 `core`）；本轮改动只在 faces 中新增两处字段赋值与一处 `mut`，类型核对依赖 `build_kernel_info` 的宿主编译与字段声明。
 - QEMU 腿：镜像无 qemu，未运行。
 
+## 七十三、第一百零七轮：消费者边界收口与配置表 DTB 三态的代码证据
+
+### VM 侧删除平台地址硬编码
+
+删除前 `os/servers/vm/src/boot.rs` 的 `read_boot_params`：
+
+```
+let root_deduct_base = 0x8200_0000;
+let root_deduct_end   = 0x8400_0000;
+let mut deduct: Vec<(u64,u64)> = vec![(root_deduct_base, root_deduct_end)];
+for m in handoff.modules { ... deduct.push((m_base, m_end)); }
+```
+`deduct` 在 `reconcile` **之前**把空闲表切成片段，因此 `reconcile` 的第 4 条（`free ∩ deducted = ∅`）只能看到“已被修剪过”的空闲集：真正的记账缺陷会被静默吞掉。`0x8200_0000` 是 riscv64 QEMU 的 `MODULE_REGION_BASE`；aarch64 DRAM 从 `0x4000_0000` 起，该字面量落在普通 RAM 内。
+
+删除后：`adopt_free_regions(&handoff.free_regions[..count])` 原样映射为 `BootMemRegion`，`reconcile` 保持四条判定不变。新增 `test_adopt_free_regions_keeps_every_region_verbatim` 钉住“0x8200_0000 的区间原样保留”。`minix-vm` 548 通过 / 0 失败。
+
+### aarch64 UEFI 配置表 DTB 三态
+
+新函数 `os/boot-shim/src/uefi_helpers.rs::cross_validate_config_dtb`，两个 UEFI 入口各调一次：
+
+- 内联内核路径：`build_memmaps()` 与两条 `assert_bootstrap_outside_memmap` 之后；
+- 跨镜像路径：EBS 分类产出的 `memmap` 之后、`assert_bootstrap_outside_memmap` 之前。
+
+门序与 OpenSBI 腿一致：`dtb_blob_aligned` → `dtb_len_ok(total: u32)` → `checked_add` → `fdt_layout::validate` → `Fdt::new` → `DtbMemoryMap::new(&fdt, 0).collect()` → `dtb_covers_conventional`（既有谓词，自身有单测）。分支：
+
+| 状态 | 动作 |
+|---|---|
+| 配置表无 DTB（x86-64 恒为此态） | 打印 “platform DTB absent — UEFI map is the only source”，返回 |
+| 有 DTB 且可解析 | 覆盖通过：打印 “cross-validated”；有跨度不被覆盖：`panic!` 并报出 `[base,+len)` |
+| 有 DTB 但不可用 | 对齐／长度／容器／解析／图拒绝各自 `assert!`/`expect` 停机 |
+
+`cargo check -p boot-shim --features uefi` 通过；`cargo test -p boot-shim --features uefi` 70 + 5 通过。**QEMU 腿未跑**：第三态与第二态的“覆盖失败”分支只有真机或 CI 的 aarch64 UEFI 腿会执行。
+
+### 明确未验证
+
+QEMU（本机镜像无 qemu）；kernel-image / uboot 交叉构建（镜像只装 host target）。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2622,3 +2659,14 @@ ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百零五轮）合并提交 | `7e37ef58c` |
+
+### 评审身份（第一百零七轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百一十四笔登记（代码提交 `d71db61d5`、`5acb4dbb6` 为其父链） |
+| `CodeEvidenceCommit` | `5acb4dbb6`（minix-vm 548 与 boot-shim --features uefi 70+5 在此提交取得） |
+| `DocumentRevision` | 第一百零七轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百零六轮）合并提交 | `3fef6483f` |
