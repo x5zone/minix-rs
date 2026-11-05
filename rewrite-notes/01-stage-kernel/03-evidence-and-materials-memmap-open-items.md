@@ -1,5 +1,7 @@
 # 内存图政策评审简报 —— 取证材料与复核锚点
 
+> **历史材料，不是现行规则**：本文件记录取证过程与逐轮读数，其中出现的旧公式、旧符号均为历史文本；现行规则只以 `01-adjudication-brief-memmap-open-items.md` 为准。
+
 > **创建**：2026-11-04（第十轮评审回填之后）
 > **为什么单独成册**：送审正文已经长到无法整份贴给看不到仓库的评审人，而下面两节属于**取证坐标**与**取证计划**——它们不是待裁政策，读者不需要在评审第一遍时读完它们。正文的第十节与第十三节保留编号与指针，本节内容**逐字移出，未改写、未删减**。
 > **与正文、档案的分工**：正文 `01-…` 是当前政策状态、合同条款、待裁问题与事实分级；审阅历史 `02-…` 是各轮改变了什么、双方各自撤回过什么；本册 `03-…` 是**拿到仓库访问权之后要复核的位置清单**（第一节）与**升级为实现合同所需的材料包与逐轮取证项**（第二节）。
@@ -987,7 +989,7 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 
 | 项 | 读数 |
 |---|---|
-| 本轮评审对照的版本 | 评审意见引用的「当前公式：`EffectiveSvade = SvadeImplemented ∨ (SvaduImplemented ∧ ADUE == 0)`」与「无 `SystemHartSet`」对应第六十四轮文本 `fffaa3e5f`；第六十五轮 `bd8a89eee`（合并后 `2eca58006`）已改为分支式并加入两个 hart 集合 |
+| 本轮评审对照的版本 | 评审意见引用的「当前公式」是**第六十四轮的布尔式**（逐字引用已在第七十二轮材料清理中删除；第六十五轮 `bd8a89eee`/合并后 `2eca58006` 已改分支式），并称「无 `SystemHartSet`」；两者都不在现行主文档 |
 | 合并态锚点（`2eca58006`） | `PteUpdateScheme(hart) =` 分支在约 1032 行；`SystemHartSet`/`ParticipatingHartSet` 在约 1074 行；`HartRuntimeAdmission` 在约 1122 行、既存对象段在约 1126 行；`grep -c 规范原文未取到` = 0 |
 | 本轮修掉的呈现缺陷 | 撤回说明曾把被撤销的布尔式逐字留在正文（`grep` 计数 1），检索会命中；本轮删除，正文只留「上一版是布尔式、已撤销」，逐字记录移入本档案第六十五轮块 |
 | 新增合同 | `SystemHartSet` 清单来源（固件 ABI / DT `/cpus` / ACPI MADT）与「永不启用」政策；`HartRuntimeAdmission` 增映射与访问路径维度；`ProfileMemoryObligations(isa_profile)` 与 `PlatformMemoryProfile` 分离并补 `Ziccif`；`AtomicFallbackPlan` 五字段与两条覆盖要求 |
@@ -1002,7 +1004,7 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 |---|---|
 | 本轮评审对照的版本（推定） | 引用的布尔式与「无 `SystemHartSet`/无 `AtomicFallbackPlan`」对应 `2eca58006` 之前；`7aeea8964` 中这四项均在文（第 1032 行分支式附近的负控表、1074 行 SystemHartSet、1126 行既存对象、995 行 AtomicFallbackPlan） |
 | 结构性对策 | 主文档标题下新增**自指**版本横幅：以 `git log -1 --format=%h -- <本文件>` 取「本文件最近一次改动的提交」——硬编码哈希会在提交后立刻过期，自指形式才是长期可用的核对锚点 |
-| 旧符号清零 | `grep -c 'fallback_available'` = 0、`grep -c 'HartAdmittedBytes'` = 0、`grep -c 'EffectiveSvade = SvadeImplemented'` = 0——正文不再保留中已撤销符号的原文，避免检索误命中 |
+| 旧符号清零 | `grep -c 'fallback_available'` = 0、`grep -c 'HartAdmittedBytes'` = 0，旧布尔中间量的名称与公式也已从全部材料删除——正文不再保留已撤销符号的原文，避免检索误命中 |
 | 本轮新增 | `AccessRequirement`/`HartAccessEligibleBytes(hart, req)`/`RoleRequirements(role, ctx)`；`Ssccptr` 与「第一版不声明 RVA 合规 ⇒ 空集≠已满足」；`AtomicFallbackPlan.required_memory` 与锁/状态路径准入；O-11 第三条硬约束；AArch64 `EfiReserved`↔`EfiReservedMemoryType` 映射；§7 逐项签字视图；`SourceRecord` 变体拆分候选登记 |
 | 主简报 | 1318 行（上限 1700）；围栏 30（偶）；表格列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **141**、boot-shim **70** 复跑；QEMU 腿沿用 `7aeea8964` 读数 |

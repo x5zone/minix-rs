@@ -1,5 +1,7 @@
 # 内存图政策评审简报 —— 审阅历史档案
 
+> **历史档案，不是现行规则**：本文件按轮次记录「改了什么、撤销了什么」，因此会出现已被撤销的公式描述与旧符号名（例如把 Svade 实现状态与 `ADUE` 做无条件 OR 的旧布尔中间量，以及两个已被替换的旧字段/符号名）。它们只说明历史，不构成合同；现行规则只以 `01-adjudication-brief-memmap-open-items.md` 为准。
+
 > **创建**：2026-11-04（第八轮评审回填之后）
 > **来源与完整性**：本文件的内容全部从对外评审简报 `01-adjudication-brief-memmap-open-items.md` **逐字移出**，未改写、未删减。移出原因只有一个：正文已经长到无法整份送交外部评审人，而下面这些部分属于**记录**，不属于**待审内容**。
 > **与正文的分工**：正文保留当前政策状态、合同条款、待裁问题、事实分级与复核锚点；本档案保留二十轮各自改变了什么、双方各自撤回过什么、本方承认过哪些错误，以及被后续轮次替代的阻断表与取证表。
@@ -9,6 +11,14 @@
 ---
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
+
+**本轮（材料清理：撤回「评审按旧文本」的判定，改指材料本身）**
+
+- **更正我此前四轮的诊断**：我一直说「评审按旧材料」，但用户确认送审的就是这套文档。逐字检索给出了真正的原因——**主文档里没有那条公式，而我把撤销掉的布尔式逐字留在了 `02`/`03` 里**（`02` 的撤销记录与第六十四轮块、`03` 的对照行）。送审材料包含这两份时，评审人看到的就是「现行公式」。**这是我的材料缺陷，不是评审人或用户的问题。**
+- **处置**：① 主文档横幅加**本版时间**（用户要求，一眼判定新旧）并声明「本文件是唯一的现行规则来源」；② `02`/`03` 标题下各加一行「历史档案 / 历史材料，不是现行规则」；③ 三处逐字旧公式改为不含公式原文的叙述，并在原位注明「逐字引用已在第七十二轮材料清理中删除」。
+- **教训**：把「正文不保留被撤销符号」这条规则扩展到**全部送审材料**——此前只清了主文档，档案里的历史引文照旧可被检索与误读。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；主简报行数与围栏见 §6。
+
 
 **本轮（第七十一轮评审之后：来源记录接上首个启动消费者 + 逐条更正）**
 
@@ -22,7 +32,7 @@
 
 **本轮（第七十轮评审之后：PMP 操作级判定、排除原因第五类、设备窗口三分）**
 
-- **评审件内部自相矛盾，但其中三条是真正的新问题**：本轮 P0 复述旧布尔式，随后 §1 又说「本轮 partial final 给出的分支式判定是合理的」并把它抄了一遍——同一份材料里两种状态并存，说明它仍是拼接自不同版本。不重复辩驳；`EffectiveSvade`/`fallback_available`/`HartAdmittedBytes` 的 `grep -c` 仍为 0。
+- **评审件内部自相矛盾，但其中三条是真正的新问题**：本轮 P0 复述旧布尔式，随后 §1 又说「本轮 partial final 给出的分支式判定是合理的」并把它抄了一遍——同一份材料里两种状态并存，说明它仍是拼接自不同版本。不重复辩驳；三个旧符号（旧布尔中间量、旧的布尔字段名、旧的字节集合符号）的 `grep -c` 仍为 0。
 - **PMP 判定模型纠错（本轮最重要）**：上一版写「逐字节合成权限」是**错的**。规范逐字规定编号最低、命中任意字节的条目决定整次操作，且该条目必须覆盖操作的全部字节（`norm:pmp_entry_priority`、`norm:pmp_full_match_required`），并用 `0xC–0xF` 遇 `0x8–0xF` 八字节访问失败作为反例。公式据此改为 `PmpPermits(hart, req, [a,b))` → `AdmittedRanges`，输入是整次访问（基址/宽度/对齐/特权级/隐式或显式），并引 `norm:pmp_rwx_check`、`norm:pmp_no_entry_match` 说明许可位与默认许可。
 - **排除原因补第五类并区分证据状态**：`PmmBaseExcluded` 还包含缓存策略不可表达、排序模型不兼容、参与 hart 普通读写不足三种失败，原「四类原因」只覆盖保留/对象/类型/平台拒绝，导致集合闭合而**归因不闭合**。补 `ArchitectureAdmissionRejected{cache_policy_evidence, memory_ordering_evidence, hart_access_evidence, state}`，`state ∈ {DefinitelyIneligible, InsufficientEvidence}`——前者是平台事实、后者是证据缺口，诊断不能合并。
 - **不变量 3 与 O-03 统一**：改为「每棵树各有独立的映射禁止集合；访问禁止另有独立集合，按对象/阶段/路径裁决；两者不得互相代替」。
@@ -54,7 +64,7 @@
 
 **本轮（第六十七轮评审之后：PMP 按访问类别索引、Profile 义务补齐与版本横幅）**
 
-- **第二次出现「按旧文本评审」**：本轮意见再次引用 `EffectiveSvade = SvadeImplemented ∨ …`、把 `SystemHartSet`、既存对象入场、`AtomicFallbackPlan` 都记为缺失，而四者在 `7aeea8964` 里都存在（上一轮 `7aeea8964` 之前的 `2eca58006` 已改）。教训：光在正文写「已撤销」不够，**评审入口必须先标明版本**。本轮在主文档标题下加**版本横幅**（用 `git log -1 --format=%h -- <本文件>` **自指**取「本文件最近一次改动的提交」，避免硬编码哈希在提交后立刻过期），并继续执行「正文不保留被撤销符号/公式原文」的规则（本轮把 `fallback_available`、`HartAdmittedBytes` 两个旧名也清零）。
+- **第二次出现「按旧文本评审」**：本轮意见再次引用旧布尔式（逐字已删除）、把 `SystemHartSet`、既存对象入场、`AtomicFallbackPlan` 都记为缺失，而四者在 `7aeea8964` 里都存在（上一轮 `7aeea8964` 之前的 `2eca58006` 已改）。教训：光在正文写「已撤销」不够，**评审入口必须先标明版本**。本轮在主文档标题下加**版本横幅**（用 `git log -1 --format=%h -- <本文件>` **自指**取「本文件最近一次改动的提交」，避免硬编码哈希在提交后立刻过期），并继续执行「正文不保留被撤销符号/公式原文」的规则（本轮把 `fallback_available`、`HartAdmittedBytes` 两个旧名也清零）。
 - **PMP 证据改为按访问类别索引**（本轮实质新增）：原 `HartAdmittedBytes(hart)` 是一组不带类型的字节集合，无法表达「普通读写可用、隐式页表读不可用」「页表可读、A/D 隐式写不可用」「读写可用、取指不可用」「读写可用、某 AMO 宽度不可用」。改为 `AccessRequirement = (access_kind, width, alignment, implicit|explicit)`、`HartAccessEligibleBytes(hart, req)`，并由 `RoleRequirements(role, ctx)` 决定各用途要交哪些类别（`PageTable` 含 PteRead / 条件 PteWrite，`Executable` 含 Fetch + `Ziccif` 指定宽度，`AtomicSharedState` 含算法登记的 AMO/LR-SC 与宽度）。
 - **Profile 义务补 `Ssccptr` 并作出「不声明 RVA」的项目决定**：supervisor 侧 profile（如 RVA20S64）要求硬件页表读取能力；第一版**不声明** RVA20/RVA22 合规，因此 `ProfileMemoryObligations` 是**空集合**——空集只表示「未声明」，不得读成「已满足」；将来若声明，必须一次列全该 Profile 的相关主存义务，不能只挑一条。
 - **fallback 计划再补两项**：`required_memory`（fallback 自己需要的内存区域与属性）与「锁变量、状态字及其访问路径也要过准入」，避免用一块从未准入的共享内存兜底。
@@ -80,7 +90,7 @@
 
 **本轮（第六十五轮评审之后：A/D 分支式、系统 hart 集合、入场审计既存对象 + `2^64` 端点分名落码）**
 
-- **撤销本方上一轮的布尔公式**：`EffectiveSvade = SvadeImplemented ∨ (SvaduImplemented ∧ ADUE==0)` 与同段的真值表矛盾——`Svadu=已实现 ∧ ADUE=1 ∧ Svade=已实现` 会被算成软件方案，而规范要求 `ADUE=1` 使实现「如同未实现 Svade」。改为分支式 `PteUpdateScheme(hart)`，并加该行反例负控；顺带把**证据要求**按分支钉清楚（Svadu 未知时不得拿 `ADUE` 读数猜方案）。
+- **撤销本方上一轮的布尔公式**（旧式把 Svade 的实现状态与 `ADUE` 做无条件 OR；逐字引用已在第七十二轮材料清理中删除）：旧式与同段的真值表矛盾——`Svadu=已实现 ∧ ADUE=1 ∧ Svade=已实现` 会被算成软件方案，而规范要求 `ADUE=1` 使实现「如同未实现 Svade」。改为分支式 `PteUpdateScheme(hart)`，并加该行反例负控；顺带把**证据要求**按分支钉清楚（Svadu 未知时不得拿 `ADUE` 读数猜方案）。
 - **两个 hart 集合分开**：`SystemHartSet`（验证全系统 PTE 方案一致性，含暂不启动的 hart）与 `ParticipatingHartSet`（`ctx.H`，逐 hart 求物理访问交集）。反例：4 hart 中 hart 3 未参与但方案不同，不能宣称 `norm:pte_ad_scheme_uniform` 已满足。另**运行时禁止单 hart 切换方案**——`norm:menvcfg_adue_fence` 只同步本 hart 的地址转换缓存；第一版把方案在初始化后冻结，将来若允许变更需全系统 quiescence → 统一写入 → 各 hart 同步 → 投影与存活页表重建。
 - **入场审计覆盖既存存活对象**：新 hart 加入只重算 `PmmBaseAvailable(ctx)` 只能阻止将来分配，不能让已交给内核对象的页忽然可访问。补四行处置表（可访问全部既存对象才允许加入；无法证明则不得进入共享调度集合；支持迁移/分区的先迁移再加入），并明确它与 `CommonCpuAccessEligiblePages(ctx)` 的分工（未来分配 vs 加入现有内存使用体系）。
 - **一致性 vs 排序继续拆清**：引「Coherence is not to be confused with the memory consistency model」与「the use of hardware-incoherent regions is discouraged」，并作出**项目选择：第一版不支持软件维护一致性的非一致主存**——非一致区域无论内存模型能否证明都不进基底，`MemoryOrderingCompatiblePages(ctx)` 只验排序模型。
@@ -93,7 +103,7 @@
 **本轮（第六十四轮评审之后：A/D 真值表、准入上下文、规范原文改为本方直取）**
 
 - **撤销本方两处自设规则**：① 「hart 方案一致属项目准入、不是规范强制」不成立——`supervisor.adoc` 锚点 `norm:pte_ad_scheme_uniform` 逐字要求「All harts in a system must employ the same PTE-update scheme as each other」；② 「证据缺失默认 `SupervisorFaultManagedAd`」不安全——`ADUE=0` 与「未实现 Svadu」都推不出软件方案，Svade/Svadu 皆未实现时是**硬件更新**。
-- **`EffectiveSvade = SvadeImplemented ∨ (SvaduImplemented ∧ ADUE=0)`**，四行真值表补齐第四行；新增 `PteUpdateScheme = Unknown`：不可证时只有「逐 hart 固件证明」或「拒绝启动」两条出路；`PteUpdateEvidence` 字段扩展（Svade/Svadu 状态、有效 `ADUE`、hart、提供者、代次、`stability_until`），只读 `ADUE` 不够。规范约束 / 项目准入 / 项目实现责任三层分开写。
+- **本轮曾给出一个布尔中间量**（后被第六十五轮撤销、逐字引用已在第七十二轮材料清理中删除），四行真值表补齐第四行；新增 `PteUpdateScheme = Unknown`：不可证时只有「逐 hart 固件证明」或「拒绝启动」两条出路；`PteUpdateEvidence` 字段扩展（Svade/Svadu 状态、有效 `ADUE`、hart、提供者、代次、`stability_until`），只读 `ADUE` 不够。规范约束 / 项目准入 / 项目实现责任三层分开写。
 - **`H` 进签名**：全部投影与谓词改为 `MemoryAdmissionContext {phase, hart_set_id, profile_id, evidence_generation, pte_update_scheme_id}`；`hart_set_id` 不能取 hart 数量；hart 集合变化、证据换代、方案变更都使既有投影失效（与 `MapSnapshotId` 同一条版本化原则）。
 - **SMP 拆三判定**：`HartRuntimeAdmission` / `CommonCpuAccessEligiblePages(ctx)` / `RoleAdmit(PageTable,·,ctx)`。上一版把「隐式页表访问」留在基底最低条件里，正是把用途条件塞回全局——只允许普通读写、不允许硬件页表遍历的页仍可作 `GeneralData`。
 - **原子用途补进展维度**：`AtomicAlgorithmRequirement`（指令族、宽度、是否依赖最终成功、fallback），`RsrvNone/RsrvNonEventual/RsrvEventual` 主源原文引用；AMO-only 不因此要求 `RsrvEventual`；`Ziccrse` 那条是规范要求而非推荐。
