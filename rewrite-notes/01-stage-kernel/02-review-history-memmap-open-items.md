@@ -12,6 +12,22 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第八十三轮（评审意见落笔：现状冲突入正文、backing 两半、对象访问三层对应、进展枚举收敛）**
+
+- **P0 现状冲突（恒等宽映射与禁止政策） 成立且比评审人写得更强（已入正文）**：落代码核对确认 `build_bootstrap_root_and_enable` 的恒等循环 `while addr < IDENTITY_MAP_END` 不查 memmap、不查类型、不查禁止集，`BOOT_IDENTITY_MAP_END = 0x1_0000_0000` 三架构共用一个常量，`map_huge` 失败被显式忽略，标志位含 `EXECUTABLE` 且不含 `USER_ACCESSIBLE`；全仓无恒等段撤销路径（`unmap` 只服务 heap 窗口驱逐）。§2.3 因此不再写「不在可用表推不出不会被映射」这种弱形式，改写明确结论：`no-map`/MRB/`EfiReservedMemoryType`/`UNUSABLE` 落在低 4 GiB 内今天**都已有映射叶子**，第一版目标合同尚未兑现。O-02a 增加**必须裁决项**：甲案（授权驱动建表）或乙案（具名 `BootTransitionMapping`，含撤销时点与「宽映射如何不沦为任意访问通道」），并写清乙案两个硬后果——今天没有撤销路径所以「临时」不成立、以及「过渡映射」自称不构成 `no-map` 豁免。
+- **P0 页表 backing 双定义 成立（已改）**：`PageTableBackingEligible` 拆成 `CommonBackingCapabilityEligible`（含评审人指出遗漏的 `OrdinaryCachePolicyRepresentablePages`——既有页表不经过 `PmmBaseAvailable`，缓存可表达性必须自带）与 `PageTableSpecificAccessEligible`；`RolePageEligible` 收成**全文唯一定义点**的分支形式（PageTable → backing，其余 → `GenericRolePageEligible`），并写明 backing 里不得出现 `LiveObjectRanges` 或「PMM 可分配」语义。
+- **P0 对象访问三层对应 成立（已改）**：新增 `AccessInstanceSet`（实例产生者、`source_evidence`、`completeness_scope`，并规定「一条 use 即一条实例」与「多实例须列清单」二选一）；把物理并集相等改成 `SegmentsCorrespondToExpectedTranslation`（逐段 `f.pa_range = TranslateByOffset(s, f.va_range)`，因为并集会放过两段 PA 互换）；新增 adapter 契约 `OperationsRealizeAccess`（覆盖全部字节、跨页的每次操作都要在集合内、footprint 取自片段、架构允许的预取/分解必须在本契约内声明）。
+- **P0 来源授权未消费操作权限 成立（已改）**：`AccessAuthorizationCovers` 参数补 `ObjectAccessSubject`、`operation`、`width`、`privilege`，写明只读授权推不出写入/取指/原子授权、MRB 一次性 DTB 读取授权的七个覆盖项；并规定 `use.path = use.access_requirement.path`（或删除其一），杜绝授权与物理准入各走一个 path。
+- **P0 进展枚举残留 成立（已改）**：`PmaPermits` 的 `progress_guarantee = Eventual` 改为三分 `match`（`NotRequired` / `OperationCompletion` / `ReservationEventual`）；`ProgressOf` 不再写「OperationCompletion 或 NotRequired」这种留给实现者猜的二选一，改取登记项 `progress_requirement` 显式给出的值。
+- **P1 七项全部采纳**：① `ProfileContextState` 增 `DeclaredButDeclarationInvalid`，`ProfileAdmissionUsable` 同时消费 `ProfileDeclarationValid`；② `fail` 三分表按已选定的 `SystemHartSet` 语义收敛（物理存在即纳入、只证明不可运行 → `InsufficientEvidence` 拒绝启动、`NotOperational` 降级为诊断事实）；③ O-06 的兼容矩阵改成与 O-11 **权威表一**同结论的四行表并声明权威表一是唯一裁决来源；④ O-03 新增访问侧合同 `NoMapControlledAccessEligible`（受控映射是必要非充分），`MappingAudit` 那行加指针；⑤ UEFI 描述符记录新增 `DescriptorAddressDomain = PhysicalAddress | PortIoAddress | UnsupportedOrOpaque`，类型 12 不得因字段名叫 `PhysicalStart` 就规范化成 `PhysicalRange`；⑥ §2.1 的 `conventional` 语义改为「交给当前 PMM 的候选输入表」，明确不等于 `PmmBaseAvailable(ctx)`；⑦ `Complete(uses ≠ ∅, audit_scope)` 禁空清单、每条 `use` 至少一个真实实例、`audit_scope` 须证明范围内实际实例都被覆盖。
+- **文档整理**：O-11 的五张表收成**两张权威表**（逐页 EFI 类型主张裁决表、DTB 一次性首读授权表），粒度与规范强度降为解释段不再重复裁决；`DtbPages \ DtbPages` 页集合差分公式与射程声明保留。
+- **对过期阅读的三处更正**（评审人读的删节版与现行版不同）：§7 已无「六个阻塞组」字样（现行为「两个阻塞组」）；§6 已无「证据基线 `f52730bef`」句（现行为 `38668f843` 起 + HEAD 复核命令）；O-11 的五表问题本批已解决。
+- **篇幅**：1695 → 1681 行（上限 1700）——真实去重一处（O-06「已知属性位的处置」与「属性按语义分三类」合并，两段原文逐字进本档案）+ 按纪律 8 合并 16 处同小节相邻段落空行（纯格式、未删文字）。正文 125,876 字符。
+- **零丢失对账**：`check.py diff` 比对本轮基线（`3bf329608` 的 01）与「正文 ∪ 02 ∪ 03 ∪ 本轮 arc」——符号名 240、测试名 56、`norm:` 锚点 30，三处 **lost 0**。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；`doc-style-lint --diff` error **0**；围栏 48（偶）；表格 56 块、列数不一致 0 处。
+- 认领：`I-29 qorder87`（工作树 `.wt/i-29-qorder87`，基线 `3bf329608`），状态 🔄，合并后释放。
+
+
 **本批（结构重构批，不是评审轮：主简报体积收缩，一条规则都没撤销）**
 
 - **动因**：主简报 141,273 字符超了外部评审渠道的单条消息容量（用户实测：从第一行删到 §1.4 才发得出去，说明上限约十三万字量级）。第八十二轮守的 1700 **行**门管不住字符数——本文每行都是一个长段，行数与体积不成比例。
