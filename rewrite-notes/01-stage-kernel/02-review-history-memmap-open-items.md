@@ -12,6 +12,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本批（结构重构批，不是评审轮：主简报体积收缩，一条规则都没撤销）**
+
+- **动因**：主简报 141,273 字符超了外部评审渠道的单条消息容量（用户实测：从第一行删到 §1.4 才发得出去，说明上限约十三万字量级）。第八十二轮守的 1700 **行**门管不住字符数——本文每行都是一个长段，行数与体积不成比例。
+- **手法边界**：按纪律 8「多轮稳定的设计可简写合并删除」与 style-bible 第 7/8 条「过程痕迹禁入正文」执行，只动三类内容——本方自设又被推翻的过程叙述、规范逐字引文与锚点穷举、用例与读数的整串列举。判定式、失败形态、候选条款、判据与「第一个消费者」逐项原文保留。
+- **零丢失对账（L1 工具输出）**：脚本比对基线与「正文 ∪ 档案」的三类身份——符号名 247 → 460、测试名 123 → 194、`norm:` 锚点 49 → 52，三处 **lost 0**。尺子在 `tmp/i29-r83compress/check.py`，逐块原文在 `03` 第五十四节与本文第七节。
+- **落位**：取证引文、用例穷举、带行号的定位表、逐轮读数共 44 块 / 47,015 字符进 `03` 第五十四节；被删除或改写的原文（含本方已撤销判断）共 15 块 / 10,370 字符进本文第七节并就地保留原文。正文中被移空处改为一句话结论加指针（写「见 `03`」处均已在 `03` 兑现）。
+- **新增 §0 现行模型速览**：把 §5 反复出现的 12 个名字与等式集中一处（两层 PMM、`RoleAdmit` ≡ `RolePageEligible`、页表 backing 等式、`PhysicalAccessPermits` 三因子、`LegalStarts` 合同 A、对象访问三层展开、`MemoryAdmissionContext`、两个 hart 集合），并显式标注**全部是候选合同、零代码**，避免评审人把速览读成实现现状。
+- **过程痕迹清零**：正文里的「本轮/上一版/已撤销/已撤回」由 11 处降到 0 处；改写一律用假设性推理（例如把「上一版布尔式是错的」改写为「为什么用分支而不是布尔式」）。
+- **体积终读**：141,273 → 119,988 字符（**-15.1%**）；1692 → 1636 行（上限 1700）；围栏 46（偶）；表格 58 块、列数不一致 0 处；`doc-style-lint --diff` error **0**。`doc-ref-check --check` 报 4 处 `§4.6.1.3`/`§2.3.6` 疑指向不存在章节——这是 **UEFI 规范的章节号**，基线同样报 4 处，非本批引入。
+- **门**：纯文档批，无代码改动；沿用 minix-boot **146**、boot-shim **70**。
+- 认领：`I-29 qorder85`（工作树 `.wt/i-29-qorder85`，基线 `6aeb76a64`），状态 🔄，合并后释放。
+
+
 **本轮（第八十二轮评审之后：页表唯一合同、原子展开等式、三层访问展开、Profile 状态改名）**
 
 - **P0 `PageTableBackingEligible` 不在唯一操作化定义里（成立，已改）**：新分配页走 `PmmRoleEligible → RolePageEligible`，既有页表走 `ExistingPageTableObjectEligible → PageTableBackingEligible`，两条路径没有等价关系，幂等/排序/Profile 政策可能被新页路径绕过。现补 `RolePageEligible(page, PageTable, ctx) = PageTableBackingEligible(page, ctx)`，并把「页表只允许普通、幂等主存」写进 backing 本身（两条路径共用）。
@@ -1541,3 +1554,134 @@ C′ 的内容保留在这里，只作为**它被取代的理由**与一段仍�
 | `compare_exchange` 等原子能力 | 登记主键必须是**真实指令实现路径**，且「122」要说清是行匹配 | §1.4 与 §8 两处口径改写 |
 
 **他本轮问「L2 是否要加成绝对禁止」这一题本方直接答**：不要——本方按他的判据把 L2 限回「不得进入最终直接映射」的原义，**同时第一版不提供绕过它的专用路径例外**（两句要一起写，缺一句话就变成他批评过的那种「看起来可用的口子」）。若将来真要加强成绝对禁止，按 §7.2 那条流程作为一次**项目加强政策**变更登记，不借用 L2 这个词。
+
+---
+
+## 七、结构重构批自正文删除或改写的原文（逐字保留，非现行规则）
+
+> 这批内容含**已被撤销的本方判断**与**过程叙述**。按本档案维护约定第 2 条保留原文并就地标注；它们**不构成合同**，现行规则只以 `01` 为准。
+
+### 篇头：被替换的声明与历史指针块
+
+> **重写**: 2026-11-05 23:21 CST（由 `date "+%Y-%m-%d %H:%M %Z"` 实测；准确提交时间以 `git log -1 --format=%ci -- rewrite-notes/01-stage-kernel/01-adjudication-brief-memmap-open-items.md` 为准）；**内容轮次：第八十二轮评审后的修改**。
+> **本文件是唯一的「现行规则」来源**：`02`（审阅历史）与 `03`（证据材料）是**历史档案**，其中出现的旧公式描述与旧符号名（例如把 Svade 实现状态与 `ADUE` 做无条件 OR 的旧布尔中间量，以及两个已被替换的旧字段/符号名）都是**已被撤销的历史文本**，不代表现行规则。只把本文件当作当前合同。
+> 送审前请对一下本行时间：低于你正在评审的那一轮即说明材料不是最新。
+> **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
+> **怎么读**：§2 是代码**今天真实**保证的行为，每条都有测试名；§5 是**尚未裁定**的问题，其中出现的公式与方案一律是**候选**，不是合同。**不要把 §5 的任何一行当成实现依据。**
+> **更新方式**：按代码切片全量重写；没有代码变化的评审轮只产出 delta。
+> **历史**：二十八轮的完整论证与历史公式冻结在 `04-design-backlog-round28.md`，本文不重复。
+
+### §1.2 单来源不可信的旧表述
+
+### 1.2 为什么不能只信一份来源
+
+- **UEFI 启动时 `/memory` 必须被忽略**：RAM 范围由固件内存图决定，设备树不是第二份 RAM 来源。
+- **但静态保留区仍要进 UEFI 内存图**：`no-map` 对应固件保留类型，其它静态保留对应引导服务数据。注意范围：**所有 UEFI 路径都以内存图作为固件内存处置的权威描述来源**——内存图本身不是硬件访问保护（它不建页表、不拦访问）；内核据类型与属性建立来源记录，由后续映射与分配政策兑现。只有提供权威 DTB 的路径才进一步解析 DTB 保留声明（`/reserved-memory` 与 MRB）并与内存图交叉验证。没有 DTB 来源的路径（x86）不得伪造或推断这份来源身份。
+- **aarch64 UEFI 腿有两份设备树，只有一份与内存政策有关**：RAM 唯一来源是固件内存图；配置表 DTB 是保留政策的权威来源（设计目标，今天尚未接入，见 O-11）；磁盘镜像 DTB **不是内存政策输入**——它的 `/memory` 只用于覆盖对照，且该对照**只打印诊断**：不改变启动结果、映射、PMM 或任何政策结论（实现上只打印警告，不参与裁决）。
+- **MRB 的强度高于普通保留**：规范要求客户端在启动程序给出明确用途前不得访问。它不能和「保留但可读」混为一谈。
+
+### §1.4 两棵树的旧表述
+
+### 1.4 两棵树：设计意图，不是今天的代码
+
+设计意图是每棵项目页表树各有一条路径：**引导根**（交接前执行，恒等 `VA = PA`）与**最终根**（内核直接映射）。每个对象在每棵树、每个阶段都可能有不同的要求。
+**今天只有一棵根**：引导阶段建立的根在 Step 4 追加直接映射覆盖后继续使用；没有独立的最终根，也没有针对它的审计与冻结（§2.3）。所有涉及「两棵树」的合同（R13/R15/R19/R21）今天都没有代码消费者。
+
+### §7 签字状态（逐项签字视图原文）
+
+## 7. 签字状态
+
+| 层 | 结论 | 依据 |
+|---|---|---|
+| 第一层：语义与方向 | **可签** | 五条不变量；§4 的准入合同方向明确 |
+| 第二层：集合与逐路径判据 | **不签** | 按完整性边界分为六组（见下） |
+| 第三层：固定布局 ABI | **不可签** | 未开始（O-13） |
+
+**第二层的六个阻塞组**：
+
+**逐项签字视图（第八十二轮评审后）**：
+
+| 项目 | 状态 | 未闭合的是什么 |
+|---|---|---|
+| A/D 与全系统一致性 | 有效方案分支与规范义务已明确（本轮复核无推翻项） | 待完整 hart 清单与逐 hart 证据；平台证据缺失 |
+| 系统 hart 一致性 | 两集合分离已闭合；负控已改为「`SystemHartSet` 内方案不一致 ⇒ 拒绝平台」，`disabled`/暂不调度不再是排除依据 | 清单完整性证据缺失（`HartInventoryEvidence.completeness_claim`） |
+| hart 清单 | `disabled` 处理方向正确 | `fail` 的「物理不存在」与「不可运行」本轮已拆成 `PhysicallyAbsent` / `NotOperational`，但 `SystemHartSet` 取哪一种仍需平台确认 |
+| 普通访问 / 内存序 | 非一致主存已裁定排除；PMP 无条目分支与 PMA 合成已写成谓词 | **本轮不闭合**：整页合格的起始量化刚改写，无实现、无负控 |
+| 原子页级准入 | helper 已进唯一展开并去掉重复的 `AccessRequirementsSatisfied`；进展分型 `NotRequired / OperationCompletion / ReservationEventual`；页级几何补「所有合法 LR/SC 起始」量词 | 登记表→需求集合写成等式 `ExpandAtomic(...)`，但**可验证的完整对应**仍靠实现证明；AMO-only 不再被要求 `RsrvEventual` |
+| 原子对象级访问 | `reservation_set_evidence` 已进对象级公式，与页级共用 `ReservationSetGeometryCore` | 无实现；证据采集路径未定 |
+| 准入上下文闭合（**P0 阻塞**） | `ParticipatingCpuSet = Resolve(id, inventory_snapshot)` 不可变并绑定 `evidence_generation`；`legal_starts_contract` 进 `ctx` 与 `AdmissionContextId`；`ProfileContextState` 四态（只判全局检查），第一版 `NotDeclared` 且页级取中性语义 | 无实现；`SystemPteUpdateSchemeUniform` 在非 RISC-V 的 `NotApplicable` 分支未落 |
+| 整页合格判定式 | 全称谓词 + 合同 A 补「完整 footprint 约束」；`PageTable` 已补回始终必需的隐式页表读（形式化缺陷已修）；非空前置覆盖基底集合、`U`、参与 CPU 集合与非 `GeneralData` 用途；`GeneralDataCompleteness` 已进 `BasePageEligible` | `RoleRequirementsComplete`/`Applicable` 与完整性证据无实现；Fetch 页尾排除无实现 |
+| 原子与 Profile 义务 | Profile 页级集合已进 `PmmBaseAvailable`，`ProfileAdmissionUsable` 与 `ProfileConformanceSatisfied` 已分开；原子用途经 `RolePageEligible` 的 `AtomicSharedStateEligible` 唯一入口展开（含 family、进展与几何） | **原子进展与预约集几何此前未进唯一展开**（本轮已补，但仍无实现）；`RsrvEventual` 与几何证据均未落 |
+| 共享架构边界 | `privilege` 改为 `ExecutionPrivilege`、基底量词改用 `ParticipatingCpuSet`、`AtomicUpdate` 只留 `family`（宽度与进展取外层单一位置） | 实例必须由模板展开、`required_cpus` 与作用域解析的一致性仅写成不变量，无实现；AArch64/x86 展开表未写 |
+| 取指访问模型 / 对象访问资格（**P0 阻塞**） | `InstructionFetchPattern` + `FetchFootprints` 已定义，「对齐 ≠ 宽度」且取指可跨页；对象级按**每个指令实例**的宽度与片段判定，不再用固定宽度代表全部；三层已分开且逐项绑定：`TranslateExpected(实例虚拟范围) = 实例物理集合`、对齐逐实例、映射与属性逐片段；`NotApplicable` 逃逸口撤销，只建模 `CpuAccess(cpus)`，非 CPU 主体 `UnsupportedAccessActor`；`NoAccess` 需机器可检查证明 | 页级保守片段集与对象级多片段证明均无实现；x86 变长指令跨页仅按架构事实使用，未取 SDM 原文；实例展开、绑定与几何证据均无实现；DMA/IOMMU/固件等访问主体尚无合同 |
+| PMP 证据稳定性与保护清单 | 同上；稳定性改为「不可变承诺（第一版）」或「变更前协调」二选一，`stability_until` 定义为承诺而非期限 | 无 provider、无协调协议、无 `evidence_generation` 递增路径 |
+| Profile 与有效方案 | 两者已分离，五档校验表已写；`Za64rs` 几何与基础页内约束分成两层并都有判定位置 | 第一版不声明任何 RVA Profile，profile 几何为「不适用」，**但基础页内约束不适用这条捷径不成立**；几何事实的 profile 来源未实现 |
+| PMP 权限映射与 Smepmp | 操作→许可位表逐行带规范锚点；第一版只接受 `MML=0 ∧ MMWP=0` | 硬件 A/D 隐式写查 W 的依据是遍历算法里那句无编号锚点的 store 条款，强度低于命名规范条目；`Absent` 的平台支持限制与 `mseccfg` 证据提供者未落地 |
+| 原子算法进展 | 基础页内约束 ∧ 进展分型（仅 LR/SC 要求 `ReservationEventual`）∧ 已声明 profile 的几何三项并列 | `AtomicFallbackPlan` 与 `ReservationSetGeometryCore` 的对象级入参为实现预留 |
+| 页表用途准入 | 职责三分，且本轮补 `RolePageEligible(page, PageTable, ctx) = PageTableBackingEligible(page, ctx)`：新分配页与既有对象共用同一份 backing（排序、Profile 区域义务、内存类别、幂等政策都在内） | 等价关系目前是人工核对；「页表只用幂等主存」是项目政策；实现与审计为零 |
+| ISA Profile 义务 | 第一版不声明任何 RVA Profile；义务表由本方直取核对，`Svade` 强制与 `Svadu` 扩展选项的关系已写进 profile 校验表 | 空集≠已满足；profile 合规判定与 `ReservationSetRequirement` 无实现 |
+| UEFI DTB 与 MapKey | 方向认可；三方组合（EFI DTB × MRB × `no-map`）与「类型按页 / 访问按原始字节」的粒度分工已定形 | 无实现与负控；UEFI 侧证据为评审人核对，本方未独立取到原文 |
+| AArch64 64 KiB 分组 | 方向可签 | 规则内容已核；本方未独立取证 |
+| UEFI 属性位版本差异 | 策略可签，profile 未签 | 冲突域 fail-closed；固件镜像证据未钉 |
+| 设备窗口 | 模型可签，数值未签 | 四层关系已定；APIC 核对改为**逐逻辑处理器**（BSP 一次核对不构成全平台证明）；QEMU 平台证据未齐 |
+
+| 阻塞组 | 对应合同 |
+|---|---|
+| 输入真实性、来源保真与生命周期 | O-11（EFI DTB 专属类型合同、三方组合裁决表、页/字节粒度分工）、O-12h、**O-12k（MapKey 快照）**、O-12j、DTB 节点准入、O-01、O-06、O-12f、O-12g |
+| 投影、映射、禁止集合与访问完整性 | O-12d、O-12i（当前 P0：对象访问主体与证明、实际 footprint↔预期翻译绑定、页级/对象级几何统一、共享层去 RISC-V 术语、`PageTableBackingEligible` 完整语义、Profile 系统级与区域级解耦）、O-12c、O-08、O-02a/b、O-03、O-04、O-05、O-12a/b、O-07、O-09、O-10、O-12e |
+
+**「禁止集合编译 + 引导根审计」有代码只能作为第一轮实现复审的起点，不是第二层签字的条件**：输入边界、来源完整性、PMM 资格与设备映射覆盖都是它的前置证明。
+
+**第二层第一轮实现复审的起点**：禁止集合编译与引导根审计具备代码和测试后，可以开始复核其实现；这不代表其它阻塞组已满足，也不构成第二层签字。在那之前，对 §5 的评审只需回答两个问题：问题是否成立、候选是否覆盖失败形态。
+
+### O-12i 三范围段与代码状态重复
+
+**原始声明、RAM 交集与政策投影是三个范围**：`RawDeclaredRange` 是输入声明的完整字节（不裁剪、不取整）——DTB 侧已落为 `SourceRecord` 的 `range.start` / `range.end_exclusive`（派生记录的该字段是派生结果，不是原始声明），记录本身**不携带任何页范围**；`RamIntersection` 是与 RAM 来源域相交、按页向外量化的部分，用于 PMM 投影；`PolicyProjection` 是按 `no-map`、MRB、对象各自语义生成的禁止范围。**MRB 即使超出 `/memory` 也不能丢**：它的访问禁止语义不因为范围不在 RAM 内而消失。`no-map` 与标准系统映射相交时由独立的映射禁止投影处理；若项目只支持与 RAM 相交的 `no-map`，超出部分必须是显式拒绝条件，不能静默裁剪。今天两张投影表只表达 `RamIntersection`，`PolicyProjection` 尚无消费者——这正是 O-12g 记录层要先行的原因。**范围表示的三层与今天代码**（本轮把 DTB 腿的边界语义从算术副作用改成显式项目策略）：
+
+### O-12h 顶端边界行（三层代码状态与 §2.1 重复）
+
+| 顶端边界 | **结构合法性与平台准入分开（已裁定，未实现）**：`[0xffff_ffff_ffff_f000, 2^64)` 是合法的最后一页，UEFI 只约束「页起始地址不超过 `0xffff_ffff_ffff_f000`」，不要求独占末端能用 `u64` 表示。结构校验用 `u128` 接受 `end == 2^64`；是否可用由平台地址准入层判定（`effective_pa_limit`、PMA/PMP 等），拒绝时用独立错误码。**代码已落到三层**：`SourceRecord.range` 已是 `PhysicalRange { start: u64, end_exclusive: u128 }`，**记录层接受 `end == 2^64`**；拒绝发生在投影层——`PhysicalRange::projectable_end()` 对最高页返回 `None`，`/memory` 与 `declared_page_range` 在那里报 `UnsupportedPhysicalAddressEnd`。输入层只拒 `> 2^64`（`RangeOverflow`）。**仍未落地的部分**：投影层算术仍是 `u64`，最高页不交付给 PMM/保留表；UEFI 描述符路径本就接受 `end == 2^64`。测试：`physical_range_expresses_the_top_page` 与四个边界用例 |
+
+### O-12i 幂等段（含本方名称杜撰的撤销记录）
+
+**幂等性不能反过来证明是主内存**：规范的小节名是 **Idempotency PMAs**，属性对是 `Idempotent` / `Non-idempotent`。上一版写的 `Non-resident` 是**本方杜撰的名称**，本轮撤销（当前主源里根本没有该 PMA 名）。逐字规定：「Main memory regions are assumed to be idempotent」；对 I/O 区域，读与写的幂等性可**分别**规定（例如读幂等、写不幂等）；「If accesses are non-idempotent, i.e., there is potentially a side effect on any read or write access, then speculative or redundant accesses must be avoided」；以及「For non-idempotent regions, implicit reads and writes must not be performed early or speculatively」（隐式读写不得提前或推测执行，主源对该条另有页表遍历相关的例外分支）。方向因此仍是「先由来源域认定主内存，才谈得上排序/幂等属性适用」，「观察到读写无副作用」不是 RAM 来源资格证据；反过来，主存区域被**假定**幂等是规范的默认，不需要额外证据，也就不能拿它当成区分主存与 MMIO 的判据。非幂等区域禁止提前/推测隐式访问这一条，正是页表内存必须落在幂等区域的原因，但它属于 `PageTableBackingEligible` 的证据，不由幂等 PMA 单独决定准入。AArch64 与 x86 无对应 PMA 概念，其可缓存性等价要求由 `OrdinaryCachePolicyRepresentablePages` 与实际叶子审计承担，本节集合对非 RISC-V 架构按「由 profile 声明为兼容」处理，不得留空当作已通过。
+
+### O-12i 顶端边界与 §2.1 重复的代码状态段
+
+**代码已按这三层落定**：`physical_end` 在 `u128` 里算 `address + size`，只把 `> 2^64` 判为 `RangeOverflow`（真正的畸形输入）；`== 2^64` 一路被接受进 `PhysicalRange`。拒绝移到投影层——`PhysicalRange::projectable_end()` 对最高页返回 `None`，`/memory` 循环与 `declared_page_range`（同时服务 `/reserved-memory` 子节点与 MRB）在那里报 `UnsupportedPhysicalAddressEnd`，向外取整落到 `2^64` 同样归投影层。三条输入路径（`/memory` 的 `reg`、`/reserved-memory` 子节点的 `reg`、MRB 的地址+长度）现在共用同一条 `u128` 求和；`grep -c checked_add os/libs/minix-boot/src/memmap_source.rs` = 0。**剩下的一步**：投影层自身改用 `u128` 后即可交付最高页——那时 `UnsupportedPhysicalAddressEnd` 连投影层也不再需要。类型契约由 `physical_range_expresses_the_top_page` 钉住（最高页可表达、`projectable_end()` 为 `None`），边界行为仍由四个 `dtb_*_2_64_*` 用例守。
+
+### O-06 版本读数表（与属性位矩阵重复）
+
+| 来源 | 版本/修订 | `HOT_PLUGGABLE` | `WP` | `MORE_RELIABLE` |
+|---|---|---|---|---|
+| UEFI 2.10 PDF | 2022-08 发布 | 未定义 | `0x1000` | `0x10000` |
+| UEFI 2.10 Errata A PDF | 2024-08 | 未定义 | `0x100` | `0x1000` |
+| UEFI 2.11 PDF | 2024-12 | `0x10000` | `0x100` | `0x1000` |
+| EDK2 头文件 | 主干，commit 待钉 | `0x100000` | `0x1000` | `0x10000` |
+| Linux 头文件 | 版本待钉 | `0x100000` | `0x1000` | `0x10000` |
+| `uefi-raw 0.9` | 0.9 | 未定义常量 | `WRITE_PROTECT = 0x1000`（crate 常量） | `MORE_RELIABLE = 0x10000`（crate 常量） |
+
+### O-06 待补证据段（内容已并入版本读数段）
+
+**待补证据**：EDK2 与 Linux 的具体 commit/tag 尚未钉死（`main` 会漂移，不能作为长期冻结证据）。`uefi-raw` 升级时必须重核全部已识别属性位，不能只迁移 hot-pluggable 一位。
+
+### O-12j-b 属性序与撤回记录
+
+- **属性序**：`fdt 0.1.5` 的 `properties()` 在首个非属性 token 处停止；`children()` 与 `all_nodes()` 在「子节点之后的属性」处**直接结束迭代**。因此这种布局不是「容忍即可」，而是会把子树静默截断成部分树。预扫改为拒绝（`PropertyAfterChild`）。此前的「QEMU/OpenSBI 会产出这种布局」结论**已撤回**：QEMU 8.2.2 `dumpdtb` 全树 0 处违规，且 riscv（OpenSBI 打补丁链）与 aarch64 UEFI 两条 QEMU 腿在「拒绝」规则下均 PASS——当时的观测来自有缺陷的临时扫描器，不是固件事实。**该「双 PASS」是早期提交上的历史读数**（riscv `test-kernel-image-riscv64-bootface.sh` 只覆盖 bootface；aarch64 `test-shim-bootmarks-aarch64.sh` 自 `2d292a06b` 起被 `E0046` 阻断，当前基线只有 riscv PASS），引用时必须带提交与脚本，不能当作当前基线证据。
+- **深度**：`all_nodes()` 的父栈是 `[&[u8]; 64]`，但根节点存在下标 1（`parent_index += 1` 后才写入），所以可安全走完的最大深度是 **63**（含根）。上限从 64 收到 63，并用 `the_parser_consumes_the_deepest_tree_this_gate_accepts` 证明「门接受的最深树，解析器确实能走完」。
+
+### O-12i backing 拆分的开发文档味叙述
+
+**但上一版写成 `page ∈ PmmBaseAvailable(ctx) ∧ RoleAdmit(...)` 是错的**：`PmmBaseAvailable` 扣除了 `Outward(LiveObjectRanges(ctx))`，而既有引导页表恰恰是存活对象——**越是被使用的页表页，越不可能通过这个谓词**。这是把两个不同问题写进了同一个断言：① 该物理页的硬件能力是否允许承担页表用途；② 该页当前是否处于可供 PMM 分配的状态。拆成三个：
+
+### O-12i 布尔式撤销叙述
+
+**上一版这里是一条布尔式，与真值表冲突，已撤销**：它在 `Svadu=已实现 ∧ ADUE=1 ∧ Svade=已实现` 时给出软件方案，而真值表与规范原文都要求硬件更新。正文**不再保留那条式子**（逐字记录留在 02 的第六十五轮块），原因有两个：同一段里表格与公式各说一套会互相矛盾；后来者检索到已撤销的式子，还会把它当成现行规则。能直接抓住它的反例见下面的负控表。
+
+### O-12i hart 一致性自设规则叙述
+
+**撤销上一轮的第二条自设规则**：「hart 方案一致属于项目准入、不是规范强制」不成立。规范逐字要求系统内所有 hart 采用同一 PTE 更新方案（`norm:pte_ad_scheme_uniform`）。因此**「证据缺失时默认 `SupervisorFaultManagedAd`」也不安全**：若硬件实际自动更新而内核按软件方案建表等待 A/D 故障，故障永不到来，fault handler 不承担该职责；反过来该区间还需要硬件页表写能力与 `RsrvEventual`，按软件方案就会漏检。三层分开写：
+
+### O-12i 对象访问主体的撤销记号
+
+      NotApplicable 逃逸口已撤销——reason 不是证明，任何调用方都能用它跳过整段 PMP/PMA 检查；

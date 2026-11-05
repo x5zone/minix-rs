@@ -1191,3 +1191,304 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单 | 统一页表叶子观测记录（三个审计共用）尚未定义字段；`ReservationSetFor(a, algorithm)` 的 adapter 语义未定；`NoAccess` 证明的机器可检查形式未定；`ExpandAtomic` 的完整性证明路径未定 |
 | 主简报 | 1692 行（上限 1700）；围栏 48（偶）；表格 61 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 五十四、结构重构批：自正文移入的取证原文与穷举清单
+
+> **本批性质**：主简报体积收缩（结构重构批，不是评审轮）。下列内容**逐字**从 `01` 移出，未改写、未删减；`01` 中被移空的位置改为一句话结论加指针。移出不等于失效——凡属**取证引文、用例穷举、逐轮读数、带行号的定位表**，都以本节为家；`01` 里写「见 `03`」指的就是这里。
+
+### §6 证据与复核：逐轮锚点穷举与复核登记原文
+
+## 6. 证据与复核
+
+| 证据 | 内容 |
+|---|---|
+| 提交 `38668f843`（**功能落码提交，不是测试基线**） | DTB 保留来源落码：`/reserved-memory`、MRB、容量/回绕/重叠/形状拒绝、引导区 checked 守卫 |
+| `cargo test -p minix-boot --lib` | 146 通过（采集器用例见 §2.1） |
+| `cargo test -p boot-shim --lib` | 70 通过（分类器用例见 §2.2） |
+| 交叉编译 | `x86_64-unknown-none`、`aarch64-unknown-none`（`fw-none-image`）、`riscv64gc-unknown-none-elf`、`x86_64-unknown-uefi`、`aarch64-unknown-uefi` |
+| QEMU | `test-kernel-image-riscv64-bootface.sh` PASS（`### TEST_RESULT: PASS ###`，B1/B2/B3 三点位齐全，仅覆盖 bootface 入口）；`test-shim-bootmarks-aarch64.sh` PASS（串口读到 `boot-shim: memmap source: uefi-getmemorymap (dtb /memory cross-checked, diagnostic only; conv=13 dtb_regions=1)` 与内核进入行）；`test-shim-bootmarks-x86.sh` PASS（串口 `boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)`——该腿没有 ESP 上的 `dumpdtb.dtb`，**DTB 采集器根本没被进入**，故它只证明 x86 启动未回归，不构成对本切片新分支的覆盖）。三条腿均在**本轮边界改动之后**重跑：第六十三轮的 `size`-only 与本轮的 `2^64` 分名都不改变 QEMU/OpenSBI 与 EDK2 实际递交的 DTB（其实例子节点都带 `reg`，也没有任何范围触到顶端页），故启动行为不变——这是「未观察到变化」，不是「已验证新分支」；两个新分支目前只有宿主测试覆盖。riscv 腿 B1/B2/B3 点位仍全；aarch64 腿读到 `conv=13 dtb_regions=1` 与内核进入行；x86 腿仍是 `no dumpdtb.dtb on ESP`（不进入采集器） |
+| 来源记录层 | `collect_with_sources()` 交出六类 `SourceRecord`（容量 40）；`no-map`、RAM 外声明、MRB 出表后仍可追溯：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`；`collect()` 语义不变；`dtb_collect_and_collect_with_sources_agree` 钉住两条入口不漂移；`dtb_no_map_declarations_count_against_the_declaration_cap` 钉住「RAM 外的 no-map 不进任何表仍占声明容量」；`dtb_reusable_duplicates_are_deduplicated_not_rejected`、`dtb_ordinary_and_reusable_same_range_is_a_conflict`、`dtb_reusable_and_no_map_same_range_is_a_conflict`、`dtb_partial_overlap_of_memory_ranges_is_rejected` 钉住三分裁决 |
+| 本轮规范原文取证（主源直取，可复核） | RISC-V：`riscv/riscv-isa-manual` @ `418bdc4990ae2d60a86f1e11e8d7795aa279da61`（`main` 只作阅读入口，不作为冻结版本）`src/priv/supervisor.adoc`（两种 A/D 方案、`norm:pte_ad_scheme_uniform`「All harts in a system must employ the same PTE-update scheme as each other.」、硬件更新方案要求「hardware page-table write access and *RsrvEventual* PMA」）与 `src/priv/machine.adoc`（`norm:menvcfg_adue_op`、`norm:menvcfg_adue_rdonly0`、Memory Ordering PMA、Reservability PMA 三级、Idempotency PMAs）。设备树：`devicetree-org/devicetree-specification` 主分支 `source/chapter3-devicenodes.rst`（`/reserved-memory` 父子节点属性表、`reg`/`size` 优先关系、动态区不入 UEFI 内存图、`no-map` 与 `reusable` 互斥）与 `source/chapter5-flattened-format.rst`（MRB「shall not overlap each other」、以 `EfiReservedMemoryType` 列出是 *should*）。RISC-V 与设备树两处已改为本方直接取证；**UEFI 侧的证据等级本轮上调一档**：`EfiReservedMemoryType` 在类型表（Table 7.10）的字面「Not usable」、`GetMemoryMap()` 对「无物理硬件支撑」与「有物理支撑但 OS 不应访问」的区分、以及 §4.6.1.3 的「标准 `EFI_DTB_TABLE_GUID` 必须位于 `EfiACPIReclaimMemory`、按物理地址解释、运行时不修正、固件安装后不得修改」三项，已由**评审人独立取到 UEFI 2.11 原文并给出章节/表号**；本方环境抓取 uefi.org 仍返回 403，**本方未复现**。因此这三项按「第三方独立核对」引用，不写成「本方已验证」。**仍是缺口**：AArch64 Table 2.5/2.6 的分工只有评审人核对，没有本方或第三方的原文引用。**边界**：规范保证「固件不修改」不等于「所有 UEFI 应用/驱动都不修改」，复制期间源对象的一致性仍须由当前 loader 自己保证 |
+| 保留声明形状分流 | `size`-only / 无 `reg` 无 `size` / `reg`+`size` 三种形状各有专名错误与专测（见 O-12g 行 c）；`UnsupportedDynamicReservation` 拒绝的是 **DTSpec 3.5 允许、但第一版不支持**的合法动态保留请求，规范语义已由本方直取原文核实 |
+| 边界端点分流 | `address + size` 在 `u128` 里三分：`>2^64` → `RangeOverflow`；记录层的 `range.end_exclusive` 是 `u128`，**恰好等于 `2^64` 现在可表达**；投影侧 `declared_page_range` 向外取整达到 `2^64` 时报 `UnsupportedPhysicalAddressEnd`，`collect()` 构表前再用 `projectable_end()` 复查同一条件；四测试 `dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_top_partial_page_reservation_is_refused_as_unsupported_end`、`dtb_memory_range_past_2_64_is_range_overflow`；`grep -c 'checked_add' …/memmap_source.rs` = 0 |
+| 近几轮规范取证（本方直取，锚点即条目名） | `src/priv/machine.adoc` 的 PMP 小节：`norm:pmp_cfg_permissions`（R/W/X 按访问类型许可）、`norm:pmp_rwx_warl`（R=0 且 W=1 为保留编码）、`norm:pmp_exec_fault`、`norm:pmp_load_fault`（load 与 load-reserved 查 R）、`norm:pmp_store_fault`（store、store-conditional、AMO、cache-block zero 查 W）、`norm:pmp_misaligned_access_behavior`（非对齐访问可被拆成多次操作，逐次独立检查；通过检查的那一半 store 可能已可见）、`norm:pmp_check_priv_modes`（有效特权级 S/U 全覆盖，含 M-mode 下 `MPRV=1 ∧ MPP∈{S,U}` 的数据访问）、`norm:pmp_check_pagetable_access`（页表访问的有效特权级为 S）、`norm:pmp_l_bit_m_mode_enforcement`、`norm:pmp_no_entry_match`、`norm:pmp_entry_count`（可零条）、`norm:pmp_granularity` 与 `norm:pmp_a_field_napot_na4`（4 字节粒度）、Smepmp 的 `norm:mseccfg_mml_warl`、`norm:mseccfg_mml_pmpcfg_l_op`、`norm:mseccfg_mml_m_rule_op`、`norm:mseccfg_mml_soru_rule_op`、`norm:mseccfg_mml_shared_l0_op`、`norm:mseccfg_mml_shared_l1_op`、`norm:mseccfg_mml_shared_lrwx_1111_op`、`norm:mseccfg_mml_x_restrict`、`norm:pmp_rw01_rsv`、`norm:mseccfg_mmwp_op_warl`、`norm:mseccfg_rlb_op_warl`、`norm:mseccfg_mml_mmwp_rlb_rst`，以及 PMP 小节那段**无编号 NOTE**「some platforms may provide other PMP structures in addition to or instead of the scheme described in this section」；原子侧 `src/unpriv/zaamo.adoc` 的 `norm:amo_op` 与 `norm:pma_amo_levels`；主存义务 `norm:Zicclsm_misaligned_support`、`norm:Ziccamoa_amo_pma`、`norm:Ziccrse_rsrv_eventual`。**第七十七轮评审人另独立核到** UEFI 2.11 属性位低位组（`WP=0x100`/`RP=0x200`/`XP=0x400`/`NV=0x800`）与 2.10 原始版高位组的差异，与本简报 O-06 的冲突位矩阵一致；本方仍未取到原文。**本轮新增（第七十七轮）**：`src/unpriv/cmo.adoc` 的 `norm:pmp_same`（块内 PMP 位一致且 W⇒R）、`norm:pma_same`、`norm:cbo_rsv`（不满足则行为 UNSPECIFIED）、`norm:cbm_access`（cache-block management 只要 load **或** store 许可）、`norm:cbz_access`（cache-block zero 需 store 许可且 PMA 支持）、`norm:cbp_access`；`src/priv/supervisor.adoc` 1745–1748（A/D 更新「Perform the following steps atomically … Then store _pte_」）。**本轮仍缺的**：`src/priv/supervisor.adoc` 地址翻译算法里「对 PTE 的 store 会先过 PMA/PMP 检查」这句话**没有 norm 锚点**（本方直取原文，按算法步骤引用），因此硬件 A/D 隐式写查 W 的依据强度低于命名规范条目；cache-block 的 PMA supported-access-type 读数需由平台 profile 提供，本方未取；UEFI 与 `EfiReservedMemoryType` 的「Not usable」措辞仍是评审人核对，本方未独立取到原文 |
+| FDT 容器校验 | `fdt_layout::validate` **28 条测试**（`accepts_a_canonical_layout`、`accepts_an_unaligned_strings_block`、`accepts_a_property_before_children`、`rejects_a_property_after_a_child`、`rejects_an_unknown_token`、`rejects_a_second_root`、`rejects_unbalanced_end_nodes`、`rejects_an_end_token_in_the_middle`、`rejects_a_property_running_past_the_block`、`rejects_a_property_name_outside_the_strings_block`、`rejects_an_unterminated_property_name`、`rejects_nesting_beyond_the_parser_limit`、`the_parser_consumes_the_deepest_tree_this_gate_accepts`、`rejects_misaligned_blob_address`、`rejects_misaligned_mrb_offset`、`rejects_mrb_outside_the_object`、`rejects_missing_terminator_before_the_struct_block`、`rejects_a_terminator_only_beyond_totalsize`、`rejects_more_reservations_than_the_collector_accepts`、`rejects_struct_block_past_totalsize`、`rejects_overlapping_struct_and_strings_blocks`、`rejects_totalsize_larger_than_the_buffer`、`rejects_a_structure_block_without_the_end_token`、`rejects_unbacked_structure_alignment`、`rejects_unsupported_fdt_versions`、`rejects_a_layout_whose_mrb_follows_the_struct_block`、`rejects_an_mrb_that_starts_inside_the_header`、`rejects_strings_before_the_structure_block`）；五处调用点：`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`、`uefi_helpers.rs` 两处 |
+| 解析库依赖事实 | `fdt 0.1.5` `node.rs`：`properties()` 首个非属性 token 即停；`children()`/`all_nodes()` 遇「子节点后属性」即结束；`all_nodes()` 父栈 64 槽、根在下标 1（最大安全深度 63）。QEMU 8.2.2 `dumpdtb` 全树 0 处属性后置 |
+
+**规范版本钉法（本轮补）**——引用规范要钉**发布版与源 commit**，不能引用活动页面：
+
+```
+RISC-V Privileged Architecture
+  official release 入口标签: v20260120（docs.riscv.org/reference/isa/v20260120/priv/…）
+  相关模块: Supervisor ISA 1.13、Svade 1.0、Svadu 1.0、Machine ISA 1.13
+  本方本轮实际读取的源: github.com/riscv/riscv-isa-manual
+      @ 418bdc4990ae2d60a86f1e11e8d7795aa279da61  src/priv/supervisor.adoc, src/priv/machine.adoc
+  用到的锚点: norm:pte_ad_scheme_uniform、norm:menvcfg_adue_*、norm:pma_rsrv_levels、norm:Ziccrse_pma_rsrv_req、
+      norm:Ziccamoa_pma_amo_req、norm:Ziccamoc_pma_amo_req；同 commit 另读 machine.adoc 的 PMP/Smepmp 小节与
+      unpriv 的 zaamo/zicclsm/ziccamoa/ziccif/ziccrse（完整锚点清单见 `03`）
+
+RISC-V Profiles
+  本方本轮实际读取的源: github.com/riscv/riscv-profiles  src/rva23-profile.adoc
+      blob sha 4fce3ebf34393d7a52564dfab53b69730fab514d
+      该文件最近一次提交 2852ae1f1bfbc34334fcee8b8345472e4811dfd7
+  读到的事实（只作 profile 义务表来源，第一版不声明合规）: RVA23U64 强制 Ziccif/Ziccrse/Ziccamoa/Zicclsm/
+      Za64rs/Zic64b/Zicbom/Zicbop/Zicboz；Zacas 与 Ziccamoc 属 Development Options；强制预约集条目是 Za64rs
+      （≤64 B），Za128rs 只在文末术语表；RVA23S64 强制 Svbare/Sv39/Svade/Ssccptr/Sstvecd/Ss1p13，
+      Svadu 是 Expansion Option。该清单由本方直取，此前「按转述登记」的缺口已撤销
+
+Devicetree Specification
+  本方本轮实际读取的源: github.com/devicetree-org/devicetree-specification
+      @ 8314f1e1c9965482e5c1080d4118f52fef827fce  source/chapter3-devicenodes.rst,
+                                                   source/chapter5-flattened-format.rst
+  站点 revision 显示 v0.4-12-g8314f1e（评审人读出，本方只核到 commit 前缀一致）；在线页标 unknown-rev，只作阅读入口
+```
+
+**Profile 与 UEFI 仍是缺口**：RVA20/RVA22/RVA23 各自的版本号与能力清单要**另行钉住**，不并入某一份 Privileged ISA；UEFI 2.11 的 §4.6.1.3 与 AArch64 平台绑定（Table 2.5/2.6 分工）本环境抓取返回 403，仍属**本方未取证**。
+
+**下一轮最该补的证据（可复核事实，不是新公式）**：　· x86_64 OVMF 与 aarch64 AAVMF 的实际镜像身份、版本、哈希 **+ 该固件实际返回的代表性描述符及其 `Attribute` 原始值 + 项目接受的完整位解释表**（要证明的是运行固件**实际用了哪套编码**，不是它自报符合哪个规范版本；两条腿的固件也不必同源）　· QEMU 构建版本、machine version、accelerator、CPU 型号、SMP 配置（逐 `PlatformMemoryProfile`）（设备窗口与 PLIC 公式目前仍是 profile 候选值）　· `PreflightMap` / 首次 `FinalMap` 的缓冲容量策略与 `EFI_BUFFER_TOO_SMALL` 处理（三种失败位置的合同已定，缺实现与测试）　· 四条 DTB 输入路径的启动 ABI 合同，特别是「复制完成前原 DTB 不被并发修改」的依据（O-11 的内容一致性条件目前是假设）
+
+**证据分层（编译通过 ≠ 启动验证）**：
+
+| 层级 | 本轮状态 |
+|---|---|
+| `minix-boot` 宿主单测 | 146 PASS |
+| `boot-shim` 宿主单测 | 70 PASS |
+| riscv64 启动路径 QEMU | PASS（exit 0） |
+| aarch64 镜像组装 | **PASS**（`b71bce1d0`/`ae4ef5c76`/`8dc30f75e` 依次补齐 `sendrec` 实现后） |
+| aarch64 启动行为 | **PASS**：`test-shim-bootmarks-aarch64.sh` exit 0，串口读到 memmap 来源行与内核进入行。**但日志中的 `dtb /memory cross-checked, diagnostic only` 不代表 O-11 的配置表 DTB 首读授权已验证**——配置表 DTB 尚未进入政策链，该测试证明的是今天实际接入的路径 |
+
+**证据基线**：本轮代码提交 `f52730bef`。复核命令与顺序（缺一不可）：
+
+```
+git rev-parse HEAD
+git status --short
+cd os && cargo test -p minix-boot --lib
+cd os && cargo test -p boot-shim --lib
+```
+
+146/70 条测试是**该 HEAD、该工作树状态**下的读数（§2.1、§2.2、§6 三处数字必须一致）。`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。基线之后如有新提交，必须重跑并更新本段。
+
+复核方式：对 §2 的每条主张，文中给出了测试名或代码位置；对 §5 的每条问题，文中给出了失败形态——评审人可以只凭本文判断「问题是否成立」。
+**测试通过不等于输入完整性**：146 与 70 条测试说明的是「已覆盖的行为」，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源。这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
+
+### O-12i 三级 Reservability 逐字引句
+
+**原子用途要把「指令可执行」与「算法进展假设」分开**：主源把 LR/SC 支持分三级——「RsrvNone indicates that no LR/SC operations are supported (the location is non-reservable). RsrvNonEventual indicates that the operations are supported (the location is reservable), but without the eventual success guarantee described in the unprivileged ISA specification. RsrvEventual indicates that the operations are supported and provide the eventual success guarantee.」因此光登记指令族与宽度不够，用途记录要带：
+
+### O-12i fallback 论证段
+
+**`fallback` 必须是可追溯的计划引用，不是布尔值**：一个「有 fallback」的布尔标记可能只说明「源码里还存在另一个函数」，而那个函数自己可能也在用 LR/SC、或依赖该区域并不支持的 AMO。计划至少要证明四件事：① 能完成**同一算法操作**；② 不依赖刚被判为不足的 LR/SC 进展保证；③ 它实际使用的操作与宽度在该页上**确有 PMA 支持**（走同一条 `RoleAdmit`，不能用未经验证的操作替代另一个未经验证的操作）；④ 检测到缺乏进展时**真的切换**过去。合同必须显式覆盖两点：**如何检测需要 fallback**（`trigger` 与 `bounded_retry_policy`，不能把「存在另一个函数」当成检测机制），以及**fallback 自身依赖的操作、宽度与内存区域也要过准入**（`required_operations`/`required_widths`/`required_memory`）——包括 fallback 用到的锁变量、状态字与它们的访问路径，不能出现「fallback 依赖一块从未过准入的共享内存」。
+
+### O-12i 原子三件事段重复句
+
+- **只用 AMO 的算法**：要求相应 AMO 家族与宽度即可，不因它要求 `RsrvEventual`；`reservation_set` 为空、不检查预约集。
+- **LR/SC 的几何、进展与页内约束是三件事**：基础页内约束（`norm:lr_sc_rsrv_set_page`，第一版即使不声明 profile 也成立）∧ 进展要求（第一版一律 `RsrvEventual`）∧ 声明 profile 时的几何（`Za64rs`）。三项并列，缺一不得通过原子用途准入。**不依赖最终成功的 `RsrvNonEventual` + fallback 路径整体不开放**：规范允许它，但前提是 `FallbackPlanSatisfied` 有真证据，第一版没有。 第一版策略：所有实际使用 LR/SC 的算法一律要求语义级「最终成功」进展保证（RISC-V 即 `RsrvEventual`）；`RsrvNonEventual` 与 `AtomicFallbackPlan` 路径整体留待扩展——规范允许它，但前提是 fallback 计划有真证据，第一版没有。
+- 「We recommend providing RsrvEventual support for main memory regions where possible」是规范的 NOTE（推荐，不是强制），不能当准入依据引用。
+- **声明符合的 ISA Profile 会追加全局 PMA 义务，只查当前源码恰好用到的指令不够**。这里有两个不同的 profile，不能合并：
+
+### O-12i 内存序 PMA 逐字引句
+
+- `MemoryOrderingCompatiblePages(ctx)`：**内存序 PMA 的落点**（此前只在 RISC-V 讨论里被提到，没有归属集合）。Machine-Level ISA「Memory Ordering PMA」小节主源逐字规定：「Regions of the address space are classified as either *main memory* or *I/O* for the purposes of ordering by the FENCE instruction and atomic-instruction ordering bits.」以及「Coherent main memory regions always have either the RVWMO or RVTSO memory model. Incoherent main memory regions have an implementation-defined memory model.」内核的同步原语按其中一种模型书写，因此：① 该集合进入**基底层**（用途无关）——用途特有的原子要求仍归 `RoleAdmit(AtomicSharedState, ·, ctx)`；② **第一版不支持由软件维护一致性的非一致主存**：区间被声明为主内存但 Coherence PMA 显示非一致 → 无论其内存模型能否被证明，都不得进入 `PmmBaseAvailable(ctx)`；实现自定义排序的区域同理被排除。规范在「Coherence and Cacheability PMAs」小节逐字把两件事分开——「Coherence is a property defined for a single physical address, and indicates that writes to that address by one agent will eventually be made visible to other coherent agents in the system. **Coherence is not to be confused with the memory consistency model of a system**, which defines what values a memory read can return given the previous history of reads and writes to the entire memory system.」并写明「the use of hardware-incoherent regions is discouraged due to software complexity, performance, and energy impacts」。两条规则各答各的问题：
+
+### O-12i A/D 两方案逐字引句
+
+> Two schemes to manage the A and D bits are defined: … The *Svade* extension: when a virtual page is accessed and the A bit is clear, or is written and the D bit is clear, a page-fault exception is raised. … When the Svade extension is not implemented, the following scheme applies. … The page tables must be located in memory with hardware page-table write access and *RsrvEventual* PMA. … All harts in a system must employ the same PTE-update scheme as each other.（锚点 `norm:pte_ad_scheme_uniform`）
+
+### O-12i hart 集合职责与反例
+
+职责不重叠：`SystemHartSet` 只用来验证 PTE 更新方案的**全系统**一致性；`ParticipatingHartSet` 只用来计算普通物理访问准入的**逐 hart 交集**。反例（4 hart 平台）：hart 0/1/2 参与、hart 3 暂不启动且实际方案与其它三个不同——**不能**因为 hart 3 没进 `ctx.H` 就宣称 `norm:pte_ad_scheme_uniform` 已满足。该证明由 M-mode/固件按 SystemHartSet 逐 hart 给出，缺任一 hart 的证明即 `Unknown`。
+**清单从哪来、永不启用的 hart 怎么算，必须写死**：`SystemHartSet` 不能由 `ctx.H` 反推，也不能只停留成一个名字——它要有一份可核对的清单与来源（固件启动 ABI 的 hart 清单 / 设备树 `/cpus` 的 `reg` 集合 / ACPI MADT 处理器条目，取其一并记录代次）。清单缺失、与实际启动 hart 不一致或来源不可证 → `Unknown` → 拒绝启动。**「永不启用」不等于「不属于系统」**：某个 hart 若只是本项目暂不调度，它仍属规范所说的 system hart，其方案仍须被证明；只有能给出该 hart 在平台上**不存在**的物理事实（不是「我们不启动它」）时，才可以把它从清单里去掉。把它从 `ctx.H` 删除，规范义务一点也不会消失。
+
+### O-12i CPU status 逐字引句
+
+**清单的完整性要按 CPU 节点状态语义判定**（DTSpec 逐字）：`"okay"` = The CPU is running；`"disabled"` = The CPU is in a quiescent state，且可由 `enable-method` 重新启用（「This property is required for CPUs with a status property with a value of `disabled`」）；`"fail"` = The CPU is not operational or does not exist，并且「A CPU with `fail` status does not affect the system in any way」。由此：`disabled` **不能**简单排除——它仍可能是未来可启用的 system hart，必须进入一致性证明；`fail` **不能直接当成物理不存在**——DTSpec 的措辞是「not operational or does not exist」，两种读法对系统集合的后果不同：
+
+### O-12i 基底与用途两层重复表述
+
+**名字与定义必须一一对应；基底与用途特有是两层**：`RoleAdmit(role, page, ctx)` 是声明式接口，其操作化定义**只有** `RolePageEligible(page, role, ctx)` 一个展开式。`CommonCpuAccessEligiblePages(ctx)` 只消费 `BaseAccessRequirements(ctx)`，`RoleAdmit` 只消费 `RoleSpecificRequirements(role, ctx)`——`GeneralData` 的用途特有集合因此**定义为空**，它不再同时扮演「基底要求」与「空的额外要求」。`PageTable` 的用途特有要求即 `PageTableBackingEligible` 的访问部分。**只有 `GeneralData` 可以按定义为空**：`PageTable` 因隐式遍历读与显式 PTE 写始终必需而非空，`Executable` 必须有完整取指模式，`AtomicSharedState` 必须有完整算法清单；其它用途出现空集是 `InsufficientEvidence`，前置条件是 `RoleRequirementsComplete` 与 `RoleRequirementsApplicable`。把 `RoleAdmit` 存成一个布尔字段会丢掉 `req`/起始/CPU 三个量词维度。
+
+### O-12i 全称量词段重复表述
+
+**全称量词不能替换成「字节被覆盖」**：一页每个字节都被某次成功访问覆盖，并不代表从该页任一合法起始地址发起的最宽访问都能成功——编号最低的条目只需命中一个字节就要覆盖整次访问，跨边界的操作整体失败（规范那个覆盖 `0xC–0xF` 的条目遇到 `0x8–0xF` 的 8 字节访问的例子）。`AdmittedFootprints` / `AllowedOperationStarts` 这类「先把可允许访问收集成集合、再比包含」的写法可以当等价推导，但**判定式本身必须写成对起始地址全称量化**，否则实现里很容易退化成字节并集。PMP 粒度最细 4 字节（`norm:pmp_granularity`、`norm:pmp_a_field_napot_na4`「These modes support four-byte granularity」），页内边界是真实存在的，这正是必须量到起始地址的原因。**判定式的索引必须是 `AccessRequirement` 而不是页**：同一 hart 同一条 PMP 配置下，「普通读写可用但隐式页表读不可用」「页表可读但 A/D 隐式写不可用」「读写可用但取指不可用」「读写可用但某 AMO 宽度不可用」四类差异真实存在，字节集合会把它们抹平。**一个页不满足 `PageTable` 用途，不代表它不能作为 `GeneralData`**——把页表条件塞回基底会把用途层架空。
+
+### O-12i 页级与对象级互不冒充
+
+一个对象可以跨过两页，其中一页不作为该用途的分配候选，但对象自己的既有访问点仍可能全部合法；反过来，整页合格也证明不了某个跨越页尾的对象访问合法。页级谓词与对象级谓词不得互相冒充：`PmmRoleEligible` 回答「能不能把这一页交给该用途」，`ObjectAccessEligibility` 回答「这个对象现在经这些 VA 是否真的可用」。
+**第一版只准入「按架构对齐的整次访问」——三类对齐必须分开**：`norm:pmp_misaligned_access_behavior`「On some implementations, misaligned loads, stores, and instruction fetches may be decomposed into multiple memory operations, some of which may succeed before an access-fault exception occurs, as described in the RVWMO specification. PMP checking is performed on each memory operation independently.」以及紧随其后的「In particular, a portion of a misaligned store that passes the PMP check may become visible, even if another portion fails the PMP check.」——**半写可见**是真实失败形态：一次非对齐 store 可以把落在合格页内的那一半写进去，再在越界那一半上触发故障，页级资格完全拦不住。因此 `alignment` **不能**统一理解成「等于宽度」：
+
+### O-12i IALIGN 逐字引句
+
+**取指不能套用「宽度 = 对齐」**：RISC-V 的逐字依据是 `src/unpriv/intro.adoc` 的「IALIGN is 32 in the base ISA, but some ISA extensions, including the compressed ISA extension, relax IALIGN to 16.」（该文件 452–460 行），以及「the instruction-fetch unit on machines with ILEN >32 report an illegal-instruction exception rather than an access-fault exception when such an instruction borders a protection boundary, complicating variable-instruction-length fetch and decode」（同文件 528–531 行，位于 NOTE 内，不是编号规范条目）——**规范明确承认一条指令可以 border 一个保护边界**。于是页尾 `page_end − 2` 处的 32 位指令 footprint 是 `[page_end−2, page_end+2)`，跨两页。x86 的可变长指令（最长 15 字节）同理，该条按架构事实使用，本方未取 Intel SDM 原文，登记为待核。
+
+### O-12i PMP 整次访问判定逐字引句
+
+**PMP 不是逐字节权限的交集，而是「整次访问」的判定**——规范逐字规定：「PMP entries are statically prioritized. The lowest-numbered PMP entry that matches any byte of a memory operation determines whether that operation succeeds or fails.」（`norm:pmp_entry_priority`）以及「The matching PMP entry must match all bytes of a memory operation, or the operation fails, irrespective of the L, R, W, and X bits.」（`norm:pmp_full_match_required`）；规范自带的反例是：一条覆盖 `0xC–0xF` 的条目遇到 `0x8–0xF` 的 8 字节访问会**失败**，哪怕逐字节看只有一半越界。所以判定输入必须是**整次访问**（基址 + 宽度 + 对齐 + 特权级 + 路径）。
+
+### O-12i PMP 权限表逐字引句列
+
+| 操作 | 查的位 | 有效特权级 | 依据 |
+|---|---|---|---|
+| `Load` / `Lr` | **R** | S 或 U | `norm:pmp_load_fault`：「Attempting to execute a load or load-reserved instruction that accesses a physical address within a PMP region without read permissions raises a load access-fault exception.」 |
+| `Store` / `Sc` / `Amo(·)` / cache-block zero | **W** | S 或 U | `norm:pmp_store_fault`：「Attempting to execute a store, store-conditional, AMO, or cache-block zero instruction that accesses a physical address within a PMP region without write permissions raises a store access-fault exception.」 |
+| `Fetch` | **X** | S 或 U | `norm:pmp_exec_fault`：无执行权限的取指触发 instruction access-fault |
+| 隐式页表**读** | **R** | **S**（固定） | `norm:pmp_check_pagetable_access`：「PMP checks are also applied to page-table accesses for virtual-address translation, for which the effective privilege mode is S.」＋ `norm:pmp_cfg_permissions` |
+| 硬件 A/D **隐式写** | **W** | **S**（固定） | 遍历算法把这一步直接写成对 PTE 的 **store**：「If a store to the PTE at address __a__+__va.vpn__[__i__]×PTESIZE would violate a PMA or PMP check, raise an access-fault exception corresponding to the original access type.」（`src/priv/supervisor.adoc` 地址翻译算法第 5 步的分支，该句**无独立 norm 锚点**，本方本轮直取原文）＋ `norm:pmp_store_fault` 的 store→W。**强度差别要写清**：条款存在，但它是算法步骤里的一句话而非编号规范条目，且同一步还要求「Compare…set a/d…store」原子完成——这正是硬件方案另要 `RsrvEventual` 与硬件页表写权限的原因 |
+| 软件更新 PTE | 显式 `Write` 的 **W** | S | 同一张表，只是 `path = Explicit` |
+
+### O-12i 三条配套的逐字引句
+
+- **权限按写侧检查 ≠ 原子能力由 PMP 决定**。`norm:amo_op` 描述 AMO 为「atomically load a data value … then store the result back」，一次操作同时含 load 与 store，但规范的故障归类把 AMO 划到 store 侧；同时 `norm:pmp_rwx_warl` 规定 R/W/X 里「R=0 且 W=1」是**保留编码**，因此一条可写的合法条目必然也可读。**AMO 的族（`AMONone`/`AMOSwap`/`AMOLogical`/`AMOArithmetic`，`norm:pma_amo_levels`）与支持的宽度、以及 `Ziccamoa`/`Ziccamoc` 这类主存义务全部由 `PmaPermits` 承担**，拿 PMP 位代替会造出「PMP 可写就以为支持该 AMO」的错误准入。
+- **`privilege` 是有效特权级，且合同只覆盖 `{S, U}`**。`norm:pmp_check_priv_modes`：「PMP checks are applied to all accesses whose effective privilege mode is S or U, including instruction fetches and data accesses in S and U mode, and data accesses in M-mode when the MPRV bit in `mstatus` is set and the MPP field in `mstatus` contains S or U.」由此三条结论：① `MPRV=1 ∧ MPP∈{S,U}` 的 M-mode 数据访问落在本合同内，但内核第一版不在 M-mode 用 MPRV 访问普通主存，所以这一格记为「合同覆盖、当前无消费者」；② `norm:pmp_l_bit_m_mode_enforcement` 说 L 清零时「any M-mode access matching the PMP entry will succeed」，**M-mode 能访问不构成 S/U 准入的证据**；③ 位判定本身按特权级分支：`norm:pmp_rwx_check`（L 置位或特权级为 S/U 时，只有对应访问类型的 R/W/X 置位才成功）与 `norm:pmp_no_entry_match`（无条目命中时 M 成功；S/U 在至少实现一条时失败）。
+- **PMP 与 PMA 并行且都要通过**：PMP 管有效权限，PMA 管访问类型、宽度、取指、页表读写与原子能力。缺任一项，公式就表达不出「PMA 允许读写但不允许页表访问 → 数据页可用、页表页拒绝」这条已列入的负控。
+
+### O-12i cache-block 逐字引句
+
+**cache-block 三类操作的许可规则与普通读写不同**（`src/unpriv/cmo.adoc` 原文；prefetch 类 `norm:cbp_access` 在许可时按 load/store/fetch 任一，不许可时**不产生异常也不访问内存**，与另两类不同）：`norm:cbm_access` 说 cache-block management「is permitted to access the specified cache block whenever a load instruction **or store instruction** is permitted to access the corresponding physical addresses」——是「读**或**写许可」，两者都不允许而仅取指允许时行为 UNSPECIFIED；它**不是**「按读权限检查」。`norm:cbz_access` 说 cache-block zero 要求 **store** 许可**且** PMA 表明支持该访问类型。另有块级一致性约束 `norm:pmp_same` / `norm:pma_same`：整个 cache block 内 PMP 位与 PMA 必须一致，且「if write permission is granted by the PMP access control bits, read permission shall also be granted」，不满足时 `norm:cbo_rsv` 规定行为 UNSPECIFIED。因此将来启用这两类操作时，准入必须按**整个 cache block** 判并检查块内一致性，只按单次访问 footprint 判会漏掉 UNSPECIFIED 分支。
+
+### O-12i Smepmp 逐字引句与锚点列
+
+**Smepmp 的支持边界（第一版裁定）**：`mseccfg.MML`（Machine Mode Lockdown）「changes the interpretation of the `pmpcfg.L` bit」——置位后 `L` 不再表示「锁定且在所有模式强制」，而是 `L=1` → *M-mode-only*、`L=0` → *S/U-mode-only*，并且原本保留的 `pmpcfg.RW=01` 与 `pmpcfg.LRWX=1111` 变成 *Shared-Region* 编码（`norm:mseccfg_mml_pmpcfg_l_op`、`norm:mseccfg_mml_m_rule_op`、`norm:mseccfg_mml_soru_rule_op`、`norm:mseccfg_mml_shared_l0_op`、`norm:mseccfg_mml_shared_l1_op`、`norm:mseccfg_mml_shared_lrwx_1111_op`）；`MMWP` 把「无匹配条目的 M-mode 访问」的默认从 ignored 改成 denied（`norm:mseccfg_mmwp_op_warl`）；`RLB` 是临时绕过锁定的开关（`norm:mseccfg_rlb_op_warl`）；三者复位为 0「unless the platform mandates a different reset value」（`norm:mseccfg_mml_mmwp_rlb_rst`），`MML`/`MMWP` 还是 sticky 位。**同一张 R/W/X 表在 `MML=1` 下整张是错的**——查表的位含义已经变了。第一版因此只接受 `smepmp_state = {MML=0, MMWP=0}`（`RLB` 只登记不参与判定）；`MML=1`、`MMWP=1`，或 `mseccfg` 读不到/无法证明 → `SmepmpUnsupportedConfiguration`，在平台准入阶段拒绝，不做「按标准语义近似」。将来若要支持，得把 Shared-Region 的三种编码、`norm:mseccfg_mml_x_restrict`（不能新增可执行的 *M-mode-only* 或锁定的 *Shared-Region* 规则）与 `norm:pmp_rw01_rsv` 一并写进 `PmpPermits`，那是另一份合同。`mseccfg` 同 `pmpcfg*` 一样只能 M-mode 访问，所以这一格也归 `PmpEvidence.provider`，不能靠探测。
+
+### O-12i Absent 段逐字引句
+
+**`Absent` 不等于「没有物理内存保护」**：规范允许零条 PMP（`norm:pmp_entry_count`「Implementations may implement zero, 16, or 64 PMP entries」），但同一节的 NOTE 逐字写着「Platforms vary widely in demands for physical memory protection, and some platforms may provide other PMP structures in addition to or instead of the scheme described in this section.」因此 `PmpImplementationState = Absent` 只表示**标准 PMP 单元不施加额外限制**，它不证明平台没有别的保护结构。第一版两条出路，必须择一登记进 `PmpEvidence`：① 平台 profile 给出带实现名与版本的支持限制声明——「本 profile 下该区间除标准 PMP 外无其它物理访问限制」；② 拿不出该声明 → 证据不足 → fail-closed，不得把 `Absent` 当成整段通过。把 `Absent` 直接写成 `PmpPermits => true` 而不附支持限制，等于把「没观察到保护」写成「没有保护」。
+
+### O-12i 稳定性四条与待补测试穷举
+
+**证据稳定性：`RLB` 进稳定性证明，不是只登记**。`norm:mseccfg_rlb_op_warl` 说 `RLB` 提供「a mechanism to temporarily modify *Locked* PMP rules」，即 `RLB=1` 时 `L=1` 的条目仍可被改。于是「`RLB` 只登记不参与判定」只在**位解释**层面成立，不能当作证据有效期依据。完整合同四条：① 若依赖 `L=1` 条目保证稳定，必须证明 `RLB` 不允许绕过锁定（`RLB=0` 且无法再置位）；② 只要求 `RLB=0` 也不够——没有 `L` 的条目仍可由 M-mode 修改；③ 真正要证明的是**整份有效配置**在 `stability_until` 内不变——而且**事后通知不够**：provider 改完再通知，旧投影可能已被分配器或访问路径使用，事后递增代次无法撤销已经发生的非法访问。第一版只接受两种合同之一：
+   **A 不可变配置合同**（第一版选它）：provider 承诺从提供证据到生命周期结束，不修改相关 PMP、Smepmp 与额外保护配置；
+   **B 协调式变更合同**：变更**前**先通知内核，内核停止相关访问、完成受影响对象检查与必要的迁移或隔离，再允许配置变化；变化完成后递增代次、重建投影、重新开放访问。
+   `stability_until` 因此不是单纯的时间期限，而是 provider 对「配置不可变」或「变更受协调」的承诺；没有该承诺的证据不得用于任何跨阶段分配或访问授权；④ 任何改变生效配置的事件（M-mode 改写 `pmpcfg*`/`pmpaddr*`、写 `mseccfg`、hart 上线使该 hart 的配置进入参与集合）都必须递增 `evidence_generation` 并使全部依赖投影失效。拿不到承诺与通知的 provider，`stability_until` 只能记「未声明」，其证据不得跨阶段缓存。
+**待补测试（按用途区分，不做「全局原子/全局可访问」的粗暴结论）**：MAIR 配置正确但叶子选错 `AttrIndx` 必须失败；PAT 项正确但 MTRR 使有效类型非 WB 必须失败；任一参与 hart 的有效 PMP 拒绝该区间的**普通读写** → 不得进入 `PmmBaseAvailable`；仅拒绝**隐式页表访问** → 基底保留、`PmmRoleRejected(PageTable)` 命中；PMA 允许读写但不允许页表访问 → 数据页可用、页表页拒绝；PMA 无 AMO 但普通读写可用 → 按用途处理；一致主内存标为实现自定义排序 → 不得进入基底；A/D 方案的六行负控见上表（尤其「Svade/Svadu 均不可证 → 拒绝启动」与「两 hart 方案不同 → 拒绝该平台配置」）；参与 hart 集合新增一个 PMP 更严的 hart → 旧 `ctx` 的全部投影失效并重建；LR/SC 算法依赖最终成功而区域仅 `RsrvNonEventual` 且无 fallback → 该用途不合格，同页 `GeneralData` 仍合格；一页只有一半落在准入域内 → 该用途不合格；`ranges` 缺失与非空分别落到各自错误；`FinalMap` 扩容后旧快照与投影全部失效；**起始地址负控**——同一页内存在一个起始地址使 footprint 越过 PMP 条目边界 → 该页在此宽度下不合格，即使逐字节看全部被覆盖过；**非对齐负控**——合格页尾部发起的半字/字访问越过条目边界 → 必须拒绝或走显式软件路径，不得按整页合格放行；**合同负控**——同一 `evidence_generation` 下 `legal_starts_contract` 从 A 切到 B → 全部投影失效；**Smepmp 负控**——`mseccfg.MML=1` 或 `MMWP=1` 或 `mseccfg` 不可读 → `SmepmpUnsupportedConfiguration`，不得套用 R/W/X 表；`Absent` 且平台拿不出「无其它保护结构」支持限制 → fail-closed；**Footprint 顶端负控**——`a = 0xffff_ffff_ffff_fff8` 且宽度 8 必须合格（`end == 2^64`），`a = 0xffff_ffff_ffff_fff9` 必须越界；**取指跨页负控**——页尾 `page_end − 2` 处的 32 位取指：页级资格按保守片段集排除该起始，对象级按 `FetchFootprints` 同时判两页；**空集负控**——`BaseAccessRequirements` 为空、`U = ∅`、或某条 `req` 的 `LegalStarts` 为空 → `InsufficientEvidence`，不得真空通过；**稳定性负控**——`RLB=1` 或 provider 没有变更通知 → `stability_until` 不得用于跨阶段缓存，配置变更未递增 `evidence_generation` 必须失败；**保护清单负控**——`Implemented` 但 profile 既未证明「无未建模结构」也未列出其它结构 → `PlatformProtectionPermits` 不得默认为真；**profile 负控**——声明 RVA23S64 而 `Svade` 未实现 → 不合格，即使通用公式落到硬件更新；**基底真空负控**——`BaseAccessRequirements` 为空、`PmmRoleEligible` 的 `U = ∅`、或任一基底 `req` 的 `LegalStarts` 为空 → `InsufficientEvidence`，不得通过；**用途特有集合负控**——`RoleSpecificRequirements(GeneralData) = ∅` 必须**不**触发失败（空集是定义），但把它当成「基底要求」的写法必须失败；**硬件 PTE 更新负控**——`HardwareManagedAd` 下缺 `ImplicitHardwarePteUpdate` 的任一项（隐式 W、硬件页表写、原子更新、`RsrvEventual`）→ 页表用途不合格；**对象区间负控**——VA 起点正确但区间中段落到别名或属性不兼容映射 → `ObjectMappedAccessEligible` 失败；**跨页取指对象负控**——32 位指令起于页尾 2 字节、下一页取指不合格 → 失败；**稳定性负控**——provider 只承诺「变更后通知」→ 不接受，须给不可变或变更前协调承诺；**预约集几何负控**——支持 LR/SC 且 `RsrvEventual`，但预约集几何不满足声明 profile → 原子用途不合格；**cache-block 负控**——`CacheBlockManagement`/`CacheBlockZero` 在第一版一律 `UnsupportedAccessOperation`；**本轮新增负控**：硬件页表读未登记 → `PageTable` 用途不合格（即使显式写通过）；`RoleRequirementsComplete` 为假或 `Executable` 的 `instruction_lengths` 未登记 → `InsufficientEvidence`；`ctx.ParticipatingCpuSet = ∅` → 基底判定不得通过；对象物理准入通过但来源政策未授权（MRB / `no-map` / `EfiReservedMemoryType`）→ `ObjectPolicyAccessEligible` 失败；连续 VA 映射到两段不连续 PA 而 `expected_translation` 只登记一段 → 失败；叶子落在正向授权内但与某条 `DenyMapping` 相交 → `MappingAudit` 失败；LR/SC 算法在第一版遇到 `RsrvNonEventual` 区域 → 一律拒绝（fallback 分支未开放）。
+
+### §2.1 来源记录层逐字段叙述与用例名
+
+**来源记录层（DTB 侧，第一阶段）**：`collect_with_sources()` 在同样的遍历里为每条声明留一条 `SourceRecord { id, kind, origin, range: PhysicalRange }`——`kind` 六类：`Memory`、`FirmwarePrefix`、`MrbEntry`、`ReservedOrdinary`、`ReservedReusable`、`ReservedNoMap`；`SourceKind::class()` 把它们分成**输入声明**（`Memory`/`MrbEntry`/`Reserved*` 五类）与**派生保留**（`FirmwarePrefix`）。**字段名是中性词**：输入声明的 `range` 就是声明范围；派生前缀的 `range` 是派生结果 `M_i ∩ [0, F)`（`F = firmware_reserve_end`），所以不叫 `raw_*`。`origin` 给出位置：`MemoryNode { node, reg }`、`ReservedMemoryChild { node, reg }`、`MrbEntry(n)`（`node` 只数匹配节点、`reg` 只数该节点 `reg` 属性内的元组，均从 0 起、按文档顺序）；前缀的 `origin` 是 `FirmwarePrefix { memory_id, cut }`，既指回被切分的 `/memory` 记录，又保留派生参数 `F` （原 DTB 释放后仍能解释「为什么截在这里」）。`id` 是**输入对象内的局部 ID**；跨输入引用须用 `(InputObjectId, LocalSourceId)`，不能单用 `id`。**记录不携带页范围**：`/memory` 投影向内取整（`FullPages`），保留声明与 `no-map` 向外取整，MRB 访问禁止保留精确字节。`range.end_exclusive` 是 `u128` 独占端，因此记录层能表达 `2^64` 本身：`physical_end` 只在 `start + len > 2^64` 时报 `RangeOverflow`，恰好等于 `2^64` 是合法顶端边界。拒绝发生在**投影**侧——`declared_page_range` 向外取整后达到 `2^64` 时报 `UnsupportedPhysicalAddressEnd`，`collect()` 构表时用 `projectable_end()` 复查同一条件。`PhysicalRange` 是两条腿共用的类型，因此 UEFI 描述符顶端页将来接入记录层时不会再靠 `u64` 加法偶然放过；但 UEFI 侧的 `SourceRecord` **今天仍未产出**（见 O-12g），这句只说类型合同，不说 UEFI 腿已实现。容量 40 由**输入上限**推出（`/memory` 段与声明各受 `DTB_MEMMAP_MAX`、`no-map` 同样计数、前缀不多于 `/memory` 段、MRB 受 `DTB_MRB_MAX`），按 **reg 元组**计数而非节点数；超限拒绝（`TooManySourceRecords`）。`collect()` 语义不变、只取前两张表。测试：`dtb_no_map_reservation_keeps_a_source_record`、`dtb_memory_reservation_record_keeps_the_raw_range`、`dtb_reservation_outside_memory_keeps_its_record`、`dtb_source_records_cover_every_projected_span`、`dtb_collect_and_collect_with_sources_agree`、`dtb_no_map_declarations_count_against_the_declaration_cap`、`dtb_declaration_cap_is_shared_across_reservation_kinds`、`dtb_source_capacity_is_reachable_at_exactly_forty`、`dtb_firmware_prefix_links_to_its_memory_record`、`dtb_identical_reservations_are_deduplicated_not_rejected`、`dtb_identical_mrb_entries_are_rejected`、`dtb_same_range_with_different_semantics_is_a_conflict`、`dtb_every_input_declaration_has_exactly_one_record`、`dtb_identical_memory_tuples_are_deduplicated_not_rejected`、`dtb_missing_reserved_memory_ranges_is_rejected`、`dtb_missing_reserved_memory_cells_is_rejected`。
+
+### §2.1 拒绝条件表的 DTSpec 逐字引句
+
+| 来源 | 解析内容 | 拒绝条件 |
+|---|---|---|
+| `/memory` | 全树枚举 + `reg()`，支持 unit-address 与多段 | 单表超过 8 段（`TooManyFreeRegions` / `TooManyReservedRegions`）；`address + size` 越过 `2^64`（`RangeOverflow`，畸形）；末端恰为 `2^64`：**记录层接受**（`SourceRecord.range` 已是 `PhysicalRange`，`end_exclusive: u128`），拒绝发生在**投影层**（`projectable_end()` 返回 `None` → `UnsupportedPhysicalAddressEnd`），投影改用 `u128` 后才可能交付最高页 |
+| `/reserved-memory` | 路径查找 + 可见性交叉检查；父节点的 `#address-cells`/`#size-cells` 必须存在**且与根节点取值相同**（DTSpec 的父节点属性表把 `#address-cells`/`#size-cells`/`ranges` 三项 Usage 都标为 R=Required，另逐字写「should use the same values as for the root node, and `ranges` should be empty so that address translation logic works correctly」——因此**缺失是格式错误**，而「不同/非空」只是 *should*；本项目要求相同与为空属**项目输入子集**，不是规范要求）；`ranges` 必须存在且为空（同为**项目输入子集**，非空 `ranges` 不代表非法，而是尚无转换路径）；子节点必须有可解析 `reg`；只有 `size` 无 `reg` 是**动态分配请求**——DTSpec 3.5 逐字：「Each child node may either use a `reg` property to specify a specific range of reserved memory, or a `size` property with optional constraints to request a dynamically allocated block of memory」，且「A reserved memory node requires either a `reg` property for static allocations, or a `size` property for dynamics allocations. Dynamic allocations may use `alignment` and `alloc-ranges` properties to constrain where the memory is allocated from. If both `reg` and `size` are present, then the region is treated as a static allocation with the `reg` property taking precedence and `size` is ignored.」。因此 `reg`+`size` 并存时按 `reg` 静态处理、`size` 与 `alignment`/`alloc-ranges` 一并忽略是**规范规定**，不是本方选择；`no-map`/`reusable` 必须是**空属性**；两者互斥 | `size`-only 动态请求（`UnsupportedDynamicReservation`：**合法输入的不支持子集**——规范允许该形状，本启动没有可为其选址的动态分配器，静默忽略会把页交给 PMM；见 O-12g 行 c）；缺 `reg` 且无 `size`（`UnsupportedReservedDeclaration`）；缺 cells（`MissingReservedMemoryCells`）、cells 与根不同（`MismatchedReservedMemoryCells`，项目子集）；`ranges` 缺失（`MissingReservedMemoryRanges`，格式错误）与 `ranges` 非空（`UnsupportedReservedMemoryRanges`，输入合法但暂不支持转换）分开；同时声明 `no-map` 与 `reusable`（`ConflictingReservationAttributes`）；标记属性带非空值（`NonEmptyReservationAttribute`）；声明重叠（`OverlappingReservedRanges`）；节点可见却取不到（`ReservedMemoryUnreachable`） |
+| MRB | `memory_reservations()` 条目（地址+长度，`{0,0}` 终止） | `address + size` 越过或落到 `2^64`（`RangeOverflow` / `UnsupportedPhysicalAddressEnd` 分名；后者是今天的临时拒绝，目标在记录层接受）；**零长度非终止项**（`ZeroLengthMemoryReservation`）；**条目之间重叠**（`OverlappingMemoryReservations`）；**超过 16 条**（`TooManyMemoryReservations`，缺失终止项也会落到这里）。对齐、`totalsize` 边界与终止项**由 `fdt_layout::validate` 在解析库之前检查**（五条输入路径接入）；`DtbMemoryMap` 自身不做头部校验，也不声称做过 |
+
+### §2.1 重复容忍与 owner 关系段
+
+`/reserved-memory` 的重复容忍是**项目级输入策略**，不是规范授权；MRB 没有这层容忍。`reusable` 在去重时保留的是**声明身份**（两条记录各有 `id`）；owner 关系尚未建立，不能把记录数量当成 owner 数量——`memory-region` 引用是多对多（一个设备可引用多个区域、一个区域可被多个设备引用），模型应是 `DeviceMemoryRegionReference`（或 `MemoryRegionAssociation`）的引用集合，而非单个 `OwnerId` 字段。**引用不等于所有权**：只有平台 binding 或驱动注册信息进一步证明回收职责时，才提升为 `ReclaimAuthority`。`/memory` 的**部分重叠**拒绝同样是项目策略：**不是数学必然**——§3 允许纯集合层对兼容区间 `Union`，部分重叠在集合模型里可以安全归一化；拒绝的理由是「严格输入策略：部分重叠视为固件异常」，它不依赖今天 PMM 的实现，也不声称 DTSpec 禁止 `/memory` 重叠。若将来改为并集，来源记录仍须各留一条。`reusable` 的 owner 关系在去重时不得合并（来源记录各留一条正是为此）。
+- `reusable` 在记录层已独立成 `ReservedReusable`；两张投影表仍把它按保留处理（不实现 owner 关联、回收能力或生命周期处置），第一版保守地不回收，但不丢原始声明语义。
+
+### §2.1 采集用例穷举与不保证段
+
+测试（`cargo test -p minix-boot --lib`，146 通过）中的采集用例：`dtb_single_memory_region_fw_end_zero`、`dtb_multi_region_and_unit_address_variant`、`dtb_more_than_capacity_is_rejected_not_truncated`、`dtb_declared_reservation_is_never_conventional`、`dtb_no_map_reservation_leaves_both_tables`、`dtb_reservation_inside_the_firmware_prefix_is_not_duplicated`、`dtb_reservation_outside_memory_claims_no_ram`、`dtb_memory_reservation_block_is_carved_from_free`、`dtb_overlapping_reservations_are_rejected`、`dtb_reservation_with_wrapping_end_is_rejected`、`dtb_reserved_memory_with_wide_cells_is_rejected`、`dtb_carving_that_exceeds_capacity_is_rejected`、`dtb_reserved_memory_without_empty_ranges_is_rejected`、`dtb_reservation_with_no_map_and_reusable_is_rejected`、`dtb_reservation_with_nonempty_marker_is_rejected`、`dtb_reserved_memory_cells_must_match_root`、`dtb_overlapping_memory_reservations_are_rejected`、`dtb_too_many_memory_reservations_are_rejected`、`dtb_disabled_memory_node_is_rejected`、`dtb_hotpluggable_memory_is_rejected`、`dtb_zero_length_memory_reservation_is_rejected`、`dtb_size_only_reservation_is_rejected_as_dynamic`、`dtb_child_without_reg_and_without_size_is_an_unsupported_declaration`、`reg_and_size_together_uses_reg_and_ignores_size`、`dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_top_partial_page_reservation_is_refused_as_unsupported_end`、`dtb_memory_range_past_2_64_is_range_overflow`。
+**不保证什么**：不产出禁止集合、不产出 PMM 排除集合、不实现 `reusable` 的 owner 回收、不处理 UEFI 来源。**`collect()` 的两张表无法表达 MRB 来源**：MRB 范围会从 conventional 扣除，但不会进入 reserved（reserved 的语义是「可达、永不再分配」，MRB 是「不得访问」）；调用方若不持有 `SourceRecord`，排除原因与访问禁止来源都不可追溯。这是旧接口的**有意取舍**，修复方向是让政策所有者持有记录，而不是把 MRB 塞进 reserved（那会把「不得访问」误表达成「可达但不分配」）。因此 `dtb_collect_and_collect_with_sources_agree` 只证明两条接口的**投影一致**，不证明旧接口保留来源完整性。
+**输入准入（已实现，不是「已知限制」）**：`/memory` 的 `status` 缺失或为 `okay` 才采集；其它值一律拒绝启动（`UnsupportedMemoryNodeStatus`）——节点自己说不可用的内存不得交给 PMM。带 `hotpluggable` 的 `/memory` 拒绝启动（`HotpluggableMemoryUnsupported`）：内核没有内存移除机制。`/reserved-memory` 子节点的 `status` 不筛选——保留声明即使 `disabled` 也按声明处理（保守方向，只会多留不会误放行）。**仍是项目限制**：`reusable` 不回收；记录保留其类型，回收语义留给后续生命周期层。
+
+### O-06 冲突位叙述与矩阵重复
+
+- **冲突位域整体 fail-closed（已实现）**：`0x1000..=0x1_0000` 在两套官方编码里含义不同——`0x4000` 在一套里是 `SP`（必须排除出 PMM）、另一套里是 `XP`（仅保护能力元数据）；`0x8000` 是 `CPU_CRYPTO` vs `NV`；`0x1000` 是 `MORE_RELIABLE` vs `WP`；`0x2000` 是 `RO` vs `RP`；`0x1_0000` 是 `HOT_PLUGGABLE` vs `MORE_RELIABLE`。任一读法都可能把必须排除的内存伪装成元数据，因此整个 `0x1_F000` 在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`，负控 `every_contested_attribute_bit_fails_closed` 与 `the_ambiguous_bit_fails_closed_under_either_name`）。
+- `0x0010_0000`（仓库编码的 `HOT_PLUGGABLE`）：`uefi-raw 0.9` 无该常量，走未知位拒绝（`hot_pluggable_bit_fails_closed_as_unknown`）。
+- **代价**：`NON_VOLATILE` 位现在也落进拒绝域——模型仍认识 NV 语义（`TYPE_INDEPENDENT` 保留该分支），但**当前分类器不接受带 NV 位的输入，该分支在真实输入上不可达**；恢复它需要**两步**：先钉住带版本证据的固件编码 profile，再把 `0x1_F000` 的无条件拒绝改为按 profile 解释——只要无条件拒绝还在，仅添加 profile 记录仍然解不开 `NV`。若决定后续版本也不支持该属性，应明说，不要让读者以为 profile 一到手就自动解锁。`SPECIAL_PURPOSE`（`0x4_0000`）属于 `ProfileAttribute` 拒绝域、低位 `0x4000` 属于冲突拒绝域，**当前同样不可达**。**位值证据不是「三个已发布文本 vs EDK2」**：UEFI 2.10 原始发布版与 EDK2/Linux 同组，2.10 Errata A 与 2.11 PDF 是移位后的另一组（见下方完整矩阵）。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
+
+### O-06 高位 profile 门控叙述
+
+**高位属性改为 profile 门控（已实现），理由要按两版发布文本写对**：`RO`/`SP`/`CPU_CRYPTO` **在 UEFI 2.10 原始发布版里就是 `0x2_0000`/`0x4_0000`/`0x8_0000`**；2.10 Errata A 与 2.11 PDF 把它们移到低一组（`0x2000`/`0x4000`/`0x8000`）。所以问题不是「已发布规范没有这些位置」，而是**两个正式发布版本族对同一属性采用了不同位值**，而内核无法从 `uefi-raw` 常量判断启动固件采用哪一版。三者因此在 profile 未钉住前**直接拒绝**（`PolicyError::ProfileAttribute`，测试 `profile_only_attributes_fail_closed_without_a_pinned_profile`）；`0x10_0000` 仍由未知位闸拒绝。将来 `UefiMemoryAttributeProfile` 必须绑定**实际启动固件镜像身份**（x86 与 aarch64 分别记录，不能假设同源），并**同时钉住低位组与高位组的完整映射**——只授权三个高位会得到「部分属性可识别、其余冲突位永久拒绝」的半套 profile。
+
+### §2.2 分类器用例穷举
+
+测试（`cargo test -p boot-shim --lib`，70 通过）：`types_that_earn_no_ordinary_mapping_go_to_the_side_list`、`excluded_and_device_types_stay_out_of_every_list`、`rejects_side_list_beyond_its_buffer`、`the_four_ambiguous_combinations_land_as_adjudicated`、`every_contested_attribute_bit_fails_closed`、`profile_only_attributes_fail_closed_without_a_pinned_profile`、`geometry_is_checked_for_ranges_that_are_emitted` 等 32 条。
+**不保证什么**：类型 11/12 与 `RESERVED`/`UNUSABLE` 只是一种「不产出区间」的处置，它们**没有**进入任何禁止集合（禁止集合不存在）；诊断成员没有跨界载体。**输出分流相同 ≠ 语义相同**：`RESERVED` 在来源域之外（类型本身推不出普通 RAM 资格），`UNUSABLE` 在来源域之内、由类型资格排除；未来不能让实现者把两者合并成一个 `Excluded`。两者的差异要等 UEFI 原始描述符记录落地后才能兑现（O-12g 第二半）。
+**结构校验的范围**：今天的几何检查（起点对齐、页数为零、末端回绕）只作用于**会输出区间的处置**（`geometry_is_checked_for_ranges_that_are_emitted`）。不输出区间的类型（`RESERVED`/`UNUSABLE`、类型 11/12）在结构上是否合法没有检查——这是 O-12h 要补的。
+**一条必须说清的项目策略**：把引导服务代码/数据与 `ACPI_RECLAIM` 放进保留表并永不回收，是**第一版的选择**，不是 UEFI 的规范语义。规范允许它们在 `ExitBootServices` / ACPI 启用之后用于一般用途（见 O-01）。
+
+### §2.7 主张-位置表（手工行号移出，符号锚点保留）
+
+行号对应当前提交；复核时以**函数名**为准，行号只作定位。
+
+| 主张 | 代码位置 |
+|---|---|
+| 两张表由同一次采集产出 | `os/libs/minix-boot/src/memmap_source.rs:282` `DtbMemoryMap::collect` |
+| `/reserved-memory` 的查找与可见性检查 | 同文件 `:484` `lookup_reserved_memory` |
+| UEFI 六步裁决 | `os/boot-shim/src/ebs_map.rs:479` `adjudicate` |
+| 分类计数与提交 | 同文件 `:551` `classify`、`:619` `commit` |
+| 恒等映射循环 | `os/kernel/src/lib.rs:934`（`while addr < IDENTITY_MAP_END`） |
+| 引导根构造入口 | 同文件 `:894` `build_bootstrap_root_and_enable` |
+| Step 4 直接映射（追加） | `os/kernel/src/dm_coverage.rs:97` `establish_boot_dm` |
+| 配置表 DTB 的取得 | `os/boot-shim/src/uefi_helpers.rs:111` `find_platform_sources` |
+
+### O-12j 状态表动态行（规范依据移 03）
+
+| c 动态 `size` / `alignment` / `alloc-ranges` | **已实现**：`size`-only → `UnsupportedDynamicReservation`（`dtb_size_only_reservation_is_rejected_as_dynamic`）；无 `reg` 且无 `size` → 仍走 `UnsupportedReservedDeclaration`（`dtb_child_without_reg_and_without_size_is_an_unsupported_declaration`）；`reg`+`size` → 按 `reg` 处理、`size` 忽略（`reg_and_size_together_uses_reg_and_ignores_size`） | 形状分流与规范依据**均已闭合**（本轮取到主源原文）：`size` 独有=动态请求、「`reg`+`size` 按 `reg` 且忽略 `size`」、「Dynamic reserved memory regions must not be listed in the UEFI memory map because they are allocated by the OS after exiting firmware boot services」都是 DTSpec 3.5 逐字规定。因此 `UnsupportedDynamicReservation` 拒绝的是**规范允许、本项目不支持**的输入，不是非法 DTB。`alignment`/`alloc-ranges` 只在有 `reg` 时被忽略、未单独设错误——规范把它们定义为动态分配约束，静态处理时忽略是规定行为 |
+
+### O-12c 四层约束与 APIC 包络论证
+
+约束是：**每个 `DeviceAccessRequirement` 的地址都落在对应 `DeviceMappingCoverage` 内**；**coverage 的每一页都要有兼容的 `DeviceWindowPolicy` 授权**；未使用的 aperture 可以不映射；包络超出所需访问范围的部分仍要逐页通过授权与属性兼容检查。**不再写 `DeviceMappingRange ⊇ DeviceResourceRange`**——那会把「整个设备 aperture 必须映射」错当成普遍不变量。
+**架构寄存器窗口、设备声明的 aperture 与页对齐映射包络是三件事**（x86 APIC 是最清楚的例子）：xAPIC 的寄存器接口只有 **4 KiB**，而当前政策授权是 `[0xFEE0_0000, 0xFF00_0000)`（**2 MiB**——上一版这里写 18 MiB，是我算错：`0xFF00_0000 − 0xFEE0_0000 = 0x20_0000`），IO-APIC 授权 `[0xFEC0_0000, 0xFEE0_0000)` 同样是 2 MiB。真正要回答的因此不是「授权范围太大」，而是**为什么 4 KiB 的实际访问需求要用一个 2 MiB 的设备映射叶子**。大范围映射本身不一定错：只要 profile 能证明整个 2 MiB 区域可按设备属性映射（不覆盖普通 RAM、地址空洞或属性不同的区域），设计就成立；但在 QEMU profile、实际 MMIO 资源描述与映射覆盖证据钉住之前，这个授权范围只是**待证平台假设**，不是已证事实。第一版若拿不出包络证明，就只映射实际需要的 4 KiB 区域、用更细粒度叶子。
+
+### O-12c 观测记录带 VA 段
+
+**观测记录必须带 VA，不能只有 PA**：`DeviceMappingCoverage` 若只是物理区间，就回答不了「这些页映射到哪个 VA」「访问点用的 VA 是否落在里面」「同一 PA 是否有多个别名、权限/属性/共享性是否兼容」。观测单元定义为 `ObservedDeviceMapping { VaRange, PaRange, LeafSize, Permissions, MemoryAttribute, Shareability, Tree, Phase }`，由它派生纯物理覆盖 `ObservedPaCoverage = Union(PaRange)`，审计仍写 `ObservedPaCoverage ⊆ DevicePolicyAuthorizedPaRange`。访问需求不能只拿 PA 包络比覆盖：每条 `DeviceAccessUse` 要能证明其访问 VA 经对应叶子解析到预期 PA，且宽度、读写与属性兼容。这与 O-05 的别名审计是同一条要求——不能在要求审计别名的同时让覆盖集合丢掉 VA。
+
+### O-12c 64 KiB 分组规则逐条论证
+
+**AArch64 的 64 KiB 分组属性规则：按物理地址分组、只比分组属性、限定 UEFI profile**：UEFI 规定若一个 64 KiB 物理区间含任一 4 KiB 子页属于 `RuntimeServicesCode`/`RuntimeServicesData`/`ReservedMemoryType`/`ACPIMemoryNVS`，则该区间内全部 4 KiB 子页必须采用相同的 ARM memory page attributes。规范文本里的 `EfiReserved` 就是本项目的 `EfiReservedMemoryType`，是同一类型的两种写法，不是两个类型。规范位置为 UEFI 2.11 §2.3.6（评审人已按该节核对：引用 Table 2.5，权限映射在 Table 2.6）；本方本环境抓取 uefi.org 返回 403，**未直接取证**——两侧分开记：规则内容有评审人核对支持，「本方独立取证」仍是缺口，因此不升级为跨入口的架构通则。四条精度约束：
+
+- **分组键是物理地址**：`AttrGroup(PA) = floor(PA / 65536) * 65536`。同一 VA 在不同树里的别名不改变分组，不同 VA 映射到同一 `AttrGroup` 才需要比较；按 VA 分组会漏掉跨别名违例。
+- **比较字段只限分组属性**：memory type（Normal/Device 及其子型）、inner/outer cacheability、shareability。`R/W/X`、`PXN`/`UXN`、`AF` 等**访问权限逐页独立**（Table 2.6 一支），不进一致性比较——把权限塞进分组会禁掉合法的「同组不同权限」拆分，反向也会放过属性不一致。
+- **比较对象是叶子最终生效的属性，不是 `AttrIndx` 数字**：写成 `EffectiveArmMemoryAttributes = (ResolvedMAIRAttrByte, Shareability)`，或规范化成等价的内存类型 + 内/外层缓存属性 + 共享性语义。两个不同 `AttrIndx` 若解析出完全相同的有效属性，不因索引编号不同而判冲突；反过来，同一 `AttrIndx` 在不同 PE 上对应不同 MAIR 内容**不算通过**（只读回索引相等证明不了任何事）。权限仍逐页独立，这条与上一项合起来才既不放纵违例、也不误禁合法的同组不同权限映射。
+- **适用性按 profile 判定，不是无条件全局**：这条约束随 AArch64 **UEFI 启动 profile** 的属性递交而来；非 UEFI 入口（`-kernel` + DTB）没有 EFI memory map 属性递交，规则不自动适用，但架构侧是否也按 64 KiB 粒度取属性属另一项取证，未取到之前记为 profile 条件而非普适事实。第一版锁定 4 KiB granule **不等于**规则不适用。
+- **未映射子页要有组级覆盖登记**：一致性检查的对象是同一 `AttrGroup` 内**已建立叶子**的属性集合；组内其余子页尚未映射不构成违例，但审计须记 `GroupCoverage`（该组已映射哪些子页）。任一后续新映射（低 4 GiB 宽恒等映射拆分、改属性尤其）都受既有分组属性约束；若某子页必须取不同的分组属性，只能整组改属性或拒绝，不能局部改。
+
+### O-12c x2APIC 审计细节
+
+**x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——它既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。**MSR 编号不进共享层**：共享层只表达 `ApicRegisterAccessRequirement`（APIC 逻辑寄存器、读写方向、访问者、阶段、CPU 范围、适用模式）；x86 架构层用 `X2ApicMsrUse` 记录具体 MSR 编号、指令位置、包装函数与访问约束。同一 OS 语义（读 Local APIC ID、写 EOI）在 xAPIC 映射到 MMIO、在 x2APIC 映射到 MSR。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动；不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 现有的 in/out 负控不覆盖 RDMSR/WRMSR：**架构寄存器访问必须进入独立的原始操作审计**——允许出现原始 MSR 访问的函数与指令位置清单、MSR 编号与共享层逻辑寄存器的对应关系、在已批准的 `asm!` 块中加第二条 `rdmsr`/`wrmsr` 必须使审计失败、x2APIC 模式下不得残留 xAPIC LAPIC MMIO 访问义务。
+
+### O-12c APIC 逐处理器核对
+
+**x86 的 APIC 地址不是无条件硬件事实，而且核对是逐逻辑处理器的**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。`IA32_APIC_BASE` 是**每处理器 MSR**、xAPIC/x2APIC 模式也按处理器启用，因此不能只在 BSP 上核对一次——这条按「评审人已核的架构事实」使用，本方未取 Intel SDM 原文，登记为待核，不写成本方已验证的引用。启动与次级处理器入场时，对**每个参与内存访问与调度的逻辑处理器**分别核对：该处理器的 Local APIC 当前模式（xAPIC MMIO 还是 x2APIC MSR 路径）、该处理器的 `IA32_APIC_BASE` 基址与政策表一致、该处理器的 LAPIC 寄存器窗口是否已按对应模式获得映射或 MSR 路径准入。只读 BSP 不构成全平台证明——一个 AP 的基址不同，「政策授权一个 4 KiB 页」这条主张就不再对所有参与者成立。若解析 ACPI，MADT 的 Local APIC 地址、每个处理器条目的 processor ID 与 enabled flags、override 与 I/O APIC 项都要与政策表兼容；任一参与处理器不符合当前 profile 就**拒绝启动**或**阻止该处理器入场**。riscv 侧是同一形态的问题：PLIC 的 context 按 hart 列出（`interrupts-extended`），逐 hart 核对，不能由 hart 总数乘 2 推出来（见 PLIC 推导段）。
+
+### O-12c PLIC 访问集合段
+
+**PLIC 的访问集合与包络**：`DeviceAccessUseSet` 的每条记录至少含 `AccessUseId`、`DeviceId`、`ObjectId`、**`VirtualByteRange`（或其可静态解析出实际 VA 的访问点标识）**、`PhysicalByteRange`（预期 PA）、访问宽度、读/写、阶段与路径。**缺 VA 就无法证明访问需求**：指针实际落在哪个别名上，只有 VA 能回答；不能先由现有 PTE 推出 PA 再充作访问需求输入（那是循环证明）。`DeviceRequiredAccessEnvelope = Envelope(DeviceAccessUseSet)`，**不表示包络内每个 byte 都被访问**。没有完整访问清单时，包络只是保守上界，不能宣称访问需求已完整（与 O-07 相连）。PLIC 的 profile 还必须钉住具体的 QEMU 构建版本（`qemu-system-riscv64 --version` 读数与 machine version）；今天尚未记录该版本，属于待补证据。
+
+### O-12c PLIC 推导与窗口教训合并
+
+**PLIC 范围的推导与 profile 条件**（合并上一版两段重复表述）：`N_context = hart_count × 2` 不是通用公式——QEMU TCG 用奇数 context ID（`2·cpu+1`），KVM 用连续编号；不支持 S-mode 的 hart 还会造成 context 数差异。所需范围写成 `ContextBase + (max(实际使用的 context ID)+1) × Stride`；context ID 不能由 hart 数直接乘 2，也不能把 `interrupts-extended` 的 interrupt specifier 当成 PLIC 的 MMIO `addrid`。推导链：specifier → 解析 `interrupt-parent` phandle → 识别 hart 与特权模式 → 确定 context 排列 → 枚举稠密 `addrid` → 最大偏移。本项目的 `0x24_0000` **只在以下配置下成立**：QEMU `virt` + 固定 machine version + TCG + 单 socket + AIA 关闭 + 明确 CPU 型号 + `-smp ≤ 32` 且全部支持 S-mode；其它配置必须拒绝或重新推导。
+
+### O-12g 附加要求四条
+
+原始记录保留：声明所在节点、**每一级 `ranges` 转换的输入/输出与引用节点**、最终 CPU 物理地址、属性与来源身份。只保留最终地址会让审计无法解释地址是怎么来的。
+**四条补充要求**：① **排除原因多重归属**——同一页可同时被普通保留、MRB、存活对象覆盖，PMM 只扣一次，但审计能列出全部 `SourceId`；② 固件前缀、内核镜像、boot shim、自举页表、栈、启动模块、DTB 原始对象与副本、登记表**不能合并成一个 Reserved 标记**，它们各自有阶段化读写/执行需求；③ **重叠规则**：**同一权威来源内部的同语义重复**（例如两个 `/memory` 节点描述同一段 RAM，或同一节点多个 `reg` 重复）集合去重、保留多个 `SourceId`；**跨来源证据**（UEFI 类型、平台分类、固件保留与 RAM 来源）对同一物理区域提出**不兼容主张**时进入冲突裁决，不能靠并集掩盖——不兼容即拒绝启动。`/memory` 本身只有 RAM 语义（`status` 非 `okay` 与 `hotpluggable` 已被准入拒绝），不存在「同源一条说 RAM、一条说不可用」的形态；④ **原始记录必须保留不输出区间的描述符**（含 `RESERVED`/`UNUSABLE`）——否则 O-06 的「`UNUSABLE` 属于来源域」没有可实现的输入；诊断成员表是面向内核的另一层，不能替代原始记录。
+
+### O-12g SourceRef 定型段
+
+**统一 `SourceRef` 必须在接通启动路径前定型**（未实现）：`SourceRef { input_object: InputObjectId, local_source: LocalSourceId }`；`FirmwarePrefix` 对 `Memory` 的引用也用它，不再保留裸 `memory_id`。**UEFI 的 `InputObjectId` 是快照实例身份，不是来源类别**：每次成功的 `GetMemoryMap()` 分配新的 `MapSnapshotId`（`MapKey` 只是该快照的固件版本凭据）；`PreflightMap` 不产生最终政策记录，`FinalMap` 的全部描述符同属一个快照 ID，stale-key 重试产生新 ID 且旧记录与旧投影整体废弃——否则三份快照里同号的 `DescriptorIndex` 会被当成同一条来源。这样每条政策、排除原因、禁止项、对象义务共用同一身份，也防止把两个输入对象里的 `SourceId(3)` 当成同一条来源。节点路径文本与逐级 `ranges` 转换链可分阶段补，不必为接通内存记录先做完整地址翻译。
+
+### O-12i 保护清单与第一版二选一
+
+第一版对每个 `PlatformMemoryProfile` 二选一：证明不存在未建模的额外保护结构（此时 `PlatformProtectionPermits` 由该证明通过），或把已声明结构纳入 `PlatformProtectionPermits` 逐区间判定。`completeness` 只能由 profile 提供，**不能默认为真**。
+**证据稳定性：`RLB` 进稳定性证明，不是只登记**。`norm:mseccfg_rlb_op_warl` 说 `RLB` 提供「临时修改 *Locked* PMP 规则」的机制，即 `RLB=1` 时 `L=1` 的条目仍可被改，所以「`RLB` 不参与位解释」不能当作证据有效期依据。完整合同四条：① 依赖 `L=1` 保证稳定时，必须证明 `RLB=0` 且无法再置位；② 只要求 `RLB=0` 也不够——没有 `L` 的条目仍可由 M-mode 修改；③ 真正要证明的是**整份有效配置**在 `stability_until` 内不变，而且**事后通知不够**：provider 改完再通知，旧投影可能已被分配器或访问路径使用，事后递增代次无法撤销已经发生的非法访问。第一版只接受两种合同之一——**A 不可变配置合同**（provider 承诺从提供证据到生命周期结束不修改相关 PMP、Smepmp 与额外保护配置；第一版选它）或 **B 协调式变更合同**（变更**前**通知内核，内核停止相关访问、完成受影响对象检查与必要的迁移或隔离，再允许配置变化，完成后递增代次、重建投影、重新开放访问）；`stability_until` 因此是 provider 对「配置不可变」或「变更受协调」的**承诺**而非时间期限，没有该承诺的证据不得用于任何跨阶段分配或访问授权；④ 任何改变生效配置的事件（M-mode 改写 `pmpcfg*`/`pmpaddr*`、写 `mseccfg`、hart 上线使该 hart 的配置进入参与集合）都必须递增 `evidence_generation` 并使全部依赖投影失效。拿不到承诺与通知的 provider，`stability_until` 只能记「未声明」，其证据不得跨阶段缓存。
+
+### O-12c PLIC 窗口教训（内容已并入 PLIC 推导段）
+
+**PLIC 窗口的教训（本轮修正）**：context 区从 `+0x20_0000` 开始，窗口大小应为 `0x200000 + N_context×0x1000`，**不能写固定 2 MiB**——原来的 2 MiB 恰好结束在 context 区起点，claim/complete 寄存器拿不到 `DEVICE` 映射。QEMU 实测 DTB：`plic@c000000` 的 `reg` 为 `0xc000000 + 0x600000`。窗口按内核 SMP 上限 32 hart 取 `0x24_0000`，仍在 QEMU 的 PLIC 区间内。
+
+### O-11 顶端边界段去本轮记号
+
+**统一物理范围类型 `PhysicalRange { start: u64, end_exclusive: u128 }`**（`start < 2^64`、`start < end_exclusive ≤ 2^64`）：DTB 的 `address + size` 与 UEFI 描述符都能表达 `[0xffff_ffff_ffff_f000, 2^64)`，统一来源记录不得因 Rust 字段类型丢掉这个合法边界。原始输入字段保留各自编码（DTB 的 address+size、UEFI 的 start+pages），规范化层才转成 `PhysicalRange`；`UnsupportedPhysicalAddressEnd` 只在项目明确选择拒绝该边界时使用，**不能成为 `u64` 加法的副作用**——DTB 腿本轮已按这条实现（`physical_end` 用 `u128` 求和并分名两类拒绝，见 O-12i 的三层表）。这条与 O-12h 结构校验、O-12i `FullPages` 是同一条边界合同；DTB 记录层**已按此落地**，UEFI 侧的 `SourceRecord` 尚未接入。
+
+### O-01 三层不得串层段的 §6 指向改写
+
+**三层各自的说法不得串层**：第一层只有「Not usable」这一个事实，它既不承诺硬件会拦访问，也不等于本项目的 `DenyOsUse`；第二层才是项目政策的具名主张；第三层是「类型本身不兑现保护，映射隔离与访问阻断由内核建立」。两个方向的越层都要防：把第一层写成「硬件禁止访问」是拔高，把第三层「类型本身不兑现保护」反过来读成「所以第一层其实没那么强」是压低——后者尤其危险，因为 `DenyOsUse` 的强度来自第二层政策，不依赖硬件是否拦得住。UEFI 原文在本环境抓取返回 403，「Not usable」措辞与 `GetMemoryMap()` 的两段区分都由**评审人按 UEFI 2.11 核对**，本方独立取证仍是缺口，登记在 §6，不升级成本方已验证的引用。
+
+### O-12i A/D 取文记号
+
+**RISC-V 的 A/D 更新方案决定页表页准入**（不能无条件要求 `RsrvEventual`）。规范原文本轮已从主源 `riscv/riscv-isa-manual` 的 `src/priv/supervisor.adoc` 与 `src/priv/machine.adoc` 直接取到，逐字引句带规范锚点：
+
+### O-12i 负控表反例说明去上一版
+
+| **Svadu 已实现、`ADUE=1`、Svade 也已实现** | **硬件更新**——这条就是上一版布尔式的反例，必须能失败旧公式 |
+
+### O-12i adapter 边界段裁定记号
+
+**共享层与架构 adapter 的边界（本轮裁定，属重构项而非 RISC-V 算法错误）**：通用内存资格模型的接口只表达 OS 需要的**语义**——普通物理访问要求、页表读取与更新要求、原子操作的宽度/原子性/进展、执行访问要求、参与访问的 CPU 集合、证据代次与有效期；具体机制名属于各架构 adapter：参与访问的 CPU 集合（RISC-V hart / AArch64 PE / x86 逻辑处理器）、页表更新要求（`Svade`/`Svadu`/`ADUE` 与 `RsrvEventual` / 硬件 `AF`+dirty / 硬件 A/D）、原子能力（`AMO(family)`/`Lr`/`Sc` 与预约集几何 / `exclusive`+`LSE` / 锁定 `lock` 前缀族）、物理访问保护（PMP+PMA / MAIR 与层级保护 / PAT+MTRR 与分页）。
