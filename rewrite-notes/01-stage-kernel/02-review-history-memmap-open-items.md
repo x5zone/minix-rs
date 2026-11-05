@@ -12,6 +12,20 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十六轮评审之后：基底/用途两层拆分、硬件 PTE 更新原子性、对象完整 footprint）**
+
+- **先认一个材料缺陷**：上一轮横幅写的 `20:35 CST` 不是实测值，比真实时间超前约 1 小时 43 分，评审人据此无法认定材料是最新版本。本轮改为 `date` 实测（当日 `18:54 CST (+0800)`，完整命令输出见 `03` 第四十七节），并把「横幅时间必须由命令实测」作为固定规则写进横幅本身。
+- **P0 `RoleAdmit` 仍可真空通过（成立，已改）**：上一轮只在 `RolePageEligible` 里加了非空前置，而 `PmmRoleEligible` 引用的是 `RoleAdmit`，两处展开式不同——同一份合同有两个版本。改为 `RoleAdmit ⇔ RolePageEligible` **单一展开式**，并把 `U ≠ ∅` 写进 `PmmRoleEligible`。
+- **P0 `GeneralData` 双层定义冲突（成立，已改）**：`RoleRequirements(GeneralData)` 既是「实际 Load/Store 宽度集合」又被说成「额外要求为空集」，三句话能拼出两套模型。拆成 `BaseAccessRequirements(ctx)`（普通数据页的基底访问类别，含 `GeneralDataCompleteness`）与 `RoleSpecificRequirements(role, ctx)`（用途在基底之上的额外类别，`GeneralData → ∅` 是定义）；`CommonCpuAccessEligiblePages` 只消费前者，`RoleAdmit` 只消费后者。
+- **P1 硬件 A/D 更新的原子性（成立，已改）**：`rsrv_eventual_required = true` 不是完整的 `AccessRequirement`，没有宽度、对齐与原子性。新增 `ImplicitHardwarePteUpdate = AccessRequirement { privilege=S, path=ImplicitPageWalk, operation=Write, width=PteSize(mode), alignment=PteAlignment, atomicity=AtomicPteUpdate, rsrv_eventual_required=true }`，并给 `AccessRequirement` 增加 `atomicity` 字段；`PageTableBackingEligible` 同时补上「内核显式 PTE 读写与 A/D 方案无关、始终必需」。
+- **P1 对象访问的完整 footprint 与区间转换（成立，已改）**：`ObjectPhysicalAccessEligible` 原来只有单个连续 `Footprint`，取指跨页根本进不来。改为 `ObjectAccessUse { va_range, expected_pa_range, access_requirement, tree, phase, required_harts }` + `ActualFootprints(use)`（Fetch 用 `FetchFootprints` 展开全部片段），并把 `VAResolution(va)=pa` 改成**区间级** `Resolve(va_range, tree, phase) = expected_pa_range`——起点相等只证明一个点。
+- **P1 合同 A 与取指例外（成立，已改）**：合同 A 原文是「满足 `req.alignment` 的起始地址」，与「页级只保留最大 footprint 不越页的起始」不是同一句话。合同 A 正式定义为「满足该访问类别架构对齐**且**满足该用途规定的完整 footprint 约束」，并给出三类具体化（Load/Store、LR/SC/AMO、Fetch）。
+- **P1 稳定性要变更前协调（成立，已改）**：事后通知不足以防止旧投影被使用。第一版只接受两种合同：**A 不可变配置合同**（第一版选它）或 **B 协调式变更合同**（变更前通知、停访问、检查/迁移、再放行）；`stability_until` 定义为 provider 的承诺而不是时间期限。
+- **P2 预约集几何进入准入（成立，已改）**：`ReservationSetGeometryPermits(hart, physical_range, requirement, ctx.profile_id)` 与指令族、宽度、进展保证并列；支持 LR/SC 且 `RsrvEventual` 但几何不合 profile 时仍不得通过。
+- **P2 cache-block 枚举（成立，评审人表述需更正）**：补齐 `CacheBlockManagement(family)`；但规范原文是「load instruction **or store instruction** is permitted」——**不是**「按读权限检查」。另补 `norm:pmp_same`/`norm:pma_same` 的块级 PMP/PMA 一致性要求与 `norm:cbo_rsv` 的 UNSPECIFIED 分支，说明将来启用时必须按整个 cache block 判。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1663 行、围栏 46（偶）、表格 62 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第七十五轮评审之后：Footprint 顶端、取指跨页、对象 VA 路径、PMP 稳定性）**
 
 - 评审人本轮判断「阻塞点已从模型没有表达力，转到边界谓词有漏洞」，并限定四个优先项加 RVA23S64 并行。本轮按该范围落地，未新增抽象层。

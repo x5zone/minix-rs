@@ -1099,3 +1099,17 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单（不升级成规范引用） | x86 变长指令可跨页（最长 15 字节）按架构事实使用，未取 Intel SDM 原文；UEFI Table 7.10 与 §4.6.1.3 由评审人独立取到，本方 uefi.org 仍 403；AArch64 Table 2.5/2.6 仍是评审人核对；`PmpEvidence` 的 provider 承诺与变更通知机制未实现 |
 | 主简报 | 1617 行（上限 1700）；围栏 46（偶）；表格 62 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 四十七、第七十六轮：基底/用途两层、硬件 PTE 更新、cache-block 许可规则
+
+| 项 | 读数 |
+|---|---|
+| 横幅时间实测 | 命令 `date "+%Y-%m-%d %H:%M %Z (%z)"` → `2026-11-05 18:54 CST (+0800)`。上一轮横幅的 `20:35` 未实测，超前约 1 小时 43 分，已更正；规则改为「横幅时间必须由该命令实测」 |
+| 本轮取证的源与版本 | `riscv/riscv-isa-manual@418bdc4990ae2d60a86f1e11e8d7795aa279da61`：`src/unpriv/cmo.adoc`（cache-block 许可与块级一致性）；`src/priv/supervisor.adoc`（A/D 更新步骤的原子性）；`src/priv/machine.adoc`（`norm:pmp_cbm_fault` 指向 CMO 章节） |
+| 命令 | `curl -sL .../src/unpriv/cmo.adoc` 后 `grep -n "norm:pmp_same\|norm:cbm_access\|norm:cbz_access\|norm:cbo_rsv" cmo.adoc` |
+| 读到的行号（实测） | `cmo.adoc` 319–321（`norm:pmp_same`：块内 PMP 位一致且 W⇒R）、323–325（`norm:pma_same`）、327–328（`norm:cbo_rsv`：不满足则 UNSPECIFIED）、336–345（CMO 访问大小等于 cache block，可被拆成多次操作，逐次 PMP 检查）、352–362（`norm:cbm_access`：load **或** store 许可即允许；`norm:cbm_unperm_fault`）、373–381（`norm:cbz_access`：store 许可且 PMA 支持）、383–389（`norm:cbp_access`：预取不产生异常）；`supervisor.adoc` 1745–1748（A/D 更新「Perform the following steps atomically: Compare … Then store」） |
+| 主文档更动 | ① `RoleAdmit ⇔ RolePageEligible` 单一展开式，`U ≠ ∅` 进 `PmmRoleEligible`；② 拆 `BaseAccessRequirements` / `RoleSpecificRequirements`，`GeneralData → ∅` 成为定义；③ 新增 `ImplicitHardwarePteUpdate` 与 `AccessRequirement.atomicity`；④ `PageTableBackingEligible` 补「显式 PTE 读写与方案无关」；⑤ `ObjectAccessUse` + `ActualFootprints` + 区间级 `Resolve`；⑥ 合同 A 补「完整 footprint 约束」并给三类具体化；⑦ 稳定性改「不可变 / 变更前协调」二选一；⑧ `ReservationSetGeometryPermits` 进原子准入；⑨ `CacheBlockManagement` 入枚举 + 块级一致性规则；⑩ 负控与 §7 增行 |
+| 符号核查（主文档实测计数） | `RoleRequirements` **0**、`VAResolution` **0**（旧名已清）；`BaseAccessRequirements` 6、`RoleSpecificRequirements` 5、`ImplicitHardwarePteUpdate` 4、`ActualFootprints` 4、`ReservationSetGeometryPermits` 4、`CacheBlockManagement` 2 |
+| 待核清单（不升级成规范引用） | cache-block 的 PMA 支持位（`norm:cbz_access` 提到的 supported access type）由平台 profile 提供，本方未取具体 PMA 编码；x86 变长指令跨页仍按架构事实；UEFI 侧仍是评审人取证；`PmpEvidence` 的不可变承诺协议未实现 |
+| 主简报 | 1663 行（上限 1700）；围栏 46（偶）；表格 62 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |

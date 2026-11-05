@@ -5531,4 +5531,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 另：MRB 表拆「原始字节相交」与「仅页级投影相交」两行，保守选择归为项目页级限制；profile 五档校验表把 `SvadeImplemented` 与 `PteUpdateScheme` 分开；`Za64rs` 预约集几何落 `ReservationSetRequirement`；`RoleRequirements`/`LegalStarts` 非空前置、`GeneralDataCompleteness`、`CacheBlockZero` 枚举一致；§2.1/O-11/§6 现状同步。
 - 待实现：以上全是候选合同，代码与负控为零；`PlatformProtectionPermits`、`VAResolution`、`FetchFootprints`、`GeneralDataCompleteness` 均无消费者。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 62 块列数不一致 0 处、主简报 1617 行、围栏 46（偶）。
-- 认领：`I-29 qorder76`（工作树 `.wt/i-29-qorder76`，基线 `411356507`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder76`（工作树 `.wt/i-29-qorder76`，基线 `411356507`），状态 ✅：已 ff 合并为 `5ec532b12`，认领 `I-29 qorder76` 已释放。
+
+### 第二百八十四笔（01 阶段 · I-29 第七十六轮：基底/用途两层、硬件 PTE 更新、对象完整 footprint）
+
+- 先认材料缺陷：上一轮横幅的 `2026-11-05 20:35 CST` 不是实测值（超前约 1h43m），评审人据此无法确认材料版本；本轮改为 `date` 实测 `18:54 CST (+0800)`，并把「横幅时间必须实测」写进横幅。
+- P0：`RoleAdmit` 与 `RolePageEligible` 收成**单一展开式**，`U ≠ ∅` 写进 `PmmRoleEligible`；拆 `BaseAccessRequirements`（普通数据页基底 + `GeneralDataCompleteness`）与 `RoleSpecificRequirements`（用途额外类别，`GeneralData → ∅` 为定义），消除 `GeneralData` 同时扮演基底与空额外要求的两套模型。
+- P1：新增 `ImplicitHardwarePteUpdate = AccessRequirement{ privilege=S, path=ImplicitPageWalk, operation=Write, width=PteSize(mode), alignment=PteAlignment, atomicity=AtomicPteUpdate, rsrv_eventual_required=true }`，`AccessRequirement` 增 `atomicity` 字段；`PageTableBackingEligible` 补「显式 PTE 读写与 A/D 方案无关」；对象访问改 `ObjectAccessUse{va_range, expected_pa_range, …}` + `ActualFootprints`（Fetch 用 `FetchFootprints` 全片段）+ 区间级 `Resolve(va_range)=expected_pa_range`；合同 A 补「用途规定的完整 footprint 约束」并给三类具体化。
+- P1/P2：稳定性改「不可变承诺（第一版）/ 变更前协调」二选一，`stability_until` 是承诺不是期限；`ReservationSetGeometryPermits` 与指令族、宽度、进展并列进原子准入；`CacheBlockManagement` 入枚举，并按 `cmo.adoc` 原文补块级 `norm:pmp_same`/`norm:pma_same` 一致性与 `norm:cbo_rsv` 的 UNSPECIFIED 分支——CBM 的许可是「load **或** store」，评审人「按读权限」的表述已回写更正。
+- 待实现：全部为候选合同；`BasePageEligible`、`ActualFootprints`、`Resolve`、`ReservationSetGeometryPermits`、不可变承诺协议均无消费者。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 62 块列数不一致 0 处、主简报 1663 行、围栏 46（偶）。
+- 认领：`I-29 qorder77`（工作树 `.wt/i-29-qorder77`，基线 `5ec532b12`），状态 🔄，合并后释放。
