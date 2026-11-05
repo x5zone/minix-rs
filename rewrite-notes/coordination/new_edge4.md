@@ -5735,4 +5735,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 冲突与裁决：O-04 与 O-11 对 DTB 落在 `no-map` 能否首读给了相反结论 → 两决定分离（首读授权 vs 解析后拒绝继续）；配置表 DTB 三态规则（存在但未接入/解析失败 → 拒绝启动，不得静默丢弃 `no-map`/MRB）；O-01 第一版采静态处置表 B 但保留 `ReservedReusable` 独立类型；O-06 列名改「物理 backing／来源类别」并把 PAT/MTRR/MAIR/PMA/PMP 移出；UEFI 类型 11 拆成 `DescriptorAddressDomain = PhysicalAddress` + `PolicyDisposition = UnsupportedUefiRuntimeMmio`。
 - 数值证据状态四标签落地：`DtbMemoryMap` 不解析设备 `reg`（只处理 /memory、/reserved-memory、MRB），所以 PLIC 6 MiB 属编译期常量 + 离线 dump，2.25 MiB 保持候选；QEMU 版本四个有记录、accelerator 全无记录、x86_64 腿连 `-machine` 都没有。UEFI 来源记录容量按 `MemoryMapSize / DescriptorSize` 与 `MAX_MAP_DESCRIPTORS = 256` 具体化。
 - 门：简报 1089 行 / 93,922 字符（1686/136,442 → −31%，单文件重新可送审）、专项册 685 行 / 48,806 字符；围栏各自为偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
-- 认领：`I-29 qorder96`（基线 `5401f9ad0`），状态 🔄。
+- 认领：`I-29 qorder96`（基线 `5401f9ad0`），状态 ✅：第九十六轮已 ff 合并为 `6cf745eba`，认领已释放。简报回到 1090 行 / 93,922 字符（单文件可送审），硬件准入模型另立 `01-design-note-hardware-admission-model.md`。
