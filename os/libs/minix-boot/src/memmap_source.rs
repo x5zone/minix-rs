@@ -61,8 +61,15 @@ pub enum DtbMemMapError {
     /// The reserved table (firmware prefix plus declared reservations) needs
     /// more entries than `DTB_MEMMAP_MAX`.
     TooManyReservedRegions,
-    /// A declared range wraps the 64-bit address space.
+    /// A declared range wraps past the 64-bit address space: `address + size`
+    /// does not fit, so the range itself is malformed.
     RangeOverflow,
+    /// A declared range is well formed but its exclusive end point is exactly
+    /// 2^64 (or the outward page rounding lands there). `SourceRecord` keeps a
+    /// `u64` end, so this project refuses the highest page rather than
+    /// truncating it. The refusal is an input-policy choice and is named
+    /// separately so it can never be a side effect of `u64` arithmetic.
+    UnsupportedPhysicalAddressEnd,
     /// Two `/reserved-memory` declarations **partially** overlap. Exact
     /// duplicates (same range, same intent) are deduplicated in the projection
     /// while both source records survive; the same range declared with and
@@ -288,14 +295,32 @@ const PAGE_BYTES: u64 = 4096;
 
 /// Page-rounded extent of a declared reservation, rounded outward: a page that
 /// is only partly declared is not fully free.
+/// The first address that does not fit a 64-bit physical address.
+const PHYS_END: u128 = 1u128 << 64;
+
+/// `address + size` in `u128`, so a range ending exactly at `2^64` is
+/// recognized as the well-formed top boundary instead of a wrap.
+fn physical_end(start: u64, len: u64) -> Result<u64, DtbMemMapError> {
+    let end = (start as u128) + (len as u128);
+    if end > PHYS_END {
+        return Err(DtbMemMapError::RangeOverflow);
+    }
+    if end == PHYS_END {
+        return Err(DtbMemMapError::UnsupportedPhysicalAddressEnd);
+    }
+    Ok(end as u64)
+}
+
 fn declared_page_range(start: u64, len: u64) -> Result<(u64, u64), DtbMemMapError> {
-    let range_end = start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
+    let range_end = physical_end(start, len)?;
     let start = start & !(PAGE_BYTES - 1);
-    let end = range_end
-        .checked_add(PAGE_BYTES - 1)
-        .ok_or(DtbMemMapError::RangeOverflow)?
-        & !(PAGE_BYTES - 1);
-    Ok((start, end))
+    // Outward rounding can also land exactly on 2^64 (a range whose last byte
+    // sits inside the top page). Same boundary case, same refusal.
+    let projected = ((range_end as u128) + (PAGE_BYTES - 1) as u128) & !((PAGE_BYTES - 1) as u128);
+    if projected >= PHYS_END {
+        return Err(DtbMemMapError::UnsupportedPhysicalAddressEnd);
+    }
+    Ok((start, projected as u64))
 }
 
 fn push_span(
@@ -572,7 +597,7 @@ impl DtbMemoryMap<'_> {
                     Some(s) if s != 0 => s as u64,
                     _ => continue,
                 };
-                start.checked_add(len).ok_or(DtbMemMapError::RangeOverflow)?;
+                let end = physical_end(start, len)?;
                 let memory_id = sources_n as u16;
                 // Overlapping RAM claims are a firmware input anomaly: a
                 // partial overlap would put a page in the panorama twice and
@@ -583,8 +608,8 @@ impl DtbMemoryMap<'_> {
                 for &span in memory[..memory_n].iter() {
                     let prev_start = span.base.0;
                     let prev_end = prev_start + span.len as u64;
-                    if start < prev_end && prev_start < start + len {
-                        if start == prev_start && start + len == prev_end {
+                    if start < prev_end && prev_start < end {
+                        if start == prev_start && end == prev_end {
                             duplicate = true;
                             break;
                         }
@@ -596,7 +621,7 @@ impl DtbMemoryMap<'_> {
                     &mut sources_n,
                     SourceKind::Memory,
                     SourceOrigin::MemoryNode { node: node_ordinal, reg: reg_index as u16 },
-                    (start, start + len),
+                    (start, end),
                 )?;
                 if duplicate {
                     continue;
@@ -1024,14 +1049,15 @@ mod tests {
             };
             struct_blk.extend_from_slice(name.as_bytes());
             while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
-            // The root declares cells 2/2, so reg is fully encoded for that
-            // semantic (128 bits: [hi(base)=0, base, hi(size)=0, size]). A
-            // lesson from real hardware: a short 1/1 encoding is truncated under
+            // The root declares cells 2/2, so reg is a full 128-bit pair
+            // [hi(base), lo(base), hi(size), lo(size)]; for values below 2^32 the
+            // high words are zero, exactly as the earlier hand-written encoding.
+            // A lesson from real hardware: a short 1/1 encoding is truncated under
             // 2/2 semantics (size=None) → the region is silently skipped.
             let mut reg: Vec<u8> = Vec::new();
-            reg.extend_from_slice(&0u32.to_be_bytes());
+            reg.extend_from_slice(&((*base >> 32) as u32).to_be_bytes());
             reg.extend_from_slice(&(*base as u32).to_be_bytes());
-            reg.extend_from_slice(&0u32.to_be_bytes());
+            reg.extend_from_slice(&((*size >> 32) as u32).to_be_bytes());
             reg.extend_from_slice(&(*size as u32).to_be_bytes());
             push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
             let status: &[u8] = match memory_status {
@@ -1748,6 +1774,71 @@ mod tests {
             &[],
             2,
         );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::RangeOverflow)
+        ));
+    }
+
+    #[test]
+    fn dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end() {
+        // address + size == 2^64 exactly: a well-formed range that the u64
+        // exclusive end cannot hold. Refusing it is this project's input
+        // policy, so it must not arrive as the arithmetic-wrap error.
+        let blob = build_fdt(&[(0xffff_ffff_ffff_f000, 0x1000)], false);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedPhysicalAddressEnd)
+        ));
+    }
+
+    #[test]
+    fn dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0xffff_ffff_ffff_f000, size: 0x1000, no_map: true, reusable: false }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedPhysicalAddressEnd)
+        ));
+    }
+
+    #[test]
+    fn dtb_top_partial_page_reservation_is_refused_as_unsupported_end() {
+        // The declared range ends 1 byte into the highest page (below 2^64),
+        // but rounding outward reaches 2^64 — the same boundary, found only
+        // after quantization.
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow {
+                base: 0xffff_ffff_ffff_e000,
+                size: 0x1001,
+                no_map: true,
+                reusable: false,
+            }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedPhysicalAddressEnd)
+        ));
+    }
+
+    #[test]
+    fn dtb_memory_range_past_2_64_is_range_overflow() {
+        // address + size > 2^64 is a malformed range, and must keep the
+        // arithmetic name.
+        let blob = build_fdt(&[(u64::MAX - 0x10, 0x100)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
             DtbMemoryMap::new(&fdt, 0).collect(),

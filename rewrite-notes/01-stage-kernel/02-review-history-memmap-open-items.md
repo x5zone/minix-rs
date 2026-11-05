@@ -10,6 +10,18 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十五轮评审之后：A/D 分支式、系统 hart 集合、入场审计既存对象 + `2^64` 端点分名落码）**
+
+- **撤销本方上一轮的布尔公式**：`EffectiveSvade = SvadeImplemented ∨ (SvaduImplemented ∧ ADUE==0)` 与同段的真值表矛盾——`Svadu=已实现 ∧ ADUE=1 ∧ Svade=已实现` 会被算成软件方案，而规范要求 `ADUE=1` 使实现「如同未实现 Svade」。改为分支式 `PteUpdateScheme(hart)`，并加该行反例负控；顺带把**证据要求**按分支钉清楚（Svadu 未知时不得拿 `ADUE` 读数猜方案）。
+- **两个 hart 集合分开**：`SystemHartSet`（验证全系统 PTE 方案一致性，含暂不启动的 hart）与 `ParticipatingHartSet`（`ctx.H`，逐 hart 求物理访问交集）。反例：4 hart 中 hart 3 未参与但方案不同，不能宣称 `norm:pte_ad_scheme_uniform` 已满足。另**运行时禁止单 hart 切换方案**——`norm:menvcfg_adue_fence` 只同步本 hart 的地址转换缓存；第一版把方案在初始化后冻结，将来若允许变更需全系统 quiescence → 统一写入 → 各 hart 同步 → 投影与存活页表重建。
+- **入场审计覆盖既存存活对象**：新 hart 加入只重算 `PmmBaseAvailable(ctx)` 只能阻止将来分配，不能让已交给内核对象的页忽然可访问。补四行处置表（可访问全部既存对象才允许加入；无法证明则不得进入共享调度集合；支持迁移/分区的先迁移再加入），并明确它与 `CommonCpuAccessEligiblePages(ctx)` 的分工（未来分配 vs 加入现有内存使用体系）。
+- **一致性 vs 排序继续拆清**：引「Coherence is not to be confused with the memory consistency model」与「the use of hardware-incoherent regions is discouraged」，并作出**项目选择：第一版不支持软件维护一致性的非一致主存**——非一致区域无论内存模型能否证明都不进基底，`MemoryOrderingCompatiblePages(ctx)` 只验排序模型。
+- **原子用途两处收紧**：`fallback` 从布尔改成凭证（同一操作、不依赖被判定不足的进展保证、替代路径在该页确有 PMA 支持、缺进展时真的切换）；补 Profile 侧全局义务 `Ziccamoa`→AMOArithmetic、`Ziccamoc`→AMOCASQ、`Ziccrse`→RsrvEventual，规则是 `RoleAdmit`（实际算法）∩ `PlatformMemoryProfile`（声明支持的 Profile 全部义务）。
+- **代码切片**：`physical_end` 在 `u128` 求 `address + size`，`>2^64` → `RangeOverflow`、`==2^64`（含向外取整落到 `2^64`）→ 新错误 `UnsupportedPhysicalAddressEnd`；`/memory` 循环改用已验证的 `end` 而非二次相加；`grep -c checked_add …/memmap_source.rs` = 0。夹具的 `/memory` `reg` 编码改为完整 hi/lo 两段（2^32 以下逐字节等价），才能表达顶端范围。minix-boot **141**、boot-shim **70**；三条 QEMU 腿 PASS。
+- **证据钉法**：RISC-V 记 official release 入口标签 `v20260120` + 模块（Supervisor 1.13 / Svade 1.0 / Svadu 1.0 / Machine 1.13）+ 实际读取源 commit `418bdc49…`；DTSpec 记 commit `8314f1e1…`，在线页面 `unknown-rev` 只作入口；RVA Profile 与 UEFI 2.11（抓取 403）列为本方未取证。
+- 另修：§6 的「规范原文未取到」旧句（与前文冲突）、`HartAdmittedBytes` 漏改的旧名、`O-12h` 顶端边界行改为 as-built。
+
+
 **本轮（第六十四轮评审之后：A/D 真值表、准入上下文、规范原文改为本方直取）**
 
 - **撤销本方两处自设规则**：① 「hart 方案一致属项目准入、不是规范强制」不成立——`supervisor.adoc` 锚点 `norm:pte_ad_scheme_uniform` 逐字要求「All harts in a system must employ the same PTE-update scheme as each other」；② 「证据缺失默认 `SupervisorFaultManagedAd`」不安全——`ADUE=0` 与「未实现 Svadu」都推不出软件方案，Svade/Svadu 皆未实现时是**硬件更新**。

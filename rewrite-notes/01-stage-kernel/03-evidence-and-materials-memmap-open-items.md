@@ -965,3 +965,20 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 主简报 | 1183 行（上限 1700）；代码围栏 26（偶）；表格列数不一致 0 处 |
 | 门 | 本轮无代码改动：minix-boot **137**、boot-shim **70**、riscv bootface 与 aarch64/x86_64 shim 三条腿沿用上一笔读数；纯文档提交按 lint/表格/行数三门 |
 
+
+## 三十七、第六十五轮：A/D 分支式与端点分名
+
+| 项 | 读数 |
+|---|---|
+| 代码落点 | `os/libs/minix-boot/src/memmap_source.rs`：新枚举 `UnsupportedPhysicalAddressEnd`；`const PHYS_END: u128 = 1u128 << 64`；`physical_end(start, len)` 三分；`declared_page_range` 改用它并对「向外取整落到 2^64」同名单列；`/memory` 循环由 `start.checked_add(len)` + 三处 `start + len` 改为单个已验证的 `end` |
+| 夹具改动 | `build_fdt_full_opts` 的 `/memory` `reg` 编码由 `[0, base32, 0, size32]` 改为 `[hi(base), lo(base), hi(size), lo(size)]`——2^32 以下逐字节等价，因此旧用例不变；这是能表达顶端范围的必要条件 |
+| 新测试 | `dtb_memory_range_ending_at_2_64_is_refused_as_unsupported_end`、`dtb_reservation_ending_at_2_64_is_refused_as_unsupported_end`（末端恰为 2^64）；`dtb_top_partial_page_reservation_is_refused_as_unsupported_end`（末端落在最高页内 1 字节，取整后才触界）；`dtb_memory_range_past_2_64_is_range_overflow`（越过 2^64 仍归畸形） |
+| 编写过程中的两处自误 | 第一版三个用例把底址写成 `0xffff_ffff_f000`（48 位，末端是 2^48，用例根本不会触发边界）；夹具 hi/lo 忘记截成 `u32` 导致 `reg` 变成 16 字节、19 个用例连带失败。两处都由测试读数当场暴露后修正 |
+| `cargo test -p minix-boot --lib` | 141 passed; 0 failed |
+| `cargo test -p boot-shim --lib` | 70 passed; 0 failed |
+| 交叉编译 | `cargo check -p minix-boot --target riscv64gc-unknown-none-elf`、`--target aarch64-unknown-none`、`cargo check -p boot-shim --target x86_64-unknown-uefi` 均 Finished |
+| QEMU（串行） | riscv bootface `### TEST_RESULT: PASS test-kernel-image-riscv64-bootface ###`；aarch64 `### TEST_RESULT: PASS test-shim-bootmarks-aarch64 ###`（`conv=13 dtb_regions=1`）；x86 `### TEST_RESULT: PASS test-shim-bootmarks-x86 ###`（`no dumpdtb.dtb on ESP`，不进入采集器） |
+| 主简报 | 1265 行（上限 1700）；围栏 30（偶）；表格列数不一致 0 处；lint error 0 |
+| 规范钉法 | RISC-V：official release 入口 `v20260120`，模块 Supervisor ISA 1.13 / Svade 1.0 / Svadu 1.0 / Machine ISA 1.13，源 commit `riscv/riscv-isa-manual@418bdc4990ae2d60a86f1e11e8d7795aa279da61`；DTSpec：`devicetree-org/devicetree-specification@8314f1e1c9965482e5c1080d4118f52fef827fce`（在线 readthedocs 页面 `unknown-rev`，不作冻结版本引用）；RVA20/22/23 与 UEFI 2.11 未取（403），列为本方未取证 |
+| 一处流程事故 | 后台 QEMU 腿的日志写在 WSL `/tmp`，`/tmp` 在两次调用之间被回收，日志连 `TEST_RESULT` 一起丢失；后台命令的退码来自管道尾部的 `tail`，`grep` 找不到文件也报 0——因此 aarch64/x86 两条腿改为前台重跑并直接读输出，本轮三条腿读数全部来自实际打印 |
+

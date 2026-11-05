@@ -5446,4 +5446,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 取证：RISC-V 与 DTSpec 改为本方直取主源（`supervisor.adoc`/`machine.adoc`/`chapter3-devicenodes.rst`/`chapter5-flattened-format.rst`，带行号与锚点）；UEFI 2.11 抓取 403，仍标本方未取证。
 - 撤销上一笔的两处自设规则：hart 方案一致是规范要求；缺证据不得默认软件 A/D 方案。
 - 门：无代码改动，沿用 minix-boot **137**、boot-shim **70** 与三条 QEMU 腿；lint/表格/行数三门。
-- 认领：`I-29 qorder65`（工作树 `.wt/i-29-qorder65`，基线 `12f7b5f70`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder65`（工作树 `.wt/i-29-qorder65`，基线 `12f7b5f70`），状态 ✅：已 ff 合并为 `fffaa3e5f`，认领已释放，`sweep` 读数在册 0。
+
+### 第二百七十三笔（01 阶段 · I-29 第六十五轮：A/D 分支式与端点分名）
+
+- 主简报 1265 行：分支式 `PteUpdateScheme`（撤销自写布尔式）、`SystemHartSet`/`ParticipatingHartSet` 分离 + 方案初始化后冻结、入场审计覆盖既存存活对象、一致性 vs 排序的项目选择、`fallback` 凭证与 Profile 全局义务、规范证据钉 commit 与 release 标签。
+- 代码：`physical_end`（`u128`）+ `UnsupportedPhysicalAddressEnd`，末端恰为或取整到 `2^64` 与越过 `2^64` 分名；`/memory` 循环用已验证的 `end`；夹具 `reg` 改完整 hi/lo 编码。
+- 门：minix-boot **141**、boot-shim **70**；riscv bootface、aarch64/x86_64 shim 三条 QEMU 腿 PASS；riscv64/aarch64-none/x86_64-uefi 交叉编译通过；lint error 0。
+- 认领：`I-29 qorder66`（工作树 `.wt/i-29-qorder66`，基线 `fffaa3e5f`），状态 🔄，合并后释放。
