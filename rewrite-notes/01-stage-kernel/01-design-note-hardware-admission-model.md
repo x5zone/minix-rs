@@ -759,3 +759,32 @@ MappingAudit(leaf, tree, phase, intent)（对每个实际叶子，不是对物�
 - 用途集合**可组合、不互斥**，不是页的分类：`U ⊆ U′ ⇒ PmmRoleEligible(page, U′, ctx) → PmmRoleEligible(page, U, ctx)`（单调），同一页可同时属于多个 `U` 的可用集合。
 - 分配时用途未知，只能保守取 `U = AllRoles`（等价于旧的「保守全局集合」）；这与用途化仍是二选一，**不得**同时声称「按用途准入」和「一页一用途类」。本项目选用途化 + 未知即 `AllRoles`。
 
+
+
+### 第一百轮补迁：引导根映射计划与审计谓词（BootRoot-2／BootRoot-3）
+
+> 与前面几节同属映射政策，不属 I-29 验收。逐字迁入，公式未改。
+
+<!-- 自正文 O-02a 的映射计划/审计公式段（第一式、比较对象、执行闭包、第二消费者、前置条件） 移入 -->
+
+**两层合同分开写，避免把建表机制带回政策层**：
+
+```
+BootstrapRootAuthorizationPlan =
+    RequiredObjectAuthorizations
+    - BootstrapRootDenyProjection
+
+ObservedMappingAudit(observed) =
+    observed ⊆ AuthorizedMapping          ← 实际存在的映射不得超出授权，也不得命中禁止
+    ∧ RequiredMapping ⊆ observed          ← 政策要求兑现的义务不得缺失
+    ∧ 有精确计划处取 observed = PlannedMapping
+```
+
+第一式是 **BootRoot-2／BootRoot-3 的政策交付物**，不是本项的——I29-1 只提供它的来源事实、身份与原始政策含义；第二式是 **Paging-4** 对实际 PTE 的验收谓词。两者都不降低验收标准，而是把「政策决定允许什么」与「实际是否兑现」分成可分别追责的两份合同。集合差只在映射记录之间做：`RequiredObjectMappingAuthorizations − BootstrapRootMappingDenials`；MRB 的**访问**禁止仍由独立访问侧合同处理，若分页侧选择用「完全不映射」兑现它，那是访问禁止的一种保守实现投影，不得把原始 MRB 语义改名为 `DenyMapping`。
+**被比较的对象不是 PA 区间，而是带映射关系的记录**，每条至少含 `(VA 区间, PA 区间, 权限, 有效内存属性, 共享性, 树, 阶段, 映射意图)`。只比 PA 并集会漏掉这类真实错误：对象要求经 `VA₁` 到达 `PA₁`，实际页表把 `VA₁` 映射到 `PA₂`，而某别名 `VA₂` 恰好映射到 `PA₁`——两个 PA 并集仍相等，路径却已经错。O-12i 的 `SegmentsCorrespondToExpectedTranslation` 已给出处置方向，本处的简写不得被读成较弱版本；同理设备窗口侧的 `Coverage ⊆ AuthorizedRange`、`RequiredAccess ⊆ Coverage` 只是便于阅读的物理投影，不能取代逐条访问需求的 VA→PA 对应检查。
+**`EarlyExecutionClosure` 是必需覆盖集合，不是第四种授权来源**。它回答「根激活瞬间继续执行所需的访问集合是否都有映射覆盖」，不回答「这些物理字节来自哪里、是否允许 OS 映射」。因此它不出现在计划构造式的授权项里，而是出现在 `RequiredMapping` 侧：闭包内的每个对象（代码、`.rodata` 依赖含编译器生成的跳转表、可写状态、当前栈、仍存活的启动对象）仍须各自取得来源授权并通过禁止投影——**「执行所必需」绝不产生穿过 `no-map` 或 `EfiReservedMemoryType` 的许可**。
+**普通 RAM 的映射授权必须独立于 PMM 可分配集合**：第一版策略 `OrdinaryRamMappingAuthorizations = ∅`，这是一个有意设计的接口状态，不是临时凑数。后续它必须由独立的映射政策投影产生，**不得复用 `PmmBaseAvailable(ctx)` 或 `conventional` 表**——来源资格、阶段资格、硬件可访问性、映射属性兑现分别检查；一页可以「不许 PMM 分配却因已登记对象获准映射」，也可以「允许分配但当前阶段尚未获准映射」。
+**第二消费者不能漏**：§2.3 已写明 Step 4 的 `establish_boot_dm` 在同一棵根上追加直接映射。如果它继续从 `conventional` 或其它候选表生成叶子，第一步建立的边界会在 Step 4 被绕过——所以第一阶段必须同时保证恒等循环不再越权、`establish_boot_dm` 不再引入未授权或命中禁止项的叶子，并对 Step 4 之后的同一棵根做实际叶子审计。
+**前置条件：根激活瞬间的执行闭包必须被映射覆盖**——这与 O-12j 的 `EarlyExecutionClosure` 是同一个问题，不另造概念：当前执行代码、继续执行所需的只读数据依赖、必须访问的可写状态、当前栈、以及切换之后仍要使用的页表与启动对象。**只映射当前指令所在页不够**：实证就在本仓库——预扫逻辑的代码页都在已映射范围内，但 `switch` 被编译成 `.rodata` 跳转表 + `jr` 绝对地址，照样触发 instruction access fault（见 O-12j 跳转表段）。编译器生成的跳转表、静态数据与调用路径依赖都属于该闭包。
+**建表机制与映射政策都不在本工作项内**。I-29 的交付终点是**交出一份可被消费的来源事实与政策含义**：每条声明的身份与原始范围、跨来源的兼容性裁决结果、类型／保留／生命周期的原始政策含义、可供后续消费者使用的物理范围与来源记录、启动对象的实际存活范围与最后使用点。**下列五项属 BootEntry／分页专项**：`BootstrapRootDenyProjection`、`RequiredObjectAuthorizations`、`BootstrapRootAuthorizationPlan`、`EarlyExecutionClosure`、把授权计划变成实际 PTE 并检查实际映射。因此本项的合同拆成两块读：**O-02a-src（引导来源完整性，I-29）**与 **O-02a-map（引导根映射政策与消费，专项）**；O-12a/b、O-03、O-04 同守这条边界——来源语义与其身份归本项，映射禁止集、访问禁止集与对象访问路径的**投影**归消费者。这不是要删掉 `no-map`、MRB 或 `EfiReservedMemoryType` 的语义：恰恰相反，本项必须把它们准确保留，否则专项没有可靠输入。恒等段与直接映射**怎样**变成 PTE——叶子粒度怎么选、降级要几张中间表页、根激活后分配器自身的地址通道、`split_huge` 在各架构的可用性——属引导分页侧的专项，登记到 `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` 与 `07-paging-probe.md` 那条线，本轮已从正文撤出（原文逐字见 `02` 第七节）。**这条边界不是回避冲突**：§2.3 与 O-02a 已把「宽恒等映射不消费禁止政策」写成现状冲突，第四段依赖链也保留为政策验收条件；被撤出的只是分页机制的取证细节。
+

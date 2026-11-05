@@ -2128,3 +2128,214 @@ PmmRoleRejected(role, ctx) ⊆ PmmBaseAvailable(ctx)
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | `e32bb7e30770f49c0e5c501436348adbc7c887544e38be82f325118dc683e5df` |
 | 上一轮（第九十八轮）合并提交 | `aece113f8`，正文 `afb050f4f8…`、档案 `e2d82e46ee…` |
 | `WorkingTreeDiffHash` | 不适用：本轮无未提交修改 |
+
+
+## 七十、第一百轮：设备资源与平台窗口整段移交（逐字保留）
+
+> 归属：设备资源发现（`reg`／`ranges`／ACPI／PLIC／APIC／UART／平台 profile）交 `04-platform-discovery.md`；
+> `DeviceWindowPolicy`、授权范围、映射覆盖与实际 PTE 审计交分页／映射专项。本档只留原文，供接收方引用。
+
+<!-- 自正文 §1.6 的三合同表与平台资源六行表（设备发现并入 04，窗口映射并入专项） 移入 -->
+
+### 1.6 三个相邻合同：本项只裁决第一个
+
+| 合同 | 它回答的问题 | 谁负责 |
+|---|---|---|
+| **物理内存图** | 哪些物理范围存在、可用、保留、不可访问，各带什么属性；bootloader 自己的占用是否全部反映 | **本项（I-29）** |
+| **平台资源图** | 设备资源在哪、范围多大、来源身份是什么 | 本项只负责**资源发现与描述**（下表），不负责驱动访问点审计与映射政策 |
+| **页表与引导页表切换** | 虚拟地址如何映射到物理、用 4 KiB／2 MiB／1 GiB、权限与属性怎么设、根切换怎么过渡 | **BootEntry 与分页侧专项**，不作本项验收条件 |
+
+**平台资源图这一栏必须再切一刀**，否则 O-07 的实际访问完整性会悄悄变成第 7 项阻塞，而 §7 的六项里没有它：
+
+| 内容 | 是否属 I-29 |
+|---|---|
+| DTB 设备 `reg` 与多级 `ranges` 解析 | **是**（资源发现；今天未开始，见 O-12j-c） |
+| ACPI 或平台静态资源描述的来源与身份 | **是**，按第一版支持范围 |
+| `DeviceResource` 与平台 profile 的对应关系 | **是** |
+| 每个驱动使用点的 VA、宽度、读写方向、参与 CPU | **否**——属设备访问审计（O-12c 已把它与资源描述分开） |
+| `DeviceWindowPolicy`（哪些资源允许在哪棵树、哪个阶段以什么属性映射） | **否**——平台映射政策，不是资源发现结果 |
+| `DeviceMappingCoverage`／实际 PTE 审计 | **否**——分页专项 |
+
+判据是一句可检验的话：**OS 决定完全不开大页，也不应要求 bootloader 换一种内存图交接方式**。页大小是分页策略，不是物理资源描述的组成部分；因此凡以「某种叶子粒度／某次 PTE 修改／某个硬件访问能力」为条件的条款，都不属于本项的验收集合。
+
+本轮据此撤销此前被列为阻断项的四类要求（叶子粒度与 `split_huge`、PTE 的 A/D 更新机制、页表访问的 PMP/PMA 证明、LR/SC／AMO／预约集等原子能力，以及 `FrozenBootMappingSet` 的页大小冻结）：它们的**内容继续留在正文作为设计上下文**，但**不再是 I-29 的签字条件**，逐段归属见 §7。这不等于说它们不重要——它们各自成立，只是回答的是另一个合同。
+
+
+
+<!-- 自正文 O-12c 整段（98 行：DeviceAperture／四层覆盖／PLIC 6 MiB／x2APIC／AArch64 64 KiB 分组／QEMU profile） 移入 -->
+
+#### O-12c 的输入：三个概念要分开
+
+| 概念 | 回答的问题 | 允许的来源 |
+|---|---|---|
+| `DeviceResource` | 设备资源在哪里 | DTB 设备节点 `reg`（经每级 `ranges` 转换）、ACPI、平台信息 |
+| `DeviceWindowPolicy` | 哪个窗口允许被哪棵树、哪个阶段映射 | **可审计的平台/设备政策**，不能由一段地址自动推导 |
+| `DeviceAccessRequirement` | 哪个使用点经什么路径访问 | 对象/设备使用点登记 |
+
+**`reg` 只是资源位置描述，不是映射或访问授权**：它不推出「必须映射」「属性一定是 DEVICE」「任意代码可访问」「应进入恒等映射」。
+
+| 入口 | 设备资源来源 | 今天实际生效的授权事实源 |
+|---|---|---|
+| x86_64 UEFI | ACPI（未解析）或平台静态表 | 内核内静态常量表 |
+| aarch64 UEFI | 同上 | 静态常量表 |
+| aarch64 直启 | DTB 设备节点 `reg` + 每级 `ranges` | 静态常量表 |
+| riscv64 | DTB 设备节点 `reg` / OpenSBI 平台信息 | 静态常量表 |
+| 端口 I/O | **不属于物理设备窗口**，走 O-08 | 独立地址域 |
+| UEFI 类型 11/12 | **不作为设备授权来源**（11 是运行时服务 MMIO 请求；12 有 Itanium 限定） | 不产生窗口 |
+
+**数值必须带证据状态，四种强度不得混在同一列里**（`ObservedInputResource` 本次启动输入实际解析所得 / `ProfileExpectedResource` 由钉住的 `PlatformMemoryProfile` 给出 / `StaticPolicyRange` 项目当前静态政策 / `ExpectedMappingCoverage` 从现有建表代码推导、非 PTE 实测）。按代码读数：**`DtbMemoryMap` 今天不解析设备节点的 `reg`**——只处理 `/memory`、`/reserved-memory` 与 MRB；`DeviceAperture` 这个名字在代码里不存在。因此 PLIC 的 `[0x0C00_0000, 0x0C60_0000)` 是 `StaticPolicyRange`（编译期常量）＋一份**离线** DTB dump 读数（`reg = 0xc000000 + 0x600000`、`interrupts-extended = <0x02 0x0b 0x02 0x09>`，见 `03`），**不是** `ObservedInputResource`；运行时解析只有 `minix-platform` 取到 PLIC 基址且 context 数硬编码为 1，长度未取。设备 `reg` 与多级 `ranges` 转换仍属 O-12j-c 未开始项。
+
+QEMU 侧今天能给的读数：`rewrite-notes/concepts/qemu-environments.md` 记录 8.2.2 / 8.2.10 / 9.2.4 / 10.0.13 四个版本；`os/qemu-tests/run_qemu.sh` 里 aarch64 是 `-machine virt,gic-version=3 -cpu max -smp 4`，riscv64 是 `-machine virt,acpi=off -smp 4`（或 `-machine virt -smp 4 -bios default`），x86_64 只带 `-smp 4`、**没有 `-machine`/`-cpu`**；三条腿都**未记录 accelerator 参数**，DTB 由 QEMU `dumpdtb` 生成而非外部递交。所以「逐 profile 钉住」缺的是运行参数取证，不是模型问题；在它补齐之前，6 MiB 授权与 2.25 MiB 需求都保持候选状态。
+
+**静态表必须作为今天的事实源被清点**。
+**四层关系**（不是两层）：
+
+| 概念 | 含义 | PLIC 例子 |
+|---|---|---|
+| `DeviceAperture` | 平台/设备描述声明的完整地址窗口 | DTB `reg`：`[0x0C00_0000, 0x0C60_0000)`（6 MiB） |
+| `DeviceRequiredAccessEnvelope` | 当前内核实际需要访问的寄存器范围 | `[0x0C00_0000, 0x0C24_0000)`（按钉住的配置推导） |
+| `DeviceWindowPolicy` | 授权某个范围以指定属性映射的政策 | 本项目静态表 |
+| `DeviceMappingCoverage` | 页表实际叶子覆盖的范围 | `[0x0C00_0000, 0x0C40_0000)`（2 MiB 叶子包络） |
+
+约束是：**每个 `DeviceAccessRequirement` 的地址都落在对应 `DeviceMappingCoverage` 内**；**coverage 的每一页都要有兼容的 `DeviceWindowPolicy` 授权**；未使用的 aperture 可以不映射；包络超出所需访问范围的部分仍要逐页通过授权与属性兼容检查。**不写 `DeviceMappingRange ⊇ DeviceResourceRange`**——那会把「整个设备 aperture 必须映射」错当成普遍不变量。
+**架构寄存器窗口、设备声明的 aperture 与页对齐映射包络是三件事**，不能因为某个访问点落在 4 KiB 页里就把周围数 MiB 自动变成设备窗口授权。xAPIC 是最清楚的例子：寄存器接口只有 **4 KiB**，而当前政策授权是 `[0xFEE0_0000, 0xFF00_0000)`（**2 MiB**，即 `0xFF00_0000 − 0xFEE0_0000 = 0x20_0000`），IO-APIC 授权同样是 2 MiB。要回答的不是「授权范围太大」，而是**为什么 4 KiB 的实际访问需求要用一个 2 MiB 的设备映射叶子**：只要 profile 能证明整个 2 MiB 区域可按设备属性映射（不覆盖普通 RAM、地址空洞或属性不同的区域），设计就成立；在 QEMU profile、实际 MMIO 资源描述与映射覆盖证据钉住之前，这个授权范围只是**待证平台假设**。第一版若拿不出包络证明，就只映射实际需要的 4 KiB、用更细粒度叶子。
+
+```
+ArchitecturalRegisterAperture（架构规定的寄存器窗口，如 xAPIC 4 KiB）≠ PlatformDeviceAperture（平台/固件声明的窗口）≠ PageAlignedMappingEnvelope（实际叶子的对齐包络）
+```
+
+三者不能因为某个访问点落在 4 KiB 页里，就把周围数 MiB 自动变成设备窗口授权。
+
+| 窗口 | `DeviceAperture`（设备声明） | `DeviceRequiredAccessEnvelope`（实际访问点） | `DevicePolicyAuthorizedRange`（政策授权） | `DeviceMappingCoverage`（预期；观测待实现） |
+|---|---|---|---|---|
+| LAPIC（**xAPIC MMIO 分支**） | **未知**（ACPI 未解析） | `[0xFEE0_0000, 0xFEE0_1000)` | `[0xFEE0_0000, 0xFF00_0000)` | 同授权范围 |
+| LAPIC（**x2APIC 分支**） | 不适用：x2APIC 用 MSR 访问，MMIO 接口不可用 | **不产生 MMIO 访问需求，也不得伪造包络** | 无 MMIO 授权 | 无 |
+| IO-APIC | **未知**（同上） | `[0xFEC0_0000, 0xFEC0_1000)` | `[0xFEC0_0000, 0xFEE0_0000)`（**与 LAPIC 相邻，不是同一个包络**） | 同授权范围 |
+| 平台外设窗口 | 32 MiB（QEMU virt profile） | 从已登记的设备访问点派生；**未登记的设备不产生访问需求** | `[0x0800_0000, 0x0A00_0000)`（有意授权整段） | 32 MiB |
+| PLIC | `[0x0C00_0000, 0x0C60_0000)`（DTB `reg`，6 MiB） | `[0x0C00_0000, 0x0C24_0000)` | `[0x0C00_0000, 0x0C60_0000)`（**整段 aperture，第九十三轮裁决**） | `[0x0C00_0000, 0x0C40_0000)`（预期覆盖，不等于授权） |
+| `RiscvVirtPlatformMmioWindow` | 平台窗口（见下） | UART 控制台寄存器偏移（资源 256 B） | `[0x1000_0000, 0x1020_0000)`（2 MiB 平台窗口） | 同授权范围 |
+
+**2 MiB 包络的授权对象是平台窗口，不是 UART**：QEMU virt 的 `[0x1000_0000, 0x1020_0000)` 同一段里还有 VirtIO MMIO（`0x1000_1000` 起）与 fw_cfg（`0x1010_0000`），所以这条政策登记为 `RiscvVirtPlatformMmioWindow`，UART 只是窗口内的一个资源条目（`DeviceAperture` = 256 B）。**通用规则：大页包络的授权对象必须是产生该包络的完整平台内存窗口，而不是包络里恰好存在的一个设备资源。**
+**`RiscvVirtPlatformMmioWindow` 的资源清单**（QEMU virt，按 profile 记录）：UART0 `0x1000_0000`+`0x100`、VirtIO MMIO 8 个窗口自 `0x1000_1000` 起每 4 KiB、UART1 `0x1000_A000`+`0x100`（**仅在使用第二个串口时实例化，属 profile 条件资源**）、fw_cfg `0x1010_0000`+`0x18`。资源存在不等于访问需求：没有 `AccessUseId` 的设备不产生 `DeviceRequiredAccessEnvelope`。
+**每条 `DeviceWindowPolicy` 的完整记录**（缺任一字段就只是地址白名单）：允许映射的整页范围、OS 语义属性（普通主存/设备）、`R/W/X`、共享性、适用树、适用阶段、`ProfileId`、证据出处；记录 OS 语义，不写 PAT/MAIR/PBMT 这类架构编码。
+**四个数据不是同一件事**：`Aperture` 来自设备描述；`RequiredAccess` 来自已登记的访问点（`reg` 不能证明实际访问）；`PolicyAuthorizedRange` 来自预先审查的平台政策；`Coverage` 来自实际 PTE 遍历。审计公式：`Coverage ⊆ AuthorizedRange` 且 `RequiredAccess ⊆ Coverage`。
+**观测记录必须带 VA，不能只有 PA**：`DeviceMappingCoverage` 若只是物理区间，就回答不了「这些页映射到哪个 VA」「访问点用的 VA 是否落在里面」「同一 PA 是否有多个别名、权限/属性/共享性是否兼容」。观测单元定义为 `ObservedDeviceMapping { VaRange, PaRange, LeafSize, Permissions, MemoryAttribute, Shareability, Tree, Phase }`，由它派生纯物理覆盖 `ObservedPaCoverage = Union(PaRange)`，审计仍写 `ObservedPaCoverage ⊆ DevicePolicyAuthorizedPaRange`；每条 `DeviceAccessUse` 要能证明其访问 VA 经对应叶子解析到预期 PA，且宽度、读写与属性兼容。这与 O-05 的别名审计是同一条要求——不能在要求审计别名的同时让覆盖集合丢掉 VA。
+**AArch64 的 64 KiB 分组属性规则：按物理地址分组、只比分组属性、限定 UEFI profile**：UEFI 规定若一个 64 KiB 物理区间含任一 4 KiB 子页属于 `RuntimeServicesCode`/`RuntimeServicesData`/`ReservedMemoryType`/`ACPIMemoryNVS`，则该区间内全部 4 KiB 子页必须采用相同的 ARM memory page attributes。规范位置 UEFI 2.11 §2.3.6，评审人已按该节核对：引用 Table 2.5，权限映射在 Table 2.6；本方抓取 uefi.org 返回 403，**未直接取得原文**，两侧分开记。文本里的 `EfiReserved` 与本项目的 `EfiReservedMemoryType` 是同一类型的两种写法。四条精度约束：
+
+- **分组键是物理地址**：`AttrGroup(PA) = floor(PA / 65536) * 65536`。同一 VA 在不同树里的别名不改变分组；按 VA 分组会漏掉跨别名违例。
+- **比较字段只限分组属性**：memory type（Normal/Device 及其子型）、inner/outer cacheability、shareability。`R/W/X`、`PXN`/`UXN`、`AF` 等**访问权限逐页独立**（Table 2.6 一支），不进一致性比较——把权限塞进分组会禁掉合法的「同组不同权限」拆分，反向也会放过属性不一致。
+- **比较对象是叶子最终生效的属性，不是 `AttrIndx` 数字**：写成 `EffectiveArmMemoryAttributes = (ResolvedMAIRAttrByte, Shareability)`。两个不同 `AttrIndx` 若解析出完全相同的有效属性，不因索引编号不同而判冲突；反过来，同一 `AttrIndx` 在不同 PE 上对应不同 MAIR 内容**不算通过**（只读回索引相等证明不了任何事）。
+- **适用性按 profile 判定**：这条约束随 AArch64 **UEFI 启动 profile** 的属性递交而来；非 UEFI 入口（`-kernel` + DTB）没有 EFI memory map 属性递交，规则不自动适用，而架构侧是否也按 64 KiB 粒度取属性属另一项取证，未取到之前记为 profile 条件而非普适事实。第一版锁定 4 KiB granule **不等于**规则不适用。
+- **未映射子页要有组级覆盖登记**：一致性检查的对象是同一 `AttrGroup` 内**已建立叶子**的属性集合，组内其余子页尚未映射不构成违例，但审计须记 `GroupCoverage`。任一后续新映射（低 4 GiB 宽恒等映射拆分、改属性尤其）都受既有分组属性约束；若某子页必须取不同的分组属性，只能整组改属性或拒绝，不能局部改。
+
+它与 ACPI reclaim/NVS 描述符自身的 4 KiB 对齐约束是两条独立规则，不能混用。
+**三个完整性主张强度不同，不能互相代替**：`Coverage ⊆ AuthorizedRange`（已映射区域未越权）、`RegisteredRequiredAccess ⊆ Coverage`（已登记需求可映射）、`ActualDeviceAccess ⊆ RegisteredRequiredAccess`（**未证明**：没有登记的设备访问是否存在，当前无任何证据）。最终报告必须分别陈述，不能拿前两项冒充第三项。
+
+**数值相等 ≠ 来源相等**：表中若干行的授权范围与覆盖范围数值相同，但授权是**独立政策输入**，覆盖是**独立测量**；不能由实际叶子反推授权。PLIC 是显式例外：它的授权（6 MiB）比预期覆盖（4 MiB）**更宽**，两者不得再写成「同授权范围」。而且今天**没有页表审计遍历**，所以今天的覆盖只能叫 `ExpectedDeviceMappingCoverage`（从构造代码推导），`ObservedDeviceMappingCoverage`（PTE 遍历）等 O-02a 的引导根审计落地后才存在。表中「覆盖」列在观测实现前一律标为**预期**。
+
+**x2APIC 是第三种访问域**：xAPIC 走 MMIO（`0xFEE0_0000` 页），x2APIC 走架构寄存器（RDMSR/WRMSR）——既不属于 MMIO 窗口模型，也不属于 O-08 的端口 I/O 地址域。**MSR 编号不进共享层**：共享层只表达 `ApicRegisterAccessRequirement`（APIC 逻辑寄存器、读写方向、访问者、阶段、CPU 范围、适用模式），x86 架构层用 `X2ApicMsrUse` 记录具体 MSR 编号、指令位置与包装函数。同一 OS 语义（读 Local APIC ID、写 EOI）在 xAPIC 映射到 MMIO、在 x2APIC 映射到 MSR。**第一版若不实现 x2APIC 访问路径**，必须锁定 xAPIC profile 并在检测到 x2APIC 时拒绝启动，不得「允许 x2APIC 模式却保留 xAPIC 的 MMIO 访问需求」。O-10 的 in/out 负控不覆盖 RDMSR/WRMSR：**架构寄存器访问必须进入独立的原始操作审计**——允许出现原始 MSR 访问的函数与指令位置清单、MSR 编号与共享层逻辑寄存器的对应关系、在已批准的 `asm!` 块中加第二条 `rdmsr`/`wrmsr` 必须使审计失败、x2APIC 模式下不得残留 xAPIC LAPIC MMIO 访问义务。
+
+**x86 的 APIC 地址不是无条件硬件事实，而且核对是逐逻辑处理器的**：表中 `0xFEE0_0000`/`0xFEC0_0000` 只属于「本项目支持的某个 x86 QEMU profile」。`IA32_APIC_BASE` 是**每处理器 MSR**，xAPIC/x2APIC 模式也按处理器启用，因此不能只在 BSP 上核对一次（这条按「评审人已核的架构事实」使用，本方未取 Intel SDM 原文，登记为待核）。启动与次级处理器入场时，对**每个参与内存访问与调度的逻辑处理器**分别核对：当前模式（xAPIC MMIO 还是 x2APIC MSR）、该处理器的 `IA32_APIC_BASE` 基址与政策表一致、其 LAPIC 寄存器窗口是否已按对应模式获得映射或 MSR 路径准入——一个 AP 的基址不同，「政策授权一个 4 KiB 页」这条主张就不再对所有参与者成立。若解析 ACPI，MADT 的 Local APIC 地址、每个处理器条目的 ID 与 enabled flags、override 与 I/O APIC 项都要与政策表兼容；任一参与处理器不符合当前 profile 就**拒绝启动**或**阻止该处理器入场**。riscv 侧同形态：PLIC 的 context 按 hart 列出（`interrupts-extended`），逐 hart 核对，不能由 hart 总数乘 2 推出来。
+
+**PLIC 的访问集合与包络**：`DeviceAccessUseSet` 的每条记录至少含 `AccessUseId`、`DeviceId`、`ObjectId`、**`VirtualByteRange`（或其可静态解析出实际 VA 的访问点标识）**、`PhysicalByteRange`（预期 PA）、访问宽度、读/写、阶段与路径。**缺 VA 就无法证明访问需求**：指针实际落在哪个别名上只有 VA 能回答；不能先由现有 PTE 推出 PA 再充作访问需求输入（那是循环证明）。`DeviceRequiredAccessEnvelope = Envelope(DeviceAccessUseSet)`，**不表示包络内每个 byte 都被访问**；没有完整访问清单时包络只是保守上界，不能宣称访问需求已完整（与 O-07 相连）。
+
+**静态窗口必须绑定一个 `PlatformMemoryProfile`**：每个 profile 至少含 `ProfileId`、QEMU 构建版本、machine type/version、accelerator、CPU 型号、SMP 拓扑、窗口政策集合、预期资源集合与不支持的配置。表格只引用 profile ID；x86 APIC、aarch64 32 MiB、riscv PLIC/UART 四类窗口都适用——今天四者的 QEMU 构建版本都**尚未记录**，属于待补证据。
+
+**aarch64 的 32 MiB 是 `DeviceWindowPolicy` 窗口，不是一个设备的资源**：它表示钉住的 QEMU virt profile 对该整段授予 `DEVICE` 映射资格；其中哪些设备、哪些空隙、哪些区段当前没有访问点，由资源清单与访问需求另行解释，不能由设备名称反推。
+
+**`PLIC_RESOURCE_LEN` 里的 2 倍关系属于 TCG 形状，不是通用资源长度**（因此 2.25 MiB 至今是候选值，不得称「内核实际所需资源长度」，除非该 profile 的 context 编号布局被证明）：代码常量写成 `0x0020_0000 + 2 * PLIC_MAX_HARTS * 0x1000`（`os/arch/src/lib.rs`），配套注释逐字说的是「M-mode 与 S-mode context of every supported hart」，claim 寄存器按 `0x20_0000 + (2N+1)*0x1000` 定位——奇数 context ID 正是 QEMU TCG 路径的形状，KVM 用连续编号。所以通用合同只有一条：`RequiredEnd = ContextBase + (MaxActualContextID + 1) × Stride`，`2 × hart_count` 只能作为**具名 TCG profile 的推导结果**出现在该 profile 的记录里。另两点要分清：`PLIC_MAX_HARTS = 32` 是本项目 SMP 上限（注释要求「至少与内核 SMP 上限一致」），不是 QEMU 的最大 CPU 数；上游 QEMU virt 的 PLIC 窗口按最大 CPU 配置可达 6 MiB 这一条按「评审人已核」使用，**本方未取 QEMU 源码**。窗口长度 `PLIC_WINDOW_LEN` 是资源范围按 2 MiB 向上取整的结果并有 `PLIC_WINDOW_LEN <= 0x60_0000` 的编译期断言——它落在 aperture 内，但 aperture 本身不因它而被授权。
+
+**PLIC 范围的推导与 profile 条件**：`N_context = hart_count × 2` 不是通用公式——QEMU TCG 用奇数 context ID（`2·cpu+1`），KVM 用连续编号，不支持 S-mode 的 hart 还会造成 context 数差异。所需范围写成 `ContextBase + (max(实际使用的 context ID)+1) × Stride`；context ID 不能由 hart 数直接乘 2，也不能把 `interrupts-extended` 的 interrupt specifier 当成 PLIC 的 MMIO `addrid`。内核实际需要的资源长度是 `PLIC_RESOURCE_LEN = 0x0020_0000 + 2 × PLIC_MAX_HARTS × 0x1000`（32 hart 时 `0x24_0000`）。
+
+**本项「平台授权范围」的数值来源已裁决（第九十三轮）：否决按叶子粒度反推的 4 MiB 授权**。代码注释逐字写着 Step 1 按 2 MiB 出设备叶子，所以授权范围取资源范围的 2 MiB 包络，`PLIC_WINDOW_LEN = (PLIC_RESOURCE_LEN + 0x1F_FFFF) & !0x1F_FFFF`（并有 `is_multiple_of(0x20_0000)` 的编译期断言，`os/arch/src/lib.rs`）。先看到 2 MiB 叶子、再把所需范围向上取整成 4 MiB，这种生成方式不属于授权政策，正是本文自己确立的 `DeviceWindowPolicy` 与 `DeviceMappingCoverage` 分离原则所禁止的推导。第一版 PLIC 改按**完整 aperture 授权**：
+
+| 层次 | 第一版裁决（钉住的 riscv QEMU virt profile） | 依据状态 |
+|---|---|---|
+| `DeviceAperture` | `[0x0C00_0000, 0x0C60_0000)`，6 MiB | DTB `reg` 的资源位置描述，不是映射许可 |
+| `DeviceRequiredAccessEnvelope` | `[0x0C00_0000, 0x0C24_0000)`，2.25 MiB | 仍须按实际 context 证据确认（见上条推导规则） |
+| `DevicePolicyAuthorizedRange` | `[0x0C00_0000, 0x0C60_0000)`，6 MiB | **须由 `PlatformMemoryProfile` 独立证明**，不是 `reg` 自动给的许可 |
+| `DeviceMappingCoverage` | `[0x0C00_0000, 0x0C40_0000)`，4 MiB | **预期覆盖**，等实际 PTE 观测；它是 2 MiB 粒度的产物，不是授权 |
+
+三条包含式必须同时成立：`DeviceRequiredAccess ⊆ DeviceMappingCoverage ⊆ DevicePolicyAuthorizedRange`，且 `DevicePolicyAuthorizedRange ⊆ ProfileVerifiedDeviceAperture`。**`DevicePolicyAuthorizedRange` 不得由 `PageSize`／`LeafSize` 推导**：换成 4 KiB 或别的粒度，授权范围不随之变化——这就是它与建表粒度脱钩的检验。两个边界：① 6 MiB 不因 DTB 写了 `reg` 就自动获得映射许可，必须由 profile 整段确认这些页都属 PLIC 设备窗口、每页都能以目标设备属性映射、不与 RAM／地址空洞／其它不兼容区冲突；**证据不成立就拒绝该 profile**，不得为了保住当前 2 MiB 建表方案强行放行（届时要么分页侧改用更细粒度，要么平台侧拿出独立子窗口证据）。② 不把「授权范围必须等于 aperture」提升为所有设备的普遍定律——普遍规则只有上面那三条包含式与「不得由叶子粒度推导」；若有独立平台证据证明某设备只需较小子窗口，可以只授权该子窗口，但**不能用 `AlignOut(RequiredAccess, LeafSize)` 代替那份证据**。本项 PLIC 数值取**6 MiB 授权、4 MiB 预期覆盖**。这项裁决不替代 PLIC context 的完整性证明：`max(实际 context ID)`、hart 与 context 的对应关系、QEMU 构建版本与 machine version 仍需钉住，`2 × hart_count` 不得回到通用公式。
+
+
+这些条目今天来自编译期常量（`kernel_identity_mmio_regions()` 与 `MMIO_PA_BASE/MMIO_WINDOW_LEN`），**不是** DTB/ACPI 解析结果。
+**每条窗口必须绑定可验证的版本与动态规则**：QEMU 版本或 machine version、固定地址依据、动态范围的计算式、与 DTB `reg` 的一致性检查、不支持的配置范围。窗口表复制自某个 QEMU 版本时，不能继续当作另一个版本的硬件事实。**DTB 与静态表不一致时的规则**（拒绝启动 / 以哪一方为准）必须写明；第一版倾向拒绝。
+
+
+
+<!-- 自正文 §0 的十九行外部模型速览表（含 HardwareAdmissionExcluded／RoleAdmit／AtomicCapabilityPermits 等） 移入 -->
+
+## 0. 现行模型速览（读 §5 前先拿住这些名字）
+
+本节**不新增规则**，只把 §5 里反复出现的名字与等式集中一处，方便逐条评审时定位。下表里的名字目前**全部是候选合同，一行代码都没有**（代码现状见 §2）。
+
+| 名字 | 它回答的问题 | 展开位置 |
+|---|---|---|
+| `RamSourceDomain` | 本入口的权威输入是否声称这段是物理主存（尚未应用保留声明与对象生命周期） | §3 第 2 条、O-12f |
+| `RamSourcePageDomain` | 上述主张先经兼容性裁决、再并集、再取完整页 | O-12i |
+| `PmmSourceExclusionContributions` / `PmmSourceExcludedPages` | 前者是**贡献记录**（`evidence_ref`／`reason`／`raw_range`／`page_projection`／`phase`，MRB 单列、类型政策只取 `ExcludeRange`），后者是这些贡献的页并集——归因与集合分开，页只扣一次 | O-12i |
+| `PmmSourceCandidatePages` | **本项的输出边界**：来源域减去上述页集合；它不回答「这台机器允许这次访问吗」 | O-12i |
+| `HardwareAdmissionExcluded` | 架构与平台物理访问能力不满足而排除的页（缓存可表达性／内存序／与用途无关的访问准入／Profile 义务）——**专项侧**，本项不实现 | 专项册 |
+| `PmmBaseAvailable(ctx) ⊍ PmmBaseExcluded(ctx)` | 最终基底层的可用与排除互补且**只对页域成立**；`PmmBaseExcluded = PmmSourceExcludedPages ∪ HardwareAdmissionExcluded` | O-12i |
+| `PmmRoleEligible(page, U, ctx)` | 把一页交给用途集合 `U` 的分配资格；用途未知时保守取 `AllRoles` | 专项册（非本项验收） |
+| `RoleAdmit` ≡ `RolePageEligible` | 用途特有准入**只有一个展开式**，且它是分支：`PageTable` 走 backing，其余走通用体。三个消费者共用同一个判定核，各喂自己的需求集合——基底 `BaseAccessRequirements`、通用用途 `RoleSpecificRequirements`、页表用途 `PageTableAccessRequirements` | 专项册（非本项验收） |
+| `PageTableBackingEligible` | 页表用途的唯一能力合同；新分配页与引导期既有页表共用（既有页表不经过 PMM，因此排序、Profile 区域义务、内存类别与幂等政策都必须自带在 backing 里） | 专项册（非本项验收） |
+| `AccessRequirementsEligible`（唯一全称判定核） | `requirements ≠ ∅ ∧ ∀ req ∈ requirements : LegalStarts(page, req, role, ctx) ≠ ∅ ∧ ∀ a ∈ LegalStarts ∀ cpu ∈ ctx.ParticipatingCpuSet : PhysicalAccessPermits(cpu, req, Footprint(a, req))`，其中 `PhysicalAccessPermits = PmpPermits ∧ PmaPermits ∧ PlatformProtectionPermits`；`LegalStarts` 第一版锁**合同 A**（架构起始对齐 ∧ 该用途规定的完整 footprint 约束）。空需求集合与空起始集合都不允许让全称量词真空通过 | 专项册（非本项验收） |
+| `VirtualAccessInstance → TranslatedAccessFragments → ActualMemoryOperations` | 对象访问的三层：源级一次访问、完整翻译片段、硬件实际执行的操作——**不得合并** | 专项册（非本项验收） |
+| `ObjectPolicyAccessEligible` / `ObjectPhysicalAccessEligible` / `ObjectMappedAccessEligible` | 对象可用性的三面：来源授权、硬件准入、映射路径兑现 | 专项册（非本项验收） |
+| `MemoryAdmissionContext` | 一切投影的输入：阶段、参与 CPU 集合身份、平台内存 profile、ISA profile、UEFI 属性位 profile、起始地址合同、证据代次、来源快照集合 | 专项册（非本项验收） |
+| `SystemHartSet` / `ParticipatingHartSet` | 前者验证 A/D 更新方案的**全系统**一致性，后者计算普通物理访问准入的**逐 hart 交集**，不得互相替代 | 专项册（非本项验收） |
+| `CommonBackingCapabilityEligible` + `PageTableSpecificAccessEligible` | 页表 backing 的两半：与用途无关的公共能力（含**缓存可表达性**）与页表特有的三类访问 | 专项册（非本项验收） |
+| `AtomicCapabilityPermits` | 共享层唯一的原子能力谓词：只问「这些 CPU 在该范围上能否满足该算法的族／宽度／原子性／进展要求」。预约集是 RISC-V LR/SC 的承载形式，其几何与证据留在 adapter 侧；共享进展成员叫 `EventualAtomicProgress`，由 RISC-V adapter 兑现为 `RsrvEventual` | 专项册（非本项验收） |
+| `SegmentsCorrespondToExpectedTranslation` / `OperationsRealizeAccess` | 对象访问三层之间的对应关系：逐段 VA→PA 对应（不是比物理并集）、操作集合是源级访问的忠实展开（adapter 证明） | 专项册（非本项验收） |
+| `NoMapControlledAccessEligible` | 受控映射是必要非充分：谁能经哪条 VA 实际碰这些字节，另立访问侧合同 | O-03 |
+| 甲案：授权驱动建表（**已裁定，属分页专项背景，非 I-29 交付**） | 恒等循环的输入换成四类已裁决授权对象（合法普通 RAM、内核映像、启动对象、设备窗口），外加根激活瞬间的 `EarlyExecutionClosure`；具名过渡映射 `BootTransitionMapping` 被否决 | O-02a |
+
+> 上表标注「**专项册（非本项验收）**」的行，展开位置是同目录的 `01-design-note-hardware-admission-model.md`（第九十六轮逐字迁出）。它们描述硬件准入与用途资格，不是内存图交棒的签字条件；本项只保留页域、两层划分与「用途拒绝不等于基底排除」这三条与交接直接相关的事实（见 §5 末节的保留表）。
+
+**共享层与架构 adapter 的分工**贯穿上表：共享层只表达 OS 需要的语义（普通物理访问、页表读取与更新、原子操作的宽度/原子性/进展、执行访问、参与访问的 CPU 集合、证据代次），机制名（PMP/PMA、`Svade`/`Svadu`/`ADUE`、AMO/LR/SC、`RsrvEventual`、MAIR、PAT/MTRR）留在各架构 adapter。本文的 RISC-V 段落因此是 **adapter 侧的展开示例**，不决定三架构共享接口的形状。
+
+
+
+<!-- 自正文 O-06 的 MemoryKind 八成员表（ACPI_RECLAIM 被当成物理性质、Permanent 与可分配相撞） 移入 -->
+
+| 类型 | 属 `RamSourceDomain` | `MemoryKind` | 类型允许普通映射 | 类型允许普通分配 | 规范生命周期 → **第一版处置** |
+|---|---|---|---|---|---|
+| `CONVENTIONAL` | 是 | `VolatileRam` | 是（**缓存属性另行判定**，不在类型列） | 是（阶段／属性／排除另行判定） | 无事件 → `Permanent` |
+| `LOADER_CODE` | 是 | `VolatileRam` | 是（存活期需 X，由对象义务提供） | 否 | `ExitBootServices` → **`Permanent`（第一版不回收）** |
+| `LOADER_DATA` | 是 | `VolatileRam` | 是（默认 NX；写需对象义务） | 否 | 同上 |
+| `BOOT_SERVICES_CODE/DATA` | 是 | `VolatileRam` | 是（固件活跃期按义务） | 否 | 规范：`ExitBootServices` 后可通用 → **第一版 `Permanent`** |
+| `ACPI_RECLAIM` | 是 | `AcpiReclaim` | 是 | 否 | 规范：ACPI 启用后可回收 → **第一版 `Permanent`**（没有 `AcpiEnabled` 消费者） |
+| `ACPI_NVS` | 是 | `AcpiNvs` | 否 | 否 | 无 → `Permanent` |
+| `PERSISTENT` | 是 | `PersistentMemory` | 否（第一版普通 volatile 策略） | 否 | 无 |
+| `RUNTIME_SERVICES_CODE/DATA` | 是 | `VolatileRam` | 否 | 否 | 第一版永久排除 |
+| `RESERVED` | 否（采用 B）：仅凭类型名推不出是系统 RAM | 不承诺 | 否 | 否 | 无 |
+| `UNUSABLE` | 是 | `UnusableRam` | 否 | 否 | 无 |
+| `UNACCEPTED` | 是 | `UnacceptedRam` | 否 | 否 | **`RejectBoot`**（不是页排除） |
+| `PAL_CODE` | 不支持 | `Unsupported` | — | — | **`RejectBoot`** |
+| 类型 11 / 12 | 否 | `NonRamPhysicalResource` | 否 | 否 | 无 |
+
+**资格是分层的，不是三个布尔值**：`RamSourceDomain`（权威来源是否声明这是物理主存）、`MemoryKind`（普通易失 / 持久 / NVS / 未接受 / 不可用）、`OrdinaryRamMappingEligibility(tree, phase)`、`PmmEligibility(phase)`、`AccessRequirement/AccessAuthorization` 各自回答不同问题，不能互相推导——普通 RAM 可能因 `no-map` 禁止普通映射；设备 MMIO 不是普通 RAM 却有设备访问授权；普通 RAM 可能因 MRB 禁止访问；保留对象可能允许特定对象读却不许 PMM 分配。表头「普通主存性质」只描述 `MemoryKind`，不是「能否使用」的总结论。
+**「来源叠加」不是无条件成立（兼容矩阵）**：DTSpec 要求静态 `/reserved-memory` 出现在 UEFI 内存图里——`no-map` 对应 `EfiReservedMemoryType`，其它静态保留对应 `EfiBootServicesData`。所以表里「按兼容矩阵裁决」指的就是下面三种组合：
+
+| UEFI 描述符 | 与之重叠的 DTB 静态保留声明 | 结果 |
+|---|---|---|
+| `EfiBootServicesData` | 普通 / `reusable` | 兼容（规范给出的预期组合） |
+| `EfiReservedMemoryType` | `no-map` | 兼容 |
+| `EfiReservedMemoryType` | 普通 / `reusable` | **冲突，拒绝启动**——这不是待裁事项，O-11 权威表一已给结论 |
+| 其它类型 | 任意静态保留 | 与预期类型不符：拒绝启动，除非有明确列出的项目扩展规则 |
+
+三张表（本矩阵、O-11 权威表一、O-11 权威表二）里**只有 O-11 权威表一是裁决来源**；本表是它在 UEFI 类型一侧的投影，后续修改必须先改权威表一再同步本表，不得两处各写一套结论。
+
+同一页同时被普通静态保留与 MRB 覆盖时，**两种类型要求冲突、第一版拒绝启动**（见 O-11 的同页裁决表）；不存在「较强类型覆盖较弱类型」的泛化规则，来源记录在拒绝诊断中分别保留。动态 `size` 保留：规范要求它**不出现在** UEFI 内存图（不是「不要求出现」）；`reg` 与 `size` 同时存在时按静态 `reg` 处理，`size` 不决定分配。
+**第一版处置与统一模型语义分开**：「属 `RamSourceDomain`」是按统一模型填的，不等于今天的分类器已经支持它继续启动：
+
+| 类型 | 统一模型中的含义 | 第一版处置 |
+|---|---|---|
+| `UNACCEPTED` | 有物理来源、尚未接受、无普通 backing | **拒绝启动**，不进入阶段化分配 |
+| `PAL_CODE` | 固件/处理器专用的代码内存 | 拒绝启动（项目兼容性限制） |
+| `PERSISTENT` | 非易失物理内存，有 backing | 不接入普通 volatile PMM 与直接映射，保留来源记录 |
+
+**属性位：语义三类 + 当前处置**（不能只写「未知位拒绝」）。语义分三类：缓存能力（`WB`/`WT`/`WC`/`UC`/`UCE`）；物理保护能力（`WP`/`RP`/`XP`/`RO`）——`WP` 归此类：规范先称它 physical memory protection attribute，再说明它通常被用作 write-protected cacheability policy，所以它有特殊缓存语义，但既不是页表写权限，也不能与 `RO` 混为一谈；其它特征（`MORE_RELIABLE`、`CPU_CRYPTO`、`SP`、`NV`、`RUNTIME`）。当前处置：模型保留 `RUNTIME`/`NV`/`SP` 三种独立属性语义，但**分类器实际可达的只有 `RUNTIME`**——`NV` 属无条件冲突拒绝域，`SP` 的低位编码属冲突拒绝域、高位编码在 profile 未钉住时被 `ProfileAttribute` 拒绝，二者都不进入输出表；`PERSISTENT` 是独立的 UEFI 内存类型，不等于 `NV` 属性位，不能用它的测试证明 `NV` 分支可达。`RO`/`RP`/`XP`/`WP`/`CPU_CRYPTO` 是 **capability 能力位**（`MORE_RELIABLE` 因 `0x1_0000` 的官方文本歧义已改为 fail-closed），第一版只作来源元数据——**不直接等同于当前已生效的访问权限**，也不改变 RAM 来源域成员资格；后续映射策略可用其中的能力信息验证目标属性是否可兑现，**`WP` 不得误解为页表写权限**。**`SP` 不是 no-map**：第一版把它排除出普通 PMM 是项目保守选择，不得由 `SP` 自动生成映射禁令。任何**档外位**仍按第 1 步拒绝启动。
+

@@ -12,6 +12,21 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百轮（最终裁剪并冻结：设备资源还回去、域裁剪与类型正交化、容量与签字清单同步）**
+
+- **评审人自己撤销了上一轮的越界项**：设备 `reg`／`ranges`、ACPI／PLIC／APIC 资源、`DeviceWindowPolicy`、设备覆盖审计、x86 APIC 映射属性、共享层 `HartSet` 命名、ELF 页写授权——他在接受「Minix3 语义 + 04 分工」后明确把这些从 I-29 的签字条件里撤回。本轮按撤销处理，不再逐项反驳。
+- **设备资源整段移交**：O-12c 的 98 行（`DeviceAperture`／四层覆盖／PLIC 6 MiB／2.25 MiB／x2APIC／AArch64 64 KiB 分组／QEMU profile）逐字进 `03` 七十节，正文只留两条与内存图有关的结论（`reg` 不推出映射；设备资源记录不得塞进以 `PhysicalRange` 为地址类型的内存来源记录）。`§1.6` 的三合同表与平台资源六行表也删掉，只留 5 行边界声明，设备发现指向 `04-platform-discovery.md`。
+- **O-02a 的映射计划公式移交专项册**：`BootstrapRootAuthorizationPlan`、`ObservedMappingAudit`、`EarlyExecutionClosure`、第二消费者与前置条件整段搬走；正文只留 I29-1 的交付清单与 `OrdinaryRamMappingAuthorizations = ∅` 这条第一版策略。
+- **§0 从十九行外部模型压到九个本项名字**：`HardwareAdmissionExcluded`／`RoleAdmit`／`AccessRequirementsEligible`／`AtomicCapabilityPermits`／`MemoryAdmissionContext` 等不再逐一展开公式，只留一句「下游专项，查专项册与 04」。
+- **域裁剪修正（他这一条成立）**：`PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAdmissionExcluded)`——硬件准入排除与存活对象范围都可能落在 RAM 来源域之外，贡献记录保留完整范围与归因，但参与基底分割的页集合必须先裁剪，否则「互补且只对页域成立」不是公式保证的性质。页粒度表那一行也改成「定义为 `RamSourcePageDomain \ PmmBaseAvailable`，每页为何在排除侧由贡献记录解释」。
+- **类型正交化（他这一条成立）**：`MemoryKind` 再拆成六个只回答一个问题的字段（`PhysicalBackingKind`／`UefiMemoryType`／`MemoryAcceptance`／`MemoryUsability`／`PolicySupport`／处置），处置词汇改成 `AvailableNow | ExcludedPermanently | RejectBoot`——`CONVENTIONAL` 是 `AvailableNow`，第一版不回收的 `BOOT_SERVICES_*` 与 `ACPI_RECLAIM` 是 `ExcludedPermanently`，`UNACCEPTED`／`PAL_CODE` 是 `RejectBoot`。这解决了原表「`Permanent` 与可分配相撞」的术语冲突。
+- **47 的上界按 `fn push` 的读数闭合（他的质疑成立，但结论是 47 站得住）**：`push` 只把长度向上取整到页并断言起点对齐，**既不做候选域交集、也不合并记录**；内核映像、根页、bump、每个模块各一条整段，池区间每个被触碰区间一条已用后缀（`MAX_BOOT_REGIONS = 32` 是聚合上限），合计 `3 + 32 + 12 = 47`。若将来改成按交集片段记账，就必须按片段数重推。另澄清 §2.4 的「不许放宽」指不得改成无界动态扩容，按上界提高固定值不属于放宽。
+- **签字清单补根页（他这一条成立）**：§7 第 4 项改成三枚测试（bump 候选、根页候选、实际分配页 vs 两者并集），并写明 UEFI 腿由 `assert_bootstrap_outside_memmap` 挡住、**自引导两腿的根页与页表 bump 按现有披露事实应视为已落入候选集合**（除非补出 `select_multi` 内部过滤证据）。
+- **§2.3 补 x86 设备窗口一句**：`kernel_identity_mmio_regions()` 在 x86 也返回两个 4 KiB 窗口（IO-APIC `0xFEC0_0000`、xAPIC `0xFEE0_0000`），落在低 4 GiB 恒等段内、所在 2 MiB 块整块打 `DEVICE`；叶子权限与属性核对属建表／设备专项，不在本项验收。
+- **§7.1 冻结规则**：内容冻结（三件事）、意见分诊（内部矛盾／与代码事实冲突／本项交付缺口）、停止条件（只在实现偏离合同、代码揭示遗漏、需求变化时重开）。并写明冻结后的下一步是代码三件事。
+- **读数**：1,188 → **1,064 行**、104,418 → **87,811 字符**（−16%）；围栏 26（偶）、表格 42 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0。无代码改动，沿用 minix-boot **146** / boot-shim **70**。
+
+
 **第九十九轮（排除模型闭合、MemoryKind 变枚举、扣减容量证到 47、启动分配页补授权链）**
 
 - **排除定义拆成两件产物**：第九十八轮只给了四大类并集，评审人指出裸并集只留成员关系、不留归因；且 MRB 没被单列、`UNACCEPTED`／`PAL_CODE` 的「拒绝启动」被写成一种页排除。现在：`ExclusionContribution { evidence_ref, reason, raw_range, page_projection, phase }`（`evidence_ref` 可以是 `SourceRef`／`ObjectRef`／`PolicyRuleRef`），静态保留类逐项列出 `FirmwarePrefix | ReservedOrdinary | ReservedReusable | ReservedNoMap | MrbEntry`；`PmmSourceExcludedPages = Union(page_projection)` 只保留页；`TypePolicyDecision = AcceptWithDisposition | ExcludeRange | RejectBoot`，只有 `ExcludeRange` 进集合，`UNACCEPTED` 与 `PAL_CODE` 属 `RejectBoot`——整个启动输入不被接受，不会产出一份看起来合法的候选集合。MRB 的分配排除与访问禁止仍是两份合同。

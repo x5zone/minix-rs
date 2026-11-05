@@ -5774,3 +5774,16 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - O-02a 残留（「第一式是本项交付物」）改为 BootRoot-2/3 交付物并限定为映射记录之差；两处重复标题/问句删除；§6 填完整 SHA `aece113f8…` 与两份 sha256。
 - 门：1188 行 / 104,418 字符（单封可送）、围栏 28 偶、表格 50 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
 - 认领：`I-29 qorder99`（基线 `d449606c5`），状态 ✅：第九十九轮已 ff 合并为 `a7d9ab4fa78f3b635d819844b9d0480ad5d08937`，认领已释放。评审身份与两份文件哈希写在 `03` 六十九节、正文 §6 同步；简报 1188 行 / 104,418 字符。
+
+
+### 第三百零七笔（01 阶段 · I-29 第一百轮：最终裁剪并冻结设计循环）
+
+- 评审人在接受「Minix3 语义 + 04 分工」后**自行撤销**上一轮越界项：设备 `reg`/`ranges`、ACPI/PLIC/APIC 资源、`DeviceWindowPolicy`、设备覆盖审计、x86 APIC 映射属性、共享层 `HartSet` 命名、ELF 页写授权。本轮按撤销处理，不逐项反驳。
+- 设备资源整段（O-12c 98 行）逐字进 `03` 七十节，正文只留两条与内存图有关的结论；§1.6 压成 5 行边界并指向 `04-platform-discovery.md`；O-02a 的 `BootstrapRootAuthorizationPlan`/`ObservedMappingAudit`/`EarlyExecutionClosure` 整段移交专项册；§0 从十九行外部模型压到九个本项名字。
+- 域裁剪修正：`PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAdmissionExcluded)`（硬件准入排除与存活对象范围可能落在 RAM 域外，贡献记录保留完整范围、参与分割的页集合必须先裁剪）。页粒度表相应改为「定义为 `RamSourcePageDomain \ PmmBaseAvailable`」。
+- 类型正交化：`MemoryKind` 拆成 `PhysicalBackingKind`/`UefiMemoryType`/`MemoryAcceptance`/`MemoryUsability`/`PolicySupport`/处置六个单问题字段；处置词汇 `AvailableNow | ExcludedPermanently | RejectBoot`，`CONVENTIONAL` 为 `AvailableNow`，第一版不回收的 BootServices 与 ACPI reclaim 为 `ExcludedPermanently`，`UNACCEPTED`/`PAL_CODE` 为 `RejectBoot`。
+- 47 上界按 `fn push` 读数闭合：push 只做页取整与起点对齐断言，既不与候选域求交也不合并 → 每条来源恰一条记录，池区间每条已用后缀一条，`3 + 32 + 12 = 47`；若改按交集片段记账需重推。§2.4「不许放宽」澄清为不得无界动态扩容。
+- §7 第 4 项补根页：三枚测试（bump 候选、根页候选、实际分配页 vs 两者并集）；UEFI 腿由 `assert_bootstrap_outside_memmap` 挡住，自引导两腿根页与页表 bump 按现有披露应视为已入候选。§2.3 补 x86 两个 4 KiB APIC 窗口落在恒等段内。
+- **§7.1 冻结规则**：内容冻结（物理内存图、启动对象占用、两跳交接）、意见分诊（内部矛盾／代码事实冲突／本项交付缺口）、停止条件（只在实现偏离合同、代码揭示遗漏、需求变化时重开）。冻结后的下一步是代码三件事。
+- 门：1,188 → **1,064 行** / 87,811 字符（−16%）、围栏 26 偶、表格 42 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
+- 认领：`I-29 qorder100`（基线 `a4943531b`），状态 🔄。
