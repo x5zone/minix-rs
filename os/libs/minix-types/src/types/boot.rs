@@ -74,7 +74,7 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 ///   With the x86 independent-image cut, the kernel executes from its
 ///   high-half image, so `kern_ident` now carries only the architecture
 ///   MMIO identity ranges (the link-in low windows retired).
-pub const VM_BOOT_HANDOFF_VERSION: u32 = 7;
+pub const VM_BOOT_HANDOFF_VERSION: u32 = 8;
 
 /// Maximum kernel identity-window entries the handoff page carries
 /// (version 6). The UEFI memory map's non-conventional RAM
@@ -91,9 +91,18 @@ pub const VM_BOOT_HANDOFF_MAX_REGIONS: usize = 64;
 
 /// Maximum LiveBootstrap deduction-record entries the handoff page carries.
 ///
-/// Upper bound of the record: kernel image + self root + boot bump region +
-/// per-pool-region used-frame suffixes (8) + reserved boot modules (11).
-pub const VM_BOOT_HANDOFF_MAX_DEDUCTED: usize = 32;
+/// Derived from the record's *sources*, not from one sampled boot:
+/// 3 fixed ranges (kernel image, self root page, boot bump region)
+/// + one used suffix per touched pool region (`MAX_BOOT_REGIONS = 32`,
+///   an aggregate cap on the allocator's region array)
+/// + one whole-blob range per reserved boot module (`NR_BOOT_MODULES = 12`,
+///   VM's own blob included).
+///
+/// `DeductionCollector::push` only page-rounds a source range — it never
+/// intersects with the candidate domain and never merges records — so one
+/// source yields exactly one entry. If the record ever changes to
+/// per-intersection fragments, this bound must be re-derived.
+pub const VM_BOOT_HANDOFF_MAX_DEDUCTED: usize = 47;
 
 /// Maximum reserved-module entries the handoff page carries.
 ///
@@ -767,7 +776,7 @@ mod tests {
         #[test]
         fn test_kernel_layout_v6_reports_identity_windows() {
             let mut h = handoff(VM_BOOT_HANDOFF_VERSION);
-            assert_eq!(VM_BOOT_HANDOFF_VERSION, 7);
+            assert_eq!(VM_BOOT_HANDOFF_VERSION, 8);
             h.kern_ident[0] = HandoffMemRegion { base: 0x1da0_0000, size: 0x40_0000 };
             h.kern_ident[1] = HandoffMemRegion { base: 0x1f00_0000, size: 0x1000 };
             h.kern_ident_count = 2;

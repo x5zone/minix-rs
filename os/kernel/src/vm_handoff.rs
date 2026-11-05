@@ -96,7 +96,7 @@ pub(crate) fn kern_text_pages(kernel_info: &KernelInfo) -> u64 {
 }
 
 /// Frame size of every `VmBootAllocator` page (C: I386_PAGE_SIZE).
-const PAGE_SIZE: u64 = 0x1000;
+pub(crate) const PAGE_SIZE: u64 = 0x1000;
 
 /// The A2 free list (physical memory still free after the first
 /// boot-image load), published by [`build_vm_handoff`] at the
@@ -164,6 +164,12 @@ pub struct Classification {
     pub deducted: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_DEDUCTED],
     pub deducted_count: usize,
 }
+
+const _: () = assert!(
+    VM_BOOT_HANDOFF_MAX_DEDUCTED
+        >= 3 + minix_arch::arch::frame::MAX_BOOT_REGIONS + crate::proc::NR_BOOT_MODULES,
+    "deduction capacity must cover kernel+root+bump, every pool region and every module"
+);
 
 /// Fixed-capacity collector for deduction ranges (fail-fast on overflow).
 struct DeductionCollector {
@@ -695,6 +701,28 @@ mod tests {
     /// Kernel image, root, bump, used frames and a reserved module are all
     /// cut out of one contiguous span; the record contains every source and
     /// the survivors are exactly the complement (interior cuts → 5 spans).
+    /// The capacity is derived (`3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES`):
+    /// a boot that reaches the bound must still be enumerable.
+    #[test]
+    fn test_deduction_capacity_accepts_full_bound() {
+        let mut c = DeductionCollector::new();
+        for i in 0..VM_BOOT_HANDOFF_MAX_DEDUCTED {
+            c.push(i as u64 * PAGE_SIZE, PAGE_SIZE);
+        }
+        assert_eq!(c.count, VM_BOOT_HANDOFF_MAX_DEDUCTED);
+    }
+
+    /// One entry past the bound is a fail-stop, not a truncation: a silently
+    /// dropped deduction would hand live bootstrap frames to the VM.
+    #[should_panic(expected = "deduction record overflow")]
+    #[test]
+    fn test_deduction_capacity_overflow_is_fail_stop() {
+        let mut c = DeductionCollector::new();
+        for i in 0..=VM_BOOT_HANDOFF_MAX_DEDUCTED {
+            c.push(i as u64 * PAGE_SIZE, PAGE_SIZE);
+        }
+    }
+
     #[test]
     fn test_classification_deducts_all_record_sources() {
         let memmap = [mem_region(0x10_0000, 0x3F0_0000)]; // [1M, 64M)

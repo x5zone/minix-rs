@@ -146,7 +146,7 @@ const PAGE_SIZE: u64 = PhysFrame::SIZE;
 /// firmware maps). Callers needing a different capacity use the const
 /// generic on [`VmBootRegions<N>`] / [`VmBootAllocator<N>`] and the
 /// const-generic variant of [`VmBootRegion::select_multi`].
-pub(crate) const MAX_BOOT_REGIONS: usize = 32;
+pub const MAX_BOOT_REGIONS: usize = 32;
 
 // =====================================================================
 // Errors

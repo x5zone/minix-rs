@@ -12,6 +12,14 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零一轮（冻结后第一个代码切片：扣减容量 32→47、首次分配排除补根页与 bump）**
+
+- **先落码，不再开设计轮**。按 §7.1 冻结规则，本轮只做已冻结合同对应的实现：`VM_BOOT_HANDOFF_MAX_DEDUCTED` 32 → **47**（`3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES`）、`VM_BOOT_HANDOFF_VERSION` 7 → 8、内核侧编译期断言把「容量 ≥ 来源上界」变成编译错误而不是运行期 panic；两枚边界测试 `test_deduction_capacity_accepts_full_bound`（恰好 47 条通过）与 `test_deduction_capacity_overflow_is_fail_stop`（第 48 条 fail-stop）。
+- **首次分配排除清单补齐**：新增 `vm_boot_exclusions`（内核映像、启动模块、交接根页、boot bump 区，容量 `NR_BOOT_MODULES + 3`），真实与 mock 两个分支共用。这正是 §2.8 时间线里「候选集合含 bump、首次分配早于任何扣减」那条缺口的修法：UEFI 两腿的根页与 bump 是 `LOADER_DATA`、本来就不在 memmap 里，切割是空操作；自引导两腿的 bump 从 memmap 切出，这条排除才真正起作用。单测 `test_vm_boot_exclusions_cover_kernel_root_and_bump` 钉住四类来源与缺省情形。
+- **测试门读数**：`minix-types` **331 通过**；`minix-kernel --features mock` **861 通过 / 0 失败 / 8 忽略**（新增三枚测试在册）；三架构 `cargo build -p minix-kernel --target … --no-default-features` 全部通过。**QEMU 腿未跑**：CI 镜像内没有 qemu、宿主没有 Rust 工具链，按「未验证」记录，不能写成通过。
+- **仍是登记项**：第二跳的字段偏移／尺寸／对齐断言与 magic/version 失败语义；`FirstVmAllocatedPages ∩ (BootBumpRange ∪ BootRootPage)` 结果断言；`FREE_MEMMAP` 去留；`lib.rs` 与 `vm_handoff.rs` 关于「VM 的 blob 是否进扣减」的注释矛盾。
+
+
 **第一百轮（最终裁剪并冻结：设备资源还回去、域裁剪与类型正交化、容量与签字清单同步）**
 
 - **评审人自己撤销了上一轮的越界项**：设备 `reg`／`ranges`、ACPI／PLIC／APIC 资源、`DeviceWindowPolicy`、设备覆盖审计、x86 APIC 映射属性、共享层 `HartSet` 命名、ELF 页写授权——他在接受「Minix3 语义 + 04 分工」后明确把这些从 I-29 的签字条件里撤回。本轮按撤销处理，不再逐项反驳。

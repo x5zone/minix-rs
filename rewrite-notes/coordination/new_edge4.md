@@ -5787,3 +5787,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - **§7.1 冻结规则**：内容冻结（物理内存图、启动对象占用、两跳交接）、意见分诊（内部矛盾／代码事实冲突／本项交付缺口）、停止条件（只在实现偏离合同、代码揭示遗漏、需求变化时重开）。冻结后的下一步是代码三件事。
 - 门：1,188 → **1,064 行** / 87,811 字符（−16%）、围栏 26 偶、表格 42 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0；无代码改动，沿用 **146** / **70**。
 - 认领：`I-29 qorder100`（基线 `a4943531b`），状态 ✅：第一百轮已 ff 合并为 `371bc06fca4f0fee0951cf98825d1772fe2e1fff`，认领已释放。**设计评审循环冻结**；评审身份与两份文件哈希在 `03` 七十节。下一步是代码：来源记录进 ABI、首次分配排除、扣减容量按 47 修正。
+
+
+### 第三百零八笔（01 阶段 · I-29 第一百零一轮：冻结后首个代码切片）
+
+- 容量按来源上界落码：`VM_BOOT_HANDOFF_MAX_DEDUCTED` 32 → **47**（3 固定 + 32 池区间 + 12 模块），`VM_BOOT_HANDOFF_VERSION` 7 → 8；内核侧新增编译期断言 `VM_BOOT_HANDOFF_MAX_DEDUCTED >= 3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES`，把「容量不够」从运行期 panic 变成编译错误。`MAX_BOOT_REGIONS` 由 `pub(crate)` 提为 `pub`（合同需要）。
+- 边界测试：`test_deduction_capacity_accepts_full_bound`（恰好 47 条通过）、`test_deduction_capacity_overflow_is_fail_stop`（第 48 条 fail-stop，`should_panic` 钉住报错文本）。
+- 首次分配排除补齐：新增 `vm_boot_exclusions(kern, modules, root, bump)`，容量 `NR_BOOT_MODULES + 3`；真实与 mock 分支共用。UEFI 两腿根页与 bump 为 `LOADER_DATA`、不在 memmap，切割是空操作；自引导两腿 bump 从 memmap 切出，此前会让 allocator 把仍被页表占用的页交给 VM。单测 `test_vm_boot_exclusions_cover_kernel_root_and_bump` 钉住内核／根页／bump 与缺省情形。
+- 测试门：`minix-types` 331 通过；`minix-kernel --features mock` **861 通过 / 0 失败 / 8 忽略**；三架构 `--no-default-features` 交叉构建通过。**QEMU 腿未跑**：CI 镜像内无 qemu、宿主无 Rust 工具链，按未验证记录（不写成通过）。
+- 文档同步：正文 §7 第 4／6 项、O-13b 与横幅改为「已落码」并保留剩余登记项；02/todo 同批更新。
+- 门（文档部分）：1,064 行、围栏偶、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅 PASS、零丢失 lost 0。
+- 认领：`I-29 qorder101`（基线 `9d64e21a3`），状态 🔄。

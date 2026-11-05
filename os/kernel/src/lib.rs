@@ -2319,13 +2319,56 @@ pub fn init_clock_and_interrupts() {
 /// C: boot image loop — main.c:157-282
 /// C: arch_boot_proc() — protect.c:388 (x86) / protect.c:115 (ARM)
 ///
+/// Occupied ranges the VM bootstrap allocator must never hand out.
+///
+/// The boot-shim memmap reports all conventional RAM as free, so every range
+/// still live at the first VM allocation has to be carved out here. Two of
+/// them are not part of the kernel image: the handoff root page (`arch_boot`
+/// allocated it separately) and the boot bump region (bootstrap page tables
+/// plus early allocations). On the UEFI legs both are `LOADER_DATA` and never
+/// appear in the memmap, so these cuts are no-ops there; on the self-boot legs
+/// the bump is carved *from* the memmap, which is exactly the case this list
+/// protects. The publish step (`build_vm_handoff`) runs later and only reads —
+/// it cannot protect the first allocation.
+const VM_BOOT_EXCLUSION_CAP: usize = crate::proc::NR_BOOT_MODULES + 3;
+
+fn vm_boot_exclusions(
+    kern_base: PhysBytes,
+    kern_len: usize,
+    modules: &[minix_boot::BootModule],
+    root: Option<PhysBytes>,
+    bump: Option<(u64, u64)>,
+) -> ([MemoryRegion; VM_BOOT_EXCLUSION_CAP], usize) {
+    let mut exclusions = [MemoryRegion {
+        base: PhysBytes(0),
+        len: 0,
+    }; VM_BOOT_EXCLUSION_CAP];
+    let mut n = 0usize;
+    push_exclusion(&mut exclusions, &mut n, kern_base, kern_len);
+    for m in modules {
+        push_exclusion(&mut exclusions, &mut n, m.start, m.len);
+    }
+    if let Some(root) = root {
+        push_exclusion(&mut exclusions, &mut n, root, crate::vm_handoff::PAGE_SIZE as usize);
+    }
+    if let Some((base, end)) = bump {
+        push_exclusion(
+            &mut exclusions,
+            &mut n,
+            PhysBytes(base),
+            end.saturating_sub(base) as usize,
+        );
+    }
+    (exclusions, n)
+}
+
 /// Collects one occupied physical range into a fixed-size exclusion
 /// array (boot is zero-heap — no `Vec`). The boot-shim memmap reports
 /// all conventional RAM as free *including* kernel-image and boot-module
 /// regions; `VmBootRegion::select_multi` needs them excluded so
 /// `VmBootRegion ∩ ReservedRegions = ∅` holds (see `frame.rs` module
 /// doc-comment, "Invariants enforced by construction").
-/// Callers pre-allocate `[MemoryRegion; NR_BOOT_MODULES + 1]`.
+/// Callers pre-allocate [`VM_BOOT_EXCLUSION_CAP`] entries.
 fn push_exclusion(
     exclusions: &mut [MemoryRegion],
     n: &mut usize,
@@ -2494,27 +2537,23 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 // regions — so the occupied ranges must be excluded here
                 // (invariant 1: `VmBootRegion ∩ ReservedRegions = ∅`).
                 // Collect occupied ranges: kernel image + every boot module
+                // + the handoff root page + the boot bump region (bootstrap
+                // page tables live there) — all four are live at the first
+                // VM allocation, which runs before any deduction is published.
                 // (fixed array — boot is zero-heap, no Vec).
-                let mut exclusions = [MemoryRegion {
-                    base: PhysBytes(0),
-                    len: 0,
-                }; crate::proc::NR_BOOT_MODULES + 1];
-                let mut n_excl = 0usize;
-                push_exclusion(
-                    &mut exclusions,
-                    &mut n_excl,
+                let (exclusions, n_excl) = vm_boot_exclusions(
                     kernel_info.kern_phys_base(),
                     kernel_info.kern_size() as usize,
+                    kernel_info.boot_modules(),
+                    current_root_phys(),
+                    crate::boot_alloc::boot_alloc_region(),
                 );
-                for m in kernel_info.boot_modules() {
-                    push_exclusion(&mut exclusions, &mut n_excl, m.start, m.len);
-                }
                 let regions = VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
                     .expect("init_proc_and_boot: VM bootstrap region selection failed")
                     .unwrap_or_else(|| {
                         panic!(
                             "init_proc_and_boot: no free memory for VM bootstrap region \
-                             (after excluding kernel + boot modules)"
+                             (after excluding kernel, boot modules, root page and bump)"
                         )
                     });
                 let mut vm_alloc = VmBootAllocator::new(regions);
@@ -2571,26 +2610,19 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 // Same exclusion set as the mock path: boot-shim memmap is
                 // unfiltered, so occupied ranges (kernel + modules) must be
                 // excluded (invariant 1: `VmBootRegion ∩ ReservedRegions = ∅`).
-                let mut exclusions = [MemoryRegion {
-                    base: PhysBytes(0),
-                    len: 0,
-                }; crate::proc::NR_BOOT_MODULES + 1];
-                let mut n_excl = 0usize;
-                push_exclusion(
-                    &mut exclusions,
-                    &mut n_excl,
+                let (exclusions, n_excl) = vm_boot_exclusions(
                     kernel_info.kern_phys_base(),
                     kernel_info.kern_size() as usize,
+                    kernel_info.boot_modules(),
+                    current_root_phys(),
+                    crate::boot_alloc::boot_alloc_region(),
                 );
-                for m in kernel_info.boot_modules() {
-                    push_exclusion(&mut exclusions, &mut n_excl, m.start, m.len);
-                }
                 let regions = VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
                     .expect("init_proc_and_boot: VM bootstrap region selection failed")
                     .unwrap_or_else(|| {
                         panic!(
                             "init_proc_and_boot: no free memory for VM bootstrap region \
-                             (after excluding kernel + boot modules)"
+                             (after excluding kernel, boot modules, root page and bump)"
                         )
                     });
                 let mut vm_alloc = VmBootAllocator::new(regions);
@@ -5122,6 +5154,31 @@ mod tests {
     use super::*;
     use minix_arch::paging::mock::MockPaging;
     use minix_arch::paging::Paging;
+
+    /// The first VM allocation runs before any deduction is published, so the
+    /// exclusion list is the only protection for the root page and the boot
+    /// bump region (bootstrap page tables live in the bump).
+    #[test]
+    fn test_vm_boot_exclusions_cover_kernel_root_and_bump() {
+        let (e, n) = vm_boot_exclusions(
+            PhysBytes(0x10_0000),
+            0x20_0000,
+            &[],
+            Some(PhysBytes(0x9000_0000)),
+            Some((0x8F00_0000, 0x8F20_0000)),
+        );
+        assert_eq!(n, 3);
+        assert_eq!((e[0].base.0, e[0].len), (0x10_0000, 0x20_0000));
+        assert_eq!(
+            (e[1].base.0, e[1].len),
+            (0x9000_0000, crate::vm_handoff::PAGE_SIZE as usize)
+        );
+        assert_eq!((e[2].base.0, e[2].len), (0x8F00_0000, 0x20_0000));
+
+        // Absent root/bump (mock and UEFI legs) contribute nothing.
+        let (_, n) = vm_boot_exclusions(PhysBytes(0x10_0000), 0x20_0000, &[], None, None);
+        assert_eq!(n, 1);
+    }
 
     /// Pin the bit semantics of the riscv lazy FPU ownership gating, so the
     /// old bug cannot recur — non-owner must be FS=Off(0b00<<13) (otherwise
