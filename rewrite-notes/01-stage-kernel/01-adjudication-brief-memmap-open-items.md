@@ -1,7 +1,7 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 01:57 CST（`date` 实测）；**内容轮次：第九十一轮评审后的修改**（体积收缩：已裁定条目的引文与穷举清单移交 `03`，正文只留结论与指针）。
-> **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03` 第五十四节（正文写「见 `03`」即指此处）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
+> **重写**：2026-11-06 02:07 CST（`date` 实测）；**内容轮次：第九十二轮评审后的修改**（复核侧内容归位：函数定位表与本机命令移交 `03`，正文只留评审人可判的条款）。
+> **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第六十三节（正文写「见 `03`」即指这些节）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
 > **怎么读**：§0 是现行模型的名字与它们之间的等式；§2 是代码**今天真实**保证的行为，每条都有测试名；§5 是**尚未裁定**的问题，其中出现的公式与方案一律是**候选**，不是合同。**不要把 §5 的任何一行当成实现依据。**
@@ -193,22 +193,9 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 `grep -rn "Deny" os/kernel/src os/arch/src`（排除测试）只命中权限语义；`grep -rln "fn audit" os/kernel/src os/arch/src` 为空。对象登记表、设备义务表、恒等 VA 检查、PMA/PMP 准入、固定布局 ABI 均无代码。
 
-### 2.7 关键代码位置（供复核 §2 的主张）
+### 2.7 复核方式：本节只留一条会影响重构决策的事实
 
-复核 §2 只需这几个位置：两张表由同一次采集产出（`os/libs/minix-boot/src/memmap_source.rs:fn collect`，`/reserved-memory` 的查找与可见性检查在同文件 `fn lookup_reserved_memory`）；UEFI 六步裁决在 `os/boot-shim/src/ebs_map.rs:fn adjudicate`，计数与提交在同文件 `fn classify` / `fn commit`；恒等映射循环与引导根构造入口在 `os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable`；Step 4 直接映射（追加）在 `os/kernel/src/dm_coverage.rs:fn establish_boot_dm`；配置表 DTB 的取得在 `os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources`。容器校验是 `os/libs/minix-boot/src/fdt_layout.rs:fn validate`。**行号会随代码漂移，一律以函数名为准**；带行号的定位表在 `03`。
-**FDT 容器校验的五个调用点**（`fdt_layout::validate` 在解析库之前执行）：
-
-| 调用点 | 输入来源 | 参与内存政策 | 校验结果用于解析 |
-|---|---|---|---|
-| `bootface()`（`kernel-image/src/bootface.rs`） | riscv 启动 ABI 递入的 DTB | 是 | 是 |
-| `bootface_a64()`（`kernel-image/src/bootface_a64.rs`） | aarch64 直启 DTB | 是 | 是 |
-| `RiscvUbootBootShim::prepare_boot`（`boot-shim/src/opensbi_helpers.rs`） | OpenSBI/U-Boot a1 | 是 | 是 |
-| `UefiBootShim::prepare_boot`（`uefi_helpers.rs` 的磁盘 DTB 分支） | ESP 上的 `dumpdtb.dtb` | **否**（只作覆盖对照诊断） | 是（只用于诊断读取） |
-| `load_dumpdtb_free`（`uefi_helpers.rs`） | 同上 | **否** | 是（只用于诊断读取） |
-
-最后两行是磁盘镜像 DTB：它**不进入内存政策**，校验只保护诊断读取路径；重构时不得把它接进政策链。
-
-复核方式：`os/libs/minix-boot/src/fdt_layout.rs` 的 `validate`（容器）与本节的函数和映射构造位置即可核对 §2 的每一条主张；`validate` 的五处实际调用点见本节表格。不需要整仓。
+§2 每条主张的代码位置已写在各自小节标题与正文里，**行号会随代码漂移，一律以函数名为准**；带行号的主张-位置对照表在 `03`。这里只保留一条不读代码就会做错的事实：容器校验 `fdt_layout::validate` 在解析库之前执行，今天共五处调用点——三条 DTB 政策入口（riscv `bootface()`、aarch64 直启 `bootface_a64()`、U-Boot `RiscvUbootBootShim::prepare_boot`）**参与内存政策**；另两处读取的是磁盘镜像里的 `dumpdtb.dtb`（`UefiBootShim::prepare_boot` 的磁盘 DTB 分支与 `load_dumpdtb_free`），它**不进入内存政策**，校验只保护诊断读取路径，**重构时不得把它接进政策链**。
 
 ## 3. 五条不变量
 
@@ -1609,16 +1596,7 @@ TypeAllocatablePages(p)       = FullPages(Union(ResolvedTypeEligibleRanges(p)))
 
 **下一轮最该补的证据**（可复核事实，不是新公式）：x86_64 OVMF 与 aarch64 AAVMF 的实际镜像身份、版本与哈希，并附该固件实际返回的代表性描述符及其 `Attribute` 原始值与项目接受的完整位解释表——要证明的是运行固件**实际用了哪套编码**，不是它自报符合哪个规范版本，两条腿的固件也不必同源；逐 `PlatformMemoryProfile` 的 QEMU 构建版本、machine version、accelerator、CPU 型号与 SMP 配置（设备窗口与 PLIC 公式目前仍是 profile 候选值）；`PreflightMap` 与首次 `FinalMap` 的缓冲容量策略及 `EFI_BUFFER_TOO_SMALL` 处理；四条 DTB 输入路径的启动 ABI 合同，特别是「复制完成前原 DTB 不被并发修改」的依据——O-11 的内容一致性条件目前是假设。
 
-**复核命令**（146 与 70 是该 HEAD、该工作树状态下的读数，§2.1、§2.2、本节三处数字必须一致；基线之后如有新提交必须重跑）：
-
-```
-git rev-parse HEAD
-git status --short
-cd os && cargo test -p minix-boot --lib
-cd os && cargo test -p boot-shim --lib
-```
-
-`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。
+**复核命令**（`git rev-parse HEAD`、`git status --short` 与两条 `cargo test -p <pkg> --lib`）及干净基线的期望输出在 `03`。146 与 70 是该基线、该工作树状态下的读数，§2.1、§2.2 与本节三处数字必须一致；基线之后如有新提交必须重跑。
 
 **测试通过不等于输入完整性**：146 与 70 条说明的是已覆盖的行为，不能证明所有 DTB 输入都被解析、所有原始访问点都被登记、每条启动路径都用了正确的权威来源——这几项各自需要独立的完整性论证（O-07、O-11、O-12）。
 ## 7. 签字状态

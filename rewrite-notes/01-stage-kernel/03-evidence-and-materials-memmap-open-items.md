@@ -1657,3 +1657,40 @@ PDF 低位组的 `0x100`–`0x800` 在本项目里落入已知位集合之外，
 - **Profile**：声明 RVA23S64 而 `Svade` 未实现 → 不合格，即使通用公式会落到硬件更新。
 - **空集前置**：`ctx.ParticipatingCpuSet = ∅`、`BaseAccessRequirements` 为空、`U = ∅`、任一 `req` 的 `LegalStarts` 为空、`RoleRequirementsComplete` 为假、或 `Executable` 的 `instruction_lengths` 未登记 → `InsufficientEvidence`，不得真空通过；但 `RoleSpecificRequirements(GeneralData) = ∅` 必须**不**触发失败（空集是定义），而把基底要求写成用途特有要求的写法必须失败。
 - **对象访问与映射**：对象物理准入通过但来源政策未授权（MRB / `no-map` / `EfiReservedMemoryType`）→ `ObjectPolicyAccessEligible` 失败；连续 VA 映射到两段不连续 PA 而 `expected_translation` 只登记一段 → 失败；VA 起点正确但区间中段落到别名或属性不兼容映射 → `ObjectMappedAccessEligible` 失败；叶子落在正向授权内但与某条 `DenyMapping` 相交 → `MappingAudit` 失败；`ranges` 缺失与非空分别落到各自错误。
+
+
+## 六十三、第九十二轮：自正文移入的 §2.7 定位表与 §6 复核命令
+
+> 移入理由与正文一致：外部评审人看不到仓库，因此「带路径的函数定位表」与「本机 cargo 命令」对他既不可执行也不可复现，属取证而非待审内容。正文 §2.7 保留的是唯一一条只看文字就会做错的重构约束（磁盘镜像 DTB 不进入内存政策），§6 保留的是 146/70 三个读数必须一致的对账要求。
+
+<!-- 自正文 §2.7 函数名定位段落与 FDT 五调用点表（正文只留重构约束那条事实） 移入 -->
+
+### 2.7 关键代码位置（供复核 §2 的主张）
+
+复核 §2 只需这几个位置：两张表由同一次采集产出（`os/libs/minix-boot/src/memmap_source.rs:fn collect`，`/reserved-memory` 的查找与可见性检查在同文件 `fn lookup_reserved_memory`）；UEFI 六步裁决在 `os/boot-shim/src/ebs_map.rs:fn adjudicate`，计数与提交在同文件 `fn classify` / `fn commit`；恒等映射循环与引导根构造入口在 `os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable`；Step 4 直接映射（追加）在 `os/kernel/src/dm_coverage.rs:fn establish_boot_dm`；配置表 DTB 的取得在 `os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources`。容器校验是 `os/libs/minix-boot/src/fdt_layout.rs:fn validate`。**行号会随代码漂移，一律以函数名为准**；带行号的定位表在 `03`。
+**FDT 容器校验的五个调用点**（`fdt_layout::validate` 在解析库之前执行）：
+
+| 调用点 | 输入来源 | 参与内存政策 | 校验结果用于解析 |
+|---|---|---|---|
+| `bootface()`（`kernel-image/src/bootface.rs`） | riscv 启动 ABI 递入的 DTB | 是 | 是 |
+| `bootface_a64()`（`kernel-image/src/bootface_a64.rs`） | aarch64 直启 DTB | 是 | 是 |
+| `RiscvUbootBootShim::prepare_boot`（`boot-shim/src/opensbi_helpers.rs`） | OpenSBI/U-Boot a1 | 是 | 是 |
+| `UefiBootShim::prepare_boot`（`uefi_helpers.rs` 的磁盘 DTB 分支） | ESP 上的 `dumpdtb.dtb` | **否**（只作覆盖对照诊断） | 是（只用于诊断读取） |
+| `load_dumpdtb_free`（`uefi_helpers.rs`） | 同上 | **否** | 是（只用于诊断读取） |
+
+最后两行是磁盘镜像 DTB：它**不进入内存政策**，校验只保护诊断读取路径；重构时不得把它接进政策链。
+
+复核方式：`os/libs/minix-boot/src/fdt_layout.rs` 的 `validate`（容器）与本节的函数和映射构造位置即可核对 §2 的每一条主张；`validate` 的五处实际调用点见本节表格。不需要整仓。
+
+<!-- 自正文 §6 复核命令代码块与 git status 期望输出 移入 -->
+
+**复核命令**（146 与 70 是该 HEAD、该工作树状态下的读数，§2.1、§2.2、本节三处数字必须一致；基线之后如有新提交必须重跑）：
+
+```
+git rev-parse HEAD
+git status --short
+cd os && cargo test -p minix-boot --lib
+cd os && cargo test -p boot-shim --lib
+```
+
+`git status --short` 的期望输出只有用户自有文件 `AI-chats/daily.todo.md` 一行；出现其它改动即说明测试不是在干净基线上跑的。
