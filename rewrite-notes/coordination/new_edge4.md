@@ -5713,4 +5713,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 其余五项全部落地：PLIC 6 MiB 授权 / 4 MiB 预期覆盖并否决 `AlignOut(RequiredAccess, LeafSize)` 代替平台证据；原子几何与证据移入 RISC-V adapter，共享结构删 `reservation_set_requirement`，进展成员改名 `EventualAtomicProgress`；`no-map` 受控使用写死 `ReservedForFuture / Reject`；新增 `RoleAdmissionDenial`。
 - 正文代码坐标纪律：本轮新增行号一律进 `03` 六十四节底账，正文只留符号锚点（评审人看不到仓库）。
 - 门：1673 行（余 27）、围栏 48（偶）、表格列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失 lost 0；无代码改动，沿用 minix-boot **146** / boot-shim **70**。
-- 认领：`I-29 qorder94`（基线 `ad72ecc70`），状态 🔄。
+- 认领：`I-29 qorder94`（基线 `ad72ecc70`），状态 ✅：第九十三轮已 ff 合并为 `2615db108`，认领已释放。送审正文现为 1673 行 / 133,366 字符，已越过单封容量，送审改用三封分段包（逐字拼回对账为真）。
