@@ -2556,3 +2556,14 @@ BootInputReadEligible(use, source_policy, platform_profile) =
 | `DocumentFileHash`（正文 sha256） | `9ecccee0c2118c748a4520c44cb65eea2df79a99ee32776a69a340db93e9b607` |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | `8062200785f89337fea2c9725406cd85cfaaf4c053220bee6e19235ccba2b4e7` |
 | 上一轮（第一百零一轮）合并提交 | `3683a34ca`，正文 `3eac16ae35…`、档案 `7cbfece6cd…` |
+
+### 评审身份（第一百零三轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | `14760c794aa93d0f04676200539fd7ddf8ca6c0e`（第一百零三轮合并提交，含代码） |
+| `CodeEvidenceCommit` | `14760c794aa93d0f04676200539fd7ddf8ca6c0e`（146/70/332/861 与两条交叉构建均在本提交上取得） |
+| `DocumentRevision` | 第一百零三轮 |
+| `DocumentFileHash`（正文 sha256） | `5165abb556ed1091556d83561e615817bca8f1fcb4b7feed861def8dbee45145` |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | `61d0d60b80f1a06f3d850ef70cadf2728950815799c6669a4097d8af2fa8d6cc` |
+| 上一轮（第一百零二轮）合并提交 | `29cee8cb3`，正文 `9ecccee0c2…`、档案 `8062200785…` |

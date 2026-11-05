@@ -5819,4 +5819,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 注释与实现对齐：`lib.rs` 的「VM blob 不进扣减记录」改为事实（每个模块 blob 都在记录里，VM-exclusion 只作用于 handoff 模块表）；`ebs_map.rs` 不再声称类型 11/12 的 `Attribute` 被记录。
 - 测试门：`minix-types` 332、`minix-kernel --features mock` 861 通过 / 0 失败 / 8 忽略、`minix-boot` 146、`boot-shim` 70；`kernel-image --target aarch64-unknown-none`、`boot-shim --target riscv64gc-unknown-none-elf` 构建通过。**QEMU 腿未跑**：镜像无 qemu、宿主无 Rust 工具链，按未验证记录。
 - 剩余核心：`SourceRecord` 跨第一跳载体。现有 arena 只剩 2,368 B，放不下 40 条记录，必须先裁决「独立有界载荷区」还是「`(MapSnapshotId, DescriptorIndex)` + 快照存活」，属 O-13a 的布局决定。
-- 认领：`I-29 qorder103`（基线 `8068dbd0d`），状态 🔄。
+- 认领：`I-29 qorder103`（基线 `8068dbd0d`），状态 ✅：第一百零三轮已 ff 合并为 `14760c794aa93d0f04676200539fd7ddf8ca6c0e`，认领已释放。下一步只剩一个布局裁决：`SourceRecord` 跨第一跳用独立有界载荷区还是 `(MapSnapshotId, DescriptorIndex)` 引用。
