@@ -5521,4 +5521,14 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 另：`PageRoleEligibility` 与 `ObjectAccessEligibility` 分离，跨页对象逐使用点判定；第一版只准入自然对齐访问（依据 `norm:pmp_misaligned_access_behavior` 的半写可见）；`a + width` 走 `u128`，起始 ≥ 2^64 − width 排除；`EfiReservedMemoryType` 首层改回 UEFI 字面「Not usable」；APIC 核对改逐逻辑处理器；RVA23 profile 义务改为本方直取（Svade 强制、Svadu 仅扩展选项），§2.1 字段名残留与 §7 状态同步。
 - 待实现：谓词全是候选合同，代码与负控为零；`LegalStarts` 合同切换失效、`ObjectAccessEligibility`、`SmepmpUnsupportedConfiguration`、`PmpEvidence.provider` 都还没有消费者。
 - 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint/表格/行数三门；主简报 1530 行、围栏 42（偶）、表格列数不一致 0 处。
-- 认领：`I-29 qorder75`（工作树 `.wt/i-29-qorder75`，基线 `e3a94068e`），状态 🔄，合并后释放。
+- 认领：`I-29 qorder75`（工作树 `.wt/i-29-qorder75`，基线 `e3a94068e`），状态 ✅：已 ff 合并为 `411356507`，认领 `I-29 qorder75` 已释放。
+
+### 第二百八十三笔（01 阶段 · I-29 第七十五轮：Footprint 顶端、取指跨页、对象 VA 路径、PMP 稳定性）
+
+- 评审人本轮把阻塞点定性为「边界谓词有漏洞」，限定四个优先项加 RVA23S64 并行，本轮按此落地。
+- P0：`Footprint` 顶端从 `a ≥ 2^64 − width` 改为只拒绝 `a + width > 2^64`——`a = 0xffff_ffff_ffff_fff8`、宽度 8 恰好覆盖最后 8 个物理字节，必须合格；与 `PhysicalRange.end_exclusive: u128` 是同一条边界合同。
+- P1 四项：① `PageTable` 需求拆五项，显式 PTE 写在两种 A/D 方案下都必需，隐式写与 `RsrvEventual` 只在 `HardwareManagedAd`；② 新增 `InstructionFetchPattern`/`FetchFootprints`——取指对齐 ≠ 宽度且会跨页（RISC-V `IALIGN=16`，`intro.adoc` 528–531 明写「borders a protection boundary」），页级用保守片段集、对象级按真实片段证明两页；③ `ObjectAccessEligibility` 拆 `ObjectPhysicalAccessEligible` 与 `ObjectMappedAccessEligible`，`pa_start` 必须来自独立输入，既有页表资格写实为五项合取；④ `PhysicalProtectionInventory`/`PlatformProtectionPermits` 进 `PhysicalAccessPermits`，`RLB` 进证据稳定性证明（`RLB=0` 也不够，无 `L` 条目仍可改）。
+- 另：MRB 表拆「原始字节相交」与「仅页级投影相交」两行，保守选择归为项目页级限制；profile 五档校验表把 `SvadeImplemented` 与 `PteUpdateScheme` 分开；`Za64rs` 预约集几何落 `ReservationSetRequirement`；`RoleRequirements`/`LegalStarts` 非空前置、`GeneralDataCompleteness`、`CacheBlockZero` 枚举一致；§2.1/O-11/§6 现状同步。
+- 待实现：以上全是候选合同，代码与负控为零；`PlatformProtectionPermits`、`VAResolution`、`FetchFootprints`、`GeneralDataCompleteness` 均无消费者。
+- 门：纯文档；沿用 minix-boot **146**、boot-shim **70**；lint error 0、表格 62 块列数不一致 0 处、主简报 1617 行、围栏 46（偶）。
+- 认领：`I-29 qorder76`（工作树 `.wt/i-29-qorder76`，基线 `411356507`），状态 🔄，合并后释放。

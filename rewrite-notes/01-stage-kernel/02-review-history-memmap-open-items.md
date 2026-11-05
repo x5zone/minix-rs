@@ -12,6 +12,22 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第七十五轮评审之后：Footprint 顶端、取指跨页、对象 VA 路径、PMP 稳定性）**
+
+- 评审人本轮判断「阻塞点已从模型没有表达力，转到边界谓词有漏洞」，并限定四个优先项加 RVA23S64 并行。本轮按该范围落地，未新增抽象层。
+- **P0 `Footprint` 顶端等号（成立，已改）**：`a ≥ 2^64 − width` 排除写错，等于把 `a = 0xffff_ffff_ffff_fff8`、宽度 8 这种恰好覆盖最后 8 个物理字节的合法访问也排掉。改为 `require width > 0 ∧ a < 2^64 ∧ a + width ≤ 2^64`，只有 `> 2^64` 越界；这与 `PhysicalRange.end_exclusive: u128` 是同一条边界合同。
+- **P1 页表显式 PTE 写（成立，已改）**：原写法 `{ (Explicit, Write) 若软件更新 PTE }` 会被读成「只有 Svade 方案才需要」。改为五项：隐式遍历读、显式读（若内核直接读 PTE）、**显式写（两种 A/D 方案都必需）**、隐式写（仅 `HardwareManagedAd`）、`RsrvEventual`（仅 `HardwareManagedAd`，经 `rsrv_eventual_required` 进 `PmaPermits`）。
+- **P1 取指跨页（成立，已改）**：原句「自然对齐且宽度 ≤ 页大小的访问不跨页」对取指不成立。RISC-V `IALIGN` 含 `C` 时为 16 位，32 位指令可从 2 字节对齐处开始；`intro.adoc` 还明确写「when such an instruction borders a protection boundary」。新增 `InstructionFetchPattern { instruction_lengths, architectural_start_alignment, access_fragments, page_boundary_behavior }` 与 `FetchFootprints`，并定两条规则：页级资格用保守片段集（页尾若干字节不能作指令起点，属容量损失），对象级资格按真实片段同时证明两页。
+- **P1 对象访问资格（成立，已改）**：`ObjectAccessEligibility` 原来只有物理准入。拆成 `ObjectPhysicalAccessEligible`（逐 hart 物理许可）与 `ObjectMappedAccessEligible`（`VAResolution`、权限、属性、别名、物理准入五合一）；`use.pa_start` 必须来自独立对象访问输入，不能先查 PTE 再当预期 PA；`ExistingPageTableObjectEligible` 明确为五项合取。
+- **P1 MRB 两种情形（成立，已改）**：原三方表把「原始字节相交」与「只有向外量化后同页」合成一行。拆成两行：前者确实触碰 MRB 字节、须具名授权；后者不属于 MRB 原始字节访问，若第一版仍要求授权，须标成**项目额外施加的页级启动读取限制**。
+- **P1 PMP 稳定性与保护清单（成立，已改）**：① 新增 `PhysicalProtectionInventory` 与 `PlatformProtectionPermits`，并把 `PhysicalAccessPermits = PmpPermits ∧ PmaPermits ∧ PlatformProtectionPermits` 用于**所有**状态，不再只对 `Absent` 要求「无其它保护结构」；② `RLB` 从「只登记」升级为稳定性证明的一部分——`RLB=1` 时锁定条目仍可改，`RLB=0` 也不够（无 `L` 条目仍可改），因此要证明**整份有效配置**在 `stability_until` 内不变，且 provider 必须给变更通知，任何配置变更递增 `evidence_generation`。
+- **P1 Profile 与有效方案分离（成立，已改）**：新增五档校验表（不声明 / RVA23S64 / +Svadu 未实现 / +Svadu 已实现 / 两者皆未实现 → 不合格），明确 `SvadeImplemented` 与 `PteUpdateScheme` 不能合并成一个布尔；`Za64rs` 的预约集几何（连续、自然对齐、≤64 字节）落到 `ReservationSetRequirement`，不再只靠 `RsrvEventual`。
+- **P2 空集与操作枚举（成立，已改）**：`RolePageEligible` 增加 `RoleRequirements ≠ ∅` 与每条 `req` 的 `LegalStarts ≠ ∅` 前置条件；`GeneralData` 宽度清单需 `GeneralDataCompleteness(ctx)`（编译目标 + 代码生成约束 + 已审计指令集合），证不出完整即 `InsufficientEvidence`；`CacheBlockZero` 进 `operation` 枚举并声明第一版不支持（`UnsupportedAccessOperation`），消除「权限表能处理、输入模型表示不了」的不一致。
+- **文档现状同步（成立，已改）**：§2.1 的 `/memory` 拒绝行改为「记录层接受 `2^64`、拒绝在投影层」；O-11 的「`PhysicalRange` 仍是待落类型」与三层表的「目标，未落」改为「DTB 腿已落、UEFI 腿未接」；§6 的 UEFI 证据等级上调为「评审人已独立取到原文并给出 Table 7.10 / §4.6.1.3」，本方 403 未复现，AArch64 Table 2.5/2.6 仍是缺口。
+- §7 新增三行（取指访问模型、对象访问资格、PMP 稳定性与保护清单）与一行（Profile 与有效方案），并把整页合格行的未闭合项写实。
+- 门：纯文档轮，无代码改动；沿用 minix-boot **146**、boot-shim **70**；主简报 1617 行、围栏 46（偶）、表格 62 块列数不一致 0 处、lint error 0。
+
+
 **本轮（第七十四轮评审之后：整页合格改全称谓词、PMP 权限位逐行钉原文、O-11 三方组合）**
 
 - 评审人本轮限定「只盯三个裁决，不再扩主题」，本轮按该范围落地，未新增抽象层。

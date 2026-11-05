@@ -1086,3 +1086,16 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 待核清单（不升级成规范引用） | 硬件 A/D 隐式写的 store-过-PMP 条款**无 norm 锚点**；`EfiReservedMemoryType` 的「Not usable」与 §4.6.1.3、§2.3.6 仍为评审人核对，本环境抓 uefi.org 返回 403；QEMU 构建版本 / machine version / 固件镜像哈希仍未记录；`PmpEvidence` 提供者与 `mseccfg` 读取路径未实现 |
 | 主简报 | 1530 行（上限 1700）；围栏 42（偶）；表格 60 块、列数不一致 0 处；lint error 0 |
 | 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
+
+## 四十六、第七十五轮：Footprint 顶端边界、取指跨页与 PMP 证据稳定性
+
+| 项 | 读数 |
+|---|---|
+| 本轮取证的源与版本 | `riscv/riscv-isa-manual@418bdc4990ae2d60a86f1e11e8d7795aa279da61`：`src/unpriv/intro.adoc`（IALIGN 与保护边界取指）；`src/priv/machine.adoc`（PMP 故障规范、Smepmp `RLB`/`MML`/`MMWP`）；`riscv/riscv-profiles` 的 `src/rva23-profile.adoc`（`Za64rs` 几何、RVA23S64 强制项，blob `4fce3ebf34393d7a52564dfab53b69730fab514d`） |
+| 命令 | `curl -sL .../src/unpriv/intro.adoc` 后 `grep -n "IALIGN\|protection boundary" intro.adoc`；`grep -n "Za64rs" rva23.adoc` |
+| 读到的行号（实测） | `intro.adoc` 452–460（「IALIGN is 32 in the base ISA … relax IALIGN to 16」）、528–531（「when such an instruction borders a protection boundary」，位于 NOTE 内、非编号条目）、537–539（指令按 16 位 parcel 存放）；`rva23.adoc` 97–98（「Reservation sets are contiguous, naturally aligned, and a maximum of 64 bytes」）；`machine.adoc` 2383–2398（`RLB` 可临时修改锁定规则） |
+| 主文档更动 | ① `Footprint` 改 `require width > 0 ∧ a < 2^64 ∧ a + width ≤ 2^64`，允许 `end == 2^64`；② `PageTable` 需求拆五项（显式写两种方案都必需）；③ 新增 `InstructionFetchPattern`/`FetchFootprints` 与页级/对象级两条取指规则；④ `ObjectAccessEligibility` 拆物理与映射两谓词，`pa_start` 须独立输入；⑤ MRB 表拆「原始字节相交」与「仅页级投影相交」；⑥ `PhysicalProtectionInventory`/`PlatformProtectionPermits` 进公式，`RLB` 进稳定性证明；⑦ profile 五档校验表与 `ReservationSetRequirement`；⑧ 空集前置条件、`GeneralDataCompleteness`、`CacheBlockZero`；⑨ §2.1/O-11/§6 现状同步；⑩ §7 增四行 |
+| 符号核查（主文档实测计数） | `PlatformProtectionPermits` 6、`PhysicalProtectionInventory` 2、`GeneralDataCompleteness` 2、`InstructionFetchPattern` 3、`FetchFootprints` 4、`ReservationSetRequirement` 3、`ObjectMappedAccessEligible` 3、`ObjectPhysicalAccessEligible` 4、`rsrv_eventual_required` 3、`PagesFullyInside` **0**、`RoleEligiblePages` **0** |
+| 待核清单（不升级成规范引用） | x86 变长指令可跨页（最长 15 字节）按架构事实使用，未取 Intel SDM 原文；UEFI Table 7.10 与 §4.6.1.3 由评审人独立取到，本方 uefi.org 仍 403；AArch64 Table 2.5/2.6 仍是评审人核对；`PmpEvidence` 的 provider 承诺与变更通知机制未实现 |
+| 主简报 | 1617 行（上限 1700）；围栏 46（偶）；表格 62 块、列数不一致 0 处；lint error 0 |
+| 门 | 无代码改动：minix-boot **146**、boot-shim **70**；QEMU 腿沿用 `f866b92c3` 之后的读数 |
