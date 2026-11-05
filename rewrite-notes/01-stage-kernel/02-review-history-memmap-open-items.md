@@ -12,6 +12,14 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零六轮（来源记录跨第一跳；删除只写不读的 FREE_MEMMAP）**
+
+- 来源记录不再停在采集器静态数组：v1 arena 新增来源分区（`WIRE_SOURCES_OFFSET = SEMANTIC_END`，40 条 × 48 B = 1,920 B，信封 168→176 B，`BOOT_HANDOFF_V1_VERSION` 1→2、精确比较），`KernelInfo` 新增 `memmap_sources`，`validate` 第 6 步在消费者边界重跑覆盖审计。
+- 三条 DTB 腿交付：两条直启腿直接赋值；U-Boot 腿经 `write_sources` 序列化、接收端 `decode_sources` 落进 `SOURCE_RECORD_STORE`。UEFI 腿仍为空并如实登记（逐描述符记录需 ≥256 条独立载体）。
+- 删除只写不读的 `FREE_MEMMAP`：Phase A.2 整段、Phase F 的 bootstrap 回收段、两处 VM 模块回收写入、`dtb_blob_len` 与 `MEM_MAP_ENTRY_ZERO`；删除前三处 doc 提及同改。
+- 自引导腿 arena 定论：两条直启腿没有 arena，载荷在内核 `.bss`，链接期 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)` 钉住“映像不超过交给 `KernelInfo` 的 `KERN_SIZE`”；U-Boot 腿 arena 的最后读取点是接收端解码，`decoded_payloads_survive_arena_poison` 为证。交接页归属由 `test_bootstrap_frames_are_recorded_per_region_not_per_frame` 钉住（2 帧与 8 帧记录条数相同、全部交付帧被覆盖）。
+- 读数：正文 975 行；`minix-boot` 150、`boot-shim` 70（+5 集成）、`minix-kernel --features mock` 863 / 0 失败 / 8 忽略；交叉构建与 QEMU 本轮未跑（环境缺 target std 与 qemu）。
+
 **第一百零五轮（把旧读数刷成当前实现）**
 
 - 评审人指出本轮标题与正文仍互相矛盾，核对后三处都成立：§2.5 的 aarch64 UEFI 行仍写 `collect()`（实际磁盘 `dumpdtb.dtb` 两处是诊断路径，配置表 DTB 只登记地址）；§2.8 的时间线与 bump 表仍写「排除只有内核 + 模块」；O-13 开头仍写 `VM_BOOT_HANDOFF_MAX_DEDUCTED = 32`。三处都改成当前实现。

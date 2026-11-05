@@ -2546,6 +2546,50 @@ BootInputReadEligible(use, source_policy, platform_profile) =
 
 逐个登记允许出现原始操作的函数，检查函数体内原始操作的数量与位置，新增原始操作必须显式更新审计合同。**两枚负控**：① 在已批准函数体内注入第二条原始操作；② 在**已有 `asm!` 块内**加入第二条 `in`/`out`——审计器必须看展开后的真实操作，不能只数宏调用次数。**判据**：该负控生效。**消费者**：CI 审计器。
 
+## 七十二、第一百零六轮：来源记录跨第一跳与 FREE_MEMMAP 清理的代码证据
+
+### 线上协议（wire v2）
+
+- 信封：`BootHandoffV1` 168 → **176 B**（新增 `sources_byte_len`，偏移 168），`ENVELOPE_CAP = 256` 不变；`BOOT_HANDOFF_V1_VERSION` 1 → **2**，`decode_envelope` 按精确相等比较（`HandoffV1ReadError::UnsupportedVersion`）。
+- 分区：`WIRE_SOURCES_OFFSET = SEMANTIC_END = 14016`，`WIRE_SOURCES_CAP = 40`，`WIRE_SOURCE_RECORD_SIZE = 48`，`WIRE_SOURCES_END = 15936`，`ARENA_CAP = 16384`（余 448 B）。编译期门：`size_of::<WireSourceRecord>() == 48`、`align_of == 8`、`WIRE_SOURCES_OFFSET % 8 == 0`、`WIRE_SOURCES_END <= ARENA_CAP`、`offset_of!(BootHandoffV1, sources_byte_len) == 168`。
+- 记录布局：`start u64 | end_lo u64 | end_hi u64 | id u16 | kind u8 | origin_tag u8 | a u16 | b u16 | cut u64 | reserved u64`。`end_hi ∈ {0,1}`；编码器恒写 0 的 `reserved` 非零即 `BadSourceRecord`；未知 `kind`/`origin_tag` 同判。写侧 `write_sources` 超容量返回 `TooManySourceRecords`，不截断。
+
+### 消费者边界
+
+- `KernelInfo.memmap_sources: &'static [SourceRecord]`；`KernelInfo::validate` 第 6 步（非空时）重跑 `audit_source_coverage(memmap, reserved_regions, memmap_sources)`，失败 `panic!("KernelInfo: source records do not cover the projected map: …")`；另有 `source_audit()` 返回 `Option<SourceAuditError>` 供诊断。
+- 三条 DTB 腿：`bootface.rs` / `bootface_a64.rs` 直接赋 `kernel_info.memmap_sources = sources`；`opensbi_helpers.rs` 的 `prepare_boot` 把记录放进 `BootPrepareResult.kernel_info`，`uboot_main` 调 `write_sources`，接收端 `arch_boot_resume_v1` 调 `decode_sources` 落进 `globals::SOURCE_RECORD_STORE`（40 × 56 B 的 `.bss` 落地垫，已进 `BklProtected` 白名单）。
+- UEFI 腿仍为空：`memmap_sources: &[]`，`validate` 跳过该步。
+
+### 测试读数（本提交，docker `minix-ci:1.94`，`-j 1`）
+
+```
+$ cargo test -p minix-boot             → 150 passed; 0 failed
+$ cargo test -p boot-shim              → 70 passed; 5 passed（集成）; 0 failed
+$ cargo test -p minix-kernel --features mock → 863 passed; 0 failed; 8 ignored
+```
+
+新增用例：`decoded_payloads_survive_arena_poison`、`round_trip_sources`、`rejects_sources_over_capacity`、`rejects_source_record_with_nonzero_reserved_word`、`test_validate_accepts_covering_source_records`、`test_validate_rejects_span_without_source_record`、`test_bootstrap_frames_are_recorded_per_region_not_per_frame`。
+
+### 链接期 `KERN_SIZE` 断言（rust-lld 双例实测）
+
+两个自引导脚本（`os/kernel-image/riscv64.ld`、`aarch64.ld`）尾部：
+
+```
+ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
+       "kernel-image memsz exceeds KERN_SIZE (0x400000) — update KERN_SIZE in src/bootface.rs / bootface_a64.rs")
+```
+
+用 `rust-lld -flavor gnu -T` 对同一脚本做两例（`.bss` 1 KiB 与 5 MiB）实测：小镜像 `SMALL_LINK=0`；大镜像输出 `rust-lld: error: kernel-image memsz exceeds KERN_SIZE (0x400000) - update KERN_SIZE`。第一版表达式误用 `KERNEL_PHYS_BASE`（VMA 减 PA 溢出）被该实测当场抓出，改为 VMA 基准。
+
+### `FREE_MEMMAP` 删除的读数
+
+删除前 `grep -rn "FREE_MEMMAP" --include=*.rs os/` 的全部命中：`globals.rs` 定义一处、`lib.rs` 五个写点（Phase A.2 初始化/模块切分、Phase F、两处 VM 模块回收）、四条文内提及。**零读取点**。删除后同 grep 仅余文档性提及（已同步改写为真实消费者）。
+
+### 明确未验证
+
+- `kernel-image`（aarch64/riscv64）与 `boot-shim`（riscv64）交叉构建：本机 CI 镜像只安装 `x86_64-unknown-linux-gnu` target，`cargo build --target …` 报 `E0463`（找不到 `core`）；本轮改动只在 faces 中新增两处字段赋值与一处 `mut`，类型核对依赖 `build_kernel_info` 的宿主编译与字段声明。
+- QEMU 腿：镜像无 qemu，未运行。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2567,3 +2611,14 @@ BootInputReadEligible(use, source_policy, platform_profile) =
 | `DocumentFileHash`（正文 sha256） | `5165abb556ed1091556d83561e615817bca8f1fcb4b7feed861def8dbee45145` |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | `61d0d60b80f1a06f3d850ef70cadf2728950815799c6669a4097d8af2fa8d6cc` |
 | 上一轮（第一百零二轮）合并提交 | `29cee8cb3`，正文 `9ecccee0c2…`、档案 `8062200785…` |
+
+### 评审身份（第一百零六轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百一十三笔登记（代码提交 `6c2a26abb`、清理提交 `c3208001e` 为其父链） |
+| `CodeEvidenceCommit` | `6c2a26abb`（150/70/863 与 rust-lld 双例均在此提交取得） |
+| `DocumentRevision` | 第一百零六轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百零五轮）合并提交 | `7e37ef58c` |
