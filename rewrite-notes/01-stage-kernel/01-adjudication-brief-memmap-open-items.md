@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 01:07 CST（`date` 实测）；**内容轮次：第八十六轮评审后的修改**（甲案依赖链修正、§0 摘要同步、运行依赖核实；代码切片在 `wip/i-29-identity-plan` 未合并）。
+> **重写**：2026-11-06 01:17 CST（`date` 实测）；**内容轮次：第八十七轮评审后的修改**（运行依赖更正：页表页分配与叶子粒度；arena 登记字段表）。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03` 第五十四节（正文写「见 `03`」即指此处）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -171,7 +171,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **由此产生的不是「缺审计」，而是现状与目标合同的直接冲突**。低 4 GiB 内凡属下列范围的物理地址，今天**都已经有映射叶子**：`no-map` 声明的区间、MRB 区间、`EfiReservedMemoryType`、`UNUSABLE`。而目标合同要求 `no-map` 产生 `DenyStandardSystemMapping`、要求 MRB 若经页表兑现则相交页不得出现在普通映射中、要求 `EfiReservedMemoryType` 与 `UNUSABLE` 的 `DenyOsUse` 派生禁止映射——**这些政策今天一项都没有参与恒等映射循环的裁决**。因此本文不写「不在可用表推不出不会被映射」这种弱形式，而写明确结论：**当前低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策；任何此类范围落在该区间内都会被恒等映射覆盖，且第一版目标合同尚未兑现——在完成映射裁决之前，不得声称当前引导根满足这些禁止语义。**
 
-**同一棵根上的第二个建表点也必须一起收**：Step 4 的 `establish_boot_dm` 候选来自 `kernel_info.memmap()`（文档逐字写着 **not filtered**：每条 conventional RAM 都算候选，含内核映像与启动模块占用的部分）加上自举页表树与 bump 区。只修恒等循环而不管 Step 4，边界会在追加直接映射时被绕过。**同时本轮核实：建根与 Step 4 都不新建页表页**——`map_huge` 不分配中间表，`boot_alloc::boot_pt_alloc` 在非测试代码里零调用者，页表由 shim 预建、内核只填既有表项。该冲突与实施合同的裁决全文见 O-02a（甲案：授权驱动建表，四段依赖链）。
+**同一棵根上的第二个建表点也必须一起收**：Step 4 的 `establish_boot_dm` 候选来自 `kernel_info.memmap()`（文档逐字写着 **not filtered**：每条 conventional RAM 都算候选，含内核映像与启动模块占用的部分）加上自举页表树与 bump 区。只修恒等循环而不管 Step 4，边界会在追加直接映射时被绕过。**本轮另更正一条**：恒等段的 2 MiB 设备叶子会在缺少中间表时经 `pt_alloc::alloc_pt_page()` 消耗普通 RAM 里的页表页，而把已有 1 GiB 叶子改细则返回 `AlreadyMapped`（今天被 `let _ =` 吞掉）——「建根期间不新建页表页」的说法不成立，第一阶段因此必须先定叶子粒度计划与表页容量，见 O-02a。该冲突与实施合同的裁决全文见 O-02a（甲案：授权驱动建表，四段依赖链）。
 
 ### 2.4 交接与消费
 
@@ -307,11 +307,25 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 **第一阶段的边界（可交付形态）**：`BootstrapRootPlan = 必需对象的显式授权 − BootstrapRootDenyProjection − 逐叶权限/属性/共享性检查`。**普通 RAM 授权集合在这一阶段可以为空**——一段内存仅因为出现在 `/memory` 或 `CONVENTIONAL` 描述符里，不得自动进入授权集合；但**也不能继续让它走旧宽映射**。若某个必需对象与禁止项冲突就拒绝启动；可选映射失败只在政策明确允许省略时继续；不得为了让启动通过而回头映射它所在的整个内存区间。某种负向输入没有接入时，必须**明确拒绝该启动形态**，而不是假定没有这种政策。
 **第二消费者不能漏**：§2.3 已写明 Step 4 的 `establish_boot_dm` 在同一棵根上追加直接映射。如果它继续从 `conventional` 或其它候选表生成叶子，第一步建立的边界会在 Step 4 被绕过——所以第一阶段必须同时保证恒等循环不再越权、`establish_boot_dm` 不再引入未授权或命中禁止项的叶子，并对 Step 4 之后的同一棵根做实际叶子审计。
 **前置条件：根激活瞬间的执行闭包必须被映射覆盖**——这与 O-12j 的 `EarlyExecutionClosure` 是同一个问题，不另造概念：当前执行代码、继续执行所需的只读数据依赖、必须访问的可写状态、当前栈、以及切换之后仍要使用的页表与启动对象。**只映射当前指令所在页不够**：实证就在本仓库——预扫逻辑的代码页都在已映射范围内，但 `switch` 被编译成 `.rodata` 跳转表 + `jr` 绝对地址，照样触发 instruction access fault（见 O-12j 跳转表段）。编译器生成的跳转表、静态数据与调用路径依赖都属于该闭包。
-**落码前必须核实的运行依赖，本轮已核实**（结论：第一阶段的依赖**不需要**延伸到 O-12i 的页表用途准入，但代价是必需对象必须枚举完整）：
+**运行依赖：本轮更正一次核实错误，并给出改正后的事实**。此前一版写道「`map_huge` 不分配中间表页、`boot_alloc::boot_pt_alloc` 在非测试代码里零调用者，因此页表用途准入不是本阶段前置」——**该结论不成立**，错因是复核时 grep 了 `boot_pt_alloc` 这个名字，而真实的分配路径叫 `pt_alloc::alloc_pt_page`（与我当时检查的是两个不同函数）。逐字重读后的事实：
 
-- **建根与 Step 4 期间不新建页表页**：`map_huge`（`os/arch/src/{riscv64,x86_64,arm64}/paging.rs`）只做支持性、对齐、范围与地址上界检查后写叶子，不分配中间表；`boot_alloc::boot_pt_alloc` 在**非测试代码里零调用者**（`grep -rn "boot_pt_alloc(" os --include=*.rs` 只命中 `init_boot_pt_alloc`/`resume_boot_pt_alloc` 与 `os/kernel/tests/set_addr_space_no_boot_alloc_pin.rs`）。自举页表由 boot shim 预先建好，内核只填既有表项。
-- **因此页表 backing 不是本阶段前置**：正在被使用的页表页全部落在「根页 + bump 区」这两个已知物理范围内，可作为启动对象逐项登记，而不需要把登记对象冒充成 `PageTableBackingEligible` 的证明。运行时（VM/缺页路径）新分配的页表页仍要走那份准入，那是另一阶段。
-- **但必需对象的枚举必须完整，否则第一步就挂**：根激活后内核立刻写一块由 shim 分配、位于 `boot_dm_admissible_end` 之下的四页 `LOADER_DATA` arena（`os/kernel/src/lib.rs`，注释逐字说明「the root just enabled maps that physical range identity and writable」）。它是**普通 RAM 上的活对象**，必须逐对象登记；只按「必需叶子」四个字列符号会漏掉它。
+- **缺中间表时 `map_huge` 会分配页表页**：`os/arch/src/riscv64/paging.rs` 在 2 MiB 分支上，若 L2 项不是有效表指针就调用 `crate::pt_alloc::alloc_pt_page()` 新建 L1 表页（同文件另有四处相同调用，含根页与 1 MiB 级安装路径）。`alloc_pt_page` 是注册制函数指针（`os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page`），引导期注册的提供方就是 bump 分配器（`os/kernel/src/boot_alloc.rs` 的注释逐字写着「Called by Paging implementations via `pt_alloc::alloc_pt_page()`」）。**所以恒等段的 2 MiB 设备叶子本来就在消耗普通 RAM 里的页表页**，「不新建页表页」是错的。
+- **把已有大叶子改细会被拒绝**：L2 项已是 1 GiB 叶子时，同处直接返回 `PageTableError::AlreadyMapped`，注释说明理由是「降级会静默破坏既有的 1 GB 映射」。今天这个错误被恒等循环的 `let _ =` 吞掉——**因此「先建宽叶子、之后按对象授权改细」这条路在当前实现里根本不成立**，这正是评审人担心的粒度问题，且比它更硬。
+- **对第一阶段的意义**：依赖没有消失，而是换了位置。它不需要通用的 `PageTableAllocationEligible`（那仍是运行时新分配路径的合同），但**必须**在写第一个叶子之前定下两件事：① **叶子粒度计划**——哪些地址按多大粒度映射，且任何改细都不得依赖降级；② **中间表页容量**——计划需要多少张新表页、bump 区是否够、不够时明确拒绝启动而不是 `AlreadyMapped` 被吞。
+
+**四页交接 arena 是本阶段最关键的对象，登记字段如下**（它的物理上属于普通 RAM，但授权对象是这个有身份、有范围、有使用者与生命周期的具体对象，不是它所在的整段 RAM——通用 RAM 授权集合为空时，对象级授权的并集仍可非空）：
+
+| 字段 | 今天已核实的事实（代码位置） | 第一阶段还缺什么 |
+|---|---|---|
+| 身份 | 交接 v1 的 arena，容量常量 `minix_boot::ARENA_CAP = 4 * 4096`（`os/libs/minix-boot/src/handoff_v1.rs`） | 还没有 `ObjectId`，只有裸物理地址常数 |
+| 物理范围 | 由 `alloc_arena()` 现分配恰好 `ARENA_CAP` 字节的 `LOADER_DATA`，且被约束在恒等界以下（`os/boot-shim/src/uefi_helpers.rs`），以 `x0`/`rbx` 递进内核 | 范围只在寄存器里传递，未进入任何来源记录 |
+| 来源 | UEFI `EfiLoaderData` 类型分配（`ebs_map.rs` 的类型表把 `LOADER_DATA` 判为 `ReservedMapped`） | 没有对应的 `SourceRecord`，x86/aarch64 UEFI 腿记录本就未产出（O-12g） |
+| 存活期 | 内核在根激活后立即 `patch_runtime_fields_in` 写入，之后 `arch_boot_resume_v1` 再读取 | 没有「最后一次使用」的登记，也没有释放点 |
+| 访问需求 | 写者=内核 patch 阶段；读后续消费者=`arch_boot_resume_v1` | 未按使用点登记，无法证明范围与路径 |
+| 映射要求 | 今天靠恒等段的 1 GiB 宽叶子顺带覆盖，权限 RW+X | 需要 `VA = PA`、要 `W`、无执行需求时应 `NX`；16 KiB 对象却吃 1 GiB 叶子正是粒度问题 |
+| 负向检查 | 无任何禁止项参与（§2.3） | 必须过 `BootstrapRootDenyProjection` |
+
+**因此第一阶段的启动形态**是：`KernelImageAuthorizations ∪ EarlyExecutionClosure ∪ LiveStartupObjectAuthorizations ∪ ExplicitDeviceWindowAuthorizations`，再减去禁止投影与不兼容覆盖；其余普通 RAM 不建通用直接映射，`establish_boot_dm` 也只能追加上述已授权范围。若某个启动对象在该边界之前就要用到一块任意普通 RAM，就必须把它逐对象登记进来或调整执行顺序，不得让旧宽映射代替授权。
 **建表失败必须分档处理**，不得再用「忽略错误」把「没有建立完整授权覆盖」延迟成之后的不可预测缺页：① 必需叶子（执行闭包、内核映像、启动对象、页表）映射失败 → **拒绝启动**；② 可选映射未建立 → 只有政策明确允许不建立时才继续；③ 其余一律拒绝。代码里已有正确先例：同一个函数中，高半内核映射用的是 `.expect("kernel map: map_huge failed — kernel image mismatch")`，而恒等循环用的是 `let _ =`（`map_huge` 返回 `Result<(), PageTableError>`，错误类型有 `InvalidAddress`/`AlreadyMapped`/`AllocationFailed`/`NotSupported` 等）。**甲案把循环输入换成已裁决的授权集合之后，「地址没有物理内存支撑」这一类可容忍失败的理由随之消失**，因此忽略错误的写法失去依据。
 **判据**：每个实际叶子都能反查到一个授权来源（四类之一），且叶子覆盖的**每一页**都通过来源、权限、内存属性、共享性与禁止项检查——大页覆盖「有授权 + 空洞 + `no-map`」时不能只看起始页，必须拆分叶子或拒绝。授权记录至少含：PA 范围、VA 范围、用途、R/W/X、内存属性、共享性、树与阶段。
 **x86 的叶子属性判据**：`EffectiveMemoryType = Resolve(PAT_Entry, MTRR_Type(physical_range))`，不是简单二元运算；大页覆盖 MTRR 类型不同的区间时不能按起始地址判定，必须拆分或拒绝。**所有逻辑处理器的 `IA32_PAT` 必须一致**（或逐核读回验证），不能只查 `CR0.CD/NW`；同一物理页的多个 VA 别名不得产生不兼容的有效内存类型。
@@ -397,23 +411,16 @@ NoMapControlledAccessEligible(use, device_id) =
 | 架构 adapter 列出的受控元数据字段（`MutableMappingMetadata { field, update_agent, permitted_transition, synchronization_contract }`） | 按 `update_agent` 允许特定变化；RISC-V 的 A/D 随 `PteUpdateScheme` 取 `Hardware` 或 `FaultHandler`，AArch64/x86 由各自 adapter 定义；审计必须说明如何屏蔽或验证 |
 
 **冻结对象是 `FrozenBootMappingSet`，不是整棵页表**：T1/T2 审计过的是启动政策映射集合，该集合内的映射定义不得被未授权修改；其它页表区域（未来的 VM、动态映射、进程地址空间）经受控更新接口变化——准备修改 → 校验政策 → 发布 → 架构同步——这不违反冻结。**不接受的表述**：「启动后页表永久不可改」。
-
 **候选 B**：不冻结，每次修改后重跑对应审计——可作为后续动态页表阶段的机制，不能替代切根前审计。
-
 **无论 A/B，后续页表修改必须「先审后用」**：在未激活的副本上修改并审计后再发布，或经受控更新接口在映射对硬件可见之前完成验证；A/D 位的屏蔽必须逐字段定义，不能笼统忽略一组 PTE 位。
-
 **政策审计与硬件同步是两份独立合同**：审计通过不等于新映射已在所有执行单元生效。架构层必须负责 PTE 写入的发布顺序、相应地址空间的 TLB 失效、以及多核之间的同步失效（shootdown）；共享层只表达「新映射必须在所有相关执行单元生效」这个语义，不出现 `INVLPG`/`SFENCE.VMA`/`TLBI` 之类机制。
-
 **判据**：每个时点能列出「必须已完成的审计」与「允许的硬件更新」。
-
 **第一个消费者**：根切换代码（今天只有一次根建立，没有切换）。
 
 ### O-06 `OrdinaryRamMappingEligibility` 的阶段化定义
 
 **问题**：UEFI 分支不能拿来源域当 backing——它含类型排除、诊断成员与设备类描述符。
-
 **失败形态**：一条 `RESERVED` 描述符被当作「完整 RAM 支撑」，某段保留声明因此通过 backing 检查并被映射成普通内存。
-
 **候选 A（已裁定，待实现）**：每个来源记录回答三个问题——是否具备普通主存属性、当前阶段是否允许普通映射、当前阶段是否允许 PMM 分配。逐类型至少：
 
 | 类型 | 属 `RamSourceDomain` | 普通主存性质 | 当前可映射 | 当前可分配 | 释放事件 | 来源叠加 |
@@ -434,7 +441,6 @@ NoMapControlledAccessEligible(use, device_id) =
 | `UNACCEPTED` | 是（尚未接受） | 否 | 否 | 否 | 接受前不得当作普通可用内存 | — |
 
 **资格是分层的，不是三个布尔值**：`RamSourceDomain`（权威来源是否声明这是物理主存）、`MemoryKind`（普通易失 / 持久 / NVS / 未接受 / 不可用）、`OrdinaryRamMappingEligibility(tree, phase)`、`PmmEligibility(phase)`、`AccessRequirement/AccessAuthorization` 各自回答不同问题，不能互相推导——普通 RAM 可能因 `no-map` 禁止普通映射；设备 MMIO 不是普通 RAM 却有设备访问授权；普通 RAM 可能因 MRB 禁止访问；保留对象可能允许特定对象读却不许 PMM 分配。表头「普通主存性质」只描述 `MemoryKind`，不是「能否使用」的总结论。
-
 **「来源叠加」不是无条件成立（兼容矩阵）**：DTSpec 要求静态 `/reserved-memory` 出现在 UEFI 内存图里——`no-map` 对应 `EfiReservedMemoryType`，其它静态保留对应 `EfiBootServicesData`。所以表里「按兼容矩阵裁决」指的就是下面三种组合：
 
 | UEFI 描述符 | 与之重叠的 DTB 静态保留声明 | 结果 |
@@ -456,22 +462,16 @@ NoMapControlledAccessEligible(use, device_id) =
 | `PERSISTENT` | 非易失物理内存，有 backing | 不接入普通 volatile PMM 与直接映射，保留来源记录 |
 
 **属性位：语义三类 + 当前处置**（不能只写「未知位拒绝」）。语义分三类：缓存能力（`WB`/`WT`/`WC`/`UC`/`UCE`）；物理保护能力（`WP`/`RP`/`XP`/`RO`）——`WP` 归此类：规范先称它 physical memory protection attribute，再说明它通常被用作 write-protected cacheability policy，所以它有特殊缓存语义，但既不是页表写权限，也不能与 `RO` 混为一谈；其它特征（`MORE_RELIABLE`、`CPU_CRYPTO`、`SP`、`NV`、`RUNTIME`）。当前处置：模型保留 `RUNTIME`/`NV`/`SP` 三种独立属性语义，但**分类器实际可达的只有 `RUNTIME`**——`NV` 属无条件冲突拒绝域，`SP` 的低位编码属冲突拒绝域、高位编码在 profile 未钉住时被 `ProfileAttribute` 拒绝，二者都不进入输出表；`PERSISTENT` 是独立的 UEFI 内存类型，不等于 `NV` 属性位，不能用它的测试证明 `NV` 分支可达。`RO`/`RP`/`XP`/`WP`/`CPU_CRYPTO` 是 **capability 能力位**（`MORE_RELIABLE` 因 `0x1_0000` 的官方文本歧义已改为 fail-closed），第一版只作来源元数据——**不直接等同于当前已生效的访问权限**，也不改变 RAM 来源域成员资格；后续映射策略可用其中的能力信息验证目标属性是否可兑现，**`WP` 不得误解为页表写权限**。**`SP` 不是 no-map**：第一版把它排除出普通 PMM 是项目保守选择，不得由 `SP` 自动生成映射禁令。任何**档外位**仍按第 1 步拒绝启动。
-
 **`CONVENTIONAL` 是有条件的**：它可以构成 `RamSourceDomain` 与普通主存性质，但 `OrdinaryRamMappingEligibility`（类型层面）**不隐含缓存属性检查**；最终普通映射 = 类型资格 ∧ 缓存属性资格（第一版要求 WB），最终 PMM 分配 = 阶段资格 ∧ 缓存资格 ∧ 全部排除项。无 WB 的描述符不进入普通可分配集合，但**保留其来源身份**。
-
 **术语边界**：这里读的是 `GetMemoryMap()` 的 `EFI_MEMORY_DESCRIPTOR.Attribute`（能力位掩码），与 `EFI Memory Attributes Table` 反映的保护配置不是一回事；第一版不解析后者，也不宣称已获知固件实际施加的全部权限。
-
 **`EfiReservedMemoryType` 在域外但来源身份仍有效**：它不进入 `RamSourceDomain`，因此不参与 `PmmBaseAvailable`/`PmmBaseExcluded` 的域内分割；但与其重叠的 DTB `/reserved-memory`、MRB 原始记录仍然保留，并可独立产生映射禁止与访问禁止。没有独立平台证据时，不把它重新解释为普通主存。
-
 **UEFI Runtime Services 的支持边界（明确声明）**：第一版**不调用 `SetVirtualAddressMap()`、不提供 UEFI Runtime Services**；`RUNTIME` 属性与 `RUNTIME_SERVICES_*` 类型只保留诊断与来源信息，不产生任何普通或运行时映射义务。将来支持时，必须**单独增加**运行时对象与 MMIO 映射义务，不得混入普通直接映射授权。
-
 **`EFI_MEMORY_HOT_PLUGGABLE` 与语义歧义位（两个不同的位）**：
 
 - **冲突位域整体 fail-closed（已实现）**：`0x1000..=0x1_0000` 在两套官方编码里含义不同（见下方矩阵），任一读法都可能把必须排除的内存伪装成元数据——`0x4000` 在一套里是 `SP`（必须排除出 PMM）、另一套里是 `XP`（仅保护能力元数据）；`0x8000` 是 `CPU_CRYPTO` vs `NV`；`0x1000` 是 `MORE_RELIABLE` vs `WP`；`0x2000` 是 `RO` vs `RP`；`0x1_0000` 是 `HOT_PLUGGABLE` vs `MORE_RELIABLE`。整个 `0x1_F000` 因此在已知位闸之前单独拒绝（`PolicyError::AmbiguousAttribute`，负控 `every_contested_attribute_bit_fails_closed` 与 `the_ambiguous_bit_fails_closed_under_either_name`）。`0x0010_0000`（仓库编码的 `HOT_PLUGGABLE`）在 `uefi-raw 0.9` 无该常量，走未知位拒绝（`hot_pluggable_bit_fails_closed_as_unknown`）。
 - **代价与恢复路径**：`NON_VOLATILE` 位现在也落进拒绝域——模型仍认识 NV 语义（`TYPE_INDEPENDENT` 保留该分支），但**当前分类器不接受带 NV 位的输入，该分支在真实输入上不可达**。恢复它需要**两步**：先钉住带版本证据的固件编码 profile，再把 `0x1_F000` 的无条件拒绝改为按 profile 解释——只要无条件拒绝还在，仅添加 profile 记录仍然解不开 `NV`。若决定后续版本也不支持该属性，应明说，不要让读者以为 profile 一到手就自动解锁。`SPECIAL_PURPOSE`（`0x4_0000`）属 `ProfileAttribute` 拒绝域、低位 `0x4000` 属冲突拒绝域，**当前同样不可达**。钉住的是「当前 `uefi-raw` 与 Linux 头文件一致的编码」这一事实，而不是某份 PDF 的表格；将来升级 `uefi-raw` 时**必须重核全部已识别属性位**，不能只迁移 hot-pluggable 一位。
 
 **高位属性改为 profile 门控（已实现）**：`RO`/`SP`/`CPU_CRYPTO` **在 UEFI 2.10 原始发布版里就是 `0x2_0000`/`0x4_0000`/`0x8_0000`**，2.10 Errata A 与 2.11 PDF 把它们移到低一组。所以问题不是「已发布规范没有这些位置」，而是**两个正式发布版本族对同一属性采用了不同位值**，而内核无法从 `uefi-raw` 常量判断启动固件用哪一版。三者因此在 profile 未钉住前直接拒绝（`PolicyError::ProfileAttribute`，测试 `profile_only_attributes_fail_closed_without_a_pinned_profile`）；`0x10_0000` 仍由未知位闸拒绝。将来 `UefiMemoryAttributeProfile` 必须绑定**实际启动固件镜像身份**（x86 与 aarch64 分别记录，不能假设同源），并**同时钉住低位组与高位组的完整映射**——只授权三个高位会得到「部分属性可识别、其余冲突位永久拒绝」的半套 profile。PDF 低位组的 `0x100`–`0x800` 落在本项目已知位集合之外，同样被未知位闸拒绝；规范仓库 `main` 是活动分支，不能当固定版本。
-
 **属性位完整矩阵（两组编码的全部相关位）**：
 
 | 属性 | UEFI 2.10 原始版 | 2.10 Errata A / 2.11 PDF | EDK2 / Linux / `uefi-raw 0.9` | 本项目当前处置 |
@@ -492,9 +492,7 @@ PDF 低位组的 `0x100`–`0x800` 在本项目里落入已知位集合之外，
 
 
 **候选 B（不可接受，列出以说明为何否）**：只看平台物理内存描述、不看类型分类——会把不可用内存当成 backing。
-
 **判据**：每个 backing 页能指回一个「普通主存 = 是」的来源记录，且阶段允许。
-
 **边界**：`OrdinaryRamMappingEligibility` 只描述来源与 OS 政策资格，**不证明某架构实际能访问该区间**——x86 还要 PAT/MTRR 有效类型、AArch64 还要 MAIR 与逐 PE 配置、RISC-V 还要 PMA 能力与逐 hart 的 PMP。硬件准入不得被 `ordinary_main_memory = true` 代替。
 
 **`LOADER_CODE` 不是一律 R/NX**：只要它仍是当前执行中的 loader 代码，就需要可执行映射；可执行权限来自仍存活的 loader 对象义务，不因「被分类为保留内存」自动变成 R/NX。最后一次执行点之后才撤销执行映射或按生命周期处置——这也是对象存活区间必须参与映射权限计算的原因。
@@ -1675,7 +1673,7 @@ cd os && cargo test -p boot-shim --lib
 
 **第二层未闭合项**——共同形状是「文本已定、证据或实现为零」，外加一条**现状与合同相反**的项：
 
-- **现状冲突（不是缺口，裁决已下，依赖链已修正）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，没有撤销路径、普通叶子带 `EXECUTABLE`（§2.3）。O-02a 裁定甲案、否决乙案，并同时**否决「必需叶子走授权、普通 RAM 继续走旧宽映射」的半拉子形态**。实施顺序因此是**四段依赖链**：来源进入政策 → 引导根负向投影 → 必需对象正向授权 → 替换建表并审计实际叶子；普通 RAM 的正向授权是其后独立的一段。第一阶段允许普通 RAM 授权集合为空，但不允许它沿用旧宽映射。**已核实的有利事实**：建根与 Step 4 都不新建页表页（`map_huge` 不分配中间表，`boot_pt_alloc` 在非测试代码里零调用者），所以页表用途准入不是本阶段前置；代价是必需对象必须枚举完整，根激活后那块 `LOADER_DATA` arena 就是必须逐对象登记的实例。**仍未闭合**：四段全部无代码；Step 4 的候选仍来自未被过滤的 `memmap()`，只修恒等循环会在这里被绕过。
+- **现状冲突（不是缺口，裁决已下，依赖链已修正）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，没有撤销路径、普通叶子带 `EXECUTABLE`（§2.3）。O-02a 裁定甲案、否决乙案，并否决「必需叶子走授权、普通 RAM 继续走旧宽映射」的半拉子形态。实施顺序是**四段依赖链**：来源进入政策 → 引导根负向投影 → 必需对象正向授权 → 替换建表并审计实际叶子。**本轮更正的依赖判断**：页表页分配依赖没有消失——`map_huge` 在缺中间表时经 `pt_alloc::alloc_pt_page()` 取用普通 RAM 页表页，改细已有大叶子会返回 `AlreadyMapped`，所以第一阶段必须先定**叶子粒度计划**与**中间表页容量**；它仍不需要通用的 `PageTableAllocationEligible`。最关键的具体对象是 16 KiB 交接 arena（`ARENA_CAP = 4 * 4096`，由 `alloc_arena()` 以 `LOADER_DATA` 现分配、根激活后立即写、`arch_boot_resume_v1` 再读），它必须以对象级授权登记而不是靠整段 RAM 授权。四段全部无代码；Step 4 候选仍来自未过滤的 `memmap()`。
 
 - **准入上下文闭合（P0 阻塞）**：`ParticipatingCpuSet = Resolve(id, inventory_snapshot)` 的身份解析、`legal_starts_contract` 进 `AdmissionContextId`、`ProfileContextState` 四态、`SystemPteUpdateSchemeUniform` 在非 RISC-V 的 `NotApplicable` 分支——全部无实现。
 - **取指与对象访问资格（P0 阻塞）**：页级保守片段集与对象级多片段证明均无实现；实例展开、`reservation_set_evidence` 采集路径、`NoAccess` 的机器可检查证明形式未定；DMA/IOMMU、设备、固件等访问主体尚无合同（第一版一律 `UnsupportedAccessActor`）；x86 变长指令跨页仅按架构事实使用，本方未取 Intel SDM 原文。

@@ -1534,3 +1534,18 @@ cd os && cargo test -p boot-shim --lib
 | `十六、`…（本轮起 `五十七、`） | 第四十四轮起的逐轮读数、门读数与移出原文 | **独立递增**，与轮次号一一对应但不相等（例如 `五十五、` 记第八十三轮、`五十六、` 记第八十四轮） | 号与轮次号差一位以上，检索时必须按「第 N 轮」文字而不是按节号猜轮次 |
 
 **今后约定（不回改历史）**：新增逐轮材料一律继续用本册递增的中文数字节号，并在节标题里同时写明**轮次或批次**（形如「五十八、第八十六轮：…」）；需要引用被移出的正文原文时，指向 `02` 第七节（过程痕迹与已撤销判断）或本册对应节号，不新建第四套编号体系。
+
+## 五十八、第八十七轮：分配路径的更正读数与 arena 事实
+
+> **本节推翻 `五十五、` 与 `五十六、` 中的两条读数**（那两节按只增不改保留原文）：其中「`boot_pt_alloc` 在非测试代码里零调用者，因此建根与 Step 4 不新建页表页」是用错了被 grep 的函数名——真实路径是 `pt_alloc::alloc_pt_page`，分配确实发生。
+
+| 项 | 读数（命令与输出） |
+|---|---|
+| 2 MiB 叶子缺中间表时分配 | `os/arch/src/riscv64/paging.rs`：`// Allocate a new L1 page table.` 后接 `let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;`；同文件另有三处 `alloc_pt_page()` 调用（含根页安装） |
+| 提供方是 bump 分配器 | `os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page` 读注册函数指针；`os/kernel/src/boot_alloc.rs` 注释逐字：「Called by Paging implementations via `pt_alloc::alloc_pt_page()`」；运行时提供方是 VM（`os/servers/vm/src/alloc_page.rs`） |
+| 降级已有大叶子被拒 | 同文件：L2 项为 1 GB 叶子时 `return Err(PageTableError::AlreadyMapped)`，注释「Demoting it to a table pointer would silently corrupt the existing 1GB mapping」；该错误在恒等循环被 `let _ =` 吞掉 |
+| arena 容量与身份 | `minix_boot::ARENA_CAP = 4 * 4096`（`os/libs/minix-boot/src/handoff_v1.rs`）＝16 KiB，四页 |
+| arena 分配与传递 | `os/boot-shim/src/uefi_helpers.rs:fn alloc_arena()`：分配恰好 `ARENA_CAP` 字节的 `LOADER_DATA`、限定在恒等界以下；`let arena_pa = alloc_arena();` 后以 `x0`（aarch64）/`rbx`（x86_64，trampoline 移到 `rdi`）递进内核 |
+| arena 使用区间 | 写：`os/kernel/src/lib.rs` 根激活后 `patch_runtime_fields_in(arena, …)`；再读：`pub fn arch_boot_resume_v1(arena_pa: u64)` 内 `from_raw_parts(arena_pa …, ARENA_CAP)`。**释放点未登记** |
+| 复核方式教训 | 同一会话内第二次「检查手段太窄却当成结论成立」（前一次是 `progress_guarantee = Eventual` 的带空格 grep）。今后涉及「谁分配了什么」必须按**被调函数名**与**注册点**两处 grep 交叉验证，不能只查一个符号 |
+| 门读数 | 正文 1689 行（≤1700）、围栏 48（偶）、表格 58 块列数不一致 0、破表 0、`doc-style-lint --diff` error 0、横幅门 PASS、零丢失对账 lost 0；无代码改动，沿用 146 / 70 |
