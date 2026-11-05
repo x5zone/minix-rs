@@ -10,6 +10,19 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**本轮（第六十六轮评审之后：版本状态回写 + 三项新增合同）**
+
+- **版本状态先回写**：本轮评审称「三个 P0 未修正」，对照的是第六十四轮的文本（`fffaa3e5f`）；三项在第六十五轮 `bd8a89eee` 已落地，`rewrite` 尖子 `2eca58006` 里逐条可核：分支式 `PteUpdateScheme(hart)`（约 1032 行）、`SystemHartSet`/`ParticipatingHartSet`（约 1074 行）、`HartRuntimeAdmission` 扩到既存对象（约 1122/1126 行），§6 的「规范原文未取到」也已在前一轮清零。
+- **但呈现缺陷是本方的**：撤回说明把被撤销的布尔式逐字留在正文里，检索会撞上，等于给误读留入口。本轮把该式子从正文删除，只保留「上一版是布尔式、已撤销」的陈述，逐字记录留在本档案。
+- **`SystemHartSet` 补清单来源与「永不启用」政策**：不能由 `ctx.H` 反推，须取自固件启动 ABI / 设备树 `/cpus` / ACPI MADT 并记代次；清单缺失或不一致 → `Unknown` → 拒绝启动；暂不调度 ≠ 不属于系统，只有能证明该 hart 在平台上**不存在**才可从清单去掉。
+- **入场审计补映射维度**：`HartRuntimeAdmission` 的检查对象扩为「当前执行工作集 + 活动页表及其遍历区域 + 可能访问的既存共享对象 + 这些对象的映射与访问路径」；处置表改用更锋利的四行（全部可访问／已迁移或隔离／仍可能被调度路径触及／无法证明）。
+- **ISA Profile 义务独立成概念**：`PlatformMemoryProfile`（硬件实际配置）与 `ProfileMemoryObligations(isa_profile)`（ISA Profile 对整段主存的 PMA 义务）分开；补齐 `Ziccif`（可执行 + 指定取指宽度的原子性），与已记的 `Ziccrse`/`Ziccamoa`/`Ziccamoc` 并列，并写明「`Executable`/`AtomicSharedState` 的用途准入不能替代 Profile 义务」。
+- **原子 fallback 升级为计划引用**：`fallback_plan_id` → `AtomicFallbackPlan { trigger, bounded_retry_policy, required_operations, required_widths, progress_argument }`，合同显式覆盖「如何检测缺乏进展」与「fallback 自身依赖的操作也要准入」。
+- **`PhysicalRange` 目标态改口径**：上一轮把「拒绝最高页」写成项目政策；按本轮意见改为——`== 2^64` 在**规范化记录层应当被接受**，今天仍拒绝只是 `u64` 记录层的临时限制，`UnsupportedPhysicalAddressEnd` 将来只属投影层，不属输入层。下一刀即 `SourceRecord` → `PhysicalRange`。
+- **§6 证据两处更新**：DTSpec 记站点 revision 串 `v0.4-12-g8314f1e`（本方只核 commit 前缀）；UEFI §4.6.1.3 记为「评审人按 2.11 核对、本方本环境 403 未直接取证」，并补边界「固件不修改 ≠ 应用/驱动不修改，复制期一致性仍由 loader 保证」。
+- 门：无代码改动；沿用 minix-boot **141**、boot-shim **70** 与三条 QEMU 腿读数；主简报 1285 行。
+
+
 **本轮（第六十五轮评审之后：A/D 分支式、系统 hart 集合、入场审计既存对象 + `2^64` 端点分名落码）**
 
 - **撤销本方上一轮的布尔公式**：`EffectiveSvade = SvadeImplemented ∨ (SvaduImplemented ∧ ADUE==0)` 与同段的真值表矛盾——`Svadu=已实现 ∧ ADUE=1 ∧ Svade=已实现` 会被算成软件方案，而规范要求 `ADUE=1` 使实现「如同未实现 Svade」。改为分支式 `PteUpdateScheme(hart)`，并加该行反例负控；顺带把**证据要求**按分支钉清楚（Svadu 未知时不得拿 `ADUE` 读数猜方案）。

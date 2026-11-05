@@ -982,3 +982,16 @@ QEMU 实测（`qemu-system-riscv64 -M virt,dumpdtb=/tmp/virt_rv.dtb -smp 4 -m 25
 | 规范钉法 | RISC-V：official release 入口 `v20260120`，模块 Supervisor ISA 1.13 / Svade 1.0 / Svadu 1.0 / Machine ISA 1.13，源 commit `riscv/riscv-isa-manual@418bdc4990ae2d60a86f1e11e8d7795aa279da61`；DTSpec：`devicetree-org/devicetree-specification@8314f1e1c9965482e5c1080d4118f52fef827fce`（在线 readthedocs 页面 `unknown-rev`，不作冻结版本引用）；RVA20/22/23 与 UEFI 2.11 未取（403），列为本方未取证 |
 | 一处流程事故 | 后台 QEMU 腿的日志写在 WSL `/tmp`，`/tmp` 在两次调用之间被回收，日志连 `TEST_RESULT` 一起丢失；后台命令的退码来自管道尾部的 `tail`，`grep` 找不到文件也报 0——因此 aarch64/x86 两条腿改为前台重跑并直接读输出，本轮三条腿读数全部来自实际打印 |
 
+
+## 三十八、第六十六轮：版本状态回写与新合同
+
+| 项 | 读数 |
+|---|---|
+| 本轮评审对照的版本 | 评审意见引用的「当前公式：`EffectiveSvade = SvadeImplemented ∨ (SvaduImplemented ∧ ADUE == 0)`」与「无 `SystemHartSet`」对应第六十四轮文本 `fffaa3e5f`；第六十五轮 `bd8a89eee`（合并后 `2eca58006`）已改为分支式并加入两个 hart 集合 |
+| 合并态锚点（`2eca58006`） | `PteUpdateScheme(hart) =` 分支在约 1032 行；`SystemHartSet`/`ParticipatingHartSet` 在约 1074 行；`HartRuntimeAdmission` 在约 1122 行、既存对象段在约 1126 行；`grep -c 规范原文未取到` = 0 |
+| 本轮修掉的呈现缺陷 | 撤回说明曾把被撤销的布尔式逐字留在正文（`grep` 计数 1），检索会命中；本轮删除，正文只留「上一版是布尔式、已撤销」，逐字记录移入本档案第六十五轮块 |
+| 新增合同 | `SystemHartSet` 清单来源（固件 ABI / DT `/cpus` / ACPI MADT）与「永不启用」政策；`HartRuntimeAdmission` 增映射与访问路径维度；`ProfileMemoryObligations(isa_profile)` 与 `PlatformMemoryProfile` 分离并补 `Ziccif`；`AtomicFallbackPlan` 五字段与两条覆盖要求 |
+| 口径更正 | 顶端页：上一轮写「项目政策拒绝」，本轮改为「记录层应接受 `== 2^64`，今天拒绝是 `u64` 记录层的临时限制，`UnsupportedPhysicalAddressEnd` 将来只属投影层」——与 O-11 的 `PhysicalRange` 目标一致 |
+| 证据更新 | DTSpec 记站点 revision `v0.4-12-g8314f1e`（本方只核 commit 前缀 8314f1e 一致，tag 串未独立核）；UEFI §4.6.1.3 记为「评审人核对 / 本方 403 未取证」两侧分开，并补「固件不修改 ≠ 应用不修改」边界 |
+| 门 | 无代码改动：minix-boot **141**、boot-shim **70**、三条 QEMU 腿沿用 `2eca58006` 读数；主简报 1285 行（上限 1700）、围栏 30（偶）、表格列数不一致 0、lint error 0 |
+
