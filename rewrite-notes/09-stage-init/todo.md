@@ -50,7 +50,7 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 | signal_state（take_* 待主循环 drain 接线；note_* 已由 trampoline 消费 ✅） | E-INITSYS ① PM 臂闭单后由 run_transition 接管 |
 | log::disaster（fatal handler 安装） | E-INITSYS ①；信号名已经 Signal::name 权威生成（P2-4 ✓） |
 | contracts（request_for/shutdown_argv/SHUTDOWN_PATH）+ SignalState::take_shutdown_request 的驱动侧 drain | E-INITSYS ①（handler 置位 + 主循环边界执行 spawn） |
-| multi_user::setctty 包装 | E-INITSYS ②（setsid ✅；login_tty 的 dup2/TIOCSCTTY 封装待 C-21 扩面） |
+| multi_user::setctty 包装 | E-INITSYS ②（setsid ✅；login_tty 的 dup2/TIOCSCTTY 封装 ✅——host.rs 的 set_controlling_tty 完整折叠 C setctty+login_tty） |
 | utmp（session_utmpx/RecordType::Login/clear_session_logs） | ✅ 执行半就位（2026-09-20 卡 J：append_file 真装 open/write/close；时间戳 now_secs 仍 ENOSYS→退化为 0，GETTIMEOFDAY 封装待 C-21 扩面） |
 | session_db（FakeDb/DbError/open/is_open） | 会话表重启路径接线 |
 | wait（exited/signal 辅助） | 后续状态扩展 |
