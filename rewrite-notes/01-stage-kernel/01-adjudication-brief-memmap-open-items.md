@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 01:17 CST（`date` 实测）；**内容轮次：第八十七轮评审后的修改**（运行依赖更正：页表页分配与叶子粒度；arena 登记字段表）。
+> **重写**：2026-11-06 01:30 CST（`date` 实测）；**内容轮次：第八十八轮评审后的修改**（自查更正第三次：降级可行但每级耗一张表页；Step 4 在激活后执行且依赖 VA=PA 地址通道）。评审人本轮提的四份合同与两处语义边界修正尚未写入正文，登记在 `02` 第八十八轮块。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03` 第五十四节（正文写「见 `03`」即指此处）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -171,7 +171,7 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 **由此产生的不是「缺审计」，而是现状与目标合同的直接冲突**。低 4 GiB 内凡属下列范围的物理地址，今天**都已经有映射叶子**：`no-map` 声明的区间、MRB 区间、`EfiReservedMemoryType`、`UNUSABLE`。而目标合同要求 `no-map` 产生 `DenyStandardSystemMapping`、要求 MRB 若经页表兑现则相交页不得出现在普通映射中、要求 `EfiReservedMemoryType` 与 `UNUSABLE` 的 `DenyOsUse` 派生禁止映射——**这些政策今天一项都没有参与恒等映射循环的裁决**。因此本文不写「不在可用表推不出不会被映射」这种弱形式，而写明确结论：**当前低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策；任何此类范围落在该区间内都会被恒等映射覆盖，且第一版目标合同尚未兑现——在完成映射裁决之前，不得声称当前引导根满足这些禁止语义。**
 
-**同一棵根上的第二个建表点也必须一起收**：Step 4 的 `establish_boot_dm` 候选来自 `kernel_info.memmap()`（文档逐字写着 **not filtered**：每条 conventional RAM 都算候选，含内核映像与启动模块占用的部分）加上自举页表树与 bump 区。只修恒等循环而不管 Step 4，边界会在追加直接映射时被绕过。**本轮另更正一条**：恒等段的 2 MiB 设备叶子会在缺少中间表时经 `pt_alloc::alloc_pt_page()` 消耗普通 RAM 里的页表页，而把已有 1 GiB 叶子改细则返回 `AlreadyMapped`（今天被 `let _ =` 吞掉）——「建根期间不新建页表页」的说法不成立，第一阶段因此必须先定叶子粒度计划与表页容量，见 O-02a。该冲突与实施合同的裁决全文见 O-02a（甲案：授权驱动建表，四段依赖链）。
+**同一棵根上的第二个建表点也必须一起收**：Step 4 的 `establish_boot_dm` 候选来自 `kernel_info.memmap()`（文档逐字写着 **not filtered**：每条 conventional RAM 都算候选，含内核映像与启动模块占用的部分）加上自举页表树与 bump 区。只修恒等循环而不管 Step 4，边界会在追加直接映射时被绕过。**本轮另更正一条**：恒等段的 2 MiB 设备叶子会在缺少中间表时经 `pt_alloc::alloc_pt_page()` 消耗普通 RAM 里的页表页，而把已有 1 GiB 叶子改细要走显式的 `split_huge`（它同样分配表页）——「建根期间不新建页表页」的说法不成立，第一阶段因此必须先定**以映射请求为单位的叶子粒度计划**与**含降级次数的表页容量**，见 O-02a。该冲突与实施合同的裁决全文见 O-02a（甲案：授权驱动建表，四段依赖链）。
 
 ### 2.4 交接与消费
 
@@ -310,8 +310,8 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 **运行依赖：本轮更正一次核实错误，并给出改正后的事实**。此前一版写道「`map_huge` 不分配中间表页、`boot_alloc::boot_pt_alloc` 在非测试代码里零调用者，因此页表用途准入不是本阶段前置」——**该结论不成立**，错因是复核时 grep 了 `boot_pt_alloc` 这个名字，而真实的分配路径叫 `pt_alloc::alloc_pt_page`（与我当时检查的是两个不同函数）。逐字重读后的事实：
 
 - **缺中间表时 `map_huge` 会分配页表页**：`os/arch/src/riscv64/paging.rs` 在 2 MiB 分支上，若 L2 项不是有效表指针就调用 `crate::pt_alloc::alloc_pt_page()` 新建 L1 表页（同文件另有四处相同调用，含根页与 1 MiB 级安装路径）。`alloc_pt_page` 是注册制函数指针（`os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page`），引导期注册的提供方就是 bump 分配器（`os/kernel/src/boot_alloc.rs` 的注释逐字写着「Called by Paging implementations via `pt_alloc::alloc_pt_page()`」）。**所以恒等段的 2 MiB 设备叶子本来就在消耗普通 RAM 里的页表页**，「不新建页表页」是错的。
-- **把已有大叶子改细会被拒绝**：L2 项已是 1 GiB 叶子时，同处直接返回 `PageTableError::AlreadyMapped`，注释说明理由是「降级会静默破坏既有的 1 GB 映射」。今天这个错误被恒等循环的 `let _ =` 吞掉——**因此「先建宽叶子、之后按对象授权改细」这条路在当前实现里根本不成立**，这正是评审人担心的粒度问题，且比它更硬。
-- **对第一阶段的意义**：依赖没有消失，而是换了位置。它不需要通用的 `PageTableAllocationEligible`（那仍是运行时新分配路径的合同），但**必须**在写第一个叶子之前定下两件事：① **叶子粒度计划**——哪些地址按多大粒度映射，且任何改细都不得依赖降级；② **中间表页容量**——计划需要多少张新表页、bump 区是否够、不够时明确拒绝启动而不是 `AlreadyMapped` 被吞。
+- **把已有大叶子改细要走显式 API**：`map_huge` 遇 L2 已是 1 GiB 叶子时返回 `PageTableError::AlreadyMapped`（它自身不降级），而 `os/arch/src/riscv64/paging.rs:fn split_huge` 才是降级路径——它经 `pt_alloc::alloc_pt_page()` 取一张新 L1 表页，把 1 GiB 展开成 512 个 2 MiB（注释写明可一路降到 4 KiB），并已在 `harden_kernel_text` 与 heap 窗口驱逐中**于活动根上**使用，注释说明理由是「降级会静默破坏既有的 1 GB 映射」。今天这个错误被恒等循环的 `let _ =` 吞掉——**因此「先建宽叶子、之后按对象授权改细」这条路技术上可行**，但每降一级都要一张新表页——粒度计划因此必须把降级次数计入页表页预算，而不是假设粒度可免费提供。**本条更正上一轮的过强结论**：我只查了 `map_huge` 就断言「先宽后细根本不成立」，是同一类「检查手段太窄却当成结论成立」错误的第三次（前两次为带空格的 Eventual grep、`boot_pt_alloc` 名称错配）。
+- **对第一阶段的意义**：依赖没有消失，而是换了位置。它不需要通用的 `PageTableAllocationEligible`（那仍是运行时新分配路径的合同），但**必须**在写第一个叶子之前定下两件事：① **叶子粒度计划**——哪些地址按多大粒度映射，且任何改细在哪一级显式调用 `split_huge`；② **中间表页容量**——需要多少张新表页（**含每次降级所需**）、bump 区是否够、不够即拒绝启动而不是让错误被 `let _ =` 吞。另核实两条：Step 4 的 `establish_boot_dm` 在 `paging.enable()` **之后**执行；bump 分配器文件头写明 identity mapping (VA = PA)——取消宽恒等映射后，**页表页池必须先登记成第一棵根里可访问的启动对象**，否则 Step 4 会失去写入新表页的地址通道。
 
 **四页交接 arena 是本阶段最关键的对象，登记字段如下**（它的物理上属于普通 RAM，但授权对象是这个有身份、有范围、有使用者与生命周期的具体对象，不是它所在的整段 RAM——通用 RAM 授权集合为空时，对象级授权的并集仍可非空）：
 
@@ -1673,7 +1673,7 @@ cd os && cargo test -p boot-shim --lib
 
 **第二层未闭合项**——共同形状是「文本已定、证据或实现为零」，外加一条**现状与合同相反**的项：
 
-- **现状冲突（不是缺口，裁决已下，依赖链已修正）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，没有撤销路径、普通叶子带 `EXECUTABLE`（§2.3）。O-02a 裁定甲案、否决乙案，并否决「必需叶子走授权、普通 RAM 继续走旧宽映射」的半拉子形态。实施顺序是**四段依赖链**：来源进入政策 → 引导根负向投影 → 必需对象正向授权 → 替换建表并审计实际叶子。**本轮更正的依赖判断**：页表页分配依赖没有消失——`map_huge` 在缺中间表时经 `pt_alloc::alloc_pt_page()` 取用普通 RAM 页表页，改细已有大叶子会返回 `AlreadyMapped`，所以第一阶段必须先定**叶子粒度计划**与**中间表页容量**；它仍不需要通用的 `PageTableAllocationEligible`。最关键的具体对象是 16 KiB 交接 arena（`ARENA_CAP = 4 * 4096`，由 `alloc_arena()` 以 `LOADER_DATA` 现分配、根激活后立即写、`arch_boot_resume_v1` 再读），它必须以对象级授权登记而不是靠整段 RAM 授权。四段全部无代码；Step 4 候选仍来自未过滤的 `memmap()`。
+- **现状冲突（不是缺口，裁决已下，依赖链已修正）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，没有撤销路径、普通叶子带 `EXECUTABLE`（§2.3）。O-02a 裁定甲案、否决乙案，并否决「必需叶子走授权、普通 RAM 继续走旧宽映射」的半拉子形态。实施顺序是**四段依赖链**：来源进入政策 → 引导根负向投影 → 必需对象正向授权 → 替换建表并审计实际叶子。**本轮更正的依赖判断**：页表页分配依赖没有消失——`map_huge` 在缺中间表时经 `pt_alloc::alloc_pt_page()` 取用普通 RAM 页表页，改细已有大叶子只有 `split_huge` 一条显式路径且同样分配表页，所以第一阶段必须先定**以映射请求为单位的叶子粒度计划**与**含降级次数的中间表页容量**；它仍不需要通用的 `PageTableAllocationEligible`。最关键的具体对象是 16 KiB 交接 arena（`ARENA_CAP = 4 * 4096`，由 `alloc_arena()` 以 `LOADER_DATA` 现分配、根激活后立即写、`arch_boot_resume_v1` 再读），它必须以对象级授权登记而不是靠整段 RAM 授权。四段全部无代码；Step 4 候选仍来自未过滤的 `memmap()`。
 
 - **准入上下文闭合（P0 阻塞）**：`ParticipatingCpuSet = Resolve(id, inventory_snapshot)` 的身份解析、`legal_starts_contract` 进 `AdmissionContextId`、`ProfileContextState` 四态、`SystemPteUpdateSchemeUniform` 在非 RISC-V 的 `NotApplicable` 分支——全部无实现。
 - **取指与对象访问资格（P0 阻塞）**：页级保守片段集与对象级多片段证明均无实现；实例展开、`reservation_set_evidence` 采集路径、`NoAccess` 的机器可检查证明形式未定；DMA/IOMMU、设备、固件等访问主体尚无合同（第一版一律 `UnsupportedAccessActor`）；x86 变长指令跨页仅按架构事实使用，本方未取 Intel SDM 原文。

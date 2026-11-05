@@ -12,6 +12,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第八十八轮（自查更正第三次同类错误；评审人四份合同登记为待办，未写入正文）**
+
+- **我方再更正一条**：第八十七轮写「改细已有大叶子返回 `AlreadyMapped`，故先宽后细根本不成立」——**过强**。真实情况：`map_huge` 自身不降级，但 `os/arch/src/riscv64/paging.rs:fn split_huge` 就是降级路径，经 `pt_alloc::alloc_pt_page()` 取新 L1 表页把 1 GiB 展开为 512×2 MiB（注释称可一路降到 4 KiB），且已在 `os/kernel/src/lib.rs` 的 `harden_kernel_text` 与 heap 窗口驱逐中于**活动根**上使用（两处失败都 `panic!`）。结论改为：先宽后细**技术上可行但每降一级耗一张表页**，故粒度计划必须把降级次数计入页表页预算。
+- **错误模式已第三次**：带空格的 `Eventual` grep、查 `boot_pt_alloc` 得出「不分配」、查 `map_huge` 得出「不能降级」——三次都是**只查一个符号就断言一个能力**。新增复核规程：断言「某能力存在/不存在」前，必须按**动词与路径**在 arch 层全量 grep 并列出全部命中函数，逐个读其注释与错误返回值；只查单个函数名不足以否证能力。
+- **新核实的两条事实**：`establish_boot_dm` 在 `paging.enable()` 之后执行（`os/kernel/src/lib.rs` 调用顺序）；bump 分配器文件头逐字写着 identity mapping (VA = PA)。合起来的后果：**取消宽恒等映射后，若页表页池未被登记成第一棵根可访问的启动对象，Step 4 会失去写入新表页的地址通道**——这不再是容量问题，而是地址可达性问题。
+- **评审人本轮提出、本轮未写入正文的四份合同与两处语义边界修正（登记为第八十九轮待办）**：① `BootstrapPageTablePool` + `BootstrapPageTablePageEligible`（六项，且刻意不含 `PmmBaseAvailable`）；② `BootstrapMappingRequest` / `BootstrapLeafPlan` / `BootstrapPageTableBudget` 与 `RequiredNewTablePages = MissingIntermediateNodes(...)`，含四类既有表项状态的区分；③ Step 4 与 O-05 冻结合同的衔接（路线 A 前移 / 路线 B 受控增量，禁止「T1 冻结后 Step 4 以未定义方式改根」）；④ 实际叶子审计的双向判据（`Observed ⊆ Authorized`、`Required ⊆ Observed`、有精确计划处取等号，比较含 VA→PA、叶子尺寸、权限、有效属性、共享性、树与阶段）与两个审计时点；⑤ §0 的 `PhysicalAccessPermits` 把 RISC-V 机制名写成了共享层定义，与正文「PMP/PMA 属 adapter」自相矛盾；⑥ `ActualAccesses(use) = { i | 由 Expand(...) 展开 }` 与它上方 `AccessInstanceSet` 的职责划分自相矛盾。**未写入原因：本轮上下文不足以在不牺牲准确性的前提下同时落这四份合同**，非判断为不必做。
+- 门：正文 1690 行（≤1700）；`doc-style-lint --diff` 与其余三门见提交信息；无代码改动，沿用 146 / 70。
+- 认领：`I-29 qorder91`（基线 `06c557345`），状态 🔄。
+
+
 **第八十七轮（评审确认替代结论后，我方自查更正一次核实错误：页表页分配与叶子粒度）**
 
 - **评审人本轮收回上轮推测**（他不再把 O-12i 页表用途准入列为第一阶段潜在阻塞），但收紧边界：「没有分配依赖」不等于「既有页表无需使用证明」，「通用 RAM 授权为空」不等于「启动期间不需要映射普通 RAM」。这个区分成立，已按他的字段表写进 O-02a。
