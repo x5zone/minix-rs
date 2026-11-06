@@ -17,6 +17,9 @@ extern crate alloc;
 
 pub use minix_sffs as framework;
 
+pub mod vbox;
+pub mod vboxfs;
+
 /// Share option key (`"share"`, `vbfs.c:46`).
 pub const OPTION_SHARE: &str = "share";
 

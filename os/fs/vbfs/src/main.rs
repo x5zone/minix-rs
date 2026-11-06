@@ -11,6 +11,14 @@
 //! its purest form: the process *pretends*. Until the loop exists, refuse loudly:
 //! RS never launches vbfs today, so a panic here is inert on the boot path and
 //! turns "why is my mount hanging" into "this server is not built yet".
+//!
+//! Progress marker (`2026-11-06`, A 板 A20 后端先行切片): the guest-library
+//! connect core is in (`vbox.rs` — the backdoor ABI model over the libsys
+//! verb set; `vboxfs.rs` — `vboxfs_init`'s MAP_FOLDER flow and the path
+//! object, `minix-fs-vbfs` 8/0). What keeps this main a panic: the sffs
+//! framework port (C `minix3/minix/fs/sffs/`) and the vboxguest driver
+//! (machine face) are the registered prerequisites before the ring can
+//! replace this refusal.
 
 fn main() {
     minix_fs_vbfs::init();
