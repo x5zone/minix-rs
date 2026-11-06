@@ -5990,3 +5990,15 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 提交：`docs(01)` 一笔 + 本笔台账。门：1,133 行、围栏 42 偶、表格 37 块 0 不一致、破表 0、lint 0、横幅 PASS、lost 0（syms 163→591、tests 89→353）。
 - 认领：`I-29 qorder119`，状态 ✅：已 ff 合并，认领已释放。
 - 结论：正文现可作为第三方审阅入口；剩余未闭合项集中在 O-01 回收框架（已裁定不做）、O-12k 两次快照序列、配置表 DTB「存在且可解析」的固件路径。
+
+### 第三百三十四笔（01 阶段 · I-29 第一百二十轮：UEFI 记录完整性与 wire v5）
+
+- 复审四项判断逐条核到代码全部成立，本轮先落最关键的来源身份切片：
+  - `Plan::commit` 为每个结构合法描述符写记录（`Side/Excluded/DevicePath` → 新 `SourceKind::UefiExcluded`，wire tag 7），容量预检按描述符数；
+  - `SourceRecord.raw_type: u32` 保存固件 `Type` 原值（wire 尾字由保留位改为该字段）；
+  - `snapshot_id` 改为观测实例序号，与 `MapKey` 分离；`BOOT_HANDOFF_V1_VERSION = 5`。
+- 测试：`excluded_descriptors_keep_their_provenance_and_snapshot_id_is_not_the_map_key`、`round_trips_the_raw_firmware_type_and_accepts_any_value`（替换旧保留字用例）。
+- 回归：宿主 341/169/92(+5)/863/548；五个交叉构建；`run_all` 38/1/0/0（唯一红 `test-rt-birth-aarch64` 基线同签名）；六条非注册腿全 PASS。
+- 文档按复审意见修正：§7.1 过期下一步、§7 第三层理由、O-12g 六项 ABI 表旧读数、审计顺序措辞（投影产生后、交棒前）、§6 三种身份标签、`reconcile` 证明边界。
+- 认领：`I-29 qorder120`，状态 ✅：已 ff 合并，认领已释放。
+- **仍开放（下一批）**：① AArch64 UEFI 配置表 DTB 的 `SourceRecord` 随第一跳交付 + 容量 256→296（按 9 页 arena 算余 384 B）与按输入权威的覆盖审计；② 启动对象职责边界与 `last_use` 表达、`reconcile` 完整性边界已写清但未加检查；③ O-11 的 PreflightMap/FinalMap 两次快照顺序（当前 `prepare` 在取图前读 8 字节 header，与严格合同不符，需实现或明确豁免）。
