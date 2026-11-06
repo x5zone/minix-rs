@@ -9,6 +9,7 @@
 | 版本 | 日期 | 变更 | 证据 | 替代物 | 同步门读数 | 状态 |
 |---|---|---|---|---|---|---|
 | V1 | 2026-11-07 | 建立外层循环脚手架：`review-panel.md`、`review-evals.md`、`review-loop` 技能、`eval-trace-check.py`、`trait-audit.py`、固定语料、盲区账本、冻结决策账本、八个对抗样本；修正 `check-review-rules.sh` 的 `grep -c` 零命中中断与 `diff-trae-skills.sh` 漏认 `review-loop` 两处工具缺口 | W-6、W-16、`prompt/code-review-subagent.md:4`（设计死代码）、`69-75`（冷读）、`484-498`（范围纪律）；DOC-ITER 台账的 14 篇引文事故 | 无（V1 只搭脚手架，不删除旧装置） | 四门全绿（见第四节） | 生效 |
+| V2 | 2026-11-07 | 晋升 C-20 轨迹门 v2 与 C-23 禁止 follow-up 大桶：无发现面板必须显式豁免、P-REFUTE 主张入附加表、`dup-of` 合并；`eval-trace-check.py` 增加 `panel-exemption` 检查 | D02/D03 meta-review：B-17 轨迹门 WARN 仍 PASS、B-18 跨角色重复无归并、D03-F10 把 36 条读者项压成一行 | C-20 替代 V1 的“WARN 可接受”；C-23 替代“follow-up 大桶”实践 | 待跑 | 生效 |
 
 ## 二、候选规则登记
 
@@ -44,6 +45,7 @@
 | 版本 | `generate-derived-skills.sh` | `check-review-rules.sh` | `lint-review-rules.sh` | `diff-trae-skills.sh --only-diff` | 新工具自测 |
 |---|---|---|---|---|---|
 | V1 | exit 0；派生 10 个技能（含 `review-loop`） | exit 0；输出 “Review source, Trae adapters, Claude runtime references, and Codex adapters are consistent.” | exit 0；0 个失败 | exit 0；源 10 个、派生 10 个，完全同步 | `eval-trace-check.py --self-test` 与 `trait-audit.py --self-test` 均 PASS |
+| V2 | exit 0；无漂移 | exit 0 | exit 0；0 个失败 | exit 0；10 个 skill 完全同步 | `eval-trace-check.py --self-test` PASS；D01–D03 轨迹门均 PASS（8 PASS / 2 WARN / 0 FAIL） |
 
 ### V1 基线读数
 

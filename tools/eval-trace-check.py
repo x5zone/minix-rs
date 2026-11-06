@@ -286,6 +286,24 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                     panel_dir = candidate
                     break
     panel_ids = collect_panel_findings(panel_dir, report)
+    if loop_text is not None and panel_dir is not None and panel_dir.is_dir():
+        # V2 轨迹门：每个 panel 文件要么有 FINDING，要么在 loop.md §1
+        # 显式写“无发现面板：<file>（理由）”豁免。WARN 不再是可接受状态。
+        for path in sorted(panel_dir.glob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            if FINDING_RE.search(text):
+                continue
+            exempt = re.search(
+                rf"无发现面板[：:][^\n]*{re.escape(path.name)}|{re.escape(path.name)}[^\n]*无发现",
+                loop_text,
+            )
+            if exempt:
+                report.ok("panel-exemption", f"{path.name} 无 FINDING，loop.md 已豁免")
+            else:
+                report.fail(
+                    "panel-exemption",
+                    f"{path.name} 没有 FINDING，且 loop.md §1 没有“无发现面板：{path.name}”豁免行",
+                )
 
     if loop_text is not None:
         check_loop_sections(loop_text, report)

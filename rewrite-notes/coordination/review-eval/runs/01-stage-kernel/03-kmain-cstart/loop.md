@@ -23,6 +23,7 @@
 - P-REFUTE：文档、C 源、关联 Rust、设计快照；未读其他面板输出。输出 `panel/refute.md`，6 条主张：5 条反证失败，1 条反证成功（CLAIM 02：旧 memmap 链与 `arch_init` APIC 分支），另有 P1/P2。
 - 缩编：无。
 - 工作树完整性：面板前后 `git status --porcelain` 只有 `prompt/resources/` 与新增 `runs/`，无面板写入源码或文档。
+- 无发现面板：`design-d1.md`（独立设计提案，14 条 DECISION，只作参考）；`refute.md`（6 条 CLAIM，反证结果见 `defect-ledger.md` 的 `## P-REFUTE 附加` 表）。
 
 ## §2 发现
 
