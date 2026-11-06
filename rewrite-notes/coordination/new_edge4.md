@@ -5883,3 +5883,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 门：正文 1,001 行 / 163,375 字节、围栏 24 偶、表格 39 块 0 不一致、破表 0、lint error 0、承载门通过、lost 0（syms 181→574、tests 86→296）。
 - 认领：`I-29 qorder110`，状态 ✅：已 ff 合并为 `d4746c044`，认领已释放。
 - I-29 实现与评审项至此全部闭合；唯一未验证项 = QEMU 真机门（本机无 qemu）与三架构交叉构建（镜像只装 host target）。
+
+### 第三百一十八笔（01 阶段 · I-29 第一百一十一轮：文档重写 + QEMU 全套件上机）
+
+- `4567ed736 fix(qemu-tests)`：`os/qemu-tests/test-kernels/` 30 处 `KernelInfo` 字面量补 `memmap_sources`（`test-sysboot` E0063）；三组测试内核全部编译通过，`test-sysboot.sh` PASS。宿主单测覆盖不到这些包——第一次完整跑套件即抓到。
+- `e6a6eb724 docs(01)`：正文按当前代码重写为「设计—实现—测试保证」（1,072 行）：§0 速览、§1 四层模型与两跳对象图、§2 逐构件实现（真实代码/常量）、§2.8 与分页专项交界、§5 实现状态索引、§6 实测证据；§3 不变量、§5 裁定正文、§7.1 冻结规则保留。门：围栏 42 偶、表格 37 块 0 不一致、承载门通过、lint 0、lost 0（syms 181→579、tests 86→300）。
+- **QEMU（本机 8.2.2 + AAVMF/OpenSBI/U-Boot）**：四条启动链全 PASS——x86 UEFI 链路、x86 全系统（12 server + E5f-LABELS 12/12）、x86 双镜像、aarch64 UEFI 链路、riscv 自引导、riscv U-Boot 全链（6/6）、riscv 全系统。`run_all.sh` **38 passed / 1 failed / 0 skipped / 0 build failures**；唯一红 `test-rt-birth-aarch64` 在会话基线 `537f5c16b` 逐字同签名（`elr=0x140003628 esr=0x92000047 far=0x7ffffffff000`），属既有红。
+- 未覆盖分支（已写入 §6.4）：配置表 DTB 的「存在且可解析／存在但坏」（AAVMF 不提供）、真实固件 256 条描述符上限、`Excluded`/`DevicePath` 的真实分布。
+- 认领：`I-29 qorder111`，状态 ✅：已 ff 合并为 `e6a6eb724`，认领已释放。
