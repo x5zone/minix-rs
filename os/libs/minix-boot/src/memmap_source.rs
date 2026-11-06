@@ -164,8 +164,11 @@ static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
 /// spans and declared reservations each stop at `DTB_MEMMAP_MAX` (the same
 /// `push_span`/`push_declared` caps — `no-map` declarations count too), the
 /// firmware prefix cannot outnumber `/memory` spans, and the MRB stops at
-/// `DTB_MRB_MAX`. Worst case 8 + 8 + 16 + 8 = 40. An overflow is a refusal
-/// (`TooManySourceRecords`), never a silent drop.
+/// `DTB_MRB_MAX`. 40 = 8 + 8 + 16 + 8 is reachable at exactly those caps.
+/// Exact duplicates keep their record without adding a projection span, so a
+/// blob that repeats the same tuple more often than the projection caps allow
+/// can exceed 40; that case is refused (`TooManySourceRecords`), never
+/// truncated.
 const DTB_SOURCE_MAX: usize = DTB_MEMMAP_MAX + DTB_MEMMAP_MAX + DTB_MRB_MAX + DTB_MEMMAP_MAX;
 
 /// Which declaration a range came from. Records are facts; every policy
@@ -368,6 +371,14 @@ static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     range: PhysicalRange::new(0, 0),
 }; DTB_SOURCE_MAX];
 static DTB_SOURCES_N: AtomicUsize = AtomicUsize::new(0);
+/// The deduplicated `/memory` panorama the projections were built from.
+/// UEFI's static-reservation type cross-check needs it to decide which
+/// reservation pages are claims on RAM at all (a framebuffer-style
+/// reservation outside `/memory` claims no RAM and must not be compared
+/// against the EFI map's MMIO descriptors).
+static mut DTB_PANORAMA: [MemoryRegion; DTB_MEMMAP_MAX] =
+    [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+static DTB_PANORAMA_N: AtomicUsize = AtomicUsize::new(0);
 
 /// Clip the part of `[start, start+len)` that falls inside the resident
 /// firmware area (`[0, fw_end)`, a lower-bound semantic measured in PAs from
@@ -633,6 +644,37 @@ impl DtbMemoryMap<'_> {
     /// projections were built from. A `no-map` or MRB range outside `/memory`
     /// appears in neither table, so this is the only output that still carries
     /// those facts.
+    /// The same collection plus the unclipped `/memory` panorama (exact
+    /// duplicates folded). Consumers that reconcile DTB reservations against
+    /// firmware tables use it to tell a RAM reservation from an out-of-RAM
+    /// declaration.
+    pub fn collect_with_panorama(
+        &self,
+    ) -> Result<
+        (
+            &'static [MemoryRegion],
+            &'static [MemoryRegion],
+            &'static [SourceRecord],
+            &'static [MemoryRegion],
+        ),
+        DtbMemMapError,
+    > {
+        let (free, reserved, sources) = self.collect_inner()?;
+        // SAFETY: same single-hart write-once contract as the other tables;
+        // the count is published with Release by collect_inner.
+        let panorama = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::addr_of!(DTB_PANORAMA) as *const MemoryRegion,
+                DTB_PANORAMA_N.load(Ordering::Acquire),
+            )
+        };
+        Ok((free, reserved, sources, panorama))
+    }
+
+    /// The same collection plus the unclipped per-declaration records the
+    /// projections were built from. A `no-map` or MRB range outside `/memory`
+    /// appears in neither table, so this is the only output that still carries
+    /// those facts.
     pub fn collect_with_sources(
         &self,
     ) -> Result<
@@ -662,6 +704,7 @@ impl DtbMemoryMap<'_> {
         DTB_FREE_N.store(0, Ordering::Relaxed);
         DTB_RESERVED_N.store(0, Ordering::Relaxed);
         DTB_SOURCES_N.store(0, Ordering::Relaxed);
+        DTB_PANORAMA_N.store(0, Ordering::Relaxed);
         let mut sources = [SourceRecord {
             id: 0,
             kind: SourceKind::Memory,
@@ -1005,10 +1048,12 @@ impl DtbMemoryMap<'_> {
             DTB_FREE = free;
             DTB_RESERVED = reserved;
             DTB_SOURCES = sources;
+            DTB_PANORAMA = memory;
         }
         DTB_FREE_N.store(free_n, Ordering::Release);
         DTB_RESERVED_N.store(reserved_n, Ordering::Release);
         DTB_SOURCES_N.store(sources_n, Ordering::Release);
+        DTB_PANORAMA_N.store(memory_n, Ordering::Release);
         // SAFETY: all three static arrays hold `n` initialised entries; on the
         // single-hart boot face the read only happens after the write.
         Ok(unsafe {

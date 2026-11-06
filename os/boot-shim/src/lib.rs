@@ -103,6 +103,7 @@ pub mod ebs_map;
 // injected firmware calls; host-testable retry/buffer discipline.
 #[cfg(feature = "uefi")]
 pub mod ebs_pair;
+pub mod resv_claims;
 
 #[cfg(feature = "opensbi")]
 pub mod opensbi_helpers;

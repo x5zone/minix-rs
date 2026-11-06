@@ -153,7 +153,17 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
 
     // Leak the Vec so it has 'static lifetime — acceptable for boot-stage
     // code that runs exactly once (same pattern as build_memmap).
-    Box::leak(sources.into_inner().into_boxed_slice())
+    let leaked: &'static [PlatformDescSource] =
+        Box::leak(sources.into_inner().into_boxed_slice());
+    // Capture the DTB-side reservation claims here, before the EBS pairing
+    // loop: it verifies them against the snapshot it reads (brief O-11).
+    // A missing or unparsable DTB leaves the list empty;
+    // `cross_validate_config_dtb` owns the halt for that case.
+    #[cfg(target_arch = "aarch64")]
+    if let Some(source) = leaked.iter().find(|s| s.kind() == minix_boot::DTB) {
+        crate::resv_claims::capture(source.phys_addr().0);
+    }
+    leaked
 }
 
 /// Collect this image's `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions` and normalize

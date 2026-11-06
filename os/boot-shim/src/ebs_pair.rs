@@ -85,6 +85,11 @@ pub enum PairError {
     ExitStatus(usize),
     /// Two EBS attempts were both rejected with `EFI_INVALID_PARAMETER`.
     RetryExhausted,
+    /// The DTB's static reservations are not covered by EFI descriptors of
+    /// the type their semantics require (brief O-11). The map paired with the
+    /// key is real but contradicts the platform description, so the boot
+    /// stops before `ExitBootServices` rather than accepting it.
+    ReservationCoverage(crate::resv_claims::ClaimError),
 }
 
 /// Run the pairing loop over `map_buf`, dual-writing the accepted
@@ -151,6 +156,13 @@ pub unsafe fn pair_and_classify(
         let classification = storage
             .classify_into_handoff(pa_limit, serializer)
             .map_err(PairError::Map)?;
+        // O-11: static `/reserved-memory` and MRB claims must be covered by
+        // descriptors of the type their semantics require. The claims were
+        // captured from the configuration-table DTB before this loop; checking
+        // them before `ExitBootServices` keeps the failure while firmware
+        // services can still print.
+        crate::resv_claims::check_current(storage.descriptors())
+            .map_err(PairError::ReservationCoverage)?;
 
         // SAFETY: same contract as above; `map_key` comes from the map that
         // was just classified.
