@@ -23,10 +23,11 @@ use minix_types::VirBytes;
 /// 1. **Architecture isolation**: Each arch's implementation is completely
 ///    different (x86-64 uses `mov rsp + call`, aarch64 uses `mov sp + br`,
 ///    riscv64 uses `mv sp + jalr`). The trait encapsulates these differences.
-/// 2. **Uniform call site**: `arch_boot_impl` calls `HigherHalf::jump_to_kmain()`
-///    without `#[cfg]` conditionals.
-/// 3. **Testability**: Mock implementations can verify call sequencing without
-///    executing real instructions.
+/// 2. **Uniform call site**: the boot tail (`arch_boot_finish`) calls
+///    `HigherHalf::jump_to_kmain()` without `#[cfg]` conditionals.
+/// 3. **Testability**: Mock implementations can verify the signature and the
+///    call contract; the `-> !` return means sequencing itself is not
+///    observable at runtime.
 pub trait HigherHalf {
     /// Perform the higher-half transition: switch stack to high address
     /// and jump to kmain.

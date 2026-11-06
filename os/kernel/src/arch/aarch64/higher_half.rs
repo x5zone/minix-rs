@@ -44,7 +44,7 @@ impl HigherHalf for AArch64HigherHalf {
                 "and x2, x2, x1",
                 "mov sp, x2",
                 "mov x29, #0",
-                "isb",                      // drain write buffer before br
+                "isb",                      // defensive barrier; enable() already synchronized TTBR/SCTLR
                 "ldr x1, ={kmain}",
                 "br x1",
                 stktop = in(reg) stack_top.0,
