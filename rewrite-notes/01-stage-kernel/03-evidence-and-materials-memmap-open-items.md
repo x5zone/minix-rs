@@ -2908,6 +2908,26 @@ test-riscv64-boot-full.sh                     → PASS（rc 标记）
 - 反引号标识符检索是**机械检查**：它只证明名字存在，不证明语义一致；语义一致性仍靠逐节读代码与测试名对账（本轮同时做了）。
 - 剩余未闭合项（O-01 回收框架、O-12k 两次快照、配置表 DTB 正例固件路径）已在正文与 §6.4 标注。
 
+## 八十六、第一百二十轮：UEFI 来源完整性与 wire v5 回归
+
+### 代码事实
+
+- `SourceKind::UefiExcluded`（wire tag 7）：结构合法但不入普通表的描述符保留身份。
+- `SourceRecord.raw_type: u32`：固件 `EFI_MEMORY_DESCRIPTOR.Type` 原值；wire 尾字（原 `reserved u32`）承载它，非 UEFI 输入为 0。
+- `snapshot_id`：每成功 `GetMemoryMap` 自增的观测序号；`MapKey` 只用于 `ExitBootServices` 配对。
+- `BOOT_HANDOFF_V1_VERSION = 5`；容量预检改为 `descs.len() <= WIRE_SOURCES_CAP`。
+
+### 新增/调整测试
+
+| 用例 | 断言 |
+|---|---|
+| `excluded_descriptors_keep_their_provenance_and_snapshot_id_is_not_the_map_key` | 2 描述符（CONV + RESERVED）→ 2 记录；索引 1 的记录 `kind=UefiExcluded`、`raw_type=0`、范围 0x30_0000；`snapshot_id=1 != MapKey 0x1234`；`audit_source_coverage` 不受影响 |
+| `round_trips_the_raw_firmware_type_and_accepts_any_value` | 尾字为 `0xDEAD_BEEF` 时解码成功并原样返回（旧「必须为零」规则撤销） |
+
+### 回归（wire v5）
+
+宿主 341/169/92(+5)/863/548；五个交叉构建全通过；`run_all` 38/1/0/0（唯一红 `test-rt-birth-aarch64`，基线同签名）；六条非注册腿全 PASS（x86/aarch64 ACPI/`DTB_CFGTABLE=1` 负例/riscv bootface/riscv U-Boot 6/6/riscv 全系统）。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -3114,3 +3134,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百一十八轮）合并提交 | `53696a732` |
+
+### 评审身份（第一百二十轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十四笔登记 |
+| `CodeEvidenceCommit` | 本轮提交（代码与文档同提交） |
+| `DocumentRevision` | 第一百二十轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百一十九轮）合并提交 | `c4b46890d` |

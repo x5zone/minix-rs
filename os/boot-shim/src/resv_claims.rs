@@ -87,7 +87,10 @@ pub fn claims_from_records(
                 ExpectedEfiType::BootServicesData
             }
             SourceKind::ReservedNoMap | SourceKind::MrbEntry => ExpectedEfiType::Reserved,
-            SourceKind::Memory | SourceKind::FirmwarePrefix | SourceKind::StartupObject => continue,
+            SourceKind::Memory
+            | SourceKind::FirmwarePrefix
+            | SourceKind::StartupObject
+            | SourceKind::UefiExcluded => continue,
         };
         let raw_start = record.range.start;
         let raw_end = record.range.end_exclusive;
@@ -328,6 +331,7 @@ mod tests {
     fn record(kind: SourceKind, start: u64, end: u128) -> SourceRecord {
         SourceRecord {
             id: 0,
+            raw_type: 0,
             input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
             address_domain: minix_boot::memmap_source::AddressDomain::Physical,
             local_source: 0,

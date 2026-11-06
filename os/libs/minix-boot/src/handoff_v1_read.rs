@@ -389,7 +389,7 @@ pub fn decode_sources(
             origin_tag: arena[off + 65],
             input_object: arena[off + 66],
             address_domain: arena[off + 67],
-            reserved: read_u32(arena, off + 68),
+            raw_type: read_u32(arena, off + 68),
         };
         *slot = wire.decode().ok_or(HandoffV1ReadError::BadSourceRecord)?;
     }
@@ -431,7 +431,7 @@ pub fn decode_startup_objects(
             origin_tag: arena[off + 65],
             input_object: arena[off + 66],
             address_domain: arena[off + 67],
-            reserved: read_u32(arena, off + 68),
+            raw_type: read_u32(arena, off + 68),
         };
         *slot = wire.decode().ok_or(HandoffV1ReadError::BadSourceRecord)?;
     }
@@ -522,6 +522,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
             range: PhysicalRange::new(0x10_0000, 0x20_0000),
@@ -534,6 +535,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 1,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },
             range: PhysicalRange::new(0x40_0000, 0x60_0000),
@@ -546,6 +548,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 2,
+            raw_type: 0,
             kind: SourceKind::ReservedOrdinary,
             origin: SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
             range: PhysicalRange::new(0x1DA0_0000, 0x1DA0_3000),
@@ -832,6 +835,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
             range: PhysicalRange::new(0, 0),
@@ -956,6 +960,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
             range: PhysicalRange::new(0, 0),
@@ -970,11 +975,13 @@ mod tests {
     /// image did not come from [`WireSourceRecord::encode`]; the receiver
     /// fails closed instead of carrying a guessed record.
     #[test]
-    fn rejects_source_record_with_nonzero_reserved_word() {
+    fn round_trips_the_raw_firmware_type_and_accepts_any_value() {
+        // The trailing word used to be a must-be-zero reserved slot; it now
+        // carries the firmware's own Type, so every value is legal and must
+        // survive the round trip.
         let mut arena = build_arena();
-        // Third record starts at WIRE_SOURCES_OFFSET + 2 * 72; its reserved
-        // word is the last four bytes of the 72-byte slot.
-        put_u64(&mut arena, WIRE_SOURCES_OFFSET + 2 * 72 + 68, 1);
+        let wire_off = crate::handoff_v1::WIRE_SOURCES_OFFSET + 68;
+        put_u32(&mut arena, wire_off, 0xDEAD_BEEF);
         let s = decode_envelope(&arena).unwrap();
         let mut out = [SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
@@ -984,14 +991,14 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
             range: PhysicalRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
-        assert_eq!(
-            decode_sources(&arena, &s, &mut out).unwrap_err(),
-            HandoffV1ReadError::BadSourceRecord
-        );
+        let n = decode_sources(&arena, &s, &mut out).unwrap();
+        assert!(n >= 1);
+        assert_eq!(out[0].raw_type, 0xDEAD_BEEF);
     }
 
     #[test]
@@ -1071,6 +1078,7 @@ mod tests {
         use crate::memmap_source::InputObjectId;
         let record = SourceRecord {
             id: 7,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::UefiDescriptor { index: 7 },
             range: PhysicalRange::new(0x1000, 0x3000),
@@ -1161,6 +1169,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
             range: PhysicalRange::new(0, 0),

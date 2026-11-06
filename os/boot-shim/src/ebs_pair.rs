@@ -118,6 +118,11 @@ pub unsafe fn pair_and_classify(
 ) -> Result<Classification, PairError> {
     let mut ebs_attempts = 0u32;
     let mut ebs_failed = false;
+    // Snapshot instance identity: one increment per successful GetMemoryMap.
+    // This is *not* the MapKey — the key is firmware's version credential for
+    // ExitBootServices, while the snapshot id names the observation. Two reads
+    // returning the same key are still two snapshots.
+    let mut snapshot_seq = 0u64;
 
     loop {
         let mut map_size = map_buf.len();
@@ -159,7 +164,10 @@ pub unsafe fn pair_and_classify(
                 map_size,
                 descriptor_size,
                 descriptor_version,
-                map_key as u64,
+                {
+                    snapshot_seq += 1;
+                    snapshot_seq
+                },
             )
             .map_err(PairError::Map)?;
         let classification = storage
@@ -455,6 +463,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
             range: PhysicalRange::new(0, 0),
@@ -474,6 +483,84 @@ mod tests {
         assert_eq!(sources[2].kind, SourceKind::Memory);
         audit_source_coverage(&free[..nf], &reserved[..nr], &sources[..ns])
             .expect("per-descriptor records must explain both projections");
+    }
+
+    /// Every structurally valid descriptor gets a record — including the ones
+    /// the classifier keeps out of both ordinary tables — and the record keeps
+    /// the firmware's own Type. The snapshot id is the observation sequence,
+    /// not the MapKey.
+    #[test]
+    fn excluded_descriptors_keep_their_provenance_and_snapshot_id_is_not_the_map_key() {
+        use minix_boot::{
+            audit_source_coverage, decode_envelope, decode_memmap, decode_sources, MemoryRegion,
+            PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
+        };
+        use minix_types::PhysBytes;
+
+        // RESERVED is structurally valid but produces no ordinary-table entry.
+        let mut fw = MockFw::new(
+            &[(CONV, 0x10_0000, 1), (0u32, 0x30_0000, 1)],
+            &[],
+        );
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        write_min_envelope(&mut s);
+        let mut map_buf = [0u8; 256];
+        // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
+        let c = unsafe {
+            pair_and_classify(
+                &ops(),
+                &mut fw as *mut MockFw as *mut c_void,
+                0,
+                &mut map_buf,
+                1 << 48,
+                &mut s,
+            )
+        }
+        .unwrap();
+        assert_eq!((c.conventional, c.reserved, c.side), (1, 0, 0));
+
+        s.patch_runtime_fields(minix_boot::RuntimeFields {
+            root_page: 0x1000,
+            bump_base: 0x20_0000,
+            bump_next: 0x20_0000,
+            bump_end: 0x30_0000,
+        });
+        let scalars = decode_envelope(s.as_bytes()).unwrap();
+        let empty = MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        };
+        let mut free = [empty; 4];
+        let nf = decode_memmap(s.as_bytes(), &scalars, &mut free).unwrap();
+        let mut sources = [SourceRecord {
+            input_object: minix_boot::InputObjectId::DtbBootInput,
+            address_domain: minix_boot::memmap_source::AddressDomain::Physical,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
+            id: 0,
+            raw_type: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
+        assert_eq!(ns, 2, "one record per descriptor, not per emitted range");
+        assert_eq!(sources[0].kind, SourceKind::Memory);
+        assert_eq!(sources[1].kind, SourceKind::UefiExcluded);
+        assert_eq!(sources[1].origin, SourceOrigin::UefiDescriptor { index: 1 });
+        assert_eq!(sources[1].raw_type, 0, "RESERVED is EFI type 0");
+        assert_eq!(sources[1].range.start, 0x30_0000);
+        assert_eq!(
+            sources[1].snapshot_id, 1,
+            "snapshot identity is the observation sequence, not MapKey {KEY:#x}"
+        );
+        assert!(
+            audit_source_coverage(&free[..nf], &[], &sources[..ns]).is_ok(),
+            "excluded records must not disturb free-span coverage"
+        );
     }
 
     /// A rejected `ExitBootServices` re-classifies a fresh map; the source
@@ -528,6 +615,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
             range: PhysicalRange::new(0, 0),

@@ -643,10 +643,11 @@ pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Resu
             HandoffV1WriteError::TooManyReservedRegions,
         ));
     }
-    // One source record per emitted ordinary-table entry. The descriptor count
-    // is bounded by MAX_MAP_DESCRIPTORS, so this can only trip on a contract
-    // change, never on a real map — prove it here rather than at write time.
-    if counts.conventional + counts.reserved > WIRE_SOURCES_CAP {
+    // One source record per structurally valid descriptor (every disposition
+    // gets an identity, including the ones outside both ordinary tables). The
+    // descriptor count is bounded by MAX_MAP_DESCRIPTORS, so this can only
+    // trip on a contract change, never on a real map.
+    if descs.len() > WIRE_SOURCES_CAP {
         return Err(MapError::Capacity(
             HandoffV1WriteError::TooManySourceRecords,
         ));
@@ -732,18 +733,18 @@ impl Plan {
                 Disposition::Side => {
                     side[side_written] = *region;
                     side_written += 1;
-                    return;
                 }
                 Disposition::Excluded | Disposition::DevicePath => return,
             }
-            // Provenance: one record per descriptor that lands in an ordinary
-            // table. The record names the input object (the final snapshot,
-            // implied by the leg) and the descriptor index inside it; the range
-            // is exactly the region the classifier emitted, so the consumer
-            // boundary can re-audit coverage without re-deriving the map.
+            // Provenance: every structurally valid descriptor that produces a
+            // range gets a record, whether or not it lands in an ordinary
+            // table. `kind` is this project's role; `raw_type` keeps the
+            // firmware's own type so a `Side` descriptor does not lose its
+            // identity.
             let kind = match disposition {
                 Disposition::Allocate => SourceKind::Memory,
-                _ => SourceKind::ReservedOrdinary,
+                Disposition::ReservedMapped => SourceKind::ReservedOrdinary,
+                _ => SourceKind::UefiExcluded,
             };
             let record = SourceRecord {
                 id: index as u16,
@@ -761,6 +762,7 @@ impl Plan {
                 snapshot_id,
                 attribute: descs[index].attribute,
                 virtual_start: descs[index].virtual_start,
+                raw_type: descs[index].raw_type,
             };
             let admitted = serializer.push_source(&record).is_ok();
             assert!(
@@ -769,6 +771,42 @@ impl Plan {
                 self.counts.conventional + self.counts.reserved
             );
         });
+        // Descriptors the classifier emits no range for (`Excluded`,
+        // `DevicePath`) still carry provenance: their raw extent and firmware
+        // type enter the same record partition.
+        for (index, desc) in descs.iter().enumerate() {
+            let Ok((disposition, len)) = adjudicate(desc, pa_limit) else {
+                continue;
+            };
+            if len != 0
+                || !matches!(disposition, Disposition::Excluded | Disposition::DevicePath)
+            {
+                continue;
+            }
+            let end = desc
+                .physical_start
+                .saturating_add(desc.number_of_pages.saturating_mul(PAGE_SIZE));
+            let record = SourceRecord {
+                id: index as u16,
+                raw_type: desc.raw_type,
+                kind: SourceKind::UefiExcluded,
+                origin: SourceOrigin::UefiDescriptor {
+                    index: index as u16,
+                },
+                range: PhysicalRange::new(desc.physical_start, end as u128),
+                input_object: minix_boot::InputObjectId::UefiMemoryMap,
+                address_domain: minix_boot::memmap_source::AddressDomain::Physical,
+                local_source: index as u16,
+                snapshot_id,
+                attribute: desc.attribute,
+                virtual_start: desc.virtual_start,
+            };
+            let admitted = serializer.push_source(&record).is_ok();
+            assert!(
+                admitted,
+                "preflight proved the source partition holds every descriptor"
+            );
+        }
         serializer.finish_memmap();
         serializer.finish_reserved();
         serializer.finish_sources();

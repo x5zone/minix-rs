@@ -94,7 +94,8 @@ pub struct WireSourceRecord {
     pub origin_tag: u8,
     pub input_object: u8,
     pub address_domain: u8,
-    pub reserved: u32,
+    /// The firmware's own `EFI_MEMORY_DESCRIPTOR.Type`; 0 for non-UEFI input.
+    pub raw_type: u32,
 }
 
 impl WireSourceRecord {
@@ -105,6 +106,8 @@ impl WireSourceRecord {
     pub const KIND_RESERVED_NO_MAP: u8 = 3;
     pub const KIND_RESERVED_ORDINARY: u8 = 4;
     pub const KIND_RESERVED_REUSABLE: u8 = 5;
+    /// A structurally valid descriptor outside both ordinary tables.
+    pub const KIND_UEFI_EXCLUDED: u8 = 7;
     pub const KIND_STARTUP_OBJECT: u8 = 6;
 
     /// `SourceOrigin` tags. Values are protocol constants: never renumber.
@@ -126,6 +129,7 @@ impl WireSourceRecord {
             SourceKind::ReservedNoMap => Self::KIND_RESERVED_NO_MAP,
             SourceKind::ReservedOrdinary => Self::KIND_RESERVED_ORDINARY,
             SourceKind::ReservedReusable => Self::KIND_RESERVED_REUSABLE,
+            SourceKind::UefiExcluded => Self::KIND_UEFI_EXCLUDED,
             SourceKind::StartupObject => Self::KIND_STARTUP_OBJECT,
         };
         let (origin_tag, a, b, cut) = match record.origin {
@@ -156,7 +160,7 @@ impl WireSourceRecord {
             origin_tag,
             input_object: record.input_object.tag(),
             address_domain: record.address_domain.tag(),
-            reserved: 0,
+            raw_type: record.raw_type,
         }
     }
 
@@ -164,7 +168,7 @@ impl WireSourceRecord {
     /// cannot produce, i.e. a corrupted or foreign wire image; the caller
     /// must fail closed rather than guess.
     pub fn decode(self) -> Option<SourceRecord> {
-        if self.end_hi > 1 || self.reserved != 0 {
+        if self.end_hi > 1 {
             return None;
         }
         let input_object = crate::memmap_source::InputObjectId::from_tag(self.input_object)?;
@@ -176,6 +180,7 @@ impl WireSourceRecord {
             Self::KIND_RESERVED_NO_MAP => SourceKind::ReservedNoMap,
             Self::KIND_RESERVED_ORDINARY => SourceKind::ReservedOrdinary,
             Self::KIND_RESERVED_REUSABLE => SourceKind::ReservedReusable,
+            Self::KIND_UEFI_EXCLUDED => SourceKind::UefiExcluded,
             Self::KIND_STARTUP_OBJECT => SourceKind::StartupObject,
             _ => return None,
         };
@@ -243,6 +248,7 @@ impl WireSourceRecord {
             attribute: self.attribute,
             virtual_start: self.virtual_start,
             address_domain,
+            raw_type: self.raw_type,
         })
     }
 }
@@ -257,7 +263,7 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// instead of being dropped on the sending side. A v1 receiver would ignore
 /// the new partition and a v1 sender would leave it empty, so the version is
 /// compared exactly, not as a minimum.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 4;
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 5;
 
 /// `free_upper_idx` sentinel for "no value" (a valid index can never be
 /// `u64::MAX`; decode checks the sentinel first, then the range).

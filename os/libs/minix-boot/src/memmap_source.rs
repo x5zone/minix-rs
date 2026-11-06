@@ -196,6 +196,11 @@ pub enum SourceKind {
     /// page-table pool, root page, bump region, handoff arena). Not a memory
     /// map declaration: it is the second record class with its own capacity.
     StartupObject,
+    /// A structurally valid firmware descriptor whose disposition puts it
+    /// outside both ordinary tables (`Side`, `Excluded`, `DevicePath`).
+    /// The record keeps its provenance (identity, range, `raw_type`); the
+    /// coverage audit ignores it because it explains no projected byte.
+    UefiExcluded,
 }
 
 /// Whether a record is declared by the input object or derived by this project.
@@ -279,7 +284,7 @@ pub fn audit_source_coverage(
         let start = span.base.0;
         let end = start as u128 + span.len as u128;
         let is_reservation_record = |r: &SourceRecord| match r.kind {
-            SourceKind::Memory => false,
+            SourceKind::Memory | SourceKind::UefiExcluded | SourceKind::StartupObject => false,
             SourceKind::MrbEntry | SourceKind::ReservedNoMap => false,
             SourceKind::StartupObject => false,
             SourceKind::FirmwarePrefix
@@ -389,6 +394,11 @@ pub struct SourceRecord {
     pub virtual_start: u64,
     /// Which address space [`Self::range`] is expressed in.
     pub address_domain: AddressDomain,
+    /// The firmware's own memory-type value (`EFI_MEMORY_DESCRIPTOR.Type`);
+    /// 0 for inputs that are not a UEFI memory map. `kind` is this project's
+    /// role classification — the two must not be confused: `LOADER_DATA` and
+    /// `ACPI_RECLAIM` share a role but not a type.
+    pub raw_type: u32,
 }
 
 /// Address space of a [`SourceRecord`] range. v1 records are physical only;
@@ -448,6 +458,7 @@ impl InputObjectId {
 
 static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     id: 0,
+    raw_type: 0,
     kind: SourceKind::Memory,
     origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
     range: PhysicalRange::new(0, 0),
@@ -573,6 +584,7 @@ fn push_source(
     }
     sources[*n] = SourceRecord {
         id: *n as u16,
+        raw_type: 0,
         kind,
         origin,
         range,
@@ -593,6 +605,7 @@ fn push_source(
 pub const fn startup_record(index: u16, start: u64, end: u64) -> SourceRecord {
     SourceRecord {
         id: index,
+        raw_type: 0,
         kind: SourceKind::StartupObject,
         origin: SourceOrigin::StartupObject(index),
         range: PhysicalRange::new(start, end as u128),
@@ -822,6 +835,7 @@ impl DtbMemoryMap<'_> {
         DTB_PANORAMA_N.store(0, Ordering::Relaxed);
         let mut sources = [SourceRecord {
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
             range: PhysicalRange::new(0, 0),
@@ -2398,6 +2412,7 @@ mod tests {
             attribute: 0,
             virtual_start: 0,
             id: 0,
+            raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
             range: PhysicalRange::new(0x8000_0000, 0x8000_1000),
@@ -2428,6 +2443,7 @@ mod tests {
                 attribute: 0,
                 virtual_start: 0,
                 id: 0,
+                raw_type: 0,
                 kind: SourceKind::Memory,
                 origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
                 range: PhysicalRange::new(0x8000_0000, 0x8000_1000),
@@ -2440,6 +2456,7 @@ mod tests {
                 attribute: 0,
                 virtual_start: 0,
                 id: 1,
+                raw_type: 0,
                 kind: SourceKind::Memory,
                 origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },
                 range: PhysicalRange::new(0x8000_1000, 0x8000_2000),

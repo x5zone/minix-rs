@@ -398,6 +398,7 @@ pub(crate) static STARTUP_RECORD_STORE: SyncUnsafeCell<
 > = SyncUnsafeCell::new(
     [minix_boot::SourceRecord {
         id: 0,
+        raw_type: 0,
         kind: minix_boot::SourceKind::StartupObject,
         origin: minix_boot::SourceOrigin::StartupObject(0),
         range: minix_boot::PhysicalRange::new(0, 0),
@@ -421,6 +422,7 @@ pub(crate) static SOURCE_RECORD_STORE: SyncUnsafeCell<
         attribute: 0,
         virtual_start: 0,
         id: 0,
+        raw_type: 0,
         kind: minix_boot::SourceKind::Memory,
         origin: minix_boot::SourceOrigin::MrbEntry(0),
         range: minix_boot::PhysicalRange::new(0, 0),

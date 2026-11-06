@@ -12,6 +12,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百二十轮（UEFI 来源完整性 + 身份分离；按复审意见修文档）**
+
+- 代码：UEFI 配对循环现在为**每个结构合法的描述符**写一条来源记录——`Allocate→Memory`、`ReservedMapped→ReservedOrdinary`、`Side/Excluded/DevicePath→UefiExcluded`；记录携带固件 `raw_type`（wire 尾字从保留位改为该字段），来源事实不因不进入投影而消失。`snapshot_id` 改为「观测实例序号」（每成功取图自增），与 `MapKey` 分离。容量预检按描述符数（256），wire 版本升到 5。
+- 测试：`excluded_descriptors_keep_their_provenance_and_snapshot_id_is_not_the_map_key`（两条描述符 → 两条记录、`raw_type` 保留、`snapshot_id=1` 而非 MapKey、审计不受 `UefiExcluded` 干扰）；`round_trips_the_raw_firmware_type_and_accepts_any_value` 替换旧的「保留字必须为零」测试。
+- 文档：按复审意见修正——§7.1 的过期下一步、§7 第三层理由、O-12g 六项 ABI 表的旧读数（第二跳九个偏移已钉）、`audit_source_coverage` 的顺序措辞（投影产生后、交棒前）、§6 三种提交身份标签；并写清 `reconcile` 的证明边界（只证「接到集合与自由集合不相交 + 根页/模块抽查」，不证枚举完整）。
+- 读数与回归：宿主 341/169/92(+5)/863/548；五个交叉构建；`run_all` 38/1/0/0；六条非注册腿全 PASS。
+
 **第一百一十九轮（文档-代码逐项对账）**
 
 - 方法：抽取正文全部反引号标识符（89 个 snake 名）逐一在 `os/` 代码里检索，并逐节比对结构体字段、线布局与状态标记。结果：2 个名字在代码中不存在（`test_decoded_payloads_survive_arena_poison` 的实际名没有 `test_` 前缀；`effective_pa_limit` 是模型名、代码是 `support.phys_addr_limit()`），另有 7 处状态或节选与实现不符。
