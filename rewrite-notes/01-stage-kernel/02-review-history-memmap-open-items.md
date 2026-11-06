@@ -12,6 +12,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百一十四轮（复审后全面回归；文档与代码再同步）**
+
+- 另一会话的 16 笔复审修复（`6b4f5d1f4..d09fff501`：不可读 `reg` 拒绝、MRB × 普通保留按页冲突、FDT MRB 上限 16、严格来源门、O-11 静态保留 × EFI 类型覆盖、几何溢出跳过、dumpdtb 采集点重解析、rustfmt）已合入。正文按新代码校正：§2.1（四条 `reg` 负控）、§2.2（`DTB_SOURCE_MAX` 容量、MRB 冲突、`collect_with_panorama`）、§2.3（`resv_claims` 的 `MAX_CLAIMS=64`/`MAX_INTERVALS=256`、采集与核对时序）、§2.5（`validate_requiring_sources` 严格门、DTB 时序假设）；§7 第 1 项的「只验证了不存在」改为「正例已在 `acpi=off` 腿通过」。
+- 回归：宿主 339/163/82/863/548 全绿；五个交叉构建目标全通过；`run_all` 38/1/0/0（唯一红仍是基线同签名的 `test-rt-birth-aarch64`）；五条非注册腿（x86/aarch64 bootmarks、DTB_CFGTABLE、riscv bootface、U-Boot shim 6/6、riscv 全系统）全部 PASS。
+- 顺带修正：正文的测试名恢复为 `test_decoded_payloads_survive_arena_poison`（此前掉了 `test_` 前缀）；`SOURCE_RECORD_CAP` 更名为代码里的真实符号 `DTB_SOURCE_MAX` 并加注。
+
 **第一百一十三轮（I-29 实现复审的修复）**
 
 - 双轴复审（标准轴 + 规格轴）在 `acd1302d3..7a464dc82` 的实现上发现两项 fail-open：`/reserved-memory` 的截断 `reg` 被 `continue` 静默跳过（FDT 迭代器对不足字节不产出元组）、MRB 与普通保留重叠未裁决；另有空来源分区可跳过覆盖审计、FDT 容器 MRB 上限 off-by-one、四处注释/引用漂移。

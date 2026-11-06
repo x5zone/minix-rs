@@ -2794,6 +2794,48 @@ $ DTB_CFGTABLE=1 bash test-shim-bootmarks-aarch64.sh   → PASS（cross-validate
 
 「存在但不可用」的负例：固件发布的 DTB 由其自身构造，外部无法注入损坏副本；该分支只有宿主单测与代码审阅覆盖。
 
+## 八十、第一百一十四轮：复审后全面回归读数
+
+### 宿主
+
+```
+cargo test -p minix-types                 → 339 passed / 0 failed
+cargo test -p minix-boot                  → 163 passed / 0 failed
+cargo test -p boot-shim                   → 82 passed / 0 failed
+cargo test -p boot-shim --features uefi   → 82 passed / 0 failed（+5 集成）
+cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
+cargo test -p minix-vm                    → 548 passed / 0 failed
+```
+
+### 交叉构建（宿主 rustc 1.94.1）
+
+```
+kernel-image --target aarch64-unknown-none --features fw-aarch64-none --release        ✅
+kernel-image --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release  ✅
+boot-shim --target x86_64-unknown-uefi --no-default-features --features fw-x86-uefi     ✅
+boot-shim --target aarch64-unknown-uefi --no-default-features --features fw-aarch64-uefi ✅
+boot-shim --target riscv64gc-unknown-none-elf --no-default-features --features fw-riscv-uboot ✅
+```
+
+### QEMU（QEMU 8.2.2）
+
+```
+run_all.sh → 38 passed / 1 failed / 0 skipped / 0 build failures
+            唯一失败 test-rt-birth-aarch64（与基线 537f5c16b 同签名，既有红）
+
+test-shim-bootmarks-x86.sh                    → PASS
+test-shim-bootmarks-aarch64.sh                → PASS（platform DTB absent）
+DTB_CFGTABLE=1 test-shim-bootmarks-aarch64.sh → PASS（platform DTB cross-validated）
+test-kernel-image-riscv64-bootface.sh         → PASS（B1/B2/B3）
+test-riscv64-uboot-shim.sh                    → PASS（6/6 标记，进入 scheduler）
+test-riscv64-boot-full.sh                     → PASS（rc 标记）
+```
+
+### 说明
+
+- `DTB_CFGTABLE=1` 腿同时走 `resv_claims::capture`（`find_platform_sources` 内，EBS 前）与 `check_current`（分类后、EBS 前），即 O-11 类型覆盖合同在真实固件路径上被实际执行；默认 ACPI 腿无配置表 DTB，按空主张通过。
+- 复审新增的 20 条单测（`minix-boot` 11 条、`boot-shim` 10 条，含 `resv_claims` 9 条）已在宿主读数中。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2918,3 +2960,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 **复审自检追加（`fc7759e16`、`eaa7d55fd`）**：① `resv_claims::check` 对 `number_of_pages` 改 `checked_mul`，几何溢出的描述符（只可能来自 `Excluded`/`DevicePath`）视为不覆盖，补负控；② `DtbMemoryMap` 的静态存储是进程级的，`load_dumpdtb` 早先返回的 `'static` 切片会被后续采集覆盖——改为保存 blob、在打印点重新 `collect` 并立即消费；aarch64 UEFI 腿（含 `dumpdtb.dtb`）复跑 PASS。
 
 **仍开放**：O-11「复制到自有缓冲再解析」；UEFI 真机固件证据（本机 AAVMF 默认不发布配置表 DTB）。
+
+### 评审身份（第一百一十四轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百二十四笔登记 |
+| `CodeEvidenceCommit` | `d09fff501`（复审修复后的代码；本轮回归在此树上取得） |
+| `DocumentRevision` | 第一百一十四轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上上轮（第一百一十二轮）合并提交 | `6bb26349a`（第一百一十三轮为另一会话的复审批次 `d09fff501`） |

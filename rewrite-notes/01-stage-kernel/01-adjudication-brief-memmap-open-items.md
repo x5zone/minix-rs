@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 17:13 CST（`date` 实测）；**内容轮次：第一百一十三轮——I-29 差异复审的修复落码**（不可读 `reg` 拒绝、MRB × 普通保留冲突、严格来源门、O-11 类型覆盖、rustfmt）。§6.1/§6.3 与 `03` 七十九节记录本轮读数。
+> **重写**：2026-11-06 18:10 CST（`date` 实测）；**内容轮次：第一百一十四轮——复审后全面回归与文档再同步**（16 笔复审修复后的宿主/交叉构建/QEMU 全套件复跑；§2.1～§2.3/§2.5 已按新代码校正：不可读 `reg` 拒绝、MRB × 普通保留按页冲突、严格来源门、`resv_claims` 覆盖合同）。§6.1/§6.3 与 `03` 八十节记录本轮读数。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -78,7 +78,7 @@ boot-shim（UEFI/U-Boot 腿）                 kernel                       VM
 
 两条不变量把两段连起来：
 
-- 第一跳：`decode_*` 不制造任何指向 arena 的 `'static` 引用；arena 的最后读取点是解码（`decoded_payloads_survive_arena_poison` 为证）。
+- 第一跳：`decode_*` 不制造任何指向 arena 的 `'static` 引用；arena 的最后读取点是解码（`test_decoded_payloads_survive_arena_poison` 为证）。
 - 第二跳：`LiveBootstrap ∩ VM-free = ∅` 在**消费边界**核对（`reconcile`），不信任内核自己的记账；内核侧 `classify` 的记录是唯一的扣减来源。
 
 ### 1.4 与 Minix3 C 的关系
@@ -132,7 +132,7 @@ pub struct SourceRecord {
 
 - 可用表 / 保留表各 `DTB_MEMMAP_MAX = 8` 项；
 - MRB `DTB_MRB_MAX = 16` 项；
-- 记录槽 `SOURCE_RECORD_CAP = 8 + 8 + 16 + 8 = 40`，恰好可达；精确重复声明只占记录槽、不占投影槽，超过 40 仍返回 `TooManySourceRecords`，不截断。
+- 记录槽 `DTB_SOURCE_MAX = 8 + 8 + 16 + 8 = 40`，恰好可达（正文此前写作 `SOURCE_RECORD_CAP`，代码里没有这个符号）；精确重复声明只占记录槽、不占投影槽，超过 40 仍返回 `TooManySourceRecords`，不截断。
 
 **跨来源冲突按页拒绝**（第一百一十三轮）：非 `no-map` 的 `/reserved-memory` 与 MRB 重叠时，MRB 的访问禁令与普通保留的「可直达」不能同时兑现；页量化后返回 `MrbConflictingReservation`（`dtb_mrb_and_ordinary_reservation_overlap_is_rejected`、`dtb_mrb_and_reusable_reservation_overlap_is_rejected`、`dtb_mrb_and_reservation_on_the_same_page_conflict`）；`no-map` × MRB 双方都禁止访问，保持兼容（`dtb_mrb_and_no_map_reservation_are_compatible`）。FDT 容器的 MRB 上限与 collector 对齐为 16 条（第 17 条才拒绝，`accepts_exactly_the_collector_reservation_bound`）。`collect_with_panorama()` 额外返回去重后的 `/memory` 全景，供 UEFI 的静态保留类型核对使用（§2.3）。
 
@@ -207,7 +207,7 @@ let record = SourceRecord {
 serializer.push_source(&record).expect("preflight proved the source partition");
 ```
 
-**静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在 `find_platform_sources` 时采集，EBS 配对循环在 `ExitBootServices` **之前**逐页核对：无覆盖或同页出现异类描述符即拒绝启动；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 9 条单测；QEMU 无配置表 DTB，因此该分支在 `platform DTB absent` 腿按「无主张」通过。
+**静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在 `find_platform_sources` 时采集（`resv_claims::capture`），EBS 配对循环在**分类之后、`ExitBootServices` 之前**逐页核对（`check_current`，失败形状 `PairError::ReservationCoverage`）：无覆盖或同页出现异类描述符即拒绝启动，即使另有兼容描述符覆盖同页也算冲突（保守加强）；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。容量固定：主张 `MAX_CLAIMS = 64`、每条主张的覆盖区间 `MAX_INTERVALS = 256`，溢出拒绝不截断。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 9 条单测；默认 ACPI 腿无配置表 DTB（无主张、按空集通过），`DTB_CFGTABLE=1` 腿会真正采集并核对。
 
 ### 2.4 第一跳：`BootHandoffV1`（wire v2）
 
@@ -374,7 +374,7 @@ ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
 | O-08 端口 I/O 地址域 | 裁定 A；专项未实现 | — |
 | O-09 诊断成员存储 | 裁定 A；`dumpdtb` 为诊断输入 | `uefi_helpers::load_dumpdtb_free` |
 | O-10 第二枚负控 | 专项 | — |
-| O-11 配置表 DTB 首读授权 | **三态已落码**；copy-first 未实现 | `uefi_helpers::cross_validate_config_dtb` |
+| O-11 配置表 DTB 首读授权 | **三态已落码**；**静态保留 × EFI 类型覆盖已落码**（`resv_claims`）；copy-first 未实现 | `uefi_helpers::cross_validate_config_dtb`、`resv_claims::{capture,check_current}` |
 | O-12 集合构造与来源完整性 | **a/g 已落码**（记录与逐描述符容量）；c/h/i/j 的集合构造在专项 | `Plan::commit`、`WIRE_SOURCES_CAP` |
 | O-13 固定布局 ABI | **基线与来源记录已落码**（wire v2、第二跳版本 8）；`Attribute` 记录未实现 | `handoff_v1.rs`、`vm_handoff.rs`、`types/boot.rs` |
 
@@ -1034,13 +1034,15 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 | x86_64 全系统 | `test-e5-ds.sh` | **PASS**（12 个 server 出生，`E5f-LABELS 12/12`，DS 传输链四腿通电）→ 第二跳与 VM `reconcile` 在真机成立 |
 | x86_64 双镜像 | `test-sysboot.sh` | **PASS**（多进程引导 + 首次用户态 IPC） |
 | aarch64 UEFI 链路（ACPI 模式） | `test-shim-bootmarks-aarch64.sh` | **PASS**（`platform DTB absent — UEFI map is the only source`；`conv=13 dtb_regions=1` 诊断交叉对照） |
-| aarch64 UEFI 链路（DT 模式） | `DTB_CFGTABLE=1 test-shim-bootmarks-aarch64.sh`（`-machine virt,gic-version=3,acpi=off`） | **PASS**（EDK2 的 `PlatformHasAcpiDtDxe` 改把机器 DTB 发布到配置表，`b1b621d5…` 出现在配置表中；shim 打印 `platform DTB cross-validated against the UEFI map`。这是三态「存在且可解析」分支的真机验证） |
+| aarch64 UEFI 链路（DT 模式） | `DTB_CFGTABLE=1 test-shim-bootmarks-aarch64.sh`（`-machine virt,gic-version=3,acpi=off`） | **PASS**（EDK2 的 `PlatformHasAcpiDtDxe` 改把机器 DTB 发布到配置表；shim 打印 `platform DTB cross-validated against the UEFI map`。三态「存在且可解析」分支真机验证；该腿同时走 `resv_claims::capture` + `check_current`，即 O-11 静态保留 × EFI 类型覆盖的真实固件路径） |
 | riscv64 自引导 | `test-kernel-image-riscv64-bootface.sh` | **PASS**（B1/B2/B3 三点位；`KernelInfo::validate` 第 6 步在真机跑过） |
 | riscv64 U-Boot 全链 | `test-riscv64-uboot-shim.sh` | **PASS**（6/6 标记：shim 进入 → MNXBOOT1 表 → 内核+12 模块 → arena → 接收端 → scheduler；wire v2 与 `decode_sources` 在真机跑过） |
 | riscv64 全系统 | `test-riscv64-boot-full.sh` | **PASS**（12 server 出生，`minix-rs rc: minimal boot script marker`）→ 第二跳与 VM `reconcile` 在 riscv 成立 |
-| 全量套件 | `run_all.sh` | **38 passed / 1 failed / 0 skipped / 0 build failures**；唯一红是 `test-rt-birth-aarch64`，在**本会话基线 `537f5c16b` 上逐字同签名**（`elr=0x140003628 esr=0x92000047 far=0x7ffffffff000`），属既有红，不是本轮回归（证据见 `03` 七十七节） |
+| 全量套件 | `run_all.sh` | **38 passed / 1 failed / 0 skipped / 0 build failures**（第一百一十四轮在复审修复后的代码上复跑，读数不变）；唯一红是 `test-rt-birth-aarch64`，在**基线 `537f5c16b` 上逐字同签名**（`elr=0x140003628 esr=0x92000047 far=0x7ffffffff000`），属既有红（证据见 `03` 七十七节） |
 
 **第一百一十三轮复跑**（代码变更后受影响腿必重跑）：`test-kernel-image-riscv64-bootface`、`test-shim-bootmarks-x86`、`test-shim-bootmarks-aarch64` 三条再次 **PASS**；`boot-shim` 五个目标与 `fw-riscv-uboot` 单特性构建均 ✅。
+
+**第一百一十四轮全面回归**（16 笔复审修复之后）：宿主 339/163/82/863/548 全绿；五个交叉构建目标全通过；`run_all` 38/1/0/0；另跑五条非注册腿——`test-shim-bootmarks-x86`、`test-shim-bootmarks-aarch64`（ACPI）、`DTB_CFGTABLE=1`（DT，含 `resv_claims` 核对）、`test-kernel-image-riscv64-bootface`、`test-riscv64-uboot-shim`（6/6）、`test-riscv64-boot-full`——全部 PASS。
 
 **证据分层：编译通过 ≠ 启动验证 ≠ 新分支被覆盖。** 上述 QEMU 腿证明了四条启动链、两跳交接、内核消费者边界审计与 VM `reconcile` 的真实运行；它们**没有**走到下面这些分支：
 
@@ -1072,7 +1074,7 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 
 **第二层的验收内容已按 §1.6 收紧**，只保留真正属于「资源发现与交接」的五项（平台资源描述随射程移交 `04`，不再作为签字项）：
 
-1. **输入真实性**——**provenance 与 reachability 分开**：I-29 负责各启动 ABI 的**对象身份、地址域、授权范围、阶段与失效点**，以及可复核的来源依据（provenance）；「该地址在当前阶段是否端到端可达、是否满足非受控推测访问限制」（reachability）由 BootEntry 与各架构 adapter 负责。**配置表 DTB 指针存在，不能推出它可读**——即便 UEFI 规定该指针按物理地址解释且 DTB 必须位于 `EfiACPIReclaimMemory`，可达性仍要单独证明。aarch64 UEFI 配置表 DTB 的三态规则已落码（不存在→仅按内存图；已解析→`/memory` 必须覆盖每条 conventional 跨度，否则 halt；存在但不可用→halt），实现为 `uefi_helpers::cross_validate_config_dtb`，两个 UEFI 入口各调一次；QEMU 的 AAVMF 不提供配置表 DTB，真机日志逐字为 `platform DTB absent`，所以三态只验证了「不存在」一条（见 §6.3、§6.4）。
+1. **输入真实性**——**provenance 与 reachability 分开**：I-29 负责各启动 ABI 的**对象身份、地址域、授权范围、阶段与失效点**，以及可复核的来源依据（provenance）；「该地址在当前阶段是否端到端可达、是否满足非受控推测访问限制」（reachability）由 BootEntry 与各架构 adapter 负责。**配置表 DTB 指针存在，不能推出它可读**——即便 UEFI 规定该指针按物理地址解释且 DTB 必须位于 `EfiACPIReclaimMemory`，可达性仍要单独证明。aarch64 UEFI 配置表 DTB 的三态规则已落码（不存在→仅按内存图；已解析→`/memory` 必须覆盖每条 conventional 跨度，否则 halt；存在但不可用→halt），实现为 `uefi_helpers::cross_validate_config_dtb`，两个 UEFI 入口各调一次。`acpi=off` 腿让 EDK2 改为发布 DTB 配置表，`cross-validated` 分支已在真机通过；默认 ACPI 腿验证「不存在」；仍只有「存在但不可用」一条缺真机证据（见 §6.3、§6.4）。
 2. **来源保真**：每条启动路径的 `SourceRecord` 生产、保存与**传递**。三条 DTB 政策路径（riscv bootface、aarch64 直启、riscv U-Boot）都生成记录、在投影前审计、并写入 `KernelInfo.memmap_sources`；U-Boot 腿的记录经 v1 来源分区跨镜像，接收端落进内核 `.bss` 后由 `KernelInfo::validate` 第 6 步在消费者边界重跑覆盖审计。**UEFI 的逐描述符记录已接入**：EBS 配对循环为每个产出入普通表的描述符写一条 `SourceOrigin::UefiDescriptor { index }` 记录（范围=分类器实际发出的区间），接收端与 DTB 腿走同一个 `decode_sources` 与消费者边界审计；容量 256 = `MAX_MAP_DESCRIPTORS`。`Excluded`/`DevicePath` 描述符不产出投影字节，因此没有记录（计数单独打印），这是唯一登记在案的省略。
 3. **冲突与生命周期**：DTB／UEFI 静态保留的交叉验证、MRB、`no-map`、类型政策各自语义独立；首读与解析后拒绝两个决定已分开（O-04／O-11 的冲突已消）；O-01 第一版采静态处置表 + 损失声明，`ReservedReusable` 保持独立类型。
 4. **分配所有权**：候选集与交付集不得混称。§2.8 的时间线已证明两件事——**候选集合包含 bump 池**、**首次分配早于任何扣减**；UEFI 腿的根页与 bump 靠 `assert_bootstrap_outside_memmap` 挡在候选之外，**自引导两腿的根页与页表 bump 都取自 `/memory` 内的固定池，按现有披露事实应视为已落入候选集合**（除非补出 `select_multi` 内部的过滤证据）。验收三枚：`BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅`、`BootRootPage ∩ FirstVmBootAllocatorCandidates = ∅`、`FirstVmAllocatedPages ∩ (BootBumpRange ∪ BootRootPage) = ∅`；第三枚是结果断言，前两枚替代不了。**第一百零四轮已补**：`test_first_vm_allocation_never_lands_in_bump_or_root` 走生产的 `select_multi` + `VmBootAllocator`，取尽 703 页并断言全部避开 bump 与根页。另加 `FREE_MEMMAP` 去留裁决（它零读者、也不是候选输入）。**第一百零一轮已落码**：排除清单从「内核 + 模块」扩成 `vm_boot_exclusions`（内核、模块、根页、bump，容量 `NR_BOOT_MODULES + 3`），真实与 mock 两个分支共用；单测 `test_vm_boot_exclusions_cover_kernel_root_and_bump` 覆盖四类来源与缺省情形。**已补**：第三枚结果断言就是 `test_first_vm_allocation_never_lands_in_bump_or_root`（真实 `select_multi` + `VmBootAllocator`，703 页全部避开）；QEMU 四条启动链与全系统腿已跑（§6.3），第二跳与 VM `reconcile` 在 x86 与 riscv 全系统腿上成立。
