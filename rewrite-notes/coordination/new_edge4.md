@@ -6063,3 +6063,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 提交 `dbbfbfd18`（代码+测试）；本笔（文档）与主简报同一次文档提交。认领 `qorder129`：ff 合并后释放。
 - 仍开放：O-12k 的按最小描述符尺寸推导缓冲上界；`PolicyProjection` 若需要成为独立结果，另立条目（本项不新增引擎）。
 - 补记（2026-11-07）：正文两处旧口径修正——§2.3 代码节选的构造器改为 `SourceRange::new`，§2.1 的 128 位末端说明改为 `SourceRange` 存数值、`PhysicalRange` 只承载物理域。
+
+### 第三百四十二笔（01 阶段 · I-29 第一百二十七轮：地址域唯一化、阶段名与 O-11 分路径合同）
+
+- 代码：`AddressDomain::Virtual` 注释明确为保留 wire 值、当前无生产路径；新增多页 MRB 中间页 DTB 用例 `the_dtb_exception_applies_only_to_the_intersecting_page`（三页 MRB，中间页 ACPI reclaim 仅在该页生效）。无运行时行为变化；boot-shim 109 / test-all 121。
+- 文档：`AddressDomain` 统一为 wire v7 的 Physical/Virtual/UefiMmioPortSpace，删除 O-12g 旧 `DescriptorAddressDomain`；Virtual 与 `virtual_start` 分离说明。阶段名收准：`KernelInfo.memmap` 是内存图可用投影（UEFI 腿固件标号已排除 shim 分配；直启腿 `/memory` 投影仍含 bootface 根页与 bump）→ 经 `vm_boot_exclusions` 后是分配候选；`PmmSourceCandidatePages` 指后者，O-12d 仅语义说明。O-11 的共同合同与 UEFI/三条直启路径实现分开，标题改「header 与 body 的单次读取顺序」，不可变性结束时间按路径（UEFI body 复制完成 / 直启解析完成）。第一跳补 little-endian；`OtherStartupObject=0`；O-02a 访问需求行标注已移交 BootRoot-3/分页专项；签字表 API 名改 `SourceRecord::physical_range()`；DocumentRevision 126→127。
+- 回归：宿主 boot-shim 109、test-all 121；其余矩阵沿用 341/175/863/548。QEMU 未复跑（只新增单元测试与文档，运行时行为未变；上一轮六腿证据仍适用）。
+- 提交 `cc81020bb`（测试+注释）；本笔（文档）。认领 `qorder131`：合并后释放。
+- 文档门：lint 0、引用 0、锚点 3（2 resolved、1 处既有 multi-def）、承载 PASS；正文 1193 行 / 97821 字符、围栏 42 偶、表格 39 块 0 不一致。
+- 仍开放：O-12k 的按最小描述符尺寸推导缓冲上界；评审方签字。
