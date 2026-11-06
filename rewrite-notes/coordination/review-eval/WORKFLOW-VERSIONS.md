@@ -23,6 +23,9 @@
 | C-05 | 关键 P0 的复验由面板冷启动实例承担，替代同 agent VERIFY-CROSS | `prompt/review-rules/review-process.md:1916-1926` 承认同 agent 局限 | `prompt/review-rules/review-process.md` Step 5.6 | 候选，待 V2 边界 |
 | C-06 | 合并 `structure.md` §11 复述与 V5-B 结构编辑 | 两者都在问“读者拿到什么结构” | `prompt/review-rules/review-process.md:755-760`、`prompt/DOC-ITER-WORKFLOW.md:290` | 候选，待 V2 边界 |
 | C-07 | 模式库单一源：`review-scan/checks/patterns.md` 由权威源生成，不再手抄子集 | F-B 三副本漂移，`prompt/WORKFLOW-OPEN-ITEMS.md:317-325` | `tools/generate-derived-skills.sh`、`prompt/skill/review-scan/checks/patterns.md` | 候选，待工具排期 |
+| C-08 | 材料违规分级：现有实现或 Ch3/Ch4 正文 = 作废；清单外 C 真值 = 降级并标注；清单内材料 = 正常 | D01 P-DESIGN D1 读了清单外 C 真值，协议只有“作废”一档，主 agent 先标了规则外的 `PARTIAL-VIOLATION` | `prompt/review-rules/review-panel.md` §6 | V2 候选，待 D02 闭环复核 |
+| C-09 | 修改公共入口必须枚举调用方，并跑对应形态门（至少编译检查，能跑则 QEMU） | D01 DESIGN-10 在 `arch_boot_finish` 加 `validate()`，三个 QEMU 测试内核会 panic；meta-review N2 | `prompt/skill/review-loop.md` L3/L4、`review-panel.md` P-FACT | V2 候选，待 D02 闭环复核 |
+| C-10 | 测试计数用 crate 全量 `src/*.rs` 或 `cargo test -- --list`，不以文档点名的文件表为清单 | D01 FACT-09 按 15 个文件复算 97/144，实际 125/175；meta-review N1 判 B-08 复发 | `prompt/skill/review-loop.md` L4、`review-evals.md` | V2 候选，待 D02 闭环复核 |
 
 ## 三、减法账本
 
@@ -53,6 +56,15 @@
 
 - `check-review-rules.sh`：Codex 正文漂移检查用 `grep -c '^### '`，零命中时 `grep` 退出 1，被 `set -e` 打断，导致新增无三级标题的技能时整门静默失败。改为 `grep -c ... || true`。
 - `diff-trae-skills.sh`：只枚举 `review-*-skill.md`，漏掉 `review-loop.md`。枚举条件补上 `review-loop`，源与派生计数从 9 变 10。
+- `eval-trace-check.py`：新增 `--panel-dir`；未给时先在 run 目录找 `panel/`，再向上找 `tmp/review-eval/<stage>/<doc>/panel`。这样 `review-loop.md` 的默认命令可以直接跑，不要求把原始面板输出复制进入库目录。
+
+### V1 首跑结果（D01）
+
+- 发现 85 条：① 37 修、② 48 转出、③ ④ ⑤ 各 0；`re-litigation` 0、`adjacent 阻塞` 0。
+- meta-review：总体 `IMPROVED`（V1 基线已建立），运行质量 `NOT PASS`（抽样 24/85 = 28.2%，处置一致性 87.5%）。
+- 三条否决已补修：测试计数改为 crate 全量 125/175；`arch_boot_finish` 改用 `validate_before_tables` 并编译检查 7 个 QEMU 测试内核；`kernel_info.rs` 的 `reserved_regions` 注释同步。
+- 新增盲区 B-14（测试计数口径）、B-15（公共入口调用方枚举）、B-16（材料违规分级）；对应候选 C-08/C-09/C-10。
+- V1 保持生效；V2 晋升暂缓到 D02 闭环复核之后，避免一次首跑就改三条规则。
 
 ## 五、回退记录
 

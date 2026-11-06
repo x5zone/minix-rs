@@ -259,7 +259,7 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
     return ids
 
 
-def check_run_dir(run_dir: Path) -> Report:
+def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
     report = Report()
     if not run_dir.is_dir():
         report.fail("file", f"run 目录不存在: {run_dir}")
@@ -268,7 +268,24 @@ def check_run_dir(run_dir: Path) -> Report:
     loop_text = read_text(run_dir / "loop.md", report, "loop.md")
     metrics_text = read_text(run_dir / "metrics.md", report, "metrics.md")
     ledger_text = read_text(run_dir / "defect-ledger.md", report, "defect-ledger.md")
-    panel_ids = collect_panel_findings(run_dir / "panel", report)
+    if panel_dir is None:
+        panel_dir = run_dir / "panel"
+        if not panel_dir.is_dir():
+            # 规范布局把原始面板输出放在 tmp/review-eval/<stage>/<doc>/panel；
+            # 从 run 目录向上找第一个存在该相对路径的祖先（仓库根）。
+            for parent in run_dir.resolve().parents:
+                candidate = (
+                    parent
+                    / "tmp"
+                    / "review-eval"
+                    / run_dir.parent.name
+                    / run_dir.name
+                    / "panel"
+                )
+                if candidate.is_dir():
+                    panel_dir = candidate
+                    break
+    panel_ids = collect_panel_findings(panel_dir, report)
 
     if loop_text is not None:
         check_loop_sections(loop_text, report)
@@ -400,6 +417,10 @@ def main() -> int:
         description="review-loop 轨迹完整性检查",
     )
     parser.add_argument("run_dir", nargs="?", help="run 目录")
+    parser.add_argument(
+        "--panel-dir",
+        help="面板原始输出目录（默认 <run-dir>/panel；规范布局在 tmp/review-eval/ 下）",
+    )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     parser.add_argument("--self-test", action="store_true", help="运行内置自测")
     args = parser.parse_args()
@@ -410,7 +431,8 @@ def main() -> int:
         parser.print_help()
         return 2
 
-    report = check_run_dir(Path(args.run_dir))
+    panel_dir = Path(args.panel_dir) if args.panel_dir else None
+    report = check_run_dir(Path(args.run_dir), panel_dir)
     print_report(report, args.json)
     return 1 if report.failed else 0
 
