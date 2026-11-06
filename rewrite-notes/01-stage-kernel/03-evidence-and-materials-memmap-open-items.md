@@ -2713,6 +2713,49 @@ QEMU 腿（本机镜像无 qemu）：真实固件的描述符数量、`Excluded`
 
 `minix-types` 339、`minix-boot` 152、`boot-shim --features uefi` 72+5、`minix-kernel --features mock` 863 / 0 / 8、`minix-vm` 548；`boot-shim --features uefi` 编译通过。
 
+## 七十七、第一百一十一轮：QEMU 全套件上机读数（四条启动链）
+
+### 环境
+
+`qemu-system-{x86_64,aarch64,riscv64}` 8.2.2（Debian 1:8.2.2+ds-0ubuntu1.18）、AAVMF、OpenSBI、`u-boot-qemu`、`dtc`/`fdtput`、`mtools`/`dosfstools`、宿主 `rustc 1.94.1`（与 CI 镜像同版本，`x86_64-unknown-uefi` / `aarch64-unknown-uefi` / `aarch64-unknown-none` / `riscv64gc-unknown-none-elf` / `x86_64-unknown-none` 均已安装）。
+
+### 交叉构建
+
+```
+cargo build -j 1 -p kernel-image --target aarch64-unknown-none --features fw-aarch64-none --release       ✅
+cargo build -j 1 -p kernel-image --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release ✅
+boot-shim 三目标由 QEMU 脚本与 xtask image 构建链覆盖                                                      ✅
+```
+
+### 单腿读数
+
+| 脚本 | 结果行 |
+|---|---|
+| `test-kernel-image-riscv64-bootface.sh` | `### TEST_RESULT: PASS test-kernel-image-riscv64-bootface ###`（B1/B2/B3 全 PASS） |
+| `test-riscv64-uboot-shim.sh` | `RESULT: PASS (D-73 U-Boot → boot-shim → kernel-uboot full chain: 6/6 markers, entering scheduler)` |
+| `test-shim-bootmarks-aarch64.sh` | 两行路标 + `platform DTB absent — UEFI map is the only source` + `arena=0x5c336000 conv=13 res=20` |
+| `test-shim-bootmarks-x86.sh` | 两行路标 + `platform DTB absent` + `arena=0x1dfd7000 conv=13 res=113` + `entering scheduler` |
+| `test-sysboot.sh` | `RESULT: PASS (multi-process boot + first user↔user IPC on real machine — S42 ④/C-27)` |
+| `test-e5-ds.sh` | `E5f-LABELS 12/12` + `RESULT: PASS (DS 传输链四腿真机通电…)` |
+| `test-riscv64-boot-full.sh` | `### TEST_RESULT: PASS riscv64 full boot (marker reached) ###` |
+
+### 全量套件
+
+`run_all.sh`：**38 passed / 1 failed / 0 skipped / 0 build failures**。唯一失败：
+
+```
+### TEST_RESULT: FAIL test-rt-birth-aarch64 ###
+[svc] fatal: not an SVC ec=0x24 esr=0x92000047 elr=0x140003628 far=0x7ffffffff000
+```
+
+**基线对照**：在会话起点 `537f5c16b` 的独立工作树重跑同一脚本，得到逐字同签名（同 `elr`/`esr`/`far`）→ 既有红，不是本轮改动引入。该测试此前曾在全量套件中全绿，历史见 `rewrite-notes/coordination/PARALLEL-20261018-C-KERN-QEMU.md`。
+
+### 覆盖边界（未走到的分支）
+
+- 配置表 DTB「存在且可解析」正例与「存在但坏」负例：AAVMF 本机不提供配置表 DTB（日志逐字 `platform DTB absent`），三态只执行了「不存在」；
+- UEFI 真实固件描述符数达到 256 上限：容量由宿主测试与写前预检覆盖；
+- `Excluded`/`DevicePath` 的真实分布：不产记录，宿主测试覆盖计数。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2789,3 +2832,14 @@ QEMU 腿（本机镜像无 qemu）：真实固件的描述符数量、`Excluded`
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百零九轮）合并提交 | `36fb62c35` |
+
+### 评审身份（第一百一十一轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百一十八笔登记 |
+| `CodeEvidenceCommit` | `4567ed736`（QEMU 38/1/0/0 与交叉构建在此提交的树上取得） |
+| `DocumentRevision` | 第一百一十一轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百一十轮）合并提交 | `c2d767d4a` |

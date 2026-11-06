@@ -12,6 +12,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百一十一轮（按当前代码重写；QEMU 全套件上机）**
+
+- 正文重写为「设计—实现—测试保证」：§0 一页速览（交付物表 + 四条启动腿表）、§1 四层模型与两跳对象图、§2 逐构件实现（每节贴真实代码或常量）、§2.8 与分页专项的交界、§5 实现状态索引表（O-01…O-13 逐项状态 + 代码锚点）、§6 以宿主/交叉构建/QEMU 实测重写。§3 不变量与 §7.1 冻结规则保留原文；§5 各条裁定正文保留，只更新状态。
+- QEMU：本机 QEMU 8.2.2 + AAVMF/OpenSBI/U-Boot 全套就位。四条启动链与全系统腿全部通过：x86 UEFI 链路、x86 全系统（12 server + `E5f-LABELS 12/12`）、x86 双镜像、aarch64 UEFI 链路、riscv 自引导、riscv U-Boot 全链（6/6 标记）、riscv 全系统。`run_all.sh` 读数 **38 passed / 1 failed / 0 skipped / 0 build failures**；唯一红 `test-rt-birth-aarch64` 在本会话基线 `537f5c16b` 上逐字同签名（`elr=0x140003628 esr=0x92000047 far=0x7ffffffff000`），属既有红。
+- 测试内核补字段：`os/qemu-tests/test-kernels/` 下 30 处 `KernelInfo` 字面量缺 `memmap_sources`，`test-sysboot` 构建 E0063 失败——QEMU 套件第一次完整跑就抓到（宿主单测覆盖不到这些包），已修（`4567ed736`）。
+- 仍未验证（写进 §6.4）：配置表 DTB 的「存在且可解析」与「存在但坏」两条分支（AAVMF 不提供配置表 DTB，真机日志逐字 `platform DTB absent`）；UEFI 真实固件达到 256 条描述符上限；`Excluded`/`DevicePath` 的真实分布。
+
 **第一百一十轮（评审修正）**
 
 - 只读评审 537f5c16b..36fb62c35 的代码与文档差异：P0 为零；两处 P1 均为文档/注释漂移——`ARENA_CAP` 扩到 7 页后四处注释仍写 four-page；教学构件承载门判 §2 为“分析章无码”。两处都已修。
