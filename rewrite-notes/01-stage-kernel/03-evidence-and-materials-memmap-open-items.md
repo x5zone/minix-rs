@@ -2835,6 +2835,7 @@ test-riscv64-boot-full.sh                     → PASS（rc 标记）
 
 - `DTB_CFGTABLE=1` 腿同时走 `resv_claims::capture`（`find_platform_sources` 内，EBS 前）与 `check_current`（分类后、EBS 前），即 O-11 类型覆盖合同在真实固件路径上被实际执行；默认 ACPI 腿无配置表 DTB，按空主张通过。
 - 复审新增的 20 条单测（`minix-boot` 11 条、`boot-shim` 10 条，含 `resv_claims` 9 条）已在宿主读数中。
+- 合并后 HEAD 复跑受影响包（另一线 concurrent 的 clippy 批次只做 import 归位与 rustfmt）：`minix-kernel --features mock` 863 / 0 / 8、`minix-vm` 548、`minix-vfs` 538、`minix-sys` 345，全部通过，确认无行为变化。
 
 ### 评审身份（第一百零二轮）
 
