@@ -5910,3 +5910,9 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 
 - 复审自检发现：`resv_claims::check` 直接乘 `number_of_pages * 4096`，而 `Excluded`/`DevicePath` 描述符不过分类器几何门；极大页数在 debug 构建 panic、release 回绕。改为 `checked_mul`，溢出即视为不覆盖任何主张页，补负控 `overflowing_descriptor_geometry_is_ignored`（boot-shim 82）。
 - 认领：`I-29 qorder87`，状态 ✅：已 ff 合并为 `fc7759e16`，认领已释放。
+
+### 第三百二十二笔（01 阶段 · I-29 复审：测试文档注释归位 + 长函数登记）
+
+- `d4014d924 docs(kernel)`：`vm_handoff` 的单段扣减说明与 `boot.rs` 的 v6 说明移回各自描述的测试；注释归位后 kernel/types 测试复跑通过。
+- 正文 §7「已登记的实施清理」新增 ⑦：`collect_inner` 约 350 行与两段裁剪样板重复，按「非阻断发现登记、不追改」留待专门重构。
+- 认领：`I-29 qorder88`，状态 ✅：已 ff 合并为 `d4014d924`，认领已释放。
