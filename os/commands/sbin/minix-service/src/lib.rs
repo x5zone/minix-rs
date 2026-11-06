@@ -486,12 +486,116 @@ pub struct RsStartDefaults {
     pub quantum: i32,
 }
 
+/// Every statement keyword `do_service` dispatches on (`parse.h:1-26`,
+/// dispatch at `parse.c:1063-1150`). A statement's value list ends at the
+/// next one of these: C keeps each statement in its own `config_t` chain,
+/// so a following keyword is the next statement, never a value.
+const STATEMENT_KEYWORDS: [&str; 17] = [
+    "class",
+    "control",
+    "cpu",
+    "descr",
+    "domain",
+    "io",
+    "ipc",
+    "irq",
+    "pci",
+    "priority",
+    "quantum",
+    "scheduler",
+    "sigmgr",
+    "system",
+    "type",
+    "uid",
+    "vm",
+];
+
+/// C `strtoul(s, &check, base)` for the two bases the walker uses (`0` for
+/// `irq`, `16` for `io`), returning the converted value and the number of
+/// bytes consumed. The `check[0] == '\0'` contract stays with the caller,
+/// which compares the count with the word's length; when no digit is
+/// consumed the count is 0, mirroring `check` being left at the string
+/// start (so only the empty word passes that test).
+///
+/// Base 0 selects octal on a leading `0` and hex on `0x`/`0X` with at
+/// least one hex digit after it; base 16 accepts the same `0x` prefix.
+/// A sign is consumed and folded with wrapping negation, as `strtoul`
+/// does; overflow saturates at `ULONG_MAX` like the C library.
+fn strtoul_prefix(s: &str, base: u32) -> (u64, usize) {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let mut neg = false;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        neg = b[i] == b'-';
+        i += 1;
+    }
+    let mut radix = base;
+    let hex_prefix = i + 2 < b.len()
+        && b[i] == b'0'
+        && (b[i + 1] | 0x20) == b'x'
+        && b[i + 2].is_ascii_hexdigit();
+    if hex_prefix && (radix == 0 || radix == 16) {
+        radix = 16;
+        i += 2;
+    } else if radix == 0 {
+        radix = if i < b.len() && b[i] == b'0' { 8 } else { 10 };
+    }
+    let start = i;
+    let mut acc: u64 = 0;
+    while i < b.len() {
+        let Some(d) = (b[i] as char).to_digit(radix) else {
+            break;
+        };
+        acc = acc
+            .saturating_mul(u64::from(radix))
+            .saturating_add(u64::from(d));
+        i += 1;
+    }
+    if i == start {
+        return (0, 0);
+    }
+    (if neg { acc.wrapping_neg() } else { acc }, i)
+}
+
+/// C `do_io`'s `base[:len]` pair (`parse.c:497-517`): base 16 `strtoul`, an
+/// optional `:` and a second hex `strtoul` for the length (default 1), then
+/// `check[0] == '\0'`. Both land in `unsigned` fields, so the caller
+/// truncates to 32 bits exactly as C's assignment does. The one shape worth
+/// spelling out: `base:` leaves an empty tail, and `strtoul("")` reports
+/// `check` on the empty string, so C accepts it with length 0.
+fn parse_io_range(word: &str) -> Option<(u64, u64)> {
+    let (base, used) = strtoul_prefix(word, 16);
+    let mut idx = used;
+    let mut len = 1u64;
+    if word.as_bytes().get(idx) == Some(&b':') {
+        let rest = &word[idx + 1..];
+        if rest.is_empty() {
+            idx = word.len();
+        } else {
+            let (parsed, used_rest) = strtoul_prefix(rest, 16);
+            if used_rest == 0 {
+                return None;
+            }
+            len = parsed;
+            idx += 1 + used_rest;
+        }
+    }
+    if idx != word.len() {
+        return None;
+    }
+    Some((base, len))
+}
+
 /// The do_config keyword walk over the parsed lines (`parse.c:1177-1263`
 /// walk; the scalar keywords this slice covers are `uid`, `priority`,
-/// `quantum`, `sigmgr`, `scheduler`, `descr` — the device-family keywords
-/// (`irq`/`io`/`pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`net`/
-/// `domain`) are the registered next slice). C's per-branch `fatal` faces
-/// become `ConfigError` with the same wording.
+/// `quantum`, `sigmgr`, `scheduler`, `descr`, and the device-family
+/// keywords `irq` and `io` — the remaining device-family keywords
+/// (`pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`domain`) are the
+/// registered next slice). C's per-branch `fatal` faces become
+/// `ConfigError` with the same wording.
 pub fn do_config_walk(
     lines: &[minix_proctools::configfile::ConfigEntry],
     defaults: &RsStartDefaults,
@@ -507,6 +611,10 @@ pub fn do_config_walk(
         quantum: defaults.quantum,
         descr: None,
         label: args.label.clone(),
+        nr_irq: 0,
+        irq: Vec::new(),
+        nr_io: 0,
+        io: Vec::new(),
     };
     for line in lines {
         if !line.is_sub() {
@@ -542,7 +650,6 @@ pub fn do_config_walk(
         // (do_service → do_uid/do_priority/…); a scalar keyword takes
         // exactly one value and the next word must be a keyword or the end
         // (`do_uid`'s `cpe->next != NULL` fatal, parse.c:120-123).
-        let keywords = ["uid", "priority", "quantum", "sigmgr", "scheduler", "descr"];
         let mut index = 0usize;
         while index < flat.len() {
             let word = flat[index];
@@ -555,7 +662,7 @@ pub fn do_config_walk(
                         .unwrap_or_else(|| resolve_uid(&value.word));
                     if flat
                         .get(index + 2)
-                        .is_some_and(|next| !keywords.contains(&next.word.as_str()))
+                        .is_some_and(|next| !STATEMENT_KEYWORDS.contains(&next.word.as_str()))
                     {
                         return Err(ConfigError {
                             line: word.line,
@@ -620,14 +727,21 @@ pub fn do_config_walk(
                 }
                 "irq" => {
                     // C `do_irq` (`parse.c:406-461`): the values run to the
-                    // next keyword; `none` alone clears; `all` alone sets
-                    // the sentinel.
+                    // next statement keyword; `NONE` only ends the list;
+                    // `ALL` sets the sentinel; everything else is
+                    // `strtoul(word, &check, 0)` — base 0, so `0x10` is 16
+                    // and `010` is 8 — stored into an `int`.
                     index += 1;
                     let mut first = true;
-                    let mut irqs: Vec<i32> = Vec::new();
+                    // C writes at `rss_nr_irq` and `do_config` memsets the
+                    // struct only once, so a repeated `irq` statement
+                    // appends to what earlier ones stored; `NONE` leaves
+                    // the count alone (`parse.c:428-434`, `:454-460`).
+                    let mut count = out.nr_irq;
+                    let mut irqs: Vec<i32> = core::mem::take(&mut out.irq);
                     while index < flat.len() {
                         let w = flat[index];
-                        if keywords.contains(&w.word.as_str()) {
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
                             break;
                         }
                         if w.is_string() || w.is_sub() {
@@ -636,8 +750,13 @@ pub fn do_config_walk(
                                 message: String::from("do_irq: unexpected string"),
                             });
                         }
-                        if w.word == "none" {
-                            if !first || index + 1 < flat.len() {
+                        // C's `cpe->next` spans this statement's list only;
+                        // in the flat walk that list ends at the next
+                        // statement keyword.
+                        let at_list_end = index + 1 >= flat.len()
+                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                        if w.word == "NONE" {
+                            if !first || !at_list_end {
                                 return Err(ConfigError {
                                     line: w.line,
                                     message: String::from(
@@ -645,12 +764,11 @@ pub fn do_config_walk(
                                     ),
                                 });
                             }
-                            irqs.clear();
                             index += 1;
                             break;
                         }
-                        if w.word == "all" {
-                            if !first || index + 1 < flat.len() {
+                        if w.word == "ALL" {
+                            if !first || !at_list_end {
                                 return Err(ConfigError {
                                     line: w.line,
                                     message: String::from(
@@ -658,36 +776,45 @@ pub fn do_config_walk(
                                     ),
                                 });
                             }
-                            out.nr_irq = RSS_IRQ_ALL;
+                            count = RSS_IRQ_ALL;
                             index += 1;
                             break;
                         }
-                        let v: i32 = w.word.parse().map_err(|_| ConfigError {
-                            line: w.line,
-                            message: format!("do_irq: bad irq '{}'", w.word),
-                        })?;
-                        if irqs.len() >= RSS_NR_IRQ as usize {
+                        let (v, used) = strtoul_prefix(&w.word, 0);
+                        if used != w.word.len() {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!("do_irq: bad irq '{}'", w.word),
+                            });
+                        }
+                        if count >= RSS_NR_IRQ {
                             return Err(ConfigError {
                                 line: w.line,
                                 message: format!("do_irq: too many IRQs (max {RSS_NR_IRQ})"),
                             });
                         }
-                        irqs.push(v);
+                        // C assigns `unsigned long` to `int`: keep the low
+                        // 32 bits, sign included.
+                        irqs.push(v as u32 as i32);
+                        count += 1;
                         first = false;
                         index += 1;
                     }
-                    out.nr_irq = irqs.len() as i32;
+                    out.nr_irq = count;
                     out.irq = irqs;
                 }
                 "io" => {
-                    // C `do_io` (`parse.c:461-530`): `base[:len]` hex pairs;
-                    // `none`/`all` same shapes as do_irq.
+                    // C `do_io` (`parse.c:461-530`): `base[:len]` pairs in
+                    // hex (`strtoul(..., 0x10)`, the `0x` prefix allowed);
+                    // `NONE`/`ALL` take the same shapes as `do_irq`, and a
+                    // repeated statement appends like `do_irq`.
                     index += 1;
                     let mut first = true;
-                    let mut ranges: Vec<(u64, u64)> = Vec::new();
+                    let mut count = out.nr_io;
+                    let mut ranges: Vec<(u64, u64)> = core::mem::take(&mut out.io);
                     while index < flat.len() {
                         let w = flat[index];
-                        if keywords.contains(&w.word.as_str()) {
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
                             break;
                         }
                         if w.is_string() || w.is_sub() {
@@ -696,8 +823,10 @@ pub fn do_config_walk(
                                 message: String::from("do_io: unexpected string"),
                             });
                         }
-                        if w.word == "none" {
-                            if !first || index + 1 < flat.len() {
+                        let at_list_end = index + 1 >= flat.len()
+                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                        if w.word == "NONE" {
+                            if !first || !at_list_end {
                                 return Err(ConfigError {
                                     line: w.line,
                                     message: String::from(
@@ -705,57 +834,39 @@ pub fn do_config_walk(
                                     ),
                                 });
                             }
-                            ranges.clear();
                             index += 1;
                             break;
                         }
-                        if w.word == "all" {
-                            if !first || index + 1 < flat.len() {
+                        if w.word == "ALL" {
+                            if !first || !at_list_end {
                                 return Err(ConfigError {
                                     line: w.line,
-                                    message: String::from(
-                                        "do_io: ALL keyword not allowed in list",
-                                    ),
+                                    message: String::from("do_io: ALL keyword not allowed in list"),
                                 });
                             }
-                            out.nr_io = RSS_IO_ALL;
+                            count = RSS_IO_ALL;
                             index += 1;
                             break;
                         }
-                        // `base[:len]` in hex (strtoul base 0x10, `parse.c:503`).
-                        let (base_s, len_s) = match w.word.split_once(':') {
-                            Some((b, l)) => (b, Some(l)),
-                            None => (w.word.as_str(), None),
-                        };
-                        let base = u64::from_str_radix(base_s, 0x10).map_err(|_| {
-                            ConfigError {
+                        let Some((base, len)) = parse_io_range(&w.word) else {
+                            return Err(ConfigError {
                                 line: w.line,
                                 message: format!("do_io: bad I/O range '{}'", w.word),
-                            }
-                        })?;
-                        let len = match len_s {
-                            Some(l) => u64::from_str_radix(l, 0x10).map_err(|_| {
-                                ConfigError {
-                                    line: w.line,
-                                    message: format!(
-                                        "do_io: bad I/O range '{}'",
-                                        w.word
-                                    ),
-                                }
-                            })?,
-                            None => 1,
+                            });
                         };
-                        if ranges.len() >= RSS_NR_IO as usize {
+                        if count >= RSS_NR_IO {
                             return Err(ConfigError {
                                 line: w.line,
                                 message: format!("do_io: too many I/O ranges (max {RSS_NR_IO})"),
                             });
                         }
-                        ranges.push((base, len));
+                        // C stores into `unsigned base` / `unsigned len`.
+                        ranges.push((u64::from(base as u32), u64::from(len as u32)));
+                        count += 1;
                         first = false;
                         index += 1;
                     }
-                    out.nr_io = ranges.len() as i32;
+                    out.nr_io = count;
                     out.io = ranges;
                 }
                 _ => {
@@ -889,5 +1000,126 @@ mod do_config_tests {
         let args = parse_args(&["up", "/bin/x"]).unwrap();
         let got = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap();
         assert_eq!(got.descr.as_deref(), Some("the x server"));
+    }
+
+    /// `walk(text)` with the C defaults — the harness the device-family
+    /// tests below share.
+    fn walk(text: &str) -> Result<BuiltRsStart, minix_proctools::configfile::ConfigError> {
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/bin/x"]).unwrap();
+        do_config_walk(&lines, &defaults, &args, Some(PW))
+    }
+
+    #[test]
+    fn irq_values_take_the_c_strtoul_base_zero_face() {
+        // `parse.c:447`: `strtoul(word, &check, 0)` — base 0 selects hex
+        // on `0x`, octal on a leading `0`, decimal otherwise; the value
+        // lands in an `int`, so a negative word keeps its low 32 bits.
+        let got = walk("service x {\n  irq 4 0x10 010 -1;\n}\n").unwrap();
+        assert_eq!(got.nr_irq, 4);
+        assert_eq!(got.irq, vec![4, 16, 8, -1]);
+    }
+
+    #[test]
+    fn irq_none_and_all_are_the_uppercase_keywords() {
+        // `KW_NONE`/`KW_ALL` are `"NONE"`/`"ALL"` (`parse.h:18-20`);
+        // `strcmp` makes them case-sensitive, and real system.conf spells
+        // them uppercase (`minix3/etc/system.conf:18`, `:179`).
+        let got = walk("service x {\n  irq NONE;\n}\n").unwrap();
+        assert_eq!(got.nr_irq, 0);
+        assert!(got.irq.is_empty());
+        // The real system.conf shape: `irq NONE;` followed by the next
+        // statement — `NONE` is last in its own list, so this is legal.
+        let got = walk("service x {\n  irq NONE;\n  io ALL;\n}\n").unwrap();
+        assert_eq!(got.nr_irq, 0);
+        assert_eq!(got.nr_io, RSS_IO_ALL);
+        let got = walk("service x {\n  irq ALL;\n}\n").unwrap();
+        assert_eq!(got.nr_irq, RSS_IRQ_ALL);
+        assert!(got.irq.is_empty());
+        // Lowercase is not the C keyword: `strtoul("none", ..., 0)` parses
+        // no digits, leaving `check` non-empty — the bad-irq fatal.
+        let e = walk("service x {\n  irq none;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_irq: bad irq 'none'");
+    }
+
+    #[test]
+    fn io_ranges_are_hex_pairs_with_the_0x_prefix_allowed() {
+        // `parse.c:502-517`: `strtoul(word, &check, 0x10)` for the base and
+        // an optional `:` plus a second hex `strtoul` for the length
+        // (default 1). Real shapes from system.conf: `3f0:8`, `cf8:8`,
+        // `70:2`, and a bare base.
+        let got = walk("service x {\n  io 3f0:8 cf8:8 70:2 3f9;\n}\n").unwrap();
+        assert_eq!(got.nr_io, 4);
+        assert_eq!(got.io, vec![(0x3f0, 8), (0xcf8, 8), (0x70, 2), (0x3f9, 1)]);
+        // Base 16 accepts the `0x` prefix that `from_str_radix` would not.
+        let got = walk("service x {\n  io 0x3f8:0x10;\n}\n").unwrap();
+        assert_eq!(got.io, vec![(0x3f8, 0x10)]);
+    }
+
+    #[test]
+    fn io_none_and_all_take_the_sentinel_and_the_clear() {
+        let got = walk("service x {\n  io NONE;\n}\n").unwrap();
+        assert_eq!(got.nr_io, 0);
+        assert!(got.io.is_empty());
+        let got = walk("service x {\n  io ALL;\n}\n").unwrap();
+        assert_eq!(got.nr_io, RSS_IO_ALL);
+        assert!(got.io.is_empty());
+    }
+
+    #[test]
+    fn device_lists_end_at_the_next_statement_keyword() {
+        // C keeps each statement in its own chain, so `irq 6;` followed by
+        // `io 3f0:8;` must not let the irq list swallow `io`. This is the
+        // real adjacency in `minix3/etc/system.conf:244-245`.
+        let got = walk("service x {\n  irq 6;\n  io 3f0:8;\n}\n").unwrap();
+        assert_eq!(got.nr_irq, 1);
+        assert_eq!(got.irq, vec![6]);
+        assert_eq!(got.nr_io, 1);
+        assert_eq!(got.io, vec![(0x3f0, 8)]);
+    }
+
+    #[test]
+    fn device_family_error_faces_match_the_c_fatals() {
+        let e = walk("service x {\n  irq 1 ALL;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_irq: ALL keyword not allowed in list");
+        let e = walk("service x {\n  io ALL 1;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_io: ALL keyword not allowed in list");
+        let e = walk("service x {\n  irq NONE 1;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_irq: NONE keyword not allowed in list");
+        let e = walk("service x {\n  irq abc;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_irq: bad irq 'abc'");
+        let e = walk("service x {\n  io 3g8;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_io: bad I/O range '3g8'");
+        let e = walk("service x {\n  io 3f8:x;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_io: bad I/O range '3f8:x'");
+        // `rss_nr_irq >= RSS_NR_IRQ` before the store: the seventeenth
+        // value is one too many (`parse.c:456-457`).
+        let mut text = String::from("service x {\n  irq");
+        for n in 0..=RSS_NR_IRQ {
+            text.push(' ');
+            text.push_str(&n.to_string());
+        }
+        text.push_str(";\n}\n");
+        let e = walk(&text).unwrap_err();
+        assert_eq!(e.message, "do_irq: too many IRQs (max 16)");
+    }
+
+    #[test]
+    fn repeated_device_statements_append_like_the_c_arrays() {
+        // C writes at `rss_nr_irq`/`rss_nr_io` and `do_config` memsets the
+        // struct once, so a second statement appends instead of replacing
+        // (`parse.c:454-460`, `:511-516`).
+        let got = walk("service x {\n  irq 4;\n  irq 5;\n}\n").unwrap();
+        assert_eq!(got.nr_irq, 2);
+        assert_eq!(got.irq, vec![4, 5]);
+        // `NONE` ends the list; it does not clear what an earlier
+        // statement stored (`parse.c:428-434`).
+        let got = walk("service x {\n  irq 4;\n  irq NONE;\n}\n").unwrap();
+        assert_eq!(got.nr_irq, 1);
+        assert_eq!(got.irq, vec![4]);
+        let got = walk("service x {\n  io 3f8:8;\n  io 3f9;\n}\n").unwrap();
+        assert_eq!(got.nr_io, 2);
+        assert_eq!(got.io, vec![(0x3f8, 8), (0x3f9, 1)]);
     }
 }

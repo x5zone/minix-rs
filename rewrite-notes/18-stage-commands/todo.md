@@ -119,6 +119,31 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百四十八（设备族复核收口——批次五百四十六的三测补齐、哨兵覆盖修正与 `strtoul` 面）
+
+- **这一笔的射程**：批次五百四十六的账面与树上的代码对不上：记着「新三枚测」而树上零枚、记着「`0x` 前缀需先剥」而代码没剥、记着「`all` 设哨兵」而循环后的 `out.nr_irq = irqs.len()` 把哨兵覆盖成 0。本笔按 C 真源把这四处一并收口，并补上设备族的测试面。
+- **落码（`minix-service` 库）**：
+  - `STATEMENT_KEYWORDS`（17 个 `do_service` 分派关键字）——`irq`/`io` 值列表到此为止。旧码的局部 `keywords` 只有六个标量词，真实 `system.conf` 的 `irq 6; io 3f0:8;` 邻接会把 `io` 当 IRQ 值吃掉（盘面锚：`minix3/etc/system.conf:244-245`）。
+  - `strtoul_prefix(s, base)`：C `strtoul` 的两基（`irq` 用 0、`io` 用 0x10）——前缀进制选择（`0x`、前导 0 八进制）、符号、溢出饱和；`check[0] == '\0'` 契约折成「消费字节数等于词长」。
+  - `parse_io_range`：`base[:len]` 按 C 的两次 `strtoul` 走——`0x` 前缀合法、`:` 后第二段、缺省 len 1、`base:` 空尾按 C 的 `strtoul("")` 判 len 0（`parse.c:502-517`）。
+  - `NONE`/`ALL` 改回 C 的大写字面（`KW_NONE`/`KW_ALL`，`parse.h:18-20`，`strcmp` 大小写敏感）——真实配置全是大写（`system.conf:18`、`:179`），旧码的小写比较会让每个 `irq NONE;` 报 `bad irq 'NONE'`。
+  - `NONE` 不再清零、`ALL` 哨兵不再被后置赋值覆盖；`count` 从 `out.nr_irq`/`out.nr_io` 起算，重复语句按 C 的 `rss_nr_irq++` 追加（`parse.c:454-460`）；值截断到 `int`/`unsigned` 的 32 位（C 赋值语义）。
+- **登记偏差**：平铺词链丢失语句边界，极端形 `irq pci`（值词恰为关键字）会被当作下一语句——C 里 `pci` 是该语句的值并报 `bad irq 'pci'`；真实配置无此形，待 bin 侧按语句子表直接派发时消掉。
+- **门**：`cargo test -p minix-service` → **19/0**（新七枚：`irq` 的 base-0 三进制与 `int` 截断、大写 `NONE`/`ALL` 与真实邻接、`io` 的 hex/`0x`/缺省 len、`io` 的 `NONE`/`ALL`、语句边界、六句 fatal 面与超限、重复语句追加）；clippy 触及文件零新增；rustfmt 零漂移。核实日 `2026-11-06`；基线 `d09fff501`。
+- **记账联动**：批次五百四十六的账面按本笔更正；设备族余下 `pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`domain` 仍为后续片。
+
+---
+
+## 批次五百四十七（`rs_start` 全载荷编码器——`encode_rs_start` 镜像解码，ABI 字节复现与 roundtrip 双测）
+
+- **这一笔的射程**：`minix-service up` 全构造链的最后一块——`rs_start` 的编码半。解码半（`decode_rs_start`）已带编译期 repr(C) 偏移钉与三枚既有测；本笔补镜像编码器。
+- **落码（`minix-types` 的 `ipc/rs_start.rs`）**：`encode_rs_start(bytes, wire)`——每偏移与每 lane 宽度镜像解码常量（`put_u32`/`put_i32`/`put_u64`/`put_i64`/`put_u16`/`put_label` 六个闭包），字段序逐一对 `decode_rs_start`：标量族、irq/io 数组族（stride 4/8）、pci_id（u16×4 × 32 项）/pci_class（u32×2 × 4 项）、label 族（label/trg_label/control×8 的 addr+len 对）、system/vm 掩码、state_data 七段、devman/progname/domain×8/cpu。短 buffer 即 `EINVAL`（与 decode 同判）。
+- **登记偏差**：无——编码器是解码的逐字段镜像，两半共享同一 `rs_start_off` 常量权威。
+- **门**：`cargo test -p minix-types --lib` → **341/0**（新二枚：`serialize(sample_layout)` → decode → encode 得回同一组 ABI 字节、短 buffer `EINVAL`）；clippy 触及文件零新增；rustfmt 零漂移；none 双架构绿。核实日 `2026-11-06`；基线 `d09fff501`。
+- **记账联动**：`minix-service up` 全构造链三段（读取器→走查→编码器）至此**全部闭合**；余面只剩恢复脚本执行面与 rc 接线。
+
+---
+
 ## 批次五百四十六（`do_config` 设备族关键字——irq/io 双臂、NONE/ALL 面、十六进制 base:len 对）
 
 - **这一笔的射程**：`do_config` 走查的设备族关键字——`irq` 与 `io`（C `parse.c:406-530`）。剩余的 `pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`net`/`domain` 为后续片。
@@ -126,6 +151,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - **登记偏差**：`base[:len]` 的 hex 解析需先剥 `0x` 前缀再 `from_str_radix(base,16)`——C 的 `strtoul(…,0x10)` 自动接受 `0x` 前缀，本树的 `from_str_radix` 不接受。
 - **门**：`cargo test -p minix-service --lib` → **15/0**（新三枚：irq 值列表与 ALL 面、io hex base:len 对、none 后跟值的 fatal）；`cargo clippy -p minix-service --all-targets` 触及文件零新增；`rustfmt --edition 2024 --check` 零漂移；none 双架构绿；边界门 0 违规；pattern `--diff` 与基线一致。核实日 `2026-11-06`；基线 `9dc533e75`。
 - **记账联动**：`do_config` 走查的 irq/io 半闭合；pci/class/system/ipc/vm/control/type/net/domain 与 `rs_start` 全载荷编码器为后续片。
+- **`2026-11-06` 复核更正**：本条「落码」三段与树上的代码不符（三测未落、`0x` 前缀未剥、哨兵被后置赋值覆盖），逐项收口见批次五百四十八。
 
 ---
 

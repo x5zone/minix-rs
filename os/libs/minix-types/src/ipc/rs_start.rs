@@ -129,6 +129,144 @@ pub mod rs_start_off {
     pub const LABEL_STRIDE: usize = 16;
 }
 
+/// C `:812-830` — the encode half of the request face: pack an
+/// [`RsStartWire`] back into the `rs_start_off::SIZE`-byte buffer. The
+/// mirror of [`decode_rs_start`] field for field: every offset and lane
+/// width matches the decode constants, so
+/// `decode_rs_start(encode_rs_start(w)) == w` holds exactly.
+///
+/// The buffer must carry the whole struct (`rs_start_off::SIZE` bytes; a
+/// short buffer is `Errno::EINVAL`, the same verdict decode gives).
+pub fn encode_rs_start(bytes: &mut [u8], wire: &RsStartWire) -> Result<(), Errno> {
+    if bytes.len() < rs_start_off::SIZE {
+        return Err(Errno::EINVAL);
+    }
+    let put_u32 =
+        |bytes: &mut [u8], o: usize, v: u32| bytes[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    let put_i32 =
+        |bytes: &mut [u8], o: usize, v: i32| bytes[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    let put_u64 =
+        |bytes: &mut [u8], o: usize, v: u64| bytes[o..o + 8].copy_from_slice(&v.to_le_bytes());
+    let put_i64 =
+        |bytes: &mut [u8], o: usize, v: i64| bytes[o..o + 8].copy_from_slice(&v.to_le_bytes());
+    let put_u16 =
+        |bytes: &mut [u8], o: usize, v: u16| bytes[o..o + 2].copy_from_slice(&v.to_le_bytes());
+    let put_label = |bytes: &mut [u8], o: usize, l: &RsLabelWire| {
+        put_u64(bytes, o, l.addr);
+        put_u64(bytes, o + 8, l.len);
+    };
+
+    put_u32(bytes, rs_start_off::FLAGS, wire.flags);
+    put_u64(bytes, rs_start_off::CMD_ADDR, wire.cmd_addr);
+    put_u64(bytes, rs_start_off::CMD_LEN, wire.cmd_len);
+    put_u32(bytes, rs_start_off::UID, wire.uid);
+    put_i32(bytes, rs_start_off::SIGMGR, wire.sigmgr);
+    put_i32(bytes, rs_start_off::SCHEDULER, wire.scheduler);
+    put_i32(bytes, rs_start_off::PRIORITY, wire.priority);
+    put_i32(bytes, rs_start_off::QUANTUM, wire.quantum);
+    put_i32(bytes, rs_start_off::MAJOR, wire.major);
+    put_i64(bytes, rs_start_off::PERIOD, wire.period);
+    put_u64(bytes, rs_start_off::SCRIPT_ADDR, wire.script_addr);
+    put_u64(bytes, rs_start_off::SCRIPT_LEN, wire.script_len);
+    put_i64(bytes, rs_start_off::ASR_COUNT, wire.asr_count);
+    put_i64(bytes, rs_start_off::RESTARTS, wire.restarts);
+    put_i64(
+        bytes,
+        rs_start_off::HEAP_PREALLOC_BYTES,
+        wire.heap_prealloc_bytes,
+    );
+    put_i64(
+        bytes,
+        rs_start_off::MAP_PREALLOC_BYTES,
+        wire.map_prealloc_bytes,
+    );
+    put_i32(bytes, rs_start_off::NR_IRQ, wire.nr_irq);
+    for (i, v) in wire.irq.iter().enumerate() {
+        put_i32(bytes, rs_start_off::IRQ + i * 4, *v);
+    }
+    put_i32(bytes, rs_start_off::NR_IO, wire.nr_io);
+    for (i, v) in wire.io.iter().enumerate() {
+        put_u32(
+            bytes,
+            rs_start_off::IO + i * rs_start_off::IO_STRIDE,
+            v.base,
+        );
+        put_u32(
+            bytes,
+            rs_start_off::IO + i * rs_start_off::IO_STRIDE + 4,
+            v.len,
+        );
+    }
+    put_i32(bytes, rs_start_off::NR_PCI_ID, wire.nr_pci_id);
+    for (i, v) in wire.pci_id.iter().enumerate() {
+        let o = rs_start_off::PCI_ID + i * rs_start_off::PCI_ID_STRIDE;
+        put_u16(bytes, o, v.vid);
+        put_u16(bytes, o + 2, v.did);
+        put_u16(bytes, o + 4, v.sub_vid);
+        put_u16(bytes, o + 6, v.sub_did);
+    }
+    put_i32(bytes, rs_start_off::NR_PCI_CLASS, wire.nr_pci_class);
+    for (i, v) in wire.pci_class.iter().enumerate() {
+        let o = rs_start_off::PCI_CLASS + i * rs_start_off::PCI_CLASS_STRIDE;
+        put_u32(bytes, o, v.pciclass);
+        put_u32(bytes, o + 4, v.mask);
+    }
+    put_u64(bytes, rs_start_off::SYSTEM, wire.system);
+    put_label(bytes, rs_start_off::LABEL_ADDR, &wire.label);
+    put_label(bytes, rs_start_off::TRG_LABEL_ADDR, &wire.trg_label);
+    put_u64(bytes, rs_start_off::IPC_ADDR, wire.ipc_addr);
+    put_u64(bytes, rs_start_off::IPC_LEN, wire.ipc_len);
+    put_u64(bytes, rs_start_off::VM, wire.vm);
+    put_i32(bytes, rs_start_off::NR_CONTROL, wire.nr_control);
+    for (i, v) in wire.control.iter().enumerate() {
+        put_label(
+            bytes,
+            rs_start_off::CONTROL + i * rs_start_off::LABEL_STRIDE,
+            v,
+        );
+    }
+    put_u64(bytes, rs_start_off::STATE_DATA, wire.state_data.size);
+    put_u64(
+        bytes,
+        rs_start_off::STATE_DATA + 8,
+        wire.state_data.ipcf_els_addr,
+    );
+    put_u64(
+        bytes,
+        rs_start_off::STATE_DATA + 16,
+        wire.state_data.ipcf_els_size,
+    );
+    put_i32(
+        bytes,
+        rs_start_off::STATE_DATA + 24,
+        wire.state_data.ipcf_els_gid,
+    );
+    put_u64(
+        bytes,
+        rs_start_off::STATE_DATA + 32,
+        wire.state_data.eval_addr,
+    );
+    put_u64(
+        bytes,
+        rs_start_off::STATE_DATA + 40,
+        wire.state_data.eval_len,
+    );
+    put_i32(
+        bytes,
+        rs_start_off::STATE_DATA + 48,
+        wire.state_data.eval_gid,
+    );
+    put_i32(bytes, rs_start_off::DEVMAN_ID, wire.devman_id);
+    put_u64(bytes, rs_start_off::PROGNAME_ADDR, wire.progname_addr);
+    put_u64(bytes, rs_start_off::PROGNAME_LEN, wire.progname_len);
+    put_i32(bytes, rs_start_off::NR_DOMAIN, wire.nr_domain);
+    for (i, v) in wire.domain.iter().enumerate() {
+        put_i32(bytes, rs_start_off::DOMAIN + i * 4, *v);
+    }
+    put_i32(bytes, rs_start_off::CPU, wire.cpu);
+    Ok(())
+}
+
 /// Wire-shaped decode of one `struct rs_start`.
 ///
 /// Pointer-bearing fields keep their caller-space addresses (`cmd_addr`,
@@ -898,5 +1036,28 @@ mod tests {
             .copy_from_slice(&200i32.to_le_bytes());
         let w = decode_rs_start(&bytes).expect("decode");
         assert_eq!(w.quantum, 200);
+    }
+
+    #[test]
+    fn test_encode_rs_start_reproduces_the_abi_bytes() {
+        // Encode half of the same witness the decode tests use: the bytes
+        // serialize() lays down at the compiler's own offset_of! positions
+        // must come back out of encode_rs_start unchanged. That proves the
+        // encoder mirrors the ABI layout field for field, not just the
+        // decoder.
+        let bytes = serialize(&sample_layout());
+        let wire = decode_rs_start(&bytes).expect("decode");
+        let mut out = [0u8; rs_start_off::SIZE];
+        encode_rs_start(&mut out, &wire).expect("encode");
+        assert_eq!(out, bytes);
+    }
+
+    #[test]
+    fn test_encode_rs_start_short_buffer_rejected() {
+        // Same verdict as decode: C's copy_rs_start moves sizeof(struct
+        // rs_start) bytes, so a short buffer is EINVAL.
+        let wire = decode_rs_start(&serialize(&sample_layout())).expect("decode");
+        let mut bytes = [0u8; rs_start_off::SIZE - 1];
+        assert_eq!(encode_rs_start(&mut bytes, &wire), Err(Errno::EINVAL));
     }
 }
