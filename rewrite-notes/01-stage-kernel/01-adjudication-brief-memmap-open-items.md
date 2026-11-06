@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 16:35 CST（`date` 实测）；**内容轮次：第一百一十二轮——配置表 DTB 三态的正例上机**（`DTB_CFGTABLE=1` 让 AAVMF 以 `acpi=off` 发布 DTB 配置表，`cross-validated` 分支真机通过；默认 ACPI 腿仍是 `absent`）。§6.3/§6.4 与 `03` 七十八节记录固件侧取证。
+> **重写**：2026-11-06 17:13 CST（`date` 实测）；**内容轮次：第一百一十三轮——I-29 差异复审的修复落码**（不可读 `reg` 拒绝、MRB × 普通保留冲突、严格来源门、O-11 类型覆盖、rustfmt）。§6.1/§6.3 与 `03` 七十九节记录本轮读数。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -124,13 +124,17 @@ pub struct SourceRecord {
 
 `PhysicalRange` 的末端用 128 位，表示**地址空间最后一页**（`[...f000, 2^64)`）；是否能投影成 `u64` 由 `projectable_end()` 回答，拒绝发生在各投影点，而不是把 `2^64` 悄悄截成 0。
 
+**不可读的 `reg` 形状一律拒绝**（第一百一十三轮）：`/memory` 与 `/reserved-memory` 的 `reg` 在声明 cell 宽度下截断（或 `#size-cells = 0`）时，`fdt` 迭代器不产出任何元组；把它当成「没有这段」会静默丢 RAM 或释放固件保留页。因此 `/memory` 返回 `UnsupportedMemoryReg`，`/reserved-memory` 返回 `UnsupportedReservedDeclaration`，四条负控：`dtb_truncated_memory_reg_is_rejected`、`dtb_zero_size_memory_reg_is_rejected`、`dtb_truncated_reserved_reg_is_rejected`、`dtb_zero_size_reservation_is_rejected`。
+
 ### 2.2 DTB 采集（三条 DTB 腿共用）
 
 `DtbMemoryMap::new(&fdt, firmware_reserve_end).collect_with_sources()` 返回三个 `'static` 切片：可用表、保留表、来源记录。容量从结构推导，不猜：
 
 - 可用表 / 保留表各 `DTB_MEMMAP_MAX = 8` 项；
 - MRB `DTB_MRB_MAX = 16` 项；
-- 记录槽 `SOURCE_RECORD_CAP = 8 + 8 + 16 + 8 = 40`，溢出返回 `TooManySourceRecords`，不截断。
+- 记录槽 `SOURCE_RECORD_CAP = 8 + 8 + 16 + 8 = 40`，恰好可达；精确重复声明只占记录槽、不占投影槽，超过 40 仍返回 `TooManySourceRecords`，不截断。
+
+**跨来源冲突按页拒绝**（第一百一十三轮）：非 `no-map` 的 `/reserved-memory` 与 MRB 重叠时，MRB 的访问禁令与普通保留的「可直达」不能同时兑现；页量化后返回 `MrbConflictingReservation`（`dtb_mrb_and_ordinary_reservation_overlap_is_rejected`、`dtb_mrb_and_reusable_reservation_overlap_is_rejected`、`dtb_mrb_and_reservation_on_the_same_page_conflict`）；`no-map` × MRB 双方都禁止访问，保持兼容（`dtb_mrb_and_no_map_reservation_are_compatible`）。FDT 容器的 MRB 上限与 collector 对齐为 16 条（第 17 条才拒绝，`accepts_exactly_the_collector_reservation_bound`）。`collect_with_panorama()` 额外返回去重后的 `/memory` 全景，供 UEFI 的静态保留类型核对使用（§2.3）。
 
 投影前必跑覆盖审计（贪心链，节选）：
 
@@ -203,6 +207,8 @@ let record = SourceRecord {
 serializer.push_source(&record).expect("preflight proved the source partition");
 ```
 
+**静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在 `find_platform_sources` 时采集，EBS 配对循环在 `ExitBootServices` **之前**逐页核对：无覆盖或同页出现异类描述符即拒绝启动；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 9 条单测；QEMU 无配置表 DTB，因此该分支在 `platform DTB absent` 腿按「无主张」通过。
+
 ### 2.4 第一跳：`BootHandoffV1`（wire v2）
 
 arena 是 7 页（28,672 B），布局由编译期算术钉住：
@@ -243,17 +249,29 @@ start u64 | end_lo u64 | end_hi u64 | id u16 | kind u8 | origin_tag u8
 - U-Boot 腿在接收端解码到 `SOURCE_RECORD_STORE` 后赋值；
 - UEFI 腿同样由 `decode_sources` 落地。
 
-`KernelInfo::validate()` 第 6 步是**消费者边界复核**：
+`KernelInfo::validate()` 第 6 步是**消费者边界复核**；`validate_requiring_sources()` 是生产形态的严格门（第一百一十三轮）：
 
 ```rust
-if !self.memmap_sources.is_empty() {
-    match audit_source_coverage(self.memmap, self.reserved_regions, self.memmap_sources) {
-        Ok(()) => {}
-        Err(error) => panic!(
-            "KernelInfo: source records do not cover the projected map: {error:?}"),
+pub fn validate(&self) { self.validate_impl(false); }
+pub fn validate_requiring_sources(&self) { self.validate_impl(true); }
+
+fn validate_impl(&self, require_sources: bool) {
+    // ... 前五项非地址不变量 ...
+    if require_sources {
+        assert!(!self.memmap_sources.is_empty(),
+            "KernelInfo: production handoff carries no memory-map source records");
+    }
+    if !self.memmap_sources.is_empty() {
+        match audit_source_coverage(self.memmap, self.reserved_regions, self.memmap_sources) {
+            Ok(()) => {}
+            Err(error) => panic!(
+                "KernelInfo: source records do not cover the projected map: {error:?}"),
+        }
     }
 }
 ```
+
+跨镜像 `arch_boot_resume_v1` 直接调用严格门；三条 DTB 腿在交出 `KernelInfo` 前断言来源非空。手工构造 `KernelInfo` 的 qemu 测试内核没有 DTB 来源，仍走宽松 `validate()`——两条测试 `test_validate_requiring_sources_rejects_an_empty_partition` / `_accepts_covering_records` 钉住两种形态。
 
 自引导两条腿没有 arena：采集结果（可用表、保留表、来源记录、参数）全部写在内核映像自己的 `.bss`，由 `classify` 的第一条扣减记录（内核映像整段）覆盖。映像跨度不得超过交给 `KernelInfo` 的 `KERN_SIZE = 0x40_0000`，这条前提由两个自引导链接脚本的链接期断言守住：
 
@@ -990,9 +1008,9 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 
 ```
 $ cargo test -p minix-types                 → 339 passed / 0 failed
-$ cargo test -p minix-boot                  → 152 passed / 0 failed
-$ cargo test -p boot-shim                   → 72 passed / 0 failed
-$ cargo test -p boot-shim --features uefi   → 72 passed / 0 failed（+5 集成）
+$ cargo test -p minix-boot                  → 163 passed / 0 failed（第一百一十三轮）
+$ cargo test -p boot-shim                   → 81 passed / 0 failed（+9 条 resv_claims）
+$ cargo test -p boot-shim --features uefi   → 81 passed / 0 failed（+5 集成）
 $ cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
 $ cargo test -p minix-vm                    → 548 passed / 0 failed
 ```
@@ -1020,6 +1038,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 | riscv64 全系统 | `test-riscv64-boot-full.sh` | **PASS**（12 server 出生，`minix-rs rc: minimal boot script marker`）→ 第二跳与 VM `reconcile` 在 riscv 成立 |
 | 全量套件 | `run_all.sh` | **38 passed / 1 failed / 0 skipped / 0 build failures**；唯一红是 `test-rt-birth-aarch64`，在**本会话基线 `537f5c16b` 上逐字同签名**（`elr=0x140003628 esr=0x92000047 far=0x7ffffffff000`），属既有红，不是本轮回归（证据见 `03` 七十七节） |
 
+**第一百一十三轮复跑**（代码变更后受影响腿必重跑）：`test-kernel-image-riscv64-bootface`、`test-shim-bootmarks-x86`、`test-shim-bootmarks-aarch64` 三条再次 **PASS**；`boot-shim` 五个目标与 `fw-riscv-uboot` 单特性构建均 ✅。
+
 **证据分层：编译通过 ≠ 启动验证 ≠ 新分支被覆盖。** 上述 QEMU 腿证明了四条启动链、两跳交接、内核消费者边界审计与 VM `reconcile` 的真实运行；它们**没有**走到下面这些分支：
 
 - 配置表 DTB「存在但不可用」的负例：固件自己发布的 DTB 永远是合法的，外部无法把它改坏；正例已用 `acpi=off` 腿真机验证（§6.3），负例只剩宿主测试与代码审阅；AAVMF 在默认 ACPI 模式下不发布 DTB 表（8 条配置表项里没有 `b1b621d5`，日志逐字 `platform DTB absent`），这是 EDK2 的 `PlatformHasAcpiDtDxe` 按 ACPI 可用性二选一的行为，不是固件缺件；
@@ -1045,6 +1065,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 | 第一层：语义与方向 | **可签** | §1.6 三合同划界；来源事实／冲突裁决／纯集合投影三层分离；保留语义（普通／`reusable`／`no-map`、MRB、UEFI 类型）各自独立 |
 | 第二层：来源完整性与交接判据 | **不签** | 五项阻塞见下 |
 | 第三层：固定布局 ABI | **不签** | 现有 `BootHandoffV1` 与 `VmBootHandoff` 是已存在的基线，缺的是承载来源记录与对象信息的**扩展**（O-13a／O-13b） |
+
+**第一百一十三轮（实现复审修复，不改变层结论）**：双轴复审提出的两项 fail-open 与四项合同/文档不一致已闭合——① 截断或零长的 `reg` 不再被跳过（四条负控）；② 非 `no-map` 保留与 MRB 的页级冲突拒绝（三正一负）；③ 跨镜像 resume 走 `validate_requiring_sources`，三条 DTB 腿交出前断言来源非空；④ FDT 容器 MRB 上限回到 16；⑤ O-11 静态保留 × EFI 类型覆盖落码（`resv_claims`，三条必测形态）；⑥ 注释/引用同步与 I-29 触及文件的 rustfmt。读数见 §6.1/§6.3；仍开放的是 O-11「复制到自有缓冲再解析」与真机固件证据。
 
 **第二层的验收内容已按 §1.6 收紧**，只保留真正属于「资源发现与交接」的五项（平台资源描述随射程移交 `04`，不再作为签字项）：
 

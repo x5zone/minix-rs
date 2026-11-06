@@ -12,6 +12,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百一十三轮（I-29 实现复审的修复）**
+
+- 双轴复审（标准轴 + 规格轴）在 `acd1302d3..7a464dc82` 的实现上发现两项 fail-open：`/reserved-memory` 的截断 `reg` 被 `continue` 静默跳过（FDT 迭代器对不足字节不产出元组）、MRB 与普通保留重叠未裁决；另有空来源分区可跳过覆盖审计、FDT 容器 MRB 上限 off-by-one、四处注释/引用漂移。
+- 修复：`UnsupportedMemoryReg` / `UnsupportedReservedDeclaration` 拒绝不可读形状（4 条负控）；`MrbConflictingReservation` 按页拒绝（3 正 1 负）；`validate_requiring_sources` 严格门 + 三条 DTB 腿生产者断言；容器 MRB 上限回 16（恰 16 条正控）；`resv_claims` 落码 O-11 类型覆盖（9 条单测）。
+- 读数：minix-boot 163、boot-shim 81、kernel 863、types 339、vm 548；五目标 + `fw-riscv-uboot` 构建 ✅；三条 QEMU 腿复跑 PASS。全树 clippy 棘轮在本批基线 `7a464dc82` 上被无关的 `minix-service` 在制品（E0063）挡住，未取得计数。
+
 **第一百一十二轮（配置表 DTB 正例上机；测试腿固化）**
 
 - 事实更正：AAVMF 在默认 ACPI 模式下根本不发布 DTB 配置表（8 条配置表项里没有 `b1b621d5`）——这是 EDK2 `PlatformHasAcpiDtDxe` 按 ACPI 可用性二选一的行为，不是固件缺件，也不是我们的 GUID 常量有误。

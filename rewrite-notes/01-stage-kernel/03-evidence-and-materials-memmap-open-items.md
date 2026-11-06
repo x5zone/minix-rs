@@ -2892,3 +2892,27 @@ $ DTB_CFGTABLE=1 bash test-shim-bootmarks-aarch64.sh   → PASS（cross-validate
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百一十一轮）合并提交 | `e6a6eb724` |
+
+## 七十九、第一百一十三轮：I-29 实现复审修复的读数（代码证据）
+
+**范围**：`acd1302d3..7a464dc82` 的 I-29 实现（四条启动腿、来源记录、两跳交接）双轴复审后的修复提交：`6b4f5d1f4`、`c19c03fd0`、`1c05632f0`、`54aeb74ad`、`4c004e861`、`b5921d616`、`b4dc9e8ce`。
+
+**宿主读数（本机 rustc/clippy 1.94.1）**：
+
+```
+$ cargo test -p minix-boot --lib                 → 163 passed / 0 failed
+$ cargo test -p boot-shim --lib                  → 81 passed / 0 failed
+$ cargo test -p minix-kernel --features mock     → 863 passed / 0 failed / 8 ignored
+$ cargo test -p minix-types --lib                → 339 passed / 0 failed
+$ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
+```
+
+**交叉构建**：`cargo check --target {riscv64gc-unknown-none-elf, aarch64-unknown-none, x86_64-unknown-none, x86_64-unknown-uefi, aarch64-unknown-uefi} -p minix-boot -p boot-shim` 全 OK；`boot-shim --no-default-features --features fw-riscv-uboot --target riscv64gc-unknown-none-elf`、`fw-x86-uefi`、`fw-aarch64-uefi` 三组合 OK（`resv_claims` 跟随 `uefi` 特性门）。
+
+**QEMU（代码变更后复跑）**：`test-kernel-image-riscv64-bootface.sh` PASS（B1/B2/B3）；`test-shim-bootmarks-x86.sh` PASS（conv=13 res=113）；`test-shim-bootmarks-aarch64.sh` PASS（conv=13 res=20，`platform DTB absent`）。
+
+**新增负控/正控**：`dtb_truncated_memory_reg_is_rejected`、`dtb_zero_size_memory_reg_is_rejected`、`dtb_truncated_reserved_reg_is_rejected`、`dtb_zero_size_reservation_is_rejected`、`dtb_mrb_and_ordinary_reservation_overlap_is_rejected`、`dtb_mrb_and_reusable_reservation_overlap_is_rejected`、`dtb_mrb_and_reservation_on_the_same_page_conflict`、`dtb_mrb_and_no_map_reservation_are_compatible`、`accepts_exactly_the_collector_reservation_bound`、`test_validate_requiring_sources_rejects_an_empty_partition`、`test_validate_requiring_sources_accepts_covering_records`、`resv_claims::tests::*`（9 条）。
+
+**未取得读数**：`tools/check-clippy-ratchet.sh` 在本批基线 `7a464dc82` 上因无关的 `minix-service` 在制品（`E0063 missing fields io/irq/nr_io`，修复在主树未提交）编译失败，棘轮未出数；本批新增的 `resv_claims` 经 `cargo clippy -p boot-shim` 复核为零告警。
+
+**仍开放**：O-11「复制到自有缓冲再解析」；UEFI 真机固件证据（本机 AAVMF 默认不发布配置表 DTB）。
