@@ -6034,3 +6034,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 代码：`WireSourceRecord::decode` 非 Physical 域只允许 `UefiExcluded`，测试 `non_physical_domain_is_only_legal_on_excluded_records`。宿主 minix-boot 172、boot-shim uefi 92、kernel 863。QEMU 未重跑（只收窄解码、生产者输出不变）。
 - 认领 `qorder125` 已释放。
 - 仍开放：① 显式投影权威（由启动入口传入，缺权威记录失败关闭）；② O-11 严格两快照（40 字节 PreflightMap → copy → FinalMap → body）；③ `SourceRange` 带标签类型 vs 现 `PhysicalRange` + 解码闸的裁决。
+
+### 第三百三十九笔（01 阶段 · I-29 第一百二十四轮：显式投影权威 wire v7）
+
+- 信封偏移 12 声明 `ram_authority`（0 DTB / 1 UEFI，其它拒收），版本 7；UEFI 与 U-Boot 腿各自声明，两条 DTB 直启腿在交出 KernelInfo 前走同一严格门。
+- `validate_requiring_sources(authority)`：声明的权威必须有记录（缺失即 panic、不回退），再用 `audit_source_coverage_for(Some(authority))` 证明覆盖；负控 `test_validate_requiring_sources_refuses_missing_authority`。
+- 回归：宿主 173/92(+5)/863；五个交叉构建；六个 QEMU 腿全 PASS。
+- 提交 `89cf8b0...`（见 git log）；认领 `qorder126` 已释放。
+- 仍开放：O-11 严格两快照（40 字节 PreflightMap → 副本 → FinalMap → body），以及 `SourceRange` 带标签类型的裁决。
