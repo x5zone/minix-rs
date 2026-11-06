@@ -392,7 +392,7 @@ pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; PARAM_BUF_STORE_LEN]> =
 ///
 /// Capacity is the wire partition's (`WIRE_SOURCES_CAP`), so an undersized
 /// store cannot silently truncate: the decoder reports `OutputTooSmall`.
-pub(crate) const SOURCE_RECORD_STORE_LEN: usize = 40;
+pub(crate) const SOURCE_RECORD_STORE_LEN: usize = minix_boot::WIRE_SOURCES_CAP;
 
 pub(crate) static SOURCE_RECORD_STORE: SyncUnsafeCell<
     [minix_boot::SourceRecord; SOURCE_RECORD_STORE_LEN],

@@ -202,6 +202,10 @@ impl SourceKind {
 /// Ordinals are 0-based in document order: `node` counts matching nodes only
 /// (`/memory` nodes for the first variant, `/reserved-memory` children for the
 /// last), and `reg` counts tuples **inside that node's `reg` property**.
+///
+/// [`SourceOrigin::UefiDescriptor`] names the other input-object class: the
+/// final `GetMemoryMap` snapshot, whose local identity is the descriptor's
+/// 0-based index in that snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceOrigin {
     /// The `node`-th `/memory` node, `reg` tuple `reg`.
@@ -215,6 +219,8 @@ pub enum SourceOrigin {
     MrbEntry(u16),
     /// The `node`-th `/reserved-memory` child, `reg` tuple `reg`.
     ReservedMemoryChild { node: u16, reg: u16 },
+    /// The `index`-th descriptor of the final `GetMemoryMap` snapshot.
+    UefiDescriptor { index: u16 },
 }
 
 /// A projection span that no source record can explain: either a free span not
@@ -1791,6 +1797,7 @@ mod tests {
             SourceOrigin::MrbEntry(e) => (1u8, *e as u32, 0),
             SourceOrigin::ReservedMemoryChild { node, reg } => (2u8, *node as u32, *reg as u32),
             SourceOrigin::FirmwarePrefix { .. } => (3u8, 0, 0),
+            SourceOrigin::UefiDescriptor { index } => (4u8, *index as u32, 0),
         });
         assert_eq!(
             origins,

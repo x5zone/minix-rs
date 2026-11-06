@@ -285,6 +285,32 @@ mod tests {
         }
     }
 
+    /// Minimal envelope so the receiver-side decoders accept the arena; the
+    /// pairing loop only owns the map partitions and the source records.
+    fn write_min_envelope(s: &mut Serializer<'_>) {
+        use minix_boot::KernelInfo;
+        use minix_types::{PhysBytes, VirBytes};
+
+        let carrier = KernelInfo {
+            memmap: &[],
+            reserved_regions: &[],
+            memmap_sources: &[],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x20_0000),
+            kern_size: 0x20_0000,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x8000_0000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+        };
+        s.write_envelope(&carrier).unwrap();
+    }
+
     fn run(fw: &mut MockFw) -> Result<Classification, PairError> {
         let mut arena = [0u8; ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
@@ -331,6 +357,140 @@ mod tests {
         );
         assert_eq!(fw.get_calls, 1);
         assert_eq!(fw.ebs_calls, 1);
+    }
+
+    /// The UEFI leg's per-descriptor provenance: one record per emitted
+    /// ordinary-table entry, origin = the descriptor index in the accepted
+    /// snapshot, range = exactly the emitted region. The records must explain
+    /// both projections — the same audit the kernel runs at its consumer
+    /// boundary.
+    #[test]
+    fn source_records_cover_the_classified_map_per_descriptor() {
+        use minix_boot::{
+            audit_source_coverage, decode_envelope, decode_memmap, decode_reserved_regions,
+            decode_sources, MemoryRegion, PhysicalRange, SourceKind, SourceOrigin, SourceRecord,
+            WIRE_SOURCES_CAP,
+        };
+        use minix_types::PhysBytes;
+
+        let mut fw = MockFw::new(
+            &[(CONV, 0x10_0000, 2), (LOADER, 0x20_0000, 1), (CONV, 0x40_0000, 1)],
+            &[],
+        );
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        write_min_envelope(&mut s);
+        let mut map_buf = [0u8; 256];
+        // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
+        let c = unsafe {
+            pair_and_classify(
+                &ops(),
+                &mut fw as *mut MockFw as *mut c_void,
+                0,
+                &mut map_buf,
+                1 << 48,
+                &mut s,
+            )
+        }
+        .unwrap();
+        assert_eq!((c.conventional, c.reserved), (2, 1));
+
+        s.patch_runtime_fields(minix_boot::RuntimeFields {
+            root_page: 0x1000,
+            bump_base: 0x20_0000,
+            bump_next: 0x20_0000,
+            bump_end: 0x30_0000,
+        });
+        let scalars = decode_envelope(s.as_bytes()).unwrap();
+        let empty = MemoryRegion { base: PhysBytes(0), len: 0 };
+        let mut free = [empty; 4];
+        let nf = decode_memmap(s.as_bytes(), &scalars, &mut free).unwrap();
+        let mut reserved = [empty; 4];
+        let nr = decode_reserved_regions(s.as_bytes(), &scalars, &mut reserved).unwrap();
+        let mut sources = [SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
+
+        assert_eq!(ns, c.conventional + c.reserved);
+        assert_eq!(
+            sources[0].origin,
+            SourceOrigin::UefiDescriptor { index: 0 },
+            "record 0 must name descriptor 0"
+        );
+        assert_eq!(sources[0].kind, SourceKind::Memory);
+        assert_eq!(
+            sources[1].origin,
+            SourceOrigin::UefiDescriptor { index: 1 }
+        );
+        assert_eq!(sources[1].kind, SourceKind::ReservedOrdinary);
+        assert_eq!(
+            sources[2].origin,
+            SourceOrigin::UefiDescriptor { index: 2 }
+        );
+        assert_eq!(sources[2].kind, SourceKind::Memory);
+        audit_source_coverage(&free[..nf], &reserved[..nr], &sources[..ns])
+            .expect("per-descriptor records must explain both projections");
+    }
+
+    /// A rejected `ExitBootServices` re-classifies a fresh map; the source
+    /// partition must carry only the accepted snapshot's records, never the
+    /// stale ones from the rejected attempt.
+    #[test]
+    fn source_partition_resets_between_ebs_attempts() {
+        use minix_boot::{
+            decode_envelope, decode_sources, PhysicalRange, SourceKind, SourceOrigin, SourceRecord,
+            WIRE_SOURCES_CAP,
+        };
+
+        let mut fw = MockFw::new(
+            &[(CONV, 0x10_0000, 4), (CONV, 0x20_0000, 4)],
+            &[(LOADER, 0x30_0000, 1)],
+        );
+        let mut fw = MockFw::new(
+            &[(CONV, 0x10_0000, 4), (CONV, 0x20_0000, 4)],
+            &[(LOADER, 0x30_0000, 1)],
+        );
+        fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        write_min_envelope(&mut s);
+        let mut map_buf = [0u8; 256];
+        // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
+        let c = unsafe {
+            pair_and_classify(
+                &ops(),
+                &mut fw as *mut MockFw as *mut c_void,
+                0,
+                &mut map_buf,
+                1 << 48,
+                &mut s,
+            )
+        }
+        .unwrap();
+        assert_eq!((c.conventional, c.reserved), (0, 1), "second map only");
+
+        s.patch_runtime_fields(minix_boot::RuntimeFields {
+            root_page: 0x1000,
+            bump_base: 0x20_0000,
+            bump_next: 0x20_0000,
+            bump_end: 0x30_0000,
+        });
+        let scalars = decode_envelope(s.as_bytes()).unwrap();
+        let mut sources = [SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
+        assert_eq!(ns, 1, "the rejected attempt's records must be cleared");
+        assert_eq!(sources[0].origin, SourceOrigin::UefiDescriptor { index: 0 });
+        assert_eq!(sources[0].kind, SourceKind::ReservedOrdinary);
+        assert_eq!(sources[0].range.start, 0x30_0000);
     }
 
     #[test]

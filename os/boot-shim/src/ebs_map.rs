@@ -87,7 +87,8 @@
 //! by reading this list.
 
 use minix_boot::{
-    HandoffV1WriteError, MemoryRegion, Serializer, WIRE_MEMMAP_CAP, WIRE_RESERVED_CAP,
+    HandoffV1WriteError, MemoryRegion, PhysicalRange, Serializer, SourceKind, SourceOrigin,
+    SourceRecord, WIRE_MEMMAP_CAP, WIRE_RESERVED_CAP, WIRE_SOURCES_CAP,
 };
 use minix_types::PhysBytes;
 
@@ -605,6 +606,12 @@ pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Resu
     if counts.reserved > WIRE_RESERVED_CAP {
         return Err(MapError::Capacity(HandoffV1WriteError::TooManyReservedRegions));
     }
+    // One source record per emitted ordinary-table entry. The descriptor count
+    // is bounded by MAX_MAP_DESCRIPTORS, so this can only trip on a contract
+    // change, never on a real map — prove it here rather than at write time.
+    if counts.conventional + counts.reserved > WIRE_SOURCES_CAP {
+        return Err(MapError::Capacity(HandoffV1WriteError::TooManySourceRecords));
+    }
     if counts.side > side_cap {
         return Err(MapError::TooManySideEntries);
     }
@@ -625,10 +632,10 @@ impl Plan {
     /// in which ranges they receive.
     pub fn write_to<F>(&self, descs: &[DescriptorRef], pa_limit: u64, mut emit: F) -> Classification
     where
-        F: FnMut(Disposition, &MemoryRegion),
+        F: FnMut(usize, Disposition, &MemoryRegion),
     {
         let mut counts = Classification::default();
-        for desc in descs {
+        for (index, desc) in descs.iter().enumerate() {
             // Re-deriving is a pure function of a descriptor that has not moved,
             // so these dispositions are the ones `classify` already counted.
             let Ok((disposition, len)) = adjudicate(desc, pa_limit) else {
@@ -644,7 +651,7 @@ impl Plan {
                 Disposition::Side => counts.side += 1,
                 Disposition::Excluded | Disposition::DevicePath => {}
             }
-            emit(disposition, &region);
+            emit(index, disposition, &region);
         }
         assert_eq!(counts, self.counts, "a plan must be written exactly once");
         counts
@@ -664,31 +671,59 @@ impl Plan {
         side: &mut [MemoryRegion],
     ) -> Classification {
         let mut side_written = 0usize;
-        let counts = self.write_to(descs, pa_limit, |disposition, region| match disposition {
-            Disposition::Allocate => {
-                let admitted = serializer.push_memmap(*region).is_ok();
-                assert!(
-                    admitted,
-                    "preflight proved the memmap partition holds {} entries",
-                    self.counts.conventional
-                );
+        let counts = self.write_to(descs, pa_limit, |index, disposition, region| {
+            match disposition {
+                Disposition::Allocate => {
+                    let admitted = serializer.push_memmap(*region).is_ok();
+                    assert!(
+                        admitted,
+                        "preflight proved the memmap partition holds {} entries",
+                        self.counts.conventional
+                    );
+                }
+                Disposition::ReservedMapped => {
+                    let admitted = serializer.push_reserved(*region).is_ok();
+                    assert!(
+                        admitted,
+                        "preflight proved the reserved partition holds {} entries",
+                        self.counts.reserved
+                    );
+                }
+                Disposition::Side => {
+                    side[side_written] = *region;
+                    side_written += 1;
+                    return;
+                }
+                Disposition::Excluded | Disposition::DevicePath => return,
             }
-            Disposition::ReservedMapped => {
-                let admitted = serializer.push_reserved(*region).is_ok();
-                assert!(
-                    admitted,
-                    "preflight proved the reserved partition holds {} entries",
-                    self.counts.reserved
-                );
-            }
-            Disposition::Side => {
-                side[side_written] = *region;
-                side_written += 1;
-            }
-            Disposition::Excluded | Disposition::DevicePath => {}
+            // Provenance: one record per descriptor that lands in an ordinary
+            // table. The record names the input object (the final snapshot,
+            // implied by the leg) and the descriptor index inside it; the range
+            // is exactly the region the classifier emitted, so the consumer
+            // boundary can re-audit coverage without re-deriving the map.
+            let kind = match disposition {
+                Disposition::Allocate => SourceKind::Memory,
+                _ => SourceKind::ReservedOrdinary,
+            };
+            let record = SourceRecord {
+                id: index as u16,
+                kind,
+                origin: SourceOrigin::UefiDescriptor { index: index as u16 },
+                range: PhysicalRange::new(
+                    region.base.0,
+                    region.base.0 as u128 + region.len as u128,
+                ),
+            };
+            let admitted = serializer.push_source(&record).is_ok();
+            assert!(
+                admitted,
+                "preflight proved the source partition holds {} records",
+                self.counts.conventional + self.counts.reserved
+            );
         });
         serializer.finish_memmap();
         serializer.finish_reserved();
+        serializer.finish_sources();
         counts
     }
 }

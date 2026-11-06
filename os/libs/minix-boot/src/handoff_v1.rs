@@ -105,6 +105,8 @@ impl WireSourceRecord {
     pub const ORIGIN_FIRMWARE_PREFIX: u8 = 1;
     pub const ORIGIN_MRB_ENTRY: u8 = 2;
     pub const ORIGIN_RESERVED_MEMORY_CHILD: u8 = 3;
+    /// The final `GetMemoryMap` snapshot; `a` is the descriptor index.
+    pub const ORIGIN_UEFI_DESCRIPTOR: u8 = 4;
 
     /// Encode one record. Total: every `PhysicalRange` is representable
     /// (`start` is 64-bit, `end_exclusive` splits into two halves).
@@ -126,6 +128,7 @@ impl WireSourceRecord {
             SourceOrigin::ReservedMemoryChild { node, reg } => {
                 (Self::ORIGIN_RESERVED_MEMORY_CHILD, node, reg, 0)
             }
+            SourceOrigin::UefiDescriptor { index } => (Self::ORIGIN_UEFI_DESCRIPTOR, index, 0, 0),
         };
         Self {
             start: record.range.start,
@@ -171,13 +174,16 @@ impl WireSourceRecord {
                 node: self.a,
                 reg: self.b,
             },
+            Self::ORIGIN_UEFI_DESCRIPTOR => SourceOrigin::UefiDescriptor { index: self.a },
             _ => return None,
         };
         // Reject payload words the encoder leaves at zero, so one record has
         // exactly one wire image (a receiver can compare images).
         let payload_ok = match origin {
             SourceOrigin::FirmwarePrefix { .. } => self.b == 0,
-            SourceOrigin::MrbEntry(_) => self.b == 0 && self.cut == 0,
+            SourceOrigin::MrbEntry(_) | SourceOrigin::UefiDescriptor { .. } => {
+                self.b == 0 && self.cut == 0
+            }
             SourceOrigin::MemoryNode { .. } | SourceOrigin::ReservedMemoryChild { .. } => {
                 self.cut == 0
             }
@@ -262,11 +268,14 @@ pub const WIRE_RESERVED_CAP: usize = 256;
 pub const WIRE_MODULE_CAP: usize = 12;
 pub const WIRE_PLATFORM_CAP: usize = 4;
 pub const WIRE_PARAM_CAP: usize = 1024;
-/// Source records carried across the hop. The capacity is the DTB collector's
-/// worst case (`/memory` 8 + declared reservations 8 + MRB 16 + firmware
-/// prefixes 8); the UEFI leg's per-descriptor provenance stays on the sending
-/// side until it gets its own bounded carrier.
-pub const WIRE_SOURCES_CAP: usize = 40;
+/// Source records carried across the hop.
+///
+/// 256 is the descriptor bound: the UEFI leg emits one record per descriptor
+/// that produces an ordinary table entry, and the map buffer accepts at most
+/// `MAX_MAP_DESCRIPTORS = 256` descriptors. The DTB collector's worst case is
+/// 40 (`/memory` 8 + declared reservations 8 + MRB 16 + firmware prefixes 8),
+/// so the same partition serves both legs.
+pub const WIRE_SOURCES_CAP: usize = 256;
 /// Wire size of one [`WireSourceRecord`].
 pub const WIRE_SOURCE_RECORD_SIZE: usize = 48;
 
@@ -296,8 +305,9 @@ pub const SEMANTIC_END: usize = SEMANTIC_RESERVED_OFFSET + SEMANTIC_RESERVED_CAP
 pub const WIRE_SOURCES_OFFSET: usize = SEMANTIC_END;
 pub const WIRE_SOURCES_END: usize = WIRE_SOURCES_OFFSET + WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE;
 
-/// Whole-arena capacity: 4 pages (16 KiB).
-pub const ARENA_CAP: usize = 4 * 4096;
+/// Whole-arena capacity: 7 pages (28 KiB) — the 16 KiB envelope + wire +
+/// semantic partitions plus the 12 KiB source-record partition.
+pub const ARENA_CAP: usize = 7 * 4096;
 
 // ── layout gate ──────────────────────────────────────────────────────────
 
@@ -342,6 +352,7 @@ const _: () = {
     assert!(SEMANTIC_RESERVED_OFFSET % align_of::<crate::kernel_info::MemoryRegion>() == 0);
     assert!(SEMANTIC_END == 14016);
     assert!(WIRE_SOURCES_OFFSET % align_of::<WireSourceRecord>() == 0);
+    assert!(WIRE_SOURCES_END == 26304);
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
     assert!(SEMANTIC_END <= ARENA_CAP);
     assert!(ARENA_CAP % 4096 == 0);

@@ -491,7 +491,7 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
         let plan = ebs_map::classify(descs, pa_limit(), storage.side_capacity())
             .unwrap_or_else(|err| panic!("boot-shim: memory map rejected: {err:?}"));
         let (mut free_n, mut reserved_n, mut side_n) = (0usize, 0usize, 0usize);
-        plan.write_to(descs, pa_limit(), |disposition, region| match disposition {
+        plan.write_to(descs, pa_limit(), |_index, disposition, region| match disposition {
             ebs_map::Disposition::Allocate => {
                 (*core::ptr::addr_of_mut!(UEFI_FREE))[free_n] = *region;
                 free_n += 1;

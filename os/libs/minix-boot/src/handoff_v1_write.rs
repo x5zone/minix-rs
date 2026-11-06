@@ -23,7 +23,8 @@ use crate::handoff_v1::{
     WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP,
     WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP,
     WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
-    WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET, WIRE_SOURCE_RECORD_SIZE, WireSourceRecord,
+    WIRE_SOURCES_CAP, WIRE_SOURCES_END, WIRE_SOURCES_OFFSET, WIRE_SOURCE_RECORD_SIZE,
+    WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, KernelInfo, MemoryRegion};
 use crate::memmap_source::SourceRecord;
@@ -124,6 +125,7 @@ pub struct Serializer<'a> {
     modules_n: usize,
     platform_n: usize,
     param_n: usize,
+    sources_n: usize,
 }
 
 impl<'a> Serializer<'a> {
@@ -143,6 +145,7 @@ impl<'a> Serializer<'a> {
             modules_n: 0,
             platform_n: 0,
             param_n: 0,
+            sources_n: 0,
         })
     }
 
@@ -281,25 +284,50 @@ impl<'a> Serializer<'a> {
             return Err(HandoffV1WriteError::TooManySourceRecords);
         }
         for (i, record) in sources.iter().enumerate() {
-            let wire = WireSourceRecord::encode(record);
-            let off = WIRE_SOURCES_OFFSET + i * WIRE_SOURCE_RECORD_SIZE;
-            put_u64(self.arena, off, wire.start);
-            put_u64(self.arena, off + 8, wire.end_lo);
-            put_u64(self.arena, off + 16, wire.end_hi);
-            self.arena[off + 24..off + 26].copy_from_slice(&wire.id.to_le_bytes());
-            self.arena[off + 26] = wire.kind;
-            self.arena[off + 27] = wire.origin_tag;
-            self.arena[off + 28..off + 30].copy_from_slice(&wire.a.to_le_bytes());
-            self.arena[off + 30..off + 32].copy_from_slice(&wire.b.to_le_bytes());
-            put_u64(self.arena, off + 32, wire.cut);
-            put_u64(self.arena, off + 40, wire.reserved);
+            self.write_wire_source(i, record);
         }
+        self.sources_n = sources.len();
         put_u64(
             self.arena,
             offsets::SOURCES_BYTE_LEN,
             (sources.len() * WIRE_SOURCE_RECORD_SIZE) as u64,
         );
         Ok(())
+    }
+
+    /// Append one source record (the EBS pairing loop emits one per
+    /// descriptor that produces an ordinary table entry).
+    pub fn push_source(&mut self, record: &SourceRecord) -> Result<(), HandoffV1WriteError> {
+        if self.sources_n >= WIRE_SOURCES_CAP {
+            return Err(HandoffV1WriteError::TooManySourceRecords);
+        }
+        self.write_wire_source(self.sources_n, record);
+        self.sources_n += 1;
+        Ok(())
+    }
+
+    /// Finalize the source-record descriptor after the classification loop.
+    pub fn finish_sources(&mut self) {
+        put_u64(
+            self.arena,
+            offsets::SOURCES_BYTE_LEN,
+            (self.sources_n * WIRE_SOURCE_RECORD_SIZE) as u64,
+        );
+    }
+
+    fn write_wire_source(&mut self, index: usize, record: &SourceRecord) {
+        let wire = WireSourceRecord::encode(record);
+        let off = WIRE_SOURCES_OFFSET + index * WIRE_SOURCE_RECORD_SIZE;
+        put_u64(self.arena, off, wire.start);
+        put_u64(self.arena, off + 8, wire.end_lo);
+        put_u64(self.arena, off + 16, wire.end_hi);
+        self.arena[off + 24..off + 26].copy_from_slice(&wire.id.to_le_bytes());
+        self.arena[off + 26] = wire.kind;
+        self.arena[off + 27] = wire.origin_tag;
+        self.arena[off + 28..off + 30].copy_from_slice(&wire.a.to_le_bytes());
+        self.arena[off + 30..off + 32].copy_from_slice(&wire.b.to_le_bytes());
+        put_u64(self.arena, off + 32, wire.cut);
+        put_u64(self.arena, off + 40, wire.reserved);
     }
 
     /// Dual-write one memory-map entry: `WireMemoryRegion` into the wire
@@ -360,10 +388,15 @@ impl<'a> Serializer<'a> {
         for byte in &mut self.arena[SEMANTIC_MEMMAP_OFFSET..SEMANTIC_END] {
             *byte = 0;
         }
+        for byte in &mut self.arena[WIRE_SOURCES_OFFSET..WIRE_SOURCES_END] {
+            *byte = 0;
+        }
         self.wire_memmap_n = 0;
         self.reserved_n = 0;
+        self.sources_n = 0;
         put_u64(self.arena, offsets::MEMMAP_BYTE_LEN, 0);
         put_u64(self.arena, offsets::RESERVED_BYTE_LEN, 0);
+        put_u64(self.arena, offsets::SOURCES_BYTE_LEN, 0);
     }
 
     /// The raw arena bytes (tests and diagnostics).
