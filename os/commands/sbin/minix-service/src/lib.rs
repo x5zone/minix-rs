@@ -119,6 +119,11 @@ impl Request {
 /// `RSS_NR_IRQ 16` / `RSS_NR_IO 16` (`rs.h:25-26`).
 pub const RSS_NR_IRQ: i32 = 16;
 pub const RSS_NR_IO: i32 = 16;
+/// `RSS_IPC_ALL` / `RSS_IPC_ALL_SYS` (`rs.h:29-30`) — the sentinel strings a
+/// lone `ipc ALL` / `ipc ALL_SYS` stands for.
+pub const RSS_IPC_ALL: &str = "IPC_ALL";
+pub const RSS_IPC_ALL_SYS: &str = "IPC_ALL_SYS";
+
 /// `RSS_SYS_BASIC_CALLS` / `RSS_VM_BASIC_CALLS` (`rs.h:46-47`) — the two
 /// default bits `do_config` installs before the walk (`parse.c:1171-1176`);
 /// `system NONE` and `vm NONE` clear them.
@@ -764,11 +769,11 @@ const VM_CALLS: [(&str, u32); 26] = [
 /// The do_config keyword walk over the parsed lines (`parse.c:1177-1263`
 /// walk; the scalar keywords this slice covers are `uid`, `priority`,
 /// `quantum`, `sigmgr`, `scheduler`, `descr`, the device-family keywords
-/// `irq`, `io` and `pci` (`pci device` / `pci class`), and the call-mask
-/// keywords `system` and `vm` — the remaining keywords (`class` in its
-/// service-inheritance sense, `ipc`, `control`, `type`, `net`, `domain`)
-/// are the registered next slice). C's per-branch `fatal` faces become
-/// `ConfigError` with the same wording.
+/// `irq`, `io` and `pci` (`pci device` / `pci class`), the call-mask
+/// keywords `system` and `vm`, and the IPC contact list `ipc` — the
+/// remaining keywords (`class` in its service-inheritance sense, `control`,
+/// `type`, `net`, `domain`) are the registered next slice). C's per-branch
+/// `fatal` faces become `ConfigError` with the same wording.
 pub fn do_config_walk(
     lines: &[minix_proctools::configfile::ConfigEntry],
     defaults: &RsStartDefaults,
@@ -795,6 +800,7 @@ pub fn do_config_walk(
         flags: defaults.flags,
         system: 0,
         vm: 0,
+        ipc: None,
     };
     for line in lines {
         if !line.is_sub() {
@@ -1304,8 +1310,62 @@ pub fn do_config_walk(
                         index += 1;
                     }
                 }
+                "ipc" => {
+                    // C `do_ipc` (`parse.c:658-706`): one space-separated
+                    // contact list; `ALL`/`ALL_SYS` must stand alone and
+                    // expand to the sentinel strings; a second `ipc`
+                    // statement is the `req_ipc is set` fatal.
+                    index += 1;
+                    let mut first = true;
+                    let mut parts: Vec<&str> = Vec::new();
+                    while index < flat.len() {
+                        let w = flat[index];
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                            break;
+                        }
+                        if w.is_string() || w.is_sub() {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_ipc: unexpected string"),
+                            });
+                        }
+                        let at_list_end = index + 1 >= flat.len()
+                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                        let word = if w.word == "ALL" || w.word == "ALL_SYS" {
+                            if !first || !at_list_end {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: format!(
+                                        "do_ipc: {} keyword not allowed in list",
+                                        w.word
+                                    ),
+                                });
+                            }
+                            if w.word == "ALL" {
+                                RSS_IPC_ALL
+                            } else {
+                                RSS_IPC_ALL_SYS
+                            }
+                        } else {
+                            &w.word
+                        };
+                        parts.push(word);
+                        first = false;
+                        index += 1;
+                    }
+                    if out.ipc.is_some() {
+                        // C's fatal carries no source position
+                        // (`parse.c:703-704`); the statement's line is the
+                        // closest anchor this walker has.
+                        return Err(ConfigError {
+                            line: word.line,
+                            message: String::from("do_ipc: req_ipc is set"),
+                        });
+                    }
+                    out.ipc = Some(parts.join(" "));
+                }
                 _ => {
-                    // The remaining keywords (class/ipc/control/type/net/
+                    // The remaining keywords (class/control/type/net/
                     // domain) ride with the next slice;
                     // unknown words are skipped to surface every unknown.
                     index += 1;
@@ -1390,6 +1450,10 @@ pub struct BuiltRsStart {
     pub system: u64,
     /// `rss_vm` — VM-call mask, bit *i* is call `VM_RQ_BASE + i`.
     pub vm: u64,
+    /// `rss_ipc` — the space-separated IPC target list (`do_config` falls
+    /// back to `RSS_IPC_ALL_SYS` when no `ipc` statement set it,
+    /// `parse.c:1240-1246`; that fallback belongs to the bin's build step).
+    pub ipc: Option<String>,
 }
 
 #[cfg(test)]
@@ -1760,6 +1824,52 @@ mod do_config_tests {
         assert_eq!(e.message, "do_vm: NONE keyword not allowed in list");
         let e = walk("service x {\n  system \"x\";\n}\n").unwrap_err();
         assert_eq!(e.message, "do_system: unexpected string");
+    }
+
+    #[test]
+    fn ipc_list_joins_labels_with_single_spaces() {
+        // `parse.c:686-699`: each word is appended after one space; `list+1`
+        // drops the leading space, so the face is a single-space join.
+        let got = walk("service x {\n  ipc SYSTEM pm vfs;\n}\n").unwrap();
+        assert_eq!(got.ipc.as_deref(), Some("SYSTEM pm vfs"));
+    }
+
+    #[test]
+    fn ipc_all_and_all_sys_are_the_sentinel_strings() {
+        // `rs.h:29-30`: `ipc ALL;` stands for "IPC_ALL", `ipc ALL_SYS;` for
+        // "IPC_ALL_SYS".
+        let got = walk("service x {\n  ipc ALL;\n}\n").unwrap();
+        assert_eq!(got.ipc.as_deref(), Some(RSS_IPC_ALL));
+        let got = walk("service x {\n  ipc ALL_SYS;\n}\n").unwrap();
+        assert_eq!(got.ipc.as_deref(), Some(RSS_IPC_ALL_SYS));
+        assert_eq!(RSS_IPC_ALL, "IPC_ALL");
+        assert_eq!(RSS_IPC_ALL_SYS, "IPC_ALL_SYS");
+    }
+
+    #[test]
+    fn ipc_all_must_stand_alone() {
+        let e = walk("service x {\n  ipc SYSTEM ALL;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_ipc: ALL keyword not allowed in list");
+        let e = walk("service x {\n  ipc ALL_SYS pm;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_ipc: ALL_SYS keyword not allowed in list");
+        let e = walk("service x {\n  ipc ALL ALL;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_ipc: ALL keyword not allowed in list");
+    }
+
+    #[test]
+    fn a_second_ipc_statement_is_the_c_fatal() {
+        // `parse.c:703-704`: the request's IPC list may be set only once.
+        let e = walk("service x {\n  ipc SYSTEM;\n  ipc ALL;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_ipc: req_ipc is set");
+    }
+
+    #[test]
+    fn ipc_list_ends_at_the_next_statement() {
+        let got = walk("service x {\n  ipc SYSTEM pm;\n  irq 4;\n}\n").unwrap();
+        assert_eq!(got.ipc.as_deref(), Some("SYSTEM pm"));
+        assert_eq!(got.irq, vec![4]);
+        let e = walk("service x {\n  ipc \"SYSTEM\";\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_ipc: unexpected string");
     }
 
     #[test]

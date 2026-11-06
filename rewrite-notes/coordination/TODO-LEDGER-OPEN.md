@@ -205,6 +205,8 @@
 
 - **`2026-11-06` 收口刷新（第 71 轮，基线 `aba6bc6ce`，`claim/A19-AUDIT-qoder`，审计轮无代码）**：A19 的两锚实查**均已在库**并注销——`login_tty` 封装（init `host.rs:277-299` 完整折叠 C setctty+login_tty）与 panic 执行面（init 自带 `#[panic_handler]` 走 `format_panic_report`，Cargo 双形态注释自陈「handler 由 init 自带」）。C-21（fs-rt 成员）不再挡 init。
 
+- **`2026-11-06` 收口刷新（第 78 轮，基线 `2867cb26d`）**：`do_config` 的 IPC 接触面随批次五百五十四落——`ipc` 白名单（单空格拼列表、`ALL`/`ALL_SYS` 独占换成 `IPC_ALL`/`IPC_ALL_SYS` 哨兵、第二个语句 `req_ipc is set` fatal），`BuiltRsStart` 加 `ipc: Option<String>`；`RSS_IPC_ALL_SYS` 的无语句默认留在 bin 构造片。`cargo test -p minix-service` 36/0、clippy/rustfmt/三架构全绿；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面，本轮文件 0）。设备族余下 `class`（服务继承）/`control`/`type`/`net`/`domain`。
+
 - **`2026-11-06` 收口刷新（第 77 轮，基线 `24b3c426b`）**：`do_config` 调用掩码续片随批次五百五十三落——`system` 与 `vm` 两张调用白名单（19 项/26 项标签表、58/49 位位图、`BASIC`/`NONE`/`ALL` 三面、`PUSH_SIG` 零号不置位、C 的 BASIC-fatal 打印 `NONE` 的 quirk 逐字），`BuiltRsStart` 加 `flags`/`system`/`vm` 三字段并给 `RsStartDefaults` 手写 C 默认（两个 BASIC_CALLS 位）。`minix-sys` 的 `syscall`/`vm` 补常量再导出（边界门）。`cargo test -p minix-service` 31/0、`minix-sys` 345/0、三架构 lib check 全绿；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面，本轮文件 0）。设备族余下 `class`（服务继承）/`ipc`/`control`/`type`/`net`/`domain`。
 
 - **`2026-11-06` 收口刷新（第 76 轮，基线 `6f5dca30f`）**：`do_config` 设备族续片随批次五百五十二落——`pci device` / `pci class` 两张匹配表（四字段 device 形、三掩码 class 形、按 `rss_nr_*` 追加、C 的 fatal 句面含 `do_pci_class` 复用 `do_pci_device` 字面的 quirk），`BuiltRsStart` 加四字段，线型经 `minix-sys::rs` 再导出（边界门）。`cargo test -p minix-service` 25/0、`minix-sys` 345/0、三架构 lib check 全绿。设备族余下 `class`（服务继承）/`system`/`ipc`/`vm`/`control`/`type`/`net`/`domain`。全树棘轮 344 对基线 341 的新增 3 条全在并行线在制 kernel 面，本轮文件为 0，基线未动。

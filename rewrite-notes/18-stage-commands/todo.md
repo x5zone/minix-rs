@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十四（`do_config` IPC 接触面——`ipc` 白名单与两个哨兵串）
+
+- **这一笔的射程**：C `do_ipc`（`parse.c:658-706`）。真实配置里每个服务的首条资源语句（`ipc ALL;` / `ipc ALL_SYS;` / 标签列表，`minix3/etc/system.conf:8`、`:28`、`:42`）。
+- **落码（`minix-service` 库）**：`BuiltRsStart` 加 `ipc: Option<String>`；常量 `RSS_IPC_ALL`/`RSS_IPC_ALL_SYS`（`rs.h:29-30`，值为 `IPC_ALL`/`IPC_ALL_SYS`）；走查 `"ipc"` 臂——单词列表按单空格拼接、`ALL`/`ALL_SYS` 独占时换成哨兵串、第二个 `ipc` 语句触发 `req_ipc is set` fatal。
+- **C 语义要点**：`ALL`/`ALL_SYS` 的独占判据是 `!first || cpe->next`，错误消息带原词（`do_ipc: ALL_SYS keyword not allowed in list`）；列表即 `" "+word` 逐个 `strcat` 后取 `list+1`，等价于单空格 join；无 `ipc` 语句时的 `RSS_IPC_ALL_SYS` 默认由 `do_config` 收尾步负责（`parse.c:1240-1246`），归 bin 构造片的默认面，本片不代填。
+- **登记偏差**：空 `ipc;` 在 C 是 `list+1` 指向 1 字节分配尾后的 UB，Rust 按可观测意图记为 `Some("")`；`req_ipc is set` 的 C fatal 不带源位置，Rust 用该语句行号作锚。
+- **门**：`cargo test -p minix-service` → **36/0**（新五枚：单空格拼接、两个哨兵、`ALL`/`ALL_SYS` 独占、第二语句 fatal、语句边界与字符串面）；clippy 触及文件零告警；rustfmt 零漂移；三架构 lib check 全绿；棘轮 344 对基线 341，新增 3 条仍为并行线在制 kernel 面。核实日 `2026-11-06`；基线 `2867cb26d`。
+- **记账联动**：设备族余下 `class`（服务继承语义）/`control`/`type`/`net`/`domain` 为后续片。
+
+---
+
 ## 批次五百五十三（`do_config` 调用掩码续片——`system` 与 `vm` 两张调用白名单）
 
 - **这一笔的射程**：C `do_system`（`parse.c:852-914`）与 `do_vm`（`:760-826`）——两张标签到调用号的表（`system_tab` 19 项，`:828-849`；`vm_table` 26 项，`:729-758`），填 `rss_system`/`rss_vm` 两张位图与 `rss_flags` 的两个 BASIC_CALLS 位。真实配置每个服务都用（`system ALL;`、`vm BASIC;`/`NONE;`/列表，`minix3/etc/system.conf:9`、`:30`、`:44`）。
