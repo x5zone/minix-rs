@@ -395,6 +395,11 @@ pub(crate) static SOURCE_RECORD_STORE: SyncUnsafeCell<
     [minix_boot::SourceRecord; SOURCE_RECORD_STORE_LEN],
 > = SyncUnsafeCell::new(
     [minix_boot::SourceRecord {
+    input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+    local_source: 0,
+    snapshot_id: 0,
+    attribute: 0,
+    virtual_start: 0,
         id: 0,
         kind: minix_boot::SourceKind::Memory,
         origin: minix_boot::SourceOrigin::MrbEntry(0),

@@ -313,13 +313,19 @@ impl<'a> Serializer<'a> {
         put_u64(self.arena, off, wire.start);
         put_u64(self.arena, off + 8, wire.end_lo);
         put_u64(self.arena, off + 16, wire.end_hi);
-        self.arena[off + 24..off + 26].copy_from_slice(&wire.id.to_le_bytes());
-        self.arena[off + 26] = wire.kind;
-        self.arena[off + 27] = wire.origin_tag;
-        self.arena[off + 28..off + 30].copy_from_slice(&wire.a.to_le_bytes());
-        self.arena[off + 30..off + 32].copy_from_slice(&wire.b.to_le_bytes());
-        put_u64(self.arena, off + 32, wire.cut);
-        put_u64(self.arena, off + 40, wire.reserved);
+        put_u64(self.arena, off + 24, wire.attribute);
+        put_u64(self.arena, off + 32, wire.virtual_start);
+        put_u64(self.arena, off + 40, wire.snapshot);
+        put_u64(self.arena, off + 48, wire.cut);
+        self.arena[off + 56..off + 58].copy_from_slice(&wire.id.to_le_bytes());
+        self.arena[off + 58..off + 60].copy_from_slice(&wire.local.to_le_bytes());
+        self.arena[off + 60..off + 62].copy_from_slice(&wire.a.to_le_bytes());
+        self.arena[off + 62..off + 64].copy_from_slice(&wire.b.to_le_bytes());
+        self.arena[off + 64] = wire.kind;
+        self.arena[off + 65] = wire.origin_tag;
+        self.arena[off + 66] = wire.input_object;
+        self.arena[off + 67] = wire.reserved0;
+        self.arena[off + 68..off + 72].copy_from_slice(&wire.reserved.to_le_bytes());
     }
 
     /// Dual-write one memory-map entry: `WireMemoryRegion` into the wire

@@ -105,6 +105,7 @@ pub const PAGE_SIZE: u64 = 4096;
 /// Field offsets inside the version-1 descriptor prefix.
 const OFF_TYPE: usize = 0;
 const OFF_PHYSICAL_START: usize = 8;
+const OFF_VIRTUAL_START: usize = 16;
 const OFF_NUMBER_OF_PAGES: usize = 24;
 const OFF_ATTRIBUTE: usize = 32;
 
@@ -232,6 +233,7 @@ pub mod attr {
 pub struct DescriptorRef {
     pub raw_type: u32,
     pub physical_start: u64,
+    pub virtual_start: u64,
     pub number_of_pages: u64,
     pub attribute: u64,
 }
@@ -241,6 +243,7 @@ impl DescriptorRef {
     pub const EMPTY: DescriptorRef = DescriptorRef {
         raw_type: 0,
         physical_start: 0,
+        virtual_start: 0,
         number_of_pages: 0,
         attribute: 0,
     };
@@ -387,6 +390,7 @@ pub struct MapStorage {
     side: [MemoryRegion; SIDE_CAP],
     len: usize,
     side_len: usize,
+    snapshot_id: u64,
 }
 
 impl MapStorage {
@@ -399,6 +403,7 @@ impl MapStorage {
             }; SIDE_CAP],
             len: 0,
             side_len: 0,
+            snapshot_id: 0,
         }
     }
 
@@ -414,12 +419,14 @@ impl MapStorage {
         map_size: usize,
         descriptor_size: usize,
         descriptor_version: u32,
+        snapshot_id: u64,
     ) -> Result<(), MapError> {
         let entries = validate_header(map.len(), map_size, descriptor_size, descriptor_version)?;
         if entries > self.descs.len() {
             return Err(MapError::TooManyDescriptors);
         }
         self.side_len = 0;
+        self.snapshot_id = snapshot_id;
         for (i, slot) in self.descs.iter_mut().enumerate().take(entries) {
             let off = i * descriptor_size;
             let prefix = map
@@ -428,6 +435,7 @@ impl MapStorage {
             *slot = DescriptorRef {
                 raw_type: read_u32(prefix, OFF_TYPE),
                 physical_start: read_u64(prefix, OFF_PHYSICAL_START),
+                virtual_start: read_u64(prefix, OFF_VIRTUAL_START),
                 number_of_pages: read_u64(prefix, OFF_NUMBER_OF_PAGES),
                 attribute: read_u64(prefix, OFF_ATTRIBUTE),
             };
@@ -468,7 +476,7 @@ impl MapStorage {
         let descs = &self.descs[..self.len];
         let side = &mut self.side[..];
         let plan = classify(descs, pa_limit, side.len())?;
-        let counts = plan.commit(descs, pa_limit, serializer, side);
+        let counts = plan.commit(descs, pa_limit, serializer, side, self.snapshot_id);
         self.side_len = counts.side;
         Ok(counts)
     }
@@ -675,6 +683,7 @@ impl Plan {
         pa_limit: u64,
         serializer: &mut Serializer<'_>,
         side: &mut [MemoryRegion],
+        snapshot_id: u64,
     ) -> Classification {
         let mut side_written = 0usize;
         let counts = self.write_to(descs, pa_limit, |index, disposition, region| {
@@ -721,6 +730,11 @@ impl Plan {
                     region.base.0,
                     region.base.0 as u128 + region.len as u128,
                 ),
+                input_object: minix_boot::InputObjectId::UefiMemoryMap,
+                local_source: index as u16,
+                snapshot_id,
+                attribute: descs[index].attribute,
+                virtual_start: descs[index].virtual_start,
             };
             let admitted = serializer.push_source(&record).is_ok();
             assert!(
@@ -774,6 +788,7 @@ mod tests {
         DescriptorRef {
             raw_type: t,
             physical_start: 0x10_0000,
+            virtual_start: 0,
             number_of_pages: 1,
             attribute,
         }
@@ -789,7 +804,7 @@ mod tests {
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
         storage
-            .parse_raw_map(map, map_size, desc_size, version)
+            .parse_raw_map(map, map_size, desc_size, version, 0)
             .and_then(|()| storage.classify_into_handoff(PA_LIMIT, &mut s))
             .unwrap_err()
     }
@@ -1110,6 +1125,31 @@ mod tests {
     }
 
     #[test]
+    fn records_carry_descriptor_identity() {
+        let mut map = [0u8; 40];
+        // UC|WC|WT|WB: a non-trivial attribute that still passes the
+        // write-back admission (no TYPE_INDEPENDENT / profile-only bit).
+        push_desc(&mut map, 0, 40, ty::CONVENTIONAL, 0x10_0000, 1, 0xF);
+        map[16..24].copy_from_slice(&0xFFFF_8000_0000_2000u64.to_le_bytes());
+        let mut storage = MapStorage::new();
+        storage.parse_raw_map(&map, map.len(), 40, 1, 42).unwrap();
+        let mut arena = [0u8; minix_boot::ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
+        let off = minix_boot::WIRE_SOURCES_OFFSET;
+        let u64_at = |o: usize| u64::from_le_bytes(arena[o..o + 8].try_into().unwrap());
+        assert_eq!(u64_at(off + 24), 0xF, "attribute");
+        assert_eq!(u64_at(off + 32), 0xFFFF_8000_0000_2000, "virtual_start");
+        assert_eq!(u64_at(off + 40), 42, "map snapshot id");
+        assert_eq!(
+            u16::from_le_bytes(arena[off + 58..off + 60].try_into().unwrap()),
+            0,
+            "local source id"
+        );
+        assert_eq!(arena[off + 66], 1, "input object = UEFI snapshot");
+    }
+
+    #[test]
     fn a_range_above_the_ram_ceiling_still_reaches_the_ordinary_tables() {
         // Replaces the old "starts below the highest conventional end" filter:
         // membership is answered by type and attributes, not by where the largest
@@ -1117,7 +1157,7 @@ mod tests {
         let mut map = [0u8; 40];
         push_desc(&mut map, 0, 40, ty::LOADER_DATA, 0xFD_0000_0000, 0x100, WB);
         let mut storage = MapStorage::new();
-        storage.parse_raw_map(&map, map.len(), 40, 1).unwrap();
+        storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
@@ -1163,14 +1203,14 @@ mod tests {
         let mut s = Serializer::new(&mut arena).unwrap();
         let mut storage = MapStorage::new();
         storage
-            .parse_raw_map(&map, map.len(), desc_size, 1)
+            .parse_raw_map(&map, map.len(), desc_size, 1, 0)
             .unwrap();
         let plan = classify(storage.descriptors(), PA_LIMIT, storage.side_capacity()).unwrap();
         let mut side = [MemoryRegion {
             base: PhysBytes(0),
             len: 0,
         }; SIDE_CAP];
-        let c = plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side);
+        let c = plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side, 0);
         assert_eq!(
             c,
             Classification {
@@ -1221,7 +1261,7 @@ mod tests {
         let mut s = Serializer::new(&mut arena).unwrap();
         let mut storage = MapStorage::new();
         storage
-            .parse_raw_map(&map, map.len(), desc_size, 1)
+            .parse_raw_map(&map, map.len(), desc_size, 1, 0)
             .unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         assert_eq!(c.conventional, 2);
@@ -1309,7 +1349,7 @@ mod tests {
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
         let mut storage = MapStorage::new();
-        storage.parse_raw_map(&map, map.len(), 40, 1).unwrap();
+        storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         assert_eq!(
             storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap_err(),
             MapError::Policy(PolicyError::UnknownType)
@@ -1354,7 +1394,9 @@ mod tests {
         let map = [0u8; 40 * (MAX_MAP_DESCRIPTORS + 1)];
         let mut storage = MapStorage::new();
         assert_eq!(
-            storage.parse_raw_map(&map, map.len(), 40, 1).unwrap_err(),
+            storage
+                .parse_raw_map(&map, map.len(), 40, 1, 0)
+                .unwrap_err(),
             MapError::TooManyDescriptors
         );
     }
@@ -1365,7 +1407,7 @@ mod tests {
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
         let mut storage = MapStorage::new();
-        storage.parse_raw_map(&map, 0, 40, 1).unwrap();
+        storage.parse_raw_map(&map, 0, 40, 1, 0).unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         assert_eq!(c, Classification::default());
     }

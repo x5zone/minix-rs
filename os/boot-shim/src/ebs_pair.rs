@@ -154,7 +154,13 @@ pub unsafe fn pair_and_classify(
         // holder.
         let storage = unsafe { &mut *core::ptr::addr_of_mut!(PAIR_STORAGE) };
         storage
-            .parse_raw_map(map_buf, map_size, descriptor_size, descriptor_version)
+            .parse_raw_map(
+                map_buf,
+                map_size,
+                descriptor_size,
+                descriptor_version,
+                map_key as u64,
+            )
             .map_err(PairError::Map)?;
         let classification = storage
             .classify_into_handoff(pa_limit, serializer)
@@ -441,6 +447,11 @@ mod tests {
         let mut reserved = [empty; 4];
         let nr = decode_reserved_regions(s.as_bytes(), &scalars, &mut reserved).unwrap();
         let mut sources = [SourceRecord {
+            input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
@@ -508,6 +519,11 @@ mod tests {
         });
         let scalars = decode_envelope(s.as_bytes()).unwrap();
         let mut sources = [SourceRecord {
+            input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),

@@ -519,6 +519,7 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
                 buffer.len(),
                 descriptor_size,
                 ebs_map::MEMORY_DESCRIPTOR_VERSION,
+                0,
             )
             .unwrap_or_else(|err| panic!("boot-shim: memory map rejected: {err:?}"));
         let descs = storage.descriptors();

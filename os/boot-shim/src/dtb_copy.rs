@@ -161,6 +161,7 @@ mod tests {
         DescriptorRef {
             raw_type,
             physical_start: start,
+            virtual_start: 0,
             number_of_pages: pages,
             attribute: 0,
         }

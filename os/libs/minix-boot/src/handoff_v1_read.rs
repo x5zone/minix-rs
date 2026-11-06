@@ -371,13 +371,19 @@ pub fn decode_sources(
             start: read_u64(arena, off),
             end_lo: read_u64(arena, off + 8),
             end_hi: read_u64(arena, off + 16),
-            id: u16::from_le_bytes(arena[off + 24..off + 26].try_into().unwrap()),
-            kind: arena[off + 26],
-            origin_tag: arena[off + 27],
-            a: u16::from_le_bytes(arena[off + 28..off + 30].try_into().unwrap()),
-            b: u16::from_le_bytes(arena[off + 30..off + 32].try_into().unwrap()),
-            cut: read_u64(arena, off + 32),
-            reserved: read_u64(arena, off + 40),
+            attribute: read_u64(arena, off + 24),
+            virtual_start: read_u64(arena, off + 32),
+            snapshot: read_u64(arena, off + 40),
+            cut: read_u64(arena, off + 48),
+            id: u16::from_le_bytes(arena[off + 56..off + 58].try_into().unwrap()),
+            local: u16::from_le_bytes(arena[off + 58..off + 60].try_into().unwrap()),
+            a: u16::from_le_bytes(arena[off + 60..off + 62].try_into().unwrap()),
+            b: u16::from_le_bytes(arena[off + 62..off + 64].try_into().unwrap()),
+            kind: arena[off + 64],
+            origin_tag: arena[off + 65],
+            input_object: arena[off + 66],
+            reserved0: arena[off + 67],
+            reserved: read_u32(arena, off + 68),
         };
         *slot = wire.decode().ok_or(HandoffV1ReadError::BadSourceRecord)?;
     }
@@ -459,18 +465,33 @@ mod tests {
     static PARAM: &[u8] = b"ARCH=x86_64\0BOARD=qemu\0";
     static RECORDS: [SourceRecord; 3] = [
         SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
             range: PhysicalRange::new(0x10_0000, 0x20_0000),
         },
         SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 1,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },
             range: PhysicalRange::new(0x40_0000, 0x60_0000),
         },
         SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 2,
             kind: SourceKind::ReservedOrdinary,
             origin: SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
@@ -742,6 +763,11 @@ mod tests {
             (RECORDS.len() * WIRE_SOURCE_RECORD_SIZE) as u64
         );
         let mut out = [SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
@@ -762,6 +788,11 @@ mod tests {
         );
         let s = decode_envelope(&arena).unwrap();
         let mut out = [SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
@@ -779,11 +810,16 @@ mod tests {
     #[test]
     fn rejects_source_record_with_nonzero_reserved_word() {
         let mut arena = build_arena();
-        // Third record starts at WIRE_SOURCES_OFFSET + 2 * 48; its reserved
-        // tail is the last 8 bytes of the 48-byte slot.
-        put_u64(&mut arena, WIRE_SOURCES_OFFSET + 2 * 48 + 40, 1);
+        // Third record starts at WIRE_SOURCES_OFFSET + 2 * 72; its reserved
+        // word is the last four bytes of the 72-byte slot.
+        put_u64(&mut arena, WIRE_SOURCES_OFFSET + 2 * 72 + 68, 1);
         let s = decode_envelope(&arena).unwrap();
         let mut out = [SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
@@ -868,6 +904,67 @@ mod tests {
     /// executable form of that claim: any surviving alias into arena memory
     /// would flip a landing byte to the poison pattern and fail here.
     #[test]
+    fn round_trip_identity_fields() {
+        use crate::memmap_source::InputObjectId;
+        let record = SourceRecord {
+            id: 7,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::UefiDescriptor { index: 7 },
+            range: PhysicalRange::new(0x1000, 0x3000),
+            input_object: InputObjectId::UefiMemoryMap,
+            local_source: 7,
+            snapshot_id: 0xABCD_EF01,
+            attribute: 0x8000_0000_0000_000F,
+            virtual_start: 0xFFFF_8000_0000_1000,
+        };
+        let mut arena = [0u8; ARENA_CAP];
+        {
+            let mut s = Serializer::new(&mut arena).unwrap();
+            s.write_envelope(&info()).unwrap();
+            s.write_sources(&[record]).unwrap();
+            s.patch_runtime_fields(RuntimeFields {
+                root_page: ROOT,
+                bump_base: BUMP_BASE,
+                bump_next: BUMP_NEXT,
+                bump_end: BUMP_END,
+            });
+        }
+        let scalars = decode_envelope(&arena).unwrap();
+        let mut out = [record; 1];
+        let n = decode_sources(&arena, &scalars, &mut out).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(out[0].input_object, InputObjectId::UefiMemoryMap);
+        assert_eq!(out[0].local_source, 7);
+        assert_eq!(out[0].snapshot_id, 0xABCD_EF01);
+        assert_eq!(out[0].attribute, 0x8000_0000_0000_000F);
+        assert_eq!(out[0].virtual_start, 0xFFFF_8000_0000_1000);
+    }
+
+    #[test]
+    fn rejects_nonzero_snapshot_on_a_dtb_record() {
+        let mut arena = [0u8; ARENA_CAP];
+        {
+            let mut s = Serializer::new(&mut arena).unwrap();
+            s.write_envelope(&info()).unwrap();
+            s.write_sources(&RECORDS[..1]).unwrap();
+            s.patch_runtime_fields(RuntimeFields {
+                root_page: ROOT,
+                bump_base: BUMP_BASE,
+                bump_next: BUMP_NEXT,
+                bump_end: BUMP_END,
+            });
+        }
+        let off = WIRE_SOURCES_OFFSET + 40;
+        arena[off..off + 8].copy_from_slice(&1u64.to_le_bytes());
+        let scalars = decode_envelope(&arena).unwrap();
+        let mut out = [RECORDS[0]; 1];
+        assert!(matches!(
+            decode_sources(&arena, &scalars, &mut out),
+            Err(HandoffV1ReadError::BadSourceRecord)
+        ));
+    }
+
+    #[test]
     fn decoded_payloads_survive_arena_poison() {
         let mut arena = build_arena();
         let s = decode_envelope(&arena).unwrap();
@@ -893,6 +990,11 @@ mod tests {
         let mut param = [0u8; WIRE_PARAM_CAP];
         let n_param = decode_param_buf(&arena, &s, &mut param).unwrap();
         let mut records = [SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),

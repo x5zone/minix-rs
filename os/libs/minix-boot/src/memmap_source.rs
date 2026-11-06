@@ -369,6 +369,43 @@ pub struct SourceRecord {
     pub kind: SourceKind,
     pub origin: SourceOrigin,
     pub range: PhysicalRange,
+    /// Which input object the record came from.
+    pub input_object: InputObjectId,
+    /// Index inside that input object (DTB: record ordinal, UEFI: descriptor
+    /// index). Together with `input_object` it is the cross-input reference.
+    pub local_source: u16,
+    /// Which `GetMemoryMap` snapshot produced the record; 0 for DTB inputs.
+    pub snapshot_id: u64,
+    /// The firmware descriptor's `Attribute`; 0 for DTB inputs.
+    pub attribute: u64,
+    /// The firmware descriptor's `VirtualStart`; 0 for DTB inputs.
+    pub virtual_start: u64,
+}
+
+/// Identity of the input object a [`SourceRecord`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputObjectId {
+    /// A device-tree blob (configuration table, disk, or firmware `a1`).
+    DtbBootInput,
+    /// The `GetMemoryMap` snapshot taken by the EBS pairing loop.
+    UefiMemoryMap,
+}
+
+impl InputObjectId {
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::DtbBootInput => 0,
+            Self::UefiMemoryMap => 1,
+        }
+    }
+
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::DtbBootInput),
+            1 => Some(Self::UefiMemoryMap),
+            _ => None,
+        }
+    }
 }
 
 static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
@@ -376,6 +413,11 @@ static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     kind: SourceKind::Memory,
     origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
     range: PhysicalRange::new(0, 0),
+    input_object: InputObjectId::DtbBootInput,
+    local_source: 0,
+    snapshot_id: 0,
+    attribute: 0,
+    virtual_start: 0,
 }; DTB_SOURCE_MAX];
 static DTB_SOURCES_N: AtomicUsize = AtomicUsize::new(0);
 /// The deduplicated `/memory` panorama the projections were built from.
@@ -495,6 +537,11 @@ fn push_source(
         kind,
         origin,
         range,
+        input_object: InputObjectId::DtbBootInput,
+        local_source: *n as u16,
+        snapshot_id: 0,
+        attribute: 0,
+        virtual_start: 0,
     };
     *n += 1;
     Ok(())
@@ -720,6 +767,11 @@ impl DtbMemoryMap<'_> {
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
             range: PhysicalRange::new(0, 0),
+            input_object: InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
         }; DTB_SOURCE_MAX];
         let mut sources_n = 0usize;
         let mut free = [MemoryRegion {
@@ -2279,6 +2331,11 @@ mod tests {
             len: 0x1000,
         }];
         let sources = [SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
@@ -2303,12 +2360,22 @@ mod tests {
         }];
         let sources = [
             SourceRecord {
+                input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+                local_source: 0,
+                snapshot_id: 0,
+                attribute: 0,
+                virtual_start: 0,
                 id: 0,
                 kind: SourceKind::Memory,
                 origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
                 range: PhysicalRange::new(0x8000_0000, 0x8000_1000),
             },
             SourceRecord {
+                input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+                local_source: 0,
+                snapshot_id: 0,
+                attribute: 0,
+                virtual_start: 0,
                 id: 1,
                 kind: SourceKind::Memory,
                 origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },

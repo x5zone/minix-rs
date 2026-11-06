@@ -311,6 +311,7 @@ mod tests {
         DescriptorRef {
             raw_type,
             physical_start: start,
+            virtual_start: 0,
             number_of_pages: pages,
             attribute: 0,
         }
@@ -327,6 +328,11 @@ mod tests {
     fn record(kind: SourceKind, start: u64, end: u128) -> SourceRecord {
         SourceRecord {
             id: 0,
+            input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             kind,
             origin: minix_boot::SourceOrigin::UefiDescriptor { index: 0 },
             range: minix_boot::PhysicalRange::new(start, end),

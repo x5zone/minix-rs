@@ -572,12 +572,22 @@ mod tests {
     /// span.
     static COVERING_RECORDS: [SourceRecord; 2] = [
         SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 0,
             kind: crate::memmap_source::SourceKind::Memory,
             origin: crate::memmap_source::SourceOrigin::MemoryNode { node: 0, reg: 0 },
             range: crate::memmap_source::PhysicalRange::new(0x100000, 0x1100000),
         },
         SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
             id: 1,
             kind: crate::memmap_source::SourceKind::ReservedOrdinary,
             origin: crate::memmap_source::SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },

@@ -33,7 +33,8 @@ pub use handoff_v1_read::*;
 pub use handoff_v1_write::*;
 pub use kernel_info::*;
 pub use memmap_source::{
-    DtbMemoryMap, PhysicalRange, SourceAuditError, SourceKind, SourceOrigin, SourceRecord,
+    DtbMemoryMap, InputObjectId, PhysicalRange, SourceAuditError, SourceKind, SourceOrigin,
+    SourceRecord,
     audit_source_coverage, dtb_covers_conventional,
 };
 pub use platform::{
