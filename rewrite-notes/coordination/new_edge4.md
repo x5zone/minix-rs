@@ -5960,4 +5960,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 
 - `MapError::RejectedDescriptor(DescriptorRejection)`：携带 index、raw_type、physical_start、virtual_start、number_of_pages、attribute 与 failed（PolicyError）；`classify` 逐描述符填充；新增 `a_refused_descriptor_is_named_in_the_error`，五条既有 Policy 断言改为按 failed 匹配。
 - 读数：boot-shim 91；minix-boot 165、kernel 863 不变。
-- 认领：`I-29 qorder94`，状态 🔄 待合入。
+- 认领：`I-29 qorder94`，状态 ✅：已 ff 合并为 `d9c5549a6`，认领已释放。
