@@ -16,7 +16,8 @@
 
 - `SourceRecord` 增 `input_object`/`local_source`/`snapshot_id`/`attribute`/`virtual_start`；UEFI 记录写描述符原值与 MapKey，DTB 记录写输入对象标识；解码按输入类做规范化校验。
 - wire v3：记录 48→72 B，arena 7→9 页，`WIRE_SOURCES_END=32448`，版本精确比较 3；原 `reserved0` 字节改为 `address_domain`（v1 恒为 Physical），解码拒绝未知域。
-- 读数：minix-boot 165、boot-shim 89、kernel 863；三组特性构建 OK；x86 UEFI、aarch64 强制 DT 负例、riscv U-Boot 全链三条腿 PASS。
+- 读数：minix-boot 165、boot-shim 90、kernel 863；三组特性构建 OK；x86 UEFI、aarch64 强制 DT 负例、riscv U-Boot 全链三条腿 PASS。
+- B2：补「恰好 256 条且填满 128/64/64」正例（`accepts_exactly_the_descriptor_and_partition_caps`），与既有 257 拒绝负例成对。
 
 **第一百一十五轮（A1：copy-first + 页类型预检）**
 

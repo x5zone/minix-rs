@@ -5949,3 +5949,9 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `SourceRecord` 增 `AddressDomain`（`Physical`/`Virtual`），wire 第 67 字节由 `reserved0` 改为 `address_domain`，解码拒绝未知标签；v1 生产者全部写 `Physical`。
 - 读数：minix-boot 165、boot-shim 89；三组特性构建 OK；x86 UEFI 与 aarch64 强制 DT 负例腿复跑 PASS。
 - 认领：`I-29 qorder92`，状态 ✅：已 ff 合并为 `133940b89`，认领已释放。
+
+### 第三百二十八笔（01 阶段 · I-29 B2：容量边界正例）
+
+- 新增 `accepts_exactly_the_descriptor_and_partition_caps`：恰好 256 条描述符（128 CONVENTIONAL + 64 LOADER_DATA + 64 ACPI_NVS）解析并分类为 `(128, 64, 64)`，同时钉住 `MAX_MAP_DESCRIPTORS`、`WIRE_MEMMAP_CAP`、`SIDE_CAP`；与既有 257 拒绝负例成对。
+- 读数：boot-shim 90；minix-boot 165、kernel 863 不变。
+- 认领：`I-29 qorder93`，状态 🔄 待合入。

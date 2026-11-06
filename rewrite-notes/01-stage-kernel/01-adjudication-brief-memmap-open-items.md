@@ -209,7 +209,7 @@ let record = SourceRecord {
 serializer.push_source(&record).expect("preflight proved the source partition");
 ```
 
-每条记录同时携带身份：`input_object = UefiMemoryMap`、`local_source = 描述符索引`、`snapshot_id` 为本次 `GetMemoryMap` 的 MapKey、`attribute` 与 `virtual_start` 为描述符原值。跨快照的同号描述符因此可区分。
+每条记录同时携带身份：`input_object = UefiMemoryMap`、`local_source = 描述符索引`、`snapshot_id` 为本次 `GetMemoryMap` 的 MapKey、`attribute` 与 `virtual_start` 为描述符原值。跨快照的同号描述符因此可区分。容量边界两向都有测试：257 条描述符拒绝（`rejects_a_map_larger_than_the_storage`），恰好 256 条且同时填满 128 可用 / 64 保留 / 64 侧表通过（`accepts_exactly_the_descriptor_and_partition_caps`）。
 
 **静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在 `find_platform_sources` 时采集（`resv_claims::capture`），EBS 配对循环在**分类之后、`ExitBootServices` 之前**逐页核对（`check_current`，失败形状 `PairError::ReservationCoverage`）：无覆盖或同页出现异类描述符即拒绝启动，即使另有兼容描述符覆盖同页也算冲突（保守加强）；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。容量固定：主张 `MAX_CLAIMS = 64`、每条主张的覆盖区间 `MAX_INTERVALS = 256`，溢出拒绝不截断。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 9 条单测；默认 ACPI 腿无配置表 DTB（无主张、按空集通过），`DTB_CFGTABLE=1` 腿会真正采集并核对。
 
@@ -1018,8 +1018,8 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 ```
 $ cargo test -p minix-types                 → 339 passed / 0 failed
 $ cargo test -p minix-boot                  → 165 passed / 0 failed（第一百一十六轮）
-$ cargo test -p boot-shim                   → 89 passed / 0 failed（+10 resv_claims，+3 记录身份）
-$ cargo test -p boot-shim --features uefi   → 89 passed / 0 failed（+5 集成）
+$ cargo test -p boot-shim                   → 90 passed / 0 failed（+10 resv_claims，+3 记录身份，+1 容量边界）
+$ cargo test -p boot-shim --features uefi   → 90 passed / 0 failed（+5 集成）
 $ cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
 $ cargo test -p minix-vm                    → 548 passed / 0 failed
 ```

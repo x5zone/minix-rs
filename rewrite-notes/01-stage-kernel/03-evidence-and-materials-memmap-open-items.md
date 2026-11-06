@@ -2994,3 +2994,5 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 **QEMU**：`test-shim-bootmarks-x86` PASS；`test-shim-bootmarks-aarch64`（`DTB_CFGTABLE=1` 负例）PASS；`test-riscv64-uboot-shim` PASS（6/6 markers，wire v3 跨第一跳）。
 
 **追加（`address_domain`）**：记录增 `AddressDomain`（`Physical`/`Virtual`），wire 第 67 字节由保留位改为域标签，解码拒绝未知标签；v1 生产者全部写 `Physical`。minix-boot 165、boot-shim 89；x86 UEFI 与 aarch64 强制 DT 负例腿复跑 PASS。
+
+**B2（容量边界正例）**：`accepts_exactly_the_descriptor_and_partition_caps`——恰好 256 条描述符（128 `CONVENTIONAL` + 64 `LOADER_DATA` + 64 `ACPI_NVS`）解析并分类为 `(128, 64, 64)`，同时钉住 `MAX_MAP_DESCRIPTORS`、`WIRE_MEMMAP_CAP` 与 `SIDE_CAP` 三个上界；boot-shim 90。

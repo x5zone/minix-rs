@@ -1390,6 +1390,53 @@ mod tests {
         );
     }
 
+    /// The storage accepts exactly `MAX_MAP_DESCRIPTORS` descriptors, and a map
+    /// that fills every output capacity at once still classifies: 128
+    /// conventional (`WIRE_MEMMAP_CAP`), 64 reserved, 64 side (`SIDE_CAP`).
+    #[test]
+    fn accepts_exactly_the_descriptor_and_partition_caps() {
+        let mut map = [0u8; 40 * MAX_MAP_DESCRIPTORS];
+        for i in 0..128 {
+            push_desc(
+                &mut map,
+                i,
+                40,
+                ty::CONVENTIONAL,
+                0x10_0000 + (i as u64) * 0x1000,
+                1,
+                WB,
+            );
+        }
+        for i in 0..64 {
+            push_desc(
+                &mut map,
+                128 + i,
+                40,
+                ty::LOADER_DATA,
+                0x40_0000 + (i as u64) * 0x1000,
+                1,
+                WB,
+            );
+        }
+        for i in 0..64 {
+            push_desc(
+                &mut map,
+                192 + i,
+                40,
+                ty::ACPI_NVS,
+                0x80_0000 + (i as u64) * 0x1000,
+                1,
+                WB,
+            );
+        }
+        let mut storage = MapStorage::new();
+        storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
+        let mut arena = [0u8; minix_boot::ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
+        assert_eq!((c.conventional, c.reserved, c.side), (128, 64, 64));
+    }
+
     #[test]
     fn rejects_a_map_larger_than_the_storage() {
         let map = [0u8; 40 * (MAX_MAP_DESCRIPTORS + 1)];
