@@ -5948,4 +5948,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 
 - `SourceRecord` 增 `AddressDomain`（`Physical`/`Virtual`），wire 第 67 字节由 `reserved0` 改为 `address_domain`，解码拒绝未知标签；v1 生产者全部写 `Physical`。
 - 读数：minix-boot 165、boot-shim 89；三组特性构建 OK；x86 UEFI 与 aarch64 强制 DT 负例腿复跑 PASS。
-- 认领：`I-29 qorder92`，状态 🔄 待合入。
+- 认领：`I-29 qorder92`，状态 ✅：已 ff 合并为 `133940b89`，认领已释放。
