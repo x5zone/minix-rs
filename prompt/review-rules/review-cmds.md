@@ -61,6 +61,8 @@
 │   ├─ 测试：完备/自身正确/冗余/无效/虚构对账 → cmd test-audit
 │   ├─ 待办：修一条 TODO（DEFERRED 不算修，一次一条）→ cmd todo-fix
 │   └─ 只写不审：先出新 outline（含代码放置栏）→ 再按 §六 第 9 条“必备构件清单”生成；前置加载 style-bible
+├─ 工作流试点/流程评测（逐篇文档+关联代码，记录轨迹，判断是否收敛）
+│   → skill review-loop（外层编排；不新增任务命令，复用上面六个 cmd）
 ├─ 判不了、需要用户提供证据或澄清 → review-socratic-skill（13 类话术）
 └─ 需要「该在哪个 Step 查哪些模式」→ review-patterns-skill §0 与 review-patterns.md 附录交叉引用表
 ```
@@ -257,3 +259,36 @@
 **组合示例**（用户显式串联，系统不隐式展开）：
 - 写完一个文档 → `full-review`（scope=chapter）× 每章 → `style-fix` → `test-audit`
 - 阶段收尾 → `full-review`（scope=dir，coverage 强制）→ `code-excellence`（module）→ `test-audit`
+
+---
+
+## 十、元工作流：review-loop（工作流试点循环）
+
+**定位**：`review-loop` 不是第七个任务命令，而是外层编排技能。它把“文档加关联代码的 review、修复、轨迹记录、独立流程评估”固定成一个可以逐篇重复执行的循环，用来判断 review 工作流本身是否进步与收敛。普通 review 仍走第二节到第七节的六个命令。
+
+**入口与规范源**：
+
+- 技能：`prompt/skill/review-loop.md`
+- 面板协议：`prompt/review-rules/review-panel.md`
+- 评测规范：`prompt/review-rules/review-evals.md`
+- 数据目录：`rewrite-notes/coordination/review-eval/`
+
+**何时使用**：
+
+- 用户要求“按固定循环 review 一篇文档和它相关的代码，并记录轨迹”；
+- 用户要求“判断当前 review 工作流是否进步或收敛”；
+- 用户要求逐篇处理 `01-stage-kernel` 的 01–10 篇，或后续 `02-stage-vm`、`03-stage-rs` 的 01–10 篇。
+
+**不做什么**：
+
+- 不新增任务命令，不改变六个命令的契约；
+- 不做一次性 review；一次性 review 走 `full-review`；
+- 不在同一轮同时改工作流和修文档；工作流升版只在版本边界，且每次最多晋升两条。
+
+**强制门**：
+
+- L0 必须先声明范围，并产出 `tools/doc-code-map.sh` 的关联代码清单；
+- L1 面板角色只读，材料隔离，原始输出进 `tmp/review-eval/`；
+- L2 每条面板发现必须有处置行，`tools/eval-trace-check.py` 退出码必须为 0；
+- L4 必须跑文档五门与代码测试门；修复段必须回读；
+- L6 meta-review 必须按 `review-evals.md` 第五节的九项问卷给结论，并标注同 agent 局限。

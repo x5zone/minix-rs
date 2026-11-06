@@ -86,6 +86,8 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 任务一律先走**决策树**再落命令：`prompt/review-rules/review-cmds.md` §一b 给「任务性质 → 命令 → 技能」的路由树（新会话第一眼该看它，别先看名字最像的技能）。6 个命令入口：`full-review`、`style-fix`、`code-excellence`、`test-audit`、`todo-fix`、`style-bible`。旧 Profile A–P / R / AG 保留为别名，对账表见该文件 §八。**通用强制门任何命令都不可裁剪**：锚点纪律门、测试名对账门、文风门、translate 防线、fix-guard、文档-代码同步、教学构件承载门（机制文档的分析/实现章无码、诊断章无命令 = P1，`tools/doc-code-density-check.sh`）。
 
-技能清单（10 个）与调用时机见 `.codex/skills/`、`.claude/skills/`、`.trae/skills/`；源在 `prompt/skill/`。
+技能清单与调用时机见 `.codex/skills/`、`.claude/skills/`、`.trae/skills/`；源在 `prompt/skill/`（9 个领域技能、`review-scan` 与 `review-loop` 两个编排器）。
+
+**Review workflow 试点循环（2026-11-07 新增）**：`review-loop` 是文档加关联代码的固定循环与流程评测入口，源在 `prompt/skill/review-loop.md`，规范源为 `prompt/review-rules/review-panel.md` 与 `prompt/review-rules/review-evals.md`，数据在 `rewrite-notes/coordination/review-eval/`。它不是第七个任务命令，复用上面六个命令；普通 review 不走它。试点批次：`01-stage-kernel` 的 01–10 篇，之后 `02-stage-vm` 与 `03-stage-rs` 的 01–10 篇。
 
 > **一致性约定**：`.trae/skills/`、`.codex/skills/` 与 `.claude/skills/review-scan/` 全部由 `prompt/skill/` 经 `tools/generate-derived-skills.sh` 生成（编排器源在 `prompt/skill/review-scan/`，运行时差异用 `<!-- @if:claude -->` / `<!-- @if:codex -->` 条件块表达，Claude 专有的 `allowed-tools` 字段只进 Claude 份）；只有 `.claude/rules/*` 三份运行时副本属手工同步。改完源必须跑：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh` → `tools/diff-trae-skills.sh --only-diff`，四条全绿才算改完。这四道门已由 `.github/workflows/rules-consistency.yml` 在 CI 常驻执行（连同门自身的 `--self-test` 与各工具自测：文风/锚点/承载门/引用对账/迁移/unsafe/模式/断链），不依赖任何人记得跑。

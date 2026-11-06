@@ -26,6 +26,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # 9 个领域 Skill + review-scan 编排器（源在 prompt/skill/review-scan/，2026-10-07 收编）
+# + review-loop 外层编排技能（2026-11-07 新增，单文件源）
 SKILLS=(
   review-code-skill
   review-doc-skill
@@ -36,6 +37,7 @@ SKILLS=(
   review-excellence-skill
   review-implementation-skill
   review-socratic-skill
+  review-loop
 )
 
 CHECK_ONLY="false"

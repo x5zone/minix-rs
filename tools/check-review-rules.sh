@@ -16,6 +16,7 @@ SKILLS=(
   review-patterns-skill
   review-process-skill
   review-socratic-skill
+  review-loop
 )
 
 errors=0
@@ -130,8 +131,8 @@ for skill in "${SKILLS[@]}"; do
   cod_file=".codex/skills/${skill}/SKILL.md"
   [[ -f "$src_file" ]] || continue
   [[ -f "$cod_file" ]] || continue
-  src_h3=$(strip_frontmatter "$src_file" | grep -c '^### ')
-  cod_h3=$(strip_frontmatter "$cod_file" | grep -c '^### ')
+  src_h3=$(strip_frontmatter "$src_file" | grep -c '^### ' || true)
+  cod_h3=$(strip_frontmatter "$cod_file" | grep -c '^### ' || true)
   diff=$(( src_h3 > cod_h3 ? src_h3 - cod_h3 : cod_h3 - src_h3 ))
   if (( diff > 5 )); then
     fail "Codex body drift: $skill has ${cod_h3} H3 headings vs source ${src_h3} (diff=${diff}, threshold=5)"

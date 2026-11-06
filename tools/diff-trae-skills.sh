@@ -120,9 +120,9 @@ echo "$(bold "  .trae/skills/ vs prompt/skill/ 同步对比")"
 echo "$(bold "========================================")"
 echo ""
 
-# 找出所有 skill
-PROMPT_SKILLS=$(find "$PROMPT_DIR" -name "review-*-skill.md" -printf "%f\n" | sed 's/.md$//' | sort)
-TRAE_SKILLS=$(find "$TRAE_DIR" -mindepth 1 -maxdepth 1 -type d -name 'review-*-skill' -printf "%f\n" | sort)
+# 找出所有 skill（含 2026-11-07 新增的 review-loop 单文件编排技能）
+PROMPT_SKILLS=$(find "$PROMPT_DIR" -maxdepth 1 \( -name "review-*-skill.md" -o -name "review-loop.md" \) -printf "%f\n" | sed 's/.md$//' | sort)
+TRAE_SKILLS=$(find "$TRAE_DIR" -mindepth 1 -maxdepth 1 -type d \( -name 'review-*-skill' -o -name 'review-loop' \) -printf "%f\n" | sort)
 
 P_COUNT=$(echo "$PROMPT_SKILLS" | wc -l)
 T_COUNT=$(echo "$TRAE_SKILLS" | wc -l)

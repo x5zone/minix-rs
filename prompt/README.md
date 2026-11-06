@@ -297,6 +297,7 @@ done
 | review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map + Gate A 强制运行规则 + gate-evidence-A 块模板） |
 | review.md（苏格拉底追问话术） | review-socratic-skill.md | Skill（13 场景追问话术模板） |
 | review-process.md §实施验证（2026-06-22 新增） | review-implementation-skill.md | Skill（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试边界） |
+| review-panel.md + review-evals.md（2026-11-07 新增） | review-loop.md | Skill（外层编排：独立面板 + 归因 + 轨迹 + meta-review + 升版；不新增任务命令） |
 | review-profiles.md | review-agent-ide.md（路由指令部分） | 并入 Agent |
 | ~~review-agent.md~~ | ~~已删除~~ | 原 8,847 字符完整版，STATE.md 格式已迁移至 review-process-skill.md |
 
