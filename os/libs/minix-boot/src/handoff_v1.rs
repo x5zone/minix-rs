@@ -82,13 +82,19 @@ pub struct WireSourceRecord {
     pub start: u64,
     pub end_lo: u64,
     pub end_hi: u64,
+    pub attribute: u64,
+    pub virtual_start: u64,
+    pub snapshot: u64,
+    pub cut: u64,
     pub id: u16,
-    pub kind: u8,
-    pub origin_tag: u8,
+    pub local: u16,
     pub a: u16,
     pub b: u16,
-    pub cut: u64,
-    pub reserved: u64,
+    pub kind: u8,
+    pub origin_tag: u8,
+    pub input_object: u8,
+    pub reserved0: u8,
+    pub reserved: u32,
 }
 
 impl WireSourceRecord {
@@ -134,12 +140,18 @@ impl WireSourceRecord {
             start: record.range.start,
             end_lo: record.range.end_exclusive as u64,
             end_hi: (record.range.end_exclusive >> 64) as u64,
+            attribute: record.attribute,
+            virtual_start: record.virtual_start,
+            snapshot: record.snapshot_id,
+            cut,
             id: record.id,
-            kind,
-            origin_tag,
+            local: record.local_source,
             a,
             b,
-            cut,
+            kind,
+            origin_tag,
+            input_object: record.input_object.tag(),
+            reserved0: 0,
             reserved: 0,
         }
     }
@@ -148,9 +160,10 @@ impl WireSourceRecord {
     /// cannot produce, i.e. a corrupted or foreign wire image; the caller
     /// must fail closed rather than guess.
     pub fn decode(self) -> Option<SourceRecord> {
-        if self.end_hi > 1 || self.reserved != 0 {
+        if self.end_hi > 1 || self.reserved != 0 || self.reserved0 != 0 {
             return None;
         }
+        let input_object = crate::memmap_source::InputObjectId::from_tag(self.input_object)?;
         let kind = match self.kind {
             Self::KIND_MEMORY => SourceKind::Memory,
             Self::KIND_FIRMWARE_PREFIX => SourceKind::FirmwarePrefix,
@@ -191,6 +204,23 @@ impl WireSourceRecord {
         if !payload_ok {
             return None;
         }
+        // Canonical wire image: fields the other input class leaves at zero
+        // must stay zero, so one record has exactly one encoding.
+        match input_object {
+            crate::memmap_source::InputObjectId::DtbBootInput => {
+                if self.snapshot != 0 || self.attribute != 0 || self.virtual_start != 0 {
+                    return None;
+                }
+            }
+            crate::memmap_source::InputObjectId::UefiMemoryMap => {
+                // `a` carries the descriptor index (origin payload); the
+                // explicit local source id must agree with it, and only the
+                // DTB-only words may stay zero.
+                if self.cut != 0 || self.b != 0 || self.local != self.a {
+                    return None;
+                }
+            }
+        }
         Some(SourceRecord {
             id: self.id,
             kind,
@@ -199,6 +229,11 @@ impl WireSourceRecord {
                 self.start,
                 self.end_lo as u128 | ((self.end_hi as u128) << 64),
             ),
+            input_object,
+            local_source: self.local,
+            snapshot_id: self.snapshot,
+            attribute: self.attribute,
+            virtual_start: self.virtual_start,
         })
     }
 }
@@ -213,7 +248,7 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// instead of being dropped on the sending side. A v1 receiver would ignore
 /// the new partition and a v1 sender would leave it empty, so the version is
 /// compared exactly, not as a minimum.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 2;
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 3;
 
 /// `free_upper_idx` sentinel for "no value" (a valid index can never be
 /// `u64::MAX`; decode checks the sentinel first, then the range).
@@ -280,7 +315,7 @@ pub const WIRE_PARAM_CAP: usize = 1024;
 /// so the same partition serves both legs.
 pub const WIRE_SOURCES_CAP: usize = 256;
 /// Wire size of one [`WireSourceRecord`].
-pub const WIRE_SOURCE_RECORD_SIZE: usize = 48;
+pub const WIRE_SOURCE_RECORD_SIZE: usize = 72;
 
 /// Semantic work-partition capacities (`128×16 + 256×16 = 6144` bytes).
 pub const SEMANTIC_MEMMAP_CAP: usize = 128;
@@ -311,7 +346,7 @@ pub const WIRE_SOURCES_END: usize =
 
 /// Whole-arena capacity: 7 pages (28 KiB) — the 16 KiB envelope + wire +
 /// semantic partitions plus the 12 KiB source-record partition.
-pub const ARENA_CAP: usize = 7 * 4096;
+pub const ARENA_CAP: usize = 9 * 4096;
 
 // ── layout gate ──────────────────────────────────────────────────────────
 
@@ -353,10 +388,12 @@ const _: () = {
     assert!(WIRE_PARAM_OFFSET == 6848);
     assert!(WIRE_END == 7872);
     assert!(SEMANTIC_MEMMAP_OFFSET == WIRE_END);
-    assert!(SEMANTIC_RESERVED_OFFSET.is_multiple_of(align_of::<crate::kernel_info::MemoryRegion>()));
+    assert!(
+        SEMANTIC_RESERVED_OFFSET.is_multiple_of(align_of::<crate::kernel_info::MemoryRegion>())
+    );
     assert!(SEMANTIC_END == 14016);
     assert!(WIRE_SOURCES_OFFSET.is_multiple_of(align_of::<WireSourceRecord>()));
-    assert!(WIRE_SOURCES_END == 26304);
+    assert!(WIRE_SOURCES_END == 32448);
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
     assert!(SEMANTIC_END <= ARENA_CAP);
     assert!(ARENA_CAP.is_multiple_of(4096));
@@ -372,7 +409,7 @@ mod tests {
         assert_eq!(size_of::<WireBootModule>(), 32);
         assert_eq!(size_of::<WirePlatformDescSource>(), 16);
         assert_eq!(size_of::<BootHandoffV1>(), 176);
-        assert_eq!(size_of::<WireSourceRecord>(), 48);
+        assert_eq!(size_of::<WireSourceRecord>(), 72);
     }
 
     #[test]
