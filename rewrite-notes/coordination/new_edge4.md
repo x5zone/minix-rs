@@ -6096,4 +6096,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `resv_claims::capture` 返回 `Result<(), ClaimError>`，`TooManyClaims` 以 `PairError::DtbClaims` 失败关闭；此前空主张集让 `check_current` 放行。回归 `capture_claims_surfaces_the_capacity_overflow`、`capture_leaves_container_failures_to_the_later_gate`。
 - 排除记录末端改用 u128 精确表示（顶端页末端 `2^64` 不再被 u64 饱和截短）；回归 `an_excluded_top_page_record_keeps_its_exact_end`；`ARENA_CAP` 注释改为 384 B。
 - 读数：boot-shim 113（+4）/ test-all 125、minix-boot 175、kernel 863；六组交叉构建 OK；x86 UEFI、aarch64 ACPI、aarch64 强制 DT 负例、riscv bootface、riscv U-Boot（6/6）五条 QEMU 腿 PASS。
-- 认领：`I-29 qorder96`，状态 🔄 待合入。
+- 认领：`I-29 qorder96`，状态 ✅：已 ff 合并为 `6d548de9b`，认领已释放。
