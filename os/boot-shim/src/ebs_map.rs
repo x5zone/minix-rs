@@ -311,6 +311,18 @@ pub enum PolicyError {
     OutOfPhysRange,
 }
 
+/// The descriptor that failed admission, captured for the halt report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescriptorRejection {
+    pub index: u16,
+    pub raw_type: u32,
+    pub physical_start: u64,
+    pub virtual_start: u64,
+    pub number_of_pages: u64,
+    pub attribute: u64,
+    pub failed: PolicyError,
+}
+
 /// Why a whole map was refused, before or during classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapError {
@@ -324,6 +336,9 @@ pub enum MapError {
     /// More descriptors than the caller's storage holds.
     TooManyDescriptors,
     Policy(PolicyError),
+    /// A descriptor failed admission; the record names the descriptor and the
+    /// failed requirement, so the halt report is actionable.
+    RejectedDescriptor(DescriptorRejection),
     /// A produced list needs more room than the caller gave it.
     Capacity(HandoffV1WriteError),
     /// More side-list entries than the diagnostic buffer holds.
@@ -601,8 +616,18 @@ pub struct Plan {
 /// been written yet.
 pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Result<Plan, MapError> {
     let mut counts = Classification::default();
-    for desc in descs {
-        let (disposition, _) = adjudicate(desc, pa_limit)?;
+    for (index, desc) in descs.iter().enumerate() {
+        let (disposition, _) = adjudicate(desc, pa_limit).map_err(|failed| {
+            MapError::RejectedDescriptor(DescriptorRejection {
+                index: index as u16,
+                raw_type: desc.raw_type,
+                physical_start: desc.physical_start,
+                virtual_start: desc.virtual_start,
+                number_of_pages: desc.number_of_pages,
+                attribute: desc.attribute,
+                failed,
+            })
+        })?;
         match disposition {
             Disposition::Allocate => counts.conventional += 1,
             Disposition::ReservedMapped => counts.reserved += 1,
@@ -1306,40 +1331,52 @@ mod tests {
     fn rejects_zero_page_count_on_an_emitted_range() {
         let mut map = [0u8; 40];
         push_desc(&mut map, 0, 40, ty::CONVENTIONAL, 0x10_0000, 0, WB);
-        assert_eq!(
+        assert!(matches!(
             classify_err(&map, 40, 40, 1),
-            MapError::Policy(PolicyError::ZeroPageCount)
-        );
+            MapError::RejectedDescriptor(DescriptorRejection {
+                failed: PolicyError::ZeroPageCount,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn rejects_page_count_overflow() {
         let mut map = [0u8; 40];
         push_desc(&mut map, 0, 40, ty::CONVENTIONAL, 0x10_0000, u64::MAX, WB);
-        assert_eq!(
+        assert!(matches!(
             classify_err(&map, 40, 40, 1),
-            MapError::Policy(PolicyError::LengthOverflow)
-        );
+            MapError::RejectedDescriptor(DescriptorRejection {
+                failed: PolicyError::LengthOverflow,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn rejects_range_above_phys_limit() {
         let mut map = [0u8; 40];
         push_desc(&mut map, 0, 40, ty::CONVENTIONAL, PA_LIMIT, 1, WB);
-        assert_eq!(
+        assert!(matches!(
             classify_err(&map, 40, 40, 1),
-            MapError::Policy(PolicyError::OutOfPhysRange)
-        );
+            MapError::RejectedDescriptor(DescriptorRejection {
+                failed: PolicyError::OutOfPhysRange,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn rejects_unaligned_start() {
         let mut map = [0u8; 40];
         push_desc(&mut map, 0, 40, ty::CONVENTIONAL, 0x10_0001, 1, WB);
-        assert_eq!(
+        assert!(matches!(
             classify_err(&map, 40, 40, 1),
-            MapError::Policy(PolicyError::UnalignedStart)
-        );
+            MapError::RejectedDescriptor(DescriptorRejection {
+                failed: PolicyError::UnalignedStart,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1351,10 +1388,13 @@ mod tests {
         let mut s = Serializer::new(&mut arena).unwrap();
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
-        assert_eq!(
+        assert!(matches!(
             storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap_err(),
-            MapError::Policy(PolicyError::UnknownType)
-        );
+            MapError::RejectedDescriptor(DescriptorRejection {
+                failed: PolicyError::UnknownType,
+                ..
+            })
+        ));
         // Nothing reached the wire: an un-nameable map is refused whole.
         assert_eq!(get_u64(s.as_bytes(), 128), 0);
         assert_eq!(get_u64(s.as_bytes(), 136), 0);
@@ -1393,6 +1433,28 @@ mod tests {
     /// The storage accepts exactly `MAX_MAP_DESCRIPTORS` descriptors, and a map
     /// that fills every output capacity at once still classifies: 128
     /// conventional (`WIRE_MEMMAP_CAP`), 64 reserved, 64 side (`SIDE_CAP`).
+    /// A refused descriptor is reported with its own identity, not just an
+    /// error code: index, type, geometry, attribute and the failed step.
+    #[test]
+    fn a_refused_descriptor_is_named_in_the_error() {
+        let mut map = [0u8; 40];
+        push_desc(&mut map, 0, 40, 0x100, 0x10_0000, 1, WB);
+        let mut storage = MapStorage::new();
+        storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
+        assert_eq!(
+            classify(storage.descriptors(), PA_LIMIT, 0).unwrap_err(),
+            MapError::RejectedDescriptor(DescriptorRejection {
+                index: 0,
+                raw_type: 0x100,
+                physical_start: 0x10_0000,
+                virtual_start: 0,
+                number_of_pages: 1,
+                attribute: WB,
+                failed: PolicyError::UnknownType,
+            })
+        );
+    }
+
     #[test]
     fn accepts_exactly_the_descriptor_and_partition_caps() {
         let mut map = [0u8; 40 * MAX_MAP_DESCRIPTORS];

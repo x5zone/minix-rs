@@ -5955,3 +5955,9 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 新增 `accepts_exactly_the_descriptor_and_partition_caps`：恰好 256 条描述符（128 CONVENTIONAL + 64 LOADER_DATA + 64 ACPI_NVS）解析并分类为 `(128, 64, 64)`，同时钉住 `MAX_MAP_DESCRIPTORS`、`WIRE_MEMMAP_CAP`、`SIDE_CAP`；与既有 257 拒绝负例成对。
 - 读数：boot-shim 90；minix-boot 165、kernel 863 不变。
 - 认领：`I-29 qorder93`，状态 ✅：已 ff 合并为 `418bc2cc4`，认领已释放。
+
+### 第三百二十九笔（01 阶段 · I-29 B1：拒绝诊断记录）
+
+- `MapError::RejectedDescriptor(DescriptorRejection)`：携带 index、raw_type、physical_start、virtual_start、number_of_pages、attribute 与 failed（PolicyError）；`classify` 逐描述符填充；新增 `a_refused_descriptor_is_named_in_the_error`，五条既有 Policy 断言改为按 failed 匹配。
+- 读数：boot-shim 91；minix-boot 165、kernel 863 不变。
+- 认领：`I-29 qorder94`，状态 🔄 待合入。
