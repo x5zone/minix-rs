@@ -129,8 +129,17 @@ cp "$FW_SRC_VARS" "$FW_VARS"
 pkill -f '[q]emu-system' 2>/dev/null || true
 sleep 1
 
+# DTB_CFGTABLE=1：以 acpi=off 启动，EDK2 的 PlatformHasAcpiDtDxe 会改为把
+# 机器 DTB 发布到 UEFI 配置表（EFI_DTB_TABLE_GUID），用来真机验证
+# `cross_validate_config_dtb` 的「存在且可解析」分支。默认（ACPI 模式）该表
+# 不存在，只验证「不存在」分支。
+MACHINE="virt,gic-version=3"
+if [ "${DTB_CFGTABLE:-0}" = "1" ]; then
+    MACHINE="$MACHINE,acpi=off"
+fi
+
 timeout "$TIMEOUT_BOOT" qemu-system-aarch64 \
-    -machine virt,gic-version=3 \
+    -machine "$MACHINE" \
     -cpu max \
     -smp 1 \
     -m 512M \
@@ -157,12 +166,19 @@ if [ "${D1_DUMPDTB:-0}" = "1" ] \
     MARK3="boot-shim: memmap source: uefi-getmemorymap (dtb /memory cross-checked, diagnostic only;"
 fi
 
+MARK_DTB="boot-shim: platform DTB cross-validated against the UEFI map"
+if [ "${DTB_CFGTABLE:-0}" = "1" ]; then
+    MARK4="$MARK_DTB"
+else
+    MARK4="$MARK3"
+fi
 both=0
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
     if [ -f "$SERIAL_LOG" ] \
         && grep -qaF "$MARK1" "$SERIAL_LOG" \
         && grep -qaF "$MARK2" "$SERIAL_LOG" \
-        && grep -qaF "$MARK3" "$SERIAL_LOG"; then
+        && grep -qaF "$MARK3" "$SERIAL_LOG" \
+        && grep -qaF "$MARK4" "$SERIAL_LOG"; then
         both=1
         break
     fi

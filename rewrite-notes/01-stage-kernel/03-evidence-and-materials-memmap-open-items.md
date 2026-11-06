@@ -2756,6 +2756,44 @@ boot-shim 三目标由 QEMU 脚本与 xtask image 构建链覆盖               
 - UEFI 真实固件描述符数达到 256 上限：容量由宿主测试与写前预检覆盖；
 - `Excluded`/`DevicePath` 的真实分布：不产记录，宿主测试覆盖计数。
 
+## 七十八、第一百一十二轮：配置表 DTB 三态的固件侧取证
+
+### 配置表 GUID 转储（aarch64 AAVMF 2024.02，默认 ACPI 模式）
+
+`find_platform_sources` 的临时探针（已撤除）打印了 `with_config_table` 的全部 8 条项。按固件顺序，各条 Guid 的 `time_low` 原始值为：
+
+```
+4229680560, 95237306, 2000286284, 1276707999,
+1226124919, 4076672324, 3707408669, 2288576625
+```
+
+最后一条 `2288576625 = 0x8868e871` 即 ACPI 2.0 的 `EFI_ACPI_20_TABLE_GUID`；其余为厂商表。**没有任何一条的 `time_low` 是 `0xb1b621d5`**，即没有 `EFI_DTB_TABLE_GUID`（`b1b621d5-f19c-41a5-830b-d9152c69aae0`），所以默认腿的日志是 `platform DTB absent — UEFI map is the only source`。**这是 EDK2 `ArmVirtPkg/PlatformHasAcpiDtDxe` 的行为**：ACPI 可用时发布 ACPI 表、不发布 DTB 表；ACPI 不可用时反过来。
+
+### 强制 DT 模式
+
+`-machine virt,gic-version=3,acpi=off` 下，配置表里的第 7 项变为
+`Guid { time_low: 2981503445 (0xb1b621d5), time_mid: [156, 241], … node: [217, 21, 44, 105, 170, 224] }`，
+即 `EFI_DTB_TABLE_GUID`；shim 随后打印：
+
+```
+boot-shim: platform DTB cross-validated against the UEFI map
+```
+
+核在该模式下继续走到 rc 与 init（日志尾部可见 `/etc/rc` 与 `pid=… sys=y`），说明交叉校验后的启动路径完好。
+
+### 固化为测试腿
+
+`os/qemu-tests/test-shim-bootmarks-aarch64.sh` 新增 `DTB_CFGTABLE=1` 旋钮：机器参数追加 `,acpi=off`，判定追加 `platform DTB cross-validated against the UEFI map`。两条腿现跑：
+
+```
+$ bash test-shim-bootmarks-aarch64.sh                  → PASS（absent 分支）
+$ DTB_CFGTABLE=1 bash test-shim-bootmarks-aarch64.sh   → PASS（cross-validated 分支）
+```
+
+### 未覆盖
+
+「存在但不可用」的负例：固件发布的 DTB 由其自身构造，外部无法注入损坏副本；该分支只有宿主单测与代码审阅覆盖。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2843,3 +2881,14 @@ boot-shim 三目标由 QEMU 脚本与 xtask image 构建链覆盖               
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百一十轮）合并提交 | `c2d767d4a` |
+
+### 评审身份（第一百一十二轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百一十九笔登记 |
+| `CodeEvidenceCommit` | 本轮测试腿提交（`test-shim-bootmarks-aarch64.sh` 旋钮 + 文档） |
+| `DocumentRevision` | 第一百一十二轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百一十一轮）合并提交 | `e6a6eb724` |

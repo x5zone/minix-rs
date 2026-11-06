@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 16:20 CST（`date` 实测）；**内容轮次：第一百一十一轮——全文按当前代码重写为设计、实现与测试保证**（§0 速览、§1 四层模型、§2 逐构件实现含真实代码、§5 实现状态索引；§3 不变量与 §7 冻结规则保留原文）。QEMU 四条启动腿与全套件读数见 §6。
+> **重写**：2026-11-06 16:35 CST（`date` 实测）；**内容轮次：第一百一十二轮——配置表 DTB 三态的正例上机**（`DTB_CFGTABLE=1` 让 AAVMF 以 `acpi=off` 发布 DTB 配置表，`cross-validated` 分支真机通过；默认 ACPI 腿仍是 `absent`）。§6.3/§6.4 与 `03` 七十八节记录固件侧取证。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -1013,7 +1013,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 | x86_64 UEFI 链路 | `test-shim-bootmarks-x86.sh` | **PASS**（`platform DTB absent` → UEFI 唯一来源；arena=0x1dfd7000 conv=13 res=113；进入内核与 scheduler） |
 | x86_64 全系统 | `test-e5-ds.sh` | **PASS**（12 个 server 出生，`E5f-LABELS 12/12`，DS 传输链四腿通电）→ 第二跳与 VM `reconcile` 在真机成立 |
 | x86_64 双镜像 | `test-sysboot.sh` | **PASS**（多进程引导 + 首次用户态 IPC） |
-| aarch64 UEFI 链路 | `test-shim-bootmarks-aarch64.sh` | **PASS**（`platform DTB absent — UEFI map is the only source`；`conv=13 dtb_regions=1` 诊断交叉对照） |
+| aarch64 UEFI 链路（ACPI 模式） | `test-shim-bootmarks-aarch64.sh` | **PASS**（`platform DTB absent — UEFI map is the only source`；`conv=13 dtb_regions=1` 诊断交叉对照） |
+| aarch64 UEFI 链路（DT 模式） | `DTB_CFGTABLE=1 test-shim-bootmarks-aarch64.sh`（`-machine virt,gic-version=3,acpi=off`） | **PASS**（EDK2 的 `PlatformHasAcpiDtDxe` 改把机器 DTB 发布到配置表，`b1b621d5…` 出现在配置表中；shim 打印 `platform DTB cross-validated against the UEFI map`。这是三态「存在且可解析」分支的真机验证） |
 | riscv64 自引导 | `test-kernel-image-riscv64-bootface.sh` | **PASS**（B1/B2/B3 三点位；`KernelInfo::validate` 第 6 步在真机跑过） |
 | riscv64 U-Boot 全链 | `test-riscv64-uboot-shim.sh` | **PASS**（6/6 标记：shim 进入 → MNXBOOT1 表 → 内核+12 模块 → arena → 接收端 → scheduler；wire v2 与 `decode_sources` 在真机跑过） |
 | riscv64 全系统 | `test-riscv64-boot-full.sh` | **PASS**（12 server 出生，`minix-rs rc: minimal boot script marker`）→ 第二跳与 VM `reconcile` 在 riscv 成立 |
@@ -1021,7 +1022,7 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 
 **证据分层：编译通过 ≠ 启动验证 ≠ 新分支被覆盖。** 上述 QEMU 腿证明了四条启动链、两跳交接、内核消费者边界审计与 VM `reconcile` 的真实运行；它们**没有**走到下面这些分支：
 
-- 配置表 DTB「存在且可解析」的正例与「存在但坏」的负例——AAVMF 在本机不提供配置表 DTB（日志逐字为 `platform DTB absent`），三态只验证了「不存在」一条；
+- 配置表 DTB「存在但不可用」的负例：固件自己发布的 DTB 永远是合法的，外部无法把它改坏；正例已用 `acpi=off` 腿真机验证（§6.3），负例只剩宿主测试与代码审阅；AAVMF 在默认 ACPI 模式下不发布 DTB 表（8 条配置表项里没有 `b1b621d5`，日志逐字 `platform DTB absent`），这是 EDK2 的 `PlatformHasAcpiDtDxe` 按 ACPI 可用性二选一的行为，不是固件缺件；
 - UEFI 真实固件的描述符分布达到 256 条上限的边界（容量由宿主测试与预检覆盖）；
 - `Excluded`/`DevicePath` 描述符在真实固件上的分布（它们不产生记录，宿主测试覆盖计数）。
 
