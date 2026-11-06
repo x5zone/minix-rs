@@ -2915,4 +2915,6 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 
 **未取得读数**：`tools/check-clippy-ratchet.sh` 在本批基线 `7a464dc82` 上因无关的 `minix-service` 在制品（`E0063 missing fields io/irq/nr_io`，修复在主树未提交）编译失败，棘轮未出数；本批新增的 `resv_claims` 经 `cargo clippy -p boot-shim` 复核为零告警。
 
+**复审自检追加（`fc7759e16`、`eaa7d55fd`）**：① `resv_claims::check` 对 `number_of_pages` 改 `checked_mul`，几何溢出的描述符（只可能来自 `Excluded`/`DevicePath`）视为不覆盖，补负控；② `DtbMemoryMap` 的静态存储是进程级的，`load_dumpdtb` 早先返回的 `'static` 切片会被后续采集覆盖——改为保存 blob、在打印点重新 `collect` 并立即消费；aarch64 UEFI 腿（含 `dumpdtb.dtb`）复跑 PASS。
+
 **仍开放**：O-11「复制到自有缓冲再解析」；UEFI 真机固件证据（本机 AAVMF 默认不发布配置表 DTB）。

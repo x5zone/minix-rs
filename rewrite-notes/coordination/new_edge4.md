@@ -5916,3 +5916,9 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `d4014d924 docs(kernel)`：`vm_handoff` 的单段扣减说明与 `boot.rs` 的 v6 说明移回各自描述的测试；注释归位后 kernel/types 测试复跑通过。
 - 正文 §7「已登记的实施清理」新增 ⑦：`collect_inner` 约 350 行与两段裁剪样板重复，按「非阻断发现登记、不追改」留待专门重构。
 - 认领：`I-29 qorder88`，状态 ✅：已 ff 合并为 `d4014d924`，认领已释放。
+
+### 第三百二十三笔（01 阶段 · I-29 复审：dumpdtb 诊断的采集点解析）
+
+- 复审自检：`DtbMemoryMap` 的存储是进程级的，`load_dumpdtb` 早先返回的 `'static` 切片会被后续采集（配置表校验、`resv_claims`）覆盖，`report_memmap_source` 会打印别人的 `/memory`。`eaa7d55fd fix(uefi)` 改为保存合法 blob、打印点重新 `collect` 并立即消费。
+- 验证：aarch64 UEFI 腿（ESP 带 `dumpdtb.dtb`）复跑 PASS，打印 `dtb /memory cross-checked ... dtb_regions=1`；boot-shim 82。
+- 认领：`I-29 qorder89`，状态 ✅：已 ff 合并为 `eaa7d55fd`，认领已释放。
