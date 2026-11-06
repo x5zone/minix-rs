@@ -177,7 +177,6 @@ impl IntervalSet {
         }
         None
     }
-
 }
 
 /// Verify every claim against the classified snapshot.
@@ -196,7 +195,13 @@ pub fn check(
         let mut conflict: Option<(u64, u32)> = None;
         for desc in descs {
             let desc_start = desc.physical_start;
-            let desc_end = desc_start.saturating_add(desc.number_of_pages * 4096);
+            // The classifier rejects overflowing geometry for every range it
+            // emits; only `Excluded`/`DevicePath` descriptors skip that gate,
+            // and such a descriptor cannot cover a claim page.
+            let Some(desc_len) = desc.number_of_pages.checked_mul(4096) else {
+                continue;
+            };
+            let desc_end = desc_start.saturating_add(desc_len);
             let start = desc_start.max(claim.start);
             let end = desc_end.min(claim.end);
             if start >= end {
@@ -437,6 +442,22 @@ mod tests {
             })
         );
         assert_eq!(check(&claims, &descs, Some((0x2000, 0x3000))), Ok(()));
+    }
+
+    /// A descriptor whose geometry overflows 64 bits (only reachable for the
+    /// `Excluded`/`DevicePath` types, which skip the classifier's geometry
+    /// gate) must not panic the checker; it cannot cover a claim page.
+    #[test]
+    fn overflowing_descriptor_geometry_is_ignored() {
+        let claims = [claim(0x2000, 0x3000, ExpectedEfiType::Reserved)];
+        let skewed = desc(ty::MMIO, 0x2000, u64::MAX);
+        assert_eq!(
+            check(&claims, &[skewed], None),
+            Err(ClaimError::UncoveredPage {
+                page: 0x2000,
+                expected: ExpectedEfiType::Reserved
+            })
+        );
     }
 
     #[test]
