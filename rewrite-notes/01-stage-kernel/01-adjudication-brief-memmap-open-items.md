@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 22:10 CST（`date` 实测）；**内容轮次：第一百一十八轮——A1/A2/A3/B1/B2 落码后的全面回归与文档校正**（wire v4：72 B 记录、9 页 arena、版本 4；启动对象独立分区；拒绝诊断；容量正例；copy-first 与 DTB 页类型预检）。§5 的「拒绝诊断」与 §7 第 1 项按新实现改正，§6.1/§6.3 与 `03` 八十四节记录本轮读数。
+> **重写**：2026-11-06 23:05 CST（`date` 实测）；**内容轮次：第一百一十九轮——文档与代码逐项对账**（修正 9 处不一致：测试名、`SourceRecord` 节选、两处已落码却仍写“未实现”的标记、`SourceRef` 身份形态、O-12k 部分实现状态、O-12j-c 移交、`effective_pa_limit` 的代码名）。§2.1/§2.3/§5 同步；`03` 八十五节存对账方法与结果。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -78,7 +78,7 @@ boot-shim（UEFI/U-Boot 腿）                 kernel                       VM
 
 两条不变量把两段连起来：
 
-- 第一跳：`decode_*` 不制造任何指向 arena 的 `'static` 引用；arena 的最后读取点是解码（`test_decoded_payloads_survive_arena_poison` 为证）。
+- 第一跳：`decode_*` 不制造任何指向 arena 的 `'static` 引用；arena 的最后读取点是解码（`decoded_payloads_survive_arena_poison` 为证）。
 - 第二跳：`LiveBootstrap ∩ VM-free = ∅` 在**消费边界**核对（`reconcile`），不信任内核自己的记账；内核侧 `classify` 的记录是唯一的扣减来源。
 
 ### 1.4 与 Minix3 C 的关系
@@ -104,11 +104,18 @@ C 的 `kinfo.memmap[]` 是引导期自举分配器的记账本（`pg_utils.c` �
 
 ```rust
 pub struct SourceRecord {
-    pub id: u16,              // 输入对象内稳定
-    pub kind: SourceKind,     // Memory / FirmwarePrefix / MrbEntry /
-                              //   ReservedNoMap / ReservedOrdinary / ReservedReusable
-    pub origin: SourceOrigin, // 见下
-    pub range: PhysicalRange, // start: u64, end_exclusive: u128
+    pub id: u16,                    // 输入对象内稳定（跨输入引用用下面两个字段）
+    pub kind: SourceKind,           // Memory / FirmwarePrefix / MrbEntry /
+                                    //   ReservedNoMap / ReservedOrdinary /
+                                    //   ReservedReusable / StartupObject
+    pub origin: SourceOrigin,       // 见下
+    pub range: PhysicalRange,       // start: u64, end_exclusive: u128
+    pub input_object: InputObjectId,// DtbBootInput / UefiMemoryMap / StartupObjects
+    pub local_source: u16,          // 输入对象内序号（UEFI = 描述符索引）
+    pub snapshot_id: u64,           // GetMemoryMap 快照的 MapKey；DTB 为 0
+    pub attribute: u64,             // UEFI 描述符原值；DTB 为 0
+    pub virtual_start: u64,         // UEFI 描述符原值；DTB 为 0
+    pub address_domain: AddressDomain, // Physical（v1 记录只有物理域）
 }
 ```
 
@@ -201,10 +208,15 @@ match desc.raw_type {
 ```rust
 let record = SourceRecord {
     id: index as u16,
-    kind: match disposition { Disposition::Allocate => SourceKind::Memory,
-                              _ => SourceKind::ReservedOrdinary },
+    kind,
     origin: SourceOrigin::UefiDescriptor { index: index as u16 },
     range: PhysicalRange::new(region.base.0, region.base.0 as u128 + region.len as u128),
+    input_object: InputObjectId::UefiMemoryMap,
+    address_domain: AddressDomain::Physical,
+    local_source: index as u16,
+    snapshot_id,
+    attribute: descs[index].attribute,
+    virtual_start: descs[index].virtual_start,
 };
 serializer.push_source(&record).expect("preflight proved the source partition");
 ```
@@ -364,7 +376,7 @@ ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
 
 | 合同 | 内容 | 为什么现在还不能当现状 |
 |---|---|---|
-| `effective_pa_limit` 的含义 | **物理地址可表示上界**（格式位宽 ∩ 平台位宽），不承诺上界以下可访问 | 已裁定；PMP 与 PMA 是独立准入维度（专项） |
+| `effective_pa_limit` 的含义（代码里是 `support.phys_addr_limit()`） | **物理地址可表示上界**（格式位宽 ∩ 平台位宽），不承诺上界以下可访问 | 已裁定；PMP 与 PMA 是独立准入维度（专项） |
 | 恒等 VA 合法性 | `VA = PA` 必须落在该树分页配置的合法虚拟地址范围 | 属 BootRoot 专项，本项不验收 |
 
 「三架构普通主存准入」「保留映射区权限」「设备访问边界」三行随射程移交，逐字见 `03` 七十一节。
@@ -677,7 +689,7 @@ Outward(R_reserved) ⊆ ⋃ { 类型兼容的 EFI 描述符覆盖的页 }
 | `EfiACPIReclaimMemory` | 允许（唯一合规存放类型） | 整段 DTB 对象所在描述符必须是该类型才允许首读；ACPI 启用前的保留处置不变 |
 | `EfiUnusableMemory` / `EfiUnacceptedMemoryType` / MMIO / 端口空间 / `PAL_CODE` | 拒绝，或走各自独立准入规则 | 不得借用普通 DTB 读取通道 |
 
-**类型验证分两个时点**（读完 header 之前并不知道 `totalsize`）：① **首读前**用 ABI 给出的物理起始地址验证 `[dtb, dtb+40)` 覆盖的全部页都落在 `EfiACPIReclaimMemory`，并完成 `BootInputProvenance` 与端到端 `BootInputReachability`；② **header preflight 后**由 snapshot 得到 `totalsize`，验证 `Outward([dtb, dtb+totalsize))` 的**全部页**都由该类型描述符完整覆盖（可多个连续同类型共同覆盖）；覆盖不完整、类型不一致或中途落入其它类型 → 立即拒绝，**不得继续复制 body**。**必测（未实现）**：header 跨两个连续 ACPI reclaim 描述符；header 在 ACPI reclaim 而 body 跨入其它类型（读 body 前失败）；header 跨入不兼容页（读 body 前失败）。
+**类型验证分两个时点**（读完 header 之前并不知道 `totalsize`）：① **首读前**用 ABI 给出的物理起始地址验证 `[dtb, dtb+40)` 覆盖的全部页都落在 `EfiACPIReclaimMemory`，并完成 `BootInputProvenance` 与端到端 `BootInputReachability`；② **header preflight 后**由 snapshot 得到 `totalsize`，验证 `Outward([dtb, dtb+totalsize))` 的**全部页**都由该类型描述符完整覆盖（可多个连续同类型共同覆盖）；覆盖不完整、类型不一致或中途落入其它类型 → 立即拒绝，**不得继续复制 body**。**必测已落码**（`dtb_copy` 6 条单测）：`all_pages_acpi_reclaim_passes`（两个连续 ACPI reclaim 描述符共同覆盖）、`a_reserved_page_is_not_acpi_reclaim`（body 跨入其它类型，memcpy 前失败）、`an_uncovered_page_is_rejected`、`a_conflicting_type_beside_acpi_reclaim_is_rejected`（同类异型覆盖也算冲突）、`the_range_is_page_rounded_outward`、`a_too_small_header_is_refused`。
 **这两张表的射程**：它们**只**决定「该页的 EFI 类型主张是什么」与「一次性只读能否发生」，**不**修改 `RamSourceDomain`、`PmmBaseAvailable` 或 `OrdinaryRamMappingEligibility`。
 **实现状态：未实现**。见 §2.1——今天校验与解析都在固件提供的原始地址上就地执行，没有 preflight / 复制 / 副本校验三段。
 **副本生命周期**：原始 DTB 只在复制期间可读；自有副本登记进对象目录；切根前不得回收或覆盖；副本的最终释放必须有明确消费者与阶段。边界条件：header 固定读取长度写明；`totalsize` 有项目上限；`dtb + totalsize` 必须 checked；完整范围必须证明可安全读取（不能只验证起始地址）。
@@ -692,7 +704,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 ```
 
 
-交集页上的 MRB 来源身份、访问禁令与 PMM 排除仍然存在，只是该页的 EFI 类型要求服从 DTB 专属 `must`。因此一条多页 MRB 若只与 DTB 相交其中一页，描述符必须能按页分段：其余页仍按项目强化规则取 `EfiReservedMemoryType`。**必测**（未实现）：MRB 覆盖多页、DTB 只落在中间页 → 只允许中间页为 ACPIReclaim；DTB 横跨两页 → 不能只检查起始页。
+交集页上的 MRB 来源身份、访问禁令与 PMM 排除仍然存在，只是该页的 EFI 类型要求服从 DTB 专属 `must`。因此一条多页 MRB 若只与 DTB 相交其中一页，描述符必须能按页分段：其余页仍按项目强化规则取 `EfiReservedMemoryType`。**规则已落码**：`resv_claims::check` 按**每条主张页**判定，DTB 自身范围以外的页不接受 `EfiACPIReclaimMemory`（`dtb_pages_accept_acpi_reclaim_for_the_reservation_type` 覆盖「DTB 只占该页才接受、否则拒绝」）。**仍缺专门用例**：多页 MRB 且 DTB 只落在中间页的分段场景——当前单页版证明规则，多页只是同一循环的重复。
 **判据**：该腿能指出保留声明的实际读取点；若 DTB 在 MRB 内，能指出授权依据（候选 A）或拒绝依据（候选 B）。
 **第一个消费者**：aarch64 UEFI 腿的保留政策。
 
@@ -709,7 +721,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 - **O-12g** 采集器重构：保留原始来源记录，再派生投影。
 - **O-12h** UEFI 描述符结构校验与政策分类分开（见下）。
 - **O-12i** 每种政策投影的页粒度规则（见下）；其**后半节**（普通访问准入、页表用途、原子能力、对象访问三层展开、整页全称判定）已在第九十六轮迁到 `01-design-note-hardware-admission-model.md`。
-- **O-12j** 三层：**a 容器与 MRB（已实现）**——magic、`totalsize`（≤64 MiB）、blob/`off_mem_rsvmap` 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、结构块 4 字节对齐并以 `FDT_END` 结尾、MRB 终止项落在 `min(off_dt_struct, totalsize)`、**MRB 条目上限 16**、FDT 版本 `17/16`（项目子集）、块顺序 MRB → structure → strings（项目输入限制）。**b 结构块预扫（已实现，消费能力已验）**——无分配 token 预扫：token 合法性、单根、嵌套平衡、节点名/属性长度与名称偏移边界、**属性必须先于子节点**、深度 ≤63、`FDT_END` 唯一且最后。**c 目标节点语义（未闭合）**——`/memory`、`/reserved-memory` 与设备 `reg` 的解析与地址转换仍需明确失败形状（含动态 `size` 声明的拒绝形状）。
+- **O-12j** 三层：**a 容器与 MRB（已实现）**——magic、`totalsize`（≤64 MiB）、blob/`off_mem_rsvmap` 8 字节对齐、`struct`/`strings` 块 checked 边界与互不重叠、结构块 4 字节对齐并以 `FDT_END` 结尾、MRB 终止项落在 `min(off_dt_struct, totalsize)`、**MRB 条目上限 16**、FDT 版本 `17/16`（项目子集）、块顺序 MRB → structure → strings（项目输入限制）。**b 结构块预扫（已实现，消费能力已验）**——无分配 token 预扫：token 合法性、单根、嵌套平衡、节点名/属性长度与名称偏移边界、**属性必须先于子节点**、深度 ≤63、`FDT_END` 唯一且最后。**c 目标节点语义**——`/memory` 与 `/reserved-memory` 的拒绝形状已落码（截断/零长 `reg`、MRB 冲突、动态 `size` 声明的拒绝）；**设备 `reg`／`ranges` 的解析与地址转换已移交 `04-platform-discovery.md`**，不再作为本项未闭合项。
 
 **O-12j-b 的两条边界必须与解析库实现对齐，不能只按格式规范写**：
 
@@ -735,7 +747,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 
 本项只保留两条对内存图有影响的结论：① `reg` 只是资源位置描述，不推出「必须映射」「属性一定是 DEVICE」「可以进入恒等映射」；② 设备资源记录**不得**直接塞进以 `PhysicalRange` 为地址类型的内存来源记录——那是两类地址域，转换失败（缺失 `ranges`、某一级无法转换、只覆盖部分 `reg`、溢出、最终不是 CPU 物理地址）时不得静默产出看似合法的记录。
 
-#### O-12k UEFI 内存图快照与 MapKey 一致性（未实现）
+#### O-12k UEFI 内存图快照与 MapKey 一致性（**部分实现**：单快照配对与重试已落码；两次快照的 PreflightMap/FinalMap 序列与按最小描述符尺寸推导缓冲上界未实现）
 
 `GetMemoryMap()` 返回的 `MapKey` 随内存图变化而变化，`ExitBootServices()` 必须使用**当前**内存图的 key；key 失效时须重新取图、重试。这与 O-11 的自有副本、对象登记表、诊断缓冲区的分配直接冲突：每次 Boot Services 分配都可能改变内存图。
 **合同**：
@@ -889,9 +901,9 @@ StartupObjectRecordCapacity = KernelImage + BootModule + BootPageTable + BootRoo
 
 **合法记录与拒绝诊断记录分开**（**已落码，第一百一十六轮 B1**）：结构校验失败的描述符不进入来源记录层；拒绝发生时 `MapError::RejectedDescriptor` 携带 `index`、原始 `raw_type`、`physical_start`、`virtual_start`、`number_of_pages`、`attribute` 与失败项（`PolicyError`），停机报告可定位到具体描述符与失败原因（负控 `a_refused_descriptor_is_named_in_the_error`）。形态与「持久诊断记录」不同：拒绝是停机路径，没有后续读者；若将来出现非致命拒绝，再按记录形态补。
 
-**统一 `SourceRef` 必须在接通启动路径前定型**（未实现）：`SourceRef { input_object: InputObjectId, local_source: LocalSourceId }`，`FirmwarePrefix` 对 `Memory` 的引用也用它，不再保留裸 `memory_id`。**UEFI 的 `InputObjectId` 是快照实例身份，不是来源类别**：每次成功的 `GetMemoryMap()` 分配新的 `MapSnapshotId`（`MapKey` 只是该快照的固件版本凭据）；`PreflightMap` 不产生最终政策记录，`FinalMap` 的全部描述符同属一个快照 ID，stale-key 重试产生新 ID 且旧记录与旧投影整体废弃——否则三份快照里同号的 `DescriptorIndex` 会被当成同一条来源。这样每条政策、排除原因、禁止项、对象义务共用同一身份。节点路径文本与逐级 `ranges` 转换链可分阶段补。
+**统一来源身份**（**已落码，第一百一十六轮 A2，以 `SourceRecord` 字段形式，没有单独的 `SourceRef` 类型**）：`SourceRef { input_object: InputObjectId, local_source: LocalSourceId }`，`FirmwarePrefix` 对 `Memory` 的引用也用它，不再保留裸 `memory_id`。**UEFI 的 `InputObjectId` 是快照实例身份，不是来源类别**：每次成功的 `GetMemoryMap()` 分配新的 `MapSnapshotId`（`MapKey` 只是该快照的固件版本凭据）；`PreflightMap` 不产生最终政策记录，`FinalMap` 的全部描述符同属一个快照 ID，stale-key 重试产生新 ID 且旧记录与旧投影整体废弃——否则三份快照里同号的 `DescriptorIndex` 会被当成同一条来源。这样每条政策、排除原因、禁止项、对象义务共用同一身份。节点路径文本与逐级 `ranges` 转换链可分阶段补。
 
-**UEFI 原始描述符记录的最小字段**（未实现）：`DescriptorIndex`、原始 `Type`、原始 `Attribute`、`PhysicalStart`、`VirtualStart`、`NumberOfPages`、**`address_domain`**、结构校验结果。地址域必须是显式类型，不能靠字段名推断：
+**UEFI 原始描述符记录的最小字段**（**已落码，第一百一十六轮 A2 / 一百一十七轮 B1**）：`DescriptorIndex`、原始 `Type`、原始 `Attribute`、`PhysicalStart`、`VirtualStart`、`NumberOfPages`、**`address_domain`**、结构校验结果。地址域必须是显式类型，不能靠字段名推断：
 
 ```
 DescriptorAddressDomain = PhysicalAddress | UefiMmioPortSpaceAddress | UnsupportedOrOpaque

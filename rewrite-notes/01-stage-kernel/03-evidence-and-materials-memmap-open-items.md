@@ -2880,6 +2880,34 @@ test-riscv64-boot-full.sh                     → PASS（rc 标记）
 - `DTB_CFGTABLE=1` 腿的语义在 A1 之后正式成为「存在但不可用」负例：EDK2 把机器 DTB 发布在非 `EfiACPIReclaimMemory` 页，`dtb_copy` 的页类型预检在 `ExitBootServices` 前拒绝启动。「存在且可解析」的正例只剩宿主单测（`resv_claims` 与 `dtb_copy` 的单元测试）。
 - 启动对象分区（16 槽）不在 `reset_map_partitions` 的清空范围内，EBS 重试不影响它；UEFI 腿恰好写满 16 条（内核 + 12 模块 + 根页 + bump + arena），超限两道断言分别在生产侧与序列化侧。
 
+## 八十五、第一百一十九轮：文档-代码对账记录
+
+### 方法
+
+1. 抽取正文全部反引号内的 snake_case 标识符（≥9 字符，89 个），在 `os/**/*.rs` 拼接文本中逐一检索。
+2. 对结构体、线上布局、常量与状态标记逐节读代码比对（`SourceRecord`、`WireSourceRecord`、`BootHandoffV1` 编译期断言、`dtb_copy`/`resv_claims` 测试清单）。
+3. 对 §5 每个「未实现/未闭合」标记回到代码确认。
+
+### 结果
+
+| 发现 | 处置 |
+|---|---|
+| `test_decoded_payloads_survive_arena_poison` 在代码中不存在（实际名 `decoded_payloads_survive_arena_poison`，无 `test_` 前缀） | 改名 |
+| `effective_pa_limit` 是模型名；代码是 `support.phys_addr_limit()` | 加代码名对照 |
+| §2.1 的 `SourceRecord` 节选仍是 4 字段旧形态（实际 10 字段） | 补全 |
+| §2.3 的构造函数节选缺 `input_object/local_source/snapshot_id/attribute/virtual_start/address_domain` | 补全 |
+| O-11「header 页类型三形态」标「未实现」，实际 `dtb_copy` 已有 6 条单测 | 改为已落码并列名 |
+| MRB × DTB 分页规则标「未实现」，实际规则已落码（单页用例在 `dtb_pages_accept_acpi_reclaim_for_the_reservation_type`） | 改为「规则已落码，缺多页专门用例」 |
+| `SourceRef` 统一身份标「未实现」，实际已以 `SourceRecord` 字段落码 | 改正 |
+| UEFI 描述符最小字段标「未实现」，实际已落码（A2 + B1） | 改正 |
+| O-12k 标题「未实现」 | 改为「部分实现」并写明缺项：两次快照 PreflightMap/FinalMap、缓冲上界推导 |
+| O-12j-c 把设备 `reg` 留在本项 | 拆开：内存图节点已落码，设备 `reg` 移交 `04` |
+
+### 备注
+
+- 反引号标识符检索是**机械检查**：它只证明名字存在，不证明语义一致；语义一致性仍靠逐节读代码与测试名对账（本轮同时做了）。
+- 剩余未闭合项（O-01 回收框架、O-12k 两次快照、配置表 DTB 正例固件路径）已在正文与 §6.4 标注。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -3075,3 +3103,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百一十七轮）文档提交 | `b6f715f3d` 之后的 A3 文档批次 |
+
+### 评审身份（第一百一十九轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十三笔登记 |
+| `CodeEvidenceCommit` | `c22f12954`（纯文档轮，代码未改） |
+| `DocumentRevision` | 第一百一十九轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百一十八轮）合并提交 | `53696a732` |
