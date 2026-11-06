@@ -12,6 +12,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百零九轮（UEFI 逐描述符来源记录跨第一跳）**
+
+- 裁决：采用“扩大 arena”而非“快照引用”——`ARENA_CAP` 4→7 页，来源分区容量 40→256（= `MAX_MAP_DESCRIPTORS`，48 B×256=12,288 B，余 2,368 B）。理由是四条腿共用同一条接收/审计路径，内核无需理解 UEFI 描述符布局。
+- 新来源身份 `SourceOrigin::UefiDescriptor { index }`；EBS 配对循环对每个产出入普通表的描述符写一条记录，范围=分类器实际发出的区间；`Excluded`/`DevicePath` 无投影字节、无记录（计数单列）。重试时来源分区随 `reset_map_partitions` 清空。
+- 测试：三条描述符 → 三条记录（origin 0/1/2、kind Memory/ReservedOrdinary/Memory），`audit_source_coverage` 通过（与内核消费者边界同一谓词）；EBS 重试后只剩第二份地图的一条记录。读数：minix-boot 152、boot-shim --features uefi 72+5、kernel mock 863。
+- 四条启动腿现在都交付来源记录；仍待真机/CI 的是 QEMU 腿（真实固件的 256 条上限只在 UEFI 腿上执行）。
+
 **第一百零八轮（第二跳交接页的失败语义落成测试）**
 
 - `VmBootHandoff::validate` 的六类 fail-stop 现在各有测试：坏 magic、非精确版本、未对齐根页、三类 count 超容量；另有一枚“合法交接页被接受”的正例。

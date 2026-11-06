@@ -2654,6 +2654,43 @@ const _: () = assert!(KERNINFO_USER_VA   < (1 << 38), "...Sv39 user-VA cap...");
 
 `cargo test -p minix-types` **339 通过 / 0 失败**。仅宿主测试，无 QEMU 依赖。
 
+## 七十五、第一百零九轮：UEFI 逐描述符来源记录（代码证据）
+
+### 容量与布局
+
+```
+ARENA_CAP = 7 * 4096 = 28672
+WIRE_SOURCES_CAP = 256          // = MAX_MAP_DESCRIPTORS
+WIRE_SOURCE_RECORD_SIZE = 48
+WIRE_SOURCES_OFFSET = SEMANTIC_END = 14016
+WIRE_SOURCES_END = 14016 + 256*48 = 26304      // 编译期断言
+spare = 28672 - 26304 = 2368
+```
+
+### 生产点（`os/boot-shim/src/ebs_map.rs::Plan::commit`）
+
+| Disposition | 普通表条目 | 来源记录 |
+|---|---|---|
+| `Allocate` | `push_memmap` | `SourceKind::Memory`，origin = 描述符索引 |
+| `ReservedMapped` | `push_reserved` | `SourceKind::ReservedOrdinary`，origin = 描述符索引 |
+| `Side` | 侧表 | 无（不进入两份投影） |
+| `Excluded` / `DevicePath` | 无（`len == 0`） | 无（不产出投影字节） |
+
+记录范围 = `MemoryRegion { base, len }`，即分类器实际发出的区间；预检 `classify()` 在写之前检查 `conventional + reserved <= WIRE_SOURCES_CAP`，超限返回 `TooManySourceRecords`。重试时 `Serializer::reset_map_partitions` 同时清空来源分区与 `sources_byte_len`。
+
+### 测试
+
+| 用例 | 断言 |
+|---|---|
+| `source_records_cover_the_classified_map_per_descriptor` | 3 描述符 → 3 记录；origin 0/1/2；kind Memory/ReservedOrdinary/Memory；`audit_source_coverage` 对两份投影通过 |
+| `source_partition_resets_between_ebs_attempts` | 首次 EBS 被拒、第二份地图仅 1 条 LOADER → 1 条记录，origin 0，range 0x30_0000 |
+
+读数：`minix-boot` 152、`boot-shim --features uefi` 72 + 5、`minix-kernel --features mock` 863 / 0 失败 / 8 忽略。
+
+### 明确未验证
+
+QEMU 腿（本机镜像无 qemu）：真实固件的描述符数量、`Excluded`/`DevicePath` 的实际分布与 256 上限只有在 aarch64/x86 UEFI 腿上执行；三架构交叉构建同样未在本机重跑。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2708,3 +2745,14 @@ const _: () = assert!(KERNINFO_USER_VA   < (1 << 38), "...Sv39 user-VA cap...");
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百零七轮）合并提交 | `b1b96feff` |
+
+### 评审身份（第一百零九轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百一十六笔登记（代码提交 `42af28d01` 为其父链） |
+| `CodeEvidenceCommit` | `42af28d01`（152 / 72+5 / 863 在此提交取得） |
+| `DocumentRevision` | 第一百零九轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百零八轮）合并提交 | `fa894ca84` |
