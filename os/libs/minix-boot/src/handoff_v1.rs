@@ -271,7 +271,7 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// instead of being dropped on the sending side. A v1 receiver would ignore
 /// the new partition and a v1 sender would leave it empty, so the version is
 /// compared exactly, not as a minimum.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 6;
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 7;
 
 /// `free_upper_idx` sentinel for "no value" (a valid index can never be
 /// `u64::MAX`; decode checks the sentinel first, then the range).
@@ -291,7 +291,10 @@ pub struct BootHandoffV1 {
     pub magic: u32,
     pub version: u32,
     pub size: u32,
-    pub reserved0: u32,
+    /// The RAM authority of the sending leg: 0 = boot DTB, 1 = UEFI memory
+    /// map. The receiver refuses any other value; a declared authority with
+    /// no records fails closed (no fallback to the other input).
+    pub ram_authority: u32,
     pub arena_len: u64,
     // ── kernel scalars (fixed-width wire forms) ──
     pub kern_virt_base: WireVirtAddr,
@@ -402,6 +405,7 @@ const _: () = {
     assert!(size_of::<BootHandoffV1>() <= ENVELOPE_CAP);
     assert!(offset_of!(BootHandoffV1, magic) == 0);
     assert!(offset_of!(BootHandoffV1, version) == 4);
+    assert!(offset_of!(BootHandoffV1, ram_authority) == 12);
     assert!(offset_of!(BootHandoffV1, size) == 8);
     assert!(offset_of!(BootHandoffV1, arena_len) == 16);
     assert!(offset_of!(BootHandoffV1, kern_virt_base) == 24);

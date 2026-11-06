@@ -68,6 +68,7 @@ pub struct RuntimeFields {
 mod offsets {
     pub const MAGIC: usize = 0;
     pub const VERSION: usize = 4;
+    pub const RAM_AUTHORITY: usize = 12;
     pub const SIZE: usize = 8;
     pub const ARENA_LEN: usize = 16;
     pub const KERN_VIRT_BASE: usize = 24;
@@ -171,6 +172,12 @@ impl<'a> Serializer<'a> {
         put_u64(self.arena, offsets::BOOTSTRAP_START, info.bootstrap_start.0);
         put_u64(self.arena, offsets::BOOTSTRAP_LEN, info.bootstrap_len);
         Ok(())
+    }
+
+    /// Declare which input is authoritative for this leg's RAM projection.
+    /// Defaults to the boot DTB (0); the UEFI leg must declare the memory map.
+    pub fn write_ram_authority(&mut self, authority: crate::memmap_source::InputObjectId) {
+        put_u32(self.arena, offsets::RAM_AUTHORITY, authority.tag() as u32);
     }
 
     /// Patch the runtime fields in place (after the root switch, before the

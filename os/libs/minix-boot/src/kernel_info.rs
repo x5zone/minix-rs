@@ -202,7 +202,7 @@ impl KernelInfo {
     /// This is a fail-fast contract: boot-shim bugs that produce invalid
     /// `KernelInfo` are unrecoverable.
     pub fn validate(&self) {
-        self.validate_impl(false);
+        self.validate_impl(None);
     }
 
     /// Production handoff gate: exactly [`Self::validate`], plus the
@@ -213,11 +213,17 @@ impl KernelInfo {
     /// (`os/qemu-tests` fixtures) construct `KernelInfo` directly and use
     /// [`Self::validate`]; the strict gate is for surfaces that know the wire
     /// contract was in force.
-    pub fn validate_requiring_sources(&self) {
-        self.validate_impl(true);
+    /// Strict production gate: the leg's declared RAM authority must have
+    /// records, and those records must explain the projection. A missing
+    /// authority is a fail-stop — never a fallback to the other input.
+    pub fn validate_requiring_sources(
+        &self,
+        authority: crate::memmap_source::InputObjectId,
+    ) {
+        self.validate_impl(Some(authority));
     }
 
-    fn validate_impl(&self, require_sources: bool) {
+    fn validate_impl(&self, authority: Option<crate::memmap_source::InputObjectId>) {
         // 1. bootstrap_len must be 0 (Rust port has no unpaged section).
         //    C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unparsed_start
         //    Rust: always 0 (see bootstrap_start field doc).
@@ -265,44 +271,42 @@ impl KernelInfo {
             MULTIBOOT_PARAM_BUF_SIZE
         );
 
-        // 6. Source records, when the leg carried any, must explain every
-        //    projected span. The sending side already ran this audit; running
-        //    it again here is the consumer-boundary proof (same shape as the
-        //    VM handoff's `LiveBootstrap ∩ VM-free = ∅` re-check): nothing
-        //    between the producer and this point can strip a span of its
-        //    provenance unnoticed.
-        if require_sources {
+        // 6. Source records: a strict (production) gate declares the leg's
+        //    RAM authority and requires records from *that* input; a missing
+        //    authority is a fail-stop, never a fallback to the other input.
+        //    The lenient gate audits whatever records are present.
+        if let Some(authority) = authority {
             assert!(
                 !self.memmap_sources.is_empty(),
                 "KernelInfo: production handoff carries no memory-map source records"
             );
-        }
-        if !self.memmap_sources.is_empty() {
-            // Authority filter: on an aarch64 UEFI boot the list holds both
-            // the memory-map descriptors and the configuration-table DTB's
-            // records. Only the memory-map records may explain the UEFI
-            // projections; a DTB `/memory` record is a cross-check, not the
-            // RAM authority. A leg whose records all come from one input gets
-            // that input either way.
-            let authority = if self
-                .memmap_sources
-                .iter()
-                .any(|r| r.input_object == crate::memmap_source::InputObjectId::UefiMemoryMap)
-            {
-                Some(crate::memmap_source::InputObjectId::UefiMemoryMap)
-            } else {
-                Some(crate::memmap_source::InputObjectId::DtbBootInput)
-            };
+            assert!(
+                self.memmap_sources
+                    .iter()
+                    .any(|r| r.input_object == authority),
+                "KernelInfo: declared RAM authority {authority:?} has no source records — refusing to fall back to another input"
+            );
             match crate::memmap_source::audit_source_coverage_for(
                 self.memmap,
                 self.reserved_regions,
                 self.memmap_sources,
-                authority,
+                Some(authority),
             ) {
                 Ok(()) => {}
-                Err(error) => {
-                    panic!("KernelInfo: source records do not cover the projected map: {error:?}")
-                }
+                Err(error) => panic!(
+                    "KernelInfo: declared RAM authority {authority:?} does not cover the projected map: {error:?}"
+                ),
+            }
+        } else if !self.memmap_sources.is_empty() {
+            match crate::memmap_source::audit_source_coverage(
+                self.memmap,
+                self.reserved_regions,
+                self.memmap_sources,
+            ) {
+                Ok(()) => {}
+                Err(error) => panic!(
+                    "KernelInfo: source records do not cover the projected map: {error:?}"
+                ),
             }
         }
     }
@@ -646,14 +650,24 @@ mod tests {
     #[test]
     #[should_panic(expected = "carries no memory-map source records")]
     fn test_validate_requiring_sources_rejects_an_empty_partition() {
-        make_valid_info().validate_requiring_sources();
+        make_valid_info().validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
     }
 
     #[test]
     fn test_validate_requiring_sources_accepts_covering_records() {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS;
-        info.validate_requiring_sources();
+        info.validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
+    }
+
+    /// A declared authority with no records is a fail-stop; it must not fall
+    /// back to the other input even when that input's records are present.
+    #[test]
+    #[should_panic(expected = "declared RAM authority")]
+    fn test_validate_requiring_sources_refuses_missing_authority() {
+        let mut info = make_valid_info();
+        info.memmap_sources = &COVERING_RECORDS; // all DtbBootInput
+        info.validate_requiring_sources(crate::memmap_source::InputObjectId::UefiMemoryMap);
     }
 
     #[test]

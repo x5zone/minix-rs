@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-07 00:51 CST（`date` 实测）；**内容轮次：第一百二十三轮——按复审清掉旧读数并补地址域解码闸**（删除 O-12g 旧三层状态表；§3 改三条不变量；arena 九页与 startup_objects 身份、最后使用点对齐；容量预检三句联动；启动对象完整清单；§0/§2.1 补 raw_type/UefiExcluded；§6 轮次与路径覆盖说明；非物理域只在 UefiExcluded 记录上合法）。
+> **重写**：2026-11-07 01:03 CST（`date` 实测）；**内容轮次：第一百二十四轮——显式投影权威（wire v7）**（信封偏移 12 声明 `ram_authority`；`validate_requiring_sources(authority)` 对声明的权威做记录存在性检查与覆盖审计，缺失即失败关闭、不回退；两条 DTB 直启腿在交出 KernelInfo 前走同一严格门）。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -259,7 +259,7 @@ start u64 | end_lo u64 | end_hi u64 | attribute u64 | virtual_start u64
 
 `end_hi ∈ {0,1}`（128 位末端的两个半字）；`a/b/cut` 是 origin 的变体载荷；编码器恒写 0 的字段若非零，解码按 `BadSourceRecord` 失败关闭；未知 `kind`/`origin_tag` 同样拒绝。**地址域与角色的配对也有解码闸**：非 `Physical` 域只允许 `kind = UefiExcluded`（类型 12 是来源事实、不是物理范围），其余组合按坏记录拒绝（`non_physical_domain_is_only_legal_on_excluded_records`）。
 
-**版本**：`BOOT_HANDOFF_V1_VERSION = 6`（v3 增加身份、属性与虚拟地址；v4 增加启动对象分区；v5 把尾字从保留位改为固件 `raw_type` 并新增 `UefiExcluded` 角色；v6 把来源分区扩到 296 条并后移启动对象分区），接收端按**精确相等**比较；v1–v5 的发送方会被 `UnsupportedVersion` 拒收，不会按新偏移读旧镜像。
+**版本**：`BOOT_HANDOFF_V1_VERSION = 7`（v3 增加身份、属性与虚拟地址；v4 增加启动对象分区；v5 把尾字从保留位改为固件 `raw_type` 并新增 `UefiExcluded` 角色；v6 把来源分区扩到 296 条并后移启动对象分区；v7 把信封偏移 12 的保留字改为 `ram_authority`），接收端按**精确相等**比较；v1–v6 的发送方会被 `UnsupportedVersion` 拒收，不会按新偏移读旧镜像。信封里的 `ram_authority`（0=启动 DTB，1=UEFI 内存图）由发送腿声明，接收端拒绝其它值。
 
 **两类记录分槽**：内存图来源记录回答「这条投影从哪来」，启动对象记录回答「谁占了什么」。启动对象记录用独立分区（16 槽）与独立 `SourceKind::StartupObject` / `SourceOrigin::StartupObject` / `InputObjectId::StartupObjects`，不占内存图分区的 296 槽；`EBS` 重试清空分类快照时**不清**该分区（`reset_map_partitions_keeps_the_startup_partition`），因为它描述的是映像布局而非某次 MapKey 的分类结果。写入前按完整清单核算容量：UEFI shim 路径为「内核映像 + 全部模块 + 根页 + bump + arena」（最坏 1+12+3 = 16），三条 DTB 腿为「内核映像 + 全部模块」（1+12 = 13）；列表在第一次写入前断言 `<= WIRE_STARTUP_CAP`，序列化器再按 `WIRE_STARTUP_CAP` 拒绝一次——超限不截断。
 
@@ -299,7 +299,7 @@ fn validate_impl(&self, require_sources: bool) {
 
 跨镜像 `arch_boot_resume_v1` 直接调用严格门；三条 DTB 腿在交出 `KernelInfo` 前断言来源非空。手工构造 `KernelInfo` 的 qemu 测试内核没有 DTB 来源，仍走宽松 `validate()`——两条测试 `test_validate_requiring_sources_rejects_an_empty_partition` / `_accepts_covering_records` 钉住两种形态。
 
-**覆盖审计按输入权威过滤**：aarch64 UEFI 腿的来源分区同时含 UEFI 描述符与配置表 DTB 记录；`validate` 只让**当前投影的权威输入**参与覆盖证明（有 `UefiMemoryMap` 记录时只认它，否则认 `DtbBootInput`），DTB 的 `/memory` 记录不能替 UEFI 投影作证（`audit_source_coverage_for`；混合输入测试 `uefi_projection_cannot_be_covered_by_a_dtb_memory_record` 与 `reserved_projection_is_also_authority_filtered`）。
+**覆盖审计按输入权威过滤（显式）**：权威由发送腿在信封里声明（`ram_authority`），接收端调用 `validate_requiring_sources(authority)`：该权威必须至少有一条记录，缺失即失败关闭（**不回退**到另一种输入），并用 `audit_source_coverage_for(..., Some(authority))` 证明覆盖。aarch64 UEFI 的配置表 DTB 记录只做静态保留交叉核对，不能替 UEFI RAM 投影作证（混合输入测试 `uefi_projection_cannot_be_covered_by_a_dtb_memory_record`、`reserved_projection_is_also_authority_filtered` 与「声明的权威无记录即拒绝」`test_validate_requiring_sources_refuses_missing_authority`）。
 
 **DTB 原始对象的时序假设**：`FREE_MEMMAP` 与 Phase A.2 已删除，自引导与 UEFI 腿都不再把 DTB 原始对象写进任何扣减记录；安全前提是「Phase A.5 解析完即无人再读原 blob」——任何后置消费者都必须先复制它，或把它登记为存活对象。声明同时写在 `kmain` 的 Phase A.2 注释与 `bootface_a64` 的采集点；已上机的四条腿不存在后置读者。
 
@@ -1085,6 +1085,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 **第一百一十四轮全面回归**（16 笔复审修复之后）：宿主 339/163/82/863/548 全绿；五个交叉构建目标全通过；`run_all` 38/1/0/0；另跑五条非注册腿——`test-shim-bootmarks-x86`、`test-shim-bootmarks-aarch64`（ACPI）、`DTB_CFGTABLE=1`（DT，含 `resv_claims` 核对）、`test-kernel-image-riscv64-bootface`、`test-riscv64-uboot-shim`（6/6）、`test-riscv64-boot-full`——全部 PASS。
 
 **第一百一十七轮（A3 后受影响腿复跑）**：`test-shim-bootmarks-x86`、`test-shim-bootmarks-aarch64`（ACPI）、`DTB_CFGTABLE=1`（DT 负例）、`test-kernel-image-riscv64-bootface`、`test-riscv64-uboot-shim`（6/6）全部 **PASS**——wire v4 跨第一跳、启动对象分区解码与消费者边界在四条链上跑过。
+
+**第一百二十四轮（wire v7 代码上）**：宿主 `341/173/92(+5)/863/548`；五个交叉构建全通过；六条非注册腿全 PASS（x86 bootmarks、aarch64 ACPI、`DTB_CFGTABLE=1` 负例、riscv bootface、riscv U-Boot shim 6/6、riscv 全系统）。
 
 **第一百二十二轮（wire v6 代码上）**：宿主 `341/171/92(+5)/863/548`；五个交叉构建全通过；`run_all` **38/1/0/0**（唯一红仍为基线同签名的 `test-rt-birth-aarch64`）；六条非注册腿全 PASS——x86 bootmarks、aarch64 ACPI、`DTB_CFGTABLE=1`（`DtbPages(NotAcpiReclaim …)` 负例）、riscv bootface、riscv U-Boot shim（6/6）、riscv 全系统。
 

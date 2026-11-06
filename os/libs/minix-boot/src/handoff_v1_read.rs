@@ -36,6 +36,7 @@ pub const MAX_PAGE_DIR_INDEX: usize = 512;
 mod offsets {
     pub const MAGIC: usize = 0;
     pub const VERSION: usize = 4;
+    pub const RAM_AUTHORITY: usize = 12;
     pub const SIZE: usize = 8;
     pub const ARENA_LEN: usize = 16;
     pub const KERN_VIRT_BASE: usize = 24;
@@ -87,6 +88,8 @@ pub enum HandoffV1ReadError {
     /// A source record carries a tag or payload value the encoder cannot
     /// produce (corrupted or foreign wire image).
     BadSourceRecord,
+    /// The declared RAM authority is not one this kernel understands.
+    BadRamAuthority,
 }
 
 /// Verified envelope scalars, copied out of the arena by value.
@@ -112,6 +115,7 @@ pub struct HandoffScalars {
     pub param_byte_len: u64,
     pub sources_byte_len: u64,
     pub startup_byte_len: u64,
+    pub ram_authority: crate::memmap_source::InputObjectId,
 }
 
 fn read_u32(arena: &[u8], off: usize) -> u32 {
@@ -196,6 +200,11 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
     // page; the bump triple must be a self-consistent half-open range (N-1:
     // an inverted or out-of-range cursor would let `BootAlloc::alloc` hand out
     // pages outside the declared region).
+    let ram_authority = match read_u32(arena, offsets::RAM_AUTHORITY) {
+        0 => crate::memmap_source::InputObjectId::DtbBootInput,
+        1 => crate::memmap_source::InputObjectId::UefiMemoryMap,
+        _ => return Err(HandoffV1ReadError::BadRamAuthority),
+    };
     let root_page = read_u64(arena, offsets::ROOT_PAGE);
     if root_page == 0 || !root_page.is_multiple_of(4096) {
         return Err(HandoffV1ReadError::BadRootPage);
@@ -227,6 +236,7 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
         sources_byte_len: read_u64(arena, offsets::SOURCES_BYTE_LEN),
         startup_byte_len: read_u64(arena, offsets::STARTUP_BYTE_LEN),
+        ram_authority,
     })
 }
 

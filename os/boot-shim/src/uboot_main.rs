@@ -409,6 +409,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // them, and the slice lives for the rest of this `!` function.
     let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa as *mut u8, ARENA_CAP) };
     let mut serializer = Serializer::new(arena).expect("handoff arena too small");
+    serializer.write_ram_authority(minix_boot::InputObjectId::DtbBootInput);
     serializer
         .write_envelope(&result.kernel_info)
         .expect("handoff envelope over capacity");

@@ -1015,6 +1015,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     serializer
         .write_envelope(&carrier)
         .expect("handoff envelope over capacity");
+    serializer.write_ram_authority(minix_boot::InputObjectId::UefiMemoryMap);
     serializer
         .write_boot_modules(boot_modules)
         .expect("too many boot modules for the handoff arena");

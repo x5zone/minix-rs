@@ -350,6 +350,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         "bootface: DTB legs must carry source records, not an empty partition"
     );
     kernel_info.memmap_sources = sources;
+    kernel_info.validate_requiring_sources(minix_boot::InputObjectId::DtbBootInput);
 
     // Startup-object records: the kernel image and every boot module, in the
     // second record class with its own capacity.

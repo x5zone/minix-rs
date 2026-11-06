@@ -12,6 +12,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百二十四轮（显式投影权威，wire v7）**
+
+- 信封偏移 12 的保留字改为 `ram_authority`（0=启动 DTB、1=UEFI 内存图，其它值拒收）；UEFI 与 U-Boot 发送腿各自声明；版本 6→7。
+- `KernelInfo::validate_requiring_sources(authority)`：声明权威必须至少有一条记录，缺失即 `panic`（不回退另一种输入），再用 `audit_source_coverage_for(Some(authority))` 证明覆盖；两条 DTB 直启腿在交出 `KernelInfo` 前调用同一严格门，跨镜像 resume 用信封里的权威。
+- 旧「按记录是否存在推断权威」的段落删除；新增负控 `test_validate_requiring_sources_refuses_missing_authority`（全部 DTB 记录 + 声明 UEFI 权威 → 拒绝）。
+- 读数：minix-boot 173、boot-shim uefi 92、kernel 863；六个 QEMU 腿在 wire v7 全 PASS（含 `DtbPages(NotAcpiReclaim)` 负例与 riscv U-Boot 6/6）。
+
 **第一百二十三轮（清旧读数；地址域解码闸）**
 
 - 删除 O-12g 的旧「三层状态」表与其旧容量读数（256/v4/3,264 B），现行正文只剩本轮六层状态表。

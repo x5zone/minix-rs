@@ -2995,6 +2995,21 @@ UEFI 腿在写 `startup_objects` 前断言 `1 + boot_modules.len() + 3 <= WIRE_S
 
 `WireSourceRecord::decode`：`address_domain != Physical` 时只接受 `kind == UefiExcluded`；其余组合返回 `BadSourceRecord`。测试 `non_physical_domain_is_only_legal_on_excluded_records`（正向：域 2 + kind 7 解码成功；反向：域 2 + kind Memory 拒绝）。`minix-boot` 172 / 0。
 
+## 九十、第一百二十四轮：显式投影权威（wire v7）
+
+### 协议
+
+- 信封偏移 12（原保留字）改为 `ram_authority`：0 = `DtbBootInput`，1 = `UefiMemoryMap`；其它值解码返回 `BadRamAuthority`。版本 7，精确比较。
+- 发送腿：UEFI 两个写入口（跨镜像）调用 `write_ram_authority(UefiMemoryMap)`；riscv U-Boot 调用 `write_ram_authority(DtbBootInput)`；两条 DTB 直启腿不经 wire，直接在 `KernelInfo` 上调用严格门。
+
+### 消费
+
+`KernelInfo::validate_requiring_sources(authority)`：非空 → 至少一条 `input_object == authority` 的记录（否则 panic，不回退）→ `audit_source_coverage_for(..., Some(authority))`。宽松 `validate()` 保留给手工构造的测试内核。
+
+### 测试与回归
+
+`test_validate_requiring_sources_refuses_missing_authority`（DTB 记录 + 声明 UEFI → panic）；`test_validate_requiring_sources_accepts_covering_records`（声明 DTB 且记录覆盖 → 通过）。宿主 minix-boot 173 / boot-shim uefi 92 / kernel 863；六个 QEMU 腿（x86、aarch64 ACPI、DTB_CFGTABLE 负例、riscv bootface、riscv U-Boot 6/6、riscv 全系统）全 PASS。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -3245,3 +3260,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百二十二轮）合并提交 | `cd478bd84` |
+
+### 评审身份（第一百二十四轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十九笔登记 |
+| `CodeEvidenceCommit` | 本轮提交（wire v7 + 文档） |
+| `DocumentRevision` | 第一百二十四轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百二十三轮）合并提交 | `50792fdff` |
