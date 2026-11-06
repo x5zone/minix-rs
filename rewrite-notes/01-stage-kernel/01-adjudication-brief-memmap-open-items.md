@@ -179,6 +179,30 @@ Raw DTB bytes → fdt_layout::validate → bounded blob slice → FDT parser
 
 第二跳今天**已有实现且有测试**，它正是「bootloader／内核自己占了什么」这份记录的载体（`os/kernel/src/vm_handoff.rs:fn build_vm_handoff`）。扣减记录逐条可枚举，五类范围各有明确来源：内核映像（`KernelInfo.kern_phys_base()/kern_size()`）、VM 自己的根页（`arch_boot` 参数，即交接里的 `root_paddr`）、**启动 bump 区整段**（`os/kernel/src/boot_alloc.rs:fn boot_alloc_region`，已用页与剩余页都算内核保留）、引导期已用帧（`VmBootAllocator` 各池区间从尾部向前的已用后缀，**页表页就在这里**）、保留模块 blob（`KernelInfo.boot_modules()` 的**全部** blob，含 VM 自己的——因为 VM 的段帧在进入前就取自这份空闲表）。消费者侧的不变量写成 `LiveBootstrap ∩ VM-free = ∅`，且是在**消费边界**上核对，而不是相信内核自己的记账；PMM 可用集表达为 `conventional ∩ DM-representable − LiveBootstrap`。VM 侧现在**原样采纳**交接页里的空闲表（`adopt_free_regions`），不在自己的入口再切任何范围——包括此前按字面量 `0x8200_0000..0x8400_0000` 做的 32 MiB 修剪，那在 aarch64／UEFI 腿上指向普通 RAM，并且会掩盖真正的记账缺陷；唯一的裁决点是 `reconcile`（记录非空、根页与每个模块 blob 被覆盖、`free ∩ deducted = ∅`）。容量是固定的（`VM_BOOT_HANDOFF_MAX_DEDUCTED`），超出即当场失败并报「扣减记录不可在容量内枚举」——这是设计行为，不许放宽。测试：`test_classification_deducts_all_record_sources`、`test_classification_free_list_is_exact_complement`、`test_classification_clips_to_dm_window`、`test_classification_drops_out_of_window_region`、`test_boot_image_table_layout`。
 
+这段代码就是上面那张“五类来源”表的落点（`os/kernel/src/vm_handoff.rs`，节选；注释是本简报对每行角色的框定）：
+
+```rust
+record.push(kernel_info.kern_phys_base().0, kernel_info.kern_size()); // 内核映像
+record.push(root_paddr.0, PAGE_SIZE);                                 // VM 自身根页
+if let Some((base, end)) = boot_alloc_region() {                      // bump 整段
+    record.push(base, end.saturating_sub(base));
+}
+for i in 0..pool.len().min(idx + 1) {                                 // 已用帧后缀
+    let region = pool[i];                                             // 每个被触碰的池区间一条
+    let used_start = if i < idx { region.start.0 } else { cursor.max(region.start.0) };
+    if used_start < region.end.0 {
+        record.push(used_start, region.end.0 - used_start);
+    }
+}
+for module in kernel_info.boot_modules().iter() {                     // 全部模块 blob
+    record.push(module.start.0, module.len as u64);
+}
+const _: () = assert!(VM_BOOT_HANDOFF_MAX_DEDUCTED                     // 容量上界即来源数
+    >= 3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES);
+```
+
+判据是可数的：`3`（内核映像、根页、bump）`+ 32`（池区间聚合上限）`+ 12`（模块）`= 47`，而 `push` 只做页取整、不合并、不与候选域求交——若改成按交集片段记账，这个上界必须按片段数重新推导。
+
 **这一跳与本项的关系**：交棒信息必须完整且无歧义，所以五类范围的来源清单、容量核算与失败形状属 I-29 的合同；至于 VM 拿到之后怎么映射、开不开大页，属分页侧。缺口见 O-13（固定布局 ABI 未开始）与 §7。
 
 ### 2.5 四条启动入口现状

@@ -947,7 +947,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     );
 
     let arena_pa = alloc_arena();
-    // SAFETY: the arena is a fresh four-page LOADER_DATA allocation below the
+    // SAFETY: the arena is a fresh `ARENA_CAP` (seven-page) LOADER_DATA allocation below the
     // identity bound; boot services own it until EBS and nothing else writes
     // those pages. The slice lives for the rest of this `!` function.
     let arena = unsafe {

@@ -364,7 +364,7 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 /// fields into the already-serialized arena, then absolute-jump into the
 /// standalone image.
 ///
-/// The arena is a four-page loader-data allocation below the identity bound;
+/// The arena is an `ARENA_CAP` (seven-page) loader-data allocation below the identity bound;
 /// the bootstrap root maps it through the identity window, so the in-place
 /// patch is a plain memory write after paging is live. The architecture-specific
 /// part is only the jump register convention: aarch64 passes the arena in
@@ -404,7 +404,7 @@ pub fn enter_kernel_image_v1(
     let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
         .expect("enter_kernel_image_v1: bump region not registered");
     let bump_next = boot_alloc::boot_alloc_next();
-    // SAFETY: `arena_pa` is the four-page LOADER_DATA arena the boot-shim
+    // SAFETY: `arena_pa` is the `ARENA_CAP` LOADER_DATA arena the boot-shim
     // allocated below `boot_dm_admissible_end`; the root just enabled maps
     // that physical range identity and writable, and this function owns the
     // patch phase (the shim is the only other party and never writes again).
@@ -493,7 +493,7 @@ unsafe extern "sysv64" {
     any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")
 ))]
 pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
-    // SAFETY: the sender allocated a four-page LOADER_DATA arena below the
+    // SAFETY: the sender allocated an `ARENA_CAP` LOADER_DATA arena below the
     // identity bound and the live bootstrap root maps it; nothing writes it
     // after the jump.
     let arena = unsafe { core::slice::from_raw_parts(arena_pa as *const u8, ARENA_CAP) };
