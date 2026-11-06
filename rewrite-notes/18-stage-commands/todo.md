@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十五（`do_config` 两张标签列表——`control` 控制端点与 `domain` 协议族）
+
+- **这一笔的射程**：C `do_control`（`parse.c:916-942`）与 `do_domain`（`:989-1024`）。`control` 在真实配置里有实形（`minix3/etc/system.conf:395` 的 `control at_wini;`）；`domain` 是 socket 驱动的协议族声明。
+- **落码（`minix-service` 库）**：`BuiltRsStart` 加 `nr_control`/`control`（标签串）与 `nr_domain`/`domain`（协议族号）；常量 `RS_NR_CONTROL=8`（`rs.h:55`）、`NR_DOMAIN=8`（`config.h:61`）、`PF_MAX=35`（`sys/sys/socket.h:223`）；`atoi` 助手（C 的 `strtol` 十进面前缀语义、尾部忽略）；32 项 `DOMAIN_TABLE`（`parse.c:946-985` 与 `sys/sys/socket.h:150-215` 的 `AF_*` 值，`PF_UNSPEC` 按 C 注释不入表）。
+- **C 语义要点**：两者都是**替換**语义（局部计数每次从 0 起，重复语句覆盖上一份，不同于 irq/io/pci 的追加）；`control` 每词即标签、上限 `RS_NR_CONTROL`（第 9 个报 `(9 needed)`）；`domain` 先查表后 `atoi`，再判 `0 < D < PF_MAX`，越界/未知报 `unknown domain <词>`，上限 `NR_DOMAIN`。
+- **登记偏差**：平铺词链的既有边界偏差在此可见——`control pci;` 里的 `pci` 会被当作下一语句（真实配置的端点标签无此形），已在测试注释里标注；`atoi` 的 `long`→`int` 溢出按 i32 饱和处理（C 为实现定义，两侧观测同为「越界 fatal」）。
+- **门**：`cargo test -p minix-service` → **42/0**（新六枚：控制标签与替换、控制上限、域标签/数字/`atoi` 尾忽略、域范围与大小写、域上限、语句边界与字符串面）；clippy 触及文件零告警；rustfmt 零漂移；三架构 lib check 全绿；棘轮 344 对基线 341，新增 3 条仍为并行线在制 kernel 面。核实日 `2026-11-06`；基线 `46bd8b276`。
+- **记账联动**：设备族余下 `class`（服务继承语义）/`type`/`net` 为后续片。
+
+---
+
 ## 批次五百五十四（`do_config` IPC 接触面——`ipc` 白名单与两个哨兵串）
 
 - **这一笔的射程**：C `do_ipc`（`parse.c:658-706`）。真实配置里每个服务的首条资源语句（`ipc ALL;` / `ipc ALL_SYS;` / 标签列表，`minix3/etc/system.conf:8`、`:28`、`:42`）。

@@ -119,6 +119,14 @@ impl Request {
 /// `RSS_NR_IRQ 16` / `RSS_NR_IO 16` (`rs.h:25-26`).
 pub const RSS_NR_IRQ: i32 = 16;
 pub const RSS_NR_IO: i32 = 16;
+/// `RS_NR_CONTROL 8` (`rs.h:55`) and `NR_DOMAIN 8` (`config.h:61`): the
+/// two fixed-size label arrays the matching statements fill.
+pub const RS_NR_CONTROL: i32 = 8;
+pub const NR_DOMAIN: i32 = 8;
+/// `PF_MAX` (`sys/sys/socket.h:223`, = `AF_MAX`): the `domain` range's
+/// upper bound; `D` must satisfy `0 < D < PF_MAX`.
+pub const PF_MAX: i32 = 35;
+
 /// `RSS_IPC_ALL` / `RSS_IPC_ALL_SYS` (`rs.h:29-30`) — the sentinel strings a
 /// lone `ipc ALL` / `ipc ALL_SYS` stands for.
 pub const RSS_IPC_ALL: &str = "IPC_ALL";
@@ -766,14 +774,78 @@ const VM_CALLS: [(&str, u32); 26] = [
     ("RS_PREPARE", VM_RS_PREPARE),
 ];
 
+/// C `atoi` (`strtol(s, NULL, 10)` truncated to `int`): optional sign and
+/// leading digits, the tail ignored, junk answers 0. The `domain` keyword
+/// falls back to this when the word is not a protocol-family label.
+fn atoi(s: &str) -> i32 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let mut neg = false;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        neg = b[i] == b'-';
+        i += 1;
+    }
+    let mut acc: i64 = 0;
+    while i < b.len() && b[i].is_ascii_digit() {
+        acc = acc
+            .saturating_mul(10)
+            .saturating_add(i64::from(b[i] - b'0'));
+        i += 1;
+    }
+    let v = if neg { -acc } else { acc };
+    v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// `domain_tab` (`parse.c:946-985`): protocol-family labels and their
+/// `PF_*` numbers (`sys/sys/socket.h:150-223`). `PF_UNSPEC` is deliberately
+/// absent (`:950`), and the range check rejects `0`.
+const DOMAIN_TABLE: [(&str, i32); 32] = [
+    ("LOCAL", 1),
+    ("INET", 2),
+    ("IMPLINK", 3),
+    ("PUP", 4),
+    ("CHAOS", 5),
+    ("NS", 6),
+    ("ISO", 7),
+    ("ECMA", 8),
+    ("DATAKIT", 9),
+    ("CCITT", 10),
+    ("SNA", 11),
+    ("DECnet", 12),
+    ("DLI", 13),
+    ("LAT", 14),
+    ("HYLINK", 15),
+    ("APPLETALK", 16),
+    ("OROUTE", 17),
+    ("LINK", 18),
+    ("XTP", 19),
+    ("COIP", 20),
+    ("CNT", 21),
+    ("RTIP", 22),
+    ("IPX", 23),
+    ("INET6", 24),
+    ("PIP", 25),
+    ("ISDN", 26),
+    ("NATM", 27),
+    ("ARP", 28),
+    ("KEY", 29),
+    ("BLUETOOTH", 31),
+    ("MPLS", 33),
+    ("ROUTE", 34),
+];
+
 /// The do_config keyword walk over the parsed lines (`parse.c:1177-1263`
 /// walk; the scalar keywords this slice covers are `uid`, `priority`,
 /// `quantum`, `sigmgr`, `scheduler`, `descr`, the device-family keywords
 /// `irq`, `io` and `pci` (`pci device` / `pci class`), the call-mask
-/// keywords `system` and `vm`, and the IPC contact list `ipc` — the
-/// remaining keywords (`class` in its service-inheritance sense, `control`,
-/// `type`, `net`, `domain`) are the registered next slice). C's per-branch
-/// `fatal` faces become `ConfigError` with the same wording.
+/// keywords `system` and `vm`, the IPC contact list `ipc`, and the two
+/// label lists `control` and `domain` — the remaining keywords (`class` in
+/// its service-inheritance sense, `type`, `net`) are the registered next
+/// slice). C's per-branch `fatal` faces become `ConfigError` with the same
+/// wording.
 pub fn do_config_walk(
     lines: &[minix_proctools::configfile::ConfigEntry],
     defaults: &RsStartDefaults,
@@ -801,6 +873,10 @@ pub fn do_config_walk(
         system: 0,
         vm: 0,
         ipc: None,
+        nr_control: 0,
+        control: Vec::new(),
+        nr_domain: 0,
+        domain: Vec::new(),
     };
     for line in lines {
         if !line.is_sub() {
@@ -1364,9 +1440,85 @@ pub fn do_config_walk(
                     }
                     out.ipc = Some(parts.join(" "));
                 }
+                "control" => {
+                    // C `do_control` (`parse.c:916-942`): every word is a
+                    // control label; the local count restarts per
+                    // statement, so a repeated `control` replaces the list.
+                    index += 1;
+                    let mut labels: Vec<String> = Vec::new();
+                    while index < flat.len() {
+                        let w = flat[index];
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                            break;
+                        }
+                        if w.is_string() || w.is_sub() {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_control: unexpected string"),
+                            });
+                        }
+                        if labels.len() >= RS_NR_CONTROL as usize {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!(
+                                    "do_control: RS_NR_CONTROL is too small ({} needed)",
+                                    labels.len() + 1
+                                ),
+                            });
+                        }
+                        labels.push(w.word.clone());
+                        index += 1;
+                    }
+                    out.nr_control = labels.len() as i32;
+                    out.control = labels;
+                }
+                "domain" => {
+                    // C `do_domain` (`parse.c:989-1024`): labels resolve
+                    // through `domain_tab`, anything else through `atoi`;
+                    // the result must satisfy `0 < D < PF_MAX`. The count
+                    // restarts per statement (replace, not append).
+                    index += 1;
+                    let mut domains: Vec<i32> = Vec::new();
+                    while index < flat.len() {
+                        let w = flat[index];
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                            break;
+                        }
+                        if w.is_string() || w.is_sub() {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_domain: unexpected string"),
+                            });
+                        }
+                        if domains.len() >= NR_DOMAIN as usize {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!(
+                                    "do_domain: NR_DOMAIN is too small ({} needed)",
+                                    domains.len() + 1
+                                ),
+                            });
+                        }
+                        let domain = DOMAIN_TABLE
+                            .iter()
+                            .find(|(name, _)| *name == w.word)
+                            .map(|&(_, number)| number)
+                            .unwrap_or_else(|| atoi(&w.word));
+                        if domain <= 0 || domain >= PF_MAX {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!("do_domain: unknown domain {}", w.word),
+                            });
+                        }
+                        domains.push(domain);
+                        index += 1;
+                    }
+                    out.nr_domain = domains.len() as i32;
+                    out.domain = domains;
+                }
                 _ => {
-                    // The remaining keywords (class/control/type/net/
-                    // domain) ride with the next slice;
+                    // The remaining keywords (class/type/net) ride with
+                    // the next slice;
                     // unknown words are skipped to surface every unknown.
                     index += 1;
                 }
@@ -1454,6 +1606,14 @@ pub struct BuiltRsStart {
     /// back to `RSS_IPC_ALL_SYS` when no `ipc` statement set it,
     /// `parse.c:1240-1246`; that fallback belongs to the bin's build step).
     pub ipc: Option<String>,
+    /// `rss_nr_control` / `rss_control` — control-endpoint labels
+    /// (`RS_NR_CONTROL` slots; a repeated statement replaces the list).
+    pub nr_control: i32,
+    pub control: Vec<String>,
+    /// `rss_nr_domain` / `rss_domain` — socket protocol families
+    /// (`NR_DOMAIN` slots; a repeated statement replaces the list).
+    pub nr_domain: i32,
+    pub domain: Vec<i32>,
 }
 
 #[cfg(test)]
@@ -1870,6 +2030,89 @@ mod do_config_tests {
         assert_eq!(got.irq, vec![4]);
         let e = walk("service x {\n  ipc \"SYSTEM\";\n}\n").unwrap_err();
         assert_eq!(e.message, "do_ipc: unexpected string");
+    }
+
+    #[test]
+    fn control_labels_are_collected_and_replaced() {
+        // `parse.c:916-942`: every word is a label; the count restarts per
+        // statement, so a repeated `control` replaces the list.
+        // Labels like `pci` cannot appear here: it is also a statement
+        // keyword, and the flat walk ends a list at the next statement
+        // keyword (registered deviation, batch 548).
+        let got = walk("service x {\n  control at_wini devman;\n}\n").unwrap();
+        assert_eq!(got.nr_control, 2);
+        assert_eq!(got.control, vec!["at_wini", "devman"]);
+        let got = walk("service x {\n  control a;\n  control b;\n}\n").unwrap();
+        assert_eq!(got.nr_control, 1);
+        assert_eq!(got.control, vec!["b"]);
+    }
+
+    #[test]
+    fn control_limit_is_rs_nr_control() {
+        let mut text = String::from("service x {\n  control");
+        for n in 0..=RS_NR_CONTROL {
+            text.push_str(&format!(" l{n}"));
+        }
+        text.push_str(";\n}\n");
+        let e = walk(&text).unwrap_err();
+        assert_eq!(
+            e.message,
+            "do_control: RS_NR_CONTROL is too small (9 needed)"
+        );
+    }
+
+    #[test]
+    fn domain_labels_and_numbers_take_the_c_face() {
+        // `parse.c:1006-1018`: labels resolve through `domain_tab`
+        // (case-sensitive, `DECnet` included), anything else through
+        // `atoi`.
+        let got = walk("service x {\n  domain INET LOCAL 2 DECnet;\n}\n").unwrap();
+        assert_eq!(got.nr_domain, 4);
+        assert_eq!(got.domain, vec![2, 1, 2, 12]);
+        let got = walk("service x {\n  domain 24;\n}\n").unwrap();
+        assert_eq!(got.domain, vec![24]);
+        // `atoi` stops at the tail: `2x` is 2.
+        let got = walk("service x {\n  domain 2x;\n}\n").unwrap();
+        assert_eq!(got.domain, vec![2]);
+    }
+
+    #[test]
+    fn domain_range_and_unknown_faces() {
+        // `0 < D < PF_MAX` (35); labels are case-sensitive, so a lowercase
+        // `inet` falls through `atoi` to 0 and is rejected.
+        let e = walk("service x {\n  domain FOO;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_domain: unknown domain FOO");
+        let e = walk("service x {\n  domain inet;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_domain: unknown domain inet");
+        let e = walk("service x {\n  domain 0;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_domain: unknown domain 0");
+        let e = walk("service x {\n  domain 35;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_domain: unknown domain 35");
+        let got = walk("service x {\n  domain 34;\n}\n").unwrap();
+        assert_eq!(got.domain, vec![34]);
+    }
+
+    #[test]
+    fn domain_limit_is_nr_domain() {
+        let mut text = String::from("service x {\n  domain");
+        for n in 1..=(NR_DOMAIN + 1) {
+            text.push_str(&format!(" {n}"));
+        }
+        text.push_str(";\n}\n");
+        let e = walk(&text).unwrap_err();
+        assert_eq!(e.message, "do_domain: NR_DOMAIN is too small (9 needed)");
+    }
+
+    #[test]
+    fn control_and_domain_lists_end_at_the_next_statement() {
+        let got = walk("service x {\n  control at_wini;\n  domain INET;\n  irq 4;\n}\n").unwrap();
+        assert_eq!(got.control, vec!["at_wini"]);
+        assert_eq!(got.domain, vec![2]);
+        assert_eq!(got.irq, vec![4]);
+        let e = walk("service x {\n  control \"x\";\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_control: unexpected string");
+        let e = walk("service x {\n  domain \"INET\";\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_domain: unexpected string");
     }
 
     #[test]
