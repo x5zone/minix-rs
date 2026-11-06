@@ -1081,7 +1081,7 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 | `DocumentRevision` | 本轮正文与档案的版本 |
 | `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码）。分支头是移动引用，不能当评审身份；每轮的完整 SHA 与两份 sha256 存档在 `03` 的评审身份表与台账里 |
 
-本轮（第一百二十七轮）的取值：代码证据提交见台账对应笔；文档版本为第一百二十七轮；完整仓库快照（评审身份）以台账登记的合并提交为准。三种身份分别记录，不合并成一个轮次。
+本轮（第一百二十八轮）的取值：`CodeEvidenceCommit = 832560f6a`（两条 bootface 的相交检查 + RISC-V 自引导腿复跑；宿主读数沿用同一代码线的前一笔，bootface 改动不影响宿主包）；`DocumentRevision` = 第一百二十八轮；`ReviewedRepositoryCommit` 以台账第三百四十四笔登记的合并头为准。三种身份分别记录，不合并成一个轮次。
 
 ### 6.1 宿主读数
 
@@ -1161,8 +1161,10 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 | 层 | 结论 | 理由 |
 |---|---|---|
 | 第一层：语义与方向 | **可签** | §1.5 三合同划界；来源事实／冲突裁决／纯集合投影三层分离；保留语义（普通／`reusable`／`no-map`、MRB、UEFI 类型）各自独立；地址域与范围类型已在类型层强制（`SourceRecord::physical_range()` 只认物理域） |
-| 第二层：来源完整性与交接判据 | **待评审方签字**（本方复核：五项验收全部闭合） | 来源身份三元组、地址域类型（`SourceRange` 只允许物理域转 `PhysicalRange`）、296 条 ABI 与权威审计、启动对象写前证明、O-11 严格两快照与 A 案策略均已落码；PMM 候选投影的冻结边界已明确（不新增 `PolicyProjection`）；O-11 的可达性责任归 BootEntry/架构 adapter。签字与否由评审方按落码复核。 |
-| 第三层：固定布局 ABI | **待评审方签字**（本方复核：布局与编码已可独立复核） | `BootHandoffV1` wire v7 已承载来源记录（296）与启动对象（16）两段独立分区；kind/origin/input/domain 的数值编码与 `a/b/cut` 载荷已列入 §2.4；`VmBootHandoff` 版本 8 的尺寸/对齐/九个偏移与失败语义均已钉桩。签字与否由评审方按落码复核。 |
+| 第二层：来源完整性与交接判据 | **可签（评审方第 128 轮结论：小修后闭合；签字动作待落）** | 来源身份三元组、地址域类型（`SourceRange` 只允许物理域转 `PhysicalRange`）、296 条 ABI 与权威审计、启动对象写前证明、O-11 严格两快照与 A 案策略均已落码；PMM 候选投影的冻结边界已明确（不新增 `PolicyProjection`）；O-11 的可达性责任归 BootEntry/架构 adapter。签字与否由评审方按落码复核。 |
+| 第三层：固定布局 ABI | **可签（评审方第 128 轮结论：文本合同可签；代码真实性以测试与提交证据为准；签字动作待落）** | `BootHandoffV1` wire v7 已承载来源记录（296）与启动对象（16）两段独立分区；kind/origin/input/domain 的数值编码与 `a/b/cut` 载荷已列入 §2.4；`VmBootHandoff` 版本 8 的尺寸/对齐/九个偏移与失败语义均已钉桩。签字与否由评审方按落码复核。 |
+
+**评审方第 128 轮结论：设计评审完成，I-29 设计冻结**。后续只做合同与实现对账、缺陷修复及必要真机回归；只有实现违背冻结合同、出现不可避免的新输入或失败形态、或项目需求改变，才重开设计评审。保留的已披露证据缺口：aarch64 直启没有独立 QEMU 启动腿（仅交叉构建）；配置表 DTB「存在且可解析」的正例只有宿主测试。
 
 **第一百二十八轮（回应第一百二十七轮评审，最后一轮设计修订）**：① O-12i 的正式公式补上阶段关系 `M = Pages(KernelInfo.memmap)`、`C = M \ Pages(vm_boot_exclusions)`，并把 `PmmSourceExcludedPages` 写成 `(RamSourcePageDomain \ M) ∪ Pages(vm_boot_exclusions)`；② O-11 候选 A 改为「完整范围一次性只读访问 + 按路径自有化」，`副本生命周期` 改为 `UEFI 字节副本的生命周期`；③ 三条直启路径补输入/输出存储不相交保证：两条 bootface 的 `dtb_bounded` 增加内核映像范围拒绝（含 checked 末端），U-Boot 腿引用固定链接布局；RISC-V 自引导腿复跑 PASS，aarch64 直启仅交叉构建。其余读数不变；此后按 §7.1 冻结设计评审。
 
