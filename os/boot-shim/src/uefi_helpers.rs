@@ -830,7 +830,17 @@ fn raw_serial_hex(value: u64) {
 
 /// Print the memmap-source line (and enforce the DTB bound gate) after EBS.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[MemoryRegion]) {
+fn report_memmap_source(dtb_blob: Option<&[u8]>, conventional: &[MemoryRegion]) {
+    // The collector's storage is process-wide: parse at the point of use so a
+    // later collection (the configuration-table DTB, the claims capture)
+    // cannot silently rewrite the panorama this line reports.
+    let dtb_free = dtb_blob.map(|blob| {
+        let fdt = fdt::Fdt::new(blob).expect("boot-shim: dumpdtb.dtb 不可解析");
+        minix_boot::DtbMemoryMap::new(&fdt, 0)
+            .collect()
+            .expect("boot-shim: DTB memmap rejected — halting")
+            .0
+    });
     match dtb_free {
         Some(dtb) => {
             if let Err((base, len)) = minix_boot::dtb_covers_conventional(dtb, conventional) {
@@ -926,21 +936,20 @@ fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[Mem
     }
 }
 
-/// Read and parse the optional ESP `/dumpdtb.dtb` into the DTB `/memory`
-/// free list. Pure read-only gate; the conventional source stays the UEFI
-/// map (C17's v1 semantics).
+/// Read and validate the optional ESP `/dumpdtb.dtb`, returning the leaked
+/// blob. The caller parses it at the point of use: the collector's storage is
+/// process-wide, so a slice captured here would be overwritten by the next
+/// collection (the configuration-table DTB or the claims capture).
 #[cfg(target_arch = "aarch64")]
-fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryRegion]> {
+fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<&'static [u8]> {
     let blob = file_loader.read(loader::DUMPDTB_PATH)?;
     if minix_boot::fdt_layout::validate(0, &blob).is_err() {
         panic!("boot-shim: dumpdtb.dtb container invalid");
     }
-    let fdt =
-        fdt::Fdt::new(&blob).unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
-    let (free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0)
-        .collect()
-        .expect("boot-shim: DTB memmap rejected — halting");
-    Some(free)
+    if fdt::Fdt::new(&blob).is_err() {
+        panic!("boot-shim: dumpdtb.dtb 不可解析");
+    }
+    Some(Box::leak(blob.into_boxed_slice()))
 }
 
 /// aarch64 UEFI production entry for the v1 handoff.
@@ -960,9 +969,9 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 
     let file_loader = UefiFileLoader;
     #[cfg(target_arch = "aarch64")]
-    let dumpdtb_free = load_dumpdtb_free(&file_loader);
+    let dumpdtb_blob = load_dumpdtb_blob(&file_loader);
     #[cfg(target_arch = "x86_64")]
-    let dumpdtb_free: Option<&'static [MemoryRegion]> = None;
+    let dumpdtb_blob: Option<&'static [u8]> = None;
     let kern = loader::load_kernel_with_loader(&file_loader).expect(
         "Failed to load kernel ELF from ESP — check that the ESP contains \
          /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
@@ -1086,7 +1095,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
     assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
     assert_bootstrap_outside_memmap(memmap, arena_pa.0, ARENA_CAP as u64);
-    report_memmap_source(dumpdtb_free, memmap);
+    report_memmap_source(dumpdtb_blob, memmap);
 
     let kernel_info = build_kernel_info(
         memmap,
