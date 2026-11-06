@@ -382,6 +382,20 @@ unsafe extern "C" fn rt_birth_svc_dispatch(frame: *mut u64) {
         early_console::write_hex(far);
         early_console::write_str(" spsr=");
         early_console::write_hex(*frame.add(IDX_SPSR));
+        early_console::write_str(" lr=");
+        early_console::write_hex(*frame.add(30));
+        let sp0: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, sp_el0", out(reg) sp0, options(nomem, nostack));
+        }
+        early_console::write_str(" sp0=");
+        early_console::write_hex(sp0);
+        early_console::write_str(" x9=");
+        early_console::write_hex(*frame.add(9));
+        early_console::write_str(" x10=");
+        early_console::write_hex(*frame.add(10));
+        early_console::write_str(" x8=");
+        early_console::write_hex(*frame.add(8));
         early_console::write_str("\n");
         {
             let sctlr: u64;

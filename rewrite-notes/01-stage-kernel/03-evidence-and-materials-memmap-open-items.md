@@ -2744,6 +2744,22 @@ boot-shim 三目标由 QEMU 脚本与 xtask image 构建链覆盖               
 `run_all.sh`：**38 passed / 1 failed / 0 skipped / 0 build failures**。唯一失败：
 
 ```
+### 九十一、第八十五轮：`test-rt-birth-aarch64` 唯一红的首次根因取证（GDB 活体）
+
+**现场**（本会话基线复跑，签名与 `537f5c16b` 逐字同）：`[svc] fatal: not an SVC ec=0x24 esr=0x92000047 elr=0x140003628 far=0x7ffffffff000`。
+
+**取证方法**：载体 fatal 打印补 `lr`/`sp0`(SP_EL0)/`x9`/`x10` 探针；`gdb-multiarch` + QEMU gdbstub（`-s -S`）下 `hbreak *0x14000122c`（载荷 `_start`）与 `hbreak *0x140000a18`（main 的 Line#2 memset 调用点）活体追踪。
+
+**已证事实**：
+1. **内核交付正确**：`_start` 命中时 `sp=0x7fffffffefc0`（= `load_vm_elf` 的 `stack_high-64`，GDB 实读）、`x0=0x7fffffffefd8`（ps_strings）——`arch/src/arch/boot.rs` 的栈放置与 aarch64 `build_cpu_context` 交付无误。
+2. **故障半**：EL0 数据中止（`EC=0x24`=DABT_LOW，WnR=1，DFSC=0x07=L3 翻译错），`far=0x7ffffffff000` = USER_STACK_TOP = 256 KiB 栈窗 `[stack_high-256K, stack_high)` 的**第一未映射字节**；`elr` 落在载荷自己 `memset` 的对齐字节环（`memset+0x6c`），`x10`（填充指针）= `far`。
+3. **控制流已破坏**：`lr=0x140000a1c` = main+0x48（main 的 Line#2 memset 返回址），但 **`hbreak *0x140009d4`（main 入口）从未命中**——流程未经 main 入口就执行到 main 中段的 memset 调用 ⇒ **crt0→main 链上有一处野跳转**（corrupted control flow），散落寄存器（x10=栈顶）随后在 memset 的对齐环里越界写出。
+4. **载体诊断隐患（顺带真 bug）**：`rt_birth_el0_sync` 向量入口在保存 x9 **之前**用 x9 做 scratch（`adrp x9, rt_birth_kstack_top`）——异常帧里的 x9 恒为向量自己的 kstack 地址（本轮实测 `0x4c719ec8`），任何依赖帧内 x9 的取证都被污染；同构风险也覆盖 x10 之后的保存序（x10 未被先踩，可信）。
+
+**下一步（归 C 板，跨板不单方面动）**：① 修向量 x9 先踩后存（专用 .bss 暂存格或换 scratch 策略）——否则一切寄存器取证失真；② 从 `_start` 起对 crt0 链（`rt_birth` → `initialize_runtime` → main）逐步单步，定位野跳转的源头指令（疑点：stage 3 `initialize_runtime` 的 sp/帧管理）；③ 野跳转修掉后，栈窗上方 `USER_STACK_TOP` 页是否需要哨兵映射另行裁决。
+
+**本轮产物**：载体 fatal 探针（`lr`/`sp0`/`x9`/`x10`）已入 `os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs`（诊断件，签名随探针变化——基线对照脚本需同步知晓）。
+
 ### TEST_RESULT: FAIL test-rt-birth-aarch64 ###
 [svc] fatal: not an SVC ec=0x24 esr=0x92000047 elr=0x140003628 far=0x7ffffffff000
 ```
