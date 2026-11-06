@@ -21,7 +21,7 @@
  *                     kernel.elf file staging    0x85000000
  *                     module file staging        0x86000000-0x86bfffff
  *                     BootFileTable              0x8c000000
- *                     DTB staging                0x8c200000
+ *                     DTB staging                0x8c000000
  *   - this image:     0x84500000 (+ ~64 KiB text/rodata/data/bss + 64 KiB
  *                     stack) — disjoint from every region above.
  *

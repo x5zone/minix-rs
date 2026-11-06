@@ -420,7 +420,16 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
 /// can only be walked once the header is known), so this uses the physical form
 /// rather than the lane's values.
 fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
-    dtb_pa >= DRAM_BASE && dtb_pa + total as u64 <= 0x1_0000_0000
+    let Some(end) = dtb_pa.checked_add(total as u64) else {
+        return false;
+    };
+    // The collected projections and source records land in this image's
+    // `.bss`, inside [KERN_PHYS_BASE, KERN_PHYS_BASE + KERN_SIZE). A source
+    // blob overlapping that image would be overwritten while later bytes are
+    // still unread, so the bound gate rejects the whole image range too.
+    dtb_pa >= DRAM_BASE
+        && end <= 0x1_0000_0000
+        && (end <= KERN_PHYS_BASE || dtb_pa >= KERN_PHYS_BASE + KERN_SIZE)
 }
 
 // ── BootFileTable consumption (kernel-image shape: sources copied straight
