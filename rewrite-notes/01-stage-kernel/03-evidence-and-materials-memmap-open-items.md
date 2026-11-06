@@ -2837,6 +2837,49 @@ test-riscv64-boot-full.sh                     → PASS（rc 标记）
 - 复审新增的 20 条单测（`minix-boot` 11 条、`boot-shim` 10 条，含 `resv_claims` 9 条）已在宿主读数中。
 - 合并后 HEAD 复跑受影响包（另一线 concurrent 的 clippy 批次只做 import 归位与 rustfmt）：`minix-kernel --features mock` 863 / 0 / 8、`minix-vm` 548、`minix-vfs` 538、`minix-sys` 345，全部通过，确认无行为变化。
 
+## 八十四、第一百一十八轮：wire v4 代码上的全面回归
+
+### 宿主（本树现跑）
+
+```
+cargo test -p minix-types                 → 341 passed / 0 failed
+cargo test -p minix-boot                  → 169 passed / 0 failed
+cargo test -p boot-shim                   → 91 passed / 0 failed
+cargo test -p boot-shim --features uefi   → 91 passed / 0 failed（+5 集成）
+cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
+cargo test -p minix-vm                    → 548 passed / 0 failed
+```
+
+### 交叉构建（宿主 rustc 1.94.1）
+
+```
+kernel-image aarch64-unknown-none (fw-aarch64-none)            ✅
+kernel-image riscv64gc-unknown-none-elf (fw-riscv64-none)      ✅
+boot-shim x86_64-unknown-uefi (fw-x86-uefi)                    ✅
+boot-shim aarch64-unknown-uefi (fw-aarch64-uefi)               ✅
+boot-shim riscv64gc-unknown-none-elf (fw-riscv-uboot)          ✅
+```
+
+### QEMU（QEMU 8.2.2）
+
+```
+run_all.sh → 38 passed / 1 failed / 0 skipped / 0 build failures
+            唯一失败 test-rt-birth-aarch64（与基线 537f5c16b 同签名，既有红）
+
+test-shim-bootmarks-x86.sh                    → PASS
+test-shim-bootmarks-aarch64.sh                → PASS（platform DTB absent）
+DTB_CFGTABLE=1 test-shim-bootmarks-aarch64.sh → PASS（负例：
+    boot-shim: EBS pairing loop failed: DtbPages(NotAcpiReclaim { page: 1206870016 })）
+test-kernel-image-riscv64-bootface.sh         → PASS（B1/B2/B3）
+test-riscv64-uboot-shim.sh                    → PASS（6/6 标记，进入 scheduler）
+test-riscv64-boot-full.sh                     → PASS（rc 标记）
+```
+
+### 说明
+
+- `DTB_CFGTABLE=1` 腿的语义在 A1 之后正式成为「存在但不可用」负例：EDK2 把机器 DTB 发布在非 `EfiACPIReclaimMemory` 页，`dtb_copy` 的页类型预检在 `ExitBootServices` 前拒绝启动。「存在且可解析」的正例只剩宿主单测（`resv_claims` 与 `dtb_copy` 的单元测试）。
+- 启动对象分区（16 槽）不在 `reset_map_partitions` 的清空范围内，EBS 重试不影响它；UEFI 腿恰好写满 16 条（内核 + 12 模块 + 根页 + bump + arena），超限两道断言分别在生产侧与序列化侧。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -3021,3 +3064,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 **QEMU**：`test-shim-bootmarks-x86` PASS；`test-shim-bootmarks-aarch64`（ACPI）PASS；`DTB_CFGTABLE=1`（DT 负例）PASS；`test-kernel-image-riscv64-bootface` PASS；`test-riscv64-uboot-shim` PASS（6/6 markers）。
 
 **复审修复（同一轮）**：`uefi_helpers` 的 `push_startup` 在超容量时 `assert!` 停机（静默返回会丢掉最后几条，当前恰好是 arena）；三条 DTB 腿在写 `.bss` 静态数组前断言 `1 + modules.len() <= WIRE_STARTUP_CAP`，模块数增长不会越界。UEFI 腿当前记录数为 16（内核 + 12 模块 + 根页 + bump + arena），正好等于 `WIRE_STARTUP_CAP`。
+
+### 评审身份（第一百一十八轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十二笔登记 |
+| `CodeEvidenceCommit` | `c22f12954`（A1～B2 全部合入后的树；本轮回归在此取得） |
+| `DocumentRevision` | 第一百一十八轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百一十七轮）文档提交 | `b6f715f3d` 之后的 A3 文档批次 |

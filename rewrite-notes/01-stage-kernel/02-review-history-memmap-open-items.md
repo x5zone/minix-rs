@@ -12,6 +12,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百一十八轮（A1/A2/A3/B1/B2 落码后的全面回归与文档校正）**
+
+- A1～B2 五批落码已合入（copy-first 与 DTB 页类型预检、记录身份与 wire v3/v4、启动对象独立分区、拒绝诊断、容量正例）。正文校正两处与本轮实现冲突的旧表述：§5「合法记录与拒绝诊断记录分开」由「未实现」改为「已落码（停机错误载荷形态，非持久记录）」；§7 第 1 项按 A1 之后的口径重写真机三态覆盖（默认腿 absent、acpi=off 腿为「存在但不可用」负例、正例只剩宿主测试）。
+- 读数：`minix-types` 339→**341**；其余 169/91(+5)/863/548 保持。
+- 全面回归：五个交叉构建全通过；`run_all` 38/1/0/0（唯一红仍为基线同签名的 `test-rt-birth-aarch64`）；六条非注册腿全 PASS，其中 `DTB_CFGTABLE=1` 的负例串口为 `DtbPages(NotAcpiReclaim { page: 1206870016 })`。
+
 **第一百一十七轮（A3：启动对象记录独立分区）**
 
 - wire v4：`SourceKind::StartupObject`（kind tag 6）、`SourceOrigin::StartupObject(u16)`（origin tag 5）、`InputObjectId::StartupObjects`（input tag 2）；信封 176→184 B（`startup_byte_len` @176），16 槽 × 72 B 独立分区（32,448–33,600），`BOOT_HANDOFF_V1_VERSION = 4`。
