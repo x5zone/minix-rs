@@ -21,7 +21,7 @@
 //! domain model keeps its idiomatic Rust types, and conversion happens only
 //! at the controlled-copy boundary.
 
-use crate::memmap_source::{PhysicalRange, SourceKind, SourceOrigin, SourceRecord};
+use crate::memmap_source::{SourceKind, SourceOrigin, SourceRange, SourceRecord};
 use core::mem::{align_of, offset_of, size_of};
 
 /// Physical-address wire field (semantics declared per field).
@@ -246,7 +246,7 @@ impl WireSourceRecord {
             id: self.id,
             kind,
             origin,
-            range: PhysicalRange::new(
+            range: SourceRange::new(
                 self.start,
                 self.end_lo as u128 | ((self.end_hi as u128) << 64),
             ),

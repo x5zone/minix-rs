@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn source_records_cover_the_classified_map_per_descriptor() {
         use minix_boot::{
-            MemoryRegion, PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
+            MemoryRegion, SourceKind, SourceOrigin, SourceRange, SourceRecord, WIRE_SOURCES_CAP,
             audit_source_coverage, decode_envelope, decode_memmap, decode_reserved_regions,
             decode_sources,
         };
@@ -528,7 +528,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
 
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn excluded_descriptors_keep_their_provenance_and_snapshot_id_is_not_the_map_key() {
         use minix_boot::{
-            MemoryRegion, PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
+            MemoryRegion, SourceKind, SourceOrigin, SourceRange, SourceRecord, WIRE_SOURCES_CAP,
             audit_source_coverage, decode_envelope, decode_memmap, decode_sources,
         };
         use minix_types::PhysBytes;
@@ -603,7 +603,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
         assert_eq!(ns, 2, "one record per descriptor, not per emitted range");
@@ -628,8 +628,8 @@ mod tests {
     #[test]
     fn source_partition_resets_between_ebs_attempts() {
         use minix_boot::{
-            PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
-            decode_envelope, decode_sources,
+            SourceKind, SourceOrigin, SourceRange, SourceRecord, WIRE_SOURCES_CAP, decode_envelope,
+            decode_sources,
         };
 
         let mut fw = MockFw::new(
@@ -673,7 +673,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
         assert_eq!(ns, 1, "the rejected attempt's records must be cleared");
@@ -826,7 +826,7 @@ mod tests {
         s.write_platform_sources(&SOURCES).unwrap();
         s.write_param_buf(carrier.param_buf).unwrap();
 
-        let mut fw = MockFw::new(&[(CONV, 0x10_0000, 0x200), (LOADER, 0x20_0000, 4)], &[]);
+        let mut fw = MockFw::new(&[(CONV, 0x10_0000, 0x10), (LOADER, 0x20_0000, 4)], &[]);
         let mut map_buf = [0u8; 256];
         let c = unsafe {
             pair_and_classify(
@@ -958,8 +958,8 @@ mod tests {
     fn a_retried_ebs_takes_a_new_snapshot_and_the_copy_survives() {
         use crate::ebs_map::ty;
         use minix_boot::{
-            PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
-            decode_envelope, decode_sources,
+            SourceKind, SourceOrigin, SourceRange, SourceRecord, WIRE_SOURCES_CAP, decode_envelope,
+            decode_sources,
         };
 
         let _reset = crate::dtb_copy::ResetOnDrop;
@@ -1014,7 +1014,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
         assert_eq!(ns, 2, "one record per ordinary entry of the accepted map");

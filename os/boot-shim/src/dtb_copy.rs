@@ -120,10 +120,8 @@ pub fn preflight(descs: &[DescriptorRef]) -> Result<(), DtbPageError> {
                 let buffer: &'static mut [u8] = Box::leak(vec![0u8; len].into_boxed_slice());
                 let dst = buffer.as_mut_ptr();
                 let end = pa + len as u64;
-                let dst_start = dst as u64;
-                let dst_end = dst_start + len as u64;
                 assert!(
-                    dst_end <= pa || end <= dst_start,
+                    !copy_target_overlaps(dst as u64, len, (pa, end)),
                     "boot-shim: DTB copy target overlaps the firmware blob — halting"
                 );
                 core::ptr::addr_of_mut!(PHASE).write(Phase::Preflighted {
@@ -220,6 +218,18 @@ pub fn check_pages(descs: &[DescriptorRef], range: (u64, u64)) -> Result<(), Dtb
         page += PAGE_BYTES;
     }
     Ok(())
+}
+
+/// Whether the freshly allocated copy `[dst, dst + len)` overlaps the
+/// firmware source `[start, end)`.
+///
+/// Under Boot Services the shim runs on the firmware's identity mapping, so
+/// the pool pointer is the allocation's physical address. This is the
+/// actual-allocation intersection check the brief requires, not a prediction
+/// from the allocator's usual behaviour.
+pub fn copy_target_overlaps(dst: u64, len: usize, source: (u64, u64)) -> bool {
+    let dst_end = dst.saturating_add(len as u64);
+    !(dst_end <= source.0 || source.1 <= dst)
 }
 
 fn checked_total(pa: u64, head: &[u8; HEADER_LEN]) -> usize {
@@ -510,6 +520,23 @@ mod tests {
             }
             _ => panic!("ready stage"),
         }
+    }
+
+    #[test]
+    fn the_copy_target_overlap_check_uses_the_allocated_range() {
+        let source = (0x1000, 0x3000);
+        assert!(copy_target_overlaps(0x2000, 0x1000, source));
+        assert!(copy_target_overlaps(0x0800, 0x1000, source));
+        assert!(copy_target_overlaps(0x2800, 0x1000, source));
+        assert!(
+            !copy_target_overlaps(0x3000, 0x1000, source),
+            "touching the source end is not an overlap"
+        );
+        assert!(
+            !copy_target_overlaps(0x800, 0x800, source),
+            "touching the source start is not an overlap"
+        );
+        assert!(!copy_target_overlaps(0x5000, 0x1000, source));
     }
 
     #[test]

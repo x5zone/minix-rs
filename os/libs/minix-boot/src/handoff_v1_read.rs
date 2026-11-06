@@ -487,7 +487,7 @@ mod tests {
     use crate::handoff_v1_write::{HandoffV1WriteError, RuntimeFields, Serializer};
     use crate::kernel_info::KernelInfo;
     use crate::memmap_source::{
-        PhysicalRange, SourceKind, SourceOrigin, SourceRecord, startup_record,
+        SourceKind, SourceOrigin, SourceRange, SourceRecord, startup_record,
     };
     use crate::platform::{DTB, RSDP};
     use minix_types::{USER_STACK_TOP, VirBytes};
@@ -535,7 +535,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-            range: PhysicalRange::new(0x10_0000, 0x20_0000),
+            range: SourceRange::new(0x10_0000, 0x20_0000),
         },
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
@@ -548,7 +548,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },
-            range: PhysicalRange::new(0x40_0000, 0x60_0000),
+            range: SourceRange::new(0x40_0000, 0x60_0000),
         },
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
@@ -561,7 +561,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::ReservedOrdinary,
             origin: SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
-            range: PhysicalRange::new(0x1DA0_0000, 0x1DA0_3000),
+            range: SourceRange::new(0x1DA0_0000, 0x1DA0_3000),
         },
     ];
 
@@ -848,7 +848,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let n = decode_sources(&arena, &s, &mut out).unwrap();
         assert_eq!(n, RECORDS.len());
@@ -973,7 +973,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         assert_eq!(
             decode_sources(&arena, &s, &mut out).unwrap_err(),
@@ -1008,7 +1008,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let n = decode_sources(&arena, &s, &mut out).unwrap();
         assert!(n >= 1);
@@ -1046,7 +1046,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let n = decode_sources(&arena, &s, &mut out).unwrap();
         assert!(n >= 1);
@@ -1133,7 +1133,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::UefiDescriptor { index: 7 },
-            range: PhysicalRange::new(0x1000, 0x3000),
+            range: SourceRange::new(0x1000, 0x3000),
             input_object: InputObjectId::UefiMemoryMap,
             address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 7,
@@ -1224,7 +1224,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
         }; WIRE_SOURCES_CAP];
         let n_records = decode_sources(&arena, &s, &mut records).unwrap();
 

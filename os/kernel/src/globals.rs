@@ -401,7 +401,7 @@ pub(crate) static STARTUP_RECORD_STORE: SyncUnsafeCell<
         raw_type: 0,
         kind: minix_boot::SourceKind::StartupObject,
         origin: minix_boot::SourceOrigin::StartupObject(0),
-        range: minix_boot::PhysicalRange::new(0, 0),
+        range: minix_boot::SourceRange::new(0, 0),
         input_object: minix_boot::InputObjectId::StartupObjects,
         local_source: 0,
         snapshot_id: 0,
@@ -425,7 +425,7 @@ pub(crate) static SOURCE_RECORD_STORE: SyncUnsafeCell<
         raw_type: 0,
         kind: minix_boot::SourceKind::Memory,
         origin: minix_boot::SourceOrigin::MrbEntry(0),
-        range: minix_boot::PhysicalRange::new(0, 0),
+        range: minix_boot::SourceRange::new(0, 0),
     }; SOURCE_RECORD_STORE_LEN],
 );
 

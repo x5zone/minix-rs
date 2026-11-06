@@ -82,6 +82,10 @@ pub fn claims_from_records(
 ) -> Result<usize, ClaimError> {
     let mut n = 0usize;
     for record in records {
+        // Only physical declarations are claims on the EFI physical map.
+        if record.address_domain != minix_boot::AddressDomain::Physical {
+            continue;
+        }
         let expected = match record.kind {
             SourceKind::ReservedOrdinary | SourceKind::ReservedReusable => {
                 ExpectedEfiType::BootServicesData
@@ -366,7 +370,7 @@ mod tests {
             virtual_start: 0,
             kind,
             origin: minix_boot::SourceOrigin::UefiDescriptor { index: 0 },
-            range: minix_boot::PhysicalRange::new(start, end),
+            range: minix_boot::SourceRange::new(start, end),
         }
     }
 

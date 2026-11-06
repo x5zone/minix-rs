@@ -216,10 +216,7 @@ impl KernelInfo {
     /// Strict production gate: the leg's declared RAM authority must have
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
-    pub fn validate_requiring_sources(
-        &self,
-        authority: crate::memmap_source::InputObjectId,
-    ) {
+    pub fn validate_requiring_sources(&self, authority: crate::memmap_source::InputObjectId) {
         self.validate_impl(Some(authority));
     }
 
@@ -304,9 +301,9 @@ impl KernelInfo {
                 self.memmap_sources,
             ) {
                 Ok(()) => {}
-                Err(error) => panic!(
-                    "KernelInfo: source records do not cover the projected map: {error:?}"
-                ),
+                Err(error) => {
+                    panic!("KernelInfo: source records do not cover the projected map: {error:?}")
+                }
             }
         }
     }
@@ -609,7 +606,7 @@ mod tests {
             raw_type: 0,
             kind: crate::memmap_source::SourceKind::Memory,
             origin: crate::memmap_source::SourceOrigin::MemoryNode { node: 0, reg: 0 },
-            range: crate::memmap_source::PhysicalRange::new(0x100000, 0x1100000),
+            range: crate::memmap_source::SourceRange::new(0x100000, 0x1100000),
         },
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
@@ -622,7 +619,7 @@ mod tests {
             raw_type: 0,
             kind: crate::memmap_source::SourceKind::ReservedOrdinary,
             origin: crate::memmap_source::SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
-            range: crate::memmap_source::PhysicalRange::new(0x1da00000, 0x1da01000),
+            range: crate::memmap_source::SourceRange::new(0x1da00000, 0x1da01000),
         },
     ];
 
@@ -650,7 +647,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "carries no memory-map source records")]
     fn test_validate_requiring_sources_rejects_an_empty_partition() {
-        make_valid_info().validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
+        make_valid_info()
+            .validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
     }
 
     #[test]

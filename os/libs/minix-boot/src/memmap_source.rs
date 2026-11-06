@@ -173,8 +173,7 @@ static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
 /// blob that repeats the same tuple more often than the projection caps allow
 /// can exceed 40; that case is refused (`TooManySourceRecords`), never
 /// truncated.
-pub const DTB_SOURCE_CAP: usize =
-    DTB_MEMMAP_MAX + DTB_MEMMAP_MAX + DTB_MRB_MAX + DTB_MEMMAP_MAX;
+pub const DTB_SOURCE_CAP: usize = DTB_MEMMAP_MAX + DTB_MEMMAP_MAX + DTB_MRB_MAX + DTB_MEMMAP_MAX;
 const DTB_SOURCE_MAX: usize = DTB_SOURCE_CAP;
 
 /// Which declaration a range came from. Records are facts; every policy
@@ -267,7 +266,7 @@ pub const EMPTY_SOURCE_RECORD: SourceRecord = SourceRecord {
     id: 0,
     kind: SourceKind::Memory,
     origin: SourceOrigin::MrbEntry(0),
-    range: PhysicalRange::new(0, 0),
+    range: SourceRange::new(0, 0),
     input_object: InputObjectId::DtbBootInput,
     local_source: 0,
     snapshot_id: 0,
@@ -305,8 +304,12 @@ pub fn audit_source_coverage_for(
     sources: &[SourceRecord],
     authority: Option<InputObjectId>,
 ) -> Result<(), SourceAuditError> {
+    // Only physical records can explain a physical projection. The decoder
+    // already refuses a non-physical range on an ordinary kind; this guard
+    // keeps the audit independent of that earlier gate.
     let admitted = |r: &SourceRecord, keep: bool| {
-        keep && authority.is_none_or(|a| r.input_object == a)
+        keep && r.address_domain == AddressDomain::Physical
+            && authority.is_none_or(|a| r.input_object == a)
     };
     for span in free {
         let start = span.base.0;
@@ -408,15 +411,51 @@ impl PhysicalRange {
     }
 }
 
+/// A numeric range carried by a source record.
+///
+/// This is not a physical range until the record's [`AddressDomain`] says so:
+/// [`SourceRange::physical`] is the only conversion, and it yields `None` for
+/// the I/O-port domain. The wire format stores the same `start`/`end` pair and
+/// the domain tag, so no wire change follows from this split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceRange {
+    pub start: u64,
+    pub end_exclusive: u128,
+}
+
+impl SourceRange {
+    pub const fn new(start: u64, end_exclusive: u128) -> Self {
+        Self {
+            start,
+            end_exclusive,
+        }
+    }
+
+    pub const fn len(self) -> u128 {
+        self.end_exclusive - self.start as u128
+    }
+
+    /// The range as a physical range, only in the physical address domain.
+    pub const fn physical(self, domain: AddressDomain) -> Option<PhysicalRange> {
+        match domain {
+            AddressDomain::Physical => Some(PhysicalRange::new(self.start, self.end_exclusive)),
+            AddressDomain::Virtual | AddressDomain::UefiMmioPortSpace => None,
+        }
+    }
+}
+
 /// One physical range carried by the source layer. For input declarations
 /// (`class() == InputDeclaration`) the range is the declared extent, byte for
 /// byte; for a derived reservation (`FirmwarePrefix`) it is the **derived**
 /// extent `M_i ∩ [0, F)`. No page range is stored here — `/memory` projects
 /// inward (`FullPages`) while reservations project outward, so a single
 /// precomputed page extent would bake one consumer's rule into every consumer.
-/// The field is typed `PhysicalRange`, so an end of `2^64` is representable at
-/// the record layer; whether a projection can deliver it is a separate question
-/// answered by `projectable_end()` and the refusal at each projection site.
+/// The field is a [`SourceRange`] (numeric start/end), not a `PhysicalRange`:
+/// only the physical address domain converts, via
+/// [`SourceRecord::physical_range`], so an I/O-port range cannot pose as a
+/// physical one. An end of `2^64` is representable at the record layer;
+/// whether a projection can deliver it is a separate question answered by
+/// `projectable_end()` and the refusal at each projection site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRecord {
     /// Stable within one input object; cross-input references need
@@ -424,7 +463,7 @@ pub struct SourceRecord {
     pub id: u16,
     pub kind: SourceKind,
     pub origin: SourceOrigin,
-    pub range: PhysicalRange,
+    pub range: SourceRange,
     /// Which input object the record came from.
     pub input_object: InputObjectId,
     /// Index inside that input object (DTB: record ordinal, UEFI: descriptor
@@ -443,6 +482,14 @@ pub struct SourceRecord {
     /// role classification — the two must not be confused: `LOADER_DATA` and
     /// `ACPI_RECLAIM` share a role but not a type.
     pub raw_type: u32,
+}
+
+impl SourceRecord {
+    /// The record's range as a physical range; `None` when its address domain
+    /// is not physical. Only this conversion may feed physical page sets.
+    pub const fn physical_range(&self) -> Option<PhysicalRange> {
+        self.range.physical(self.address_domain)
+    }
 }
 
 /// Address space of a [`SourceRecord`] range. v1 records are physical only;
@@ -512,7 +559,7 @@ static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     raw_type: 0,
     kind: SourceKind::Memory,
     origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-    range: PhysicalRange::new(0, 0),
+    range: SourceRange::new(0, 0),
     input_object: InputObjectId::DtbBootInput,
     address_domain: crate::memmap_source::AddressDomain::Physical,
     local_source: 0,
@@ -638,7 +685,7 @@ fn push_source(
         raw_type: 0,
         kind,
         origin,
-        range,
+        range: SourceRange::new(range.start, range.end_exclusive),
         input_object: InputObjectId::DtbBootInput,
         address_domain: crate::memmap_source::AddressDomain::Physical,
         local_source: *n as u16,
@@ -659,7 +706,7 @@ pub const fn startup_record(index: u16, start: u64, end: u64) -> SourceRecord {
         raw_type: 0,
         kind: SourceKind::StartupObject,
         origin: SourceOrigin::StartupObject(index),
-        range: PhysicalRange::new(start, end as u128),
+        range: SourceRange::new(start, end as u128),
         input_object: InputObjectId::StartupObjects,
         local_source: index,
         snapshot_id: 0,
@@ -889,7 +936,7 @@ impl DtbMemoryMap<'_> {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-            range: PhysicalRange::new(0, 0),
+            range: SourceRange::new(0, 0),
             input_object: InputObjectId::DtbBootInput,
             address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
@@ -2435,6 +2482,55 @@ mod tests {
     }
 
     #[test]
+    fn source_range_converts_only_in_the_physical_domain() {
+        let range = SourceRange::new(0x3f8, 0x13f8);
+        assert_eq!(
+            range.physical(AddressDomain::Physical),
+            Some(PhysicalRange::new(0x3f8, 0x13f8))
+        );
+        assert_eq!(range.physical(AddressDomain::Virtual), None);
+        assert_eq!(range.physical(AddressDomain::UefiMmioPortSpace), None);
+
+        let record = SourceRecord {
+            kind: SourceKind::UefiExcluded,
+            range,
+            address_domain: AddressDomain::UefiMmioPortSpace,
+            ..EMPTY_SOURCE_RECORD
+        };
+        assert!(record.physical_range().is_none());
+    }
+
+    #[test]
+    fn the_source_audit_ignores_non_physical_records() {
+        let free = [MemoryRegion {
+            base: minix_types::PhysBytes(0x1000),
+            len: 0x1000,
+        }];
+        // The decoder already refuses this combination; the audit must not
+        // depend on that earlier gate.
+        let port_space = [SourceRecord {
+            kind: SourceKind::Memory,
+            range: SourceRange::new(0x1000, 0x2000),
+            address_domain: AddressDomain::UefiMmioPortSpace,
+            ..EMPTY_SOURCE_RECORD
+        }];
+        assert_eq!(
+            audit_source_coverage(&free, &[], &port_space),
+            Err(SourceAuditError::FreeSpanWithoutMemorySource {
+                start: 0x1000,
+                end_exclusive: 0x2000,
+            })
+        );
+        let physical = [SourceRecord {
+            kind: SourceKind::Memory,
+            range: SourceRange::new(0x1000, 0x2000),
+            address_domain: AddressDomain::Physical,
+            ..EMPTY_SOURCE_RECORD
+        }];
+        assert_eq!(audit_source_coverage(&free, &[], &physical), Ok(()));
+    }
+
+    #[test]
     fn source_audit_rejects_a_free_span_without_a_memory_record() {
         let free = [MemoryRegion {
             base: minix_types::PhysBytes(0x8000_0000),
@@ -2466,7 +2562,7 @@ mod tests {
             raw_type: 0,
             kind: SourceKind::Memory,
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-            range: PhysicalRange::new(0x8000_0000, 0x8000_1000),
+            range: SourceRange::new(0x8000_0000, 0x8000_1000),
         }];
         assert_eq!(
             audit_source_coverage(&[], &reserved, &sources),
@@ -2497,7 +2593,7 @@ mod tests {
                 raw_type: 0,
                 kind: SourceKind::Memory,
                 origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-                range: PhysicalRange::new(0x8000_0000, 0x8000_1000),
+                range: SourceRange::new(0x8000_0000, 0x8000_1000),
             },
             SourceRecord {
                 input_object: crate::memmap_source::InputObjectId::DtbBootInput,
@@ -2510,7 +2606,7 @@ mod tests {
                 raw_type: 0,
                 kind: SourceKind::Memory,
                 origin: SourceOrigin::MemoryNode { node: 0, reg: 1 },
-                range: PhysicalRange::new(0x8000_1000, 0x8000_2000),
+                range: SourceRange::new(0x8000_1000, 0x8000_2000),
             },
         ];
         assert_eq!(audit_source_coverage(&free, &[], &sources), Ok(()));
@@ -3307,7 +3403,7 @@ mod authority_filter_tests {
             id: 0,
             kind,
             origin: SourceOrigin::MrbEntry(0),
-            range: PhysicalRange::new(start, end),
+            range: SourceRange::new(start, end),
             input_object: input,
             local_source: 0,
             snapshot_id: 0,
@@ -3322,49 +3418,53 @@ mod authority_filter_tests {
     /// firmware map did not report.
     #[test]
     fn uefi_projection_cannot_be_covered_by_a_dtb_memory_record() {
-        let free = [MemoryRegion { base: minix_types::PhysBytes(0x10_0000), len: 0x1000 }];
-        let sources = [rec(InputObjectId::DtbBootInput, SourceKind::Memory, 0x10_0000, 0x10_1000)];
+        let free = [MemoryRegion {
+            base: minix_types::PhysBytes(0x10_0000),
+            len: 0x1000,
+        }];
+        let sources = [rec(
+            InputObjectId::DtbBootInput,
+            SourceKind::Memory,
+            0x10_0000,
+            0x10_1000,
+        )];
         assert!(audit_source_coverage(&free, &[], &sources).is_ok());
-        assert!(audit_source_coverage_for(
-            &free,
-            &[],
-            &sources,
-            Some(InputObjectId::UefiMemoryMap)
-        )
-        .is_err());
-        let uefi = [rec(InputObjectId::UefiMemoryMap, SourceKind::Memory, 0x10_0000, 0x10_1000)];
-        assert!(audit_source_coverage_for(
-            &free,
-            &[],
-            &uefi,
-            Some(InputObjectId::UefiMemoryMap)
-        )
-        .is_ok());
+        assert!(
+            audit_source_coverage_for(&free, &[], &sources, Some(InputObjectId::UefiMemoryMap))
+                .is_err()
+        );
+        let uefi = [rec(
+            InputObjectId::UefiMemoryMap,
+            SourceKind::Memory,
+            0x10_0000,
+            0x10_1000,
+        )];
+        assert!(
+            audit_source_coverage_for(&free, &[], &uefi, Some(InputObjectId::UefiMemoryMap))
+                .is_ok()
+        );
     }
 
     /// The reservation side is filtered the same way.
     #[test]
     fn reserved_projection_is_also_authority_filtered() {
-        let reserved = [MemoryRegion { base: minix_types::PhysBytes(0x20_0000), len: 0x1000 }];
+        let reserved = [MemoryRegion {
+            base: minix_types::PhysBytes(0x20_0000),
+            len: 0x1000,
+        }];
         let dtb = [rec(
             InputObjectId::DtbBootInput,
             SourceKind::ReservedOrdinary,
             0x20_0000,
             0x20_1000,
         )];
-        assert!(audit_source_coverage_for(
-            &[],
-            &reserved,
-            &dtb,
-            Some(InputObjectId::UefiMemoryMap)
-        )
-        .is_err());
-        assert!(audit_source_coverage_for(
-            &[],
-            &reserved,
-            &dtb,
-            Some(InputObjectId::DtbBootInput)
-        )
-        .is_ok());
+        assert!(
+            audit_source_coverage_for(&[], &reserved, &dtb, Some(InputObjectId::UefiMemoryMap))
+                .is_err()
+        );
+        assert!(
+            audit_source_coverage_for(&[], &reserved, &dtb, Some(InputObjectId::DtbBootInput))
+                .is_ok()
+        );
     }
 }

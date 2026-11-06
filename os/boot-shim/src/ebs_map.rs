@@ -87,7 +87,7 @@
 //! by reading this list.
 
 use minix_boot::{
-    HandoffV1WriteError, MemoryRegion, PhysicalRange, Serializer, SourceKind, SourceOrigin,
+    HandoffV1WriteError, MemoryRegion, Serializer, SourceKind, SourceOrigin, SourceRange,
     SourceRecord, WIRE_MEMMAP_CAP, WIRE_RESERVED_CAP, WIRE_SOURCES_CAP,
 };
 use minix_types::PhysBytes;
@@ -315,6 +315,13 @@ pub enum PolicyError {
     LengthOverflow,
     /// A range whose end overflows the address space.
     RangeOverflow,
+    /// A virtual start address that is not page-aligned.
+    UnalignedVirtualStart,
+    /// A virtual range ending above `2^64`.
+    VirtualRangeOverflow,
+    /// This range overlaps the descriptor at the given index in the same
+    /// address domain. Ranges in different domains are never compared.
+    OverlapsDescriptor(u16),
     /// A range ending above this architecture's page-table ceiling.
     OutOfPhysRange,
 }
@@ -516,10 +523,17 @@ impl MapStorage {
 /// The start address must be page-aligned because the `GetMemoryMap` contract
 /// requires it, and an unaligned range cannot become page-table entries without
 /// silently dropping the head of the region.
-pub fn checked_len(desc: &DescriptorRef, pa_limit: u64) -> Result<u64, PolicyError> {
-    if !desc.physical_start.is_multiple_of(PAGE_SIZE) {
-        return Err(PolicyError::UnalignedStart);
-    }
+const ADDRESS_SPACE_END: u128 = 1u128 << 64;
+
+/// Structural shape shared by every descriptor, whether or not it projects a
+/// range.
+///
+/// The ends are computed in `u128`, so the last page of the address space
+/// (`[0xffff_ffff_ffff_f000, 2^64)`) is structurally valid; whether a
+/// projection can carry it is the admission step's separate question.
+/// `PhysicalStart` alignment is a physical-address property: type 12's start
+/// lives in I/O-port space, so it is not held to that alignment.
+pub fn checked_shape(desc: &DescriptorRef) -> Result<(), PolicyError> {
     if desc.number_of_pages == 0 {
         return Err(PolicyError::ZeroPageCount);
     }
@@ -527,11 +541,29 @@ pub fn checked_len(desc: &DescriptorRef, pa_limit: u64) -> Result<u64, PolicyErr
         .number_of_pages
         .checked_mul(PAGE_SIZE)
         .ok_or(PolicyError::LengthOverflow)?;
-    let end = desc
-        .physical_start
-        .checked_add(len)
-        .ok_or(PolicyError::RangeOverflow)?;
-    if end > pa_limit {
+    if desc.raw_type != ty::MMIO_PORT_SPACE && !desc.physical_start.is_multiple_of(PAGE_SIZE) {
+        return Err(PolicyError::UnalignedStart);
+    }
+    if desc.physical_start as u128 + len as u128 > ADDRESS_SPACE_END {
+        return Err(PolicyError::RangeOverflow);
+    }
+    if desc.virtual_start != 0 {
+        if !desc.virtual_start.is_multiple_of(PAGE_SIZE) {
+            return Err(PolicyError::UnalignedVirtualStart);
+        }
+        if desc.virtual_start as u128 + len as u128 > ADDRESS_SPACE_END {
+            return Err(PolicyError::VirtualRangeOverflow);
+        }
+    }
+    Ok(())
+}
+
+/// Prove a range is representable and within this architecture's page-table
+/// ceiling, and return its byte length.
+pub fn checked_len(desc: &DescriptorRef, pa_limit: u64) -> Result<u64, PolicyError> {
+    checked_shape(desc)?;
+    let len = desc.number_of_pages * PAGE_SIZE;
+    if desc.physical_start as u128 + len as u128 > pa_limit as u128 {
         return Err(PolicyError::OutOfPhysRange);
     }
     Ok(len)
@@ -569,6 +601,11 @@ pub fn adjudicate(desc: &DescriptorRef, pa_limit: u64) -> Result<(Disposition, u
     if matches!(desc.raw_type, ty::UNACCEPTED | ty::PAL_CODE) {
         return Err(PolicyError::RefuseToBoot);
     }
+
+    // Structural shape applies to every type, including the ones that project
+    // nothing: a range this policy cannot even represent must not be recorded
+    // as if it were a fact.
+    checked_shape(desc)?;
 
     // Step 3 — the type's own mandatory disposition wins over any attribute.
     if matches!(desc.raw_type, ty::RESERVED | ty::UNUSABLE) {
@@ -617,6 +654,26 @@ pub struct Plan {
     counts: Classification,
 }
 
+fn domain_of(desc: &DescriptorRef) -> minix_boot::AddressDomain {
+    if desc.raw_type == ty::MMIO_PORT_SPACE {
+        minix_boot::AddressDomain::UefiMmioPortSpace
+    } else {
+        minix_boot::AddressDomain::Physical
+    }
+}
+
+fn rejection(index: usize, desc: &DescriptorRef, failed: PolicyError) -> MapError {
+    MapError::RejectedDescriptor(DescriptorRejection {
+        index: index as u16,
+        raw_type: desc.raw_type,
+        physical_start: desc.physical_start,
+        virtual_start: desc.virtual_start,
+        number_of_pages: desc.number_of_pages,
+        attribute: desc.attribute,
+        failed,
+    })
+}
+
 /// Counting pass: adjudicate every descriptor and prove all three outputs fit.
 ///
 /// This is the pass that can fail. The two handoff capacities and `side_cap` are
@@ -625,22 +682,31 @@ pub struct Plan {
 pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Result<Plan, MapError> {
     let mut counts = Classification::default();
     for (index, desc) in descs.iter().enumerate() {
-        let (disposition, _) = adjudicate(desc, pa_limit).map_err(|failed| {
-            MapError::RejectedDescriptor(DescriptorRejection {
-                index: index as u16,
-                raw_type: desc.raw_type,
-                physical_start: desc.physical_start,
-                virtual_start: desc.virtual_start,
-                number_of_pages: desc.number_of_pages,
-                attribute: desc.attribute,
-                failed,
-            })
-        })?;
+        let (disposition, _) =
+            adjudicate(desc, pa_limit).map_err(|failed| rejection(index, desc, failed))?;
         match disposition {
             Disposition::Allocate => counts.conventional += 1,
             Disposition::ReservedMapped => counts.reserved += 1,
             Disposition::Side => counts.side += 1,
             Disposition::Excluded | Disposition::DevicePath => {}
+        }
+    }
+    // The map must give every page one policy. Ranges in the same address
+    // domain may not overlap; type 12 lives in a different domain and is
+    // therefore never compared numerically with physical descriptors.
+    for i in 1..descs.len() {
+        let a = &descs[i];
+        let a_start = a.physical_start as u128;
+        let a_end = a_start + a.number_of_pages as u128 * PAGE_SIZE as u128;
+        for (j, b) in descs[..i].iter().enumerate() {
+            if domain_of(a) != domain_of(b) {
+                continue;
+            }
+            let b_start = b.physical_start as u128;
+            let b_end = b_start + b.number_of_pages as u128 * PAGE_SIZE as u128;
+            if a_start < b_end && b_start < a_end {
+                return Err(rejection(i, a, PolicyError::OverlapsDescriptor(j as u16)));
+            }
         }
     }
     if counts.conventional > WIRE_MEMMAP_CAP {
@@ -760,10 +826,7 @@ impl Plan {
                 origin: SourceOrigin::UefiDescriptor {
                     index: index as u16,
                 },
-                range: PhysicalRange::new(
-                    region.base.0,
-                    region.base.0 as u128 + region.len as u128,
-                ),
+                range: SourceRange::new(region.base.0, region.base.0 as u128 + region.len as u128),
                 input_object: minix_boot::InputObjectId::UefiMemoryMap,
                 address_domain: minix_boot::memmap_source::AddressDomain::Physical,
                 local_source: index as u16,
@@ -786,9 +849,7 @@ impl Plan {
             let Ok((disposition, len)) = adjudicate(desc, pa_limit) else {
                 continue;
             };
-            if len != 0
-                || !matches!(disposition, Disposition::Excluded | Disposition::DevicePath)
-            {
+            if len != 0 || !matches!(disposition, Disposition::Excluded | Disposition::DevicePath) {
                 continue;
             }
             let end = desc
@@ -801,7 +862,7 @@ impl Plan {
                 origin: SourceOrigin::UefiDescriptor {
                     index: index as u16,
                 },
-                range: PhysicalRange::new(desc.physical_start, end as u128),
+                range: SourceRange::new(desc.physical_start, end as u128),
                 input_object: minix_boot::InputObjectId::UefiMemoryMap,
                 // Type 12's start/count live in I/O-port space; the record
                 // keeps the raw fact but must not claim a physical address.
@@ -875,6 +936,18 @@ mod tests {
     /// The disposition of one ordinary page-sized range.
     fn disp(t: u32, attribute: u64) -> Result<Disposition, PolicyError> {
         adjudicate(&desc(t, attribute), PA_LIMIT).map(|(d, _)| d)
+    }
+
+    fn classify_ok(map: &[u8], map_size: usize, desc_size: usize, version: u32) -> Classification {
+        let mut storage = MapStorage::new();
+        let mut arena = [0u8; minix_boot::ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        storage
+            .parse_raw_map(map, map_size, desc_size, version, 0)
+            .unwrap();
+        storage
+            .classify_into_handoff(PA_LIMIT, &mut s)
+            .expect("map accepted")
     }
 
     fn classify_err(map: &[u8], map_size: usize, desc_size: usize, version: u32) -> MapError {
@@ -972,6 +1045,45 @@ mod tests {
         for t in [ty::MMIO, ty::MMIO_PORT_SPACE] {
             assert_eq!(disp(t, WB), Ok(Disposition::DevicePath), "type {t}");
         }
+    }
+
+    /// Type 12 keeps its raw start/page count and its own address domain.
+    /// The record must not be constructible as a physical range.
+    #[test]
+    fn a_port_space_descriptor_keeps_its_raw_range_without_becoming_physical() {
+        let mut map = [0u8; 40];
+        push_desc(&mut map, 0, 40, ty::MMIO_PORT_SPACE, 0x3f8, 1, WB);
+        let mut storage = MapStorage::new();
+        storage
+            .parse_raw_map(&map, map.len(), 40, 1, 7)
+            .expect("shape accepted");
+        let plan = classify(storage.descriptors(), PA_LIMIT, storage.side_capacity())
+            .expect("one descriptor fits");
+        let mut arena = [0u8; minix_boot::ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut side = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; SIDE_CAP];
+        plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side, 7);
+
+        let base = minix_boot::WIRE_SOURCES_OFFSET;
+        let b = s.as_bytes();
+        assert_eq!(get_u64(b, base), 0x3f8, "the raw port-space start is kept");
+        assert_eq!(
+            get_u64(b, base + 8),
+            0x13f8,
+            "the raw end is start + pages * 4 KiB"
+        );
+        assert_eq!(
+            b[base + 64],
+            minix_boot::WireSourceRecord::KIND_UEFI_EXCLUDED
+        );
+        assert_eq!(b[base + 67], 2, "UefiMmioPortSpace tag");
+        assert_eq!(
+            u32::from_le_bytes(b[base + 68..base + 72].try_into().unwrap()),
+            ty::MMIO_PORT_SPACE
+        );
     }
 
     #[test]
@@ -1173,7 +1285,8 @@ mod tests {
         d.physical_start = u64::MAX - PAGE_SIZE + 1;
         assert_eq!(
             adjudicate(&d, PA_LIMIT).map(|x| x.0),
-            Err(PolicyError::RangeOverflow)
+            Err(PolicyError::OutOfPhysRange),
+            "end == 2^64 is a valid shape; admission refuses the page"
         );
         d = desc(ty::CONVENTIONAL, WB);
         d.physical_start = PA_LIMIT;
@@ -1184,22 +1297,21 @@ mod tests {
     }
 
     #[test]
-    fn ranges_that_emit_nothing_are_not_geometry_checked() {
-        // A device aperture or a firmware hole beyond the address ceiling must not
-        // stop the boot: we never emit it, and its shape is firmware's business.
+    fn ranges_that_emit_nothing_still_get_shape_checked() {
+        // Platform admission is skipped because nothing is projected, but the
+        // descriptor's shape must still be representable.
         let mut d = desc(ty::MMIO, WB);
         d.physical_start = PA_LIMIT + PAGE_SIZE;
-        d.number_of_pages = u64::MAX;
+        d.number_of_pages = 1;
         assert_eq!(
             adjudicate(&d, PA_LIMIT).map(|x| x.0),
             Ok(Disposition::DevicePath)
         );
+        d.number_of_pages = u64::MAX;
+        assert_eq!(adjudicate(&d, PA_LIMIT), Err(PolicyError::LengthOverflow));
         d = desc(ty::RESERVED, WB);
         d.number_of_pages = 0;
-        assert_eq!(
-            adjudicate(&d, PA_LIMIT).map(|x| x.0),
-            Ok(Disposition::Excluded)
-        );
+        assert_eq!(adjudicate(&d, PA_LIMIT), Err(PolicyError::ZeroPageCount));
     }
 
     #[test]
@@ -1432,6 +1544,99 @@ mod tests {
     }
 
     #[test]
+    fn the_last_page_is_structurally_valid_and_only_admission_refuses_it() {
+        let top = 0xffff_ffff_ffff_f000u64;
+
+        // Type 12 projects nothing; its start may be unaligned I/O-port space.
+        let mut port = desc(ty::MMIO_PORT_SPACE, WB);
+        port.physical_start = 0x3f8;
+        assert_eq!(
+            adjudicate(&port, PA_LIMIT),
+            Ok((Disposition::DevicePath, 0))
+        );
+
+        // One page at the top: end == 2^64 is a valid shape.
+        let mut accepted = desc(ty::MMIO, WB);
+        accepted.physical_start = top;
+        assert_eq!(
+            adjudicate(&accepted, PA_LIMIT),
+            Ok((Disposition::DevicePath, 0)),
+            "structural shape must accept end == 2^64"
+        );
+
+        // The same page as an emitted range fails admission, not shape.
+        let mut conventional = desc(ty::CONVENTIONAL, WB);
+        conventional.physical_start = top;
+        assert_eq!(
+            adjudicate(&conventional, PA_LIMIT),
+            Err(PolicyError::OutOfPhysRange),
+            "admission refuses a page above the page-table ceiling"
+        );
+
+        // Two pages from the top overflow the address space.
+        conventional.number_of_pages = 2;
+        assert_eq!(
+            adjudicate(&conventional, PA_LIMIT),
+            Err(PolicyError::RangeOverflow)
+        );
+    }
+
+    #[test]
+    fn virtual_start_is_validated_with_u128_for_every_type() {
+        let top = 0xffff_ffff_ffff_f000u64;
+        let mut d = desc(ty::MMIO, WB); // projects nothing, shape still runs
+        d.virtual_start = top;
+        assert_eq!(adjudicate(&d, PA_LIMIT), Ok((Disposition::DevicePath, 0)));
+
+        d.number_of_pages = 2;
+        assert_eq!(
+            adjudicate(&d, PA_LIMIT),
+            Err(PolicyError::VirtualRangeOverflow)
+        );
+
+        d.number_of_pages = 1;
+        d.virtual_start = 0x10_0001;
+        assert_eq!(
+            adjudicate(&d, PA_LIMIT),
+            Err(PolicyError::UnalignedVirtualStart)
+        );
+
+        // Zero is the specification's "no virtual mapping" value.
+        d.virtual_start = 0;
+        assert_eq!(adjudicate(&d, PA_LIMIT), Ok((Disposition::DevicePath, 0)));
+    }
+
+    #[test]
+    fn same_domain_overlaps_are_rejected_and_cross_domain_is_not() {
+        // Identical numeric ranges in different domains: port space and
+        // physical addresses are not comparable, so both are accepted.
+        let mut map = [0u8; 80];
+        push_desc(&mut map, 0, 40, ty::MMIO_PORT_SPACE, 0x10_0000, 1, WB);
+        push_desc(&mut map, 1, 40, ty::CONVENTIONAL, 0x10_0000, 1, WB);
+        let c = classify_ok(&map, 80, 40, 1);
+        assert_eq!(c.conventional, 1);
+
+        // Two physical descriptors whose pages overlap.
+        let mut overlap = [0u8; 80];
+        push_desc(&mut overlap, 0, 40, ty::CONVENTIONAL, 0x10_0000, 2, WB);
+        push_desc(&mut overlap, 1, 40, ty::CONVENTIONAL, 0x10_1000, 1, WB);
+        assert!(matches!(
+            classify_err(&overlap, 80, 40, 1),
+            MapError::RejectedDescriptor(DescriptorRejection {
+                index: 1,
+                failed: PolicyError::OverlapsDescriptor(0),
+                ..
+            })
+        ));
+
+        // Touching endpoints are not an overlap.
+        let mut abut = [0u8; 80];
+        push_desc(&mut abut, 0, 40, ty::CONVENTIONAL, 0x10_0000, 1, WB);
+        push_desc(&mut abut, 1, 40, ty::CONVENTIONAL, 0x10_1000, 1, WB);
+        assert_eq!(classify_ok(&abut, 80, 40, 1).conventional, 2);
+    }
+
+    #[test]
     fn rejects_a_type_it_cannot_name_without_writing_anything() {
         let mut map = [0u8; 80];
         push_desc(&mut map, 0, 40, ty::CONVENTIONAL, 0x10_0000, 1, WB);
@@ -1467,7 +1672,11 @@ mod tests {
 
     #[test]
     fn rejects_side_list_beyond_its_buffer() {
-        let descs = [desc(ty::ACPI_NVS, WB), desc(ty::PERSISTENT, WB)];
+        let mut first = desc(ty::ACPI_NVS, WB);
+        let mut second = desc(ty::PERSISTENT, WB);
+        second.physical_start = 0x20_0000;
+        first.physical_start = 0x10_0000;
+        let descs = [first, second];
         assert_eq!(
             classify(&descs, PA_LIMIT, 1).unwrap_err(),
             MapError::TooManySideEntries
