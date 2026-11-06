@@ -17,9 +17,9 @@
 //! The hook reads RHR, verifies the expected character, and prints the
 //! first-source marker (capped at 4, the same house rule as sei-ack).
 
+use crate::irq_manager::IrqHookContext;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering as AtomicOrd};
 use minix_plat::{IrqAction, IrqNotifyId, IrqPolicy, IrqVector};
-use crate::irq_manager::IrqHookContext;
 
 /// QEMU virt NS16550A base address (DTB `/soc/serial@10000000`; inside the
 /// identity-mapped window).
@@ -32,7 +32,11 @@ pub const UART_BASE: u64 = 0x1000_0000;
 fn uart_va(off: u64) -> Option<*mut u8> {
     use minix_arch::arch::device_window::{device_va_for, device_window_regions};
     let regions = device_window_regions();
-    let slot = if cfg!(target_arch = "riscv64") { 1 } else { return None };
+    let slot = if cfg!(target_arch = "riscv64") {
+        1
+    } else {
+        return None;
+    };
     let va = device_va_for(regions, slot, UART_BASE + off)?;
     Some(va as *mut u8)
 }
@@ -107,14 +111,15 @@ pub fn enable_uart_rx_selftest(expected: u8) {
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let irq = IrqVector::new(UART_IRQ_NUM);
     // ① First registration auto-unmasks: the PLIC enable bit (S context).
-    crate::irq_manager_with(&section).register_hook(
-        irq,
-        uart_rx_hook,
-        minix_types::Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0),
-        IrqNotifyId(0),
-        IrqPolicy::REENABLE,
-    )
-    .expect("uart rx hook: no free slots in IRQ_MANAGER");
+    crate::irq_manager_with(&section)
+        .register_hook(
+            irq,
+            uart_rx_hook,
+            minix_types::Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0),
+            IrqNotifyId(0),
+            IrqPolicy::REENABLE,
+        )
+        .expect("uart rx hook: no free slots in IRQ_MANAGER");
     Console::write_str("  uart: stageA hook+unmask\n");
     // ② PLIC priority[10] = 1 (reset value 0 means never delivered).
     crate::irq_manager_with(&section).set_irq_priority(irq, 1);

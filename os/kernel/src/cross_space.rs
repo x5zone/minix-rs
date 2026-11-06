@@ -46,7 +46,10 @@ use minix_types::{Endpoint, PhysBytes, VirBytes};
 
 use crate::proc::ProcNr;
 use crate::proc_table::ProcessTable;
-use crate::vm::{AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy, cross_space_memset, cross_space_read, cross_space_write};
+use crate::vm::{
+    AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy,
+    cross_space_memset, cross_space_read, cross_space_write,
+};
 use minix_arch::CurrentDirectMap;
 
 // ── Kernel-internal cross-process copy ──
@@ -152,12 +155,14 @@ pub fn data_copy_vmcheck(
         // `as_process()` is guaranteed to return `Some` here.
         let (target, start, write_flag) = match fault_type {
             VmFaultType::Src => {
-                let (endpt, offset) = src.as_process()
+                let (endpt, offset) = src
+                    .as_process()
                     .expect("Physical address cannot produce Src page fault");
                 (endpt, offset, false)
             }
             VmFaultType::Dst => {
-                let (endpt, offset) = dst.as_process()
+                let (endpt, offset) = dst
+                    .as_process()
                     .expect("Physical address cannot produce Dst page fault");
                 (endpt, offset, true)
             }
@@ -316,7 +321,8 @@ pub fn memset_vmcheck(
 
     if let CrossSpaceResult::Suspended(VmFaultType::Dst) = result {
         // Physical addresses cannot fault — only Process addresses can.
-        let (target, start) = dst.as_process()
+        let (target, start) = dst
+            .as_process()
             .expect("Physical address cannot produce Dst page fault");
         let check_params = crate::vm::VmCheckParams {
             start,
@@ -329,12 +335,7 @@ pub fn memset_vmcheck(
         proc_table
             .get_mut(caller_nr)
             .expect("memset_vmcheck: caller slot must exist")
-            .suspend_for_vm(
-                VmSuspendType::KernelCall,
-                target,
-                check_params,
-                None,
-            );
+            .suspend_for_vm(VmSuspendType::KernelCall, target, check_params, None);
     }
 
     result
@@ -402,7 +403,9 @@ mod tests {
         }
         assert_eq!(classify(&CrossSpaceResult::Completed(Ok(()))), "ok");
         assert_eq!(
-            classify(&CrossSpaceResult::Completed(Err(crate::vm::VmCopyError::InvalidAddress))),
+            classify(&CrossSpaceResult::Completed(Err(
+                crate::vm::VmCopyError::InvalidAddress
+            ))),
             "fault"
         );
         assert_eq!(
@@ -466,7 +469,10 @@ mod tests {
         let fault = data_copy_vmcheck(
             ProcNr(0),
             &mut table,
-            AddressRef::Process { endpoint: Endpoint(999), offset: VirBytes(0) },
+            AddressRef::Process {
+                endpoint: Endpoint(999),
+                offset: VirBytes(0),
+            },
             AddressRef::Physical(PhysBytes(0)),
             4,
             |_pt: &crate::proc_table::ProcessTable, _| None,
@@ -478,7 +484,10 @@ mod tests {
             ProcNr(0),
             &mut table,
             AddressRef::Physical(PhysBytes(0)),
-            AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
+            AddressRef::Process {
+                endpoint: Endpoint(100),
+                offset: VirBytes(0x1000),
+            },
             4,
             |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
@@ -495,15 +504,23 @@ mod tests {
             ProcNr(0),
             &mut table,
             AddressRef::Physical(PhysBytes(0)),
-            AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
+            AddressRef::Process {
+                endpoint: Endpoint(100),
+                offset: VirBytes(0x1000),
+            },
             4,
             |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
         assert!(matches!(r, CrossSpaceResult::Suspended(_)));
         let caller = table.get(ProcNr(0)).unwrap();
-        assert!(caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
-            "挂起必须置 RTS_VMREQUEST");
-        assert!(caller.p_vm_suspend.is_some(), "挂起必须保存 VmSuspendContext");
+        assert!(
+            caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
+            "挂起必须置 RTS_VMREQUEST"
+        );
+        assert!(
+            caller.p_vm_suspend.is_some(),
+            "挂起必须保存 VmSuspendContext"
+        );
     }
 
     /// copy_context preserved across VMSUSPEND: VmCopyContext(src, dst,
@@ -517,19 +534,27 @@ mod tests {
             ProcNr(0),
             &mut table,
             AddressRef::Physical(PhysBytes(0)),
-            AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
+            AddressRef::Process {
+                endpoint: Endpoint(100),
+                offset: VirBytes(0x1000),
+            },
             4,
             |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
         assert!(matches!(r, CrossSpaceResult::Suspended(VmFaultType::Dst)));
         let caller = table.get(ProcNr(0)).unwrap();
-        let ctx = caller.p_vm_suspend.as_ref()
+        let ctx = caller
+            .p_vm_suspend
+            .as_ref()
             .and_then(|s| s.copy_context.as_ref())
             .expect("挂起必须携带 copy_context");
         assert_eq!(ctx.bytes, 4);
         assert!(matches!(ctx.fault_type, VmFaultType::Dst));
         let params = &caller.p_vm_suspend.as_ref().unwrap().check_params;
-        assert_eq!(params.start.0, 0x1000, "check_params.start = 故障侧虚拟地址");
+        assert_eq!(
+            params.start.0, 0x1000,
+            "check_params.start = 故障侧虚拟地址"
+        );
         assert_eq!(params.length.0, 4);
         assert!(params.write_flag, "Dst 故障 → write_flag = true");
         let _ = RtsFlagsBits::VMREQUEST; // reference to avoid an unused warning (this test focuses on the context)
@@ -552,7 +577,9 @@ mod tests {
             0,
             |_pt: &crate::proc_table::ProcessTable, _| None,
         );
-        assert_eq!(r, CrossSpaceResult::Completed(Err(crate::vm::VmCopyError::Domain)));
+        assert_eq!(
+            r,
+            CrossSpaceResult::Completed(Err(crate::vm::VmCopyError::Domain))
+        );
     }
 }
-

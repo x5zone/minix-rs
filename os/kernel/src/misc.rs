@@ -14,28 +14,30 @@
 //!   EBADREQUEST for a NULL vector entry (there is no `do_unused` in C)
 //! - **D5**: TRACE deferred — debugging feature, not core
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use minix_plat::NR_IRQ_VECTORS;
 use minix_platform::PlatformDesc;
 use minix_types::{BootImageStruct, IrqHookStruct, KinfoStruct, PrivInfoStruct, ProcInfoStruct};
 use minix_types::{
-    Message, MessKrnLsysSysGetwhoami, MessLsysKrnSysGetinfo,
-    MessLsysKrnSysTrace, Endpoint, VirBytes,
+    Endpoint, MessKrnLsysSysGetwhoami, MessLsysKrnSysGetinfo, MessLsysKrnSysTrace, Message,
+    VirBytes,
 };
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use minix_plat::NR_IRQ_VECTORS;
 
-use crate::proc::{KProcess, MiscFlagsBits, RtsFlagsBits, CpuId, ProcNr, PROC_NAME_LEN,
-    BOOT_MODULE_PROC_NRS, NR_BOOT_PROCS};
+use crate::clock::ClockState;
+use crate::cross_space::{data_copy_vmcheck, write_to_process_vmcheck};
+use crate::irq_manager::IrqHookContext;
+use crate::kpriv::PrivTable;
 #[cfg(test)]
 use crate::proc::NR_BOOT_MODULES;
-use crate::kpriv::PrivTable;
+use crate::proc::{
+    BOOT_MODULE_PROC_NRS, CpuId, KProcess, MiscFlagsBits, NR_BOOT_PROCS, PROC_NAME_LEN, ProcNr,
+    RtsFlagsBits,
+};
 use crate::proc_table::{NR_PROCS, NR_TASKS, ProcessTable};
-use crate::irq_manager::IrqHookContext;
-use minix_plat::IrqAction;
 use crate::syscall::{KcallResult, Syscall};
-use crate::cross_space::{data_copy_vmcheck, write_to_process_vmcheck};
 use crate::vm::{AddressRef, CrossSpaceResult};
-use crate::clock::ClockState;
 use minix_arch::cpu_identity::{CpuIdentity, X86Vendor};
+use minix_plat::IrqAction;
 
 // ── Minix3 error codes ──
 // Centralized in `crate::errno` to prevent value drift.
@@ -369,9 +371,10 @@ impl From<CpuIdentity> for CpuInfoEntry {
             // CSR values have no counterpart in it, so non-x86 CPUs report
             // CPU_VENDOR_UNKNOWN with zeroed fields. The typed per-arch
             // identity stays available kernel-side via `smp::cpu_identity`.
-            CpuIdentity::Arm(_) | CpuIdentity::Riscv(_) => {
-                CpuInfoEntry { vendor: CPU_VENDOR_UNKNOWN, ..Default::default() }
-            }
+            CpuIdentity::Arm(_) | CpuIdentity::Riscv(_) => CpuInfoEntry {
+                vendor: CPU_VENDOR_UNKNOWN,
+                ..Default::default()
+            },
         }
     }
 }
@@ -513,18 +516,17 @@ fn copy_struct_to_caller<T>(
         .map(|p| p.p_seg.phys_root)
         .expect("copy_struct_to_caller: caller slot must exist");
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
     // SAFETY: `data` points to a live kernel local of `size_of::<T>()`
     // bytes (a `&T` reference), valid for `length` byte reads.
-    let src =
-        unsafe { core::slice::from_raw_parts(data as *const T as *const u8, length) };
+    let src = unsafe { core::slice::from_raw_parts(data as *const T as *const u8, length) };
     let dst = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(val_ptr),
@@ -603,9 +605,9 @@ pub fn dispatch_getinfo(
 ) -> KcallResult {
     let gi = msg_getinfo(msg);
     // C: do_getinfo.c:22-24 — extract parameters
-    let request = gi.request;       // m_lsys_krn_sys_getinfo.request
-    let val_ptr = gi.val_ptr;       // m_lsys_krn_sys_getinfo.val_ptr
-    let val_len = gi.val_len;       // m_lsys_krn_sys_getinfo.val_len
+    let request = gi.request; // m_lsys_krn_sys_getinfo.request
+    let val_ptr = gi.val_ptr; // m_lsys_krn_sys_getinfo.val_ptr
+    let val_len = gi.val_len; // m_lsys_krn_sys_getinfo.val_len
     let val_len2_e = gi.val_len2_e; // m_lsys_krn_sys_getinfo.val_len2_e
 
     let req = match GetInfoRequest::try_from(request) {
@@ -618,24 +620,34 @@ pub fn dispatch_getinfo(
         GetInfoRequest::KInfo => getinfo_kinfo(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::Proc => getinfo_proc(caller_nr, proc_table, val_ptr, val_len, val_len2_e),
         GetInfoRequest::ProcTab => getinfo_proc_tab(caller_nr, proc_table, val_ptr, val_len),
-        GetInfoRequest::PrivTab => getinfo_priv_tab(caller_nr, proc_table, priv_table, val_ptr, val_len),
-        GetInfoRequest::LoadInfo => getinfo_load_info(caller_nr, proc_table, clock_state, val_ptr, val_len),
-        GetInfoRequest::Priv => getinfo_priv(caller_nr, proc_table, priv_table, val_ptr, val_len, val_len2_e),
+        GetInfoRequest::PrivTab => {
+            getinfo_priv_tab(caller_nr, proc_table, priv_table, val_ptr, val_len)
+        }
+        GetInfoRequest::LoadInfo => {
+            getinfo_load_info(caller_nr, proc_table, clock_state, val_ptr, val_len)
+        }
+        GetInfoRequest::Priv => getinfo_priv(
+            caller_nr, proc_table, priv_table, val_ptr, val_len, val_len2_e,
+        ),
         GetInfoRequest::Regs => getinfo_regs(caller_nr, proc_table, val_ptr, val_len, val_len2_e),
-        GetInfoRequest::CpuTicks => getinfo_cpu_ticks(caller_nr, proc_table, val_len2_e, val_ptr, val_len),
+        GetInfoRequest::CpuTicks => {
+            getinfo_cpu_ticks(caller_nr, proc_table, val_len2_e, val_ptr, val_len)
+        }
         GetInfoRequest::Hz => getinfo_hz(caller_nr, proc_table, clock_state, val_ptr, val_len),
         GetInfoRequest::Machine => getinfo_machine(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::CpuInfo => getinfo_cpu_info(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::IrqActids => getinfo_irq_actids(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::IdleTsc => getinfo_idle_tsc(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::Randomness => getinfo_randomness(caller_nr, proc_table, val_ptr, val_len),
-        GetInfoRequest::RandomnessBin => getinfo_randomness_bin(caller_nr, proc_table, val_len2_e, val_ptr, val_len),
-        GetInfoRequest::IrqHooks => getinfo_irq_hooks(caller_nr, proc_table, val_ptr, val_len),
-        GetInfoRequest::KMessages => crate::kmess::copy_snapshot_to_caller(caller_nr, proc_table, val_ptr, val_len),
-        GetInfoRequest::Image => getinfo_image(caller_nr, proc_table, val_ptr, val_len),
-        GetInfoRequest::MonParams => {
-            getinfo_mon_params(caller_nr, proc_table, val_ptr, val_len)
+        GetInfoRequest::RandomnessBin => {
+            getinfo_randomness_bin(caller_nr, proc_table, val_len2_e, val_ptr, val_len)
         }
+        GetInfoRequest::IrqHooks => getinfo_irq_hooks(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::KMessages => {
+            crate::kmess::copy_snapshot_to_caller(caller_nr, proc_table, val_ptr, val_len)
+        }
+        GetInfoRequest::Image => getinfo_image(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::MonParams => getinfo_mon_params(caller_nr, proc_table, val_ptr, val_len),
     }
 }
 
@@ -656,7 +668,12 @@ fn getinfo_whoami(
         .and_then(|pid| priv_table.get(pid))
         // C: do_getinfo.c:139 — `privflags = priv(caller)->s_flags` (u16
         // wire width); to_wire strips the kernel-only extension bits.
-        .map(|priv_| (priv_.flags.s_flags.to_wire() as i32, priv_.init.s_init_flags))
+        .map(|priv_| {
+            (
+                priv_.flags.s_flags.to_wire() as i32,
+                priv_.init.s_init_flags,
+            )
+        })
         .unwrap_or((0, 0));
 
     let mut name_buf = [0u8; 44];
@@ -759,7 +776,8 @@ fn getinfo_proc(
     // release the proc_table borrow before data_copy_vmcheck borrows
     // caller (caller and proc_table are separate parameters, but
     // building the owned snapshot first keeps the borrow flow clean).
-    let info = proc_table.get(target_nr)
+    let info = proc_table
+        .get(target_nr)
         .map(ProcInfoStruct::from_kprocess)
         .unwrap_or_default();
     copy_struct_to_caller(caller_nr, proc_table, &info, val_ptr, val_len)
@@ -792,25 +810,27 @@ fn getinfo_proc_tab(
         .map(|c| c.p_seg.phys_root)
         .expect("getinfo: caller slot must exist");
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
     for i in 0..total {
         // Build the snapshot; the proc_table borrow ends here. The kernel
         // local is the copy SOURCE read directly by virtual address (the
         // `copy_struct_to_caller` SELF semantics — a stack address has no
         // DM-window phys translation).
-        let info = proc_table.get_by_index(i)
+        let info = proc_table
+            .get_by_index(i)
             .map(ProcInfoStruct::from_kprocess)
             .unwrap_or_default();
         // SAFETY: `&info` is a live kernel local of `elem_size` bytes.
-        let src =
-            unsafe { core::slice::from_raw_parts(&info as *const ProcInfoStruct as *const u8, elem_size) };
+        let src = unsafe {
+            core::slice::from_raw_parts(&info as *const ProcInfoStruct as *const u8, elem_size)
+        };
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(val_ptr + (i * elem_size) as u64),
@@ -851,23 +871,25 @@ fn getinfo_priv_tab(
         .map(|c| c.p_seg.phys_root)
         .expect("getinfo: caller slot must exist");
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
     for i in 0..total {
-        let info = priv_table.get(i as crate::kpriv::PrivId)
+        let info = priv_table
+            .get(i as crate::kpriv::PrivId)
             .map(PrivInfoStruct::from_kpriv)
             .unwrap_or_default();
         // Kernel-local source read directly by VA (copy_struct_to_caller
         // SELF semantics — same fix as getinfo_proc_tab).
         // SAFETY: `&info` is a live kernel local of `elem_size` bytes.
-        let src =
-            unsafe { core::slice::from_raw_parts(&info as *const PrivInfoStruct as *const u8, elem_size) };
+        let src = unsafe {
+            core::slice::from_raw_parts(&info as *const PrivInfoStruct as *const u8, elem_size)
+        };
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(val_ptr + (i * elem_size) as u64),
@@ -932,7 +954,8 @@ fn getinfo_priv(
     // Resolve process → priv_id → KPriv, then build a snapshot.
     // The chain releases each borrow before the next (priv_id is
     // Copy, so the proc_table borrow ends before priv_table is touched).
-    let info = proc_table.get(target_nr)
+    let info = proc_table
+        .get(target_nr)
         .and_then(|p| p.priv_id)
         .and_then(|pid| priv_table.get(pid))
         .map(PrivInfoStruct::from_kpriv)
@@ -991,14 +1014,14 @@ fn getinfo_regs(
         .map(|c| c.p_seg.phys_root)
         .expect("getinfo: caller slot must exist");
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
     let src = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(reg_kva),
@@ -1525,7 +1548,9 @@ pub fn dispatch_trace(
         // C returns OK directly (no data writeback for T_STOP).
         TraceRequest::Stop => {
             target.p_rts_flags.set(RtsFlagsBits::PROC_STOP);
-            target.p_misc_flags.clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::STEP);
+            target
+                .p_misc_flags
+                .clear(MiscFlagsBits::SC_TRACE | MiscFlagsBits::STEP);
             KcallResult::Ok(0)
         }
 
@@ -1574,37 +1599,55 @@ pub fn dispatch_trace(
 
         // C: do_trace.c:95-103 — T_GETINS / T_GETDATA:
         // COPYFROMPROC(tr_addr, &tr_data, sizeof(long)).
-        TraceRequest::GetIns | TraceRequest::GetData => {
-            trace_copy_word_from_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr)
-        }
+        TraceRequest::GetIns | TraceRequest::GetData => trace_copy_word_from_proc(
+            caller_nr,
+            proc_table,
+            msg,
+            target_endpoint,
+            target_cr3,
+            tr_addr,
+        ),
 
         // C: do_trace.c:126-134 — T_SETINS / T_SETDATA:
         // COPYTOPROC(tr_addr, &tr_data, sizeof(long)).
-        TraceRequest::SetIns | TraceRequest::SetData => {
-            trace_copy_word_to_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr, tr_data)
-        }
+        TraceRequest::SetIns | TraceRequest::SetData => trace_copy_word_to_proc(
+            caller_nr,
+            proc_table,
+            msg,
+            target_endpoint,
+            target_cr3,
+            tr_addr,
+            tr_data,
+        ),
 
         // C: do_trace.c:191-194 — T_READB_INS:
         // COPYFROMPROC(tr_addr, &ub, 1) — byte-level copy.
-        TraceRequest::ReadBIns => {
-            trace_copy_byte_from_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr)
-        }
+        TraceRequest::ReadBIns => trace_copy_byte_from_proc(
+            caller_nr,
+            proc_table,
+            msg,
+            target_endpoint,
+            target_cr3,
+            tr_addr,
+        ),
 
         // C: do_trace.c:196-200 — T_WRITEB_INS:
         // COPYTOPROC(tr_addr, &ub, 1) — byte-level copy.
-        TraceRequest::WriteBIns => {
-            trace_copy_byte_to_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr, tr_data)
-        }
+        TraceRequest::WriteBIns => trace_copy_byte_to_proc(
+            caller_nr,
+            proc_table,
+            msg,
+            target_endpoint,
+            target_cr3,
+            tr_addr,
+            tr_data,
+        ),
 
         // C: do_trace.c:105-124 — T_GETUSER: read from proc/priv struct.
-        TraceRequest::GetUser => {
-            trace_get_user(proc_table, priv_table, target_nr, msg, tr_addr)
-        }
+        TraceRequest::GetUser => trace_get_user(proc_table, priv_table, target_nr, msg, tr_addr),
 
         // C: do_trace.c:136-168 — T_SETUSER: write to p_reg (register area).
-        TraceRequest::SetUser => {
-            trace_set_user(proc_table, target_nr, msg, tr_addr, tr_data)
-        }
+        TraceRequest::SetUser => trace_set_user(proc_table, target_nr, msg, tr_addr, tr_data),
     }
 }
 
@@ -1630,7 +1673,11 @@ fn trace_copy_word_from_proc(
 ) -> KcallResult {
     let mut buf: u64 = 0;
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-        if ep == target_endpoint { Some(target_cr3) } else { None }
+        if ep == target_endpoint {
+            Some(target_cr3)
+        } else {
+            None
+        }
     };
     let src = AddressRef::Process {
         endpoint: target_endpoint,
@@ -1643,7 +1690,14 @@ fn trace_copy_word_from_proc(
         endpoint: target_endpoint,
         offset: VirBytes(&mut buf as *mut u64 as u64),
     };
-    match data_copy_vmcheck(caller_nr, proc_table, src, dst, TRACE_WORD_SIZE as usize, proc_cr3) {
+    match data_copy_vmcheck(
+        caller_nr,
+        proc_table,
+        src,
+        dst,
+        TRACE_WORD_SIZE as usize,
+        proc_cr3,
+    ) {
         CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
         CrossSpaceResult::Completed(Ok(())) => {
@@ -1657,7 +1711,8 @@ fn trace_copy_word_from_proc(
 ///
 /// C: do_trace.c:126-134 — `COPYTOPROC(tr_addr, &tr_data, sizeof(long))`.
 fn trace_copy_word_to_proc(
-    caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable,
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
     msg: &mut Message,
     target_endpoint: Endpoint,
     target_cr3: PhysBytes,
@@ -1666,7 +1721,11 @@ fn trace_copy_word_to_proc(
 ) -> KcallResult {
     let buf: u64 = tr_data as u64;
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-        if ep == target_endpoint { Some(target_cr3) } else { None }
+        if ep == target_endpoint {
+            Some(target_cr3)
+        } else {
+            None
+        }
     };
     // `buf` is a kernel-stack local; use AddressRef::Process instead (the
     // target CR3 maps the kernel higher half).
@@ -1678,7 +1737,14 @@ fn trace_copy_word_to_proc(
         endpoint: target_endpoint,
         offset: VirBytes(tr_addr),
     };
-    match data_copy_vmcheck(caller_nr, proc_table, src, dst, TRACE_WORD_SIZE as usize, proc_cr3) {
+    match data_copy_vmcheck(
+        caller_nr,
+        proc_table,
+        src,
+        dst,
+        TRACE_WORD_SIZE as usize,
+        proc_cr3,
+    ) {
         CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
         CrossSpaceResult::Completed(Ok(())) => {
@@ -1692,7 +1758,8 @@ fn trace_copy_word_to_proc(
 ///
 /// C: do_trace.c:191-194 — `COPYFROMPROC(tr_addr, &ub, 1)` — byte-level copy.
 fn trace_copy_byte_from_proc(
-    caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable,
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
     msg: &mut Message,
     target_endpoint: Endpoint,
     target_cr3: PhysBytes,
@@ -1700,7 +1767,11 @@ fn trace_copy_byte_from_proc(
 ) -> KcallResult {
     let mut buf: u8 = 0;
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-        if ep == target_endpoint { Some(target_cr3) } else { None }
+        if ep == target_endpoint {
+            Some(target_cr3)
+        } else {
+            None
+        }
     };
     let src = AddressRef::Process {
         endpoint: target_endpoint,
@@ -1727,7 +1798,8 @@ fn trace_copy_byte_from_proc(
 ///
 /// C: do_trace.c:196-200 — `COPYTOPROC(tr_addr, &ub, 1)` — byte-level copy.
 fn trace_copy_byte_to_proc(
-    caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable,
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
     msg: &mut Message,
     target_endpoint: Endpoint,
     target_cr3: PhysBytes,
@@ -1736,7 +1808,11 @@ fn trace_copy_byte_to_proc(
 ) -> KcallResult {
     let buf: u8 = tr_data as u8;
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-        if ep == target_endpoint { Some(target_cr3) } else { None }
+        if ep == target_endpoint {
+            Some(target_cr3)
+        } else {
+            None
+        }
     };
     // `buf` is a kernel-stack local; use AddressRef::Process instead (the
     // target CR3 maps the kernel higher half).
@@ -1778,7 +1854,8 @@ fn trace_get_user(
     }
     // C: do_trace.c:108-111 — read long from proc struct at offset.
     // Build a ProcInfoStruct snapshot, then read a u64 at the offset.
-    let proc_info = proc_table.get(target_nr)
+    let proc_info = proc_table
+        .get(target_nr)
         .map(ProcInfoStruct::from_kprocess)
         .unwrap_or_default();
     let proc_size = core::mem::size_of::<ProcInfoStruct>() as u64;
@@ -1789,7 +1866,8 @@ fn trace_get_user(
         // Align proc_size up to sizeof(long) boundary, then
         // subtract to get the priv-struct offset.
         let priv_offset = tr_addr - ((proc_size + TRACE_WORD_MASK) & !TRACE_WORD_MASK);
-        let priv_info = proc_table.get(target_nr)
+        let priv_info = proc_table
+            .get(target_nr)
             .and_then(|rp| rp.priv_id)
             .and_then(|pid| priv_table.get(pid))
             .map(PrivInfoStruct::from_kpriv)
@@ -1912,13 +1990,8 @@ pub fn dispatch_update(
     // and the dispatch table routed here on `m_type == SYS_UPDATE`,
     // which selects the `m_m1` member; reading m1i1/m1i2/m1i3 therefore
     // touches initialized bytes of the active variant.
-    let (src_e, dst_e, flags): (i32, i32, i32) = unsafe {
-        (
-            msg.m_u.m_m1.m1i1,
-            msg.m_u.m_m1.m1i2,
-            msg.m_u.m_m1.m1i3,
-        )
-    };
+    let (src_e, dst_e, flags): (i32, i32, i32) =
+        unsafe { (msg.m_u.m_m1.m1i1, msg.m_u.m_m1.m1i2, msg.m_u.m_m1.m1i3) };
 
     // C: do_update.c:55-57 — isokendpt(src_e, &src_p)
     let src_endpoint = Endpoint(src_e);
@@ -1928,7 +2001,8 @@ pub fn dispatch_update(
     };
 
     // C: do_update.c:60-62 — src must be SYS_PROC
-    let src_is_sys = proc_table.get(src_nr)
+    let src_is_sys = proc_table
+        .get(src_nr)
         .and_then(|p| p.priv_id)
         .and_then(|pid| priv_table.get(pid))
         .is_some_and(|kp| kp.is_sys_proc());
@@ -1944,7 +2018,8 @@ pub fn dispatch_update(
     };
 
     // C: do_update.c:70-72 — dst must be SYS_PROC
-    let dst_is_sys = proc_table.get(dst_nr)
+    let dst_is_sys = proc_table
+        .get(dst_nr)
         .and_then(|p| p.priv_id)
         .and_then(|pid| priv_table.get(pid))
         .is_some_and(|kp| kp.is_sys_proc());
@@ -2053,33 +2128,32 @@ pub fn dispatch_update(
     if (flags & SYS_UPD_ROLLBACK) != 0 {
         use crate::proc::RtsFlagsBits;
         // Read src's send target and SENDING flag before mutation.
-        let (sendto_e, is_sending) = proc_table.get(src_nr)
+        let (sendto_e, is_sending) = proc_table
+            .get(src_nr)
             .map(|p| (p.p_sendto_e, p.p_rts_flags.is_set(RtsFlagsBits::SENDING)))
             .unwrap_or((Endpoint::NONE, false));
         if is_sending {
             // Clear RTS_SENDING on src
             if let Some(src) = proc_table.get_mut(src_nr) {
                 src.p_rts_flags.clear(RtsFlagsBits::SENDING);
-                src.p_misc_flags.clear(crate::proc::MiscFlagsBits::SENDING_FROM_KERNEL);
+                src.p_misc_flags
+                    .clear(crate::proc::MiscFlagsBits::SENDING_FROM_KERNEL);
             }
             // Remove src from target's caller_q (intrusive chain walk —
             // C: abort_proc_ipc_send, do_update.c:226-234: walk the
             // target's p_caller_q chain via p_q_link, unlink src).
             if let Some(target_nr) = proc_table.endpoint_to_nr(sendto_e)
-                && let Some(target_idx) = crate::proc_table::nr_to_idx(target_nr) {
-                    crate::ipc::caller_q_remove_by_nr(
-                        proc_table.procs_slice_mut(),
-                        target_idx,
-                        src_nr,
-                    );
-                    // Clear src's own link (C: rp->p_q_link = NULL —
-                    // do_update.c:230; `caller_q_remove_by_nr` already
-                    // clears it when the unlink succeeds — this is the
-                    // not-found fallback, matching C's break-less exit).
-                    if let Some(src) = proc_table.get_mut(src_nr) {
-                        src.send_q_link = None;
-                    }
+                && let Some(target_idx) = crate::proc_table::nr_to_idx(target_nr)
+            {
+                crate::ipc::caller_q_remove_by_nr(proc_table.procs_slice_mut(), target_idx, src_nr);
+                // Clear src's own link (C: rp->p_q_link = NULL —
+                // do_update.c:230; `caller_q_remove_by_nr` already
+                // clears it when the unlink succeeds — this is the
+                // not-found fallback, matching C's break-less exit).
+                if let Some(src) = proc_table.get_mut(src_nr) {
+                    src.send_q_link = None;
                 }
+            }
         }
     }
 
@@ -2092,38 +2166,66 @@ pub fn dispatch_update(
     // from_rp->p_caller_q` — do_update.c:249). `send_q_link` is content —
     // it swaps with the rest of the slot (C's `*src_rp = orig_dst_proc`
     // copies the link; adjust_proc_slot does not restore it).
-    let src_endpoint = proc_table.get(src_nr).map(|p| p.p_endpoint).unwrap_or(Endpoint::NONE);
-    let dst_endpoint = proc_table.get(dst_nr).map(|p| p.p_endpoint).unwrap_or(Endpoint::NONE);
+    let src_endpoint = proc_table
+        .get(src_nr)
+        .map(|p| p.p_endpoint)
+        .unwrap_or(Endpoint::NONE);
+    let dst_endpoint = proc_table
+        .get(dst_nr)
+        .map(|p| p.p_endpoint)
+        .unwrap_or(Endpoint::NONE);
     let src_nr_val = src_nr;
     let dst_nr_val = dst_nr;
     let src_priv_id_val = src_priv_id;
     let dst_priv_id_val = dst_priv_id;
     let src_scheduler = proc_table.get(src_nr).and_then(|p| p.p_sched.scheduler);
     let dst_scheduler = proc_table.get(dst_nr).and_then(|p| p.p_sched.scheduler);
-    let src_cpu = proc_table.get(src_nr).map(|p| p.p_sched.cpu.load(Ordering::Relaxed)).unwrap_or(0);
-    let dst_cpu = proc_table.get(dst_nr).map(|p| p.p_sched.cpu.load(Ordering::Relaxed)).unwrap_or(0);
-    let src_cpu_mask = proc_table.get(src_nr).map(|p| p.p_sched.cpu_mask).unwrap_or_default();
-    let dst_cpu_mask = proc_table.get(dst_nr).map(|p| p.p_sched.cpu_mask).unwrap_or_default();
+    let src_cpu = proc_table
+        .get(src_nr)
+        .map(|p| p.p_sched.cpu.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    let dst_cpu = proc_table
+        .get(dst_nr)
+        .map(|p| p.p_sched.cpu.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    let src_cpu_mask = proc_table
+        .get(src_nr)
+        .map(|p| p.p_sched.cpu_mask)
+        .unwrap_or_default();
+    let dst_cpu_mask = proc_table
+        .get(dst_nr)
+        .map(|p| p.p_sched.cpu_mask)
+        .unwrap_or_default();
 
     // Save caller queue heads (slot identity fields — Copy).
-    let (src_q_head, src_q_tail) = proc_table.get(src_nr)
+    let (src_q_head, src_q_tail) = proc_table
+        .get(src_nr)
         .map(|p| (p.caller_q_head, p.caller_q_tail))
         .unwrap_or((None, None));
-    let (dst_q_head, dst_q_tail) = proc_table.get(dst_nr)
+    let (dst_q_head, dst_q_tail) = proc_table
+        .get(dst_nr)
         .map(|p| (p.caller_q_head, p.caller_q_tail))
         .unwrap_or((None, None));
 
     // Save priv identity fields
     let src_s_id = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.identity.s_id));
     let dst_s_id = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.identity.s_id));
-    let src_asyn_pending = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_asyn_pending));
-    let dst_asyn_pending = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_asyn_pending));
-    let src_notify_pending = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_notify_pending));
-    let dst_notify_pending = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_notify_pending));
-    let src_int_pending = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_int_pending));
-    let dst_int_pending = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_int_pending));
-    let src_sig_pending = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_sig_pending));
-    let dst_sig_pending = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_sig_pending));
+    let src_asyn_pending =
+        src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_asyn_pending));
+    let dst_asyn_pending =
+        dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_asyn_pending));
+    let src_notify_pending =
+        src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_notify_pending));
+    let dst_notify_pending =
+        dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_notify_pending));
+    let src_int_pending =
+        src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_int_pending));
+    let dst_int_pending =
+        dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_int_pending));
+    let src_sig_pending =
+        src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_sig_pending));
+    let dst_sig_pending =
+        dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_sig_pending));
     let src_diag_sig = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.mem.s_diag_sig));
     let dst_diag_sig = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.mem.s_diag_sig));
     // C: do_update.c:292 — s_alarm_timer is the 7th adjust_priv_slot field.
@@ -2133,8 +2235,10 @@ pub fn dispatch_update(
     // restoring per-slot makes every chain-referenced slot hold the same
     // timer it held before the swap — the service's armed alarm survives
     // the update and stays with its slot, exactly as in C.
-    let src_alarm_timer = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.runtime.s_alarm_timer));
-    let dst_alarm_timer = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.runtime.s_alarm_timer));
+    let src_alarm_timer =
+        src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.runtime.s_alarm_timer));
+    let dst_alarm_timer =
+        dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.runtime.s_alarm_timer));
 
     // C: do_update.c:129-133 — Swap slots.
     proc_table.swap_slots(src_nr, dst_nr);
@@ -2170,23 +2274,51 @@ pub fn dispatch_update(
     // Restore identity fields on priv slots.
     if let (Some(src_pid), Some(dst_pid)) = (src_priv_id, dst_priv_id) {
         if let Some(p) = priv_table.get_mut(src_pid) {
-            if let Some(v) = src_s_id { p.identity.s_id = v; }
-            if let Some(v) = src_asyn_pending { p.signals.s_asyn_pending = v; }
-            if let Some(v) = src_notify_pending { p.signals.s_notify_pending = v; }
-            if let Some(v) = src_int_pending { p.signals.s_int_pending = v; }
-            if let Some(v) = src_sig_pending { p.signals.s_sig_pending = v; }
-            if let Some(v) = src_diag_sig { p.mem.s_diag_sig = v; }
-            if let Some(v) = src_alarm_timer { p.runtime.s_alarm_timer = v; }
+            if let Some(v) = src_s_id {
+                p.identity.s_id = v;
+            }
+            if let Some(v) = src_asyn_pending {
+                p.signals.s_asyn_pending = v;
+            }
+            if let Some(v) = src_notify_pending {
+                p.signals.s_notify_pending = v;
+            }
+            if let Some(v) = src_int_pending {
+                p.signals.s_int_pending = v;
+            }
+            if let Some(v) = src_sig_pending {
+                p.signals.s_sig_pending = v;
+            }
+            if let Some(v) = src_diag_sig {
+                p.mem.s_diag_sig = v;
+            }
+            if let Some(v) = src_alarm_timer {
+                p.runtime.s_alarm_timer = v;
+            }
             p.identity.s_proc_nr = Some(src_nr_val);
         }
         if let Some(p) = priv_table.get_mut(dst_pid) {
-            if let Some(v) = dst_s_id { p.identity.s_id = v; }
-            if let Some(v) = dst_asyn_pending { p.signals.s_asyn_pending = v; }
-            if let Some(v) = dst_notify_pending { p.signals.s_notify_pending = v; }
-            if let Some(v) = dst_int_pending { p.signals.s_int_pending = v; }
-            if let Some(v) = dst_sig_pending { p.signals.s_sig_pending = v; }
-            if let Some(v) = dst_diag_sig { p.mem.s_diag_sig = v; }
-            if let Some(v) = dst_alarm_timer { p.runtime.s_alarm_timer = v; }
+            if let Some(v) = dst_s_id {
+                p.identity.s_id = v;
+            }
+            if let Some(v) = dst_asyn_pending {
+                p.signals.s_asyn_pending = v;
+            }
+            if let Some(v) = dst_notify_pending {
+                p.signals.s_notify_pending = v;
+            }
+            if let Some(v) = dst_int_pending {
+                p.signals.s_int_pending = v;
+            }
+            if let Some(v) = dst_sig_pending {
+                p.signals.s_sig_pending = v;
+            }
+            if let Some(v) = dst_diag_sig {
+                p.mem.s_diag_sig = v;
+            }
+            if let Some(v) = dst_alarm_timer {
+                p.runtime.s_alarm_timer = v;
+            }
             p.identity.s_proc_nr = Some(dst_nr_val);
         }
     }
@@ -2336,8 +2468,7 @@ pub const SAMPLE_BUFFER_SIZE: usize = 256 * 1024;
 // to `SyncUnsafeCell` wrappers (access shape: `get()` replaces
 // `addr_of_mut!`). Imported here.
 use crate::globals::{
-    SPROF_DATA_ADDR, SPROF_EP, SPROF_INFO, SPROF_INFO_ADDR, SPROF_MEM_SIZE,
-    SPROF_SAMPLE_BUFFER,
+    SPROF_DATA_ADDR, SPROF_EP, SPROF_INFO, SPROF_INFO_ADDR, SPROF_MEM_SIZE, SPROF_SAMPLE_BUFFER,
 };
 
 /// Dispatch SYS_SPROF (statistical profiling).
@@ -2413,7 +2544,9 @@ pub fn dispatch_profile(
             // C: do_sprofile.c:64-68 — reset counters.
             // SAFETY: BKL is held; SPROFILING was just set to true (exclusive access).
             let info = SPROF_INFO.get();
-            unsafe { *info = SprofInfo::default(); }
+            unsafe {
+                *info = SprofInfo::default();
+            }
 
             // C: do_sprofile.c:75-82 — intr-specific initialization.
             //   PROF_RTC → init_profile_clock(freq)
@@ -2494,9 +2627,9 @@ pub fn dispatch_profile(
 
             // Capture caller's CR3 for the proc_cr3 closure.
             let caller_cr3 = proc_table
-        .get(caller_nr)
-        .map(|c| c.p_seg.phys_root)
-        .expect("getinfo: caller slot must exist");
+                .get(caller_nr)
+                .map(|c| c.p_seg.phys_root)
+                .expect("getinfo: caller slot must exist");
 
             // Copy 1: sprof_info struct → user space.
             //
@@ -2509,7 +2642,11 @@ pub fn dispatch_profile(
             // maps the kernel higher half).
             let info_src_kva = SPROF_INFO.get() as u64;
             let info_proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-                if ep == sprof_ep { Some(caller_cr3) } else { None }
+                if ep == sprof_ep {
+                    Some(caller_cr3)
+                } else {
+                    None
+                }
             };
             let info_src = crate::vm::AddressRef::Process {
                 endpoint: sprof_ep,
@@ -2520,7 +2657,8 @@ pub fn dispatch_profile(
                 offset: minix_types::VirBytes(info_addr),
             };
             match data_copy_vmcheck(
-                caller_nr, proc_table,
+                caller_nr,
+                proc_table,
                 info_src,
                 info_dst,
                 core::mem::size_of::<SprofInfo>(),
@@ -2540,7 +2678,11 @@ pub fn dispatch_profile(
                 // higher half).
                 let buf_src_kva = SPROF_SAMPLE_BUFFER.get() as u64;
                 let buf_proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-                    if ep == sprof_ep { Some(caller_cr3) } else { None }
+                    if ep == sprof_ep {
+                        Some(caller_cr3)
+                    } else {
+                        None
+                    }
                 };
                 let buf_src = crate::vm::AddressRef::Process {
                     endpoint: sprof_ep,
@@ -2551,14 +2693,17 @@ pub fn dispatch_profile(
                     offset: minix_types::VirBytes(data_addr),
                 };
                 match data_copy_vmcheck(
-                    caller_nr, proc_table,
+                    caller_nr,
+                    proc_table,
                     buf_src,
                     buf_dst,
                     mem_used,
                     buf_proc_cr3,
                 ) {
                     crate::vm::CrossSpaceResult::Completed(Ok(())) => {}
-                    crate::vm::CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+                    crate::vm::CrossSpaceResult::Completed(Err(_)) => {
+                        return KcallResult::Ok(EFAULT);
+                    }
                     crate::vm::CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
                 }
             }
@@ -2650,22 +2795,24 @@ pub struct SprofProc {
 /// Caller must hold the BKL (interrupt context under BKL). `SPROF_INFO`
 /// and `SPROF_SAMPLE_BUFFER` are `static mut` accessed only under BKL via
 /// `addr_of_mut!` (Rust 2024 `static_mut_refs` compliance, P1-5).
-unsafe fn sprof_save_sample(endpoint: i32, pc: u64) { unsafe {
-    // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
-    let info = SPROF_INFO.get();
-    let offset = (*info).mem_used as usize;
-    if offset + core::mem::size_of::<SprofSample>() > SAMPLE_BUFFER_SIZE {
-        // Buffer overflow — should have been caught by the space check in
-        // profile_sample. Mark as full to prevent further writes.
-        (*info).mem_used = -1;
-        return;
+unsafe fn sprof_save_sample(endpoint: i32, pc: u64) {
+    unsafe {
+        // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
+        let info = SPROF_INFO.get();
+        let offset = (*info).mem_used as usize;
+        if offset + core::mem::size_of::<SprofSample>() > SAMPLE_BUFFER_SIZE {
+            // Buffer overflow — should have been caught by the space check in
+            // profile_sample. Mark as full to prevent further writes.
+            (*info).mem_used = -1;
+            return;
+        }
+        let sample = SprofSample { proc: endpoint, pc };
+        let base = SPROF_SAMPLE_BUFFER.get() as *mut u8;
+        let dst = base.add(offset) as *mut SprofSample;
+        core::ptr::write_unaligned(dst, sample);
+        (*info).mem_used += core::mem::size_of::<SprofSample>() as i32;
     }
-    let sample = SprofSample { proc: endpoint, pc };
-    let base = SPROF_SAMPLE_BUFFER.get() as *mut u8;
-    let dst = base.add(offset) as *mut SprofSample;
-    core::ptr::write_unaligned(dst, sample);
-    (*info).mem_used += core::mem::size_of::<SprofSample>() as i32;
-}}
+}
 
 /// Save a process record (endpoint + name) to the sample buffer.
 ///
@@ -2679,23 +2826,25 @@ unsafe fn sprof_save_sample(endpoint: i32, pc: u64) { unsafe {
 ///
 /// Caller must hold the BKL. `SPROF_INFO` and `SPROF_SAMPLE_BUFFER` are
 /// `static mut` accessed only under BKL via `addr_of_mut!` (P1-5).
-unsafe fn sprof_save_proc(proc: &KProcess) { unsafe {
-    // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
-    let info = SPROF_INFO.get();
-    let offset = (*info).mem_used as usize;
-    if offset + core::mem::size_of::<SprofProc>() > SAMPLE_BUFFER_SIZE {
-        (*info).mem_used = -1;
-        return;
+unsafe fn sprof_save_proc(proc: &KProcess) {
+    unsafe {
+        // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
+        let info = SPROF_INFO.get();
+        let offset = (*info).mem_used as usize;
+        if offset + core::mem::size_of::<SprofProc>() > SAMPLE_BUFFER_SIZE {
+            (*info).mem_used = -1;
+            return;
+        }
+        let record = SprofProc {
+            proc: proc.p_endpoint.get(),
+            name: *proc.p_name.as_bytes(),
+        };
+        let base = SPROF_SAMPLE_BUFFER.get() as *mut u8;
+        let dst = base.add(offset) as *mut SprofProc;
+        core::ptr::write_unaligned(dst, record);
+        (*info).mem_used += core::mem::size_of::<SprofProc>() as i32;
     }
-    let record = SprofProc {
-        proc: proc.p_endpoint.get(),
-        name: *proc.p_name.as_bytes(),
-    };
-    let base = SPROF_SAMPLE_BUFFER.get() as *mut u8;
-    let dst = base.add(offset) as *mut SprofProc;
-    core::ptr::write_unaligned(dst, record);
-    (*info).mem_used += core::mem::size_of::<SprofProc>() as i32;
-}}
+}
 
 /// Collect a profiling sample for the current process.
 ///
@@ -2714,61 +2863,61 @@ unsafe fn sprof_save_proc(proc: &KProcess) { unsafe {
 /// # Safety
 ///
 /// Caller must hold the BKL. `SPROF_INFO` accessed via `addr_of_mut!` (P1-5).
-pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable) { unsafe {
-    // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
-    let info = SPROF_INFO.get();
+pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable) {
+    unsafe {
+        // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
+        let info = SPROF_INFO.get();
 
-    // C: profile.c:80-81 — are we profiling, and not full?
-    if !SPROFILING.load(Ordering::Acquire) || (*info).mem_used == -1 {
-        return;
-    }
-
-    // C: profile.c:84-89 — check if enough memory available before writing.
-    //
-    // C code checks: mem_used + sizeof(sprof_info) + 2*sizeof(sprof_sample)
-    //                + 2*sizeof(sprof_sample) > sprof_mem_size
-    //
-    // NOTE: C has a typo — the second `2*sizeof(struct sprof_sample)` should
-    // be `2*sizeof(struct sprof_proc)`. We replicate C's exact check for
-    // semantic alignment, even though it's slightly less conservative than
-    // intended (sizeof(sprof_sample) < sizeof(sprof_proc) on all platforms).
-    let space_needed = (*info).mem_used as usize
-        + core::mem::size_of::<SprofInfo>()
-        + 2 * core::mem::size_of::<SprofSample>()
-        + 2 * core::mem::size_of::<SprofSample>();
-    let mem_size = SPROF_MEM_SIZE.load(Ordering::Relaxed);
-    if space_needed > mem_size {
-        (*info).mem_used = -1;
-        return;
-    }
-
-    // C: profile.c:92-107 — classify the sample.
-    let endpoint = proc.p_endpoint.get();
-
-    if endpoint == Endpoint::IDLE.get() {
-        // C: profile.c:93 — idle sample.
-        (*info).idle_samples += 1;
-    } else if endpoint == Endpoint::KERNEL.get()
-        || (is_sys_proc_runnable(proc, priv_table))
-    {
-        // C: profile.c:94-103 — runnable system process.
-        //
-        // Save proc record if this is the first time we see it
-        // (gated by MF_SPROF_SEEN, matching C's p_misc_flags check).
-        if !proc.p_misc_flags.is_set(MiscFlagsBits::SPROF_SEEN) {
-            proc.p_misc_flags.set(MiscFlagsBits::SPROF_SEEN);
-            sprof_save_proc(proc);
+        // C: profile.c:80-81 — are we profiling, and not full?
+        if !SPROFILING.load(Ordering::Acquire) || (*info).mem_used == -1 {
+            return;
         }
-        sprof_save_sample(endpoint, pc);
-        (*info).system_samples += 1;
-    } else {
-        // C: profile.c:106 — user process.
-        (*info).user_samples += 1;
-    }
 
-    // C: profile.c:109 — total samples (always, unless early return).
-    (*info).total_samples += 1;
-}}
+        // C: profile.c:84-89 — check if enough memory available before writing.
+        //
+        // C code checks: mem_used + sizeof(sprof_info) + 2*sizeof(sprof_sample)
+        //                + 2*sizeof(sprof_sample) > sprof_mem_size
+        //
+        // NOTE: C has a typo — the second `2*sizeof(struct sprof_sample)` should
+        // be `2*sizeof(struct sprof_proc)`. We replicate C's exact check for
+        // semantic alignment, even though it's slightly less conservative than
+        // intended (sizeof(sprof_sample) < sizeof(sprof_proc) on all platforms).
+        let space_needed = (*info).mem_used as usize
+            + core::mem::size_of::<SprofInfo>()
+            + 2 * core::mem::size_of::<SprofSample>()
+            + 2 * core::mem::size_of::<SprofSample>();
+        let mem_size = SPROF_MEM_SIZE.load(Ordering::Relaxed);
+        if space_needed > mem_size {
+            (*info).mem_used = -1;
+            return;
+        }
+
+        // C: profile.c:92-107 — classify the sample.
+        let endpoint = proc.p_endpoint.get();
+
+        if endpoint == Endpoint::IDLE.get() {
+            // C: profile.c:93 — idle sample.
+            (*info).idle_samples += 1;
+        } else if endpoint == Endpoint::KERNEL.get() || (is_sys_proc_runnable(proc, priv_table)) {
+            // C: profile.c:94-103 — runnable system process.
+            //
+            // Save proc record if this is the first time we see it
+            // (gated by MF_SPROF_SEEN, matching C's p_misc_flags check).
+            if !proc.p_misc_flags.is_set(MiscFlagsBits::SPROF_SEEN) {
+                proc.p_misc_flags.set(MiscFlagsBits::SPROF_SEEN);
+                sprof_save_proc(proc);
+            }
+            sprof_save_sample(endpoint, pc);
+            (*info).system_samples += 1;
+        } else {
+            // C: profile.c:106 — user process.
+            (*info).user_samples += 1;
+        }
+
+        // C: profile.c:109 — total samples (always, unless early return).
+        (*info).total_samples += 1;
+    }
+}
 
 /// Check if a process is a runnable system process.
 ///
@@ -2814,14 +2963,12 @@ fn is_sys_proc_runnable(proc: &KProcess, priv_table: &PrivTable) -> bool {
 /// `dispatch_hardware_irq` does not pass the saved PC, so the trap entry
 /// must call this handler directly with the PC extracted from the trap
 /// frame before falling through to the generic IRQ dispatch.
-pub unsafe fn profile_clock_handler(
-    proc: &KProcess,
-    pc: u64,
-    priv_table: &PrivTable,
-) { unsafe {
-    profile_sample(proc, pc, priv_table);
-    crate::clock::ack_profile_clock();
-}}
+pub unsafe fn profile_clock_handler(proc: &KProcess, pc: u64, priv_table: &PrivTable) {
+    unsafe {
+        profile_sample(proc, pc, priv_table);
+        crate::clock::ack_profile_clock();
+    }
+}
 
 // ── Profile clock IRQ wiring (C profile.c:22-49) ─────────────────────────
 //
@@ -2917,8 +3064,8 @@ mod tests {
         assert_eq!(GetInfoRequest::try_from(25), Ok(GetInfoRequest::CpuTicks));
         // 7 = GET_KMESSAGES (the new arm in chapter 04 §4.1) → Ok(KMessages).
         assert_eq!(GetInfoRequest::try_from(7), Ok(GetInfoRequest::KMessages));
-        assert_eq!(GetInfoRequest::try_from(9), Err(()));   // GET_KADDRESSES (not handled)
-        assert_eq!(GetInfoRequest::try_from(10), Err(()));  // GET_SCHEDINFO (not handled)
+        assert_eq!(GetInfoRequest::try_from(9), Err(())); // GET_KADDRESSES (not handled)
+        assert_eq!(GetInfoRequest::try_from(10), Err(())); // GET_SCHEDINFO (not handled)
         assert_eq!(GetInfoRequest::try_from(99), Err(()));
     }
 
@@ -2965,14 +3112,16 @@ mod tests {
     fn test_cpu_info_entry_from_x86_identity() {
         use minix_arch::cpu_identity::X86Identity;
 
-        let mk = |vendor| CpuInfoEntry::from(CpuIdentity::X86(X86Identity {
-            vendor,
-            family: 6,
-            model: 142,
-            stepping: 10,
-            feature_ecx: 0x7654_3210,
-            feature_edx: 0xFEBA_EBAD,
-        }));
+        let mk = |vendor| {
+            CpuInfoEntry::from(CpuIdentity::X86(X86Identity {
+                vendor,
+                family: 6,
+                model: 142,
+                stepping: 10,
+                feature_ecx: 0x7654_3210,
+                feature_edx: 0xFEBA_EBAD,
+            }))
+        };
 
         let intel = mk(X86Vendor::Intel);
         assert_eq!(intel.vendor, CPU_VENDOR_INTEL);
@@ -2992,7 +3141,11 @@ mod tests {
         use minix_arch::cpu_identity::{ArmIdentity, RiscvIdentity};
 
         let arm = CpuInfoEntry::from(CpuIdentity::Arm(ArmIdentity {
-            implementer: 0x41, variant: 0, arch: 0xF, part: 0xD08, revision: 3,
+            implementer: 0x41,
+            variant: 0,
+            arch: 0xF,
+            part: 0xD08,
+            revision: 3,
         }));
         assert_eq!(arm.vendor, CPU_VENDOR_UNKNOWN);
         assert_eq!(arm.family, 0);
@@ -3002,7 +3155,9 @@ mod tests {
         assert_eq!(arm.flags, [0, 0]);
 
         let riscv = CpuInfoEntry::from(CpuIdentity::Riscv(RiscvIdentity {
-            mvendorid: 0, marchid: 0x210, mimpid: 0x100,
+            mvendorid: 0,
+            marchid: 0x210,
+            mimpid: 0x100,
         }));
         assert_eq!(riscv.vendor, CPU_VENDOR_UNKNOWN);
         assert_eq!(riscv.family, 0);
@@ -3021,24 +3176,79 @@ mod tests {
         for &(name, nr) in crate::proc::KERNEL_TASKS.iter() {
             proc_table.get_mut(nr).unwrap().set_boot_name(name);
         }
-        for (i, name) in ["ds", "rs", "pm", "sched", "vfs", "memory", "tty",
-                          "mib", "vm", "pfs", "mfs", "init"].iter().enumerate() {
-            proc_table.get_mut(BOOT_MODULE_PROC_NRS[i]).unwrap().set_boot_name(name);
+        for (i, name) in [
+            "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
+        ]
+        .iter()
+        .enumerate()
+        {
+            proc_table
+                .get_mut(BOOT_MODULE_PROC_NRS[i])
+                .unwrap()
+                .set_boot_name(name);
         }
 
         let modules: [minix_boot::BootModule; NR_BOOT_MODULES] = [
-            minix_boot::BootModule { name: "ds",     start: minix_types::PhysBytes(0x10_0000), len: 0x1000 },
-            minix_boot::BootModule { name: "rs",     start: minix_types::PhysBytes(0x11_0000), len: 0x2000 },
-            minix_boot::BootModule { name: "pm",     start: minix_types::PhysBytes(0x12_0000), len: 0x3000 },
-            minix_boot::BootModule { name: "sched",  start: minix_types::PhysBytes(0x13_0000), len: 0x4000 },
-            minix_boot::BootModule { name: "vfs",    start: minix_types::PhysBytes(0x14_0000), len: 0x5000 },
-            minix_boot::BootModule { name: "memory", start: minix_types::PhysBytes(0x15_0000), len: 0x6000 },
-            minix_boot::BootModule { name: "tty",    start: minix_types::PhysBytes(0x16_0000), len: 0x7000 },
-            minix_boot::BootModule { name: "mib",    start: minix_types::PhysBytes(0x17_0000), len: 0x8000 },
-            minix_boot::BootModule { name: "vm",     start: minix_types::PhysBytes(0x18_0000), len: 0x9000 },
-            minix_boot::BootModule { name: "pfs",    start: minix_types::PhysBytes(0x19_0000), len: 0xA000 },
-            minix_boot::BootModule { name: "mfs",    start: minix_types::PhysBytes(0x1A_0000), len: 0xB000 },
-            minix_boot::BootModule { name: "init",   start: minix_types::PhysBytes(0x1B_0000), len: 0xC000 },
+            minix_boot::BootModule {
+                name: "ds",
+                start: minix_types::PhysBytes(0x10_0000),
+                len: 0x1000,
+            },
+            minix_boot::BootModule {
+                name: "rs",
+                start: minix_types::PhysBytes(0x11_0000),
+                len: 0x2000,
+            },
+            minix_boot::BootModule {
+                name: "pm",
+                start: minix_types::PhysBytes(0x12_0000),
+                len: 0x3000,
+            },
+            minix_boot::BootModule {
+                name: "sched",
+                start: minix_types::PhysBytes(0x13_0000),
+                len: 0x4000,
+            },
+            minix_boot::BootModule {
+                name: "vfs",
+                start: minix_types::PhysBytes(0x14_0000),
+                len: 0x5000,
+            },
+            minix_boot::BootModule {
+                name: "memory",
+                start: minix_types::PhysBytes(0x15_0000),
+                len: 0x6000,
+            },
+            minix_boot::BootModule {
+                name: "tty",
+                start: minix_types::PhysBytes(0x16_0000),
+                len: 0x7000,
+            },
+            minix_boot::BootModule {
+                name: "mib",
+                start: minix_types::PhysBytes(0x17_0000),
+                len: 0x8000,
+            },
+            minix_boot::BootModule {
+                name: "vm",
+                start: minix_types::PhysBytes(0x18_0000),
+                len: 0x9000,
+            },
+            minix_boot::BootModule {
+                name: "pfs",
+                start: minix_types::PhysBytes(0x19_0000),
+                len: 0xA000,
+            },
+            minix_boot::BootModule {
+                name: "mfs",
+                start: minix_types::PhysBytes(0x1A_0000),
+                len: 0xB000,
+            },
+            minix_boot::BootModule {
+                name: "init",
+                start: minix_types::PhysBytes(0x1B_0000),
+                len: 0xC000,
+            },
         ];
 
         let image = build_boot_image(&mut proc_table, &modules);
@@ -3065,10 +3275,10 @@ mod tests {
             assert_eq!(&image[idx].proc_name[..name_bytes.len()], name_bytes);
         }
         // Spot-check the non-contiguous entries (image order ≠ proc numbers).
-        assert_eq!(image[NR_TASKS + 0].proc_nr, 6);  // DS
-        assert_eq!(image[NR_TASKS + 1].proc_nr, 2);  // RS
-        assert_eq!(image[NR_TASKS + 2].proc_nr, 0);  // PM
-        assert_eq!(image[NR_TASKS + 8].proc_nr, 8);  // VM
+        assert_eq!(image[NR_TASKS + 0].proc_nr, 6); // DS
+        assert_eq!(image[NR_TASKS + 1].proc_nr, 2); // RS
+        assert_eq!(image[NR_TASKS + 2].proc_nr, 0); // PM
+        assert_eq!(image[NR_TASKS + 8].proc_nr, 8); // VM
         assert_eq!(image[NR_TASKS + 11].proc_nr, 11); // INIT
     }
 
@@ -3125,13 +3335,13 @@ mod tests {
     fn test_trace_request_try_from() {
         // C: ptrace.h:225-250 — T_* macro values
         assert_eq!(TraceRequest::try_from(-1), Ok(TraceRequest::Stop));
-        assert_eq!(TraceRequest::try_from(1), Ok(TraceRequest::GetIns));   // PT_READ_I
-        assert_eq!(TraceRequest::try_from(7), Ok(TraceRequest::Resume));   // PT_CONTINUE
+        assert_eq!(TraceRequest::try_from(1), Ok(TraceRequest::GetIns)); // PT_READ_I
+        assert_eq!(TraceRequest::try_from(7), Ok(TraceRequest::Resume)); // PT_CONTINUE
         assert_eq!(TraceRequest::try_from(104), Ok(TraceRequest::Step));
         assert_eq!(TraceRequest::try_from(14), Ok(TraceRequest::Syscall)); // PT_SYSCALL
         // PM-handled requests → Err (→ EINVAL in kernel dispatch)
-        assert_eq!(TraceRequest::try_from(0), Err(()));   // T_OK (PT_TRACE_ME) — PM handles
-        assert_eq!(TraceRequest::try_from(8), Err(()));   // T_EXIT (PT_KILL) — PM handles
+        assert_eq!(TraceRequest::try_from(0), Err(())); // T_OK (PT_TRACE_ME) — PM handles
+        assert_eq!(TraceRequest::try_from(8), Err(())); // T_EXIT (PT_KILL) — PM handles
         assert_eq!(TraceRequest::try_from(99), Err(()));
     }
 
@@ -3150,12 +3360,21 @@ mod tests {
     fn test_dispatch_trace_step_clears_proc_stop_and_sets_step_flag() {
         let mut proc_table = make_proc_table_with_user(0, 100);
         // Pre-set PROC_STOP on target.
-        proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::PROC_STOP);
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100; // target endpoint
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Step as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
         // Verify side effects.
         let target = proc_table.get(ProcNr(0)).unwrap();
@@ -3167,12 +3386,21 @@ mod tests {
     fn test_dispatch_trace_resume_clears_proc_stop() {
         // C: do_trace.c:174-177 — T_RESUME: clear RTS_P_STOP, write data=0.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::PROC_STOP);
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Resume as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(!target.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
@@ -3186,7 +3414,12 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Stop as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
@@ -3198,13 +3431,26 @@ mod tests {
     fn test_dispatch_trace_detach_clears_sc_active_and_proc_stop() {
         // C: do_trace.c:170-177 — T_DETACH: clear MF_SC_ACTIVE + RTS_P_STOP.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
-        proc_table.get_mut(ProcNr(0)).unwrap().p_misc_flags.set(MiscFlagsBits::SC_ACTIVE);
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::PROC_STOP);
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_misc_flags
+            .set(MiscFlagsBits::SC_ACTIVE);
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Detach as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(!target.p_misc_flags.is_set(MiscFlagsBits::SC_ACTIVE));
@@ -3215,12 +3461,21 @@ mod tests {
     fn test_dispatch_trace_syscall_sets_sc_trace_and_clears_proc_stop() {
         // C: do_trace.c:185-189 — T_SYSCALL: set MF_SC_TRACE + clear RTS_P_STOP.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::PROC_STOP);
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Syscall as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(target.p_misc_flags.is_set(MiscFlagsBits::SC_TRACE));
@@ -3237,7 +3492,12 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = 8; // T_EXIT = PT_KILL = 8
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3253,13 +3513,20 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetIns as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     // ── TRACE memory copy tests ──────────────────────────────────
@@ -3284,13 +3551,20 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetIns as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1001; // unaligned (1 byte off 8-byte boundary)
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3304,13 +3578,20 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetData as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1000; // aligned
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3324,13 +3605,20 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetIns as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1003; // unaligned
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3345,13 +3633,20 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetData as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1000; // aligned
         msg.m_u.m_lsys_krn_sys_trace.data = 0xDEAD_BEEF; // data to write
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3363,7 +3658,12 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x4; // unaligned
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -3376,7 +3676,12 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x2; // unaligned
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -3390,7 +3695,12 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 56; // rip offset
         msg.m_u.m_lsys_krn_sys_trace.data = 0xdead_beef;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(0), "writing rip should succeed");
     }
 
@@ -3407,7 +3717,12 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 8; // cs offset (protected)
         msg.m_u.m_lsys_krn_sys_trace.data = 0x10;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -3423,7 +3738,12 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0; // psw offset
         msg.m_u.m_lsys_krn_sys_trace.data = 0x0200; // IF (bit 9)
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(0), "writing psw should succeed");
     }
 
@@ -3434,7 +3754,12 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = 99; // out of range
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3445,7 +3770,12 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 9999; // not in proc table
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Step as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3464,7 +3794,12 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 50;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Step as i32;
-        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &crate::test_helpers::test_priv_table(),
+        );
         // ProcessTable::is_kernel(KERNEL=-1) returns true → EPERM.
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -3484,7 +3819,11 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = tr_addr as u64;
         let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
-        assert_eq!(result, KcallResult::Ok(0), "priv-struct read should succeed");
+        assert_eq!(
+            result,
+            KcallResult::Ok(0),
+            "priv-struct read should succeed"
+        );
         // The first field of PrivInfoStruct is s_proc_nr (i32). For slot 0
         // with assign_static(0), s_proc_nr should be 0.
         msg.debug_check_m_type_any(&[Syscall::Trace as i32]);
@@ -3519,7 +3858,10 @@ mod tests {
         src_endpoint: i32,
         dst_slot: usize,
         dst_endpoint: i32,
-    ) -> (crate::test_helpers::TestProcTable, crate::test_helpers::TestPrivTable) {
+    ) -> (
+        crate::test_helpers::TestProcTable,
+        crate::test_helpers::TestPrivTable,
+    ) {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         use crate::proc::RtsFlagsBits;
@@ -3535,7 +3877,9 @@ mod tests {
                 p.p_rts_flags.clear(RtsFlagsBits::SIG_PENDING);
                 p.p_rts_flags.clear(RtsFlagsBits::SENDING);
                 p.p_rts_flags.clear(RtsFlagsBits::RECEIVING);
-                let pid = priv_table.assign_static(ProcNr(slot_i32)).expect("static priv slot");
+                let pid = priv_table
+                    .assign_static(ProcNr(slot_i32))
+                    .expect("static priv slot");
                 if let Some(kpriv) = priv_table.get_mut(pid) {
                     kpriv.flags.s_flags = crate::capability::ProcessCapability::SYS_PROC;
                 }
@@ -3628,7 +3972,7 @@ mod tests {
         msg.m_u.m_m1.m1i2 = 200; // dst endpoint
         msg.m_u.m_m1.m1i3 = 0;
 
-        use crate::vm::{VmSuspendContext, VmSuspendType, VmSuspendState, VmCheckParams};
+        use crate::vm::{VmCheckParams, VmSuspendContext, VmSuspendState, VmSuspendType};
         use minix_types::VirBytes;
         // The process at dst slot (nr 1) is suspended in a VM request and
         // enqueued — pre-swap the chain anchors it at its own slot.
@@ -3659,13 +4003,22 @@ mod tests {
         // Post-swap the requesting process lives at the src slot (nr 0):
         // its VMREQUEST flag moved there with the content swap, and the
         // chain must now anchor THAT slot.
-        assert!(proc_table.get(ProcNr(0)).unwrap()
-            .p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
-            "VMREQUEST flag follows the process to the src slot");
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST),
+            "VMREQUEST flag follows the process to the src slot"
+        );
         let head = proc_table.vm_request_queue().head();
-        assert_eq!(head,
-            Some(ProcNr(crate::proc_table::nr_to_idx(ProcNr(0)).unwrap() as i32)),
-            "chain must be re-anchored to the slot now holding the process");
+        assert_eq!(
+            head,
+            Some(ProcNr(
+                crate::proc_table::nr_to_idx(ProcNr(0)).unwrap() as i32
+            )),
+            "chain must be re-anchored to the slot now holding the process"
+        );
         // The re-anchored entry still carries the pending request.
         assert!(proc_table.get(ProcNr(0)).unwrap().p_vm_suspend.is_some());
     }
@@ -3687,12 +4040,34 @@ mod tests {
         // restore would swap them and fail the assert).
         let src_pid = proc_table.get(ProcNr(0)).unwrap().priv_id.unwrap();
         let dst_pid = proc_table.get(ProcNr(1)).unwrap().priv_id.unwrap();
-        priv_table.get_mut(src_pid).unwrap().runtime.s_alarm_timer.exp_time = 1111;
-        priv_table.get_mut(src_pid).unwrap().runtime.s_alarm_timer.action =
-            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(100) });
-        priv_table.get_mut(dst_pid).unwrap().runtime.s_alarm_timer.exp_time = 2222;
-        priv_table.get_mut(dst_pid).unwrap().runtime.s_alarm_timer.action =
-            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(200) });
+        priv_table
+            .get_mut(src_pid)
+            .unwrap()
+            .runtime
+            .s_alarm_timer
+            .exp_time = 1111;
+        priv_table
+            .get_mut(src_pid)
+            .unwrap()
+            .runtime
+            .s_alarm_timer
+            .action = Some(crate::clock::TimerAction::NotifyAlarm {
+            endpoint: Endpoint(100),
+        });
+        priv_table
+            .get_mut(dst_pid)
+            .unwrap()
+            .runtime
+            .s_alarm_timer
+            .exp_time = 2222;
+        priv_table
+            .get_mut(dst_pid)
+            .unwrap()
+            .runtime
+            .s_alarm_timer
+            .action = Some(crate::clock::TimerAction::NotifyAlarm {
+            endpoint: Endpoint(200),
+        });
 
         let result = dispatch_update(ProcNr(0), &mut proc_table, &msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(0), "swap should succeed");
@@ -3701,11 +4076,19 @@ mod tests {
         let src_t = priv_table.get(src_pid).unwrap().runtime.s_alarm_timer;
         let dst_t = priv_table.get(dst_pid).unwrap().runtime.s_alarm_timer;
         assert_eq!(src_t.exp_time, 1111, "src slot alarm must stay at src slot");
-        assert_eq!(src_t.action,
-            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(100) }));
+        assert_eq!(
+            src_t.action,
+            Some(crate::clock::TimerAction::NotifyAlarm {
+                endpoint: Endpoint(100)
+            })
+        );
         assert_eq!(dst_t.exp_time, 2222, "dst slot alarm must stay at dst slot");
-        assert_eq!(dst_t.action,
-            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(200) }));
+        assert_eq!(
+            dst_t.action,
+            Some(crate::clock::TimerAction::NotifyAlarm {
+                endpoint: Endpoint(200)
+            })
+        );
     }
 
     #[test]
@@ -3782,16 +4165,24 @@ mod tests {
         // Set request = GET_PROC (11), val_len2_e = SELF (-1)
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Proc as i32;
         msg.m_u.m_m1.m1p3 = Endpoint::SELF.0 as u64; // val_len2_e = SELF
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         // Endpoint is valid (SELF replaced with caller's). data_copy_vmcheck
         // is now wired (was DEFERRED → ENOSYS). In mock mode the PTE walk
         // always misses, so the copy suspends → VmSuspend + RTS_VMREQUEST.
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3813,13 +4204,21 @@ mod tests {
         // Set request = GET_PROC (11), val_len2_e = valid endpoint
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Proc as i32;
         msg.m_u.m_m1.m1p3 = target_ep.0 as u64; // val_len2_e = valid endpoint
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3832,7 +4231,13 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Proc as i32;
         msg.m_u.m_m1.m1p3 = 9999u64; // val_len2_e = invalid
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3846,13 +4251,21 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::ProcTab as i32;
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3863,7 +4276,9 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let target_ep = Endpoint::from_generation_slot(1, 0);
-        let pid = priv_table.assign_static(ProcNr(0)).expect("static priv slot");
+        let pid = priv_table
+            .assign_static(ProcNr(0))
+            .expect("static priv slot");
         if let Some(target) = proc_table.get_mut(ProcNr(0)) {
             target.p_endpoint = target_ep;
             target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
@@ -3873,13 +4288,21 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Priv as i32;
         msg.m_u.m_m1.m1p3 = target_ep.0 as u64;
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3891,13 +4314,21 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::PrivTab as i32;
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3915,13 +4346,21 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Regs as i32;
         msg.m_u.m_m1.m1p3 = target_ep.0 as u64;
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::VmSuspend);
-        assert!(proc_table
-            .get(ProcNr(0))
-            .unwrap()
-            .p_rts_flags
-            .is_set(RtsFlagsBits::VMREQUEST));
+        assert!(
+            proc_table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMREQUEST)
+        );
     }
 
     #[test]
@@ -3934,7 +4373,13 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Regs as i32;
         msg.m_u.m_m1.m1p3 = 9999u64; // val_len2_e = invalid
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3949,56 +4394,62 @@ mod tests {
         // Set request = GET_PRIV (17), val_len2_e = invalid endpoint
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Priv as i32;
         msg.m_u.m_m1.m1p3 = 9999u64; // val_len2_e = invalid
-        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &priv_table,
+            &crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
     // ── SPROF input validation tests ──
 
     /// Test-only spinlock for SPROFILING state-machine tests.
-///
-/// SPROFILING is a process-wide static that is mutated by every
-/// `dispatch_profile` call. Cargo's test harness runs tests in parallel
-/// by default; without explicit synchronization, parallel sprof tests
-/// race on the static. We use a simple AtomicBool-based spin lock
-/// (no_std compatible) to serialize test-side setup/teardown.
-///
-/// # Why not just rely on `AtomicBool` for SPROFILING itself?
-///
-/// `SPROFILING: AtomicBool` ensures individual load/store atomicity,
-/// but cannot enforce "set → dispatch → assert" as a single test
-/// transaction. A second test running between our `store(true)` and
-/// our dispatch would observe `true` and possibly corrupt the
-/// assertion. The spin lock guarantees test isolation.
-#[cfg(test)]
-static SPROF_TEST_LOCK: AtomicBool = AtomicBool::new(false);
+    ///
+    /// SPROFILING is a process-wide static that is mutated by every
+    /// `dispatch_profile` call. Cargo's test harness runs tests in parallel
+    /// by default; without explicit synchronization, parallel sprof tests
+    /// race on the static. We use a simple AtomicBool-based spin lock
+    /// (no_std compatible) to serialize test-side setup/teardown.
+    ///
+    /// # Why not just rely on `AtomicBool` for SPROFILING itself?
+    ///
+    /// `SPROFILING: AtomicBool` ensures individual load/store atomicity,
+    /// but cannot enforce "set → dispatch → assert" as a single test
+    /// transaction. A second test running between our `store(true)` and
+    /// our dispatch would observe `true` and possibly corrupt the
+    /// assertion. The spin lock guarantees test isolation.
+    #[cfg(test)]
+    static SPROF_TEST_LOCK: AtomicBool = AtomicBool::new(false);
 
-/// Acquire the SPROF_TEST_LOCK spinlock and reset SPROFILING.
-///
-/// Returns the previous lock state (false=acquired). The caller must
-/// release the lock at the end of the test by calling
-/// `sprof_test_teardown`. This function busy-waits until the lock is
-/// acquired; tests run briefly so contention is rare in practice.
-#[cfg(test)]
-fn sprof_test_setup() -> bool {
-    while SPROF_TEST_LOCK
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        core::hint::spin_loop();
+    /// Acquire the SPROF_TEST_LOCK spinlock and reset SPROFILING.
+    ///
+    /// Returns the previous lock state (false=acquired). The caller must
+    /// release the lock at the end of the test by calling
+    /// `sprof_test_teardown`. This function busy-waits until the lock is
+    /// acquired; tests run briefly so contention is rare in practice.
+    #[cfg(test)]
+    fn sprof_test_setup() -> bool {
+        while SPROF_TEST_LOCK
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        SPROFILING.store(false, Ordering::Release);
+        true
     }
-    SPROFILING.store(false, Ordering::Release);
-    true
-}
 
-/// Release the SPROF_TEST_LOCK spinlock.
-#[cfg(test)]
-fn sprof_test_teardown() {
-    SPROFILING.store(false, Ordering::Release);
-    SPROF_TEST_LOCK.store(false, Ordering::Release);
-}
+    /// Release the SPROF_TEST_LOCK spinlock.
+    #[cfg(test)]
+    fn sprof_test_teardown() {
+        SPROFILING.store(false, Ordering::Release);
+        SPROF_TEST_LOCK.store(false, Ordering::Release);
+    }
 
-#[test]
+    #[test]
     fn test_sprof_rejects_unknown_action() {
         let _lock = sprof_test_setup();
         let mut proc_table = crate::test_helpers::test_proc_table();
@@ -4032,7 +4483,9 @@ fn sprof_test_teardown() {
         let target_ep = Endpoint::from_generation_slot(1, 0);
         if let Some(target) = proc_table.get_mut(ProcNr(0)) {
             target.p_endpoint = target_ep;
-            target.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+            target
+                .p_rts_flags
+                .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         }
 
         let mut msg = Message::default();
@@ -4052,7 +4505,9 @@ fn sprof_test_teardown() {
         let target_ep = Endpoint::from_generation_slot(1, 0);
         if let Some(target) = proc_table.get_mut(ProcNr(0)) {
             target.p_endpoint = target_ep;
-            target.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+            target
+                .p_rts_flags
+                .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         }
 
         let mut msg = Message::default();
@@ -4078,7 +4533,9 @@ fn sprof_test_teardown() {
         let target_ep = Endpoint::from_generation_slot(1, 0);
         if let Some(target) = proc_table.get_mut(ProcNr(0)) {
             target.p_endpoint = target_ep;
-            target.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+            target
+                .p_rts_flags
+                .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
             // Simulate a flag left set by a previous profiling run.
             target.p_misc_flags.set(MiscFlagsBits::SPROF_SEEN);
         }
@@ -4132,7 +4589,9 @@ fn sprof_test_teardown() {
         SPROF_DATA_ADDR.store(0x2000, Ordering::Relaxed);
         // SAFETY: BKL is held (simulated by test lock); SPROF_INFO accessed via addr_of_mut!.
         let info = SPROF_INFO.get();
-        unsafe { *info = SprofInfo::default(); }
+        unsafe {
+            *info = SprofInfo::default();
+        }
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
@@ -4217,7 +4676,9 @@ fn sprof_test_teardown() {
         SPROF_MEM_SIZE.store(mem_size, Ordering::Relaxed);
         // SAFETY: BKL is held (simulated by test lock); SPROF_INFO accessed via addr_of_mut!.
         let info = SPROF_INFO.get();
-        unsafe { *info = SprofInfo::default(); }
+        unsafe {
+            *info = SprofInfo::default();
+        }
         // Return a guard that calls sprof_test_teardown on drop.
         struct ProfileSampleGuard;
         impl Drop for ProfileSampleGuard {
@@ -4225,7 +4686,9 @@ fn sprof_test_teardown() {
                 SPROF_MEM_SIZE.store(0, Ordering::Relaxed);
                 // SAFETY: test lock is still held (sprof_test_setup guard).
                 let info = SPROF_INFO.get();
-                unsafe { *info = SprofInfo::default(); }
+                unsafe {
+                    *info = SprofInfo::default();
+                }
                 SPROFILING.store(false, Ordering::Release);
                 sprof_test_teardown();
             }
@@ -4259,7 +4722,9 @@ fn sprof_test_teardown() {
         let _guard = profile_sample_setup(SAMPLE_BUFFER_SIZE);
         // SAFETY: BKL is held; SPROF_INFO accessed via addr_of_mut!.
         let info = SPROF_INFO.get();
-        unsafe { (*info).mem_used = -1; }
+        unsafe {
+            (*info).mem_used = -1;
+        }
         let priv_table = crate::test_helpers::test_priv_table();
         let proc = KProcess::new(ProcNr(0), Endpoint(100));
         // SAFETY: BKL is held.
@@ -4385,8 +4850,7 @@ fn sprof_test_teardown() {
         assert_eq!(info.system_samples, 2);
         assert_eq!(info.total_samples, 2);
         // 1 SprofProc + 2 SprofSample.
-        let expected = core::mem::size_of::<SprofProc>()
-            + 2 * core::mem::size_of::<SprofSample>();
+        let expected = core::mem::size_of::<SprofProc>() + 2 * core::mem::size_of::<SprofSample>();
         assert_eq!(info.mem_used as usize, expected);
     }
 

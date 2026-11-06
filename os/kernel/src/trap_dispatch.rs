@@ -57,24 +57,15 @@ use minix_types::VirBytes;
 /// and the switch-after-pop resched thunk.
 pub(crate) fn register_current_arch() {
     #[cfg(target_arch = "x86_64")]
-    minix_arch::register_trap_dispatchers(
-        x86_trap_dispatch_body,
-        x86_syscall_dispatch_body,
-    );
+    minix_arch::register_trap_dispatchers(x86_trap_dispatch_body, x86_syscall_dispatch_body);
     #[cfg(target_arch = "riscv64")]
     {
-        minix_arch::register_trap_dispatchers(
-            riscv64_kernel_body,
-            riscv64_user_body,
-        );
+        minix_arch::register_trap_dispatchers(riscv64_kernel_body, riscv64_user_body);
         minix_arch::register_resched_entry(riscv64_resched_thunk);
     }
     #[cfg(target_arch = "aarch64")]
     {
-        minix_arch::register_trap_dispatchers(
-            aarch64_kernel_body,
-            aarch64_user_body,
-        );
+        minix_arch::register_trap_dispatchers(aarch64_kernel_body, aarch64_user_body);
         minix_arch::register_resched_entry(aarch64_resched_thunk);
     }
 }
@@ -160,10 +151,7 @@ unsafe fn save_irq_frame_to_context(frame: &TrapFrame) {
 /// fields); this function and its call sites serve x86_64 evidence work and
 /// are compiled under an architecture gate.
 #[cfg(target_arch = "x86_64")]
-fn mirror_irq_frame_into_proc(
-    frame: &TrapFrame,
-    proc: &mut crate::proc::KProcess,
-) -> bool {
+fn mirror_irq_frame_into_proc(frame: &TrapFrame, proc: &mut crate::proc::KProcess) -> bool {
     if frame.cs & 3 != 3 {
         // kernel re-entry: the frame holds kernel registers; the process's
         // user context was already saved in full by its own trap entry.
@@ -309,15 +297,10 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 // Every 1000 ticks, print a marker (count + current ep) — to
                 // pin down the exact event of timer death (align logs from
                 // before and after the death point).
-                if tick % 1000 == 0
-                    && PMST_K.fetch_add(1, AtomicOrd::Relaxed) < 20
-                {
+                if tick % 1000 == 0 && PMST_K.fetch_add(1, AtomicOrd::Relaxed) < 20 {
                     use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 }
-                if tick > 5000
-                    && nr.0 == 0
-                    && PMST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
-                {
+                if tick > 5000 && nr.0 == 0 && PMST_N.fetch_add(1, AtomicOrd::Relaxed) < 2 {
                     use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                     if let Some(p) = table.get(nr) {
                         crate::stacktrace::proc_stacktrace(p);
@@ -361,9 +344,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 static GTICK: AtomicU64 = AtomicU64::new(0);
                 static GTICK_K: AtomicUsize = AtomicUsize::new(0);
                 let g = GTICK.fetch_add(1, AtomicOrd::Relaxed);
-                if g % 1000 == 0
-                    && GTICK_K.fetch_add(1, AtomicOrd::Relaxed) < 20
-                {
+                if g % 1000 == 0 && GTICK_K.fetch_add(1, AtomicOrd::Relaxed) < 20 {
                     use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 }
             }
@@ -392,10 +373,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     static GST_TICK: AtomicU64 = AtomicU64::new(0);
                     static GST_N: AtomicUsize = AtomicUsize::new(0);
                     let g2 = GST_TICK.fetch_add(1, AtomicOrd::Relaxed);
-                    if g2 > 5000
-                        && nr.0 == 0
-                        && GST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
-                    {
+                    if g2 > 5000 && nr.0 == 0 && GST_N.fetch_add(1, AtomicOrd::Relaxed) < 2 {
                         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                         if let Some(p) = table.get(nr) {
                             crate::stacktrace::proc_stacktrace(p);
@@ -606,7 +584,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // CR2 = the real faulting address. rip only shows how far
             // execution got; deciding "which VA is unmapped" requires cr2.
             let cr2: u64;
-            unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
+            }
             Console::write_str(" cr2 ");
             Console::write_hex(cr2);
             Console::write_str(" err ");
@@ -867,8 +847,7 @@ fn forward_pagefault_to_vm(
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static ANCHOR: AtomicUsize = AtomicUsize::new(0);
-        if ANCHOR.fetch_add(1, AtomicOrd::Relaxed) == 0 {
-        }
+        if ANCHOR.fetch_add(1, AtomicOrd::Relaxed) == 0 {}
     }
     // Birth-server (p_nr 1,3,4,5,6,7,9,10,11) page-fault forwarding outcomes
     // fall into three classes — D = Path A direct delivery, B = Path B into
@@ -1021,10 +1000,9 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // delivered to every birth-time kerninfo query on real machine
     // (the first real-machine birth through this
     // gate).
-    let is_bodyless =
-        is_senda
-            || call_nr == (crate::ipc::IpcCall::KernInfo as i32)
-            || call_nr == (crate::ipc::IpcCall::Notify as i32);
+    let is_bodyless = is_senda
+        || call_nr == (crate::ipc::IpcCall::KernInfo as i32)
+        || call_nr == (crate::ipc::IpcCall::Notify as i32);
     {
         let caller = table
             .get_mut(cur_nr)
@@ -1083,8 +1061,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static INIT33: AtomicUsize = AtomicUsize::new(0);
-            if INIT33.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-            }
+            if INIT33.fetch_add(1, AtomicOrd::Relaxed) < 48 {}
         }
     }
 
@@ -1283,16 +1260,10 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                         .get(cur_nr)
                         .map(|p| {
                             (
-                                p.p_rts_flags
-                                    .is_set(crate::proc::RtsFlagsBits::VMREQUEST),
-                                p.p_vm_suspend
-                                    .as_ref()
-                                    .is_some_and(|c| {
-                                        matches!(
-                                            c.state,
-                                            crate::vm::VmSuspendState::Pending
-                                        )
-                                    }),
+                                p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::VMREQUEST),
+                                p.p_vm_suspend.as_ref().is_some_and(|c| {
+                                    matches!(c.state, crate::vm::VmSuspendState::Pending)
+                                }),
                             )
                         })
                         .unwrap_or((false, false));
@@ -1442,7 +1413,9 @@ fn riscv64_read_scause() -> u64 {
     let v: u64;
     // SAFETY: side-effect-free CSR read in S-mode; nomem/nostack per the
     // usual CSR-read contract.
-    unsafe { core::arch::asm!("csrr {}, scause", out(reg) v, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("csrr {}, scause", out(reg) v, options(nomem, nostack));
+    }
     v
 }
 
@@ -1450,7 +1423,9 @@ fn riscv64_read_scause() -> u64 {
 fn riscv64_read_stval() -> u64 {
     let v: u64;
     // SAFETY: side-effect-free CSR read in S-mode.
-    unsafe { core::arch::asm!("csrr {}, stval", out(reg) v, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("csrr {}, stval", out(reg) v, options(nomem, nostack));
+    }
     v
 }
 
@@ -1463,7 +1438,9 @@ fn riscv64_read_stval() -> u64 {
 /// `frame` points at the live kernel-leg frame (asm contract); the stub
 /// resumes via `sret` when this returns.
 #[cfg(target_arch = "riscv64")]
-pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+pub unsafe extern "C" fn riscv64_kernel_body(
+    frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
+) {
     let scause = riscv64_read_scause();
     if scause & RISCV64_SCAUSE_INTERRUPT != 0
         && scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER
@@ -1565,9 +1542,7 @@ pub unsafe extern "C" fn riscv64_user_body(
     // same FS==OFF gate as the old Linux riscv entry.S); a real illegal
     // instruction with FS!=Off falls back to the diagnostic panic (SIGILL
     // surface).
-    if scause == RISCV64_CAUSE_ILLEGAL_INSN
-        && riscv64_illegal_insn_is_fpu_trap(frame.sstatus)
-    {
+    if scause == RISCV64_CAUSE_ILLEGAL_INSN && riscv64_illegal_insn_is_fpu_trap(frame.sstatus) {
         return riscv64_fpu_trap_body(frame);
     }
     // The acting arm for the remaining user synchronous exceptions (C:
@@ -1587,12 +1562,15 @@ pub unsafe extern "C" fn riscv64_user_body(
         let ipc_bkl = crate::smp::bkl_lock_or_inherit();
         let smp = unsafe { crate::smp_state_boot_unchecked() };
         let cpu = crate::current_cpu_id();
-        let cur_nr = smp.cpu_local(cpu).and_then(|l| l.proc_ptr).unwrap_or_else(|| {
-            panic!(
-                "riscv64 user sync fault before scheduler bring-up (proc_ptr = \
+        let cur_nr = smp
+            .cpu_local(cpu)
+            .and_then(|l| l.proc_ptr)
+            .unwrap_or_else(|| {
+                panic!(
+                    "riscv64 user sync fault before scheduler bring-up (proc_ptr = \
                  None on cpu {cpu:?}) — wiring bug"
-            )
-        });
+                )
+            });
         let table = unsafe { crate::proc_table_boot_unchecked() };
         {
             let proc = table
@@ -1601,12 +1579,9 @@ pub unsafe extern "C" fn riscv64_user_body(
             minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
             proc.trap_style = TrapStyle::FullContext;
         }
-        crate::syscall_signal::cause_signal(
-            cur_nr,
-            sig,
-            table,
-            unsafe { crate::priv_table_boot_unchecked() },
-        );
+        crate::syscall_signal::cause_signal(cur_nr, sig, table, unsafe {
+            crate::priv_table_boot_unchecked()
+        });
         if ipc_bkl {
             crate::smp::bkl_unlock();
         }
@@ -1671,10 +1646,8 @@ pub(crate) fn riscv64_pf_error_code(scause: u64) -> u32 {
 /// process (same contract as [`riscv64_ipc_dispatch_body`]).
 /// Companion of the krewalk (rolled out after use): the ptroot/pte_pa of
 /// the last fill-root.
-pub static LAST_FILL_PTROOT: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+pub static LAST_FILL_PTROOT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn riscv64_pagefault_body(
@@ -1753,12 +1726,8 @@ unsafe fn riscv64_pagefault_body(
                 // does not contain the child vaddr (that tautology was
                 // corrected). Also read directly the current leaf slot
                 // pte_pa the fill-root just wrote.
-                let ptroot = LAST_FILL_PTROOT.load(
-                    core::sync::atomic::Ordering::Relaxed,
-                );
-                let leaf_pa = LAST_FILL_LEAF_PA.load(
-                    core::sync::atomic::Ordering::Relaxed,
-                );
+                let ptroot = LAST_FILL_PTROOT.load(core::sync::atomic::Ordering::Relaxed);
+                let leaf_pa = LAST_FILL_LEAF_PA.load(core::sync::atomic::Ordering::Relaxed);
                 Console::write_str("krewalk: ptroot=");
                 Console::write_hex(ptroot);
                 Console::write_str(" leaf_pa=");
@@ -1790,9 +1759,7 @@ unsafe fn riscv64_pagefault_body(
                         Console::write_str("krewalk: lvl out-of-range\n");
                         break;
                     }
-                    let v = unsafe {
-                        ((KDM + slot_pa) as *const u64).read_volatile()
-                    };
+                    let v = unsafe { ((KDM + slot_pa) as *const u64).read_volatile() };
                     Console::write_str("krewalk: l");
                     Console::write_str(["2", "1", "0"][lvl]);
                     Console::write_str(" slot_pa=");
@@ -1867,9 +1834,7 @@ unsafe fn riscv64_pagefault_body(
             // in RAM actually is during the loop".
             if ppn << 12 >= 0x8000_0000 {
                 const KDM: u64 = 0xFFFF_FFC0_4000_0000;
-                let kdm = |pa: u64| unsafe {
-                    ((KDM + pa) as *const u64).read_volatile()
-                };
+                let kdm = |pa: u64| unsafe { ((KDM + pa) as *const u64).read_volatile() };
                 let mut pa = ppn << 12;
                 let mut ok = true;
                 for sh in [30u64, 21, 12] {
@@ -1883,10 +1848,19 @@ unsafe fn riscv64_pagefault_body(
                     }
                     let v = kdm(slot);
                     P5Console::write_str(" l");
-                    P5Console::write_hex(if sh == 30 { 2 } else if sh == 21 { 1 } else { 0 });
+                    P5Console::write_hex(if sh == 30 {
+                        2
+                    } else if sh == 21 {
+                        1
+                    } else {
+                        0
+                    });
                     P5Console::write_str("=");
                     P5Console::write_hex(v);
-                    if v & 1 == 0 { ok = false; break; }
+                    if v & 1 == 0 {
+                        ok = false;
+                        break;
+                    }
                     pa = ((v >> 10) & 0xF_FFFF_F) << 12;
                 }
                 if ok {
@@ -2402,7 +2376,9 @@ unsafe fn riscv64_ipc_dispatch_body(
 /// cross-process `fpu_state` accesses — same discipline as the other
 /// trap bodies.
 #[cfg(target_arch = "riscv64")]
-unsafe fn riscv64_fpu_trap_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) -> u64 {
+unsafe fn riscv64_fpu_trap_body(
+    frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
+) -> u64 {
     use minix_arch::riscv64::trap_stub::PARK_NONE;
     let smp = unsafe { crate::smp_state_boot_unchecked() };
     let cpu = crate::current_cpu_id();
@@ -2718,12 +2694,15 @@ pub unsafe extern "C" fn aarch64_user_body(
         let ipc_bkl = crate::smp::bkl_lock_or_inherit();
         let smp = unsafe { crate::smp_state_boot_unchecked() };
         let cpu = crate::current_cpu_id();
-        let cur_nr = smp.cpu_local(cpu).and_then(|l| l.proc_ptr).unwrap_or_else(|| {
-            panic!(
-                "aarch64 user sync fault before scheduler bring-up (proc_ptr = \
+        let cur_nr = smp
+            .cpu_local(cpu)
+            .and_then(|l| l.proc_ptr)
+            .unwrap_or_else(|| {
+                panic!(
+                    "aarch64 user sync fault before scheduler bring-up (proc_ptr = \
                  None on cpu {cpu:?}) — wiring bug"
-            )
-        });
+                )
+            });
         let table = unsafe { crate::proc_table_boot_unchecked() };
         {
             let proc = table
@@ -2732,12 +2711,9 @@ pub unsafe extern "C" fn aarch64_user_body(
             minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
             proc.trap_style = TrapStyle::FullContext;
         }
-        crate::syscall_signal::cause_signal(
-            cur_nr,
-            sig,
-            table,
-            unsafe { crate::priv_table_boot_unchecked() },
-        );
+        crate::syscall_signal::cause_signal(cur_nr, sig, table, unsafe {
+            crate::priv_table_boot_unchecked()
+        });
         if ipc_bkl {
             crate::smp::bkl_unlock();
         }
@@ -2810,9 +2786,9 @@ pub(crate) enum AbortDisposition {
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) fn classify_abort_disposition(esr: u64) -> AbortDisposition {
     match esr & 0x3F {
-        0x00..=0x03 => AbortDisposition::Segv, // address size
+        0x00..=0x03 => AbortDisposition::Segv,      // address size
         0x04..=0x0F => AbortDisposition::Pagefault, // translation / access flag / permission
-        0x10..=0x13 => AbortDisposition::Sea, // synchronous external abort
+        0x10..=0x13 => AbortDisposition::Sea,       // synchronous external abort
         _ => AbortDisposition::Unknown,
     }
 }
@@ -2854,24 +2830,44 @@ mod abort_classification_tests {
         // translation levels 0-3 → Pagefault (INIT's §1.116 fault: 0x05 =
         // 0b000101, type=translation, level=1)
         for dfsc in [0x04u64, 0x05, 0x06, 0x07] {
-            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Pagefault, "{dfsc:#x}");
+            assert_eq!(
+                classify_abort_disposition(dfsc),
+                AbortDisposition::Pagefault,
+                "{dfsc:#x}"
+            );
         }
         // access flag (VM-resolvable: set AF) → Pagefault
         for dfsc in [0x08u64, 0x09, 0x0A, 0x0B] {
-            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Pagefault, "{dfsc:#x}");
+            assert_eq!(
+                classify_abort_disposition(dfsc),
+                AbortDisposition::Pagefault,
+                "{dfsc:#x}"
+            );
         }
         // permission levels 0-3 → Pagefault (VM read-only → write promote)
         for dfsc in [0x0Cu64, 0x0D, 0x0E, 0x0F] {
-            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Pagefault, "{dfsc:#x}");
+            assert_eq!(
+                classify_abort_disposition(dfsc),
+                AbortDisposition::Pagefault,
+                "{dfsc:#x}"
+            );
         }
         // address size levels 0-3 → Segv (geometry, not resolvable; a user
         // access must never panic the kernel)
         for dfsc in [0x00u64, 0x01, 0x02, 0x03] {
-            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Segv, "{dfsc:#x}");
+            assert_eq!(
+                classify_abort_disposition(dfsc),
+                AbortDisposition::Segv,
+                "{dfsc:#x}"
+            );
         }
         // synchronous external abort → Sea
         for dfsc in [0x10u64, 0x11, 0x12, 0x13] {
-            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Sea, "{dfsc:#x}");
+            assert_eq!(
+                classify_abort_disposition(dfsc),
+                AbortDisposition::Sea,
+                "{dfsc:#x}"
+            );
         }
     }
 
@@ -3174,7 +3170,9 @@ pub unsafe extern "C" fn aarch64_resched_thunk() -> ! {
 fn aarch64_read_esr() -> u64 {
     let v: u64;
     // SAFETY: side-effect-free system-register read at EL1.
-    unsafe { core::arch::asm!("mrs {}, esr_el1", out(reg) v, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, esr_el1", out(reg) v, options(nomem, nostack));
+    }
     v
 }
 
@@ -3494,10 +3492,7 @@ unsafe fn aarch64_fpu_trap_body() -> u64 {
 /// Console diagnostics + panic for unreached causes (riscv64 sibling
 /// carries the rationale).
 #[cfg(target_arch = "aarch64")]
-fn aarch64_diag_panic(
-    frame: &minix_arch::arm64::trap_stub::AArch64TrapFrame,
-    origin: &str,
-) -> ! {
+fn aarch64_diag_panic(frame: &minix_arch::arm64::trap_stub::AArch64TrapFrame, origin: &str) -> ! {
     use crate::kmess::{EarlyConsole, KernelConsole as Console};
     let far = aarch64_read_far();
     Console::write_str(origin);
@@ -3520,7 +3515,9 @@ fn aarch64_diag_panic(
 fn aarch64_read_far() -> u64 {
     let v: u64;
     // SAFETY: side-effect-free system-register read at EL1.
-    unsafe { core::arch::asm!("mrs {}, far_el1", out(reg) v, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, far_el1", out(reg) v, options(nomem, nostack));
+    }
     v
 }
 
@@ -3574,11 +3571,28 @@ mod tests {
         // (asm→thunk contract aside, the body's early-return arm) hosted,
         // including the BKL witness acquisition.
         let mut frame = TrapFrame {
-            rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
-            r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
             vector: 0xFF,
             errcode: 0,
-            rip: 0, cs: 0x08, rflags: 0, rsp: 0, ss: 0,
+            rip: 0,
+            cs: 0x08,
+            rflags: 0,
+            rsp: 0,
+            ss: 0,
         };
         // SAFETY: hosted test body; the frame is a local.
         unsafe { x86_trap_dispatch_body(&mut frame) };
@@ -3683,12 +3697,30 @@ mod tests {
         // in this kernel signal module; the mapping must hit the C
         // constants exactly (signal.h:55-63).
         use minix_arch::exception_dispatcher::ExceptionSignal;
-        assert_eq!(exception_signal_to_nr(ExceptionSignal::Fpe), crate::syscall_signal::SIGFPE);
-        assert_eq!(exception_signal_to_nr(ExceptionSignal::Ill), crate::syscall_signal::SIGILL);
-        assert_eq!(exception_signal_to_nr(ExceptionSignal::Segv), crate::syscall_signal::SIGSEGV);
-        assert_eq!(exception_signal_to_nr(ExceptionSignal::Bus), crate::syscall_signal::SIGBUS);
-        assert_eq!(exception_signal_to_nr(ExceptionSignal::Emt), crate::syscall_signal::SIGEMT);
-        assert_eq!(exception_signal_to_nr(ExceptionSignal::Trap), crate::syscall_signal::SIGTRAP);
+        assert_eq!(
+            exception_signal_to_nr(ExceptionSignal::Fpe),
+            crate::syscall_signal::SIGFPE
+        );
+        assert_eq!(
+            exception_signal_to_nr(ExceptionSignal::Ill),
+            crate::syscall_signal::SIGILL
+        );
+        assert_eq!(
+            exception_signal_to_nr(ExceptionSignal::Segv),
+            crate::syscall_signal::SIGSEGV
+        );
+        assert_eq!(
+            exception_signal_to_nr(ExceptionSignal::Bus),
+            crate::syscall_signal::SIGBUS
+        );
+        assert_eq!(
+            exception_signal_to_nr(ExceptionSignal::Emt),
+            crate::syscall_signal::SIGEMT
+        );
+        assert_eq!(
+            exception_signal_to_nr(ExceptionSignal::Trap),
+            crate::syscall_signal::SIGTRAP
+        );
     }
 
     /// Shape a test table with a faulting user proc (nr 0) and the VM
@@ -3717,7 +3749,7 @@ mod tests {
         // carrying RTS_PAGEFAULT (the scheduler must skip it until VM
         // resolves — exception.c:115 + proc.c:938-960).
         use crate::ipc::IpcOutcome;
-        use crate::proc::{proc_nr, RtsFlagsBits};
+        use crate::proc::{RtsFlagsBits, proc_nr};
         let (mut table, caller_nr) = pagefault_test_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
 
@@ -3726,7 +3758,10 @@ mod tests {
         {
             let p = table.get(caller_nr).unwrap();
             assert!(p.p_rts_flags.is_set(RtsFlagsBits::PAGEFAULT));
-            assert!(!p.is_runnable(), "faulting process must not stay schedulable");
+            assert!(
+                !p.is_runnable(),
+                "faulting process must not stay schedulable"
+            );
             assert!(p.p_rts_flags.is_set(RtsFlagsBits::SENDING));
             assert_eq!(p.p_sendto_e, minix_types::Endpoint(8));
             assert_eq!(p.p_fault_addr, Some(0x4000));
@@ -3746,7 +3781,7 @@ mod tests {
         // exception.c:118-122), and the faulting process is parked on
         // RTS_PAGEFAULT alone (delivery cleared nothing for the sender).
         use crate::ipc::IpcOutcome;
-        use crate::proc::{proc_nr, RtsFlagsBits};
+        use crate::proc::{RtsFlagsBits, proc_nr};
         let (mut table, caller_nr) = pagefault_test_table();
         {
             let vm = table.get_mut(proc_nr::VM_PROC_NR).unwrap();
@@ -3759,7 +3794,10 @@ mod tests {
         assert!(matches!(outcome, Ok(IpcOutcome::Delivered)));
         {
             let vm = table.get(proc_nr::VM_PROC_NR).unwrap();
-            assert!(vm.p_misc_flags.is_set(crate::proc::MiscFlagsBits::DELIVERMSG));
+            assert!(
+                vm.p_misc_flags
+                    .is_set(crate::proc::MiscFlagsBits::DELIVERMSG)
+            );
             assert_eq!(vm.p_delivermsg.m_type, minix_types::VM_PAGEFAULT as i32);
             assert_eq!(vm.p_delivermsg.m_source, minix_types::Endpoint(100));
             // SAFETY: m_vm_pagefault is the active arm — the kernel just

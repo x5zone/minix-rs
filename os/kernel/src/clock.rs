@@ -38,9 +38,9 @@
 //! - **D10**: explicit `billp: Option<&mut KProcess>` parameter for billable accounting
 //! - **D11**: standalone `vtimer_check()` deleted (tick-internal logic handles expiry)
 
+use crate::irq_manager::IrqHookContext;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use minix_plat::{IrqAction, IrqId, IrqNotifyId, IrqPolicy, PROFILE_CLOCK_IRQ};
-use crate::irq_manager::IrqHookContext;
 
 use minix_types::Endpoint;
 
@@ -62,8 +62,7 @@ use crate::globals::TSC_PER_MS;
 /// Calibrated ICR count for one local tick. Written once by
 /// `init_ap_local_timer` after the arch calibration, read by every tick's
 /// re-arm.
-static LOCAL_TICK_ICR: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+static LOCAL_TICK_ICR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// The calibrated one-shot reload count, for the idle-wake restart half.
 pub(crate) fn local_tick_icr() -> u32 {
@@ -103,8 +102,7 @@ pub static LOCAL_TICK_COUNT: [core::sync::atomic::AtomicU64; 16] = [
 /// with no scheduler loop reading it would be a second decision point
 /// racing the placeholder).
 pub fn local_tick(cpu: crate::proc::CpuId) {
-    LOCAL_TICK_COUNT[(cpu.raw() as usize) % 16]
-        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    LOCAL_TICK_COUNT[(cpu.raw() as usize) % 16].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     rearm_local_tick();
     #[cfg(not(test))]
     {
@@ -155,7 +153,11 @@ pub fn get_boottime(_section: &crate::smp::BklSection<'_>) -> u64 {
 /// to the default 1 GHz assumption.
 pub fn ms_to_cpu_time(ms: u32) -> u64 {
     let tsc_per_ms = TSC_PER_MS.load(Ordering::Acquire);
-    let factor = if tsc_per_ms == 0 { DEFAULT_TSC_PER_MS } else { tsc_per_ms };
+    let factor = if tsc_per_ms == 0 {
+        DEFAULT_TSC_PER_MS
+    } else {
+        tsc_per_ms
+    };
     ms as u64 * factor
 }
 
@@ -168,7 +170,11 @@ pub fn ms_to_cpu_time(ms: u32) -> u64 {
 /// message's `acnt_queue` field (proc.c:1876).
 pub fn cpu_time_to_ms(cycles: u64) -> u32 {
     let tsc_per_ms = TSC_PER_MS.load(Ordering::Acquire);
-    let factor = if tsc_per_ms == 0 { DEFAULT_TSC_PER_MS } else { tsc_per_ms };
+    let factor = if tsc_per_ms == 0 {
+        DEFAULT_TSC_PER_MS
+    } else {
+        tsc_per_ms
+    };
     // SAFETY: `cycles / factor` yields milliseconds. Used for
     // per-quantum `time_in_queue` accounting (notify_scheduler), which is bounded
     // well below u32::MAX (~49 days) in practice; no hard proof against overflow
@@ -190,7 +196,9 @@ pub fn current_cpuid() -> CpuId {
     // SAFETY: read-only access to bsp_cpu_id. If SMP_STATE isn't init yet
     // (test/early boot), fall back to the BSP.
     unsafe {
-        crate::try_smp_state().map(|s| s.bsp_cpu_id()).unwrap_or(CpuId::BSP)
+        crate::try_smp_state()
+            .map(|s| s.bsp_cpu_id())
+            .unwrap_or(CpuId::BSP)
     }
 }
 
@@ -457,7 +465,11 @@ pub fn init_ap_local_timer() {
         use minix_arch::{ClockArch as _, CurrentClockArch};
         use minix_platform::platform_desc;
         let tsc_per_ms = crate::globals::TSC_PER_MS.load(Ordering::Acquire);
-        let tsc_per_ms = if tsc_per_ms == 0 { 1_000_000 } else { tsc_per_ms };
+        let tsc_per_ms = if tsc_per_ms == 0 {
+            1_000_000
+        } else {
+            tsc_per_ms
+        };
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         let icr = clock_arch.init_local_timer(1, tsc_per_ms, crate::current_cpu_id().raw());
@@ -477,9 +489,7 @@ pub fn rearm_local_tick() {
         use minix_platform::platform_desc;
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
-        clock_arch.write_local_timer_icr(
-            LOCAL_TICK_ICR.load(Ordering::Relaxed) as u32,
-        );
+        clock_arch.write_local_timer_icr(LOCAL_TICK_ICR.load(Ordering::Relaxed) as u32);
     }
 }
 
@@ -552,10 +562,7 @@ pub fn decrement_quantum(current_proc: &mut KProcess) -> bool {
 /// simulate TSC progression.
 ///
 /// See [`decrement_quantum`] for semantics, safety, and design rationale.
-pub(crate) fn decrement_quantum_with_tsc(
-    current_proc: &mut KProcess,
-    current_tsc: u64,
-) -> bool {
+pub(crate) fn decrement_quantum_with_tsc(current_proc: &mut KProcess, current_tsc: u64) -> bool {
     // SAFETY: caller holds BKL. SMP_STATE is a BKL-protected global; we
     // borrow it briefly to read+update `tsc_ctr_switch` for the current
     // CPU and then drop the borrow before touching `current_proc`.
@@ -636,7 +643,10 @@ pub(crate) fn classify_cpu_state(
         }
     } else if current.priv_id != Some(USER_PRIV_ID) {
         CP_SYS
-    } else if current.p_misc_flags.is_set(crate::proc::MiscFlagsBits::NICED) {
+    } else if current
+        .p_misc_flags
+        .is_set(crate::proc::MiscFlagsBits::NICED)
+    {
         CP_NICE
     } else {
         CP_USER
@@ -805,7 +815,11 @@ impl AlarmTimerNode {
     /// (timers.h:64) — `exp_time` is left uninitialized in C; Rust zeroes it
     /// because `Option` discriminants require a total value.
     pub const fn new() -> Self {
-        Self { exp_time: 0, action: None, next: None }
+        Self {
+            exp_time: 0,
+            action: None,
+            next: None,
+        }
     }
 
     /// Whether this node is on the clock chain.
@@ -837,11 +851,7 @@ impl AlarmTimerNode {
 /// untouched. This is the operation invoked by `SYS_SETALARM` with
 /// relative `exp_time == 0` (do_setalarm.c:57) and by `SYS_CLEAR`
 /// (do_clear.c:52).
-pub fn reset_alarm_timer(
-    priv_table: &mut PrivTable,
-    clock: &mut ClockState,
-    priv_id: PrivId,
-) {
+pub fn reset_alarm_timer(priv_table: &mut PrivTable, clock: &mut ClockState, priv_id: PrivId) {
     let node = match priv_table.get(priv_id) {
         Some(kp) => kp.runtime.s_alarm_timer,
         None => return,
@@ -883,7 +893,9 @@ pub fn set_alarm_timer(
 
     // C: tmrs_set.c:31-33 — set the timer's variables.
     {
-        let Some(kp) = priv_table.get_mut(priv_id) else { return };
+        let Some(kp) = priv_table.get_mut(priv_id) else {
+            return;
+        };
         kp.runtime.s_alarm_timer.exp_time = exp_time;
         kp.runtime.s_alarm_timer.action = Some(action);
     }
@@ -935,11 +947,7 @@ pub fn set_alarm_timer(
 /// C: the unlink loop of `tmrs_clrtimer` — tmrs_clr.c:29-34
 /// (`for (atp = tmrs; *atp != NULL; atp = &(*atp)->tmr_next) ...`).
 /// The caller is responsible for clearing `action` (C: `tmr_func`).
-fn chain_unlink(
-    priv_table: &mut PrivTable,
-    clock: &mut ClockState,
-    priv_id: PrivId,
-) {
+fn chain_unlink(priv_table: &mut PrivTable, clock: &mut ClockState, priv_id: PrivId) {
     if clock.timers_head == Some(priv_id) {
         let next = priv_table
             .get(priv_id)
@@ -1133,7 +1141,11 @@ impl ClockState {
     /// C: `env_get("hz")` override in `init_clock()` — clock.c:56-60
     /// Range: 2..=50000 (matching C's validation).
     pub fn with_hz(hz: u32) -> Self {
-        let hz = if !(2..=50000).contains(&hz) { DEFAULT_HZ } else { hz };
+        let hz = if !(2..=50000).contains(&hz) {
+            DEFAULT_HZ
+        } else {
+            hz
+        };
         let mut state = Self::new();
         state.hz = hz;
         state
@@ -1185,21 +1197,27 @@ impl ClockState {
     /// Set boot time in seconds since UNIX epoch (BSP only).
     /// C: `set_boottime()` — clock.c:212
     pub fn set_boottime(&mut self, new_boottime: u64) {
-        if !self.is_bsp { return; }
+        if !self.is_bsp {
+            return;
+        }
         self.boottime = new_boottime;
     }
 
     /// Set wall-clock time in ticks (BSP only).
     /// C: `set_realtime()` — clock.c:187
     pub fn set_realtime(&mut self, new_realtime: u64) {
-        if !self.is_bsp { return; }
+        if !self.is_bsp {
+            return;
+        }
         self.realtime = new_realtime;
     }
 
     /// Set adjtime delta for time adjustment (BSP only).
     /// C: `set_adjtime_delta()` — clock.c:195
     pub fn set_adjtime_delta(&mut self, ticks: i32) {
-        if !self.is_bsp { return; }
+        if !self.is_bsp {
+            return;
+        }
         self.adjtime_delta = ticks;
     }
 
@@ -1483,11 +1501,7 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
     const ALARM_NOTIFY_BATCH: usize = 16;
     let mut batch: [Option<Endpoint>; ALARM_NOTIFY_BATCH] = [None; ALARM_NOTIFY_BATCH];
     let mut n_batch = 0usize;
-    fn collect_expired(
-        batch: &mut [Option<Endpoint>; 16],
-        n: &mut usize,
-        action: TimerAction,
-    ) {
+    fn collect_expired(batch: &mut [Option<Endpoint>; 16], n: &mut usize, action: TimerAction) {
         let TimerAction::NotifyAlarm { endpoint } = action;
         if *n < ALARM_NOTIFY_BATCH {
             batch[*n] = Some(endpoint);
@@ -1530,13 +1544,9 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
         Endpoint::from_generation_slot(0, crate::proc::proc_nr::IDLE.0),
     );
     let current: &mut KProcess = cur_p.unwrap_or(&mut scratch);
-    let _vtimer = clock.tick_with(
-        priv_table,
-        current,
-        bill_p,
-        ready_count,
-        |a| collect_expired(&mut batch, &mut n_batch, a),
-    );
+    let _vtimer = clock.tick_with(priv_table, current, bill_p, ready_count, |a| {
+        collect_expired(&mut batch, &mut n_batch, a)
+    });
 
     // Deliver alarm notifications from the CLOCK source (post-tick — the
     // notify needs the process slice, which the tick no longer borrows).
@@ -1568,8 +1578,6 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
         IrqAction::NotCompleted
     }
 }
-
-
 
 // ── Tests (software half + alarm notify) ──
 
@@ -1615,8 +1623,6 @@ mod clock_irq_handler_tests {
             (table, priv_table)
         }
     }
-
-
 
     /// Software half-loop plus end to end: SETALARM(1 tick) → one tick
     /// through clock_irq_handler → the expiry notification is delivered
@@ -1701,9 +1707,11 @@ mod clock_irq_handler_tests {
                 IrqPolicy::REENABLE,
             )
             .expect("free slot must exist on a fresh manager");
-        assert!(unsafe { crate::irq_manager() }
-            .find_hook_by_owner_notify(clock_ep, IrqNotifyId(0))
-            .is_some());
+        assert!(
+            unsafe { crate::irq_manager() }
+                .find_hook_by_owner_notify(clock_ep, IrqNotifyId(0))
+                .is_some()
+        );
     }
 }
 
@@ -1757,7 +1765,9 @@ mod tests {
         smp.account_tsc_per_state(crate::proc::CpuId::BSP, CP_INTR, 500);
         smp.account_tsc_per_state(crate::proc::CpuId::BSP, CP_INTR, 250);
         assert_eq!(
-            smp.cpu_local(crate::proc::CpuId::BSP).unwrap().tsc_per_state[CP_INTR],
+            smp.cpu_local(crate::proc::CpuId::BSP)
+                .unwrap()
+                .tsc_per_state[CP_INTR],
             750
         );
         assert!(
@@ -1800,9 +1810,7 @@ mod tests {
         let mut n = 0;
         let mut cur = clock.timers_head;
         while let Some(id) = cur {
-            cur = privs
-                .get(id)
-                .and_then(|kp| kp.runtime.s_alarm_timer.next);
+            cur = privs.get(id).and_then(|kp| kp.runtime.s_alarm_timer.next);
             n += 1;
         }
         n
@@ -2058,8 +2066,13 @@ mod tests {
         let pid: PrivId = 5;
 
         set_alarm_timer(
-            &mut privs, &mut clock, pid, 3,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(100) },
+            &mut privs,
+            &mut clock,
+            pid,
+            3,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(100),
+            },
         );
         assert!(privs.get(pid).unwrap().runtime.s_alarm_timer.is_set());
         assert_eq!(timers_len(&privs, &clock), 1);
@@ -2075,7 +2088,9 @@ mod tests {
         assert_eq!(collected.len(), 1);
         assert_eq!(
             collected[0],
-            TimerAction::NotifyAlarm { endpoint: Endpoint(100) }
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(100)
+            }
         );
         // Node deactivated and chain empty after expiry (C: tmrs_exp.c:17-18).
         assert!(!privs.get(pid).unwrap().runtime.s_alarm_timer.is_set());
@@ -2093,8 +2108,13 @@ mod tests {
         let mut proc = make_test_proc();
 
         set_alarm_timer(
-            &mut privs, &mut clock, 2, 1,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(42) },
+            &mut privs,
+            &mut clock,
+            2,
+            1,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(42),
+            },
         );
 
         // Tick 1: timer should expire.
@@ -2105,7 +2125,12 @@ mod tests {
 
         // Verify callback was invoked with the correct action.
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(42) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(42)
+            }
+        );
         // No vtimer configured.
         assert_eq!(vtimer_expired, None);
     }
@@ -2142,19 +2167,31 @@ mod tests {
         // expiry times → same chain shape).
         for (pid, exp) in [(0u16, 3u64), (1, 3), (2, 5)] {
             set_alarm_timer(
-                &mut privs_a, &mut clock_a, pid, exp,
-                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+                &mut privs_a,
+                &mut clock_a,
+                pid,
+                exp,
+                TimerAction::NotifyAlarm {
+                    endpoint: Endpoint(exp as i32),
+                },
             );
             set_alarm_timer(
-                &mut privs_b, &mut clock_b, pid, exp,
-                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+                &mut privs_b,
+                &mut clock_b,
+                pid,
+                exp,
+                TimerAction::NotifyAlarm {
+                    endpoint: Endpoint(exp as i32),
+                },
             );
         }
 
         // Tick both clocks 5 times.
         let mut collected_with: Vec<TimerAction> = Vec::new();
         for _ in 0..5 {
-            clock_a.tick_with(&mut privs_a, &mut proc_a, None, 0, |a| collected_with.push(a));
+            clock_a.tick_with(&mut privs_a, &mut proc_a, None, 0, |a| {
+                collected_with.push(a)
+            });
         }
         let mut collected_tick: Vec<TimerAction> = Vec::new();
         for _ in 0..5 {
@@ -2182,8 +2219,13 @@ mod tests {
         let mut privs = make_priv_table();
 
         set_alarm_timer(
-            &mut privs, &mut clock, 4, 5,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(50) },
+            &mut privs,
+            &mut clock,
+            4,
+            5,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(50),
+            },
         );
         assert!(privs.get(4).unwrap().runtime.s_alarm_timer.is_set());
         assert_eq!(timers_len(&privs, &clock), 1);
@@ -2210,12 +2252,22 @@ mod tests {
         let mut proc = make_test_proc();
 
         set_alarm_timer(
-            &mut privs, &mut clock, 0, 5,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
+            &mut privs,
+            &mut clock,
+            0,
+            5,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(1),
+            },
         );
         set_alarm_timer(
-            &mut privs, &mut clock, 1, 5,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(2) },
+            &mut privs,
+            &mut clock,
+            1,
+            5,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(2),
+            },
         );
         assert_eq!(timers_len(&privs, &clock), 2, "Both timers must coexist");
 
@@ -2225,9 +2277,23 @@ mod tests {
             clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
         assert_eq!(collected.len(), 2);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(2) });
-        assert_eq!(collected[1], TimerAction::NotifyAlarm { endpoint: Endpoint(1) });
-        assert_eq!(timers_len(&privs, &clock), 0, "Both timers must have expired");
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(2)
+            }
+        );
+        assert_eq!(
+            collected[1],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(1)
+            }
+        );
+        assert_eq!(
+            timers_len(&privs, &clock),
+            0,
+            "Both timers must have expired"
+        );
     }
 
     #[test]
@@ -2239,16 +2305,31 @@ mod tests {
         let mut proc = make_test_proc();
 
         set_alarm_timer(
-            &mut privs, &mut clock, 0, 5,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(5) },
+            &mut privs,
+            &mut clock,
+            0,
+            5,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(5),
+            },
         );
         set_alarm_timer(
-            &mut privs, &mut clock, 1, 3,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(3) },
+            &mut privs,
+            &mut clock,
+            1,
+            3,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(3),
+            },
         );
         set_alarm_timer(
-            &mut privs, &mut clock, 2, 7,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(7) },
+            &mut privs,
+            &mut clock,
+            2,
+            7,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(7),
+            },
         );
 
         // Tick 1-3: timer@3 fires.
@@ -2257,7 +2338,12 @@ mod tests {
             clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(3) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(3)
+            }
+        );
 
         // Tick 4-5: timer@5 fires.
         collected.clear();
@@ -2265,7 +2351,12 @@ mod tests {
             clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(5) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(5)
+            }
+        );
 
         // Tick 6-7: timer@7 fires.
         collected.clear();
@@ -2273,7 +2364,12 @@ mod tests {
             clock.tick_bsp(&mut privs, &mut proc, None, 0, |a| collected.push(a));
         }
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(7) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(7)
+            }
+        );
     }
 
     #[test]
@@ -2287,8 +2383,13 @@ mod tests {
         let mut proc = make_test_proc();
 
         set_alarm_timer(
-            &mut privs, &mut clock, 3, TMR_NEVER,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(99) },
+            &mut privs,
+            &mut clock,
+            3,
+            TMR_NEVER,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(99),
+            },
         );
 
         for _ in 0..100 {
@@ -2306,8 +2407,13 @@ mod tests {
         let mut clock = make_ap_clock();
         let mut privs = make_priv_table();
         set_alarm_timer(
-            &mut privs, &mut clock, 0, 1,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
+            &mut privs,
+            &mut clock,
+            0,
+            1,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(1),
+            },
         );
     }
 
@@ -2326,7 +2432,10 @@ mod tests {
 
         let history = clock.load_history();
         let total: u32 = history.iter().map(|&v| v as u32).sum();
-        assert_eq!(total, 500, "100 ticks × 5 ready should accumulate exactly 500");
+        assert_eq!(
+            total, 500,
+            "100 ticks × 5 ready should accumulate exactly 500"
+        );
         assert_eq!(
             history[0], 500,
             "all 100 ticks fall in slot 0 (rotation at tick 600)"
@@ -2563,7 +2672,10 @@ mod tests {
         decrement_quantum_in(&mut smp, &mut proc, 1_000);
         // Large delta — should be skipped for kernel task.
         let exhausted = decrement_quantum_in(&mut smp, &mut proc, 1_000_000);
-        assert!(!exhausted, "kernel tasks must not report quantum exhaustion");
+        assert!(
+            !exhausted,
+            "kernel tasks must not report quantum exhaustion"
+        );
         assert_eq!(
             proc.p_sched.quantum.cpu_time_left.load(Ordering::Acquire),
             initial,
@@ -2635,8 +2747,13 @@ mod tests {
         // Arm three nodes; insertion scan keeps them ordered 10, 20, 30.
         for (pid, exp) in [(0u16, 10u64), (1, 20), (2, 30)] {
             set_alarm_timer(
-                &mut privs, &mut clock, pid, exp,
-                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+                &mut privs,
+                &mut clock,
+                pid,
+                exp,
+                TimerAction::NotifyAlarm {
+                    endpoint: Endpoint(exp as i32),
+                },
             );
         }
         assert_eq!(timers_len(&privs, &clock), 3);
@@ -2653,8 +2770,18 @@ mod tests {
         let mut collected: Vec<TimerAction> = Vec::new();
         expire_alarm_timers(&mut privs, &mut clock, 30, |a| collected.push(a));
         assert_eq!(collected.len(), 2);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(10) });
-        assert_eq!(collected[1], TimerAction::NotifyAlarm { endpoint: Endpoint(30) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(10)
+            }
+        );
+        assert_eq!(
+            collected[1],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(30)
+            }
+        );
     }
 
     #[test]
@@ -2668,8 +2795,13 @@ mod tests {
         // Insert out of order to exercise the sorted-insert scan.
         for (pid, exp) in [(0u16, 30u64), (1, 10), (2, 20)] {
             set_alarm_timer(
-                &mut privs, &mut clock, pid, exp,
-                TimerAction::NotifyAlarm { endpoint: Endpoint(exp as i32) },
+                &mut privs,
+                &mut clock,
+                pid,
+                exp,
+                TimerAction::NotifyAlarm {
+                    endpoint: Endpoint(exp as i32),
+                },
             );
         }
         // Chain is sorted: head=1(exp 10) → 2(exp 20) → 0(exp 30).
@@ -2685,7 +2817,12 @@ mod tests {
         let mut collected: Vec<TimerAction> = Vec::new();
         expire_alarm_timers(&mut privs, &mut clock, 15, |a| collected.push(a));
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(10) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(10)
+            }
+        );
         assert_eq!(timers_len(&privs, &clock), 2);
         assert_eq!(clock.timers_head, Some(2));
 
@@ -2693,13 +2830,23 @@ mod tests {
         collected.clear();
         expire_alarm_timers(&mut privs, &mut clock, 25, |a| collected.push(a));
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(20) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(20)
+            }
+        );
 
         // now=30: exp 30 fires.
         collected.clear();
         expire_alarm_timers(&mut privs, &mut clock, 30, |a| collected.push(a));
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(30) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(30)
+            }
+        );
         assert_eq!(timers_len(&privs, &clock), 0);
         assert_eq!(clock.timers_head, None);
 
@@ -2717,27 +2864,56 @@ mod tests {
         let mut privs = make_priv_table();
 
         set_alarm_timer(
-            &mut privs, &mut clock, 0, 10,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(1) },
+            &mut privs,
+            &mut clock,
+            0,
+            10,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(1),
+            },
         );
         set_alarm_timer(
-            &mut privs, &mut clock, 1, 20,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(2) },
+            &mut privs,
+            &mut clock,
+            1,
+            20,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(2),
+            },
         );
 
         // Re-arm slot 0 with a later expiry: old node (exp 10) is replaced.
         set_alarm_timer(
-            &mut privs, &mut clock, 0, 30,
-            TimerAction::NotifyAlarm { endpoint: Endpoint(3) },
+            &mut privs,
+            &mut clock,
+            0,
+            30,
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(3),
+            },
         );
         assert_eq!(timers_len(&privs, &clock), 2);
-        assert_eq!(clock.timers_head, Some(1), "exp 20 (slot 1) is now the head");
+        assert_eq!(
+            clock.timers_head,
+            Some(1),
+            "exp 20 (slot 1) is now the head"
+        );
 
         // exp 10 must never fire; only 20 then 30.
         let mut collected: Vec<TimerAction> = Vec::new();
         expire_alarm_timers(&mut privs, &mut clock, 30, |a| collected.push(a));
         assert_eq!(collected.len(), 2);
-        assert_eq!(collected[0], TimerAction::NotifyAlarm { endpoint: Endpoint(2) });
-        assert_eq!(collected[1], TimerAction::NotifyAlarm { endpoint: Endpoint(3) });
+        assert_eq!(
+            collected[0],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(2)
+            }
+        );
+        assert_eq!(
+            collected[1],
+            TimerAction::NotifyAlarm {
+                endpoint: Endpoint(3)
+            }
+        );
     }
 }

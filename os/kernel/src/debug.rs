@@ -18,11 +18,9 @@
 //! - `miscflagstr(flags)` — format misc flags as a human-readable string
 //! - `print_proc(pp)` — print process diagnostic info to early console
 
-use crate::proc::{
-    priority, CpuId, KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, NONE_PROC_NR,
-};
 use crate::kmess::{EarlyConsole, KernelConsole as Console};
-use crate::proc_table::{ProcessTable, PROC_TABLE_SIZE};
+use crate::proc::{CpuId, KProcess, MiscFlagsBits, NONE_PROC_NR, ProcNr, RtsFlagsBits, priority};
+use crate::proc_table::{PROC_TABLE_SIZE, ProcessTable};
 use crate::smp::SmpState;
 
 /// Maximum iteration count for queue walks (defense against cycles).
@@ -44,11 +42,7 @@ const MAX_LOOP: usize = PROC_TABLE_SIZE + 16;
 ///
 /// Returns `true` if all invariants hold, `false` otherwise.
 /// On failure, prints a diagnostic message to the early console.
-pub fn runqueues_ok_cpu(
-    _smp_state: &SmpState,
-    proc_table: &ProcessTable,
-    cpu: CpuId,
-) -> bool {
+pub fn runqueues_ok_cpu(_smp_state: &SmpState, proc_table: &ProcessTable, cpu: CpuId) -> bool {
     // Ready queues are per-CPU (ProcessTable::sched[cpu]),
     // mirroring C's cpulocal run_q_head/run_q_tail (cpulocals.h:58-59). Each
     // CPU validates its own queue; the cross-CPU readiness check below is
@@ -83,12 +77,16 @@ pub fn runqueues_ok_cpu(
         // C: debug.c:39-41 — tail->p_nextready must be None.
         if let Some(tail_nr) = tail
             && let Some(tail_proc) = proc_table.get(tail_nr)
-                && tail_proc.p_nextready.load(core::sync::atomic::Ordering::Acquire) != NONE_PROC_NR {
-                    Console::write_str("runqueues_ok: tail->next not null in queue ");
-                    Console::write_hex(q as u64);
-                    Console::write_str("\n");
-                    return false;
-                }
+            && tail_proc
+                .p_nextready
+                .load(core::sync::atomic::Ordering::Acquire)
+                != NONE_PROC_NR
+        {
+            Console::write_str("runqueues_ok: tail->next not null in queue ");
+            Console::write_hex(q as u64);
+            Console::write_str("\n");
+            return false;
+        }
 
         // C: debug.c:43-89 — walk the queue via p_nextready.
         let mut current = head;
@@ -131,7 +129,12 @@ pub fn runqueues_ok_cpu(
             }
 
             // C: debug.c:69-73 — priority match check.
-            if proc.p_sched.priority.load(core::sync::atomic::Ordering::Acquire) as usize != q {
+            if proc
+                .p_sched
+                .priority
+                .load(core::sync::atomic::Ordering::Acquire) as usize
+                != q
+            {
                 Console::write_str("runqueues_ok: wrong priority in queue ");
                 Console::write_hex(q as u64);
                 Console::write_str("\n");
@@ -156,7 +159,11 @@ pub fn runqueues_ok_cpu(
                 return false;
             }
 
-            current = if next == NONE_PROC_NR { None } else { Some(ProcNr(next)) };
+            current = if next == NONE_PROC_NR {
+                None
+            } else {
+                Some(ProcNr(next))
+            };
         }
     }
 
@@ -265,7 +272,11 @@ pub fn print_proc(proc: &KProcess) {
     Console::write_str(" ep=");
     Console::write_hex(proc.p_endpoint.0 as u64);
     Console::write_str(" prio=");
-    Console::write_hex(proc.p_sched.priority.load(core::sync::atomic::Ordering::Acquire) as u64);
+    Console::write_hex(
+        proc.p_sched
+            .priority
+            .load(core::sync::atomic::Ordering::Acquire) as u64,
+    );
     Console::write_str(" rts=[");
     write_rts_flags(proc.p_rts_flags.load());
     Console::write_str("] misc=[");

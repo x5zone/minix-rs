@@ -512,8 +512,9 @@ mod tests {
     fn process_capability_wire_round_trip() {
         // C wire layout (const.h:143-154): from_wire/to_wire are per-bit
         // lossless for every atomic bit.
-        for bits in [0x002u16, 0x004, 0x008, 0x010, 0x020, 0x040, 0x080, 0x100, 0x200, 0x400, 0x800]
-        {
+        for bits in [
+            0x002u16, 0x004, 0x008, 0x010, 0x020, 0x040, 0x080, 0x100, 0x200, 0x400, 0x800,
+        ] {
             let caps = ProcessCapability::from_wire(bits);
             assert_eq!(caps.to_wire(), bits, "wire round trip failed for {bits:#x}");
         }
@@ -537,7 +538,10 @@ mod tests {
         // Round trip is lossless.
         assert_eq!(TrapMask::ALL.to_wire(), 0xFFFF);
         assert_eq!(TrapMask::RECEIVE.to_wire(), 1 << 2);
-        assert_eq!(TrapMask::from_wire(TrapMask::RECEIVE.to_wire()), TrapMask::RECEIVE);
+        assert_eq!(
+            TrapMask::from_wire(TrapMask::RECEIVE.to_wire()),
+            TrapMask::RECEIVE
+        );
     }
 
     #[test]

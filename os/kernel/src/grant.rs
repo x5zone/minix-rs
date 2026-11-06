@@ -57,8 +57,8 @@ use crate::vm::{AddressRef, CrossSpaceResult, VmFaultType};
 // is the pattern that was retired for the request wire vocabulary). The
 // re-export below keeps this crate's `crate::grant::*` paths unchanged.
 pub use minix_types::{
-    grant_idx, grant_seq, grant_valid, CpFlags, CpGrant, CpGrantDirect, CpGrantFree,
-    CpGrantIndirect, CpGrantMagic, CpGrantUnion, GRANT_INVALID,
+    CpFlags, CpGrant, CpGrantDirect, CpGrantFree, CpGrantIndirect, CpGrantMagic, CpGrantUnion,
+    GRANT_INVALID, grant_idx, grant_seq, grant_valid,
 };
 
 /// C: `MAX_INDIRECT_DEPTH` — do_safecopy.c:21
@@ -258,8 +258,7 @@ pub fn verify_grant(
                     effective_granter: granter,
                     sfinfo: None,
                 });
-            } else if priv_.runtime.s_grant_table == 0
-                || grantee != priv_.runtime.s_grant_endpoint
+            } else if priv_.runtime.s_grant_table == 0 || grantee != priv_.runtime.s_grant_endpoint
             {
                 return VerifyGrantOutcome::Err(ENOTREADY);
             }
@@ -303,7 +302,8 @@ pub fn verify_grant(
             offset: VirBytes(grant_entry_addr),
         };
         match read_from_process_vmcheck(
-            caller_nr, proc_table,
+            caller_nr,
+            proc_table,
             // SAFETY: `grant_entry` is a live kernel-local `CpGrant`; view it
             // as its byte representation for the copy (repr(C) POD, no
             // alignment requirement for u8 access).
@@ -347,10 +347,7 @@ pub fn verify_grant(
             let indirect = grant_entry.cp_indirect();
 
             // C: do_safecopy.c:159-166 — verify grantee.
-            if indirect.who_to != grantee.0
-                && grantee.0 != ANY
-                && indirect.who_to != ANY
-            {
+            if indirect.who_to != grantee.0 && grantee.0 != ANY && indirect.who_to != ANY {
                 return VerifyGrantOutcome::Err(EPERM);
             }
 
@@ -378,10 +375,7 @@ pub fn verify_grant(
             }
 
             // C: do_safecopy.c:194-200 — verify grantee.
-            if direct.who_to != grantee.0
-                && grantee.0 != ANY
-                && direct.who_to != ANY
-            {
+            if direct.who_to != grantee.0 && grantee.0 != ANY && direct.who_to != ANY {
                 return VerifyGrantOutcome::Err(EPERM);
             }
 
@@ -411,10 +405,7 @@ pub fn verify_grant(
             }
 
             // C: do_safecopy.c:229-234 — verify grantee.
-            if magic.who_to != grantee.0
-                && grantee.0 != ANY
-                && magic.who_to != ANY
-            {
+            if magic.who_to != grantee.0 && grantee.0 != ANY && magic.who_to != ANY {
                 return VerifyGrantOutcome::Err(EPERM);
             }
 
@@ -552,7 +543,8 @@ mod tests {
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, _| None;
 
         let result = verify_grant(
-            ProcNr(0), &mut proc_table,
+            ProcNr(0),
+            &mut proc_table,
             minix_types::Endpoint::NONE,
             Endpoint(100),
             0,
@@ -572,7 +564,8 @@ mod tests {
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, _| None;
 
         let result = verify_grant(
-            ProcNr(0), &mut proc_table,
+            ProcNr(0),
+            &mut proc_table,
             Endpoint(100),
             Endpoint(100),
             GRANT_INVALID,
@@ -598,10 +591,16 @@ mod tests {
 
         // Both the caller (the side initiating the safecopy) and the granter
         // (ep 200) are in the table.
-        proc_table.get_mut(ProcNr(0)).unwrap()
-            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
-        proc_table.get_mut(ProcNr(1)).unwrap()
-            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table
+            .get_mut(ProcNr(1))
+            .unwrap()
+            .p_rts_flags
+            .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         proc_table.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
 
         // The granter's priv: table non-null, 2 entries, temp-table endpoint
@@ -610,7 +609,7 @@ mod tests {
         {
             let kp = priv_table.get_mut(pid).unwrap();
             kp.runtime.s_grant_table = 0x4000; // nonzero → HASGRANTTABLE passes
-            kp.runtime.s_grant_entries = 2;    // only 2 entries
+            kp.runtime.s_grant_entries = 2; // only 2 entries
             kp.runtime.s_grant_endpoint = Endpoint(200);
         }
         proc_table.get_mut(ProcNr(1)).unwrap().priv_id = Some(pid);
@@ -619,18 +618,22 @@ mod tests {
         // The closure may return None: the out-of-bounds branch fires before
         // the cross-space read of the grant entry.
         let result = verify_grant(
-            ProcNr(0), &mut proc_table,
-            Endpoint(200),   // granter
-            Endpoint(100),   // grantee
-            10,              // grant_id → idx 10, out of bounds
-            16,              // bytes
+            ProcNr(0),
+            &mut proc_table,
+            Endpoint(200), // granter
+            Endpoint(100), // grantee
+            10,            // grant_id → idx 10, out of bounds
+            16,            // bytes
             CpFlags::READ,
             0,
             &priv_table,
             &|_pt: &crate::proc_table::ProcessTable, _| None,
         );
-        assert!(matches!(result, VerifyGrantOutcome::Err(EPERM)),
-            "越界 grant 索引必须返回 EPERM，实际 {:?}", result);
+        assert!(
+            matches!(result, VerifyGrantOutcome::Err(EPERM)),
+            "越界 grant 索引必须返回 EPERM，实际 {:?}",
+            result
+        );
     }
 
     /// Temporary grant table branch: the granter's s_grant_endpoint differs
@@ -641,10 +644,16 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
 
-        proc_table.get_mut(ProcNr(0)).unwrap()
-            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
-        proc_table.get_mut(ProcNr(1)).unwrap()
-            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table
+            .get_mut(ProcNr(1))
+            .unwrap()
+            .p_rts_flags
+            .clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         proc_table.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
 
         let pid = priv_table.assign_static(ProcNr(1)).expect("priv slot");
@@ -658,18 +667,22 @@ mod tests {
         proc_table.get_mut(ProcNr(1)).unwrap().priv_id = Some(pid);
 
         let result = verify_grant(
-            ProcNr(0), &mut proc_table,
+            ProcNr(0),
+            &mut proc_table,
             Endpoint(200),
             Endpoint(100),
-            0,               // idx 0, within s_grant_entries=8
+            0, // idx 0, within s_grant_entries=8
             16,
             CpFlags::READ,
             0,
             &priv_table,
             &|_pt: &crate::proc_table::ProcessTable, _| None,
         );
-        assert!(matches!(result, VerifyGrantOutcome::Err(ENOTREADY)),
-            "临时授权表 grantee 不匹配必须返回 ENOTREADY，实际 {:?}", result);
+        assert!(
+            matches!(result, VerifyGrantOutcome::Err(ENOTREADY)),
+            "临时授权表 grantee 不匹配必须返回 ENOTREADY，实际 {:?}",
+            result
+        );
     }
 
     // ── Magic-grant gate endpoint authority ──

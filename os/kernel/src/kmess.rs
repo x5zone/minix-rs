@@ -56,7 +56,11 @@ impl Default for KmessRing {
 impl KmessRing {
     /// New empty ring.
     pub const fn new() -> Self {
-        Self { buf: [0; KMESS_BUF_SIZE], next: 0, size: 0 }
+        Self {
+            buf: [0; KMESS_BUF_SIZE],
+            next: 0,
+            size: 0,
+        }
     }
 
     /// Append one byte (C: `kputc` body — utility.c:71-75).
@@ -240,13 +244,23 @@ pub fn copy_snapshot_to_caller(
         .map(|p| p.p_seg.phys_root)
         .expect("copy_snapshot_to_caller: caller slot must exist");
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, endpt: minix_types::Endpoint| {
-        if endpt == caller_endpt { Some(caller_cr3) } else { None }
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            None
+        }
     };
     let r = data_copy_vmcheck(
         caller_nr,
         proc_table,
-        AddressRef::Process { endpoint: caller_endpt, offset: VirBytes(snap.as_ptr() as u64) },
-        AddressRef::Process { endpoint: caller_endpt, offset: VirBytes(val_ptr) },
+        AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(snap.as_ptr() as u64),
+        },
+        AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(val_ptr),
+        },
         KMESS_SNAPSHOT_SIZE,
         &proc_cr3,
     );

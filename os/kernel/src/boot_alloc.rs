@@ -19,8 +19,8 @@
 //! `Ordering::Relaxed` is sufficient since there is no concurrent access.
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use minix_types::{PhysBytes, VirBytes};
 use minix_arch::paging::PageTableError;
+use minix_types::{PhysBytes, VirBytes};
 
 /// Boot-stage bump allocator state.
 ///
@@ -123,7 +123,9 @@ impl BootAlloc {
         // SAFETY: pa is a valid, 4KB-aligned physical address returned by the
         // bump allocator. Under identity mapping (boot stage), VA=PA, so the
         // pointer is valid. The page is not aliased by any other live reference.
-        unsafe { core::ptr::write_bytes(pa as *mut u64, 0, 512) };
+        unsafe {
+            core::ptr::write_bytes(pa as *mut u64, 0, 512)
+        };
         Ok((PhysBytes(pa), VirBytes(pa)))
     }
 }
@@ -250,7 +252,10 @@ mod tests {
         // Re-init with a new range
         alloc.init(0x5000_0000, 0x5000_0000 + 0x1000); // 1 page
         let (pa, va) = alloc.alloc().unwrap();
-        assert_eq!(pa.0, 0x5000_0000, "after reinit, allocation starts at new base");
+        assert_eq!(
+            pa.0, 0x5000_0000,
+            "after reinit, allocation starts at new base"
+        );
         assert_eq!(va.0, 0x5000_0000, "identity mapping preserved after reinit");
     }
 
@@ -264,8 +269,11 @@ mod tests {
         for i in 0..5 {
             let (pa, _) = alloc.alloc().unwrap();
             if i > 0 {
-                assert_eq!(pa.0 - prev, 0x1000,
-                    "each allocation advances by exactly 4KB");
+                assert_eq!(
+                    pa.0 - prev,
+                    0x1000,
+                    "each allocation advances by exactly 4KB"
+                );
             }
             prev = pa.0;
         }
@@ -282,7 +290,10 @@ mod tests {
         assert_eq!(alloc.region(), Some((0x7000_0000, 0x7000_8000)));
         assert_eq!(alloc.used_bytes(), 0x3000);
         let (pa, _) = alloc.alloc().unwrap();
-        assert_eq!(pa.0, 0x7000_3000, "resume must continue at the handoff cursor");
+        assert_eq!(
+            pa.0, 0x7000_3000,
+            "resume must continue at the handoff cursor"
+        );
     }
 
     /// Inverted region: `base > end` would make `region()` report an inverted

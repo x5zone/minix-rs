@@ -17,13 +17,13 @@
 //! - **D5**: Linear scan for GETKSIG (matches C, process count < 128)
 //! - **D6**: `trait SignalContext` for architecture-specific sigframe/sigcontext
 
-use minix_types::{Endpoint, Message, MessSigcalls, VirBytes};
+use minix_types::{Endpoint, MessSigcalls, Message, VirBytes};
 
+use crate::cross_space::data_copy_vmcheck;
+use crate::kpriv::PrivTable;
 use crate::proc::{MiscFlagsBits, ProcNr, RtsFlagsBits, SigSet};
 use crate::proc_table::ProcessTable;
-use crate::kpriv::PrivTable;
 use crate::syscall::{KcallResult, Syscall};
-use crate::cross_space::data_copy_vmcheck;
 use crate::vm::{AddressRef, CrossSpaceResult};
 
 use minix_arch::{CurrentSignalContext, SignalContext, SignalInfo, TrapStyle};
@@ -129,7 +129,10 @@ pub const fn sig_mask(sig_nr: u32) -> SigSet {
 /// signal itself: the kernel must either fail over to the designated
 /// backup manager or panic (see [`cause_signal`]).
 pub(crate) const fn is_lethal(sig_nr: u32) -> bool {
-    matches!(sig_nr, SIGILL | SIGBUS | SIGFPE | SIGSEGV | SIGEMT | SIGABRT)
+    matches!(
+        sig_nr,
+        SIGILL | SIGBUS | SIGFPE | SIGSEGV | SIGEMT | SIGABRT
+    )
 }
 
 // ── Helper ──
@@ -164,8 +167,8 @@ pub fn dispatch_kill(
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
     // C: do_kill.c:26,28 — m_sigcalls.sig / m_sigcalls.endpt
-    let endpt = sc.endpt;    // m_sigcalls.endpt
-    let sig_nr = sc.sig;     // m_sigcalls.sig
+    let endpt = sc.endpt; // m_sigcalls.endpt
+    let sig_nr = sc.sig; // m_sigcalls.sig
 
     // C: do_kill.c:31 — sig_nr >= _NSIG → EINVAL
     if sig_nr as usize >= NSIG {
@@ -193,8 +196,7 @@ pub fn dispatch_kill(
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static KT: AtomicUsize = AtomicUsize::new(0);
-        if KT.fetch_add(1, AtomicOrd::Relaxed) < 32 {
-        }
+        if KT.fetch_add(1, AtomicOrd::Relaxed) < 32 {}
     }
     cause_signal(target_nr, sig_nr as u32, proc_table, priv_table);
 
@@ -330,7 +332,10 @@ pub(crate) fn cause_signal(
             if sig_nr == crate::syscall_signal::SIGSEGV {
                 use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 match proc_table.get(target_nr) {
-                    Some(p) => match p.p_fault_addr { Some(a) => Console::write_hex(a), None => Console::write_str("none2") },
+                    Some(p) => match p.p_fault_addr {
+                        Some(a) => Console::write_hex(a),
+                        None => Console::write_str("none2"),
+                    },
                     None => Console::write_str("none"),
                 }
                 Console::write_str("\n");
@@ -381,7 +386,8 @@ pub(crate) fn cause_signal(
     // Rust decides was_signaled from RTS_SIGNALED and adds to p_pending
     // unconditionally: sigaddset is idempotent, which is semantically
     // equivalent to C's sigismember gate.
-    let was_signaled = proc_table.get(target_nr)
+    let was_signaled = proc_table
+        .get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
 
     // C: system.c:442 — sigaddset(&rp->p_pending, sig_nr)
@@ -394,7 +400,10 @@ pub(crate) fn cause_signal(
     // C: system.c:443 — if (!RTS_ISSET(rp, RTS_SIGNALED))
     if !was_signaled {
         // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
-        proc_table.rts_set(target_nr, RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
+        proc_table.rts_set(
+            target_nr,
+            RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING,
+        );
 
         // C: system.c:445-446 — send_sig(sig_mgr, SIGKSIG) → wake the signal manager
         // send_sig (system.c:364-382): sigaddset(&priv(sig_mgr)->s_sig_pending, SIGKSIG)
@@ -406,13 +415,14 @@ pub(crate) fn cause_signal(
             // bitmap; it reaches the manager with the notify sigset).
             if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep)
                 && let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr)
-                    && let Some(pid) = sig_mgr_proc.priv_id
-                        && let Some(sig_mgr_priv) = priv_table.get_mut(pid) {
-                            // SAFETY: `SIGKSIG` is a compile-time `u32`
-                            // constant (= 74, < 256), so `as u8` cannot
-                            // truncate.
-                            sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
-                        }
+                && let Some(pid) = sig_mgr_proc.priv_id
+                && let Some(sig_mgr_priv) = priv_table.get_mut(pid)
+            {
+                // SAFETY: `SIGKSIG` is a compile-time `u32`
+                // constant (= 74, < 256), so `as u8` cannot
+                // truncate.
+                sig_mgr_priv.signals.s_sig_pending.add(SIGKSIG as u8);
+            }
 
             // C: system.c:381 — mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
             let _ = crate::ipc::mini_notify_core(
@@ -557,7 +567,8 @@ pub fn dispatch_endksig(
 
     // Step 3: Check RTS_SIG_PENDING is set.
     // C: do_endksig.c:32 — if (!RTS_ISSET(rp, RTS_SIG_PENDING)) return EINVAL
-    if !proc_table.get(target_nr)
+    if !proc_table
+        .get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING))
     {
         return KcallResult::Ok(EINVAL);
@@ -566,7 +577,8 @@ pub fn dispatch_endksig(
     // Step 4: If no new signal arrived, clear RTS_SIG_PENDING.
     // C: do_endksig.c:35-36 — if (!RTS_ISSET(rp, RTS_SIGNALED))
     //     RTS_UNSET(rp, RTS_SIG_PENDING)
-    if !proc_table.get(target_nr)
+    if !proc_table
+        .get(target_nr)
         .is_some_and(|p| p.p_rts_flags.is_set(RtsFlagsBits::SIGNALED))
     {
         proc_table.rts_unset(target_nr, RtsFlagsBits::SIG_PENDING);
@@ -691,7 +703,8 @@ pub fn dispatch_sigsend(
             offset: VirBytes(&smsg as *const SigMsg as u64),
         };
         match data_copy_vmcheck(
-            caller_nr, proc_table,
+            caller_nr,
+            proc_table,
             src,
             dst,
             core::mem::size_of::<SigMsg>(),
@@ -728,12 +741,8 @@ pub fn dispatch_sigsend(
         let frame_addr = info
             .stkptr
             .saturating_sub(CurrentSignalContext::sigframe_size() as u64);
-        let frame = CurrentSignalContext::build_sigframe(
-            &target.cpu_context,
-            &sctx,
-            &info,
-            frame_addr,
-        );
+        let frame =
+            CurrentSignalContext::build_sigframe(&target.cpu_context, &sctx, &info, frame_addr);
         (frame, frame_addr)
     };
 
@@ -772,7 +781,8 @@ pub fn dispatch_sigsend(
             offset: VirBytes(frame_addr),
         };
         match data_copy_vmcheck(
-            caller_nr, proc_table,
+            caller_nr,
+            proc_table,
             src,
             dst,
             CurrentSignalContext::sigframe_size(),
@@ -801,18 +811,16 @@ pub fn dispatch_sigsend(
             sigreturn: smsg.sigreturn,
             stkptr: smsg.stkptr,
         };
-        CurrentSignalContext::setup_handler_entry(
-            &mut target.cpu_context,
-            &info,
-            frame_addr,
-        );
+        CurrentSignalContext::setup_handler_entry(&mut target.cpu_context, &info, frame_addr);
 
         // C: do_sigsend.c:156 — `rp->p_misc_flags &= ~MF_FPU_INITIALIZED`
         // Signal handler should get clean FPU. Clear the EXT_REG_INITIALIZED
         // flag so the next FPU instruction traps and lazily initializes a
         // fresh FPU state (64-bit lazy FPU model — no save/restore on
         // signal delivery, matching C behavior).
-        target.p_misc_flags.unset(MiscFlagsBits::EXT_REG_INITIALIZED);
+        target
+            .p_misc_flags
+            .unset(MiscFlagsBits::EXT_REG_INITIALIZED);
     }
 
     KcallResult::Ok(OK)
@@ -1086,7 +1094,12 @@ mod tests {
     fn occupy_two_slots(
         target_nr: ProcNr,
         manager_nr: ProcNr,
-    ) -> (Endpoint, Endpoint, crate::test_helpers::TestProcTable, crate::test_helpers::TestPrivTable) {
+    ) -> (
+        Endpoint,
+        Endpoint,
+        crate::test_helpers::TestProcTable,
+        crate::test_helpers::TestPrivTable,
+    ) {
         let mut procs = crate::test_helpers::test_proc_table();
         let mut privs = crate::test_helpers::test_priv_table();
 
@@ -1120,8 +1133,7 @@ mod tests {
 
     #[test]
     fn test_cause_signal_external_path_notifies_manager() {
-        let (target_ep, manager_ep, mut procs, mut privs) =
-            occupy_two_slots(ProcNr(0), ProcNr(1));
+        let (target_ep, manager_ep, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         // The target is managed by an external manager (C system.c:412:
         // s_sig_mgr = manager endpoint)
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
@@ -1146,20 +1158,27 @@ mod tests {
 
     #[test]
     fn test_cause_signal_dedup_does_not_notify_twice() {
-        let (_, manager_ep, mut procs, mut privs) =
-            occupy_two_slots(ProcNr(0), ProcNr(1));
+        let (_, manager_ep, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
 
         // First delivery: RTS_SIGNALED not set → notify the manager
         listen(&mut procs, ProcNr(1));
         cause_signal(ProcNr(0), SIGTRAP, &mut procs, &mut privs);
-        assert!(procs.get(ProcNr(1)).unwrap()
-            .p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(
+            procs
+                .get(ProcNr(1))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::DELIVERMSG)
+        );
 
         // Clear the observable state and put the manager back into the
         // listening state
-        procs.get_mut(ProcNr(1)).unwrap()
-            .p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+        procs
+            .get_mut(ProcNr(1))
+            .unwrap()
+            .p_misc_flags
+            .clear(MiscFlagsBits::DELIVERMSG);
         listen(&mut procs, ProcNr(1));
 
         // C system.c:443 — notify only if (!RTS_ISSET(rp, RTS_SIGNALED));
@@ -1172,8 +1191,10 @@ mod tests {
         assert!(target.p_pending.contains(SIGPROF as u8));
         let manager = procs.get(ProcNr(1)).unwrap();
         assert!(!manager.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
-        assert!(manager.p_rts_flags.is_set(RtsFlagsBits::RECEIVING),
-            "未重复通知时 manager 应保持监听态");
+        assert!(
+            manager.p_rts_flags.is_set(RtsFlagsBits::RECEIVING),
+            "未重复通知时 manager 应保持监听态"
+        );
     }
 
     #[test]
@@ -1187,26 +1208,32 @@ mod tests {
 
         // C system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig)
         let priv0 = privs.get(0).unwrap();
-        assert!(priv0.signals.s_sig_pending.contains(15_u8),
-            "自管理非致命信号应记入进程自身 priv 的 s_sig_pending");
+        assert!(
+            priv0.signals.s_sig_pending.contains(15_u8),
+            "自管理非致命信号应记入进程自身 priv 的 s_sig_pending"
+        );
         // C: the self-managed path does not set RTS_SIGNALED (the process
         // is not suspended; it handles the signal itself)
         let target = procs.get(ProcNr(0)).unwrap();
         assert!(!target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
-        assert!(!target.p_pending.contains(15_u8),
-            "自管理路径不写 p_pending（那是外部管理器轮询的位图）");
+        assert!(
+            !target.p_pending.contains(15_u8),
+            "自管理路径不写 p_pending（那是外部管理器轮询的位图）"
+        );
     }
 
     #[test]
     fn test_cause_signal_self_lethal_promotes_backup() {
-        let (_, manager_ep, mut procs, mut privs) =
-            occupy_two_slots(ProcNr(0), ProcNr(1));
+        let (_, manager_ep, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         // Self-managed + backup preassigned (C system.c:418-419 — s_bak_sig_mgr)
         privs.get_mut(0).unwrap().signals.s_bak_sig_mgr = manager_ep;
         // The backup is suspended with RTS_NO_PRIV (cleared on promotion,
         // C system.c:424)
-        procs.get_mut(ProcNr(1)).unwrap()
-            .p_rts_flags.set(RtsFlagsBits::NO_PRIV);
+        procs
+            .get_mut(ProcNr(1))
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::NO_PRIV);
         listen(&mut procs, ProcNr(1));
 
         cause_signal(ProcNr(0), SIGABRT, &mut procs, &mut privs);
@@ -1226,8 +1253,10 @@ mod tests {
         assert!(target.p_pending.contains(SIGABRT as u8));
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING));
-        assert!(backup.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
-            "提升后 backup 应收到 SIGKSIG 通知");
+        assert!(
+            backup.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
+            "提升后 backup 应收到 SIGKSIG 通知"
+        );
     }
 
     #[test]
@@ -1245,8 +1274,7 @@ mod tests {
         // C do_getksig.c:27-40 — first call: finds the SIGNALED target,
         // fills in (endpt, map) and clears SIGNALED + p_pending; second
         // call: nothing pending → endpt = NONE.
-        let (target_ep, manager_ep, mut procs, mut privs) =
-            occupy_two_slots(ProcNr(0), ProcNr(1));
+        let (target_ep, manager_ep, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         // Point the target's signal manager at manager (C: priv(rp)->s_sig_mgr)
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
         {
@@ -1290,11 +1318,13 @@ mod tests {
     fn test_endksig_clears_sig_pending_when_no_new_signal() {
         // C do_endksig.c:35-36 — SIG_PENDING set and no new signal
         // (SIGNALED clear) → clear RTS_SIG_PENDING and return OK.
-        let (target_ep, manager_ep, mut procs, mut privs) =
-            occupy_two_slots(ProcNr(0), ProcNr(1));
+        let (target_ep, manager_ep, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
-        procs.get_mut(ProcNr(0)).unwrap()
-            .p_rts_flags.set(RtsFlagsBits::SIG_PENDING);
+        procs
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::SIG_PENDING);
         // The caller is addressed by slot ProcNr(1); its endpoint must live
         // on the slot (the standalone handle no longer applies).
         procs.get_mut(ProcNr(1)).unwrap().p_endpoint = manager_ep;
@@ -1302,13 +1332,20 @@ mod tests {
         msg.m_type = Syscall::Endksig as i32;
         // SAFETY: m_type set above; test-only union write (same as the
         // msg_sigcalls read side).
-        unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
+        unsafe {
+            msg.m_u.m_sigcalls.endpt = target_ep.get();
+        }
 
         let result = dispatch_endksig(ProcNr(1), &mut procs, &msg, &privs);
         assert_eq!(result, KcallResult::Ok(OK));
-        assert!(!procs.get(ProcNr(0)).unwrap()
-            .p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING),
-            "无新信号时 ENDKSIG 必须清 RTS_SIG_PENDING");
+        assert!(
+            !procs
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::SIG_PENDING),
+            "无新信号时 ENDKSIG 必须清 RTS_SIG_PENDING"
+        );
     }
 
     #[test]
@@ -1316,8 +1353,7 @@ mod tests {
         // C do_endksig.c:35 — if a new signal arrived during ENDKSIG
         // processing (SIGNALED set), RTS_SIG_PENDING stays (the manager
         // must GETKSIG again).
-        let (target_ep, manager_ep, mut procs, mut privs) =
-            occupy_two_slots(ProcNr(0), ProcNr(1));
+        let (target_ep, manager_ep, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
         {
             let t = procs.get_mut(ProcNr(0)).unwrap();
@@ -1331,13 +1367,20 @@ mod tests {
         msg.m_type = Syscall::Endksig as i32;
         // SAFETY: m_type set above; test-only union write (same as the
         // msg_sigcalls read side).
-        unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
+        unsafe {
+            msg.m_u.m_sigcalls.endpt = target_ep.get();
+        }
 
         let result = dispatch_endksig(ProcNr(1), &mut procs, &msg, &privs);
         assert_eq!(result, KcallResult::Ok(OK));
-        assert!(procs.get(ProcNr(0)).unwrap()
-            .p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING),
-            "新信号已到达（SIGNALED 置位）时 SIG_PENDING 必须保留");
+        assert!(
+            procs
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::SIG_PENDING),
+            "新信号已到达（SIGNALED 置位）时 SIG_PENDING 必须保留"
+        );
     }
 
     #[test]
@@ -1348,8 +1391,7 @@ mod tests {
         let (target_ep, _, mut procs, _privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         // The target must have a recorded kernel entry (NoEntry → EINVAL,
         // never reaches the copy)
-        procs.get_mut(ProcNr(0)).unwrap().trap_style =
-            minix_arch::TrapStyle::IntHard;
+        procs.get_mut(ProcNr(0)).unwrap().trap_style = minix_arch::TrapStyle::IntHard;
         procs.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigsend as i32;
@@ -1360,8 +1402,11 @@ mod tests {
         }
 
         let result = dispatch_sigsend(ProcNr(0), &mut procs, &msg);
-        assert_eq!(result, KcallResult::VmSuspend,
-            "未映射 sigctx 的拷贝必须挂起等待 VM 协助");
+        assert_eq!(
+            result,
+            KcallResult::VmSuspend,
+            "未映射 sigctx 的拷贝必须挂起等待 VM 协助"
+        );
     }
 
     #[test]
@@ -1381,7 +1426,10 @@ mod tests {
         }
 
         let result = dispatch_sigreturn(ProcNr(0), &mut procs, &msg);
-        assert_eq!(result, KcallResult::VmSuspend,
-            "未映射 sigctx 的 sigcontext 拷回必须挂起等待 VM 协助");
+        assert_eq!(
+            result,
+            KcallResult::VmSuspend,
+            "未映射 sigctx 的 sigcontext 拷回必须挂起等待 VM 协助"
+        );
     }
 }

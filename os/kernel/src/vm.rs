@@ -17,12 +17,12 @@
 //! Design decisions are documented in 02-higher-half-kernel.md §3 and
 //! 24-cross-space-runtime.md §3.
 
-use minix_types::{Endpoint, Message, PhysBytes, VirBytes};
+use minix_arch::PteWalkArch;
 use minix_arch::direct_map::DirectMapArch;
 use minix_arch::paging::PageFlags;
-use minix_arch::PteWalkArch;
+use minix_types::{Endpoint, Message, PhysBytes, VirBytes};
 
-use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits};
+use crate::proc::{KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits};
 
 /// Double-walk reconciliation probe for kernel cross-space writes: for one
 /// (root, va), two independent walks yielding different PAs is direct
@@ -64,7 +64,6 @@ pub(crate) fn nk4a_walk_reconcile(root: u64, va: u64, pa1: u64, pa2: u64) {
     SEEN[n][3].store(pa2, AtomicOrd::Relaxed);
     N.fetch_add(1, AtomicOrd::Relaxed);
 }
-
 
 /// Instrument round two: per-operation content verification observation
 /// point on the cross-space copy channel.
@@ -153,7 +152,9 @@ fn nk4a_copy_verify(
                 Console::write_str(" chunk=");
                 Console::write_str(core::str::from_utf8(&hx(chunk_no)).unwrap_or("?"));
                 Console::write_str(" off=");
-                Console::write_str(core::str::from_utf8(&hx(done as u64 + diff as u64)).unwrap_or("?"));
+                Console::write_str(
+                    core::str::from_utf8(&hx(done as u64 + diff as u64)).unwrap_or("?"),
+                );
                 Console::write_str(" exp=");
                 Console::write_str(core::str::from_utf8(&hx(srcb[diff] as u64)).unwrap_or("?"));
                 Console::write_str(" got=");
@@ -203,7 +204,10 @@ impl Default for PageTableRef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressRef {
-    Process { endpoint: Endpoint, offset: VirBytes },
+    Process {
+        endpoint: Endpoint,
+        offset: VirBytes,
+    },
     Physical(PhysBytes),
 }
 
@@ -331,7 +335,12 @@ pub struct VmCopyContext {
 
 impl VmCopyContext {
     pub fn new(src: AddressRef, dst: AddressRef, bytes: usize, fault_type: VmFaultType) -> Self {
-        Self { src, dst, bytes, fault_type }
+        Self {
+            src,
+            dst,
+            bytes,
+            fault_type,
+        }
     }
 }
 
@@ -628,7 +637,7 @@ pub fn cross_space_copy<D: DirectMapArch>(
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
         Err(ResolveError::UnknownEndpoint) => {
-            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint));
         }
     };
     let _ = dst_phys;
@@ -687,11 +696,7 @@ pub fn cross_space_copy<D: DirectMapArch>(
         //   temporary on the caller side.
         // - BKL ensures no concurrent mutation; u8 has no alignment requirement.
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                src_vaddr.0 as *const u8,
-                dst_vaddr.0 as *mut u8,
-                chunk,
-            );
+            core::ptr::copy_nonoverlapping(src_vaddr.0 as *const u8, dst_vaddr.0 as *mut u8, chunk);
         }
         done += chunk;
     }
@@ -750,46 +755,43 @@ pub(crate) fn nk4a_memset_verify(
     } else {
         (bytes, 0)
     };
-    let mut verify_range = |side: &CopySide,
-                            from: usize,
-                            to: usize,
-                            hits: &AtomicUsize,
-                            printed: &AtomicUsize| {
-        let mut done = from;
-        while done < to {
-            let remaining = to - done;
-            let (dp, drun) = side.chunk::<minix_arch::CurrentDirectMap>(done, remaining);
-            if drun == 0 {
-                return; // the half-copy shape is not covered (same boundary as csc-verify)
-            }
-            let dv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(dp);
-            // SAFETY: the DM alias is read-only, from the same window source
-            // as the memset main path.
-            let dstb = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, drun) };
-            if let Some(off) = dstb.iter().position(|&b| b != pattern) {
-                let h = hits.fetch_add(1, AtomicOrd::AcqRel);
-                if printed.fetch_add(1, AtomicOrd::AcqRel) < 8 {
-                    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
-                    let abs = done + off;
-                    let got = dstb[off];
-                    Console::write_str("nk4c: mset-verify HIT at=");
-                    let mut hb = [0u8; 16];
-                    let mut v = abs as u64;
-                    for byte in hb.iter_mut().rev() {
-                        *byte = b"0123456789abcdef"[(v & 0xf) as usize];
-                        v >>= 4;
-                    }
-                    Console::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
-                    Console::write_str(" want=");
-                    Console::write_hex(pattern as u64);
-                    Console::write_str(" got=");
-                    Console::write_hex(got as u64);
-                    Console::write_str("\n");
+    let mut verify_range =
+        |side: &CopySide, from: usize, to: usize, hits: &AtomicUsize, printed: &AtomicUsize| {
+            let mut done = from;
+            while done < to {
+                let remaining = to - done;
+                let (dp, drun) = side.chunk::<minix_arch::CurrentDirectMap>(done, remaining);
+                if drun == 0 {
+                    return; // the half-copy shape is not covered (same boundary as csc-verify)
                 }
+                let dv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(dp);
+                // SAFETY: the DM alias is read-only, from the same window source
+                // as the memset main path.
+                let dstb = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, drun) };
+                if let Some(off) = dstb.iter().position(|&b| b != pattern) {
+                    let h = hits.fetch_add(1, AtomicOrd::AcqRel);
+                    if printed.fetch_add(1, AtomicOrd::AcqRel) < 8 {
+                        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+                        let abs = done + off;
+                        let got = dstb[off];
+                        Console::write_str("nk4c: mset-verify HIT at=");
+                        let mut hb = [0u8; 16];
+                        let mut v = abs as u64;
+                        for byte in hb.iter_mut().rev() {
+                            *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                            v >>= 4;
+                        }
+                        Console::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
+                        Console::write_str(" want=");
+                        Console::write_hex(pattern as u64);
+                        Console::write_str(" got=");
+                        Console::write_hex(got as u64);
+                        Console::write_str("\n");
+                    }
+                }
+                done += drun;
             }
-            done += drun;
-        }
-    };
+        };
     verify_range(&side, 0, verify_bytes, &HITS, &PRINTED);
     if skip_tail != 0 {
         verify_range(&side, skip_tail, bytes, &HITS, &PRINTED);
@@ -824,7 +826,7 @@ pub fn cross_space_memset<D: DirectMapArch>(
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
         Err(ResolveError::UnknownEndpoint) => {
-            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint));
         }
     };
 
@@ -918,7 +920,7 @@ pub fn cross_space_write<D: DirectMapArch>(
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
         Err(ResolveError::UnknownEndpoint) => {
-            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint));
         }
     };
     // Keep `dst_phys` used so the gate and its definition stay consistent.
@@ -1314,11 +1316,7 @@ impl VmRequestQueue {
     ///
     /// Returns `None` if the queue is empty or all requests are filtered out
     /// (C: `return ENOENT`).
-    pub fn dequeue_filtered<F>(
-        &mut self,
-        procs: &mut [KProcess],
-        mut filter: F,
-    ) -> Option<ProcNr>
+    pub fn dequeue_filtered<F>(&mut self, procs: &mut [KProcess], mut filter: F) -> Option<ProcNr>
     where
         F: FnMut(&KProcess, &KProcess) -> bool,
     {
@@ -1407,7 +1405,10 @@ impl VmRequestQueue {
 }
 
 fn endpoint_to_proc_nr(endpoint: Endpoint, procs: &[KProcess]) -> Option<ProcNr> {
-    procs.iter().find(|p| p.p_endpoint == endpoint).map(|p| p.p_nr)
+    procs
+        .iter()
+        .find(|p| p.p_endpoint == endpoint)
+        .map(|p| p.p_nr)
 }
 
 // VMCTL error type.
@@ -1586,9 +1587,9 @@ impl VmRequestHandler {
         queue: &mut VmRequestQueue,
         procs: &mut [KProcess],
     ) -> Result<(ProcNr, VmCheckParams), VmCtlError> {
-        let proc_nr = queue.dequeue_filtered(procs, |_requestor, _target| {
-            true
-        }).ok_or(VmCtlError::NoRequest)?;
+        let proc_nr = queue
+            .dequeue_filtered(procs, |_requestor, _target| true)
+            .ok_or(VmCtlError::NoRequest)?;
 
         debug_assert!((proc_nr.0 as usize) < procs.len(), "ProcNr out of bounds");
         let proc = &mut procs[proc_nr.0 as usize];
@@ -1610,10 +1611,7 @@ impl VmRequestHandler {
     /// Transitions `VmSuspendState::Fetched → Completed(result)`.
     /// Sets `MF_KCALL_RESUME` for `KernelCall` type (C: `p->p_misc_flags |= MF_KCALL_RESUME`).
     /// Clears `RTS_VMREQUEST` to make the process schedulable again.
-    pub fn memreq_reply(
-        proc: &mut KProcess,
-        result: VmCheckResult,
-    ) -> Result<(), VmCtlError> {
+    pub fn memreq_reply(proc: &mut KProcess, result: VmCheckResult) -> Result<(), VmCtlError> {
         let ctx = proc.p_vm_suspend.as_mut().ok_or(VmCtlError::NoRequest)?;
 
         if ctx.state != VmSuspendState::Fetched {
@@ -1711,9 +1709,10 @@ pub fn try_deliver_message(rp: &KProcess) -> bool {
 pub fn check_resumed_caller(caller: &KProcess) -> VmCheckResult {
     if caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME)
         && let Some(ctx) = caller.p_vm_suspend.as_ref()
-            && let VmSuspendState::Completed(result) = ctx.state {
-                return result;
-            }
+        && let VmSuspendState::Completed(result) = ctx.state
+    {
+        return result;
+    }
     VmCheckResult::Ok
 }
 
@@ -1771,7 +1770,10 @@ mod tests {
         let completed_ok = CrossSpaceResult::Completed(Ok(()));
         assert_eq!(completed_ok, CrossSpaceResult::Completed(Ok(())));
         let completed_err = CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault));
-        assert_eq!(completed_err, CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault)));
+        assert_eq!(
+            completed_err,
+            CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault))
+        );
     }
 
     #[test]
@@ -1794,7 +1796,11 @@ mod tests {
         use minix_arch::direct_map::MockDirectMap;
         let paddr = PhysBytes::new(0x5000);
         let addr = AddressRef::Physical(paddr);
-        let result = resolve_physical::<MockDirectMap>(&addr, &crate::test_helpers::test_proc_table(), |_pt: &crate::proc_table::ProcessTable, _| None);
+        let result = resolve_physical::<MockDirectMap>(
+            &addr,
+            &crate::test_helpers::test_proc_table(),
+            |_pt: &crate::proc_table::ProcessTable, _| None,
+        );
         assert_eq!(result, Ok(paddr));
     }
 
@@ -1871,7 +1877,11 @@ mod tests {
             endpoint: Endpoint::from_generation_slot(1, 9999),
             offset: VirBytes::new(0),
         };
-        let result = resolve_physical::<MockDirectMap>(&addr, &crate::test_helpers::test_proc_table(), |_pt: &crate::proc_table::ProcessTable, _| None);
+        let result = resolve_physical::<MockDirectMap>(
+            &addr,
+            &crate::test_helpers::test_proc_table(),
+            |_pt: &crate::proc_table::ProcessTable, _| None,
+        );
         assert_eq!(result, Err(ResolveError::UnknownEndpoint));
     }
 
@@ -2045,10 +2055,30 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
         // Each process targets the next one (circular), so endpoint_to_proc_nr can resolve
-        procs[0].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 1), params, None);
-        procs[1].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 2), params, None);
-        procs[2].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 3), params, None);
-        procs[3].suspend_for_vm(VmSuspendType::KernelCall, Endpoint::from_generation_slot(1, 0), params, None);
+        procs[0].suspend_for_vm(
+            VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 1),
+            params,
+            None,
+        );
+        procs[1].suspend_for_vm(
+            VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 2),
+            params,
+            None,
+        );
+        procs[2].suspend_for_vm(
+            VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 3),
+            params,
+            None,
+        );
+        procs[3].suspend_for_vm(
+            VmSuspendType::KernelCall,
+            Endpoint::from_generation_slot(1, 0),
+            params,
+            None,
+        );
         crate::test_helpers::scratch_procs(procs)
     }
 
@@ -2087,10 +2117,7 @@ mod tests {
         let mut queue = VmRequestQueue::new();
         queue.enqueue(ProcNr(0), &mut procs);
 
-        let result = VmRequestHandler::memreq_get(
-            &mut queue,
-            &mut procs,
-        );
+        let result = VmRequestHandler::memreq_get(&mut queue, &mut procs);
         assert!(result.is_ok());
         let ctx = procs[0].p_vm_suspend.as_ref().unwrap();
         assert_eq!(ctx.state, VmSuspendState::Fetched);
@@ -2098,7 +2125,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_transitions_fetched_to_completed_ok() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0), VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
@@ -2113,7 +2140,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_transitions_fetched_to_completed_fault() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0), VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
@@ -2126,7 +2153,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_rejects_pending_state() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0), VmSuspendType::KernelCall);
         // state is Pending by default
         let result = VmRequestHandler::memreq_reply(&mut proc, VmCheckResult::Ok);
         assert_eq!(result, Err(VmCtlError::InvalidState));
@@ -2134,7 +2161,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_rejects_completed_state() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0), VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
@@ -2150,7 +2177,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_delivermsg_requires_mf_delivermsg() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::DeliverMsg);
+        let mut proc = make_vm_suspended_proc(ProcNr(0), VmSuspendType::DeliverMsg);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
         // MF_DELIVERMSG not set → should fail
@@ -2161,7 +2188,7 @@ mod tests {
 
     #[test]
     fn memreq_reply_delivermsg_succeeds_with_flag() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::DeliverMsg);
+        let mut proc = make_vm_suspended_proc(ProcNr(0), VmSuspendType::DeliverMsg);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
         proc.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
@@ -2200,7 +2227,13 @@ mod tests {
 
         let result = kernel_call_resume(ProcNr(0), &mut table);
         assert_eq!(result, VmCheckResult::Ok);
-        assert!(!table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::KCALL_RESUME)
+        );
     }
 
     #[test]
@@ -2230,7 +2263,13 @@ mod tests {
 
         let result = kernel_call_resume(ProcNr(0), &mut table);
         assert_eq!(result, VmCheckResult::Fault);
-        assert!(!table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::KCALL_RESUME)
+        );
     }
 
     #[test]
@@ -2241,7 +2280,7 @@ mod tests {
 
     #[test]
     fn check_resumed_caller_returns_result_when_resumed() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
+        let mut proc = make_vm_suspended_proc(ProcNr(0), VmSuspendType::KernelCall);
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Completed(VmCheckResult::Fault);
         proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);

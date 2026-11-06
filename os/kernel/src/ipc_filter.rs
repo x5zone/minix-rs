@@ -55,7 +55,7 @@ pub const NR_SYS_CALLS: usize = 58;
 /// User processes share `USER_PRIV` which has limited `s_ipc_to`.
 #[inline]
 #[allow(dead_code)] // Wrapper is tested directly; will be
-                    // wired into dispatch path when IPC filter pool is enabled.
+// wired into dispatch path when IPC filter pool is enabled.
 pub(crate) fn ipc_filter_check(caller_priv: &KPriv, target_sys_id: u16) -> bool {
     caller_priv.may_send_to(target_sys_id)
 }
@@ -76,7 +76,10 @@ pub(crate) fn kcall_filter_check(caller_priv: &KPriv, call_nr: u32) -> bool {
         return false;
     }
     // s_k_call_mask is a KCallMask (capability.rs); bit i = kernel call i.
-    caller_priv.ipc.s_k_call_mask.contains(crate::capability::KCallMask::from_bits(1u64 << call_nr))
+    caller_priv
+        .ipc
+        .s_k_call_mask
+        .contains(crate::capability::KCallMask::from_bits(1u64 << call_nr))
 }
 
 /// Set a bit in the IPC target bitmap.
@@ -163,7 +166,8 @@ pub(crate) fn is_any_ep(ep: minix_types::Endpoint) -> bool {
 /// must be an ANY_* endpoint or `source_ok` (the caller's pre-computed
 /// isokendpt result -- resolving it needs the process table).
 pub(crate) fn el_check(el: &IpcFilterElement, source_ok: bool) -> bool {
-    let has_match = (el.flags & (IpcFilterElFlags::MATCH_M_SOURCE | IpcFilterElFlags::MATCH_M_TYPE)) != 0;
+    let has_match =
+        (el.flags & (IpcFilterElFlags::MATCH_M_SOURCE | IpcFilterElFlags::MATCH_M_TYPE)) != 0;
     let source_resolves = (el.flags & IpcFilterElFlags::MATCH_M_SOURCE) == 0
         || is_any_ep(minix_types::Endpoint(el.m_source))
         || source_ok;
@@ -183,8 +187,7 @@ pub(crate) fn el_match(
     class_of_source: &mut ClassResolver<'_>,
 ) -> bool {
     // IPCF_EL_MATCH_M_TYPE — ipc_filter.h:30-32.
-    let type_ok =
-        (el.flags & IpcFilterElFlags::MATCH_M_TYPE) == 0 || el.m_type == m_type;
+    let type_ok = (el.flags & IpcFilterElFlags::MATCH_M_TYPE) == 0 || el.m_type == m_type;
     // IPCF_EL_MATCH_M_SOURCE — ipc_filter.h:32-38.
     let source_ok = (el.flags & IpcFilterElFlags::MATCH_M_SOURCE) == 0 || {
         let el_source = minix_types::Endpoint(el.m_source);
@@ -265,7 +268,9 @@ pub(crate) fn append_to_chain(
     head: Option<usize>,
     new_idx: usize,
 ) -> Option<usize> {
-    let Some(head) = head else { return Some(new_idx) };
+    let Some(head) = head else {
+        return Some(new_idx);
+    };
     let mut cur = Some(head);
     while let Some(idx) = cur {
         let next = pool.get(idx).and_then(|s| s.next);
@@ -525,16 +530,32 @@ mod tests {
 
     #[test]
     fn test_el_check_requires_a_match_flag() {
-        let no_flags = IpcFilterElement { flags: 0, m_source: 0, m_type: 0 };
+        let no_flags = IpcFilterElement {
+            flags: 0,
+            m_source: 0,
+            m_type: 0,
+        };
         // C ipc_filter.h:19-25 -- no MATCH flag at all means invalid.
         assert!(!el_check(&no_flags, true));
-        let with_type = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_TYPE, m_source: 0, m_type: 5 };
+        let with_type = IpcFilterElement {
+            flags: IpcFilterElFlags::MATCH_M_TYPE,
+            m_source: 0,
+            m_type: 5,
+        };
         assert!(el_check(&with_type, true));
         // MATCH_M_SOURCE + an unresolvable source (isokendpt fails) -> invalid.
-        let bad_source = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_SOURCE, m_source: 0x7FFF, m_type: 0 };
+        let bad_source = IpcFilterElement {
+            flags: IpcFilterElFlags::MATCH_M_SOURCE,
+            m_source: 0x7FFF,
+            m_type: 0,
+        };
         assert!(!el_check(&bad_source, false));
         // MATCH_M_SOURCE + ANY_* -> isokendpt is not needed.
-        let any_source = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_SOURCE, m_source: ANY_USR.0, m_type: 0 };
+        let any_source = IpcFilterElement {
+            flags: IpcFilterElFlags::MATCH_M_SOURCE,
+            m_source: ANY_USR.0,
+            m_type: 0,
+        };
         assert!(el_check(&any_source, false));
     }
 
@@ -545,11 +566,26 @@ mod tests {
             m_source: 0x100, // concrete source
             m_type: 42,
         };
-        assert!(el_match(&el, minix_types::Endpoint(0x100), 42, &mut usr_class));
+        assert!(el_match(
+            &el,
+            minix_types::Endpoint(0x100),
+            42,
+            &mut usr_class
+        ));
         // Type mismatch -> no hit.
-        assert!(!el_match(&el, minix_types::Endpoint(0x100), 43, &mut usr_class));
+        assert!(!el_match(
+            &el,
+            minix_types::Endpoint(0x100),
+            43,
+            &mut usr_class
+        ));
         // Source mismatch -> no hit.
-        assert!(!el_match(&el, minix_types::Endpoint(0x200), 42, &mut usr_class));
+        assert!(!el_match(
+            &el,
+            minix_types::Endpoint(0x200),
+            42,
+            &mut usr_class
+        ));
     }
 
     #[test]
@@ -560,12 +596,27 @@ mod tests {
             m_source: ANY_USR.0,
             m_type: 0,
         };
-        assert!(el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Usr)));
-        assert!(!el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Sys)));
-        assert!(!el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Task)));
+        assert!(el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| {
+            Some(EndpointClass::Usr)
+        }));
+        assert!(!el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| {
+            Some(EndpointClass::Sys)
+        }));
+        assert!(!el_match(&el, minix_types::Endpoint(0x100), 0, &mut |_| {
+            Some(EndpointClass::Task)
+        }));
         // ANY_TSK hits Task.
-        let el_tsk = IpcFilterElement { flags: IpcFilterElFlags::MATCH_M_SOURCE, m_source: ANY_TSK.0, m_type: 0 };
-        assert!(el_match(&el_tsk, minix_types::Endpoint(0x100), 0, &mut |_| Some(EndpointClass::Task)));
+        let el_tsk = IpcFilterElement {
+            flags: IpcFilterElFlags::MATCH_M_SOURCE,
+            m_source: ANY_TSK.0,
+            m_type: 0,
+        };
+        assert!(el_match(
+            &el_tsk,
+            minix_types::Endpoint(0x100),
+            0,
+            &mut |_| Some(EndpointClass::Task)
+        ));
     }
 
     #[test]
@@ -581,8 +632,20 @@ mod tests {
                 m_type: 0,
             };
         }
-        assert!(chain_allowed(&pool, Some(idx), minix_types::Endpoint(0x100), 0, &mut usr_class));
-        assert!(!chain_allowed(&pool, Some(idx), minix_types::Endpoint(0x200), 0, &mut usr_class));
+        assert!(chain_allowed(
+            &pool,
+            Some(idx),
+            minix_types::Endpoint(0x100),
+            0,
+            &mut usr_class
+        ));
+        assert!(!chain_allowed(
+            &pool,
+            Some(idx),
+            minix_types::Endpoint(0x200),
+            0,
+            &mut usr_class
+        ));
     }
 
     #[test]
@@ -598,8 +661,20 @@ mod tests {
                 m_type: 0,
             };
         }
-        assert!(!chain_allowed(&pool, Some(bl), minix_types::Endpoint(0x100), 0, &mut usr_class));
-        assert!(chain_allowed(&pool, Some(bl), minix_types::Endpoint(0x200), 0, &mut usr_class));
+        assert!(!chain_allowed(
+            &pool,
+            Some(bl),
+            minix_types::Endpoint(0x100),
+            0,
+            &mut usr_class
+        ));
+        assert!(chain_allowed(
+            &pool,
+            Some(bl),
+            minix_types::Endpoint(0x200),
+            0,
+            &mut usr_class
+        ));
 
         // Chain [wl{A}, bl{A}]: the whitelist lets it through and the blacklist
         // flips it back -- order is priority (the outer walk in C
@@ -615,7 +690,13 @@ mod tests {
             };
             slot.next = Some(bl);
         }
-        assert!(!chain_allowed(&pool, Some(wl), minix_types::Endpoint(0x100), 0, &mut usr_class));
+        assert!(!chain_allowed(
+            &pool,
+            Some(wl),
+            minix_types::Endpoint(0x100),
+            0,
+            &mut usr_class
+        ));
     }
 
     #[test]

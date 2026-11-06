@@ -12,10 +12,10 @@
 //! the call site.
 
 use minix_arch::arch::boot_arch::BootArch;
-use minix_arch::arch::direct_map::DirectMapLayout;
 use minix_arch::arch::boot_dm::{DmPagePolicy, DmPolicyError, plan_dm_policy};
-use minix_arch::paging_ext::{BootPageSupport, PageSize, PageSupportError};
+use minix_arch::arch::direct_map::DirectMapLayout;
 use minix_arch::paging::Paging;
+use minix_arch::paging_ext::{BootPageSupport, PageSize, PageSupportError};
 
 /// Kernel image layout used as planning input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,9 +99,7 @@ pub fn plan_kernel_mapping<A: BootArch>(
     support: &BootPageSupport<A>,
     layout: KernelLayout,
 ) -> Result<KernelMapPolicy<A>, KernelMapError> {
-    support
-        .validate()
-        .map_err(KernelMapError::InvalidSupport)?;
+    support.validate().map_err(KernelMapError::InvalidSupport)?;
 
     if layout.size == 0 {
         return Err(KernelMapError::InvalidKernelLayout);
@@ -210,9 +208,7 @@ pub fn plan_boot_pages<A: BootArch>(
     kernel_layout: KernelLayout,
     dm_layout: &DirectMapLayout<A>,
 ) -> Result<BootPagePolicy<A>, BootPagePolicyError> {
-    support
-        .validate()
-        .map_err(BootPagePolicyError::Support)?;
+    support.validate().map_err(BootPagePolicyError::Support)?;
     let kernel = plan_kernel_mapping::<A>(support, kernel_layout)?;
     let dm = plan_dm_policy::<A>(support, dm_layout)?;
     Ok(BootPagePolicy { kernel, dm })
@@ -221,10 +217,10 @@ pub fn plan_boot_pages<A: BootArch>(
 #[cfg(all(test, feature = "mock"))]
 mod policy_tests {
     use super::*;
+    use minix_arch::DirectMapArch;
     use minix_arch::arch::boot_arch::MockBootArch;
     use minix_arch::arch::direct_map::MockDirectMap;
     use minix_arch::paging_ext::{BootPageSupport, PageSupport};
-    use minix_arch::DirectMapArch;
 
     fn support(preferred: bool, fallback: bool, phys_limit: u64) -> BootPageSupport<MockBootArch> {
         BootPageSupport::<MockBootArch>::from_parts(

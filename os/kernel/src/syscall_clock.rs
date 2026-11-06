@@ -17,12 +17,10 @@
 use core::sync::atomic::Ordering;
 
 use minix_types::{
-    Endpoint, Message,
-    MessKrnLsysSysTimes, MessLsysKrnSysSetalarm,
-    MessageM1, MessageM2,
+    Endpoint, MessKrnLsysSysTimes, MessLsysKrnSysSetalarm, Message, MessageM1, MessageM2,
 };
 
-use crate::clock::{self, ClockState, TimerAction, TMR_NEVER};
+use crate::clock::{self, ClockState, TMR_NEVER, TimerAction};
 use crate::kpriv::{KPriv, PrivTable};
 use crate::proc::{KProcess, MiscFlagsBits, ProcNr};
 use crate::proc_table::ProcessTable;
@@ -366,10 +364,7 @@ pub(crate) fn caller_has_sys_proc(caller: &KProcess) -> bool {
 /// 2. Call `ClockState::set_boottime()` which updates both the
 ///    internal field and the global `CLOCK_BOOTTIME` atomic.
 /// 3. Return OK.
-pub fn dispatch_stime(
-    msg: &Message,
-    clock_state: &mut ClockState,
-) -> KcallResult {
+pub fn dispatch_stime(msg: &Message, clock_state: &mut ClockState) -> KcallResult {
     // C: do_stime.c:17 — set_boottime(m_ptr->m_lsys_krn_sys_stime.boot_time)
     msg.debug_check_m_type_any(&[Syscall::Stime as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
@@ -396,10 +391,7 @@ pub fn dispatch_stime(
 /// 3. If `now != 0`: set-time mode — compute `timediff_ticks` from
 ///    `sec - boottime`, validate range, and call `set_realtime()`
 ///    (C:35-57). If boottime was wrong, correct it.
-pub fn dispatch_settime(
-    msg: &Message,
-    clock_state: &mut ClockState,
-) -> KcallResult {
+pub fn dispatch_settime(msg: &Message, clock_state: &mut ClockState) -> KcallResult {
     // C: do_settime.c:25-52 — parameters read inline (C has no extraction)
     msg.debug_check_m_type_any(&[Syscall::Settime as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
@@ -476,8 +468,8 @@ pub fn dispatch_vtimer(
     // VT_ENDPT:37, VT_SET:60, VT_VALUE:63/71)
     msg.debug_check_m_type_any(&[Syscall::Vtimer as i32]);
     let m2 = msg_m2(msg);
-    let which = m2.m2i1;        // VT_WHICH
-    let set = m2.m2i2 != 0;     // VT_SET
+    let which = m2.m2i1; // VT_WHICH
+    let set = m2.m2i2 != 0; // VT_SET
     let value = m2.m2l1 as u64; // VT_VALUE
     let endpt = m2.m2l2 as i32; // VT_ENDPT
 
@@ -635,7 +627,13 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut msg = Message::default();
         msg.m_type = Syscall::Setalarm as i32;
-        match dispatch_setalarm(ProcNr(0), &mut msg, &mut priv_table, &mut ClockState::new(), &proc_table) {
+        match dispatch_setalarm(
+            ProcNr(0),
+            &mut msg,
+            &mut priv_table,
+            &mut ClockState::new(),
+            &proc_table,
+        ) {
             KcallResult::Ok(EPERM) => {}
             other => panic!("expected Ok(EPERM), got {:?}", other),
         }
@@ -729,7 +727,11 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Setalarm as i32;
         let result = dispatch_setalarm(
-            ProcNr(0), &mut msg, &mut priv_table, &mut ClockState::new(), &proc_table,
+            ProcNr(0),
+            &mut msg,
+            &mut priv_table,
+            &mut ClockState::new(),
+            &proc_table,
         );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -742,12 +744,14 @@ mod tests {
     /// valid caller. priv_id points at a static priv slot carrying the
     /// SYS_PROC capability; SLOT_FREE is cleared as well (`endpoint_to_nr`
     /// skips free slots).
-    fn t6_sys_proc_caller() -> (crate::test_helpers::TestProcTable, crate::test_helpers::TestPrivTable) {
+    fn t6_sys_proc_caller() -> (
+        crate::test_helpers::TestProcTable,
+        crate::test_helpers::TestPrivTable,
+    ) {
         let mut table = crate::test_helpers::test_proc_table();
         let mut privs = crate::test_helpers::test_priv_table();
         let pid = privs.assign_static(ProcNr(0)).expect("static priv slot");
-        privs.get_mut(pid).unwrap().flags.s_flags =
-            crate::capability::ProcessCapability::SYS_PROC;
+        privs.get_mut(pid).unwrap().flags.s_flags = crate::capability::ProcessCapability::SYS_PROC;
         let slot = table.get_mut(ProcNr(0)).unwrap();
         slot.priv_id = Some(pid);
         slot.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
@@ -762,7 +766,9 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Stime as i32;
         // SAFETY: m_type is set; the union write is test-side.
-        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000;
+        }
         let result = dispatch_stime(&msg, &mut cs);
         assert_eq!(result, KcallResult::Ok(OK));
         assert_eq!(cs.boottime(), 1000);
@@ -775,9 +781,13 @@ mod tests {
         let mut cs = ClockState::new();
         let mut msg = Message::default();
         msg.m_type = Syscall::Stime as i32;
-        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000;
+        }
         let _ = dispatch_stime(&msg, &mut cs);
-        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 2000; }
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_stime.boot_time = 2000;
+        }
         let _ = dispatch_stime(&msg, &mut cs);
         assert_eq!(cs.boottime(), 2000);
     }
@@ -910,7 +920,9 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Vtimer as i32;
         // SAFETY: m_type is set; the union write is test-side.
-        unsafe { msg.m_u.m_m2.m2i1 = 99; } // neither 1 nor 2
+        unsafe {
+            msg.m_u.m_m2.m2i1 = 99;
+        } // neither 1 nor 2
         let result = dispatch_vtimer(ProcNr(0), &mut msg, &privs, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }

@@ -50,7 +50,7 @@ use minix_arch::{
 };
 
 use crate::proc::KProcess;
-use crate::vm::{cross_space_copy, AddressRef, CrossSpaceResult};
+use crate::vm::{AddressRef, CrossSpaceResult, cross_space_copy};
 
 /// Diagnose a process by walking its stack and emitting each PC.
 ///
@@ -122,14 +122,10 @@ pub fn proc_stacktrace(rp: &KProcess) {
     let read_word = make_read_word(target_endpt, target_cr3, is_kernel, &scratch_cell);
 
     // Walk the frames and print each PC.
-    CurrentStacktraceArch::walk_frames(
-        &target_ctx,
-        read_word,
-        |pc| {
-            Console::write_hex(pc);
-            Console::write_str(" ");
-        },
-    );
+    CurrentStacktraceArch::walk_frames(&target_ctx, read_word, |pc| {
+        Console::write_hex(pc);
+        Console::write_str(" ");
+    });
 
     // C: printf("\n") at the end of proc_stacktrace_execute.
     Console::write_str("\n");
@@ -161,9 +157,7 @@ fn kernel_direct_read_word() -> impl Fn(u64) -> Option<u64> {
         // C's PRCOPY memcpy branch; `volatile` keeps the read from being
         // elided across the diagnostic's console side effects.
         let mapped = CurrentDirectMap::kernel_phys_to_virt(phys);
-        let bytes: [u8; 8] = unsafe {
-            core::ptr::read_volatile(mapped.0 as *const [u8; 8])
-        };
+        let bytes: [u8; 8] = unsafe { core::ptr::read_volatile(mapped.0 as *const [u8; 8]) };
         Some(u64::from_le_bytes(bytes))
     }
 }
@@ -195,10 +189,15 @@ pub fn util_stacktrace() {
         Console::write_str("(stacktrace unavailable on this arch)\n");
         return;
     };
-    CurrentStacktraceArch::walk_frames_from(kernel_direct_read_word(), |pc| {
-        Console::write_hex(pc);
-        Console::write_str(" ");
-    }, fp, 0);
+    CurrentStacktraceArch::walk_frames_from(
+        kernel_direct_read_word(),
+        |pc| {
+            Console::write_hex(pc);
+            Console::write_str(" ");
+        },
+        fp,
+        0,
+    );
     Console::write_str("\n");
 }
 
@@ -262,7 +261,11 @@ fn make_read_word(
         // `resolve_physical` walks the real page table and gets the correct PA.
         let scratch_ptr = scratch_cell.get();
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-            if ep == target_endpt { Some(target_cr3) } else { None }
+            if ep == target_endpt {
+                Some(target_cr3)
+            } else {
+                None
+            }
         };
         let src = AddressRef::Process {
             endpoint: target_endpt,
@@ -289,9 +292,7 @@ fn make_read_word(
                 // an 8-byte write). The address is valid for the
                 // duration of this closure call because `proc_stacktrace`
                 // is on the stack above us.
-                let bytes: [u8; 8] = unsafe {
-                    core::ptr::read(scratch_ptr as *const [u8; 8])
-                };
+                let bytes: [u8; 8] = unsafe { core::ptr::read(scratch_ptr as *const [u8; 8]) };
                 Some(u64::from_le_bytes(bytes))
             }
             _ => None,
@@ -457,8 +458,12 @@ mod tests {
         let user_target = KProcess::new(ProcNr(0), Endpoint(0xBEEF));
         let mut scratch = [0u8; 8];
         let cell = Cell::new(scratch.as_mut_ptr());
-        let read_user =
-            make_read_word(user_target.p_endpoint, user_target.p_seg.phys_root, false, &cell);
+        let read_user = make_read_word(
+            user_target.p_endpoint,
+            user_target.p_seg.phys_root,
+            false,
+            &cell,
+        );
         // Different endpoint → resolver returns None → walk ends.
         assert_eq!(read_user(0x1000), None);
     }

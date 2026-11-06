@@ -9,8 +9,8 @@
 //!
 //! See 02-higher-half-kernel.md §3.4 and §4.3 for design rationale.
 
-use minix_types::VirBytes;
 use minix_boot::KernelInfo;
+use minix_types::VirBytes;
 
 /// Abstraction for the higher-half kernel transition.
 ///

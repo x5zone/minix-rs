@@ -17,14 +17,14 @@
 //!
 //! Each process table is linked via `endpoint`.
 
-use minix_types::{Endpoint, Message, VirBytes, PhysBytes};
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicI32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use minix_types::{Endpoint, Message, PhysBytes, VirBytes};
 
 use minix_arch::{
-    CurrentCpuContext, CurrentCpuContextArch, CpuContextArch, CurrentFpuState, TrapStyle,
+    CpuContextArch, CurrentCpuContext, CurrentCpuContextArch, CurrentFpuState, TrapStyle,
 };
 
-use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
+use crate::vm::{VmCheckParams, VmCopyContext, VmSuspendContext, VmSuspendState, VmSuspendType};
 
 /// Process number type (corresponds to C's `proc_nr_t` — kernel/type.h:9).
 ///
@@ -91,11 +91,11 @@ pub const NR_BOOT_PROCS: usize = crate::proc_table::NR_TASKS + NR_BOOT_MODULES;
 /// Kernel tasks are not loaded from multiboot modules — they are compiled
 /// into the kernel binary.
 pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS] = &[
-    ("asyncm", ProcNr(-5)),  // ASYNCM — async message completion notifications
-    ("idle",   ProcNr(-4)),  // IDLE — runs when no other process can
-    ("clock",  ProcNr(-3)),  // CLOCK — alarms and clock functions
-    ("system", ProcNr(-2)),  // SYSTEM — system functionality requests
-    ("kernel", ProcNr(-1)),  // KERNEL/HARDWARE — pseudo-process for IPC/scheduling
+    ("asyncm", ProcNr(-5)), // ASYNCM — async message completion notifications
+    ("idle", ProcNr(-4)),   // IDLE — runs when no other process can
+    ("clock", ProcNr(-3)),  // CLOCK — alarms and clock functions
+    ("system", ProcNr(-2)), // SYSTEM — system functionality requests
+    ("kernel", ProcNr(-1)), // KERNEL/HARDWARE — pseudo-process for IPC/scheduling
 ];
 
 /// User-space boot module process numbers, in C's boot image order.
@@ -109,18 +109,18 @@ pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS] = &[
 /// number, so booted servers end up with the C endpoints (gen=0: endpoint
 /// == proc number) that user-space servers use for addressing.
 pub const BOOT_MODULE_PROC_NRS: &[ProcNr; NR_BOOT_MODULES] = &[
-    ProcNr(6),   // DS_PROC_NR   (com.h: DS=6)
-    ProcNr(2),   // RS_PROC_NR   (com.h: RS=2)
-    ProcNr(0),   // PM_PROC_NR   (com.h: PM=0)
-    ProcNr(4),   // SCHED_PROC_NR (com.h: SCHED=4)
-    ProcNr(1),   // VFS_PROC_NR  (com.h: VFS=1)
-    ProcNr(3),   // MEM_PROC_NR  (com.h: MEM=3)
-    ProcNr(5),   // TTY_PROC_NR  (com.h: TTY=5)
-    ProcNr(7),   // MIB_PROC_NR
-    ProcNr(8),   // VM_PROC_NR
-    ProcNr(9),   // PFS_PROC_NR
-    ProcNr(10),  // MFS_PROC_NR
-    ProcNr(11),  // INIT_PROC_NR
+    ProcNr(6),  // DS_PROC_NR   (com.h: DS=6)
+    ProcNr(2),  // RS_PROC_NR   (com.h: RS=2)
+    ProcNr(0),  // PM_PROC_NR   (com.h: PM=0)
+    ProcNr(4),  // SCHED_PROC_NR (com.h: SCHED=4)
+    ProcNr(1),  // VFS_PROC_NR  (com.h: VFS=1)
+    ProcNr(3),  // MEM_PROC_NR  (com.h: MEM=3)
+    ProcNr(5),  // TTY_PROC_NR  (com.h: TTY=5)
+    ProcNr(7),  // MIB_PROC_NR
+    ProcNr(8),  // VM_PROC_NR
+    ProcNr(9),  // PFS_PROC_NR
+    ProcNr(10), // MFS_PROC_NR
+    ProcNr(11), // INIT_PROC_NR
 ];
 
 bitflags::bitflags! {
@@ -440,7 +440,10 @@ impl Quantum {
             if current <= cycles {
                 // Quantum exhausted — set to 0 and return true
                 match self.cpu_time_left.compare_exchange_weak(
-                    current, 0, Ordering::AcqRel, Ordering::Acquire,
+                    current,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
                 ) {
                     Ok(_) => return true,
                     Err(actual) => current = actual,
@@ -448,7 +451,10 @@ impl Quantum {
             } else {
                 // Still has time left
                 match self.cpu_time_left.compare_exchange_weak(
-                    current, current - cycles, Ordering::AcqRel, Ordering::Acquire,
+                    current,
+                    current - cycles,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
                 ) {
                     Ok(_) => return false,
                     Err(actual) => current = actual,
@@ -493,24 +499,38 @@ impl CpuId {
 
     /// Create a validated `CpuId`. Returns `None` if `id >= MAX_CPUS`.
     pub const fn new(id: u32) -> Option<Self> {
-        if (id as usize) < MAX_CPUS { Some(CpuId(id)) } else { None }
+        if (id as usize) < MAX_CPUS {
+            Some(CpuId(id))
+        } else {
+            None
+        }
     }
 
     /// Create a `CpuId` without validation. Caller must ensure `id < MAX_CPUS`
     /// or use `NONE` sentinel intentionally.
-    pub const fn new_unchecked(id: u32) -> Self { CpuId(id) }
+    pub const fn new_unchecked(id: u32) -> Self {
+        CpuId(id)
+    }
 
     /// Get the raw `u32` value.
-    pub const fn raw(self) -> u32 { self.0 }
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
 
     /// Get the CPU id as a `usize` for array indexing.
-    pub const fn index(self) -> usize { self.0 as usize }
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
 
     /// Is this the BSP?
-    pub const fn is_bsp(self) -> bool { self.0 == 0 }
+    pub const fn is_bsp(self) -> bool {
+        self.0 == 0
+    }
 
     /// Is this the "no CPU" sentinel?
-    pub const fn is_none(self) -> bool { self.0 == u32::MAX }
+    pub const fn is_none(self) -> bool {
+        self.0 == u32::MAX
+    }
 }
 
 /// CPU affinity bitmap (06-proc-init-boot-proc.md §3.11).
@@ -532,7 +552,9 @@ impl CpuMask {
     /// Const-constructible all-ones mask (any CPU allowed).
     pub const fn all() -> Self {
         // Lower MAX_CPUS bits set.
-        Self { bits: (1u64 << MAX_CPUS) - 1 }
+        Self {
+            bits: (1u64 << MAX_CPUS) - 1,
+        }
     }
 
     /// Const-constructible empty mask (no CPU allowed — sentinel).
@@ -722,7 +744,10 @@ impl TimeStats {
             }
             let new_val = current - 1;
             match self.virt_left.compare_exchange_weak(
-                current, new_val, Ordering::AcqRel, Ordering::Acquire,
+                current,
+                new_val,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             ) {
                 Ok(_) => return new_val == 0,
                 Err(actual) => current = actual,
@@ -738,7 +763,10 @@ impl TimeStats {
             }
             let new_val = current - 1;
             match self.prof_left.compare_exchange_weak(
-                current, new_val, Ordering::AcqRel, Ordering::Acquire,
+                current,
+                new_val,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             ) {
                 Ok(_) => return new_val == 0,
                 Err(actual) => current = actual,
@@ -828,7 +856,11 @@ pub struct DeferArgs {
 impl DeferArgs {
     /// Const-constructible zeroed defer args (for `const fn` table init).
     pub const fn new() -> Self {
-        Self { r1: 0, r2: 0, r3: 0 }
+        Self {
+            r1: 0,
+            r2: 0,
+            r3: 0,
+        }
     }
 }
 
@@ -933,7 +965,6 @@ pub struct KProcess {
     // SMP: p_nextready is accessed by the scheduler across CPUs.
     // Using AtomicI32 with Ordering::Relaxed under BKL protection.
     // -1 (NONE_PROC_NR) represents None, valid ProcNr values are >= 0.
-
     /// Next process pointer in ready queue.
     /// Used by scheduler to manage ready process list at same priority.
     /// C: `struct proc *p_nextready` — proc.h
@@ -1073,7 +1104,6 @@ pub struct KProcess {
     ///
     /// Invariant: `p_rts_flags.is_set(RtsFlagsBits::VMREQUEST) <==> p_vm_suspend.is_some()`
     pub p_vm_suspend: Option<VmSuspendContext>,
-
     // ── Boot-time initial register state (06-proc-init-boot-proc.md §3.2, §3.3) ──
     //
     // ── Boot-time initial register state has been replaced by
@@ -1151,7 +1181,9 @@ pub struct ProcName {
 impl ProcName {
     /// Creates empty process name.
     pub const fn new() -> Self {
-        Self { data: [0; PROC_NAME_LEN] }
+        Self {
+            data: [0; PROC_NAME_LEN],
+        }
     }
 
     /// Creates process name from string.
@@ -1169,22 +1201,31 @@ impl ProcName {
 
     /// Gets name string (without trailing \0).
     pub fn as_str(&self) -> &str {
-        let len = self.data.iter().position(|&b| b == 0).unwrap_or(PROC_NAME_LEN);
+        let len = self
+            .data
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(PROC_NAME_LEN);
         core::str::from_utf8(&self.data[..len]).unwrap_or("<invalid>")
     }
 
     /// Adds suffix to name.
     /// If adding would exceed max length, it will be truncated.
     pub fn push_suffix(&mut self, suffix: &str) {
-        let current_len = self.data.iter().position(|&b| b == 0).unwrap_or(PROC_NAME_LEN);
+        let current_len = self
+            .data
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(PROC_NAME_LEN);
         let suffix_bytes = suffix.as_bytes();
         let suffix_len = suffix_bytes.len();
-        
+
         let available = PROC_NAME_LEN.saturating_sub(current_len + 1);
         let copy_len = suffix_len.min(available);
-        
+
         if copy_len > 0 {
-            self.data[current_len..current_len + copy_len].copy_from_slice(&suffix_bytes[..copy_len]);
+            self.data[current_len..current_len + copy_len]
+                .copy_from_slice(&suffix_bytes[..copy_len]);
         }
     }
 
@@ -1306,10 +1347,12 @@ impl SigSet {
 
     /// Construct from C `sigset_t` words. Inverse of [`Self::to_words`].
     pub const fn from_words(w: [u32; 4]) -> Self {
-        Self((w[0] as u128)
-            | ((w[1] as u128) << 32)
-            | ((w[2] as u128) << 64)
-            | ((w[3] as u128) << 96))
+        Self(
+            (w[0] as u128)
+                | ((w[1] as u128) << 32)
+                | ((w[2] as u128) << 64)
+                | ((w[3] as u128) << 96),
+        )
     }
 }
 
@@ -1474,8 +1517,7 @@ impl KProcess {
     }
 
     pub fn get_priority(&self) -> Priority {
-        Priority::new(self.p_sched.priority.load(Ordering::Acquire))
-            .unwrap_or_default()
+        Priority::new(self.p_sched.priority.load(Ordering::Acquire)).unwrap_or_default()
     }
 
     /// Sets priority with validation. Returns false if value is out of range.
@@ -1680,7 +1722,11 @@ impl KProcess {
         let child_rts = {
             let flags = parent.p_rts_flags.get();
             let flags = flags | RtsFlagsBits::NO_QUANTUM;
-            let flags = flags & !(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING | RtsFlagsBits::P_STOP | RtsFlagsBits::VMREQUEST);
+            let flags = flags
+                & !(RtsFlagsBits::SIGNALED
+                    | RtsFlagsBits::SIG_PENDING
+                    | RtsFlagsBits::P_STOP
+                    | RtsFlagsBits::VMREQUEST);
             RtsFlags::with(flags)
         };
 
@@ -1689,7 +1735,11 @@ impl KProcess {
         let child_mf = {
             let flags = parent.p_misc_flags.get();
             let flags = flags
-                & !(MiscFlagsBits::VIRT_TIMER | MiscFlagsBits::PROF_TIMER | MiscFlagsBits::SC_TRACE | MiscFlagsBits::SPROF_SEEN | MiscFlagsBits::STEP);
+                & !(MiscFlagsBits::VIRT_TIMER
+                    | MiscFlagsBits::PROF_TIMER
+                    | MiscFlagsBits::SC_TRACE
+                    | MiscFlagsBits::SPROF_SEEN
+                    | MiscFlagsBits::STEP);
             MiscFlags::with(flags)
         };
 
@@ -1777,7 +1827,10 @@ impl KProcess {
         //    per-CPU FPU ownership path (`smp.rs` `fpu_owner`) is wired.
         //
         // See 06-proc-init-boot-proc.md §3.14.
-        if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
+        if parent
+            .p_misc_flags
+            .is_set(MiscFlagsBits::EXT_REG_INITIALIZED)
+        {
             <CurrentCpuContextArch as CpuContextArch>::inherit_fpu_state(
                 &mut child.cpu_context,
                 &parent.cpu_context,
@@ -1938,7 +1991,8 @@ mod tests {
         assert_eq!(expected.len(), NR_BOOT_MODULES);
         for (i, (proc_nr, endpoint)) in expected.iter().enumerate() {
             assert_eq!(
-                BOOT_MODULE_PROC_NRS[i], ProcNr(*proc_nr),
+                BOOT_MODULE_PROC_NRS[i],
+                ProcNr(*proc_nr),
                 "boot module {i}: proc number must match C com.h"
             );
             assert_eq!(
@@ -1982,7 +2036,10 @@ mod tests {
     #[test]
     fn test_sched_fields_new_has_all_cpu_mask() {
         let s = SchedFields::new();
-        assert!(s.cpu_mask.allows(CpuId::BSP), "default SchedFields must allow CPU 0");
+        assert!(
+            s.cpu_mask.allows(CpuId::BSP),
+            "default SchedFields must allow CPU 0"
+        );
         assert_eq!(s.cpu.load(Ordering::Relaxed), 0);
     }
 
@@ -2039,7 +2096,10 @@ mod tests {
     #[test]
     fn test_slot_is_occupied_agrees_with_slot_free_bit() {
         let mut proc = KProcess::new(ProcNr(1), Endpoint(1));
-        assert!(!proc.slot_is_occupied(), "fresh KProcess::new is an empty slot");
+        assert!(
+            !proc.slot_is_occupied(),
+            "fresh KProcess::new is an empty slot"
+        );
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(proc.slot_is_occupied(), "SLOT_FREE cleared → occupied");
         proc.p_rts_flags.set(RtsFlagsBits::SLOT_FREE);
@@ -2203,14 +2263,19 @@ mod tests {
 
     #[test]
     fn test_fork_from_basic() {
-        let parent = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(5), Endpoint::from_generation_slot(3, 5)));
+        let parent = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(5),
+            Endpoint::from_generation_slot(3, 5),
+        ));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         parent.set_priority(priority::USER_Q);
 
-        let child_endpoint = Endpoint::fork_new_endpoint(
-            Endpoint::from_generation_slot(0, 10), 10
-        );
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), child_endpoint));
+        let child_endpoint = Endpoint::fork_new_endpoint(Endpoint::from_generation_slot(0, 10), 10);
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            child_endpoint,
+        ));
 
         assert_eq!(child.p_nr, ProcNr(10));
         assert_eq!(child.p_endpoint, child_endpoint);
@@ -2226,7 +2291,11 @@ mod tests {
         parent.p_accounting.record_ipc_sync();
         parent.p_accounting.record_ipc_sync();
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         assert_eq!(child.p_accounting.ipc_sync.load(Ordering::Relaxed), 0);
     }
@@ -2237,7 +2306,11 @@ mod tests {
         parent.p_nextready.store(3, Ordering::Relaxed);
         parent.send_q_link = Some(ProcNr(7));
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         assert_eq!(child.p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
         assert!(child.send_q_link.is_none());
@@ -2251,7 +2324,11 @@ mod tests {
         parent.p_getfrom_e = Endpoint::PM;
         parent.p_sendto_e = Endpoint::VFS;
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         assert_eq!(child.p_getfrom_e, Endpoint::PM);
         assert_eq!(child.p_sendto_e, Endpoint::VFS);
@@ -2311,7 +2388,11 @@ mod tests {
         parent.p_cycles.add_cycles(1000);
         parent.p_cycles.add_kcall_cycles(200);
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         assert_eq!(child.p_cycles.total.load(Ordering::Relaxed), 0);
         assert_eq!(child.p_cycles.kcall.load(Ordering::Relaxed), 0);
@@ -2320,11 +2401,20 @@ mod tests {
     #[test]
     fn test_fork_from_rts_flags_corrections() {
         // Parent has SIGNALED and SIG_PENDING set — child must NOT inherit these
-        let parent = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5)));
+        let parent = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(5),
+            Endpoint::from_generation_slot(1, 5),
+        ));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-        parent.p_rts_flags.set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING | RtsFlagsBits::P_STOP);
+        parent
+            .p_rts_flags
+            .set(RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING | RtsFlagsBits::P_STOP);
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         // Child must have NO_QUANTUM set (C: RTS_SET(rpc, RTS_NO_QUANTUM))
         assert!(child.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
@@ -2338,11 +2428,21 @@ mod tests {
     fn test_fork_from_misc_flags_corrections() {
         // Parent has VIRT_TIMER, PROF_TIMER, STEP set — child must NOT inherit
         let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
-        parent.p_misc_flags.set(MiscFlagsBits::VIRT_TIMER | MiscFlagsBits::PROF_TIMER | MiscFlagsBits::STEP | MiscFlagsBits::SC_TRACE | MiscFlagsBits::SPROF_SEEN);
+        parent.p_misc_flags.set(
+            MiscFlagsBits::VIRT_TIMER
+                | MiscFlagsBits::PROF_TIMER
+                | MiscFlagsBits::STEP
+                | MiscFlagsBits::SC_TRACE
+                | MiscFlagsBits::SPROF_SEEN,
+        );
         // Also set a flag that SHOULD be inherited
         parent.p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         // Cleared flags
         assert!(!child.p_misc_flags.is_set(MiscFlagsBits::VIRT_TIMER));
@@ -2363,14 +2463,22 @@ mod tests {
         let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
         parent.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         // The save area counts as initialized in the child: the flag
         // propagates and the state buffer is a byte-for-byte copy
         // (`CurrentFpuState: Copy`). Under the mock arch the state is a
         // ZST, so the buffer contents are unobservable here; the copy
         // semantics are guaranteed by the `Copy` bound in `FpuArch::State`.
-        assert!(child.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED));
+        assert!(
+            child
+                .p_misc_flags
+                .is_set(MiscFlagsBits::EXT_REG_INITIALIZED)
+        );
         let _ = child.fpu_state;
     }
 
@@ -2380,16 +2488,27 @@ mod tests {
         // (C: the child's own static buffer stays zeroed until first use).
         let parent = KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5));
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
-        assert!(!child.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED));
+        assert!(
+            !child
+                .p_misc_flags
+                .is_set(MiscFlagsBits::EXT_REG_INITIALIZED)
+        );
     }
 
     // ── §5.1: KProcess VM suspend/resume tests ──
 
     #[test]
     fn test_suspend_for_vm_sets_rts_and_context() {
-        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(1),
+            Endpoint::from_generation_slot(1, 1),
+        ));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2417,7 +2536,10 @@ mod tests {
 
     #[test]
     fn test_suspend_for_vm_with_copy() {
-        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(1),
+            Endpoint::from_generation_slot(1, 1),
+        ));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2451,7 +2573,10 @@ mod tests {
 
     #[test]
     fn test_clear_vm_suspend() {
-        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(1),
+            Endpoint::from_generation_slot(1, 1),
+        ));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2478,7 +2603,10 @@ mod tests {
 
     #[test]
     fn test_clear_vm_suspend_does_not_clear_kcall_resume() {
-        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(1),
+            Endpoint::from_generation_slot(1, 1),
+        ));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2504,7 +2632,10 @@ mod tests {
 
     #[test]
     fn test_vm_suspend_context_mut() {
-        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1)));
+        let mut proc = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(1),
+            Endpoint::from_generation_slot(1, 1),
+        ));
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2522,12 +2653,18 @@ mod tests {
         let ctx = proc.vm_suspend_context_mut().unwrap();
         ctx.state = crate::vm::VmSuspendState::Fetched;
 
-        assert_eq!(proc.vm_suspend_context().unwrap().state, crate::vm::VmSuspendState::Fetched);
+        assert_eq!(
+            proc.vm_suspend_context().unwrap().state,
+            crate::vm::VmSuspendState::Fetched
+        );
     }
 
     #[test]
     fn test_fork_child_has_no_vm_suspend() {
-        let mut parent = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(5), Endpoint::from_generation_slot(1, 5)));
+        let mut parent = crate::test_helpers::scratch_kproc(KProcess::new(
+            ProcNr(5),
+            Endpoint::from_generation_slot(1, 5),
+        ));
         parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
         let params = crate::vm::VmCheckParams {
@@ -2542,7 +2679,11 @@ mod tests {
             None,
         );
 
-        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(&parent, ProcNr(10), Endpoint::from_generation_slot(1, 10)));
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
 
         // Child should NOT inherit VM suspend state
         assert!(!child.is_vm_suspended());

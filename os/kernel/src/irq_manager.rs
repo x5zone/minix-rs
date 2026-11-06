@@ -24,8 +24,8 @@
 //! as a generic parameter.
 
 use minix_plat::{
-    InterruptRouter, PerCpuInterruptUnit, IrqAction, IrqId, IrqPolicy, IrqVector, IrqNotifyId,
-    NR_IRQ_HOOKS, NR_IRQ_VECTORS,
+    InterruptRouter, IrqAction, IrqId, IrqNotifyId, IrqPolicy, IrqVector, NR_IRQ_HOOKS,
+    NR_IRQ_VECTORS, PerCpuInterruptUnit,
 };
 use minix_types::Endpoint;
 
@@ -147,9 +147,7 @@ impl IrqNotify for KernelNotifier {
             let proc = proc_table
                 .iter()
                 .find(|p| p.p_endpoint == dst)
-                .unwrap_or_else(|| {
-                    panic!("invalid interrupt handler: endpoint={:?}", dst)
-                });
+                .unwrap_or_else(|| panic!("invalid interrupt handler: endpoint={:?}", dst));
 
             let priv_id = proc.priv_id.unwrap_or_else(|| {
                 panic!(
@@ -306,8 +304,7 @@ fn s_mode_context_for_current_cpu() -> usize {
 /// PD22S2H diag: the context the SEI leg last derived (visible via the
 /// kernel-leg fault diag even when the LOOP-pulsed console is deaf).
 #[cfg(target_arch = "riscv64")]
-pub static LAST_SEI_CTX: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+pub static LAST_SEI_CTX: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// PD22S2H diag: the device-window VA injected into the PLIC driver at
 /// init (kernel-side record — diagnostics read it on the fault path).
@@ -399,10 +396,8 @@ pub fn complete_hardware_irq(claimed: Option<u32>) {
 pub fn enable_sched_sgi_for_cpu(hw_id: usize) {
     let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
-    crate::irq_manager_with(&section).enable_sgi(
-        hw_id,
-        minix_arch::arm64::smp::SCHED_SGI_INTID as u8,
-    );
+    crate::irq_manager_with(&section)
+        .enable_sgi(hw_id, minix_arch::arm64::smp::SCHED_SGI_INTID as u8);
     if acquired {
         crate::smp::bkl_unlock();
     }
@@ -689,8 +684,6 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
         self.controller.claim_context(context)
     }
 
-
-
     /// The controller's completion write, exposed for a claim that has no
     /// hook chain (the aarch64 scheduler SGI lane).
     pub fn controller_complete(&mut self, claimed: Option<u32>) {
@@ -840,18 +833,16 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
             None => {
                 self.handlers[irq_idx] = Some(new_idx);
             }
-            Some(mut idx) => {
-                loop {
-                    let slot = self.hooks[idx].as_ref().unwrap();
-                    match slot.next {
-                        Some(next) => idx = next,
-                        None => {
-                            self.hooks[idx].as_mut().unwrap().next = Some(new_idx);
-                            break;
-                        }
+            Some(mut idx) => loop {
+                let slot = self.hooks[idx].as_ref().unwrap();
+                match slot.next {
+                    Some(next) => idx = next,
+                    None => {
+                        self.hooks[idx].as_mut().unwrap().next = Some(new_idx);
+                        break;
                     }
                 }
-            }
+            },
         }
     }
 
@@ -881,33 +872,43 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     ///
     /// C: irq_hooks[hook_id].proc_nr_e
     pub fn hook_owner(&self, slot_idx: usize) -> Option<Endpoint> {
-        self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.proc_endpoint))
+        self.hooks
+            .get(slot_idx)
+            .and_then(|s| s.as_ref().map(|h| h.proc_endpoint))
     }
 
     /// Get the IRQ vector of a hook slot.
     pub fn hook_irq(&self, slot_idx: usize) -> Option<IrqVector> {
-        self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.irq))
+        self.hooks
+            .get(slot_idx)
+            .and_then(|s| s.as_ref().map(|h| h.irq))
     }
 
     /// Get the IrqId of a hook slot (for enable/disable operations).
     ///
     /// C: irq_hooks[hook_id].id
     pub fn hook_irq_id(&self, slot_idx: usize) -> Option<IrqId> {
-        self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.id))
+        self.hooks
+            .get(slot_idx)
+            .and_then(|s| s.as_ref().map(|h| h.id))
     }
 
     /// Get the notify ID of a hook slot.
     ///
     /// C: irq_hooks[hook_id].notify_id — type.h:25
     pub fn hook_notify_id(&self, slot_idx: usize) -> Option<IrqNotifyId> {
-        self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.notify_id))
+        self.hooks
+            .get(slot_idx)
+            .and_then(|s| s.as_ref().map(|h| h.notify_id))
     }
 
     /// Get the policy flags of a hook slot.
     ///
     /// C: irq_hooks[hook_id].policy — type.h:26
     pub fn hook_policy(&self, slot_idx: usize) -> Option<IrqPolicy> {
-        self.hooks.get(slot_idx).and_then(|s| s.as_ref().map(|h| h.policy))
+        self.hooks
+            .get(slot_idx)
+            .and_then(|s| s.as_ref().map(|h| h.policy))
     }
 
     /// Get a read-only slice of the `irq_actids[]` bitmap array.
@@ -931,9 +932,10 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     ///
     /// C: enable_irq(&irq_hooks[irq_hook_id])
     pub fn enable_irq_by_slot(&mut self, slot_idx: usize) {
-        let info = self.hooks.get(slot_idx).and_then(|s| {
-            s.as_ref().map(|h| (h.irq, h.id))
-        });
+        let info = self
+            .hooks
+            .get(slot_idx)
+            .and_then(|s| s.as_ref().map(|h| (h.irq, h.id)));
         if let Some((irq, hook_id)) = info {
             self.enable_irq(hook_id, irq);
         }
@@ -943,9 +945,10 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     ///
     /// C: disable_irq(&irq_hooks[irq_hook_id])
     pub fn disable_irq_by_slot(&mut self, slot_idx: usize) {
-        let info = self.hooks.get(slot_idx).and_then(|s| {
-            s.as_ref().map(|h| (h.irq, h.id))
-        });
+        let info = self
+            .hooks
+            .get(slot_idx)
+            .and_then(|s| s.as_ref().map(|h| (h.irq, h.id)));
         if let Some((irq, hook_id)) = info {
             self.disable_irq(hook_id, irq);
         }
@@ -1049,7 +1052,8 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
 /// `priv(proc_addr(...))` (D9 / 14-exception-interrupt.md §4.4).
 fn generic_notify_handler(ctx: &mut IrqHookContext) -> IrqAction {
     // C: do_irqctl.c:167-170 — set pending bit + deliver notification.
-    ctx.notifier.notify_hardware(ctx.proc_endpoint, ctx.notify_id);
+    ctx.notifier
+        .notify_hardware(ctx.proc_endpoint, ctx.notify_id);
 
     // C: do_irqctl.c:171 — `return(hook->policy & IRQ_REENABLE)`.
     if ctx.policy.contains(IrqPolicy::REENABLE) {
@@ -1170,13 +1174,15 @@ mod tests {
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
-        let id = mgr.register_hook(
-            IrqVector::new(0),
-            completed_handler,
-            Endpoint::KERNEL,
-            IrqNotifyId(0),
-            IrqPolicy::REENABLE,
-        ).unwrap();
+        let id = mgr
+            .register_hook(
+                IrqVector::new(0),
+                completed_handler,
+                Endpoint::KERNEL,
+                IrqNotifyId(0),
+                IrqPolicy::REENABLE,
+            )
+            .unwrap();
 
         assert_eq!(id.0, 1);
 
@@ -1260,7 +1266,10 @@ mod tests {
         assert!(matches!(result, Err(IrqError::Spurious(_))));
         assert_eq!(mgr.controller.eoi_log.len(), 1, "claim must be completed");
         assert_eq!(mgr.controller.mask_log, alloc::vec![IrqVector::new(5)]);
-        assert!(mgr.controller.unmask_log.is_empty(), "spurious line stays masked");
+        assert!(
+            mgr.controller.unmask_log.is_empty(),
+            "spurious line stays masked"
+        );
     }
 
     #[test]
@@ -1269,20 +1278,24 @@ mod tests {
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
-        let id1 = mgr.register_hook(
-            IrqVector::new(0),
-            completed_handler,
-            Endpoint::KERNEL,
-            IrqNotifyId(0),
-            IrqPolicy::REENABLE,
-        ).unwrap();
-        let id2 = mgr.register_hook(
-            IrqVector::new(0),
-            completed_handler,
-            Endpoint::PM,
-            IrqNotifyId(1),
-            IrqPolicy::empty(),
-        ).unwrap();
+        let id1 = mgr
+            .register_hook(
+                IrqVector::new(0),
+                completed_handler,
+                Endpoint::KERNEL,
+                IrqNotifyId(0),
+                IrqPolicy::REENABLE,
+            )
+            .unwrap();
+        let id2 = mgr
+            .register_hook(
+                IrqVector::new(0),
+                completed_handler,
+                Endpoint::PM,
+                IrqNotifyId(1),
+                IrqPolicy::empty(),
+            )
+            .unwrap();
 
         assert_ne!(id1.0, id2.0);
 
@@ -1297,13 +1310,15 @@ mod tests {
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
-        let _id = mgr.register_hook(
-            IrqVector::new(0),
-            not_completed_handler,
-            Endpoint::KERNEL,
-            IrqNotifyId(0),
-            IrqPolicy::empty(),
-        ).unwrap();
+        let _id = mgr
+            .register_hook(
+                IrqVector::new(0),
+                not_completed_handler,
+                Endpoint::KERNEL,
+                IrqNotifyId(0),
+                IrqPolicy::empty(),
+            )
+            .unwrap();
 
         let mut notifier = MockNotifier::default();
         let result = mgr.dispatch(IrqVector::new(0), &mut notifier);
@@ -1318,13 +1333,15 @@ mod tests {
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
-        let id = mgr.register_hook(
-            IrqVector::new(0),
-            completed_handler,
-            Endpoint::KERNEL,
-            IrqNotifyId(0),
-            IrqPolicy::REENABLE,
-        ).unwrap();
+        let id = mgr
+            .register_hook(
+                IrqVector::new(0),
+                completed_handler,
+                Endpoint::KERNEL,
+                IrqNotifyId(0),
+                IrqPolicy::REENABLE,
+            )
+            .unwrap();
 
         let result = mgr.remove_hook(id, IrqVector::new(0));
         assert!(result.is_ok());
@@ -1340,13 +1357,15 @@ mod tests {
         let mut mgr = IrqManager::new(ctrl);
         mgr.init();
 
-        let id = mgr.register_hook(
-            IrqVector::new(0),
-            not_completed_handler,
-            Endpoint::KERNEL,
-            IrqNotifyId(0),
-            IrqPolicy::empty(),
-        ).unwrap();
+        let id = mgr
+            .register_hook(
+                IrqVector::new(0),
+                not_completed_handler,
+                Endpoint::KERNEL,
+                IrqNotifyId(0),
+                IrqPolicy::empty(),
+            )
+            .unwrap();
 
         let mut notifier = MockNotifier::default();
         mgr.dispatch(IrqVector::new(0), &mut notifier).unwrap();
@@ -1373,20 +1392,24 @@ mod tests {
         // Register via `irqctl_set_policy`, which installs `generic_notify_handler`.
         let proc_ep = Endpoint::KERNEL;
         let notify_id = IrqNotifyId(3);
-        mgr.irqctl_set_policy(
-            IrqVector::new(0),
-            proc_ep,
-            notify_id,
-            IrqPolicy::REENABLE,
-        ).expect("irqctl_set_policy should succeed");
+        mgr.irqctl_set_policy(IrqVector::new(0), proc_ep, notify_id, IrqPolicy::REENABLE)
+            .expect("irqctl_set_policy should succeed");
 
         let mut notifier = MockNotifier::default();
-        mgr.dispatch(IrqVector::new(0), &mut notifier).expect("dispatch should succeed");
+        mgr.dispatch(IrqVector::new(0), &mut notifier)
+            .expect("dispatch should succeed");
 
         // The handler should have called notify_hardware exactly once with
         // the registered proc_endpoint and notify_id.
-        assert_eq!(notifier.notify_log.len(), 1, "expected exactly one notify call");
-        assert_eq!(notifier.notify_log[0].0, proc_ep, "notify dst endpoint mismatch");
+        assert_eq!(
+            notifier.notify_log.len(),
+            1,
+            "expected exactly one notify call"
+        );
+        assert_eq!(
+            notifier.notify_log[0].0, proc_ep,
+            "notify dst endpoint mismatch"
+        );
         assert_eq!(notifier.notify_log[0].1, notify_id, "notify_id mismatch");
 
         // With REENABLE policy, the handler returns Completed → active bit cleared.
@@ -1403,21 +1426,21 @@ mod tests {
 
         let proc_ep = Endpoint::PM;
         let notify_id = IrqNotifyId(5);
-        mgr.irqctl_set_policy(
-            IrqVector::new(2),
-            proc_ep,
-            notify_id,
-            IrqPolicy::empty(),
-        ).expect("irqctl_set_policy should succeed");
+        mgr.irqctl_set_policy(IrqVector::new(2), proc_ep, notify_id, IrqPolicy::empty())
+            .expect("irqctl_set_policy should succeed");
 
         let mut notifier = MockNotifier::default();
-        mgr.dispatch(IrqVector::new(2), &mut notifier).expect("dispatch should succeed");
+        mgr.dispatch(IrqVector::new(2), &mut notifier)
+            .expect("dispatch should succeed");
 
         // Notification still delivered even without REENABLE.
         assert_eq!(notifier.notify_log.len(), 1);
         assert_eq!(notifier.notify_log[0].0, proc_ep);
 
         // But the active bit stays set (handler returned NotCompleted).
-        assert_ne!(mgr.actids[2], 0, "no-REENABLE policy should keep active bit");
+        assert_ne!(
+            mgr.actids[2], 0,
+            "no-REENABLE policy should keep active bit"
+        );
     }
 }

@@ -39,9 +39,9 @@
 //! `minix_arch::paging::PageFlags`. The mapping is one-way: callers
 //! see only OS-semantic flags, not hardware encoding details.
 
+use minix_arch::CurrentDirectMap;
 use minix_arch::direct_map::DirectMapArch;
 use minix_arch::paging::PageFlags;
-use minix_arch::CurrentDirectMap;
 use minix_arch::{CurrentPteWalk, PteWalkArch};
 use minix_types::{PhysBytes, VirBytes};
 
@@ -222,8 +222,8 @@ pub fn copy_from_user(
     let mut dst_offset = 0usize;
 
     while remaining > 0 {
-        let (phys, _flags) = walk_x86_64(root_paddr, VirBytes(src_offset))
-            .ok_or(UserCopyError::Fault)?;
+        let (phys, _flags) =
+            walk_x86_64(root_paddr, VirBytes(src_offset)).ok_or(UserCopyError::Fault)?;
         let page_offset = (src_offset & PAGE_OFFSET_MASK) as usize;
         let chunk = core::cmp::min(remaining, 0x1000 - page_offset);
 
@@ -274,8 +274,8 @@ pub fn copy_to_user(
     let mut dst_offset = user_addr.0;
 
     while remaining > 0 {
-        let (phys, _flags) = walk_x86_64(root_paddr, VirBytes(dst_offset))
-            .ok_or(UserCopyError::Fault)?;
+        let (phys, _flags) =
+            walk_x86_64(root_paddr, VirBytes(dst_offset)).ok_or(UserCopyError::Fault)?;
         let page_offset = (dst_offset & PAGE_OFFSET_MASK) as usize;
         let chunk = core::cmp::min(remaining, 0x1000 - page_offset);
 
@@ -283,11 +283,7 @@ pub fn copy_to_user(
         // SAFETY: Direct Map is active; kv.0 is a valid kernel-virtual
         // pointer to the user's physical page (writable via Direct Map).
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                src[src_offset..].as_ptr(),
-                kv.0 as *mut u8,
-                chunk,
-            );
+            core::ptr::copy_nonoverlapping(src[src_offset..].as_ptr(), kv.0 as *mut u8, chunk);
         }
         dst_offset += chunk as u64;
         src_offset += chunk;

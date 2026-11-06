@@ -21,14 +21,14 @@
 //! - **D7**: enum + match for statectl sub-requests (type-safe)
 //! - **D8**: `KcallResult::Ok(errno)` preserves C error code semantics
 
-use minix_types::{Endpoint, Message, MessageM1, MessLsysKrnSchedctl, MessLsysKrnSysStatectl};
+use minix_types::{Endpoint, MessLsysKrnSchedctl, MessLsysKrnSysStatectl, Message, MessageM1};
 
-use crate::proc::{CpuId, KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, complete_fork_setup};
-use crate::proc_table::ProcessTable;
 use crate::capability::ProcessCapability;
 use crate::kpriv::{PrivTable, USER_PRIV_ID};
+use crate::proc::{CpuId, KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, complete_fork_setup};
+use crate::proc_table::ProcessTable;
 use crate::syscall::{KcallResult, Syscall};
-use crate::syscall_signal::{cause_signal, SIGABRT};
+use crate::syscall_signal::{SIGABRT, cause_signal};
 
 // ── Minix3 error codes ──
 // Centralized in `crate::errno` to prevent value drift.
@@ -195,7 +195,8 @@ pub fn dispatch_fork(
     // C: do_fork.c:59,69-72 — increment endpoint generation
     // gen = _ENDPOINT_G(rpc->p_endpoint); gen++; rpc->p_endpoint = _ENDPOINT(gen, rpc->p_nr);
     // Get the child's current (old) endpoint to extract generation
-    let child_old_endpoint = proc_table.get(child_slot)
+    let child_old_endpoint = proc_table
+        .get(child_slot)
         .map(|p| p.p_endpoint)
         .unwrap_or(Endpoint::from_generation_slot(0, child_slot.0));
     let child_endpoint = Endpoint::fork_new_endpoint(child_old_endpoint, child_slot.0);
@@ -298,15 +299,17 @@ pub fn dispatch_exec(
     };
 
     // C: do_exec.c:32-34 — clear MF_DELIVERMSG on the target
-    if let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG); }
+    if let Some(rp) = proc_table.get_mut(target_nr) {
+        rp.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
+    }
 
     // C: do_exec.c:37-42 — copy process name from caller's address space
     // C: data_copy(src, dst, sizeof(rp->p_name)) + null termination (do_exec.c:43)
     {
         use crate::cross_space::data_copy_vmcheck;
+        use crate::proc::{PROC_NAME_LEN, ProcName};
         use crate::vm::{AddressRef, CrossSpaceResult};
         use minix_types::VirBytes;
-        use crate::proc::{ProcName, PROC_NAME_LEN};
 
         let name_ptr = exec_msg.name;
 
@@ -323,7 +326,11 @@ pub fn dispatch_exec(
         let mut name_buf = [0u8; PROC_NAME_LEN];
 
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt { Some(caller_cr3) } else { None }
+            if endpt == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                None
+            }
         };
 
         let src = AddressRef::Process {
@@ -416,7 +423,9 @@ pub fn dispatch_exec(
 
     // C: do_exec.c:55-57 — clear FPU initialized flag, release FPU
     // C uses MF_FPU_INITIALIZED; Rust uses EXT_REG_INITIALIZED
-    if let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.clear(MiscFlagsBits::EXT_REG_INITIALIZED); }
+    if let Some(rp) = proc_table.get_mut(target_nr) {
+        rp.p_misc_flags.clear(MiscFlagsBits::EXT_REG_INITIALIZED);
+    }
     // release_fpu(rp) — clearing EXT_REG_INITIALIZED + lazy FPU model
     // means the next FPU instruction traps and re-initializes.
 
@@ -504,9 +513,11 @@ pub fn dispatch_clear(
     // deviation from C), so this uses a resolution that does not exclude freed
     // slots.
     let target_endpoint = Endpoint(endpt);
-    let target_nr = match proc_table.iter()
+    let target_nr = match proc_table
+        .iter()
         .find(|p| p.p_endpoint == target_endpoint)
-        .map(|p| p.p_nr) {
+        .map(|p| p.p_nr)
+    {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
@@ -518,9 +529,10 @@ pub fn dispatch_clear(
 
     // C: do_clear.c:38 — if(isemptyp(rc)) return OK
     // (idempotent path: a repeated clear lands here → OK)
-    if proc_table.get(target_nr).is_none_or(|p| {
-        p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE)
-    }) {
+    if proc_table
+        .get(target_nr)
+        .is_none_or(|p| p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE))
+    {
         return KcallResult::Ok(OK);
     }
 
@@ -543,13 +555,14 @@ pub fn dispatch_clear(
         // Iterate all hook slots; remove those owned by the target.
         for slot in 0..crate::syscall_device::NR_IRQ_HOOKS {
             if let Some(owner) = irq_mgr.hook_owner(slot)
-                && owner == target_endpoint {
-                    // Endpoint teardown clears the hook loop: the target is
-                    // dying, so a failed remove_hook_by_slot has nowhere to be
-                    // reported.
-                    #[allow(clippy::let_underscore_must_use)]
-                    let _ = irq_mgr.remove_hook_by_slot(slot);
-                }
+                && owner == target_endpoint
+            {
+                // Endpoint teardown clears the hook loop: the target is
+                // dying, so a failed remove_hook_by_slot has nowhere to be
+                // reported.
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = irq_mgr.remove_hook_by_slot(slot);
+            }
         }
     }
 
@@ -580,17 +593,20 @@ pub fn dispatch_clear(
     // Clear the FPU initialized flag so the slot's FPU state is not
     // mistakenly used by a new process assigned to this slot.
     if let Some(target) = proc_table.get_mut(target_nr) {
-        target.p_misc_flags.clear(MiscFlagsBits::EXT_REG_INITIALIZED);
+        target
+            .p_misc_flags
+            .clear(MiscFlagsBits::EXT_REG_INITIALIZED);
     }
 
     // C: do_clear.c:68 — if SYS_PROC, release privilege structure
     // priv(rc)->s_proc_nr = NONE — marks the privilege slot as unassigned.
     if let Some(target) = proc_table.get(target_nr)
         && let Some(priv_id) = target.priv_id
-            && let Some(kpriv) = priv_table.get_mut(priv_id)
-                && kpriv.is_sys_proc() {
-                    kpriv.identity.s_proc_nr = None;
-                }
+        && let Some(kpriv) = priv_table.get_mut(priv_id)
+        && kpriv.is_sys_proc()
+    {
+        kpriv.identity.s_proc_nr = None;
+    }
 
     KcallResult::Ok(OK)
 }
@@ -609,9 +625,9 @@ pub fn dispatch_runctl(
 ) -> KcallResult {
     let m1 = msg_m1(msg);
     // C: do_runctl.c:34-35 — extract parameters
-    let endpt = m1.m1i1;    // RC_ENDPT
-    let action = m1.m1i2;   // RC_ACTION
-    let flags = m1.m1i3;    // RC_FLAGS
+    let endpt = m1.m1i1; // RC_ENDPT
+    let action = m1.m1i2; // RC_ACTION
+    let flags = m1.m1i3; // RC_FLAGS
 
     // C: do_runctl.c:30 — isokendpt(m_ptr->RC_ENDPT, &proc_nr)
     let target_endpoint = Endpoint(endpt);
@@ -634,9 +650,13 @@ pub fn dispatch_runctl(
                 if let Some(rp) = target
                     && (rp.p_rts_flags.is_set(RtsFlagsBits::SENDING)
                         || rp.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER))
-                        && let Some(rp) = proc_table.get_mut(target_nr) { rp.p_misc_flags.set(MiscFlagsBits::SIG_DELAY); }
+                    && let Some(rp) = proc_table.get_mut(target_nr)
+                {
+                    rp.p_misc_flags.set(MiscFlagsBits::SIG_DELAY);
+                }
                 // Check if SIG_DELAY was set (by us or already present)
-                let sig_delay_set = proc_table.get(target_nr)
+                let sig_delay_set = proc_table
+                    .get(target_nr)
                     .is_some_and(|rp| rp.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
                 if sig_delay_set {
                     return KcallResult::Ok(EBUSY);
@@ -653,9 +673,7 @@ pub fn dispatch_runctl(
             let target_cpu = proc_table
                 .get(target_nr)
                 .map(|p| {
-                    CpuId::new_unchecked(
-                        p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire)
-                    )
+                    CpuId::new_unchecked(p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire))
                 })
                 .unwrap_or(CpuId::BSP);
 
@@ -688,7 +706,8 @@ pub fn dispatch_runctl(
         RC_RESUME => {
             // C: do_runctl.c:65 — assert(RTS_ISSET(rp, RTS_PROC_STOP))
             debug_assert!(
-                proc_table.get(target_nr)
+                proc_table
+                    .get(target_nr)
                     .is_some_and(|rp| rp.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP)),
                 "RC_RESUME on process without RTS_PROC_STOP: {:?}",
                 target_nr,
@@ -782,7 +801,12 @@ pub fn dispatch_schedctl(
         match crate::sched::sched_proc(
             proc_table,
             target_nr,
-            crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced: false },
+            crate::sched::SchedParams {
+                priority: priority_opt,
+                quantum: quantum_opt,
+                cpu: cpu_opt,
+                niced: false,
+            },
         ) {
             Ok(()) => {
                 // C: do_schedctl.c:39 — p->p_scheduler = NULL
@@ -863,22 +887,35 @@ pub(crate) fn dispatch_statectl(
         // C: do_statectl.c:29-30 — priv(caller)->s_state_table = address; s_state_entries = length
         StatectlRequest::SetStateTable => {
             if let Some(pid) = proc_table.get(caller_nr).and_then(|c| c.priv_id)
-                && let Some(priv_) = priv_table.get_mut(pid) {
-                    priv_.runtime.s_state_table = sc.address as usize;
-                    priv_.runtime.s_state_entries = sc.length;
-                }
+                && let Some(priv_) = priv_table.get_mut(pid)
+            {
+                priv_.runtime.s_state_table = sc.address as usize;
+                priv_.runtime.s_state_entries = sc.length;
+            }
         }
         // C: do_statectl.c:32-36 — add_ipc_filter(caller, IPCF_BLACKLIST, address, length)
         StatectlRequest::AddIpcBlFilter => {
             // C: do_statectl.c:34-36 — add_ipc_filter(caller, IPCF_BLACKLIST,
             // address, length); the implementation is in add_ipc_filter_arm.
-            return add_ipc_filter_arm(caller_nr, proc_table, sc, priv_table, pool,
-                crate::ipc_filter::IpcFilterType::Blacklist);
+            return add_ipc_filter_arm(
+                caller_nr,
+                proc_table,
+                sc,
+                priv_table,
+                pool,
+                crate::ipc_filter::IpcFilterType::Blacklist,
+            );
         }
         // C: do_statectl.c:37-41 — add_ipc_filter(caller, IPCF_WHITELIST, address, length)
         StatectlRequest::AddIpcWlFilter => {
-            return add_ipc_filter_arm(caller_nr, proc_table, sc, priv_table, pool,
-                crate::ipc_filter::IpcFilterType::Whitelist);
+            return add_ipc_filter_arm(
+                caller_nr,
+                proc_table,
+                sc,
+                priv_table,
+                pool,
+                crate::ipc_filter::IpcFilterType::Whitelist,
+            );
         }
         StatectlRequest::ClearIpcFilters => {
             // C clear_ipc_filters (system.c:751-770) — free the WHOLE
@@ -895,7 +932,6 @@ pub(crate) fn dispatch_statectl(
 
     KcallResult::Ok(OK)
 }
-
 
 /// SYS_STATECTL ADD_IPC_{BL,WL}_FILTER — C `add_ipc_filter` (system.c:705-747):
 /// validate (length byte-aligned to the element size, 1..=MAX elements →
@@ -965,7 +1001,11 @@ fn add_ipc_filter_arm(
     };
 
     match data_copy_vmcheck(caller_nr, proc_table, src, dst, length, |_pt, endpt| {
-        if endpt == caller_endpt { Some(caller_cr3) } else { None }
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            None
+        }
     }) {
         CrossSpaceResult::Completed(Ok(())) => {}
         CrossSpaceResult::Completed(Err(_)) => {
@@ -989,7 +1029,14 @@ fn add_ipc_filter_arm(
         Some(id) => id,
         None => return KcallResult::Ok(EPERM),
     };
-    match finalize_ipc_filter(proc_table, caller_priv_id, pool, new_idx, num_elements, priv_table) {
+    match finalize_ipc_filter(
+        proc_table,
+        caller_priv_id,
+        pool,
+        new_idx,
+        num_elements,
+        priv_table,
+    ) {
         Ok(()) => KcallResult::Ok(OK),
         Err(EINVAL) => {
             pool.free(new_idx);
@@ -1049,11 +1096,26 @@ mod tests {
 
     #[test]
     fn test_statectl_request_from_i32() {
-        assert_eq!(StatectlRequest::try_from(1), Ok(StatectlRequest::ClearIpcRefs));
-        assert_eq!(StatectlRequest::try_from(2), Ok(StatectlRequest::SetStateTable));
-        assert_eq!(StatectlRequest::try_from(3), Ok(StatectlRequest::AddIpcBlFilter));
-        assert_eq!(StatectlRequest::try_from(4), Ok(StatectlRequest::AddIpcWlFilter));
-        assert_eq!(StatectlRequest::try_from(5), Ok(StatectlRequest::ClearIpcFilters));
+        assert_eq!(
+            StatectlRequest::try_from(1),
+            Ok(StatectlRequest::ClearIpcRefs)
+        );
+        assert_eq!(
+            StatectlRequest::try_from(2),
+            Ok(StatectlRequest::SetStateTable)
+        );
+        assert_eq!(
+            StatectlRequest::try_from(3),
+            Ok(StatectlRequest::AddIpcBlFilter)
+        );
+        assert_eq!(
+            StatectlRequest::try_from(4),
+            Ok(StatectlRequest::AddIpcWlFilter)
+        );
+        assert_eq!(
+            StatectlRequest::try_from(5),
+            Ok(StatectlRequest::ClearIpcFilters)
+        );
         assert_eq!(StatectlRequest::try_from(0), Err(()));
         assert_eq!(StatectlRequest::try_from(99), Err(()));
     }
@@ -1139,7 +1201,9 @@ mod tests {
             .clear(RtsFlagsBits::SLOT_FREE);
         let a_ep = proc_table.get(ProcNr(1)).unwrap().p_endpoint;
 
-        let idx = pool.allocate(crate::ipc_filter::IpcFilterType::Whitelist).unwrap();
+        let idx = pool
+            .allocate(crate::ipc_filter::IpcFilterType::Whitelist)
+            .unwrap();
         if let Some(slot) = pool.get_mut(idx) {
             slot.elements[0] = crate::ipc_filter::IpcFilterElement {
                 flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
@@ -1158,7 +1222,9 @@ mod tests {
 
         // The second filter is appended at the chain tail (chained semantics:
         // chain length 2).
-        let idx2 = pool.allocate(crate::ipc_filter::IpcFilterType::Blacklist).unwrap();
+        let idx2 = pool
+            .allocate(crate::ipc_filter::IpcFilterType::Blacklist)
+            .unwrap();
         assert!(finalize_ipc_filter(&proc_table, 0, &mut pool, idx2, 0, &mut priv_table).is_ok());
         assert_eq!(pool.get(idx).unwrap().next, Some(idx2));
         assert_eq!(priv_table.get(0).unwrap().mem.s_ipcf, Some(idx), "链头不变");
@@ -1171,7 +1237,9 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
-        let idx = pool.allocate(crate::ipc_filter::IpcFilterType::Blacklist).unwrap();
+        let idx = pool
+            .allocate(crate::ipc_filter::IpcFilterType::Blacklist)
+            .unwrap();
         if let Some(slot) = pool.get_mut(idx) {
             slot.elements[0] = crate::ipc_filter::IpcFilterElement {
                 flags: crate::ipc_filter::IpcFilterElFlags::MATCH_M_SOURCE,
@@ -1232,13 +1300,7 @@ mod tests {
         );
         // The manager slot (nr 1) must be occupied, otherwise the notification
         // target of the external path is invalid.
-        let _ = occupy_exiting_proc(
-            &mut procs,
-            &mut privs,
-            ProcNr(1),
-            1,
-            mgr_ep,
-        );
+        let _ = occupy_exiting_proc(&mut procs, &mut privs, ProcNr(1), 1, mgr_ep);
 
         let msg = Message::default();
         assert_eq!(
@@ -1301,12 +1363,18 @@ mod tests {
 
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
-        msg.m_u.m_m1.m1i2 = RC_STOP;           // action = stop
-        msg.m_u.m_m1.m1i3 = 0;                  // no RC_DELAY
+        msg.m_u.m_m1.m1i2 = RC_STOP; // action = stop
+        msg.m_u.m_m1.m1i3 = 0; // no RC_DELAY
 
         let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
-        assert!(proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
+        assert!(
+            proc_table
+                .get(target_nr)
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PROC_STOP)
+        );
     }
 
     #[test]
@@ -1326,7 +1394,13 @@ mod tests {
 
         let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
-        assert!(!proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
+        assert!(
+            !proc_table
+                .get(target_nr)
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PROC_STOP)
+        );
     }
 
     #[test]
@@ -1353,7 +1427,8 @@ mod tests {
         // Kernel processes have negative ProcNr. The IDLE process
         // (nr = -(NR_TASKS-4) on most configs) is a kernel task.
         // Find a kernel process by scanning for negative p_nr.
-        let kernel_nr = proc_table.iter()
+        let kernel_nr = proc_table
+            .iter()
             .find(|p| p.p_nr < ProcNr(0))
             .map(|p| p.p_nr)
             .expect("crate::test_helpers::test_proc_table() should have kernel tasks");
@@ -1361,7 +1436,11 @@ mod tests {
 
         // IDLE is in SLOT_FREE by default, so endpoint_to_nr won't find it.
         // Clear SLOT_FREE so the endpoint lookup succeeds.
-        proc_table.get_mut(kernel_nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        proc_table
+            .get_mut(kernel_nr)
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
 
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = kernel_endpoint.0;
@@ -1377,13 +1456,29 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         // Set up a user-space target process (nr >= 0)
         let target_nr: ProcNr = ProcNr(0);
-        proc_table.get_mut(target_nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        proc_table
+            .get_mut(target_nr)
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
         let target_endpoint = proc_table.get(target_nr).unwrap().p_endpoint;
 
         // Set up the target with DELIVERMSG, RECEIVING, and EXT_REG_INITIALIZED
-        proc_table.get_mut(target_nr).unwrap().p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
-        proc_table.get_mut(target_nr).unwrap().p_rts_flags.set(RtsFlagsBits::RECEIVING);
-        proc_table.get_mut(target_nr).unwrap().p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
+        proc_table
+            .get_mut(target_nr)
+            .unwrap()
+            .p_misc_flags
+            .set(MiscFlagsBits::DELIVERMSG);
+        proc_table
+            .get_mut(target_nr)
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::RECEIVING);
+        proc_table
+            .get_mut(target_nr)
+            .unwrap()
+            .p_misc_flags
+            .set(MiscFlagsBits::EXT_REG_INITIALIZED);
 
         let caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
@@ -1405,7 +1500,11 @@ mod tests {
         // RECEIVING and EXT_REG_INITIALIZED are cleared AFTER the name copy
         // (do_exec.c:51,55-57), so they should still be set.
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
-        assert!(target.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED));
+        assert!(
+            target
+                .p_misc_flags
+                .is_set(MiscFlagsBits::EXT_REG_INITIALIZED)
+        );
 
         // Caller should be unmodified
         assert!(!caller.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
@@ -1434,7 +1533,13 @@ mod tests {
         // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
         // real dispatch runs under the BKL; tests acquire it here.
         let bkl_section = crate::smp::bkl_lock_section();
-        let result = dispatch_clear(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_clear(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1462,23 +1567,41 @@ mod tests {
 
         // dispatch_clear now calls the global irq_manager() during IRQ-hook
         // cleanup; install an empty IrqManager so the global is initialized.
-        unsafe { crate::init_irq_manager_for_test(); }
+        unsafe {
+            crate::init_irq_manager_for_test();
+        }
         // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
         // real dispatch runs under the BKL; tests acquire it here.
         let bkl_section = crate::smp::bkl_lock_section();
-        let result = dispatch_clear(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_clear(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(OK));
 
         // TARGET should be SLOT_FREE, not caller
-        assert!(proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE));
+        assert!(
+            proc_table
+                .get(target_nr)
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::SLOT_FREE)
+        );
         // §26 #8 regression: C `RTS_SETFLAGS(rc, RTS_SLOT_FREE)` overwrites the
         // flags wholesale, so the `RTS_NO_ENDPOINT` that `clear_endpoint` set
         // is wiped and `is_empty` (exact `== SLOT_FREE`, C `isemptyp`) holds —
         // fork can reuse the exited slot. A bit-set (`rts_set`) would leave
         // NO_ENDPOINT alongside SLOT_FREE and fail this.
         assert!(
-            !proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT),
+            !proc_table
+                .get(target_nr)
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::NO_ENDPOINT),
             "clear must wipe NO_ENDPOINT"
         );
         assert!(
@@ -1506,16 +1629,30 @@ mod tests {
 
         // dispatch_clear now calls the global irq_manager() during IRQ-hook
         // cleanup; install an empty IrqManager so the global is initialized.
-        unsafe { crate::init_irq_manager_for_test(); }
+        unsafe {
+            crate::init_irq_manager_for_test();
+        }
         // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
         // real dispatch runs under the BKL; tests acquire it here.
         let bkl_section = crate::smp::bkl_lock_section();
-        let result = dispatch_clear(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_clear(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(OK));
 
         // TARGET should have EXT_REG_INITIALIZED cleared
-        assert!(!proc_table.get(target_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED));
+        assert!(
+            !proc_table
+                .get(target_nr)
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::EXT_REG_INITIALIZED)
+        );
     }
 
     /// Helper: build a schedctl Message targeting `endpoint` with the given
@@ -1599,8 +1736,21 @@ mod tests {
         // TARGET (not caller) should have scheduler cleared and priority applied.
         let target = proc_table.get(target_nr).unwrap();
         assert_eq!(target.p_sched.scheduler, None);
-        assert_eq!(target.p_sched.priority.load(core::sync::atomic::Ordering::Acquire), 5);
-        assert_eq!(target.p_sched.quantum.size_ms.load(core::sync::atomic::Ordering::Acquire), 10);
+        assert_eq!(
+            target
+                .p_sched
+                .priority
+                .load(core::sync::atomic::Ordering::Acquire),
+            5
+        );
+        assert_eq!(
+            target
+                .p_sched
+                .quantum
+                .size_ms
+                .load(core::sync::atomic::Ordering::Acquire),
+            10
+        );
     }
 
     #[test]
@@ -1689,8 +1839,15 @@ mod tests {
 
         // Pre-set known scheduling state on the target.
         if let Some(target) = proc_table.get_mut(target_nr) {
-            target.p_sched.priority.store(7, core::sync::atomic::Ordering::Release);
-            target.p_sched.quantum.size_ms.store(20, core::sync::atomic::Ordering::Release);
+            target
+                .p_sched
+                .priority
+                .store(7, core::sync::atomic::Ordering::Release);
+            target
+                .p_sched
+                .quantum
+                .size_ms
+                .store(20, core::sync::atomic::Ordering::Release);
         }
 
         // All -1 sentinels → sched_proc should keep current values.
@@ -1700,8 +1857,21 @@ mod tests {
         assert_eq!(result, KcallResult::Ok(OK));
 
         let target = proc_table.get(target_nr).unwrap();
-        assert_eq!(target.p_sched.priority.load(core::sync::atomic::Ordering::Acquire), 7);
-        assert_eq!(target.p_sched.quantum.size_ms.load(core::sync::atomic::Ordering::Acquire), 20);
+        assert_eq!(
+            target
+                .p_sched
+                .priority
+                .load(core::sync::atomic::Ordering::Acquire),
+            7
+        );
+        assert_eq!(
+            target
+                .p_sched
+                .quantum
+                .size_ms
+                .load(core::sync::atomic::Ordering::Acquire),
+            20
+        );
         assert_eq!(target.p_sched.scheduler, None);
     }
 
@@ -1726,15 +1896,19 @@ mod tests {
 
         let mut msg = Message::default();
         msg.m_u.m_lsys_krn_sys_fork.endpt = 100; // parent endpoint
-        msg.m_u.m_lsys_krn_sys_fork.slot = 3;    // child slot
-        msg.m_u.m_lsys_krn_sys_fork.flags = 0;   // flags
+        msg.m_u.m_lsys_krn_sys_fork.slot = 3; // child slot
+        msg.m_u.m_lsys_krn_sys_fork.flags = 0; // flags
 
         let result = dispatch_fork(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(0), "C do_fork 返回 OK");
         // SAFETY(test): m_type is unchanged (SYS_FORK), so reading the reply
         // arm is a constructed mirror.
         let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
-        assert_eq!(reply_arm.endpt, (1 << 15) + 3, "应答臂 endpt = (gen+1)<<15 | slot");
+        assert_eq!(
+            reply_arm.endpt,
+            (1 << 15) + 3,
+            "应答臂 endpt = (gen+1)<<15 | slot"
+        );
         assert_eq!(
             reply_arm.msgaddr,
             proc_table.get(ProcNr(0)).unwrap().p_delivermsg_vir.0,
@@ -1868,10 +2042,15 @@ mod tests {
         let result = dispatch_fork(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert!(matches!(result, KcallResult::Ok(_)));
         let child = proc_table.get(ProcNr(3)).unwrap();
-        assert_eq!(child.priv_id, Some(crate::kpriv::USER_PRIV_ID),
-            "子进程必须挂 USER_PRIV_ID");
-        assert!(child.p_rts_flags.is_set(RtsFlagsBits::NO_PRIV),
-            "SYS_PROC 父的子进程必须置 RTS_NO_PRIV");
+        assert_eq!(
+            child.priv_id,
+            Some(crate::kpriv::USER_PRIV_ID),
+            "子进程必须挂 USER_PRIV_ID"
+        );
+        assert!(
+            child.p_rts_flags.is_set(RtsFlagsBits::NO_PRIV),
+            "SYS_PROC 父的子进程必须置 RTS_NO_PRIV"
+        );
     }
 
     #[test]
@@ -1893,9 +2072,14 @@ mod tests {
 
         let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EBUSY));
-        assert!(proc_table.get(target_nr).unwrap()
-            .p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY),
-            "EBUSY 路径必须置 MF_SIG_DELAY");
+        assert!(
+            proc_table
+                .get(target_nr)
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::SIG_DELAY),
+            "EBUSY 路径必须置 MF_SIG_DELAY"
+        );
     }
 
     #[test]
@@ -1914,7 +2098,9 @@ mod tests {
         let mut clock_state = crate::clock::ClockState::new();
         // IRQ-hook cleanup reads the global IRQ_MANAGER (same initialization as
         // the existing clear tests).
-        unsafe { crate::init_irq_manager_for_test(); }
+        unsafe {
+            crate::init_irq_manager_for_test();
+        }
         // The IRQ-hook cleanup path of clear needs a BKL witness (the dispatch
         // entry convention, same as the existing tests).
         let bkl_section = crate::smp::bkl_lock_section();
@@ -1922,16 +2108,29 @@ mod tests {
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_ep.0;
 
-        let first = dispatch_clear(ProcNr(0), &mut proc_table, &msg,
-            &mut priv_table, &mut clock_state);
+        let first = dispatch_clear(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut clock_state,
+        );
         assert_eq!(first, KcallResult::Ok(OK), "第一次 clear 应成功");
 
         // C isokendpt does not exclude freed slots → the second call hits
         // isemptyp → OK (not EINVAL).
-        let second = dispatch_clear(ProcNr(0), &mut proc_table, &msg,
-            &mut priv_table, &mut clock_state);
-        assert_eq!(second, KcallResult::Ok(OK),
-            "重复 clear 必须幂等返回 OK（C do_clear.c:38）");
+        let second = dispatch_clear(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut clock_state,
+        );
+        assert_eq!(
+            second,
+            KcallResult::Ok(OK),
+            "重复 clear 必须幂等返回 OK（C do_clear.c:38）"
+        );
         crate::smp::bkl_unlock();
     }
 }

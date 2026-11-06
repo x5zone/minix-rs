@@ -51,7 +51,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 
-use crate::proc::{proc_nr, CpuId, MiscFlagsBits, ProcNr, RtsFlagsBits};
+use crate::proc::{CpuId, MiscFlagsBits, ProcNr, RtsFlagsBits, proc_nr};
 use crate::sched::Scheduler;
 
 // ── Constants ──
@@ -382,7 +382,8 @@ impl SmpState {
     /// byte the AP consumed. Only the handshake bit — the online state is
     /// a separate lifecycle.
     pub fn publish_boot_ack(&self, logical_id: u32) {
-        self.boot_ack_mask.fetch_or(1u64 << logical_id, Ordering::Release);
+        self.boot_ack_mask
+            .fetch_or(1u64 << logical_id, Ordering::Release);
     }
 
     /// BSP side: has the AP with `logical_id` published its handshake?
@@ -510,7 +511,8 @@ impl SmpState {
     /// asserts quantity, identity, duplication and absence in one compare).
     /// Published with Release; the BSP observes with Acquire (§3.9).
     pub fn publish_online(&self, logical_id: u32) {
-        self.online_mask.fetch_or(1u64 << logical_id, Ordering::Release);
+        self.online_mask
+            .fetch_or(1u64 << logical_id, Ordering::Release);
     }
 
     /// BSP side: has `logical_id` completed init_ap?
@@ -633,7 +635,11 @@ impl SmpState {
         if flags.contains(SchedIpiFlags::SAVE_CTX) {
             let used_fpu = proc_table
                 .get(target)
-                .map(|p| p.p_misc_flags.get().contains(MiscFlagsBits::EXT_REG_INITIALIZED))
+                .map(|p| {
+                    p.p_misc_flags
+                        .get()
+                        .contains(MiscFlagsBits::EXT_REG_INITIALIZED)
+                })
                 .unwrap_or(false);
             if used_fpu && self.cpu_locals[cpu.index()].fpu_owner == Some(target) {
                 // C: disable_fpu_exception(); save_local_fpu(p, FALSE); release_fpu(p);
@@ -691,8 +697,14 @@ impl SmpState {
         target_proc: ProcNr,
         task: SchedIpiFlags,
     ) {
-        debug_assert!(target_cpu != current_cpu, "schedule_sync: target == current CPU");
-        debug_assert!(target_cpu.raw() < self.ncpus, "schedule_sync: target_cpu out of range");
+        debug_assert!(
+            target_cpu != current_cpu,
+            "schedule_sync: target == current CPU"
+        );
+        debug_assert!(
+            target_cpu.raw() < self.ncpus,
+            "schedule_sync: target_cpu out of range"
+        );
 
         // Wait if another CPU has a pending request to the same target.
         // C: smp.c:85-95
@@ -752,7 +764,13 @@ impl SmpState {
             .unwrap_or((false, CpuId::BSP));
 
         if is_runnable {
-            self.schedule_sync::<A>(proc_table, target_cpu, current_cpu, proc_nr, SchedIpiFlags::STOP_PROC);
+            self.schedule_sync::<A>(
+                proc_table,
+                target_cpu,
+                current_cpu,
+                proc_nr,
+                SchedIpiFlags::STOP_PROC,
+            );
         } else {
             proc_table.rts_set(proc_nr, RtsFlagsBits::PROC_STOP);
         }
@@ -775,7 +793,13 @@ impl SmpState {
             .unwrap_or((false, CpuId::BSP));
 
         if is_runnable {
-            self.schedule_sync::<A>(proc_table, target_cpu, current_cpu, proc_nr, SchedIpiFlags::VM_INHIBIT);
+            self.schedule_sync::<A>(
+                proc_table,
+                target_cpu,
+                current_cpu,
+                proc_nr,
+                SchedIpiFlags::VM_INHIBIT,
+            );
         } else {
             proc_table.rts_set(proc_nr, RtsFlagsBits::VMINHIBIT);
         }
@@ -795,7 +819,10 @@ impl SmpState {
             .unwrap_or(CpuId::BSP);
 
         self.schedule_sync::<A>(
-            proc_table, target_cpu, current_cpu, proc_nr,
+            proc_table,
+            target_cpu,
+            current_cpu,
+            proc_nr,
             SchedIpiFlags::STOP_PROC | SchedIpiFlags::SAVE_CTX,
         );
     }
@@ -832,9 +859,10 @@ impl SmpState {
     ) {
         let curr = self.cpu_locals[current_cpu.index()].proc_ptr;
         if let Some(curr_nr) = curr
-            && curr_nr != proc_nr::IDLE {
-                proc_table.rts_set(curr_nr, RtsFlagsBits::PREEMPTED);
-            }
+            && curr_nr != proc_nr::IDLE
+        {
+            proc_table.rts_set(curr_nr, RtsFlagsBits::PREEMPTED);
+        }
     }
 
     /// IPI schedule handler: ack + preempt current process.
@@ -883,8 +911,7 @@ impl SmpState {
         // Wait for APs — bitmap semantics: every AP that acked
         // must finish init_ap. `pause()` is the C arch_pause parity.
         // C: smp.c:45-46
-        while self.online_mask.load(Ordering::Acquire)
-            != self.boot_ack_mask.load(Ordering::Acquire)
+        while self.online_mask.load(Ordering::Acquire) != self.boot_ack_mask.load(Ordering::Acquire)
         {
             A::pause();
         }
@@ -957,8 +984,7 @@ pub(crate) static BOOT_LOCK: BootLock = BootLock::new();
 /// SGI and timer PPI gates (C2D-APENTRY). Written by the AP after
 /// `enable_ap_irq_sources`, read by the BSP after `wait_for_aps` to record
 /// the AP-side bring-up reading.
-static AP_IRQ_READY: [AtomicBool; MAX_CPUS] =
-    [const { AtomicBool::new(false) }; MAX_CPUS];
+static AP_IRQ_READY: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// Mark this CPU's per-CPU interrupt gates as open.
 pub fn mark_ap_irq_ready(cpu: CpuId) {
@@ -1061,18 +1087,13 @@ fn wait_ap_boot_ack(smp: &mut SmpState, logical: u32) -> bool {
             let section = unsafe { crate::smp::BklSection::assume_held() };
             crate::clock::get_monotonic(&section)
         } >= up0 + 500;
-        let tsc_elapsed = crate::clock::read_tsc()
-            .wrapping_sub(tsc0)
-            > 20_000_000_000u64;
+        let tsc_elapsed = crate::clock::read_tsc().wrapping_sub(tsc0) > 20_000_000_000u64;
         if uptime_elapsed || tsc_elapsed {
             return false;
         }
         <minix_arch::CurrentSmpArch as minix_arch::SmpArch>::pause();
     }
-    smp.cpu_set_flag(
-        crate::proc::CpuId::new_unchecked(logical),
-        CpuFlags::READY,
-    );
+    smp.cpu_set_flag(crate::proc::CpuId::new_unchecked(logical), CpuFlags::READY);
     true
 }
 
@@ -1088,15 +1109,13 @@ fn warn_ap_boot_timeout(hw_id: u64) {
 pub fn smp_init() {
     #[cfg(target_arch = "x86_64")]
     {
+        use minix_arch::arch::ap_early_entry::ApBootstrap;
         use minix_arch::smp::SmpArch as _;
         use minix_arch::{
-            x86_64::ap_early_entry::{
-                fill_bootstrap, install_at, AP_STARTUP_VECTOR, SCRATCH_LIN,
-            },
             CurrentSmpArch, ProtectionArch, SmpArch,
+            x86_64::ap_early_entry::{AP_STARTUP_VECTOR, SCRATCH_LIN, fill_bootstrap, install_at},
         };
-        use minix_arch::arch::ap_early_entry::ApBootstrap;
-        use minix_platform::{platform_desc, PlatformDesc};
+        use minix_platform::{PlatformDesc, platform_desc};
 
         // Register the kernel AP tail BEFORE waking anyone: the ladder's Rust
         // convergence calls it with the bootstrap record fields. The tail is
@@ -1126,51 +1145,54 @@ pub fn smp_init() {
         {
             let _boot = BOOT_LOCK.lock();
 
-        for logical in 0..topo.nr_cpus as u32 {
-            if logical == bsp_logical {
-                continue;
+            for logical in 0..topo.nr_cpus as u32 {
+                if logical == bsp_logical {
+                    continue;
+                }
+                let hw_id = topo.cpus[logical as usize].hw_id;
+                // Per-AP kernel stack: static per-CPU arrays (§3.3 decision —
+                // no_std predictable). The CpuLocal migration may move this later.
+                let stack_top = ap_kernel_stack_top(logical);
+
+                // C: tss_init(cpu, get_k_stack_top(cpu)) — write this AP's sp0
+                // and CPU-id stamp BEFORE the SIPI. `init()` built every slot
+                // with the BSP's stack top as a placeholder; without this call
+                // the AP's ring3→ring0 transition would use the BSP stack and
+                // `sp0 + sizeof(reg_t)` would not carry this CPU's id.
+                crate::with_protection_mut(|prot| {
+                    prot.set_kernel_stack(logical, minix_types::VirBytes::new(stack_top))
+                });
+
+                // CpuFlags.READY is set on the AP's behalf when the ack arrives;
+                // the send itself marks the attempt (§3.4 state machine:
+                // DISCOVERED → BOOTING).
+                let record = ApBootstrap {
+                    logical_id: logical,
+                    _pad: 0,
+                    hw_id,
+                    // The root the BSP is translating with RIGHT NOW (CR3 ground
+                    // truth) — §3.2 invariant: <4 GiB, asserted by fill_bootstrap.
+                    page_table_root_pa: minix_arch::x86_64::paging::current_cr3_pa(),
+                    kernel_stack_top_va: stack_top,
+                    rust_entry_va: minix_arch::x86_64::ap_early_entry::ap_early_entry as u64,
+                };
+                // SAFETY: scratch page is identity RAM reserved for AP bring-up.
+                unsafe { fill_bootstrap(SCRATCH_LIN, &record) };
+                // Trait contract: `entry` is the trampoline PHYSICAL address
+                // (x86 derives vector = entry >> 12 internally); the trampoline
+                // lives at 0x5000 (vector 0x05).
+                <CurrentSmpArch as SmpArch>::boot_ap(
+                    hw_id as u32,
+                    minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize,
+                );
+
+                // Bounded per-AP ack wait and READY publication (C
+                // arch_smp.c:131-141). The helper carries the dual-clock window
+                // and the single-sample-race rationale.
+                if !wait_ap_boot_ack(smp, logical) {
+                    warn_ap_boot_timeout(hw_id);
+                }
             }
-            let hw_id = topo.cpus[logical as usize].hw_id;
-            // Per-AP kernel stack: static per-CPU arrays (§3.3 decision —
-            // no_std predictable). The CpuLocal migration may move this later.
-            let stack_top = ap_kernel_stack_top(logical);
-
-            // C: tss_init(cpu, get_k_stack_top(cpu)) — write this AP's sp0
-            // and CPU-id stamp BEFORE the SIPI. `init()` built every slot
-            // with the BSP's stack top as a placeholder; without this call
-            // the AP's ring3→ring0 transition would use the BSP stack and
-            // `sp0 + sizeof(reg_t)` would not carry this CPU's id.
-            crate::with_protection_mut(|prot| {
-                prot.set_kernel_stack(logical, minix_types::VirBytes::new(stack_top))
-            });
-
-            // CpuFlags.READY is set on the AP's behalf when the ack arrives;
-            // the send itself marks the attempt (§3.4 state machine:
-            // DISCOVERED → BOOTING).
-            let record = ApBootstrap {
-                logical_id: logical,
-                _pad: 0,
-                hw_id,
-                // The root the BSP is translating with RIGHT NOW (CR3 ground
-                // truth) — §3.2 invariant: <4 GiB, asserted by fill_bootstrap.
-                page_table_root_pa: minix_arch::x86_64::paging::current_cr3_pa(),
-                kernel_stack_top_va: stack_top,
-                rust_entry_va: minix_arch::x86_64::ap_early_entry::ap_early_entry as u64,
-            };
-            // SAFETY: scratch page is identity RAM reserved for AP bring-up.
-            unsafe { fill_bootstrap(SCRATCH_LIN, &record) };
-            // Trait contract: `entry` is the trampoline PHYSICAL address
-            // (x86 derives vector = entry >> 12 internally); the trampoline
-            // lives at 0x5000 (vector 0x05).
-            <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize);
-
-            // Bounded per-AP ack wait and READY publication (C
-            // arch_smp.c:131-141). The helper carries the dual-clock window
-            // and the single-sample-race rationale.
-            if !wait_ap_boot_ack(smp, logical) {
-                warn_ap_boot_timeout(hw_id);
-            }
-        }
         } // inner block ends — boot_lock released here (guard drop), C arch_smp.c:247
 
         smp.wait_for_aps::<CurrentSmpArch>();
@@ -1215,8 +1237,7 @@ pub fn smp_init() {
     {
         use core::sync::atomic::Ordering;
         use minix_arch::arm64::ap_early_entry::{
-            AP_ARRIVED, BOOT_HART_ELECTED, ap_early_entry, record as ap_record,
-            register_ap_tail,
+            AP_ARRIVED, BOOT_HART_ELECTED, ap_early_entry, record as ap_record, register_ap_tail,
         };
         use minix_arch::{CurrentSmpArch, SmpArch};
         use minix_plat::EarlyConsole as _;
@@ -1250,8 +1271,7 @@ pub fn smp_init() {
             (0..topo.nr_cpus as usize)
                 .find(|&i| topo.cpus[i].hw_id == hw)
                 .or_else(|| {
-                    (0..topo.nr_cpus as usize)
-                        .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+                    (0..topo.nr_cpus as usize).find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
                 })
                 .expect("smp_init: BSP hart not found in topology") as u32
         } else if self_logical < topo.nr_cpus as usize {
@@ -1408,8 +1428,7 @@ pub fn smp_init() {
     {
         use minix_arch::riscv64::ap_early_entry::ap_early_entry;
         use minix_arch::riscv64::ap_early_entry::{
-            AP_ARRIVED, BOOT_HART_ELECTED, entry_start_pa, record as ap_record,
-            register_ap_tail,
+            AP_ARRIVED, BOOT_HART_ELECTED, entry_start_pa, record as ap_record, register_ap_tail,
         };
         use minix_arch::{CurrentSmpArch, SmpArch};
         use minix_plat::EarlyConsole as _;
@@ -1453,7 +1472,6 @@ pub fn smp_init() {
         // place (no panic on a stray SSI, no miscounted tick); restoring
         // delivery depends on firmware delegation or an SSWI device; the
         // EI(PLIC) arm is the next slice.
-
 
         // The BSP's current root (§3.2: the AP gets exactly the table the BSP
         // is using).
@@ -1580,8 +1598,7 @@ static AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; AP_STACK_COUNT] =
 ))]
 pub(crate) fn ap_kernel_stack_top(logical_id: u32) -> u64 {
     // Address-only computation on a shared static; no dereference, no write.
-    let base =
-        core::ptr::addr_of!(AP_KERNEL_STACKS[logical_id as usize]) as *const u8 as usize;
+    let base = core::ptr::addr_of!(AP_KERNEL_STACKS[logical_id as usize]) as *const u8 as usize;
     (base + AP_KERNEL_STACK_SIZE) as u64
 }
 
@@ -1596,7 +1613,9 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
     // The AP's LAPIC is disabled after INIT — enable it before anything can
     // address this CPU with an IPI (C apic_init parity).
     minix_arch::ap_enable_lapic();
-    crate::with_protection(|prot| prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va)));
+    crate::with_protection(|prot| {
+        prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va))
+    });
     // Per-CPU IDT attach — IDTR is per-CPU state; without this lidt
     // the AP still points at the firmware's IDT and the first interrupt
     // (the 0xF0 IPI) enters firmware gates (observed: schedule_sync hangs,
@@ -1638,11 +1657,7 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
 /// vector, open the redistributor SGI/timer gates, arm the one-shot, then
 /// the BKL/online handshake, then the shared scheduler loop.
 #[cfg(target_arch = "aarch64")]
-unsafe extern "C" fn smp_ap_tail(
-    logical_id: u32,
-    hw_id: u64,
-    kernel_stack_top_va: u64,
-) -> ! {
+unsafe extern "C" fn smp_ap_tail(logical_id: u32, hw_id: u64, kernel_stack_top_va: u64) -> ! {
     use minix_arch::ProtectionArch;
     // Identity first: everything below (timer init stores the ICR per CPU,
     // the scheduler reads its own CpuLocal) calls current_cpu_id().
@@ -1651,10 +1666,7 @@ unsafe extern "C" fn smp_ap_tail(
     unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
     // Per-CPU kernel-stack base + this AP's VBAR_EL1.
     crate::with_protection(|prot| {
-        prot.init_ap(
-            logical_id,
-            minix_types::VirBytes::new(kernel_stack_top_va),
-        )
+        prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va))
     });
     {
         use minix_arch::TrapEntryArch;
@@ -1687,20 +1699,13 @@ unsafe extern "C" fn smp_ap_tail(
 /// opens `sie.SSIE`/`sie.STIE`; the timer gate is armed after the trap
 /// vector is installed.
 #[cfg(target_arch = "riscv64")]
-unsafe extern "C" fn smp_ap_tail(
-    logical_id: u32,
-    _hw_id: u64,
-    kernel_stack_top_va: u64,
-) -> ! {
+unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_va: u64) -> ! {
     use minix_arch::ProtectionArch;
     // Ack first: the record has been consumed into locals.
     unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
     // Per-CPU stack base (`sscratch`) and this AP's `stvec`.
     crate::with_protection(|prot| {
-        prot.init_ap(
-            logical_id,
-            minix_types::VirBytes::new(kernel_stack_top_va),
-        )
+        prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va))
     });
     {
         use minix_arch::TrapEntryArch;
@@ -1732,8 +1737,8 @@ unsafe extern "C" fn smp_ap_tail(
 // here because `CONFIG_MAX_CPUS` is kernel configuration and `GET_CPUINFO`
 // (misc.rs) is the kernel-ABI consumer.
 
-use minix_arch::cpu_identity::{CpuIdentity, CpuIdentityArch};
 use minix_arch::CurrentCpuIdentity;
+use minix_arch::cpu_identity::{CpuIdentity, CpuIdentityArch};
 
 /// Per-CPU ISA identity storage — the Rust counterpart of C's
 /// `cpu_info[CONFIG_MAX_CPUS]` kernel global (glo.h).
@@ -1750,7 +1755,9 @@ pub(crate) struct CpuInfoTable {
 impl CpuInfoTable {
     /// All-unprobed table — C: zero-filled `cpu_info[]`.
     pub(crate) const fn new() -> Self {
-        Self { slots: [None; MAX_CPUS] }
+        Self {
+            slots: [None; MAX_CPUS],
+        }
     }
 
     /// Record the identity of one CPU. C: `cpu_info[cpu] = ...`.
@@ -1911,7 +1918,9 @@ impl BklGuard {
     /// BKL ownership at compile time (capability-token pattern).
     /// The witness borrows this guard, so it cannot outlive the guard.
     pub fn section(&self) -> BklSection<'_> {
-        BklSection { _lifetime: core::marker::PhantomData }
+        BklSection {
+            _lifetime: core::marker::PhantomData,
+        }
     }
 
     /// Transfer this guard's BKL ownership to the enclosing scope,
@@ -2004,7 +2013,9 @@ pub fn bkl_lock_section<'a>() -> BklSection<'a> {
     // type system that the BKL was acquired.
     let guard = bkl_lock();
     guard.transfer();
-    BklSection { _lifetime: core::marker::PhantomData }
+    BklSection {
+        _lifetime: core::marker::PhantomData,
+    }
 }
 
 impl BklSection<'static> {
@@ -2034,7 +2045,9 @@ impl BklSection<'static> {
             "BklSection::assume_held called while the BKL is NOT held — \
              the enclosing chain lost its BKL ownership invariant"
         );
-        BklSection { _lifetime: core::marker::PhantomData }
+        BklSection {
+            _lifetime: core::marker::PhantomData,
+        }
     }
 }
 
@@ -2056,10 +2069,7 @@ impl BklSection<'static> {
 /// The caller MUST hold the BKL for the entire duration of the returned
 /// reference's lifetime. The witness is the proof; the lifetime is the
 /// enforcement.
-pub fn smp_state_with<'a, 'b>(
-    _section: &'a BklSection<'b>,
-    state: &'a SmpState,
-) -> &'a SmpState {
+pub fn smp_state_with<'a, 'b>(_section: &'a BklSection<'b>, state: &'a SmpState) -> &'a SmpState {
     // SAFETY: The `BklSection` witness is a compile-time proof that the
     // caller holds the BKL. Accessing `SmpState` is safe because:
     //   1. No other CPU can be inside a critical section (BKL enforces
@@ -2251,7 +2261,7 @@ pub(crate) fn bkl_lock_reset_for_test() {
 mod tests {
     use super::*;
 
-        #[test]
+    #[test]
     fn test_boot_ack_publish_and_observe() {
         // The AP publishes its handshake bit (Release); the BSP
         // observes it (Acquire). Only the addressed logical_id's bit moves.
@@ -2262,7 +2272,7 @@ mod tests {
         assert!(!smp.observe_boot_ack(2), "other bits must stay clear");
     }
 
-#[test]
+    #[test]
     fn test_smp_state_single_cpu() {
         let smp = SmpState::new_single_cpu();
         assert_eq!(smp.ncpus(), 1);
@@ -2303,8 +2313,14 @@ mod tests {
         // Arm 1: read-clear of C `context_stop_idle`'s cpu_is_idle half.
         let mut smp = SmpState::new_single_cpu();
         smp.cpu_local_mut(CpuId::BSP).unwrap().cpu_is_idle = true;
-        assert!(smp.clear_idle_flag(CpuId::BSP), "first clear reports was-idle");
-        assert!(!smp.cpu_local(CpuId::BSP).unwrap().cpu_is_idle, "flag cleared");
+        assert!(
+            smp.clear_idle_flag(CpuId::BSP),
+            "first clear reports was-idle"
+        );
+        assert!(
+            !smp.cpu_local(CpuId::BSP).unwrap().cpu_is_idle,
+            "flag cleared"
+        );
         assert!(
             !smp.clear_idle_flag(CpuId::BSP),
             "second clear reports was-not-idle"
@@ -2406,7 +2422,7 @@ mod tests {
         // Degenerate case first: only the BSP seeded → nothing outstanding →
         // completes immediately. C-faithful: wait_for_APs with zero READY
         // APs waits for ap_cpus_booted == 0 and returns at once (degraded
-    // continuation).
+        // continuation).
         let mut smp = SmpState::with_ncpus(4, CpuId::BSP);
         smp.seed_bsp_masks(0);
         assert!(smp.all_aps_booted(), "BSP-only: nothing to wait for");
@@ -2616,7 +2632,7 @@ mod tests {
             // (Cannot call proc_table_with here because PROC_TABLE may not be
             // initialized in this test, but the type system proof is the point.)
             // BklSection RAII witness: `let _ = &section` keeps the section alive up to
-    // this point to witness ownership; it is not swallowing an error.
+            // this point to witness ownership; it is not swallowing an error.
             #[allow(clippy::let_underscore_must_use)]
             let _ = &section; // use the section
         } // section dropped here, guard no longer borrowed
@@ -2742,7 +2758,8 @@ mod tests {
         let mut smp = SmpState::new_single_cpu();
         let mut pt = crate::test_helpers::test_proc_table();
 
-        smp.ipi_data(CpuId::BSP).set_flags(SchedIpiFlags::VM_INHIBIT);
+        smp.ipi_data(CpuId::BSP)
+            .set_flags(SchedIpiFlags::VM_INHIBIT);
         smp.ipi_data(CpuId::BSP).set_target(ProcNr(0));
 
         smp.sched_handler_full(&mut pt, CpuId::BSP);
@@ -2766,7 +2783,12 @@ mod tests {
 
         // IDLE process should NOT have RTS_PREEMPTED set.
         if let Some(idle_proc) = pt.get(proc_nr::IDLE) {
-            assert!(!idle_proc.p_rts_flags.get().contains(RtsFlagsBits::PREEMPTED));
+            assert!(
+                !idle_proc
+                    .p_rts_flags
+                    .get()
+                    .contains(RtsFlagsBits::PREEMPTED)
+            );
         }
     }
 
@@ -2824,44 +2846,42 @@ mod tests {
         assert_eq!(MockSmpArch::STARTUP_TIMEOUT_MS, 5000);
     }
 
+    #[cfg(test)]
+    mod d36_tests {
+        use super::*;
 
-#[cfg(test)]
-mod d36_tests {
-    use super::*;
-
-    /// with_ncpus sets ncpus/bsp_cpu_id correctly; only BSP is
-    /// READY (APs join after boot_ap). Matches C smp.c boot flow where
-    /// non-BSP CPUs stay out of the scheduler until booted.
-    #[test]
-    fn test_with_ncpus_multi_cpu_state() {
-        let smp = SmpState::with_ncpus(4, CpuId::new_unchecked(2));
-        assert_eq!(smp.ncpus, 4);
-        assert_eq!(smp.bsp_cpu_id, CpuId::new_unchecked(2));
-        // BSP is READY.
-        assert!(smp.cpus[2].test_flag(CpuFlags::BSP | CpuFlags::READY));
-        // Non-BSP CPUs are NOT ready.
-        for i in 0..4 {
-            if i != 2 {
-                assert!(!smp.cpus[i].test_flag(CpuFlags::READY));
+        /// with_ncpus sets ncpus/bsp_cpu_id correctly; only BSP is
+        /// READY (APs join after boot_ap). Matches C smp.c boot flow where
+        /// non-BSP CPUs stay out of the scheduler until booted.
+        #[test]
+        fn test_with_ncpus_multi_cpu_state() {
+            let smp = SmpState::with_ncpus(4, CpuId::new_unchecked(2));
+            assert_eq!(smp.ncpus, 4);
+            assert_eq!(smp.bsp_cpu_id, CpuId::new_unchecked(2));
+            // BSP is READY.
+            assert!(smp.cpus[2].test_flag(CpuFlags::BSP | CpuFlags::READY));
+            // Non-BSP CPUs are NOT ready.
+            for i in 0..4 {
+                if i != 2 {
+                    assert!(!smp.cpus[i].test_flag(CpuFlags::READY));
+                }
             }
         }
-    }
 
-    /// with_ncpus clamps to MAX_CPUS.
-    #[test]
-    fn test_with_ncpus_clamps_to_max() {
-        let smp = SmpState::with_ncpus(9999, CpuId::BSP);
-        assert_eq!(smp.ncpus, MAX_CPUS as u32);
-    }
+        /// with_ncpus clamps to MAX_CPUS.
+        #[test]
+        fn test_with_ncpus_clamps_to_max() {
+            let smp = SmpState::with_ncpus(9999, CpuId::BSP);
+            assert_eq!(smp.ncpus, MAX_CPUS as u32);
+        }
 
-    /// with_ncpus(1) equals new_single_cpu (backward compat).
-    #[test]
-    fn test_with_ncpus_single_cpu_compat() {
-        let a = SmpState::with_ncpus(1, CpuId::BSP);
-        let b = SmpState::new_single_cpu();
-        assert_eq!(a.ncpus, b.ncpus);
-        assert_eq!(a.bsp_cpu_id, b.bsp_cpu_id);
+        /// with_ncpus(1) equals new_single_cpu (backward compat).
+        #[test]
+        fn test_with_ncpus_single_cpu_compat() {
+            let a = SmpState::with_ncpus(1, CpuId::BSP);
+            let b = SmpState::new_single_cpu();
+            assert_eq!(a.ncpus, b.ncpus);
+            assert_eq!(a.bsp_cpu_id, b.bsp_cpu_id);
+        }
     }
-}
-
 }

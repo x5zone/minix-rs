@@ -20,8 +20,7 @@ pub const MAXMEMMAP: usize = 128;
 
 /// Memory map entry representing a contiguous physical memory region.
 /// C: struct memory_info in minix/type.h
-#[derive(Debug, Clone, Copy)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MemMapEntry {
     /// Physical base address (page-aligned).
     pub base: u64,
@@ -30,7 +29,6 @@ pub struct MemMapEntry {
 }
 
 /// Const zero entry for static initialization.
-
 
 impl MemMapEntry {
     /// Whether this entry is empty (available for use).
@@ -95,7 +93,11 @@ pub enum MemMapError {
 /// This function should only be called during boot (while `kernel_may_alloc`
 /// is true). The caller is responsible for ensuring this invariant.
 /// C: assert(kernel_may_alloc) in pg_utils.c:102
-pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> Result<usize, MemMapError> {
+pub fn add_memmap(
+    mmap: &mut [MemMapEntry; MAXMEMMAP],
+    addr: u64,
+    len: u64,
+) -> Result<usize, MemMapError> {
     // C: assert(kernel_may_alloc) in pg_utils.c:102. The production gate is
     // set in kmain Phase A and cleared in bsp_finish_booting; host unit
     // tests exercise the pure function without the boot flag, so the
@@ -107,9 +109,7 @@ pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> R
     );
     // C: page alignment — roundup(addr) and rounddown(addr + len)
     let page_size = 4096u64;
-    let aligned_base = addr
-        .saturating_add(page_size - 1)
-        & !(page_size - 1);
+    let aligned_base = addr.saturating_add(page_size - 1) & !(page_size - 1);
     let aligned_end = addr.saturating_add(len) & !(page_size - 1);
     let aligned_len = aligned_end.saturating_sub(aligned_base);
 
@@ -182,7 +182,11 @@ pub fn add_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], addr: u64, len: u64) -> R
 /// (or another empty slot if the prefix/suffix doesn't fit the alignment
 /// requirements of the cleared slot). This is safe because `add_memmap`
 /// scans from index 0 for the first empty slot.
-pub fn cut_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], start: u64, len: u64) -> Result<(), MemMapError> {
+pub fn cut_memmap(
+    mmap: &mut [MemMapEntry; MAXMEMMAP],
+    start: u64,
+    len: u64,
+) -> Result<(), MemMapError> {
     // Zero-length cut is always a no-op (matches C behavior where the loop
     // body's `if(substart >= subend) continue;` skips zero-length overlaps).
     if len == 0 {
@@ -197,9 +201,7 @@ pub fn cut_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], start: u64, len: u64) -> 
     // instead of wrapping. The final 4 KiB below u64::MAX is not cut, which
     // is unreachable for a real memmap (the top of the address space is not
     // available RAM).
-    let cut_end = cut_end_raw
-        .saturating_add(page_size - 1)
-        & !(page_size - 1); // round up
+    let cut_end = cut_end_raw.saturating_add(page_size - 1) & !(page_size - 1); // round up
     if cut_start >= cut_end {
         // Zero-length cut after alignment — nothing to do
         return Ok(());
@@ -280,7 +282,7 @@ mod tests {
         // Non-aligned address and length
         let idx = add_memmap(&mut mmap, 0x1000_0001, 0x1FFF).unwrap();
         assert_eq!(mmap[idx].base, 0x1000_1000); // rounded up
-        assert_eq!(mmap[idx].length, 0x1000);    // rounded down
+        assert_eq!(mmap[idx].length, 0x1000); // rounded down
     }
 
     #[test]
@@ -305,7 +307,10 @@ mod tests {
         let mut mmap = empty_mmap();
         // Fill all slots
         for (i, slot) in mmap.iter_mut().enumerate().take(MAXMEMMAP) {
-            *slot = MemMapEntry { base: (i as u64) * 0x1000, length: 0x1000 };
+            *slot = MemMapEntry {
+                base: (i as u64) * 0x1000,
+                length: 0x1000,
+            };
         }
         let result = add_memmap(&mut mmap, 0x000F_F000_0000, 0x1000);
         assert_eq!(result, Err(MemMapError::NoSlots));
@@ -314,8 +319,14 @@ mod tests {
     #[test]
     fn test_add_memmap_finds_first_empty() {
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x1000 };
-        mmap[2] = MemMapEntry { base: 0x3000, length: 0x1000 };
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x1000,
+        };
+        mmap[2] = MemMapEntry {
+            base: 0x3000,
+            length: 0x1000,
+        };
         let idx = add_memmap(&mut mmap, 0x5000, 0x1000).unwrap();
         assert_eq!(idx, 1); // First empty slot
     }
@@ -326,7 +337,10 @@ mod tests {
     fn test_cut_memmap_no_overlap() {
         // Cut range that doesn't overlap any entry → no change
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x1000 };
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x1000,
+        };
         cut_memmap(&mut mmap, 0x10000, 0x1000).unwrap();
         assert_eq!(mmap[0].base, 0x1000);
         assert_eq!(mmap[0].length, 0x1000);
@@ -336,7 +350,10 @@ mod tests {
     fn test_cut_memmap_full_overlap() {
         // Cut range fully covers an entry → entry is removed entirely
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x1000 };
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x1000,
+        };
         cut_memmap(&mut mmap, 0x1000, 0x1000).unwrap();
         assert!(mmap[0].is_empty());
     }
@@ -345,7 +362,10 @@ mod tests {
     fn test_cut_memmap_prefix_split() {
         // Cut the beginning of an entry → prefix is removed, suffix is kept
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x4000 };
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x4000,
+        };
         cut_memmap(&mut mmap, 0x1000, 0x1000).unwrap();
         // The suffix [0x2000, 0x5000) should be added back
         let suffix = mmap.iter().find(|e| !e.is_empty()).unwrap();
@@ -357,7 +377,10 @@ mod tests {
     fn test_cut_memmap_suffix_split() {
         // Cut the end of an entry → prefix is kept, suffix is removed
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x4000 };
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x4000,
+        };
         cut_memmap(&mut mmap, 0x4000, 0x1000).unwrap();
         // The prefix [0x1000, 0x4000) should be kept
         let prefix = mmap.iter().find(|e| !e.is_empty()).unwrap();
@@ -369,14 +392,21 @@ mod tests {
     fn test_cut_memmap_middle_split() {
         // Cut the middle of an entry → both prefix and suffix are kept
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x8000 };
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x8000,
+        };
         // Cut [0x3000, 0x5000) from [0x1000, 0x9000)
         cut_memmap(&mut mmap, 0x3000, 0x2000).unwrap();
         let non_empty: Vec<_> = mmap.iter().filter(|e| !e.is_empty()).collect();
         assert_eq!(non_empty.len(), 2, "should have prefix + suffix");
         // Check that the two entries are [0x1000, 0x2000) and [0x5000, 0x9000)
-        let has_prefix = non_empty.iter().any(|e| e.base == 0x1000 && e.length == 0x2000);
-        let has_suffix = non_empty.iter().any(|e| e.base == 0x5000 && e.length == 0x4000);
+        let has_prefix = non_empty
+            .iter()
+            .any(|e| e.base == 0x1000 && e.length == 0x2000);
+        let has_suffix = non_empty
+            .iter()
+            .any(|e| e.base == 0x5000 && e.length == 0x4000);
         assert!(has_prefix, "prefix [0x1000, 0x3000) must exist");
         assert!(has_suffix, "suffix [0x5000, 0x9000) must exist");
     }
@@ -385,16 +415,26 @@ mod tests {
     fn test_cut_memmap_spans_multiple_entries() {
         // Cut range spans two entries → both are affected
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x2000 }; // [0x1000, 0x3000)
-        mmap[1] = MemMapEntry { base: 0x4000, length: 0x2000 }; // [0x4000, 0x6000)
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x2000,
+        }; // [0x1000, 0x3000)
+        mmap[1] = MemMapEntry {
+            base: 0x4000,
+            length: 0x2000,
+        }; // [0x4000, 0x6000)
         // Cut [0x2000, 0x5000) — overlaps tail of entry 0 and head of entry 1
         cut_memmap(&mut mmap, 0x2000, 0x3000).unwrap();
         let non_empty: Vec<_> = mmap.iter().filter(|e| !e.is_empty()).collect();
         assert_eq!(non_empty.len(), 2, "should have prefix of 0 + suffix of 1");
         // Entry 0's prefix [0x1000, 0x2000) should survive
-        let has_prefix0 = non_empty.iter().any(|e| e.base == 0x1000 && e.length == 0x1000);
+        let has_prefix0 = non_empty
+            .iter()
+            .any(|e| e.base == 0x1000 && e.length == 0x1000);
         // Entry 1's suffix [0x5000, 0x6000) should survive
-        let has_suffix1 = non_empty.iter().any(|e| e.base == 0x5000 && e.length == 0x1000);
+        let has_suffix1 = non_empty
+            .iter()
+            .any(|e| e.base == 0x5000 && e.length == 0x1000);
         assert!(has_prefix0, "prefix of entry 0 must survive");
         assert!(has_suffix1, "suffix of entry 1 must survive");
     }
@@ -403,28 +443,43 @@ mod tests {
     fn test_cut_memmap_alignment_round_down_start() {
         // Non-page-aligned start is rounded DOWN (cut expands)
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x4000 }; // [0x1000, 0x5000)
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x4000,
+        }; // [0x1000, 0x5000)
         // Cut starting at 0x2001, len 0x1000 → [0x2001, 0x3001)
         // start rounds down to 0x2000, end rounds up to 0x4000
         // → cut [0x2000, 0x4000), prefix [0x1000, 0x2000), suffix [0x4000, 0x5000)
         cut_memmap(&mut mmap, 0x2001, 0x1000).unwrap();
         let non_empty: Vec<_> = mmap.iter().filter(|e| !e.is_empty()).collect();
-        let has_prefix = non_empty.iter().any(|e| e.base == 0x1000 && e.length == 0x1000);
-        let has_suffix = non_empty.iter().any(|e| e.base == 0x4000 && e.length == 0x1000);
+        let has_prefix = non_empty
+            .iter()
+            .any(|e| e.base == 0x1000 && e.length == 0x1000);
+        let has_suffix = non_empty
+            .iter()
+            .any(|e| e.base == 0x4000 && e.length == 0x1000);
         assert!(has_prefix, "prefix [0x1000, 0x2000) must exist");
-        assert!(has_suffix, "suffix [0x4000, 0x5000) must exist (end rounds up)");
+        assert!(
+            has_suffix,
+            "suffix [0x4000, 0x5000) must exist (end rounds up)"
+        );
     }
 
     #[test]
     fn test_cut_memmap_alignment_round_up_end() {
         // Non-page-aligned end is rounded UP (cut expands)
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x4000 }; // [0x1000, 0x5000)
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x4000,
+        }; // [0x1000, 0x5000)
         // Cut ending at 0x2001 (start=0x1000, len=0x1001) → end rounds up to 0x3000
         cut_memmap(&mut mmap, 0x1000, 0x1001).unwrap();
         let non_empty: Vec<_> = mmap.iter().filter(|e| !e.is_empty()).collect();
         // Only suffix [0x3000, 0x5000) should exist
-        let has_suffix = non_empty.iter().any(|e| e.base == 0x3000 && e.length == 0x2000);
+        let has_suffix = non_empty
+            .iter()
+            .any(|e| e.base == 0x3000 && e.length == 0x2000);
         assert!(has_suffix, "end must be rounded up to page boundary");
     }
 
@@ -432,7 +487,10 @@ mod tests {
     fn test_cut_memmap_zero_length_no_op() {
         // Zero-length cut (len=0) is always a no-op regardless of alignment
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x1000 };
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x1000,
+        };
         cut_memmap(&mut mmap, 0x1001, 0).unwrap();
         assert_eq!(mmap[0].base, 0x1000, "zero-length cut should be no-op");
         assert_eq!(mmap[0].length, 0x1000);
@@ -443,11 +501,18 @@ mod tests {
         // After cutting, total free memory should decrease by exactly the
         // page-aligned cut size (no leaks, no over-reclaim)
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x1000, length: 0x10000 }; // 64KB
+        mmap[0] = MemMapEntry {
+            base: 0x1000,
+            length: 0x10000,
+        }; // 64KB
         let total_before: u64 = mmap.iter().map(|e| e.length).sum();
         cut_memmap(&mut mmap, 0x4000, 0x2000).unwrap(); // cut 8KB
         let total_after: u64 = mmap.iter().map(|e| e.length).sum();
-        assert_eq!(total_before - total_after, 0x2000, "total free memory must decrease by cut size");
+        assert_eq!(
+            total_before - total_after,
+            0x2000,
+            "total free memory must decrease by cut size"
+        );
     }
 
     /// Cut arithmetic used by the VM handoff classification, exercised on the
@@ -459,7 +524,10 @@ mod tests {
     #[test]
     fn test_cut_memmap_aarch64_dtb_real_totalsize() {
         let mut mmap = empty_mmap();
-        mmap[0] = MemMapEntry { base: 0x4000_0000, length: 0x2000_0000 };
+        mmap[0] = MemMapEntry {
+            base: 0x4000_0000,
+            length: 0x2000_0000,
+        };
         cut_memmap(&mut mmap, 0x4000_0000, 7699).unwrap();
 
         let live: Vec<&MemMapEntry> = mmap.iter().filter(|e| e.length != 0).collect();

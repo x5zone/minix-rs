@@ -29,9 +29,7 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::proc::{
-    priority, CpuId, KProcess, ProcNr, NONE_PROC_NR,
-};
+use crate::proc::{CpuId, KProcess, NONE_PROC_NR, ProcNr, priority};
 
 /// Per-CPU scheduler state holding ready queue head/tail indices.
 ///
@@ -127,12 +125,7 @@ impl Scheduler {
     /// Caller must ensure `nr` is in the queue at priority `q`.
     /// The `update_fn` closure is called with mutable references to the
     /// queue link pointers so the caller can update process fields.
-    pub fn dequeue_from_queue(
-        &mut self,
-        nr: ProcNr,
-        q: usize,
-        procs: &mut [KProcess],
-    ) {
+    pub fn dequeue_from_queue(&mut self, nr: ProcNr, q: usize, procs: &mut [KProcess]) {
         let _link_idx: Option<usize> = None;
         let mut link_is_head = true;
         let mut prev: Option<ProcNr> = None;
@@ -147,12 +140,14 @@ impl Scheduler {
             }
             prev = Some(cur_nr);
             let cur_idx = nr_to_idx(cur_nr);
-            current = cur_idx
-                .and_then(|i| procs.get(i))
-                .and_then(|p| {
-                    let v = p.p_nextready.load(Ordering::Relaxed);
-                    if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
-                });
+            current = cur_idx.and_then(|i| procs.get(i)).and_then(|p| {
+                let v = p.p_nextready.load(Ordering::Relaxed);
+                if v == NONE_PROC_NR {
+                    None
+                } else {
+                    Some(ProcNr(v))
+                }
+            });
             link_is_head = false;
         }
 
@@ -161,18 +156,22 @@ impl Scheduler {
         }
 
         // Remove from linked list
-        let next = nr_to_idx(nr)
-            .and_then(|i| procs.get(i))
-            .and_then(|p| {
-                let v = p.p_nextready.load(Ordering::Relaxed);
-                if v == NONE_PROC_NR { None } else { Some(ProcNr(v)) }
-            });
+        let next = nr_to_idx(nr).and_then(|i| procs.get(i)).and_then(|p| {
+            let v = p.p_nextready.load(Ordering::Relaxed);
+            if v == NONE_PROC_NR {
+                None
+            } else {
+                Some(ProcNr(v))
+            }
+        });
 
         if link_is_head {
             self.run_q_head[q] = next;
         } else if let Some(prev_nr) = prev {
             let prev_idx = nr_to_idx(prev_nr).unwrap();
-            procs[prev_idx].p_nextready.store(next.map(|n| n.0).unwrap_or(NONE_PROC_NR), Ordering::Relaxed);
+            procs[prev_idx]
+                .p_nextready
+                .store(next.map(|n| n.0).unwrap_or(NONE_PROC_NR), Ordering::Relaxed);
         }
 
         // Update tail if needed
@@ -182,7 +181,9 @@ impl Scheduler {
 
         // Clear the removed process's nextready
         let nr_idx = nr_to_idx(nr).unwrap();
-        procs[nr_idx].p_nextready.store(NONE_PROC_NR, Ordering::Relaxed);
+        procs[nr_idx]
+            .p_nextready
+            .store(NONE_PROC_NR, Ordering::Relaxed);
     }
 
     /// Check whether a queue is empty.
@@ -390,17 +391,19 @@ pub fn sched_proc(
     // Design decision §3.8: None = keep current (replaces C's -1).
     // u8 is always >= 0, so we only check the upper bound.
     if let Some(v) = params.priority
-        && v > priority::MIN_USER_Q {
-            return Err(SchedProcError::InvalidArgument);
-        }
+        && v > priority::MIN_USER_Q
+    {
+        return Err(SchedProcError::InvalidArgument);
+    }
 
     // Step 2: validate quantum range.
     // C: system.c:647-648:
     //   if (quantum < 1 && quantum != -1) return EINVAL;
     if let Some(v) = params.quantum
-        && v < 1 {
-            return Err(SchedProcError::InvalidArgument);
-        }
+        && v < 1
+    {
+        return Err(SchedProcError::InvalidArgument);
+    }
 
     // Step 3: validate CPU range and readiness (C system.c:650-654).
     // The topology comes from the global SMP state; before it exists
@@ -475,11 +478,16 @@ pub fn sched_proc(
         table.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
     }
     let priority_changed = match params.priority {
-        Some(v) => v != table.get(nr).map(|p| p.p_sched.priority.load(Ordering::Acquire)).unwrap_or(v),
+        Some(v) => {
+            v != table
+                .get(nr)
+                .map(|p| p.p_sched.priority.load(Ordering::Acquire))
+                .unwrap_or(v)
+        }
         None => false,
     };
     let _ = priority_changed; // C's changed check is comment-only semantics;
-                              // the actual guard is `runnable`
+    // the actual guard is `runnable`
 
     // Step 5: apply priority (if Some).
     // C: system.c:684-685:
@@ -502,7 +510,10 @@ pub fn sched_proc(
         p.p_sched.quantum.size_ms.store(v, Ordering::Release);
         // Reset cpu_time_left to (quantum * TSC_PER_MS) — clock::ms_to_cpu_time.
         let total_cycles = crate::clock::ms_to_cpu_time(v);
-        p.p_sched.quantum.cpu_time_left.store(total_cycles, Ordering::Release);
+        p.p_sched
+            .quantum
+            .cpu_time_left
+            .store(total_cycles, Ordering::Release);
     }
 
     // Step 7: apply CPU affinity (SMP).
@@ -585,36 +596,63 @@ mod tests {
     #[test]
     fn test_enqueue_empty_queue() {
         let mut table = crate::test_helpers::test_proc_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
         table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
         assert_eq!(sched.queue_head(q), Some(ProcNr(0)));
-        assert_eq!(table.get(ProcNr(0)).unwrap().p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
+        assert_eq!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_nextready
+                .load(Ordering::Relaxed),
+            NONE_PROC_NR
+        );
     }
 
     #[test]
     fn test_enqueue_non_empty_queue() {
         let mut table = crate::test_helpers::test_proc_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
-        make_runnable(&mut table, ProcNr(1),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
+        make_runnable(&mut table, ProcNr(1), priority::USER_Q);
         table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
         table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
         assert_eq!(sched.queue_head(q), Some(ProcNr(0)));
-        assert_eq!(table.get(ProcNr(0)).unwrap().p_nextready.load(Ordering::Relaxed), 1);
-        assert_eq!(table.get(ProcNr(1)).unwrap().p_nextready.load(Ordering::Relaxed), NONE_PROC_NR);
+        assert_eq!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_nextready
+                .load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            table
+                .get(ProcNr(1))
+                .unwrap()
+                .p_nextready
+                .load(Ordering::Relaxed),
+            NONE_PROC_NR
+        );
     }
 
     #[test]
     fn test_enqueue_head() {
         let mut table = crate::test_helpers::test_proc_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
-        make_runnable(&mut table, ProcNr(1),priority::USER_Q);
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(1000, Ordering::Release);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
+        make_runnable(&mut table, ProcNr(1), priority::USER_Q);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .store(1000, Ordering::Release);
 
         table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
         table.sched_enqueue_head(ProcNr(0), CpuId::BSP);
@@ -622,7 +660,14 @@ mod tests {
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
         assert_eq!(sched.queue_head(q), Some(ProcNr(0)));
-        assert_eq!(table.get(ProcNr(0)).unwrap().p_nextready.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_nextready
+                .load(Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]
@@ -709,7 +754,7 @@ mod tests {
         // evaluation is skipped, but phases 1/2/4 — the actual enqueue —
         // must work unchanged.
         let mut table = crate::test_helpers::test_proc_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
         table.sched_enqueue(ProcNr(0), CpuId::BSP);
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
@@ -726,7 +771,7 @@ mod tests {
     #[test]
     fn test_dequeue_only_process() {
         let mut table = crate::test_helpers::test_proc_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
         table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
 
         table.rts_set(ProcNr(0), RtsFlagsBits::PROC_STOP);
@@ -746,8 +791,8 @@ mod tests {
     #[test]
     fn test_pick_proc_highest_priority() {
         let mut table = crate::test_helpers::test_proc_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
-        make_runnable(&mut table, ProcNr(2),priority::MAX_USER_Q);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
+        make_runnable(&mut table, ProcNr(2), priority::MAX_USER_Q);
         table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
         table.sched_enqueue_with(ProcNr(2), None, CpuId::BSP);
 
@@ -759,16 +804,34 @@ mod tests {
     fn test_proc_no_time_kernel_scheduled() {
         let mut table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
         table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = None;
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .store(0, Ordering::Release);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .size_ms
+            .store(200, Ordering::Release);
 
         let section = crate::smp::bkl_lock_section();
         table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();
 
-        let left = table.get(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire);
+        let left = table
+            .get(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .load(Ordering::Acquire);
         assert!(left > 0);
     }
 
@@ -789,20 +852,36 @@ mod tests {
     fn test_proc_no_time_user_scheduled_preemptible() {
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
         // USR_F = BILLABLE | PREEMPTIBLE (priv.h:49) — the bit proc_no_time
         // consumes (C: proc.c:1895).
-        assign_priv_flags(&mut table, &mut priv_table, ProcNr(0),
-            crate::capability::ProcessCapability::USR_F);
+        assign_priv_flags(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::capability::ProcessCapability::USR_F,
+        );
         table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .store(0, Ordering::Release);
 
         table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
         let section = crate::smp::bkl_lock_section();
         table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();
 
-        assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
+        assert!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::NO_QUANTUM)
+        );
     }
 
     // ── The preemption gate reads the privilege flag, not the priority ──
@@ -819,20 +898,42 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         make_runnable(&mut table, ProcNr(0), priority::MAX_USER_Q);
-        assign_priv_flags(&mut table, &mut priv_table, ProcNr(0),
-            crate::capability::ProcessCapability::USR_F);
+        assign_priv_flags(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::capability::ProcessCapability::USR_F,
+        );
         table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .store(0, Ordering::Release);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .size_ms
+            .store(200, Ordering::Release);
 
         table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
         let section = crate::smp::bkl_lock_section();
         table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();
 
-        assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM),
+        assert!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::NO_QUANTUM),
             "priority-0 + USR_F（PREEMPTIBLE）必须通知调度者，实际 {:?}",
-            table.get(ProcNr(0)).unwrap().p_rts_flags);
+            table.get(ProcNr(0)).unwrap().p_rts_flags
+        );
     }
 
     /// A user-scheduled process whose privilege flags lack PREEMPTIBLE (e.g.
@@ -844,19 +945,51 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         make_runnable(&mut table, ProcNr(0), priority::USER_Q);
-        assign_priv_flags(&mut table, &mut priv_table, ProcNr(0),
-            crate::capability::ProcessCapability::TSK_F);
+        assign_priv_flags(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::capability::ProcessCapability::TSK_F,
+        );
         table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
-        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .store(0, Ordering::Release);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .size_ms
+            .store(200, Ordering::Release);
 
         let section = crate::smp::bkl_lock_section();
         table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();
 
-        let left = table.get(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire);
-        assert!(left > 0, "无 PREEMPTIBLE 位必须续量，实际 cpu_time_left={}", left);
-        assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
+        let left = table
+            .get(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .quantum
+            .cpu_time_left
+            .load(Ordering::Acquire);
+        assert!(
+            left > 0,
+            "无 PREEMPTIBLE 位必须续量，实际 cpu_time_left={}",
+            left
+        );
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::NO_QUANTUM)
+        );
     }
 
     // ── sched_proc tests (2026-06-16) ────────────────────────────────
@@ -873,8 +1006,26 @@ mod tests {
         // C: system.c:684-685 — priority update.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: Some(3), quantum: None, cpu: None, niced: false }).unwrap();
-        assert_eq!(table.get(ProcNr(0)).unwrap().p_sched.priority.load(Ordering::Acquire), 3);
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: Some(3),
+                quantum: None,
+                cpu: None,
+                niced: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_sched
+                .priority
+                .load(Ordering::Acquire),
+            3
+        );
     }
 
     #[test]
@@ -882,9 +1033,32 @@ mod tests {
         // Design §3.8: None = keep current (replaces C's -1 sentinel).
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        table.get(ProcNr(0)).unwrap().p_sched.priority.store(11, Ordering::Release);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: None, niced: false }).unwrap();
-        assert_eq!(table.get(ProcNr(0)).unwrap().p_sched.priority.load(Ordering::Acquire), 11);
+        table
+            .get(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .priority
+            .store(11, Ordering::Release);
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: None,
+                cpu: None,
+                niced: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_sched
+                .priority
+                .load(Ordering::Acquire),
+            11
+        );
     }
 
     #[test]
@@ -893,7 +1067,16 @@ mod tests {
         // value > MIN_USER_Q (15) → EINVAL.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: Some(16), quantum: None, cpu: None, niced: false });
+        let result = sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: Some(16),
+                quantum: None,
+                cpu: None,
+                niced: false,
+            },
+        );
         assert_eq!(result, Err(SchedProcError::InvalidArgument));
     }
 
@@ -902,7 +1085,16 @@ mod tests {
         // C: system.c:645 — priority > NR_SCHED_QUEUES → EINVAL.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: Some(17), quantum: None, cpu: None, niced: false });
+        let result = sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: Some(17),
+                quantum: None,
+                cpu: None,
+                niced: false,
+            },
+        );
         assert_eq!(result, Err(SchedProcError::InvalidArgument));
     }
 
@@ -911,9 +1103,37 @@ mod tests {
         // C: system.c:686-689 — quantum update resets cpu_time_left.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: Some(50), cpu: None, niced: false }).unwrap();
-        assert_eq!(table.get(ProcNr(0)).unwrap().p_sched.quantum.size_ms.load(Ordering::Acquire), 50);
-        assert!(table.get(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0);
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: Some(50),
+                cpu: None,
+                niced: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_sched
+                .quantum
+                .size_ms
+                .load(Ordering::Acquire),
+            50
+        );
+        assert!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_sched
+                .quantum
+                .cpu_time_left
+                .load(Ordering::Acquire)
+                > 0
+        );
     }
 
     #[test]
@@ -921,7 +1141,16 @@ mod tests {
         // C: system.c:647-648 — quantum < 1 (and != -1) → EINVAL.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: Some(0), cpu: None, niced: false });
+        let result = sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: Some(0),
+                cpu: None,
+                niced: false,
+            },
+        );
         assert_eq!(result, Err(SchedProcError::InvalidArgument));
     }
 
@@ -930,10 +1159,42 @@ mod tests {
         // C: system.c:695-698 — MF_NICED set/clear.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: None, niced: true }).unwrap();
-        assert!(table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::NICED));
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: None, niced: false }).unwrap();
-        assert!(!table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::NICED));
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: None,
+                cpu: None,
+                niced: true,
+            },
+        )
+        .unwrap();
+        assert!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::NICED)
+        );
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: None,
+                cpu: None,
+                niced: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::NICED)
+        );
     }
 
     #[test]
@@ -941,8 +1202,26 @@ mod tests {
         // C: system.c:691-693 (CONFIG_SMP) — cpu affinity store.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
-        assert_eq!(table.get(ProcNr(0)).unwrap().p_sched.cpu.load(Ordering::Acquire), 0);
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: None,
+                cpu: Some(0),
+                niced: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_sched
+                .cpu
+                .load(Ordering::Acquire),
+            0
+        );
     }
 
     #[test]
@@ -981,8 +1260,27 @@ mod tests {
         // is out of range → EINVAL (C's ncpus=1 build).
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
-        let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(1), niced: false });
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: None,
+                cpu: Some(0),
+                niced: false,
+            },
+        )
+        .unwrap();
+        let result = sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: None,
+                quantum: None,
+                cpu: Some(1),
+                niced: false,
+            },
+        );
         assert_eq!(result.unwrap_err(), SchedProcError::InvalidArgument);
     }
 
@@ -1014,8 +1312,24 @@ mod tests {
         // C: system.c:698 — RTS_NO_QUANTUM is cleared after enqueue.
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: Some(7), quantum: None, cpu: None, niced: false }).unwrap();
-        assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: Some(7),
+                quantum: None,
+                cpu: None,
+                niced: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::NO_QUANTUM)
+        );
     }
 
     /// Core acceptance test: a runnable process whose parameters change
@@ -1027,7 +1341,17 @@ mod tests {
     fn test_sched_proc_runnable_reenqueue_on_update() {
         let mut table = crate::test_helpers::test_proc_table();
         sched_proc_fixture(&mut table);
-        sched_proc(&mut table, ProcNr(0), SchedParams { priority: Some(7), quantum: Some(100), cpu: None, niced: false }).unwrap();
+        sched_proc(
+            &mut table,
+            ProcNr(0),
+            SchedParams {
+                priority: Some(7),
+                quantum: Some(100),
+                cpu: None,
+                niced: false,
+            },
+        )
+        .unwrap();
         let p = table.get(ProcNr(0)).unwrap();
         assert!(!p.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
         assert!(p.is_runnable());

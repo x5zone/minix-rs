@@ -13,11 +13,11 @@
 //! - **D2**: `trait PortIo` for architecture-specific I/O
 //! - **D6**: x86-only calls return BadCall on other architectures
 
-use minix_plat::{IrqPolicy, IrqVector, IrqNotifyId, NR_IRQ_VECTORS};
+use minix_plat::{IrqNotifyId, IrqPolicy, IrqVector, NR_IRQ_VECTORS};
 use minix_types::{Endpoint, Message, MessageM1};
 
-use crate::irq_manager::IrqManager;
 use crate::capability::ProcessCapability;
+use crate::irq_manager::IrqManager;
 use crate::kpriv::{KPriv, PrivTable};
 use crate::syscall::{KcallResult, Syscall};
 use minix_plat::{InterruptRouter, PerCpuInterruptUnit};
@@ -80,9 +80,9 @@ impl IoSize {
     /// The mask extracts the type field; we match on the raw C constants.
     pub fn from_request_mask(mask: i32) -> Option<Self> {
         match mask {
-            0x010 => Some(IoSize::Byte),  // _DIO_BYTE
-            0x020 => Some(IoSize::Word),  // _DIO_WORD
-            0x030 => Some(IoSize::Long),  // _DIO_LONG
+            0x010 => Some(IoSize::Byte), // _DIO_BYTE
+            0x020 => Some(IoSize::Word), // _DIO_WORD
+            0x030 => Some(IoSize::Long), // _DIO_LONG
             _ => None,
         }
     }
@@ -104,8 +104,8 @@ impl IoDirection {
     /// C values: `_DIO_INPUT=0x001, _DIO_OUTPUT=0x002`
     pub fn from_request_mask(mask: i32) -> Option<Self> {
         match mask {
-            0x001 => Some(IoDirection::Input),   // _DIO_INPUT
-            0x002 => Some(IoDirection::Output),  // _DIO_OUTPUT
+            0x001 => Some(IoDirection::Input),  // _DIO_INPUT
+            0x002 => Some(IoDirection::Output), // _DIO_OUTPUT
             _ => None,
         }
     }
@@ -201,7 +201,11 @@ fn msg_m1(msg: &Message) -> MessageM1 {
 ///
 /// C: do_irqctl.c:62-76 — `if (privp->s_flags & CHECK_IRQ)` loop.
 fn check_irq_permission(caller_priv: &KPriv, irq_vec: i32) -> bool {
-    if !caller_priv.flags.s_flags.contains(ProcessCapability::CHECK_IRQ) {
+    if !caller_priv
+        .flags
+        .s_flags
+        .contains(ProcessCapability::CHECK_IRQ)
+    {
         return true; // No CHECK_IRQ flag → unrestricted
     }
     // C: do_irqctl.c:67-72 — scan s_irq_tab for matching vector
@@ -274,9 +278,9 @@ pub fn dispatch_irqctl<IC: InterruptRouter + PerCpuInterruptUnit>(
 
             // C: do_irqctl.c:58-76 — CHECK_IRQ permission
             let caller_priv = proc_table
-            .get(caller_nr)
-            .and_then(|p| p.priv_id)
-            .and_then(|pid| priv_table.get(pid));
+                .get(caller_nr)
+                .and_then(|p| p.priv_id)
+                .and_then(|pid| priv_table.get(pid));
             match caller_priv {
                 None => return KcallResult::Ok(EPERM),
                 Some(priv_) => {
@@ -450,8 +454,8 @@ pub fn dispatch_devio<PI: PortIo>(
     let value = devio.value;
 
     // C: do_devio.c:26-29 — parse type and direction
-    let io_type = request & 0x0F0;   // _DIO_TYPEMASK
-    let io_dir = request & 0x00F;    // _DIO_DIRMASK
+    let io_type = request & 0x0F0; // _DIO_TYPEMASK
+    let io_dir = request & 0x00F; // _DIO_DIRMASK
 
     let size = match IoSize::from_request_mask(io_type) {
         Some(s) => s,
@@ -465,27 +469,31 @@ pub fn dispatch_devio<PI: PortIo>(
 
     // C: do_devio.c:31-58 — CHECK_IO_PORT permission
     let caller_priv = proc_table
-            .get(caller_nr)
-            .and_then(|p| p.priv_id)
-            .and_then(|pid| priv_table.get(pid));
+        .get(caller_nr)
+        .and_then(|p| p.priv_id)
+        .and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv
-        && priv_.flags.s_flags.contains(ProcessCapability::CHECK_IO_PORT) {
-            // C: do_devio.c:42-53 — scan s_io_tab for matching range
-            let mut allowed = false;
-            for i in 0..priv_.io.s_nr_io_range as usize {
-                if i < priv_.io.s_io_tab.len() {
-                    let ior = &priv_.io.s_io_tab[i];
-                    // C: do_devio.c:50 — if (port >= iorp->ior_base && port+size-1 <= iorp->ior_limit)
-                    if port as u32 >= ior.base && port as u32 + size as u32 - 1 <= ior.limit {
-                        allowed = true;
-                        break;
-                    }
+        && priv_
+            .flags
+            .s_flags
+            .contains(ProcessCapability::CHECK_IO_PORT)
+    {
+        // C: do_devio.c:42-53 — scan s_io_tab for matching range
+        let mut allowed = false;
+        for i in 0..priv_.io.s_nr_io_range as usize {
+            if i < priv_.io.s_io_tab.len() {
+                let ior = &priv_.io.s_io_tab[i];
+                // C: do_devio.c:50 — if (port >= iorp->ior_base && port+size-1 <= iorp->ior_limit)
+                if port as u32 >= ior.base && port as u32 + size as u32 - 1 <= ior.limit {
+                    allowed = true;
+                    break;
                 }
             }
-            if !allowed {
-                return KcallResult::Ok(EPERM);
-            }
         }
+        if !allowed {
+            return KcallResult::Ok(EPERM);
+        }
+    }
     // C: do_devio.c:33-36 — if no priv structure, goto doit (allow)
     // Rust: no priv → caller_priv is None → skip check (same as C "goto doit")
 
@@ -509,13 +517,11 @@ pub fn dispatch_devio<PI: PortIo>(
             // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
             msg.m_u.m_krn_lsys_sys_devio.value = result;
         }
-        IoDirection::Output => {
-            match size {
-                IoSize::Byte => port_io.outb(port, value as u8),
-                IoSize::Word => port_io.outw(port, value as u16),
-                IoSize::Long => port_io.outl(port, value),
-            }
-        }
+        IoDirection::Output => match size {
+            IoSize::Byte => port_io.outb(port, value as u8),
+            IoSize::Word => port_io.outw(port, value as u16),
+            IoSize::Long => port_io.outl(port, value),
+        },
     }
 
     KcallResult::Ok(OK)
@@ -564,8 +570,8 @@ pub fn dispatch_vdevio<PI: PortIo>(
     let vec_size = vdevio.vec_size;
 
     // C: do_vdevio.c:54-72 — parse type/direction, validate size
-    let io_type = request & 0x0F0;   // _DIO_TYPEMASK
-    let io_dir = request & 0x00F;    // _DIO_DIRMASK
+    let io_type = request & 0x0F0; // _DIO_TYPEMASK
+    let io_dir = request & 0x00F; // _DIO_DIRMASK
 
     let size = match IoSize::from_request_mask(io_type) {
         Some(s) => s,
@@ -628,14 +634,14 @@ pub fn dispatch_vdevio<PI: PortIo>(
     // kernel higher half, so resolve_physical walks the real page tables and
     // yields the correct PA).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
-            if ep == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(ep)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if ep == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(ep)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
     let src = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(vec_addr),
@@ -657,52 +663,66 @@ pub fn dispatch_vdevio<PI: PortIo>(
         .and_then(|p| p.priv_id)
         .and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv
-        && priv_.flags.s_flags.contains(ProcessCapability::CHECK_IO_PORT) {
-            for i in 0..vec_size as usize {
-                let port = match size {
-                    IoSize::Byte => {
-                        let pairs: &[PvBytePair] = unsafe {
-                            core::slice::from_raw_parts(buf.as_ptr() as *const PvBytePair, vec_size as usize)
-                        };
-                        pairs[i].port
-                    }
-                    IoSize::Word => {
-                        let pairs: &[PvWordPair] = unsafe {
-                            core::slice::from_raw_parts(buf.as_ptr() as *const PvWordPair, vec_size as usize)
-                        };
-                        pairs[i].port
-                    }
-                    IoSize::Long => {
-                        let pairs: &[PvLongPair] = unsafe {
-                            core::slice::from_raw_parts(buf.as_ptr() as *const PvLongPair, vec_size as usize)
-                        };
-                        pairs[i].port
-                    }
-                };
-                // C: do_vdevio.c:84-91 — scan s_io_tab for matching range
-                let mut allowed = false;
-                for j in 0..priv_.io.s_nr_io_range as usize {
-                    if j < priv_.io.s_io_tab.len() {
-                        let ior = &priv_.io.s_io_tab[j];
-                        if port as u32 >= ior.base
-                            && port as u32 + size as u32 - 1 <= ior.limit
-                        {
-                            allowed = true;
-                            break;
-                        }
-                    }
+        && priv_
+            .flags
+            .s_flags
+            .contains(ProcessCapability::CHECK_IO_PORT)
+    {
+        for i in 0..vec_size as usize {
+            let port = match size {
+                IoSize::Byte => {
+                    let pairs: &[PvBytePair] = unsafe {
+                        core::slice::from_raw_parts(
+                            buf.as_ptr() as *const PvBytePair,
+                            vec_size as usize,
+                        )
+                    };
+                    pairs[i].port
                 }
-                if !allowed {
-                    return KcallResult::Ok(EPERM);
+                IoSize::Word => {
+                    let pairs: &[PvWordPair] = unsafe {
+                        core::slice::from_raw_parts(
+                            buf.as_ptr() as *const PvWordPair,
+                            vec_size as usize,
+                        )
+                    };
+                    pairs[i].port
+                }
+                IoSize::Long => {
+                    let pairs: &[PvLongPair] = unsafe {
+                        core::slice::from_raw_parts(
+                            buf.as_ptr() as *const PvLongPair,
+                            vec_size as usize,
+                        )
+                    };
+                    pairs[i].port
+                }
+            };
+            // C: do_vdevio.c:84-91 — scan s_io_tab for matching range
+            let mut allowed = false;
+            for j in 0..priv_.io.s_nr_io_range as usize {
+                if j < priv_.io.s_io_tab.len() {
+                    let ior = &priv_.io.s_io_tab[j];
+                    if port as u32 >= ior.base && port as u32 + size as u32 - 1 <= ior.limit {
+                        allowed = true;
+                        break;
+                    }
                 }
             }
+            if !allowed {
+                return KcallResult::Ok(EPERM);
+            }
         }
+    }
 
     // C: do_vdevio.c:102-149 — perform batch I/O
     match (dir, size) {
         (IoDirection::Input, IoSize::Byte) => {
             let pairs: &mut [PvBytePair] = unsafe {
-                core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut PvBytePair, vec_size as usize)
+                core::slice::from_raw_parts_mut(
+                    buf.as_mut_ptr() as *mut PvBytePair,
+                    vec_size as usize,
+                )
             };
             for pair in pairs.iter_mut() {
                 pair.value = port_io.inb(pair.port);
@@ -718,7 +738,10 @@ pub fn dispatch_vdevio<PI: PortIo>(
         }
         (IoDirection::Input, IoSize::Word) => {
             let pairs: &mut [PvWordPair] = unsafe {
-                core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut PvWordPair, vec_size as usize)
+                core::slice::from_raw_parts_mut(
+                    buf.as_mut_ptr() as *mut PvWordPair,
+                    vec_size as usize,
+                )
             };
             for pair in pairs.iter_mut() {
                 // C: do_vdevio.c:116 — if (port & 1) goto bad (panic)
@@ -741,7 +764,10 @@ pub fn dispatch_vdevio<PI: PortIo>(
         }
         (IoDirection::Input, IoSize::Long) => {
             let pairs: &mut [PvLongPair] = unsafe {
-                core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut PvLongPair, vec_size as usize)
+                core::slice::from_raw_parts_mut(
+                    buf.as_mut_ptr() as *mut PvLongPair,
+                    vec_size as usize,
+                )
             };
             for pair in pairs.iter_mut() {
                 // C: do_vdevio.c:136 — if (port & 3) goto bad (panic)
@@ -935,8 +961,8 @@ pub fn dispatch_sdevio<PI: PortIo>(
     }
 
     // C: do_sdevio.c:62-63 — extract direction and type
-    let req_dir = request & 0x00F;   // _DIO_DIRMASK
-    let req_type = request & 0x0F0;  // _DIO_TYPEMASK
+    let req_dir = request & 0x00F; // _DIO_DIRMASK
+    let req_type = request & 0x0F0; // _DIO_TYPEMASK
 
     // C: do_sdevio.c:65-93 — safe variant handling (verify_grant)
     // For unsafe variants, C requires the target to be the caller itself
@@ -952,35 +978,37 @@ pub fn dispatch_sdevio<PI: PortIo>(
     // C: do_sdevio.c:95-100 — determine element size
     // SDEVIO only supports byte and word (long is not supported).
     let size = match req_type {
-        0x010 => 1usize,  // _DIO_BYTE
-        0x020 => 2usize,  // _DIO_WORD
-        _ => return KcallResult::Ok(EINVAL),  // _DIO_LONG not supported
+        0x010 => 1usize,                     // _DIO_BYTE
+        0x020 => 2usize,                     // _DIO_WORD
+        _ => return KcallResult::Ok(EINVAL), // _DIO_LONG not supported
     };
 
     // C: do_sdevio.c:102-122 — CHECK_IO_PORT permission
     let caller_priv = proc_table
-            .get(caller_nr)
-            .and_then(|p| p.priv_id)
-            .and_then(|pid| priv_table.get(pid));
+        .get(caller_nr)
+        .and_then(|p| p.priv_id)
+        .and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv
-        && priv_.flags.s_flags.contains(ProcessCapability::CHECK_IO_PORT) {
-            let mut allowed = false;
-            for i in 0..priv_.io.s_nr_io_range as usize {
-                if i < priv_.io.s_io_tab.len() {
-                    let ior = &priv_.io.s_io_tab[i];
-                    // C: do_sdevio.c:113 — port range check
-                    if port as u32 >= ior.base
-                        && port as u32 + (size as u32) - 1 <= ior.limit
-                    {
-                        allowed = true;
-                        break;
-                    }
+        && priv_
+            .flags
+            .s_flags
+            .contains(ProcessCapability::CHECK_IO_PORT)
+    {
+        let mut allowed = false;
+        for i in 0..priv_.io.s_nr_io_range as usize {
+            if i < priv_.io.s_io_tab.len() {
+                let ior = &priv_.io.s_io_tab[i];
+                // C: do_sdevio.c:113 — port range check
+                if port as u32 >= ior.base && port as u32 + (size as u32) - 1 <= ior.limit {
+                    allowed = true;
+                    break;
                 }
             }
-            if !allowed {
-                return KcallResult::Ok(EPERM);
-            }
         }
+        if !allowed {
+            return KcallResult::Ok(EPERM);
+        }
+    }
 
     // C: do_sdevio.c:124-129 — alignment check
     if port % (size as i64) != 0 {
@@ -1002,16 +1030,16 @@ pub fn dispatch_sdevio<PI: PortIo>(
     // Validate direction: C only accepts _DIO_INPUT (0x001) and _DIO_OUTPUT
     // (0x002); any other value returns EINVAL (do_sdevio.c:148-152).
     let is_input = match req_dir {
-        0x001 => true,   // _DIO_INPUT
-        0x002 => false,  // _DIO_OUTPUT
+        0x001 => true,  // _DIO_INPUT
+        0x002 => false, // _DIO_OUTPUT
         _ => return KcallResult::Ok(EINVAL),
     };
 
     if is_safe {
         // SAFE path: verify_grant resolves grant → granter's virtual address,
         // then data_copy_vmcheck copies between granter's buffer and kernel.
-        use crate::grant::{verify_grant, VerifyGrantOutcome, CpFlags};
         use crate::cross_space::data_copy_vmcheck;
+        use crate::grant::{CpFlags, VerifyGrantOutcome, verify_grant};
         use crate::vm::{AddressRef, CrossSpaceResult};
         use minix_types::VirBytes;
 
@@ -1027,7 +1055,11 @@ pub fn dispatch_sdevio<PI: PortIo>(
         // C: do_sdevio.c:65-72 — verify_grant
         // Input (port→buffer): grantee writes to grant → CPF_WRITE
         // Output (buffer→port): grantee reads from grant → CPF_READ
-        let access = if is_input { CpFlags::WRITE } else { CpFlags::READ };
+        let access = if is_input {
+            CpFlags::WRITE
+        } else {
+            CpFlags::READ
+        };
 
         let caller_endpt = proc_table
             .get(caller_nr)
@@ -1048,7 +1080,8 @@ pub fn dispatch_sdevio<PI: PortIo>(
         };
 
         let outcome = verify_grant(
-            caller_nr, proc_table,
+            caller_nr,
+            proc_table,
             target_ep,
             caller_endpt,
             vec_addr as i32,
@@ -1105,19 +1138,13 @@ pub fn dispatch_sdevio<PI: PortIo>(
             (false, 1) => port_io.outsb(port as u16, &buf[..total_bytes]),
             (true, 2) => {
                 let words: &mut [u16] = unsafe {
-                    core::slice::from_raw_parts_mut(
-                        buf.as_mut_ptr() as *mut u16,
-                        vec_size as usize,
-                    )
+                    core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u16, vec_size as usize)
                 };
                 port_io.insw(port as u16, words);
             }
             (false, 2) => {
                 let words: &[u16] = unsafe {
-                    core::slice::from_raw_parts(
-                        buf.as_ptr() as *const u16,
-                        vec_size as usize,
-                    )
+                    core::slice::from_raw_parts(buf.as_ptr() as *const u16, vec_size as usize)
                 };
                 port_io.outsw(port as u16, words);
             }
@@ -1331,10 +1358,10 @@ pub fn dispatch_readbios(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::{Endpoint, MessLsysKrnReadbios, MessLsysKrnSysSdevio};
     use crate::proc::KProcess;
-    use crate::proc::RtsFlagsBits;
     use crate::proc::ProcNr;
+    use crate::proc::RtsFlagsBits;
+    use minix_types::{Endpoint, MessLsysKrnReadbios, MessLsysKrnSysSdevio};
 
     #[test]
     fn test_irqctl_request_try_from() {
@@ -1358,8 +1385,14 @@ mod tests {
     #[test]
     fn test_io_direction_from_mask() {
         // C values: _DIO_INPUT=0x001, _DIO_OUTPUT=0x002
-        assert_eq!(IoDirection::from_request_mask(0x001), Some(IoDirection::Input));
-        assert_eq!(IoDirection::from_request_mask(0x002), Some(IoDirection::Output));
+        assert_eq!(
+            IoDirection::from_request_mask(0x001),
+            Some(IoDirection::Input)
+        );
+        assert_eq!(
+            IoDirection::from_request_mask(0x002),
+            Some(IoDirection::Output)
+        );
         assert_eq!(IoDirection::from_request_mask(0x003), None);
     }
 
@@ -1370,14 +1403,20 @@ mod tests {
         let io_type = req & 0x0F0;
         let io_dir = req & 0x00F;
         assert_eq!(IoSize::from_request_mask(io_type), Some(IoSize::Byte));
-        assert_eq!(IoDirection::from_request_mask(io_dir), Some(IoDirection::Input));
+        assert_eq!(
+            IoDirection::from_request_mask(io_dir),
+            Some(IoDirection::Input)
+        );
 
         // C: DIO_OUTPUT_LONG = _DIO_OUTPUT|_DIO_LONG = 0x032
         let req = 0x032i32;
         let io_type = req & 0x0F0;
         let io_dir = req & 0x00F;
         assert_eq!(IoSize::from_request_mask(io_type), Some(IoSize::Long));
-        assert_eq!(IoDirection::from_request_mask(io_dir), Some(IoDirection::Output));
+        assert_eq!(
+            IoDirection::from_request_mask(io_dir),
+            Some(IoDirection::Output)
+        );
     }
 
     #[test]
@@ -1433,15 +1472,21 @@ mod tests {
     }
 
     impl PortIo for MockPortIo {
-        fn inb(&self, _port: u16) -> u8 { self.read_value as u8 }
+        fn inb(&self, _port: u16) -> u8 {
+            self.read_value as u8
+        }
         fn outb(&self, port: u16, value: u8) {
             *self.last_write.borrow_mut() = Some((port, value as u32));
         }
-        fn inw(&self, _port: u16) -> u16 { self.read_value as u16 }
+        fn inw(&self, _port: u16) -> u16 {
+            self.read_value as u16
+        }
         fn outw(&self, port: u16, value: u16) {
             *self.last_write.borrow_mut() = Some((port, value as u32));
         }
-        fn inl(&self, _port: u16) -> u32 { self.read_value }
+        fn inl(&self, _port: u16) -> u32 {
+            self.read_value
+        }
         fn outl(&self, port: u16, value: u32) {
             *self.last_write.borrow_mut() = Some((port, value));
         }
@@ -1455,8 +1500,8 @@ mod tests {
         // SAFETY: writing to the dedicated devio variant of the union
         // (matches C `mess_lsys_krn_sys_devio` layout: request@0/port@4/value@8)
         msg.m_u.m_lsys_krn_sys_devio.request = 0x011; // request
-        msg.m_u.m_lsys_krn_sys_devio.port = 0x60;     // port (aligned for byte)
-        msg.m_u.m_lsys_krn_sys_devio.value = 0;       // value (unused for input)
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x60; // port (aligned for byte)
+        msg.m_u.m_lsys_krn_sys_devio.value = 0; // value (unused for input)
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         // No priv_id → no CHECK_IO_PORT → allowed (C "goto doit")
@@ -1477,15 +1522,21 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Devio as i32;
         msg.m_u.m_lsys_krn_sys_devio.request = 0x022; // request
-        msg.m_u.m_lsys_krn_sys_devio.port = 0x60;     // port (aligned for word)
-        msg.m_u.m_lsys_krn_sys_devio.value = 0x1234;  // value to write
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x60; // port (aligned for word)
+        msg.m_u.m_lsys_krn_sys_devio.value = 0x1234; // value to write
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         caller.priv_id = None;
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_devio(ProcNr(0), &mut crate::test_helpers::test_proc_table(), &mut msg, &pio, &priv_table);
+        let result = dispatch_devio(
+            ProcNr(0),
+            &mut crate::test_helpers::test_proc_table(),
+            &mut msg,
+            &pio,
+            &priv_table,
+        );
         assert_eq!(result, KcallResult::Ok(OK));
         assert_eq!(*pio.last_write.borrow(), Some((0x60, 0x1234)));
     }
@@ -1496,7 +1547,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Devio as i32;
         msg.m_u.m_lsys_krn_sys_devio.request = 0x021; // request
-        msg.m_u.m_lsys_krn_sys_devio.port = 0x61;     // port (not word-aligned)
+        msg.m_u.m_lsys_krn_sys_devio.port = 0x61; // port (not word-aligned)
         msg.m_u.m_lsys_krn_sys_devio.value = 0;
 
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
@@ -1504,7 +1555,13 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_devio(ProcNr(0), &mut crate::test_helpers::test_proc_table(), &mut msg, &pio, &priv_table);
+        let result = dispatch_devio(
+            ProcNr(0),
+            &mut crate::test_helpers::test_proc_table(),
+            &mut msg,
+            &pio,
+            &priv_table,
+        );
         // C: do_devio.c:60-65 — unaligned → EPERM
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -1526,7 +1583,10 @@ mod tests {
         if let Some(priv_) = priv_table.get_mut(priv_id) {
             priv_.flags.s_flags = ProcessCapability::CHECK_IO_PORT;
             priv_.io.s_nr_io_range = 1;
-            priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
+            priv_.io.s_io_tab[0] = crate::kpriv::IoRange {
+                base: 0x60,
+                limit: 0x6F,
+            };
         }
 
         let pio = MockPortIo::new(0xFF);
@@ -1552,7 +1612,10 @@ mod tests {
         if let Some(priv_) = priv_table.get_mut(priv_id) {
             priv_.flags.s_flags = ProcessCapability::CHECK_IO_PORT;
             priv_.io.s_nr_io_range = 1;
-            priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
+            priv_.io.s_io_tab[0] = crate::kpriv::IoRange {
+                base: 0x60,
+                limit: 0x6F,
+            };
         }
 
         let pio = MockPortIo::new(0);
@@ -1574,7 +1637,13 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_devio(ProcNr(0), &mut crate::test_helpers::test_proc_table(), &mut msg, &pio, &priv_table);
+        let result = dispatch_devio(
+            ProcNr(0),
+            &mut crate::test_helpers::test_proc_table(),
+            &mut msg,
+            &pio,
+            &priv_table,
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1710,7 +1779,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
         msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
-            request: 0x011, // DIO_INPUT_BYTE (unsafe)
+            request: 0x011,  // DIO_INPUT_BYTE (unsafe)
             vec_endpt: 9999, // nonexistent endpoint
             ..Default::default()
         };
@@ -1828,7 +1897,10 @@ mod tests {
         if let Some(priv_) = priv_table.get_mut(priv_id) {
             priv_.flags.s_flags = ProcessCapability::CHECK_IO_PORT;
             priv_.io.s_nr_io_range = 1;
-            priv_.io.s_io_tab[0] = crate::kpriv::IoRange { base: 0x60, limit: 0x6F };
+            priv_.io.s_io_tab[0] = crate::kpriv::IoRange {
+                base: 0x60,
+                limit: 0x6F,
+            };
         }
 
         let mut msg = Message::default();
@@ -2005,8 +2077,6 @@ mod tests {
         fn complete(&mut self, _claimed: Option<u32>) {}
     }
 
-
-
     /// Build a SYS_IRQCTL message using the dedicated struct (not `MessageM1`).
     fn build_irqctl_msg(request: i32, vector: i32, policy: i32, hook_id: i32) -> Message {
         let mut msg = Message::default();
@@ -2032,7 +2102,13 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
+        let result = dispatch_irqctl(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut irq_mgr,
+            &priv_table,
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2041,17 +2117,18 @@ mod tests {
         // C: do_irqctl.c:55-56 — irq_vec < 0 → EINVAL.
         let mut proc_table = crate::test_helpers::test_proc_table();
         proc_table.get_mut(ProcNr(0)).unwrap().p_endpoint = Endpoint(100);
-        let mut msg = build_irqctl_msg(
-            IrqctlRequest::SetPolicy as i32,
-            -1,
-            0,
-            0,
-        );
+        let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, -1, 0, 0);
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
         // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
+        let result = dispatch_irqctl(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut irq_mgr,
+            &priv_table,
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2060,17 +2137,18 @@ mod tests {
         // C: do_irqctl.c:55-56 — irq_vec >= NR_IRQ_VECTORS → EINVAL.
         let mut proc_table = crate::test_helpers::test_proc_table();
         proc_table.get_mut(ProcNr(0)).unwrap().p_endpoint = Endpoint(100);
-        let mut msg = build_irqctl_msg(
-            IrqctlRequest::SetPolicy as i32,
-            9999,
-            0,
-            0,
-        );
+        let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 9999, 0, 0);
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
         // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
+        let result = dispatch_irqctl(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut irq_mgr,
+            &priv_table,
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2092,7 +2170,13 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         // Caller identities live on table slots.
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
+        let result = dispatch_irqctl(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut irq_mgr,
+            &priv_table,
+        );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -2110,20 +2194,29 @@ mod tests {
         proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(0); // PrivTable slot 0 has no CHECK_IRQ flag → all IRQs allowed.
         let mut msg = build_irqctl_msg(
             IrqctlRequest::SetPolicy as i32,
-            5,   // valid vector
-            0,   // policy (no REENABLE)
-            0,   // notify_id (valid: 0..=31)
+            5, // valid vector
+            0, // policy (no REENABLE)
+            0, // notify_id (valid: 0..=31)
         );
         let mut irq_mgr = IrqManager::new(MockIrqController);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table);
+        let result = dispatch_irqctl(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut irq_mgr,
+            &priv_table,
+        );
         assert_eq!(result, KcallResult::Ok(OK));
         // The first installed hook gets 1-based id = 1.
         // Read back via the dedicated irqctl variant (not `MessageM1`).
         msg.debug_check_m_type_any(&[Syscall::Irqctl as i32]);
         // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
         let hook_id = unsafe { msg.m_u.m_lsys_krn_sys_irqctl.hook_id };
-        assert_eq!(hook_id, 1, "hook_id must be written to the dedicated irqctl field");
+        assert_eq!(
+            hook_id, 1,
+            "hook_id must be written to the dedicated irqctl field"
+        );
     }
 
     // ── RMPOLICY / ENABLE / DISABLE owner checks (gap in doc 20 §5.2) ───
@@ -2145,8 +2238,16 @@ mod tests {
             owner.priv_id = Some(0);
         }
         let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 5, 0, 0);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(OK));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(OK)
+        );
         assert_eq!(irq_mgr.hook_owner(0), Some(Endpoint(100)));
 
         // non-owner (ep 200) removes → EPERM (do_irqctl.c:113 owner check)
@@ -2156,21 +2257,49 @@ mod tests {
             intruder.priv_id = Some(0);
         }
         let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
-        assert_eq!(dispatch_irqctl(ProcNr(1), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(EPERM));
-        assert_eq!(irq_mgr.hook_owner(0), Some(Endpoint(100)), "EPERM 后槽位不动");
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(1),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(EPERM)
+        );
+        assert_eq!(
+            irq_mgr.hook_owner(0),
+            Some(Endpoint(100)),
+            "EPERM 后槽位不动"
+        );
 
         // owner removes → OK and the slot is cleared
         let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(OK));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(OK)
+        );
         assert_eq!(irq_mgr.hook_owner(0), None, "删除后槽位必须清空");
 
         // removing the empty slot again → EINVAL (do_irqctl.c:111-114: hook
         // not occupied)
         let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(EINVAL));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(EINVAL)
+        );
     }
 
     /// ENABLE: invalid hook_id → EINVAL; non-owner → EPERM; owner → OK
@@ -2195,23 +2324,55 @@ mod tests {
 
         // install hook 1 (owner)
         let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 5, 0, 0);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(OK));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(OK)
+        );
 
         // hook_id = 0 (< 1) → EINVAL
         let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 0);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(EINVAL));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(EINVAL)
+        );
 
         // non-owner ENABLE → EPERM
         let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 1);
-        assert_eq!(dispatch_irqctl(ProcNr(1), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(EPERM));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(1),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(EPERM)
+        );
 
         // owner ENABLE → OK
         let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 1);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(OK));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(OK)
+        );
     }
 
     /// DISABLE: non-owner → EPERM; owner → OK (do_irqctl.c:31-32 owner check
@@ -2234,15 +2395,39 @@ mod tests {
         }
 
         let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 5, 0, 0);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(OK));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(OK)
+        );
 
         let mut msg = build_irqctl_msg(IrqctlRequest::Disable as i32, 5, 0, 1);
-        assert_eq!(dispatch_irqctl(ProcNr(1), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(EPERM));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(1),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(EPERM)
+        );
 
         let mut msg = build_irqctl_msg(IrqctlRequest::Disable as i32, 5, 0, 1);
-        assert_eq!(dispatch_irqctl(ProcNr(0), &mut proc_table, &mut msg, &mut irq_mgr, &priv_table),
-            KcallResult::Ok(OK));
+        assert_eq!(
+            dispatch_irqctl(
+                ProcNr(0),
+                &mut proc_table,
+                &mut msg,
+                &mut irq_mgr,
+                &priv_table
+            ),
+            KcallResult::Ok(OK)
+        );
     }
 }

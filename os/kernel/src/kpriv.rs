@@ -1,9 +1,9 @@
 use minix_types::Endpoint;
 
 use crate::capability::{IpcMask, KCallMask, ProcessCapability, TrapMask};
-use crate::errno::{ENOSPC, EINVAL, EBUSY};
-use crate::proc::{ProcNr, SigSet};
+use crate::errno::{EBUSY, EINVAL, ENOSPC};
 use crate::proc::NR_BOOT_PROCS;
+use crate::proc::{ProcNr, SigSet};
 use crate::proc_table::NR_TASKS;
 
 pub type PrivId = u16;
@@ -540,9 +540,7 @@ impl KPriv {
         self.flags.s_flags |= ProcessCapability::CHECK_IO_PORT;
         // Dedup check
         for i in 0..self.io.s_nr_io_range as usize {
-            if self.io.s_io_tab[i].base == ior.base
-                && self.io.s_io_tab[i].limit == ior.limit
-            {
+            if self.io.s_io_tab[i].base == ior.base && self.io.s_io_tab[i].limit == ior.limit {
                 return Ok(());
             }
         }
@@ -564,8 +562,7 @@ impl KPriv {
         self.flags.s_flags |= ProcessCapability::CHECK_MEM;
         // Dedup check
         for i in 0..self.mem.s_nr_mem_range as usize {
-            if self.mem.s_mem_tab[i].base == memr.base
-                && self.mem.s_mem_tab[i].limit == memr.limit
+            if self.mem.s_mem_tab[i].base == memr.base && self.mem.s_mem_tab[i].limit == memr.limit
             {
                 return Ok(());
             }
@@ -969,9 +966,7 @@ impl PrivTable {
         if let Some(p) = rp_slot {
             p.ipc.s_ipc_to = p.ipc.s_ipc_to.set_bit(id_idx);
         }
-        if target_can_reply
-            && let Some(p) = id_slot
-        {
+        if target_can_reply && let Some(p) = id_slot {
             p.ipc.s_ipc_to = p.ipc.s_ipc_to.set_bit(rp_idx);
         }
     }
@@ -1105,13 +1100,14 @@ impl PrivTable {
             // C: system.c:285-287 — scan dynamic slots for a free one.
             for i in (NR_BOOT_PROCS as PrivId)..(NR_SYS_PROCS as PrivId) {
                 if let Some(slot) = self.get(i)
-                    && slot.identity.s_proc_nr.is_none() {
-                        // Found a free dynamic slot.
-                        if let Some(slot) = self.get_mut(i) {
-                            slot.identity.s_proc_nr = Some(proc_nr);
-                        }
-                        return Ok(i);
+                    && slot.identity.s_proc_nr.is_none()
+                {
+                    // Found a free dynamic slot.
+                    if let Some(slot) = self.get_mut(i) {
+                        slot.identity.s_proc_nr = Some(proc_nr);
                     }
+                    return Ok(i);
+                }
             }
             Err(ENOSPC)
         } else {
@@ -1181,7 +1177,8 @@ impl PrivTable {
     ) -> Result<PrivId, crate::capability::CapabilityError> {
         use crate::capability::CapabilityError;
 
-        let priv_id = self.assign_static(proc_nr)
+        let priv_id = self
+            .assign_static(proc_nr)
             .ok_or(CapabilityError::SlotOccupied)?;
 
         // `capabilities()` returns the exact C flag set for the template
@@ -1197,9 +1194,7 @@ impl PrivTable {
         if matches!(template, crate::capability::CapabilityTemplate::KernelTask) {
             // Newtype comparison (no raw-slot deconstruction): same
             // `(proc_nr == CLOCK || proc_nr == SYSTEM)` test as C main.c:218-219.
-            if proc_nr == crate::proc::proc_nr::CLOCK
-                || proc_nr == crate::proc::proc_nr::SYSTEM
-            {
+            if proc_nr == crate::proc::proc_nr::CLOCK || proc_nr == crate::proc::proc_nr::SYSTEM {
                 trap_mask = TrapMask::RECEIVE;
             }
         }
@@ -1334,10 +1329,12 @@ mod tests {
         let table = crate::test_helpers::test_priv_table();
         for i in 0..NR_SYS_PROCS {
             let p = table.get(i as PrivId).expect("slot must exist");
-            assert_eq!(p.identity.s_id, i as SysId,
-                "slot {} s_id mismatch", i);
-            assert!(p.identity.s_proc_nr.is_none(),
-                "slot {} must start unassigned", i);
+            assert_eq!(p.identity.s_id, i as SysId, "slot {} s_id mismatch", i);
+            assert!(
+                p.identity.s_proc_nr.is_none(),
+                "slot {} must start unassigned",
+                i
+            );
         }
     }
 
@@ -1492,7 +1489,9 @@ mod tests {
     #[test]
     fn test_grant_capability_idle() {
         let mut table = crate::test_helpers::test_priv_table();
-        let id = table.grant_capability(ProcNr(-4), CapabilityTemplate::Idle).unwrap();
+        let id = table
+            .grant_capability(ProcNr(-4), CapabilityTemplate::Idle)
+            .unwrap();
         let p = table.get(id).unwrap();
         assert!(p.flags.s_flags.contains(ProcessCapability::SYS_PROC));
         assert!(p.flags.s_flags.contains(ProcessCapability::BILLABLE));
@@ -1504,7 +1503,9 @@ mod tests {
     #[test]
     fn test_grant_capability_vm() {
         let mut table = crate::test_helpers::test_priv_table();
-        let id = table.grant_capability(ProcNr(8), CapabilityTemplate::Vm).unwrap();
+        let id = table
+            .grant_capability(ProcNr(8), CapabilityTemplate::Vm)
+            .unwrap();
         let p = table.get(id).unwrap();
         assert!(p.flags.s_flags.contains(ProcessCapability::SYS_PROC));
         assert!(p.flags.s_flags.contains(ProcessCapability::VM_SYS_PROC));
@@ -1523,7 +1524,9 @@ mod tests {
     #[test]
     fn test_grant_capability_root_service() {
         let mut table = crate::test_helpers::test_priv_table();
-        let id = table.grant_capability(ProcNr(1), CapabilityTemplate::RootService).unwrap();
+        let id = table
+            .grant_capability(ProcNr(1), CapabilityTemplate::RootService)
+            .unwrap();
         let p = table.get(id).unwrap();
         assert!(p.flags.s_flags.contains(ProcessCapability::ROOT_SYS_PROC));
         assert!(p.flags.s_flags.contains(ProcessCapability::PREEMPTIBLE));
@@ -1543,21 +1546,31 @@ mod tests {
     #[test]
     fn test_grant_capability_vm_self_bit_cleared() {
         let mut table = crate::test_helpers::test_priv_table();
-        let vm = table.grant_capability(ProcNr(8), CapabilityTemplate::Vm).unwrap();
-        assert!(!table.get(vm).unwrap().ipc.s_ipc_to.has_bit(vm as usize),
-            "self bit must be cleared by the fill guard");
+        let vm = table
+            .grant_capability(ProcNr(8), CapabilityTemplate::Vm)
+            .unwrap();
+        assert!(
+            !table.get(vm).unwrap().ipc.s_ipc_to.has_bit(vm as usize),
+            "self bit must be cleared by the fill guard"
+        );
         // A later grant (RS) reciprocates: RS's fill grants VM→RS.
-        let rs = table.grant_capability(ProcNr(1), CapabilityTemplate::RootService).unwrap();
+        let rs = table
+            .grant_capability(ProcNr(1), CapabilityTemplate::RootService)
+            .unwrap();
         assert!(!table.get(rs).unwrap().ipc.s_ipc_to.has_bit(rs as usize));
-        assert!(table.get(vm).unwrap().ipc.s_ipc_to.has_bit(rs as usize),
-            "RS grant must reciprocate a bit into VM's mask");
+        assert!(
+            table.get(vm).unwrap().ipc.s_ipc_to.has_bit(rs as usize),
+            "RS grant must reciprocate a bit into VM's mask"
+        );
         assert!(!table.get(vm).unwrap().ipc.s_ipc_to.has_bit(vm as usize));
     }
 
     #[test]
     fn test_grant_capability_deferred_no_flags() {
         let mut table = crate::test_helpers::test_priv_table();
-        let id = table.grant_capability(ProcNr(0), CapabilityTemplate::Deferred).unwrap();
+        let id = table
+            .grant_capability(ProcNr(0), CapabilityTemplate::Deferred)
+            .unwrap();
         let p = table.get(id).unwrap();
         assert_eq!(p.flags.s_flags, ProcessCapability::empty());
         assert_eq!(p.ipc.s_trap_mask, TrapMask::NONE);
@@ -1569,7 +1582,11 @@ mod tests {
     fn test_grant_capability_duplicate_fails() {
         use crate::capability::CapabilityError;
         let mut table = crate::test_helpers::test_priv_table();
-        assert!(table.grant_capability(ProcNr(-4), CapabilityTemplate::Idle).is_ok());
+        assert!(
+            table
+                .grant_capability(ProcNr(-4), CapabilityTemplate::Idle)
+                .is_ok()
+        );
         // Same proc_nr again should fail (slot occupied)
         assert_eq!(
             table.grant_capability(ProcNr(-4), CapabilityTemplate::Idle),
@@ -1590,14 +1607,24 @@ mod tests {
         let mut table = crate::test_helpers::test_priv_table();
 
         // CLOCK (proc_nr = -3): RECEIVE allowed (CSK_T = 1 << 2 = 4).
-        let id = table.grant_capability(CLOCK, CapabilityTemplate::KernelTask).unwrap();
-        assert_eq!(table.get(id).unwrap().ipc.s_trap_mask, TrapMask::RECEIVE,
-            "CLOCK must receive CSK_T");
+        let id = table
+            .grant_capability(CLOCK, CapabilityTemplate::KernelTask)
+            .unwrap();
+        assert_eq!(
+            table.get(id).unwrap().ipc.s_trap_mask,
+            TrapMask::RECEIVE,
+            "CLOCK must receive CSK_T"
+        );
 
         // SYSTEM (proc_nr = -2): same as CLOCK.
-        let id = table.grant_capability(SYSTEM, CapabilityTemplate::KernelTask).unwrap();
-        assert_eq!(table.get(id).unwrap().ipc.s_trap_mask, TrapMask::RECEIVE,
-            "SYSTEM must receive CSK_T");
+        let id = table
+            .grant_capability(SYSTEM, CapabilityTemplate::KernelTask)
+            .unwrap();
+        assert_eq!(
+            table.get(id).unwrap().ipc.s_trap_mask,
+            TrapMask::RECEIVE,
+            "SYSTEM must receive CSK_T"
+        );
     }
 
     /// KERNEL and the rest of the kernel-task family (HARDWARE, ASYNCM, …)
@@ -1609,14 +1636,24 @@ mod tests {
         let mut table = crate::test_helpers::test_priv_table();
 
         // KERNEL (proc_nr = -1): TSK_T = 0.
-        let id = table.grant_capability(KERNEL, CapabilityTemplate::KernelTask).unwrap();
-        assert_eq!(table.get(id).unwrap().ipc.s_trap_mask, TrapMask::NONE,
-            "KERNEL must receive TSK_T (0)");
+        let id = table
+            .grant_capability(KERNEL, CapabilityTemplate::KernelTask)
+            .unwrap();
+        assert_eq!(
+            table.get(id).unwrap().ipc.s_trap_mask,
+            TrapMask::NONE,
+            "KERNEL must receive TSK_T (0)"
+        );
 
         // ASYNCM (proc_nr = -5) — also a kernel task per KERNEL_TASKS table.
-        let id = table.grant_capability(ProcNr(-5), CapabilityTemplate::KernelTask).unwrap();
-        assert_eq!(table.get(id).unwrap().ipc.s_trap_mask, TrapMask::NONE,
-            "ASYNCM must receive TSK_T (0)");
+        let id = table
+            .grant_capability(ProcNr(-5), CapabilityTemplate::KernelTask)
+            .unwrap();
+        assert_eq!(
+            table.get(id).unwrap().ipc.s_trap_mask,
+            TrapMask::NONE,
+            "ASYNCM must receive TSK_T (0)"
+        );
     }
 
     /// All kernel tasks share `ipc_to = NO_M` regardless of whether they
@@ -1629,9 +1666,14 @@ mod tests {
 
         // CLOCK / SYSTEM / KERNEL all share ipc_to = NO_M.
         for nr in [CLOCK, SYSTEM, KERNEL] {
-            let id = table.grant_capability(nr, CapabilityTemplate::KernelTask).unwrap();
-            assert_eq!(table.get(id).unwrap().ipc.s_ipc_to, IpcMask::NONE,
-                "{nr:?} ipc_to must be NO_M (kernel tasks cannot SEND)");
+            let id = table
+                .grant_capability(nr, CapabilityTemplate::KernelTask)
+                .unwrap();
+            assert_eq!(
+                table.get(id).unwrap().ipc.s_ipc_to,
+                IpcMask::NONE,
+                "{nr:?} ipc_to must be NO_M (kernel tasks cannot SEND)"
+            );
         }
     }
 
@@ -1665,10 +1707,15 @@ mod tests {
             assert!(p.flags.s_flags.contains(ProcessCapability::SYS_PROC));
             assert!(p.flags.s_flags.contains(ProcessCapability::CHECK_IRQ));
             assert_eq!(p.io.s_nr_irq, 1, "CHECK_IRQ gate must copy the IRQ table");
-            assert_eq!(p.ipc.s_trap_mask, TrapMask::ALL,
-                "0xFFFF must sign-extend to the all-ones mask (C int promotion)");
-            assert!(p.ipc.s_trap_mask.contains(TrapMask::from_bits(1 << 16)),
-                "SENDA (call 16) must pass after sign extension");
+            assert_eq!(
+                p.ipc.s_trap_mask,
+                TrapMask::ALL,
+                "0xFFFF must sign-extend to the all-ones mask (C int promotion)"
+            );
+            assert!(
+                p.ipc.s_trap_mask.contains(TrapMask::from_bits(1 << 16)),
+                "SENDA (call 16) must pass after sign extension"
+            );
             // The requested bit survives the fill (target bound, not self);
             // a raw copy would be indistinguishable here, but a request for
             // an unassociated slot would not (see set_sendto_bit tests).
@@ -1698,10 +1745,14 @@ mod tests {
 
         table.set_sendto_bit(a, b);
 
-        assert!(table.get(a).unwrap().ipc.s_ipc_to.may_send_to(b as u8),
-            "grantor must hold the target's bit");
-        assert!(table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
-            "reply-capable target must get the reciprocal bit");
+        assert!(
+            table.get(a).unwrap().ipc.s_ipc_to.may_send_to(b as u8),
+            "grantor must hold the target's bit"
+        );
+        assert!(
+            table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
+            "reply-capable target must get the reciprocal bit"
+        );
     }
 
     /// A RECEIVE-only target (CLOCK/SYSTEM with `CSK_T = 1 << RECEIVE`)
@@ -1716,10 +1767,24 @@ mod tests {
 
         table.set_sendto_bit(a, clock_like);
 
-        assert!(table.get(a).unwrap().ipc.s_ipc_to.may_send_to(clock_like as u8),
-            "grant itself must still land");
-        assert!(!table.get(clock_like).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
-            "RECEIVE-only target must NOT get the reciprocal bit");
+        assert!(
+            table
+                .get(a)
+                .unwrap()
+                .ipc
+                .s_ipc_to
+                .may_send_to(clock_like as u8),
+            "grant itself must still land"
+        );
+        assert!(
+            !table
+                .get(clock_like)
+                .unwrap()
+                .ipc
+                .s_ipc_to
+                .may_send_to(a as u8),
+            "RECEIVE-only target must NOT get the reciprocal bit"
+        );
     }
 
     /// Both C guards degrade a requested grant into an unset of the
@@ -1744,8 +1809,10 @@ mod tests {
 
         let mask = table.get(a).unwrap().ipc.s_ipc_to;
         assert!(!mask.may_send_to(a as u8), "self bit must stay clear");
-        assert!(!mask.may_send_to(unbound as u8),
-            "unassociated slot must be revoked, not granted");
+        assert!(
+            !mask.may_send_to(unbound as u8),
+            "unassociated slot must be revoked, not granted"
+        );
     }
 
     /// Revocation is symmetric: clearing A → B also clears B → A.
@@ -1761,8 +1828,10 @@ mod tests {
         table.unset_sendto_bit(a, b);
 
         assert!(!table.get(a).unwrap().ipc.s_ipc_to.may_send_to(b as u8));
-        assert!(!table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
-            "reciprocal bit must go too");
+        assert!(
+            !table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
+            "reciprocal bit must go too"
+        );
     }
 
     /// The security core of `fill_sendto_mask`: a bit cleared in `map`
@@ -1782,8 +1851,10 @@ mod tests {
         table.fill_sendto_mask(a, IpcMask::NONE);
 
         assert!(!table.get(a).unwrap().ipc.s_ipc_to.may_send_to(b as u8));
-        assert!(!table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
-            "stale reciprocal grant must be repaired by the fill");
+        assert!(
+            !table.get(b).unwrap().ipc.s_ipc_to.may_send_to(a as u8),
+            "stale reciprocal grant must be repaired by the fill"
+        );
     }
 
     /// C micro-behavior worth pinning: when `map` HAS a bit for an
@@ -1803,8 +1874,15 @@ mod tests {
         // Map requests a grant for the unassociated slot.
         table.fill_sendto_mask(a, IpcMask::from_bits(1u64 << unbound));
 
-        assert!(!table.get(a).unwrap().ipc.s_ipc_to.may_send_to(unbound as u8),
-            "grantor's own bit must be unset by the guard");
+        assert!(
+            !table
+                .get(a)
+                .unwrap()
+                .ipc
+                .s_ipc_to
+                .may_send_to(unbound as u8),
+            "grantor's own bit must be unset by the guard"
+        );
         assert_eq!(
             table.get(unbound).unwrap().ipc.s_ipc_to,
             IpcMask::from_bits(1u64 << a),
@@ -1827,9 +1905,14 @@ mod tests {
         req.s_nr_irq = i32::MAX; // out of range → EINVAL
         req.s_ipc_to = 1u64 << b;
 
-        assert_eq!(table.update_priv(a, &req), Err(PrivUpdateError::BadIrqCount),
-            "bad IRQ count → named error");
-        assert!(table.get(a).unwrap().ipc.s_ipc_to == IpcMask::NONE,
-            "mask fill must not run after a failed field copy");
+        assert_eq!(
+            table.update_priv(a, &req),
+            Err(PrivUpdateError::BadIrqCount),
+            "bad IRQ count → named error"
+        );
+        assert!(
+            table.get(a).unwrap().ipc.s_ipc_to == IpcMask::NONE,
+            "mask fill must not run after a failed field copy"
+        );
     }
 }

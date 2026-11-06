@@ -229,9 +229,9 @@ pub fn build_vm_pagefault_msg(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proc::proc_nr::KERNEL;
-    use crate::proc::RtsFlagsBits;
     use crate::proc::ProcNr;
+    use crate::proc::RtsFlagsBits;
+    use crate::proc::proc_nr::KERNEL;
 
     #[test]
     fn test_set_pagefault_pending_sets_flag_and_addr() {
@@ -347,11 +347,8 @@ mod tests {
         // that kernel_mode_pagefault_panic_msg produces a useful panic
         // message that the trap handler can use (stack buffer, no heap).
         let mut buf = PageFaultMsgBuf::new();
-        let panic_msg = kernel_mode_pagefault_panic_msg(
-            &mut buf,
-            kernel_proc.p_endpoint,
-            0xdead_beef,
-        );
+        let panic_msg =
+            kernel_mode_pagefault_panic_msg(&mut buf, kernel_proc.p_endpoint, 0xdead_beef);
         assert!(panic_msg.contains("kernel-mode"));
         assert!(panic_msg.contains("0xdeadbeef"));
     }

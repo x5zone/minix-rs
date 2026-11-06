@@ -19,10 +19,10 @@
 //!   the implementation via a single `#[cfg(target_arch)]` (one location),
 //!   avoiding scattered `#[cfg]` behavior selection in the dispatch match.
 
-use crate::proc::{KProcess, ProcNr};
-use crate::kpriv::PrivTable;
-use crate::ipc_filter::kcall_filter_check;
 use crate::clock::ClockState;
+use crate::ipc_filter::kcall_filter_check;
+use crate::kpriv::PrivTable;
+use crate::proc::{KProcess, ProcNr};
 use crate::proc_table::ProcessTable;
 use minix_types::Message;
 
@@ -427,7 +427,12 @@ impl ArchSyscall for X86_64Syscall {
         crate::syscall_device::dispatch_sdevio(caller_nr, proc_table, msg, &port_io, priv_table)
     }
 
-    fn dispatch_vdevio(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &PrivTable) -> KcallResult {
+    fn dispatch_vdevio(
+        caller_nr: crate::proc::ProcNr,
+        proc_table: &mut crate::proc_table::ProcessTable,
+        msg: &Message,
+        priv_table: &PrivTable,
+    ) -> KcallResult {
         // C: do_vdevio.c — SYS_VDEVIO (x86-only)
         // Full batch I/O: copy (port,value) pairs from user, permission check,
         // execute via PortIo, copy results back for input.
@@ -446,7 +451,11 @@ impl ArchSyscall for X86_64Syscall {
         crate::syscall_device::dispatch_iopenable(caller_nr, proc_table, msg)
     }
 
-    fn dispatch_readbios(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult {
+    fn dispatch_readbios(
+        caller_nr: crate::proc::ProcNr,
+        proc_table: &mut crate::proc_table::ProcessTable,
+        msg: &Message,
+    ) -> KcallResult {
         // C: do_readbios.c — SYS_READBIOS (x86-only)
         // Full implementation: parameter extraction, BIOS memory range
         // validation, and page-by-page copy from BIOS memory via
@@ -613,7 +622,14 @@ pub fn kernel_call_dispatch(
     let bkl_guard = crate::smp::bkl_lock();
     let result = {
         let bkl_section = bkl_guard.section();
-        kernel_call_dispatch_inner(caller_nr, proc_table, msg, priv_table, clock_state, &bkl_section)
+        kernel_call_dispatch_inner(
+            caller_nr,
+            proc_table,
+            msg,
+            priv_table,
+            clock_state,
+            &bkl_section,
+        )
     };
     // C system.c:160 — the kernel call is in flight for `caller`:
     // attribute kernel time to it at the next context_stop. C sets the
@@ -704,10 +720,16 @@ pub(crate) fn kernel_call_dispatch_inner(
         Syscall::Vumap => dispatch_vumap(caller_nr, proc_table, msg, priv_table),
         Syscall::Irqctl => dispatch_irqctl(caller_nr, proc_table, msg, priv_table, bkl_section),
         // D6: x86-specific syscalls — return BadCall on other architectures.
-        Syscall::Devio => CurrentArchSyscall::dispatch_devio(caller_nr, proc_table, msg, priv_table),
-        Syscall::Sdevio => CurrentArchSyscall::dispatch_sdevio(caller_nr, proc_table, msg, priv_table),
+        Syscall::Devio => {
+            CurrentArchSyscall::dispatch_devio(caller_nr, proc_table, msg, priv_table)
+        }
+        Syscall::Sdevio => {
+            CurrentArchSyscall::dispatch_sdevio(caller_nr, proc_table, msg, priv_table)
+        }
         // D6: VDEVIO is also x86-specific (system.c:215-216: #if defined(__i386__))
-        Syscall::Vdevio => CurrentArchSyscall::dispatch_vdevio(caller_nr, proc_table, msg, priv_table),
+        Syscall::Vdevio => {
+            CurrentArchSyscall::dispatch_vdevio(caller_nr, proc_table, msg, priv_table)
+        }
         Syscall::Setalarm => dispatch_setalarm(caller_nr, msg, priv_table, clock_state, proc_table),
         Syscall::Times => dispatch_times(caller_nr, msg, proc_table),
         Syscall::Getinfo => dispatch_getinfo(caller_nr, proc_table, msg, priv_table, clock_state),
@@ -730,7 +752,13 @@ pub(crate) fn kernel_call_dispatch_inner(
         Syscall::Update => dispatch_update(caller_nr, proc_table, msg, priv_table),
 
         Syscall::Schedctl => dispatch_schedctl(caller_nr, proc_table, msg),
-        Syscall::Statectl => dispatch_statectl(caller_nr, proc_table, msg, priv_table, crate::ipc_filter_pool_with(bkl_section)),
+        Syscall::Statectl => dispatch_statectl(
+            caller_nr,
+            proc_table,
+            msg,
+            priv_table,
+            crate::ipc_filter_pool_with(bkl_section),
+        ),
         Syscall::Safememset => dispatch_safememset(caller_nr, proc_table, msg, priv_table),
         // D6: ARM-specific — return BadCall on other architectures.
         Syscall::Padconf => CurrentArchSyscall::dispatch_padconf(caller_nr, proc_table, msg),
@@ -844,10 +872,10 @@ pub(crate) fn dispatch_ipc(
     priv_table: &mut PrivTable,
     ipc_call: crate::ipc::IpcCall,
 ) -> KcallResult {
-    use crate::ipc::{IpcEngine, IpcOutcome, IpcError, KernelUserCopy, SendFlags};
     use crate::errno::*;
+    use crate::ipc::{IpcEngine, IpcError, IpcOutcome, KernelUserCopy, SendFlags};
+    use minix_arch::{CpuContextArch, CurrentCpuContextArch};
     use minix_types::VirBytes;
-    use minix_arch::{CurrentCpuContextArch, CpuContextArch};
 
     // ── MINIX_KERNINFO (6) ──
     // C: proc.c:685-693 — the kernel info page is handed over through the
@@ -969,9 +997,7 @@ pub(crate) fn dispatch_ipc(
                 use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                 static IPCERR_N: AtomicUsize = AtomicUsize::new(0);
-                if IPCERR_N.fetch_add(1, AtomicOrd::Relaxed) < 64
-                    && matches!(caller_nr.0, 0 | 4)
-                {
+                if IPCERR_N.fetch_add(1, AtomicOrd::Relaxed) < 64 && matches!(caller_nr.0, 0 | 4) {
                     match e {
                         IpcError::Deadlock => Console::write_str("ELOCKED"),
                         IpcError::DeadSrcDst => Console::write_str("EDEADSRCDST"),
@@ -1027,12 +1053,38 @@ pub(crate) fn dispatch_ipc(
 // Functions that need ProcessTable or PrivTable receive them from
 // kernel_call_dispatch (threaded through since 2026-06-15).
 
-fn dispatch_fork(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
+fn dispatch_fork(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
     crate::syscall_process::dispatch_fork(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_exec(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_process::dispatch_exec(caller_nr, proc_table, msg) }
-fn dispatch_clear(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut crate::kpriv::PrivTable, clock_state: &mut ClockState) -> KcallResult { crate::syscall_process::dispatch_clear(caller_nr, proc_table, msg, priv_table, clock_state) }
-fn dispatch_exit(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut crate::kpriv::PrivTable) -> KcallResult { crate::syscall_process::dispatch_exit(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_exec(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
+    crate::syscall_process::dispatch_exec(caller_nr, proc_table, msg)
+}
+fn dispatch_clear(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &mut crate::kpriv::PrivTable,
+    clock_state: &mut ClockState,
+) -> KcallResult {
+    crate::syscall_process::dispatch_clear(caller_nr, proc_table, msg, priv_table, clock_state)
+}
+fn dispatch_exit(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &mut crate::kpriv::PrivTable,
+) -> KcallResult {
+    crate::syscall_process::dispatch_exit(caller_nr, proc_table, msg, priv_table)
+}
 
 /// Dispatch SYS_SCHEDULE.
 ///
@@ -1075,7 +1127,9 @@ fn dispatch_schedule(
     // fresh empty `PrivTable::new()` internally and always returns false,
     // breaking all privileged callers — same latent bug as `dispatch_privctl`).
     if !crate::syscall_clock::caller_has_sys_proc_with_table(
-        proc_table.get(caller_nr).expect("dispatch_schedule: caller slot must exist"),
+        proc_table
+            .get(caller_nr)
+            .expect("dispatch_schedule: caller slot must exist"),
         priv_table,
     ) {
         return KcallResult::Ok(EPERM);
@@ -1137,7 +1191,7 @@ fn dispatch_schedule(
     let priority_opt = match sched.priority {
         -1 => None,
         v if v >= 0 && v <= crate::proc::priority::NR_SCHED_QUEUES as i32 => {
-            Some(v as u8)  // Safe: v ∈ [0, 16], fits in u8
+            Some(v as u8) // Safe: v ∈ [0, 16], fits in u8
         }
         _ => return KcallResult::Ok(EINVAL), // priority < -1 || priority > NR_SCHED_QUEUES
     };
@@ -1146,7 +1200,11 @@ fn dispatch_schedule(
         v if v >= 1 => Some(v as u32),
         _ => return KcallResult::Ok(EINVAL), // quantum < 1 && != -1
     };
-    let cpu_opt = if sched.cpu == -1 { None } else { Some(sched.cpu as u32) };
+    let cpu_opt = if sched.cpu == -1 {
+        None
+    } else {
+        Some(sched.cpu as u32)
+    };
 
     // sched_proc takes the table (scheduler-aware rts_set/rts_unset
     // dequeue/re-enqueue the process around the parameter update — C
@@ -1154,7 +1212,12 @@ fn dispatch_schedule(
     match crate::sched::sched_proc(
         proc_table,
         target_nr,
-        crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced },
+        crate::sched::SchedParams {
+            priority: priority_opt,
+            quantum: quantum_opt,
+            cpu: cpu_opt,
+            niced,
+        },
     ) {
         Ok(()) => KcallResult::Ok(0),
         Err(e) => KcallResult::Ok(e.to_errno().to_i32()), // D2: ToErrno
@@ -1180,8 +1243,8 @@ fn copy_struct_from_user(
     kernel_buf: *mut u8,
     bytes: usize,
 ) -> crate::vm::CrossSpaceResult {
-    use minix_types::VirBytes;
     use crate::vm::AddressRef;
+    use minix_types::VirBytes;
 
     let caller_endpt = proc_table
         .get(caller_nr)
@@ -1211,14 +1274,14 @@ fn copy_struct_from_user(
         offset: VirBytes(kernel_buf as u64),
     };
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
     crate::cross_space::data_copy_vmcheck(caller_nr, proc_table, src, dst, bytes, proc_cr3)
 }
 
@@ -1262,8 +1325,8 @@ pub(crate) fn clear_ipc_refs(
     target_nr: ProcNr,
     _error_code: i32,
 ) {
-    use crate::proc::RtsFlagsBits;
     use crate::kpriv::NR_SYS_PROCS;
+    use crate::proc::RtsFlagsBits;
 
     // Get target's endpoint and priv_id.
     let (target_ep, target_priv_id) = match proc_table.get(target_nr) {
@@ -1299,7 +1362,8 @@ pub(crate) fn clear_ipc_refs(
         }
         if proc.blocked_on() == Some(target_ep) {
             // C: clear_ipc(rp) — RTS_UNSET(rp, RTS_SENDING | RTS_RECEIVING)
-            proc.p_rts_flags.clear(RtsFlagsBits::SENDING | RtsFlagsBits::RECEIVING);
+            proc.p_rts_flags
+                .clear(RtsFlagsBits::SENDING | RtsFlagsBits::RECEIVING);
             // C: rp->p_reg.retreg = caller_ret — see design gap note above.
             // The _error_code parameter is accepted for API completeness
             // but not yet applied to the register save area.
@@ -1347,11 +1411,7 @@ pub(crate) fn clear_ipc(proc_table: &mut ProcessTable, target_nr: ProcNr) {
             // `target_nr`. C's queue can only hold each sender once
             // (asserted in `send()`), so a single removal is sufficient.
             if let Some(dst_idx) = crate::proc_table::nr_to_idx(dst_nr) {
-                crate::ipc::caller_q_remove_by_nr(
-                    proc_table.procs_slice_mut(),
-                    dst_idx,
-                    target_nr,
-                );
+                crate::ipc::caller_q_remove_by_nr(proc_table.procs_slice_mut(), dst_idx, target_nr);
             }
         }
 
@@ -1488,10 +1548,11 @@ pub(crate) fn clear_endpoint(
     // C: system.c:552-555 — if (priv(rc)->s_flags & SYS_PROC) priv(rc)->s_asynsize = 0
     if let Some(target) = proc_table.get(target_nr)
         && let Some(priv_id) = target.priv_id
-            && let Some(kpriv) = priv_table.get_mut(priv_id)
-                && kpriv.is_sys_proc() {
-                    kpriv.signals.s_asynsize = 0;
-                }
+        && let Some(kpriv) = priv_table.get_mut(priv_id)
+        && kpriv.is_sys_proc()
+    {
+        kpriv.signals.s_asynsize = 0;
+    }
 
     // C: system.c:560 — clear_ipc(rc)
     clear_ipc(proc_table, target_nr);
@@ -1549,7 +1610,9 @@ fn dispatch_privctl(
     // `caller_has_sys_proc` (which builds a fresh empty `PrivTable::new()`
     // internally and always returns false, breaking all privileged callers).
     if !crate::syscall_clock::caller_has_sys_proc_with_table(
-        proc_table.get(caller_nr).expect("dispatch_privctl: caller slot must exist"),
+        proc_table
+            .get(caller_nr)
+            .expect("dispatch_privctl: caller slot must exist"),
         priv_table,
     ) {
         return KcallResult::Ok(EPERM);
@@ -1563,7 +1626,7 @@ fn dispatch_privctl(
     let m1 = unsafe { &msg.m_u.m_m1 };
     let request = m1.m1i1;
     let endpt_raw = m1.m1i2;
-    let arg_ptr = m1.m1p1;  // User-space pointer to argument data
+    let arg_ptr = m1.m1p1; // User-space pointer to argument data
     let phys_start = m1.m1p2;
     let phys_len = m1.m1p3;
 
@@ -1590,7 +1653,9 @@ fn dispatch_privctl(
             None => return KcallResult::Ok(EINVAL),
         };
         (
-            target.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV),
+            target
+                .p_rts_flags
+                .is_set(crate::proc::RtsFlagsBits::NO_PRIV),
             target.priv_id,
         )
     };
@@ -1623,19 +1688,48 @@ fn dispatch_privctl(
 
         // SYS_PRIV_SET_SYS = 3: Set privilege structure for a blocked system process.
         // C: do_privctl.c:86-174
-        3 => privctl_set_sys(caller_nr, proc_table, priv_table, clock_state, target_nr, arg_ptr, target_has_no_priv),
+        3 => privctl_set_sys(
+            caller_nr,
+            proc_table,
+            priv_table,
+            clock_state,
+            target_nr,
+            arg_ptr,
+            target_has_no_priv,
+        ),
 
         // SYS_PRIV_ADD_IO = 5: Add I/O port range to target's privilege.
         // C: do_privctl.c:187-204
-        5 => privctl_add_io(caller_nr, proc_table, priv_table, target_priv_id, target_has_no_priv, arg_ptr),
+        5 => privctl_add_io(
+            caller_nr,
+            proc_table,
+            priv_table,
+            target_priv_id,
+            target_has_no_priv,
+            arg_ptr,
+        ),
 
         // SYS_PRIV_ADD_MEM = 6: Add memory range to target's privilege.
         // C: do_privctl.c:206-216
-        6 => privctl_add_mem(caller_nr, proc_table, priv_table, target_priv_id, target_has_no_priv, arg_ptr),
+        6 => privctl_add_mem(
+            caller_nr,
+            proc_table,
+            priv_table,
+            target_priv_id,
+            target_has_no_priv,
+            arg_ptr,
+        ),
 
         // SYS_PRIV_ADD_IRQ = 7: Add IRQ to target's privilege.
         // C: do_privctl.c:218-230
-        7 => privctl_add_irq(caller_nr, proc_table, priv_table, target_priv_id, target_has_no_priv, arg_ptr),
+        7 => privctl_add_irq(
+            caller_nr,
+            proc_table,
+            priv_table,
+            target_priv_id,
+            target_has_no_priv,
+            arg_ptr,
+        ),
 
         // SYS_PRIV_UPDATE_SYS = 9: Update existing privilege structure.
         // C: do_privctl.c:253-268
@@ -1664,9 +1758,7 @@ fn dispatch_privctl(
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static PCTL_LOG: AtomicUsize = AtomicUsize::new(0);
         if let KcallResult::Ok(code) = dispatch_result {
-            if (1..=4).contains(&request)
-                && PCTL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 24
-            {
+            if (1..=4).contains(&request) && PCTL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 24 {
                 use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                 let fl = proc_table
                     .get(target_nr)
@@ -1794,7 +1886,8 @@ fn privctl_query_mem(
     let target = proc_table.get(target_nr);
     match target {
         Some(p) => {
-            let allowed = p.priv_id
+            let allowed = p
+                .priv_id
                 .and_then(|id| priv_table.get(id))
                 .map(|kp| {
                     // C: for i in 0..s_nr_mem_range:
@@ -1874,7 +1967,9 @@ fn privctl_set_sys(
     let priv_id = if arg_ptr != 0 {
         let mut req = crate::kpriv::PrivUpdateRequest::new();
         let copy_result = copy_struct_from_user(
-            caller_nr, proc_table, arg_ptr,
+            caller_nr,
+            proc_table,
+            arg_ptr,
             &mut req as *mut _ as *mut u8,
             core::mem::size_of::<crate::kpriv::PrivUpdateRequest>(),
         );
@@ -1913,7 +2008,8 @@ fn privctl_set_sys(
             }
             // C: do_privctl.c:116-119 — restore s_id + s_proc_nr
             // (get_priv already sets s_proc_nr; s_id is the slot index)
-            let target_ep = proc_table.get(target_nr)
+            let target_ep = proc_table
+                .get(target_nr)
                 .map(|p| p.p_endpoint)
                 .unwrap_or(minix_types::Endpoint::NONE);
 
@@ -1948,10 +2044,9 @@ fn privctl_set_sys(
             priv_table.fill_sendto_mask(actual_id, crate::capability::IpcMask::ALL);
 
             // C: do_privctl.c:167-172 — override with user-provided settings
-            if arg_ptr != 0
-                && priv_table.update_priv(actual_id, &priv_id).is_err() {
-                    return KcallResult::Ok(EINVAL);
-                }
+            if arg_ptr != 0 && priv_table.update_priv(actual_id, &priv_id).is_err() {
+                return KcallResult::Ok(EINVAL);
+            }
             // Forensic probe of the SET_SYS landing: target endpoint plus
             // the effective flags after the overwrite (for the scheduler
             // setalarm EPERM ruling: did the SRV_F(0x12) sent by RS really
@@ -1998,19 +2093,19 @@ fn privctl_add_io(
     };
     let mut io_range = crate::kpriv::IoRange::new();
     let copy_result = copy_struct_from_user(
-        caller_nr, proc_table, arg_ptr,
+        caller_nr,
+        proc_table,
+        arg_ptr,
         &mut io_range as *mut _ as *mut u8,
         core::mem::size_of::<crate::kpriv::IoRange>(),
     );
     match copy_result {
         crate::vm::CrossSpaceResult::Completed(Ok(())) => {
             match priv_table.get_mut(target_priv_id) {
-                Some(priv_) => {
-                    match priv_.add_io(&io_range) {
-                        Ok(()) => KcallResult::Ok(0),
-                        Err(()) => KcallResult::Ok(ENOSPC),
-                    }
-                }
+                Some(priv_) => match priv_.add_io(&io_range) {
+                    Ok(()) => KcallResult::Ok(0),
+                    Err(()) => KcallResult::Ok(ENOSPC),
+                },
                 None => KcallResult::Ok(EINVAL),
             }
         }
@@ -2039,19 +2134,19 @@ fn privctl_add_mem(
     };
     let mut mem_range = crate::kpriv::MemRange::new();
     let copy_result = copy_struct_from_user(
-        caller_nr, proc_table, arg_ptr,
+        caller_nr,
+        proc_table,
+        arg_ptr,
         &mut mem_range as *mut _ as *mut u8,
         core::mem::size_of::<crate::kpriv::MemRange>(),
     );
     match copy_result {
         crate::vm::CrossSpaceResult::Completed(Ok(())) => {
             match priv_table.get_mut(target_priv_id) {
-                Some(priv_) => {
-                    match priv_.add_mem(&mem_range) {
-                        Ok(()) => KcallResult::Ok(0),
-                        Err(()) => KcallResult::Ok(ENOSPC),
-                    }
-                }
+                Some(priv_) => match priv_.add_mem(&mem_range) {
+                    Ok(()) => KcallResult::Ok(0),
+                    Err(()) => KcallResult::Ok(ENOSPC),
+                },
                 None => KcallResult::Ok(EINVAL),
             }
         }
@@ -2080,19 +2175,19 @@ fn privctl_add_irq(
     };
     let mut irq: i32 = 0;
     let copy_result = copy_struct_from_user(
-        caller_nr, proc_table, arg_ptr,
+        caller_nr,
+        proc_table,
+        arg_ptr,
         &mut irq as *mut _ as *mut u8,
         core::mem::size_of::<i32>(),
     );
     match copy_result {
         crate::vm::CrossSpaceResult::Completed(Ok(())) => {
             match priv_table.get_mut(target_priv_id) {
-                Some(priv_) => {
-                    match priv_.add_irq(irq) {
-                        Ok(()) => KcallResult::Ok(0),
-                        Err(()) => KcallResult::Ok(ENOSPC),
-                    }
-                }
+                Some(priv_) => match priv_.add_irq(irq) {
+                    Ok(()) => KcallResult::Ok(0),
+                    Err(()) => KcallResult::Ok(ENOSPC),
+                },
                 None => KcallResult::Ok(EINVAL),
             }
         }
@@ -2121,7 +2216,9 @@ fn privctl_update_sys(
     };
     let mut req = crate::kpriv::PrivUpdateRequest::new();
     let copy_result = copy_struct_from_user(
-        caller_nr, proc_table, arg_ptr,
+        caller_nr,
+        proc_table,
+        arg_ptr,
         &mut req as *mut _ as *mut u8,
         core::mem::size_of::<crate::kpriv::PrivUpdateRequest>(),
     );
@@ -2141,28 +2238,97 @@ fn privctl_update_sys(
         crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
     }
 }
-fn dispatch_trace(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult { crate::misc::dispatch_trace(caller_nr, proc_table, msg, priv_table) }
-fn dispatch_kill(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut PrivTable) -> KcallResult {
+fn dispatch_trace(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
+    crate::misc::dispatch_trace(caller_nr, proc_table, msg, priv_table)
+}
+fn dispatch_kill(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &mut PrivTable,
+) -> KcallResult {
     crate::syscall_signal::dispatch_kill(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_getksig(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
+fn dispatch_getksig(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
     crate::syscall_signal::dispatch_getksig(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_endksig(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &PrivTable) -> KcallResult {
+fn dispatch_endksig(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
     crate::syscall_signal::dispatch_endksig(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_sigsend(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult {
+fn dispatch_sigsend(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
     crate::syscall_signal::dispatch_sigsend(caller_nr, proc_table, msg)
 }
-fn dispatch_sigreturn(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult {
+fn dispatch_sigreturn(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
     crate::syscall_signal::dispatch_sigreturn(caller_nr, proc_table, msg)
 }
-fn dispatch_memset(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_copy::dispatch_memset(caller_nr, proc_table, msg) }
-fn dispatch_umap(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_umap(caller_nr, proc_table, msg, priv_table) }
-fn dispatch_vircopy(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_copy::dispatch_vircopy(caller_nr, proc_table, msg) }
-fn dispatch_physcopy(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_copy::dispatch_physcopy(caller_nr, proc_table, msg) }
-fn dispatch_umap_remote(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_umap_remote(caller_nr, proc_table, msg, priv_table) }
-fn dispatch_vumap(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_vumap(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_memset(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_memset(caller_nr, proc_table, msg)
+}
+fn dispatch_umap(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_umap(caller_nr, proc_table, msg, priv_table)
+}
+fn dispatch_vircopy(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_vircopy(caller_nr, proc_table, msg)
+}
+fn dispatch_physcopy(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_physcopy(caller_nr, proc_table, msg)
+}
+fn dispatch_umap_remote(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_umap_remote(caller_nr, proc_table, msg, priv_table)
+}
+fn dispatch_vumap(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_vumap(caller_nr, proc_table, msg, priv_table)
+}
 fn dispatch_irqctl(
     caller_nr: crate::proc::ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -2183,9 +2349,29 @@ fn dispatch_irqctl(
     let irq_mgr = crate::irq_manager_with(bkl_section);
     crate::syscall_device::dispatch_irqctl(caller_nr, proc_table, msg, irq_mgr, priv_table)
 }
-fn dispatch_setalarm(caller_nr: crate::proc::ProcNr, msg: &mut Message, priv_table: &mut PrivTable, clock_state: &mut ClockState, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_setalarm(caller_nr, msg, priv_table, clock_state, proc_table) }
-fn dispatch_times(caller_nr: crate::proc::ProcNr, msg: &mut Message, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_times(caller_nr, msg, proc_table) }
-fn dispatch_getinfo(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &mut PrivTable, clock_state: &ClockState) -> KcallResult {
+fn dispatch_setalarm(
+    caller_nr: crate::proc::ProcNr,
+    msg: &mut Message,
+    priv_table: &mut PrivTable,
+    clock_state: &mut ClockState,
+    proc_table: &crate::proc_table::ProcessTable,
+) -> KcallResult {
+    crate::syscall_clock::dispatch_setalarm(caller_nr, msg, priv_table, clock_state, proc_table)
+}
+fn dispatch_times(
+    caller_nr: crate::proc::ProcNr,
+    msg: &mut Message,
+    proc_table: &crate::proc_table::ProcessTable,
+) -> KcallResult {
+    crate::syscall_clock::dispatch_times(caller_nr, msg, proc_table)
+}
+fn dispatch_getinfo(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &mut PrivTable,
+    clock_state: &ClockState,
+) -> KcallResult {
     crate::misc::dispatch_getinfo(caller_nr, proc_table, msg, priv_table, clock_state)
 }
 /// Dispatch SYS_ABORT.
@@ -2236,7 +2422,11 @@ fn dispatch_abort(
     } else {
         "reset"
     };
-    let nosync = if (how & RB_NOSYNC) != 0 { " [NOSYNC]" } else { "" };
+    let nosync = if (how & RB_NOSYNC) != 0 {
+        " [NOSYNC]"
+    } else {
+        ""
+    };
     let dump = if (how & RB_DUMP) != 0 { " [DUMP]" } else { "" };
 
     // C: main.c:360 — printf("MINIX will now be shut down ...\n")
@@ -2254,9 +2444,30 @@ fn dispatch_abort(
         how,
     );
 }
-fn dispatch_safecopy_from(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safecopy_from(caller_nr, proc_table, msg, priv_table) }
-fn dispatch_safecopy_to(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safecopy_to(caller_nr, proc_table, msg, priv_table) }
-fn dispatch_vsafecopy(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_vsafecopy(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_safecopy_from(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &crate::kpriv::PrivTable,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_safecopy_from(caller_nr, proc_table, msg, priv_table)
+}
+fn dispatch_safecopy_to(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &crate::kpriv::PrivTable,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_safecopy_to(caller_nr, proc_table, msg, priv_table)
+}
+fn dispatch_vsafecopy(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &crate::kpriv::PrivTable,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_vsafecopy(caller_nr, proc_table, msg, priv_table)
+}
 /// Dispatch SYS_SETGRANT.
 ///
 /// C: `do_setgrant()` — do_setgrant.c:15-29
@@ -2308,9 +2519,19 @@ fn dispatch_setgrant(
         KcallResult::Ok(EPERM)
     }
 }
-fn dispatch_sprofile(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::misc::dispatch_profile(caller_nr, proc_table, msg) }
-fn dispatch_stime(msg: &Message, clock_state: &mut ClockState) -> KcallResult { crate::syscall_clock::dispatch_stime(msg, clock_state) }
-fn dispatch_settime(msg: &Message, clock_state: &mut ClockState) -> KcallResult { crate::syscall_clock::dispatch_settime(msg, clock_state) }
+fn dispatch_sprofile(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
+    crate::misc::dispatch_profile(caller_nr, proc_table, msg)
+}
+fn dispatch_stime(msg: &Message, clock_state: &mut ClockState) -> KcallResult {
+    crate::syscall_clock::dispatch_stime(msg, clock_state)
+}
+fn dispatch_settime(msg: &Message, clock_state: &mut ClockState) -> KcallResult {
+    crate::syscall_clock::dispatch_settime(msg, clock_state)
+}
 /// Dispatch SYS_VMCTL.
 ///
 /// C: `do_vmctl()` — do_vmctl.c:17-173
@@ -2418,7 +2639,9 @@ fn dispatch_vmctl(
     // and always returns false, rejecting every privileged caller (same
     // latent bug as `dispatch_privctl`/`dispatch_schedule`, now fixed).
     if !crate::syscall_clock::caller_has_sys_proc_with_table(
-        proc_table.get(caller_nr).expect("dispatch_vmctl: caller slot must exist"),
+        proc_table
+            .get(caller_nr)
+            .expect("dispatch_vmctl: caller slot must exist"),
         priv_table,
     ) {
         return KcallResult::Ok(EPERM);
@@ -2495,15 +2718,11 @@ fn dispatch_vmctl(
 
         // ── VmInhibitClear: clear RTS_VMINHIBIT on target ──
         // C: do_vmctl.c:132-160
-        VmCtlParam::VmInhibitClear => {
-            vmctl_vminhibit_clear(proc_table, target_nr)
-        }
+        VmCtlParam::VmInhibitClear => vmctl_vminhibit_clear(proc_table, target_nr),
 
         // ── BootInhibitClear: clear RTS_BOOTINHIBIT on target ──
         // C: do_vmctl.c:165-167 — RTS_UNSET(p, RTS_BOOTINHIBIT)
-        VmCtlParam::BootInhibitClear => {
-            vmctl_boot_inhibit_clear(proc_table, target_nr)
-        }
+        VmCtlParam::BootInhibitClear => vmctl_boot_inhibit_clear(proc_table, target_nr),
 
         // ── ClearMapCache: clear cached mappings ──
         // C: do_vmctl.c:161-164 — mem_clear_mapcache()
@@ -2597,7 +2816,9 @@ fn dispatch_vmctl(
                     _ => return KcallResult::Ok(EINVAL),
                 }
                 let v = unsafe { ((KDM + pa) as *const u64).read_volatile() };
-                unsafe { msg.m_u.m_m1.m1p1 = v; };
+                unsafe {
+                    msg.m_u.m_m1.m1p1 = v;
+                };
                 KcallResult::Ok(0)
             }
             #[cfg(not(all(target_arch = "riscv64", not(test))))]
@@ -2631,9 +2852,7 @@ fn dispatch_vmctl(
                 Err(errno) => KcallResult::Ok(errno),
             }
         }
-        VmCtlParam::SetAddrSpace => {
-            vmctl_set_addr_space(proc_table, target_nr, value_raw, msg)
-        }
+        VmCtlParam::SetAddrSpace => vmctl_set_addr_space(proc_table, target_nr, value_raw, msg),
 
         // ── Arch-specific commands: GetPdbr, FlushTlb, InvlPg ──
         // C: handled by arch_do_vmctl() in arch_do_vmctl.c:38-65
@@ -2671,7 +2890,9 @@ fn dispatch_vmctl(
             //
             // SAFETY: Called from syscall dispatch context with paging
             // enabled. The target process must be valid (checked above).
-            unsafe { minix_arch::CurrentTlbArch::flush_all(); }
+            unsafe {
+                minix_arch::CurrentTlbArch::flush_all();
+            }
             KcallResult::Ok(0)
         }
 
@@ -2684,16 +2905,16 @@ fn dispatch_vmctl(
             // SAFETY: Called from syscall dispatch context with paging
             // enabled. The virtual address is provided by the caller
             // (VM server) and is expected to be a valid user-space address.
-            unsafe { minix_arch::CurrentTlbArch::flush_addr(vaddr); }
+            unsafe {
+                minix_arch::CurrentTlbArch::flush_addr(vaddr);
+            }
             KcallResult::Ok(0)
         }
 
         // ── 32-bit legacy: KernPhysMap, KernMapReply ──
         // C: do_vmctl.c:105-118 — arch_phys_map/arch_phys_map_reply
         // These are 32-bit-only (x86 PAE) and unused on 64-bit.
-        VmCtlParam::KernPhysMap | VmCtlParam::KernMapReply => {
-            KcallResult::Ok(ENOSYS)
-        }
+        VmCtlParam::KernPhysMap | VmCtlParam::KernMapReply => KcallResult::Ok(ENOSYS),
     }
 }
 
@@ -2751,16 +2972,17 @@ fn vmctl_memreq_get(
             // process that was just dequeued. The mutable borrow from
             // vm_memreq_get() has ended, so we can borrow again.
             let proc = proc_table.get(proc_nr);
-            let target_ep = proc.and_then(|p| p.p_vm_suspend.as_ref())
+            let target_ep = proc
+                .and_then(|p| p.p_vm_suspend.as_ref())
                 .map(|ctx| ctx.target.0)
                 .unwrap_or(0);
             let requestor_ep = proc.map(|p| p.p_endpoint.0).unwrap_or(0);
 
-            m1.m1i1 = target_ep;                       // SVMCTL_MRG_TARGET
-            m1.m1p1 = params.start.0;                  // SVMCTL_MRG_ADDR
-            m1.m1p2 = params.length.0;                 // SVMCTL_MRG_LENGTH
+            m1.m1i1 = target_ep; // SVMCTL_MRG_TARGET
+            m1.m1p1 = params.start.0; // SVMCTL_MRG_ADDR
+            m1.m1p2 = params.length.0; // SVMCTL_MRG_LENGTH
             m1.m1i3 = if params.write_flag { 1 } else { 0 }; // SVMCTL_MRG_FLAG
-            m1.m1p3 = requestor_ep as u64;             // SVMCTL_MRG_REQUESTOR
+            m1.m1p3 = requestor_ep as u64; // SVMCTL_MRG_REQUESTOR
 
             // C: return rp->p_vmrequest.req_type (= VMPTYPE_CHECK = 1)
             KcallResult::Data(1) // VMPTYPE_CHECK: request found (data code, not negated on wire)
@@ -2782,7 +3004,7 @@ fn vmctl_memreq_reply(
     value_raw: i32,
 ) -> KcallResult {
     let vm_result = match value_raw {
-        0 => crate::vm::VmCheckResult::Ok,   // VM confirmed valid
+        0 => crate::vm::VmCheckResult::Ok,    // VM confirmed valid
         _ => crate::vm::VmCheckResult::Fault, // VM reported fault
     };
 
@@ -2816,9 +3038,11 @@ fn vmctl_vminhibit_set(
 ) -> KcallResult {
     let target_cpu = proc_table
         .get(target_nr)
-        .map(|p| crate::proc::CpuId::new_unchecked(
-            p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire),
-        ))
+        .map(|p| {
+            crate::proc::CpuId::new_unchecked(
+                p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire),
+            )
+        })
         .unwrap_or(crate::proc::CpuId::BSP);
     // SAFETY: dispatch_vmctl runs under BKL (kernel_call contract).
     let smp = unsafe { crate::smp_state() };
@@ -2826,9 +3050,7 @@ fn vmctl_vminhibit_set(
     if target_cpu != current_cpu {
         // SMP: route through IPI (schedule_sync → send_sched_ipi).
         // The IPI handler parks the process via VMINHIBIT only.
-        smp.schedule_vminhibit::<minix_arch::CurrentSmpArch>(
-            proc_table, target_nr, current_cpu,
-        );
+        smp.schedule_vminhibit::<minix_arch::CurrentSmpArch>(proc_table, target_nr, current_cpu);
     } else {
         // Local: direct RTS_SET (C do_vmctl.c:132).
         vminhibit_park_local(proc_table, target_nr);
@@ -2989,9 +3211,7 @@ fn vmctl_set_addr_space(
         // every root change or the first dispatch after this
         // would needlessly reload the same root.
         if crate::current_ptproc_nr() == Some(p.p_nr) {
-            crate::set_active_root_tracked(
-                minix_types::PhysBytes(ptroot_phys),
-            );
+            crate::set_active_root_tracked(minix_types::PhysBytes(ptroot_phys));
         }
 
         // Step 4: arch_enable_paging — no-op on 64-bit
@@ -3113,14 +3333,14 @@ fn dispatch_diagctl(
             let stack_va = diagbuf.as_mut_ptr() as u64;
 
             let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+                if endpt == caller_endpt {
+                    Some(caller_cr3)
+                } else {
+                    pt.endpoint_to_nr(endpt)
+                        .and_then(|nr| pt.get(nr))
+                        .map(|p| p.p_seg.phys_root)
+                }
+            };
 
             let src = AddressRef::Process {
                 endpoint: caller_endpt,
@@ -3157,21 +3377,15 @@ fn dispatch_diagctl(
                         // len u64)) — the same source data as the kernel
                         // bootface.
                         let tbl = 0x8500_0000u64;
-                        let magic = unsafe {
-                            ((KDM + tbl) as *const u64).read_volatile()
-                        };
+                        let magic = unsafe { ((KDM + tbl) as *const u64).read_volatile() };
                         if magic == 0x3154_4f4f_4258_4e4d {
-                            let count = unsafe {
-                                ((KDM + tbl + 8) as *const u32).read_volatile()
-                            };
+                            let count = unsafe { ((KDM + tbl + 8) as *const u32).read_volatile() };
                             for n in 0..count.min(16) as u64 {
                                 let base = tbl + 16 + n * (64 + 16);
-                                let pa = unsafe {
-                                    ((KDM + base + 64) as *const u64).read_volatile()
-                                };
-                                let ln = unsafe {
-                                    ((KDM + base + 72) as *const u64).read_volatile()
-                                };
+                                let pa =
+                                    unsafe { ((KDM + base + 64) as *const u64).read_volatile() };
+                                let ln =
+                                    unsafe { ((KDM + base + 72) as *const u64).read_volatile() };
                                 if pa == 0 {
                                     continue;
                                 }
@@ -3222,8 +3436,7 @@ fn dispatch_diagctl(
                     // failing diagnostic output on the scheduler side. A
                     // task close ruled it deleted.
                     #[cfg(not(feature = "mock"))]
-                    {
-                    }
+                    {}
                     KcallResult::Ok(EFAULT)
                 }
                 CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
@@ -3334,8 +3547,21 @@ fn dispatch_diagctl(
         _ => KcallResult::Ok(EINVAL),
     }
 }
-fn dispatch_vtimer(caller_nr: crate::proc::ProcNr, msg: &mut Message, priv_table: &PrivTable, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_vtimer(caller_nr, msg, priv_table, proc_table) }
-fn dispatch_runctl(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_process::dispatch_runctl(caller_nr, proc_table, msg) }
+fn dispatch_vtimer(
+    caller_nr: crate::proc::ProcNr,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+    proc_table: &crate::proc_table::ProcessTable,
+) -> KcallResult {
+    crate::syscall_clock::dispatch_vtimer(caller_nr, msg, priv_table, proc_table)
+}
+fn dispatch_runctl(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
+    crate::syscall_process::dispatch_runctl(caller_nr, proc_table, msg)
+}
 /// Dispatch SYS_GETMCONTEXT.
 ///
 /// C: `do_getmcontext()` — do_mcontext.c:23-68
@@ -3356,9 +3582,9 @@ fn dispatch_getmcontext(
     proc_table: &mut crate::proc_table::ProcessTable,
     msg: &Message,
 ) -> KcallResult {
-    use minix_arch::{CurrentSignalContext as SC, SignalContext};
     use crate::cross_space::data_copy_vmcheck;
     use crate::vm::{AddressRef, CrossSpaceResult};
+    use minix_arch::{CurrentSignalContext as SC, SignalContext};
     use minix_types::{Endpoint, VirBytes};
 
     // C: do_mcontext.c:13-14 — extract from mess_lsys_krn_sys_getmcontext.
@@ -3485,9 +3711,9 @@ fn dispatch_setmcontext(
     proc_table: &mut crate::proc_table::ProcessTable,
     msg: &Message,
 ) -> KcallResult {
-    use minix_arch::{CurrentSignalContext as SC, SignalContext};
     use crate::cross_space::data_copy_vmcheck;
     use crate::vm::{AddressRef, CrossSpaceResult};
+    use minix_arch::{CurrentSignalContext as SC, SignalContext};
     use minix_types::{Endpoint, VirBytes};
 
     // C: do_mcontext.c:64-65 — extract from mess_lsys_krn_sys_setmcontext.
@@ -3528,15 +3754,15 @@ fn dispatch_setmcontext(
 
     // Value-capturing closure — both src and dst use caller_endpt, so the
     // closure returns caller_cr3 directly without consulting proc_table.
-        let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ept: Endpoint| {
-            if ept == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(ept)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+    let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ept: Endpoint| {
+        if ept == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(ept)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
     let src = AddressRef::Process {
         endpoint: Endpoint(endpt),
         offset: VirBytes(ctx_ptr),
@@ -3555,12 +3781,38 @@ fn dispatch_setmcontext(
     // On 64-bit, no FPU copy — return OK directly.
     KcallResult::Ok(OK)
 }
-fn dispatch_update(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut PrivTable) -> KcallResult { crate::misc::dispatch_update(caller_nr, proc_table, msg, priv_table) }
-fn dispatch_schedctl(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_process::dispatch_schedctl(caller_nr, proc_table, msg) }
-fn dispatch_statectl(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut PrivTable, pool: &mut crate::ipc_filter::IpcFilterPool) -> KcallResult {
+fn dispatch_update(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &mut PrivTable,
+) -> KcallResult {
+    crate::misc::dispatch_update(caller_nr, proc_table, msg, priv_table)
+}
+fn dispatch_schedctl(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) -> KcallResult {
+    crate::syscall_process::dispatch_schedctl(caller_nr, proc_table, msg)
+}
+fn dispatch_statectl(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &mut PrivTable,
+    pool: &mut crate::ipc_filter::IpcFilterPool,
+) -> KcallResult {
     crate::syscall_process::dispatch_statectl(caller_nr, proc_table, msg, priv_table, pool)
 }
-fn dispatch_safememset(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safememset(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_safememset(
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    priv_table: &crate::kpriv::PrivTable,
+) -> KcallResult {
+    crate::syscall_copy::dispatch_safememset(caller_nr, proc_table, msg, priv_table)
+}
 
 // ── kernel_call_finish / kernel_call_resume ──
 // C: system.c:58-90 (kernel_call_finish), system.c:612-638 (kernel_call_resume)
@@ -3586,7 +3838,11 @@ use minix_types::Endpoint;
 /// dispatch path, which is safer and aligns with the IPC engine's
 /// message delivery mechanism (`MF_DELIVERMSG` flag + `p_delivermsg`,
 /// consumed by `ipc::delivermsg`).
-fn copy_msg_to_user(caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) {
+fn copy_msg_to_user(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+) {
     let caller = proc_table
         .get_mut(caller_nr)
         .expect("copy_msg_to_user: caller slot must exist");
@@ -3672,7 +3928,10 @@ pub(crate) fn kernel_call_finish_holding_bkl(
     // the dispatch entry transferred a held BKL into this chain
     // (kernel_call_dispatch / dispatch_ipc_entry via `transfer()`); the
     // VmSuspend branch below releases it. A lost lock must fail loudly.
-    debug_assert!(crate::smp::bkl_is_locked(), "kernel_call_finish entered without the BKL held");
+    debug_assert!(
+        crate::smp::bkl_is_locked(),
+        "kernel_call_finish entered without the BKL held"
+    );
     // VmSuspend path: save msg + set MF_KCALL_RESUME + release BKL.
     // C: system.c:60-63 — `if (result == VMSUSPEND) { saved.reqmsg = *msg;
     // p_misc_flags |= MF_KCALL_RESUME; }`
@@ -3809,8 +4068,7 @@ pub(crate) fn kernel_call_finish_holding_bkl(
             proc_table
                 .get(caller_nr)
                 .is_some_and(|p| p.p_endpoint.0 == 2)
-        }) {
-        }
+        }) {}
         if let (Some(root), Some(buf_va)) = (root, buf_va) {
             let bytes = core::mem::size_of::<minix_types::Message>();
             // Live print for RS reply direct writes: each chunk's target and
@@ -3838,7 +4096,9 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                         // compare; differing PAs are direct evidence of walk
                         // nondeterminism.
                         #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-                        if let Some((pa2, _)) = crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va)) {
+                        if let Some((pa2, _)) =
+                            crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va))
+                        {
                             if pa2.0 != pa.0 {
                                 crate::vm::nk4a_walk_reconcile(root.0, va, pa.0, pa2.0);
                             }
@@ -3863,10 +4123,10 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                             if tn < 512 {
                                 use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                                 let rb = |o: usize| -> u64 {
-                                    let base =
-                                        &reply as *const minix_types::Message as *const u8;
+                                    let base = &reply as *const minix_types::Message as *const u8;
                                     let mut b = [0u8; 8];
-                                    unsafe { // SAFETY: o+i<bytes keeps the read inside the Message (80B) object; per-byte reads avoid unaligned access, out-of-range bytes are filled with 0
+                                    unsafe {
+                                        // SAFETY: o+i<bytes keeps the read inside the Message (80B) object; per-byte reads avoid unaligned access, out-of-range bytes are filled with 0
                                         for i in 0..8 {
                                             if o + i < bytes {
                                                 b[i] = *base.add(o + i);
@@ -3916,8 +4176,7 @@ pub(crate) fn kernel_call_finish_holding_bkl(
             proc_table
                 .get(caller_nr)
                 .is_some_and(|p| p.p_endpoint.0 == 2)
-        }) {
-        }
+        }) {}
     }
 
     // Release BKL — syscall complete (Ok/NoReply/BadCall/CallDenied).
@@ -3952,12 +4211,18 @@ pub fn kernel_call_resume(
     let caller = proc_table
         .get(caller_nr)
         .expect("kernel_call_resume: caller slot must exist");
-    debug_assert!(!caller.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE),
-        "kernel_call_resume: caller slot is being freed");
-    debug_assert!(!caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
-        "kernel_call_resume: VM has not finished processing the fault");
-    debug_assert!(caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME),
-        "kernel_call_resume: MF_KCALL_RESUME not set (no prior VmSuspend)");
+    debug_assert!(
+        !caller.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE),
+        "kernel_call_resume: caller slot is being freed"
+    );
+    debug_assert!(
+        !caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
+        "kernel_call_resume: VM has not finished processing the fault"
+    );
+    debug_assert!(
+        caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME),
+        "kernel_call_resume: MF_KCALL_RESUME not set (no prior VmSuspend)"
+    );
 
     // C: system.c:619 — `saved.reqmsg.m_source == caller->p_endpoint`.
     // The saved message must be sourced from this caller.
@@ -3965,12 +4230,18 @@ pub fn kernel_call_resume(
     // violation (missing p_vm_suspend or saved_msg) panics loudly rather
     // than silently dispatching an empty message — the original
     // `unwrap_or_default()` masked corruption bugs.
-    let saved_msg = caller.p_vm_suspend.as_ref()
+    let saved_msg = caller
+        .p_vm_suspend
+        .as_ref()
         .and_then(|ctx| ctx.saved_msg)
-        .expect("kernel_call_resume: p_vm_suspend.saved_msg must exist \
-                 (VmSuspend path in kernel_call_finish always sets it)");
-    debug_assert_eq!(saved_msg.m_source, caller.p_endpoint,
-        "kernel_call_resume: saved_msg.m_source mismatch");
+        .expect(
+            "kernel_call_resume: p_vm_suspend.saved_msg must exist \
+                 (VmSuspend path in kernel_call_finish always sets it)",
+        );
+    debug_assert_eq!(
+        saved_msg.m_source, caller.p_endpoint,
+        "kernel_call_resume: saved_msg.m_source mismatch"
+    );
 
     let mut msg_copy = saved_msg;
 
@@ -3978,7 +4249,13 @@ pub fn kernel_call_resume(
     // still set so the call handler knows this is a retry. The flag is cleared
     // *after* dispatch returns (system.c:635) so it can be set again on a
     // subsequent VMSUSPEND within the same call.
-    let result = kernel_call_dispatch(caller_nr, proc_table, &mut msg_copy, priv_table, clock_state);
+    let result = kernel_call_dispatch(
+        caller_nr,
+        proc_table,
+        &mut msg_copy,
+        priv_table,
+        clock_state,
+    );
     proc_table
         .get_mut(caller_nr)
         .expect("kernel_call_resume: caller slot must exist")
@@ -4137,11 +4414,7 @@ mod tests {
         let caller_slot = proc_table.get_mut(ProcNr(0)).unwrap();
         caller_slot.p_endpoint = minix_types::Endpoint(100);
         caller_slot.priv_id = Some(USER_PRIV_ID);
-        priv_table
-            .get_mut(USER_PRIV_ID)
-            .unwrap()
-            .flags
-            .s_flags |= ProcessCapability::SYS_PROC;
+        priv_table.get_mut(USER_PRIV_ID).unwrap().flags.s_flags |= ProcessCapability::SYS_PROC;
         let mut msg = Message::default();
         msg.m_type = Syscall::Schedule as i32;
         // endpoint = NONE; no slot carries it → endpoint_to_nr fails.
@@ -4214,10 +4487,28 @@ mod tests {
             .p_rts_flags
             .clear(RtsFlagsBits::SLOT_FREE);
         vminhibit_park_local(&mut table, ProcNr(0));
-        assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::VMINHIBIT));
-        assert!(!table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::FLUSH_TLB));
+        assert!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::VMINHIBIT)
+        );
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::FLUSH_TLB)
+        );
         mark_flush_tlb(&mut table, ProcNr(0));
-        assert!(table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::FLUSH_TLB));
+        assert!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::FLUSH_TLB)
+        );
     }
 
     #[test]
@@ -4244,21 +4535,29 @@ mod tests {
         }
         // Target: slot 1, occupied with a resolvable endpoint; no user-space
         // scheduler registered (None → any caller allowed, do_schedule.c:18-19).
-        proc_table.get_mut(ProcNr(1)).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        proc_table
+            .get_mut(ProcNr(1))
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
         proc_table.get_mut(ProcNr(1)).unwrap().p_endpoint = minix_types::Endpoint(201);
 
         let mut msg = Message::default();
         msg.m_type = Syscall::Schedule as i32;
         msg.m_u.m_lsys_krn_schedule.endpoint = 201;
         msg.m_u.m_lsys_krn_schedule.priority = -1; // keep current
-        msg.m_u.m_lsys_krn_schedule.quantum = -1;  // keep current
-        msg.m_u.m_lsys_krn_schedule.cpu = -1;      // keep current
-        msg.m_u.m_lsys_krn_schedule.niced = 1;     // the field under test
+        msg.m_u.m_lsys_krn_schedule.quantum = -1; // keep current
+        msg.m_u.m_lsys_krn_schedule.cpu = -1; // keep current
+        msg.m_u.m_lsys_krn_schedule.niced = 1; // the field under test
         let result = dispatch_schedule(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(0));
 
         assert!(
-            proc_table.get(ProcNr(1)).unwrap().p_misc_flags.is_set(MiscFlagsBits::NICED),
+            proc_table
+                .get(ProcNr(1))
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::NICED),
             "wire niced=1 必须经 dispatch 到 sched_proc 落成 MF_NICED"
         );
     }
@@ -4270,14 +4569,14 @@ mod tests {
         // kernel_call family (com.h:208-269). Every member must land on its
         // C number — the pin fires on the first drift on either side.
         use minix_types::{
-            KERNEL_CALL, SYS_ABORT, SYS_CLEAR, SYS_DIAGCTL, SYS_EXEC, SYS_EXIT, SYS_FORK,
-            SYS_GETINFO, SYS_GETKSIG, SYS_GETMCONTEXT, SYS_IOPENABLE, SYS_IRQCTL, SYS_KILL,
-            SYS_MEMSET, SYS_PRIVCTL, SYS_PADCONF, SYS_READBIOS, SYS_RUNCTL, SYS_SAFECOPYFROM,
-            SYS_SAFECOPYTO, SYS_SAFEMEMSET, SYS_SCHEDULE, SYS_SDEVIO, SYS_SETALARM,
-            SYS_SETGRANT, SYS_SETMCONTEXT, SYS_SETTIME, SYS_SIGRETURN, SYS_SIGSEND, SYS_SPROF,
-            SYS_STATECTL, SYS_STIME, SYS_SCHEDCTL, SYS_TRACE, SYS_UMAP, SYS_UMAP_REMOTE,
-            SYS_UPDATE, SYS_VDEVIO, SYS_VIRCOPY, SYS_VMCTL, SYS_VTIMER, SYS_VUMAP, SYS_VSAFECOPY,
-            SYS_DEVIO, SYS_ENDKSIG, SYS_PHYSCOPY, SYS_TIMES,
+            KERNEL_CALL, SYS_ABORT, SYS_CLEAR, SYS_DEVIO, SYS_DIAGCTL, SYS_ENDKSIG, SYS_EXEC,
+            SYS_EXIT, SYS_FORK, SYS_GETINFO, SYS_GETKSIG, SYS_GETMCONTEXT, SYS_IOPENABLE,
+            SYS_IRQCTL, SYS_KILL, SYS_MEMSET, SYS_PADCONF, SYS_PHYSCOPY, SYS_PRIVCTL, SYS_READBIOS,
+            SYS_RUNCTL, SYS_SAFECOPYFROM, SYS_SAFECOPYTO, SYS_SAFEMEMSET, SYS_SCHEDCTL,
+            SYS_SCHEDULE, SYS_SDEVIO, SYS_SETALARM, SYS_SETGRANT, SYS_SETMCONTEXT, SYS_SETTIME,
+            SYS_SIGRETURN, SYS_SIGSEND, SYS_SPROF, SYS_STATECTL, SYS_STIME, SYS_TIMES, SYS_TRACE,
+            SYS_UMAP, SYS_UMAP_REMOTE, SYS_UPDATE, SYS_VDEVIO, SYS_VIRCOPY, SYS_VMCTL,
+            SYS_VSAFECOPY, SYS_VTIMER, SYS_VUMAP,
         };
         let pairs: [(Syscall, i32); 46] = [
             (Syscall::Fork, SYS_FORK),
@@ -4345,7 +4644,13 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let msg = Message::default();
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -4379,7 +4684,13 @@ mod tests {
         msg.m_type = Syscall::Privctl as i32;
         msg.m_u.m_m1.m1i1 = 99; // unknown request
         msg.m_u.m_m1.m1i2 = 101; // target endpoint
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -4411,7 +4722,13 @@ mod tests {
         msg.m_type = Syscall::Privctl as i32;
         msg.m_u.m_m1.m1i1 = 2; // SYS_PRIV_DISALLOW
         msg.m_u.m_m1.m1i2 = 101; // target endpoint
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
         // Verify RTS_NO_PRIV was set
         let target = proc_table.get(target_nr).unwrap();
@@ -4446,7 +4763,13 @@ mod tests {
         msg.m_type = Syscall::Privctl as i32;
         msg.m_u.m_m1.m1i1 = 2; // SYS_PRIV_DISALLOW
         msg.m_u.m_m1.m1i2 = 101;
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -4479,8 +4802,14 @@ mod tests {
         msg.m_u.m_m1.m1i1 = 8; // SYS_PRIV_QUERY_MEM
         msg.m_u.m_m1.m1i2 = 101;
         msg.m_u.m_m1.m1p2 = 0x1000; // phys_start
-        msg.m_u.m_m1.m1p3 = 0x100;  // phys_len
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        msg.m_u.m_m1.m1p3 = 0x100; // phys_len
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         // No mem ranges in USER_PRIV_ID → EPERM
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -4513,7 +4842,13 @@ mod tests {
         msg.m_type = Syscall::Privctl as i32;
         msg.m_u.m_m1.m1i1 = 3; // SYS_PRIV_SET_SYS
         msg.m_u.m_m1.m1i2 = 101;
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -4557,30 +4892,67 @@ mod tests {
         msg.m_u.m_m1.m1i1 = 3; // SYS_PRIV_SET_SYS
         msg.m_u.m_m1.m1i2 = 101;
         // arg_ptr = 0 → defaults only, no cross-space copy needed.
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
 
         // The target got a dynamically allocated priv slot.
-        let target_priv = proc_table.get(target_nr).unwrap()
-            .priv_id.expect("SET_SYS must allocate a priv slot");
+        let target_priv = proc_table
+            .get(target_nr)
+            .unwrap()
+            .priv_id
+            .expect("SET_SYS must allocate a priv slot");
         assert_ne!(target_priv, USER_PRIV_ID);
         let mask = priv_table.get(target_priv).unwrap().ipc.s_ipc_to;
         // Bound and not self → granted (system.c:313-317 inverse).
-        assert!(mask.may_send_to(USER_PRIV_ID as u8), "bound caller slot must be granted");
-        assert!(mask.may_send_to(driver as u8), "bound driver slot must be granted");
+        assert!(
+            mask.may_send_to(USER_PRIV_ID as u8),
+            "bound caller slot must be granted"
+        );
+        assert!(
+            mask.may_send_to(driver as u8),
+            "bound driver slot must be granted"
+        );
         // Self and unassociated slots → not granted (C guards).
-        assert!(!mask.may_send_to(target_priv as u8), "self bit must stay clear");
+        assert!(
+            !mask.may_send_to(target_priv as u8),
+            "self bit must stay clear"
+        );
         let unbound = (crate::proc_table::NR_TASKS + 3) as u8; // ProcNr(3) never bound
-        assert!(!mask.may_send_to(unbound),
-            "unbound slot must not be pre-authorized by the ALL_M default");
+        assert!(
+            !mask.may_send_to(unbound),
+            "unbound slot must not be pre-authorized by the ALL_M default"
+        );
         // Reciprocal: the driver's trap mask is ALL → it can reply.
-        assert!(priv_table.get(driver).unwrap().ipc.s_ipc_to.may_send_to(target_priv as u8),
-            "send-capable target must receive the reciprocal bit");
+        assert!(
+            priv_table
+                .get(driver)
+                .unwrap()
+                .ipc
+                .s_ipc_to
+                .may_send_to(target_priv as u8),
+            "send-capable target must receive the reciprocal bit"
+        );
         // Reciprocal: the caller slot has no traps → no reply right.
-        assert!(!priv_table.get(USER_PRIV_ID).unwrap().ipc.s_ipc_to.may_send_to(target_priv as u8),
-            "RECEIVE-only caller slot must not receive the reciprocal bit");
+        assert!(
+            !priv_table
+                .get(USER_PRIV_ID)
+                .unwrap()
+                .ipc
+                .s_ipc_to
+                .may_send_to(target_priv as u8),
+            "RECEIVE-only caller slot must not receive the reciprocal bit"
+        );
         // Non-mask SET_SYS defaults are unchanged by the fill rework.
-        assert_eq!(priv_table.get(target_priv).unwrap().ipc.s_trap_mask, TrapMask::ALL);
+        assert_eq!(
+            priv_table.get(target_priv).unwrap().ipc.s_trap_mask,
+            TrapMask::ALL
+        );
     }
 
     #[test]
@@ -4612,7 +4984,13 @@ mod tests {
         msg.m_type = Syscall::Privctl as i32;
         msg.m_u.m_m1.m1i1 = 5; // SYS_PRIV_ADD_IO
         msg.m_u.m_m1.m1i2 = 101;
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -4645,7 +5023,13 @@ mod tests {
         msg.m_u.m_m1.m1i1 = 9; // SYS_PRIV_UPDATE_SYS
         msg.m_u.m_m1.m1i2 = 101;
         // m1p1 (arg_ptr) = 0 → EINVAL
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -4677,7 +5061,13 @@ mod tests {
         msg.m_type = Syscall::Privctl as i32;
         msg.m_u.m_m1.m1i1 = 11; // SYS_PRIV_CLEAR_IPC_REFS
         msg.m_u.m_m1.m1i2 = 101;
-        let result = dispatch_privctl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_privctl(
+            ProcNr(0),
+            &mut proc_table,
+            &msg,
+            &mut priv_table,
+            &mut crate::clock::ClockState::new(),
+        );
         assert_eq!(result, KcallResult::Ok(0));
     }
 
@@ -4698,8 +5088,8 @@ mod tests {
     #[test]
     fn test_dispatch_getmcontext_rejects_kernel_target() {
         // C: do_mcontext.c:28 — iskerneln(proc_nr) → EPERM.
-        use crate::proc::proc_nr::KERNEL;
         use crate::proc::RtsFlagsBits;
+        use crate::proc::proc_nr::KERNEL;
         let mut proc_table = crate::test_helpers::test_proc_table();
         if let Some(p) = proc_table.get_mut(KERNEL) {
             p.p_endpoint = minix_types::Endpoint(50);
@@ -4750,8 +5140,8 @@ mod tests {
         // context switch). We use a kernel slot and expect the call to
         // pass endpoint validation (no EPERM). The copy then page-faults
         // on the kernel target's unmapped ctx_ptr → VmSuspend.
-        use crate::proc::proc_nr::KERNEL;
         use crate::proc::RtsFlagsBits;
+        use crate::proc::proc_nr::KERNEL;
         let mut proc_table = crate::test_helpers::test_proc_table();
         if let Some(p) = proc_table.get_mut(KERNEL) {
             p.p_endpoint = minix_types::Endpoint(50);
@@ -4793,12 +5183,12 @@ mod tests {
     #[test]
     fn test_syscall_values_match_c() {
         // Verify key values match C's com.h definitions
-        assert_eq!(Syscall::Fork as u16, 0);       // KERNEL_CALL + 0
-        assert_eq!(Syscall::Schedule as u16, 3);    // KERNEL_CALL + 3
-        assert_eq!(Syscall::Memset as u16, 13);     // KERNEL_CALL + 13
-        assert_eq!(Syscall::Vmctl as u16, 43);      // KERNEL_CALL + 43
-        assert_eq!(Syscall::Exit as u16, 53);       // KERNEL_CALL + 53
-        assert_eq!(Syscall::Padconf as u16, 57);    // KERNEL_CALL + 57
+        assert_eq!(Syscall::Fork as u16, 0); // KERNEL_CALL + 0
+        assert_eq!(Syscall::Schedule as u16, 3); // KERNEL_CALL + 3
+        assert_eq!(Syscall::Memset as u16, 13); // KERNEL_CALL + 13
+        assert_eq!(Syscall::Vmctl as u16, 43); // KERNEL_CALL + 43
+        assert_eq!(Syscall::Exit as u16, 53); // KERNEL_CALL + 53
+        assert_eq!(Syscall::Padconf as u16, 57); // KERNEL_CALL + 57
     }
 
     #[test]
@@ -4809,7 +5199,13 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut clock_state = crate::clock::ClockState::new();
-        let result = kernel_call_dispatch(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table, &mut clock_state);
+        let result = kernel_call_dispatch(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut priv_table,
+            &mut clock_state,
+        );
         assert_eq!(result, KcallResult::BadCall);
         // kernel_call_dispatch acquires BKL but does NOT release it —
         // the caller is expected to call kernel_call_finish() which
@@ -4826,7 +5222,13 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut clock_state = crate::clock::ClockState::new();
-        let result = kernel_call_dispatch(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table, &mut clock_state);
+        let result = kernel_call_dispatch(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut priv_table,
+            &mut clock_state,
+        );
         assert_eq!(result, KcallResult::CallDenied);
         // Same as above: release BKL acquired by kernel_call_dispatch.
         crate::smp::bkl_unlock();
@@ -4842,7 +5244,13 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut clock_state = crate::clock::ClockState::new();
-        let result = kernel_call_dispatch(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table, &mut clock_state);
+        let result = kernel_call_dispatch(
+            ProcNr(0),
+            &mut proc_table,
+            &mut msg,
+            &mut priv_table,
+            &mut clock_state,
+        );
         assert_eq!(result, KcallResult::CallDenied);
         // Marker in flight for the caller despite the denial.
         // SAFETY: single-threaded test; BKL still held (released below).
@@ -4932,12 +5340,7 @@ mod tests {
         for &bad_nr in &[0i32, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 100, 255] {
             let mut msg = Message::default();
             msg.m_type = bad_nr;
-            let result = dispatch_ipc_entry(
-                ProcNr(0),
-                &mut proc_table,
-                &mut msg,
-                &mut priv_table,
-            );
+            let result = dispatch_ipc_entry(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table);
             assert_eq!(
                 result,
                 KcallResult::Ok(crate::errno::EBADCALL),
@@ -4963,12 +5366,7 @@ mod tests {
         crate::globals::MINIX_KERNINFO_USER
             .store(crate::globals::KERNINFO_USER_UNSET, Ordering::Relaxed);
 
-        let result = dispatch_ipc_entry(
-            ProcNr(0),
-            &mut proc_table,
-            &mut msg,
-            &mut priv_table,
-        );
+        let result = dispatch_ipc_entry(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(crate::errno::EBADCALL));
 
         // dispatch_ipc_entry transfers BKL ownership out (see the SEND
@@ -4995,12 +5393,7 @@ mod tests {
         const PUBLISHED_PAGE: u64 = 0x0000_7000_2000;
         crate::globals::MINIX_KERNINFO_USER.store(PUBLISHED_PAGE, Ordering::Relaxed);
 
-        let result = dispatch_ipc_entry(
-            ProcNr(0),
-            &mut proc_table,
-            &mut msg,
-            &mut priv_table,
-        );
+        let result = dispatch_ipc_entry(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(crate::errno::OK));
 
         // Restore the unpublished sentinel so later tests see boot state.
@@ -5027,12 +5420,7 @@ mod tests {
         caller_slot.p_endpoint = minix_types::Endpoint(100);
         caller_slot.p_defer.r2 = 200; // dst endpoint
 
-        let result = dispatch_ipc_entry(
-            ProcNr(0),
-            &mut proc_table,
-            &mut msg,
-            &mut priv_table,
-        );
+        let result = dispatch_ipc_entry(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table);
         // Expect ECALLDENIED(210) because caller has no priv_id, so the
         // s_ipc_to whitelist check fails first (before trap-mask check).
         assert_eq!(result, KcallResult::Ok(crate::errno::ECALLDENIED));
@@ -5059,12 +5447,7 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
 
-        let _ = dispatch_ipc_entry(
-            ProcNr(0),
-            &mut proc_table,
-            &mut msg,
-            &mut priv_table,
-        );
+        let _ = dispatch_ipc_entry(ProcNr(0), &mut proc_table, &mut msg, &mut priv_table);
         // BKL should be held now (acquired by dispatch_ipc_entry,
         // not released due to transfer()). Release it to restore state.
         crate::smp::bkl_unlock();
@@ -5079,10 +5462,10 @@ mod tests {
     /// dispatcher that completes the PM stop-delay protocol.
     #[test]
     fn test_dispatch_ipc_receive_ends_sender_sig_delay() {
-        use crate::proc::{MiscFlagsBits, RtsFlagsBits};
         use crate::capability::{IpcMask, TrapMask};
-        use crate::proc_table::nr_to_idx;
         use crate::ipc::caller_q_push;
+        use crate::proc::{MiscFlagsBits, RtsFlagsBits};
+        use crate::proc_table::nr_to_idx;
 
         // dispatch_ipc's chain root asserts the BKL — hold it
         // via RAII (drops unlocked at test end).
@@ -5134,7 +5517,11 @@ mod tests {
         // Enqueue the sender on the receiver's caller queue.
         {
             let procs = proc_table.procs_slice_mut();
-            caller_q_push(procs, nr_to_idx(receiver_nr).unwrap(), nr_to_idx(sender_nr).unwrap());
+            caller_q_push(
+                procs,
+                nr_to_idx(receiver_nr).unwrap(),
+                nr_to_idx(sender_nr).unwrap(),
+            );
         }
 
         // Receiver performs RECEIVE from the sender.
@@ -5156,7 +5543,13 @@ mod tests {
         let sender = proc_table.get(sender_nr).unwrap();
         assert!(!sender.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
         assert!(sender.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
-        assert!(proc_table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(
+            proc_table
+                .get(manager_nr)
+                .unwrap()
+                .p_misc_flags
+                .is_set(MiscFlagsBits::DELIVERMSG)
+        );
     }
 
     // ── dispatch_diagctl STACKTRACE tests (P8-4) ──────────────────────
@@ -5185,9 +5578,12 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let a_priv = priv_table.assign_static(ProcNr(0)).unwrap();
-        priv_table.get_mut(a_priv).unwrap().flags.s_flags.insert(
-            crate::capability::ProcessCapability::SYS_PROC,
-        );
+        priv_table
+            .get_mut(a_priv)
+            .unwrap()
+            .flags
+            .s_flags
+            .insert(crate::capability::ProcessCapability::SYS_PROC);
         // caller-by-nr: the caller IS slot ProcNr(0) — its priv_id
         // must live on the slot (the standalone handle is gone).
         proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(a_priv);
@@ -5239,7 +5635,9 @@ mod tests {
         if let Some(target) = proc_table.get_mut(ProcNr(1)) {
             target.p_endpoint = target_endpt;
             // Clear SLOT_FREE so endpoint_to_nr can find it.
-            target.p_rts_flags.unset(crate::proc::RtsFlagsBits::SLOT_FREE);
+            target
+                .p_rts_flags
+                .unset(crate::proc::RtsFlagsBits::SLOT_FREE);
         }
         let mut msg = Message::default();
         msg.m_type = Syscall::Diagctl as i32;
@@ -5264,15 +5662,18 @@ mod tests {
         let msg = Message::default();
         let mut proc_table = crate::test_helpers::test_proc_table();
 
-        let result = <CurrentArchSyscall as ArchSyscall>::dispatch_padconf(
-            ProcNr(0),
-            &mut proc_table,
-            &msg,
+        let result =
+            <CurrentArchSyscall as ArchSyscall>::dispatch_padconf(ProcNr(0), &mut proc_table, &msg);
+        assert_eq!(
+            result,
+            KcallResult::BadCall,
+            "padconf on a non-arm32 kernel is the C NULL-entry case"
         );
-        assert_eq!(result, KcallResult::BadCall,
-            "padconf on a non-arm32 kernel is the C NULL-entry case");
-        assert_eq!(result.reply_code(), Some(EBADREQUEST),
-            "user-visible reply must be EBADREQUEST (212), matching system.c:123");
+        assert_eq!(
+            result.reply_code(),
+            Some(EBADREQUEST),
+            "user-visible reply must be EBADREQUEST (212), matching system.c:123"
+        );
     }
 
     #[test]
@@ -5293,17 +5694,27 @@ mod tests {
         // Fault-time park: PAGEFAULT set through the scheduler-aware
         // rts_set (the trap arm's transition).
         proc_table.rts_set(nr, RtsFlagsBits::PAGEFAULT);
-        assert!(!proc_table.get(nr).unwrap().is_runnable(),
-            "faulted process must be non-runnable before VM resolves");
+        assert!(
+            !proc_table.get(nr).unwrap().is_runnable(),
+            "faulted process must be non-runnable before VM resolves"
+        );
 
         // Clear → runnable again, fault-address record dropped.
-        assert_eq!(vmctl_clear_page_fault(&mut proc_table, nr), KcallResult::Ok(0));
-        assert!(proc_table.get(nr).unwrap().is_runnable(),
-            "RTS_UNSET must re-enqueue the resolved process (do_vmctl.c:35)");
+        assert_eq!(
+            vmctl_clear_page_fault(&mut proc_table, nr),
+            KcallResult::Ok(0)
+        );
+        assert!(
+            proc_table.get(nr).unwrap().is_runnable(),
+            "RTS_UNSET must re-enqueue the resolved process (do_vmctl.c:35)"
+        );
         assert_eq!(proc_table.get(nr).unwrap().p_fault_addr, None);
 
         // Second clear without a pending fault → EINVAL (C assert parity).
-        assert_eq!(vmctl_clear_page_fault(&mut proc_table, nr), KcallResult::Ok(EINVAL));
+        assert_eq!(
+            vmctl_clear_page_fault(&mut proc_table, nr),
+            KcallResult::Ok(EINVAL)
+        );
 
         // Free slot target → EINVAL as well (old None arm preserved).
         assert_eq!(
