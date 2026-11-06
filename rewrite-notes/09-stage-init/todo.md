@@ -1,12 +1,12 @@
 # 09-stage-init Rust 实现架构级 Review TODO
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：崩溃处理器的提供形式（归编排线 `C-21`）——它挡着两处执行面：`login_tty` 的 dup2/TIOCSCTTY 封装（下表 E-INITSYS ②）与 panic 那支的执行半（下表 ③）。**「另有加密后端的余量」这半句已于 `2026-10-19` 注销**：正文没有任何条目承接它，代码侧也无这条依赖（`os/commands/sbin/init/` 里搜 `arc4random`/`crypto`/`rand_bytes` 为空，C 的 `minix3/servers/init/` 同空），本仓唯一的 `arc4random` 使用面在 `rm -x` 那一族（`os/commands/bin/fileops/src/rm.rs`），与 init 无关。
+> **台账状态摘要**（`2026-11-06` 对账刷新；上一版核实于 `2026-10-08`，快照 `9f752834c`）：`open` 0。上一版记的「崩溃处理器的提供形式（归编排线 `C-21`）」已随 A19 审计注销——两处执行面都在库：`host.rs:277` 的 `set_controlling_tty` 完整折叠 C `setctty` + `login_tty`（`multi_user.rs`/`runcom.rs`/`single_user.rs` 三个消费点各一处），`main.rs:207` 的 `#[panic_handler]` 自带（`format_panic_report` + `SYS_DIAGCTL` + 非零 exit；`cargo check -p minix-init --target x86_64-unknown-none` 过，no_std 形态成立，上一版的「`P1-2` ③ 执行面待认领」随之落地）。正文其余开口项同步复核：`P2-5`/`P1-8` 已标 ✅，`P2-6` 残余的解锁条件全部指向跨阶段接线。**「另有加密后端的余量」这半句已于 `2026-10-19` 注销**：正文没有任何条目承接它，代码侧也无这条依赖（`os/commands/sbin/init/` 里搜 `arc4random`/`crypto`/`rand_bytes` 为空，C 的 `minix3/servers/init/` 同空），本仓唯一的 `arc4random` 使用面在 `rm -x` 那一族（`os/commands/bin/fileops/src/rm.rs`），与 init 无关。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > 来源：2026-09-17 第一轮扫描（code-excellence：查漏补缺先行 + 分层设计审视；对照 Redox init 与 nix WaitStatus）+ 2026-09-18 修复迭代轮。
 > 范围：`os/commands/sbin/init/src/`（18 模块，crate `minix-init`）；对照 ground truth `minix3/sbin/init/init.c`（1902 行）与 `minix3/lib/libc/gen/getttyent.c`。
 > 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`（E-INITSYS）。
-> 状态（2026-09-18 修复迭代轮收口）：**P0×10、P1×7、P2×6 共 23 条闭单（Fix #1~#20）**；开口项 4 条（P1-2/P2-5/P1-8 余件 + P2-6 残余面），全部挂共享基建等待态。已完成条目的完整修复记录以 `archive/todo-V1-archive-2026-09-18.md` 为检索权威，本主文件只留开口项。
+> 状态（`2026-09-18` 修复迭代轮收口）：**P0×10、P1×7、P2×6 共 23 条闭单（`Fix #1~#20`）**；开口项 4 条（`P1-2`/`P2-5`/`P1-8` 余件 + `P2-6` 残余面），全部挂共享基建等待态（后续对账：四项均已闭或转跨阶段，见首行摘要）。已完成条目的完整修复记录以 `archive/todo-V1-archive-2026-09-18.md` 为检索权威，本主文件只留开口项。
 
 ---
 
@@ -51,20 +51,20 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 | log::disaster（fatal handler 安装） | E-INITSYS ①；信号名已经 Signal::name 权威生成（P2-4 ✓） |
 | contracts（request_for/shutdown_argv/SHUTDOWN_PATH）+ SignalState::take_shutdown_request 的驱动侧 drain | E-INITSYS ①（handler 置位 + 主循环边界执行 spawn） |
 | multi_user::setctty 包装 | E-INITSYS ②（setsid ✅；login_tty 的 dup2/TIOCSCTTY 封装 ✅——host.rs 的 set_controlling_tty 完整折叠 C setctty+login_tty） |
-| utmp（session_utmpx/RecordType::Login/clear_session_logs） | ✅ 执行半就位（2026-09-20 卡 J：append_file 真装 open/write/close；时间戳 now_secs 仍 ENOSYS→退化为 0，GETTIMEOFDAY 封装待 C-21 扩面） |
+| utmp（session_utmpx/RecordType::Login/clear_session_logs） | ✅ 执行半就位（`2026-09-20` 卡 J：append_file 真装 open/write/close；时间戳走 `host.rs:434` 的 `now_secs`，`minix_sys::gettimeofday` 已接线，上一版记的「待 C-21 扩面」不再成立） |
 | session_db（FakeDb/DbError/open/is_open） | 会话表重启路径接线 |
 | wait（exited/signal 辅助） | 后续状态扩展 |
 | password（scheme_has_backend） | libcrypt 后端落地 |
 
 附带：`cargo clippy --fix` 会移除仅测试配置使用的导入，后续跑 --fix 必须以 `--tests` 视角复查编译。
 
-### P1-2 ◐ std/no_std 决策（①② 已落地，③ 决策已记录待 edge 认领）
+### `P1-2` ✅ std/no_std 决策（①②③ 全部落地，A19 审计复核）
 
 - ✅ 已落：boot 路径的参数读取改走 `minix_rt::crt0::argv_count/argv_bytes`（E-CMDSYSFACE 方案 A ② 的 env API 已由共享 lane 落地），`std::env` 依赖归零；真机入口路径只准依赖 minix_rt/minix_sys 的约束已写入本条。
 - ✅ **① HashMap→BTreeMap**（2026-09-20，卡 J）：`session_db.rs` 换 `alloc::collections::BTreeMap`，类型名随实现改 `SessionMapDb`。A-1 修订（08 篇）：`alloc` 不带哈希容器；`SessionDb` trait 不暴露遍历（C 的 db 表同样"无遍历接口"，init.c:1021-1096），键序不可观测——换容器不改行为。A-1 的行为承诺（接口与行为不变、去 libdb 依赖）不变。
 - ✅ **② Arc/atomic 换 alloc/core**（2026-09-20，卡 J）：生产路径 `main.rs`/`driver.rs`/`host.rs` 的 `alloc::sync::Arc`，`signal_state.rs`/`shutdown.rs`/`host.rs` 的 `core::sync::atomic`；crate 根 `extern crate alloc;`。测试构建保持 std（`catch_unwind` 等测试面不动）。多用户态共用 `SignalState` 的 `Arc` 语义（handler 与 death 共享，99 篇）不因换源而变。
-- ◐ **③ panic handler 形式——决策已记录，执行面待 edge 认领（C-21）**。裁决：init 采用 minix-rt 的**统一形式**——`minix_rt::diag::format_panic_report`（栈上缓冲、无分配器无系统调用）渲染 + init 特有的收尾（PID 1 不允许自旋挂死全机：发 SYS_DIAGCTL 控制台后 `exit` 非零，内核可见"init 死了"，与 C 的 panic 即死同果）。**执行障碍（为什么不能在本 stage 单方面落地）**：启用 minix-rt 的 `panic-handler` feature 需同时 `default-features = false`（attr 门控 `not(feature = "std")`），而 feature 统一会让 std 测试二进制里同时出现 minix-rt 的 `#[panic_handler]` 与 std 的 `panic_impl`——E0152；改为 init 自定义 `#[panic_handler]` 则要求 minix-rt 去掉 std feature，workspace 统一构建下会把 std 拖进 no_std init（同类冲突）。两条路都要动 workspace 级的 minix-rt 特性声明（os/Cargo.toml 共享文件 + edge2 领地），按 edge4 §1 规则登记 C-21 认领。
-- ☐ 残余：③ 的执行面（workspace 级 minix-rt 特性声明 + `#![cfg_attr(...)] no_std` 翻转 + 全模块 alloc prelude 迁移——容器使用面约 168 处/15 文件已盘点）。
+- ✅ **③ panic handler 形式（A19 审计复核：执行面已在库）**。裁决：init 采用 minix-rt 的**统一形式**——`minix_rt::diag::format_panic_report`（栈上缓冲、无分配器无系统调用）渲染 + init 特有的收尾（PID 1 不允许自旋挂死全机：发 SYS_DIAGCTL 控制台后 `exit` 非零，内核可见"init 死了"，与 C 的 panic 即死同果）。**执行障碍（为什么不能在本 stage 单方面落地）**：启用 minix-rt 的 `panic-handler` feature 需同时 `default-features = false`（attr 门控 `not(feature = "std")`），而 feature 统一会让 std 测试二进制里同时出现 minix-rt 的 `#[panic_handler]` 与 std 的 `panic_impl`——E0152；改为 init 自定义 `#[panic_handler]` 则要求 minix-rt 去掉 std feature，workspace 统一构建下会把 std 拖进 no_std init（同类冲突）。两条路都要动 workspace 级的 minix-rt 特性声明（os/Cargo.toml 共享文件 + edge2 领地），按 edge4 §1 规则登记 C-21 认领。
+- ✅ 残余已清：workspace 级 minix-rt 特性声明（`Cargo.toml` 的双形态注释写明「两形态都不取 `panic-handler`，handler 由 init 自带」）、`no_std` 翻转（`main.rs` 的 `cfg_attr`）与 alloc prelude 迁移都在树；`cargo check -p minix-init --target x86_64-unknown-none` 过。
 
 ### P1-8 ✅ 测试三层终检（2026-09-18 审计轮闭环）
 
