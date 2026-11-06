@@ -5936,4 +5936,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `d858c05f3 feat(boot)`：新增 `dtb_copy`（header preflight → 取图前分配缓冲 → 配对快照页类型授权 → memcpy → 只读副本）；`resv_claims` 改从副本构建；`cross_validate_config_dtb` 只解析副本；新增 `PairError::DtbPages`。
 - 真机：AAVMF `DTB_CFGTABLE=1` 的配置表 DTB 不在 `EfiACPIReclaimMemory` 页，O-11 预检拒绝启动——该腿由正例改为「存在但不可用」负例，补上缺失的负例固件路径。
 - 读数：boot-shim 88、minix-boot 163、kernel 863；三组特性构建 OK；aarch64 默认/负例腿与 x86 腿 PASS。
-- 认领：`I-29 qorder90`，状态 🔄 待合入。
+- 认领：`I-29 qorder90`，状态 ✅：已 ff 合并为 `c11fa5256`，认领已释放。
