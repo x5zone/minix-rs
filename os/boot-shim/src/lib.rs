@@ -103,6 +103,10 @@ pub mod ebs_map;
 // injected firmware calls; host-testable retry/buffer discipline.
 #[cfg(feature = "uefi")]
 pub mod ebs_pair;
+
+// O-11 static-reservation coverage: consumed by the UEFI pairing loop only,
+// and it names the ebs_map types, so it follows the same feature gate.
+#[cfg(feature = "uefi")]
 pub mod resv_claims;
 
 #[cfg(feature = "opensbi")]
