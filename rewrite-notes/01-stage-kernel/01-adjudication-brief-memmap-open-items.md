@@ -135,7 +135,7 @@ pub struct SourceRecord {
 | `UefiDescriptor { index }` | 最终 `GetMemoryMap` 快照的第 `index` 个描述符 |
 | `StartupObject(index)` | 第 `index` 个启动对象（独立 `InputObjectId::StartupObjects` 分区） |
 
-`PhysicalRange` 的末端用 128 位，表示**地址空间最后一页**（`[...f000, 2^64)`）；是否能投影成 `u64` 由 `projectable_end()` 回答，拒绝发生在各投影点，而不是把 `2^64` 悄悄截成 0。
+`SourceRange` 的末端用 128 位，表示**地址空间最后一页**（`[...f000, 2^64)`）；记录层保存数值，只有 `AddressDomain::Physical` 转成 `PhysicalRange` 后才进入物理投影，是否能投影成 `u64` 由 `PhysicalRange::projectable_end()` 回答，拒绝发生在各投影点，而不是把 `2^64` 悄悄截成 0。
 
 **记录身份（第一百一十六轮；第一百二十轮修正确切语义）**：`SourceRecord` 增加 `input_object`（`DtbBootInput` / `UefiMemoryMap` / `StartupObjects`）、`local_source`（输入对象内序号）、`snapshot_id`（**观测实例序号**：每成功取一次 `GetMemoryMap` 自增一次；它与 `MapKey` 不是一回事——`MapKey` 只是固件给 `ExitBootServices` 的版本凭据，两次取图可能返回同一个 key，但仍是两份观测）、`attribute` 与 `virtual_start`（UEFI 描述符原值；DTB 为 0）、`address_domain`（`Physical` / `Virtual` / `UefiMmioPortSpace`；后两者只允许配 `UefiExcluded`，类型 12 用端口域）与 `raw_type`（固件 EFI 类型原值；非 UEFI 输入为 0）。`kind` 是本项目的角色分类，`raw_type` 是固件的类型事实，二者不得混淆。跨输入引用只用 `(input_object, local_source)`，`id` 仅在单个输入对象内稳定。结构合法但被类型政策排除的描述符（`Side`/`Excluded`/`DevicePath`）也保留一条 `kind = UefiExcluded` 的记录，来源事实不因不进入投影而消失。
 
@@ -216,7 +216,7 @@ let record = SourceRecord {
     id: index as u16,
     kind,
     origin: SourceOrigin::UefiDescriptor { index: index as u16 },
-    range: PhysicalRange::new(region.base.0, region.base.0 as u128 + region.len as u128),
+    range: SourceRange::new(region.base.0, region.base.0 as u128 + region.len as u128),
     input_object: InputObjectId::UefiMemoryMap,
     address_domain: AddressDomain::Physical,
     local_source: index as u16,
