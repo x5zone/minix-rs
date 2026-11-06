@@ -6072,3 +6072,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 提交 `cc81020bb`（测试+注释）；本笔（文档）。认领 `qorder131`：合并后释放。
 - 文档门：lint 0、引用 0、锚点 3（2 resolved、1 处既有 multi-def）、承载 PASS；正文 1193 行 / 97821 字符、围栏 42 偶、表格 39 块 0 不一致。
 - 仍开放：O-12k 的按最小描述符尺寸推导缓冲上界；评审方签字。
+
+### 第三百四十三笔（01 阶段 · I-29 第一百二十八轮：O-12i 公式、O-11 措辞与直启路径相交检查）
+
+- 代码：两条 `bootface` 的 `dtb_bounded` 增加 `[dtb, dtb+totalsize)` 与内核映像 `[KERN_PHYS_BASE, KERN_PHYS_BASE+KERN_SIZE)` 的重叠拒绝与 `checked_add` 末端；`riscv64-uboot.ld` 的 DTB staging 注释修正为 0x8c000000（与启动脚本和 `uboot_layout::DTB_STAGE` 一致）。RISC-V 自引导 QEMU 复跑 PASS（B1/B2/B3）；aarch64 直启没有独立 QEMU 腿，仅交叉构建。
+- 文档：O-12i 正式公式补 `M = Pages(KernelInfo.memmap)`、`C = M \ Pages(vm_boot_exclusions)` 与 `PmmSourceExcludedPages = (RamSourcePageDomain \ M) ∪ Pages(vm_boot_exclusions)`；O-11 候选 A 改为「完整范围一次性只读访问 + 按路径自有化」，副本生命周期标题限定为 UEFI 字节副本；新增直启路径输入/输出不相交段（bootface 检查 + U-Boot 固定布局 + UEFI `copy_target_overlaps`）；§7.1 写明设计评审冻结。
+- 回归：RISC-V 自引导腿复跑 PASS；宿主读数不变 341/175/109(+5)/121(test-all)/863/548；其余 QEMU 腿未重跑（运行时行为只在 bootface 边界检查上变化）。
+- 提交 `832560f6a`（代码）；本笔（文档）。认领 `qorder132`：合并后释放。
+- 文档门：lint 0、引用 0、锚点 3（2 resolved、1 处既有 multi-def）、承载 PASS；正文 1205 行 / 99487 字符、围栏 42 偶、表格 39 块 0 不一致。
+- 本项设计评审按 §7.1 冻结；后续只做合同-实现对账与真实缺陷修复。
