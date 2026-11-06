@@ -6042,3 +6042,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 回归：宿主 173/92(+5)/863；五个交叉构建；六个 QEMU 腿全 PASS。
 - 提交 `89cf8b0...`（见 git log）；认领 `qorder126` 已释放。
 - 仍开放：O-11 严格两快照（40 字节 PreflightMap → 副本 → FinalMap → body），以及 `SourceRange` 带标签类型的裁决。
+
+### 第三百四十笔（01 阶段 · I-29 第一百二十五轮：O-11 严格两快照）
+
+- 代码：`dtb_copy` 三阶段——`note(dtb_pa)` 只记录地址；`preflight(descs)` 在预检快照下验证 `[dtb, dtb+40)` 页类型、读 40 字节 header 一次、校验 `totalsize`、分配副本；`authorize_and_copy(descs)` 在最终快照下复核 `Outward([dtb, dtb+totalsize))` 全部页、写入预检 header、只复制 body 一次、不分配；EBS 重试复用副本。`ebs_pair::preflight_dtb` 只在有地址待预检时多取一次图；配对循环自己的取图即最终快照；x86_64 无 DTB 腿零额外调用。辅助入口 `UefiBootShim::prepare_boot` 同步两次快照。
+- 测试：`dtb_copy` 14 条（最终快照类型变化在 body 前拒绝、最终分段变化仍覆盖、header/body 各读一次、预检缺失拒绝、副本复用、最终阶段零分配）＋`ebs_pair` 3 条（预检/最终/重试取图次数、预检缓冲不足不读 header、重试快照 `snapshot_id=2` 与配对段零分配）；测试期分配计数包装在 `lib.rs`。
+- 回归：宿主 341/173/103(+5)/115(test-all)/863/548；五个交叉构建全通过；六条 QEMU 腿全 PASS（x86 bootmarks、aarch64 ACPI、`DTB_CFGTABLE=1` 负例 `DTB preflight failed: DtbPages(NotAcpiReclaim { page: 1206870016 })`、riscv bootface、riscv U-Boot 6/6、riscv 全系统）。
+- 文档：主简报 wire v7 读数补齐（§0/§2.2/§2.4/§4 状态表/§5 O-11 与 O-12k/§6/§7），O-11 判定改为五项验收全部闭合；文风 lint 0、引用对账 0、锚点 3（2 resolved、1 处既有 multi-def）、承载门 PASS；正文 1,159 行 / 90,523 字符、围栏 42 偶、表格 39 块 0 不一致。
+- `run_all` 本轮未复跑（并发会话占用 QEMU）；测试内核自带 `main`、不经生产 shim。
+- 提交 `0839d7c70`（代码+测试）；本笔与主简报同笔文档提交。认领 `I-29 qorder127`：ff 合并后释放。
+- 仍开放：`SourceRange` 带标签类型 vs 现 `PhysicalRange` + 解码闸的裁决；O-12k 的「按最小描述符尺寸推导缓冲上界」与最终范围可达性独立复核。
