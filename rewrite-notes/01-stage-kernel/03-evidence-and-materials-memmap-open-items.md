@@ -2928,6 +2928,23 @@ test-riscv64-boot-full.sh                     → PASS（rc 标记）
 
 宿主 341/169/92(+5)/863/548；五个交叉构建全通过；`run_all` 38/1/0/0（唯一红 `test-rt-birth-aarch64`，基线同签名）；六条非注册腿全 PASS（x86/aarch64 ACPI/`DTB_CFGTABLE=1` 负例/riscv bootface/riscv U-Boot 6/6/riscv 全系统）。
 
+## 八十七、第一百二十一轮：wire v5 现状的全文清理记录
+
+本轮无代码改动，只做正文与代码的对账清理：
+
+| 清理项 | 之前 | 之后 |
+|---|---|---|
+| 第一跳版本号 | §0 三处、§2.4 标题、O-13 索引、§5 ABI 行仍写 wire v4 | 统一 wire v5（历史轮次叙述保留） |
+| O-12g「三条 DTB 腿审计」 | 「投影前调用；引用不再使用、无 ABI 承运」 | 「投影产生后、交棒前；记录已写入 `KernelInfo.memmap_sources`」 |
+| O-12g「UEFI 描述符记录」 | 「未实现，连 Attribute 也未记录」 | 「已实现（第一百二十轮）：全量记录 + `raw_type`/`Attribute`/`VirtualStart`/快照序号」 |
+| O-12g「内核政策消费者」 | 「未实现」 | 「消费边界审计已实现；PMM 政策消费属下游」 |
+| 来源记录容量 | 「256 是」 | 「256 够 UEFI；aarch64 UEFI 需 296（256+40）——缺口未落码，9 页 arena 放得下」 |
+| 启动对象职责 | 只在容量行提「16 槽」 | 新增按跳分层表（第一跳 vs 第二跳 vs arena vs DTB 对象），并声明无 `last_use` |
+| O-11 复制链 | 「已落码」 | 「部分落码」：8 字节预读先于取图，与严格两快照合同不一致，实现/豁免待定 |
+| §6.4 读数 | 339/169/91/863/548 | 341/169/92/863/548 |
+
+门：1,149 行、围栏 42 偶、表格 38 块 0 不一致、承载门通过、lint 0、lost 0。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -3145,3 +3162,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百一十九轮）合并提交 | `c4b46890d` |
+
+### 评审身份（第一百二十一轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十五笔登记 |
+| `CodeEvidenceCommit` | `2bbdb7bf8`（wire v5 代码；本轮为纯文档） |
+| `DocumentRevision` | 第一百二十一轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百二十轮）合并提交 | `2bbdb7bf8` |
