@@ -59,6 +59,7 @@ fn main() -> Status {
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],
+        memmap_sources: &[],
     };
 
     let result = BootPrepareResult {

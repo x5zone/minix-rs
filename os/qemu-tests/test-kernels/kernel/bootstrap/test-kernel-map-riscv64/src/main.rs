@@ -122,6 +122,7 @@ pub extern "C" fn rust_main() -> ! {
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],
+        memmap_sources: &[],
     };
 
     let result = BootPrepareResult {
