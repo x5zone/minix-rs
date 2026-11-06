@@ -6027,3 +6027,10 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 ### 第三百三十七笔补记（I-29 文档对账补正）
 
 - `docs(01)`：§2.4 的布局表仍写 176 B 信封/256 条/32,448/3,264 余量，§7 第 5 项仍写 18,432 B/共用/256 上界——按 wire v6 改为 184 B/296 条/35,328/384 B/21,312 B 并加编译期断言说明。门：1,161 行、围栏 42 偶、表格 39 块 0 不一致、lint 0。认领 `qorder124` 已释放。
+
+### 第三百三十八笔（01 阶段 · I-29 第一百二十三轮：旧读数清理与地址域解码闸）
+
+- 文档：删 O-12g 旧三层状态表；§3 改三条不变量；arena 九页与 startup_objects 身份/最后使用点；§2.4 启动对象完整清单与容量三句联动；§0/§2.1 补 raw_type/UefiExcluded/UefiMmioPortSpace；§6 轮次与路径覆盖说明。
+- 代码：`WireSourceRecord::decode` 非 Physical 域只允许 `UefiExcluded`，测试 `non_physical_domain_is_only_legal_on_excluded_records`。宿主 minix-boot 172、boot-shim uefi 92、kernel 863。QEMU 未重跑（只收窄解码、生产者输出不变）。
+- 认领 `qorder125` 已释放。
+- 仍开放：① 显式投影权威（由启动入口传入，缺权威记录失败关闭）；② O-11 严格两快照（40 字节 PreflightMap → copy → FinalMap → body）；③ `SourceRange` 带标签类型 vs 现 `PhysicalRange` + 解码闸的裁决。
