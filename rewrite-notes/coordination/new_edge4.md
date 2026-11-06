@@ -5968,3 +5968,9 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 四条腿写启动对象记录：三条 DTB 腿 `.bss`（内核映像 + 每个模块）；UEFI 腿 EBS 后（内核/模块/根页/bump/arena）；U-Boot 腿跨第一跳并在接收端落 `STARTUP_RECORD_STORE`。`KernelInfo.startup_objects` 与 `memmap_sources` 并列，不参与覆盖审计。
 - 读数：minix-boot 169（+4）、boot-shim 91、kernel 863；六组交叉构建 OK；x86 UEFI、aarch64 ACPI、aarch64 强制 DT 负例、riscv bootface、riscv U-Boot（6/6）五条 QEMU 腿 PASS。
 - 认领：`I-29 qorder95`，状态 🔄 待合入。
+
+### 第三百三十一笔（01 阶段 · I-29 A3 复审修复：超容量失败关闭）
+
+- `uefi_helpers::push_startup` 超容量由静默丢弃改为 `assert!` 停机；三条 DTB 腿（`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`）在写 `.bss` 静态数组前断言 `1 + modules.len() <= WIRE_STARTUP_CAP`，防止模块数增长时越界写。
+- 读数不变：minix-boot 169、boot-shim 91、kernel 863；五条 QEMU 腿复跑 PASS。
+- 认领：`I-29 qorder95`，状态 🔄 待合入。

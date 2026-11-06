@@ -247,7 +247,7 @@ start u64 | end_lo u64 | end_hi u64 | attribute u64 | virtual_start u64
 
 **版本**：`BOOT_HANDOFF_V1_VERSION = 4`（v3 增加身份、属性与虚拟地址，v4 增加启动对象分区），接收端按**精确相等**比较；v1–v3 的发送方会被 `UnsupportedVersion` 拒收，不会按新偏移读旧镜像。
 
-**两类记录分槽**：内存图来源记录回答「这条投影从哪来」，启动对象记录回答「谁占了什么」。启动对象记录用独立分区（16 槽）与独立 `SourceKind::StartupObject` / `SourceOrigin::StartupObject` / `InputObjectId::StartupObjects`，不占内存图分区的 256 槽；`EBS` 重试清空分类快照时**不清**该分区（`reset_map_partitions_keeps_the_startup_partition`），因为它描述的是映像布局而非某次 MapKey 的分类结果。
+**两类记录分槽**：内存图来源记录回答「这条投影从哪来」，启动对象记录回答「谁占了什么」。启动对象记录用独立分区（16 槽）与独立 `SourceKind::StartupObject` / `SourceOrigin::StartupObject` / `InputObjectId::StartupObjects`，不占内存图分区的 256 槽；`EBS` 重试清空分类快照时**不清**该分区（`reset_map_partitions_keeps_the_startup_partition`），因为它描述的是映像布局而非某次 MapKey 的分类结果。四条腿的生产者在写入前断言容量（内核映像 + 模块数 > 16 即停机），序列化器再按 `WIRE_STARTUP_CAP` 拒绝一次——超限不截断。
 
 ### 2.5 内核侧：落地垫、承载字段、消费者边界
 

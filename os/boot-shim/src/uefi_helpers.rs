@@ -1073,9 +1073,15 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     let mut startup = [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
     let mut startup_n = 0usize;
     let mut push_startup = |start: u64, len: u64| {
-        if len == 0 || startup_n >= startup.len() {
+        if len == 0 {
             return;
         }
+        // Over capacity must fail closed: silently dropping the last records
+        // would hand the kernel an incomplete startup-object list.
+        assert!(
+            startup_n < startup.len(),
+            "boot-shim: startup-object partition over capacity"
+        );
         startup[startup_n] = minix_boot::startup_record(startup_n as u16, start, start + len);
         startup_n += 1;
     };

@@ -3019,3 +3019,5 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 **读数**：`cargo test -p minix-boot --lib` **169 passed**（+4）；`boot-shim --lib` **91 passed**；`minix-kernel --features mock` **863 passed / 8 ignored**；交叉构建 `kernel-image` aarch64/riscv64/riscv64-uboot 与 `boot-shim` x86_64-uefi/aarch64-uefi/riscv-uboot 全部 OK。
 
 **QEMU**：`test-shim-bootmarks-x86` PASS；`test-shim-bootmarks-aarch64`（ACPI）PASS；`DTB_CFGTABLE=1`（DT 负例）PASS；`test-kernel-image-riscv64-bootface` PASS；`test-riscv64-uboot-shim` PASS（6/6 markers）。
+
+**复审修复（同一轮）**：`uefi_helpers` 的 `push_startup` 在超容量时 `assert!` 停机（静默返回会丢掉最后几条，当前恰好是 arena）；三条 DTB 腿在写 `.bss` 静态数组前断言 `1 + modules.len() <= WIRE_STARTUP_CAP`，模块数增长不会越界。UEFI 腿当前记录数为 16（内核 + 12 模块 + 根页 + bump + arena），正好等于 `WIRE_STARTUP_CAP`。

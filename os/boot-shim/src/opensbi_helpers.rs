@@ -355,6 +355,12 @@ impl BootShim for RiscvUbootBootShim {
         static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
             [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
         let startup_objects = unsafe {
+            // Over capacity must fail closed: the static array is the whole
+            // partition, so an unchecked write would run past it.
+            assert!(
+                1 + kernel_info.boot_modules.len() <= minix_boot::WIRE_STARTUP_CAP,
+                "boot-shim: startup-object partition over capacity"
+            );
             let slot = core::ptr::addr_of_mut!(STARTUP_OBJECTS) as *mut minix_boot::SourceRecord;
             let mut n = 0usize;
             slot.add(n).write(minix_boot::startup_record(

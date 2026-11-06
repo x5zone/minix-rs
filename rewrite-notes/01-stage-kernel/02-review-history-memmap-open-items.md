@@ -18,6 +18,7 @@
 - 四条腿写入启动对象记录：三条 DTB 腿在 `.bss` 填内核映像与每个模块；UEFI 腿在 EBS 后写内核/模块/根页/bump/arena；U-Boot 腿经 `write_startup` 跨第一跳，接收端 `decode_startup_objects` 落 `STARTUP_RECORD_STORE`。
 - `KernelInfo.startup_objects` 与 `memmap_sources` 并列但不参与覆盖审计；`reset_map_partitions` 不清启动对象分区（EBS 重试保留映像事实）。
 - 读数：minix-boot 169（+4：`round_trip_startup_objects`、`startup_partition_accepts_exactly_its_capacity`、`rejects_startup_over_capacity`、`reset_map_partitions_keeps_the_startup_partition`）、boot-shim 91、kernel 863；五条 QEMU 腿 PASS。
+- 复审修复：UEFI 生产者对超容量静默丢弃、三条 DTB 腿对静态数组无越界检查——两处都改为写入前断言停机（失败关闭，不截断）。
 
 **第一百一十六轮（A2：记录身份 + Attribute/VirtualStart）**
 

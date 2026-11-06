@@ -358,6 +358,12 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
         [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
     let startup_objects = unsafe {
+        // Over capacity must fail closed: the static array is the whole
+        // partition, so an unchecked write would run past it.
+        assert!(
+            1 + modules.len() <= minix_boot::WIRE_STARTUP_CAP,
+            "bootface: startup-object partition over capacity"
+        );
         let slot = core::ptr::addr_of_mut!(STARTUP_OBJECTS) as *mut minix_boot::SourceRecord;
         let mut n = 0usize;
         slot.add(n).write(minix_boot::startup_record(
