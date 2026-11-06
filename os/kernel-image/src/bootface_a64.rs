@@ -314,6 +314,10 @@ pub extern "C" fn bootface_a64() -> ! {
     );
     // Same handover as the riscv half: the collector's records back the
     // projected map, and the consumer boundary re-audits the pairing.
+    assert!(
+        !sources.is_empty(),
+        "bootface: DTB legs must carry source records, not an empty partition"
+    );
     kernel_info.memmap_sources = sources;
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)

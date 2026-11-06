@@ -354,6 +354,10 @@ impl BootShim for RiscvUbootBootShim {
         // Records cross the first hop: uboot_main serializes this field into
         // the source partition, and the receiver's KernelInfo::validate
         // re-audits the pairing on the other side.
+        assert!(
+            !sources.is_empty(),
+            "boot-shim: the DTB leg must carry source records, not an empty partition"
+        );
         kernel_info.memmap_sources = sources;
 
         // No ExitBootServices analogue on OpenSBI — U-Boot already handed

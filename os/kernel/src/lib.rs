@@ -580,7 +580,7 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
         platform_sources: unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) },
         param_buf: unsafe { core::slice::from_raw_parts(param_ptr, param_len) },
     };
-    kinfo.validate();
+    kinfo.validate_requiring_sources();
     kinfo.check_boot_postconditions();
     boot_alloc::resume_boot_pt_alloc(scalars.bump_base, scalars.bump_next, scalars.bump_end);
     resume_after_v1_decode(&kinfo, scalars.root_page)

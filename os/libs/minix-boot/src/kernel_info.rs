@@ -193,6 +193,22 @@ impl KernelInfo {
     /// This is a fail-fast contract: boot-shim bugs that produce invalid
     /// `KernelInfo` are unrecoverable.
     pub fn validate(&self) {
+        self.validate_impl(false);
+    }
+
+    /// Production handoff gate: exactly [`Self::validate`], plus the
+    /// requirement that the boot leg actually carried provenance records.
+    ///
+    /// Every production leg writes one record per projected input unit, so an
+    /// empty partition means a producer regression. Hand-built test kernels
+    /// (`os/qemu-tests` fixtures) construct `KernelInfo` directly and use
+    /// [`Self::validate`]; the strict gate is for surfaces that know the wire
+    /// contract was in force.
+    pub fn validate_requiring_sources(&self) {
+        self.validate_impl(true);
+    }
+
+    fn validate_impl(&self, require_sources: bool) {
         // 1. bootstrap_len must be 0 (Rust port has no unpaged section).
         //    C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unparsed_start
         //    Rust: always 0 (see bootstrap_start field doc).
@@ -246,6 +262,12 @@ impl KernelInfo {
         //    VM handoff's `LiveBootstrap ∩ VM-free = ∅` re-check): nothing
         //    between the producer and this point can strip a span of its
         //    provenance unnoticed.
+        if require_sources {
+            assert!(
+                !self.memmap_sources.is_empty(),
+                "KernelInfo: production handoff carries no memory-map source records"
+            );
+        }
         if !self.memmap_sources.is_empty() {
             match crate::memmap_source::audit_source_coverage(
                 self.memmap,
@@ -541,6 +563,21 @@ mod tests {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS[..1];
         info.validate();
+    }
+
+    /// The strict gate turns "no records" into a boot refusal: an empty
+    /// partition would otherwise skip the coverage audit silently.
+    #[test]
+    #[should_panic(expected = "carries no memory-map source records")]
+    fn test_validate_requiring_sources_rejects_an_empty_partition() {
+        make_valid_info().validate_requiring_sources();
+    }
+
+    #[test]
+    fn test_validate_requiring_sources_accepts_covering_records() {
+        let mut info = make_valid_info();
+        info.memmap_sources = &COVERING_RECORDS;
+        info.validate_requiring_sources();
     }
 
     #[test]

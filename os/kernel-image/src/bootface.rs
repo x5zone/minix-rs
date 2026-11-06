@@ -338,6 +338,10 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     // The records the collector just produced back the map it produced; the
     // consumer-boundary audit inside `KernelInfo::validate` re-checks the
     // pairing, so the handover is not a promise but a verified fact.
+    assert!(
+        !sources.is_empty(),
+        "bootface: DTB legs must carry source records, not an empty partition"
+    );
     kernel_info.memmap_sources = sources;
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)
