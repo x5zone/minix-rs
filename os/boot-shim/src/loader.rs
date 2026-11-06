@@ -21,8 +21,8 @@
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use minix_types::{PhysBytes, VirBytes};
 use minix_boot::{BootModule, NR_BOOT_MODULES};
+use minix_types::{PhysBytes, VirBytes};
 
 /// Path to the kernel ELF (same convention for UEFI ESP and U-Boot FAT).
 ///
@@ -241,9 +241,7 @@ pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr
 /// segments overlap in physical memory. Without this, a buggy or
 /// maliciously crafted ELF with overlapping LMA would silently have
 /// later segments overwrite earlier ones, with no error to the caller.
-pub unsafe fn load_segments_into_phys_memory(
-    elf_data: &[u8],
-) -> Result<(), minix_elf::ElfError> {
+pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), minix_elf::ElfError> {
     let iter = minix_elf::segment_iter(elf_data)?;
     let segments: Vec<_> = iter.collect();
     if let Some(_) = first_overlapping_pair(&segments) {
@@ -578,7 +576,10 @@ mod tests {
 
         // Craft a minimal ELF with one PT_LOAD at paddr=buf_base.
         let mut elf = vec![0u8; 0x1000];
-        elf[0] = 0x7f; elf[1] = b'E'; elf[2] = b'L'; elf[3] = b'F';
+        elf[0] = 0x7f;
+        elf[1] = b'E';
+        elf[2] = b'L';
+        elf[3] = b'F';
         elf[4] = ELFCLASS64;
         elf[5] = ELFDATA2LSB;
         elf[6] = 1;
@@ -639,7 +640,11 @@ mod tests {
         }
         // (b) BSS region is all zero — this is the contract fix #3 asserts.
         for i in filesz as usize..memsz as usize {
-            assert_eq!(buf[i], 0x00, "BSS byte at offset {i} must be zero, was {}", buf[i]);
+            assert_eq!(
+                buf[i], 0x00,
+                "BSS byte at offset {i} must be zero, was {}",
+                buf[i]
+            );
         }
         // (c) bytes past memsz are untouched.
         assert_eq!(buf[memsz as usize], 0xCC, "buf tail must be untouched");

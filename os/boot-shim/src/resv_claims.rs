@@ -247,24 +247,14 @@ static mut DTB_RAW: Option<(u64, u64)> = None;
 /// Any parse failure leaves the claim list empty: the boot is halted later by
 /// `cross_validate_config_dtb`, so this function must not invent a second
 /// failure path for the same input.
-pub fn capture(dtb_pa: u64) {
-    // SAFETY: single-threaded boot; capture runs once from
-    // `find_platform_sources` before any pairing attempt, and the reader runs
-    // on the same thread inside the pairing loop.
+pub fn capture(bytes: &'static [u8], source: (u64, u64)) {
+    // SAFETY: single-threaded boot; capture runs once inside the pairing loop
+    // after the owned copy was authorized, and the reader runs on the same
+    // thread immediately afterwards.
     unsafe {
         CLAIMS_N = 0;
-        DTB_RAW = None;
-        if !minix_boot::dtb_blob_aligned(dtb_pa) {
-            return;
-        }
-        let head = core::slice::from_raw_parts(dtb_pa as *const u8, 8);
-        let total_be = u32::from_be_bytes(head[4..8].try_into().expect("DTB totalsize"));
-        if !minix_boot::dtb_len_ok(total_be) || dtb_pa.checked_add(total_be as u64).is_none() {
-            return;
-        }
-        let total = total_be as usize;
-        let bytes = core::slice::from_raw_parts(dtb_pa as *const u8, total);
-        if minix_boot::fdt_layout::validate(dtb_pa, bytes).is_err() {
+        DTB_RAW = Some(source);
+        if minix_boot::fdt_layout::validate(0, bytes).is_err() {
             return;
         }
         let Ok(fdt) = fdt::Fdt::new(bytes) else {
@@ -289,7 +279,6 @@ pub fn capture(dtb_pa: u64) {
             base.add(i).write(*claim);
         }
         CLAIMS_N = count;
-        DTB_RAW = Some((dtb_pa, dtb_pa + total as u64));
     }
 }
 

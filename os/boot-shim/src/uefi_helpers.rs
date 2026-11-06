@@ -164,7 +164,8 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
     // `cross_validate_config_dtb` owns the halt for that case.
     #[cfg(target_arch = "aarch64")]
     if let Some(source) = leaked.iter().find(|s| s.kind() == minix_boot::DTB) {
-        crate::resv_claims::capture(source.phys_addr().0);
+        // O-11 preflight: header read + owned buffer, before any map read.
+        crate::dtb_copy::prepare(source.phys_addr().0);
     }
     leaked
 }
@@ -270,6 +271,11 @@ impl BootShim for UefiBootShim {
         // §6.0-A2). Fail fast while the boot-shim can still print.
         assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
         assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
+        // O-11: authorize the DTB pages against this snapshot, then copy the
+        // body into the buffer reserved before the snapshot (a memcpy cannot
+        // perturb the map KernelInfo is built from).
+        let _ = crate::dtb_copy::authorize_and_copy(classified_descriptors())
+            .unwrap_or_else(|e| panic!("boot-shim: configuration-table DTB pages: {e:?}"));
         cross_validate_config_dtb(platform_sources, memmap);
         // ── aarch64 UEFI chain DTB descriptor source (blob leg) ──
         // When ESP /dumpdtb.dtb exists: parse /memory through `DtbMemoryMap` to
@@ -454,6 +460,16 @@ static mut UEFI_SIDE: [MemoryRegion; ebs_map::SIDE_CAP] = [MemoryRegion {
     len: 0,
 }; ebs_map::SIDE_CAP];
 static mut MAP_STORAGE: ebs_map::MapStorage = ebs_map::MapStorage::new();
+
+/// Descriptors of the snapshot `build_memmaps` parsed. Read-only afterwards.
+fn classified_descriptors() -> &'static [ebs_map::DescriptorRef] {
+    // SAFETY: single-threaded boot; `build_memmaps` filled the storage and
+    // nothing mutates it afterwards.
+    unsafe {
+        let storage = core::ptr::addr_of!(MAP_STORAGE) as *const ebs_map::MapStorage;
+        (*storage).descriptors()
+    }
+}
 
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mmap = boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get UEFI memory map");
@@ -896,28 +912,13 @@ fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[Mem
         crate::raw_serial("boot-shim: platform DTB absent — UEFI map is the only source\r\n");
         return;
     };
+    let _ = dtb_pa;
+    let owned = crate::dtb_copy::owned().unwrap_or_else(|| {
+        panic!("boot-shim: configuration-table DTB present but no owned copy — halting")
+    });
+    let bytes = owned.bytes;
     assert!(
-        minix_boot::dtb_blob_aligned(dtb_pa),
-        "boot-shim: configuration-table DTB is not 8-byte aligned — halting"
-    );
-    // SAFETY: the configuration table entry points at a firmware-provided
-    // blob that stays readable after ExitBootServices; the first 8 bytes
-    // give the big-endian totalsize (same gate order as the OpenSBI leg).
-    let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
-    let total_be = u32::from_be_bytes(head[4..8].try_into().expect("DTB header totalsize"));
-    assert!(
-        minix_boot::dtb_len_ok(total_be),
-        "boot-shim: configuration-table DTB totalsize outside the accepted range — halting"
-    );
-    let total = total_be as usize;
-    assert!(
-        dtb_pa.checked_add(total as u64).is_some(),
-        "boot-shim: configuration-table DTB range overflows the address space — halting"
-    );
-    // SAFETY: the size was just bounded; the blob belongs to firmware RAM.
-    let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
-    assert!(
-        minix_boot::fdt_layout::validate(dtb_pa, bytes).is_ok(),
+        minix_boot::fdt_layout::validate(0, bytes).is_ok(),
         "boot-shim: configuration-table DTB container invalid — halting"
     );
     let fdt = fdt::Fdt::new(bytes).unwrap_or_else(|e| {

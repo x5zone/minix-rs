@@ -167,8 +167,12 @@ if [ "${D1_DUMPDTB:-0}" = "1" ] \
 fi
 
 MARK_DTB="boot-shim: platform DTB cross-validated against the UEFI map"
+MARK_DTB_REFUSED="boot-shim: EBS pairing loop failed: DtbPages(NotAcpiReclaim"
 if [ "${DTB_CFGTABLE:-0}" = "1" ]; then
-    MARK4="$MARK_DTB"
+    # O-11: AAVMF 的强制 DT 模式把配置表 DTB 放在非 EfiACPIReclaimMemory 页，
+    # 合同拒绝启动——这条腿断言「存在但不可用」的负例，不再是正例。
+    MARK3="$MARK_DTB_REFUSED"
+    MARK4="$MARK_DTB_REFUSED"
 else
     MARK4="$MARK3"
 fi

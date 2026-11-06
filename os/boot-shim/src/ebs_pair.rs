@@ -85,6 +85,9 @@ pub enum PairError {
     ExitStatus(usize),
     /// Two EBS attempts were both rejected with `EFI_INVALID_PARAMETER`.
     RetryExhausted,
+    /// The configuration-table DTB pages are not `EfiACPIReclaimMemory`, or a
+    /// page carries a conflicting type (brief O-11).
+    DtbPages(crate::dtb_copy::DtbPageError),
     /// The DTB's static reservations are not covered by EFI descriptors of
     /// the type their semantics require (brief O-11). The map paired with the
     /// key is real but contradicts the platform description, so the boot
@@ -161,6 +164,13 @@ pub unsafe fn pair_and_classify(
         // captured from the configuration-table DTB before this loop; checking
         // them before `ExitBootServices` keeps the failure while firmware
         // services can still print.
+        // O-11: authorize the DTB pages against this snapshot, copy the body
+        // once, then build the reservation claims from the copy.
+        if let Some(owned) = crate::dtb_copy::authorize_and_copy(storage.descriptors())
+            .map_err(PairError::DtbPages)?
+        {
+            crate::resv_claims::capture(owned.bytes, owned.source);
+        }
         crate::resv_claims::check_current(storage.descriptors())
             .map_err(PairError::ReservationCoverage)?;
 

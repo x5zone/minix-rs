@@ -27,7 +27,7 @@ extern crate std;
 static TEST_ALLOCATOR: std::alloc::System = std::alloc::System;
 
 // Re-export the trait and result type from minix-boot.
-pub use minix_boot::{BootShim, BootPrepareResult};
+pub use minix_boot::{BootPrepareResult, BootShim};
 
 // Re-export the ELF parser from the shared minix-elf crate.
 // Both boot-shim and kernel need ELF parsing, so it lives in os/libs/minix-elf.
@@ -102,6 +102,8 @@ pub mod ebs_map;
 // Scheme-B pairing loop (GetMemoryMap -> classify -> ExitBootServices) with
 // injected firmware calls; host-testable retry/buffer discipline.
 #[cfg(feature = "uefi")]
+pub mod dtb_copy;
+#[cfg(feature = "uefi")]
 pub mod ebs_pair;
 
 // O-11 static-reservation coverage: consumed by the UEFI pairing loop only,
@@ -120,7 +122,7 @@ pub mod opensbi_helpers;
 // determines which impl is compiled (no forwarding fn is provided).
 
 #[cfg(feature = "uefi")]
-pub use uefi_helpers::{find_platform_sources, UefiBootShim};
+pub use uefi_helpers::{UefiBootShim, find_platform_sources};
 
 #[cfg(all(feature = "opensbi", not(feature = "uefi")))]
 pub use opensbi_helpers::RiscvUbootBootShim;
@@ -173,7 +175,11 @@ pub fn raw_serial(text: &str) {
 
 /// All other targets: no verified bare-metal serial channel; degrade to an
 /// empty implementation.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 pub fn raw_serial(_text: &str) {}
 
 /// Raw-write the serial port byte by byte (bounded wait on the transmit side
@@ -254,5 +260,9 @@ fn emit_byte(b: u8) {
 }
 
 /// Other targets: empty implementation (same tune as [`raw_serial`]).
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 fn emit_byte(_b: u8) {}
