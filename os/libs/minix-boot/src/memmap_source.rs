@@ -173,7 +173,9 @@ static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
 /// blob that repeats the same tuple more often than the projection caps allow
 /// can exceed 40; that case is refused (`TooManySourceRecords`), never
 /// truncated.
-const DTB_SOURCE_MAX: usize = DTB_MEMMAP_MAX + DTB_MEMMAP_MAX + DTB_MRB_MAX + DTB_MEMMAP_MAX;
+pub const DTB_SOURCE_CAP: usize =
+    DTB_MEMMAP_MAX + DTB_MEMMAP_MAX + DTB_MRB_MAX + DTB_MEMMAP_MAX;
+const DTB_SOURCE_MAX: usize = DTB_SOURCE_CAP;
 
 /// Which declaration a range came from. Records are facts; every policy
 /// projection (PMM, mapping denial, access denial) decides on its own how to
@@ -260,19 +262,57 @@ pub enum SourceAuditError {
     ReservedSpanWithoutSource { start: u64, end_exclusive: u128 },
 }
 
+/// A record with every field zeroed, for fixed-size static arrays.
+pub const EMPTY_SOURCE_RECORD: SourceRecord = SourceRecord {
+    id: 0,
+    kind: SourceKind::Memory,
+    origin: SourceOrigin::MrbEntry(0),
+    range: PhysicalRange::new(0, 0),
+    input_object: InputObjectId::DtbBootInput,
+    local_source: 0,
+    snapshot_id: 0,
+    attribute: 0,
+    virtual_start: 0,
+    address_domain: AddressDomain::Physical,
+    raw_type: 0,
+};
+
 /// Check that both projections are fully covered by source records of the
 /// matching kind. This is the invariant a boot path can act on: it refuses to
 /// boot if a projected span has no source identity behind it.
+///
+/// No input filter: callers that hold records from a single input (every
+/// producer leg) want exactly this. Consumers that hold records from several
+/// inputs at once must use [`audit_source_coverage_for`].
 pub fn audit_source_coverage(
     free: &[MemoryRegion],
     reserved: &[MemoryRegion],
     sources: &[SourceRecord],
 ) -> Result<(), SourceAuditError> {
+    audit_source_coverage_for(free, reserved, sources, None)
+}
+
+/// Coverage audit restricted to records from one input object.
+///
+/// On an aarch64 UEFI boot the record list holds both the final memory-map
+/// descriptors and the configuration-table DTB's declarations. Only the
+/// memory-map records are authoritative for the UEFI projections: a DTB
+/// `/memory` record must not stand in for a descriptor the firmware map did
+/// not report. `None` keeps the unfiltered behaviour.
+pub fn audit_source_coverage_for(
+    free: &[MemoryRegion],
+    reserved: &[MemoryRegion],
+    sources: &[SourceRecord],
+    authority: Option<InputObjectId>,
+) -> Result<(), SourceAuditError> {
+    let admitted = |r: &SourceRecord, keep: bool| {
+        keep && authority.is_none_or(|a| r.input_object == a)
+    };
     for span in free {
         let start = span.base.0;
         let end = start as u128 + span.len as u128;
         if !records_cover(start as u128, end, sources, |r| {
-            r.kind == SourceKind::Memory
+            admitted(r, r.kind == SourceKind::Memory)
         }) {
             return Err(SourceAuditError::FreeSpanWithoutMemorySource {
                 start,
@@ -284,14 +324,18 @@ pub fn audit_source_coverage(
         let start = span.base.0;
         let end = start as u128 + span.len as u128;
         let is_reservation_record = |r: &SourceRecord| match r.kind {
-            SourceKind::Memory | SourceKind::UefiExcluded | SourceKind::StartupObject => false,
-            SourceKind::MrbEntry | SourceKind::ReservedNoMap => false,
-            SourceKind::StartupObject => false,
+            SourceKind::Memory
+            | SourceKind::UefiExcluded
+            | SourceKind::StartupObject
+            | SourceKind::MrbEntry
+            | SourceKind::ReservedNoMap => false,
             SourceKind::FirmwarePrefix
             | SourceKind::ReservedOrdinary
             | SourceKind::ReservedReusable => true,
         };
-        if !records_cover(start as u128, end, sources, is_reservation_record) {
+        if !records_cover(start as u128, end, sources, |r| {
+            admitted(r, is_reservation_record(r))
+        }) {
             return Err(SourceAuditError::ReservedSpanWithoutSource {
                 start,
                 end_exclusive: end,
@@ -407,6 +451,11 @@ pub struct SourceRecord {
 pub enum AddressDomain {
     Physical,
     Virtual,
+    /// `EFI_MEMORY_DESCRIPTOR.Type == 12` (`EfiMemoryMappedIOPortSpace`):
+    /// the descriptor's start/count are an I/O-port space address, not a
+    /// physical address. Records in this domain are provenance only; they
+    /// never enter the PMM physical page sets.
+    UefiMmioPortSpace,
 }
 
 impl AddressDomain {
@@ -414,6 +463,7 @@ impl AddressDomain {
         match self {
             Self::Physical => 0,
             Self::Virtual => 1,
+            Self::UefiMmioPortSpace => 2,
         }
     }
 
@@ -421,6 +471,7 @@ impl AddressDomain {
         match tag {
             0 => Some(Self::Physical),
             1 => Some(Self::Virtual),
+            2 => Some(Self::UefiMmioPortSpace),
             _ => None,
         }
     }
@@ -3244,5 +3295,76 @@ mod tests {
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::UnsupportedReservedDeclaration)
         ));
+    }
+}
+
+#[cfg(test)]
+mod authority_filter_tests {
+    use super::*;
+
+    fn rec(input: InputObjectId, kind: SourceKind, start: u64, end: u128) -> SourceRecord {
+        SourceRecord {
+            id: 0,
+            kind,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(start, end),
+            input_object: input,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
+            address_domain: AddressDomain::Physical,
+            raw_type: 0,
+        }
+    }
+
+    /// A DTB `/memory` record must not stand in for a UEFI descriptor the
+    /// firmware map did not report.
+    #[test]
+    fn uefi_projection_cannot_be_covered_by_a_dtb_memory_record() {
+        let free = [MemoryRegion { base: minix_types::PhysBytes(0x10_0000), len: 0x1000 }];
+        let sources = [rec(InputObjectId::DtbBootInput, SourceKind::Memory, 0x10_0000, 0x10_1000)];
+        assert!(audit_source_coverage(&free, &[], &sources).is_ok());
+        assert!(audit_source_coverage_for(
+            &free,
+            &[],
+            &sources,
+            Some(InputObjectId::UefiMemoryMap)
+        )
+        .is_err());
+        let uefi = [rec(InputObjectId::UefiMemoryMap, SourceKind::Memory, 0x10_0000, 0x10_1000)];
+        assert!(audit_source_coverage_for(
+            &free,
+            &[],
+            &uefi,
+            Some(InputObjectId::UefiMemoryMap)
+        )
+        .is_ok());
+    }
+
+    /// The reservation side is filtered the same way.
+    #[test]
+    fn reserved_projection_is_also_authority_filtered() {
+        let reserved = [MemoryRegion { base: minix_types::PhysBytes(0x20_0000), len: 0x1000 }];
+        let dtb = [rec(
+            InputObjectId::DtbBootInput,
+            SourceKind::ReservedOrdinary,
+            0x20_0000,
+            0x20_1000,
+        )];
+        assert!(audit_source_coverage_for(
+            &[],
+            &reserved,
+            &dtb,
+            Some(InputObjectId::UefiMemoryMap)
+        )
+        .is_err());
+        assert!(audit_source_coverage_for(
+            &[],
+            &reserved,
+            &dtb,
+            Some(InputObjectId::DtbBootInput)
+        )
+        .is_ok());
     }
 }

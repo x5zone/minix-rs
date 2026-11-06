@@ -12,6 +12,16 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百二十二轮（身份/地址域收口；296 条 ABI；配置表 DTB 记录交棒）**
+
+- 身份：唯一定位三元组固定为 `(input_object, snapshot_id, local_source)`；`input_object` 是类别、`snapshot_id` 是观测实例（与 `MapKey` 无关）、`id` 只是记录内序号；`origin` 的安装载荷是位置细节，跨输入不认它。§2.1/§2.3/O-12g 的旧「MapKey = 快照身份」表述全部改正。
+- 地址域：新增 `AddressDomain::UefiMmioPortSpace`（tag 2）；`EFI_MEMORY_DESCRIPTOR.Type == 12` 的记录保留原始描述符事实但声明非物理域，绝不进入 PMM 物理页集合；`PhysicalRange` 在非物理域仅是原始范围载体（文档写开）。
+- 容量与 ABI：`WIRE_SOURCES_CAP` 256→**296**（256 UEFI + 40 DTB），`WIRE_SOURCES_END = 35328`、启动对象 35328–36480、9 页 arena 余 384 B；`BOOT_HANDOFF_V1_VERSION` 5→**6**；`ebs_map` 加编译期断言 `296 >= 256 + 40`。
+- 交棒：配置表 DTB 记录在 `resv_claims::capture` 时留存，随 UEFI 记录一起写入来源分区（重试时随分区清空并重写）；内核 `validate` 的覆盖审计按**输入权威过滤**（aarch64 UEFI 只认 `UefiMemoryMap` 记录，DTB `/memory` 不能替 UEFI 投影作证）——两条混合输入测试钉住。
+- 启动对象：UEFI 腿在写前断言 `1 + 模块数 + 3 <= 16`（内核映像 + 模块 + 根页/bump/arena），不再只依赖序列化器兜底。
+- 文档：§0 区分「四类机制、五条路径」；O-13 容量改为 296/9 页；§6.3 U-Boot 行改 wire v6；O-12g 的 `ranges` 转换链明确归 `04`；§6.4 删除已闭合的 296 缺口。
+- 读数：宿主 `341/171/92(+5)/863/548`；五个交叉构建；QEMU 见 §6.3。
+
 **第一百二十一轮（按 wire v5 现状全文清理）**
 
 - 版本号统一：§0/§2.4/O-13/§5 索引里残留的「wire v4」全部改为 v5（历史轮次记录保留原样）。

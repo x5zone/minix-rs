@@ -184,6 +184,11 @@ pub unsafe fn pair_and_classify(
             .map_err(PairError::DtbPages)?
         {
             crate::resv_claims::capture(owned.bytes, owned.source);
+            for record in crate::resv_claims::records() {
+                serializer
+                    .push_source(record)
+                    .expect("preflight proved the source partition holds UEFI + DTB records");
+            }
         }
         crate::resv_claims::check_current(storage.descriptors())
             .map_err(PairError::ReservationCoverage)?;

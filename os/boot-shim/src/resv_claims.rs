@@ -237,6 +237,22 @@ pub fn check(
 
 // ── capture / read-back (single-threaded boot state) ─────────────────────
 
+static mut DTB_RECORDS: [SourceRecord; minix_boot::DTB_SOURCE_CAP] =
+    [minix_boot::EMPTY_SOURCE_RECORD; minix_boot::DTB_SOURCE_CAP];
+static mut DTB_RECORDS_N: usize = 0;
+
+/// The configuration-table DTB's own source records (at most
+/// [`minix_boot::DTB_SOURCE_CAP`]). Empty when the DTB is absent or
+/// unparsable; the halt for that case is `cross_validate_config_dtb`'s.
+pub fn records() -> &'static [SourceRecord] {
+    // SAFETY: write-once inside `capture`, read-only afterwards; same
+    // single-threaded boot contract as the claim list.
+    unsafe {
+        let n = core::ptr::addr_of!(DTB_RECORDS_N).read();
+        core::slice::from_raw_parts(core::ptr::addr_of!(DTB_RECORDS) as *const SourceRecord, n)
+    }
+}
+
 static mut CLAIMS: [Claim; MAX_CLAIMS] = [Claim {
     start: 0,
     end: 0,
@@ -256,6 +272,7 @@ pub fn capture(bytes: &'static [u8], source: (u64, u64)) {
     // thread immediately afterwards.
     unsafe {
         CLAIMS_N = 0;
+        DTB_RECORDS_N = 0;
         DTB_RAW = Some(source);
         if minix_boot::fdt_layout::validate(0, bytes).is_err() {
             return;
@@ -268,6 +285,15 @@ pub fn capture(bytes: &'static [u8], source: (u64, u64)) {
         else {
             return;
         };
+        for (i, record) in sources.iter().enumerate() {
+            if i >= minix_boot::DTB_SOURCE_CAP {
+                break;
+            }
+            (core::ptr::addr_of_mut!(DTB_RECORDS) as *mut SourceRecord)
+                .add(i)
+                .write(*record);
+            DTB_RECORDS_N = i + 1;
+        }
         let mut claims = [Claim {
             start: 0,
             end: 0,

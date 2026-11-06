@@ -263,7 +263,7 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// instead of being dropped on the sending side. A v1 receiver would ignore
 /// the new partition and a v1 sender would leave it empty, so the version is
 /// compared exactly, not as a minimum.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 5;
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 6;
 
 /// `free_upper_idx` sentinel for "no value" (a valid index can never be
 /// `u64::MAX`; decode checks the sentinel first, then the range).
@@ -325,12 +325,11 @@ pub const WIRE_PLATFORM_CAP: usize = 4;
 pub const WIRE_PARAM_CAP: usize = 1024;
 /// Source records carried across the hop.
 ///
-/// 256 is the descriptor bound: the UEFI leg emits one record per descriptor
-/// that produces an ordinary table entry, and the map buffer accepts at most
-/// `MAX_MAP_DESCRIPTORS = 256` descriptors. The DTB collector's worst case is
-/// 40 (`/memory` 8 + declared reservations 8 + MRB 16 + firmware prefixes 8),
-/// so the same partition serves both legs.
-pub const WIRE_SOURCES_CAP: usize = 256;
+/// The bound is additive, not either/or: an aarch64 UEFI boot has both the
+/// final `GetMemoryMap` descriptors (at most `MAX_MAP_DESCRIPTORS = 256`) and
+/// the configuration-table DTB's own records (at most 40 = `/memory` 8 +
+/// declared reservations 8 + MRB 16 + firmware prefixes 8). 256 + 40 = 296.
+pub const WIRE_SOURCES_CAP: usize = 296;
 /// Wire size of one [`WireSourceRecord`].
 pub const WIRE_SOURCE_RECORD_SIZE: usize = 72;
 
@@ -420,9 +419,9 @@ const _: () = {
     );
     assert!(SEMANTIC_END == 14016);
     assert!(WIRE_SOURCES_OFFSET.is_multiple_of(align_of::<WireSourceRecord>()));
-    assert!(WIRE_SOURCES_END == 32448);
+    assert!(WIRE_SOURCES_END == 35328);
+    assert!(WIRE_STARTUP_END == 36480);
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
-    assert!(WIRE_STARTUP_END == 33600);
     assert!(WIRE_STARTUP_END <= ARENA_CAP);
     assert!(SEMANTIC_END <= ARENA_CAP);
     assert!(ARENA_CAP.is_multiple_of(4096));

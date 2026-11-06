@@ -278,10 +278,26 @@ impl KernelInfo {
             );
         }
         if !self.memmap_sources.is_empty() {
-            match crate::memmap_source::audit_source_coverage(
+            // Authority filter: on an aarch64 UEFI boot the list holds both
+            // the memory-map descriptors and the configuration-table DTB's
+            // records. Only the memory-map records may explain the UEFI
+            // projections; a DTB `/memory` record is a cross-check, not the
+            // RAM authority. A leg whose records all come from one input gets
+            // that input either way.
+            let authority = if self
+                .memmap_sources
+                .iter()
+                .any(|r| r.input_object == crate::memmap_source::InputObjectId::UefiMemoryMap)
+            {
+                Some(crate::memmap_source::InputObjectId::UefiMemoryMap)
+            } else {
+                Some(crate::memmap_source::InputObjectId::DtbBootInput)
+            };
+            match crate::memmap_source::audit_source_coverage_for(
                 self.memmap,
                 self.reserved_regions,
                 self.memmap_sources,
+                authority,
             ) {
                 Ok(()) => {}
                 Err(error) => {

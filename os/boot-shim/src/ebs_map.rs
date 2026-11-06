@@ -92,6 +92,14 @@ use minix_boot::{
 };
 use minix_types::PhysBytes;
 
+// The record partition must hold the union of both inputs an aarch64 UEFI
+// boot carries: the final memory-map descriptors and the configuration-table
+// DTB's records. The bound is additive, not either/or.
+const _: () = assert!(
+    minix_boot::WIRE_SOURCES_CAP >= MAX_MAP_DESCRIPTORS + minix_boot::DTB_SOURCE_CAP,
+    "source partition must fit UEFI descriptors plus DTB records"
+);
+
 /// The only supported `EFI_MEMORY_DESCRIPTOR` version.
 pub const MEMORY_DESCRIPTOR_VERSION: u32 = 1;
 
@@ -795,7 +803,13 @@ impl Plan {
                 },
                 range: PhysicalRange::new(desc.physical_start, end as u128),
                 input_object: minix_boot::InputObjectId::UefiMemoryMap,
-                address_domain: minix_boot::memmap_source::AddressDomain::Physical,
+                // Type 12's start/count live in I/O-port space; the record
+                // keeps the raw fact but must not claim a physical address.
+                address_domain: if desc.raw_type == ty::MMIO_PORT_SPACE {
+                    minix_boot::memmap_source::AddressDomain::UefiMmioPortSpace
+                } else {
+                    minix_boot::memmap_source::AddressDomain::Physical
+                },
                 local_source: index as u16,
                 snapshot_id,
                 attribute: desc.attribute,

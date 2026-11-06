@@ -1070,6 +1070,16 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     crate::raw_serial("boot-shim: [raw] boot services exited (paired)\r\n");
 
     // Startup-object records: the second record class, in its own partition.
+    // Producer-side capacity proof before any write: kernel image + every
+    // module + the three bootstrap objects this leg owns (root page, bump
+    // region, arena). The serializer still rejects an over-capacity write,
+    // but that must not be the first time the count is noticed.
+    assert!(
+        1 + boot_modules.len() + 3 <= minix_boot::WIRE_STARTUP_CAP,
+        "boot-shim: startup-object list needs {} slots, partition holds {}",
+        1 + boot_modules.len() + 3,
+        minix_boot::WIRE_STARTUP_CAP
+    );
     let mut startup = [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
     let mut startup_n = 0usize;
     let mut push_startup = |start: u64, len: u64| {

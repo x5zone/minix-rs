@@ -2945,6 +2945,38 @@ test-riscv64-boot-full.sh                     → PASS（rc 标记）
 
 门：1,149 行、围栏 42 偶、表格 38 块 0 不一致、承载门通过、lint 0、lost 0。
 
+## 八十八、第一百二十二轮：296 条 ABI、DTB 记录交棒与权威过滤
+
+### 线上布局（wire v6）
+
+```
+WIRE_SOURCES_OFFSET = 14016
+WIRE_SOURCES_CAP    = 296        // 256 UEFI descriptors + 40 DTB records
+WIRE_SOURCES_END    = 14016 + 296*72 = 35328
+WIRE_STARTUP_OFFSET = 35328
+WIRE_STARTUP_END    = 35328 + 16*72 = 36480
+ARENA_CAP           = 9*4096 = 36864   → spare 384
+BOOT_HANDOFF_V1_VERSION = 6
+```
+
+`ebs_map` 编译期断言 `WIRE_SOURCES_CAP >= MAX_MAP_DESCRIPTORS + DTB_SOURCE_CAP`；`resv_claims::capture` 在解析副本后把 DTB 记录（≤40）存入静态数组，配对循环在 `capture` 之后把它们 `push_source` 进序列化器；`reset_map_partitions` 每次重试清空后重写。
+
+### 地址域
+
+`AddressDomain` 增加 `UefiMmioPortSpace`（tag 2）。`Type == 12` 的记录写该域，范围字段只承载原始描述符事实，不进入 PMM 物理页集合；类型 11（MMIO）仍是物理域。
+
+### 覆盖审计的输入权威
+
+`audit_source_coverage_for(free, reserved, sources, Some(input_object))` 只让指定输入的记录参与覆盖证明；`KernelInfo::validate` 在记录中出现 `UefiMemoryMap` 时选它，否则选 `DtbBootInput`。测试：`uefi_projection_cannot_be_covered_by_a_dtb_memory_record`、`reserved_projection_is_also_authority_filtered`。
+
+### 启动对象写前证明
+
+UEFI 腿在写 `startup_objects` 前断言 `1 + boot_modules.len() + 3 <= WIRE_STARTUP_CAP`；三条 DTB 腿由各自静态数组与写入点断言覆盖。
+
+### 读数
+
+宿主 `341/171/92(+5)/863/548`；五个交叉构建全通过；QEMU 结果见正文 §6.3。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -3173,3 +3205,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百二十轮）合并提交 | `2bbdb7bf8` |
+
+### 评审身份（第一百二十二轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十六笔登记 |
+| `CodeEvidenceCommit` | 本轮提交（代码与文档同提交） |
+| `DocumentRevision` | 第一百二十二轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百二十一轮）合并提交 | `82962e411` |
