@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-07 01:50 CST（`date` 实测）；**内容轮次：第一百二十五轮——O-11 严格两快照**（配置表 DTB 的 header 读取与副本分配移到预检快照之下；配对循环自己的取图是最终快照，全范围页类型复核与 body 复制只在它上面发生，此后到 `ExitBootServices` 零分配。本轮同时补齐上一轮 wire v7 的正文读数）。
+> **重写**：2026-11-07 01:54 CST（`date` 实测）；**内容轮次：第一百二十六轮——地址域类型、O-11 合同与范围收口**（`SourceRecord.range` 改为 `SourceRange`，只有物理域可转 `PhysicalRange`；范围裁决：不新增 `PolicyProjection` 引擎，现有投影 + 记录 + 覆盖审计即冻结边界；O-11 的 A 案、不可变性信任合同、可达性责任与副本目标相交检查写清；O-02a 启动对象表、容量公式、O-12h 结构与顶端边界、wire v7 tag/payload 表同步）。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -48,7 +48,7 @@ MRB
 |---|---|---|
 | 来源事实 | 哪份输入、哪个节点/描述符声称了这段范围 | `SourceRecord { id, kind, origin, range }` |
 | 冲突与政策 | 两份来源冲突时谁赢、类型与属性如何裁决 | `adjudicate`（UEFI 五步）、DTB 的保留叠加规则 |
-| 纯集合投影 | 哪些整页可以进入 PMM 来源候选 | `MemoryRegion` 投影（可用表 / 保留表 / 侧表） |
+| 纯集合投影 | 哪些整页进入可用／保留投影（本项输出） | `MemoryRegion` 投影（可用表 / 保留表 / 侧表） |
 | 归因 | 每个被扣除的页由哪条记录解释 | `deducted[]`（第二跳）+ `audit_source_coverage`（消费边界） |
 
 三个原则贯穿实现：
@@ -90,7 +90,9 @@ C 的 `kinfo.memmap[]` 是引导期自举分配器的记账本（`pg_utils.c` �
 
 ### 1.5 边界声明：本项只裁决物理内存图
 
-**I-29 只负责物理内存图与启动对象的物理占用**：哪些范围被权威输入描述为 RAM、哪些被保留或具有特殊类型与生命周期、每条主张来自哪里、内核与启动程序已占用哪些范围、哪些整页可进入 PMM 来源候选、这些事实如何经 boot-shim → kernel → VM 两跳交接而不因容量不足丢失。
+**I-29 只负责物理内存图与启动对象的物理占用**：哪些范围被权威输入描述为 RAM、哪些被保留或具有特殊类型与生命周期、每条主张来自哪里、内核与启动程序已占用哪些范围、哪些整页进入可用／保留投影、这些事实如何经 boot-shim → kernel → VM 两跳交接而不因容量不足丢失。
+
+**投影的冻结边界（第一百二十五轮裁决）**：本项交付的「可用／保留」就是 `KernelInfo.memmap` 与 `reserved_regions` 的 `MemoryRegion` 投影；`PmmSourceCandidatePages` 是对这份投影的语义描述，不是第二套由来源记录驱动的 `PolicyProjection` 引擎。冻结验收只有三条：① 生产当前投影；② 保留每条记录的来源身份与原始事实；③ 在投影产生后与内核消费边界验证投影范围有来源覆盖（§2.1、§2.5）。`PolicyProjection` 若将来需要，另立条目，不扩大 I-29。
 
 **不属于本项**：设备资源发现（DTB 设备节点 `reg`、多级 `ranges`、ACPI/MADT/LAPIC/IO-APIC/PLIC/UART）归 `04-platform-discovery.md`；设备窗口映射政策与实际 PTE 覆盖审计归分页／映射专项；PAT/MTRR、MAIR、PMP/PMA 与处理器访问能力归硬件准入专项；驱动访问点与实际 VA 审计归驱动访问审计专项。**I-29 为了拿到内存图要校验整个 DTB 容器、解析 `/memory`、`/reserved-memory` 与 MRB，但不因此负责发现 DTB 里的全部硬件资源。**
 
@@ -109,18 +111,20 @@ pub struct SourceRecord {
                                     //   ReservedNoMap / ReservedOrdinary /
                                     //   ReservedReusable / StartupObject / UefiExcluded
     pub origin: SourceOrigin,       // 见下
-    pub range: PhysicalRange,       // start: u64, end_exclusive: u128
+    pub range: SourceRange,         // start: u64, end_exclusive: u128（数值，域见下）
     pub input_object: InputObjectId,// DtbBootInput / UefiMemoryMap / StartupObjects
     pub local_source: u16,          // 输入对象内序号（UEFI = 描述符索引）
     pub snapshot_id: u64,           // 观测实例序号；DTB 为 0（与 MapKey 无关）
     pub attribute: u64,             // UEFI 描述符原值；DTB 为 0
     pub virtual_start: u64,         // UEFI 描述符原值；DTB 为 0
-    pub address_domain: AddressDomain, // Physical（v1 记录只有物理域）
+    pub address_domain: AddressDomain, // Physical / Virtual / UefiMmioPortSpace
     pub raw_type: u32,              // 固件 EFI 类型原值；非 UEFI 输入为 0
 }
 ```
 
-`origin` 的五种取值对应五类输入对象内的位置：
+**范围类型按地址域解释（第一百二十五轮）**：`SourceRange` 只是数值起止；`SourceRecord::physical_range()` 只在 `AddressDomain::Physical` 时返回 `PhysicalRange`。`UefiMmioPortSpace`（EFI 类型 12）保留原始数值与域身份，永远不进入物理页集合、PMM、物理上界检查或物理区间重叠比较；覆盖审计与保留主张先按域过滤。wire 布局不变（数值起止 + 域字节，72 B），没有新增字段。
+
+`origin` 的六种取值对应输入对象内的位置：
 
 | 变体 | 含义 |
 |---|---|
@@ -129,10 +133,11 @@ pub struct SourceRecord {
 | `MrbEntry(u16)` | 内存保留块的第 `entry` 项 |
 | `ReservedMemoryChild { node, reg }` | 第 `node` 个 `/reserved-memory` 子节点的第 `reg` 个元组 |
 | `UefiDescriptor { index }` | 最终 `GetMemoryMap` 快照的第 `index` 个描述符 |
+| `StartupObject(index)` | 第 `index` 个启动对象（独立 `InputObjectId::StartupObjects` 分区） |
 
 `PhysicalRange` 的末端用 128 位，表示**地址空间最后一页**（`[...f000, 2^64)`）；是否能投影成 `u64` 由 `projectable_end()` 回答，拒绝发生在各投影点，而不是把 `2^64` 悄悄截成 0。
 
-**记录身份（第一百一十六轮；第一百二十轮修正确切语义）**：`SourceRecord` 增加 `input_object`（`DtbBootInput` / `UefiMemoryMap` / `StartupObjects`）、`local_source`（输入对象内序号）、`snapshot_id`（**观测实例序号**：每成功取一次 `GetMemoryMap` 自增一次；它与 `MapKey` 不是一回事——`MapKey` 只是固件给 `ExitBootServices` 的版本凭据，两次取图可能返回同一个 key，但仍是两份观测）、`attribute` 与 `virtual_start`（UEFI 描述符原值；DTB 为 0）、`address_domain`（`Physical` / `UefiMmioPortSpace`；后者用于 EFI 类型 12）与 `raw_type`（固件 EFI 类型原值；非 UEFI 输入为 0）。`kind` 是本项目的角色分类，`raw_type` 是固件的类型事实，二者不得混淆。跨输入引用只用 `(input_object, local_source)`，`id` 仅在单个输入对象内稳定。结构合法但被类型政策排除的描述符（`Side`/`Excluded`/`DevicePath`）也保留一条 `kind = UefiExcluded` 的记录，来源事实不因不进入投影而消失。
+**记录身份（第一百一十六轮；第一百二十轮修正确切语义）**：`SourceRecord` 增加 `input_object`（`DtbBootInput` / `UefiMemoryMap` / `StartupObjects`）、`local_source`（输入对象内序号）、`snapshot_id`（**观测实例序号**：每成功取一次 `GetMemoryMap` 自增一次；它与 `MapKey` 不是一回事——`MapKey` 只是固件给 `ExitBootServices` 的版本凭据，两次取图可能返回同一个 key，但仍是两份观测）、`attribute` 与 `virtual_start`（UEFI 描述符原值；DTB 为 0）、`address_domain`（`Physical` / `Virtual` / `UefiMmioPortSpace`；后两者只允许配 `UefiExcluded`，类型 12 用端口域）与 `raw_type`（固件 EFI 类型原值；非 UEFI 输入为 0）。`kind` 是本项目的角色分类，`raw_type` 是固件的类型事实，二者不得混淆。跨输入引用只用 `(input_object, local_source)`，`id` 仅在单个输入对象内稳定。结构合法但被类型政策排除的描述符（`Side`/`Excluded`/`DevicePath`）也保留一条 `kind = UefiExcluded` 的记录，来源事实不因不进入投影而消失。
 
 **不可读的 `reg` 形状一律拒绝**（第一百一十三轮）：`/memory` 与 `/reserved-memory` 的 `reg` 在声明 cell 宽度下截断（或 `#size-cells = 0`）时，`fdt` 迭代器不产出任何元组；把它当成「没有这段」会静默丢 RAM 或释放固件保留页。因此 `/memory` 返回 `UnsupportedMemoryReg`，`/reserved-memory` 返回 `UnsupportedReservedDeclaration`，四条负控：`dtb_truncated_memory_reg_is_rejected`、`dtb_zero_size_memory_reg_is_rejected`、`dtb_truncated_reserved_reg_is_rejected`、`dtb_zero_size_reservation_is_rejected`。
 
@@ -223,6 +228,8 @@ let record = SourceRecord {
 serializer.push_source(&record).expect("preflight proved the source partition");
 ```
 
+**类型 12 不走这条投影路径**：`adjudicate` 在第 3 步就把它判为 `DevicePath`（不产生区间）；它在后置记录循环里以 `address_domain = UefiMmioPortSpace`、原始起止写入来源分区，`physical_range()` 为 `None`。覆盖审计与保留主张都先按域过滤，因此端口范围的数值即使与物理页数值相同，也不会参与物理重叠或覆盖（`a_port_space_descriptor_keeps_its_raw_range_without_becoming_physical`、`the_source_audit_ignores_non_physical_records`）。
+
 每条记录同时携带身份：`input_object = UefiMemoryMap`（输入**类别**）、`local_source = 描述符索引`、`snapshot_id` 为本次取图的**观测实例序号**（与 `MapKey` 无关）、`attribute`/`virtual_start`/`raw_type` 为描述符原值。跨快照的同号描述符因此可区分。**拒绝诊断**：`adjudicate` 失败时 `classify` 返回 `MapError::RejectedDescriptor`，携带 `index`、`raw_type`、`physical_start`、`virtual_start`、`number_of_pages`、`attribute` 与 `failed`（`PolicyError`），停机报告不再只有错误码（`a_refused_descriptor_is_named_in_the_error`）。容量边界两向都有测试：257 条描述符拒绝（`rejects_a_map_larger_than_the_storage`），恰好 256 条且同时填满 128 可用 / 64 保留 / 64 侧表通过（`accepts_exactly_the_descriptor_and_partition_caps`）。
 
 **静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在配对循环内、副本授权之后从副本采集（`resv_claims::capture`），并在同一最终快照上于 `ExitBootServices` 之前逐页核对（`check_current`，失败形状 `PairError::ReservationCoverage`）；配置表 DTB 的来源记录（≤40）也在 `capture` 时留存，并随 UEFI 记录一起写入来源分区，供内核保留原始声明身份。无覆盖或同页出现异类描述符即拒绝启动，即使另有兼容描述符覆盖同页也算冲突（保守加强）；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。容量固定：主张 `MAX_CLAIMS = 64`、每条主张的覆盖区间 `MAX_INTERVALS = 256`，溢出拒绝不截断。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 10 条单测；默认 ACPI 腿无配置表 DTB（无主张、按空集通过），`DTB_CFGTABLE=1` 腿会真正采集并核对。
@@ -257,6 +264,20 @@ start u64 | end_lo u64 | end_hi u64 | attribute u64 | virtual_start u64
 | kind u8 | origin_tag u8 | input_object u8 | address_domain u8 | raw_type u32
 ```
 
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `kind` | 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 | Memory / FirmwarePrefix / MrbEntry / ReservedNoMap / ReservedOrdinary / ReservedReusable / StartupObject / UefiExcluded |
+| `origin_tag` | 0 | MemoryNode：`a = node`，`b = reg` |
+| | 1 | FirmwarePrefix：`a = memory_id`，`cut = 固件前缀切点` |
+| | 2 | MrbEntry：`a = entry` |
+| | 3 | ReservedMemoryChild：`a = node`，`b = reg` |
+| | 4 | UefiDescriptor：`a = index` |
+| | 5 | StartupObject：`a = index` |
+| `input_object` | 0 / 1 / 2 | DtbBootInput / UefiMemoryMap / StartupObjects |
+| `address_domain` | 0 / 1 / 2 | Physical / Virtual / UefiMmioPortSpace |
+| `id` / `local` | u16 | 输入对象内记录序号 / 输入对象内定位序号 |
+| 未知值 | — | 未知 kind/origin/input/domain 或 `end_hi > 1` → `BadSourceRecord`（失败关闭） |
+
 `end_hi ∈ {0,1}`（128 位末端的两个半字）；`a/b/cut` 是 origin 的变体载荷；编码器恒写 0 的字段若非零，解码按 `BadSourceRecord` 失败关闭；未知 `kind`/`origin_tag` 同样拒绝。**地址域与角色的配对也有解码闸**：非 `Physical` 域只允许 `kind = UefiExcluded`（类型 12 是来源事实、不是物理范围），其余组合按坏记录拒绝（`non_physical_domain_is_only_legal_on_excluded_records`）。
 
 **版本**：`BOOT_HANDOFF_V1_VERSION = 7`（v3 增加身份、属性与虚拟地址；v4 增加启动对象分区；v5 把尾字从保留位改为固件 `raw_type` 并新增 `UefiExcluded` 角色；v6 把来源分区扩到 296 条并后移启动对象分区；v7 把信封偏移 12 的保留字改为 `ram_authority`），接收端按**精确相等**比较；v1–v6 的发送方会被 `UnsupportedVersion` 拒收，不会按新偏移读旧镜像。信封里的 `ram_authority`（0=启动 DTB，1=UEFI 内存图）由发送腿声明，接收端拒绝其它值。
@@ -278,26 +299,26 @@ start u64 | end_lo u64 | end_hi u64 | attribute u64 | virtual_start u64
 `KernelInfo::validate()` 第 6 步是**消费者边界复核**；`validate_requiring_sources()` 是生产形态的严格门（第一百一十三轮）：
 
 ```rust
-pub fn validate(&self) { self.validate_impl(false); }
-pub fn validate_requiring_sources(&self) { self.validate_impl(true); }
+pub fn validate(&self) { self.validate_impl(None); }
+pub fn validate_requiring_sources(&self, authority: InputObjectId) {
+    self.validate_impl(Some(authority));
+}
 
-fn validate_impl(&self, require_sources: bool) {
+fn validate_impl(&self, authority: Option<InputObjectId>) {
     // ... 前五项非地址不变量 ...
-    if require_sources {
-        assert!(!self.memmap_sources.is_empty(),
-            "KernelInfo: production handoff carries no memory-map source records");
+    if let Some(authority) = authority {
+        assert!(
+            self.memmap_sources.iter().any(|r| r.input_object == authority),
+            "KernelInfo: the declared authority has no source record");
     }
-    if !self.memmap_sources.is_empty() {
-        match audit_source_coverage(self.memmap, self.reserved_regions, self.memmap_sources) {
-            Ok(()) => {}
-            Err(error) => panic!(
-                "KernelInfo: source records do not cover the projected map: {error:?}"),
-        }
-    }
+    audit_source_coverage_for(self.memmap, self.reserved_regions,
+                              self.memmap_sources, authority)
+        .unwrap_or_else(|error| panic!(
+            "KernelInfo: source records do not cover the projected map: {error:?}"));
 }
 ```
 
-跨镜像 `arch_boot_resume_v1` 直接调用严格门；三条 DTB 腿在交出 `KernelInfo` 前断言来源非空。手工构造 `KernelInfo` 的 qemu 测试内核没有 DTB 来源，仍走宽松 `validate()`——三条测试钉住三种形态：`test_validate_requiring_sources_rejects_an_empty_partition`（空分区拒绝）、`test_validate_requiring_sources_accepts_covering_records`（覆盖记录通过）、`test_validate_requiring_sources_refuses_missing_authority`（声明的权威没有记录即拒绝，不回退另一种输入）。
+跨镜像 `arch_boot_resume_v1` 调用 `validate_requiring_sources(scalars.ram_authority)`；三条 DTB 腿在交出 `KernelInfo` 前以 `InputObjectId::DtbBootInput` 调用同一严格门。手工构造 `KernelInfo` 的 qemu 测试内核没有 DTB 来源，仍走宽松 `validate()`——三条测试钉住三种形态：`test_validate_requiring_sources_rejects_an_empty_partition`（空分区拒绝）、`test_validate_requiring_sources_accepts_covering_records`（覆盖记录通过）、`test_validate_requiring_sources_refuses_missing_authority`（声明的权威没有记录即拒绝，不回退另一种输入）。
 
 **覆盖审计按输入权威过滤（显式）**：权威由发送腿在信封里声明（`ram_authority`），接收端调用 `validate_requiring_sources(authority)`：该权威必须至少有一条记录，缺失即失败关闭（**不回退**到另一种输入），并用 `audit_source_coverage_for(..., Some(authority))` 证明覆盖。aarch64 UEFI 的配置表 DTB 记录只做静态保留交叉核对，不能替 UEFI RAM 投影作证（混合输入测试 `uefi_projection_cannot_be_covered_by_a_dtb_memory_record`、`reserved_projection_is_also_authority_filtered` 与「声明的权威无记录即拒绝」`test_validate_requiring_sources_refuses_missing_authority`）。
 
@@ -402,8 +423,8 @@ ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
 | O-08 端口 I/O 地址域 | 裁定 A；专项未实现 | — |
 | O-09 诊断成员存储 | 裁定 A；`dumpdtb` 为诊断输入 | `uefi_helpers::load_dumpdtb_free` |
 | O-10 第二枚负控 | 专项 | — |
-| O-11 配置表 DTB 首读授权 | **三态、静态保留 × EFI 类型覆盖、copy-first 严格两快照均已落码**；预检快照（header 读一次、副本分配）与最终快照（全范围页类型复核、body 只复制一次、此后零分配）分离 | `uefi_helpers::{find_platform_sources,cross_validate_config_dtb}`、`ebs_pair::{preflight_dtb,pair_and_classify}`、`dtb_copy`、`resv_claims::{capture,check_current}` |
-| O-12 集合构造与来源完整性 | **a/g 已落码**（含结构合法描述符的全量记录与 `raw_type`；配置表 DTB 记录 ≤40 条随第一跳同分区交付）；c/h/i/j 的集合构造在专项 | `Plan::commit`、`WIRE_SOURCES_CAP` |
+| O-11 配置表 DTB 首读授权 | **三态、静态保留 × EFI 类型覆盖、copy-first 严格两快照均已落码**；A 案（解析权威 DTB + 保留来源身份 + 交叉验证）已定为第一版策略，B 案未采用；预检/最终快照分离、副本目标相交检查已落码；`BootInputReachability` 仍归 BootEntry/架构 adapter | `uefi_helpers::{find_platform_sources,cross_validate_config_dtb}`、`ebs_pair::{preflight_dtb,pair_and_classify}`、`dtb_copy`、`resv_claims::{capture,check_current}` |
+| O-12 集合构造与来源完整性 | **a/g 已落码**（含结构合法描述符的全量记录与 `raw_type`；配置表 DTB 记录 ≤40 条随第一跳同分区交付）；**h 的全类型结构校验、同域重叠拒绝与顶端边界已落码**；c/i/j 的集合构造在专项 | `Plan::commit`、`WIRE_SOURCES_CAP`、`ebs_map::checked_shape` |
 | O-13 固定布局 ABI | **基线、来源记录与启动对象记录已落码**（wire v7、第二跳版本 8）；`Attribute`/`VirtualStart`/`raw_type` 已记录 | `handoff_v1.rs`、`vm_handoff.rs`、`types/boot.rs` |
 
 
@@ -480,10 +501,10 @@ I29-1 的最小要求与 BootRoot-2 的输入清单各在其处定义（`SourceR
 
 | 字段 | 今天已核实的事实（代码位置） | 第一阶段还缺什么 |
 |---|---|---|
-| 身份 | 交接 v1 的 arena，容量常量 `minix_boot::ARENA_CAP = 9 * 4096`（`os/libs/minix-boot/src/handoff_v1.rs`） | 由第一跳 `startup_objects` 记录标识（UEFI 腿的第 16 条，`SourceOrigin::StartupObject`）；最后使用点 = `arch_boot_resume_v1` 解码完成 |
-| 物理范围 | 由 `alloc_arena()` 现分配恰好 `ARENA_CAP` 字节的 `LOADER_DATA`，且被约束在恒等界以下（`os/boot-shim/src/uefi_helpers.rs`），以 `x0`/`rbx` 递进内核 | 范围只在寄存器里传递，未进入任何来源记录 |
-| 来源 | UEFI `EfiLoaderData` 类型分配（`ebs_map.rs` 的类型表把 `LOADER_DATA` 判为 `ReservedMapped`） | 没有对应的 `SourceRecord`，x86/aarch64 UEFI 腿记录本就未产出（O-12g） |
-| 存活期 | 内核在根激活后立即 `patch_runtime_fields_in` 写入，之后 `arch_boot_resume_v1` 再读取 | 没有「最后一次使用」的登记，也没有释放点 |
+| 身份 | 交接 v1 的 arena，容量常量 `minix_boot::ARENA_CAP = 9 * 4096`（`os/libs/minix-boot/src/handoff_v1.rs`） | **已落码**：第一跳 `startup_objects` 的第 16 条记录（`SourceOrigin::StartupObject`）标识；最后使用点 = `arch_boot_resume_v1` 解码完成 |
+| 物理范围 | 由 `alloc_arena()` 现分配恰好 `ARENA_CAP` 字节的 `LOADER_DATA`，且被约束在恒等界以下（`os/boot-shim/src/uefi_helpers.rs`），以 `x0`/`rbx` 递进内核 | **已落码**：启动对象记录携带 `[arena, arena+ARENA_CAP)`（`minix_boot::startup_record`），不再只有寄存器传递 |
+| 来源 | UEFI `EfiLoaderData` 类型分配（`ebs_map.rs` 的类型表把 `LOADER_DATA` 判为 `ReservedMapped`） | **已落码**：`InputObjectId::StartupObjects` 独立分区；UEFI 腿写前断言完整清单（1 + 12 + 3 = 16） |
+| 存活期 | 内核在根激活后立即 `patch_runtime_fields_in` 写入，之后 `arch_boot_resume_v1` 再读取 | **已落码**：最后使用点已登记（解码完成）；释放点仍由 BootEntry／分页专项决定 |
 | 访问需求 | 写者=内核 patch 阶段；读后续消费者=`arch_boot_resume_v1` | 未按使用点登记，无法证明范围与路径 |
 | 映射要求 | 今天靠恒等段的宽叶子顺带覆盖，权限 RW+X | 需要 `VA = PA`、要 `W`、无执行需求时应 `NX`；具体以多大叶子兑现属分页侧专项 |
 | 负向检查 | 无任何禁止项参与（§2.3） | 必须过 `BootstrapRootDenyProjection` |
@@ -571,7 +592,7 @@ T0／T1／T2 的检查点划分、冻结字段与「先审后用」全部属 Boo
 
 **候选 B（不可接受，列出以说明为何否）**：只看平台物理内存描述、不看类型分类——会把不可用内存当成 backing。
 **判据**：每个 backing 页能指回一个「普通主存 = 是」的来源记录，且阶段允许。
-**PAT/MTRR、MAIR、PMA、PMP 与逐 CPU 的物理访问准入不在本项**：它们决定「这台机器允许这次访问吗」，属硬件准入，已随 §1.6 的重规划入 `01-design-note-hardware-admission-model.md`。本项只回答「这段范围的来源事实、类型与生命周期是什么」。**名字也要拆开**：`OrdinaryRamMappingEligibility` 把来源分类与映射决定重新绑在一起，本文保留该名字只用于**类型层面**的映射资格，最终映射资格还需叠加缓存属性与硬件准入（专项侧）。
+**PAT/MTRR、MAIR、PMA、PMP 与逐 CPU 的物理访问准入不在本项**：它们决定「这台机器允许这次访问吗」，属硬件准入，已随 §1.5 的重规划入 `01-design-note-hardware-admission-model.md`。本项只回答「这段范围的来源事实、类型与生命周期是什么」。**名字也要拆开**：`OrdinaryRamMappingEligibility` 把来源分类与映射决定重新绑在一起，本文保留该名字只用于**类型层面**的映射资格，最终映射资格还需叠加缓存属性与硬件准入（专项侧）。
 
 **边界**：`OrdinaryRamMappingEligibility` 只描述来源与 OS 政策资格，**不证明某架构实际能访问该区间**——x86 还要 PAT/MTRR 有效类型、AArch64 还要 MAIR 与逐 PE 配置、RISC-V 还要 PMA 能力与逐 hart 的 PMP。硬件准入不得被 `ordinary_main_memory = true` 代替。
 **`LOADER_CODE` 不是一律 R/NX**：只要它仍是当前执行中的 loader 代码，就需要可执行映射；可执行权限来自仍存活的 loader 对象义务，不因「被分类为保留内存」自动变成 R/NX。最后一次执行点之后才撤销执行映射或按生命周期处置——这也是对象存活区间必须参与映射权限计算的原因。
@@ -618,9 +639,9 @@ T0／T1／T2 的检查点划分、冻结字段与「先审后用」全部属 Boo
 | 存在且已完整解析并与内存图交叉验证 | 按两份权威来源共同处理 |
 | 存在但尚未接入，或解析失败 | **拒绝启动**，不得静默丢弃其中的 `no-map`／MRB 声明 |
 
-**三态已落码（第一百零七轮）**：`uefi_helpers::cross_validate_config_dtb` 在两个 UEFI 入口各调一次——无 DTB 走第一行；有且可解析则要求 `/memory` 覆盖每条 conventional 跨度（否则 halt）；容器坏、拒图、解析失败都 halt。**复制到自有缓冲再解析已落码，严格两快照（第一百二十五轮）**：`find_platform_sources` 只记录配置表地址；预检快照由 `ebs_pair::preflight_dtb` 取得，`dtb_copy::preflight` 在它的授权下验证 `[dtb, dtb+40)` 的页类型、读一次 40 字节 header、按 `totalsize` 分配副本；配对循环自己的 `GetMemoryMap` 是最终快照，`authorize_and_copy` 在它上面复核全范围页类型、写入 header、只复制 body 一次，之后到 `ExitBootServices` 之间不再分配。AAVMF 的强制 DT 模式把配置表 DTB 放在非 `EfiACPIReclaimMemory` 页，因此该腿断言「存在但不可用」的拒绝，且拒绝发生在预检阶段、header 读取之前（串口 `DTB preflight failed: DtbPages(NotAcpiReclaim { page: … })`）。
+**三态已落码（第一百零七轮）**：`uefi_helpers::cross_validate_config_dtb` 在两个 UEFI 入口各调一次——无 DTB 走第一行；有且可解析则要求 `/memory` 覆盖每条 conventional 跨度（否则 halt）；容器坏、拒图、解析失败都 halt。**复制到自有缓冲再解析已落码，严格两快照（第一百二十五轮）**：`find_platform_sources` 只记录配置表地址；预检快照由 `ebs_pair::preflight_dtb` 取得，`dtb_copy::preflight` 在它的授权下验证 `[dtb, dtb+40)` 的页类型、读一次 40 字节 header、按 `totalsize` 分配副本；配对循环自己的 `GetMemoryMap` 是最终快照，`authorize_and_copy` 在它上面复核全范围页类型、写入 header、只复制 body 一次，之后到 `ExitBootServices` 之间不再分配。AAVMF 的强制 DT 模式把配置表 DTB 放在非 `EfiACPIReclaimMemory` 页，因此该腿断言「存在但不可用」的拒绝，且拒绝发生在预检阶段、header 读取之前（串口 `DTB preflight failed: DtbPages(NotAcpiReclaim { page: … })`）。**A 案已定为第一版策略，B 案未采用**：配置表 DTB 解析权威、保留来源身份并与 UEFI 内存图交叉验证；B 案的「只信内存图」不在实现里。**可达性责任**：本项已完成来源身份、物理范围、UEFI 页类型授权与两快照配对；「首读与完整范围在当前转换下可读」的 `BootInputReachability` 仍由 BootEntry 与各架构 adapter 兑现（§1.5、§7），本项不把硬件访问证明重新纳入，也不把四项前置条件全部写成已落码。**复制目标相交**：`dtb_copy::copy_target_overlaps` 在分配器返回的实际地址上判断源/目标是否相交（Boot Services 期是恒等映射，池指针即物理地址），六种边界由 `the_copy_target_overlap_check_uses_the_allocated_range` 钉住。**三条直启腿的副本语义**：riscv 自引导、aarch64 直启、riscv U-Boot 在启动 ABI 给出的物理地址上**就地只读解析一次**（identity map），把投影与 `SourceRecord` 复制进自有 `.bss`/arena；它们**不持有固件 DTB 的字节副本**，解析完成后不再读原 blob。O-11 的「自有副本」在 UEFI 腿指字节副本，在三条直启腿指投影与记录的副本——两种形态都满足「解析后无原始读者」，不能互相表述成另一种。
 
-**另需裁定一致性策略**：配置表 DTB 的保留声明与 UEFI 内存图之间——(A) 解析权威 DTB，保留来源身份并与内存图交叉验证；(B) 只信内存图，接受来源身份丢失并对无法区分的区域取更保守的统一政策。第一版倾向前者，但 B 也可以是明确的简化，不是规范要求。
+**一致性策略已裁定**：配置表 DTB 的保留声明与 UEFI 内存图之间采用 A 案——解析权威 DTB、保留来源身份并与内存图交叉验证；B 案（只信内存图、接受来源身份丢失）未采用，那会丢掉静态保留的原始身份，与本项「保存事实」的边界冲突。
 **四条 DTB 输入路径统一两阶段**（x86_64 UEFI 没有 DTB 输入，不属于这四条）：
 
 - **两个独立前置条件，缺一不可**（不能合成一个「授权」）：
@@ -636,7 +657,7 @@ BootInputObject { id, provenance, initial_read_range /*40B*/, validated_full_ran
 
 header 读取、完整对象授权、自有副本、生命周期记录都继承同一 ID，避免出现「header 是对象 A、完整 DTB 是对象 B、副本是对象 C」只能靠地址猜测关联。
 **全范围可达是第二个独立检查**：拿到 `totalsize` 后必须**重新证明** `[dtb, dtb + totalsize)` 在当前转换下整段可读（覆盖所有跨页、地址转换与末端），不能拿 header 的 40 字节证明代替；复制只能在这次证明之后开始。
-**复制目标不得与源重叠**：原始 DTB 不一定在 MRB 里，也未必已被分配器排除。分配自有副本前，先把原始 DTB 的完整范围登记为**存活输入对象**；源与目标范围不相交才允许复制（DTSpec 要求客户端在 DTB 使用完之前不得覆盖它，即使它不在保留区内）。于是 O-11 有四个互相独立的条件：**来源授权、地址可达、内容一致（不得并发修改）、自有副本**。
+**复制目标不得与源重叠**：原始 DTB 不一定在 MRB 里，也未必已被分配器排除。分配自有副本前，先把原始 DTB 的完整范围登记为**存活输入对象**；源与目标范围不相交才允许复制（DTSpec 要求客户端在 DTB 使用完之前不得覆盖它，即使它不在保留区内）。于是 O-11 有四个互相独立的条件：**来源授权、地址可达、内容一致（不得并发修改）、自有副本**。第一百二十五轮的责任划分：本项交付来源授权（页类型与两快照）与自有副本（或直启腿的投影/记录副本）；可达性归 BootEntry/架构 adapter；内容一致是启动输入方必须满足、代码未验证的信任合同。
 **`OwnedCopyValidation`（第三段，不能省）**：`fdt_layout::validate` 并非只读 40 字节 header——它还要扫 MRB、结构块、属性长度与字符串名称。因此完整容器校验**必须在自有副本上执行**：原始 DTB 的 **header 只在 preflight 阶段读一次**，**body `[dtb+40, dtb+totalsize)` 只在复制阶段读一次**；两部分都进入自有副本后，校验与解析只访问副本，不再访问原始地址。三段的顺序是：provenance + reachability（`[dtb, dtb+40)` 整段）→ header preflight → 完整读取授权 + 对齐副本 → 在副本上 `validate` → 解析 → `collect`。
 **副本必须是一份一致快照（复制算法写死）**：`totalsize` 本身来自 header，若「先读 40 字节、再整段复制」就会把 header 读两次。算法：
 
@@ -646,11 +667,11 @@ header 读取、完整对象授权、自有副本、生命周期记录都继承�
 4. 把 snapshot 写入副本前 40 字节，**只从原地址复制 `[dtb+40, dtb+totalsize)`**；
 5. 在副本上执行完整 `fdt_layout::validate`。
 **ABI 地址、源物理范围与读取 VA 是三个概念**：`BootInputAddress`（ABI 递交的地址及其地址域——四条路径实际交付的都是**物理地址**：AArch64 `x0`、UEFI 配置表 DTB、RISC-V `a1`/`satp=0`）、`SourcePhysicalRange`（DTB 对象实际占用的物理范围）、`ReadVirtualRange`（当前阶段实际用于读取的 VA 范围）。不构造概括性的 `SourceVirtualRange`——那会把物理地址误包装成虚拟地址。`LiveInputReservation = Outward(SourcePhysicalRanges)`——**PMM 排除的是物理页，不是虚拟区间**；目标副本与源的不重叠也必须**按物理地址**判断：源 VA 与目标 VA 数值不同不代表不落在同一 PA（直接映射、恒等映射等别名都可能重合）。
-**统一物理范围类型 `PhysicalRange { start: u64, end_exclusive: u128 }`**（`start < 2^64`、`start < end_exclusive ≤ 2^64`）：DTB 的 `address + size` 与 UEFI 描述符都能表达 `[0xffff_ffff_ffff_f000, 2^64)`，统一来源记录不得因 Rust 字段类型丢掉这个合法边界。原始输入字段保留各自编码（DTB 的 address+size、UEFI 的 start+pages），规范化层才转成 `PhysicalRange`；`UnsupportedPhysicalAddressEnd` 只在项目明确选择拒绝该边界时使用，**不能成为 `u64` 加法的副作用**。这条与 O-12h 结构校验、O-12i `FullPages` 是同一条边界合同；DTB 腿已按此实现（分名规则见 §2.1 与 O-12i），UEFI 描述符路径也已按同一 `PhysicalRange` 产出记录（`Plan::commit` 逐描述符记录）。
+**来源记录的数值范围 `SourceRange` 与物理范围 `PhysicalRange`**（两者都是 `start: u64`、`end_exclusive: u128`，`start < 2^64`、`start < end_exclusive ≤ 2^64`）：DTB 的 `address + size` 与 UEFI 描述符都能表达 `[0xffff_ffff_ffff_f000, 2^64)`，来源记录不得因 Rust 字段类型丢掉这个合法边界。原始输入字段保留各自编码（DTB 的 address+size、UEFI 的 start+pages），规范化层转成 `SourceRange`；**只有 `AddressDomain::Physical` 能通过 `physical_range()` 转成 `PhysicalRange`**，类型 12 的端口范围保留数值但不进入物理页集合、PMM 或物理上界检查；`UnsupportedPhysicalAddressEnd` 只在项目明确选择拒绝该边界时使用，**不能成为 `u64` 加法的副作用**。这条与 O-12h 结构校验、O-12i `FullPages` 是同一条边界合同；DTB 腿已按此实现（分名规则见 §2.1 与 O-12i），UEFI 描述符路径也已按同一 `SourceRange` 产出记录，物理域再转 `PhysicalRange`（`Plan::commit` 逐描述符记录）。
 **顶端那一页：集合层能表示，第一版仍拒绝，而拒绝是政策不是算术**。`FullPages` 的页编号范围是 `0 ≤ n < 2^52`，`n = 2^52 − 1` 的独占末端恰好是 `2^64`，所以纯集合层完全能表示最后一个 4 KiB 页；今天 `declared_page_range` 在投影末端到达 `2^64` 时返回 `UnsupportedPhysicalAddressEnd` 是**实现处置**。第一版的支持边界写明为：允许集合层表示该页，能否进入 PMM 由平台物理地址准入决定，而投影侧在拿到逐平台物理地址上界证据之前一律拒绝——理由是「该端点在本项目支持的任何一个 profile 上都没有真实 RAM 或设备窗口落在其上，接受它等于接受一条无法验证的路径」。错误码不得再被读成「`u64` 无法表达合法范围」。
 **副本与源的相交检查绑定实际分配结果**：按 PA 判断不重叠之后，仍须在分配器返回副本物理地址后，用**实际分配范围**再作一次相交检查。「分配器通常不会从 ACPI reclaim 区分配」不是证据——分配资格与源对象的生命周期登记是两份独立证据。
 **`BootInputReachability` 是端到端可读性，不是「PTE 存在」**：在指定阶段与访问路径下，完整对象的只读访问所需的地址翻译、页表访问、物理访问保护与平台准入条件必须全部成立——RISC-V 上 PMP 可能拒绝 S 模式访问、PMA 还可能限制访问方式；AArch64/x86 各有对应门控。具体由各架构实现验证，通用层只表达「可读」语义，不暴露 PMP/页表遍历等机制名。
-**输入合同**：启动程序交接后、复制完成前，DTB 剩余字节不得被并发修改（固件或其它代理都不写）。复制算法把 header 在预检快照下读一次、body 在最终快照下读一次，`fdt_layout::validate` 在副本上拒绝两段不一致的容器；但**代码不检测固件在两次读取之间改写 body**——副本仍可能是不同时刻拼出的混合状态，这是尚未验证的合同假设，不是实现已证明的事实。要把它变成已验证属性，需要固件提供不可变保证，或增加一致性检测与拒绝策略。
+**输入合同**：启动程序交接后、复制完成前，DTB 剩余字节不得被并发修改（固件或其它代理都不写）。复制算法把 header 在预检快照下读一次、body 在最终快照下读一次，`fdt_layout::validate` 在副本上拒绝两段不一致的容器；但**代码不检测固件在两次读取之间改写 body**——副本仍可能是不同时刻拼出的混合状态，这是**启动输入方必须满足的信任合同**，尚未验证，不是实现已证明的事实。要把它变成已验证属性，需要固件提供不可变保证，或增加一致性检测与拒绝策略。
 **UEFI ↔ DTB 交叉验证是覆盖合同，不是重叠检查**：静态 `/reserved-memory` 与 MRB 在 UEFI 启动时须出现在 `GetMemoryMap()` 中，且类型须匹配（`no-map`/MRB → `EfiReservedMemoryType`，普通静态 → `EfiBootServicesData`；MRB 在规范里是 `should`，本项目可提升为强制并写明是项目策略）。验证式：
 
 ```
@@ -695,7 +716,7 @@ Outward(R_reserved) ⊆ ⋃ { 类型兼容的 EFI 描述符覆盖的页 }
 
 **类型验证分两个时点**（读完 header 之前并不知道 `totalsize`）：① **首读前**用 ABI 给出的物理起始地址验证 `[dtb, dtb+40)` 覆盖的全部页都落在 `EfiACPIReclaimMemory`，并完成 `BootInputProvenance` 与端到端 `BootInputReachability`；② **header preflight 后**由 snapshot 得到 `totalsize`，验证 `Outward([dtb, dtb+totalsize))` 的**全部页**都由该类型描述符完整覆盖（可多个连续同类型共同覆盖）；覆盖不完整、类型不一致或中途落入其它类型 → 立即拒绝，**不得继续复制 body**。**必测已落码**（`dtb_copy` 14 条单测）：`all_pages_acpi_reclaim_passes`、`a_reserved_page_is_not_acpi_reclaim`、`an_uncovered_page_is_rejected`、`a_conflicting_type_beside_acpi_reclaim_is_rejected`、`the_range_is_page_rounded_outward`、`a_too_small_header_is_refused`，以及两快照时序的 `preflight_authorizes_the_header_then_the_final_map_copies_once`、`a_final_map_type_change_stops_before_the_body_copy`、`the_final_map_may_segment_the_same_range_differently`、`the_header_is_read_once_and_the_body_once`、`the_final_map_phase_allocates_nothing`、`the_copy_is_reused_when_the_final_map_is_read_again`、`copy_without_preflight_is_fail_closed` 与 `an_absent_dtb_needs_no_copy`；配对层由 `ebs_pair` 的 `dtb_preflight_reads_one_map_before_the_paired_final_map`、`preflight_buffer_too_small_stops_before_the_header_read`、`a_retried_ebs_takes_a_new_snapshot_and_the_copy_survives` 钉住。
 **这两张表的射程**：它们**只**决定「该页的 EFI 类型主张是什么」与「一次性只读能否发生」，**不**修改 `RamSourceDomain`、`PmmBaseAvailable` 或 `OrdinaryRamMappingEligibility`。
-**实现状态：已实现（UEFI 腿）**。三段的代码位置见 §2.2 的「复制到自有缓冲」段：`note` → `preflight` → `authorize_and_copy`；三条 DTB 直启腿在各自映像内本来就持有副本，不存在「先读固件对象、再复制」的窗口。`ebs_pair::preflight_dtb` 只在记录了配置表地址时取预检快照，无 DTB 的 x86_64 腿没有额外调用。
+**实现状态：已实现（UEFI 腿）**。三段的代码位置见 §2.2 的「复制到自有缓冲」段：`note` → `preflight` → `authorize_and_copy`；三条 DTB 直启腿在启动 ABI 给出的物理地址上就地只读解析一次，把投影与记录复制进自有 `.bss`/arena；它们不持有固件 DTB 的字节副本，解析完成后不再读原 blob。`ebs_pair::preflight_dtb` 只在记录了配置表地址时取预检快照，无 DTB 的 x86_64 腿没有额外调用。
 **副本生命周期**：原始 DTB 只在复制期间可读；自有副本登记进对象目录；切根前不得回收或覆盖；副本的最终释放必须有明确消费者与阶段。边界条件：header 固定读取长度写明；`totalsize` 有项目上限；`dtb + totalsize` 必须 checked；完整范围必须证明可安全读取（不能只验证起始地址）。
 **MRB 与 EFI DTB 的页集合差分**（上表第一行的例外只作用于交集页，不是整条 MRB）：
 
@@ -751,7 +772,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 
 本项只保留两条对内存图有影响的结论：① `reg` 只是资源位置描述，不推出「必须映射」「属性一定是 DEVICE」「可以进入恒等映射」；② 设备资源记录**不得**直接塞进以 `PhysicalRange` 为地址类型的内存来源记录——那是两类地址域，转换失败（缺失 `ranges`、某一级无法转换、只覆盖部分 `reg`、溢出、最终不是 CPU 物理地址）时不得静默产出看似合法的记录。
 
-#### O-12k UEFI 内存图快照与 MapKey 一致性（**大部分实现**：单快照配对与重试、PreflightMap → header → 副本分配 → FinalMap 序列已落码；按最小描述符尺寸推导缓冲上界与最终范围的可达性独立复核未实现）
+#### O-12k UEFI 内存图快照与 MapKey 一致性（**大部分实现**：单快照配对与重试、PreflightMap → header → 副本分配 → FinalMap 序列已落码；按最小描述符尺寸推导缓冲上界未实现；最终范围可达性归 BootEntry/架构 adapter，本项不实现）
 
 `GetMemoryMap()` 返回的 `MapKey` 随内存图变化而变化，`ExitBootServices()` 必须使用**当前**内存图的 key；key 失效时须重新取图、重试。这与 O-11 的自有副本、对象登记表、诊断缓冲区的分配直接冲突：每次 Boot Services 分配都可能改变内存图。
 **合同**：
@@ -774,7 +795,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 | 6 | header snapshot 写入副本、只复制 body；在副本上完成校验、解析、来源记录、政策投影与审计 | 所有结果绑定 `FinalMap` |
 | 7 | 不再调用会改变内存图的服务，立即 `ExitBootServices(FinalMap.MapKey)` | 同一最终快照 |
 
-三条硬约束：**`FinalMap` 的完整类型检查必须在读 body 之前**（不能用 `PreflightMap` 的 header 验证代替整段授权）；**步骤 5 与步骤 6 之间必须再确认一次完整范围的 `BootInputReachability`**——`FinalMap` 只证明物理范围的类型与覆盖，不证明当前 VA 翻译、PMP/PMA 与访问路径仍可读，两者不能互推；**最终取图之后的解析/采集/投影/审计必须是无分配路径**（隐藏的动态分配同样会让 `MapKey` 失效）。`PreflightMap` 不进入 PMM 投影，也不与 `FinalMap` 的记录混用。
+三条硬约束：**`FinalMap` 的完整类型检查必须在读 body 之前**（不能用 `PreflightMap` 的 header 验证代替整段授权）；**步骤 5 与步骤 6 之间必须再确认一次完整范围的 `BootInputReachability`**（该证明归 BootEntry/架构 adapter，本项只交付物理范围的类型与覆盖）——`FinalMap` 不证明当前 VA 翻译、PMP/PMA 与访问路径仍可读，两者不能互推；**最终取图之后的解析/采集/投影/审计必须是无分配路径**（隐藏的动态分配同样会让 `MapKey` 失效）。`PreflightMap` 不进入 PMM 投影，也不与 `FinalMap` 的记录混用。
 **缓冲区不足分三种情况，不能共用一个规则**：
 
 | 发生位置 | 第一版处理 |
@@ -815,11 +836,11 @@ GetMemoryMap(reused_buffer) → ValidateDescriptorSnapshot
 | 层级 | 检查 |
 |---|---|
 | 内存图元数据 | `DescriptorVersion` 受支持；`DescriptorSize` 不小于已知前缀；`MemoryMapSize` 能被 `DescriptorSize` 整除**且不超过调用方缓冲区长度**；按 `DescriptorSize` 步进；字段读取不越出该条前缀 |
-| 每个描述符 | `PhysicalStart` 对齐且不超上界；`VirtualStart` 按规范校验（**`0` 可接受**，它满足对齐；第一版验证后忽略）；`NumberOfPages` 非零，页数约束**分别对物理与虚拟起点**计算；两个末端都用 **u128**；**不论类型是否输出区间都执行** |
-| 跨描述符 | **物理区间不得重叠**：两个描述符覆盖同一页却给出不同政策时，分类器无法给出唯一结果，必须拒绝启动 |
-| 顶端边界 | **结构合法性与平台准入分开（已裁定，未实现）**：`[0xffff_ffff_ffff_f000, 2^64)` 是合法的最后一页，UEFI 只约束「页起始地址不超过 `0xffff_ffff_ffff_f000`」，不要求独占末端能用 `u64` 表示。结构校验用 `u128` 接受 `end == 2^64`；是否可用由平台地址准入层判定（`effective_pa_limit`、PMA/PMP 等），拒绝时用独立错误码。DTB 腿的三层落定见 §2.1 与 O-12i，UEFI 描述符路径本就接受 `end == 2^64`；测试 `physical_range_expresses_the_top_page` 与四个边界用例 |
+| 每个描述符 | `checked_shape`：`NumberOfPages` 非零、页数 × 4 KiB 不溢出；`PhysicalStart` 对齐（类型 12 的起点属 I/O 端口空间，不套用物理对齐）；物理末端用 **u128** 且 ≤ `2^64`；`VirtualStart = 0` 接受，否则须对齐且虚拟末端 ≤ `2^64`；**不论类型是否输出区间都执行**（`ranges_that_emit_nothing_still_get_shape_checked`、`the_last_page_is_structurally_valid_and_only_admission_refuses_it`、`virtual_start_is_validated_with_u128_for_every_type`） |
+| 跨描述符 | **同一地址域内区间不得重叠**；类型 12 与物理描述符不比较数值（不同域）。实现于 `classify` 的域内两两扫描，失败形状 `RejectedDescriptor { failed: OverlapsDescriptor(index) }`；`same_domain_overlaps_are_rejected_and_cross_domain_is_not` 覆盖同页冲突、跨域同值通过、首尾相接不冲突 |
+| 顶端边界 | **结构合法性与平台准入分开（已落码）**：`[0xffff_ffff_ffff_f000, 2^64)` 是合法的最后一页；`checked_shape` 用 `u128` 接受 `end == 2^64`，只有产出区间的分类再以 `OutOfPhysRange` 拒绝高于页表上界的页（独立错误码）。测试 `the_last_page_is_structurally_valid_and_only_admission_refuses_it` 同时钉住一页接受（结构）与两页拒绝（`RangeOverflow`） |
 | 版本策略 | 只接受 `DescriptorVersion = 1`；其它版本明确拒绝（不是「受支持」的模糊说法） |
-| 顶端页测试（待补） | `PhysicalStart = 0xffff_ffff_ffff_f000, Pages = 1` 通过；同起点 `Pages = 2` 拒绝；`VirtualStart` 同两点；`VirtualStart = 0` 允许但页数仍须满足虚拟上界；**以上对不进入任何分类输出的类型同样执行** |
+| 顶端页测试（已落码） | `the_last_page_is_structurally_valid_and_only_admission_refuses_it`：`PhysicalStart = 0xffff_ffff_ffff_f000, Pages = 1` 结构接受、`Pages = 2` 拒绝；`virtual_start_is_validated_with_u128_for_every_type`：`VirtualStart` 顶端一页接受、两页拒绝、非零未对齐拒绝、`0` 接受；**以上对不进入任何分类输出的类型同样执行** |
 
 #### O-12g 的附加要求
 
@@ -857,11 +878,13 @@ MaxAcceptedDescriptorCount = min(MAX_MAP_DESCRIPTORS, floor(MapBufferCapacity / 
 ```
 MemorySourceRecordCapacity  = UefiDescriptorSourceCapacity      ← ≥ 256（= MaxAcceptedDescriptorCount）
                             + DtbSourceRecordCapacity           ← 40（8 + 8 + 16 + 8；已含最多 8 条固件前缀）
-                            + AdditionalDerivedSourceCapacity   ← 只在 40 槽之外另计的派生记录；固件前缀**不重复计**
+                            + AdditionalDerivedSourceCapacity   ← wire v7 = 0；固件前缀已含在 40 槽内，不另计
 
-StartupObjectRecordCapacity = KernelImage + BootModule + BootPageTable + BootRoot + BootArena
+StartupObjectRecordCapacity = KernelImage + BootModule + BootBump + BootRoot + BootArena
                             + OtherStartupObject                 ← 各项按真实 wire 记录逐条核算
 ```
+
+`BootBump` 同时是自举页表池与 bump 区：页表页从 bump 池分配，不另立 `BootPageTable` 记录；UEFI 腿实数 = 1 + 12 + 1 + 1 + 1 = 16。
 
 **两类记录不是同一种东西**，不能用一个 `TotalSourceCapacity` 混算：来源记录是「事实从哪来」，启动对象记录是「谁占了什么」。它们可以共用一块物理缓冲区，但槽位定义必须各自成立。**第一百一十七轮已落码**：启动对象记录有独立分区（16 槽 × 72 B）与独立种类标签，不再与内存图分区共用槽位；派生记录仍在内存图分区的 256 槽内。
 
@@ -886,7 +909,7 @@ StartupObjectRecordCapacity = KernelImage + BootModule + BootPageTable + BootRoo
 | 来源记录数组是否 ≥ 256 槽 | **已扩到 296**：`WIRE_SOURCES_CAP = 296`（256 描述符 + 40 DTB 记录），9 页 arena 放下后余 384 B；`ebs_map` 有编译期断言 `WIRE_SOURCES_CAP >= MAX_MAP_DESCRIPTORS + DTB_SOURCE_CAP`，覆盖审计按输入权威过滤 |
 | 派生记录与启动对象记录容量 | 启动对象：独立 16 槽（`WIRE_STARTUP_CAP`，wire v7）；派生记录：占用内存图分区的 296 槽中的描述符份额 |
 
-`MaxDescriptorCount = floor(MapBufferCapacity / MinimumSupportedDescriptorSize)` 这条可计算关系仍是**未实现**要求；但「stale-key 重试后描述符数超上限必须整体拒绝、不得截断」这一条**已实现**：超限走 `TooManyDescriptors`，shim 侧 `panic!("boot-shim: memory map rejected: …")`，是整体拒绝而非截断。**两枚边界测试已落码**：恰好 256 条通过（`accepts_exactly_the_descriptor_and_partition_caps`）、257 条以具名错误拒绝（`rejects_a_map_larger_than_the_storage`）；DTB 侧对等测试 `dtb_source_capacity_is_reachable_at_exactly_forty`（上限 `DTB_SOURCE_MAX = 8 + 8 + 16 + 8 = 40`）。启动对象分区的边界由 `startup_partition_accepts_exactly_its_capacity`（16 条通过、17 条拒绝）钉住。
+**实际条数按最终 `MemoryMapSize / DescriptorSize` 计算**；缓冲不足由固件的 `EFI_BUFFER_TOO_SMALL` 处理；超过解析器 256 槽以 `TooManyDescriptors` 整体拒绝，`shim` 侧 `panic!("boot-shim: memory map rejected: …")`，不截断。不再要求从缓冲区容量反推 `MaxDescriptorCount`。**两枚边界测试已落码**：恰好 256 条通过（`accepts_exactly_the_descriptor_and_partition_caps`）、257 条以具名错误拒绝（`rejects_a_map_larger_than_the_storage`）；DTB 侧对等测试 `dtb_source_capacity_is_reachable_at_exactly_forty`（上限 `DTB_SOURCE_MAX = 8 + 8 + 16 + 8 = 40`）。启动对象分区的边界由 `startup_partition_accepts_exactly_its_capacity`（16 条通过、17 条拒绝）钉住。
 
 **arena 载荷预算（wire v7 的真实数字）**：`WireMemoryRegion` 16 B、`WireBootModule` 32 B，所以可用表 128×16 = 2,048 B、保留表 256×16 = 4,096 B、模块表 12×32 = 384 B、平台描述 4×16 = 64 B、参数字节 1,024 B；编译期算术给出 `WIRE_PARAM_OFFSET = 6848`、`WIRE_END = 7872`、`SEMANTIC_END = 14016`。内存图来源分区开在 `SEMANTIC_END`（`WIRE_SOURCES_OFFSET`），`WireSourceRecord` 72 B（无损承载 `u128` 的独占末端、身份与属性），容量 **296 条 = 21,312 B**（= `MAX_MAP_DESCRIPTORS` 256 + 配置表 DTB 记录 40；aarch64 UEFI 同时具备两类输入，不能二选一），结束于 **35,328 B**；启动对象分区紧随其后（`WIRE_STARTUP_OFFSET = 35,328`），**16 条 = 1,152 B**，结束于 **36,480 B**。`ARENA_CAP` 为 **9 页 = 36,864 B** → **余量 384 B**；编译期断言 `WIRE_SOURCES_END == 35328`、`WIRE_STARTUP_END == 36480` 与两者 `<= ARENA_CAP` 同时钉住。信封为 184 B（`sources_byte_len` @168、`startup_byte_len` @176），仍在 256 B 预算内；`BOOT_HANDOFF_V1_VERSION = 7` 且按精确相等比较，v1–v6 的发送方会被拒收，不会按新偏移读旧镜像。
 
@@ -936,7 +959,7 @@ DescriptorAddressDomain = PhysicalAddress | UefiMmioPortSpaceAddress | Unsupport
       与来源身份即可。这些规范表述按「评审人已核（UEFI 2.10/2.11）」使用，本方环境抓不到 uefi.org，未复现。
     ← EfiMemoryMappedIO 可以产生物理地址域记录；
       EfiMemoryMappedIOPortSpace（类型 12）**不得**因为描述符字段叫 PhysicalStart 就规范化成
-      PhysicalRange——§3 不变量 5 已规定端口 I/O 不属于物理地址集合，不进 PMM、页表或物理范围集合。
+      PhysicalRange——§3 的不变量已规定端口 I/O 不属于物理地址集合，不进 PMM、页表或物理范围集合。
       只有 PhysicalAddress 才允许进入 PhysicalRange；类型 11（运行时服务 MMIO 请求）按项目政策
       不产生窗口，记 PolicyDisposition = UnsupportedUefiRuntimeMmio 并保留原始字段
 ```
@@ -949,10 +972,12 @@ DescriptorAddressDomain = PhysicalAddress | UefiMmioPortSpaceAddress | Unsupport
 
 #### O-12i 每种投影的页粒度规则
 
+**范围裁决（第一百二十五轮）**：本项**不**实现独立的 `PmmSourceCandidatePages` 引擎。下面的集合名描述「当前 `MemoryRegion` 可用／保留投影 + 来源记录」的语义分工；I-29 的交付冻结为 §1.5 的三条。若将来要把 `PmmSourceCandidatePages` 做成与现有投影不同的独立结果，必须另立条目并明确它尚未实现，不能借这个名字扩大本项。
+
 | 投影 | 边界处理 |
 |---|---|
 | `RamSourceDomain` | 保留原始 byte range；只有构造页域时才说明边界处理 |
-| `PmmSourceCandidatePages` | 只交付完整落入合法 RAM、且通过保留／存活对象／类型与生命周期排除的整页（向内收缩） |
+| `PmmSourceCandidatePages`（当前即 `KernelInfo.memmap` 可用投影） | 只交付完整落入合法 RAM、且通过保留／存活对象／类型与生命周期排除的整页（向内收缩）；本节不要求另建引擎 |
 | `HardwareAdmissionExcluded` | 架构与平台物理访问能力不满足而排除的页（专项侧，不在本项） |
 | `PmmBaseAvailable` | 上面两项组合后的最终基底可用页 |
 | `PmmBaseExcluded` | 定义为 `RamSourcePageDomain \ PmmBaseAvailable`（最终补集）；每页为何在排除侧由贡献记录解释——保留声明、存活对象、类型／生命周期政策与硬件准入各自成条，不是只有保留声明 |
@@ -995,8 +1020,8 @@ TypePolicyDecision = AcceptWithDisposition | ExcludeRange | RejectBoot
       绝不能写成「排除若干页」后仍然产出一份看起来合法的候选集合
 
 PmmSourceCandidatePages(ctx) = RamSourcePageDomain \ PmmSourceExcludedPages(ctx)
-    ← **本项的输出边界就到这一层**：它回答「来源与生命周期上这页能不能进 PMM 候选」，
-      不回答「这台机器允许这次访问吗」。
+    ← 语义上这一层就是当前可用投影（`KernelInfo.memmap`）；本项不另建引擎
+      （见本节开头的范围裁决），这里不再是新的实现目标。它不回答「这台机器允许这次访问吗」。
 ```
 
 **最终基底的一层（含域裁剪）**：
@@ -1018,7 +1043,7 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 
 #### 用途准入与硬件准入模型已迁出本项（第九十六轮）
 
-从这里起的位置，属于另一份文档：那一段「普通访问准入、页表用途、原子能力、对象访问三层展开、整页全称判定」的模型。它回答的是**硬件能否以某次操作触碰某段字节，以及 OS 该不该把这一页交给某个用途**——按 §1.6 的划界属 BootEntry 与分页侧专项，不是内存图交棒的验收条件。第九十六轮把它**逐字**迁到同目录的 `01-design-note-hardware-admission-model.md`；迁移动机与两份未闭合项写在那一份的篇头，公式本身一条没改。
+从这里起的位置，属于另一份文档：那一段「普通访问准入、页表用途、原子能力、对象访问三层展开、整页全称判定」的模型。它回答的是**硬件能否以某次操作触碰某段字节，以及 OS 该不该把这一页交给某个用途**——按 §1.5 的划界属 BootEntry 与分页侧专项，不是内存图交棒的验收条件。第九十六轮把它**逐字**迁到同目录的 `01-design-note-hardware-admission-model.md`；迁移动机与两份未闭合项写在那一份的篇头，公式本身一条没改。
 
 本项只保留三条与交棒直接相关的事实，它们留在 O-12i 前半节：
 
@@ -1044,15 +1069,15 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 | `DocumentRevision` | 本轮正文与档案的版本 |
 | `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码）。分支头是移动引用，不能当评审身份；每轮的完整 SHA 与两份 sha256 存档在 `03` 的评审身份表与台账里 |
 
-本轮（第一百二十三轮）的取值：代码证据提交见台账对应笔；文档版本为第一百二十三轮；完整仓库快照（评审身份）以台账登记的合并提交为准。三种身份分别记录，不合并成一个轮次。
+本轮（第一百二十五轮）的取值：代码证据提交见台账对应笔；文档版本为第一百二十五轮；完整仓库快照（评审身份）以台账登记的合并提交为准。三种身份分别记录，不合并成一个轮次。
 
 ### 6.1 宿主读数
 
 ```
-$ cargo test -p minix-types                 → 341 passed / 0 failed（第一百一十八轮复跑）
-$ cargo test -p minix-boot                  → 173 passed / 0 failed
-$ cargo test -p boot-shim                   → 103 passed / 0 failed（默认 uefi；14 dtb_copy + 3 配对时序）
-$ cargo test -p boot-shim --features test-all → 115 passed / 0 failed（uefi+opensbi）
+$ cargo test -p minix-types                 → 341 passed / 0 failed（第一百二十六轮复跑）
+$ cargo test -p minix-boot                  → 175 passed / 0 failed
+$ cargo test -p boot-shim                   → 108 passed / 0 failed（默认 uefi；含地址域、结构与顶端边界负控）
+$ cargo test -p boot-shim --features test-all → 120 passed / 0 failed（uefi+opensbi）
 $ cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
 $ cargo test -p minix-vm                    → 548 passed / 0 failed
 ```
@@ -1088,6 +1113,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 
 **第一百二十四轮（wire v7 代码上）**：宿主 `341/173/92(+5)/863/548`；五个交叉构建全通过；六条非注册腿全 PASS（x86 bootmarks、aarch64 ACPI、`DTB_CFGTABLE=1` 负例、riscv bootface、riscv U-Boot shim 6/6、riscv 全系统）。
 
+**第一百二十六轮（wire v7，地址域类型 + O-12h 结构边界）**：宿主 `341/175/108(+5)/120(test-all)/863/548`；五个交叉构建全通过（kernel-image aarch64/riscv；boot-shim x86_64-uefi/aarch64-uefi/riscv64-uboot）；六条非注册腿全 PASS——x86 bootmarks（`platform DTB absent`）、aarch64 ACPI、`DTB_CFGTABLE=1`（负例仍在预检阶段：`DTB preflight failed: DtbPages(NotAcpiReclaim { page: 1206870016 })`）、riscv bootface、riscv U-Boot shim（6/6）、riscv 全系统。新增的同域重叠拒绝与全类型结构校验与真实 OVMF/AAVMF 映射共存，没有误伤固件；`run_all` 本轮未复跑（测试内核自带 `main`、不经生产 shim）。
+
 **第一百二十五轮（wire v7，O-11 严格两快照）**：宿主 `341/173/103(+5)/115(test-all)/863/548`；五个交叉构建全通过（kernel-image aarch64/riscv；boot-shim x86_64-uefi/aarch64-uefi/riscv64-uboot）；六条非注册腿全 PASS——x86 bootmarks（`platform DTB absent`）、aarch64 ACPI、`DTB_CFGTABLE=1`（负例在**预检阶段**拒绝：`DTB preflight failed: DtbPages(NotAcpiReclaim { page: 1206870016 })`）、riscv bootface、riscv U-Boot shim（6/6）、riscv 全系统。`run_all` 本轮未复跑（并发会话占用 QEMU）；该套件的测试内核自带 `main`、不经生产 shim，生产 UEFI 链路由上面三条腿覆盖。
 
 **第一百二十二轮（wire v6 代码上）**：宿主 `341/171/92(+5)/863/548`；五个交叉构建全通过；`run_all` **38/1/0/0**（唯一红仍为基线同签名的 `test-rt-birth-aarch64`）；六条非注册腿全 PASS——x86 bootmarks、aarch64 ACPI、`DTB_CFGTABLE=1`（`DtbPages(NotAcpiReclaim …)` 负例）、riscv bootface、riscv U-Boot shim（6/6）、riscv 全系统。
@@ -1102,7 +1129,7 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 
 - 配置表 DTB「存在但不可用」的负例已有固件路径（`DTB_CFGTABLE=1` 腿：EDK2 把机器 DTB 发布到配置表，但所在页不是 `EfiACPIReclaimMemory`，页类型预检拒绝启动）；「存在且可解析」的正例只剩宿主单测。AAVMF 在默认 ACPI 模式下不发布 DTB 表（8 条配置表项里没有 `b1b621d5`，日志逐字 `platform DTB absent`），这是 EDK2 的 `PlatformHasAcpiDtDxe` 按 ACPI 可用性二选一的行为，不是固件缺件；
 - UEFI 真实固件的描述符分布达到 256 条上限的边界（容量由宿主测试与预检覆盖）；
-- `Excluded`/`DevicePath` 描述符在真实固件上的分布（它们不产生记录，宿主测试覆盖计数）。
+- `Excluded`/`DevicePath` 描述符在真实固件上的分布（它们产生 `UefiExcluded` 记录、不产生投影字节；真实分布尚无证据，宿主测试覆盖计数与来源身份）。
 
 ### 6.4 仍需补的证据与未落码项
 
@@ -1119,9 +1146,11 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 
 | 层 | 结论 | 理由 |
 |---|---|---|
-| 第一层：语义与方向 | **可签** | §1.6 三合同划界；来源事实／冲突裁决／纯集合投影三层分离；保留语义（普通／`reusable`／`no-map`、MRB、UEFI 类型）各自独立 |
-| 第二层：来源完整性与交接判据 | **待评审方签字**（本方复核：五项验收全部闭合） | 来源身份三元组、地址域、296 条 ABI 与权威审计、启动对象写前证明、O-11 严格两快照顺序均已落码；O-11 的时序证据见 §6.1 与 `dtb_copy`/`ebs_pair` 测试。签字与否由评审方按落码复核。 |
-| 第三层：固定布局 ABI | **不签（此前的「缺扩展」理由已不成立）** | `BootHandoffV1` wire v7 已承载来源记录（296）与启动对象（16）两段独立分区，`VmBootHandoff` 版本 8 的尺寸/对齐/九个偏移与失败语义均已钉桩；层结论待评审方复核，不再是「缺扩展」。 |
+| 第一层：语义与方向 | **可签** | §1.5 三合同划界；来源事实／冲突裁决／纯集合投影三层分离；保留语义（普通／`reusable`／`no-map`、MRB、UEFI 类型）各自独立；地址域与范围类型已在类型层强制（`SourceRange::physical` 只认物理域） |
+| 第二层：来源完整性与交接判据 | **待评审方签字**（本方复核：五项验收全部闭合） | 来源身份三元组、地址域类型（`SourceRange` 只允许物理域转 `PhysicalRange`）、296 条 ABI 与权威审计、启动对象写前证明、O-11 严格两快照与 A 案策略均已落码；PMM 候选投影的冻结边界已明确（不新增 `PolicyProjection`）；O-11 的可达性责任归 BootEntry/架构 adapter。签字与否由评审方按落码复核。 |
+| 第三层：固定布局 ABI | **待评审方签字**（本方复核：布局与编码已可独立复核） | `BootHandoffV1` wire v7 已承载来源记录（296）与启动对象（16）两段独立分区；kind/origin/input/domain 的数值编码与 `a/b/cut` 载荷已列入 §2.4；`VmBootHandoff` 版本 8 的尺寸/对齐/九个偏移与失败语义均已钉桩。签字与否由评审方按落码复核。 |
+
+**第一百二十六轮（回应第一百二十五轮评审，不改变层结论）**：① `SourceRecord.range` 改为 `SourceRange`，只有 Physical 域可转 `PhysicalRange`，类型 12 保留原始数值与域身份，审计与保留主张按域过滤；② 范围裁决：不新增 `PolicyProjection`／`PmmSourceCandidatePages` 引擎，冻结为现有 `MemoryRegion` 投影 + 记录 + 覆盖审计；③ O-11 的 A 案定为第一版策略、不可变性写成启动输入方的信任合同、可达性责任归 BootEntry/架构 adapter，补副本目标实际分配相交检查与三条直启腿的投影/记录副本语义；④ O-02a 启动对象表按已落码更新，`StartupObjectRecordCapacity` 的 `BootPageTable` 改为 `BootBump`（含页表池），派生容量 = 0；⑤ O-12h 全类型结构校验、同域重叠拒绝与顶端页测试落码；⑥ wire v7 的 kind/origin/input/domain 数值编码与 `a/b/cut` 载荷表补入 §2.4。宿主读数见 §6.1，QEMU 见 §6.3。
 
 **第一百一十三轮（实现复审修复，不改变层结论）**：双轴复审提出的两项 fail-open 与四项合同/文档不一致已闭合——① 截断或零长的 `reg` 不再被跳过（四条负控）；② 非 `no-map` 保留与 MRB 的页级冲突拒绝（三正一负）；③ 跨镜像 resume 走 `validate_requiring_sources`，三条 DTB 腿交出前断言来源非空；④ FDT 容器 MRB 上限回到 16；⑤ O-11 静态保留 × EFI 类型覆盖落码（`resv_claims`，三条必测形态）；⑥ 注释/引用同步与 I-29 触及文件的 rustfmt。读数见 §6.1/§6.3；仍开放的是 O-11「复制到自有缓冲再解析」与真机固件证据。
 
@@ -1131,23 +1160,23 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 
 **第一百一十七轮（A3 落码，不改变层结论）**：启动对象记录进入独立分区（16 槽 × 72 B，wire v4，版本 4）；`KernelInfo.startup_objects` 与 `STARTUP_RECORD_STORE` 在四条腿落地；启动对象记录不参与内存图来源覆盖审计。第二层验收项 2 与 5 已按代码更新，三层结论不变。
 
-**第二层的验收内容已按 §1.6 收紧**，只保留真正属于「资源发现与交接」的五项（平台资源描述随射程移交 `04`，不再作为签字项）：
+**第二层的验收内容已按 §1.5 收紧**，只保留真正属于「资源发现与交接」的五项（平台资源描述随射程移交 `04`，不再作为签字项）：
 
 1. **输入真实性**——**provenance 与 reachability 分开**：I-29 负责各启动 ABI 的**对象身份、地址域、授权范围、阶段与失效点**，以及可复核的来源依据（provenance）；「该地址在当前阶段是否端到端可达、是否满足非受控推测访问限制」（reachability）由 BootEntry 与各架构 adapter 负责。**配置表 DTB 指针存在，不能推出它可读**——即便 UEFI 规定该指针按物理地址解释且 DTB 必须位于 `EfiACPIReclaimMemory`，可达性仍要单独证明。aarch64 UEFI 配置表 DTB 的三态规则已落码（不存在→仅按内存图；已解析→`/memory` 必须覆盖每条 conventional 跨度，否则 halt；存在但不可用→halt），实现为 `uefi_helpers::cross_validate_config_dtb`，两个 UEFI 入口各调一次。真机覆盖按 A1 之后的口径：默认 ACPI 腿验证「不存在」；`acpi=off` 腿下 EDK2 把 DTB 发布在非 `EfiACPIReclaimMemory` 页，验证「存在但不可用」的拒绝（`DtbPages(NotAcpiReclaim …)`）；「存在且可解析」的正例今天只有宿主测试（固件无法被外部改造成该形态），见 §6.3、§6.4。
-2. **来源保真**：每条启动路径的 `SourceRecord` 生产、保存与**传递**。三条 DTB 政策路径（riscv bootface、aarch64 直启、riscv U-Boot）都生成记录、在投影产生后交棒前审计、并写入 `KernelInfo.memmap_sources`；U-Boot 腿的记录经 v1 来源分区跨镜像，接收端落进内核 `.bss` 后由 `KernelInfo::validate` 第 6 步在消费者边界重跑覆盖审计。**UEFI 的逐描述符记录已接入**：EBS 配对循环为每个产出入普通表的描述符写一条 `SourceOrigin::UefiDescriptor { index }` 记录（范围=分类器实际发出的区间），接收端与 DTB 腿走同一个 `decode_sources` 与消费者边界审计；容量 256 = `MAX_MAP_DESCRIPTORS`。`Excluded`/`DevicePath` 描述符不产出投影字节，因此没有记录（计数单独打印），这是唯一登记在案的省略。
+2. **来源保真**：每条启动路径的 `SourceRecord` 生产、保存与**传递**。三条 DTB 政策路径（riscv bootface、aarch64 直启、riscv U-Boot）都生成记录、在投影产生后交棒前审计、并写入 `KernelInfo.memmap_sources`；U-Boot 腿的记录经 v1 来源分区跨镜像，接收端落进内核 `.bss` 后由 `KernelInfo::validate` 第 6 步在消费者边界重跑覆盖审计。**UEFI 的逐描述符记录已接入**：EBS 配对循环为每个产出入普通表的描述符写一条 `SourceOrigin::UefiDescriptor { index }` 记录（范围=分类器实际发出的区间），接收端与 DTB 腿走同一个 `decode_sources` 与消费者边界审计；容量 296 = `MAX_MAP_DESCRIPTORS` 256 + 配置表 DTB 记录 40。`Excluded`/`DevicePath` 描述符产出 `UefiExcluded` 记录（保留原始范围与 `raw_type`），但不产出投影字节；真实固件上的分布尚无证据，宿主测试覆盖计数与来源身份。
 3. **冲突与生命周期**：DTB／UEFI 静态保留的交叉验证、MRB、`no-map`、类型政策各自语义独立；首读与解析后拒绝两个决定已分开（O-04／O-11 的冲突已消）；O-01 第一版采静态处置表 + 损失声明，`ReservedReusable` 保持独立类型。
 4. **分配所有权**：候选集与交付集不得混称。§2.8 的时间线已证明两件事——**候选集合包含 bump 池**、**首次分配早于任何扣减**；UEFI 腿的根页与 bump 靠 `assert_bootstrap_outside_memmap` 挡在候选之外，**自引导两腿的根页与页表 bump 都取自 `/memory` 内的固定池，按现有披露事实应视为已落入候选集合**（除非补出 `select_multi` 内部的过滤证据）。验收三枚：`BootBumpRange ∩ FirstVmBootAllocatorCandidates = ∅`、`BootRootPage ∩ FirstVmBootAllocatorCandidates = ∅`、`FirstVmAllocatedPages ∩ (BootBumpRange ∪ BootRootPage) = ∅`；第三枚是结果断言，前两枚替代不了。**消费边界的证明边界**：`reconcile` 只证明「接到的扣减集合与自由集合不相交」并抽查根页/模块在记录内，不证明集合完整；完整性由内核 `classify` 的枚举合同与测试负责（第一百二十轮明确写开，避免把内部自洽读成覆盖完整）。**第一百零四轮已补**：`test_first_vm_allocation_never_lands_in_bump_or_root` 走生产的 `select_multi` + `VmBootAllocator`，取尽 703 页并断言全部避开 bump 与根页。另加 `FREE_MEMMAP` 去留裁决（它零读者、也不是候选输入）。**第一百零一轮已落码**：排除清单从「内核 + 模块」扩成 `vm_boot_exclusions`（内核、模块、根页、bump，容量 `NR_BOOT_MODULES + 3`），真实与 mock 两个分支共用；单测 `test_vm_boot_exclusions_cover_kernel_root_and_bump` 覆盖四类来源与缺省情形。**已补**：第三枚结果断言就是 `test_first_vm_allocation_never_lands_in_bump_or_root`（真实 `select_multi` + `VmBootAllocator`，703 页全部避开）；QEMU 四条启动链与全系统腿已跑（§6.3），第二跳与 VM `reconcile` 在 x86 与 riscv 全系统腿上成立。
-5. **容量与 ABI**：接受上限是 `min(256, floor(缓冲/40)) = 256`，**不是**缓冲能装的 524；来源记录按两类拆分：`MemorySourceRecordCapacity`（UEFI ≥256、DTB 40 含 8 条固件前缀、40 槽之外的派生）与 `StartupObjectRecordCapacity`（内核映像／模块／页表池／根页／arena／其它）；启动对象记录自 A3 起有独立分区（16 槽 × 72 B），派生记录仍在内存图分区的 256 槽内。第一跳 arena 为 9 页：来源分区 **296 条** × 72 B = 21,312 B（256 UEFI 描述符 + 40 配置表 DTB 记录）、启动对象分区 16 条 × 72 B = 1,152 B（wire v7，余 384 B）；两段分区都在写之前拒绝超限（`TooManySourceRecords` / `WIRE_STARTUP_CAP`），且有编译期断言 `296 >= 256 + 40`。第二跳的 `deducted` 按来源记账（`push` 只做页取整，不交集、不合并），上界 `3 + 32 + 12 = 47`。**第一百零一轮已落码**：`VM_BOOT_HANDOFF_MAX_DEDUCTED` 由 32 提到 47、`VM_BOOT_HANDOFF_VERSION` 7→8，并加编译期断言 `>= 3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES` 与两枚边界测试（`test_deduction_capacity_accepts_full_bound`、`test_deduction_capacity_overflow_is_fail_stop`）；**第一百零三轮已落码**：`VmBootHandoff` 的尺寸、对齐与九个关键字段偏移已用 `test_vm_boot_handoff_layout_is_pinned` 钉死；第一百零八轮已补齐：交接页合同（物理帧来源、生命周期、little-endian、3,792 B ≤ 一页）写入 §2.6；`magic`／精确 `version`／根页／三类容量的 fail-stop 由七枚测试钉住；两个固定用户 VA 用编译期断言压在 2^38 以下。「超限整体拒绝不截断」**已实现**。第一跳两段来源分区与 `KernelInfo` 两个承载字段已按上段落码（wire v7，版本号精确比较，超容量与坏记录都失败关闭）。
+5. **容量与 ABI**：接受上限是 `min(256, floor(缓冲/40)) = 256`，**不是**缓冲能装的 524；来源记录按两类拆分：`MemorySourceRecordCapacity`（256 UEFI + 40 DTB，派生 0）与 `StartupObjectRecordCapacity`（内核映像／模块／bump（含页表池）／根页／arena／其它）；启动对象记录自 A3 起有独立分区（16 槽 × 72 B）；派生记录为 0（wire v7），296 槽全部由 UEFI 描述符与配置表 DTB 记录使用。第一跳 arena 为 9 页：来源分区 **296 条** × 72 B = 21,312 B（256 UEFI 描述符 + 40 配置表 DTB 记录）、启动对象分区 16 条 × 72 B = 1,152 B（wire v7，余 384 B）；两段分区都在写之前拒绝超限（`TooManySourceRecords` / `WIRE_STARTUP_CAP`），且有编译期断言 `296 >= 256 + 40`。第二跳的 `deducted` 按来源记账（`push` 只做页取整，不交集、不合并），上界 `3 + 32 + 12 = 47`。**第一百零一轮已落码**：`VM_BOOT_HANDOFF_MAX_DEDUCTED` 由 32 提到 47、`VM_BOOT_HANDOFF_VERSION` 7→8，并加编译期断言 `>= 3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES` 与两枚边界测试（`test_deduction_capacity_accepts_full_bound`、`test_deduction_capacity_overflow_is_fail_stop`）；**第一百零三轮已落码**：`VmBootHandoff` 的尺寸、对齐与九个关键字段偏移已用 `test_vm_boot_handoff_layout_is_pinned` 钉死；第一百零八轮已补齐：交接页合同（物理帧来源、生命周期、little-endian、3,792 B ≤ 一页）写入 §2.6；`magic`／精确 `version`／根页／三类容量的 fail-stop 由七枚测试钉住；两个固定用户 VA 用编译期断言压在 2^38 以下。「超限整体拒绝不截断」**已实现**。第一跳两段来源分区与 `KernelInfo` 两个承载字段已按上段落码（wire v7，版本号精确比较，超容量与坏记录都失败关闭）。
 
-**已登记的实施清理（状态更新）**：① 三条 DTB 腿已全部改用 `collect_with_sources()`，`collect()` 只剩 UEFI 诊断路径；② `FREE_MEMMAP` 已删除（第一百零六轮）；③ `VmBootAllocator` 的构造参数仍是原始候选区集合，排除依赖每个调用点调 `vm_boot_exclusions`（未改）；④ `Attribute` 不进入来源记录、也没有诊断输出，但分类器五步裁决会读取它（`AMBIGUOUS`/`PROFILE_ONLY`/`ISA_*` fail-closed，`WRITE_BACK` 是普通映射准入）——未做的是「记录与诊断」，不是「读取」；⑤ 已落码（47 + 两枚边界测试，第一百零一轮）；⑥ 启动对象已独立 16 槽（A3）；派生记录仍与 UEFI/DTB 记录共用 256 槽，其余类别未单列；⑦ 登记（第一百一十三轮复审）：`collect_inner` 单函数约 350 行，MRB 与 `/reserved-memory` 两段 span 裁剪样板重复——非阻断，按「非阻断发现登记、不追改」留待专门重构。
+**已登记的实施清理（状态更新）**：① 三条 DTB 腿已全部改用 `collect_with_sources()`，`collect()` 只剩 UEFI 诊断路径；② `FREE_MEMMAP` 已删除（第一百零六轮）；③ `VmBootAllocator` 的构造参数仍是原始候选区集合，排除依赖每个调用点调 `vm_boot_exclusions`（未改）；④ `Attribute` 不进入来源记录、也没有诊断输出，但分类器五步裁决会读取它（`AMBIGUOUS`/`PROFILE_ONLY`/`ISA_*` fail-closed，`WRITE_BACK` 是普通映射准入）——未做的是「记录与诊断」，不是「读取」；⑤ 已落码（47 + 两枚边界测试，第一百零一轮）；⑥ 启动对象已独立 16 槽（A3）；派生记录为 0（wire v7），296 槽 = 256 UEFI + 40 DTB；⑦ 登记（第一百一十三轮复审）：`collect_inner` 单函数约 350 行，MRB 与 `/reserved-memory` 两段 span 裁剪样板重复——非阻断，按「非阻断发现登记、不追改」留待专门重构。
 
-**驱动访问点审计（每个使用点的 VA／宽度／读写方向／参与 CPU）不在本项**：§1.6 的边界声明已把它与 `DeviceResource` 分开，O-07 的实际访问完整性不再算作本项第七项阻塞。**列为外部依赖、不影响本项签字状态**：叶子粒度与拆分／降级路径、PTE 的 A/D 更新方案、页表访问的 PMP/PMA 证明、LR/SC／AMO／预约集等原子能力、根激活前后的审计时序与 `FrozenBootMappingSet` 的冻结字段。这些材料在 `01-design-note-hardware-admission-model.md` 与 `03` 六十五节里继续存在，其中两条已知未闭合（共享原子合同仍按 LR/SC 分支；跨页源级访问的整体覆盖规则未进入逐操作判定式）已写在那一册篇头。
+**驱动访问点审计（每个使用点的 VA／宽度／读写方向／参与 CPU）不在本项**：§1.5 的边界声明已把它与 `DeviceResource` 分开，O-07 的实际访问完整性不再算作本项第七项阻塞。**列为外部依赖、不影响本项签字状态**：叶子粒度与拆分／降级路径、PTE 的 A/D 更新方案、页表访问的 PMP/PMA 证明、LR/SC／AMO／预约集等原子能力、根激活前后的审计时序与 `FrozenBootMappingSet` 的冻结字段。这些材料在 `01-design-note-hardware-admission-model.md` 与 `03` 六十五节里继续存在，其中两条已知未闭合（共享原子合同仍按 LR/SC 分支；跨页源级访问的整体覆盖规则未进入逐操作判定式）已写在那一册篇头。
 
 **现状与合同相反的一条（不是缺口，裁决已下）**：低 4 GiB 恒等映射不消费 `no-map`、MRB 与类型禁止政策，普通叶子带 `EXECUTABLE`，且今天的启动流程没有对该区间执行拆分或撤销的调用路径（§2.3）。O-02a 裁定甲案（授权驱动建表）、否决乙案与半拉子形态；其四段依赖链中，**本项只交付第一段（来源进入政策）**，第二、三段属映射政策消费者，第四段属分页专项——这条归属划分不改变「输入边界与来源完整性是它的前置证明」。
 
 ## 7.1 冻结规则（第一百轮写入，作为后续评审的准入）
 
-**一、内容冻结**：本项交付固定为三件事——物理内存图、启动对象物理占用、两跳交接。设备发现、设备映射、硬件准入与驱动访问审计不再进入正文。任何新建议先回答「它是否直接影响这三项之一」；不直接影响的登记到对应专项或 backlog。确需新增同级合同时，**优先替换或修订现有条款，净篇幅不增**。
+**一、内容冻结**：本项交付固定为三件事——物理内存图、启动对象物理占用、两跳交接。设备发现、设备映射、硬件准入与驱动访问审计不再进入正文。任何新建议先回答「它是否直接影响这三项之一」；不直接影响的登记到对应专项或 backlog。确需新增同级合同时，**优先替换或修订现有条款，净篇幅不增**。**本项不交付独立的 `PolicyProjection`／`PmmSourceCandidatePages` 引擎**：现有 `MemoryRegion` 投影、`SourceRecord` 身份与覆盖审计即冻结边界；独立政策引擎若需要，另立条目。
 
 **二、意见分诊**：后续只接收三类问题——① 正文内部矛盾（同一事实、公式、责任或容量给出不兼容结论）；② 与代码／ABI 事实冲突（合同声称与实际实现不一致，或代码证据不支持主张）；③ **本项自己的**交付缺口（缺该事实就无法判断内存图、启动对象占用或两跳交接）。第三类不得替换成「下游实现这个功能需要更细的设计」。
 

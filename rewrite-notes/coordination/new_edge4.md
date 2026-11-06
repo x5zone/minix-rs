@@ -6053,3 +6053,12 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 提交 `0839d7c70`（代码+测试）；本笔与主简报同笔文档提交。认领 `I-29 qorder127`：ff 合并后释放。
 - 仍开放：`SourceRange` 带标签类型 vs 现 `PhysicalRange` + 解码闸的裁决；O-12k 的「按最小描述符尺寸推导缓冲上界」与最终范围可达性独立复核。
 - 补记（2026-11-07）：正文残留断面校正（O-12 记录交付、`capture` 时点、预检快照分工、输入合同、`PhysicalRange` 接入、`validate_requiring_sources` 三条测试）提交 `272854366`；主线在此期间由并发会话推进到 `96dbeddaf`，本次以 cherry-pick 重放（ff 已不可用）。
+
+### 第三百四十一笔（01 阶段 · I-29 第一百二十六轮：地址域类型、O-12h 结构与范围收口）
+
+- 代码：`SourceRecord.range` 改为 `SourceRange`（数值起止），只有 `AddressDomain::Physical` 经 `physical_range()` 转 `PhysicalRange`；类型 12 保留原始数值与 `UefiMmioPortSpace` 域，覆盖审计与保留主张按域过滤。`ebs_map::checked_shape` 对**所有**描述符做结构校验（页数非零、u128 末端 ≤ 2^64、物理对齐（类型 12 除外）、`VirtualStart` 0/对齐/末端），`classify` 增加同域重叠拒绝（`OverlapsDescriptor`）。`dtb_copy::copy_target_overlaps` 记录实际分配地址的相交检查。
+- 测试：`source_range_converts_only_in_the_physical_domain`、`the_source_audit_ignores_non_physical_records`、`a_port_space_descriptor_keeps_its_raw_range_without_becoming_physical`、`the_last_page_is_structurally_valid_and_only_admission_refuses_it`、`virtual_start_is_validated_with_u128_for_every_type`、`same_domain_overlaps_are_rejected_and_cross_domain_is_not`、`the_copy_target_overlap_check_uses_the_allocated_range`；宿主 341/175/108(+5)/120(test-all)/863/548。
+- 回归：五个交叉构建全通过；六条 QEMU 腿全 PASS（含 `DTB_CFGTABLE=1` 预检阶段负例；同域重叠检查未误伤 OVMF/AAVMF）。
+- 文档：§1.5 冻结边界（不新增 PolicyProjection）；§2.1 SourceRange；§2.3 类型 12 路径；§2.4 wire v7 tag/payload 表；§2.5 实际 API；O-02a 启动对象表；O-11 A 案/信任合同/可达性责任/直启腿副本语义；O-12h 结构与顶端边界；O-12i 范围裁决；§7 签字与 §7.1 冻结边界；DocumentRevision/§1.6/不变量 5/Excluded 记录等清理。门：lint 0、引用 0、锚点 3（2 resolved、1 既有 multi-def）、承载 PASS；正文 1,187 行 / 96,078 字符、围栏 42 偶、表格 39 块 0 不一致。
+- 提交 `dbbfbfd18`（代码+测试）；本笔（文档）与主简报同一次文档提交。认领 `qorder129`：ff 合并后释放。
+- 仍开放：O-12k 的按最小描述符尺寸推导缓冲上界；`PolicyProjection` 若需要成为独立结果，另立条目（本项不新增引擎）。
