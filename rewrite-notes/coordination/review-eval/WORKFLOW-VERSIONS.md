@@ -57,6 +57,7 @@
 - `check-review-rules.sh`：Codex 正文漂移检查用 `grep -c '^### '`，零命中时 `grep` 退出 1，被 `set -e` 打断，导致新增无三级标题的技能时整门静默失败。改为 `grep -c ... || true`。
 - `diff-trae-skills.sh`：只枚举 `review-*-skill.md`，漏掉 `review-loop.md`。枚举条件补上 `review-loop`，源与派生计数从 9 变 10。
 - `eval-trace-check.py`：新增 `--panel-dir`；未给时先在 run 目录找 `panel/`，再向上找 `tmp/review-eval/<stage>/<doc>/panel`。这样 `review-loop.md` 的默认命令可以直接跑，不要求把原始面板输出复制进入库目录。
+- `eval-trace-check.py`（D02 补）：`FINDING` 正则接受标题后缀（如 `【低置信 · 高价值】`），避免漏计 reader-c 的 C-14..C-16；D02 因此从 66 条恢复到 69 条。
 
 ### V1 首跑结果（D01）
 

@@ -51,7 +51,7 @@ SECTION_TITLES = [
     "§8 给 meta-review 的不确定点",
 ]
 
-FINDING_RE = re.compile(r"^##\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)\s*$", re.MULTILINE)
+FINDING_RE = re.compile(r"^##\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)\s*$", re.MULTILINE)
 METRIC_DISPOSITION_RE = re.compile(
     r"^-\s*处置\s*[:：]\s*①\s*(\d+)\s*/\s*②\s*(\d+)\s*/\s*③\s*(\d+)\s*/\s*④\s*(\d+)\s*/\s*⑤\s*(\d+)\s*$",
