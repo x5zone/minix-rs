@@ -268,9 +268,11 @@ static mut DTB_RAW: Option<(u64, u64)> = None;
 /// Parse the configuration-table DTB and record its reservation claims.
 ///
 /// Any parse failure leaves the claim list empty: the boot is halted later by
-/// `cross_validate_config_dtb`, so this function must not invent a second
-/// failure path for the same input.
-pub fn capture(bytes: &'static [u8], source: (u64, u64)) {
+/// `cross_validate_config_dtb` on the same bytes, so this function must not
+/// invent a second failure path for the same input. Claim *capacity* is the
+/// exception: no later gate re-counts claims, so an overflow must surface
+/// here instead of leaving `check_current` with an empty list.
+pub fn capture(bytes: &'static [u8], source: (u64, u64)) -> Result<(), ClaimError> {
     // SAFETY: single-threaded boot; capture runs once inside the pairing loop
     // after the owned copy was authorized, and the reader runs on the same
     // thread immediately afterwards.
@@ -278,18 +280,36 @@ pub fn capture(bytes: &'static [u8], source: (u64, u64)) {
         CLAIMS_N = 0;
         DTB_RECORDS_N = 0;
         DTB_RAW = Some(source);
-        if minix_boot::fdt_layout::validate(0, bytes).is_err() {
-            return;
-        }
-        let Ok(fdt) = fdt::Fdt::new(bytes) else {
-            return;
-        };
-        let Ok((_, _, sources, panorama)) =
-            minix_boot::DtbMemoryMap::new(&fdt, 0).collect_with_panorama()
-        else {
-            return;
-        };
-        for (i, record) in sources.iter().enumerate() {
+    }
+    if minix_boot::fdt_layout::validate(0, bytes).is_err() {
+        return Ok(());
+    }
+    let Ok(fdt) = fdt::Fdt::new(bytes) else {
+        return Ok(());
+    };
+    let Ok((_, _, sources, panorama)) =
+        minix_boot::DtbMemoryMap::new(&fdt, 0).collect_with_panorama()
+    else {
+        return Ok(());
+    };
+    capture_claims(sources, panorama, source)
+}
+
+/// Fill the static claim and record stores from already-parsed DTB facts.
+///
+/// Capacity is the one failure this layer cannot defer: no later gate
+/// re-counts claims, so `TooManyClaims` must reach the pairing loop.
+fn capture_claims(
+    records: &[SourceRecord],
+    panorama: &[minix_boot::MemoryRegion],
+    source: (u64, u64),
+) -> Result<(), ClaimError> {
+    // SAFETY: single-threaded boot; same contract as `capture`.
+    unsafe {
+        CLAIMS_N = 0;
+        DTB_RECORDS_N = 0;
+        DTB_RAW = Some(source);
+        for (i, record) in records.iter().enumerate() {
             if i >= minix_boot::DTB_SOURCE_CAP {
                 break;
             }
@@ -303,15 +323,14 @@ pub fn capture(bytes: &'static [u8], source: (u64, u64)) {
             end: 0,
             expected: ExpectedEfiType::Reserved,
         }; MAX_CLAIMS];
-        let Ok(count) = claims_from_records(sources, panorama, &mut claims) else {
-            return;
-        };
+        let count = claims_from_records(records, panorama, &mut claims)?;
         let base = core::ptr::addr_of_mut!(CLAIMS) as *mut Claim;
         for (i, claim) in claims.iter().enumerate().take(count) {
             // SAFETY: `base` points at the static array, `i < count <= MAX_CLAIMS`.
             base.add(i).write(*claim);
         }
         CLAIMS_N = count;
+        Ok(())
     }
 }
 
@@ -562,5 +581,33 @@ mod tests {
             claims_from_records(&records, &panorama, &mut out),
             Err(ClaimError::TooManyClaims)
         );
+    }
+
+    /// The production path must propagate the capacity refusal: an overflow
+    /// that became an empty claim list would silently skip every coverage
+    /// check for this DTB.
+    #[test]
+    fn capture_claims_surfaces_the_capacity_overflow() {
+        let records = [record(SourceKind::MrbEntry, 0x2000, 0x3000); MAX_CLAIMS + 1];
+        let panorama = [MemoryRegion {
+            base: PhysBytes(0x1000),
+            len: 0x5000,
+        }];
+        assert_eq!(
+            capture_claims(&records, &panorama, (0x2000, 0x3000)),
+            Err(ClaimError::TooManyClaims)
+        );
+        assert_eq!(check_current(&[]), Ok(()), "no claim survived the refusal");
+    }
+
+    /// A container the later gate owns leaves the claim list empty and the
+    /// pairing loop running; `cross_validate_config_dtb` halts on the same
+    /// bytes. Only capacity has no later gate.
+    #[test]
+    fn capture_leaves_container_failures_to_the_later_gate() {
+        static BAD: [u8; 64] = [0u8; 64];
+        assert_eq!(capture(&BAD, (0, 64)), Ok(()));
+        assert_eq!(records().len(), 0);
+        assert_eq!(check_current(&[]), Ok(()));
     }
 }

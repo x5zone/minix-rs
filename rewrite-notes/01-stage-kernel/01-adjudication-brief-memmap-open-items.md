@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-07 02:23 CST（`date` 实测）；**内容轮次：第一百二十八轮——O-12i 阶段公式、O-11 候选 A 措辞与直启路径相交检查**（正式公式补 `M = Pages(KernelInfo.memmap)`、`C = M \ Pages(vm_boot_exclusions)` 与 `PmmSourceExcludedPages = (RamSourcePageDomain \ M) ∪ Pages(vm_boot_exclusions)`；O-11 候选 A 改为完整范围一次性只读访问 + 按路径自有化，副本生命周期标题限定为 UEFI 字节副本；两条 bootface 的 `dtb_bounded` 增加内核映像范围拒绝，U-Boot 腿引用固定链接布局）。
+> **重写**：2026-11-07 02:47 CST（`date` 实测）；**内容轮次：第一百二十九轮——复审修复：DTB 记录跨跳收尾与主张溢出失败关闭**（`push_dtb_sources` 在 UEFI 记录之后追加 DTB 记录并重写 `sources_byte_len`，接收端首次能解码两类输入之和；`resv_claims::capture` 把 `TooManyClaims` 以 `PairError::DtbClaims` 失败关闭，不再退化成空主张集；排除记录的末端改用 u128 精确表示）。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -232,7 +232,7 @@ serializer.push_source(&record).expect("preflight proved the source partition");
 
 每条记录同时携带身份：`input_object = UefiMemoryMap`（输入**类别**）、`local_source = 描述符索引`、`snapshot_id` 为本次取图的**观测实例序号**（与 `MapKey` 无关）、`attribute`/`virtual_start`/`raw_type` 为描述符原值。跨快照的同号描述符因此可区分。**拒绝诊断**：`adjudicate` 失败时 `classify` 返回 `MapError::RejectedDescriptor`，携带 `index`、`raw_type`、`physical_start`、`virtual_start`、`number_of_pages`、`attribute` 与 `failed`（`PolicyError`），停机报告不再只有错误码（`a_refused_descriptor_is_named_in_the_error`）。容量边界两向都有测试：257 条描述符拒绝（`rejects_a_map_larger_than_the_storage`），恰好 256 条且同时填满 128 可用 / 64 保留 / 64 侧表通过（`accepts_exactly_the_descriptor_and_partition_caps`）。
 
-**静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在配对循环内、副本授权之后从副本采集（`resv_claims::capture`），并在同一最终快照上于 `ExitBootServices` 之前逐页核对（`check_current`，失败形状 `PairError::ReservationCoverage`）；配置表 DTB 的来源记录（≤40）也在 `capture` 时留存，并随 UEFI 记录一起写入来源分区，供内核保留原始声明身份。无覆盖或同页出现异类描述符即拒绝启动，即使另有兼容描述符覆盖同页也算冲突（保守加强）；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。容量固定：主张 `MAX_CLAIMS = 64`、每条主张的覆盖区间 `MAX_INTERVALS = 256`，溢出拒绝不截断。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 10 条单测；默认 ACPI 腿无配置表 DTB（无主张、按空集通过），`DTB_CFGTABLE=1` 腿会真正采集并核对。
+**静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在配对循环内、副本授权之后从副本采集（`resv_claims::capture`），并在同一最终快照上于 `ExitBootServices` 之前逐页核对（`check_current`，失败形状 `PairError::ReservationCoverage`）；配置表 DTB 的来源记录（≤40）也在 `capture` 时留存，并随 UEFI 记录一起写入来源分区，供内核保留原始声明身份。无覆盖或同页出现异类描述符即拒绝启动，即使另有兼容描述符覆盖同页也算冲突（保守加强）；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。容量固定：主张 `MAX_CLAIMS = 64`、每条主张的覆盖区间 `MAX_INTERVALS = 256`，溢出拒绝不截断——`capture` 把 `claims_from_records` 的 `TooManyClaims` 作为 `PairError::DtbClaims` 失败关闭（第一百二十九轮修复：此前错误被吞掉，`check_current` 会把空主张集当成「无主张」放行）；配置表 DTB 的记录在 UEFI 记录之后由 `push_dtb_sources` 追加并重写 `sources_byte_len`（同一修复：此前描述符停留在 UEFI 记录数，接收端只看到 256 条）。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 11 条单测（含 `capture_claims_surfaces_the_capacity_overflow`）；默认 ACPI 腿无配置表 DTB（无主张、按空集通过），`DTB_CFGTABLE=1` 腿会真正采集并核对。
 
 **复制到自有缓冲（`boot-shim/src/dtb_copy.rs`，严格两快照）**：三段落码。`note(dtb_pa)` 只记录配置表地址，不读一个字节。`preflight(descs)` 在**预检快照**下验证 `[dtb, dtb+40)` 覆盖的全部页为 `EfiACPIReclaimMemory` 且无同类异型覆盖，一次读 40 字节 header、校验 `totalsize`、分配自有缓冲；这次分配会改变活内存图，所以最终快照必须是再一次 `GetMemoryMap`。`authorize_and_copy(descs)` 在**最终快照**（配对循环自己的取图，与 `ExitBootServices` 的 MapKey 同源）下复核 `Outward([dtb, dtb+totalsize))` 的全部页，把预检捕获的 header 写入副本前 40 字节、只从源地址复制 body 一次，且不再分配；EBS 重试复用副本、不重读源。`ebs_pair::preflight_dtb` 只在记录了地址时多取一次图，没有配置表 DTB 的 x86_64 腿零额外调用。此后 `fdt_layout::validate`、解析、`collect` 与 `resv_claims` 只读副本。测试：14 条 `dtb_copy` 单测（页类型正反例、header 边界、最终快照类型变化在 body 复制前拒绝、最终快照分段变化仍覆盖、header 只读一次而 body 只在复制阶段读、副本复用、预检缺失即拒绝、最终阶段零分配）＋3 条 `ebs_pair` 时序测试（预检/最终/重试快照的取图次数、预检缓冲不足不读 header、接受记录的 `snapshot_id` 指向重试快照）。
 
@@ -1081,15 +1081,15 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 | `DocumentRevision` | 本轮正文与档案的版本 |
 | `ReviewedRepositoryCommit` | 评审人应拿去核对的完整仓库提交（文档 + 代码）。分支头是移动引用，不能当评审身份；每轮的完整 SHA 与两份 sha256 存档在 `03` 的评审身份表与台账里 |
 
-本轮（第一百二十八轮）的取值：`CodeEvidenceCommit = 832560f6a`（两条 bootface 的相交检查 + RISC-V 自引导腿复跑；宿主读数沿用同一代码线的前一笔，bootface 改动不影响宿主包）；`DocumentRevision` = 第一百二十八轮；`ReviewedRepositoryCommit` 以台账第三百四十四笔登记的合并头为准。三种身份分别记录，不合并成一个轮次。
+本轮（第一百二十九轮）的取值：`CodeEvidenceCommit` 即本轮提交（代码与本文同提交）；`DocumentRevision` = 第一百二十九轮；`ReviewedRepositoryCommit` 以台账第三百四十五笔登记的合并头为准。三种身份分别记录，不合并成一个轮次。
 
 ### 6.1 宿主读数
 
 ```
 $ cargo test -p minix-types                 → 341 passed / 0 failed（第一百二十六轮复跑）
 $ cargo test -p minix-boot                  → 175 passed / 0 failed
-$ cargo test -p boot-shim                   → 109 passed / 0 failed（默认 uefi；含地址域、结构/顶端边界与多页 MRB 负控）
-$ cargo test -p boot-shim --features test-all → 121 passed / 0 failed（uefi+opensbi）
+$ cargo test -p boot-shim                   → 113 passed / 0 failed（默认 uefi；含地址域、结构/顶端边界、多页 MRB 负控与第一百二十九轮四枚回归）
+$ cargo test -p boot-shim --features test-all → 125 passed / 0 failed（uefi+opensbi）
 $ cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
 $ cargo test -p minix-vm                    → 548 passed / 0 failed
 ```
@@ -1126,6 +1126,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 **第一百二十四轮（wire v7 代码上）**：宿主 `341/173/92(+5)/863/548`；五个交叉构建全通过；六条非注册腿全 PASS（x86 bootmarks、aarch64 ACPI、`DTB_CFGTABLE=1` 负例、riscv bootface、riscv U-Boot shim 6/6、riscv 全系统）。
 
 **第一百二十八轮（O-12i 阶段公式与直启路径相交检查）**：仅两条 `bootface` 的 `dtb_bounded` 增加 kernel-image 重叠拒绝与 checked 末端；RISC-V 自引导腿复跑 PASS（B1/B2/B3）。aarch64 直启没有独立 QEMU 腿，仅交叉构建；其余宿主/QEMU 读数不变（其余运行时代码未改）。
+
+**第一百二十九轮（复审修复后复跑）**：`test-shim-bootmarks-x86`、`test-shim-bootmarks-aarch64`（ACPI）、`DTB_CFGTABLE=1`（DT 负例）、`test-kernel-image-riscv64-bootface`、`test-riscv64-uboot-shim`（6/6）五条腿全部 **PASS**；宿主 175 / 113 / 863，六组交叉构建 OK。配置表 DTB 的正例路径仍只有宿主测试（本机固件不提供 ACPIReclaim 页上的配置表 DTB）。
 
 **第一百二十六轮（wire v7，地址域类型 + O-12h 结构边界）**：宿主 `341/175/108(+5)/120(test-all)/863/548`；五个交叉构建全通过（kernel-image aarch64/riscv；boot-shim x86_64-uefi/aarch64-uefi/riscv64-uboot）；六条非注册腿全 PASS——x86 bootmarks（`platform DTB absent`）、aarch64 ACPI、`DTB_CFGTABLE=1`（负例仍在预检阶段：`DTB preflight failed: DtbPages(NotAcpiReclaim { page: 1206870016 })`）、riscv bootface、riscv U-Boot shim（6/6）、riscv 全系统。新增的同域重叠拒绝与全类型结构校验与真实 OVMF/AAVMF 映射共存，没有误伤固件；`run_all` 本轮未复跑（测试内核自带 `main`、不经生产 shim）。
 
@@ -1167,6 +1169,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 **评审方第 128 轮结论：设计评审完成，I-29 设计冻结**。后续只做合同与实现对账、缺陷修复及必要真机回归；只有实现违背冻结合同、出现不可避免的新输入或失败形态、或项目需求改变，才重开设计评审。保留的已披露证据缺口：aarch64 直启没有独立 QEMU 启动腿（仅交叉构建）；配置表 DTB「存在且可解析」的正例只有宿主测试。
 
 **第一百二十八轮（回应第一百二十七轮评审，最后一轮设计修订）**：① O-12i 的正式公式补上阶段关系 `M = Pages(KernelInfo.memmap)`、`C = M \ Pages(vm_boot_exclusions)`，并把 `PmmSourceExcludedPages` 写成 `(RamSourcePageDomain \ M) ∪ Pages(vm_boot_exclusions)`；② O-11 候选 A 改为「完整范围一次性只读访问 + 按路径自有化」，`副本生命周期` 改为 `UEFI 字节副本的生命周期`；③ 三条直启路径补输入/输出存储不相交保证：两条 bootface 的 `dtb_bounded` 增加内核映像范围拒绝（含 checked 末端），U-Boot 腿引用固定链接布局；RISC-V 自引导腿复跑 PASS，aarch64 直启仅交叉构建。其余读数不变；此后按 §7.1 冻结设计评审。
+
+**第一百二十九轮（复审修复，不改变层结论）**：双轴复审的两处 fail-open 已闭合——① 配置表 DTB 记录在 `Plan::commit` 之后追加时没有重写 `sources_byte_len`，接收端只解码 UEFI 记录；`push_dtb_sources` 把「追加 + 收尾」绑在一起，并有 `dtb_records_extend_the_source_descriptor_after_the_uefi_commit` 回归。② `capture` 吞掉 `claims_from_records` 的 `TooManyClaims`，`check_current` 对空主张集放行；现在以 `PairError::DtbClaims` 失败关闭，`capture_claims_surfaces_the_capacity_overflow` 钉住生产路径。另修排除记录末端的 u64 饱和（顶端页 `[0xffff_ffff_ffff_f000, 2^64)` 的末端曾少 1 字节）与 `ARENA_CAP` 的陈旧注释。层结论不变，签字状态不变。
 
 **第一百二十七轮（回应第一百二十六轮评审，不改变层结论）**：① `AddressDomain` 统一为 wire v7 的 `Physical/Virtual/UefiMmioPortSpace`，删除 O-12g 的旧 `DescriptorAddressDomain` 枚举；Virtual 注明为保留值、当前无生产路径，且地址域描述 `SourceRange` 而非 `virtual_start`；② 阶段名收准：`KernelInfo.memmap` 是内存图可用投影，经 `vm_boot_exclusions` 后才是分配候选，`PmmSourceCandidatePages` 是后者的语义名；O-12d 不再作为独立实现目标；③ O-11 的共同合同与分路径实现分开写，标题改为 header/body 单次读取顺序，不可变性结束时间按路径写明；④ 第一跳补 little-endian；`OtherStartupObject=0`；O-02a 访问需求行标注已移交；签字表 API 名改为 `SourceRecord::physical_range()`；⑤ 新增多页 MRB 中间页 DTB 用例 `the_dtb_exception_applies_only_to_the_intersecting_page`（boot-shim 109 / test-all 121）。只新增单元测试与文档统一，运行时行为未变，QEMU 未复跑（上一轮六腿证据仍适用）。
 

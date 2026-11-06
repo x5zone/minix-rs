@@ -852,9 +852,11 @@ impl Plan {
             if len != 0 || !matches!(disposition, Disposition::Excluded | Disposition::DevicePath) {
                 continue;
             }
-            let end = desc
-                .physical_start
-                .saturating_add(desc.number_of_pages.saturating_mul(PAGE_SIZE));
+            // `checked_shape` proved `start + pages * 4 KiB <= 2^64`, so the
+            // exact end is representable in u128; saturating in u64 would
+            // shorten the top page's record by one byte.
+            let end =
+                desc.physical_start as u128 + desc.number_of_pages as u128 * PAGE_SIZE as u128;
             let record = SourceRecord {
                 id: index as u16,
                 raw_type: desc.raw_type,
@@ -862,7 +864,7 @@ impl Plan {
                 origin: SourceOrigin::UefiDescriptor {
                     index: index as u16,
                 },
-                range: SourceRange::new(desc.physical_start, end as u128),
+                range: SourceRange::new(desc.physical_start, end),
                 input_object: minix_boot::InputObjectId::UefiMemoryMap,
                 // Type 12's start/count live in I/O-port space; the record
                 // keeps the raw fact but must not claim a physical address.
@@ -1045,6 +1047,37 @@ mod tests {
         for t in [ty::MMIO, ty::MMIO_PORT_SPACE] {
             assert_eq!(disp(t, WB), Ok(Disposition::DevicePath), "type {t}");
         }
+    }
+
+    /// The excluded record keeps the exact 128-bit end: the top page ends at
+    /// `2^64`, which u64 saturation would shorten by one byte.
+    #[test]
+    fn an_excluded_top_page_record_keeps_its_exact_end() {
+        let top = 0xffff_ffff_ffff_f000u64;
+        let mut map = [0u8; 40];
+        push_desc(&mut map, 0, 40, ty::RESERVED, top, 1, WB);
+        let mut storage = MapStorage::new();
+        storage
+            .parse_raw_map(&map, map.len(), 40, 1, 9)
+            .expect("shape accepted");
+        let plan = classify(storage.descriptors(), PA_LIMIT, storage.side_capacity())
+            .expect("one descriptor fits");
+        let mut arena = [0u8; minix_boot::ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut side = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; SIDE_CAP];
+        plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side, 9);
+
+        let base = minix_boot::WIRE_SOURCES_OFFSET;
+        let b = s.as_bytes();
+        assert_eq!(get_u64(b, base + 8), 0, "end_lo of 2^64");
+        assert_eq!(get_u64(b, base + 16), 1, "end_hi of 2^64");
+        assert_eq!(
+            b[base + 64],
+            minix_boot::WireSourceRecord::KIND_UEFI_EXCLUDED
+        );
     }
 
     /// Type 12 keeps its raw start/page count and its own address domain.

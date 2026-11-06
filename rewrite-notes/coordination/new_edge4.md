@@ -6089,3 +6089,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - todo.md 的 I-29 行状态由 🟡 partially fixed 改为 ✅ 设计评审冻结，历史保留。
 - 无代码改动；本笔为文档/台账收尾。
 - 文档门：lint 0、引用 0、锚点 3（2 resolved、1 处既有 multi-def）、承载 PASS；正文 1207 行 / 99867 字符、围栏 42 偶、表格 39 块 0 不一致。
+
+### 第三百四十五笔（01 阶段 · I-29 第一百二十九轮：复审修复——DTB 记录跨跳与主张溢出）
+
+- `push_dtb_sources`：`Plan::commit` 之后追加配置表 DTB 记录并重写 `sources_byte_len`；此前接收端只解码 UEFI 记录（DTB 记录成为死字节）。回归 `dtb_records_extend_the_source_descriptor_after_the_uefi_commit`。
+- `resv_claims::capture` 返回 `Result<(), ClaimError>`，`TooManyClaims` 以 `PairError::DtbClaims` 失败关闭；此前空主张集让 `check_current` 放行。回归 `capture_claims_surfaces_the_capacity_overflow`、`capture_leaves_container_failures_to_the_later_gate`。
+- 排除记录末端改用 u128 精确表示（顶端页末端 `2^64` 不再被 u64 饱和截短）；回归 `an_excluded_top_page_record_keeps_its_exact_end`；`ARENA_CAP` 注释改为 384 B。
+- 读数：boot-shim 113（+4）/ test-all 125、minix-boot 175、kernel 863；六组交叉构建 OK；x86 UEFI、aarch64 ACPI、aarch64 强制 DT 负例、riscv bootface、riscv U-Boot（6/6）五条 QEMU 腿 PASS。
+- 认领：`I-29 qorder96`，状态 🔄 待合入。

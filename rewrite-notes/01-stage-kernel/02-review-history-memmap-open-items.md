@@ -12,6 +12,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百二十九轮（复审修复：DTB 记录跨跳与主张溢出）**
+
+- `push_dtb_sources`：DTB 记录在 `Plan::commit` 之后追加，并重写 `sources_byte_len`；此前接收端只解码 UEFI 记录，DTB 记录成为死字节。
+- `capture` 返回 `Result<(), ClaimError>`，`TooManyClaims` 以 `PairError::DtbClaims` 失败关闭；此前错误被吞掉，空主张集让 `check_current` 放行。
+- 排除记录的末端改用 u128 精确表示（顶端页末端为 `2^64`，不再被 u64 饱和截短）；`ARENA_CAP` 注释改为 384 B 余量。
+- 读数：boot-shim 113（+4）、minix-boot 175、kernel 863；六组交叉构建 OK；五条 QEMU 腿 PASS。
+
 **第一百二十四轮（显式投影权威，wire v7）**
 
 - 信封偏移 12 的保留字改为 `ram_authority`（0=启动 DTB、1=UEFI 内存图，其它值拒收）；UEFI 与 U-Boot 发送腿各自声明；版本 6→7。

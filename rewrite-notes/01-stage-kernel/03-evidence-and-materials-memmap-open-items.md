@@ -3287,3 +3287,23 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百二十三轮）合并提交 | `50792fdff` |
+
+### 评审身份（第一百二十九轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百四十五笔登记 |
+| `CodeEvidenceCommit` | 本轮代码提交（代码与文档同提交；宿主读数、交叉构建与 QEMU 腿在此树上取得） |
+| `DocumentRevision` | 第一百二十九轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+
+## 九十二、第一百二十九轮：复审修复——DTB 记录跨跳与主张溢出（代码证据）
+
+**缺陷一（记录未跨跳）**：`Plan::commit` 在 `ebs_map.rs:887` 已 `finish_sources()`，`ebs_pair` 随后才追加配置表 DTB 记录；`push_source` 只写记录、不更新 `sources_byte_len`，接收端按该长度解码只看到 UEFI 记录。修复：`push_dtb_sources` 把追加与 `finish_sources()` 绑在一起；回归 `dtb_records_extend_the_source_descriptor_after_the_uefi_commit`（模拟 commit 收尾后追加，解码计数为 2）。
+
+**缺陷二（主张溢出被吞）**：`capture` 对 `claims_from_records` 的 `TooManyClaims` 直接返回，`CLAIMS_N = 0`，`check_current` 对空主张集返回 `Ok`——合法 DTB 的保留记录 × 多 `/memory` 节点即可超过 `MAX_CLAIMS = 64`，O-11 覆盖核对被静默跳过。修复：`capture` 返回 `Result<(), ClaimError>`，配对循环以 `PairError::DtbClaims` 失败关闭；容器/采集错误仍留给 `cross_validate_config_dtb` 停机（同一字节，单一失败路径）；回归 `capture_claims_surfaces_the_capacity_overflow` 与 `capture_leaves_container_failures_to_the_later_gate`。
+
+**缺陷三（末端饱和）**：排除记录的末端用 `saturating_add` 在 u64 里算，顶端页 `[0xffff_ffff_ffff_f000, 2^64)` 被截成 `2^64-1`。修复：按 `checked_shape` 已证明的范围用 u128 精确计算；回归 `an_excluded_top_page_record_keeps_its_exact_end`（`end_lo = 0`、`end_hi = 1`）。
+
+**读数**：`cargo test -p minix-boot --lib` 175；`boot-shim --lib` 113（+4）、`test-all` 125；`minix-kernel --features mock` 863（8 ignored）；六组交叉构建 OK；五条 QEMU 腿 PASS（x86 UEFI、aarch64 ACPI、aarch64 强制 DT 负例、riscv bootface、riscv U-Boot 6/6）。

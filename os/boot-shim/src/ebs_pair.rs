@@ -99,6 +99,10 @@ pub enum PairError {
     /// key is real but contradicts the platform description, so the boot
     /// stops before `ExitBootServices` rather than accepting it.
     ReservationCoverage(crate::resv_claims::ClaimError),
+    /// The DTB's reservation claims exceed the fixed capacity. No later gate
+    /// re-counts claims, so this is the only place the overflow can fail
+    /// closed (a dropped claim would silently skip its coverage check).
+    DtbClaims(crate::resv_claims::ClaimError),
 }
 
 /// Run the pairing loop over `map_buf`, dual-writing the accepted
@@ -185,12 +189,8 @@ pub unsafe fn pair_and_classify(
         if let Some(owned) = crate::dtb_copy::authorize_and_copy(storage.descriptors())
             .map_err(PairError::DtbPages)?
         {
-            crate::resv_claims::capture(owned.bytes, owned.source);
-            for record in crate::resv_claims::records() {
-                serializer
-                    .push_source(record)
-                    .expect("preflight proved the source partition holds UEFI + DTB records");
-            }
+            crate::resv_claims::capture(owned.bytes, owned.source).map_err(PairError::DtbClaims)?;
+            push_dtb_sources(serializer, crate::resv_claims::records());
         }
         crate::resv_claims::check_current(storage.descriptors())
             .map_err(PairError::ReservationCoverage)?;
@@ -222,6 +222,22 @@ pub unsafe fn pair_and_classify(
         }
         return Err(PairError::ExitStatus(status));
     }
+}
+
+/// Append the DTB's records to the shared source partition and re-finalize
+/// its descriptor.
+///
+/// `Plan::commit` already wrote `sources_byte_len` for the UEFI records; a
+/// push after that point is invisible to the receiver until the descriptor is
+/// written again. Keeping the re-finalization next to the pushes makes the
+/// ordering impossible to split.
+fn push_dtb_sources(serializer: &mut Serializer, records: &[minix_boot::SourceRecord]) {
+    for record in records {
+        serializer
+            .push_source(record)
+            .expect("preflight proved the source partition holds UEFI + DTB records");
+    }
+    serializer.finish_sources();
 }
 
 /// Take the preflight snapshot for the configuration-table DTB.
@@ -866,6 +882,67 @@ mod tests {
         assert_eq!(scalars.reserved_byte_len, 16);
         assert_eq!(scalars.param_byte_len, 10);
         assert_eq!(scalars.kern_virt_base, 0xFFFF_8000_0000_0000);
+    }
+
+    /// A push after `Plan::commit` finalized the UEFI records must re-write
+    /// the source descriptor, or the receiver silently drops the DTB records.
+    #[test]
+    fn dtb_records_extend_the_source_descriptor_after_the_uefi_commit() {
+        use minix_boot::{
+            InputObjectId, SourceKind, SourceOrigin, SourceRange, SourceRecord,
+            WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, decode_envelope, decode_sources,
+        };
+
+        let uefi = SourceRecord {
+            id: 0,
+            raw_type: 7,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::UefiDescriptor { index: 0 },
+            range: SourceRange::new(0x10_0000, 0x11_0000),
+            input_object: InputObjectId::UefiMemoryMap,
+            local_source: 0,
+            snapshot_id: 1,
+            attribute: 0,
+            virtual_start: 0,
+            address_domain: minix_boot::memmap_source::AddressDomain::Physical,
+        };
+        let dtb = SourceRecord {
+            id: 0,
+            raw_type: 0,
+            kind: SourceKind::ReservedOrdinary,
+            origin: SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 },
+            range: SourceRange::new(0x1DA0_0000, 0x1DA0_1000),
+            input_object: InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
+            address_domain: minix_boot::memmap_source::AddressDomain::Physical,
+        };
+
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        write_min_envelope(&mut s);
+        s.push_source(&uefi).unwrap();
+        s.finish_sources(); // Plan::commit's finalization
+        push_dtb_sources(&mut s, &[dtb]);
+        s.patch_runtime_fields(minix_boot::RuntimeFields {
+            root_page: 0x1000,
+            bump_base: 0x20_0000,
+            bump_next: 0x20_0000,
+            bump_end: 0x30_0000,
+        });
+
+        let scalars = decode_envelope(s.as_bytes()).unwrap();
+        assert_eq!(
+            scalars.sources_byte_len,
+            2 * WIRE_SOURCE_RECORD_SIZE as u64,
+            "the descriptor must count both pushes"
+        );
+        let mut out = [uefi; WIRE_SOURCES_CAP];
+        let n = decode_sources(s.as_bytes(), &scalars, &mut out).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(out[1].input_object, InputObjectId::DtbBootInput);
     }
 
     /// O-11 timing: a configuration-table DTB costs exactly one preflight
