@@ -120,6 +120,14 @@ impl Request {
 /// `RSS_NR_IRQ 16` / `RSS_NR_IO 16` (`rs.h:25-26`).
 pub const RSS_NR_IRQ: i32 = 16;
 pub const RSS_NR_IO: i32 = 16;
+/// `SEF_LU_STATE_*` (`minix3/minix/include/minix/sef.h:213-219`): the live
+/// update states `-state` accepts; `DEFAULT_LU_STATE` is
+/// `SEF_LU_STATE_WORK_FREE` and EVAL marks an expression value
+/// (`minix-service.c:81-82`).
+pub const SEF_LU_STATE_NULL: i32 = 0;
+pub const SEF_LU_STATE_WORK_FREE: i32 = 1;
+pub const SEF_LU_STATE_EVAL: i32 = 4;
+
 /// C `DSRV_SM`/`DSRV_SCH`/`DSRV_Q`/`DSRV_QT` (`priv.h:83-99`): the clean
 /// defaults `do_config` installs — `ROOT_SYS_PROC_NR` (= `RS_PROC_NR`, 2),
 /// `SCHED_PROC_NR` (4), `USER_Q` ((`NR_SCHED_QUEUES`-1)/2 = 7), and
@@ -194,6 +202,7 @@ pub fn build_up_request(
     let trg_label = args.trg_label.clone().unwrap_or_default();
     let script = args.script.clone().unwrap_or_default();
     let control = built.control.clone();
+    let state_eval = args.lu_state_eval.clone().unwrap_or_default();
 
     let strings = cmd.len()
         + script.len()
@@ -201,6 +210,7 @@ pub fn build_up_request(
         + trg_label.len()
         + ipc.len()
         + progname.len()
+        + state_eval.len()
         + control.iter().map(String::len).sum::<usize>();
     let mut bytes: Vec<u8> = Vec::new();
     if bytes
@@ -222,6 +232,7 @@ pub fn build_up_request(
     let (trg_addr, trg_len) = place_string(&mut bytes, base, &trg_label);
     let (ipc_addr, ipc_len) = place_string(&mut bytes, base, &ipc);
     let (prog_addr, prog_len) = place_string(&mut bytes, base, &progname);
+    let (eval_addr, eval_len) = place_string(&mut bytes, base, &state_eval);
     let mut control_labels = [RsLabelWire::default(); RS_NR_CONTROL as usize];
     for (i, text) in control.iter().take(RS_NR_CONTROL as usize).enumerate() {
         let (addr, len) = place_string(&mut bytes, base, text);
@@ -243,10 +254,12 @@ pub fn build_up_request(
     wire.period = args.period.unwrap_or(0);
     wire.script_addr = script_addr;
     wire.script_len = script_len;
-    wire.asr_count = -1; // C `req_asr_count = -1` (`:164`)
-    wire.restarts = 0;
-    wire.heap_prealloc_bytes = 0;
-    wire.map_prealloc_bytes = 0;
+    // C `:763-772`: the CLI lanes replace the defaults.
+    wire.asr_count = args.asr_count.unwrap_or(-1); // `req_asr_count = -1`
+    wire.restarts = args.restarts.unwrap_or(0);
+    wire.heap_prealloc_bytes = args.heap_prealloc.unwrap_or(0);
+    wire.map_prealloc_bytes = args.map_prealloc.unwrap_or(0);
+    wire.devman_id = args.devman_id.unwrap_or(0);
     wire.nr_irq = built.nr_irq;
     for (i, value) in built.irq.iter().take(16).enumerate() {
         wire.irq[i] = *value;
@@ -281,9 +294,12 @@ pub fn build_up_request(
     wire.nr_control = built.nr_control;
     wire.control = control_labels;
     // C sets `size = sizeof(rss_state_data)` (`:788-790`); the wire layout
-    // spans seven fields = 56 bytes.
+    // spans seven fields = 56 bytes. The eval expression rides as the
+    // pointed-to string (`:791-799`); its gid stays 0 (no grant here).
     wire.state_data = RsStateDataWire {
         size: 56,
+        eval_addr,
+        eval_len,
         ..RsStateDataWire::default()
     };
     wire.progname_addr = prog_addr;
@@ -392,6 +408,22 @@ pub struct Args {
     /// `-config <path>` (`req_config`); setting it also marks the file as
     /// custom (`custom_config_file`, `minix-service.c:573-576`).
     pub config: Option<String>,
+    /// `-state <value|expression>` (`req_lu_state` / `req_state_eval`).
+    pub lu_state: Option<i32>,
+    /// The eval-expression half of `-state` (when the value is not numeric).
+    pub lu_state_eval: Option<String>,
+    /// `-maxtime <ticks>[HZ]` (`req_lu_maxtime`; 0 becomes -1).
+    pub lu_maxtime: Option<i64>,
+    /// `-devid <id>` (`devman_id`).
+    pub devman_id: Option<i32>,
+    /// `-heap-prealloc <bytes>` (`req_heap_prealloc`).
+    pub heap_prealloc: Option<i64>,
+    /// `-map-prealloc <bytes>` (`req_map_prealloc`).
+    pub map_prealloc: Option<i64>,
+    /// `-asr-count <n>` (`req_asr_count`).
+    pub asr_count: Option<i64>,
+    /// `-restarts <n>` (`req_restarts`).
+    pub restarts: Option<i64>,
 }
 
 /// A parse failure. Every message is C's `print_usage(app, problem)` pair —
@@ -416,6 +448,21 @@ pub enum ParseError {
     BadPeriodArgument,
     /// `sysctl` without a known subtype (usage face).
     SysctlNeedsSubtype,
+    /// `:585-589`: "bad live update max time".
+    BadLuMaxTime,
+    /// `:604-607`: "null live update state".
+    NullLuState,
+    /// `:616-621` (and the map twin, same wording in C): "bad heap prealloc
+    /// bytes".
+    BadHeapPrealloc,
+    /// `:640-645`: "bad ASR count".
+    BadAsrCount,
+    /// `:646-651`: "bad number of restarts".
+    BadRestarts,
+    /// `:541-545`: "major already set".
+    MajorAlreadySet,
+    /// `:653-656`: "unknown optional argument given".
+    UnknownOptionalArgument,
 }
 
 /// C `getopt(argc, argv, "rbcnpqaosxyzdumeft?")` (`:314`) — the 19 letters
@@ -553,12 +600,118 @@ pub fn parse_args(args: &[&str]) -> Result<Args, ParseError> {
                     .ok_or(ParseError::OptionalArgumentNotComplete)?;
                 out.progname = Some(String::from(*v));
             }
-            "-trglabel" => {
+            "-trg-label" | "-trglabel" => {
+                // C's parser accepts `-trg-label` (`ARG_TRG_LABELNAME`);
+                // its usage text spells the same option `-trglabel`. Both
+                // are taken so neither face surprises a caller (registered
+                // deviation: C's parser rejects the usage-text spelling).
                 index += 1;
                 let v = args
                     .get(index)
                     .ok_or(ParseError::OptionalArgumentNotComplete)?;
                 out.trg_label = Some(String::from(*v));
+            }
+            "-major" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                if out.major.is_some() {
+                    return Err(ParseError::MajorAlreadySet);
+                }
+                // C `atoi` (`:546-551`): lenient, no range check.
+                out.major = Some(i64::from(atoi(v)));
+            }
+            "-state" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // `:577-590`: a numeric value is the state, 0 is the null
+                // state, anything else is an eval expression.
+                match v.parse::<i32>() {
+                    Ok(0) => return Err(ParseError::NullLuState),
+                    Ok(n) => out.lu_state = Some(n),
+                    Err(_) => {
+                        out.lu_state = Some(SEF_LU_STATE_EVAL);
+                        out.lu_state_eval = Some(String::from(*v));
+                    }
+                }
+            }
+            "-maxtime" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // `:591-604`: decimal with an optional `HZ` suffix; 0 means
+                // "no timeout" (-1). The HZ multiplier needs the system
+                // clock rate, which the bin owns (deviation: the value is
+                // stored in raw ticks).
+                let (digits, _hz) = match v.strip_suffix("HZ") {
+                    Some(rest) => (rest, true),
+                    None => (*v, false),
+                };
+                let raw: i64 = digits.parse().map_err(|_| ParseError::BadLuMaxTime)?;
+                if raw < 0 {
+                    return Err(ParseError::BadLuMaxTime);
+                }
+                out.lu_maxtime = Some(if raw == 0 { -1 } else { raw });
+            }
+            "-devid" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // C `atoi` (`:605-612`): lenient, no validation.
+                out.devman_id = Some(atoi(v));
+            }
+            "-heap-prealloc" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // `:613-621`: strictly positive decimal.
+                let raw: i64 = v.parse().map_err(|_| ParseError::BadHeapPrealloc)?;
+                if raw <= 0 {
+                    return Err(ParseError::BadHeapPrealloc);
+                }
+                out.heap_prealloc = Some(raw);
+            }
+            "-map-prealloc" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // `:622-630`: C reuses the heap-prealloc wording here too.
+                let raw: i64 = v.parse().map_err(|_| ParseError::BadHeapPrealloc)?;
+                if raw <= 0 {
+                    return Err(ParseError::BadHeapPrealloc);
+                }
+                out.map_prealloc = Some(raw);
+            }
+            "-asr-count" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // `:631-638`: non-negative decimal.
+                let raw: i64 = v.parse().map_err(|_| ParseError::BadAsrCount)?;
+                if raw < 0 {
+                    return Err(ParseError::BadAsrCount);
+                }
+                out.asr_count = Some(raw);
+            }
+            "-restarts" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // `:639-646`: non-negative decimal.
+                let raw: i64 = v.parse().map_err(|_| ParseError::BadRestarts)?;
+                if raw < 0 {
+                    return Err(ParseError::BadRestarts);
+                }
+                out.restarts = Some(raw);
             }
             "-config" => {
                 index += 1;
@@ -572,24 +725,24 @@ pub fn parse_args(args: &[&str]) -> Result<Args, ParseError> {
                 let v = args
                     .get(index)
                     .ok_or(ParseError::OptionalArgumentNotComplete)?;
-                // C `:591-597`: a trailing `HZ` multiplies by system_hz; this
-                // slice keeps the raw number (the HZ face rides with the
-                // config-parse slice where system_hz arrives).
-                let raw: i64 = v.parse().map_err(|_| ParseError::BadPeriodArgument)?;
+                // C `:591-597`: a trailing `HZ` multiplies by system_hz;
+                // the value is stored in raw ticks here (the multiplier
+                // needs the system clock rate, which the bin owns).
+                let digits = v.strip_suffix("HZ").unwrap_or(v);
+                let raw: i64 = digits.parse().map_err(|_| ParseError::BadPeriodArgument)?;
                 if raw < 0 {
                     return Err(ParseError::BadPeriodArgument);
                 }
                 out.period = Some(raw);
             }
-            other => {
-                let _ = other;
-                // Unrecognised pair heads are C's "optional argument not
-                // complete"/unknown-shape family; this slice reports the
-                // incomplete-pair face for any bare head.
+            _other => {
+                // C `:653-656`: an unrecognised pair head is fatal
+                // ("unknown optional argument given"), and a bare head is
+                // the incomplete-pair face.
                 if args.get(index + 1).is_none() {
                     return Err(ParseError::OptionalArgumentNotComplete);
                 }
-                index += 2;
+                return Err(ParseError::UnknownOptionalArgument);
             }
         }
         index += 1;
@@ -617,14 +770,22 @@ pub struct BuiltRequest {
 /// `shutdown` sends nothing but the type; the config family's full
 /// `rs_start` payload rides with the config-parse slice (this build's
 /// `addr` is the label face for those verbs' error path).
-pub fn build_request(request: Request, _args: &Args) -> minix_sys::Message {
+pub fn build_request(request: Request, args: &Args) -> minix_sys::Message {
     // C `:790-838`: the per-family lanes are filled here; the label text's
     // own address is stamped by the bin once its buffer exists (the library
-    // carries the shape).
-    minix_sys::Message {
+    // carries the shape). `RS_UPDATE`'s prepare lanes are set here
+    // (`:736-741`).
+    let mut msg = minix_sys::Message {
         m_type: request.call_nr(),
         ..minix_sys::Message::default()
+    };
+    if request == Request::Update {
+        msg.set_rs_update_lanes(
+            args.lu_state.unwrap_or(SEF_LU_STATE_WORK_FREE),
+            args.lu_maxtime.unwrap_or(0) as i32,
+        );
     }
+    msg
 }
 
 #[cfg(test)]
@@ -2613,6 +2774,106 @@ mod do_config_tests {
         };
         assert_eq!(read(wire.progname_addr, wire.progname_len), "lwip2");
         assert_eq!(read(wire.trg_label.addr, wire.trg_label.len), "t");
+    }
+
+    #[test]
+    fn cli_lanes_reach_the_image() {
+        use minix_sys::rs::decode_rs_start;
+        // C `:763-772`: the CLI values replace the request defaults.
+        let text = "service x {\n};\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults {
+            service_uid: Some(50),
+            ..RsStartDefaults::default()
+        };
+        let args = parse_args(&[
+            "up",
+            "/sbin/x",
+            "-asr-count",
+            "3",
+            "-restarts",
+            "5",
+            "-heap-prealloc",
+            "4096",
+            "-map-prealloc",
+            "8192",
+            "-devid",
+            "7",
+            "-major",
+            "42",
+            "-state",
+            "3",
+            "-maxtime",
+            "10HZ",
+        ])
+        .unwrap();
+        let img = build_up_request(&lines, "x", &defaults, &args, Some(PW)).unwrap();
+        let wire = decode_rs_start(&img.bytes).unwrap();
+        assert_eq!(wire.asr_count, 3);
+        assert_eq!(wire.restarts, 5);
+        assert_eq!(wire.heap_prealloc_bytes, 4096);
+        assert_eq!(wire.map_prealloc_bytes, 8192);
+        assert_eq!(wire.devman_id, 7);
+        assert_eq!(wire.major, 42);
+        assert_eq!(args.lu_state, Some(3));
+        assert_eq!(args.lu_maxtime, Some(10), "HZ 后缀剥掉、值留原样");
+    }
+
+    #[test]
+    fn state_eval_expression_rides_as_a_pointer() {
+        use minix_sys::rs::decode_rs_start;
+        let text = "service x {\n};\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/sbin/x", "-state", "work_free > 1"]).unwrap();
+        assert_eq!(args.lu_state, Some(SEF_LU_STATE_EVAL));
+        let img = build_up_request(&lines, "x", &defaults, &args, Some(PW)).unwrap();
+        let wire = decode_rs_start(&img.bytes).unwrap();
+        let off = (wire.state_data.eval_addr - img.address()) as usize;
+        assert_eq!(
+            &img.bytes[off..off + wire.state_data.eval_len as usize],
+            b"work_free > 1"
+        );
+        assert_eq!(wire.state_data.size, 56);
+    }
+
+    #[test]
+    fn update_request_fills_the_prepare_lanes() {
+        let args = parse_args(&["update", "/sbin/x", "-state", "3", "-maxtime", "2"]).unwrap();
+        let msg = build_request(Request::Update, &args);
+        assert_eq!(msg.rs_update_lanes(), Some((3, 2)));
+        let args = parse_args(&["update", "/sbin/x"]).unwrap();
+        let msg = build_request(Request::Update, &args);
+        // C's defaults: `DEFAULT_LU_STATE` (WORK_FREE) and 0.
+        assert_eq!(msg.rs_update_lanes(), Some((SEF_LU_STATE_WORK_FREE, 0)));
+    }
+
+    #[test]
+    fn bad_option_values_are_fatal() {
+        let e = |args: &[&str]| parse_args(args).unwrap_err();
+        assert_eq!(
+            e(&["up", "/x", "-heap-prealloc", "0"]),
+            ParseError::BadHeapPrealloc
+        );
+        assert_eq!(
+            e(&["up", "/x", "-map-prealloc", "-1"]),
+            ParseError::BadHeapPrealloc
+        );
+        assert_eq!(
+            e(&["up", "/x", "-asr-count", "-1"]),
+            ParseError::BadAsrCount
+        );
+        assert_eq!(e(&["up", "/x", "-restarts", "-1"]), ParseError::BadRestarts);
+        assert_eq!(e(&["up", "/x", "-state", "0"]), ParseError::NullLuState);
+        assert_eq!(e(&["up", "/x", "-maxtime", "x"]), ParseError::BadLuMaxTime);
+        assert_eq!(
+            e(&["up", "/x", "-nope", "1"]),
+            ParseError::UnknownOptionalArgument
+        );
+        assert_eq!(
+            e(&["up", "/x", "-major", "4", "-major", "5"]),
+            ParseError::MajorAlreadySet
+        );
     }
 
     #[test]

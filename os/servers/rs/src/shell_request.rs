@@ -1912,3 +1912,73 @@ impl RsServer {
         Ok(0) // C: request.c:454 — return(OK)
     }
 }
+
+#[cfg(test)]
+mod client_up_image_tests {
+    //! RS_UP 验计：the client's `up` image (built by `minix-service`) is
+    //! consumed by the server's real `fetch_rs_start` path. The client and
+    //! the server agree on `decode_rs_start` (the shared wire authority);
+    //! this test pins the *other* half — that every pointer the client
+    //! emits lands where `fetch_rs_start` reads it.
+
+    use super::fetch_rs_start;
+    use crate::testutil::MockKernelApi;
+    use minix_types::{Endpoint, decode_rs_start, encode_rs_start, rs_start_off};
+
+    #[test]
+    fn client_up_image_is_consumed_by_fetch_rs_start() {
+        let text = "service e1000 {\n  system ALL;\n  ipc SYSTEM pm;\n  pci device 8086:100e;\n  control at_wini;\n};\n";
+        let lines = minix_proctools::configfile::config_read_text(text, "t", 0, &|_| None).unwrap();
+        let args = minix_service::parse_args(&["up", "/sbin/e1000", "-label", "e1000"]).unwrap();
+        let defaults = minix_service::RsStartDefaults {
+            service_uid: Some(50),
+            ..Default::default()
+        };
+        let img = minix_service::build_up_request(
+            &lines,
+            "e1000",
+            &defaults,
+            &args,
+            Some("service:x:50:50::/:/bin/sh\n"),
+        )
+        .unwrap();
+
+        // The mock kernel reads a zero-based caller space, so rebase every
+        // pointer the client emitted (the image itself is absolute).
+        let base = img.address();
+        let mut bytes = img.bytes.clone();
+        let mut wire = decode_rs_start(&bytes).unwrap();
+        let rebase = |addr: &mut u64| *addr = addr.wrapping_sub(base);
+        rebase(&mut wire.cmd_addr);
+        rebase(&mut wire.script_addr);
+        rebase(&mut wire.label.addr);
+        rebase(&mut wire.trg_label.addr);
+        rebase(&mut wire.ipc_addr);
+        rebase(&mut wire.progname_addr);
+        for entry in wire.control.iter_mut() {
+            rebase(&mut entry.addr);
+        }
+        rebase(&mut wire.state_data.eval_addr);
+        rebase(&mut wire.state_data.ipcf_els_addr);
+        encode_rs_start(&mut bytes[..rs_start_off::SIZE], &wire).unwrap();
+
+        let mut kernel = MockKernelApi::new(100);
+        kernel.payload = Some(bytes);
+        let rs_start = fetch_rs_start(&mut kernel, Endpoint(9), &wire).unwrap();
+
+        assert_eq!(rs_start.uid, 50);
+        assert_eq!(&rs_start.cmd[..rs_start.cmdlen], b"/sbin/e1000 ");
+        assert_eq!(&rs_start.ipc_list[..rs_start.ipclen], b"SYSTEM pm");
+        assert_eq!(rs_start.progname.as_str(), Some("e1000"));
+        assert_eq!(rs_start.label.as_str(), Some("e1000"));
+        assert_eq!(rs_start.system.0, (1u64 << 58) - 1);
+        assert_eq!(rs_start.nr_control, 1);
+        assert_eq!(rs_start.control[0].as_str(), Some("at_wini"));
+        assert_eq!(rs_start.nr_pci_id, 1);
+        assert_eq!(rs_start.pci_id[0].vid, 0x8086);
+        assert_eq!(rs_start.pci_id[0].did, 0x100e);
+        assert_eq!(rs_start.pci_id[0].sub_vid, 0xffff);
+        assert_eq!(rs_start.major, 0);
+        assert_eq!(rs_start.nr_irq, 0);
+    }
+}

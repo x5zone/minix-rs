@@ -234,6 +234,7 @@ minix-sef = { path = "libs/minix-sef" }
 minix-rt = { path = "libs/minix-rt", default-features = false }
 minix-regex = { path = "commands/usr-bin/regex" }
 minix-proctools = { path = "commands/bin/proctools" }
+minix-service = { path = "commands/sbin/minix-service" }
 minix-elf = { path = "libs/minix-elf" }
 minix-platform = { path = "libs/minix-platform" }
 minix-fs = { path = "libs/minix-fs" }

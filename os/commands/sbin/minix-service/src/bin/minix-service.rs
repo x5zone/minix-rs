@@ -56,6 +56,13 @@ fn report_parse_error(app: &str, e: &ParseError) -> ! {
         ParseError::OptionalArgumentNotComplete => "optional argument not complete",
         ParseError::BadPeriodArgument => "bad period argument",
         ParseError::SysctlNeedsSubtype => "sysctl needs a subtype",
+        ParseError::BadLuMaxTime => "bad live update max time",
+        ParseError::NullLuState => "null live update state",
+        ParseError::BadHeapPrealloc => "bad heap prealloc bytes",
+        ParseError::BadAsrCount => "bad ASR count",
+        ParseError::BadRestarts => "bad number of restarts",
+        ParseError::MajorAlreadySet => "major already set",
+        ParseError::UnknownOptionalArgument => "unknown optional argument given",
     };
     for line in usage_lines(problem, app) {
         support::warn(line.as_bytes());
@@ -83,7 +90,7 @@ fn real_main() -> ! {
         Request::Up | Request::Run | Request::Update | Request::Edit => {
             match prepare_up_image(&parsed) {
                 Ok(image) => {
-                    msg.set_rs_req_payload(image.address(), image.bytes.len() as i32);
+                    msg.set_rs_req_payload(image.address(), 0);
                 }
                 Err(problem) => {
                     support::warn(format!("couldn't parse config: {problem}\n").as_bytes());
@@ -98,7 +105,7 @@ fn real_main() -> ! {
         | Request::Unclone
         | Request::Fi => {
             if let Some(label) = &parsed.label {
-                msg.set_rs_req_payload(label.as_ptr() as u64, label.len() as i32);
+                msg.set_rs_req_payload(label.as_ptr() as u64, 0);
             }
         }
         Request::Sysctl | Request::Shutdown => {}
@@ -171,8 +178,7 @@ fn prepare_up_image(args: &Args) -> Result<minix_service::RequestImage, String> 
     let text = String::from_utf8_lossy(&raw).into_owned();
     let users_raw = support::read_file("/etc/passwd").unwrap_or_default();
     let users = String::from_utf8_lossy(&users_raw).into_owned();
-    let lines =
-        config_read_text(&text, &file, 0, &|_| None).map_err(|e| e.message)?;
+    let lines = config_read_text(&text, &file, 0, &|_| None).map_err(|e| e.message)?;
     // `parse.c:1162`: the uid default is the `service` passwd entry's.
     let defaults = RsStartDefaults {
         service_uid: minix_service::resolve_service_uid(&users),

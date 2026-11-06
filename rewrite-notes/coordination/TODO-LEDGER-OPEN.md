@@ -205,6 +205,8 @@
 
 - **`2026-11-06` 收口刷新（第 71 轮，基线 `aba6bc6ce`，`claim/A19-AUDIT-qoder`，审计轮无代码）**：A19 的两锚实查**均已在库**并注销——`login_tty` 封装（init `host.rs:277-299` 完整折叠 C setctty+login_tty）与 panic 执行面（init 自带 `#[panic_handler]` 走 `format_panic_report`，Cargo 双形态注释自陈「handler 由 init 自带」）。C-21（fs-rt 成员）不再挡 init。
 
+- **`2026-11-06` 收口刷新（第 82 轮，基线 `7f4e52e3e`）**：`minix-service` 参数面随批次五百六十收口——`-major`/`-state`/`-maxtime`/`-devid`/`-heap-prealloc`/`-map-prealloc`/`-asr-count`/`-restarts` 全接、七句 C fatal 逐字、未知项改致命、`-state` 表达式串进 `state_data.eval_addr`、RS_UPDATE 的 prepare 车道（`set_rs_update_lanes`）。**RS_UP 验计**：`rs` 的交叉测试用客户端 `build_up_request` 产出的镜像走真实 `fetch_rs_start`，uid/cmd/ipc/progname/label/system/control/pci 全数落位。门：minix-service 55/0、minix-types 341/0、minix-rs 359/0、三架构全绿、clippy 零新增、棘轮 344（+3 仍为并行线在制 kernel 面）。余面：`-dev`/`-ipc_bl`/`-ipc_wl` 与 HZ 乘数。
+
 - **`2026-11-06` 收口刷新（第 81 轮，基线 `692f681a4`）**：三件全落——(1) `class` 服务继承随批次五百五十七闭（`walk_flat` 递归抽层 + `do_config_walk` 的按标签选块 + 深度上限 100）；(2) 恢复脚本执行面随批次五百五十八闭（RS `run_script` 的 fork+exec 生产腿、`script_hook` 接线五处、getprocnr/privctl/vm 权限三步走 `kill_service`）；(3) rc 接线随批次五百五十九闭（`build_up_request` 单缓冲镜像、`Args` 的 `-progname`/`-trglabel`/`-config`、`prepare_up_image` 的四处配置查找与 passwd 默认、`Message::set_rs_req_payload`）——`minix-service up` 用户态全链端到端闭合。门：minix-service 51/0、minix-types 341/0、minix-rs 358/0、三架构 lib check 全绿、clippy 触及文件零新增、棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面）。余面：`-lustate`/`-heapprealloc`/`-mapprealloc` 参数面与 RS 侧 `RS_UP` 验计。
 
 - **`2026-11-06` 收口刷新（第 80 轮，基线 `5a23a8d18`）**：`do_config` 的服务类型随批次五百五十六落——`type` 只接受 `net`（13 个驱动配置的真实首条语句），`BuiltRsStart` 加 `service_type`，四句 C fatal 逐字。`cargo test -p minix-service` 44/0、clippy/rustfmt/三架构全绿；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面，本轮文件 0）。设备族只剩 `class`（服务继承，真实配置零使用，需按标签选块 + 递归的结构改造）。

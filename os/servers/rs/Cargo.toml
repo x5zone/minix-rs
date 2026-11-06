@@ -41,3 +41,9 @@ minix-rt = { workspace = true, features = ["std"] }
 
 [target.'cfg(target_os = "none")'.dependencies]
 minix-rt = { workspace = true, features = ["alloc-global", "panic-handler"] }
+
+[dev-dependencies]
+# The RS_UP 验计 cross-test builds the client request image with the command
+# crate and feeds it to `fetch_rs_start` (the client/server wire contract).
+minix-proctools = { workspace = true }
+minix-service = { workspace = true }

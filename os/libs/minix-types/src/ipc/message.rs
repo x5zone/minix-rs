@@ -536,6 +536,28 @@ impl Message {
         req.endpoint = endpoint.get();
     }
 
+    /// Reads the `RS_UPDATE` prepare lanes back — C
+    /// `m.m_rs_update.state`/`prepare_maxtime` (`minix-service.c:736-741`).
+    /// `None` when `m_type` is not `RS_UPDATE`.
+    #[inline]
+    pub fn rs_update_lanes(&self) -> Option<(i32, i32)> {
+        if self.m_type != crate::RS_UPDATE {
+            return None;
+        }
+        // SAFETY: `RS_UPDATE` tags the `m_rs_update` arm; the arm is POD.
+        let update = unsafe { &self.m_u.m_rs_update };
+        Some((update.state, update.prepare_maxtime))
+    }
+
+    /// Fills the `RS_UPDATE` prepare lanes — C `m.m_rs_update.state =
+    /// req_lu_state; m.m_rs_update.prepare_maxtime = req_lu_maxtime;`
+    /// (`minix-service.c:736-741`). Union writes are safe for the POD arm.
+    #[inline]
+    pub fn set_rs_update_lanes(&mut self, state: i32, prepare_maxtime: i32) {
+        self.m_u.m_rs_update.state = state;
+        self.m_u.m_rs_update.prepare_maxtime = prepare_maxtime;
+    }
+
     /// Fills `m_rs_req.addr`/`len` for the RS control-request family — C
     /// `m.m_rs_req.addr = &config.rs_start` (`minix-service.c:817`,
     /// `parse.c` callers). `addr` is a caller-space pointer to the request

@@ -137,6 +137,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百六十（`minix-service` 参数面收口与 RS_UP 验计——CLI 车道全接、客户端镜像过服务端真解析）
+
+- **这一笔的射程**：C `parse_arguments` 的成对参数族（`minix-service.c:516-656`）余下的 `-major`/`-state`/`-maxtime`/`-devid`/`-heap-prealloc`/`-map-prealloc`/`-asr-count`/`-restarts` 与未知项致命面；外加 RS 侧 `do_up` 对客户端镜像的真实消费验计。
+- **落码（参数面）**：`Args` 加八字段；`ParseError` 加七变体（C 句面逐字：`bad live update max time`、`null live update state`、`bad heap prealloc bytes`（map 同句，C quirk）、`bad ASR count`、`bad number of restarts`、`major already set`、`unknown optional argument given`）；`-state` 的数值/表达式两分（表达式置 `SEF_LU_STATE_EVAL`），`-maxtime` 的 0→−1 与 `HZ` 后缀，`-period` 的 `HZ` 后缀；未知成对项由静默跳过改为致命；`-trg-label` 与 C usage 文本拼法 `-trglabel` 双收（登记偏差）。
+- **落码（镜像与消息）**：`asr_count`/`restarts`/`heap`/`map`/`devman_id`/`major` 接 CLI 值；`state_data.eval_addr/len` 指向镜像内的表达式串——同时修掉容量预留漏算该串导致的缓冲重分配与指针失真。`minix-types` 加 `Message::set_rs_update_lanes`/`rs_update_lanes`，`build_request(Update)` 填 `m_rs_update.state/prepare_maxtime`（C 默认 `WORK_FREE`/0）。C 的 RS_UPDATE 与 RS_UP 臂写同一 union 的不同偏移（`mess_rs_update.state@4`/`maxtime@8` 对 `mess_rs_req.addr@16`），两写互不相犯——bin 只写 `addr`、`len` 保持 0（C memset 语义）。
+- **RS_UP 验计**：`rs` 加 dev-deps（`minix-service`/`minix-proctools`，workspace 依赖表补 `minix-service`），交叉测试把客户端 `build_up_request` 的镜像重基到 mock 的零基地址空间后走 RS 真实的 `fetch_rs_start`，断言 uid、cmd、ipc、progname、label、system 掩码、control、pci 与哨兵全数落位。
+- **登记偏差**：`-period`/`-maxtime` 的 `HZ` 乘数需要 `system_hz`，暂存原始 ticks（bin 取得时钟频率后再乘）；`-dev`（stat 设备取 major）与 `-ipc_bl`/`-ipc_wl`（IPC 过滤元素解析）为后续片；空串在客户端镜像里是「有效地址 + len 0」（C 为 NULL）。
+- **门**：`cargo test -p minix-service` → **55/0**（新四枚：CLI 车道入镜像、表达式串指针、update 车道、七句 fatal 面）；`-p minix-types` → 341/0；`-p minix-rs` → **359/0**（新一枚 RS_UP 验计交叉测试）；三架构 lib check 全绿；clippy 触及文件零新增；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面）。核实日 `2026-11-06`；基线 `7f4e52e3e`。
+
+---
+
 ## 批次五百五十九（rc 接线——`minix-service up` 的端到端装配与发送）
 
 - **这一笔的射程**：C `parse_config` 的配置文件选择（`parse.c:1229-1255`：自定义 → `/usr/pkg/etc/system.conf.d/<name>` → `/etc/system.conf.d/<name>` → 默认）与 `main` 的 `rs_start` 装配、`m_rs_req.addr` 发布（`minix-service.c:746-816`）。
