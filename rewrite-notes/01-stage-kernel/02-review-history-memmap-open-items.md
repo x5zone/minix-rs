@@ -12,6 +12,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百一十五轮（A1：copy-first + 页类型预检）**
+
+- 新增 `dtb_copy`：预检只读 8 字节 header 并在取图前分配缓冲；配对循环内按最终快照核对全部 4 KiB 页为 `EfiACPIReclaimMemory`（异型即 `DtbPages` 拒绝），随后 memcpy 一次；`validate`、解析、`collect`、`resv_claims` 只读副本。
+- 真机发现：AAVMF 的 `DTB_CFGTABLE=1` 把配置表 DTB 放在非 ACPIReclaim 页，合同拒绝启动——该腿改为「存在但不可用」负例，补上此前缺失的负例固件路径；正例只剩宿主单测。
+- 读数：boot-shim 88（+6）、minix-boot 163、kernel 863；三组 UEFI/opensbi 特性构建 OK；aarch64 默认腿与强制 DT 负例腿、x86 UEFI 腿 PASS。
+
 **第一百一十四轮（复审后全面回归；文档与代码再同步）**
 
 - 另一会话的 16 笔复审修复（`6b4f5d1f4..d09fff501`：不可读 `reg` 拒绝、MRB × 普通保留按页冲突、FDT MRB 上限 16、严格来源门、O-11 静态保留 × EFI 类型覆盖、几何溢出跳过、dumpdtb 采集点重解析、rustfmt）已合入。正文按新代码校正：§2.1（四条 `reg` 负控）、§2.2（`DTB_SOURCE_MAX` 容量、MRB 冲突、`collect_with_panorama`）、§2.3（`resv_claims` 的 `MAX_CLAIMS=64`/`MAX_INTERVALS=256`、采集与核对时序）、§2.5（`validate_requiring_sources` 严格门、DTB 时序假设）；§7 第 1 项的「只验证了不存在」改为「正例已在 `acpi=off` 腿通过」。

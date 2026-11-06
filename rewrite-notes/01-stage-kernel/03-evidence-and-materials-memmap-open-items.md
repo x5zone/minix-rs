@@ -2972,3 +2972,15 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上上轮（第一百一十二轮）合并提交 | `6bb26349a`（第一百一十三轮为另一会话的复审批次 `d09fff501`） |
+
+## 八十一、第一百一十五轮：A1 复制到自有缓冲与页类型预检（代码证据）
+
+**提交**：`d858c05f3`（A1 代码 + 测试 + 腿改造）。
+
+**实现**：`boot-shim/src/dtb_copy.rs` 三段式——`prepare`（8 字节 header + 自有缓冲，先于取图）→ `authorize_and_copy`（配对快照核对全部页 `EfiACPIReclaimMemory`，然后 memcpy）→ `owned`（只读副本）；`resv_claims::capture` 改从副本构建；`cross_validate_config_dtb` 只解析副本。配对循环新增 `PairError::DtbPages`。
+
+**读数**：`cargo test -p boot-shim --lib` **88 passed**（dtb_copy 6 条）；`minix-boot` 163、`minix-kernel --features mock` 863；`x86_64-unknown-uefi`/`aarch64-unknown-uefi`/`riscv64gc-none(fw-riscv-uboot)` 构建 OK。
+
+**QEMU**：aarch64 默认腿 PASS（`platform DTB absent`）；`DTB_CFGTABLE=1` 腿 PASS（负例：`DtbPages(NotAcpiReclaim { page: 1206870016 })`）；x86 UEFI 腿 PASS。
+
+**证据降级**：配置表 DTB「存在且可解析」的正例不再有固件路径（AAVMF 强制 DT 不符合 UEFI 2.11 §4.6.1.3 的页类型要求），正例由 `dtb_copy` 页类型单测覆盖；「存在但不可用」负例由真机腿覆盖。

@@ -5930,3 +5930,10 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 合并后 HEAD 复跑受影响包确认 concurrent clippy 批次（import 归位/rustfmt）无行为变化：kernel 863、vm 548、vfs 538、minix-sys 345。
 - 提交：`cef355a55 docs(01)`（正文/02/03/todo）；本笔台账。门：1,099 行、围栏 42 偶、表格 37 块 0 不一致、破表 0、lint 0、横幅 PASS、lost 0（syms 159→583、tests 67→321）。
 - 认领：`I-29 qorder113`，状态 ✅：已 rebase 后 ff 合并，认领已释放。
+
+### 第三百二十五笔（01 阶段 · I-29 第一百一十五轮：A1 copy-first + 页类型预检）
+
+- `d858c05f3 feat(boot)`：新增 `dtb_copy`（header preflight → 取图前分配缓冲 → 配对快照页类型授权 → memcpy → 只读副本）；`resv_claims` 改从副本构建；`cross_validate_config_dtb` 只解析副本；新增 `PairError::DtbPages`。
+- 真机：AAVMF `DTB_CFGTABLE=1` 的配置表 DTB 不在 `EfiACPIReclaimMemory` 页，O-11 预检拒绝启动——该腿由正例改为「存在但不可用」负例，补上缺失的负例固件路径。
+- 读数：boot-shim 88、minix-boot 163、kernel 863；三组特性构建 OK；aarch64 默认/负例腿与 x86 腿 PASS。
+- 认领：`I-29 qorder90`，状态 🔄 待合入。

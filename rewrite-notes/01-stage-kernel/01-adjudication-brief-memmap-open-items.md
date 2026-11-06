@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 18:10 CST（`date` 实测）；**内容轮次：第一百一十四轮——复审后全面回归与文档再同步**（16 笔复审修复后的宿主/交叉构建/QEMU 全套件复跑；§2.1～§2.3/§2.5 已按新代码校正：不可读 `reg` 拒绝、MRB × 普通保留按页冲突、严格来源门、`resv_claims` 覆盖合同）。§6.1/§6.3 与 `03` 八十节记录本轮读数。
+> **重写**：2026-11-06 18:59 CST（`date` 实测）；**内容轮次：第一百一十五轮——A1 复制到自有缓冲 + DTB 页类型预检**（`dtb_copy`：预检只读 8 字节 header、缓冲先于取图分配；配对循环按最终快照核页类型后 memcpy，之后只读副本；AAVMF 强制 DT 腿转为「存在但不可用」负例）。§6.3/§6.4 与 `03` 八十一节记录本轮读数。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -208,6 +208,8 @@ serializer.push_source(&record).expect("preflight proved the source partition");
 ```
 
 **静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在 `find_platform_sources` 时采集（`resv_claims::capture`），EBS 配对循环在**分类之后、`ExitBootServices` 之前**逐页核对（`check_current`，失败形状 `PairError::ReservationCoverage`）：无覆盖或同页出现异类描述符即拒绝启动，即使另有兼容描述符覆盖同页也算冲突（保守加强）；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。容量固定：主张 `MAX_CLAIMS = 64`、每条主张的覆盖区间 `MAX_INTERVALS = 256`，溢出拒绝不截断。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 9 条单测；默认 ACPI 腿无配置表 DTB（无主张、按空集通过），`DTB_CFGTABLE=1` 腿会真正采集并核对。
+
+**复制到自有缓冲（`boot-shim/src/dtb_copy.rs`，第一百一十五轮）**：`prepare` 在取图前只读 8 字节 header、按 `totalsize` 分配自有缓冲（分配先于快照，避免扰动 MapKey）；`authorize_and_copy` 在 `ExitBootServices` 前按最终快照核对 DTB 全部 4 KiB 页为 `EfiACPIReclaimMemory` 且无同类异型覆盖，然后 memcpy 一次；此后 `fdt_layout::validate`、解析、`collect` 与 `resv_claims` 只读副本。6 条单测覆盖页类型正反例与 header 边界。
 
 ### 2.4 第一跳：`BootHandoffV1`（wire v2）
 
@@ -590,7 +592,7 @@ T0／T1／T2 的检查点划分、冻结字段与「先审后用」全部属 Boo
 | 存在且已完整解析并与内存图交叉验证 | 按两份权威来源共同处理 |
 | 存在但尚未接入，或解析失败 | **拒绝启动**，不得静默丢弃其中的 `no-map`／MRB 声明 |
 
-**三态已落码（第一百零七轮）**：`uefi_helpers::cross_validate_config_dtb` 在两个 UEFI 入口各调一次——无 DTB 走第一行；有且可解析则要求 `/memory` 覆盖每条 conventional 跨度（否则 halt）；容器坏、拒图、解析失败都 halt。**仍未实现的是「复制到自有缓冲再解析」这一步**：当前实现直接读原 blob 的 header 并在原地址上解析，O-11 候选 A 的第 ② 步（完整读取前先复制）没有落地；若 DTB 本体落在 MRB 内，「读它发生在知道它是 MRB 之前」的问题仍然存在，只是被启动输入合同（平台保证 DTB 可读）暂时兜住。
+**三态已落码（第一百零七轮）**：`uefi_helpers::cross_validate_config_dtb` 在两个 UEFI 入口各调一次——无 DTB 走第一行；有且可解析则要求 `/memory` 覆盖每条 conventional 跨度（否则 halt）；容器坏、拒图、解析失败都 halt。**复制到自有缓冲再解析已落码（第一百一十五轮）**：预检只读 8 字节 header（候选 A 的 header preflight），缓冲在取图前分配；完整读取的授权（全部页 `EfiACPIReclaimMemory`）在配对循环内、`ExitBootServices` 之前完成，随后 memcpy 一次，校验与解析只访问副本。AAVMF 的强制 DT 模式把配置表 DTB 放在非 `EfiACPIReclaimMemory` 页，因此该腿现在断言「存在但不可用」的拒绝。
 
 **另需裁定一致性策略**：配置表 DTB 的保留声明与 UEFI 内存图之间——(A) 解析权威 DTB，保留来源身份并与内存图交叉验证；(B) 只信内存图，接受来源身份丢失并对无法区分的区域取更保守的统一政策。第一版倾向前者，但 B 也可以是明确的简化，不是规范要求。
 **四条 DTB 输入路径统一两阶段**（x86_64 UEFI 没有 DTB 输入，不属于这四条）：
@@ -652,7 +654,7 @@ Outward(R_reserved) ⊆ ⋃ { 类型兼容的 EFI 描述符覆盖的页 }
 
 **为什么不是「Reserved 更强所以覆盖」**：DTSpec 对普通静态保留指定的是类型本身，不只是「受保护」；用 Reserved 覆盖等于悄悄牺牲一条来源要求。若将来要接受普通保留 + MRB，唯一自洽的做法是**放弃 MRB 的 `should`→must 强化**（回到规范级别，MRB 的访问禁止由独立政策兑现），而不是让 `ResolveCompatibleClaims` 返回一个隐藏牺牲项的结果。跨来源身份照旧各留一条；覆盖公式分别定义 `R_static` 与 `R_MRB`，经页级裁决后再比对。表中的「同页冲突即拒绝」是**保守规则**，它会拒绝掉原始字节其实不相交的合法配置，换来的是不必证明「固件给出的页内字节布局恰好不重叠」——第一版接受这个代价。
 **粒度只有两条，不得互相扩张（这是对上表的解释，不是第三份裁决）**：EFI 类型裁决按 **4 KiB 页**向外量化——部分覆盖即构成该页的类型主张，不能因为原始字节只占半页就把同页另一半当成「无主张」；MRB 的访问禁止与受限授权按声明的**原始字节** `[start, start+len)`，**不取整**——不能因交集页取了 `EfiACPIReclaimMemory` 就把字节授权扩成整页可读，也不能因某页类型合规就允许越出原始字节的访问。`no-map` 与普通保留的**分配排除**按页向外，但访问禁止的**强度**仍来自各自来源语义，不因取整而改变。DTB 首读范围本身是原始字节（header 40 B、body `totalsize`），只有**类型验证按页**。页级类型裁决成立**不**意味着该页全部字节可访问；反之亦然。
-**交叉验证是覆盖合同，不是重叠检查**（验证式 `Outward(R_reserved) ⊆ ⋃ { 类型兼容的 EFI 描述符覆盖的页 }`）：只证明「有重叠」或「首类正确」不够——一个正确的首页描述符 + 其后的 `EfiConventionalMemory` 会让保留区大部分页未被保护；反向也不成立，一个兼容描述符只覆盖部分不能把整条来源标记为已验证。**必测三种形态（未实现）**：① 仅首页类型正确、后续页类型错误 → 拒绝；② 多个连续同类描述符共同完整覆盖 → 通过；③ 中间一页类型不兼容 → 拒绝。MRB 与普通声明重叠时，交叉验证只核对覆盖与兼容性，政策层保留两个独立来源身份，不得合并成一个更大区间后丢掉语义差异。规范强度照旧分开记录：静态 `/reserved-memory` 入图与类型对应是明确要求；MRB 入图是明确要求，但用 `EfiReservedMemoryType` 的措辞是 `should`（项目可提升为严格合同，不得写成 must）。`reusable` 与 `no-map` 互斥、MRB 之间不得重叠（规范 *shall*）两种强度不因本表改变。
+**交叉验证是覆盖合同，不是重叠检查**（验证式 `Outward(R_reserved) ⊆ ⋃ { 类型兼容的 EFI 描述符覆盖的页 }`）：只证明「有重叠」或「首类正确」不够——一个正确的首页描述符 + 其后的 `EfiConventionalMemory` 会让保留区大部分页未被保护；反向也不成立，一个兼容描述符只覆盖部分不能把整条来源标记为已验证。**必测三种形态（已实现：`first_page_correct_and_later_page_wrong_is_rejected`、`consecutive_compatible_descriptors_cover_the_claim`、`incompatible_middle_page_is_reported_with_its_type`）**：① 仅首页类型正确、后续页类型错误 → 拒绝；② 多个连续同类描述符共同完整覆盖 → 通过；③ 中间一页类型不兼容 → 拒绝。MRB 与普通声明重叠时，交叉验证只核对覆盖与兼容性，政策层保留两个独立来源身份，不得合并成一个更大区间后丢掉语义差异。规范强度照旧分开记录：静态 `/reserved-memory` 入图与类型对应是明确要求；MRB 入图是明确要求，但用 `EfiReservedMemoryType` 的措辞是 `should`（项目可提升为严格合同，不得写成 must）。`reusable` 与 `no-map` 互斥、MRB 之间不得重叠（规范 *shall*）两种强度不因本表改变。
 **权威表二：DTB 一次性首读授权**（启动读取是一个具名用途 `BootInputReadUse { ObjectId, PA/VA, 读取范围, 只读, 阶段, 访问路径, 失效点 }`，不是全局正向授权；每个负向来源分别判断是否允许它，`BootInputProvenance` 不能覆盖所有禁止项）。标准 DTB 表有专属规则，不能套用一般配置表允许的四种类型：`RuntimeServicesData`/`BootServicesData`/`ACPINVS` 对标准 DTB 表不成立，`LoaderData` 更不在其中。
 
 | 原始 DTB 所在区域 | 一次性启动读取的裁决 | 授权来源与失效点 |
@@ -1034,7 +1036,7 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 | x86_64 全系统 | `test-e5-ds.sh` | **PASS**（12 个 server 出生，`E5f-LABELS 12/12`，DS 传输链四腿通电）→ 第二跳与 VM `reconcile` 在真机成立 |
 | x86_64 双镜像 | `test-sysboot.sh` | **PASS**（多进程引导 + 首次用户态 IPC） |
 | aarch64 UEFI 链路（ACPI 模式） | `test-shim-bootmarks-aarch64.sh` | **PASS**（`platform DTB absent — UEFI map is the only source`；`conv=13 dtb_regions=1` 诊断交叉对照） |
-| aarch64 UEFI 链路（DT 模式） | `DTB_CFGTABLE=1 test-shim-bootmarks-aarch64.sh`（`-machine virt,gic-version=3,acpi=off`） | **PASS**（EDK2 的 `PlatformHasAcpiDtDxe` 改把机器 DTB 发布到配置表；shim 打印 `platform DTB cross-validated against the UEFI map`。三态「存在且可解析」分支真机验证；该腿同时走 `resv_claims::capture` + `check_current`，即 O-11 静态保留 × EFI 类型覆盖的真实固件路径） |
+| aarch64 UEFI 链路（DT 模式） | `DTB_CFGTABLE=1 test-shim-bootmarks-aarch64.sh`（`-machine virt,gic-version=3,acpi=off`） | **PASS（负例）**（EDK2 把机器 DTB 发布到配置表，但该 blob 所在页不是 `EfiACPIReclaimMemory`；O-11 页类型预检拒绝启动，串口为 `DtbPages(NotAcpiReclaim { page: … })`。三态「存在但不可用」由此获得固件路径；「存在且可解析」的正例只剩宿主单测） |
 | riscv64 自引导 | `test-kernel-image-riscv64-bootface.sh` | **PASS**（B1/B2/B3 三点位；`KernelInfo::validate` 第 6 步在真机跑过） |
 | riscv64 U-Boot 全链 | `test-riscv64-uboot-shim.sh` | **PASS**（6/6 标记：shim 进入 → MNXBOOT1 表 → 内核+12 模块 → arena → 接收端 → scheduler；wire v2 与 `decode_sources` 在真机跑过） |
 | riscv64 全系统 | `test-riscv64-boot-full.sh` | **PASS**（12 server 出生，`minix-rs rc: minimal boot script marker`）→ 第二跳与 VM `reconcile` 在 riscv 成立 |
@@ -1054,7 +1056,7 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 
 - OVMF/AAVMF 的实际镜像身份与哈希，以及代表性描述符的 `Attribute` 原始值——要证明运行固件实际用了哪套编码。`Attribute` **今天没有进入来源记录**（`WireSourceRecord` 没有该字段），这是 O-12g 的已知缺口。
 - 配置表 DTB 的可控正例：需要一份把 DTB 放进 UEFI 配置表的固件配置（本机 AAVMF 不提供），或用可注入配置表的固件变体。
-- O-11 的「复制到自有缓冲再解析」：四条 DTB 腿今天都直接读原 blob，候选 A 的第 ② 步未实现。
+- O-11 的「复制到自有缓冲再解析」：**已落码（第一百一十五轮）**——UEFI 腿走 `dtb_copy`（header preflight → 页类型授权 → memcpy → 只读副本），三条 DTB 腿本就复制进自有映像/arena。
 
 **事实分级的两侧口径**：RISC-V 与设备树的规范原文由本方从固定 commit 的源文本直取；UEFI 侧三项——`EfiReservedMemoryType` 的「Not usable」、`GetMemoryMap()` 对无物理支撑地址与有物理支撑但 OS 不应访问的两段区分、§4.6.1.3 的 DTB 表位置要求——由**评审人按 UEFI 2.11 独立核对**；本方环境抓取 uefi.org 返回 403，按第三方核对引用，不升级成本方已验证。
 
@@ -1071,6 +1073,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 | 第三层：固定布局 ABI | **不签** | 现有 `BootHandoffV1` 与 `VmBootHandoff` 是已存在的基线，缺的是承载来源记录与对象信息的**扩展**（O-13a／O-13b） |
 
 **第一百一十三轮（实现复审修复，不改变层结论）**：双轴复审提出的两项 fail-open 与四项合同/文档不一致已闭合——① 截断或零长的 `reg` 不再被跳过（四条负控）；② 非 `no-map` 保留与 MRB 的页级冲突拒绝（三正一负）；③ 跨镜像 resume 走 `validate_requiring_sources`，三条 DTB 腿交出前断言来源非空；④ FDT 容器 MRB 上限回到 16；⑤ O-11 静态保留 × EFI 类型覆盖落码（`resv_claims`，三条必测形态）；⑥ 注释/引用同步与 I-29 触及文件的 rustfmt。读数见 §6.1/§6.3；仍开放的是 O-11「复制到自有缓冲再解析」与真机固件证据。
+
+**第一百一十五轮（A1 落码，不改变层结论）**：O-11 的 copy-first 与页类型预检落地；AAVMF 强制 DT 腿由正例改为「存在但不可用」负例，正例只剩宿主单测。
 
 **第二层的验收内容已按 §1.6 收紧**，只保留真正属于「资源发现与交接」的五项（平台资源描述随射程移交 `04`，不再作为签字项）：
 
