@@ -39,33 +39,37 @@ extern crate alloc;
 extern crate std;
 
 use crate::boot_policy::{KernelLayout, KernelMapPolicy, plan_boot_pages};
-use minix_arch::arch::boot_arch::BootArch;
-use minix_arch::arch::direct_map::DirectMapLayout;
-use minix_arch::arch::boot_dm::plan_dm_policy;
-use minix_arch::paging_ext::{BootPageSupport, HugePages, PageSize, detect_boot_page_support};
 use minix_arch::CurrentBootArch;
-use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
+use minix_arch::arch::boot_arch::BootArch;
+use minix_arch::arch::boot_dm::plan_dm_policy;
+use minix_arch::arch::direct_map::DirectMapLayout;
+use minix_arch::paging_ext::{BootPageSupport, HugePages, PageSize, detect_boot_page_support};
+use minix_types::{PhysBytes, VirBytes};
 // Handoff types are exercised only by the non-mock VM-loading path
 // (same reason as the `PhysAccess` import below).
-#[cfg(not(feature = "mock"))]
-use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
 #[cfg(all(
     not(feature = "mock"),
-    any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "riscv64"
+    )
 ))]
 use minix_boot::{
-    decode_envelope, decode_memmap, decode_modules, decode_param_buf, decode_platform_sources,
-    decode_reserved_regions, decode_sources, patch_runtime_fields_in, BootModule, RuntimeFields,
-    WireBootModule, ARENA_CAP, WIRE_MODULE_CAP,
+    ARENA_CAP, BootModule, RuntimeFields, WIRE_MODULE_CAP, WireBootModule, decode_envelope,
+    decode_memmap, decode_modules, decode_param_buf, decode_platform_sources,
+    decode_reserved_regions, decode_sources, patch_runtime_fields_in,
 };
+#[cfg(not(feature = "mock"))]
+use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
 use minix_arch::arch::boot_arch::AArch64BootArch as BootArchImpl;
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
 use minix_arch::arch::boot_arch::X86_64BootArch as BootArchImpl;
 
-use minix_boot::{KernelInfo, MemoryRegion};
 use minix_arch::paging::{PageFlags, Paging};
+use minix_boot::{KernelInfo, MemoryRegion};
 // `PhysAccess` is exercised only by the non-mock VM-loading path
 // (`access.frame_virt`, cfg'd out under `feature = "mock"`); a plain
 // import would be an unused-import error in mock builds.
@@ -76,13 +80,13 @@ use minix_arch::{
 };
 // QEMU test kernels build a user context directly and must
 // record the full-context return style (`test-user-trap`).
-pub use minix_arch::TrapStyle as PublicTrapStyle;
 pub use kerninfo::init_kerninfo;
+pub use minix_arch::TrapStyle as PublicTrapStyle;
 
-pub mod vm;
+pub mod kpriv;
 pub mod proc;
 pub mod proc_table;
-pub mod kpriv;
+pub mod vm;
 
 /// Compile-time form reconciliation tripwire (a tripwire, not a fix — the
 /// fix is `default = []` in the three packages).
@@ -114,13 +118,13 @@ pub mod form_contract {
     #[cfg(not(feature = "mock"))]
     const _: Option<minix_plat::form::RealForm> = Option::<minix_plat::SelectedForm>::None;
 }
+pub mod boot;
+pub mod boot_alloc;
+pub mod boot_policy;
 pub mod capability;
+pub mod dm_coverage;
 pub mod errno;
 pub mod sched;
-pub mod boot_alloc;
-pub mod boot;
-pub mod boot_policy;
-pub mod dm_coverage;
 pub mod vm_handoff;
 
 pub mod irq_manager;
@@ -130,37 +134,35 @@ pub mod uart_irq;
 // arch's production trap legs (x86_64: exceptions/IRQs + SYSCALL over the
 // IDT frame; aarch64/riscv64: the E-3ARCHTRAP production legs over their
 // own frame shapes, registered per arch by init_protection).
-pub mod trap_dispatch;
-pub mod syscall;
-pub mod memmap;
-pub mod ipc;
 pub mod clock;
-pub mod smp;
-pub mod syscall_process;
-pub mod syscall_copy;
-pub mod syscall_signal;
-pub mod syscall_device;
-pub mod syscall_clock;
-pub mod ipc_filter;
 pub mod cross_space;
-pub(crate) mod kmess;
-pub mod kerninfo;
-pub mod misc;
 pub mod debug;
+pub mod globals;
+pub mod grant;
+pub mod ipc;
+pub mod ipc_filter;
+pub mod kerninfo;
+pub(crate) mod kmess;
+pub mod krandom;
+pub mod memmap;
+pub mod misc;
 pub mod page_fault;
 pub mod pte_walk;
-pub mod grant;
-pub mod krandom;
+pub mod smp;
 pub mod stacktrace;
-pub mod globals;
+pub mod syscall;
+pub mod syscall_clock;
+pub mod syscall_copy;
+pub mod syscall_device;
+pub mod syscall_process;
+pub mod syscall_signal;
+pub mod trap_dispatch;
 
 use globals::{
-    CLOCK_STATE, CURRENT_ROOT_PHYS,
-    IPC_FILTER_POOL, IRQ_MANAGER, KBILL_IPC, KBILL_KCALL, KERNEL_INFO, KERNEL_MAY_ALLOC,
-    PRIV_TABLE, PROC_TABLE, SMP_STATE, VM_RUNNING, SyncUnsafeCell,
-    ROOT_PHYS_UNSET,
+    CLOCK_STATE, CURRENT_ROOT_PHYS, IPC_FILTER_POOL, IRQ_MANAGER, KBILL_IPC, KBILL_KCALL,
+    KERNEL_INFO, KERNEL_MAY_ALLOC, PRIV_TABLE, PROC_TABLE, ROOT_PHYS_UNSET, SMP_STATE,
+    SyncUnsafeCell, VM_RUNNING,
 };
-
 
 /// Test-only serialization for tests that touch process-global boot state.
 ///
@@ -372,13 +374,13 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 /// `.bss` clear).
 #[cfg(all(
     not(feature = "mock"),
-    any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "riscv64"
+    )
 ))]
-pub fn enter_kernel_image_v1(
-    arena_pa: u64,
-    kernel_info: &KernelInfo,
-    root_page: PhysBytes,
-) -> ! {
+pub fn enter_kernel_image_v1(arena_pa: u64, kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
     // face names the type explicitly); the v1 sender names it here instead.
     #[cfg(target_arch = "riscv64")]
@@ -401,8 +403,8 @@ pub fn enter_kernel_image_v1(
     let policy = plan_boot_pages::<BootArchImpl>(&support, kernel_layout, &layout)
         .unwrap_or_else(|e| panic!("enter_kernel_image_v1: page-size policy: {e}"));
     build_bootstrap_root_and_enable::<BootArchImpl>(root_page, &policy.kernel());
-    let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
-        .expect("enter_kernel_image_v1: bump region not registered");
+    let (bump_base, bump_end) =
+        boot_alloc::boot_alloc_region().expect("enter_kernel_image_v1: bump region not registered");
     let bump_next = boot_alloc::boot_alloc_next();
     // SAFETY: `arena_pa` is the `ARENA_CAP` LOADER_DATA arena the boot-shim
     // allocated below `boot_dm_admissible_end`; the root just enabled maps
@@ -490,7 +492,11 @@ unsafe extern "sysv64" {
 /// this very function.
 #[cfg(all(
     not(feature = "mock"),
-    any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "riscv64"
+    )
 ))]
 pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
     // SAFETY: the sender allocated an `ARENA_CAP` LOADER_DATA arena below the
@@ -608,8 +614,8 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
     let root = PhysBytes(root_page);
     set_current_root_phys(root);
     store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
+    let kinfo: &'static KernelInfo =
+        crate::kernel_info().expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
     register_panic_diagnostic();
     // SAFETY: the shim's bootstrap root is active, its identity window covers
     // the table pages, and this is the boot thread.
@@ -640,8 +646,8 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
     let root = PhysBytes(root_page);
     set_current_root_phys(root);
     store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
+    let kinfo: &'static KernelInfo =
+        crate::kernel_info().expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
     register_panic_diagnostic();
     // SAFETY: the shim's bootstrap root is active, its identity window covers
     // the table pages, and this is the boot thread.
@@ -684,7 +690,9 @@ fn mock_kmain_ok() -> ! {
     // `arch_boot_impl` already verified the boot flow. We just need to
     // return `!` to satisfy the caller contract. In tests, the caller
     // expects this function to diverge.
-    loop { core::hint::spin_loop(); }
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageSupport<A> {
@@ -711,14 +719,22 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
 
     // kern_phys_base must be page-aligned (at least 4KB)
-    assert!(kp.is_multiple_of(0x1000), "arch_boot: kern_phys_base must be page-aligned");
+    assert!(
+        kp.is_multiple_of(0x1000),
+        "arch_boot: kern_phys_base must be page-aligned"
+    );
 
     // kern_virt_base must be page-aligned (at least 4KB)
-    assert!(kv.is_multiple_of(0x1000), "arch_boot: kern_virt_base must be page-aligned");
+    assert!(
+        kv.is_multiple_of(0x1000),
+        "arch_boot: kern_virt_base must be page-aligned"
+    );
 
     // kern_stack_top must be 16-byte aligned (ABI requirement)
-    assert!(kernel_info.kern_stack_top().0.is_multiple_of(16),
-        "arch_boot: kern_stack_top must be 16-byte aligned");
+    assert!(
+        kernel_info.kern_stack_top().0.is_multiple_of(16),
+        "arch_boot: kern_stack_top must be 16-byte aligned"
+    );
 
     // Register boot-stage page table page allocator if not already registered.
     // The caller (e.g., a test kernel) may have registered its own allocator
@@ -733,8 +749,10 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
     vmark!("kernel: v1 asserts ok\n");
     if boot_alloc::boot_alloc_region().is_none() {
         const FALLBACK_BUMP_LEN: u64 = 0x100_000;
-        let dm_admissible_end =
-            core::cmp::min(IDENTITY_MAP_END, <A::DirectMap as minix_arch::DirectMapArch>::VM_DIRECT_MAP_SIZE);
+        let dm_admissible_end = core::cmp::min(
+            IDENTITY_MAP_END,
+            <A::DirectMap as minix_arch::DirectMapArch>::VM_DIRECT_MAP_SIZE,
+        );
         let region = kernel_info.memmap().iter().find_map(|r| {
             let start = r.base.0;
             let end = core::cmp::min(start.checked_add(r.len as u64)?, dm_admissible_end);
@@ -892,10 +910,7 @@ fn identity_piece_is_device(piece: u64, piece_len: u64, windows: &[(u64, u64)]) 
 ///
 /// On return, paging is enabled with TTBR0/TTBR1 (x86: CR3) both pointing at
 /// `root_page`, and the active root is recorded in the kernel global.
-fn build_bootstrap_root_and_enable<A: BootArch>(
-    root_page: PhysBytes,
-    policy: &KernelMapPolicy<A>,
-) {
+fn build_bootstrap_root_and_enable<A: BootArch>(root_page: PhysBytes, policy: &KernelMapPolicy<A>) {
     let kern_huge = policy.page_size();
     let layout = policy.layout();
     let mut paging = A::Paging::new_from_page(root_page);
@@ -977,10 +992,14 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
         let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
         let mut offset = 0u64;
         while offset < layout.size {
-            paging.map_huge(
-                VirBytes(kern_virt + offset), PhysBytes(kern_phys + offset),
-                kern_huge, kern_flags,
-            ).expect("kernel map: map_huge failed — kernel image mismatch");
+            paging
+                .map_huge(
+                    VirBytes(kern_virt + offset),
+                    PhysBytes(kern_phys + offset),
+                    kern_huge,
+                    kern_flags,
+                )
+                .expect("kernel map: map_huge failed — kernel image mismatch");
             offset += kern_huge.bytes();
         }
     }
@@ -1054,24 +1073,24 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
         if regions.is_empty() {
             boot_stage!("kernel: step2c device window empty (skip)\n");
         } else {
-        for region in regions {
-            if !region.bootstrap {
-                continue; // runtime-only consumer: process roots carry it
+            for region in regions {
+                if !region.bootstrap {
+                    continue; // runtime-only consumer: process roots carry it
+                }
+                let va_base = minix_arch::arch::device_window::slot_va_base(regions, region.slot);
+                let mut off = 0u64;
+                while off < region.size {
+                    paging
+                        .map_huge(
+                            VirBytes(va_base + off),
+                            PhysBytes(region.phys_base + off),
+                            minix_arch::paging_ext::PageSize::MIB_2,
+                            minix_arch::arch::device_window::device_window_flags(),
+                        )
+                        .expect("device window map into bootstrap root failed");
+                    off += 2 << 20;
+                }
             }
-            let va_base = minix_arch::arch::device_window::slot_va_base(regions, region.slot);
-            let mut off = 0u64;
-            while off < region.size {
-                paging
-                    .map_huge(
-                        VirBytes(va_base + off),
-                        PhysBytes(region.phys_base + off),
-                        minix_arch::paging_ext::PageSize::MIB_2,
-                        minix_arch::arch::device_window::device_window_flags(),
-                    )
-                    .expect("device window map into bootstrap root failed");
-                off += 2 << 20;
-            }
-        }
         }
     }
 
@@ -1212,7 +1231,6 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
     }
 }
 
-
 /// Kernel main — called after the higher-half transition.
 ///
 /// This function runs at the kernel's high virtual address.
@@ -1243,10 +1261,10 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
 /// (the bootstrap root's data region keeps its existing coarse behavior).
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
 fn harden_kernel_text() {
-    use minix_arch::paging::Paging as _;
+    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
     use minix_arch::CurrentPaging;
     use minix_arch::paging::PageFlags;
-    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+    use minix_arch::paging::Paging as _;
 
     const MIB_2: u64 = 2 << 20;
     const PAGE: u64 = 4096;
@@ -1300,11 +1318,8 @@ fn harden_kernel_text() {
         while page < leaf_text_end {
             // SAFETY: as above — live-root edit; the write path flushes.
             unsafe {
-                pt.update_flags(
-                    minix_types::VirBytes(page),
-                    PageFlags::kernel_executable(),
-                )
-                .expect("harden_kernel_text: update_flags failed");
+                pt.update_flags(minix_types::VirBytes(page), PageFlags::kernel_executable())
+                    .expect("harden_kernel_text: update_flags failed");
             }
             page += PAGE;
         }
@@ -1337,8 +1352,8 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // ASCII garbage, so validate panicked. The global slot lives in .bss, does
     // not go through that stack area, and is the only trustworthy source.
     // This shadow can be deleted once the diagnostics below confirm it.
-    let kernel_info: &KernelInfo = crate::kernel_info()
-        .expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
+    let kernel_info: &KernelInfo =
+        crate::kernel_info().expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
     // Evidence capture (temporary, v3): read RDI in entry asm (the real
     // handoff value) plus the global slot pointer, the current RSP and the
     // bootstrap_len read through the slot.
@@ -1350,9 +1365,13 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         let entry_rdi: u64;
-        unsafe { core::arch::asm!("mov {}, rdi", out(reg) entry_rdi, options(nomem, nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("mov {}, rdi", out(reg) entry_rdi, options(nomem, nostack, preserves_flags));
+        }
         let rsp: u64;
-        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, pure)); }
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, pure));
+        }
         Console::write_str("kernel: preA rdi=");
         Console::write_hex(entry_rdi);
         Console::write_str(" kinfo=");
@@ -1426,13 +1445,17 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         let (g_lo, g_hi): (u32, u32);
         // SAFETY: rdmsr of GS_BASE is a read-only side-effect-free probe.
-        unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
+        unsafe {
+            core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack))
+        };
         let (k_lo, k_hi): (u32, u32);
         // SAFETY: rdmsr of KERNEL_GS_BASE is read-only.
-        unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0102u32, out("eax") k_lo, out("edx") k_hi, options(nomem, nostack)) };
+        unsafe {
+            core::arch::asm!("rdmsr", in("ecx") 0xC000_0102u32, out("eax") k_lo, out("edx") k_hi, options(nomem, nostack))
+        };
     }
-    init_protection(kernel_info);        // prot_init equivalent
-    init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
+    init_protection(kernel_info); // prot_init equivalent
+    init_clock_and_interrupts(); // clock + intr + arch_init (covered in 05)
 
     // The boot clock source's three-part sequence — program the source,
     // register the local-timer hook, open the delivery gate — runs EXACTLY
@@ -1453,7 +1476,9 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         let (g_lo, g_hi): (u32, u32);
         // SAFETY: rdmsr probe, see gs0 above.
-        unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
+        unsafe {
+            core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack))
+        };
     }
     // Phase B.5: kernel information page — build, user-map, publish.
     // From here on the MINIX_KERNINFO IPC call (= 6) answers OK with the
@@ -1466,7 +1491,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     boot_stage!("kernel: kmain B.5 kerninfo page ok\n");
     // Phase C: proc_init + arch_boot_proc
     // Populates the global `PROC_TABLE` / `PRIV_TABLE` statics.
-    init_proc_and_boot(kernel_info);  // covered in 06
+    init_proc_and_boot(kernel_info); // covered in 06
 
     // Phase C.5: IPCF_POOL_INIT — initialize IPC filter pool
     // C: IPCF_POOL_INIT() — main.c:158-162 (called after proc_init)
@@ -1493,7 +1518,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // C: memory_init() — memory.c:707 (x86) / memory.c:612 (ARM)
     // SAFETY: boot is single-threaded before BKL exists.
     let proc_table = unsafe { crate::proc_table_boot_unchecked() };
-    init_post_and_memory(proc_table);  // covered in 07
+    init_post_and_memory(proc_table); // covered in 07
 
     // Phase E: (no boot-time action) — C `system_init()` registered the
     // syscall table (system.c:168-278 call_vec[]); in Rust the `enum
@@ -1606,7 +1631,7 @@ fn elected_bsp_hw_id(topo: &minix_boot::platform::CpuTopology) -> u64 {
 /// C: the BSP-only SMP state assembly in main()/bsp_finish_booting's
 /// callers (arch_smp.c bsp_cpu_init parity).
 pub fn init_smp_state() {
-    use minix_platform::{platform_desc, PlatformDesc};
+    use minix_platform::{PlatformDesc, platform_desc};
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
         let topo = platform_desc().cpu_topology();
@@ -1619,7 +1644,10 @@ pub fn init_smp_state() {
         let bsp_logical = (0..topo.nr_cpus as usize)
             .find(|&i| topo.cpus[i].hw_id == bsp_hw)
             .unwrap_or(topo.bsp_id as usize) as u32;
-        let mut state = smp::SmpState::with_ncpus(topo.nr_cpus.max(1), crate::proc::CpuId::new_unchecked(bsp_logical));
+        let mut state = smp::SmpState::with_ncpus(
+            topo.nr_cpus.max(1),
+            crate::proc::CpuId::new_unchecked(bsp_logical),
+        );
         // Publish BSP_LOGICAL and the two masks now; smp_init's later seeding
         // is then idempotent.
         state.seed_bsp_masks(bsp_logical);
@@ -1643,11 +1671,12 @@ pub fn init_smp_state() {
     // SAFETY: single-threaded boot; the scheduler has not started.
     unsafe {
         let table = crate::proc_table_boot_unchecked();
-        for raw in -(crate::proc_table::NR_TASKS as i32)
-            ..(crate::proc_table::NR_PROCS as i32)
-        {
+        for raw in -(crate::proc_table::NR_TASKS as i32)..(crate::proc_table::NR_PROCS as i32) {
             let nr = crate::proc::ProcNr::new(raw);
-            let Some(homed) = table.get(nr).map(|p| p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire)) else {
+            let Some(homed) = table
+                .get(nr)
+                .map(|p| p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire))
+            else {
                 continue;
             };
             if homed == bsp_logical {
@@ -1658,7 +1687,9 @@ pub fn init_smp_state() {
                 table.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
             }
             if let Some(p) = table.get_mut(nr) {
-                p.p_sched.cpu.store(bsp_logical, core::sync::atomic::Ordering::Release);
+                p.p_sched
+                    .cpu
+                    .store(bsp_logical, core::sync::atomic::Ordering::Release);
             }
             if runnable {
                 table.rts_unset(nr, RtsFlagsBits::NO_QUANTUM);
@@ -1766,11 +1797,21 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 
     // ── Print captured register values ──
     Console::write_str("### test-higher-half ###\n");
-    Console::write_str("  arch: "); Console::write_str(minix_platform::test_support::ARCH_NAME); Console::write_str("\n");
-    Console::write_str(minix_platform::test_support::SP_LABEL); Console::write_hex(sp); Console::write_str("\n");
-    Console::write_str(minix_platform::test_support::PC_LABEL); Console::write_hex(pc); Console::write_str("\n");
-    Console::write_str(minix_platform::test_support::FP_LABEL); Console::write_hex(fp); Console::write_str("\n");
-    Console::write_str("  kern_virt_base: "); Console::write_hex(kern_high); Console::write_str("\n");
+    Console::write_str("  arch: ");
+    Console::write_str(minix_platform::test_support::ARCH_NAME);
+    Console::write_str("\n");
+    Console::write_str(minix_platform::test_support::SP_LABEL);
+    Console::write_hex(sp);
+    Console::write_str("\n");
+    Console::write_str(minix_platform::test_support::PC_LABEL);
+    Console::write_hex(pc);
+    Console::write_str("\n");
+    Console::write_str(minix_platform::test_support::FP_LABEL);
+    Console::write_hex(fp);
+    Console::write_str("\n");
+    Console::write_str("  kern_virt_base: ");
+    Console::write_hex(kern_high);
+    Console::write_str("\n");
 
     // ── Assertions ──
     // SP must be at a high virtual address (kern_stack_top was used)
@@ -1795,10 +1836,18 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     if sp_ok && sp_aligned && fp_zero {
         Console::write_str("### TEST_RESULT: PASS test-higher-half ###\n");
     } else {
-        if !sp_ok { Console::write_str("  FAIL: SP not at high address\n"); }
-        if !pc_at_high { Console::write_str("  INFO: PC not at high address (expected in test kernel)\n"); }
-        if !sp_aligned { Console::write_str("  FAIL: SP not at the architecture's entry alignment\n"); }
-        if !fp_zero { Console::write_str("  FAIL: FP not zero\n"); }
+        if !sp_ok {
+            Console::write_str("  FAIL: SP not at high address\n");
+        }
+        if !pc_at_high {
+            Console::write_str("  INFO: PC not at high address (expected in test kernel)\n");
+        }
+        if !sp_aligned {
+            Console::write_str("  FAIL: SP not at the architecture's entry alignment\n");
+        }
+        if !fp_zero {
+            Console::write_str("  FAIL: FP not zero\n");
+        }
         Console::write_str("### TEST_RESULT: FAIL test-higher-half ###\n");
     }
 
@@ -1807,13 +1856,17 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
         // SAFETY: `hlt` halts the CPU until the next interrupt. nomem/nostack
         // guarantee no memory access or stack modification. Used in an infinite
         // loop after test completion — safe because no shared state is modified.
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
         #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         // SAFETY: `wfi` (Wait For Interrupt) halts the CPU until an interrupt
         // arrives. nomem/nostack guarantee no memory access or stack modification.
         // Used in an infinite loop after test completion — safe because no
         // shared state is modified.
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 
@@ -1834,7 +1887,7 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 /// bring-up test driver (`test-smp-aps`) — the AP tail's init_ap consumes
 /// the PROTECTION global this function fills.
 pub fn init_protection(kernel_info: &KernelInfo) {
-    use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
+    use minix_arch::{CurrentProtection, CurrentTrapEntry, ProtectionArch, TrapEntryArch};
 
     // Step 1: Initialize protection structures.
     // x86-64: GDT + TSS; aarch64: SP_EL1; riscv64: sscratch
@@ -1904,14 +1957,16 @@ pub fn init_protection(kernel_info: &KernelInfo) {
 /// The live protection instance (GDT/TSS image) — a resident static, per the
 /// `ProtectionArch::load` lifetime contract. `None` before init_protection.
 #[cfg(target_arch = "x86_64")]
-pub(crate) static PROTECTION: SyncUnsafeCell<Option<minix_arch::x86_64::protection::X86_64Protection>> =
-    SyncUnsafeCell::new(None);
+pub(crate) static PROTECTION: SyncUnsafeCell<
+    Option<minix_arch::x86_64::protection::X86_64Protection>,
+> = SyncUnsafeCell::new(None);
 
 /// The live trap-entry instance (IDT image) — same lifetime contract via
 /// `TrapEntryArch::load`.
 #[cfg(target_arch = "x86_64")]
-pub(crate) static TRAP_ENTRY: SyncUnsafeCell<Option<minix_arch::x86_64::trap_entry::X86_64TrapEntry>> =
-    SyncUnsafeCell::new(None);
+pub(crate) static TRAP_ENTRY: SyncUnsafeCell<
+    Option<minix_arch::x86_64::trap_entry::X86_64TrapEntry>,
+> = SyncUnsafeCell::new(None);
 
 /// Move `prot` into the global (before its first `load`).
 #[cfg(target_arch = "x86_64")]
@@ -1980,7 +2035,10 @@ pub(crate) fn with_protection<R>(f: impl FnOnce(&CurrentProtection) -> R) -> R {
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn with_protection_mut<R>(f: impl FnOnce(&mut CurrentProtection) -> R) -> R {
     use minix_arch::arch::protection::ProtectionArch as _;
-    f(&mut CurrentProtection::init(0, minix_types::VirBytes::new(0)))
+    f(&mut CurrentProtection::init(
+        0,
+        minix_types::VirBytes::new(0),
+    ))
 }
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> R {
@@ -2019,13 +2077,10 @@ pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> 
 /// kmain order — the test must exercise the production sequence, not a
 /// re-implementation of it.
 pub fn init_clock_and_interrupts() {
-    use minix_arch::{
-        ArchInit,
-        CurrentArchInit,
-    };
     use crate::clock::ClockState;
-    use minix_plat::{InterruptRouter, CurrentInterruptController};
-    use minix_platform::{platform_desc, PlatformDesc};
+    use minix_arch::{ArchInit, CurrentArchInit};
+    use minix_plat::{CurrentInterruptController, InterruptRouter};
+    use minix_platform::{PlatformDesc, platform_desc};
 
     // Obtain the platform descriptor (initialized earlier from KernelInfo).
     // This is the single source of truth for all hardware parameters.
@@ -2062,32 +2117,29 @@ pub fn init_clock_and_interrupts() {
         // device window maps. Refuse a relocated controller instead of
         // silently programming the wrong physical address.
         assert_eq!(
-            intr.lapic_base(), lapic_region.phys_base as usize,
+            intr.lapic_base(),
+            lapic_region.phys_base as usize,
             "descriptor LAPIC base {:#x} != device-window page {:#x} \
              (relocated LAPIC unsupported)",
-            intr.lapic_base(), lapic_region.phys_base
+            intr.lapic_base(),
+            lapic_region.phys_base
         );
         assert_eq!(
-            intr.ioapic_base(), regions[0].phys_base as usize,
+            intr.ioapic_base(),
+            regions[0].phys_base as usize,
             "descriptor IOAPIC base {:#x} != device-window page {:#x} \
              (relocated IOAPIC unsupported)",
-            intr.ioapic_base(), regions[0].phys_base
+            intr.ioapic_base(),
+            regions[0].phys_base
         );
-        let lapic_va = minix_arch::arch::device_window::device_va_for(
-            regions,
-            1,
-            0xFEE0_0000,
-        )
-        .expect("LAPIC page inside its own window") as usize;
+        let lapic_va = minix_arch::arch::device_window::device_va_for(regions, 1, 0xFEE0_0000)
+            .expect("LAPIC page inside its own window") as usize;
         minix_plat::x86_64_interrupt_set_lapic_va(lapic_va);
         // The IO-APIC page is slot 0; runtime re-mask/unmask goes through
         // the same window (process roots carry no identity after PD22S2E).
-        let ioapic_va = minix_arch::arch::device_window::device_va_for(
-            regions,
-            0,
-            regions[0].phys_base,
-        )
-        .expect("IO-APIC page inside its own window") as usize;
+        let ioapic_va =
+            minix_arch::arch::device_window::device_va_for(regions, 0, regions[0].phys_base)
+                .expect("IO-APIC page inside its own window") as usize;
         minix_plat::x86_64_interrupt_set_ioapic_va(ioapic_va);
         minix_arch::arch::device_window::set_x86_window_live();
     }
@@ -2107,25 +2159,21 @@ pub fn init_clock_and_interrupts() {
             intr.plic_base(),
             plic_region.phys_base
         );
-        let plic_va = minix_arch::arch::device_window::device_va_for(
-            regions,
-            0,
-            plic_region.phys_base,
-        )
-        .expect("PLIC base inside its own window") as usize;
+        let plic_va =
+            minix_arch::arch::device_window::device_va_for(regions, 0, plic_region.phys_base)
+                .expect("PLIC base inside its own window") as usize;
         intr.set_plic_va_base(plic_va);
         crate::irq_manager::set_injected_plic_va(plic_va);
         // PD22S2H diag: confirm the injected base round-trips.
         minix_plat::riscv64_early_console_write_str("  [inject-diag] plic_va set\n");
     }
-    intr.init();  // mask_all() called internally
+    intr.init(); // mask_all() called internally
 
     // D10: Store the interrupt controller in the global `IRQ_MANAGER`.
     // This replaces the previous pattern of dropping `intr` after init.
     // SAFETY: Boot is single-threaded before BKL exists; no concurrent access.
     unsafe {
-        *IRQ_MANAGER.get() =
-            Some(crate::irq_manager::IrqManager::new(intr));
+        *IRQ_MANAGER.get() = Some(crate::irq_manager::IrqManager::new(intr));
     }
 
     // aarch64: `init()` masks every SGI in the BSP's redistributor. Open the
@@ -2197,7 +2245,12 @@ fn vm_boot_exclusions(
         push_exclusion(&mut exclusions, &mut n, m.start, m.len);
     }
     if let Some(root) = root {
-        push_exclusion(&mut exclusions, &mut n, root, crate::vm_handoff::PAGE_SIZE as usize);
+        push_exclusion(
+            &mut exclusions,
+            &mut n,
+            root,
+            crate::vm_handoff::PAGE_SIZE as usize,
+        );
     }
     if let Some((base, end)) = bump {
         push_exclusion(
@@ -2217,12 +2270,7 @@ fn vm_boot_exclusions(
 /// `VmBootRegion ∩ ReservedRegions = ∅` holds (see `frame.rs` module
 /// doc-comment, "Invariants enforced by construction").
 /// Callers pre-allocate [`VM_BOOT_EXCLUSION_CAP`] entries.
-fn push_exclusion(
-    exclusions: &mut [MemoryRegion],
-    n: &mut usize,
-    base: PhysBytes,
-    len: usize,
-) {
+fn push_exclusion(exclusions: &mut [MemoryRegion], n: &mut usize, base: PhysBytes, len: usize) {
     if len == 0 {
         return;
     }
@@ -2236,13 +2284,14 @@ fn push_exclusion(
 
 #[cfg(not(feature = "mock"))]
 pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
-    use minix_arch::{
-        CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind,
-        load_vm_elf, VmLoadError,
-    };
-    use crate::proc::{ProcNr, ProcName, RtsFlagsBits, proc_nr, KERNEL_TASKS, BOOT_MODULE_PROC_NRS};
-    use crate::proc_table::NR_TASKS;
     use crate::proc::NR_BOOT_MODULES;
+    use crate::proc::{
+        BOOT_MODULE_PROC_NRS, KERNEL_TASKS, ProcName, ProcNr, RtsFlagsBits, proc_nr,
+    };
+    use crate::proc_table::NR_TASKS;
+    use minix_arch::{
+        CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, VmLoadError, load_vm_elf,
+    };
 
     // Step 1+2: Acquire global process + privilege tables (SyncUnsafeCell, BSS).
     // C: `EXTERN struct proc proc[]` / `EXTERN struct priv priv[]` — glo.h.
@@ -2266,7 +2315,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     // C: image[0..NR_TASKS] in table.c — ASYNCM, IDLE, CLOCK, SYSTEM, KERNEL
     // Kernel tasks are compiled into the kernel, not loaded from GRUB modules.
     for &(name, nr) in KERNEL_TASKS.iter() {
-        let Some(proc) = proc_table.get_mut(nr) else { continue };
+        let Some(proc) = proc_table.get_mut(nr) else {
+            continue;
+        };
 
         proc.set_boot_name(name);
 
@@ -2281,7 +2332,8 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         } else {
             crate::capability::CapabilityTemplate::KernelTask
         };
-        let priv_id = priv_table.grant_capability(nr, template)
+        let priv_id = priv_table
+            .grant_capability(nr, template)
             .expect("grant_capability: kernel task priv slot occupied");
         // E1 slice 5: link the priv slot back into the process — C's
         // `get_priv(rp, id)` sets rp->p_priv (proc.h); without this the
@@ -2313,7 +2365,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         // C: image[NR_TASKS + i].proc_nr — table.c
         let nr: ProcNr = BOOT_MODULE_PROC_NRS[i];
 
-        let Some(proc) = proc_table.get_mut(nr) else { continue };
+        let Some(proc) = proc_table.get_mut(nr) else {
+            continue;
+        };
 
         // Set process name.
         // C: strlcpy(rp->p_name, ip->proc_name, sizeof(rp->p_name))
@@ -2338,7 +2392,8 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             } else {
                 crate::capability::CapabilityTemplate::RootService
             };
-            let priv_id = priv_table.grant_capability(nr, template)
+            let priv_id = priv_table
+                .grant_capability(nr, template)
                 .expect("grant_capability: static priv slot occupied");
             // E1 slice 5: same priv-link as the kernel-task loop — without
             // it the schedulable services fail every kernel call with
@@ -2347,7 +2402,8 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         } else {
             // Don't let the process run for now.
             // C: RTS_SET(rp, RTS_NO_PRIV | RTS_NO_QUANTUM) — main.c:226
-            proc.p_rts_flags.set(RtsFlagsBits::NO_PRIV | RtsFlagsBits::NO_QUANTUM);
+            proc.p_rts_flags
+                .set(RtsFlagsBits::NO_PRIV | RtsFlagsBits::NO_QUANTUM);
         }
 
         // For user-space boot processes, set up the arch-private CPU
@@ -2373,10 +2429,10 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         let entry = if is_vm {
             #[cfg(feature = "mock")]
             {
-                use minix_arch::paging::mock::MockPaging;
-                use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
                 use minix_arch::DirectMapArch as _;
                 use minix_arch::MockDirectMap;
+                use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+                use minix_arch::paging::mock::MockPaging;
 
                 // VM image frames come from the VM Bootstrap Memory Handoff
                 // (frame.rs module doc-comment). PA is decoupled from the
@@ -2396,27 +2452,23 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     current_root_phys(),
                     crate::boot_alloc::boot_alloc_region(),
                 );
-                let regions = VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
-                    .expect("init_proc_and_boot: VM bootstrap region selection failed")
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "init_proc_and_boot: no free memory for VM bootstrap region \
+                let regions =
+                    VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
+                        .expect("init_proc_and_boot: VM bootstrap region selection failed")
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "init_proc_and_boot: no free memory for VM bootstrap region \
                              (after excluding kernel, boot modules, root page and bump)"
-                        )
-                    });
+                            )
+                        });
                 let mut vm_alloc = VmBootAllocator::new(regions);
                 let mut paging = MockPaging::new_from_page(PhysBytes(0));
                 let access = MockDirectMap;
-                let vm_result = load_vm_elf(
-                    module,
-                    kernel_info,
-                    &mut paging,
-                    &mut vm_alloc,
-                    &access,
-                )
-                .unwrap_or_else(|e| {
-                    panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
-                });
+                let vm_result =
+                    load_vm_elf(module, kernel_info, &mut paging, &mut vm_alloc, &access)
+                        .unwrap_or_else(|e| {
+                            panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
+                        });
                 // C: protect.c:450-451 clears the module's mod_start/
                 // mod_end to hand its pages back to the boot allocator. The
                 // Rust port keeps every module blob reserved instead: the
@@ -2448,9 +2500,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 // After the ELF is loaded, the VM module's physical memory
                 // is reclaimed via `add_memmap` (undoes the `cut_memmap`
                 // from Phase A.2), matching C: protect.c:450-451.
-                use minix_arch::paging::Paging as _;
                 use minix_arch::CurrentPaging;
                 use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+                use minix_arch::paging::Paging as _;
 
                 // Same exclusion set as the mock path: boot-shim memmap is
                 // unfiltered, so occupied ranges (kernel + modules) must be
@@ -2462,35 +2514,32 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     current_root_phys(),
                     crate::boot_alloc::boot_alloc_region(),
                 );
-                let regions = VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
-                    .expect("init_proc_and_boot: VM bootstrap region selection failed")
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "init_proc_and_boot: no free memory for VM bootstrap region \
+                let regions =
+                    VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
+                        .expect("init_proc_and_boot: VM bootstrap region selection failed")
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "init_proc_and_boot: no free memory for VM bootstrap region \
                              (after excluding kernel, boot modules, root page and bump)"
-                        )
-                    });
+                            )
+                        });
                 let mut vm_alloc = VmBootAllocator::new(regions);
 
-                let root_phys = current_root_phys()
-                    .expect("init_proc_and_boot: bootstrap root not set \
-                             — arch_boot_impl must run first");
+                let root_phys = current_root_phys().expect(
+                    "init_proc_and_boot: bootstrap root not set \
+                             — arch_boot_impl must run first",
+                );
                 let mut paging = CurrentPaging::from_active_root(root_phys);
                 // B-X (2026-09-09): the per-arch ZST selection moved to the
                 // sanctioned `CurrentDirectMap` alias in minix-arch
                 // (mirrors each `Arch` bundle's `type Dm`) — kernel code
                 // carries no behavior-selection cfg.
                 let access = minix_arch::CurrentDirectMap::default();
-                let vm_result = load_vm_elf(
-                    module,
-                    kernel_info,
-                    &mut paging,
-                    &mut vm_alloc,
-                    &access,
-                )
-                .unwrap_or_else(|e| {
-                    panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
-                });
+                let vm_result =
+                    load_vm_elf(module, kernel_info, &mut paging, &mut vm_alloc, &access)
+                        .unwrap_or_else(|e| {
+                            panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
+                        });
 
                 // C: protect.c:450-451 reclaims the module's pages; this
                 // port keeps the whole blob reserved (see the mock branch
@@ -2517,10 +2566,12 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     while hva < heap_end {
                         let v = VirBytes(hva);
                         if paging.query(v).is_some() {
-                            paging.split_huge(v).unwrap_or_else(|e| panic!(
-                                "heap-window eviction: split_huge failed ({e:?}) — \
+                            paging.split_huge(v).unwrap_or_else(|e| {
+                                panic!(
+                                    "heap-window eviction: split_huge failed ({e:?}) — \
                                  arm64/riscv64 must implement it before their first light"
-                            ));
+                                )
+                            });
                             // Open the intermediate levels for CPL3 too:
                             // VM's runtime `vm_self_mappages` → Paging::map
                             // installs user leaves here, and `walk_alloc`
@@ -2528,9 +2579,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                             // intermediates it finds in place (#PF
                             // err=0x15 — same shape as the ELF segment
                             // eviction in `load_elf_into`).
-                            paging.grant_user_walk(v).unwrap_or_else(|e| panic!(
-                                "heap-window eviction: grant_user_walk failed ({e:?})"
-                            ));
+                            paging.grant_user_walk(v).unwrap_or_else(|e| {
+                                panic!("heap-window eviction: grant_user_walk failed ({e:?})")
+                            });
                             paging.unmap(v).expect("heap-window eviction: unmap failed");
                         }
                         hva += page;
@@ -2624,18 +2675,16 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             EntrySpec::DEFERRED
         };
 
-        let cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
-            proc_kind,
-            nr,
-            entry,
-        );
+        let cpu_context =
+            <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(proc_kind, nr, entry);
         proc.set_boot_cpu_context(cpu_context);
 
         // VM inhibit: all user processes except VM must wait for VM to
         // create their page tables.
         // C: main.c:267-270
         if nr != proc_nr::VM_PROC_NR {
-            proc.p_rts_flags.set(RtsFlagsBits::VMINHIBIT | RtsFlagsBits::BOOTINHIBIT);
+            proc.p_rts_flags
+                .set(RtsFlagsBits::VMINHIBIT | RtsFlagsBits::BOOTINHIBIT);
         }
 
         // All boot processes start stopped.
@@ -2653,8 +2702,6 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     //
     // The global `PROC_TABLE` / `PRIV_TABLE` statics now hold the initialized
     // tables; callers acquire them via `crate::proc_table()` / `crate::priv_table()`.
-
-
 }
 
 /// Initialize post-boot architecture state.
@@ -2693,7 +2740,8 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
     // `p_seg.virt_root` its identity-mapped VA (assigned earlier in
     // `init_proc_and_boot`). Both must
     // be present before VM can be trusted as the page-table process.
-    let vm_proc = proc_table.get(crate::proc::proc_nr::VM_PROC_NR)
+    let vm_proc = proc_table
+        .get(crate::proc::proc_nr::VM_PROC_NR)
         .expect("VM process must be initialized before init_post_and_memory");
     assert!(
         vm_proc.p_seg.phys_root.0 != 0,
@@ -2739,23 +2787,13 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 
 use core::sync::atomic::Ordering;
 
-
 /// Check if kernel may allocate memory directly.
 /// C: kernel_may_alloc checks throughout kernel code
 pub fn kernel_may_alloc() -> bool {
     KERNEL_MAY_ALLOC.load(Ordering::Acquire)
 }
 
-
-
 #[cfg(test)]
-
-
-
-
-
-
-
 
 /// Raw accessor for the global clock state.
 ///
@@ -2767,13 +2805,23 @@ pub fn kernel_may_alloc() -> bool {
 /// **Prefer [`clock_state_with`]** which takes a `BklSection` witness.
 pub unsafe fn clock_state() -> &'static mut crate::clock::ClockState {
     // SAFETY: raw-pointer read/write avoids the `static_mut_refs` lint.
-    unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
+    unsafe {
+        (*CLOCK_STATE.get())
+            .as_mut()
+            .expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first")
+    }
 }
 
 /// Clock state with BKL witness.
-pub fn clock_state_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::clock::ClockState {
+pub fn clock_state_with(
+    _section: &crate::smp::BklSection<'_>,
+) -> &'static mut crate::clock::ClockState {
     // SAFETY: BklSection witness proves the BKL is held.
-    unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
+    unsafe {
+        (*CLOCK_STATE.get())
+            .as_mut()
+            .expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first")
+    }
 }
 
 /// Boot-time clock state accessor: init paths run before
@@ -2785,7 +2833,11 @@ pub fn clock_state_with(_section: &crate::smp::BklSection<'_>) -> &'static mut c
 /// After boot, use [`clock_state_with`].
 pub unsafe fn clock_state_boot_unchecked() -> &'static mut crate::clock::ClockState {
     // SAFETY: caller guarantees single-threaded boot context.
-    unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
+    unsafe {
+        (*CLOCK_STATE.get())
+            .as_mut()
+            .expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first")
+    }
 }
 
 /// Try-accessor: `None` before `init_clock_and_interrupts`.
@@ -2935,10 +2987,7 @@ pub(crate) fn account_interrupt_stop(section: &crate::smp::BklSection<'_>) {
 /// Inject-TSC version of [`account_interrupt_stop`] (for host tests — under
 /// `cfg(test)` `read_tsc()` is always 0, so the real delta can only come from
 /// the caller).
-pub(crate) fn account_interrupt_stop_with(
-    section: &crate::smp::BklSection<'_>,
-    current_tsc: u64,
-) {
+pub(crate) fn account_interrupt_stop_with(section: &crate::smp::BklSection<'_>, current_tsc: u64) {
     let smp = crate::smp_state_with(section);
     // Use **the same** CPU id as `decrement_quantum_in_with_delta` — the
     // baseline is per-CPU (`CpuLocal::tsc_ctr_switch`), so the wrong CPU
@@ -2955,7 +3004,8 @@ pub(crate) fn account_interrupt_stop_with(
         // C `arch_clock.c:314`: kernel/idle tasks are quantum-exempt, but the
         // delta is still returned (total cycles and cpuavg are recorded for
         // them too — C's common tail does not distinguish types).
-        let (_exhausted, delta) = crate::clock::decrement_quantum_in_with_delta(smp, p, current_tsc);
+        let (_exhausted, delta) =
+            crate::clock::decrement_quantum_in_with_delta(smp, p, current_tsc);
         delta
     };
     if delta == 0 {
@@ -3035,7 +3085,6 @@ pub fn register_panic_diagnostic() {
     minix_types::set_panic_diagnostic_hook(Some(kernel_panic_diagnostic));
 }
 
-
 /// Get a reference to the global process table.
 ///
 /// # Safety
@@ -3058,7 +3107,9 @@ pub unsafe fn proc_table() -> &'static mut crate::proc_table::ProcessTable {
 /// The `BklSection` parameter is a compile-time capability token proving
 /// the caller holds the BKL. See [`crate::smp::BklGuard::section`] and
 /// [`crate::smp::bkl_lock_section`].
-pub fn proc_table_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::proc_table::ProcessTable {
+pub fn proc_table_with(
+    _section: &crate::smp::BklSection<'_>,
+) -> &'static mut crate::proc_table::ProcessTable {
     // SAFETY: BklSection witness proves BKL is held. We use raw pointer
     // dereference to avoid the `static_mut_refs` lint (Rust 2024).
     unsafe { &mut *PROC_TABLE.get() }
@@ -3090,7 +3141,9 @@ pub unsafe fn priv_table() -> &'static mut crate::kpriv::PrivTable {
 }
 
 /// Get a reference to the global privilege table with BKL witness.
-pub fn priv_table_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::kpriv::PrivTable {
+pub fn priv_table_with(
+    _section: &crate::smp::BklSection<'_>,
+) -> &'static mut crate::kpriv::PrivTable {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *PRIV_TABLE.get() }
 }
@@ -3119,7 +3172,8 @@ pub unsafe fn priv_table_boot_unchecked() -> &'static mut crate::kpriv::PrivTabl
 /// Concurrent access from multiple CPUs without BKL is a data race.
 ///
 /// **Prefer [`irq_manager_with`]** which takes a `BklSection` witness.
-pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+pub unsafe fn irq_manager()
+-> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
     // SAFETY: caller guarantees BKL (or single-threaded boot). We use raw
     // pointer dereference to avoid the `static_mut_refs` lint.
     unsafe { &mut *IRQ_MANAGER.get() }
@@ -3132,7 +3186,9 @@ pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix
 /// # Panics
 ///
 /// Panics if `IRQ_MANAGER` has not been initialized yet.
-pub fn irq_manager_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+pub fn irq_manager_with(
+    _section: &crate::smp::BklSection<'_>,
+) -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *IRQ_MANAGER.get() }
         .as_mut()
@@ -3147,7 +3203,8 @@ pub fn irq_manager_with(_section: &crate::smp::BklSection<'_>) -> &'static mut c
 ///
 /// Only safe during single-threaded boot (`bsp_finish_booting` /
 /// `init_clock_and_interrupts`). After boot, use [`irq_manager_with`].
-pub unsafe fn irq_manager_boot_unchecked() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+pub unsafe fn irq_manager_boot_unchecked()
+-> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
     // SAFETY: caller guarantees single-threaded boot context.
     unsafe { &mut *IRQ_MANAGER.get() }
         .as_mut()
@@ -3166,13 +3223,16 @@ pub unsafe fn irq_manager_boot_unchecked() -> &'static mut crate::irq_manager::I
 /// Caller must hold the BKL (or be in single-threaded boot before BKL exists).
 ///
 /// **Prefer [`try_irq_manager_with`]** which takes a `BklSection` witness.
-pub unsafe fn try_irq_manager() -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
+pub unsafe fn try_irq_manager()
+-> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
     // SAFETY: caller guarantees BKL (or single-threaded boot).
     unsafe { &mut *IRQ_MANAGER.get() }.as_mut()
 }
 
 /// Try to get a reference to the global IRQ manager with BKL witness.
-pub fn try_irq_manager_with(_section: &crate::smp::BklSection<'_>) -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
+pub fn try_irq_manager_with(
+    _section: &crate::smp::BklSection<'_>,
+) -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *IRQ_MANAGER.get() }.as_mut()
 }
@@ -3193,13 +3253,14 @@ pub fn try_irq_manager_with(_section: &crate::smp::BklSection<'_>) -> Option<&'s
 /// runs with `--test-threads=1`; the assignment is idempotent (installs
 /// a fresh empty manager each call), so test ordering does not matter.
 #[cfg(test)]
-pub(crate) unsafe fn init_irq_manager_for_test() { unsafe {
-    let ctrl = new_test_interrupt_controller();
-    // SAFETY: test-only; single-threaded under `--test-threads=1`. Uses
-    // `addr_of_mut!` to avoid the `static_mut_refs` lint, same as boot.
-    *IRQ_MANAGER.get() =
-        Some(crate::irq_manager::IrqManager::new(ctrl));
-}}
+pub(crate) unsafe fn init_irq_manager_for_test() {
+    unsafe {
+        let ctrl = new_test_interrupt_controller();
+        // SAFETY: test-only; single-threaded under `--test-threads=1`. Uses
+        // `addr_of_mut!` to avoid the `static_mut_refs` lint, same as boot.
+        *IRQ_MANAGER.get() = Some(crate::irq_manager::IrqManager::new(ctrl));
+    }
+}
 
 /// Construct a `CurrentInterruptController` for unit tests without
 /// touching hardware.
@@ -3276,7 +3337,9 @@ pub unsafe fn try_smp_state() -> Option<&'static mut crate::smp::SmpState> {
 }
 
 /// Try to get a reference to the global SMP state with BKL witness.
-pub fn try_smp_state_with(_section: &crate::smp::BklSection<'_>) -> Option<&'static mut crate::smp::SmpState> {
+pub fn try_smp_state_with(
+    _section: &crate::smp::BklSection<'_>,
+) -> Option<&'static mut crate::smp::SmpState> {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *SMP_STATE.get() }.as_mut()
 }
@@ -3294,14 +3357,15 @@ pub(crate) fn kernel_info() -> Option<&'static KernelInfo> {
     unsafe { (*KERNEL_INFO.get()).as_ref() }
 }
 
-
 /// Get a mutable reference to the global IPC filter pool.
 ///
 /// Caller must ensure BKL is held if called after boot initialization.
 /// C: `ipc_filter_pool` global array access.
 ///
 /// Get a mutable reference to the global IPC filter pool with BKL witness.
-pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::ipc_filter::IpcFilterPool {
+pub(crate) fn ipc_filter_pool_with(
+    _section: &crate::smp::BklSection<'_>,
+) -> &'static mut crate::ipc_filter::IpcFilterPool {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *IPC_FILTER_POOL.get() }
 }
@@ -3365,11 +3429,14 @@ pub fn boot_init_timer() {
     // transient clock arch instance from the global platform descriptor
     // and call `init_timer` on it.
     use minix_arch::{ClockArch, CurrentClockArch, CurrentTimerIrqGate, TimerIrqGate};
-    use minix_types::Endpoint;
     use minix_platform::platform_desc;
+    use minix_types::Endpoint;
     let pd = platform_desc();
     let mut clock_arch = CurrentClockArch::new(pd.timer());
-    clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
+    clock_arch.init_timer(
+        crate::clock::DEFAULT_HZ,
+        crate::clock::current_cpuid().raw(),
+    );
 
     // Software clock half: register the
     // clock IRQ hook with the global IrqManager. The handler
@@ -3415,7 +3482,6 @@ pub fn boot_init_timer() {
     #[cfg(target_arch = "x86_64")]
     minix_plat::pic_init();
 }
-
 
 #[cfg(not(feature = "mock"))]
 fn bsp_finish_booting(
@@ -3473,7 +3539,8 @@ fn bsp_finish_booting(
     // init_proc_and_boot and must stay stopped — they're invoked lazily).
     // C also skips kernel tasks (the loop is `for i in 0..NR_BOOT_PROCS-NR_TASKS`).
     for nr in 0..(ProcNr(crate::proc::NR_BOOT_PROCS as i32)
-        - ProcNr(crate::proc_table::NR_TASKS as i32)).0
+        - ProcNr(crate::proc_table::NR_TASKS as i32))
+    .0
     {
         proc_table.rts_unset(ProcNr(nr), RtsFlagsBits::PROC_STOP);
     }
@@ -3539,7 +3606,10 @@ fn bsp_finish_booting(
     // (the former single-CPU arrangement) would deadlock the non-reentrant
     // CAS lock. Debug-pinned so a future second caller cannot skip the
     // acquisition silently.
-    debug_assert!(smp::bkl_is_locked(), "bsp_finish_booting requires the BKL (kmain acquires it before smp_init)");
+    debug_assert!(
+        smp::bkl_is_locked(),
+        "bsp_finish_booting requires the BKL (kmain acquires it before smp_init)"
+    );
 
     // Step 9: switch_to_user() — never returns
     // C: switch_to_user(); NOT_REACHABLE;
@@ -3550,7 +3620,6 @@ fn bsp_finish_booting(
     let _ = proc_nr::IDLE;
     switch_to_user()
 }
-
 
 /// Read the `vm_running` flag. C: `EXTERN int vm_running` — glo.h:74.
 pub fn vm_running() -> bool {
@@ -3571,7 +3640,6 @@ pub fn vm_running() -> bool {
 pub fn set_vm_running(v: bool) {
     VM_RUNNING.store(v, Ordering::Release);
 }
-
 
 /// The ptproc proc-nr moved from the `CURRENT_PTPROC_NR`
 /// global atomic to the `CpuLocal.ptproc` field — C is per-CPU
@@ -3791,8 +3859,7 @@ pub(crate) fn set_active_root_tracked(root: PhysBytes) {
     // process aborts/exits the flag is always cleared, so the system never
     // keeps scheduling other processes with interrupts off.
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-    minix_arch::riscv64::trap_return::NK4C_CLI
-        .store(0, core::sync::atomic::Ordering::Relaxed);
+    minix_arch::riscv64::trap_return::NK4C_CLI.store(0, core::sync::atomic::Ordering::Relaxed);
     // SAFETY: `root` is a boot-established or VM-validated page-table
     // root (see `TlbArch::set_active_root` safety contract); the caller
     // holds the BKL, so no other CPU is concurrently switching roots.
@@ -3864,10 +3931,7 @@ fn is_billable(
 /// A process that is not runnable after the clear (blocked again by the
 /// preempting work) is left alone — C: proc.c:324 guards the enqueue the
 /// same way.
-fn requeue_if_preempted(
-    table: &mut crate::proc_table::ProcessTable,
-    nr: crate::proc::ProcNr,
-) {
+fn requeue_if_preempted(table: &mut crate::proc_table::ProcessTable, nr: crate::proc::ProcNr) {
     use crate::proc::RtsFlagsBits;
     use core::sync::atomic::Ordering;
 
@@ -4129,10 +4193,7 @@ pub(crate) fn context_stop_idle_current() {
 /// # BKL
 ///
 /// Caller holds the BKL (scheduler loop) — same protection C relies on.
-fn switch_address_space(
-    table: &crate::proc_table::ProcessTable,
-    nr: crate::proc::ProcNr,
-) {
+fn switch_address_space(table: &crate::proc_table::ProcessTable, nr: crate::proc::ProcNr) {
     let idx = match crate::proc_table::nr_to_idx(nr) {
         Some(i) => i,
         None => return,
@@ -4296,16 +4357,31 @@ fn account_process_stop(
     // C's `p->p_tick_cycles += tsc_delta` runs unconditionally **before** the
     // while loop; `tpt == 0` (cycles/tick not calibrated, e.g. host tests)
     // only keeps the loop from running, and the accumulation still happens.
-    let mut tick_cycles = p.p_cycles.tick.load(core::sync::atomic::Ordering::Acquire)
+    let mut tick_cycles = p
+        .p_cycles
+        .tick
+        .load(core::sync::atomic::Ordering::Acquire)
         .saturating_add(tsc_delta);
     // C's `while (tpt > 0 && p->p_tick_cycles >= tpt)`: advance the average
     // once per full tick's worth of cycles (an imprecise clock frequency can
     // advance it several times in a row — C's comment says that is expected).
     let mut snapshot = minix_types::CpuAvgSnap {
-        ca_base: p.p_cpuavg.ca_base.load(core::sync::atomic::Ordering::Acquire),
-        ca_run: p.p_cpuavg.ca_run.load(core::sync::atomic::Ordering::Acquire),
-        ca_last: p.p_cpuavg.ca_last.load(core::sync::atomic::Ordering::Acquire),
-        ca_avg: p.p_cpuavg.ca_avg.load(core::sync::atomic::Ordering::Acquire),
+        ca_base: p
+            .p_cpuavg
+            .ca_base
+            .load(core::sync::atomic::Ordering::Acquire),
+        ca_run: p
+            .p_cpuavg
+            .ca_run
+            .load(core::sync::atomic::Ordering::Acquire),
+        ca_last: p
+            .p_cpuavg
+            .ca_last
+            .load(core::sync::atomic::Ordering::Acquire),
+        ca_avg: p
+            .p_cpuavg
+            .ca_avg
+            .load(core::sync::atomic::Ordering::Acquire),
         _padding: 0,
     };
     let mut bumped = false;
@@ -4323,9 +4399,13 @@ fn account_process_stop(
         .store(tick_cycles, core::sync::atomic::Ordering::Release);
     if bumped {
         use core::sync::atomic::Ordering;
-        p.p_cpuavg.ca_base.store(snapshot.ca_base, Ordering::Release);
+        p.p_cpuavg
+            .ca_base
+            .store(snapshot.ca_base, Ordering::Release);
         p.p_cpuavg.ca_run.store(snapshot.ca_run, Ordering::Release);
-        p.p_cpuavg.ca_last.store(snapshot.ca_last, Ordering::Release);
+        p.p_cpuavg
+            .ca_last
+            .store(snapshot.ca_last, Ordering::Release);
         p.p_cpuavg.ca_avg.store(snapshot.ca_avg, Ordering::Release);
     }
 }
@@ -4340,11 +4420,7 @@ fn account_process_stop(
 /// injected so host tests can exercise the flag lifecycle without touching
 /// the MMU (same pattern as the `proc_cr3` closure injection in
 /// `data_copy_vmcheck`).
-fn consume_flush_tlb_flag(
-    p: &mut crate::proc::KProcess,
-    must_refresh: bool,
-    flush: impl FnOnce(),
-) {
+fn consume_flush_tlb_flag(p: &mut crate::proc::KProcess, must_refresh: bool, flush: impl FnOnce()) {
     if p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::FLUSH_TLB) {
         if must_refresh {
             flush();
@@ -4386,8 +4462,8 @@ fn finish_and_restore(
 ) -> ! {
     use core::sync::atomic::Ordering;
     use minix_arch::{
-        CpuContextArch, CurrentCpuContextArch, CurrentFpuArch,
-        CurrentTlbArch, CurrentTrapReturnArch, FpuArch, TlbArch, TrapReturnArch,
+        CpuContextArch, CurrentCpuContextArch, CurrentFpuArch, CurrentTlbArch,
+        CurrentTrapReturnArch, FpuArch, TlbArch, TrapReturnArch,
     };
 
     // C:438 — debug_assert(p->p_cpu_time_left). After the quantum stage
@@ -4470,7 +4546,8 @@ fn finish_and_restore(
 
     // 4. Clear MF_CONTEXT_SET — C:451.
     if let Some(p) = table.get_mut(picked) {
-        p.p_misc_flags.clear(crate::proc::MiscFlagsBits::CONTEXT_SET);
+        p.p_misc_flags
+            .clear(crate::proc::MiscFlagsBits::CONTEXT_SET);
     }
 
     // 5. MF_FLUSH_TLB consume — C:458-464: when the pick point found the
@@ -4579,7 +4656,9 @@ fn finish_and_restore(
     {
         let cpu = crate::current_cpu_id();
         let stack_top = if cpu == smp.bsp_cpu_id() {
-            crate::kernel_info().map(|k| k.kern_stack_top.0).unwrap_or(0)
+            crate::kernel_info()
+                .map(|k| k.kern_stack_top.0)
+                .unwrap_or(0)
         } else {
             crate::smp::ap_kernel_stack_top(cpu.raw())
         };
@@ -4723,18 +4802,13 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
         // ── Stage 1+2: probe current process / pick a new one ──
         // C: proc.c:309-349. `current` is the per-CPU proc_ptr snapshot;
         // None (or a non-runnable process) routes into the pick path.
-        let mut current: Option<crate::proc::ProcNr> = smp
-            .cpu_local(cpu)
-            .and_then(|l| l.proc_ptr);
+        let mut current: Option<crate::proc::ProcNr> = smp.cpu_local(cpu).and_then(|l| l.proc_ptr);
 
         // C: proc.c:314 — `if (proc_is_runnable(p)) goto check_misc_flags;`
         // The current process is re-dispatched only when it is still
         // runnable; anything else (None seed, blocked, stopped) enters the
         // pick path below.
-        let need_pick = current
-            .is_none_or(|nr| {
-                !table.get(nr).is_some_and(|p| p.is_runnable())
-            });
+        let need_pick = current.is_none_or(|nr| !table.get(nr).is_some_and(|p| p.is_runnable()));
         // C: proc.c:306 — `tlb_must_refresh` is schedule()-local.
         let mut tlb_must_refresh = false;
         if need_pick {
@@ -4778,10 +4852,10 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
         // arm mirrors C's vmresult≠OK → SIGSEGV. Must be consumed before
         // process_misc_flags (the same-named arm there only provides a Fault
         // fallback).
-        if table
-            .get(picked)
-            .is_some_and(|p| p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::KCALL_RESUME))
-        {
+        if table.get(picked).is_some_and(|p| {
+            p.p_misc_flags
+                .is_set(crate::proc::MiscFlagsBits::KCALL_RESUME)
+        }) {
             // State guard: re-dispatch only when Completed (VM has replied);
             // Pending/Fetched means VM is still servicing — skip dispatch this
             // round (continue re-picks; VM is runnable and will get a turn)
@@ -4858,10 +4932,7 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                         // convention, so no negation here).
                         Some(wire) => {
                             if let Some(p) = table.get_mut(picked) {
-                                crate::proc::set_ipc_return_code(
-                                    p,
-                                    wire as i64,
-                                );
+                                crate::proc::set_ipc_return_code(p, wire as i64);
                             }
                             if let Some(p) = table.get_mut(picked) {
                                 p.clear_vm_suspend();
@@ -4992,8 +5063,13 @@ mod identity_device_map_tests {
 #[cfg(all(test, feature = "mock"))]
 mod tests {
     use super::*;
-    use minix_arch::paging::mock::MockPaging;
+    // Test-only constant: the production face of this file does not
+    // reference it, so the import lives here instead of the top-level use
+    // list (where `clippy --workspace`, which builds without `--tests`,
+    // would flag it unused).
     use minix_arch::paging::Paging;
+    use minix_arch::paging::mock::MockPaging;
+    use minix_types::USER_STACK_TOP;
 
     /// The first VM allocation runs before any deduction is published, so the
     /// exclusion list is the only protection for the root page and the boot
@@ -5033,13 +5109,8 @@ mod tests {
         }]; // [1 MiB, 5 MiB)
         let bump = (0x20_0000u64, 0x24_0000u64);
         let root = PhysBytes(0x26_0000);
-        let (excl, n) = vm_boot_exclusions(
-            PhysBytes(0x30_0000),
-            0x10_0000,
-            &[],
-            Some(root),
-            Some(bump),
-        );
+        let (excl, n) =
+            vm_boot_exclusions(PhysBytes(0x30_0000), 0x10_0000, &[], Some(root), Some(bump));
         let regions = VmBootRegion::select_multi::<32>(&memmap, &excl[..n])
             .expect("select_multi")
             .expect("some regions");
@@ -5102,7 +5173,12 @@ mod tests {
         assert!(consume_kbill_kcall(&mut table, 500, &section));
         crate::smp::bkl_unlock();
         assert_eq!(
-            table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
+            table
+                .get(nr)
+                .unwrap()
+                .p_cycles
+                .kcall
+                .load(core::sync::atomic::Ordering::Acquire),
             500
         );
         // Marker cleared → second consume reports false, no attribution.
@@ -5112,7 +5188,12 @@ mod tests {
         assert!(!consume_kbill_kcall(&mut table, 100, &section));
         crate::smp::bkl_unlock();
         assert_eq!(
-            table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
+            table
+                .get(nr)
+                .unwrap()
+                .p_cycles
+                .kcall
+                .load(core::sync::atomic::Ordering::Acquire),
             500
         );
     }
@@ -5130,7 +5211,12 @@ mod tests {
         assert!(consume_kbill_ipc(&mut table, 700, &section));
         crate::smp::bkl_unlock();
         assert_eq!(
-            table.get(nr).unwrap().p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire),
+            table
+                .get(nr)
+                .unwrap()
+                .p_cycles
+                .kipc
+                .load(core::sync::atomic::Ordering::Acquire),
             700
         );
         // Marker cleared → the second consumption returns false and records
@@ -5141,7 +5227,12 @@ mod tests {
         assert!(!consume_kbill_ipc(&mut table, 100, &section));
         crate::smp::bkl_unlock();
         assert_eq!(
-            table.get(nr).unwrap().p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire),
+            table
+                .get(nr)
+                .unwrap()
+                .p_cycles
+                .kipc
+                .load(core::sync::atomic::Ordering::Acquire),
             700
         );
     }
@@ -5163,8 +5254,14 @@ mod tests {
         assert!(consume_kbill_kcall(&mut table, 300, &section));
         crate::smp::bkl_unlock();
         let p = table.get(nr).unwrap();
-        assert_eq!(p.p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire), 300);
-        assert_eq!(p.p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire), 300);
+        assert_eq!(
+            p.p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire),
+            300
+        );
+        assert_eq!(
+            p.p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
+            300
+        );
     }
 
     /// Registration wires the kernel renderer into the minix-rt
@@ -5186,7 +5283,10 @@ mod tests {
     #[test]
     fn test_boot_flow_identity_and_kernel_map() {
         let memmap: &'static [minix_boot::MemoryRegion] = &[
-            minix_boot::MemoryRegion { base: PhysBytes(0x200000), len: 0x1000000 }, // 16MB
+            minix_boot::MemoryRegion {
+                base: PhysBytes(0x200000),
+                len: 0x1000000,
+            }, // 16MB
         ];
         let info = KernelInfo {
             memmap,
@@ -5220,7 +5320,8 @@ mod tests {
         let end = addr + region.len as u64;
         let mut identity_pages = 0u64;
         while addr < end {
-            paging.map_huge(VirBytes(addr), PhysBytes(addr), huge_size, id_flags)
+            paging
+                .map_huge(VirBytes(addr), PhysBytes(addr), huge_size, id_flags)
                 .unwrap();
             addr += huge_size.bytes();
             identity_pages += 1;
@@ -5244,11 +5345,14 @@ mod tests {
         let mut offset = 0u64;
         let mut kernel_pages = 0u64;
         while offset < info.kern_size {
-            paging.map_huge(
-                VirBytes(info.kern_virt_base.0 + offset),
-                PhysBytes(info.kern_phys_base.0 + offset),
-                huge_size, id_flags,
-            ).unwrap();
+            paging
+                .map_huge(
+                    VirBytes(info.kern_virt_base.0 + offset),
+                    PhysBytes(info.kern_phys_base.0 + offset),
+                    huge_size,
+                    id_flags,
+                )
+                .unwrap();
             offset += huge_size.bytes();
             kernel_pages += 1;
         }
@@ -5287,8 +5391,7 @@ mod tests {
             let mut piece = addr;
             while piece < block_end {
                 let is_device = identity_piece_is_device(piece, piece_size, windows);
-                let overlaps_window =
-                    piece < 0x0A00_0000 && piece + piece_size > 0x0800_0000;
+                let overlaps_window = piece < 0x0A00_0000 && piece + piece_size > 0x0800_0000;
                 assert_eq!(
                     is_device, overlaps_window,
                     "device flag mismatch at {piece:#x}"
@@ -5313,12 +5416,26 @@ mod tests {
     fn test_store_kernel_info_lands_firmware_slices() {
         let _boot = crate::test_sync::lock_boot_globals();
         static MEMMAP: &[minix_boot::MemoryRegion] = &[
-            minix_boot::MemoryRegion { base: PhysBytes(0x10_0000), len: 0x40_0000 },
-            minix_boot::MemoryRegion { base: PhysBytes(0x1000_0000), len: 0x20_0000 },
+            minix_boot::MemoryRegion {
+                base: PhysBytes(0x10_0000),
+                len: 0x40_0000,
+            },
+            minix_boot::MemoryRegion {
+                base: PhysBytes(0x1000_0000),
+                len: 0x20_0000,
+            },
         ];
         static MODULES: &[minix_boot::BootModule] = &[
-            minix_boot::BootModule { name: "rs", start: PhysBytes(0x20_0000), len: 0x1000 },
-            minix_boot::BootModule { name: "vm", start: PhysBytes(0x21_0000), len: 0x2000 },
+            minix_boot::BootModule {
+                name: "rs",
+                start: PhysBytes(0x20_0000),
+                len: 0x1000,
+            },
+            minix_boot::BootModule {
+                name: "vm",
+                start: PhysBytes(0x21_0000),
+                len: 0x2000,
+            },
         ];
         static PLATFORM: &[minix_boot::PlatformDescSource] = &[
             minix_boot::PlatformDescSource::new(minix_boot::DTB, PhysBytes(0x4000_0000)),
@@ -5369,8 +5486,14 @@ mod tests {
             "platform_sources must be repointed to the .bss landing pad"
         );
         assert_eq!(stored.platform_sources().len(), 2);
-        assert_eq!(stored.platform_sources()[0].kind().raw(), minix_boot::DTB.raw());
-        assert_eq!(stored.platform_sources()[0].phys_addr(), PhysBytes(0x4000_0000));
+        assert_eq!(
+            stored.platform_sources()[0].kind().raw(),
+            minix_boot::DTB.raw()
+        );
+        assert_eq!(
+            stored.platform_sources()[0].phys_addr(),
+            PhysBytes(0x4000_0000)
+        );
         assert_ne!(
             stored.param_buf().as_ptr(),
             PARAM.as_ptr(),
@@ -5381,8 +5504,14 @@ mod tests {
         store_kernel_info(stored);
         let again = crate::kernel_info().expect("re-store republished");
         assert_eq!(again.memmap().as_ptr(), stored.memmap().as_ptr());
-        assert_eq!(again.boot_modules().as_ptr(), stored.boot_modules().as_ptr());
-        assert_eq!(again.platform_sources().as_ptr(), stored.platform_sources().as_ptr());
+        assert_eq!(
+            again.boot_modules().as_ptr(),
+            stored.boot_modules().as_ptr()
+        );
+        assert_eq!(
+            again.platform_sources().as_ptr(),
+            stored.platform_sources().as_ptr()
+        );
         assert_eq!(again.param_buf().as_ptr(), stored.param_buf().as_ptr());
         assert_eq!(again.boot_modules()[1].name, "vm");
         assert_eq!(again.param_buf(), PARAM);
@@ -5420,8 +5549,10 @@ mod tests {
     fn test_store_kernel_info_rejects_reserved_overflow() {
         let _boot = crate::test_sync::lock_boot_globals();
         static OVERFLOW: [minix_boot::MemoryRegion; crate::globals::RESERVED_REGION_STORE_LEN + 1] =
-            [minix_boot::MemoryRegion { base: PhysBytes(0), len: 0 };
-             crate::globals::RESERVED_REGION_STORE_LEN + 1];
+            [minix_boot::MemoryRegion {
+                base: PhysBytes(0),
+                len: 0,
+            }; crate::globals::RESERVED_REGION_STORE_LEN + 1];
         let mut info = minimal_store_info();
         info.reserved_regions = &OVERFLOW;
         store_kernel_info(&info);
@@ -5434,8 +5565,10 @@ mod tests {
     fn test_store_kernel_info_rejects_memmap_overflow() {
         let _boot = crate::test_sync::lock_boot_globals();
         static OVERFLOW: [minix_boot::MemoryRegion; crate::memmap::MAXMEMMAP + 1] =
-            [minix_boot::MemoryRegion { base: PhysBytes(0), len: 0 };
-             crate::memmap::MAXMEMMAP + 1];
+            [minix_boot::MemoryRegion {
+                base: PhysBytes(0),
+                len: 0,
+            }; crate::memmap::MAXMEMMAP + 1];
         let mut info = minimal_store_info();
         info.memmap = &OVERFLOW;
         store_kernel_info(&info);
@@ -5448,8 +5581,11 @@ mod tests {
     fn test_store_kernel_info_rejects_boot_module_overflow() {
         let _boot = crate::test_sync::lock_boot_globals();
         static OVERFLOW: [minix_boot::BootModule; minix_boot::NR_BOOT_MODULES + 1] =
-            [minix_boot::BootModule { name: "", start: PhysBytes(0), len: 0 };
-             minix_boot::NR_BOOT_MODULES + 1];
+            [minix_boot::BootModule {
+                name: "",
+                start: PhysBytes(0),
+                len: 0,
+            }; minix_boot::NR_BOOT_MODULES + 1];
         let mut info = minimal_store_info();
         info.boot_modules = &OVERFLOW;
         store_kernel_info(&info);
@@ -5462,11 +5598,11 @@ mod tests {
     fn test_store_kernel_info_rejects_platform_overflow() {
         let _boot = crate::test_sync::lock_boot_globals();
         static OVERFLOW: [minix_boot::PlatformDescSource;
-            crate::globals::PLATFORM_SOURCE_STORE_LEN + 1] =
-            [minix_boot::PlatformDescSource::new(
-                minix_boot::PlatformDescKind::new(0),
-                PhysBytes(0),
-            ); crate::globals::PLATFORM_SOURCE_STORE_LEN + 1];
+            crate::globals::PLATFORM_SOURCE_STORE_LEN + 1] = [minix_boot::PlatformDescSource::new(
+            minix_boot::PlatformDescKind::new(0),
+            PhysBytes(0),
+        );
+            crate::globals::PLATFORM_SOURCE_STORE_LEN + 1];
         let mut info = minimal_store_info();
         info.platform_sources = &OVERFLOW;
         store_kernel_info(&info);
@@ -5514,11 +5650,14 @@ mod tests {
         let huge_size = MockPaging::FALLBACK_HUGE_PAGE_SIZE;
         let mut offset = 0u64;
         while offset < info.kern_size {
-            paging.map_huge(
-                VirBytes(info.kern_virt_base.0 + offset),
-                PhysBytes(info.kern_phys_base.0 + offset),
-                huge_size, PageFlags::kernel_read_write(),
-            ).unwrap();
+            paging
+                .map_huge(
+                    VirBytes(info.kern_virt_base.0 + offset),
+                    PhysBytes(info.kern_phys_base.0 + offset),
+                    huge_size,
+                    PageFlags::kernel_read_write(),
+                )
+                .unwrap();
             offset += huge_size.bytes();
         }
 
@@ -5569,12 +5708,22 @@ mod tests {
     #[test]
     fn test_mock_paging_query_after_map() {
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
-        paging.map_huge(VirBytes(0x200000), PhysBytes(0x200000),
-            MockPaging::FALLBACK_HUGE_PAGE_SIZE, PageFlags::read_write()).unwrap();
-        assert!(paging.query(VirBytes(0x200000)).is_some(),
-            "mapped page should be queryable at 0x100000");
-        assert!(paging.query(VirBytes(0x00_0001_0000_0000)).is_none(),
-            "unmapped page should not be queryable");
+        paging
+            .map_huge(
+                VirBytes(0x200000),
+                PhysBytes(0x200000),
+                MockPaging::FALLBACK_HUGE_PAGE_SIZE,
+                PageFlags::read_write(),
+            )
+            .unwrap();
+        assert!(
+            paging.query(VirBytes(0x200000)).is_some(),
+            "mapped page should be queryable at 0x100000"
+        );
+        assert!(
+            paging.query(VirBytes(0x00_0001_0000_0000)).is_none(),
+            "unmapped page should not be queryable"
+        );
     }
 
     /// Verify that IDENTITY_MAP_END is aligned for huge-page mapping loops.
@@ -5582,14 +5731,29 @@ mod tests {
     fn test_identity_map_end_alignment() {
         // const assertions moved into `const {}` block so
         // they're checked at compile time, not at test runtime.
-        const { assert!(MockPaging::HUGE_PAGE_SIZE.bytes() > 0, "HUGE_PAGE_SIZE must be positive"); }
-        const { assert!(MockPaging::HUGE_PAGE_SIZE.bytes().is_power_of_two(), "HUGE_PAGE_SIZE must be a power of two"); }
-        const { assert!(IDENTITY_MAP_END > 0, "IDENTITY_MAP_END must be positive"); }
+        const {
+            assert!(
+                MockPaging::HUGE_PAGE_SIZE.bytes() > 0,
+                "HUGE_PAGE_SIZE must be positive"
+            );
+        }
+        const {
+            assert!(
+                MockPaging::HUGE_PAGE_SIZE.bytes().is_power_of_two(),
+                "HUGE_PAGE_SIZE must be a power of two"
+            );
+        }
+        const {
+            assert!(IDENTITY_MAP_END > 0, "IDENTITY_MAP_END must be positive");
+        }
         let huge = MockPaging::HUGE_PAGE_SIZE.bytes();
         // IDENTITY_MAP_END / huge should be an integer (no partial pages at boundary)
-        assert!(IDENTITY_MAP_END.is_multiple_of(huge),
+        assert!(
+            IDENTITY_MAP_END.is_multiple_of(huge),
             "IDENTITY_MAP_END (0x{:x}) must be a multiple of HUGE_PAGE_SIZE (0x{:x})",
-            IDENTITY_MAP_END, huge);
+            IDENTITY_MAP_END,
+            huge
+        );
     }
 
     // ── Three-architecture KernelInfo consistency tests ──
@@ -5599,10 +5763,16 @@ mod tests {
     fn test_kernel_info_x86_64_alignment() {
         let kern_phys_base: u64 = 0x200_000; // 2MB, as used in QEMU tests
         let kern_virt_base: u64 = 0xFFFF_8000_0000_0000;
-        assert_eq!(kern_phys_base % (1 << 21), 0,
-            "x86_64 kern_phys_base must be 2MB-aligned");
-        assert_eq!(kern_virt_base % (1 << 30), 0,
-            "x86_64 kern_virt_base must be 1GB-aligned for 1GB huge pages");
+        assert_eq!(
+            kern_phys_base % (1 << 21),
+            0,
+            "x86_64 kern_phys_base must be 2MB-aligned"
+        );
+        assert_eq!(
+            kern_virt_base % (1 << 30),
+            0,
+            "x86_64 kern_virt_base must be 1GB-aligned for 1GB huge pages"
+        );
     }
 
     /// Verify aarch64 KernelInfo: kern_phys_base must be in QEMU virt RAM range.
@@ -5611,10 +5781,15 @@ mod tests {
     fn test_kernel_info_aarch64_phys_in_ram() {
         let ram_start: u64 = 0x4000_0000; // QEMU virt aarch64 RAM base
         let kern_phys_base: u64 = 0x4020_0000; // 2MB-aligned, within RAM
-        assert!(kern_phys_base >= ram_start,
-            "aarch64 kern_phys_base must be >= QEMU RAM start (0x4000_0000)");
-        assert_eq!(kern_phys_base % (1 << 21), 0,
-            "aarch64 kern_phys_base must be 2MB-aligned");
+        assert!(
+            kern_phys_base >= ram_start,
+            "aarch64 kern_phys_base must be >= QEMU RAM start (0x4000_0000)"
+        );
+        assert_eq!(
+            kern_phys_base % (1 << 21),
+            0,
+            "aarch64 kern_phys_base must be 2MB-aligned"
+        );
     }
 
     /// Verify riscv64 KernelInfo: kern_virt_base == kern_phys_base (identity mapping in Sv39).
@@ -5627,12 +5802,20 @@ mod tests {
         // 1 GiB alignment that the real phys base (0x8020_0000) does not have.
         let kern_phys_base: u64 = 0x8020_0000;
         let kern_virt_base: u64 = 0xFFFF_FFC0_0000_0000;
-        assert_ne!(kern_virt_base, kern_phys_base,
-            "riscv64 image is high-half linked, not identity-mapped");
-        assert_eq!(kern_phys_base % (1 << 21), 0,
-            "riscv64 kern_phys_base must be 2MiB-aligned for the fallback tier");
-        assert_eq!(kern_virt_base % (1 << 30), 0,
-            "riscv64 kern_virt_base must be 1GiB-aligned for Sv39 huge pages");
+        assert_ne!(
+            kern_virt_base, kern_phys_base,
+            "riscv64 image is high-half linked, not identity-mapped"
+        );
+        assert_eq!(
+            kern_phys_base % (1 << 21),
+            0,
+            "riscv64 kern_phys_base must be 2MiB-aligned for the fallback tier"
+        );
+        assert_eq!(
+            kern_virt_base % (1 << 30),
+            0,
+            "riscv64 kern_virt_base must be 1GiB-aligned for Sv39 huge pages"
+        );
     }
 
     // ── Linker script constraint validation tests ──
@@ -5652,7 +5835,10 @@ mod tests {
             .lines()
             .find(|l| l.trim_start().starts_with(name))
             .unwrap_or_else(|| panic!("linker script lacks {name}"));
-        let rhs = line.split('=').nth(1).unwrap_or_else(|| panic!("bad {name} line"));
+        let rhs = line
+            .split('=')
+            .nth(1)
+            .unwrap_or_else(|| panic!("bad {name} line"));
         let hex = rhs
             .split(';')
             .next()
@@ -5798,8 +5984,8 @@ mod tests {
     /// the side-effect operations directly.
     #[test]
     fn test_bsp_finish_booting_step_5_7_side_effects() {
-        use crate::smp::SmpState;
         use crate::clock::read_tsc;
+        use crate::smp::SmpState;
 
         // Simulate Step 5 + Step 7 of bsp_finish_booting.
         let mut smp = SmpState::new_single_cpu();
@@ -5816,9 +6002,18 @@ mod tests {
 
         // Verify side effects.
         let bsp_local = smp.cpu_local(bsp).unwrap();
-        assert_eq!(bsp_local.cpu_last_tsc, tsc, "cycles_accounting_init must set cpu_last_tsc");
-        assert_eq!(bsp_local.cpu_last_idle, tsc, "cycles_accounting_init must set cpu_last_idle");
-        assert!(bsp_local.fpu_presence, "fpu_init must set fpu_presence = true");
+        assert_eq!(
+            bsp_local.cpu_last_tsc, tsc,
+            "cycles_accounting_init must set cpu_last_tsc"
+        );
+        assert_eq!(
+            bsp_local.cpu_last_idle, tsc,
+            "cycles_accounting_init must set cpu_last_idle"
+        );
+        assert!(
+            bsp_local.fpu_presence,
+            "fpu_init must set fpu_presence = true"
+        );
     }
 
     /// Global setup for the interrupt-stop tests:
@@ -5885,7 +6080,10 @@ mod tests {
         let table = crate::proc_table_with(&section);
         let p = table.get(nr).unwrap();
         assert_eq!(
-            p.p_sched.quantum.cpu_time_left.load(core::sync::atomic::Ordering::Acquire),
+            p.p_sched
+                .quantum
+                .cpu_time_left
+                .load(core::sync::atomic::Ordering::Acquire),
             8_000,
             "quantum 被消费 2000（C 的 p_cpu_time_left -= tsc_delta）"
         );
@@ -5954,7 +6152,11 @@ mod tests {
         let section = crate::smp::bkl_lock_section();
         let p = crate::proc_table_with(&section).get(nr).unwrap();
         assert!(
-            p.p_sched.quantum.cpu_time_left.load(core::sync::atomic::Ordering::Acquire) > 0,
+            p.p_sched
+                .quantum
+                .cpu_time_left
+                .load(core::sync::atomic::Ordering::Acquire)
+                > 0,
             "内核调度支：政策把 quantum 补满（证明用尽被看见）"
         );
         assert!(
@@ -6034,8 +6236,20 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut smp = crate::smp::SmpState::with_ncpus(1, crate::proc::CpuId::BSP);
         let section = crate::smp::bkl_lock_section();
-        super::account_process_stop(&mut table, &mut smp, crate::proc::proc_nr::KERNEL, 1000, &section);
-        super::account_process_stop(&mut table, &mut smp, crate::proc::proc_nr::KERNEL, 250, &section);
+        super::account_process_stop(
+            &mut table,
+            &mut smp,
+            crate::proc::proc_nr::KERNEL,
+            1000,
+            &section,
+        );
+        super::account_process_stop(
+            &mut table,
+            &mut smp,
+            crate::proc::proc_nr::KERNEL,
+            250,
+            &section,
+        );
         crate::smp::bkl_unlock();
         let cycles = table
             .get(crate::proc::proc_nr::KERNEL)
@@ -6045,7 +6259,9 @@ mod tests {
             .load(core::sync::atomic::Ordering::Acquire);
         assert_eq!(cycles, 1250, "both deltas accumulate into KERNEL.p_cycles");
         assert_eq!(
-            smp.cpu_local(crate::proc::CpuId::BSP).unwrap().tsc_per_state[crate::clock::CP_INTR],
+            smp.cpu_local(crate::proc::CpuId::BSP)
+                .unwrap()
+                .tsc_per_state[crate::clock::CP_INTR],
             1250,
             "CP_INTR bucket mirrors the same delta"
         );
@@ -6057,7 +6273,13 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut smp = crate::smp::SmpState::with_ncpus(1, crate::proc::CpuId::BSP);
         let section = crate::smp::bkl_lock_section();
-        super::account_process_stop(&mut table, &mut smp, crate::proc::proc_nr::KERNEL, 0, &section);
+        super::account_process_stop(
+            &mut table,
+            &mut smp,
+            crate::proc::proc_nr::KERNEL,
+            0,
+            &section,
+        );
         crate::smp::bkl_unlock();
         let cycles = table
             .get(crate::proc::proc_nr::KERNEL)
@@ -6071,8 +6293,11 @@ mod tests {
     #[test]
     fn test_ptproc_unset_returns_none_before_init() {
         fresh_ptproc_state();
-        assert_eq!(current_ptproc_nr(), None,
-            "ptproc must be None before init_post_and_memory runs");
+        assert_eq!(
+            current_ptproc_nr(),
+            None,
+            "ptproc must be None before init_post_and_memory runs"
+        );
     }
 
     /// After `set_current_ptproc_nr(VM_PROC_NR)`, `current_ptproc_nr()`
@@ -6083,8 +6308,11 @@ mod tests {
     fn test_ptproc_set_returns_vm_proc_nr() {
         fresh_ptproc_state();
         set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
-        assert_eq!(current_ptproc_nr(), Some(crate::proc::proc_nr::VM_PROC_NR),
-            "ptproc must be VM_PROC_NR after init_post_and_memory");
+        assert_eq!(
+            current_ptproc_nr(),
+            Some(crate::proc::proc_nr::VM_PROC_NR),
+            "ptproc must be VM_PROC_NR after init_post_and_memory"
+        );
     }
 
     /// The write lands in THIS CPU's CpuLocal slot only — a second
@@ -6096,7 +6324,10 @@ mod tests {
         set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
         let smp = unsafe { crate::smp_state_boot_unchecked() };
         let ap_slot = smp.cpu_local(crate::proc::CpuId::new_unchecked(1)).unwrap();
-        assert!(ap_slot.ptproc.is_none(), "AP slot must not see the BSP's ptproc write");
+        assert!(
+            ap_slot.ptproc.is_none(),
+            "AP slot must not see the BSP's ptproc write"
+        );
     }
 
     /// `set_current_ptproc_nr` is idempotent: setting twice to the same
@@ -6122,13 +6353,17 @@ mod tests {
         //   if current_ptproc_nr() == Some(target.p_nr) { set_active_root(...) }
         let target_p_nr = crate::proc::proc_nr::VM_PROC_NR;
         let should_reload = current_ptproc_nr() == Some(target_p_nr);
-        assert!(should_reload,
-            "SetAddrSpace on VM (the current ptproc) must trigger set_active_root");
+        assert!(
+            should_reload,
+            "SetAddrSpace on VM (the current ptproc) must trigger set_active_root"
+        );
         // A different proc-nr must NOT trigger the reload.
         let other_p_nr = crate::proc::ProcNr(crate::proc::proc_nr::VM_PROC_NR.0 + 1);
         let should_not_reload = current_ptproc_nr() == Some(other_p_nr);
-        assert!(!should_not_reload,
-            "SetAddrSpace on non-ptproc must NOT trigger set_active_root");
+        assert!(
+            !should_not_reload,
+            "SetAddrSpace on non-ptproc must NOT trigger set_active_root"
+        );
     }
 
     // ── Bootstrap root tracking tests (P9-5: VM ELF loading at boot) ──
@@ -6153,8 +6388,11 @@ mod tests {
     #[test]
     fn test_root_phys_unset_returns_none_before_boot() {
         reset_root_phys_for_test();
-        assert_eq!(current_root_phys(), None,
-            "root_phys must be None before arch_boot_impl runs");
+        assert_eq!(
+            current_root_phys(),
+            None,
+            "root_phys must be None before arch_boot_impl runs"
+        );
     }
 
     /// After `set_current_root_phys(0x200000)`, `current_root_phys()`
@@ -6164,8 +6402,11 @@ mod tests {
     fn test_root_phys_set_returns_recorded_value() {
         reset_root_phys_for_test();
         set_current_root_phys(minix_types::PhysBytes(0x200000));
-        assert_eq!(current_root_phys(), Some(minix_types::PhysBytes(0x200000)),
-            "root_phys must be the value passed to set_current_root_phys");
+        assert_eq!(
+            current_root_phys(),
+            Some(minix_types::PhysBytes(0x200000)),
+            "root_phys must be the value passed to set_current_root_phys"
+        );
         reset_root_phys_for_test();
     }
 
@@ -6185,12 +6426,18 @@ mod tests {
     /// cannot be a real root physical address.
     #[test]
     fn test_root_phys_sentinel_distinct_from_valid_addresses() {
-        assert_eq!(ROOT_PHYS_UNSET, u64::MAX,
-            "ROOT_PHYS_UNSET must be u64::MAX (sentinel value)");
+        assert_eq!(
+            ROOT_PHYS_UNSET,
+            u64::MAX,
+            "ROOT_PHYS_UNSET must be u64::MAX (sentinel value)"
+        );
         // u64::MAX is not 4KB-aligned (low 12 bits != 0), so it can
         // never collide with a real page-table root physical address.
-        assert_ne!(ROOT_PHYS_UNSET & 0xFFF, 0,
-            "ROOT_PHYS_UNSET must not be page-aligned");
+        assert_ne!(
+            ROOT_PHYS_UNSET & 0xFFF,
+            0,
+            "ROOT_PHYS_UNSET must not be page-aligned"
+        );
         // Common root addresses used in tests/boot must not collide.
         assert_ne!(ROOT_PHYS_UNSET, 0x1000);
         assert_ne!(ROOT_PHYS_UNSET, 0x200000);
@@ -6207,8 +6454,11 @@ mod tests {
 
         let root_phys = minix_types::PhysBytes(0x10_0000);
         let paging = MockPaging::from_active_root(root_phys);
-        assert_eq!(paging.root_paddr(), root_phys,
-            "from_active_root must produce a handle whose root_paddr matches");
+        assert_eq!(
+            paging.root_paddr(),
+            root_phys,
+            "from_active_root must produce a handle whose root_paddr matches"
+        );
     }
 
     /// Verify `from_active_root` does NOT zero the root (unlike
@@ -6228,8 +6478,11 @@ mod tests {
         // internal counter-based scheme.
         let unusual_root = minix_types::PhysBytes(0xDEAD_BEEF_0000);
         let paging = MockPaging::from_active_root(unusual_root);
-        assert_eq!(paging.root_paddr(), unusual_root,
-            "from_active_root must preserve the caller-supplied root");
+        assert_eq!(
+            paging.root_paddr(),
+            unusual_root,
+            "from_active_root must preserve the caller-supplied root"
+        );
     }
 
     // ── 10-switch-to-user: scheduler loop tests ─────────────────────────
@@ -6272,9 +6525,14 @@ mod tests {
         p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         p.p_endpoint = minix_types::Endpoint(nr.0); // endpoint >= 0 → quantum-eligible
         p.p_sched.priority.store(prio, Ordering::Release);
-        p.p_sched.quantum.cpu_time_left.store(quantum_cycles, Ordering::Release);
+        p.p_sched
+            .quantum
+            .cpu_time_left
+            .store(quantum_cycles, Ordering::Release);
 
-        let priv_id = priv_table.assign_static(nr).expect("priv slot for user process");
+        let priv_id = priv_table
+            .assign_static(nr)
+            .expect("priv slot for user process");
         let kpriv = priv_table.get_mut(priv_id).expect("priv entry");
         kpriv.flags.s_flags = crate::capability::ProcessCapability::USR_F; // BILLABLE | PREEMPTIBLE
         table.get_mut(nr).unwrap().priv_id = Some(priv_id);
@@ -6289,9 +6547,21 @@ mod tests {
         // slice before equal-priority peers run.
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            1000,
+        );
         // A peer already in the queue; the requeued process must land AHEAD of it.
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(1), crate::proc::priority::USER_Q, 1000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(1),
+            crate::proc::priority::USER_Q,
+            1000,
+        );
         table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
         // Preempt process 0 (rts_set with PREEMPTED also dequeues — it was not queued yet).
         table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
@@ -6299,10 +6569,19 @@ mod tests {
         super::requeue_if_preempted(&mut table, ProcNr(0));
 
         let q = crate::proc::priority::USER_Q as usize;
-        assert_eq!(table.scheduler().queue_head(q), Some(ProcNr(0)),
-            "preempted process with quantum left must re-enter at the HEAD");
-        assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::PREEMPTED),
-            "PREEMPTED must be cleared by the requeue");
+        assert_eq!(
+            table.scheduler().queue_head(q),
+            Some(ProcNr(0)),
+            "preempted process with quantum left must re-enter at the HEAD"
+        );
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PREEMPTED),
+            "PREEMPTED must be cleared by the requeue"
+        );
     }
 
     #[test]
@@ -6311,19 +6590,41 @@ mod tests {
         // enqueue (tail): it must yield to peers that still have a slice.
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 0);
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(1), crate::proc::priority::USER_Q, 1000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            0,
+        );
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(1),
+            crate::proc::priority::USER_Q,
+            1000,
+        );
         table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
         table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
 
         super::requeue_if_preempted(&mut table, ProcNr(0));
 
         let q = crate::proc::priority::USER_Q as usize;
-        assert_eq!(table.scheduler().queue_head(q), Some(ProcNr(1)),
-            "peer keeps the head");
-        let second = table.get(ProcNr(1)).unwrap().p_nextready.load(Ordering::Relaxed);
-        assert_eq!(second, ProcNr(0).0,
-            "exhausted preempted process goes to the TAIL (peer's nextready)");
+        assert_eq!(
+            table.scheduler().queue_head(q),
+            Some(ProcNr(1)),
+            "peer keeps the head"
+        );
+        let second = table
+            .get(ProcNr(1))
+            .unwrap()
+            .p_nextready
+            .load(Ordering::Relaxed);
+        assert_eq!(
+            second,
+            ProcNr(0).0,
+            "exhausted preempted process goes to the TAIL (peer's nextready)"
+        );
     }
 
     #[test]
@@ -6332,17 +6633,32 @@ mod tests {
         // process blocked again by the preempting work stays off the queue.
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            1000,
+        );
         table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
         table.rts_set(ProcNr(0), RtsFlagsBits::RECEIVING); // blocked again → not runnable
 
         super::requeue_if_preempted(&mut table, ProcNr(0));
 
         let q = crate::proc::priority::USER_Q as usize;
-        assert_eq!(table.scheduler().queue_head(q), None,
-            "non-runnable preempted process must not be enqueued");
-        assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::PREEMPTED),
-            "PREEMPTED is still cleared");
+        assert_eq!(
+            table.scheduler().queue_head(q),
+            None,
+            "non-runnable preempted process must not be enqueued"
+        );
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PREEMPTED),
+            "PREEMPTED is still cleared"
+        );
     }
 
     #[test]
@@ -6350,14 +6666,23 @@ mod tests {
         // C: proc.c:322 — the whole block is guarded by proc_is_preempted.
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            1000,
+        );
         // Runnable but NOT preempted, and not in any queue.
 
         super::requeue_if_preempted(&mut table, ProcNr(0));
 
         let q = crate::proc::priority::USER_Q as usize;
-        assert_eq!(table.scheduler().queue_head(q), None,
-            "non-preempted process must not be enqueued by the requeue path");
+        assert_eq!(
+            table.scheduler().queue_head(q),
+            None,
+            "non-preempted process must not be enqueued by the requeue path"
+        );
     }
 
     // ── pick_and_bill (C: pick_proc — proc.c:1785-1813) ──
@@ -6367,15 +6692,25 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut smp = SmpState::new_single_cpu();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            1000,
+        );
         table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
 
-        let picked = super::pick_and_bill(&mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP);
+        let picked =
+            super::pick_and_bill(&mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP);
 
         assert_eq!(picked, Some(ProcNr(0)));
         let bsp = smp.bsp_cpu_id();
-        assert_eq!(smp.cpu_local(bsp).unwrap().bill_ptr, Some(ProcNr(0)),
-            "BILLABLE picked process becomes the bill pointer (C: proc.c:1809)");
+        assert_eq!(
+            smp.cpu_local(bsp).unwrap().bill_ptr,
+            Some(ProcNr(0)),
+            "BILLABLE picked process becomes the bill pointer (C: proc.c:1809)"
+        );
     }
 
     #[test]
@@ -6384,8 +6719,11 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut smp = SmpState::new_single_cpu();
 
-        assert_eq!(super::pick_and_bill(&mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP), None,
-            "empty queues → None (caller falls into idle)");
+        assert_eq!(
+            super::pick_and_bill(&mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP),
+            None,
+            "empty queues → None (caller falls into idle)"
+        );
     }
 
     // ── switch_address_space (C: __switch_address_space — klib.S:605-626) ──
@@ -6407,10 +6745,16 @@ mod tests {
 
         super::switch_address_space(&table, proc_nr::KERNEL);
 
-        assert_eq!(crate::current_root_phys(), None,
-            "kernel task (no own root) must not touch the root mirror");
-        assert_eq!(crate::current_ptproc_nr(), None,
-            "kernel task must not become ptproc");
+        assert_eq!(
+            crate::current_root_phys(),
+            None,
+            "kernel task (no own root) must not touch the root mirror"
+        );
+        assert_eq!(
+            crate::current_ptproc_nr(),
+            None,
+            "kernel task must not become ptproc"
+        );
     }
 
     #[test]
@@ -6421,14 +6765,24 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let root = minix_types::PhysBytes(0x5000); // page-aligned, non-zero
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = root;
-        table.get_mut(ProcNr(0)).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
 
         super::switch_address_space(&table, ProcNr(0));
 
-        assert_eq!(crate::current_root_phys(), Some(root),
-            "the mirror must reflect the installed root (Rust's read_cr3)");
-        assert_eq!(crate::current_ptproc_nr(), Some(ProcNr(0)),
-            "the switched-to process becomes ptproc");
+        assert_eq!(
+            crate::current_root_phys(),
+            Some(root),
+            "the mirror must reflect the installed root (Rust's read_cr3)"
+        );
+        assert_eq!(
+            crate::current_ptproc_nr(),
+            Some(ProcNr(0)),
+            "the switched-to process becomes ptproc"
+        );
     }
 
     #[test]
@@ -6451,10 +6805,16 @@ mod tests {
 
         super::switch_address_space(&table, ProcNr(1));
 
-        assert_eq!(crate::current_root_phys(), Some(root),
-            "root unchanged (same-root switch syncs mirror)");
-        assert_eq!(crate::current_ptproc_nr(), Some(ProcNr(1)),
-            "same-root switch updates ptproc to the newly-dispatched process");
+        assert_eq!(
+            crate::current_root_phys(),
+            Some(root),
+            "root unchanged (same-root switch syncs mirror)"
+        );
+        assert_eq!(
+            crate::current_ptproc_nr(),
+            Some(ProcNr(1)),
+            "same-root switch updates ptproc to the newly-dispatched process"
+        );
     }
 
     // ── idle (C: idle — proc.c:175-229) ──
@@ -6474,13 +6834,21 @@ mod tests {
         let bsp = smp.bsp_cpu_id();
 
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        super::idle(&section, &mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP);
+        super::idle(
+            &section,
+            &mut table,
+            &mut smp,
+            &priv_table,
+            crate::proc::CpuId::BSP,
+        );
 
         let local = smp.cpu_local(bsp).unwrap();
-        assert_eq!(local.proc_ptr, Some(proc_nr::IDLE),
-            "idle must install the idle process as current (C:185)");
-        assert!(local.cpu_is_idle,
-            "idle must set cpu_is_idle (C:192)");
+        assert_eq!(
+            local.proc_ptr,
+            Some(proc_nr::IDLE),
+            "idle must install the idle process as current (C:185)"
+        );
+        assert!(local.cpu_is_idle, "idle must set cpu_is_idle (C:192)");
         // The wake path re-acquired the BKL; release it for the next test.
         crate::smp::bkl_unlock();
     }
@@ -6500,7 +6868,13 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut smp = SmpState::new_single_cpu();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            5000,
+        );
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
         // Simulate a prior kernel entry: the return gate refuses to dispatch
         // on NoEntry (C: arch_system.c:597-598), so the fixture records the
@@ -6525,7 +6899,13 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut smp = SmpState::new_single_cpu();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            5000,
+        );
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
         // trap_style intentionally left NoEntry.
 
@@ -6546,7 +6926,13 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut smp = SmpState::new_single_cpu();
-        make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+        make_runnable_billable(
+            &mut table,
+            &mut priv_table,
+            ProcNr(0),
+            crate::proc::priority::USER_Q,
+            5000,
+        );
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
         table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::Syscall;
 
@@ -6565,8 +6951,14 @@ mod tests {
         let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
         p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
 
-        assert!(p.needs_tlb_refresh(Some(ProcNr(3))), "旗标 + ptproc 匹配 → 刷新");
-        assert!(!p.needs_tlb_refresh(Some(ProcNr(4))), "旗标在但 ptproc 是别的进程 → 本 CPU 不刷");
+        assert!(
+            p.needs_tlb_refresh(Some(ProcNr(3))),
+            "旗标 + ptproc 匹配 → 刷新"
+        );
+        assert!(
+            !p.needs_tlb_refresh(Some(ProcNr(4))),
+            "旗标在但 ptproc 是别的进程 → 本 CPU 不刷"
+        );
         assert!(!p.needs_tlb_refresh(None), "无 ptproc 记录 → 不刷");
 
         p.p_misc_flags.clear(crate::proc::MiscFlagsBits::FLUSH_TLB);
@@ -6640,7 +7032,13 @@ mod tests {
             // single runnable+queued process seeded below (the test's stated
             // precondition), immune to upstream ordering.
             table.drain_run_queues_for_test();
-            make_runnable_billable(table, priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
+            make_runnable_billable(
+                table,
+                priv_table,
+                ProcNr(0),
+                crate::proc::priority::USER_Q,
+                5000,
+            );
             table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x6000);
             // Simulate a prior kernel entry (see test_finish_and_restore_
             // reaches_mock_restore): the return gate refuses NoEntry.

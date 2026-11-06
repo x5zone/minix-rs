@@ -38,9 +38,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use minix_arch::paging::PageFlags;
 use minix_arch::{CurrentPaging, paging::Paging as _};
 use minix_boot::KernelInfo;
-use minix_types::{KuserInfo, MinixKerninfo, KERNINFO_MAGIC, MINIX_KIF_USERINFO, USER_STACK_TOP, VirBytes};
+use minix_types::{KERNINFO_MAGIC, KuserInfo, MINIX_KIF_USERINFO, MinixKerninfo, VirBytes};
 
-use crate::globals::{SyncUnsafeCell, MINIX_KERNINFO_USER};
+use crate::globals::{MINIX_KERNINFO_USER, SyncUnsafeCell};
 
 /// Fixed user-space VA of the kernel information page.
 ///
@@ -145,7 +145,11 @@ fn map_and_publish() {
         .expect("init_kerninfo: kerninfo page VA not mapped in the active root");
     KERNINFO_PAGE_PHYS.store(page_phys.0, Ordering::Relaxed);
     paging
-        .map(VirBytes(KERNINFO_USER_VA), page_phys, PageFlags::read_only())
+        .map(
+            VirBytes(KERNINFO_USER_VA),
+            page_phys,
+            PageFlags::read_only(),
+        )
         .expect("init_kerninfo: failed to map the kernel info page user read-only");
 
     // Interior fixups + magic, C memory.c:878-919 order (pointers, then
@@ -191,8 +195,13 @@ pub(crate) fn kerninfo_page_phys() -> Option<u64> {
 #[cfg(test)]
 mod kerninfo_tests {
     use super::*;
+    // Test-only constant: the production face of this file does not
+    // reference it, so the import lives here instead of the top-level use
+    // list (where `clippy --workspace`, which builds without `--tests`,
+    // would flag it unused).
     use core::mem::{offset_of, size_of};
     use minix_types::PhysBytes;
+    use minix_types::USER_STACK_TOP;
 
     /// Minimal KernelInfo fixture — same shape as the lib.rs boot tests
     /// (`test_boot_empty_memmap` et al.); only `user_sp` is semantically

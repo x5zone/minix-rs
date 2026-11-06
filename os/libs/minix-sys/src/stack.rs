@@ -38,7 +38,7 @@
 //! kernel_utils.c:40-52). The boot path has `KernelInfo.user_sp` at hand,
 //! and the pure function stays testable without a mapped kernel page.
 
-use minix_types::{PMEF_AUXVECTORS, PMEF_EXECNAMELEN1, PsStrings, USER_STACK_TOP};
+use minix_types::{PMEF_AUXVECTORS, PMEF_EXECNAMELEN1, PsStrings};
 
 /// Pointer/word size in the frame — one slot per argv/envp entry.
 const WORD: usize = core::mem::size_of::<usize>();
@@ -268,7 +268,12 @@ fn write_ps_strings(frame: &mut [u8], off: usize, ps: &PsStrings) {
 #[cfg(test)]
 mod stack_frame_tests {
     use super::*;
+    // Test-only constant: the production face of this file does not
+    // reference it, so the import lives here instead of the top-level use
+    // list (where `clippy --workspace`, which builds without `--tests`,
+    // would flag it unused).
     use alloc::vec;
+    use minix_types::USER_STACK_TOP;
 
     /// C absolute value pin: the LP64 budget (i386 would be 1212 — see
     /// the STACK_MIN_SZ docs; com.h:356-357, syslimits.h:64).

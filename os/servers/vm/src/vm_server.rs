@@ -44,7 +44,7 @@ use minix_types::PhysBytes;
 #[cfg(test)]
 use minix_types::VM_PROCCTL;
 use minix_types::{
-    BootImage, Endpoint, Message, NR_BOOT_PROCS, USER_STACK_TOP, UserSlot, VM_RQ_BASE, VmError, VmPagefaultIn,
+    BootImage, Endpoint, Message, NR_BOOT_PROCS, UserSlot, VM_RQ_BASE, VmError, VmPagefaultIn,
     VmProcctlIn, VmReply, reply_status,
 };
 #[cfg(test)]
@@ -2282,9 +2282,7 @@ impl VmServer {
                 // (Linux counts major when I/O is required, not at
                 // completion). Access violations are not faults served.
                 match action {
-                    crate::cow_exec_pf::PagefaultAction::Suspended => {
-                        proc.inc_major_fault()
-                    }
+                    crate::cow_exec_pf::PagefaultAction::Suspended => proc.inc_major_fault(),
                     crate::cow_exec_pf::PagefaultAction::AccessViolation => {
                         // C map_pf returns EFAULT → pagefaults.c:144-151
                         // "pagefault not handled": SIGSEGV plus clear the
@@ -2549,7 +2547,12 @@ impl VmServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only constant: the production face of this file does not
+    // reference it, so the import lives here instead of the top-level use
+    // list (where `clippy --workspace`, which builds without `--tests`,
+    // would flag it unused).
     use crate::boot::{BootModule, KernelAllocated};
+    use minix_types::USER_STACK_TOP;
 
     // Pin the backend-selection semantics for every feature
     // combination — this function is the single precedence authority since

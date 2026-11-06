@@ -16,37 +16,31 @@
 //! semantics (e.g. `ForkError::InvalidEndpoint → VmError::InvalidProcess → EINVAL`
 //! matching Minix3's `do_fork` behavior in fork.c:44).
 
+use crate::alloc_page::VmPageAllocator;
+use crate::brk;
+use crate::exit;
+use crate::fork;
+use crate::map_phys;
+use crate::memtype::MEM_TYPE_SHARED;
+use crate::mmap;
+use crate::munmap;
+use crate::query;
+use crate::region::PageFrames;
+use crate::region::vir_region::{VirRegion, VrFlags, VrParam};
+use crate::rs;
+use crate::vm_server::VmContext;
+use crate::vmproc::VmProcTable;
 use minix_types::{
-    Endpoint, USER_STACK_TOP, VirBytes,
-    VmForkIn, VmBrkIn, VmMunmapIn, VmUnmapPhysIn, VmShmUnmapIn,
-    VmExitIn, VmWillexitIn,
-    VmMmapIn, VmMapPhysIn, VmVfsMmapIn, VmCacheIn,
-    VmProcctlIn, VmRemapIn, VmVfsReplyIn,
-    VmForkOut, VmBrkOut, VmMmapOut, VmMapPhysOut,
-    VmReply, VmError,
-    Message, DecodeFromM1,
-    VM_RQ_BASE, VM_MMAP, VM_MUNMAP, VM_MAP_PHYS, VM_UNMAP_PHYS, VM_EXIT, VM_FORK, VM_BRK,
-    VM_WILLEXIT, VM_VFS_MMAP, VM_MAPCACHEPAGE, VM_SETCACHEPAGE,
-    VM_FORGETCACHEPAGE, VM_CLEARCACHE, VM_RS_SET_PRIV, VM_RS_PREPARE,
-    VM_RS_UPDATE, VM_RS_MEMCTL, VM_GETPHYS, VM_GETREF, VM_INFO, VM_GETRUSAGE,
-    VM_REMAP, VM_REMAP_RO, VM_PROCCTL, VM_SHM_UNMAP, VM_VFS_REPLY,
+    DecodeFromM1, Endpoint, Message, VM_BRK, VM_CLEARCACHE, VM_EXIT, VM_FORGETCACHEPAGE, VM_FORK,
+    VM_GETPHYS, VM_GETREF, VM_GETRUSAGE, VM_INFO, VM_MAP_PHYS, VM_MAPCACHEPAGE, VM_MMAP, VM_MUNMAP,
+    VM_PROCCTL, VM_REMAP, VM_REMAP_RO, VM_RQ_BASE, VM_RS_MEMCTL, VM_RS_PREPARE, VM_RS_SET_PRIV,
+    VM_RS_UPDATE, VM_SETCACHEPAGE, VM_SHM_UNMAP, VM_UNMAP_PHYS, VM_VFS_MMAP, VM_VFS_REPLY,
+    VM_WILLEXIT, VirBytes, VmBrkIn, VmBrkOut, VmCacheIn, VmError, VmExitIn, VmForkIn, VmForkOut,
+    VmMapPhysIn, VmMapPhysOut, VmMmapIn, VmMmapOut, VmMunmapIn, VmProcctlIn, VmRemapIn, VmReply,
+    VmShmUnmapIn, VmUnmapPhysIn, VmVfsMmapIn, VmVfsReplyIn, VmWillexitIn,
 };
 #[cfg(test)]
 use minix_types::{VM_ADDDMA, VM_DELDMA, VM_EXEC_NEWMEM, VM_GETDMA};
-use crate::vmproc::VmProcTable;
-use crate::vm_server::VmContext;
-use crate::alloc_page::VmPageAllocator;
-use crate::region::PageFrames;
-use crate::region::vir_region::{VirRegion, VrFlags, VrParam};
-use crate::memtype::MEM_TYPE_SHARED;
-use crate::fork;
-use crate::brk;
-use crate::munmap;
-use crate::mmap;
-use crate::map_phys;
-use crate::exit;
-use crate::rs;
-use crate::query;
 
 // ==========================================================================
 // Public dispatch struct
@@ -82,19 +76,28 @@ pub(crate) struct DispatchResult {
 
 impl DispatchResult {
     fn from_reply(reply: VmReply) -> Self {
-        DispatchResult { reply, vfs_callback: None }
+        DispatchResult {
+            reply,
+            vfs_callback: None,
+        }
     }
 }
 
 impl From<VmReply> for DispatchResult {
     fn from(reply: VmReply) -> Self {
-        DispatchResult { reply, vfs_callback: None }
+        DispatchResult {
+            reply,
+            vfs_callback: None,
+        }
     }
 }
 
 impl From<VfsReplyResult> for DispatchResult {
     fn from(r: VfsReplyResult) -> Self {
-        DispatchResult { reply: r.reply, vfs_callback: r.callback }
+        DispatchResult {
+            reply: r.reply,
+            vfs_callback: r.callback,
+        }
     }
 }
 
@@ -108,11 +111,24 @@ impl MessageDispatcher {
     /// Corresponds to Minix3 `do_fork()` in fork.c.
     /// C returns EINVAL on vm_isokendpt failure (fork.c:44).
     pub(crate) fn dispatch_fork(ctx: &mut VmContext, request: VmForkIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, gateway, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            gateway,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let mut gateway = gateway.borrow_mut();
-        match fork::do_fork(gateway.as_mut(), table, frames, page_alloc, request.parent_endpoint, request.child_slot) {
+        match fork::do_fork(
+            gateway.as_mut(),
+            table,
+            frames,
+            page_alloc,
+            request.parent_endpoint,
+            request.child_slot,
+        ) {
             Ok(child_endpoint) => VmReply::Fork(VmForkOut { child_endpoint }),
             Err(e) => VmReply::Error(e.into()),
         }
@@ -132,7 +148,9 @@ impl MessageDispatcher {
         // map_region_extend_upto_v anon legs are demand-filled), so page
         // alloc / frames / vfs_queue no longer reach it.
         match brk::handle_brk(table, &req) {
-            Ok(response) => VmReply::Brk(VmBrkOut { new_addr: response.new_brk_addr }),
+            Ok(response) => VmReply::Brk(VmBrkOut {
+                new_addr: response.new_brk_addr,
+            }),
             Err(e) => VmReply::Error(e.into()),
         }
     }
@@ -141,7 +159,13 @@ impl MessageDispatcher {
 
     /// Dispatch VM_MUNMAP request. C: `do_munmap()` in mmap.c.
     pub(crate) fn dispatch_munmap(ctx: &mut VmContext, request: VmMunmapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = munmap::MunmapRequest {
@@ -161,7 +185,13 @@ impl MessageDispatcher {
     // -- unmap_phys --
     // VM_UNMAP_PHYS: unmap a VR_DIRECT region. Length is the full region length.
     pub(crate) fn dispatch_unmap_phys(ctx: &mut VmContext, request: VmUnmapPhysIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = munmap::MunmapRequest {
@@ -181,7 +211,13 @@ impl MessageDispatcher {
     // -- shm_unmap --
     // VM_SHM_UNMAP: unmap a shared memory region. Length is the full region length.
     pub(crate) fn dispatch_shm_unmap(ctx: &mut VmContext, request: VmShmUnmapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = munmap::MunmapRequest {
@@ -211,8 +247,19 @@ impl MessageDispatcher {
     ///   Only VFS may call this (C: exit.c:140-141 EPERM check).
     ///
     /// Unknown param values return EINVAL (C: exit.c:149 default case).
-    pub(crate) fn dispatch_procctl(ctx: &mut VmContext, caller: Endpoint, request: VmProcctlIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, gateway, .. } = ctx;
+    pub(crate) fn dispatch_procctl(
+        ctx: &mut VmContext,
+        caller: Endpoint,
+        request: VmProcctlIn,
+    ) -> VmReply {
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            gateway,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         // 1. `who` must be a valid endpoint.
@@ -238,7 +285,14 @@ impl MessageDispatcher {
                 if caller != Endpoint::RS && caller != Endpoint::VFS {
                     return VmReply::Error(VmError::PermissionDenied);
                 }
-                match exit::handle_procctl_clear(table, page_alloc, frames, vfs_queue, &mut **gateway.borrow_mut(), request.who) {
+                match exit::handle_procctl_clear(
+                    table,
+                    page_alloc,
+                    frames,
+                    vfs_queue,
+                    &mut **gateway.borrow_mut(),
+                    request.who,
+                ) {
                     Ok(()) => VmReply::Ok,
                     Err(e) => VmReply::Error(VmError::from(e)),
                 }
@@ -252,8 +306,13 @@ impl MessageDispatcher {
                     return VmReply::Error(VmError::PermissionDenied);
                 }
                 match exit::handle_procctl_handlemem(
-                    table, page_alloc, frames,
-                    request.who, request.m1, request.len, request.flags,
+                    table,
+                    page_alloc,
+                    frames,
+                    request.who,
+                    request.m1,
+                    request.len,
+                    request.flags,
                 ) {
                     Ok(exit::VmProcctlHandlememResult::Completed) => {
                         // C returns SUSPEND for the async path. Our synchronous
@@ -291,7 +350,12 @@ impl MessageDispatcher {
     /// 8. Increment source region's `remaps` counter
     /// 9. Return mapped address
     pub(crate) fn dispatch_remap(ctx: &mut VmContext, request: VmRemapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         dispatch_remap_impl(table, page_alloc, frames, request, false)
@@ -300,7 +364,12 @@ impl MessageDispatcher {
     /// Dispatch VM_REMAP_RO request. Same as VM_REMAP but the resulting
     /// region is forced read-only (C: `do_remap()` mmap.c:380-385).
     pub(crate) fn dispatch_remap_ro(ctx: &mut VmContext, request: VmRemapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         dispatch_remap_impl(table, page_alloc, frames, request, true)
@@ -389,11 +458,19 @@ impl MessageDispatcher {
     /// Dispatch VM_MMAP request. C: `do_mmap()` in mmap.c.
     /// May return `VmReply::Suspend` for file-backed mappings.
     pub(crate) fn dispatch_mmap(ctx: &mut VmContext, request: VmMmapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         match mmap::handle_mmap(table, page_alloc, frames, vfs_queue, &request) {
-            Ok(mmap::MmapResult::Complete(response)) => VmReply::Mmap(VmMmapOut { ret_addr: response.mapped_addr }),
+            Ok(mmap::MmapResult::Complete(response)) => VmReply::Mmap(VmMmapOut {
+                ret_addr: response.mapped_addr,
+            }),
             Ok(mmap::MmapResult::Suspended) => VmReply::Suspend,
             Err(e) => VmReply::Error(e.into()),
         }
@@ -401,11 +478,19 @@ impl MessageDispatcher {
 
     // -- vfs_mmap (synchronous VFS-initiated path) --
     pub(crate) fn dispatch_vfs_mmap(ctx: &mut VmContext, request: VmVfsMmapIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         match mmap::handle_vfs_mmap(table, page_alloc, frames, vfs_queue, &request) {
-            Ok(mmap::MmapResult::Complete(response)) => VmReply::VfsMmap(VmMmapOut { ret_addr: response.mapped_addr }),
+            Ok(mmap::MmapResult::Complete(response)) => VmReply::VfsMmap(VmMmapOut {
+                ret_addr: response.mapped_addr,
+            }),
             Ok(mmap::MmapResult::Suspended) => VmReply::Suspend,
             Err(e) => VmReply::Error(e.into()),
         }
@@ -415,10 +500,23 @@ impl MessageDispatcher {
 
     /// Dispatch VM_MAP_PHYS request. C: `do_map_phys()` in mmap.c.
     pub(crate) fn dispatch_map_phys(ctx: &mut VmContext, request: VmMapPhysIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        match map_phys::handle_map_phys(table, page_alloc, frames, request.caller, request.target, request.phys_addr, request.length) {
+        match map_phys::handle_map_phys(
+            table,
+            page_alloc,
+            frames,
+            request.caller,
+            request.target,
+            request.phys_addr,
+            request.length,
+        ) {
             Ok(virt_addr) => VmReply::MapPhys(VmMapPhysOut { virt_addr }),
             Err(e) => VmReply::Error(e.into()),
         }
@@ -430,7 +528,13 @@ impl MessageDispatcher {
 
     /// Dispatch VM_EXIT request. C: `do_vm_exit()` in exit.c.
     pub(crate) fn dispatch_exit(ctx: &mut VmContext, request: VmExitIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         match exit::handle_vm_exit(table, page_alloc, frames, vfs_queue, request.endpoint) {
@@ -467,7 +571,13 @@ impl MessageDispatcher {
     // revision that actually registers handlers for them.
 
     // -- rs_set_priv --
-    pub(crate) fn dispatch_rs_set_priv(ctx: &mut VmContext, caller: minix_types::Endpoint, target: minix_types::Endpoint, mask: Option<crate::acl::AclMask>, is_sys_proc: bool) -> VmReply {
+    pub(crate) fn dispatch_rs_set_priv(
+        ctx: &mut VmContext,
+        caller: minix_types::Endpoint,
+        target: minix_types::Endpoint,
+        mask: Option<crate::acl::AclMask>,
+        is_sys_proc: bool,
+    ) -> VmReply {
         let table: &VmProcTable = ctx.proc_table;
         match rs::handle_rs_set_priv(table, caller, target, mask, is_sys_proc) {
             Ok(()) => VmReply::Ok,
@@ -476,8 +586,18 @@ impl MessageDispatcher {
     }
 
     // -- rs_prepare --
-    pub(crate) fn dispatch_rs_prepare(ctx: &mut VmContext, src: minix_types::Endpoint, dst: minix_types::Endpoint, flags: u32) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
+    pub(crate) fn dispatch_rs_prepare(
+        ctx: &mut VmContext,
+        src: minix_types::Endpoint,
+        dst: minix_types::Endpoint,
+        flags: u32,
+    ) -> VmReply {
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         // rs_prepare's brk leg (heap extension) no longer needs
@@ -490,8 +610,18 @@ impl MessageDispatcher {
     }
 
     // -- rs_update --
-    pub(crate) fn dispatch_rs_update(ctx: &mut VmContext, src: minix_types::Endpoint, dst: minix_types::Endpoint, flags: u32) -> VmReply {
-        let VmContext { proc_table, page_frames, gateway, .. } = ctx;
+    pub(crate) fn dispatch_rs_update(
+        ctx: &mut VmContext,
+        src: minix_types::Endpoint,
+        dst: minix_types::Endpoint,
+        flags: u32,
+    ) -> VmReply {
+        let VmContext {
+            proc_table,
+            page_frames,
+            gateway,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let update_ctx = &mut rs::RsUpdateCtx {
             table,
@@ -508,8 +638,18 @@ impl MessageDispatcher {
     }
 
     // -- rs_memctl --
-    pub(crate) fn dispatch_rs_memctl(ctx: &mut VmContext, target: minix_types::Endpoint, request: rs::RsMemctlRequest) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+    pub(crate) fn dispatch_rs_memctl(
+        ctx: &mut VmContext,
+        target: minix_types::Endpoint,
+        request: rs::RsMemctlRequest,
+    ) -> VmReply {
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            vfs_queue,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         match rs::handle_rs_memctl(table, page_alloc, frames, vfs_queue, target, request) {
@@ -549,7 +689,11 @@ fn decode_rs_memctl_request(
 
 impl MessageDispatcher {
     // -- get_phys --
-    pub(crate) fn dispatch_get_phys(ctx: &mut VmContext, target: minix_types::Endpoint, addr: VirBytes) -> VmReply {
+    pub(crate) fn dispatch_get_phys(
+        ctx: &mut VmContext,
+        target: minix_types::Endpoint,
+        addr: VirBytes,
+    ) -> VmReply {
         let table: &VmProcTable = ctx.proc_table;
         match query::handle_get_phys(table, target, addr) {
             Ok(phys) => VmReply::GetPhys { phys_addr: phys },
@@ -558,7 +702,11 @@ impl MessageDispatcher {
     }
 
     // -- get_refcount --
-    pub(crate) fn dispatch_get_refcount(ctx: &mut VmContext, target: minix_types::Endpoint, addr: VirBytes) -> VmReply {
+    pub(crate) fn dispatch_get_refcount(
+        ctx: &mut VmContext,
+        target: minix_types::Endpoint,
+        addr: VirBytes,
+    ) -> VmReply {
         let table: &VmProcTable = ctx.proc_table;
         match query::handle_get_refcount(table, target, addr) {
             Ok(cnt) => VmReply::GetRefcount { count: cnt },
@@ -572,7 +720,13 @@ impl MessageDispatcher {
         let sources = ctx.usage_sources();
         let dropped_messages = ctx.dropped_messages;
         let pagefault_errors = ctx.pagefault_errors;
-        let VmContext { proc_table, page_alloc, page_frames, page_cache: cache, .. } = ctx;
+        let VmContext {
+            proc_table,
+            page_alloc,
+            page_frames,
+            page_cache: cache,
+            ..
+        } = ctx;
         let table: &VmProcTable = proc_table;
         let cached_pages = cache.total_cached();
         let frames = page_frames.as_ref().expect("page_frames not initialized");
@@ -600,7 +754,11 @@ impl MessageDispatcher {
                 minor_faults: u.minor_faults,
                 major_faults: u.major_faults,
             },
-            Ok(query::InfoResult::Region { regions, count, next }) => VmReply::InfoRegion {
+            Ok(query::InfoResult::Region {
+                regions,
+                count,
+                next,
+            }) => VmReply::InfoRegion {
                 // C: vri_addr/vri_length/vri_prot (region.c:1469-1478);
                 // vri_flags is always 0 in C (static zero-init, never
                 // written) and is not modeled.
@@ -617,7 +775,12 @@ impl MessageDispatcher {
     }
 
     // -- getrusage --
-    pub(crate) fn dispatch_getrusage(ctx: &mut VmContext, caller: minix_types::Endpoint, target: minix_types::Endpoint, children: bool) -> VmReply {
+    pub(crate) fn dispatch_getrusage(
+        ctx: &mut VmContext,
+        caller: minix_types::Endpoint,
+        target: minix_types::Endpoint,
+        children: bool,
+    ) -> VmReply {
         let table: &VmProcTable = ctx.proc_table;
         match query::handle_getrusage(table, caller, target, children) {
             Ok(query::GetrusageResult::Ok) => VmReply::Ok,
@@ -839,15 +1002,13 @@ fn call_rs_set_priv(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
         let lo = u32::from_le_bytes(mask_buf[0..4].try_into().unwrap()) as u64;
         let hi = u32::from_le_bytes(mask_buf[4..8].try_into().unwrap()) as u64;
         let mask = Some(crate::acl::AclMask::from_bits_truncate(lo | (hi << 32)));
-        MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, mask, is_sys_proc)
-            .into()
+        MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, mask, is_sys_proc).into()
     } else {
         if is_sys_proc {
             // C rs.c:55-57 — "sys procs don't share!"
             return VmReply::Error(VmError::InvalidParam).into();
         }
-        MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, None, is_sys_proc)
-            .into()
+        MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, None, is_sys_proc).into()
     }
 }
 
@@ -873,7 +1034,11 @@ fn call_info(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
             if ep == Endpoint::SELF {
                 ep = msg.m_source;
             }
-            query::InfoQuery::Region { target: ep, count, next }
+            query::InfoQuery::Region {
+                target: ep,
+                count,
+                next,
+            }
         }
         // C: do_info default arm returns EINVAL (utility.c:163).
         _ => return DispatchResult::from_reply(VmReply::Error(VmError::InvalidParam)),
@@ -1204,12 +1369,7 @@ fn dispatch_remap_impl(
         flags |= VrFlags::WRITABLE;
     }
 
-    let mut new_region = VirRegion::with_memtype(
-        dst_vaddr,
-        aligned_len,
-        flags,
-        &MEM_TYPE_SHARED,
-    );
+    let mut new_region = VirRegion::with_memtype(dst_vaddr, aligned_len, flags, &MEM_TYPE_SHARED);
 
     // Step 9: Set shared source parameters
     // (C: mmap.c:417 — `shared_setsource(vr, svmp->vm_endpoint, src_region)`)
@@ -1250,13 +1410,20 @@ fn dispatch_remap_impl(
     let _ = table.increment_region_remaps(src_slot, src_snapshot.vaddr);
 
     // Step 12: Return mapped address (C: mmap.c:431 — `m->m_lsys_vm_vmremap.ret_addr = vr->vaddr`)
-    VmReply::Mmap(VmMmapOut { ret_addr: dst_vaddr })
+    VmReply::Mmap(VmMmapOut {
+        ret_addr: dst_vaddr,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use minix_types::{Endpoint, UserSlot};
+    // Test-only constant: the production face of this file does not
+    // reference it, so the import lives here instead of the top-level use
+    // list (where `clippy --workspace`, which builds without `--tests`,
+    // would flag it unused).
+    use minix_types::USER_STACK_TOP;
 
     fn init_test_slots() {
         let table = VmProcTable::get_global();
@@ -1271,17 +1438,23 @@ mod tests {
     #[test]
     fn test_vm_error_invalid_process_maps_to_einval() {
         let result = VmError::InvalidProcess.to_errno();
-        assert_eq!(result, minix_types::EINVAL,
+        assert_eq!(
+            result,
+            minix_types::EINVAL,
             "VmError::InvalidProcess must map to EINVAL — covers: \
-             fork.c:44, break.c:53, exit.c:69, mmap.c:329, rs.c:44/94/165/361, utility.c:110");
+             fork.c:44, break.c:53, exit.c:69, mmap.c:329, rs.c:44/94/165/361, utility.c:110"
+        );
     }
 
     #[test]
     fn test_vm_error_invalid_endpoint_maps_to_esrch() {
         let result = VmError::InvalidEndpoint.to_errno();
-        assert_eq!(result, minix_types::ESRCH,
+        assert_eq!(
+            result,
+            minix_types::ESRCH,
             "VmError::InvalidEndpoint must map to ESRCH — covers: \
-             mmap.c:216 (third-party), utility.c:442 (getrusage)");
+             mmap.c:216 (third-party), utility.c:442 (getrusage)"
+        );
     }
 
     #[test]
@@ -1304,8 +1477,16 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(registered.len(), 26, "exactly the 26 C CALLMAP entries");
-        for rel in [call_index(VM_EXEC_NEWMEM), call_index(VM_ADDDMA), call_index(VM_DELDMA), call_index(VM_GETDMA)] {
-            assert!(CALLMAP[rel].is_none(), "parity calls must stay unregistered: +{rel}");
+        for rel in [
+            call_index(VM_EXEC_NEWMEM),
+            call_index(VM_ADDDMA),
+            call_index(VM_DELDMA),
+            call_index(VM_GETDMA),
+        ] {
+            assert!(
+                CALLMAP[rel].is_none(),
+                "parity calls must stay unregistered: +{rel}"
+            );
         }
         // The highest registered call is VM_RS_PREPARE (+48), the highest
         // relative index in the table (C: com.h:769 NR_VM_CALLS 49).
@@ -1325,7 +1506,9 @@ mod tests {
         }
         for slot in [50i32, 51] {
             let empty = table.get_empty(UserSlot::new(slot as usize)).unwrap();
-            empty.activate(Endpoint::from_generation_slot(1, slot)).init_regions();
+            empty
+                .activate(Endpoint::from_generation_slot(1, slot))
+                .init_regions();
         }
 
         let mut page_alloc = default_vm();
@@ -1375,9 +1558,11 @@ mod tests {
     fn default_vm() -> crate::alloc_page::VmPageAllocator {
         // Tiny allocator for tests; capacity is irrelevant since we
         // never reach the allocation path in validation-only tests.
-        use crate::phys_mem::bitmap_alloc::BitmapAllocator;
         use crate::phys_mem::PhysAlloc;
-        crate::alloc_page::VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(256)))
+        use crate::phys_mem::bitmap_alloc::BitmapAllocator;
+        crate::alloc_page::VmPageAllocator::new(PhysAlloc::Bitmap(BitmapAllocator::new_for_test(
+            256,
+        )))
     }
 
     fn default_frames() -> crate::region::PageFrames {
@@ -1428,7 +1613,9 @@ mod tests {
     fn init_dispatcher_process(slot_no: usize) -> Endpoint {
         let table = default_table();
         let slot = UserSlot::new(slot_no);
-        unsafe { table.reset_slot(slot); }
+        unsafe {
+            table.reset_slot(slot);
+        }
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot_no as i32);
         let mut active = empty.activate(ep);
@@ -1453,14 +1640,22 @@ mod tests {
         {
             let slot = default_table().vm_isokendpt(who).unwrap();
             let mut proc = default_table().get_active(slot).unwrap();
-            proc.regions_mut().insert(crate::region::VirRegion::new(
-                minix_types::VirBytes(0x3000_0000),
-                minix_types::VirBytes(0x10_0000),
-                crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
-            )).unwrap();
+            proc.regions_mut()
+                .insert(crate::region::VirRegion::new(
+                    minix_types::VirBytes(0x3000_0000),
+                    minix_types::VirBytes(0x10_0000),
+                    crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+                ))
+                .unwrap();
         }
 
-        let req = VmProcctlIn { param: 1, who, m1: 0, len: 0, flags: 0 };
+        let req = VmProcctlIn {
+            param: 1,
+            who,
+            m1: 0,
+            len: 0,
+            flags: 0,
+        };
         let reply = MessageDispatcher::dispatch_procctl(&mut happy_ctx(), Endpoint::RS, req);
         assert_eq!(reply, VmReply::Ok, "CLEAR from RS must succeed");
 
@@ -1482,18 +1677,26 @@ mod tests {
         {
             let slot = default_table().vm_isokendpt(src).unwrap();
             let mut proc = default_table().get_active(slot).unwrap();
-            proc.regions_mut().insert(crate::region::VirRegion::new(
-                minix_types::VirBytes(0x2000_0000),
-                minix_types::VirBytes(0x10_0000),
-                crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
-            )).unwrap();
+            proc.regions_mut()
+                .insert(crate::region::VirRegion::new(
+                    minix_types::VirBytes(0x2000_0000),
+                    minix_types::VirBytes(0x10_0000),
+                    crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+                ))
+                .unwrap();
         }
 
         // Snapshot the source region's id before dispatch — the shared
         // param must reference exactly this region.
         let src_slot = default_table().vm_isokendpt(src).unwrap();
-        let src_id = default_table().get_active(src_slot).unwrap()
-            .regions().iter().find(|vr| vr.vaddr.0 == 0x2000_0000).unwrap().id;
+        let src_id = default_table()
+            .get_active(src_slot)
+            .unwrap()
+            .regions()
+            .iter()
+            .find(|vr| vr.vaddr.0 == 0x2000_0000)
+            .unwrap()
+            .id;
 
         let req = VmRemapIn {
             caller: dst,
@@ -1511,14 +1714,17 @@ mod tests {
         };
         assert!(
             ret_addr.0 >= REMAP_MMAP_BASE && ret_addr.0 < REMAP_MMAP_TOP,
-            "mapped address must land in the REMAP window, got {:#x}", ret_addr.0
+            "mapped address must land in the REMAP window, got {:#x}",
+            ret_addr.0
         );
 
         // The destination carries a writable SHARED region pointing back
         // at the source; the source's remaps counter incremented.
         let dst_slot = default_table().vm_isokendpt(dst).unwrap();
         let dst_proc = default_table().get_active(dst_slot).unwrap();
-        let shared = dst_proc.regions().iter()
+        let shared = dst_proc
+            .regions()
+            .iter()
             .find(|vr| vr.vaddr == ret_addr)
             .expect("shared region must exist at the returned address");
         assert!(shared.flags.contains(crate::region::VrFlags::SHARED));
@@ -1533,8 +1739,11 @@ mod tests {
         }
 
         let src_proc = default_table().get_active(src_slot).unwrap();
-        let src_region = src_proc.regions().iter()
-            .find(|vr| vr.vaddr.0 == 0x2000_0000).unwrap();
+        let src_region = src_proc
+            .regions()
+            .iter()
+            .find(|vr| vr.vaddr.0 == 0x2000_0000)
+            .unwrap();
         assert_eq!(src_region.remaps, 1, "source remaps counter must increment");
     }
 
@@ -1547,11 +1756,13 @@ mod tests {
         {
             let slot = default_table().vm_isokendpt(src).unwrap();
             let mut proc = default_table().get_active(slot).unwrap();
-            proc.regions_mut().insert(crate::region::VirRegion::new(
-                minix_types::VirBytes(0x2000_0000),
-                minix_types::VirBytes(0x10_0000),
-                crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
-            )).unwrap();
+            proc.regions_mut()
+                .insert(crate::region::VirRegion::new(
+                    minix_types::VirBytes(0x2000_0000),
+                    minix_types::VirBytes(0x10_0000),
+                    crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+                ))
+                .unwrap();
         }
 
         let req = VmRemapIn {
@@ -1571,11 +1782,16 @@ mod tests {
 
         let dst_slot = default_table().vm_isokendpt(dst).unwrap();
         let dst_proc = default_table().get_active(dst_slot).unwrap();
-        let shared = dst_proc.regions().iter()
-            .find(|vr| vr.vaddr == ret_addr).unwrap();
+        let shared = dst_proc
+            .regions()
+            .iter()
+            .find(|vr| vr.vaddr == ret_addr)
+            .unwrap();
         assert!(shared.flags.contains(crate::region::VrFlags::SHARED));
-        assert!(!shared.flags.contains(crate::region::VrFlags::WRITABLE),
-            "REMAP_RO must strip the writable bit");
+        assert!(
+            !shared.flags.contains(crate::region::VrFlags::WRITABLE),
+            "REMAP_RO must strip the writable bit"
+        );
     }
 
     #[test]
@@ -1594,22 +1810,25 @@ mod tests {
         }
 
         let mut ctx = happy_ctx();
-        ctx.vfs_queue.request(VfsRequest {
-            request_type: VfsRequestType::FdIo,
-            req_id: 0, // assigned by request()
-            caller_endpoint: Endpoint(7),
-            fd: 3,
-            offset: 0,
-            length: 0x2000,
-            callback: Some(nop_callback),
-            state: Some(VfsRequestState::FdIo {
-                region_vaddr: minix_types::VirBytes(0x3000_0000),
-                page_offset: minix_types::VirBytes(0),
-                write: false,
+        ctx.vfs_queue
+            .request(VfsRequest {
+                request_type: VfsRequestType::FdIo,
+                req_id: 0, // assigned by request()
                 caller_endpoint: Endpoint(7),
-            }),
-        
-            sent: false,}).unwrap();
+                fd: 3,
+                offset: 0,
+                length: 0x2000,
+                callback: Some(nop_callback),
+                state: Some(VfsRequestState::FdIo {
+                    region_vaddr: minix_types::VirBytes(0x3000_0000),
+                    page_offset: minix_types::VirBytes(0),
+                    write: false,
+                    caller_endpoint: Endpoint(7),
+                }),
+
+                sent: false,
+            })
+            .unwrap();
         let active_id = ctx.vfs_queue.active_req_id().unwrap();
 
         let req = VmVfsReplyIn {
@@ -1622,9 +1841,15 @@ mod tests {
             size_pages: 16,
         };
         let result = MessageDispatcher::dispatch_vfs_reply(&mut ctx, req);
-        assert_eq!(result.reply, VmReply::Suspend,
-            "completed reply surfaces as SUSPEND (no reply to VFS)");
-        assert!(result.callback.is_some(), "registered callback must be returned");
+        assert_eq!(
+            result.reply,
+            VmReply::Suspend,
+            "completed reply surfaces as SUSPEND (no reply to VFS)"
+        );
+        assert!(
+            result.callback.is_some(),
+            "registered callback must be returned"
+        );
         assert!(ctx.vfs_queue.is_empty(), "active entry must be retired");
     }
 
@@ -1641,25 +1866,29 @@ mod tests {
         let mut page_alloc = default_vm();
         let mut frames = default_frames();
         match MessageDispatcher::dispatch_procctl(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                Endpoint(0), req,
-            ) {
+            },
+            Endpoint(0),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {} // expected: EINVAL (C exit.c:149)
-            other => panic!("dispatch_procctl(-1) must return InvalidParam (EINVAL), got {:?}", other),
+            other => panic!(
+                "dispatch_procctl(-1) must return InvalidParam (EINVAL), got {:?}",
+                other
+            ),
         }
     }
 
@@ -1675,27 +1904,31 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         let mut page_alloc = default_vm();
         let mut frames = default_frames();
         match MessageDispatcher::dispatch_procctl(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                Endpoint(0), req,
-            ) {
+            },
+            Endpoint(0),
+            req,
+        ) {
             // C do_procctl collapses vm_isokendpt failures to EINVAL
             // (exit.c:122-125) → InvalidProcess.
             VmReply::Error(VmError::InvalidProcess) => {} // expected
-            other => panic!("dispatch_procctl(who=0) must return InvalidProcess (EINVAL), got {:?}", other),
+            other => panic!(
+                "dispatch_procctl(who=0) must return InvalidProcess (EINVAL), got {:?}",
+                other
+            ),
         }
     }
 
@@ -1713,25 +1946,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         let mut page_alloc = default_vm();
         let mut frames = default_frames();
         match MessageDispatcher::dispatch_procctl(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                Endpoint(42), req,
-            ) {
+            },
+            Endpoint(42),
+            req,
+        ) {
             VmReply::Error(VmError::PermissionDenied) => {} // expected
-            other => panic!("dispatch_procctl CLEAR from non-RS/VFS must return PermissionDenied, got {:?}", other),
+            other => panic!(
+                "dispatch_procctl CLEAR from non-RS/VFS must return PermissionDenied, got {:?}",
+                other
+            ),
         }
     }
 
@@ -1749,25 +1986,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         let mut page_alloc = default_vm();
         let mut frames = default_frames();
         match MessageDispatcher::dispatch_procctl(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                Endpoint(0), req,
-            ) {
+            },
+            Endpoint(0),
+            req,
+        ) {
             VmReply::Error(VmError::PermissionDenied) => {} // expected
-            other => panic!("dispatch_procctl HANDLEMEM from RS must return PermissionDenied, got {:?}", other),
+            other => panic!(
+                "dispatch_procctl HANDLEMEM from RS must return PermissionDenied, got {:?}",
+                other
+            ),
         }
     }
 
@@ -1784,25 +2025,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         let mut page_alloc = default_vm();
         let mut frames = default_frames();
         match MessageDispatcher::dispatch_procctl(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                Endpoint(0), req,
-            ) {
+            },
+            Endpoint(0),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {} // expected: EINVAL
-            other => panic!("dispatch_procctl(unknown param) must return InvalidParam (EINVAL), got {:?}", other),
+            other => panic!(
+                "dispatch_procctl(unknown param) must return InvalidParam (EINVAL), got {:?}",
+                other
+            ),
         }
     }
 
@@ -1821,21 +2066,24 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         // vaddr=0 won't match any region start, so endpoint validation
         // or region lookup will fail (C: map_lookup returns NULL for addr 0)
-        match MessageDispatcher::dispatch_remap(&mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+        match MessageDispatcher::dispatch_remap(
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                }, req) {
+            },
+            req,
+        ) {
             VmReply::Error(_) => {} // expected: any error
             other => panic!("dispatch_remap(vaddr=0) must return Error, got {:?}", other),
         }
@@ -1854,23 +2102,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             target: VirBytes(0x2000),
             flags: 0,
         };
-        match MessageDispatcher::dispatch_remap(&mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+        match MessageDispatcher::dispatch_remap(
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                }, req) {
+            },
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {} // expected (C: EINVAL)
-            other => panic!("dispatch_remap(length=0) must return InvalidParam, got {:?}", other),
+            other => panic!(
+                "dispatch_remap(length=0) must return InvalidParam, got {:?}",
+                other
+            ),
         }
     }
 
@@ -1888,23 +2142,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             target: VirBytes(0x2000),
             flags: 0,
         };
-        match MessageDispatcher::dispatch_remap(&mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+        match MessageDispatcher::dispatch_remap(
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                }, req) {
+            },
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {} // expected (C: EINVAL)
-            other => panic!("dispatch_remap(bad endpoint) must return InvalidParam, got {:?}", other),
+            other => panic!(
+                "dispatch_remap(bad endpoint) must return InvalidParam, got {:?}",
+                other
+            ),
         }
     }
 
@@ -1921,23 +2181,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             target: VirBytes(0x2000),
             flags: 0,
         };
-        match MessageDispatcher::dispatch_remap_ro(&mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: _default_cache(),
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+        match MessageDispatcher::dispatch_remap_ro(
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: _default_cache(),
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                }, req) {
+            },
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {} // expected (C: EINVAL)
-            other => panic!("dispatch_remap_ro(bad endpoint) must return InvalidParam, got {:?}", other),
+            other => panic!(
+                "dispatch_remap_ro(bad endpoint) must return InvalidParam, got {:?}",
+                other
+            ),
         }
     }
 
@@ -1954,26 +2220,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             size_pages: 0,
         };
         let result = MessageDispatcher::dispatch_vfs_reply(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc: default_vm(),
-                    page_frames: Some(default_frames()),
-                    page_cache: _default_cache(),
-                    vfs_queue,
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc: default_vm(),
+                page_frames: Some(default_frames()),
+                page_cache: _default_cache(),
+                vfs_queue,
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                req,
-            );
+            },
+            req,
+        );
         match result.reply {
             VmReply::Error(VmError::InvalidAddress) => {} // expected
-            other => panic!("dispatch_vfs_reply(reqid=0) must return InvalidAddress, got {:?}", other),
+            other => panic!(
+                "dispatch_vfs_reply(reqid=0) must return InvalidAddress, got {:?}",
+                other
+            ),
         }
         assert!(result.callback.is_none());
     }
@@ -1992,26 +2261,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             size_pages: 16,
         };
         let result = MessageDispatcher::dispatch_vfs_reply(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc: default_vm(),
-                    page_frames: Some(default_frames()),
-                    page_cache: _default_cache(),
-                    vfs_queue,
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc: default_vm(),
+                page_frames: Some(default_frames()),
+                page_cache: _default_cache(),
+                vfs_queue,
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                req,
-            );
+            },
+            req,
+        );
         match result.reply {
             VmReply::Error(VmError::InvalidAddress) => {} // expected: no active request
-            other => panic!("dispatch_vfs_reply(no active) must return error, got {:?}", other),
+            other => panic!(
+                "dispatch_vfs_reply(no active) must return error, got {:?}",
+                other
+            ),
         }
         assert!(result.callback.is_none());
     }
@@ -2029,26 +2301,29 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             size_pages: 0,
         };
         let result = MessageDispatcher::dispatch_vfs_reply(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc: default_vm(),
-                    page_frames: Some(default_frames()),
-                    page_cache: _default_cache(),
-                    vfs_queue,
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc: default_vm(),
+                page_frames: Some(default_frames()),
+                page_cache: _default_cache(),
+                vfs_queue,
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                req,
-            );
+            },
+            req,
+        );
         match result.reply {
             VmReply::Error(VmError::InvalidAddress) => {} // expected
-            other => panic!("dispatch_vfs_reply(reqid=-1) must return InvalidAddress, got {:?}", other),
+            other => panic!(
+                "dispatch_vfs_reply(reqid=-1) must return InvalidAddress, got {:?}",
+                other
+            ),
         }
         assert!(result.callback.is_none());
     }
@@ -2069,25 +2344,28 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:292-294).
         match MessageDispatcher::dispatch_forgetcache(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: cache,
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                req,
-            ) {
+            },
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {}
-            other => panic!("dispatch_forgetcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
+            other => panic!(
+                "dispatch_forgetcache(pages=0) must return InvalidParam (EINVAL), got {:?}",
+                other
+            ),
         }
     }
 
@@ -2106,25 +2384,28 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         let mut page_alloc = default_vm();
         match MessageDispatcher::dispatch_forgetcache(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: cache,
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                req,
-            ) {
+            },
+            req,
+        ) {
             VmReply::Error(VmError::InvalidAddress) => {}
-            other => panic!("dispatch_forgetcache(unaligned offset) must return InvalidAddress, got {:?}", other),
+            other => panic!(
+                "dispatch_forgetcache(unaligned offset) must return InvalidAddress, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2143,25 +2424,28 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         let mut page_alloc = default_vm();
         match MessageDispatcher::dispatch_forgetcache(
-                &mut crate::vm_server::VmContext {
-                    proc_table: default_table(),
-                    gateway: test_gateway(),
-                    page_alloc,
-                    page_frames: Some(frames),
-                    page_cache: cache,
-                    vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
-                    kernel_allocated: crate::boot::KernelAllocated::ZERO,
-                    vm_allocated_bytes: 0,
-                    pagefault_errors: 0,
-                    dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-                    #[cfg(feature = "sanity_checks")]
+            &mut crate::vm_server::VmContext {
+                proc_table: default_table(),
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+                #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
-                },
-                req,
-            ) {
+            },
+            req,
+        ) {
             VmReply::Ok => {}
-            other => panic!("dispatch_forgetcache(valid) must return Ok, got {:?}", other),
+            other => panic!(
+                "dispatch_forgetcache(valid) must return Ok, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2183,9 +2467,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         let mut page_alloc = default_vm();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:204-205).
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(1),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {}
-            other => panic!("dispatch_setcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
+            other => panic!(
+                "dispatch_setcache(pages=0) must return InvalidParam (EINVAL), got {:?}",
+                other
+            ),
         }
     }
 
@@ -2208,9 +2513,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(1),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidProcess) => {}
-            other => panic!("dispatch_setcache(no valid caller) must return InvalidProcess, got {:?}", other),
+            other => panic!(
+                "dispatch_setcache(no valid caller) must return InvalidProcess, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2229,9 +2555,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(1),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidAddress) => {}
-            other => panic!("dispatch_setcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
+            other => panic!(
+                "dispatch_setcache(unaligned dev_offset) must return InvalidAddress, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2251,9 +2598,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         // Endpoint(999) is not in the process table
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_setcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(999),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidProcess) => {}
-            other => panic!("dispatch_setcache(invalid caller) must return InvalidProcess, got {:?}", other),
+            other => panic!(
+                "dispatch_setcache(invalid caller) must return InvalidProcess, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2275,9 +2643,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             block: 0,
         };
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(1),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidAddress) => {}
-            other => panic!("dispatch_mapcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
+            other => panic!(
+                "dispatch_mapcache(unaligned dev_offset) must return InvalidAddress, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2298,9 +2687,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         let mut cache = _default_cache();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:116).
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(1),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidParam) => {}
-            other => panic!("dispatch_mapcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
+            other => panic!(
+                "dispatch_mapcache(pages=0) must return InvalidParam (EINVAL), got {:?}",
+                other
+            ),
         }
     }
 
@@ -2321,9 +2731,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         };
         // Endpoint(999) is not in the process table
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_mapcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(999),
+            req,
+        ) {
             VmReply::Error(VmError::InvalidProcess) => {}
-            other => panic!("dispatch_mapcache(invalid caller) must return InvalidProcess, got {:?}", other),
+            other => panic!(
+                "dispatch_mapcache(invalid caller) must return InvalidProcess, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2346,9 +2777,30 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         // but we need a valid endpoint to get past vm_isokendpt.
         // Endpoint(0) is VM itself, which should be in the table.
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(USER_STACK_TOP as u64) }, Endpoint(0), req) {
+        match MessageDispatcher::dispatch_mapcache(
+            &mut crate::vm_server::VmContext {
+                proc_table: table,
+                gateway: test_gateway(),
+                page_alloc,
+                page_frames: Some(frames),
+                page_cache: cache,
+                vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+                kernel_allocated: crate::boot::KernelAllocated::ZERO,
+                vm_allocated_bytes: 0,
+                pagefault_errors: 0,
+                dropped_messages: 0,
+                #[cfg(feature = "sanity_checks")]
+                sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            },
+            Endpoint(0),
+            req,
+        ) {
             VmReply::Error(VmError::NotFound) | VmReply::Error(VmError::InvalidProcess) => {} // either is acceptable
-            other => panic!("dispatch_mapcache(cache miss) must return NotFound or InvalidProcess, got {:?}", other),
+            other => panic!(
+                "dispatch_mapcache(cache miss) must return NotFound or InvalidProcess, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2367,7 +2819,9 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         // Caller: an active slot with an empty region map, so the mmap
         // window is entirely free for the 3-page region.
         let caller_slot = UserSlot::new(85);
-        unsafe { table.reset_slot(caller_slot); }
+        unsafe {
+            table.reset_slot(caller_slot);
+        }
         let empty = table.get_empty(caller_slot).unwrap();
         let caller_ep = Endpoint::from_generation_slot(1, 85);
         let mut caller = empty.activate(caller_ep);
@@ -2377,8 +2831,12 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         let mut frames = default_frames();
         let mut cache = _default_cache();
         // Cache hits for pages 0 and 1; page 2 (dev_offset 0x2000) misses.
-        cache.addcache(1, 0, Some(7), 0, false, 0, &mut frames).unwrap();
-        cache.addcache(1, 0x1000, Some(7), 0x1000, false, 1, &mut frames).unwrap();
+        cache
+            .addcache(1, 0, Some(7), 0, false, 0, &mut frames)
+            .unwrap();
+        cache
+            .addcache(1, 0x1000, Some(7), 0x1000, false, 1, &mut frames)
+            .unwrap();
         // Baseline: the cache's own reference on each linked frame.
         assert_eq!(frames.get(0).unwrap().refcount, 1);
         assert_eq!(frames.get(1).unwrap().refcount, 1);
@@ -2403,23 +2861,37 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             vm_allocated_bytes: 0,
             pagefault_errors: 0,
             dropped_messages: 0,
-user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-            #[cfg(feature = "sanity_checks")] sanity_ticks: 0,
+            user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
+            #[cfg(feature = "sanity_checks")]
+            sanity_ticks: 0,
         };
         match MessageDispatcher::dispatch_mapcache(&mut ctx, caller_ep, req) {
             VmReply::Error(VmError::NotFound) => {}
-            other => panic!("dispatch_mapcache(miss on page 2) must return NotFound, got {:?}", other),
+            other => panic!(
+                "dispatch_mapcache(miss on page 2) must return NotFound, got {:?}",
+                other
+            ),
         }
 
         // Rollback symmetry: both early links unwound, frames back to the
         // cache-only baseline (not freed — IN_CACHE).
         let frames = ctx.page_frames.as_mut().unwrap();
-        assert_eq!(frames.get(0).unwrap().refcount, 1, "page-0 link must roll back");
-        assert_eq!(frames.get(1).unwrap().refcount, 1, "page-1 link must roll back");
+        assert_eq!(
+            frames.get(0).unwrap().refcount,
+            1,
+            "page-0 link must roll back"
+        );
+        assert_eq!(
+            frames.get(1).unwrap().refcount,
+            1,
+            "page-1 link must roll back"
+        );
         assert!(frames.get(0).unwrap().is_cached());
         assert!(frames.get(1).unwrap().is_cached());
 
-        unsafe { table.reset_slot(caller_slot); }
+        unsafe {
+            table.reset_slot(caller_slot);
+        }
     }
 
     // ── VM_RS_MEMCTL sub-request decode (regression) ─────
@@ -2448,11 +2920,17 @@ user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
         ));
         assert!(matches!(
             decode_rs_memctl_request(2, 0x1000, 0x2000),
-            Ok(rs::RsMemctlRequest::HeapPrealloc { addr: VirBytes(0x1000), len: 0x2000 })
+            Ok(rs::RsMemctlRequest::HeapPrealloc {
+                addr: VirBytes(0x1000),
+                len: 0x2000
+            })
         ));
         assert!(matches!(
             decode_rs_memctl_request(3, 0x1000, 0x2000),
-            Ok(rs::RsMemctlRequest::MapPrealloc { addr: VirBytes(0x1000), len: 0x2000 })
+            Ok(rs::RsMemctlRequest::MapPrealloc {
+                addr: VirBytes(0x1000),
+                len: 0x2000
+            })
         ));
         assert!(matches!(
             decode_rs_memctl_request(4, 0, 0),

@@ -60,7 +60,7 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 use minix_sys::ipc::IpcTransport;
 use minix_sys::syscall::{KernelCallTransport, sys_datacopy, sys_memset};
-use minix_types::{CpFlags, Endpoint, Message, USER_STACK_TOP};
+use minix_types::{CpFlags, Endpoint, Message};
 
 /// Page count of the first-read buffer:
 /// `static char hdr[10*PAGE_SIZE] __aligned(8)` (exec.c:738).
@@ -1278,8 +1278,13 @@ fn pm_newexec<T: IpcTransport>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only constant: the production face of this file does not
+    // reference it, so the import lives here instead of the top-level use
+    // list (where `clippy --workspace`, which builds without `--tests`,
+    // would flag it unused).
     use crate::main_loop::VfsState;
     use alloc::format;
+    use minix_types::USER_STACK_TOP;
 
     /// Call-site regression pin for `exec_forbid_check`'s `access`: it must be
     /// the low 3-bit `X_BIT`. The existing tests all bypass the three-check gate
@@ -1298,7 +1303,10 @@ mod tests {
         );
         // A non-root owner executing its own 0o755 (owner slot shift=6 →
         // perm=0o7): allowed.
-        assert_eq!(exec_forbid_check(0o755, 100, 100, 100, 100, 100, 100), Ok(()));
+        assert_eq!(
+            exec_forbid_check(0o755, 100, 100, 100, 100, 100, 100),
+            Ok(())
+        );
         // A non-root owner executing 0o644 with no execute bit (perm=0o6, X not
         // included): rejected.
         assert_eq!(
@@ -1390,9 +1398,13 @@ mod tests {
             })
             .collect();
         let img = make_test_elf(0x401_000, &phdrs);
-        assert_eq!(img.len(), 64 + 10 * 56, "10 项 LP64 phdr 表 = 624B > 旧 512 界");
-        let head = ElfHead::parse(&img)
-            .expect("LP64 10 项 phdr 表必须 parse（超 512 但 ≤ 缓冲长）");
+        assert_eq!(
+            img.len(),
+            64 + 10 * 56,
+            "10 项 LP64 phdr 表 = 624B > 旧 512 界"
+        );
+        let head =
+            ElfHead::parse(&img).expect("LP64 10 项 phdr 表必须 parse（超 512 但 ≤ 缓冲长）");
         assert_eq!(head.phnum(), 10);
         // A real overrun (e_phoff pushed past the loaded buffer) must still be
         // rejected.
@@ -1555,7 +1567,10 @@ mod tests {
         // wire shape constant `trns_add_id(REQ_READ, 0)` pins the shape, so a
         // regression back to a bare send (m_type=REQ_READ) turns this red.
         let fs_types = ipc.types_of(Endpoint::MFS);
-        assert_eq!(fs_types, vec![minix_types::trns_add_id(minix_types::REQ_READ, 0)]);
+        assert_eq!(
+            fs_types,
+            vec![minix_types::trns_add_id(minix_types::REQ_READ, 0)]
+        );
         // clearmem: an in-page head gap of 0 and a tail gap of
         // 4096-0x100=0xF00 → exactly one sys_memset.
         let memsets = kernel
@@ -1670,7 +1685,11 @@ mod tests {
             ..Message::default()
         };
         assert_eq!(fs_trans_status(&bogus), 0x4E);
-        assert_eq!(neg(fs_trans_status(&bogus)), -0x4E, "折成负 errno 而非指针值");
+        assert_eq!(
+            neg(fs_trans_status(&bogus)),
+            -0x4E,
+            "折成负 errno 而非指针值"
+        );
     }
 
     /// Lane pin: the stack mapping's VM_MMAP request carries a stack top above
@@ -1865,10 +1884,7 @@ mod tests {
         match pm_exec(&mut state, &kernel, &ipc, req) {
             // Before the fold the inner body returns +8 (measured on a real
             // machine); after the fold it must be negative.
-            Err(errno) => assert!(
-                errno < 0,
-                "exec 失败必须以负 errno 直达 PM，实得 {errno}"
-            ),
+            Err(errno) => assert!(errno < 0, "exec 失败必须以负 errno 直达 PM，实得 {errno}"),
             Ok(_) => panic!("死目标应失败"),
         }
     }

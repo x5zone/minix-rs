@@ -46,7 +46,7 @@ use minix_arch::DirectMapArch;
 use minix_arch::arch::frame::VmBootAllocator;
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{
-    BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS, PhysBytes, USER_STACK_TOP,
+    BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS, PhysBytes,
     VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED, VM_BOOT_HANDOFF_MAX_IDENT,
     VM_BOOT_HANDOFF_MAX_MODULES, VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION,
     VmBootHandoff,
@@ -655,7 +655,12 @@ pub(crate) fn classify_regions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only constant: the production face of this file does not
+    // reference it, so the import lives here instead of the top-level use
+    // list (where `clippy --workspace`, which builds without `--tests`,
+    // would flag it unused).
     use alloc::{vec, vec::Vec};
+    use minix_types::USER_STACK_TOP;
 
     // Re-import the raw-slice classifier under a short alias.
     use super::classify_regions as classify_raw;

@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十一（`USER_STACK_TOP` 七处陈旧 import 扫尾——测试专用常量的 import 归位测试模块，全树 348→341 再收紧）
+
+- **这一笔的射程**：批次五百五十挂账的单点——`USER_STACK_TOP` 在七处的顶层 `use` 均只在测试代码里被引用（`kernel/src/lib.rs:47`、`kerninfo.rs:41`、`vm_handoff.rs:49`、`minix-sys/src/stack.rs:41`、`vfs/src/exec_worker.rs:63`、`vm/src/ipc/dispatcher.rs:20`、`vm/src/vm_server.rs:47`），疑为同一笔重构把生产面用法移走后的遗漏。`cargo clippy --workspace` 不带 `--tests`，非测试构建下这些 import 看似 unused——与批次五百五十 `stdio-games` 转出口同坑，直接删顶层 import 会让 `cargo test` 编不过。
+- **落码**：七文件的顶层 `use` 列表摘掉 `USER_STACK_TOP`，改在各自引用它的测试模块（`#[cfg(test)]`，kernel 为 `#[cfg(all(test, feature = "mock"))]`）内显式 `use minix_types::USER_STACK_TOP;` 并注明缘由——不靠 `allow` 压制，lint 面归零。
+- **登记偏差**：无。
+- **门**：`cargo clippy -p minix-kernel -p minix-sys -p minix-vfs -p minix-vm` → `USER_STACK_TOP` 告警 0；`cargo test -p minix-sys --lib` → 345/0、`-p minix-vfs` → 538/0、`-p minix-vm` → 548/0、`cargo test -p minix-kernel --features mock` → 863/0（8 忽略，CI 腿同形）；`cargo check` 四包 x86_64 与 riscv64 双绿（aarch64 本机未装目标组件，`minix-types`/`log`/`bitflags` 同样编不过，属环境限制、CI docker 腿覆盖）；`bash tools/check-clippy-ratchet.sh` → **341 对 348，SHRINK**，`--update-baseline` 收紧至 341；rustfmt 七文件零漂移。核实日 `2026-11-06`；基线 `9ffc434f7`。
+- **记账联动**：批次五百五十挂账的 `USER_STACK_TOP` 单点闭；棘轮基线 384→348→341 两连收。剩余真实新增集中在 `arch`(+18)/`kernel`(+9)/`vfs`(+7)/`pm`(+7)/`vm`(+6)/`boot`(+6) 的既有面，仍按「谁改哪块清哪块」留给块主。
+
+---
+
 ## 批次五百五十（棘轮新增告警溯源与收口——两条共享文件的 unused import 放大 46 条，全树 394→348 收回基线下并收紧）
 
 - **这一笔的射程**：批次五百四十九把棘轮从「编译失败」拉回「可出数」后报 394 对基线 384（+10）。本笔在基线提交 `e7602d707` 上重跑全树 clippy 复现出 384 整，逐条对账把 +10 拆开：约半数来自**两条共享 `bin_support` 的 unused import 在多 bin 上的放大**——`textfilter` 的 `use std::io::Read as _;`（泛型约束 `R: std::io::Read` 已把方法带进作用域，该 `use` 冗余）在约 40 个 bin 各 +1；`stdio-games` 的 `pub use minix_sys::err_line` 在 7 个游戏 bin 各 +1。其余为 arch(+18)/kernel(+9)/vfs(+7)/pm(+7)/vm(+6)/boot(+6) 的真实新增，同时有 112 条旧告警在他轮被清——逐条口径实为净 -33，+10 是按编译单元汇总的口径效应。
