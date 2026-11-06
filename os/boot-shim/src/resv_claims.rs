@@ -477,6 +477,28 @@ mod tests {
     /// A descriptor whose geometry overflows 64 bits (only reachable for the
     /// `Excluded`/`DevicePath` types, which skip the classifier's geometry
     /// gate) must not panic the checker; it cannot cover a claim page.
+    /// A multi-page MRB whose middle page is the DTB object keeps the
+    /// reservation type on the other pages; the ACPI-reclaim exception is
+    /// per page, not per claim.
+    #[test]
+    fn the_dtb_exception_applies_only_to_the_intersecting_page() {
+        let claims = [claim(0x2000, 0x5000, ExpectedEfiType::Reserved)];
+        let descs = [
+            desc(ty::RESERVED, 0x2000, 1),
+            desc(ty::ACPI_RECLAIM, 0x3000, 1),
+            desc(ty::RESERVED, 0x4000, 1),
+        ];
+        assert_eq!(check(&claims, &descs, Some((0x3000, 0x4000))), Ok(()));
+        assert_eq!(
+            check(&claims, &descs, None),
+            Err(ClaimError::IncompatibleType {
+                page: 0x3000,
+                expected: ExpectedEfiType::Reserved,
+                actual: ty::ACPI_RECLAIM
+            })
+        );
+    }
+
     #[test]
     fn overflowing_descriptor_geometry_is_ignored() {
         let claims = [claim(0x2000, 0x3000, ExpectedEfiType::Reserved)];

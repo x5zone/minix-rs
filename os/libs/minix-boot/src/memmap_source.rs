@@ -497,6 +497,8 @@ impl SourceRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressDomain {
     Physical,
+    /// Reserved wire value; no producer emits it today. `virtual_start` is a
+    /// separate UEFI descriptor field, not the domain of a `SourceRange`.
     Virtual,
     /// `EFI_MEMORY_DESCRIPTOR.Type == 12` (`EfiMemoryMappedIOPortSpace`):
     /// the descriptor's start/count are an I/O-port space address, not a
