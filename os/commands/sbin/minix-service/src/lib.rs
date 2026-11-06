@@ -28,6 +28,17 @@ use minix_sys::rs::{
     RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
     RS_UP, RS_UPDATE, RsPciClassWire, RsPciIdWire,
 };
+use minix_sys::syscall::{
+    KERNEL_CALL, NR_SYS_CALLS, SYS_ABORT, SYS_DEVIO, SYS_IOPENABLE, SYS_IRQCTL, SYS_KILL,
+    SYS_MEMSET, SYS_PADCONF, SYS_PHYSCOPY, SYS_PRIVCTL, SYS_READBIOS, SYS_SDEVIO, SYS_STIME,
+    SYS_TRACE, SYS_UMAP, SYS_UMAP_REMOTE, SYS_VDEVIO, SYS_VIRCOPY, SYS_VMCTL, SYS_VUMAP,
+};
+use minix_sys::vm::{
+    NR_VM_CALLS, VM_ADDDMA, VM_CLEARCACHE, VM_DELDMA, VM_EXEC_NEWMEM, VM_EXIT, VM_FORGETCACHEPAGE,
+    VM_FORK, VM_GETDMA, VM_GETPHYS, VM_GETREF, VM_GETRUSAGE, VM_INFO, VM_MAPCACHEPAGE, VM_PROCCTL,
+    VM_REMAP, VM_REMAP_RO, VM_RQ_BASE, VM_RS_MEMCTL, VM_RS_PREPARE, VM_RS_SET_PRIV, VM_RS_UPDATE,
+    VM_SETCACHEPAGE, VM_SHM_UNMAP, VM_VFS_MMAP, VM_VFS_REPLY, VM_WILLEXIT,
+};
 
 /// C `known_requests[]` (`minix-service.c:43-56`): the verb spellings in
 /// order, with their `RS_*` call numbers (`known_request_types[]`,
@@ -108,6 +119,12 @@ impl Request {
 /// `RSS_NR_IRQ 16` / `RSS_NR_IO 16` (`rs.h:25-26`).
 pub const RSS_NR_IRQ: i32 = 16;
 pub const RSS_NR_IO: i32 = 16;
+/// `RSS_SYS_BASIC_CALLS` / `RSS_VM_BASIC_CALLS` (`rs.h:46-47`) — the two
+/// default bits `do_config` installs before the walk (`parse.c:1171-1176`);
+/// `system NONE` and `vm NONE` clear them.
+pub const RSS_SYS_BASIC_CALLS: u32 = 0x4000;
+pub const RSS_VM_BASIC_CALLS: u32 = 0x8000;
+
 /// `RS_NR_PCI_DEVICE 32` / `RS_NR_PCI_CLASS 4` (`rs.h:56-57`).
 pub const RS_NR_PCI_DEVICE: i32 = 32;
 pub const RS_NR_PCI_CLASS: i32 = 4;
@@ -481,7 +498,7 @@ mod tests {
 /// `ROOT_SYS_PROC_NR`, scheduler = `SCHED_PROC_NR`, priority = `USER_Q`,
 /// quantum = `USER_QUANTUM` (`priv.h:84-99`), flags = the two BASIC_CALLS
 /// bits, and `rss_cmd` from the binary path + `-args`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RsStartDefaults {
     pub service_uid: Option<u32>,
     /// C `DSRV_SM = ROOT_SYS_PROC_NR`.
@@ -492,6 +509,22 @@ pub struct RsStartDefaults {
     pub priority: i32,
     /// C `DSRV_QT = USER_QUANTUM`.
     pub quantum: i32,
+    /// `rss_flags` — C's clean defaults set `RSS_VM_BASIC_CALLS |
+    /// RSS_SYS_BASIC_CALLS` (`parse.c:1171-1176`).
+    pub flags: u32,
+}
+
+impl Default for RsStartDefaults {
+    fn default() -> Self {
+        Self {
+            service_uid: None,
+            sigmgr: 0,
+            scheduler: 0,
+            priority: 0,
+            quantum: 0,
+            flags: RSS_VM_BASIC_CALLS | RSS_SYS_BASIC_CALLS,
+        }
+    }
 }
 
 /// Every statement keyword `do_service` dispatches on (`parse.h:1-26`,
@@ -672,14 +705,70 @@ fn parse_pci_class(word: &str) -> Option<RsPciClassWire> {
     Some(RsPciClassWire { pciclass, mask })
 }
 
+/// `system_tab` (`parse.c:828-849`): the `system` statement's call labels
+/// and kernel call numbers. The bit index is `number - KERNEL_CALL`.
+const SYSTEM_CALLS: [(&str, i32); 19] = [
+    ("PRIVCTL", SYS_PRIVCTL),
+    ("TRACE", SYS_TRACE),
+    ("KILL", SYS_KILL),
+    ("UMAP", SYS_UMAP),
+    ("VIRCOPY", SYS_VIRCOPY),
+    ("PHYSCOPY", SYS_PHYSCOPY),
+    ("UMAP_REMOTE", SYS_UMAP_REMOTE),
+    ("VUMAP", SYS_VUMAP),
+    ("IRQCTL", SYS_IRQCTL),
+    ("DEVIO", SYS_DEVIO),
+    ("SDEVIO", SYS_SDEVIO),
+    ("VDEVIO", SYS_VDEVIO),
+    ("ABORT", SYS_ABORT),
+    ("IOPENABLE", SYS_IOPENABLE),
+    ("READBIOS", SYS_READBIOS),
+    ("STIME", SYS_STIME),
+    ("VMCTL", SYS_VMCTL),
+    ("MEMSET", SYS_MEMSET),
+    ("PADCONF", SYS_PADCONF),
+];
+
+/// `vm_table` (`parse.c:729-758`): the `vm` statement's labels and VM call
+/// numbers. `PUSH_SIG` carries 0 in C (`:734`) — a placeholder that sets no
+/// bit (`else if (vm_table[i].call_nr)`).
+const VM_CALLS: [(&str, u32); 26] = [
+    ("EXIT", VM_EXIT),
+    ("FORK", VM_FORK),
+    ("EXEC_NEWMEM", VM_EXEC_NEWMEM),
+    ("PUSH_SIG", 0),
+    ("WILLEXIT", VM_WILLEXIT),
+    ("ADDDMA", VM_ADDDMA),
+    ("DELDMA", VM_DELDMA),
+    ("GETDMA", VM_GETDMA),
+    ("REMAP", VM_REMAP),
+    ("REMAP_RO", VM_REMAP_RO),
+    ("SHM_UNMAP", VM_SHM_UNMAP),
+    ("GETPHYS", VM_GETPHYS),
+    ("GETREF", VM_GETREF),
+    ("RS_SET_PRIV", VM_RS_SET_PRIV),
+    ("INFO", VM_INFO),
+    ("RS_UPDATE", VM_RS_UPDATE),
+    ("RS_MEMCTL", VM_RS_MEMCTL),
+    ("PROCCTL", VM_PROCCTL),
+    ("MAPCACHEPAGE", VM_MAPCACHEPAGE),
+    ("SETCACHEPAGE", VM_SETCACHEPAGE),
+    ("FORGETCACHEPAGE", VM_FORGETCACHEPAGE),
+    ("CLEARCACHE", VM_CLEARCACHE),
+    ("VFS_MMAP", VM_VFS_MMAP),
+    ("VFS_REPLY", VM_VFS_REPLY),
+    ("GETRUSAGE", VM_GETRUSAGE),
+    ("RS_PREPARE", VM_RS_PREPARE),
+];
+
 /// The do_config keyword walk over the parsed lines (`parse.c:1177-1263`
 /// walk; the scalar keywords this slice covers are `uid`, `priority`,
-/// `quantum`, `sigmgr`, `scheduler`, `descr`, and the device-family
-/// keywords `irq`, `io` and `pci` (`pci device` / `pci class`) — the
-/// remaining keywords (`class` in its service-inheritance sense, `system`,
-/// `ipc`, `vm`, `control`, `type`, `net`, `domain`) are the registered next
-/// slice). C's per-branch `fatal` faces become `ConfigError` with the same
-/// wording.
+/// `quantum`, `sigmgr`, `scheduler`, `descr`, the device-family keywords
+/// `irq`, `io` and `pci` (`pci device` / `pci class`), and the call-mask
+/// keywords `system` and `vm` — the remaining keywords (`class` in its
+/// service-inheritance sense, `ipc`, `control`, `type`, `net`, `domain`)
+/// are the registered next slice). C's per-branch `fatal` faces become
+/// `ConfigError` with the same wording.
 pub fn do_config_walk(
     lines: &[minix_proctools::configfile::ConfigEntry],
     defaults: &RsStartDefaults,
@@ -703,6 +792,9 @@ pub fn do_config_walk(
         pci_id: Vec::new(),
         nr_pci_class: 0,
         pci_class: Vec::new(),
+        flags: defaults.flags,
+        system: 0,
+        vm: 0,
     };
     for line in lines {
         if !line.is_sub() {
@@ -1068,9 +1160,153 @@ pub fn do_config_walk(
                         out.pci_class = classes;
                     }
                 }
+                "system" => {
+                    // C `do_system` (`parse.c:852-914`): `BASIC` keeps the
+                    // default, `NONE` clears `RSS_SYS_BASIC_CALLS`, `ALL`
+                    // fills the vector, and labels set
+                    // `SYS_* - KERNEL_CALL` bits.
+                    index += 1;
+                    let mut first = true;
+                    while index < flat.len() {
+                        let w = flat[index];
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                            break;
+                        }
+                        if w.is_string() || w.is_sub() {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_system: unexpected string"),
+                            });
+                        }
+                        let at_list_end = index + 1 >= flat.len()
+                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                        if w.word == "BASIC" {
+                            if !first || !at_list_end {
+                                // C prints `KW_NONE` here (`parse.c:877-879`)
+                                // — a faithful quirk.
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from(
+                                        "do_system: NONE keyword not allowed in list",
+                                    ),
+                                });
+                            }
+                            index += 1;
+                            break;
+                        }
+                        if w.word == "NONE" {
+                            if !first || !at_list_end {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from(
+                                        "do_system: NONE keyword not allowed in list",
+                                    ),
+                                });
+                            }
+                            out.flags &= !RSS_SYS_BASIC_CALLS;
+                            index += 1;
+                            break;
+                        }
+                        if w.word == "ALL" {
+                            if !first || !at_list_end {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from(
+                                        "do_system: ALL keyword not allowed in list",
+                                    ),
+                                });
+                            }
+                            for i in 0..NR_SYS_CALLS {
+                                out.system |= 1u64 << (i as u32);
+                            }
+                            index += 1;
+                            break;
+                        }
+                        if let Some(&(_, call)) =
+                            SYSTEM_CALLS.iter().find(|(label, _)| *label == w.word)
+                        {
+                            out.system |= 1u64 << ((call - KERNEL_CALL) as u32);
+                        }
+                        // Unknown names warn and continue in C
+                        // (`parse.c:895-898`); the walk has no warning
+                        // channel yet (registered deviation).
+                        first = false;
+                        index += 1;
+                    }
+                }
+                "vm" => {
+                    // C `do_vm` (`parse.c:760-826`): same face as `system`
+                    // over the VM vector; `PUSH_SIG`'s zero number sets no
+                    // bit.
+                    index += 1;
+                    let mut first = true;
+                    while index < flat.len() {
+                        let w = flat[index];
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                            break;
+                        }
+                        if w.is_string() || w.is_sub() {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_vm: unexpected string"),
+                            });
+                        }
+                        let at_list_end = index + 1 >= flat.len()
+                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                        if w.word == "BASIC" {
+                            if !first || !at_list_end {
+                                // C prints `KW_NONE` here too
+                                // (`parse.c:779-783`).
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from(
+                                        "do_vm: NONE keyword not allowed in list",
+                                    ),
+                                });
+                            }
+                            index += 1;
+                            break;
+                        }
+                        if w.word == "NONE" {
+                            if !first || !at_list_end {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from(
+                                        "do_vm: NONE keyword not allowed in list",
+                                    ),
+                                });
+                            }
+                            out.flags &= !RSS_VM_BASIC_CALLS;
+                            index += 1;
+                            break;
+                        }
+                        if w.word == "ALL" {
+                            if !first || !at_list_end {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from("do_vm: ALL keyword not allowed in list"),
+                                });
+                            }
+                            for i in 0..NR_VM_CALLS {
+                                out.vm |= 1u64 << i;
+                            }
+                            index += 1;
+                            break;
+                        }
+                        match VM_CALLS.iter().find(|(label, _)| *label == w.word) {
+                            // `PUSH_SIG`'s zero number sets no bit.
+                            Some(&(_, call)) if call != 0 => {
+                                out.vm |= 1u64 << (call - VM_RQ_BASE);
+                            }
+                            _ => {}
+                        }
+                        first = false;
+                        index += 1;
+                    }
+                }
                 _ => {
-                    // The remaining keywords (class/system/ipc/vm/
-                    // control/type/net/domain) ride with the next slice;
+                    // The remaining keywords (class/ipc/control/type/net/
+                    // domain) ride with the next slice;
                     // unknown words are skipped to surface every unknown.
                     index += 1;
                 }
@@ -1147,6 +1383,13 @@ pub struct BuiltRsStart {
     pub nr_pci_class: i32,
     /// `rss_pci_class` (`RS_NR_PCI_CLASS` slots).
     pub pci_class: Vec<RsPciClassWire>,
+    /// `rss_flags` — starts at the two BASIC_CALLS bits (`system NONE` /
+    /// `vm NONE` clear them).
+    pub flags: u32,
+    /// `rss_system` — kernel-call mask, bit *i* is call `KERNEL_CALL + i`.
+    pub system: u64,
+    /// `rss_vm` — VM-call mask, bit *i* is call `VM_RQ_BASE + i`.
+    pub vm: u64,
 }
 
 #[cfg(test)]
@@ -1166,6 +1409,7 @@ mod do_config_tests {
             scheduler: 1,
             priority: 0,
             quantum: 8,
+            flags: RSS_VM_BASIC_CALLS | RSS_SYS_BASIC_CALLS,
         };
         let args = parse_args(&["up", "/service/lwip", "-label", "lwip"]).unwrap();
         let got = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap();
@@ -1445,6 +1689,77 @@ mod do_config_tests {
         // string/sublist fatals (`parse.c:589-597`) — a faithful quirk.
         let e = walk("service x {\n  pci class \"x\";\n}\n").unwrap_err();
         assert_eq!(e.message, "do_pci_device: unexpected string");
+    }
+
+    #[test]
+    fn system_and_vm_all_fill_the_whole_vectors() {
+        // `parse.c:886-893` / `:803-810`: ALL sets every bit the C array
+        // holds (58 kernel calls, 49 VM calls).
+        let got = walk("service x {\n  system ALL;\n  vm ALL;\n}\n").unwrap();
+        assert_eq!(got.system, (1u64 << (NR_SYS_CALLS as u32)) - 1);
+        assert_eq!(got.vm, (1u64 << NR_VM_CALLS) - 1);
+    }
+
+    #[test]
+    fn system_and_vm_none_clear_their_basic_flags() {
+        // `parse.c:881-885` / `:798-802`: NONE clears the BASIC_CALLS bit
+        // and leaves the vector empty; the other family's bit survives.
+        let got = walk("service x {\n  system NONE;\n}\n").unwrap();
+        assert_eq!(got.system, 0);
+        assert_eq!(got.flags & RSS_SYS_BASIC_CALLS, 0);
+        assert_eq!(got.flags & RSS_VM_BASIC_CALLS, RSS_VM_BASIC_CALLS);
+        let got = walk("service x {\n  vm NONE;\n}\n").unwrap();
+        assert_eq!(got.vm, 0);
+        assert_eq!(got.flags & RSS_VM_BASIC_CALLS, 0);
+        assert_eq!(got.flags & RSS_SYS_BASIC_CALLS, RSS_SYS_BASIC_CALLS);
+    }
+
+    #[test]
+    fn system_and_vm_named_calls_set_their_bits() {
+        // Bit index = call number − vector base (`parse.c:899-900`,
+        // `:814-817`).
+        let got = walk("service x {\n  system PRIVCTL KILL;\n  vm VFS_MMAP;\n}\n").unwrap();
+        assert_eq!(
+            got.system,
+            (1u64 << ((SYS_PRIVCTL - KERNEL_CALL) as u32))
+                | (1u64 << ((SYS_KILL - KERNEL_CALL) as u32))
+        );
+        assert_eq!(got.vm, 1u64 << (VM_VFS_MMAP - VM_RQ_BASE));
+    }
+
+    #[test]
+    fn system_basic_is_the_default_noop_and_push_sig_sets_no_bit() {
+        // BASIC breaks without touching anything (the defaults already
+        // carry the flag); `PUSH_SIG`'s zero number sets no bit
+        // (`parse.c:734`, `:814`).
+        let got = walk("service x {\n  system BASIC;\n  vm BASIC;\n}\n").unwrap();
+        assert_eq!(got.system, 0);
+        assert_eq!(got.vm, 0);
+        assert_eq!(got.flags, RSS_VM_BASIC_CALLS | RSS_SYS_BASIC_CALLS);
+        let got = walk("service x {\n  vm PUSH_SIG;\n}\n").unwrap();
+        assert_eq!(got.vm, 0);
+    }
+
+    #[test]
+    fn unknown_call_names_are_ignored() {
+        // C warns and continues (`parse.c:895-898`, `:810-812`); the walk
+        // has no warning channel, so the observable face is "no bit".
+        let got = walk("service x {\n  system FOO BAR;\n  vm NOPE;\n}\n").unwrap();
+        assert_eq!(got.system, 0);
+        assert_eq!(got.vm, 0);
+    }
+
+    #[test]
+    fn system_vm_error_faces_match_the_c_fatals() {
+        let e = walk("service x {\n  system ALL KILL;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_system: ALL keyword not allowed in list");
+        // C prints KW_NONE for the BASIC fatal too (`parse.c:877-879`).
+        let e = walk("service x {\n  system BASIC KILL;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_system: NONE keyword not allowed in list");
+        let e = walk("service x {\n  vm NONE VFS_MMAP;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_vm: NONE keyword not allowed in list");
+        let e = walk("service x {\n  system \"x\";\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_system: unexpected string");
     }
 
     #[test]

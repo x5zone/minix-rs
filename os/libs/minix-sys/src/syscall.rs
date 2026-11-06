@@ -17,6 +17,16 @@
 //! All three are pure logic over the [`crate::ipc::IpcTransport`] trait, so
 //! unit tests drive them with a scripted transport and never need a kernel.
 
+/// The kernel-call vector's numbers and size (`com.h:205-270`), re-exported
+/// from the single authority in `minix-types` — `minix-service`'s `system`
+/// statement table maps labels to `SYS_* - KERNEL_CALL` bit indices (boundary
+/// gate: commands reach these faces through `minix-sys`).
+pub use minix_types::{
+    KERNEL_CALL, NR_SYS_CALLS, SYS_ABORT, SYS_DEVIO, SYS_IOPENABLE, SYS_IRQCTL, SYS_KILL,
+    SYS_MEMSET, SYS_PADCONF, SYS_PHYSCOPY, SYS_PRIVCTL, SYS_READBIOS, SYS_SDEVIO, SYS_STIME,
+    SYS_TRACE, SYS_UMAP, SYS_UMAP_REMOTE, SYS_VDEVIO, SYS_VIRCOPY, SYS_VMCTL, SYS_VUMAP,
+};
+
 use crate::ipc::IpcTransport;
 use minix_types::{Endpoint, Errno, MessKrnLsysSysTimes, Message};
 

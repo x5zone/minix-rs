@@ -119,6 +119,18 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十三（`do_config` 调用掩码续片——`system` 与 `vm` 两张调用白名单）
+
+- **这一笔的射程**：C `do_system`（`parse.c:852-914`）与 `do_vm`（`:760-826`）——两张标签到调用号的表（`system_tab` 19 项，`:828-849`；`vm_table` 26 项，`:729-758`），填 `rss_system`/`rss_vm` 两张位图与 `rss_flags` 的两个 BASIC_CALLS 位。真实配置每个服务都用（`system ALL;`、`vm BASIC;`/`NONE;`/列表，`minix3/etc/system.conf:9`、`:30`、`:44`）。
+- **落码（`minix-service` 库）**：`BuiltRsStart` 加 `flags`/`system`/`vm` 三字段；`RsStartDefaults` 加 `flags` 并改为手写 `Default`（C 的干净默认 `RSS_VM_BASIC_CALLS | RSS_SYS_BASIC_CALLS`，`parse.c:1171-1176`）；常量 `RSS_SYS_BASIC_CALLS=0x4000`/`RSS_VM_BASIC_CALLS=0x8000`（`rs.h:46-47`）；本地表 `SYSTEM_CALLS`/`VM_CALLS`；`minix-sys` 的 `syscall`/`vm` 模块补 `SYS_*`/`VM_*`/`KERNEL_CALL`/`VM_RQ_BASE`/`NR_*` 再导出（边界门：命令只走 minix-sys）。
+- **C 语义要点**：`BASIC` 不动作（默认已带旗标）、`NONE` 清对应 BASIC_CALLS 位、`ALL` 填满 58/49 位、名字置 `call − base` 位；`PUSH_SIG` 的 0 号不置位（`:734`、`:814` 的 `else if (vm_table[i].call_nr)`）。
+- **C quirk 逐字**：`BASIC` 落在列表里的 fatal 打印 `KW_NONE`（`do_system:877-879`、`do_vm:779-783` 均如此），测试钉死。
+- **登记偏差**：未知调用名在 C 只 warning 不 fatal（`parse.c:895-898`、`:810-812`）；走查当前没有 warning 通道，观测面即「不置位」，待 bin 侧接线时补通道。
+- **门**：`cargo test -p minix-service` → **31/0**（新六枚：ALL 填满、NONE 清旗标、名字置位、BASIC 与 PUSH_SIG、未知名忽略、六句 fatal 面）；`cargo test -p minix-sys --lib` → **345/0**；clippy 触及文件零告警（本轮最初引入一条 `collapsible_if`，已改成 `match` 守卫）；rustfmt 零漂移；三架构 lib check 全绿。棘轮 344 对基线 341，新增 3 条仍全为并行线在制 kernel 面，本轮文件为 0。核实日 `2026-11-06`；基线 `24b3c426b`。
+- **记账联动**：设备族余下 `class`（服务继承语义）/`ipc`/`control`/`type`/`net`/`domain` 为后续片。
+
+---
+
 ## 批次五百五十二（`do_config` 设备族续片——`pci device` / `pci class` 两张匹配表）
 
 - **这一笔的射程**：批次五百四十八记账里挂着的「pci/class/… 仍为后续片」的第一片。C `do_pci`（`parse.c:628-656`）按语句首词分派：`device` → `do_pci_device`（`:530-572`），`class` → `do_pci_class`（`:583-625`）。真实配置形见 `minix3/etc/system.conf:308`、`:322`。

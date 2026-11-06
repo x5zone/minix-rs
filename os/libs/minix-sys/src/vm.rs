@@ -30,6 +30,17 @@
 //! Pure wrappers over the transport trait: no shared state, no
 //! synchronization questions.
 
+/// The VM request numbers and vector size (`com.h:768-770`), re-exported
+/// from the single authority in `minix-types` — `minix-service`'s `vm`
+/// statement table maps labels to `VM_* - VM_RQ_BASE` bit indices (boundary
+/// gate: commands reach these faces through `minix-sys`).
+pub use minix_types::{
+    NR_VM_CALLS, VM_ADDDMA, VM_CLEARCACHE, VM_DELDMA, VM_EXEC_NEWMEM, VM_EXIT, VM_FORGETCACHEPAGE,
+    VM_FORK, VM_GETDMA, VM_GETPHYS, VM_GETREF, VM_GETRUSAGE, VM_INFO, VM_MAPCACHEPAGE, VM_PROCCTL,
+    VM_REMAP, VM_REMAP_RO, VM_RQ_BASE, VM_RS_MEMCTL, VM_RS_PREPARE, VM_RS_SET_PRIV, VM_RS_UPDATE,
+    VM_SETCACHEPAGE, VM_SHM_UNMAP, VM_VFS_MMAP, VM_VFS_REPLY, VM_WILLEXIT,
+};
+
 use crate::ipc::IpcTransport;
 use crate::syscall::{perform_syscall, perform_taskcall};
 use minix_types::{Endpoint, Errno, Message, PhysBytes, VirBytes};
