@@ -5891,3 +5891,10 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - **QEMU（本机 8.2.2 + AAVMF/OpenSBI/U-Boot）**：四条启动链全 PASS——x86 UEFI 链路、x86 全系统（12 server + E5f-LABELS 12/12）、x86 双镜像、aarch64 UEFI 链路、riscv 自引导、riscv U-Boot 全链（6/6）、riscv 全系统。`run_all.sh` **38 passed / 1 failed / 0 skipped / 0 build failures**；唯一红 `test-rt-birth-aarch64` 在会话基线 `537f5c16b` 逐字同签名（`elr=0x140003628 esr=0x92000047 far=0x7ffffffff000`），属既有红。
 - 未覆盖分支（已写入 §6.4）：配置表 DTB 的「存在且可解析／存在但坏」（AAVMF 不提供）、真实固件 256 条描述符上限、`Excluded`/`DevicePath` 的真实分布。
 - 认领：`I-29 qorder111`，状态 ✅：已 ff 合并为 `e6a6eb724`，认领已释放。
+
+### 第三百一十九笔（01 阶段 · I-29 第一百一十二轮：配置表 DTB 正例上机）
+
+- `6bb26349a test(qemu)`：`test-shim-bootmarks-aarch64.sh` 新增 `DTB_CFGTABLE=1` 旋钮（`-machine virt,gic-version=3,acpi=off`）。事实更正：AAVMF 默认 ACPI 模式不发布 DTB 表（8 条配置表项无 `b1b621d5`），这是 EDK2 `PlatformHasAcpiDtDxe` 的 ACPI/DT 二选一，不是缺件、也不是 GUID 常量错误。acpi=off 下固件发布 DTB 表，shim 打印 `platform DTB cross-validated against the UEFI map`，核继续走到 rc 与 init。
+- 两条腿现跑：默认 → PASS（absent）；`DTB_CFGTABLE=1` → PASS（cross-validated）。三态的正例与「不存在」均真机覆盖；「存在但不可用」仍只有宿主测试（固件自造 DTB 外部改不坏）。
+- 文档：正文 §6.3/§6.4 更新、`03` 新增七十八节（GUID 转储原始 time_low、强制 DT 模式取证）；02/todo 同改。门：1,073 行、围栏 42 偶、表格 37 块 0 不一致、破表 0、lint 0、横幅 PASS。
+- 认领：`I-29 qorder112`，状态 ✅：已 ff 合并为 `6bb26349a`，认领已释放。
