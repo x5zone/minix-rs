@@ -15,8 +15,11 @@
 //!
 //! Boot stage is single-threaded (only one CPU runs, no SMP yet).
 //! `AtomicU64` is used instead of `static mut` to avoid Rust 2024 edition
-//! UB and to be safe if the allocator is ever used under SMP in the future.
-//! `Ordering::Relaxed` is sufficient since there is no concurrent access.
+//! UB. It does **not** make the bump sequence safe under concurrent callers:
+//! `alloc` advances `fetch_add` before the range check and rolls back with
+//! `fetch_sub`, which is not linearizable. Treat the allocator as boot-only
+//! and single-threaded; a future SMP path needs a CAS loop or a per-CPU
+//! allocator.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use minix_arch::paging::PageTableError;

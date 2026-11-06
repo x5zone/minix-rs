@@ -218,6 +218,12 @@ where
     A: BootArch,
     H: crate::boot::HigherHalf,
 {
+    // Fail-fast before any page table is built: a malformed handoff must not
+    // reach the mapping machinery and only surface later at kmain. The
+    // pre-table gate skips the boot_modules non-empty check because QEMU
+    // bootstrap test kernels legally carry no init-server image.
+    kernel_info.validate_before_tables();
+    kernel_info.check_boot_postconditions();
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
@@ -366,7 +372,7 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 /// fields into the already-serialized arena, then absolute-jump into the
 /// standalone image.
 ///
-/// The arena is an `ARENA_CAP` (seven-page) loader-data allocation below the identity bound;
+/// The arena is an `ARENA_CAP` (nine-page) loader-data allocation below the identity bound;
 /// the bootstrap root maps it through the identity window, so the in-place
 /// patch is a plain memory write after paging is live. The architecture-specific
 /// part is only the jump register convention: aarch64 passes the arena in
@@ -1227,12 +1233,36 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
             param.fill(0);
             param[..csrc.len()].copy_from_slice(csrc);
         }
+        // Provenance records are the last two slices with the same disease:
+        // the v1 decoder already lands them in `.bss`, but the direct and
+        // auxiliary faces can hand over a firmware-pool pointer. Land both
+        // here so `store_kernel_info` really makes the snapshot self-contained.
+        let sstore = &mut *crate::globals::SOURCE_RECORD_STORE.get();
+        let ssrc = kernel_info.memmap_sources;
+        assert!(
+            ssrc.len() <= sstore.len(),
+            "store_kernel_info: memmap_sources exceeds the .bss landing pad"
+        );
+        if ssrc.as_ptr() != sstore.as_ptr() {
+            core::ptr::copy(ssrc.as_ptr(), sstore.as_mut_ptr(), ssrc.len());
+        }
+        let tstore = &mut *crate::globals::STARTUP_RECORD_STORE.get();
+        let tsrc = kernel_info.startup_objects;
+        assert!(
+            tsrc.len() <= tstore.len(),
+            "store_kernel_info: startup_objects exceeds the .bss landing pad"
+        );
+        if tsrc.as_ptr() != tstore.as_ptr() {
+            core::ptr::copy(tsrc.as_ptr(), tstore.as_mut_ptr(), tsrc.len());
+        }
         let mut k = *kernel_info;
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
         k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());
         k.boot_modules = core::slice::from_raw_parts(bstore.as_ptr(), bsrc.len());
         k.platform_sources = core::slice::from_raw_parts(pstore.as_ptr(), psrc.len());
         k.param_buf = core::slice::from_raw_parts(param.as_ptr(), csrc.len());
+        k.memmap_sources = core::slice::from_raw_parts(sstore.as_ptr(), ssrc.len());
+        k.startup_objects = core::slice::from_raw_parts(tstore.as_ptr(), tsrc.len());
         *KERNEL_INFO.get() = Some(k);
     }
 }
@@ -5627,6 +5657,32 @@ mod tests {
             [0u8; crate::globals::PARAM_BUF_STORE_LEN + 1];
         let mut info = minimal_store_info();
         info.param_buf = &OVERFLOW;
+        store_kernel_info(&info);
+    }
+
+    /// Fail-fast: more provenance records than the source landing pad aborts
+    /// before any copy.
+    #[test]
+    #[should_panic(expected = "memmap_sources exceeds the .bss landing pad")]
+    fn test_store_kernel_info_rejects_source_overflow() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static OVERFLOW: [minix_boot::SourceRecord; crate::globals::SOURCE_RECORD_STORE_LEN + 1] =
+            [minix_boot::startup_record(0, 0, 0); crate::globals::SOURCE_RECORD_STORE_LEN + 1];
+        let mut info = minimal_store_info();
+        info.memmap_sources = &OVERFLOW;
+        store_kernel_info(&info);
+    }
+
+    /// Fail-fast: more startup records than the startup landing pad aborts
+    /// before any copy.
+    #[test]
+    #[should_panic(expected = "startup_objects exceeds the .bss landing pad")]
+    fn test_store_kernel_info_rejects_startup_overflow() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static OVERFLOW: [minix_boot::SourceRecord; crate::globals::STARTUP_RECORD_STORE_LEN + 1] =
+            [minix_boot::startup_record(0, 0, 0); crate::globals::STARTUP_RECORD_STORE_LEN + 1];
+        let mut info = minimal_store_info();
+        info.startup_objects = &OVERFLOW;
         store_kernel_info(&info);
     }
 

@@ -472,12 +472,16 @@ pub fn decode_param_buf(
 /// `name` must be the NUL-terminated name borrowed from the caller's landing
 /// pool (kernel `.bss`), so the resulting `&'static str` does not point into
 /// the arena.
-pub fn wire_module_to_boot_module(wire: &WireBootModule, name: &'static str) -> BootModule {
-    BootModule {
+pub fn wire_module_to_boot_module(
+    wire: &WireBootModule,
+    name: &'static str,
+) -> Result<BootModule, HandoffV1ReadError> {
+    let len = usize::try_from(wire.len).map_err(|_| HandoffV1ReadError::ValueOutOfRange)?;
+    Ok(BootModule {
         name,
         start: PhysBytes(wire.start),
-        len: usize::try_from(wire.len).unwrap_or(0),
-    }
+        len,
+    })
 }
 
 #[cfg(test)]
@@ -690,7 +694,7 @@ mod tests {
         assert_eq!(&modules[0].name[..2], b"vm");
         assert!(modules[0].name[2..].iter().all(|&b| b == 0));
         assert_eq!(modules[1].start, 0x21_0000);
-        let vm = wire_module_to_boot_module(&modules[0], "vm");
+        let vm = wire_module_to_boot_module(&modules[0], "vm").unwrap();
         assert_eq!(vm.name, "vm");
         assert_eq!(vm.start.0, 0x20_0000);
 

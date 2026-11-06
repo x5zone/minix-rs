@@ -76,7 +76,7 @@ struct PtAllocSlotUnary(UnsafeCell<PtFreeFn>);
 unsafe impl Sync for PtAllocSlotUnary {}
 
 fn uninit_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
-    Err(PageTableError::AllocationFailed)
+    panic!("pt_alloc::alloc_pt_page called before register");
 }
 
 /// Register a page table page allocator.
@@ -122,6 +122,13 @@ pub fn is_registered() -> bool {
 /// Called by `map_huge` / `map` inside Paging implementations.
 #[inline]
 pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
+    // Program invariant: `register()` must precede any map operation. Keep the
+    // failure distinct from a genuine allocation failure so diagnostics point
+    // at the boot wiring, not at memory exhaustion.
+    assert!(
+        is_registered(),
+        "pt_alloc::alloc_pt_page called before register"
+    );
     // Acquire: pairs with `register()`'s Release store — guarantees the
     // fn pointer write is visible to this thread once registration is
     // observed (write-once-then-read-only; see module docs).

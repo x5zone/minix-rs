@@ -25,23 +25,17 @@ pub struct KernelInfo {
     /// C: kinfo.memmap[] — pg_utils.c add_memmap/cut_memmap
     pub memmap: &'static [MemoryRegion],
 
-    /// Non-free physical memory the firmware still marks occupied at
-    /// ExitBootServices (everything the memmap snapshot reports as
-    /// non-conventional RAM: the loaded boot-shim/kernel PE image, UEFI
-    /// boot-services heap objects such as `KernelInfo` itself, ACPI
-    /// tables, LOADER_DATA allocations including the bump region and
-    /// module blobs).
+    /// Non-conventional physical memory retained by the firmware at
+    /// ExitBootServices. Two historical uses:
     ///
-    /// The kernel EXECUTES from these addresses — it is
-    /// statically linked into the boot-shim PE image, so after EDKII
-    /// relocation its code / GDT / IDT / TSS live at low physical
-    /// addresses (~0x1da-0x1db_xxxxxx under QEMU OVMF), not at the
-    /// higher-half link addresses of the (never-executed) standalone
-    /// kernel.elf copy. The VM-built process page tables must replay
-    /// these windows identity (VA = PA, supervisor-only) or the first
-    /// CR3 switch to such a table fault-triples on the next instruction
-    /// fetch (forensics: a #PF at IP=0x1dac5748 == CR2 right after
-    /// `mov cr3`).
+    /// 1. The inline x86 identity window (kernel linked into the boot-shim
+    ///    PE, executed at low physical addresses). Retired with the
+    ///    independent-image split: `vm_handoff`'s kern_ident input now
+    ///    returns empty for this leg.
+    /// 2. Firmware allocations the kernel may reach through the Direct Map
+    ///    (loader data, kernel stack, ACPI tables, LOADER_DATA allocations
+    ///    including the bump region and module blobs). This is still
+    ///    consumed as DM coverage source 4 (`dm_coverage.rs`).
     ///
     /// OpenSBI/U-Boot and host tests pass `&[]` (no runtime identity
     /// window; those platforms do not link the kernel into the shim).
@@ -202,7 +196,17 @@ impl KernelInfo {
     /// This is a fail-fast contract: boot-shim bugs that produce invalid
     /// `KernelInfo` are unrecoverable.
     pub fn validate(&self) {
-        self.validate_impl(None);
+        self.validate_impl(None, true);
+    }
+
+    /// Structural gate for entries that run before the first page-table
+    /// allocation. Same invariants as [`Self::validate`] except the
+    /// `boot_modules` non-empty check: QEMU bootstrap test kernels legally
+    /// hand over an empty module list (they exercise the mapping machinery,
+    /// not the init-server image). Production still runs the full
+    /// [`Self::validate`] at `kmain`.
+    pub fn validate_before_tables(&self) {
+        self.validate_impl(None, false);
     }
 
     /// Production handoff gate: exactly [`Self::validate`], plus the
@@ -217,10 +221,14 @@ impl KernelInfo {
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
     pub fn validate_requiring_sources(&self, authority: crate::memmap_source::InputObjectId) {
-        self.validate_impl(Some(authority));
+        self.validate_impl(Some(authority), true);
     }
 
-    fn validate_impl(&self, authority: Option<crate::memmap_source::InputObjectId>) {
+    fn validate_impl(
+        &self,
+        authority: Option<crate::memmap_source::InputObjectId>,
+        require_boot_modules: bool,
+    ) {
         // 1. bootstrap_len must be 0 (Rust port has no unpaged section).
         //    C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unparsed_start
         //    Rust: always 0 (see bootstrap_start field doc).
@@ -249,11 +257,14 @@ impl KernelInfo {
             "KernelInfo: memmap must not be empty (no free memory?)"
         );
 
-        // 5. At least one boot module (PM/VM/VFS/RS).
-        assert!(
-            !self.boot_modules.is_empty(),
-            "KernelInfo: boot_modules must not be empty (no init servers?)"
-        );
+        // 5. At least one boot module (PM/VM/VFS/RS). Production-only:
+        //    bootstrap test kernels hand over no init-server image.
+        if require_boot_modules {
+            assert!(
+                !self.boot_modules.is_empty(),
+                "KernelInfo: boot_modules must not be empty (no init servers?)"
+            );
+        }
 
         // 6. Boot parameter buffer must fit in MULTIBOOT_PARAM_BUF_SIZE.
         //    C: `char kinfo.param_buf[MULTIBOOT_PARAM_BUF_SIZE]` where

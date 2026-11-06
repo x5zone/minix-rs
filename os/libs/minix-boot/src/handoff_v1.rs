@@ -66,7 +66,7 @@ pub struct WirePlatformDescSource {
     pub addr: u64,
 }
 
-/// Wire form of one [`crate::memmap_source::SourceRecord`] — 48 bytes.
+/// Wire form of one [`crate::memmap_source::SourceRecord`] — 72 bytes.
 ///
 /// The record layer keeps a 128-bit exclusive end so the last page of the
 /// address space stays representable; the wire carries that value as two
