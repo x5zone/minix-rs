@@ -119,6 +119,18 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十二（`do_config` 设备族续片——`pci device` / `pci class` 两张匹配表）
+
+- **这一笔的射程**：批次五百四十八记账里挂着的「pci/class/… 仍为后续片」的第一片。C `do_pci`（`parse.c:628-656`）按语句首词分派：`device` → `do_pci_device`（`:530-572`），`class` → `do_pci_class`（`:583-625`）。真实配置形见 `minix3/etc/system.conf:308`、`:322`。
+- **落码（`minix-service` 库）**：三助手 `pci_hex`（C `strtoul(…, 0x10)` 的「值 + 未消费尾」）、`parse_pci_device`、`parse_pci_class`，加走查的 `"pci"` 臂；`BuiltRsStart` 加 `nr_pci_id`/`pci_id`/`nr_pci_class`/`pci_class`；常量 `RS_NR_PCI_DEVICE=32`/`RS_NR_PCI_CLASS=4`/`NO_SUB_VID`/`NO_SUB_DID`（`rs.h:56-57`、`:79-80`）；线型 `RsPciIdWire`/`RsPciClassWire` 经 `minix_sys::rs` 再导出（边界门：命令只走 minix-sys）。
+- **C 语义要点**：`pci device` 三种形——`vid:did`、legacy `vid/did`、`vid:did/sub_vid:sub_did`，缺 `sub_did` 的 `vid:did/sub_vid` 是 fatal；`pci class` 的掩码随字段变宽（`0xff0000`→`0xffff00`→`0xffffff`），三个 `u8_t` 局部按 C 赋值截断；两表都按 `rss_nr_*` 追加（重复语句续写）；`do_pci_class` 的 string/sublist fatal 复用 `do_pci_device` 字面（C 原样 quirk，逐字保留）。
+- **判断顺序教训**：`class` 既是 pci 子词又是顶层语句关键字，子词判定必须先于语句边界判定，否则 `pci class …` 会在边界处整条收摊；空 `pci` 语句走 `continue` 把该关键字交回外层派发。
+- **登记偏差**：平铺词链下「空 `pci;` 紧跟顶层 `class` 语句」与「`pci class` 子句」不可区分，按不可达接受（真实配置无此形）；子表花括号形 `pci { … }` 在 C 是 fatal，平铺后会被接受（既有平铺偏差的延伸，见批次五百四十八）。
+- **门**：`cargo test -p minix-service` → **25/0**（新六枚：四字段面、掩码面、追加与语句边界、两表上限、五句 fatal 面、空语句）；`cargo test -p minix-sys --lib` → **345/0**；clippy 触及两文件零告警；rustfmt 零漂移；三架构 lib check 全绿（x86_64-unknown-none / aarch64-unknown-none / riscv64gc-unknown-none-elf）。全树棘轮读数 344 对基线 341，新增 3 条逐文件核对全在并行线的在制 kernel 面加 `minix-sys/pm.rs` 既有项，本轮两个文件为 0，基线不动。核实日 `2026-11-06`；基线 `6f5dca30f`。
+- **记账联动**：设备族余下 `class`（服务继承语义）/`system`/`ipc`/`vm`/`control`/`type`/`net`/`domain` 仍为后续片。
+
+---
+
 ## 批次五百五十一（`USER_STACK_TOP` 七处陈旧 import 扫尾——测试专用常量的 import 归位测试模块，全树 348→341 再收紧）
 
 - **这一笔的射程**：批次五百五十挂账的单点——`USER_STACK_TOP` 在七处的顶层 `use` 均只在测试代码里被引用（`kernel/src/lib.rs:47`、`kerninfo.rs:41`、`vm_handoff.rs:49`、`minix-sys/src/stack.rs:41`、`vfs/src/exec_worker.rs:63`、`vm/src/ipc/dispatcher.rs:20`、`vm/src/vm_server.rs:47`），疑为同一笔重构把生产面用法移走后的遗漏。`cargo clippy --workspace` 不带 `--tests`，非测试构建下这些 import 看似 unused——与批次五百五十 `stdio-games` 转出口同坑，直接删顶层 import 会让 `cargo test` 编不过。

@@ -26,7 +26,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use minix_sys::rs::{
     RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
-    RS_UP, RS_UPDATE,
+    RS_UP, RS_UPDATE, RsPciClassWire, RsPciIdWire,
 };
 
 /// C `known_requests[]` (`minix-service.c:43-56`): the verb spellings in
@@ -108,6 +108,14 @@ impl Request {
 /// `RSS_NR_IRQ 16` / `RSS_NR_IO 16` (`rs.h:25-26`).
 pub const RSS_NR_IRQ: i32 = 16;
 pub const RSS_NR_IO: i32 = 16;
+/// `RS_NR_PCI_DEVICE 32` / `RS_NR_PCI_CLASS 4` (`rs.h:56-57`).
+pub const RS_NR_PCI_DEVICE: i32 = 32;
+pub const RS_NR_PCI_CLASS: i32 = 4;
+/// `NO_SUB_VID` / `NO_SUB_DID` = `0xffff` (`rs.h:79-80`): "no subsystem
+/// match requested".
+pub const NO_SUB_VID: u16 = 0xffff;
+pub const NO_SUB_DID: u16 = 0xffff;
+
 /// `RSS_IRQ_ALL (RSS_NR_IRQ+1)` (`rs.h:27`).
 pub const RSS_IRQ_ALL: i32 = RSS_NR_IRQ + 1;
 /// `RSS_IO_ALL (RSS_NR_IO+1)` (`rs.h:28`).
@@ -589,13 +597,89 @@ fn parse_io_range(word: &str) -> Option<(u64, u64)> {
     Some((base, len))
 }
 
+/// One hex field of a PCI ID word, C `strtoul(s, &check, 0x10)` style: the
+/// parsed value plus the unconsumed tail. A field with no digits answers 0
+/// with the whole tail left, matching C's `check` staying at the start —
+/// that is how C accepts empty fields such as `0c//00`.
+fn pci_hex(s: &str) -> (u64, &str) {
+    let (v, used) = strtoul_prefix(s, 16);
+    (v, &s[used..])
+}
+
+/// C `do_pci_device`'s `vid:did[/sub_vid:sub_did]` word (`parse.c:541-570`).
+/// The legacy `vid/did` spelling is the same grammar with `/` as the first
+/// separator. A `vid:did/sub_vid` tail without `sub_did` is a fatal in C
+/// (`check[0] != ':'` after the sub-vendor field), so this answers `None`.
+fn parse_pci_device(word: &str) -> Option<RsPciIdWire> {
+    let (vid, rest) = pci_hex(word);
+    if !(rest.starts_with(':') || rest.starts_with('/')) {
+        return None;
+    }
+    let (did, rest) = pci_hex(&rest[1..]);
+    if rest.is_empty() {
+        return Some(RsPciIdWire {
+            vid: vid as u16,
+            did: did as u16,
+            sub_vid: NO_SUB_VID,
+            sub_did: NO_SUB_DID,
+        });
+    }
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let (sub_vid, rest) = pci_hex(&rest[1..]);
+    if !rest.starts_with(':') {
+        return None;
+    }
+    let (sub_did, rest) = pci_hex(&rest[1..]);
+    if !rest.is_empty() {
+        return None;
+    }
+    Some(RsPciIdWire {
+        vid: vid as u16,
+        did: did as u16,
+        sub_vid: sub_vid as u16,
+        sub_did: sub_did as u16,
+    })
+}
+
+/// C `do_pci_class`'s `base[/sub[/iface]]` word (`parse.c:596-620`): the mask
+/// widens with each field (`0xff0000` → `0xffff00` → `0xffffff`), and the
+/// three `u8_t` locals truncate exactly as C's assignments do.
+fn parse_pci_class(word: &str) -> Option<RsPciClassWire> {
+    let (base, mut rest) = pci_hex(word);
+    let mut subclass = 0u64;
+    let mut interface = 0u64;
+    let mut mask = 0x00ff_0000u32;
+    if rest.starts_with('/') {
+        let (sub, tail) = pci_hex(&rest[1..]);
+        subclass = sub;
+        mask = 0x00ff_ff00;
+        rest = tail;
+        if rest.starts_with('/') {
+            let (iface, tail) = pci_hex(&rest[1..]);
+            interface = iface;
+            mask = 0x00ff_ffff;
+            rest = tail;
+        }
+    }
+    if !rest.is_empty() {
+        return None;
+    }
+    let pciclass = (u32::from(base as u8) << 16)
+        | (u32::from(subclass as u8) << 8)
+        | u32::from(interface as u8);
+    Some(RsPciClassWire { pciclass, mask })
+}
+
 /// The do_config keyword walk over the parsed lines (`parse.c:1177-1263`
 /// walk; the scalar keywords this slice covers are `uid`, `priority`,
 /// `quantum`, `sigmgr`, `scheduler`, `descr`, and the device-family
-/// keywords `irq` and `io` — the remaining device-family keywords
-/// (`pci`/`class`/`system`/`ipc`/`vm`/`control`/`type`/`domain`) are the
-/// registered next slice). C's per-branch `fatal` faces become
-/// `ConfigError` with the same wording.
+/// keywords `irq`, `io` and `pci` (`pci device` / `pci class`) — the
+/// remaining keywords (`class` in its service-inheritance sense, `system`,
+/// `ipc`, `vm`, `control`, `type`, `net`, `domain`) are the registered next
+/// slice). C's per-branch `fatal` faces become `ConfigError` with the same
+/// wording.
 pub fn do_config_walk(
     lines: &[minix_proctools::configfile::ConfigEntry],
     defaults: &RsStartDefaults,
@@ -615,6 +699,10 @@ pub fn do_config_walk(
         irq: Vec::new(),
         nr_io: 0,
         io: Vec::new(),
+        nr_pci_id: 0,
+        pci_id: Vec::new(),
+        nr_pci_class: 0,
+        pci_class: Vec::new(),
     };
     for line in lines {
         if !line.is_sub() {
@@ -869,8 +957,119 @@ pub fn do_config_walk(
                     out.nr_io = count;
                     out.io = ranges;
                 }
+                "pci" => {
+                    // C `do_pci` (`parse.c:628-656`): the statement's first
+                    // word selects the table — `device` fills `rss_pci_id`,
+                    // `class` fills `rss_pci_class`; an empty statement is a
+                    // no-op (`cpe == NULL`).
+                    index += 1;
+                    let Some(sub) = flat.get(index) else {
+                        break;
+                    };
+                    if sub.is_string() || sub.is_sub() {
+                        return Err(ConfigError {
+                            line: sub.line,
+                            message: String::from("do_pci: unexpected string"),
+                        });
+                    }
+                    // `class` is both a pci sub-keyword and a top-level
+                    // statement keyword, so the sub-word is interpreted
+                    // before the statement-boundary test.
+                    let device_table = match sub.word.as_str() {
+                        "device" => Some(true),
+                        "class" => Some(false),
+                        _ => None,
+                    };
+                    let Some(device_table) = device_table else {
+                        if STATEMENT_KEYWORDS.contains(&sub.word.as_str()) {
+                            // Empty `pci` statement: C's `do_pci(NULL)`
+                            // returns and this word opens the next
+                            // statement, so dispatch resumes here.
+                            continue;
+                        }
+                        return Err(ConfigError {
+                            line: sub.line,
+                            message: format!("do_pci: unexpected word '{}'", sub.word),
+                        });
+                    };
+                    index += 1;
+                    if device_table {
+                        // C appends at `rss_nr_pci_id`, so a repeated
+                        // statement continues the same table.
+                        let mut count = out.nr_pci_id;
+                        let mut ids: Vec<RsPciIdWire> = core::mem::take(&mut out.pci_id);
+                        while index < flat.len() {
+                            let w = flat[index];
+                            if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                                break;
+                            }
+                            if w.is_string() || w.is_sub() {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from("do_pci_device: unexpected string"),
+                                });
+                            }
+                            let Some(entry) = parse_pci_device(&w.word) else {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: format!("do_pci_device: bad ID '{}'", w.word),
+                                });
+                            };
+                            if count >= RS_NR_PCI_DEVICE {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: format!(
+                                        "do_pci_device: too many device IDs (max {RS_NR_PCI_DEVICE})"
+                                    ),
+                                });
+                            }
+                            ids.push(entry);
+                            count += 1;
+                            index += 1;
+                        }
+                        out.nr_pci_id = count;
+                        out.pci_id = ids;
+                    } else {
+                        let mut count = out.nr_pci_class;
+                        let mut classes: Vec<RsPciClassWire> = core::mem::take(&mut out.pci_class);
+                        while index < flat.len() {
+                            let w = flat[index];
+                            if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                                break;
+                            }
+                            if w.is_string() || w.is_sub() {
+                                // C's `do_pci_class` reuses the
+                                // `do_pci_device` wording for these two
+                                // fatals (`parse.c:589-597`) — kept verbatim.
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: String::from("do_pci_device: unexpected string"),
+                                });
+                            }
+                            let Some(entry) = parse_pci_class(&w.word) else {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: format!("do_pci_class: bad class ID '{}'", w.word),
+                                });
+                            };
+                            if count >= RS_NR_PCI_CLASS {
+                                return Err(ConfigError {
+                                    line: w.line,
+                                    message: format!(
+                                        "do_pci_class: too many class IDs (max {RS_NR_PCI_CLASS})"
+                                    ),
+                                });
+                            }
+                            classes.push(entry);
+                            count += 1;
+                            index += 1;
+                        }
+                        out.nr_pci_class = count;
+                        out.pci_class = classes;
+                    }
+                }
                 _ => {
-                    // The remaining keywords (pci/class/system/ipc/vm/
+                    // The remaining keywords (class/system/ipc/vm/
                     // control/type/net/domain) ride with the next slice;
                     // unknown words are skipped to surface every unknown.
                     index += 1;
@@ -940,6 +1139,14 @@ pub struct BuiltRsStart {
     pub nr_io: i32,
     /// `(base, len)` pairs (`rss_io[0..nr_io]`).
     pub io: Vec<(u64, u64)>,
+    /// `rss_nr_pci_id` — count of `pci device` entries.
+    pub nr_pci_id: i32,
+    /// `rss_pci_id` (`RS_NR_PCI_DEVICE` slots).
+    pub pci_id: Vec<RsPciIdWire>,
+    /// `rss_nr_pci_class` — count of `pci class` entries.
+    pub nr_pci_class: i32,
+    /// `rss_pci_class` (`RS_NR_PCI_CLASS` slots).
+    pub pci_class: Vec<RsPciClassWire>,
 }
 
 #[cfg(test)]
@@ -1121,5 +1328,131 @@ mod do_config_tests {
         let got = walk("service x {\n  io 3f8:8;\n  io 3f9;\n}\n").unwrap();
         assert_eq!(got.nr_io, 2);
         assert_eq!(got.io, vec![(0x3f8, 8), (0x3f9, 1)]);
+    }
+
+    #[test]
+    fn pci_device_ids_take_the_c_four_field_face() {
+        // `parse.c:541-570`: `vid:did`, the legacy `vid/did`, and the
+        // subsystem form `vid:did/sub_vid:sub_did`; `NO_SUB_VID`/
+        // `NO_SUB_DID` (0xffff) mark "no subsystem match" (`rs.h:79-80`).
+        let got = walk("service x {\n  pci device 1af4:1001;\n}\n").unwrap();
+        assert_eq!(got.nr_pci_id, 1);
+        assert_eq!(
+            got.pci_id,
+            vec![RsPciIdWire {
+                vid: 0x1af4,
+                did: 0x1001,
+                sub_vid: NO_SUB_VID,
+                sub_did: NO_SUB_DID,
+            }]
+        );
+        let got = walk("service x {\n  pci device 8086:100e/1af4:1100;\n}\n").unwrap();
+        assert_eq!(
+            got.pci_id,
+            vec![RsPciIdWire {
+                vid: 0x8086,
+                did: 0x100e,
+                sub_vid: 0x1af4,
+                sub_did: 0x1100,
+            }]
+        );
+        // Legacy separator: `vid/did` is one device, no subsystem.
+        let got = walk("service x {\n  pci device 1022/1100;\n}\n").unwrap();
+        assert_eq!(got.pci_id[0].vid, 0x1022);
+        assert_eq!(got.pci_id[0].did, 0x1100);
+        assert_eq!(got.pci_id[0].sub_vid, NO_SUB_VID);
+    }
+
+    #[test]
+    fn pci_class_ids_take_the_c_mask_face() {
+        // `parse.c:596-620`: each field widens the mask — base only
+        // 0xff0000, base/sub 0xffff00, base/sub/iface 0xffffff; the three
+        // locals are `u8_t`, so 0x1ff truncates to 0xff.
+        let got = walk("service x {\n  pci class 02 03/01 0c/03/00 1ff/2/3;\n}\n").unwrap();
+        assert_eq!(got.nr_pci_class, 4);
+        assert_eq!(
+            got.pci_class,
+            vec![
+                RsPciClassWire {
+                    pciclass: 0x02_0000,
+                    mask: 0x00ff_0000,
+                },
+                RsPciClassWire {
+                    pciclass: 0x03_0100,
+                    mask: 0x00ff_ff00,
+                },
+                RsPciClassWire {
+                    pciclass: 0x0c_0300,
+                    mask: 0x00ff_ffff,
+                },
+                RsPciClassWire {
+                    pciclass: 0xff_0203,
+                    mask: 0x00ff_ffff,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pci_tables_append_and_stop_at_the_next_statement() {
+        // C appends at `rss_nr_pci_id`/`rss_nr_pci_class`, and each
+        // statement's list ends at the next statement keyword — the real
+        // system.conf shape (`pci class …;` then `pci device …;`).
+        let got =
+            walk("service x {\n  pci class 0c/03/00;\n  pci device 1af4:1001;\n  irq 4;\n}\n")
+                .unwrap();
+        assert_eq!(got.nr_pci_class, 1);
+        assert_eq!(got.pci_class[0].pciclass, 0x0c_0300);
+        assert_eq!(got.nr_pci_id, 1);
+        assert_eq!(got.pci_id[0].vid, 0x1af4);
+        assert_eq!(got.nr_irq, 1);
+        assert_eq!(got.irq, vec![4]);
+        let got =
+            walk("service x {\n  pci device 1af4:1001;\n  pci device 8086:100e;\n}\n").unwrap();
+        assert_eq!(got.nr_pci_id, 2);
+    }
+
+    #[test]
+    fn pci_limits_are_the_c_array_sizes() {
+        let mut text = String::from("service x {\n  pci device");
+        for n in 0..=RS_NR_PCI_DEVICE {
+            text.push_str(&format!(" {n:x}:1"));
+        }
+        text.push_str(";\n}\n");
+        let e = walk(&text).unwrap_err();
+        assert_eq!(e.message, "do_pci_device: too many device IDs (max 32)");
+        let mut text = String::from("service x {\n  pci class");
+        for n in 0..=RS_NR_PCI_CLASS {
+            text.push_str(&format!(" {n:x}"));
+        }
+        text.push_str(";\n}\n");
+        let e = walk(&text).unwrap_err();
+        assert_eq!(e.message, "do_pci_class: too many class IDs (max 4)");
+    }
+
+    #[test]
+    fn pci_error_faces_match_the_c_fatals() {
+        let e = walk("service x {\n  pci foo 1:2;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_pci: unexpected word 'foo'");
+        let e = walk("service x {\n  pci device 1af4;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_pci_device: bad ID '1af4'");
+        // A subsystem form without `sub_did` is a fatal (`check[0] != ':'`).
+        let e = walk("service x {\n  pci device 1:2/3;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_pci_device: bad ID '1:2/3'");
+        let e = walk("service x {\n  pci class 0c/03/00/x;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_pci_class: bad class ID '0c/03/00/x'");
+        // C's `do_pci_class` reuses the `do_pci_device` wording for the
+        // string/sublist fatals (`parse.c:589-597`) — a faithful quirk.
+        let e = walk("service x {\n  pci class \"x\";\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_pci_device: unexpected string");
+    }
+
+    #[test]
+    fn empty_pci_statement_is_a_noop() {
+        // C `do_pci` returns on `cpe == NULL` (`parse.c:630-631`).
+        let got = walk("service x {\n  pci;\n  irq 4;\n}\n").unwrap();
+        assert_eq!(got.nr_pci_id, 0);
+        assert_eq!(got.nr_pci_class, 0);
+        assert_eq!(got.irq, vec![4]);
     }
 }

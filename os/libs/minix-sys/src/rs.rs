@@ -39,6 +39,10 @@ pub use minix_types::ipc::rs::{
     RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
     RS_UP, RS_UPDATE,
 };
+/// The PCI match tables' wire shapes (`struct rs_pci_id` / `struct
+/// rs_pci_class`, `rs.h:73-85`) — re-exported so the command layer keeps its
+/// single dependency edge on `minix-sys` (boundary gate).
+pub use minix_types::{RsPciClassWire, RsPciIdWire};
 
 /// Look up a service name. C: `RS_LOOKUP (RS_RQ_BASE + 8)` (`com.h:474`),
 /// with the request base at `0x700` (`com.h:463`).
