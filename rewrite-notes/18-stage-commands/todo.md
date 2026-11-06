@@ -137,6 +137,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百六十一（`minix-service` 余面收口——`-dev` 设备主号、`-ipc_bl`/`-ipc_wl` 过滤元素、`HZ` 乘数）
+
+- **这一笔的射程**：C `parse_arguments` 余下的三面——`-dev`（`stat` + 设备检查 + `major()`，`minix-service.c:527-545`）、`-ipc_bl`/`-ipc_wl`（`parse_ipc_filter`，`:229-280`）、`-period`/`-maxtime` 的 `HZ` 乘数（`sysconf(_SC_CLK_TCK)`，`:588-604`）。
+- **落码（`-dev`）**：库侧存路径（`Args.dev`）；bin 侧 `minix_sys::stat` + `S_IFMT`/`S_IFBLK`/`S_IFCHR` 检查 + `major()` 位提取（`(st_rdev & 0x000fff00) >> 8`），三句 C fatal 句面（`couldn't get status of device`、`special file is not a device`、`major already set`）与 stat errno 退出。
+- **落码（IPC 过滤）**：`IpcFilterEl`（24 字节线型：flags@0 / m_label@4 / m_type@20）、`IpcFilter`（`IPCF_MAX_ELEMENTS`=128 的定长数组 + count）、`parse_ipc_filter` 逐条对 C（`:` 分元素、`,` 分 label/type 且必须恰两段、两半至少一半非空、长串 `ENOMEM`/长标签 `ENOMEM`/超元素 `E2BIG`/超过滤器 `E2BIG`）；`-ipc_bl`/`-ipc_wl` 入 `Args.ipc_filters` 并做 4 个过滤器上限；镜像里按整个 `[IPCF_MAX_ELEMENTS]` 数组零填充落块，`state_data.ipcf_els_addr/size` 指向它。
+- **落码（HZ）**：`Args.period_hz`/`lu_maxtime_hz` 记录后缀；bin 用 `sys_get_hz`（`GET_HZ`）取得时钟频率后乘算，`-maxtime` 的 0→−1 保留不动。支撑改动：`minix-types::Stat` 补 `Default`（全零为合法状态缓冲）。
+- **门**：`cargo test -p minix-service` → **59/0**（新四枚：过滤解析各面、过滤块入镜像、4 过滤器上限、`-dev`/`HZ` 记录）；`-p minix-types` → 341/0；`-p minix-rs` → 359/0；三架构 lib check 全绿；clippy 触及文件零新增；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面）。核实日 `2026-11-06`；基线 `0d771bdb7`。
+
+---
+
 ## 批次五百六十（`minix-service` 参数面收口与 RS_UP 验计——CLI 车道全接、客户端镜像过服务端真解析）
 
 - **这一笔的射程**：C `parse_arguments` 的成对参数族（`minix-service.c:516-656`）余下的 `-major`/`-state`/`-maxtime`/`-devid`/`-heap-prealloc`/`-map-prealloc`/`-asr-count`/`-restarts` 与未知项致命面；外加 RS 侧 `do_up` 对客户端镜像的真实消费验计。

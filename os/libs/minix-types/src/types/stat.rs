@@ -67,6 +67,16 @@ pub struct Stat {
     /// Reserved for future use. C: `st_spare[2]`.
     pub st_spare: [u32; 2],
 }
+impl Default for Stat {
+    /// All-zero status — the buffer `stat(2)` fills; every field is an
+    /// integer or a time pair, so the zeroed image is a valid initial
+    /// value (the syscall overwrites it on success).
+    fn default() -> Self {
+        // SAFETY: `Stat` is `repr(C)` plain-old-data made only of integers
+        // and integer pairs; the all-zero bit pattern is valid.
+        unsafe { core::mem::zeroed() }
+    }
+}
 
 #[cfg(test)]
 mod tests {

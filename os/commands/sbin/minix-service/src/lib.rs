@@ -24,6 +24,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use minix_sys::Errno;
 use minix_sys::rs::{
     RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
     RS_UP, RS_UPDATE, RsIoRangeWire, RsLabelWire, RsPciClassWire, RsPciIdWire, RsStartWire,
@@ -204,6 +205,7 @@ pub fn build_up_request(
     let control = built.control.clone();
     let state_eval = args.lu_state_eval.clone().unwrap_or_default();
 
+    let filter_bytes = args.ipc_filters.len() * IPCF_MAX_ELEMENTS * IPC_FILTER_EL_SIZE;
     let strings = cmd.len()
         + script.len()
         + label.len()
@@ -211,7 +213,8 @@ pub fn build_up_request(
         + ipc.len()
         + progname.len()
         + state_eval.len()
-        + control.iter().map(String::len).sum::<usize>();
+        + control.iter().map(String::len).sum::<usize>()
+        + filter_bytes;
     let mut bytes: Vec<u8> = Vec::new();
     if bytes
         .try_reserve_exact(rs_start_off::SIZE + strings)
@@ -237,6 +240,22 @@ pub fn build_up_request(
     for (i, text) in control.iter().take(RS_NR_CONTROL as usize).enumerate() {
         let (addr, len) = place_string(&mut bytes, base, text);
         control_labels[i] = RsLabelWire { addr, len };
+    }
+    // C `:800-812`: the filter block is the whole
+    // `rs_ipc_filter_els[RS_MAX_IPC_FILTERS][IPCF_MAX_ELEMENTS]` image, one
+    // `rs_ipc_filter_el` (24 bytes) per slot, unused slots zeroed.
+    let mut ipcf_addr = 0u64;
+    let mut ipcf_size = 0u64;
+    if filter_bytes > 0 {
+        ipcf_addr = base + bytes.len() as u64;
+        for filter in &args.ipc_filters {
+            for el in &filter.els {
+                bytes.extend_from_slice(&el.flags.to_le_bytes());
+                bytes.extend_from_slice(&el.m_label);
+                bytes.extend_from_slice(&el.m_type.to_le_bytes());
+            }
+        }
+        ipcf_size = filter_bytes as u64;
     }
 
     let mut wire = RsStartWire {
@@ -298,6 +317,8 @@ pub fn build_up_request(
     // pointed-to string (`:791-799`); its gid stays 0 (no grant here).
     wire.state_data = RsStateDataWire {
         size: 56,
+        ipcf_els_addr: ipcf_addr,
+        ipcf_els_size: ipcf_size,
         eval_addr,
         eval_len,
         ..RsStateDataWire::default()
@@ -320,6 +341,21 @@ pub const PATH_SYSTEM_CONF: &str = "/etc/system.conf";
 pub const PATH_SYSTEM_CONF_DIR: &str = "/etc/system.conf.d";
 pub const PATH_SYSTEM_CONF_PKG_DIR: &str = "/usr/pkg/etc/system.conf.d";
 pub const SERVICE_LOGIN: &str = "service";
+
+/// IPC filter limits and flags (`rs.h:58-60`, `ipc_filter.h:15-23`):
+/// `RS_MAX_IPC_FILTERS` = 4 filters, `IPCF_MAX_ELEMENTS` =
+/// `NR_SYS_PROCS`(64)×2 = 128 elements each, `RS_MAX_IPCF_STR_LEN` = 28.
+pub const RS_MAX_LABEL_LEN: usize = 16;
+pub const RS_MAX_IPCF_STR_LEN: usize = RS_MAX_LABEL_LEN + 12;
+pub const RS_MAX_IPC_FILTERS: usize = 4;
+pub const IPCF_MAX_ELEMENTS: usize = 128;
+pub const IPCF_MATCH_M_SOURCE: i32 = 0x1;
+pub const IPCF_MATCH_M_TYPE: i32 = 0x2;
+pub const IPCF_EL_BLACKLIST: i32 = 0x4;
+pub const IPCF_EL_WHITELIST: i32 = 0x8;
+/// `struct rs_ipc_filter_el` (`rs.h:88-92`): `int flags; char
+/// m_label[RS_MAX_LABEL_LEN]; int m_type` — 24 bytes.
+pub const IPC_FILTER_EL_SIZE: usize = 24;
 
 /// `MAX_CLASS_RECURS 100` (`parse.c:39`): nesting bound for `class`
 /// inheritance. C checks `class_recurs > MAX_CLASS_RECURS` at entry
@@ -424,6 +460,13 @@ pub struct Args {
     pub asr_count: Option<i64>,
     /// `-restarts <n>` (`req_restarts`).
     pub restarts: Option<i64>,
+    /// `-ipc_bl`/`-ipc_wl` filters, in command-line order (C's
+    /// `rs_ipc_filter_els[RS_MAX_IPC_FILTERS]` + `num_ipc_filters`).
+    pub ipc_filters: Vec<IpcFilter>,
+    /// `-period` carried the `HZ` suffix (the bin scales by `system_hz`).
+    pub period_hz: bool,
+    /// `-maxtime` carried the `HZ` suffix.
+    pub lu_maxtime_hz: bool,
 }
 
 /// A parse failure. Every message is C's `print_usage(app, problem)` pair —
@@ -463,6 +506,11 @@ pub enum ParseError {
     MajorAlreadySet,
     /// `:653-656`: "unknown optional argument given".
     UnknownOptionalArgument,
+    /// `-ipc_bl` parse failure; the payload is C's errno answer (`E2BIG`
+    /// too many filters, `ENOMEM` over-long string, `EINVAL` malformed).
+    BadIpcBlacklist(Errno),
+    /// `-ipc_wl` parse failure (same errno family).
+    BadIpcWhitelist(Errno),
 }
 
 /// C `getopt(argc, argv, "rbcnpqaosxyzdumeft?")` (`:314`) — the 19 letters
@@ -647,15 +695,49 @@ pub fn parse_args(args: &[&str]) -> Result<Args, ParseError> {
                 // "no timeout" (-1). The HZ multiplier needs the system
                 // clock rate, which the bin owns (deviation: the value is
                 // stored in raw ticks).
-                let (digits, _hz) = match v.strip_suffix("HZ") {
+                let (digits, hz) = match v.strip_suffix("HZ") {
                     Some(rest) => (rest, true),
                     None => (*v, false),
                 };
+                out.lu_maxtime_hz = hz;
                 let raw: i64 = digits.parse().map_err(|_| ParseError::BadLuMaxTime)?;
                 if raw < 0 {
                     return Err(ParseError::BadLuMaxTime);
                 }
                 out.lu_maxtime = Some(if raw == 0 { -1 } else { raw });
+            }
+            "-dev" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                // The path is resolved by the bin (`stat` + device check +
+                // `major()`), which owns file I/O (`:527-545`).
+                out.dev = Some(String::from(*v));
+            }
+            "-ipc_bl" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                if out.ipc_filters.len() + 1 > RS_MAX_IPC_FILTERS {
+                    return Err(ParseError::BadIpcBlacklist(Errno::E2BIG));
+                }
+                let filter =
+                    parse_ipc_filter(v, IPCF_EL_BLACKLIST).map_err(ParseError::BadIpcBlacklist)?;
+                out.ipc_filters.push(filter);
+            }
+            "-ipc_wl" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                if out.ipc_filters.len() + 1 > RS_MAX_IPC_FILTERS {
+                    return Err(ParseError::BadIpcWhitelist(Errno::E2BIG));
+                }
+                let filter =
+                    parse_ipc_filter(v, IPCF_EL_WHITELIST).map_err(ParseError::BadIpcWhitelist)?;
+                out.ipc_filters.push(filter);
             }
             "-devid" => {
                 index += 1;
@@ -728,6 +810,7 @@ pub fn parse_args(args: &[&str]) -> Result<Args, ParseError> {
                 // C `:591-597`: a trailing `HZ` multiplies by system_hz;
                 // the value is stored in raw ticks here (the multiplier
                 // needs the system clock rate, which the bin owns).
+                out.period_hz = v.ends_with("HZ");
                 let digits = v.strip_suffix("HZ").unwrap_or(v);
                 let raw: i64 = digits.parse().map_err(|_| ParseError::BadPeriodArgument)?;
                 if raw < 0 {
@@ -1218,6 +1301,86 @@ const DOMAIN_TABLE: [(&str, i32); 32] = [
     ("MPLS", 33),
     ("ROUTE", 34),
 ];
+
+/// One IPC filter element — C `struct rs_ipc_filter_el` (`rs.h:88-92`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpcFilterEl {
+    pub flags: i32,
+    pub m_label: [u8; RS_MAX_LABEL_LEN],
+    pub m_type: i32,
+}
+
+impl Default for IpcFilterEl {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            m_label: [0; RS_MAX_LABEL_LEN],
+            m_type: 0,
+        }
+    }
+}
+
+/// One IPC filter — C `rs_ipc_filter_els[num_ipc_filters]`, a fixed array of
+/// `IPCF_MAX_ELEMENTS` elements (the tail stays zeroed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpcFilter {
+    pub els: [IpcFilterEl; IPCF_MAX_ELEMENTS],
+    pub count: usize,
+}
+
+impl Default for IpcFilter {
+    fn default() -> Self {
+        Self {
+            els: [IpcFilterEl::default(); IPCF_MAX_ELEMENTS],
+            count: 0,
+        }
+    }
+}
+
+/// C `parse_ipc_filter` (`minix-service.c:229-280`): `:`-separated elements,
+/// each `label,type` (both halves optional, not both empty); the element
+/// flag (blacklist/whitelist) is OR'd in last. The C errno answers are
+/// kept: `E2BIG` too many elements, `ENOMEM` an over-long string or label,
+/// `EINVAL` a malformed element.
+pub fn parse_ipc_filter(text: &str, el_flag: i32) -> Result<IpcFilter, Errno> {
+    let mut filter = IpcFilter::default();
+    for (num_els, el_str) in text.split(':').enumerate() {
+        if num_els >= IPCF_MAX_ELEMENTS {
+            return Err(Errno::E2BIG);
+        }
+        if el_str.len() >= RS_MAX_IPCF_STR_LEN {
+            return Err(Errno::ENOMEM);
+        }
+        let mut parts = el_str.split(',');
+        let (Some(label), Some(type_str)) = (parts.next(), parts.next()) else {
+            return Err(Errno::EINVAL);
+        };
+        // A third comma field is malformed (C's trailing `strsep` probe).
+        if parts.next().is_some() {
+            return Err(Errno::EINVAL);
+        }
+        let mut el = IpcFilterEl::default();
+        if !label.is_empty() {
+            if label.len() >= RS_MAX_LABEL_LEN {
+                return Err(Errno::ENOMEM);
+            }
+            el.m_label[..label.len()].copy_from_slice(label.as_bytes());
+            el.flags |= IPCF_MATCH_M_SOURCE;
+        }
+        if !type_str.is_empty() {
+            // C `strtol(type_str, &buff, 10)` with full consumption.
+            el.m_type = type_str.parse().map_err(|_| Errno::EINVAL)?;
+            el.flags |= IPCF_MATCH_M_TYPE;
+        }
+        if el.flags == 0 {
+            return Err(Errno::EINVAL);
+        }
+        el.flags |= el_flag;
+        filter.els[num_els] = el;
+        filter.count = num_els + 1;
+    }
+    Ok(filter)
+}
 
 /// The do_config keyword walk over the parsed lines (`parse.c:1177-1263`
 /// walk; the scalar keywords this slice covers are `uid`, `priority`,
@@ -2874,6 +3037,101 @@ mod do_config_tests {
             e(&["up", "/x", "-major", "4", "-major", "5"]),
             ParseError::MajorAlreadySet
         );
+    }
+
+    #[test]
+    fn ipc_filter_parsing_takes_the_c_faces() {
+        // C `parse_ipc_filter` (`minix-service.c:229-280`).
+        let f = parse_ipc_filter("vfs,10:rs,0", IPCF_EL_BLACKLIST).unwrap();
+        assert_eq!(f.count, 2);
+        assert_eq!(
+            f.els[0].flags,
+            IPCF_MATCH_M_SOURCE | IPCF_MATCH_M_TYPE | IPCF_EL_BLACKLIST
+        );
+        assert_eq!(&f.els[0].m_label[..3], b"vfs");
+        assert_eq!(f.els[0].m_label[3], 0);
+        assert_eq!(f.els[0].m_type, 10);
+        assert_eq!(
+            f.els[1].flags,
+            IPCF_MATCH_M_SOURCE | IPCF_MATCH_M_TYPE | IPCF_EL_BLACKLIST
+        );
+        assert_eq!(&f.els[1].m_label[..2], b"rs");
+        assert_eq!(f.els[1].m_type, 0, "0 是合法类型值（len>0 即置位）");
+        // Only one half present.
+        let f = parse_ipc_filter("vfs,", IPCF_EL_WHITELIST).unwrap();
+        assert_eq!(f.els[0].flags, IPCF_MATCH_M_SOURCE | IPCF_EL_WHITELIST);
+        let f = parse_ipc_filter(",17", IPCF_EL_WHITELIST).unwrap();
+        assert_eq!(f.els[0].flags, IPCF_MATCH_M_TYPE | IPCF_EL_WHITELIST);
+        // Malformed faces.
+        assert_eq!(parse_ipc_filter("vfs", 0), Err(Errno::EINVAL));
+        assert_eq!(parse_ipc_filter("vfs,1,2", 0), Err(Errno::EINVAL));
+        assert_eq!(parse_ipc_filter(",", 0), Err(Errno::EINVAL));
+        assert_eq!(parse_ipc_filter("vfs,x", 0), Err(Errno::EINVAL));
+        assert_eq!(
+            parse_ipc_filter(&format!("{},1", "a".repeat(RS_MAX_LABEL_LEN)), 0),
+            Err(Errno::ENOMEM)
+        );
+        let too_many = core::iter::repeat_n(",1", IPCF_MAX_ELEMENTS + 1)
+            .collect::<Vec<_>>()
+            .join(":");
+        assert_eq!(parse_ipc_filter(&too_many, 0), Err(Errno::E2BIG));
+    }
+
+    #[test]
+    fn ipc_filter_block_rides_in_the_image() {
+        use minix_sys::rs::decode_rs_start;
+        let text = "service x {\n};\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/sbin/x", "-ipc_bl", "vfs,10", "-ipc_wl", "pm,5"]).unwrap();
+        let img = build_up_request(&lines, "x", &defaults, &args, Some(PW)).unwrap();
+        let wire = decode_rs_start(&img.bytes).unwrap();
+        // Two filters, each the full `IPCF_MAX_ELEMENTS` array.
+        assert_eq!(
+            wire.state_data.ipcf_els_size,
+            (2 * IPCF_MAX_ELEMENTS * IPC_FILTER_EL_SIZE) as u64
+        );
+        let off = (wire.state_data.ipcf_els_addr - img.address()) as usize;
+        let first = &img.bytes[off..off + IPC_FILTER_EL_SIZE];
+        assert_eq!(i32::from_le_bytes(first[0..4].try_into().unwrap()), 0x7);
+        assert_eq!(&first[4..7], b"vfs");
+        assert_eq!(i32::from_le_bytes(first[20..24].try_into().unwrap()), 10);
+        // The second filter starts one element-array later.
+        let second = off + IPCF_MAX_ELEMENTS * IPC_FILTER_EL_SIZE;
+        let whitelist = &img.bytes[second..second + IPC_FILTER_EL_SIZE];
+        assert_eq!(
+            i32::from_le_bytes(whitelist[0..4].try_into().unwrap()),
+            IPCF_MATCH_M_SOURCE | IPCF_MATCH_M_TYPE | IPCF_EL_WHITELIST
+        );
+    }
+
+    #[test]
+    fn ipc_filter_limit_is_four_filters() {
+        let mut args = alloc::vec!["up".to_string(), "/sbin/x".to_string(),];
+        for _ in 0..=RS_MAX_IPC_FILTERS {
+            args.push("-ipc_bl".to_string());
+            args.push("vfs,1".to_string());
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        assert_eq!(
+            parse_args(&refs),
+            Err(ParseError::BadIpcBlacklist(Errno::E2BIG))
+        );
+    }
+
+    #[test]
+    fn dev_path_and_hz_suffixes_are_recorded() {
+        let args = parse_args(&["up", "/x", "-dev", "/dev/console"]).unwrap();
+        assert_eq!(args.dev.as_deref(), Some("/dev/console"));
+        let args = parse_args(&["up", "/x", "-period", "2HZ"]).unwrap();
+        assert_eq!(args.period, Some(2));
+        assert!(args.period_hz);
+        let args = parse_args(&["up", "/x", "-maxtime", "5HZ"]).unwrap();
+        assert_eq!(args.lu_maxtime, Some(5));
+        assert!(args.lu_maxtime_hz);
+        let args = parse_args(&["up", "/x", "-maxtime", "0"]).unwrap();
+        assert_eq!(args.lu_maxtime, Some(-1));
+        assert!(!args.lu_maxtime_hz);
     }
 
     #[test]

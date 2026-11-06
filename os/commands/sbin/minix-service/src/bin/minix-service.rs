@@ -38,6 +38,69 @@ fn usage_lines(problem: &str, app: &str) -> alloc::vec::Vec<String> {
     lines
 }
 
+/// `S_IF*` file-type bits (`minix3/sys/sys/stat.h`: `S_IFMT 0170000`,
+/// `S_IFCHR 0020000`, `S_IFBLK 0060000`).
+const S_IFMT: u32 = 0o170000;
+const S_IFCHR: u32 = 0o020000;
+const S_IFBLK: u32 = 0o060000;
+
+/// C `parse_arguments`' `-dev` branch (`minix-service.c:527-545`): stat the
+/// special file, require a block or character device, refuse a second major
+/// source, and take `major(st_rdev)` — `((dev & 0x000fff00) >> 8)`.
+fn resolve_dev_major(args: &mut Args, app: &str) {
+    let Some(dev) = args.dev.clone() else {
+        return;
+    };
+    let mut st = minix_sys::Stat::default();
+    if let Err(e) = minix_sys::stat(&dev, &mut st) {
+        support::warn(format!("{dev}: cannot stat\n").as_bytes());
+        for line in usage_lines("couldn't get status of device", app) {
+            support::warn(line.as_bytes());
+        }
+        support::terminate(e.to_i32());
+    }
+    let kind = st.st_mode & S_IFMT;
+    if kind != S_IFBLK && kind != S_IFCHR {
+        for line in usage_lines("special file is not a device", app) {
+            support::warn(line.as_bytes());
+        }
+        support::terminate(minix_sys::EINVAL);
+    }
+    if args.major.is_some_and(|major| major != 0) {
+        for line in usage_lines("major already set", app) {
+            support::warn(line.as_bytes());
+        }
+        support::terminate(minix_sys::EINVAL);
+    }
+    args.major = Some(((st.st_rdev & 0x000f_ff00) >> 8) as i64);
+}
+
+/// `-period`/`-maxtime`'s `HZ` suffix: C multiplies by `system_hz`
+/// (`sysconf(_SC_CLK_TCK)`, `:588-604`). The library keeps the raw ticks;
+/// the bin owns the clock-rate lookup. `-maxtime`'s "0 → no timeout" (-1)
+/// is preserved untouched.
+fn scale_hz_suffixes(args: &mut Args) {
+    if !(args.period_hz || args.lu_maxtime_hz) {
+        return;
+    }
+    let hz = minix_sys::syscall::sys_get_hz(&minix_sys::syscall::DirectKernelCallTransport)
+        .ok()
+        .filter(|hz| *hz > 0)
+        .unwrap_or(1);
+    let hz = i64::from(hz);
+    if args.period_hz
+        && let Some(period) = args.period
+    {
+        args.period = Some(period * hz);
+    }
+    if args.lu_maxtime_hz
+        && let Some(maxtime) = args.lu_maxtime
+        && maxtime > 0
+    {
+        args.lu_maxtime = Some(maxtime * hz);
+    }
+}
+
 fn report_parse_error(app: &str, e: &ParseError) -> ! {
     let problem = match e {
         ParseError::UnknownFlag(c) => {
@@ -63,6 +126,18 @@ fn report_parse_error(app: &str, e: &ParseError) -> ! {
         ParseError::BadRestarts => "bad number of restarts",
         ParseError::MajorAlreadySet => "major already set",
         ParseError::UnknownOptionalArgument => "unknown optional argument given",
+        ParseError::BadIpcBlacklist(errno) => {
+            for line in usage_lines("bad IPC blacklist filter", app) {
+                support::warn(line.as_bytes());
+            }
+            support::terminate(errno.to_i32());
+        }
+        ParseError::BadIpcWhitelist(errno) => {
+            for line in usage_lines("bad IPC whitelist filter", app) {
+                support::warn(line.as_bytes());
+            }
+            support::terminate(errno.to_i32());
+        }
     };
     for line in usage_lines(problem, app) {
         support::warn(line.as_bytes());
@@ -75,10 +150,14 @@ fn real_main() -> ! {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let app = args.first().copied().unwrap_or("minix-service");
 
-    let parsed: Args = match minix_service::parse_args(&args[1.min(args.len())..]) {
+    let mut parsed: Args = match minix_service::parse_args(&args[1.min(args.len())..]) {
         Ok(a) => a,
         Err(e) => report_parse_error(app, &e),
     };
+    // C `:527-545`: `-dev` resolves through `stat` + `major()`; `:591-604`:
+    // `-period`/`-maxtime` with an `HZ` suffix scale by `system_hz`.
+    resolve_dev_major(&mut parsed, app);
+    scale_hz_suffixes(&mut parsed);
     let request = parsed.request.unwrap_or(Request::Shutdown);
 
     // C `:839-843`: `_syscall(RS_PROC_NR, request, &m)` — one sendrec to RS;
