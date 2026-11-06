@@ -448,6 +448,7 @@ mod tests {
         let nr = decode_reserved_regions(s.as_bytes(), &scalars, &mut reserved).unwrap();
         let mut sources = [SourceRecord {
             input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: minix_boot::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -520,6 +521,7 @@ mod tests {
         let scalars = decode_envelope(s.as_bytes()).unwrap();
         let mut sources = [SourceRecord {
             input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: minix_boot::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,

@@ -329,6 +329,7 @@ mod tests {
         SourceRecord {
             id: 0,
             input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: minix_boot::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,

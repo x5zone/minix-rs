@@ -5943,3 +5943,9 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `SourceRecord` 增 `input_object`/`local_source`/`snapshot_id`/`attribute`/`virtual_start`；`WireSourceRecord` 48→72 B；`DescriptorRef` 增 `virtual_start`；UEFI 记录写 MapKey 与描述符原值；arena 7→9 页、版本 3。
 - 读数：minix-boot 165、boot-shim 89、kernel 863；三组特性构建 OK；x86 UEFI、aarch64 强制 DT 负例、riscv U-Boot 全链 PASS。
 - 认领：`I-29 qorder91`，状态 ✅：已合入（文档/自检 `8e74a9df0`，A2 代码 `98ef0094a`），认领已释放。
+
+### 第三百二十七笔（01 阶段 · I-29 A2 收尾：address_domain）
+
+- `SourceRecord` 增 `AddressDomain`（`Physical`/`Virtual`），wire 第 67 字节由 `reserved0` 改为 `address_domain`，解码拒绝未知标签；v1 生产者全部写 `Physical`。
+- 读数：minix-boot 165、boot-shim 89；三组特性构建 OK；x86 UEFI 与 aarch64 强制 DT 负例腿复跑 PASS。
+- 认领：`I-29 qorder92`，状态 🔄 待合入。

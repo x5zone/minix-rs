@@ -573,6 +573,7 @@ mod tests {
     static COVERING_RECORDS: [SourceRecord; 2] = [
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -584,6 +585,7 @@ mod tests {
         },
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,

@@ -124,7 +124,7 @@ pub struct SourceRecord {
 
 `PhysicalRange` 的末端用 128 位，表示**地址空间最后一页**（`[...f000, 2^64)`）；是否能投影成 `u64` 由 `projectable_end()` 回答，拒绝发生在各投影点，而不是把 `2^64` 悄悄截成 0。
 
-**记录身份（第一百一十六轮）**：`SourceRecord` 增加 `input_object`（`DtbBootInput` / `UefiMemoryMap`）、`local_source`（输入对象内序号）、`snapshot_id`（`GetMemoryMap` 快照的 MapKey；DTB 为 0）、`attribute` 与 `virtual_start`（UEFI 描述符原值；DTB 为 0）。跨输入引用只用 `(input_object, local_source)`，`id` 仅在单个输入对象内稳定。
+**记录身份（第一百一十六轮）**：`SourceRecord` 增加 `input_object`（`DtbBootInput` / `UefiMemoryMap`）、`local_source`（输入对象内序号）、`snapshot_id`（`GetMemoryMap` 快照的 MapKey；DTB 为 0）、`attribute` 与 `virtual_start`（UEFI 描述符原值；DTB 为 0）、`address_domain`（v1 恒为 `Physical`，标签保留给未来的虚拟域记录）。跨输入引用只用 `(input_object, local_source)`，`id` 仅在单个输入对象内稳定。
 
 **不可读的 `reg` 形状一律拒绝**（第一百一十三轮）：`/memory` 与 `/reserved-memory` 的 `reg` 在声明 cell 宽度下截断（或 `#size-cells = 0`）时，`fdt` 迭代器不产出任何元组；把它当成「没有这段」会静默丢 RAM 或释放固件保留页。因此 `/memory` 返回 `UnsupportedMemoryReg`，`/reserved-memory` 返回 `UnsupportedReservedDeclaration`，四条负控：`dtb_truncated_memory_reg_is_rejected`、`dtb_zero_size_memory_reg_is_rejected`、`dtb_truncated_reserved_reg_is_rejected`、`dtb_zero_size_reservation_is_rejected`。
 
@@ -239,7 +239,7 @@ arena 是 9 页（36,864 B），布局由编译期算术钉住：
 ```text
 start u64 | end_lo u64 | end_hi u64 | attribute u64 | virtual_start u64
 | snapshot u64 | cut u64 | id u16 | local u16 | a u16 | b u16
-| kind u8 | origin_tag u8 | input_object u8 | reserved0 u8 | reserved u32
+| kind u8 | origin_tag u8 | input_object u8 | address_domain u8 | reserved u32
 ```
 
 `end_hi ∈ {0,1}`（128 位末端的两个半字）；`a/b/cut` 是 origin 的变体载荷；编码器恒写 0 的字段若非零，解码按 `BadSourceRecord` 失败关闭；未知 `kind`/`origin_tag` 同样拒绝。

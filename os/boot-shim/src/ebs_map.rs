@@ -731,6 +731,7 @@ impl Plan {
                     region.base.0 as u128 + region.len as u128,
                 ),
                 input_object: minix_boot::InputObjectId::UefiMemoryMap,
+                address_domain: minix_boot::memmap_source::AddressDomain::Physical,
                 local_source: index as u16,
                 snapshot_id,
                 attribute: descs[index].attribute,

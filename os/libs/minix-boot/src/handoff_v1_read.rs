@@ -382,7 +382,7 @@ pub fn decode_sources(
             kind: arena[off + 64],
             origin_tag: arena[off + 65],
             input_object: arena[off + 66],
-            reserved0: arena[off + 67],
+            address_domain: arena[off + 67],
             reserved: read_u32(arena, off + 68),
         };
         *slot = wire.decode().ok_or(HandoffV1ReadError::BadSourceRecord)?;
@@ -466,6 +466,7 @@ mod tests {
     static RECORDS: [SourceRecord; 3] = [
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -477,6 +478,7 @@ mod tests {
         },
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -488,6 +490,7 @@ mod tests {
         },
         SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -764,6 +767,7 @@ mod tests {
         );
         let mut out = [SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -789,6 +793,7 @@ mod tests {
         let s = decode_envelope(&arena).unwrap();
         let mut out = [SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -816,6 +821,7 @@ mod tests {
         let s = decode_envelope(&arena).unwrap();
         let mut out = [SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -912,6 +918,7 @@ mod tests {
             origin: SourceOrigin::UefiDescriptor { index: 7 },
             range: PhysicalRange::new(0x1000, 0x3000),
             input_object: InputObjectId::UefiMemoryMap,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 7,
             snapshot_id: 0xABCD_EF01,
             attribute: 0x8000_0000_0000_000F,
@@ -991,6 +998,7 @@ mod tests {
         let n_param = decode_param_buf(&arena, &s, &mut param).unwrap();
         let mut records = [SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,

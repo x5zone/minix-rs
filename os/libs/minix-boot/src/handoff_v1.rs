@@ -93,7 +93,7 @@ pub struct WireSourceRecord {
     pub kind: u8,
     pub origin_tag: u8,
     pub input_object: u8,
-    pub reserved0: u8,
+    pub address_domain: u8,
     pub reserved: u32,
 }
 
@@ -151,7 +151,7 @@ impl WireSourceRecord {
             kind,
             origin_tag,
             input_object: record.input_object.tag(),
-            reserved0: 0,
+            address_domain: record.address_domain.tag(),
             reserved: 0,
         }
     }
@@ -160,10 +160,11 @@ impl WireSourceRecord {
     /// cannot produce, i.e. a corrupted or foreign wire image; the caller
     /// must fail closed rather than guess.
     pub fn decode(self) -> Option<SourceRecord> {
-        if self.end_hi > 1 || self.reserved != 0 || self.reserved0 != 0 {
+        if self.end_hi > 1 || self.reserved != 0 {
             return None;
         }
         let input_object = crate::memmap_source::InputObjectId::from_tag(self.input_object)?;
+        let address_domain = crate::memmap_source::AddressDomain::from_tag(self.address_domain)?;
         let kind = match self.kind {
             Self::KIND_MEMORY => SourceKind::Memory,
             Self::KIND_FIRMWARE_PREFIX => SourceKind::FirmwarePrefix,
@@ -234,6 +235,7 @@ impl WireSourceRecord {
             snapshot_id: self.snapshot,
             attribute: self.attribute,
             virtual_start: self.virtual_start,
+            address_domain,
         })
     }
 }

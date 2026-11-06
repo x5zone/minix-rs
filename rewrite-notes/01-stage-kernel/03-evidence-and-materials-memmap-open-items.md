@@ -2992,3 +2992,5 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 **读数**：`cargo test -p minix-boot --lib` **165 passed**（+2：`round_trip_identity_fields`、`rejects_nonzero_snapshot_on_a_dtb_record`）；`boot-shim --lib` **89 passed**（+1：`records_carry_descriptor_identity`）；`minix-kernel --features mock` **863**；三组特性构建 OK。
 
 **QEMU**：`test-shim-bootmarks-x86` PASS；`test-shim-bootmarks-aarch64`（`DTB_CFGTABLE=1` 负例）PASS；`test-riscv64-uboot-shim` PASS（6/6 markers，wire v3 跨第一跳）。
+
+**追加（`address_domain`）**：记录增 `AddressDomain`（`Physical`/`Virtual`），wire 第 67 字节由保留位改为域标签，解码拒绝未知标签；v1 生产者全部写 `Physical`。minix-boot 165、boot-shim 89；x86 UEFI 与 aarch64 强制 DT 负例腿复跑 PASS。

@@ -380,6 +380,33 @@ pub struct SourceRecord {
     pub attribute: u64,
     /// The firmware descriptor's `VirtualStart`; 0 for DTB inputs.
     pub virtual_start: u64,
+    /// Which address space [`Self::range`] is expressed in.
+    pub address_domain: AddressDomain,
+}
+
+/// Address space of a [`SourceRecord`] range. v1 records are physical only;
+/// the tag exists so a future virtual-space record cannot be mistaken for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressDomain {
+    Physical,
+    Virtual,
+}
+
+impl AddressDomain {
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Physical => 0,
+            Self::Virtual => 1,
+        }
+    }
+
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Physical),
+            1 => Some(Self::Virtual),
+            _ => None,
+        }
+    }
 }
 
 /// Identity of the input object a [`SourceRecord`] came from.
@@ -414,6 +441,7 @@ static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
     origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
     range: PhysicalRange::new(0, 0),
     input_object: InputObjectId::DtbBootInput,
+    address_domain: crate::memmap_source::AddressDomain::Physical,
     local_source: 0,
     snapshot_id: 0,
     attribute: 0,
@@ -538,6 +566,7 @@ fn push_source(
         origin,
         range,
         input_object: InputObjectId::DtbBootInput,
+        address_domain: crate::memmap_source::AddressDomain::Physical,
         local_source: *n as u16,
         snapshot_id: 0,
         attribute: 0,
@@ -768,6 +797,7 @@ impl DtbMemoryMap<'_> {
             origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
             range: PhysicalRange::new(0, 0),
             input_object: InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -2332,6 +2362,7 @@ mod tests {
         }];
         let sources = [SourceRecord {
             input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
             local_source: 0,
             snapshot_id: 0,
             attribute: 0,
@@ -2361,6 +2392,7 @@ mod tests {
         let sources = [
             SourceRecord {
                 input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+                address_domain: crate::memmap_source::AddressDomain::Physical,
                 local_source: 0,
                 snapshot_id: 0,
                 attribute: 0,
@@ -2372,6 +2404,7 @@ mod tests {
             },
             SourceRecord {
                 input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+                address_domain: crate::memmap_source::AddressDomain::Physical,
                 local_source: 0,
                 snapshot_id: 0,
                 attribute: 0,

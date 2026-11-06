@@ -324,7 +324,7 @@ impl<'a> Serializer<'a> {
         self.arena[off + 64] = wire.kind;
         self.arena[off + 65] = wire.origin_tag;
         self.arena[off + 66] = wire.input_object;
-        self.arena[off + 67] = wire.reserved0;
+        self.arena[off + 67] = wire.address_domain;
         self.arena[off + 68..off + 72].copy_from_slice(&wire.reserved.to_le_bytes());
     }
 
