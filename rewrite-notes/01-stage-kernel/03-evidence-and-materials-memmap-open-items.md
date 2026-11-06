@@ -2691,6 +2691,28 @@ spare = 28672 - 26304 = 2368
 
 QEMU 腿（本机镜像无 qemu）：真实固件的描述符数量、`Excluded`/`DevicePath` 的实际分布与 256 上限只有在 aarch64/x86 UEFI 腿上执行；三架构交叉构建同样未在本机重跑。
 
+## 七十六、第一百一十轮：I-29 差异评审记录（537f5c16b..36fb62c35）
+
+### 结论
+
+| 级别 | 数量 | 内容 |
+|---|---|---|
+| P0 | 0 | — |
+| P1 | 2 | ① `ARENA_CAP` 4→7 后四处注释仍写 four-page（`uefi_helpers.rs` ×1、`kernel/src/lib.rs` ×3）；② 教学构件承载门判 §2 为 P1 承载缺码（分析章无代码）。两者本轮已修。 |
+| P2 | 2 | ① `WireSourceRecord` 的 `reserved: u64` 尾字当前恒零（协议预留，占 8 B/条）；② UEFI `ReservedMapped` 统一映射为 `SourceKind::ReservedOrdinary`，未按固件类型细分（记录的是“角色”，细分类随类型政策）。均登记不修。 |
+
+### 代码维度结论（gate-evidence-code）
+
+- **错误处理**：新增路径全部失败关闭——wire 解码对未知标签/非零保留字返回 `BadSourceRecord`，超容量返回 `TooManySourceRecords`/`DescriptorOverflowsPartition`；内核侧 `KernelInfo::validate` 覆盖审计失败 panic；配置表 DTB 的四种不可用形状各自停机。无静默截断。
+- **资源**：arena +3 页 `LOADER_DATA`（UEFI 腿）／+3 页 bump（U-Boot 腿，该分区不写）；内核 `.bss` +8 KiB（`SOURCE_RECORD_STORE` 256 条）。均固定大小、无堆。
+- **并发**：`SOURCE_RECORD_STORE` 为 write-once-then-read，已进 `BklProtected` 白名单；写侧单线程引导。
+- **测试覆盖**：新增 11 枚用例（wire 往返/超容量/坏记录、validate 覆盖与拒绝、空闲表原样采纳、UEFI 逐描述符与重试清空、交接页七枚失败语义）；未覆盖分支仅剩“需要真实固件”的两条（配置表 DTB 交叉校验、描述符分布）。
+- **文档同步**：四处注释与主文档/02/03/todo 同改；`doc-style-lint --diff` error 0。
+
+### 复跑读数
+
+`minix-types` 339、`minix-boot` 152、`boot-shim --features uefi` 72+5、`minix-kernel --features mock` 863 / 0 / 8、`minix-vm` 548；`boot-shim --features uefi` 编译通过。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -2756,3 +2778,14 @@ QEMU 腿（本机镜像无 qemu）：真实固件的描述符数量、`Excluded`
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百零八轮）合并提交 | `fa894ca84` |
+
+### 评审身份（第一百一十轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百一十七笔登记（修正提交 `d4746c044` 为其父链） |
+| `CodeEvidenceCommit` | `d4746c044`（本轮为注释与文档修正，读数沿用 `42af28d01`） |
+| `DocumentRevision` | 第一百一十轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百零九轮）合并提交 | `36fb62c35` |
