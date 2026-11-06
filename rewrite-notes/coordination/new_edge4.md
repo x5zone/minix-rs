@@ -5922,3 +5922,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 复审自检：`DtbMemoryMap` 的存储是进程级的，`load_dumpdtb` 早先返回的 `'static` 切片会被后续采集（配置表校验、`resv_claims`）覆盖，`report_memmap_source` 会打印别人的 `/memory`。`eaa7d55fd fix(uefi)` 改为保存合法 blob、打印点重新 `collect` 并立即消费。
 - 验证：aarch64 UEFI 腿（ESP 带 `dumpdtb.dtb`）复跑 PASS，打印 `dtb /memory cross-checked ... dtb_regions=1`；boot-shim 82。
 - 认领：`I-29 qorder89`，状态 ✅：已 ff 合并为 `eaa7d55fd`，认领已释放。
+
+### 第三百二十四笔（01 阶段 · I-29 第一百一十四轮：复审修复后的全面回归）
+
+- 另一会话 16 笔复审修复（`6b4f5d1f4..d09fff501`）合入后，正文按新代码校正并经全文复核：§2.1 四条 `reg` 负控、§2.2 `DTB_SOURCE_MAX` 容量与 MRB 按页冲突/`collect_with_panorama`、§2.3 `resv_claims`（`MAX_CLAIMS=64`/`MAX_INTERVALS=256`、采集与核对时序、DTB 自身页 ACPI_RECLAIM 例外）、§2.5 `validate_requiring_sources` 与 DTB 时序假设；§7 第 1 项改为「正例已在 acpi=off 腿通过」；测试名恢复 `test_decoded_payloads_survive_arena_poison`。
+- 全面回归（本树现跑）：宿主 339/163/82(+5)/863/548；五个交叉构建目标全通过；`run_all` 38/1/0/0（唯一红 `test-rt-birth-aarch64` 与基线同签名）；五条非注册腿全 PASS——x86 bootmarks、aarch64 bootmarks（ACPI）、`DTB_CFGTABLE=1`（DT，含 `resv_claims` 真实路径）、riscv bootface、riscv U-Boot shim（6/6）、riscv 全系统。
+- 合并后 HEAD 复跑受影响包确认 concurrent clippy 批次（import 归位/rustfmt）无行为变化：kernel 863、vm 548、vfs 538、minix-sys 345。
+- 提交：`cef355a55 docs(01)`（正文/02/03/todo）；本笔台账。门：1,099 行、围栏 42 偶、表格 37 块 0 不一致、破表 0、lint 0、横幅 PASS、lost 0（syms 159→583、tests 67→321）。
+- 认领：`I-29 qorder113`，状态 ✅：已 rebase 后 ff 合并，认领已释放。
