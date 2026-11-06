@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百四十九（devman 的 `SefBridge::sendrec` 补腿——第八个 `SefIpc` 实现者，全树 clippy 棘轮从「编译失败」回到「可出数」）
+
+- **这一笔的射程**：批次五百四十七/四十八把 `minix-service` 的在制品收口后，全树 clippy 棘轮第一次能编译到底，随即暴露 `minix-devman` 的 E0046：`SefBridge` 只实现了 `receive`/`notify`，缺 `SefIpc::sendrec`。轮 65-68 的清点写着「全仓 `SefIpc` 实现者七家 `sendrec` 腿齐」，devman 是漏掉的第八家（通用桥 `impl<K: KernelIpc> SefIpc for SefBridge<'_, K>`，不在当时的文件清单里）。
+- **落码（`os/servers/devman/src/ipc/minix.rs`）**：`SefBridge::sendrec` 转发到 `KernelIpc::sendrec`（C `ipc_sendrec`），交付面回 0——C 的结果走 `m_type`，与 rs 的 `SefKernelBridge::sendrec`（`os/servers/rs/src/lib.rs:215-223`）同形。该桥现只服务 `sef_receive_status` 的收/通知两腿，此腿存在是因为 trait 要求。
+- **登记偏差**：无。
+- **门**：`cargo test -p minix-devman` → **90/0**（此前整个包连同测试都编不过）；`cargo clippy --workspace` 现在能编译到底，全树 **394** 对基线 **384** → 10 条新增告警；逐文件核对改动面（`rs_start.rs`、`minix-service/src`、`devman/src`）**零告警**，10 条全在 kernel/arch/vm/vfs/textfilter 等既有面，属基线 `e7602d707` 之后他轮累积，未在本笔处理。核实日 `2026-11-06`；基线 `945a53087`。
+- **记账联动**：轮 65-68 的「全仓 `SefIpc` sendrec 清点为空」按本笔更正为「八家齐」；棘轮余项（10 条新增告警）单独挂账。
+
+---
+
 ## 批次五百四十八（设备族复核收口——批次五百四十六的三测补齐、哨兵覆盖修正与 `strtoul` 面）
 
 - **这一笔的射程**：批次五百四十六的账面与树上的代码对不上：记着「新三枚测」而树上零枚、记着「`0x` 前缀需先剥」而代码没剥、记着「`all` 设哨兵」而循环后的 `out.nr_irq = irqs.len()` 把哨兵覆盖成 0。本笔按 C 真源把这四处一并收口，并补上设备族的测试面。

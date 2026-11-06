@@ -205,7 +205,7 @@
 
 - **`2026-11-06` 收口刷新（第 71 轮，基线 `aba6bc6ce`，`claim/A19-AUDIT-qoder`，审计轮无代码）**：A19 的两锚实查**均已在库**并注销——`login_tty` 封装（init `host.rs:277-299` 完整折叠 C setctty+login_tty）与 panic 执行面（init 自带 `#[panic_handler]` 走 `format_panic_report`，Cargo 双形态注释自陈「handler 由 init 自带」）。C-21（fs-rt 成员）不再挡 init。
 
-- **`2026-11-06` 收口刷新（第 75.5 轮，基线 `d09fff501`，在制品收尾）**：两笔同落——(1) `minix-service` 的在制品（E0063 `missing fields io/irq/nr_io`，修在树未提交、挡全树 clippy 棘轮）随批次五百四十八收口，并把批次五百四十六的账面拉回真值：`NONE`/`ALL` 按 C 的大写字面、`irq`/`io` 各走 `strtoul` 的 0 与 0x10 两基、`ALL` 哨兵不再被后置赋值覆盖、值列表在下一语句关键字处收束、重复语句按 C 追加，新七测（19/0）；(2) `rs_start` 全载荷编码器 `encode_rs_start` 随批次五百四十七落（ABI 字节复现 + 短 buffer `EINVAL`，`minix-types` 341/0）——`minix-service up` 全构造链三段闭合。余面：恢复脚本执行面与 rc 接线。
+- **`2026-11-06` 收口刷新（第 75.5 轮，基线 `d09fff501`，在制品收尾）**：两笔同落——(1) `minix-service` 的在制品（E0063 `missing fields io/irq/nr_io`，修在树未提交、挡全树 clippy 棘轮）随批次五百四十八收口，并把批次五百四十六的账面拉回真值：`NONE`/`ALL` 按 C 的大写字面、`irq`/`io` 各走 `strtoul` 的 0 与 0x10 两基、`ALL` 哨兵不再被后置赋值覆盖、值列表在下一语句关键字处收束、重复语句按 C 追加，新七测（19/0）；(2) `rs_start` 全载荷编码器 `encode_rs_start` 随批次五百四十七落（ABI 字节复现 + 短 buffer `EINVAL`，`minix-types` 341/0）——`minix-service up` 全构造链三段闭合。同轮把全树 clippy 棘轮从「编译失败」拉回「可出数」：devman 的第八个 `SefIpc` 实现者补 `sendrec`（批次五百四十九，devman 90/0），棘轮现 **394 对基线 384**——新增 10 条逐文件核对均不在本轮改动面，单独挂账。余面：恢复脚本执行面、rc 接线与这 10 条告警。
 
 - **`2026-11-06` 收口刷新（第 75 轮，基线 `633f3759a`）**：do_config 设备族 irq/io 的 cherry-pick 合入主树（`c177f297e`→`3b5c94abf`——他线 I-29-qorder89 先行推进了 rewrite，冲突已解，lib.rs 12/0）。**三次 release 险情的教训**（轮 74 release 先于 merge、轮 66 的 stash 先于 cherry-pick——两轮均以 cherry-pick/直接合并化解）：release 必须在 ff-merge 确认之后执行。
 

@@ -166,6 +166,15 @@ impl<K: KernelIpc> minix_sef::SefIpc for SefBridge<'_, K> {
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
         self.0.notify(dest)
     }
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // C `ipc_sendrec`: the kernel face's round trip delivers the reply
+        // into `msg`, and C's result rides in `m_type`, so the delivered
+        // face answers 0 (same shape as rs's `SefKernelBridge::sendrec`,
+        // `os/servers/rs/src/lib.rs:215-223`). The receive path this
+        // bridge serves does not call it today; the leg exists because
+        // `SefIpc` requires it.
+        self.0.sendrec(dest, msg).map(|()| 0)
+    }
 }
 
 /// The production `Transport`: receive one, classify it, reply — the FS face
