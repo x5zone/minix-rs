@@ -16,15 +16,15 @@
 #![no_std]
 #![no_main]
 
-use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::pt_alloc;
 use minix_arch::x86_64::paging::X86_64Paging;
-use minix_boot::{BootPrepareResult, KernelInfo};
-use minix_kernel::boot_alloc;
 use minix_plat::x86_64::early_console;
+use minix_kernel::boot_alloc;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
+use boot_shim::uefi_helpers;
 use uefi::boot::AllocateType;
 use uefi::mem::memory_map::MemoryType;
 use uefi::prelude::*;
@@ -124,10 +124,7 @@ fn main() -> Status {
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + high-half map + enable paging
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
     let probe_post_enable = probe_checksum(probe_pa);
 
     early_console::write_str("  n5: pa=0x");
@@ -150,11 +147,9 @@ fn main() -> Status {
     // listed its physical range as conventional, the page holds live payload
     // while being advertised as free — the exact precondition for a later
     // allocator (VM PMM) to hand it out and zero it.
-    let in_free = result
-        .kernel_info
-        .memmap
-        .iter()
-        .any(|r| probe_pa >= r.base.0 && probe_pa < r.base.0 + r.len as u64);
+    let in_free = result.kernel_info.memmap.iter().any(|r| {
+        probe_pa >= r.base.0 && probe_pa < r.base.0 + r.len as u64
+    });
     early_console::write_str(" in_snapshot_free=");
     early_console::write_hex(in_free as u64);
     early_console::write_str("\n");
@@ -188,19 +183,11 @@ fn main() -> Status {
         early_console::write_str("### TEST_RESULT: FAIL test-kernel-map ###\n");
     }
 
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }

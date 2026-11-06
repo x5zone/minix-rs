@@ -49,8 +49,8 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::alloc::{GlobalAlloc, Layout};
-use boot_shim::{RiscvUbootBootShim, raw_serial, raw_serial_line};
-use minix_boot::{ARENA_CAP, BootShim, Serializer};
+use boot_shim::{raw_serial, raw_serial_line, RiscvUbootBootShim};
+use minix_boot::{BootShim, Serializer, ARENA_CAP};
 
 extern crate alloc;
 
@@ -179,8 +179,10 @@ pub mod uboot_layout {
     /// `boot_shim::loader::MODULE_NAMES` — single-source via the
     /// compile-time assert in opensbi_helpers).
     pub const MODULE_NAMES: &[&str] = &[
-        "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
+        "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm",
+        "pfs", "mfs", "init",
     ];
+
 }
 
 fn halt() -> ! {
@@ -256,45 +258,30 @@ unsafe fn staged_elf_used_len(pa: u64, slot: u64) -> Option<u64> {
     // bounds-checked against `slot`.
     unsafe {
         let read_u16 = |off: u64| -> Option<u16> {
-            if off.checked_add(2)? > slot {
-                return None;
-            }
+            if off.checked_add(2)? > slot { return None; }
             Some(core::ptr::read_unaligned((pa + off) as *const u16))
         };
         let read_u32 = |off: u64| -> Option<u32> {
-            if off.checked_add(4)? > slot {
-                return None;
-            }
+            if off.checked_add(4)? > slot { return None; }
             Some(core::ptr::read_unaligned((pa + off) as *const u32))
         };
         let read_u64 = |off: u64| -> Option<u64> {
-            if off.checked_add(8)? > slot {
-                return None;
-            }
+            if off.checked_add(8)? > slot { return None; }
             Some(core::ptr::read_unaligned((pa + off) as *const u64))
         };
-        if read_u32(0)? != 0x464C_457F {
-            return None;
-        } // \x7fELF
-        if read_u16(4)? != 2 || read_u16(5)? != 1 {
-            return None;
-        } // 64-bit LE
+        if read_u32(0)? != 0x464C_457F { return None; } // \x7fELF
+        if read_u16(4)? != 2 || read_u16(5)? != 1 { return None; } // 64-bit LE
         let phoff = read_u64(32)?;
         let phentsize = read_u16(54)? as u64;
         let phnum = read_u16(56)? as u64;
-        if phentsize < 56 {
-            return None;
-        }
+        if phentsize < 56 { return None; }
         let table_end = phoff.checked_add(phnum.checked_mul(phentsize)?)?;
-        if table_end > slot {
-            return None;
-        }
+        if table_end > slot { return None; }
         let mut end = 0u64;
         let mut i = 0u64;
         while i < phnum {
             let ph = phoff + i * phentsize;
-            if read_u32(ph)? == 1 {
-                // PT_LOAD
+            if read_u32(ph)? == 1 { // PT_LOAD
                 let off = read_u64(ph + 8)?;
                 let filesz = read_u64(ph + 32)?;
                 end = end.max(off.checked_add(filesz)?);
@@ -320,63 +307,45 @@ unsafe fn build_shim_table() -> u64 {
     unsafe {
         // magic (u64 LE)
         let magic_bytes = magic.to_le_bytes();
-        for i in 0..8 {
-            base.add(i).write_volatile(magic_bytes[i]);
-        }
+        for i in 0..8 { base.add(i).write_volatile(magic_bytes[i]); }
         // entry_count (u32 LE) = 1 kernel + 12 modules = 13
         let count = (1 + MODULE_NAMES.len()) as u32;
         let count_bytes = count.to_le_bytes();
-        for i in 0..4 {
-            base.add(8 + i).write_volatile(count_bytes[i]);
-        }
+        for i in 0..4 { base.add(8 + i).write_volatile(count_bytes[i]); }
         // pad (u32) = 0 (already zero from .bss clear)
         // entry 0: kernel
         let e0 = base.add(16);
         let path = b"/EFI/minix/kernel.elf";
-        for i in 0..path.len() {
-            e0.add(i).write_volatile(path[i]);
-        }
+        for i in 0..path.len() { e0.add(i).write_volatile(path[i]); }
         e0.add(path.len()).write_volatile(0);
         let addr = uboot_layout::KERNEL_FILE_STAGE;
         let addr_bytes = addr.to_le_bytes();
-        for i in 0..8 {
-            e0.add(64 + i).write_volatile(addr_bytes[i]);
-        }
+        for i in 0..8 { e0.add(64 + i).write_volatile(addr_bytes[i]); }
         let slot = 2u64 * 1024 * 1024; // 2 MB kernel slot
         let used = staged_elf_used_len(addr, slot).unwrap_or(slot);
         if used > slot {
             raw_serial_line("boot-shim: kernel ELF exceeds the 2 MiB staging slot — truncating");
         }
         let len_bytes = used.min(slot).to_le_bytes();
-        for i in 0..8 {
-            e0.add(72 + i).write_volatile(len_bytes[i]);
-        }
+        for i in 0..8 { e0.add(72 + i).write_volatile(len_bytes[i]); }
         // entries 1-12: modules
         for (mi, name) in MODULE_NAMES.iter().enumerate() {
             let e = base.add(16 + (mi + 1) * 80);
             let module_path = alloc::format!("/EFI/minix/modules/{}", name);
-            for i in 0..module_path.len() {
-                e.add(i).write_volatile(module_path.as_bytes()[i]);
-            }
+            for i in 0..module_path.len() { e.add(i).write_volatile(module_path.as_bytes()[i]); }
             e.add(module_path.len()).write_volatile(0);
             let a = module_file_stage(mi);
             let a_bytes = a.to_le_bytes();
-            for i in 0..8 {
-                e.add(64 + i).write_volatile(a_bytes[i]);
-            }
+            for i in 0..8 { e.add(64 + i).write_volatile(a_bytes[i]); }
             let slot = 1u64 * 1024 * 1024; // 1 MB module slot
             let used = staged_elf_used_len(a, slot).unwrap_or(slot);
             if used > slot {
-                raw_serial_line(
-                    "boot-shim: module ELF exceeds the 1 MiB staging slot — truncating: ",
-                );
+                raw_serial_line("boot-shim: module ELF exceeds the 1 MiB staging slot — truncating: ");
                 raw_serial_line(name);
                 raw_serial_line("\n");
             }
             let l_bytes = used.min(slot).to_le_bytes();
-            for i in 0..8 {
-                e.add(72 + i).write_volatile(l_bytes[i]);
-            }
+            for i in 0..8 { e.add(72 + i).write_volatile(l_bytes[i]); }
         }
     }
     base as u64
@@ -413,7 +382,9 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
             .expect("boot-shim: MNXBOOT1 magic mismatch in shim-built table");
         let n = table.valid_entries().len();
         raw_serial("boot-shim: table built (MNXBOOT1, ");
-        raw_serial(core::str::from_utf8(alloc::format!("{}", n).as_bytes()).unwrap_or("?"));
+        raw_serial(core::str::from_utf8(
+            alloc::format!("{}", n).as_bytes(),
+        ).unwrap_or("?"));
         raw_serial_line(" entries)");
     }
 
@@ -495,10 +466,7 @@ fn panic(info: &PanicInfo) -> ! {
         }
     }
     let mut buf = [0u8; 200];
-    let mut w = StackWriter {
-        buf: &mut buf,
-        pos: 0,
-    };
+    let mut w = StackWriter { buf: &mut buf, pos: 0 };
     let _ = core::fmt::write(&mut w, format_args!("{info}"));
     let n = w.pos;
     let mut end = n;

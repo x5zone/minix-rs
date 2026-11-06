@@ -5973,4 +5973,5 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 
 - `uefi_helpers::push_startup` 超容量由静默丢弃改为 `assert!` 停机；三条 DTB 腿（`bootface.rs`、`bootface_a64.rs`、`opensbi_helpers.rs`）在写 `.bss` 静态数组前断言 `1 + modules.len() <= WIRE_STARTUP_CAP`，防止模块数增长时越界写。
 - 读数不变：minix-boot 169、boot-shim 91、kernel 863；五条 QEMU 腿复跑 PASS。
+- 同轮：还原 `os/qemu-tests` 30 个测试内核与 `boot_integration.rs`、`uboot_main.rs` 的无关 rustfmt 改动；A3 在这些文件里只剩 `startup_objects` 字段与 `write_startup` 调用。
 - 认领：`I-29 qorder95`，状态 🔄 待合入。

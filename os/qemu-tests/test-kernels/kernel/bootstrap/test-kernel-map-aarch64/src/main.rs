@@ -9,15 +9,15 @@
 #![no_std]
 #![no_main]
 
-use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
 use minix_arch::arm64::paging::AArch64Paging;
-use minix_arch::pt_alloc;
-use minix_boot::{BootPrepareResult, KernelInfo};
-use minix_kernel::boot_alloc;
 use minix_plat::arm64::early_console;
+use minix_kernel::boot_alloc;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 /// Sentinel value written to low memory, read back via high-half alias.
@@ -79,10 +79,7 @@ fn main() -> Status {
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + high-half map + enable MMU
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
 
     // 4. Verify high-half mapping: write sentinel at a low physical address,
     //    read it back via the high-half virtual alias.
@@ -134,19 +131,11 @@ fn main() -> Status {
         early_console::write_str("### TEST_RESULT: FAIL test-kernel-map-aarch64 ###\n");
     }
 
-    loop {
-        unsafe {
-            asm!("wfe", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
-    loop {
-        unsafe {
-            asm!("wfe", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
 }

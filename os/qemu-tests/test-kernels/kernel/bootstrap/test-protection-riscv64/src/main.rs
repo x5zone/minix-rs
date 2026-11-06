@@ -12,13 +12,13 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::pt_alloc;
 use minix_arch::riscv64::paging::Riscv64Paging;
-use minix_arch::{CurrentProtection, CurrentTrapEntry, ProtectionArch, TrapEntryArch};
-use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
-use minix_kernel::boot_alloc;
 use minix_plat::riscv64::early_console;
+use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
+use minix_kernel::boot_alloc;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
 
 use core::alloc::{GlobalAlloc, Layout};
 
@@ -81,8 +81,8 @@ core::arch::global_asm!(
     ".balign 4",
     ".global trap_vector",
     "trap_vector:",
-    "    csrw sscratch, sp", // save user SP
-    "    sret",              // return from trap
+    "    csrw sscratch, sp",    // save user SP
+    "    sret",                  // return from trap
 );
 
 static mut BUMP_PTR: u64 = DRAM_BASE + 0x0200_0000;
@@ -107,9 +107,7 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    early_console::write_str(
-        "### test_protection (riscv64): init_protection → verify stvec/sscratch\n",
-    );
+    early_console::write_str("### test_protection (riscv64): init_protection → verify stvec/sscratch\n");
 
     let memmap: &'static [MemoryRegion] = &MEMMAP;
     let root_page = PhysBytes(bump_alloc(1).expect("bump alloc: root page"));
@@ -146,10 +144,7 @@ pub extern "C" fn rust_main() -> ! {
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
 
     early_console::write_str("  Sv39 MMU enabled\n");
 
@@ -206,28 +201,16 @@ pub extern "C" fn rust_main() -> ! {
     early_console::write_str("  sstatus valid (S-mode)\n");
 
     early_console::write_str("### TEST_RESULT: PASS test-protection-riscv64 ###\n");
-    loop {
-        unsafe {
-            asm!("wfi", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
 }
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-protection-riscv64 ###\n");
-    loop {
-        unsafe {
-            asm!("wfi", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC in test-protection-riscv64 ###\n");
-    loop {
-        unsafe {
-            asm!("wfi", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
 }

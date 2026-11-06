@@ -21,17 +21,17 @@
 
 extern crate alloc;
 
-use boot_shim::uefi_helpers;
-use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::pt_alloc;
+use core::alloc::{GlobalAlloc, Layout};
 use minix_arch::x86_64::paging::X86_64Paging;
-use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
-use minix_kernel::boot_alloc;
 use minix_plat::x86_64::early_console;
+use minix_kernel::boot_alloc;
 use minix_platform;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -46,15 +46,8 @@ unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
             if !BOOT_SERVICES_EXITED {
-                let size = if layout.align() > 8 {
-                    layout.size() + layout.align()
-                } else {
-                    layout.size()
-                };
-                match uefi::boot::allocate_pool(
-                    uefi::mem::memory_map::MemoryType::LOADER_DATA,
-                    size,
-                ) {
+                let size = if layout.align() > 8 { layout.size() + layout.align() } else { layout.size() };
+                match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, size) {
                     Ok(ptr) => ptr.as_ptr() as *mut u8,
                     Err(_) => core::ptr::null_mut(),
                 }
@@ -86,77 +79,23 @@ static ALLOCATOR: HybridAllocator = HybridAllocator;
 /// KERNEL_TASKS[]; only the VM slot is patched to the ELF stub so
 /// init_proc_and_boot's VM-load step has something well-formed to parse.
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule {
-        name: "ds",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "rs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "pm",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "sched",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "vfs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "memory",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "tty",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "mib",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "vm",
-        start: PhysBytes(0),
-        len: 0,
-    }, // patched at runtime
-    BootModule {
-        name: "pfs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "mfs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "init",
-        start: PhysBytes(0),
-        len: 0,
-    },
+    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
+    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
+    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
+    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
+    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
+    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
+    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
 ];
 
 static MEMMAP: [MemoryRegion; 2] = [
-    MemoryRegion {
-        base: PhysBytes(0),
-        len: 0x200_0000,
-    },
-    MemoryRegion {
-        base: PhysBytes(0x200_0000),
-        len: 0x600_0000,
-    },
+    MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
+    MemoryRegion { base: PhysBytes(0x200_0000), len: 0x600_0000 },
 ];
 
 /// Minimal valid ELF64 image (header only, e_phnum = 0) — same rationale
@@ -164,34 +103,21 @@ static MEMMAP: [MemoryRegion; 2] = [
 #[unsafe(link_section = ".rodata")]
 static VM_ELF_STUB: [u8; 64] = {
     let mut e = [0u8; 64];
-    e[0] = 0x7F;
-    e[1] = b'E';
-    e[2] = b'L';
-    e[3] = b'F';
-    e[4] = 2;
-    e[5] = 1;
-    e[6] = 1;
-    e[16] = 2;
-    e[17] = 0; // e_type = ET_EXEC
-    e[18] = 62;
-    e[19] = 0; // e_machine = EM_X86_64
-    e[24] = 0;
-    e[25] = 0x40;
+    e[0] = 0x7F; e[1] = b'E'; e[2] = b'L'; e[3] = b'F';
+    e[4] = 2; e[5] = 1; e[6] = 1;
+    e[16] = 2; e[17] = 0;   // e_type = ET_EXEC
+    e[18] = 62; e[19] = 0;  // e_machine = EM_X86_64
+    e[24] = 0; e[25] = 0x40;
     e[32] = 64;
-    e[52] = 64;
-    e[53] = 0;
-    e[54] = 56;
-    e[55] = 0;
-    e[56] = 0;
-    e[57] = 0; // e_phnum = 0
+    e[52] = 64; e[53] = 0;
+    e[54] = 56; e[55] = 0;
+    e[56] = 0; e[57] = 0;   // e_phnum = 0
     e
 };
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str(
-        "### test_smp_ipi (x86_64): S-10 L6 — BSP↔AP schedule IPI round-trip\n",
-    );
+    early_console::write_str("### test_smp_ipi (x86_64): S-10 L6 — BSP↔AP schedule IPI round-trip\n");
 
     // 1. UEFI boot preparation (test-proc-init shape).
     let root_page = uefi_helpers::alloc_root_page();
@@ -239,17 +165,12 @@ fn main() -> Status {
     };
 
     uefi_helpers::exit_boot_services();
-    unsafe {
-        BOOT_SERVICES_EXITED = true;
-    }
+    unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A).
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order) — init_protection
@@ -344,20 +265,12 @@ fn main() -> Status {
     early_console::write_str("  all APs entered the scheduling loop\n");
 
     early_console::write_str("### TEST_RESULT: PASS test-smp-ipi ###\n");
-    loop {
-        unsafe {
-            asm!("cli", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
 }
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-smp-ipi ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
@@ -369,9 +282,5 @@ fn panic(info: &PanicInfo) -> ! {
         early_console::write_hex(loc.line() as u64);
     }
     early_console::write_str(" ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }

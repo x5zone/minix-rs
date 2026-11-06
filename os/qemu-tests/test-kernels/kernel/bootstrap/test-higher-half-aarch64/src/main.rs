@@ -10,14 +10,14 @@
 #![no_std]
 #![no_main]
 
-use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::pt_alloc;
-use minix_boot::{BootPrepareResult, KernelInfo};
-use minix_kernel::boot_alloc;
 use minix_plat::arm64::early_console;
+use minix_kernel::boot_alloc;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // UEFI test kernels allocate only while boot services are alive (build_memmap
@@ -30,9 +30,7 @@ static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str(
-        "### test_higher_half (aarch64): verifying higher-half transition...\n",
-    );
+    early_console::write_str("### test_higher_half (aarch64): verifying higher-half transition...\n");
 
     let memmap = uefi_helpers::build_memmap();
     let root_page = uefi_helpers::alloc_root_page();
@@ -75,9 +73,5 @@ fn main() -> Status {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC in test-higher-half-aarch64 ###\n");
-    loop {
-        unsafe {
-            asm!("wfe", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
 }

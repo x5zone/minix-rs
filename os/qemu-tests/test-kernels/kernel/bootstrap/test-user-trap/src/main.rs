@@ -35,19 +35,19 @@
 
 extern crate alloc;
 
-use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::panic::PanicInfo;
+use core::alloc::{GlobalAlloc, Layout};
 
-use boot_shim::uefi_helpers;
-use minix_arch::pt_alloc;
 use minix_arch::x86_64::paging::X86_64Paging;
 use minix_arch::{CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind};
-use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
-use minix_kernel::boot_alloc;
 use minix_plat::x86_64::early_console;
+use minix_kernel::boot_alloc;
 use minix_platform;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -62,15 +62,8 @@ unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
             if !BOOT_SERVICES_EXITED {
-                let size = if layout.align() > 8 {
-                    layout.size() + layout.align()
-                } else {
-                    layout.size()
-                };
-                match uefi::boot::allocate_pool(
-                    uefi::mem::memory_map::MemoryType::LOADER_DATA,
-                    size,
-                ) {
+                let size = if layout.align() > 8 { layout.size() + layout.align() } else { layout.size() };
+                match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, size) {
                     Ok(ptr) => ptr.as_ptr() as *mut u8,
                     Err(_) => core::ptr::null_mut(),
                 }
@@ -97,77 +90,23 @@ unsafe impl GlobalAlloc for HybridAllocator {
 static ALLOCATOR: HybridAllocator = HybridAllocator;
 
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule {
-        name: "ds",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "rs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "pm",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "sched",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "vfs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "memory",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "tty",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "mib",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "vm",
-        start: PhysBytes(0),
-        len: 0,
-    }, // patched at runtime
-    BootModule {
-        name: "pfs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "mfs",
-        start: PhysBytes(0),
-        len: 0,
-    },
-    BootModule {
-        name: "init",
-        start: PhysBytes(0),
-        len: 0,
-    },
+    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
+    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
+    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
+    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
+    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
+    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
+    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
+    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
 ];
 
 static MEMMAP: [MemoryRegion; 2] = [
-    MemoryRegion {
-        base: PhysBytes(0),
-        len: 0x200_0000,
-    },
-    MemoryRegion {
-        base: PhysBytes(0x200_0000),
-        len: 0x600_0000,
-    },
+    MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
+    MemoryRegion { base: PhysBytes(0x200_0000), len: 0x600_0000 },
 ];
 
 /// Minimal valid ELF64 image (header only, e_phnum = 0) — same rationale
@@ -175,26 +114,15 @@ static MEMMAP: [MemoryRegion; 2] = [
 #[unsafe(link_section = ".rodata")]
 static VM_ELF_STUB: [u8; 64] = {
     let mut e = [0u8; 64];
-    e[0] = 0x7F;
-    e[1] = b'E';
-    e[2] = b'L';
-    e[3] = b'F';
-    e[4] = 2;
-    e[5] = 1;
-    e[6] = 1;
-    e[16] = 2;
-    e[17] = 0; // e_type = ET_EXEC
-    e[18] = 62;
-    e[19] = 0; // e_machine = EM_X86_64
-    e[24] = 0;
-    e[25] = 0x40;
+    e[0] = 0x7F; e[1] = b'E'; e[2] = b'L'; e[3] = b'F';
+    e[4] = 2; e[5] = 1; e[6] = 1;
+    e[16] = 2; e[17] = 0;   // e_type = ET_EXEC
+    e[18] = 62; e[19] = 0;  // e_machine = EM_X86_64
+    e[24] = 0; e[25] = 0x40;
     e[32] = 64;
-    e[52] = 64;
-    e[53] = 0;
-    e[54] = 56;
-    e[55] = 0;
-    e[56] = 0;
-    e[57] = 0; // e_phnum = 0
+    e[52] = 64; e[53] = 0;
+    e[54] = 56; e[55] = 0;
+    e[56] = 0; e[57] = 0;   // e_phnum = 0
     e
 };
 
@@ -210,7 +138,7 @@ const USER_STACK_VA: u64 = 0x1_0002_0000;
 const USER_CODE_PHYS: u64 = 0x0400_0000; // 64 MiB — region 2
 const USER_DATA_PHYS: u64 = 0x0400_1000;
 const USER_STACK_PHYS: u64 = 0x0400_2000;
-const MSG_VA: u64 = 0x1_0001_0100; // GetInfo message in the data page
+const MSG_VA: u64 = 0x1_0001_0100;   // GetInfo message in the data page
 const HZ_BUF_VA: u64 = 0x0400_1200; // hz result buffer (identity VA = PA, E8 identity-channel bypass)
 
 /// The CPL3 payload (hand-assembled x86-64):
@@ -251,17 +179,7 @@ const HZ_BUF_VA: u64 = 0x0400_1200; // hz result buffer (identity VA = PA, E8 id
 /// kerninfo publication end-to-end, including a CPL3 data read of the
 /// mapped page.
 #[unsafe(link_section = ".rodata")]
-static USER_PAYLOAD: [u8; 144] = [
-    0xB9, 0x63, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-    0x00, 0x48, 0xC7, 0xC0, 0xAD, 0xDE, 0x00, 0x00, 0x48, 0xA3, 0x08, 0x00, 0x01, 0x00, 0x01, 0x00,
-    0x00, 0x00, 0x48, 0xBF, 0x00, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xA3,
-    0x20, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xA1, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00,
-    0x00, 0x00, 0x48, 0xA3, 0x10, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB9, 0x06, 0x00, 0x00,
-    0x00, 0xCD, 0x21, 0x48, 0xA3, 0x18, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x4C, 0x89, 0xD0,
-    0x48, 0xA3, 0x28, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x49, 0x8B, 0x02, 0x48, 0xA3, 0x30,
-    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB8, 0x2A, 0x00, 0x00, 0x00, 0xF2, 0x0F, 0x2A, 0xC0,
-    0x66, 0x0F, 0x2C, 0xC0, 0x48, 0xA3, 0x38, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB, 0xFE,
-];
+static USER_PAYLOAD: [u8; 144] = [0xB9, 0x63, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC0, 0xAD, 0xDE, 0x00, 0x00, 0x48, 0xA3, 0x08, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xBF, 0x00, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xA3, 0x20, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xA1, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x48, 0xA3, 0x10, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB9, 0x06, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x18, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x4C, 0x89, 0xD0, 0x48, 0xA3, 0x28, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x49, 0x8B, 0x02, 0x48, 0xA3, 0x30, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB8, 0x2A, 0x00, 0x00, 0x00, 0xF2, 0x0F, 0x2A, 0xC0, 0x66, 0x0F, 0x2C, 0xC0, 0x48, 0xA3, 0x38, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB, 0xFE];
 
 /// User mailbox physical page (data page): [+0x00] round-1 errno,
 /// [+0x08] completion marker, [+0x10] hz value (E8), [+0x18] round-2
@@ -274,9 +192,7 @@ const EBADCALL: u64 = 209;
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str(
-        "### test_user_trap (x86_64): E1 slice 5 — user-mode int-33 trap bridge\n",
-    );
+    early_console::write_str("### test_user_trap (x86_64): E1 slice 5 — user-mode int-33 trap bridge\n");
 
     // 1. UEFI boot preparation (test-proc-init shape).
     let root_page = uefi_helpers::alloc_root_page();
@@ -321,17 +237,12 @@ fn main() -> Status {
     };
 
     uefi_helpers::exit_boot_services();
-    unsafe {
-        BOOT_SERVICES_EXITED = true;
-    }
+    unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A).
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order) — init_protection
@@ -364,9 +275,7 @@ fn main() -> Status {
     // be picked by any CPU's scheduler — the restore machinery is
     // per-CPU symmetric). BKL acquired once and held (C main.c:149).
     minix_kernel::smp::bkl_lock().transfer();
-    unsafe {
-        core::arch::asm!("sti", options(nomem, nostack));
-    }
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
     minix_kernel::smp::smp_init();
     early_console::write_str("  smp_init completed\n");
 
@@ -380,29 +289,11 @@ fn main() -> Status {
     // vector 14, kernel mode, in the first bring-up attempt).
     unsafe {
         early_console::write_str("  map: code\n");
-        map_user_page(
-            result.root_page.0,
-            USER_CODE_VA,
-            USER_CODE_PHYS,
-            false,
-            true,
-        );
+        map_user_page(result.root_page.0, USER_CODE_VA, USER_CODE_PHYS, false, true);
         early_console::write_str("  map: data\n");
-        map_user_page(
-            result.root_page.0,
-            USER_DATA_VA,
-            USER_DATA_PHYS,
-            true,
-            false,
-        );
+        map_user_page(result.root_page.0, USER_DATA_VA, USER_DATA_PHYS, true, false);
         early_console::write_str("  map: stack\n");
-        map_user_page(
-            result.root_page.0,
-            USER_STACK_VA,
-            USER_STACK_PHYS,
-            true,
-            false,
-        );
+        map_user_page(result.root_page.0, USER_STACK_VA, USER_STACK_PHYS, true, false);
     }
     early_console::write_str("  user pages mapped (code/data/stack, CPL3)\n");
 
@@ -473,26 +364,18 @@ fn main() -> Status {
         let leaf_idx = (HZ_BUF_VA >> 21) & 511;
         let root = result.root_page.0;
         let pml4e = unsafe { core::ptr::read_volatile(root as *const u64) };
-        unsafe {
-            core::ptr::write_volatile(root as *mut u64, pml4e | PAGE_USER);
-        }
+        unsafe { core::ptr::write_volatile(root as *mut u64, pml4e | PAGE_USER); }
         let pdp_base = pml4e & addr_mask;
         let pdp0 = unsafe { core::ptr::read_volatile(pdp_base as *const u64) };
-        unsafe {
-            core::ptr::write_volatile(pdp_base as *mut u64, pdp0 | PAGE_USER);
-        }
+        unsafe { core::ptr::write_volatile(pdp_base as *mut u64, pdp0 | PAGE_USER); }
         let pd_base = pdp0 & addr_mask;
         let pde = unsafe { core::ptr::read_volatile((pd_base + leaf_idx * 8) as *const u64) };
-        unsafe {
-            core::ptr::write_volatile((pd_base + leaf_idx * 8) as *mut u64, pde | PAGE_USER);
-        }
+        unsafe { core::ptr::write_volatile((pd_base + leaf_idx * 8) as *mut u64, pde | PAGE_USER); }
         // The identity leaf was already walked by the kernel in supervisor
         // mode, so its translation is TLB-cached supervisor-only. invlpg the
         // hz page (or reload CR3) or the CPL3 read still faults on the stale
         // entry (observed: fix ineffective until the flush was added).
-        unsafe {
-            core::arch::asm!("invlpg [{}]", in(reg) HZ_BUF_VA, options(nostack, preserves_flags));
-        }
+        unsafe { core::arch::asm!("invlpg [{}]", in(reg) HZ_BUF_VA, options(nostack, preserves_flags)); }
         early_console::write_str("  identity PML4[0]+PDP[0]+PD[32] USER bits set\n");
     }
 
@@ -580,11 +463,7 @@ unsafe fn map_user_page(root_phys: u64, va: u64, pa: u64, writable: bool, exec: 
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-user-trap ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
@@ -596,9 +475,5 @@ fn panic(info: &PanicInfo) -> ! {
         early_console::write_hex(loc.line() as u64);
     }
     early_console::write_str(" ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }

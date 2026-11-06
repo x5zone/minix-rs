@@ -11,16 +11,16 @@
 #![no_std]
 #![no_main]
 
-use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::pt_alloc;
 use minix_arch::x86_64::paging::X86_64Paging;
-use minix_arch::{CurrentProtection, CurrentTrapEntry, ProtectionArch, TrapEntryArch};
-use minix_boot::{BootPrepareResult, KernelInfo};
-use minix_kernel::boot_alloc;
 use minix_plat::x86_64::early_console;
+use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
+use minix_kernel::boot_alloc;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // UEFI test kernels allocate only while boot services are alive (build_memmap
@@ -33,9 +33,7 @@ static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str(
-        "### test_protection (x86_64): init_protection → verify GDT/IDT/TSS\n",
-    );
+    early_console::write_str("### test_protection (x86_64): init_protection → verify GDT/IDT/TSS\n");
 
     // 1. UEFI boot preparation
     let memmap = uefi_helpers::build_memmap();
@@ -73,10 +71,7 @@ fn main() -> Status {
     // 2. Enable paging (arch_boot_impl)
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
 
     early_console::write_str("  paging enabled\n");
 
@@ -191,20 +186,12 @@ fn main() -> Status {
     early_console::write_str("  DS=RPL0 (kernel privilege)\n");
 
     early_console::write_str("### TEST_RESULT: PASS test-protection ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-protection ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
 /// Read a 64-bit MSR. `msr` must be valid for this CPU (the SYSCALL MSRs
@@ -227,9 +214,5 @@ unsafe fn rdmsr(msr: u32) -> u64 {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC in test-protection ###\n");
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }

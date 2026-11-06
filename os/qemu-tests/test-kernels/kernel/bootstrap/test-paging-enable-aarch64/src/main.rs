@@ -7,15 +7,15 @@
 #![no_std]
 #![no_main]
 
-use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
 use minix_arch::arm64::paging::AArch64Paging;
-use minix_arch::pt_alloc;
-use minix_boot::{BootPrepareResult, KernelInfo};
-use minix_kernel::boot_alloc;
 use minix_plat::arm64::early_console;
+use minix_kernel::boot_alloc;
+use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // UEFI test kernels allocate only while boot services are alive (build_memmap
@@ -28,9 +28,7 @@ static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str(
-        "### test_paging_enable (aarch64): boot → enable MMU → verify alive\n",
-    );
+    early_console::write_str("### test_paging_enable (aarch64): boot → enable MMU → verify alive\n");
 
     // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
     let memmap = uefi_helpers::build_memmap();
@@ -71,28 +69,17 @@ fn main() -> Status {
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + enable MMU
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
 
     // If we reach here, MMU is enabled and the CPU can still execute.
     early_console::write_str("  MMU enabled — CPU still executing\n");
     early_console::write_str("### TEST_RESULT: PASS test-paging-enable-aarch64 ###\n");
 
-    loop {
-        unsafe {
-            asm!("wfe", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
-    loop {
-        unsafe {
-            asm!("wfe", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
 }

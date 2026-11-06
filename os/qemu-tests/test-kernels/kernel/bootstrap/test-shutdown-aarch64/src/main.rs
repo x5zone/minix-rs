@@ -15,14 +15,14 @@
 #![no_std]
 #![no_main]
 
-use boot_shim::uefi_helpers;
-use core::panic::PanicInfo;
 use minix_arch::arm64::paging::AArch64Paging;
 use minix_arch::pt_alloc;
-use minix_boot::{BootPrepareResult, KernelInfo};
-use minix_kernel::boot_alloc;
 use minix_plat::arm64::early_console;
+use minix_kernel::boot_alloc;
+use core::panic::PanicInfo;
 use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootPrepareResult, KernelInfo};
+use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 #[global_allocator]
@@ -67,10 +67,7 @@ fn main() -> Status {
 
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
     early_console::write_str("  paging enabled (post-MMU shutdown path)\n");
 
     early_console::write_str("  requesting shutdown via semihosting SYS_EXIT\n");
@@ -78,19 +75,11 @@ fn main() -> Status {
     minix_kernel::minix_shutdown(0);
 
     #[allow(unreachable_code)]
-    loop {
-        unsafe {
-            core::arch::asm!("wfe", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { core::arch::asm!("wfe", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC in test-shutdown-aarch64 ###\n");
-    loop {
-        unsafe {
-            core::arch::asm!("wfe", options(nomem, nostack));
-        }
-    }
+    loop { unsafe { core::arch::asm!("wfe", options(nomem, nostack)); } }
 }

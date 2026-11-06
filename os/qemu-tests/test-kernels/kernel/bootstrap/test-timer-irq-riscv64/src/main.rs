@@ -272,10 +272,8 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // 2. Paging (Phase A): identity + Sv39 enable (production path).
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(
-        &result.kernel_info,
-        result.root_page,
-    );
+    let _info =
+        minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — the DTB pointer OpenSBI passed in
