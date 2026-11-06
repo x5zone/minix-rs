@@ -1009,8 +1009,8 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 ```
 $ cargo test -p minix-types                 → 339 passed / 0 failed
 $ cargo test -p minix-boot                  → 163 passed / 0 failed（第一百一十三轮）
-$ cargo test -p boot-shim                   → 81 passed / 0 failed（+9 条 resv_claims）
-$ cargo test -p boot-shim --features uefi   → 81 passed / 0 failed（+5 集成）
+$ cargo test -p boot-shim                   → 82 passed / 0 failed（+10 条 resv_claims）
+$ cargo test -p boot-shim --features uefi   → 82 passed / 0 failed（+5 集成）
 $ cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
 $ cargo test -p minix-vm                    → 548 passed / 0 failed
 ```

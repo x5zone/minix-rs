@@ -2901,7 +2901,7 @@ $ DTB_CFGTABLE=1 bash test-shim-bootmarks-aarch64.sh   → PASS（cross-validate
 
 ```
 $ cargo test -p minix-boot --lib                 → 163 passed / 0 failed
-$ cargo test -p boot-shim --lib                  → 81 passed / 0 failed
+$ cargo test -p boot-shim --lib                  → 82 passed / 0 failed
 $ cargo test -p minix-kernel --features mock     → 863 passed / 0 failed / 8 ignored
 $ cargo test -p minix-types --lib                → 339 passed / 0 failed
 $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
@@ -2911,7 +2911,7 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 
 **QEMU（代码变更后复跑）**：`test-kernel-image-riscv64-bootface.sh` PASS（B1/B2/B3）；`test-shim-bootmarks-x86.sh` PASS（conv=13 res=113）；`test-shim-bootmarks-aarch64.sh` PASS（conv=13 res=20，`platform DTB absent`）。
 
-**新增负控/正控**：`dtb_truncated_memory_reg_is_rejected`、`dtb_zero_size_memory_reg_is_rejected`、`dtb_truncated_reserved_reg_is_rejected`、`dtb_zero_size_reservation_is_rejected`、`dtb_mrb_and_ordinary_reservation_overlap_is_rejected`、`dtb_mrb_and_reusable_reservation_overlap_is_rejected`、`dtb_mrb_and_reservation_on_the_same_page_conflict`、`dtb_mrb_and_no_map_reservation_are_compatible`、`accepts_exactly_the_collector_reservation_bound`、`test_validate_requiring_sources_rejects_an_empty_partition`、`test_validate_requiring_sources_accepts_covering_records`、`resv_claims::tests::*`（9 条）。
+**新增负控/正控**：`dtb_truncated_memory_reg_is_rejected`、`dtb_zero_size_memory_reg_is_rejected`、`dtb_truncated_reserved_reg_is_rejected`、`dtb_zero_size_reservation_is_rejected`、`dtb_mrb_and_ordinary_reservation_overlap_is_rejected`、`dtb_mrb_and_reusable_reservation_overlap_is_rejected`、`dtb_mrb_and_reservation_on_the_same_page_conflict`、`dtb_mrb_and_no_map_reservation_are_compatible`、`accepts_exactly_the_collector_reservation_bound`、`test_validate_requiring_sources_rejects_an_empty_partition`、`test_validate_requiring_sources_accepts_covering_records`、`resv_claims::tests::*`（10 条，含几何溢出负控 `overflowing_descriptor_geometry_is_ignored`）。
 
 **未取得读数**：`tools/check-clippy-ratchet.sh` 在本批基线 `7a464dc82` 上因无关的 `minix-service` 在制品（`E0063 missing fields io/irq/nr_io`，修复在主树未提交）编译失败，棘轮未出数；本批新增的 `resv_claims` 经 `cargo clippy -p boot-shim` 复核为零告警。
 

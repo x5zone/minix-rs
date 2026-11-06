@@ -5905,3 +5905,8 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 读数：minix-boot 163 / boot-shim 81 / kernel 863 / types 339 / vm 548；五目标交叉构建 OK；QEMU 三腿 PASS。
 - 全树 clippy 棘轮被基线 `7a464dc82` 上的无关 `minix-service` 在制品（E0063）挡住，未出数（已记 `03` 七十九节）。
 - 认领：`I-29 qorder86`，状态 ✅：已 ff 合并为 `3902bf364`，认领已释放（工作树已删）。
+
+### 第三百二十一笔（01 阶段 · I-29 复审自检：覆盖检查的几何溢出）
+
+- 复审自检发现：`resv_claims::check` 直接乘 `number_of_pages * 4096`，而 `Excluded`/`DevicePath` 描述符不过分类器几何门；极大页数在 debug 构建 panic、release 回绕。改为 `checked_mul`，溢出即视为不覆盖任何主张页，补负控 `overflowing_descriptor_geometry_is_ignored`（boot-shim 82）。
+- 认领：`I-29 qorder87`，状态 ✅：已 ff 合并为 `fc7759e16`，认领已释放。
