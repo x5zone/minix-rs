@@ -6009,3 +6009,17 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 提交：`82962e411 docs(01)`（正文/02/03/todo）；本笔台账。门：1,149 行、围栏 42 偶、表格 38 块 0 不一致、承载门通过、lint 0、横幅 PASS、lost 0（syms 165→593、tests 96→357）。
 - 认领：`I-29 qorder121`，状态 ✅：已 ff 合并，认领已释放。
 - 剩余（下一批，均已在正文标注）：① DTB 记录随第一跳交付 + 容量 296 + 审计输入权威过滤；② O-11 两快照顺序或 8 字节预读豁免的裁决与落码；③ 启动对象 `last_use` 表达（第一版维持分层 + 扣减兜底）。
+
+### 第三百三十六笔（01 阶段 · I-29 第一百二十二轮：身份/地址域收口与 296 条 ABI）
+
+- 复审四项有限收尾落码（wire v6）：
+  - 身份三元组 `(input_object, snapshot_id, local_source)` 定型；`input_object`=类别、`snapshot_id`=观测实例（与 MapKey 无关）、`id`=记录序号；文档旧表述全部改正。
+  - `AddressDomain::UefiMmioPortSpace`（tag 2）承载 `Type == 12`，保留描述符事实但声明非物理域，不进入 PMM 物理页集合。
+  - 来源分区 256→**296**（256 UEFI + 40 DTB），`WIRE_SOURCES_END = 35328`、启动对象 35328–36480、9 页 arena 余 384 B；版本 6；`ebs_map` 编译期断言 `296 >= 256 + 40`。
+  - 配置表 DTB 记录在 `capture` 时留存并随 UEFI 记录写入来源分区；`audit_source_coverage_for` 按输入权威过滤，`KernelInfo::validate` 在含 UEFI 记录时只认 `UefiMemoryMap`。两条混合输入测试钉住。
+  - UEFI 腿启动对象写前断言 `1 + 模块数 + 3 <= 16`。
+- 测试：`uefi_projection_cannot_be_covered_by_a_dtb_memory_record`、`reserved_projection_is_also_authority_filtered`；宿主 341/171/92(+5)/863/548。
+- 回归：五个交叉构建全通过；`run_all` 38/1/0/0（唯一红 `test-rt-birth-aarch64` 基线同签名）；六条非注册腿全 PASS（x86/aarch64 ACPI/`DTB_CFGTABLE=1` 负例/riscv bootface/riscv U-Boot 6/6/riscv 全系统）。
+- 提交 `cd478bd84`（代码+文档同提交）；本笔台账。门：1,161 行、围栏 42 偶、表格 39 块 0 不一致、lint 0、横幅 PASS、lost 0。
+- 认领：`I-29 qorder122`，状态 ✅：已 ff 合并，认领已释放。
+- **仍开放（唯一一项）**：O-11 的严格两快照顺序（PreflightMap → 40 字节 header snapshot → 分配副本 → FinalMap → 全范围校验 → body 复制）。当前 `dtb_copy::prepare` 在第一次取图前读 8 字节 header；要么实现严格顺序，要么把 8 字节预读写进合同作豁免——需一次裁决。其余复审项（身份、地址域、296 ABI、权威审计、启动对象写前证明）已闭合。
