@@ -791,7 +791,6 @@ mod tests {
             assert_eq!(l.ident_regions().len(), 0);
         }
 
-        /// v6: the kernel runtime identity windows flow through.
         /// Pins the kernel→VM wire layout: the VM reads this structure through
         /// a fixed VA, so a field reorder or width change must fail the build
         /// instead of silently shifting what the consumer sees.
@@ -810,6 +809,7 @@ mod tests {
             assert_eq!(core::mem::offset_of!(VmBootHandoff, modules), 1888);
         }
 
+        /// v6: the kernel runtime identity windows flow through.
         #[test]
         fn test_kernel_layout_v6_reports_identity_windows() {
             let mut h = handoff(VM_BOOT_HANDOFF_VERSION);

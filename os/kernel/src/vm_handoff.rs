@@ -709,9 +709,6 @@ mod tests {
         }
     }
 
-    /// Kernel image, root, bump, used frames and a reserved module are all
-    /// cut out of one contiguous span; the record contains every source and
-    /// the survivors are exactly the complement (interior cuts → 5 spans).
     /// The capacity is derived (`3 + MAX_BOOT_REGIONS + NR_BOOT_MODULES`):
     /// a boot that reaches the bound must still be enumerable.
     #[test]
@@ -734,6 +731,9 @@ mod tests {
         }
     }
 
+    /// Kernel image, root, bump, used frames and a reserved module are all
+    /// cut out of one contiguous span; the record contains every source and
+    /// the survivors are exactly the complement (interior cuts → 5 spans).
     #[test]
     fn test_classification_deducts_all_record_sources() {
         let memmap = [mem_region(0x10_0000, 0x3F0_0000)]; // [1M, 64M)
