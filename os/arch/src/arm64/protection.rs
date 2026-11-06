@@ -138,18 +138,18 @@ impl ProtectionArch for AArch64Protection {
     }
 
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // EL1h model (`SPSel=1`): `SP_EL1` *is* the active stack pointer, so
-        // it is not bank-accessible via `msr SP_EL1, Xt` — ARMv8 D1.5 declares
-        // that encoding UNDEFINED when `SPSel=1`, and executing it raises a
-        // synchronous exception (this is exactly the boot trap observed
-        // during bring-up). The kernel stack the exception entry uses is the
-        // running SP, which the higher-half transition already established
-        // with `mov sp, kern_stack_top`
-        // (kernel/src/arch/aarch64/higher_half.rs). Because EL1h has no
-        // hardware stack switch on trap entry (contrast x86 `TSS.sp0`), the
-        // per-CPU base is parked in `TPIDR_EL1` here so `restore_to_user` can
-        // reload `SP_EL1` from it before every `eret` — closing the scheduler
-        // stack ratchet.
+        // EL1h model (`SPSel=1`): `SP_EL1` *is* the active stack pointer. The
+        // encoding is architecturally accessible from EL1 (HCR_EL2.TSP=0);
+        // the boot trap observed during bring-up came from replacing the
+        // active stack pointer mid-function, so the epilogue popped x29/x30
+        // from the new stack — not from an UNDEFINED encoding. The kernel
+        // stack the exception entry uses is the running SP, which the
+        // higher-half transition already established with `mov sp,
+        // kern_stack_top` (kernel/src/arch/aarch64/higher_half.rs). Because
+        // the hardware selects banked `SP_EL1` on an EL0→EL1 trap (there is
+        // no x86-TSS-style memory fetch), the per-CPU base is parked in
+        // `TPIDR_EL1` here so `restore_to_user` can reload `SP_EL1` from it
+        // before every `eret` — closing the scheduler stack ratchet.
         //
         // `base == 0` is a sentinel, not a stack: the non-x86 `with_protection`
         // helper fabricates a throwaway `init(0, VirBytes::new(0))` purely to
