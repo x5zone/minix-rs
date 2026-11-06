@@ -776,7 +776,7 @@ MrbPages ∩ DtbPages  → EfiACPIReclaimMemory
 
 本项只保留两条对内存图有影响的结论：① `reg` 只是资源位置描述，不推出「必须映射」「属性一定是 DEVICE」「可以进入恒等映射」；② 设备资源记录**不得**直接塞进以 `PhysicalRange` 为地址类型的内存来源记录——那是两类地址域，转换失败（缺失 `ranges`、某一级无法转换、只覆盖部分 `reg`、溢出、最终不是 CPU 物理地址）时不得静默产出看似合法的记录。
 
-#### O-12k UEFI 内存图快照与 MapKey 一致性（**大部分实现**：单快照配对与重试、PreflightMap → header → 副本分配 → FinalMap 序列已落码；按最小描述符尺寸推导缓冲上界未实现；最终范围可达性归 BootEntry/架构 adapter，本项不实现）
+#### O-12k UEFI 内存图快照与 MapKey 一致性（**大部分实现**：单快照配对与重试、PreflightMap → header → 副本分配 → FinalMap 序列已落码；缓冲区按固件探测值加增长余量处理，实际条数按 `MemoryMapSize / DescriptorSize` 计算，超过 256 槽整体拒绝；最终范围可达性归 BootEntry/架构 adapter，本项不实现）
 
 `GetMemoryMap()` 返回的 `MapKey` 随内存图变化而变化，`ExitBootServices()` 必须使用**当前**内存图的 key；key 失效时须重新取图、重试。这与 O-11 的自有副本、对象登记表、诊断缓冲区的分配直接冲突：每次 Boot Services 分配都可能改变内存图。
 **合同**：
