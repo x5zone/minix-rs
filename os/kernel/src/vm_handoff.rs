@@ -39,17 +39,17 @@
 
 use crate::boot_alloc::{boot_alloc_region, boot_alloc_used_bytes};
 use crate::globals::SyncUnsafeCell;
-use crate::memmap::{cut_memmap, MemMapEntry, MAXMEMMAP};
+use crate::memmap::{MAXMEMMAP, MemMapEntry, cut_memmap};
 use crate::proc::{BOOT_MODULE_PROC_NRS, KERNEL_TASKS};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use minix_arch::arch::frame::VmBootAllocator;
 use minix_arch::DirectMapArch;
+use minix_arch::arch::frame::VmBootAllocator;
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{
-    BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS, USER_STACK_TOP,
-    PhysBytes, VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED,
-    VM_BOOT_HANDOFF_MAX_IDENT, VM_BOOT_HANDOFF_MAX_MODULES,
-    VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION, VmBootHandoff,
+    BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS, PhysBytes, USER_STACK_TOP,
+    VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED, VM_BOOT_HANDOFF_MAX_IDENT,
+    VM_BOOT_HANDOFF_MAX_MODULES, VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION,
+    VmBootHandoff,
 };
 
 /// The kernel image's text-segment end (link VMA), provided by
@@ -144,9 +144,15 @@ pub fn vm_pmm_free_regions() -> ([MemoryRegion; VM_BOOT_HANDOFF_MAX_REGIONS], us
     // SAFETY: write-once-then-read (see `VM_PMM_FREE`); the copy-out is a
     // plain value read of plain data.
     let regions = unsafe { *VM_PMM_FREE.get() };
-    let mut out = [MemoryRegion { base: PhysBytes(0), len: 0 }; VM_BOOT_HANDOFF_MAX_REGIONS];
+    let mut out = [MemoryRegion {
+        base: PhysBytes(0),
+        len: 0,
+    }; VM_BOOT_HANDOFF_MAX_REGIONS];
     for (i, region) in regions.iter().enumerate().take(count) {
-        out[i] = MemoryRegion { base: PhysBytes(region.base), len: region.size as usize };
+        out[i] = MemoryRegion {
+            base: PhysBytes(region.base),
+            len: region.size as usize,
+        };
     }
     (out, count)
 }
@@ -437,7 +443,10 @@ pub fn build_vm_handoff(
         };
         n += 1;
     }
-    debug_assert_eq!(n, NR_BOOT_PROCS, "kernel tasks + boot modules must fill the boot image table");
+    debug_assert_eq!(
+        n, NR_BOOT_PROCS,
+        "kernel tasks + boot modules must fill the boot image table"
+    );
 
     // Handoff v6: kernel runtime identity windows — the VM's
     // `map_kernel` replays them into every process page table so the
@@ -611,8 +620,7 @@ pub(crate) fn classify_regions(
     }
 
     for range in &record.ranges[..record.count] {
-        cut_memmap(&mut mmap, range.base, range.size)
-            .expect("vm_handoff test: cut_memmap failed");
+        cut_memmap(&mut mmap, range.base, range.size).expect("vm_handoff test: cut_memmap failed");
     }
 
     let window_end = minix_arch::CurrentDirectMap::VM_DIRECT_MAP_SIZE;
@@ -776,7 +784,7 @@ mod tests {
     fn test_bootstrap_frames_are_recorded_per_region_not_per_frame() {
         let _boot = crate::test_sync::lock_boot_globals();
         use crate::vm_boot_exclusions;
-        use minix_arch::arch::frame::{VmBootRegion, MAX_BOOT_REGIONS};
+        use minix_arch::arch::frame::{MAX_BOOT_REGIONS, VmBootRegion};
         use minix_boot::BootModule;
         use minix_types::VirBytes;
 
@@ -823,12 +831,9 @@ mod tests {
                 Some(root),
                 boot_alloc_region(),
             );
-            let regions = VmBootRegion::select_multi::<MAX_BOOT_REGIONS>(
-                info.memmap(),
-                &excl[..n],
-            )
-            .expect("select_multi")
-            .expect("a bootstrap region survives the exclusions");
+            let regions = VmBootRegion::select_multi::<MAX_BOOT_REGIONS>(info.memmap(), &excl[..n])
+                .expect("select_multi")
+                .expect("a bootstrap region survives the exclusions");
             let mut alloc = VmBootAllocator::<MAX_BOOT_REGIONS>::new(regions);
             let taken = (0..frames)
                 .map(|_| {
@@ -920,7 +925,10 @@ mod tests {
         assert_eq!(&name[..2], b"vm");
         assert!(name[2..].iter().all(|&b| b == 0));
 
-        assert_eq!(KERNEL_TASKS.len() + BOOT_MODULE_PROC_NRS.len(), NR_BOOT_PROCS);
+        assert_eq!(
+            KERNEL_TASKS.len() + BOOT_MODULE_PROC_NRS.len(),
+            NR_BOOT_PROCS
+        );
     }
 
     // ── identity-window construction ──
@@ -944,7 +952,10 @@ mod tests {
         for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
             assert_eq!(base % PAGE_SIZE, 0, "MMIO identity base not page-aligned");
             assert_eq!(size % PAGE_SIZE, 0, "MMIO identity size not page-aligned");
-            assert!(base >= previous_end, "MMIO identity regions overlap or are unsorted");
+            assert!(
+                base >= previous_end,
+                "MMIO identity regions overlap or are unsorted"
+            );
             previous_end = base + size;
         }
     }

@@ -1398,7 +1398,9 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // the occupied ranges it must not touch (`vm_boot_exclusions` for the VM
     // bootstrap pools, `classify` for the handoff free list), and the only
     // firmware blob read after this point (the DTB, Phase A.5) is consumed
-    // before the first allocator can reach it. Boot module blobs, the kernel
+    // before the first allocator can reach it. Nothing may re-read that blob
+    // afterwards; a future consumer must copy it or register it as a live
+    // object. Boot module blobs, the kernel
     // image, the self root page and the boot bump region stay reserved for
     // the whole run by the A2 deduction record.
     // Phase A.5: Platform discovery — initialize PlatformContext from KernelInfo.

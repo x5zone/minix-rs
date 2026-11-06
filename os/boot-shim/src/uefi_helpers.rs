@@ -12,29 +12,27 @@
 use crate::ebs_map;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use minix_arch::boot_dm_admissible_end;
+use minix_boot::{BootPrepareResult, BootShim, DTB, MemoryRegion, PlatformDescSource, RSDP};
+use minix_types::PhysBytes;
+use uefi::Guid;
 use uefi::boot::{self, AllocateType};
 use uefi::fs::FileSystem;
 use uefi::mem::memory_map::{MemoryMap, MemoryType};
 use uefi::system;
 use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
-use uefi::Guid;
-use minix_types::PhysBytes;
-use minix_arch::boot_dm_admissible_end;
-use minix_boot::{
-    BootPrepareResult, BootShim, DTB, MemoryRegion, PlatformDescSource, RSDP,
-};
 
 use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+use crate::ebs_pair::{self, PairError, RawOps};
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use core::ffi::c_void;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use minix_boot::{
-    decode_descriptors, Serializer, ARENA_CAP, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET,
+    ARENA_CAP, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET, Serializer, decode_descriptors,
 };
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-use crate::ebs_pair::{self, PairError, RawOps};
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
 ///
@@ -118,7 +116,9 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
         {
             for e in entries {
                 if e.guid == ACPI2_GUID || e.guid == ACPI_GUID {
-                    sources.borrow_mut().push(PlatformDescSource::new(RSDP, PhysBytes(e.address as u64)));
+                    sources
+                        .borrow_mut()
+                        .push(PlatformDescSource::new(RSDP, PhysBytes(e.address as u64)));
                     break;
                 }
             }
@@ -129,14 +129,18 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
         {
             for e in entries {
                 if e.guid == DEVICE_TREE_GUID || e.guid == LEGACY_DEVICE_TREE_GUID {
-                    sources.borrow_mut().push(PlatformDescSource::new(DTB, PhysBytes(e.address as u64)));
+                    sources
+                        .borrow_mut()
+                        .push(PlatformDescSource::new(DTB, PhysBytes(e.address as u64)));
                     break;
                 }
             }
             // Fall back to ACPI if DTB not present.
             for e in entries {
                 if e.guid == ACPI2_GUID || e.guid == ACPI_GUID {
-                    sources.borrow_mut().push(PlatformDescSource::new(RSDP, PhysBytes(e.address as u64)));
+                    sources
+                        .borrow_mut()
+                        .push(PlatformDescSource::new(RSDP, PhysBytes(e.address as u64)));
                     break;
                 }
             }
@@ -153,8 +157,7 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
 
     // Leak the Vec so it has 'static lifetime — acceptable for boot-stage
     // code that runs exactly once (same pattern as build_memmap).
-    let leaked: &'static [PlatformDescSource] =
-        Box::leak(sources.into_inner().into_boxed_slice());
+    let leaked: &'static [PlatformDescSource] = Box::leak(sources.into_inner().into_boxed_slice());
     // Capture the DTB-side reservation claims here, before the EBS pairing
     // loop: it verifies them against the snapshot it reads (brief O-11).
     // A missing or unparsable DTB leaves the list empty;
@@ -179,9 +182,9 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
 fn collect_param_buf() -> (&'static [u8], minix_boot::ParamStats) {
     let landing: &'static mut [u8] =
         Box::leak(alloc::vec![0u8; minix_boot::PARAM_BUF_CAP].into_boxed_slice());
-    let input: Vec<u8> = boot::open_protocol_exclusive::<
-        uefi::proto::loaded_image::LoadedImage,
-    >(boot::image_handle())
+    let input: Vec<u8> = boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
+        boot::image_handle(),
+    )
     .ok()
     .and_then(|image| image.load_options_as_bytes().map(|bytes| bytes.to_vec()))
     .unwrap_or_default();
@@ -238,8 +241,7 @@ impl BootShim for UefiBootShim {
              kernel binary into the ESP image",
         );
         uefi::println!("boot-shim: kernel loaded (entry staged)");
-        let boot_modules =
-            loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
+        let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
         uefi::println!("boot-shim: 12 boot modules loaded");
 
         // Locate platform descriptor sources (ACPI RSDP and/or DTB) from the
@@ -294,9 +296,7 @@ impl BootShim for UefiBootShim {
                 let (dtb_free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0)
                     .collect()
                     .expect("boot-shim: DTB memmap rejected — halting");
-                if let Err((base, len)) =
-                    minix_boot::dtb_covers_conventional(dtb_free, memmap)
-                {
+                if let Err((base, len)) = minix_boot::dtb_covers_conventional(dtb_free, memmap) {
                     // Diagnostic only: under UEFI the firmware memory map is the
                     // sole RAM authority and any `/memory` node must be ignored,
                     // so a mismatch must never change the boot decision.
@@ -439,17 +439,24 @@ impl BootShim for UefiBootShim {
 /// deep-copies both tables into its own `.bss` before anything can allocate from
 /// the free list; the shim never returns and never frees, so those pages are dead
 /// to the firmware afterwards. Keep both orderings if this function is restructured.
-static mut UEFI_FREE: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] =
-    [MemoryRegion { base: PhysBytes(0), len: 0 }; ebs_map::MAX_MAP_DESCRIPTORS];
-static mut UEFI_RESERVED: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] =
-    [MemoryRegion { base: PhysBytes(0), len: 0 }; ebs_map::MAX_MAP_DESCRIPTORS];
-static mut UEFI_SIDE: [MemoryRegion; ebs_map::SIDE_CAP] =
-    [MemoryRegion { base: PhysBytes(0), len: 0 }; ebs_map::SIDE_CAP];
+static mut UEFI_FREE: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] = [MemoryRegion {
+    base: PhysBytes(0),
+    len: 0,
+};
+    ebs_map::MAX_MAP_DESCRIPTORS];
+static mut UEFI_RESERVED: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] = [MemoryRegion {
+    base: PhysBytes(0),
+    len: 0,
+};
+    ebs_map::MAX_MAP_DESCRIPTORS];
+static mut UEFI_SIDE: [MemoryRegion; ebs_map::SIDE_CAP] = [MemoryRegion {
+    base: PhysBytes(0),
+    len: 0,
+}; ebs_map::SIDE_CAP];
 static mut MAP_STORAGE: ebs_map::MapStorage = ebs_map::MapStorage::new();
 
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
-    let mmap = boot::memory_map(MemoryType::LOADER_DATA)
-        .expect("Failed to get UEFI memory map");
+    let mmap = boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get UEFI memory map");
 
     let entries = mmap.len();
     if entries == 0 {
@@ -483,7 +490,8 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     }
     // SAFETY: the counted walk covers `entries` descriptors at this stride inside
     // the buffer firmware just filled; nothing else writes it on this boot face.
-    let buffer = unsafe { core::slice::from_raw_parts(base as *const u8, descriptor_size * entries) };
+    let buffer =
+        unsafe { core::slice::from_raw_parts(base as *const u8, descriptor_size * entries) };
 
     // SAFETY: boot is single-threaded and this leg runs once per image; these
     // statics have no other holder.
@@ -501,23 +509,27 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
         let plan = ebs_map::classify(descs, pa_limit(), storage.side_capacity())
             .unwrap_or_else(|err| panic!("boot-shim: memory map rejected: {err:?}"));
         let (mut free_n, mut reserved_n, mut side_n) = (0usize, 0usize, 0usize);
-        plan.write_to(descs, pa_limit(), |_index, disposition, region| match disposition {
-            ebs_map::Disposition::Allocate => {
-                (*core::ptr::addr_of_mut!(UEFI_FREE))[free_n] = *region;
-                free_n += 1;
-            }
-            ebs_map::Disposition::ReservedMapped => {
-                (*core::ptr::addr_of_mut!(UEFI_RESERVED))[reserved_n] = *region;
-                reserved_n += 1;
-            }
-            ebs_map::Disposition::Side => {
-                if side_n < (*core::ptr::addr_of!(UEFI_SIDE)).len() {
-                    (*core::ptr::addr_of_mut!(UEFI_SIDE))[side_n] = *region;
+        plan.write_to(
+            descs,
+            pa_limit(),
+            |_index, disposition, region| match disposition {
+                ebs_map::Disposition::Allocate => {
+                    (*core::ptr::addr_of_mut!(UEFI_FREE))[free_n] = *region;
+                    free_n += 1;
                 }
-                side_n += 1;
-            }
-            ebs_map::Disposition::Excluded | ebs_map::Disposition::DevicePath => {}
-        });
+                ebs_map::Disposition::ReservedMapped => {
+                    (*core::ptr::addr_of_mut!(UEFI_RESERVED))[reserved_n] = *region;
+                    reserved_n += 1;
+                }
+                ebs_map::Disposition::Side => {
+                    if side_n < (*core::ptr::addr_of!(UEFI_SIDE)).len() {
+                        (*core::ptr::addr_of_mut!(UEFI_SIDE))[side_n] = *region;
+                    }
+                    side_n += 1;
+                }
+                ebs_map::Disposition::Excluded | ebs_map::Disposition::DevicePath => {}
+            },
+        );
         // Count both lists at the source, so "the walk found nothing" and
         // "forwarding lost it" stay distinguishable on real hardware, and name the
         // ranges that policy left out rather than leaving them implied.
@@ -528,7 +540,10 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
             side_n
         );
         (
-            core::slice::from_raw_parts(core::ptr::addr_of!(UEFI_FREE) as *const MemoryRegion, free_n),
+            core::slice::from_raw_parts(
+                core::ptr::addr_of!(UEFI_FREE) as *const MemoryRegion,
+                free_n,
+            ),
             core::slice::from_raw_parts(
                 core::ptr::addr_of!(UEFI_RESERVED) as *const MemoryRegion,
                 reserved_n,
@@ -556,9 +571,13 @@ const PAGE_SIZE: u64 = 4096;
 /// per architecture. A target with no UEFI boot face has no map to classify and
 /// no width to report: reaching this there is a wiring mistake, not a state.
 #[cfg(target_arch = "aarch64")]
-fn pa_limit() -> u64 { 1 << 48 }
+fn pa_limit() -> u64 {
+    1 << 48
+}
 #[cfg(target_arch = "x86_64")]
-fn pa_limit() -> u64 { 1 << 52 }
+fn pa_limit() -> u64 {
+    1 << 52
+}
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 fn pa_limit() -> u64 {
     unreachable!("no UEFI memory map to classify on this target")
@@ -658,7 +677,8 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
 /// below the identity/DM-admissible bound (the receiver reads it through the
 /// bootstrap root's identity window).
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-fn alloc_arena() -> PhysBytes {    let pages = ARENA_CAP / PAGE_SIZE as usize;
+fn alloc_arena() -> PhysBytes {
+    let pages = ARENA_CAP / PAGE_SIZE as usize;
     let ptr = boot::allocate_pages(
         AllocateType::MaxAddress(bootstrap_alloc_limit()),
         MemoryType::LOADER_DATA,
@@ -706,7 +726,10 @@ fn probe_map_buffer_size(boot_services: *mut c_void) -> usize {
         panic!("boot-shim: GetMemoryMap size probe failed: {status:?}");
     }
     let floor = 16 * 1024usize;
-    let margin = desc_size.max(64).saturating_mul(8).saturating_add(PAGE_SIZE as usize);
+    let margin = desc_size
+        .max(64)
+        .saturating_mul(8)
+        .saturating_add(PAGE_SIZE as usize);
     size.max(floor).saturating_add(margin)
 }
 
@@ -791,7 +814,11 @@ fn raw_serial_hex(value: u64) {
     for shift in (0..16).rev() {
         let digit = ((value >> (shift * 4)) & 0xf) as u8;
         if digit != 0 || started || shift == 0 {
-            buf[n] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+            buf[n] = if digit < 10 {
+                b'0' + digit
+            } else {
+                b'a' + digit - 10
+            };
             n += 1;
             started = true;
         }
@@ -807,9 +834,7 @@ fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[Memor
     match dtb_free {
         Some(dtb) => {
             if let Err((base, len)) = minix_boot::dtb_covers_conventional(dtb, conventional) {
-                crate::raw_serial(
-                    "boot-shim: conventional range outside DTB /memory: base=",
-                );
+                crate::raw_serial("boot-shim: conventional range outside DTB /memory: base=");
                 raw_serial_hex(base);
                 crate::raw_serial(" len=");
                 raw_serial_hex(len as u64);
@@ -892,9 +917,9 @@ fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[Mem
         .collect()
         .expect("boot-shim: configuration-table DTB memmap rejected — halting");
     match minix_boot::dtb_covers_conventional(dtb_free, conventional) {
-        Ok(()) => crate::raw_serial(
-            "boot-shim: platform DTB cross-validated against the UEFI map\r\n",
-        ),
+        Ok(()) => {
+            crate::raw_serial("boot-shim: platform DTB cross-validated against the UEFI map\r\n")
+        }
         Err((base, len)) => panic!(
             "boot-shim: UEFI conventional [{base:#x},+{len:#x}) lies outside the configuration-table DTB /memory — halting"
         ),
@@ -910,8 +935,8 @@ fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryReg
     if minix_boot::fdt_layout::validate(0, &blob).is_err() {
         panic!("boot-shim: dumpdtb.dtb container invalid");
     }
-    let fdt = fdt::Fdt::new(&blob)
-        .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
+    let fdt =
+        fdt::Fdt::new(&blob).unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
     let (free, _) = minix_boot::DtbMemoryMap::new(&fdt, 0)
         .collect()
         .expect("boot-shim: DTB memmap rejected — halting");
@@ -960,9 +985,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // SAFETY: the arena is a fresh `ARENA_CAP` (seven-page) LOADER_DATA allocation below the
     // identity bound; boot services own it until EBS and nothing else writes
     // those pages. The slice lives for the rest of this `!` function.
-    let arena = unsafe {
-        core::slice::from_raw_parts_mut(arena_pa.0 as *mut u8, ARENA_CAP)
-    };
+    let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa.0 as *mut u8, ARENA_CAP) };
     let mut serializer = Serializer::new(arena).expect("handoff arena too small");
     // Scalars-only carrier: the real memmap arrives from the pairing loop, but
     // the envelope's scalar fields are already final here.
@@ -1196,8 +1219,14 @@ mod tests {
     #[test]
     fn test_bootstrap_outside_memmap_accepts_disjoint_and_abutting() {
         static MEMMAP: [MemoryRegion; 2] = [
-            MemoryRegion { base: PhysBytes(0x10_0000), len: 0x10_0000 },
-            MemoryRegion { base: PhysBytes(0x40_0000), len: 0x10_0000 },
+            MemoryRegion {
+                base: PhysBytes(0x10_0000),
+                len: 0x10_0000,
+            },
+            MemoryRegion {
+                base: PhysBytes(0x40_0000),
+                len: 0x10_0000,
+            },
         ];
         // Before the first region, after the last, and exactly abutting the
         // seam at 0x20_0000 from the right.
@@ -1211,8 +1240,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "overlaps bootstrap allocation")]
     fn test_bootstrap_outside_memmap_rejects_contained_range() {
-        static MEMMAP: [MemoryRegion; 1] =
-            [MemoryRegion { base: PhysBytes(0x10_0000), len: 0x10_0000 }];
+        static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(0x10_0000),
+            len: 0x10_0000,
+        }];
         assert_bootstrap_outside_memmap(&MEMMAP, 0x14_0000, 0x1000);
     }
 
@@ -1222,8 +1253,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "overlaps bootstrap allocation")]
     fn test_bootstrap_outside_memmap_rejects_partial_overlap() {
-        static MEMMAP: [MemoryRegion; 1] =
-            [MemoryRegion { base: PhysBytes(0x10_0000), len: 0x10_0000 }];
+        static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(0x10_0000),
+            len: 0x10_0000,
+        }];
         assert_bootstrap_outside_memmap(&MEMMAP, 0x1f_f000, 0x2000);
     }
 
@@ -1233,8 +1266,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "wrapping length")]
     fn test_bootstrap_outside_memmap_rejects_wrapping_region() {
-        static MEMMAP: [MemoryRegion; 1] =
-            [MemoryRegion { base: PhysBytes(0xffff_ffff_ffff_f000), len: 0x2000 }];
+        static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(0xffff_ffff_ffff_f000),
+            len: 0x2000,
+        }];
         assert_bootstrap_outside_memmap(&MEMMAP, 0x10_0000, 0x1000);
     }
 
@@ -1243,8 +1278,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "overflows the address space")]
     fn test_bootstrap_outside_memmap_rejects_wrapping_allocation() {
-        static MEMMAP: [MemoryRegion; 1] =
-            [MemoryRegion { base: PhysBytes(0), len: 0x1000 }];
+        static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0x1000,
+        }];
         assert_bootstrap_outside_memmap(&MEMMAP, 0xffff_ffff_ffff_f000, 0x2000);
     }
 }

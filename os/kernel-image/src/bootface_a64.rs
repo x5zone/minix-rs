@@ -51,10 +51,7 @@
 
 use core::slice;
 
-use minix_boot::{
-    BootModule, DTB, KernelInfo, MemoryRegion, NR_BOOT_MODULES,
-    PlatformDescSource,
-};
+use minix_boot::{BootModule, DTB, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource};
 use minix_types::{PhysBytes, VirBytes};
 
 use boot_shim::build_kernel_info;
@@ -140,7 +137,11 @@ static mut PLATFORM_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, Ph
 
 /// Landing descriptor table for the 12 modules.
 static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
-    BootModule { name: "", start: PhysBytes(0), len: 0 }
+    BootModule {
+        name: "",
+        start: PhysBytes(0),
+        len: 0,
+    }
 }; NR_BOOT_MODULES];
 
 // ── Entry ──────────────────────────────────────────────────────
@@ -193,9 +194,11 @@ pub extern "C" fn bootface_a64() -> ! {
     // lane). `fw_end = 0` is a premise of this form: the DRAM of the aarch64
     // direct-kernel chain has no resident firmware area (QEMU places only the
     // DTB and the image), so nothing is trimmed here; the DTB itself is
-    // permanently subtracted by kernel phase A.2 using the real totalsize —
-    // the two mechanisms do not substitute for each other: this site only
-    // produces the semantic list, the subtraction is kernel accounting.
+    // No longer subtracted by the kernel: Phase A.2 disappeared together with
+    // FREE_MEMMAP. The pages stay outside every boot-time exclusion by the
+    // ordering contract — platform discovery consumes the blob in Phase A.5,
+    // before any allocator can reach conventional memory. A future consumer
+    // of the raw blob would have to copy it or register it as a live object.
     let (memmap, reserved, sources) = minix_boot::DtbMemoryMap::new(&fdt, 0)
         .collect_with_sources()
         .expect("bootface: DTB memmap rejected (capacity or reservation shape) — halting");
@@ -235,11 +238,20 @@ pub extern "C" fn bootface_a64() -> ! {
     //    (sequential and non-overlapping; Option plus an honest halt, with no
     //    expect/panic leg — the same shape as the riscv half).
     let pool_exhaust = "### minix-rs kernel image: bump pool exhausted — halting\n";
-    let Some(cur_root) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
+    let Some(cur_root) = bump_alloc_pages(1) else {
+        say(pool_exhaust);
+        crate::halt()
+    };
     let root_page = PhysBytes(cur_root);
-    let Some(pt_base) = bump_alloc_pages(PT_BUMP_PAGES) else { say(pool_exhaust); crate::halt() };
+    let Some(pt_base) = bump_alloc_pages(PT_BUMP_PAGES) else {
+        say(pool_exhaust);
+        crate::halt()
+    };
     let pt_end = pt_base + (PT_BUMP_PAGES as u64) * 4096;
-    let Some(names_pool) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
+    let Some(names_pool) = bump_alloc_pages(1) else {
+        say(pool_exhaust);
+        crate::halt()
+    };
     minix_kernel::boot_alloc::init_boot_pt_alloc(pt_base, pt_end);
     minix_arch::pt_alloc::register(minix_kernel::boot_alloc::boot_pt_alloc);
     say("  root 0x");
@@ -265,14 +277,12 @@ pub extern "C" fn bootface_a64() -> ! {
     //    in .bss).
     // SAFETY: single hart on the boot face; written once, read-only afterwards.
     unsafe {
-        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
-            PlatformDescSource::new(DTB, PhysBytes(DTB_PA));
+        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) = PlatformDescSource::new(DTB, PhysBytes(DTB_PA));
     }
     // SAFETY: as above — the static reference is taken after the write; the
     // single array cell and the length-1 slice have the same origin.
-    let platform_sources: &'static [PlatformDescSource] = unsafe {
-        core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1)
-    };
+    let platform_sources: &'static [PlatformDescSource] =
+        unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1) };
 
     // T3: DTB `/chosen/bootargs` is the direct-boot parameter source
     // (QEMU `-append` fills it).
@@ -349,11 +359,7 @@ fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
 /// `place_modules` item by item (straight copy, full-width and alignment gates)
 /// and are not repeated here; the only difference is the bump pool base (the
 /// aarch64 form).
-fn place_modules(
-    table: &BootFileTable,
-    memmap: &[MemoryRegion],
-    names_pool: u64,
-) -> Option<()> {
+fn place_modules(table: &BootFileTable, memmap: &[MemoryRegion], names_pool: u64) -> Option<()> {
     let entries = table.valid_entries();
     if entries.len() < NR_BOOT_MODULES {
         say("  table holds 0x");
@@ -419,7 +425,10 @@ fn place_modules(
         unsafe {
             core::ptr::copy_nonoverlapping(NAME_POOL[i].as_ptr(), slot as *mut u8, NAME_SLOT);
         }
-        let n = NAME_POOL[i].iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
+        let n = NAME_POOL[i]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(NAME_SLOT);
         let landed: &'static str = unsafe {
             // SAFETY: the bytes come from the ASCII literal pool; the backing
             // is an exclusive physical page.

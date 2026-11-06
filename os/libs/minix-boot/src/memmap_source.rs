@@ -34,8 +34,8 @@
 //! point back into this library.
 
 use crate::kernel_info::MemoryRegion;
-use minix_types::PhysBytes;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use minix_types::PhysBytes;
 
 /// Capacity of the DTB memory map. Symmetric with kernel-image bootface's old
 /// `MEMMAP_MAX = 8` (the capacity moved with the migration; consumer semantics
@@ -152,10 +152,14 @@ pub enum DtbMemMapError {
 // `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
 // boot face writes once and the storage is read-only afterwards; the read side
 // never hands out `&mut` (addr_of! base plus from_raw_parts).
-static mut DTB_FREE: [MemoryRegion; DTB_MEMMAP_MAX] =
-    [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
-static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] =
-    [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+static mut DTB_FREE: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
+    base: PhysBytes(0),
+    len: 0,
+}; DTB_MEMMAP_MAX];
+static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
+    base: PhysBytes(0),
+    len: 0,
+}; DTB_MEMMAP_MAX];
 static DTB_FREE_N: AtomicUsize = AtomicUsize::new(0);
 static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
 
@@ -256,7 +260,9 @@ pub fn audit_source_coverage(
     for span in free {
         let start = span.base.0;
         let end = start as u128 + span.len as u128;
-        if !records_cover(start as u128, end, sources, |r| r.kind == SourceKind::Memory) {
+        if !records_cover(start as u128, end, sources, |r| {
+            r.kind == SourceKind::Memory
+        }) {
             return Err(SourceAuditError::FreeSpanWithoutMemorySource {
                 start,
                 end_exclusive: end,
@@ -301,10 +307,8 @@ fn records_cover<F: Fn(&SourceRecord) -> bool>(
             }
             let rs = r.range.start as u128;
             let re = r.range.end_exclusive;
-            if rs <= cursor && cursor < re {
-                if re > next {
-                    next = re;
-                }
+            if rs <= cursor && cursor < re && re > next {
+                next = re;
             }
         }
         if next == cursor {
@@ -326,7 +330,10 @@ pub struct PhysicalRange {
 
 impl PhysicalRange {
     pub const fn new(start: u64, end_exclusive: u128) -> Self {
-        Self { start, end_exclusive }
+        Self {
+            start,
+            end_exclusive,
+        }
     }
 
     pub const fn len(self) -> u128 {
@@ -376,8 +383,10 @@ static DTB_SOURCES_N: AtomicUsize = AtomicUsize::new(0);
 /// reservation pages are claims on RAM at all (a framebuffer-style
 /// reservation outside `/memory` claims no RAM and must not be compared
 /// against the EFI map's MMIO descriptors).
-static mut DTB_PANORAMA: [MemoryRegion; DTB_MEMMAP_MAX] =
-    [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+static mut DTB_PANORAMA: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
+    base: PhysBytes(0),
+    len: 0,
+}; DTB_MEMMAP_MAX];
 static DTB_PANORAMA_N: AtomicUsize = AtomicUsize::new(0);
 
 /// Clip the part of `[start, start+len)` that falls inside the resident
@@ -391,18 +400,14 @@ static DTB_PANORAMA_N: AtomicUsize = AtomicUsize::new(0);
 /// original bootface `clip_firmware`; with `fw_end` parameterized, the riscv leg
 /// passes `KERN_PHYS_BASE` and the opensbi boot-shim leg passes 0 = no
 /// clipping).
-const fn clip_reserved(
-    start: u64,
-    len: u64,
-    fw_end: u64,
-) -> Option<(u64, u64)> {
+const fn clip_reserved(start: u64, len: u64, fw_end: u64) -> Option<(u64, u64)> {
     if start >= fw_end {
         return Some((start, len));
     }
     let drop = fw_end - start;
     if drop >= len {
         return None; // the whole span sits below the firmware area
-                     // (including the exact len==drop case)
+        // (including the exact len==drop case)
     }
     Some((fw_end, len - drop))
 }
@@ -413,16 +418,15 @@ const fn clip_reserved(
 //   • a pure firmware span `[DRAM, FW_END)` → None
 const _FW_PURE: () = assert!(clip_reserved(0x8000_0000, 0x20_0000, 0x8020_0000).is_none());
 //   • a span entirely above the image → kept as is
-const _FW_ABOVE: () = assert!(
-    matches!(clip_reserved(0x8020_0000, 0x1000, 0x8020_0000), Some((0x8020_0000, 0x1000)))
-);
+const _FW_ABOVE: () = assert!(matches!(
+    clip_reserved(0x8020_0000, 0x1000, 0x8020_0000),
+    Some((0x8020_0000, 0x1000))
+));
 //   • a straddling span → clip off the firmware area, keep the rest
-const _FW_CROSS: () = assert!(
-    matches!(
-        clip_reserved(0x8000_0000, 0x20_1000, 0x8020_0000),
-        Some((0x8020_0000, 0x1000))
-    )
-);
+const _FW_CROSS: () = assert!(matches!(
+    clip_reserved(0x8000_0000, 0x20_1000, 0x8020_0000),
+    Some((0x8020_0000, 0x1000))
+));
 
 const PAGE_BYTES: u64 = 4096;
 
@@ -468,7 +472,10 @@ fn push_span(
     if *n >= DTB_MEMMAP_MAX {
         return Err(full);
     }
-    table[*n] = MemoryRegion { base: PhysBytes(start), len: len as usize };
+    table[*n] = MemoryRegion {
+        base: PhysBytes(start),
+        len: len as usize,
+    };
     *n += 1;
     Ok(())
 }
@@ -502,7 +509,10 @@ fn carve_free(
     start: u64,
     end: u64,
 ) -> Result<(), DtbMemMapError> {
-    let mut out = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+    let mut out = [MemoryRegion {
+        base: PhysBytes(0),
+        len: 0,
+    }; DTB_MEMMAP_MAX];
     let mut out_n = 0usize;
     for &span in table[..*n].iter() {
         let span_start = span.base.0;
@@ -712,12 +722,21 @@ impl DtbMemoryMap<'_> {
             range: PhysicalRange::new(0, 0),
         }; DTB_SOURCE_MAX];
         let mut sources_n = 0usize;
-        let mut free = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
-        let mut reserved = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+        let mut free = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; DTB_MEMMAP_MAX];
+        let mut reserved = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; DTB_MEMMAP_MAX];
         // The unclipped panorama: a declaration means something only where it
         // overlaps RAM, and its reserved entry must not extend past it (a
         // framebuffer-style reservation outside `/memory` claims no RAM).
-        let mut memory = [MemoryRegion { base: PhysBytes(0), len: 0 }; DTB_MEMMAP_MAX];
+        let mut memory = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; DTB_MEMMAP_MAX];
         // Declarations in raw page coordinates with their `no-map` intent,
         // kept for the duplicate/overlap decision (the reserved table holds
         // just the reachable subset).
@@ -801,7 +820,10 @@ impl DtbMemoryMap<'_> {
                     &mut sources,
                     &mut sources_n,
                     SourceKind::Memory,
-                    SourceOrigin::MemoryNode { node: node_ordinal, reg: reg_index as u16 },
+                    SourceOrigin::MemoryNode {
+                        node: node_ordinal,
+                        reg: reg_index as u16,
+                    },
                     record_range,
                 )?;
                 if duplicate {
@@ -1078,9 +1100,7 @@ impl DtbMemoryMap<'_> {
     /// unreachable": upstream path lookup is known to miss nodes in some
     /// firmware-rebuilt blobs, and reading an unreachable reservation node as
     /// absent would hand its pages to the allocator.
-    fn lookup_reserved_memory(
-        &self,
-    ) -> Result<Option<fdt::node::FdtNode<'_, '_>>, DtbMemMapError> {
+    fn lookup_reserved_memory(&self) -> Result<Option<fdt::node::FdtNode<'_, '_>>, DtbMemMapError> {
         if let Some(node) = self.fdt.find_node("/reserved-memory") {
             return Ok(Some(node));
         }
@@ -1160,7 +1180,17 @@ mod tests {
         memrsv: &[(u64, u64)],
         reserved_cells: u32,
     ) -> Vec<u8> {
-        build_fdt_full(memory_regs, unit_address, reserved, memrsv, reserved_cells, &[], &[], 0, false)
+        build_fdt_full(
+            memory_regs,
+            unit_address,
+            reserved,
+            memrsv,
+            reserved_cells,
+            &[],
+            &[],
+            0,
+            false,
+        )
     }
 
     /// The same blob with an explicit `ranges` value on `/reserved-memory`.
@@ -1243,11 +1273,15 @@ mod tests {
             push_u32(out, val.len() as u32);
             push_u32(out, nameoff as u32);
             out.extend_from_slice(val);
-            while out.len() % 4 != 0 { out.push(0); }
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
         };
         push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE (root, empty name)
         struct_blk.push(0);
-        while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
+        while struct_blk.len() % 4 != 0 {
+            struct_blk.push(0);
+        }
         push_prop(&mut struct_blk, nameoff_cells as u32, &2u32.to_be_bytes());
         push_prop(&mut struct_blk, nameoff_size as u32, &2u32.to_be_bytes());
         for (base, size) in memory_regs {
@@ -1258,7 +1292,9 @@ mod tests {
                 "memory\u{0}"
             };
             struct_blk.extend_from_slice(name.as_bytes());
-            while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
+            while struct_blk.len() % 4 != 0 {
+                struct_blk.push(0);
+            }
             // The root declares cells 2/2, so reg is a full 128-bit pair
             // [hi(base), lo(base), hi(size), lo(size)]; for values below 2^32 the
             // high words are zero, exactly as the earlier hand-written encoding.
@@ -1289,7 +1325,9 @@ mod tests {
         if !reserved.is_empty() {
             push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE
             struct_blk.extend_from_slice(b"reserved-memory\0");
-            while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
+            while struct_blk.len() % 4 != 0 {
+                struct_blk.push(0);
+            }
             if let Some(cells) = reserved_cells {
                 push_prop(&mut struct_blk, nameoff_cells as u32, &cells.to_be_bytes());
                 push_prop(&mut struct_blk, nameoff_size as u32, &cells.to_be_bytes());
@@ -1311,13 +1349,14 @@ mod tests {
             for row in reserved {
                 push_u32(&mut struct_blk, 1); // FDT_BEGIN_NODE
                 struct_blk.extend_from_slice(format!("region@{:x}\u{0}", row.base).as_bytes());
-                while struct_blk.len() % 4 != 0 { struct_blk.push(0); }
+                while struct_blk.len() % 4 != 0 {
+                    struct_blk.push(0);
+                }
                 if emit_reg {
                     let mut reg: Vec<u8> = Vec::new();
                     encode_cells(&mut reg, row.base, cells_for_reg);
                     encode_cells(&mut reg, row.size, cells_for_reg);
-                    let words =
-                        reserved_reg_words.unwrap_or(cells_for_reg as usize * 2);
+                    let words = reserved_reg_words.unwrap_or(cells_for_reg as usize * 2);
                     reg.truncate(words * 4);
                     push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
                 }
@@ -1341,14 +1380,14 @@ mod tests {
         let strings_off = struct_off + struct_blk.len() as u32;
         let mut out: Vec<u8> = Vec::new();
         let push = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
-        push(&mut out, 0xd00d_feed);          // magic
-        push(&mut out, 0);                    // totalsize (patched in later)
+        push(&mut out, 0xd00d_feed); // magic
+        push(&mut out, 0); // totalsize (patched in later)
         push(&mut out, struct_off);
         push(&mut out, strings_off);
-        push(&mut out, 40);                   // off_memrsv
-        push(&mut out, 17);                   // version
-        push(&mut out, 16);                   // last_comp_version
-        push(&mut out, 0);                    // boot_cpuid
+        push(&mut out, 40); // off_memrsv
+        push(&mut out, 17); // version
+        push(&mut out, 16); // last_comp_version
+        push(&mut out, 0); // boot_cpuid
         push(&mut out, strings.len() as u32); // size_strings
         push(&mut out, struct_blk.len() as u32); // size_struct
         for (base, size) in memrsv {
@@ -1357,10 +1396,12 @@ mod tests {
             push(&mut out, (*size >> 32) as u32);
             push(&mut out, *size as u32);
         }
-        out.extend_from_slice(&[0u8; 16]);    // memrsv terminator
+        out.extend_from_slice(&[0u8; 16]); // memrsv terminator
         out.extend_from_slice(&struct_blk);
         out.extend_from_slice(&strings);
-        while out.len() % 4 != 0 { out.push(0); }
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
         let total = out.len() as u32;
         out[4..8].copy_from_slice(&total.to_be_bytes());
         out
@@ -1370,7 +1411,9 @@ mod tests {
     fn dtb_single_memory_region_fw_end_zero() {
         let blob = build_fdt(&[(0x8000_0000, 0x4000_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("规范形 stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0)
+            .collect()
+            .expect("test map fits DTB_MEMMAP_MAX");
         assert_eq!(conv.len(), 1);
         assert_eq!(conv[0].base.0, 0x8000_0000);
         assert_eq!(conv[0].len, 0x4000_0000 as usize);
@@ -1400,7 +1443,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             2,
         );
@@ -1420,7 +1468,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            }],
             &[],
             2,
         );
@@ -1437,13 +1490,19 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            }],
             &[],
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("map fits");
         let record = sources
             .iter()
             .find(|r| r.kind == SourceKind::ReservedNoMap)
@@ -1452,17 +1511,27 @@ mod tests {
             (record.range.start, record.range.end_exclusive),
             (0x8000_4000, 0x8000_5000)
         );
-        assert_eq!(record.origin, SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 });
+        assert_eq!(
+            record.origin,
+            SourceOrigin::ReservedMemoryChild { node: 0, reg: 0 }
+        );
     }
 
     #[test]
     fn dtb_memory_reservation_record_keeps_the_raw_range() {
         // An unaligned MRB entry rounds outward for the projections but the
         // record has to keep the bytes the firmware actually reserved.
-        let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[(0x8000_1000, 0x800)], 2);
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[(0x8000_1000, 0x800)],
+            2,
+        );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("map fits");
         let record = sources
             .iter()
             .find(|r| r.kind == SourceKind::MrbEntry)
@@ -1482,13 +1551,19 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x9000_0000, size: 0x1000, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: 0x9000_0000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            }],
             &[],
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        let (conv, res, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("map fits");
         assert_eq!(conv.len(), 1);
         assert!(res.is_empty());
         let record = sources
@@ -1509,14 +1584,24 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_8000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_8000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[(0x8000_4000, 0x1000)],
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
-        assert_eq!(sources.len(), 3, "one /memory span + one MRB entry + one reservation");
+        let (conv, res, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("map fits");
+        assert_eq!(
+            sources.len(),
+            3,
+            "one /memory span + one MRB entry + one reservation"
+        );
         let covered = |start: u64| {
             sources.iter().any(|r| {
                 let first = (r.range.start & !0xfff) as u128;
@@ -1525,7 +1610,11 @@ mod tests {
             })
         };
         for span in conv.iter().chain(res.iter()) {
-            assert!(covered(span.base.0), "span at {:#x} has no source record", span.base.0);
+            assert!(
+                covered(span.base.0),
+                "span at {:#x} has no source record",
+                span.base.0
+            );
         }
     }
 
@@ -1536,7 +1625,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_8000, size: 0x1000, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_8000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            }],
             &[(0x8000_4000, 0x1000)],
             2,
         );
@@ -1544,8 +1638,9 @@ mod tests {
         let (conv_a, res_a) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
         let conv_a: Vec<(u64, usize)> = conv_a.iter().map(|r| (r.base.0, r.len)).collect();
         let res_a: Vec<(u64, usize)> = res_a.iter().map(|r| (r.base.0, r.len)).collect();
-        let (conv_b, res_b, _) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        let (conv_b, res_b, _) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("map fits");
         let conv_b: Vec<(u64, usize)> = conv_b.iter().map(|r| (r.base.0, r.len)).collect();
         let res_b: Vec<(u64, usize)> = res_b.iter().map(|r| (r.base.0, r.len)).collect();
         assert_eq!(conv_a, conv_b);
@@ -1585,9 +1680,24 @@ mod tests {
             .flat_map(|i| {
                 let base = 0x9000_0000 + i as u64 * 0x1_0000;
                 [
-                    ReservedRow { base, size: 0x1000, no_map: false, reusable: false },
-                    ReservedRow { base: base + 0x2000, size: 0x1000, no_map: false, reusable: true },
-                    ReservedRow { base: base + 0x4000, size: 0x1000, no_map: true, reusable: false },
+                    ReservedRow {
+                        base,
+                        size: 0x1000,
+                        no_map: false,
+                        reusable: false,
+                    },
+                    ReservedRow {
+                        base: base + 0x2000,
+                        size: 0x1000,
+                        no_map: false,
+                        reusable: true,
+                    },
+                    ReservedRow {
+                        base: base + 0x4000,
+                        size: 0x1000,
+                        no_map: true,
+                        reusable: false,
+                    },
                 ]
             })
             .collect();
@@ -1604,10 +1714,12 @@ mod tests {
     fn dtb_source_capacity_is_reachable_at_exactly_forty() {
         // 8 `/memory` spans + 8 prefixes (fw_end covers every span start) +
         // 16 MRB entries + 8 declarations = 40 records, exactly the buffer.
-        let memory: Vec<(u64, u64)> =
-            (0..DTB_MEMMAP_MAX).map(|i| (0x8000_0000 + i as u64 * 0x1000, 0x1000)).collect();
-        let memrsv: Vec<(u64, u64)> =
-            (0..DTB_MRB_MAX).map(|i| (0x9000_0000 + i as u64 * 0x2000, 0x1000)).collect();
+        let memory: Vec<(u64, u64)> = (0..DTB_MEMMAP_MAX)
+            .map(|i| (0x8000_0000 + i as u64 * 0x1000, 0x1000))
+            .collect();
+        let memrsv: Vec<(u64, u64)> = (0..DTB_MRB_MAX)
+            .map(|i| (0x9000_0000 + i as u64 * 0x2000, 0x1000))
+            .collect();
         let rows: Vec<ReservedRow> = (0..DTB_MEMMAP_MAX)
             .map(|i| ReservedRow {
                 base: 0xA000_0000 + i as u64 * 0x2000,
@@ -1635,8 +1747,9 @@ mod tests {
         // `/memory` record it was cut from.
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) =
-            DtbMemoryMap::new(&fdt, 0x8000_4000).collect_with_sources().expect("map fits");
+        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0x8000_4000)
+            .collect_with_sources()
+            .expect("map fits");
         let prefix = sources
             .iter()
             .find(|r| r.kind == SourceKind::FirmwarePrefix)
@@ -1739,10 +1852,19 @@ mod tests {
             .collect_with_sources()
             .expect("an exact duplicate is not an overlap");
         assert_eq!(free.len(), 1, "the projection holds the span once");
-        let records: Vec<_> = sources.iter().filter(|r| r.kind == SourceKind::Memory).collect();
+        let records: Vec<_> = sources
+            .iter()
+            .filter(|r| r.kind == SourceKind::Memory)
+            .collect();
         assert_eq!(records.len(), 2, "both declarations keep their record");
-        assert_eq!(records[0].origin, SourceOrigin::MemoryNode { node: 0, reg: 0 });
-        assert_eq!(records[1].origin, SourceOrigin::MemoryNode { node: 0, reg: 1 });
+        assert_eq!(
+            records[0].origin,
+            SourceOrigin::MemoryNode { node: 0, reg: 0 }
+        );
+        assert_eq!(
+            records[1].origin,
+            SourceOrigin::MemoryNode { node: 0, reg: 1 }
+        );
         assert_eq!(records[0].range.start, records[1].range.start);
     }
 
@@ -1751,13 +1873,24 @@ mod tests {
         // Two children declaring the same range with the same intent: one
         // projection, two source identities.
         let rows = [
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            },
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, reserved, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("duplicate is not an overlap");
+        let (_, reserved, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("duplicate is not an overlap");
         assert_eq!(reserved.len(), 1, "the projection holds the range once");
         let records: Vec<_> = sources
             .iter()
@@ -1774,16 +1907,30 @@ mod tests {
         // relation of each declaration is future work and must not be merged
         // away here.
         let rows = [
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: true,
+            },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: true,
+            },
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, reserved, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("same intent is a duplicate");
+        let (_, reserved, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("same intent is a duplicate");
         assert_eq!(reserved.len(), 1);
         assert_eq!(
-            sources.iter().filter(|r| r.kind == SourceKind::ReservedReusable).count(),
+            sources
+                .iter()
+                .filter(|r| r.kind == SourceKind::ReservedReusable)
+                .count(),
             2
         );
     }
@@ -1794,14 +1941,27 @@ mod tests {
         // semantics the ordinary declaration does not: same bytes, different
         // intent, so the pair is a conflict rather than a duplicate.
         let rows = [
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: true,
+            },
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
         assert!(
-            matches!(result, Err(DtbMemMapError::ConflictingReservationAttributes)),
+            matches!(
+                result,
+                Err(DtbMemMapError::ConflictingReservationAttributes)
+            ),
             "expected an intent conflict, got {result:?}"
         );
     }
@@ -1809,14 +1969,27 @@ mod tests {
     #[test]
     fn dtb_reusable_and_no_map_same_range_is_a_conflict() {
         let rows = [
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true },
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: true,
+            },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            },
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
         assert!(
-            matches!(result, Err(DtbMemMapError::ConflictingReservationAttributes)),
+            matches!(
+                result,
+                Err(DtbMemMapError::ConflictingReservationAttributes)
+            ),
             "expected an intent conflict, got {result:?}"
         );
     }
@@ -1846,8 +2019,13 @@ mod tests {
         // DTSpec 5.3.2: "These given regions shall not overlap each other."
         // An identical pair is an overlap, not a repeatable declaration, so it
         // is refused rather than deduplicated.
-        let blob =
-            build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[(0x8000_4000, 0x1000), (0x8000_4000, 0x1000)], 2);
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[(0x8000_4000, 0x1000), (0x8000_4000, 0x1000)],
+            2,
+        );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
         assert!(
@@ -1861,14 +2039,27 @@ mod tests {
         // Same bytes, one `no-map` and one not: the two claims cannot both be
         // honoured, so this is a conflict rather than a duplicate.
         let rows = [
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            },
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
         assert!(
-            matches!(result, Err(DtbMemMapError::ConflictingReservationAttributes)),
+            matches!(
+                result,
+                Err(DtbMemMapError::ConflictingReservationAttributes)
+            ),
             "expected a semantic conflict, got {result:?}"
         );
     }
@@ -1879,14 +2070,25 @@ mod tests {
         // tuple produces exactly one record, and no record is invented.
         let memory = [(0x8000_0000u64, 0x1_0000u64), (0x9000_0000, 0x1_0000)];
         let rows = [
-            ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false },
-            ReservedRow { base: 0x8000_8000, size: 0x1000, no_map: true, reusable: false },
+            ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            },
+            ReservedRow {
+                base: 0x8000_8000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            },
         ];
         let memrsv = [(0x8000_6000u64, 0x1000u64)];
         let blob = build_fdt_ex(&memory, false, &rows, &memrsv, 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) =
-            DtbMemoryMap::new(&fdt, 0).collect_with_sources().expect("map fits");
+        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0)
+            .collect_with_sources()
+            .expect("map fits");
         assert_eq!(sources.len(), 5, "2 memory + 1 MRB + 2 reservations");
         let mut origins: Vec<_> = sources
             .iter()
@@ -1920,12 +2122,19 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_0000, size: 0x4000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_0000,
+                size: 0x4000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8000_4000).collect().expect("map fits");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8000_4000)
+            .collect()
+            .expect("map fits");
         assert_eq!(conv.len(), 1);
         assert_eq!((conv[0].base.0, conv[0].len), (0x8000_4000, 0xc000));
         assert_eq!(res.len(), 1, "the prefix entry alone");
@@ -1939,7 +2148,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x1_0000_0000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x1_0000_0000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             2,
         );
@@ -1978,8 +2192,18 @@ mod tests {
             &[(0x8000_0000, 0x1_0000)],
             false,
             &[
-                ReservedRow { base: 0x8000_4000, size: 0x2000, no_map: false, reusable: false },
-                ReservedRow { base: 0x8000_5000, size: 0x1000, no_map: true, reusable: false },
+                ReservedRow {
+                    base: 0x8000_4000,
+                    size: 0x2000,
+                    no_map: false,
+                    reusable: false,
+                },
+                ReservedRow {
+                    base: 0x8000_5000,
+                    size: 0x1000,
+                    no_map: true,
+                    reusable: false,
+                },
             ],
             &[],
             2,
@@ -1996,7 +2220,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: u64::MAX - 0x10, size: 0x100, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: u64::MAX - 0x10,
+                size: 0x100,
+                no_map: true,
+                reusable: false,
+            }],
             &[],
             2,
         );
@@ -2012,7 +2241,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[(0x8000_8000, 0x1000)],
             2,
         );
@@ -2025,7 +2259,10 @@ mod tests {
 
     #[test]
     fn source_audit_rejects_a_free_span_without_a_memory_record() {
-        let free = [MemoryRegion { base: minix_types::PhysBytes(0x8000_0000), len: 0x1000 }];
+        let free = [MemoryRegion {
+            base: minix_types::PhysBytes(0x8000_0000),
+            len: 0x1000,
+        }];
         assert_eq!(
             audit_source_coverage(&free, &[], &[]),
             Err(SourceAuditError::FreeSpanWithoutMemorySource {
@@ -2037,7 +2274,10 @@ mod tests {
 
     #[test]
     fn source_audit_rejects_a_reserved_span_without_a_reservation_record() {
-        let reserved = [MemoryRegion { base: minix_types::PhysBytes(0x8000_0000), len: 0x1000 }];
+        let reserved = [MemoryRegion {
+            base: minix_types::PhysBytes(0x8000_0000),
+            len: 0x1000,
+        }];
         let sources = [SourceRecord {
             id: 0,
             kind: SourceKind::Memory,
@@ -2057,7 +2297,10 @@ mod tests {
     fn source_audit_chains_adjacent_memory_records() {
         // Two abutting declarations together explain one projected span; the
         // audit must union them rather than demand a single covering record.
-        let free = [MemoryRegion { base: minix_types::PhysBytes(0x8000_0000), len: 0x2000 }];
+        let free = [MemoryRegion {
+            base: minix_types::PhysBytes(0x8000_0000),
+            len: 0x2000,
+        }];
         let sources = [
             SourceRecord {
                 id: 0,
@@ -2106,7 +2349,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0xffff_ffff_ffff_f000, size: 0x1000, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: 0xffff_ffff_ffff_f000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            }],
             &[],
             2,
         );
@@ -2160,7 +2408,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             3,
         );
@@ -2179,7 +2432,12 @@ mod tests {
         let blob = build_fdt_full_opts(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             Some(2),
             None,
@@ -2205,7 +2463,12 @@ mod tests {
         let blob = build_fdt_full_opts(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             None,
             Some(&[]),
@@ -2231,7 +2494,12 @@ mod tests {
         build_fdt_full_opts(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             Some(2),
             Some(&[]),
@@ -2326,7 +2594,12 @@ mod tests {
         let blob = build_fdt_full(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             2,
             &[0u8; 16],
@@ -2347,7 +2620,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: true }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: true,
+                reusable: true,
+            }],
             &[],
             2,
         );
@@ -2365,7 +2643,12 @@ mod tests {
         let blob = build_fdt_full(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            }],
             &[],
             2,
             &[],
@@ -2387,7 +2670,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             1,
         );
@@ -2498,9 +2786,14 @@ mod tests {
         // The two spans must be disjoint: 0x8000_0000 + 0x4000_0000 would end
         // at 0xC000_0000 and swallow the second span — the old fixture was an
         // overlapping-RAM input that nothing checked before.
-        let blob = build_fdt(&[(0x8000_0000, 0x400_0000), (0x8800_0000, 0x1000_0000)], true);
+        let blob = build_fdt(
+            &[(0x8000_0000, 0x400_0000), (0x8800_0000, 0x1000_0000)],
+            true,
+        );
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, _res) = DtbMemoryMap::new(&fdt, 0).collect().expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, _res) = DtbMemoryMap::new(&fdt, 0)
+            .collect()
+            .expect("test map fits DTB_MEMMAP_MAX");
         assert_eq!(conv.len(), 2, "两段 /memory → 2 条（含 unit-address 变体）");
         assert_eq!(conv[0].base.0, 0x8000_0000);
         assert_eq!(conv[1].base.0, 0x8800_0000);
@@ -2512,7 +2805,9 @@ mod tests {
         // → free = [0x8020_0000, +62MiB), reserved = [0x8000_0000, 2MiB)
         let blob = build_fdt(&[(0x8000_0000, 0x400_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect().expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000)
+            .collect()
+            .expect("test map fits DTB_MEMMAP_MAX");
         assert_eq!(conv.len(), 1);
         assert_eq!(conv[0].base.0, 0x8020_0000, "削界后 free 起点抬到 fw_end");
         assert_eq!(conv[0].len, (0x400_0000 - 0x20_0000) as usize);
@@ -2528,8 +2823,13 @@ mod tests {
         // consumer seeing an empty table halts honestly).
         let blob = build_fdt(&[(0x8000_0000, 0x10_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000).collect().expect("test map fits DTB_MEMMAP_MAX");
-        assert!(conv.is_empty(), "整段固件区 → free 空（诚实停机由消费方判）");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000)
+            .collect()
+            .expect("test map fits DTB_MEMMAP_MAX");
+        assert!(
+            conv.is_empty(),
+            "整段固件区 → free 空（诚实停机由消费方判）"
+        );
         assert_eq!(res.len(), 1);
     }
 
@@ -2537,7 +2837,9 @@ mod tests {
     fn dtb_no_memory_node_yields_empty() {
         let blob = build_fdt(&[], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0)
+            .collect()
+            .expect("test map fits DTB_MEMMAP_MAX");
         assert!(conv.is_empty(), "无 /memory → 空（诚实停机由消费方判）");
         assert!(res.is_empty());
     }
@@ -2545,10 +2847,19 @@ mod tests {
     #[test]
     fn dtb_gate_covers_contained_and_multi_region() {
         // both conventional spans fall inside /memory [0x4000_0000, +512MiB) → Ok
-        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x2000_0000 }];
+        let dtb = [MemoryRegion {
+            base: PhysBytes(0x4000_0000),
+            len: 0x2000_0000,
+        }];
         let conv = [
-            MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000_0000 },
-            MemoryRegion { base: PhysBytes(0x5000_0000), len: 0x800_0000 },
+            MemoryRegion {
+                base: PhysBytes(0x4000_0000),
+                len: 0x1000_0000,
+            },
+            MemoryRegion {
+                base: PhysBytes(0x5000_0000),
+                len: 0x800_0000,
+            },
         ];
         assert_eq!(dtb_covers_conventional(&dtb, &conv), Ok(()));
     }
@@ -2557,10 +2868,19 @@ mod tests {
     fn dtb_gate_reports_out_of_bounds_region() {
         // an out-of-bounds span (conventional above the /memory upper bound) →
         // Err(base, len)
-        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000_0000 }];
+        let dtb = [MemoryRegion {
+            base: PhysBytes(0x4000_0000),
+            len: 0x1000_0000,
+        }];
         let conv = [
-            MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 },
-            MemoryRegion { base: PhysBytes(0x5000_0000), len: 0x1000 },
+            MemoryRegion {
+                base: PhysBytes(0x4000_0000),
+                len: 0x800_0000,
+            },
+            MemoryRegion {
+                base: PhysBytes(0x5000_0000),
+                len: 0x1000,
+            },
         ];
         assert_eq!(
             dtb_covers_conventional(&dtb, &conv),
@@ -2572,8 +2892,14 @@ mod tests {
     fn dtb_gate_rejects_partial_overlap() {
         // a straddling span (lower half inside /memory, upper half outside) does
         // not count as covered
-        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 }];
-        let conv = [MemoryRegion { base: PhysBytes(0x4040_0000), len: 0x800_0000 }];
+        let dtb = [MemoryRegion {
+            base: PhysBytes(0x4000_0000),
+            len: 0x800_0000,
+        }];
+        let conv = [MemoryRegion {
+            base: PhysBytes(0x4040_0000),
+            len: 0x800_0000,
+        }];
         assert_eq!(
             dtb_covers_conventional(&dtb, &conv),
             Err((0x4040_0000, 0x800_0000))
@@ -2582,7 +2908,10 @@ mod tests {
 
     #[test]
     fn dtb_gate_empty_conventional_is_ok() {
-        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000 }];
+        let dtb = [MemoryRegion {
+            base: PhysBytes(0x4000_0000),
+            len: 0x1000,
+        }];
         assert_eq!(dtb_covers_conventional(&dtb, &[]), Ok(()));
     }
 
@@ -2630,7 +2959,12 @@ mod tests {
         let blob = build_fdt_full_opts(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             Some(2),
             Some(&[]),
@@ -2657,7 +2991,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: false,
+            }],
             &[(0x8000_4000, 0x1000)],
             2,
         );
@@ -2673,7 +3012,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: false,
+                reusable: true,
+            }],
             &[(0x8000_4000, 0x1000)],
             2,
         );
@@ -2691,7 +3035,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4800, size: 0x800, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4800,
+                size: 0x800,
+                no_map: false,
+                reusable: false,
+            }],
             &[(0x8000_4000, 0x1000)],
             2,
         );
@@ -2709,14 +3058,24 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0x1000,
+                no_map: true,
+                reusable: false,
+            }],
             &[(0x8000_4000, 0x1000)],
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("compatible pair");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0)
+            .collect()
+            .expect("compatible pair");
         assert_eq!(conv.len(), 2);
-        assert!(res.is_empty(), "both sources agree the pages leave the reachable set");
+        assert!(
+            res.is_empty(),
+            "both sources agree the pages leave the reachable set"
+        );
     }
 
     #[test]
@@ -2724,7 +3083,12 @@ mod tests {
         let blob = build_fdt_ex(
             &[(0x8000_0000, 0x1_0000)],
             false,
-            &[ReservedRow { base: 0x8000_4000, size: 0, no_map: false, reusable: false }],
+            &[ReservedRow {
+                base: 0x8000_4000,
+                size: 0,
+                no_map: false,
+                reusable: false,
+            }],
             &[],
             2,
         );

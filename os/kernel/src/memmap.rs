@@ -450,11 +450,12 @@ mod tests {
         assert_eq!(total_before - total_after, 0x2000, "total free memory must decrease by cut size");
     }
 
-    /// End-to-end accounting for the aarch64 direct-core leg: the leg reports
-    /// `/memory` as [0x4000_0000, 512 MiB) (`fw_end = 0`) and its DTB sits at
-    /// the DRAM base. The real QEMU blob is 7699 bytes, so Phase A.2's cut
-    /// must remove exactly the two page-rounded pages and leave the rest as
-    /// one contiguous free span.
+    /// Cut arithmetic used by the VM handoff classification, exercised on the
+    /// aarch64 direct-core shape: `/memory` is [0x4000_0000, 512 MiB)
+    /// (`fw_end = 0`) and the real QEMU DTB is 7699 bytes at the DRAM base,
+    /// so a cut of the blob leaves one contiguous free span starting two
+    /// pages later. The boot path itself no longer keeps a mutable memmap
+    /// copy (Phase A.2 was removed with FREE_MEMMAP).
     #[test]
     fn test_cut_memmap_aarch64_dtb_real_totalsize() {
         let mut mmap = empty_mmap();

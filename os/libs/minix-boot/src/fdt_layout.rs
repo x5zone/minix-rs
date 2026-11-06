@@ -107,7 +107,9 @@ fn be_u32(bytes: &[u8], off: usize) -> u32 {
 }
 
 fn block(start: u32, size: u32, total: u32) -> Result<(u32, u32), FdtInputError> {
-    let end = start.checked_add(size).ok_or(FdtInputError::BlockOverflow)?;
+    let end = start
+        .checked_add(size)
+        .ok_or(FdtInputError::BlockOverflow)?;
     if end > total {
         return Err(FdtInputError::BlockOutOfRange);
     }
@@ -278,10 +280,7 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
         return Err(FdtInputError::UnsupportedVersion);
     }
     let totalsize = be_u32(bytes, 4);
-    if totalsize < HEADER_LEN
-        || totalsize > FDT_MAX_LEN
-        || totalsize as usize > bytes.len()
-    {
+    if !(HEADER_LEN..=FDT_MAX_LEN).contains(&totalsize) || totalsize as usize > bytes.len() {
         return Err(FdtInputError::BadTotalsize);
     }
 
@@ -297,7 +296,7 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
     if overlaps(struct_block, strings_block) {
         return Err(FdtInputError::BlockOverlap);
     }
-    if off_struct % 4 != 0 {
+    if !off_struct.is_multiple_of(4) {
         return Err(FdtInputError::BlockMisaligned);
     }
     // The structure block must end with the FDT_END token (0x9): a truncated
@@ -308,7 +307,7 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
 
     // The reservation block must start after the header, be 8-byte aligned,
     // and end (with its terminator) before the next block or the object end.
-    if off_mrb % 8 != 0 {
+    if !off_mrb.is_multiple_of(8) {
         return Err(FdtInputError::MrbMisaligned);
     }
     if off_mrb < HEADER_LEN {
@@ -318,7 +317,7 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
     // even hold one record is not a block inside this object.
     if off_mrb
         .checked_add(MRB_ENTRY)
-        .map_or(true, |end| end > totalsize)
+        .is_none_or(|end| end > totalsize)
     {
         return Err(FdtInputError::BlockOutOfRange);
     }
@@ -353,10 +352,7 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
     };
 
     let mrb = block(off_mrb, mrb_end - off_mrb, totalsize)?;
-    if overlaps(mrb, struct_block)
-        || overlaps(mrb, strings_block)
-        || overlaps(mrb, header)
-    {
+    if overlaps(mrb, struct_block) || overlaps(mrb, strings_block) || overlaps(mrb, header) {
         return Err(FdtInputError::BlockOverlap);
     }
     if overlaps(header, struct_block) || overlaps(header, strings_block) {
@@ -499,7 +495,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::PropertyAfterChild));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::PropertyAfterChild)
+        );
     }
 
     #[test]
@@ -509,7 +508,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::InvalidToken));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::InvalidToken)
+        );
     }
 
     #[test]
@@ -520,7 +522,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BadTreeShape));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BadTreeShape)
+        );
     }
 
     #[test]
@@ -530,7 +535,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BadTreeShape));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BadTreeShape)
+        );
     }
 
     #[test]
@@ -542,7 +550,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::EndTokenNotLast));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::EndTokenNotLast)
+        );
     }
 
     #[test]
@@ -552,7 +563,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::StructureOutOfRange));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::StructureOutOfRange)
+        );
     }
 
     #[test]
@@ -562,7 +576,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BadPropertyName));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BadPropertyName)
+        );
     }
 
     #[test]
@@ -572,7 +589,10 @@ mod tests {
         structure.extend_from_slice(&end_node());
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BadPropertyName));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BadPropertyName)
+        );
     }
 
     #[test]
@@ -586,7 +606,10 @@ mod tests {
         }
         structure.extend_from_slice(&end());
         let bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::DepthLimitExceeded));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::DepthLimitExceeded)
+        );
     }
 
     #[test]
@@ -611,7 +634,10 @@ mod tests {
     #[test]
     fn rejects_misaligned_blob_address() {
         let bytes = valid_blob();
-        assert_eq!(validate(0x8000_0001, &bytes), Err(FdtInputError::BlobMisaligned));
+        assert_eq!(
+            validate(0x8000_0001, &bytes),
+            Err(FdtInputError::BlobMisaligned)
+        );
     }
 
     #[test]
@@ -619,7 +645,10 @@ mod tests {
         let structure = minimal_tree(0);
         let mut bytes = blob_ex(49, 56, &structure, 56 + structure.len() as u32, b"reg\0");
         bytes[16..20].copy_from_slice(&49u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::MrbMisaligned));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::MrbMisaligned)
+        );
     }
 
     #[test]
@@ -627,7 +656,10 @@ mod tests {
         let structure = minimal_tree(0);
         let mut bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
         bytes[16..20].copy_from_slice(&0x1000u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BlockOutOfRange));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BlockOutOfRange)
+        );
     }
 
     #[test]
@@ -635,7 +667,10 @@ mod tests {
         let structure = minimal_tree(0);
         let mut bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
         bytes[40..56].copy_from_slice(&[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::MrbNoTerminator));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::MrbNoTerminator)
+        );
     }
 
     #[test]
@@ -644,7 +679,10 @@ mod tests {
         let mut bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
         bytes[40..56].copy_from_slice(&[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
         bytes.extend_from_slice(&[0u8; 16]);
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::MrbNoTerminator));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::MrbNoTerminator)
+        );
     }
 
     #[test]
@@ -665,7 +703,10 @@ mod tests {
             b"reg\0",
         );
         bytes[40..40 + entries.len()].copy_from_slice(&entries);
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::TooManyReservations));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::TooManyReservations)
+        );
     }
 
     /// The card is 16 entries (the collector's own cap), so the 16th entry
@@ -696,7 +737,10 @@ mod tests {
         let structure = minimal_tree(0);
         let mut bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
         bytes[36..40].copy_from_slice(&0x100u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BlockOutOfRange));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BlockOutOfRange)
+        );
     }
 
     #[test]
@@ -704,14 +748,20 @@ mod tests {
         // struct 56..72, strings 64..72: both in the object, overlapping.
         let structure = minimal_tree(0);
         let bytes = blob_ex(40, 56, &structure, 64, b"reg\0\0\0\0\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BlockOverlap));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BlockOverlap)
+        );
     }
 
     #[test]
     fn rejects_totalsize_larger_than_the_buffer() {
         let mut bytes = valid_blob();
         bytes[4..8].copy_from_slice(&0x1000u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BadTotalsize));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BadTotalsize)
+        );
     }
 
     #[test]
@@ -722,25 +772,37 @@ mod tests {
         let mut bytes = blob_ex(40, 56, &structure, 56 + structure_len as u32, b"reg\0");
         bytes[56 + structure_len as usize - 4..56 + structure_len as usize]
             .copy_from_slice(&0u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::MissingEndToken));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::MissingEndToken)
+        );
     }
 
     #[test]
     fn rejects_unbacked_structure_alignment() {
         let structure = minimal_tree(0);
         let bytes = blob_ex(40, 57, &structure, 57 + structure.len() as u32, b"reg\0");
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BlockMisaligned));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BlockMisaligned)
+        );
     }
 
     #[test]
     fn rejects_unsupported_fdt_versions() {
         let mut old = valid_blob();
         old[20..24].copy_from_slice(&16u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &old), Err(FdtInputError::UnsupportedVersion));
+        assert_eq!(
+            validate(0x8000_0000, &old),
+            Err(FdtInputError::UnsupportedVersion)
+        );
 
         let mut future = valid_blob();
         future[24..28].copy_from_slice(&18u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &future), Err(FdtInputError::UnsupportedVersion));
+        assert_eq!(
+            validate(0x8000_0000, &future),
+            Err(FdtInputError::UnsupportedVersion)
+        );
     }
 
     #[test]
@@ -749,7 +811,10 @@ mod tests {
         let mut bytes = blob_ex(64, 40, &structure, 56, b"reg\0");
         bytes.resize(80, 0);
         bytes[4..8].copy_from_slice(&80u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::UnsupportedBlockOrder));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::UnsupportedBlockOrder)
+        );
     }
 
     #[test]
@@ -757,7 +822,10 @@ mod tests {
         let structure = minimal_tree(0);
         let mut bytes = blob_ex(40, 56, &structure, 56 + structure.len() as u32, b"reg\0");
         bytes[16..20].copy_from_slice(&32u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::BlockOutOfRange));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::BlockOutOfRange)
+        );
     }
 
     #[test]
@@ -765,6 +833,9 @@ mod tests {
         let structure = minimal_tree(0);
         let mut bytes = blob_ex(40, 64, &structure, 80, b"reg\0");
         bytes[12..16].copy_from_slice(&56u32.to_be_bytes());
-        assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::UnsupportedBlockOrder));
+        assert_eq!(
+            validate(0x8000_0000, &bytes),
+            Err(FdtInputError::UnsupportedBlockOrder)
+        );
     }
 }

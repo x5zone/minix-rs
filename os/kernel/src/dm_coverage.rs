@@ -205,7 +205,10 @@ pub unsafe fn establish_boot_dm<A: BootArch>(
                 let _ = c;
             }
         }
-        for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
+        for r in bootstrap_tree_candidates(kernel_info, root)
+            .into_iter()
+            .flatten()
+        {
             if let Some(c) = r.clipped_to(vm_capacity) {
                 let _ = c;
             }
@@ -244,7 +247,10 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
     for r in memmap_candidates(kernel_info) {
         note(r);
     }
-    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
+    for r in bootstrap_tree_candidates(kernel_info, root)
+        .into_iter()
+        .flatten()
+    {
         note(r);
     }
     for r in boot_module_candidates(kernel_info, root) {
@@ -407,8 +413,9 @@ fn memmap_candidates(kernel_info: &KernelInfo) -> impl Iterator<Item = DmRange> 
 /// the middle piece is emitted as `[base, root_base)` and the remainder
 /// above the root is skipped with the shape documented here.
 fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Option<DmRange>; 2] {
-    let in_memmap =
-        |r: &DmRange| memmap_candidates(kernel_info).any(|m| r.base < m.base + m.len && m.base < r.base + r.len);
+    let in_memmap = |r: &DmRange| {
+        memmap_candidates(kernel_info).any(|m| r.base < m.base + m.len && m.base < r.base + r.len)
+    };
 
     let root_range = DmRange::new(root.0, PAGE_SIZE);
     let root_end = root.0 + PAGE_SIZE;
@@ -447,7 +454,9 @@ fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Opti
 fn validate_bootstrap_tree(root: PhysBytes) {
     let bound = core::cmp::min(IDENTITY_MAP_END, CurrentDirectMap::VM_DIRECT_MAP_SIZE);
     assert!(
-        root.0.checked_add(PAGE_SIZE).is_some_and(|end| end <= bound),
+        root.0
+            .checked_add(PAGE_SIZE)
+            .is_some_and(|end| end <= bound),
         "boot DM: bootstrap root {:#x} outside DM-admissible bound {:#x}",
         root.0,
         bound
@@ -491,7 +500,10 @@ mod tests {
         use minix_boot::MemoryRegion;
 
         let info = KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0x10_0000), len: 0x100_0000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0x10_0000),
+                len: 0x100_0000,
+            }],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
@@ -517,7 +529,10 @@ mod tests {
         boot_alloc::init_boot_pt_alloc(0x9000_0000, 0x9000_4000);
         let cands = bootstrap_tree_candidates(&info, PhysBytes(0x9000_0000));
         assert_eq!(cands[0], Some(DmRange::new(0x9000_0000, PAGE_SIZE)));
-        assert_eq!(cands[1], Some(DmRange::new(0x9000_0000 + PAGE_SIZE, 0x3000)));
+        assert_eq!(
+            cands[1],
+            Some(DmRange::new(0x9000_0000 + PAGE_SIZE, 0x3000))
+        );
     }
 
     /// Disjoint shape (UEFI shim): `alloc_root_page` runs first with
@@ -535,7 +550,10 @@ mod tests {
         use minix_boot::MemoryRegion;
 
         let info = KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0), len: 0x800_0000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0),
+                len: 0x800_0000,
+            }],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
@@ -578,7 +596,10 @@ mod tests {
         use minix_boot::{BootModule, MemoryRegion};
 
         let mk = |modules: &'static [BootModule]| KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0), len: 0x100_0000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0),
+                len: 0x100_0000,
+            }],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
@@ -597,14 +618,25 @@ mod tests {
         // Real-world shape (blob at PA 0x1de0e000, above the 16 MiB
         // memmap) plus a hypothetical in-memmap module (dropped).
         static MODS: &[BootModule] = &[
-            BootModule { name: "rs", start: PhysBytes(0x1de0_e000), len: 0x42_000 },
-            BootModule { name: "overlap", start: PhysBytes(0x80_0000), len: 0x1000 },
+            BootModule {
+                name: "rs",
+                start: PhysBytes(0x1de0_e000),
+                len: 0x42_000,
+            },
+            BootModule {
+                name: "overlap",
+                start: PhysBytes(0x80_0000),
+                len: 0x1000,
+            },
         ];
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // bump inside memmap → dropped by source 2 too
         let cands: alloc::vec::Vec<DmRange> =
             boot_module_candidates(&mk(MODS), PhysBytes(0x1000)).collect();
-        assert_eq!(cands, alloc::vec![DmRange::new(0x1de0_e000, 0x42_000)],
-            "out-of-memmap module kept, overlapping module dropped");
+        assert_eq!(
+            cands,
+            alloc::vec![DmRange::new(0x1de0_e000, 0x42_000)],
+            "out-of-memmap module kept, overlapping module dropped"
+        );
     }
 
     /// `kernel_dm_pa_end` returns the page-rounded highest end of
@@ -623,7 +655,10 @@ mod tests {
             len: 0x42_000,
         }];
         let info = KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0), len: 0x100_0000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0),
+                len: 0x100_0000,
+            }],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
@@ -640,8 +675,11 @@ mod tests {
             memmap_sources: &[],
         };
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → dropped
-        assert_eq!(kernel_dm_pa_end(&info, PhysBytes(0x1000)), 0x1de5_0000,
-            "module end 0x1de0e000+0x42000=0x1de50000 is the highest candidate");
+        assert_eq!(
+            kernel_dm_pa_end(&info, PhysBytes(0x1000)),
+            0x1de5_0000,
+            "module end 0x1de0e000+0x42000=0x1de50000 is the highest candidate"
+        );
     }
 
     /// Reserved regions (source 4) fill the kernel-DM gap that the
@@ -832,8 +870,10 @@ mod tests {
 
         let policy = mock_dm_policy();
         // SAFETY: host test mock records leaves; no page tables are touched.
-        unsafe { establish_boot_dm::<minix_arch::arch::boot_arch::MockBootArch>(&info, root, &policy) }
-            .expect("mock establish_boot_dm");
+        unsafe {
+            establish_boot_dm::<minix_arch::arch::boot_arch::MockBootArch>(&info, root, &policy)
+        }
+        .expect("mock establish_boot_dm");
 
         let leaves = minix_arch::arch::boot_dm::mock::mock_dm_leaves();
         assert!(
@@ -872,7 +912,10 @@ mod tests {
     fn test_boot_dm_x86_64_style_params() {
         let _boot = crate::test_sync::lock_boot_globals();
         let info = KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0x100000),
+                len: 0x1000000,
+            }],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
@@ -888,9 +931,14 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
         };
-        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, PhysBytes(0x1000));
-        assert_eq!(info_ref.kern_virt_base.0, info.kern_virt_base.0,
-            "returned KernelInfo should match input");
+        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(
+            &info,
+            PhysBytes(0x1000),
+        );
+        assert_eq!(
+            info_ref.kern_virt_base.0, info.kern_virt_base.0,
+            "returned KernelInfo should match input"
+        );
     }
 
     #[test]
@@ -899,7 +947,10 @@ mod tests {
         let _boot = crate::test_sync::lock_boot_globals();
         boot_dm_test_preconditions();
         let info = KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0x4000_0000),
+                len: 0x800_0000,
+            }],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x4020_0000),
             kern_size: 0x200_000,
@@ -915,7 +966,10 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
         };
-        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, PhysBytes(0x1000));
+        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(
+            &info,
+            PhysBytes(0x1000),
+        );
         assert_eq!(info_ref.kern_phys_base.0, 0x4020_0000);
     }
 
@@ -925,7 +979,10 @@ mod tests {
         let _boot = crate::test_sync::lock_boot_globals();
         boot_dm_test_preconditions();
         let info = KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0x8000_0000), len: 0x800_0000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0x8000_0000),
+                len: 0x800_0000,
+            }],
             kern_virt_base: VirBytes(0xFFFF_8000_0800_0000),
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x200_000,
@@ -941,7 +998,10 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
         };
-        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, PhysBytes(0x1000));
+        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(
+            &info,
+            PhysBytes(0x1000),
+        );
         assert_eq!(info_ref.kern_phys_base.0, 0x8000_0000);
     }
 }

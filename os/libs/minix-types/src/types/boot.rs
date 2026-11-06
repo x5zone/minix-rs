@@ -220,8 +220,14 @@ pub const USER_VA_LIMIT: u64 = if cfg!(target_arch = "riscv64") {
 // Compile-time invariants: a wrong value here is the same defect class as
 // the riscv64 bound violation (an untranslatable user address), so pin it at
 // build time on every target.
-const _: () = assert!(USER_STACK_TOP.is_multiple_of(4096), "USER_STACK_TOP must be page-aligned");
-const _: () = assert!(USER_STACK_TOP < USER_VA_LIMIT, "USER_STACK_TOP must stay in the user half");
+const _: () = assert!(
+    USER_STACK_TOP.is_multiple_of(4096),
+    "USER_STACK_TOP must be page-aligned"
+);
+const _: () = assert!(
+    USER_STACK_TOP < USER_VA_LIMIT,
+    "USER_STACK_TOP must stay in the user half"
+);
 #[cfg(target_arch = "riscv64")]
 const _: () = assert!(
     USER_STACK_TOP < (1u64 << 38),
@@ -808,8 +814,14 @@ mod tests {
         fn test_kernel_layout_v6_reports_identity_windows() {
             let mut h = handoff(VM_BOOT_HANDOFF_VERSION);
             assert_eq!(VM_BOOT_HANDOFF_VERSION, 8);
-            h.kern_ident[0] = HandoffMemRegion { base: 0x1da0_0000, size: 0x40_0000 };
-            h.kern_ident[1] = HandoffMemRegion { base: 0x1f00_0000, size: 0x1000 };
+            h.kern_ident[0] = HandoffMemRegion {
+                base: 0x1da0_0000,
+                size: 0x40_0000,
+            };
+            h.kern_ident[1] = HandoffMemRegion {
+                base: 0x1f00_0000,
+                size: 0x1000,
+            };
             h.kern_ident_count = 2;
             let l = h.kernel_layout().expect("v6 must carry the layout");
             assert_eq!(l.ident_regions().len(), 2);

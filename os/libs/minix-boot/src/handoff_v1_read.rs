@@ -14,11 +14,10 @@
 //! little-endian, mirroring [`crate::handoff_v1_write`].
 
 use crate::handoff_v1::{
-    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1,
-    FREE_UPPER_IDX_NONE, WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET,
-    WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
-    WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
-    WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET, WIRE_SOURCE_RECORD_SIZE,
+    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1, FREE_UPPER_IDX_NONE,
+    WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP,
+    WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP,
+    WIRE_RESERVED_OFFSET, WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET,
     WireBootModule, WireMemoryRegion, WirePlatformDescSource, WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
@@ -409,10 +408,7 @@ pub fn decode_param_buf(
 /// `name` must be the NUL-terminated name borrowed from the caller's landing
 /// pool (kernel `.bss`), so the resulting `&'static str` does not point into
 /// the arena.
-pub fn wire_module_to_boot_module(
-    wire: &WireBootModule,
-    name: &'static str,
-) -> BootModule {
+pub fn wire_module_to_boot_module(wire: &WireBootModule, name: &'static str) -> BootModule {
     BootModule {
         name,
         start: PhysBytes(wire.start),
@@ -425,8 +421,8 @@ mod tests {
     use super::*;
     use crate::handoff_v1::ARENA_CAP;
     use crate::handoff_v1_write::{RuntimeFields, Serializer};
-    use crate::memmap_source::{PhysicalRange, SourceKind, SourceOrigin, SourceRecord};
     use crate::kernel_info::KernelInfo;
+    use crate::memmap_source::{PhysicalRange, SourceKind, SourceOrigin, SourceRecord};
     use crate::platform::{DTB, RSDP};
     use minix_types::{USER_STACK_TOP, VirBytes};
 
@@ -741,7 +737,10 @@ mod tests {
     fn round_trip_sources() {
         let arena = build_arena();
         let s = decode_envelope(&arena).unwrap();
-        assert_eq!(s.sources_byte_len, (RECORDS.len() * WIRE_SOURCE_RECORD_SIZE) as u64);
+        assert_eq!(
+            s.sources_byte_len,
+            (RECORDS.len() * WIRE_SOURCE_RECORD_SIZE) as u64
+        );
         let mut out = [SourceRecord {
             id: 0,
             kind: SourceKind::Memory,
@@ -908,7 +907,10 @@ mod tests {
             (2, 1, 2, 2, PARAM.len(), RECORDS.len())
         );
         for (i, landed) in free[..n_free].iter().enumerate() {
-            assert_eq!((landed.base.0, landed.len), (MEMMAP[i].base.0, MEMMAP[i].len));
+            assert_eq!(
+                (landed.base.0, landed.len),
+                (MEMMAP[i].base.0, MEMMAP[i].len)
+            );
         }
         for (i, landed) in reserved[..n_reserved].iter().enumerate() {
             assert_eq!(

@@ -11,9 +11,9 @@
 //! implementation of "how they may be touched" are one file apart by
 //! design, not interleaved with the boot sequence.
 
-use minix_boot::KernelInfo;
 use bkl_protected::BklProtected;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
+use minix_boot::KernelInfo;
 
 /// `UnsafeCell` with `Sync` gated on the [`BklProtected`] marker trait.
 ///
@@ -209,8 +209,6 @@ mod bkl_protected {
     unsafe impl<T: BklProtected, const N: usize> BklProtected for [T; N] {}
 }
 
-
-
 #[cfg(test)]
 mod bkl_protected_tests {
     use super::*;
@@ -272,7 +270,6 @@ mod bkl_protected_tests {
         let _ = String::new(); // suppress unused import warning
     }
 }
-
 
 /// Global flag: kernel may allocate physical memory directly.
 /// C: kernel_may_alloc in glo.h
@@ -419,12 +416,14 @@ pub(crate) static SOURCE_RECORD_STORE: SyncUnsafeCell<
 /// All access requires the Big Kernel Lock (BKL). The BKL serializes all
 /// kernel code, so at most one CPU mutates `PROC_TABLE` at a time. Boot-time
 /// init (single-threaded, before BKL exists) is also safe.
-pub(crate) static PROC_TABLE: SyncUnsafeCell<crate::proc_table::ProcessTable> = SyncUnsafeCell::new(crate::proc_table::ProcessTable::new());
+pub(crate) static PROC_TABLE: SyncUnsafeCell<crate::proc_table::ProcessTable> =
+    SyncUnsafeCell::new(crate::proc_table::ProcessTable::new());
 
 /// Global privilege table — C's `EXTERN struct priv priv[NR_SYS_PROCS]`.
 ///
 /// Same storage / safety model as `PROC_TABLE`. See `06-proc-init-boot-proc.md` §3.1.
-pub(crate) static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> = SyncUnsafeCell::new(crate::kpriv::PrivTable::new());
+pub(crate) static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> =
+    SyncUnsafeCell::new(crate::kpriv::PrivTable::new());
 
 /// Global IRQ manager — owns the architecture's interrupt controller and
 /// the IRQ hook chain.
@@ -444,7 +443,9 @@ pub(crate) static PRIV_TABLE: SyncUnsafeCell<crate::kpriv::PrivTable> = SyncUnsa
 /// The IRQ manager is a global so that trap entry points (assembly stubs)
 /// can reach it without holding a reference in a CPU-local. This mirrors
 /// C's global `irq_hooks[]` + `irq_actids[]` + `intr_*` globals.
-pub(crate) static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>> = SyncUnsafeCell::new(None);
+pub(crate) static IRQ_MANAGER: SyncUnsafeCell<
+    Option<crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>>,
+> = SyncUnsafeCell::new(None);
 
 /// The process whose kernel call is currently in flight (`kbill_kcall`);
 /// C glo.h:44 + system.c:160. Set unconditionally after
@@ -458,7 +459,8 @@ pub(crate) static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqMana
 /// estimate, faithfully kept). SMP: a single global mirrors
 
 /// lands.
-pub(crate) static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
+pub(crate) static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> =
+    SyncUnsafeCell::new(None);
 
 /// The IPC half of the same kill-billing pair (C glo.h's `kbill_ipc` +
 /// `proc.c:607`) -- the process currently performing IPC. `do_ipc` sets it
@@ -469,14 +471,16 @@ pub(crate) static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = Syn
 /// consumed and both cleared -- one switch can add a delta to the same
 /// process's `kipc` and `kcall`; that is C's coarse estimation, copied
 /// verbatim).
-pub(crate) static KBILL_IPC: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
+pub(crate) static KBILL_IPC: SyncUnsafeCell<Option<crate::proc::ProcNr>> =
+    SyncUnsafeCell::new(None);
 
 /// The global software clock state (software half): the
 /// uptime/realtime/alarm-timer ring live here. C: `kclockinfo` +
 /// `clock_timers` (clock.c globals). Initialized in
 /// `init_clock_and_interrupts` (Phase B); consumed by the timer IRQ
 /// handler (`clock::clock_irq_handler`) at dispatch time.
-pub(crate) static CLOCK_STATE: SyncUnsafeCell<Option<crate::clock::ClockState>> = SyncUnsafeCell::new(None);
+pub(crate) static CLOCK_STATE: SyncUnsafeCell<Option<crate::clock::ClockState>> =
+    SyncUnsafeCell::new(None);
 
 /// Global SMP state — owns per-CPU `CpuLocal` (proc_ptr, bill_ptr,
 /// cpu_last_tsc, cpu_last_idle, ...) and CPU readiness flags.
@@ -496,7 +500,8 @@ pub(crate) static CLOCK_STATE: SyncUnsafeCell<Option<crate::clock::ClockState>> 
 /// (proc_table.rs) can reach per-CPU `cpu_last_tsc` / `cpu_last_idle`
 /// without threading `&mut SmpState` through every call site. Mirrors C's
 /// `get_cpu_var_ptr(cpu, ...)` access pattern.
-pub(crate) static SMP_STATE: SyncUnsafeCell<Option<crate::smp::SmpState>> = SyncUnsafeCell::new(None);
+pub(crate) static SMP_STATE: SyncUnsafeCell<Option<crate::smp::SmpState>> =
+    SyncUnsafeCell::new(None);
 
 /// IPC filter pool for per-process message filtering.
 /// C: `ipc_filter_pool[IPCF_POOL_SIZE]` — ipc_filter.h:54
@@ -506,7 +511,8 @@ pub(crate) static SMP_STATE: SyncUnsafeCell<Option<crate::smp::SmpState>> = Sync
 ///
 /// SAFETY: Only written once during boot (single-threaded, before BKL needed).
 /// After boot, accessed under BKL protection.
-pub(crate) static IPC_FILTER_POOL: SyncUnsafeCell<crate::ipc_filter::IpcFilterPool> = SyncUnsafeCell::new(crate::ipc_filter::IpcFilterPool::new());
+pub(crate) static IPC_FILTER_POOL: SyncUnsafeCell<crate::ipc_filter::IpcFilterPool> =
+    SyncUnsafeCell::new(crate::ipc_filter::IpcFilterPool::new());
 
 /// Global atomic mirror of C's `vm_running` flag.
 ///
@@ -557,7 +563,6 @@ pub(crate) static VM_RUNNING: AtomicBool = AtomicBool::new(false);
 /// "no ptproc set yet" — distinct from any valid proc-nr (which are
 /// non-negative for user processes and small negative for kernel tasks).
 
-
 /// Sentinel for "no root page table installed yet" (A2: moved with the
 /// static it sentinels — every reader/writer of CURRENT_ROOT_PHYS pairs
 /// against this value).
@@ -583,7 +588,6 @@ pub(crate) const KERNINFO_USER_UNSET: u64 = 0;
 /// `CURRENT_ROOT_PHYS`: plain write-once-read-many `u64` needs no
 /// `SyncUnsafeCell` wrapper.
 pub(crate) static MINIX_KERNINFO_USER: AtomicU64 = AtomicU64::new(KERNINFO_USER_UNSET);
-
 
 // ── Statics that had escaped the single audit point ──
 // The "single audit point" was previously broken by four groups of statics
@@ -641,8 +645,7 @@ pub(crate) static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 =
 /// TSC cycles per millisecond, calibrated during boot (standalone
 /// calibration constant — NOT a mirror; single source).
 /// C: `tsc_per_ms[cpuid]` — kernel/proc.h. Per-CPU values arrive with SMP.
-pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // Statistical-profiling state (C: sprof_ep / sprof_info_addr_vir /
 // sprof_data_addr_vir / sprof_mem_size / sprof_info — profile.h:15-18,
@@ -652,11 +655,14 @@ pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
 /// Profiler control endpoint.
 pub(crate) static SPROF_EP: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
 /// User-space address of the profiler info record.
-pub(crate) static SPROF_INFO_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(crate) static SPROF_INFO_ADDR: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 /// User-space address of the sample buffer copy-out area.
-pub(crate) static SPROF_DATA_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(crate) static SPROF_DATA_ADDR: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 /// Size of the user-space copy-out area.
-pub(crate) static SPROF_MEM_SIZE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+pub(crate) static SPROF_MEM_SIZE: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
 /// Global profiling record (PROF_START resets, PROF_STOP reads).
 /// Upgraded from `static mut`: the `SyncUnsafeCell` wrapper keeps

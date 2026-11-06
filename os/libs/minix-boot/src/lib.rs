@@ -14,7 +14,6 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-pub mod kernel_info;
 pub mod boot_form;
 pub mod boot_params;
 pub mod boot_shim;
@@ -22,26 +21,25 @@ pub mod fdt_layout;
 pub mod handoff_v1;
 pub mod handoff_v1_read;
 pub mod handoff_v1_write;
+pub mod kernel_info;
 pub mod memmap_source;
 pub mod platform;
 
-pub use kernel_info::*;
-pub use boot_form::{BootForm, ALL_BOOT_FORMS};
+pub use boot_form::{ALL_BOOT_FORMS, BootForm};
 pub use boot_params::*;
 pub use boot_shim::*;
 pub use handoff_v1::*;
 pub use handoff_v1_read::*;
 pub use handoff_v1_write::*;
+pub use kernel_info::*;
 pub use memmap_source::{
     DtbMemoryMap, PhysicalRange, SourceAuditError, SourceKind, SourceOrigin, SourceRecord,
     audit_source_coverage, dtb_covers_conventional,
 };
 pub use platform::{
-    PlatformDescKind, PlatformDescSource, PlatformDesc, PlatformSource,
-    InterruptControllerDesc, TimerDesc, ConsoleDesc,
-    CpuTopology, CpuInfo, ArchMiscDesc, MAX_CPUS,
-    PlatformParseError,
-    DTB, RSDP,
+    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, DTB, InterruptControllerDesc, MAX_CPUS,
+    PlatformDesc, PlatformDescKind, PlatformDescSource, PlatformParseError, PlatformSource, RSDP,
+    TimerDesc,
 };
 
 /// The devicetree specification requires the blob to start on an 8-byte

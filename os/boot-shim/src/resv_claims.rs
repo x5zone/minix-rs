@@ -57,9 +57,16 @@ pub enum ClaimError {
     /// More covering intervals than the fixed buffer holds.
     IntervalOverflow,
     /// A claimed page has no covering descriptor of the expected type.
-    UncoveredPage { page: u64, expected: ExpectedEfiType },
+    UncoveredPage {
+        page: u64,
+        expected: ExpectedEfiType,
+    },
     /// A claimed page is covered by a descriptor of another type.
-    IncompatibleType { page: u64, expected: ExpectedEfiType, actual: u32 },
+    IncompatibleType {
+        page: u64,
+        expected: ExpectedEfiType,
+        actual: u32,
+    },
 }
 
 /// Build the page-rounded claims behind a DTB's reservation records.
@@ -89,7 +96,11 @@ pub fn claims_from_records(
         }
         let start = raw_start & !0xfff;
         let rounded = (raw_end + 0xfff) & !0xfffu128;
-        let end = if rounded > u64::MAX as u128 { u64::MAX } else { rounded as u64 };
+        let end = if rounded > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            rounded as u64
+        };
         if start >= end {
             continue;
         }
@@ -104,7 +115,11 @@ pub fn claims_from_records(
             if n >= out.len() {
                 return Err(ClaimError::TooManyClaims);
             }
-            out[n] = Claim { start: clip_start, end: clip_end as u64, expected };
+            out[n] = Claim {
+                start: clip_start,
+                end: clip_end as u64,
+                expected,
+            };
             n += 1;
         }
     }
@@ -120,7 +135,10 @@ struct IntervalSet {
 
 impl IntervalSet {
     const fn new() -> Self {
-        Self { items: [(0, 0); MAX_INTERVALS], len: 0 }
+        Self {
+            items: [(0, 0); MAX_INTERVALS],
+            len: 0,
+        }
     }
 
     fn push(&mut self, start: u64, end: u64) -> Result<(), ClaimError> {
@@ -160,9 +178,6 @@ impl IntervalSet {
         None
     }
 
-    fn first(&self) -> Option<(u64, u64)> {
-        (self.len > 0).then(|| self.items[0])
-    }
 }
 
 /// Verify every claim against the classified snapshot.
@@ -203,7 +218,10 @@ pub fn check(
             });
         }
         if let Some(page) = covered.uncovered_from(claim.start, claim.end) {
-            return Err(ClaimError::UncoveredPage { page, expected: claim.expected });
+            return Err(ClaimError::UncoveredPage {
+                page,
+                expected: claim.expected,
+            });
         }
     }
     Ok(())
@@ -244,20 +262,26 @@ pub fn capture(dtb_pa: u64) {
         if minix_boot::fdt_layout::validate(dtb_pa, bytes).is_err() {
             return;
         }
-        let Ok(fdt) = fdt::Fdt::new(bytes) else { return };
-        let Ok((_, _, sources, panorama)) = minix_boot::DtbMemoryMap::new(&fdt, 0)
-            .collect_with_panorama()
+        let Ok(fdt) = fdt::Fdt::new(bytes) else {
+            return;
+        };
+        let Ok((_, _, sources, panorama)) =
+            minix_boot::DtbMemoryMap::new(&fdt, 0).collect_with_panorama()
         else {
             return;
         };
-        let mut claims = [Claim { start: 0, end: 0, expected: ExpectedEfiType::Reserved }; MAX_CLAIMS];
+        let mut claims = [Claim {
+            start: 0,
+            end: 0,
+            expected: ExpectedEfiType::Reserved,
+        }; MAX_CLAIMS];
         let Ok(count) = claims_from_records(sources, panorama, &mut claims) else {
             return;
         };
         let base = core::ptr::addr_of_mut!(CLAIMS) as *mut Claim;
         for (i, claim) in claims.iter().enumerate().take(count) {
             // SAFETY: `base` points at the static array, `i < count <= MAX_CLAIMS`.
-            unsafe { base.add(i).write(*claim) };
+            base.add(i).write(*claim);
         }
         CLAIMS_N = count;
         DTB_RAW = Some((dtb_pa, dtb_pa + total as u64));
@@ -299,7 +323,11 @@ mod tests {
     }
 
     fn claim(start: u64, end: u64, expected: ExpectedEfiType) -> Claim {
-        Claim { start, end, expected }
+        Claim {
+            start,
+            end,
+            expected,
+        }
     }
 
     fn record(kind: SourceKind, start: u64, end: u128) -> SourceRecord {
@@ -400,11 +428,14 @@ mod tests {
     fn dtb_pages_accept_acpi_reclaim_for_the_reservation_type() {
         let claims = [claim(0x2000, 0x3000, ExpectedEfiType::Reserved)];
         let descs = [desc(ty::ACPI_RECLAIM, 0x2000, 1)];
-        assert_eq!(check(&claims, &descs, Some((0x4000, 0x5000))), Err(ClaimError::IncompatibleType {
-            page: 0x2000,
-            expected: ExpectedEfiType::Reserved,
-            actual: ty::ACPI_RECLAIM
-        }));
+        assert_eq!(
+            check(&claims, &descs, Some((0x4000, 0x5000))),
+            Err(ClaimError::IncompatibleType {
+                page: 0x2000,
+                expected: ExpectedEfiType::Reserved,
+                actual: ty::ACPI_RECLAIM
+            })
+        );
         assert_eq!(check(&claims, &descs, Some((0x2000, 0x3000))), Ok(()));
     }
 
@@ -414,11 +445,17 @@ mod tests {
             record(SourceKind::ReservedOrdinary, 0x2000, 0x4000),
             record(SourceKind::ReservedNoMap, 0x9000_0000, 0x9000_1000),
         ];
-        let panorama = [MemoryRegion { base: PhysBytes(0x1000), len: 0x3000 }];
+        let panorama = [MemoryRegion {
+            base: PhysBytes(0x1000),
+            len: 0x3000,
+        }];
         let mut out = [claim(0, 0, ExpectedEfiType::Reserved); 4];
         let n = claims_from_records(&records, &panorama, &mut out).expect("fits");
         assert_eq!(n, 1, "the reservation outside /memory is not a RAM claim");
-        assert_eq!(out[0], claim(0x2000, 0x4000, ExpectedEfiType::BootServicesData));
+        assert_eq!(
+            out[0],
+            claim(0x2000, 0x4000, ExpectedEfiType::BootServicesData)
+        );
     }
 
     #[test]
@@ -428,7 +465,10 @@ mod tests {
             record(SourceKind::ReservedNoMap, 0x3000, 0x4000),
             record(SourceKind::ReservedReusable, 0x4000, 0x5000),
         ];
-        let panorama = [MemoryRegion { base: PhysBytes(0x1000), len: 0x5000 }];
+        let panorama = [MemoryRegion {
+            base: PhysBytes(0x1000),
+            len: 0x5000,
+        }];
         let mut out = [claim(0, 0, ExpectedEfiType::Reserved); 4];
         let n = claims_from_records(&records, &panorama, &mut out).expect("fits");
         assert_eq!(n, 3);
@@ -440,7 +480,10 @@ mod tests {
     #[test]
     fn claim_capacity_overflow_is_a_refusal() {
         let records = [record(SourceKind::MrbEntry, 0x2000, 0x3000)];
-        let panorama = [MemoryRegion { base: PhysBytes(0x1000), len: 0x5000 }];
+        let panorama = [MemoryRegion {
+            base: PhysBytes(0x1000),
+            len: 0x5000,
+        }];
         let mut out = [claim(0, 0, ExpectedEfiType::Reserved); 0];
         assert_eq!(
             claims_from_records(&records, &panorama, &mut out),

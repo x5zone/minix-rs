@@ -58,15 +58,12 @@
 use core::slice;
 
 use minix_boot::{
-    DtbMemoryMap,
-    BootModule, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource, DTB,
+    BootModule, DTB, DtbMemoryMap, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource,
 };
 use minix_types::{PhysBytes, VirBytes};
 
 use boot_shim::build_kernel_info;
-use boot_shim::opensbi_helpers::{
-    BootFileTable, bump_alloc_pages, bump_end_bound, bump_pool_base,
-};
+use boot_shim::opensbi_helpers::{BootFileTable, bump_alloc_pages, bump_end_bound, bump_pool_base};
 
 use crate::early_console;
 
@@ -225,11 +222,14 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     //    fault; the discipline established by real-hardware and U-Boot
     //    forensics).
     let chosen_pa = fdt_table_pa(&fdt);
-    let table_pa = [Some(table_pa_a2), chosen_pa].into_iter().flatten().find(|pa| {
-        in_memmap(memmap, *pa) && table_magic_ok(*pa)
-    });
+    let table_pa = [Some(table_pa_a2), chosen_pa]
+        .into_iter()
+        .flatten()
+        .find(|pa| in_memmap(memmap, *pa) && table_magic_ok(*pa));
     let Some(table_pa) = table_pa else {
-        say("### minix-rs kernel image: no BootFileTable (a2/chosen) — module channel not wired, halting\n");
+        say(
+            "### minix-rs kernel image: no BootFileTable (a2/chosen) — module channel not wired, halting\n",
+        );
         crate::halt();
     };
     say("  boot file table pa 0x");
@@ -250,13 +250,22 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     //    pieces, which under the physical-address view hits exactly that
     //    invariant).
     let pool_exhaust = "### minix-rs kernel image: bump pool exhausted — halting\n";
-    let Some(cur_root) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
+    let Some(cur_root) = bump_alloc_pages(1) else {
+        say(pool_exhaust);
+        crate::halt()
+    };
     let root_page = PhysBytes(cur_root);
-    let Some(pt_base) = bump_alloc_pages(PT_BUMP_PAGES) else { say(pool_exhaust); crate::halt() };
+    let Some(pt_base) = bump_alloc_pages(PT_BUMP_PAGES) else {
+        say(pool_exhaust);
+        crate::halt()
+    };
     let pt_end = pt_base + (PT_BUMP_PAGES as u64) * 4096;
     // Name pool: one physical-address bump page, 12 slots of 16B (see the view
     // discussion in `place_modules`).
-    let Some(names_pool) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
+    let Some(names_pool) = bump_alloc_pages(1) else {
+        say(pool_exhaust);
+        crate::halt()
+    };
     minix_kernel::boot_alloc::init_boot_pt_alloc(pt_base, pt_end);
     minix_arch::pt_alloc::register(minix_kernel::boot_alloc::boot_pt_alloc);
     say("  root 0x");
@@ -285,15 +294,13 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     // SAFETY: a single hart on the boot face; written once, then read-only
     // (from the next step on).
     unsafe {
-        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
-            PlatformDescSource::new(DTB, PhysBytes(dtb_pa));
+        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) = PlatformDescSource::new(DTB, PhysBytes(dtb_pa));
     }
     // SAFETY: as above — a static reference after the write, with no concurrent
     // rewriting; the single array cell and the length-1 slice share the same
     // storage.
-    let platform_sources: &'static [PlatformDescSource] = unsafe {
-        core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1)
-    };
+    let platform_sources: &'static [PlatformDescSource] =
+        unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1) };
 
     // T3: the direct-boot parameter source is the standard firmware channel,
     // DTB `/chosen/bootargs` (QEMU `-append` fills it).
@@ -388,7 +395,11 @@ fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
 /// Landing descriptor table for the 12 modules (`.bss`, read-only after
 /// assembly).
 static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
-    BootModule { name: "", start: PhysBytes(0), len: 0 }
+    BootModule {
+        name: "",
+        start: PhysBytes(0),
+        len: 0,
+    }
 }; NR_BOOT_MODULES];
 
 /// Consume the first `NR_BOOT_MODULES` entries at their contract positions and
@@ -433,11 +444,7 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
 /// function (the only difference is the bump pool base); the two point at each
 /// other, so keep them in sync when changing the name gate (structural merging
 /// is out of scope).
-fn place_modules(
-    table: &BootFileTable,
-    memmap: &[MemoryRegion],
-    names_pool: u64,
-) -> Option<()> {
+fn place_modules(table: &BootFileTable, memmap: &[MemoryRegion], names_pool: u64) -> Option<()> {
     let entries = table.valid_entries();
     if entries.len() < NR_BOOT_MODULES {
         say("  table holds 0x");
@@ -510,13 +517,12 @@ fn place_modules(
         // first zero boundary in the pool: zero padding never enters the `&str`
         // (the kernel's strlcpy semantics only need the prefix).
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                NAME_POOL[i].as_ptr(),
-                slot as *mut u8,
-                NAME_SLOT,
-            );
+            core::ptr::copy_nonoverlapping(NAME_POOL[i].as_ptr(), slot as *mut u8, NAME_SLOT);
         }
-        let n = NAME_POOL[i].iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
+        let n = NAME_POOL[i]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(NAME_SLOT);
         let landed: &'static str = unsafe {
             // SAFETY: the bytes come from an ASCII literal pool (all < 0x80
             // before the zero truncation); the backing is an exclusive physical

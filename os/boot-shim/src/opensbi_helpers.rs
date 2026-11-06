@@ -50,11 +50,10 @@
 
 use core::slice;
 
-use minix_types::{PhysBytes, VirBytes};
 use minix_boot::{
-    BootPrepareResult, BootShim, DTB, DtbMemoryMap, KernelInfo,
-    MemoryRegion, PlatformDescSource,
+    BootPrepareResult, BootShim, DTB, DtbMemoryMap, KernelInfo, MemoryRegion, PlatformDescSource,
 };
+use minix_types::{PhysBytes, VirBytes};
 
 use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
@@ -66,7 +65,7 @@ use crate::loader::{self, FileLoader};
 /// DRAM for boot-module pages. The exact start address is conservative;
 /// the boot script controls actual U-Boot allocations.
 const MODULE_REGION_BASE: u64 = 0x8000_0000 + 0x0200_0000; // DRAM + 32 MB
-const MODULE_REGION_SIZE: u64 = 0x0200_0000;             // 32 MB
+const MODULE_REGION_SIZE: u64 = 0x0200_0000; // 32 MB
 
 /// Kernel image physical base (`riscv64.ld` `KERNEL_PHYS_BASE` — the same
 /// value `kernel-image/src/bootface.rs` pins as `KERN_PHYS_BASE`). Passed to
@@ -181,9 +180,8 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // SAFETY: U-Boot's `fatload` placed `entry.len` bytes at
         // `entry.phys_addr`. The region is identity-mapped during boot
         // and not concurrently modified.
-        let slice = unsafe {
-            slice::from_raw_parts(entry.phys_addr as *const u8, entry.len as usize)
-        };
+        let slice =
+            unsafe { slice::from_raw_parts(entry.phys_addr as *const u8, entry.len as usize) };
         // The table stores the slot capacity, not the file length (the shim
         // does not know the size before `fatload`). Trim to the end of the
         // last PT_LOAD segment so `BootModule.len` and the module-page
@@ -191,10 +189,7 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // A non-ELF payload (tests, future formats) keeps the full slot.
         let used = minix_elf::segment_iter(slice)
             .ok()
-            .and_then(|iter| {
-                iter.map(|seg| (seg.offset + seg.filesz) as usize)
-                    .max()
-            })
+            .and_then(|iter| iter.map(|seg| (seg.offset + seg.filesz) as usize).max())
             .filter(|&end| end > 0 && end <= slice.len())
             .unwrap_or(slice.len());
         Some(slice[..used].to_vec())
@@ -230,8 +225,8 @@ impl BootShim for RiscvUbootBootShim {
         // module-private static during early boot. For unit testing
         // and headless development we fall back to a panic with a
         // clear message.
-        let table = boot_file_table()
-            .expect("boot-shim: U-Boot did not pass a BootFileTable in a0");
+        let table =
+            boot_file_table().expect("boot-shim: U-Boot did not pass a BootFileTable in a0");
         let file_loader = UbootFileLoader::new(table);
 
         // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
@@ -244,9 +239,8 @@ impl BootShim for RiscvUbootBootShim {
         // fallback; the single-region hardcoding is exactly the leak surface
         // being closed here).
         let (memmap, reserved, param_buf, sources) = {
-            let dtb_pa = dtb_ptr().expect(
-                "boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）",
-            );
+            let dtb_pa = dtb_ptr()
+                .expect("boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）");
             // SAFETY: a1 is passed in by firmware; the first 8 bytes give
             // totalsize (same as bootface), `Fdt::new` checks the magic/size
             // gates, and a bad blob → expect halts.
@@ -270,22 +264,20 @@ impl BootShim for RiscvUbootBootShim {
                 minix_boot::fdt_layout::validate(dtb_pa, bytes).is_ok(),
                 "boot-shim: DTB container invalid — halting"
             );
-            let fdt = fdt::Fdt::new(bytes)
-                .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
-            let (memmap, reserved, sources) =
-                minix_boot::DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
-                    .collect_with_sources()
-                    .expect("boot-shim: DTB memmap rejected (capacity or reservation shape) — halting");
+            let fdt =
+                fdt::Fdt::new(bytes).expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
+            let (memmap, reserved, sources) = minix_boot::DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
+                .collect_with_sources()
+                .expect("boot-shim: DTB memmap rejected (capacity or reservation shape) — halting");
             // Hold the source records and audit coverage before anything is
             // projected; a span without a record behind it must halt.
             minix_boot::audit_source_coverage(memmap, reserved, sources)
                 .expect("boot-shim: a projected span has no source record — halting");
             // The SBI leg's parameter source is the standard firmware
             // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
-            let landing: &'static mut [u8] =
-                alloc::boxed::Box::leak(
-                    alloc::vec![0u8; minix_boot::PARAM_BUF_CAP].into_boxed_slice(),
-                );
+            let landing: &'static mut [u8] = alloc::boxed::Box::leak(
+                alloc::vec![0u8; minix_boot::PARAM_BUF_CAP].into_boxed_slice(),
+            );
             let input = fdt.chosen().bootargs().unwrap_or("");
             let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, landing);
             let ptr = landing.as_ptr();
@@ -299,8 +291,7 @@ impl BootShim for RiscvUbootBootShim {
 
         let kern = loader::load_kernel_with_loader(&file_loader)
             .expect("boot-shim: failed to parse kernel ELF");
-        let boot_modules =
-            loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
+        let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
 
         // OpenSBI passes the DTB physical address in register a1.
         // The entry trampoline saves it via `install_dtb_ptr(a1)`.
@@ -313,8 +304,7 @@ impl BootShim for RiscvUbootBootShim {
             Some(pa) => {
                 use alloc::boxed::Box;
                 Box::leak(
-                    alloc::vec![PlatformDescSource::new(DTB, PhysBytes(pa))]
-                        .into_boxed_slice(),
+                    alloc::vec![PlatformDescSource::new(DTB, PhysBytes(pa))].into_boxed_slice(),
                 )
             }
             None => &[],
@@ -395,7 +385,10 @@ pub unsafe fn install_boot_file_table(addr: u64) {
     // silently overwrite and lose track. The `debug_assert!` fires only
     // in debug builds; release builds skip the check to avoid a load.
     // SAFETY: single-writer during early boot before secondary harts run.
-    debug_assert!(BOOT_FILE_TABLE_PTR == 0, "install_boot_file_table called twice");
+    debug_assert!(
+        BOOT_FILE_TABLE_PTR == 0,
+        "install_boot_file_table called twice"
+    );
     unsafe {
         BOOT_FILE_TABLE_PTR = addr as usize;
     }
@@ -600,10 +593,7 @@ mod tests {
 
     #[test]
     fn test_boot_file_table_find_returns_matching_entry() {
-        let table = build_table(&[
-            ("/a", &[0x11, 0x22][..]),
-            ("/b", &[0x33][..]),
-        ]);
+        let table = build_table(&[("/a", &[0x11, 0x22][..]), ("/b", &[0x33][..])]);
         let e = table.find("/b").unwrap();
         assert_eq!(e.len, 1);
         assert!(table.find("/c").is_none());
@@ -623,17 +613,12 @@ mod tests {
             }; BOOT_FILE_TABLE_MAX_ENTRIES],
         });
         let leaked: &'static BootFileTable = Box::leak(table);
-        assert_eq!(
-            leaked.valid_entries().len(),
-            BOOT_FILE_TABLE_MAX_ENTRIES
-        );
+        assert_eq!(leaked.valid_entries().len(), BOOT_FILE_TABLE_MAX_ENTRIES);
     }
 
     #[test]
     fn test_uboot_file_loader_reads_bytes_from_table() {
-        let table = build_table(&[
-            ("/EFI/minix/modules/vm", &[0xAA, 0xBB, 0xCC][..]),
-        ]);
+        let table = build_table(&[("/EFI/minix/modules/vm", &[0xAA, 0xBB, 0xCC][..])]);
         let loader = UbootFileLoader::new(table);
         let data = loader.read("/EFI/minix/modules/vm").unwrap();
         assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
@@ -699,7 +684,10 @@ mod tests {
         // return strictly increasing addresses.
         let a = bump_alloc(1).expect("first alloc should succeed");
         let b = bump_alloc(1).expect("second alloc should succeed");
-        assert!(b > a, "bump_alloc must return strictly increasing addresses");
+        assert!(
+            b > a,
+            "bump_alloc must return strictly increasing addresses"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -780,7 +768,7 @@ mod tests {
             0x100_000,
             &[],
             PhysBytes(0), // production-path value (see §3.5.1)
-            0,           // production-path value
+            0,            // production-path value
             &[],
             &[],
         );
@@ -798,7 +786,10 @@ mod tests {
     fn test_alloc_bump_region_round_trip() {
         let (base, end) = alloc_bump_region(2);
         assert_eq!(end - base, 2 * 4096, "end - base must equal n * page_size");
-        assert!(base >= MODULE_REGION_BASE, "base must be inside bump region");
+        assert!(
+            base >= MODULE_REGION_BASE,
+            "base must be inside bump region"
+        );
         assert!(end <= BUMP_END, "end must be inside bump region");
     }
 
@@ -810,6 +801,9 @@ mod tests {
         let paddr = alloc_root_page();
         assert_eq!(paddr.0 % 4096, 0, "root page must be 4K aligned");
         // Must lie inside the bump region (must not exceed BUMP_END)
-        assert!(paddr.0 + 4096 <= BUMP_END, "root page must fit in bump region");
+        assert!(
+            paddr.0 + 4096 <= BUMP_END,
+            "root page must fit in bump region"
+        );
     }
 }

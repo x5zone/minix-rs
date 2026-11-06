@@ -3,9 +3,9 @@
 //! Corresponds to Minix3's `kinfo_t` (minix/param.h, pre_init.c).
 //! Stripped of multiboot-specific fields — UEFI provides memory map directly.
 
-use minix_types::{VirBytes, PhysBytes};
+use minix_types::{PhysBytes, VirBytes};
 
-use crate::memmap_source::{SourceRecord, SourceAuditError};
+use crate::memmap_source::{SourceAuditError, SourceRecord};
 use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
@@ -49,11 +49,14 @@ pub struct KernelInfo {
 
     /// Provenance records behind [`Self::memmap`] / [`Self::reserved_regions`]:
     /// one record per input declaration (or derived firmware prefix), naming
-    /// the object and the offset inside it. Empty means the boot leg did not
-    /// carry records (the UEFI leg today — its per-descriptor provenance is
-    /// not on the wire yet). A non-empty list is re-audited by
+    /// the object and the offset inside it. All four production legs carry
+    /// them (three DTB collectors, and the UEFI leg's per-descriptor records
+    /// written by the EBS pairing loop). A non-empty list is re-audited by
     /// [`Self::validate`], so the consumer boundary refuses to boot on a
-    /// projected span that no record explains.
+    /// projected span that no record explains; surfaces that know the wire
+    /// contract was in force call [`Self::validate_requiring_sources`], which
+    /// also refuses an empty partition. Hand-built test kernels construct
+    /// this field as `&[]` and use the lenient gate.
     pub memmap_sources: &'static [SourceRecord],
 
     /// Kernel virtual base address.
@@ -275,9 +278,9 @@ impl KernelInfo {
                 self.memmap_sources,
             ) {
                 Ok(()) => {}
-                Err(error) => panic!(
-                    "KernelInfo: source records do not cover the projected map: {error:?}"
-                ),
+                Err(error) => {
+                    panic!("KernelInfo: source records do not cover the projected map: {error:?}")
+                }
             }
         }
     }
@@ -384,81 +387,111 @@ impl KernelInfo {
     /// `vm_handoff::classify` for the handoff free list).
     /// C: `kinfo.memmap[]` — pg_utils.c add_memmap/cut_memmap
     #[inline]
-    pub fn memmap(&self) -> &'static [MemoryRegion] { self.memmap }
+    pub fn memmap(&self) -> &'static [MemoryRegion] {
+        self.memmap
+    }
 
     /// Provenance records handed over with the memory map (empty when the
     /// boot leg carried none).
     #[inline]
-    pub fn memmap_sources(&self) -> &'static [SourceRecord] { self.memmap_sources }
+    pub fn memmap_sources(&self) -> &'static [SourceRecord] {
+        self.memmap_sources
+    }
 
     /// Non-conventional (occupied) physical regions — the kernel runtime
     /// identity windows replayed into every process page table.
     /// See the `reserved_regions` field doc.
     #[inline]
-    pub fn reserved_regions(&self) -> &'static [MemoryRegion] { self.reserved_regions }
+    pub fn reserved_regions(&self) -> &'static [MemoryRegion] {
+        self.reserved_regions
+    }
 
     /// Kernel virtual base address.
     /// C: `kinfo.vir_kern_start = &_kern_vir_base` — pre_init.c:113
     #[inline]
-    pub fn kern_virt_base(&self) -> VirBytes { self.kern_virt_base }
+    pub fn kern_virt_base(&self) -> VirBytes {
+        self.kern_virt_base
+    }
 
     /// Kernel physical base address.
     /// C: `kern_phys_start = &_kern_phys_base` — pg_utils.c linker symbol
     #[inline]
-    pub fn kern_phys_base(&self) -> PhysBytes { self.kern_phys_base }
+    pub fn kern_phys_base(&self) -> PhysBytes {
+        self.kern_phys_base
+    }
 
     /// Kernel total size in bytes.
     /// C: `kern_kernlen = &_kern_size` — pg_utils.c linker symbol
     #[inline]
-    pub fn kern_size(&self) -> u64 { self.kern_size }
+    pub fn kern_size(&self) -> u64 {
+        self.kern_size
+    }
 
     /// First free page table root-level index after identity+kernel maps.
     /// C: `kinfo.freepde_start = pg_mapkernel()` — pre_init.c:233
     /// Returns `None` if boot-shim has not computed this value.
     #[inline]
-    pub fn free_upper_idx(&self) -> Option<usize> { self.free_upper_idx }
+    pub fn free_upper_idx(&self) -> Option<usize> {
+        self.free_upper_idx
+    }
 
     /// User-space stack top.
     /// C: `kinfo.user_sp = USR_STACKTOP` — pre_init.c:156
     #[inline]
-    pub fn user_sp(&self) -> VirBytes { self.user_sp }
+    pub fn user_sp(&self) -> VirBytes {
+        self.user_sp
+    }
 
     /// Kernel initial stack top (virtual address).
     /// C: `k_boot_stktop` / `k_initial_stktop` — linker symbol
     #[inline]
-    pub fn kern_stack_top(&self) -> VirBytes { self.kern_stack_top }
+    pub fn kern_stack_top(&self) -> VirBytes {
+        self.kern_stack_top
+    }
 
     /// System call entry point (virtual address).
     /// x86-64: configures LSTAR MSR; aarch64/riscv64: reference only.
     #[inline]
-    pub fn syscall_entry(&self) -> VirBytes { self.syscall_entry }
+    pub fn syscall_entry(&self) -> VirBytes {
+        self.syscall_entry
+    }
 
     /// Boot process images (PM, VM, VFS, RS etc.).
     /// C: `kinfo.module_list[]` — pre_init.c memcpy from GRUB
     #[inline]
-    pub fn boot_modules(&self) -> &'static [BootModule] { self.boot_modules }
+    pub fn boot_modules(&self) -> &'static [BootModule] {
+        self.boot_modules
+    }
 
     /// Physical address of the bootstrap (unpaged-kernel) memory region.
     /// Rust port: always `PhysBytes(0)` (see `bootstrap_start` field doc).
     #[inline]
-    pub fn bootstrap_start(&self) -> PhysBytes { self.bootstrap_start }
+    pub fn bootstrap_start(&self) -> PhysBytes {
+        self.bootstrap_start
+    }
 
     /// Length of the bootstrap (unpaged-kernel) memory region.
     /// Rust port: always `0` (validated by [`Self::validate`]).
     #[inline]
-    pub fn bootstrap_len(&self) -> u64 { self.bootstrap_len }
+    pub fn bootstrap_len(&self) -> u64 {
+        self.bootstrap_len
+    }
 
     /// Platform descriptor sources — opaque handles carrying firmware
     /// table pointers (DTB, RSDP, or both).
     #[inline]
-    pub fn platform_sources(&self) -> &'static [PlatformDescSource] { self.platform_sources }
+    pub fn platform_sources(&self) -> &'static [PlatformDescSource] {
+        self.platform_sources
+    }
 
     /// Boot parameter bytes (`param_buf`): `key=value` pairs, C's
     /// `param_buf[MULTIBOOT_PARAM_BUF_SIZE]` equivalent. Empty until a boot
     /// surface supplies real bytes; the kernel's GET_MONPARAMS handler
     /// zero-pads to the fixed C size.
     #[inline]
-    pub fn param_buf(&self) -> &'static [u8] { self.param_buf }
+    pub fn param_buf(&self) -> &'static [u8] {
+        self.param_buf
+    }
 }
 
 #[repr(C)]
@@ -506,8 +539,14 @@ mod tests {
     /// Helper to build a valid KernelInfo for testing.
     fn make_valid_info() -> KernelInfo {
         KernelInfo {
-            memmap: &[MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }],
-            reserved_regions: &[MemoryRegion { base: PhysBytes(0x1da00000), len: 0x1000 }],
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0x100000),
+                len: 0x1000000,
+            }],
+            reserved_regions: &[MemoryRegion {
+                base: PhysBytes(0x1da00000),
+                len: 0x1000,
+            }],
             memmap_sources: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
@@ -666,11 +705,17 @@ mod tests {
         assert_eq!(info.memmap().len(), info.memmap.len());
         assert_eq!(info.memmap().as_ptr(), info.memmap.as_ptr());
         assert_eq!(info.reserved_regions().len(), info.reserved_regions.len());
-        assert_eq!(info.reserved_regions().as_ptr(), info.reserved_regions.as_ptr());
+        assert_eq!(
+            info.reserved_regions().as_ptr(),
+            info.reserved_regions.as_ptr()
+        );
         assert_eq!(info.boot_modules().len(), info.boot_modules.len());
         assert_eq!(info.boot_modules().as_ptr(), info.boot_modules.as_ptr());
         assert_eq!(info.platform_sources().len(), info.platform_sources.len());
-        assert_eq!(info.platform_sources().as_ptr(), info.platform_sources.as_ptr());
+        assert_eq!(
+            info.platform_sources().as_ptr(),
+            info.platform_sources.as_ptr()
+        );
         assert_eq!(info.param_buf().len(), info.param_buf.len());
         assert_eq!(info.param_buf().as_ptr(), info.param_buf.as_ptr());
     }

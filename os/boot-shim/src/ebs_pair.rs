@@ -196,8 +196,8 @@ pub unsafe fn pair_and_classify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_boot::{Serializer, ARENA_CAP};
     use core::ffi::c_void;
+    use minix_boot::{ARENA_CAP, Serializer};
 
     const CONV: u32 = 7;
     const LOADER: u32 = 4;
@@ -355,7 +355,11 @@ mod tests {
     #[test]
     fn success_on_first_attempt_classifies_and_exits() {
         let mut fw = MockFw::new(
-            &[(CONV, 0x10_0000, 2), (CONV, 0x40_0000, 1), (LOADER, 0x20_0000, 1)],
+            &[
+                (CONV, 0x10_0000, 2),
+                (CONV, 0x40_0000, 1),
+                (LOADER, 0x20_0000, 1),
+            ],
             &[],
         );
         let c = run(&mut fw).unwrap();
@@ -379,14 +383,18 @@ mod tests {
     #[test]
     fn source_records_cover_the_classified_map_per_descriptor() {
         use minix_boot::{
+            MemoryRegion, PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
             audit_source_coverage, decode_envelope, decode_memmap, decode_reserved_regions,
-            decode_sources, MemoryRegion, PhysicalRange, SourceKind, SourceOrigin, SourceRecord,
-            WIRE_SOURCES_CAP,
+            decode_sources,
         };
         use minix_types::PhysBytes;
 
         let mut fw = MockFw::new(
-            &[(CONV, 0x10_0000, 2), (LOADER, 0x20_0000, 1), (CONV, 0x40_0000, 1)],
+            &[
+                (CONV, 0x10_0000, 2),
+                (LOADER, 0x20_0000, 1),
+                (CONV, 0x40_0000, 1),
+            ],
             &[],
         );
         let mut arena = [0u8; ARENA_CAP];
@@ -414,7 +422,10 @@ mod tests {
             bump_end: 0x30_0000,
         });
         let scalars = decode_envelope(s.as_bytes()).unwrap();
-        let empty = MemoryRegion { base: PhysBytes(0), len: 0 };
+        let empty = MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        };
         let mut free = [empty; 4];
         let nf = decode_memmap(s.as_bytes(), &scalars, &mut free).unwrap();
         let mut reserved = [empty; 4];
@@ -434,15 +445,9 @@ mod tests {
             "record 0 must name descriptor 0"
         );
         assert_eq!(sources[0].kind, SourceKind::Memory);
-        assert_eq!(
-            sources[1].origin,
-            SourceOrigin::UefiDescriptor { index: 1 }
-        );
+        assert_eq!(sources[1].origin, SourceOrigin::UefiDescriptor { index: 1 });
         assert_eq!(sources[1].kind, SourceKind::ReservedOrdinary);
-        assert_eq!(
-            sources[2].origin,
-            SourceOrigin::UefiDescriptor { index: 2 }
-        );
+        assert_eq!(sources[2].origin, SourceOrigin::UefiDescriptor { index: 2 });
         assert_eq!(sources[2].kind, SourceKind::Memory);
         audit_source_coverage(&free[..nf], &reserved[..nr], &sources[..ns])
             .expect("per-descriptor records must explain both projections");
@@ -454,8 +459,8 @@ mod tests {
     #[test]
     fn source_partition_resets_between_ebs_attempts() {
         use minix_boot::{
-            decode_envelope, decode_sources, PhysicalRange, SourceKind, SourceOrigin, SourceRecord,
-            WIRE_SOURCES_CAP,
+            PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
+            decode_envelope, decode_sources,
         };
 
         let mut fw = MockFw::new(
@@ -576,7 +581,11 @@ mod tests {
         // First map fills 3 conventional; the retry's map has 1 conventional.
         // The descriptor after the retry must reflect the second map only.
         let mut fw = MockFw::new(
-            &[(CONV, 0x10_0000, 1), (CONV, 0x20_0000, 1), (CONV, 0x30_0000, 1)],
+            &[
+                (CONV, 0x10_0000, 1),
+                (CONV, 0x20_0000, 1),
+                (CONV, 0x30_0000, 1),
+            ],
             &[(CONV, 0x10_0000, 1)],
         );
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
@@ -595,9 +604,8 @@ mod tests {
         }
         .unwrap();
         assert_eq!(c.conventional, 1);
-        let get_u64 = |off: usize| {
-            u64::from_le_bytes(s.as_bytes()[off..off + 8].try_into().unwrap())
-        };
+        let get_u64 =
+            |off: usize| u64::from_le_bytes(s.as_bytes()[off..off + 8].try_into().unwrap());
         assert_eq!(get_u64(128), 16, "descriptor must not accumulate entries");
     }
 
@@ -608,10 +616,10 @@ mod tests {
     #[test]
     fn producer_sequence_survives_the_pairing_loop() {
         use minix_boot::{
-            decode_descriptors, decode_envelope, patch_runtime_fields_in, BootModule, KernelInfo,
-            PlatformDescSource, RuntimeFields, DTB,
+            BootModule, DTB, KernelInfo, PlatformDescSource, RuntimeFields, decode_descriptors,
+            decode_envelope, patch_runtime_fields_in,
         };
-        use minix_types::{PhysBytes, VirBytes, USER_STACK_TOP};
+        use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 
         static MODULES: [BootModule; 1] = [BootModule {
             name: "vm",
@@ -645,10 +653,7 @@ mod tests {
         s.write_platform_sources(&SOURCES).unwrap();
         s.write_param_buf(carrier.param_buf).unwrap();
 
-        let mut fw = MockFw::new(
-            &[(CONV, 0x10_0000, 0x200), (LOADER, 0x20_0000, 4)],
-            &[],
-        );
+        let mut fw = MockFw::new(&[(CONV, 0x10_0000, 0x200), (LOADER, 0x20_0000, 4)], &[]);
         let mut map_buf = [0u8; 256];
         let c = unsafe {
             pair_and_classify(

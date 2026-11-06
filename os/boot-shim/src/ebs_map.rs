@@ -393,7 +393,10 @@ impl MapStorage {
     pub const fn new() -> Self {
         Self {
             descs: [DescriptorRef::EMPTY; MAX_MAP_DESCRIPTORS],
-            side: [MemoryRegion { base: PhysBytes(0), len: 0 }; SIDE_CAP],
+            side: [MemoryRegion {
+                base: PhysBytes(0),
+                len: 0,
+            }; SIDE_CAP],
             len: 0,
             side_len: 0,
         }
@@ -469,7 +472,6 @@ impl MapStorage {
         self.side_len = counts.side;
         Ok(counts)
     }
-
 }
 
 /// Prove a range is representable and return its byte length.
@@ -604,13 +606,17 @@ pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Resu
         return Err(MapError::Capacity(HandoffV1WriteError::TooManyMemmap));
     }
     if counts.reserved > WIRE_RESERVED_CAP {
-        return Err(MapError::Capacity(HandoffV1WriteError::TooManyReservedRegions));
+        return Err(MapError::Capacity(
+            HandoffV1WriteError::TooManyReservedRegions,
+        ));
     }
     // One source record per emitted ordinary-table entry. The descriptor count
     // is bounded by MAX_MAP_DESCRIPTORS, so this can only trip on a contract
     // change, never on a real map — prove it here rather than at write time.
     if counts.conventional + counts.reserved > WIRE_SOURCES_CAP {
-        return Err(MapError::Capacity(HandoffV1WriteError::TooManySourceRecords));
+        return Err(MapError::Capacity(
+            HandoffV1WriteError::TooManySourceRecords,
+        ));
     }
     if counts.side > side_cap {
         return Err(MapError::TooManySideEntries);
@@ -708,7 +714,9 @@ impl Plan {
             let record = SourceRecord {
                 id: index as u16,
                 kind,
-                origin: SourceOrigin::UefiDescriptor { index: index as u16 },
+                origin: SourceOrigin::UefiDescriptor {
+                    index: index as u16,
+                },
                 range: PhysicalRange::new(
                     region.base.0,
                     region.base.0 as u128 + region.len as u128,
@@ -1018,7 +1026,10 @@ mod tests {
             Err(PolicyError::UnknownAttribute)
         );
         assert_eq!(
-            disp(ty::CONVENTIONAL, u64::MAX & !(attr::AMBIGUOUS | attr::PROFILE_ONLY)),
+            disp(
+                ty::CONVENTIONAL,
+                u64::MAX & !(attr::AMBIGUOUS | attr::PROFILE_ONLY)
+            ),
             Err(PolicyError::UnknownAttribute)
         );
     }
@@ -1092,7 +1103,10 @@ mod tests {
         );
         d = desc(ty::RESERVED, WB);
         d.number_of_pages = 0;
-        assert_eq!(adjudicate(&d, PA_LIMIT).map(|x| x.0), Ok(Disposition::Excluded));
+        assert_eq!(
+            adjudicate(&d, PA_LIMIT).map(|x| x.0),
+            Ok(Disposition::Excluded)
+        );
     }
 
     #[test]
@@ -1109,9 +1123,16 @@ mod tests {
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         assert_eq!(
             c,
-            Classification { conventional: 0, reserved: 1, side: 0 }
+            Classification {
+                conventional: 0,
+                reserved: 1,
+                side: 0
+            }
         );
-        assert_eq!(get_u64(s.as_bytes(), minix_boot::WIRE_RESERVED_OFFSET), 0xFD_0000_0000);
+        assert_eq!(
+            get_u64(s.as_bytes(), minix_boot::WIRE_RESERVED_OFFSET),
+            0xFD_0000_0000
+        );
         assert_eq!(get_u64(s.as_bytes(), minix_boot::WIRE_MEMMAP_OFFSET), 0);
     }
 
@@ -1120,7 +1141,15 @@ mod tests {
         let desc_size = 40usize;
         let mut map = [0u8; 40 * 5];
         // free RAM
-        push_desc(&mut map, 0, desc_size, ty::CONVENTIONAL, 0x10_0000, 0x200, WB);
+        push_desc(
+            &mut map,
+            0,
+            desc_size,
+            ty::CONVENTIONAL,
+            0x10_0000,
+            0x200,
+            WB,
+        );
         // shim's own data: mapped, never reallocatable
         push_desc(&mut map, 1, desc_size, ty::LOADER_DATA, 0x40_0000, 1, WB);
         // device aperture: neither table
@@ -1133,13 +1162,22 @@ mod tests {
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
         let mut storage = MapStorage::new();
-        storage.parse_raw_map(&map, map.len(), desc_size, 1).unwrap();
+        storage
+            .parse_raw_map(&map, map.len(), desc_size, 1)
+            .unwrap();
         let plan = classify(storage.descriptors(), PA_LIMIT, storage.side_capacity()).unwrap();
-        let mut side = [MemoryRegion { base: PhysBytes(0), len: 0 }; SIDE_CAP];
+        let mut side = [MemoryRegion {
+            base: PhysBytes(0),
+            len: 0,
+        }; SIDE_CAP];
         let c = plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side);
         assert_eq!(
             c,
-            Classification { conventional: 1, reserved: 1, side: 1 }
+            Classification {
+                conventional: 1,
+                reserved: 1,
+                side: 1
+            }
         );
         let b = s.as_bytes();
         assert_eq!(get_u64(b, 128), 16, "memmap descriptor = 1 x 16");
@@ -1161,12 +1199,30 @@ mod tests {
     fn padded_descriptor_stride_is_honored() {
         let desc_size = 48usize;
         let mut map = [0u8; 48 * 2];
-        push_desc(&mut map, 0, desc_size, ty::CONVENTIONAL, 0x10_0000, 0x10, WB);
-        push_desc(&mut map, 1, desc_size, ty::CONVENTIONAL, 0x20_0000, 0x10, WB);
+        push_desc(
+            &mut map,
+            0,
+            desc_size,
+            ty::CONVENTIONAL,
+            0x10_0000,
+            0x10,
+            WB,
+        );
+        push_desc(
+            &mut map,
+            1,
+            desc_size,
+            ty::CONVENTIONAL,
+            0x20_0000,
+            0x10,
+            WB,
+        );
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
         let mut storage = MapStorage::new();
-        storage.parse_raw_map(&map, map.len(), desc_size, 1).unwrap();
+        storage
+            .parse_raw_map(&map, map.len(), desc_size, 1)
+            .unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         assert_eq!(c.conventional, 2);
         assert_eq!(get_u64(s.as_bytes(), 128), 32);
@@ -1187,7 +1243,10 @@ mod tests {
     #[test]
     fn rejects_unaligned_descriptor_size() {
         let map = [0u8; 84];
-        assert_eq!(classify_err(&map, 82, 41, 1), MapError::DescriptorSizeNotAligned);
+        assert_eq!(
+            classify_err(&map, 82, 41, 1),
+            MapError::DescriptorSizeNotAligned
+        );
     }
 
     #[test]
@@ -1276,10 +1335,17 @@ mod tests {
     #[test]
     fn rejects_side_list_beyond_its_buffer() {
         let descs = [desc(ty::ACPI_NVS, WB), desc(ty::PERSISTENT, WB)];
-        assert_eq!(classify(&descs, PA_LIMIT, 1).unwrap_err(), MapError::TooManySideEntries);
+        assert_eq!(
+            classify(&descs, PA_LIMIT, 1).unwrap_err(),
+            MapError::TooManySideEntries
+        );
         assert_eq!(
             classify(&descs, PA_LIMIT, 2).unwrap().counts(),
-            Classification { conventional: 0, reserved: 0, side: 2 }
+            Classification {
+                conventional: 0,
+                reserved: 0,
+                side: 2
+            }
         );
     }
 

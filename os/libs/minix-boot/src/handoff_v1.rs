@@ -195,7 +195,10 @@ impl WireSourceRecord {
             id: self.id,
             kind,
             origin,
-            range: PhysicalRange::new(self.start, self.end_lo as u128 | ((self.end_hi as u128) << 64)),
+            range: PhysicalRange::new(
+                self.start,
+                self.end_lo as u128 | ((self.end_hi as u128) << 64),
+            ),
         })
     }
 }
@@ -303,7 +306,8 @@ pub const SEMANTIC_END: usize = SEMANTIC_RESERVED_OFFSET + SEMANTIC_RESERVED_CAP
 /// the semantic work partition. Receiver-owned landing storage is the
 /// kernel's, so this partition has no semantic twin.
 pub const WIRE_SOURCES_OFFSET: usize = SEMANTIC_END;
-pub const WIRE_SOURCES_END: usize = WIRE_SOURCES_OFFSET + WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE;
+pub const WIRE_SOURCES_END: usize =
+    WIRE_SOURCES_OFFSET + WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE;
 
 /// Whole-arena capacity: 7 pages (28 KiB) — the 16 KiB envelope + wire +
 /// semantic partitions plus the 12 KiB source-record partition.
@@ -342,20 +346,20 @@ const _: () = {
     assert!(offset_of!(BootHandoffV1, sources_byte_len) == 168);
 
     // Arena partitions: element-aligned, disjoint, exact, and fitting the cap.
-    assert!(WIRE_MEMMAP_OFFSET % align_of::<WireMemoryRegion>() == 0);
-    assert!(WIRE_RESERVED_OFFSET % align_of::<WireMemoryRegion>() == 0);
-    assert!(WIRE_MODULES_OFFSET % align_of::<WireBootModule>() == 0);
-    assert!(WIRE_PLATFORM_OFFSET % align_of::<WirePlatformDescSource>() == 0);
+    assert!(WIRE_MEMMAP_OFFSET.is_multiple_of(align_of::<WireMemoryRegion>()));
+    assert!(WIRE_RESERVED_OFFSET.is_multiple_of(align_of::<WireMemoryRegion>()));
+    assert!(WIRE_MODULES_OFFSET.is_multiple_of(align_of::<WireBootModule>()));
+    assert!(WIRE_PLATFORM_OFFSET.is_multiple_of(align_of::<WirePlatformDescSource>()));
     assert!(WIRE_PARAM_OFFSET == 6848);
     assert!(WIRE_END == 7872);
     assert!(SEMANTIC_MEMMAP_OFFSET == WIRE_END);
-    assert!(SEMANTIC_RESERVED_OFFSET % align_of::<crate::kernel_info::MemoryRegion>() == 0);
+    assert!(SEMANTIC_RESERVED_OFFSET.is_multiple_of(align_of::<crate::kernel_info::MemoryRegion>()));
     assert!(SEMANTIC_END == 14016);
-    assert!(WIRE_SOURCES_OFFSET % align_of::<WireSourceRecord>() == 0);
+    assert!(WIRE_SOURCES_OFFSET.is_multiple_of(align_of::<WireSourceRecord>()));
     assert!(WIRE_SOURCES_END == 26304);
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
     assert!(SEMANTIC_END <= ARENA_CAP);
-    assert!(ARENA_CAP % 4096 == 0);
+    assert!(ARENA_CAP.is_multiple_of(4096));
 };
 
 #[cfg(test)]

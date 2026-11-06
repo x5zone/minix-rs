@@ -18,12 +18,11 @@
 //! patched in place after the root switch.
 
 use crate::handoff_v1::{
-    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1,
-    FREE_UPPER_IDX_NONE, SEMANTIC_END, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET,
-    WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP,
-    WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP,
-    WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
-    WIRE_SOURCES_CAP, WIRE_SOURCES_END, WIRE_SOURCES_OFFSET, WIRE_SOURCE_RECORD_SIZE,
+    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1, FREE_UPPER_IDX_NONE,
+    SEMANTIC_END, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET, WIRE_MEMMAP_CAP,
+    WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
+    WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
+    WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_END, WIRE_SOURCES_OFFSET,
     WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, KernelInfo, MemoryRegion};
@@ -155,11 +154,7 @@ impl<'a> Serializer<'a> {
     pub fn write_envelope(&mut self, info: &KernelInfo) -> Result<(), HandoffV1WriteError> {
         put_u32(self.arena, offsets::MAGIC, BOOT_HANDOFF_V1_MAGIC);
         put_u32(self.arena, offsets::VERSION, BOOT_HANDOFF_V1_VERSION);
-        put_u32(
-            self.arena,
-            offsets::SIZE,
-            size_of::<BootHandoffV1>() as u32,
-        );
+        put_u32(self.arena, offsets::SIZE, size_of::<BootHandoffV1>() as u32);
         put_u64(self.arena, offsets::ARENA_LEN, ARENA_CAP as u64);
         put_u64(self.arena, offsets::KERN_VIRT_BASE, info.kern_virt_base.0);
         put_u64(self.arena, offsets::KERN_PHYS_BASE, info.kern_phys_base.0);
@@ -276,10 +271,7 @@ impl<'a> Serializer<'a> {
     /// Serialize the memory-map source records. Unlike the map partitions
     /// there is no semantic twin: the receiver lands them in its own
     /// fixed-size store.
-    pub fn write_sources(
-        &mut self,
-        sources: &[SourceRecord],
-    ) -> Result<(), HandoffV1WriteError> {
+    pub fn write_sources(&mut self, sources: &[SourceRecord]) -> Result<(), HandoffV1WriteError> {
         if sources.len() > WIRE_SOURCES_CAP {
             return Err(HandoffV1WriteError::TooManySourceRecords);
         }
@@ -380,8 +372,8 @@ impl<'a> Serializer<'a> {
     /// only the classification paired with a successful MapKey may survive,
     /// so stale entries must not linger.
     pub fn reset_map_partitions(&mut self) {
-        for byte in &mut self.arena
-            [WIRE_MEMMAP_OFFSET..WIRE_RESERVED_OFFSET + WIRE_RESERVED_CAP * 16]
+        for byte in
+            &mut self.arena[WIRE_MEMMAP_OFFSET..WIRE_RESERVED_OFFSET + WIRE_RESERVED_CAP * 16]
         {
             *byte = 0;
         }
@@ -434,7 +426,7 @@ mod tests {
         WIRE_MODULES_OFFSET, WIRE_PARAM_OFFSET, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_OFFSET,
     };
     use crate::kernel_info::MemoryRegion;
-    use crate::platform::{PlatformDescSource, DTB, RSDP};
+    use crate::platform::{DTB, PlatformDescSource, RSDP};
     use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 
     fn get_u32(arena: &[u8], off: usize) -> u32 {
@@ -604,9 +596,11 @@ mod tests {
         s.write_boot_modules(&MODULES).unwrap();
         let b = s.as_bytes();
         assert_eq!(&b[WIRE_MODULES_OFFSET..WIRE_MODULES_OFFSET + 2], b"vm");
-        assert!(b[WIRE_MODULES_OFFSET + 2..WIRE_MODULES_OFFSET + 16]
-            .iter()
-            .all(|&x| x == 0));
+        assert!(
+            b[WIRE_MODULES_OFFSET + 2..WIRE_MODULES_OFFSET + 16]
+                .iter()
+                .all(|&x| x == 0)
+        );
         assert_eq!(get_u64(b, WIRE_MODULES_OFFSET + 16), 0x20_0000);
         assert_eq!(get_u64(b, WIRE_MODULES_OFFSET + 24), 0x1000);
         let second = WIRE_MODULES_OFFSET + 32;

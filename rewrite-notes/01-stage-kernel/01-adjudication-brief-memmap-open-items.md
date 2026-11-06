@@ -78,7 +78,7 @@ boot-shim（UEFI/U-Boot 腿）                 kernel                       VM
 
 两条不变量把两段连起来：
 
-- 第一跳：`decode_*` 不制造任何指向 arena 的 `'static` 引用；arena 的最后读取点是解码（`test_decoded_payloads_survive_arena_poison` 为证）。
+- 第一跳：`decode_*` 不制造任何指向 arena 的 `'static` 引用；arena 的最后读取点是解码（`decoded_payloads_survive_arena_poison` 为证）。
 - 第二跳：`LiveBootstrap ∩ VM-free = ∅` 在**消费边界**核对（`reconcile`），不信任内核自己的记账；内核侧 `classify` 的记录是唯一的扣减来源。
 
 ### 1.4 与 Minix3 C 的关系
