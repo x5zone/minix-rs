@@ -86,6 +86,11 @@ pub enum DtbMemMapError {
     /// would hand the pages to the PMM while a later consumer still expects
     /// them to be reserved. Reject instead of guessing a placement.
     UnsupportedDynamicReservation,
+    /// A `/memory` `reg` tuple whose extent this collector cannot read: the
+    /// size word is missing at the declared cell width (a truncated property,
+    /// or `#size-cells = 0`) or the size is zero. Treating such a tuple as
+    /// absent would silently drop RAM from the panorama, so it is refused.
+    UnsupportedMemoryReg,
     /// A `/reserved-memory` node is visible in the tree but upstream path
     /// lookup cannot reach it. Treating it as absent would free its pages.
     ReservedMemoryUnreachable,
@@ -699,12 +704,25 @@ impl DtbMemoryMap<'_> {
             if node.property("hotpluggable").is_some() {
                 return Err(DtbMemMapError::HotpluggableMemoryUnsupported);
             }
-            let Some(regs) = node.reg() else { continue };
+            let regs = match node.reg() {
+                Some(regs) => regs,
+                // A `reg` property that exists but cannot be read at this
+                // node's cell counts is a malformed extent, not an absent one.
+                None if node.property("reg").is_some() => {
+                    return Err(DtbMemMapError::UnsupportedMemoryReg);
+                }
+                None => continue,
+            };
+            let mut reg_tuples = 0usize;
             for (reg_index, region) in regs.enumerate() {
+                reg_tuples += 1;
                 let start = region.starting_address as u64;
                 let len = match region.size {
                     Some(s) if s != 0 => s as u64,
-                    _ => continue,
+                    // `None` = the size word is missing at the declared cell
+                    // width (truncated property or `#size-cells = 0`); a zero
+                    // size states no extent. Either would drop real RAM.
+                    _ => return Err(DtbMemMapError::UnsupportedMemoryReg),
                 };
                 let end = physical_end(start, len)?;
                 let record_range = PhysicalRange::new(start, end);
@@ -779,6 +797,11 @@ impl DtbMemoryMap<'_> {
                         PhysicalRange::new(start, start as u128 + prefix_len as u128),
                     )?;
                 }
+            }
+            // A `reg` property that exists but yields no readable tuple at
+            // this node's cell width is malformed, not absent.
+            if reg_tuples == 0 && node.property("reg").is_some() {
+                return Err(DtbMemMapError::UnsupportedMemoryReg);
             }
         }
         // 2. The device-tree memory reservation block: regions no client may
@@ -885,10 +908,14 @@ impl DtbMemoryMap<'_> {
                 if no_map && reusable {
                     return Err(DtbMemMapError::ConflictingReservationAttributes);
                 }
+                let mut child_tuples = 0usize;
                 for (reg_index, region) in regs.enumerate() {
+                    child_tuples += 1;
                     let len = match region.size {
                         Some(s) if s != 0 => s as u64,
-                        _ => continue,
+                        // An extent this collector cannot read is exactly the
+                        // shape that would be skipped into freedom.
+                        _ => return Err(DtbMemMapError::UnsupportedReservedDeclaration),
                     };
                     let (start, end) = declared_page_range(region.starting_address as u64, len)?;
                     push_source(
@@ -949,6 +976,11 @@ impl DtbMemoryMap<'_> {
                             )?;
                         }
                     }
+                }
+                // A child whose `reg` yields no tuple is a malformed extent:
+                // skipping it would free the pages it was meant to protect.
+                if child_tuples == 0 {
+                    return Err(DtbMemMapError::UnsupportedReservedDeclaration);
                 }
             }
         }
@@ -1095,6 +1127,8 @@ mod tests {
             memory_status,
             hotplug,
             true,
+            4,
+            None,
             &[],
         )
     }
@@ -1114,6 +1148,8 @@ mod tests {
         memory_status: u8,
         hotplug: bool,
         emit_reg: bool,
+        memory_reg_words: usize,
+        reserved_reg_words: Option<usize>,
         extra: &[(&str, &[u8])],
     ) -> Vec<u8> {
         let mut strings: Vec<u8> = Vec::new();
@@ -1174,6 +1210,9 @@ mod tests {
             reg.extend_from_slice(&(*base as u32).to_be_bytes());
             reg.extend_from_slice(&((*size >> 32) as u32).to_be_bytes());
             reg.extend_from_slice(&(*size as u32).to_be_bytes());
+            // Truncated shapes are a test-only input: the collector must
+            // refuse them instead of skipping the tuple.
+            reg.truncate(memory_reg_words.min(4) * 4);
             push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
             let status: &[u8] = match memory_status {
                 0 => b"",
@@ -1218,6 +1257,9 @@ mod tests {
                     let mut reg: Vec<u8> = Vec::new();
                     encode_cells(&mut reg, row.base, cells_for_reg);
                     encode_cells(&mut reg, row.size, cells_for_reg);
+                    let words =
+                        reserved_reg_words.unwrap_or(cells_for_reg as usize * 2);
+                    reg.truncate(words * 4);
                     push_prop(&mut struct_blk, nameoff_reg as u32, &reg);
                 }
                 if row.no_map {
@@ -2086,6 +2128,8 @@ mod tests {
             0,
             false,
             true,
+            4,
+            None,
             &[],
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
@@ -2110,6 +2154,8 @@ mod tests {
             0,
             false,
             true,
+            4,
+            None,
             &[],
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
@@ -2134,6 +2180,8 @@ mod tests {
             0,
             false,
             emit_reg,
+            4,
+            None,
             extra,
         )
     }
@@ -2477,5 +2525,84 @@ mod tests {
     fn dtb_gate_empty_conventional_is_ok() {
         let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000 }];
         assert_eq!(dtb_covers_conventional(&dtb, &[]), Ok(()));
+    }
+
+    /// A `/memory` `reg` whose size word is missing at the declared cell width
+    /// (a truncated property) is refused, not skipped: dropping the tuple would
+    /// silently remove RAM from the panorama.
+    #[test]
+    fn dtb_truncated_memory_reg_is_rejected() {
+        let blob = build_fdt_full_opts(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[],
+            &[],
+            Some(2),
+            Some(&[]),
+            &[],
+            0,
+            false,
+            true,
+            3,
+            None,
+            &[],
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedMemoryReg)
+        ));
+    }
+
+    #[test]
+    fn dtb_zero_size_memory_reg_is_rejected() {
+        let blob = build_fdt(&[(0x8000_0000, 0)], false);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedMemoryReg)
+        ));
+    }
+
+    /// The same shape on the reservation side: a truncated `reg` used to yield
+    /// no tuple at all, so the pages it protects were freed silently.
+    #[test]
+    fn dtb_truncated_reserved_reg_is_rejected() {
+        let blob = build_fdt_full_opts(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[],
+            Some(2),
+            Some(&[]),
+            &[],
+            0,
+            false,
+            true,
+            4,
+            Some(3),
+            &[],
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedReservedDeclaration)
+        ));
+    }
+
+    #[test]
+    fn dtb_zero_size_reservation_is_rejected() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0, no_map: false, reusable: false }],
+            &[],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::UnsupportedReservedDeclaration)
+        ));
     }
 }
