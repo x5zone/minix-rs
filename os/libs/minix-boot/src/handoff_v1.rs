@@ -234,6 +234,14 @@ impl WireSourceRecord {
                 }
             }
         }
+        // A record in a non-physical address domain is provenance only; it
+        // must not be constructible as an ordinary source that a physical
+        // projection could lean on.
+        if address_domain != crate::memmap_source::AddressDomain::Physical
+            && kind != SourceKind::UefiExcluded
+        {
+            return None;
+        }
         Some(SourceRecord {
             id: self.id,
             kind,

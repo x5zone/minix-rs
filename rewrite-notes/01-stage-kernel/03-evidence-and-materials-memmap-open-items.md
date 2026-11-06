@@ -2977,6 +2977,24 @@ UEFI 腿在写 `startup_objects` 前断言 `1 + boot_modules.len() + 3 <= WIRE_S
 
 宿主 `341/171/92(+5)/863/548`；五个交叉构建全通过；QEMU 结果见正文 §6.3。
 
+## 八十九、第一百二十三轮：旧读数清理与地址域解码闸
+
+### 修正清单
+
+| 位置 | 旧 | 新 |
+|---|---|---|
+| O-12g | 两套状态表并存（三层旧表称 256/v4/未接入） | 仅保留六层状态表 |
+| §3 标题 | 五条不变量（实列 3 条） | 三条不变量 |
+| §2.4 启动对象预检 | 「内核映像 + 模块数 > 16」 | UEFI 16 条完整清单、DTB 腿 13 条；写前断言 |
+| §2.4 容量预检 | 只查 `descs.len()` | 三句联动：256 + 40 ≤ 296（第三句编译期断言） |
+| O-02a arena | 七页、无 ObjectId | 九页、startup_objects 第 16 条、最后使用点=解码完成 |
+| §0 / §2.1 | 缺 `raw_type`、缺 `UefiExcluded`、地址域只写 Physical | 补全 |
+| §6 | 本轮=第一百二十轮 | 第一百二十三；aarch64 直启注明无 QEMU 腿 |
+
+### 解码闸
+
+`WireSourceRecord::decode`：`address_domain != Physical` 时只接受 `kind == UefiExcluded`；其余组合返回 `BadSourceRecord`。测试 `non_physical_domain_is_only_legal_on_excluded_records`（正向：域 2 + kind 7 解码成功；反向：域 2 + kind Memory 拒绝）。`minix-boot` 172 / 0。
+
 ### 评审身份（第一百零二轮）
 
 | 身份 | 值 |
@@ -3216,3 +3234,14 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 | `DocumentFileHash`（正文 sha256） | 见合并后回填 |
 | `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
 | 上一轮（第一百二十一轮）合并提交 | `82962e411` |
+
+### 评审身份（第一百二十三轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十八笔登记 |
+| `CodeEvidenceCommit` | 本轮提交（解码闸 + 文档） |
+| `DocumentRevision` | 第一百二十三轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百二十二轮）合并提交 | `cd478bd84` |

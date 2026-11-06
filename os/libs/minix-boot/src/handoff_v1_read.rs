@@ -974,6 +974,48 @@ mod tests {
     /// A record word the encoder always zeroes (the reserved tail) means the
     /// image did not come from [`WireSourceRecord::encode`]; the receiver
     /// fails closed instead of carrying a guessed record.
+    /// A non-physical record (EFI type 12) is provenance only: it decodes as
+    /// `UefiExcluded`, and a non-physical domain paired with any other kind is
+    /// rejected rather than reinterpreted as a physical range.
+    #[test]
+    fn non_physical_domain_is_only_legal_on_excluded_records() {
+        let mut arena = build_arena();
+        let off = crate::handoff_v1::WIRE_SOURCES_OFFSET;
+        // `build_arena` writes DTB records (address_domain = 0). Patch the
+        // first record's domain to UefiMmioPortSpace (2) and its kind to
+        // `UefiExcluded` (7); decoding must succeed.
+        arena[off + 67] = 2;
+        arena[off + 64] = 7;
+        let s = decode_envelope(&arena).unwrap();
+        let mut out = [SourceRecord {
+            input_object: crate::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: crate::memmap_source::AddressDomain::Physical,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
+            id: 0,
+            raw_type: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        let n = decode_sources(&arena, &s, &mut out).unwrap();
+        assert!(n >= 1);
+        assert_eq!(
+            out[0].address_domain,
+            crate::memmap_source::AddressDomain::UefiMmioPortSpace
+        );
+        // Same domain with a physical kind is a corrupt image.
+        let mut arena = build_arena();
+        arena[off + 67] = 2; // domain = UefiMmioPortSpace, kind stays Memory
+        let s = decode_envelope(&arena).unwrap();
+        assert_eq!(
+            decode_sources(&arena, &s, &mut out).unwrap_err(),
+            HandoffV1ReadError::BadSourceRecord
+        );
+    }
+
     #[test]
     fn round_trips_the_raw_firmware_type_and_accepts_any_value() {
         // The trailing word used to be a must-be-zero reserved slot; it now

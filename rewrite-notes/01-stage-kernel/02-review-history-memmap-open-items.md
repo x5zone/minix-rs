@@ -12,6 +12,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百二十三轮（清旧读数；地址域解码闸）**
+
+- 删除 O-12g 的旧「三层状态」表与其旧容量读数（256/v4/3,264 B），现行正文只剩本轮六层状态表。
+- 更正：§3 标题改「三条不变量」（实际只有 1–3 条）；arena 由七页改九页，身份改为「第一跳 startup_objects 第 16 条记录，最后使用点=解码完成」；§2.4 启动对象预检改为完整清单（UEFI 16 条、DTB 腿 13 条）；容量预检写成三句联动证明（解析器上限 256 + 采集器上限 40 ≤ 分区 296，第三条有编译期断言）；§0 字段摘要补 `raw_type`；§2.1 的 `address_domain` 说明补 `UefiMmioPortSpace`；§6 身份改第一百二十三、路径覆盖补「aarch64 直启无 QEMU 腿」。
+- 代码：`WireSourceRecord::decode` 增加地址域/角色配对闸——非 `Physical` 域只允许 `kind = UefiExcluded`，防止类型 12 被重新解释成物理范围；测试 `non_physical_domain_is_only_legal_on_excluded_records`。`minix-boot` 172 / 0。
+- 仍开放（复审四项）：① `SourceRecord.range` 仍是 `PhysicalRange` 类型，仅靠解码闸与角色约束保证语义（是否引入带标签 `SourceRange` 待裁决）；② 覆盖审计的权威选择仍由「记录中是否存在 UEFI 记录」推断，未改为启动入口显式传入；③ O-11 严格两快照（40 字节 PreflightMap/FinalMap）未实现。
+
 **第一百二十二轮（身份/地址域收口；296 条 ABI；配置表 DTB 记录交棒）**
 
 - 身份：唯一定位三元组固定为 `(input_object, snapshot_id, local_source)`；`input_object` 是类别、`snapshot_id` 是观测实例（与 `MapKey` 无关）、`id` 只是记录内序号；`origin` 的安装载荷是位置细节，跨输入不认它。§2.1/§2.3/O-12g 的旧「MapKey = 快照身份」表述全部改正。
