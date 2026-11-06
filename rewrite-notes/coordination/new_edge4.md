@@ -5937,3 +5937,9 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 真机：AAVMF `DTB_CFGTABLE=1` 的配置表 DTB 不在 `EfiACPIReclaimMemory` 页，O-11 预检拒绝启动——该腿由正例改为「存在但不可用」负例，补上缺失的负例固件路径。
 - 读数：boot-shim 88、minix-boot 163、kernel 863；三组特性构建 OK；aarch64 默认/负例腿与 x86 腿 PASS。
 - 认领：`I-29 qorder90`，状态 ✅：已 ff 合并为 `c11fa5256`，认领已释放。
+
+### 第三百二十六笔（01 阶段 · I-29 第一百一十六轮：A2 记录身份 + Attribute/VirtualStart）
+
+- `SourceRecord` 增 `input_object`/`local_source`/`snapshot_id`/`attribute`/`virtual_start`；`WireSourceRecord` 48→72 B；`DescriptorRef` 增 `virtual_start`；UEFI 记录写 MapKey 与描述符原值；arena 7→9 页、版本 3。
+- 读数：minix-boot 165、boot-shim 89、kernel 863；三组特性构建 OK；x86 UEFI、aarch64 强制 DT 负例、riscv U-Boot 全链 PASS。
+- 认领：`I-29 qorder91`，状态 🔄 待合入。

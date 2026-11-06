@@ -2984,3 +2984,11 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 **QEMU**：aarch64 默认腿 PASS（`platform DTB absent`）；`DTB_CFGTABLE=1` 腿 PASS（负例：`DtbPages(NotAcpiReclaim { page: 1206870016 })`）；x86 UEFI 腿 PASS。
 
 **证据降级**：配置表 DTB「存在且可解析」的正例不再有固件路径（AAVMF 强制 DT 不符合 UEFI 2.11 §4.6.1.3 的页类型要求），正例由 `dtb_copy` 页类型单测覆盖；「存在但不可用」负例由真机腿覆盖。
+
+## 八十二、第一百一十六轮：A2 记录身份与 Attribute/VirtualStart（代码证据）
+
+**实现**：`SourceRecord` 增 `input_object`（`DtbBootInput`/`UefiMemoryMap`）、`local_source`、`snapshot_id`、`attribute`、`virtual_start`；`WireSourceRecord` 48→72 B；`DescriptorRef` 增 `virtual_start`（EFI 偏移 16）；UEFI `Plan::commit` 写 MapKey 与描述符原值；`MapStorage` 保存快照 id；arena 7→9 页、`WIRE_SOURCES_END=32448`、版本 3。
+
+**读数**：`cargo test -p minix-boot --lib` **165 passed**（+2：`round_trip_identity_fields`、`rejects_nonzero_snapshot_on_a_dtb_record`）；`boot-shim --lib` **89 passed**（+1：`records_carry_descriptor_identity`）；`minix-kernel --features mock` **863**；三组特性构建 OK。
+
+**QEMU**：`test-shim-bootmarks-x86` PASS；`test-shim-bootmarks-aarch64`（`DTB_CFGTABLE=1` 负例）PASS；`test-riscv64-uboot-shim` PASS（6/6 markers，wire v3 跨第一跳）。

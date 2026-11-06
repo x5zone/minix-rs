@@ -12,6 +12,12 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百一十六轮（A2：记录身份 + Attribute/VirtualStart）**
+
+- `SourceRecord` 增 `input_object`/`local_source`/`snapshot_id`/`attribute`/`virtual_start`；UEFI 记录写描述符原值与 MapKey，DTB 记录写输入对象标识；解码按输入类做规范化校验。
+- wire v3：记录 48→72 B，arena 7→9 页，`WIRE_SOURCES_END=32448`，版本精确比较 3。
+- 读数：minix-boot 165、boot-shim 89、kernel 863；三组特性构建 OK；x86 UEFI、aarch64 强制 DT 负例、riscv U-Boot 全链三条腿 PASS。
+
 **第一百一十五轮（A1：copy-first + 页类型预检）**
 
 - 新增 `dtb_copy`：预检只读 8 字节 header 并在取图前分配缓冲；配对循环内按最终快照核对全部 4 KiB 页为 `EfiACPIReclaimMemory`（异型即 `DtbPages` 拒绝），随后 memcpy 一次；`validate`、解析、`collect`、`resv_claims` 只读副本。

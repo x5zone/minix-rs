@@ -1,6 +1,6 @@
 # 引导期内存政策：今天的保证、未决问题与候选方案
 
-> **重写**：2026-11-06 18:59 CST（`date` 实测）；**内容轮次：第一百一十五轮——A1 复制到自有缓冲 + DTB 页类型预检**（`dtb_copy`：预检只读 8 字节 header、缓冲先于取图分配；配对循环按最终快照核页类型后 memcpy，之后只读副本；AAVMF 强制 DT 腿转为「存在但不可用」负例）。§6.3/§6.4 与 `03` 八十一节记录本轮读数。
+> **重写**：2026-11-06 19:15 CST（`date` 实测）；**内容轮次：第一百一十六轮——A2 记录身份与 `Attribute`/`VirtualStart` 落码**（wire v3：记录 48→72 B、arena 7→9 页、版本 3；`SourceRecord` 增 `input_object`/`local_source`/`snapshot_id`/`attribute`/`virtual_start`，UEFI 记录带 MapKey 与描述符原值）。§6.1/§6.3 与 `03` 八十二节记录本轮读数。
 > **本文件是送审正文，也是唯一的「现行规则」来源**。体积收缩时被移出正文的内容分两处存放，逐字保留、未改写：取证引文、用例穷举、逐轮读数与带行号的定位表在同目录 `03`，按批次从第五十四节递增到第七十节（正文写「见 `03`」即指这些节；六十六～六十七节存 §2/§7 收紧与分配路径读数，七〇节存第一百轮整段移交的设备资源与平台窗口原文）。另有三份配套：**设备资源发现**归同目录 `04-platform-discovery.md`；**硬件准入、用途资格与引导根映射计划**在同目录 `01-design-note-hardware-admission-model.md`（第九十六与一百轮逐字迁出，非本项验收条件）；本方自设又被推翻的判断与过程叙述在 `02` 第七节（标注了撤销理由，不构成合同）。两处与本文冲突时以本文为准。`04-design-backlog-round28.md` 是第二十八轮的冻结快照，不再更新。
 > **送审前请对一下本行时间**：低于你正在评审的那一轮即说明材料不是最新。
 > **读者**：看不到代码仓库的外部评审人。本文不要求你读代码，但要求你能判断两件事——问题是否真实成立、候选方案是否覆盖了失败形态。
@@ -124,6 +124,8 @@ pub struct SourceRecord {
 
 `PhysicalRange` 的末端用 128 位，表示**地址空间最后一页**（`[...f000, 2^64)`）；是否能投影成 `u64` 由 `projectable_end()` 回答，拒绝发生在各投影点，而不是把 `2^64` 悄悄截成 0。
 
+**记录身份（第一百一十六轮）**：`SourceRecord` 增加 `input_object`（`DtbBootInput` / `UefiMemoryMap`）、`local_source`（输入对象内序号）、`snapshot_id`（`GetMemoryMap` 快照的 MapKey；DTB 为 0）、`attribute` 与 `virtual_start`（UEFI 描述符原值；DTB 为 0）。跨输入引用只用 `(input_object, local_source)`，`id` 仅在单个输入对象内稳定。
+
 **不可读的 `reg` 形状一律拒绝**（第一百一十三轮）：`/memory` 与 `/reserved-memory` 的 `reg` 在声明 cell 宽度下截断（或 `#size-cells = 0`）时，`fdt` 迭代器不产出任何元组；把它当成「没有这段」会静默丢 RAM 或释放固件保留页。因此 `/memory` 返回 `UnsupportedMemoryReg`，`/reserved-memory` 返回 `UnsupportedReservedDeclaration`，四条负控：`dtb_truncated_memory_reg_is_rejected`、`dtb_zero_size_memory_reg_is_rejected`、`dtb_truncated_reserved_reg_is_rejected`、`dtb_zero_size_reservation_is_rejected`。
 
 ### 2.2 DTB 采集（三条 DTB 腿共用）
@@ -207,13 +209,15 @@ let record = SourceRecord {
 serializer.push_source(&record).expect("preflight proved the source partition");
 ```
 
+每条记录同时携带身份：`input_object = UefiMemoryMap`、`local_source = 描述符索引`、`snapshot_id` 为本次 `GetMemoryMap` 的 MapKey、`attribute` 与 `virtual_start` 为描述符原值。跨快照的同号描述符因此可区分。
+
 **静态保留 × EFI 类型覆盖**（`boot-shim/src/resv_claims.rs`，第一百一十三轮）：配置表 DTB 的 `/reserved-memory` 与 MRB 记录按 4 KiB 页向外量化成类型主张——普通/`reusable` → `EfiBootServicesData`，`no-map`/MRB → `EfiReservedMemoryType`；只保留与 `/memory` 全景相交的页（图外 framebuffer 声明不是 RAM 主张）。主张在 `find_platform_sources` 时采集（`resv_claims::capture`），EBS 配对循环在**分类之后、`ExitBootServices` 之前**逐页核对（`check_current`，失败形状 `PairError::ReservationCoverage`）：无覆盖或同页出现异类描述符即拒绝启动，即使另有兼容描述符覆盖同页也算冲突（保守加强）；配置表 DTB 自身页按 UEFI 2.11 允许 `EfiACPIReclaimMemory`。容量固定：主张 `MAX_CLAIMS = 64`、每条主张的覆盖区间 `MAX_INTERVALS = 256`，溢出拒绝不截断。三条必测形态（首页正确后续页错、多描述符连续完整覆盖、中间页异类）与边界共 9 条单测；默认 ACPI 腿无配置表 DTB（无主张、按空集通过），`DTB_CFGTABLE=1` 腿会真正采集并核对。
 
 **复制到自有缓冲（`boot-shim/src/dtb_copy.rs`，第一百一十五轮）**：`prepare` 在取图前只读 8 字节 header、按 `totalsize` 分配自有缓冲（分配先于快照，避免扰动 MapKey）；`authorize_and_copy` 在 `ExitBootServices` 前按最终快照核对 DTB 全部 4 KiB 页为 `EfiACPIReclaimMemory` 且无同类异型覆盖，然后 memcpy 一次；此后 `fdt_layout::validate`、解析、`collect` 与 `resv_claims` 只读副本。6 条单测覆盖页类型正反例与 header 边界。
 
 ### 2.4 第一跳：`BootHandoffV1`（wire v2）
 
-arena 是 7 页（28,672 B），布局由编译期算术钉住：
+arena 是 9 页（36,864 B），布局由编译期算术钉住：
 
 | 分区 | 容量 | 字节 | 偏移 |
 |---|---|---|---|
@@ -225,21 +229,22 @@ arena 是 7 页（28,672 B），布局由编译期算术钉住：
 | 参数字节 | 1,024 | 1,024 | 6,848 |
 | 可用表（语义工作区） | 128 × 16 B | 2,048 | 7,872 |
 | 保留表（语义工作区） | 256 × 16 B | 4,096 | 9,920 |
-| 来源记录 | 256 × 48 B | 12,288 | 14,016 |
-| 余量 | — | 2,368 | 26,304 |
+| 来源记录 | 256 × 72 B | 18,432 | 14,016 |
+| 余量 | — | 4,416 | 32,448 |
 
-编译期门（`handoff_v1.rs` 的 `const _` 块）钉住：信封 size 176、`sources_byte_len` 偏移 168、`WireSourceRecord` 48 B/对齐 8、`WIRE_SOURCES_END == 26304`、`SEMANTIC_END == 14016`、`ARENA_CAP % 4096 == 0`。
+编译期门（`handoff_v1.rs` 的 `const _` 块）钉住：信封 size 176、`sources_byte_len` 偏移 168、`WireSourceRecord` 48 B/对齐 8、`WIRE_SOURCES_END == 32448`、`SEMANTIC_END == 14016`、`ARENA_CAP % 4096 == 0`。
 
 来源记录的线上布局（48 B，无损）：
 
 ```text
-start u64 | end_lo u64 | end_hi u64 | id u16 | kind u8 | origin_tag u8
-| a u16 | b u16 | cut u64 | reserved u64
+start u64 | end_lo u64 | end_hi u64 | attribute u64 | virtual_start u64
+| snapshot u64 | cut u64 | id u16 | local u16 | a u16 | b u16
+| kind u8 | origin_tag u8 | input_object u8 | reserved0 u8 | reserved u32
 ```
 
 `end_hi ∈ {0,1}`（128 位末端的两个半字）；`a/b/cut` 是 origin 的变体载荷；编码器恒写 0 的字段若非零，解码按 `BadSourceRecord` 失败关闭；未知 `kind`/`origin_tag` 同样拒绝。
 
-**版本**：`BOOT_HANDOFF_V1_VERSION = 2`，接收端按**精确相等**比较；版本 1 的发送方会被 `UnsupportedVersion` 拒收，不会按新偏移读旧镜像。
+**版本**：`BOOT_HANDOFF_V1_VERSION = 3`（v3 增加身份、属性与虚拟地址），接收端按**精确相等**比较；v1/v2 的发送方会被 `UnsupportedVersion` 拒收，不会按新偏移读旧镜像。
 
 ### 2.5 内核侧：落地垫、承载字段、消费者边界
 
@@ -851,7 +856,7 @@ StartupObjectRecordCapacity = KernelImage + BootModule + BootPageTable + BootRoo
 
 `MaxDescriptorCount = floor(MapBufferCapacity / MinimumSupportedDescriptorSize)` 这条可计算关系仍是**未实现**要求；但「stale-key 重试后描述符数超上限必须整体拒绝、不得截断」这一条**已实现**：超限走 `TooManyDescriptors`，shim 侧 `panic!("boot-shim: memory map rejected: …")`，是整体拒绝而非截断。**待补测试两枚**：恰好 256 条通过、257 条以具名错误拒绝（DTB 侧已有对等测试 `dtb_source_capacity_is_reachable_at_exactly_forty`，上限 `DTB_SOURCE_MAX = 8 + 8 + 16 + 8 = 40`）。
 
-**arena 载荷预算（wire v2 的真实数字）**：`WireMemoryRegion` 16 B、`WireBootModule` 32 B，所以可用表 128×16 = 2,048 B、保留表 256×16 = 4,096 B、模块表 12×32 = 384 B、平台描述 4×16 = 64 B、参数字节 1,024 B；编译期算术给出 `WIRE_PARAM_OFFSET = 6848`、`WIRE_END = 7872`、`SEMANTIC_END = 14016`。来源分区就开在 `SEMANTIC_END`（`WIRE_SOURCES_OFFSET`），`WireSourceRecord` 48 B（无损承载 `u128` 的独占末端的两个 64 位半字与来源标签），容量 **256 条 = 12,288 B**（= `MAX_MAP_DESCRIPTORS`；DTB 腿的 40 条与 UEFI 腿的逐描述符记录共用同一分区），结束于 26,304 B。`ARENA_CAP` 随之定为 **7 页 = 28,672 B** → **余量 2,368 B**；编译期断言 `WIRE_SOURCES_END == 26304` 与 `WIRE_SOURCES_END <= ARENA_CAP` 同时钉住。信封从 168 B 增到 176 B（新增 `sources_byte_len`，偏移 168），仍在 256 B 预算内；`BOOT_HANDOFF_V1_VERSION` 升到 **2** 且按精确相等比较，版本 1 的发送方会被拒收，不会按新偏移读版本 1 的镜像。
+**arena 载荷预算（wire v2 的真实数字）**：`WireMemoryRegion` 16 B、`WireBootModule` 32 B，所以可用表 128×16 = 2,048 B、保留表 256×16 = 4,096 B、模块表 12×32 = 384 B、平台描述 4×16 = 64 B、参数字节 1,024 B；编译期算术给出 `WIRE_PARAM_OFFSET = 6848`、`WIRE_END = 7872`、`SEMANTIC_END = 14016`。来源分区就开在 `SEMANTIC_END`（`WIRE_SOURCES_OFFSET`），`WireSourceRecord` 48 B（无损承载 `u128` 的独占末端的两个 64 位半字与来源标签），容量 **256 条 = 12,288 B**（= `MAX_MAP_DESCRIPTORS`；DTB 腿的 40 条与 UEFI 腿的逐描述符记录共用同一分区），结束于 26,304 B。`ARENA_CAP` 随之定为 **7 页 = 28,672 B** → **余量 2,368 B**；编译期断言 `WIRE_SOURCES_END == 32448` 与 `WIRE_SOURCES_END <= ARENA_CAP` 同时钉住。信封从 168 B 增到 176 B（新增 `sources_byte_len`，偏移 168），仍在 256 B 预算内；`BOOT_HANDOFF_V1_VERSION` 升到 **2** 且按精确相等比较，版本 1 的发送方会被拒收，不会按新偏移读版本 1 的镜像。
 
 **`#[repr(C)]` 不等于完整 ABI 合同——六项核对的当前读数**
 
@@ -1012,9 +1017,9 @@ PmmBaseExcluded = RamSourcePageDomain ∩ (PmmSourceExcludedPages ∪ HardwareAd
 
 ```
 $ cargo test -p minix-types                 → 339 passed / 0 failed
-$ cargo test -p minix-boot                  → 163 passed / 0 failed（第一百一十三轮）
-$ cargo test -p boot-shim                   → 82 passed / 0 failed（+10 条 resv_claims）
-$ cargo test -p boot-shim --features uefi   → 82 passed / 0 failed（+5 集成）
+$ cargo test -p minix-boot                  → 165 passed / 0 failed（第一百一十六轮）
+$ cargo test -p boot-shim                   → 89 passed / 0 failed（+10 resv_claims，+3 记录身份）
+$ cargo test -p boot-shim --features uefi   → 89 passed / 0 failed（+5 集成）
 $ cargo test -p minix-kernel --features mock → 863 passed / 0 failed / 8 ignored
 $ cargo test -p minix-vm                    → 548 passed / 0 failed
 ```
@@ -1075,6 +1080,8 @@ boot-shim    --target x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unk
 **第一百一十三轮（实现复审修复，不改变层结论）**：双轴复审提出的两项 fail-open 与四项合同/文档不一致已闭合——① 截断或零长的 `reg` 不再被跳过（四条负控）；② 非 `no-map` 保留与 MRB 的页级冲突拒绝（三正一负）；③ 跨镜像 resume 走 `validate_requiring_sources`，三条 DTB 腿交出前断言来源非空；④ FDT 容器 MRB 上限回到 16；⑤ O-11 静态保留 × EFI 类型覆盖落码（`resv_claims`，三条必测形态）；⑥ 注释/引用同步与 I-29 触及文件的 rustfmt。读数见 §6.1/§6.3；仍开放的是 O-11「复制到自有缓冲再解析」与真机固件证据。
 
 **第一百一十五轮（A1 落码，不改变层结论）**：O-11 的 copy-first 与页类型预检落地；AAVMF 强制 DT 腿由正例改为「存在但不可用」负例，正例只剩宿主单测。
+
+**第一百一十六轮（A2 落码，不改变层结论）**：记录身份与 `Attribute`/`VirtualStart` 进入 wire v3；`MapSnapshotId` 为本次 `GetMemoryMap` 的 MapKey；跨快照同号描述符可区分。
 
 **第二层的验收内容已按 §1.6 收紧**，只保留真正属于「资源发现与交接」的五项（平台资源描述随射程移交 `04`，不再作为签字项）：
 
