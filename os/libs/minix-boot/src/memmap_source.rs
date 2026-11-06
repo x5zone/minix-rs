@@ -127,6 +127,11 @@ pub enum DtbMemMapError {
     /// overlap too — no deduplication here, unlike `/reserved-memory`
     /// duplicates, which are a project-level tolerance.
     OverlappingMemoryReservations,
+    /// A non-`no-map` `/reserved-memory` declaration shares a page with a
+    /// memory-reservation-block entry. The MRB forbids access until an
+    /// explicit use, while the ordinary reservation promises the range stays
+    /// reachable; no single projection can honour both claims.
+    MrbConflictingReservation,
     /// A `/memory` node carries a `status` other than "okay" (or an unknown
     /// value). Such memory is not described as usable RAM, so handing it to
     /// the allocator would ignore the node's own state.
@@ -918,6 +923,22 @@ impl DtbMemoryMap<'_> {
                         _ => return Err(DtbMemMapError::UnsupportedReservedDeclaration),
                     };
                     let (start, end) = declared_page_range(region.starting_address as u64, len)?;
+                    let intent = if no_map {
+                        ReservationIntent::NoMap
+                    } else if reusable {
+                        ReservationIntent::Reusable
+                    } else {
+                        ReservationIntent::Ordinary
+                    };
+                    // `no-map` and an MRB entry agree (both forbid access), but
+                    // an ordinary or reusable reservation promises the same
+                    // pages stay reachable. Page-rounded, matching the UEFI
+                    // side's conservative same-page rule.
+                    if intent != ReservationIntent::NoMap
+                        && mrb[..mrb_n].iter().any(|&(s, e)| start < e && s < end)
+                    {
+                        return Err(DtbMemMapError::MrbConflictingReservation);
+                    }
                     push_source(
                         &mut sources,
                         &mut sources_n,
@@ -937,13 +958,6 @@ impl DtbMemoryMap<'_> {
                             physical_end(region.starting_address as u64, len)?,
                         ),
                     )?;
-                    let intent = if no_map {
-                        ReservationIntent::NoMap
-                    } else if reusable {
-                        ReservationIntent::Reusable
-                    } else {
-                        ReservationIntent::Ordinary
-                    };
                     if push_declared(&mut declared, &mut declared_n, start, end, intent)? {
                         // Exact duplicate: the projection already covers it,
                         // the record above keeps the second source identity.
@@ -2588,6 +2602,76 @@ mod tests {
             DtbMemoryMap::new(&fdt, 0).collect(),
             Err(DtbMemMapError::UnsupportedReservedDeclaration)
         ));
+    }
+
+    /// MRB and a plain `/reserved-memory` declaration make incompatible
+    /// claims about the same page: the MRB forbids access, the ordinary
+    /// reservation keeps it reachable. The pair is refused, not merged.
+    #[test]
+    fn dtb_mrb_and_ordinary_reservation_overlap_is_rejected() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: false }],
+            &[(0x8000_4000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::MrbConflictingReservation)
+        ));
+    }
+
+    #[test]
+    fn dtb_mrb_and_reusable_reservation_overlap_is_rejected() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: false, reusable: true }],
+            &[(0x8000_4000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::MrbConflictingReservation)
+        ));
+    }
+
+    /// The conflict is page-rounded: raw ranges that do not intersect but
+    /// land on the same 4 KiB page still disagree about that page.
+    #[test]
+    fn dtb_mrb_and_reservation_on_the_same_page_conflict() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4800, size: 0x800, no_map: false, reusable: false }],
+            &[(0x8000_4000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        assert!(matches!(
+            DtbMemoryMap::new(&fdt, 0).collect(),
+            Err(DtbMemMapError::MrbConflictingReservation)
+        ));
+    }
+
+    /// `no-map` and an MRB entry agree (both forbid access), so the same
+    /// bytes may be declared by both.
+    #[test]
+    fn dtb_mrb_and_no_map_reservation_are_compatible() {
+        let blob = build_fdt_ex(
+            &[(0x8000_0000, 0x1_0000)],
+            false,
+            &[ReservedRow { base: 0x8000_4000, size: 0x1000, no_map: true, reusable: false }],
+            &[(0x8000_4000, 0x1000)],
+            2,
+        );
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("compatible pair");
+        assert_eq!(conv.len(), 2);
+        assert!(res.is_empty(), "both sources agree the pages leave the reachable set");
     }
 
     #[test]
