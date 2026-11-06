@@ -5954,4 +5954,4 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 
 - 新增 `accepts_exactly_the_descriptor_and_partition_caps`：恰好 256 条描述符（128 CONVENTIONAL + 64 LOADER_DATA + 64 ACPI_NVS）解析并分类为 `(128, 64, 64)`，同时钉住 `MAX_MAP_DESCRIPTORS`、`WIRE_MEMMAP_CAP`、`SIDE_CAP`；与既有 257 拒绝负例成对。
 - 读数：boot-shim 90；minix-boot 165、kernel 863 不变。
-- 认领：`I-29 qorder93`，状态 🔄 待合入。
+- 认领：`I-29 qorder93`，状态 ✅：已 ff 合并为 `418bc2cc4`，认领已释放。
