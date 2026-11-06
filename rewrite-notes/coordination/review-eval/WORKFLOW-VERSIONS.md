@@ -64,6 +64,7 @@
 - meta-review：总体 `IMPROVED`（V1 基线已建立），运行质量 `NOT PASS`（抽样 24/85 = 28.2%，处置一致性 87.5%）。
 - 三条否决已补修：测试计数改为 crate 全量 125/175；`arch_boot_finish` 改用 `validate_before_tables` 并编译检查 7 个 QEMU 测试内核；`kernel_info.rs` 的 `reserved_regions` 注释同步。
 - 新增盲区 B-14（测试计数口径）、B-15（公共入口调用方枚举）、B-16（材料违规分级）；对应候选 C-08/C-09/C-10。
+- V1 边界对抗样本：T01–T08 全 PASS，阳性召回 6/6、阴性 2/2、误报 0、`adjacent 阻塞` 0；报告见 `meta/boundary-V1.md`。
 - V1 保持生效；V2 晋升暂缓到 D02 闭环复核之后，避免一次首跑就改三条规则。
 
 ## 五、回退记录
