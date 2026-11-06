@@ -45,18 +45,18 @@
 
 extern crate alloc;
 
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::panic::PanicInfo;
-use core::alloc::{GlobalAlloc, Layout};
 
+use boot_shim::uefi_helpers;
 use minix_arch::arm64::paging::AArch64Paging;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
-use minix_plat::arm64::early_console;
+use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
 use minix_kernel::boot_alloc;
+use minix_plat::arm64::early_console;
 use minix_platform;
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
-use boot_shim::uefi_helpers;
+use minix_types::{PhysBytes, VirBytes};
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -71,8 +71,15 @@ unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
             if !BOOT_SERVICES_EXITED {
-                let size = if layout.align() > 8 { layout.size() + layout.align() } else { layout.size() };
-                match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, size) {
+                let size = if layout.align() > 8 {
+                    layout.size() + layout.align()
+                } else {
+                    layout.size()
+                };
+                match uefi::boot::allocate_pool(
+                    uefi::mem::memory_map::MemoryType::LOADER_DATA,
+                    size,
+                ) {
                     Ok(ptr) => ptr.as_ptr() as *mut u8,
                     Err(_) => core::ptr::null_mut(),
                 }
@@ -110,21 +117,67 @@ static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
 }];
 
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule {
+        name: "ds",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "rs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "pm",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "sched",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "memory",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "tty",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mib",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // patched at runtime
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "init",
+        start: PhysBytes(0),
+        len: 0,
+    },
 ];
-
-
 
 /// The rt-birth user image, embedded at kernel build time (the run script
 /// builds `rt-birth` for aarch64-unknown-none first and passes the artifact
@@ -167,7 +220,7 @@ core::arch::global_asm!(
 core::arch::global_asm!(
     ".section .text.vec",
     ".globl rt_birth_vectors",
-    ".align 11",              // 2 KiB alignment (VBAR_EL1 contract)
+    ".align 11", // 2 KiB alignment (VBAR_EL1 contract)
     "rt_birth_vectors:",
     // ── 0x000: Current EL with SP0 (sync) ──
     "b 1f",
@@ -397,7 +450,9 @@ unsafe extern "C" fn rt_birth_svc_dispatch(frame: *mut u64) {
             early_console::write_str("\n");
         }
         loop {
-            unsafe { asm!("wfe", options(nomem, nostack)); }
+            unsafe {
+                asm!("wfe", options(nomem, nostack));
+            }
         }
     }
 
@@ -447,7 +502,11 @@ unsafe extern "C" fn rt_birth_svc_dispatch(frame: *mut u64) {
     }
 }
 
-unsafe fn kernel_call_leg(msg_user: u64, kmsg: *mut [u8; 64], diagbuf: *mut [u8; DIAGBUF_MAX]) -> u64 {
+unsafe fn kernel_call_leg(
+    msg_user: u64,
+    kmsg: *mut [u8; 64],
+    diagbuf: *mut [u8; DIAGBUF_MAX],
+) -> u64 {
     if msg_user == 0 {
         return minix_types::EINVAL as u64;
     }
@@ -463,12 +522,24 @@ unsafe fn kernel_call_leg(msg_user: u64, kmsg: *mut [u8; 64], diagbuf: *mut [u8;
         return ENOSYS;
     }
     let buf = u64::from_le_bytes([
-        (*kmsg)[16], (*kmsg)[17], (*kmsg)[18], (*kmsg)[19],
-        (*kmsg)[20], (*kmsg)[21], (*kmsg)[22], (*kmsg)[23],
+        (*kmsg)[16],
+        (*kmsg)[17],
+        (*kmsg)[18],
+        (*kmsg)[19],
+        (*kmsg)[20],
+        (*kmsg)[21],
+        (*kmsg)[22],
+        (*kmsg)[23],
     ]);
     let len = u64::from_le_bytes([
-        (*kmsg)[24], (*kmsg)[25], (*kmsg)[26], (*kmsg)[27],
-        (*kmsg)[28], (*kmsg)[29], (*kmsg)[30], (*kmsg)[31],
+        (*kmsg)[24],
+        (*kmsg)[25],
+        (*kmsg)[26],
+        (*kmsg)[27],
+        (*kmsg)[28],
+        (*kmsg)[29],
+        (*kmsg)[30],
+        (*kmsg)[31],
     ]) as usize;
     let n = len.min(DIAGBUF_MAX);
     if buf == 0 || n == 0 {
@@ -553,6 +624,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -563,12 +635,17 @@ fn main() -> Status {
     };
 
     uefi_helpers::exit_boot_services();
-    unsafe { BOOT_SERVICES_EXITED = true; }
+    unsafe {
+        BOOT_SERVICES_EXITED = true;
+    }
 
     // 2. Paging (Phase A).
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order).
@@ -658,7 +735,11 @@ fn main() -> Status {
 #[allow(dead_code)]
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-rt-birth-aarch64 ###\n");
-    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfe", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
@@ -679,5 +760,9 @@ fn panic(info: &PanicInfo) -> ! {
     }
     let _ = core::fmt::write(&mut Console, format_args!("{}\n", info.message()));
     early_console::write_str(" ###\n");
-    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfe", options(nomem, nostack));
+        }
+    }
 }

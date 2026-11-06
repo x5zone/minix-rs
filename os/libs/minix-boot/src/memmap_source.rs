@@ -192,6 +192,10 @@ pub enum SourceKind {
     ReservedReusable,
     /// A `/reserved-memory` child range marked `no-map`.
     ReservedNoMap,
+    /// A live object the boot image occupies (kernel image, module, bootstrap
+    /// page-table pool, root page, bump region, handoff arena). Not a memory
+    /// map declaration: it is the second record class with its own capacity.
+    StartupObject,
 }
 
 /// Whether a record is declared by the input object or derived by this project.
@@ -238,6 +242,8 @@ pub enum SourceOrigin {
     ReservedMemoryChild { node: u16, reg: u16 },
     /// The `index`-th descriptor of the final `GetMemoryMap` snapshot.
     UefiDescriptor { index: u16 },
+    /// The `index`-th startup object of this boot image.
+    StartupObject(u16),
 }
 
 /// A projection span that no source record can explain: either a free span not
@@ -275,6 +281,7 @@ pub fn audit_source_coverage(
         let is_reservation_record = |r: &SourceRecord| match r.kind {
             SourceKind::Memory => false,
             SourceKind::MrbEntry | SourceKind::ReservedNoMap => false,
+            SourceKind::StartupObject => false,
             SourceKind::FirmwarePrefix
             | SourceKind::ReservedOrdinary
             | SourceKind::ReservedReusable => true,
@@ -416,6 +423,8 @@ pub enum InputObjectId {
     DtbBootInput,
     /// The `GetMemoryMap` snapshot taken by the EBS pairing loop.
     UefiMemoryMap,
+    /// The boot image's own live objects (kernel, modules, pools, arena).
+    StartupObjects,
 }
 
 impl InputObjectId {
@@ -423,6 +432,7 @@ impl InputObjectId {
         match self {
             Self::DtbBootInput => 0,
             Self::UefiMemoryMap => 1,
+            Self::StartupObjects => 2,
         }
     }
 
@@ -430,6 +440,7 @@ impl InputObjectId {
         match tag {
             0 => Some(Self::DtbBootInput),
             1 => Some(Self::UefiMemoryMap),
+            2 => Some(Self::StartupObjects),
             _ => None,
         }
     }
@@ -574,6 +585,24 @@ fn push_source(
     };
     *n += 1;
     Ok(())
+}
+
+/// Build one startup-object record: the second record class (kernel image,
+/// boot modules, bootstrap pools, root page, bump region, handoff arena). It
+/// travels in its own wire partition with its own capacity.
+pub const fn startup_record(index: u16, start: u64, end: u64) -> SourceRecord {
+    SourceRecord {
+        id: index,
+        kind: SourceKind::StartupObject,
+        origin: SourceOrigin::StartupObject(index),
+        range: PhysicalRange::new(start, end as u128),
+        input_object: InputObjectId::StartupObjects,
+        local_source: index,
+        snapshot_id: 0,
+        attribute: 0,
+        virtual_start: 0,
+        address_domain: AddressDomain::Physical,
+    }
 }
 
 /// Remove `[start, end)` from the conventional table. A span that straddles the
@@ -2183,6 +2212,7 @@ mod tests {
             SourceOrigin::ReservedMemoryChild { node, reg } => (2u8, *node as u32, *reg as u32),
             SourceOrigin::FirmwarePrefix { .. } => (3u8, 0, 0),
             SourceOrigin::UefiDescriptor { index } => (4u8, *index as u32, 0),
+            SourceOrigin::StartupObject(i) => (5u8, *i as u32, 0),
         });
         assert_eq!(
             origins,

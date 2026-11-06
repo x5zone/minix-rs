@@ -16,15 +16,15 @@
 #![no_std]
 #![no_main]
 
+use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::x86_64::paging::X86_64Paging;
-use minix_plat::x86_64::early_console;
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
+use minix_arch::x86_64::paging::X86_64Paging;
 use minix_boot::{BootPrepareResult, KernelInfo};
-use boot_shim::uefi_helpers;
+use minix_kernel::boot_alloc;
+use minix_plat::x86_64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 use uefi::prelude::*;
 
 // UEFI test kernels allocate only while boot services are alive (build_memmap
@@ -60,6 +60,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -78,7 +79,10 @@ fn main() -> Status {
 
     // 3. Run arch_boot_impl — identity map + enable paging
     //    This is the same code path as the real kernel boot.
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
 
     // If we reach here, paging is enabled and the CPU can still execute.
     early_console::write_str("Hello, World!\n");
@@ -94,7 +98,9 @@ fn main() -> Status {
     minix_kernel::minix_shutdown(0);
 
     loop {
-        unsafe { asm!("hlt", options(nomem, nostack)); }
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
     }
 }
 
@@ -111,7 +117,11 @@ fn panic(info: &PanicInfo) -> ! {
         early_console::write_str(write_u32(loc.column(), &mut buf));
         early_console::write_str("\n");
     }
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 /// Format a u32 as decimal into the caller's buffer (no_std, no itoa).
@@ -121,7 +131,9 @@ fn write_u32(mut v: u32, buf: &mut [u8; 12]) -> &str {
         i -= 1;
         buf[i] = b'0' + (v % 10) as u8;
         v /= 10;
-        if v == 0 { break; }
+        if v == 0 {
+            break;
+        }
     }
     core::str::from_utf8(&buf[i..]).unwrap_or("?")
 }

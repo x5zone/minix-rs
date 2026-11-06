@@ -18,7 +18,8 @@ use crate::handoff_v1::{
     WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP,
     WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP,
     WIRE_RESERVED_OFFSET, WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET,
-    WireBootModule, WireMemoryRegion, WirePlatformDescSource, WireSourceRecord,
+    WIRE_STARTUP_CAP, WIRE_STARTUP_OFFSET, WireBootModule, WireMemoryRegion,
+    WirePlatformDescSource, WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
 use crate::memmap_source::SourceRecord;
@@ -56,6 +57,7 @@ mod offsets {
     pub const PLATFORM_BYTE_LEN: usize = 152;
     pub const PARAM_BYTE_LEN: usize = 160;
     pub const SOURCES_BYTE_LEN: usize = 168;
+    pub const STARTUP_BYTE_LEN: usize = 176;
 }
 
 /// Decoder failure. Every variant is fail-closed: the receiver must not fall
@@ -109,6 +111,7 @@ pub struct HandoffScalars {
     pub platform_byte_len: u64,
     pub param_byte_len: u64,
     pub sources_byte_len: u64,
+    pub startup_byte_len: u64,
 }
 
 fn read_u32(arena: &[u8], off: usize) -> u32 {
@@ -151,6 +154,7 @@ pub struct HandoffDescriptors {
     pub platform_byte_len: u64,
     pub param_byte_len: u64,
     pub sources_byte_len: u64,
+    pub startup_byte_len: u64,
 }
 
 /// Validate the header and return the five payload descriptors only.
@@ -166,6 +170,7 @@ pub fn decode_descriptors(arena: &[u8]) -> Result<HandoffDescriptors, HandoffV1R
         platform_byte_len: read_u64(arena, offsets::PLATFORM_BYTE_LEN),
         param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
         sources_byte_len: read_u64(arena, offsets::SOURCES_BYTE_LEN),
+        startup_byte_len: read_u64(arena, offsets::STARTUP_BYTE_LEN),
     })
 }
 
@@ -221,6 +226,7 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         platform_byte_len: read_u64(arena, offsets::PLATFORM_BYTE_LEN),
         param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
         sources_byte_len: read_u64(arena, offsets::SOURCES_BYTE_LEN),
+        startup_byte_len: read_u64(arena, offsets::STARTUP_BYTE_LEN),
     })
 }
 
@@ -390,6 +396,48 @@ pub fn decode_sources(
     Ok(count)
 }
 
+/// Decode the startup-object records into `out`, returning the count.
+///
+/// They live in their own partition with their own capacity, so the memory
+/// map's 256 slots can never crowd them out.
+pub fn decode_startup_objects(
+    arena: &[u8],
+    scalars: &HandoffScalars,
+    out: &mut [SourceRecord],
+) -> Result<usize, HandoffV1ReadError> {
+    let count = element_count(
+        scalars.startup_byte_len,
+        WIRE_SOURCE_RECORD_SIZE,
+        WIRE_STARTUP_CAP,
+    )?;
+    if count > out.len() {
+        return Err(HandoffV1ReadError::OutputTooSmall);
+    }
+    for (i, slot) in out.iter_mut().enumerate().take(count) {
+        let off = WIRE_STARTUP_OFFSET + i * WIRE_SOURCE_RECORD_SIZE;
+        let wire = WireSourceRecord {
+            start: read_u64(arena, off),
+            end_lo: read_u64(arena, off + 8),
+            end_hi: read_u64(arena, off + 16),
+            attribute: read_u64(arena, off + 24),
+            virtual_start: read_u64(arena, off + 32),
+            snapshot: read_u64(arena, off + 40),
+            cut: read_u64(arena, off + 48),
+            id: u16::from_le_bytes(arena[off + 56..off + 58].try_into().unwrap()),
+            local: u16::from_le_bytes(arena[off + 58..off + 60].try_into().unwrap()),
+            a: u16::from_le_bytes(arena[off + 60..off + 62].try_into().unwrap()),
+            b: u16::from_le_bytes(arena[off + 62..off + 64].try_into().unwrap()),
+            kind: arena[off + 64],
+            origin_tag: arena[off + 65],
+            input_object: arena[off + 66],
+            address_domain: arena[off + 67],
+            reserved: read_u32(arena, off + 68),
+        };
+        *slot = wire.decode().ok_or(HandoffV1ReadError::BadSourceRecord)?;
+    }
+    Ok(count)
+}
+
 /// Decode the `param_buf` bytes into `out`, returning the byte count.
 pub fn decode_param_buf(
     arena: &[u8],
@@ -426,9 +474,11 @@ pub fn wire_module_to_boot_module(wire: &WireBootModule, name: &'static str) -> 
 mod tests {
     use super::*;
     use crate::handoff_v1::ARENA_CAP;
-    use crate::handoff_v1_write::{RuntimeFields, Serializer};
+    use crate::handoff_v1_write::{HandoffV1WriteError, RuntimeFields, Serializer};
     use crate::kernel_info::KernelInfo;
-    use crate::memmap_source::{PhysicalRange, SourceKind, SourceOrigin, SourceRecord};
+    use crate::memmap_source::{
+        PhysicalRange, SourceKind, SourceOrigin, SourceRecord, startup_record,
+    };
     use crate::platform::{DTB, RSDP};
     use minix_types::{USER_STACK_TOP, VirBytes};
 
@@ -502,6 +552,13 @@ mod tests {
         },
     ];
 
+    /// Kernel image + two modules, in the startup-object class.
+    static STARTUP: [SourceRecord; 3] = [
+        startup_record(0, 0x20_0000, 0x60_0000),
+        startup_record(1, 0x20_0000, 0x21_0000),
+        startup_record(2, 0x21_0000, 0x23_0000),
+    ];
+
     const ROOT: u64 = 0x1000;
     const BUMP_BASE: u64 = 0x20_0000;
     const BUMP_NEXT: u64 = 0x21_0000;
@@ -512,6 +569,7 @@ mod tests {
             memmap: &MEMMAP,
             reserved_regions: &RESERVED,
             memmap_sources: &[],
+            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
@@ -538,6 +596,7 @@ mod tests {
             s.write_platform_sources(info.platform_sources).unwrap();
             s.write_param_buf(info.param_buf).unwrap();
             s.write_sources(&RECORDS).unwrap();
+            s.write_startup(&STARTUP).unwrap();
             for region in info.memmap {
                 s.push_memmap(*region).unwrap();
             }
@@ -780,6 +839,104 @@ mod tests {
         let n = decode_sources(&arena, &s, &mut out).unwrap();
         assert_eq!(n, RECORDS.len());
         assert_eq!(&out[..n], &RECORDS[..]);
+    }
+
+    /// The startup-object partition is decoded on its own and never eats into
+    /// the memory-map partition (or vice versa).
+    #[test]
+    fn round_trip_startup_objects() {
+        let arena = build_arena();
+        let s = decode_envelope(&arena).unwrap();
+        assert_eq!(
+            s.startup_byte_len,
+            (STARTUP.len() * WIRE_SOURCE_RECORD_SIZE) as u64
+        );
+        let mut out = [STARTUP[0]; WIRE_STARTUP_CAP];
+        let n = decode_startup_objects(&arena, &s, &mut out).unwrap();
+        assert_eq!(n, STARTUP.len());
+        assert_eq!(&out[..n], &STARTUP[..]);
+        let mut mem = [RECORDS[0]; WIRE_SOURCES_CAP];
+        let n = decode_sources(&arena, &s, &mut mem).unwrap();
+        assert_eq!(n, RECORDS.len());
+        assert_eq!(&mem[..n], &RECORDS[..]);
+    }
+
+    /// Exactly `WIRE_STARTUP_CAP` startup records are accepted while the
+    /// memory partition is simultaneously full at its own cap; the 17th
+    /// startup record is refused by the startup capacity alone.
+    #[test]
+    fn startup_partition_accepts_exactly_its_capacity() {
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        s.write_envelope(&info()).unwrap();
+        s.patch_runtime_fields(RuntimeFields {
+            root_page: ROOT,
+            bump_base: BUMP_BASE,
+            bump_next: BUMP_NEXT,
+            bump_end: BUMP_END,
+        });
+        let memmap_full = [RECORDS[0]; WIRE_SOURCES_CAP];
+        s.write_sources(&memmap_full).unwrap();
+        let startup_full = [STARTUP[0]; WIRE_STARTUP_CAP];
+        s.write_startup(&startup_full).unwrap();
+        let startup_over = [STARTUP[0]; WIRE_STARTUP_CAP + 1];
+        assert_eq!(
+            s.write_startup(&startup_over).unwrap_err(),
+            HandoffV1WriteError::TooManySourceRecords
+        );
+        let scalars = decode_envelope(&arena).unwrap();
+        assert_eq!(
+            scalars.sources_byte_len,
+            (WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE) as u64
+        );
+        assert_eq!(
+            scalars.startup_byte_len,
+            (WIRE_STARTUP_CAP * WIRE_SOURCE_RECORD_SIZE) as u64
+        );
+    }
+
+    #[test]
+    fn rejects_startup_over_capacity() {
+        let mut arena = build_arena();
+        // Startup descriptor is the u64 at offset 176.
+        put_u64(
+            &mut arena,
+            176,
+            ((WIRE_STARTUP_CAP as u64) + 1) * WIRE_SOURCE_RECORD_SIZE as u64,
+        );
+        let s = decode_envelope(&arena).unwrap();
+        let mut out = [STARTUP[0]; WIRE_STARTUP_CAP];
+        assert_eq!(
+            decode_startup_objects(&arena, &s, &mut out).unwrap_err(),
+            HandoffV1ReadError::DescriptorOverflowsPartition
+        );
+    }
+
+    /// The EBS retry clears the classification snapshot only; startup-object
+    /// records describe the image and must survive it.
+    #[test]
+    fn reset_map_partitions_keeps_the_startup_partition() {
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        s.write_envelope(&info()).unwrap();
+        s.write_sources(&RECORDS).unwrap();
+        s.write_startup(&STARTUP).unwrap();
+        s.patch_runtime_fields(RuntimeFields {
+            root_page: ROOT,
+            bump_base: BUMP_BASE,
+            bump_next: BUMP_NEXT,
+            bump_end: BUMP_END,
+        });
+        s.reset_map_partitions();
+        let scalars = decode_envelope(&arena).unwrap();
+        assert_eq!(scalars.sources_byte_len, 0);
+        assert_eq!(
+            scalars.startup_byte_len,
+            (STARTUP.len() * WIRE_SOURCE_RECORD_SIZE) as u64
+        );
+        let mut out = [STARTUP[0]; WIRE_STARTUP_CAP];
+        let n = decode_startup_objects(&arena, &scalars, &mut out).unwrap();
+        assert_eq!(&out[..n], &STARTUP[..]);
     }
 
     #[test]

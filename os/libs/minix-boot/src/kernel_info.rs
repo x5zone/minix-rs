@@ -59,6 +59,12 @@ pub struct KernelInfo {
     /// this field as `&[]` and use the lenient gate.
     pub memmap_sources: &'static [SourceRecord],
 
+    /// Startup-object records: the kernel image, boot modules, bootstrap
+    /// page-table pool, root page, bump region and handoff arena. They have
+    /// their own partition and capacity, so they are never counted against
+    /// memmap_sources.
+    pub startup_objects: &'static [SourceRecord],
+
     /// Kernel virtual base address.
     /// C: kinfo.vir_kern_start = &_kern_vir_base — pre_init.c:113
     pub kern_virt_base: VirBytes,
@@ -548,6 +554,7 @@ mod tests {
                 len: 0x1000,
             }],
             memmap_sources: &[],
+            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,

@@ -13,12 +13,12 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::riscv64::paging::Riscv64Paging;
-use minix_plat::riscv64::early_console;
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
+use minix_arch::riscv64::paging::Riscv64Paging;
 use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::riscv64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 
 use core::alloc::{GlobalAlloc, Layout};
 
@@ -123,6 +123,7 @@ pub extern "C" fn rust_main() -> ! {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -135,7 +136,10 @@ pub extern "C" fn rust_main() -> ! {
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
 
     // Verify mapping: write sentinel and read it back.
     // Use an address well past the OpenSBI firmware (~322KB from 0x8000_0000)
@@ -163,11 +167,19 @@ pub extern "C" fn rust_main() -> ! {
         early_console::write_str("### TEST_RESULT: FAIL test-kernel-map-riscv64 ###\n");
     }
 
-    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
-    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
 }

@@ -61,6 +61,7 @@ pub fn build_kernel_info(
         memmap,
         reserved_regions,
         memmap_sources: &[],
+        startup_objects: &[],
         kern_virt_base,
         kern_phys_base,
         kern_size,

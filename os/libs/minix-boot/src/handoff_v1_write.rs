@@ -23,7 +23,7 @@ use crate::handoff_v1::{
     WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
     WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
     WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_END, WIRE_SOURCES_OFFSET,
-    WireSourceRecord,
+    WIRE_STARTUP_CAP, WIRE_STARTUP_END, WIRE_STARTUP_OFFSET, WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, KernelInfo, MemoryRegion};
 use crate::memmap_source::SourceRecord;
@@ -89,6 +89,7 @@ mod offsets {
     pub const PLATFORM_BYTE_LEN: usize = 152;
     pub const PARAM_BYTE_LEN: usize = 160;
     pub const SOURCES_BYTE_LEN: usize = 168;
+    pub const STARTUP_BYTE_LEN: usize = 176;
 }
 
 fn put_u32(arena: &mut [u8], off: usize, value: u32) {
@@ -287,6 +288,25 @@ impl<'a> Serializer<'a> {
         Ok(())
     }
 
+    /// Write the startup-object partition (its own capacity; never counted
+    /// against the memory-source partition).
+    pub fn write_startup(&mut self, records: &[SourceRecord]) -> Result<(), HandoffV1WriteError> {
+        if records.len() > WIRE_STARTUP_CAP {
+            return Err(HandoffV1WriteError::TooManySourceRecords);
+        }
+        for (i, record) in records.iter().enumerate() {
+            let wire = WireSourceRecord::encode(record);
+            let off = WIRE_STARTUP_OFFSET + i * WIRE_SOURCE_RECORD_SIZE;
+            self.write_wire_source_at(off, &wire);
+        }
+        put_u64(
+            self.arena,
+            offsets::STARTUP_BYTE_LEN,
+            (records.len() * WIRE_SOURCE_RECORD_SIZE) as u64,
+        );
+        Ok(())
+    }
+
     /// Append one source record (the EBS pairing loop emits one per
     /// descriptor that produces an ordinary table entry).
     pub fn push_source(&mut self, record: &SourceRecord) -> Result<(), HandoffV1WriteError> {
@@ -310,6 +330,10 @@ impl<'a> Serializer<'a> {
     fn write_wire_source(&mut self, index: usize, record: &SourceRecord) {
         let wire = WireSourceRecord::encode(record);
         let off = WIRE_SOURCES_OFFSET + index * WIRE_SOURCE_RECORD_SIZE;
+        self.write_wire_source_at(off, &wire);
+    }
+
+    fn write_wire_source_at(&mut self, off: usize, wire: &WireSourceRecord) {
         put_u64(self.arena, off, wire.start);
         put_u64(self.arena, off + 8, wire.end_lo);
         put_u64(self.arena, off + 16, wire.end_hi);
@@ -389,6 +413,9 @@ impl<'a> Serializer<'a> {
         for byte in &mut self.arena[WIRE_SOURCES_OFFSET..WIRE_SOURCES_END] {
             *byte = 0;
         }
+        // The startup-object partition is deliberately *not* cleared: those
+        // records describe the image layout, not the classification paired
+        // with a MapKey, and a retry must not lose them.
         self.wire_memmap_n = 0;
         self.reserved_n = 0;
         self.sources_n = 0;
@@ -448,6 +475,7 @@ mod tests {
             memmap: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,

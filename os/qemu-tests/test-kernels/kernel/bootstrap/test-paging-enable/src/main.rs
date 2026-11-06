@@ -7,15 +7,15 @@
 #![no_std]
 #![no_main]
 
+use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::x86_64::paging::X86_64Paging;
-use minix_plat::x86_64::early_console;
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
+use minix_arch::x86_64::paging::X86_64Paging;
 use minix_boot::{BootPrepareResult, KernelInfo};
-use boot_shim::uefi_helpers;
+use minix_kernel::boot_alloc;
+use minix_plat::x86_64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 use uefi::prelude::*;
 
 // UEFI test kernels allocate only while boot services are alive (build_memmap
@@ -51,6 +51,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -68,17 +69,28 @@ fn main() -> Status {
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + enable paging
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
 
     // If we reach here, paging is enabled and the CPU can still execute.
     early_console::write_str("  paging enabled — CPU still executing\n");
     early_console::write_str("### TEST_RESULT: PASS test-paging-enable ###\n");
 
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }

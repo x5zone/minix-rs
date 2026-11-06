@@ -223,6 +223,7 @@ mod kerninfo_tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         }
     }
 

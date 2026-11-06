@@ -105,6 +105,7 @@ impl WireSourceRecord {
     pub const KIND_RESERVED_NO_MAP: u8 = 3;
     pub const KIND_RESERVED_ORDINARY: u8 = 4;
     pub const KIND_RESERVED_REUSABLE: u8 = 5;
+    pub const KIND_STARTUP_OBJECT: u8 = 6;
 
     /// `SourceOrigin` tags. Values are protocol constants: never renumber.
     pub const ORIGIN_MEMORY_NODE: u8 = 0;
@@ -113,6 +114,7 @@ impl WireSourceRecord {
     pub const ORIGIN_RESERVED_MEMORY_CHILD: u8 = 3;
     /// The final `GetMemoryMap` snapshot; `a` is the descriptor index.
     pub const ORIGIN_UEFI_DESCRIPTOR: u8 = 4;
+    pub const ORIGIN_STARTUP_OBJECT: u8 = 5;
 
     /// Encode one record. Total: every `PhysicalRange` is representable
     /// (`start` is 64-bit, `end_exclusive` splits into two halves).
@@ -124,6 +126,7 @@ impl WireSourceRecord {
             SourceKind::ReservedNoMap => Self::KIND_RESERVED_NO_MAP,
             SourceKind::ReservedOrdinary => Self::KIND_RESERVED_ORDINARY,
             SourceKind::ReservedReusable => Self::KIND_RESERVED_REUSABLE,
+            SourceKind::StartupObject => Self::KIND_STARTUP_OBJECT,
         };
         let (origin_tag, a, b, cut) = match record.origin {
             SourceOrigin::MemoryNode { node, reg } => (Self::ORIGIN_MEMORY_NODE, node, reg, 0),
@@ -135,6 +138,7 @@ impl WireSourceRecord {
                 (Self::ORIGIN_RESERVED_MEMORY_CHILD, node, reg, 0)
             }
             SourceOrigin::UefiDescriptor { index } => (Self::ORIGIN_UEFI_DESCRIPTOR, index, 0, 0),
+            SourceOrigin::StartupObject(index) => (Self::ORIGIN_STARTUP_OBJECT, index, 0, 0),
         };
         Self {
             start: record.range.start,
@@ -172,6 +176,7 @@ impl WireSourceRecord {
             Self::KIND_RESERVED_NO_MAP => SourceKind::ReservedNoMap,
             Self::KIND_RESERVED_ORDINARY => SourceKind::ReservedOrdinary,
             Self::KIND_RESERVED_REUSABLE => SourceKind::ReservedReusable,
+            Self::KIND_STARTUP_OBJECT => SourceKind::StartupObject,
             _ => return None,
         };
         let origin = match self.origin_tag {
@@ -189,15 +194,16 @@ impl WireSourceRecord {
                 reg: self.b,
             },
             Self::ORIGIN_UEFI_DESCRIPTOR => SourceOrigin::UefiDescriptor { index: self.a },
+            Self::ORIGIN_STARTUP_OBJECT => SourceOrigin::StartupObject(self.a),
             _ => return None,
         };
         // Reject payload words the encoder leaves at zero, so one record has
         // exactly one wire image (a receiver can compare images).
         let payload_ok = match origin {
             SourceOrigin::FirmwarePrefix { .. } => self.b == 0,
-            SourceOrigin::MrbEntry(_) | SourceOrigin::UefiDescriptor { .. } => {
-                self.b == 0 && self.cut == 0
-            }
+            SourceOrigin::MrbEntry(_)
+            | SourceOrigin::UefiDescriptor { .. }
+            | SourceOrigin::StartupObject(_) => self.b == 0 && self.cut == 0,
             SourceOrigin::MemoryNode { .. } | SourceOrigin::ReservedMemoryChild { .. } => {
                 self.cut == 0
             }
@@ -213,9 +219,10 @@ impl WireSourceRecord {
                     return None;
                 }
             }
-            crate::memmap_source::InputObjectId::UefiMemoryMap => {
-                // `a` carries the descriptor index (origin payload); the
-                // explicit local source id must agree with it, and only the
+            crate::memmap_source::InputObjectId::UefiMemoryMap
+            | crate::memmap_source::InputObjectId::StartupObjects => {
+                // `a` carries the descriptor / object index (origin payload);
+                // the explicit local source id must agree with it, and only the
                 // DTB-only words may stay zero.
                 if self.cut != 0 || self.b != 0 || self.local != self.a {
                     return None;
@@ -250,7 +257,7 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// instead of being dropped on the sending side. A v1 receiver would ignore
 /// the new partition and a v1 sender would leave it empty, so the version is
 /// compared exactly, not as a minimum.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 3;
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 4;
 
 /// `free_upper_idx` sentinel for "no value" (a valid index can never be
 /// `u64::MAX`; decode checks the sentinel first, then the range).
@@ -294,6 +301,8 @@ pub struct BootHandoffV1 {
     pub platform_sources_byte_len: u64,
     pub param_buf_byte_len: u64,
     pub sources_byte_len: u64,
+    /// Startup-object records (their own partition and capacity).
+    pub startup_byte_len: u64,
 }
 
 // ── arena layout (fixed offsets, compile-time arithmetic) ────────────────
@@ -346,8 +355,17 @@ pub const WIRE_SOURCES_OFFSET: usize = SEMANTIC_END;
 pub const WIRE_SOURCES_END: usize =
     WIRE_SOURCES_OFFSET + WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE;
 
-/// Whole-arena capacity: 7 pages (28 KiB) — the 16 KiB envelope + wire +
-/// semantic partitions plus the 12 KiB source-record partition.
+/// Startup-object records: the second record class, with its own slots so the
+/// memory-map partition can never crowd them out (and vice versa).
+pub const WIRE_STARTUP_CAP: usize = 16;
+pub const WIRE_STARTUP_OFFSET: usize = WIRE_SOURCES_END;
+pub const WIRE_STARTUP_END: usize =
+    WIRE_STARTUP_OFFSET + WIRE_STARTUP_CAP * WIRE_SOURCE_RECORD_SIZE;
+
+/// Whole-arena capacity: 9 pages (36 KiB) — envelope + wire + semantic
+/// partitions up to `SEMANTIC_END`, the 256-slot memory-source partition,
+/// and the 16-slot startup-object partition; 3,264 bytes of design spare
+/// remain after `WIRE_STARTUP_END`.
 pub const ARENA_CAP: usize = 9 * 4096;
 
 // ── layout gate ──────────────────────────────────────────────────────────
@@ -366,7 +384,7 @@ const _: () = {
     assert!(size_of::<WireVirtAddr>() == 8);
 
     // Envelope: fits the budget, 8-byte aligned, key offsets pinned.
-    assert!(size_of::<BootHandoffV1>() == 176);
+    assert!(size_of::<BootHandoffV1>() == 184);
     assert!(align_of::<BootHandoffV1>() == 8);
     assert!(size_of::<BootHandoffV1>() <= ENVELOPE_CAP);
     assert!(offset_of!(BootHandoffV1, magic) == 0);
@@ -381,6 +399,7 @@ const _: () = {
     assert!(offset_of!(BootHandoffV1, memmap_byte_len) == 128);
     assert!(offset_of!(BootHandoffV1, param_buf_byte_len) == 160);
     assert!(offset_of!(BootHandoffV1, sources_byte_len) == 168);
+    assert!(offset_of!(BootHandoffV1, startup_byte_len) == 176);
 
     // Arena partitions: element-aligned, disjoint, exact, and fitting the cap.
     assert!(WIRE_MEMMAP_OFFSET.is_multiple_of(align_of::<WireMemoryRegion>()));
@@ -397,6 +416,8 @@ const _: () = {
     assert!(WIRE_SOURCES_OFFSET.is_multiple_of(align_of::<WireSourceRecord>()));
     assert!(WIRE_SOURCES_END == 32448);
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
+    assert!(WIRE_STARTUP_END == 33600);
+    assert!(WIRE_STARTUP_END <= ARENA_CAP);
     assert!(SEMANTIC_END <= ARENA_CAP);
     assert!(ARENA_CAP.is_multiple_of(4096));
 };
@@ -410,7 +431,7 @@ mod tests {
         assert_eq!(size_of::<WireMemoryRegion>(), 16);
         assert_eq!(size_of::<WireBootModule>(), 32);
         assert_eq!(size_of::<WirePlatformDescSource>(), 16);
-        assert_eq!(size_of::<BootHandoffV1>(), 176);
+        assert_eq!(size_of::<BootHandoffV1>(), 184);
         assert_eq!(size_of::<WireSourceRecord>(), 72);
     }
 

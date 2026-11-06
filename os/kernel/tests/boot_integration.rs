@@ -7,8 +7,8 @@
 //! Run:
 //!   cargo test -p minix-kernel --test boot_integration -- --nocapture
 
+use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
-use minix_boot::{MemoryRegion, KernelInfo};
 
 #[test]
 fn boot_simulation_full_flow() {
@@ -16,25 +16,26 @@ fn boot_simulation_full_flow() {
 
     let memmap: &'static [MemoryRegion] = &[MemoryRegion {
         base: PhysBytes(0x200000), // 2MB, conventional RAM start
-        len:  0x2000000,           // 32MB
+        len: 0x2000000,            // 32MB
     }];
 
     let kernel_info = KernelInfo {
         memmap,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000), // x86-64 kernel half
-        kern_phys_base: PhysBytes(0x200000),              // loaded at 2MB
-        kern_size: 0x400000,                              // 4MB kernel
-        free_upper_idx: Some(256),                              // user space PML4 idx 0-255
-        user_sp: VirBytes(USER_STACK_TOP as u64),         // user stack top
-        kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),   // kernel stack top
-        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),    // syscall entry point
-        boot_modules: &[],                                // no boot modules yet
+        kern_phys_base: PhysBytes(0x200000),             // loaded at 2MB
+        kern_size: 0x400000,                             // 4MB kernel
+        free_upper_idx: Some(256),                       // user space PML4 idx 0-255
+        user_sp: VirBytes(USER_STACK_TOP as u64),        // user stack top
+        kern_stack_top: VirBytes(0xFFFF_8000_0040_0000), // kernel stack top
+        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),  // syscall entry point
+        boot_modules: &[],                               // no boot modules yet
         bootstrap_start: PhysBytes(0),
         bootstrap_len: 0,
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let root_page = PhysBytes(0x1000); // physical page for PML4
@@ -47,12 +48,20 @@ fn boot_simulation_full_flow() {
     println!();
     println!("── Simulated Hardware ──");
     for (i, region) in kernel_info.memmap.iter().enumerate() {
-        println!("  memmap[{}]: base=0x{:016x} len=0x{:x} ({} MB)",
-            i, region.base.0, region.len, region.len / (1024 * 1024));
+        println!(
+            "  memmap[{}]: base=0x{:016x} len=0x{:x} ({} MB)",
+            i,
+            region.base.0,
+            region.len,
+            region.len / (1024 * 1024)
+        );
     }
-    println!("  kernel: phys=0x{:016x} virt=0x{:016x} size={} KB",
-        kernel_info.kern_phys_base.0, kernel_info.kern_virt_base.0,
-        kernel_info.kern_size / 1024);
+    println!(
+        "  kernel: phys=0x{:016x} virt=0x{:016x} size={} KB",
+        kernel_info.kern_phys_base.0,
+        kernel_info.kern_virt_base.0,
+        kernel_info.kern_size / 1024
+    );
     println!("  root_page: phys=0x{:x}", root_page.0);
     println!("  user_sp: 0x{:016x}", kernel_info.user_sp.0);
     println!("  free_upper_idx: {:?}", kernel_info.free_upper_idx);
@@ -60,7 +69,7 @@ fn boot_simulation_full_flow() {
     // ── Run boot flow step-by-step (instrumented version of arch_boot_impl) ──
 
     use minix_arch::paging::mock::MockPaging;
-    use minix_arch::paging::{Paging, PageFlags};
+    use minix_arch::paging::{PageFlags, Paging};
     use minix_arch::paging_ext::HugePages;
 
     println!();
@@ -68,8 +77,11 @@ fn boot_simulation_full_flow() {
     let mut paging = MockPaging::new_from_page(root_page);
 
     let huge_size = MockPaging::FALLBACK_HUGE_PAGE_SIZE;
-    println!("  PAGE_SIZE={} huge_granularity={} KB",
-        MockPaging::PAGE_SIZE, huge_size.bytes() / 1024);
+    println!(
+        "  PAGE_SIZE={} huge_granularity={} KB",
+        MockPaging::PAGE_SIZE,
+        huge_size.bytes() / 1024
+    );
 
     println!();
     println!("── Step 2: Identity mapping (C: pg_identity) ──");
@@ -78,7 +90,14 @@ fn boot_simulation_full_flow() {
         let mut addr = region.base.0;
         let end = addr + region.len as u64;
         while addr < end {
-            paging.map_huge(VirBytes(addr), PhysBytes(addr), huge_size, PageFlags::read_write()).unwrap();
+            paging
+                .map_huge(
+                    VirBytes(addr),
+                    PhysBytes(addr),
+                    huge_size,
+                    PageFlags::read_write(),
+                )
+                .unwrap();
             addr += huge_size.bytes();
             identity_pages += 1;
         }
@@ -89,7 +108,10 @@ fn boot_simulation_full_flow() {
     let verify_addr = kernel_info.memmap[0].base.0;
     match paging.query(VirBytes(verify_addr)) {
         Some((phys, flags)) => {
-            println!("  verify: vaddr=0x{:x} → padddr=0x{:x} flags={:?}", verify_addr, phys.0, flags);
+            println!(
+                "  verify: vaddr=0x{:x} → padddr=0x{:x} flags={:?}",
+                verify_addr, phys.0, flags
+            );
         }
         None => panic!("identity mapping verification failed"),
     }
@@ -99,11 +121,14 @@ fn boot_simulation_full_flow() {
     let mut kernel_pages = 0u64;
     let mut offset = 0u64;
     while offset < kernel_info.kern_size {
-        paging.map_huge(
-            VirBytes(kernel_info.kern_virt_base.0 + offset),
-            PhysBytes(kernel_info.kern_phys_base.0 + offset),
-            huge_size, PageFlags::kernel_read_write(),
-        ).unwrap();
+        paging
+            .map_huge(
+                VirBytes(kernel_info.kern_virt_base.0 + offset),
+                PhysBytes(kernel_info.kern_phys_base.0 + offset),
+                huge_size,
+                PageFlags::kernel_read_write(),
+            )
+            .unwrap();
         offset += huge_size.bytes();
         kernel_pages += 1;
     }
@@ -112,8 +137,10 @@ fn boot_simulation_full_flow() {
     // Verify kernel mapping
     match paging.query(VirBytes(kernel_info.kern_virt_base.0)) {
         Some((phys, flags)) => {
-            println!("  verify: vaddr=0x{:x} → padddr=0x{:x} flags={:?}",
-                kernel_info.kern_virt_base.0, phys.0, flags);
+            println!(
+                "  verify: vaddr=0x{:x} → padddr=0x{:x} flags={:?}",
+                kernel_info.kern_virt_base.0, phys.0, flags
+            );
         }
         None => panic!("kernel mapping verification failed"),
     }
@@ -127,10 +154,12 @@ fn boot_simulation_full_flow() {
     println!("── Summary ──");
     println!("  identity_pages:  {}", identity_pages);
     println!("  kernel_pages:    {}", kernel_pages);
-    println!("  total_mapped:    {} × {}KB = {} MB",
+    println!(
+        "  total_mapped:    {} × {}KB = {} MB",
         identity_pages + kernel_pages,
         huge_size.bytes() / 1024,
-        (identity_pages + kernel_pages) * huge_size.bytes() / (1024 * 1024));
+        (identity_pages + kernel_pages) * huge_size.bytes() / (1024 * 1024)
+    );
     println!("  arch:            x86-64 (mock, no real HW)");
     println!();
     println!("  Hello, World! 🎉");
@@ -150,7 +179,7 @@ fn init_proc_and_boot_test() {
     //! Run:
     //!   cargo test -p minix-kernel --test boot_integration init_proc_and_boot_test -- --nocapture
 
-    use minix_kernel::proc::{proc_nr, ProcNr, RtsFlagsBits};
+    use minix_kernel::proc::{ProcNr, RtsFlagsBits, proc_nr};
     use minix_kernel::proc_table::ProcessTable;
 
     // Step 1: Create process table and verify initial state.
@@ -168,8 +197,12 @@ fn init_proc_and_boot_test() {
     // Verify SLOT_FREE for all user-space slots
     for nr in 0..=255 {
         if let Some(proc) = table.get(ProcNr(nr)) {
-            assert!(proc.p_rts_flags.get() == RtsFlagsBits::SLOT_FREE,
-                "slot {} should be SLOT_FREE, got {:?}", nr, proc.p_rts_flags.get());
+            assert!(
+                proc.p_rts_flags.get() == RtsFlagsBits::SLOT_FREE,
+                "slot {} should be SLOT_FREE, got {:?}",
+                nr,
+                proc.p_rts_flags.get()
+            );
         }
     }
     println!("  All user-space slots are SLOT_FREE ✓");
@@ -178,11 +211,20 @@ fn init_proc_and_boot_test() {
     let vm_nr = proc_nr::VM_PROC_NR;
     let vm_proc = table.get(vm_nr).expect("VM process slot must exist");
     assert_eq!(vm_proc.p_nr, vm_nr, "VM p_nr mismatch");
-    println!("  VM process slot exists: nr={} endpoint={:?}", vm_nr, vm_proc.p_endpoint);
+    println!(
+        "  VM process slot exists: nr={} endpoint={:?}",
+        vm_nr, vm_proc.p_endpoint
+    );
 
     // Step 3: Verify p_seg default state.
-    assert_eq!(vm_proc.p_seg.phys_root.0, 0, "VM p_seg.phys_root should be 0 initially");
-    assert!(vm_proc.p_seg.virt_root.is_none(), "VM p_seg.virt_root should be None initially");
+    assert_eq!(
+        vm_proc.p_seg.phys_root.0, 0,
+        "VM p_seg.phys_root should be 0 initially"
+    );
+    assert!(
+        vm_proc.p_seg.virt_root.is_none(),
+        "VM p_seg.virt_root should be None initially"
+    );
     println!("  VM p_seg default: phys_root=0 virt_root=None ✓");
 
     // Step 4: Verify p_magic in debug builds.
@@ -219,7 +261,7 @@ fn init_proc_and_boot_test() {
 #[test]
 fn runqueues_ok_cpu_positive_invariants_hold() {
     use minix_kernel::debug::runqueues_ok_cpu;
-    use minix_kernel::proc::{priority, CpuId, ProcNr};
+    use minix_kernel::proc::{CpuId, ProcNr, priority};
     use minix_kernel::proc_table::ProcessTable;
     use minix_kernel::smp::SmpState;
 
@@ -227,18 +269,24 @@ fn runqueues_ok_cpu_positive_invariants_hold() {
     let smp = SmpState::new_single_cpu();
     for nr in [ProcNr(0), ProcNr(1)] {
         let p = table.get_mut(nr).unwrap();
-        p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
-        p.p_sched.priority
+        p.p_rts_flags
+            .clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+        p.p_sched
+            .priority
             .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
     }
     // After the shared-queue decision the Scheduler lives on the ProcessTable
     // (CpuLocal only holds per-CPU scheduling state such as proc_ptr/bill_ptr).
     for nr in [ProcNr(0), ProcNr(1)] {
-        table.sched_for_cpu_mut(CpuId::BSP)
+        table
+            .sched_for_cpu_mut(CpuId::BSP)
             .enqueue_queue_tail(nr, priority::USER_Q as usize);
     }
     // Link nr0 -> nr1 explicitly (enqueue_queue_tail does not fill in p_nextready).
-    table.get_mut(ProcNr(0)).unwrap().p_nextready
+    table
+        .get_mut(ProcNr(0))
+        .unwrap()
+        .p_nextready
         .store(1, core::sync::atomic::Ordering::Release);
     // nr1 is the tail: p_nextready stays NONE_PROC_NR.
 
@@ -248,8 +296,10 @@ fn runqueues_ok_cpu_positive_invariants_hold() {
     // drop).
     let table = Box::leak(table);
 
-    assert!(runqueues_ok_cpu(&smp, table, CpuId::BSP),
-        "链接正确的双进程队列必须通过全部五项不变量检查");
+    assert!(
+        runqueues_ok_cpu(&smp, table, CpuId::BSP),
+        "链接正确的双进程队列必须通过全部五项不变量检查"
+    );
 }
 
 /// Breaks invariant 3: a queued process is marked SLOT_FREE (dead process on a
@@ -258,7 +308,7 @@ fn runqueues_ok_cpu_positive_invariants_hold() {
 #[ignore = "失败诊断经 CurrentEarlyConsole 输出——宿主 x86_64 上是真 COM1（plat/lib.rs:59 mock 臂排除 x86_64），SIGSEGV；QEMU 下移除本 ignore"]
 fn runqueues_ok_cpu_detects_dead_proc_on_queue() {
     use minix_kernel::debug::runqueues_ok_cpu;
-    use minix_kernel::proc::{priority, CpuId, ProcNr};
+    use minix_kernel::proc::{CpuId, ProcNr, priority};
     use minix_kernel::proc_table::ProcessTable;
     use minix_kernel::smp::SmpState;
 
@@ -266,24 +316,35 @@ fn runqueues_ok_cpu_detects_dead_proc_on_queue() {
     let smp = SmpState::new_single_cpu();
     for nr in [ProcNr(0), ProcNr(1)] {
         let p = table.get_mut(nr).unwrap();
-        p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
-        p.p_sched.priority
+        p.p_rts_flags
+            .clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+        p.p_sched
+            .priority
             .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
     }
     // After the shared-queue decision the Scheduler lives on the ProcessTable
     // (CpuLocal only holds per-CPU scheduling state such as proc_ptr/bill_ptr).
     for nr in [ProcNr(0), ProcNr(1)] {
-        table.sched_for_cpu_mut(CpuId::BSP)
+        table
+            .sched_for_cpu_mut(CpuId::BSP)
             .enqueue_queue_tail(nr, priority::USER_Q as usize);
     }
-    table.get_mut(ProcNr(0)).unwrap().p_nextready
+    table
+        .get_mut(ProcNr(0))
+        .unwrap()
+        .p_nextready
         .store(1, core::sync::atomic::Ordering::Release);
     let table = Box::leak(table);
 
-    table.get_mut(ProcNr(1)).unwrap()
-        .p_rts_flags.set(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
-    assert!(!runqueues_ok_cpu(&smp, table, CpuId::BSP),
-        "队列中的死进程必须被检测");
+    table
+        .get_mut(ProcNr(1))
+        .unwrap()
+        .p_rts_flags
+        .set(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+    assert!(
+        !runqueues_ok_cpu(&smp, table, CpuId::BSP),
+        "队列中的死进程必须被检测"
+    );
 }
 
 /// Breaks invariant 5: a runnable process is not queued -> must be detected.
@@ -291,7 +352,7 @@ fn runqueues_ok_cpu_detects_dead_proc_on_queue() {
 #[ignore = "同上：失败诊断在宿主 x86_64 触发真 COM1 SIGSEGV；QEMU 下移除本 ignore"]
 fn runqueues_ok_cpu_detects_runnable_not_queued() {
     use minix_kernel::debug::runqueues_ok_cpu;
-    use minix_kernel::proc::{priority, CpuId, ProcNr};
+    use minix_kernel::proc::{CpuId, ProcNr, priority};
     use minix_kernel::proc_table::ProcessTable;
     use minix_kernel::smp::SmpState;
 
@@ -299,18 +360,23 @@ fn runqueues_ok_cpu_detects_runnable_not_queued() {
     let smp = SmpState::new_single_cpu();
     for nr in [ProcNr(0), ProcNr(1)] {
         let p = table.get_mut(nr).unwrap();
-        p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
-        p.p_sched.priority
+        p.p_rts_flags
+            .clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+        p.p_sched
+            .priority
             .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
     }
     // Only nr0 is queued; nr1 is runnable but on no queue (after the
     // shared-queue decision the queues live on the table).
-    table.sched_for_cpu_mut(CpuId::BSP)
+    table
+        .sched_for_cpu_mut(CpuId::BSP)
         .enqueue_queue_tail(ProcNr(0), priority::USER_Q as usize);
     let table = Box::leak(table);
 
-    assert!(!runqueues_ok_cpu(&smp, table, CpuId::BSP),
-        "runnable 但未入队的进程必须被检测");
+    assert!(
+        !runqueues_ok_cpu(&smp, table, CpuId::BSP),
+        "runnable 但未入队的进程必须被检测"
+    );
 }
 
 /// Defensive branch: an invalid CPU (beyond MAX_CPUS) -> false.
@@ -324,6 +390,8 @@ fn runqueues_ok_cpu_rejects_invalid_cpu() {
 
     let smp = SmpState::new_single_cpu();
     let table = Box::leak(Box::new(ProcessTable::new()));
-    assert!(!runqueues_ok_cpu(&smp, table, CpuId::new_unchecked(63)),
-        "超出 MAX_CPUS 的 CPU 必须返回 false");
+    assert!(
+        !runqueues_ok_cpu(&smp, table, CpuId::new_unchecked(63)),
+        "超出 MAX_CPUS 的 CPU 必须返回 false"
+    );
 }

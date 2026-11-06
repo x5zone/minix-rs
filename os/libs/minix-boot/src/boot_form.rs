@@ -156,6 +156,7 @@ mod tests {
             }],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,

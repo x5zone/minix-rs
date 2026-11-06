@@ -2998,3 +2998,24 @@ $ cargo test -p minix-vm --lib                   → 548 passed / 0 failed
 **B2（容量边界正例）**：`accepts_exactly_the_descriptor_and_partition_caps`——恰好 256 条描述符（128 `CONVENTIONAL` + 64 `LOADER_DATA` + 64 `ACPI_NVS`）解析并分类为 `(128, 64, 64)`，同时钉住 `MAX_MAP_DESCRIPTORS`、`WIRE_MEMMAP_CAP` 与 `SIDE_CAP` 三个上界；boot-shim 90。
 
 **B1（拒绝诊断记录）**：`DescriptorRejection { index, raw_type, physical_start, virtual_start, number_of_pages, attribute, failed }` 随 `MapError::RejectedDescriptor` 返回；新增 `a_refused_descriptor_is_named_in_the_error`，五条既有 Policy 断言改为匹配 `failed`；boot-shim 91。
+
+### 评审身份（第一百一十七轮）
+
+| 身份 | 值 |
+|---|---|
+| `ReviewedRepositoryCommit` | 合并提交在台账第三百三十笔登记 |
+| `CodeEvidenceCommit` | 本轮代码提交（代码与文档同提交；宿主读数、交叉构建与 QEMU 腿在此树上取得） |
+| `DocumentRevision` | 第一百一十七轮 |
+| `DocumentFileHash`（正文 sha256） | 见合并后回填 |
+| `03ArchiveFileHash`（本档 sha256，按合并提交） | 见合并后回填 |
+| 上一轮（第一百一十六轮）合并提交 | 台账第三百二十六至三百二十九笔（A2 主体 `98ef0094a`、收尾 `133940b89`） |
+
+## 八十三、第一百一十七轮：A3 启动对象记录独立分区（代码证据）
+
+**实现**：`SourceRecord` 的种类枚举增 `SourceKind::StartupObject`（tag 6）、`SourceOrigin::StartupObject(u16)`（tag 5）、`InputObjectId::StartupObjects`（tag 2）；`startup_record(index, start, end)` 是 `const fn`，可直接初始化 `.bss` 静态数组。`BootHandoffV1` 增 `startup_byte_len`（偏移 176，信封 184 B）；`WIRE_STARTUP_CAP = 16`、`WIRE_STARTUP_OFFSET = 32448`、`WIRE_STARTUP_END = 33600`，`ARENA_CAP` 仍 9 页（余 3,264 B）；`BOOT_HANDOFF_V1_VERSION = 4`。写侧 `Serializer::write_startup` 与读侧 `decode_startup_objects` 成对；`reset_map_partitions` 不清该分区。内核侧 `KernelInfo.startup_objects` + `STARTUP_RECORD_STORE`（`WIRE_STARTUP_CAP` 槽），`arch_boot_resume_v1` 解码后赋值；`audit_source_coverage` 明确跳过启动对象记录。
+
+**生产者**：`kernel-image/src/bootface.rs`、`bootface_a64.rs`、`boot-shim/src/opensbi_helpers.rs` 各写内核映像 + 每个模块（`.bss` 静态数组）；`uefi_helpers` 在 EBS 成功后写内核/模块/根页/bump/arena，并经 `uboot_main` 的 `write_startup` 跨第一跳。
+
+**读数**：`cargo test -p minix-boot --lib` **169 passed**（+4）；`boot-shim --lib` **91 passed**；`minix-kernel --features mock` **863 passed / 8 ignored**；交叉构建 `kernel-image` aarch64/riscv64/riscv64-uboot 与 `boot-shim` x86_64-uefi/aarch64-uefi/riscv-uboot 全部 OK。
+
+**QEMU**：`test-shim-bootmarks-x86` PASS；`test-shim-bootmarks-aarch64`（ACPI）PASS；`DTB_CFGTABLE=1`（DT 负例）PASS；`test-kernel-image-riscv64-bootface` PASS；`test-riscv64-uboot-shim` PASS（6/6 markers）。

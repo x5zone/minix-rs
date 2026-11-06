@@ -813,6 +813,7 @@ mod tests {
             memmap: MEMMAP,
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x10_0000,

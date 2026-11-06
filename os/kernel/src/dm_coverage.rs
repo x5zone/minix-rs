@@ -518,6 +518,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         };
         // Bump inside the memmap range → dropped by union semantics.
         boot_alloc::init_boot_pt_alloc(0x20_0000, 0x21_0000);
@@ -568,6 +569,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         };
         // Real test-user-trap numbers: bump [0x0dfaf000, 0x0dfef000) (64
         // pages), root page 0x0e789000 — above the bump end, outside the
@@ -614,6 +616,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         };
         // Real-world shape (blob at PA 0x1de0e000, above the 16 MiB
         // memmap) plus a hypothetical in-memmap module (dropped).
@@ -673,6 +676,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         };
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → dropped
         assert_eq!(
@@ -736,6 +740,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: RESERVED,
             memmap_sources: &[],
+            startup_objects: &[],
         };
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → source 2 drops
         let cands: alloc::vec::Vec<DmRange> =
@@ -790,6 +795,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: RESERVED,
             memmap_sources: &[],
+            startup_objects: &[],
         };
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000);
         let root = PhysBytes(0x1000);
@@ -862,6 +868,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: RESERVED,
             memmap_sources: &[],
+            startup_objects: &[],
         };
         // Bump entirely above the memmap → a live source-2 candidate, so the
         // second reserved range overlaps it and must be dropped.
@@ -930,6 +937,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         };
         let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(
             &info,
@@ -965,6 +973,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         };
         let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(
             &info,
@@ -997,6 +1006,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
+            startup_objects: &[],
         };
         let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(
             &info,

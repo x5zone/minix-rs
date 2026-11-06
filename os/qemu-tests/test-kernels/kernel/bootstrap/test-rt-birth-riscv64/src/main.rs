@@ -47,16 +47,16 @@
 
 extern crate alloc;
 
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::panic::PanicInfo;
-use core::alloc::{GlobalAlloc, Layout};
 
-use minix_arch::riscv64::paging::Riscv64Paging;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
-use minix_plat::riscv64::early_console;
+use minix_arch::riscv64::paging::Riscv64Paging;
+use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
 use minix_kernel::boot_alloc;
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_plat::riscv64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 
 // ── Bump allocator on a static heap (hello-boot-riscv64 shape) ──
 #[unsafe(link_section = ".bss")]
@@ -98,18 +98,66 @@ const DRAM_BASE: u64 = 0x8000_0000;
 const KERNEL_LOAD_PA: u64 = 0x8020_0000;
 
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule {
+        name: "ds",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "rs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "pm",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "sched",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "memory",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "tty",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mib",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // patched at runtime
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "init",
+        start: PhysBytes(0),
+        len: 0,
+    },
 ];
 
 static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
@@ -313,7 +361,9 @@ unsafe extern "C" fn uecall_dispatch(frame: *mut u64) {
         early_console::write_hex(stval);
         early_console::write_str("\n");
         loop {
-            unsafe { asm!("wfi", options(nomem, nostack)); }
+            unsafe {
+                asm!("wfi", options(nomem, nostack));
+            }
         }
     }
     let call_nr = *frame.add(IDX_A7) as usize;
@@ -376,7 +426,11 @@ unsafe extern "C" fn uecall_dispatch(frame: *mut u64) {
 /// The KERNEL_CALL leg: copy the 64-byte message from user memory, serve
 /// SYS_DIAGCTL (code 1 renders the user buffer on the kernel console),
 /// return the reply code.
-unsafe fn kernel_call_leg(msg_user: u64, kmsg: *mut [u8; 64], diagbuf: *mut [u8; DIAGBUF_MAX]) -> u64 {
+unsafe fn kernel_call_leg(
+    msg_user: u64,
+    kmsg: *mut [u8; 64],
+    diagbuf: *mut [u8; DIAGBUF_MAX],
+) -> u64 {
     if msg_user == 0 {
         return minix_types::EINVAL as u64;
     }
@@ -385,25 +439,33 @@ unsafe fn kernel_call_leg(msg_user: u64, kmsg: *mut [u8; 64], diagbuf: *mut [u8;
     unsafe {
         core::ptr::copy_nonoverlapping(msg_user as *const u8, kmsg.cast(), 64);
     }
-    let m_type = i32::from_le_bytes([
-        (*kmsg)[4], (*kmsg)[5], (*kmsg)[6], (*kmsg)[7],
-    ]);
+    let m_type = i32::from_le_bytes([(*kmsg)[4], (*kmsg)[5], (*kmsg)[6], (*kmsg)[7]]);
     if m_type != minix_types::SYS_DIAGCTL {
         return ENOSYS;
     }
-    let code = u32::from_le_bytes([
-        (*kmsg)[8], (*kmsg)[9], (*kmsg)[10], (*kmsg)[11],
-    ]) as u64;
+    let code = u32::from_le_bytes([(*kmsg)[8], (*kmsg)[9], (*kmsg)[10], (*kmsg)[11]]) as u64;
     if code != DIAGCTL_CODE_DIAG {
         return ENOSYS;
     }
     let buf = u64::from_le_bytes([
-        (*kmsg)[16], (*kmsg)[17], (*kmsg)[18], (*kmsg)[19],
-        (*kmsg)[20], (*kmsg)[21], (*kmsg)[22], (*kmsg)[23],
+        (*kmsg)[16],
+        (*kmsg)[17],
+        (*kmsg)[18],
+        (*kmsg)[19],
+        (*kmsg)[20],
+        (*kmsg)[21],
+        (*kmsg)[22],
+        (*kmsg)[23],
     ]);
     let len = u64::from_le_bytes([
-        (*kmsg)[24], (*kmsg)[25], (*kmsg)[26], (*kmsg)[27],
-        (*kmsg)[28], (*kmsg)[29], (*kmsg)[30], (*kmsg)[31],
+        (*kmsg)[24],
+        (*kmsg)[25],
+        (*kmsg)[26],
+        (*kmsg)[27],
+        (*kmsg)[28],
+        (*kmsg)[29],
+        (*kmsg)[30],
+        (*kmsg)[31],
     ]) as usize;
     let n = len.min(DIAGBUF_MAX);
     if buf == 0 || n == 0 {
@@ -434,7 +496,9 @@ unsafe extern "C" {
 /// both unused: the boot info is hand-built for this fixed platform).
 #[unsafe(no_mangle)]
 extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
-    early_console::write_str("### test_rt_birth (riscv64): first minix-rt user binary on OpenSBI\n");
+    early_console::write_str(
+        "### test_rt_birth (riscv64): first minix-rt user binary on OpenSBI\n",
+    );
 
     // 1. Hand-built BootPrepareResult (hello-boot-riscv64 shape — no
     //    U-Boot/BootFileTable in the QEMU -kernel scenario).
@@ -479,6 +543,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -491,7 +556,10 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // 2. Paging (Phase A): identity + Sv39 enable (production path).
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — the DTB pointer OpenSBI passed in
@@ -500,13 +568,13 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // global; skipping this freeze is the Frozen::get-before-freeze panic.
     {
         use minix_boot::PlatformDescSource;
-        use minix_platform::kind::{parse_by_kind, DTB};
+        use minix_platform::kind::{DTB, parse_by_kind};
         if dtb_phys == 0 {
             panic!("OpenSBI did not pass a DTB pointer in a1");
         }
         let source = PlatformDescSource::new(DTB, PhysBytes(dtb_phys));
-        let desc = unsafe { parse_by_kind(source) }
-            .unwrap_or_else(|e| panic!("DTB parse failed: {e:?}"));
+        let desc =
+            unsafe { parse_by_kind(source) }.unwrap_or_else(|e| panic!("DTB parse failed: {e:?}"));
         unsafe { minix_platform::init(desc) };
         early_console::write_str("  platform desc installed (DTB)\n");
     }
@@ -532,9 +600,13 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // DRAM, far above the loaded image).
     {
         let kstack: u64 = KERNEL_LOAD_PA + 0x200_000;
-        unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) kstack, options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("csrw sscratch, {}", in(reg) kstack, options(nomem, nostack));
+        }
         let ss: u64;
-        unsafe { core::arch::asm!("csrr {}, sscratch", out(reg) ss, options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("csrr {}, sscratch", out(reg) ss, options(nomem, nostack));
+        }
         early_console::write_str("  sscratch = ");
         early_console::write_hex(ss);
         early_console::write_str("\n");
@@ -610,7 +682,11 @@ fn bump(num_pages: usize) -> Option<u64> {
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-rt-birth-riscv64 ###\n");
-    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
@@ -633,5 +709,9 @@ fn panic(info: &PanicInfo) -> ! {
     }
     let _ = core::fmt::write(&mut Console, format_args!("{}\n", info.message()));
     early_console::write_str(" ###\n");
-    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
 }

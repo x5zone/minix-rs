@@ -5961,3 +5961,10 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `MapError::RejectedDescriptor(DescriptorRejection)`：携带 index、raw_type、physical_start、virtual_start、number_of_pages、attribute 与 failed（PolicyError）；`classify` 逐描述符填充；新增 `a_refused_descriptor_is_named_in_the_error`，五条既有 Policy 断言改为按 failed 匹配。
 - 读数：boot-shim 91；minix-boot 165、kernel 863 不变。
 - 认领：`I-29 qorder94`，状态 ✅：已 ff 合并为 `d9c5549a6`，认领已释放。
+
+### 第三百三十笔（01 阶段 · I-29 第一百一十七轮：A3 启动对象记录独立分区）
+
+- wire v4：`SourceKind::StartupObject` / `SourceOrigin::StartupObject(u16)` / `InputObjectId::StartupObjects`；信封 184 B（`startup_byte_len` @176），16 槽 × 72 B 分区（32,448–33,600），版本 4；`Serializer::write_startup` 与 `decode_startup_objects` 成对，`reset_map_partitions` 不清该分区。
+- 四条腿写启动对象记录：三条 DTB 腿 `.bss`（内核映像 + 每个模块）；UEFI 腿 EBS 后（内核/模块/根页/bump/arena）；U-Boot 腿跨第一跳并在接收端落 `STARTUP_RECORD_STORE`。`KernelInfo.startup_objects` 与 `memmap_sources` 并列，不参与覆盖审计。
+- 读数：minix-boot 169（+4）、boot-shim 91、kernel 863；六组交叉构建 OK；x86 UEFI、aarch64 ACPI、aarch64 强制 DT 负例、riscv bootface、riscv U-Boot（6/6）五条 QEMU 腿 PASS。
+- 认领：`I-29 qorder95`，状态 🔄 待合入。

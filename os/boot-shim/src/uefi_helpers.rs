@@ -1069,6 +1069,27 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     };
     crate::raw_serial("boot-shim: [raw] boot services exited (paired)\r\n");
 
+    // Startup-object records: the second record class, in its own partition.
+    let mut startup = [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
+    let mut startup_n = 0usize;
+    let mut push_startup = |start: u64, len: u64| {
+        if len == 0 || startup_n >= startup.len() {
+            return;
+        }
+        startup[startup_n] = minix_boot::startup_record(startup_n as u16, start, start + len);
+        startup_n += 1;
+    };
+    push_startup(kern.kern_phys_base.0, kern.kern_size);
+    for module in boot_modules {
+        push_startup(module.start.0, module.len as u64);
+    }
+    push_startup(root_page.0, PAGE_SIZE);
+    push_startup(bump_base, bump_end - bump_base);
+    push_startup(arena_pa.0, ARENA_CAP as u64);
+    serializer
+        .write_startup(&startup[..startup_n])
+        .expect("boot-shim: startup-object partition over capacity");
+
     // Build the real KernelInfo from the semantic partition. The arena stays
     // mapped as identity memory until the first process root switch, which is
     // why the receiver deep-copies it before then.

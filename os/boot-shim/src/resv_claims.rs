@@ -87,7 +87,7 @@ pub fn claims_from_records(
                 ExpectedEfiType::BootServicesData
             }
             SourceKind::ReservedNoMap | SourceKind::MrbEntry => ExpectedEfiType::Reserved,
-            SourceKind::Memory | SourceKind::FirmwarePrefix => continue,
+            SourceKind::Memory | SourceKind::FirmwarePrefix | SourceKind::StartupObject => continue,
         };
         let raw_start = record.range.start;
         let raw_end = record.range.end_exclusive;

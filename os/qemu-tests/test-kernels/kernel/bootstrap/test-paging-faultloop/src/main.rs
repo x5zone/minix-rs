@@ -68,20 +68,22 @@
 
 extern crate alloc;
 
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::panic::PanicInfo;
-use core::alloc::{GlobalAlloc, Layout};
 
+use boot_shim::uefi_helpers;
 use minix_arch::pt_alloc;
 use minix_arch::x86_64::paging::X86_64Paging;
 use minix_arch::x86_64::trap_stub::TrapFrame;
-use minix_arch::{register_trap_dispatchers, CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind};
+use minix_arch::{
+    CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, register_trap_dispatchers,
+};
+use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
 use minix_plat::x86_64::early_console;
 use minix_platform;
-use minix_kernel::boot_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
-use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -96,8 +98,15 @@ unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
             if !BOOT_SERVICES_EXITED {
-                let size = if layout.align() > 8 { layout.size() + layout.align() } else { layout.size() };
-                match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, size) {
+                let size = if layout.align() > 8 {
+                    layout.size() + layout.align()
+                } else {
+                    layout.size()
+                };
+                match uefi::boot::allocate_pool(
+                    uefi::mem::memory_map::MemoryType::LOADER_DATA,
+                    size,
+                ) {
                     Ok(ptr) => ptr.as_ptr() as *mut u8,
                     Err(_) => core::ptr::null_mut(),
                 }
@@ -124,23 +133,77 @@ unsafe impl GlobalAlloc for HybridAllocator {
 static ALLOCATOR: HybridAllocator = HybridAllocator;
 
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule {
+        name: "ds",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "rs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "pm",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "sched",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "memory",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "tty",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mib",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // patched at runtime
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "init",
+        start: PhysBytes(0),
+        len: 0,
+    },
 ];
 
 static MEMMAP: [MemoryRegion; 2] = [
-    MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
-    MemoryRegion { base: PhysBytes(0x200_0000), len: 0x600_0000 },
+    MemoryRegion {
+        base: PhysBytes(0),
+        len: 0x200_0000,
+    },
+    MemoryRegion {
+        base: PhysBytes(0x200_0000),
+        len: 0x600_0000,
+    },
 ];
 
 /// Minimal valid ELF64 image (header only, e_phnum = 0) — Phase C
@@ -148,15 +211,26 @@ static MEMMAP: [MemoryRegion; 2] = [
 #[unsafe(link_section = ".rodata")]
 static VM_ELF_STUB: [u8; 64] = {
     let mut e = [0u8; 64];
-    e[0] = 0x7F; e[1] = b'E'; e[2] = b'L'; e[3] = b'F';
-    e[4] = 2; e[5] = 1; e[6] = 1;
-    e[16] = 2; e[17] = 0;   // e_type = ET_EXEC
-    e[18] = 62; e[19] = 0;  // e_machine = EM_X86_64
-    e[24] = 0; e[25] = 0x40;
+    e[0] = 0x7F;
+    e[1] = b'E';
+    e[2] = b'L';
+    e[3] = b'F';
+    e[4] = 2;
+    e[5] = 1;
+    e[6] = 1;
+    e[16] = 2;
+    e[17] = 0; // e_type = ET_EXEC
+    e[18] = 62;
+    e[19] = 0; // e_machine = EM_X86_64
+    e[24] = 0;
+    e[25] = 0x40;
     e[32] = 64;
-    e[52] = 64; e[53] = 0;
-    e[54] = 56; e[55] = 0;
-    e[56] = 0; e[57] = 0;   // e_phnum = 0
+    e[52] = 64;
+    e[53] = 0;
+    e[54] = 56;
+    e[55] = 0;
+    e[56] = 0;
+    e[57] = 0; // e_phnum = 0
     e
 };
 
@@ -212,32 +286,62 @@ static USER_PAYLOAD: [u8; 39] = {
     let mut p = [0u8; 39];
     let mut i = 0;
     // mov rax, [FAULT_VA] — opcode 48 A1 + moffs64
-    p[i] = 0x48; i += 1;
-    p[i] = 0xA1; i += 1;
+    p[i] = 0x48;
+    i += 1;
+    p[i] = 0xA1;
+    i += 1;
     let mut b = FAULT_VA.to_le_bytes();
-    p[i] = b[0]; p[i + 1] = b[1]; p[i + 2] = b[2]; p[i + 3] = b[3];
-    p[i + 4] = b[4]; p[i + 5] = b[5]; p[i + 6] = b[6]; p[i + 7] = b[7];
+    p[i] = b[0];
+    p[i + 1] = b[1];
+    p[i + 2] = b[2];
+    p[i + 3] = b[3];
+    p[i + 4] = b[4];
+    p[i + 5] = b[5];
+    p[i + 6] = b[6];
+    p[i + 7] = b[7];
     i += 8;
     // mov [MB+0x00], rax — opcode 48 A3 + moffs64
-    p[i] = 0x48; i += 1;
-    p[i] = 0xA3; i += 1;
+    p[i] = 0x48;
+    i += 1;
+    p[i] = 0xA3;
+    i += 1;
     b = USER_DATA_VA.to_le_bytes();
-    p[i] = b[0]; p[i + 1] = b[1]; p[i + 2] = b[2]; p[i + 3] = b[3];
-    p[i + 4] = b[4]; p[i + 5] = b[5]; p[i + 6] = b[6]; p[i + 7] = b[7];
+    p[i] = b[0];
+    p[i + 1] = b[1];
+    p[i + 2] = b[2];
+    p[i + 3] = b[3];
+    p[i + 4] = b[4];
+    p[i + 5] = b[5];
+    p[i + 6] = b[6];
+    p[i + 7] = b[7];
     i += 8;
     // mov rax, 0xBEEF — 48 C7 C0 imm32 (sign-extended)
-    p[i] = 0x48; p[i + 1] = 0xC7; p[i + 2] = 0xC0;
-    p[i + 3] = 0xEF; p[i + 4] = 0xBE; p[i + 5] = 0x00; p[i + 6] = 0x00;
+    p[i] = 0x48;
+    p[i + 1] = 0xC7;
+    p[i + 2] = 0xC0;
+    p[i + 3] = 0xEF;
+    p[i + 4] = 0xBE;
+    p[i + 5] = 0x00;
+    p[i + 6] = 0x00;
     i += 7;
     // mov [MB+0x08], rax
-    p[i] = 0x48; i += 1;
-    p[i] = 0xA3; i += 1;
+    p[i] = 0x48;
+    i += 1;
+    p[i] = 0xA3;
+    i += 1;
     b = (USER_DATA_VA + 8).to_le_bytes();
-    p[i] = b[0]; p[i + 1] = b[1]; p[i + 2] = b[2]; p[i + 3] = b[3];
-    p[i + 4] = b[4]; p[i + 5] = b[5]; p[i + 6] = b[6]; p[i + 7] = b[7];
+    p[i] = b[0];
+    p[i + 1] = b[1];
+    p[i + 2] = b[2];
+    p[i + 3] = b[3];
+    p[i + 4] = b[4];
+    p[i + 5] = b[5];
+    p[i + 6] = b[6];
+    p[i + 7] = b[7];
     i += 8;
     // jmp $ — EB FE
-    p[i] = 0xEB; p[i + 1] = 0xFE;
+    p[i] = 0xEB;
+    p[i + 1] = 0xFE;
     p
 };
 
@@ -253,8 +357,7 @@ static mut ADOPTED_ROOT: Option<u64> = None;
 static mut FAULT_COUNT: u32 = 0;
 
 fn adopted_root() -> u64 {
-    unsafe { *core::ptr::addr_of!(ADOPTED_ROOT) }
-        .expect("carrier: root not adopted yet")
+    unsafe { *core::ptr::addr_of!(ADOPTED_ROOT) }.expect("carrier: root not adopted yet")
 }
 
 /// Read CR2 — the #PF faulting linear address. Same privileged read as
@@ -291,13 +394,19 @@ fn walk_leaf(root: u64, va: u64, alloc: bool) -> Option<*mut u64> {
                 return None;
             }
             let (p, v) = pt_alloc::alloc_pt_page().expect("carrier: pt page");
-            unsafe { core::ptr::write_bytes(v.0 as *mut u8, 0, 4096); }
-            unsafe { core::ptr::write_volatile(entry, p.0 | PRESENT | RW | USER); }
+            unsafe {
+                core::ptr::write_bytes(v.0 as *mut u8, 0, 4096);
+            }
+            unsafe {
+                core::ptr::write_volatile(entry, p.0 | PRESENT | RW | USER);
+            }
             table = p.0;
         } else {
             // Existing intermediate (boot identity built these without
             // the user bit) — OR the user bit in, same as test-user-trap.
-            unsafe { core::ptr::write_volatile(entry, cur | USER); }
+            unsafe {
+                core::ptr::write_volatile(entry, cur | USER);
+            }
             table = cur & addr_mask;
         }
     }
@@ -307,7 +416,9 @@ fn walk_leaf(root: u64, va: u64, alloc: bool) -> Option<*mut u64> {
 
 fn invlpg(va: u64) {
     // SAFETY: invlpg invalidates one translation; no memory access.
-    unsafe { asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags)); }
+    unsafe {
+        asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags));
+    }
 }
 
 /// E5(d) stage 1-2: adopt the live root and run the map/query/unmap
@@ -353,7 +464,9 @@ fn run_self_pt_legs(root: u64) -> bool {
     early_console::write_str("  map + query: PTE names the mapped frame\n");
 
     // unmap + query: the leaf must read not-present
-    unsafe { core::ptr::write_volatile(leaf, 0u64); }
+    unsafe {
+        core::ptr::write_volatile(leaf, 0u64);
+    }
     invlpg(SELF_TEST_VA);
     let q2 = unsafe { core::ptr::read_volatile(leaf as *const u64) };
     if q2 & PRESENT != 0 {
@@ -384,7 +497,9 @@ unsafe extern "C" fn faultloop_trap_dispatch(frame: &mut TrapFrame) {
         // below is complete before this returns.
         return;
     }
-    unsafe { minix_kernel::trap_dispatch::x86_trap_dispatch_body(frame); }
+    unsafe {
+        minix_kernel::trap_dispatch::x86_trap_dispatch_body(frame);
+    }
 }
 
 /// The E5(d) loop in carrier form: RTS flag → VM_PAGEFAULT message →
@@ -417,7 +532,9 @@ fn carrier_pagefault(frame: &mut TrapFrame) {
         // The explicit E5(d) assertion: without a PTE write the same
         // address re-faults forever. One re-entry = the map did not
         // stick = live-lock in the making → deterministic FAIL.
-        early_console::write_str("  FAIL: re-fault on the same address — live-lock (E5(d) anti-livelock)\n");
+        early_console::write_str(
+            "  FAIL: re-fault on the same address — live-lock (E5(d) anti-livelock)\n",
+        );
         fail();
     }
 
@@ -432,11 +549,8 @@ fn carrier_pagefault(frame: &mut TrapFrame) {
         minix_kernel::page_fault::set_pagefault_pending(vm, fault_va);
         vm.p_endpoint
     };
-    let msg = minix_kernel::page_fault::build_vm_pagefault_msg(
-        endpoint,
-        fault_va,
-        frame.errcode as u32,
-    );
+    let msg =
+        minix_kernel::page_fault::build_vm_pagefault_msg(endpoint, fault_va, frame.errcode as u32);
 
     // (c) stand-in VM resolve: frame from the carrier pool, patterned.
     // SAFETY: FAULT_FRAME_PHYS is inside MEMMAP region 2, exclusively
@@ -505,7 +619,9 @@ fn write_kbox(fault_count: u64, legs: u64) {
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str("### test_paging_faultloop (x86_64): E5(d) page-fault complete loop\n");
+    early_console::write_str(
+        "### test_paging_faultloop (x86_64): E5(d) page-fault complete loop\n",
+    );
 
     // 1. UEFI boot preparation (test-user-trap shape).
     let root_page = uefi_helpers::alloc_root_page();
@@ -539,6 +655,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -549,12 +666,17 @@ fn main() -> Status {
     };
 
     uefi_helpers::exit_boot_services();
-    unsafe { BOOT_SERVICES_EXITED = true; }
+    unsafe {
+        BOOT_SERVICES_EXITED = true;
+    }
 
     // 2. Paging (Phase A).
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order).
@@ -564,7 +686,10 @@ fn main() -> Status {
     // seam: re-register the dispatcher so vector-14-from-CPL3 lands in
     // the E5(d) arm while every other vector keeps production routing.
     minix_kernel::init_protection(&result.kernel_info);
-    register_trap_dispatchers(faultloop_trap_dispatch, minix_kernel::trap_dispatch::x86_syscall_dispatch_body);
+    register_trap_dispatchers(
+        faultloop_trap_dispatch,
+        minix_kernel::trap_dispatch::x86_syscall_dispatch_body,
+    );
     early_console::write_str("  protection + IDT live; fault-loop dispatcher registered\n");
 
     // 4. Clock + interrupt controller (kmain Phase B order).
@@ -578,7 +703,9 @@ fn main() -> Status {
 
     // 6. BKL held (C main.c:149) + APs online (test-user-trap order).
     minix_kernel::smp::bkl_lock().transfer();
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
     minix_kernel::smp::smp_init();
     early_console::write_str("  smp_init completed\n");
 
@@ -595,9 +722,21 @@ fn main() -> Status {
         early_console::write_str("  map: code\n");
         map_user_page(result.root_page.0, USER_CODE_VA, USER_CODE_PHYS, true, true);
         early_console::write_str("  map: data\n");
-        map_user_page(result.root_page.0, USER_DATA_VA, USER_DATA_PHYS, true, false);
+        map_user_page(
+            result.root_page.0,
+            USER_DATA_VA,
+            USER_DATA_PHYS,
+            true,
+            false,
+        );
         early_console::write_str("  map: stack\n");
-        map_user_page(result.root_page.0, USER_STACK_VA, USER_STACK_PHYS, true, false);
+        map_user_page(
+            result.root_page.0,
+            USER_STACK_VA,
+            USER_STACK_PHYS,
+            true,
+            false,
+        );
     }
     early_console::write_str("  user pages mapped (FAULT_VA intentionally absent)\n");
 
@@ -688,7 +827,11 @@ unsafe fn map_user_page(root_phys: u64, va: u64, pa: u64, writable: bool, exec: 
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-paging-faultloop ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
@@ -700,5 +843,9 @@ fn panic(info: &PanicInfo) -> ! {
         early_console::write_hex(loc.line() as u64);
     }
     early_console::write_str(" ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }

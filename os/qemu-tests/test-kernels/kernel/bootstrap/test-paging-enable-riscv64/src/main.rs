@@ -9,12 +9,12 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::riscv64::paging::Riscv64Paging;
-use minix_plat::riscv64::early_console;
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
+use minix_arch::riscv64::paging::Riscv64Paging;
 use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::riscv64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 
 use core::alloc::{GlobalAlloc, Layout};
 
@@ -91,7 +91,9 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    early_console::write_str("### test_paging_enable (riscv64): boot → enable Sv39 → verify alive\n");
+    early_console::write_str(
+        "### test_paging_enable (riscv64): boot → enable Sv39 → verify alive\n",
+    );
 
     let memmap: &'static [MemoryRegion] = &MEMMAP;
     let root_page = PhysBytes(bump_alloc(1).expect("bump alloc: root page"));
@@ -115,6 +117,7 @@ pub extern "C" fn rust_main() -> ! {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -127,16 +130,27 @@ pub extern "C" fn rust_main() -> ! {
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
 
     early_console::write_str("  Sv39 MMU enabled — CPU still executing\n");
     early_console::write_str("### TEST_RESULT: PASS test-paging-enable-riscv64 ###\n");
 
-    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
-    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
 }

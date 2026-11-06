@@ -23,12 +23,12 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_arch::riscv64::paging::Riscv64Paging;
-use minix_plat::riscv64::early_console;
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
+use minix_arch::riscv64::paging::Riscv64Paging;
 use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::riscv64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 
 // ── Global allocator (bump allocator on a static heap) ──
 // UEFI targets get this from the `uefi` crate's `global_allocator` feature.
@@ -108,7 +108,7 @@ static mut STACK: [u8; 0x10000] = [0u8; 0x10000];
 /// Bump allocator state for root_page and bump_region.
 /// Placed high in DRAM to avoid clashing with the loaded kernel image.
 static mut BUMP_PTR: u64 = DRAM_BASE + 0x0200_0000; // DRAM + 32 MB
-const BUMP_END: u64 = DRAM_BASE + 0x0400_0000;       // DRAM + 64 MB
+const BUMP_END: u64 = DRAM_BASE + 0x0400_0000; // DRAM + 64 MB
 
 /// Hardcoded memory map for QEMU virt (one CONVENTIONAL region covering DRAM).
 static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
@@ -158,6 +158,7 @@ pub extern "C" fn rust_main() -> ! {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -172,7 +173,10 @@ pub extern "C" fn rust_main() -> ! {
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + enable Sv39
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
 
     // If we reach here, paging is enabled and the CPU can still execute.
     early_console::write_str("Hello, World!\n");
@@ -183,7 +187,9 @@ pub extern "C" fn rust_main() -> ! {
     early_console::write_str("### TEST_RESULT: PASS hello-boot-riscv64 ###\n");
 
     loop {
-        unsafe { asm!("wfi", options(nomem, nostack)); }
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 
@@ -191,7 +197,9 @@ pub extern "C" fn rust_main() -> ! {
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC ###\n");
     loop {
-        unsafe { asm!("wfi", options(nomem, nostack)); }
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 

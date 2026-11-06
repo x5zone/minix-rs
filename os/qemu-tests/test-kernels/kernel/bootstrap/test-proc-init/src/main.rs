@@ -20,18 +20,21 @@
 
 extern crate alloc;
 
+use boot_shim::uefi_helpers;
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::panic::PanicInfo;
-use core::alloc::{GlobalAlloc, Layout};
-use minix_arch::x86_64::paging::X86_64Paging;
-use minix_plat::x86_64::early_console;
 use minix_arch::paging::{PageFlags, Paging};
-use minix_arch::{DirectMapArch, CurrentDirectMap, ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
+use minix_arch::x86_64::paging::X86_64Paging;
+use minix_arch::{
+    CurrentDirectMap, CurrentProtection, CurrentTrapEntry, DirectMapArch, ProtectionArch,
+    TrapEntryArch,
+};
+use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::x86_64::early_console;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
-use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -63,7 +66,10 @@ unsafe impl GlobalAlloc for HybridAllocator {
             // UEFI requires 8-byte alignment minimum; for larger alignments,
             // over-allocate and align within the block
             let alloc_size = if align > 8 { size + align } else { size };
-            match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, alloc_size) {
+            match uefi::boot::allocate_pool(
+                uefi::mem::memory_map::MemoryType::LOADER_DATA,
+                alloc_size,
+            ) {
                 Ok(ptr) => {
                     let addr = ptr.as_ptr() as usize;
                     if align > 8 {
@@ -107,23 +113,77 @@ static ALLOCATOR: HybridAllocator = HybridAllocator;
 /// C: table.c — image[NR_TASKS..NR_BOOT_PROCS]
 /// C: minix/com.h — DS_PROC_NR=0, RS_PROC_NR=1, ..., INIT_PROC_NR=11
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },  // nr=0  (DS_PROC_NR)
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },  // nr=1  (RS_PROC_NR)
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },  // nr=2  (PM_PROC_NR)
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },  // nr=3  (SCHED_PROC_NR)
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },  // nr=4  (VFS_PROC_NR)
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },  // nr=5  (MEM_PROC_NR)
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },  // nr=6  (TTY_PROC_NR)
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },  // nr=7  (MIB_PROC_NR)
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // nr=8  (VM_PROC_NR) — patched at runtime to VM_ELF_STUB
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },  // nr=9  (PFS_PROC_NR)
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },  // nr=10 (MFS_PROC_NR)
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },  // nr=11 (INIT_PROC_NR)
+    BootModule {
+        name: "ds",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=0  (DS_PROC_NR)
+    BootModule {
+        name: "rs",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=1  (RS_PROC_NR)
+    BootModule {
+        name: "pm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=2  (PM_PROC_NR)
+    BootModule {
+        name: "sched",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=3  (SCHED_PROC_NR)
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=4  (VFS_PROC_NR)
+    BootModule {
+        name: "memory",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=5  (MEM_PROC_NR)
+    BootModule {
+        name: "tty",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=6  (TTY_PROC_NR)
+    BootModule {
+        name: "mib",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=7  (MIB_PROC_NR)
+    BootModule {
+        name: "vm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=8  (VM_PROC_NR) — patched at runtime to VM_ELF_STUB
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=9  (PFS_PROC_NR)
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=10 (MFS_PROC_NR)
+    BootModule {
+        name: "init",
+        start: PhysBytes(0),
+        len: 0,
+    }, // nr=11 (INIT_PROC_NR)
 ];
 
 static MEMMAP: [MemoryRegion; 2] = [
-    MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
-    MemoryRegion { base: PhysBytes(0x200_0000), len: 0x600_0000 },
+    MemoryRegion {
+        base: PhysBytes(0),
+        len: 0x200_0000,
+    },
+    MemoryRegion {
+        base: PhysBytes(0x200_0000),
+        len: 0x600_0000,
+    },
 ];
 
 /// Minimal valid ELF64 image: header only, `e_phnum = 0` (zero PT_LOAD
@@ -133,17 +193,26 @@ static MEMMAP: [MemoryRegion; 2] = [
 #[unsafe(link_section = ".rodata")]
 static VM_ELF_STUB: [u8; 64] = {
     let mut e = [0u8; 64];
-    e[0] = 0x7F; e[1] = b'E'; e[2] = b'L'; e[3] = b'F'; // magic
-    e[4] = 2;            // EI_CLASS = ELFCLASS64
-    e[5] = 1;            // EI_DATA  = ELFDATA2LSB
-    e[6] = 1;            // EI_VERSION = EV_CURRENT
-    e[16] = 2; e[17] = 0; // e_type = ET_EXEC
-    e[18] = 62; e[19] = 0; // e_machine = EM_X86_64
-    e[24] = 0; e[25] = 0x40; // e_entry = 0x4000_00 (unused: VM never runs)
-    e[32] = 64;            // e_phoff = 64 (table immediately after header)
-    e[52] = 64; e[53] = 0; // e_ehsize = 64
-    e[54] = 56; e[55] = 0; // e_phentsize = 56 (ELF64_PHDR_SIZE)
-    e[56] = 0; e[57] = 0;  // e_phnum = 0 — no PT_LOAD segments
+    e[0] = 0x7F;
+    e[1] = b'E';
+    e[2] = b'L';
+    e[3] = b'F'; // magic
+    e[4] = 2; // EI_CLASS = ELFCLASS64
+    e[5] = 1; // EI_DATA  = ELFDATA2LSB
+    e[6] = 1; // EI_VERSION = EV_CURRENT
+    e[16] = 2;
+    e[17] = 0; // e_type = ET_EXEC
+    e[18] = 62;
+    e[19] = 0; // e_machine = EM_X86_64
+    e[24] = 0;
+    e[25] = 0x40; // e_entry = 0x4000_00 (unused: VM never runs)
+    e[32] = 64; // e_phoff = 64 (table immediately after header)
+    e[52] = 64;
+    e[53] = 0; // e_ehsize = 64
+    e[54] = 56;
+    e[55] = 0; // e_phentsize = 56 (ELF64_PHDR_SIZE)
+    e[56] = 0;
+    e[57] = 0; // e_phnum = 0 — no PT_LOAD segments
     e
 };
 
@@ -203,6 +272,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -215,12 +285,17 @@ fn main() -> Status {
     uefi_helpers::exit_boot_services();
 
     // Switch to bump allocator now that UEFI boot services are gone
-    unsafe { BOOT_SERVICES_EXITED = true; }
+    unsafe {
+        BOOT_SERVICES_EXITED = true;
+    }
 
     // 2. Enable paging (Phase A)
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
     early_console::write_str("  paging enabled\n");
 
     // 3. Phase B: protection only (no clock/interrupt needed for proc table init)
@@ -250,8 +325,8 @@ fn main() -> Status {
     early_console::write_str("  init_proc_and_boot completed\n");
 
     // 5. Verify process table state
-    use minix_kernel::proc::RtsFlagsBits;
     use minix_kernel::proc::ProcNr;
+    use minix_kernel::proc::RtsFlagsBits;
     use minix_kernel::proc::proc_nr;
 
     // 5a. Verify: CLOCK kernel task has SLOT_FREE cleared and PROC_STOP set
@@ -382,11 +457,17 @@ fn main() -> Status {
     if let Err(e) = vm_pt.map(VirBytes(FRESH_VA), sentinel_pa, PageFlags::read_write()) {
         // Diagnostic: name the variant so a failure is actionable.
         early_console::write_str(match e {
-            minix_arch::paging::PageTableError::InvalidAddress => "  FAIL: map err: InvalidAddress\n",
+            minix_arch::paging::PageTableError::InvalidAddress => {
+                "  FAIL: map err: InvalidAddress\n"
+            }
             minix_arch::paging::PageTableError::AlreadyMapped => "  FAIL: map err: AlreadyMapped\n",
             minix_arch::paging::PageTableError::NotMapped => "  FAIL: map err: NotMapped\n",
-            minix_arch::paging::PageTableError::AllocationFailed => "  FAIL: map err: AllocationFailed\n",
-            minix_arch::paging::PageTableError::PermissionDenied => "  FAIL: map err: PermissionDenied\n",
+            minix_arch::paging::PageTableError::AllocationFailed => {
+                "  FAIL: map err: AllocationFailed\n"
+            }
+            minix_arch::paging::PageTableError::PermissionDenied => {
+                "  FAIL: map err: PermissionDenied\n"
+            }
             minix_arch::paging::PageTableError::NotSupported => "  FAIL: map err: NotSupported\n",
         });
         fail();
@@ -429,12 +510,20 @@ fn main() -> Status {
     }
 
     early_console::write_str("### TEST_RESULT: PASS test-proc-init ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-proc-init ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
@@ -446,5 +535,9 @@ fn panic(info: &PanicInfo) -> ! {
         early_console::write_hex(loc.line() as u64);
     }
     early_console::write_str(" ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }

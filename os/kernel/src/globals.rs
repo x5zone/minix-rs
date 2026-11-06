@@ -391,6 +391,25 @@ pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; PARAM_BUF_STORE_LEN]> =
 /// store cannot silently truncate: the decoder reports `OutputTooSmall`.
 pub(crate) const SOURCE_RECORD_STORE_LEN: usize = minix_boot::WIRE_SOURCES_CAP;
 
+pub(crate) const STARTUP_RECORD_STORE_LEN: usize = minix_boot::WIRE_STARTUP_CAP;
+
+pub(crate) static STARTUP_RECORD_STORE: SyncUnsafeCell<
+    [minix_boot::SourceRecord; STARTUP_RECORD_STORE_LEN],
+> = SyncUnsafeCell::new(
+    [minix_boot::SourceRecord {
+        id: 0,
+        kind: minix_boot::SourceKind::StartupObject,
+        origin: minix_boot::SourceOrigin::StartupObject(0),
+        range: minix_boot::PhysicalRange::new(0, 0),
+        input_object: minix_boot::InputObjectId::StartupObjects,
+        local_source: 0,
+        snapshot_id: 0,
+        attribute: 0,
+        virtual_start: 0,
+        address_domain: minix_boot::AddressDomain::Physical,
+    }; STARTUP_RECORD_STORE_LEN],
+);
+
 pub(crate) static SOURCE_RECORD_STORE: SyncUnsafeCell<
     [minix_boot::SourceRecord; SOURCE_RECORD_STORE_LEN],
 > = SyncUnsafeCell::new(

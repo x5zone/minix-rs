@@ -350,6 +350,31 @@ impl BootShim for RiscvUbootBootShim {
         );
         kernel_info.memmap_sources = sources;
 
+        // Startup-object records: kernel image and every boot module.
+        // SAFETY: single-threaded boot; written once before the handoff.
+        static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
+            [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
+        let startup_objects = unsafe {
+            let slot = core::ptr::addr_of_mut!(STARTUP_OBJECTS) as *mut minix_boot::SourceRecord;
+            let mut n = 0usize;
+            slot.add(n).write(minix_boot::startup_record(
+                0,
+                kernel_info.kern_phys_base.0,
+                kernel_info.kern_phys_base.0 + kernel_info.kern_size,
+            ));
+            n += 1;
+            for module in kernel_info.boot_modules {
+                slot.add(n).write(minix_boot::startup_record(
+                    n as u16,
+                    module.start.0,
+                    module.start.0 + module.len as u64,
+                ));
+                n += 1;
+            }
+            core::slice::from_raw_parts(slot, n)
+        };
+        kernel_info.startup_objects = startup_objects;
+
         // No ExitBootServices analogue on OpenSBI — U-Boot already handed
         // over control before the boot-shim started executing.
 

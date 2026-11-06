@@ -29,17 +29,17 @@
 
 extern crate alloc;
 
-use core::panic::PanicInfo;
 use core::alloc::{GlobalAlloc, Layout};
+use core::panic::PanicInfo;
 
-use minix_arch::x86_64::paging::X86_64Paging;
-use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
-use minix_plat::x86_64::early_console;
-use minix_kernel::boot_alloc;
-use minix_platform;
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
+use minix_arch::pt_alloc;
+use minix_arch::x86_64::paging::X86_64Paging;
+use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::x86_64::early_console;
+use minix_platform;
+use minix_types::{PhysBytes, VirBytes};
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -54,8 +54,15 @@ unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
             if !BOOT_SERVICES_EXITED {
-                let size = if layout.align() > 8 { layout.size() + layout.align() } else { layout.size() };
-                match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, size) {
+                let size = if layout.align() > 8 {
+                    layout.size() + layout.align()
+                } else {
+                    layout.size()
+                };
+                match uefi::boot::allocate_pool(
+                    uefi::mem::memory_map::MemoryType::LOADER_DATA,
+                    size,
+                ) {
                     Ok(ptr) => ptr.as_ptr() as *mut u8,
                     Err(_) => core::ptr::null_mut(),
                 }
@@ -82,23 +89,77 @@ unsafe impl GlobalAlloc for HybridAllocator {
 static ALLOCATOR: HybridAllocator = HybridAllocator;
 
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule {
+        name: "ds",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "rs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "pm",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "sched",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "memory",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "tty",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mib",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // patched at runtime
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "init",
+        start: PhysBytes(0),
+        len: 0,
+    },
 ];
 
 static MEMMAP: [MemoryRegion; 2] = [
-    MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
-    MemoryRegion { base: PhysBytes(0x200_0000), len: 0x600_0000 },
+    MemoryRegion {
+        base: PhysBytes(0),
+        len: 0x200_0000,
+    },
+    MemoryRegion {
+        base: PhysBytes(0x200_0000),
+        len: 0x600_0000,
+    },
 ];
 
 /// The rt-birth user image, embedded at kernel build time (see the crate
@@ -114,7 +175,6 @@ struct PageAlignedElf<const N: usize>([u8; N]);
 static RT_BIRTH_ELF_BYTES: PageAlignedElf<{ include_bytes!(env!("RT_BIRTH_ELF_PATH")).len() }> =
     PageAlignedElf(*include_bytes!(env!("RT_BIRTH_ELF_PATH")));
 static RT_BIRTH_ELF: &[u8] = &RT_BIRTH_ELF_BYTES.0;
-
 
 #[entry]
 fn main() -> Status {
@@ -152,6 +212,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -162,13 +223,18 @@ fn main() -> Status {
     };
 
     uefi_helpers::exit_boot_services();
-    unsafe { BOOT_SERVICES_EXITED = true; }
+    unsafe {
+        BOOT_SERVICES_EXITED = true;
+    }
 
     // 2. Paging (Phase A) — identity + higher-half + Direct Map coverage.
     minix_kernel::store_kernel_info(&result.kernel_info);
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order).
@@ -198,7 +264,9 @@ fn main() -> Status {
     // 6. BKL held (C main.c:149); single CPU is enough — the birth chain
     // is a one-process story.
     minix_kernel::smp::bkl_lock().transfer();
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
     minix_kernel::smp::smp_init();
     early_console::write_str("  smp_init completed\n");
 
@@ -230,7 +298,11 @@ fn main() -> Status {
 #[allow(dead_code)]
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-rt-birth ###\n");
-    loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
@@ -253,5 +325,9 @@ fn panic(info: &PanicInfo) -> ! {
     }
     let _ = core::fmt::write(&mut Console, format_args!("{}\n", info.message()));
     early_console::write_str(" ###\n");
-    loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
+    }
 }

@@ -350,6 +350,33 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         "bootface: DTB legs must carry source records, not an empty partition"
     );
     kernel_info.memmap_sources = sources;
+
+    // Startup-object records: the kernel image and every boot module, in the
+    // second record class with its own capacity.
+    // SAFETY: single-hart boot face; the array is written once here and read
+    // only through the returned slice afterwards.
+    static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
+        [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
+    let startup_objects = unsafe {
+        let slot = core::ptr::addr_of_mut!(STARTUP_OBJECTS) as *mut minix_boot::SourceRecord;
+        let mut n = 0usize;
+        slot.add(n).write(minix_boot::startup_record(
+            0,
+            KERN_PHYS_BASE,
+            KERN_PHYS_BASE + KERN_SIZE,
+        ));
+        n += 1;
+        for module in modules {
+            slot.add(n).write(minix_boot::startup_record(
+                n as u16,
+                module.start.0,
+                module.start.0 + module.len as u64,
+            ));
+            n += 1;
+        }
+        core::slice::from_raw_parts(slot, n)
+    };
+    kernel_info.startup_objects = startup_objects;
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)
 }

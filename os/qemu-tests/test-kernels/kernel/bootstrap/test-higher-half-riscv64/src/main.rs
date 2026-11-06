@@ -16,11 +16,11 @@
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_plat::riscv64::early_console;
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
 use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::riscv64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 
 // ── Global allocator (bump allocator on a static heap) ──
 use core::alloc::{GlobalAlloc, Layout};
@@ -77,7 +77,7 @@ core::arch::global_asm!(
 
 /// Bump allocator state for root_page and bump_region.
 static mut BUMP_PTR: u64 = DRAM_BASE + 0x0200_0000; // DRAM + 32 MB
-const BUMP_END: u64 = DRAM_BASE + 0x0400_0000;       // DRAM + 64 MB
+const BUMP_END: u64 = DRAM_BASE + 0x0400_0000; // DRAM + 64 MB
 
 static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
     base: PhysBytes(DRAM_BASE),
@@ -99,7 +99,9 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
 /// Rust entry point — called by _start after stack setup.
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    early_console::write_str("### test_higher_half (riscv64): verifying higher-half transition...\n");
+    early_console::write_str(
+        "### test_higher_half (riscv64): verifying higher-half transition...\n",
+    );
 
     let memmap: &'static [MemoryRegion] = &MEMMAP;
 
@@ -139,6 +141,7 @@ pub extern "C" fn rust_main() -> ! {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -162,5 +165,9 @@ pub extern "C" fn rust_main() -> ! {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC in test-higher-half-riscv64 ###\n");
-    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
 }

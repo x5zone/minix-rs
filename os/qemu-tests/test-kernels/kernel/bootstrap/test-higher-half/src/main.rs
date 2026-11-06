@@ -10,14 +10,14 @@
 #![no_std]
 #![no_main]
 
+use boot_shim::uefi_helpers;
 use core::arch::asm;
 use core::panic::PanicInfo;
-use minix_plat::x86_64::early_console;
-use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
 use minix_boot::{BootPrepareResult, KernelInfo};
-use boot_shim::uefi_helpers;
+use minix_kernel::boot_alloc;
+use minix_plat::x86_64::early_console;
+use minix_types::{PhysBytes, VirBytes};
 use uefi::prelude::*;
 
 // UEFI test kernels allocate only while boot services are alive (build_memmap
@@ -30,7 +30,9 @@ static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str("### test_higher_half (x86_64): verifying higher-half transition...\n");
+    early_console::write_str(
+        "### test_higher_half (x86_64): verifying higher-half transition...\n",
+    );
 
     // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
     let memmap = uefi_helpers::build_memmap();
@@ -53,6 +55,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -80,5 +83,9 @@ fn main() -> Status {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     early_console::write_str("### PANIC in test-higher-half ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }

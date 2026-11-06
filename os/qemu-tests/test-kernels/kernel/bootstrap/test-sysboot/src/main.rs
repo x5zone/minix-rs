@@ -33,17 +33,17 @@
 
 extern crate alloc;
 
-use core::panic::PanicInfo;
 use core::alloc::{GlobalAlloc, Layout};
+use core::panic::PanicInfo;
 
-use minix_arch::x86_64::paging::X86_64Paging;
-use minix_arch::pt_alloc;
-use minix_types::{PhysBytes, VirBytes};
-use minix_plat::x86_64::early_console;
-use minix_kernel::boot_alloc;
-use minix_platform;
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
+use minix_arch::pt_alloc;
+use minix_arch::x86_64::paging::X86_64Paging;
+use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::x86_64::early_console;
+use minix_platform;
+use minix_types::{PhysBytes, VirBytes};
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -58,8 +58,15 @@ unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
             if !BOOT_SERVICES_EXITED {
-                let size = if layout.align() > 8 { layout.size() + layout.align() } else { layout.size() };
-                match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, size) {
+                let size = if layout.align() > 8 {
+                    layout.size() + layout.align()
+                } else {
+                    layout.size()
+                };
+                match uefi::boot::allocate_pool(
+                    uefi::mem::memory_map::MemoryType::LOADER_DATA,
+                    size,
+                ) {
                     Ok(ptr) => ptr.as_ptr() as *mut u8,
                     Err(_) => core::ptr::null_mut(),
                 }
@@ -86,23 +93,77 @@ unsafe impl GlobalAlloc for HybridAllocator {
 static ALLOCATOR: HybridAllocator = HybridAllocator;
 
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },  // ← sysboot-tx
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // ← sysboot-rx
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule {
+        name: "ds",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "rs",
+        start: PhysBytes(0),
+        len: 0,
+    }, // ← sysboot-tx
+    BootModule {
+        name: "pm",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "sched",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "memory",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "tty",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mib",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // ← sysboot-rx
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "init",
+        start: PhysBytes(0),
+        len: 0,
+    },
 ];
 
 static MEMMAP: [MemoryRegion; 2] = [
-    MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
-    MemoryRegion { base: PhysBytes(0x200_0000), len: 0x600_0000 },
+    MemoryRegion {
+        base: PhysBytes(0),
+        len: 0x200_0000,
+    },
+    MemoryRegion {
+        base: PhysBytes(0x200_0000),
+        len: 0x600_0000,
+    },
 ];
 
 /// Page-aligned blob wrapper: boot-module regions enter the VM handoff's
@@ -161,6 +222,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
+        startup_objects: &[],
     };
 
     let result = BootPrepareResult {
@@ -171,13 +233,18 @@ fn main() -> Status {
     };
 
     uefi_helpers::exit_boot_services();
-    unsafe { BOOT_SERVICES_EXITED = true; }
+    unsafe {
+        BOOT_SERVICES_EXITED = true;
+    }
 
     // 2. Paging (Phase A) — identity + higher-half + Direct Map coverage.
     minix_kernel::store_kernel_info(&result.kernel_info);
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(
+        &result.kernel_info,
+        result.root_page,
+    );
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order).
@@ -205,7 +272,9 @@ fn main() -> Status {
 
     // 6. BKL held (C main.c:149); single CPU is enough.
     minix_kernel::smp::bkl_lock().transfer();
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
     minix_kernel::smp::smp_init();
     early_console::write_str("  smp_init completed\n");
 
@@ -221,8 +290,9 @@ fn main() -> Status {
     {
         use minix_arch::CurrentPaging;
         use minix_arch::frame::{VmBootAllocator, VmBootRegion};
-        use minix_arch::{CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, load_process_elf};
-
+        use minix_arch::{
+            CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, load_process_elf,
+        };
 
         let regions = {
             // Frames MUST come from the A2 post-deduction free list, not
@@ -258,54 +328,52 @@ fn main() -> Status {
         .unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"));
         early_console::write_str("  TX ELF loaded into the RS slot (per-image root)\n");
         {
-        {
-            // [fix] PDPT-slot merge for the kernel's LOW-half footprint.
-            // This test kernel executes identity-mapped (UEFI-era shape:
-            // kernel code at ~0xdb9xxxxx, PML4 entry 0 — the USER half),
-            // so the entry-range supervisor inherit cannot carry it: the
-            // same entry also hosts the first image's user mappings. The
-            // merge copies the kernel-owned 1 GB PDPT slots from the
-            // bootstrap root into the fresh root, leaving the images'
-            // own slots (link base 0x140000000 → slot 5; stack → 511)
-            // untouched:
-            //   slot(kernel_va)   — supervisor code/data + IDT/GDT targets
-            //   slot(KERNINFO_USER_VA) — the published kernel-info page
-            //     (read-only): the birth chain's kerninfo query returns
-            //     this VA and the payload dereferences it immediately —
-            //     without the slot the read page-faults in the new root
-            //     (CR2 = 0x200000000 observed on real machine).
-            // Production higher-half kernels need none of this: their
-            // supervisor footprint IS entries 256..512, already inherited.
-            use minix_arch::frame::PhysAccess as _;
-            let kernel_va = main as *const () as u64;
-            let kern_slot = ((kernel_va >> 30) & 0x1ff) as usize;
-            let kerninfo_slot =
-                ((minix_kernel::kerninfo::KERNINFO_USER_VA >> 30) & 0x1ff) as usize;
-            let src_pml4 = access.phys_to_virt(PhysBytes(root_phys.0)).0 as *const u64;
-            let dst_pml4 = access.phys_to_virt(PhysBytes(tx.root.0)).0 as *mut u64;
-            // Source entry 0 → bootstrap's PDPT; dest entry 0 → the fresh
-            // root's own PDPT (walk_alloc created it while mapping the
-            // image). Copy ONLY the kernel-owned slots.
-            let src_pdpt =
-                unsafe { src_pml4.add(0).read() } & 0x000f_ffff_ffff_f000;
-            let dst_pdpt =
-                unsafe { dst_pml4.add(0).read() } & 0x000f_ffff_ffff_f000;
-            if src_pdpt != 0 && dst_pdpt != 0 {
-                let s = access.phys_to_virt(PhysBytes(src_pdpt)).0 as *const u64;
-                let d = access.phys_to_virt(PhysBytes(dst_pdpt)).0 as *mut u64;
-                for slot in [kern_slot, kerninfo_slot] {
-                    unsafe {
-                        let entry = s.add(slot).read();
-                        d.add(slot).write(entry);
+            {
+                // [fix] PDPT-slot merge for the kernel's LOW-half footprint.
+                // This test kernel executes identity-mapped (UEFI-era shape:
+                // kernel code at ~0xdb9xxxxx, PML4 entry 0 — the USER half),
+                // so the entry-range supervisor inherit cannot carry it: the
+                // same entry also hosts the first image's user mappings. The
+                // merge copies the kernel-owned 1 GB PDPT slots from the
+                // bootstrap root into the fresh root, leaving the images'
+                // own slots (link base 0x140000000 → slot 5; stack → 511)
+                // untouched:
+                //   slot(kernel_va)   — supervisor code/data + IDT/GDT targets
+                //   slot(KERNINFO_USER_VA) — the published kernel-info page
+                //     (read-only): the birth chain's kerninfo query returns
+                //     this VA and the payload dereferences it immediately —
+                //     without the slot the read page-faults in the new root
+                //     (CR2 = 0x200000000 observed on real machine).
+                // Production higher-half kernels need none of this: their
+                // supervisor footprint IS entries 256..512, already inherited.
+                use minix_arch::frame::PhysAccess as _;
+                let kernel_va = main as *const () as u64;
+                let kern_slot = ((kernel_va >> 30) & 0x1ff) as usize;
+                let kerninfo_slot =
+                    ((minix_kernel::kerninfo::KERNINFO_USER_VA >> 30) & 0x1ff) as usize;
+                let src_pml4 = access.phys_to_virt(PhysBytes(root_phys.0)).0 as *const u64;
+                let dst_pml4 = access.phys_to_virt(PhysBytes(tx.root.0)).0 as *mut u64;
+                // Source entry 0 → bootstrap's PDPT; dest entry 0 → the fresh
+                // root's own PDPT (walk_alloc created it while mapping the
+                // image). Copy ONLY the kernel-owned slots.
+                let src_pdpt = unsafe { src_pml4.add(0).read() } & 0x000f_ffff_ffff_f000;
+                let dst_pdpt = unsafe { dst_pml4.add(0).read() } & 0x000f_ffff_ffff_f000;
+                if src_pdpt != 0 && dst_pdpt != 0 {
+                    let s = access.phys_to_virt(PhysBytes(src_pdpt)).0 as *const u64;
+                    let d = access.phys_to_virt(PhysBytes(dst_pdpt)).0 as *mut u64;
+                    for slot in [kern_slot, kerninfo_slot] {
+                        unsafe {
+                            let entry = s.add(slot).read();
+                            d.add(slot).write(entry);
+                        }
                     }
+                    early_console::write_str("  identity merge: slots ");
+                    early_console::write_hex(kern_slot as u64);
+                    early_console::write_str(" + ");
+                    early_console::write_hex(kerninfo_slot as u64);
+                    early_console::write_str("\n");
                 }
-                early_console::write_str("  identity merge: slots ");
-                early_console::write_hex(kern_slot as u64);
-                early_console::write_str(" + ");
-                early_console::write_hex(kerninfo_slot as u64);
-                early_console::write_str("\n");
             }
-        }
         }
 
         // Rebuild the RS slot's CPU context for the loaded entry — the same
@@ -317,12 +385,11 @@ fn main() -> Status {
             let rs = table
                 .get_mut(minix_kernel::proc::proc_nr::RS_PROC_NR)
                 .expect("RS boot proc exists");
-            rs.cpu_context =
-                <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
-                    ProcKind::RootService,
-                    minix_kernel::proc::proc_nr::RS_PROC_NR,
-                    EntrySpec::loaded(tx.pc, tx.sp, tx.ps_strings),
-                );
+            rs.cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
+                ProcKind::RootService,
+                minix_kernel::proc::proc_nr::RS_PROC_NR,
+                EntrySpec::loaded(tx.pc, tx.sp, tx.ps_strings),
+            );
             // Record the fresh root so the scheduler's address-space
             // switch (C `switch_address_space(p)`, proc.c:349 — klib.S
             // __switch_address_space counterpart) installs it when the RS slot
@@ -383,7 +450,11 @@ fn main() -> Status {
 #[allow(dead_code)]
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-sysboot ###\n");
-    loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
@@ -406,5 +477,9 @@ fn panic(info: &PanicInfo) -> ! {
     }
     let _ = core::fmt::write(&mut Console, format_args!("{}\n", info.message()));
     early_console::write_str(" ###\n");
-    loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
+    }
 }

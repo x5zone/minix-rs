@@ -12,6 +12,13 @@
 
 ## 一、各轮评审带来的正文变化（按轮次，最新在上）
 
+**第一百一十七轮（A3：启动对象记录独立分区）**
+
+- wire v4：`SourceKind::StartupObject`（kind tag 6）、`SourceOrigin::StartupObject(u16)`（origin tag 5）、`InputObjectId::StartupObjects`（input tag 2）；信封 176→184 B（`startup_byte_len` @176），16 槽 × 72 B 独立分区（32,448–33,600），`BOOT_HANDOFF_V1_VERSION = 4`。
+- 四条腿写入启动对象记录：三条 DTB 腿在 `.bss` 填内核映像与每个模块；UEFI 腿在 EBS 后写内核/模块/根页/bump/arena；U-Boot 腿经 `write_startup` 跨第一跳，接收端 `decode_startup_objects` 落 `STARTUP_RECORD_STORE`。
+- `KernelInfo.startup_objects` 与 `memmap_sources` 并列但不参与覆盖审计；`reset_map_partitions` 不清启动对象分区（EBS 重试保留映像事实）。
+- 读数：minix-boot 169（+4：`round_trip_startup_objects`、`startup_partition_accepts_exactly_its_capacity`、`rejects_startup_over_capacity`、`reset_map_partitions_keeps_the_startup_partition`）、boot-shim 91、kernel 863；五条 QEMU 腿 PASS。
+
 **第一百一十六轮（A2：记录身份 + Attribute/VirtualStart）**
 
 - `SourceRecord` 增 `input_object`/`local_source`/`snapshot_id`/`attribute`/`virtual_start`；UEFI 记录写描述符原值与 MapKey，DTB 记录写输入对象标识；解码按输入类做规范化校验。
