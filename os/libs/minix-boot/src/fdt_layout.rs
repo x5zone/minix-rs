@@ -346,7 +346,7 @@ pub fn validate(addr: u64, bytes: &[u8]) -> Result<FdtLayout, FdtInputError> {
         if address == 0 && high_addr == 0 && size == 0 && high_size == 0 {
             break end;
         }
-        if (pos - off_mrb) / MRB_ENTRY + 1 >= MRB_MAX_ENTRIES {
+        if (pos - off_mrb) / MRB_ENTRY >= MRB_MAX_ENTRIES {
             return Err(FdtInputError::TooManyReservations);
         }
         pos = end;
@@ -666,6 +666,29 @@ mod tests {
         );
         bytes[40..40 + entries.len()].copy_from_slice(&entries);
         assert_eq!(validate(0x8000_0000, &bytes), Err(FdtInputError::TooManyReservations));
+    }
+
+    /// The card is 16 entries (the collector's own cap), so the 16th entry
+    /// must pass and only the 17th is refused.
+    #[test]
+    fn accepts_exactly_the_collector_reservation_bound() {
+        let structure = minimal_tree(0);
+        let mut entries = Vec::new();
+        for i in 0..MRB_MAX_ENTRIES {
+            entries.extend_from_slice(&(0x8000_0000u64 + i as u64 * 0x1000).to_be_bytes());
+            entries.extend_from_slice(&0x1000u64.to_be_bytes());
+        }
+        entries.extend_from_slice(&[0u8; 16]);
+        let struct_start = 40 + entries.len() as u32;
+        let mut bytes = blob_ex(
+            40,
+            struct_start,
+            &structure,
+            struct_start + structure.len() as u32,
+            b"reg\0",
+        );
+        bytes[40..40 + entries.len()].copy_from_slice(&entries);
+        assert!(validate(0x8000_0000, &bytes).is_ok());
     }
 
     #[test]
