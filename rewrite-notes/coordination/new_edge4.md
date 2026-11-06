@@ -5865,3 +5865,13 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - `fa894ca84 docs(01)`：§2.8 补交接页合同段（物理帧来源、生命周期、字节序、精确版本、fail-stop 与测试名）；§6 读数刷新；02/03/todo 追加。门：977 行 / 161,724 字节、围栏 22 偶、表格 39 块 0 不一致、破表 0、lint error 0、横幅 PASS（第一百零八轮）、lost 0（syms 180→573、tests 78→291）。
 - 认领：`I-29 qorder108`，状态 ✅：第一百零八轮已 ff 合并为 `fa894ca84`，认领已释放。
 - 仍开放：UEFI 逐描述符来源记录（设计裁决未定：≥256 条独立有界载体 vs 快照身份+索引引用）；QEMU 腿。
+
+### 第三百一十六笔（01 阶段 · I-29 第一百零九轮：UEFI 逐描述符来源记录）
+
+- 裁决（用户选定）：扩大 arena 而非快照引用。
+- `42af28d01 feat(handoff)`：`ARENA_CAP` 4→7 页；来源分区容量 40→256（= `MAX_MAP_DESCRIPTORS`，48 B×256=12,288 B，`WIRE_SOURCES_END == 26304` 编译期断言，余 2,368 B）；新增 `SourceOrigin::UefiDescriptor { index }`（wire 标签 4）；`Plan::write_to` 回调带描述符索引，`commit` 对每个产出入普通表的描述符写记录，重试时 `reset_map_partitions` 清空来源分区；预检 `conventional + reserved <= WIRE_SOURCES_CAP`；内核落地垫扩到 256。
+- `36fb62c35 docs(01)`：§2.9／O-13a／§7／§6 刷新（四条腿均交付记录；`Excluded`/`DevicePath` 无记录为唯一省略）；02/03/todo 追加。门：977 行 / 162,020 字节、围栏 22 偶、表格 39 块 0 不一致、破表 0、lint error 0、横幅 PASS（第一百零九轮）、lost 0（syms 180→573、tests 87→296）。
+- 测试：`source_records_cover_the_classified_map_per_descriptor`、`source_partition_resets_between_ebs_attempts`；minix-boot 152、boot-shim --features uefi 72+5、kernel mock 863 / 0 / 8。
+- **未验证**：QEMU 腿（真实固件的描述符分布与 256 上限只在 UEFI 腿执行）、三架构交叉构建。
+- 认领：`I-29 qorder109`，状态 ✅：第一百零九轮已 ff 合并为 `36fb62c35`，认领已释放。
+- I-29 实现项至此全部落地；仅剩 QEMU 真机门（环境不具备）与由此而来的验证声明。
