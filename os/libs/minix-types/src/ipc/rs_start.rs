@@ -275,7 +275,7 @@ pub fn encode_rs_start(bytes: &mut [u8], wire: &RsStartWire) -> Result<(), Errno
 /// (`bitchunk_t[2]`) are combined little-endian into one `u64` — bit *i*
 /// of the combined value is call number *i*, matching C's chunk layout
 /// (`bitmap.h`: chunk *i/32*, bit *i%32*).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RsStartWire {
     /// `rss_flags` — raw `RSS_*` bits.
     pub flags: u32,
@@ -359,7 +359,7 @@ pub struct RsStartWire {
 }
 
 /// `struct { unsigned base; unsigned len; }` — rs.h:125.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RsIoRangeWire {
     /// `base`.
     pub base: u32,
@@ -369,7 +369,7 @@ pub struct RsIoRangeWire {
 
 /// `struct rs_pci_id` — rs.h:73-78. `NO_SUB_VID`/`NO_SUB_DID` = `0xffff`
 /// (rs.h:79-80) mean "no subsystem match requested".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RsPciIdWire {
     /// `vid`.
     pub vid: u16,
@@ -382,7 +382,7 @@ pub struct RsPciIdWire {
 }
 
 /// `struct rs_pci_class` — rs.h:82-85.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RsPciClassWire {
     /// `pciclass`.
     pub pciclass: u32,
@@ -393,7 +393,7 @@ pub struct RsPciClassWire {
 /// `struct rss_label` — rs.h:66-70: a caller-space (address, length) pair;
 /// the label bytes are copied over separately ("Labels are copied over
 /// separately" — rs.h:63).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RsLabelWire {
     /// `l_addr` — caller-space address (0 = unset).
     pub addr: u64,
@@ -402,7 +402,7 @@ pub struct RsLabelWire {
 }
 
 /// `struct rs_state_data` — rs.h:92-101.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RsStateDataWire {
     /// `size` — total state-data size.
     pub size: u64,

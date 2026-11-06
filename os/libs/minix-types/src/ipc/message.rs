@@ -536,6 +536,19 @@ impl Message {
         req.endpoint = endpoint.get();
     }
 
+    /// Fills `m_rs_req.addr`/`len` for the RS control-request family — C
+    /// `m.m_rs_req.addr = &config.rs_start` (`minix-service.c:817`,
+    /// `parse.c` callers). `addr` is a caller-space pointer to the request
+    /// structure; RS copies from it with `sys_datacopy`.
+    #[inline]
+    pub fn set_rs_req_payload(&mut self, addr: u64, len: i32) {
+        // Union *writes* are safe for plain-old-data arms (reads are not);
+        // this mirrors C's `m.m_rs_req.addr = ...` assignment and leaves the
+        // union's other arms untouched.
+        self.m_u.m_rs_req.addr = addr;
+        self.m_u.m_rs_req.len = len;
+    }
+
     /// Reads back the endpoint written by [`Self::set_rs_req_endpoint`]
     /// (the RS_LOOKUP reply payload assertion path).
     pub fn rs_req_endpoint(&self) -> Option<Endpoint> {

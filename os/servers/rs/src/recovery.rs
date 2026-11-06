@@ -264,6 +264,17 @@ mod tests {
     use crate::testutil::MockKernelApi;
 
     #[test]
+    fn script_text_stops_at_the_nul_and_tolerates_junk() {
+        // The slot's `char[MAX_SCRIPT_LEN]` is always terminated by the copy
+        // helpers; the bytes before the first NUL are the script.
+        assert_eq!(script_text(b"/etc/rs.single\0junk"), "/etc/rs.single");
+        assert_eq!(script_text(b"all-zero"), "all-zero");
+        assert_eq!(script_text(b"\0"), "");
+        // Non-UTF-8 answers "" (registered deviation: C hands raw bytes).
+        assert_eq!(script_text(b"\xff\xfe"), "");
+    }
+
+    #[test]
     fn test_compute_backoff_properties() {
         // E-9: generated restarts across the full i32 range — totality
         // (no panic, Fix #32), bounds [1, MAX_BACKOFF], the use_copy and
@@ -812,7 +823,99 @@ pub fn crash_service(
     Ok(CrashOutcome::Signalled)
 }
 
-/// Crashes a system service and marks it as not-to-be-restarted.
+/// The NUL-terminated script/label arrays in the slot are `char[N]` in C;
+/// the copy helpers always terminate them, so the bytes before the first
+/// NUL are the string. Non-UTF-8 tails answer `""` (C hands the raw bytes to
+/// `execle`; paths in this tree are UTF-8 — registered deviation).
+fn script_text(script: &[u8]) -> &str {
+    let end = script.iter().position(|&b| b == 0).unwrap_or(script.len());
+    core::str::from_utf8(&script[..end]).unwrap_or("")
+}
+
+/// C `run_script` (`manager.c:1185-1239`): fork RS and exec `/bin/sh` with
+/// the restart script, label, reason, and incarnation (`execle(_PATH_BSHELL,
+/// "sh", r_script, label, reason, incarnation, NULL, envp)`); in the parent,
+/// hand the child a user privilege set, let it run, and re-pin RS's own
+/// memory. This is the `run_script` seam's production leg.
+///
+/// Failure mapping: the three parent-side fatals C answers through
+/// `kill_service` ("can't set script privileges", "can't set script VM
+/// privs", "can't let the script run") keep that path; C's
+/// `panic("unable to get child endpoint")` becomes an `Err` instead of a
+/// server-wide outage (registered deviation — a root server must not die on
+/// a missing child endpoint).
+pub fn run_script(slot: &mut ServiceSlot, kernel: &mut dyn KernelApi) -> Result<(), Errno> {
+    let script = script_text(&slot.script);
+    let label = slot.pub_.label.as_str().unwrap_or("");
+    let reason = script_reason(slot.flags);
+    let incarnation = alloc::format!("{}", slot.restarts);
+    let pid = minix_sys::fork()?;
+    if pid == 0 {
+        // Child: build the initial stack for `sh script label reason
+        // incarnation` with an empty environment, then exec `/bin/sh`. A
+        // returned call is failure — a successful exec never comes back
+        // (`execve.c:53-58`).
+        let argv = ["sh", script, label, reason, incarnation.as_str()];
+        let envp: [&str; 0] = [];
+        let params = minix_sys::stack::stack_params(&argv, &envp);
+        let Ok(user_sp) = minix_sys::user_stack_top() else {
+            minix_sys::exit(1);
+        };
+        let mut frame = alloc::vec![0u8; params.frame_size];
+        let Ok(placement) =
+            minix_sys::stack::stack_fill(&argv, &envp, params.frame_size, user_sp, &mut frame)
+        else {
+            minix_sys::exit(1);
+        };
+        let path = b"/bin/sh\0";
+        let Ok(prepared) = minix_sys::pm::prepare_exec(
+            path.as_ptr() as u64,
+            path.len(),
+            frame.as_ptr() as u64,
+            frame.len(),
+            placement.ps_str,
+        ) else {
+            minix_sys::exit(1);
+        };
+        // [SD19-gate] the Errno returned here is the failure itself; the
+        // child exits either way (C prints and exits, manager.c:1217-1220).
+        #[allow(clippy::let_underscore_must_use)]
+        let _ = minix_sys::exec(prepared);
+        minix_sys::exit(1);
+    }
+    // Parent (`manager.c:1221-1237`).
+    let endpoint = kernel.getprocnr(pid)?;
+    if let Err(e) = kernel.privctl(endpoint, PrivCtlOp::SetUser, None) {
+        return Err(kill_service(slot, kernel, e));
+    }
+    if let Err(e) = kernel.vm_set_priv(endpoint, crate::privilege::CallMask::empty(), false) {
+        return Err(kill_service(slot, kernel, e));
+    }
+    if let Err(e) = kernel.privctl(endpoint, PrivCtlOp::Allow, None) {
+        return Err(kill_service(slot, kernel, e));
+    }
+    // Pin RS memory again after fork()ing (`manager.c:1236-1237`); C
+    // ignores this result.
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
+    Ok(())
+}
+
+/// The production `run_script` hook the effect tables use. Test builds keep
+/// the no-op: forking `/bin/sh` inside the test process would take the
+/// harness over (the seam exists precisely so tests script it).
+#[cfg(not(test))]
+pub(crate) fn script_hook(slot: &mut ServiceSlot) -> Result<(), Errno> {
+    run_script(slot, &mut crate::trap_api::TrapKernelApi::new())
+}
+
+/// Test-build counterpart of [`script_hook`] — see its docs.
+#[cfg(test)]
+pub(crate) fn script_hook(_slot: &mut ServiceSlot) -> Result<(), Errno> {
+    Ok(())
+}
+
+/// Crashes a system service and marks it as not-to-be-restarted./// Crashes a system service and marks it as not-to-be-restarted.
 ///
 /// C: `kill_service` — manager.c:360-378: sets `RS_EXITING` ("expect exit")
 /// then crashes the service; the `errstr` printf (manager.c:365-367) is the

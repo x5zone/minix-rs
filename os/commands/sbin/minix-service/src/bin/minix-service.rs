@@ -77,6 +77,32 @@ fn real_main() -> ! {
     // C `:839-843`: `_syscall(RS_PROC_NR, request, &m)` — one sendrec to RS;
     // the reply's m_type is the result.
     let mut msg = build_request(request, &parsed);
+    // C `:756-816` / `:819-833`: the `up` family carries the packed
+    // `rs_start` image; the label verbs carry the label pointer.
+    match request {
+        Request::Up | Request::Run | Request::Update | Request::Edit => {
+            match prepare_up_image(&parsed) {
+                Ok(image) => {
+                    msg.set_rs_req_payload(image.address(), image.bytes.len() as i32);
+                }
+                Err(problem) => {
+                    support::warn(format!("couldn't parse config: {problem}\n").as_bytes());
+                    support::terminate(1);
+                }
+            }
+        }
+        Request::Down
+        | Request::Refresh
+        | Request::Restart
+        | Request::Clone
+        | Request::Unclone
+        | Request::Fi => {
+            if let Some(label) = &parsed.label {
+                msg.set_rs_req_payload(label.as_ptr() as u64, label.len() as i32);
+            }
+        }
+        Request::Sysctl | Request::Shutdown => {}
+    }
     // C `:839-843`: `_syscall(RS_PROC_NR, request, &m)` — the minix-sys
     // top-level `sendrec` wrapper (the sanctioned command face).
     let reply = minix_sys::sendrec(minix_sys::Endpoint::RS, &mut msg);
@@ -101,6 +127,59 @@ fn real_main() -> ! {
             support::terminate(1);
         }
     }
+}
+
+/// C `parse_config` (`parse.c:1229-1255`) + the `up` image assembly: pick the
+/// config file (custom, package dir, conf dir, then the default), read the
+/// passwd database for the `service` entry, and pack the request.
+fn prepare_up_image(args: &Args) -> Result<minix_service::RequestImage, String> {
+    use minix_proctools::configfile::config_read_text;
+    use minix_service::{
+        PATH_SYSTEM_CONF, PATH_SYSTEM_CONF_DIR, PATH_SYSTEM_CONF_PKG_DIR, RsStartDefaults,
+        build_up_request, progname_of,
+    };
+
+    let path = args
+        .path
+        .as_deref()
+        .ok_or_else(|| String::from("no binary path"))?;
+    let progname = args
+        .progname
+        .clone()
+        .unwrap_or_else(|| String::from(progname_of(path)));
+
+    let (raw, file) = if let Some(custom) = &args.config {
+        (
+            support::read_file(custom).map_err(|_| format!("cannot read {custom}"))?,
+            custom.clone(),
+        )
+    } else {
+        let pkg = format!("{PATH_SYSTEM_CONF_PKG_DIR}/{progname}");
+        let dir = format!("{PATH_SYSTEM_CONF_DIR}/{progname}");
+        if let Ok(text) = support::read_file(&pkg) {
+            (text, pkg)
+        } else if let Ok(text) = support::read_file(&dir) {
+            (text, dir)
+        } else {
+            (
+                support::read_file(PATH_SYSTEM_CONF)
+                    .map_err(|_| String::from("cannot read the system config"))?,
+                String::from(PATH_SYSTEM_CONF),
+            )
+        }
+    };
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let users_raw = support::read_file("/etc/passwd").unwrap_or_default();
+    let users = String::from_utf8_lossy(&users_raw).into_owned();
+    let lines =
+        config_read_text(&text, &file, 0, &|_| None).map_err(|e| e.message)?;
+    // `parse.c:1162`: the uid default is the `service` passwd entry's.
+    let defaults = RsStartDefaults {
+        service_uid: minix_service::resolve_service_uid(&users),
+        ..RsStartDefaults::default()
+    };
+    build_up_request(&lines, &progname, &defaults, args, Some(users.as_str()))
+        .map_err(|e| e.message)
 }
 
 #[cfg(all(not(test), target_os = "none"))]

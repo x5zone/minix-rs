@@ -26,7 +26,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use minix_sys::rs::{
     RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
-    RS_UP, RS_UPDATE, RsPciClassWire, RsPciIdWire,
+    RS_UP, RS_UPDATE, RsIoRangeWire, RsLabelWire, RsPciClassWire, RsPciIdWire, RsStartWire,
+    RsStateDataWire, encode_rs_start, rs_start_off,
 };
 use minix_sys::syscall::{
     KERNEL_CALL, NR_SYS_CALLS, SYS_ABORT, SYS_DEVIO, SYS_IOPENABLE, SYS_IRQCTL, SYS_KILL,
@@ -119,6 +120,196 @@ impl Request {
 /// `RSS_NR_IRQ 16` / `RSS_NR_IO 16` (`rs.h:25-26`).
 pub const RSS_NR_IRQ: i32 = 16;
 pub const RSS_NR_IO: i32 = 16;
+/// C `DSRV_SM`/`DSRV_SCH`/`DSRV_Q`/`DSRV_QT` (`priv.h:83-99`): the clean
+/// defaults `do_config` installs — `ROOT_SYS_PROC_NR` (= `RS_PROC_NR`, 2),
+/// `SCHED_PROC_NR` (4), `USER_Q` ((`NR_SCHED_QUEUES`-1)/2 = 7), and
+/// `USER_QUANTUM` (200) (`config.h:66-74`, `com.h:63,77`).
+pub const DSRV_SM: i32 = 2;
+pub const DSRV_SCH: i32 = 4;
+pub const DSRV_Q: i32 = 7;
+pub const DSRV_QT: i32 = 200;
+
+/// C `strrchr(req_path, '/') + 1` (`minix-service.c:743-752`): the program
+/// name is the path's basename.
+pub fn progname_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(i) => &path[i + 1..],
+        None => path,
+    }
+}
+
+/// Appends one string to the image and answers its absolute caller-space
+/// address and length.
+fn place_string(bytes: &mut Vec<u8>, base: u64, text: &str) -> (u64, u64) {
+    let start = bytes.len();
+    bytes.extend_from_slice(text.as_bytes());
+    (base + start as u64, text.len() as u64)
+}
+
+/// A complete `up` request image: the `rs_start` struct followed by every
+/// string it points at, in one caller-space buffer. `decode_rs_start` reads
+/// the leading struct back; RS copies the whole image out of the caller's
+/// space with `sys_datacopy`.
+pub struct RequestImage {
+    pub bytes: Vec<u8>,
+}
+
+impl RequestImage {
+    /// The struct's address — the value `m_rs_req.addr` carries.
+    pub fn address(&self) -> u64 {
+        self.bytes.as_ptr() as u64
+    }
+}
+
+/// C `main`'s `RS_UP`/`RS_UPDATE`/`RS_EDIT` assembly
+/// (`minix-service.c:746-816`): run the config walk for `block_label`, apply
+/// the post-walk defaults, then pack the struct and its strings into one
+/// image whose internal pointers are absolute.
+pub fn build_up_request(
+    lines: &[minix_proctools::configfile::ConfigEntry],
+    block_label: &str,
+    defaults: &RsStartDefaults,
+    args: &Args,
+    users: Option<&str>,
+) -> Result<RequestImage, minix_proctools::configfile::ConfigError> {
+    use minix_proctools::configfile::ConfigError;
+    let mut built = do_config_walk(lines, Some(block_label), defaults, args, users)?;
+    // `parse.c:1240-1246`: with no `ipc` statement the request carries
+    // `RSS_IPC_ALL_SYS`.
+    let ipc = built
+        .ipc
+        .take()
+        .unwrap_or_else(|| String::from(RSS_IPC_ALL_SYS));
+    let path = args.path.as_deref().unwrap_or("");
+    // `:746-753`: `command` is `path + " " + args`; `progname` is
+    // `-progname` or the path's basename.
+    let cmd = format!("{path} {}", args.args.as_deref().unwrap_or(""));
+    let progname = args
+        .progname
+        .clone()
+        .unwrap_or_else(|| String::from(progname_of(path)));
+    // `:776-787`: `rss_label` defaults to the progname; the target label
+    // stays empty unless given.
+    let label = built.label.clone().unwrap_or_else(|| progname.clone());
+    let trg_label = args.trg_label.clone().unwrap_or_default();
+    let script = args.script.clone().unwrap_or_default();
+    let control = built.control.clone();
+
+    let strings = cmd.len()
+        + script.len()
+        + label.len()
+        + trg_label.len()
+        + ipc.len()
+        + progname.len()
+        + control.iter().map(String::len).sum::<usize>();
+    let mut bytes: Vec<u8> = Vec::new();
+    if bytes
+        .try_reserve_exact(rs_start_off::SIZE + strings)
+        .is_err()
+    {
+        return Err(ConfigError {
+            line: 0,
+            message: String::from("no memory for the request image"),
+        });
+    }
+    bytes.resize(rs_start_off::SIZE, 0);
+    // The capacity above guarantees the buffer never moves, so the base
+    // taken here stays valid while the strings are appended.
+    let base = bytes.as_ptr() as u64;
+    let (cmd_addr, cmd_len) = place_string(&mut bytes, base, &cmd);
+    let (script_addr, script_len) = place_string(&mut bytes, base, &script);
+    let (label_addr, label_len) = place_string(&mut bytes, base, &label);
+    let (trg_addr, trg_len) = place_string(&mut bytes, base, &trg_label);
+    let (ipc_addr, ipc_len) = place_string(&mut bytes, base, &ipc);
+    let (prog_addr, prog_len) = place_string(&mut bytes, base, &progname);
+    let mut control_labels = [RsLabelWire::default(); RS_NR_CONTROL as usize];
+    for (i, text) in control.iter().take(RS_NR_CONTROL as usize).enumerate() {
+        let (addr, len) = place_string(&mut bytes, base, text);
+        control_labels[i] = RsLabelWire { addr, len };
+    }
+
+    let mut wire = RsStartWire {
+        flags: built.flags | args.rss_flags,
+        ..RsStartWire::default()
+    };
+    wire.cmd_addr = cmd_addr;
+    wire.cmd_len = cmd_len;
+    wire.uid = built.uid;
+    wire.sigmgr = built.sigmgr;
+    wire.scheduler = built.scheduler;
+    wire.priority = built.priority;
+    wire.quantum = built.quantum;
+    wire.major = args.major.unwrap_or(0) as i32;
+    wire.period = args.period.unwrap_or(0);
+    wire.script_addr = script_addr;
+    wire.script_len = script_len;
+    wire.asr_count = -1; // C `req_asr_count = -1` (`:164`)
+    wire.restarts = 0;
+    wire.heap_prealloc_bytes = 0;
+    wire.map_prealloc_bytes = 0;
+    wire.nr_irq = built.nr_irq;
+    for (i, value) in built.irq.iter().take(16).enumerate() {
+        wire.irq[i] = *value;
+    }
+    wire.nr_io = built.nr_io;
+    for (i, (b, l)) in built.io.iter().take(16).enumerate() {
+        wire.io[i] = RsIoRangeWire {
+            base: *b as u32,
+            len: *l as u32,
+        };
+    }
+    wire.nr_pci_id = built.nr_pci_id;
+    for (i, value) in built.pci_id.iter().take(32).enumerate() {
+        wire.pci_id[i] = *value;
+    }
+    wire.nr_pci_class = built.nr_pci_class;
+    for (i, value) in built.pci_class.iter().take(4).enumerate() {
+        wire.pci_class[i] = *value;
+    }
+    wire.system = built.system;
+    wire.vm = built.vm;
+    wire.label = RsLabelWire {
+        addr: label_addr,
+        len: label_len,
+    };
+    wire.trg_label = RsLabelWire {
+        addr: trg_addr,
+        len: trg_len,
+    };
+    wire.ipc_addr = ipc_addr;
+    wire.ipc_len = ipc_len;
+    wire.nr_control = built.nr_control;
+    wire.control = control_labels;
+    // C sets `size = sizeof(rss_state_data)` (`:788-790`); the wire layout
+    // spans seven fields = 56 bytes.
+    wire.state_data = RsStateDataWire {
+        size: 56,
+        ..RsStateDataWire::default()
+    };
+    wire.progname_addr = prog_addr;
+    wire.progname_len = prog_len;
+    wire.nr_domain = built.nr_domain;
+    for (i, value) in built.domain.iter().take(8).enumerate() {
+        wire.domain[i] = *value;
+    }
+    // The capacity reserved above makes these arguments in bounds.
+    let _ = encode_rs_start(&mut bytes[..rs_start_off::SIZE], &wire);
+    Ok(RequestImage { bytes })
+}
+
+/// The default config file and its per-service search directories
+/// (`minix3/minix/include/minix/paths.h:7-9`), and the passwd entry the
+/// defaults come from (`SERVICE_LOGIN`, `priv.h`).
+pub const PATH_SYSTEM_CONF: &str = "/etc/system.conf";
+pub const PATH_SYSTEM_CONF_DIR: &str = "/etc/system.conf.d";
+pub const PATH_SYSTEM_CONF_PKG_DIR: &str = "/usr/pkg/etc/system.conf.d";
+pub const SERVICE_LOGIN: &str = "service";
+
+/// `MAX_CLASS_RECURS 100` (`parse.c:39`): nesting bound for `class`
+/// inheritance. C checks `class_recurs > MAX_CLASS_RECURS` at entry
+/// (`:49-54`), so the deepest accepted chain is 101 calls.
+pub const MAX_CLASS_RECURS: usize = 100;
+
 /// `RS_NR_CONTROL 8` (`rs.h:55`) and `NR_DOMAIN 8` (`config.h:61`): the
 /// two fixed-size label arrays the matching statements fill.
 pub const RS_NR_CONTROL: i32 = 8;
@@ -194,6 +385,13 @@ pub struct Args {
     pub period: Option<i64>,
     /// `sysctl <subtype>` (`req_sysctl_type`).
     pub sysctl_subtype: Option<i32>,
+    /// `-progname <name>` (`req_progname`).
+    pub progname: Option<String>,
+    /// `-trglabel <name>` (`req_trg_label`).
+    pub trg_label: Option<String>,
+    /// `-config <path>` (`req_config`); setting it also marks the file as
+    /// custom (`custom_config_file`, `minix-service.c:573-576`).
+    pub config: Option<String>,
 }
 
 /// A parse failure. Every message is C's `print_usage(app, problem)` pair —
@@ -347,6 +545,27 @@ pub fn parse_args(args: &[&str]) -> Result<Args, ParseError> {
                     .get(index)
                     .ok_or(ParseError::OptionalArgumentNotComplete)?;
                 out.label = Some(String::from(*v));
+            }
+            "-progname" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                out.progname = Some(String::from(*v));
+            }
+            "-trglabel" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                out.trg_label = Some(String::from(*v));
+            }
+            "-config" => {
+                index += 1;
+                let v = args
+                    .get(index)
+                    .ok_or(ParseError::OptionalArgumentNotComplete)?;
+                out.config = Some(String::from(*v));
             }
             "-period" => {
                 index += 1;
@@ -528,13 +747,15 @@ pub struct RsStartDefaults {
 }
 
 impl Default for RsStartDefaults {
+    /// C's clean defaults (`parse.c:1160-1176`): `DSRV_SM`/`DSRV_SCH`/
+    /// `DSRV_Q`/`DSRV_QT` plus the two BASIC_CALLS flag bits.
     fn default() -> Self {
         Self {
             service_uid: None,
-            sigmgr: 0,
-            scheduler: 0,
-            priority: 0,
-            quantum: 0,
+            sigmgr: DSRV_SM,
+            scheduler: DSRV_SCH,
+            priority: DSRV_Q,
+            quantum: DSRV_QT,
             flags: RSS_VM_BASIC_CALLS | RSS_SYS_BASIC_CALLS,
         }
     }
@@ -842,12 +1063,12 @@ const DOMAIN_TABLE: [(&str, i32); 32] = [
 /// `quantum`, `sigmgr`, `scheduler`, `descr`, the device-family keywords
 /// `irq`, `io` and `pci` (`pci device` / `pci class`), the call-mask
 /// keywords `system` and `vm`, the IPC contact list `ipc`, the two label
-/// lists `control` and `domain`, and the service `type` — the remaining
-/// keyword (`class` in its service-inheritance sense) is the registered
-/// next slice). C's per-branch `fatal` faces become `ConfigError` with the
-/// same wording.
+/// lists `control` and `domain`, the service `type`, and the `class`
+/// inheritance face — every keyword `do_service` dispatches on is covered).
+/// C's per-branch `fatal` faces become `ConfigError` with the same wording.
 pub fn do_config_walk(
     lines: &[minix_proctools::configfile::ConfigEntry],
+    label: Option<&str>,
     defaults: &RsStartDefaults,
     args: &Args,
     users: Option<&str>,
@@ -879,7 +1100,22 @@ pub fn do_config_walk(
         domain: Vec::new(),
         service_type: None,
     };
+    let mut selected = 0usize;
     for line in lines {
+        if let Some(want) = label {
+            // C `do_config` (`parse.c:1195-1225`) walks only the block
+            // whose label matches; the full config stays available to
+            // `class` lookups.
+            let matched = line.is_sub()
+                && line
+                    .list
+                    .get(1)
+                    .is_some_and(|w| !w.is_string() && !w.is_sub() && w.word == want);
+            if !matched {
+                continue;
+            }
+            selected += 1;
+        }
         if !line.is_sub() {
             return Err(ConfigError {
                 line: line.line,
@@ -909,667 +1145,723 @@ pub fn do_config_walk(
         // words in place — C's per-line chain is flat at the consumer level.
         let mut flat: Vec<&minix_proctools::configfile::ConfigEntry> = Vec::new();
         flatten_words(&line.list[1..], &mut flat);
-        // C's walk dispatches keyword by keyword over the flat chain
-        // (do_service → do_uid/do_priority/…); a scalar keyword takes
-        // exactly one value and the next word must be a keyword or the end
-        // (`do_uid`'s `cpe->next != NULL` fatal, parse.c:120-123).
-        let mut index = 0usize;
-        while index < flat.len() {
-            let word = flat[index];
-            let Some(value) = flat.get(index + 1) else {
-                break; // a trailing keyword with no value: C's walk ends too
-            };
-            match word.word.as_str() {
-                "uid" => {
-                    out.uid = user_by_name(users, &value.word)
-                        .unwrap_or_else(|| resolve_uid(&value.word));
-                    if flat
-                        .get(index + 2)
-                        .is_some_and(|next| !STATEMENT_KEYWORDS.contains(&next.word.as_str()))
-                    {
-                        return Err(ConfigError {
-                            line: word.line,
-                            message: String::from("just one uid/login expected"),
-                        });
-                    }
-                    index += 2;
-                }
-                "priority" => {
-                    if value.is_string() || value.is_sub() {
-                        return Err(ConfigError {
-                            line: word.line,
-                            message: String::from("unexpected string"),
-                        });
-                    }
-                    out.priority = value.word.parse().map_err(|_| ConfigError {
-                        line: word.line,
-                        message: format!("bad priority '{}'", value.word),
-                    })?;
-                    index += 2;
-                }
-                "quantum" => {
-                    if value.is_string() || value.is_sub() {
-                        return Err(ConfigError {
-                            line: word.line,
-                            message: String::from("unexpected string"),
-                        });
-                    }
-                    out.quantum = value.word.parse().map_err(|_| ConfigError {
-                        line: word.line,
-                        message: format!("bad quantum '{}'", value.word),
-                    })?;
-                    index += 2;
-                }
-                "sigmgr" | "scheduler" => {
-                    if value.is_string() || value.is_sub() {
-                        return Err(ConfigError {
-                            line: word.line,
-                            message: String::from("unexpected string"),
-                        });
-                    }
-                    let parsed: i32 = value.word.parse().map_err(|_| ConfigError {
-                        line: word.line,
-                        message: format!("bad {} '{}'", word.word, value.word),
-                    })?;
-                    if word.word == "sigmgr" {
-                        out.sigmgr = parsed;
-                    } else {
-                        out.scheduler = parsed;
-                    }
-                    index += 2;
-                }
-                "descr" => {
-                    if !value.is_string() {
-                        return Err(ConfigError {
-                            line: word.line,
-                            message: String::from("descr must be a string"),
-                        });
-                    }
-                    out.descr = Some(value.word.clone());
-                    index += 2;
-                }
-                "irq" => {
-                    // C `do_irq` (`parse.c:406-461`): the values run to the
-                    // next statement keyword; `NONE` only ends the list;
-                    // `ALL` sets the sentinel; everything else is
-                    // `strtoul(word, &check, 0)` — base 0, so `0x10` is 16
-                    // and `010` is 8 — stored into an `int`.
-                    index += 1;
-                    let mut first = true;
-                    // C writes at `rss_nr_irq` and `do_config` memsets the
-                    // struct only once, so a repeated `irq` statement
-                    // appends to what earlier ones stored; `NONE` leaves
-                    // the count alone (`parse.c:428-434`, `:454-460`).
-                    let mut count = out.nr_irq;
-                    let mut irqs: Vec<i32> = core::mem::take(&mut out.irq);
-                    while index < flat.len() {
-                        let w = flat[index];
-                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                            break;
-                        }
-                        if w.is_string() || w.is_sub() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: String::from("do_irq: unexpected string"),
-                            });
-                        }
-                        // C's `cpe->next` spans this statement's list only;
-                        // in the flat walk that list ends at the next
-                        // statement keyword.
-                        let at_list_end = index + 1 >= flat.len()
-                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
-                        if w.word == "NONE" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_irq: NONE keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            index += 1;
-                            break;
-                        }
-                        if w.word == "ALL" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_irq: ALL keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            count = RSS_IRQ_ALL;
-                            index += 1;
-                            break;
-                        }
-                        let (v, used) = strtoul_prefix(&w.word, 0);
-                        if used != w.word.len() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: format!("do_irq: bad irq '{}'", w.word),
-                            });
-                        }
-                        if count >= RSS_NR_IRQ {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: format!("do_irq: too many IRQs (max {RSS_NR_IRQ})"),
-                            });
-                        }
-                        // C assigns `unsigned long` to `int`: keep the low
-                        // 32 bits, sign included.
-                        irqs.push(v as u32 as i32);
-                        count += 1;
-                        first = false;
-                        index += 1;
-                    }
-                    out.nr_irq = count;
-                    out.irq = irqs;
-                }
-                "io" => {
-                    // C `do_io` (`parse.c:461-530`): `base[:len]` pairs in
-                    // hex (`strtoul(..., 0x10)`, the `0x` prefix allowed);
-                    // `NONE`/`ALL` take the same shapes as `do_irq`, and a
-                    // repeated statement appends like `do_irq`.
-                    index += 1;
-                    let mut first = true;
-                    let mut count = out.nr_io;
-                    let mut ranges: Vec<(u64, u64)> = core::mem::take(&mut out.io);
-                    while index < flat.len() {
-                        let w = flat[index];
-                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                            break;
-                        }
-                        if w.is_string() || w.is_sub() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: String::from("do_io: unexpected string"),
-                            });
-                        }
-                        let at_list_end = index + 1 >= flat.len()
-                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
-                        if w.word == "NONE" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_io: NONE keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            index += 1;
-                            break;
-                        }
-                        if w.word == "ALL" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from("do_io: ALL keyword not allowed in list"),
-                                });
-                            }
-                            count = RSS_IO_ALL;
-                            index += 1;
-                            break;
-                        }
-                        let Some((base, len)) = parse_io_range(&w.word) else {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: format!("do_io: bad I/O range '{}'", w.word),
-                            });
-                        };
-                        if count >= RSS_NR_IO {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: format!("do_io: too many I/O ranges (max {RSS_NR_IO})"),
-                            });
-                        }
-                        // C stores into `unsigned base` / `unsigned len`.
-                        ranges.push((u64::from(base as u32), u64::from(len as u32)));
-                        count += 1;
-                        first = false;
-                        index += 1;
-                    }
-                    out.nr_io = count;
-                    out.io = ranges;
-                }
-                "pci" => {
-                    // C `do_pci` (`parse.c:628-656`): the statement's first
-                    // word selects the table — `device` fills `rss_pci_id`,
-                    // `class` fills `rss_pci_class`; an empty statement is a
-                    // no-op (`cpe == NULL`).
-                    index += 1;
-                    let Some(sub) = flat.get(index) else {
-                        break;
-                    };
-                    if sub.is_string() || sub.is_sub() {
-                        return Err(ConfigError {
-                            line: sub.line,
-                            message: String::from("do_pci: unexpected string"),
-                        });
-                    }
-                    // `class` is both a pci sub-keyword and a top-level
-                    // statement keyword, so the sub-word is interpreted
-                    // before the statement-boundary test.
-                    let device_table = match sub.word.as_str() {
-                        "device" => Some(true),
-                        "class" => Some(false),
-                        _ => None,
-                    };
-                    let Some(device_table) = device_table else {
-                        if STATEMENT_KEYWORDS.contains(&sub.word.as_str()) {
-                            // Empty `pci` statement: C's `do_pci(NULL)`
-                            // returns and this word opens the next
-                            // statement, so dispatch resumes here.
-                            continue;
-                        }
-                        return Err(ConfigError {
-                            line: sub.line,
-                            message: format!("do_pci: unexpected word '{}'", sub.word),
-                        });
-                    };
-                    index += 1;
-                    if device_table {
-                        // C appends at `rss_nr_pci_id`, so a repeated
-                        // statement continues the same table.
-                        let mut count = out.nr_pci_id;
-                        let mut ids: Vec<RsPciIdWire> = core::mem::take(&mut out.pci_id);
-                        while index < flat.len() {
-                            let w = flat[index];
-                            if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                                break;
-                            }
-                            if w.is_string() || w.is_sub() {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from("do_pci_device: unexpected string"),
-                                });
-                            }
-                            let Some(entry) = parse_pci_device(&w.word) else {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: format!("do_pci_device: bad ID '{}'", w.word),
-                                });
-                            };
-                            if count >= RS_NR_PCI_DEVICE {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: format!(
-                                        "do_pci_device: too many device IDs (max {RS_NR_PCI_DEVICE})"
-                                    ),
-                                });
-                            }
-                            ids.push(entry);
-                            count += 1;
-                            index += 1;
-                        }
-                        out.nr_pci_id = count;
-                        out.pci_id = ids;
-                    } else {
-                        let mut count = out.nr_pci_class;
-                        let mut classes: Vec<RsPciClassWire> = core::mem::take(&mut out.pci_class);
-                        while index < flat.len() {
-                            let w = flat[index];
-                            if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                                break;
-                            }
-                            if w.is_string() || w.is_sub() {
-                                // C's `do_pci_class` reuses the
-                                // `do_pci_device` wording for these two
-                                // fatals (`parse.c:589-597`) — kept verbatim.
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from("do_pci_device: unexpected string"),
-                                });
-                            }
-                            let Some(entry) = parse_pci_class(&w.word) else {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: format!("do_pci_class: bad class ID '{}'", w.word),
-                                });
-                            };
-                            if count >= RS_NR_PCI_CLASS {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: format!(
-                                        "do_pci_class: too many class IDs (max {RS_NR_PCI_CLASS})"
-                                    ),
-                                });
-                            }
-                            classes.push(entry);
-                            count += 1;
-                            index += 1;
-                        }
-                        out.nr_pci_class = count;
-                        out.pci_class = classes;
-                    }
-                }
-                "system" => {
-                    // C `do_system` (`parse.c:852-914`): `BASIC` keeps the
-                    // default, `NONE` clears `RSS_SYS_BASIC_CALLS`, `ALL`
-                    // fills the vector, and labels set
-                    // `SYS_* - KERNEL_CALL` bits.
-                    index += 1;
-                    let mut first = true;
-                    while index < flat.len() {
-                        let w = flat[index];
-                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                            break;
-                        }
-                        if w.is_string() || w.is_sub() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: String::from("do_system: unexpected string"),
-                            });
-                        }
-                        let at_list_end = index + 1 >= flat.len()
-                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
-                        if w.word == "BASIC" {
-                            if !first || !at_list_end {
-                                // C prints `KW_NONE` here (`parse.c:877-879`)
-                                // — a faithful quirk.
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_system: NONE keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            index += 1;
-                            break;
-                        }
-                        if w.word == "NONE" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_system: NONE keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            out.flags &= !RSS_SYS_BASIC_CALLS;
-                            index += 1;
-                            break;
-                        }
-                        if w.word == "ALL" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_system: ALL keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            for i in 0..NR_SYS_CALLS {
-                                out.system |= 1u64 << (i as u32);
-                            }
-                            index += 1;
-                            break;
-                        }
-                        if let Some(&(_, call)) =
-                            SYSTEM_CALLS.iter().find(|(label, _)| *label == w.word)
-                        {
-                            out.system |= 1u64 << ((call - KERNEL_CALL) as u32);
-                        }
-                        // Unknown names warn and continue in C
-                        // (`parse.c:895-898`); the walk has no warning
-                        // channel yet (registered deviation).
-                        first = false;
-                        index += 1;
-                    }
-                }
-                "vm" => {
-                    // C `do_vm` (`parse.c:760-826`): same face as `system`
-                    // over the VM vector; `PUSH_SIG`'s zero number sets no
-                    // bit.
-                    index += 1;
-                    let mut first = true;
-                    while index < flat.len() {
-                        let w = flat[index];
-                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                            break;
-                        }
-                        if w.is_string() || w.is_sub() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: String::from("do_vm: unexpected string"),
-                            });
-                        }
-                        let at_list_end = index + 1 >= flat.len()
-                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
-                        if w.word == "BASIC" {
-                            if !first || !at_list_end {
-                                // C prints `KW_NONE` here too
-                                // (`parse.c:779-783`).
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_vm: NONE keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            index += 1;
-                            break;
-                        }
-                        if w.word == "NONE" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from(
-                                        "do_vm: NONE keyword not allowed in list",
-                                    ),
-                                });
-                            }
-                            out.flags &= !RSS_VM_BASIC_CALLS;
-                            index += 1;
-                            break;
-                        }
-                        if w.word == "ALL" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: String::from("do_vm: ALL keyword not allowed in list"),
-                                });
-                            }
-                            for i in 0..NR_VM_CALLS {
-                                out.vm |= 1u64 << i;
-                            }
-                            index += 1;
-                            break;
-                        }
-                        match VM_CALLS.iter().find(|(label, _)| *label == w.word) {
-                            // `PUSH_SIG`'s zero number sets no bit.
-                            Some(&(_, call)) if call != 0 => {
-                                out.vm |= 1u64 << (call - VM_RQ_BASE);
-                            }
-                            _ => {}
-                        }
-                        first = false;
-                        index += 1;
-                    }
-                }
-                "ipc" => {
-                    // C `do_ipc` (`parse.c:658-706`): one space-separated
-                    // contact list; `ALL`/`ALL_SYS` must stand alone and
-                    // expand to the sentinel strings; a second `ipc`
-                    // statement is the `req_ipc is set` fatal.
-                    index += 1;
-                    let mut first = true;
-                    let mut parts: Vec<&str> = Vec::new();
-                    while index < flat.len() {
-                        let w = flat[index];
-                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                            break;
-                        }
-                        if w.is_string() || w.is_sub() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: String::from("do_ipc: unexpected string"),
-                            });
-                        }
-                        let at_list_end = index + 1 >= flat.len()
-                            || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
-                        let word = if w.word == "ALL" || w.word == "ALL_SYS" {
-                            if !first || !at_list_end {
-                                return Err(ConfigError {
-                                    line: w.line,
-                                    message: format!(
-                                        "do_ipc: {} keyword not allowed in list",
-                                        w.word
-                                    ),
-                                });
-                            }
-                            if w.word == "ALL" {
-                                RSS_IPC_ALL
-                            } else {
-                                RSS_IPC_ALL_SYS
-                            }
-                        } else {
-                            &w.word
-                        };
-                        parts.push(word);
-                        first = false;
-                        index += 1;
-                    }
-                    if out.ipc.is_some() {
-                        // C's fatal carries no source position
-                        // (`parse.c:703-704`); the statement's line is the
-                        // closest anchor this walker has.
-                        return Err(ConfigError {
-                            line: word.line,
-                            message: String::from("do_ipc: req_ipc is set"),
-                        });
-                    }
-                    out.ipc = Some(parts.join(" "));
-                }
-                "control" => {
-                    // C `do_control` (`parse.c:916-942`): every word is a
-                    // control label; the local count restarts per
-                    // statement, so a repeated `control` replaces the list.
-                    index += 1;
-                    let mut labels: Vec<String> = Vec::new();
-                    while index < flat.len() {
-                        let w = flat[index];
-                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                            break;
-                        }
-                        if w.is_string() || w.is_sub() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: String::from("do_control: unexpected string"),
-                            });
-                        }
-                        if labels.len() >= RS_NR_CONTROL as usize {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: format!(
-                                    "do_control: RS_NR_CONTROL is too small ({} needed)",
-                                    labels.len() + 1
-                                ),
-                            });
-                        }
-                        labels.push(w.word.clone());
-                        index += 1;
-                    }
-                    out.nr_control = labels.len() as i32;
-                    out.control = labels;
-                }
-                "domain" => {
-                    // C `do_domain` (`parse.c:989-1024`): labels resolve
-                    // through `domain_tab`, anything else through `atoi`;
-                    // the result must satisfy `0 < D < PF_MAX`. The count
-                    // restarts per statement (replace, not append).
-                    index += 1;
-                    let mut domains: Vec<i32> = Vec::new();
-                    while index < flat.len() {
-                        let w = flat[index];
-                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
-                            break;
-                        }
-                        if w.is_string() || w.is_sub() {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: String::from("do_domain: unexpected string"),
-                            });
-                        }
-                        if domains.len() >= NR_DOMAIN as usize {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: format!(
-                                    "do_domain: NR_DOMAIN is too small ({} needed)",
-                                    domains.len() + 1
-                                ),
-                            });
-                        }
-                        let domain = DOMAIN_TABLE
-                            .iter()
-                            .find(|(name, _)| *name == w.word)
-                            .map(|&(_, number)| number)
-                            .unwrap_or_else(|| atoi(&w.word));
-                        if domain <= 0 || domain >= PF_MAX {
-                            return Err(ConfigError {
-                                line: w.line,
-                                message: format!("do_domain: unknown domain {}", w.word),
-                            });
-                        }
-                        domains.push(domain);
-                        index += 1;
-                    }
-                    out.nr_domain = domains.len() as i32;
-                    out.domain = domains;
-                }
-                "type" => {
-                    // C `do_type` (`parse.c:198-225`): exactly one value,
-                    // and the only accepted type is `net`; a second `type`
-                    // statement is fatal.
-                    index += 1;
-                    let Some(value) = flat.get(index) else {
-                        break;
-                    };
-                    // `cpe->next != NULL` — the value must stand alone.
-                    if let Some(next) = flat.get(index + 1)
-                        && !STATEMENT_KEYWORDS.contains(&next.word.as_str())
-                    {
-                        return Err(ConfigError {
-                            line: value.line,
-                            message: String::from("do_type: just one type value expected"),
-                        });
-                    }
-                    if value.is_string() || value.is_sub() {
-                        return Err(ConfigError {
-                            line: value.line,
-                            message: String::from("do_type: unexpected string"),
-                        });
-                    }
-                    if out.service_type.is_some() {
-                        return Err(ConfigError {
-                            line: value.line,
-                            message: String::from("do_type: another type"),
-                        });
-                    }
-                    if value.word != "net" {
-                        return Err(ConfigError {
-                            line: value.line,
-                            message: String::from("do_type: odd type"),
-                        });
-                    }
-                    out.service_type = Some(value.word.clone());
-                    index += 1;
-                }
-                _ => {
-                    // The remaining keyword (`class` in its
-                    // service-inheritance sense) rides with the next
-                    // slice;
-                    // unknown words are skipped to surface every unknown.
-                    index += 1;
-                }
-            }
-        }
+        walk_flat(&flat, &mut out, users, lines, 0)?;
+
         // `-label` overrides the config label (C `req_label`, `:563-565`).
         if let Some(label) = &args.label {
             out.label = Some(label.clone());
         }
     }
+    if label.is_some() && selected == 0 {
+        // C prints `minix-service: service '<label>' not found in '<file>'`
+        // and exits (`parse.c:1230-1235`); the walk reports it as a config
+        // error (the bin owns the exit).
+        return Err(ConfigError {
+            line: 0,
+            message: format!("service '{}' not found", label.unwrap_or("")),
+        });
+    }
     Ok(out)
+}
+
+/// The keyword dispatch over one service block's flat word chain — C's
+/// `do_service` (`parse.c:1027-1150`) plus the per-keyword handlers.
+/// `depth` counts `class` nesting (C's `class_recurs`, `parse.c:39-56`);
+/// the recursion re-enters here with the referenced block's words.
+fn walk_flat(
+    flat: &[&minix_proctools::configfile::ConfigEntry],
+    out: &mut BuiltRsStart,
+    users: Option<&str>,
+    lines: &[minix_proctools::configfile::ConfigEntry],
+    depth: usize,
+) -> Result<(), minix_proctools::configfile::ConfigError> {
+    use minix_proctools::configfile::ConfigError;
+    let mut index = 0usize;
+    while index < flat.len() {
+        let word = flat[index];
+        let Some(value) = flat.get(index + 1) else {
+            break; // a trailing keyword with no value: C's walk ends too
+        };
+        match word.word.as_str() {
+            "uid" => {
+                out.uid =
+                    user_by_name(users, &value.word).unwrap_or_else(|| resolve_uid(&value.word));
+                if flat
+                    .get(index + 2)
+                    .is_some_and(|next| !STATEMENT_KEYWORDS.contains(&next.word.as_str()))
+                {
+                    return Err(ConfigError {
+                        line: word.line,
+                        message: String::from("just one uid/login expected"),
+                    });
+                }
+                index += 2;
+            }
+            "priority" => {
+                if value.is_string() || value.is_sub() {
+                    return Err(ConfigError {
+                        line: word.line,
+                        message: String::from("unexpected string"),
+                    });
+                }
+                out.priority = value.word.parse().map_err(|_| ConfigError {
+                    line: word.line,
+                    message: format!("bad priority '{}'", value.word),
+                })?;
+                index += 2;
+            }
+            "quantum" => {
+                if value.is_string() || value.is_sub() {
+                    return Err(ConfigError {
+                        line: word.line,
+                        message: String::from("unexpected string"),
+                    });
+                }
+                out.quantum = value.word.parse().map_err(|_| ConfigError {
+                    line: word.line,
+                    message: format!("bad quantum '{}'", value.word),
+                })?;
+                index += 2;
+            }
+            "sigmgr" | "scheduler" => {
+                if value.is_string() || value.is_sub() {
+                    return Err(ConfigError {
+                        line: word.line,
+                        message: String::from("unexpected string"),
+                    });
+                }
+                let parsed: i32 = value.word.parse().map_err(|_| ConfigError {
+                    line: word.line,
+                    message: format!("bad {} '{}'", word.word, value.word),
+                })?;
+                if word.word == "sigmgr" {
+                    out.sigmgr = parsed;
+                } else {
+                    out.scheduler = parsed;
+                }
+                index += 2;
+            }
+            "descr" => {
+                if !value.is_string() {
+                    return Err(ConfigError {
+                        line: word.line,
+                        message: String::from("descr must be a string"),
+                    });
+                }
+                out.descr = Some(value.word.clone());
+                index += 2;
+            }
+            "irq" => {
+                // C `do_irq` (`parse.c:406-461`): the values run to the
+                // next statement keyword; `NONE` only ends the list;
+                // `ALL` sets the sentinel; everything else is
+                // `strtoul(word, &check, 0)` — base 0, so `0x10` is 16
+                // and `010` is 8 — stored into an `int`.
+                index += 1;
+                let mut first = true;
+                // C writes at `rss_nr_irq` and `do_config` memsets the
+                // struct only once, so a repeated `irq` statement
+                // appends to what earlier ones stored; `NONE` leaves
+                // the count alone (`parse.c:428-434`, `:454-460`).
+                let mut count = out.nr_irq;
+                let mut irqs: Vec<i32> = core::mem::take(&mut out.irq);
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_irq: unexpected string"),
+                        });
+                    }
+                    // C's `cpe->next` spans this statement's list only;
+                    // in the flat walk that list ends at the next
+                    // statement keyword.
+                    let at_list_end = index + 1 >= flat.len()
+                        || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                    if w.word == "NONE" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_irq: NONE keyword not allowed in list"),
+                            });
+                        }
+                        index += 1;
+                        break;
+                    }
+                    if w.word == "ALL" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_irq: ALL keyword not allowed in list"),
+                            });
+                        }
+                        count = RSS_IRQ_ALL;
+                        index += 1;
+                        break;
+                    }
+                    let (v, used) = strtoul_prefix(&w.word, 0);
+                    if used != w.word.len() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!("do_irq: bad irq '{}'", w.word),
+                        });
+                    }
+                    if count >= RSS_NR_IRQ {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!("do_irq: too many IRQs (max {RSS_NR_IRQ})"),
+                        });
+                    }
+                    // C assigns `unsigned long` to `int`: keep the low
+                    // 32 bits, sign included.
+                    irqs.push(v as u32 as i32);
+                    count += 1;
+                    first = false;
+                    index += 1;
+                }
+                out.nr_irq = count;
+                out.irq = irqs;
+            }
+            "io" => {
+                // C `do_io` (`parse.c:461-530`): `base[:len]` pairs in
+                // hex (`strtoul(..., 0x10)`, the `0x` prefix allowed);
+                // `NONE`/`ALL` take the same shapes as `do_irq`, and a
+                // repeated statement appends like `do_irq`.
+                index += 1;
+                let mut first = true;
+                let mut count = out.nr_io;
+                let mut ranges: Vec<(u64, u64)> = core::mem::take(&mut out.io);
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_io: unexpected string"),
+                        });
+                    }
+                    let at_list_end = index + 1 >= flat.len()
+                        || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                    if w.word == "NONE" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_io: NONE keyword not allowed in list"),
+                            });
+                        }
+                        index += 1;
+                        break;
+                    }
+                    if w.word == "ALL" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_io: ALL keyword not allowed in list"),
+                            });
+                        }
+                        count = RSS_IO_ALL;
+                        index += 1;
+                        break;
+                    }
+                    let Some((base, len)) = parse_io_range(&w.word) else {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!("do_io: bad I/O range '{}'", w.word),
+                        });
+                    };
+                    if count >= RSS_NR_IO {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!("do_io: too many I/O ranges (max {RSS_NR_IO})"),
+                        });
+                    }
+                    // C stores into `unsigned base` / `unsigned len`.
+                    ranges.push((u64::from(base as u32), u64::from(len as u32)));
+                    count += 1;
+                    first = false;
+                    index += 1;
+                }
+                out.nr_io = count;
+                out.io = ranges;
+            }
+            "pci" => {
+                // C `do_pci` (`parse.c:628-656`): the statement's first
+                // word selects the table — `device` fills `rss_pci_id`,
+                // `class` fills `rss_pci_class`; an empty statement is a
+                // no-op (`cpe == NULL`).
+                index += 1;
+                let Some(sub) = flat.get(index) else {
+                    break;
+                };
+                if sub.is_string() || sub.is_sub() {
+                    return Err(ConfigError {
+                        line: sub.line,
+                        message: String::from("do_pci: unexpected string"),
+                    });
+                }
+                // `class` is both a pci sub-keyword and a top-level
+                // statement keyword, so the sub-word is interpreted
+                // before the statement-boundary test.
+                let device_table = match sub.word.as_str() {
+                    "device" => Some(true),
+                    "class" => Some(false),
+                    _ => None,
+                };
+                let Some(device_table) = device_table else {
+                    if STATEMENT_KEYWORDS.contains(&sub.word.as_str()) {
+                        // Empty `pci` statement: C's `do_pci(NULL)`
+                        // returns and this word opens the next
+                        // statement, so dispatch resumes here.
+                        continue;
+                    }
+                    return Err(ConfigError {
+                        line: sub.line,
+                        message: format!("do_pci: unexpected word '{}'", sub.word),
+                    });
+                };
+                index += 1;
+                if device_table {
+                    // C appends at `rss_nr_pci_id`, so a repeated
+                    // statement continues the same table.
+                    let mut count = out.nr_pci_id;
+                    let mut ids: Vec<RsPciIdWire> = core::mem::take(&mut out.pci_id);
+                    while index < flat.len() {
+                        let w = flat[index];
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                            break;
+                        }
+                        if w.is_string() || w.is_sub() {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_pci_device: unexpected string"),
+                            });
+                        }
+                        let Some(entry) = parse_pci_device(&w.word) else {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!("do_pci_device: bad ID '{}'", w.word),
+                            });
+                        };
+                        if count >= RS_NR_PCI_DEVICE {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!(
+                                    "do_pci_device: too many device IDs (max {RS_NR_PCI_DEVICE})"
+                                ),
+                            });
+                        }
+                        ids.push(entry);
+                        count += 1;
+                        index += 1;
+                    }
+                    out.nr_pci_id = count;
+                    out.pci_id = ids;
+                } else {
+                    let mut count = out.nr_pci_class;
+                    let mut classes: Vec<RsPciClassWire> = core::mem::take(&mut out.pci_class);
+                    while index < flat.len() {
+                        let w = flat[index];
+                        if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                            break;
+                        }
+                        if w.is_string() || w.is_sub() {
+                            // C's `do_pci_class` reuses the
+                            // `do_pci_device` wording for these two
+                            // fatals (`parse.c:589-597`) — kept verbatim.
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_pci_device: unexpected string"),
+                            });
+                        }
+                        let Some(entry) = parse_pci_class(&w.word) else {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!("do_pci_class: bad class ID '{}'", w.word),
+                            });
+                        };
+                        if count >= RS_NR_PCI_CLASS {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!(
+                                    "do_pci_class: too many class IDs (max {RS_NR_PCI_CLASS})"
+                                ),
+                            });
+                        }
+                        classes.push(entry);
+                        count += 1;
+                        index += 1;
+                    }
+                    out.nr_pci_class = count;
+                    out.pci_class = classes;
+                }
+            }
+            "system" => {
+                // C `do_system` (`parse.c:852-914`): `BASIC` keeps the
+                // default, `NONE` clears `RSS_SYS_BASIC_CALLS`, `ALL`
+                // fills the vector, and labels set
+                // `SYS_* - KERNEL_CALL` bits.
+                index += 1;
+                let mut first = true;
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_system: unexpected string"),
+                        });
+                    }
+                    let at_list_end = index + 1 >= flat.len()
+                        || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                    if w.word == "BASIC" {
+                        if !first || !at_list_end {
+                            // C prints `KW_NONE` here (`parse.c:877-879`)
+                            // — a faithful quirk.
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from(
+                                    "do_system: NONE keyword not allowed in list",
+                                ),
+                            });
+                        }
+                        index += 1;
+                        break;
+                    }
+                    if w.word == "NONE" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from(
+                                    "do_system: NONE keyword not allowed in list",
+                                ),
+                            });
+                        }
+                        out.flags &= !RSS_SYS_BASIC_CALLS;
+                        index += 1;
+                        break;
+                    }
+                    if w.word == "ALL" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_system: ALL keyword not allowed in list"),
+                            });
+                        }
+                        for i in 0..NR_SYS_CALLS {
+                            out.system |= 1u64 << (i as u32);
+                        }
+                        index += 1;
+                        break;
+                    }
+                    if let Some(&(_, call)) =
+                        SYSTEM_CALLS.iter().find(|(label, _)| *label == w.word)
+                    {
+                        out.system |= 1u64 << ((call - KERNEL_CALL) as u32);
+                    }
+                    // Unknown names warn and continue in C
+                    // (`parse.c:895-898`); the walk has no warning
+                    // channel yet (registered deviation).
+                    first = false;
+                    index += 1;
+                }
+            }
+            "vm" => {
+                // C `do_vm` (`parse.c:760-826`): same face as `system`
+                // over the VM vector; `PUSH_SIG`'s zero number sets no
+                // bit.
+                index += 1;
+                let mut first = true;
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_vm: unexpected string"),
+                        });
+                    }
+                    let at_list_end = index + 1 >= flat.len()
+                        || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                    if w.word == "BASIC" {
+                        if !first || !at_list_end {
+                            // C prints `KW_NONE` here too
+                            // (`parse.c:779-783`).
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_vm: NONE keyword not allowed in list"),
+                            });
+                        }
+                        index += 1;
+                        break;
+                    }
+                    if w.word == "NONE" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_vm: NONE keyword not allowed in list"),
+                            });
+                        }
+                        out.flags &= !RSS_VM_BASIC_CALLS;
+                        index += 1;
+                        break;
+                    }
+                    if w.word == "ALL" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: String::from("do_vm: ALL keyword not allowed in list"),
+                            });
+                        }
+                        for i in 0..NR_VM_CALLS {
+                            out.vm |= 1u64 << i;
+                        }
+                        index += 1;
+                        break;
+                    }
+                    match VM_CALLS.iter().find(|(label, _)| *label == w.word) {
+                        // `PUSH_SIG`'s zero number sets no bit.
+                        Some(&(_, call)) if call != 0 => {
+                            out.vm |= 1u64 << (call - VM_RQ_BASE);
+                        }
+                        _ => {}
+                    }
+                    first = false;
+                    index += 1;
+                }
+            }
+            "ipc" => {
+                // C `do_ipc` (`parse.c:658-706`): one space-separated
+                // contact list; `ALL`/`ALL_SYS` must stand alone and
+                // expand to the sentinel strings; a second `ipc`
+                // statement is the `req_ipc is set` fatal.
+                index += 1;
+                let mut first = true;
+                let mut parts: Vec<&str> = Vec::new();
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_ipc: unexpected string"),
+                        });
+                    }
+                    let at_list_end = index + 1 >= flat.len()
+                        || STATEMENT_KEYWORDS.contains(&flat[index + 1].word.as_str());
+                    let word = if w.word == "ALL" || w.word == "ALL_SYS" {
+                        if !first || !at_list_end {
+                            return Err(ConfigError {
+                                line: w.line,
+                                message: format!("do_ipc: {} keyword not allowed in list", w.word),
+                            });
+                        }
+                        if w.word == "ALL" {
+                            RSS_IPC_ALL
+                        } else {
+                            RSS_IPC_ALL_SYS
+                        }
+                    } else {
+                        &w.word
+                    };
+                    parts.push(word);
+                    first = false;
+                    index += 1;
+                }
+                if out.ipc.is_some() {
+                    // C's fatal carries no source position
+                    // (`parse.c:703-704`); the statement's line is the
+                    // closest anchor this walker has.
+                    return Err(ConfigError {
+                        line: word.line,
+                        message: String::from("do_ipc: req_ipc is set"),
+                    });
+                }
+                out.ipc = Some(parts.join(" "));
+            }
+            "control" => {
+                // C `do_control` (`parse.c:916-942`): every word is a
+                // control label; the local count restarts per
+                // statement, so a repeated `control` replaces the list.
+                index += 1;
+                let mut labels: Vec<String> = Vec::new();
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_control: unexpected string"),
+                        });
+                    }
+                    if labels.len() >= RS_NR_CONTROL as usize {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!(
+                                "do_control: RS_NR_CONTROL is too small ({} needed)",
+                                labels.len() + 1
+                            ),
+                        });
+                    }
+                    labels.push(w.word.clone());
+                    index += 1;
+                }
+                out.nr_control = labels.len() as i32;
+                out.control = labels;
+            }
+            "domain" => {
+                // C `do_domain` (`parse.c:989-1024`): labels resolve
+                // through `domain_tab`, anything else through `atoi`;
+                // the result must satisfy `0 < D < PF_MAX`. The count
+                // restarts per statement (replace, not append).
+                index += 1;
+                let mut domains: Vec<i32> = Vec::new();
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_domain: unexpected string"),
+                        });
+                    }
+                    if domains.len() >= NR_DOMAIN as usize {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!(
+                                "do_domain: NR_DOMAIN is too small ({} needed)",
+                                domains.len() + 1
+                            ),
+                        });
+                    }
+                    let domain = DOMAIN_TABLE
+                        .iter()
+                        .find(|(name, _)| *name == w.word)
+                        .map(|&(_, number)| number)
+                        .unwrap_or_else(|| atoi(&w.word));
+                    if domain <= 0 || domain >= PF_MAX {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!("do_domain: unknown domain {}", w.word),
+                        });
+                    }
+                    domains.push(domain);
+                    index += 1;
+                }
+                out.nr_domain = domains.len() as i32;
+                out.domain = domains;
+            }
+            "type" => {
+                // C `do_type` (`parse.c:198-225`): exactly one value,
+                // and the only accepted type is `net`; a second `type`
+                // statement is fatal.
+                index += 1;
+                let Some(value) = flat.get(index) else {
+                    break;
+                };
+                // `cpe->next != NULL` — the value must stand alone.
+                if let Some(next) = flat.get(index + 1)
+                    && !STATEMENT_KEYWORDS.contains(&next.word.as_str())
+                {
+                    return Err(ConfigError {
+                        line: value.line,
+                        message: String::from("do_type: just one type value expected"),
+                    });
+                }
+                if value.is_string() || value.is_sub() {
+                    return Err(ConfigError {
+                        line: value.line,
+                        message: String::from("do_type: unexpected string"),
+                    });
+                }
+                if out.service_type.is_some() {
+                    return Err(ConfigError {
+                        line: value.line,
+                        message: String::from("do_type: another type"),
+                    });
+                }
+                if value.word != "net" {
+                    return Err(ConfigError {
+                        line: value.line,
+                        message: String::from("do_type: odd type"),
+                    });
+                }
+                out.service_type = Some(value.word.clone());
+                index += 1;
+            }
+            "class" => {
+                // C `do_class` (`parse.c:45-114`): each label names
+                // another service entry whose statements apply as well
+                // (resource inheritance); the lookup walks the whole
+                // config and re-enters the dispatch on the found block.
+                if depth > MAX_CLASS_RECURS {
+                    return Err(ConfigError {
+                        line: word.line,
+                        message: format!(
+                            "do_class: nesting level too high for class '{}'",
+                            flat.get(index + 1).map_or("", |w| w.word.as_str())
+                        ),
+                    });
+                }
+                index += 1;
+                while index < flat.len() {
+                    let w = flat[index];
+                    if STATEMENT_KEYWORDS.contains(&w.word.as_str()) {
+                        break;
+                    }
+                    if w.is_string() || w.is_sub() {
+                        // C's string fatal reuses the `do_uid` wording
+                        // (`parse.c:67-69`) — kept verbatim.
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: String::from("do_uid: unexpected string"),
+                        });
+                    }
+                    let target = lines.iter().find(|line| {
+                        line.is_sub()
+                            && line.list.len() >= 2
+                            && !line.list[0].is_string()
+                            && !line.list[0].is_sub()
+                            && line.list[0].word == "service"
+                            && !line.list[1].is_string()
+                            && !line.list[1].is_sub()
+                            && line.list[1].word == w.word
+                    });
+                    let Some(target) = target else {
+                        return Err(ConfigError {
+                            line: w.line,
+                            message: format!("do_class: no entry found for class '{}'", w.word),
+                        });
+                    };
+                    let mut inner: Vec<&minix_proctools::configfile::ConfigEntry> = Vec::new();
+                    flatten_words(&target.list[2..], &mut inner);
+                    walk_flat(&inner, out, users, lines, depth + 1)?;
+                    index += 1;
+                }
+            }
+            _ => {
+                // Unknown words (including a service name that is not a
+                // statement keyword) are skipped to surface every
+                // unknown.
+                index += 1;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Flatten a line's word chain, descending into `{`-created nested
@@ -1586,6 +1878,14 @@ fn flatten_words<'a>(
             out.push(entry);
         }
     }
+}
+
+/// `getpwnam(SERVICE_LOGIN)` (`parse.c:1162`): the `service` entry's uid
+/// from the caller-read passwd text — the bin feeds this into
+/// [`RsStartDefaults::service_uid`] the way C's `do_config` calls
+/// `getpwnam` before the walk.
+pub fn resolve_service_uid(users: &str) -> Option<u32> {
+    user_by_name(Some(users), SERVICE_LOGIN)
 }
 
 /// `getpwnam`'s named-uid scan over the caller-read database.
@@ -1679,7 +1979,7 @@ mod do_config_tests {
             flags: RSS_VM_BASIC_CALLS | RSS_SYS_BASIC_CALLS,
         };
         let args = parse_args(&["up", "/service/lwip", "-label", "lwip"]).unwrap();
-        let got = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap();
+        let got = do_config_walk(&lines, None, &defaults, &args, Some(PW)).unwrap();
         assert_eq!(got.uid, 50, "uid service 走 getpwnam 面");
         assert_eq!(got.priority, 0);
         assert_eq!(got.quantum, 4);
@@ -1692,11 +1992,11 @@ mod do_config_tests {
         let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
         let defaults = RsStartDefaults::default();
         let args = parse_args(&["up", "/bin/x"]).unwrap();
-        let e = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap_err();
+        let e = do_config_walk(&lines, None, &defaults, &args, Some(PW)).unwrap_err();
         assert_eq!(e.message, "just one uid/login expected");
         let text = "service x {\n  priority abc;\n}\n";
         let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
-        let e = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap_err();
+        let e = do_config_walk(&lines, None, &defaults, &args, Some(PW)).unwrap_err();
         assert_eq!(e.message, "bad priority 'abc'");
     }
 
@@ -1706,7 +2006,7 @@ mod do_config_tests {
         let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
         let defaults = RsStartDefaults::default();
         let args = parse_args(&["up", "/bin/x"]).unwrap();
-        let e = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap_err();
+        let e = do_config_walk(&lines, None, &defaults, &args, Some(PW)).unwrap_err();
         assert_eq!(e.message, "expected word 'service'");
     }
 
@@ -1716,8 +2016,21 @@ mod do_config_tests {
         let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
         let defaults = RsStartDefaults::default();
         let args = parse_args(&["up", "/bin/x"]).unwrap();
-        let got = do_config_walk(&lines, &defaults, &args, Some(PW)).unwrap();
+        let got = do_config_walk(&lines, None, &defaults, &args, Some(PW)).unwrap();
         assert_eq!(got.descr.as_deref(), Some("the x server"));
+    }
+
+    /// `walk_block(text, label)` feeds only the named service block through
+    /// `do_config_walk` — the C selection `do_config` performs before
+    /// `do_service` (needed for the `class` inheritance tests).
+    fn walk_block(
+        text: &str,
+        label: &str,
+    ) -> Result<BuiltRsStart, minix_proctools::configfile::ConfigError> {
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/bin/x"]).unwrap();
+        do_config_walk(&lines, Some(label), &defaults, &args, Some(PW))
     }
 
     /// `walk(text)` with the C defaults — the harness the device-family
@@ -1726,7 +2039,7 @@ mod do_config_tests {
         let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
         let defaults = RsStartDefaults::default();
         let args = parse_args(&["up", "/bin/x"]).unwrap();
-        do_config_walk(&lines, &defaults, &args, Some(PW))
+        do_config_walk(&lines, None, &defaults, &args, Some(PW))
     }
 
     #[test]
@@ -2178,6 +2491,128 @@ mod do_config_tests {
         assert_eq!(e.message, "do_type: another type");
         let e = walk("service x {\n  type \"net\";\n}\n").unwrap_err();
         assert_eq!(e.message, "do_type: unexpected string");
+    }
+
+    #[test]
+    fn dbg_multi() {
+        for text in [
+            "service a {\n  irq 4;\n};\nservice b {\n  io 3f8:8;\n};\n",
+            "service a {\n  irq 4;\n}\nservice b {\n  io 3f8:8;\n}\n",
+        ] {
+            let lines = config_read_text(text, "t", 0, &|_| None);
+            println!(
+                "TEXT ok={} len={:?}",
+                lines.is_ok(),
+                lines.as_ref().map(|v| v.len())
+            );
+        }
+    }
+
+    #[test]
+    fn class_inherits_another_blocks_statements() {
+        // C's `do_config` selects one block by label, then `do_class`
+        // re-runs `do_service` over the referenced block (`parse.c:45-114`).
+        // Feeding only the child block mirrors that selection.
+        let text = "service base {\n  irq 4;\n  system ALL;\n};\nservice child {\n  class base;\n  io 3f8:8;\n};\n";
+        let got = walk_block(text, "child").unwrap();
+        assert_eq!(got.irq, vec![4]);
+        assert_eq!(got.system, (1u64 << (NR_SYS_CALLS as u32)) - 1);
+        assert_eq!(got.io, vec![(0x3f8, 8)]);
+    }
+
+    #[test]
+    fn class_inheritance_is_transitive() {
+        let text = "service mid {\n  class base;\n};\nservice base {\n  irq 7;\n};\nservice child {\n  class mid;\n};\n";
+        let got = walk_block(text, "child").unwrap();
+        assert_eq!(got.irq, vec![7]);
+    }
+
+    #[test]
+    fn class_missing_entry_is_fatal() {
+        let text = "service child {\n  class nope;\n}\n";
+        let e = walk_block(text, "child").unwrap_err();
+        assert_eq!(e.message, "do_class: no entry found for class 'nope'");
+    }
+
+    #[test]
+    fn class_nesting_is_bounded() {
+        // `MAX_CLASS_RECURS` = 100 (`parse.c:39`); a self-referencing
+        // class hits the bound instead of looping.
+        let text = "service a {\n  class a;\n}\n";
+        let e = walk_block(text, "a").unwrap_err();
+        assert_eq!(e.message, "do_class: nesting level too high for class 'a'");
+    }
+
+    #[test]
+    fn up_image_carries_the_config_and_its_strings() {
+        use minix_sys::rs::decode_rs_start;
+        // C `minix-service.c:746-816`: the image is the `rs_start` struct
+        // followed by every string it points at.
+        let text = "service e1000 {\n  type net;\n  system ALL;\n  ipc SYSTEM pm;\n};\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let args = parse_args(&["up", "/sbin/e1000", "-label", "e1000"]).unwrap();
+        let defaults = RsStartDefaults {
+            service_uid: resolve_service_uid(PW),
+            ..RsStartDefaults::default()
+        };
+        let img = build_up_request(&lines, "e1000", &defaults, &args, Some(PW)).unwrap();
+        let wire = decode_rs_start(&img.bytes).unwrap();
+        assert_eq!(wire.uid, 50, "uid service 走 passwd 面");
+        assert_eq!(wire.sigmgr, DSRV_SM);
+        assert_eq!(wire.scheduler, DSRV_SCH);
+        assert_eq!(wire.priority, DSRV_Q);
+        assert_eq!(wire.quantum, DSRV_QT);
+        assert_eq!(wire.flags, defaults.flags | args.rss_flags);
+        assert_eq!(wire.system, (1u64 << (NR_SYS_CALLS as u32)) - 1);
+        assert_eq!(wire.asr_count, -1, "C req_asr_count 默认 -1");
+        assert_eq!(wire.state_data.size, 56);
+        // Every pointer the struct carries points inside the image.
+        let read = |addr: u64, len: u64| {
+            let off = (addr - img.address()) as usize;
+            String::from_utf8(img.bytes[off..off + len as usize].to_vec()).unwrap()
+        };
+        assert_eq!(read(wire.cmd_addr, wire.cmd_len), "/sbin/e1000 ");
+        assert_eq!(read(wire.progname_addr, wire.progname_len), "e1000");
+        assert_eq!(read(wire.label.addr, wire.label.len), "e1000");
+        assert_eq!(read(wire.ipc_addr, wire.ipc_len), "SYSTEM pm");
+        assert_eq!(wire.control[0].len, 0);
+    }
+
+    #[test]
+    fn up_image_defaults_ipc_label_and_progname() {
+        use minix_sys::rs::decode_rs_start;
+        // No `ipc` statement → `RSS_IPC_ALL_SYS` (`parse.c:1240-1246`);
+        // no `-label` → the progname; `-progname` overrides the basename.
+        let text = "service lwip {\n};\n";
+        let lines = config_read_text(text, "t", 0, &|_| None).unwrap();
+        let defaults = RsStartDefaults::default();
+        let args = parse_args(&["up", "/service/lwip"]).unwrap();
+        let img = build_up_request(&lines, "lwip", &defaults, &args, Some(PW)).unwrap();
+        let wire = decode_rs_start(&img.bytes).unwrap();
+        let read = |addr: u64, len: u64| {
+            let off = (addr - img.address()) as usize;
+            String::from_utf8(img.bytes[off..off + len as usize].to_vec()).unwrap()
+        };
+        assert_eq!(read(wire.ipc_addr, wire.ipc_len), RSS_IPC_ALL_SYS);
+        assert_eq!(read(wire.label.addr, wire.label.len), "lwip");
+        assert_eq!(read(wire.progname_addr, wire.progname_len), "lwip");
+        let args = parse_args(&[
+            "up",
+            "/service/lwip",
+            "-progname",
+            "lwip2",
+            "-trglabel",
+            "t",
+        ])
+        .unwrap();
+        let img = build_up_request(&lines, "lwip", &defaults, &args, Some(PW)).unwrap();
+        let wire = decode_rs_start(&img.bytes).unwrap();
+        let read = |addr: u64, len: u64| {
+            let off = (addr - img.address()) as usize;
+            String::from_utf8(img.bytes[off..off + len as usize].to_vec()).unwrap()
+        };
+        assert_eq!(read(wire.progname_addr, wire.progname_len), "lwip2");
+        assert_eq!(read(wire.trg_label.addr, wire.trg_label.len), "t");
     }
 
     #[test]

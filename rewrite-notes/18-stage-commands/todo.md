@@ -119,6 +119,34 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十七（`do_config` 服务继承——`class` 标签与递归选块）
+
+- **这一笔的射程**：C `do_class`（`parse.c:45-114`）——`class <label>…` 把另一个服务块的资源语句并入当前请求（服务继承），查找遍历整份配置、命中后重入 `do_service`；深度上限 `MAX_CLASS_RECURS`（`:39`，100）。
+- **落码（`minix-service` 库）**：把关键字派发从 `do_config_walk` 抽成可递归的 `walk_flat(flat, out, users, lines, depth)`；`do_config_walk` 增加 `label: Option<&str>` 选择参数——镜像 C `do_config` 的「按标签选块后只走该块，全配置仍可供 `class` 查找」；`class` 臂做块查找、递归、深度检查与 C 的 `do_uid: unexpected string` 措辞 quirk；未命中报 `do_class: no entry found for class '<label>'`。
+- **登记偏差**：C `do_class` 对非 `service` 头的 fatal 文案是 `do_class: exected word 'service'`（原样拼写错误），本实现的块头校验由 `do_config_walk` 的 `expected word 'service'` 覆盖（同一判据、不同措辞）；平铺词链的 `class` 值恰为语句关键字时按既有边界偏差处理。
+- **门**：`cargo test -p minix-service` → **51/0**（新四枚：继承/传递继承/缺条目 fatal/递归上限）；clippy 触及文件零新增；三架构 lib check 全绿。核实日 `2026-11-06`；基线 `692f681a4`。
+
+---
+
+## 批次五百五十八（恢复脚本执行面——RS 的 `run_script` fork+exec 生产腿）
+
+- **这一笔的射程**：C `run_script`（`manager.c:1185-1239`）——fork RS、子进程 `execle("/bin/sh", "sh", script, label, reason, incarnation, NULL, envp)`；父进程取子端点、置用户权限、设 VM 掩码、放行、重钉 RS 内存。此前 RS 侧只是接缝（生产路径传 no-op 闭包）。
+- **落码（`os/servers/rs`）**：`recovery::run_script(slot, kernel)` 生产实现——`minix_sys::fork`、共享 `minix_sys::stack::{stack_params, stack_fill}` 构初始栈、`pm::prepare_exec` + `minix_sys::exec`；父侧 `getprocnr`/`privctl(SetUser)`/`vm_set_priv`/`privctl(Allow)`/`vm_memctl(Pin)`，前三步失败走 `kill_service`（C 原样）；`script_hook` 为效果表的钩子（`cfg(test)` 保留 no-op，防止测试进程被 exec 顶掉）；接线 `lib.rs` 四处与 `boot.rs` 一处。
+- **登记偏差**：C 的 `panic("unable to get child endpoint")` 改为 `Err`（根进程不自毁）；非 UTF-8 脚本名答 `""`（C 传原始字节）。
+- **门**：`cargo test -p minix-rs` → **358/0**（新一枚 `script_text` 的 NUL 截断与非 UTF-8 面）；clippy 触及文件零新增；三架构 lib check 全绿。
+
+---
+
+## 批次五百五十九（rc 接线——`minix-service up` 的端到端装配与发送）
+
+- **这一笔的射程**：C `parse_config` 的配置文件选择（`parse.c:1229-1255`：自定义 → `/usr/pkg/etc/system.conf.d/<name>` → `/etc/system.conf.d/<name>` → 默认）与 `main` 的 `rs_start` 装配、`m_rs_req.addr` 发布（`minix-service.c:746-816`）。
+- **落码**：`minix-service` 库——`Args` 加 `-progname`/`-trglabel`/`-config`；`RsStartDefaults::default` 改为 C 干净默认（`DSRV_SM/SCH/Q/QT`，`priv.h:83-99`）；`PATH_*`/`SERVICE_LOGIN` 常量；`resolve_service_uid`（getpwnam 面）；`progname_of` 公开；**`RequestImage` + `build_up_request`**——结构体与全部字符串打包进同一调用者缓冲、指针为绝对地址（`cmd`/`progname`/`label`/`trg_label`/`ipc`/`control`），IPC 无语句时补 `IPC_ALL_SYS`。`minix-types` 给线型加 `Default` 派生、`Message::set_rs_req_payload`。bin——`prepare_up_image`（四处配置查找 + `/etc/passwd` 读取 + 默认值）与 up 族/标签族的 `m_rs_req` 填充。
+- **登记偏差**：`-config` 语义按 C（设置即自定义文件）；hiprealloc/maprealloc/lustate/state-eval 等参数面仍为后续片（本片不代填，`asr_count` 按 C 默认 -1）。
+- **门**：`cargo test -p minix-service` → **51/0**（新两枚：镜像内指针落位与字符串内容、默认 IPC/标签/progname 覆盖）；`-p minix-types` 341/0；三架构 lib check 全绿；clippy 触及文件零新增；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面）。核实日 `2026-11-06`；基线 `692f681a4`。
+- **记账联动**：`minix-service up` 的用户态全链（读配置→走查→镜像→发送）**端到端闭合**；余面只剩 `-lustate`/`-heapprealloc`/`-mapprealloc` 等参数面与 RS 侧 `RS_UP` 验计。
+
+---
+
 ## 批次五百五十六（`do_config` 服务类型——`type net` 的唯一合法值）
 
 - **这一笔的射程**：C `do_type`（`parse.c:198-225`）。`type net` 在 13 个驱动配置里真实使用（如 `minix3/minix/drivers/net/e1000/e1000.conf:3`），是自配置文件里的首条语句。

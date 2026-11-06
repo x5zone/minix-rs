@@ -458,7 +458,7 @@ impl RsServer {
                     now,
                     &mut live_update::EndEffects {
                         request_prepare: &mut |_s, _ps| {},
-                        run_script: &mut |_s| Ok(()),
+                        run_script: &mut crate::recovery::script_hook,
                     },
                 );
                 if outcome == recovery::CrashOutcome::SelfTerminate {
@@ -497,7 +497,6 @@ impl RsServer {
                     let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
                         crate::exec::read_exec_with(image_io, slot)
                     };
-                    let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                     let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
                     service_create::restart_service(
                         &mut state.table,
@@ -506,7 +505,7 @@ impl RsServer {
                         now,
                         &mut crate::service_create::RestartEffects {
                             read_exec: &mut read_exec,
-                            run_script: &mut noop_script,
+                            run_script: &mut crate::recovery::script_hook,
                             asynsend: &mut noop_asynsend,
                         },
                     );
@@ -670,7 +669,7 @@ impl SefCallbacks for RsServer {
                         ticks,
                         &mut crate::live_update::EndEffects {
                             request_prepare: &mut |_s, _ps| {},
-                            run_script: &mut |_s| Ok(()),
+                            run_script: &mut crate::recovery::script_hook,
                         },
                     );
                 }
@@ -877,7 +876,6 @@ impl SefCallbacks for RsServer {
                 let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
                     crate::exec::read_exec_with(image_io, slot)
                 };
-                let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                 let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
                 crate::recovery::terminate_service(
                     &mut state.table,
@@ -888,7 +886,7 @@ impl SefCallbacks for RsServer {
                     shutting_down,
                     &mut crate::recovery::TerminateEffects {
                         unpublish: alloc::boxed::Box::new(&mut unpublish),
-                        run_script: alloc::boxed::Box::new(&mut noop_script),
+                        run_script: alloc::boxed::Box::new(&mut crate::recovery::script_hook),
                         read_exec: alloc::boxed::Box::new(&mut read_exec),
                         asynsend: alloc::boxed::Box::new(&mut noop_asynsend),
                     },

@@ -1296,8 +1296,12 @@ impl<'a> BootInit<'a> {
                     SysFlags::empty(),
                 )?;
                 sys.cpf_reload()?;
-                let mut no_script = |_s: &mut crate::service_slot::ServiceSlot| Ok(());
-                crate::recovery::cleanup_service(&mut self.table, rp, sys, &mut no_script);
+                crate::recovery::cleanup_service(
+                    &mut self.table,
+                    rp,
+                    sys,
+                    &mut crate::recovery::script_hook,
+                );
                 sys.vm_memctl(Endpoint::RS, VmRsMemReq::Pin, 0, 0)?;
             }
             // C: main.c:474-489 — the old RS instance primes the replica
