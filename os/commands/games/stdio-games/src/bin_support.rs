@@ -272,9 +272,17 @@ pub fn utox(mut value: u32, out: &mut [u8]) -> usize {
     count
 }
 
+/// C's `warn(3)`/`err(3)` line: `prog: label: <sentence>` plus one newline,
+/// written without exiting (`vwarnc.c` does not exit; the caller decides). Both
+/// the shape and the sentence live in the `minix-types` authority (`err_line`),
+/// alongside `perror_line`, which omits the program name. Only the arms that
+/// need an errno suffix (`primes`' `err(1, "%s", argv[i])`) use it.
 /// Rendering of C's `err(3)` line, with the authority next to the errno table:
 /// forwards to [`minix_sys::err_line`] so each command family does not keep its
-/// own copy of the shape.
+/// own copy of the shape. Only the bins' unit tests call through this re-export
+/// (`clippy --workspace` builds without `--tests`, where it would look unused —
+/// hence the `cfg_attr`).
+#[cfg_attr(not(test), allow(unused_imports))]
 pub use minix_sys::err_line;
 
 /// C's `warn(3)`/`err(3)` line: `prog: label: <sentence>` plus one newline,

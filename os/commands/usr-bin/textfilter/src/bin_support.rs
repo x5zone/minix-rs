@@ -704,7 +704,8 @@ where
     R: std::io::Read,
     F: FnMut(&[u8]),
 {
-    use std::io::Read as _;
+    // The `R: std::io::Read` bound already puts the trait's methods in
+    // scope for `R`; a local `use` here is redundant.
     if chunk_len == 0 {
         return Ok(());
     }

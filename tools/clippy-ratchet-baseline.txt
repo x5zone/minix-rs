@@ -3,6 +3,6 @@
 # clippy:    clippy 0.1.94 (e408947bfd 2026-03-25)
 # command:   cargo clippy --workspace   (in os, target=all-host, features=default)
 # package-set: workspace members
-# captured:  2026-10-13 @ e7602d707
+# captured:  2026-11-06 @ f85c8329d
 # rerun:     bash tools/check-clippy-ratchet.sh
-384
+348

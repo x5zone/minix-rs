@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十（棘轮新增告警溯源与收口——两条共享文件的 unused import 放大 46 条，全树 394→348 收回基线下并收紧）
+
+- **这一笔的射程**：批次五百四十九把棘轮从「编译失败」拉回「可出数」后报 394 对基线 384（+10）。本笔在基线提交 `e7602d707` 上重跑全树 clippy 复现出 384 整，逐条对账把 +10 拆开：约半数来自**两条共享 `bin_support` 的 unused import 在多 bin 上的放大**——`textfilter` 的 `use std::io::Read as _;`（泛型约束 `R: std::io::Read` 已把方法带进作用域，该 `use` 冗余）在约 40 个 bin 各 +1；`stdio-games` 的 `pub use minix_sys::err_line` 在 7 个游戏 bin 各 +1。其余为 arch(+18)/kernel(+9)/vfs(+7)/pm(+7)/vm(+6)/boot(+6) 的真实新增，同时有 112 条旧告警在他轮被清——逐条口径实为净 -33，+10 是按编译单元汇总的口径效应。
+- **落码**：`textfilter` 删冗余 `use`（测试 640/0 与 78/0 全绿）；`stdio-games` 的转出口**只有各 bin 的单测在用**——`cargo clippy --workspace` 不带 `--tests`，非测试构建下看似 unused，直接删除会让 `cargo test` 编不过（第一版即踩此坑，已回退），改为 `#[cfg_attr(not(test), allow(unused_imports))]` 精确消音并在文档注释说明缘由。
+- **登记偏差**：无。
+- **门**：`bash tools/check-clippy-ratchet.sh` → **348 对 384，SHRINK**，随后 `--update-baseline` 收紧至 348（`captured @ f85c8329d`）；`cargo test -p minix-textfilter --lib` → 640/0、`cargo test -p minix-stdio-games` → 全绿；两包 clippy 触及文件零新增；rustfmt 零漂移。核实日 `2026-11-06`；基线 `f85c8329d`。
+- **记账联动**：剩余真实新增 79 条（`arch`/`kernel`/`vfs`/`pm`/`vm`/`boot` 等；另有 112 条旧告警已在他轮消失）按「谁改哪块清哪块」留给块主，其中 `USER_STACK_TOP` 的 7 处陈旧 import 疑为同一笔重构的遗漏，建议作单点扫尾。
+
+---
+
 ## 批次五百四十九（devman 的 `SefBridge::sendrec` 补腿——第八个 `SefIpc` 实现者，全树 clippy 棘轮从「编译失败」回到「可出数」）
 
 - **这一笔的射程**：批次五百四十七/四十八把 `minix-service` 的在制品收口后，全树 clippy 棘轮第一次能编译到底，随即暴露 `minix-devman` 的 E0046：`SefBridge` 只实现了 `receive`/`notify`，缺 `SefIpc::sendrec`。轮 65-68 的清点写着「全仓 `SefIpc` 实现者七家 `sendrec` 腿齐」，devman 是漏掉的第八家（通用桥 `impl<K: KernelIpc> SefIpc for SefBridge<'_, K>`，不在当时的文件清单里）。
