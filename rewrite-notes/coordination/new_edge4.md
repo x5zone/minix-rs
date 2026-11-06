@@ -5975,3 +5975,11 @@ C 写进缓冲的那份文本，`:519-530`），之后每个字符继续追加�
 - 读数不变：minix-boot 169、boot-shim 91、kernel 863；五条 QEMU 腿复跑 PASS。
 - 同轮：还原 `os/qemu-tests` 30 个测试内核与 `boot_integration.rs`、`uboot_main.rs` 的无关 rustfmt 改动；A3 在这些文件里只剩 `startup_objects` 字段与 `write_startup` 调用。
 - 认领：`I-29 qorder95`，状态 ✅：已 ff 合并为 `fe6392cbe`，认领已释放。
+
+### 第三百三十二笔（01 阶段 · I-29 第一百一十八轮：wire v4 代码上的全面回归）
+
+- A1/A2/A3/B1/B2 五批落码（`d858c05f3`、`98ef0094a`+`133940b89`、`5a3d4b5b6`+`9410b10e2`、`d9c5549a6`、`418bc2cc4`）合入后，正文与当前代码再对齐并改正两处旧表述：§5 拒绝诊断由「未实现」改为「已落码（停机错误载荷形态）」；§7 第 1 项按 A1 之后的口径重写真机三态（默认 absent、`DTB_CFGTABLE=1` 为「存在但不可用」负例、正例只剩宿主测试）。`minix-types` 读数 339→341。
+- 全面回归（本树现跑）：宿主 341/169/91(+5)/863/548；五个交叉构建全通过；`run_all` **38/1/0/0**（唯一红仍为基线同签名的 `test-rt-birth-aarch64`）；六条非注册腿全 PASS——x86 bootmarks、aarch64 ACPI、`DTB_CFGTABLE=1`（`DtbPages(NotAcpiReclaim { page: 1206870016 })`）、riscv bootface、riscv U-Boot shim（6/6）、riscv 全系统。
+- 提交：`53696a732 docs(01)`（正文/02/03/todo）；本笔台账。门：1,121 行、围栏 42 偶、表格 37 块 0 不一致、破表 0、承载门通过、lint 0、横幅 PASS、lost 0（syms 163→591、tests 89→346）。
+- 认领：`I-29 qorder118`，状态 ✅：rebase 后 ff 合并，认领已释放。
+- I-29 射程内的 A1/A2/A3/B1/B2 至此全部落码并回归；剩余仅「存在且可解析」正例的固件路径（固件无法被外部改造成该形态）与外部签字层。
