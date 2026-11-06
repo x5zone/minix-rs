@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次五百五十六（`do_config` 服务类型——`type net` 的唯一合法值）
+
+- **这一笔的射程**：C `do_type`（`parse.c:198-225`）。`type net` 在 13 个驱动配置里真实使用（如 `minix3/minix/drivers/net/e1000/e1000.conf:3`），是自配置文件里的首条语句。
+- **落码（`minix-service` 库）**：`BuiltRsStart` 加 `service_type: Option<String>`（镜像 `rs_config.type`，`config.h:5`）；走查 `"type"` 臂——值必须独占（`do_type: just one type value expected`）、只接受 `net`（`do_type: odd type`）、第二个 `type` 语句报 `do_type: another type`、字符串面报 `do_type: unexpected string`；检查顺序按 C 原序（独占→类型串→重复→取值）。
+- **登记偏差**：空 `type;` 语句在 C 是解引用 NULL 的崩溃（`do_type(cpe->next)` 收到 NULL 后读 `cpe->next`）；平铺走查按既有标量面约定取紧随其后的词为值，注册为不可达形。`rs_config.type` 只被 `print.c` 打印，不进 `rs_start`，故 `BuiltRsStart` 里单独存放、不参与编码器。
+- **门**：`cargo test -p minix-service` → **44/0**（新二枚：`type net` 与后续语句隔离、四句 fatal 面）；clippy 触及文件零告警；rustfmt 零漂移；三架构 lib check 全绿；棘轮 344 对基线 341，新增 3 条仍为并行线在制 kernel 面。核实日 `2026-11-06`；基线 `5a23a8d18`。
+- **记账联动**：设备族余下 `class`（服务继承语义，真实配置零使用，需「按标签选块 + 递归」的结构改造）为后续片；`net` 作为 `type` 的唯一取值随本笔闭合。
+
+---
+
 ## 批次五百五十五（`do_config` 两张标签列表——`control` 控制端点与 `domain` 协议族）
 
 - **这一笔的射程**：C `do_control`（`parse.c:916-942`）与 `do_domain`（`:989-1024`）。`control` 在真实配置里有实形（`minix3/etc/system.conf:395` 的 `control at_wini;`）；`domain` 是 socket 驱动的协议族声明。

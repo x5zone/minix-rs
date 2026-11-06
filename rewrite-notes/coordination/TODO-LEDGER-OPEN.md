@@ -205,6 +205,8 @@
 
 - **`2026-11-06` 收口刷新（第 71 轮，基线 `aba6bc6ce`，`claim/A19-AUDIT-qoder`，审计轮无代码）**：A19 的两锚实查**均已在库**并注销——`login_tty` 封装（init `host.rs:277-299` 完整折叠 C setctty+login_tty）与 panic 执行面（init 自带 `#[panic_handler]` 走 `format_panic_report`，Cargo 双形态注释自陈「handler 由 init 自带」）。C-21（fs-rt 成员）不再挡 init。
 
+- **`2026-11-06` 收口刷新（第 80 轮，基线 `5a23a8d18`）**：`do_config` 的服务类型随批次五百五十六落——`type` 只接受 `net`（13 个驱动配置的真实首条语句），`BuiltRsStart` 加 `service_type`，四句 C fatal 逐字。`cargo test -p minix-service` 44/0、clippy/rustfmt/三架构全绿；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面，本轮文件 0）。设备族只剩 `class`（服务继承，真实配置零使用，需按标签选块 + 递归的结构改造）。
+
 - **`2026-11-06` 收口刷新（第 79 轮，基线 `46bd8b276`）**：`do_config` 的两张标签列表随批次五百五十五落——`control`（控制端点标签、`RS_NR_CONTROL=8` 上限、替換语义）与 `domain`（32 项协议族表 + `atoi` 回退、`0 < D < PF_MAX` 范围、`NR_DOMAIN=8` 上限），`BuiltRsStart` 加四字段。`cargo test -p minix-service` 42/0、clippy/rustfmt/三架构全绿；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面，本轮文件 0）。设备族余下 `class`（服务继承）/`type`/`net`。
 
 - **`2026-11-06` 收口刷新（第 78 轮，基线 `2867cb26d`）**：`do_config` 的 IPC 接触面随批次五百五十四落——`ipc` 白名单（单空格拼列表、`ALL`/`ALL_SYS` 独占换成 `IPC_ALL`/`IPC_ALL_SYS` 哨兵、第二个语句 `req_ipc is set` fatal），`BuiltRsStart` 加 `ipc: Option<String>`；`RSS_IPC_ALL_SYS` 的无语句默认留在 bin 构造片。`cargo test -p minix-service` 36/0、clippy/rustfmt/三架构全绿；棘轮 344 对基线 341（+3 仍为并行线在制 kernel 面，本轮文件 0）。设备族余下 `class`（服务继承）/`control`/`type`/`net`/`domain`。

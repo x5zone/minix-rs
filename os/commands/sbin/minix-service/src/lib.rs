@@ -841,11 +841,11 @@ const DOMAIN_TABLE: [(&str, i32); 32] = [
 /// walk; the scalar keywords this slice covers are `uid`, `priority`,
 /// `quantum`, `sigmgr`, `scheduler`, `descr`, the device-family keywords
 /// `irq`, `io` and `pci` (`pci device` / `pci class`), the call-mask
-/// keywords `system` and `vm`, the IPC contact list `ipc`, and the two
-/// label lists `control` and `domain` — the remaining keywords (`class` in
-/// its service-inheritance sense, `type`, `net`) are the registered next
-/// slice). C's per-branch `fatal` faces become `ConfigError` with the same
-/// wording.
+/// keywords `system` and `vm`, the IPC contact list `ipc`, the two label
+/// lists `control` and `domain`, and the service `type` — the remaining
+/// keyword (`class` in its service-inheritance sense) is the registered
+/// next slice). C's per-branch `fatal` faces become `ConfigError` with the
+/// same wording.
 pub fn do_config_walk(
     lines: &[minix_proctools::configfile::ConfigEntry],
     defaults: &RsStartDefaults,
@@ -877,6 +877,7 @@ pub fn do_config_walk(
         control: Vec::new(),
         nr_domain: 0,
         domain: Vec::new(),
+        service_type: None,
     };
     for line in lines {
         if !line.is_sub() {
@@ -1516,9 +1517,48 @@ pub fn do_config_walk(
                     out.nr_domain = domains.len() as i32;
                     out.domain = domains;
                 }
+                "type" => {
+                    // C `do_type` (`parse.c:198-225`): exactly one value,
+                    // and the only accepted type is `net`; a second `type`
+                    // statement is fatal.
+                    index += 1;
+                    let Some(value) = flat.get(index) else {
+                        break;
+                    };
+                    // `cpe->next != NULL` — the value must stand alone.
+                    if let Some(next) = flat.get(index + 1)
+                        && !STATEMENT_KEYWORDS.contains(&next.word.as_str())
+                    {
+                        return Err(ConfigError {
+                            line: value.line,
+                            message: String::from("do_type: just one type value expected"),
+                        });
+                    }
+                    if value.is_string() || value.is_sub() {
+                        return Err(ConfigError {
+                            line: value.line,
+                            message: String::from("do_type: unexpected string"),
+                        });
+                    }
+                    if out.service_type.is_some() {
+                        return Err(ConfigError {
+                            line: value.line,
+                            message: String::from("do_type: another type"),
+                        });
+                    }
+                    if value.word != "net" {
+                        return Err(ConfigError {
+                            line: value.line,
+                            message: String::from("do_type: odd type"),
+                        });
+                    }
+                    out.service_type = Some(value.word.clone());
+                    index += 1;
+                }
                 _ => {
-                    // The remaining keywords (class/type/net) ride with
-                    // the next slice;
+                    // The remaining keyword (`class` in its
+                    // service-inheritance sense) rides with the next
+                    // slice;
                     // unknown words are skipped to surface every unknown.
                     index += 1;
                 }
@@ -1614,6 +1654,9 @@ pub struct BuiltRsStart {
     /// (`NR_DOMAIN` slots; a repeated statement replaces the list).
     pub nr_domain: i32,
     pub domain: Vec<i32>,
+    /// `rs_config.type` (`config.h:5`): the service type. Only `net` is
+    /// accepted (`do_type`, `parse.c:198-225`); `None` when absent.
+    pub service_type: Option<String>,
 }
 
 #[cfg(test)]
@@ -2113,6 +2156,28 @@ mod do_config_tests {
         assert_eq!(e.message, "do_control: unexpected string");
         let e = walk("service x {\n  domain \"INET\";\n}\n").unwrap_err();
         assert_eq!(e.message, "do_domain: unexpected string");
+    }
+
+    #[test]
+    fn type_net_sets_the_service_type() {
+        // The real driver configs carry `type net;` as their first
+        // statement (`minix3/minix/drivers/net/e1000/e1000.conf:3`).
+        let got = walk("service x {\n  type net;\n  irq 4;\n}\n").unwrap();
+        assert_eq!(got.service_type.as_deref(), Some("net"));
+        assert_eq!(got.irq, vec![4]);
+        assert_eq!(walk("service x {\n}\n").unwrap().service_type, None);
+    }
+
+    #[test]
+    fn type_error_faces_match_the_c_fatals() {
+        let e = walk("service x {\n  type foo;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_type: odd type");
+        let e = walk("service x {\n  type net net;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_type: just one type value expected");
+        let e = walk("service x {\n  type net;\n  type net;\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_type: another type");
+        let e = walk("service x {\n  type \"net\";\n}\n").unwrap_err();
+        assert_eq!(e.message, "do_type: unexpected string");
     }
 
     #[test]
