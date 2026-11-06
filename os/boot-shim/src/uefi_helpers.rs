@@ -38,12 +38,14 @@ use minix_boot::{
 ///
 /// Defined in the UEFI Specification (2.4+) as `EFI_DEVICE_TREE_GUID`.
 /// Not provided by the `uefi` crate, so we define it here.
+#[cfg(target_arch = "aarch64")]
 const DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 
 /// Legacy ARM FDT configuration-table GUID used by pre-2.4 firmware.
 ///
 /// Kept as a second accepted GUID so older UEFI builds that published this
 /// value still reach the DTB parser. It is not the UEFI-spec value.
+#[cfg(target_arch = "aarch64")]
 const LEGACY_DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d2-f19c-41c5-8310-daa6f018a8d3");
 
 /// Global allocator for UEFI test kernels that define none of their own.
@@ -158,14 +160,14 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
     // Leak the Vec so it has 'static lifetime — acceptable for boot-stage
     // code that runs exactly once (same pattern as build_memmap).
     let leaked: &'static [PlatformDescSource] = Box::leak(sources.into_inner().into_boxed_slice());
-    // Capture the DTB-side reservation claims here, before the EBS pairing
-    // loop: it verifies them against the snapshot it reads (brief O-11).
-    // A missing or unparsable DTB leaves the list empty;
-    // `cross_validate_config_dtb` owns the halt for that case.
+    // Record the DTB address only: reading its header needs a snapshot that
+    // already accepted the header pages, and no memory map has been read yet
+    // (brief O-11). The preflight stage reads it once the first map is in
+    // hand; a missing DTB leaves the stage idle and
+    // `cross_validate_config_dtb` owns the absence diagnostic.
     #[cfg(target_arch = "aarch64")]
     if let Some(source) = leaked.iter().find(|s| s.kind() == minix_boot::DTB) {
-        // O-11 preflight: header read + owned buffer, before any map read.
-        crate::dtb_copy::prepare(source.phys_addr().0);
+        crate::dtb_copy::note(source.phys_addr().0);
     }
     leaked
 }
@@ -258,6 +260,16 @@ impl BootShim for UefiBootShim {
             param_stats.dropped
         );
 
+        // O-11 two-snapshot discipline on this auxiliary path as well: the
+        // first read authorizes the 40-byte DTB header and the copy
+        // allocation; the second is the snapshot KernelInfo is built from,
+        // now that the copy already occupies its LOADER_DATA pages.
+        if platform_sources.iter().any(|s| s.kind() == DTB) {
+            let _ = build_memmaps();
+            crate::dtb_copy::preflight(classified_descriptors()).unwrap_or_else(|e| {
+                panic!("boot-shim: configuration-table DTB header pages: {e:?}")
+            });
+        }
         // One snapshot, two lists — conventional (free) plus the
         // non-conventional remainder that hosts everything the kernel
         // executes and touches through low addresses at runtime.
@@ -271,8 +283,8 @@ impl BootShim for UefiBootShim {
         // §6.0-A2). Fail fast while the boot-shim can still print.
         assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
         assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
-        // O-11: authorize the DTB pages against this snapshot, then copy the
-        // body into the buffer reserved before the snapshot (a memcpy cannot
+        // O-11: re-authorize the whole range against this final snapshot and
+        // copy the body into the buffer reserved before it (a memcpy cannot
         // perturb the map KernelInfo is built from).
         let _ = crate::dtb_copy::authorize_and_copy(classified_descriptors())
             .unwrap_or_else(|e| panic!("boot-shim: configuration-table DTB pages: {e:?}"));
@@ -1042,6 +1054,25 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         let buffer_ptr = alloc_map_buffer(buffer_bytes);
         // SAFETY: fresh pool allocation of `buffer_bytes` bytes.
         let buffer = unsafe { core::slice::from_raw_parts_mut(buffer_ptr, buffer_bytes) };
+        // O-11 preflight snapshot: it authorizes the DTB header read and the
+        // copy allocation. Both happen before the pairing loop's own read, so
+        // the copy's LOADER_DATA pages are already re-labeled in the final
+        // snapshot. With no configuration-table DTB this is a no-op.
+        // SAFETY: same contract as the pairing call below.
+        match unsafe { ebs_pair::preflight_dtb(&ops, boot_services_raw, buffer) } {
+            Ok(()) => {}
+            Err(PairError::NeedBiggerBuffer(needed)) => {
+                assert!(
+                    needed > buffer_bytes,
+                    "boot-shim: GetMemoryMap asked for a smaller buffer"
+                );
+                buffer_bytes = needed.saturating_add(PAGE_SIZE as usize);
+                continue;
+            }
+            Err(error) => {
+                panic!("boot-shim: DTB preflight failed: {error:?}");
+            }
+        }
         // SAFETY: the raw ops dereference the live boot-services table; the
         // serializer writes only into the arena. On success the call has
         // performed ExitBootServices and no further boot-service call is made.

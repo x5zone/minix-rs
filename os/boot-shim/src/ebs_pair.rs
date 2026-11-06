@@ -6,6 +6,12 @@
 //! classification paired with a successful MapKey may survive, so a failed
 //! EBS triggers a re-fetch + re-classification with the partitions reset.
 //!
+//! A configuration-table DTB needs one snapshot *before* this loop:
+//! [`preflight_dtb`] reads the DTB header under a map that accepted its pages,
+//! and the owned copy allocated from that header changes the live map. The
+//! loop's own read is therefore the final snapshot by construction, not by a
+//! timing assumption.
+//!
 //! The firmware calls are injected as plain `extern "C"` function pointers
 //! ([`RawOps`]) so the retry/buffer discipline is host-testable with a mock
 //! firmware; the production glue in `uefi_helpers` passes the raw UEFI boot
@@ -159,16 +165,10 @@ pub unsafe fn pair_and_classify(
         // holder.
         let storage = unsafe { &mut *core::ptr::addr_of_mut!(PAIR_STORAGE) };
         storage
-            .parse_raw_map(
-                map_buf,
-                map_size,
-                descriptor_size,
-                descriptor_version,
-                {
-                    snapshot_seq += 1;
-                    snapshot_seq
-                },
-            )
+            .parse_raw_map(map_buf, map_size, descriptor_size, descriptor_version, {
+                snapshot_seq += 1;
+                snapshot_seq
+            })
             .map_err(PairError::Map)?;
         let classification = storage
             .classify_into_handoff(pa_limit, serializer)
@@ -178,8 +178,10 @@ pub unsafe fn pair_and_classify(
         // captured from the configuration-table DTB before this loop; checking
         // them before `ExitBootServices` keeps the failure while firmware
         // services can still print.
-        // O-11: authorize the DTB pages against this snapshot, copy the body
-        // once, then build the reservation claims from the copy.
+        // O-11: the header was read under the preflight snapshot; this is the
+        // final snapshot. Re-authorize the whole range here, copy the body
+        // once, then build the reservation claims from the copy. Nothing
+        // between this point and `ExitBootServices` may allocate.
         if let Some(owned) = crate::dtb_copy::authorize_and_copy(storage.descriptors())
             .map_err(PairError::DtbPages)?
         {
@@ -220,6 +222,61 @@ pub unsafe fn pair_and_classify(
         }
         return Err(PairError::ExitStatus(status));
     }
+}
+
+/// Take the preflight snapshot for the configuration-table DTB.
+///
+/// This read exists only when [`crate::dtb_copy::note`] recorded an address:
+/// its descriptors authorize the 40-byte header read and the copy-buffer
+/// allocation that follows. Because that allocation changes the live map, the
+/// pairing loop's next `GetMemoryMap` is the final snapshot that must accept
+/// the whole range again. A boot face without a configuration-table DTB pays
+/// no extra firmware call.
+///
+/// # Safety
+///
+/// Same contract as [`pair_and_classify`]: `ops` must be the live firmware
+/// entries, `boot_services` the table they belong to, and `map_buf` writable
+/// for its whole length.
+pub unsafe fn preflight_dtb(
+    ops: &RawOps,
+    boot_services: *mut c_void,
+    map_buf: &mut [u8],
+) -> Result<(), PairError> {
+    if !crate::dtb_copy::awaiting_preflight() {
+        return Ok(());
+    }
+    let mut map_size = map_buf.len();
+    let mut map_key = 0usize;
+    let mut descriptor_size = 0usize;
+    let mut descriptor_version = 0u32;
+    // SAFETY: the caller guarantees the firmware entry and buffer; boot is
+    // single-threaded.
+    let status = unsafe {
+        (ops.get_memory_map)(
+            boot_services,
+            &mut map_size,
+            map_buf.as_mut_ptr(),
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        )
+    };
+    if status == EFI_BUFFER_TOO_SMALL {
+        return Err(PairError::NeedBiggerBuffer(map_size));
+    }
+    if status != EFI_SUCCESS {
+        return Err(PairError::GetMapStatus(status));
+    }
+    // SAFETY: single-threaded boot and this function is the storage's only
+    // holder until `pair_and_classify` re-parses it.
+    let storage = unsafe { &mut *core::ptr::addr_of_mut!(PAIR_STORAGE) };
+    // Snapshot id 0: the preflight read emits no source records; the final
+    // snapshot counts the observations that reach the kernel.
+    storage
+        .parse_raw_map(map_buf, map_size, descriptor_size, descriptor_version, 0)
+        .map_err(PairError::Map)?;
+    crate::dtb_copy::preflight(storage.descriptors()).map_err(PairError::DtbPages)
 }
 
 #[cfg(test)]
@@ -497,16 +554,13 @@ mod tests {
     #[test]
     fn excluded_descriptors_keep_their_provenance_and_snapshot_id_is_not_the_map_key() {
         use minix_boot::{
-            audit_source_coverage, decode_envelope, decode_memmap, decode_sources, MemoryRegion,
-            PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
+            MemoryRegion, PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
+            audit_source_coverage, decode_envelope, decode_memmap, decode_sources,
         };
         use minix_types::PhysBytes;
 
         // RESERVED is structurally valid but produces no ordinary-table entry.
-        let mut fw = MockFw::new(
-            &[(CONV, 0x10_0000, 1), (0u32, 0x30_0000, 1)],
-            &[],
-        );
+        let mut fw = MockFw::new(&[(CONV, 0x10_0000, 1), (0u32, 0x30_0000, 1)], &[]);
         let mut arena = [0u8; ARENA_CAP];
         let mut s = Serializer::new(&mut arena).unwrap();
         write_min_envelope(&mut s);
@@ -578,10 +632,6 @@ mod tests {
             decode_envelope, decode_sources,
         };
 
-        let mut fw = MockFw::new(
-            &[(CONV, 0x10_0000, 4), (CONV, 0x20_0000, 4)],
-            &[(LOADER, 0x30_0000, 1)],
-        );
         let mut fw = MockFw::new(
             &[(CONV, 0x10_0000, 4), (CONV, 0x20_0000, 4)],
             &[(LOADER, 0x30_0000, 1)],
@@ -816,5 +866,161 @@ mod tests {
         assert_eq!(scalars.reserved_byte_len, 16);
         assert_eq!(scalars.param_byte_len, 10);
         assert_eq!(scalars.kern_virt_base, 0xFFFF_8000_0000_0000);
+    }
+
+    /// O-11 timing: a configuration-table DTB costs exactly one preflight
+    /// `GetMemoryMap` before the pairing loop, and the loop's own read is the
+    /// final snapshot whose key `ExitBootServices` receives.
+    #[test]
+    fn dtb_preflight_reads_one_map_before_the_paired_final_map() {
+        use crate::ebs_map::ty;
+
+        let _reset = crate::dtb_copy::ResetOnDrop;
+        let blob = crate::dtb_copy::test_blob::Blob::new(0x100);
+        let pa = blob.pa();
+        crate::dtb_copy::note(pa);
+        let mut fw = MockFw::new(
+            &[(ty::ACPI_RECLAIM, pa, 1), (CONV, 0x10_0000, 1)],
+            &[
+                (ty::ACPI_RECLAIM, pa, 1),
+                (CONV, 0x10_0000, 1),
+                (CONV, 0x20_0000, 1),
+            ],
+        );
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        write_min_envelope(&mut s);
+        let mut map_buf = [0u8; 256];
+        // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
+        unsafe { preflight_dtb(&ops(), &mut fw as *mut MockFw as *mut c_void, &mut map_buf) }
+            .unwrap();
+        assert_eq!(fw.get_calls, 1, "the preflight is its own snapshot");
+        assert_eq!(fw.ebs_calls, 0);
+
+        let before = crate::test_allocations();
+        let c = unsafe {
+            pair_and_classify(
+                &ops(),
+                &mut fw as *mut MockFw as *mut c_void,
+                0,
+                &mut map_buf,
+                1 << 48,
+                &mut s,
+            )
+        }
+        .unwrap();
+        let after = crate::test_allocations();
+        assert_eq!(
+            before, after,
+            "the final-map phase must not allocate after its snapshot"
+        );
+        assert_eq!(fw.get_calls, 2, "the pairing loop reads the final map");
+        assert_eq!(fw.ebs_calls, 1);
+        assert_eq!(
+            (c.conventional, c.reserved),
+            (2, 1),
+            "the accepted classification must come from the final map"
+        );
+        assert!(crate::dtb_copy::owned().is_some());
+    }
+
+    /// A too-small buffer at the preflight stage stops before the header is
+    /// read: the caller may grow the buffer and take a fresh preflight
+    /// snapshot, and the DTB stage must still be waiting for one.
+    #[test]
+    fn preflight_buffer_too_small_stops_before_the_header_read() {
+        use crate::ebs_map::ty;
+
+        let _reset = crate::dtb_copy::ResetOnDrop;
+        let blob = crate::dtb_copy::test_blob::Blob::new(0x100);
+        let pa = blob.pa();
+        crate::dtb_copy::note(pa);
+        let mut fw = MockFw::new(&[(ty::ACPI_RECLAIM, pa, 1)], &[]);
+        fw.get_need[0] = 4096;
+        let mut map_buf = [0u8; 256];
+        // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
+        let err =
+            unsafe { preflight_dtb(&ops(), &mut fw as *mut MockFw as *mut c_void, &mut map_buf) }
+                .unwrap_err();
+        assert_eq!(err, PairError::NeedBiggerBuffer(4096));
+        assert_eq!(fw.get_calls, 1);
+        assert_eq!(fw.ebs_calls, 0);
+        assert!(
+            crate::dtb_copy::awaiting_preflight(),
+            "no map accepted the header, so it must not have been read"
+        );
+    }
+
+    /// A rejected `ExitBootServices` re-reads the map; the DTB copy is not
+    /// re-opened, and the accepted records name the retry's snapshot id, not
+    /// the preflight id or the rejected attempt's.
+    #[test]
+    fn a_retried_ebs_takes_a_new_snapshot_and_the_copy_survives() {
+        use crate::ebs_map::ty;
+        use minix_boot::{
+            PhysicalRange, SourceKind, SourceOrigin, SourceRecord, WIRE_SOURCES_CAP,
+            decode_envelope, decode_sources,
+        };
+
+        let _reset = crate::dtb_copy::ResetOnDrop;
+        let blob = crate::dtb_copy::test_blob::Blob::new(0x100);
+        let pa = blob.pa();
+        crate::dtb_copy::note(pa);
+        let mut fw = MockFw::new(
+            &[(ty::ACPI_RECLAIM, pa, 1)],
+            &[(ty::ACPI_RECLAIM, pa, 1), (CONV, 0x10_0000, 1)],
+        );
+        fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        write_min_envelope(&mut s);
+        let mut map_buf = [0u8; 256];
+        // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
+        unsafe { preflight_dtb(&ops(), &mut fw as *mut MockFw as *mut c_void, &mut map_buf) }
+            .unwrap();
+        let c = unsafe {
+            pair_and_classify(
+                &ops(),
+                &mut fw as *mut MockFw as *mut c_void,
+                0,
+                &mut map_buf,
+                1 << 48,
+                &mut s,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            fw.get_calls, 3,
+            "preflight + rejected final + retry snapshot"
+        );
+        assert_eq!(fw.ebs_calls, 2);
+        assert_eq!((c.conventional, c.reserved), (1, 1));
+
+        s.patch_runtime_fields(minix_boot::RuntimeFields {
+            root_page: 0x1000,
+            bump_base: 0x20_0000,
+            bump_next: 0x20_0000,
+            bump_end: 0x30_0000,
+        });
+        let scalars = decode_envelope(s.as_bytes()).unwrap();
+        let mut sources = [SourceRecord {
+            input_object: minix_boot::memmap_source::InputObjectId::DtbBootInput,
+            address_domain: minix_boot::memmap_source::AddressDomain::Physical,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
+            id: 0,
+            raw_type: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MrbEntry(0),
+            range: PhysicalRange::new(0, 0),
+        }; WIRE_SOURCES_CAP];
+        let ns = decode_sources(s.as_bytes(), &scalars, &mut sources).unwrap();
+        assert_eq!(ns, 2, "one record per ordinary entry of the accepted map");
+        assert!(
+            sources[..ns].iter().all(|r| r.snapshot_id == 2),
+            "the accepted records must name the retry snapshot"
+        );
     }
 }

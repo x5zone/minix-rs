@@ -130,9 +130,10 @@ pkill -f '[q]emu-system' 2>/dev/null || true
 sleep 1
 
 # DTB_CFGTABLE=1：以 acpi=off 启动，EDK2 的 PlatformHasAcpiDtDxe 会改为把
-# 机器 DTB 发布到 UEFI 配置表（EFI_DTB_TABLE_GUID），用来真机验证
-# `cross_validate_config_dtb` 的「存在且可解析」分支。默认（ACPI 模式）该表
-# 不存在，只验证「不存在」分支。
+# 机器 DTB 发布到 UEFI 配置表（EFI_DTB_TABLE_GUID）。AAVMF 发布的 blob 所在
+# 页不是 EfiACPIReclaimMemory，所以这条腿验证的是「存在但不可用」的拒绝分支
+# （O-11 预检快照在读 header 之前即拒绝）；默认（ACPI 模式）该表不存在，
+# 验证「不存在」分支。「存在且可解析」的正例只有宿主单测。
 MACHINE="virt,gic-version=3"
 if [ "${DTB_CFGTABLE:-0}" = "1" ]; then
     MACHINE="$MACHINE,acpi=off"
@@ -167,10 +168,12 @@ if [ "${D1_DUMPDTB:-0}" = "1" ] \
 fi
 
 MARK_DTB="boot-shim: platform DTB cross-validated against the UEFI map"
-MARK_DTB_REFUSED="boot-shim: EBS pairing loop failed: DtbPages(NotAcpiReclaim"
+MARK_DTB_REFUSED="boot-shim: DTB preflight failed: DtbPages(NotAcpiReclaim"
 if [ "${DTB_CFGTABLE:-0}" = "1" ]; then
     # O-11: AAVMF 的强制 DT 模式把配置表 DTB 放在非 EfiACPIReclaimMemory 页，
     # 合同拒绝启动——这条腿断言「存在但不可用」的负例，不再是正例。
+    # 两快照纪律下，拒绝发生在预检快照（读 40 字节 header 之前），
+    # 因此匹配的 panic 阶段名是 DTB preflight，而不是配对循环。
     MARK3="$MARK_DTB_REFUSED"
     MARK4="$MARK_DTB_REFUSED"
 else

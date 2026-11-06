@@ -22,9 +22,47 @@ extern crate std;
 // Provide a global allocator for the test binary.
 // The kernel and its dependencies use `alloc` but are `#![no_std]`;
 // without this, the test linker would have no allocator for them.
+//
+// The wrapper counts `alloc` calls (the default `alloc_zeroed`/`realloc`
+// implementations route through it) so timing tests can prove that a boot
+// phase allocates nothing; it delegates to `std::alloc::System` otherwise.
+#[cfg(test)]
+struct CountingAllocator;
+
+#[cfg(test)]
+static TEST_ALLOCATIONS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        TEST_ALLOCATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        // SAFETY: delegation with the caller's layout.
+        unsafe {
+            <std::alloc::System as std::alloc::GlobalAlloc>::alloc(&std::alloc::System, layout)
+        }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: the pointer came from this allocator.
+        unsafe {
+            <std::alloc::System as std::alloc::GlobalAlloc>::dealloc(
+                &std::alloc::System,
+                ptr,
+                layout,
+            )
+        }
+    }
+}
+
+/// Number of heap allocations made by the test binary so far.
+#[cfg(test)]
+pub(crate) fn test_allocations() -> usize {
+    TEST_ALLOCATIONS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(test)]
 #[global_allocator]
-static TEST_ALLOCATOR: std::alloc::System = std::alloc::System;
+static TEST_ALLOCATOR: CountingAllocator = CountingAllocator;
 
 // Re-export the trait and result type from minix-boot.
 pub use minix_boot::{BootPrepareResult, BootShim};
