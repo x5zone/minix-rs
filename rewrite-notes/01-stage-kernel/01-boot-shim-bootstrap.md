@@ -1436,7 +1436,7 @@ kernel-image ─┬─→ minix-kernel
 - `os/kernel/Cargo.toml` 的依赖是 `minix-arch`、`minix-plat`、`minix-platform`、`minix-types`、`minix-boot`——**没有 boot-shim，也没有 uefi**。两个名字相近的 crate 分工不同：`minix-plat` 是板级/机器相关的实现层（早期控制台、中断控制器一类与具体硬件打交道的代码，[`early_console.rs`](os/plat/src/early_console.rs)），`minix-platform` 是平台描述符的解析与分发层（`os/libs/minix-platform/`，面向 ACPI/DTB 这类固件描述）。
 - `os/libs/minix-boot/Cargo.toml` 只依赖 `minix-types` 与 `fdt`。
 - `os/kernel-image/Cargo.toml` 依赖 `minix-kernel`、`minix-boot`、`minix-arch`、`minix-plat`、`minix-types`。Cargo 的 `[target.'cfg(target_arch = "…")'.dependencies]` 语法允许一条依赖只在指定 target 架构下生效，kernel-image 用它给 riscv64 与 aarch64 各加了两条：`boot-shim`（只开 `opensbi` feature，`uefi` 不开）与 `fdt`（解 DTB 用）——只有以这两个架构为 target 构建时它们才生效。
-  - 符合本项目设计目标的方式（独立引导器 + 内核本体两个产物）里，"内核不依赖 boot-shim"对 `minix-kernel` 与 `boot-shim` 成立——引导器依赖内核、内核不回头依赖引导器。这一分工现在就是两条 UEFI 产线的实况（x86_64 与 aarch64 都跳独立镜像）；riscv64 的 UEFI-shim 路径待接线，当前产线走直核自引导。
+  - 符合本项目设计目标的方式（独立引导器 + 内核本体两个产物）里，"内核不依赖 boot-shim"对 `minix-kernel` 与 `boot-shim` 成立——引导器依赖内核、内核不回头依赖引导器。这一分工的接线状态见 §3.1 的现状标注表（两条 UEFI 产线已跳独立镜像；riscv64 当前产线走直核自引导）。
   - `kernel-image` 的情况不同：它是自引导镜像（引导面 `bootface` 长在自己体内，§3.1 例外条款），riscv64/aarch64 目标下按上面那两条 target 表反向依赖 boot-shim 的**库**（取件表、memmap 源等函数）——依赖的是库而不是引导器产物，单向边界不因此破例（道理见问题二）。这张 target 表就是终态：memmap 源下沉到 `minix-boot` 之后，反向依赖的仍是库、不是引导器产物，依赖方向没有变化。
 
 这条单向边界回答的是"共享类型住哪"，与"哪种固件能编译"是两个独立的问题，别混在一起：
@@ -1498,7 +1498,7 @@ pub struct KernelInfo {
 
 五条生产腿产出这两张表的方式不同，形状相同：
 
-- **两条 UEFI 链**：在 `ExitBootServices` 的配对循环里读 `GetMemoryMap`，按固件的类型标签分流（分流规则见 §4.2）。分类必须与退出共用同一个 MapKey，所以它只能发生在那一个循环里。（`MapKey` 是 `GetMemoryMap` 给当前内存图快照的标识；内存图一变，旧 key 失效，`ExitBootServices` 必须拿到最新 key。）
+- **两条 UEFI 链**：在 `ExitBootServices` 的配对循环里读 `GetMemoryMap`，按固件的类型标签分流（分流规则见 §4.2）。分类必须与退出共用同一个 MapKey，所以它只能发生在那一个循环里（`MapKey` 的定义、配对理由与重试语义见 §4.2）。
 - **riscv64 的 U-Boot shim**：读 DTB `/memory` 的 `reg`（`DtbMemoryMap`，[`memmap_source.rs`](os/libs/minix-boot/src/memmap_source.rs)），再用固件常驻区上界 `KERN_PHYS_BASE` 削出保留段（OpenSBI 占 `[0x8000_0000, 0x8020_0000)`）。
 - **两个直核面**：同一份 DTB 解析实现；aarch64 传 `fw_end = 0`，因为该形态的 DRAM 里没有固件常驻区，保留表为空。
 
@@ -1528,8 +1528,8 @@ pub struct KernelInfo {
 | `kernel_allocated_bytes` | 同上（记录里的 `kernel_allocated_static`） | 同上 |
 | `kernel_allocated_bytes_dynamic` | 同上（记录里的 `kernel_allocated_dynamic`，值来自 bump 分配器用量） | [`fn boot_alloc_used_bytes`](os/kernel/src/boot_alloc.rs:fn boot_alloc_used_bytes) |
 | `mmap_size` | 未映射为 Rust 字段：C 的"遍历边界（最高占用下标加一）"由切片长度 `.len()` 直接承载——`memmap` 从定长数组 + 边界标量变成 `&'static [MemoryRegion]`，长度自带 | [`globals.rs`](os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN) 的容量常量与 §2.4 的边界语义 |
-| `freepde_start` | 曾改型为 `free_upper_idx: Option<usize>` 跨 handoff 携带（D05 轮前）；D01-F03 起整个字段离开 `KernelInfo`——所有生产者都写 `None`、唯一消费者 `GET_KINFO` 报告以 `unwrap_or(0)` 抹平 `Option`，等于"携带一个恒 0 值再由读者归零"。报告面 `KinfoStruct.freepde_start` 保留并固定填 0（C 布局位不动）；64 位侧没有借槽消费者，见 §3.9 | [`misc.rs`](os/kernel/src/misc.rs) 的 `getinfo_kinfo`（填 0 处带注释） |
-| `bootstrap_start` / `bootstrap_len` | 曾以 `(PhysBytes(0), 0)` + 硬断言携带（"Rust 无 unpaged 段"）；D01-F03 起字段删除——布尔事实不再用两个整数与一条断言表达，误设回收区间的接口面随字段一起消失，wire 版本 7→8（envelope 184→160 字节） | §3.5 的删除论证与过度回收风险表 |
+| `freepde_start` | 曾改型 `Option` 跨 handoff 携带，D01-F03 起整个退场（删除论证与报告位填 0 的去向见 §3.9） | [`misc.rs`](os/kernel/src/misc.rs) 的 `getinfo_kinfo` |
+| `bootstrap_start` / `bootstrap_len` | 曾以 `(PhysBytes(0), 0)` + 硬断言携带，D01-F03 起字段删除——误设回收区间的接口面随字段一起消失（论证、过度回收风险表与 wire 版本变更见 §3.5） | §3.5 |
 
 **外部可见面的一条架构演进** `[ARCH: GET_KINFO 载荷收窄为 used-fields subset；其余字段由 GET_IMAGE/GET_MONPARAMS/GET_KMESSAGES 等分开提供]`：C 的 `GET_KINFO` 把整个 `struct kinfo` 拷给调用者（[`do_getinfo.c`](minix3/minix/kernel/system/do_getinfo.c) 的 `length = sizeof(struct kinfo)`）；Rust 只拷 48 字节的 `KinfoStruct`（[`kinfo.rs`](os/libs/minix-types/src/types/kinfo.rs)），只含 C 读者实际消费的七个字段——`freepde_start`、`user_sp`、`vir_kern_start`、`nr_procs`、`nr_tasks`、`release`、`version`（仓内 C 侧读取点 `dmp_kernel.c` 读的就是这几个）。受影响的 C 字段——`memmap[]`/`mmap_size`、`module_list[]`/`boot_procs[]`、`param_buf`、`kmessages` 指针、`bootstrap_start/len` 等——不再经这条系统调用出现：内存账与模块表由各自的 GETINFO 键（GET_IMAGE/GET_MONPARAMS 一族）分开提供，`kmessages` 走 GET_KMESSAGES。行为基线定为 Rust userland 的 `KinfoStruct`；按 C 全布局读被删字段的程序在本仓没有消费者。
 
@@ -1852,7 +1852,7 @@ riscv64 上是第三种形态的出生地：内核镜像自己就是引导体—
 
 其二，接收侧按"干净启动"重建 bootstrap 根（调 `Paging::new_from_page`）。该函数的第一件事是把 512 个根条目清零（`write_bytes(ptr, 0, 512)`），而此时这个根**正在被使用**——承载当前函数的那条指令所在的 L0 槽就在其中。清零本身不会立刻作废已缓存的 TLB 项——三个架构都不因改写页表而自动清 TLB——故障落在下一个**冷**取指上（TLB 回填或切换后的 kmain 入口取指）：之前靠 TLB 残留还能跑几条指令，这段"还能跑"的窗口让故障点与根因隔得更远，栈上多半连一条 panic 消息都来不及打印；"resume 面只做 additive 阶段"这条约束就是从这里来的。
 
-**直核自引导在真板上的位置** `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`。RISC-V 的固件规范 OpenSBI 提供 `FW_PAYLOAD` 模式——把下一级镜像打包进固件本体，boot 时固件直接跳进 S 模式目标；真板上这类极简装机（省掉 U-Boot 与文件系统）不需要独立引导器存在，QEMU 的 `-kernel` 模拟的正是同一时序（§3.1 例外条款的背景段）。三架构的落位并不对称：
+**直核自引导在真板上的位置** `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`。`FW_PAYLOAD` 直核形态的规范背景与真板意义见 §3.1 例外条款段（一句话版：固件打包下一级镜像直接跳 S 模式目标，QEMU `-kernel` 模拟同一时序）。三架构的落位并不对称：
 
 | 架构 | 直核形态的位置 | 原因 |
 |---|---|---|
@@ -2296,7 +2296,7 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 
 ### 4.4 `KernelInfo` 的构造：单一 builder 与一个校验（→3.4、3.5）
 
-五条生产腿（两条 UEFI 链、U-Boot shim、两个直核面——计数口径见 §3.7 术语对账）共用**一个** `build_kernel_info`（boot-shim 库根导出）。收敛的是构造面，不是引导形态层：每条路径仍各自产出自己的列表，只有 `reserved_regions` 一项按路径取值。
+五条生产腿（两条 UEFI 链、U-Boot shim、两个直核面——计数口径见 §3.7 术语对账）共用**一个** `build_kernel_info`（boot-shim 库根导出）——这是"层内收敛原则"（§3.4 开头：收敛数据形状与构造函数，不合并引导形态层）的落点：每条路径仍各自产出自己的列表，只有 `reserved_regions` 一项按路径取值。
 
 ```rust
 // 代码引用（略去函数文档注释；代码内注释有删节与改述），os/boot-shim/src/lib.rs:fn build_kernel_info。
@@ -2556,7 +2556,7 @@ Step 1 与 Step 2 是两段映射循环；aarch64 另有 Step 2b（设备 MMIO �
 Step 1 的注释给出两条判据（另有一处设备窗口分片规则，aarch64 与 riscv64 都适用）：
 
 - 范围是 `IDENTITY_MAP_END`（唯一权威在 [`minix-arch`](os/arch/src/lib.rs) 的 `BOOT_IDENTITY_MAP_END`，值就是低 4GB；kernel 侧是别名 `use minix_arch::BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END`，boot-shim 侧 §4.2 的分配上界直接用同一常量），不是"可用内存的并集"。理由写在 Step 1 之前的注释里：UEFI 的加载器代码/数据可能落在 `LOADER_DATA`/`LOADER_CODE` 类型的内存里，它们不是 conventional；不覆盖这些区间，切页表后的下一条取指就取不到码。
-- 标志是 `kernel_read_write() | EXECUTABLE`（supervisor-only + 可执行），不是"用户可访问"。RISC-V Sv39 上，S 模式取指一条 `U=1` 的页是被禁止的——`sstatus.SUM` 只放宽 supervisor 对用户页的 load/store，取指不受它影响——所以恒等映射必须是 supervisor-only。（源码在同一处的注释写成"除非 `sstatus.SUM=1`"，与规范相反；规范原文是 `Irrespective of SUM, the supervisor may not execute code on pages with U=1`，这里按规范陈述。）C 的 `pg_identity` 反而置了 `I386_VM_USER`：boot 阶段内核跑在 Ring 0，U/S 位不参与内核自己的访问判定，那个位在 C 里没有实际作用（有意义的对照是 `pg_mapkernel` 不置它，把内核地址标成 supervisor-only），Rust 侧因此不再置它。缓存属性是另一处与 C 的差异，两侧的划法不同：C 按单一内存上界划分——上界之上（设备/空洞）统一置 `PWT|PCD`，条目仍 PRESENT（[`pg_identity`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity) 对全部 1024 项都置 `I386_VM_PRESENT`），所以 C 的空洞访问同样不触发页错误——`PWT|PCD` 防的是垃圾字节进缓存，fast-fail 在 C 里本来就没有提供；64 位侧按"登记窗口"划分——登记过的 MMIO 窗口在 Step 1 内按 2MiB 分片置 `DEVICE`（机制在下一条），未登记的空洞统一可缓存 `id_flags`。这个差异连同它的代价要交代清楚：其一，未登记空洞在运行期没有访问者——物理访问只从账本分配的 DRAM 来，会真访问的 MMIO 全部进了登记窗口（源码口径："some ranges may not be backed by physical memory, but that's fine; the CPU won't access them"，`os/kernel/src/lib.rs` 的 Step 1）；其二，fast-fail 的削弱被接受——C 的 `PWT|PCD` 也不提供页错误，被放弃的只是"空洞访问不污染缓存"这层兜底，防线从映射属性换成账本纪律：分配只来自账本、MMIO 只来自登记窗口。Step 1 的窗口清单是 `identity_device_windows()`（aarch64 = 平台 MMIO 基窗，riscv64 = `minix_arch::kernel_identity_mmio_regions()` 的 PLIC/UART，x86 = 空——x86 的 LAPIC/IO-APIC 不在 Step 1 置属性，靠固件建立的 MTRR）；Step 2c 的 `device_window_regions()` 是另一条腿，把会从高半访问的固定 MMIO 页装进自举根，x86 的 LAPIC/IO-APIC 走的是它。
+- 标志是 `kernel_read_write() | EXECUTABLE`（supervisor-only + 可执行），不是"用户可访问"。RISC-V Sv39 上，S 模式取指一条 `U=1` 的页是被禁止的——`sstatus.SUM` 只放宽 supervisor 对用户页的 load/store，取指不受它影响——所以恒等映射必须是 supervisor-only。（源码在同一处的注释写成"除非 `sstatus.SUM=1`"，与规范相反；规范原文是 `Irrespective of SUM, the supervisor may not execute code on pages with U=1`，这里按规范陈述。）C 侧口径见 §2.6.1（`pg_identity` 置 USER 位但在 Ring 0 无实效；`pg_mapkernel` 不置）；Rust 侧的差异是直接不置它。缓存属性是另一处与 C 的差异，两侧的划法不同：C 按单一内存上界划分——上界之上（设备/空洞）统一置 `PWT|PCD`，条目仍 PRESENT（[`pg_identity`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity) 对全部 1024 项都置 `I386_VM_PRESENT`），所以 C 的空洞访问同样不触发页错误——`PWT|PCD` 防的是垃圾字节进缓存，fast-fail 在 C 里本来就没有提供；64 位侧按"登记窗口"划分——登记过的 MMIO 窗口在 Step 1 内按 2MiB 分片置 `DEVICE`（机制在下一条），未登记的空洞统一可缓存 `id_flags`。这个差异连同它的代价要交代清楚：其一，未登记空洞在运行期没有访问者——物理访问只从账本分配的 DRAM 来，会真访问的 MMIO 全部进了登记窗口（源码口径："some ranges may not be backed by physical memory, but that's fine; the CPU won't access them"，`os/kernel/src/lib.rs` 的 Step 1）；其二，fast-fail 的削弱被接受——C 的 `PWT|PCD` 也不提供页错误，被放弃的只是"空洞访问不污染缓存"这层兜底，防线从映射属性换成账本纪律：分配只来自账本、MMIO 只来自登记窗口。Step 1 的窗口清单是 `identity_device_windows()`（aarch64 = 平台 MMIO 基窗，riscv64 = `minix_arch::kernel_identity_mmio_regions()` 的 PLIC/UART，x86 = 空——x86 的 LAPIC/IO-APIC 不在 Step 1 置属性，靠固件建立的 MTRR）；Step 2c 的 `device_window_regions()` 是另一条腿，把会从高半访问的固定 MMIO 页装进自举根，x86 的 LAPIC/IO-APIC 走的是它。
 - 循环里 `let _ = paging.map_huge(...)` 忽略错误。先纠正这条忽略自己原来的理由：源码注释曾写"some ranges may not be backed by physical memory, the CPU won't access them"，但 `map_huge` 的错误集（`InvalidAddress`/`AlreadyMapped`/`NotMapped`/`AllocationFailed`/`PermissionDenied`/`NotSupported`，[`paging.rs`](os/arch/src/arch/paging.rs:PageTableError)）里**没有**"物理内存不存在"这一类——`map_huge` 根本不探测物理内存，空洞不可能从这里产生错误。按机制数，Step 1 里真正可达的失败类别只有两个，处置各不相同：**`AllocationFailed`**——某块需要新配一级中层页表、而引导 bump 分配器发不出页；预算是 1024 页、实际只需几张中层表，正常不会触发，但若真发生且该块正是 CPU 要取指/访问的，故障会在 `enable()` 的下一条取指上出现——恰好是上一条反向推演的场景（注释里已把这一后果写明，不把它说成"可以接受"）；**`AlreadyMapped`**——Step 1 里结构性排除：根是新建清零的、分片按地址严格前进不重访任何 VA，同一槽位不会被写两次（Step 2 的同槽异尺寸守卫针对的是 Step 1 与 Step 2 之间，见下条）。注释原文已按这个口径改写（`os/kernel/src/lib.rs` 的 Step 1 循环内）。
 - 设备窗口分片对 aarch64 与 riscv64 都适用：`identity_device_windows()` 返回两类窗口——aarch64 的 MMIO 物理窗口，以及 riscv64 的 PLIC/UART 固定窗口（`minix_arch::kernel_identity_mmio_regions()`）。与窗口相交的块按 `DEV_PIECE`（2 MiB）分片，落在窗口内的分片改置 `DEVICE` 标志——MMIO 寄存器要求强序访问（不投机、不合并、不重排），普通可缓存映射在 QEMU 上能过、真机上不行；注释同时要求这里的分片与 Step 2b 的高半别名对同一物理页使用同一套属性（ARM 手册：同一物理页用两种属性映射，结果不可预测）。不碰窗口的块保持 `kern_huge` 粒度。
 
