@@ -34,39 +34,47 @@ fn kernel_entries_store_before_any_page_allocation() {
     // The three direct `arch_boot` entries now delegate to one generic
     // `arch_boot_finish` helper; pin the ordering in the helper, then check
     // that every entry actually calls it.
+    // D01-R1 D2-07 merged the three additive-resume bodies into the generic
+    // `resume_additive` (same pattern as `arch_boot_finish`); the store-
+    // before-alloc ordering is now pinned there once, and each entry must
+    // still route through its helper.
     let entries: &[(&str, &str)] = &[
         ("fn arch_boot_finish", "arch_boot_impl"),
+        ("fn resume_additive", "establish_boot_dm"),
+        // The three delegates must not regain their own store calls: the
+        // ordering contract lives in `resume_additive` alone.
         (
-            "pub fn arch_boot_resume_high_half",
-            "establish_boot_dm",
+            "#[cfg(all(not(feature = \"mock\"), target_arch = \"aarch64\"))]\npub fn arch_boot_resume_high_half",
+            "resume_additive::<",
         ),
-        // v1 cross-image receiver: x86_64 and riscv64 land the KernelInfo in
-        // `resume_after_v1_decode` before establishing DM coverage. The
-        // aarch64 receiver delegates to `arch_boot_resume_high_half` (already
-        // pinned above), so it has no direct store call in this body.
         (
             "#[cfg(all(not(feature = \"mock\"), target_arch = \"x86_64\"))]\nfn resume_after_v1_decode",
-            "establish_boot_dm",
+            "resume_additive::<",
         ),
         (
             "#[cfg(all(not(feature = \"mock\"), target_arch = \"riscv64\"))]\nfn resume_after_v1_decode",
-            "establish_boot_dm",
+            "resume_additive::<",
         ),
     ];
 
     for (marker, alloc_site) in entries {
         let body = fn_body(marker);
-        let store = body.find("store_kernel_info(").unwrap_or_else(|| {
-            panic!("M4 pin: {marker} never calls store_kernel_info")
-        });
         let alloc = body.find(alloc_site).unwrap_or_else(|| {
             panic!("M4 pin: {marker} no longer reaches {alloc_site} (update the pin)")
         });
-        assert!(
-            store < alloc,
-            "M4 pin: {marker} reaches {alloc_site} before store_kernel_info \
-             (deep copy must precede the first page allocation)"
-        );
+        // Delegate shells route through `resume_additive`/`arch_boot_finish`
+        // and carry no store of their own — their ordering contract is pinned
+        // inside the helpers above. Helper bodies must hold store < alloc.
+        if marker.contains("fn arch_boot_finish") || marker.contains("fn resume_additive") {
+            let store = body.find("store_kernel_info(").unwrap_or_else(|| {
+                panic!("M4 pin: {marker} never calls store_kernel_info")
+            });
+            assert!(
+                store < alloc,
+                "M4 pin: {marker} reaches {alloc_site} before store_kernel_info \
+                 (deep copy must precede the first page allocation)"
+            );
+        }
     }
 
     // Every direct entry must route through the helper; a future arch_boot
