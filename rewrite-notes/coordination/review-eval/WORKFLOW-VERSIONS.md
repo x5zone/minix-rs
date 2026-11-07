@@ -10,12 +10,27 @@
 |---|---|---|---|---|---|---|
 | V1 | 2026-11-07 | 建立外层循环脚手架：`review-panel.md`、`review-evals.md`、`review-loop` 技能、`eval-trace-check.py`、`trait-audit.py`、固定语料、盲区账本、冻结决策账本、八个对抗样本；修正 `check-review-rules.sh` 的 `grep -c` 零命中中断与 `diff-trae-skills.sh` 漏认 `review-loop` 两处工具缺口 | W-6、W-16、`prompt/code-review-subagent.md:4`（设计死代码）、`69-75`（冷读）、`484-498`（范围纪律）；DOC-ITER 台账的 14 篇引文事故 | 无（V1 只搭脚手架，不删除旧装置） | 四门全绿（见第四节） | 生效 |
 | V2 | 2026-11-07 | 晋升 C-20 轨迹门 v2 与 C-23 禁止 follow-up 大桶：无发现面板必须显式豁免、P-REFUTE 主张入附加表、`dup-of` 合并；`eval-trace-check.py` 增加 `panel-exemption` 检查 | D02/D03 meta-review：B-17 轨迹门 WARN 仍 PASS、B-18 跨角色重复无归并、D03-F10 把 36 条读者项压成一行 | C-20 替代 V1 的“WARN 可接受”；C-23 替代“follow-up 大桶”实践 | 待跑 | 生效 |
+| V2.1 | 2026-11-07 | 晋升 C-25 fix-scope 与 C-28 面板可执行性：每条 ① 必须逐处改到发现点名的位置；L1 并发 ≤3、边查边写、重试 1 次后标 MISSING、合并角色标 VARIANCE、禁止 `grep '^#'` | D05 meta-review：6 条 ① 有 1 条只改一处、CLAIM 04 不完整；首轮 5 个角色被平台回收、读者 A/B 合并、D1 用 `grep '^#'` 带出 Ch3 标题 | C-25 替代“改一处算全修”；C-28 替代“每个角色一个子 agent、无并发上限” | 待跑 | 生效 |
 
 ### V2 执行状态（D04 复核）
 
 - C-20 的 `panel-exemption` 已落地（D01–D04 轨迹门均通过）；`dup-of` 合并与 P-REFUTE 映射校验尚未工具化（B-23/B-24），V2.1 处理。
 - C-23 规则已写，但 D04 的 `D04-F11..F14` 仍是分组大桶；V2 记录不宣称“已完全落地”，V2.1 要拆到逐条。
 - 下一轮关联代码基线用 53（D04 修复后 doc-code-map 计数），不再用 51。
+
+### V2.1 执行状态（D05 复核）
+
+- C-25 的规则已写进 `review-evals.md` §8（每条 ① 逐处回读；暂存 diff 的 hunk 必须回指台账行）；工具化的 fix-scope 检查尚未实现（B-28）。
+- C-28 的面板约束已写进 `review-loop.md` L1（并发 ≤3、边查边写、重试 1 次后 MISSING、合并角色 VARIANCE、禁止 `grep '^#'`）。
+- 四道规则同步门全绿；D01–D05 的轨迹门复跑 PASS。
+
+### D05 首跑结果（05-clock-interrupt-init）
+
+- 发现 83 条：① 11、② 72、③ 0、④ 0、⑤ 0；`re-litigation` 0、`adjacent 阻塞` 0。
+- meta-review：总体 `FLAT`，运行质量 `NOT PASS`（抽样 22/83 = 26.5%，严格一致性 72.7%）。
+- 新增盲区 B-25（台账 ID 重编号）、B-26（非 FINDING 面板豁免）、B-27（平台回收角色缩编）、B-28（暂存 diff 无反向对账）。
+- V2.1 晋升 C-25（fix-scope）与 C-28（面板可执行性）；工具化 fix-scope 待 V2.2。
+- 四条 P0 设计项（TSC 校准、riscv `IrqVector`、`irq_manager` 架构泄漏、LAPIC 契约）仍在 follow-up；D05 不因修复率低而关闭。
 
 ## 二、候选规则登记
 
@@ -52,6 +67,7 @@
 |---|---|---|---|---|---|
 | V1 | exit 0；派生 10 个技能（含 `review-loop`） | exit 0；输出 “Review source, Trae adapters, Claude runtime references, and Codex adapters are consistent.” | exit 0；0 个失败 | exit 0；源 10 个、派生 10 个，完全同步 | `eval-trace-check.py --self-test` 与 `trait-audit.py --self-test` 均 PASS |
 | V2 | exit 0；无漂移 | exit 0 | exit 0；0 个失败 | exit 0；10 个 skill 完全同步 | `eval-trace-check.py --self-test` PASS；D01–D03 轨迹门均 PASS（8 PASS / 2 WARN / 0 FAIL） |
+| V2.1 | exit 0；无漂移 | exit 0 | exit 0；0 个失败 | exit 0；10 个 skill 完全同步 | `eval-trace-check.py --self-test` PASS；D01–D05 轨迹门均 PASS |
 
 ### V1 基线读数
 
@@ -91,6 +107,7 @@
   - C-25 L4.5 修复复验：每条 ① 台账列出发现点名的全部位置，修完逐处 grep 回读；缺一处降级（fix-scope = 已改位置数 / 点名位置数）。
   - C-26 引文归属核对：文档修正若依赖另一份注释/载体，必须把该注释列入本轮 diff 或显式转出。
   - C-27 P-REFUTE 映射校验：附加表每行必须与 `refute.md` 总表的 claim ID/结果/分级逐字一致，轨迹门校验。
+  - C-28 面板可执行性：L1 并发 ≤3、边查边写盘、每角色重试 1 次后标 MISSING、合并角色标 VARIANCE、禁止 `grep '^#'` 读章节标题。
 - V1 继续生效到 D03 边界；D02 的 design-debt 与 teaching-debt 不因升版候选而关闭。
 
 ## 五、回退记录

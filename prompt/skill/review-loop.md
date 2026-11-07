@@ -67,7 +67,11 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 
 派发方式：
 
-1. 用 Agent 工具启动子 agent，类型 `general-purpose`；每个角色一个独立子 agent。
+1. 用 Agent 工具启动子 agent，类型 `general-purpose`；每个角色一个独立子 agent。并发上限 3；超过 3 个角色时分批派发。
+   - 每个角色先写报告骨架，每完成 2–3 条发现就追加写盘，不要等全部查完才写。
+   - 角色在 10 分钟无输出时重试 1 次；仍失败标 `MISSING`，在 `loop.md §1` 写明缺哪个角色与可能漏什么。
+   - 合并角色（如读者 A+B）必须在 `loop.md §1` 标 `VARIANCE`，说明合并理由与独立性损失。
+   - 禁止用 `grep '^#'` 读章节标题来定位；需要标题时用 `rg '^## '` 只取二级标题，且不得把设计章标题交给需要盲读的角色。
 2. 把 `review-panel.md` 第四节对应 brief 逐字作为任务，替换尖括号占位符；不要补充作者的解释、结论、历史评审。
 3. 子 agent 只写 `tmp/review-eval/<stage>/<doc-stem>/panel/<role>.md`；禁止修改仓库文件。
 4. 面板运行前后各跑一次 `git status --porcelain`；出现新改动即判违规，丢弃该角色输出并重跑。
