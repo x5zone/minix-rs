@@ -196,3 +196,48 @@
 | READER-A-20 | reader-a(R2) | P3 | 文档/同句自重复+孤立符号 vmctl_set_addr_space | ② 带日期 | 维护批（局部打磨；与 §4.1 括注重叠已部分收敛） | 同上 | 维护批 |
 | READER-C-18 | reader-c(R1) | P2 | 文档/bootstrap_alloc_limit 签名不一致 | ① | 已修：R3 refute 批把步骤 4 改为 alloc_arena() 经 UEFI allocate_pages(MaxAddress(bootstrap_alloc_limit()))——无参签名与引文一致 | panel/round1/reader-c.md | 五门重跑 |
 | READER-C-19 | reader-c(R1) | P3 | 文档/24 字节归因不闭合 | ① | 已修（信息在 §3.9 可连读；R3 批二把 §3.9 的 wire 版本句改指针后两节连读路径仍在）——补一句显式归因见维护批 | 同上 | 维护批补一句 |
+
+# Round 4（清积压后首轮；基线 194e6c8c2）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | fact | P1 | 文档/入口寄存器三腿 | ① | 已修：§3.7 改 rbx→rdi / x0 / a0 三腿 + 段首三腿限定 | `fc1faecd5` | 五门 |
+| FACT-02 | fact | P1 | 文档/计数归因 | ① | 已修：git 逐 commit 复算（F03 −3、F07 +1、D2 +3 → 176/124） | 同上 | 同上 |
+| FACT-03 | fact | P1 | 文档/entering 行腿数 | ① | 已修：§6.1 标三条 v1 发送腿 | 同上 | 同上 |
+| FACT-04 | fact | P1 | 文档/v0–v4 两次打印 | ① | 已修：§6.1 行注两次打印 + §6.3 最后一行推演改发送侧 v4 | 同上 | 同上 |
+| FACT-05 | fact | P2 | 文档/arena 先后序 | ① | 已修：§4.1 准备链改 root/bump→装载→平台源→arena | 同上 | 同上 |
+| FACT-06 | fact | P2 | 文档/dmp_kernel 字段数 | ① | 已修：四字段归 dmp_kernel、三字段归 VM | 同上 | 同上 |
+| FACT-07 | fact | P2 | 文档/adjudicate 五步 | ① | 已修：§4.2 五步与源码 Step 1–5 对齐（含 RESERVED+WRITE_BACK 反例、RefuseToBoot） | 同上 | 同上 |
+| FACT-08 | fact | P2 | 文档/DTB 解析事实 | ① | 已修：§3.5 行改"建内存表、读 bootargs、传 PlatformDescSource" | 同上 | 同上 |
+| FACT-09 | fact | P2 | 文档/门链集合与脚本 | ① | 已修：五条=表格五行（含 uboot-shim），aarch64 直核注明不计入；§6.4 补脚本 | 同上 | 同上 |
+| FACT-10 | fact | P3 | 文档/委托链精度 | ① | 已修：三架构直接壳均 resume_after_v1_decode，aarch64 再转 high_half | 同上 | 同上 |
+| FACT-11 | fact | P2 | 源码注释/aarch64 only | ① | 已修：resume_additive 注释改三架构 | 同上 | 编译绿 |
+| FACT-12 | fact | P3 | 文档/M14 路标字符串 | ① | 已修：handing control → [raw] entering kernel image v1 | 同上 | 同上 |
+| DESIGN-D2-09 | design-d2 | P1 | 源码注释/入口顺序与寄存器 | ① | 已修：uefi_helpers 入口注释改 x86_64/aarch64 双腿 + 顺序 + rbx/x0 | `194e6c8c2`+`fc1faecd5` | 编译绿 |
+| DESIGN-D2-10 | design-d2 | P1 | 源码注释/表来源与入口 | ① | 已修：opensbi_helpers 模块头改 bootelf-argv + shim 自建表 | 同上 | 同上 |
+| DESIGN-D2-11 | design-d2 | P2 | 源码注释/硬编码内存图 | ① | 已修：lib.rs opensbi 描述改 DTB /memory | 同上 | 同上 |
+| DESIGN-D2-12 | design-d2 | P1 | 源码注释/reserved 范围 | ① | 已修：build_memmap 文档改五类型映射口径 | 同上 | 同上 |
+| DESIGN-D2-13 | design-d2 | P2 | 源码注释/五载荷 | ① | 已修：handoff_v1_read 改 seven payloads | 同上 | 同上 |
+| DESIGN-D2-14 | design-d2 | P2 | 源码注释/快照时点 | ① | 已修：kernel_info 注释改分腿事实（UEFI 后拍/自引导腿含占用） | 同上 | 同上 |
+| DESIGN-D2-15 | design-d2 | P2 | 文档/五步口径 | ① | 已修（与 FACT-07 同靶，采源码口径） | 同上 | 同上 |
+| DESIGN-D2-16 | design-d2 | P2 | 源码注释/模块分配模型 | ① | 已修：Real-hardware 段改 LOADER_DATA 事实 | 同上 | 同上 |
+| READER-A-01 | reader | P2 | 文档/§1.2 三层依赖密度 | ① | 已修：压成一句+回指 §2.8（去重） | 同上 | 五门 |
+| READER-A-02 | reader | P2 | 文档/16 字节对齐消费者 | ① | 已修：补 ABI 消费者与 #GP 后果、编译选项限定 | 同上 | 同上 |
+| READER-A-03 | reader | P2 | 文档/ARM overlaps 锚点 | ① | 已修：补 earm/pre_init.c:overlaps 锚点 | 同上 | 锚点门 |
+| READER-A-04 | reader | P3 | 文档/ram_authority 未定义 | ① | 已修：wire 引文加编注定界 | 同上 | 五门 |
+| READER-A-05 | reader | P2 | 文档/arena 分区计数 | ① | 已修：七载荷分区列名 + 信封+四段相加口径 | 同上 | 同上 |
+| READER-B-01 | reader | P3 | 文档/跨侧类型论证 | ① | 已修（与 C-09 同靶）：KernelInfo 跨侧、接口类型引导侧 | 同上 | 同上 |
+| READER-B-02 | reader | P3 | 文档/框图双向依赖 | ① | 已修：箭头注拆"依赖 A/B"两行 | 同上 | 同上 |
+| READER-B-03 | reader | P1 | 文档/§3.1 列名 OpenSBI | ① | 已修：列名改 U-Boot shim 路径 + 直核指向 §3.7 | 同上 | 同上 |
+| READER-B-04 | reader | P1 | 文档/三类链循环指认 | ① | 已修：定义收进 §3.7 对账为唯一处，§4.1 只按两列 | 同上 | 同上 |
+| READER-C-01 | reader | P1 | 文档/门链五条集合 | ① | 已修（与 FACT-09 同靶） | 同上 | 同上 |
+| READER-C-02 | reader | P2 | 文档/§2.8 证据数 | ① | 已修：两条在此配证据、三条在 §1.2/§2.6/§2.6.1 | 同上 | 同上 |
+| READER-C-03 | reader | P2 | 文档/§3.8 第四写点 | ① | 已修：换手表 Step 0 行并入接收镜像 resume_additive 注册 | 同上 | 同上 |
+| READER-C-04 | reader | P2 | 文档/riscv 反事实范围 | ① | 已修：限定非 U-Boot 特性直核入口 | 同上 | 同上 |
+| READER-C-05 | reader | P3 | 文档/计数轴 | ② 带日期 | R5 fact 复核（B-04/术语对账重写后需观察一轮） | panel/round4/reader.md | R5 |
+| READER-C-06 | reader | P2 | 文档/M1 证据类型 | ① | 已修：引文对账、删真机兜底、注明真机不覆盖 C head.S | 同上 | 同上 |
+| READER-C-07 | reader | P2 | 文档/M3 覆盖强度 | ① | 已修：改部分覆盖+源码序钉说明 | 同上 | 同上 |
+| READER-C-08 | reader | P3 | 文档/pg_map USER | ① | 已修：补用户态消费与 pg_identity 对照 | 同上 | 同上 |
+| READER-C-09 | reader | P3 | 文档/跨侧类型论证 | ① | 已修（与 B-01 同靶） | 同上 | 同上 |
+| READER-C-10 | reader | P3 | 文档/24 字节归因 | ① | 已修：§3.5 补 free_upper_idx 8 字节 | 同上 | 同上 |
+| READER-C-12 | reader | P2 | 文档/§1.2 四条编号 | ① | 已修：四条编号+单列一条=五条 | 同上 | 同上 |

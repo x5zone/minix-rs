@@ -377,11 +377,19 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         ledger_ids, _rows = parse_ledger(ledger_text, report)
         panel_set = set(panel_ids)
         ledger_set = set(ledger_ids)
-        # IDs may also appear as overflow one-liners (no FINDING header) —
-        # those still count as panel findings for the orphan direction.
+        # Orphan reference set: IDs that appear in ANY panel file (the
+        # selected round plus its sibling rounds and the flat files at the
+        # parent level). A per-round --panel-dir must not turn other rounds'
+        # ledger rows into orphans.
         panel_text_ids = set()
-        for f in panel_dir.rglob("*.md"):
-            panel_text_ids.update(re.findall(r"[A-Z]{2,}-[A-Za-z0-9-]+", f.read_text(encoding="utf-8")))
+        roots = [panel_dir]
+        if panel_dir.parent != panel_dir and panel_dir.parent.is_dir():
+            roots.append(panel_dir.parent)
+        for root in roots:
+            for f in root.rglob("*.md"):
+                panel_text_ids.update(
+                    re.findall(r"[A-Z]{2,}-[A-Za-z0-9-]+", f.read_text(encoding="utf-8"))
+                )
         missing = sorted(panel_set - ledger_set)
         # Orphan candidates: only first-cells that look like finding IDs
         # ([A-Z]+-<digits> prefix). Aggregate ledger rows carry prose labels
