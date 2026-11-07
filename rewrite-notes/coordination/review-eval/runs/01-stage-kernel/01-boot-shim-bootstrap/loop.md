@@ -149,3 +149,27 @@
 - 输出目录：tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round1/
 - 面板前 git status：干净（仅 untracked prompt/resources/ 与 tmp/）
 - 派发事件：6 并发 → 4 个立即失败（平台返回 user concurrency limit exceeded；用户确认赠送额度限制并发）→ 降档串行队列。当前在飞：fact、design-d1、reader-b；排队：refute、reader-a、reader-c、design-d2（等 d1）。
+
+## §4 修复（Round 1）
+
+- 文档批 `7af7532ed`：30 条修复（F03 残留簇 + 计数回填 + 引文保真 + 读者因果项 + 术语首用）；台账见 defect-ledger Round 1 段。
+- 代码批 `b4b86cb66`：D2-04 上界断言 + 负控、D2-05 有序不交扫描 + 两条负控、D2-08 删 clone-to-compile、D2-07 resume_additive 合并（三架构编译 0 错，aarch64 双路标经双标签保真）。
+- 误报核销：FACT-05（现行文档已是源码版本）；D1 方案组（typestate/BootError 等）经 D2 依证据拒绝。
+
+## §5 复验（Round 1）
+
+- 文档五门：anchors 99/99、map 45/45、style 0 err、refs 全解析、density 通过。
+- 轨迹检查：PASS 8 / WARN 2 / FAIL 0。
+- 测试：kernel 857、minix-boot 176（+3 负控）、boot-shim 124、minix-arch 307；三架构目标编译 0 错误。
+- 反向验证：D2-04/05 的 should_panic 负控即"还原→红"的机制化等价物。
+
+## §6 指标（Round 1）
+
+- 发现：fact 15、reader-a 31、reader-b 26、reader-c 22、design-d1 8 决策（参考）、design-d2 8、refute 6 主张（2 命中）。
+- 处置：① 修 30 条（文档 27 + 代码 4 项）；② 带日期 3（F04/F05/F06 → code-excellence，用户既定裁决）；③ 误报 2（FACT-05、D1 方案组）；⑤ 证据不足 2（D2-06、refute 潜伏路径——已登记下轮证据获取路径）。
+- 派发：串行降档（6→1 队列；平台赠送额度并发限制）。
+
+## §7 状态
+
+- **NOT CONVERGED（进入 Round 2）**：G8 要求连续两轮无新增范围内发现——Round 1 新发现并修复了 30 条，尚不满足；G1–G6 已达（范围内 P0/P1/P2 当轮清零、④ 清零、②③⑤ 有处置、机械门全绿）。G7 待 Round 2 后统一 meta。
+- Round 2 重点：上轮修复段的回读复核（残留簇是否清干净）、③⑤ 两条的证据补齐、以及"收敛信号"观察（若 Round 2 新增范围内发现 ≤ 上轮 20%，按 §5.7 收敛规则进入 G8 计数）。
