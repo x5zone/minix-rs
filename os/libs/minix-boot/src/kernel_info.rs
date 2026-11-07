@@ -56,7 +56,8 @@ pub struct KernelInfo {
     /// Startup-object records — the canonical set (D01-F07): the kernel
     /// image, every boot module, the root page, the bump pool, and the
     /// handoff arena (when the leg has one). All four producer legs write
-    /// the same set; `validate_requiring_sources` fails closed unless at
+    /// the same set (four writer sites across the five legs — the two
+    /// UEFI chains share one writer); `validate_requiring_sources` fails closed unless at
     /// least one record covers the kernel image. They have their own
     /// partition and capacity, so they are never counted against
     /// memmap_sources.
