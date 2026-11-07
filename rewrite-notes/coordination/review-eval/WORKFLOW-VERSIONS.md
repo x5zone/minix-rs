@@ -10,7 +10,7 @@
 |---|---|---|---|---|---|---|
 | V1 | 2026-11-07 | 建立外层循环脚手架：`review-panel.md`、`review-evals.md`、`review-loop` 技能、`eval-trace-check.py`、`trait-audit.py`、固定语料、盲区账本、冻结决策账本、八个对抗样本；修正 `check-review-rules.sh` 的 `grep -c` 零命中中断与 `diff-trae-skills.sh` 漏认 `review-loop` 两处工具缺口 | W-6、W-16、`prompt/code-review-subagent.md:4`（设计死代码）、`69-75`（冷读）、`484-498`（范围纪律）；DOC-ITER 台账的 14 篇引文事故 | 无（V1 只搭脚手架，不删除旧装置） | 四门全绿（见第四节） | 生效 |
 | V2 | 2026-11-07 | 晋升 C-20 轨迹门 v2 与 C-23 禁止 follow-up 大桶：无发现面板必须显式豁免、P-REFUTE 主张入附加表、`dup-of` 合并；`eval-trace-check.py` 增加 `panel-exemption` 检查 | D02/D03 meta-review：B-17 轨迹门 WARN 仍 PASS、B-18 跨角色重复无归并、D03-F10 把 36 条读者项压成一行 | C-20 替代 V1 的“WARN 可接受”；C-23 替代“follow-up 大桶”实践 | 待跑 | 生效 |
-| V2.1 | 2026-11-07 | 晋升 C-25 fix-scope 与 C-28 面板可执行性：每条 ① 必须逐处改到发现点名的位置；L1 并发 ≤3、边查边写、重试 1 次后标 MISSING、合并角色标 VARIANCE、禁止 `grep '^#'` | D05 meta-review：6 条 ① 有 1 条只改一处、CLAIM 04 不完整；首轮 5 个角色被平台回收、读者 A/B 合并、D1 用 `grep '^#'` 带出 Ch3 标题 | C-25 替代“改一处算全修”；C-28 替代“每个角色一个子 agent、无并发上限” | 待跑 | 生效 |
+| V2.1 | 2026-11-07 | 全修策略（P0/P1/P2/④ 一律本轮修，不允许无档期转出）+ ② 收窄为两种带日期形态 + 测试充分性门（回归测试 + 反向验证 + 含 minix-arch 全量绿 + QEMU）+ commit 级回归 review（文档轴/代码双轴/混合）+ meta 分级（1–2 全量 / 3+ 轻量 / 收敛时收口）+ 收敛判据双层（文档 G1–G8 / 工作流原八条）+ 过拟合护栏（§十）+ resource re-consultation（L6.5）+ reader ④ 必修 + Top-20 输出上限 + fact 已知清单 + 派发降档协议 | D01–D04 转出率 56%→83%；B-20/B-23/B-24；D05 面板 5h48m；meta 一致性四轮 <90% | ②大桶转出被排期制替代；全量 review 被 commit 级回归 review 替代；④可选被必修替代；resource 一次性输入被持续引用替代 | 四道门 | 生效 |
 
 ### V2 执行状态（D04 复核）
 
