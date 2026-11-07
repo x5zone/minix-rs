@@ -1,15 +1,24 @@
 //! Boot shim — bridges firmware (UEFI/OpenSBI/...) to the bare-metal kernel.
 //!
-//! This crate implements the `BootShim` trait (defined in `minix-types`)
-//! for different firmware types. The kernel only depends on the trait,
-//! not on any concrete implementation.
+//! The `BootShim` trait is defined in the `minix-boot` library crate
+//! (`minix-boot::boot_shim`), not in `minix-types`. The kernel does **not**
+//! go through this trait at all — its real entry surface is
+//! `arch_boot(&KernelInfo, root_page)` / `enter_kernel_image_v1` (see doc 01
+//! §3.2 for the honest division of labor: only the U-Boot leg's production
+//! path calls `prepare_boot`).
 //!
-//! Feature gates in `Cargo.toml` select which implementation gets compiled;
-//! code uses the trait uniformly without `#[cfg]` conditionals.
+//! Feature gates in `Cargo.toml` select which firmware helpers get compiled;
+//! the shared loading logic in `loader.rs` is firmware-agnostic, while
+//! `uefi_helpers` / `opensbi_helpers` carry the firmware-specific pieces
+//! behind `#[cfg(feature = ...)]` gates (7 `cfg(feature` sites + 1 combined
+//! gate in `lib.rs`).
 //!
 //! Available implementations:
 //! - `uefi` feature (default): `UefiBootShim` — uses `uefi` crate
+//!   (trait-shaped auxiliary form; the production UEFI entry is
+//!   `prepare_and_enter_kernel_image`, which does not go through the trait)
 //! - `opensbi` feature: `RiscvUbootBootShim` — hardcoded QEMU virt memory map
+//!   (the wired U-Boot leg; called from `uboot_main.rs`)
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(test, allow(internal_features))]

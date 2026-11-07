@@ -15,8 +15,8 @@ use crate::kernel_info::KernelInfo;
 /// - `bump_base` / `bump_end`: bump region for boot-stage page table allocation
 ///
 /// This struct is produced by a `BootShim` implementation and consumed **in
-/// the same address space** (today only the x86_64 inline leg; T2 switches it
-/// to the cross-image form). It is not serialized across binaries: the
+/// the same address space**. Since T2 landed, both UEFI legs are cross-image
+/// producers: the struct is built in the boot-shim process, and the
 /// cross-image authority is the wire protocol `BootHandoffV1`
 /// ([`crate::handoff_v1`]), whose envelope carries the same semantic fields in
 /// fixed-width wire types.
@@ -31,22 +31,19 @@ pub struct BootPrepareResult {
 
 /// Firmware-agnostic boot preparation trait.
 ///
-/// Implemented by firmware-specific modules (UEFI, OpenSBI, ...).
-/// The kernel only depends on this trait — it does not know whether
-/// the boot info came from UEFI, OpenSBI, or any other firmware.
+/// Implemented by firmware-specific modules (UEFI, OpenSBI, ...). The kernel
+/// does **not** depend on this trait (zero references in `os/kernel`) — its
+/// entry surface is `arch_boot` / `enter_kernel_image_v1`. Production load:
+/// only the U-Boot leg (`RiscvUbootBootShim`, called from `uboot_main.rs`);
+/// the UEFI trait impl is an auxiliary form with no production caller.
 ///
-/// Feature gates in `Cargo.toml` select which implementation gets compiled;
-/// code uses the trait uniformly without `#[cfg]` conditionals.
-///
-/// # Why a trait instead of free functions?
-///
-/// 1. **Type safety**: The kernel receives a `&dyn BootShim` or generic `B: BootShim`,
-///    not a bag of loose functions. The compiler enforces that all required steps
-///    (memmap, root page, bump region, exit services) are implemented together.
-/// 2. **Encapsulation**: Each firmware's implementation is a cohesive unit —
-///    you can't accidentally mix `uefi_helpers::build_memmap` with
-///    `opensbi_helpers::alloc_root_page`.
-/// 3. **Testability**: Mock implementations can be injected for kernel unit tests.
+/// What the trait actually buys (doc 01 §3.2, with evidence strength):
+/// 1. **Uniform entry shape** — U-Boot leg & test forms only.
+/// 2. **Testability** — `MockLoader` feeds file bytes in loader tests.
+/// 3. **cfg-gate locality** — 8 gate sites, none in business logic.
+/// 4. **"New firmware, kernel untouched"** — design promise, no automated
+///    counterexample yet. Type safety/encapsulation come from the feature
+///    gates, not from this trait.
 pub trait BootShim {
     /// Prepare boot: discover memory, load kernel and boot modules,
     /// allocate pages, build KernelInfo, exit firmware services.

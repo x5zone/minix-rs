@@ -155,4 +155,7 @@
 | D2-04 | design-d2 | P2 | 代码/模块文档四处失真 | ① 待修 | 登记下批（boot_shim.rs 的 trait 定义位置、"kernel only depends"、cfg 矛盾、过时 T2 注记） | 同上 | 下批 |
 | D2-05 | design-d2 | P1 | 设计/参数表 wire 分歧 | ⑤→用户 | 三处可观察分歧（重复键拒绝/命令行内部键被拒/board 缺失）——比照 F10 先例倾向标 [ARCH]，随下一批用户确认 | 同上 | 裁决后 |
 | D2-10 | design-d2 | P3 | 工具/trait-audit 两类盲区 | ⑥ 工作流 | 记入 BLIND-SPOTS 候选（宏展开 impl 假阳性、非 trait 抽象逃逸） | 同上 | meta |
-| READER-C-01/02/03/05/06/08 + B 簇 + A 簇 | readers | P1-P3 | 文档/复述失真与导航 | ① 待修 | 登记下批：load_mods 两复述、三入口收敛措辞、arena 布局数、大页失败三处、兜底视角切换、aarch64 模块来源、§3.3 消歧、修订痕迹、计数维度、A-18 升序前提复核等约 40 条 | panel/round2/reader-*.md | 下批 |
+| READER-C-01/02/03/05/06/08 + B 簇 + A 簇 | readers | P1-P3 | 文档/复述失真与导航 | ① | 批二已修（本轮）：C-01 load_mods 表格行（exec_multiboot:759 实证）、C-02 直核家族限定、C-03 arena 四段布局注、C-05 双前缀+规划函数名统一、C-06 视角锚定句、C-08 aarch64 表址单通道、B-01 框图注、B-02 边界清单补 §2.3、B-03/C-09 三次出场、B-04/C-12 指向 §2.4.2、B-11 两道闸分工、B-15 链形状、A-03 可执行体/库消歧、A-07 跨镜像产线措辞、A-08 指针落点、A-18 升序机制修正（右余量落数组末尾，序不保证；alloc_lowest 按地址取不受影响）、A-04/A-05/A-14/A-17/A-19、B-06/B-13/B-14/B-17、C-07/C-10/C-11 | panel/round2/reader-*.md | 五门全绿+锚点 100/100 |
+| B-05/07/08/09/16/20 | reader-b | P3 | 文档/冗余（七处） | ② 带日期 | 纯冗余收敛类，Round 3 与收敛判定合并处理（每处补权威指针或删一处复述；不动正确性） | panel/round2/reader-b.md | Round 3 |
+| D2-04 | design-d2 | P2 | 代码/模块文档四处失真 | ① | 已修：boot-shim/src/lib.rs 与 boot_shim.rs 模块头按 §3.2 口径重写（trait 定义在 minix-boot；kernel 零引用；cfg 8 处实况；T2 注记更新；Why-a-trait 换四条收益带证据强度） | grep 实证 | 编译 0 错 |
+| D2-05 | design-d2 | P1 | 设计/参数表 wire 分歧 | ① | 已修（比照 F10 先例）：doc §3.4 与 boot_params.rs 模块文档统一标 [ARCH: 参数表语义规约化]（重复键首条生效/内部键拒绝/BOARD 按源生成三处分歧；仓内消费者零命中已核） | panel/round2/design-d2.md | 五门 |

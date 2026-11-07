@@ -5,6 +5,13 @@
 //! normalization rule every boot leg shares, so the UEFI LoadOptions leg and
 //! the DTB `/chosen/bootargs` leg cannot drift into two formats.
 //!
+//! `[ARCH: 参数表语义规约化]` — three observable divergences from C's
+//! `mb_set_param`, each a deliberate rewrite of a defect carrier (doc 01
+//! §3.4 carries the full label): duplicate keys are first-wins/reject
+//! (C's broken delete leaves two records), the command line may not
+//! override the generated `ARCH`/`BOARD` (C lets it), and `BOARD` is
+//! source-generated instead of unconditionally written.
+//!
 //! Rules (frozen by the design):
 //! - input records are separated by NUL **or** ASCII whitespace (UEFI passes
 //!   NUL-terminated records; DTB bootargs is a space-separated string);
