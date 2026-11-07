@@ -148,3 +148,4 @@
 - 派发：6 角色并发（fact、design-d1、reader-a/b/c、refute），design-d2 等 d1 完成后派发
 - 输出目录：tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round1/
 - 面板前 git status：干净（仅 untracked prompt/resources/ 与 tmp/）
+- 派发事件：6 并发 → 4 个立即失败（平台返回 user concurrency limit exceeded；用户确认赠送额度限制并发）→ 降档串行队列。当前在飞：fact、design-d1、reader-b；排队：refute、reader-a、reader-c、design-d2（等 d1）。
