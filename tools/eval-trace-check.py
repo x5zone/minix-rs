@@ -247,14 +247,15 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
                 f"{'、'.join(row_ids)} 处置类为 ⑤，但没有写清还缺什么证据",
             )
         id_like_row = re.compile(r"^[A-Z]{2,}-[A-Za-z0-9-]+$")
+        round_prefix_row = re.compile(r"^(?:R|D)\d+-\d+$")
         for row_id in row_ids:
             # Short IDs repeat across rounds (each round's panel re-uses
             # FACT-01 etc.) — duplicates are only an error within one table.
             # Prose fragments from aggregate-row labels ("+", "簇", bare
-            # "REFUTE") never enter the duplicate check.
-            if not id_like_row.match(row_id):
-                continue
-            if row_id in table_seen:
+            # "REFUTE") never enter the duplicate check — but they STILL
+            # register in rows/ids for coverage purposes.
+            is_id_like = bool(id_like_row.match(row_id) or round_prefix_row.match(row_id))
+            if is_id_like and row_id in table_seen:
                 report.fail("ledger", f"台账里发现 ID 重复: {row_id}")
             table_seen.add(row_id)
             rows[row_id] = {
