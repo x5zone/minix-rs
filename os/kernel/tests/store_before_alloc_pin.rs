@@ -77,6 +77,26 @@ fn kernel_entries_store_before_any_page_allocation() {
         }
     }
 
+    // R2 (refute): pin the v1 resume sequence's ordering — decode → validate →
+    // resume the boot region → delegate. The registration before the delegate
+    // is what makes the fallback allocator dead code on the resume legs.
+    {
+        let body = fn_body("pub fn arch_boot_resume_v1");
+        let validate = body
+            .find("validate_requiring_sources(")
+            .unwrap_or_else(|| panic!("M4 pin: arch_boot_resume_v1 never validates (update the pin)"));
+        let resume_reg = body
+            .find("resume_boot_pt_alloc(")
+            .unwrap_or_else(|| panic!("M4 pin: arch_boot_resume_v1 never calls resume_boot_pt_alloc"));
+        let delegate = body
+            .find("resume_after_v1_decode(")
+            .unwrap_or_else(|| panic!("M4 pin: arch_boot_resume_v1 never delegates (update the pin)"));
+        assert!(
+            validate < resume_reg && resume_reg < delegate,
+            "M4 pin: arch_boot_resume_v1 sequence drift — expected validate < resume_boot_pt_alloc < resume_after_v1_decode"
+        );
+    }
+
     // Every direct entry must route through the helper; a future arch_boot
     // that bypasses it would evade the ordering pin above.
     for arch in ["x86_64", "aarch64", "riscv64"] {

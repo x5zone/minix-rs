@@ -1842,7 +1842,7 @@ riscv64 上是第三种形态的出生地：内核镜像自己就是引导体—
 
 其一，aarch64 退回内联执行。内联时内核代码住在 PE 镜像的运行物理地址上（低半、`VA = PA`、在 TTBR0 覆盖范围内）。第一次 `switch_address_space` 会换 TTBR0 到进程页表并发 `tlbi vmalle1is`，内核自身的取指映射随之消失——现场证据（`elr`/`vbar` 钉在同一个低地址上）记在 [`rewrite-notes/01-stage-kernel/01-code-design.md`](rewrite-notes/01-stage-kernel/01-code-design.md)，不在 `arch_boot_resume_high_half` 的文档注释里。跨镜像形态把这个问题的根去掉：内核代码链接在高半（TTBR1），而 TTBR1 在上下文切换中不被替换。
 
-其二，接收侧按"干净启动"重建 bootstrap 根（调 `Paging::new_from_page`）。该函数的第一件事是把 512 个根条目清零（`write_bytes(ptr, 0, 512)`），而此时这个根**正在被使用**——承载当前函数的那条指令所在的 L0 槽就在其中。清零后的下一次取指立刻页错误，栈上连一条 panic 消息都来不及打印；"resume 面只做 additive 阶段"这条约束就是从这里来的。
+其二，接收侧按"干净启动"重建 bootstrap 根（调 `Paging::new_from_page`）。该函数的第一件事是把 512 个根条目清零（`write_bytes(ptr, 0, 512)`），而此时这个根**正在被使用**——承载当前函数的那条指令所在的 L0 槽就在其中。清零本身不会立刻作废已缓存的 TLB 项——三个架构都不因改写页表而自动清 TLB——故障落在下一个**冷**取指上（TLB 回填或切换后的 kmain 入口取指）：之前靠 TLB 残留还能跑几条指令，这段"还能跑"的窗口让故障点与根因隔得更远，栈上多半连一条 panic 消息都来不及打印；"resume 面只做 additive 阶段"这条约束就是从这里来的。
 
 **直核自引导在真板上的位置** `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`。RISC-V 的固件规范 OpenSBI 提供 `FW_PAYLOAD` 模式——把下一级镜像打包进固件本体，boot 时固件直接跳进 S 模式目标；真板上这类极简装机（省掉 U-Boot 与文件系统）不需要独立引导器存在，QEMU 的 `-kernel` 模拟的正是同一时序（§3.1 例外条款的背景段）。三架构的落位并不对称：
 
@@ -2119,7 +2119,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 | 1 | 分配根页表页与 bump 区，`init_boot_pt_alloc` | 必须在 DM 可达上界之下；bump 池同时给 shim 建根与接收侧续用 |
 | 2 | 加载 `kernel.elf` 与 12 个启动模块 | 必须在 EBS 之前（依赖 `SimpleFileSystem`） |
 | 3 | 定位平台描述符来源，归一化 `param_buf` | 必须在 EBS 之前（依赖 Configuration Table 与 `LoadOptions`） |
-| 4 | 分配九页 arena（`AllocateMaxAddress(bootstrap_alloc_limit(ARENA_CAP))`，`LOADER_DATA`） | 整段落在恒等/DM 可达界之下；接收方经恒等窗口读它 |
+| 4 | 分配九页 arena（`bump_alloc_pages` 以 `bootstrap_alloc_limit()`——无参，返回 DM 可达上界——为界，`LOADER_DATA`） | 整段落在恒等/DM 可达界之下；接收方经恒等窗口读它 |
 | 5 | 写信封、模块、平台源、参数（非内存图载荷） | arena 已零化；信封的标量字段此时已定稿 |
 | 6 | 分配 `GetMemoryMap` 缓冲，进入配对循环 | 循环内先 `GetMemoryMap`，再分类进 arena 的两个内存图分区，最后用同一 MapKey 调 raw `ExitBootServices` |
 | 7 | 复核 root/bump/arena 都不在 conventional 列表里 | 失败即裸串口打印后停机；此时已无 Boot Services 可退 |
@@ -2746,7 +2746,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | M1 | 第一跳设栈与传参（§2.2，C 侧） | 内核入口 esp 指向 `load_stack_start`；`pre_init` 收到 `(magic, ebx)` | 引文对账＋真机 | 引文块逐字对账＋真机链兜底；C 侧无执行断言（不在本仓测试面） | — |
 | M2 | 内存清单的建与裁（§2.4，Rust 等价物） | `add_memmap` 只收页对齐、非零、<4GB 区间；`cut_memmap` 起点向下、终点向上取整 | 宿主测试 | **已覆盖**：D01-F08 起扣减由 [`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `FreeRangeSet` 承担——行为契约由 9 条行为锁测试 + "与参考区间减法逐页等价"对拍锁定（外向取整、零长跳过、中切分、容量 fail-closed）；旧 `memmap.rs` 17 条随模块删除，其断言被行为锁与对拍覆盖 | — |
 | M3 | 清单先于建表（§1.2/§2.8，Rust 侧） | 正常注册路径下 Step 0/1 不向清单领页（兜底路径除外：`boot_alloc_region()` 为 `None` 时从清单切 256 页，见 §4.1——它发生在建表之前，不违反"清单先于建表"）；清单的动态取用发生在 `pre_init` 等价的 4KB 路径 | 真机 | 真机链覆盖（`kernel: step1+2 mappings ok` 路标） | — |
-| M4 | **深拷先于一切动用空闲清单者**（§4.5 不变量） | 六个入口在 `store_kernel_info` 之前不发生页分配、不读空闲清单；交接分类点读 `KernelInfo` 切片非零 | 真机＋调用序证据 | 宿主测试 `test_store_kernel_info_lands_firmware_slices`（落地区行为）+ 调用序钉 `os/kernel/tests/store_before_alloc_pin.rs`（D01-R1 D2-07 合并后钉在两个泛型体上：`arch_boot_finish` 与 `resume_additive` 的源码序 store 先于建表/establish；三个入口委托壳钉"必须经泛型体"）。运行期钩不可行：QEMU 测试内核直接调 `arch_boot_impl` 分阶段验证，无法区分生产入口与测试 | TODO-01（已关闭，见 5.3） |
+| M4 | **深拷先于一切动用空闲清单者**（§4.5 不变量） | 六个入口在 `store_kernel_info` 之前不发生页分配、不读空闲清单；交接分类点读 `KernelInfo` 切片非零 | 真机＋调用序证据 | 宿主测试 `test_store_kernel_info_lands_firmware_slices`（落地区行为）+ 调用序钉 `os/kernel/tests/store_before_alloc_pin.rs`（D01-R1 D2-07 合并后钉在两个泛型体上：`arch_boot_finish` 与 `resume_additive` 的源码序 store 先于建表/establish；三个入口委托壳钉"必须经泛型体"；R2 补：`arch_boot_resume_v1` 的三步序 validate < `resume_boot_pt_alloc` < 委托亦入钉——此前该次序无钉，resume 腿的兜底死代码属性靠的是无钉守卫）。运行期钩不可行：QEMU 测试内核直接调 `arch_boot_impl` 分阶段验证，无法区分生产入口与测试 | TODO-01（已关闭，见 5.3） |
 | M5 | 页表建立与开分页（§2.6 C / §4.6 Rust） | 开分页后的下一条取指有映射（能打印第一个内核路标） | 真机 | 真机链覆盖（当前映射档；2MiB 回退档的真机矩阵未跑，即 TODO-05） | TODO-05（开放，见 5.3） |
 | M6 | 恒等映射覆盖低 4GB 固定上界（§4.6 Step 1） | `IDENTITY_MAP_END` 以下全部有映射、标志为 supervisor-only | 宿主测试＋真机 | **部分覆盖**：宿主侧 `identity_piece_policy_covers_low_4gib_and_marks_device_windows` 验证分片覆盖全 4GiB 且设备窗口标记正确；`paging.rs` 16 条覆盖 `map_huge` 的能力/编码。全量 4GiB 实际叶子映射仍由真机门覆盖（TODO-05） | TODO-05（开放，见 5.3） |
 | M7 | 分配器"写一次"（§3.8） | 二次 `register` 在 debug 构建失败、release 构建拒绝改写 | 宿主测试 | **已覆盖**：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` / `register_free` 各一：debug 下二次注册 panic，release 下被拒且指针不变） | TODO-02（已关闭，见 5.3） |
@@ -2799,21 +2799,21 @@ $ for f in os/boot-shim/src/loader.rs os/boot-shim/src/opensbi_helpers.rs \
            os/boot-shim/tests/ebs_boundary_audit.rs; do
   printf '%-50s %s\n' "$f" "$(grep -c '#\[test\]' $f)"; done
 os/boot-shim/src/loader.rs                         18
-os/boot-shim/src/opensbi_helpers.rs                12
+os/boot-shim/src/opensbi_helpers.rs                11
 os/boot-shim/src/uefi_helpers.rs                   6
 os/boot-shim/src/ebs_map.rs                        44
 os/boot-shim/src/ebs_pair.rs                       17
 os/boot-shim/src/dtb_copy.rs                       15
 os/boot-shim/src/resv_claims.rs                    13
 os/boot-shim/tests/ebs_boundary_audit.rs           5
-os/libs/minix-boot/src/kernel_info.rs              14
+os/libs/minix-boot/src/kernel_info.rs              17
 os/libs/minix-boot/src/platform.rs                 8
 os/libs/minix-boot/src/boot_form.rs                6
 os/libs/minix-boot/src/boot_params.rs              8
 os/libs/minix-boot/src/memmap_source.rs            72
-os/libs/minix-boot/src/handoff_v1.rs               3
+os/libs/minix-boot/src/handoff_v1.rs               2
 os/libs/minix-boot/src/handoff_v1_write.rs         11
-os/libs/minix-boot/src/handoff_v1_read.rs          22
+os/libs/minix-boot/src/handoff_v1_read.rs          21
 os/libs/minix-boot/src/fdt_layout.rs               29
 os/libs/minix-boot/src/lib.rs                      2
 os/libs/minix-elf/src/lib.rs                       23
@@ -3024,6 +3024,7 @@ fn panic(info: &PanicInfo) -> ! {
 | bump 区间耗尽 | `BootAlloc::alloc` 返回 `AllocationFailed` | 内核侧 `map_huge`/`boot_pt_alloc` 失败，或 `enter_kernel_image_v1: bump region not registered` | 复算 `prepare_and_enter_kernel_image(N)` 的页数预算与镜像规模 |
 | v1 信封/载荷无效 | `arch_boot_resume_v1` 的 `decode_*` | `kernel-image: handoff v1 envelope invalid: <变体>`（或 memmap/reserved/modules/platform/param 对应行） | 核对 shim 的序列化顺序与描述符长度；先看 `[raw] arena=… conv=… res=…` 是否已打印 |
 | ~~`bootstrap_len` 非零~~ | （D01-F03 起字段与断言均已删除，该失败模式不可复发） | 历史消息曾是 `bootstrap_len must be 0 (Rust port has no unpaged section), got N`——现行代码 grep 不到它，排障不要按这条找 | — |
+| boot-shim 自身镜像被装载在 4GiB 之上 | 固件装载器（UEFI 无此保证：规范不约束 loader 镜像的物理落点） | 恒等映射只铺低 4GiB（`IDENTITY_MAP_END`），`bootstrap_alloc_limit()` 只守 root/bump/arena 三段——boot-shim 自己的代码与栈若在 4GiB 之上，开分页后的第一条冷取指就落在无映射区 | 复核 OVMF 的实际装载地址（本仓门链上恒低于 4GiB）；这是 §4.6 Step 1 固定上界隐含的前提，无代码守护 |
 | 快照位置错（自举页被报成可用） | `assert_bootstrap_outside_memmap` | `conventional memmap [a,b) overlaps bootstrap allocation [c,d)` | 核对快照调用点在两次分配之后 |
 | 大页阶梯无档可用 | `boot_validate_and_prepare` | `arch_boot: page-size policy: no kernel page size satisfies the layout` | 跑 `check-layout.sh` 的 L3/L4/L5 |
 | 页表切换后取指故障 | `Paging::enable` 之后第一条指令 | QEMU `-d int` 日志里的异常记录；`CR2`/`EPC` 指向当前指令 | 核对恒等映射范围是否覆盖该地址（§4.6） |
@@ -3072,7 +3073,7 @@ $ gdb-multiarch image.elf
 
 - 第一层回答"哪一步没走到"：里程碑清单（6.1）把 boot-shim 的动作切成十几段，缺哪一段就知道卡在哪个区间。
 - 第二层回答"卡的时候 CPU 在做什么"：`int` 给出异常类型与故障地址，`page` 给出页表遍历记录。`-d page` 的日志量与 `-d int` 不在一个数量级，只用于定位单次页表遍历。
-- 第三层回答"值是什么"：在 `arch_boot` 或 `arch_boot_resume_high_half` 断下来，检查 `KernelInfo` 的字段与 `root_page` 是否合理（`bootstrap_len`、`kern_size`、`memmap` 切片长度）。
+- 第三层回答"值是什么"：在 `arch_boot` 或接收侧委托链（`arch_boot_resume_v1` → `resume_after_v1_decode`/`arch_boot_resume_high_half` → `resume_additive`）断下来，检查 `KernelInfo` 的字段与 `root_page` 是否合理（`kern_size`、`memmap` 切片长度、`kern_stack_top` 是否等于镜像尾——`bootstrap_len` 已随 D01-F03 删除，不是现存的检查项）。
 
 **只用第三层（GDB）而不开 `-d int` 会怎样**。页表切换后的故障是"取指即失败"：GDB 断在切换之后的第一条指令上时，故障已经发生，而"故障地址是哪个、是取指还是读"这类信息只有 QEMU 的异常记录才给。缺了第二层，现场只剩"停在了某处"，没有 `epc`/`CR2` 可对照页表范围。
 
