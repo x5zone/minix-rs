@@ -34,7 +34,7 @@
 //! point back into this library.
 
 use crate::kernel_info::MemoryRegion;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use minix_types::PhysBytes;
 
 /// Capacity of the DTB memory map. Symmetric with kernel-image bootface's old
@@ -160,6 +160,11 @@ static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
     base: PhysBytes(0),
     len: 0,
 }; DTB_MEMMAP_MAX];
+/// One-shot guard: production boots must call `collect_inner` at most once.
+/// Tests may re-enter (multiple test cases share the static), so the guard
+/// is compiled out under `cfg(test)`.
+#[cfg(not(test))]
+static DTB_COLLECT_TAKEN: AtomicBool = AtomicBool::new(false);
 static DTB_FREE_N: AtomicUsize = AtomicUsize::new(0);
 static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
 
@@ -926,6 +931,18 @@ impl DtbMemoryMap<'_> {
         ),
         DtbMemMapError,
     > {
+        // One-shot guard: a second collect on the same boot face overwrites
+        // the `'static` slices returned by the first call, which is UB under
+        // the Rust aliasing model. Tests may re-enter (shared static across
+        // test cases), so the guard is compiled out under `cfg(test)`.
+        #[cfg(not(test))]
+        {
+            assert!(
+                !DTB_COLLECT_TAKEN.swap(true, Ordering::AcqRel),
+                "DtbMemoryMap::collect re-entered: the 'static slices from the \
+                 first call would be invalidated by a second write"
+            );
+        }
         // Single-hart boot face: written once, then read-only; a re-entry that
         // zeroes the counters (a second collect on the same face) merely
         // overwrites the same cells.

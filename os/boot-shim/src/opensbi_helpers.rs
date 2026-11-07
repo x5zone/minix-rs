@@ -354,6 +354,11 @@ impl BootShim for RiscvUbootBootShim {
         // SAFETY: single-threaded boot; written once before the handoff.
         static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
             [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
+        static STARTUP_TAKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        assert!(
+            !STARTUP_TAKEN.swap(true, core::sync::atomic::Ordering::AcqRel),
+            "opensbi_helpers: startup-object landing re-entered"
+        );
         let startup_objects = unsafe {
             // Over capacity must fail closed: the static array is the whole
             // partition, so an unchecked write would run past it.

@@ -358,6 +358,13 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     // only through the returned slice afterwards.
     static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
         [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
+    // One-shot guard: a second entry into this boot face would overwrite the
+    // `'static` slice returned by the first call (UB under Rust aliasing).
+    static STARTUP_TAKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    assert!(
+        !STARTUP_TAKEN.swap(true, core::sync::atomic::Ordering::AcqRel),
+        "bootface: startup-object landing re-entered"
+    );
     let startup_objects = unsafe {
         // Over capacity must fail closed: the static array is the whole
         // partition, so an unchecked write would run past it.
