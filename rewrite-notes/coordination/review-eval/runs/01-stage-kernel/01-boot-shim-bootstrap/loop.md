@@ -185,3 +185,11 @@
 - 范围：同 Round 1
 - 串行队列（平台赠送额度并发限制延续）：fact → design-d1 → design-d2 → reader-a → reader-b → reader-c → refute
 - 本轮使命：G8 收敛判定（连续两轮无新增范围内发现）；③⑤ 两条补证据（D2-06 store 时序、refute 潜伏路径）
+
+## Round 2 §4-§7（阶段状态）
+
+- L1：七角色串行交付完毕（fact 12+3附注 / d1 12决策+STABILITY-NOTE / d2 10 / reader-a 30 / reader-b 27 / reader-c 20 / refute 6 主张零阻断）。
+- L2/L3：批一 `ac223745c` + `1027b63ef` 已修 P0 钉测试、resume 三步序新钉、计数表第二张、refute 四项、FACT-05..12；约 40 条读者复述项 + D2-04（模块文档四处失真）+ D2-05（参数表 wire 分歧，倾向 [ARCH]，随用户确认）登记下批。
+- 关键裁决输入：refute 焦点 a 一半成立（兜底死代码✓）一半证伪（发送方切片不可达）；焦点 b 反证失败（两序均安全）；D1 两轮 STABILITY-NOTE 待 meta 对照收敛度。
+- §7 状态：**NOT CONVERGED（下批继续）**——Round 2 新发现 60+ 条（含 P0 钉测试失配），G8 远未满足；收敛信号观察：新增发现的性质已从"结构性"转向"修订同步与导航"，残留簇在收敛。
+- 下批顺序：读者复述簇（P1）→ D2-04 模块文档 → D2-05 裁决 → 五门 → Round 3 收敛判定轮。
