@@ -1009,7 +1009,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // identity bound; boot services own it until EBS and nothing else writes
     // those pages. The slice lives for the rest of this `!` function.
     let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa.0 as *mut u8, ARENA_CAP) };
-    let mut serializer = Serializer::new(arena).expect("handoff arena too small");
+    let mut serializer = Serializer::new(arena, minix_boot::InputObjectId::UefiMemoryMap).expect("handoff arena too small");
     // Scalars-only carrier: the real memmap arrives from the pairing loop, but
     // the envelope's scalar fields are already final here.
     let carrier = build_kernel_info(
@@ -1027,7 +1027,6 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     serializer
         .write_envelope(&carrier)
         .expect("handoff envelope over capacity");
-    serializer.write_ram_authority(minix_boot::InputObjectId::UefiMemoryMap);
     serializer
         .write_boot_modules(boot_modules)
         .expect("too many boot modules for the handoff arena");

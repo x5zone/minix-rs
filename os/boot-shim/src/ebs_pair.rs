@@ -428,7 +428,7 @@ mod tests {
 
     fn run(fw: &mut MockFw) -> Result<Classification, PairError> {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
         unsafe {
@@ -501,7 +501,7 @@ mod tests {
             &[],
         );
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
@@ -578,7 +578,7 @@ mod tests {
         // RESERVED is structurally valid but produces no ordinary-table entry.
         let mut fw = MockFw::new(&[(CONV, 0x10_0000, 1), (0u32, 0x30_0000, 1)], &[]);
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
@@ -654,7 +654,7 @@ mod tests {
         );
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
@@ -778,7 +778,7 @@ mod tests {
         );
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         let mut map_buf = [0u8; 256];
         let c = unsafe {
             pair_and_classify(
@@ -836,7 +836,7 @@ mod tests {
             param_buf: b"ARCH=test\0",
         };
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&carrier).unwrap();
         s.write_boot_modules(&MODULES).unwrap();
         s.write_platform_sources(&SOURCES).unwrap();
@@ -921,7 +921,7 @@ mod tests {
         };
 
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         write_min_envelope(&mut s);
         s.push_source(&uefi).unwrap();
         s.finish_sources(); // Plan::commit's finalization
@@ -965,7 +965,7 @@ mod tests {
             ],
         );
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
@@ -1049,7 +1049,7 @@ mod tests {
         );
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.

@@ -132,13 +132,18 @@ pub struct Serializer<'a> {
 impl<'a> Serializer<'a> {
     /// Wrap an arena buffer. The buffer must be at least [`ARENA_CAP`] bytes;
     /// only the first `ARENA_CAP` bytes are used.
-    pub fn new(arena: &'a mut [u8]) -> Result<Self, HandoffV1WriteError> {
+    pub fn new(
+        arena: &'a mut [u8],
+        authority: crate::memmap_source::InputObjectId,
+    ) -> Result<Self, HandoffV1WriteError> {
         if arena.len() < ARENA_CAP {
             return Err(HandoffV1WriteError::ArenaTooSmall);
         }
         for byte in &mut arena[..ARENA_CAP] {
             *byte = 0;
         }
+        // Write RAM authority eagerly so a UEFI leg cannot forget to declare it.
+        put_u32(arena, offsets::RAM_AUTHORITY, authority.tag() as u32);
         Ok(Self {
             arena,
             wire_memmap_n: 0,
@@ -172,12 +177,6 @@ impl<'a> Serializer<'a> {
         put_u64(self.arena, offsets::BOOTSTRAP_START, info.bootstrap_start.0);
         put_u64(self.arena, offsets::BOOTSTRAP_LEN, info.bootstrap_len);
         Ok(())
-    }
-
-    /// Declare which input is authoritative for this leg's RAM projection.
-    /// Defaults to the boot DTB (0); the UEFI leg must declare the memory map.
-    pub fn write_ram_authority(&mut self, authority: crate::memmap_source::InputObjectId) {
-        put_u32(self.arena, offsets::RAM_AUTHORITY, authority.tag() as u32);
     }
 
     /// Patch the runtime fields in place (after the root switch, before the

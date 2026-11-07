@@ -408,8 +408,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // SAFETY: fresh bump pages below the identity bound; nothing else writes
     // them, and the slice lives for the rest of this `!` function.
     let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa as *mut u8, ARENA_CAP) };
-    let mut serializer = Serializer::new(arena).expect("handoff arena too small");
-    serializer.write_ram_authority(minix_boot::InputObjectId::DtbBootInput);
+    let mut serializer = Serializer::new(arena, minix_boot::InputObjectId::DtbBootInput).expect("handoff arena too small");
     serializer
         .write_envelope(&result.kernel_info)
         .expect("handoff envelope over capacity");

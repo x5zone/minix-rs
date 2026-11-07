@@ -257,6 +257,26 @@ impl KernelInfo {
             "KernelInfo: memmap must not be empty (no free memory?)"
         );
 
+        // 4a. All memory regions must be non-empty and page-aligned.
+        //     DESIGN-09 (D01): zero-length or unaligned entries would be
+        //     silently skipped by consumers, hiding boot-shim bugs.
+        for (i, r) in self.memmap.iter().enumerate() {
+            assert!(r.len > 0, "KernelInfo: memmap[{}] has zero length", i);
+            assert!(
+                r.base.0 % 0x1000 == 0,
+                "KernelInfo: memmap[{}] base {:#x} is not page-aligned",
+                i, r.base.0
+            );
+        }
+        for (i, r) in self.reserved_regions.iter().enumerate() {
+            assert!(r.len > 0, "KernelInfo: reserved_regions[{}] has zero length", i);
+            assert!(
+                r.base.0 % 0x1000 == 0,
+                "KernelInfo: reserved_regions[{}] base {:#x} is not page-aligned",
+                i, r.base.0
+            );
+        }
+
         // 5. At least one boot module (PM/VM/VFS/RS). Production-only:
         //    bootstrap test kernels hand over no init-server image.
         if require_boot_modules {
