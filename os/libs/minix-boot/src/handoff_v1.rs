@@ -372,7 +372,7 @@ pub const WIRE_SOURCES_END: usize =
 
 /// Startup-object records: the second record class, with its own slots so the
 /// memory-map partition can never crowd them out (and vice versa).
-pub const WIRE_STARTUP_CAP: usize = 16;
+pub const WIRE_STARTUP_CAP: usize = 20;
 pub const WIRE_STARTUP_OFFSET: usize = WIRE_SOURCES_END;
 pub const WIRE_STARTUP_END: usize =
     WIRE_STARTUP_OFFSET + WIRE_STARTUP_CAP * WIRE_SOURCE_RECORD_SIZE;
@@ -432,7 +432,7 @@ const _: () = {
     assert!(SEMANTIC_END == 14016);
     assert!(WIRE_SOURCES_OFFSET.is_multiple_of(align_of::<WireSourceRecord>()));
     assert!(WIRE_SOURCES_END == 35328);
-    assert!(WIRE_STARTUP_END == 36480);
+    assert!(WIRE_STARTUP_END == 36768); // 20 × 72 = 1440
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
     assert!(WIRE_STARTUP_END <= ARENA_CAP);
     assert!(SEMANTIC_END <= ARENA_CAP);

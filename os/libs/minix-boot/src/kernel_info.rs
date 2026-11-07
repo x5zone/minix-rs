@@ -53,9 +53,12 @@ pub struct KernelInfo {
     /// this field as `&[]` and use the lenient gate.
     pub memmap_sources: &'static [SourceRecord],
 
-    /// Startup-object records: the kernel image, boot modules, bootstrap
-    /// page-table pool, root page, bump region and handoff arena. They have
-    /// their own partition and capacity, so they are never counted against
+    /// Startup-object records — the canonical set (D01-F07): the kernel
+    /// image, every boot module, the root page, the bump pool, and the
+    /// handoff arena (when the leg has one). All four producer legs write
+    /// the same set; `validate_requiring_sources` fails closed unless at
+    /// least one record covers the kernel image. They have their own
+    /// partition and capacity, so they are never counted against
     /// memmap_sources.
     pub startup_objects: &'static [SourceRecord],
 
@@ -190,13 +193,22 @@ impl KernelInfo {
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
     pub fn validate_requiring_sources(&self, authority: crate::memmap_source::InputObjectId) {
-        self.validate_impl(Some(authority), true);
+        self.validate_impl_inner(Some(authority), true, true);
     }
 
     fn validate_impl(
         &self,
         authority: Option<crate::memmap_source::InputObjectId>,
         require_boot_modules: bool,
+    ) {
+        self.validate_impl_inner(authority, require_boot_modules, false);
+    }
+
+    fn validate_impl_inner(
+        &self,
+        authority: Option<crate::memmap_source::InputObjectId>,
+        require_boot_modules: bool,
+        require_startup_kernel_record: bool,
     ) {
         // 1. Kernel size must be non-zero.
         assert!(
@@ -296,6 +308,22 @@ impl KernelInfo {
                     panic!("KernelInfo: source records do not cover the projected map: {error:?}")
                 }
             }
+        }
+
+        // Startup-object canonical set (D01-F07): at least one record must
+        // cover the kernel image's physical span. Every production leg writes
+        // it; a missing record means a producer regression, not an empty-list
+        // corner case.
+        if require_startup_kernel_record {
+            let kern_lo = self.kern_phys_base.0;
+            let kern_hi = kern_lo + self.kern_size;
+            assert!(
+                self.startup_objects.iter().any(|r| {
+                    r.range.start <= kern_lo && u128::from(kern_hi) <= r.range.end_exclusive
+                }),
+                "KernelInfo: startup_objects must carry a record covering the kernel image [{kern_lo:#x}, {kern_hi:#x}) — got {} record(s)",
+                self.startup_objects.len()
+            );
         }
     }
 
@@ -621,6 +649,24 @@ mod tests {
     fn test_validate_requiring_sources_accepts_covering_records() {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS;
+        // D01-F07: the strict gate also requires a startup record covering
+        // the kernel image (here kern_phys_base 0x200000 + kern_size
+        // 0x200000 → [0x200000, 0x400000)).
+        static KERN_RECORD: [SourceRecord; 1] =
+            [crate::memmap_source::startup_record(0, 0x200_000, 0x400_000)];
+        info.startup_objects = &KERN_RECORD;
+        info.validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
+    }
+
+    /// D01-F07: without a startup record covering the kernel image, the
+    /// strict production gate fails closed even when source records cover
+    /// the memory projections.
+    #[test]
+    #[should_panic(expected = "startup_objects must carry a record covering the kernel image")]
+    fn test_validate_requiring_sources_rejects_missing_kernel_startup_record() {
+        let mut info = make_valid_info();
+        info.memmap_sources = &COVERING_RECORDS;
+        info.startup_objects = &[];
         info.validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
     }
 

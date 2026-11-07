@@ -348,10 +348,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         "bootface: DTB legs must carry source records, not an empty partition"
     );
     kernel_info.memmap_sources = sources;
-    kernel_info.validate_requiring_sources(minix_boot::InputObjectId::DtbBootInput);
-
-    // Startup-object records: the kernel image and every boot module, in the
-    // second record class with its own capacity.
+    // Startup-object records: the canonical set (D01-F07) — kernel image,
+    // every boot module, the root page, and the bump pool. Written before the
+    // strict gate so the gate can check coverage.
     // SAFETY: single-hart boot face; the array is written once here and read
     // only through the returned slice afterwards.
     static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
@@ -367,7 +366,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         // Over capacity must fail closed: the static array is the whole
         // partition, so an unchecked write would run past it.
         assert!(
-            1 + modules.len() <= minix_boot::WIRE_STARTUP_CAP,
+            3 + modules.len() <= minix_boot::WIRE_STARTUP_CAP,
             "bootface: startup-object partition over capacity"
         );
         let slot = core::ptr::addr_of_mut!(STARTUP_OBJECTS) as *mut minix_boot::SourceRecord;
@@ -386,9 +385,25 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
             ));
             n += 1;
         }
+        // Root page and bump pool complete the canonical set (D01-F07):
+        // these are the bootstrap allocations a provenance consumer must
+        // see to know which conventional pages are already spent.
+        slot.add(n).write(minix_boot::startup_record(
+            n as u16,
+            root_page.0,
+            root_page.0 + 4096,
+        ));
+        n += 1;
+        slot.add(n).write(minix_boot::startup_record(
+            n as u16,
+            bump_pool_base().0,
+            bump_end_bound().0,
+        ));
+        n += 1;
         core::slice::from_raw_parts(slot, n)
     };
     kernel_info.startup_objects = startup_objects;
+    kernel_info.validate_requiring_sources(minix_boot::InputObjectId::DtbBootInput);
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)
 }

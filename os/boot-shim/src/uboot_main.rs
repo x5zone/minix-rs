@@ -433,8 +433,48 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     serializer
         .write_sources(result.kernel_info.memmap_sources)
         .expect("too many memory-map source records for the handoff arena");
+    // Canonical startup set (D01-F07): kernel + modules (already in
+    // `result.kernel_info.startup_objects`) + root page + bump pool + the v1
+    // arena — the bootstrap allocations a provenance consumer must see. The
+    // root/bump/arena values are only known at this serialization point, so
+    // the extension happens here rather than in `prepare_boot`.
+    static mut STARTUP_FULL: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
+        [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
+    // SAFETY: single-threaded boot path; this landing is written once below
+    // and read only through the slice handed to `write_startup`.
+    let startup_full = unsafe {
+        let base = result.kernel_info.startup_objects;
+        assert!(
+            base.len() + 3 <= minix_boot::WIRE_STARTUP_CAP,
+            "boot-shim: startup-object partition over capacity"
+        );
+        let slot = core::ptr::addr_of_mut!(STARTUP_FULL) as *mut minix_boot::SourceRecord;
+        for (i, rec) in base.iter().enumerate() {
+            slot.add(i).write(*rec);
+        }
+        let mut n = base.len();
+        slot.add(n).write(minix_boot::startup_record(
+            n as u16,
+            result.root_page.0,
+            result.root_page.0 + 4096,
+        ));
+        n += 1;
+        slot.add(n).write(minix_boot::startup_record(
+            n as u16,
+            result.bump_base,
+            result.bump_end,
+        ));
+        n += 1;
+        slot.add(n).write(minix_boot::startup_record(
+            n as u16,
+            arena_pa,
+            arena_pa + ARENA_CAP as u64,
+        ));
+        n += 1;
+        core::slice::from_raw_parts(slot, n)
+    };
     serializer
-        .write_startup(result.kernel_info.startup_objects)
+        .write_startup(startup_full)
         .expect("too many startup-object records for the handoff arena");
 
     raw_serial_line("boot-shim: [raw] entering kernel image v1");
