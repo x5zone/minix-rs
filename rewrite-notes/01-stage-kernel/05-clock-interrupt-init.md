@@ -61,7 +61,7 @@ cstart 的三行调用（`prot_init` 是 03 篇的起点，作上下文列出）
 
 依据都在常量与式子上：`kernel/clock.c` 的 [`init_clock`](minix3/minix/kernel/clock.c:init_clock) 是唯一给 `kclockinfo.hz` 赋值的地方（结构体其余字段由 tick 与 `set_realtime`/`set_boottime` 各自推进），[`i386/apic.c`](minix3/minix/kernel/arch/i386/apic.c) 里 `system_hz` 出现在分频与样本数的算式里。
 
-第三条次序关系与这三行调用不在同一处：硬件定时器的编程不在 `cstart` 里。C 把它放在 `boot_cpu_init_timer`（`kernel/clock.c` 的 [`boot_cpu_init_timer`](minix3/minix/kernel/clock.c:boot_cpu_init_timer)），由 `bsp_finish_booting` 在 `kmain` 的最后调用（`kernel/main.c` 的 [`bsp_finish_booting`](minix3/minix/kernel/main.c:bsp_finish_booting)）。原因在 §2.6 展开：定时器的编程里含一次"等时钟中断到达"的校准，且 tick 的消费者（记账与时钟任务通知）要到启动末端才就位。
+第三条次序关系与这三行调用不在同一处：**持久 tick 源**的编程不在 `cstart` 里（APIC 形态的 PIT 校准窗口见 §2.6）。C 把它放在 `boot_cpu_init_timer`（`kernel/clock.c` 的 [`boot_cpu_init_timer`](minix3/minix/kernel/clock.c:boot_cpu_init_timer)），由 `bsp_finish_booting` 在 `kmain` 的最后调用（`kernel/main.c` 的 [`bsp_finish_booting`](minix3/minix/kernel/main.c:bsp_finish_booting)）。原因在 §2.6 展开：tick 的消费者（记账与时钟任务通知）要到启动末端才就位；APIC 形态 cstart 内的校准窗口用的是临时 PIT，不是持久 tick 源。
 
 ### 1.2 中断控制器在这条链上做什么
 
@@ -263,7 +263,7 @@ init_clock(void)
 
 全局别名在 `glo.h` 里：`system_hz` 就是 `kclockinfo.hz`（本篇 §1.1 已引用该宏）。这一点让 `init_clock` 的产物被整个内核的计时算式读到——它是后来 `arch_init` 必须排在它之后的第一条依据（第二条见 §2.4 的门表重建约束；两条的合并陈述见 §2.1 的结论段）。
 
-整个函数体里没有任何端口写、没有任何寄存器访问。硬件定时器的编程在 C 里属于另外两个函数（`init_local_timer` 与 `boot_cpu_init_timer`），它们由 `bsp_finish_booting` 在启动末端调用，见 §2.6。
+整个函数体里没有任何端口写、没有任何寄存器访问。持久 tick 源的编程在 C 里属于另外两个函数（`init_local_timer` 与 `boot_cpu_init_timer`），它们由 `bsp_finish_booting` 在启动末端调用，见 §2.6。
 
 **把范围回退那一行删掉会怎样**：`kclockinfo` 刚被清零，未命中 `env_get` 时 `hz` 保持 0，而 `system_hz` 是它的别名，于是同一张污染清单（§1.1）在这里逐条落地：`load_update` 的槽位算式 `(kclockinfo.uptime / system_hz / _LOAD_UNIT_SECS) % _LOAD_HISTORY` 变成除以 0（`kernel/clock.c` 的 [`load_update`](minix3/minix/kernel/clock.c:load_update)）；`init_local_timer` 的 legacy 分支里 `tsc_per_tick[0] = cpu_get_freq(0) / system_hz` 除以 0（`i386/arch_clock.c` 的 [`init_local_timer`](minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer)）；`apic.c` 的校准两式分子为 0、`estimate_cpu_freq` 的采样循环退化（[`i386/apic.c`](minix3/minix/kernel/arch/i386/apic.c)、`:estimate_cpu_freq`）。落到对象：`kloadinfo.proc_last_slot` 永远算不出、`tsc_per_tick[0]` 除零、频率读数为 0。
 
@@ -534,7 +534,7 @@ bsp_register_timer_handler(const irq_handler_t handler)
 
 `cstart` 的三行调用完成后，内核有了软件时钟状态、有了处于"除级联外全屏蔽"态的控制器、有了架构杂项——但还没有时间在流动：没有任何硬件在按固定间隔产生中断。C 把这一步放在启动的末端，函数体 11 行、只有两个调用；第三段"首次放行"藏在注册路径里。
 
-**限定**：这里的“不在 cstart 里”指**持久**的 tick 源。`USE_APIC` 且 `no_apic=0` 的单 CPU 构建里，`arch_init → apic_single_cpu_init → lapic_enable(0) → apic_calibrate_clocks` 会在 `cstart` 内启动一次 8254 PIT、开中断、采若干 tick（默认 60 Hz 约 6 个 tick、100 毫秒），随后停 PIT、摘临时钩子、关中断（`apic.c:491`、`:499-512`）。它用的是用完就拆的校准钩子，不是 `timer_int_handler`。所以准确说法是：持久 tick 源（该形态下是 LAPIC 计时器）在 `boot_cpu_init_timer`；APIC 形态的 `cstart` 内有一段 PIT 校准窗口。
+**限定**：这里的“不在 cstart 里”指**持久**的 tick 源。`USE_APIC` 且 `no_apic=0` 的单 CPU 构建里，`arch_init → apic_single_cpu_init → lapic_enable(0) → apic_calibrate_clocks` 会在 `cstart` 内启动一次 8254 PIT、开中断、采若干 tick（默认 60 Hz 约 6 个 tick、100 毫秒），随后停 PIT、摘临时钩子、关中断（`apic.c:491`、`:499-512`）。它用的是用完就拆的校准钩子，不是 `timer_int_handler`。此外 APIC 支路的 LVT 门在 `init_local_timer` 的编程段就由 `lapic_set_timer_one_shot` 打开（`apic.c:139`、`:541-542`），所以“编程段不含放行”对 APIC 形态也不成立；放行与编程的层次要按 PIC/LAPIC 分开说。准确说法是：持久 tick 源（该形态下是 LAPIC 计时器）在 `boot_cpu_init_timer`；APIC 形态的 `cstart` 内有一段 PIT 校准窗口。
 
 ```c
 // minix3/minix/kernel/clock.c:boot_cpu_init_timer —— 代码引用（L294-304 的完整函数体）
@@ -701,7 +701,7 @@ PIC 支路的放行藏在 `put_irq_handler` 内部。C 的这个函数在挂链�
 两条次序原则：
 
 1. **软件状态先于读它的人**——`arch_init` 读 `system_hz`，所以它不能早于 `init_clock`；反过来，`init_clock` 不读任何人的产物，`intr_init` 也不读它，这两个之间可以交换。
-2. **编程先于放行**——硬件定时器的三段（编程、注册、放行）在同一条链上，任一段提前都会留下一个"源与处理者不匹配"的窗口；C 把这三次动作收进 `boot_cpu_init_timer` 一处，正是为了让这个次序只有一个维护点。
+2. **编程先于放行**——持久 tick 源的三段（编程、注册、放行）在同一条链上，任一段提前都会留下一个"源与处理者不匹配"的窗口；C 把这三次动作收进 `boot_cpu_init_timer` 一处，正是为了让这个次序只有一个维护点。
 
 ---
 
@@ -1926,7 +1926,7 @@ CLOCK_STATE not initialized — init_clock_and_interrupts must run first
 | 文件 | 源码里 `#[test]` 条数 | x86_64 宿主实跑 | 说明 |
 |---|---|---|---|
 | [`clock.rs`](os/kernel/src/clock.rs) | 47 | 46 跑 + 1 忽略 | 软件时钟状态、定时器链、负载、quantum 递减；其中 2 条在 `clock_irq_handler_tests` 模块里 |
-| [`irq_manager.rs`](os/kernel/src/irq_manager.rs) | 9 | 9 | 注册/移除/分发、共享线、策略与通知 |
+| [`irq_manager.rs`](os/kernel/src/irq_manager.rs) | 10 | 10 | 注册/移除/分发、共享线、策略与通知 |
 | [`clock.rs`](os/arch/src/arch/clock.rs) | 3 | 3 | `DEFAULT_HZ`、`LOAD_HISTORY_SIZE`、`read_tsc` 默认委托 |
 | [`timer_irq_gate.rs`](os/arch/src/arch/timer_irq_gate.rs) | 4 | 2 | 三条按 `target_arch` 门控的编译检查里只有本架构那条参与编译 |
 | [`interrupt.rs`](os/plat/src/interrupt.rs) | 0 | 0 | 原 10 条包装器/派生的自指测试已删，模块注释写明"本模块目前无行为可单元测试" |
