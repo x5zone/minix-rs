@@ -101,9 +101,9 @@ pub const BOOT_FILE_PATH_MAX: usize = 64;
 
 /// One entry in a [`BootFileTable`].
 ///
-/// Layout is `#[repr(C)]` so the U-Boot boot script can populate the
-/// table from a hand-written binary blob without depending on Rust's
-/// layout decisions.
+/// Layout is `#[repr(C)]` and mirrored by the shim's own builder
+/// (`uboot_main::build_shim_table`); the U-Boot script never populates
+/// this table (it only `fatload`s the files to fixed addresses).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BootFileEntry {
@@ -224,24 +224,25 @@ pub struct RiscvUbootBootShim;
 
 impl BootShim for RiscvUbootBootShim {
     fn prepare_boot(bump_pages: usize) -> BootPrepareResult {
-        // U-Boot passes the BootFileTable's physical address in a0,
-        // which our entry trampoline (see `main.rs`) saves into a
-        // module-private static during early boot. For unit testing
-        // and headless development we fall back to a panic with a
-        // clear message.
+        // The shim builds the table itself in .bss
+        // (`uboot_main::build_shim_table`) and installs its address into a
+        // module-private static before calling this. `a0` carries
+        // `(extra_argc, extra_argv)` — not a table address. For unit testing
+        // and headless development we fall back to a panic with a clear
+        // message.
         let table =
             boot_file_table().expect("boot-shim: U-Boot did not pass a BootFileTable in a0");
         let file_loader = UbootFileLoader::new(table);
 
         // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
-        // `install_dtb_ptr` is already in place; `fw_end = 0` is not
-        // trimmed — on this leg the OpenSBI region is reclaimable and the
-        // module regions are excluded by the kernel's bootstrap-pool
-        // exclusions and covered by the A2 deduction record, which is
-        // equivalent to the former single-region hardcoding while taking the
-        // source from the real DTB). A missing DTB means an honest halt (no
-        // fallback; the single-region hardcoding is exactly the leak surface
-        // being closed here).
+        // `install_dtb_ptr` is already in place; the collector is built with
+        // `firmware_reserve_end = KERN_PHYS_BASE` — the firmware prefix
+        // [DRAM_BASE, KERN_PHYS_BASE) is carved out as reserved, not
+        // trimmed at 0: on this leg the OpenSBI region is reclaimable and
+        // the module regions are excluded by the kernel's bootstrap-pool
+        // exclusions and covered by the A2 deduction record). A missing DTB
+        // means an honest halt (no fallback; the single-region hardcoding is
+        // exactly the leak surface being closed here).
         let (memmap, reserved, param_buf, sources) = {
             let dtb_pa = dtb_ptr()
                 .expect("boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）");
@@ -383,9 +384,9 @@ impl BootShim for RiscvUbootBootShim {
 
 // ── BootFileTable handoff ──
 //
-// The trampoline in `main.rs` (or an equivalent setup routine) is
-// expected to call `install_boot_file_table(a0)` exactly once before
-// invoking `RiscvUbootBootShim::prepare_boot`.
+// `uboot_main` builds the table in `.bss` (`build_shim_table`) and calls
+// `install_boot_file_table(table_pa)` exactly once before invoking
+// `RiscvUbootBootShim::prepare_boot`.
 
 static mut BOOT_FILE_TABLE_PTR: usize = 0;
 

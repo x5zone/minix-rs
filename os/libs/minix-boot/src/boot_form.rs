@@ -32,10 +32,12 @@ use crate::kernel_info::KernelInfo;
 /// to in-tree source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootForm {
-    /// (a) x86_64 UEFI inline: `arch_boot` runs directly inside the
-    /// boot-shim process; the kernel is statically linked into the PE.
-    /// This is the historical/test-carrier form; production x86_64 UEFI
-    /// uses the v1 cross-image handoff (see the module note above).
+    /// (a) x86_64 UEFI inline: `arch_boot` ran directly inside the
+    /// boot-shim process; the kernel was statically linked into the PE.
+    /// This is the historical/test-carrier form — the source path is kept
+    /// for the family-existence test only, and `os/boot-shim/src` no longer
+    /// contains an `arch_boot` call (production x86_64 UEFI uses the v1
+    /// cross-image handoff; see the module note above).
     X86UefiInline,
     /// (b) aarch64 UEFI cross-image: the shim produces a `BootHandoffV1`
     /// arena and hands over to `kernel.elf`.

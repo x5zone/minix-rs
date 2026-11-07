@@ -216,20 +216,23 @@ impl BootShim for UefiBootShim {
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
         uefi::println!("boot-shim: root+bump allocated");
-        // Ordering correction: the snapshot must come after **all** LOADER_DATA
-        // allocations — besides the root page and the bump region, that includes
-        // the allocate_pages for the kernel segments and the 12 boot modules
-        // (second-layer lesson: the original correction only covered the first
-        // two allocations, so module pages were still listed as conventional in
-        // the snapshot and the kernel's VM bootstrap side needed 13 more
-        // exclusions to cut those holes, producing fragments that directly
-        // exceeded the VmBootRegions capacity). UEFI satisfies allocations from
-        // conventional free memory and re-labels the allocated pages as
-        // LOADER_DATA in the live map — snapshotting after that means the live
-        // map is already re-labeled, so a conventional-only snapshot naturally
-        // excludes every occupied range, and the PMM map handed to the kernel is
-        // the final pre-EBS free state (matching C: kinfo.memmap is the cut
-        // version).
+        // Ordering correction: the snapshot must come after **all** UEFI
+        // LOADER_DATA allocations — the root page, the bump region, and the
+        // 12 boot modules (second-layer lesson: the original correction only
+        // covered the first two allocations, so module pages were still
+        // listed as conventional in the snapshot and the kernel's VM
+        // bootstrap side needed 13 more exclusions to cut those holes,
+        // producing fragments that directly exceeded the VmBootRegions
+        // capacity). UEFI satisfies allocations from conventional free memory
+        // and re-labels the allocated pages as LOADER_DATA in the live map,
+        // so a conventional-only snapshot excludes those ranges. One range is
+        // NOT covered by this mechanism (D01-R6): the **kernel image** is
+        // written straight to its ELF physical LMAs — conventional RAM — so
+        // it still appears in the snapshot; the kernel's A2 classification
+        // deducts it (`classify` pushes kern_phys_base..+kern_size). The PMM
+        // map handed to the kernel is the final pre-EBS free state with the
+        // kernel range cut at classification (matching C: kinfo.memmap is the
+        // cut version).
         // The file accesses between the uefi::println calls depend on
         // SimpleFileSystem and must complete before ExitBootServices; the
         // snapshot only depends on the live map, so it goes last.
@@ -246,6 +249,26 @@ impl BootShim for UefiBootShim {
         uefi::println!("boot-shim: kernel loaded (entry staged)");
         let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
         uefi::println!("boot-shim: 12 boot modules loaded");
+        // Defensive check (D01-R6 D2-13): the kernel image is written straight
+        // to its ELF physical LMAs, so firmware never sees it as "allocated"
+        // and an `AllocatePages` request could, under memory pressure, return
+        // pages overlapping the kernel. Fail fast instead of letting a module
+        // blob overwrite kernel text.
+        {
+            let kern_lo = kern.kern_phys_base.0;
+            let kern_hi = kern_lo.saturating_add(kern.kern_size);
+            for module in boot_modules {
+                let lo = module.start.0;
+                let hi = lo.saturating_add(module.len as u64);
+                assert!(
+                    hi <= kern_lo || lo >= kern_hi,
+                    "boot-shim: module {} at [0x{lo:x}, 0x{hi:x}) overlaps the kernel image [0x{kern_lo:x}, 0x{kern_hi:x})",
+                    module.name
+                );
+            }
+            // The arena and map-buffer allocations come from the same pool;
+            // check them too once their addresses are known.
+        }
 
         // Locate platform descriptor sources (ACPI RSDP and/or DTB) from the
         // UEFI configuration table. Must happen before ExitBootServices because
@@ -991,6 +1014,18 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     );
 
     let arena_pa = alloc_arena();
+    // Defensive check (D01-R6 D2-13): the arena must not overlap the kernel
+    // image's physical LMAs (firmware does not know they are occupied).
+    {
+        let kern_lo = kern.kern_phys_base.0;
+        let kern_hi = kern_lo.saturating_add(kern.kern_size);
+        let lo = arena_pa.0;
+        let hi = lo.saturating_add(ARENA_CAP as u64);
+        assert!(
+            hi <= kern_lo || lo >= kern_hi,
+            "boot-shim: arena [0x{lo:x}, 0x{hi:x}) overlaps the kernel image [0x{kern_lo:x}, 0x{kern_hi:x})"
+        );
+    }
     // SAFETY: the arena is a fresh `ARENA_CAP` (nine-page) LOADER_DATA allocation below the
     // identity bound; boot services own it until EBS and nothing else writes
     // those pages. The slice lives for the rest of this `!` function.

@@ -596,7 +596,8 @@ static DTB_PANORAMA_N: AtomicUsize = AtomicUsize::new(0);
 /// down its single-character mutations (the arithmetic was migrated from the
 /// original bootface `clip_firmware`; with `fw_end` parameterized, the riscv64
 /// bootface leg and the U-Boot shim leg pass `KERN_PHYS_BASE`, and only the
-/// aarch64 direct leg passes 0 = no clipping).
+/// aarch64 direct leg passes 0 = no clipping; the **aarch64 UEFI leg also
+/// passes 0** — UEFI legs clip at classification time instead, not by fw_end).
 const fn clip_reserved(start: u64, len: u64, fw_end: u64) -> Option<(u64, u64)> {
     if start >= fw_end {
         return Some((start, len));
@@ -838,7 +839,8 @@ fn push_declared(
 /// riscv64 bootface leg and the U-Boot shim leg pass `KERN_PHYS_BASE` (OpenSBI
 /// resides in `[DRAM_BASE, KERN_PHYS_BASE)` and the VM bitmap metadata memsets
 /// that whole span — confirmed on real hardware, so clipping is functionally
-/// required); only the aarch64 direct leg passes 0 = no clipping.
+/// required); the **aarch64 direct leg passes 0** (no firmware prefix to carve;
+/// the aarch64 UEFI leg also passes 0 and clips at classification time).
 pub struct DtbMemoryMap<'a> {
     fdt: &'a fdt::Fdt<'a>,
     firmware_reserve_end: u64,

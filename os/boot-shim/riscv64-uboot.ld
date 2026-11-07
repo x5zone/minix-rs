@@ -15,13 +15,15 @@
  *                     (relocaddr 0x8f6cf000, malloc 0x8eeaf000-0x8f6cf000,
  *                      fdt_blob 0x8eead8e0)
  *   - free band:      0x80060000-0x8dea9fff
- *   - boot script regions that must stay clear of this image:
+ *   - boot script regions that must stay clear of this image
+ *     (authority: uboot_main::uboot_layout):
  *                     kernel.elf PT_LOAD target 0x80200000-0x80600000
  *                     bump/module region         0x82000000-0x84000000
- *                     kernel.elf file staging    0x85000000
- *                     module file staging        0x86000000-0x86bfffff
- *                     BootFileTable              0x8c000000
+ *                     kernel.elf file staging    0x86000000
+ *                     module file staging        0x87000000-0x87bfffff
  *                     DTB staging                0x8c000000
+ *                     (the MNXBOOT1 table is built by the shim in .bss —
+ *                      no table file is staged)
  *   - this image:     0x84500000 (+ ~64 KiB text/rodata/data/bss + 64 KiB
  *                     stack) — disjoint from every region above.
  *

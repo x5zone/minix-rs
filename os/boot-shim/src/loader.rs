@@ -10,8 +10,9 @@
 //!
 //! What differs is **only** how raw file bytes are obtained:
 //! - UEFI uses the `SimpleFileSystem` protocol on the ESP.
-//! - U-Boot pre-loads files into RAM with `fatload` and hands the boot-shim
-//!   a `BootFileTable` describing where each file lives.
+//! - U-Boot pre-loads files into RAM with `fatload`; the shim builds its own
+//!   `BootFileTable` (in `.bss`, from the shared layout constants) describing
+//!   where each file lives.
 //!
 //! We capture that difference in the [`FileLoader`] trait, and then write
 //! the loading logic **once**, generically over `L: FileLoader`. Both
@@ -46,7 +47,7 @@ pub const MODULES_DIR: &str = "/EFI/minix/modules";
 /// The kernel reads these modules positionally: the `i`-th entry here becomes
 /// the `i`-th [`BootModule`] in `kernel_info.boot_modules()`, which the kernel
 /// maps to process slot `BOOT_MODULE_PROC_NRS[i]` while building the process
-/// table (see `os/kernel/src/lib.rs:1200-1203`). The kernel also asserts at
+/// table (see `os/kernel/src/lib.rs:2395-2398`). The kernel also asserts at
 /// boot that the number of modules equals `NR_BOOT_MODULES` (12)
 /// (`os/kernel/src/lib.rs:2336-2344`). So **both the order and the count of
 /// this list are load-bearing** — they are not free to reorder, and a missing
@@ -476,8 +477,8 @@ mod tests {
     /// T-9: `compute_kernel_layout` must surface `NoLoadSegments` for an
     /// image with no `PT_LOAD`. Flip the single program header from
     /// `PT_LOAD` to `PT_NULL` so the PT_LOAD iterator yields nothing — the
-    /// same `!found_load` path (loader.rs:161) `load_kernel_with_loader` reports. Covers the
-    /// previously-untested `NoLoadSegments` variant (loader.rs:161).
+    /// same `!found_load` path (loader.rs:162) `load_kernel_with_loader` reports. Covers the
+    /// previously-untested `NoLoadSegments` variant (loader.rs:162).
     #[test]
     fn test_compute_kernel_layout_rejects_image_without_load_segments() {
         let mut elf = build_minimal_elf();

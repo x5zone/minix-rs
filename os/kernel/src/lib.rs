@@ -515,7 +515,7 @@ unsafe extern "sysv64" {
 }
 
 /// T1 2c/3b receiver-side entry: read the v1 arena through the identity
-/// window, land all five payloads into this image's `.bss` stores, rebuild
+/// window, land all seven payloads into this image's `.bss` stores, rebuild
 /// `KernelInfo`, then resume the additive high-half boot.
 ///
 /// The bootstrap root is already live (the shim built it); this entry must

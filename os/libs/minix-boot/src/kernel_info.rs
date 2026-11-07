@@ -489,9 +489,9 @@ impl KernelInfo {
         self.memmap_sources
     }
 
-    /// Non-conventional (occupied) physical regions — the kernel runtime
-    /// identity windows replayed into every process page table.
-    /// See the `reserved_regions` field doc.
+    /// Non-conventional (occupied) physical regions — *available but not
+    /// allocatable*; Direct Map candidates (see the field doc for the
+    /// per-leg composition and the retired identity-window use).
     #[inline]
     pub fn reserved_regions(&self) -> &'static [MemoryRegion] {
         self.reserved_regions
