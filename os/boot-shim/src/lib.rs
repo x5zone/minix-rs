@@ -81,7 +81,7 @@ pub use minix_elf;
 /// ([`minix_boot::normalize_param_buf`]); pass `&[]` when the leg has no
 /// source. The derived fields follow the boot layout contract:
 /// `kern_stack_top = kern_virt_base + kern_size`, `syscall_entry =
-/// kern_virt_base`, `free_upper_idx = None`, and the per-arch user stack top
+/// kern_virt_base`, and the per-arch user stack top
 /// from `minix_types::USER_STACK_TOP`.
 pub fn build_kernel_info(
     memmap: &'static [minix_boot::MemoryRegion],
@@ -90,8 +90,6 @@ pub fn build_kernel_info(
     kern_phys_base: minix_types::PhysBytes,
     kern_size: u64,
     boot_modules: &'static [minix_boot::BootModule],
-    bootstrap_start: minix_types::PhysBytes,
-    bootstrap_len: u64,
     platform_sources: &'static [minix_boot::PlatformDescSource],
     param_buf: &'static [u8],
 ) -> minix_boot::KernelInfo {
@@ -103,15 +101,12 @@ pub fn build_kernel_info(
         kern_virt_base,
         kern_phys_base,
         kern_size,
-        free_upper_idx: None,
         // Per-arch user stack top; the single authority is
         // `minix_types::USER_STACK_TOP`.
         user_sp: minix_types::VirBytes(minix_types::USER_STACK_TOP),
         kern_stack_top: minix_types::VirBytes(kern_virt_base.0 + kern_size),
         syscall_entry: minix_types::VirBytes(kern_virt_base.0),
         boot_modules,
-        bootstrap_start,
-        bootstrap_len,
         platform_sources,
         param_buf,
     }

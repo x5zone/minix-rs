@@ -817,13 +817,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x10_0000,
-            free_upper_idx: None,
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: MODS,
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
         };

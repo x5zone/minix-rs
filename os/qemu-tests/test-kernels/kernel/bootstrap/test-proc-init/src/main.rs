@@ -197,8 +197,6 @@ fn main() -> Status {
         kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
         syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
         boot_modules,
-        bootstrap_start: PhysBytes(0),
-        bootstrap_len: 0,
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],

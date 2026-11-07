@@ -714,14 +714,12 @@ fn getinfo_kinfo(
     val_ptr: u64,
     val_len: i32,
 ) -> KcallResult {
+    // freepde_start: the handoff no longer carries `free_upper_idx`
+    // (D01-F03 — every producer wrote the "none" form), so the report fills
+    // the C layout position with 0. C's `freepde_start` consumer was the
+    // C VM's borrowed-slot window; the Rust VM does not borrow slots.
     let (user_sp, freepde_start, vir_kern_start) = crate::kernel_info()
-        .map(|ki| {
-            (
-                ki.user_sp.0 as i64,
-                ki.free_upper_idx().unwrap_or(0) as i64,
-                ki.kern_virt_base.0 as i64,
-            )
-        })
+        .map(|ki| (ki.user_sp.0 as i64, 0i64, ki.kern_virt_base.0 as i64))
         .unwrap_or((0, 0, 0));
     let info = KinfoStruct {
         freepde_start,

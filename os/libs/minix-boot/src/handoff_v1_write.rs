@@ -18,7 +18,7 @@
 //! patched in place after the root switch.
 
 use crate::handoff_v1::{
-    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1, FREE_UPPER_IDX_NONE,
+    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1,
     SEMANTIC_END, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET, WIRE_MEMMAP_CAP,
     WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
     WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
@@ -74,23 +74,20 @@ mod offsets {
     pub const KERN_VIRT_BASE: usize = 24;
     pub const KERN_PHYS_BASE: usize = 32;
     pub const KERN_SIZE: usize = 40;
-    pub const FREE_UPPER_IDX: usize = 48;
-    pub const USER_SP: usize = 56;
-    pub const KERN_STACK_TOP: usize = 64;
-    pub const SYSCALL_ENTRY: usize = 72;
-    pub const BOOTSTRAP_START: usize = 80;
-    pub const BOOTSTRAP_LEN: usize = 88;
-    pub const ROOT_PAGE: usize = 96;
-    pub const BUMP_BASE: usize = 104;
-    pub const BUMP_NEXT: usize = 112;
-    pub const BUMP_END: usize = 120;
-    pub const MEMMAP_BYTE_LEN: usize = 128;
-    pub const RESERVED_BYTE_LEN: usize = 136;
-    pub const MODULES_BYTE_LEN: usize = 144;
-    pub const PLATFORM_BYTE_LEN: usize = 152;
-    pub const PARAM_BYTE_LEN: usize = 160;
-    pub const SOURCES_BYTE_LEN: usize = 168;
-    pub const STARTUP_BYTE_LEN: usize = 176;
+    pub const USER_SP: usize = 48;
+    pub const KERN_STACK_TOP: usize = 56;
+    pub const SYSCALL_ENTRY: usize = 64;
+    pub const ROOT_PAGE: usize = 72;
+    pub const BUMP_BASE: usize = 80;
+    pub const BUMP_NEXT: usize = 88;
+    pub const BUMP_END: usize = 96;
+    pub const MEMMAP_BYTE_LEN: usize = 104;
+    pub const RESERVED_BYTE_LEN: usize = 112;
+    pub const MODULES_BYTE_LEN: usize = 120;
+    pub const PLATFORM_BYTE_LEN: usize = 128;
+    pub const PARAM_BYTE_LEN: usize = 136;
+    pub const SOURCES_BYTE_LEN: usize = 144;
+    pub const STARTUP_BYTE_LEN: usize = 152;
 }
 
 fn put_u32(arena: &mut [u8], off: usize, value: u32) {
@@ -166,16 +163,9 @@ impl<'a> Serializer<'a> {
         put_u64(self.arena, offsets::KERN_VIRT_BASE, info.kern_virt_base.0);
         put_u64(self.arena, offsets::KERN_PHYS_BASE, info.kern_phys_base.0);
         put_u64(self.arena, offsets::KERN_SIZE, info.kern_size);
-        let free_upper = match info.free_upper_idx {
-            Some(idx) => idx as u64,
-            None => FREE_UPPER_IDX_NONE,
-        };
-        put_u64(self.arena, offsets::FREE_UPPER_IDX, free_upper);
         put_u64(self.arena, offsets::USER_SP, info.user_sp.0);
         put_u64(self.arena, offsets::KERN_STACK_TOP, info.kern_stack_top.0);
         put_u64(self.arena, offsets::SYSCALL_ENTRY, info.syscall_entry.0);
-        put_u64(self.arena, offsets::BOOTSTRAP_START, info.bootstrap_start.0);
-        put_u64(self.arena, offsets::BOOTSTRAP_LEN, info.bootstrap_len);
         Ok(())
     }
 
@@ -485,13 +475,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            free_upper_idx: None,
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
         }
@@ -508,7 +495,7 @@ mod tests {
     fn envelope_carries_header_and_scalars() {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena).unwrap();
+            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
             s.write_envelope(&base_info()).unwrap();
         }
         assert_eq!(get_u32(&arena, 0), BOOT_HANDOFF_V1_MAGIC);
@@ -521,9 +508,8 @@ mod tests {
         assert_eq!(get_u64(&arena, 24), 0xFFFF_8000_0000_0000);
         assert_eq!(get_u64(&arena, 32), 0x20_0000);
         assert_eq!(get_u64(&arena, 40), 0x20_0000);
-        assert_eq!(get_u64(&arena, 48), FREE_UPPER_IDX_NONE);
         // Descriptors start empty.
-        for off in [128usize, 136, 144, 152, 160] {
+        for off in [104usize, 112, 120, 128, 136] {
             assert_eq!(get_u64(&arena, off), 0);
         }
         assert!(ENVELOPE_CAP >= core::mem::size_of::<BootHandoffV1>());
@@ -532,7 +518,7 @@ mod tests {
     #[test]
     fn runtime_fields_are_patched_in_place() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.patch_runtime_fields(RuntimeFields {
             root_page: 0x1000,
@@ -540,10 +526,10 @@ mod tests {
             bump_next: 0x21_0000,
             bump_end: 0x30_0000,
         });
-        assert_eq!(get_u64(s.as_bytes(), 96), 0x1000);
-        assert_eq!(get_u64(s.as_bytes(), 104), 0x20_0000);
-        assert_eq!(get_u64(s.as_bytes(), 112), 0x21_0000);
-        assert_eq!(get_u64(s.as_bytes(), 120), 0x30_0000);
+        assert_eq!(get_u64(s.as_bytes(), 72), 0x1000);
+        assert_eq!(get_u64(s.as_bytes(), 80), 0x20_0000);
+        assert_eq!(get_u64(s.as_bytes(), 88), 0x21_0000);
+        assert_eq!(get_u64(s.as_bytes(), 96), 0x30_0000);
     }
 
     /// The free function patches a fully serialized arena without zeroing it:
@@ -551,7 +537,7 @@ mod tests {
     #[test]
     fn patch_runtime_fields_in_preserves_the_rest_of_the_arena() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_param_buf(b"ARCH=test\0").unwrap();
         let mut before = [0u8; ARENA_CAP];
@@ -568,23 +554,23 @@ mod tests {
         );
         assert_eq!(get_u32(&arena, 0), BOOT_HANDOFF_V1_MAGIC);
         assert_eq!(get_u64(&arena, 24), 0xFFFF_8000_0000_0000);
-        assert_eq!(get_u64(&arena, 160), 10);
+        assert_eq!(get_u64(&arena, 136), 10);
         for (i, (old, new)) in before.iter().zip(arena.iter()).enumerate() {
-            if (96..128).contains(&i) {
+            if (72..104).contains(&i) {
                 continue;
             }
             assert_eq!(old, new, "byte {i} outside the runtime fields changed");
         }
-        assert_eq!(get_u64(&arena, 96), 0x9000);
-        assert_eq!(get_u64(&arena, 104), 0x40_0000);
-        assert_eq!(get_u64(&arena, 112), 0x40_1000);
-        assert_eq!(get_u64(&arena, 120), 0x50_0000);
+        assert_eq!(get_u64(&arena, 72), 0x9000);
+        assert_eq!(get_u64(&arena, 80), 0x40_0000);
+        assert_eq!(get_u64(&arena, 88), 0x40_1000);
+        assert_eq!(get_u64(&arena, 96), 0x50_0000);
     }
 
     #[test]
     fn memmap_is_dual_written_wire_and_semantic() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.push_memmap(region(0x10_0000, 0x1000)).unwrap();
         s.push_memmap(region(0x20_0000, 0x2000)).unwrap();
@@ -599,13 +585,13 @@ mod tests {
         assert_eq!(get_u64(b, SEMANTIC_MEMMAP_OFFSET), 0x10_0000);
         assert_eq!(get_u64(b, SEMANTIC_MEMMAP_OFFSET + 8), 0x1000);
         // Descriptor = count × 16.
-        assert_eq!(get_u64(b, 128), 32);
+        assert_eq!(get_u64(b, 104), 32);
     }
 
     #[test]
     fn reserved_regions_fill_both_partitions_and_descriptor() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_reserved_regions(&[region(0x1DA0_0000, 0x3000)])
             .unwrap();
@@ -613,7 +599,7 @@ mod tests {
         assert_eq!(get_u64(b, WIRE_RESERVED_OFFSET), 0x1DA0_0000);
         assert_eq!(get_u64(b, WIRE_RESERVED_OFFSET + 8), 0x3000);
         assert_eq!(get_u64(b, SEMANTIC_RESERVED_OFFSET), 0x1DA0_0000);
-        assert_eq!(get_u64(b, 136), 16);
+        assert_eq!(get_u64(b, 112), 16);
     }
 
     #[test]
@@ -631,7 +617,7 @@ mod tests {
             },
         ];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_boot_modules(&MODULES).unwrap();
         let b = s.as_bytes();
@@ -645,7 +631,7 @@ mod tests {
         assert_eq!(get_u64(b, WIRE_MODULES_OFFSET + 24), 0x1000);
         let second = WIRE_MODULES_OFFSET + 32;
         assert_eq!(&b[second..second + 6], b"memory");
-        assert_eq!(get_u64(b, 144), 64);
+        assert_eq!(get_u64(b, 120), 64);
     }
 
     #[test]
@@ -655,7 +641,7 @@ mod tests {
             PlatformDescSource::new(RSDP, PhysBytes(0xE0000)),
         ];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_platform_sources(&SOURCES).unwrap();
         let b = s.as_bytes();
@@ -663,26 +649,26 @@ mod tests {
         assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 4), 0);
         assert_eq!(get_u64(b, WIRE_PLATFORM_OFFSET + 8), 0x4000_0000);
         assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 16), RSDP.raw());
-        assert_eq!(get_u64(b, 152), 32);
+        assert_eq!(get_u64(b, 128), 32);
     }
 
     #[test]
     fn param_buf_is_copied_verbatim() {
         let payload = b"ARCH=x86_64\0BOARD=qemu\0";
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_param_buf(payload).unwrap();
         assert_eq!(
             &s.as_bytes()[WIRE_PARAM_OFFSET..WIRE_PARAM_OFFSET + payload.len()],
             payload
         );
-        assert_eq!(get_u64(s.as_bytes(), 160), payload.len() as u64);
+        assert_eq!(get_u64(s.as_bytes(), 136), payload.len() as u64);
     }
 
     #[test]
     fn over_capacity_payloads_fail_fast() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         // param > 1024
         let big = [0u8; WIRE_PARAM_CAP + 1];
         assert_eq!(
@@ -723,7 +709,7 @@ mod tests {
     fn short_arena_is_rejected() {
         let mut arena = [0u8; ARENA_CAP - 1];
         assert!(matches!(
-            Serializer::new(&mut arena),
+            Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput),
             Err(HandoffV1WriteError::ArenaTooSmall)
         ));
     }

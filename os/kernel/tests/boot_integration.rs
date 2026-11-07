@@ -24,13 +24,10 @@ fn boot_simulation_full_flow() {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000), // x86-64 kernel half
         kern_phys_base: PhysBytes(0x200000),              // loaded at 2MB
         kern_size: 0x400000,                              // 4MB kernel
-        free_upper_idx: Some(256),                              // user space PML4 idx 0-255
         user_sp: VirBytes(USER_STACK_TOP as u64),         // user stack top
         kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),   // kernel stack top
         syscall_entry: VirBytes(0xFFFF_8000_0010_0000),    // syscall entry point
         boot_modules: &[],                                // no boot modules yet
-        bootstrap_start: PhysBytes(0),
-        bootstrap_len: 0,
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],
@@ -56,7 +53,6 @@ fn boot_simulation_full_flow() {
         kernel_info.kern_size / 1024);
     println!("  root_page: phys=0x{:x}", root_page.0);
     println!("  user_sp: 0x{:016x}", kernel_info.user_sp.0);
-    println!("  free_upper_idx: {:?}", kernel_info.free_upper_idx);
 
     // ── Run boot flow step-by-step (instrumented version of arch_boot_impl) ──
 

@@ -943,7 +943,7 @@ mod tests {
     fn classify_ok(map: &[u8], map_size: usize, desc_size: usize, version: u32) -> Classification {
         let mut storage = MapStorage::new();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         storage
             .parse_raw_map(map, map_size, desc_size, version, 0)
             .unwrap();
@@ -955,7 +955,7 @@ mod tests {
     fn classify_err(map: &[u8], map_size: usize, desc_size: usize, version: u32) -> MapError {
         let mut storage = MapStorage::new();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         storage
             .parse_raw_map(map, map_size, desc_size, version, 0)
             .and_then(|()| storage.classify_into_handoff(PA_LIMIT, &mut s))
@@ -1063,7 +1063,7 @@ mod tests {
         let plan = classify(storage.descriptors(), PA_LIMIT, storage.side_capacity())
             .expect("one descriptor fits");
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let mut side = [MemoryRegion {
             base: PhysBytes(0),
             len: 0,
@@ -1093,7 +1093,7 @@ mod tests {
         let plan = classify(storage.descriptors(), PA_LIMIT, storage.side_capacity())
             .expect("one descriptor fits");
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let mut side = [MemoryRegion {
             base: PhysBytes(0),
             len: 0,
@@ -1357,7 +1357,7 @@ mod tests {
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, map.len(), 40, 1, 42).unwrap();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         let off = minix_boot::WIRE_SOURCES_OFFSET;
         let u64_at = |o: usize| u64::from_le_bytes(arena[o..o + 8].try_into().unwrap());
@@ -1382,7 +1382,7 @@ mod tests {
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         assert_eq!(
             c,
@@ -1423,7 +1423,7 @@ mod tests {
         push_desc(&mut map, 4, desc_size, ty::ACPI_NVS, 0x800_0000, 0x10, WB);
 
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let mut storage = MapStorage::new();
         storage
             .parse_raw_map(&map, map.len(), desc_size, 1, 0)
@@ -1443,8 +1443,8 @@ mod tests {
             }
         );
         let b = s.as_bytes();
-        assert_eq!(get_u64(b, 128), 16, "memmap descriptor = 1 x 16");
-        assert_eq!(get_u64(b, 136), 16, "reserved descriptor = 1 x 16");
+        assert_eq!(get_u64(b, 104), 16, "memmap descriptor = 1 x 16");
+        assert_eq!(get_u64(b, 112), 16, "reserved descriptor = 1 x 16");
         assert_eq!(get_u64(b, minix_boot::WIRE_MEMMAP_OFFSET), 0x10_0000);
         assert_eq!(get_u64(b, minix_boot::WIRE_MEMMAP_OFFSET + 8), 0x200 * 4096);
         assert_eq!(get_u64(b, minix_boot::WIRE_RESERVED_OFFSET), 0x40_0000);
@@ -1481,14 +1481,14 @@ mod tests {
             WB,
         );
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let mut storage = MapStorage::new();
         storage
             .parse_raw_map(&map, map.len(), desc_size, 1, 0)
             .unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         assert_eq!(c.conventional, 2);
-        assert_eq!(get_u64(s.as_bytes(), 128), 32);
+        assert_eq!(get_u64(s.as_bytes(), 104), 32);
     }
 
     #[test]
@@ -1675,7 +1675,7 @@ mod tests {
         push_desc(&mut map, 0, 40, ty::CONVENTIONAL, 0x10_0000, 1, WB);
         push_desc(&mut map, 1, 40, ty::OEM_BAND, 0x20_0000, 1, WB);
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         assert!(matches!(
@@ -1788,7 +1788,7 @@ mod tests {
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
         assert_eq!((c.conventional, c.reserved, c.side), (128, 64, 64));
     }
@@ -1809,7 +1809,7 @@ mod tests {
     fn an_empty_map_classifies_to_nothing() {
         let map = [0u8; 40];
         let mut arena = [0u8; minix_boot::ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, 0, 40, 1, 0).unwrap();
         let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();

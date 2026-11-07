@@ -354,27 +354,6 @@ impl BootShim for UefiBootShim {
             kern.kern_phys_base,
             kern.kern_size,
             boot_modules,
-            // Bootstrap (unpaged kernel) region.
-            //
-            // C semantics (pre_init.c:114-116):
-            //     kinfo.bootstrap_start = &_kern_unpaged_start;
-            //     kinfo.bootstrap_len   = &_kern_unpaged_end - &_kern_unpaged_start;
-            //
-            // In Minix3 C the kernel has a small "unpaged" section that runs
-            // before paging is enabled and must remain identity-mapped; its
-            // physical range is reclaimed via add_memmap() after boot completes.
-            //
-            // Rust port design choice: the kernel is higher-half from the
-            // very first instruction — there is no separate unpaged section
-            // because we never run with paging disabled. The startup trampoline
-            // lives in boot-shim (a separate ELF loaded by firmware), not in
-            // the kernel proper. Therefore no kernel-side memory needs to be
-            // reclaimed at this point; the previous `PhysBytes(0) + len =
-            // kern_phys_base.0` was a dangerous over-reclaim that swept up
-            // OpenSBI/DTB/U-Boot/boot-shim itself. See 01-boot-shim-bootstrap.md
-            // §3.5.1 for the rationale.
-            PhysBytes(0),
-            0,
             platform_sources,
             param_buf,
         );
@@ -1019,8 +998,6 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base,
         kern.kern_size,
         boot_modules,
-        PhysBytes(0),
-        0,
         platform_sources,
         param_buf,
     );
@@ -1174,8 +1151,6 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base,
         kern.kern_size,
         boot_modules,
-        PhysBytes(0),
-        0,
         platform_sources,
         param_buf,
     );
@@ -1274,8 +1249,6 @@ mod tests {
             PhysBytes(0x200000),
             0x100_000,
             &MODULES,
-            PhysBytes(0x100000), // bootstrap_start
-            0x100000,            // bootstrap_len
             &[],                 // platform_sources (empty = no source)
             &[],                 // param_buf (no source in this unit test)
         );

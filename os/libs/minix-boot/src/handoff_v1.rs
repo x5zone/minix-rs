@@ -271,11 +271,13 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// instead of being dropped on the sending side. A v1 receiver would ignore
 /// the new partition and a v1 sender would leave it empty, so the version is
 /// compared exactly, not as a minimum.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 7;
-
-/// `free_upper_idx` sentinel for "no value" (a valid index can never be
-/// `u64::MAX`; decode checks the sentinel first, then the range).
-pub const FREE_UPPER_IDX_NONE: u64 = u64::MAX;
+///
+/// 8 = the `free_upper_idx` / `bootstrap_start` / `bootstrap_len` scalars
+/// left the envelope (D01-F03): all producers wrote the "none" forms
+/// (sentinel / 0 / 0), the kernel-side consumer of `free_upper_idx` was
+/// the GET_KINFO report which fills 0 anyway, and the bootstrap reclaim
+/// does not exist in the Rust port. Envelope shrinks 184 → 160 bytes.
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 8;
 
 /// The handoff envelope. Lives at the start of the handoff arena; the
 /// runtime fields (`root_page`, bump triple) are patched in place after the
@@ -300,12 +302,9 @@ pub struct BootHandoffV1 {
     pub kern_virt_base: WireVirtAddr,
     pub kern_phys_base: WirePhysAddr,
     pub kern_size: u64,
-    pub free_upper_idx: u64,
     pub user_sp: WireVirtAddr,
     pub kern_stack_top: WireVirtAddr,
     pub syscall_entry: WireVirtAddr,
-    pub bootstrap_start: WirePhysAddr,
-    pub bootstrap_len: u64,
     // ── runtime handoff fields (patched after the root switch) ──
     pub root_page: u64,
     pub bump_base: u64,
@@ -400,7 +399,7 @@ const _: () = {
     assert!(size_of::<WireVirtAddr>() == 8);
 
     // Envelope: fits the budget, 8-byte aligned, key offsets pinned.
-    assert!(size_of::<BootHandoffV1>() == 184);
+    assert!(size_of::<BootHandoffV1>() == 160);
     assert!(align_of::<BootHandoffV1>() == 8);
     assert!(size_of::<BootHandoffV1>() <= ENVELOPE_CAP);
     assert!(offset_of!(BootHandoffV1, magic) == 0);
@@ -410,13 +409,14 @@ const _: () = {
     assert!(offset_of!(BootHandoffV1, arena_len) == 16);
     assert!(offset_of!(BootHandoffV1, kern_virt_base) == 24);
     assert!(offset_of!(BootHandoffV1, kern_phys_base) == 32);
-    assert!(offset_of!(BootHandoffV1, free_upper_idx) == 48);
-    assert!(offset_of!(BootHandoffV1, root_page) == 96);
-    assert!(offset_of!(BootHandoffV1, bump_end) == 120);
-    assert!(offset_of!(BootHandoffV1, memmap_byte_len) == 128);
-    assert!(offset_of!(BootHandoffV1, param_buf_byte_len) == 160);
-    assert!(offset_of!(BootHandoffV1, sources_byte_len) == 168);
-    assert!(offset_of!(BootHandoffV1, startup_byte_len) == 176);
+    assert!(offset_of!(BootHandoffV1, user_sp) == 48);
+    assert!(offset_of!(BootHandoffV1, syscall_entry) == 64);
+    assert!(offset_of!(BootHandoffV1, root_page) == 72);
+    assert!(offset_of!(BootHandoffV1, bump_end) == 96);
+    assert!(offset_of!(BootHandoffV1, memmap_byte_len) == 104);
+    assert!(offset_of!(BootHandoffV1, param_buf_byte_len) == 136);
+    assert!(offset_of!(BootHandoffV1, sources_byte_len) == 144);
+    assert!(offset_of!(BootHandoffV1, startup_byte_len) == 152);
 
     // Arena partitions: element-aligned, disjoint, exact, and fitting the cap.
     assert!(WIRE_MEMMAP_OFFSET.is_multiple_of(align_of::<WireMemoryRegion>()));
@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(size_of::<WireMemoryRegion>(), 16);
         assert_eq!(size_of::<WireBootModule>(), 32);
         assert_eq!(size_of::<WirePlatformDescSource>(), 16);
-        assert_eq!(size_of::<BootHandoffV1>(), 184);
+        assert_eq!(size_of::<BootHandoffV1>(), 160);
         assert_eq!(size_of::<WireSourceRecord>(), 72);
     }
 
@@ -463,9 +463,4 @@ mod tests {
         assert_eq!(SEMANTIC_END, 14016);
     }
 
-    #[test]
-    fn free_upper_idx_sentinel_is_distinct_from_any_valid_index() {
-        assert_eq!(FREE_UPPER_IDX_NONE, u64::MAX);
-        assert!(FREE_UPPER_IDX_NONE > u32::MAX as u64);
-    }
 }

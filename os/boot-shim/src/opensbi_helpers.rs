@@ -317,27 +317,6 @@ impl BootShim for RiscvUbootBootShim {
             kern.kern_phys_base,
             kern.kern_size,
             boot_modules,
-            // Bootstrap (unpaged kernel) region.
-            //
-            // C semantics (pre_init.c:114-116):
-            //     kinfo.bootstrap_start = &_kern_unpaged_start;
-            //     kinfo.bootstrap_len   = &_kern_unpaged_end - &_kern_unpaged_start;
-            //
-            // In Minix3 C the kernel has a small "unpaged" section that runs
-            // before paging is enabled and must remain identity-mapped; its
-            // physical range is reclaimed via add_memmap() after boot completes.
-            //
-            // Rust port design choice: the kernel is higher-half from the
-            // very first instruction — there is no separate unpaged section
-            // because we never run with paging disabled. The startup trampoline
-            // lives in boot-shim (a separate ELF loaded by U-Boot via OpenSBI),
-            // not in the kernel proper. Therefore no kernel-side memory needs
-            // to be reclaimed at this point; the previous `PhysBytes(0) + len
-            // = kern_phys_base.0` was a dangerous over-reclaim that swept up
-            // OpenSBI firmware, DTB, U-Boot image, and the boot-shim itself.
-            // See 01-boot-shim-bootstrap.md §3.5.1 for the rationale.
-            PhysBytes(0),
-            0,
             platform_sources,
             param_buf,
         );
@@ -571,10 +550,6 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 
 /// Build a KernelInfo struct.
 ///
-/// `bootstrap_start`/`bootstrap_len` describe the boot-shim's physical
-/// memory region that the kernel should reclaim after boot completes.
-/// C: kinfo.bootstrap_start/len — pre_init.c:114-116
-///
 /// `platform_sources` is the ordered list of firmware-provided platform
 /// descriptor sources. On RISC-V (OpenSBI) this is either `[DTB source]`
 /// or empty. The kernel tries each in order, using the first that parses
@@ -689,8 +664,6 @@ mod tests {
             PhysBytes(0x8000_0000),
             0x100_000,
             &[],
-            PhysBytes(0x80000000), // bootstrap_start
-            0x200000,              // bootstrap_len
             &[],                   // platform_sources (empty = no source)
             &[],                   // param_buf (no source in this unit test)
         );
@@ -736,12 +709,7 @@ mod tests {
     // monitoring; see 01-boot-shim-bootstrap.md §5.1.1 B.
     // ─────────────────────────────────────────────────────────────────
 
-    /// `build_kernel_info` maps all 8 fields exactly from the inputs.
-    ///
-    /// On the production path `bootstrap_start/len` are always
-    /// `(PhysBytes(0), 0)` (see §3.5.1). This test uses nonzero values only
-    /// to verify field mapping, not semantics (semantics are covered by
-    /// `test_build_kernel_info_bootstrap_zero_means_no_reclaim`).
+    /// `build_kernel_info` maps the fields exactly from the inputs.
     #[test]
     fn test_build_kernel_info_riscv64_fields_match_input() {
         let modules: &'static [minix_boot::BootModule] = &[];
@@ -755,8 +723,6 @@ mod tests {
             PhysBytes(0x8000_0000),
             0x100_000,
             modules,
-            PhysBytes(0x8000_0000),
-            0x200_000,
             &[],
             &[],
         );
@@ -781,39 +747,12 @@ mod tests {
         // module + platform_sources
         assert_eq!(info.boot_modules.len(), 0);
         assert!(info.platform_sources.is_empty());
-        // bootstrap passthrough
-        assert_eq!(info.bootstrap_start, PhysBytes(0x8000_0000));
-        assert_eq!(info.bootstrap_len, 0x200_000);
     }
 
-    /// Regression guard: `build_kernel_info` accepts `(PhysBytes(0), 0)` as
-    /// the bootstrap arguments and the value stays unchanged in `KernelInfo`
-    /// (no-op reclaim semantics, see §3.5.1).
-    ///
-    /// Passing `(PhysBytes(0), kern_phys_base.0)` by mistake would make
-    /// `add_memmap(0, kern_phys_base)` over-reclaim the entire low-memory
-    /// range `[0, kern_phys_base)`, covering OpenSBI/DTB/U-Boot. This test
-    /// keeps that no-op semantics from regressing.
-    #[test]
-    fn test_build_kernel_info_bootstrap_zero_means_no_reclaim() {
-        let info = build_kernel_info(
-            &[],
-            &[],
-            VirBytes(0xFFFF_FFFF_8000_0000),
-            PhysBytes(0x8000_0000),
-            0x100_000,
-            &[],
-            PhysBytes(0), // production-path value (see §3.5.1)
-            0,            // production-path value
-            &[],
-            &[],
-        );
-        assert_eq!(info.bootstrap_start, PhysBytes(0));
-        assert_eq!(info.bootstrap_len, 0);
-        // Not equal to kern_phys_base (equality would be an over-reclaim bug)
-        assert_ne!(info.bootstrap_len, info.kern_phys_base.0);
-    }
-
+    // The bootstrap over-reclaim regression (D01-F03): C's
+    // `add_memmap(0, kern_phys_base)` hazard is structurally impossible
+    // after the `bootstrap_start/len` fields left `KernelInfo` — there is
+    // no caller-supplied reclaim range left to mistype.
     /// The `(base, end)` returned by `alloc_bump_region(n)` satisfies:
     /// 1. `end - base == n * 4096`
     /// 2. `base >= MODULE_REGION_BASE`

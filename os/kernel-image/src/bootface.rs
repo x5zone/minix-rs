@@ -337,8 +337,6 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         PhysBytes(KERN_PHYS_BASE),
         KERN_SIZE,
         modules,
-        PhysBytes(0),
-        0,
         platform_sources,
         param_buf,
     );

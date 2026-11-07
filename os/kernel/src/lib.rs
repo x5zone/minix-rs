@@ -260,8 +260,6 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot arg=");
         Console::write_hex(kernel_info as *const KernelInfo as u64);
-        Console::write_str(" blen=");
-        Console::write_hex(kernel_info.bootstrap_len);
         Console::write_str("\n");
         // Forensics: shim printed memmaps conv=12
         // reserved=127 but the handoff saw zero identity candidates.
@@ -588,13 +586,10 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
         kern_virt_base: VirBytes(scalars.kern_virt_base),
         kern_phys_base: PhysBytes(scalars.kern_phys_base),
         kern_size: scalars.kern_size,
-        free_upper_idx: scalars.free_upper_idx,
         user_sp: VirBytes(scalars.user_sp),
         kern_stack_top: VirBytes(scalars.kern_stack_top),
         syscall_entry: VirBytes(scalars.syscall_entry),
         boot_modules: unsafe { core::slice::from_raw_parts(module_ptr, module_len) },
-        bootstrap_start: PhysBytes(scalars.bootstrap_start),
-        bootstrap_len: scalars.bootstrap_len,
         platform_sources: unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) },
         param_buf: unsafe { core::slice::from_raw_parts(param_ptr, param_len) },
     };
@@ -1422,15 +1417,11 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         Console::write_hex(kernel_info as *const minix_boot::KernelInfo as u64);
         Console::write_str(" rsp=");
         Console::write_hex(rsp);
-        Console::write_str(" blen=");
-        Console::write_hex(kernel_info.bootstrap_len);
         Console::write_str("\n");
     }
     boot_stage!("kernel: kmain Phase A enter\n");
     // Phase A: Entry
     // Validate KernelInfo invariants before any use.
-    // Fail-fast on boot-shim bugs (e.g. non-zero bootstrap_len would
-    // trigger add_memmap and reclaim firmware regions).
     kernel_info.validate();
     // Cross-boot-form postcondition equivalence assertions. `validate()` only
     // checks non-address invariants; this layer additionally checks the
@@ -5337,13 +5328,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000, // 2MB kernel
-            free_upper_idx: None,
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
@@ -5492,13 +5480,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
-            free_upper_idx: None,
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: MODULES,
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: PLATFORM,
             param_buf: PARAM,
             reserved_regions: &[],
@@ -5577,13 +5562,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            free_upper_idx: None,
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
         }
@@ -5702,13 +5684,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
-            free_upper_idx: None,
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
@@ -5984,13 +5963,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x1001), // not page-aligned
             kern_size: 0x200_000,
-            free_upper_idx: None,
             user_sp: VirBytes(0),
             kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
             syscall_entry: VirBytes(0),
             boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
@@ -6011,13 +5987,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0, // zero size
-            free_upper_idx: None,
             user_sp: VirBytes(0),
             kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
             syscall_entry: VirBytes(0),
             boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
@@ -6038,13 +6011,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
-            free_upper_idx: None,
             user_sp: VirBytes(0),
             kern_stack_top: VirBytes(0xFFFF_8000_0020_0008), // not 16-byte aligned
             syscall_entry: VirBytes(0),
             boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],

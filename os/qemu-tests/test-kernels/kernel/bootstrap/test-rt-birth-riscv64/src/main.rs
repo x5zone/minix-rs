@@ -464,7 +464,6 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         kern_virt_base: VirBytes(DRAM_BASE),
         kern_phys_base: PhysBytes(KERNEL_LOAD_PA),
         kern_size: 0x200_000,
-        free_upper_idx: None,
         user_sp: VirBytes(0x0000_003f_ffff_f000),
         // Kernel-stack TOP for the sscratch swap on U→S entry: the image
         // end (+2 MiB), NOT the image base — the first value put the
@@ -473,8 +472,6 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         kern_stack_top: VirBytes(KERNEL_LOAD_PA + 0x200_000),
         syscall_entry: VirBytes(DRAM_BASE),
         boot_modules,
-        bootstrap_start: PhysBytes(0),
-        bootstrap_len: 0,
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],

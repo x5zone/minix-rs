@@ -14,7 +14,7 @@
 //! little-endian, mirroring [`crate::handoff_v1_write`].
 
 use crate::handoff_v1::{
-    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1, FREE_UPPER_IDX_NONE,
+    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1,
     WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP,
     WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP,
     WIRE_RESERVED_OFFSET, WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET,
@@ -28,8 +28,7 @@ use core::mem::size_of;
 use minix_types::PhysBytes;
 
 /// Page-directory index ceiling shared by the supported 64-bit targets
-/// (4-level tables, 512 entries per level). The wire field is a legacy
-/// `free_upper_idx`; `u64::MAX` is the "no value" sentinel.
+/// (4-level tables, 512 entries per level).
 pub const MAX_PAGE_DIR_INDEX: usize = 512;
 
 /// Envelope field offsets (mirror of the producer).
@@ -42,23 +41,20 @@ mod offsets {
     pub const KERN_VIRT_BASE: usize = 24;
     pub const KERN_PHYS_BASE: usize = 32;
     pub const KERN_SIZE: usize = 40;
-    pub const FREE_UPPER_IDX: usize = 48;
-    pub const USER_SP: usize = 56;
-    pub const KERN_STACK_TOP: usize = 64;
-    pub const SYSCALL_ENTRY: usize = 72;
-    pub const BOOTSTRAP_START: usize = 80;
-    pub const BOOTSTRAP_LEN: usize = 88;
-    pub const ROOT_PAGE: usize = 96;
-    pub const BUMP_BASE: usize = 104;
-    pub const BUMP_NEXT: usize = 112;
-    pub const BUMP_END: usize = 120;
-    pub const MEMMAP_BYTE_LEN: usize = 128;
-    pub const RESERVED_BYTE_LEN: usize = 136;
-    pub const MODULES_BYTE_LEN: usize = 144;
-    pub const PLATFORM_BYTE_LEN: usize = 152;
-    pub const PARAM_BYTE_LEN: usize = 160;
-    pub const SOURCES_BYTE_LEN: usize = 168;
-    pub const STARTUP_BYTE_LEN: usize = 176;
+    pub const USER_SP: usize = 48;
+    pub const KERN_STACK_TOP: usize = 56;
+    pub const SYSCALL_ENTRY: usize = 64;
+    pub const ROOT_PAGE: usize = 72;
+    pub const BUMP_BASE: usize = 80;
+    pub const BUMP_NEXT: usize = 88;
+    pub const BUMP_END: usize = 96;
+    pub const MEMMAP_BYTE_LEN: usize = 104;
+    pub const RESERVED_BYTE_LEN: usize = 112;
+    pub const MODULES_BYTE_LEN: usize = 120;
+    pub const PLATFORM_BYTE_LEN: usize = 128;
+    pub const PARAM_BYTE_LEN: usize = 136;
+    pub const SOURCES_BYTE_LEN: usize = 144;
+    pub const STARTUP_BYTE_LEN: usize = 152;
 }
 
 /// Decoder failure. Every variant is fail-closed: the receiver must not fall
@@ -71,8 +67,6 @@ pub enum HandoffV1ReadError {
     UnsupportedVersion,
     BadEnvelopeSize,
     BadArenaLen,
-    /// `free_upper_idx` is neither the sentinel nor a plausible index.
-    BadFreeUpperIdx,
     /// A payload descriptor exceeds its partition capacity.
     DescriptorOverflowsPartition,
     /// A payload descriptor is not a whole number of elements.
@@ -98,12 +92,9 @@ pub struct HandoffScalars {
     pub kern_virt_base: u64,
     pub kern_phys_base: u64,
     pub kern_size: u64,
-    pub free_upper_idx: Option<usize>,
     pub user_sp: u64,
     pub kern_stack_top: u64,
     pub syscall_entry: u64,
-    pub bootstrap_start: u64,
-    pub bootstrap_len: u64,
     pub root_page: u64,
     pub bump_base: u64,
     pub bump_next: u64,
@@ -184,17 +175,6 @@ pub fn decode_descriptors(arena: &[u8]) -> Result<HandoffDescriptors, HandoffV1R
 /// interpret the arena any further.
 pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadError> {
     check_header(arena)?;
-    let raw_free_upper = read_u64(arena, offsets::FREE_UPPER_IDX);
-    let free_upper_idx = if raw_free_upper == FREE_UPPER_IDX_NONE {
-        None
-    } else {
-        let idx =
-            usize::try_from(raw_free_upper).map_err(|_| HandoffV1ReadError::ValueOutOfRange)?;
-        if idx >= MAX_PAGE_DIR_INDEX {
-            return Err(HandoffV1ReadError::BadFreeUpperIdx);
-        }
-        Some(idx)
-    };
     // The runtime fields are written by the sender after the root switch, so
     // the receiver can only trust their shape here. `root_page` must be a real
     // page; the bump triple must be a self-consistent half-open range (N-1:
@@ -219,12 +199,9 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         kern_virt_base: read_u64(arena, offsets::KERN_VIRT_BASE),
         kern_phys_base: read_u64(arena, offsets::KERN_PHYS_BASE),
         kern_size: read_u64(arena, offsets::KERN_SIZE),
-        free_upper_idx,
         user_sp: read_u64(arena, offsets::USER_SP),
         kern_stack_top: read_u64(arena, offsets::KERN_STACK_TOP),
         syscall_entry: read_u64(arena, offsets::SYSCALL_ENTRY),
-        bootstrap_start: read_u64(arena, offsets::BOOTSTRAP_START),
-        bootstrap_len: read_u64(arena, offsets::BOOTSTRAP_LEN),
         root_page,
         bump_base,
         bump_next,
@@ -590,13 +567,10 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            free_upper_idx: Some(256),
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &MODULES,
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &SOURCES,
             param_buf: PARAM,
         }
@@ -605,7 +579,7 @@ mod tests {
     fn build_arena() -> [u8; ARENA_CAP] {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena).unwrap();
+            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
             let info = info();
             s.write_envelope(&info).unwrap();
             s.write_reserved_regions(info.reserved_regions).unwrap();
@@ -643,8 +617,6 @@ mod tests {
         assert_eq!(s.kern_virt_base, 0xFFFF_8000_0000_0000);
         assert_eq!(s.kern_phys_base, 0x20_0000);
         assert_eq!(s.kern_size, 0x20_0000);
-        assert_eq!(s.free_upper_idx, Some(256));
-        assert_eq!(s.bootstrap_len, 0);
         assert_eq!(s.root_page, ROOT);
         assert_eq!(s.bump_base, BUMP_BASE);
         assert_eq!(s.bump_next, BUMP_NEXT);
@@ -751,7 +723,7 @@ mod tests {
     fn descriptor_reader_ignores_unpatched_runtime_fields() {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena).unwrap();
+            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
             let info = info();
             s.write_envelope(&info).unwrap();
             s.push_memmap(MEMMAP[0]).unwrap();
@@ -770,29 +742,16 @@ mod tests {
     }
 
     #[test]
-    fn free_upper_idx_sentinel_and_range() {
-        let mut arena = build_arena();
-        put_u64(&mut arena, 48, FREE_UPPER_IDX_NONE);
-        assert_eq!(decode_envelope(&arena).unwrap().free_upper_idx, None);
-        let mut arena = build_arena();
-        put_u64(&mut arena, 48, MAX_PAGE_DIR_INDEX as u64);
-        assert_eq!(
-            decode_envelope(&arena).unwrap_err(),
-            HandoffV1ReadError::BadFreeUpperIdx
-        );
-    }
-
-    #[test]
     fn rejects_bad_root_and_bump_triple() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 96, 0x1234);
+        put_u64(&mut arena, 72, 0x1234);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadRootPage
         );
 
         let mut arena = build_arena();
-        put_u64(&mut arena, 96, 0);
+        put_u64(&mut arena, 72, 0);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadRootPage
@@ -800,7 +759,7 @@ mod tests {
 
         // Inverted range: base above end.
         let mut arena = build_arena();
-        put_u64(&mut arena, 104, BUMP_END + 0x1000);
+        put_u64(&mut arena, 80, BUMP_END + 0x1000);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -808,7 +767,7 @@ mod tests {
 
         // Cursor before the base.
         let mut arena = build_arena();
-        put_u64(&mut arena, 112, BUMP_BASE - 0x1000);
+        put_u64(&mut arena, 88, BUMP_BASE - 0x1000);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -816,7 +775,7 @@ mod tests {
 
         // Cursor past the end.
         let mut arena = build_arena();
-        put_u64(&mut arena, 112, BUMP_END + 0x1000);
+        put_u64(&mut arena, 88, BUMP_END + 0x1000);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -824,9 +783,9 @@ mod tests {
 
         // The empty region is not a valid bump pool for this protocol.
         let mut arena = build_arena();
-        put_u64(&mut arena, 104, BUMP_BASE);
-        put_u64(&mut arena, 112, BUMP_BASE);
-        put_u64(&mut arena, 120, BUMP_BASE);
+        put_u64(&mut arena, 80, BUMP_BASE);
+        put_u64(&mut arena, 88, BUMP_BASE);
+        put_u64(&mut arena, 96, BUMP_BASE);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -885,7 +844,7 @@ mod tests {
     #[test]
     fn startup_partition_accepts_exactly_its_capacity() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&info()).unwrap();
         s.patch_runtime_fields(RuntimeFields {
             root_page: ROOT,
@@ -916,10 +875,10 @@ mod tests {
     #[test]
     fn rejects_startup_over_capacity() {
         let mut arena = build_arena();
-        // Startup descriptor is the u64 at offset 176.
+        // Startup descriptor is the u64 at offset 152.
         put_u64(
             &mut arena,
-            176,
+            152,
             ((WIRE_STARTUP_CAP as u64) + 1) * WIRE_SOURCE_RECORD_SIZE as u64,
         );
         let s = decode_envelope(&arena).unwrap();
@@ -935,7 +894,7 @@ mod tests {
     #[test]
     fn reset_map_partitions_keeps_the_startup_partition() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena).unwrap();
+        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
         s.write_envelope(&info()).unwrap();
         s.write_sources(&RECORDS).unwrap();
         s.write_startup(&STARTUP).unwrap();
@@ -962,7 +921,7 @@ mod tests {
         let mut arena = build_arena();
         put_u64(
             &mut arena,
-            168,
+            144,
             ((WIRE_SOURCES_CAP as u64) + 1) * WIRE_SOURCE_RECORD_SIZE as u64,
         );
         let s = decode_envelope(&arena).unwrap();
@@ -1060,7 +1019,7 @@ mod tests {
     #[test]
     fn rejects_descriptor_over_capacity() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 128, (WIRE_MEMMAP_CAP as u64 + 1) * 16);
+        put_u64(&mut arena, 104, (WIRE_MEMMAP_CAP as u64 + 1) * 16);
         let s = decode_envelope(&arena).unwrap();
         let mut out = [MemoryRegion {
             base: PhysBytes(0),
@@ -1075,7 +1034,7 @@ mod tests {
     #[test]
     fn rejects_non_divisible_descriptor() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 128, 24);
+        put_u64(&mut arena, 104, 24);
         let s = decode_envelope(&arena).unwrap();
         let mut out = [MemoryRegion {
             base: PhysBytes(0),
@@ -1109,7 +1068,7 @@ mod tests {
     #[test]
     fn rejects_param_over_capacity() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 160, WIRE_PARAM_CAP as u64 + 1);
+        put_u64(&mut arena, 136, WIRE_PARAM_CAP as u64 + 1);
         let s = decode_envelope(&arena).unwrap();
         let mut param = [0u8; WIRE_PARAM_CAP + 1];
         assert_eq!(
@@ -1147,7 +1106,7 @@ mod tests {
         };
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena).unwrap();
+            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
             s.write_envelope(&info()).unwrap();
             s.write_sources(&[record]).unwrap();
             s.patch_runtime_fields(RuntimeFields {
@@ -1172,7 +1131,7 @@ mod tests {
     fn rejects_nonzero_snapshot_on_a_dtb_record() {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena).unwrap();
+            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
             s.write_envelope(&info()).unwrap();
             s.write_sources(&RECORDS[..1]).unwrap();
             s.patch_runtime_fields(RuntimeFields {

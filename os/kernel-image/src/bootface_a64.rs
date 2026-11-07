@@ -317,8 +317,6 @@ pub extern "C" fn bootface_a64() -> ! {
         PhysBytes(KERN_PHYS_BASE),
         KERN_SIZE,
         modules,
-        PhysBytes(0),
-        0,
         platform_sources,
         param_buf,
     );

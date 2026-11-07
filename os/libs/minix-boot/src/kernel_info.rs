@@ -72,16 +72,6 @@ pub struct KernelInfo {
     /// Uses u64 instead of usize to avoid truncation on 32-bit targets.
     pub kern_size: u64,
 
-    /// First free page table root-level index after identity+kernel maps.
-    /// C: kinfo.freepde_start = pg_mapkernel() — pre_init.c:233
-    /// x86-64: PML4 index, aarch64: TTBR1 L0 index, riscv64: Sv39 VPN[2]
-    ///
-    /// `None` means the boot-shim has not yet computed this value.
-    /// In Minix3 C, `pg_mapkernel()` returns the index; the Rust boot-shim
-    /// currently does not compute it, so it is set to `None` and the kernel
-    /// must validate it before use.
-    pub free_upper_idx: Option<usize>,
-
     /// User-space stack top.
     /// C: kinfo.user_sp = USR_STACKTOP — pre_init.c:156
     pub user_sp: VirBytes,
@@ -105,24 +95,6 @@ pub struct KernelInfo {
     /// Boot process images (PM, VM, VFS, RS etc.).
     /// C: kinfo.module_list[] — pre_init.c memcpy from GRUB
     pub boot_modules: &'static [BootModule],
-
-    /// Physical address of the bootstrap (unpaged-kernel) memory region.
-    /// C: kinfo.bootstrap_start = &_kern_unpaged_start — pre_init.c:114
-    /// In Minix3 C this is reclaimed via add_memmap() after boot completes.
-    /// In the Rust port the kernel runs in higher-half from the first
-    /// instruction — no separate unpaged section exists. Callers therefore
-    /// pass `(PhysBytes(0), 0)` and the kernel's `if bootstrap_len > 0`
-    /// guard skips the reclaim entirely. See 01-boot-shim-bootstrap.md
-    /// for the rationale.
-    pub bootstrap_start: PhysBytes,
-
-    /// Length of the bootstrap (unpaged-kernel) memory region.
-    /// C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unpaged_start — pre_init.c:115-116
-    /// In the Rust port: must be `0` (see bootstrap_start for rationale).
-    /// A non-zero value triggers add_memmap() in kmain Phase F and would
-    /// reclaim physical memory; an incorrect range would corrupt firmware
-    /// regions such as OpenSBI/DTB/U-Boot.
-    pub bootstrap_len: u64,
 
     /// Platform descriptor sources — opaque handles carrying firmware table
     /// pointers (DTB, RSDP, or both). Ordered by boot-shim's preference;
@@ -182,13 +154,10 @@ impl KernelInfo {
     /// access (boot-shim constructs, kernel reads, tests assert), but this
     /// method enforces runtime invariants that the type system cannot:
     ///
-    /// 1. `bootstrap_len == 0` — Rust port runs higher-half from the first
-    ///    instruction; non-zero would trigger `add_memmap()` and reclaim
-    ///    physical memory that may overlap firmware regions (OpenSBI/DTB).
-    /// 2. `kern_size > 0` — boot-shim must have loaded a non-empty kernel.
-    /// 3. `kern_stack_top % 16 == 0` — stack alignment (AAPCS64 / SysV ABI).
-    /// 4. `!memmap.is_empty()` — at least one free memory region required.
-    /// 5. `!boot_modules.is_empty()` — at least PM/VM/VFS/RS required.
+    /// 1. `kern_size > 0` — boot-shim must have loaded a non-empty kernel.
+    /// 2. `kern_stack_top % 16 == 0` — stack alignment (AAPCS64 / SysV ABI).
+    /// 3. `!memmap.is_empty()` — at least one free memory region required.
+    /// 4. `!boot_modules.is_empty()` — at least PM/VM/VFS/RS required.
     ///
     /// # Panics
     ///
@@ -229,16 +198,7 @@ impl KernelInfo {
         authority: Option<crate::memmap_source::InputObjectId>,
         require_boot_modules: bool,
     ) {
-        // 1. bootstrap_len must be 0 (Rust port has no unpaged section).
-        //    C: kinfo.bootstrap_len = &_kern_unpaged_end - &_kern_unparsed_start
-        //    Rust: always 0 (see bootstrap_start field doc).
-        assert_eq!(
-            self.bootstrap_len, 0,
-            "KernelInfo: bootstrap_len must be 0 (Rust port has no unpaged section), got {}",
-            self.bootstrap_len
-        );
-
-        // 2. Kernel size must be non-zero.
+        // 1. Kernel size must be non-zero.
         assert!(
             self.kern_size > 0,
             "KernelInfo: kern_size must be non-zero (boot-shim did not load kernel?)"
@@ -370,7 +330,7 @@ impl KernelInfo {
     /// world and zeroed a root page still in use.
     ///
     /// Complementary to [`Self::validate`]: `validate` checks non-address
-    /// invariants (bootstrap_len/kern_size/alignment/non-empty/param_buf
+    /// invariants (kern_size/alignment/non-empty/param_buf
     /// bound), while this method checks the **address-space separation
     /// relations**, so every form's construction site should call both in
     /// order. All assertions depend only on relative relations between
@@ -481,14 +441,6 @@ impl KernelInfo {
         self.kern_size
     }
 
-    /// First free page table root-level index after identity+kernel maps.
-    /// C: `kinfo.freepde_start = pg_mapkernel()` — pre_init.c:233
-    /// Returns `None` if boot-shim has not computed this value.
-    #[inline]
-    pub fn free_upper_idx(&self) -> Option<usize> {
-        self.free_upper_idx
-    }
-
     /// User-space stack top.
     /// C: `kinfo.user_sp = USR_STACKTOP` — pre_init.c:156
     #[inline]
@@ -515,20 +467,6 @@ impl KernelInfo {
     #[inline]
     pub fn boot_modules(&self) -> &'static [BootModule] {
         self.boot_modules
-    }
-
-    /// Physical address of the bootstrap (unpaged-kernel) memory region.
-    /// Rust port: always `PhysBytes(0)` (see `bootstrap_start` field doc).
-    #[inline]
-    pub fn bootstrap_start(&self) -> PhysBytes {
-        self.bootstrap_start
-    }
-
-    /// Length of the bootstrap (unpaged-kernel) memory region.
-    /// Rust port: always `0` (validated by [`Self::validate`]).
-    #[inline]
-    pub fn bootstrap_len(&self) -> u64 {
-        self.bootstrap_len
     }
 
     /// Platform descriptor sources — opaque handles carrying firmware
@@ -606,7 +544,6 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
-            free_upper_idx: Some(256),
             user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
@@ -615,8 +552,6 @@ mod tests {
                 start: PhysBytes(0x400000),
                 len: 0x100000,
             }],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
         }
@@ -706,14 +641,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "bootstrap_len must be 0")]
-    fn test_validate_rejects_nonzero_bootstrap_len() {
-        let mut info = make_valid_info();
-        info.bootstrap_len = 0x1000;
-        info.validate();
-    }
-
-    #[test]
     #[should_panic(expected = "kern_size must be non-zero")]
     fn test_validate_rejects_zero_kern_size() {
         let mut info = make_valid_info();
@@ -775,12 +702,9 @@ mod tests {
         assert_eq!(info.kern_virt_base(), info.kern_virt_base);
         assert_eq!(info.kern_phys_base(), info.kern_phys_base);
         assert_eq!(info.kern_size(), info.kern_size);
-        assert_eq!(info.free_upper_idx(), info.free_upper_idx);
         assert_eq!(info.user_sp(), info.user_sp);
         assert_eq!(info.kern_stack_top(), info.kern_stack_top);
         assert_eq!(info.syscall_entry(), info.syscall_entry);
-        assert_eq!(info.bootstrap_start(), info.bootstrap_start);
-        assert_eq!(info.bootstrap_len(), info.bootstrap_len);
         // Slice fields: compare length and first element address.
         assert_eq!(info.memmap().len(), info.memmap.len());
         assert_eq!(info.memmap().as_ptr(), info.memmap.as_ptr());
