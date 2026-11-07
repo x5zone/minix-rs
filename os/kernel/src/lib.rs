@@ -974,8 +974,16 @@ fn build_bootstrap_root_and_enable<A: BootArch>(root_page: PhysBytes, policy: &K
                 } else {
                     id_flags
                 };
-            // Ignore errors — some ranges may not be backed by physical memory,
-            // but that's fine; the CPU won't access them.
+            // Ignore errors: `map_huge` never probes physical memory, so an
+            // unbacked hole cannot produce an error (the old "CPU won't access
+            // holes" rationale named a class this call never returns). The
+            // reachable classes here are `AllocationFailed` (a mid-level page
+            // table page from the boot bump allocator — 1024-page budget
+            // against a handful of mid tables) and `AlreadyMapped`
+            // (structurally excluded: the root is fresh and pieces advance
+            // without revisiting a VA). If allocation ever does fail for a
+            // piece the CPU needs, the fault surfaces at enable() — see the
+            // reverse derivation in doc 01 §4.6.
             #[allow(clippy::let_underscore_must_use)]
             let _ = paging.map_huge(
                 VirBytes(piece_addr),
