@@ -387,3 +387,50 @@
 | R6-11 | fact | P2 | 文档/辅助八步漏 collect_param_buf | ① | 已修：八步补"归一化 param_buf" | 同上 | 五门 |
 | R6-12 | fact | P2 | 文档/aarch64 第三形态标记 | ① | 已修：补 DTB_CFGTABLE=1 形态 | 同上 | 同上 |
 | R6-13 | fact | P2 | 源码注释/锚点 161→162（SELF-INFLICTED） | ① | 已修：loader.rs NoLoadSegments 行号 | 同上 | 编译绿 |
+
+# Round 7（基线 6a9afd065）
+
+## R7 d2 明细（DESIGN-D2-NN 逐 ID）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| DESIGN-D2-01 | panel-r7 | P1 | 代码/aarch64 startup 记录借用 riscv bump 池常量 | ① | 已修：`bootface_a64.rs` 改 `BUMP_BASE`/`BUMP_BASE+BUMP_SIZE`，删 riscv 访问器导入 | `os/kernel-image/src/bootface_a64.rs`；`cargo check -p kernel-image` 0 错 | 编译绿 |
+| DESIGN-D2-02 | panel-r7 | P1 | 代码/内核重叠防线只在无调用方函数、事后检查、未页取整 | ①（预防面转出） | 已修：`record_kernel_span` + `alloc_module_pages` 拷贝前拒绝；两条入口加页取整重查；同族自查补 root/bump 装载后复核（预防面"先装内核再分配"留 follow-up）；§4.2 步骤 2、§5.1 M16 同步 | `uefi_helpers.rs`；`cargo test -p boot-shim --features test-all` 124+5 | 测试+五门 |
+| DESIGN-D2-03 | panel-r7 | P1 | BootForm 三处断言不成立 | ①（结构取舍待裁决） | 已修：三处断言改为"注册表不追踪真实入口/电池只查规范几何"；保留/删除/接线需用户裁决 | `os/libs/minix-boot/src/boot_form.rs` | 测试绿 |
+| DESIGN-D2-04 | panel-r7 | P0 | 源码注释/reserved_regions 说两条腿传空表 | ① | 已修：字段文档按四腿写真值（UEFI 空；U-Boot/riscv 直核非空；aarch64 直核通常空） | `kernel_info.rs:45` | 编译绿 |
+| DESIGN-D2-05 | panel-r7 | P1 | 源码注释/表归属 7 处仍归 U-Boot；a2 误标 | ① | 已修：opensbi_helpers 七处 + bootface.rs 两处 + 测试脚本头改"shim 自建表/QEMU 直载 a2" | 见源码注释 | 编译绿 |
+| DESIGN-D2-06 | panel-r7 | P1 | 源码注释/两处"五个载荷" | ① | 已修：boot-shim main.rs 与 kernel-image main.rs 改"七载荷分区" | 同左 | 编译绿 |
+| DESIGN-D2-07 | panel-r7 | P1 | 源码注释/build_identity_windows 三段互斥 + 不存在常量 | ① | 已修：并成一段退役说明，删 `USER_IDENTITY_FLOOR`；测试改名 `test_identity_windows_are_retired` | `vm_handoff.rs` | 测试绿 |
+| DESIGN-D2-08 | panel-r7 | P1 | 源码注释/引用不存在的 `opensbi_helpers::DRAM_BASE` | ① | 已修：改指 `MODULE_REGION_BASE` 的同基推导 | `bootface.rs` | 编译绿 |
+| DESIGN-D2-09 | panel-r7 | P2 | 源码注释/Real-hardware 段说覆盖 arena | ① | 已修：改为"本函数只覆盖 root/bump；arena 在另一入口" | `uefi_helpers.rs` | 编译绿 |
+| DESIGN-D2-10 | panel-r7 | P2 | 源码注释/16 KiB arena 旧数 | ① | 已修：改 36 KiB（九页）+96 B spare | `handoff_v1.rs` | 测试绿 |
+| DESIGN-D2-11 | panel-r7 | P1 | 源码注释/最高页拒绝归因到记录层 | ① | 已修：改为投影层 `MemoryRegion` 宽度限制，记录层为 128 位 | `memmap_source.rs` | 编译绿 |
+| DESIGN-D2-12 | panel-r7 | P2 | 源码注释/序列化器分区清单漏 source/startup | ① | 已修：模块文档补两项独立分区 | `handoff_v1_write.rs` | 编译绿 |
+| DESIGN-D2-13 | panel-r7 | P2 | 文档/§3.4"四段分区"与引文非原文 | ① | 已修：改五组相加明细并标注该注释为改述 | 文档 §3.4 | 五门 |
+
+## R7 fact 明细（终版 FACT-NN 逐 ID）
+
+> fact 面板在审查期间自我收窄：首版 16 条 + 2 溢出，终版（07:47）保留 11 条；首版的其余 7 条已随 07:43/07:45 修订解决（面板头 "并发修订复核" 逐项列明）。下表为终版 11 条。
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | panel-r7 | P2 | 文档/M16 "宿主无法构造"不成立 | ① | 已修：新增 5 条纯函数宿主测试（相离/相切/包含/部分重叠/页取整）；M16 改"纯函数宿主可测，仅 AllocatePages 分配面不可构造" | `uefi_helpers.rs` 新 5 测试；boot-shim 129+5 | 测试+五门 |
+| FACT-02 | panel-r7 | P2 | 文档/§4.8 把 U-Boot 一族整体算进 v1 路径 | ① | 已修：改为"U-Boot 一族的 shim 生产腿；直载测试链不参与交接路径计数" | 文档 §4.8 | 五门 |
+| FACT-03 | panel-r7 | P3 | 文档/§4.6 尾句重复（SELF-INFLICTED） | ① | 已修：删重复句 | 文档 §4.6 | 五门 |
+| FACT-04 | panel-r7 | P3 | 文档/§4.2 越界界把 Side 排除 | ① | 已修：改"凡过 Step 3 的描述符（含 Side）都过 checked_len；上界是 pa_limit" | 文档 §4.2 | 五门 |
+| FACT-05 | panel-r7 | P3 | 文档/§4.2 引文漏新断言且无省略标记 | ① | 已修：引文补省略标记并指步骤 2/M16 | 文档 §4.2 | 五门 |
+| FACT-06 | panel-r7 | P3 | 文档/§5.2.1 转录顺序与 for 列表不一致 | ① | 已修：注明输出按分组重排、数字逐字来自实跑 | 文档 §5.2.1 | 五门 |
+| FACT-07 | panel-r7 | P3 | 文档/§4.3 代码块中文译注未声明改述 | ① | 已修：块头补"块内中文注释为改述/译述" | 文档 §4.3 | 五门 |
+| FACT-08 | panel-r7 | P3 | 文档/§5.2.3 "五条链都只到入口"过宽 | ① | 已修：限定三条 riscv64/aarch64 链；x86 与 U-Boot shim 含 entering scheduler | 文档 §5.2.3 | 五门 |
+| FACT-09 | panel-r7 | P3 | 文档/测试名只给后缀 | ① | 已修：M13/TODO-07/§5.2.1 统一完整 `test_bootstrap_outside_memmap_*` 名 | 文档 §5.1/§5.2.1/§5.3 | 五门 |
+| FACT-10 | panel-r7 | P3 | 文档/§3.4 memmap 指针错指 §4.5 | ① | 已修：改"§3.8 扣除表；扣减实现在 vm_handoff::classify" | 文档 §3.4 | 五门 |
+| FACT-11 | panel-r7 | P3 | 文档/M16 "不走 alloc_module_pages"同名歧义 | ① | 已修：点名 U-Boot shim 的同名函数与直核 place_modules，均无内核重叠拒绝 | 文档 §5.1 M16 | 五门 |
+
+## R7 reader 明细（终版 READER-C-NN 逐 ID）
+
+> 面板实例在审查期间自我重读：初版 31 条（07:26）→ 中间版 11 条（07:42）→ 终版 2 条（07:45）。前两版的发现均随修订解决或并入终版，逐条修复见 `c85a93837` 与 R7 后续小批；下表只记终版 2 条。
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| READER-C-01 | panel-r7 | P3 | 文档/§4.4 表缺页大小能力/物理上限行 | ① | 已修：表补 `detect_boot_page_support` 成功且 `phys_addr_limit() >= IDENTITY_MAP_END` 一行 | 文档 §4.4 | 五门 |
+| READER-C-02 | panel-r7 | P3 | 文档/§4.4 表用未定义符号 `entry_start_pa` | ① | 已修：改自然语言"镜像内入口/栈顶偏移写错，或用户栈上界越入内核半区" | 文档 §4.4 | 五门 |

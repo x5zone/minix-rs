@@ -44,9 +44,10 @@ pub struct KernelInfo {
     ///
     /// What each production leg passes here:
     ///
-    /// - UEFI legs: `&[]` — the pairing loop's five-step classification routes
-    ///   non-conventional descriptors into [`Self::memmap`] or leaves them out
-    ///   as side ranges; this partition stays empty on that leg.
+    /// - UEFI legs: non-empty — the pairing loop's five-step classification
+    ///   routes `ReservedMapped` descriptors (LOADER_*/BOOT_SERVICES_*/
+    ///   ACPI_RECLAIM with write-back) into this list; it is serialized as the
+    ///   arena's reserved partition and decoded on the receive side.
     /// - U-Boot shim leg and riscv64 direct-core leg: non-empty — the DTB
     ///   collector is built with `firmware_reserve_end = KERN_PHYS_BASE`, so
     ///   the firmware prefix `[DRAM_BASE, KERN_PHYS_BASE)` is carved out here
@@ -59,9 +60,10 @@ pub struct KernelInfo {
 
     /// Provenance records behind [`Self::memmap`] / [`Self::reserved_regions`]:
     /// one record per input declaration (or derived firmware prefix), naming
-    /// the object and the offset inside it. All four production legs carry
-    /// them (three DTB collectors, and the UEFI leg's per-descriptor records
-    /// written by the EBS pairing loop). A non-empty list is re-audited by
+    /// the object and the offset inside it. All five production legs carry
+    /// them across four writer sites (the two UEFI legs share the pairing
+    /// loop's per-descriptor records, the U-Boot shim has one site, and the
+    /// two direct-core faces have one each). A non-empty list is re-audited by
     /// [`Self::validate`], so the consumer boundary refuses to boot on a
     /// projected span that no record explains; surfaces that know the wire
     /// contract was in force call [`Self::validate_requiring_sources`], which

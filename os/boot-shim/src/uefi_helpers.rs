@@ -297,6 +297,24 @@ impl BootShim for UefiBootShim {
         );
         uefi::println!("boot-shim: kernel loaded (entry staged)");
         record_kernel_span(&kern);
+        // Same-family check (D01-R7): root/bump were allocated before the
+        // kernel was copied to its LMAs, so firmware could also have placed
+        // them under the kernel image. Report the overlap before they are
+        // used; prevention would require loading the kernel first.
+        assert_range_clear_of_kernel(
+            "root page",
+            root_page.0,
+            root_page.0.saturating_add(PAGE_SIZE),
+            kern.kern_phys_base.0,
+            kern.kern_phys_base.0.saturating_add(kern.kern_size),
+        );
+        assert_range_clear_of_kernel(
+            "bump region",
+            bump_base,
+            bump_end,
+            kern.kern_phys_base.0,
+            kern.kern_phys_base.0.saturating_add(kern.kern_size),
+        );
         let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
         uefi::println!("boot-shim: 12 boot modules loaded");
         // Post-load verification (D01-R7 D2-02): `alloc_module_pages` already
@@ -1042,6 +1060,22 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     );
     uefi::println!("boot-shim: kernel loaded (entry staged)");
     record_kernel_span(&kern);
+    // Same-family check (D01-R7): root/bump were allocated before the kernel
+    // copy, so they must not sit inside the kernel's LMA span.
+    assert_range_clear_of_kernel(
+        "root page",
+        root_page.0,
+        root_page.0.saturating_add(PAGE_SIZE),
+        kern.kern_phys_base.0,
+        kern.kern_phys_base.0.saturating_add(kern.kern_size),
+    );
+    assert_range_clear_of_kernel(
+        "bump region",
+        bump_base,
+        bump_end,
+        kern.kern_phys_base.0,
+        kern.kern_phys_base.0.saturating_add(kern.kern_size),
+    );
     let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
     uefi::println!("boot-shim: 12 boot modules loaded");
     // Same second line as `prepare_boot` (D01-R7 D2-02): the allocator refuses
@@ -1439,5 +1473,47 @@ mod tests {
             len: 0x1000,
         }];
         assert_bootstrap_outside_memmap(&MEMMAP, 0xffff_ffff_ffff_f000, 0x2000);
+    }
+
+    // ── kernel-image overlap guards (D01-R7 D2-02) ──
+
+    #[test]
+    fn test_assert_range_clear_of_kernel_accepts_disjoint_and_abutting() {
+        // Abutting before, abutting after, and fully disjoint.
+        assert_range_clear_of_kernel("range", 0x1000, 0x2000, 0x2000, 0x3000);
+        assert_range_clear_of_kernel("range", 0x3000, 0x4000, 0x2000, 0x3000);
+        assert_range_clear_of_kernel("range", 0x4000, 0x5000, 0x2000, 0x3000);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps the kernel image")]
+    fn test_assert_range_clear_of_kernel_rejects_contained() {
+        assert_range_clear_of_kernel("range", 0x2400, 0x2600, 0x2000, 0x3000);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps the kernel image")]
+    fn test_assert_range_clear_of_kernel_rejects_partial_overlap() {
+        assert_range_clear_of_kernel("range", 0x1000, 0x2800, 0x2000, 0x3000);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps the kernel image")]
+    fn test_assert_range_clear_of_kernel_rejects_kernel_inside() {
+        assert_range_clear_of_kernel("range", 0x1000, 0x4000, 0x2000, 0x3000);
+    }
+
+    /// A module whose file bytes end before the kernel but whose zero-filled
+    /// page tail crosses into it must be refused: the loader writes the tail
+    /// up to `num_pages * 4096`.
+    #[test]
+    #[should_panic(expected = "overlaps the kernel image")]
+    fn test_assert_modules_clear_of_kernel_rejects_page_rounded_tail() {
+        static MODULES: [minix_boot::BootModule; 1] = [minix_boot::BootModule {
+            name: "vm",
+            start: PhysBytes(0x1000),
+            len: 0x2001,
+        }];
+        assert_modules_clear_of_kernel(&MODULES, 0x3000, 0x4000);
     }
 }
