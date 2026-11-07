@@ -318,15 +318,24 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 /// half, `jump_to_kmain`'s `{kmain}` resolves to the real high virtual address
 /// and execution proceeds immune to the first `switch_address_space` — the
 /// original root cause, fixed at its source.
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
-pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
-    use crate::aarch64::higher_half::AArch64HigherHalf;
-    use crate::boot::HigherHalf;
+/// The additive-resume sequence shared by all cross-image entry points
+/// (D01-R1 D2-07): validate → DM plan → record root → store → register →
+/// establish DM → jump. Extracted for the same reason `arch_boot_finish`
+/// exists for the inline face — one sequence, three callers, zero drift.
+/// Architecture differences live only in the two type parameters; leg-specific
+/// console milestones stay in the delegate shells.
+#[cfg(not(feature = "mock"))]
+fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
+    kernel_info: &KernelInfo,
+    root_page: PhysBytes,
+    stage_label: &str,
+    done_label: &str,
+) -> ! {
     // Validate KernelInfo + (idempotently) register the resumed bump allocator
     // and pt_alloc. This helper touches no page table — safe on a live root.
-    let support = boot_validate_and_prepare::<CurrentBootArch>(kernel_info);
-    let layout = DirectMapLayout::<CurrentBootArch>::from_arch();
-    let dm = plan_dm_policy::<CurrentBootArch>(&support, &layout)
+    let support = boot_validate_and_prepare::<A>(kernel_info);
+    let layout = DirectMapLayout::<A>::from_arch();
+    let dm = plan_dm_policy::<A>(&support, &layout)
         .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
     // Record the already-active bootstrap root in *this image's* global. The
     // inline boot records it inside `build_bootstrap_root_and_enable`, which we
@@ -339,30 +348,48 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
     // boot-services pool, which we re-home here so they survive past the PE.
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot_resume_high_half: KERNEL_INFO store failed — one-shot");
+        .expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
     register_panic_diagnostic();
     // Step 4: add direct-map coverage to the *active* bootstrap root (additive;
     // `establish_boot_dm` wraps `root_page` and only writes new PTEs).
-    // This entry sits above the `boot_stage!` definition, so it writes the
-    // early console directly (the whole fn is already `not(mock)`-gated).
-    {
+    // （boot_stage! 宏定义在本文件更靠后，此处直接用同款 Console 打印；
+    //   空标签 = 该腿原本就没有 establish 前路标，保持无输出。）
+    if !stage_label.is_empty() {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
-        Console::write_str("kernel-image: step4 DM coverage (additive on active root)\n");
+        Console::write_str(stage_label);
+        Console::write_str("\n");
     }
     // SAFETY: the boot-shim's bootstrap root is active, its identity window
     // covers the table pages, and this is the boot thread.
-    unsafe { crate::dm_coverage::establish_boot_dm::<CurrentBootArch>(kinfo, root_page, &dm) }
+    unsafe { crate::dm_coverage::establish_boot_dm::<A>(kinfo, root_page, &dm) }
         .unwrap_or_else(|e| panic!("resume: DM coverage: {e}"));
-    {
+    if !done_label.is_empty() {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
-        Console::write_str("kernel-image: DM ok, jumping to kmain (high half)\n");
+        Console::write_str(done_label);
+        Console::write_str("\n");
     }
-    // SAFETY: paging is already live via the boot-shim's identical bootstrap
-    // root; kinfo is this image's high-half-resident `.bss` copy;
-    // `kern_stack_top` is the same high VA the inline boot used successfully,
-    // and `{kmain}` now links to the high half so execution never returns to a
-    // switchable identity window.
-    unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
+    // image's high-half-resident `.bss` copy; `kern_stack_top` is the high
+    // virtual stack the inline boot used successfully.
+    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+}
+
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+    use crate::aarch64::higher_half::AArch64HigherHalf;
+    use crate::boot::HigherHalf;
+    // aarch64 的 establish 前路标（U-Boot 腿的门脚本按它 grep）经由
+    // stage_label 保留；"DM ok, jumping" 那一行并入通用体之后只剩通用
+    // 打印点，该路标原先在 establish 之后——为不丢门脚本的锚点，此壳
+    // 保留原有两行的前一行，后一行由 resume_additive 的 stage 打印承担
+    // （对 aarch64 腿，label 即 establish 前那条；后一条的丢失需要门
+    // 脚本同步——见本轮 L4 对 test-riscv64-uboot.sh 路标清单的核对）。
+    resume_additive::<CurrentBootArch, AArch64HigherHalf>(
+        kernel_info,
+        root_page,
+        "kernel-image: step4 DM coverage (additive on active root)",
+        "kernel-image: DM ok, jumping to kmain (high half)",
+    )
 }
 
 /// T1 2c/3b sender-side entry: build the bootstrap root, patch the runtime
@@ -612,25 +639,13 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
 fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
     use crate::boot::HigherHalf;
     use crate::x86_64::higher_half::X86_64HigherHalf;
-
-    let support = boot_validate_and_prepare::<CurrentBootArch>(kernel_info);
-    let layout = DirectMapLayout::<CurrentBootArch>::from_arch();
-    let dm = plan_dm_policy::<CurrentBootArch>(&support, &layout)
-        .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
-    let root = PhysBytes(root_page);
-    set_current_root_phys(root);
-    store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo =
-        crate::kernel_info().expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
-    register_panic_diagnostic();
-    // SAFETY: the shim's bootstrap root is active, its identity window covers
-    // the table pages, and this is the boot thread.
-    unsafe { crate::dm_coverage::establish_boot_dm::<CurrentBootArch>(kinfo, root, &dm) }
-        .unwrap_or_else(|e| panic!("resume: DM coverage: {e}"));
-    // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
-    // image's `.bss` copy and `kern_stack_top` is the high virtual stack the
-    // inline boot used successfully.
-    unsafe { X86_64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    resume_additive::<CurrentBootArch, X86_64HigherHalf>(
+        kernel_info,
+        PhysBytes(root_page),
+        // x86 腿无既有的 establish 前后路标——保持原状（无打印），传空串即跳过。
+        "",
+        "",
+    )
 }
 
 /// Finish the v1 handoff on riscv64: same additive-only shape as x86-64 —
@@ -643,29 +658,12 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
 fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
     use crate::boot::HigherHalf;
     use crate::riscv64::higher_half::Riscv64HigherHalf;
-
-    let support =
-        boot_validate_and_prepare::<minix_arch::arch::boot_arch::Riscv64BootArch>(kernel_info);
-    let layout = DirectMapLayout::<minix_arch::arch::boot_arch::Riscv64BootArch>::from_arch();
-    let dm = plan_dm_policy::<minix_arch::arch::boot_arch::Riscv64BootArch>(&support, &layout)
-        .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
-    let root = PhysBytes(root_page);
-    set_current_root_phys(root);
-    store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo =
-        crate::kernel_info().expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
-    register_panic_diagnostic();
-    // SAFETY: the shim's bootstrap root is active, its identity window covers
-    // the table pages, and this is the boot thread.
-    unsafe {
-        crate::dm_coverage::establish_boot_dm::<minix_arch::arch::boot_arch::Riscv64BootArch>(
-            kinfo, root, &dm,
-        )
-    }
-    .unwrap_or_else(|e| panic!("resume: DM coverage: {e}"));
-    // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
-    // image's `.bss` copy and `kern_stack_top` is a high virtual address.
-    unsafe { Riscv64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    resume_additive::<minix_arch::arch::boot_arch::Riscv64BootArch, Riscv64HigherHalf>(
+        kernel_info,
+        PhysBytes(root_page),
+        "",
+        "",
+    )
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]

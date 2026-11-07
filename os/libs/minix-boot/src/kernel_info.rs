@@ -230,6 +230,29 @@ impl KernelInfo {
             "KernelInfo: memmap must not be empty (no free memory?)"
         );
 
+        // Ordered & pairwise disjoint (D01-R1 D2-05): firmware contracts
+        // (UEFI GetMemoryMap conventional descriptors, DTB /memory reg)
+        // deliver sorted non-overlapping ranges — a producer regression
+        // that violates this fails fast here instead of being silently
+        // absorbed by one consumer and not another.
+        for (list_name, list) in [("memmap", self.memmap), ("reserved_regions", self.reserved_regions)] {
+            for w in list.windows(2) {
+                assert!(
+                    w[0].base.0 < w[1].base.0,
+                    "KernelInfo: {list_name} 未按基址升序（0x{:x} ≥ 0x{:x}）",
+                    w[0].base.0,
+                    w[1].base.0
+                );
+                assert!(
+                    w[0].base.0 + w[0].len as u64 <= w[1].base.0,
+                    "KernelInfo: {list_name} 区间相交（[0x{:x}, 0x{:x}) 与 0x{:x} 起）",
+                    w[0].base.0,
+                    w[0].base.0 + w[0].len as u64,
+                    w[1].base.0
+                );
+            }
+        }
+
         // 4a. All memory regions must be non-empty and page-aligned.
         //     DESIGN-09 (D01): zero-length or unaligned entries would be
         //     silently skipped by consumers, hiding boot-shim bugs.
@@ -406,6 +429,21 @@ impl KernelInfo {
             "KernelInfo postcond: user_sp (0x{:x}) 未严格低于内核基 (0x{:x})",
             self.user_sp.0,
             self.kern_virt_base.0
+        );
+
+        // 4. The initial stack top does not sit past the image end: the
+        //    constructor derives `kern_stack_top = kern_virt_base +
+        //    kern_size` (builder) or pins it at the image tail (bootface
+        //    `.ld` constants), so a value beyond `base + size` is a
+        //    paper-constant error of the `entry_start_pa` family — first
+        //    push after `mov sp` would land in unmapped memory. If a future
+        //    layout legally moves the boot stack out of the image, relax
+        //    this together with the producer that justifies it.
+        assert!(
+            self.kern_stack_top.0 <= self.kern_virt_base.0.saturating_add(self.kern_size),
+            "KernelInfo postcond: kern_stack_top (0x{:x}) 越过镜像尾 (0x{:x})",
+            self.kern_stack_top.0,
+            self.kern_virt_base.0.saturating_add(self.kern_size)
         );
     }
 
@@ -657,6 +695,44 @@ mod tests {
             [crate::memmap_source::startup_record(0, 0x200_000, 0x400_000)];
         info.startup_objects = &KERN_RECORD;
         info.validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
+    }
+
+    /// D01-R1 D2-04: a stack top past the image end is representable in
+    /// the type but semantically impossible — the postcondition gate must
+    /// catch it (first push after `mov sp` would hit unmapped memory).
+    #[test]
+    #[should_panic(expected = "越过镜像尾")]
+    fn test_postconditions_reject_stack_top_past_image_end() {
+        let mut info = make_valid_info();
+        info.kern_stack_top = VirBytes(info.kern_virt_base.0 + info.kern_size + 0x1000);
+        info.check_boot_postconditions();
+    }
+
+    /// D01-R1 D2-05: an out-of-order memmap violates the firmware delivery
+    /// contract and must fail fast at validate.
+    #[test]
+    #[should_panic(expected = "未按基址升序")]
+    fn test_validate_rejects_unordered_memmap() {
+        static UNORDERED: [MemoryRegion; 2] = [
+            MemoryRegion { base: PhysBytes(0x200_000), len: 0x10_000 },
+            MemoryRegion { base: PhysBytes(0x100_000), len: 0x10_000 },
+        ];
+        let mut info = make_valid_info();
+        info.memmap = &UNORDERED;
+        info.validate();
+    }
+
+    /// D01-R1 D2-05: overlapping memmap entries are equally impossible.
+    #[test]
+    #[should_panic(expected = "区间相交")]
+    fn test_validate_rejects_overlapping_memmap() {
+        static OVERLAP: [MemoryRegion; 2] = [
+            MemoryRegion { base: PhysBytes(0x100_000), len: 0x20_000 },
+            MemoryRegion { base: PhysBytes(0x110_000), len: 0x10_000 },
+        ];
+        let mut info = make_valid_info();
+        info.memmap = &OVERLAP;
+        info.validate();
     }
 
     /// D01-F07: without a startup record covering the kernel image, the

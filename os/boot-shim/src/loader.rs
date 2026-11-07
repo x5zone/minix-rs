@@ -341,9 +341,10 @@ pub fn load_boot_modules_with_loader<L: FileLoader>(
             core::ptr::write_bytes(dest.add(data.len()), 0, remaining);
         }
 
-        let name_static: &'static str = Box::leak(name.to_string().into_boxed_str());
+        // `name` 已是 `MODULE_NAMES` 常量表里的 `&'static str`——无需堆分配再泄漏
+        // （D01 Round1 D2-08：删掉 clone-to-compile 形）。
         modules.push(BootModule {
-            name: name_static,
+            name,
             start: PhysBytes(phys_base),
             len: data.len(),
         });

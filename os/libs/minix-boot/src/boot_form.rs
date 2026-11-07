@@ -161,7 +161,9 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
             user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            // 与 builder 派生式一致：kern_stack_top = kern_virt_base + kern_size
+            // （D01-R1 D2-04 上界断言后，夹具几何必须满足它自己的构造不变量）。
+            kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[BootModule {
                 name: "vm",
