@@ -84,9 +84,9 @@ const KERN_PHYS_BASE: u64 = 0x8020_0000;
 
 /// Magic number identifying a valid [`BootFileTable`] in memory.
 ///
-/// ASCII for "MNXBOOT1". Used to defensively detect a misconfigured U-Boot
-/// boot script — passing the wrong `a0` is far more likely than passing
-/// a corrupted-but-magic-matching table.
+/// ASCII for "MNXBOOT1". The table is built by the shim itself
+/// (`uboot_main::build_shim_table`), so the magic gate catches a builder or
+/// installer that wrote the wrong address before any entry is dereferenced.
 pub const BOOT_FILE_TABLE_MAGIC: u64 = 0x3154_4f4f_4258_4e4d;
 
 /// Maximum number of files describable by a single `BootFileTable`.
@@ -109,25 +109,29 @@ pub const BOOT_FILE_PATH_MAX: usize = 64;
 pub struct BootFileEntry {
     /// NUL-terminated UTF-8 path, e.g. `b"/EFI/minix/kernel.elf\0"`.
     ///
-    /// **U-Boot contract**: this field MUST be NUL-terminated within the
-    /// first `BOOT_FILE_PATH_MAX - 1` bytes. Unterminated paths are
-    /// rejected by [`entry_path_eq`] (lookup returns `None`) and the
-    /// kernel silently fails to find the file. The U-Boot boot script
-    /// in `os/boot-scripts/` is responsible for zero-padding after the
-    /// path bytes.
+    /// The shim's builder (`uboot_main::build_shim_table`) writes the bytes
+    /// and zero-fills the rest of the fixed field, so the path is always
+    /// NUL-terminated within the first `BOOT_FILE_PATH_MAX - 1` bytes.
+    /// Unterminated paths are rejected by [`entry_path_eq`] (lookup returns
+    /// `None`).
     pub path: [u8; BOOT_FILE_PATH_MAX],
-    /// Physical address of the file bytes (set by U-Boot `fatload`).
+    /// Physical address where U-Boot's `fatload` placed the file bytes.
+    ///
+    /// The shim's builder fills this from its own staging layout
+    /// (`uboot_main::uboot_layout`), the same constants the U-Boot script
+    /// uses.
     pub phys_addr: u64,
     /// File length in bytes.
     pub len: u64,
 }
 
-/// Directory-style description of all files U-Boot pre-loaded into RAM.
+/// Directory-style description of the files the boot-shim loads.
 ///
-/// The boot script builds this in memory and passes its physical address
-/// to the boot-shim via register `a0`. The boot-shim reads `magic` first
-/// to validate; if it doesn't match, boot is aborted with a clear panic
-/// message.
+/// The shim builds this in its own `.bss` (`uboot_main::build_shim_table`)
+/// and installs its address via [`install_boot_file_table`]; U-Boot only
+/// `fatload`s the files to the fixed staging addresses and passes
+/// `(extra_argc, extra_argv)` in `a0`/`a1`. This type reads `magic` first to
+/// validate; if it doesn't match, boot is aborted with a clear panic message.
 #[repr(C)]
 pub struct BootFileTable {
     /// Must equal [`BOOT_FILE_TABLE_MAGIC`].
@@ -161,12 +165,10 @@ fn entry_path_eq(entry: &BootFileEntry, path: &str) -> bool {
     entry.path[..bytes.len()] == *bytes && entry.path[bytes.len()] == 0
 }
 
-/// `FileLoader` backed by a [`BootFileTable`] that U-Boot has placed
-/// somewhere in RAM.
+/// `FileLoader` backed by a [`BootFileTable`] that the shim built in `.bss`.
 ///
-/// `'a` is the lifetime of the table itself, which lives in U-Boot-managed
-/// RAM and remains valid for the entire boot-shim lifetime (U-Boot never
-/// reclaims that region).
+/// `'a` is the lifetime of the table itself, which lives in the shim's own
+/// `.bss` and remains valid for the entire boot-shim lifetime.
 pub struct UbootFileLoader<'a> {
     table: &'a BootFileTable,
 }
@@ -216,7 +218,7 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 /// The three roles are kept apart: **U-Boot** is the loader (it stages the
 /// files and hands over via `bootelf`), **OpenSBI** is the S-mode runtime
 /// service provider this leg inherits, and *this* struct is the Minix-RS
-/// boot shim that consumes U-Boot's `BootFileTable`. The old
+/// boot shim that builds its own `BootFileTable` in `.bss`. The old
 /// `RiscvUbootBootShim` name fused "loader" and "runtime provider" into one
 /// word; the type describes the loader-side contract, so it is named after
 /// U-Boot.
@@ -231,7 +233,7 @@ impl BootShim for RiscvUbootBootShim {
         // and headless development we fall back to a panic with a clear
         // message.
         let table =
-            boot_file_table().expect("boot-shim: U-Boot did not pass a BootFileTable in a0");
+            boot_file_table().expect("boot-shim: BootFileTable not installed (install_boot_file_table was not called)");
         let file_loader = UbootFileLoader::new(table);
 
         // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
@@ -390,9 +392,11 @@ impl BootShim for RiscvUbootBootShim {
 
 static mut BOOT_FILE_TABLE_PTR: usize = 0;
 
-/// Install the physical address of the [`BootFileTable`] passed by U-Boot.
+/// Install the physical address of the shim-built [`BootFileTable`].
 ///
 /// Must be called exactly once, before [`RiscvUbootBootShim::prepare_boot`].
+/// The table is built by `uboot_main::build_shim_table` in the shim's own
+/// `.bss`; U-Boot does not pass a table.
 ///
 /// # Safety
 ///
@@ -469,11 +473,12 @@ pub fn dtb_ptr() -> Option<u64> {
     Some(ptr)
 }
 
-// ── OpenSBI helpers (no firmware to call; bump pool base is fixed by the boot script) ──
+// ── OpenSBI helpers (no firmware to call; the bump pool base is a compile-time constant) ──
 
 /// Bump pointer used by `alloc_root_page` / `alloc_bump_region` and
-/// `alloc_module_pages`. Starts above the boot-shim image and the
-/// `BootFileTable` region; see `MODULE_REGION_BASE`.
+/// `alloc_module_pages`. The pool is the compile-time region starting at
+/// `MODULE_REGION_BASE` (below the shim image and the kernel/module staging
+/// addresses — see the constant's doc).
 static mut BUMP_PTR: u64 = MODULE_REGION_BASE;
 const BUMP_END: u64 = MODULE_REGION_BASE + MODULE_REGION_SIZE;
 

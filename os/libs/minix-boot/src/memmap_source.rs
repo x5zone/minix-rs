@@ -65,10 +65,12 @@ pub enum DtbMemMapError {
     /// does not fit, so the range itself is malformed.
     RangeOverflow,
     /// A declared range is well formed but its exclusive end point is exactly
-    /// 2^64 (or the outward page rounding lands there). `SourceRecord` keeps a
-    /// `u64` end, so this project refuses the highest page rather than
-    /// truncating it. The refusal is an input-policy choice and is named
-    /// separately so it can never be a side effect of `u64` arithmetic.
+    /// 2^64 (or the outward page rounding lands there). The record layer keeps
+    /// a 128-bit exclusive end and can represent this range; the projection
+    /// layer cannot — `MemoryRegion` is a 64-bit base plus a `usize` length, so
+    /// `PhysicalRange::projectable_end` rejects the highest page. The refusal
+    /// is an input-policy choice at the projection boundary and is named
+    /// separately so it can never be a side effect of arithmetic.
     UnsupportedPhysicalAddressEnd,
     /// Two `/reserved-memory` declarations **partially** overlap. Exact
     /// duplicates (same range, same intent) are deduplicated in the projection

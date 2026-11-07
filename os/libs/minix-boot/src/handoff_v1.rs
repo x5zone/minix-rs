@@ -458,8 +458,9 @@ mod tests {
         assert_eq!(WIRE_END - WIRE_OFFSET, 7616);
         // 128×16 + 256×16 = 6144 semantic bytes.
         assert_eq!(SEMANTIC_END - SEMANTIC_OFFSET, 6144);
-        // Envelope + wire + semantic ≈ 14 KiB; fitting the 16 KiB arena is
-        // asserted at compile time by the layout gate above.
+        // Envelope + wire + semantic ≈ 14 KiB; the compile-time layout gate
+        // above asserts the full semantic end fits the 36 KiB (nine-page)
+        // arena with 96 bytes of design spare.
         assert_eq!(SEMANTIC_END, 14016);
     }
 

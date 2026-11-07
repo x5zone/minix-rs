@@ -658,38 +658,18 @@ pub fn build_vm_handoff(
     }
 }
 
-/// Build the kernel runtime identity windows for the handoff (version 6) —
-/// the physical regions `map_kernel` must replay identity
-/// (VA = PA, supervisor-only) into every VM-built process page table.
+/// Historical identity-window producer — now retired, returning an empty list.
 ///
-/// Sources:
-/// - `KernelInfo::reserved_regions()` — the boot-shim's non-conventional
-///   memory-map snapshot (running PE image incl. the linked-in kernel,
-///   UEFI heap objects, ACPI tables, LOADER_DATA allocations). Empty on
-///   platforms without link-in execution (OpenSBI, host tests).
-/// - [`minix_arch::kernel_identity_mmio_regions()`] — fixed low-VA MMIO
-///   the kernel dereferences at runtime (x86-64: local APIC EOI page).
-///
-/// Transform: page-align out, drop everything below
-/// `USER_IDENTITY_FLOOR`, sort by base, merge overlapping/adjacent
-/// regions. Fail-fast on candidate, merged-entry, and total-page caps.
-///
-/// `USER_IDENTITY_FLOOR` (4 MiB): user-space boot images link their
-/// text/data at 2-4 MiB, and NO live kernel object sits below 4 MiB in
-/// the UEFI model (the standalone kernel.elf copy at 2-4 MiB is loaded
-/// but never executed, and its pages stay marked conventional so they
-/// never enter `reserved_regions` anyway). The floor is the defensive
-/// half of the identity-window / user-VA non-overlap discipline
-/// ([ARCH]: future VM mmap ranges must stay clear of the windows).
-/// Build the per-process identity windows that the VM replays into every new
-/// root.
-///
-/// T2 split: the firmware `reserved_regions` input retired with the x86 inline
-/// execution model — the kernel now runs from its standalone high-half image,
-/// so no low-address code/data window needs replaying. What remains is the
-/// architecture's MMIO identity range (local APIC/IO-APIC and, on RISC-V, the
-/// PLIC window), which every root still needs to reach the interrupt
-/// controller at its physical address.
+/// PD-22 step 2 final retired identity windows from process roots (strong-form
+/// acceptance: no VA=PA mapping in any normal process address space). MMIO
+/// consumers reach their registers through the kernel device window
+/// (`map_kernel` segment 5 + the bootstrap-root install), so there is nothing
+/// left to replay. Earlier versions assembled candidates from
+/// `KernelInfo::reserved_regions()` and
+/// [`minix_arch::kernel_identity_mmio_regions()`], page-aligned and merged
+/// them; that construction is preserved only in git history. The v6 handoff's
+/// identity field is written empty, and VM rejects a non-empty field
+/// (check-and-reject).
 pub(crate) fn build_identity_windows() -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT], usize) {
     // PD-22 step 2 final: identity windows RETIRED from process roots —
     // the strong-form acceptance ("must not exist") requires no VA=PA
@@ -1053,7 +1033,7 @@ mod tests {
     // ── identity-window construction ──
 
     #[test]
-    fn test_identity_windows_are_arch_mmio_only() {
+    fn test_identity_windows_are_retired() {
         // PD-22 step 2 final: identity windows RETIRED — the producer must
         // return an empty list (strong form: no VA=PA mapping in process
         // roots). The device window (slot-mapped high-half) replaced the

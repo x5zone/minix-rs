@@ -42,8 +42,19 @@ pub struct KernelInfo {
     ///    including the bump region and module blobs). This is still
     ///    consumed as DM coverage source 4 (`dm_coverage.rs`).
     ///
-    /// OpenSBI/U-Boot and host tests pass `&[]` (no runtime identity
-    /// window; those platforms do not link the kernel into the shim).
+    /// What each production leg passes here:
+    ///
+    /// - UEFI legs: `&[]` — the pairing loop's five-step classification routes
+    ///   non-conventional descriptors into [`Self::memmap`] or leaves them out
+    ///   as side ranges; this partition stays empty on that leg.
+    /// - U-Boot shim leg and riscv64 direct-core leg: non-empty — the DTB
+    ///   collector is built with `firmware_reserve_end = KERN_PHYS_BASE`, so
+    ///   the firmware prefix `[DRAM_BASE, KERN_PHYS_BASE)` is carved out here
+    ///   (plus any DTB `/reserved-memory` entries).
+    /// - aarch64 direct-core leg: built with `firmware_reserve_end = 0`, so
+    ///   the prefix is empty; DTB `/reserved-memory` entries would still
+    ///   appear, and the current test DTB has none.
+    /// - Host tests: `&[]`.
     pub reserved_regions: &'static [MemoryRegion],
 
     /// Provenance records behind [`Self::memmap`] / [`Self::reserved_regions`]:

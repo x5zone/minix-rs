@@ -55,7 +55,7 @@ use minix_boot::{BootModule, DTB, KernelInfo, MemoryRegion, NR_BOOT_MODULES, Pla
 use minix_types::{PhysBytes, VirBytes};
 
 use boot_shim::build_kernel_info;
-use boot_shim::opensbi_helpers::{BootFileTable, bump_end_bound, bump_pool_base};
+use boot_shim::opensbi_helpers::BootFileTable;
 
 use minix_plat::arm64::early_console;
 
@@ -368,10 +368,12 @@ pub extern "C" fn bootface_a64() -> ! {
             root_page.0 + 4096,
         ));
         n += 1;
+        // aarch64's own bump pool (D01-R7: the riscv opensbi_helpers
+        // constants describe the U-Boot leg's pool, a different address).
         slot.add(n).write(minix_boot::startup_record(
             n as u16,
-            bump_pool_base(),
-            bump_end_bound(),
+            BUMP_BASE,
+            BUMP_BASE + BUMP_SIZE,
         ));
         n += 1;
         core::slice::from_raw_parts(slot, n)

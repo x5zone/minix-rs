@@ -18,11 +18,13 @@
 //!    boot-source chains converge there, and the boot-form layer is not
 //!    merged).
 //! 2. **module load source**: `BootFileTable` (gated by magic `MNXBOOT1`). Two
-//!    channels: the U-Boot leg's `a2` register convention, and the DTB
-//!    `/chosen` `opensbi,boot-file-table` property (the latter also lets
-//!    OpenSBI `-kernel` direct load plus `-device loader` injection self-test
-//!    the whole chain, without waiting for the xtask install leg). Entries
-//!    carry the physical address/length that U-Boot `fatload` placed; this
+//!    channels: the `a2` argument that QEMU's `-kernel` direct load hands the
+//!    image (not a U-Boot convention — the U-Boot shim leg passes
+//!    `(extra_argc, extra_argv)` in `a0`/`a1` and is a different entry), and
+//!    the DTB `/chosen` `opensbi,boot-file-table` property (the latter also
+//!    lets OpenSBI `-kernel` direct load plus `-device loader` injection
+//!    self-test the whole chain, without waiting for the xtask install leg).
+//!    Entries carry the physical address/length of the staged file bytes; this
 //!    face copies module bytes into bump physical pages in contract order
 //!    (`MODULE_NAMES` = the 12 names in C `table.c:44-64`; position is
 //!    primary, checking the in-table name against the expected literal is
@@ -51,8 +53,8 @@
 //! image's own segments** and clears NOBITS — self-destructive for a self-boot
 //! image; this face copies only **modules** and never re-copies itself. Module
 //! copies go through physical bump scratch pages rather than a heap `Vec` (the
-//! heap has a single `IMAGE_HEAP` block of 1 MiB, while the U-Boot bytes are
-//! already in RAM — reading and copying directly saves a layer and is not
+//! heap has a single `IMAGE_HEAP` block of 1 MiB, while the staged file bytes
+//! are already in RAM — reading and copying directly saves a layer and is not
 //! bound by heap width).
 
 use core::slice;
@@ -95,7 +97,8 @@ use crate::bootface_common::{
 // pure-function gates shared by both live in `bootface_common`.
 
 /// QEMU virt DRAM base (lower bound of the DTB/table bound gates; same value
-/// as the `riscv64.ld` header note and `opensbi_helpers::DRAM_BASE`; L0/A1
+/// as the `riscv64.ld` header note, and the base `opensbi_helpers`'s
+/// `MODULE_REGION_BASE` (0x8000_0000 + 32 MB) is derived from; L0/A1
 /// already protect the base from drifting).
 const DRAM_BASE: u64 = 0x8000_0000;
 
@@ -216,11 +219,11 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(memmap[0].len as u64);
     say("\n");
 
-    // 2. BootFileTable: both the a2 convention channel and the DTB /chosen
-    //    channel must pass the DRAM bound gate and then the magic gate before
-    //    dereference (reading a hartid or a garbage pointer directly is a Load
-    //    fault; the discipline established by real-hardware and U-Boot
-    //    forensics).
+    // 2. BootFileTable: both the `a2` channel (QEMU `-kernel` direct-load
+    //    argument) and the DTB /chosen channel must pass the DRAM bound gate
+    //    and then the magic gate before dereference (reading a hartid or a
+    //    garbage pointer directly is a Load fault; the discipline established
+    //    by real-hardware and U-Boot forensics).
     let chosen_pa = fdt_table_pa(&fdt);
     let table_pa = [Some(table_pa_a2), chosen_pa]
         .into_iter()
@@ -236,9 +239,10 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(table_pa);
     say("\n");
     // SAFETY: the preceding `table_magic_ok` already checked the magic inside
-    // the `in_memmap` bound; U-Boot or the host injection tool places the table
-    // in physical RAM exclusive to the boot phase, and this face is its first
-    // and only reader (single hart, no concurrent writers).
+    // the `in_memmap` bound; QEMU's direct-load staging (or the host injection
+    // tool) places the table in physical RAM exclusive to the boot phase, and
+    // this face is its first and only reader (single hart, no concurrent
+    // writers).
     let table = unsafe { &*(table_pa as *const BootFileTable) };
 
     // 3. Bump physical pool (boot-shim library `MODULE_REGION_BASE` lane: 32MiB

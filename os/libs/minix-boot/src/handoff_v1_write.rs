@@ -3,9 +3,11 @@
 //! A [`Serializer`] owns a caller-provided arena (`&mut [u8]`) and writes the
 //! v1 wire image into it at the fixed offsets from [`crate::handoff_v1`]:
 //! envelope first, then the wire partition (memmap / reserved regions / boot
-//! modules / platform sources / param bytes), with every memory-map entry
-//! dual-written into the semantic work partition (`MemoryRegion`, shim-side
-//! supply; the receiver ignores it).
+//! modules / platform sources / param bytes) and the two independent record
+//! partitions (`write_sources` for the provenance records and `write_startup`
+//! for the startup-object records), with every memory-map entry dual-written
+//! into the semantic work partition (`MemoryRegion`, shim-side supply; the
+//! receiver ignores it).
 //!
 //! The arena is a plain byte slice here on purpose: the boot legs construct it
 //! from their `AllocatePages` result (the only `unsafe` step, documented at

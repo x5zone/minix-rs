@@ -22,8 +22,57 @@ use uefi::mem::memory_map::{MemoryMap, MemoryType};
 use uefi::system;
 use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
+
+/// Physical span of the loaded kernel image, recorded before any module page
+/// is allocated (D01-R7 D2-02).
+///
+/// The kernel is copied to its ELF physical LMAs, which firmware never marks
+/// as allocated. `AllocatePages` can therefore return overlapping pages under
+/// memory pressure; recording the span here lets `alloc_module_pages` refuse
+/// such a request **before** module bytes are copied (a post-copy check can
+/// only report the damage). Both fields are zero until a kernel load lands.
+static KERNEL_SPAN_LO: AtomicU64 = AtomicU64::new(0);
+static KERNEL_SPAN_HI: AtomicU64 = AtomicU64::new(0);
+
+fn record_kernel_span(kern: &loader::KernelLoadResult) {
+    KERNEL_SPAN_HI.store(
+        kern.kern_phys_base.0.saturating_add(kern.kern_size),
+        Ordering::Relaxed,
+    );
+    KERNEL_SPAN_LO.store(kern.kern_phys_base.0, Ordering::Relaxed);
+}
+
+/// Assert that a physical range does not overlap the loaded kernel image
+/// (D01-R7 D2-02). `kern_lo`/`kern_hi` are the kernel's physical span.
+fn assert_range_clear_of_kernel(label: &str, lo: u64, hi: u64, kern_lo: u64, kern_hi: u64) {
+    assert!(
+        hi <= kern_lo || lo >= kern_hi,
+        "boot-shim: {label} [0x{lo:x}, 0x{hi:x}) overlaps the kernel image [0x{kern_lo:x}, 0x{kern_hi:x})"
+    );
+}
+
+/// Post-load check over the module layout (D01-R7 D2-02). Spans are
+/// page-rounded: the loader zero-fills the allocation tail up to
+/// `num_pages * 4096`, which a byte-length check would miss.
+fn assert_modules_clear_of_kernel(
+    modules: &[minix_boot::BootModule],
+    kern_lo: u64,
+    kern_hi: u64,
+) {
+    for module in modules {
+        let lo = module.start.0;
+        let hi = lo.saturating_add(((module.len as u64) + 4095) & !4095);
+        assert!(
+            hi <= kern_lo || lo >= kern_hi,
+            "boot-shim: module {} at [0x{lo:x}, 0x{hi:x}) overlaps the kernel image [0x{kern_lo:x}, 0x{kern_hi:x})",
+            module.name
+        );
+    }
+}
 
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use crate::ebs_pair::{self, PairError, RawOps};
@@ -247,28 +296,17 @@ impl BootShim for UefiBootShim {
              kernel binary into the ESP image",
         );
         uefi::println!("boot-shim: kernel loaded (entry staged)");
+        record_kernel_span(&kern);
         let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
         uefi::println!("boot-shim: 12 boot modules loaded");
-        // Defensive check (D01-R6 D2-13): the kernel image is written straight
-        // to its ELF physical LMAs, so firmware never sees it as "allocated"
-        // and an `AllocatePages` request could, under memory pressure, return
-        // pages overlapping the kernel. Fail fast instead of letting a module
-        // blob overwrite kernel text.
-        {
-            let kern_lo = kern.kern_phys_base.0;
-            let kern_hi = kern_lo.saturating_add(kern.kern_size);
-            for module in boot_modules {
-                let lo = module.start.0;
-                let hi = lo.saturating_add(module.len as u64);
-                assert!(
-                    hi <= kern_lo || lo >= kern_hi,
-                    "boot-shim: module {} at [0x{lo:x}, 0x{hi:x}) overlaps the kernel image [0x{kern_lo:x}, 0x{kern_hi:x})",
-                    module.name
-                );
-            }
-            // The arena and map-buffer allocations come from the same pool;
-            // check them too once their addresses are known.
-        }
+        // Post-load verification (D01-R7 D2-02): `alloc_module_pages` already
+        // refuses kernel-overlapping pages before the copy, so this check is a
+        // second, independent line over the returned layout.
+        assert_modules_clear_of_kernel(
+            boot_modules,
+            kern.kern_phys_base.0,
+            kern.kern_phys_base.0.saturating_add(kern.kern_size),
+        );
 
         // Locate platform descriptor sources (ACPI RSDP and/or DTB) from the
         // UEFI configuration table. Must happen before ExitBootServices because
@@ -366,12 +404,13 @@ impl BootShim for UefiBootShim {
         // kernel's A2 classification; module blobs are UEFI `LOADER_DATA`
         // allocations (`alloc_module_pages` uses
         // `AllocatePages(MaxAddress(bootstrap_alloc_limit()))`) and never
-        // appear. The assertion itself covers only root/bump/arena: root and
-        // bump are LOADER_DATA allocations, and the snapshot ordering
-        // guarantees they are excluded, so the assertion stays. On real
-        // hardware the old per-range check blew up on the first run
-        // (conventional [0x100000,0x800000) containing kernel
-        // [0x200000,0x400000) is the expected shape).
+        // appear. This function's assertion covers root and bump only (both
+        // LOADER_DATA; the snapshot ordering guarantees they are excluded, so
+        // the assertion stays); the arena counterpart lives in
+        // `prepare_and_enter_kernel_image`, which is the only path that
+        // allocates an arena. On real hardware the old per-range check blew
+        // up on the first run (conventional [0x100000,0x800000) containing
+        // kernel [0x200000,0x400000) is the expected shape).
 
         uefi::println!("boot-shim: building KernelInfo…");
 
@@ -1002,8 +1041,17 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
          kernel binary into the ESP image",
     );
     uefi::println!("boot-shim: kernel loaded (entry staged)");
+    record_kernel_span(&kern);
     let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
     uefi::println!("boot-shim: 12 boot modules loaded");
+    // Same second line as `prepare_boot` (D01-R7 D2-02): the allocator refuses
+    // kernel-overlapping pages before copying; this verifies the returned
+    // layout with page-rounded spans.
+    assert_modules_clear_of_kernel(
+        boot_modules,
+        kern.kern_phys_base.0,
+        kern.kern_phys_base.0.saturating_add(kern.kern_size),
+    );
     let platform_sources = find_platform_sources();
     let (param_buf, param_stats) = collect_param_buf();
     uefi::println!(
@@ -1016,16 +1064,13 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     let arena_pa = alloc_arena();
     // Defensive check (D01-R6 D2-13): the arena must not overlap the kernel
     // image's physical LMAs (firmware does not know they are occupied).
-    {
-        let kern_lo = kern.kern_phys_base.0;
-        let kern_hi = kern_lo.saturating_add(kern.kern_size);
-        let lo = arena_pa.0;
-        let hi = lo.saturating_add(ARENA_CAP as u64);
-        assert!(
-            hi <= kern_lo || lo >= kern_hi,
-            "boot-shim: arena [0x{lo:x}, 0x{hi:x}) overlaps the kernel image [0x{kern_lo:x}, 0x{kern_hi:x})"
-        );
-    }
+    assert_range_clear_of_kernel(
+        "arena",
+        arena_pa.0,
+        arena_pa.0.saturating_add(ARENA_CAP as u64),
+        kern.kern_phys_base.0,
+        kern.kern_phys_base.0.saturating_add(kern.kern_size),
+    );
     // SAFETY: the arena is a fresh `ARENA_CAP` (nine-page) LOADER_DATA allocation below the
     // identity bound; boot services own it until EBS and nothing else writes
     // those pages. The slice lives for the rest of this `!` function.
@@ -1240,6 +1285,13 @@ impl FileLoader for UefiFileLoader {
 }
 
 /// UEFI page allocator used by `load_boot_modules_with_loader`.
+///
+/// Refuses any page range that would overlap the loaded kernel image
+/// (D01-R7 D2-02). The kernel is written to its ELF physical LMAs, which
+/// firmware does not track as allocated, so `AllocatePages` may return such
+/// pages under memory pressure; the refusal happens **before** the loader
+/// copies module bytes, which is the only point where the overwrite can
+/// still be prevented (a post-copy check would only report it).
 fn alloc_module_pages(num_pages: usize) -> Option<u64> {
     let size = (num_pages as u64).checked_mul(PAGE_SIZE)?;
     // T2: the kernel reads module blobs through the bootstrap identity window
@@ -1254,7 +1306,17 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
     .ok()?;
     let base = ptr.as_ptr() as u64;
     let end = base.checked_add(size)?;
-    (end <= boot_dm_admissible_end()).then_some(base)
+    if end > boot_dm_admissible_end() {
+        return None;
+    }
+    let kern_lo = KERNEL_SPAN_LO.load(Ordering::Relaxed);
+    let kern_hi = KERNEL_SPAN_HI.load(Ordering::Relaxed);
+    if kern_hi > kern_lo && base < kern_hi && end > kern_lo {
+        panic!(
+            "boot-shim: module page allocation [0x{base:x}, 0x{end:x}) overlaps the kernel image [0x{kern_lo:x}, 0x{kern_hi:x}) — refusing before copy"
+        );
+    }
+    Some(base)
 }
 
 #[cfg(test)]

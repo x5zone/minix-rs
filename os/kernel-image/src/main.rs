@@ -363,8 +363,8 @@ fn rust_image_main(arena_pa: usize) -> ! {
 ///
 /// This image links at the high half (`aarch64.ld`'s `KERN_VIRT_BASE`), so
 /// when `x0 != 0` we hand over to `minix_kernel::arch_boot_resume_v1`: it
-/// decodes the five payload blocks from the arena, copies them into the T5
-/// landing area inside this image's `.bss`, validates `KernelInfo`, then runs
+/// decodes the seven payload partitions from the arena, copies them into the
+/// T5 landing area inside this image's `.bss`, validates `KernelInfo`, then runs
 /// the additive-only high-half resume (record root, build DM, jump to kmain)
 /// and **never rebuilds the root** — the root was built by boot-shim and is
 /// active right now; zeroing it via `new_from_page` would immediately destroy

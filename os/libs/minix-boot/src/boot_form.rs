@@ -11,33 +11,39 @@
 //!
 //! 1. [`BootForm`] collects the five forms in one enum, and
 //!    `ALL_BOOT_FORMS` is the single source for the form count; adding or
-//!    removing a form must change it too, or
-//!    `test_boot_form_count_is_accounted` fails on the spot.
+//!    removing a variant must change it too, or
+//!    `test_boot_form_count_is_accounted` fails on the spot. The count test
+//!    guards **this enum only**: a new boot entry path added elsewhere in
+//!    the tree is not detected here — this registry is a postcondition
+//!    battery and a historical inventory, not the production path map.
 //! 2. [`KernelInfo::check_boot_postconditions`] (kernel_info.rs) is the
 //!    postcondition predicate shared across forms; the battery below runs
-//!    it against each form, realizing "equivalent post-assertions, not
-//!    entry-structure equality" — absolute addresses depend on firmware,
-//!    so what can be equivalent is the same set of higher-half
-//!    address-space relations.
+//!    it against one canonical higher-half geometry, realizing "equivalent
+//!    post-assertions, not entry-structure equality" — absolute addresses
+//!    depend on firmware, so what can be equivalent is the same set of
+//!    higher-half address-space relations. No per-form `KernelInfo`
+//!    constructor exists, so the battery does not exercise each form's real
+//!    entry; it proves the predicate is form-independent.
 //!
-//! This registry is a **postcondition battery**, not the production path
-//! map. Production x86_64 UEFI uses the v1 cross-image handoff; the inline
-//! entry below is the historical/test-carrier form kept for the battery
-//! (see `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` §4.4 for
-//! the current production entries).
+//! Production x86_64 UEFI uses the v1 cross-image handoff; the inline
+//! entry this enum calls `X86UefiInline` is a retired historical form kept
+//! for the inventory (see `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
+//! §4.4 for the current production entries).
 
 use crate::kernel_info::KernelInfo;
 
-/// One kernel boot form. The variant order is (a)–(e), each traceable back
-/// to in-tree source.
+/// One kernel boot form. The variant order is (a)–(e). The retired inline
+/// form has no live implementation in tree; its `source_path` points at the
+/// carrier binary where the entry used to live, and only the file's
+/// existence is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootForm {
     /// (a) x86_64 UEFI inline: `arch_boot` ran directly inside the
     /// boot-shim process; the kernel was statically linked into the PE.
-    /// This is the historical/test-carrier form — the source path is kept
-    /// for the family-existence test only, and `os/boot-shim/src` no longer
-    /// contains an `arch_boot` call (production x86_64 UEFI uses the v1
-    /// cross-image handoff; see the module note above).
+    /// Retired: `os/boot-shim/src` no longer contains an `arch_boot` call
+    /// (production x86_64 UEFI uses the v1 cross-image handoff; see the
+    /// module note above). The path records where the carrier entry used to
+    /// live.
     X86UefiInline,
     /// (b) aarch64 UEFI cross-image: the shim produces a `BootHandoffV1`
     /// arena and hands over to `kernel.elf`.
@@ -65,9 +71,10 @@ pub const ALL_BOOT_FORMS: &[BootForm] = &[
 ];
 
 impl BootForm {
-    /// Where this form lives in tree (the source path). Used to keep the
-    /// registry aligned with the real code; a missing path means some form
-    /// was moved or renamed and this record did not follow.
+    /// Where this form lives in tree (the source path). For the four live
+    /// forms a missing path means the form was moved or renamed without
+    /// updating this record; for the retired inline form it only records
+    /// the carrier binary's location.
     pub const fn source_path(self) -> &'static str {
         match self {
             BootForm::X86UefiInline => "os/boot-shim/src/main.rs",
@@ -97,9 +104,11 @@ mod tests {
     use crate::kernel_info::{BootModule, MemoryRegion};
     use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 
-    /// The form count is accounted for in one place. The five were counted
-    /// from the current state; any "a sixth form quietly appeared and the
-    /// registry did not change" turns this test red.
+    /// The form count is accounted for in one place. This guards the enum's
+    /// own membership: adding or removing a variant without updating
+    /// `ALL_BOOT_FORMS` turns it red. It does **not** detect a new boot entry
+    /// path elsewhere in the tree — the registry is not the production path
+    /// map.
     #[test]
     fn test_boot_form_count_is_accounted() {
         assert_eq!(
@@ -109,10 +118,10 @@ mod tests {
         );
     }
 
-    /// Every form has a non-empty landing path, the landing paths are
-    /// distinct (two forms pointing at the same file means the family
-    /// definition is wrong), and each path really exists on disk (moving or
-    /// renaming one turns this red immediately).
+    /// Every form has a non-empty landing path and the landing paths are
+    /// distinct. Each path is checked for existence on disk; for the four
+    /// live forms that catches a move or rename, while for the retired
+    /// inline form it only checks that its old carrier file still exists.
     #[test]
     fn test_each_boot_form_has_distinct_source() {
         // `source_path()` is a repo-root-relative path; this package's
@@ -177,15 +186,14 @@ mod tests {
         }
     }
 
-    /// The equivalence battery: the `KernelInfo` produced by each boot form
-    /// must pass `validate()` (non-address invariants) and then
-    /// `check_boot_postconditions()` (higher-half address-space relations).
+    /// The equivalence battery: the shared postcondition predicate is checked
+    /// against one canonical higher-half geometry, once per registry member.
+    /// This proves the predicate is independent of the enum variant; it does
+    /// not construct any form's real `KernelInfo` (no per-form constructor
+    /// exists), so it does not exercise the forms' entry paths.
     #[test]
     fn test_boot_postconditions_hold_for_every_form() {
         for form in ALL_BOOT_FORMS {
-            // Constructed per form from the same internal relations, proving
-            // the predicate is independent of the concrete form and applies
-            // equivalently.
             canonical_higher_half_info().validate();
             canonical_higher_half_info().check_boot_postconditions();
             let _ = form.label();
