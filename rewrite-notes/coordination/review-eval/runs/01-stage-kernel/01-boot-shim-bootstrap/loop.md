@@ -195,3 +195,14 @@
 - 下批顺序：读者复述簇（P1）→ D2-04 模块文档 → D2-05 裁决 → 五门 → Round 3 收敛判定轮。
 - **批二已落地 `afd8cc41e`**：24 条读者项 + D2-04 + D2-05 修复；五门全绿（锚点 100/100——批二曾误劈 §3.3 代码围栏致假红，已复原）；B-05/07/08/09/16/20 七处纯冗余 ② 带日期进 Round 3。
 - **Round 2 终态：NOT CONVERGED → Round 3（收敛判定轮）**。G1–G6 达成（范围内 P0/P1/P2 当轮清零）；G8 需 Round 3 面板零新增范围内发现；G7 meta（两轮 STABILITY-NOTE 对照）随 Round 3 一起做。Round 3 面板可用轻量形态（fact + 合并读者 + refute），重点测上两轮修复段的回归。
+
+---
+
+# Round 3（收敛判定轮）
+
+## §0 基线
+
+- HEAD：`f17c712b0`（冗余组七处收敛后）
+- 配置：轻量面板（fact / design-d2 / reader-a / reader-b / reader-c / refute 并发；design-d1 按轮次 3+ 规则跳过，其两轮 STABILITY-NOTE 收敛对照归 G7 meta）
+- 使命：G8 判定（零新增范围内发现）+ 上两轮修复段回归
+- 10 并发已恢复（coding plan），全程并发派发
