@@ -129,3 +129,22 @@
 5. meta-review 判 `NOT PASS`（87.5%）；三条否决已在评审后补修，但补修本身没有再经过一次独立 meta-review。下一轮应先做一次闭环复核，再判 D01 是否可冻结。
 6. QEMU 只做了编译检查，没有跑真机回归；`validate_before_tables` 的运行时行为需要 QEMU 门确认。
 7. 测试计数已改为 crate 全量口径；下一轮建议用 `cargo test -- --list` 再对一次，避免属性计数与运行期用例的差。
+
+---
+
+# Round 1（V2.1 全修后首个收敛轮）
+
+## §0 基线
+
+- HEAD：`7d638f774`（Round 0 终态，18/18 闭环）
+- 文档 sha256 前 16：见运行记录；行数：约 3200
+- 范围：文档主题 + §7.3 关联 Rust 清单 + §7.2 C 清单
+- 顺手修清单（L0 步骤 8）：F04/F05/F06（BootShim trait / PagingWithId / BootForm）——用户已裁决归 code-excellence 命令，本轮面板若再报，按 ② 带日期（code-excellence 批次）处置，不计本篇阻塞
+- 核销清单：Round 0 follow-ups 18/18 已闭环（14 修复 + 4 裁决修复）
+
+## §1 面板
+
+- 配置：文档 3000+ 行 + 启动链高风险 → 全角色（FACT / DESIGN D1+D2 / READER A+B+C / REFUTE）
+- 派发：6 角色并发（fact、design-d1、reader-a/b/c、refute），design-d2 等 d1 完成后派发
+- 输出目录：tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round1/
+- 面板前 git status：干净（仅 untracked prompt/resources/ 与 tmp/）
