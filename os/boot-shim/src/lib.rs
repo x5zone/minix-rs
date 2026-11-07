@@ -17,7 +17,8 @@
 //! - `uefi` feature (default): `UefiBootShim` — uses `uefi` crate
 //!   (trait-shaped auxiliary form; the production UEFI entry is
 //!   `prepare_and_enter_kernel_image`, which does not go through the trait)
-//! - `opensbi` feature: `RiscvUbootBootShim` — hardcoded QEMU virt memory map
+//! - `opensbi` feature: `RiscvUbootBootShim` — memory comes from the DTB
+//!   `/memory` node (QEMU virt; no hardcoded map)
 //!   (the wired U-Boot leg; called from `uboot_main.rs`)
 
 #![cfg_attr(not(test), no_std)]

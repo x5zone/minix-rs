@@ -23,11 +23,13 @@
 //! kernel (S-mode, ELF)
 //! ```
 //!
-//! U-Boot performs the file-IO work for us: a small `boot.cmd` script (a
-//! `bootenv`/`uEnv.txt` fragment) issues a sequence of `fatload` commands
-//! that copy `kernel.elf` and every module into known physical addresses,
-//! and then jumps into the boot-shim with the address of a small
-//! [`BootFileTable`] in register `a0`.
+//! U-Boot stages the files for us: its `bootelf -p` preloads the kernel ELF
+//! and the modules into the fixed addresses of `uboot_layout`, then jumps
+//! into the shim with `(extra_argc, extra_argv)` in `a0`/`a1` (the DTB
+//! address arrives as `argv[0]`). The `MNXBOOT1` [`BootFileTable`] is
+//! **built by the shim itself** (`uboot_main::build_shim_table`) — not
+//! staged by U-Boot (see `uboot_main.rs` for the coherency finding that
+//! froze this).
 //!
 //! Inside the boot-shim, [`UbootFileLoader`] looks files up in that table.
 //! Once it has the bytes, the rest of the loading pipeline

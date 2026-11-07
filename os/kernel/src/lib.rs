@@ -304,7 +304,8 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     )
 }
 
-/// Kernel-image-side high-half boot resume (aarch64 only).
+/// Kernel-image-side high-half boot resume (all three cross-image
+/// architectures; the aarch64 delegate shell carries the milestone prints).
 ///
 /// The boot-shim already built the bootstrap page-table root and enabled
 /// paging; that root is *currently loaded* in TTBR0/TTBR1 and maps *this* code.

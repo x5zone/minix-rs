@@ -456,13 +456,15 @@ impl KernelInfo {
 
     /// Free physical memory regions reported by the boot-shim.
     ///
-    /// NOTE: **not** filtered. The boot-shim snapshots the UEFI memory map
-    /// *before* loading the kernel, so every conventional RAM region is
-    /// reported as free — the kernel image and boot-module regions are
-    /// included. Consumers that allocate from this map (e.g. the VM
-    /// bootstrap allocator, `VmBootRegion::select_multi` in
-    /// `os/arch/src/arch/frame.rs`) must exclude the occupied ranges
-    /// (kernel image + modules) explicitly, mirroring C's `cut_memmap`
+    /// NOTE: **not** filtered. What lands in this map differs per leg
+    /// (D01-R4 D2-14): the UEFI legs take the final `GetMemoryMap` snapshot
+    /// *after* loading, so the kernel and module images sit in
+    /// `LOADER_DATA` and never appear here; the U-Boot / direct-core legs
+    /// copy modules and kernel into bump pages carved from conventional
+    /// RAM, so those regions **do** appear and must be deducted. Consumers
+    /// that allocate from this map (e.g. the VM bootstrap allocator,
+    /// `VmBootRegion::select_multi` in `os/arch/src/arch/frame.rs`) must
+    /// exclude the occupied ranges explicitly, mirroring C's `cut_memmap`
     /// (pre_init.c:190-214). The kernel keeps no mutable copy of this map:
     /// each boot-time consumer subtracts the occupied ranges it must not
     /// touch (`vm_boot_exclusions` for the VM bootstrap pools,

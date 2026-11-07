@@ -336,14 +336,16 @@ impl BootShim for UefiBootShim {
         }
         // Real-hardware correction (per-range assertions were once added on a
         // wrong assumption): the kernel segments and boot module segments are
-        // **not** in scope for this assertion — this load model is "the shim
-        // writes conventional RAM directly (without UEFI allocation), and the
-        // kernel's A2 classification deducts boot occupancy range by range" (the
-        // `deducted` count in vm_handoff). On real hardware it blew up on the
-        // first run (conventional [0x100000,0x800000) containing kernel
-        // [0x200000,0x400000) is the expected shape). root/bump are the real
-        // UEFI LOADER_DATA allocations; the snapshot ordering guarantees they
-        // are excluded, so the assertion stays.
+        // **not** in scope for this assertion — their bytes live in UEFI
+        // `LOADER_DATA` allocations (`alloc_module_pages` / the bump pool use
+        // `AllocatePages(MaxAddress(bootstrap_alloc_limit()))`), so they never
+        // appear in the conventional list this assertion scans. The earlier
+        // "writes conventional RAM directly" reading of the load model is
+        // stale (D01-R4 D2-16). On real hardware the old per-range check blew
+        // up on the first run (conventional [0x100000,0x800000) containing
+        // kernel [0x200000,0x400000) is the expected shape). root/bump are
+        // also UEFI LOADER_DATA; the snapshot ordering guarantees they are
+        // excluded, so the assertion stays.
 
         uefi::println!("boot-shim: building KernelInfo…");
 
@@ -384,15 +386,14 @@ impl BootShim for UefiBootShim {
 ///
 /// `build_memmap()` semantics for the conventional list are unchanged
 /// (free RAM only, kernel/module occupancy NOT cut — the kernel's A2
-/// classification does that). The reserved list is everything
-/// else EXCEPT the MMIO descriptor types (`MMIO` / `MMIO_PORT_SPACE`):
-/// the running kernel's code,
-/// static data, GDT/IDT/TSS, the `KernelInfo` heap object, ACPI tables,
-/// LOADER_DATA allocations (root page, bump region, module blobs). MMIO
-/// windows are excluded because they are huge device ranges nobody may
-/// identity-map cacheably; the two local-APIC/IO-APIC pages the kernel
-/// touches on every tick are added kernel-side as arch constants
-/// (`kernel_identity_mmio_regions`).
+/// classification does that). The reserved list is the non-conventional
+/// subset the kernel may still need to reach through the Direct Map —
+/// see the in-function mapping comment for the five accepted types
+/// (loader data / boot-services data / ACPI reclaim / ACPI NVS etc.);
+/// runtime services and MMIO descriptor types are excluded (MMIO windows
+/// are huge device ranges nobody may identity-map cacheably; the two
+/// local-APIC/IO-APIC pages the kernel touches on every tick are added
+/// kernel-side as arch constants via `kernel_identity_mmio_regions`).
 ///
 /// Leaks the allocations so they have `'static` lifetime — acceptable
 /// for boot-stage code that runs exactly once.
@@ -945,12 +946,13 @@ fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<&'static [u8]> {
     Some(Box::leak(blob.into_boxed_slice()))
 }
 
-/// aarch64 UEFI production entry for the v1 handoff.
+/// x86_64 / aarch64 UEFI production entry for the v1 handoff.
 ///
-/// Order (frozen by the T1 design): load kernel/modules → platform sources →
-/// root/bump → arena → map buffer → non-map payloads → pairing loop
+/// Order (frozen by the T1 design): root/bump → load kernel/modules →
+/// platform sources → arena → envelope + non-map payloads → pairing loop
 /// (`GetMemoryMap` → classify → raw `ExitBootServices`) → bootstrap root →
-/// patch runtime fields → jump with `x0 = arena_pa`.
+/// patch runtime fields → jump (aarch64 passes the arena in `x0`, x86_64 in
+/// `rbx`).
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
