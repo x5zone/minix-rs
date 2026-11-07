@@ -927,6 +927,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1040,6 +1042,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1158,6 +1162,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         // The "live" bootstrap root — mock inherit is a no-op, only the
         // parameter plumbing is exercised here.
@@ -1239,6 +1245,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let result = load_process_elf::<crate::paging::mock::MockPaging, _>(
             &module,
@@ -1355,6 +1363,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1479,6 +1489,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1562,6 +1574,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1624,6 +1638,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1702,6 +1718,8 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
