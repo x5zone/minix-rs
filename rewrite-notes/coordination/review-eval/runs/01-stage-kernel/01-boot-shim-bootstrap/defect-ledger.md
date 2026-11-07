@@ -131,7 +131,7 @@
 | DESIGN-D2-06 | design-d2 | P2 | 设计/store 收口时点 | ⑤ | 证据不足：需读 store_kernel_info 与 boot_validate_and_prepare 的完整时序，登记 follow-ups 带获取路径 | 同上 | 下轮 |
 | DESIGN-D2-07 | design-d2 | P1 | 代码/三抄加性恢复体 | ① | 本轮代码批：合并 resume_additive<A, H> | 同上 | 测试+三架构编译 |
 | DESIGN-D2-08 | design-d2 | P2 | 代码/clone 到能编译 | ① | 本轮代码批：删 Box::leak(to_string()) | loader.rs:344 | 测试 |
-| REFUTE-P2 观察 | refute | P3 | 代码/潜伏路径（boot_validate_and_prepare 兜底读发送方切片） | ⑤ | 证据不足：登记 follow-ups（当前被 resume_boot_pt_alloc 挡住）；BootAlloc 非线性化约束补进 §3.8 正文一句 | refute.md CLAIM 观察 | 下轮 |
+| 反证P2观察（resume 兜底） | refute | P3 | 代码/潜伏路径（boot_validate_and_prepare 兜底读发送方切片） | ⑤ | 证据不足：登记 follow-ups（当前被 resume_boot_pt_alloc 挡住）；BootAlloc 非线性化约束补进 §3.8 正文一句 | refute.md CLAIM 观察 | 下轮 |
 | D1 方案组 | design-d1 | — | 设计提案 | ③/参考 | typestate/统一 BootError/BootMmu 抽取被 D2 依证据拒绝（多入口×三架构实况）；8 决策作 Round 2+ 重构参考素材，不直接实施 | panel/round1/design-d1.md | — |
 
 # Round 2（收敛观察轮；基线 da984f70f）
@@ -154,7 +154,7 @@
 | D2-01/02/03 | design-d2 | P1 | 设计/死抽象稳定判定 | ② 带日期 | code-excellence 批次（F05 加强为"零生产实现"；F06 补 per-form 空转缺口；F04 拆分——UefiBootShim 零调用可删、trait 本体去留待裁决） | panel/round2/design-d2.md | 批次执行 |
 | D2-04 | design-d2 | P2 | 代码/模块文档四处失真 | ① 待修 | 登记下批（boot_shim.rs 的 trait 定义位置、"kernel only depends"、cfg 矛盾、过时 T2 注记） | 同上 | 下批 |
 | D2-05 | design-d2 | P1 | 设计/参数表 wire 分歧 | ⑤→用户 | 三处可观察分歧（重复键拒绝/命令行内部键被拒/board 缺失）——比照 F10 先例倾向标 [ARCH]，随下一批用户确认 | 同上 | 裁决后 |
-| D2-10 | design-d2 | P3 | 工具/trait-audit 两类盲区 | ⑥ 工作流 | 记入 BLIND-SPOTS 候选（宏展开 impl 假阳性、非 trait 抽象逃逸） | 同上 | meta |
+| D2-10 | design-d2 | P3 | 工具/trait-audit 两类盲区 | ⑤（工作流记录项：入 meta/BLIND-SPOTS 候选，非文档缺陷） | 记入 BLIND-SPOTS 候选（宏展开 impl 假阳性、非 trait 抽象逃逸） | 同上 | meta |
 | READER-C-01/02/03/05/06/08 + B 簇 + A 簇 | readers | P1-P3 | 文档/复述失真与导航 | ① | 批二已修（本轮）：C-01 load_mods 表格行（exec_multiboot:759 实证）、C-02 直核家族限定、C-03 arena 四段布局注、C-05 双前缀+规划函数名统一、C-06 视角锚定句、C-08 aarch64 表址单通道、B-01 框图注、B-02 边界清单补 §2.3、B-03/C-09 三次出场、B-04/C-12 指向 §2.4.2、B-11 两道闸分工、B-15 链形状、A-03 可执行体/库消歧、A-07 跨镜像产线措辞、A-08 指针落点、A-18 升序机制修正（右余量落数组末尾，序不保证；alloc_lowest 按地址取不受影响）、A-04/A-05/A-14/A-17/A-19、B-06/B-13/B-14/B-17、C-07/C-10/C-11 | panel/round2/reader-*.md | 五门全绿+锚点 100/100 |
 | B-05/07/08/09/16/20 | reader-b | P3 | 文档/冗余（七处） | ② 带日期 | 纯冗余收敛类，Round 3 与收敛判定合并处理（每处补权威指针或删一处复述；不动正确性） | panel/round2/reader-b.md | Round 3 |
 | D2-04 | design-d2 | P2 | 代码/模块文档四处失真 | ① | 已修：boot-shim/src/lib.rs 与 boot_shim.rs 模块头按 §3.2 口径重写（trait 定义在 minix-boot；kernel 零引用；cfg 8 处实况；T2 注记更新；Why-a-trait 换四条收益带证据强度） | grep 实证 | 编译 0 错 |
@@ -180,3 +180,19 @@
 | D2-01/02/05/06 | design-d2 | P2 | 文档引文同步/注释口径 | ① 待修-小 | 登记维护批（§4.3 Box::leak 引文块未跟、boot_shim.rs 模块头 3-5 行残留、输入假设显式化两处） | panel/round3/design-d2.md | 维护批 |
 | D2-03 | design-d2 | P2 | 设计/DTB 乱序输入 | ⑤→用户 | 乱序 DTB /memory 会被有序断言拒启（fail-closed，非静默错）——声明子集约束或加排序，随用户裁决 | 同上 | 裁决 |
 | D2-04 | design-d2 | P1 | 设计/PagingWithId 去留 | ② 带日期 | 维持 code-excellence 批次（R3 独立裁决加强：零生产实现、文档零提及） | 同上 | 批次 |
+
+## 处置索引（逐 ID 补充，Round 3 收敛判定轮追加）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| DESIGN-D2-02 | design-d2(R2) | P1 | 设计/BootForm 删除建议 | ② 带日期 | code-excellence 批次；R3 d2 独立复核改判"接受保留"（记账职责真实、形态盲电池已自报）——两轮裁决并存，批次执行时以 R3 复核为准 | panel/round2/design-d2.md、panel/round3/design-d2.md | 批次执行 |
+| DESIGN-D2-09 | design-d2(R2) | P3 | 设计/D1"错误消息逐字对齐 C"提案 | ③ | 接受现状：R2 d2 定性确认 D1 提案落选（boot 失败即停机、逐字对齐无收益）；与 refute R3 的 C 侧逐字命中互证 | panel/round2/design-d2.md | — |
+| DESIGN-D2-01 | design-d2(R2) | P1 | 设计/PagingWithId 零生产实现（F05 加强） | ② 带日期 | code-excellence 批次（R3 d2 独立复核同判"建议删除"） | panel/round2/design-d2.md、panel/round3/design-d2.md | 批次执行 |
+| DESIGN-D2-03 | design-d2(R2) | P1 | 设计/BootShim trait 文档三理由失实（F04 强度重定） | ② 带日期 | code-excellence 批次；模块头失实部分已在 R2 批二 D2-04 修复，trait 本体去留随 UefiBootShim impl 删除后再评估（R3 d2 判"接受保留"） | 同上 | 批次执行 |
+| DESIGN-D2-10 | design-d2(R2) | P3 | 工具/trait-audit 两类盲区（宏 impl 假阳性、enum 逃逸） | ⑤（工作流记录项：入 meta/BLIND-SPOTS 候选，非文档缺陷） | 已记入 meta R3 报告与 BLIND-SPOTS 候选（R3 d2 独立复核同发现） | panel/round2/design-d2.md、panel/round3/design-d2.md | meta 已采集 |
+| READER-A-17 | reader-a(R2) | P2 | 文档/wire 双版本轴未对表 | ① | 已修：§3.4 补"协议身份 v1 vs 信封版本号（当前 8）"两层版本号段 | panel/round2/reader-a.md | 五门 |
+| READER-A-18 | reader-a(R2) | P1 | 文档/升序机制表述错误 | ① | 已修：§2.4.1 改"右余量落数组末尾空槽、序不保证；alloc_lowest 按地址取 min 不依赖序" | 同上 | 同上 |
+| READER-A-19 | reader-a(R2) | P3 | 文档/仓库内库称"第三方" | ① | 已修：§3.2 改"本仓库的共享库 crate minix-boot" | 同上 | 同上 |
+| READER-A-20 | reader-a(R2) | P3 | 文档/同句自重复+孤立符号 vmctl_set_addr_space | ② 带日期 | 维护批（局部打磨；与 §4.1 括注重叠已部分收敛） | 同上 | 维护批 |
+| READER-C-18 | reader-c(R1) | P2 | 文档/bootstrap_alloc_limit 签名不一致 | ① | 已修：R3 refute 批把步骤 4 改为 alloc_arena() 经 UEFI allocate_pages(MaxAddress(bootstrap_alloc_limit()))——无参签名与引文一致 | panel/round1/reader-c.md | 五门重跑 |
+| READER-C-19 | reader-c(R1) | P3 | 文档/24 字节归因不闭合 | ① | 已修（信息在 §3.9 可连读；R3 批二把 §3.9 的 wire 版本句改指针后两节连读路径仍在）——补一句显式归因见维护批 | 同上 | 维护批补一句 |

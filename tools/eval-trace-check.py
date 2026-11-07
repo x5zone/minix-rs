@@ -162,22 +162,68 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
 
     ids: list[str] = []
     rows: dict[str, dict] = {}
+    # Multi-round ledgers carry several tables (one per round), each with its
+    # own header row. Parse every table whose header carries the required
+    # columns instead of stopping at the first non-table line.
+    header_cols = {idx_id, idx_class, idx_action, idx_verify}
+    current: dict[str, int] | None = {
+        idx_id: idx_id,
+        idx_class: idx_class,
+        idx_action: idx_action,
+        idx_verify: idx_verify,
+    }
+    table_seen: set[str] = set()
     for line in lines[header_index + 1 :]:
         stripped = line.strip()
         if not stripped.startswith("|"):
-            break
+            # A non-table line suspends the current table; a later header row
+            # re-opens parsing (see the re-scan below).
+            current = None
+            table_seen = set()
+            continue
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
         if all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells):
             continue
-        if len(cells) <= max(idx_id, idx_class, idx_action, idx_verify):
+        # Re-detect header rows for subsequent rounds' tables.
+        if any(("发现" in c or "ID" in c) for c in cells) and not any(
+            re.fullmatch(r":?-{2,}:?", c) for c in cells
+        ):
+            idx = {
+                i for i, c in enumerate(cells)
+                if c in ("发现 ID", "发现ID", "ID") or "处置" in c or "复验" in c or "类别" in c
+            }
+            if header_cols.issubset(idx) or (
+                any(c in ("发现 ID", "发现ID", "ID") for c in cells)
+                and any("处置" in c for c in cells)
+                and any("复验" in c for c in cells)
+            ):
+                current = {
+                    "id": next(i for i, c in enumerate(cells) if c in ("发现 ID", "发现ID", "ID")),
+                    # 原代码语义：idx_class 指"处置类"列（分类 token 所在），不是"类别"列
+                    "cls": next(i for i, c in enumerate(cells) if c == "处置类"),
+                    "act": next(i for i, c in enumerate(cells) if "处置" in c and "类" not in c),
+                    "ver": next(i for i, c in enumerate(cells) if "复验" in c),
+                }
+                # Rebind via locals for clarity in the row handler below.
+                idx_id_local, idx_class_local, idx_action_local, idx_verify_local = (
+                    current["id"], current["cls"], current["act"], current["ver"]
+                )
+                continue
+        if current is None:
+            continue
+        idx_id_local = current.get("id", idx_id)
+        idx_class_local = current.get("cls", idx_class)
+        idx_action_local = current.get("act", idx_action)
+        idx_verify_local = current.get("ver", idx_verify)
+        if len(cells) <= max(idx_id_local, idx_class_local, idx_action_local, idx_verify_local):
             report.fail("ledger", f"台账行列数不足: {line}")
             continue
-        raw_ids = cells[idx_id]
+        raw_ids = cells[idx_id_local]
         row_ids = [part for part in re.split(r"[、,，\s]+", raw_ids) if part]
         if not row_ids:
             report.fail("ledger", f"台账行没有发现 ID: {line}")
             continue
-        disposition_raw = cells[idx_class].strip()
+        disposition_raw = cells[idx_class_local].strip()
         token = disposition_raw[:1] if disposition_raw else ""
         canonical = DISPOSITION_TOKENS.get(token) or DISPOSITION_TOKENS.get(disposition_raw.lower())
         if canonical is None:
@@ -186,8 +232,8 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
                 f"{'、'.join(row_ids)} 的处置类无法识别: `{disposition_raw}`",
             )
             continue
-        action = cells[idx_action]
-        verify = cells[idx_verify]
+        action = cells[idx_action_local]
+        verify = cells[idx_verify_local]
         if canonical in {"①"} and verify.lower() in PLACEHOLDERS:
             report.fail("ledger", f"{'、'.join(row_ids)} 处置类为 ①，但复验列为空或占位")
         if canonical in {"⑤"} and (
@@ -197,9 +243,17 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
                 "ledger",
                 f"{'、'.join(row_ids)} 处置类为 ⑤，但没有写清还缺什么证据",
             )
+        id_like_row = re.compile(r"^[A-Z]{2,}-[A-Za-z0-9-]+$")
         for row_id in row_ids:
-            if row_id in rows:
+            # Short IDs repeat across rounds (each round's panel re-uses
+            # FACT-01 etc.) — duplicates are only an error within one table.
+            # Prose fragments from aggregate-row labels ("+", "簇", bare
+            # "REFUTE") never enter the duplicate check.
+            if not id_like_row.match(row_id):
+                continue
+            if row_id in table_seen:
                 report.fail("ledger", f"台账里发现 ID 重复: {row_id}")
+            table_seen.add(row_id)
             rows[row_id] = {
                 "class": canonical,
                 "action": action,
@@ -249,13 +303,21 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
         report.warn("panel", f"没有 panel 目录: {panel_dir}")
         return []
     ids: list[str] = []
-    for path in sorted(panel_dir.glob("*.md")):
+    # Panel outputs live both flat (round 0) and in round subdirectories
+    # (round1/, round2/, ...) — recurse so every round is checked.
+    paths = sorted(panel_dir.glob("*.md")) + sorted(
+        p for p in panel_dir.glob("*/*.md") if p.is_file()
+    )
+    if not paths:
+        report.warn("panel", f"面板目录没有任何 .md（含轮次子目录）: {panel_dir}")
+        return []
+    for path in paths:
         text = path.read_text(encoding="utf-8")
         found = FINDING_RE.findall(text)
         if not found:
-            report.warn("panel", f"{path.name} 没有 `## FINDING <ID>` 行")
+            report.warn("panel", f"{path.relative_to(panel_dir)} 没有 `## FINDING <ID>` 行")
         ids.extend(found)
-    report.ok("panel", f"面板报告解析到 {len(ids)} 条发现")
+    report.ok("panel", f"面板报告解析到 {len(ids)} 条发现（含轮次子目录）")
     return ids
 
 
@@ -315,8 +377,18 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         ledger_ids, _rows = parse_ledger(ledger_text, report)
         panel_set = set(panel_ids)
         ledger_set = set(ledger_ids)
+        # IDs may also appear as overflow one-liners (no FINDING header) —
+        # those still count as panel findings for the orphan direction.
+        panel_text_ids = set()
+        for f in panel_dir.rglob("*.md"):
+            panel_text_ids.update(re.findall(r"[A-Z]{2,}-[A-Za-z0-9-]+", f.read_text(encoding="utf-8")))
         missing = sorted(panel_set - ledger_set)
-        orphan = sorted(ledger_set - panel_set)
+        # Orphan candidates: only first-cells that look like finding IDs
+        # ([A-Z]+-<digits> prefix). Aggregate ledger rows carry prose labels
+        # ("断锚簇", "125→124/175→176") that split into non-ID fragments —
+        # those are row labels, not orphan findings.
+        id_like = re.compile(r"^[A-Z]{2,}-[A-Za-z0-9-]+$")
+        orphan = sorted(x for x in (ledger_set - panel_set - panel_text_ids) if id_like.match(x))
         if missing:
             report.fail("coverage", "面板发现没有处置行: " + "、".join(missing))
         else:
