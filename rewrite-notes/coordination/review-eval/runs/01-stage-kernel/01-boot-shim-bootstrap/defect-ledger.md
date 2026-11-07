@@ -371,3 +371,21 @@
 | READER-C-13 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
 | READER-C-14 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
 | READER-C-15 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+
+## Round 6 fact 明细（R6-NN 逐 ID）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| R6-01 | fact | P1 | 文档/§5.4 与 M6 解绑不同步（SELF-INFLICTED） | ① | 已修：§5.4 改"M5 与 M13 已登记；M6 未单独登记 TODO" | `6afb501c6` | 五门 |
+| R6-02 | fact | P1 | 源码注释/reserved_regions 旧文案 | ① | 已修：访问器改"可用但不可分配、Direct Map 候选" | 同上 | 编译绿 |
+| R6-03 | fact | P1 | 文档/fw_end=0 过头 | ① | 已修：两处改"仅关前缀裁剪，/reserved-memory 仍进表（典型为空）" | 同上 | 五门 |
+| R6-04 | fact | P2 | 文档/接收链两处互斥 | ① | 已修：§4.8 统一"三架构先经 decode"；§6.4 箭头串联 | 同上 | 同上 |
+| R6-05 | fact | P2 | 文档/TODO-07 重复标签（SELF-INFLICTED） | ① | 已修：删重复"5 条：" | 同上 | 同上 |
+| R6-06 | fact | P2 | 文档/jalr→jr（SELF-INFLICTED） | ① | 已修：两处跳转助记符改 `jr {entry}` | 同上 | 同上 |
+| R6-07 | fact | P2 | 文档/最后一行边界（SELF-INFLICTED） | ① | 已修：补 Step1/2 挂住情形 | 同上 | 同上 |
+| R6-08 | fact | P2 | 文档/memmap 可分配与未过滤冲突 | ① | 已修：行内注明"未预过滤、先扣占用区" | 同上 | 同上 |
+| R6-09 | fact | P2 | 源码注释/five payloads→seven | ① | 已修：lib.rs:518 | 同上 | 编译绿 |
+| R6-10 | fact | P2 | 源码注释/ld staging 头过期 | ① | 已修：ld 头对齐 uboot_layout 常量 | 同上 | 同上 |
+| R6-11 | fact | P2 | 文档/辅助八步漏 collect_param_buf | ① | 已修：八步补"归一化 param_buf" | 同上 | 五门 |
+| R6-12 | fact | P2 | 文档/aarch64 第三形态标记 | ① | 已修：补 DTB_CFGTABLE=1 形态 | 同上 | 同上 |
+| R6-13 | fact | P2 | 源码注释/锚点 161→162（SELF-INFLICTED） | ① | 已修：loader.rs NoLoadSegments 行号 | 同上 | 编译绿 |

@@ -51,7 +51,10 @@ SECTION_TITLES = [
     "§8 给 meta-review 的不确定点",
 ]
 
-FINDING_RE = re.compile(r"^##\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
+FINDING_RE = re.compile(r"^#{2,3}\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
+# Round-tagged detailed-section style (fact.md R6 uses `### R6-04　…`): the
+# round prefix is part of the ID namespace used in that round's ledger rows.
+FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)\s*$", re.MULTILINE)
 METRIC_DISPOSITION_RE = re.compile(
     r"^-\s*处置\s*[:：]\s*①\s*(\d+)\s*/\s*②\s*(\d+)\s*/\s*③\s*(\d+)\s*/\s*④\s*(\d+)\s*/\s*⑤\s*(\d+)\s*$",
@@ -313,7 +316,7 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
         return []
     for path in paths:
         text = path.read_text(encoding="utf-8")
-        found = FINDING_RE.findall(text)
+        found = FINDING_RE.findall(text) + FINDING_ROUND_RE.findall(text)
         if not found:
             report.warn("panel", f"{path.relative_to(panel_dir)} 没有 `## FINDING <ID>` 行")
         ids.extend(found)
@@ -353,7 +356,7 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         # 显式写“无发现面板：<file>（理由）”豁免。WARN 不再是可接受状态。
         for path in sorted(panel_dir.glob("*.md")):
             text = path.read_text(encoding="utf-8")
-            if FINDING_RE.search(text):
+            if FINDING_RE.search(text) or FINDING_ROUND_RE.search(text):
                 continue
             exempt = re.search(
                 rf"无发现面板[：:][^\n]*{re.escape(path.name)}|{re.escape(path.name)}[^\n]*无发现",
