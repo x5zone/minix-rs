@@ -10,7 +10,12 @@
 //!
 //! Not a mirror of C `struct kinfo` (include/minix/param.h:14-54): it is
 //! the used-fields subset — the multiboot blobs, `param_buf` and the
-//! `kmessages` pointer stay kernel-private. Field order preserves C's
+//! `kmessages` pointer stay kernel-private.
+//!
+//! `[ARCH: GET_KINFO 载荷收窄为 used-fields subset；其余字段由
+//! GET_IMAGE/GET_MONPARAMS/GET_KMESSAGES 等分开提供]` — C 侧按全布局读
+//! `memmap[]`/`module_list[]`/`param_buf`/`bootstrap_*` 的程序在本仓无
+//! 消费者；受影响字段清单见 doc 01 §3.4 的同名标注。 Field order preserves C's
 //! relative order (freepde_start < user_sp < vir_kern_start < nr_procs <
 //! nr_tasks < release < version). `vir_bytes` fields widen to `u64`
 //! (LP64 rewrite precedent, proc_info.rs).

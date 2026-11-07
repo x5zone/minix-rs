@@ -1527,6 +1527,8 @@ pub struct KernelInfo {
 | `kernel_allocated_bytes_dynamic` | 同上（记录里的 `kernel_allocated_dynamic`，值来自 bump 分配器用量） | [`fn boot_alloc_used_bytes`](os/kernel/src/boot_alloc.rs:fn boot_alloc_used_bytes) |
 | `mmap_size` | 未映射为 Rust 字段：C 的"遍历边界（最高占用下标加一）"由切片长度 `.len()` 直接承载——`memmap` 从定长数组 + 边界标量变成 `&'static [MemoryRegion]`，长度自带 | [`memmap.rs`](os/kernel/src/memmap.rs:MAXMEMMAP) 的容量常量与 §2.4 的边界语义 |
 
+**外部可见面的一条架构演进** `[ARCH: GET_KINFO 载荷收窄为 used-fields subset；其余字段由 GET_IMAGE/GET_MONPARAMS/GET_KMESSAGES 等分开提供]`：C 的 `GET_KINFO` 把整个 `struct kinfo` 拷给调用者（[`do_getinfo.c`](minix3/minix/kernel/system/do_getinfo.c) 的 `length = sizeof(struct kinfo)`）；Rust 只拷 48 字节的 `KinfoStruct`（[`kinfo.rs`](os/libs/minix-types/src/types/kinfo.rs)），只含 C 读者实际消费的七个字段——`freepde_start`、`user_sp`、`vir_kern_start`、`nr_procs`、`nr_tasks`、`release`、`version`（仓内 C 侧读取点 `dmp_kernel.c` 读的就是这几个）。受影响的 C 字段——`memmap[]`/`mmap_size`、`module_list[]`/`boot_procs[]`、`param_buf`、`kmessages` 指针、`bootstrap_start/len` 等——不再经这条系统调用出现：内存账与模块表由各自的 GETINFO 键（GET_IMAGE/GET_MONPARAMS 一族）分开提供，`kmessages` 走 GET_KMESSAGES。行为基线定为 Rust userland 的 `KinfoStruct`；按 C 全布局读被删字段的程序在本仓没有消费者。
+
 表中两个"控制台"落点名字相近、层次不同：`EarlyConsole`（[`early_console.rs`](os/plat/src/early_console.rs)）是硬件输出通道——`minix-plat` 里的跨架构 trait，每架构只实现一个 `write_byte`（x86-64 COM1、aarch64 PL011、riscv64 SBI ecall），启动与诊断输出经它直写串口；`KernelConsole`（[`kmess.rs`](os/kernel/src/kmess.rs)）是内核诊断收口——对应 C 的 `kputc`，把流经的每个字节先记进 10000 字节环形缓冲（C `struct kmessages` 的重写）再转发给当前架构的 `EarlyConsole` 实现，环内容经 `GET_KMESSAGES` 快照供用户态读取。分工一句话：前者管"字节怎么落到硬件"，后者在其上叠加"内核诊断的记录"。
 
 几处需要展开的字段，各自的来源与理由：
@@ -2001,7 +2003,7 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 
 保留下来的用处只有一处：把 C 的 `struct kinfo` 形状报给用户态时占住那个位置（[`misc.rs`](os/kernel/src/misc.rs) 的 `getinfo_kinfo` 用 `unwrap_or(0)` 把它填进返回结构）。这个出口也说明为什么要用 `Option` 而不是"随便算一个值"：`None` 是"没有这个值"，`Some(0)` 是"0 号槽位空闲"——后者会被下游当成有效索引使用。
 
-在 64 位侧，偏移一位的形态与 C 不同：这个字段的消费者只有 GET_KINFO 的报告（[`misc.rs`](os/kernel/src/misc.rs)），所以一个"最后一个已用槽位"的值不会造成取指失败，而是让用户态读到一个错的槽号——把它当成有效索引去用。这正是字段保留为 `Option` 并在没有真实计算者时取 `None` 的理由：类型能区分"没有值"（`None`）与"某个值"（`Some`），却区分不出"算对的槽号"与"算错一位的槽号"——在没有真实计算者时随便填一个数，只会把后者伪装成前者；C 侧那套机制里偏移一位的后果（改写内核映射、下一次访问页错误或静默读错）见 §2.6。
+在 64 位侧，偏移一位的形态与 C 不同：这个字段的消费者只有 GET_KINFO 的报告（[`misc.rs`](os/kernel/src/misc.rs)；GET_KINFO 载荷本身的收窄演进与受影响字段清单见 §3.4 的 `[ARCH]` 标注），所以一个"最后一个已用槽位"的值不会造成取指失败，而是让用户态读到一个错的槽号——把它当成有效索引去用。这正是字段保留为 `Option` 并在没有真实计算者时取 `None` 的理由：类型能区分"没有值"（`None`）与"某个值"（`Some`），却区分不出"算对的槽号"与"算错一位的槽号"——在没有真实计算者时随便填一个数，只会把后者伪装成前者；C 侧那套机制里偏移一位的后果（改写内核映射、下一次访问页错误或静默读错）见 §2.6。
 
 对照表：
 
