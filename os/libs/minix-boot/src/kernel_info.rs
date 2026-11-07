@@ -21,7 +21,12 @@ use crate::platform::PlatformDescSource;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelInfo {
-    /// Free physical memory regions (kernel + modules already excluded).
+    /// Free physical memory regions — **not** pre-filtered (D01-R5 D2-14):
+    /// the kernel image (direct physical writes to its LMAs) is always in
+    /// this list; module blobs are in it on the U-Boot / direct-core legs
+    /// (bump pages) but absent on UEFI legs (`LOADER_DATA`). Each consumer
+    /// deducts the occupied ranges it must not touch (see the `memmap()`
+    /// accessor for the per-consumer split).
     /// C: kinfo.memmap[] — pg_utils.c add_memmap/cut_memmap
     pub memmap: &'static [MemoryRegion],
 
@@ -457,14 +462,16 @@ impl KernelInfo {
     /// Free physical memory regions reported by the boot-shim.
     ///
     /// NOTE: **not** filtered. What lands in this map differs per leg
-    /// (D01-R4 D2-14): the UEFI legs take the final `GetMemoryMap` snapshot
-    /// *after* loading, so the kernel and module images sit in
-    /// `LOADER_DATA` and never appear here; the U-Boot / direct-core legs
-    /// copy modules and kernel into bump pages carved from conventional
-    /// RAM, so those regions **do** appear and must be deducted. Consumers
-    /// that allocate from this map (e.g. the VM bootstrap allocator,
-    /// `VmBootRegion::select_multi` in `os/arch/src/arch/frame.rs`) must
-    /// exclude the occupied ranges explicitly, mirroring C's `cut_memmap`
+    /// (D01-R5 D2-14, corrected): the **kernel image** is always written
+    /// straight to its ELF physical LMAs (`loader::load_segments_into_
+    /// phys_memory`), so it **is** part of the conventional map on every
+    /// leg and must be deducted. **Module blobs** differ: UEFI legs
+    /// allocate them as `LOADER_DATA` (absent from the map), while the
+    /// U-Boot / direct-core legs copy them into bump pages carved from
+    /// conventional RAM (present, deducted). Consumers that allocate from
+    /// this map (e.g. the VM bootstrap allocator, `VmBootRegion::
+    /// select_multi` in `os/arch/src/arch/frame.rs`) must exclude the
+    /// occupied ranges explicitly, mirroring C's `cut_memmap`
     /// (pre_init.c:190-214). The kernel keeps no mutable copy of this map:
     /// each boot-time consumer subtracts the occupied ranges it must not
     /// touch (`vm_boot_exclusions` for the VM bootstrap pools,

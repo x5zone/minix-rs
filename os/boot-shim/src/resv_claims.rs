@@ -17,9 +17,13 @@
 use crate::ebs_map::{DescriptorRef, ty};
 use minix_boot::{MemoryRegion, SourceKind, SourceRecord};
 
-/// Upper bound on emitted claims: at most 8 declared reservations × 8
-/// `/memory` spans + 16 MRB entries × 8 spans is smaller, and one claim per
-/// (record, panorama span) intersection is the most this module produces.
+/// Capacity for emitted claims. The input bounds allow a pathological worst
+/// case of 8 declared reservations × 8 `/memory` spans + 16 MRB entries × 8
+/// spans = 192 intersections (D01-R5 D2-23; one claim per record × span
+/// intersection is the most this module produces). 64 covers every real
+/// device tree seen so far; inputs beyond capacity are **refused** with
+/// `TooManyClaims` (fail-closed, never a silent drop). Raise this constant if
+/// a real platform ever approaches it.
 pub const MAX_CLAIMS: usize = 64;
 /// Intervals collected per claim. A 256-descriptor map can contribute at most
 /// one interval per descriptor; overflow is a refusal, never a drop.

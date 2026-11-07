@@ -594,9 +594,9 @@ static DTB_PANORAMA_N: AtomicUsize = AtomicUsize::new(0);
 ///
 /// A pure function — the compile-time guards at the bottom of this module pin
 /// down its single-character mutations (the arithmetic was migrated from the
-/// original bootface `clip_firmware`; with `fw_end` parameterized, the riscv leg
-/// passes `KERN_PHYS_BASE` and the opensbi boot-shim leg passes 0 = no
-/// clipping).
+/// original bootface `clip_firmware`; with `fw_end` parameterized, the riscv64
+/// bootface leg and the U-Boot shim leg pass `KERN_PHYS_BASE`, and only the
+/// aarch64 direct leg passes 0 = no clipping).
 const fn clip_reserved(start: u64, len: u64, fw_end: u64) -> Option<(u64, u64)> {
     if start >= fw_end {
         return Some((start, len));
@@ -835,11 +835,10 @@ fn push_declared(
 /// the same miss there would silently free reserved pages.
 ///
 /// `firmware_reserve_end`: upper bound (PA) of the resident firmware area. The
-/// riscv bootface leg passes `KERN_PHYS_BASE` (OpenSBI resides in
-/// `[DRAM_BASE, KERN_PHYS_BASE)` and the VM bitmap metadata memsets that whole
-/// span — confirmed on real hardware, so clipping is functionally required); the
-/// opensbi boot-shim leg passes 0 = no clipping (that leg's kernel side cuts the
-/// map itself through `cut_memmap`).
+/// riscv64 bootface leg and the U-Boot shim leg pass `KERN_PHYS_BASE` (OpenSBI
+/// resides in `[DRAM_BASE, KERN_PHYS_BASE)` and the VM bitmap metadata memsets
+/// that whole span — confirmed on real hardware, so clipping is functionally
+/// required); only the aarch64 direct leg passes 0 = no clipping.
 pub struct DtbMemoryMap<'a> {
     fdt: &'a fdt::Fdt<'a>,
     firmware_reserve_end: u64,

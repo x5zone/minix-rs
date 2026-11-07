@@ -23,13 +23,13 @@
 //! kernel (S-mode, ELF)
 //! ```
 //!
-//! U-Boot stages the files for us: its `bootelf -p` preloads the kernel ELF
-//! and the modules into the fixed addresses of `uboot_layout`, then jumps
-//! into the shim with `(extra_argc, extra_argv)` in `a0`/`a1` (the DTB
-//! address arrives as `argv[0]`). The `MNXBOOT1` [`BootFileTable`] is
-//! **built by the shim itself** (`uboot_main::build_shim_table`) — not
-//! staged by U-Boot (see `uboot_main.rs` for the coherency finding that
-//! froze this).
+//! U-Boot stages the files for us: its boot script `fatload`s the kernel ELF
+//! and every module into the fixed addresses of `uboot_layout`, then
+//! `bootelf -p <shim> <dtb_addr>` loads the shim and jumps into it with
+//! `(extra_argc, extra_argv)` in `a0`/`a1` (the DTB address arrives as
+//! `argv[0]`). The `MNXBOOT1` [`BootFileTable`] is **built by the shim
+//! itself** (`uboot_main::build_shim_table`) — not staged by U-Boot (see
+//! `uboot_main.rs` for the coherency finding that froze this).
 //!
 //! Inside the boot-shim, [`UbootFileLoader`] looks files up in that table.
 //! Once it has the bytes, the rest of the loading pipeline
@@ -60,12 +60,14 @@ use minix_types::{PhysBytes, VirBytes};
 use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
 
-/// Bump-allocation region for boot modules in OpenSBI path.
+/// Bump-allocation region for boot modules in the U-Boot shim path.
 ///
-/// U-Boot has placed `kernel.elf` and the `BootFileTable` somewhere
-/// in low DRAM. To avoid clashing with them we carve a region high in
-/// DRAM for boot-module pages. The exact start address is conservative;
-/// the boot script controls actual U-Boot allocations.
+/// Actual topology (D01-R5 D2-19): DRAM starts at 0x8000_0000; this pool
+/// occupies `0x8200_0000..0x8400_0000` (DRAM+32MB, 32MB) — *below* the
+/// shim itself (linked at 0x8450_0000, `riscv64-uboot.ld`) and below the
+/// kernel staging address (0x8600_0000, `uboot_layout::KERNEL_FILE_STAGE`).
+/// "High in DRAM" here means "above the low region U-Boot loads into",
+/// not "at the top of DRAM"; the three ranges are disjoint by construction.
 const MODULE_REGION_BASE: u64 = 0x8000_0000 + 0x0200_0000; // DRAM + 32 MB
 const MODULE_REGION_SIZE: u64 = 0x0200_0000; // 32 MB
 
@@ -202,7 +204,7 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 ///
 /// Mirrors `UefiBootShim` step by step; the only differences are how
 /// firmware-specific services are accessed:
-/// - Memory map → `DtbMemoryMap::collect(dtb_ptr())` (DTB `/memory`;
+/// - Memory map → `DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect_with_sources()` (DTB `/memory`;
 ///   missing DTB halts).
 /// - Page allocation → tiny bump allocator (no UEFI `AllocatePages`).
 /// - File access → [`UbootFileLoader`] over a `BootFileTable`.
@@ -549,13 +551,6 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
 fn alloc_module_pages(num_pages: usize) -> Option<u64> {
     bump_alloc(num_pages)
 }
-
-/// Build a KernelInfo struct.
-///
-/// `platform_sources` is the ordered list of firmware-provided platform
-/// descriptor sources. On RISC-V (OpenSBI) this is either `[DTB source]`
-/// or empty. The kernel tries each in order, using the first that parses
-/// successfully.
 
 #[cfg(test)]
 mod tests {

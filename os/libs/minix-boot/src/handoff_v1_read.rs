@@ -152,7 +152,8 @@ pub struct HandoffDescriptors {
     pub startup_byte_len: u64,
 }
 
-/// Validate the header and return the five payload descriptors only.
+/// Validate the header and return the seven payload descriptors only
+/// (memmap/reserved/modules/platform/param/sources/startup).
 ///
 /// This is the sender-side read: it deliberately does not touch the runtime
 /// fields, which are patched later in the boot sequence.

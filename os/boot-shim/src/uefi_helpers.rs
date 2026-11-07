@@ -336,16 +336,19 @@ impl BootShim for UefiBootShim {
         }
         // Real-hardware correction (per-range assertions were once added on a
         // wrong assumption): the kernel segments and boot module segments are
-        // **not** in scope for this assertion — their bytes live in UEFI
-        // `LOADER_DATA` allocations (`alloc_module_pages` / the bump pool use
-        // `AllocatePages(MaxAddress(bootstrap_alloc_limit()))`), so they never
-        // appear in the conventional list this assertion scans. The earlier
-        // "writes conventional RAM directly" reading of the load model is
-        // stale (D01-R4 D2-16). On real hardware the old per-range check blew
-        // up on the first run (conventional [0x100000,0x800000) containing
-        // kernel [0x200000,0x400000) is the expected shape). root/bump are
-        // also UEFI LOADER_DATA; the snapshot ordering guarantees they are
-        // excluded, so the assertion stays.
+        // **not** in scope for this assertion. Correct attribution (D01-R5
+        // D2-16, after the R4 wording was itself corrected): the kernel image
+        // is written straight to its ELF physical LMAs — conventional RAM —
+        // so it DOES appear in the list and its occupancy is deducted by the
+        // kernel's A2 classification; module blobs are UEFI `LOADER_DATA`
+        // allocations (`alloc_module_pages` uses
+        // `AllocatePages(MaxAddress(bootstrap_alloc_limit()))`) and never
+        // appear. The assertion itself covers only root/bump/arena: root and
+        // bump are LOADER_DATA allocations, and the snapshot ordering
+        // guarantees they are excluded, so the assertion stays. On real
+        // hardware the old per-range check blew up on the first run
+        // (conventional [0x100000,0x800000) containing kernel
+        // [0x200000,0x400000) is the expected shape).
 
         uefi::println!("boot-shim: building KernelInfo…");
 
@@ -386,14 +389,16 @@ impl BootShim for UefiBootShim {
 ///
 /// `build_memmap()` semantics for the conventional list are unchanged
 /// (free RAM only, kernel/module occupancy NOT cut — the kernel's A2
-/// classification does that). The reserved list is the non-conventional
-/// subset the kernel may still need to reach through the Direct Map —
-/// see the in-function mapping comment for the five accepted types
-/// (loader data / boot-services data / ACPI reclaim / ACPI NVS etc.);
-/// runtime services and MMIO descriptor types are excluded (MMIO windows
-/// are huge device ranges nobody may identity-map cacheably; the two
-/// local-APIC/IO-APIC pages the kernel touches on every tick are added
-/// kernel-side as arch constants via `kernel_identity_mmio_regions`).
+/// classification does that). The reserved list is exactly the
+/// `ReservedMapped` disposition set (D01-R5 D2-12): `LOADER_CODE`,
+/// `LOADER_DATA`, `BOOT_SERVICES_CODE`, `BOOT_SERVICES_DATA`,
+/// `ACPI_RECLAIM` — all `WRITE_BACK` only. Runtime-services types,
+/// `ACPI_NVS`, `PERSISTENT`, and every non-write-back descriptor go to
+/// the *side* list instead (no ordinary mapping); `RESERVED`/`UNUSABLE`
+/// are excluded and `MMIO`/`MMIO_PORT_SPACE` go to the device path.
+/// MMIO windows are huge device ranges nobody may identity-map cacheably;
+/// the two local-APIC/IO-APIC pages the kernel touches on every tick are
+/// added kernel-side as arch constants via `kernel_identity_mmio_regions`.
 ///
 /// Leaks the allocations so they have `'static` lifetime — acceptable
 /// for boot-stage code that runs exactly once.

@@ -48,7 +48,7 @@ pub const MODULES_DIR: &str = "/EFI/minix/modules";
 /// maps to process slot `BOOT_MODULE_PROC_NRS[i]` while building the process
 /// table (see `os/kernel/src/lib.rs:1200-1203`). The kernel also asserts at
 /// boot that the number of modules equals `NR_BOOT_MODULES` (12)
-/// (`os/kernel/src/lib.rs:1146-1152`). So **both the order and the count of
+/// (`os/kernel/src/lib.rs:2336-2344`). So **both the order and the count of
 /// this list are load-bearing** — they are not free to reorder, and a missing
 /// entry is a boot-time failure, not a cosmetic gap.
 ///
@@ -476,8 +476,8 @@ mod tests {
     /// T-9: `compute_kernel_layout` must surface `NoLoadSegments` for an
     /// image with no `PT_LOAD`. Flip the single program header from
     /// `PT_LOAD` to `PT_NULL` so the PT_LOAD iterator yields nothing — the
-    /// same `!found_load` path `load_kernel_with_loader` reports. Covers the
-    /// previously-untested `NoLoadSegments` variant (loader.rs:144).
+    /// same `!found_load` path (loader.rs:161) `load_kernel_with_loader` reports. Covers the
+    /// previously-untested `NoLoadSegments` variant (loader.rs:161).
     #[test]
     fn test_compute_kernel_layout_rejects_image_without_load_segments() {
         let mut elf = build_minimal_elf();
@@ -549,7 +549,7 @@ mod tests {
         image
     }
 
-    /// T-9: the `InvalidSegment` error variant (loader.rs:211) had no test
+    /// T-9: the `InvalidSegment` error variant (loader.rs:150/248) had no test
     /// constructing it. The overlap guard runs *before* the copy loop, so
     /// calling the real loader with overlapping segments returns
     /// `Err(InvalidSegment)` without dereferencing the (unmapped) segment
