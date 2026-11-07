@@ -159,3 +159,24 @@
 | B-05/07/08/09/16/20 | reader-b | P3 | 文档/冗余（七处） | ② 带日期 | 纯冗余收敛类，Round 3 与收敛判定合并处理（每处补权威指针或删一处复述；不动正确性） | panel/round2/reader-b.md | Round 3 |
 | D2-04 | design-d2 | P2 | 代码/模块文档四处失真 | ① | 已修：boot-shim/src/lib.rs 与 boot_shim.rs 模块头按 §3.2 口径重写（trait 定义在 minix-boot；kernel 零引用；cfg 8 处实况；T2 注记更新；Why-a-trait 换四条收益带证据强度） | grep 实证 | 编译 0 错 |
 | D2-05 | design-d2 | P1 | 设计/参数表 wire 分歧 | ① | 已修（比照 F10 先例）：doc §3.4 与 boot_params.rs 模块文档统一标 [ARCH: 参数表语义规约化]（重复键首条生效/内部键拒绝/BOARD 按源生成三处分歧；仓内消费者零命中已核） | panel/round2/design-d2.md | 五门 |
+
+# Round 3（收敛判定轮；基线 f17c712b0）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| refute R3 四项 | refute | P2 | 文档/措辞与源注释 | ① | 已修 `f839e15b0`：§6.3 四段、§4.2 步骤4 alloc_arena、M2 措辞、handoff_v1 源注释 96 | refute.md | 五门 |
+| REFUTE 终裁 a/b | refute | — | 遗留观察 | ③ | 反证失败（主张成立）：兜底可达性钉完整无第三路径；<4GiB 行措辞已闭合 | refute.md | — |
+| FACT-01 | fact | P1 | 文档/契约表 kernel_info 行 9→17 | ① | 已修：rejects 8 + accepts 3 + requiring 4 + postcond 1 + getters 1 = 17；不变量表述与 §4.4 对齐 | grep 实测 | 五门 |
+| FACT-04/05/07 | fact | P2 | 文档/引文保真 | ① | 已修：§4.2 自由变量来源注；§4.7 引文尾句换源码真句（validated not trusted）；§4.6 bullet1 旧注释改过去时指针 | grep 零命中 | 同上 |
+| FACT-06/B-05 | fact+reader | P1 | 文档/MapKey 无定义 | ① | 已修：§4.2 补"MapKey 是什么"定义段（快照标识/失效/配对/拒绝重试） | UEFI 契约 | 同上 |
+| FACT-08/09/11/12/13 | fact | P2-P3 | 文档/行号、cfg 口径、枚举、重复、编注 | ① | 已修：354→317 行；cfg 8 处口径改属性锚定表述；五条 panic 枚举两案 wrapping 补名；§3.9 wire 版本改指针；两条编注移出引文块 | 实测 | 同上 |
+| 断锚簇 B-01/C-03/A-08、C-06/B-03、B-02、B-04、B-05 | readers | P1 | 文档/回指断裂 | ① | 已修：三类链定义搬进对账（§3.10 空锚消除）；boot_image 前 8 项改 §4.3；§3.4→§3.7 BootAlloc 引证；MapKey 见上；图例闭合（O-11/D01-R1/R2/D05/T2/Phase A.2 全覆盖+各自回指） | grep | 同上 |
+| B-06/A-08 链形状 | readers | P1 | 文档/接收入口双名 | ① | 已修：§3.7/§4.7/§6.1 三处改"本架构委托壳（aarch64 resume_high_half / x86-riscv resume_after_v1_decode）"；§3.10 收敛句同步双收敛点 | lib.rs | 同上 |
+| C-04/B-13 | reader-c | P1 | 文档/收敛主张被自括号推翻 | ① | 已修：§4.8 改双收敛点表述+发送侧终点 br {entry} | §3.7 引文 | 同上 |
+| C-01/02、C-05、C-07 | reader-c | P2 | 文档/计数因果与成员集 | ① | 已修：minix-boot 因果账闭合（17 计法）；handoff 3→2；真机门链计法入对账+§6.4 同步；§3.3 riscv64 句对齐权威表 | 实测 | 同上 |
+| C-10 | reader-c | P2 | 文档/兜底与保留表相抵 | ① | 已修：补 LOADER_DATA 落保留表一侧的限定 | vm_handoff 注释 | 同上 |
+| B-14 | reader-b | P2 | 文档/三陈述组合互斥 | ① | 已修（源码核实后为表述缺口）：§4.6 补"分片在 Step 1 自循环决定、窗口部位只写一次 2MiB 叶"——无先 1GiB 后 2MiB 次序；Step 2c 另腿不共享槽位判定 | lib.rs:900-967 | 同上 |
+| A-08 等读者残余（§4.5 四个容量、125→124/175→176 算式句、M14 路标名、§4.9 孤例、§1.2/§2.8 三层推演重叠、§4.2↔§6.1 双份诊断串、孤立符号 vmctl_set_addr_space、B-15/16 脚本指针、B-17 收口块、B-18 里程碑标注） | readers | P3 | 文档/残余打磨 | ② 带日期 | 登记随下篇或 D01 维护批（全部为局部打磨，不接触论证链；其中三处与 B-06 链形状修复重叠已顺带闭合） | panel/round3/reader-*.md | 维护批 |
+| D2-01/02/05/06 | design-d2 | P2 | 文档引文同步/注释口径 | ① 待修-小 | 登记维护批（§4.3 Box::leak 引文块未跟、boot_shim.rs 模块头 3-5 行残留、输入假设显式化两处） | panel/round3/design-d2.md | 维护批 |
+| D2-03 | design-d2 | P2 | 设计/DTB 乱序输入 | ⑤→用户 | 乱序 DTB /memory 会被有序断言拒启（fail-closed，非静默错）——声明子集约束或加排序，随用户裁决 | 同上 | 裁决 |
+| D2-04 | design-d2 | P1 | 设计/PagingWithId 去留 | ② 带日期 | 维持 code-excellence 批次（R3 独立裁决加强：零生产实现、文档零提及） | 同上 | 批次 |
