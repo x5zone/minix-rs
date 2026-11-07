@@ -106,10 +106,12 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
    ```bash
    tools/anchor-resolve.sh --check <doc>
    tools/doc-code-map.sh <doc> --check
-   tools/doc-style-lint.sh --diff <doc>
+   git add <doc>
+   tools/doc-style-lint.sh --diff
    tools/doc-ref-check.sh --check <doc>
    tools/doc-code-density-check.sh --check <doc>
    ```
+   `doc-style-lint.sh --diff` 的参数是 git revision（默认 HEAD），不是文件路径；先 `git add` 目标文档再跑。
 4. 代码块分类：`tools/doc-snippet-extract.sh <doc>`；引文块逐块对账。
 5. 回归扫描：邻句、自引入过程词、端口义、引号、模糊尾巴、跨节复述。
 6. 同一篇最多 2 个修复轮；仍有 P0 时标 `NOT CONVERGED`，带 carry-over 进入下一篇。
