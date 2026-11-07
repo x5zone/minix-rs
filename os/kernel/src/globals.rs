@@ -133,12 +133,11 @@ mod bkl_protected {
     bkl_protected_impls! {
         // Write-once-read-only after boot (no BKL needed post-init):
         minix_boot::KernelInfo,
-        crate::memmap::MemMapEntry,
         crate::kerninfo::KerninfoPage,
         // Handoff-page physical range (plain u64 pair). Written once at the
         // A2 classification point (single-threaded boot — `build_vm_handoff`
         // publishing the post-deduction free list for multi-image boot
-        // loaders), read-only afterwards — same contract as MemMapEntry.
+        // loaders), read-only afterwards.
         minix_types::HandoffMemRegion,
         // `.bss` landing pad payload (plain u64+usize pair). Written
         // once by `store_kernel_info` during boot, read-only afterwards —
@@ -225,7 +224,6 @@ mod bkl_protected_tests {
 
         // Write-once-read-only after boot:
         assert_impl::<minix_boot::KernelInfo>();
-        assert_impl::<crate::memmap::MemMapEntry>();
         assert_impl::<crate::kerninfo::KerninfoPage>();
 
         // BKL-serialized mutation:
@@ -239,7 +237,6 @@ mod bkl_protected_tests {
 
         // Composite impls:
         assert_impl::<Option<minix_boot::KernelInfo>>();
-        assert_impl::<[crate::memmap::MemMapEntry; 4]>();
     }
 
     /// Document the negative case: `RefCell<T>` is `!Sync` and must NOT
@@ -270,11 +267,6 @@ mod bkl_protected_tests {
         let _ = String::new(); // suppress unused import warning
     }
 }
-
-/// Global flag: kernel may allocate physical memory directly.
-/// C: kernel_may_alloc in glo.h
-/// Set to true at kmain start, cleared in bsp_finish_booting().
-pub(crate) static KERNEL_MAY_ALLOC: AtomicBool = AtomicBool::new(false);
 
 /// Global KernelInfo — stored once during kmain, read-only thereafter.
 ///
@@ -325,7 +317,12 @@ pub(crate) static RESERVED_REGION_STORE: SyncUnsafeCell<
 /// `store_kernel_info` deep-copies both payloads here (kernel `.bss`,
 /// mapped for the whole run) and repoints the global copy's slices, so no
 /// consumer ever dereferences firmware-heap memory past the handoff.
-pub(crate) const MEMMAP_REGION_STORE_LEN: usize = crate::memmap::MAXMEMMAP;
+/// C `MAXMEMMAP` = 40 (param.h:13); Rust raises it to 128 deliberately:
+/// UEFI firmware maps routinely exceed 40 entries and truncating the
+/// firmware map would silently drop RAM. Capacity divergence from C is
+/// input-shaped. (Home since D01-F08: the ledger module became
+/// `vm_handoff::FreeRangeSet`; only the store capacity survives here.)
+pub(crate) const MEMMAP_REGION_STORE_LEN: usize = 128;
 
 pub(crate) static MEMMAP_REGION_STORE: SyncUnsafeCell<
     [minix_boot::MemoryRegion; MEMMAP_REGION_STORE_LEN],

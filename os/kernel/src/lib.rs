@@ -144,7 +144,6 @@ pub mod ipc_filter;
 pub mod kerninfo;
 pub(crate) mod kmess;
 pub mod krandom;
-pub mod memmap;
 pub mod misc;
 pub mod page_fault;
 pub mod pte_walk;
@@ -160,7 +159,7 @@ pub mod trap_dispatch;
 
 use globals::{
     CLOCK_STATE, CURRENT_ROOT_PHYS, IPC_FILTER_POOL, IRQ_MANAGER, KBILL_IPC, KBILL_KCALL,
-    KERNEL_INFO, KERNEL_MAY_ALLOC, PRIV_TABLE, PROC_TABLE, ROOT_PHYS_UNSET, SMP_STATE,
+    KERNEL_INFO, PRIV_TABLE, PROC_TABLE, ROOT_PHYS_UNSET, SMP_STATE,
     SyncUnsafeCell, VM_RUNNING,
 };
 
@@ -1443,7 +1442,6 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     }
 
     store_kernel_info(kernel_info);
-    KERNEL_MAY_ALLOC.store(true, Ordering::Release);
     boot_stage!("kernel: kmain A.1b console+kinfo ok\n");
 
     // Phase A.2 is intentionally empty: the kernel keeps no mutable copy of
@@ -2822,12 +2820,6 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 
 use core::sync::atomic::Ordering;
 
-/// Check if kernel may allocate memory directly.
-/// C: kernel_may_alloc checks throughout kernel code
-pub fn kernel_may_alloc() -> bool {
-    KERNEL_MAY_ALLOC.load(Ordering::Acquire)
-}
-
 #[cfg(test)]
 
 /// Raw accessor for the global clock state.
@@ -3629,10 +3621,10 @@ fn bsp_finish_booting(
         bsp_local.fpu_presence = true;
     }
 
-    // Step 8: kernel_may_alloc = 0
-    // C: kernel_may_alloc = 0 — main.c:105 (last statement of bsp_finish_booting)
-    // Rust: AtomicBool store.
-    KERNEL_MAY_ALLOC.store(false, Ordering::Release);
+    // Step 8: (D01-F08) C 的 kernel_may_alloc = 0（main.c:105）在 Rust 侧
+    // 没有对应物——该开关唯一的读者是已删除的 add_memmap 断言；账本换成
+    // FreeRangeSet 后，"引导期 vs 运行期"的写权限由调用图保证，不需要
+    // 运行期布尔。
 
     // Step 8.5: BKL held.
     // C: BKL_LOCK() — main.c:149, early in main(). The acquisition moved to
@@ -5593,11 +5585,11 @@ mod tests {
     #[should_panic(expected = "memmap exceeds the .bss landing pad")]
     fn test_store_kernel_info_rejects_memmap_overflow() {
         let _boot = crate::test_sync::lock_boot_globals();
-        static OVERFLOW: [minix_boot::MemoryRegion; crate::memmap::MAXMEMMAP + 1] =
+        static OVERFLOW: [minix_boot::MemoryRegion; crate::globals::MEMMAP_REGION_STORE_LEN + 1] =
             [minix_boot::MemoryRegion {
                 base: PhysBytes(0),
                 len: 0,
-            }; crate::memmap::MAXMEMMAP + 1];
+            }; crate::globals::MEMMAP_REGION_STORE_LEN + 1];
         let mut info = minimal_store_info();
         info.memmap = &OVERFLOW;
         store_kernel_info(&info);

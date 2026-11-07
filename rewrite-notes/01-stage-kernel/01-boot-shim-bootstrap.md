@@ -1476,7 +1476,7 @@ pub struct KernelInfo {
 
 | 关系 | 字段 | 说明 |
 |---|---|---|
-| 保留（同名或近义） | `memmap`<br>`user_sp` | `memmap` 从 `multiboot_memory_map_t memmap[MAXMEMMAP]` 变成 `&'static [MemoryRegion]`，长度自带。C 那条"VM 只读前 `MIN(MAXMEMMAP, NR_MEMS)=16` 条"的截断（§2.4.2 结算）**不再继承**：Rust 把容量提到 `MAXMEMMAP = 128`（[`memmap.rs`](os/kernel/src/memmap.rs:MAXMEMMAP)），VM 交接消费整份账并以断言守住不超容量（[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `mmap` 数组与 `boot-shim memmap exceeds` 断言）——16 条静默截断是 C 的行为，不是 Rust 的 |
+| 保留（同名或近义） | `memmap`<br>`user_sp` | `memmap` 从 `multiboot_memory_map_t memmap[MAXMEMMAP]` 变成 `&'static [MemoryRegion]`，长度自带。C 那条"VM 只读前 `MIN(MAXMEMMAP, NR_MEMS)=16` 条"的截断（§2.4.2 结算）**不再继承**：Rust 把容量提到 128（常量现居 [`globals.rs`](os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN)，C `MAXMEMMAP=40` 提额——UEFI 图常超 40 条），VM 交接消费整份账并以断言守住不超容量——16 条静默截断是 C 的行为，不是 Rust 的 |
 | 改型（C 有、形状变） | `param_buf`：`char[MULTIBOOT_PARAM_BUF_SIZE]` → `&'static [u8]`，上限仍按 1024 校验<br>`module_list[]` → `boot_modules: &'static [BootModule]` | |
 | 改名 | `vir_kern_start` → `kern_virt_base` | （`freepde_start` 曾改名 `free_upper_idx`，D01-F03 起整个字段退场，见 §3.9） |
 | 升为字段 | `kern_phys_base`<br>`kern_size` | C 里这两个值不是 `kinfo_t` 的字段，而是链接脚本导出的符号 `_kern_phys_base`、`_kern_size`（定义见 §3.5 引文；§2.3 未列过这两个）。Rust 把它们放进交接结构，来源改为 boot-shim 解析内核 ELF 的 PT_LOAD 段（§4.4 的字段表）。`kern_size` 用 `u64` 而不是 `usize`，避免 32 位目标上的截断 |
@@ -1507,7 +1507,7 @@ pub struct KernelInfo {
 | C 字段 | 接管者 / 去哪了 | 依据 |
 |---|---|---|
 | `mbi` | 不进内核：UEFI/SBI 没有 Multiboot 结构体，交接信息由 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs) 另行承载 | - |
-| `mem_high_phys` | 删除。C 里它是"最高物理地址"标量，有真实读者：恒等映射铺满整个 4GB 目录，靠它把 RAM 顶以上没有内存的段标成禁缓存；PCI 驱动另拿它找 RAM 之上的 MMIO 空洞。Rust 的恒等映射只在 bootstrap 内短暂存在、随后在**同一张已激活的根上**逐页撤掉、由 Direct Map 接管（不重建根——重建会清零活动根、下一条取指页错误，见 §3.7 反向推演与 §4.1 的逐页拆解），帧分配器直接遍历 memmap 区域列表——这个标量在 Rust 里没有读者，维护它只是写后即弃的状态 | [`memmap.rs`](os/kernel/src/memmap.rs) 的 `add_memmap` 函数文档（Known Gaps 段）；C 读者：[`pg_identity()`](minix3/minix/kernel/arch/i386/pg_utils.c)、[`complete_bars()`](minix3/minix/drivers/bus/pci/pci.c) |
+| `mem_high_phys` | 删除。C 里它是"最高物理地址"标量，有真实读者：恒等映射铺满整个 4GB 目录，靠它把 RAM 顶以上没有内存的段标成禁缓存；PCI 驱动另拿它找 RAM 之上的 MMIO 空洞。Rust 的恒等映射只在 bootstrap 内短暂存在、随后在**同一张已激活的根上**逐页撤掉、由 Direct Map 接管（不重建根——重建会清零活动根、下一条取指页错误，见 §3.7 反向推演与 §4.1 的逐页拆解），帧分配器直接遍历 memmap 区域列表——这个标量在 Rust 里没有读者，维护它只是写后即弃的状态 | C 读者：[`pg_identity()`](minix3/minix/kernel/arch/i386/pg_utils.c)、[`complete_bars()`](minix3/minix/drivers/bus/pci/pci.c) |
 | `mods_with_kernel` | 删除：C 里它只为一个用途——把内核临时登记成第 N+1 个模块，让重叠检查与 memmap 扣除一并处理内核自身（[`pre_init()`](minix3/minix/kernel/arch/i386/pre_init.c) 的登记段）。Rust 里内核布局由 `kern_phys_base`/`kern_size` 单独表达，扣除与检查各自直接用区间，不需要这个计数 | - |
 | `kern_mod` | 删除：C 里它是上面那个"临时第 N+1 个模块"的下标，随 `mods_with_kernel` 一起消失 | - |
 | `kmessages` | 独立的内核消息/诊断设施 | [`kmess.rs`](os/kernel/src/kmess.rs)（`KernelConsole`） |
@@ -1521,7 +1521,7 @@ pub struct KernelInfo {
 | `vm_allocated_bytes` | VM 交接记录的字段 | [`fn build_vm_handoff`](os/kernel/src/vm_handoff.rs:fn build_vm_handoff) |
 | `kernel_allocated_bytes` | 同上（记录里的 `kernel_allocated_static`） | 同上 |
 | `kernel_allocated_bytes_dynamic` | 同上（记录里的 `kernel_allocated_dynamic`，值来自 bump 分配器用量） | [`fn boot_alloc_used_bytes`](os/kernel/src/boot_alloc.rs:fn boot_alloc_used_bytes) |
-| `mmap_size` | 未映射为 Rust 字段：C 的"遍历边界（最高占用下标加一）"由切片长度 `.len()` 直接承载——`memmap` 从定长数组 + 边界标量变成 `&'static [MemoryRegion]`，长度自带 | [`memmap.rs`](os/kernel/src/memmap.rs:MAXMEMMAP) 的容量常量与 §2.4 的边界语义 |
+| `mmap_size` | 未映射为 Rust 字段：C 的"遍历边界（最高占用下标加一）"由切片长度 `.len()` 直接承载——`memmap` 从定长数组 + 边界标量变成 `&'static [MemoryRegion]`，长度自带 | [`globals.rs`](os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN) 的容量常量与 §2.4 的边界语义 |
 | `freepde_start` | 曾改型为 `free_upper_idx: Option<usize>` 跨 handoff 携带（D05 轮前）；D01-F03 起整个字段离开 `KernelInfo`——所有生产者都写 `None`、唯一消费者 `GET_KINFO` 报告以 `unwrap_or(0)` 抹平 `Option`，等于"携带一个恒 0 值再由读者归零"。报告面 `KinfoStruct.freepde_start` 保留并固定填 0（C 布局位不动）；64 位侧没有借槽消费者，见 §3.9 | [`misc.rs`](os/kernel/src/misc.rs) 的 `getinfo_kinfo`（填 0 处带注释） |
 | `bootstrap_start` / `bootstrap_len` | 曾以 `(PhysBytes(0), 0)` + 硬断言携带（"Rust 无 unpaged 段"）；D01-F03 起字段删除——布尔事实不再用两个整数与一条断言表达，误设回收区间的接口面随字段一起消失，wire 版本 7→8（envelope 184→160 字节） | §3.5 的删除论证与过度回收风险表 |
 
@@ -2468,7 +2468,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
 | 落地区 | 容量常量 | 值 | 溢出行为 |
 |---|---|---|---|
 | `RESERVED_REGION_STORE` | `RESERVED_REGION_STORE_LEN` | 256 | panic |
-| `MEMMAP_REGION_STORE` | `MEMMAP_REGION_STORE_LEN` | `crate::memmap::MAXMEMMAP` | panic |
+| `MEMMAP_REGION_STORE` | `MEMMAP_REGION_STORE_LEN` | 128（C `MAXMEMMAP=40` 提额；D01-F08 起常量定居 globals.rs） | panic |
 | `BOOT_MODULE_STORE` | `minix_boot::NR_BOOT_MODULES` | 12 | panic |
 | `PLATFORM_SOURCE_STORE` | `PLATFORM_SOURCE_STORE_LEN` | 4（真实上限 2 × 有意余量） | panic |
 | `PARAM_BUF_STORE` | `PARAM_BUF_STORE_LEN` | 1024（C 的 `MULTIBOOT_PARAM_BUF_SIZE`） | panic（先清零再复制） |
@@ -2480,7 +2480,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
 
 `if src.as_ptr() != store.as_ptr()` 这个条件不是优化：`kmain` 会在拿到全局副本之后再调一次 `store_kernel_info`（幂等），此时源就是落地区本身，跳过拷贝可以避免 `ptr::copy` 在同址范围内的行为问题（注释里说明这也是用 `ptr::copy` 而非 `copy_nonoverlapping` 的原因）。
 
-三个容量各有来由：`RESERVED_REGION_STORE_LEN = 256` 是真机 probe 的 127 条 reserved 加一倍余量（独立容量；`vm_handoff` 的 ident 上限是 64，两者不是同一个常量）；`MEMMAP_REGION_STORE_LEN` 的注释记着一次真机故障的探针读数（读数与归因限定见 §3.4 的"不做深拷…会怎样"，实现侧增量见本节末）；`BOOT_MODULE_NAME_LEN = 16` 与 `vm_handoff::copy_name` 的 16 字节 `proc_name` 字段同宽，落地不会比既有长度契约更紧。另外两个容量定案：`PLATFORM_SOURCE_STORE_LEN = 4` 是"一个 DTB/ACPI 源加一个回退"的真实上限再乘二；`PARAM_BUF_STORE_LEN = 1024` 直接对齐 C 的定长语义，复制前先清零，短缓冲留下的尾部因此是全零而不是上一轮内容；`SOURCE_RECORD_STORE_LEN` 与 `STARTUP_RECORD_STORE_LEN` 直接取 wire 分区容量（296 与 20），与解码端同一口径；startup 容量 16→20 是 D01-F07 规范集合的余量（1 内核 + 12 模块 + root + bump + arena = 16，留 4 槽给新增腿）。
+三个容量各有来由：`RESERVED_REGION_STORE_LEN = 256` 是真机 probe 的 127 条 reserved 加一倍余量（独立容量；`vm_handoff` 的 ident 上限是 64，两者不是同一个常量）；`MEMMAP_REGION_STORE_LEN = 128` 自 D01-F08 起直接定居 globals.rs——C 形状账本模块（`memmap.rs` 的 add/cut + 空洞 + 高水位）删除后，交接扣减由 [`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `FreeRangeSet`（有序不相交页对齐集合）承担，行为契约由"与参考区间减法逐页等价"的对拍测试锁住（读数与归因限定见 §3.4 的"不做深拷…会怎样"，实现侧增量见本节末）；`BOOT_MODULE_NAME_LEN = 16` 与 `vm_handoff::copy_name` 的 16 字节 `proc_name` 字段同宽，落地不会比既有长度契约更紧。另外两个容量定案：`PLATFORM_SOURCE_STORE_LEN = 4` 是"一个 DTB/ACPI 源加一个回退"的真实上限再乘二；`PARAM_BUF_STORE_LEN = 1024` 直接对齐 C 的定长语义，复制前先清零，短缓冲留下的尾部因此是全零而不是上一轮内容；`SOURCE_RECORD_STORE_LEN` 与 `STARTUP_RECORD_STORE_LEN` 直接取 wire 分区容量（296 与 20），与解码端同一口径；startup 容量 16→20 是 D01-F07 规范集合的余量（1 内核 + 12 模块 + root + bump + arena = 16，留 4 槽给新增腿）。
 
 **只做一半深拷会怎样**：`reserved_regions` 深拷进去，但 `memmap` 与 `boot_modules` 保持原指针。现象就是 §3.4 那组真机读数的后半段（Step 4 建立 Direct Map 覆盖时读 `memmap` 还正常，到 `vm_handoff::classify` 再读时全部是零长度条目）；零化若更早发生（分类之前），实现侧的增量是：`vm_handoff::classify` 用 `if region.len > 0` 过滤，零条目被静默跳过，于是 free list 变成空记录——第一次物理页分配失败时，现场离"三个切片里有两个没落地"隔着整个分类阶段。
 
@@ -2701,8 +2701,8 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | `pre_init(magic, ebx)` | `prepare_and_enter_kernel_image`（UEFI 两条路径）与 `impl BootShim::prepare_boot`（U-Boot 路径/辅助形态） | 改型 | 六条语句被拆成固件入口与共享 builder |
 | `get_parameters(ebx, cbi)` | `prepare_and_enter_kernel_image` + `ebs_pair::pair_and_classify` + `build_kernel_info` | 改型 | 拷一份引导器结构体 → 调固件接口拿两份内存列表 |
 | `mb_set_param(...)` | [`normalize_param_buf`](os/libs/minix-boot/src/boot_params.rs:fn normalize_param_buf) + [`param_buf`](os/libs/minix-boot/src/kernel_info.rs:param_buf) | 改型 | 统一分词/拒绝/截断规则，ARCH 生成、BOARD 有来源才生成；UEFI 与 DTB 两源共用 |
-| `add_memmap(cbi, addr, len)` | `ebs_pair::pair_and_classify` / `build_memmaps` + [`memmap.rs`](os/kernel/src/memmap.rs) | 改型 | 构建侧改为配对循环分类；内核侧仍按区间记账 |
-| `cut_memmap(cbi, start, end)` | [`fn cut_memmap`](os/kernel/src/memmap.rs:fn cut_memmap)（由 `kmain` A.2 调） | 改型 | 引导侧报告全部 DRAM，切除移到内核侧；第三个参数从"结束地址"改成**长度**（`memmap.rs:fn cut_memmap` 收 `start, len`），与同族的 `add_memmap` 统一——C 里两者不一致，§2.4 那处 `alloc_lowest` 传错参数就出在这个差异上 |
+| `add_memmap(cbi, addr, len)` | `ebs_pair::pair_and_classify` / `build_memmaps`（构建侧）；内核侧扣减为 [`FreeRangeSet`](os/kernel/src/vm_handoff.rs) 的区间集合（D01-F08 起，C 形状账本模块删除） | 改型 | 构建侧改为配对循环分类；内核侧按有序不相交区间集合记账，行为由对拍测试锁等价 |
+| `cut_memmap(cbi, start, end)` | [`FreeRangeSet::cut`](os/kernel/src/vm_handoff.rs)（`classify` 扣减步调用） | 改型 | 引导侧报告全部 DRAM，切除移到内核侧；C 的第三个参数是"结束地址"，Rust 集合的 `cut` 收 `start, len`——C 里 add/cut 参数形不一致（§2.4 那处 `alloc_lowest` 传错参数就出在这个差异上），Rust 侧统一为长度 |
 | `alloc_lowest(cbi, len)` | 当前无对应物；低地址代码的拷入端已有（[`fn install_at`](os/arch/src/x86_64/ap_early_entry.rs:fn install_at)，地址由调用者给） | 暂未移植 | 唯一的消费者是 32 位 AP 启动跳板（SMP 归 16 篇）；`install_at` 的注释写明扫描空闲表找最低区间的动作归 SMP 篇的 `smp_init`，**重做时不得复刻 §2.4 那处"把长度当结束地址"的误用**（这条规则依赖的四个前提与各自的复查判据见 §2.4.1 的前提清单） |
 | `overlaps(mod, n, cmp_mod)` | [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) | 改型 | 检查对象从"模块 + 内核"变成"内核镜像自身的 PT_LOAD 段" |
 | `pg_clear()` | [`X86_64Paging::new_from_page`](os/arch/src/x86_64/paging.rs:X86_64Paging::new_from_page) 的清零 | 改型 | 根页由调用者提供 |
@@ -2731,7 +2731,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | # | 机制（正文位置） | 需要证明什么（可观测、可证伪） | 证据类型 | 覆盖状态 | TODO |
 |---|---|---|---|---|---|
 | M1 | 第一跳设栈与传参（§2.2，C 侧） | 内核入口 esp 指向 `load_stack_start`；`pre_init` 收到 `(magic, ebx)` | 引文对账＋真机 | 引文块逐字对账＋真机链兜底；C 侧无执行断言（不在本仓测试面） | — |
-| M2 | 内存清单的建与裁（§2.4，Rust 等价物） | `add_memmap` 只收页对齐、非零、<4GB 区间；`cut_memmap` 起点向下、终点向上取整 | 宿主测试 | **已覆盖**：[`memmap.rs`](os/kernel/src/memmap.rs) 17 条（含 `test_cut_memmap_alignment_round_down_start` / `round_up_end` / `preserves_total_free_memory` / aarch64 DTB 真实 totalsize 记账） | — |
+| M2 | 内存清单的建与裁（§2.4，Rust 等价物） | `add_memmap` 只收页对齐、非零、<4GB 区间；`cut_memmap` 起点向下、终点向上取整 | 宿主测试 | **已覆盖**：D01-F08 起扣减由 [`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `FreeRangeSet` 承担——行为契约由 9 条行为锁测试 + "与参考区间减法逐页等价"对拍锁定（外向取整、零长跳过、中切分、容量 fail-closed）；旧 `memmap.rs` 17 条随模块删除，其断言被行为锁与对拍覆盖 | — |
 | M3 | 清单先于建表（§1.2/§2.8，Rust 侧） | 正常注册路径下 Step 0/1 不向清单领页（兜底路径除外：`boot_alloc_region()` 为 `None` 时从清单切 256 页，见 §4.1——它发生在建表之前，不违反"清单先于建表"）；清单的动态取用发生在 `pre_init` 等价的 4KB 路径 | 真机 | 真机链覆盖（`kernel: step1+2 mappings ok` 路标） | — |
 | M4 | **深拷先于一切动用空闲清单者**（§4.5 不变量） | 六个入口在 `store_kernel_info` 之前不发生页分配、不读空闲清单；交接分类点读 `KernelInfo` 切片非零 | 真机＋调用序证据 | 宿主测试 `test_store_kernel_info_lands_firmware_slices`（落地区行为）+ 调用序钉 `os/kernel/tests/store_before_alloc_pin.rs`（六入口源码序：三个 `arch_boot`、`arch_boot_resume_high_half`、x86/riscv 的 `resume_after_v1_decode`；store 先于 `arch_boot_impl`/`establish_boot_dm`）。运行期钩不可行：QEMU 测试内核直接调 `arch_boot_impl` 分阶段验证，无法区分生产入口与测试 | TODO-01（已关闭，见 5.3） |
 | M5 | 页表建立与开分页（§2.6 C / §4.6 Rust） | 开分页后的下一条取指有映射（能打印第一个内核路标） | 真机 | 真机链覆盖（当前映射档；2MiB 回退档的真机矩阵未跑，即 TODO-05） | TODO-05（开放，见 5.3） |
@@ -2808,7 +2808,7 @@ os/libs/minix-elf/src/lib.rs                       23
 
 18 + 12 + 6 + 44 + 17 + 15 + 13 = 125（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 5 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair，125 这个读数必须带 `test-all`）；`minix-boot` 的 175 = `kernel_info.rs` 的 14 + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 72 + `handoff_v1.rs` 的 3 + `handoff_v1_write.rs` 的 11 + `handoff_v1_read.rs` 的 22 + `fdt_layout.rs` 的 29 + `lib.rs` 的 2；`minix-elf` 的 23 与实测一致。
 
-推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`memmap.rs`](os/kernel/src/memmap.rs) 17 条、[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 10 条、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 16 条、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 8 条（1 枚落地区行为 + 7 枚超容量负控）。[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零，其单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）；v1 协议的布局门禁由 [`handoff_v1.rs`](os/libs/minix-boot/src/handoff_v1.rs) 的编译期断言与 3 条尺寸/偏移测试覆盖。
+推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 classify/FreeRangeSet 系列（D01-F08 起含 9 条行为锁与对拍；旧 `memmap.rs` 17 条随模块删除）、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 16 条、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 8 条（1 枚落地区行为 + 7 枚超容量负控）。[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零，其单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）；v1 协议的布局门禁由 [`handoff_v1.rs`](os/libs/minix-boot/src/handoff_v1.rs) 的编译期断言与 3 条尺寸/偏移测试覆盖。
 
 列出的测试各自挡的是哪条契约（选列，未逐条穷举）：
 
@@ -3090,7 +3090,7 @@ $ gdb-multiarch image.elf
 - `os/boot-shim/src/{main,lib,loader,uefi_helpers,opensbi_helpers,uboot_main}.rs`
 - `os/boot-shim/riscv64-uboot.ld`
 - `os/libs/minix-boot/src/{kernel_info,boot_shim,handoff_v1,handoff_v1_read,handoff_v1_write,platform}.rs`
-- `os/kernel/src/{lib,boot_alloc,globals,memmap,vm_handoff,misc}.rs`
+- `os/kernel/src/{lib,boot_alloc,globals,vm_handoff,misc}.rs`
 - `os/arch/src/arch/{pt_alloc,paging,paging_ext}.rs`
 - `os/arch/src/x86_64/paging.rs`
 - `os/kernel-image/check-layout.sh`、`os/kernel-image/src/{main,bootface,bootface_a64}.rs`
@@ -3114,14 +3114,14 @@ $ gdb-multiarch image.elf
 | `load_stack` / `load_stack_start` | 引导栈符号（`check-layout.sh` 的 L7） | §2.2 / §5.2.2 |
 | `pre_init` | `prepare_and_enter_kernel_image`（UEFI 两条路径）/ `prepare_boot`（U-Boot 路径） | §2.6 / §3.7 / §4.1–§4.2 / §4.9 |
 | `get_parameters` | `prepare_and_enter_kernel_image` + `ebs_pair` / `build_kernel_info` | §2.3 / §2.4 / §4.2–§4.4 |
-| `add_memmap` / `cut_memmap` | `os/kernel/src/memmap.rs` | §2.4 / §4.9 |
+| `add_memmap` / `cut_memmap` | `os/kernel/src/vm_handoff.rs`（D01-F08 起 `FreeRangeSet`；C 形状账本模块已删除） | §2.4 / §4.9 |
 | `alloc_lowest` | 无对应物（AP 启动归 SMP 篇） | §2.4.1 / §4.9 |
 | `overlaps` | `os/boot-shim/src/loader.rs:fn first_overlapping_pair` | §2.5 / §4.9 |
 | `pg_clear` / `pg_identity` / `pg_mapkernel` / `pg_load` / `vm_enable_paging` | Step 1–3、`new_from_page`、`enable` | §2.6 / §4.6 / §4.9 |
-| `freepde_start` | `free_upper_idx`（`Option<usize>`） | §2.6.3 / §3.9 |
+| `freepde_start` | 字段已退场（D01-F03）；`GET_KINFO` 报告位固定填 0 | §2.6.3 / §3.9 |
 | `alloc_pagetable` | `os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page`（注册式分配器） | §2.6.2 / §3.8 / §4.7 |
 | `pg_alloc_page` | `os/kernel/src/boot_alloc.rs:BootAlloc::alloc` | §2.4.1 / §3.8 |
-| `bootstrap_start` / `bootstrap_len` | 同名字段（恒 `(0, 0)`） | §2.3 / §3.5 / §4.4 |
+| `bootstrap_start` / `bootstrap_len` | 字段已退场（D01-F03；C 侧回收机制照旧） | §2.3 / §3.5 |
 | `mem_high_phys` | 无对应物（Step 1 固定上界） | §1.2 / §2.4 / §3.4 |
 | `kinfo`（全局） | `KernelInfo`（按值交接 + `.bss` 深拷） | §2.3 / §3.4 / §4.5 |
 | `kmain` | `kmain`（高半执行） | §2.2 / §2.8 |

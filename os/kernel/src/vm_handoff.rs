@@ -39,7 +39,7 @@
 
 use crate::boot_alloc::{boot_alloc_region, boot_alloc_used_bytes};
 use crate::globals::SyncUnsafeCell;
-use crate::memmap::{MAXMEMMAP, MemMapEntry, cut_memmap};
+
 use crate::proc::{BOOT_MODULE_PROC_NRS, KERNEL_TASKS};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use minix_arch::DirectMapArch;
@@ -161,7 +161,7 @@ pub fn vm_pmm_free_regions() -> ([MemoryRegion; VM_BOOT_HANDOFF_MAX_REGIONS], us
 ///
 /// The record is what the kernel cut from the memmap; the free list is
 /// what survived (clipped to VM's Direct Map window). The two are disjoint
-/// by construction (`cut_memmap` on the recorded ranges).
+/// by construction (`FreeRangeSet::cut` on the recorded ranges).
 pub struct Classification {
     /// Surviving free ranges, page-aligned, DM-window-clipped.
     pub free_regions: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_REGIONS],
@@ -194,7 +194,7 @@ impl DeductionCollector {
     /// Records one page-rounded deduction range.
     ///
     /// `start` must be page-aligned (every choke-point source is); `len`
-    /// is rounded up to the page the way [`cut_memmap`] rounds its cuts,
+    /// is rounded up to the page the way [`FreeRangeSet::cut`] rounds its cuts,
     /// so the record is exactly the range removed from the memmap.
     fn push(&mut self, start: u64, len: u64) {
         if len == 0 {
@@ -228,28 +228,164 @@ impl DeductionCollector {
 /// region *from* the memmap, and the cut is what keeps it out of VM's free
 /// list. Either way the whole registered range is deducted (kernel-reserved
 /// includes the bump remainder, §6.0-A2 composition table).
+/// Sorted, disjoint, page-aligned set of free physical ranges (D01-F08).
+///
+/// Replaces the C-shaped ledger (`pg_utils.c:86-125` → the deleted
+/// `memmap.rs`: fixed array + zero-length holes + high watermark +
+/// first-empty-slot insert). The only production consumer was
+/// [`classify`]'s one-shot local deduction, so the container artifacts
+/// (holes every consumer had to skip, refill-into-earliest-hole) carried
+/// no semantic weight. Behavior contract kept from the old ledger and
+/// locked by the tests below: cuts round the removed interval outward to
+/// page boundaries (start down, end up), zero-length cuts are no-ops,
+/// and capacity exhaustion is a fail-closed panic.
+pub(crate) struct FreeRangeSet {
+    /// Sorted by `base`, pairwise disjoint, page-aligned half-open ranges.
+    ranges: [MemRange; FREE_SET_CAP],
+    len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct MemRange {
+    base: u64,
+    end: u64,
+}
+
+/// C `MAXMEMMAP` (param.h:13, 40) raised to 128: UEFI firmware maps
+/// routinely exceed 40 entries and truncating them would silently drop
+/// RAM. Capacity divergence from C is input-shaped, not semantic.
+pub(crate) const FREE_SET_CAP: usize = 128;
+
+impl FreeRangeSet {
+    /// Builds the set from a boot report's conventional list. Zero-length
+    /// entries are skipped (old ledger's "hole" inputs); adjacent ranges
+    /// merge — set-equal to the old array shape, fewer entries.
+    pub(crate) fn from_memmap(regions: &[MemoryRegion]) -> Self {
+        let mut set = Self {
+            ranges: [MemRange { base: 0, end: 0 }; FREE_SET_CAP],
+            len: 0,
+        };
+        for region in regions {
+            if region.len == 0 {
+                continue;
+            }
+            set.insert(region.base.0, region.base.0 + region.len as u64);
+        }
+        set
+    }
+
+    /// Inserts one page-aligned range, keeping the sort and merging with
+    /// any overlapping or touching neighbor (append + sort + merge pass —
+    /// n ≤ 128 makes the obvious form the right one).
+    fn insert(&mut self, base: u64, end: u64) {
+        assert!(base < end, "vm_handoff: empty range inserted");
+        assert!(
+            self.len < FREE_SET_CAP,
+            "vm_handoff: free-range set over capacity ({FREE_SET_CAP})"
+        );
+        self.ranges[self.len] = MemRange { base, end };
+        self.len += 1;
+        self.sort_and_merge();
+    }
+
+    /// Sorts by `base` (the list is near-sorted) and merges overlapping or
+    /// touching ranges in place.
+    fn sort_and_merge(&mut self) {
+        for i in 1..self.len {
+            let key = self.ranges[i];
+            let mut j = i;
+            while j > 0 && self.ranges[j - 1].base > key.base {
+                self.ranges[j] = self.ranges[j - 1];
+                j -= 1;
+            }
+            self.ranges[j] = key;
+        }
+        let mut w = 0;
+        for r in 1..self.len {
+            if self.ranges[w].end >= self.ranges[r].base {
+                self.ranges[w].end = self.ranges[w].end.max(self.ranges[r].end);
+            } else {
+                w += 1;
+                self.ranges[w] = self.ranges[r];
+            }
+        }
+        self.len = w + 1;
+    }
+
+    /// Removes `[start, start + size)` from the set, rounding the removed
+    /// interval outward to page boundaries (old `cut_memmap` contract:
+    /// start down, end up). Zero-length is a no-op.
+    pub(crate) fn cut(&mut self, start: u64, size: u64) {
+        if size == 0 {
+            return;
+        }
+        let lo = start & !(PAGE_SIZE - 1);
+        let hi = (start + size).div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        assert!(hi > lo, "vm_handoff: cut range rounds to empty");
+        let mut i = 0;
+        while i < self.len {
+            let r = self.ranges[i];
+            if r.end <= lo || r.base >= hi {
+                i += 1;
+                continue;
+            }
+            // Overlap: [max(r.base, lo), min(r.end, hi)) is removed.
+            let keep_left = r.base < lo;
+            let keep_right = r.end > hi;
+            match (keep_left, keep_right) {
+                (false, false) => {
+                    // Whole range consumed.
+                    for j in i..self.len - 1 {
+                        self.ranges[j] = self.ranges[j + 1];
+                    }
+                    self.len -= 1;
+                    // Do not advance: the shifted tail needs re-examining.
+                }
+                (true, false) => {
+                    self.ranges[i].end = lo;
+                    i += 1;
+                }
+                (false, true) => {
+                    self.ranges[i].base = hi;
+                    i += 1;
+                }
+                (true, true) => {
+                    // Split: right half becomes a new range after i.
+                    let right = MemRange { base: hi, end: r.end };
+                    assert!(
+                        self.len < FREE_SET_CAP,
+                        "vm_handoff: free-range set over capacity ({FREE_SET_CAP})"
+                    );
+                    for j in (i + 1..self.len).rev() {
+                        self.ranges[j + 1] = self.ranges[j];
+                    }
+                    self.ranges[i + 1] = right;
+                    self.len += 1;
+                    self.ranges[i].end = lo;
+                    i += 2;
+                }
+            }
+        }
+    }
+
+    /// Page-rounded total (forensics/metrics).
+    pub(crate) fn total_pages(&self) -> u64 {
+        self.ranges[..self.len]
+            .iter()
+            .map(|r| (r.end - r.base) / PAGE_SIZE)
+            .sum()
+    }
+}
+
 pub fn classify(
     kernel_info: &KernelInfo,
     root_paddr: PhysBytes,
     vm_alloc: &VmBootAllocator,
     vm_module_idx: usize,
 ) -> Classification {
-    // Snapshot the full memmap into a local working copy (C: pre_init
-    // operates on kinfo's own memmap copy). MAXMEMMAP bounds it; the
-    // boot-shim cannot report more.
-    let mut mmap = [MemMapEntry::default(); MAXMEMMAP];
-    for (i, region) in kernel_info.memmap().iter().enumerate() {
-        assert!(
-            i < MAXMEMMAP,
-            "vm_handoff: boot-shim memmap exceeds MAXMEMMAP"
-        );
-        if region.len > 0 {
-            mmap[i] = MemMapEntry {
-                base: region.base.0,
-                length: region.len as u64,
-            };
-        }
-    }
+    // The free set starts as the boot report's conventional list (D01-F08:
+    // sorted disjoint page-aligned ranges; zero-length entries skipped).
+    let mut free = FreeRangeSet::from_memmap(kernel_info.memmap());
 
     // ── Build the LiveBootstrap(t_classify) record ──
     let mut record = DeductionCollector::new();
@@ -308,8 +444,7 @@ pub fn classify(
     //    `VmBootRegion::select_multi` — frame.rs invariant 1) ──
     for range in &record.ranges[..record.count] {
         // Every recorded range is page-aligned by construction.
-        cut_memmap(&mut mmap, range.base, range.size)
-            .expect("vm_handoff: cut_memmap failed — memmap slot exhaustion");
+        free.cut(range.base, range.size);
     }
 
     // ── Clip survivors to VM's Direct Map window ──
@@ -319,14 +454,9 @@ pub fn classify(
     let window_end = minix_arch::CurrentDirectMap::VM_DIRECT_MAP_SIZE;
     let mut free_regions = [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_REGIONS];
     let mut free_count = 0usize;
-    for entry in mmap.iter().take(MAXMEMMAP) {
-        if entry.is_empty() {
-            continue;
-        }
-        let base = entry.base;
-        let end = entry.base.saturating_add(entry.length);
-        let clipped_end = end.min(window_end);
-        if base >= clipped_end {
+    for r in free.ranges.iter().take(free.len) {
+        let clipped_end = r.end.min(window_end);
+        if r.base >= clipped_end {
             continue; // entirely outside the window
         }
         assert!(
@@ -334,8 +464,8 @@ pub fn classify(
             "vm_handoff: free-region list overflow — raise VM_BOOT_HANDOFF_MAX_REGIONS"
         );
         free_regions[free_count] = HandoffMemRegion {
-            base,
-            size: clipped_end - base,
+            base: r.base,
+            size: clipped_end - r.base,
         };
         free_count += 1;
     }
@@ -594,16 +724,7 @@ pub(crate) fn classify_regions(
     used_suffixes: &[(u64, u64)],
     reserved_modules: &[(u64, u64)],
 ) -> Classification {
-    let mut mmap = [MemMapEntry::default(); MAXMEMMAP];
-    for (i, region) in memmap.iter().enumerate() {
-        assert!(i < MAXMEMMAP);
-        if region.len > 0 {
-            mmap[i] = MemMapEntry {
-                base: region.base.0,
-                length: region.len as u64,
-            };
-        }
-    }
+    let mut free = FreeRangeSet::from_memmap(memmap);
 
     let mut record = DeductionCollector::new();
     record.push(root_paddr.0, PAGE_SIZE);
@@ -620,26 +741,21 @@ pub(crate) fn classify_regions(
     }
 
     for range in &record.ranges[..record.count] {
-        cut_memmap(&mut mmap, range.base, range.size).expect("vm_handoff test: cut_memmap failed");
+        free.cut(range.base, range.size);
     }
 
     let window_end = minix_arch::CurrentDirectMap::VM_DIRECT_MAP_SIZE;
     let mut free_regions = [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_REGIONS];
     let mut free_count = 0usize;
-    for entry in mmap.iter().take(MAXMEMMAP) {
-        if entry.is_empty() {
-            continue;
-        }
-        let base = entry.base;
-        let end = entry.base.saturating_add(entry.length);
-        let clipped_end = end.min(window_end);
-        if base >= clipped_end {
+    for r in free.ranges.iter().take(free.len) {
+        let clipped_end = r.end.min(window_end);
+        if r.base >= clipped_end {
             continue;
         }
         assert!(free_count < VM_BOOT_HANDOFF_MAX_REGIONS);
         free_regions[free_count] = HandoffMemRegion {
-            base,
-            size: clipped_end - base,
+            base: r.base,
+            size: clipped_end - r.base,
         };
         free_count += 1;
     }
@@ -962,4 +1078,145 @@ mod tests {
             previous_end = base + size;
         }
     }
+
+    // ── FreeRangeSet behavior lock (D01-F08) ────────────────────────────
+    // The old C-shaped ledger's observable contract, restated on the set:
+    // cuts round outward to page boundaries, zero-length is a no-op, the
+    // free output is a sorted disjoint page-aligned list.
+
+    fn set(regions: &[(u64, u64)]) -> FreeRangeSet {
+        let owned: Vec<MemoryRegion> = regions
+            .iter()
+            .map(|&(b, l)| MemoryRegion { base: PhysBytes(b), len: l as usize })
+            .collect();
+        FreeRangeSet::from_memmap(&owned)
+    }
+
+    fn ranges_of(s: &FreeRangeSet) -> Vec<(u64, u64)> {
+        s.ranges[..s.len].iter().map(|r| (r.base, r.end)).collect()
+    }
+
+    /// Reference model: page-rounded interval subtraction on a plain list.
+    /// The set must be page-equal to this on every input below.
+    fn reference_subtract(regions: &[(u64, u64)], cuts: &[(u64, u64)]) -> Vec<(u64, u64)> {
+        let page = PAGE_SIZE;
+        let lo_cut = |(b, l): (u64, u64)| (b & !(page - 1), (b + l).div_ceil(page) * page);
+        let mut pieces: Vec<(u64, u64)> =
+            regions.iter().map(|&(b, l)| (b, b + l)).collect();
+        for &c in cuts {
+            let (lo, hi) = lo_cut(c);
+            let mut next = Vec::new();
+            for (b, e) in pieces {
+                if e <= lo || b >= hi {
+                    next.push((b, e));
+                } else {
+                    if b < lo {
+                        next.push((b, lo));
+                    }
+                    if e > hi {
+                        next.push((hi, e));
+                    }
+                }
+            }
+            pieces = next;
+        }
+        pieces.sort();
+        pieces
+    }
+
+    fn assert_page_equal(regions: &[(u64, u64)], cuts: &[(u64, u64)]) {
+        let mut s = set(regions);
+        for &(b, l) in cuts {
+            s.cut(b, l);
+        }
+        let got = ranges_of(&s);
+        let want = reference_subtract(regions, cuts);
+        assert_eq!(got, want, "set diverged from reference: regions={regions:?} cuts={cuts:?}");
+    }
+
+    #[test]
+    fn free_set_zero_length_inputs_are_skipped() {
+        let s = set(&[(0x1000, 0x2000), (0x0, 0x0), (0x8000, 0x1000)]);
+        assert_eq!(ranges_of(&s), vec![(0x1000, 0x3000), (0x8000, 0x9000)]);
+    }
+
+    #[test]
+    fn free_set_adjacent_inputs_merge() {
+        let s = set(&[(0x1000, 0x1000), (0x2000, 0x1000)]);
+        assert_eq!(ranges_of(&s), vec![(0x1000, 0x3000)]);
+    }
+
+    #[test]
+    fn free_set_cut_rounds_outward() {
+        // Old contract: cut start rounds down, end rounds up.
+        let mut s = set(&[(0x1000, 0x4000)]);
+        s.cut(0x1800, 0x1000); // removes [0x1000, 0x3000) after rounding
+        assert_eq!(ranges_of(&s), vec![(0x3000, 0x5000)]);
+    }
+
+    #[test]
+    fn free_set_cut_splits_middle() {
+        let mut s = set(&[(0x1000, 0x8000)]);
+        s.cut(0x3000, 0x1000);
+        assert_eq!(ranges_of(&s), vec![(0x1000, 0x3000), (0x4000, 0x9000)]);
+    }
+
+    #[test]
+    fn free_set_zero_length_cut_is_noop() {
+        let mut s = set(&[(0x1000, 0x2000)]);
+        s.cut(0x1000, 0);
+        assert_eq!(ranges_of(&s), vec![(0x1000, 0x3000)]);
+    }
+
+    #[test]
+    fn free_set_disjoint_cut_is_noop() {
+        let mut s = set(&[(0x5000, 0x1000)]);
+        s.cut(0x1000, 0x1000);
+        assert_eq!(ranges_of(&s), vec![(0x5000, 0x6000)]);
+    }
+
+    #[test]
+    fn free_set_unaligned_input_region_keeps_shape_until_cut() {
+        // The old ledger stored unaligned input as-is (consumers clipped);
+        // the set keeps the same rule — rounding happens at cut time.
+        let s = set(&[(0x1800, 0x800)]);
+        assert_eq!(ranges_of(&s), vec![(0x1800, 0x2000)]);
+    }
+
+    /// Page-equivalence battery (D01-F08 acceptance): the set is page-equal
+    /// to reference interval subtraction on mixed overlapping cuts, the
+    /// shape that the old add/cut tests pinned.
+    #[test]
+    fn free_set_page_equivalent_to_reference_subtraction() {
+        assert_page_equal(
+            &[(0x100000, 0x1000000), (0x2000000, 0x800000)],
+            &[
+                (0x200000, 0x200000),   // kernel image
+                (0x100000, 0x1000),     // root page
+                (0x300000, 0x400000),   // bump
+                (0x180000, 0x123000),   // unaligned mid cut
+                (0x2500000, 0x40000),   // module over boundary
+                (0x2800000, 0x100000),  // full-removal cut
+                (0x2900000, 0x40000),   // already-removed region
+            ],
+        );
+        assert_page_equal(
+            &[(0x1000, 0x3000), (0x8000, 0x1000)],
+            &[(0x2000, 0x2000)], // cut spans two input regions
+        );
+        assert_page_equal(&[(0x1000, 0x1000)], &[(0x0, 0x10000)]); // swallow all
+        assert_page_equal(&[(0x1000, 0x2000)], &[]); // no cuts
+    }
+
+    #[test]
+    #[should_panic(expected = "free-range set over capacity")]
+    fn free_set_capacity_fails_closed() {
+        let mut s = set(&[]);
+        // 128 disjoint inserts fill the cap; the 129th must panic.
+        for i in 0..FREE_SET_CAP {
+            s.insert((i as u64 + 1) * PAGE_SIZE * 2, (i as u64 + 1) * PAGE_SIZE * 2 + PAGE_SIZE);
+        }
+        s.insert(0, PAGE_SIZE);
+    }
+
 }
