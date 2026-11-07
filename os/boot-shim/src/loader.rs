@@ -19,7 +19,7 @@
 //! differs.
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use minix_boot::{BootModule, NR_BOOT_MODULES};
 use minix_types::{PhysBytes, VirBytes};
@@ -370,6 +370,7 @@ fn build_module_path(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use super::*;
     use minix_elf::{ELFCLASS64, ELFDATA2LSB, ET_EXEC, PT_LOAD};
 

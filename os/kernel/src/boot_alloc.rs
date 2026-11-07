@@ -188,7 +188,8 @@ pub fn boot_alloc_next() -> u64 {
 
 /// Resume the global boot allocator from a cross-image handoff.
 ///
-/// Aarch64-only entry used by the high-half kernel image to continue the bump
+/// Entry used by the high-half kernel image (all three cross-image
+/// architectures, via the shared `arch_boot_resume_v1`) to continue the bump
 /// region the boot-shim left off in. Must be called before the image's first
 /// `map`/`map_huge`.
 pub fn resume_boot_pt_alloc(base: u64, next: u64, end: u64) {

@@ -1,8 +1,8 @@
 //! BootShim trait — firmware-agnostic boot preparation interface.
 //!
-//! Implemented by firmware-specific modules (UEFI, OpenSBI, ...).
-//! The kernel only depends on this trait — it does not know whether
-//! the boot info came from UEFI, OpenSBI, or any other firmware.
+//! Implemented by firmware-specific modules (UEFI aux form, U-Boot
+//! production leg). The kernel does **not** depend on this trait — its
+//! entry surface is `arch_boot` / `enter_kernel_image_v1` (doc 01 §3.2).
 
 use minix_types::PhysBytes;
 use crate::kernel_info::KernelInfo;

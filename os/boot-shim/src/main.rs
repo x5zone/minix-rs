@@ -34,7 +34,8 @@ static ALLOCATOR: uefi::allocator::Allocator = uefi::allocator::Allocator;
 
 #[entry]
 fn main() -> Status {
-    // 1. UEFI boot preparation via BootShim trait
+    // 1. UEFI boot preparation via `prepare_and_enter_kernel_image`
+    //    (not the BootShim trait — see the module docs)
     //    Internally: GetMemoryMap → AllocatePages → load kernel ELF from ESP
     //    → load boot modules → build KernelInfo → ExitBootServices
     // 1024 pages (4 MiB): the identity mapping, the kernel high mapping,
@@ -63,8 +64,10 @@ fn main() -> Status {
     // arena (address space, five payloads, pairing loop) and absolutely
     // jumps into the standalone high-half `kernel.elf` `_start`. aarch64
     // passes the arena in `x0`; x86-64 passes it in `rbx` (the image
-    // trampoline moves it to `rdi`). riscv64 keeps its direct-boot face
-    // until an independent shim leg is wired.
+    // trampoline moves it to `rdi`). riscv64's independent shim leg
+    // (riscv64-uboot-shim + fw-riscv64-uboot receiver) is wired separately;
+    // this binary stays UEFI-only (its riscv64 UEFI-shim form remains
+    // unwired — the UEFI targets do not include riscv64).
     boot_shim::uefi_helpers::prepare_and_enter_kernel_image(1024)
 }
 

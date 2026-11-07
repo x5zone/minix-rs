@@ -230,11 +230,12 @@ impl KernelInfo {
             "KernelInfo: memmap must not be empty (no free memory?)"
         );
 
-        // Ordered & pairwise disjoint (D01-R1 D2-05): firmware contracts
-        // (UEFI GetMemoryMap conventional descriptors, DTB /memory reg)
-        // deliver sorted non-overlapping ranges — a producer regression
-        // that violates this fails fast here instead of being silently
-        // absorbed by one consumer and not another.
+        // Ordered & pairwise disjoint (D01-R1 D2-05). The input assumption
+        // is explicit (D01-R4 D2-03): UEFI GetMemoryMap publishes descriptors
+        // in address order; DTB /memory's ordering is *not* spec-guaranteed,
+        // so this repository accepts only the sorted subset — an unordered
+        // (legal but pathological) DTB fails closed here rather than being
+        // silently absorbed by one consumer and not another.
         for (list_name, list) in [("memmap", self.memmap), ("reserved_regions", self.reserved_regions)] {
             for w in list.windows(2) {
                 assert!(
