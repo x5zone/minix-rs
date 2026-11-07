@@ -2127,7 +2127,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 | 1 | 分配根页表页与 bump 区，`init_boot_pt_alloc` | 必须在 DM 可达上界之下；bump 池同时给 shim 建根与接收侧续用 |
 | 2 | 加载 `kernel.elf` 与 12 个启动模块 | 必须在 EBS 之前（依赖 `SimpleFileSystem`） |
 | 3 | 定位平台描述符来源，归一化 `param_buf` | 必须在 EBS 之前（依赖 Configuration Table 与 `LoadOptions`） |
-| 4 | 分配九页 arena（`bump_alloc_pages` 以 `bootstrap_alloc_limit()`——无参，返回 DM 可达上界——为界，`LOADER_DATA`） | 整段落在恒等/DM 可达界之下；接收方经恒等窗口读它 |
+| 4 | 分配九页 arena（`alloc_arena()` 经 UEFI `boot::allocate_pages(MaxAddress(bootstrap_alloc_limit()))`——该上界为无参函数返回的 DM 可达界；`bump_alloc_pages` 是 OpenSBI 侧的另一个分配器，勿混），`LOADER_DATA` | 整段落在恒等/DM 可达界之下；接收方经恒等窗口读它 |
 | 5 | 写信封、模块、平台源、参数（非内存图载荷） | arena 已零化；信封的标量字段此时已定稿 |
 | 6 | 分配 `GetMemoryMap` 缓冲，进入配对循环 | 循环内先 `GetMemoryMap`，再分类进 arena 的两个内存图分区，最后用同一 MapKey 调 raw `ExitBootServices` |
 | 7 | 复核 root/bump/arena 都不在 conventional 列表里 | 失败即裸串口打印后停机；此时已无 Boot Services 可退 |
@@ -2752,7 +2752,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | # | 机制（正文位置） | 需要证明什么（可观测、可证伪） | 证据类型 | 覆盖状态 | TODO |
 |---|---|---|---|---|---|
 | M1 | 第一跳设栈与传参（§2.2，C 侧） | 内核入口 esp 指向 `load_stack_start`；`pre_init` 收到 `(magic, ebx)` | 引文对账＋真机 | 引文块逐字对账＋真机链兜底；C 侧无执行断言（不在本仓测试面） | — |
-| M2 | 内存清单的建与裁（§2.4，Rust 等价物） | `add_memmap` 只收页对齐、非零、<4GB 区间；`cut_memmap` 起点向下、终点向上取整 | 宿主测试 | **已覆盖**：D01-F08 起扣减由 [`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `FreeRangeSet` 承担——行为契约由 9 条行为锁测试 + "与参考区间减法逐页等价"对拍锁定（外向取整、零长跳过、中切分、容量 fail-closed）；旧 `memmap.rs` 17 条随模块删除，其断言被行为锁与对拍覆盖 | — |
+| M2 | 内存清单的建与裁（§2.4，Rust 等价物） | `add_memmap` 只收页对齐、非零、<4GB 区间；`cut_memmap` 起点向下、终点向上取整 | 宿主测试 | **已覆盖**：D01-F08 起扣减由 [`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `FreeRangeSet` 承担——行为契约由 9 条 vm_handoff 侧测试（行为锁 + "与参考区间减法逐页等价"对拍，对拍即其中一条）锁定（外向取整、零长跳过、中切分、容量 fail-closed）；旧 `memmap.rs` 17 条随模块删除，其断言被行为锁与对拍覆盖 | — |
 | M3 | 清单先于建表（§1.2/§2.8，Rust 侧） | 正常注册路径下 Step 0/1 不向清单领页（兜底路径除外：`boot_alloc_region()` 为 `None` 时从清单切 256 页，见 §4.1——它发生在建表之前，不违反"清单先于建表"）；清单的动态取用发生在 `pre_init` 等价的 4KB 路径 | 真机 | 真机链覆盖（`kernel: step1+2 mappings ok` 路标） | — |
 | M4 | **深拷先于一切动用空闲清单者**（§4.5 不变量） | 六个入口在 `store_kernel_info` 之前不发生页分配、不读空闲清单；交接分类点读 `KernelInfo` 切片非零 | 真机＋调用序证据 | 宿主测试 `test_store_kernel_info_lands_firmware_slices`（落地区行为）+ 调用序钉 `os/kernel/tests/store_before_alloc_pin.rs`（D01-R1 D2-07 合并后钉在两个泛型体上：`arch_boot_finish` 与 `resume_additive` 的源码序 store 先于建表/establish；三个入口委托壳钉"必须经泛型体"；R2 补：`arch_boot_resume_v1` 的三步序 validate < `resume_boot_pt_alloc` < 委托亦入钉——此前该次序无钉，resume 腿的兜底死代码属性靠的是无钉守卫）。运行期钩不可行：QEMU 测试内核直接调 `arch_boot_impl` 分阶段验证，无法区分生产入口与测试 | TODO-01（已关闭，见 5.3） |
 | M5 | 页表建立与开分页（§2.6 C / §4.6 Rust） | 开分页后的下一条取指有映射（能打印第一个内核路标） | 真机 | 真机链覆盖（当前映射档；2MiB 回退档的真机矩阵未跑，即 TODO-05） | TODO-05（开放，见 5.3） |
@@ -3032,7 +3032,7 @@ fn panic(info: &PanicInfo) -> ! {
 | bump 区间耗尽 | `BootAlloc::alloc` 返回 `AllocationFailed` | 内核侧 `map_huge`/`boot_pt_alloc` 失败，或 `enter_kernel_image_v1: bump region not registered` | 复算 `prepare_and_enter_kernel_image(N)` 的页数预算与镜像规模 |
 | v1 信封/载荷无效 | `arch_boot_resume_v1` 的 `decode_*` | `kernel-image: handoff v1 envelope invalid: <变体>`（或 memmap/reserved/modules/platform/param 对应行） | 核对 shim 的序列化顺序与描述符长度；先看 `[raw] arena=… conv=… res=…` 是否已打印 |
 | ~~`bootstrap_len` 非零~~ | （D01-F03 起字段与断言均已删除，该失败模式不可复发） | 历史消息曾是 `bootstrap_len must be 0 (Rust port has no unpaged section), got N`——现行代码 grep 不到它，排障不要按这条找 | — |
-| boot-shim 自身镜像被装载在 4GiB 之上 | 固件装载器（UEFI 无此保证：规范不约束 loader 镜像的物理落点） | 恒等映射只铺低 4GiB（`IDENTITY_MAP_END`），`bootstrap_alloc_limit()` 只守 root/bump/arena 三段——boot-shim 自己的代码与栈若在 4GiB 之上，开分页后的第一条冷取指就落在无映射区 | 复核 OVMF 的实际装载地址（本仓门链上恒低于 4GiB）；这是 §4.6 Step 1 固定上界隐含的前提，无代码守护 |
+| boot-shim 自身镜像被装载在 4GiB 之上 | 固件装载器（UEFI 无此保证：规范不约束 loader 镜像的物理落点） | 恒等映射只铺低 4GiB（`IDENTITY_MAP_END`），`bootstrap_alloc_limit()` 只守 root/bump/arena/模块页四段（`alloc_module_pages` 同以该界分配并带端点复核）——boot-shim 自己的代码与栈若在 4GiB 之上，开分页后的第一条冷取指就落在无映射区 | 复核 OVMF 的实际装载地址（本仓门链上恒低于 4GiB）；这是 §4.6 Step 1 固定上界隐含的前提，无代码守护 |
 | 快照位置错（自举页被报成可用） | `assert_bootstrap_outside_memmap` | `conventional memmap [a,b) overlaps bootstrap allocation [c,d)` | 核对快照调用点在两次分配之后 |
 | 大页阶梯无档可用 | 规划层 `plan_boot_pages`（两个调用点：直核 `arch_boot` 家族与 UEFI 发送侧 `enter_kernel_image_v1`） | 两条消息前缀对应两腿：`arch_boot: page-size policy: …`（直核）/ `enter_kernel_image_v1: page-size policy: …`（UEFI 发送）；消息体同为 `no kernel page size satisfies the layout` | 跑 `check-layout.sh` 的 L3/L4/L5 |
 | 页表切换后取指故障 | `Paging::enable` 之后第一条指令 | QEMU `-d int` 日志里的异常记录；`CR2`/`EPC` 指向当前指令 | 核对恒等映射范围是否覆盖该地址（§4.6） |

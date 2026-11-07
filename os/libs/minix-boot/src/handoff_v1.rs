@@ -379,8 +379,8 @@ pub const WIRE_STARTUP_END: usize =
 
 /// Whole-arena capacity: 9 pages (36 KiB) — envelope + wire + semantic
 /// partitions up to `SEMANTIC_END`, the 256-slot memory-source partition,
-/// and the 16-slot startup-object partition; 384 bytes of design spare
-/// remain after `WIRE_STARTUP_END`.
+/// and the 20-slot startup-object partition; 96 bytes of design spare
+/// remain after `WIRE_STARTUP_END` (36864 − 36768).
 pub const ARENA_CAP: usize = 9 * 4096;
 
 // ── layout gate ──────────────────────────────────────────────────────────
