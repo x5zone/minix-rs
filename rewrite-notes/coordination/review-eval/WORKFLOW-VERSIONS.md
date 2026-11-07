@@ -11,6 +11,12 @@
 | V1 | 2026-11-07 | 建立外层循环脚手架：`review-panel.md`、`review-evals.md`、`review-loop` 技能、`eval-trace-check.py`、`trait-audit.py`、固定语料、盲区账本、冻结决策账本、八个对抗样本；修正 `check-review-rules.sh` 的 `grep -c` 零命中中断与 `diff-trae-skills.sh` 漏认 `review-loop` 两处工具缺口 | W-6、W-16、`prompt/code-review-subagent.md:4`（设计死代码）、`69-75`（冷读）、`484-498`（范围纪律）；DOC-ITER 台账的 14 篇引文事故 | 无（V1 只搭脚手架，不删除旧装置） | 四门全绿（见第四节） | 生效 |
 | V2 | 2026-11-07 | 晋升 C-20 轨迹门 v2 与 C-23 禁止 follow-up 大桶：无发现面板必须显式豁免、P-REFUTE 主张入附加表、`dup-of` 合并；`eval-trace-check.py` 增加 `panel-exemption` 检查 | D02/D03 meta-review：B-17 轨迹门 WARN 仍 PASS、B-18 跨角色重复无归并、D03-F10 把 36 条读者项压成一行 | C-20 替代 V1 的“WARN 可接受”；C-23 替代“follow-up 大桶”实践 | 待跑 | 生效 |
 
+### V2 执行状态（D04 复核）
+
+- C-20 的 `panel-exemption` 已落地（D01–D04 轨迹门均通过）；`dup-of` 合并与 P-REFUTE 映射校验尚未工具化（B-23/B-24），V2.1 处理。
+- C-23 规则已写，但 D04 的 `D04-F11..F14` 仍是分组大桶；V2 记录不宣称“已完全落地”，V2.1 要拆到逐条。
+- 下一轮关联代码基线用 53（D04 修复后 doc-code-map 计数），不再用 51。
+
 ## 二、候选规则登记
 
 候选只登记、不生效；晋升需要版本边界与用户裁决。候选编号与版本表分开，避免把“想法”误读成“规则”。
@@ -84,6 +90,7 @@
   - C-24 P1 文档侧声明同轮降级：代码转出时，文档句必须同轮改。
   - C-25 L4.5 修复复验：每条 ① 台账列出发现点名的全部位置，修完逐处 grep 回读；缺一处降级（fix-scope = 已改位置数 / 点名位置数）。
   - C-26 引文归属核对：文档修正若依赖另一份注释/载体，必须把该注释列入本轮 diff 或显式转出。
+  - C-27 P-REFUTE 映射校验：附加表每行必须与 `refute.md` 总表的 claim ID/结果/分级逐字一致，轨迹门校验。
 - V1 继续生效到 D03 边界；D02 的 design-debt 与 teaching-debt 不因升版候选而关闭。
 
 ## 五、回退记录
