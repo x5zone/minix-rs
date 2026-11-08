@@ -767,3 +767,37 @@
 ### §3 剩余欠账
 
 - 13 行 = 4 个唯一 DESIGN 项（02 BootReport 跨 6 crate；04 arena 双写；05 bump 分区设计；08 FileLoader borrow）+ 1 条相邻（02 篇未生成）。文档类可修项已清零。
+
+## R18 实施批（非面板；全部裁决项落码）
+
+> 依据：`DECISIONS-PENDING-R18.md` §14.5 九步。R18 不启动面板（P-3：实施 → 固定基线 → 停止，R17-panel 待用户明确指示）。本节记录实施与回归，不产生新的面板发现。
+
+### §0 基线
+
+- 起点：`dd46841a2`（R17 收口后）；文档 3292 行、sha256 `c1b7c86c…`；工作树含用户扩展的 `DECISIONS-PENDING-R18.md`。
+- 范围：D-1…D-8、P-1/P-2 的代码与流程装置；文档同步 `01-boot-shim-bootstrap.md`；不启动新一轮面板。
+
+### §1 处置（按九步）
+
+1. **D-6**：删除 `boot_validate_and_prepare` 的 memmap 兜底；`require_boot_region` 未注册即 panic；正负控 2 条。
+2. **D-3**：`minix_boot::BumpRegion`（5 测试）；U-Boot 池原子游标 + 编译期分区断言；`prepare_boot` 运行期断言 root/PT 子区间次序；`BootAlloc` 复用 `is_consistent`。
+3. **D-7/D-8**：`source_destination_overlap_stops_before_any_segment_write`；R7-FU-02→F-R16-01、R7-FU-03 归档。
+4. **P-1/P-2**：`review-evals.md` §3.5 八字段判决账 + §3.6 结构/链接门；`tools/doc-structure-check.py`（8 项自测）+ CI 接线；`DECISIONS.md` 落 R18 十一行。
+5. **D-1/D-2/D-4**：`BootStorage`/`BootReport<'a>`（5 测试）；UEFI 腿 storage 化；wire v9、语义分区删除、arena 8 页；`FileBytes<'a>` 两条固件实现。
+6. **D-5**：`arch_boot_resume_v1` 生命周期合同；`decoded_map_survives_arena_poison_and_reissues_the_arena_frames`；`load_kernel_with_loader_gated` + `KERNEL_MAX_LMA_END` 编译期断言。
+7. 全量宿主测试、三架构构建、三个 QEMU 门（见 §2）。
+8. 固定提交 `10ecd8ef4`；文档版本/测试基线同步（本提交）。
+9. 停止：不进入 R17-panel。
+
+### §2 复验读数
+
+- 宿主：`minix-boot` 184；`boot-shim --features test-all` 135 + `ebs_boundary_audit` 2；`minix-kernel --features mock` 860 + 8 ignored（合计 868）；`cargo build --workspace` 绿。
+- 三架构：`kernel-image` riscv64 直核/ U-Boot 接收、aarch64 直核、`boot-shim` riscv64 U-Boot 构建绿。
+- QEMU：`test-shim-bootmarks-x86.sh` PASS；`test-shim-bootmarks-aarch64.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS。
+- 文档门：anchor 108/108、style 0 error、ref 通过、承载门通过、code-map 46/46、结构/链接门 0 问题。
+- 规则门：`check-review-rules` / `lint-review-rules` / `generate-derived-skills --check` / `diff-trae-skills --only-diff` 全绿。
+
+### §3 剩余欠账
+
+- `OPEN-DEBT.md` 2 行：`R14/READER-A-16`（相邻，02 篇未生成）与 `F-R18-01`（D-1 第二阶段：U-Boot 腿 storage 迁移，截止 code-excellence 下一批）。
+- 本篇状态：**NOT CONVERGED（无新一轮面板）**；基线已封存，等待用户指示是否启动 R17-panel。
