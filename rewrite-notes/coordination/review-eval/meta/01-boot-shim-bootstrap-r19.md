@@ -16,11 +16,19 @@
 
 进步在产出层：R19 用四条独立冷读抓到 R18 修复批自己写进去的槽号算术错误（`961+k-1` → 应为 `961+k`），抓到 R18 接收侧复核的 release 回绕（D2-11）并落了 `checked_add` 与两条负控；面板误报率从 R18 的约 10.5% 降到约 1%；`BASELINE.txt` 这次与最新 fix head 逐项吻合（R18 meta 残留项已消）；六门、`minix-boot` 188、`boot-shim --lib` 135、`ebs_boundary_audit` 4 均可重放，逐文件计数闭合。
 
-不通过的原因在装置与记账层：
+以下第一至九节是**初次评审（`a140bb6a0` 时点）的原始读数**，保留不改。`7dbd07f6` 后的复核读数与结论变化见末尾“复核后记（2026-11-09）”。
 
-1. **删除探针只有 2/3 转红。** 删 R19 台账表 FAIL、改 R19 指标 FAIL，但**删 R19 整段 loop 仍 PASS**（`check_loop_sections` 在找不到 `## …R19…` 标题时静默退回全文匹配）。`BLIND-SPOTS.md` 把 B-51 标成 `CLOSED`，与实测不符。
-2. **指标分档不可复算。** 总 80 自洽，但台账实际给出 ① 13 / ③ 14 / ④ 53；`metrics.md` 与 `loop.md §3/§6` 写 ① 13 / ③ 13 / ④ 54（`READER-B-12` 台账记 ③，汇总却把它算进“READER-B 19”的 ④）。
-3. **`READER-A-09` 未修却按已修计 ④。** §6.1 的复算命令仍只扫 `os/boot-shim/src/main.rs` 与 `uefi_helpers.rs`，表里却有 `os/kernel/src/lib.rs` 与 `kernel-image/src/main.rs` 的行；台账 `READER-A-01..20` 一行 19 条处置里没有 A-09，也没有把它记 ③。
+初次评审给出的三条不通过理由，`7dbd07f6` 已修掉前两条与第三条的主体：
+
+1. **删除探针只有 2/3 转红**（初评）→ 已修：删 R19 loop 段现报 `FAIL loop-sections`；三组删除/篡改探针全部 FAIL。
+2. **指标分档不可复算**（初评）→ 已修：R19 台账与 `metrics.md` 现在都给出 ① 13 / ② 0 / ③ 14 / ④ 53 / ⑤ 0 = 80。
+3. **`READER-A-09` 未修**（初评）→ 已修：§6.1 复算命令补了 `os/kernel/src/lib.rs`、`os/kernel-image/src/main.rs`、`os/kernel-image/src/bootface*.rs`。
+
+复核仍判 `NOT PASS`，但阻断项换成一条 `7dbd07f6` 新引入的旁账错误：
+
+- **R18 台账的 READER-B 范围被改错。** 该提交把 R18 段的 `READER-B-01..20` 改成 `READER-B-01..11、READER-B-13..20`，排掉的是 `READER-B-12`；但 R18 的 ③ 是 `READER-B-15`（`defect-ledger.md:1324`）。结果 R18 面板的 B-12 失去处置行，B-15 仍在 ④ 范围内由单行 ③ 精化覆盖，R18 台账唯一 ID 从 20 条降到 19 条（分段展开 97 ≠ metrics 的 98）。这条改动是把 R19 的“排除 B-12”误用到 R18 段；R19 段本身没有范围行，B-12 已是单独 ③，不需要动。
+
+另有若干 P3 残留（`loop.md §3/§7/§8` 计数与状态未同步、R19 台账 FACT-03..06 行仍写 358–361、`metrics.md` 的回读行仍写“待提交后执行”、覆盖门 `scoped or ledger_set` 的空集回退、轮次标签子串匹配），见复核后记。
 
 ## 一、Detection — PASS
 
@@ -127,6 +135,8 @@ A-01 / B-01 / C-01 / FACT-01 同一处错误被四个材料隔离的角色分别
 - token 连续第三轮“未采集”；`loop.md §1` 仍无并发数；这些仪表缺口与 R18 相同。
 
 ## 八、Trace integrity — FAIL
+
+> 初评读数（`a140bb6a0`）。`7dbd07f6` 后三组探针全部 FAIL、R19 指标与台账可复算，本项已转 PASS；见末尾“复核后记”。
 
 ### 8.1 删除探针（副本在 `/tmp/meta-r19-probe/`，仓库只读）
 
@@ -299,5 +309,53 @@ R19 的三个硬数据：
 - 本轮是产出层的小幅进步（四条冷读抓到上轮修复自伤、D2-11 真实加固、误报率降到约 1%、BASELINE 正确），但装置层的两个老洞没有关上（删 loop 段仍 PASS、范围行静默漏项），并新增两处账面错（B-12 分类、耗时读数）。因此 `IMPROVED` 与 `NOT PASS` 同时成立。
 - 本报告是**同 agent 验证 + 已重放命令**；六门中我只重放了 anchor 之外的宿主测试与计数，没有重跑 QEMU、`minix-kernel --features mock` 与 `minix-arch`；这三项按主 agent 自述处理，不构成对它们的独立确认。
 - 本报告未读 `expected/`、`traps/` 与其他篇目的面板输出；未修改仓库任何文件，探针全部在 `/tmp/meta-r19-probe/`。
+
+## 复核后记（2026-11-09）
+
+- 复核对象：`7dbd07f64422d786530f7129d682ca5d351ac6e1`（2026-11-09 05:56:09，`fix(01): R19 meta 补修——轨迹门缺轮即 FAIL/A-09 复算/B 计数/容量测试`），基线记录提交 `bb788156d`（05:56:14）。当前文档 3387 行、sha256 `f9ddbc562f81862b1033165e07a0f1c5346d06c9da97da406796cb60f8ae1275`；`git show 7dbd07f64:rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 的 sha/行数与工作树逐项相同。`BASELINE.txt` 的 `r19_fix_head=7dbd07f64422d786530f7129d682ca5d351ac6e1`、`r19_fixed_doc_sha256=f9ddbc56…`、`r19_fixed_doc_lines=3387` 与提交及工作树一致。
+- 局限不变：**同 agent 验证 + 已重放命令**。原抽样表与 37/39 = 94.9% 的读数按要求保留，不按新时点重算；下文单独给当前树的重判。
+
+### 命令与读数
+
+| 项 | 命令 | 读数 | 结论 |
+|---|---|---|---|
+| 轨迹门自测 | `python3 tools/eval-trace-check.py --self-test` | `self-test PASS: 正确样本通过，缺陷样本被拦截` | PASS |
+| 真实 run-dir | `python3 tools/eval-trace-check.py <run-dir> --panel-dir .../panel/round19` | `PASS 8 / WARN 1 / FAIL 0`；`panel: 80 条`；`metrics: 80`；`ledger: 1196 条处置` | PASS |
+| 探针 A：删 R19 台账表（1349→EOF） | 同上，副本 `/tmp/meta-r19-probe2/p1` | `FAIL coverage: 面板发现没有处置行: CLAIM-07`；`ledger 1111` | FAIL（符合预期） |
+| 探针 B：删 R19 loop 段（943→EOF） | 同上，副本 `/tmp/meta-r19-probe2/p2` | `FAIL loop-sections: loop.md 缺少 R19 面板轮小节` | FAIL（符合预期） |
+| 探针 C：R19 指标改 `999` / `1/0/1/1/0` | 同上，副本 `/tmp/meta-r19-probe2/p3` | `FAIL metrics: 发现总数 999 与五项处置之和 3 不一致` | FAIL（符合预期） |
+| R19 计数复算 | 按 ID 展开 `defect-ledger.md:1349-1385` | ① 13 / ② 0 / ③ 14 / ④ 53 / ⑤ 0 = 80；`metrics.md` 的 R19 块逐项相同 | PASS |
+| `minix-boot` | `cargo test -p minix-boot` | `188 passed; 0 failed` | 与 §5.2.1 一致 |
+| 新容量测试 | `cargo test -p minix-boot drops_tail_records_whole_at_capacity` | `1 passed` | PASS（见下） |
+
+### 三项点名补修的复核
+
+1. **轨迹门缺轮即 FAIL：成立。** `tools/eval-trace-check.py` 的 `check_loop_sections` 现在在 `round_tag` 存在但找不到本轮标题时直接 `report.fail("loop-sections", "loop.md 缺少 R19 面板轮小节")`；探针 B 复现 FAIL。删台账表与改指标仍是 FAIL。
+2. **计数：R19 已可复算。** 台账 `READER-B` 段现为逐 ID 行（B-01 ①、B-02..B-11 ④、B-12 ③、B-13..B-20 ④），③ = B-12 + REFUTE 03/04/07 + D2-01..10 = 14，④ = A 20 + B 18 + C 15 = 53，① = 13，总数 80；`metrics.md` 同步为 ①13/②0/③14/④53/⑤0。R19 的“总数 = 五项之和”与“分档 = 台账逐 ID 归属”这两层都成立。
+3. **A-09：文件面已覆盖，pattern 面有 P3 残余。** §6.1 的复算命令现在是两条：boot-shim 一组，另加 `grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kernel-image/src/main.rs os/kernel-image/src/bootface*.rs`。按表内 16 组里程碑串逐条比对，命中 10 组；`param_buf bytes=`（`uefi_helpers.rs:956`，宏下一行）、`memmap source:`（`:786/:794`）、`kernel: arch_boot entered`（`lib.rs:285`，`Console::write_str`）、`kernel: v0 enter`/`v4 …`（`vmark!`）、`kernel-image: DM ok, jumping to kmain`（`lib.rs:395-396`，作为 `resume_additive` 实参）、直核面 `param_buf bytes=… first=…`（`bootface.rs:314`/`bootface_a64.rs:294`，`say()`）仍不在输出里。原因是 pattern 按“发射宏”匹配，而这几处走别的宏或裸字符串。原缺陷的“只扫 boot-shim 两个文件”已消失，故 A-09 本身判 PASS；注释“覆盖表内全部来源”过强属 P3，建议把 pattern 改成字符串前缀 `boot-shim: \|kernel: \|kernel-image: `。
+4. **REFUTE-02 测试：现在是可区分的。** `os/libs/minix-boot/src/boot_params.rs:276-288` 改用 24 字节缓冲与 `"A=1 BBBBBBBBBBBBBBBBBBBB=2 C=1"`：生成的 `ARCH=x86_64`（13 字节）+ `A=1`（4 字节）= 17，22 字符的大记录放不下 → `dropped`；`C=1` 若被继续尝试只占 4 字节（17+4=21 ≤ 24）会落进缓冲，故 `assert!(!out.windows(3).any(|w| w == b"C=1"))` 能区分“丢弃其后全部”与“逐条继续尝试”。测试 1 passed，套件 188 passed。
+5. **F-R17-01..04：截止已顺延 R20。** `follow-ups.md:95-98` 与 `OPEN-DEBT.md:9-10` 均写 R20；`loop.md §7` 补了“R19 的‘全修’只指 in-scope 面板项，不含这四项 ②”。
+
+### 新发现：R18 台账的 READER-B 范围被改错（阻断）
+
+- `git show 14e516d64:` 的 R18 段是 `READER-B-01..20`；`7dbd07f6` 改成 `READER-B-01..11、READER-B-13..20`，排掉的是 `READER-B-12`。但 R18 的 ③ 是 `READER-B-15`（`defect-ledger.md:1324`，单复数）。R19 的 ③ 才是 B-12（`:1369`）。这条改动把 R19 的排除项误用到 R18 段。
+- 后果：R18 面板的 `READER-B-12`（§4.3 开篇 vs §5.1 M11，`panel/round18/reader-b.md:198`）在 R18 段没有处置行；`READER-B-15` 既在 ④ 范围内、又由单行 ③ 精化覆盖。把 R18 段按范围展开，唯一 ID 是 97 条（①21 + ③21 + ④55），与 R18 的 `metrics.md` 98 差 1。轨迹门的 `ledger: 1196 条处置` 也比补修前的 1197 少 1，少的正是 B-12。该行的处置文字仍包含 B-12 的修复（“§4.3 开篇改‘没有编译期检查’”），但 ID 范围把它排除了——同一行自相矛盾。
+- 轨迹门的 `round18` 复核没有报这条：`coverage` 的 `scoped` 用 `"r18" in section.lower()`，而 R19 的标题是“R19 面板轮（2026-11-09，R18 收口后…）”，子串命中把 R19 行也算进 R18 作用域，R19 的 B-12 行顶替了 R18 缺失的行。这是工具的子串匹配缺陷，不是这条台账错的理由。
+- 最小修复：把 R18 段的范围改成 `READER-B-01..14、READER-B-16..20`（排除 B-15，保留 B-12），或恢复 `READER-B-01..20` 并保留 B-15 的单行 ③ 精化。R19 段不动。
+
+### 其余 P3 残留（不单独阻断，但应在下一轮清零）
+
+- `loop.md §3` 仍写 `④ 54 条：… READER-B 19`、`③ 13 条`；与 `metrics.md` 的 ③14/④53 相反。`§8` 仍写“13 条 ③ 是 D1 否决”（实际 D1 否决 10 条 + 反证失败 3 条 + B-12 1 条）。`§7` 仍写“RB19/meta R19 待跑”，与 §5 的“RB19 判 NOT PASS、meta R19 判 IMPROVED/NOT PASS”矛盾。
+- R19 台账 `FACT-03..06` 行的处置文字仍写“§2.6.4 行号改 358–361”；最终文档（`1123` 行）与 RB19 子表都是 `360-363`。
+- `metrics.md` 的 R19 “回读”行仍写“RB19 与 meta R19 待提交后执行”。
+- `coverage` 的 `scoped or ledger_set` 空集回退仍在：探针 A 之所以转红，是因为 `CLAIM-07` 这个 ID 前几轮从未出现；若 80 个 ID 都有历史同名行，删整张 R19 台账仍会 PASS。
+- 轮次标签子串匹配（`R18` 命中 `R19 … R18 收口后`）让 `--panel-dir round18` 的作用域被 R19 行污染。
+
+### 结论变化
+
+- **初次评审的三条不通过理由，前两条与第三条主体均已修**：删 R19 loop 段现 FAIL、三组探针全 FAIL；R19 的 ③14/④53 与台账逐 ID 可复算；A-09 的文件覆盖已补；REFUTE-02 的测试现在可区分两种行为；F-R17 截止顺延 R20；BASELINE 指向 `7dbd07f6`。
+- **R19 自身的 Trace integrity 与计数转 PASS。** 但复核仍判 **NOT PASS**，唯一阻断是 `7dbd07f6` 把 R19 的“排除 B-12”误用到 R18 段，造成 R18 的 `READER-B-12` 失去处置行、R18 台账 97 ≠ metrics 98。这是同一台账文件里的新账实不符，按 `review-evals.md` §八第 1、2 项不能放过。
+- 原抽样表的两个 FAIL（A-09、B-12）在当前树上按“缺陷成立条件是否消失”重判：A-09 的文件面已消失（P3 pattern 残余）、B-12 的缺陷条件已消失且 R19 已单独记 ③；若按当前树重算，严格一致会从 37/39 变为 39/39。但按合同保留初次评审的 94.9% 读数，不改原表。
+- 修掉 R18 范围这一行（并把上面 P3 清掉）后，下一轮复核可以判 PASS；当前不判。
 
 VERDICT: NOT PASS

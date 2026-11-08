@@ -3191,7 +3191,7 @@ pub fn raw_serial(text: &str) {
 
 （`build_memmaps` 的诊断打印是 `boot-shim: memmaps conv=… reserved=… unmapped=…`；空表时打印完整串 `boot-shim: memmaps conv=0 reserved=0 unmapped=0 (empty map)`。没有单独的 `reserved-big` 行；这些是测试内核调用 `build_memmaps` 时的诊断读数（`build_memmap()` 是只取 conventional 表的单表包装），不进主路径里程碑。）
 
-复算命令（覆盖表内全部来源，boot-shim 与内核/接收侧各一组）：`grep -n 'uefi::println!\|raw_serial' os/boot-shim/src/main.rs os/boot-shim/src/uefi_helpers.rs`；`grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kernel-image/src/main.rs os/kernel-image/src/bootface*.rs`。
+复算命令（按文件覆盖表内全部来源；串前缀扫描约命中 10/16 组，其余走别的宏或裸字符串，见各行位置列）：`grep -n 'uefi::println!\|raw_serial' os/boot-shim/src/main.rs os/boot-shim/src/uefi_helpers.rs`；`grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kernel-image/src/main.rs os/kernel-image/src/bootface*.rs`。
 
 **删掉 `[raw] entering kernel image v1` 这一行会怎样**：发送侧在调用 `enter_kernel_image_v1` 之前打印 `[raw] arena=…` 与这一行；建根与开分页发生在调用内部。删掉这一行后，串口停点按三档读：`[raw] arena=…` 表示还没进调用；`kernel: v4 capability facts ok` 表示已进调用但 Step 1/2 映射尚未完成（建根前半）；`kernel: step1+2 mappings ok` 表示 Step 1/2 已过（建根后半或跳转之后），若随后出现接收侧 `###`/第二组 `v0` 则接收端已起。第二档与第三档之间没有发送侧路标——“卡在建根后半”与“跳转后卡死”无法用串口区分，这是诊断面的已知缺口；补法是在建根返回之后、跳转之前加一条发送侧路标（见 §5.3 TODO-09，不在本篇改动范围）。
 

@@ -967,8 +967,8 @@
 ### R19 §3 归因
 
 - ① 13 条：FACT-01..06、READER-B-01、REFUTE-01/02/05/06、DESIGN-D2-11/12。
-- ④ 54 条：READER-A 20、READER-B 19、READER-C 15。
-- ③ 13 条：REFUTE-03/04/07（反证失败）、DESIGN-D2-01..10（D1 方案否决）。
+- ④ 53 条：READER-A 20、READER-B 18、READER-C 15。
+- ③ 14 条：READER-B-12（重复/已消失）、REFUTE-03/04/07（反证失败）、DESIGN-D2-01..10（D1 方案否决）。
 - ② 0、⑤ 0；re-litigation 0；adjacent 阻塞 0。
 
 ### R19 §4 修复
@@ -990,10 +990,10 @@
 
 ### R19 §7 状态
 
-`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 未在 R19 处理，截止日顺延到 R20（R19 的“全修”只指 in-scope 面板项，不含这四项 ②）；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB17/RB18 已结算、RB19/meta R19 待跑；G8 本轮新增 80 条（仍远大于 0）；G9 ⑥ 项 D2-11/12 已实施，D1 其余方案不采纳。
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 未在 R19 处理，截止日顺延到 R20（R19 的“全修”只指 in-scope 面板项，不含这四项 ②）；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB19 判 NOT PASS（FACT-06 行号）后补修；meta R19 判 IMPROVED / NOT PASS（Trace integrity + 计数差 1），二次补修后三组探针均 FAIL、R18/R19 计数闭合；G8 本轮新增 80 条（仍远大于 0）；G9 ⑥ 项 D2-11/12 已实施，D1 其余方案不采纳。
 
 ### R19 §8 给 meta-review 的不确定点
 
 - 四源同靶（A-01/B-01/C-01/FACT-01）说明 R18 漏检的槽号错误只有冷读能抓到；需 meta 判断这是否应升级为“取槽/下标算术”专项探针。
 - D2 连续两轮判 D1 NOT PASS；D1 的方案价值是否已递减到应停跑，需 meta 给结论（当前仍按协议全量跑）。
-- 本轮 80 条里 13 条 ③ 是 D1 否决，仍计入“新发现”；B-52（origin/dup-of）未落码，G8 的零新增口径需 meta 解释。
+- 本轮 80 条里 14 条 ③（10 条 D1 否决 + 3 条反证失败 + 1 条重复/已消失），仍计入“新发现”；B-52（origin/dup-of）未落码，G8 的零新增口径需 meta 解释。

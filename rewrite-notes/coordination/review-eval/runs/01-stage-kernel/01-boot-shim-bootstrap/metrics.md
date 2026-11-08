@@ -27,4 +27,4 @@
 - adjacent 阻塞: 0
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（`KernelInfo::validate` 跨度 `checked_add`）
 - 成本: agent 7 / token 未采集 / 耗时 约 45 分钟（面板 + 修复 + 三门，不含排队）
-- 回读: RB19 与 meta R19 待提交后执行
+- 回读: RB19 判 NOT PASS（FACT-06 行号）；补修后 meta R19 判 IMPROVED / NOT PASS（Trace integrity 与计数差 1），二次补修后三组探针均 FAIL、R18/R19 计数闭合

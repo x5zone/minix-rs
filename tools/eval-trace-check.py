@@ -198,10 +198,11 @@ def _prefix_of(token: str) -> str | None:
     return m.group(1) if m else None
 
 
-def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]:
+def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict], dict[str, set[str]]]:
     lines = text.splitlines()
     ids: list[str] = []
     rows: dict[str, dict] = {}
+    section_ids: dict[str, set[str]] = {}
     current: dict[str, int] | None = None
     section = ""
     table_seen: set[str] = set()
@@ -308,9 +309,10 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
                 "verify": verify,
                 "section": section,
             }
+            section_ids.setdefault(section, set()).add(row_id)
             ids.append(row_id)
     report.ok("ledger", f"台账解析到 {len(ids)} 条处置")
-    return ids, rows
+    return ids, rows, section_ids
 
 
 def _metric_blocks(text: str) -> list[tuple[str, str]]:
@@ -502,7 +504,7 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         check_metrics(metrics_text, report, round_tag)
     if ledger_text is not None:
         check_placeholders(ledger_text, report, "defect-ledger.md")
-        ledger_ids, ledger_rows = parse_ledger(ledger_text, report)
+        ledger_ids, ledger_rows, section_ids = parse_ledger(ledger_text, report)
         panel_set = set(panel_ids)
         ledger_set = set(ledger_ids)
         # Round-scoped coverage: a per-round --panel-dir (round18) must be
@@ -511,10 +513,14 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         # rounds (B-51 whole-file loophole).
         if round_tag:
             scoped = {
-                fid for fid, row in ledger_rows.items()
-                if round_tag.lower() in row.get("section", "").lower()
+                fid
+                for section, fids in section_ids.items()
+                if section.lower().startswith(round_tag.lower())
+                for fid in fids
             }
-            coverage_ledger = scoped or ledger_set
+            # No fallback to the whole ledger: if this round's section is
+            # missing, every panel finding must be reported missing.
+            coverage_ledger = scoped
         else:
             coverage_ledger = ledger_set
         # Orphan reference set: IDs that appear in ANY panel file (the
@@ -536,7 +542,7 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         # ("断锚簇", "125→124/175→176") that split into non-ID fragments —
         # those are row labels, not orphan findings.
         id_like = re.compile(r"^[A-Z]{2,}-[A-Za-z0-9-]+$")
-        orphan = sorted(x for x in (ledger_set - panel_set - panel_text_ids) if id_like.match(x))
+        orphan = sorted(x for x in (coverage_ledger - panel_set - panel_text_ids) if id_like.match(x))
         if missing:
             report.fail("coverage", "面板发现没有处置行: " + "、".join(missing))
         else:
