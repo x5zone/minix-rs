@@ -105,6 +105,17 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 5. 代码门：`cargo fmt --check`、`cargo clippy`、`cargo test`；触碰 arch 或 boot 时按 `AGENTS.md` 跑 QEMU。
 6. **受影响 crate 全量绿**：提交前 `cargo test -p <crate>` 必须通过；含 minix-arch。
 
+## L3.5 DESIGN 实施
+
+1. P-DESIGN 发现标 ⑥ 的项在本步实施（不是”下一轮”或”单独立项”——那就是永远不做）。
+2. 实施纪律：
+   - 先写设计取舍（改哪些文件、为什么这样改、替代方案是什么、拒绝理由）；
+   - 再写代码，每个改动跟 `fix-guard`（读 ±5 行、grep 确认、一次一条、修后验证）；
+   - 受影响 crate 全量绿（`cargo test -p <crate>` + clippy）；
+   - 代码改完后**同步更新文档 §3/§4/§5 中对应的描述**——这是”文档与代码同步”门，不是可选步骤。
+3. 确需跨 crate 协调（比如 `BootReport<'a>` 触 6 个 crate）的项，在 `OPEN-DEBT.md` 立独立项目（负责人 + 截止轮次），并在本篇的 `STUCK-REPORT.md` 或 `NOT CONVERGED` 标注中写明”本篇收敛受此项目阻塞”。
+4. 本步完成后，L4 的文档五门与 trace 门用**更新后的文档**跑。
+
 ## L4 复验与回归
 
 1. 修复段回读：由发现该问题的角色或同角色冷启动实例，只读修改段及邻句；标签写”修复后回读”。
