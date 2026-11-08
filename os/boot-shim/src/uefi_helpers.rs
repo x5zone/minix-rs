@@ -1503,16 +1503,17 @@ mod tests {
         assert_range_clear_of_kernel("range", 0x1000, 0x4000, 0x2000, 0x3000);
     }
 
-    /// A module whose file bytes end before the kernel but whose zero-filled
-    /// page tail crosses into it must be refused: the loader writes the tail
-    /// up to `num_pages * 4096`.
+    /// A module whose bytes cross the kernel start must be refused. Note
+    /// that page rounding cannot add detection power here: the module start
+    /// is page-aligned, so a byte end before a page-aligned kernel start
+    /// implies the zero-filled tail also stops before it.
     #[test]
     #[should_panic(expected = "overlaps the kernel image")]
-    fn test_assert_modules_clear_of_kernel_rejects_page_rounded_tail() {
+    fn test_assert_modules_clear_of_kernel_rejects_byte_overlap() {
         static MODULES: [minix_boot::BootModule; 1] = [minix_boot::BootModule {
             name: "vm",
-            start: PhysBytes(0x1000),
-            len: 0x2001,
+            start: PhysBytes(0x2000),
+            len: 0x1001,
         }];
         assert_modules_clear_of_kernel(&MODULES, 0x3000, 0x4000);
     }

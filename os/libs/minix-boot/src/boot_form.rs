@@ -54,8 +54,10 @@ pub enum BootForm {
     ///     `os/kernel-image/src/bootface_a64.rs` (the fourth independent
     ///     entry, loaded via `-kernel`).
     Aarch64QemuDirectCore,
-    /// (e) riscv64 early-hart filter park mailbox (registered as a family
-    ///     member from birth).
+    /// (e) riscv64 AP early-entry stub: secondary harts enter
+    ///     `ap_early_entry` and park until a kernel-registered tail is
+    ///     installed. This is a secondary-hart path, not a primary boot form;
+    ///     it stays in the inventory for the family count.
     RiscvEarlyHartMailbox,
 }
 

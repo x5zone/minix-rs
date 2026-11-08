@@ -48,18 +48,16 @@ fn main() -> Status {
     // one PT page per 2 MiB region per window — which the former 16/64
     // pages cannot cover (the kernel's fallback bump is 1 MiB = 256
     // pages, FALLBACK_BUMP_LEN — this pool stays in the same order).
-    // 128 pages sufficed for boot alone, but the kerninfo-injection
-    // chain (1–3 pages) is also drawn from this pool at EVERY new-root
-    // bind, and the pool has no free path — the real machine died with
-    // `AllocationFailed` after ~40 binds.
-    // 1024 = boot needs (~100) + per-bind chain (≤3) × bind ceiling
-    // (one root rebuild per child process on exec; hundreds) × safety;
-    // the runway is not free though: vm_handoff deducts the WHOLE region
-    // from the VM free list whether used or not (vm_handoff.rs module
-    // doc), so this costs every boot 4 MiB of VM-selectable memory.
-    // Before the structural fix lands (reclaimable page-table pages /
-    // moving the kerninfo mapping responsibility to VM per kerninfo.rs
-    // doc) this pool only postpones the deterministic panic.
+    // 128 pages sufficed for boot alone. The pool also served the old
+    // kerninfo-injection chain (1–3 pages per new-root bind), which the
+    // real machine exhausted with `AllocationFailed` after ~40 binds.
+    // D72VM moved that mapping to VM (`init_page_table`), so the per-bind
+    // draw is gone; the pool's remaining pressure is boot itself and the
+    // 4 KiB-granularity DM coverage. 1024 = boot needs (~100) + that
+    // coverage headroom + safety. The runway is not free: vm_handoff deducts
+    // the WHOLE region from the VM free list whether used or not
+    // (vm_handoff.rs module doc), costing every boot 4 MiB of VM-selectable
+    // memory.
     // The shim builds the bootstrap root itself, serializes the v1 handoff
     // arena (address space, seven payload partitions, pairing loop) and
     // absolutely jumps into the standalone high-half `kernel.elf` `_start`. aarch64

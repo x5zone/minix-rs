@@ -316,6 +316,10 @@ unsafe fn build_shim_table() -> u64 {
         // entry 0: kernel
         let e0 = base.add(16);
         let path = b"/EFI/minix/kernel.elf";
+        assert!(
+            path.len() < boot_shim::opensbi_helpers::BOOT_FILE_PATH_MAX,
+            "boot-shim: kernel path does not fit the BootFileEntry field"
+        );
         for i in 0..path.len() { e0.add(i).write_volatile(path[i]); }
         e0.add(path.len()).write_volatile(0);
         let addr = uboot_layout::KERNEL_FILE_STAGE;
@@ -332,6 +336,10 @@ unsafe fn build_shim_table() -> u64 {
         for (mi, name) in MODULE_NAMES.iter().enumerate() {
             let e = base.add(16 + (mi + 1) * 80);
             let module_path = alloc::format!("/EFI/minix/modules/{}", name);
+            assert!(
+                module_path.len() < boot_shim::opensbi_helpers::BOOT_FILE_PATH_MAX,
+                "boot-shim: module path does not fit the BootFileEntry field"
+            );
             for i in 0..module_path.len() { e.add(i).write_volatile(module_path.as_bytes()[i]); }
             e.add(module_path.len()).write_volatile(0);
             let a = module_file_stage(mi);

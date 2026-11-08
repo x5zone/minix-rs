@@ -1148,8 +1148,9 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         // VA reads zeros (real machine: res=127 zeroed=127 at
         // build_identity_windows). Land the bytes in kernel .bss — mapped
         // for the whole run — and hand the global copy that pointer.
-        // `ptr::copy` (not `copy_nonoverlapping`) because kmain re-stores
-        // the global copy itself: src and dst are then the same range.
+        // `ptr::copy` (not `copy_nonoverlapping`) keeps the same-address
+        // case well-defined for the defensive guard; no current caller
+        // stores a source that already lives in the landing pad.
         let store = &mut *crate::globals::RESERVED_REGION_STORE.get();
         let src = kernel_info.reserved_regions;
         assert!(
@@ -5522,7 +5523,7 @@ mod tests {
             "param_buf must be repointed to the .bss landing pad"
         );
         assert_eq!(stored.param_buf(), PARAM);
-        // kmain re-stores the global copy itself: idempotent, no double copy.
+        // The test re-stores the global copy itself: idempotent, no double copy.
         store_kernel_info(stored);
         let again = crate::kernel_info().expect("re-store republished");
         assert_eq!(again.memmap().as_ptr(), stored.memmap().as_ptr());

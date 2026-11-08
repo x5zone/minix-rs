@@ -84,9 +84,14 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 /// - 7: `kerninfo_pa` — the kernel-information page's physical address.
 ///   VM maps it read-only at [`KERNINFO_USER_VA`] in every new root;
 ///   the kernel no longer injects the mapping in `vmctl_set_addr_space`.
-///   With the x86 independent-image cut, the kernel executes from its
-///   high-half image, so `kern_ident` now carries only the architecture
-///   MMIO identity ranges (the link-in low windows retired).
+///   With the x86 independent-image cut, at v7 the kernel executed from its
+///   high-half image, so `kern_ident` carried only the architecture MMIO
+///   identity ranges (the link-in low windows had retired).
+/// - 8: `VM_BOOT_HANDOFF_MAX_DEDUCTED` 32 → 47 and the first-allocation
+///   exclusion list `vm_boot_exclusions`; the struct-size change
+///   deliberately breaks the v7 layout. From v8 on `kern_ident` is always
+///   empty: the producer retired identity windows (PD-22 step 2 final), and
+///   VM rejects a non-empty field (check-and-reject).
 pub const VM_BOOT_HANDOFF_VERSION: u32 = 8;
 
 /// Maximum kernel identity-window entries the handoff page carries

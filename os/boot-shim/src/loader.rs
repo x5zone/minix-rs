@@ -251,6 +251,18 @@ pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), mini
     for seg in &segments {
         let dest = seg.paddr as *mut u8;
         let src = &elf_data[seg.offset as usize..(seg.offset + seg.filesz) as usize];
+        // D01-R8: the ELF bytes live in a heap allocation; under the boot
+        // identity map the pointer value is physical. If the source buffer
+        // itself sits inside the destination span, the copy is UB and the
+        // source would be destroyed mid-copy. Refuse that layout explicitly.
+        let dest_lo = seg.paddr;
+        let dest_hi = seg.paddr.saturating_add(seg.memsz);
+        let src_lo = src.as_ptr() as u64;
+        let src_hi = src_lo.saturating_add(seg.filesz);
+        assert!(
+            src_hi <= dest_lo || src_lo >= dest_hi,
+            "boot-shim: kernel ELF segment source [0x{src_lo:x}, 0x{src_hi:x}) overlaps its destination LMA [0x{dest_lo:x}, 0x{dest_hi:x})"
+        );
         unsafe {
             dest.copy_from_nonoverlapping(src.as_ptr(), seg.filesz as usize);
             if seg.memsz > seg.filesz {

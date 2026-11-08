@@ -375,8 +375,9 @@ impl VmServer {
         // `vm_allocpage` (pagetable.c:515); the VM-side hook
         // (`alloc_page::vm_pt_alloc`) supplies them from the page allocator
         // via the Direct Map ([ARCH: A-1], 06-page-allocator.md §3.2).
-        // The `is_registered()` guard mirrors os/kernel/src/lib.rs:178 —
-        // production never has a prior registration in the VM address space,
+        // The `is_registered()` guard mirrors the kernel-side guard in
+        // `boot_validate_and_prepare` — production never has a prior
+        // registration in the VM address space,
         // but repeated `VmServer::new()` in tests must not panic.
         if !minix_arch::pt_alloc::is_registered() {
             minix_arch::pt_alloc::register(crate::alloc_page::vm_pt_alloc);

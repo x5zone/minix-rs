@@ -262,7 +262,7 @@ core::arch::global_asm!(
         li ra, 0
         li fp, 0
         # 甲案交接：OpenSBI 递 a0 = boot hartid、a1 = DTB 物理指针；U-Boot
-        # 腿另约定 a2 = BootFileTable 物理指针（本 boot 面同时读 DTB
+        # 面另留 a2 作 BootFileTable 物理指针的备用通道，仓内无生产者（本 boot 面同时读 DTB
         # /chosen/opensbi,boot-file-table，a2 不合法时靠 DTB 通道；两者均
         # 过 magic 把关才解引用）。`call` 是 PC 相对，不改动 a0–a2，三个
         # 入参自然落位 Rust 面（rt-birth 载体 :426 同形先例）。

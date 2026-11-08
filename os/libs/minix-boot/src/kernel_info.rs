@@ -30,8 +30,9 @@ pub struct KernelInfo {
     /// C: kinfo.memmap[] — pg_utils.c add_memmap/cut_memmap
     pub memmap: &'static [MemoryRegion],
 
-    /// Non-conventional physical memory retained by the firmware at
-    /// ExitBootServices. Two historical uses:
+    /// Memory the classifier marked `ReservedMapped` — non-conventional,
+    /// firmware-retained, usable through the Direct Map but not allocatable.
+    /// Two historical uses:
     ///
     /// 1. The inline x86 identity window (kernel linked into the boot-shim
     ///    PE, executed at low physical addresses). Retired with the

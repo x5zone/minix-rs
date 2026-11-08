@@ -434,3 +434,52 @@
 |---|---|---|---|---|---|---|---|
 | READER-C-01 | panel-r7 | P3 | 文档/§4.4 表缺页大小能力/物理上限行 | ① | 已修：表补 `detect_boot_page_support` 成功且 `phys_addr_limit() >= IDENTITY_MAP_END` 一行 | 文档 §4.4 | 五门 |
 | READER-C-02 | panel-r7 | P3 | 文档/§4.4 表用未定义符号 `entry_start_pa` | ① | 已修：改自然语言"镜像内入口/栈顶偏移写错，或用户栈上界越入内核半区" | 文档 §4.4 | 五门 |
+
+# Round 8（基线 1ceaf539d）
+
+## R8 面板明细（39 条）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-R8-01 | panel-r8 | P1 | 文档/§5.2.1 计数未随 5 条新测试回填 | ① | 已修：124→129、6→11、113→118、求和式与“该文件 11 条”同步；历史补 R7 D2-02 五条负控 | 文档 §5.2.1 | 五门+测试 |
+| FACT-R8-02 | panel-r8 | P2 | 文档/§2.2 把入口 esp≡0 当 i386 SysV ABI 要求 | ① | 已修：改“入口 %esp+4 是 16 的倍数；本布局 esp≡0，差 4 字节”，保留编译选项免责 | 文档 §2.2 | 五门 |
+| FACT-R8-03 | panel-r8 | P2 | 源码注释/main.rs 仍写 kerninfo 每绑定注入 | ① | 已修：改历史陈述 + D72VM 已移交 VM；删 per-bind 乘法与“修复未落地” | os/boot-shim/src/main.rs | 编译绿 |
+| FACT-R8-04 | panel-r8 | P2 | 文档/§4.5 称 kmain 会再存一次 store_kernel_info | ① | 已修：改“守卫防未来同址调用”；lib.rs 两处 kmain 注释同步改写 | 文档 §4.5；os/kernel/src/lib.rs | 测试+五门 |
+| FACT-R8-05 | panel-r8 | P3 | 源码注释/vm_server 行号锚点失效 | ① | 已修：改指 boot_validate_and_prepare，不绑行号 | os/servers/vm/src/vm_server.rs | 编译绿 |
+| READER-R8-F01 | panel-r8 | P2 | 文档/§3.7 三条入口收敛点与 §4.8 矛盾 | ① | 已修：分直核 arch_boot_finish 与接收 arch_boot_resume_v1→resume_additive；发送侧不收敛 | 文档 §3.7 | 五门 |
+| READER-R8-F02 | panel-r8 | P2 | 文档/§2.8 N 同时指 mmap 条目数与模块数 | ① | 已修：拆 R（mmap 条目数）与 M（模块数）；箭头改“交错” | 文档 §2.8 | 五门 |
+| READER-R8-F03 | panel-r8 | P2 | 文档/§4.2 九步漏 startup 分区写入 | ① | 已修：表后注明表外动作（EBS 后补写 canonical 五类） | 文档 §4.2 | 五门 |
+| READER-R8-F04 | panel-r8 | P2 | 文档/Step 0-4 编号全文使用无定义 | ① | 已修：§4.6 开头补五行阶段表（含 2b/2c 归属） | 文档 §4.6 | 五门 |
+| READER-R8-F05 | panel-r8 | P2 | 文档/§4.6 AlreadyMapped 与 AllocationFailed 成因写串 | ① | 已修：可达类=AllocationFailed；AlreadyMapped 结构性排除，各自理由分开 | 文档 §4.6 | 五门 |
+| READER-R8-F06 | panel-r8 | P2 | 文档/流程代号密度与读者画像冲突；O-11 仍在用 | ① | 已修：图例明确可跳过、删编号后句意完整；O-11 改“两快照纪律” | 文档 §3.4/§4.1 | 五门 |
+| READER-R8-F07 | panel-r8 | P3 | 文档/§3.4 “删掉的不是信息”与退役三字段矛盾 | ① | 已修：段首改“多数换载体，少数退役”，保留三类归位 | 文档 §3.4 | 五门 |
+| READER-R8-F08 | panel-r8 | P3 | 文档/§2.4.2 结算锚点不含 16 条截断 | ① | 已修：改指 §2.4.1 末“另一件必须单说的事”段 | 文档 §2.4/§3.4 | 五门 |
+| READER-R8-F09 | panel-r8 | P3 | 文档/§1.4 kmain 校验归给 §3.5 | ① | 已修：改指 §4.4 门链 | 文档 §1.4 | 五门 |
+| READER-R8-F10 | panel-r8 | P3 | 文档/ram_authority 注释指 §4.2 无 source 审计 | ① | 已修：改指 §3.4 规范集合与 §4.4 strict 门 | 文档 §3.4 | 五门 |
+| READER-R8-F11 | panel-r8 | P3 | 文档/两处“§2.4 升序讨论”层级错 | ① | 已修：两处改 §2.4.1 | 文档 §2.4.1 | 五门 |
+| READER-R8-F12 | panel-r8 | P3 | 文档/§2.6.5 “三张表”后写“两张表” | ① | 已修：改“CR0/CR4 表里” | 文档 §2.6.5 | 五门 |
+| READER-R8-F13 | panel-r8 | P3 | 文档/逐页累加与整段累加自相矛盾 | ① | 已修：前半句拆两种粒度，删末尾重复更正 | 文档 §2.4.1 | 五门 |
+| READER-R8-F14 | panel-r8 | P3 | 文档/§4.1 “步骤 2 的 init_boot_pt_alloc”编号悬空 | ① | 已修：改动作名“prepare_and_enter_kernel_image 开头那次” | 文档 §4.1 | 五门 |
+| READER-R8-F15 | panel-r8 | P3 | 文档/§3.8 首行不写注册槽却计入“写点” | ① | 已修：改“一次初始化 + 三次注册”；首行标“不写注册槽” | 文档 §3.8 | 五门 |
+| READER-R8-F16 | panel-r8 | P3 | 文档/961..1023 与 961+k 边界差一格 | ① | 已修：改“0–1023（含 1023）”与“961+k-1” | 文档 §2.6 | 五门 |
+| READER-R8-F17 | panel-r8 | P2 | 文档/接收公共段 high_half vs resume_additive 两说 | ① | 已修：次序句改“各架构委托壳”；§6.1 表注明两行仅 aarch64 壳打印 | 文档 §4.7/§6.1 | 五门 |
+| READER-R8-F18 | panel-r8 | P3 | 文档/§3.3 依赖图漏 8 条边（含反向库依赖） | ① | 已修：图下注明简化图、条件依赖见四表 | 文档 §3.3 | 五门 |
+| READER-R8-F19 | panel-r8 | P3 | 文档/“跨镜像两腿”与发送腿术语冲突 | ① | 已修：改“发送/接收两端” | 文档 §3.7 | 五门 |
+| READER-R8-F20 | panel-r8 | P3 | 文档/§5.2.3 “这条 U-Boot 链”指代不明；脚本不在清单 | ① | 已修：点名 riscv64 U-Boot 直载测试链；§7.4 补 test-riscv64-boot-full.sh | 文档 §5.2.3/§7.4 | 五门 |
+| READER-R8-F21 | panel-r8 | P3 | 文档/ESP、ConOut、MIB 首现未展开 | ① | 已修：三处补一句定义 | 文档 §6.1/§6.3/§2.3 | 五门 |
+| READER-R8-F22 | panel-r8 | P3 | 画像目标④章节集合与正文不一致 | ① | 已修：画像同步 §2.4/§2.4.2 | reader-profile.md | 五门 |
+| READER-R8-F23 | panel-r8 | P3 | 文档/RESERVED 256 来由 127×2=254 差 2 | ① | 已修：改“翻倍后向上取整到 2 的幂” | 文档 §4.5 | 五门 |
+| READER-R8-F24 | panel-r8 | P3 | 文档/fast-fail “被削弱” vs “本来没有” | ① | 已修：统一“相对稀疏方案被放弃；C 本来没有” | 文档 §2.6.1 | 五门 |
+| READER-R8-F25 | panel-r8 | P3 | 文档/测试证据三处重复无单一权威 | ① | 已修：M13 与 §5.2.1 改指针，§5.3 TODO-07 保留完整清单 | 文档 §5.1/§5.2.1/§5.3 | 五门 |
+| DESIGN-R8-01 | panel-r8 | P0 | 源码/文档/a2 通道三种互斥说法且无生产者 | ①（待裁决） | 已修：统一为“备用 a2 通道，仓内无生产者；已跑通 DTB /chosen”（doc §3.7/§4.8、bootface.rs、main.rs asm、脚本注释）；是否补 a2 真机取证待用户 | 四文件注释 | 编译绿 |
+| DESIGN-R8-02 | panel-r8 | P1 | 代码/pool 分配面仍可覆写内核（模块读入、param、DTB、ELF 源） | ①（部分转出） | 已修：loader 段拷贝加 src/dest 不重叠断言；M16 收窄为“仅 UEFI 模块页防线”；全局 allocator 守卫留 follow-up | os/boot-shim/src/loader.rs；M16 | 测试+五门 |
+| DESIGN-R8-03 | panel-r8 | P2 | 测试/页取整案无判别力 | ① | 已修：换成模块字节越界案；M16 五档改“相离/相切、包含、部分重叠、内核在区间内、模块字节越界” | uefi_helpers.rs 测试 | 测试绿 |
+| DESIGN-R8-04 | panel-r8 | P2 | 源码注释/vm_handoff 调用点仍写恒等窗重放 | ① | 已修：改“退休；生产者空表、VM 拒绝、MMIO 走设备窗” | os/kernel/src/vm_handoff.rs | 编译绿 |
+| DESIGN-R8-05 | panel-r8 | P2 | 源码注释/handoff_v1 测试把 96B 挂到 SEMANTIC_END | ① | 已修：改“wire 镜像到 WIRE_STARTUP_END 后余 96B” | os/libs/minix-boot/src/handoff_v1.rs | 测试绿 |
+| DESIGN-R8-06 | panel-r8 | P2 | 源码注释/BootFileEntry.path 零填充说法未被 builder 保证 | ① | 已修：注释改 .bss 零初始化 + builder 写出 NUL；builder 增路径长度断言 | os/boot-shim/src/uboot_main.rs / opensbi_helpers.rs | 编译绿 |
+| DESIGN-R8-07 | panel-r8 | P3 | 文档/§4.2 把 arena 重查算进 alloc_arena 之前 | ① | 已修：括注拆“root/bump 与模块在 alloc_arena 前；arena 重查紧跟 alloc_arena” | 文档 §4.2 | 五门 |
+| DESIGN-R8-08 | panel-r8 | P3 | 源码注释/BootForm (e) 仍称 park mailbox | ① | 已修：改“AP early-entry stub（次级核路径，非主启动形态）”；结构取舍随 R7-FU-01 | os/libs/minix-boot/src/boot_form.rs | 编译绿 |
+| DESIGN-R8-09 | panel-r8 | P3 | 源码注释/magic 闸高估能抓的失败 | ① | 已修：改“只抓可读地址上的坏内容；野地址在首次读 magic 时 fault” | os/boot-shim/src/opensbi_helpers.rs | 编译绿 |
+| FACT-R8-06 | panel-r8 | P2 | 源码注释/VmBootHandoff 版本历史缺 v8，v7 末句与返空生产者相反 | ① | 已修：补 v8 条目（deducted 32→47、vm_boot_exclusions、kern_ident 恒空），v7 末句改过去时 | os/libs/minix-types/src/types/boot.rs | 编译绿 |
+| FACT-R8-07 | panel-r8 | P3 | 文档/§3.4 称内存账走 GETINFO 键 | ① | 已修：模块表/param/kmessages 各自键写清；内存账改走 VM boot handoff 页 | 文档 §3.4 | 五门 |
+| FACT-R8-08 | panel-r8 | P3 | 文档/§4.4 把 reserved 来源写成“非 conventional” | ① | 已修：两处改 `ReservedMapped` 档（Excluded/DevicePath/Side 不进）；kernel_info 字段首句同步 | 文档 §4.4；kernel_info.rs | 五门+编译绿 |

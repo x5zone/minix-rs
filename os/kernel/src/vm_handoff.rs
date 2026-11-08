@@ -578,10 +578,10 @@ pub fn build_vm_handoff(
         "kernel tasks + boot modules must fill the boot image table"
     );
 
-    // Handoff v6: kernel runtime identity windows — the VM's
-    // `map_kernel` replays them into every process page table so the
-    // link-in execution model's low VA=PA code/data/MMIO accesses
-    // survive the first CR3 switch (see version history v6).
+    // Handoff v6 identity windows: retired (PD-22 step 2 final). The
+    // producer returns an empty list, VM rejects a non-empty field, and MMIO
+    // consumers use the kernel device window; the field is kept only for the
+    // v6/v7 wire layout.
     let (kern_ident, kern_ident_count) = build_identity_windows();
 
     // Production reaches here after kmain Phase B.5 initialized the

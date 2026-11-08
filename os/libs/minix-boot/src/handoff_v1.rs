@@ -378,7 +378,7 @@ pub const WIRE_STARTUP_END: usize =
     WIRE_STARTUP_OFFSET + WIRE_STARTUP_CAP * WIRE_SOURCE_RECORD_SIZE;
 
 /// Whole-arena capacity: 9 pages (36 KiB) — envelope + wire + semantic
-/// partitions up to `SEMANTIC_END`, the 256-slot memory-source partition,
+/// partitions up to `SEMANTIC_END`, the 296-slot memory-source partition,
 /// and the 20-slot startup-object partition; 96 bytes of design spare
 /// remain after `WIRE_STARTUP_END` (36864 − 36768).
 pub const ARENA_CAP: usize = 9 * 4096;
@@ -459,8 +459,8 @@ mod tests {
         // 128×16 + 256×16 = 6144 semantic bytes.
         assert_eq!(SEMANTIC_END - SEMANTIC_OFFSET, 6144);
         // Envelope + wire + semantic ≈ 14 KiB; the compile-time layout gate
-        // above asserts the full semantic end fits the 36 KiB (nine-page)
-        // arena with 96 bytes of design spare.
+        // above asserts the full wire image through `WIRE_STARTUP_END` fits
+        // the 36 KiB (nine-page) arena with 96 bytes of design spare.
         assert_eq!(SEMANTIC_END, 14016);
     }
 

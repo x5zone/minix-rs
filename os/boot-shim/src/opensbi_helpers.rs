@@ -85,8 +85,10 @@ const KERN_PHYS_BASE: u64 = 0x8020_0000;
 /// Magic number identifying a valid [`BootFileTable`] in memory.
 ///
 /// ASCII for "MNXBOOT1". The table is built by the shim itself
-/// (`uboot_main::build_shim_table`), so the magic gate catches a builder or
-/// installer that wrote the wrong address before any entry is dereferenced.
+/// (`uboot_main::build_shim_table`), so the magic gate catches a table whose
+/// contents were mis-written when the installed address does point at
+/// readable memory. A wild address faults at the first read of `magic`; no
+/// gate can validate a pointer before dereferencing it.
 pub const BOOT_FILE_TABLE_MAGIC: u64 = 0x3154_4f4f_4258_4e4d;
 
 /// Maximum number of files describable by a single `BootFileTable`.
@@ -109,11 +111,11 @@ pub const BOOT_FILE_PATH_MAX: usize = 64;
 pub struct BootFileEntry {
     /// NUL-terminated UTF-8 path, e.g. `b"/EFI/minix/kernel.elf\0"`.
     ///
-    /// The shim's builder (`uboot_main::build_shim_table`) writes the bytes
-    /// and zero-fills the rest of the fixed field, so the path is always
-    /// NUL-terminated within the first `BOOT_FILE_PATH_MAX - 1` bytes.
-    /// Unterminated paths are rejected by [`entry_path_eq`] (lookup returns
-    /// `None`).
+    /// The shim's builder (`uboot_main::build_shim_table`) writes the path
+    /// and one terminating NUL into a zero-initialized `.bss` table; it also
+    /// asserts the path fits within `BOOT_FILE_PATH_MAX - 1` bytes. The rest
+    /// of the fixed field stays zero from `.bss` initialization. Unterminated
+    /// paths are rejected by [`entry_path_eq`] (lookup returns `None`).
     pub path: [u8; BOOT_FILE_PATH_MAX],
     /// Physical address where U-Boot's `fatload` placed the file bytes.
     ///

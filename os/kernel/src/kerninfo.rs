@@ -26,11 +26,11 @@
 //! kernel where; this kernel bootstrap has no VM yet, so
 //! [`init_kerninfo`] maps one reserved page itself into the active
 //! bootstrap root at a fixed user VA — the same shape as the `VmBootHandoff`
-//! page (`vm_handoff`, lib.rs `init_proc_and_boot`). When VM takes over
-//! per-process address spaces, replicating this mapping into each new root
-//! moves to VM together with the rest of the user PTE work; the publish
-//! mechanism (this module + the dispatch arm reading
-//! `MINIX_KERNINFO_USER`) is unchanged by that transition.
+//! page (`vm_handoff`, lib.rs `init_proc_and_boot`). VM replicates this
+//! mapping into every new root in `init_page_table`; the bootstrap mapping
+//! below exists only because no VM is running yet. The publish mechanism
+//! (this module + the dispatch arm reading `MINIX_KERNINFO_USER`) is
+//! unchanged by that transition.
 
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -180,11 +180,10 @@ pub fn init_kerninfo(kernel_info: &KernelInfo) {
 }
 
 /// Cached physical frame of the kernel info page, or `None` before
-/// [`init_kerninfo`] established it. Read by the VMCTL SetAddrSpace
-/// replication hook (C maps `.usermapped` into every
-/// process address space via the VMCTL_KERN_PHYSMAP protocol, i386
-/// memory.c `arch_phys_map`; this rewrite keeps the kernel as the
-/// mapper — see the module doc's mapping-responsibility note).
+/// [`init_kerninfo`] established it. Read once by `vm_handoff`'s
+/// `VmBootHandoff` builder. VM maps the frame at `KERNINFO_USER_VA` in every
+/// new root (`init_page_table`); the kernel-side VMCTL SetAddrSpace path no
+/// longer maps it (see the D72VM pin test).
 pub(crate) fn kerninfo_page_phys() -> Option<u64> {
     match KERNINFO_PAGE_PHYS.load(Ordering::Relaxed) {
         0 => None,

@@ -18,11 +18,12 @@
 //!    boot-source chains converge there, and the boot-form layer is not
 //!    merged).
 //! 2. **module load source**: `BootFileTable` (gated by magic `MNXBOOT1`). Two
-//!    channels: the `a2` argument that QEMU's `-kernel` direct load hands the
-//!    image (not a U-Boot convention — the U-Boot shim leg passes
-//!    `(extra_argc, extra_argv)` in `a0`/`a1` and is a different entry), and
-//!    the DTB `/chosen` `opensbi,boot-file-table` property (the latter also
-//!    lets OpenSBI `-kernel` direct load plus `-device loader` injection
+//!    channels: a spare `a2` argument (no in-repo producer — QEMU/OpenSBI
+//!    only promise `a0`/`a1`; the six real-machine scripts all inject the
+//!    table through the DTB; the U-Boot shim leg passes `(extra_argc,
+//!    extra_argv)` in `a0`/`a1` and is a different entry), and the DTB
+//!    `/chosen` `opensbi,boot-file-table` property (the exercised path; it
+//!    also lets OpenSBI `-kernel` direct load plus `-device loader` injection
 //!    self-test the whole chain, without waiting for the xtask install leg).
 //!    Entries carry the physical address/length of the staged file bytes; this
 //!    face copies module bytes into bump physical pages in contract order
@@ -219,8 +220,8 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(memmap[0].len as u64);
     say("\n");
 
-    // 2. BootFileTable: both the `a2` channel (QEMU `-kernel` direct-load
-    //    argument) and the DTB /chosen channel must pass the DRAM bound gate
+    // 2. BootFileTable: both the spare `a2` channel (no in-repo producer) and
+    //    the DTB /chosen channel must pass the DRAM bound gate
     //    and then the magic gate before dereference (reading a hartid or a
     //    garbage pointer directly is a Load fault; the discipline established
     //    by real-hardware and U-Boot forensics).
