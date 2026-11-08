@@ -226,6 +226,10 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
             continue
         raw_ids = cells[idx_id_local]
         row_ids = [part for part in re.split(r"[、,，\s]+", raw_ids) if part]
+        # Round-scoped IDs (`R16/FACT-P1-01`) are the preferred form in a
+        # multi-round ledger: they keep the same short panel ID from being
+        # matched across rounds. Coverage matching uses the short form.
+        row_ids = [re.sub(r"^R\d+/", "", part) for part in row_ids]
         if not row_ids:
             report.fail("ledger", f"台账行没有发现 ID: {line}")
             continue
