@@ -501,8 +501,9 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
 /// `names_pool` is the physical bump page base: the pointer field of
 /// `BootModule.name` must also be a physical address — the kernel's
 /// `store_kernel_info` reads `module.name.as_bytes()` once at the `arch_boot`
-/// entry (the physical-address leg after satp is written and before enable;
-/// os/kernel/src/lib.rs:fn store_kernel_info), and a baked VMA handed in there blows up on the spot
+/// entry, before the bootstrap root is built and before `satp` is written
+/// (MMU off, pure physical-address view; os/kernel/src/lib.rs:fn
+/// store_kernel_info), and a baked VMA handed in there blows up on the spot
 /// as well. After the byte-pool slot (pure data, call-site `auipc` base) is
 /// copied into the physical name pool, the fat pointer is assembled in place —
 /// reachable from both views.
