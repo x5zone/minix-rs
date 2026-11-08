@@ -26,3 +26,12 @@ r19_fixed_doc_sha256=56cefc7d71673df3b75394558092384dd907af0d6966e27557b98c2d36d
 r19_fixed_doc_lines=3387
 r19_panel_round=round19
 r19_panel_role_files=fact.md reader-a.md reader-b.md reader-c.md refute.md design-d1.md design-d2.md
+
+# R20 round
+r20_panel_base_head=03ed48505c1e605a1a070e818397704ae4283128
+r20_panel_base_doc_sha256=56cefc7d71673df3b75394558092384dd907af0d6966e27557b98c2d36db2545
+r20_fix_head=e4e26862a39db03faf98ca585983e882f3953160
+r20_fixed_doc_sha256=0314e194a7d174cc4be47af181aba73fe87ed4e87f0082ed177f92ac6fe349c0
+r20_fixed_doc_lines=3390
+r20_panel_round=round20
+r20_panel_role_files=fact.md reader-a.md reader-b.md reader-c.md refute.md design-d1.md design-d2.md
