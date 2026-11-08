@@ -373,6 +373,9 @@ impl KernelInfo {
         //     DESIGN-09 (D01): zero-length or unaligned entries would be
         //     silently skipped by consumers, hiding boot-shim bugs.
         for (i, r) in self.memmap.iter().enumerate() {
+            r.base.0
+                .checked_add(r.len as u64)
+                .unwrap_or_else(|| panic!("KernelInfo: memmap[{}] span overflows u64", i));
             assert!(r.len > 0, "KernelInfo: memmap[{}] has zero length", i);
             assert!(
                 r.base.0 % 0x1000 == 0,
@@ -381,6 +384,9 @@ impl KernelInfo {
             );
         }
         for (i, r) in self.reserved_regions.iter().enumerate() {
+            r.base.0
+                .checked_add(r.len as u64)
+                .unwrap_or_else(|| panic!("KernelInfo: reserved_regions[{}] span overflows u64", i));
             assert!(r.len > 0, "KernelInfo: reserved_regions[{}] has zero length", i);
             assert!(
                 r.base.0 % 0x1000 == 0,
@@ -835,6 +841,19 @@ mod tests {
         ];
         let mut info = make_valid_info();
         info.boot_modules = &OVERLAP;
+        info.validate();
+    }
+
+    #[test]
+    #[should_panic(expected = "memmap[0] span overflows")]
+    fn test_validate_rejects_memmap_span_overflow() {
+        static OVERFLOW: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(u64::MAX - 1),
+            len: 4,
+        }];
+        let mut info = make_valid_info();
+        info.memmap = &OVERFLOW;
+        info.reserved_regions = &[];
         info.validate();
     }
 

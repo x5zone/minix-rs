@@ -37,4 +37,4 @@
 - adjacent 阻塞: 0
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（六处跨度加法 checked_add）
 - 成本: agent 7 / token 未采集 / 耗时 约 40 分钟（面板 + 修复 + 三门）
-- 回读: RB20 与 meta R20 待提交后执行
+- 回读: RB20 判 NOT PASS（LSR 释义/八条未同步等 2 P2 + 5 P3），补修后 minix-boot 189、三门回绿；meta R20 待跑

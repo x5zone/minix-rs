@@ -1032,14 +1032,14 @@
 
 - 文档：§1.1 缩写表（VM/PM/RS/DTB/SBI/OVMF/AAVMF/MTRR/LSR）；§1.2 四坐标读序；§1.4 五栈名/索引成员/门链定义；§2.3 删除扫描后缀支；§2.4.1.1 表行；§2.4.1.3 取整口径；§2.6.4 TLB 窗口；§2.7 入口/参数来源；§3.1 U-Boot `a0`；§3.4 深拷要求与两组来源；§3.4.2 八条分歧、user_end 分类；§3.5 正面判据；§3.7 两个“5”成员；§3.10 来源句；§4.1 非 UEFI 列/256 页；§4.2.1 动作 8；§4.3 接收侧模块复核；§4.4 标题/门链；§4.6 包装关系/1 GiB size 条件；§5.1 M6；§5.2.1 868 命令；§5.4 M3/M6 子项；§7.2 清单口径；§7.5 指针。
 - 代码：`kernel_info`/`vm_handoff`/`memmap_source` 六处裸加改 `checked_add`；`exit_boot_services` 注释改测试路径 best-effort；`main.rs` 入口注释改 `BootHandoffV1`。
-- 测试：`minix-boot` 188、boot-shim 135、ebs audit 4、kernel mock 860+8、minix-arch 287。
+- 测试：`minix-boot` 189、boot-shim 135、ebs audit 4、kernel mock 860+8、minix-arch 287。
 - QEMU：三门 PASS。
 
 ### R20 §5 复验
 
 - 文档六门全绿（anchor 108/108、code-map 46/46、style 0、ref 通过、承载门、结构 0）。
 - 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无 dead_code。
-- RB20/meta R20 提交后执行。
+- RB20 判 **NOT PASS**（P0=0、P1=0；两条 P2：`LSR` 释义、参数计数未同步；五条 P3）。已补修（`LSR`→串口线路状态寄存器、§4.9/源码注释改八条、§7.2 补 `pm/misc.c`、§4.6 补 256 页限定、§3.4.3 三腿寄存器、§5.2.1 改整条丢弃、新增 memmap 单区间溢出负控），补修后 `minix-boot` 189、六门与三门回绿。meta R20 待跑。
 
 ### R20 §6 指标
 
@@ -1047,7 +1047,7 @@
 
 ### R20 §7 状态
 
-`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 + F-R20-01..03 均为 ② 带 R21 档期；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB20/meta R20 待跑；G8 本轮新增 64 条（仍大于 0）；G9 ⑥ 项 D2-02/05/07 已实施，D1 其余不采纳。
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 + F-R20-01..03 均为 ② 带 R21 档期；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB20 判 NOT PASS 后七项已补修；meta R20 待跑；G8 本轮新增 64 条（仍大于 0）；G9 ⑥ 项 D2-02/05/07 已实施，D1 其余不采纳。
 
 ### R20 §8 给 meta-review 的不确定点
 

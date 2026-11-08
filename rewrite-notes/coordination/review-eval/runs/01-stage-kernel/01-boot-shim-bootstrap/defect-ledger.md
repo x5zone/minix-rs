@@ -1421,3 +1421,18 @@
 | DESIGN-D2-05 | design-d2 | P2 | 测试快照非配对 | ① | `exit_boot_services` 注释改“best-effort、不与 build_memmaps 同 MapKey”；生产用 ebs_pair | 源码注释 | 与 §3.1 一致 |
 | DESIGN-D2-06 | design-d2 | P3 | 单实现 trait | ③ | 与 F-R17-01 同一裁决点，未新增证据；保留待用户裁决 | trait-audit 1/15/0 | 不重复记账 |
 | DESIGN-D2-07 | design-d2 | P3 | 入口注释身份歧义 | ① | `main.rs` 注释改“serialize BootHandoffV1” | 源码注释 | 与 §4.1 一致 |
+
+### R20 独立回读（RB20）与补修
+
+`panel/round20-rb.md` 判 NOT PASS（P0=0、P1=0；两条 P2 + 五条 P3）。12 条 ① 中 10 条成立；阻断项是 R20 新引入的 `LSR` 释义错误与参数计数未同步。
+
+| RB20 项 | 严重度 | 处置 | 证据 |
+|---|---|---|---|
+| `LSR` 被释成段选择子 RPL | P2 | ① 改为“串口 Line Status Register（0x3FD）”，与 §6.3/`lib.rs:341-343` 一致 | 源码注释 |
+| 参数分歧八条未同步 §4.9 与源码注释 | P2 | ① §4.9 改“八条”；`boot_params.rs:8` 改 eight | 文档/源码 grep |
+| §7.2 枚举漏 `pm/misc.c` | P3 | ① 补入枚举 | 正文 422 行引用 |
+| §4.6 “预算是 1024 页”未限定腿 | P3 | ① 改为“UEFI/U-Boot 腿 1024，两个直核面 256” | `bootface.rs:135` |
+| §3.4.3 `x0` 泛化 | P3 | ① 改为三腿寄存器 `rbx`/`x0`/`a0` | §3.7 权威表 |
+| §5.2.1 “整条截断”措辞 | P3 | ① 改“整条丢弃” | §3.4.2 合同 |
+| 新增 `checked_add` 缺负控 | P3 | ① `kernel_info` 对每条 memmap/reserved 做 `checked_add`，新增单区间溢出负控；`minix-boot` 189 | `test_validate_rejects_memmap_span_overflow` |
+| QEMU 三门未重放 | — | 回读局限，本轮提交前主 agent 重跑三门 | 见 loop §4 |
