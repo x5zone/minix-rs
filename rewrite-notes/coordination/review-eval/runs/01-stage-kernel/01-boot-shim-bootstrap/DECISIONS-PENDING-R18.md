@@ -113,7 +113,7 @@ A，但要分阶段：
 
 ### 选项
 
-**A. 删掉语义分区，发送侧直接解码 wire 构造 `KernelInfo`。** 接收方已经有解码器，发送侧复用它。
+**A（A2 形态）：删掉 arena 语义工作分区，以唯一的语义存储产生发送侧报告，并编码为 wire；接收侧从 wire 解码到自己的存储。** 发送侧直接借用分类结果构造报告（不经 encode→decode 往返）；wire 仍是唯一线上真相。
 
 - 收益：少 6 KiB、少一遍写、消掉“两份真相”这一类缺陷。
 - 代价：发送侧启动路径多一次解码；解码器必须在发送侧也可用（现在它主要在接收侧）；`KernelInfo` 仍然需要 `'static` 切片，所以语义数组仍要存在，只是从“分类时写”变成“解码后写”。
@@ -260,7 +260,7 @@ A。它是三者里最小、最显式的一步；B 的收益与 A 相同但要�
 
 选项：
 
-- **A. fail-closed**：没有注册就 panic。前提是三条生产腿都会注册（UEFI、U-Boot、两个直核面都注册；QEMU 测试内核可能不注册）。
+- **A. fail-closed**：没有注册就 panic。前提是五条生产入口都会注册（x86_64 UEFI、aarch64 UEFI、riscv64 U-Boot、riscv64 直核、aarch64 直核——注册矩阵见 §13.1c；代码核实 30 个 QEMU 测试内核也全部注册，兜底零依赖）。
 - **B. 保留兜底，但先把内核/模块/root 的区间从候选里排除。**
 - **C. 维持现状**，把它当测试专用路径。
 
@@ -487,3 +487,83 @@ D-7 保留 fail-closed；D-8 归档；P-1/P-2 作 workflow 基础设施。
 1. **D-6**：封闭危险 fallback（可能把仍存活的物理页重新发出去，优先级最高）。
 2. **D-5**：证明 arena 生命周期与 VM 自由页交付顺序（先证明是否真有缺陷，再决定释放或扣除）。
 3. **D-1 + D-4**：统一借用/拥有数据模型（长期价值最大；D-2 随此设计，D-3 作局部改进，P-1/P-2 可并行）。
+
+## 13. 第三轮：材料补齐与最终修订（2026-11-09）
+
+> 说明：GPT 本轮指出的两处正文问题（D-2“24 字节”、R17 状态）**在上一轮（§12.1 / §0 / §8.3）已修正**；本节用精确数据再确认一遍，并补上 GPT 要求的全部三组材料。
+
+### 13.1 三组材料（GPT 请求的代码事实）
+
+#### a. D-2：类型尺寸、arena 布局与发送侧调用链
+
+- **`MemoryRegion`**：`pub struct MemoryRegion { pub base: PhysBytes, pub len: usize }`（`kernel_info.rs:537`）——`PhysBytes` 是 `u64` 新类型，64 位下 `size_of::<MemoryRegion>() == 16`。**不是 24 字节**；6144 = 384 × 16。
+- **arena 分区常量**（`handoff_v1.rs`）：`ARENA_CAP=36864`（9 页）；`WIRE_OFFSET=256` → 可用表@256（128×16=2048）→ 保留表@2304（256×16=4096）→ 模块表@6400（12×32=384）→ 平台源@6784（4×16=64）→ 参数@6848（1024）→ `WIRE_END=7872`；语义可用表@7872（128×16=2048）→ 语义保留表@9920（256×16=4096）→ `SEMANTIC_END=14016`；来源记录@14016..35328；startup@35328..36768。
+- **发送侧调用链**（UEFI 腿）：`prepare_and_enter_kernel_image` → 塑形 carrier（`build_kernel_info` 只带标量）→ `serializer.write_envelope(carrier)` → 配对循环 `ebs_map::classify_into_handoff` 对每条区域调 `serializer.push_memmap`（`ebs_map.rs:792`，wire+语义双写）→ `decode_descriptors(serializer.as_bytes())`（`uefi_helpers.rs:1102`）→ **memmap/reserved 切片直接指向 arena 语义分区**（`uefi_helpers.rs:1111/1117`：`arena_pa + SEMANTIC_MEMMAP_OFFSET` / `SEMANTIC_RESERVED_OFFSET`）→ 最终 `KernelInfo` → `enter_kernel_image_v1` 内 `boot_validate_and_prepare` 与 layout 规划（`lib.rs:415` 起）→ 跳转。U-Boot 腿同构（`uboot_main.rs:426/431`）。
+- **A2 可行性结论**：语义工作区唯一起作用是给发送侧 `KernelInfo` 的 `'static` 切片做 backing；其消费者只在跳转前。因此语义存储可移到 shim 自己的 `.bss`（`BootStorage`），arena 只留 wire——**不需要发送侧 encode→decode 往返**。
+- **收益核算（不写“节省 6 KiB”）**：删掉语义分区后来源/startup 可前移 6144 B，arena 末尾从 36768 降到 30432——**9 页可缩到 8 页，省 4 KiB 页级分配**；语义存储移入 shim `.bss` 增 6144 B——**净物理占用不一定下降**，按链接映像核算。文档不再把 6144 B 写成“确定节省”。
+
+#### b. D-5：arena 最后读取与 VM 自由页交付的真实时序
+
+- **接收链**：`arch_boot_resume_v1`（`lib.rs`）→ `decode_envelope` → `decode_memmap`（拷入 `MEMMAP_REGION_STORE`）/`decode_reserved_regions`/`decode_modules`（拷入 `BOOT_MODULE_STORE`）/`decode_platform_sources`（拷入 `PLATFORM_SOURCE_STORE`）/`decode_param_buf`（拷入 `PARAM_BUF_STORE`）/`decode_sources`（拷入 `SOURCE_RECORD_STORE`）/`decode_startup`（拷入 `STARTUP_RECORD_STORE`）→ 用这些 store 的切片构造 `kinfo` → `validate_requiring_sources` → `resume_boot_pt_alloc` → `resume_after_v1_decode` → `resume_additive` → `jump_to_kmain`。**解码后不保留 `arena_pa`**；`kinfo` 的切片指向 `.bss` stores，不指向 arena。
+- **发布链**：`kmain`（`lib.rs:1531` 调 `init_proc_and_boot`）→ `init_proc_and_boot`（`:2324`）→ `build_vm_handoff`（`:2685`）→ `classify`（`vm_handoff.rs:516`）→ 交接页（`VM_BOOT_HANDOFF_VA`）→ VM 启动时读取（`os/servers/vm/src/boot.rs:292-315`，“before scheduling VM”）。
+- **时序结论**：`LastRead(arena)`（resume 解码）= 早于 `Publish(VMFreePages)`（kmain 的 build_vm_handoff）→ 早于 `FirstVMAllocation`（VM 启动后）。**静态链成立**；缺的只是一条端到端测试钉住它（§12.5 的 poison 测试）。
+- **`KernelInfo` 是否间接引用 arena**：否——七个分区全部 `decode_*` 拷贝进 `.bss` stores；`platform_sources` 是携带 DTB 指针的 opaque 句柄，不引用 arena。
+- **B 的隐含缺陷（GPT 指出，采纳）**：若把 arena 放进 4 MiB 页表 bump 区，必须保证内核 bump allocator 不会把 arena 页再发出去——“落在最终被扣除的区间里”不等于“内部 allocator 不会重用”。
+
+#### c. D-6：五条生产入口的注册矩阵
+
+| 入口 | `boot_alloc_region` 注册点 | 首次可能进入 fallback 的位置 | 注册是否先于任何页表分配 |
+|---|---|---|---|
+| x86_64 UEFI | `uefi_helpers.rs:916` | `arch_boot_finish` → `boot_validate_and_prepare`（`lib.rs`） | 是（`arch_boot` 前） |
+| aarch64 UEFI | 同上（共享路径） | 同上 | 是 |
+| riscv64 U-Boot | `uboot_main.rs:410` | `arch_boot` 前已注册；resume 腿再 `resume_boot_pt_alloc` | 是 |
+| riscv64 直核（`bootface`） | `bootface.rs:272` | 同上 | 是 |
+| aarch64 直核（`bootface_a64`） | `bootface_a64.rs:256` | 同上 | 是 |
+
+另：30 个引用 `arch_boot` 的 .rs 测试内核**全部注册 `init_boot_pt_alloc`**；兜底 vmark 零引用。→ **无任何入口走到 fallback**，A 可无条件冻结。
+
+### 13.2 对 GPT 意见的采纳与反驳
+
+**采纳（与 GPT 一致的部分）**：
+- D-1：A（`BootStorage` + `BootReport<'a>`），第一阶段先查清 `KernelInfo` 的真实使用生命周期；内核侧 `.bss` 已是真所有权（§12.3），迁移面=生产者/交接类型。
+- D-2：**A2**（单一语义来源，wire 从同源编码，接收侧解码；不制造发送侧往返）。
+- D-3：C（同算法、两实例、固定分区）+ A 的断言合同；编译期只断言常量，运行时输入的合法性不假装编译期已证。
+- D-4：A（`FileBytes<'a>` 显式枚举）；三条合同（借用不可覆盖、源/目标不交检查保留、不长期独占 `FileLoader`）；`.bss` 缩减量按全部 `Vec`/`Box`/parser 工作区清点后再宣告。
+- D-5：先合同后决定；扣除由内核产生；B 的隐含缺陷采纳。
+- D-6：A（矩阵已补齐）；D-7：B + 负控；D-8：合并归档；P-1：字段分离、保留 NOT PASS；P-2：解析器驱动、第一版不做锚点；P-3：先闭合安全合同与设计边界，再固定基线启动 R17。
+
+**反驳/修正 GPT 的三点**：
+1. **“24 字节”算术问题**：已核实 `MemoryRegion` = 16 B（`u64` + `usize`），6144 = 384 × 16；GPT 据此推出的 9216 不成立。相关正文在 §3/§12.1 已修正。
+2. **“7616 是纯内存图 wire 分区”**：7616 是整个 wire 载荷（两表 6144 + 模块 384 + 平台 64 + 参数 1024）；比较口径统一为“两表 wire 6144 对两表语义 6144”。
+3. **“删除即节省 6 KiB 物理内存”**：不成立也不作为收益表述——真实账是 arena 9→8 页（省 4 KiB 页分配）与 shim `.bss` +6144 的净差，按链接映像核算（§13.1a）。
+4. 另：GPT 提到的“三条生产腿”不准确——是五条入口（§13.1c），且 30 个测试内核全部注册，兜底零依赖；D-6 的 A 无附加条件。
+
+### 13.3 冻结判定表（能否立即冻结）
+
+| 编号 | 修订后建议 | 冻结状态 |
+|---|---|---|
+| D-1 | A：`BootStorage` + `BootReport<'a>`；内核侧 `.bss` 存储不动 | **方向可冻结**；实施第一阶段查清生命周期边界 |
+| D-2 | A2：唯一语义来源 + arena 只留 wire；布局改动待链接映像核算 | **方向可冻结**；arena 9→8 页核对后再改偏移 |
+| D-3 | C + A 断言（编译期常量 + 运行期实例区间） | **可立即冻结** |
+| D-4 | A：`FileBytes<'a>`；C 仅原型 | **方向可冻结** |
+| D-5 | D-5′：合同 + 端到端 poison 测试；通过→维持现状（可回收），否则内核侧扣除 | **不可冻结 A**；合同与测试先行 |
+| D-6 | A：生产 fail-closed | **可立即冻结**（五入口矩阵已核实） |
+| D-7 | B + 重叠失败测试 | **可立即冻结** |
+| D-8 | 合并 + 归档 | **可立即冻结** |
+| P-1 | 8 字段判决账（`reviewer_verdict` 与 `user_decision` 分列，保留 NOT PASS） | **可立即冻结** |
+| P-2 | 解析器驱动表结构 + 跨文档链接门（第一版不做锚点） | **可立即冻结** |
+| P-3 | 先安全合同（D-5/D-6）+ 设计边界（D-1/2/4）→ 固定基线 → R17-panel | **可立即冻结** |
+
+### 13.4 三个设计主题（GPT 最新分组，采纳）
+
+| 设计主题 | 项目 | 共同问题 |
+|---|---|---|
+| 数据所有权与生命周期 | D-1、D-4 | 谁持有数据、谁能够借用、何时失效 |
+| 数据表示与跨镜像交接 | D-2 | 哪份表示权威、如何避免两套真相 |
+| 物理分区与生命周期回收 | D-3、D-5 | 谁分配物理页、什么时候能重新发放 |
+
+D-6/D-7 是两个较小代码债，归入“物理分配安全”主题下独立处理；D-1/D-2/D-4 一起设计、分批实施；D-3 不并入所有权重构；D-5 不并入扣除表重构。
+
+### 13.5 结论
+
+三组材料已补齐；GPT 的 24 字节算术、7616 口径与“节省 6 KiB”三点已用代码事实修正（§13.2）。剩余唯一未闭合的是 D-5 的端到端时序测试——其余十项均可冻结。冻结后按 §13.3 的批次实施：先 D-6/D-7/D-8/P-1/P-2 与 D-3 断言，再 D-1/D-2/D-4 分批迁移，D-5 以合同与测试收尾。
