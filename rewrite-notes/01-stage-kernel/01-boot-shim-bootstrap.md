@@ -2811,7 +2811,7 @@ Step 3 的 `enable()` 在 x86-64 上做四件事：
 #[cfg(target_arch = "aarch64")]
 fn rust_image_main(arena_pa: usize) -> ! {
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
-    // 两条链的分道：直核 `-kernel`（QEMU 不设参，x0=0）走自引导面；
+    // 两条链的分道：直核 `-kernel`（QEMU 观察到不设 `x0` 参数——非规范保证，仅本仓 QEMU 虚机实测；真板 `-kernel` 行为以板级文档为准）走自引导面；
     // boot-shim UEFI 链 x0=arena 物理地址走 v1 解码 + 高半 resume 面。
     if arena_pa == 0 {
         bootface_a64::bootface_a64();
