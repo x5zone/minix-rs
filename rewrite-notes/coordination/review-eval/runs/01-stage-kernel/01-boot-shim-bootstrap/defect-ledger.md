@@ -38,18 +38,18 @@
 | READER-A-02 | reader-a | P3 | 教学/链接顺序 | ② | 转出：follow-ups.md D01-F12（16 字节对齐论证依赖链接顺序，需链接脚本证据） | panel/reader-a.md READER-A-02 | 不适用（转出） |
 | READER-A-03 | reader-a | P3 | 事实/NUL 语义 | ② | 转出：follow-ups.md D01-F12（mb_set_param 删除扫描的 NUL 语义需 C 源码复核） | panel/reader-a.md READER-A-03 | 不适用（转出） |
 | READER-A-04 | reader-a | P3 | 事实/空槽顺序 | ② | 转出：follow-ups.md D01-F12（add_memmap 空槽填充顺序需 C 源码复核） | panel/reader-a.md READER-A-04 | 不适用（转出） |
-| READER-A-05 | reader-a | P1 | 文档/分配接口 | ① | 已修：§3.1 明确页分配 allocate_pages 与池分配 allocate_pool 两类 | rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md §3.1 | L4 文档五门重跑 |
-| READER-A-06 | reader-a | P1 | 文档/未定义术语 | ① | 已修：test-kernel-map 已定义；D1 闸改为描述性一致性检查 | 同篇 §3.4、§6.1 | L4 文档五门重跑 |
-| READER-A-07 | reader-a | P1 | 文档/术语 | ① | 已修：§3.1 补 [ARCH] 架构演进标注说明 | 同篇 §3.1 | L4 文档五门重跑 |
-| READER-A-08 | reader-a | P1 | 文档/唯一落点 | ① | 已修：read_required 收窄为内核 ELF 落点，模块另有 panic | 同篇 §3.2、§4.3 | L4 文档五门重跑 |
-| READER-A-09 | reader-a | P0 | 文档/引文保真 | ① | 已修：§3.8 register 引文补 release 守门（同 FACT-07） | 同篇 §3.8 | L4 文档五门重跑 |
-| READER-A-10 | reader-a | P1 | 文档/计数矛盾 | ① | 已修：四条→五条（同 FACT-16） | 同篇 §3.7 | L4 文档五门重跑 |
+| READER-A-05 | reader-a | P1 | 文档/分配接口 | ④ | 已修：§3.1 明确页分配 allocate_pages 与池分配 allocate_pool 两类 | rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md §3.1 | L4 文档五门重跑 |
+| READER-A-06 | reader-a | P1 | 文档/未定义术语 | ④ | 已修：test-kernel-map 已定义；D1 闸改为描述性一致性检查 | 同篇 §3.4、§6.1 | L4 文档五门重跑 |
+| READER-A-07 | reader-a | P1 | 文档/术语 | ④ | 已修：§3.1 补 [ARCH] 架构演进标注说明 | 同篇 §3.1 | L4 文档五门重跑 |
+| READER-A-08 | reader-a | P1 | 文档/唯一落点 | ④ | 已修：read_required 收窄为内核 ELF 落点，模块另有 panic | 同篇 §3.2、§4.3 | L4 文档五门重跑 |
+| READER-A-09 | reader-a | P0 | 文档/引文保真 | ④ | 已修：§3.8 register 引文补 release 守门（同 FACT-07） | 同篇 §3.8 | L4 文档五门重跑 |
+| READER-A-10 | reader-a | P1 | 文档/计数矛盾 | ④ | 已修：四条→五条（同 FACT-16） | 同篇 §3.7 | L4 文档五门重跑 |
 | READER-A-11 | reader-a | P2 | 文档/歧义 | ② | 转出：follow-ups.md D01-F12（BootFileTable 与 DTB 取模块的“或”歧义） | panel/reader-a.md READER-A-11 | 不适用（转出） |
-| READER-A-12 | reader-a | P2 | 文档/空承诺 | ① | 已修：§4.1 改为一段式入口加三段内部流程 | 同篇 §4.1 | L4 文档五门重跑 |
-| READER-A-13 | reader-a | P2 | 文档/未定义术语 | ① | 已修：§3.4 补 MapKey 定义 | 同篇 §3.4 | L4 文档五门重跑 |
-| READER-A-14 | reader-a | P2 | 文档/悬空引用 | ① | 已修：NR_BOOT_PROCS 回指改为 boot image 表 | 同篇 §4.3 | L4 文档五门重跑 |
+| READER-A-12 | reader-a | P2 | 文档/空承诺 | ④ | 已修：§4.1 改为一段式入口加三段内部流程 | 同篇 §4.1 | L4 文档五门重跑 |
+| READER-A-13 | reader-a | P2 | 文档/未定义术语 | ④ | 已修：§3.4 补 MapKey 定义 | 同篇 §3.4 | L4 文档五门重跑 |
+| READER-A-14 | reader-a | P2 | 文档/悬空引用 | ④ | 已修：NR_BOOT_PROCS 回指改为 boot image 表 | 同篇 §4.3 | L4 文档五门重跑 |
 | READER-A-15 | reader-a | P2 | 教学/证据不足 | ② | 转出：follow-ups.md D01-F12（kern_stack_top 与 L7 断言不等价） | panel/reader-a.md READER-A-15 | 不适用（转出） |
-| READER-A-16 | reader-a | P2 | 文档/错误节号 | ① | 已修：§7.5 三行错误节号已收窄 | 同篇 §7.5 | L4 文档五门重跑 |
+| READER-A-16 | reader-a | P2 | 文档/错误节号 | ④ | 已修：§7.5 三行错误节号已收窄 | 同篇 §7.5 | L4 文档五门重跑 |
 | READER-B-01 | reader-b | P1 | 结构/边界声明 | ② | 转出：follow-ups.md D01-F13（§1.4 边界与第 3/4 章重叠） | panel/reader-b.md READER-B-01 | 不适用（转出） |
 | READER-B-02 | reader-b | P2 | 结构/时序倒置 | ② | 转出：follow-ups.md D01-F13（§1.1 栈与 memmap 时序倒置） | panel/reader-b.md READER-B-02 | 不适用（转出） |
 | READER-B-03 | reader-b | P1 | 教学/结论先于证据 | ② | 转出：follow-ups.md D01-F14（§1.2 结论先于证据、四次重复） | panel/reader-b.md READER-B-03 | 不适用（转出） |
@@ -70,13 +70,13 @@
 | READER-B-18 | reader-b | P2 | 结构/C 失败模式 | ② | 转出：follow-ups.md D01-F13（§6.3 前两行是 C 的失败模式） | panel/reader-b.md READER-B-18 | 不适用（转出） |
 | READER-B-19 | reader-b | P2 | 教学/未标记合取 | ② | 转出：follow-ups.md D01-F13（§2.4.1 安全论证是未标记合取） | panel/reader-b.md READER-B-19 | 不适用（转出） |
 | READER-B-20 | reader-b | P2 | 结构/从句藏约束 | ② | 转出：follow-ups.md D01-F13（§2.4.2 16 条截断只在从句出现） | panel/reader-b.md READER-B-20 | 不适用（转出） |
-| READER-C-01 | reader-c | P1 | 文档/唯一落点 | ① | 已修：同 READER-A-08 | panel/reader-c.md READER-C-01 | L4 文档五门重跑 |
-| READER-C-02 | reader-c | P0 | 文档/引文保真 | ① | 已修：同 FACT-07 | panel/reader-c.md READER-C-02 | L4 文档五门重跑 |
-| READER-C-03 | reader-c | P0 | 文档/交接面矛盾 | ① | 已修：§3.1 传递参数改为 arena 基址，KernelInfo 序列化进 arena | 同篇 §3.1 | L4 文档五门重跑 |
-| READER-C-04 | reader-c | P1 | 教学/单形态结论 | ① | 已修：§3.8 按已用部分扣除加自引导路径限定 | 同篇 §3.8 | L4 文档五门重跑 |
+| READER-C-01 | reader-c | P1 | 文档/唯一落点 | ④ | 已修：同 READER-A-08 | panel/reader-c.md READER-C-01 | L4 文档五门重跑 |
+| READER-C-02 | reader-c | P0 | 文档/引文保真 | ④ | 已修：同 FACT-07 | panel/reader-c.md READER-C-02 | L4 文档五门重跑 |
+| READER-C-03 | reader-c | P0 | 文档/交接面矛盾 | ④ | 已修：§3.1 传递参数改为 arena 基址，KernelInfo 序列化进 arena | 同篇 §3.1 | L4 文档五门重跑 |
+| READER-C-04 | reader-c | P1 | 教学/单形态结论 | ④ | 已修：§3.8 按已用部分扣除加自引导路径限定 | 同篇 §3.8 | L4 文档五门重跑 |
 | READER-C-05 | reader-c | P2 | 教学/探针不同源 | ② | 转出：follow-ups.md D01-F15（探针形态与真机读数不同源） | panel/reader-c.md READER-C-05 | 不适用（转出） |
 | READER-C-06 | reader-c | P2 | 结构/一致性 | ② | 转出：follow-ups.md D01-F18（reader-c 结构/一致性项） | panel/reader-c.md READER-C-06 | 不适用（转出） |
-| READER-C-07 | reader-c | P1 | 文档/归属矛盾 | ① | 已修：§4.6 LAPIC/IO-APIC 归属改为 Step 2c | 同篇 §4.6 | L4 文档五门重跑 |
+| READER-C-07 | reader-c | P1 | 文档/归属矛盾 | ④ | 已修：§4.6 LAPIC/IO-APIC 归属改为 Step 2c | 同篇 §4.6 | L4 文档五门重跑 |
 | READER-C-08 | reader-c | P2 | 结构/一致性 | ② | 转出：follow-ups.md D01-F18（reader-c 一致性/指针项） | panel/reader-c.md READER-C-08 | 不适用（转出） |
 | READER-C-09 | reader-c | P2 | 结构/一致性 | ② | 转出：follow-ups.md D01-F18（reader-c 一致性/指针项） | panel/reader-c.md READER-C-09 | 不适用（转出） |
 | READER-C-10 | reader-c | P2 | 结构/一致性 | ② | 转出：follow-ups.md D01-F18（reader-c 一致性/指针项） | panel/reader-c.md READER-C-10 | 不适用（转出） |
@@ -104,26 +104,26 @@
 | FACT-13 | fact | P2 | 文档/计数维度 | ① | 已修：startup_objects 段"四条"改"五条腿四个写点"；kernel_info.rs 代码注释同步 | — | 同上 |
 | FACT-14 | fact | P2 | 文档/里程碑串截断 | ① | 已修：补 `(high half)` 后缀 | lib.rs:358 | 同上 |
 | FACT-15 | fact | P3 | 文档/节选归属 | ① | 已修：DEV_PIECE 改注释声明为文件级常量 | — | 同上 |
-| READER-A-01/B-01/C-01 | readers | P0 | 文档/新旧叙事并存（F03 残留簇） | ① | 已修：同 FACT-01..04 批（§4.2/§4.4/§5.2.1/§6.3 全部对齐删除态） | 三读者交叉同靶 | L4 回读 |
-| READER-A-02 | reader-a | P1 | 文档/builder 缺字段 | ① | 已修：§4.4 builder 引文补 `memmap_sources: &[]`/`startup_objects: &[]`（与源码一致——随 FACT-01 批核对） | lib.rs builder | 同上 |
-| READER-A-03/C-02 | readers | P1 | 文档/§3.10 与 §3.9 矛盾 | ① | 已修：§3.10 freepde 行改"先 Option 后退场" | — | 同上 |
-| READER-A-04/C-06 | readers | P2 | 文档/回指落空 | ① | 已修：§1.2"两个分支"回指改指 §2.4 LOAD_BSS 链 | — | 同上 |
-| READER-A-05/B-05 | readers | P2 | 文档/编号无图例 | ① | 已修：§3.4 前加编号图例块（D01-Fnn/D05/T2/Phase A.2） | — | 同上 |
-| READER-B-03 | reader-b | P1 | 文档/计数维度冲突 | ① | 已修：§4.8 开头改"五行并列+归并口径回指" | — | 同上 |
-| READER-B-04 | reader-b | P1 | 文档/三条链 vs 五行 | ① | 已修：§5.2.3 标题去计数、§3.10 收束句改"三类链+回指术语对账" | — | 同上 |
-| READER-C-03 | reader-c | P1 | 文档/因果前提缺失 | ① | 已修：§3.8 补 Rust 侧搬运时序前提（blob 留原地、VM 启动才搬；C 复制后才回收）；表注两种"段帧"说法统一 | 2.4.2 引文 | 同上 |
-| READER-C-04 | reader-c | P2 | 文档/跨二进制钩子因果 | ① | 已修：§6.2 第 4 条拆 shim/内核两腿（钩子每二进制一份，shim 侧恒未注册） | diagnostic.rs 静态量 | 同上 |
-| READER-C-05 | reader-c | P2 | 文档/次序计数 | ① | 已修：§2.8 括注改"步骤级五条+字段级一条"的完整清单 | — | 同上 |
-| READER-C-07 | reader-c | P1 | 文档/隐含不变量 | ① | 已修：§2.4.1 补"下标序=地址序"的成立条件与失效场景 | C 源回填语义 | 同上 |
-| READER-C-08 | reader-c | P1 | 文档/守卫触发场景 | ① | 已修：§4.8 点名 VMA=LMA 测试内核（link.ld 单行 `. = 0x80200000`）为相等场景 | link.ld | 同上 |
-| READER-C-09 | reader-c | P2 | 文档/同段尺寸矛盾 | ① | 已修：Step 2 反向推演改"按 Step 2 自己的尺寸，设备分片槽例外" | — | 同上 |
-| READER-C-10/FACT-10/11 | 多源 | P2 | 文档/计数互斥 | ① | 同 FACT-10/11 批 | — | 同上 |
-| READER-C-11 | reader-c | P2 | 文档/覆盖声明过强 | ① | 已修：M14 行补覆盖边界（路标出现≠内核存活，后者归下游门链） | — | 同上 |
-| READER-C-20 | reader-c | P3 | 文档/测试名与省略声明表面冲突 | ① | 已修：§3.4 补"测试传显式板名验证的是有来源分支；生产传 None" | boot_params.rs:209 | 同上 |
-| READER-C-21 | reader-c | P3 | 文档/BIOS 链无着落 | ① | 已修：改"固件未开分页形态（C 侧语义统一），本仓无 BIOS 产线" | — | 同上 |
-| READER-C-22 | reader-c | P3 | 文档/同形掩盖差异 | ① | 已修：param_buf 句改"仅就 ARCH 同形；BOARD 省略不再保证" | — | 同上 |
-| READER-B-19 | reader-b | P3 | 文档/图面与文字 | ① | 已修：§1.2 改"一条逆向箭头+一条文字标注依赖" | — | 同上 |
-| READER-B-20 | reader-b | P3 | 文档/指涉不明 | ① | 已修：§5.2.3 补三条路标的 EBS 前后归属 | — | 同上 |
+| READER-A-01/B-01/C-01 | readers | P0 | 文档/新旧叙事并存（F03 残留簇） | ④ | 已修：同 FACT-01..04 批（§4.2/§4.4/§5.2.1/§6.3 全部对齐删除态） | 三读者交叉同靶 | L4 回读 |
+| READER-A-02 | reader-a | P1 | 文档/builder 缺字段 | ④ | 已修：§4.4 builder 引文补 `memmap_sources: &[]`/`startup_objects: &[]`（与源码一致——随 FACT-01 批核对） | lib.rs builder | 同上 |
+| READER-A-03/C-02 | readers | P1 | 文档/§3.10 与 §3.9 矛盾 | ④ | 已修：§3.10 freepde 行改"先 Option 后退场" | — | 同上 |
+| READER-A-04/C-06 | readers | P2 | 文档/回指落空 | ④ | 已修：§1.2"两个分支"回指改指 §2.4 LOAD_BSS 链 | — | 同上 |
+| READER-A-05/B-05 | readers | P2 | 文档/编号无图例 | ④ | 已修：§3.4 前加编号图例块（D01-Fnn/D05/T2/Phase A.2） | — | 同上 |
+| READER-B-03 | reader-b | P1 | 文档/计数维度冲突 | ④ | 已修：§4.8 开头改"五行并列+归并口径回指" | — | 同上 |
+| READER-B-04 | reader-b | P1 | 文档/三条链 vs 五行 | ④ | 已修：§5.2.3 标题去计数、§3.10 收束句改"三类链+回指术语对账" | — | 同上 |
+| READER-C-03 | reader-c | P1 | 文档/因果前提缺失 | ④ | 已修：§3.8 补 Rust 侧搬运时序前提（blob 留原地、VM 启动才搬；C 复制后才回收）；表注两种"段帧"说法统一 | 2.4.2 引文 | 同上 |
+| READER-C-04 | reader-c | P2 | 文档/跨二进制钩子因果 | ④ | 已修：§6.2 第 4 条拆 shim/内核两腿（钩子每二进制一份，shim 侧恒未注册） | diagnostic.rs 静态量 | 同上 |
+| READER-C-05 | reader-c | P2 | 文档/次序计数 | ④ | 已修：§2.8 括注改"步骤级五条+字段级一条"的完整清单 | — | 同上 |
+| READER-C-07 | reader-c | P1 | 文档/隐含不变量 | ④ | 已修：§2.4.1 补"下标序=地址序"的成立条件与失效场景 | C 源回填语义 | 同上 |
+| READER-C-08 | reader-c | P1 | 文档/守卫触发场景 | ④ | 已修：§4.8 点名 VMA=LMA 测试内核（link.ld 单行 `. = 0x80200000`）为相等场景 | link.ld | 同上 |
+| READER-C-09 | reader-c | P2 | 文档/同段尺寸矛盾 | ④ | 已修：Step 2 反向推演改"按 Step 2 自己的尺寸，设备分片槽例外" | — | 同上 |
+| READER-C-10/FACT-10/11 | 多源 | P2 | 文档/计数互斥 | ④ | 同 FACT-10/11 批 | — | 同上 |
+| READER-C-11 | reader-c | P2 | 文档/覆盖声明过强 | ④ | 已修：M14 行补覆盖边界（路标出现≠内核存活，后者归下游门链） | — | 同上 |
+| READER-C-20 | reader-c | P3 | 文档/测试名与省略声明表面冲突 | ④ | 已修：§3.4 补"测试传显式板名验证的是有来源分支；生产传 None" | boot_params.rs:209 | 同上 |
+| READER-C-21 | reader-c | P3 | 文档/BIOS 链无着落 | ④ | 已修：改"固件未开分页形态（C 侧语义统一），本仓无 BIOS 产线" | — | 同上 |
+| READER-C-22 | reader-c | P3 | 文档/同形掩盖差异 | ④ | 已修：param_buf 句改"仅就 ARCH 同形；BOARD 省略不再保证" | — | 同上 |
+| READER-B-19 | reader-b | P3 | 文档/图面与文字 | ④ | 已修：§1.2 改"一条逆向箭头+一条文字标注依赖" | — | 同上 |
+| READER-B-20 | reader-b | P3 | 文档/指涉不明 | ④ | 已修：§5.2.3 补三条路标的 EBS 前后归属 | — | 同上 |
 | READER-A 术语组 | reader-a | P3 | 教学/首用未定义 | ④ | 已修：arena/信封/v1、RAMDS、medany、PML4 首用处就地展开 | — | 同上 |
 | DESIGN-D2-01/02/03 | design-d2 | P1 | 设计/死抽象（F04/F05/F06 复核维持） | ② 带日期 | code-excellence 批次执行（用户既定裁决；D2 补充了执行面修正：build_memmaps 族被 QEMU 测试依赖不可删） | panel/round1/design-d2.md | 批次执行时复验 |
 | DESIGN-D2-04 | design-d2 | P2 | 代码/非法状态（kern_stack_top 无上界） | ① | 本轮代码批修复 | design-d2.md | 测试 |
@@ -144,8 +144,8 @@
 | FACT-07 | fact | P2 | 文档/引文无省略标记 | ① | 已修 `ac223745c`：§4.2 补约 35 行 startup 写入段的省略注记 | uefi_helpers:1059-1104 | 同上 |
 | FACT-08 | fact | P1 | 文档/builder 引文缺两行 | ① | 已修 `ac223745c`：引文补 memmap_sources/startup_objects + 字段表补行 | lib.rs builder | 同上 |
 | FACT-10/11/12 | fact | P3 | 文档/引文逐字与判据描述 | ① | 已修 `ac223745c`：vm/utility.c 逐字原文；alloc_lowest 判据三处命中；link.ld 措辞 | C 源 | 同上 |
-| READER-A-01/B-19 | readers | P1 | 文档/GDB 清单查已删字段 | ① | 已修：§6.4 第三层改现存字段+委托链，明示 bootstrap_len 非检查项 | — | 五门 |
-| READER-A-02/B-18/C-04 | readers | P1 | 文档/三套计数互斥 | ① | 同 FACT-01/02/03/09 批（转录块+算式行+契约表全部对齐 124/176） | 实测 | 同上 |
+| READER-A-01/B-19 | readers | P1 | 文档/GDB 清单查已删字段 | ④ | 已修：§6.4 第三层改现存字段+委托链，明示 bootstrap_len 非检查项 | — | 五门 |
+| READER-A-02/B-18/C-04 | readers | P1 | 文档/三套计数互斥 | ④ | 同 FACT-01/02/03/09 批（转录块+算式行+契约表全部对齐 124/176） | 实测 | 同上 |
 | REFUTE-③④ | refute | P2 | 文档/计数格过期+签名失真 | ① | 同上批 + bootstrap_alloc_limit() 无参签名修正 | uefi_helpers:635 | 同上 |
 | REFUTE-① | refute | P2 | 文档/机制过强（TLB） | ① | 已修：改"冷取指"机制表述（三架构不因写表清 TLB） | refute.md | 五门 |
 | REFUTE-② | refute | P2 | 设计/无守护前提（<4GiB） | ① | 已修：§6.3 补一行失败模式（boot-shim 镜像 >4GiB 无守护，OVMF 门链恒低于 4GiB） | refute.md | 同上 |
@@ -153,7 +153,7 @@
 | REFUTE 焦点b | refute | P2 | 设计/store 与 validate 收口序 | ③ | 反证失败：两序均安全（resume 体切片已落地、兜底死代码、validate 无页分配）；文档未主张同序，无冲突 | refute.md | — |
 | D2-01/02/03 | design-d2 | P1 | 设计/死抽象稳定判定 | ② 带日期 | code-excellence 批次（F05 加强为"零生产实现"；F06 补 per-form 空转缺口；F04 拆分——UefiBootShim 零调用可删、trait 本体去留待裁决） | panel/round2/design-d2.md | 批次执行 |
 | D2-10 | design-d2 | P3 | 工具/trait-audit 两类盲区 | ⑤（工作流记录项：入 meta/BLIND-SPOTS 候选，非文档缺陷） | 记入 BLIND-SPOTS 候选（宏展开 impl 假阳性、非 trait 抽象逃逸） | 同上 | meta |
-| READER-C-01/02/03/05/06/08 + B 簇 + A 簇 | readers | P1-P3 | 文档/复述失真与导航 | ① | 批二已修（本轮）：C-01 load_mods 表格行（exec_multiboot:759 实证）、C-02 直核家族限定、C-03 arena 四段布局注、C-05 双前缀+规划函数名统一、C-06 视角锚定句、C-08 aarch64 表址单通道、B-01 框图注、B-02 边界清单补 §2.3、B-03/C-09 三次出场、B-04/C-12 指向 §2.4.2、B-11 两道闸分工、B-15 链形状、A-03 可执行体/库消歧、A-07 跨镜像产线措辞、A-08 指针落点、A-18 升序机制修正（右余量落数组末尾，序不保证；alloc_lowest 按地址取不受影响）、A-04/A-05/A-14/A-17/A-19、B-06/B-13/B-14/B-17、C-07/C-10/C-11 | panel/round2/reader-*.md | 五门全绿+锚点 100/100 |
+| READER-C-01/02/03/05/06/08 + B 簇 + A 簇 | readers | P1-P3 | 文档/复述失真与导航 | ④ | 批二已修（本轮）：C-01 load_mods 表格行（exec_multiboot:759 实证）、C-02 直核家族限定、C-03 arena 四段布局注、C-05 双前缀+规划函数名统一、C-06 视角锚定句、C-08 aarch64 表址单通道、B-01 框图注、B-02 边界清单补 §2.3、B-03/C-09 三次出场、B-04/C-12 指向 §2.4.2、B-11 两道闸分工、B-15 链形状、A-03 可执行体/库消歧、A-07 跨镜像产线措辞、A-08 指针落点、A-18 升序机制修正（右余量落数组末尾，序不保证；alloc_lowest 按地址取不受影响）、A-04/A-05/A-14/A-17/A-19、B-06/B-13/B-14/B-17、C-07/C-10/C-11 | panel/round2/reader-*.md | 五门全绿+锚点 100/100 |
 | B-05/07/08/09/16/20 | reader-b | P3 | 文档/冗余（七处） | ② 带日期 | 纯冗余收敛类，Round 3 与收敛判定合并处理（每处补权威指针或删一处复述；不动正确性） | panel/round2/reader-b.md | Round 3 |
 | D2-04 | design-d2 | P2 | 代码/模块文档四处失真 | ① | 已修：boot-shim/src/lib.rs 与 boot_shim.rs 模块头按 §3.2 口径重写（trait 定义在 minix-boot；kernel 零引用；cfg 8 处实况；T2 注记更新；Why-a-trait 换四条收益带证据强度） | grep 实证 | 编译 0 错 |
 | D2-05 | design-d2 | P1 | 设计/参数表 wire 分歧 | ① | 已修（比照 F10 先例）：doc §3.4 与 boot_params.rs 模块文档统一标 [ARCH: 参数表语义规约化]（重复键首条生效/内部键拒绝/BOARD 按源生成三处分歧；仓内消费者零命中已核） | panel/round2/design-d2.md | 五门 |
@@ -188,12 +188,12 @@
 | DESIGN-D2-01 | design-d2(R2) | P1 | 设计/PagingWithId 零生产实现（F05 加强） | ② 带日期 | code-excellence 批次（R3 d2 独立复核同判"建议删除"） | panel/round2/design-d2.md、panel/round3/design-d2.md | 批次执行 |
 | DESIGN-D2-03 | design-d2(R2) | P1 | 设计/BootShim trait 文档三理由失实（F04 强度重定） | ② 带日期 | code-excellence 批次；模块头失实部分已在 R2 批二 D2-04 修复，trait 本体去留随 UefiBootShim impl 删除后再评估（R3 d2 判"接受保留"） | 同上 | 批次执行 |
 | DESIGN-D2-10 | design-d2(R2) | P3 | 工具/trait-audit 两类盲区（宏 impl 假阳性、enum 逃逸） | ⑤（工作流记录项：入 meta/BLIND-SPOTS 候选，非文档缺陷） | 已记入 meta R3 报告与 BLIND-SPOTS 候选（R3 d2 独立复核同发现） | panel/round2/design-d2.md、panel/round3/design-d2.md | meta 已采集 |
-| READER-A-17 | reader-a(R2) | P2 | 文档/wire 双版本轴未对表 | ① | 已修：§3.4 补"协议身份 v1 vs 信封版本号（当前 8）"两层版本号段 | panel/round2/reader-a.md | 五门 |
-| READER-A-18 | reader-a(R2) | P1 | 文档/升序机制表述错误 | ① | 已修：§2.4.1 改"右余量落数组末尾空槽、序不保证；alloc_lowest 按地址取 min 不依赖序" | 同上 | 同上 |
-| READER-A-19 | reader-a(R2) | P3 | 文档/仓库内库称"第三方" | ① | 已修：§3.2 改"本仓库的共享库 crate minix-boot" | 同上 | 同上 |
+| READER-A-17 | reader-a(R2) | P2 | 文档/wire 双版本轴未对表 | ④ | 已修：§3.4 补"协议身份 v1 vs 信封版本号（当前 8）"两层版本号段 | panel/round2/reader-a.md | 五门 |
+| READER-A-18 | reader-a(R2) | P1 | 文档/升序机制表述错误 | ④ | 已修：§2.4.1 改"右余量落数组末尾空槽、序不保证；alloc_lowest 按地址取 min 不依赖序" | 同上 | 同上 |
+| READER-A-19 | reader-a(R2) | P3 | 文档/仓库内库称"第三方" | ④ | 已修：§3.2 改"本仓库的共享库 crate minix-boot" | 同上 | 同上 |
 | READER-A-20 | reader-a(R2) | P3 | 文档/同句自重复+孤立符号 vmctl_set_addr_space | ② 带日期 | 维护批（局部打磨；与 §4.1 括注重叠已部分收敛） | 同上 | 维护批 |
-| READER-C-18 | reader-c(R1) | P2 | 文档/bootstrap_alloc_limit 签名不一致 | ① | 已修：R3 refute 批把步骤 4 改为 alloc_arena() 经 UEFI allocate_pages(MaxAddress(bootstrap_alloc_limit()))——无参签名与引文一致 | panel/round1/reader-c.md | 五门重跑 |
-| READER-C-19 | reader-c(R1) | P3 | 文档/24 字节归因不闭合 | ① | 已修（信息在 §3.9 可连读；R3 批二把 §3.9 的 wire 版本句改指针后两节连读路径仍在）——补一句显式归因见维护批 | 同上 | 维护批补一句 |
+| READER-C-18 | reader-c(R1) | P2 | 文档/bootstrap_alloc_limit 签名不一致 | ④ | 已修：R3 refute 批把步骤 4 改为 alloc_arena() 经 UEFI allocate_pages(MaxAddress(bootstrap_alloc_limit()))——无参签名与引文一致 | panel/round1/reader-c.md | 五门重跑 |
+| READER-C-19 | reader-c(R1) | P3 | 文档/24 字节归因不闭合 | ④ | 已修（信息在 §3.9 可连读；R3 批二把 §3.9 的 wire 版本句改指针后两节连读路径仍在）——补一句显式归因见维护批 | 同上 | 维护批补一句 |
 
 # Round 4（清积压后首轮；基线 194e6c8c2）
 
@@ -219,26 +219,26 @@
 | DESIGN-D2-14 | design-d2 | P2 | 源码注释/快照时点 | ① | 已修：kernel_info 注释改分腿事实（UEFI 后拍/自引导腿含占用） | 同上 | 同上 |
 | DESIGN-D2-15 | design-d2 | P2 | 文档/五步口径 | ① | 已修（与 FACT-07 同靶，采源码口径） | 同上 | 同上 |
 | DESIGN-D2-16 | design-d2 | P2 | 源码注释/模块分配模型 | ① | 已修：Real-hardware 段改 LOADER_DATA 事实 | 同上 | 同上 |
-| READER-A-01 | reader | P2 | 文档/§1.2 三层依赖密度 | ① | 已修：压成一句+回指 §2.8（去重） | 同上 | 五门 |
-| READER-A-02 | reader | P2 | 文档/16 字节对齐消费者 | ① | 已修：补 ABI 消费者与 #GP 后果、编译选项限定 | 同上 | 同上 |
-| READER-A-03 | reader | P2 | 文档/ARM overlaps 锚点 | ① | 已修：补 earm/pre_init.c:overlaps 锚点 | 同上 | 锚点门 |
-| READER-A-04 | reader | P3 | 文档/ram_authority 未定义 | ① | 已修：wire 引文加编注定界 | 同上 | 五门 |
-| READER-A-05 | reader | P2 | 文档/arena 分区计数 | ① | 已修：七载荷分区列名 + 信封+四段相加口径 | 同上 | 同上 |
-| READER-B-01 | reader | P3 | 文档/跨侧类型论证 | ① | 已修（与 C-09 同靶）：KernelInfo 跨侧、接口类型引导侧 | 同上 | 同上 |
-| READER-B-02 | reader | P3 | 文档/框图双向依赖 | ① | 已修：箭头注拆"依赖 A/B"两行 | 同上 | 同上 |
-| READER-B-03 | reader | P1 | 文档/§3.1 列名 OpenSBI | ① | 已修：列名改 U-Boot shim 路径 + 直核指向 §3.7 | 同上 | 同上 |
-| READER-B-04 | reader | P1 | 文档/三类链循环指认 | ① | 已修：定义收进 §3.7 对账为唯一处，§4.1 只按两列 | 同上 | 同上 |
-| READER-C-01 | reader | P1 | 文档/门链五条集合 | ① | 已修（与 FACT-09 同靶） | 同上 | 同上 |
-| READER-C-02 | reader | P2 | 文档/§2.8 证据数 | ① | 已修：两条在此配证据、三条在 §1.2/§2.6/§2.6.1 | 同上 | 同上 |
-| READER-C-03 | reader | P2 | 文档/§3.8 第四写点 | ① | 已修：换手表 Step 0 行并入接收镜像 resume_additive 注册 | 同上 | 同上 |
-| READER-C-04 | reader | P2 | 文档/riscv 反事实范围 | ① | 已修：限定非 U-Boot 特性直核入口 | 同上 | 同上 |
+| READER-A-01 | reader | P2 | 文档/§1.2 三层依赖密度 | ④ | 已修：压成一句+回指 §2.8（去重） | 同上 | 五门 |
+| READER-A-02 | reader | P2 | 文档/16 字节对齐消费者 | ④ | 已修：补 ABI 消费者与 #GP 后果、编译选项限定 | 同上 | 同上 |
+| READER-A-03 | reader | P2 | 文档/ARM overlaps 锚点 | ④ | 已修：补 earm/pre_init.c:overlaps 锚点 | 同上 | 锚点门 |
+| READER-A-04 | reader | P3 | 文档/ram_authority 未定义 | ④ | 已修：wire 引文加编注定界 | 同上 | 五门 |
+| READER-A-05 | reader | P2 | 文档/arena 分区计数 | ④ | 已修：七载荷分区列名 + 信封+四段相加口径 | 同上 | 同上 |
+| READER-B-01 | reader | P3 | 文档/跨侧类型论证 | ④ | 已修（与 C-09 同靶）：KernelInfo 跨侧、接口类型引导侧 | 同上 | 同上 |
+| READER-B-02 | reader | P3 | 文档/框图双向依赖 | ④ | 已修：箭头注拆"依赖 A/B"两行 | 同上 | 同上 |
+| READER-B-03 | reader | P1 | 文档/§3.1 列名 OpenSBI | ④ | 已修：列名改 U-Boot shim 路径 + 直核指向 §3.7 | 同上 | 同上 |
+| READER-B-04 | reader | P1 | 文档/三类链循环指认 | ④ | 已修：定义收进 §3.7 对账为唯一处，§4.1 只按两列 | 同上 | 同上 |
+| READER-C-01 | reader | P1 | 文档/门链五条集合 | ④ | 已修（与 FACT-09 同靶） | 同上 | 同上 |
+| READER-C-02 | reader | P2 | 文档/§2.8 证据数 | ④ | 已修：两条在此配证据、三条在 §1.2/§2.6/§2.6.1 | 同上 | 同上 |
+| READER-C-03 | reader | P2 | 文档/§3.8 第四写点 | ④ | 已修：换手表 Step 0 行并入接收镜像 resume_additive 注册 | 同上 | 同上 |
+| READER-C-04 | reader | P2 | 文档/riscv 反事实范围 | ④ | 已修：限定非 U-Boot 特性直核入口 | 同上 | 同上 |
 | READER-C-05 | reader | P3 | 文档/计数轴 | ② 带日期 | R5 fact 复核（B-04/术语对账重写后需观察一轮） | panel/round4/reader.md | R5 |
-| READER-C-06 | reader | P2 | 文档/M1 证据类型 | ① | 已修：引文对账、删真机兜底、注明真机不覆盖 C head.S | 同上 | 同上 |
-| READER-C-07 | reader | P2 | 文档/M3 覆盖强度 | ① | 已修：改部分覆盖+源码序钉说明 | 同上 | 同上 |
-| READER-C-08 | reader | P3 | 文档/pg_map USER | ① | 已修：补用户态消费与 pg_identity 对照 | 同上 | 同上 |
-| READER-C-09 | reader | P3 | 文档/跨侧类型论证 | ① | 已修（与 B-01 同靶） | 同上 | 同上 |
-| READER-C-10 | reader | P3 | 文档/24 字节归因 | ① | 已修：§3.5 补 free_upper_idx 8 字节 | 同上 | 同上 |
-| READER-C-12 | reader | P2 | 文档/§1.2 四条编号 | ① | 已修：四条编号+单列一条=五条 | 同上 | 同上 |
+| READER-C-06 | reader | P2 | 文档/M1 证据类型 | ④ | 已修：引文对账、删真机兜底、注明真机不覆盖 C head.S | 同上 | 同上 |
+| READER-C-07 | reader | P2 | 文档/M3 覆盖强度 | ④ | 已修：改部分覆盖+源码序钉说明 | 同上 | 同上 |
+| READER-C-08 | reader | P3 | 文档/pg_map USER | ④ | 已修：补用户态消费与 pg_identity 对照 | 同上 | 同上 |
+| READER-C-09 | reader | P3 | 文档/跨侧类型论证 | ④ | 已修（与 B-01 同靶） | 同上 | 同上 |
+| READER-C-10 | reader | P3 | 文档/24 字节归因 | ④ | 已修：§3.5 补 free_upper_idx 8 字节 | 同上 | 同上 |
+| READER-C-12 | reader | P2 | 文档/§1.2 四条编号 | ④ | 已修：四条编号+单列一条=五条 | 同上 | 同上 |
 
 # Round 5（基线 6fecc5a92）
 
@@ -274,36 +274,36 @@
 | FACT-13 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
 | FACT-14 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
 | FACT-15 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-A-01 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-A-02 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-A-03 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-A-04 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-B-01 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-B-02 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-B-03 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-B-04 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-01 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-02 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-03 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-04 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-05 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-06 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-07 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-08 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-09 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-10 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-11 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-12 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-13 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-14 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-15 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-16 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-17 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-18 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-19 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-20 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-21 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
-| READER-C-22 | panel-r5 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-A-01 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-A-02 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-A-03 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-A-04 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-B-01 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-B-02 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-B-03 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-B-04 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-01 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-02 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-03 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-04 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-05 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-06 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-07 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-08 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-09 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-10 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-11 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-12 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-13 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-14 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-15 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-16 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-17 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-18 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-19 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-20 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-21 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
+| READER-C-22 | panel-r5 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `19a481dad` 提交与 panel/round5 对读 | panel/round5 | 五门+测试 |
 
 # Round 6（基线 d4915ae1f）
 
@@ -337,38 +337,38 @@
 | R6-11 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
 | R6-12 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
 | R6-13 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-A-01 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-A-02 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-A-03 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-A-04 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-A-05 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-A-06 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-01 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-02 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-03 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-04 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-05 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-06 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-07 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-08 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-09 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-10 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-B-11 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-01 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-02 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-03 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-04 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-05 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-06 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-07 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-08 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-09 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-10 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-11 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-12 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-13 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-14 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
-| READER-C-15 | panel-r6 | P2/P3 | 文档/源码注释同步 | ① | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-A-01 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-A-02 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-A-03 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-A-04 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-A-05 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-A-06 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-01 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-02 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-03 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-04 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-05 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-06 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-07 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-08 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-09 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-10 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-B-11 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-01 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-02 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-03 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-04 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-05 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-06 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-07 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-08 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-09 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-10 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-11 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-12 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-13 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-14 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
+| READER-C-15 | panel-r6 | P2/P3 | 文档/源码注释同步 | ④ | 已修：见 `6afb501c6` 与后续小批 | panel/round6 | 五门+测试 |
 
 ## Round 6 fact 明细（R6-NN 逐 ID）
 
@@ -432,8 +432,8 @@
 
 | 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|
-| READER-C-01 | panel-r7 | P3 | 文档/§4.4 表缺页大小能力/物理上限行 | ① | 已修：表补 `detect_boot_page_support` 成功且 `phys_addr_limit() >= IDENTITY_MAP_END` 一行 | 文档 §4.4 | 五门 |
-| READER-C-02 | panel-r7 | P3 | 文档/§4.4 表用未定义符号 `entry_start_pa` | ① | 已修：改自然语言"镜像内入口/栈顶偏移写错，或用户栈上界越入内核半区" | 文档 §4.4 | 五门 |
+| READER-C-01 | panel-r7 | P3 | 文档/§4.4 表缺页大小能力/物理上限行 | ④ | 已修：表补 `detect_boot_page_support` 成功且 `phys_addr_limit() >= IDENTITY_MAP_END` 一行 | 文档 §4.4 | 五门 |
+| READER-C-02 | panel-r7 | P3 | 文档/§4.4 表用未定义符号 `entry_start_pa` | ④ | 已修：改自然语言"镜像内入口/栈顶偏移写错，或用户栈上界越入内核半区" | 文档 §4.4 | 五门 |
 
 # Round 8（基线 1ceaf539d）
 
@@ -446,31 +446,31 @@
 | FACT-R8-03 | panel-r8 | P2 | 源码注释/main.rs 仍写 kerninfo 每绑定注入 | ① | 已修：改历史陈述 + D72VM 已移交 VM；删 per-bind 乘法与“修复未落地” | os/boot-shim/src/main.rs | 编译绿 |
 | FACT-R8-04 | panel-r8 | P2 | 文档/§4.5 称 kmain 会再存一次 store_kernel_info | ① | 已修：改“守卫防未来同址调用”；lib.rs 两处 kmain 注释同步改写 | 文档 §4.5；os/kernel/src/lib.rs | 测试+五门 |
 | FACT-R8-05 | panel-r8 | P3 | 源码注释/vm_server 行号锚点失效 | ① | 已修：改指 boot_validate_and_prepare，不绑行号 | os/servers/vm/src/vm_server.rs | 编译绿 |
-| READER-R8-F01 | panel-r8 | P2 | 文档/§3.7 三条入口收敛点与 §4.8 矛盾 | ① | 已修：分直核 arch_boot_finish 与接收 arch_boot_resume_v1→resume_additive；发送侧不收敛 | 文档 §3.7 | 五门 |
-| READER-R8-F02 | panel-r8 | P2 | 文档/§2.8 N 同时指 mmap 条目数与模块数 | ① | 已修：拆 R（mmap 条目数）与 M（模块数）；箭头改“交错” | 文档 §2.8 | 五门 |
-| READER-R8-F03 | panel-r8 | P2 | 文档/§4.2 九步漏 startup 分区写入 | ① | 已修：表后注明表外动作（EBS 后补写 canonical 五类） | 文档 §4.2 | 五门 |
-| READER-R8-F04 | panel-r8 | P2 | 文档/Step 0-4 编号全文使用无定义 | ① | 已修：§4.6 开头补五行阶段表（含 2b/2c 归属） | 文档 §4.6 | 五门 |
-| READER-R8-F05 | panel-r8 | P2 | 文档/§4.6 AlreadyMapped 与 AllocationFailed 成因写串 | ① | 已修：可达类=AllocationFailed；AlreadyMapped 结构性排除，各自理由分开 | 文档 §4.6 | 五门 |
-| READER-R8-F06 | panel-r8 | P2 | 文档/流程代号密度与读者画像冲突；O-11 仍在用 | ① | 已修：图例明确可跳过、删编号后句意完整；O-11 改“两快照纪律” | 文档 §3.4/§4.1 | 五门 |
-| READER-R8-F07 | panel-r8 | P3 | 文档/§3.4 “删掉的不是信息”与退役三字段矛盾 | ① | 已修：段首改“多数换载体，少数退役”，保留三类归位 | 文档 §3.4 | 五门 |
-| READER-R8-F08 | panel-r8 | P3 | 文档/§2.4.2 结算锚点不含 16 条截断 | ① | 已修：改指 §2.4.1 末“另一件必须单说的事”段 | 文档 §2.4/§3.4 | 五门 |
-| READER-R8-F09 | panel-r8 | P3 | 文档/§1.4 kmain 校验归给 §3.5 | ① | 已修：改指 §4.4 门链 | 文档 §1.4 | 五门 |
-| READER-R8-F10 | panel-r8 | P3 | 文档/ram_authority 注释指 §4.2 无 source 审计 | ① | 已修：改指 §3.4 规范集合与 §4.4 strict 门 | 文档 §3.4 | 五门 |
-| READER-R8-F11 | panel-r8 | P3 | 文档/两处“§2.4 升序讨论”层级错 | ① | 已修：两处改 §2.4.1 | 文档 §2.4.1 | 五门 |
-| READER-R8-F12 | panel-r8 | P3 | 文档/§2.6.5 “三张表”后写“两张表” | ① | 已修：改“CR0/CR4 表里” | 文档 §2.6.5 | 五门 |
-| READER-R8-F13 | panel-r8 | P3 | 文档/逐页累加与整段累加自相矛盾 | ① | 已修：前半句拆两种粒度，删末尾重复更正 | 文档 §2.4.1 | 五门 |
-| READER-R8-F14 | panel-r8 | P3 | 文档/§4.1 “步骤 2 的 init_boot_pt_alloc”编号悬空 | ① | 已修：改动作名“prepare_and_enter_kernel_image 开头那次” | 文档 §4.1 | 五门 |
-| READER-R8-F15 | panel-r8 | P3 | 文档/§3.8 首行不写注册槽却计入“写点” | ① | 已修：改“一次初始化 + 三次注册”；首行标“不写注册槽” | 文档 §3.8 | 五门 |
-| READER-R8-F16 | panel-r8 | P3 | 文档/961..1023 与 961+k 边界差一格 | ① | 已修：改“0–1023（含 1023）”与“961+k-1” | 文档 §2.6 | 五门 |
-| READER-R8-F17 | panel-r8 | P2 | 文档/接收公共段 high_half vs resume_additive 两说 | ① | 已修：次序句改“各架构委托壳”；§6.1 表注明两行仅 aarch64 壳打印 | 文档 §4.7/§6.1 | 五门 |
-| READER-R8-F18 | panel-r8 | P3 | 文档/§3.3 依赖图漏 8 条边（含反向库依赖） | ① | 已修：图下注明简化图、条件依赖见四表 | 文档 §3.3 | 五门 |
-| READER-R8-F19 | panel-r8 | P3 | 文档/“跨镜像两腿”与发送腿术语冲突 | ① | 已修：改“发送/接收两端” | 文档 §3.7 | 五门 |
-| READER-R8-F20 | panel-r8 | P3 | 文档/§5.2.3 “这条 U-Boot 链”指代不明；脚本不在清单 | ① | 已修：点名 riscv64 U-Boot 直载测试链；§7.4 补 test-riscv64-boot-full.sh | 文档 §5.2.3/§7.4 | 五门 |
-| READER-R8-F21 | panel-r8 | P3 | 文档/ESP、ConOut、MIB 首现未展开 | ① | 已修：三处补一句定义 | 文档 §6.1/§6.3/§2.3 | 五门 |
-| READER-R8-F22 | panel-r8 | P3 | 画像目标④章节集合与正文不一致 | ① | 已修：画像同步 §2.4/§2.4.2 | reader-profile.md | 五门 |
-| READER-R8-F23 | panel-r8 | P3 | 文档/RESERVED 256 来由 127×2=254 差 2 | ① | 已修：改“翻倍后向上取整到 2 的幂” | 文档 §4.5 | 五门 |
-| READER-R8-F24 | panel-r8 | P3 | 文档/fast-fail “被削弱” vs “本来没有” | ① | 已修：统一“相对稀疏方案被放弃；C 本来没有” | 文档 §2.6.1 | 五门 |
-| READER-R8-F25 | panel-r8 | P3 | 文档/测试证据三处重复无单一权威 | ① | 已修：M13 与 §5.2.1 改指针，§5.3 TODO-07 保留完整清单 | 文档 §5.1/§5.2.1/§5.3 | 五门 |
+| READER-R8-F01 | panel-r8 | P2 | 文档/§3.7 三条入口收敛点与 §4.8 矛盾 | ④ | 已修：分直核 arch_boot_finish 与接收 arch_boot_resume_v1→resume_additive；发送侧不收敛 | 文档 §3.7 | 五门 |
+| READER-R8-F02 | panel-r8 | P2 | 文档/§2.8 N 同时指 mmap 条目数与模块数 | ④ | 已修：拆 R（mmap 条目数）与 M（模块数）；箭头改“交错” | 文档 §2.8 | 五门 |
+| READER-R8-F03 | panel-r8 | P2 | 文档/§4.2 九步漏 startup 分区写入 | ④ | 已修：表后注明表外动作（EBS 后补写 canonical 五类） | 文档 §4.2 | 五门 |
+| READER-R8-F04 | panel-r8 | P2 | 文档/Step 0-4 编号全文使用无定义 | ④ | 已修：§4.6 开头补五行阶段表（含 2b/2c 归属） | 文档 §4.6 | 五门 |
+| READER-R8-F05 | panel-r8 | P2 | 文档/§4.6 AlreadyMapped 与 AllocationFailed 成因写串 | ④ | 已修：可达类=AllocationFailed；AlreadyMapped 结构性排除，各自理由分开 | 文档 §4.6 | 五门 |
+| READER-R8-F06 | panel-r8 | P2 | 文档/流程代号密度与读者画像冲突；O-11 仍在用 | ④ | 已修：图例明确可跳过、删编号后句意完整；O-11 改“两快照纪律” | 文档 §3.4/§4.1 | 五门 |
+| READER-R8-F07 | panel-r8 | P3 | 文档/§3.4 “删掉的不是信息”与退役三字段矛盾 | ④ | 已修：段首改“多数换载体，少数退役”，保留三类归位 | 文档 §3.4 | 五门 |
+| READER-R8-F08 | panel-r8 | P3 | 文档/§2.4.2 结算锚点不含 16 条截断 | ④ | 已修：改指 §2.4.1 末“另一件必须单说的事”段 | 文档 §2.4/§3.4 | 五门 |
+| READER-R8-F09 | panel-r8 | P3 | 文档/§1.4 kmain 校验归给 §3.5 | ④ | 已修：改指 §4.4 门链 | 文档 §1.4 | 五门 |
+| READER-R8-F10 | panel-r8 | P3 | 文档/ram_authority 注释指 §4.2 无 source 审计 | ④ | 已修：改指 §3.4 规范集合与 §4.4 strict 门 | 文档 §3.4 | 五门 |
+| READER-R8-F11 | panel-r8 | P3 | 文档/两处“§2.4 升序讨论”层级错 | ④ | 已修：两处改 §2.4.1 | 文档 §2.4.1 | 五门 |
+| READER-R8-F12 | panel-r8 | P3 | 文档/§2.6.5 “三张表”后写“两张表” | ④ | 已修：改“CR0/CR4 表里” | 文档 §2.6.5 | 五门 |
+| READER-R8-F13 | panel-r8 | P3 | 文档/逐页累加与整段累加自相矛盾 | ④ | 已修：前半句拆两种粒度，删末尾重复更正 | 文档 §2.4.1 | 五门 |
+| READER-R8-F14 | panel-r8 | P3 | 文档/§4.1 “步骤 2 的 init_boot_pt_alloc”编号悬空 | ④ | 已修：改动作名“prepare_and_enter_kernel_image 开头那次” | 文档 §4.1 | 五门 |
+| READER-R8-F15 | panel-r8 | P3 | 文档/§3.8 首行不写注册槽却计入“写点” | ④ | 已修：改“一次初始化 + 三次注册”；首行标“不写注册槽” | 文档 §3.8 | 五门 |
+| READER-R8-F16 | panel-r8 | P3 | 文档/961..1023 与 961+k 边界差一格 | ④ | 已修：改“0–1023（含 1023）”与“961+k-1” | 文档 §2.6 | 五门 |
+| READER-R8-F17 | panel-r8 | P2 | 文档/接收公共段 high_half vs resume_additive 两说 | ④ | 已修：次序句改“各架构委托壳”；§6.1 表注明两行仅 aarch64 壳打印 | 文档 §4.7/§6.1 | 五门 |
+| READER-R8-F18 | panel-r8 | P3 | 文档/§3.3 依赖图漏 8 条边（含反向库依赖） | ④ | 已修：图下注明简化图、条件依赖见四表 | 文档 §3.3 | 五门 |
+| READER-R8-F19 | panel-r8 | P3 | 文档/“跨镜像两腿”与发送腿术语冲突 | ④ | 已修：改“发送/接收两端” | 文档 §3.7 | 五门 |
+| READER-R8-F20 | panel-r8 | P3 | 文档/§5.2.3 “这条 U-Boot 链”指代不明；脚本不在清单 | ④ | 已修：点名 riscv64 U-Boot 直载测试链；§7.4 补 test-riscv64-boot-full.sh | 文档 §5.2.3/§7.4 | 五门 |
+| READER-R8-F21 | panel-r8 | P3 | 文档/ESP、ConOut、MIB 首现未展开 | ④ | 已修：三处补一句定义 | 文档 §6.1/§6.3/§2.3 | 五门 |
+| READER-R8-F22 | panel-r8 | P3 | 画像目标④章节集合与正文不一致 | ④ | 已修：画像同步 §2.4/§2.4.2 | reader-profile.md | 五门 |
+| READER-R8-F23 | panel-r8 | P3 | 文档/RESERVED 256 来由 127×2=254 差 2 | ④ | 已修：改“翻倍后向上取整到 2 的幂” | 文档 §4.5 | 五门 |
+| READER-R8-F24 | panel-r8 | P3 | 文档/fast-fail “被削弱” vs “本来没有” | ④ | 已修：统一“相对稀疏方案被放弃；C 本来没有” | 文档 §2.6.1 | 五门 |
+| READER-R8-F25 | panel-r8 | P3 | 文档/测试证据三处重复无单一权威 | ④ | 已修：M13 与 §5.2.1 改指针，§5.3 TODO-07 保留完整清单 | 文档 §5.1/§5.2.1/§5.3 | 五门 |
 | DESIGN-R8-01 | panel-r8 | P0 | 源码/文档/a2 通道三种互斥说法且无生产者 | ①（待裁决） | 已修：统一为“备用 a2 通道，仓内无生产者；已跑通 DTB /chosen”（doc §3.7/§4.8、bootface.rs、main.rs asm、脚本注释）；是否补 a2 真机取证待用户 | 四文件注释 | 编译绿 |
 | DESIGN-R8-02 | panel-r8 | P1 | 代码/pool 分配面仍可覆写内核（模块读入、param、DTB、ELF 源） | ①（部分转出） | 已修：loader 段拷贝加 src/dest 不重叠断言；M16 收窄为“仅 UEFI 模块页防线”；全局 allocator 守卫留 follow-up | os/boot-shim/src/loader.rs；M16 | 测试+五门 |
 | DESIGN-R8-03 | panel-r8 | P2 | 测试/页取整案无判别力 | ① | 已修：换成模块字节越界案；M16 五档改“相离/相切、包含、部分重叠、内核在区间内、模块字节越界” | uefi_helpers.rs 测试 | 测试绿 |
@@ -496,23 +496,23 @@
 | FACT-R9-03 | panel-r9 | P2 | 测试/boot-shim 并行下 preflight 全局态互污染 | ①（设计选择） | 已修：新增 `test_serial` 锁；`.cargo/config.toml` 固定 RUST_TEST_THREADS=1 并删“可并行覆盖”邀请；分配计数测试不承诺并行（R10-06 纠正） | os/boot-shim/src/{lib,dtb_copy,ebs_pair}.rs；os/.cargo/config.toml | 默认单线程 131 绿 |
 | FACT-R9-04 | panel-r9 | P2 | 源码注释/kern_ident 只保留 v6/v7 与 v8 结构相反 | ① | 已修：vm_handoff 注释改"v8 仍占布局、恒空、v6/v7 精确拒绝"；boot.rs 字段注释同步 | vm_handoff.rs；types/boot.rs | 编译绿 |
 | FACT-R9-05 | panel-r9 | P3 | 文档/§4.3 逐字段补零与 builder 新契约不符 | ① | 已修：改"路径 + 一个 NUL；其余 .bss 零初值；越界由 assert 拦下" | 文档 §4.3 | 五门 |
-| READER-R9-F01 | panel-r9 | P2 | 文档/§1.2 .bss 装载证据指向 §2.8 | ① | 已修：拆两指向（§2.8 推演、§2.4 装载证据） | 文档 §1.2 | 五门 |
-| READER-R9-F02 | panel-r9 | P2 | 文档/kern_stack_top 门描述与构造边界矛盾 | ① | 已修：门描述改"不越过上界，恰等于镜像尾合法" | 文档 §4.4 | 五门 |
-| READER-R9-F03 | panel-r9 | P2 | 文档/落地区二义，接收侧深拷次数不清 | ① | 已修：接收侧直接解码进七个 store，store 同址 no-op；DTB 落地区改暂存区 | 文档 §4.8/§4.5/§4.2 | 五门 |
-| READER-R9-F04 | panel-r9 | P2 | 文档/U-Boot shim 腿写成调 arch_boot | ① | 已修：改"序列化进 arena 交接收镜像 arch_boot_resume_v1" | 文档 §3.7 | 五门 |
-| READER-R9-F05 | panel-r9 | P2 | 文档/§4.2 省略块同时承载循环内 preflight 与 EBS 后写入 | ① | 已修：拆成"循环体内另一处省略"与"本处只含 EBS 后 startup" | 文档 §4.2 | 五门 |
-| READER-R9-F06 | panel-r9 | P3 | 文档/§2.6.1 PSE/PGE 挂在 CR0.PG 后 | ① | 已修：改 CR0.PG/CR0.WP/CR4.PSE/CR4.PGE | 文档 §2.6.1 | 五门 |
-| READER-R9-F07 | panel-r9 | P3 | 文档/"两个可执行体"缺主线限定 | ① | 已修：§1.2/§1.3 加主线限定；§1.4 补 resume 入口 | 文档 §1.2/§1.3/§1.4 | 五门 |
-| READER-R9-F08 | panel-r9 | P3 | 文档/手算五例分组与定档返回不符 | ① | 已修：改"前两例成功定档（例2 Step3 返回）；后三例报错/Side/报错" | 文档 §4.2 | 五门 |
-| READER-R9-F09 | panel-r9 | P3 | 文档/§2.8 R 定义与 AVAILABLE 过滤不符 | ① | 已修：R = 可用条目数；N+1→M+1 | 文档 §2.8 | 五门 |
-| READER-R9-F10 | panel-r9 | P3 | 文档/"16 篇"不可达 | ① | 已修：改指 `smp_gpt_v3.md`，§7.1 补一行 | 文档 §4.9/§7.1 | 五门 |
-| READER-R9-F11 | panel-r9 | P3 | 文档/UEFI 术语承诺未兑现 | ① | 已修：Configuration Table/LoadOptions/SimpleFileSystem 首现补定义 | 文档 §4.2/§4.3 | 五门 |
-| READER-R9-F12 | panel-r9 | P3 | 文档/§2.4.2 口径句漏内核块 | ① | 已修：切占用含内核镜像块 | 文档 §2.4.2 | 五门 |
-| READER-R9-F13 | panel-r9 | P3 | 文档/syscall_entry 语义二义 | ① | 已修：字段表注明引用性元数据、实际门地址由架构 asm 标签提供 | 文档 §4.4 | 五门 |
-| READER-R9-F14 | panel-r9 | P3 | 文档/§6.4 同块"无脚本/有脚本"并存 | ① | 已修：首处改"无专用启动门脚本，由 test-smp-aps-aarch64.sh 间接驱动" | 文档 §6.4 | 五门 |
-| READER-R9-F15 | panel-r9 | P3 | 文档/§3.6 否决表方案与理由不对应 | ① | 已修：方案扩为常量面三件 | 文档 §3.6 | 五门 |
-| READER-R9-F16 | panel-r9 | P3 | 文档/§2.8 引用章内未出现的断言 | ① | 已修：换成 §2.4 已引的 `assert(cbi->mem_high_phys)` | 文档 §2.8 | 五门 |
-| READER-R9-F17 | panel-r9 | P3 | 文档/§2.6.4 把同一批 1024 项数两遍 | ① | 已修：改"0..960 恒等 + 961 起被内核映射覆写" | 文档 §2.6.4 | 五门 |
+| READER-R9-F01 | panel-r9 | P2 | 文档/§1.2 .bss 装载证据指向 §2.8 | ④ | 已修：拆两指向（§2.8 推演、§2.4 装载证据） | 文档 §1.2 | 五门 |
+| READER-R9-F02 | panel-r9 | P2 | 文档/kern_stack_top 门描述与构造边界矛盾 | ④ | 已修：门描述改"不越过上界，恰等于镜像尾合法" | 文档 §4.4 | 五门 |
+| READER-R9-F03 | panel-r9 | P2 | 文档/落地区二义，接收侧深拷次数不清 | ④ | 已修：接收侧直接解码进七个 store，store 同址 no-op；DTB 落地区改暂存区 | 文档 §4.8/§4.5/§4.2 | 五门 |
+| READER-R9-F04 | panel-r9 | P2 | 文档/U-Boot shim 腿写成调 arch_boot | ④ | 已修：改"序列化进 arena 交接收镜像 arch_boot_resume_v1" | 文档 §3.7 | 五门 |
+| READER-R9-F05 | panel-r9 | P2 | 文档/§4.2 省略块同时承载循环内 preflight 与 EBS 后写入 | ④ | 已修：拆成"循环体内另一处省略"与"本处只含 EBS 后 startup" | 文档 §4.2 | 五门 |
+| READER-R9-F06 | panel-r9 | P3 | 文档/§2.6.1 PSE/PGE 挂在 CR0.PG 后 | ④ | 已修：改 CR0.PG/CR0.WP/CR4.PSE/CR4.PGE | 文档 §2.6.1 | 五门 |
+| READER-R9-F07 | panel-r9 | P3 | 文档/"两个可执行体"缺主线限定 | ④ | 已修：§1.2/§1.3 加主线限定；§1.4 补 resume 入口 | 文档 §1.2/§1.3/§1.4 | 五门 |
+| READER-R9-F08 | panel-r9 | P3 | 文档/手算五例分组与定档返回不符 | ④ | 已修：改"前两例成功定档（例2 Step3 返回）；后三例报错/Side/报错" | 文档 §4.2 | 五门 |
+| READER-R9-F09 | panel-r9 | P3 | 文档/§2.8 R 定义与 AVAILABLE 过滤不符 | ④ | 已修：R = 可用条目数；N+1→M+1 | 文档 §2.8 | 五门 |
+| READER-R9-F10 | panel-r9 | P3 | 文档/"16 篇"不可达 | ④ | 已修：改指 `smp_gpt_v3.md`，§7.1 补一行 | 文档 §4.9/§7.1 | 五门 |
+| READER-R9-F11 | panel-r9 | P3 | 文档/UEFI 术语承诺未兑现 | ④ | 已修：Configuration Table/LoadOptions/SimpleFileSystem 首现补定义 | 文档 §4.2/§4.3 | 五门 |
+| READER-R9-F12 | panel-r9 | P3 | 文档/§2.4.2 口径句漏内核块 | ④ | 已修：切占用含内核镜像块 | 文档 §2.4.2 | 五门 |
+| READER-R9-F13 | panel-r9 | P3 | 文档/syscall_entry 语义二义 | ④ | 已修：字段表注明引用性元数据、实际门地址由架构 asm 标签提供 | 文档 §4.4 | 五门 |
+| READER-R9-F14 | panel-r9 | P3 | 文档/§6.4 同块"无脚本/有脚本"并存 | ④ | 已修：首处改"无专用启动门脚本，由 test-smp-aps-aarch64.sh 间接驱动" | 文档 §6.4 | 五门 |
+| READER-R9-F15 | panel-r9 | P3 | 文档/§3.6 否决表方案与理由不对应 | ④ | 已修：方案扩为常量面三件 | 文档 §3.6 | 五门 |
+| READER-R9-F16 | panel-r9 | P3 | 文档/§2.8 引用章内未出现的断言 | ④ | 已修：换成 §2.4 已引的 `assert(cbi->mem_high_phys)` | 文档 §2.8 | 五门 |
+| READER-R9-F17 | panel-r9 | P3 | 文档/§2.6.4 把同一批 1024 项数两遍 | ④ | 已修：改"0..960 恒等 + 961 起被内核映射覆写" | 文档 §2.6.4 | 五门 |
 | DESIGN-R9-01 | panel-r9 | P1 | 代码/loader 新断言只查同段，跨段源破坏仍可过 | ① | 已修：新增 `first_source_destination_overlap` 全源×全目标判定；文档 §4.3 补防线 | loader.rs；文档 §4.3 | 测试+五门 |
 | DESIGN-R9-02 | panel-r9 | P0 | 文档/源码 kmain 同址再存被误判 | ① | 已修（与 FACT-R9-01 同批）：恢复三调用点与同址说明 | 文档 §4.5；lib.rs | 五门+测试 |
 | DESIGN-R9-03 | panel-r9 | P0 | 源码注释/BootForm(e) "park until tail installed" 与永久 wfi 相反 | ① | 已修：改"无 tail 永久 wfi；tail 须在首个 hart_start 前注册" | boot_form.rs | 编译绿 |
@@ -542,23 +542,23 @@
 | FACT-R10-03 | panel-r10 | P3 | 代码/in_memmap 成死函数，magic SAFETY 仍指旧函数 | ① | 已修：删 in_memmap；SAFETY 改 in_memmap_range(pa,8) | bootface_common.rs | 编译绿 |
 | FACT-R10-04 | panel-r10 | P3 | 文档/mem_high_phys 引文位置标 §2.4，实际 §2.6.1 | ① | 已修：指针改 §2.6.1 | 文档 §2.8 | 五门 |
 | FACT-R10-05 | panel-r10 | P3 | 代码/重叠谓词对零长段误报 | ① | 已修：filesz/memsz 为 0 跳过；补零长负控测试 | loader.rs | 测试绿 |
-| READER-R10-F01 | panel-r10 | P2 | 文档/enter_kernel_image_v1 被写成 UEFI 专属 | ① | 已修：改"跨镜像 v1 发送，三条腿" | 文档 §3.7 | 五门 |
-| READER-R10-F02 | panel-r10 | P2 | 文档/接线权威表缺 aarch64 直核面 | ① | 已修：表补一行（测试通道、SMP 判据） | 文档 §3.1 | 五门 |
-| READER-R10-F03 | panel-r10 | P2 | 文档/§2.4.1 结算把 §2.5 的切除写成已完成 | ① | 已修：改"将在 §2.5 切掉（本节尚未切）" | 文档 §2.4.1 | 五门 |
-| READER-R10-F04 | panel-r10 | P2 | 文档/arena 由 UEFI 分配覆盖 U-Boot shim | ① | 已修：拆两腿（UEFI allocate_pages；U-Boot shim bump_alloc_pages，含在整段扣除） | 文档 §3.7 | 五门 |
-| READER-R10-F05 | panel-r10 | P2 | 文档/§4.1 导航表把 U-Boot shim 归进直核面 | ① | 已修：列名改直核面，三处单元格注明 U-Boot shim 走 v1/接收 | 文档 §4.1 | 五门 |
-| READER-R10-F06 | panel-r10 | P2 | 文档/§3.1 用辅助 prepare_boot 充当生产证据 | ① | 已修：引文头标"辅助形态无生产调用方"；1311 行加"辅助形态下"限定 | 文档 §3.1 | 五门 |
-| READER-R10-F07 | panel-r10 | P2 | 文档/"内核镜像恒在表内"与 LOADER_* 分流冲突 | ① | 已修：改"UEFI 腿在保留表；DTB 腿在可用表" | 文档 §3.4 | 五门 |
-| READER-R10-F08 | panel-r10 | P2 | 文档/"六入口"两套划分 | ① | 已修：定义按最外层壳（3 arch_boot + 3 decode；aarch64 内层 high_half） | 文档 §5.3 | 五门 |
-| READER-R10-F09 | panel-r10 | P3 | 文档/§6.1 v1 路标位置全写 uefi_helpers | ① | 已修：位置列拆 uefi_helpers（两条 UEFI）/uboot_main（shim） | 文档 §6.1 | 五门 |
-| READER-R10-F10 | panel-r10 | P3 | 文档/§2.8 "逐条如下"只列三条 | ① | 已修：改"其余三条只给指向" | 文档 §2.8 | 五门 |
-| READER-R10-F11 | panel-r10 | P3 | 文档/PML4 256 至 512 越界 | ① | 已修：改 256..511（半开 256..512，256 项） | 文档 §4.7 | 五门 |
-| READER-R10-F12 | panel-r10 | P3 | 文档/§2.4.1 调用序箭头与嵌套关系相反 | ① | 已修：改嵌套表述（arch_init in cstart in kmain；smp_init 晚于 cstart） | 文档 §2.4.1 | 五门 |
-| READER-R10-F13 | panel-r10 | P3 | 文档/"11 个模块"章内无出处 | ① | 已修：改"12 个里除 VM 外 11 个（名单见 §4.3）" | 文档 §2.4.2 | 五门 |
-| READER-R10-F14 | panel-r10 | P3 | 文档/§7.3 源码清单漏 ebs_map/ebs_pair 等 | ① | 已修：补 ebs_map/ebs_pair/boot_params/memmap_source/fdt_layout | 文档 §7.3 | 五门 |
-| READER-R10-F15 | panel-r10 | P3 | 文档/分配上界"同一常量" vs 两界取小 | ① | 已修：改"以 BOOT_IDENTITY_MAP_END 为一界，再与 DM 窗口取小" | 文档 §4.6 | 五门 |
-| READER-R10-F16 | panel-r10 | P3 | 文档/"六个真机脚本"无枚举 | ① | 已修：改"五条门链加 aarch64 直核面这六个组合" | 文档 §3.7 | 五门 |
-| READER-R10-F17 | panel-r10 | P3 | 文档/Step1 可达失败只列 AllocationFailed 论据不足 | ① | 已修：补其余四类不可达判据（地址常量/只映射/尺寸快照/自造标志） | 文档 §4.6 | 五门 |
+| READER-R10-F01 | panel-r10 | P2 | 文档/enter_kernel_image_v1 被写成 UEFI 专属 | ④ | 已修：改"跨镜像 v1 发送，三条腿" | 文档 §3.7 | 五门 |
+| READER-R10-F02 | panel-r10 | P2 | 文档/接线权威表缺 aarch64 直核面 | ④ | 已修：表补一行（测试通道、SMP 判据） | 文档 §3.1 | 五门 |
+| READER-R10-F03 | panel-r10 | P2 | 文档/§2.4.1 结算把 §2.5 的切除写成已完成 | ④ | 已修：改"将在 §2.5 切掉（本节尚未切）" | 文档 §2.4.1 | 五门 |
+| READER-R10-F04 | panel-r10 | P2 | 文档/arena 由 UEFI 分配覆盖 U-Boot shim | ④ | 已修：拆两腿（UEFI allocate_pages；U-Boot shim bump_alloc_pages，含在整段扣除） | 文档 §3.7 | 五门 |
+| READER-R10-F05 | panel-r10 | P2 | 文档/§4.1 导航表把 U-Boot shim 归进直核面 | ④ | 已修：列名改直核面，三处单元格注明 U-Boot shim 走 v1/接收 | 文档 §4.1 | 五门 |
+| READER-R10-F06 | panel-r10 | P2 | 文档/§3.1 用辅助 prepare_boot 充当生产证据 | ④ | 已修：引文头标"辅助形态无生产调用方"；1311 行加"辅助形态下"限定 | 文档 §3.1 | 五门 |
+| READER-R10-F07 | panel-r10 | P2 | 文档/"内核镜像恒在表内"与 LOADER_* 分流冲突 | ④ | 已修：改"UEFI 腿在保留表；DTB 腿在可用表" | 文档 §3.4 | 五门 |
+| READER-R10-F08 | panel-r10 | P2 | 文档/"六入口"两套划分 | ④ | 已修：定义按最外层壳（3 arch_boot + 3 decode；aarch64 内层 high_half） | 文档 §5.3 | 五门 |
+| READER-R10-F09 | panel-r10 | P3 | 文档/§6.1 v1 路标位置全写 uefi_helpers | ④ | 已修：位置列拆 uefi_helpers（两条 UEFI）/uboot_main（shim） | 文档 §6.1 | 五门 |
+| READER-R10-F10 | panel-r10 | P3 | 文档/§2.8 "逐条如下"只列三条 | ④ | 已修：改"其余三条只给指向" | 文档 §2.8 | 五门 |
+| READER-R10-F11 | panel-r10 | P3 | 文档/PML4 256 至 512 越界 | ④ | 已修：改 256..511（半开 256..512，256 项） | 文档 §4.7 | 五门 |
+| READER-R10-F12 | panel-r10 | P3 | 文档/§2.4.1 调用序箭头与嵌套关系相反 | ④ | 已修：改嵌套表述（arch_init in cstart in kmain；smp_init 晚于 cstart） | 文档 §2.4.1 | 五门 |
+| READER-R10-F13 | panel-r10 | P3 | 文档/"11 个模块"章内无出处 | ④ | 已修：改"12 个里除 VM 外 11 个（名单见 §4.3）" | 文档 §2.4.2 | 五门 |
+| READER-R10-F14 | panel-r10 | P3 | 文档/§7.3 源码清单漏 ebs_map/ebs_pair 等 | ④ | 已修：补 ebs_map/ebs_pair/boot_params/memmap_source/fdt_layout | 文档 §7.3 | 五门 |
+| READER-R10-F15 | panel-r10 | P3 | 文档/分配上界"同一常量" vs 两界取小 | ④ | 已修：改"以 BOOT_IDENTITY_MAP_END 为一界，再与 DM 窗口取小" | 文档 §4.6 | 五门 |
+| READER-R10-F16 | panel-r10 | P3 | 文档/"六个真机脚本"无枚举 | ④ | 已修：改"五条门链加 aarch64 直核面这六个组合" | 文档 §3.7 | 五门 |
+| READER-R10-F17 | panel-r10 | P3 | 文档/Step1 可达失败只列 AllocationFailed 论据不足 | ④ | 已修：补其余四类不可达判据（地址常量/只映射/尺寸快照/自造标志） | 文档 §4.6 | 五门 |
 | DESIGN-R10-01 | panel-r10 | P2 | 测试/串行锁与进程级分配计数测试不匹配；覆盖档仍红 | ①（设计选择） | 已修：`.cargo/config.toml` 固定 RUST_TEST_THREADS=1 并删"可覆盖"邀请；文档命令即默认串行；并行覆盖不承诺 | os/.cargo/config.toml | 默认 131 绿 |
 | DESIGN-R10-02 | panel-r10 | P2 | 源码+文档/ptr::copy 理由指向被守卫跳过的同址分支 | ① | 已修：改"为部分重叠保留；精确同址由守卫跳过"；expect one-shot 文案改 KERNEL_INFO store failed | lib.rs；文档 §4.5 | 五门+测试 |
 | DESIGN-R10-03 | panel-r10 | P2 | 源码注释/(extra_argc,extra_argv) 记到内核镜像入口 | ① | 已修：改"U-Boot shim 的入口是另一个二进制"；本镜像接收 a0=arena PA 不变 | kernel-image/src/main.rs | 编译绿 |
@@ -595,24 +595,24 @@
 | FACT-R11-08 | panel-r11 | P3 | 文档/PermissionDenied 被写成真实失败类别 | ① | 已修：改"当前 os/arch 无生产者" | 文档 §4.6 | 五门 |
 | FACT-R11-09 | panel-r11 | P2 | 源码注释/rt-birth :426 引用不存在；载体携已删字段 | ①（部分转出） | 已修：删 :426 引用；8 个 QEMU 载体携 free_upper_idx 的编译问题登记 follow-up | main.rs；R11-FU | 编译绿 |
 | FACT-R11-10 | panel-r11 | P2 | 文档/resume_additive 引文起点 317 行不符 | ① | 已修：改约 318–322 行 | 文档 §4.7 | 五门 |
-| READER-R11-F01 | panel-r11 | P2 | 文档/§2.8 "逐条如下"只列三条 | ① | 已修：改"下面只展开三条，另两条回指 §1.2/§2.6" | 文档 §2.8 | 五门 |
-| READER-R11-F02 | panel-r11 | P2 | 文档/M15 时点写"EBS 前" | ① | 已修：改"配对循环成功后、裸串口可打印" | 文档 §5.1 M15 | 五门 |
-| READER-R11-F03 | panel-r11 | P2 | 文档/TODO-07 "三案" vs 5 条 | ① | 已修：M13 与 §5.3 统一"五案/5 条" | 文档 §5.1/§5.3 | 五门 |
-| READER-R11-F04 | panel-r11 | P2 | 文档/§2.4.1 pg_alloc_page 主语漂移 | ① | 已修：记账句归回 pg_alloc_page；alloc_lowest 另述 | 文档 §2.4.1 | 五门 |
-| READER-R11-F05 | panel-r11 | P2 | 文档/四前提被说成安全边界 | ① | 已修：改"四前提建立的是切除不发生（危险来源）；兜住的是取页方向与生命周期" | 文档 §2.4.1 | 五门 |
-| READER-R11-F06 | panel-r11 | P3 | 文档/"两条 UEFI 产线改用协议" | ① | 已修：改"跨镜像三腿" | 文档 §3.4 | 五门 |
-| READER-R11-F07 | panel-r11 | P3 | 文档/Step 2c 归属矛盾 | ① | 已修：改"三架构共用，aarch64 空表 no-op" | 文档 §4.6 | 五门 |
-| READER-R11-F08 | panel-r11 | P3 | 文档/"映射责任移交 VM"重复 | ① | 已修：删重复状语 | 文档 §4.1 | 五门 |
-| READER-R11-F09 | panel-r11 | P3 | 文档/BOARD 分歧复述 | ① | 已修：删段尾重复句 | 文档 §3.4 | 五门 |
-| READER-R11-F10 | panel-r11 | P3 | 文档/§1.1"不会再发出去"绝对化 | ① | 已修：加"归还之前"时间窗与 §2.4.2 回指 | 文档 §1.1 | 五门 |
-| READER-R11-F11 | panel-r11 | P3 | 文档/L5 跨距与 kern_size 同义却分列 | ① | 已修：注明 L5 与规划层检查同一公式，仅执行位置不同 | 文档 §5.2.1 | 五门 |
-| READER-R11-F12 | panel-r11 | P3 | 文档/§2.6.4 "本节前半"误指 | ① | 已修：改"上一小节（§2.6.3）" | 文档 §2.6.4 | 五门 |
-| READER-R11-F13 | panel-r11 | P3 | 文档/§4.2 "这两页"单位错 | ① | 已修：改"两个分配（根页 + 1024 页 bump 区）" | 文档 §4.2 | 五门 |
-| READER-R11-F14 | panel-r11 | P3 | 文档/§3 导览 3.8–3.9 归类错 | ① | 已修：改"3.8 分配器换手，3.9 槽位账退役" | 文档 §3 导览 | 五门 |
-| READER-R11-F15 | panel-r11 | P3 | 文档/§2.4.1 自指 | ① | 已修：两处改"上文的升序讨论" | 文档 §2.4.1 | 五门 |
-| READER-R11-F16 | panel-r11 | P3 | 文档/§7.2 C 源清单漏项 | ① | 已修：补 main/protect/arch_system/vm-alloc/do_*/assert/loadfile/exec/sysenv 等 | 文档 §7.2 | 五门 |
-| READER-R11-F17 | panel-r11 | P3 | 文档/证据类型列 11 种写法超四类 | ① | 已修：引言说明 `＋`/`→` 组合语义与三类归并 | 文档 §5 引言 | 五门 |
-| READER-R11-F18 | panel-r11 | P3 | 文档/§2.4.1 "本节结算"归属错 | ① | 已修：改"2.4 结算"；"本节尚未切"→"§2.4 尚未切" | 文档 §2.4.1 | 五门 |
+| READER-R11-F01 | panel-r11 | P2 | 文档/§2.8 "逐条如下"只列三条 | ④ | 已修：改"下面只展开三条，另两条回指 §1.2/§2.6" | 文档 §2.8 | 五门 |
+| READER-R11-F02 | panel-r11 | P2 | 文档/M15 时点写"EBS 前" | ④ | 已修：改"配对循环成功后、裸串口可打印" | 文档 §5.1 M15 | 五门 |
+| READER-R11-F03 | panel-r11 | P2 | 文档/TODO-07 "三案" vs 5 条 | ④ | 已修：M13 与 §5.3 统一"五案/5 条" | 文档 §5.1/§5.3 | 五门 |
+| READER-R11-F04 | panel-r11 | P2 | 文档/§2.4.1 pg_alloc_page 主语漂移 | ④ | 已修：记账句归回 pg_alloc_page；alloc_lowest 另述 | 文档 §2.4.1 | 五门 |
+| READER-R11-F05 | panel-r11 | P2 | 文档/四前提被说成安全边界 | ④ | 已修：改"四前提建立的是切除不发生（危险来源）；兜住的是取页方向与生命周期" | 文档 §2.4.1 | 五门 |
+| READER-R11-F06 | panel-r11 | P3 | 文档/"两条 UEFI 产线改用协议" | ④ | 已修：改"跨镜像三腿" | 文档 §3.4 | 五门 |
+| READER-R11-F07 | panel-r11 | P3 | 文档/Step 2c 归属矛盾 | ④ | 已修：改"三架构共用，aarch64 空表 no-op" | 文档 §4.6 | 五门 |
+| READER-R11-F08 | panel-r11 | P3 | 文档/"映射责任移交 VM"重复 | ④ | 已修：删重复状语 | 文档 §4.1 | 五门 |
+| READER-R11-F09 | panel-r11 | P3 | 文档/BOARD 分歧复述 | ④ | 已修：删段尾重复句 | 文档 §3.4 | 五门 |
+| READER-R11-F10 | panel-r11 | P3 | 文档/§1.1"不会再发出去"绝对化 | ④ | 已修：加"归还之前"时间窗与 §2.4.2 回指 | 文档 §1.1 | 五门 |
+| READER-R11-F11 | panel-r11 | P3 | 文档/L5 跨距与 kern_size 同义却分列 | ④ | 已修：注明 L5 与规划层检查同一公式，仅执行位置不同 | 文档 §5.2.1 | 五门 |
+| READER-R11-F12 | panel-r11 | P3 | 文档/§2.6.4 "本节前半"误指 | ④ | 已修：改"上一小节（§2.6.3）" | 文档 §2.6.4 | 五门 |
+| READER-R11-F13 | panel-r11 | P3 | 文档/§4.2 "这两页"单位错 | ④ | 已修：改"两个分配（根页 + 1024 页 bump 区）" | 文档 §4.2 | 五门 |
+| READER-R11-F14 | panel-r11 | P3 | 文档/§3 导览 3.8–3.9 归类错 | ④ | 已修：改"3.8 分配器换手，3.9 槽位账退役" | 文档 §3 导览 | 五门 |
+| READER-R11-F15 | panel-r11 | P3 | 文档/§2.4.1 自指 | ④ | 已修：两处改"上文的升序讨论" | 文档 §2.4.1 | 五门 |
+| READER-R11-F16 | panel-r11 | P3 | 文档/§7.2 C 源清单漏项 | ④ | 已修：补 main/protect/arch_system/vm-alloc/do_*/assert/loadfile/exec/sysenv 等 | 文档 §7.2 | 五门 |
+| READER-R11-F17 | panel-r11 | P3 | 文档/证据类型列 11 种写法超四类 | ④ | 已修：引言说明 `＋`/`→` 组合语义与三类归并 | 文档 §5 引言 | 五门 |
+| READER-R11-F18 | panel-r11 | P3 | 文档/§2.4.1 "本节结算"归属错 | ④ | 已修：改"2.4 结算"；"本节尚未切"→"§2.4 尚未切" | 文档 §2.4.1 | 五门 |
 | DESIGN-R11-01 | panel-r11 | P2 | 测试/单线程只是默认值，两条旁路仍可并线 | ① | 已修：分配计数改 thread_local（每线程计数）；8 线程实测 131 全绿；锁仍保护 preflight | lib.rs；8 线程 | 测试 8 线程 |
 | DESIGN-R11-02 | panel-r11 | P2 | 测试/零长负控零判别力 | ① | 已修（与 FACT-R11-04 同批） | loader.rs 测试 | 测试绿 |
 | DESIGN-R11-03 | panel-r11 | P1 | 文档/§3.4 memmap 行回归 | ① | 已修（与 FACT-R10-12 同批） | 文档 §3.4 | 五门 |
@@ -637,18 +637,18 @@
 | FACT-R12-05 | panel-r12 | P3 | 文档/§4.2 省略括注顺序错 | ① | 已修：record_span/root/bump 在模块行之前 | 文档 §4.2 | 五门 |
 | FACT-R12-06 | panel-r12 | P3 | 源码注释/bootface 孤立 doc 注释 | ① | 已修：删悬空 "Upper bound on memmap entries" 注释 | bootface.rs | 编译绿 |
 | FACT-R12-07 | panel-r12 | P3 | 源码注释/RISC-V SUM 取指说明与规范相反 | ① | 已修：改 "irrespective of SUM；SUM 只放宽 load/store" | lib.rs | 编译绿 |
-| READER-R12-F01 | panel-r12 | P2 | 文档/§2.8 三条/两条矛盾 | ① | 已修（与 FACT-R12-01 同批） | 文档 §2.8 | 五门 |
-| READER-R12-F02 | panel-r12 | P2 | 文档/"产线"未进术语对账 | ① | 已修：对账补"产线=链的别称，不参与计数" | 文档 §3.7 | 五门 |
-| READER-R12-F03 | panel-r12 | P2 | 文档/前提一行号无标签 | ① | 已修：标明 474/311/301 各自对象 | 文档 §2.4.1 | 五门 |
-| READER-R12-F04 | panel-r12 | P2 | 文档/§5.2.3 两条通道超出证据 | ① | 已修：改"DTB 通道可用；a2 无生产者未验证" | 文档 §5.2.3 | 五门 |
-| READER-R12-F05 | panel-r12 | P3 | 文档/§2.6.1 下游指针错 | ① | 已修：改 §2.6.3 | 文档 §2.6.1 | 五门 |
-| READER-R12-F06 | panel-r12 | P3 | 文档/§3.4 边界说明指针错 | ① | 已修：改"§3.4 末的 repr(C) 边界说明" | 文档 §3.4 | 五门 |
-| READER-R12-F07 | panel-r12 | P3 | 文档/"差一个连字符"不实 | ① | 已修：改"名字相近但不是同一个东西" | 文档 §3.3 | 五门 |
-| READER-R12-F08 | panel-r12 | P3 | 文档/kern_size/4MB 未取整 | ① | 已修：两处改 ceil | 文档 §2.6 | 五门 |
+| READER-R12-F01 | panel-r12 | P2 | 文档/§2.8 三条/两条矛盾 | ④ | 已修（与 FACT-R12-01 同批） | 文档 §2.8 | 五门 |
+| READER-R12-F02 | panel-r12 | P2 | 文档/"产线"未进术语对账 | ④ | 已修：对账补"产线=链的别称，不参与计数" | 文档 §3.7 | 五门 |
+| READER-R12-F03 | panel-r12 | P2 | 文档/前提一行号无标签 | ④ | 已修：标明 474/311/301 各自对象 | 文档 §2.4.1 | 五门 |
+| READER-R12-F04 | panel-r12 | P2 | 文档/§5.2.3 两条通道超出证据 | ④ | 已修：改"DTB 通道可用；a2 无生产者未验证" | 文档 §5.2.3 | 五门 |
+| READER-R12-F05 | panel-r12 | P3 | 文档/§2.6.1 下游指针错 | ④ | 已修：改 §2.6.3 | 文档 §2.6.1 | 五门 |
+| READER-R12-F06 | panel-r12 | P3 | 文档/§3.4 边界说明指针错 | ④ | 已修：改"§3.4 末的 repr(C) 边界说明" | 文档 §3.4 | 五门 |
+| READER-R12-F07 | panel-r12 | P3 | 文档/"差一个连字符"不实 | ④ | 已修：改"名字相近但不是同一个东西" | 文档 §3.3 | 五门 |
+| READER-R12-F08 | panel-r12 | P3 | 文档/kern_size/4MB 未取整 | ④ | 已修：两处改 ceil | 文档 §2.6 | 五门 |
 | READER-R12-F09 | panel-r12 | P3 | 文档/§4.9 与 §4.3 overlaps 口径不一 | ①（残留） | 部分修：§4.9 已注明跨段防线；完整不变量合并列入 STUCK-REPORT | 文档 §4.9 | 五门 |
-| READER-R12-F10 | panel-r12 | P3 | 文档/M4 与 TODO-01 入口计数 5 vs 6 | ① | 已修：M4 改六入口（3 arch_boot + 3 decode） | 文档 §5.1 | 五门 |
+| READER-R12-F10 | panel-r12 | P3 | 文档/M4 与 TODO-01 入口计数 5 vs 6 | ④ | 已修：M4 改六入口（3 arch_boot + 3 decode） | 文档 §5.1 | 五门 |
 | READER-R12-F11 | panel-r12 | P3 | 文档/四术语定义位置与首用不符 | ①（残留） | 部分修：arena/信封已就地定义；EBS/wire 定义位置列入 STUCK-REPORT | 文档 §3.4 | 五门 |
-| READER-R12-F12 | panel-r12 | P3 | 文档/2.4 结算落点错 | ① | 已修：整段移到 §2.4.1 之前（§2.4 收束） | 文档 §2.4 | 五门 |
+| READER-R12-F12 | panel-r12 | P3 | 文档/2.4 结算落点错 | ④ | 已修：整段移到 §2.4.1 之前（§2.4 收束） | 文档 §2.4 | 五门 |
 | READER-R12-F13 | panel-r12 | P3 | 文档/三处长段阻断冷读 | ①（残留） | 未拆：长段 642/1052/1858，列入 STUCK-REPORT | 文档全文 | 已登记 STUCK-REPORT 残留清单 |
 | DESIGN-R12-01 | panel-r12 | P0 | 文档/U-Boot 入口锚点 fn main 不存在 | ① | 已修：两处改 `:fn uboot_main`；锚点 104/104 | 文档 §3.1/§3.2 | 锚点门 |
 | DESIGN-R12-02 | panel-r12 | P2 | 源码注释/共享 v1 入口把 arena 一律写 LOADER_DATA | ① | 已修：三处按腿陈述（UEFI LOADER_DATA / U-Boot bump） | lib.rs | 编译绿 |
@@ -675,11 +675,11 @@
 | DESIGN-R13-02 | panel-r13 | P2 | 文档/§4.6 转述源码 SUM 注释已过期（源码 R12 已改对） | ① | 已修：删"源码写成除非 SUM=1"，改"源码 NOTE 已同口径" | 文档 §4.6；lib.rs 935-938 | 五门 |
 | DESIGN-R13-03 | panel-r13 | P3 | 文档/§3.4 括注把 arena 分配点归到 prepare_boot | ① | 已修：root/bump 在 prepare_boot 内、arena 在 uboot_main 序列化点 | 文档 §3.4；uboot_main 403/414 | 五门 |
 | DESIGN-R13-04 | panel-r13 | P3 | 源码注释/bootface 把 store_kernel_info 时点写成 satp 之后 | ① | 已修：改"satp 写入之前、建根之前" | bootface.rs 501-508 | 编译绿 |
-| READER-R13-F01 | panel-r13 | P2 | 文档/三处"长段拆分"只插软换行，渲染仍是同段 | ① | 已修：在真拆点插空行；pandoc `<p>` 计数 5/4 复验 | 文档 644/1057/1867 | 渲染复验 |
-| READER-R13-F02 | panel-r13 | P2 | 文档/Step1 两条目被吞并成惰性续行，计数与两处指针失准 | ① | 已修：改"六条交代（前两条判据）"，三条非列表段落升为条目，指针改"第五条" | 文档 §4.6；`<li>` 计数 6 | 渲染复验 |
-| READER-R13-F03 | panel-r13 | P3 | 文档/拆段留下三处双空行 | ① | 已修：全篇空行归一，末尾多余空行去掉 | 全篇 | 结构复验 |
-| READER-R13-F04 | panel-r13 | P3 | 文档/"见上一段"指向错段 | ① | 已修：改"见上文'靠的是两点'那一段" | 文档 §2.4.1 | 五门 |
-| READER-R13-F05 | panel-r13 | P3 | 文档/三处手写行号作判据锚 | ① | 已修：三处改符号锚（cstart/arch_init、smp_init、add_memmap 归还点、`///` 注记） | 文档 §2.4.1/§2.4.2/§4.7 | 五门 |
+| READER-R13-F01 | panel-r13 | P2 | 文档/三处"长段拆分"只插软换行，渲染仍是同段 | ④ | 已修：在真拆点插空行；pandoc `<p>` 计数 5/4 复验 | 文档 644/1057/1867 | 渲染复验 |
+| READER-R13-F02 | panel-r13 | P2 | 文档/Step1 两条目被吞并成惰性续行，计数与两处指针失准 | ④ | 已修：改"六条交代（前两条判据）"，三条非列表段落升为条目，指针改"第五条" | 文档 §4.6；`<li>` 计数 6 | 渲染复验 |
+| READER-R13-F03 | panel-r13 | P3 | 文档/拆段留下三处双空行 | ④ | 已修：全篇空行归一，末尾多余空行去掉 | 全篇 | 结构复验 |
+| READER-R13-F04 | panel-r13 | P3 | 文档/"见上一段"指向错段 | ④ | 已修：改"见上文'靠的是两点'那一段" | 文档 §2.4.1 | 五门 |
+| READER-R13-F05 | panel-r13 | P3 | 文档/三处手写行号作判据锚 | ④ | 已修：三处改符号锚（cstart/arch_init、smp_init、add_memmap 归还点、`///` 注记） | 文档 §2.4.1/§2.4.2/§4.7 | 五门 |
 
 ## R13 前置实施：内核 LMA 预订 A+D（用户裁决 2026-11-08）
 
@@ -1195,3 +1195,80 @@
 | R18/DESIGN-08 | R14/R15/R16 DESIGN-08 | P2 | 设计/强制拷贝 | ① | `FileBytes<'a>` 显式 Borrowed/Owned；U-Boot 借出、UEFI 拥有 | `cargo test -p boot-shim --features test-all` 135；`test_uboot_file_loader_reads_bytes_from_table` | 五门/QEMU 三门 |
 | R18/D-6 | F-R16-02 | P1 | 代码/兜底 | ① | 删除 memmap 兜底；未注册即 fail-closed；正负控各一条 | `missing_boot_allocator_registration_fails_closed` | 五门/源码对照 |
 | R18/D-7 | F-R16-01（负控面） | P2 | 测试缺口 | ① | ELF 源缓冲与目标 LMA 重叠必须在首段写入前停机 | `source_destination_overlap_stops_before_any_segment_write` | 五门 |
+
+## R17 面板轮（2026-11-09，用户指示持续循环；全角色）
+
+> 面板原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round17/`。本轮按用户标准"P0–P3 全部修"处置；设计第二遍对第一遍的否决项记 ③（不改代码，理由在 D2 条目内）。
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01、CLAIM 01 | fact / refute | P0 | 事实/引文 | ① | §3.6 删除不存在的 `HUGE_PAGE_SHIFT`/`PTE_HUGE_IDENTIFIER_BIT`；理由与否决表改写为"标识位留在实现内" | grep 两个常量零命中；trait 实为 5 成员 | `grep -n "HUGE_PAGE_SHIFT\|PTE_HUGE_IDENTIFIER_BIT" 文档` 零命中 |
+| FACT-02、CLAIM 02 | fact / refute | P0 | 事实/引文 | ① | §3.8 `BootAlloc::alloc` 换成 `BumpRegion` 实现；反事实的 `fetch_add` 改为 `alloc_pages(1)` | `boot_alloc.rs:118-144` | `rg fetch_add 文档` 零命中 |
+| FACT-03 | fact | P0 | 事实/引文 | ① | §3.7 `enter_kernel_image_v1` 引文改 `report` 四标量调用 | `lib.rs` 签名与函数体 | 引文与源码对读 |
+| FACT-04 | fact | P1 | 事实/合同 | ① | §4.4 改为"两直核腿共用 builder；三条 v1 腿共用 storage/report 形状" | `build_kernel_info` 调用点 grep | 文档与 §3.4 一致 |
+| FACT-05、FACT-06、READER-A-07、READER-B-03、READER-C-03、CLAIM 03 | 多角色 | P0 | 测试计数 | ① | §5.2.1 逐文件表与求和统一为实测 22/2/21/10，补 bump/boot_storage；kernel_info 拆解改 9/3/4/4/1=21 | `cargo test -- --list` 与 `grep -c '#\[test\]'` | 表、求和式、总数三处一致 |
+| FACT-07 | fact | P2 | 引文省略 | ① | BootPrepareResult 节选标省略；arena 注释补全；trait 文档逐字保留 | `boot_shim.rs` 对读 | 逐字对读 |
+| FACT-08 | fact | P2 | 机制误述 | ① | §2.4.2 改为"切走区间、左右余量补回；整条目被覆盖才留零长" | `cut_memmap` 源码 | 与源码机制一致 |
+| FACT-09 | fact | — | — | ③ | 行号 759/760 正确，省略 758 可接受，不构成缺陷 | 源码 grep | — |
+| FACT-10 | fact | P3 | 省略行数 | ① | "约 41 行"改"约 35 行" | 源码段计数 | 文本检查 |
+| READER-A-01、READER-B-01 | reader-a/b | P1 | 结构/编号 | ④ | 把 §3.4.5 整块移到 §3.4.4 之后，编号与阅读顺序一致 | 标题顺序 | `rg '^#### 3.4.[345]'` 递增 |
+| READER-A-02 | reader-a | P1 | 结构/时序 | ④ | §4.2.1 表加"时间序"列（2,1,3,…,9） | 代码块顺序 | 表列与代码一致 |
+| READER-A-03、READER-B-05 | reader-a/b | P2 | 因果/悬空结论 | ④ | §2.2 明确 C 入口不满足 SysV 对齐、风险前提与 Rust 侧对齐/禁 SSE 的对照 | `main.rs` 入口 asm 与 `.cargo/config.toml` | 文档结论含裁决句 |
+| READER-A-04、READER-B-04 | reader-a/b | P1 | 因果/编号 | ④ | §1.2 D1 改"第二步 `pg_identity`"并说明依赖是缓存属性输入；补"编号不是执行序，执行序 D2→D1→D3→D4" | §2.6.1 五步表 | 编号说明与 §2.8 一致 |
+| READER-A-05 | reader-a | P2 | 前提缺失 | ④ | §2.6.1 U/S 句补 `CR4.SMEP = 0` 前提与 Rust 侧不依赖该前提 | `pg_utils.c` 只清 PGE/PSE | 文本含前提 |
+| READER-A-06 | reader-a | P2 | 证据缺失 | ④ | §2.4.1.3 四前提补 `main.c:147/311`、`arch_system.c:246/277-278`、`arch_smp.c:76` 与 236 CPU 阈值 | 源码锚点 | 四前提各有锚点 |
+| READER-A-08 | reader-a | P2 | 模型误导 | ④ | §3.1 标明 `exit_boot_services` 是测试辅助，生产走配对循环且不丢弃内存图 | `pair_and_classify` | 文本分工明确 |
+| READER-A-09、READER-A-10 | reader-a | P2 | 术语迟到 | ④ | §3.2 首段定义"腿"；trait 代码块后定义 bump | 文档 | 首次使用前有定义 |
+| READER-A-11 | reader-a | P3 | 计数负担 | ④ | §3.7 补"每套计数只在本用途内使用，跨节换算单位" | 文档 | 文本含换算说明 |
+| READER-A-12 | reader-a | P2 | 自相矛盾 | ④ | §6.1 "两条通道"改"两个函数" | 文档 | 同节不再冲突 |
+| READER-A-13 | reader-a | P2 | 计数错误 | ④ | "其余四类"改"其余五类（AlreadyMapped 见下句）" | `PageTableError` 6 变体 | 1+5=6 |
+| READER-A-14 | reader-a | P2 | 符号错配 | ④ | §7.5 改"角色对应、非同一对象；数组顶是 `kernel_boot_stack_top`" | §4.4 字段表 | 两处一致 |
+| READER-A-15 | reader-a | P3 | 术语未定义 | ④ | §1.4 首段定义"快照"与"恒等窗口" | 文档 | 首用前有定义 |
+| READER-A-16 | reader-a | P2 | 指针错节 | ④ | 五处 `§3.1 现状表` 改 `§3.1.1 接线状态表` | 标题实际位置 | `rg '§3.1 的?现状'` 零命中 |
+| READER-B-02 | reader-b | P2 | 跨节半账 | ④ | §3.5 给 16+8=24、184−24=160 完整式；§3.9 只回指 | 文档 | 两节不再互指 |
+| READER-B-06、READER-C-12 | reader-b/c | P2 | 指针错节 | ④ | §1.4 时序组改指 §3.4.4 探针 | 节内容 | 指针可落 |
+| READER-B-07 | reader-b | P2 | 句子被标题截断 | ④ | 引导句移入 §3.4.2 标题之后 | 文档 | 冒号后有表 |
+| READER-B-08 | reader-b | P2 | 分账矛盾 | ④ | §2.8 删除"两条/三条"二分，按证据小节逐条列 | 文档 | 五条各给一节 |
+| READER-B-09 | reader-b | P2 | 重复 | ④ | §3.9 三前提改为指向 §2.6.3，不复述 | 文档 | 只留 64 位侧三点 |
+| READER-B-10 | reader-b | P2 | 边界混淆 | ④ | §2.4.1 开篇说明 2.4.1.4 是清单生命周期的第三件事 | 文档 | 开篇与子节一致 |
+| READER-B-11 | reader-b | P2 | 开篇与正文不符 | ④ | §2.6.2 开篇改"alloc_pagetable 管页表页；pg_map 调 2.4.1.1 的 pg_alloc_page" | 文档 | 开篇与正文一致 |
+| READER-B-12 | reader-b | P2 | 五步对账缺格 | ④ | §4.6 补 `pg_clear` 并入 `new_from_page` 等五步落点 | 文档/源码 | 五步各有落点 |
+| READER-B-13 | reader-b | P3 | 残句 | ④ | 删"不是'两道'" | 文档 | 全文无该残句 |
+| READER-B-14 | reader-b | P2 | 标题以偏概全 | ④ | §2.6.3 改"下游之一：借槽窗口" | 标题 | 与 2.6.4"两个下游"一致 |
+| READER-B-15 | reader-b | P2 | 未定义事件 | ④ | §3.4.1 图例定义"字段删除"；一处错搭配改"该次删除中" | 文档 | 首用有定义 |
+| READER-B-16 | reader-b | P3 | 前置缺失 | ④ | §3.1 采纳行加"库/可执行体区分见 §3.3" | 文档 | 指针存在 |
+| READER-B-17 | reader-b | P2 | 三表权威 | ④ | §3.10 加"冲突以 §7.5 为准，与 §4.9 同规则" | 文档 | 两处规则一致 |
+| READER-B-18 | reader-b | P3 | 空节 | ④ | §1.3 补"先看符号再看注释"的读法 | 文档 | 节有实质内容 |
+| READER-B-19 | reader-b | P3 | 计数承诺 | ④ | §6.2"三条"改"四条"；§1.4"两处"改"三处" | 文档 | 条目数一致 |
+| READER-B-20 | reader-b | P3 | 回指无锚 | ④ | 2.4.1.1 加"下标序与地址序的关系"引导；两处回指改用该名 | 文档 | 回指可定位 |
+| READER-C-01 | reader-c | P1 | 契约三方矛盾 | ④ | §4.3 UbootFileLoader 引文改 `FileBytes::Borrowed` 签名/返回 | `opensbi_helpers.rs` | 三处一致 |
+| READER-C-02 | reader-c | P2 | 算术缺口 | ④ | arena 注释补"v8 因此用九页 36864 B" | 文档 | 30624+6144≤36864 |
+| READER-C-04 | reader-c | P2 | 计数错误 | ④ | "三个地址"改"四个地址（root/bump_base/bump_end/arena_pa）" | 结构体字段 | 四字段 |
+| READER-C-05 | reader-c | P2 | 同行矛盾 | ④ | M16 末句改"UEFI 之外三条腿无同形运行期拒绝，由编译期断言/装载前 gate 覆盖" | 源码 | 同行无矛盾 |
+| READER-C-06 | reader-c | P2 | 完备口径 | ④ | M13 加"对可分配/保留两档；Excluded/DevicePath/Side 不进表" | §4.2.2 | 两处一致 |
+| READER-C-07 | reader-c | P2 | 理由缺限定 | ④ | 扣除表模块行标注 UEFI 为 no-op、理由只适用于 blob 在 free list 的腿 | §3.4.1 | 两处一致 |
+| READER-C-08 | reader-c | P2 | 索引错配 | ④ | §1.4 五步消费者改 §4.2.2 / §5.2.1（ebs_map 44 条） | 文档 | 指针可落 |
+| READER-C-09 | reader-c | P2 | 层级措辞 | ④ | "最外层壳"改"各架构最靠近泛型体的委托壳"，并写共享入口另钉 | §4.8 调用链 | 与调用链一致 |
+| READER-C-10 | reader-c | P2 | 全称缺项 | ④ | §3.5 "两类执行形态"改"当前两条生产形态；内联已退役" | 文档 | 全称有范围 |
+| READER-C-11 | reader-c | P2 | 反事实落点 | ④ | §4.1 改"挪到 `enter_kernel_image_v1` 跳转后（接收侧 `arch_boot_resume_v1`）" | 入口分工 | 与 §3.7 一致 |
+| READER-C-13 | reader-c | P2 | 条件缺失 | ④ | §2.3 改"arch 无读者、board 可被同名键遮蔽" | 文档后文 | 与后文一致 |
+| READER-C-14 | reader-c | P3 | 索引错误 | ④ | 改"cmp_mod=0、内层 m=1 时 panic" | `overlaps` 代码 | 与循环一致 |
+| READER-C-15 | reader-c | P2 | 容量口径 | ④ | §3.4.5 补 source 40/startup 20 槽及 UEFI source 写 wire 的说明 | `boot_storage.rs` | 五类+两类齐全 |
+| CLAIM 04 | refute | — | 反证失败 | ③ | `alloc_lowest` 四前提实测成立，主张保留；量化阈值补入 READER-A-06 修复 | 源码 | 反证失败=主张成立 |
+| CLAIM 05 | refute | P2 | 事实过度断言 | ① | `kern_stack_top` 行区分跨镜像清零与直核面未清零，安全性不依赖清零 | `main.rs` 三个 `_start` | 三腿口径分别写 |
+| CLAIM 06 | refute | P2 | 可达停机点缺失 | ① | §2.4.1.4 与 §3.4 补 `VM_BOOT_HANDOFF_MAX_REGIONS=64` 与停机行为 | `vm_handoff.rs:466` | 两级上限写明 |
+| DESIGN-D2-01、DESIGN-D2-02、DESIGN-D2-03 | design-d2 | — | 设计前提 | ③ | 第一遍的 40 槽可变账/AllocAuthority/页目录 typestate 在实现中没有需求方，拒绝采纳 | D2 条目证据 | 不改代码 |
+| DESIGN-D2-04 | design-d2 | P2 | 并发 UB | ① | `pt_alloc::register/register_free` 用 `PT_CLAIMED` swap 抢写权后再写指针、最后发布 | `cargo test -p minix-arch` 287 通过 | 两个写者只一个赢 |
+| DESIGN-D2-05 | design-d2 | P2 | 半提交状态 | ① | 新增 `commit_map_tables(len,len)` 一次提交；两处生产调用点改用 | `boot-shim` 135 通过 | 两表同轮 |
+| DESIGN-D2-06 | design-d2 | P2 | 构造中合法值 | ① | `build_kernel_info` 收 `memmap_sources`/`startup_objects`；两直核腿先算后传，删除事后赋值 | riscv/aarch64 `cargo check` | 无事后补写 |
+| DESIGN-D2-07 | design-d2 | P2 | 容量三处 | ① | `globals.rs` 加四条跨 crate 编译期等式；`FREE_SET_CAP` 引用 store 常量 | `minix-kernel` 860 通过 | 常量漂移编译失败 |
+| DESIGN-D2-08 | design-d2 | P2 | 双枚举器 | ① | 抽 `for_each_live_bootstrap`，`classify` 与 `vm_boot_exclusions` 共用 | `minix-kernel` 860 通过 | 成员单源 |
+| DESIGN-D2-09 | design-d2 | P2 | 假 'static | ① | `OwnedDtb.bytes` 注释写明 shim 生命周期与消费者边界；Phase 栈化登记 F-R17-03 | `dtb_copy.rs` | 注释与消费者一致 |
+| DESIGN-D2-10 | design-d2 | P3 | 死 API | ① | `push_module` 收进 `#[cfg(test)]`；`push_platform_source`/`push_startup` 有生产调用者故保留 | grep 调用点 | 生产面只留 used |
+| DESIGN-D2-11 | design-d2 | P2 | 静默参数 | ① | U-Boot 腿打印 rejected/dropped；两直核腿补 rejected/dropped 十六进制读数 | 三处代码 | 三腿均出声 |
+| DESIGN-D2-12 | design-d2 | P2 | 单实现 trait | ① | trait 文档删除"UEFI aux form"等过时描述；去留裁决登记 F-R17-01 | `boot_shim.rs` | 文档与 impl 数一致 |
+| DESIGN-D2-13 | design-d2 | P2 | 死代码/测试专用 | ① | 删除零调用 `classified_descriptors`；测试三件套 feature 门登记 F-R17-02 | grep 零调用 | 生产面无死函数 |
+| DESIGN-D2-14 | design-d2 | — | 反向证据 | ③ | 运行期 enum 是跨边界状态的正确形态，不改 | D2 条目 | — |
+| DESIGN-D2-15、DESIGN-D2-16、DESIGN-D2-19、DESIGN-D2-20 | design-d2 | — | D1 表述 | ③ | 第一遍方案的垫片/Paging/测试/恒等范围表述与实现相反；D2 结论保留实现 | D2 条目 | 不改代码 |
+| DESIGN-D2-17 | design-d2 | — | 容量依据 | ① | `WIRE_MEMMAP_CAP` 注记 128 的推导与实测 12–13；保留 128 | `handoff_v1.rs` | 注释含依据 |
+| DESIGN-D2-18 | design-d2 | P2 | 权威错配 | ② | 给 `KernelInfo` 加 authority 字段属契约变更（13→14），登记 F-R17-04 待裁决 | D2 条目 | 台账有去向 |

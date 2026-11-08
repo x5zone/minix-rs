@@ -2318,26 +2318,25 @@ fn vm_boot_exclusions(
         len: 0,
     }; VM_BOOT_EXCLUSION_CAP];
     let mut n = 0usize;
-    push_exclusion(&mut exclusions, &mut n, kern_base, kern_len);
-    for m in modules {
-        push_exclusion(&mut exclusions, &mut n, m.start, m.len);
-    }
-    if let Some(root) = root {
-        push_exclusion(
-            &mut exclusions,
-            &mut n,
-            root,
-            crate::vm_handoff::PAGE_SIZE as usize,
-        );
-    }
-    if let Some((base, end)) = bump {
-        push_exclusion(
-            &mut exclusions,
-            &mut n,
-            PhysBytes(base),
-            end.saturating_sub(base) as usize,
-        );
-    }
+    // The membership lives in one place (`for_each_live_bootstrap`); this
+    // pre-allocation view has no bootstrap-allocator suffixes yet, so it
+    // passes an empty list.
+    crate::vm_handoff::for_each_live_bootstrap(
+        kern_base,
+        kern_len as u64,
+        modules,
+        root,
+        bump,
+        &[],
+        |base, len| {
+            push_exclusion(
+                &mut exclusions,
+                &mut n,
+                PhysBytes(base),
+                usize::try_from(len).expect("boot exclusion length exceeds usize"),
+            );
+        },
+    );
     (exclusions, n)
 }
 

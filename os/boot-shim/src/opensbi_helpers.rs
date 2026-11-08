@@ -323,8 +323,7 @@ impl BootShim for RiscvUbootBootShim {
                 );
                 reserved_slots[..owned.reserved().len()].copy_from_slice(owned.reserved());
             }
-            storage.set_memmap_len(owned.free().len());
-            storage.set_reserved_len(owned.reserved().len());
+            storage.commit_map_tables(owned.free().len(), owned.reserved().len());
             {
                 let source_slots = storage.memmap_source_slots_mut();
                 assert!(
@@ -340,6 +339,12 @@ impl BootShim for RiscvUbootBootShim {
             let stats =
                 minix_boot::normalize_param_buf(input.as_bytes(), None, storage.param_buf_mut());
             storage.set_param_len(stats.bytes);
+            crate::raw_serial_line(&alloc::format!(
+                "boot-shim: param_buf bytes={} rejected={} dropped={}",
+                stats.bytes,
+                stats.rejected,
+                stats.dropped
+            ));
         }
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
@@ -774,6 +779,8 @@ mod tests {
             &[],
             &[], // platform_sources (empty = no source)
             &[], // param_buf (no source in this unit test)
+            &[], // memmap_sources
+            &[], // startup_objects
         );
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit
@@ -831,6 +838,8 @@ mod tests {
             PhysBytes(0x8000_0000),
             0x100_000,
             modules,
+            &[],
+            &[],
             &[],
             &[],
         );

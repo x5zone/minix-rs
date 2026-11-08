@@ -376,6 +376,14 @@ pub(crate) static PLATFORM_SOURCE_STORE: SyncUnsafeCell<
 /// copying (fixed-length, NUL-terminated semantics).
 pub(crate) const PARAM_BUF_STORE_LEN: usize = 1024;
 
+// Cross-crate capacity lockstep: the landing stores and the wire partitions
+// are two views of the same protocol. A change on one side must fail the
+// build on the other, not at `store_kernel_info` on a booted machine.
+const _: () = assert!(MEMMAP_REGION_STORE_LEN == minix_boot::WIRE_MEMMAP_CAP);
+const _: () = assert!(RESERVED_REGION_STORE_LEN == minix_boot::WIRE_RESERVED_CAP);
+const _: () = assert!(PLATFORM_SOURCE_STORE_LEN == minix_boot::WIRE_PLATFORM_CAP);
+const _: () = assert!(PARAM_BUF_STORE_LEN == minix_boot::WIRE_PARAM_CAP);
+
 pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; PARAM_BUF_STORE_LEN]> =
     SyncUnsafeCell::new([0u8; PARAM_BUF_STORE_LEN]);
 

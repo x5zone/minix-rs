@@ -293,6 +293,10 @@ pub extern "C" fn bootface_a64() -> ! {
         let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, out);
         say("  param_buf bytes=");
         say_hex(stats.bytes as u64);
+        say(" rejected=");
+        say_hex(stats.rejected as u64);
+        say(" dropped=");
+        say_hex(stats.dropped as u64);
         if stats.bytes > 0 {
             let end = out[..stats.bytes]
                 .iter()
@@ -311,23 +315,13 @@ pub extern "C" fn bootface_a64() -> ! {
 
     // 6. KernelInfo plus the real arch_boot gate (validate → build the root
     //    → DM → jump_to_kmain; it never returns to this face).
-    let mut kernel_info: KernelInfo = build_kernel_info(
-        memmap,
-        reserved,
-        VirBytes(KERN_VIRT_BASE),
-        PhysBytes(KERN_PHYS_BASE),
-        KERN_SIZE,
-        modules,
-        platform_sources,
-        param_buf,
-    );
+    //
     // Same handover as the riscv half: the collector's records back the
     // projected map, and the consumer boundary re-audits the pairing.
     assert!(
         !sources.is_empty(),
         "bootface: DTB legs must carry source records, not an empty partition"
     );
-    kernel_info.memmap_sources = sources;
     // Startup-object records: the kernel image and every boot module, in the
     // second record class with its own capacity.
     // SAFETY: single-hart boot face; the array is written once here and read
@@ -379,7 +373,19 @@ pub extern "C" fn bootface_a64() -> ! {
         n += 1;
         core::slice::from_raw_parts(slot, n)
     };
-    kernel_info.startup_objects = startup_objects;
+
+    let kernel_info: KernelInfo = build_kernel_info(
+        memmap,
+        reserved,
+        VirBytes(KERN_VIRT_BASE),
+        PhysBytes(KERN_PHYS_BASE),
+        KERN_SIZE,
+        modules,
+        platform_sources,
+        param_buf,
+        sources,
+        startup_objects,
+    );
     kernel_info.validate_requiring_sources(minix_boot::InputObjectId::DtbBootInput);
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)

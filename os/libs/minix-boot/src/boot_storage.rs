@@ -95,6 +95,25 @@ impl BootStorage {
         }
     }
 
+    /// Commit both map-table lengths as one step.
+    ///
+    /// The classifier fills the two tables from one classification pass; a
+    /// caller that updates only one length would expose a report whose two
+    /// tables come from different rounds. This commit makes that half-state
+    /// unrepresentable at the call site.
+    pub fn commit_map_tables(&mut self, memmap_len: usize, reserved_len: usize) {
+        assert!(
+            memmap_len <= WIRE_MEMMAP_CAP,
+            "BootStorage: memmap length {memmap_len} exceeds capacity {WIRE_MEMMAP_CAP}"
+        );
+        assert!(
+            reserved_len <= WIRE_RESERVED_CAP,
+            "BootStorage: reserved length {reserved_len} exceeds capacity {WIRE_RESERVED_CAP}"
+        );
+        self.memmap_len = memmap_len;
+        self.reserved_len = reserved_len;
+    }
+
     /// The full memmap slot array. The classifier writes entries starting at
     /// index 0 and then commits the count with [`Self::set_memmap_len`].
     pub fn memmap_slots_mut(&mut self) -> &mut [MemoryRegion] {
@@ -149,6 +168,10 @@ impl BootStorage {
     }
 
     /// Append one boot module. Fails when the fixed list is full.
+    ///
+    /// Production loaders write the slot array directly; this append form is
+    /// used by tests that build a storage record by record.
+    #[cfg(test)]
     pub fn push_module(&mut self, module: BootModule) -> Result<(), BootStorageFull> {
         if self.modules_len >= WIRE_MODULE_CAP {
             return Err(BootStorageFull);

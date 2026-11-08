@@ -812,3 +812,51 @@
   - `BootReport::from_kernel_info` 删除（无生产调用者）；30 个 QEMU 测试内核改为直接持有 `KernelInfo` 与局部变量，不再构造 `BootPrepareResult`；`test-smp-aps`/`test-smp-topo-aarch64` 改用 `find_platform_sources_into`。
 - 复验：`minix-boot` 183、`boot-shim --features test-all` 135 + 2、`minix-kernel --features mock` 868；32 个测试内核 `cargo check` 通过（`test-rt-birth-riscv64` 需构建期 `RT_BIRTH_ELF_PATH`，属既有构建注入，不在本批范围）；QEMU x86/aarch64 shim bootmarks PASS、riscv64 U-Boot shim 6/6 PASS。
 - 欠账：`OPEN-DEBT.md` 为空；`R14/READER-A-16` 是 adjacent（02 篇未生成），按 §4.2 不阻塞本篇收敛。收敛仍未宣告：R18 的架构级改动使旧轮次结论失效，需在新基线上重跑面板满足 G8（G9 已满足）。
+
+## R17 面板轮（2026-11-09，用户明确指示持续循环）
+
+### §0 基线
+
+- commit：`ec67e3d4f`（代码面同 `d82f481a6`，之后只有台账/规则提交）
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`，3308 行，sha256 `544ad466…`
+- 工作树：仅未跟踪 `0`、`prompt/resources/`（既有、非本轮产物）
+- Step 0 预检：`ls .design/01-*` 五类齐全；`tools/design-coverage-check.sh 01-stage-kernel` → ALL DOCS COMPLETE
+- 关联代码：`tools/doc-code-map.sh <doc> --check` → 46/46 存在
+- 范围：文档主题 + doc-code-map 清单 + 本轮修复触碰文件；相邻模块与 02 篇不在范围
+- 语料：`CORPUS.md` D01；冻结决策：`DECISIONS.md`（D-001–D-023）
+- 技能调用：`review-loop`、`full-review` 已通过 Skill 工具调用；`review-process-skill`/`review-doc-skill` 不在运行时技能清单，按其规范源 `prompt/skill/review-process-skill.md`、`review-doc-skill.md` 加载（此例外记入 §1）
+
+### R17 §1 面板
+
+- 角色：P-FACT、P-DESIGN D1、P-DESIGN D2、P-READER A/B/C、P-REFUTE（启动链高风险，全角色）。
+- 材料隔离：FACT 只拿正文/关联源码/工具；D1 只拿 C 源与 §1/§2；D2 拿 D1 输出、现有 Rust、§3/§4 与 trait-audit；A/B/C 只拿正文与读者画像；REFUTE 拿正文/源码/设计合同。均禁止历史评审、其他角色输出与 expected/。
+- 技能：`review-loop`、`full-review` 经 Skill 工具调用；`review-process-skill`/`review-doc-skill` 不在运行时技能清单，按其规范源加载（例外记录）。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round17/`（fact 10 条、reader-a 16、reader-b 20、reader-c 15、design-d1 5 决策、design-d2 20、refute 6 主张；D1 首轮输出被截断，重派一次补完 5 条决策）。
+- 违规检查：面板前后 `git status --porcelain` 仅有主 agent 的 loop.md/文档改动，无面板写仓库。
+
+### R17 §2 发现
+
+- 原始发现 87 条：FACT 10、READER-A 16、READER-B 20、READER-C 15、DESIGN-D2 20、REFUTE 6 条主张。
+- 重复簇：FACT-05/06 = A-07 = B-03 = C-03 = CLAIM 03（测试计数）；A-01 = B-01（小节顺序）；B-06 = C-12（§1.4 指针）；FACT-01/02/03 = CLAIM 01/02/03 的对应主张。
+- 设计第一遍：5 条决策；D2 否决其中 3 条（可变账、AllocAuthority、页目录 typestate），另指出 D1 垫片/Paging/恒等范围/测试门四类表述与实现相反。D2 接受 8 条低成本代码改进。
+
+### R17 §3 归因
+
+- ①（代码/事实修复）25 条：FACT-01..08、10；READER-C-01（跨节契约）；DESIGN-D2-04..13、17；CLAIM 05/06。
+- ④（读者体验，本轮修）51 条：READER-A/B/C 全部条目。
+- ③（误报/不改）10 条：FACT-09（行号正确）、CLAIM 04（反证失败、主张成立）、DESIGN-D2-01/02/03/14/15/16/19/20（D1 前提或表述，不改代码）。
+- ②（转出）1 条：DESIGN-D2-18 → F-R17-04（`KernelInfo` authority 字段，契约变更待裁决）。
+- re-litigation 0（未命中 DECISIONS 且无新证据的重复项）；adjacent 阻塞 0。
+
+### R17 §4 修复
+
+- 文档：§3.6 HugePages 引文/理由/否决表；§3.8 BootAlloc 引文与反事实；§3.7 enter 引文、arena 生命周期措辞；§4.4 builder 分组；§5.2.1 计数表与拆解；§2.4.2 切除机制；§3.4.4/3.4.5 顺序；§4.2.1 时间序列；§2.2 栈对齐裁决；§1.2 D1 与执行序；§2.6.1 SMEP 前提；§2.4.1.3 四前提锚点；§3.1 EBS helper 分工；§3.2 腿/bump 定义；§3.7 计数单位；§6.1 通道措辞；§4.6 五类错误；§7.5 栈符号；§1.4 快照/恒等窗口；§3.1.1 指针；§3.5/§3.9 wire 账；§2.8 证据分账；§3.9 前提回指；§2.4.1.4 开篇；§2.6.2 开篇；§4.6 pg_clear；§2.6.3 标题；§3.4.1 字段删除定义；§3.10 权威规则；§1.3 读法；§6.2/§1.4 计数承诺；2.4.1.1 索引导语；§4.3 UbootFileLoader 引文；arena v8 九页；四地址；M13/M16；模块扣除 UEFI 限定；§1.4 五步消费者；壳层级；两类形态；§4.1 反事实入口；§2.3 board/arch；overlaps 索引；§3.4.5 source/startup 容量；§2.4.1.4 与 §3.4 的 64 条上限；`kern_stack_top` 清零口径。
+- 代码：`pt_alloc` 写者 CAS 抢写；`BootStorage::commit_map_tables`；`build_kernel_info` 收 source/startup 两参（两直核腿先算后传）；`globals.rs` 四容量编译期等式 + `FREE_SET_CAP` 复用；`for_each_live_bootstrap` 统一两处占用枚举；删除 `classified_descriptors`；`push_module` 收进 `#[cfg(test)]`；三条腿补打参数拒绝计数；`WIRE_MEMMAP_CAP` 加推导注释；`OwnedDtb` 生命周期注释；`BootShim` 文档去掉已删除的 UEFI 实现描述。
+- 测试：`minix-boot` 183、`boot-shim --features test-all` 135+2、`minix-kernel --features mock` 868、`minix-arch` 287；riscv64 直核与 aarch64 直核 `cargo check` 通过。
+- QEMU：x86 shim bootmarks PASS、aarch64 shim bootmarks PASS、riscv64 U-Boot shim 6/6 PASS（本轮代码改动后重跑）。
+
+### R17 §5 复验
+
+- 文档六门：anchor 109/109、style 0 error、ref 通过、承载门通过、code-map 46/46、结构/链接门 0 问题。
+- trace 门：`eval-trace-check.py <run-dir> --panel-dir …/panel/round17` 待本轮台账收口后执行。
+- 回读：修复段由主 agent 逐条复读（同 agent 局限已在 §8 标注；reader 条目以原文对读为准）。

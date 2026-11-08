@@ -46,6 +46,12 @@ pub enum DtbPageError {
 /// The owned copy plus the firmware range it was taken from.
 #[derive(Debug, Clone, Copy)]
 pub struct OwnedDtb {
+    /// The copied blob. `'static` because the copy buffer is a leaked
+    /// LOADER_DATA allocation owned by this module's global `PHASE`; its
+    /// real validity is the shim's lifetime (until the jump to the kernel),
+    /// not the process lifetime. Consumers (`cross_validate_config_dtb`,
+    /// `report_memmap_source`) run before that jump. Moving `PHASE` onto the
+    /// pairing-loop stack would let this become a real borrow.
     pub bytes: &'static [u8],
     pub source: (u64, u64),
 }

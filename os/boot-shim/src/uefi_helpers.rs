@@ -380,15 +380,6 @@ static mut UEFI_SIDE: [MemoryRegion; ebs_map::SIDE_CAP] = [MemoryRegion {
 }; ebs_map::SIDE_CAP];
 static mut MAP_STORAGE: ebs_map::MapStorage = ebs_map::MapStorage::new();
 
-/// Descriptors of the snapshot `build_memmaps` parsed. Read-only afterwards.
-fn classified_descriptors() -> &'static [ebs_map::DescriptorRef] {
-    // SAFETY: single-threaded boot; `build_memmaps` filled the storage and
-    // nothing mutates it afterwards.
-    unsafe {
-        let storage = core::ptr::addr_of!(MAP_STORAGE) as *const ebs_map::MapStorage;
-        (*storage).descriptors()
-    }
-}
 
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mmap = boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get UEFI memory map");
@@ -1110,8 +1101,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         .expect("boot-shim: handoff descriptors invalid after classification");
     let memmap_len = (descriptors.memmap_byte_len / 16) as usize;
     let reserved_len = (descriptors.reserved_byte_len / 16) as usize;
-    storage.set_memmap_len(memmap_len);
-    storage.set_reserved_len(reserved_len);
+    storage.commit_map_tables(memmap_len, reserved_len);
     let report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     // The classification must have marked every bootstrap allocation as
@@ -1236,6 +1226,8 @@ mod tests {
             &MODULES,
             &[], // platform_sources (empty = no source)
             &[], // param_buf (no source in this unit test)
+            &[], // memmap_sources
+            &[], // startup_objects
         );
 
         assert_eq!(info.reserved_regions.len(), 1);

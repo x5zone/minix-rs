@@ -107,12 +107,14 @@ pub fn build_kernel_info(
     boot_modules: &'static [minix_boot::BootModule],
     platform_sources: &'static [minix_boot::PlatformDescSource],
     param_buf: &'static [u8],
+    memmap_sources: &'static [minix_boot::SourceRecord],
+    startup_objects: &'static [minix_boot::SourceRecord],
 ) -> minix_boot::KernelInfo {
     minix_boot::KernelInfo {
         memmap,
         reserved_regions,
-        memmap_sources: &[],
-        startup_objects: &[],
+        memmap_sources,
+        startup_objects,
         kern_virt_base,
         kern_phys_base,
         kern_size,

@@ -335,6 +335,10 @@ pub const ENVELOPE_CAP: usize = 256;
 
 /// Wire partition capacities, in elements (`128×16 + 256×16 + 12×32 + 4×16
 /// + 1024 = 7616` bytes).
+/// 128 is a conservative bound derived from `MAX_MAP_DESCRIPTORS = 256`
+/// (conventional spans are at most every other descriptor); QEMU runs
+/// observed 12–13 conventional spans. Kept in lockstep with the kernel
+/// landing store by a compile-time equality in `os/kernel/src/globals.rs`.
 pub const WIRE_MEMMAP_CAP: usize = 128;
 pub const WIRE_RESERVED_CAP: usize = 256;
 pub const WIRE_MODULE_CAP: usize = 12;

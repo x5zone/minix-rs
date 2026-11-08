@@ -1,8 +1,8 @@
 //! BootShim trait — firmware-agnostic boot preparation interface.
 //!
-//! Implemented by firmware-specific modules (UEFI aux form, U-Boot
-//! production leg). The kernel does **not** depend on this trait — its
-//! entry surface is `arch_boot` / `enter_kernel_image_v1` (doc 01 §3.2).
+//! Implemented by the U-Boot production leg (`RiscvUbootBootShim`). The
+//! kernel does **not** depend on this trait — its entry surface is
+//! `arch_boot` / `enter_kernel_image_v1` (doc 01 §3.2).
 
 use crate::boot_storage::{BootReport, BootStorage};
 use minix_types::PhysBytes;
@@ -37,11 +37,10 @@ pub struct BootPrepareResult<'a> {
 
 /// Firmware-agnostic boot preparation trait.
 ///
-/// Implemented by firmware-specific modules (UEFI, OpenSBI, ...). The kernel
-/// does **not** depend on this trait (zero references in `os/kernel`) — its
-/// entry surface is `arch_boot` / `enter_kernel_image_v1`. Production load:
-/// only the U-Boot leg (`RiscvUbootBootShim`, called from `uboot_main.rs`);
-/// the UEFI trait impl is an auxiliary form with no production caller.
+/// The kernel does **not** depend on this trait (zero references in
+/// `os/kernel`) — its entry surface is `arch_boot` / `enter_kernel_image_v1`.
+/// Production load: only the U-Boot leg (`RiscvUbootBootShim`, called from
+/// `uboot_main.rs`). The UEFI production entry does not go through this trait.
 ///
 /// What the trait actually buys (doc 01 §3.2, with evidence strength):
 /// 1. **Uniform entry shape** — U-Boot leg & test forms only.

@@ -60,9 +60,13 @@ unsafe impl Sync for PtAllocSlot {}
 
 static PT_ALLOC: PtAllocSlot = PtAllocSlot(UnsafeCell::new(uninit_alloc));
 static PT_REGISTERED: AtomicBool = AtomicBool::new(false);
+/// Writer-side claim: serializes the pointer write itself. `PT_REGISTERED`
+/// stays the reader-facing publication flag (set only after the write).
+static PT_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 static PT_FREE: PtAllocSlotUnary = PtAllocSlotUnary(UnsafeCell::new(uninit_free));
 static PT_FREE_REGISTERED: AtomicBool = AtomicBool::new(false);
+static PT_FREE_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 /// No-op free used before `register_free()` — keeps `free_pt_page` callable
 /// unconditionally (destroy paths check `is_free_registered()` and fall back
@@ -93,14 +97,14 @@ pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>)
     // Write-once is enforced in both profiles: debug builds abort on the
     // bug, release builds refuse the second write and keep the first
     // allocator instead of silently overwriting it.
-    let already = PT_REGISTERED.load(Ordering::Acquire);
-    debug_assert!(!already, "pt_alloc::register called twice");
-    if already {
+    let claimed = PT_CLAIMED.swap(true, Ordering::AcqRel);
+    debug_assert!(!claimed, "pt_alloc::register called twice");
+    if claimed {
         return;
     }
-    // SAFETY: write-once contract — callers register during boot
-    // (single-threaded) or user-space VM init before any concurrent
-    // access; the guard above makes the write itself one-shot.
+    // SAFETY: the `PT_CLAIMED` swap above admits exactly one writer; the
+    // pointer write happens before `PT_REGISTERED` is published, so a reader
+    // that observes `true` also observes the written pointer.
     unsafe {
         core::ptr::write(PT_ALLOC.0.get(), alloc_fn);
     }
@@ -147,12 +151,12 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
 pub fn register_free(free_fn: PtFreeFn) {
     // Same write-once contract as `register()`: debug aborts, release keeps
     // the first hook.
-    let already = PT_FREE_REGISTERED.load(Ordering::Acquire);
-    debug_assert!(!already, "pt_alloc::register_free called twice");
-    if already {
+    let claimed = PT_FREE_CLAIMED.swap(true, Ordering::AcqRel);
+    debug_assert!(!claimed, "pt_alloc::register_free called twice");
+    if claimed {
         return;
     }
-    // SAFETY: write-once contract — see `register()`.
+    // SAFETY: the `PT_FREE_CLAIMED` swap above admits exactly one writer.
     unsafe {
         core::ptr::write(PT_FREE.0.get(), free_fn);
     }

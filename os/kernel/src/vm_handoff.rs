@@ -254,7 +254,7 @@ struct MemRange {
 /// C `MAXMEMMAP` (param.h:13, 40) raised to 128: UEFI firmware maps
 /// routinely exceed 40 entries and truncating them would silently drop
 /// RAM. Capacity divergence from C is input-shaped, not semantic.
-pub(crate) const FREE_SET_CAP: usize = 128;
+pub(crate) const FREE_SET_CAP: usize = crate::globals::MEMMAP_REGION_STORE_LEN;
 
 impl FreeRangeSet {
     /// Builds the set from a boot report's conventional list. Zero-length
@@ -393,19 +393,6 @@ pub fn classify(
     // ── Build the LiveBootstrap(t_classify) record ──
     let mut record = DeductionCollector::new();
 
-    // Kernel-reserved: kernel image (C: pre_init.c:196-199 treats the
-    // kernel as an extra module and cuts it the same way).
-    record.push(kernel_info.kern_phys_base.0, kernel_info.kern_size);
-
-    // Kernel-reserved: VM's self root page (A1 identity — the handoff value
-    // itself, §6.0-A2 composition table "root page (the handoff value itself)").
-    record.push(root_paddr.0, PAGE_SIZE);
-
-    // Kernel-reserved: the boot bump region, whole range.
-    if let Some((base, end)) = boot_alloc_region() {
-        record.push(base, end.saturating_sub(base));
-    }
-
     // Bootstrap-used ②③: frames handed out by the VM bootstrap allocator.
     // The allocator walks each pool region from `end` down to `start`, so
     // the consumed part of every touched region is a contiguous suffix:
@@ -414,6 +401,8 @@ pub fn classify(
     let pool = vm_alloc.regions();
     let idx = vm_alloc.current_region_idx();
     let cursor = vm_alloc.cursor().0;
+    let mut suffixes = [(0u64, 0u64); minix_arch::arch::frame::MAX_BOOT_REGIONS];
+    let mut suffix_n = 0usize;
     for i in 0..pool.len().min(idx + 1) {
         let region = pool[i];
         let used_start = if i < idx {
@@ -422,26 +411,28 @@ pub fn classify(
             cursor.max(region.start.0)
         };
         if used_start < region.end.0 {
-            record.push(used_start, region.end.0 - used_start);
+            suffixes[suffix_n] = (used_start, region.end.0);
+            suffix_n += 1;
         }
     }
 
-    // Kernel-reserved: every boot module blob INCLUDING VM's own.
-    // Correction: the old logic reclaimed the VM module (to free frames for
-    // exec copy-out), but the kernel's boot-exec loads servers 0..7 one by one
-    // before VM starts — their segment frames come from this free list, so
-    // taking VM's blob away means it is overwritten before the VM image starts
-    // (gh53/58: VM text pages take illegal instructions → SIGSEGV-for-itself,
-    // with p_fault_addr=None rather than a page fault). The 625KB concession is
-    // not worth corruption before startup: keep the whole blob reserved.
+    // The remaining members (kernel image, root page, bump region, module
+    // blobs) are shared with the pre-allocation exclusion list; see
+    // `for_each_live_bootstrap`.
     assert!(
         vm_module_idx < kernel_info.boot_modules.len(),
         "vm_handoff: VM module index {} out of bounds",
         vm_module_idx
     );
-    for module in kernel_info.boot_modules.iter() {
-        record.push(module.start.0, module.len as u64);
-    }
+    for_each_live_bootstrap(
+        kernel_info.kern_phys_base,
+        kernel_info.kern_size,
+        kernel_info.boot_modules,
+        Some(root_paddr),
+        boot_alloc_region(),
+        &suffixes[..suffix_n],
+        |base, len| record.push(base, len),
+    );
 
     // ── Cut the record out of the memmap (same-family exclusion as
     //    `VmBootRegion::select_multi` — frame.rs invariant 1) ──
@@ -688,9 +679,46 @@ fn copy_name(name: &str) -> [u8; 16] {
     out
 }
 
+/// Enumerate the ranges occupied by the live bootstrap, in one place.
+///
+/// Two consumers need this set before the VM free list exists: the VM boot
+/// exclusion list (first allocation) and `classify` (handoff deduction). They
+/// differ only in whether bootstrap-allocator suffixes exist yet, so the
+/// caller passes them explicitly; keeping the membership here stops the two
+/// copies from drifting when a new bootstrap allocation is added.
+pub(crate) fn for_each_live_bootstrap<F>(
+    kern_base: PhysBytes,
+    kern_len: u64,
+    modules: &[minix_boot::BootModule],
+    root_paddr: Option<PhysBytes>,
+    boot_bump: Option<(u64, u64)>,
+    used_suffixes: &[(u64, u64)],
+    mut f: F,
+) where
+    F: FnMut(u64, u64),
+{
+    f(kern_base.0, kern_len);
+    if let Some(root) = root_paddr {
+        f(root.0, PAGE_SIZE);
+    }
+    if let Some((base, end)) = boot_bump {
+        f(base, end.saturating_sub(base));
+    }
+    for &(start, end) in used_suffixes {
+        if start < end {
+            f(start, end - start);
+        }
+    }
+    for module in modules.iter() {
+        f(module.start.0, module.len as u64);
+    }
+}
+
 /// Classifies a raw memmap slice directly (test entry point — the real
 /// boot path snapshots `KernelInfo.memmap` first).
 #[cfg(test)]
+
+
 pub(crate) fn classify_regions(
     memmap: &[MemoryRegion],
     root_paddr: PhysBytes,
