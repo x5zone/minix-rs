@@ -114,11 +114,27 @@ def read_text(path: Path, report: Report, label: str) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
-def check_loop_sections(text: str, report: Report) -> None:
+def check_loop_sections(text: str, report: Report, round_tag: str | None = None) -> None:
+    # Round-scoped: a per-round panel must be answered by that round's loop
+    # section. Whole-file search lets a deleted round section pass because the
+    # same fixed titles exist in older rounds (B-31 residual).
+    if round_tag:
+        all_headings = [
+            (m.start(), m.end(), m.group(0))
+            for m in re.finditer(rf"^## .*{re.escape(round_tag)}.*$", text, re.MULTILINE)
+        ]
+        headings = [(a, b) for a, b, line in all_headings if "面板轮" in line] or [
+            (a, b) for a, b, _line in all_headings
+        ]
+        if headings:
+            start = headings[0][0]
+            following = re.search(r"^## ", text[headings[0][1]:], re.MULTILINE)
+            end = headings[0][1] + following.start() if following else len(text)
+            text = text[start:end]
     positions: list[int] = []
     missing: list[str] = []
     for title in SECTION_TITLES:
-        marker = f"## {title}"
+        marker = f"§{title.lstrip('§')}"
         idx = text.find(marker)
         if idx < 0:
             missing.append(title)
@@ -226,7 +242,7 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
         if len(cells) <= max(current.values()):
             report.fail("ledger", f"台账行列数不足: {line}")
             continue
-        raw_ids = cells[current["id"]]
+        raw_ids = re.sub(r"CLAIM\s+(\d+)", lambda m: f"CLAIM-{int(m.group(1)):02d}", cells[current["id"]])
         row_ids: list[str] = []
         last_prefix: str | None = None
         # `DESIGN-D2-01、03、06` carries the prefix across comma-separated
@@ -376,6 +392,10 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
     for path in paths:
         text = path.read_text(encoding="utf-8")
         found = FINDING_RE.findall(text) + FINDING_ROUND_RE.findall(text)
+        # Non-`## FINDING` shapes still count as findings in a round's panel:
+        # fact.md's secondary bullets and refute.md's numbered claims.
+        found += [f"FACT-{n}" for n in re.findall(r"^-\s*\*\*FACT-(\d+)\*\*", text, re.MULTILINE)]
+        found += [f"CLAIM-{int(n):02d}" for n in re.findall(r"^##\s+CLAIM\s+(\d+)", text, re.MULTILINE)]
         if not found:
             report.warn("panel", f"{path.relative_to(panel_dir)} 没有 `## FINDING <ID>` 行")
         ids.extend(found)
@@ -448,7 +468,13 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         # 显式写“无发现面板：<file>（理由）”豁免。WARN 不再是可接受状态。
         for path in sorted(panel_dir.glob("*.md")):
             text = path.read_text(encoding="utf-8")
-            if FINDING_RE.search(text) or FINDING_ROUND_RE.search(text):
+            has_finding = bool(
+                FINDING_RE.search(text)
+                or FINDING_ROUND_RE.search(text)
+                or re.search(r"^##\s+CLAIM\s+\d+", text, re.MULTILINE)
+                or re.search(r"^-\s*\*\*FACT-\d+\*\*", text, re.MULTILINE)
+            )
+            if has_finding:
                 continue
             exempt = re.search(
                 rf"无发现面板[：:][^\n]*{re.escape(path.name)}|{re.escape(path.name)}[^\n]*无发现",
@@ -463,7 +489,7 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                 )
 
     if loop_text is not None:
-        check_loop_sections(loop_text, report)
+        check_loop_sections(loop_text, report, round_tag)
         check_round_closure(loop_text, report)
         check_placeholders(loop_text, report, "loop.md")
     if metrics_text is not None:

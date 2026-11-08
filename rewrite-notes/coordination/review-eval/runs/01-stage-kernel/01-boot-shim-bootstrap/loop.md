@@ -923,18 +923,19 @@
 - 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无 dead_code；`cargo clippy -p minix-boot` 仅 `minix-types` 既有 warning。
 - 回读：RB17 的 P2/P3 已逐条补修并复验（见 `defect-ledger.md` 的 RB17 段）。RB18 独立回读判 **NOT PASS**（P0=0、P1=1、P2=1、P3=3）：21 条 ① 中 20 条成立条件消失、RB17 12 项全部成立，但 §5.2.1 转录漏改 `boot_storage.rs` 4→5、§3.4.2 新补“追加到缓冲开头”与源码相反；五项已补修（见 `defect-ledger.md` 的 RB18 段），补修后需重跑六门与 `minix-boot` 186。
 - 三门读数：x86/aarch64 串口路标到 `entering scheduler`；riscv64 U-Boot 链 6/6 路标。
+- meta R18（`meta/01-boot-shim-bootstrap-r18.md`）：`IMPROVED` / **NOT PASS**，抽样严格一致 33/36=91.7%（C-10 重判后 34/36=94.4%），不通过的唯一装置项是 Trace integrity——删 R18 台账表/篡改指标仍 PASS。R18 已修 `tools/eval-trace-check.py`（轮次作用域 + 范围展开 + 分轮 metrics + CLAIM/FACT 次级解析），self-test 通过，删除探针 A（删 loop 段）与 B（删 15 条次级行）均 FAIL；B-50/B-51/B-52/B-53 已落 `BLIND-SPOTS.md`。
 
 ### R18 §6 指标
 
-见 `metrics.md`：发现 98，处置 ① 21 / ② 0 / ③ 21 / ④ 56 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构 1 实施。
+见 `metrics.md`：发现 98（文档缺陷 86 + D1 方案否决 12），处置 ① 21 / ② 0 / ③ 21 / ④ 56 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构 1 实施。
 
 ### R18 §7 状态
 
-`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB18 判 NOT PASS 后五项残留已补修；meta R18 在补修提交后执行；G8 本轮新增 98 条（远大于 0），需下一轮；G9 ⑥ 项只有 1 条（D2-10）且已实施，D1 其余方案不采纳。
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB18 五项残留已补修；meta R18 判 IMPROVED / NOT PASS（唯一装置项 Trace integrity），其点名的删表/指标探针已由轨迹门修复转为 FAIL；G8 本轮新增 98 条（远大于 0），需下一轮；G9 ⑥ 项只有 1 条（D2-10）且已实施，D1 其余方案不采纳。
 
 ### R18 §8 给 meta-review 的不确定点
 
 - D2 判 D1 “NOT PASS”，但 D1 是独立方案而非文档缺陷；本轮把 D2 的采纳项压到 D2-10 一条，其余按 ③ 处理。meta 需抽样判断这是否“设计角色只出命名级意见”的相反面（本轮设计侧产出了一条真实代码加固）。
 - RB17 指出的“冻结面与台账不一致”已按“R18 提交重新冻结”处理；BASELINE 更新见提交后。
-- 轨迹门仍是全文件匹配（B-31/B-51），R18 段删除后 coverage 仍可能 PASS；工具修正留 L7 边界。
+- 轨迹门已按轮次作用域修复（B-51 CLOSED）；剩余 B-52（origin/dup-of）与 B-53（面板读取锚）是下一轮候选，不在 R18 阻塞。
 - 同一文档在面板期间被持续编辑（3332→3386 行），RB17 的基线漂移问题在 R18 仍存在；本轮以“面板读取基线 + 收口基线”两行分别记录。
