@@ -12,8 +12,8 @@ panel_round=round17
 # R18 round (fix head includes the RB18 residual commit)
 r18_panel_base_head=7a36a9253
 r18_panel_base_doc_sha256=3b8b0bde25d568ce500440570ee451e3832aa820b0db52884f53a39a6bf4ceb3
-r18_fix_head=01143c2e70606e5f6352eadc371ee20822dd3147
-r18_fixed_doc_sha256=a9a17420ceb069b6367570ba45386421d09f1364fe3dc477ffb4cf422ee8acf2
+r18_fix_head=cd15ee8165278fdff13169c393ca5024f30c6b0a
+r18_fixed_doc_sha256=755b762e0aca423a429782873871c982d9e97d37746b5cb0dae28385c29ac64c
 r18_fixed_doc_lines=3386
 r18_panel_round=round18
 r18_panel_role_files=fact.md reader-a.md reader-b.md reader-c.md refute.md design-d1.md design-d2.md
