@@ -551,3 +551,23 @@
 ## §7 状态
 
 - **NOT CONVERGED**（零新增计数为 0 轮）。进入 RB13 回读轮，之后 R14。
+
+## R13 统计更新（面板全部交付后）
+
+- 面板交付：d2 4 + reader 30（F01–F30）+ fact 6 = **40 条**（P0 1 / P1 2 / P2 10 / P3 27）。
+- 处置：① 40（全部已修或批一已覆盖）；0 误报。
+- 三批提交：`030c1ae96`（9）、`f9280568e`（22）、本批（9）。
+- 零新增计数：**0 轮**（R13 非零）。
+
+### L6
+
+- campaign meta：R0–R12 从未跑 meta，合同第六条要求补一次全量；本轮已派发 campaign meta（冷启动，产物 `meta/01-boot-shim-bootstrap-campaign.md`），**回读轮派发时尚未返回**，R13 的 meta 结论先按"未交付"记录，R14 前补齐。
+- 本轮 meta 观察（主 agent 自记，非 L6 结论）：40 条里 30 条来自 reader、4 来自 d2、6 来自 fact；其中 **11 条是上一轮修复批自身引入或未生效**（F01/F02/F03 拆段未生效、FACT-01/DESIGN-02 转述过期、FACT-02 符号锚错、FACT-05 for 列表、FACT-06 M4 计数、F13/F22 计数口径）。SELF-INFLICTED 率约 27%，与 R6–R12 区间一致。
+
+### L6.5
+
+- 主导类别：**流程（修复质量）**——本轮最大一类是"修复批自身形式未生效/引用过期"。
+- 资源选读（未读优先，本次首读）：`superpowers/skills/verification-before-completion`（证据先于断言）、`superpowers/skills/systematic-debugging`（先根因后修复）、`mattpocock-skills/engineering/retro`（按类别提改进）、`mattpocock-skills/productivity/writing-for-agents`（指针与信息层级）。
+- **Q1 检测模式**：`verification-before-completion` 的 Gate Function（"claim 前必须在**本条消息内**跑完整命令并读输出"）正好接住本轮 B-29（拆段只报"行数变多"）与 B-30（转述未复验）。→ 已记入 `BLIND-SPOTS.md` B-29/B-30 的期望探测器列。
+- **Q2 流程改进**：`retro` 的"机械违规先建确定性检查，规则只留给判断项"支持把 C-08（渲染层读数）做成 fix-guard 的机械项而非新规则；`writing-for-agents` 的"指针措辞决定触发率"支持把 `review-panel.md` 的冻结基线条款写成命令级指针（`ReviewedDocumentRevision` 字段）而不是叙述。→ 记入 `WORKFLOW-VERSIONS.md` 候选表 C-08/C-09/C-10。
+- **Q3 立即可用**：下一轮修复批照单执行三条——①结构性修复附 pandoc/解析层读数；②"文档指控源码注释"句子当场重跑 grep；③每条 hunk 必须有台账行（这是 `retro` 的"guardrail 优先"与 B-28 的直接组合）。→ 已写入本节，R14 修复批执行。
