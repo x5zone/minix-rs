@@ -275,6 +275,29 @@ impl KernelInfo {
             }
         }
 
+        // Cross-table disjointness (R16 DESIGN-10): a page that appears in
+        // both the allocatable list and the never-reallocate list is a
+        // producer bug that would let the PMM hand out a reserved frame.
+        // Both lists are sorted (checked above), so a merge-walk suffices.
+        {
+            let (mut mi, mut ri) = (0usize, 0usize);
+            while mi < self.memmap.len() && ri < self.reserved_regions.len() {
+                let m_end = self.memmap[mi].base.0 + self.memmap[mi].len as u64;
+                let r_end = self.reserved_regions[ri].base.0 + self.reserved_regions[ri].len as u64;
+                if m_end <= self.reserved_regions[ri].base.0 {
+                    mi += 1;
+                } else if r_end <= self.memmap[mi].base.0 {
+                    ri += 1;
+                } else {
+                    panic!(
+                        "KernelInfo: memmap[{}] ([0x{:x},+0x{:x})) overlaps reserved_regions[{}] ([0x{:x},+0x{:x})) — producer bug",
+                        mi, self.memmap[mi].base.0, self.memmap[mi].len,
+                        ri, self.reserved_regions[ri].base.0, self.reserved_regions[ri].len,
+                    );
+                }
+            }
+        }
+
         // 4a. All memory regions must be non-empty and page-aligned.
         //     DESIGN-09 (D01): zero-length or unaligned entries would be
         //     silently skipped by consumers, hiding boot-shim bugs.
@@ -758,6 +781,24 @@ mod tests {
         ];
         let mut info = make_valid_info();
         info.memmap = &OVERLAP;
+        info.validate();
+    }
+
+    /// R16 DESIGN-10: a page that appears in both memmap and reserved_regions
+    /// would let the PMM hand out a reserved frame. The cross-table check
+    /// must catch it.
+    #[test]
+    #[should_panic(expected = "overlaps reserved_regions")]
+    fn test_validate_rejects_memmap_reserved_overlap() {
+        static CONV: [MemoryRegion; 1] = [
+            MemoryRegion { base: PhysBytes(0x100_000), len: 0x20_000 },
+        ];
+        static RES: [MemoryRegion; 1] = [
+            MemoryRegion { base: PhysBytes(0x110_000), len: 0x4_000 },
+        ];
+        let mut info = make_valid_info();
+        info.memmap = &CONV;
+        info.reserved_regions = &RES;
         info.validate();
     }
 
