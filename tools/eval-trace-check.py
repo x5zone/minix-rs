@@ -58,11 +58,8 @@ FINDING_RE = re.compile(r"^#{2,3}\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)", re.MULT
 # Round-tagged detailed-section style (fact.md R6 uses `### R6-04　…`): the
 # round prefix is part of the ID namespace used in that round's ledger rows.
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
-METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)\s*$", re.MULTILINE)
-METRIC_DISPOSITION_RE = re.compile(
-    r"^-\s*处置\s*[:：]\s*①\s*(\d+)\s*/\s*②\s*(\d+)\s*/\s*③\s*(\d+)\s*/\s*④\s*(\d+)\s*/\s*⑤\s*(\d+)\s*$",
-    re.MULTILINE,
-)
+METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE)
+METRIC_COUNT_RE = re.compile(r"([①②③④⑤])\s*(\d+)")
 PLACEHOLDERS = {"tbd", "待定", "-", "—", ""}
 DISPOSITION_TOKENS = {
     "①": "①",
@@ -142,108 +139,129 @@ def check_loop_sections(text: str, report: Report) -> None:
             )
 
 
+RANGE_RE = re.compile(r"^([A-Z][A-Za-z0-9-]*?)-(\d+)\.\.(\d+)$")
+
+
+def expand_id_token(token: str) -> list[str]:
+    """Expand `READER-A-01..20` into the individual IDs used by panels.
+
+    Range rows keep multi-round ledgers readable; coverage still needs the
+    concrete IDs, otherwise a whole reader family silently escapes the check.
+    """
+    m = RANGE_RE.match(token)
+    if not m:
+        return [token]
+    prefix, start, end = m.group(1), int(m.group(2)), int(m.group(3))
+    width = len(m.group(2))
+    return [f"{prefix}-{i:0{width}d}" for i in range(start, end + 1)]
+
+
+RANGE_RE = re.compile(r"^([A-Z][A-Za-z0-9-]*?)-(\d+)\.\.(\d+)$")
+SEP_RE = re.compile(r"^:?-{2,}:?$")
+
+
+def expand_id_token(token: str) -> list[str]:
+    """Expand `READER-A-01..20` into the individual IDs used by panels.
+
+    Range rows keep multi-round ledgers readable; coverage still needs the
+    concrete IDs, otherwise a whole reader family silently escapes the check.
+    """
+    m = RANGE_RE.match(token)
+    if not m:
+        return [token]
+    prefix, start, end = m.group(1), int(m.group(2)), int(m.group(3))
+    width = len(m.group(2))
+    return [f"{prefix}-{i:0{width}d}" for i in range(start, end + 1)]
+
+
+def _prefix_of(token: str) -> str | None:
+    m = re.match(r"^([A-Z][A-Za-z0-9-]*?)-(\d+)$", token)
+    return m.group(1) if m else None
+
+
 def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]:
     lines = text.splitlines()
-    header_index = None
-    headers: list[str] = []
-    for i, line in enumerate(lines):
-        if line.strip().startswith("|") and "发现 ID" in line:
-            header_index = i
-            headers = [cell.strip() for cell in line.strip().strip("|").split("|")]
-            break
-    if header_index is None:
-        report.fail("ledger", "defect-ledger.md 找不到含 `发现 ID` 的表头")
-        return [], {}
-
-    required = ["发现 ID", "处置类", "处置", "复验"]
-    missing = [name for name in required if name not in headers]
-    if missing:
-        report.fail("ledger", "defect-ledger.md 表头缺少列: " + "、".join(missing))
-        return [], {}
-
-    idx_id = headers.index("发现 ID")
-    idx_class = headers.index("处置类")
-    idx_action = headers.index("处置")
-    idx_verify = headers.index("复验")
-
     ids: list[str] = []
     rows: dict[str, dict] = {}
-    # Multi-round ledgers carry several tables (one per round), each with its
-    # own header row. Parse every table whose header carries the required
-    # columns instead of stopping at the first non-table line.
-    header_cols = {idx_id, idx_class, idx_action, idx_verify}
-    current: dict[str, int] | None = {
-        idx_id: idx_id,
-        idx_class: idx_class,
-        idx_action: idx_action,
-        idx_verify: idx_verify,
-    }
+    current: dict[str, int] | None = None
+    section = ""
     table_seen: set[str] = set()
-    for line in lines[header_index + 1 :]:
+    range_covered: set[str] = set()
+
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            section = line.strip("# ").strip()
         stripped = line.strip()
         if not stripped.startswith("|"):
-            # A non-table line suspends the current table; a later header row
-            # re-opens parsing (see the re-scan below).
-            current = None
-            table_seen = set()
             continue
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if all(re.fullmatch(r":?-{2,}:?", cell) for cell in cells):
+        if all(SEP_RE.fullmatch(cell) for cell in cells):
             continue
-        # Re-detect header rows for subsequent rounds' tables.
-        if any(("发现" in c or "ID" in c) for c in cells) and not any(
-            re.fullmatch(r":?-{2,}:?", c) for c in cells
-        ):
-            idx = {
-                i for i, c in enumerate(cells)
-                if c in ("发现 ID", "发现ID", "ID") or "处置" in c or "复验" in c or "类别" in c
-            }
-            if header_cols.issubset(idx) or (
-                any(c in ("发现 ID", "发现ID", "ID") for c in cells)
-                and any("处置" in c for c in cells)
-                and any("复验" in c for c in cells)
-            ):
-                current = {
-                    "id": next(i for i, c in enumerate(cells) if c in ("发现 ID", "发现ID", "ID")),
-                    # 原代码语义：idx_class 指"处置类"列（分类 token 所在），不是"类别"列
-                    "cls": next(i for i, c in enumerate(cells) if c == "处置类"),
-                    "act": next(i for i, c in enumerate(cells) if "处置" in c and "类" not in c),
-                    "ver": next(i for i, c in enumerate(cells) if "复验" in c),
-                }
-                # Rebind via locals for clarity in the row handler below.
-                idx_id_local, idx_class_local, idx_action_local, idx_verify_local = (
-                    current["id"], current["cls"], current["act"], current["ver"]
+        # Every markdown table header is followed by a separator row. Use that
+        # to reset the column mapping at table boundaries; otherwise the RB
+        # tables (4 columns) get parsed with the previous round's indices.
+        next_is_sep = False
+        if i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            if nxt.startswith("|"):
+                next_cells = [c.strip() for c in nxt.strip("|").split("|")]
+                next_is_sep = bool(next_cells) and all(
+                    SEP_RE.fullmatch(c) for c in next_cells
                 )
-                continue
+        if next_is_sep:
+            try:
+                current = {
+                    "id": cells.index("发现 ID"),
+                    "cls": cells.index("处置类"),
+                    "act": cells.index("处置"),
+                    "ver": cells.index("复验"),
+                }
+                table_seen = set()
+                range_covered = set()
+            except ValueError:
+                current = None
+            continue
         if current is None:
             continue
-        idx_id_local = current.get("id", idx_id)
-        idx_class_local = current.get("cls", idx_class)
-        idx_action_local = current.get("act", idx_action)
-        idx_verify_local = current.get("ver", idx_verify)
-        if len(cells) <= max(idx_id_local, idx_class_local, idx_action_local, idx_verify_local):
+        if len(cells) <= max(current.values()):
             report.fail("ledger", f"台账行列数不足: {line}")
             continue
-        raw_ids = cells[idx_id_local]
-        row_ids = [part for part in re.split(r"[、,，\s]+", raw_ids) if part]
-        # Round-scoped IDs (`R16/FACT-P1-01`) are the preferred form in a
-        # multi-round ledger: they keep the same short panel ID from being
-        # matched across rounds. Coverage matching uses the short form.
-        row_ids = [re.sub(r"^R\d+/", "", part) for part in row_ids]
+        raw_ids = cells[current["id"]]
+        row_ids: list[str] = []
+        last_prefix: str | None = None
+        # `DESIGN-D2-01、03、06` carries the prefix across comma-separated
+        # bare numbers; `FACT-01、CLAIM 01` must NOT turn the claim number
+        # into a second FACT-01, so only a chunk that is a bare number alone
+        # inherits the previous prefix.
+        for chunk in re.split(r"[、,，]", raw_ids):
+            sub = [part for part in chunk.split() if part]
+            if not sub:
+                continue
+            if len(sub) == 1 and re.fullmatch(r"\d{1,2}", sub[0]) and last_prefix:
+                sub = [f"{last_prefix}-{int(sub[0]):02d}"]
+            for token in sub:
+                token = re.sub(r"^R\d+/", "", token)
+                expanded = expand_id_token(token)
+                if ".." in token:
+                    range_covered.update(expanded)
+                row_ids.extend(expanded)
+                last_prefix = _prefix_of(token) or last_prefix
         if not row_ids:
             report.fail("ledger", f"台账行没有发现 ID: {line}")
             continue
-        disposition_raw = cells[idx_class_local].strip()
+        disposition_raw = cells[current["cls"]].strip()
         token = disposition_raw[:1] if disposition_raw else ""
-        canonical = DISPOSITION_TOKENS.get(token) or DISPOSITION_TOKENS.get(disposition_raw.lower())
+        canonical = DISPOSITION_TOKENS.get(token) or DISPOSITION_TOKENS.get(
+            disposition_raw.lower()
+        )
         if canonical is None:
             report.fail(
                 "ledger",
                 f"{'、'.join(row_ids)} 的处置类无法识别: `{disposition_raw}`",
             )
             continue
-        action = cells[idx_action_local]
-        verify = cells[idx_verify_local]
+        action = cells[current["act"]]
+        verify = cells[current["ver"]]
         if canonical in {"①"} and verify.lower() in PLACEHOLDERS:
             report.fail("ledger", f"{'、'.join(row_ids)} 处置类为 ①，但复验列为空或占位")
         if canonical in {"⑤"} and (
@@ -256,35 +274,68 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict]]
         id_like_row = re.compile(r"^[A-Z]{2,}-[A-Za-z0-9-]+$")
         round_prefix_row = re.compile(r"^(?:R|D)\d+-\d+$")
         for row_id in row_ids:
-            # Short IDs repeat across rounds (each round's panel re-uses
-            # FACT-01 etc.) — duplicates are only an error within one table.
-            # Prose fragments from aggregate-row labels ("+", "簇", bare
-            # "REFUTE") never enter the duplicate check — but they STILL
-            # register in rows/ids for coverage purposes.
             is_id_like = bool(id_like_row.match(row_id) or round_prefix_row.match(row_id))
-            if is_id_like and row_id in table_seen:
-                report.fail("ledger", f"台账里发现 ID 重复: {row_id}")
+            # A range row (`READER-B-01..20`) followed by a single-ID
+            # refinement (`READER-B-15 | ③`) is intentional: the specific
+            # disposition overrides the range. Only flag duplicates that are
+            # not explained by such a refinement.
+            refinement = row_id in range_covered and len(row_ids) == 1
+            if is_id_like and row_id in table_seen and not refinement:
+                report.fail("ledger", f"台账里发现 ID 重复: {row_id}（节：{section}）")
             table_seen.add(row_id)
             rows[row_id] = {
                 "class": canonical,
                 "action": action,
                 "verify": verify,
+                "section": section,
             }
             ids.append(row_id)
     report.ok("ledger", f"台账解析到 {len(ids)} 条处置")
     return ids, rows
 
 
-def check_metrics(text: str, report: Report) -> None:
-    total_match = METRIC_TOTAL_RE.search(text)
-    disposition_match = METRIC_DISPOSITION_RE.search(text)
+def _metric_blocks(text: str) -> list[tuple[str, str]]:
+    """Split metrics.md into `##` sections so a multi-round file is checked
+    per round instead of always reading the first (oldest) block."""
+    blocks: list[tuple[str, str]] = []
+    title = ""
+    body: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if title or body:
+                blocks.append((title, "\n".join(body)))
+            title = line.strip("# ").strip()
+            body = [line]
+        else:
+            body.append(line)
+    if title or body:
+        blocks.append((title, "\n".join(body)))
+    return blocks
+
+
+def _pick_metric_block(text: str, report: Report, round_tag: str | None) -> str:
+    blocks = _metric_blocks(text)
+    if round_tag:
+        for title, body in blocks:
+            if round_tag.lower() in title.lower():
+                return body
+    # No round heading: a single-block file is the normal case; otherwise the
+    # last block is the newest round.
+    return blocks[-1][1] if blocks else text
+
+
+def check_metrics(text: str, report: Report, round_tag: str | None = None) -> None:
+    body = _pick_metric_block(text, report, round_tag)
+    total_match = METRIC_TOTAL_RE.search(body)
+    counts = {m.group(1): int(m.group(2)) for m in METRIC_COUNT_RE.finditer(body)}
     if total_match is None:
         report.fail("metrics", "metrics.md 缺少 `- 发现总数: <整数>`")
-    if disposition_match is None:
-        report.fail("metrics", "metrics.md 缺少标准 `- 处置: ① n / ② n / ③ n / ④ n / ⑤ n` 行")
-    if total_match and disposition_match:
+    missing = [k for k in "①②③④⑤" if k not in counts]
+    if missing:
+        report.fail("metrics", "metrics.md 缺少处置计数: " + "、".join(missing))
+    if total_match is not None and not missing:
         total = int(total_match.group(1))
-        parts = [int(disposition_match.group(i)) for i in range(1, 6)]
+        parts = [counts[k] for k in "①②③④⑤"]
         if total != sum(parts):
             report.fail(
                 "metrics",
@@ -390,6 +441,8 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                     panel_dir = candidate
                     break
     panel_ids = collect_panel_findings(panel_dir, report)
+    round_match = re.search(r"round(\d+)", panel_dir.name) if panel_dir else None
+    round_tag = f"R{int(round_match.group(1))}" if round_match else None
     if loop_text is not None and panel_dir is not None and panel_dir.is_dir():
         # V2 轨迹门：每个 panel 文件要么有 FINDING，要么在 loop.md §1
         # 显式写“无发现面板：<file>（理由）”豁免。WARN 不再是可接受状态。
@@ -414,12 +467,24 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         check_round_closure(loop_text, report)
         check_placeholders(loop_text, report, "loop.md")
     if metrics_text is not None:
-        check_metrics(metrics_text, report)
+        check_metrics(metrics_text, report, round_tag)
     if ledger_text is not None:
         check_placeholders(ledger_text, report, "defect-ledger.md")
-        ledger_ids, _rows = parse_ledger(ledger_text, report)
+        ledger_ids, ledger_rows = parse_ledger(ledger_text, report)
         panel_set = set(panel_ids)
         ledger_set = set(ledger_ids)
+        # Round-scoped coverage: a per-round --panel-dir (round18) must be
+        # answered by that round's ledger section. Without this, deleting the
+        # newest round's table still passes because short IDs repeat in older
+        # rounds (B-51 whole-file loophole).
+        if round_tag:
+            scoped = {
+                fid for fid, row in ledger_rows.items()
+                if round_tag.lower() in row.get("section", "").lower()
+            }
+            coverage_ledger = scoped or ledger_set
+        else:
+            coverage_ledger = ledger_set
         # Orphan reference set: IDs that appear in ANY panel file (the
         # selected round plus its sibling rounds and the flat files at the
         # parent level). A per-round --panel-dir must not turn other rounds'
@@ -433,7 +498,7 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                 panel_text_ids.update(
                     re.findall(r"[A-Z]{2,}-[A-Za-z0-9-]+", f.read_text(encoding="utf-8"))
                 )
-        missing = sorted(panel_set - ledger_set)
+        missing = sorted(panel_set - coverage_ledger)
         # Orphan candidates: only first-cells that look like finding IDs
         # ([A-Z]+-<digits> prefix). Aggregate ledger rows carry prose labels
         # ("断锚簇", "125→124/175→176") that split into non-ID fragments —
@@ -572,6 +637,69 @@ def self_test() -> int:
         if not bad.failed or "L6.5" not in messages:
             print("self-test FAIL: R13 缺 ### L6.5 未被拦截")
             print_report(bad, False)
+            return 1
+
+    # 范围行展开：`READER-A-01..03` 必须覆盖三条具体发现
+    with tempfile.TemporaryDirectory() as tmp:
+        panel_range = "# 面板\n\n" + "\n\n".join(
+            f"## FINDING READER-A-{i:02d}\n- 位置：§1\n- 问题：x\n" for i in (1, 2, 3)
+        )
+        ledger_range = """# 台账
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| READER-A-01..03 | reader-a | P2 | 结构 | ④ | 修 | E1 | grep |
+"""
+        metrics_range = """# 指标
+
+- 发现总数: 3
+- 处置: ① 0 / ② 0 / ③ 0 / ④ 3 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        run_dir = write_fixture(Path(tmp), GOOD_LOOP, ledger_range, metrics_range, panel_range)
+        result = check_run_dir(run_dir)
+        if result.failed:
+            print("self-test FAIL: 范围行 READER-A-01..03 未被展开覆盖")
+            print_report(result, False)
+            return 1
+
+    # 轮次作用域：round2 的 FACT-01 不能由 R1 的台账行顶替
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        panel_dir = run_dir / "panel" / "round2"
+        panel_dir.mkdir(parents=True)
+        (run_dir / "loop.md").write_text(GOOD_LOOP, encoding="utf-8")
+        (panel_dir / "fact.md").write_text(
+            "# 面板\n\n## FINDING FACT-01\n- 位置：§1\n- 问题：x\n", encoding="utf-8"
+        )
+        (run_dir / "metrics.md").write_text(
+            GOOD_METRICS, encoding="utf-8"
+        )
+        (run_dir / "defect-ledger.md").write_text(
+            """# 台账
+
+## R1 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | fact | P1 | 事实 | ① | 修 | E1 | grep |
+
+## R2 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-02 | fact | P1 | 事实 | ① | 修 | E1 | grep |
+""",
+            encoding="utf-8",
+        )
+        result = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in result.items)
+        if not result.failed or "FACT-01" not in messages:
+            print("self-test FAIL: 轮次作用域未拦截 R1 台账顶替 R2 发现")
+            print_report(result, False)
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
