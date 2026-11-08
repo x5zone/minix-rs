@@ -222,7 +222,7 @@ pub extern "C" fn bootface_a64() -> ! {
     //    then the magic gate before dereferencing (the same discipline as the
     //    riscv half).
     let table_pa =
-        fdt_table_pa(&fdt).filter(|pa| in_memmap_range(memmap, *pa, 8) && table_magic_ok(*pa));
+        fdt_table_pa(&fdt).filter(|pa| in_memmap_range(memmap, *pa, core::mem::size_of::<BootFileTable>() as u64) && table_magic_ok(*pa));
     let Some(table_pa) = table_pa else {
         say("### minix-rs kernel image: no BootFileTable (chosen) — halting\n");
         crate::halt();
@@ -464,7 +464,7 @@ fn place_modules(table: &BootFileTable, memmap: &[MemoryRegion], names_pool: u64
             say(" escapes memmap\n");
             return None;
         }
-        if entry.phys_addr < BUMP_BASE + BUMP_SIZE && entry.phys_addr + entry.len >= BUMP_BASE {
+        if entry.phys_addr < BUMP_BASE + BUMP_SIZE && entry.phys_addr + entry.len > BUMP_BASE {
             say("  module slot 0x");
             say_hex(i as u64);
             say(" source overlaps bump pool\n");

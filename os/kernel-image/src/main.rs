@@ -263,10 +263,9 @@ core::arch::global_asm!(
         li fp, 0
         # 甲案交接：OpenSBI 递 a0 = boot hartid、a1 = DTB 物理指针；本
         # riscv64 直核面另留 a2 作 BootFileTable 物理指针的备用通道，仓内无生产者。
-        # U-Boot shim 的入口是另一个二进制，用 a0/a1 收 (extra_argc, extra_argv)；
+        # U-Boot shim 的入口是另一个二进制，用 a0/a1 收 (extra_argc, extra_argv)。
         # 本 boot 面同时读 DTB /chosen/opensbi,boot-file-table，a2 不合法时靠
-        # DTB 通道）。`call` 是 PC 相对，不改动 a0–a2，三个入参自然落位
-        # Rust 面（rt-birth 载体 :426 同形先例）。
+        # DTB 通道。`call` 是 PC 相对，不改动 a0–a2，三个入参自然落位 Rust 面。
         call {rust_image_main}
     3:  wfi
         j 3b

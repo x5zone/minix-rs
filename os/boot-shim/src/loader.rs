@@ -808,14 +808,19 @@ mod tests {
         // A zero-length source or destination cannot write or read bytes; it
         // must not be reported as an overlap even when its address sits
         // inside another range.
+        // Zero-length source at an address strictly inside the destination:
+        // without the skip, the half-open test reports an overlap.
         let mut empty_src = phdr(0x1000, 0x100);
+        empty_src.offset = 0x50;
         empty_src.filesz = 0;
-        let mut empty_dst = phdr(0x1000, 0);
-        empty_dst.filesz = 0;
         assert_eq!(
             first_source_destination_overlap(0x1000, &[empty_src.clone()]),
             None
         );
+        // Zero-length destination strictly inside a live source range.
+        let mut empty_dst = phdr(0x1008, 0);
+        empty_dst.offset = 0;
+        empty_dst.filesz = 0x10;
         assert_eq!(
             first_source_destination_overlap(0x1000, &[empty_dst.clone()]),
             None

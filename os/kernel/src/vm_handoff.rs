@@ -1043,8 +1043,9 @@ mod tests {
 
     #[test]
     fn test_arch_mmio_identity_regions_are_page_aligned_and_sorted() {
-        // The arch table is the remaining input of build_identity_windows;
-        // its own invariants must hold before the window construction runs.
+        // The arch table is no longer read by build_identity_windows (the
+        // identity replay is retired); this test only checks the table's own
+        // invariants.
         let mut previous_end = 0u64;
         for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
             assert_eq!(base % PAGE_SIZE, 0, "MMIO identity base not page-aligned");

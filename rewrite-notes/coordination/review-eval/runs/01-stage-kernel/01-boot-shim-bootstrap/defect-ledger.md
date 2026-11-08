@@ -572,3 +572,54 @@
 | FACT-R10-06 | panel-r10 | P2 | 测试/R9 声称 8 线程全绿不可复现；锁只覆盖 preflight 全局态 | ①（设计选择） | 已修：撤销“并行安全”声明；config 固定单线程并禁止覆盖；test_serial 注释限定为“显式覆盖时保护 preflight 全局态” | lib.rs；.cargo/config.toml；loop/台账 | 默认 131 绿 |
 | FACT-R10-07 | panel-r10 | P3 | 文档/§3.6 否决表理由仍写被迫实现 map_huge | ① | 已修：理由收窄为“所有 Paging 实现声明支持大页；map_huge 不在搬移范围” | 文档 §3.6 | 五门 |
 | FACT-R10-08 | panel-r10 | P3 | 源码注释/.bss 清零称碰 rdi/rax/rcx，实际 rdi/rcx | ① | 已修：注释改 rdi/rcx | kernel-image/src/main.rs | 编译绿 |
+| FACT-R10-09 | panel-r10 | P3 | 文档/smp_gpt_v3.md 放在 §7.4，记录称 §7.1 | ① | 已修：移到 §7.1 前置与后续篇 | 文档 §7.1/§7.4 | 五门 |
+| FACT-R10-10 | panel-r10 | P3 | 源码注释/riscv 交接注释悬空右括号 | ① | 已修：删多余 `）`，两句改独立句 | kernel-image/src/main.rs | 编译绿 |
+| FACT-R10-11 | panel-r10 | P3 | 文档/startup_objects 称有运行期 provenance 读者 | ① | 已修：改“只供启动期 validate_requiring_sources；全仓无运行期读者” | 文档 §3.4 | 五门 |
+| FACT-R10-12 | panel-r10 | P1 | 文档/§3.4 memmap 行把内核划进 UEFI 保留表 | ① | 已修：改回源码契约“内核在每条腿都恒在可用表；模块 UEFI 不在” | 文档 §3.4；kernel_info.rs:24-28 | 五门 |
+| FACT-R10-13 | panel-r10 | P2 | 文档/U-Boot shim arena 称已在整段 bump 扣除内 | ① | 已修：改“独立 bump 分配，在 boot_alloc_region 之后，不在扣除内；解码后废弃” | 文档 §3.7；opensbi/uboot 顺序 | 五门 |
+| FACT-R10-14 | panel-r10 | P3 | 文档/§4.1 单元格仍把 U-Boot shim 混进直核列 | ① | 已修：内存与参数准备单元格拆三腿；进入内核单元格已拆 | 文档 §4.1 | 五门 |
+
+# Round 11（基线 2b3f10c10）
+
+## R11 面板明细（38 条）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-R11-01 | panel-r11 | P0 | 文档/§4.6 引文仍印已删的 one-shot expect | ① | 已修：引文改现行消息；补省略标记 | 文档 §4.6 | 五门 |
+| FACT-R11-02 | panel-r11 | P0 | 文档/"六个组合全部 DTB 注入"与实际相反 | ① | 已修：改为仓库内六个 fdtput 注入脚本逐一列名 | 文档 §3.7 | 五门 |
+| FACT-R11-03 | panel-r11 | P2 | 文档/权威表 aarch64 行丢块引用前缀 | ① | 已修：补 `> ` | 文档 §3.1 | 五门 |
+| FACT-R11-04 | panel-r11 | P1 | 测试/零长负控零判别力 | ① | 已修：负控改成"零长地址严格落在区间内"的几何，删 continue 才红 | loader.rs 测试 | 测试绿 |
+| FACT-R11-05 | panel-r11 | P3 | 源码注释/riscv 交接注释孤立右括号 | ① | 已修（与 R10-10 同批） | kernel-image/src/main.rs | 编译绿 |
+| FACT-R11-06 | panel-r11 | P3 | 源码注释/bootface SAFETY 仍称 in_memmap | ① | 已修：改 in_memmap_range(size_of::<BootFileTable>()) | bootface.rs | 编译绿 |
+| FACT-R11-07 | panel-r11 | P3 | 源码注释/test_serial 只提 dtb_copy | ① | 已修：注释补 resv_claims 静态量范围 | lib.rs | 编译绿 |
+| FACT-R11-08 | panel-r11 | P3 | 文档/PermissionDenied 被写成真实失败类别 | ① | 已修：改"当前 os/arch 无生产者" | 文档 §4.6 | 五门 |
+| FACT-R11-09 | panel-r11 | P2 | 源码注释/rt-birth :426 引用不存在；载体携已删字段 | ①（部分转出） | 已修：删 :426 引用；8 个 QEMU 载体携 free_upper_idx 的编译问题登记 follow-up | main.rs；R11-FU | 编译绿 |
+| FACT-R11-10 | panel-r11 | P2 | 文档/resume_additive 引文起点 317 行不符 | ① | 已修：改约 318–322 行 | 文档 §4.7 | 五门 |
+| READER-R11-F01 | panel-r11 | P2 | 文档/§2.8 "逐条如下"只列三条 | ① | 已修：改"下面只展开三条，另两条回指 §1.2/§2.6" | 文档 §2.8 | 五门 |
+| READER-R11-F02 | panel-r11 | P2 | 文档/M15 时点写"EBS 前" | ① | 已修：改"配对循环成功后、裸串口可打印" | 文档 §5.1 M15 | 五门 |
+| READER-R11-F03 | panel-r11 | P2 | 文档/TODO-07 "三案" vs 5 条 | ① | 已修：M13 与 §5.3 统一"五案/5 条" | 文档 §5.1/§5.3 | 五门 |
+| READER-R11-F04 | panel-r11 | P2 | 文档/§2.4.1 pg_alloc_page 主语漂移 | ① | 已修：记账句归回 pg_alloc_page；alloc_lowest 另述 | 文档 §2.4.1 | 五门 |
+| READER-R11-F05 | panel-r11 | P2 | 文档/四前提被说成安全边界 | ① | 已修：改"四前提建立的是切除不发生（危险来源）；兜住的是取页方向与生命周期" | 文档 §2.4.1 | 五门 |
+| READER-R11-F06 | panel-r11 | P3 | 文档/"两条 UEFI 产线改用协议" | ① | 已修：改"跨镜像三腿" | 文档 §3.4 | 五门 |
+| READER-R11-F07 | panel-r11 | P3 | 文档/Step 2c 归属矛盾 | ① | 已修：改"三架构共用，aarch64 空表 no-op" | 文档 §4.6 | 五门 |
+| READER-R11-F08 | panel-r11 | P3 | 文档/"映射责任移交 VM"重复 | ① | 已修：删重复状语 | 文档 §4.1 | 五门 |
+| READER-R11-F09 | panel-r11 | P3 | 文档/BOARD 分歧复述 | ① | 已修：删段尾重复句 | 文档 §3.4 | 五门 |
+| READER-R11-F10 | panel-r11 | P3 | 文档/§1.1"不会再发出去"绝对化 | ① | 已修：加"归还之前"时间窗与 §2.4.2 回指 | 文档 §1.1 | 五门 |
+| READER-R11-F11 | panel-r11 | P3 | 文档/L5 跨距与 kern_size 同义却分列 | ① | 已修：注明 L5 与规划层检查同一公式，仅执行位置不同 | 文档 §5.2.1 | 五门 |
+| READER-R11-F12 | panel-r11 | P3 | 文档/§2.6.4 "本节前半"误指 | ① | 已修：改"上一小节（§2.6.3）" | 文档 §2.6.4 | 五门 |
+| READER-R11-F13 | panel-r11 | P3 | 文档/§4.2 "这两页"单位错 | ① | 已修：改"两个分配（根页 + 1024 页 bump 区）" | 文档 §4.2 | 五门 |
+| READER-R11-F14 | panel-r11 | P3 | 文档/§3 导览 3.8–3.9 归类错 | ① | 已修：改"3.8 分配器换手，3.9 槽位账退役" | 文档 §3 导览 | 五门 |
+| READER-R11-F15 | panel-r11 | P3 | 文档/§2.4.1 自指 | ① | 已修：两处改"上文的升序讨论" | 文档 §2.4.1 | 五门 |
+| READER-R11-F16 | panel-r11 | P3 | 文档/§7.2 C 源清单漏项 | ① | 已修：补 main/protect/arch_system/vm-alloc/do_*/assert/loadfile/exec/sysenv 等 | 文档 §7.2 | 五门 |
+| READER-R11-F17 | panel-r11 | P3 | 文档/证据类型列 11 种写法超四类 | ① | 已修：引言说明 `＋`/`→` 组合语义与三类归并 | 文档 §5 引言 | 五门 |
+| READER-R11-F18 | panel-r11 | P3 | 文档/§2.4.1 "本节结算"归属错 | ① | 已修：改"2.4 结算"；"本节尚未切"→"§2.4 尚未切" | 文档 §2.4.1 | 五门 |
+| DESIGN-R11-01 | panel-r11 | P2 | 测试/单线程只是默认值，两条旁路仍可并线 | ① | 已修：分配计数改 thread_local（每线程计数）；8 线程实测 131 全绿；锁仍保护 preflight | lib.rs；8 线程 | 测试 8 线程 |
+| DESIGN-R11-02 | panel-r11 | P2 | 测试/零长负控零判别力 | ① | 已修（与 FACT-R11-04 同批） | loader.rs 测试 | 测试绿 |
+| DESIGN-R11-03 | panel-r11 | P1 | 文档/§3.4 memmap 行回归 | ① | 已修（与 FACT-R10-12 同批） | 文档 §3.4 | 五门 |
+| DESIGN-R11-04 | panel-r11 | P2 | 文档/台账两行称已修但树未改 | ① | 已修：uboot 锚点 395→403、mem_high_phys 指针→§2.6.1 两处补改 | 文档 §3.1/§3.2/§2.8 | 五门 |
+| DESIGN-R11-05 | panel-r11 | P2 | 代码/BootFileTable 门只保证 8 字节，按 1296 字节解引用 | ① | 已修：两个自举面改 `in_memmap_range(pa, size_of::<BootFileTable>())` | bootface.rs/a64 | 编译绿 |
+| DESIGN-R11-06 | panel-r11 | P3 | 源码注释/test_serial 范围窄 | ① | 已修（与 FACT-R11-07 同批） | lib.rs | 编译绿 |
+| DESIGN-R11-07 | panel-r11 | P3 | 源码注释/in_memmap 旧符号 | ① | 已修（与 FACT-R11-06 同批） | bootface.rs | 编译绿 |
+| DESIGN-R11-08 | panel-r11 | P3 | 源码注释/孤立右括号 | ① | 已修（与 FACT-R11-05 同批） | main.rs | 编译绿 |
+| DESIGN-R11-09 | panel-r11 | P3 | 源码注释/build_identity_windows 测试前提过期 | ① | 已修：测试注释改"函数无参且不读 arch MMIO 表" | vm_handoff.rs 测试 | 测试绿 |
+| DESIGN-R11-10 | panel-r11 | P3 | 代码/模块源与 bump 池相接判成交 | ① | 已修：相交判据改严格 `>`（相接不算重叠） | 待核代码/文档 | 编译绿 |

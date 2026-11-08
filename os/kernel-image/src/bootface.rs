@@ -230,7 +230,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     let table_pa = [Some(table_pa_a2), chosen_pa]
         .into_iter()
         .flatten()
-        .find(|pa| in_memmap_range(memmap, *pa, 8) && table_magic_ok(*pa));
+        .find(|pa| in_memmap_range(memmap, *pa, core::mem::size_of::<BootFileTable>() as u64) && table_magic_ok(*pa));
     let Some(table_pa) = table_pa else {
         say(
             "### minix-rs kernel image: no BootFileTable (a2/chosen) — module channel not wired, halting\n",
@@ -241,7 +241,8 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(table_pa);
     say("\n");
     // SAFETY: the preceding `table_magic_ok` already checked the magic inside
-    // the `in_memmap` bound; QEMU's direct-load staging (or the host injection
+    // the `in_memmap_range(pa, size_of::<BootFileTable>())` bound; QEMU's
+    // direct-load staging (or the host injection
     // tool) places the table in physical RAM exclusive to the boot phase, and
     // this face is its first and only reader (single hart, no concurrent
     // writers).
@@ -559,7 +560,7 @@ fn place_modules(table: &BootFileTable, memmap: &[MemoryRegion], names_pool: u64
             say(" escapes memmap\n");
             return None;
         }
-        if entry.phys_addr < bump_end_bound() && entry.phys_addr + entry.len >= bump_pool_base() {
+        if entry.phys_addr < bump_end_bound() && entry.phys_addr + entry.len > bump_pool_base() {
             say("  module slot 0x");
             say_hex(i as u64);
             say(" source overlaps bump pool\n");

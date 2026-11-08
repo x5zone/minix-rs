@@ -40,12 +40,17 @@ extern crate std;
 struct CountingAllocator;
 
 #[cfg(test)]
-static TEST_ALLOCATIONS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+std::thread_local! {
+    // Per-thread counter: tests assert "this phase allocates nothing" while
+    // cargo may run other tests concurrently. A process-wide counter would
+    // count their allocations too (R11 D2-01).
+    static TEST_ALLOCATIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
 
 #[cfg(test)]
 unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        TEST_ALLOCATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        TEST_ALLOCATIONS.with(|count| count.set(count.get() + 1));
         // SAFETY: delegation with the caller's layout.
         unsafe {
             <std::alloc::System as std::alloc::GlobalAlloc>::alloc(&std::alloc::System, layout)
@@ -67,7 +72,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
 /// Number of heap allocations made by the test binary so far.
 #[cfg(test)]
 pub(crate) fn test_allocations() -> usize {
-    TEST_ALLOCATIONS.load(core::sync::atomic::Ordering::Relaxed)
+    TEST_ALLOCATIONS.with(|count| count.get())
 }
 
 #[cfg(test)]
@@ -133,8 +138,9 @@ pub mod loader;
 
 #[cfg(test)]
 pub(crate) mod test_serial {
-    //! Process-wide lock for tests that touch the one-shot DTB preflight
-    //! globals (`dtb_copy`). This workspace pins `RUST_TEST_THREADS=1`
+    //! Process-wide lock for tests that touch one-shot crate globals: the
+    //! DTB preflight state (`dtb_copy`) and the `resv_claims` static muts.
+    //! This workspace pins `RUST_TEST_THREADS=1`
     //! (`.cargo/config.toml`), so the default path is already serial; the
     //! lock keeps those globals coherent when a caller explicitly overrides
     //! the thread count. It does not make allocation-counter assertions
