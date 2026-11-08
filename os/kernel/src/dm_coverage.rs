@@ -334,7 +334,7 @@ fn reserved_regions_candidates<'a>(
 /// Source 1: conventional RAM ranges (the boot shim already type-filtered).
 fn memmap_candidates(kernel_info: &KernelInfo) -> impl Iterator<Item = DmRange> + '_ {
     kernel_info
-        .memmap()
+        .memmap
         .iter()
         .map(|r| DmRange::new(r.base.0, r.len as u64))
 }

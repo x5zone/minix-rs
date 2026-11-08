@@ -17,13 +17,13 @@
 //!
 //! | Range | Source |
 //! |-------|--------|
-//! | kernel image | `KernelInfo.kern_phys_base()/kern_size()` |
+//! | kernel image | `KernelInfo.kern_phys_base/kern_size` |
 //! | VM self root page | `arch_boot` parameter (= handoff `root_paddr`) |
 //! | boot bump region | `boot_alloc::boot_alloc_region()` (whole range —
 //!   consumed pages and remainder are both kernel-reserved) |
 //! | bootstrap-used frames | per-pool-region used suffixes of
 //!   `VmBootAllocator` (walk order: descending from each region's end) |
-//! | reserved module blobs (deduction record) | `KernelInfo.boot_modules()`
+//! | reserved module blobs (deduction record) | `KernelInfo.boot_modules`
 //!   — **every** blob including VM's own (VM's segment frames come from this
 //!   free list before VM starts, so reclaiming its blob corrupts VM before
 //!   entry) |
@@ -82,7 +82,7 @@ unsafe extern "C" {
 pub(crate) fn kern_text_pages(kernel_info: &KernelInfo) -> u64 {
     let text_end_vma = core::ptr::addr_of!(__text_end) as usize as u64;
     let text_bytes = text_end_vma
-        .checked_sub(kernel_info.kern_virt_base().0)
+        .checked_sub(kernel_info.kern_virt_base.0)
         .expect("__text_end below kern_virt_base — link layout drift");
     text_bytes.div_ceil(4096)
 }
@@ -92,7 +92,7 @@ pub(crate) fn kern_text_pages(kernel_info: &KernelInfo) -> u64 {
 /// `__text_end` symbol.
 #[cfg(not(feature = "kernel-text-rx"))]
 pub(crate) fn kern_text_pages(kernel_info: &KernelInfo) -> u64 {
-    kernel_info.kern_size() / 4096
+    kernel_info.kern_size / 4096
 }
 
 /// Frame size of every `VmBootAllocator` page (C: I386_PAGE_SIZE).
@@ -385,14 +385,14 @@ pub fn classify(
 ) -> Classification {
     // The free set starts as the boot report's conventional list (D01-F08:
     // sorted disjoint page-aligned ranges; zero-length entries skipped).
-    let mut free = FreeRangeSet::from_memmap(kernel_info.memmap());
+    let mut free = FreeRangeSet::from_memmap(kernel_info.memmap);
 
     // ── Build the LiveBootstrap(t_classify) record ──
     let mut record = DeductionCollector::new();
 
     // Kernel-reserved: kernel image (C: pre_init.c:196-199 treats the
     // kernel as an extra module and cuts it the same way).
-    record.push(kernel_info.kern_phys_base().0, kernel_info.kern_size());
+    record.push(kernel_info.kern_phys_base.0, kernel_info.kern_size);
 
     // Kernel-reserved: VM's self root page (A1 identity — the handoff value
     // itself, §6.0-A2 composition table "root page (the handoff value itself)").
@@ -432,11 +432,11 @@ pub fn classify(
     // with p_fault_addr=None rather than a page fault). The 625KB concession is
     // not worth corruption before startup: keep the whole blob reserved.
     assert!(
-        vm_module_idx < kernel_info.boot_modules().len(),
+        vm_module_idx < kernel_info.boot_modules.len(),
         "vm_handoff: VM module index {} out of bounds",
         vm_module_idx
     );
-    for module in kernel_info.boot_modules().iter() {
+    for module in kernel_info.boot_modules.iter() {
         record.push(module.start.0, module.len as u64);
     }
 
@@ -532,7 +532,7 @@ pub fn build_vm_handoff(
     // global page total (main.c:485-489).
     let mut modules = [HandoffModule::ZERO; VM_BOOT_HANDOFF_MAX_MODULES];
     let mut module_count = 0usize;
-    for (i, module) in kernel_info.boot_modules().iter().enumerate() {
+    for (i, module) in kernel_info.boot_modules.iter().enumerate() {
         if i == vm_module_idx {
             continue;
         }
@@ -563,7 +563,7 @@ pub fn build_vm_handoff(
         };
         n += 1;
     }
-    for (i, module) in kernel_info.boot_modules().iter().enumerate() {
+    for (i, module) in kernel_info.boot_modules.iter().enumerate() {
         boot_procs[n] = BootImage {
             proc_nr: BOOT_MODULE_PROC_NRS[i].0,
             proc_name: copy_name(module.name),
@@ -606,7 +606,7 @@ pub fn build_vm_handoff(
         // `KERNINFO_USER_VA` and owns only the intermediate page-table pages.
         kerninfo_pa,
         vm_allocated_bytes: vm_alloc.used_frames() * PAGE_SIZE,
-        kernel_allocated_static: kernel_info.kern_size(),
+        kernel_allocated_static: kernel_info.kern_size,
         kernel_allocated_dynamic: boot_alloc_used_bytes(),
         // Kernel layout for VM's per-process kernel mappings —
         // C kinfo carries the same role (kernel text/data base + pages).
@@ -624,12 +624,12 @@ pub fn build_vm_handoff(
         // text (data_pages = 0), leaving per-process roots fully RWX; the
         // real values let the VM's `map_kernel` map the text segment RX
         // and the data segment RW (W^X within the per-process-root scope).
-        kern_virt_base: kernel_info.kern_virt_base().0,
-        kern_phys_base: kernel_info.kern_phys_base().0,
+        kern_virt_base: kernel_info.kern_virt_base.0,
+        kern_phys_base: kernel_info.kern_phys_base.0,
         kern_text_pages: u32::try_from(kern_text_pages(kernel_info))
             .expect("vm_handoff: kern_text_pages exceeds u32"),
         kern_data_pages: {
-            let total = kernel_info.kern_size() / 4096;
+            let total = kernel_info.kern_size / 4096;
             let text = kern_text_pages(kernel_info) as u64;
             let data = total
                 .checked_sub(text)
@@ -686,7 +686,7 @@ fn copy_name(name: &str) -> [u8; 16] {
 }
 
 /// Classifies a raw memmap slice directly (test entry point — the real
-/// boot path snapshots `KernelInfo.memmap()` first).
+/// boot path snapshots `KernelInfo.memmap` first).
 #[cfg(test)]
 pub(crate) fn classify_regions(
     memmap: &[MemoryRegion],
@@ -915,13 +915,13 @@ mod tests {
 
         let run = |frames: usize| -> (Vec<(u64, u64)>, Classification) {
             let (excl, n) = vm_boot_exclusions(
-                info.kern_phys_base(),
-                info.kern_size() as usize,
-                info.boot_modules(),
+                info.kern_phys_base,
+                info.kern_size as usize,
+                info.boot_modules,
                 Some(root),
                 boot_alloc_region(),
             );
-            let regions = VmBootRegion::select_multi::<MAX_BOOT_REGIONS>(info.memmap(), &excl[..n])
+            let regions = VmBootRegion::select_multi::<MAX_BOOT_REGIONS>(info.memmap, &excl[..n])
                 .expect("select_multi")
                 .expect("a bootstrap region survives the exclusions");
             let mut alloc = VmBootAllocator::<MAX_BOOT_REGIONS>::new(regions);

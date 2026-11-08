@@ -37,7 +37,7 @@
 //!
 //!    ```ignore
 //!    let regions = VmBootRegion::select_multi(
-//!        kernel_info.memmap(),
+//!        kernel_info.memmap,
 //!        &[ /* kernel image */, /* every boot module */ ],
 //!    )?;
 //!    let regions = regions.expect("no free memory for VM bootstrap");

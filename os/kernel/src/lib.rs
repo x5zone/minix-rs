@@ -266,7 +266,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
         // store/copy" (reslen=127 here) — and print the first entry to
         // distinguish a dangling slice (all-zero payload) from a lost
         // length.
-        let rr = kernel_info.reserved_regions();
+        let rr = kernel_info.reserved_regions;
         Console::write_str("kernel: arch_boot reslen=");
         Console::write_hex(rr.len() as u64);
         if let Some(r0) = rr.first() {
@@ -428,9 +428,9 @@ pub fn enter_kernel_image_v1(arena_pa: u64, kernel_info: &KernelInfo, root_page:
     let support = boot_validate_and_prepare::<BootArchImpl>(kernel_info);
     let layout = DirectMapLayout::<BootArchImpl>::from_arch();
     let kernel_layout = KernelLayout {
-        virtual_base: kernel_info.kern_virt_base().0,
-        physical_base: kernel_info.kern_phys_base().0,
-        size: kernel_info.kern_size(),
+        virtual_base: kernel_info.kern_virt_base.0,
+        physical_base: kernel_info.kern_phys_base.0,
+        size: kernel_info.kern_size,
     };
     let policy = plan_boot_pages::<BootArchImpl>(&support, kernel_layout, &layout)
         .unwrap_or_else(|e| panic!("enter_kernel_image_v1: page-size policy: {e}"));
@@ -453,7 +453,7 @@ pub fn enter_kernel_image_v1(arena_pa: u64, kernel_info: &KernelInfo, root_page:
             bump_end,
         },
     );
-    let entry = core::hint::black_box(kernel_info.kern_virt_base().0);
+    let entry = core::hint::black_box(kernel_info.kern_virt_base.0);
     // SAFETY: paging is enabled and `entry` maps the executable kernel-image
     // `_start`; the arena is a valid physical address below the identity end.
     // The handoff register is bound to a fixed operand so LLVM cannot
@@ -719,9 +719,9 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
     // Use getter methods (preferred API).
     // `validate()` is called later in `kmain`; the assertions here are
     // defense-in-depth — they fail-fast before paging setup begins.
-    let kv = kernel_info.kern_virt_base().0;
-    let kp = kernel_info.kern_phys_base().0;
-    let ks = kernel_info.kern_size();
+    let kv = kernel_info.kern_virt_base.0;
+    let kp = kernel_info.kern_phys_base.0;
+    let ks = kernel_info.kern_size;
 
     // kern_size must be positive
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
@@ -740,7 +740,7 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
 
     // kern_stack_top must be 16-byte aligned (ABI requirement)
     assert!(
-        kernel_info.kern_stack_top().0.is_multiple_of(16),
+        kernel_info.kern_stack_top.0.is_multiple_of(16),
         "arch_boot: kern_stack_top must be 16-byte aligned"
     );
 
@@ -761,7 +761,7 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
             IDENTITY_MAP_END,
             <A::DirectMap as minix_arch::DirectMapArch>::VM_DIRECT_MAP_SIZE,
         );
-        let region = kernel_info.memmap().iter().find_map(|r| {
+        let region = kernel_info.memmap.iter().find_map(|r| {
             let start = r.base.0;
             let end = core::cmp::min(start.checked_add(r.len as u64)?, dm_admissible_end);
             (end >= start + FALLBACK_BUMP_LEN).then_some((start, start + FALLBACK_BUMP_LEN))
@@ -829,9 +829,9 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     // cannot re-assemble a different one.
     let layout = DirectMapLayout::<A>::from_arch();
     let kernel_layout = KernelLayout {
-        virtual_base: kernel_info.kern_virt_base().0,
-        physical_base: kernel_info.kern_phys_base().0,
-        size: kernel_info.kern_size(),
+        virtual_base: kernel_info.kern_virt_base.0,
+        physical_base: kernel_info.kern_phys_base.0,
+        size: kernel_info.kern_size,
     };
     let policy = plan_boot_pages::<A>(&support, kernel_layout, &layout)
         .unwrap_or_else(|e| panic!("arch_boot: page-size policy: {e}"));
@@ -1313,12 +1313,12 @@ fn harden_kernel_text() {
     Console::write_str("kernel: text harden enter\n");
 
     let kinfo = crate::kernel_info().expect("harden_kernel_text: KERNEL_INFO store missing");
-    let kern_virt = kinfo.kern_virt_base().0;
+    let kern_virt = kinfo.kern_virt_base.0;
     // The medany direct-boot form has a virt == phys image view (step 1
     // only builds the high-half alias when virt != phys) — there is no
     // high-half alias to split; the identity view stays as-is per the
     // promise scope above.
-    if kern_virt == kinfo.kern_phys_base().0 {
+    if kern_virt == kinfo.kern_phys_base.0 {
         return;
     }
     // Placeholder handoff (non-kernel-text-rx builds report data_pages ==
@@ -1327,7 +1327,7 @@ fn harden_kernel_text() {
     // Production images (kernel-text-rx) carry the real boundary; the
     // placeholder always takes the legacy path.
     let text_pages = crate::vm_handoff::kern_text_pages(kinfo);
-    if kinfo.kern_size() / 4096 == text_pages {
+    if kinfo.kern_size / 4096 == text_pages {
         return;
     }
     let root = crate::current_root_phys()
@@ -1828,7 +1828,7 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     // `#[cfg(target_arch)]` for output selection.
     Console::write_str(minix_platform::test_support::REACHED_BANNER);
 
-    let kern_high = kernel_info.kern_virt_base().0;
+    let kern_high = kernel_info.kern_virt_base.0;
 
     // B-X: banner labels are arch-dispatched from
     // minix_platform::test_support (ARCH_NAME/SP_LABEL/PC_LABEL/FP_LABEL).
@@ -2342,11 +2342,11 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     // C: NR_BOOT_MODULES check — main.c:160-162
     // Use getter method (preferred API).
     assert_eq!(
-        kernel_info.boot_modules().len(),
+        kernel_info.boot_modules.len(),
         NR_BOOT_MODULES,
         "expected {} boot modules, found {}",
         NR_BOOT_MODULES,
-        kernel_info.boot_modules().len()
+        kernel_info.boot_modules.len()
     );
 
     // Step 3a: Initialize kernel tasks (hardcoded, not from multiboot modules).
@@ -2398,7 +2398,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     // Step 3b: Initialize user-space boot modules (from multiboot module list).
     // C: image[NR_TASKS..NR_BOOT_PROCS] in table.c
     // C: kinfo.module_list[i] corresponds to image[NR_TASKS + i]
-    for (i, module) in kernel_info.boot_modules().iter().enumerate() {
+    for (i, module) in kernel_info.boot_modules.iter().enumerate() {
         // Map boot module index to process number using the C boot image order.
         // C: image[NR_TASKS + i].proc_nr — table.c
         let nr: ProcNr = BOOT_MODULE_PROC_NRS[i];
@@ -2484,14 +2484,14 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 // VM allocation, which runs before any deduction is published.
                 // (fixed array — boot is zero-heap, no Vec).
                 let (exclusions, n_excl) = vm_boot_exclusions(
-                    kernel_info.kern_phys_base(),
-                    kernel_info.kern_size() as usize,
-                    kernel_info.boot_modules(),
+                    kernel_info.kern_phys_base,
+                    kernel_info.kern_size as usize,
+                    kernel_info.boot_modules,
                     current_root_phys(),
                     crate::boot_alloc::boot_alloc_region(),
                 );
                 let regions =
-                    VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
+                    VmBootRegion::select_multi(kernel_info.memmap, &exclusions[..n_excl])
                         .expect("init_proc_and_boot: VM bootstrap region selection failed")
                         .unwrap_or_else(|| {
                             panic!(
@@ -2546,14 +2546,14 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 // unfiltered, so occupied ranges (kernel + modules) must be
                 // excluded (invariant 1: `VmBootRegion ∩ ReservedRegions = ∅`).
                 let (exclusions, n_excl) = vm_boot_exclusions(
-                    kernel_info.kern_phys_base(),
-                    kernel_info.kern_size() as usize,
-                    kernel_info.boot_modules(),
+                    kernel_info.kern_phys_base,
+                    kernel_info.kern_size as usize,
+                    kernel_info.boot_modules,
                     current_root_phys(),
                     crate::boot_alloc::boot_alloc_region(),
                 );
                 let regions =
-                    VmBootRegion::select_multi(kernel_info.memmap(), &exclusions[..n_excl])
+                    VmBootRegion::select_multi(kernel_info.memmap, &exclusions[..n_excl])
                         .expect("init_proc_and_boot: VM bootstrap region selection failed")
                         .unwrap_or_else(|| {
                             panic!(
@@ -5490,59 +5490,59 @@ mod tests {
         store_kernel_info(&info);
         let stored = crate::kernel_info().expect("store_kernel_info published the global copy");
         assert_ne!(
-            stored.memmap().as_ptr(),
+            stored.memmap.as_ptr(),
             MEMMAP.as_ptr(),
             "memmap must be repointed to the .bss landing pad"
         );
-        assert_eq!(stored.memmap().len(), 2);
-        assert_eq!(stored.memmap()[0].base, PhysBytes(0x10_0000));
-        assert_eq!(stored.memmap()[1].len, 0x20_0000);
+        assert_eq!(stored.memmap.len(), 2);
+        assert_eq!(stored.memmap[0].base, PhysBytes(0x10_0000));
+        assert_eq!(stored.memmap[1].len, 0x20_0000);
         assert_ne!(
-            stored.boot_modules().as_ptr(),
+            stored.boot_modules.as_ptr(),
             MODULES.as_ptr(),
             "boot_modules must be repointed to the .bss landing pad"
         );
-        assert_eq!(stored.boot_modules().len(), 2);
-        assert_eq!(stored.boot_modules()[0].name, "rs");
-        assert_eq!(stored.boot_modules()[1].start, PhysBytes(0x21_0000));
-        assert_eq!(stored.boot_modules()[1].len, 0x2000);
+        assert_eq!(stored.boot_modules.len(), 2);
+        assert_eq!(stored.boot_modules[0].name, "rs");
+        assert_eq!(stored.boot_modules[1].start, PhysBytes(0x21_0000));
+        assert_eq!(stored.boot_modules[1].len, 0x2000);
         // The platform-source list and the parameter bytes are landed
         // by the same store.
         assert_ne!(
-            stored.platform_sources().as_ptr(),
+            stored.platform_sources.as_ptr(),
             PLATFORM.as_ptr(),
             "platform_sources must be repointed to the .bss landing pad"
         );
-        assert_eq!(stored.platform_sources().len(), 2);
+        assert_eq!(stored.platform_sources.len(), 2);
         assert_eq!(
-            stored.platform_sources()[0].kind().raw(),
+            stored.platform_sources[0].kind().raw(),
             minix_boot::DTB.raw()
         );
         assert_eq!(
-            stored.platform_sources()[0].phys_addr(),
+            stored.platform_sources[0].phys_addr(),
             PhysBytes(0x4000_0000)
         );
         assert_ne!(
-            stored.param_buf().as_ptr(),
+            stored.param_buf.as_ptr(),
             PARAM.as_ptr(),
             "param_buf must be repointed to the .bss landing pad"
         );
-        assert_eq!(stored.param_buf(), PARAM);
+        assert_eq!(stored.param_buf, PARAM);
         // The test re-stores the global copy itself: idempotent, no double copy.
         store_kernel_info(stored);
         let again = crate::kernel_info().expect("re-store republished");
-        assert_eq!(again.memmap().as_ptr(), stored.memmap().as_ptr());
+        assert_eq!(again.memmap.as_ptr(), stored.memmap.as_ptr());
         assert_eq!(
-            again.boot_modules().as_ptr(),
-            stored.boot_modules().as_ptr()
+            again.boot_modules.as_ptr(),
+            stored.boot_modules.as_ptr()
         );
         assert_eq!(
-            again.platform_sources().as_ptr(),
-            stored.platform_sources().as_ptr()
+            again.platform_sources.as_ptr(),
+            stored.platform_sources.as_ptr()
         );
-        assert_eq!(again.param_buf().as_ptr(), stored.param_buf().as_ptr());
-        assert_eq!(again.boot_modules()[1].name, "vm");
-        assert_eq!(again.param_buf(), PARAM);
+        assert_eq!(again.param_buf.as_ptr(), stored.param_buf.as_ptr());
+        assert_eq!(again.boot_modules[1].name, "vm");
+        assert_eq!(again.param_buf, PARAM);
         // Release the one-shot slot for other boot-global tests.
         // SAFETY: boot-globals lock held; single writer.
         unsafe { *crate::globals::KERNEL_INFO.get() = None };

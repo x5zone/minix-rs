@@ -379,7 +379,7 @@ pub fn load_vm_elf<P: Paging, A: PhysAccess>(
 
 /// Shared body of [`load_vm_elf`] / [`load_process_elf`]: parse the ELF,
 /// map every PT_LOAD segment page-by-page, then place the user stack and
-/// the `ps_strings` block at `kernel_info.user_sp()` — all into whatever
+/// the `ps_strings` block at `kernel_info.user_sp` — all into whatever
 /// root the caller's `paging` handle wraps. The two public entry points
 /// differ only in WHICH root that is (a caller-provided live root vs. a
 /// fresh per-process root), so the mapping logic lives here once.
@@ -656,7 +656,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // we lack the self-grow, so the eager runway IS the whole allowance
     // (see VM_STACK_SIZE doc above for the rationale).
     // Use the getter method (preferred API).
-    let stack_high = kernel_info.user_sp();
+    let stack_high = kernel_info.user_sp;
     // Defensive: a caller-supplied `user_sp` below the runway clamps the
     // window to [0, stack_high) rather than underflowing the subtraction
     // (production `user_sp` = 0x7fffffff_f000, far above VM_STACK_SIZE).
@@ -765,7 +765,7 @@ pub struct ProcessLoad {
 /// image's segments + stack are mapped into the result. Two images may
 /// therefore overlap freely in VA (same link base, same `user_sp` stack
 /// window) without colliding — the stack address comes from
-/// `kernel_info.user_sp()` per address space, which is also how C treats
+/// `kernel_info.user_sp` per address space, which is also how C treats
 /// `kinfo.user_sp` (`protect.c:402`: a global value applied inside each
 /// address space VM builds).
 ///

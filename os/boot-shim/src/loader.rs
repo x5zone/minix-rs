@@ -45,7 +45,7 @@ pub const MODULES_DIR: &str = "/EFI/minix/modules";
 /// Boot modules to load, **in the order the kernel consumes them**.
 ///
 /// The kernel reads these modules positionally: the `i`-th entry here becomes
-/// the `i`-th [`BootModule`] in `kernel_info.boot_modules()`, which the kernel
+/// the `i`-th [`BootModule`] in `kernel_info.boot_modules`, which the kernel
 /// maps to process slot `BOOT_MODULE_PROC_NRS[i]` while building the process
 /// table (see `BOOT_MODULE_PROC_NRS` in `os/kernel/src/proc.rs`). The kernel
 /// also asserts at boot that the number of modules equals `NR_BOOT_MODULES`

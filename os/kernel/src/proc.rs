@@ -100,7 +100,7 @@ pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS] = &[
 
 /// User-space boot module process numbers, in C's boot image order.
 ///
-/// `kernel_info.boot_modules()[i]` is the i-th multiboot module, which
+/// `kernel_info.boot_modules[i]` is the i-th multiboot module, which
 /// corresponds to `image[NR_TASKS + i]` in C's table.c. The boot image
 /// order (DS, RS, PM, SCHED, VFS, MEM, TTY, MIB, VM, PFS, MFS, INIT) is
 /// **not** the same as the C proc numbers — each module keeps its fixed

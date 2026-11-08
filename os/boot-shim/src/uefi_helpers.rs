@@ -1467,8 +1467,8 @@ mod tests {
             &[],                 // param_buf (no source in this unit test)
         );
 
-        assert_eq!(info.reserved_regions().len(), 1);
-        assert_eq!(info.reserved_regions()[0].base, PhysBytes(0x1da0_0000));
+        assert_eq!(info.reserved_regions.len(), 1);
+        assert_eq!(info.reserved_regions[0].base, PhysBytes(0x1da0_0000));
 
         assert_eq!(info.kern_virt_base, VirBytes(0xFFFFFFFF80000000));
         assert_eq!(info.kern_phys_base, PhysBytes(0x200000));

@@ -1882,7 +1882,7 @@ x86_64 的 `arch_boot` 只做诊断打印并调用 `arch_boot_finish::<X86_64Boo
     }
     let support = boot_validate_and_prepare::<BootArchImpl>(kernel_info);
     let layout = DirectMapLayout::<BootArchImpl>::from_arch();
-    let kernel_layout = KernelLayout { virtual_base: kernel_info.kern_virt_base().0, physical_base: kernel_info.kern_phys_base().0, size: kernel_info.kern_size() };
+    let kernel_layout = KernelLayout { virtual_base: kernel_info.kern_virt_base.0, physical_base: kernel_info.kern_phys_base.0, size: kernel_info.kern_size };
     let policy = plan_boot_pages::<BootArchImpl>(&support, kernel_layout, &layout)
         .unwrap_or_else(|e| panic!("enter_kernel_image_v1: page-size policy: {e}"));
     build_bootstrap_root_and_enable::<BootArchImpl>(root_page, &policy.kernel());
@@ -1894,7 +1894,7 @@ x86_64 的 `arch_boot` 只做诊断打印并调用 `arch_boot_finish::<X86_64Boo
         arena,
         RuntimeFields { root_page: root_page.0, bump_base, bump_next, bump_end },
     );
-    let entry = core::hint::black_box(kernel_info.kern_virt_base().0);
+    let entry = core::hint::black_box(kernel_info.kern_virt_base.0);
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
@@ -1934,7 +1934,7 @@ U-Boot shim 腿自建表、不经过此通道——它把表与模块序列化�
 
 **两个替代做法各会撞什么**（两处）：
 
-其一，aarch64 退回内联执行。内联时内核代码住在 PE 镜像的运行物理地址上（低半、`VA = PA`、在 TTBR0 覆盖范围内）。第一次 `switch_address_space` 会换 TTBR0 到进程页表并发 `tlbi vmalle1is`，内核自身的取指映射随之消失——现场证据（`elr`/`vbar` 钉在同一个低地址上）记在 [`rewrite-notes/01-stage-kernel/01-code-design.md`](rewrite-notes/01-stage-kernel/01-code-design.md)，不在 `arch_boot_resume_high_half` 的文档注释里。跨镜像形态把这个问题的根去掉：内核代码链接在高半（TTBR1），而 TTBR1 在上下文切换中不被替换。
+其一，aarch64 退回内联执行。内联时内核代码住在 PE 镜像的运行物理地址上（低半、`VA = PA`、在 TTBR0 覆盖范围内）。第一次 `switch_address_space` 会换 TTBR0 到进程页表并发 `tlbi vmalle1is`，内核自身的取指映射随之消失——现场证据（`elr`/`vbar` 钉在同一个低地址上）记在 [`rewrite-notes/01-stage-kernel/01-code-design.md`](01-code-design.md)，不在 `arch_boot_resume_high_half` 的文档注释里。跨镜像形态把这个问题的根去掉：内核代码链接在高半（TTBR1），而 TTBR1 在上下文切换中不被替换。
 
 其二，接收侧按"干净启动"重建 bootstrap 根（调 `Paging::new_from_page`）。该函数的第一件事是把 512 个根条目清零（`write_bytes(ptr, 0, 512)`），而此时这个根**正在被使用**——承载当前函数的那条指令所在的 L0 槽就在其中。清零本身不会立刻作废已缓存的 TLB 项——三个架构都不因改写页表而自动清 TLB——故障落在下一个**冷**取指上（TLB 回填或切换后的 kmain 入口取指）：之前靠 TLB 残留还能跑几条指令，这段"还能跑"的窗口让故障点与根因隔得更远，栈上多半连一条 panic 消息都来不及打印；"resume 面只做 additive 阶段"这条约束就是从这里来的。
 
@@ -2033,13 +2033,13 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 // 节选（略去行号引用；kernel image 一行加了 A+D 之后的归属说明，C 对应关系一行按 §2.4.2 的指针改述，见上文），os/kernel/src/vm_handoff.rs 的扣除区间表头与 bump 行。
 //! | Range | Source |
 //! |-------|--------|
-//! | kernel image | `KernelInfo.kern_phys_base()/kern_size()`（UEFI 腿在 A+D 之后已预订为 `LOADER_DATA`，本行对 free list 退化为空操作；自引导腿与 U-Boot shim 腿仍是实际扣除） |
+//! | kernel image | `KernelInfo.kern_phys_base/kern_size()`（UEFI 腿在 A+D 之后已预订为 `LOADER_DATA`，本行对 free list 退化为空操作；自引导腿与 U-Boot shim 腿仍是实际扣除） |
 //! | VM self root page | `arch_boot` parameter (= handoff `root_paddr`) |
 //! | boot bump region | `boot_alloc::boot_alloc_region()` (whole range —
 //!   consumed pages and remainder are both kernel-reserved) |
 //! | bootstrap-used frames | per-pool-region used suffixes of
 //!   `VmBootAllocator` (walk order: descending from each region's end) |
-//! | reserved module blobs (deduction record) | `KernelInfo.boot_modules()`
+//! | reserved module blobs (deduction record) | `KernelInfo.boot_modules`
 //!   — **every** blob including VM's own (VM's segment frames come from this
 //!   free list before VM starts, so reclaiming its blob corrupts VM before
 //!   entry) |
@@ -2263,7 +2263,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 | Step 4 | 属性含 `TYPE_INDEPENDENT` | `Side` | 继续 |
 | Step 5 | 属性 `WRITE_BACK == 0` → `Side`；否则按类型表：`CONVENTIONAL`→可分配、`LOADER_CODE`/`LOADER_DATA`/`BOOT_SERVICES_CODE`/`BOOT_SERVICES_DATA`/`ACPI_RECLAIM`→`ReservedMapped`、其余→`Side` | 定档返回 | —（类型表兜底） |
 
-落点：可分配进 free list；`ReservedMapped` 进保留表（可用但不可分配）；`DevicePath` 是设备窗口、不当内存；`Excluded` 不进任何表；`Side` 不进任何表，只计入 EBS 成功后的诊断侧计数。读表前先把判据令牌立住（与 [`ebs_map.rs`](os/boot-shim/src/ebs_map.rs) 的模块常量逐项对应）：
+落点：可分配进 free list；`ReservedMapped` 进保留表（可用但不可分配）；`DevicePath` 是设备窗口、不当内存；`Excluded` 不进任何表；`Side` 不进任何表，只计入 EBS 成功后的诊断侧计数。**两道内联闸的覆盖范围不同**（R14 A-20）：`checked_shape` 在 Step 2 之后、Step 3 之前，所以包括 `Excluded`/`DevicePath` 在内的所有非 `RefuseToBoot` 描述符都经过它；`checked_len` 在 Step 3 之后、Step 4 之前，而 Step 3 命中者已经定档返回——`Excluded` 与 `DevicePath` **不经过** `checked_len`。读表前先把判据令牌立住（与 [`ebs_map.rs`](os/boot-shim/src/ebs_map.rs) 的模块常量逐项对应）：
 
 | 令牌 | 取值/含义 | 失败落点 |
 |---|---|---|
@@ -2489,14 +2489,14 @@ pub fn build_kernel_info(
 
 ```rust
 // 节选（保留校验段；尺寸阶梯与诊断路标宏略去——阶梯的代码与解码在 §3.6；注释省略，尾部兜底注册块以省略号代替），os/kernel/src/lib.rs:fn boot_validate_and_prepare。
-    let kv = kernel_info.kern_virt_base().0;
-    let kp = kernel_info.kern_phys_base().0;
-    let ks = kernel_info.kern_size();
+    let kv = kernel_info.kern_virt_base.0;
+    let kp = kernel_info.kern_phys_base.0;
+    let ks = kernel_info.kern_size;
 
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
     assert!(kp.is_multiple_of(0x1000), "arch_boot: kern_phys_base must be page-aligned");
     assert!(kv.is_multiple_of(0x1000), "arch_boot: kern_virt_base must be page-aligned");
-    assert!(kernel_info.kern_stack_top().0.is_multiple_of(16),
+    assert!(kernel_info.kern_stack_top.0.is_multiple_of(16),
         "arch_boot: kern_stack_top must be 16-byte aligned");
     ... // 分配器注册
     let support = detect_boot_page_support::<A>()

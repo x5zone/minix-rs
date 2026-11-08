@@ -90,11 +90,11 @@ impl HigherHalf for Riscv64HigherHalf {
         // to the caller) is itself the correctness argument that those writes
         // are unobservable downstream, so they need no explicit clobber list.)
         let delta = kinfo
-            .kern_virt_base()
+            .kern_virt_base
             .0
-            .checked_sub(kinfo.kern_phys_base().0)
+            .checked_sub(kinfo.kern_phys_base.0)
             .expect("higher_half: kern_virt_base must be >= kern_phys_base");
-        let kvirt = kinfo.kern_virt_base().0;
+        let kvirt = kinfo.kern_virt_base.0;
         unsafe {
             core::arch::asm!(
                 "mv sp, {stktop}",

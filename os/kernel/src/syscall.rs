@@ -2597,8 +2597,8 @@ fn phys_ram_view() -> Option<(
 )> {
     let kinfo = crate::kernel_info()?;
     Some((
-        kinfo.memmap(),
-        kinfo.reserved_regions(),
+        kinfo.memmap,
+        kinfo.reserved_regions,
         (kinfo.kern_phys_base.0, kinfo.kern_size),
     ))
 }

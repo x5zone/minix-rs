@@ -116,7 +116,7 @@ fn fill_kerninfo_page(kernel_info: &KernelInfo) {
     let page = unsafe { &mut *KERNINFO_PAGE.get() };
     page.user = KuserInfo {
         kui_size: size_of::<KuserInfo>() as u64,
-        kui_user_sp: kernel_info.user_sp().0,
+        kui_user_sp: kernel_info.user_sp.0,
     };
 }
 
@@ -242,7 +242,7 @@ mod kerninfo_tests {
 
         // kuserinfo is filled from boot info (C main.c:438-440)...
         assert_eq!(page.user.kui_size, size_of::<KuserInfo>() as u64);
-        assert_eq!(page.user.kui_user_sp, info.user_sp().0);
+        assert_eq!(page.user.kui_user_sp, info.user_sp.0);
 
         // ...while the top-level struct still shows the pre-publish state:
         // magic stamped (const init), but no pointer/flag fixups yet. The

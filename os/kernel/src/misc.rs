@@ -1353,7 +1353,7 @@ fn getinfo_image(
     val_len: i32,
 ) -> KcallResult {
     let boot_modules = crate::kernel_info()
-        .map(|ki| ki.boot_modules())
+        .map(|ki| ki.boot_modules)
         .unwrap_or(&[]);
     let image = build_boot_image(proc_table, boot_modules);
     copy_struct_to_caller(caller_nr, proc_table, &image, val_ptr, val_len)

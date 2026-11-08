@@ -519,108 +519,17 @@ impl KernelInfo {
     // `pub` for backward compatibility with boot-shim construction and
     // test assertions, but new code should prefer these methods.
 
-    /// Free physical memory regions reported by the boot-shim.
-    ///
-    /// NOTE: **not** filtered. What lands in this map differs per leg
-    /// (D01-R5 D2-14, corrected): the **kernel image** is always written
-    /// straight to its ELF physical LMAs (`loader::load_segments_into_
-    /// phys_memory`), so it **is** part of the conventional map on every
-    /// leg and must be deducted. **Module blobs** differ: UEFI legs
-    /// allocate them as `LOADER_DATA` (absent from the map), while the
-    /// U-Boot / direct-core legs copy them into bump pages carved from
-    /// conventional RAM (present, deducted). Consumers that allocate from
-    /// this map (e.g. the VM bootstrap allocator, `VmBootRegion::
-    /// select_multi` in `os/arch/src/arch/frame.rs`) must exclude the
-    /// occupied ranges explicitly, mirroring C's `cut_memmap`
-    /// (pre_init.c:190-214). The kernel keeps no mutable copy of this map:
-    /// each boot-time consumer subtracts the occupied ranges it must not
-    /// touch (`vm_boot_exclusions` for the VM bootstrap pools,
-    /// `vm_handoff::classify` for the handoff free list).
-    /// C: `kinfo.memmap[]` — pg_utils.c add_memmap/cut_memmap
-    #[inline]
-    pub fn memmap(&self) -> &'static [MemoryRegion] {
-        self.memmap
-    }
 
-    /// Provenance records handed over with the memory map (empty when the
-    /// boot leg carried none).
-    #[inline]
-    pub fn memmap_sources(&self) -> &'static [SourceRecord] {
-        self.memmap_sources
-    }
 
-    /// Non-conventional (occupied) physical regions — *available but not
-    /// allocatable*; Direct Map candidates (see the field doc for the
-    /// per-leg composition and the retired identity-window use).
-    #[inline]
-    pub fn reserved_regions(&self) -> &'static [MemoryRegion] {
-        self.reserved_regions
-    }
 
-    /// Kernel virtual base address.
-    /// C: `kinfo.vir_kern_start = &_kern_vir_base` — pre_init.c:113
-    #[inline]
-    pub fn kern_virt_base(&self) -> VirBytes {
-        self.kern_virt_base
-    }
 
-    /// Kernel physical base address.
-    /// C: `kern_phys_start = &_kern_phys_base` — pg_utils.c linker symbol
-    #[inline]
-    pub fn kern_phys_base(&self) -> PhysBytes {
-        self.kern_phys_base
-    }
 
-    /// Kernel total size in bytes.
-    /// C: `kern_kernlen = &_kern_size` — pg_utils.c linker symbol
-    #[inline]
-    pub fn kern_size(&self) -> u64 {
-        self.kern_size
-    }
 
-    /// User-space stack top.
-    /// C: `kinfo.user_sp = USR_STACKTOP` — pre_init.c:156
-    #[inline]
-    pub fn user_sp(&self) -> VirBytes {
-        self.user_sp
-    }
 
-    /// Kernel initial stack top (virtual address).
-    /// C: `k_boot_stktop` / `k_initial_stktop` — linker symbol
-    #[inline]
-    pub fn kern_stack_top(&self) -> VirBytes {
-        self.kern_stack_top
-    }
 
-    /// System call entry point (virtual address).
-    /// x86-64: configures LSTAR MSR; aarch64/riscv64: reference only.
-    #[inline]
-    pub fn syscall_entry(&self) -> VirBytes {
-        self.syscall_entry
-    }
 
-    /// Boot process images (PM, VM, VFS, RS etc.).
-    /// C: `kinfo.module_list[]` — pre_init.c memcpy from GRUB
-    #[inline]
-    pub fn boot_modules(&self) -> &'static [BootModule] {
-        self.boot_modules
-    }
 
-    /// Platform descriptor sources — opaque handles carrying firmware
-    /// table pointers (DTB, RSDP, or both).
-    #[inline]
-    pub fn platform_sources(&self) -> &'static [PlatformDescSource] {
-        self.platform_sources
-    }
 
-    /// Boot parameter bytes (`param_buf`): `key=value` pairs, C's
-    /// `param_buf[MULTIBOOT_PARAM_BUF_SIZE]` equivalent. Empty until a boot
-    /// surface supplies real bytes; the kernel's GET_MONPARAMS handler
-    /// zero-pads to the fixed C size.
-    #[inline]
-    pub fn param_buf(&self) -> &'static [u8] {
-        self.param_buf
-    }
 }
 
 #[repr(C)]
@@ -937,28 +846,28 @@ mod tests {
         // Slice types lack PartialEq, so compare lengths and first elements.
         let info = make_valid_info();
         // Scalar fields: direct equality.
-        assert_eq!(info.kern_virt_base(), info.kern_virt_base);
-        assert_eq!(info.kern_phys_base(), info.kern_phys_base);
-        assert_eq!(info.kern_size(), info.kern_size);
-        assert_eq!(info.user_sp(), info.user_sp);
-        assert_eq!(info.kern_stack_top(), info.kern_stack_top);
-        assert_eq!(info.syscall_entry(), info.syscall_entry);
+        assert_eq!(info.kern_virt_base, info.kern_virt_base);
+        assert_eq!(info.kern_phys_base, info.kern_phys_base);
+        assert_eq!(info.kern_size, info.kern_size);
+        assert_eq!(info.user_sp, info.user_sp);
+        assert_eq!(info.kern_stack_top, info.kern_stack_top);
+        assert_eq!(info.syscall_entry, info.syscall_entry);
         // Slice fields: compare length and first element address.
-        assert_eq!(info.memmap().len(), info.memmap.len());
-        assert_eq!(info.memmap().as_ptr(), info.memmap.as_ptr());
-        assert_eq!(info.reserved_regions().len(), info.reserved_regions.len());
+        assert_eq!(info.memmap.len(), info.memmap.len());
+        assert_eq!(info.memmap.as_ptr(), info.memmap.as_ptr());
+        assert_eq!(info.reserved_regions.len(), info.reserved_regions.len());
         assert_eq!(
-            info.reserved_regions().as_ptr(),
+            info.reserved_regions.as_ptr(),
             info.reserved_regions.as_ptr()
         );
-        assert_eq!(info.boot_modules().len(), info.boot_modules.len());
-        assert_eq!(info.boot_modules().as_ptr(), info.boot_modules.as_ptr());
-        assert_eq!(info.platform_sources().len(), info.platform_sources.len());
+        assert_eq!(info.boot_modules.len(), info.boot_modules.len());
+        assert_eq!(info.boot_modules.as_ptr(), info.boot_modules.as_ptr());
+        assert_eq!(info.platform_sources.len(), info.platform_sources.len());
         assert_eq!(
-            info.platform_sources().as_ptr(),
+            info.platform_sources.as_ptr(),
             info.platform_sources.as_ptr()
         );
-        assert_eq!(info.param_buf().len(), info.param_buf.len());
-        assert_eq!(info.param_buf().as_ptr(), info.param_buf.as_ptr());
+        assert_eq!(info.param_buf.len(), info.param_buf.len());
+        assert_eq!(info.param_buf.as_ptr(), info.param_buf.as_ptr());
     }
 }
