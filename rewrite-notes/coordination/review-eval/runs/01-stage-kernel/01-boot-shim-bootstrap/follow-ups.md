@@ -30,13 +30,13 @@
 
 | ID | 来源 | 事项 | 状态 | 说明 |
 |---|---|---|---|---|
-| R7-FU-01 | D2-03 | BootForm 注册表：保留/删除/接到真实入口 | 待用户裁决 | 三处不成立的断言已改；结构取舍不阻塞本轮收敛 |
+| R7-FU-01 | D2-03 | BootForm 注册表：保留/删除/接到真实入口 | ✅ 已裁决（2026-11-08，采 A：删） | 删注册表/电池/数量测试，历史形态留教学文档；随 code-excellence 批次（与 F04/F05 同批） |
 | R7-FU-02 | D2-02 同族 | root/bump 分配先于内核装载，预防需重排两入口步骤 | 已登记 | 检测面已加（装载后复核 root/bump 不重叠）；预防面留 code-excellence / 后续轮 |
 | R7-FU-03 | D2-13 | 内核 LMA 与 AllocatePages 的权衡（是否预留内核区间） | 待用户裁决 | 现为"分配时拒绝模块页 + 装载后复核"；预留区间会改变内存图 |
 
 | R8-FU-01 | DESIGN-R8-02 | 全局 allocator 守卫：pool 分配拒绝内核跨度 | 已登记 | 最小修复仅覆盖 ELF 段 src/dest 断言；完整守卫留 code-excellence |
-| R8-FU-02 | DESIGN-R8-01 | a2 通道真机取证（打印 a2 原值 + 命中日志） | 待用户 | 当前统一为“备用通道、仓内无生产者”；补证据或删通道由用户裁决 |
-| R10-FU-01 | FACT-R10-01 | CI 增加 kernel-image riscv64 双 feature 构建作业 | 已登记 | 当前 qemu-tests CI 不构建 kernel-image，导致 F07 的 `.0` 编译错误长期未拦 |
+| R8-FU-02 | DESIGN-R8-01 | a2 通道真机取证 vs 删通道 | ✅ 已裁决（2026-11-08，采 A：删） | 删 a2 备用通道（asm 注释 + bootface 分支 + 文档表述），DTB `/chosen` 为唯一生产通道；随批次实施 |
+| R10-FU-01 | FACT-R10-01 | CI 增加 kernel-image riscv64 双 feature 构建作业 | ✅ 已裁决（2026-11-08，采 A） | 加 riscv64 `fw-riscv64-none`/`fw-riscv64-uboot` 构建作业并纳入 aarch64；随批次实施 |
 
 ## Round 14 转出（F-R14-nn）
 
