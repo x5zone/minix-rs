@@ -583,7 +583,11 @@ pub fn build_vm_handoff(
     // consumers use the kernel device window. The field remains part of the
     // current v8 wire layout (always empty; removing it would change the
     // struct size again); v6/v7 are rejected by the exact-version check.
-    let (kern_ident, kern_ident_count) = build_identity_windows();
+    // PD-22 final: identity windows retired — always empty, always zero.
+    // The v8 wire field is kept (removing it would change struct size);
+    // VM rejects a non-empty field (check-and-reject). R17 DESIGN-07.
+    let kern_ident = [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT];
+    let kern_ident_count = 0usize;
 
     // Production reaches here after kmain Phase B.5 initialized the
     // kernel-information page. Staged bootstrap test kernels call
@@ -670,17 +674,6 @@ pub fn build_vm_handoff(
 /// [`minix_arch::kernel_identity_mmio_regions()`], page-aligned and merged
 /// them; that construction is preserved only in git history. The v6 handoff's
 /// identity field is written empty, and VM rejects a non-empty field
-/// (check-and-reject).
-pub(crate) fn build_identity_windows() -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT], usize) {
-    // PD-22 step 2 final: identity windows RETIRED from process roots —
-    // the strong-form acceptance ("must not exist") requires no VA=PA
-    // mapping in any normal process address space. MMIO consumers reach
-    // their registers through the kernel device window (segment 5 of
-    // `map_kernel` + the bootstrap-root install); this function now
-    // produces an empty list, and the v6 handoff's identity field is
-    // written empty (VM rejects a non-empty field — check-and-reject).
-    ([HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT], 0)
-}
 
 /// Copies a boot image name into the fixed `proc_name` field (truncate to
 /// 16 bytes, C: `strlcpy`).
@@ -1036,9 +1029,10 @@ mod tests {
         // return an empty list (strong form: no VA=PA mapping in process
         // roots). The device window (slot-mapped high-half) replaced the
         // identity replay entirely.
-        let (ident, count) = build_identity_windows();
-        assert_eq!(count, 0, "identity windows retired — must produce none");
-        assert!(ident.iter().all(|w| w.base == 0 && w.size == 0));
+        // PD-22 final: identity windows retired — the field is always empty.
+        // The wire layout keeps the slot; build_vm_handoff writes zeros.
+        // No function to test — the invariant is "kern_ident_count == 0 in
+        // the handoff struct" which is checked by the wire-format gate.
     }
 
     #[test]
