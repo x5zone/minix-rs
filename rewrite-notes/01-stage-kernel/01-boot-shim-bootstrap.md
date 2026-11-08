@@ -2325,14 +2325,19 @@ const _: () = assert!(MODULE_NAMES.len() == NR_BOOT_MODULES);
 装载循环：
 
 ```rust
-// 代码引用（略去函数文档注释），os/boot-shim/src/loader.rs:fn load_boot_modules_with_loader。
-pub fn load_boot_modules_with_loader<L: FileLoader>(
+// 代码引用（略去函数文档注释；`assert!` 的容量前置检查保留原样），os/boot-shim/src/loader.rs:fn load_boot_modules_into。
+pub fn load_boot_modules_into<L: FileLoader>(
     loader: &L,
     alloc_pages: PageAllocator,
-) -> &'static [BootModule] {
-    let mut modules: Vec<BootModule> = Vec::new();
-
-    for &name in MODULE_NAMES {
+    out: &mut [BootModule],
+) -> usize {
+    assert!(
+        out.len() >= MODULE_NAMES.len(),
+        "boot-shim: module slot array has {} slots, the contract needs {}",
+        out.len(),
+        MODULE_NAMES.len()
+    );
+    for (slot, &name) in out.iter_mut().zip(MODULE_NAMES.iter()) {
         let path = build_module_path(name);
         let data = loader.read(&path).unwrap_or_else(|| {
             panic!(
@@ -2343,6 +2348,7 @@ pub fn load_boot_modules_with_loader<L: FileLoader>(
                 MODULE_NAMES.len()
             )
         });
+        let data = data.as_slice();
 
         let num_pages = (data.len() + 4095) / 4096;
         let phys_base = alloc_pages(num_pages).unwrap_or_else(|| {
@@ -2361,16 +2367,14 @@ pub fn load_boot_modules_with_loader<L: FileLoader>(
             core::ptr::write_bytes(dest.add(data.len()), 0, remaining);
         }
 
-        // `name` 已是 `MODULE_NAMES` 常量表里的 `&'static str`——无需堆分配再泄漏
-        // （D01 Round1 D2-08：删掉 clone-to-compile 形）。
-        modules.push(BootModule {
+        // `name` 已是 `MODULE_NAMES` 常量表里的 `&'static str`——无需堆分配。
+        *slot = BootModule {
             name,
             start: PhysBytes(phys_base),
             len: data.len(),
-        });
+        };
     }
-
-    Box::leak(modules.into_boxed_slice())
+    MODULE_NAMES.len()
 }
 ```
 
@@ -2992,7 +2996,7 @@ os/libs/minix-elf/src/lib.rs                       23
 
 一处覆盖缺口（对应推导表 M13）：UEFI 侧四个函数里，纯判定函数 `assert_bootstrap_outside_memmap` 已有五案宿主测试（清单见 §5.3 TODO-07）；其余三个（`build_memmaps`、`alloc_root_page`、`alloc_bump_region`）的调用点单根（`main.rs` 的 [`fn main`](<os/boot-shim/src/main.rs:fn main>) → Boot Services），宿主无法构造；明细与去向见 5.3 的 TODO-07。
 
-**把缺件处理改回静默跳过会怎样**：`load_boot_modules_with_loader` 里换成 `if let Some(data) = loader.read(&path) { ... }`。`test_load_boot_modules_panics_on_missing` 立刻变红——这条测试的可观测形式正是 panic，它挡的正是"错误被推迟到内核侧"那条路；那条链的完整走向（内核侧只剩"期望 12、实际 N"）在 §4.3 已经给过。
+**把缺件处理改回静默跳过会怎样**：`load_boot_modules_into` 里换成 `if let Some(data) = loader.read(&path) { ... }`。`test_load_boot_modules_panics_on_missing` 立刻变红——这条测试的可观测形式正是 panic，它挡的正是"错误被推迟到内核侧"那条路；那条链的完整走向（内核侧只剩"期望 12、实际 N"）在 §4.3 已经给过。
 
 #### 5.2.2 宿主断言层（镜像还没运行就能查）
 
@@ -3169,7 +3173,7 @@ fn panic(info: &PanicInfo) -> ! {
 |---|---|---|---|
 | 引导器指令次序错（`load_mods` 在 `multiboot` 之后） | [`get_parameters`](minix3/minix/kernel/arch/i386/pre_init.c:get_parameters) 的 `assert(mbi->mi_mods_count > 0)`（同函数前面那条查 `HAS_MODS` 的会放过去，理由见 2.1） | 未开串口调试（默认）：屏幕刷出 `Minix panic. System diagnostics buffer:` 与 `press any key to reboot`、等一个按键才复位；命令行里写了 `cttyline=`（`do_serial_debug` 为真）时走**互斥**的另一条通路——panic 由串口同步输出后立即复位，不刷屏、也不等按键。这条断言排在命令行解析之后，所以 `cttyline=` 已经生效；对照下一行那条在解析之前，串口一定不出声 | 核对 `boot.cfg.default` 的 `;` 分隔次序 |
 | 参数压栈次序错（x86-32） | [`pre_init`](minix3/minix/kernel/arch/i386/pre_init.c:pre_init) 的 `assert(magic == MULTIBOOT_INFO_MAGIC)` | 同样刷屏等按键，但串口一定不出声——这条断言在命令行解析之前，`do_serial_debug` 还是 `.bss` 的零初值；报出的表达式里带着 `magic` 这个名字，而它当时装的是地址（值本身不打印，见 §2.2 的说明） | 核对 `head.S` 两条 `push` 的次序 |
-| 模块缺失 | `loader.rs:load_boot_modules_with_loader` | `boot-shim: required boot module 'X' not found at <路径>` | 核对盘上 12 个模块名（脚本的 `mdir` 前置检查会先报） |
+| 模块缺失 | `loader.rs:load_boot_modules_into` | `boot-shim: required boot module 'X' not found at <路径>` | 核对盘上 12 个模块名（脚本的 `mdir` 前置检查会先报） |
 | 内核 ELF 读不到 | `FileLoader::read_required` | `boot-shim: required file not found: /EFI/minix/kernel.elf` | 核对 ESP 的 `/EFI/minix/kernel.elf` 与固件是否挂载了该分区 |
 | bump 区间耗尽 | `BootAlloc::alloc` 返回 `AllocationFailed` | 内核侧 `map_huge`/`boot_pt_alloc` 失败，或 `enter_kernel_image_v1: bump region not registered` | 复算 `prepare_and_enter_kernel_image(N)` 的页数预算与镜像规模 |
 | v1 信封/载荷无效 | `arch_boot_resume_v1` 的 `decode_*` | `kernel-image: handoff v1 envelope invalid: <变体>`（或 memmap/reserved/modules/platform/param/source/startup 七个分区中任一段的对应行） | 核对 shim 的序列化顺序与描述符长度；先看 `[raw] arena=… conv=… res=…` 是否已打印 |
