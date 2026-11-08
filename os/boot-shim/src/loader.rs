@@ -47,9 +47,10 @@ pub const MODULES_DIR: &str = "/EFI/minix/modules";
 /// The kernel reads these modules positionally: the `i`-th entry here becomes
 /// the `i`-th [`BootModule`] in `kernel_info.boot_modules()`, which the kernel
 /// maps to process slot `BOOT_MODULE_PROC_NRS[i]` while building the process
-/// table (see `os/kernel/src/lib.rs:2395-2398`). The kernel also asserts at
-/// boot that the number of modules equals `NR_BOOT_MODULES` (12)
-/// (`os/kernel/src/lib.rs:2336-2344`). So **both the order and the count of
+/// table (see `BOOT_MODULE_PROC_NRS` in `os/kernel/src/lib.rs`). The kernel
+/// also asserts at boot that the number of modules equals `NR_BOOT_MODULES`
+/// (12) (see the `expected {} boot modules` assert there). So **both the
+/// order and the count of
 /// this list are load-bearing** — they are not free to reorder, and a missing
 /// entry is a boot-time failure, not a cosmetic gap.
 ///
@@ -517,8 +518,9 @@ mod tests {
     /// T-9: `compute_kernel_layout` must surface `NoLoadSegments` for an
     /// image with no `PT_LOAD`. Flip the single program header from
     /// `PT_LOAD` to `PT_NULL` so the PT_LOAD iterator yields nothing — the
-    /// same `!found_load` path (loader.rs:162) `load_kernel_with_loader` reports. Covers the
-    /// previously-untested `NoLoadSegments` variant (loader.rs:162).
+    /// same `!found_load` path in `compute_kernel_layout` that
+    /// `load_kernel_with_loader` reports. Covers the previously-untested
+    /// `NoLoadSegments` variant.
     #[test]
     fn test_compute_kernel_layout_rejects_image_without_load_segments() {
         let mut elf = build_minimal_elf();
@@ -590,7 +592,8 @@ mod tests {
         image
     }
 
-    /// T-9: the `InvalidSegment` error variant (loader.rs:150/248) had no test
+    /// T-9: the `InvalidSegment` error variant (in `compute_kernel_layout`
+    /// and `load_segments_into_phys_memory`) had no test
     /// constructing it. The overlap guard runs *before* the copy loop, so
     /// calling the real loader with overlapping segments returns
     /// `Err(InvalidSegment)` without dereferencing the (unmapped) segment

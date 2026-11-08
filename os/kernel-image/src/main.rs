@@ -128,7 +128,7 @@ static KERNEL_ENTRY_ANCHOR: fn(&KernelInfo, PhysBytes) -> ! = minix_kernel::arch
 // semantic correspondence: load stack top → clear frame pointer → call the
 // Rust surface → halt and park. The aarch64 `adrp` + `add :lo12:` symbol
 // addressing copies an existing carrier in the repo
-// (`os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:250-251`);
+// (`test-rt-birth-aarch64`'s `global_asm!` block, the `adrp`+`add` pair);
 // riscv64 uses `la` (relaxed by the linker to PC-relative `auipc` + `addi`) so
 // the stack-top symbol resolves under both low-half and high-half execution
 // views.
