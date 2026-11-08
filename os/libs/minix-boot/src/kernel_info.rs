@@ -286,11 +286,16 @@ impl KernelInfo {
                     w[0].base.0,
                     w[1].base.0
                 );
+                let w_end = w[0]
+                    .base
+                    .0
+                    .checked_add(w[0].len as u64)
+                    .expect("KernelInfo: memory region span overflows u64");
                 assert!(
-                    w[0].base.0 + w[0].len as u64 <= w[1].base.0,
+                    w_end <= w[1].base.0,
                     "KernelInfo: {list_name} 区间相交（[0x{:x}, 0x{:x}) 与 0x{:x} 起）",
                     w[0].base.0,
-                    w[0].base.0 + w[0].len as u64,
+                    w_end,
                     w[1].base.0
                 );
             }
@@ -303,8 +308,16 @@ impl KernelInfo {
         {
             let (mut mi, mut ri) = (0usize, 0usize);
             while mi < self.memmap.len() && ri < self.reserved_regions.len() {
-                let m_end = self.memmap[mi].base.0 + self.memmap[mi].len as u64;
-                let r_end = self.reserved_regions[ri].base.0 + self.reserved_regions[ri].len as u64;
+                let m_end = self.memmap[mi]
+                    .base
+                    .0
+                    .checked_add(self.memmap[mi].len as u64)
+                    .expect("KernelInfo: memmap span overflows u64");
+                let r_end = self.reserved_regions[ri]
+                    .base
+                    .0
+                    .checked_add(self.reserved_regions[ri].len as u64)
+                    .expect("KernelInfo: reserved span overflows u64");
                 if m_end <= self.reserved_regions[ri].base.0 {
                     mi += 1;
                 } else if r_end <= self.memmap[mi].base.0 {
@@ -443,7 +456,9 @@ impl KernelInfo {
         // corner case.
         if level.requires_startup_kernel_record() {
             let kern_lo = self.kern_phys_base.0;
-            let kern_hi = kern_lo + self.kern_size;
+            let kern_hi = kern_lo
+                .checked_add(self.kern_size)
+                .expect("KernelInfo: kernel span overflows u64");
             assert!(
                 self.startup_objects.iter().any(|r| {
                     r.range.start <= kern_lo && u128::from(kern_hi) <= r.range.end_exclusive

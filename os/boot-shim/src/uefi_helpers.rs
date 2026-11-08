@@ -1129,8 +1129,10 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 pub fn exit_boot_services() {
     // SAFETY: caller has finished all uses of boot services; from this
     // point on only runtime services (if any) may be used. The returned
-    // memory map is discarded because the kernel already received the
-    // CONVENTIONAL regions via `build_memmap()`.
+    // memory map is discarded: this helper is the test-kernel path only.
+    // Its snapshot is best-effort and not MapKey-paired with
+    // `build_memmaps`; production uses `ebs_pair` so classification and EBS
+    // share one key.
     unsafe {
         let _mmap = boot::exit_boot_services(MemoryType::LOADER_DATA);
     }

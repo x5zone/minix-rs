@@ -269,7 +269,12 @@ impl FreeRangeSet {
             if region.len == 0 {
                 continue;
             }
-            set.insert(region.base.0, region.base.0 + region.len as u64);
+            let end = region
+                .base
+                .0
+                .checked_add(region.len as u64)
+                .expect("vm_handoff: memory region span overflows u64");
+            set.insert(region.base.0, end);
         }
         set
     }
@@ -320,7 +325,10 @@ impl FreeRangeSet {
             return;
         }
         let lo = start & !(PAGE_SIZE - 1);
-        let hi = (start + size).div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        let end = start
+            .checked_add(size)
+            .expect("vm_handoff: cut range overflows u64");
+        let hi = end.div_ceil(PAGE_SIZE) * PAGE_SIZE;
         assert!(hi > lo, "vm_handoff: cut range rounds to empty");
         let mut i = 0;
         while i < self.len {

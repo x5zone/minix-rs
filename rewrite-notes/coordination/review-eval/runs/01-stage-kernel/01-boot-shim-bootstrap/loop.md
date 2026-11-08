@@ -997,3 +997,60 @@
 - 四源同靶（A-01/B-01/C-01/FACT-01）说明 R18 漏检的槽号错误只有冷读能抓到；需 meta 判断这是否应升级为“取槽/下标算术”专项探针。
 - D2 连续两轮判 D1 NOT PASS；D1 的方案价值是否已递减到应停跑，需 meta 给结论（当前仍按协议全量跑）。
 - 本轮 80 条里 14 条 ③（10 条 D1 否决 + 3 条反证失败 + 1 条重复/已消失），仍计入“新发现”；B-52（origin/dup-of）未落码，G8 的零新增口径需 meta 解释。
+
+## R20 面板轮（2026-11-09，R19 meta PASS 后）
+
+### §0 基线
+
+- 冻结提交：`03ed48505c1e605a1a070e818397704ae4283128`
+- 文档：3387 行、sha256 `56cefc7d71673df3b75394558092384dd907af0d6966e27557b98c2d36db2545`
+- 工作树：仅未跟踪 `prompt/resources/`；面板只读
+- Step 0：`.design/01-*.v*.md` 十一份齐全；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE；`doc-code-map --check` 46/46
+- 范围与语料同 R19；F-R17-01..04 截止 R20，按 follow-ups 处理；D1 本轮为轻量版（≤90 行），回应 meta “降频而非全停”
+
+### R20 §1 面板
+
+- 角色：P-FACT、P-DESIGN D1（轻量 ≤90 行）/D2、P-READER A/B/C、P-REFUTE。
+- 原始输出：`panel/round20/`（fact 3、reader-a 20、reader-b 20、reader-c 8、refute 6、design-d1 5 决策、design-d2 7）。
+- 材料隔离同 R19；面板期间工作树只有主 agent 改动。
+
+### R20 §2 发现
+
+- 64 条：FACT 3、READER-A 20、READER-B 20、READER-C 8、REFUTE 6、DESIGN-D2 7。
+- 硬冲突：§4.4 标题/导航“单一 builder”与正文“两个入口”；§4.3 模块重叠“不再查”与 §4.4 接收侧复核；§3.10 “来源不进交接结构”；§3.1 U-Boot 传参“同 UEFI”；§2.4.1.3 取整自相矛盾；§2.6.4 清活动根“无害”与 §3.7 禁止重建；§3.4.2 参数分歧只列五条（实际八条）；§2.3 删除扫描漏后缀支。
+- 设计两遍：D1 轻量方案；D2 判 NOT PASS（D1 三处现仓锚点错、统一占用集合跨时刻、恒等窗口收窄未闭合），同时抓到 R19 `checked_add` 点修之外的六处裸加（D2-02）与测试路径假 `'static`（D2-04）。
+
+### R20 §3 归因
+
+- ① 12 条：FACT-01/02/03、REFUTE-01..06、DESIGN-D2-02/05/07。
+- ④ 48 条：READER-A 20、READER-B 20、READER-C 8。
+- ② 3 条：DESIGN-D2-01/03/04 → F-R20-01/02/03（R21）。
+- ③ 1 条：DESIGN-D2-06（与 F-R17-01 同一裁决点）。
+- re-litigation 0；adjacent 阻塞 0。
+
+### R20 §4 修复
+
+- 文档：§1.1 缩写表（VM/PM/RS/DTB/SBI/OVMF/AAVMF/MTRR/LSR）；§1.2 四坐标读序；§1.4 五栈名/索引成员/门链定义；§2.3 删除扫描后缀支；§2.4.1.1 表行；§2.4.1.3 取整口径；§2.6.4 TLB 窗口；§2.7 入口/参数来源；§3.1 U-Boot `a0`；§3.4 深拷要求与两组来源；§3.4.2 八条分歧、user_end 分类；§3.5 正面判据；§3.7 两个“5”成员；§3.10 来源句；§4.1 非 UEFI 列/256 页；§4.2.1 动作 8；§4.3 接收侧模块复核；§4.4 标题/门链；§4.6 包装关系/1 GiB size 条件；§5.1 M6；§5.2.1 868 命令；§5.4 M3/M6 子项；§7.2 清单口径；§7.5 指针。
+- 代码：`kernel_info`/`vm_handoff`/`memmap_source` 六处裸加改 `checked_add`；`exit_boot_services` 注释改测试路径 best-effort；`main.rs` 入口注释改 `BootHandoffV1`。
+- 测试：`minix-boot` 188、boot-shim 135、ebs audit 4、kernel mock 860+8、minix-arch 287。
+- QEMU：三门 PASS。
+
+### R20 §5 复验
+
+- 文档六门全绿（anchor 108/108、code-map 46/46、style 0、ref 通过、承载门、结构 0）。
+- 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无 dead_code。
+- RB20/meta R20 提交后执行。
+
+### R20 §6 指标
+
+见 `metrics.md`：发现 64，处置 ① 12 / ② 3 / ③ 1 / ④ 48 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构 1 实施（六处 checked_add）。
+
+### R20 §7 状态
+
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 + F-R20-01..03 均为 ② 带 R21 档期；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB20/meta R20 待跑；G8 本轮新增 64 条（仍大于 0）；G9 ⑥ 项 D2-02/05/07 已实施，D1 其余不采纳。
+
+### R20 §8 给 meta-review 的不确定点
+
+- 读者条目从 R19 的 53 条降到 48 条，但新发现仍集中在“同一事实多套编号/多套构造入口”的结构性重复；是否应做一次“权威表合并”而非逐条修，需 meta 判断。
+- D2 连续第三轮判 D1 NOT PASS；D1 已降为轻量版，是否停跑需 meta 给结论。
+- ② 项从 0 增到 3（F-R20-01..03），都是跨 crate 类型/所有权改造；是否阻塞 01 收敛按 review-evals §4.2 判。

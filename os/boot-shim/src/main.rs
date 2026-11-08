@@ -35,7 +35,8 @@ fn main() -> Status {
     // 1. UEFI boot preparation via `prepare_and_enter_kernel_image`
     //    (not the BootShim trait — see the module docs)
     //    Internally: GetMemoryMap → AllocatePages → load kernel ELF from ESP
-    //    → load boot modules → build KernelInfo → ExitBootServices
+    //    → load boot modules → serialize BootHandoffV1 (envelope + partitions)
+    //    → ExitBootServices
     // 1024 pages (4 MiB): the identity mapping, the kernel high mapping,
     // DM coverage establishment (kernel + VM windows), the
     // boot-identity eviction (ELF segment pages + the 64 MiB VM heap

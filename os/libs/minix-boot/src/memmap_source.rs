@@ -1465,10 +1465,18 @@ pub fn dtb_covers_conventional(
 ) -> Result<(), (u64, usize)> {
     for r in conventional {
         let r_start = r.base.0;
-        let r_end = r.base.0 + r.len as u64;
+        let r_end = r
+            .base
+            .0
+            .checked_add(r.len as u64)
+            .expect("memmap_source: memory region span overflows u64");
         let covered = dtb_free.iter().any(|d| {
             let d_start = d.base.0;
-            let d_end = d.base.0 + d.len as u64;
+            let d_end = d
+                .base
+                .0
+                .checked_add(d.len as u64)
+                .expect("memmap_source: DTB region span overflows u64");
             d_start <= r_start && r_end <= d_end
         });
         if !covered {

@@ -28,3 +28,13 @@
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（`KernelInfo::validate` 跨度 `checked_add`）
 - 成本: agent 7 / token 未采集 / 耗时 约 45 分钟（面板 + 修复 + 三门，不含排队）
 - 回读: RB19 判 NOT PASS（FACT-06 行号）；补修后 meta R19 判 IMPROVED / NOT PASS（Trace integrity 与计数差 1），二次补修后四组探针均 FAIL、R18/R19 计数闭合
+
+## R20
+
+- 发现总数: 64（FACT 3；READER-A 20；READER-B 20；READER-C 8；REFUTE 6；DESIGN-D2 7）
+- 处置: ① 12 / ② 3 / ③ 1 / ④ 48 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（六处跨度加法 checked_add）
+- 成本: agent 7 / token 未采集 / 耗时 约 40 分钟（面板 + 修复 + 三门）
+- 回读: RB20 与 meta R20 待提交后执行

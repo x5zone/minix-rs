@@ -1396,3 +1396,28 @@
 | ledger READER-B-13 声称“§4.9 加仅直核”无文本 | P3 | ① 已补“（仅直核面）”，台账与文本一致 | §4.9 行 |
 | ledger FACT-02 证据行号 | P3 | ③ 复核 `grep -rn "DM ok, jumping to kmain"` 只命中 `os/kernel/src/lib.rs:396`；`main.rs:387` 不成立，保留原证据 | 全仓 grep |
 | `pe = pb + prev.len` 裸加 | P3 | ① 同改 `checked_add`，与 kernel span 一致 | `kernel_info.rs` |
+
+## R20 面板轮（2026-11-09，R19 meta PASS 后；全角色，D1 轻量）
+
+> 面板输出：`panel/round20/`（fact 3、reader-a 20、reader-b 20、reader-c 8、refute 6、design-d2 7；design-d1 为轻量方案，不计发现）。总计 64 条。
+
+| 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | fact | P2 | 关联 C 清单完备性 | ① | §7.2 加“只列主干文件；逐段小文件见正文脚注”，列出 14 组缺失路径类别 | `grep -o minix3/...` 集合差 | 清单口径自洽 |
+| FACT-02、FACT-03 | fact | P3 | 引文注释口径 | ① | §3.8 块头标“SAFETY 注释有节略”；§3.2 标“一处英文注释译为中文” | 源码对读 | 块头与内容一致 |
+| READER-A-01..20 | reader-a | P1/P2/P3 | 读者障碍 | ④ | §1.2 四坐标加读序说明；§1.1 补 VM/PM/RS/DTB/SBI/OVMF/AAVMF/MTRR/LSR 缩写；§1.4 索引加“成员见 §3.7”与五栈名（补 `load_stack_start`）；§2.4.1.1 表第三行改“通常不断开”；§4.1 列名改“非 UEFI 路径”；boot-shim 首用加定义；§3.4.1 memmap 长单元格未拆（③）；§2.3 补首条记录条件；§2.4.1.3 补“缺口大于还回量”；E820 页对齐改“通常”；§5.2.1 补 868 命令与实测；§4.2.1 说明动作 ID 非时间序；门表改“五个门标签 + 规划期一行”；§4.4 补“2MiB−16”来源；卷首改论证段定位；三基址标架构；17–40 标 1-based；§1.3 删重复执行序 | 各条锚点在 panel 内 | 六门 + 原句 grep |
+| READER-B-01..20 | reader-b | P2/P3 | 结构/权威 | ④ | §3.10/§4 导航/§4.4 标题改“两个构造入口”；§4.3 补接收侧模块复核；§3.10 来源句改“来源记录进 KernelInfo/source 分区”；§3.1 U-Boot 寄存器改 `a0`；§2.4.1.3 取整口径拆开；§1.4 五栈名；§7.5 `k_initial_stktop` 指 §2.8；§4.2.1 动作 8 改“先构造报告再复核”；§3.4 通道补 U-Boot shim；§4.6 Step 1 函数归属改“riscv 经 identity_device_windows 使用”；§3.8 注册表补“shim 间接注册”；§4.3/§7.5 overlaps 三处口径；§5.4 改 M3/M6 子项；§1.4 门链成员指 §5.2.3；§4.9/§3.4 重复与反事实分离（③）；表行 2 改“行 1 子情形”；§3.4.3 `x0` 限定 aarch64 | 各条锚点在 panel 内 | 六门 + 原句 grep |
+| READER-C-01..08 | reader-c | P1/P2 | 跨节因果 | ④ | §2.6.4 补“TLB 窗口 + 回填”区分；§2.7 改“入口/参数来源唯一按架构另写”；§3.4 拆“深拷要求一致 / v1 解码 vs 直核 builder”；§4.6 补 `identity_device_windows` 包装关系；§2.4.1.4 指针改 128/64 权威 + 128 落地区；§3.5 正面判据改“无可单独界定可归还段”；§3.7 补两个“5”成员不同；§3.4.2 内部键检查标大小写不敏感 | 各条锚点在 panel 内 | 六门 + 原句 grep |
+| REFUTE CLAIM 01 | refute | P1 | 参数分歧计数 | ① | §3.4.2 改八条，补分隔符/非 ASCII/空键；`[ARCH]` 标签同步 | `boot_params.rs` 测试、C 复算 | 八条与源码/测试一致 |
+| REFUTE CLAIM 02 | refute | P2 | 删除扫描模型漏支 | ① | §2.3 补“前缀匹配不要求在记录起点，后缀可致伪记录” | C 扫描模型 | 两分支都写明 |
+| REFUTE CLAIM 03 | refute | P2 | 字段分类错 | ① | §3.4.2 `user_end` 移出“上浮为常量”，release/version 改“构建身份” | 字段表 | 分类自洽 |
+| REFUTE CLAIM 04 | refute | P2 | 1 GiB 落选原因 | ① | §4.6 补 `kern_size % 1GiB == 0` 条件，说明生产跨度约 4 MiB | `boot_policy.rs` | 条件完整 |
+| REFUTE CLAIM 05 | refute | P3 | 预算单腿普遍化 | ① | §4.1 补“两个直核面 `PT_BUMP_PAGES = 256`” | `bootface.rs:135`、`bootface_a64.rs:99` | 三腿分开 |
+| REFUTE CLAIM 06 | refute | P3 | M6 证据说大 | ① | §5.1 M6 改“合成窗口/1 GiB 块配置下验证策略函数，不跑生产 Step 1” | 测试实现 | 与测试一致 |
+| DESIGN-D2-01 | design-d2 | P2 | 物理地址类型身份 | ② | `BootPrepareResult`/`enter_kernel_image_v1` 的 bump/arena 从裸 `u64` 改物理区间类型；F-R20-01（R21） | D2 条目 | 不改本轮 |
+| DESIGN-D2-02 | design-d2 | P1 | 其余裸加回绕 | ① | `kernel_info` 有序/跨表/startup、`vm_handoff` from_memmap/cut、`memmap_source` 覆盖判定全部 `checked_add` | 源码 grep | `minix-boot` 188、kernel 860 |
+| DESIGN-D2-03 | design-d2 | P3 | 端点/长度接口面 | ② | 引入 `Range{start,end}` 并让 `cut` 收区间；F-R20-02（R21） | D2 条目 | 不改本轮 |
+| DESIGN-D2-04 | design-d2 | P2 | 测试路径假 'static | ② | `build_memmaps`/`exit_boot_services` 的测试内核所有权迁移；F-R20-03（R21） | D2 条目 | 不改本轮 |
+| DESIGN-D2-05 | design-d2 | P2 | 测试快照非配对 | ① | `exit_boot_services` 注释改“best-effort、不与 build_memmaps 同 MapKey”；生产用 ebs_pair | 源码注释 | 与 §3.1 一致 |
+| DESIGN-D2-06 | design-d2 | P3 | 单实现 trait | ③ | 与 F-R17-01 同一裁决点，未新增证据；保留待用户裁决 | trait-audit 1/15/0 | 不重复记账 |
+| DESIGN-D2-07 | design-d2 | P3 | 入口注释身份歧义 | ① | `main.rs` 注释改“serialize BootHandoffV1” | 源码注释 | 与 §4.1 一致 |
