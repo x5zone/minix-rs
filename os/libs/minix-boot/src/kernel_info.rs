@@ -778,6 +778,33 @@ mod tests {
         info.check_boot_postconditions();
     }
 
+    /// R17 DESIGN-09: each postcondition needs a negative test that feeds
+    /// hand-crafted invalid input, proving the assertion can fire on
+    /// independent data (not just builder-consistent values).
+    #[test]
+    #[should_panic(expected = "不在内核镜像")]
+    fn test_postconditions_reject_syscall_entry_outside_image() {
+        let mut info = make_valid_info();
+        info.syscall_entry = VirBytes(info.kern_virt_base.0 + info.kern_size + 0x2000);
+        info.check_boot_postconditions();
+    }
+
+    #[test]
+    #[should_panic(expected = "低于 higher-half 内核基")]
+    fn test_postconditions_reject_stack_top_below_higher_half() {
+        let mut info = make_valid_info();
+        info.kern_stack_top = VirBytes(0x1000); // far below any higher-half base
+        info.check_boot_postconditions();
+    }
+
+    #[test]
+    #[should_panic(expected = "未严格低于内核基")]
+    fn test_postconditions_reject_user_sp_above_kernel_base() {
+        let mut info = make_valid_info();
+        info.user_sp = VirBytes(info.kern_virt_base.0 + 0x1000);
+        info.check_boot_postconditions();
+    }
+
     /// D01-R1 D2-05: an out-of-order memmap violates the firmware delivery
     /// contract and must fail fast at validate.
     #[test]
