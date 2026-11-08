@@ -126,6 +126,9 @@ def check_loop_sections(text: str, report: Report, round_tag: str | None = None)
         headings = [(a, b) for a, b, line in all_headings if "面板轮" in line] or [
             (a, b) for a, b, _line in all_headings
         ]
+        if not headings:
+            report.fail("loop-sections", f"loop.md 缺少 {round_tag} 面板轮小节")
+            return
         if headings:
             start = headings[0][0]
             following = re.search(r"^## ", text[headings[0][1]:], re.MULTILINE)

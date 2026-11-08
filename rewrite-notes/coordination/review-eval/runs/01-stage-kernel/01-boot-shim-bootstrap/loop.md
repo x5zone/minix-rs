@@ -931,7 +931,7 @@
 
 ### R18 §7 状态
 
-`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB18 五项残留已补修；meta R18 判 IMPROVED / NOT PASS（唯一装置项 Trace integrity），其点名的删表/指标探针已由轨迹门修复转为 FAIL；G8 本轮新增 98 条（远大于 0），需下一轮；G9 ⑥ 项只有 1 条（D2-10）且已实施，D1 其余方案不采纳。
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 未在 R19 处理，截止日顺延到 R20（R19 的“全修”只指 in-scope 面板项，不含这四项 ②）；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB18 五项残留已补修；meta R18 判 IMPROVED / NOT PASS（唯一装置项 Trace integrity），其点名的删表/指标探针已由轨迹门修复转为 FAIL；G8 本轮新增 98 条（远大于 0），需下一轮；G9 ⑥ 项只有 1 条（D2-10）且已实施，D1 其余方案不采纳。
 
 ### R18 §8 给 meta-review 的不确定点
 
@@ -982,15 +982,15 @@
 
 - 文档六门：anchor 108/108、doc-code-map 46/46、style 0 error、ref 通过、承载门通过、结构/链接 0 问题。
 - 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无新增 warning（仅 `minix-types` 既有 `unused_unsafe`）。
-- RB19 独立回读判 **NOT PASS**（13 条 ① 中 12 条成立）：唯一阻断是 FACT-06 的 `protect.c` 区间被改成 358–361（实际 360–363）；另三条 P2/P3 注释/台账偏差。已补修（见 `defect-ledger.md` 的 RB19 段），补修后 `minix-boot` 188、六门全绿；meta R19 在补修提交后执行。
+- RB19 独立回读判 **NOT PASS**（13 条 ① 中 12 条成立）：唯一阻断是 FACT-06 的 `protect.c` 区间被改成 358–361（实际 360–363）；另三条 P2/P3 注释/台账偏差。已补修（见 `defect-ledger.md` 的 RB19 段）。meta R19 判 **IMPROVED / NOT PASS**：抽样 37/39=94.9%，Trace integrity FAIL（删 R19 loop 段仍 PASS、③/④ 计数差 1）。补修：轨迹门“找不到本轮小节即 FAIL”；台账 B 范围排除 B-12、metrics 改 ③14/④53；A-09 复算命令补内核/接收侧；REFUTE-02 测试改为“小记录+放不下的大记录+小记录”，真断言后续被拒；F-R17 截止顺延 R20。
 
 ### R19 §6 指标
 
-见 `metrics.md`：发现 80，处置 ① 13 / ② 0 / ③ 13 / ④ 54 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构 1 实施（D2-11 溢出加固）。
+见 `metrics.md`：发现 80，处置 ① 13 / ② 0 / ③ 14 / ④ 53 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构 1 实施（D2-11 溢出加固）。
 
 ### R19 §7 状态
 
-`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB17/RB18 已结算、RB19/meta R19 待跑；G8 本轮新增 80 条（仍远大于 0）；G9 ⑥ 项 D2-11/12 已实施，D1 其余方案不采纳。
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 未在 R19 处理，截止日顺延到 R20（R19 的“全修”只指 in-scope 面板项，不含这四项 ②）；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB17/RB18 已结算、RB19/meta R19 待跑；G8 本轮新增 80 条（仍远大于 0）；G9 ⑥ 项 D2-11/12 已实施，D1 其余方案不采纳。
 
 ### R19 §8 给 meta-review 的不确定点
 

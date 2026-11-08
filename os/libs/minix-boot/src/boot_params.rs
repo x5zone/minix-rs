@@ -274,17 +274,19 @@ mod tests {
 
     #[test]
     fn drops_tail_records_whole_at_capacity() {
-        let mut out = [0u8; 32];
-        let stats = normalize_param_buf(b"AAAAAAAAAA=1 BBBBBBBBBB=2 CCCCCCCCCC=3", None, &mut out);
+        // A small record, then one that cannot fit, then another small record.
+        // If the normalizer merely skipped the big one, `C=1` would fit; the
+        // contract is that everything after the first non-fitting record is
+        // dropped.
+        let mut out = [0u8; 24];
+        let stats = normalize_param_buf(b"A=1 BBBBBBBBBBBBBBBBBBBB=2 C=1", None, &mut out);
         assert!(stats.dropped >= 1);
         assert!(stats.bytes <= out.len());
         // No half record: the buffer either ends at a NUL or at a whole record.
         if stats.bytes > 0 {
             assert_eq!(out[stats.bytes - 1], 0);
         }
-        // Once a record does not fit, every later record is dropped too.
-        assert!(!out.windows(4).any(|w| w == b"BBBB"));
-        assert!(!out.windows(4).any(|w| w == b"CCCC"));
+        assert!(!out.windows(3).any(|w| w == b"C=1"));
     }
 
     #[test]
