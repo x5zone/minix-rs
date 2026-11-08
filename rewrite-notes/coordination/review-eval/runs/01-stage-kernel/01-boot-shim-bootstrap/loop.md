@@ -619,7 +619,8 @@
 
 ### R14 §7 状态
 
-- **NOT CONVERGED**（零新增计数 0 轮）。进入 RB14 回读 + L6 meta；R15 继续全篇面板。
+- **NOT CONVERGED**（零新增计数 0 轮）。RB14 独立回读：19 项检查 18 PASS / 1 FAIL（§4.2 省略说明把 `cross_validate_config_dtb` 放进 41 行 startup 段，实际在 decode 之后、断言之前）；已修并重跑五门。L6 meta：FLAT / NOT PASS（58% 严格一致），收口动作已在本轮执行完毕（档期、压缩项、总数、④ 口径、metrics）。
+- 下一轮：R15 全篇面板（新基线为本次 L6 收口提交）。按 Q3 三条执行：旧串 grep 归零、转出带档期、RB 先入账再冻结。
 
 ### L6
 
