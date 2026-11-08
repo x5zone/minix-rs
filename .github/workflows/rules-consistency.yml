@@ -83,7 +83,7 @@ jobs:
       - name: 门自身的正反向断言
         run: bash tools/lint-review-rules.sh --self-test
 
-      - name: 门禁工具自测（文风门 / 锚点门 / 承载门 / unsafe 审计 / 模式门 / 断链门 / clippy 棘轮）
+      - name: 门禁工具自测（文风门 / 锚点门 / 承载门 / unsafe 审计 / 模式门 / 断链门 / 表结构门 / clippy 棘轮）
         run: |
           bash tools/doc-style-lint.sh --self-test
           bash tools/anchor-resolve.sh --self-test
@@ -95,6 +95,14 @@ jobs:
           bash tools/pattern-gate.sh --self-test
           bash tools/check-clippy-ratchet.sh --self-test
           python3 tools/notes-link-check.py --self-test
+          python3 tools/doc-structure-check.py --self-test
+
+      - name: 表结构与内部 .md 链接门（P-2）
+        # 只扫受版本管理的评审产物与试点篇目：历史笔记树的存量表格形态不在本轮范围。
+        run: |
+          python3 tools/doc-structure-check.py \
+            rewrite-notes/coordination/review-eval \
+            rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 
       - name: 架构门测试计数门（SD-34 防回长：宿主跑不到的 #[test] 不许静默增减）
         run: |

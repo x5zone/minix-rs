@@ -17,9 +17,9 @@
 #![no_std]
 #![no_main]
 
+use boot_shim::raw_serial_line;
 use core::panic::PanicInfo;
 use uefi::prelude::*;
-use boot_shim::raw_serial_line;
 
 extern crate alloc;
 
@@ -44,8 +44,9 @@ fn main() -> Status {
     // page-table pages from this bump pool via boot_pt_alloc. A
     // fragmentary firmware memmap forces 4 KiB-granularity DM leaves —
     // one PT page per 2 MiB region per window — which the former 16/64
-    // pages cannot cover (the kernel's fallback bump is 1 MiB = 256
-    // pages, FALLBACK_BUMP_LEN — this pool stays in the same order).
+    // pages cannot cover (the kernel has no fallback allocator any more:
+    // an unregistered boot allocator fails closed — this pool's width is
+    // the only budget).
     // 128 pages sufficed for boot alone. The pool also served the old
     // kerninfo-injection chain (1–3 pages per new-root bind), which the
     // real machine exhausted with `AllocationFailed` after ~40 binds.
@@ -65,7 +66,7 @@ fn main() -> Status {
     // (riscv64-uboot-shim + fw-riscv64-uboot receiver) is wired separately;
     // this binary stays UEFI-only (its riscv64 UEFI-shim form remains
     // unwired — the UEFI targets do not include riscv64).
-    boot_shim::uefi_helpers::prepare_and_enter_kernel_image(1024)
+    boot_shim::uefi_helpers::prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)
 }
 
 #[panic_handler]
@@ -97,13 +98,16 @@ fn panic(info: &PanicInfo) -> ! {
         }
     }
     let mut buf = [0u8; 256];
-    let mut writer = StackWriter { buf: &mut buf, len: 0 };
+    let mut writer = StackWriter {
+        buf: &mut buf,
+        len: 0,
+    };
     // PanicInfo's Display output is "panicked at file:line:\nmessage".
     let _ = core::fmt::Write::write_fmt(&mut writer, format_args!("{}", info));
     // Take the length first to end the mutable borrow of buf, then slice by byte.
     let written = writer.len;
-    let message = core::str::from_utf8(&buf[..written])
-        .unwrap_or("boot-shim panic: (non-utf8 message)");
+    let message =
+        core::str::from_utf8(&buf[..written]).unwrap_or("boot-shim panic: (non-utf8 message)");
     raw_serial_line("boot-shim panic: ");
     raw_serial_line(message);
     // The hook lives in the same address space as the panic path: if the

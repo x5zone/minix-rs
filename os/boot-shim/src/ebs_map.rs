@@ -493,6 +493,11 @@ impl MapStorage {
     /// Classify the parsed map into the handoff tables, keeping the side list
     /// here for the caller to read afterwards.
     ///
+    /// `memmap_out` / `reserved_out` are the caller's own fixed-capacity
+    /// semantic tables (its `BootStorage`): the same entry value is written to
+    /// the wire and to these arrays, so the sender's report and the receiver's
+    /// decode read one classification, not two.
+    ///
     /// `serializer.reset_map_partitions()` is the caller's job: the pairing loop
     /// reclassifies against a fresh MapKey on each attempt and must clear the
     /// previous attempt's entries first.
@@ -500,13 +505,23 @@ impl MapStorage {
         &mut self,
         pa_limit: u64,
         serializer: &mut Serializer<'_>,
+        memmap_out: &mut [MemoryRegion],
+        reserved_out: &mut [MemoryRegion],
     ) -> Result<Classification, MapError> {
         // Borrowing the descriptor list and the side list as separate fields is
         // what lets the read side and the write side coexist across the commit.
         let descs = &self.descs[..self.len];
         let side = &mut self.side[..];
         let plan = classify(descs, pa_limit, side.len())?;
-        let counts = plan.commit(descs, pa_limit, serializer, side, self.snapshot_id);
+        let counts = plan.commit(
+            descs,
+            pa_limit,
+            serializer,
+            side,
+            self.snapshot_id,
+            memmap_out,
+            reserved_out,
+        );
         self.side_len = counts.side;
         Ok(counts)
     }
@@ -679,7 +694,11 @@ fn rejection(index: usize, desc: &DescriptorRef, failed: PolicyError) -> MapErro
 /// This is the pass that can fail. The two handoff capacities and `side_cap` are
 /// checked here, so a map that cannot be expressed is rejected while nothing has
 /// been written yet.
-pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Result<ClassificationPlan, MapError> {
+pub fn classify(
+    descs: &[DescriptorRef],
+    pa_limit: u64,
+    side_cap: usize,
+) -> Result<ClassificationPlan, MapError> {
     let mut counts = Classification::default();
     for (index, desc) in descs.iter().enumerate() {
         let (disposition, _) =
@@ -784,8 +803,12 @@ impl ClassificationPlan {
         serializer: &mut Serializer<'_>,
         side: &mut [MemoryRegion],
         snapshot_id: u64,
+        memmap_out: &mut [MemoryRegion],
+        reserved_out: &mut [MemoryRegion],
     ) -> Classification {
         let mut side_written = 0usize;
+        let mut memmap_written = 0usize;
+        let mut reserved_written = 0usize;
         let counts = self.write_to(descs, pa_limit, |index, disposition, region| {
             match disposition {
                 Disposition::Allocate => {
@@ -795,6 +818,13 @@ impl ClassificationPlan {
                         "preflight proved the memmap partition holds {} entries",
                         self.counts.conventional
                     );
+                    assert!(
+                        memmap_written < memmap_out.len(),
+                        "caller's memmap table holds {} entries",
+                        memmap_out.len()
+                    );
+                    memmap_out[memmap_written] = *region;
+                    memmap_written += 1;
                 }
                 Disposition::ReservedMapped => {
                     let admitted = serializer.push_reserved(*region).is_ok();
@@ -803,6 +833,13 @@ impl ClassificationPlan {
                         "preflight proved the reserved partition holds {} entries",
                         self.counts.reserved
                     );
+                    assert!(
+                        reserved_written < reserved_out.len(),
+                        "caller's reserved table holds {} entries",
+                        reserved_out.len()
+                    );
+                    reserved_out[reserved_written] = *region;
+                    reserved_written += 1;
                 }
                 Disposition::Side => {
                     side[side_written] = *region;
@@ -925,6 +962,22 @@ mod tests {
         u64::from_le_bytes(arena[off..off + 8].try_into().unwrap())
     }
 
+    const ZERO_REGION: MemoryRegion = MemoryRegion {
+        base: PhysBytes(0),
+        len: 0,
+    };
+
+    /// Classify into the wire plus throwaway semantic tables (the production
+    /// caller passes its `BootStorage` arrays).
+    fn commit_map(
+        storage: &mut MapStorage,
+        s: &mut Serializer<'_>,
+    ) -> Result<Classification, MapError> {
+        let mut memmap = [ZERO_REGION; minix_boot::WIRE_MEMMAP_CAP];
+        let mut reserved = [ZERO_REGION; minix_boot::WIRE_RESERVED_CAP];
+        storage.classify_into_handoff(PA_LIMIT, s, &mut memmap, &mut reserved)
+    }
+
     fn desc(t: u32, attribute: u64) -> DescriptorRef {
         DescriptorRef {
             raw_type: t,
@@ -947,9 +1000,7 @@ mod tests {
         storage
             .parse_raw_map(map, map_size, desc_size, version, 0)
             .unwrap();
-        storage
-            .classify_into_handoff(PA_LIMIT, &mut s)
-            .expect("map accepted")
+        commit_map(&mut storage, &mut s).expect("map accepted")
     }
 
     fn classify_err(map: &[u8], map_size: usize, desc_size: usize, version: u32) -> MapError {
@@ -958,7 +1009,7 @@ mod tests {
         let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         storage
             .parse_raw_map(map, map_size, desc_size, version, 0)
-            .and_then(|()| storage.classify_into_handoff(PA_LIMIT, &mut s))
+            .and_then(|()| commit_map(&mut storage, &mut s))
             .unwrap_err()
     }
 
@@ -1068,7 +1119,17 @@ mod tests {
             base: PhysBytes(0),
             len: 0,
         }; SIDE_CAP];
-        plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side, 9);
+        let mut memmap = [ZERO_REGION; minix_boot::WIRE_MEMMAP_CAP];
+        let mut reserved = [ZERO_REGION; minix_boot::WIRE_RESERVED_CAP];
+        plan.commit(
+            storage.descriptors(),
+            PA_LIMIT,
+            &mut s,
+            &mut side,
+            9,
+            &mut memmap,
+            &mut reserved,
+        );
 
         let base = minix_boot::WIRE_SOURCES_OFFSET;
         let b = s.as_bytes();
@@ -1098,7 +1159,17 @@ mod tests {
             base: PhysBytes(0),
             len: 0,
         }; SIDE_CAP];
-        plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side, 7);
+        let mut memmap = [ZERO_REGION; minix_boot::WIRE_MEMMAP_CAP];
+        let mut reserved = [ZERO_REGION; minix_boot::WIRE_RESERVED_CAP];
+        plan.commit(
+            storage.descriptors(),
+            PA_LIMIT,
+            &mut s,
+            &mut side,
+            7,
+            &mut memmap,
+            &mut reserved,
+        );
 
         let base = minix_boot::WIRE_SOURCES_OFFSET;
         let b = s.as_bytes();
@@ -1358,7 +1429,7 @@ mod tests {
         storage.parse_raw_map(&map, map.len(), 40, 1, 42).unwrap();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
-        storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
+        commit_map(&mut storage, &mut s).unwrap();
         let off = minix_boot::WIRE_SOURCES_OFFSET;
         let u64_at = |o: usize| u64::from_le_bytes(arena[o..o + 8].try_into().unwrap());
         assert_eq!(u64_at(off + 24), 0xF, "attribute");
@@ -1383,7 +1454,7 @@ mod tests {
         storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
-        let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
+        let c = commit_map(&mut storage, &mut s).unwrap();
         assert_eq!(
             c,
             Classification {
@@ -1433,7 +1504,17 @@ mod tests {
             base: PhysBytes(0),
             len: 0,
         }; SIDE_CAP];
-        let c = plan.commit(storage.descriptors(), PA_LIMIT, &mut s, &mut side, 0);
+        let mut memmap = [ZERO_REGION; minix_boot::WIRE_MEMMAP_CAP];
+        let mut reserved = [ZERO_REGION; minix_boot::WIRE_RESERVED_CAP];
+        let c = plan.commit(
+            storage.descriptors(),
+            PA_LIMIT,
+            &mut s,
+            &mut side,
+            0,
+            &mut memmap,
+            &mut reserved,
+        );
         assert_eq!(
             c,
             Classification {
@@ -1449,9 +1530,10 @@ mod tests {
         assert_eq!(get_u64(b, minix_boot::WIRE_MEMMAP_OFFSET + 8), 0x200 * 4096);
         assert_eq!(get_u64(b, minix_boot::WIRE_RESERVED_OFFSET), 0x40_0000);
         assert_eq!(get_u64(b, minix_boot::WIRE_RESERVED_OFFSET + 8), 4096);
-        // The semantic partition mirrors the same entries.
-        assert_eq!(get_u64(b, minix_boot::SEMANTIC_MEMMAP_OFFSET), 0x10_0000);
-        assert_eq!(get_u64(b, minix_boot::SEMANTIC_RESERVED_OFFSET), 0x40_0000);
+        // The caller's semantic tables received the same entries (the wire is
+        // their encoding; there is no second arena copy any more).
+        assert_eq!((memmap[0].base.0, memmap[0].len), (0x10_0000, 0x200 * 4096));
+        assert_eq!((reserved[0].base.0, reserved[0].len), (0x40_0000, 4096));
         // The side list holds the range that neither table received.
         assert_eq!(side[0].base.0, 0x800_0000);
         assert_eq!(side[0].len, 0x10 * 4096);
@@ -1486,7 +1568,7 @@ mod tests {
         storage
             .parse_raw_map(&map, map.len(), desc_size, 1, 0)
             .unwrap();
-        let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
+        let c = commit_map(&mut storage, &mut s).unwrap();
         assert_eq!(c.conventional, 2);
         assert_eq!(get_u64(s.as_bytes(), 104), 32);
     }
@@ -1679,7 +1761,7 @@ mod tests {
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         assert!(matches!(
-            storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap_err(),
+            commit_map(&mut storage, &mut s).unwrap_err(),
             MapError::RejectedDescriptor(DescriptorRejection {
                 failed: PolicyError::UnknownType,
                 ..
@@ -1789,7 +1871,7 @@ mod tests {
         storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
         let mut arena = [0u8; minix_boot::ARENA_CAP];
         let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
-        let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
+        let c = commit_map(&mut storage, &mut s).unwrap();
         assert_eq!((c.conventional, c.reserved, c.side), (128, 64, 64));
     }
 
@@ -1812,7 +1894,7 @@ mod tests {
         let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
         let mut storage = MapStorage::new();
         storage.parse_raw_map(&map, 0, 40, 1, 0).unwrap();
-        let c = storage.classify_into_handoff(PA_LIMIT, &mut s).unwrap();
+        let c = commit_map(&mut storage, &mut s).unwrap();
         assert_eq!(c, Classification::default());
     }
 }

@@ -1,19 +1,8 @@
 # D01 开放欠账（open-debt）
 
-> 唯一欠账源：由 `defect-ledger.md` 的 R14/R15/R16 ② 行抽取，已剔除已完成行；行 ID 带轮次前缀。R17 按本表施工；本表为空才允许标记本篇 CONVERGED（G8+G9 仍要求连续两轮零新增）。
+> 唯一欠账源：由 `defect-ledger.md` 的 R14/R15/R16 ② 行抽取，已剔除已完成行；行 ID 带轮次前缀。R18 实施后本表只剩两条：一条相邻项与一条第二阶段迁移；本表非空即不得标记本篇 CONVERGED（G8+G9 仍要求连续两轮零新增）。
 
 | ID | 严重度 | 处置/档期 |
 |---|---|---|
-| R14/READER-A-16 | P2 | 相邻：02 篇尚未生成；本篇已保留边界声明 |
-| R14/DESIGN-02 | P1 | 登记 F-R14-13（`BootReport<'a>` 重构；跨 6 crate，须单独立项） |
-| R14/DESIGN-04 | P2 | 登记 F-R14-14 |
-| R14/DESIGN-05 | P2 | R18：分区语义需设计裁决——试合并游标后 QEMU U-Boot shim 门在 3/6 标记处 panic（bump_end 是 1024 页页表专用子区间，模块/arena 在其外），已回滚 |
-| R14/DESIGN-08 | P2 | 登记 F-R14-18 |
-| R15/DESIGN-02 | P2 | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 |
-| R15/DESIGN-04 | P2 | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 |
-| R15/DESIGN-05 | P2 | 同 R14/DESIGN-05 |
-| R15/DESIGN-08 | P2 | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 |
-| R16/DESIGN-02 | P2 | BootReport 重构，修于 R18（跨 6 crate） |
-| R16/DESIGN-04 | P2 | arena 双写简化，修于 R18 |
-| R16/DESIGN-05 | P2 | 同 R14/DESIGN-05 |
-| R16/DESIGN-08 | P2 | FileLoader borrow 接口，修于 R18 |
+| R14/READER-A-16 | P2 | 相邻：Direct Map（`kernel_direct_map_size`/`kern_dm_pages`）的读者主要在尚未生成的 02 篇；本篇已保留边界声明，02 篇立项时补 |
+| F-R18-01（D-1 第二阶段） | P2 | U-Boot shim 腿的 `BootStorage` 迁移：`prepare_boot` 目前仍用一次性 `.bss` 静态量 + `Box::leak`（模块表、平台源、参数落地区）；所有权真实但形态未统一。截止：code-excellence 下一批；判据：该腿不再 `Box::leak` 模块/平台/参数，`BootPrepareResult` 携带 storage 视图，QEMU `test-riscv64-uboot-shim.sh` 6/6 不退化 |

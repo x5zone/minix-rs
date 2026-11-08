@@ -36,7 +36,7 @@ use crate::ebs_map::{Classification, MapError, MapStorage};
 /// loop has to be able to work without the allocator at all.
 static mut PAIR_STORAGE: MapStorage = MapStorage::new();
 use core::ffi::c_void;
-use minix_boot::Serializer;
+use minix_boot::{MemoryRegion, Serializer};
 
 /// UEFI `EFI_ERROR_BIT` (the high bit of `EFI_STATUS`; same value as
 /// `uefi_raw::Status::ERROR_BIT`).
@@ -125,6 +125,8 @@ pub unsafe fn pair_and_classify(
     map_buf: &mut [u8],
     pa_limit: u64,
     serializer: &mut Serializer<'_>,
+    memmap_out: &mut [MemoryRegion],
+    reserved_out: &mut [MemoryRegion],
 ) -> Result<Classification, PairError> {
     let mut ebs_attempts = 0u32;
     // Snapshot instance identity: one increment per successful GetMemoryMap.
@@ -174,7 +176,7 @@ pub unsafe fn pair_and_classify(
             })
             .map_err(PairError::Map)?;
         let classification = storage
-            .classify_into_handoff(pa_limit, serializer)
+            .classify_into_handoff(pa_limit, serializer, memmap_out, reserved_out)
             .map_err(PairError::Map)?;
         // O-11: static `/reserved-memory` and MRB claims must be covered by
         // descriptors of the type their semantics require. The claims were
@@ -421,21 +423,43 @@ mod tests {
         s.write_envelope(&carrier).unwrap();
     }
 
-    fn run(fw: &mut MockFw) -> Result<Classification, PairError> {
-        let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
-        let mut map_buf = [0u8; 256];
+    const ZERO_REGION: minix_boot::MemoryRegion = minix_boot::MemoryRegion {
+        base: minix_types::PhysBytes(0),
+        len: 0,
+    };
+
+    /// Run the production pairing helper with throwaway semantic tables.
+    fn pair(
+        fw: &mut MockFw,
+        map_buf: &mut [u8],
+        s: &mut Serializer<'_>,
+    ) -> Result<Classification, PairError> {
+        let mut memmap = [ZERO_REGION; minix_boot::WIRE_MEMMAP_CAP];
+        let mut reserved = [ZERO_REGION; minix_boot::WIRE_RESERVED_CAP];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
         unsafe {
             pair_and_classify(
                 &ops(),
                 fw as *mut MockFw as *mut c_void,
                 0,
-                &mut map_buf,
+                map_buf,
                 1 << 48,
-                &mut s,
+                s,
+                &mut memmap,
+                &mut reserved,
             )
         }
+    }
+
+    fn run(fw: &mut MockFw) -> Result<Classification, PairError> {
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
+        let mut map_buf = [0u8; 256];
+        pair(fw, &mut map_buf, &mut s)
     }
 
     #[test]
@@ -499,21 +523,15 @@ mod tests {
             &[],
         );
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
-        let c = unsafe {
-            pair_and_classify(
-                &ops(),
-                &mut fw as *mut MockFw as *mut c_void,
-                0,
-                &mut map_buf,
-                1 << 48,
-                &mut s,
-            )
-        }
-        .unwrap();
+        let c = pair(&mut fw, &mut map_buf, &mut s).unwrap();
         assert_eq!((c.conventional, c.reserved), (2, 1));
 
         s.patch_runtime_fields(minix_boot::RuntimeFields {
@@ -577,21 +595,15 @@ mod tests {
         // RESERVED is structurally valid but produces no ordinary-table entry.
         let mut fw = MockFw::new(&[(CONV, 0x10_0000, 1), (0u32, 0x30_0000, 1)], &[]);
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
-        let c = unsafe {
-            pair_and_classify(
-                &ops(),
-                &mut fw as *mut MockFw as *mut c_void,
-                0,
-                &mut map_buf,
-                1 << 48,
-                &mut s,
-            )
-        }
-        .unwrap();
+        let c = pair(&mut fw, &mut map_buf, &mut s).unwrap();
         assert_eq!((c.conventional, c.reserved, c.side), (1, 0, 0));
 
         s.patch_runtime_fields(minix_boot::RuntimeFields {
@@ -654,21 +666,15 @@ mod tests {
         );
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
-        let c = unsafe {
-            pair_and_classify(
-                &ops(),
-                &mut fw as *mut MockFw as *mut c_void,
-                0,
-                &mut map_buf,
-                1 << 48,
-                &mut s,
-            )
-        }
-        .unwrap();
+        let c = pair(&mut fw, &mut map_buf, &mut s).unwrap();
         assert_eq!((c.conventional, c.reserved), (0, 1), "second map only");
 
         s.patch_runtime_fields(minix_boot::RuntimeFields {
@@ -785,19 +791,13 @@ mod tests {
         );
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
-        let mut map_buf = [0u8; 256];
-        let c = unsafe {
-            pair_and_classify(
-                &ops(),
-                &mut fw as *mut MockFw as *mut c_void,
-                0,
-                &mut map_buf,
-                1 << 48,
-                &mut s,
-            )
-        }
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
         .unwrap();
+        let mut map_buf = [0u8; 256];
+        let c = pair(&mut fw, &mut map_buf, &mut s).unwrap();
         assert_eq!(c.conventional, 1);
         let get_u64 =
             |off: usize| u64::from_le_bytes(s.as_bytes()[off..off + 8].try_into().unwrap());
@@ -841,7 +841,11 @@ mod tests {
             param_buf: b"ARCH=test\0",
         };
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&carrier).unwrap();
         s.write_boot_modules(&MODULES).unwrap();
         s.write_platform_sources(&SOURCES).unwrap();
@@ -849,17 +853,7 @@ mod tests {
 
         let mut fw = MockFw::new(&[(CONV, 0x10_0000, 0x10), (LOADER, 0x20_0000, 4)], &[]);
         let mut map_buf = [0u8; 256];
-        let c = unsafe {
-            pair_and_classify(
-                &ops(),
-                &mut fw as *mut MockFw as *mut c_void,
-                0,
-                &mut map_buf,
-                1 << 48,
-                &mut s,
-            )
-        }
-        .unwrap();
+        let c = pair(&mut fw, &mut map_buf, &mut s).unwrap();
         assert_eq!(c.conventional, 1);
         assert_eq!(c.reserved, 1);
 
@@ -927,7 +921,11 @@ mod tests {
         };
 
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         write_min_envelope(&mut s);
         s.push_source(&uefi).unwrap();
         s.finish_sources(); // ClassificationPlan::commit's finalization
@@ -971,7 +969,11 @@ mod tests {
             ],
         );
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
@@ -981,17 +983,7 @@ mod tests {
         assert_eq!(fw.ebs_calls, 0);
 
         let before = crate::test_allocations();
-        let c = unsafe {
-            pair_and_classify(
-                &ops(),
-                &mut fw as *mut MockFw as *mut c_void,
-                0,
-                &mut map_buf,
-                1 << 48,
-                &mut s,
-            )
-        }
-        .unwrap();
+        let c = pair(&mut fw, &mut map_buf, &mut s).unwrap();
         let after = crate::test_allocations();
         assert_eq!(
             before, after,
@@ -1055,23 +1047,17 @@ mod tests {
         );
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            minix_boot::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         write_min_envelope(&mut s);
         let mut map_buf = [0u8; 256];
         // SAFETY: the mock functions expect `fw` behind the `bs` pointer.
         unsafe { preflight_dtb(&ops(), &mut fw as *mut MockFw as *mut c_void, &mut map_buf) }
             .unwrap();
-        let c = unsafe {
-            pair_and_classify(
-                &ops(),
-                &mut fw as *mut MockFw as *mut c_void,
-                0,
-                &mut map_buf,
-                1 << 48,
-                &mut s,
-            )
-        }
-        .unwrap();
+        let c = pair(&mut fw, &mut map_buf, &mut s).unwrap();
         assert_eq!(
             fw.get_calls, 3,
             "preflight + rejected final + retry snapshot"

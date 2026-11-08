@@ -31,9 +31,8 @@
 | ID | 来源 | 事项 | 状态 | 说明 |
 |---|---|---|---|---|
 | R7-FU-01 | D2-03 | BootForm 注册表：保留/删除/接到真实入口 | ✅ 已裁决（2026-11-08，采 A：删） | 删注册表/电池/数量测试，历史形态留教学文档；随 code-excellence 批次（与 F04/F05 同批） |
-| R7-FU-02 | D2-02 同族 | root/bump 分配先于内核装载，预防需重排两入口步骤 | 已登记 | 检测面已加（装载后复核 root/bump 不重叠）；预防面留 code-excellence / 后续轮 |
-| R7-FU-03 | D2-13 | 内核 LMA 与 AllocatePages 的权衡（是否预留内核区间） | 待用户裁决 | 现为"分配时拒绝模块页 + 装载后复核"；预留区间会改变内存图 |
-
+| R7-FU-02 | D2-02 同族 | root/bump 分配先于内核装载，预防需重排两入口步骤 | ✅ 已并入 F-R16-01（R18） | 检测面已有（装载后复核 root/bump 不重叠）；预防面（装载前不相交）并入 F-R16-01 的物理不相交合同，按 D-5 验收项实施 |
+| R7-FU-03 | D2-13 | 内核 LMA 与 AllocatePages 的权衡（是否预留内核区间） | ✅ 已归档（R18：被 A+D 取代） | `reserve_kernel_span` 用 `AllocateAddress` 在内核布局确定后立即预留 LMA 跨度（A+D 方案，R13/R14 落地）；"分配时拒绝 + 装载后复核"退为第二道防线，不再有待裁决的权衡 |
 | R8-FU-01 | DESIGN-R8-02 | 全局 allocator 守卫：pool 分配拒绝内核跨度 | 已登记 | 最小修复仅覆盖 ELF 段 src/dest 断言；完整守卫留 code-excellence |
 | R8-FU-02 | DESIGN-R8-01 | a2 通道真机取证 vs 删通道 | ✅ 已裁决（2026-11-08，采 A：删） | 删 a2 备用通道（asm 注释 + bootface 分支 + 文档表述），DTB `/chosen` 为唯一生产通道；随批次实施 |
 | R10-FU-01 | FACT-R10-01 | CI 增加 kernel-image riscv64 双 feature 构建作业 | ✅ 已裁决（2026-11-08，采 A） | 加 riscv64 `fw-riscv64-none`/`fw-riscv64-uboot` 构建作业并纳入 aarch64；随批次实施 |
@@ -56,12 +55,12 @@
 | F-R14-10 | B-16 | §3.4 字段台账结论先于论证 | 已登记（R15） | 论证前置或加一行"论证见 §3.5/§3.9" |
 | F-R14-11 | B-18 | §4.1 两列表按"是否 UEFI"划分，与形态轴（谁建根/谁发送）不符 | 已登记（R15） | 表轴重定义，需同步 §3.7/§4.8 |
 | F-R14-12 | B-19 | §3.10/§4.9/§7.5 三张 C↔Rust 对照表无权威 | 已登记（R15） | 指定 §7.5 为唯一索引，其余两表加"索引见 §7.5" |
-| F-R14-13 | DESIGN-02 | `KernelInfo` 的 `&'static` 切片逼出 static mut/Box::leak | 已登记（P1） | `BootReport<'a>` + 调用方持有定长表；跨 6 crate，单独立项，须先有设计稿 |
-| F-R14-14 | DESIGN-04 | arena wire 分区与语义分区逐区双写 | 已登记（R16） | 评估删语义分区、解码后直接读 wire（需 XOR 校验与对齐约束） |
-| F-R14-15 | DESIGN-05 | 同一物理池两个 bump 分配器（`BUMP_PTR` 与 `BootAlloc`） | 已登记（R16） | 统一为一个分配器或加编译期区间不相交断言 |
+| F-R14-13 | DESIGN-02 | `KernelInfo` 的 `&'static` 切片逼出 static mut/Box::leak | ✅ 已修（R18 D-1 第一阶段） | `BootStorage` + `BootReport<'a>` 落地，UEFI 腿改走 storage 报告；U-Boot 腿第二阶段迁移登记为 F-R18-01 |
+| F-R14-14 | DESIGN-04 | arena wire 分区与语义分区逐区双写 | ✅ 已修（R18 D-2） | 删除语义分区；arena 8 页、wire v9、source@7872/end@30624；版本拒绝负控 |
+| F-R14-15 | DESIGN-05 | 同一物理池两个 bump 分配器（`BUMP_PTR` 与 `BootAlloc`） | ✅ 已修（R18，D-3） | 保留两个独立实例（合并游标已证伪：QEMU U-Boot 门 3/6 panic）；公共算法提为 `minix_boot::BumpRegion`，池分区加编译期断言（对齐/范围/arena 容量）+ `prepare_boot` 运行期断言（root 是池首、PT 子区间紧随其后） |
 | F-R14-16 | DESIGN-06 | DM 候选顺序在四处各写一遍 | 已登记（R16） | 提为单一常量/函数，四处引用 |
 | F-R14-17 | DESIGN-07 | `build_identity_windows()` 恒空而 `kern_ident` 仍在 | 已登记（R16） | 删除函数与字段，或恢复语义；先查 handoff 兼容 |
-| F-R14-18 | DESIGN-08 | `FileLoader` 返回 `Vec` 强制整份拷贝 | 已登记（R16） | 改为 borrow/切片接口；U-Boot 腿已持有 RAM 字节 |
+| F-R14-18 | DESIGN-08 | `FileLoader` 返回 `Vec` 强制整份拷贝 | ✅ 已修（R18 D-4） | `FileBytes<'a>` 显式 Borrowed/Owned；U-Boot 借出、UEFI 拥有 |
 | F-R14-19 | DESIGN-09 | `check_boot_postconditions` 在生产值上不可证伪 | 已登记（R16） | 断言改为对独立输入，或降级为 debug 检查 |
 | F-R14-20 | DESIGN-10 | `memmap ∩ reserved` 未在校验期检查 | 已登记（R16） | `validate` 加交集检查（先确认 C 侧无此约束） |
 | F-R14-21 | DESIGN-11 | 13 个 pub 字段 + 12 个转发 getter | 已登记（R16） | 二选一：字段私有 + getter，或删 getter |
@@ -69,7 +68,7 @@
 | F-R14-23 | DESIGN-13 | `ebs_failed` 与 `ebs_attempts > 0` 重叠 | 已登记（R16） | 删一个状态，保留有语义的那个 |
 | F-R14-24 | DESIGN-14 | `PagingWithId` 仅测试实现；`HUGE_PAGE_SHIFT` 零读者 | 已登记（R16） | 先做读者审计（含未来 PCID 计划），再删 |
 | F-R14-25 | DESIGN-15 | `Plan` 两遍遍历 | 已登记（R16） | 建议只改名（`ClassificationPlan`），不重构 |
-| F-R14-26 | DESIGN-03 | `prepare_boot` 约 250 行零生产调用，与生产入口分叉 | 已登记（R16，裁决截止） | ② 裁决：等待裁决项 1（删 BootForm/prepare_boot）；选项 保留/删除；R16 前必须裁决 |
+| F-R14-26 | DESIGN-03 | `prepare_boot` 约 250 行零生产调用，与生产入口分叉 | ✅ 已修（R17 裁决：删；R18 记账） | 随 `UefiBootShim` 整型删除；`prepare_boot` 只剩 U-Boot 生产入口 `RiscvUbootBootShim` 一处实现 |
 
 > 档期口径：R15 批处理本篇 in-scope 结构项（F-R14-01/02/03/05/06/07/08/09/10/11/12），R16 批处理跨 crate 代码重构（F-R14-13..25）与 `prepare_boot` 裁决；F-R14-04 指向尚未生成的 02 篇，定在 R17。
 
@@ -77,5 +76,12 @@
 
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
-| F-R16-01 | DESIGN-01 / RB16-08 | U-Boot shim 腿：root/bump 在读取内核布局之前分配，无"模块/root/bump 不落进内核 LMA 跨度"的守卫；arena 在 `boot_alloc_region()` 区间之后，不在整段扣除内，扣除表未单独排除 | 已登记（R17，代码） | 重排为"读 ELF→算布局→校验跨度→分配 root/bump→拷贝"，或加等价 post-layout 守卫；arena 补进扣除记录 |
-| F-R16-02 | DESIGN-02 | 兜底 bump 选择（`boot_alloc_region()==None`）只取 memmap 第一个够大区间起点，不排除内核/模块/root | 已登记（R17，代码） | 加排除集后重选，或 fail-closed |
+| F-R16-01 | DESIGN-01 / RB16-08 / R7-FU-02 | U-Boot shim 腿：root/bump 在读取内核布局之前分配，无"模块/root/bump 不落进内核 LMA 跨度"的守卫；arena 在 `boot_alloc_region()` 区间之后，不在整段扣除内，扣除表未单独排除 | ✅ 已修（R18 D-5） | 装载前门：`load_kernel_with_loader_gated` 从 ELF 程序头算 LMA 跨度，断言不越链接期 4 MiB 上界（编译期 `KERNEL_MAX_LMA_END <= MODULE_REGION_BASE`）且不与 bump 池相交，失败在首个段写入前停机；arena 不做永久扣除，改由生命周期合同 + poison 端到端测试证明（`decoded_map_survives_arena_poison_and_reissues_the_arena_frames`） |
+| F-R16-02 | DESIGN-02 | 兜底 bump 选择（`boot_alloc_region()==None`）只取 memmap 第一个够大区间起点，不排除内核/模块/root | ✅ 已修（R18，D-6） | 删兜底扫描；未注册即 panic（fail-closed），消息带 DM 可采界；负控 `missing_boot_allocator_registration_fails_closed` + 正控各一条 |
+
+## Round 18 转出（F-R18-nn）
+
+| ID | 来源 | 事项 | 状态 | 下一步 |
+|---|---|---|---|---|
+| F-R18-01 | D-1 第二阶段 | U-Boot shim 腿仍以一次性 `.bss` 静态量 + `Box::leak`（模块表、平台源、参数）持有载荷；所有权真实但形态未统一 | 已登记（code-excellence 下一批） | `prepare_boot` 接收 `&mut BootStorage`，`BootPrepareResult` 携带报告视图；判据与截止见 `OPEN-DEBT.md` |
+| F-R18-02 | P-2 第一版边界 | 表结构/链接门不做标题锚点校验与外部链接存活检查 | 已登记（workflow 候选） | 出现需要时在 `WORKFLOW-VERSIONS.md` 立版本候选，附真实案例 |

@@ -16,13 +16,14 @@
 //! Boot stage is single-threaded (only one CPU runs, no SMP yet).
 //! `AtomicU64` is used instead of `static mut` to avoid Rust 2024 edition
 //! UB. It does **not** make the bump sequence safe under concurrent callers:
-//! `alloc` advances `fetch_add` before the range check and rolls back with
-//! `fetch_sub`, which is not linearizable. Treat the allocator as boot-only
-//! and single-threaded; a future SMP path needs a CAS loop or a per-CPU
-//! allocator.
+//! each operation reloads the shared [`BumpRegion`] value, allocates, and
+//! stores the cursor back, which is not linearizable. Treat the allocator as
+//! boot-only and single-threaded; a future SMP path needs a CAS loop or a
+//! per-CPU allocator.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use minix_arch::paging::PageTableError;
+use minix_boot::BumpRegion;
 use minix_types::{PhysBytes, VirBytes};
 
 /// Boot-stage bump allocator state.
@@ -72,7 +73,7 @@ impl BootAlloc {
     /// Boot is single-threaded, so the check is a fail-fast `assert!`.
     pub fn resume(&self, base: u64, next: u64, end: u64) {
         assert!(
-            base < end && base <= next && next <= end,
+            BumpRegion::resumed(base, next, end).is_consistent(),
             "BootAlloc::resume: inconsistent region base={base:#x} next={next:#x} end={end:#x}"
         );
         self.base.store(base, Ordering::Relaxed);
@@ -94,7 +95,7 @@ impl BootAlloc {
         let base = self.base.load(Ordering::Relaxed);
         let next = self.next.load(Ordering::Relaxed);
         assert!(
-            base < end && base <= next && next <= end,
+            BumpRegion::resumed(base, next, end).is_consistent(),
             "BootAlloc::region: inconsistent region base={base:#x} next={next:#x} end={end:#x}"
         );
         Some((base, end))
@@ -106,21 +107,31 @@ impl BootAlloc {
     /// (C: `cbi->n_dynamic`, pg_utils.c:154 — every boot page-table page
     /// the kernel allocated while mapping itself).
     pub fn used_bytes(&self) -> u64 {
-        self.next
-            .load(Ordering::Relaxed)
-            .saturating_sub(self.base.load(Ordering::Relaxed))
+        BumpRegion::resumed(
+            self.base.load(Ordering::Relaxed),
+            self.next.load(Ordering::Relaxed),
+            self.end.load(Ordering::Relaxed),
+        )
+        .used_bytes()
     }
 
     /// Allocate a zero-filled 4 KiB page with identity mapping (VA = PA).
     ///
     /// Returns `(phys, virt)` where `virt == phys`.
     pub fn alloc(&self) -> Result<(PhysBytes, VirBytes), PageTableError> {
-        let pa = self.next.fetch_add(0x1000, Ordering::Relaxed);
-        if pa >= self.end.load(Ordering::Relaxed) {
-            // Roll back the increment on failure
-            self.next.fetch_sub(0x1000, Ordering::Relaxed);
+        // Rebuild the shared bump-region value from this instance's atomic
+        // state, run the common arithmetic, and store the cursor back. Boot
+        // is single-threaded, so the load/check/store sequence is equivalent
+        // to the former fetch_add/rollback pair.
+        let mut region = BumpRegion::resumed(
+            self.base.load(Ordering::Relaxed),
+            self.next.load(Ordering::Relaxed),
+            self.end.load(Ordering::Relaxed),
+        );
+        let Some(pa) = region.alloc_pages(1) else {
             return Err(PageTableError::AllocationFailed);
-        }
+        };
+        self.next.store(region.next(), Ordering::Relaxed);
         // Zero-fill the page. In test mode, skip the write (no real memory).
         #[cfg(not(test))]
         // SAFETY: pa is a valid, 4KB-aligned physical address returned by the

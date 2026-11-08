@@ -127,12 +127,45 @@ pub fn build_kernel_info(
     }
 }
 
+/// Single-threaded boot-stage cell holding the caller-owned
+/// [`minix_boot::BootStorage`].
+///
+/// The UEFI and U-Boot senders keep their semantic tables in their own
+/// `.bss` (R18 D-1) instead of pointing `'static` slices into the handoff
+/// arena. `UnsafeCell` + `Sync` is sound under the boot contract: exactly one
+/// CPU runs, the storage is filled before the wire image is finalized, and it
+/// is read by the same thread before the jump. It is not a general-purpose
+/// shared cell.
+pub struct BootStorageCell(core::cell::UnsafeCell<minix_boot::BootStorage>);
+
+// SAFETY: see the type doc — single-threaded boot, one writer, one reader.
+unsafe impl Sync for BootStorageCell {}
+
+impl BootStorageCell {
+    /// An empty cell; usable as a `.bss` static initializer.
+    pub const fn new() -> Self {
+        Self(core::cell::UnsafeCell::new(minix_boot::BootStorage::new()))
+    }
+
+    /// The storage. Callers must uphold the single-threaded boot contract.
+    pub fn get(&self) -> &mut minix_boot::BootStorage {
+        // SAFETY: the boot contract gives this cell exactly one borrower at a
+        // time (no interrupts, no SMP, no re-entry).
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+impl Default for BootStorageCell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── Shared, firmware-agnostic loading logic ──
 //
 // The kernel/module loading pipeline is identical for every firmware
 // (parse ELF → copy segments → place modules → build KernelInfo). The
-// only thing that differs is how raw file bytes are obtained, captured by
-// the `FileLoader` trait. Both `uefi_helpers` and `opensbi_helpers`
+// only thing that differs is how raw file bytes are obtained, captured by// the `FileLoader` trait. Both `uefi_helpers` and `opensbi_helpers`
 // implement this trait and reuse the same shared loader functions.
 pub mod loader;
 
@@ -201,10 +234,18 @@ pub mod opensbi_helpers;
 // determines which impl is compiled (no forwarding fn is provided).
 
 #[cfg(feature = "uefi")]
-pub use uefi_helpers::find_platform_sources;
+pub use uefi_helpers::find_platform_sources_into;
 
 #[cfg(all(feature = "opensbi", not(feature = "uefi")))]
 pub use opensbi_helpers::RiscvUbootBootShim;
+
+/// Maximum page-table subrange the boot-shim hands to the kernel image (in
+/// 4 KiB pages). Both shim call sites (`main.rs` on UEFI, `uboot_main.rs` on
+/// U-Boot) pass this value, and the U-Boot pool's compile-time partition
+/// assertion uses it, so a change is one edit rather than a literal drift.
+/// The kernel-image self-boot form allocates a smaller subrange (256 pages)
+/// from the same pool; that stays below this bound.
+pub const BOOT_PT_BUMP_PAGES: usize = 1024;
 
 /// Raw-write the QEMU serial port (COM1 data port 0x3F8; OVMF has already
 /// initialized the 16550).

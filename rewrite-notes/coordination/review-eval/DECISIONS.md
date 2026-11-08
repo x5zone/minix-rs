@@ -75,3 +75,23 @@
 - **决策**：P0 的独立验证优先跨 agent；单 agent 可接受，但必须写明“同 agent 验证 + 已重放 grep 命令”，并给出抽样比例与一致性。一致性低于 90% 写 NOT PASS。
 - **来源**：`prompt/review-rules/review-process.md:1916-1926`；`AGENTS.md` 的 VERIFY-CHECK 局限条款。
 - **不要重提**：“同 agent 验证一律无效”。
+
+## R18 判决账（八字段，P-1 起）
+
+> 格式契约见 `prompt/review-rules/review-evals.md` §3.5。本表从 R18 起使用八列；
+> 历史条目（D-001–D-012）保留散文形态。`reviewer_verdict` 与 `user_decision`
+> 分列：用户接受风险时前者仍保留 `NOT PASS`。
+
+| decision_id | reviewer_verdict | user_decision | decision_reason | scope | implementation_status | evidence | reopen_condition |
+|---|---|---|---|---|---|---|---|
+| D-013（R18 D-1） | NOT PASS（开放）：生产者侧 `&'static` 切片是假所有权；A1 方向获第三方评审同意 | 采 A1：`BootStorage`（调用方定长数组）+ `BootReport<'a>` 视图；内核侧 `.bss` 存储不动；分腿迁移 | 长期价值最大且不改 wire；否决 B（只改 U-Boot） | cross-crate | 已实施（第一阶段：UEFI 腿）；U-Boot 腿迁移登记为 F-R18-01 | `BootStorage`/`BootReport` + UEFI storage 路径；minix-boot 184 / boot-shim 135 / kernel 868；QEMU 三门 PASS | 迁移破坏任一起动腿或既有不变量 |
+| D-014（R18 D-2） | NOT PASS（开放）：arena wire 分区与语义分区逐区双写，两份内存图可能漂移 | 采 A2：唯一语义来源，wire 从同源编码、接收侧解码；删 arena 语义分区；wire 版本 8→9 + 版本拒绝负控 | 语义区仅服务发送侧跳转前的 `KernelInfo`，可移入 shim `.bss`；不做发送侧往返 | cross-crate | 已实施 | wire v9；语义分区删除（arena 8 页，source@7872、end@30624）；版本拒绝负控；宿主测试 184/135/868 | wire v9 布局或容量不足，或旧版本混用 |
+| D-015（R18 D-3） | P2：同一物理池两个 bump 分配器，算法与边界无共同来源 | 采 C+A：`BumpRegion` 纯核心、两独立实例、固定分区；编译期常量断言 + 运行期区间断言；B（合并分配器）否决 | 合并游标已被 QEMU U-Boot 门 3/6 panic 证伪；两实例本来就必须分开 | in-scope | 已实施 | `minix-boot::BumpRegion` + 5 项单测；`prepare_boot` 运行期断言；`cargo test -p minix-boot` 180 通过 | 池分区或分配顺序改变 |
+| D-016（R18 D-4） | NOT PASS（开放）：`FileLoader` 返回 `Vec`，强制整份拷贝且接口不表达借用 | 采 A：`FileBytes<'a>`（`Borrowed`/`Owned`）；借用期不可覆盖、源/目标不交检查保留、不长期独占 loader | 显式枚举比 `Cow<'static>` 更贴合跨镜像两条腿；C（静态缓冲）仅作原型 | cross-crate | 已实施 | `FileBytes` Borrowed/Owned；U-Boot 借出、UEFI 拥有；loader 测试与 QEMU 三门 PASS | 借用腿无法满足覆盖检查 |
+| D-017（R18 D-5） | P2：arena 生命周期缺端到端证据；未列入 VM 自由页扣除 | 采 C：证明 `LastRead(arena) ≺ Publish(VMFreePages)` 后按生命周期回收；验收 = poison 测试 + U-Boot 装载前不相交检查 | 先证明再决定扣除，避免盲目改内存图；B 的隐含缺陷（扣除区内仍可被内部 allocator 重用）采纳 | in-scope | 已实施 | 生命周期合同（`arch_boot_resume_v1` 文档）+ poison 测试 + `load_kernel_with_loader_gated` 装载前门与编译期 LMA 断言；QEMU 三门 PASS | 时序证明失败，或装载前断言无法建立 |
+| D-018（R18 D-6） | P1：兜底 bump 取 memmap 第一个足够大的区间，不排除内核/模块/root | 采 A：删除兜底；未注册即 fail-closed；补“缺注册即失败”负控 | 五条生产入口与 30 个测试内核全部注册，兜底零依赖 | in-scope | 已实施 | `require_boot_region` + 正负控两条；`cargo test -p minix-kernel --features mock` 867 通过 | 出现合法的不注册入口 |
+| D-019（R18 D-7） | P1：ELF 源缓冲与目标 LMA 预订重叠无负控 | 采 B：保留 fail-closed；补重叠负控（停止且不进入任何段写入） | `AllocateAddress` 预留已落地；负控固定“检查先于写” | in-scope | 已实施 | `source_destination_overlap_stops_before_any_segment_write`；boot-shim 135 通过 | `AllocateAddress` 预留面变化 |
+| D-020（R18 D-8） | 登记项：R7-FU-02 与 F-R16-01 重复，R7-FU-03 已被 A+D 取代 | 合并 R7-FU-02→F-R16-01；R7-FU-03 标“被 A+D 取代”归档 | 保留追溯链接，不再作为活动任务 | workflow | 已实施 | `follow-ups.md` 两行更新 | A+D 预留被回退 |
+| D-021（R18 P-1） | 流程缺陷 C-16：用户裁决与独立回读 `NOT PASS` 无固定字段，容易被压成“已修” | 加八字段判决账；`reviewer_verdict` 与 `user_decision` 分列，不覆盖 `NOT PASS` | 判决消失是不可恢复的轨迹损失 | workflow | 已实施 | `review-evals.md` §3.5 + 本表 | 字段被合并或 `NOT PASS` 丢失 |
+| D-022（R18 P-2） | 流程缺陷 C-18：五道文档门不查表结构，也不解析跨文档相对链接基址 | 加解析器驱动门：表块连续性 + 内部 `.md` 相对链接（按文档目录）；fenced/行内代码排除；第一版不做锚点；正负 fixture | 出现过“空行劈表五门全绿”和“6 个 .md 链接 1 个断” | workflow | 已实施 | `tools/doc-structure-check.py --self-test` 8/8；01 篇 0 问题 | 出现嵌套表/HTML 表等新形态 |
+| D-023（R18 P-3） | 流程顺序：先实施再固定基线，不得自动进入下一轮 | 按九步实施；完成后封存基线并停止；R17-panel 仅用户明确指示后启动 | 带病收敛会浪费轮次；面板必须审同一稳定基线 | workflow | 待实施（基线封存后填） | 本 run 的 `loop.md §7` 待填 | 用户明确启动面板 |

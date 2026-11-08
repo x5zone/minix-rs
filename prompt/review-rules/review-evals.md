@@ -124,6 +124,56 @@ tmp/review-eval/<stage>/<doc-stem>/logs/
 - `重构` 四项分别记录提出、接受、实施、登记的数量；
 - 成本不能只写“若干”；没有 token 读数时写“未采集”，不要编造。
 
+### 3.5 判决账（decision ledger，P-1）
+
+用户裁决与审查者的独立结论必须分列，不能压成“某几条已修”。凡是用户裁决过的
+事项（采纳、否决、接受风险、要求继续修），都要在
+`rewrite-notes/coordination/review-eval/DECISIONS.md` 的判决账表里落一行，
+表头固定八列：
+
+```markdown
+| decision_id | reviewer_verdict | user_decision | decision_reason | scope | implementation_status | evidence | reopen_condition |
+```
+
+规则：
+
+- `decision_id`：稳定编号（`D-01` 起；一轮内不复用）；
+- `reviewer_verdict`：审查者/独立回读的原始结论（`PASS`、`NOT PASS`、具体异议），
+  **用户裁决不得覆盖它**——用户接受风险时写 `user_decision: 接受（风险自留）`，
+  `reviewer_verdict` 仍保留 `NOT PASS`；
+- `user_decision`：用户最终裁决（采纳的选项、否决、搁置），与上一列分列；
+- `decision_reason`：裁决理由（不是审查者理由）；
+- `scope`：`in-scope` / `adjacent` / `cross-crate` / `workflow`；
+- `implementation_status`：`待实施` / `已实施` / `移入 code-excellence` / `不实施`；
+- `evidence`：可重放的命令、提交号或测试名；没有证据就写缺什么；
+- `reopen_condition`：什么新证据可以重开；没有就写“无”。
+
+账本同时保留历史散文条目（`D-001` 起）；新增条目一律用八列表格。PR 或轮次
+收尾时，`implementation_status` 从“待实施”变为“已实施”必须同时填 `evidence`。
+
+### 3.6 表结构与内部链接门（P-2 第一版）
+
+文档 review 的机械门在原有五门之外，增加：
+
+```bash
+python3 tools/doc-structure-check.py <doc.md>
+```
+
+判据（第一版范围）：
+
+- 表块连续性：每个表块以「表头 + 分隔行」开始，表体不得被空行劈开；表头与
+  每一行的列数一致；
+- 转义竖线（`\|`）与行内代码里的竖线不算分隔符；
+- fenced code block（``` / ~~~）整块排除；
+- 内部 `.md` 相对链接按**文档目录**解析；外链、纯锚点、代码块与行内代码里的
+  示例不查；`#fragment` 剥掉后只解析文件；
+- 第一版**不做**标题锚点校验与外部链接存活检查（锚点仍由 `anchor-resolve.sh`
+  负责）。
+
+检查器自身由 `--self-test` 的正负 fixture 驱动（合法表、空行劈表、列数不符、
+转义竖线、fenced 排除、断链、代码内链接、锚点剥离）；fixture 失败视为门故障，
+不是文档缺陷。CI 在 `rules-consistency.yml` 常驻执行自测与受审文档的正式检查。
+
 ## 四、归因契约
 
 ### 4.0 全修原则

@@ -92,6 +92,52 @@ pub struct KernelLoadResult {
     pub entry_point: u64,
 }
 
+/// Bytes of one boot file, as either a borrow of loader-owned storage or an
+/// owned read buffer.
+///
+/// The explicit enum is the R18 D-4 contract: the loader says which side owns
+/// the bytes instead of forcing every read to copy into a `Vec`. The U-Boot
+/// leg already holds the file in RAM (U-Boot `fatload`ed it), so it returns
+/// [`FileBytes::Borrowed`]; the UEFI leg must read through the firmware
+/// protocol and returns [`FileBytes::Owned`]. While a `Borrowed` value is
+/// alive the loader's backing storage must not be overwritten (the UEFI flow
+/// never borrows; the U-Boot table is written before the shim runs and is not
+/// modified afterwards).
+pub enum FileBytes<'a> {
+    /// Bytes owned by the loader / firmware staging area.
+    Borrowed(&'a [u8]),
+    /// Bytes read into a fresh buffer by the loader.
+    Owned(Vec<u8>),
+}
+
+impl<'a> FileBytes<'a> {
+    /// The bytes, regardless of ownership.
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+
+    /// Byte length.
+    pub fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    /// Whether the file is empty.
+    pub fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+
+    /// Take an owned buffer, copying only when the bytes are borrowed.
+    pub fn into_owned(self) -> Vec<u8> {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Borrowed(bytes) => bytes.to_vec(),
+        }
+    }
+}
+
 /// Firmware-agnostic file access.
 ///
 /// Implementations:
@@ -99,8 +145,9 @@ pub struct KernelLoadResult {
 /// - `UbootFileLoader` — looks up pre-loaded files in a `BootFileTable`
 ///   placed in physical memory by U-Boot's `fatload` commands.
 ///
-/// Both implementations return owned `Vec<u8>` so the caller (the shared
-/// loader code) can process the bytes without caring about the data source.
+/// Both implementations return [`FileBytes`] so the caller (the shared loader
+/// code) can process the bytes without caring about ownership or the data
+/// source; only the firmware-specific leg decides whether a copy is needed.
 ///
 /// `read` returns `None` when the file is absent (non-fatal for optional
 /// modules) or unreadable. Callers use `read_required` to make absence
@@ -108,10 +155,10 @@ pub struct KernelLoadResult {
 pub trait FileLoader {
     /// Read a file by path. Returns `None` if the file does not exist or
     /// cannot be read.
-    fn read(&self, path: &str) -> Option<Vec<u8>>;
+    fn read<'a>(&'a self, path: &str) -> Option<FileBytes<'a>>;
 
     /// Read a file that must exist. Default panics with a useful message.
-    fn read_required(&self, path: &str) -> Vec<u8> {
+    fn read_required<'a>(&'a self, path: &str) -> FileBytes<'a> {
         match self.read(path) {
             Some(d) => d,
             None => panic!("boot-shim: required file not found: {}", path),
@@ -336,12 +383,27 @@ fn first_overlapping_pair(segments: &[minix_elf::LoadSegment]) -> Option<(usize,
 pub fn load_kernel_with_loader<L: FileLoader>(
     loader: &L,
 ) -> Result<KernelLoadResult, minix_elf::ElfError> {
+    load_kernel_with_loader_gated(loader, |_| {})
+}
+
+/// Load the kernel ELF with a pre-copy layout gate.
+///
+/// The gate runs after the ELF program headers are parsed and **before the
+/// first segment byte is written**. A leg whose destination memory has fixed
+/// partitions (the U-Boot shim's bump pool) uses it to refuse a kernel LMA
+/// span that overlaps those partitions: a post-copy check would be too late,
+/// because the copy has already overwritten the pool.
+pub fn load_kernel_with_loader_gated<L: FileLoader, G: FnOnce(&KernelLoadResult)>(
+    loader: &L,
+    layout_gate: G,
+) -> Result<KernelLoadResult, minix_elf::ElfError> {
     let elf_data = loader.read_required(KERNEL_PATH);
-    let layout = compute_kernel_layout(&elf_data)?;
+    let layout = compute_kernel_layout(elf_data.as_slice())?;
+    layout_gate(&layout);
     // SAFETY: see `load_segments_into_phys_memory`. Both firmware paths
     // satisfy the contract: physical RAM is identity-mapped at this stage,
     // and the kernel linker script reserves non-overlapping LMA range.
-    unsafe { load_segments_into_phys_memory(&elf_data)? };
+    unsafe { load_segments_into_phys_memory(elf_data.as_slice())? };
     Ok(layout)
 }
 
@@ -358,9 +420,36 @@ pub fn load_boot_modules_with_loader<L: FileLoader>(
     loader: &L,
     alloc_pages: PageAllocator,
 ) -> &'static [BootModule] {
-    let mut modules: Vec<BootModule> = Vec::new();
+    let mut modules = alloc::vec![ZERO_MODULE; MODULE_NAMES.len()];
+    let n = load_boot_modules_into(loader, alloc_pages, &mut modules);
+    modules.truncate(n);
+    Box::leak(modules.into_boxed_slice())
+}
 
-    for &name in MODULE_NAMES {
+const ZERO_MODULE: BootModule = BootModule {
+    name: "",
+    start: PhysBytes(0),
+    len: 0,
+};
+
+/// Load the boot modules into a caller-owned slot array and return the count.
+///
+/// `out` must have at least `MODULE_NAMES.len()` slots; the caller commits the
+/// returned count to its [`minix_boot::BootStorage`]. Writing into the
+/// caller's storage is what removes the `Box::leak` from the UEFI leg (R18
+/// D-1): the loader no longer has to hand back a `'static` slice.
+pub fn load_boot_modules_into<L: FileLoader>(
+    loader: &L,
+    alloc_pages: PageAllocator,
+    out: &mut [BootModule],
+) -> usize {
+    assert!(
+        out.len() >= MODULE_NAMES.len(),
+        "boot-shim: module slot array has {} slots, the contract needs {}",
+        out.len(),
+        MODULE_NAMES.len()
+    );
+    for (slot, &name) in out.iter_mut().zip(MODULE_NAMES.iter()) {
         let path = build_module_path(name);
         let data = loader.read(&path).unwrap_or_else(|| {
             panic!(
@@ -371,6 +460,7 @@ pub fn load_boot_modules_with_loader<L: FileLoader>(
                 MODULE_NAMES.len()
             )
         });
+        let data = data.as_slice();
 
         let num_pages = (data.len() + 4095) / 4096;
         let phys_base = alloc_pages(num_pages).unwrap_or_else(|| {
@@ -391,14 +481,13 @@ pub fn load_boot_modules_with_loader<L: FileLoader>(
 
         // `name` 已是 `MODULE_NAMES` 常量表里的 `&'static str`——无需堆分配再泄漏
         // （D01 Round1 D2-08：删掉 clone-to-compile 形）。
-        modules.push(BootModule {
+        *slot = BootModule {
             name,
             start: PhysBytes(phys_base),
             len: data.len(),
-        });
+        };
     }
-
-    Box::leak(modules.into_boxed_slice())
+    MODULE_NAMES.len()
 }
 
 /// Build "`<MODULES_DIR>/<name>`" without depending on `format!` macros
@@ -418,8 +507,8 @@ fn build_module_path(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
     use super::*;
+    use alloc::string::ToString;
     use minix_elf::{ELFCLASS64, ELFDATA2LSB, ET_EXEC, PT_LOAD};
 
     /// Mock loader backed by a small in-memory table.
@@ -437,11 +526,11 @@ mod tests {
     }
 
     impl FileLoader for MockLoader {
-        fn read(&self, path: &str) -> Option<Vec<u8>> {
+        fn read<'a>(&'a self, path: &str) -> Option<FileBytes<'a>> {
             self.files
                 .iter()
                 .find(|(p, _)| p == path)
-                .map(|(_, d)| d.clone())
+                .map(|(_, d)| FileBytes::Owned(d.clone()))
         }
     }
 
@@ -493,7 +582,10 @@ mod tests {
     fn test_mock_loader_returns_inserted_bytes() {
         let mut loader = MockLoader::new();
         loader.insert("/foo", vec![1, 2, 3]);
-        assert_eq!(loader.read("/foo"), Some(vec![1, 2, 3]));
+        assert_eq!(
+            loader.read("/foo").map(|bytes| bytes.as_slice().to_vec()),
+            Some(vec![1, 2, 3])
+        );
     }
 
     #[test]
@@ -504,7 +596,7 @@ mod tests {
         // We can't perform the unsafe phys-memory copy in unit tests; instead
         // call `compute_kernel_layout` directly through the same code path.
         let elf = loader.read_required(KERNEL_PATH);
-        let layout = compute_kernel_layout(&elf).unwrap();
+        let layout = compute_kernel_layout(elf.as_slice()).unwrap();
 
         assert_eq!(layout.kern_phys_base, PhysBytes(0x200000));
         assert_eq!(layout.kern_virt_base, VirBytes(0xFFFFFFFF80000000));
@@ -613,6 +705,33 @@ mod tests {
         assert!(
             matches!(result, Err(minix_elf::ElfError::InvalidSegment)),
             "two overlapping PT_LOAD segments must fail with InvalidSegment"
+        );
+    }
+
+    /// D-7 negative control: when a segment's destination LMA overlaps the
+    /// ELF source buffer, the loader must stop before the first segment
+    /// write. The proof is byte-for-byte: the destination points into the
+    /// same allocation as the ELF bytes, so a write that ran before the
+    /// overlap gate would leave the buffer changed when the panic unwinds.
+    #[test]
+    fn source_destination_overlap_stops_before_any_segment_write() {
+        let mut elf = build_minimal_elf();
+        let base = elf.as_ptr() as u64;
+        // The minimal image's file bytes live at [base+0x1000, base+0x1800).
+        // A destination at base+0x1400 spans [0x1400, 0x1c00): it crosses the
+        // source range inside the same allocation.
+        elf[64 + 24..64 + 32].copy_from_slice(&(base + 0x1400).to_le_bytes());
+        let before = elf.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            load_segments_into_phys_memory(&elf)
+        }));
+        assert!(
+            result.is_err(),
+            "a destination overlapping the ELF source must halt the loader"
+        );
+        assert_eq!(
+            elf, before,
+            "the overlap gate must run before the first segment write"
         );
     }
 

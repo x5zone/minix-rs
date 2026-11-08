@@ -16,6 +16,8 @@ extern crate std;
 
 pub mod boot_params;
 pub mod boot_shim;
+pub mod boot_storage;
+pub mod bump;
 pub mod fdt_layout;
 pub mod handoff_v1;
 pub mod handoff_v1_read;
@@ -26,6 +28,8 @@ pub mod platform;
 
 pub use boot_params::*;
 pub use boot_shim::*;
+pub use boot_storage::{BootReport, BootStorage, BootStorageFull};
+pub use bump::{BUMP_PAGE_SIZE, BumpRegion};
 pub use handoff_v1::*;
 pub use handoff_v1_read::*;
 pub use handoff_v1_write::*;

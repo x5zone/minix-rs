@@ -277,7 +277,14 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// (sentinel / 0 / 0), the kernel-side consumer of `free_upper_idx` was
 /// the GET_KINFO report which fills 0 anyway, and the bootstrap reclaim
 /// does not exist in the Rust port. Envelope shrinks 184 → 160 bytes.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 8;
+///
+/// 9 = the arena's semantic work partition (two `MemoryRegion` tables, 6144
+/// B) was deleted (R18 D-2): the sender keeps its semantic tables in its own
+/// `BootStorage` and the wire is the only representation in the arena. The
+/// source and startup partitions move down by 6144 B and the arena shrinks
+/// from nine pages to eight. This is a layout change, so a v8 receiver must
+/// reject a v9 arena and vice versa — the comparison stays exact.
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 9;
 
 /// The handoff envelope. Lives at the start of the handoff arena; the
 /// runtime fields (`root_page`, bump triple) are patched in place after the
@@ -343,10 +350,6 @@ pub const WIRE_SOURCES_CAP: usize = 296;
 /// Wire size of one [`WireSourceRecord`].
 pub const WIRE_SOURCE_RECORD_SIZE: usize = 72;
 
-/// Semantic work-partition capacities (`128×16 + 256×16 = 6144` bytes).
-pub const SEMANTIC_MEMMAP_CAP: usize = 128;
-pub const SEMANTIC_RESERVED_CAP: usize = 256;
-
 /// Wire partition offsets from the arena base.
 pub const WIRE_OFFSET: usize = ENVELOPE_CAP;
 pub const WIRE_MEMMAP_OFFSET: usize = WIRE_OFFSET;
@@ -356,17 +359,10 @@ pub const WIRE_PLATFORM_OFFSET: usize = WIRE_MODULES_OFFSET + WIRE_MODULE_CAP * 
 pub const WIRE_PARAM_OFFSET: usize = WIRE_PLATFORM_OFFSET + WIRE_PLATFORM_CAP * 16;
 pub const WIRE_END: usize = WIRE_PARAM_OFFSET + WIRE_PARAM_CAP;
 
-/// Semantic work-partition offsets (shim-side `MemoryRegion` supply; ignored
-/// by the receiver, no wire descriptor).
-pub const SEMANTIC_OFFSET: usize = WIRE_END;
-pub const SEMANTIC_MEMMAP_OFFSET: usize = SEMANTIC_OFFSET;
-pub const SEMANTIC_RESERVED_OFFSET: usize = SEMANTIC_MEMMAP_OFFSET + SEMANTIC_MEMMAP_CAP * 16;
-pub const SEMANTIC_END: usize = SEMANTIC_RESERVED_OFFSET + SEMANTIC_RESERVED_CAP * 16;
-
-/// Source-record partition: the first use of the arena's design spare after
-/// the semantic work partition. Receiver-owned landing storage is the
-/// kernel's, so this partition has no semantic twin.
-pub const WIRE_SOURCES_OFFSET: usize = SEMANTIC_END;
+/// Source-record partition: follows the wire payload directly. The sender's
+/// semantic tables live in its own `BootStorage` (R18 D-2), so the arena
+/// carries no second representation of the map.
+pub const WIRE_SOURCES_OFFSET: usize = WIRE_END;
 pub const WIRE_SOURCES_END: usize =
     WIRE_SOURCES_OFFSET + WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE;
 
@@ -377,11 +373,12 @@ pub const WIRE_STARTUP_OFFSET: usize = WIRE_SOURCES_END;
 pub const WIRE_STARTUP_END: usize =
     WIRE_STARTUP_OFFSET + WIRE_STARTUP_CAP * WIRE_SOURCE_RECORD_SIZE;
 
-/// Whole-arena capacity: 9 pages (36 KiB) — envelope + wire + semantic
-/// partitions up to `SEMANTIC_END`, the 296-slot memory-source partition,
-/// and the 20-slot startup-object partition; 96 bytes of design spare
-/// remain after `WIRE_STARTUP_END` (36864 − 36768).
-pub const ARENA_CAP: usize = 9 * 4096;
+/// Whole-arena capacity: 8 pages (32 KiB) — envelope + wire payload up to
+/// `WIRE_END`, the 296-slot memory-source partition, and the 20-slot
+/// startup-object partition; 2144 bytes of design spare remain after
+/// `WIRE_STARTUP_END` (32768 − 30624). The ninth page the v8 layout needed
+/// (for the deleted semantic partition) is gone.
+pub const ARENA_CAP: usize = 8 * 4096;
 
 // ── layout gate ──────────────────────────────────────────────────────────
 
@@ -425,17 +422,13 @@ const _: () = {
     assert!(WIRE_PLATFORM_OFFSET.is_multiple_of(align_of::<WirePlatformDescSource>()));
     assert!(WIRE_PARAM_OFFSET == 6848);
     assert!(WIRE_END == 7872);
-    assert!(SEMANTIC_MEMMAP_OFFSET == WIRE_END);
-    assert!(
-        SEMANTIC_RESERVED_OFFSET.is_multiple_of(align_of::<crate::kernel_info::MemoryRegion>())
-    );
-    assert!(SEMANTIC_END == 14016);
     assert!(WIRE_SOURCES_OFFSET.is_multiple_of(align_of::<WireSourceRecord>()));
-    assert!(WIRE_SOURCES_END == 35328);
-    assert!(WIRE_STARTUP_END == 36768); // 20 × 72 = 1440
+    assert!(WIRE_SOURCES_OFFSET == WIRE_END);
+    assert!(WIRE_SOURCES_END == 29184);
+    assert!(WIRE_STARTUP_OFFSET == WIRE_SOURCES_END);
+    assert!(WIRE_STARTUP_END == 30624); // 20 × 72 = 1440
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
     assert!(WIRE_STARTUP_END <= ARENA_CAP);
-    assert!(SEMANTIC_END <= ARENA_CAP);
     assert!(ARENA_CAP.is_multiple_of(4096));
 };
 
@@ -456,12 +449,12 @@ mod tests {
     fn arena_partition_arithmetic_matches_the_design() {
         // 128×16 + 256×16 + 12×32 + 4×16 + 1024 = 7616 wire bytes.
         assert_eq!(WIRE_END - WIRE_OFFSET, 7616);
-        // 128×16 + 256×16 = 6144 semantic bytes.
-        assert_eq!(SEMANTIC_END - SEMANTIC_OFFSET, 6144);
-        // Envelope + wire + semantic ≈ 14 KiB; the compile-time layout gate
-        // above asserts the full wire image through `WIRE_STARTUP_END` fits
-        // the 36 KiB (nine-page) arena with 96 bytes of design spare.
-        assert_eq!(SEMANTIC_END, 14016);
+        // The wires are the only map representation in the arena (v9); the
+        // source partition starts immediately after the payload.
+        assert_eq!(WIRE_SOURCES_OFFSET, WIRE_END);
+        assert_eq!(WIRE_SOURCES_END, 29184);
+        // Envelope + wire + sources + startup = 30624; the eight-page arena
+        // leaves 2144 bytes of design spare.
+        assert_eq!(ARENA_CAP - WIRE_STARTUP_END, 2144);
     }
-
 }

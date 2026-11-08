@@ -51,9 +51,11 @@
 //! directory table.
 
 use core::slice;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use minix_boot::{
-    BootPrepareResult, BootShim, DTB, DtbMemoryMap, KernelInfo, MemoryRegion, PlatformDescSource,
+    BootPrepareResult, BootShim, BumpRegion, DTB, DtbMemoryMap, KernelInfo, MemoryRegion,
+    PlatformDescSource,
 };
 use minix_types::{PhysBytes, VirBytes};
 
@@ -81,6 +83,21 @@ const MODULE_REGION_SIZE: u64 = 0x0200_0000; // 32 MB
 /// metadata store into DM(0x80000000) then page-faulted, because the kernel's
 /// DM plan correctly refuses to map the firmware range.
 const KERN_PHYS_BASE: u64 = 0x8020_0000;
+
+/// Upper bound of the kernel image's physical LMA span.
+///
+/// The link-side authority is `os/kernel-image/riscv64.ld`'s
+/// `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)`: a kernel image is at
+/// most 4 MiB wide. Pinning the same bound here lets the shim prove, at
+/// compile time, that the whole possible LMA span stays below its bump pool —
+/// a relation between two separately linked artifacts that nothing else
+/// enforces.
+const KERNEL_MAX_LMA_END: u64 = KERN_PHYS_BASE + 0x40_0000;
+
+const _: () = assert!(
+    KERNEL_MAX_LMA_END <= MODULE_REGION_BASE,
+    "kernel LMA span must end below the shim's bump pool (MODULE_REGION_BASE)"
+);
 
 /// Magic number identifying a valid [`BootFileTable`] in memory.
 ///
@@ -183,7 +200,7 @@ impl<'a> UbootFileLoader<'a> {
 }
 
 impl<'a> FileLoader for UbootFileLoader<'a> {
-    fn read(&self, path: &str) -> Option<alloc::vec::Vec<u8>> {
+    fn read<'b>(&'b self, path: &str) -> Option<crate::loader::FileBytes<'b>> {
         let entry = self.table.find(path)?;
         // SAFETY: U-Boot's `fatload` placed `entry.len` bytes at
         // `entry.phys_addr`. The region is identity-mapped during boot
@@ -200,7 +217,10 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
             .and_then(|iter| iter.map(|seg| (seg.offset + seg.filesz) as usize).max())
             .filter(|&end| end > 0 && end <= slice.len())
             .unwrap_or(slice.len());
-        Some(slice[..used].to_vec())
+        // U-Boot staged the file in RAM; hand out a borrow instead of a copy
+        // (R18 D-4). The table is written once before the shim runs and is
+        // not modified while the bytes are in use.
+        Some(crate::loader::FileBytes::Borrowed(&slice[..used]))
     }
 }
 
@@ -234,8 +254,9 @@ impl BootShim for RiscvUbootBootShim {
         // `(extra_argc, extra_argv)` — not a table address. For unit testing
         // and headless development we fall back to a panic with a clear
         // message.
-        let table =
-            boot_file_table().expect("boot-shim: BootFileTable not installed (install_boot_file_table was not called)");
+        let table = boot_file_table().expect(
+            "boot-shim: BootFileTable not installed (install_boot_file_table was not called)",
+        );
         let file_loader = UbootFileLoader::new(table);
 
         // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
@@ -297,9 +318,45 @@ impl BootShim for RiscvUbootBootShim {
         };
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
+        // Runtime partition check (D-3): the pool's fixed partitions are
+        // handed out in one order — root page first, page-table subrange
+        // second — and the kernel image resumes exactly that subrange from
+        // the wire. If the order ever changes, the root page would sit inside
+        // the kernel's bump region and the resumed cursor would hand out live
+        // page-table pages.
+        assert_eq!(
+            root_page.0,
+            bump_pool_base(),
+            "boot-shim: root page is not the bump pool's first page — halting"
+        );
+        assert_eq!(
+            bump_base,
+            root_page.0 + 4096,
+            "boot-shim: page-table subrange does not start after the root page — halting"
+        );
+        assert!(
+            bump_end <= bump_end_bound(),
+            "boot-shim: page-table subrange runs past the bump pool — halting"
+        );
 
-        let kern = loader::load_kernel_with_loader(&file_loader)
-            .expect("boot-shim: failed to parse kernel ELF");
+        let kern = loader::load_kernel_with_loader_gated(&file_loader, |layout| {
+            // Pre-copy gate (D-5 / F-R16-01): the ELF program headers give the
+            // kernel's LMA span before any segment byte is written. Refusing
+            // an overlap here is the only point where the pool can still be
+            // protected — a post-copy assertion would report the damage after
+            // the fact.
+            let k0 = layout.kern_phys_base.0;
+            let k1 = k0.saturating_add(layout.kern_size);
+            assert!(
+                k1 <= KERNEL_MAX_LMA_END,
+                "boot-shim: kernel LMA span [0x{k0:x}, 0x{k1:x}) exceeds the linker bound 0x{KERNEL_MAX_LMA_END:x} — refusing before any segment write"
+            );
+            assert!(
+                k1 <= MODULE_REGION_BASE || k0 >= BUMP_END,
+                "boot-shim: kernel LMA span [0x{k0:x}, 0x{k1:x}) overlaps the bump pool [0x{MODULE_REGION_BASE:x}, 0x{BUMP_END:x}) — refusing before any segment write"
+            );
+        })
+        .expect("boot-shim: failed to parse kernel ELF");
         // The U-Boot leg has no `AllocateAddress` reservation (the firmware
         // placed the image), so the kernel span is only known after the
         // copy. Reject the layout if the already-allocated bootstrap pages
@@ -361,7 +418,8 @@ impl BootShim for RiscvUbootBootShim {
         // SAFETY: single-threaded boot; written once before the handoff.
         static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
             [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
-        static STARTUP_TAKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        static STARTUP_TAKEN: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
         assert!(
             !STARTUP_TAKEN.swap(true, core::sync::atomic::Ordering::AcqRel),
             "opensbi_helpers: startup-object landing re-entered"
@@ -496,11 +554,15 @@ pub fn dtb_ptr() -> Option<u64> {
 
 // ── OpenSBI helpers (no firmware to call; the bump pool base is a compile-time constant) ──
 
-/// Bump pointer used by `alloc_root_page` / `alloc_bump_region` and
-/// `alloc_module_pages`. The pool is the compile-time region starting at
-/// `MODULE_REGION_BASE` (below the shim image and the kernel/module staging
-/// addresses — see the constant's doc).
-static mut BUMP_PTR: u64 = MODULE_REGION_BASE;
+/// Cursor of the U-Boot shim's fixed bump pool. The pool is the compile-time
+/// region starting at `MODULE_REGION_BASE` (below the shim image and the
+/// kernel/module staging addresses — see the constant's doc).
+///
+/// The cursor is an `AtomicU64` for the same reason as the kernel-side
+/// [`minix_kernel::boot_alloc::BootAlloc`]: boot is single-threaded, and the
+/// atomic avoids the `static mut` reference rules of edition 2024. It does
+/// not make concurrent allocation linearizable.
+static BUMP_NEXT: AtomicU64 = AtomicU64::new(MODULE_REGION_BASE);
 const BUMP_END: u64 = MODULE_REGION_BASE + MODULE_REGION_SIZE;
 
 // Compile-time proof (riscv64 target) that every bump allocation — root
@@ -513,22 +575,36 @@ const BUMP_END: u64 = MODULE_REGION_BASE + MODULE_REGION_SIZE;
 #[cfg(target_arch = "riscv64")]
 const _: () = assert!(BUMP_END <= minix_arch::boot_dm_admissible_end());
 
+// Fixed partitions of the pool, asserted at compile time (D-3). The pool is
+// handed out in allocation order: root page → page-table subrange → module
+// pages → arena. Only the extents known at compile time can be checked here;
+// module sizes are runtime, and `bump_alloc` returns `None` instead of
+// overrunning. The kernel image resumes exactly the page-table subrange, so
+// the root page must stay outside it.
+const _: () = assert!(MODULE_REGION_BASE % 4096 == 0, "bump pool base alignment");
+const _: () = assert!(MODULE_REGION_SIZE % 4096 == 0, "bump pool size alignment");
+const _: () = assert!(
+    MODULE_REGION_BASE % minix_boot::BUMP_PAGE_SIZE == 0,
+    "bump pool base must be a whole number of boot pages"
+);
+const _: () = assert!(
+    4096 + (crate::BOOT_PT_BUMP_PAGES as u64) * minix_boot::BUMP_PAGE_SIZE
+        + minix_boot::ARENA_CAP as u64
+        <= MODULE_REGION_SIZE,
+    "root page + page-table subrange + arena must fit the bump pool"
+);
+
 fn bump_alloc(num_pages: usize) -> Option<u64> {
-    // Reject zero-page requests: a successful call with num_pages == 0
-    // would return the current BUMP_PTR (a duplicate address) without
-    // advancing the pointer, breaking the "no overlap" invariant.
-    assert!(num_pages > 0, "bump_alloc: num_pages must be > 0");
-    // SAFETY: single-threaded boot context; SMP not yet started.
-    unsafe {
-        let need = (num_pages as u64).checked_mul(4096)?;
-        let end = BUMP_PTR.checked_add(need)?;
-        if end > BUMP_END {
-            return None;
-        }
-        let addr = BUMP_PTR;
-        BUMP_PTR = end;
-        Some(addr)
-    }
+    // The zero-page rejection lives in `BumpRegion::alloc_pages` (shared with
+    // the kernel-side allocator, so the two cannot drift).
+    let mut region = BumpRegion::resumed(
+        MODULE_REGION_BASE,
+        BUMP_NEXT.load(Ordering::Relaxed),
+        BUMP_END,
+    );
+    let addr = region.alloc_pages(num_pages)?;
+    BUMP_NEXT.store(region.next(), Ordering::Relaxed);
+    Some(addr)
 }
 
 /// Exported for the kernel-image self-boot side (the second legitimate
@@ -656,7 +732,11 @@ mod tests {
         let table = build_table(&[("/EFI/minix/modules/vm", &[0xAA, 0xBB, 0xCC][..])]);
         let loader = UbootFileLoader::new(table);
         let data = loader.read("/EFI/minix/modules/vm").unwrap();
-        assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
+        assert_eq!(data.as_slice(), &[0xAA, 0xBB, 0xCC]);
+        assert!(
+            matches!(data, crate::loader::FileBytes::Borrowed(_)),
+            "the U-Boot leg already holds the bytes; a borrow is the D-4 contract"
+        );
         assert!(loader.read("/missing").is_none());
     }
 
@@ -688,8 +768,8 @@ mod tests {
             PhysBytes(0x8000_0000),
             0x100_000,
             &[],
-            &[],                   // platform_sources (empty = no source)
-            &[],                   // param_buf (no source in this unit test)
+            &[], // platform_sources (empty = no source)
+            &[], // param_buf (no source in this unit test)
         );
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit

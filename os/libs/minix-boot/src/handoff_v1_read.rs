@@ -14,12 +14,12 @@
 //! little-endian, mirroring [`crate::handoff_v1_write`].
 
 use crate::handoff_v1::{
-    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1,
-    WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP,
-    WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP,
-    WIRE_RESERVED_OFFSET, WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET,
-    WIRE_STARTUP_CAP, WIRE_STARTUP_OFFSET, WireBootModule, WireMemoryRegion,
-    WirePlatformDescSource, WireSourceRecord,
+    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1, WIRE_MEMMAP_CAP,
+    WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
+    WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
+    WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET, WIRE_STARTUP_CAP,
+    WIRE_STARTUP_OFFSET, WireBootModule, WireMemoryRegion, WirePlatformDescSource,
+    WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
 use crate::memmap_source::SourceRecord;
@@ -138,9 +138,8 @@ fn check_header(arena: &[u8]) -> Result<(), HandoffV1ReadError> {
 }
 
 /// Payload descriptor lengths, read by the sender after the pairing loop has
-/// classified the final map (the sender still needs the semantic partition to
-/// build the in-process `KernelInfo`, and the runtime fields are not patched
-/// until the root is live).
+/// classified the final map (the sender's semantic tables live in its own
+/// `BootStorage`; the runtime fields are not patched until the root is live).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandoffDescriptors {
     pub memmap_byte_len: u64,
@@ -580,7 +579,11 @@ mod tests {
     fn build_arena() -> [u8; ARENA_CAP] {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+            let mut s = Serializer::new(
+                &mut arena,
+                crate::memmap_source::InputObjectId::DtbBootInput,
+            )
+            .unwrap();
             let info = info();
             s.write_envelope(&info).unwrap();
             s.write_reserved_regions(info.reserved_regions).unwrap();
@@ -693,13 +696,21 @@ mod tests {
             HandoffV1ReadError::BadMagic
         );
         let mut arena = build_arena();
-        // Version 1 is the pre-source-partition envelope: an exact match is
-        // required, so an older sender is rejected rather than read with the
-        // new offsets.
-        put_u32(&mut arena, 4, 1);
+        // The previous version (v8) has a different arena layout — it still
+        // carries the deleted semantic partition. An exact match is required,
+        // so an older sender is rejected rather than read with the new
+        // offsets (R18 D-2 negative control).
+        put_u32(&mut arena, 4, BOOT_HANDOFF_V1_VERSION - 1);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::UnsupportedVersion
+        );
+        let mut arena = build_arena();
+        put_u32(&mut arena, 4, BOOT_HANDOFF_V1_VERSION + 1);
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::UnsupportedVersion,
+            "a future version is rejected too, not read optimistically"
         );
         let mut arena = build_arena();
         put_u32(&mut arena, 8, 1);
@@ -724,7 +735,11 @@ mod tests {
     fn descriptor_reader_ignores_unpatched_runtime_fields() {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+            let mut s = Serializer::new(
+                &mut arena,
+                crate::memmap_source::InputObjectId::DtbBootInput,
+            )
+            .unwrap();
             let info = info();
             s.write_envelope(&info).unwrap();
             s.push_memmap(MEMMAP[0]).unwrap();
@@ -845,7 +860,11 @@ mod tests {
     #[test]
     fn startup_partition_accepts_exactly_its_capacity() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&info()).unwrap();
         s.patch_runtime_fields(RuntimeFields {
             root_page: ROOT,
@@ -895,7 +914,11 @@ mod tests {
     #[test]
     fn reset_map_partitions_keeps_the_startup_partition() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&info()).unwrap();
         s.write_sources(&RECORDS).unwrap();
         s.write_startup(&STARTUP).unwrap();
@@ -1107,7 +1130,11 @@ mod tests {
         };
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+            let mut s = Serializer::new(
+                &mut arena,
+                crate::memmap_source::InputObjectId::DtbBootInput,
+            )
+            .unwrap();
             s.write_envelope(&info()).unwrap();
             s.write_sources(&[record]).unwrap();
             s.patch_runtime_fields(RuntimeFields {
@@ -1132,7 +1159,11 @@ mod tests {
     fn rejects_nonzero_snapshot_on_a_dtb_record() {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+            let mut s = Serializer::new(
+                &mut arena,
+                crate::memmap_source::InputObjectId::DtbBootInput,
+            )
+            .unwrap();
             s.write_envelope(&info()).unwrap();
             s.write_sources(&RECORDS[..1]).unwrap();
             s.patch_runtime_fields(RuntimeFields {

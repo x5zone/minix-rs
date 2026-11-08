@@ -1182,3 +1182,16 @@
 | R16/RB16-04 | P2 | ① | §4.8 “在 3.7 已给出”假指针 | 五门 |
 | R16/RB16-05 | P2 | ① | §5.4 部分覆盖清单漏 M12/M14 | 五门 |
 | R16/RB16-08 | P1 | ① | U-Boot arena 归属写错（在 bump 区间之后） | 五门/源码对照 |
+
+## R18 实施批（承接 R14/R15/R16 的转出项）
+
+> 这些行不是新一轮面板发现，而是已裁决转出项的实施落账；`处置类` 记 ① 表示"本轮修完"。来源列给原台账行，证据列给可重放命令或测试名。
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| R18/DESIGN-02 | R14/R15/R16 DESIGN-02 | P1 | 设计/假所有权 | ① | `BootStorage` + `BootReport<'a>`；UEFI 腿改走 storage，内核入口收报告；U-Boot 腿第二阶段登记 F-R18-01 | `cargo test -p minix-boot` 184；`cargo test -p minix-kernel --features mock` 868 | 五门/QEMU 三门 |
+| R18/DESIGN-04 | R14/R15/R16 DESIGN-04 | P2 | 设计/双写 | ① | 删除 arena 语义分区；wire v9；arena 8 页；分类同时写 storage 与 wire | `arena_partition_arithmetic_matches_the_design`；`rejects_bad_header_fields`（v8/v10 拒绝） | 五门/QEMU 三门 |
+| R18/DESIGN-05 | R14/R15/R16 DESIGN-05 | P2 | 设计/双分配器 | ① | 保留两实例；公共核心 `BumpRegion`；编译期分区断言 + `prepare_boot` 运行期断言 | `cargo test -p minix-boot`（`bump` 5 条）；QEMU U-Boot 6/6 | 五门/QEMU U-Boot |
+| R18/DESIGN-08 | R14/R15/R16 DESIGN-08 | P2 | 设计/强制拷贝 | ① | `FileBytes<'a>` 显式 Borrowed/Owned；U-Boot 借出、UEFI 拥有 | `cargo test -p boot-shim --features test-all` 135；`test_uboot_file_loader_reads_bytes_from_table` | 五门/QEMU 三门 |
+| R18/D-6 | F-R16-02 | P1 | 代码/兜底 | ① | 删除 memmap 兜底；未注册即 fail-closed；正负控各一条 | `missing_boot_allocator_registration_fails_closed` | 五门/源码对照 |
+| R18/D-7 | F-R16-01（负控面） | P2 | 测试缺口 | ① | ELF 源缓冲与目标 LMA 重叠必须在首段写入前停机 | `source_destination_overlap_stops_before_any_segment_write` | 五门 |

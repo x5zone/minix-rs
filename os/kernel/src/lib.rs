@@ -159,8 +159,7 @@ pub mod trap_dispatch;
 
 use globals::{
     CLOCK_STATE, CURRENT_ROOT_PHYS, IPC_FILTER_POOL, IRQ_MANAGER, KBILL_IPC, KBILL_KCALL,
-    KERNEL_INFO, PRIV_TABLE, PROC_TABLE, ROOT_PHYS_UNSET, SMP_STATE,
-    SyncUnsafeCell, VM_RUNNING,
+    KERNEL_INFO, PRIV_TABLE, PROC_TABLE, ROOT_PHYS_UNSET, SMP_STATE, SyncUnsafeCell, VM_RUNNING,
 };
 
 /// Test-only serialization for tests that touch process-global boot state.
@@ -224,8 +223,8 @@ where
     kernel_info.validate_before_tables();
     kernel_info.check_boot_postconditions();
     store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot: KERNEL_INFO store failed");
+    let kinfo: &'static KernelInfo =
+        crate::kernel_info().expect("arch_boot: KERNEL_INFO store failed");
     register_panic_diagnostic();
     arch_boot_impl::<A>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity and
@@ -334,7 +333,12 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
 ) -> ! {
     // Validate KernelInfo + (idempotently) register the resumed bump allocator
     // and pt_alloc. This helper touches no page table — safe on a live root.
-    let support = boot_validate_and_prepare::<A>(kernel_info);
+    let support = boot_validate_and_prepare::<A>(
+        kernel_info.kern_virt_base,
+        kernel_info.kern_phys_base,
+        kernel_info.kern_size,
+        kernel_info.kern_stack_top,
+    );
     let layout = DirectMapLayout::<A>::from_arch();
     let dm = plan_dm_policy::<A>(&support, &layout)
         .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
@@ -348,8 +352,8 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
     // them: the handoff copy's fat pointers still reference the boot-shim's
     // boot-services pool, which we re-home here so they survive past the PE.
     store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot_resume_v1: KERNEL_INFO store failed");
+    let kinfo: &'static KernelInfo =
+        crate::kernel_info().expect("arch_boot_resume_v1: KERNEL_INFO store failed");
     register_panic_diagnostic();
     // Step 4: add direct-map coverage to the *active* bootstrap root (additive;
     // `establish_boot_dm` wraps `root_page` and only writes new PTEs).
@@ -397,7 +401,7 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 /// fields into the already-serialized arena, then absolute-jump into the
 /// standalone image.
 ///
-/// The arena is an `ARENA_CAP` (nine-page) allocation below the identity
+/// The arena is an `ARENA_CAP` (eight-page) allocation below the identity
 /// bound — `LOADER_DATA` on the two UEFI legs, bump-pool pages on the U-Boot
 /// shim leg; the bootstrap root maps it through the identity window, so the in-place
 /// patch is a plain memory write after paging is live. The architecture-specific
@@ -412,7 +416,11 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
         target_arch = "riscv64"
     )
 ))]
-pub fn enter_kernel_image_v1(arena_pa: u64, kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+pub fn enter_kernel_image_v1(
+    arena_pa: u64,
+    report: &minix_boot::BootReport<'_>,
+    root_page: PhysBytes,
+) -> ! {
     // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
     // face names the type explicitly); the v1 sender names it here instead.
     #[cfg(target_arch = "riscv64")]
@@ -425,12 +433,17 @@ pub fn enter_kernel_image_v1(arena_pa: u64, kernel_info: &KernelInfo, root_page:
     unsafe {
         core::arch::asm!("cli", options(nomem, nostack));
     }
-    let support = boot_validate_and_prepare::<BootArchImpl>(kernel_info);
+    let support = boot_validate_and_prepare::<BootArchImpl>(
+        report.kern_virt_base,
+        report.kern_phys_base,
+        report.kern_size,
+        report.kern_stack_top,
+    );
     let layout = DirectMapLayout::<BootArchImpl>::from_arch();
     let kernel_layout = KernelLayout {
-        virtual_base: kernel_info.kern_virt_base.0,
-        physical_base: kernel_info.kern_phys_base.0,
-        size: kernel_info.kern_size,
+        virtual_base: report.kern_virt_base.0,
+        physical_base: report.kern_phys_base.0,
+        size: report.kern_size,
     };
     let policy = plan_boot_pages::<BootArchImpl>(&support, kernel_layout, &layout)
         .unwrap_or_else(|e| panic!("enter_kernel_image_v1: page-size policy: {e}"));
@@ -453,7 +466,7 @@ pub fn enter_kernel_image_v1(arena_pa: u64, kernel_info: &KernelInfo, root_page:
             bump_end,
         },
     );
-    let entry = core::hint::black_box(kernel_info.kern_virt_base.0);
+    let entry = core::hint::black_box(report.kern_virt_base.0);
     // SAFETY: paging is enabled and `entry` maps the executable kernel-image
     // `_start`; the arena is a valid physical address below the identity end.
     // The handoff register is bound to a fixed operand so LLVM cannot
@@ -523,6 +536,23 @@ unsafe extern "sysv64" {
 /// The bootstrap root is already live (the shim built it); this entry must
 /// never rebuild it — `new_from_page` would zero the active root that maps
 /// this very function.
+///
+/// # Arena lifecycle contract (R18 D-5)
+///
+/// The decode below is the **last read of the arena**. Every payload is
+/// copied into a `.bss` store, and `KernelInfo`'s slices point at those
+/// stores, not at the arena; `arena_pa` is not retained. The VM free-page
+/// list is published much later, in `kmain` → `build_vm_handoff`, which is
+/// strictly after this function. Therefore:
+///
+/// - `LastRead(arena) ≺ Publish(VMFreePages)`, so arena frames that the
+///   classification leaves in the conventional map may be reissued to VM;
+/// - the arena is still named by a startup-object record (identity, not
+///   liveness) and stays in the boot handoff's deduction inputs if a leg
+///   classifies it as occupied;
+/// - if a future change needs to read the arena after the jump, it must move
+///   this function's decode boundary or add the arena to the deduction —
+///   otherwise the VM can hand out a live wire image.
 #[cfg(all(
     not(feature = "mock"),
     any(
@@ -703,7 +733,33 @@ fn mock_kmain_ok() -> ! {
     }
 }
 
-fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageSupport<A> {
+/// Fail closed when the boot-stage page-table allocator was not registered.
+///
+/// Takes the observed registration instead of reading the process-wide
+/// global, so the missing-registration path is testable without racing other
+/// tests that initialize the global allocator. The DM-admissible bound stays
+/// in the message because a caller that does register must keep the bump
+/// region below it (`establish_boot_dm` fails otherwise).
+fn require_boot_region<A: BootArch>(region: Option<(u64, u64)>) -> (u64, u64) {
+    region.unwrap_or_else(|| {
+        let dm_admissible_end = core::cmp::min(
+            IDENTITY_MAP_END,
+            <A::DirectMap as minix_arch::DirectMapArch>::VM_DIRECT_MAP_SIZE,
+        );
+        panic!(
+            "arch_boot: boot allocator not registered — the boot-shim must call \
+             init_boot_pt_alloc with a DM-admissible region below {dm_admissible_end:#x} \
+             before entering the kernel"
+        )
+    })
+}
+
+fn boot_validate_and_prepare<A: BootArch>(
+    kern_virt_base: VirBytes,
+    kern_phys_base: PhysBytes,
+    kern_size: u64,
+    kern_stack_top: VirBytes,
+) -> BootPageSupport<A> {
     // Per-assertion markers (boot-visibility diagnostics; same approach as
     // the arch_boot entry).
     macro_rules! vmark {
@@ -716,12 +772,11 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
         }};
     }
     vmark!("kernel: v0 enter\n");
-    // Use getter methods (preferred API).
     // `validate()` is called later in `kmain`; the assertions here are
     // defense-in-depth — they fail-fast before paging setup begins.
-    let kv = kernel_info.kern_virt_base.0;
-    let kp = kernel_info.kern_phys_base.0;
-    let ks = kernel_info.kern_size;
+    let kv = kern_virt_base.0;
+    let kp = kern_phys_base.0;
+    let ks = kern_size;
 
     // kern_size must be positive
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
@@ -740,41 +795,21 @@ fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageS
 
     // kern_stack_top must be 16-byte aligned (ABI requirement)
     assert!(
-        kernel_info.kern_stack_top.0.is_multiple_of(16),
+        kern_stack_top.0.is_multiple_of(16),
         "arch_boot: kern_stack_top must be 16-byte aligned"
     );
 
-    // Register boot-stage page table page allocator if not already registered.
-    // The caller (e.g., a test kernel) may have registered its own allocator
-    // with a safer region (e.g., a bump region past the kernel image).
-    //
-    // The fallback region must satisfy the DM-admissible bound
-    // `min(IDENTITY_MAP_END, VM_DIRECT_MAP_SIZE)` — the bootstrap tree (self
-    // root + bump pages) has to stay DM-covered (07-paging_init_design §6.1
-    // eligibility filter (2)), and `establish_boot_dm` fails fast otherwise.
-    // Enforcing the bound here turns a late validate panic into an early,
-    // clearer one.
+    // The boot-stage page-table allocator must have been registered by the
+    // caller before entering the kernel. Every production entry registers it
+    // (UEFI x86_64/aarch64, U-Boot, both direct-core `bootface` legs), and so
+    // does every test kernel. There used to be a fallback that picked the
+    // first DM-admissible conventional-memory range out of the memmap when
+    // this check failed; that range can overlap the kernel image, the loaded
+    // modules or the arena, so it could hand out live pages. A missing
+    // registration means the caller skipped a required step — fail closed.
     vmark!("kernel: v1 asserts ok\n");
-    if boot_alloc::boot_alloc_region().is_none() {
-        const FALLBACK_BUMP_LEN: u64 = 0x100_000;
-        let dm_admissible_end = core::cmp::min(
-            IDENTITY_MAP_END,
-            <A::DirectMap as minix_arch::DirectMapArch>::VM_DIRECT_MAP_SIZE,
-        );
-        let region = kernel_info.memmap.iter().find_map(|r| {
-            let start = r.base.0;
-            let end = core::cmp::min(start.checked_add(r.len as u64)?, dm_admissible_end);
-            (end >= start + FALLBACK_BUMP_LEN).then_some((start, start + FALLBACK_BUMP_LEN))
-        });
-        let (base, boot_alloc_end) = region.unwrap_or_else(|| {
-            panic!(
-                "arch_boot: no DM-admissible region for the boot allocator — \
-                 boot-shim must allocate the bump region below {dm_admissible_end:#x}"
-            )
-        });
-        boot_alloc::init_boot_pt_alloc(base, boot_alloc_end);
-    }
-    vmark!("kernel: v2 fallback region ok\n");
+    require_boot_region::<A>(boot_alloc::boot_alloc_region());
+    vmark!("kernel: v2 boot allocator registered\n");
     if !pt_alloc::is_registered() {
         pt_alloc::register(boot_alloc::boot_pt_alloc);
     }
@@ -821,7 +856,12 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     // Step 0: validate KernelInfo, register the allocator, and collect the
     // platform's page-size facts (no choice yet).
     boot_stage!("kernel: entering validate\n");
-    let support = boot_validate_and_prepare::<A>(kernel_info);
+    let support = boot_validate_and_prepare::<A>(
+        kernel_info.kern_virt_base,
+        kernel_info.kern_phys_base,
+        kernel_info.kern_size,
+        kernel_info.kern_stack_top,
+    );
     boot_stage!("kernel: step0 validate ok\n");
 
     // One policy for both consumers: the kernel image mapping and the Direct
@@ -2490,15 +2530,14 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     current_root_phys(),
                     crate::boot_alloc::boot_alloc_region(),
                 );
-                let regions =
-                    VmBootRegion::select_multi(kernel_info.memmap, &exclusions[..n_excl])
-                        .expect("init_proc_and_boot: VM bootstrap region selection failed")
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "init_proc_and_boot: no free memory for VM bootstrap region \
+                let regions = VmBootRegion::select_multi(kernel_info.memmap, &exclusions[..n_excl])
+                    .expect("init_proc_and_boot: VM bootstrap region selection failed")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "init_proc_and_boot: no free memory for VM bootstrap region \
                              (after excluding kernel, boot modules, root page and bump)"
-                            )
-                        });
+                        )
+                    });
                 let mut vm_alloc = VmBootAllocator::new(regions);
                 let mut paging = MockPaging::new_from_page(PhysBytes(0));
                 let access = MockDirectMap;
@@ -2552,15 +2591,14 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     current_root_phys(),
                     crate::boot_alloc::boot_alloc_region(),
                 );
-                let regions =
-                    VmBootRegion::select_multi(kernel_info.memmap, &exclusions[..n_excl])
-                        .expect("init_proc_and_boot: VM bootstrap region selection failed")
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "init_proc_and_boot: no free memory for VM bootstrap region \
+                let regions = VmBootRegion::select_multi(kernel_info.memmap, &exclusions[..n_excl])
+                    .expect("init_proc_and_boot: VM bootstrap region selection failed")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "init_proc_and_boot: no free memory for VM bootstrap region \
                              (after excluding kernel, boot modules, root page and bump)"
-                            )
-                        });
+                        )
+                    });
                 let mut vm_alloc = VmBootAllocator::new(regions);
 
                 let root_phys = current_root_phys().expect(
@@ -5103,6 +5141,26 @@ mod tests {
     use minix_arch::paging::mock::MockPaging;
     use minix_types::USER_STACK_TOP;
 
+    /// Negative control for D-6: an entry that skipped allocator registration
+    /// must stop instead of handing out guessed conventional-memory pages.
+    #[test]
+    #[should_panic(expected = "boot allocator not registered")]
+    fn missing_boot_allocator_registration_fails_closed() {
+        let _ = require_boot_region::<minix_arch::arch::boot_arch::MockBootArch>(None);
+    }
+
+    /// The registered side of the same contract: once a region is present it
+    /// is returned unchanged (the caller's coordinates are not re-derived).
+    #[test]
+    fn registered_boot_allocator_region_is_returned_unchanged() {
+        assert_eq!(
+            require_boot_region::<minix_arch::arch::boot_arch::MockBootArch>(Some((
+                0x20_0000, 0x30_0000
+            ))),
+            (0x20_0000, 0x30_0000)
+        );
+    }
+
     /// The first VM allocation runs before any deduction is published, so the
     /// exclusion list is the only protection for the root page and the boot
     /// bump region (bootstrap page tables live in the bump).
@@ -5532,10 +5590,7 @@ mod tests {
         store_kernel_info(stored);
         let again = crate::kernel_info().expect("re-store republished");
         assert_eq!(again.memmap.as_ptr(), stored.memmap.as_ptr());
-        assert_eq!(
-            again.boot_modules.as_ptr(),
-            stored.boot_modules.as_ptr()
-        );
+        assert_eq!(again.boot_modules.as_ptr(), stored.boot_modules.as_ptr());
         assert_eq!(
             again.platform_sources.as_ptr(),
             stored.platform_sources.as_ptr()

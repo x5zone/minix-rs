@@ -351,7 +351,10 @@ impl FreeRangeSet {
                 }
                 (true, true) => {
                     // Split: right half becomes a new range after i.
-                    let right = MemRange { base: hi, end: r.end };
+                    let right = MemRange {
+                        base: hi,
+                        end: r.end,
+                    };
                     assert!(
                         self.len < FREE_SET_CAP,
                         "vm_handoff: free-range set over capacity ({FREE_SET_CAP})"
@@ -988,6 +991,132 @@ mod tests {
         assert_disjoint(&c);
     }
 
+    /// D-5 lifecycle proof: the receiver's last read of the v1 arena is the
+    /// decode. The test serializes a real arena, decodes the map into
+    /// caller-owned stores, poisons the arena, and then runs the same
+    /// classification the VM handoff uses. The free list must still be the
+    /// decoded map (nothing re-reads the arena), and the arena's own frames —
+    /// which sit inside the conventional region — must be reissued as free,
+    /// because the decode was the last read.
+    #[test]
+    fn decoded_map_survives_arena_poison_and_reissues_the_arena_frames() {
+        use minix_boot::{
+            ARENA_CAP, InputObjectId, RuntimeFields, Serializer, WIRE_MEMMAP_CAP,
+            WIRE_RESERVED_CAP, decode_envelope, decode_memmap, decode_reserved_regions,
+        };
+        use minix_types::VirBytes;
+
+        const ARENA_PA: u64 = 0x40_0000; // 4 MiB, inside the conventional region
+        const KERNEL_PA: u64 = 0x20_0000;
+        const KERNEL_LEN: u64 = 0x10_0000;
+        const ROOT_PA: u64 = 0x80_0000;
+
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena, InputObjectId::UefiMemoryMap).unwrap();
+        let carrier = KernelInfo {
+            memmap: &[],
+            reserved_regions: &[],
+            memmap_sources: &[],
+            startup_objects: &[],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(KERNEL_PA),
+            kern_size: KERNEL_LEN,
+            user_sp: VirBytes(USER_STACK_TOP as u64),
+            kern_stack_top: VirBytes(0xFFFF_8000_0010_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0000_0000),
+            boot_modules: &[],
+            platform_sources: &[],
+            param_buf: &[],
+        };
+        s.write_envelope(&carrier).unwrap();
+        s.push_memmap(mem_region(0x10_0000, 0x80_0000)).unwrap(); // [1 MiB, 9 MiB)
+        s.finish_memmap();
+        s.write_reserved_regions(&[mem_region(0x100_0000, 0x1000)])
+            .unwrap();
+        s.patch_runtime_fields(RuntimeFields {
+            root_page: ROOT_PA,
+            bump_base: 0x90_0000,
+            bump_next: 0x90_0000,
+            bump_end: 0x92_0000,
+        });
+
+        let scalars = decode_envelope(s.as_bytes()).unwrap();
+        let mut free = [mem_region(0, 0); WIRE_MEMMAP_CAP];
+        let n_free = decode_memmap(s.as_bytes(), &scalars, &mut free).unwrap();
+        let mut reserved = [mem_region(0, 0); WIRE_RESERVED_CAP];
+        let n_reserved = decode_reserved_regions(s.as_bytes(), &scalars, &mut reserved).unwrap();
+        assert_eq!((n_free, n_reserved), (1, 1));
+
+        // The receiver's `KernelInfo` slices point into its own `.bss` stores;
+        // leaking the decoded arrays mirrors that ownership here.
+        let memmap: &'static [MemoryRegion] =
+            alloc::boxed::Box::leak(free[..n_free].to_vec().into_boxed_slice());
+        let reserved_regions: &'static [MemoryRegion] =
+            alloc::boxed::Box::leak(reserved[..n_reserved].to_vec().into_boxed_slice());
+        let info = KernelInfo {
+            memmap,
+            reserved_regions,
+            memmap_sources: &[],
+            startup_objects: &[],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(KERNEL_PA),
+            kern_size: KERNEL_LEN,
+            user_sp: VirBytes(USER_STACK_TOP as u64),
+            kern_stack_top: VirBytes(0xFFFF_8000_0010_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0000_0000),
+            boot_modules: &[],
+            platform_sources: &[],
+            param_buf: &[],
+        };
+
+        // Last read is done: poison the arena.
+        arena.fill(0xA5);
+
+        // VM-facing classification: kernel suffix + root deducted, bump
+        // outside the memmap. The arena frames are *not* deducted — that is
+        // exactly the D-5 lifecycle claim (decode was the last read).
+        let c = classify_raw(
+            info.memmap,
+            PhysBytes(ROOT_PA),
+            Some((0x90_0000, 0x92_0000)),
+            &[(KERNEL_PA, KERNEL_PA + KERNEL_LEN)],
+            &[],
+        );
+        assert_eq!(
+            sorted_free(&c),
+            vec![
+                (0x10_0000, 0x20_0000),
+                (0x30_0000, 0x80_0000),
+                (0x80_1000, 0x90_0000),
+            ]
+        );
+        assert!(
+            free_ranges(&c)
+                .iter()
+                .any(|&(base, end)| base <= ARENA_PA && ARENA_PA + 0x2000 <= end),
+            "the poisoned arena's frames must be reissued to VM"
+        );
+        assert!(
+            !free_ranges(&c)
+                .iter()
+                .any(|&(base, end)| base <= KERNEL_PA && KERNEL_PA + KERNEL_LEN <= end),
+            "the kernel image must stay deducted"
+        );
+        assert_eq!(
+            (info.memmap[0].base.0, info.memmap[0].len),
+            (0x10_0000, 0x80_0000),
+            "the decoded map must not alias the poisoned arena"
+        );
+        assert_eq!(
+            (
+                info.reserved_regions[0].base.0,
+                info.reserved_regions[0].len
+            ),
+            (0x100_0000, 0x1000)
+        );
+        assert_disjoint(&c);
+    }
+
     /// A region straddling the VM DM window end is clipped, not dropped.
     /// The root page at PA 0 cuts the first frame off the free list.
     #[test]
@@ -1060,7 +1189,10 @@ mod tests {
     fn set(regions: &[(u64, u64)]) -> FreeRangeSet {
         let owned: Vec<MemoryRegion> = regions
             .iter()
-            .map(|&(b, l)| MemoryRegion { base: PhysBytes(b), len: l as usize })
+            .map(|&(b, l)| MemoryRegion {
+                base: PhysBytes(b),
+                len: l as usize,
+            })
             .collect();
         FreeRangeSet::from_memmap(&owned)
     }
@@ -1074,8 +1206,7 @@ mod tests {
     fn reference_subtract(regions: &[(u64, u64)], cuts: &[(u64, u64)]) -> Vec<(u64, u64)> {
         let page = PAGE_SIZE;
         let lo_cut = |(b, l): (u64, u64)| (b & !(page - 1), (b + l).div_ceil(page) * page);
-        let mut pieces: Vec<(u64, u64)> =
-            regions.iter().map(|&(b, l)| (b, b + l)).collect();
+        let mut pieces: Vec<(u64, u64)> = regions.iter().map(|&(b, l)| (b, b + l)).collect();
         for &c in cuts {
             let (lo, hi) = lo_cut(c);
             let mut next = Vec::new();
@@ -1104,7 +1235,10 @@ mod tests {
         }
         let got = ranges_of(&s);
         let want = reference_subtract(regions, cuts);
-        assert_eq!(got, want, "set diverged from reference: regions={regions:?} cuts={cuts:?}");
+        assert_eq!(
+            got, want,
+            "set diverged from reference: regions={regions:?} cuts={cuts:?}"
+        );
     }
 
     #[test]
@@ -1164,13 +1298,13 @@ mod tests {
         assert_page_equal(
             &[(0x100000, 0x1000000), (0x2000000, 0x800000)],
             &[
-                (0x200000, 0x200000),   // kernel image
-                (0x100000, 0x1000),     // root page
-                (0x300000, 0x400000),   // bump
-                (0x180000, 0x123000),   // unaligned mid cut
-                (0x2500000, 0x40000),   // module over boundary
-                (0x2800000, 0x100000),  // full-removal cut
-                (0x2900000, 0x40000),   // already-removed region
+                (0x200000, 0x200000),  // kernel image
+                (0x100000, 0x1000),    // root page
+                (0x300000, 0x400000),  // bump
+                (0x180000, 0x123000),  // unaligned mid cut
+                (0x2500000, 0x40000),  // module over boundary
+                (0x2800000, 0x100000), // full-removal cut
+                (0x2900000, 0x40000),  // already-removed region
             ],
         );
         assert_page_equal(
@@ -1187,9 +1321,11 @@ mod tests {
         let mut s = set(&[]);
         // 128 disjoint inserts fill the cap; the 129th must panic.
         for i in 0..FREE_SET_CAP {
-            s.insert((i as u64 + 1) * PAGE_SIZE * 2, (i as u64 + 1) * PAGE_SIZE * 2 + PAGE_SIZE);
+            s.insert(
+                (i as u64 + 1) * PAGE_SIZE * 2,
+                (i as u64 + 1) * PAGE_SIZE * 2 + PAGE_SIZE,
+            );
         }
         s.insert(0, PAGE_SIZE);
     }
-
 }

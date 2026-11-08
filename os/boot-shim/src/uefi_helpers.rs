@@ -13,7 +13,7 @@ use crate::ebs_map;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use minix_arch::boot_dm_admissible_end;
-use minix_boot::{BootPrepareResult, BootShim, DTB, MemoryRegion, PlatformDescSource, RSDP};
+use minix_boot::{DTB, MemoryRegion, PlatformDescSource, RSDP};
 use minix_types::PhysBytes;
 use uefi::Guid;
 use uefi::boot::{self, AllocateType};
@@ -24,8 +24,7 @@ use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::build_kernel_info;
-use crate::loader::{self, FileLoader};
+use crate::loader::{self, FileBytes, FileLoader};
 
 /// Physical span of the loaded kernel image, recorded before any module page
 /// is allocated (D01-R7 D2-02).
@@ -101,11 +100,7 @@ fn assert_range_clear_of_kernel(label: &str, lo: u64, hi: u64, kern_lo: u64, ker
 /// page-rounded defensively. With page-aligned module starts and a
 /// page-aligned kernel start, rounding cannot detect an overlap that the
 /// byte length misses, so it is not a second detection dimension.
-fn assert_modules_clear_of_kernel(
-    modules: &[minix_boot::BootModule],
-    kern_lo: u64,
-    kern_hi: u64,
-) {
+fn assert_modules_clear_of_kernel(modules: &[minix_boot::BootModule], kern_lo: u64, kern_hi: u64) {
     for module in modules {
         let lo = module.start.0;
         let hi = lo.saturating_add(((module.len as u64) + 4095) & !4095);
@@ -122,9 +117,12 @@ use crate::ebs_pair::{self, PairError, RawOps};
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use core::ffi::c_void;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-use minix_boot::{
-    ARENA_CAP, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET, Serializer, decode_descriptors,
-};
+use minix_boot::{ARENA_CAP, Serializer, decode_descriptors};
+
+/// The UEFI sender's caller-owned semantic tables (R18 D-1). One boot, one
+/// writer; the wire image is encoded from this storage and the kernel entry
+/// borrows it through a `BootReport`.
+static UEFI_BOOT_STORAGE: crate::BootStorageCell = crate::BootStorageCell::new();
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
 ///
@@ -186,10 +184,11 @@ unsafe impl core::alloc::GlobalAlloc for UefiPoolAllocator {
 /// Scan the UEFI Configuration Table for platform descriptor sources
 /// (ACPI RSDP on x86-64, DTB on ARM64).
 ///
-/// Returns a `'static` slice of `PlatformDescSource` entries, ordered by
-/// boot-shim's preference. The kernel takes the first source that parses
-/// successfully. An empty slice means no source was found — the kernel
-/// falls back to `QemuVirtDesc` (dev) or panics (release).
+/// Returns the number of entries written into `out` (the caller's
+/// [`crate::BootStorage`] platform-slot array), ordered by boot-shim's
+/// preference. The kernel takes the first source that parses successfully.
+/// Zero means no source was found — the kernel falls back to `QemuVirtDesc`
+/// (dev) or panics (release).
 ///
 /// # Ordering (DTB + RSDP coexistence)
 ///
@@ -200,7 +199,7 @@ unsafe impl core::alloc::GlobalAlloc for UefiPoolAllocator {
 /// Must be called **before** `exit_boot_services()`, because the UEFI
 /// System Table (which holds the configuration table pointer) is only
 /// valid while boot services are available.
-pub fn find_platform_sources() -> &'static [PlatformDescSource] {
+pub fn find_platform_sources_into(out: &mut [PlatformDescSource]) -> usize {
     use core::cell::RefCell;
     let sources = RefCell::new(Vec::<PlatformDescSource>::new());
 
@@ -249,19 +248,27 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
         }
     });
 
-    // Leak the Vec so it has 'static lifetime — acceptable for boot-stage
-    // code that runs exactly once (same pattern as build_memmap).
-    let leaked: &'static [PlatformDescSource] = Box::leak(sources.into_inner().into_boxed_slice());
+    let sources = sources.into_inner();
+    assert!(
+        sources.len() <= out.len(),
+        "boot-shim: platform-source slot array has {} slots, firmware supplied {}",
+        out.len(),
+        sources.len()
+    );
+    out[..sources.len()].copy_from_slice(&sources);
     // Record the DTB address only: reading its header needs a snapshot that
     // already accepted the header pages, and no memory map has been read yet
     // (brief O-11). The preflight stage reads it once the first map is in
     // hand; a missing DTB leaves the stage idle and
     // `cross_validate_config_dtb` owns the absence diagnostic.
     #[cfg(target_arch = "aarch64")]
-    if let Some(source) = leaked.iter().find(|s| s.kind() == minix_boot::DTB) {
+    if let Some(source) = out[..sources.len()]
+        .iter()
+        .find(|s| s.kind() == minix_boot::DTB)
+    {
         crate::dtb_copy::note(source.phys_addr().0);
     }
-    leaked
+    sources.len()
 }
 
 /// Collect this image's `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions` and normalize
@@ -274,21 +281,18 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
 /// `LOADER_DATA` allocation, so it survives until the matching builder call.
 ///
 /// Must run before `ExitBootServices` (it opens a protocol).
-fn collect_param_buf() -> (&'static [u8], minix_boot::ParamStats) {
-    let landing: &'static mut [u8] =
-        Box::leak(alloc::vec![0u8; minix_boot::PARAM_BUF_CAP].into_boxed_slice());
+///
+/// Normalizes into the caller's landing buffer (`out`, a
+/// [`crate::BootStorage`] field) and returns the statistics plus the live
+/// prefix length via `out`'s committed length.
+fn collect_param_buf_into(out: &mut [u8; minix_boot::PARAM_BUF_CAP]) -> minix_boot::ParamStats {
     let input: Vec<u8> = boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
         boot::image_handle(),
     )
     .ok()
     .and_then(|image| image.load_options_as_bytes().map(|bytes| bytes.to_vec()))
     .unwrap_or_default();
-    let stats = minix_boot::normalize_param_buf(&input, None, landing);
-    let ptr = landing.as_ptr();
-    // SAFETY: `landing` is a leaked `'static` allocation; the slice covers the
-    // normalized prefix only.
-    let out = unsafe { core::slice::from_raw_parts(ptr, stats.bytes) };
-    (out, stats)
+    minix_boot::normalize_param_buf(&input, None, out)
 }
 
 /// UEFI implementation of `BootShim`.
@@ -862,13 +866,13 @@ fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[Mem
 #[cfg(target_arch = "aarch64")]
 fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<&'static [u8]> {
     let blob = file_loader.read(loader::DUMPDTB_PATH)?;
-    if minix_boot::fdt_layout::validate(0, &blob).is_err() {
+    if minix_boot::fdt_layout::validate(0, blob.as_slice()).is_err() {
         panic!("boot-shim: dumpdtb.dtb container invalid");
     }
-    if fdt::Fdt::new(&blob).is_err() {
+    if fdt::Fdt::new(blob.as_slice()).is_err() {
         panic!("boot-shim: dumpdtb.dtb 不可解析");
     }
-    Some(Box::leak(blob.into_boxed_slice()))
+    Some(Box::leak(blob.into_owned().into_boxed_slice()))
 }
 
 /// x86_64 / aarch64 UEFI production entry for the v1 handoff.
@@ -892,7 +896,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     #[cfg(target_arch = "x86_64")]
     let dumpdtb_blob: Option<&'static [u8]> = None;
     let elf_data = file_loader.read_required(loader::KERNEL_PATH);
-    let layout = loader::compute_kernel_layout(&elf_data).expect(
+    let layout = loader::compute_kernel_layout(elf_data.as_slice()).expect(
         "Failed to parse kernel ELF from ESP — check that the ESP contains \
          /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
          not mounted the FAT partition, or the build did not embed the \
@@ -916,7 +920,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     minix_kernel::boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     // SAFETY: the span is reserved above and identity-mapped; the source and
     // destination overlap gate runs inside.
-    unsafe { loader::load_segments_into_phys_memory(&elf_data) }.expect(
+    unsafe { loader::load_segments_into_phys_memory(elf_data.as_slice()) }.expect(
         "Failed to copy kernel ELF segments into their LMAs — the span was reserved but the copy range is malformed",
     );
     let kern = layout;
@@ -937,18 +941,26 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base.0,
         kern.kern_phys_base.0.saturating_add(kern.kern_size),
     );
-    let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
+    let storage = UEFI_BOOT_STORAGE.get();
+    let module_len = loader::load_boot_modules_into(
+        &file_loader,
+        alloc_module_pages,
+        storage.module_slots_mut(),
+    );
+    storage.set_modules_len(module_len);
     uefi::println!("boot-shim: 12 boot modules loaded");
     // Same second line as `prepare_boot` (D01-R7 D2-02): the allocator refuses
     // kernel-overlapping pages before copying; this verifies the returned
     // layout using the page-rounded spans the loader allocated.
     assert_modules_clear_of_kernel(
-        boot_modules,
+        storage.boot_modules(),
         kern.kern_phys_base.0,
         kern.kern_phys_base.0.saturating_add(kern.kern_size),
     );
-    let platform_sources = find_platform_sources();
-    let (param_buf, param_stats) = collect_param_buf();
+    let platform_len = find_platform_sources_into(storage.platform_slots_mut());
+    storage.set_platform_len(platform_len);
+    let param_stats = collect_param_buf_into(storage.param_buf_mut());
+    storage.set_param_len(param_stats.bytes);
     uefi::println!(
         "boot-shim: param_buf bytes={} rejected={} dropped={}",
         param_stats.bytes,
@@ -966,34 +978,26 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base.0,
         kern.kern_phys_base.0.saturating_add(kern.kern_size),
     );
-    // SAFETY: the arena is a fresh `ARENA_CAP` (nine-page) LOADER_DATA allocation below the
+    // SAFETY: the arena is a fresh `ARENA_CAP` (eight-page) LOADER_DATA allocation below the
     // identity bound; boot services own it until EBS and nothing else writes
     // those pages. The slice lives for the rest of this `!` function.
     let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa.0 as *mut u8, ARENA_CAP) };
-    let mut serializer = Serializer::new(arena, minix_boot::InputObjectId::UefiMemoryMap).expect("handoff arena too small");
-    // Scalars-only carrier: the real memmap arrives from the pairing loop, but
-    // the envelope's scalar fields are already final here.
-    let carrier = build_kernel_info(
-        &[],
-        &[],
-        kern.kern_virt_base,
-        kern.kern_phys_base,
-        kern.kern_size,
-        boot_modules,
-        platform_sources,
-        param_buf,
-    );
+    let mut serializer = Serializer::new(arena, minix_boot::InputObjectId::UefiMemoryMap)
+        .expect("handoff arena too small");
+    // Scalars are final here; the payload slices come from the storage, which
+    // owns them (no `'static` slice into the arena).
+    let report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
     serializer
-        .write_envelope(&carrier)
+        .write_envelope_report(&report)
         .expect("handoff envelope over capacity");
     serializer
-        .write_boot_modules(boot_modules)
+        .write_boot_modules(report.boot_modules)
         .expect("too many boot modules for the handoff arena");
     serializer
-        .write_platform_sources(platform_sources)
+        .write_platform_sources(report.platform_sources)
         .expect("too many platform sources for the handoff arena");
     serializer
-        .write_param_buf(param_buf)
+        .write_param_buf(report.param_buf)
         .expect("param_buf over capacity");
 
     let system_table = uefi::table::system_table_raw()
@@ -1035,6 +1039,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         // serializer writes only into the arena. On success the call has
         // performed ExitBootServices and no further boot-service call is made.
         match unsafe {
+            let (memmap_slots, reserved_slots) = storage.map_tables_mut();
             ebs_pair::pair_and_classify(
                 &ops,
                 boot_services_raw,
@@ -1042,6 +1047,8 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
                 buffer,
                 pa_limit(),
                 &mut serializer,
+                memmap_slots,
+                reserved_slots,
             )
         } {
             Ok(classification) => break classification,
@@ -1065,9 +1072,9 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // region, arena). The serializer still rejects an over-capacity write,
     // but that must not be the first time the count is noticed.
     assert!(
-        1 + boot_modules.len() + 3 <= minix_boot::WIRE_STARTUP_CAP,
+        1 + storage.boot_modules().len() + 3 <= minix_boot::WIRE_STARTUP_CAP,
         "boot-shim: startup-object list needs {} slots, partition holds {}",
-        1 + boot_modules.len() + 3,
+        1 + storage.boot_modules().len() + 3,
         minix_boot::WIRE_STARTUP_CAP
     );
     let mut startup = [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
@@ -1086,7 +1093,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         startup_n += 1;
     };
     push_startup(kern.kern_phys_base.0, kern.kern_size);
-    for module in boot_modules {
+    for module in storage.boot_modules() {
         push_startup(module.start.0, module.len as u64);
     }
     push_startup(root_page.0, PAGE_SIZE);
@@ -1096,46 +1103,23 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         .write_startup(&startup[..startup_n])
         .expect("boot-shim: startup-object partition over capacity");
 
-    // Build the real KernelInfo from the semantic partition. The arena stays
-    // mapped as identity memory until the first process root switch, which is
-    // why the receiver deep-copies it before then.
+    // The classifier wrote the live prefixes into the storage tables; commit
+    // the lengths the wire descriptors report. From here on the report is the
+    // single semantic view the sender uses — the arena carries no second copy.
     let descriptors = decode_descriptors(serializer.as_bytes())
         .expect("boot-shim: handoff descriptors invalid after classification");
     let memmap_len = (descriptors.memmap_byte_len / 16) as usize;
     let reserved_len = (descriptors.reserved_byte_len / 16) as usize;
-    // SAFETY: the semantic partitions live inside the arena, are 8-byte
-    // aligned (compile-time gate) and hold exactly `len` entries written by
-    // the classifier. The slices are not mutated after EBS.
-    let memmap: &'static [MemoryRegion] = unsafe {
-        core::slice::from_raw_parts(
-            (arena_pa.0 + SEMANTIC_MEMMAP_OFFSET as u64) as *const MemoryRegion,
-            memmap_len,
-        )
-    };
-    let reserved: &'static [MemoryRegion] = unsafe {
-        core::slice::from_raw_parts(
-            (arena_pa.0 + SEMANTIC_RESERVED_OFFSET as u64) as *const MemoryRegion,
-            reserved_len,
-        )
-    };
-    cross_validate_config_dtb(platform_sources, memmap);
+    storage.set_memmap_len(memmap_len);
+    storage.set_reserved_len(reserved_len);
+    let report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
+    cross_validate_config_dtb(report.platform_sources, report.memmap);
     // The classification must have marked every bootstrap allocation as
     // non-conventional; a containment here would hand live pages to the VM PMM.
-    assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
-    assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
-    assert_bootstrap_outside_memmap(memmap, arena_pa.0, ARENA_CAP as u64);
-    report_memmap_source(dumpdtb_blob, memmap);
-
-    let kernel_info = build_kernel_info(
-        memmap,
-        reserved,
-        kern.kern_virt_base,
-        kern.kern_phys_base,
-        kern.kern_size,
-        boot_modules,
-        platform_sources,
-        param_buf,
-    );
+    assert_bootstrap_outside_memmap(report.memmap, root_page.0, PAGE_SIZE);
+    assert_bootstrap_outside_memmap(report.memmap, bump_base, bump_end - bump_base);
+    assert_bootstrap_outside_memmap(report.memmap, arena_pa.0, ARENA_CAP as u64);
+    report_memmap_source(dumpdtb_blob, report.memmap);
 
     crate::raw_serial("boot-shim: [raw] arena=");
     raw_serial_hex(arena_pa.0);
@@ -1144,7 +1128,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     crate::raw_serial(" res=");
     raw_serial_number(classification.reserved as u64);
     crate::raw_serial("\r\nboot-shim: [raw] entering kernel image v1\r\n");
-    minix_kernel::enter_kernel_image_v1(arena_pa.0, &kernel_info, root_page)
+    minix_kernel::enter_kernel_image_v1(arena_pa.0, &report, root_page)
 }
 
 /// Exit UEFI boot services.
@@ -1168,14 +1152,15 @@ pub fn exit_boot_services() {
 pub struct UefiFileLoader;
 
 impl FileLoader for UefiFileLoader {
-    fn read(&self, path: &str) -> Option<Vec<u8>> {
+    fn read<'a>(&'a self, path: &str) -> Option<FileBytes<'a>> {
         let fs_proto = boot::get_image_file_system(boot::image_handle()).ok()?;
         let mut fs = FileSystem::new(fs_proto);
         // UEFI uses backslashes as path separators; convert from the
         // canonical forward-slash format used by `loader::KERNEL_PATH`.
         let uefi_path = path.replace('/', "\\");
         let cs = uefi::CString16::try_from(uefi_path.as_str()).ok()?;
-        fs.read(cs.as_ref()).ok()
+        // The firmware protocol returns a fresh buffer: this leg owns it.
+        fs.read(cs.as_ref()).ok().map(FileBytes::Owned)
     }
 }
 
@@ -1222,6 +1207,7 @@ mod tests {
     //! impls share the same coverage.
 
     use super::*;
+    use crate::build_kernel_info;
     use minix_boot::BootModule;
     use minix_types::VirBytes;
 
@@ -1248,8 +1234,8 @@ mod tests {
             PhysBytes(0x200000),
             0x100_000,
             &MODULES,
-            &[],                 // platform_sources (empty = no source)
-            &[],                 // param_buf (no source in this unit test)
+            &[], // platform_sources (empty = no source)
+            &[], // param_buf (no source in this unit test)
         );
 
         assert_eq!(info.reserved_regions.len(), 1);

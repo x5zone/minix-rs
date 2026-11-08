@@ -5,9 +5,9 @@
 //! envelope first, then the wire partition (memmap / reserved regions / boot
 //! modules / platform sources / param bytes) and the two independent record
 //! partitions (`write_sources` for the provenance records and `write_startup`
-//! for the startup-object records), with every memory-map entry dual-written
-//! into the semantic work partition (`MemoryRegion`, shim-side supply; the
-//! receiver ignores it).
+//! for the startup-object records). The wire is the only map representation
+//! in the arena (R18 D-2); the sender's semantic tables live in its own
+//! `BootStorage` and the receiver decodes the wire into its own `.bss`.
 //!
 //! The arena is a plain byte slice here on purpose: the boot legs construct it
 //! from their `AllocatePages` result (the only `unsafe` step, documented at
@@ -20,12 +20,11 @@
 //! patched in place after the root switch.
 
 use crate::handoff_v1::{
-    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1,
-    SEMANTIC_END, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET, WIRE_MEMMAP_CAP,
+    ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1, WIRE_MEMMAP_CAP,
     WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
     WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
     WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_END, WIRE_SOURCES_OFFSET,
-    WIRE_STARTUP_CAP, WIRE_STARTUP_END, WIRE_STARTUP_OFFSET, WireSourceRecord,
+    WIRE_STARTUP_CAP, WIRE_STARTUP_OFFSET, WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, KernelInfo, MemoryRegion};
 use crate::memmap_source::SourceRecord;
@@ -154,20 +153,55 @@ impl<'a> Serializer<'a> {
         })
     }
 
-    /// Write the protocol header and the kernel scalars. Runtime fields and
-    /// payload descriptors stay zero until written (valid intermediate states:
-    /// empty payloads are legal).
+    /// Write the protocol header and the kernel scalars from the sender's
+    /// borrowed report. Runtime fields and payload descriptors stay zero until
+    /// written (valid intermediate states: empty payloads are legal).
+    pub fn write_envelope_report(
+        &mut self,
+        report: &crate::boot_storage::BootReport<'_>,
+    ) -> Result<(), HandoffV1WriteError> {
+        self.write_envelope_scalars(
+            report.kern_virt_base.0,
+            report.kern_phys_base.0,
+            report.kern_size,
+            report.user_sp.0,
+            report.kern_stack_top.0,
+            report.syscall_entry.0,
+        )
+    }
+
+    /// Write the protocol header and the kernel scalars (receiver-side
+    /// `KernelInfo` form; direct-core legs still use it).
     pub fn write_envelope(&mut self, info: &KernelInfo) -> Result<(), HandoffV1WriteError> {
+        self.write_envelope_scalars(
+            info.kern_virt_base.0,
+            info.kern_phys_base.0,
+            info.kern_size,
+            info.user_sp.0,
+            info.kern_stack_top.0,
+            info.syscall_entry.0,
+        )
+    }
+
+    fn write_envelope_scalars(
+        &mut self,
+        kern_virt_base: u64,
+        kern_phys_base: u64,
+        kern_size: u64,
+        user_sp: u64,
+        kern_stack_top: u64,
+        syscall_entry: u64,
+    ) -> Result<(), HandoffV1WriteError> {
         put_u32(self.arena, offsets::MAGIC, BOOT_HANDOFF_V1_MAGIC);
         put_u32(self.arena, offsets::VERSION, BOOT_HANDOFF_V1_VERSION);
         put_u32(self.arena, offsets::SIZE, size_of::<BootHandoffV1>() as u32);
         put_u64(self.arena, offsets::ARENA_LEN, ARENA_CAP as u64);
-        put_u64(self.arena, offsets::KERN_VIRT_BASE, info.kern_virt_base.0);
-        put_u64(self.arena, offsets::KERN_PHYS_BASE, info.kern_phys_base.0);
-        put_u64(self.arena, offsets::KERN_SIZE, info.kern_size);
-        put_u64(self.arena, offsets::USER_SP, info.user_sp.0);
-        put_u64(self.arena, offsets::KERN_STACK_TOP, info.kern_stack_top.0);
-        put_u64(self.arena, offsets::SYSCALL_ENTRY, info.syscall_entry.0);
+        put_u64(self.arena, offsets::KERN_VIRT_BASE, kern_virt_base);
+        put_u64(self.arena, offsets::KERN_PHYS_BASE, kern_phys_base);
+        put_u64(self.arena, offsets::KERN_SIZE, kern_size);
+        put_u64(self.arena, offsets::USER_SP, user_sp);
+        put_u64(self.arena, offsets::KERN_STACK_TOP, kern_stack_top);
+        put_u64(self.arena, offsets::SYSCALL_ENTRY, syscall_entry);
         Ok(())
     }
 
@@ -177,8 +211,7 @@ impl<'a> Serializer<'a> {
         patch_runtime_fields_in(self.arena, fields);
     }
 
-    /// Serialize the reserved regions into the wire partition and dual-write
-    /// them into the semantic work partition (shim-side supply).
+    /// Serialize the reserved regions into the wire partition.
     pub fn write_reserved_regions(
         &mut self,
         regions: &[MemoryRegion],
@@ -188,7 +221,6 @@ impl<'a> Serializer<'a> {
         }
         for (i, region) in regions.iter().enumerate() {
             self.write_wire_region(WIRE_RESERVED_OFFSET + i * 16, region);
-            self.write_semantic_region(SEMANTIC_RESERVED_OFFSET + i * 16, region);
         }
         self.reserved_n = regions.len();
         put_u64(
@@ -350,16 +382,15 @@ impl<'a> Serializer<'a> {
         self.arena[off + 68..off + 72].copy_from_slice(&wire.raw_type.to_le_bytes());
     }
 
-    /// Dual-write one memory-map entry: `WireMemoryRegion` into the wire
-    /// partition and `MemoryRegion` into the semantic work partition. Called
-    /// from the EBS pairing loop once per classified descriptor.
+    /// Write one memory-map entry into the wire partition. Called from the
+    /// EBS pairing loop once per classified descriptor; the sender's semantic
+    /// copy lives in its own `BootStorage`, not in the arena.
     pub fn push_memmap(&mut self, region: MemoryRegion) -> Result<(), HandoffV1WriteError> {
         if self.wire_memmap_n >= WIRE_MEMMAP_CAP {
             return Err(HandoffV1WriteError::TooManyMemmap);
         }
         let off = self.wire_memmap_n * 16;
         self.write_wire_region(WIRE_MEMMAP_OFFSET + off, &region);
-        self.write_semantic_region(SEMANTIC_MEMMAP_OFFSET + off, &region);
         self.wire_memmap_n += 1;
         Ok(())
     }
@@ -373,15 +404,14 @@ impl<'a> Serializer<'a> {
         );
     }
 
-    /// Dual-write one classified reserved range (non-conventional map
-    /// entries). Same partition discipline as [`Self::push_memmap`].
+    /// Write one classified reserved range (non-conventional map entries) into
+    /// the wire partition. Same partition discipline as [`Self::push_memmap`].
     pub fn push_reserved(&mut self, region: MemoryRegion) -> Result<(), HandoffV1WriteError> {
         if self.reserved_n >= WIRE_RESERVED_CAP {
             return Err(HandoffV1WriteError::TooManyReservedRegions);
         }
         let off = self.reserved_n * 16;
         self.write_wire_region(WIRE_RESERVED_OFFSET + off, &region);
-        self.write_semantic_region(SEMANTIC_RESERVED_OFFSET + off, &region);
         self.reserved_n += 1;
         Ok(())
     }
@@ -403,9 +433,6 @@ impl<'a> Serializer<'a> {
         for byte in
             &mut self.arena[WIRE_MEMMAP_OFFSET..WIRE_RESERVED_OFFSET + WIRE_RESERVED_CAP * 16]
         {
-            *byte = 0;
-        }
-        for byte in &mut self.arena[SEMANTIC_MEMMAP_OFFSET..SEMANTIC_END] {
             *byte = 0;
         }
         for byte in &mut self.arena[WIRE_SOURCES_OFFSET..WIRE_SOURCES_END] {
@@ -431,30 +458,14 @@ impl<'a> Serializer<'a> {
         put_u64(self.arena, off, region.base.0);
         put_u64(self.arena, off + 8, region.len as u64);
     }
-
-    fn write_semantic_region(&mut self, off: usize, region: &MemoryRegion) {
-        // The semantic partition stores the internal type verbatim; its
-        // layout is pinned by the compile-time gate in `handoff_v1` (16 B on
-        // every supported 64-bit target, element-aligned offset).
-        let bytes = unsafe {
-            // SAFETY: `MemoryRegion` is `#[repr(C)]` with two 8-byte fields;
-            // the const gate above pins size/alignment, and the partition
-            // offset is element-aligned by the same gate.
-            core::slice::from_raw_parts(
-                region as *const MemoryRegion as *const u8,
-                size_of::<MemoryRegion>(),
-            )
-        };
-        self.arena[off..off + bytes.len()].copy_from_slice(bytes);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::handoff_v1::{
-        ENVELOPE_CAP, SEMANTIC_MEMMAP_CAP, SEMANTIC_MEMMAP_OFFSET, WIRE_MEMMAP_OFFSET,
-        WIRE_MODULES_OFFSET, WIRE_PARAM_OFFSET, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_OFFSET,
+        ENVELOPE_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULES_OFFSET, WIRE_PARAM_OFFSET,
+        WIRE_PLATFORM_OFFSET, WIRE_RESERVED_OFFSET,
     };
     use crate::kernel_info::MemoryRegion;
     use crate::platform::{DTB, PlatformDescSource, RSDP};
@@ -497,7 +508,11 @@ mod tests {
     fn envelope_carries_header_and_scalars() {
         let mut arena = [0u8; ARENA_CAP];
         {
-            let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+            let mut s = Serializer::new(
+                &mut arena,
+                crate::memmap_source::InputObjectId::DtbBootInput,
+            )
+            .unwrap();
             s.write_envelope(&base_info()).unwrap();
         }
         assert_eq!(get_u32(&arena, 0), BOOT_HANDOFF_V1_MAGIC);
@@ -520,7 +535,11 @@ mod tests {
     #[test]
     fn runtime_fields_are_patched_in_place() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.patch_runtime_fields(RuntimeFields {
             root_page: 0x1000,
@@ -539,7 +558,11 @@ mod tests {
     #[test]
     fn patch_runtime_fields_in_preserves_the_rest_of_the_arena() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_param_buf(b"ARCH=test\0").unwrap();
         let mut before = [0u8; ARENA_CAP];
@@ -570,9 +593,13 @@ mod tests {
     }
 
     #[test]
-    fn memmap_is_dual_written_wire_and_semantic() {
+    fn memmap_entries_are_written_once_into_the_wire_partition() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.push_memmap(region(0x10_0000, 0x1000)).unwrap();
         s.push_memmap(region(0x20_0000, 0x2000)).unwrap();
@@ -583,24 +610,31 @@ mod tests {
         assert_eq!(get_u64(b, WIRE_MEMMAP_OFFSET + 8), 0x1000);
         assert_eq!(get_u64(b, WIRE_MEMMAP_OFFSET + 16), 0x20_0000);
         assert_eq!(get_u64(b, WIRE_MEMMAP_OFFSET + 24), 0x2000);
-        // Semantic partition: same values in the internal type layout.
-        assert_eq!(get_u64(b, SEMANTIC_MEMMAP_OFFSET), 0x10_0000);
-        assert_eq!(get_u64(b, SEMANTIC_MEMMAP_OFFSET + 8), 0x1000);
         // Descriptor = count × 16.
         assert_eq!(get_u64(b, 104), 32);
+        // The deleted semantic partition's bytes are no longer part of the
+        // layout: the source partition starts right after the wire payload.
+        assert_eq!(
+            get_u64(b, 144),
+            0,
+            "sources descriptor stays zero until the producer writes records"
+        );
     }
 
     #[test]
-    fn reserved_regions_fill_both_partitions_and_descriptor() {
+    fn reserved_regions_fill_the_wire_partition_and_descriptor() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_reserved_regions(&[region(0x1DA0_0000, 0x3000)])
             .unwrap();
         let b = s.as_bytes();
         assert_eq!(get_u64(b, WIRE_RESERVED_OFFSET), 0x1DA0_0000);
         assert_eq!(get_u64(b, WIRE_RESERVED_OFFSET + 8), 0x3000);
-        assert_eq!(get_u64(b, SEMANTIC_RESERVED_OFFSET), 0x1DA0_0000);
         assert_eq!(get_u64(b, 112), 16);
     }
 
@@ -619,7 +653,11 @@ mod tests {
             },
         ];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_boot_modules(&MODULES).unwrap();
         let b = s.as_bytes();
@@ -643,7 +681,11 @@ mod tests {
             PlatformDescSource::new(RSDP, PhysBytes(0xE0000)),
         ];
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_envelope(&base_info()).unwrap();
         s.write_platform_sources(&SOURCES).unwrap();
         let b = s.as_bytes();
@@ -658,7 +700,11 @@ mod tests {
     fn param_buf_is_copied_verbatim() {
         let payload = b"ARCH=x86_64\0BOARD=qemu\0";
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         s.write_param_buf(payload).unwrap();
         assert_eq!(
             &s.as_bytes()[WIRE_PARAM_OFFSET..WIRE_PARAM_OFFSET + payload.len()],
@@ -670,7 +716,11 @@ mod tests {
     #[test]
     fn over_capacity_payloads_fail_fast() {
         let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput).unwrap();
+        let mut s = Serializer::new(
+            &mut arena,
+            crate::memmap_source::InputObjectId::DtbBootInput,
+        )
+        .unwrap();
         // param > 1024
         let big = [0u8; WIRE_PARAM_CAP + 1];
         assert_eq!(
@@ -711,15 +761,11 @@ mod tests {
     fn short_arena_is_rejected() {
         let mut arena = [0u8; ARENA_CAP - 1];
         assert!(matches!(
-            Serializer::new(&mut arena, crate::memmap_source::InputObjectId::DtbBootInput),
+            Serializer::new(
+                &mut arena,
+                crate::memmap_source::InputObjectId::DtbBootInput
+            ),
             Err(HandoffV1WriteError::ArenaTooSmall)
         ));
-    }
-
-    #[test]
-    fn semantic_partition_capacity_matches_wire_count() {
-        // Both partitions hold the same entry count; the compile-time gate in
-        // `handoff_v1` pins the byte capacities, this test pins the coupling.
-        assert_eq!(SEMANTIC_MEMMAP_CAP, WIRE_MEMMAP_CAP);
     }
 }
