@@ -123,3 +123,11 @@
 | C-08 | 结构性修复必须给渲染层读数（`pandoc` 的 `<p>`/`<li>` 计数），不以源文件行数作证据 | D01 R13 READER-R13-F01/F02/F03（B-29） | `prompt/review-rules/fix-guard.md` 的"修后留痕" | 候选，待 L7 |
 | C-09 | "文档指控源码注释"类句子必须当场重跑 grep 并记入台账；Doc Code Sync 增"转述性指控复验"一项 | D01 R13 FACT-R13-01 / DESIGN-R13-02（B-30） | `prompt/review-rules/review-doc-checklist.md` §4 | 候选，待 L7 |
 | C-10 | 面板与修复批次必须冻结基线并分离：面板期间不改文档，结束后统一分诊；每批修复后跑独立 RBn 回读 | D01 R13（合同第一条/第二条；本轮 d2+reader 各自报出同一拆段问题即为证据） | `prompt/review-rules/review-panel.md`、`review-process.md` | **已生效**（R13 合同），待观察两轮后正式晋升 |
+
+## 四、候选规则（L6.5 登记，2026-11-08 R14）
+
+| 编号 | 候选 | 案例支撑 | 目标文件 | 现状 |
+|---|---|---|---|---|
+| C-11 | 每条 ① 必须写"旧串 → 新串"；复验时全篇 grep 旧串，命中数必须为 0。替代"复验=五门绿"与人工 fix-scope 计数 | D01 R13 FACT-R13-13 被 READER-C-08 复发；R14 FACT-P2-01 留相反口号（B-39） | `prompt/review-rules/fix-guard.md`"修后留痕"；`tools/eval-trace-check.py` 增旧串检查 | 候选，待 L7 |
+| C-12 | `metrics.md` 由台账自动生成（发现数、五类处置、转出档期），`loop.md §6` 只引用生成结果；轨迹门比对三者同一性 | R14 同时存在 90/102/109 三个总数，metrics 停在 R0（B-40） | `tools/eval-trace-check.py`、`review-evals.md` 指标节 | 候选，待 L7 |
+| C-13 | RBn 产出必须先入账并写进下一轮冻结说明，R(n+1) 才允许派发面板；并发派发前先数"存活子 agent + 主线程 + 计划派发数" | R14 RB13 与面板并发，同一缺陷两行；R14 首轮 11 并发被 provider 拒绝（B-37） | `prompt/review-rules/review-panel.md` L1 时序 | 候选，待 L7 |
