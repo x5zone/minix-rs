@@ -580,8 +580,9 @@ pub fn build_vm_handoff(
 
     // Handoff v6 identity windows: retired (PD-22 step 2 final). The
     // producer returns an empty list, VM rejects a non-empty field, and MMIO
-    // consumers use the kernel device window; the field is kept only for the
-    // v6/v7 wire layout.
+    // consumers use the kernel device window. The field remains part of the
+    // current v8 wire layout (always empty; removing it would change the
+    // struct size again); v6/v7 are rejected by the exact-version check.
     let (kern_ident, kern_ident_count) = build_identity_windows();
 
     // Production reaches here after kmain Phase B.5 initialized the

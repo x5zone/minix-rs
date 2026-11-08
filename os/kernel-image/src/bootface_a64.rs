@@ -102,7 +102,7 @@ const PT_BUMP_PAGES: usize = 256;
 // `in_memmap*`/`table_magic_ok`/`fdt_table_pa`) are shared by both self-boot
 // faces and live in `bootface_common`.
 use crate::bootface_common::{
-    NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap, in_memmap_range, table_magic_ok,
+    NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap_range, table_magic_ok,
 };
 
 // ── bump pool (aarch64's own cursor; opensbi_helpers' pool base is riscv DRAM) ──
@@ -221,7 +221,8 @@ pub extern "C" fn bootface_a64() -> ! {
     // 2. BootFileTable: the DTB /chosen channel; pass the DRAM bound gate and
     //    then the magic gate before dereferencing (the same discipline as the
     //    riscv half).
-    let table_pa = fdt_table_pa(&fdt).filter(|pa| in_memmap(memmap, *pa) && table_magic_ok(*pa));
+    let table_pa =
+        fdt_table_pa(&fdt).filter(|pa| in_memmap_range(memmap, *pa, 8) && table_magic_ok(*pa));
     let Some(table_pa) = table_pa else {
         say("### minix-rs kernel image: no BootFileTable (chosen) — halting\n");
         crate::halt();

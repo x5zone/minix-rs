@@ -63,9 +63,9 @@ extern crate alloc;
 // landings, arena) do NOT go through this — they use the physical bump
 // pool in `opensbi_helpers`.
 
-// 8 MiB: the kernel ELF (1.2 MB) + 12 module ELFs (~2.5 MB) are each
+// 16 MiB: the kernel ELF (1.2 MB) + 12 module ELFs (~2.5 MB) are each
 // `read` into a `Vec` and the bump allocator never reclaims — the reads
-// accumulate across the `prepare_boot` lifetime. 8 MiB covers the total
+// accumulate across the `prepare_boot` lifetime. 16 MiB covers the total
 // with headroom; the image .bss grows accordingly (NOBITS, no file cost).
 const SHIM_HEAP_LEN: usize = 16 * 1024 * 1024;
 

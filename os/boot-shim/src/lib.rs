@@ -131,6 +131,22 @@ pub fn build_kernel_info(
 // implement this trait and reuse the same shared loader functions.
 pub mod loader;
 
+#[cfg(test)]
+pub(crate) mod test_serial {
+    //! Process-wide lock for tests that touch the one-shot DTB preflight
+    //! globals (`dtb_copy`). Cargo runs one binary's tests on multiple
+    //! threads by default; without this, `ResetOnDrop` in one test races the
+    //! preflight state of another.
+
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn lock() -> MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 // ── Firmware-specific modules ──
 // Each module provides a struct that implements BootShim.
 

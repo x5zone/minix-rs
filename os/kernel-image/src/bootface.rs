@@ -85,7 +85,7 @@ const _: () = assert!(NR_BOOT_MODULES == 12);
 // `in_memmap*`/`table_magic_ok`/`fdt_table_pa`) are shared by both self-boot
 // faces and live in `bootface_common`.
 use crate::bootface_common::{
-    NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap, in_memmap_range, table_magic_ok,
+    NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap_range, table_magic_ok,
 };
 
 // ── Layout contract constants (same source as riscv64.ld; check-layout.sh
@@ -229,7 +229,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     let table_pa = [Some(table_pa_a2), chosen_pa]
         .into_iter()
         .flatten()
-        .find(|pa| in_memmap(memmap, *pa) && table_magic_ok(*pa));
+        .find(|pa| in_memmap_range(memmap, *pa, 8) && table_magic_ok(*pa));
     let Some(table_pa) = table_pa else {
         say(
             "### minix-rs kernel image: no BootFileTable (a2/chosen) — module channel not wired, halting\n",

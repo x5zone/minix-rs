@@ -87,11 +87,12 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 ///   With the x86 independent-image cut, at v7 the kernel executed from its
 ///   high-half image, so `kern_ident` carried only the architecture MMIO
 ///   identity ranges (the link-in low windows had retired).
-/// - 8: `VM_BOOT_HANDOFF_MAX_DEDUCTED` 32 → 47 and the first-allocation
-///   exclusion list `vm_boot_exclusions`; the struct-size change
+/// - 8: `VM_BOOT_HANDOFF_MAX_DEDUCTED` 32 → 47; the struct-size change
 ///   deliberately breaks the v7 layout. From v8 on `kern_ident` is always
 ///   empty: the producer retired identity windows (PD-22 step 2 final), and
-///   VM rejects a non-empty field (check-and-reject).
+///   VM rejects a non-empty field (check-and-reject). (The kernel-side
+///   `vm_boot_exclusions` list is internal to first-allocation protection;
+///   it is not a handoff field.)
 pub const VM_BOOT_HANDOFF_VERSION: u32 = 8;
 
 /// Maximum kernel identity-window entries the handoff page carries
@@ -354,12 +355,10 @@ pub struct VmBootHandoff {
     pub modules: [HandoffModule; VM_BOOT_HANDOFF_MAX_MODULES],
     /// Valid entries in `kern_ident`.
     pub kern_ident_count: u32,
-    /// Kernel runtime identity windows (version 6): occupied
-    /// physical regions the running kernel image and its tables live
-    /// in (UEFI link-in execution model — see the version history
-    /// above). `map_kernel` maps each region identity (VA = PA)
-    /// supervisor-only into every process page table. Empty on
-    /// platforms without link-in execution.
+    /// Kernel runtime identity windows (version 6). Always empty since
+    /// PD-22 step 2 final retired the identity replay; the field remains in
+    /// the v8 wire layout for size stability, and VM refuses a non-empty
+    /// value (check-and-reject).
     pub kern_ident: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT],
     /// C: `kinfo.boot_procs[NR_BOOT_PROCS]` — the full boot image table
     /// (kernel tasks with negative proc_nr first, then user-space servers).

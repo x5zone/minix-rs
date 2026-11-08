@@ -442,6 +442,7 @@ mod tests {
 
     #[test]
     fn status_constants_use_the_uefi_error_bit_encoding() {
+        let _serial = crate::test_serial::lock();
         // EFI_STATUS is `error_bit | code`; the low-byte-only values (2/5)
         // would never match real firmware statuses.
         assert_eq!(EFI_SUCCESS, 0);
@@ -454,6 +455,7 @@ mod tests {
 
     #[test]
     fn success_on_first_attempt_classifies_and_exits() {
+        let _serial = crate::test_serial::lock();
         let mut fw = MockFw::new(
             &[
                 (CONV, 0x10_0000, 2),
@@ -482,6 +484,7 @@ mod tests {
     /// boundary.
     #[test]
     fn source_records_cover_the_classified_map_per_descriptor() {
+        let _serial = crate::test_serial::lock();
         use minix_boot::{
             MemoryRegion, SourceKind, SourceOrigin, SourceRange, SourceRecord, WIRE_SOURCES_CAP,
             audit_source_coverage, decode_envelope, decode_memmap, decode_reserved_regions,
@@ -566,6 +569,7 @@ mod tests {
     /// not the MapKey.
     #[test]
     fn excluded_descriptors_keep_their_provenance_and_snapshot_id_is_not_the_map_key() {
+        let _serial = crate::test_serial::lock();
         use minix_boot::{
             MemoryRegion, SourceKind, SourceOrigin, SourceRange, SourceRecord, WIRE_SOURCES_CAP,
             audit_source_coverage, decode_envelope, decode_memmap, decode_sources,
@@ -640,6 +644,7 @@ mod tests {
     /// stale ones from the rejected attempt.
     #[test]
     fn source_partition_resets_between_ebs_attempts() {
+        let _serial = crate::test_serial::lock();
         use minix_boot::{
             SourceKind, SourceOrigin, SourceRange, SourceRecord, WIRE_SOURCES_CAP, decode_envelope,
             decode_sources,
@@ -697,6 +702,7 @@ mod tests {
 
     #[test]
     fn buffer_too_small_before_ebs_asks_caller_to_grow() {
+        let _serial = crate::test_serial::lock();
         let mut fw = MockFw::new(&[(CONV, 0x10_0000, 1)], &[]);
         fw.get_need[0] = 4096;
         assert_eq!(run(&mut fw), Err(PairError::NeedBiggerBuffer(4096)));
@@ -705,6 +711,7 @@ mod tests {
 
     #[test]
     fn invalid_parameter_retries_once_and_uses_the_new_map() {
+        let _serial = crate::test_serial::lock();
         // First map: 2 conventional; second map: 1 conventional above a
         // loader-data hole (so the hole sits below the RAM top and becomes a
         // reserved entry).
@@ -729,6 +736,7 @@ mod tests {
 
     #[test]
     fn two_invalid_parameters_exhaust_the_retry_budget() {
+        let _serial = crate::test_serial::lock();
         let mut fw = MockFw::new(&[(CONV, 0x10_0000, 1)], &[(CONV, 0x10_0000, 1)]);
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_INVALID_PARAMETER];
         assert_eq!(run(&mut fw), Err(PairError::RetryExhausted));
@@ -738,6 +746,7 @@ mod tests {
 
     #[test]
     fn other_ebs_status_fails_immediately() {
+        let _serial = crate::test_serial::lock();
         let mut fw = MockFw::new(&[(CONV, 0x10_0000, 1)], &[]);
         fw.ebs_status = [3, 0];
         assert_eq!(run(&mut fw), Err(PairError::ExitStatus(3)));
@@ -747,6 +756,7 @@ mod tests {
 
     #[test]
     fn too_small_on_retry_is_fail_closed() {
+        let _serial = crate::test_serial::lock();
         let mut fw = MockFw::new(&[(CONV, 0x10_0000, 1)], &[]);
         fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS];
         fw.get_need[1] = 8192;
@@ -756,6 +766,7 @@ mod tests {
 
     #[test]
     fn classification_error_prevents_ebs() {
+        let _serial = crate::test_serial::lock();
         let mut fw = MockFw::new(&[(CONV, u64::MAX - 0x1000, 2)], &[]);
         assert!(matches!(run(&mut fw), Err(PairError::Map(_))));
         assert_eq!(fw.ebs_calls, 0);
@@ -763,6 +774,7 @@ mod tests {
 
     #[test]
     fn retry_resets_stale_partition_entries() {
+        let _serial = crate::test_serial::lock();
         // First map fills 3 conventional; the retry's map has 1 conventional.
         // The descriptor after the retry must reflect the second map only.
         let mut fw = MockFw::new(
@@ -800,6 +812,7 @@ mod tests {
     /// aarch64 `prepare_and_enter_kernel_image` relies on.
     #[test]
     fn producer_sequence_survives_the_pairing_loop() {
+        let _serial = crate::test_serial::lock();
         use minix_boot::{
             BootModule, DTB, KernelInfo, PlatformDescSource, RuntimeFields, decode_descriptors,
             decode_envelope, patch_runtime_fields_in,
@@ -882,6 +895,7 @@ mod tests {
     /// the source descriptor, or the receiver silently drops the DTB records.
     #[test]
     fn dtb_records_extend_the_source_descriptor_after_the_uefi_commit() {
+        let _serial = crate::test_serial::lock();
         use minix_boot::{
             InputObjectId, SourceKind, SourceOrigin, SourceRange, SourceRecord,
             WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, decode_envelope, decode_sources,
@@ -946,7 +960,7 @@ mod tests {
     fn dtb_preflight_reads_one_map_before_the_paired_final_map() {
         use crate::ebs_map::ty;
 
-        let _reset = crate::dtb_copy::ResetOnDrop;
+        let _reset = crate::dtb_copy::ResetOnDrop::new();
         let blob = crate::dtb_copy::test_blob::Blob::new(0x100);
         let pa = blob.pa();
         crate::dtb_copy::note(pa);
@@ -1002,7 +1016,7 @@ mod tests {
     fn preflight_buffer_too_small_stops_before_the_header_read() {
         use crate::ebs_map::ty;
 
-        let _reset = crate::dtb_copy::ResetOnDrop;
+        let _reset = crate::dtb_copy::ResetOnDrop::new();
         let blob = crate::dtb_copy::test_blob::Blob::new(0x100);
         let pa = blob.pa();
         crate::dtb_copy::note(pa);
@@ -1033,7 +1047,7 @@ mod tests {
             decode_sources,
         };
 
-        let _reset = crate::dtb_copy::ResetOnDrop;
+        let _reset = crate::dtb_copy::ResetOnDrop::new();
         let blob = crate::dtb_copy::test_blob::Blob::new(0x100);
         let pa = blob.pa();
         crate::dtb_copy::note(pa);

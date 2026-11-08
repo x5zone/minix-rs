@@ -56,8 +56,9 @@ fn assert_range_clear_of_kernel(label: &str, lo: u64, hi: u64, kern_lo: u64, ker
 }
 
 /// Post-load check over the module layout (D01-R7 D2-02). Spans are
-/// page-rounded: the loader zero-fills the allocation tail up to
-/// `num_pages * 4096`, which a byte-length check would miss.
+/// page-rounded defensively. With page-aligned module starts and a
+/// page-aligned kernel start, rounding cannot detect an overlap that the
+/// byte length misses, so it is not a second detection dimension.
 fn assert_modules_clear_of_kernel(
     modules: &[minix_boot::BootModule],
     kern_lo: u64,
@@ -1080,7 +1081,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     uefi::println!("boot-shim: 12 boot modules loaded");
     // Same second line as `prepare_boot` (D01-R7 D2-02): the allocator refuses
     // kernel-overlapping pages before copying; this verifies the returned
-    // layout with page-rounded spans.
+    // layout using the page-rounded spans the loader allocated.
     assert_modules_clear_of_kernel(
         boot_modules,
         kern.kern_phys_base.0,

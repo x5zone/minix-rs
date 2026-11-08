@@ -54,10 +54,11 @@ fn main() -> Status {
     // D72VM moved that mapping to VM (`init_page_table`), so the per-bind
     // draw is gone; the pool's remaining pressure is boot itself and the
     // 4 KiB-granularity DM coverage. 1024 = boot needs (~100) + that
-    // coverage headroom + safety. The runway is not free: vm_handoff deducts
-    // the WHOLE region from the VM free list whether used or not
-    // (vm_handoff.rs module doc), costing every boot 4 MiB of VM-selectable
-    // memory.
+    // coverage headroom + safety. On this UEFI leg the bump pages are
+    // LOADER_DATA: the classifier keeps them out of the conventional list, so
+    // VM's free list never contains them and the 4 MiB is not "taken from
+    // VM". The whole-region deduction in vm_handoff matters on the self-boot
+    // legs, where the pool is carved from conventional RAM.
     // The shim builds the bootstrap root itself, serializes the v1 handoff
     // arena (address space, seven payload partitions, pairing loop) and
     // absolutely jumps into the standalone high-half `kernel.elf` `_start`. aarch64

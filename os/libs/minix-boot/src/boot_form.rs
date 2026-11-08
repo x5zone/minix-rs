@@ -55,9 +55,10 @@ pub enum BootForm {
     ///     entry, loaded via `-kernel`).
     Aarch64QemuDirectCore,
     /// (e) riscv64 AP early-entry stub: secondary harts enter
-    ///     `ap_early_entry` and park until a kernel-registered tail is
-    ///     installed. This is a secondary-hart path, not a primary boot form;
-    ///     it stays in the inventory for the family count.
+    ///     `ap_early_entry`; with no registered tail they park in `wfi`
+    ///     forever. A tail must be registered before the first SBI
+    ///     `hart_start`. This is a secondary-hart path, not a primary boot
+    ///     form; it stays in the inventory for the family count.
     RiscvEarlyHartMailbox,
 }
 

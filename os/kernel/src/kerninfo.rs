@@ -95,10 +95,10 @@ static KERNINFO_PAGE: SyncUnsafeCell<KerninfoPage> = SyncUnsafeCell::new(Kerninf
 
 /// Physical frame of [`KERNINFO_PAGE`], cached by [`map_and_publish`].
 ///
-/// `0` = not yet established (pre-`init_kerninfo`). Consumers that must
-/// re-map the page into a *foreign* root (VMCTL SetAddrSpace) read this
-/// instead of re-translating the static VA through the caller's CR3 — the
-/// frame never moves, so one boot-time store suffices.
+/// `0` = not yet established (pre-`init_kerninfo`). The only reader is
+/// `vm_handoff`'s `VmBootHandoff` builder; VM maps the frame at
+/// `KERNINFO_USER_VA` in every new root (`init_page_table`). The kernel-side
+/// VMCTL SetAddrSpace path no longer consumes it.
 static KERNINFO_PAGE_PHYS: AtomicU64 = AtomicU64::new(0);
 
 /// Fill the page content from boot information.

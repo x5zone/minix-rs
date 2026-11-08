@@ -248,21 +248,20 @@ pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), mini
     if let Some(_) = first_overlapping_pair(&segments) {
         return Err(minix_elf::ElfError::InvalidSegment);
     }
+    // D01-R9: the ELF bytes live in one heap allocation; under the boot
+    // identity map the pointer value is physical. Any segment's destination
+    // span (including its BSS zero-fill) must stay clear of *every* segment's
+    // file bytes, not just its own: a cross-segment overlap is the same UB
+    // and silently corrupts the source mid-load.
+    let src_base = elf_data.as_ptr() as u64;
+    if let Some((src_idx, dst_idx)) = first_source_destination_overlap(src_base, &segments) {
+        panic!(
+            "boot-shim: kernel ELF segment {src_idx} source overlaps segment {dst_idx} destination LMA"
+        );
+    }
     for seg in &segments {
         let dest = seg.paddr as *mut u8;
         let src = &elf_data[seg.offset as usize..(seg.offset + seg.filesz) as usize];
-        // D01-R8: the ELF bytes live in a heap allocation; under the boot
-        // identity map the pointer value is physical. If the source buffer
-        // itself sits inside the destination span, the copy is UB and the
-        // source would be destroyed mid-copy. Refuse that layout explicitly.
-        let dest_lo = seg.paddr;
-        let dest_hi = seg.paddr.saturating_add(seg.memsz);
-        let src_lo = src.as_ptr() as u64;
-        let src_hi = src_lo.saturating_add(seg.filesz);
-        assert!(
-            src_hi <= dest_lo || src_lo >= dest_hi,
-            "boot-shim: kernel ELF segment source [0x{src_lo:x}, 0x{src_hi:x}) overlaps its destination LMA [0x{dest_lo:x}, 0x{dest_hi:x})"
-        );
         unsafe {
             dest.copy_from_nonoverlapping(src.as_ptr(), seg.filesz as usize);
             if seg.memsz > seg.filesz {
@@ -273,6 +272,27 @@ pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), mini
         }
     }
     Ok(())
+}
+
+/// Pure helper: detect the first (source segment, destination segment) pair
+/// whose ranges overlap: source = `elf_base + offset..+ filesz`, destination
+/// = `paddr..+ memsz` (the copy plus the BSS zero-fill).
+fn first_source_destination_overlap(
+    elf_base: u64,
+    segments: &[minix_elf::LoadSegment],
+) -> Option<(usize, usize)> {
+    for (dst_idx, dst) in segments.iter().enumerate() {
+        let d_lo = dst.paddr;
+        let d_hi = dst.paddr.saturating_add(dst.memsz);
+        for (src_idx, src) in segments.iter().enumerate() {
+            let s_lo = elf_base.saturating_add(src.offset);
+            let s_hi = s_lo.saturating_add(src.filesz);
+            if s_lo < d_hi && d_lo < s_hi {
+                return Some((src_idx, dst_idx));
+            }
+        }
+    }
+    None
 }
 
 /// Pure helper: detect the first pair of PT_LOAD segments whose physical
@@ -754,6 +774,25 @@ mod tests {
         // not overlapping. Half-open intervals [a, b) and [b, c) don't share.
         let segs = [phdr(0x1000, 0x1000), phdr(0x2000, 0x1000)];
         assert_eq!(first_overlapping_pair(&segs), None);
+    }
+
+    #[test]
+    fn test_first_source_destination_overlap_detects_cross_segment() {
+        // ELF buffer at 0x2ff000. Segment 0 copies to 0x2ff800..0x300100
+        // (including its BSS tail); segment 1's file bytes live at
+        // 0x300000..0x300010 — inside segment 0's destination span, but not
+        // inside segment 1's own. The check must compare every source with
+        // every destination.
+        let mut seg0 = phdr(0x2ff800, 0x900);
+        seg0.offset = 0;
+        seg0.filesz = 0x100;
+        let mut seg1 = phdr(0x400000, 0x10);
+        seg1.offset = 0x1000;
+        seg1.filesz = 0x10;
+        assert_eq!(
+            first_source_destination_overlap(0x2ff000, &[seg0, seg1]),
+            Some((1, 0))
+        );
     }
 
     #[test]

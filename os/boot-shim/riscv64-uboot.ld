@@ -24,8 +24,9 @@
  *                     DTB staging                0x8c000000
  *                     (the MNXBOOT1 table is built by the shim in .bss —
  *                      no table file is staged)
- *   - this image:     0x84500000 (+ ~64 KiB text/rodata/data/bss + 64 KiB
- *                     stack) — disjoint from every region above.
+ *   - this image:     0x84500000 (+ ~64 KiB text/rodata/data + 16 MiB
+ *                     SHIM_HEAP/lbss + 64 KiB stack) — disjoint from every
+ *                     region above.
  *
  * The ELF file itself is staged by `fatload` at U-Boot's default
  * `loadaddr` (0x80200000) — the file bytes are consumed by `bootelf -p`
@@ -61,7 +62,7 @@ SECTIONS
     .bss (NOLOAD) : {
         __bss_start = .;
         *(.bss .bss.*)
-        /* .lbss = rustc large BSS split (SHIM_HEAP 8 MiB lands here — same
+        /* .lbss = rustc large BSS split (SHIM_HEAP 16 MiB lands here — same
          * family as kernel-image's .lbss note in riscv64.ld). Missing this
          * match puts the heap outside __bss_start..__bss_end → the entry
          * bss clear misses it → the bump allocator hands out garbage. */

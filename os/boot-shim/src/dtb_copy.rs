@@ -254,7 +254,18 @@ pub(crate) fn reset() {
 
 /// Test-only guard: cleans the stage even when an assertion panics.
 #[cfg(test)]
-pub(crate) struct ResetOnDrop;
+pub(crate) struct ResetOnDrop {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl ResetOnDrop {
+    pub(crate) fn new() -> Self {
+        Self {
+            _serial: crate::test_serial::lock(),
+        }
+    }
+}
 
 #[cfg(test)]
 impl Drop for ResetOnDrop {
@@ -407,7 +418,7 @@ mod tests {
 
     #[test]
     fn preflight_authorizes_the_header_then_the_final_map_copies_once() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         let blob = Blob::new(0x100);
         blob.fill(HEADER_LEN, b'A');
         let pa = blob.pa();
@@ -438,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_final_map_type_change_stops_before_the_body_copy() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         let blob = Blob::new(0x1100);
         let pa = blob.pa();
         note(pa);
@@ -465,7 +476,7 @@ mod tests {
 
     #[test]
     fn the_final_map_may_segment_the_same_range_differently() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         let blob = Blob::new(0x1100);
         blob.fill(HEADER_LEN, b'S');
         let pa = blob.pa();
@@ -481,7 +492,7 @@ mod tests {
 
     #[test]
     fn the_header_is_read_once_and_the_body_once() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         let blob = Blob::new(0x100);
         blob.fill(HEADER_LEN, b'A');
         let pa = blob.pa();
@@ -541,7 +552,7 @@ mod tests {
 
     #[test]
     fn the_final_map_phase_allocates_nothing() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         let blob = Blob::new(0x100);
         let pa = blob.pa();
         note(pa);
@@ -556,7 +567,7 @@ mod tests {
 
     #[test]
     fn the_copy_is_reused_when_the_final_map_is_read_again() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         let blob = Blob::new(0x100);
         let pa = blob.pa();
         note(pa);
@@ -575,7 +586,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "header preflight")]
     fn copy_without_preflight_is_fail_closed() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         let blob = Blob::new(0x100);
         let pa = blob.pa();
         note(pa);
@@ -584,7 +595,7 @@ mod tests {
 
     #[test]
     fn an_absent_dtb_needs_no_copy() {
-        let _reset = ResetOnDrop;
+        let _reset = ResetOnDrop::new();
         assert!(!awaiting_preflight());
         assert!(authorize_and_copy(&[]).unwrap().is_none());
     }

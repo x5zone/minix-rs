@@ -5,9 +5,10 @@
 # 输入通道都能在固件递入下工作——
 #   B1 DTB `/chosen` 的 `opensbi,boot-file-table` 属性被 bootface 解析，
 #      并驱动 BootFileTable 的取值（QEMU 默认 DTB 没有该属性；本脚本
-#      dumpdtb → fdtput 注入 → `-dtb` 回喂，通道与 QEMU `-kernel` 直接
-#      装载时 `a2` 参数通道等价，magic 闸同款。`a2` 不是 U-Boot 约定：
-#      U-Boot 腿用 `a0`/`a1` 递 `(argc, argv)`，是另一个入口）。
+#      dumpdtb → fdtput 注入 → `-dtb` 回喂，等价于直核面备用 `a2`
+#      通道的取件语义，magic 闸同款。`a2` 在仓内没有生产者（QEMU/OpenSBI
+#      只约定 `a0`/`a1`）；U-Boot 腿是另一个入口，用 `a0`/`a1` 递
+#      `(argc, argv)`）。
 #   B2 表被消费：entry_count=0 的合法表过 magic 闸后，12 模块装载腿在
 #      位置契约检查处点名失败（`table holds 0x0 entries, kernel contract
 #      needs 0xc`——loader.rs 的 fail-fast 语义在甲案腿的落点），然后走

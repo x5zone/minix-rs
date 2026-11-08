@@ -483,3 +483,49 @@
 | FACT-R8-06 | panel-r8 | P2 | 源码注释/VmBootHandoff 版本历史缺 v8，v7 末句与返空生产者相反 | ① | 已修：补 v8 条目（deducted 32→47、vm_boot_exclusions、kern_ident 恒空），v7 末句改过去时 | os/libs/minix-types/src/types/boot.rs | 编译绿 |
 | FACT-R8-07 | panel-r8 | P3 | 文档/§3.4 称内存账走 GETINFO 键 | ① | 已修：模块表/param/kmessages 各自键写清；内存账改走 VM boot handoff 页 | 文档 §3.4 | 五门 |
 | FACT-R8-08 | panel-r8 | P3 | 文档/§4.4 把 reserved 来源写成“非 conventional” | ① | 已修：两处改 `ReservedMapped` 档（Excluded/DevicePath/Side 不进）；kernel_info 字段首句同步 | 文档 §4.4；kernel_info.rs | 五门+编译绿 |
+| FACT-R8-09 | panel-r8 | P1 | 文档/§4.5 与 lib.rs 把 kmain 的同址再存误判为不存在（R8 修复引入；fact 自我纠错） | ① | 已修（R9 批）：文档改三个调用点、resume 与 kmain 均同址；lib.rs 注释恢复 kmain re-store | 文档 §4.5；os/kernel/src/lib.rs | 五门+测试 |
+
+# Round 9（基线 6321ce600）
+
+## R9 面板明细（33 条）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-R9-01 | panel-r9 | P1 | 文档/store_kernel_info 称只有两个调用点 | ① | 已修：改三个调用点（arch_boot_finish/resume_additive/kmain），resume 与 kmain 同址；lib.rs 注释恢复 kmain re-store | 文档 §4.5；lib.rs | 五门+测试 |
+| FACT-R9-02 | panel-r9 | P2 | 文档/§2.8 改 R/M 后残留 N+1 | ① | 已修：末行改 M+1；R 定义补 AVAILABLE | 文档 §2.8 | 五门 |
+| FACT-R9-03 | panel-r9 | P2 | 测试/boot-shim 并行下 preflight 全局态互污染 | ① | 已修：新增 `test_serial` 进程锁；`ResetOnDrop` 持锁，ebs_pair 其余 14 个测试补锁；8 线程 129 全绿 | os/boot-shim/src/{lib,dtb_copy,ebs_pair}.rs | 测试 8 线程 |
+| FACT-R9-04 | panel-r9 | P2 | 源码注释/kern_ident 只保留 v6/v7 与 v8 结构相反 | ① | 已修：vm_handoff 注释改"v8 仍占布局、恒空、v6/v7 精确拒绝"；boot.rs 字段注释同步 | vm_handoff.rs；types/boot.rs | 编译绿 |
+| FACT-R9-05 | panel-r9 | P3 | 文档/§4.3 逐字段补零与 builder 新契约不符 | ① | 已修：改"路径 + 一个 NUL；其余 .bss 零初值；越界由 assert 拦下" | 文档 §4.3 | 五门 |
+| READER-R9-F01 | panel-r9 | P2 | 文档/§1.2 .bss 装载证据指向 §2.8 | ① | 已修：拆两指向（§2.8 推演、§2.4 装载证据） | 文档 §1.2 | 五门 |
+| READER-R9-F02 | panel-r9 | P2 | 文档/kern_stack_top 门描述与构造边界矛盾 | ① | 已修：门描述改"不越过上界，恰等于镜像尾合法" | 文档 §4.4 | 五门 |
+| READER-R9-F03 | panel-r9 | P2 | 文档/落地区二义，接收侧深拷次数不清 | ① | 已修：接收侧直接解码进七个 store，store 同址 no-op；DTB 落地区改暂存区 | 文档 §4.8/§4.5/§4.2 | 五门 |
+| READER-R9-F04 | panel-r9 | P2 | 文档/U-Boot shim 腿写成调 arch_boot | ① | 已修：改"序列化进 arena 交接收镜像 arch_boot_resume_v1" | 文档 §3.7 | 五门 |
+| READER-R9-F05 | panel-r9 | P2 | 文档/§4.2 省略块同时承载循环内 preflight 与 EBS 后写入 | ① | 已修：拆成"循环体内另一处省略"与"本处只含 EBS 后 startup" | 文档 §4.2 | 五门 |
+| READER-R9-F06 | panel-r9 | P3 | 文档/§2.6.1 PSE/PGE 挂在 CR0.PG 后 | ① | 已修：改 CR0.PG/CR0.WP/CR4.PSE/CR4.PGE | 文档 §2.6.1 | 五门 |
+| READER-R9-F07 | panel-r9 | P3 | 文档/"两个可执行体"缺主线限定 | ① | 已修：§1.2/§1.3 加主线限定；§1.4 补 resume 入口 | 文档 §1.2/§1.3/§1.4 | 五门 |
+| READER-R9-F08 | panel-r9 | P3 | 文档/手算五例分组与定档返回不符 | ① | 已修：改"前两例成功定档（例2 Step3 返回）；后三例报错/Side/报错" | 文档 §4.2 | 五门 |
+| READER-R9-F09 | panel-r9 | P3 | 文档/§2.8 R 定义与 AVAILABLE 过滤不符 | ① | 已修：R = 可用条目数；N+1→M+1 | 文档 §2.8 | 五门 |
+| READER-R9-F10 | panel-r9 | P3 | 文档/"16 篇"不可达 | ① | 已修：改指 `smp_gpt_v3.md`，§7.1 补一行 | 文档 §4.9/§7.1 | 五门 |
+| READER-R9-F11 | panel-r9 | P3 | 文档/UEFI 术语承诺未兑现 | ① | 已修：Configuration Table/LoadOptions/SimpleFileSystem 首现补定义 | 文档 §4.2/§4.3 | 五门 |
+| READER-R9-F12 | panel-r9 | P3 | 文档/§2.4.2 口径句漏内核块 | ① | 已修：切占用含内核镜像块 | 文档 §2.4.2 | 五门 |
+| READER-R9-F13 | panel-r9 | P3 | 文档/syscall_entry 语义二义 | ① | 已修：字段表注明引用性元数据、实际门地址由架构 asm 标签提供 | 文档 §4.4 | 五门 |
+| READER-R9-F14 | panel-r9 | P3 | 文档/§6.4 同块"无脚本/有脚本"并存 | ① | 已修：首处改"无专用启动门脚本，由 test-smp-aps-aarch64.sh 间接驱动" | 文档 §6.4 | 五门 |
+| READER-R9-F15 | panel-r9 | P3 | 文档/§3.6 否决表方案与理由不对应 | ① | 已修：方案扩为常量面三件 | 文档 §3.6 | 五门 |
+| READER-R9-F16 | panel-r9 | P3 | 文档/§2.8 引用章内未出现的断言 | ① | 已修：换成 §2.4 已引的 `assert(cbi->mem_high_phys)` | 文档 §2.8 | 五门 |
+| READER-R9-F17 | panel-r9 | P3 | 文档/§2.6.4 把同一批 1024 项数两遍 | ① | 已修：改"0..960 恒等 + 961 起被内核映射覆写" | 文档 §2.6.4 | 五门 |
+| DESIGN-R9-01 | panel-r9 | P1 | 代码/loader 新断言只查同段，跨段源破坏仍可过 | ① | 已修：新增 `first_source_destination_overlap` 全源×全目标判定；文档 §4.3 补防线 | loader.rs；文档 §4.3 | 测试+五门 |
+| DESIGN-R9-02 | panel-r9 | P0 | 文档/源码 kmain 同址再存被误判 | ① | 已修（与 FACT-R9-01 同批）：恢复三调用点与同址说明 | 文档 §4.5；lib.rs | 五门+测试 |
+| DESIGN-R9-03 | panel-r9 | P0 | 源码注释/BootForm(e) "park until tail installed" 与永久 wfi 相反 | ① | 已修：改"无 tail 永久 wfi；tail 须在首个 hart_start 前注册" | boot_form.rs | 编译绿 |
+| DESIGN-R9-04 | panel-r9 | P0 | 源码注释/v8 历史把内核侧 vm_boot_exclusions 写成 handoff 变更 | ① | 已修：v8 只留 deducted 32→47；注明 exclusions 不跨 handoff | types/boot.rs | 编译绿 |
+| DESIGN-R9-05 | panel-r9 | P0 | 源码注释/"kept only for v6/v7" 与 v8 仍带字段相反 | ① | 已修：改"v8 仍占布局、恒空；v6/v7 精确拒绝" | vm_handoff.rs；types/boot.rs | 编译绿 |
+| DESIGN-R9-06 | panel-r9 | P0 | 源码注释/KERNINFO_PAGE_PHYS 仍称 SetAddrSpace 消费者 | ① | 已修：改唯一读者 vm_handoff builder；VM 在 init_page_table 建每根映射 | kerninfo.rs | 编译绿 |
+| DESIGN-R9-07 | panel-r9 | P1 | 源码注释/ld SHIM_HEAP 写 8 MiB，常量 16 MiB | ① | 已修：uboot_main 注释、ld .lbss 与镜像尺寸三处改 16 MiB | uboot_main.rs；riscv64-uboot.ld | 编译绿 |
+| DESIGN-R9-08 | panel-r9 | P1 | 文档/§4.3 逐字段补零 | ① | 已修（与 FACT-R9-05 同批） | 文档 §4.3 | 五门 |
+| DESIGN-R9-09 | panel-r9 | P1 | 源码注释/main.rs a2 主语仍绑 U-Boot | ① | 已修：改"本 riscv64 直核面另留 a2"；U-Boot 另入口 a0/a1 | kernel-image/src/main.rs | 编译绿 |
+| DESIGN-R9-10 | panel-r9 | P1 | 代码/DRAM 边界闸只查起始，魔数读 8 字节可越界 | ① | 已修：两处直核面改 `in_memmap_range(..,8)`；删未用 in_memmap 导入 | bootface.rs；bootface_a64.rs | 编译绿 |
+| DESIGN-R9-11 | panel-r9 | P2 | 源码注释/4 MiB 归因于扣除，UEFI 腿实际不在 free list | ① | 已修：注释拆因果（UEFI LOADER_DATA 不在 conventional；整段扣除只对自引导腿有效） | boot-shim/src/main.rs | 编译绿 |
+| FACT-R9-06 | panel-r9 | P2 | 文档/"九步只覆盖 EBS 之前"与步骤 7–9 矛盾 | ① | 已修：改"编号覆盖到跳转为止（含 EBS 后 7–9）；startup 夹在 6 与 7 之间" | 文档 §4.2 | 五门 |
+| FACT-R9-07 | panel-r9 | P2 | 文档/§3.5 引用已随 F03 删除的调用点注释 | ① | 已修：改"早期注释（f80ae358b^ 删除）；现仓仅 opensbi 测试模块一句结构说明" | 文档 §3.5 | 五门 |
+| FACT-R9-08 | panel-r9 | P2 | 代码/loader 断言只查同段，跨段源破坏仍可过 | ① | 已修（与 DESIGN-R9-01 同批）：全源×全目标谓词 + 跨段宿主测试 | loader.rs | 测试绿 |
+| FACT-R9-09 | panel-r9 | P3 | 源码注释/页取整理由与新测试注释互相矛盾 | ① | 已修：函数注释与调用点注释改"页对齐前提下取整不增加判别力，属防御性写法" | uefi_helpers.rs | 编译绿 |
+| FACT-R9-10 | panel-r9 | P3 | 脚本头注仍把 a2 说成 QEMU 直载通道 | ① | 已修：改"直核面备用 a2，仓内无生产者；QEMU/OpenSBI 只约定 a0/a1" | test-kernel-image-riscv64-bootface.sh | 五门 |
