@@ -21,8 +21,8 @@ r18_panel_role_files=fact.md reader-a.md reader-b.md reader-c.md refute.md desig
 # R19 round
 r19_panel_base_head=87ceaaad6e4e1e5640f65eeb4fad300c514752f1
 r19_panel_base_doc_sha256=755b762e0aca423a429782873871c982d9e97d37746b5cb0dae28385c29ac64c
-r19_fix_head=a140bb6a0fa88f21665a60f6f271732fc7bd774e
-r19_fixed_doc_sha256=6c13d722e3a5e0e04e49a4f31ba3e526931bbe19f3a86cedb0b9634cb23e21e4
+r19_fix_head=7dbd07f64422d786530f7129d682ca5d351ac6e1
+r19_fixed_doc_sha256=f9ddbc562f81862b1033165e07a0f1c5346d06c9da97da406796cb60f8ae1275
 r19_fixed_doc_lines=3387
 r19_panel_round=round19
 r19_panel_role_files=fact.md reader-a.md reader-b.md reader-c.md refute.md design-d1.md design-d2.md
