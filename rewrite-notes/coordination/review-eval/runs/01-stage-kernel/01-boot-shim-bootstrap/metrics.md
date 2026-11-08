@@ -18,3 +18,13 @@
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（`KernelInfo::validate` 增加内核×模块×模块半开区间复核）
 - 成本: agent 7（fact / reader A/B/C / refute / design D1 / design D2）/ token 未采集 / 耗时 约 4 小时（面板 + 修复 + 三门）
 - 回读: RB17 独立回读判 NOT PASS（P0=0、P1=0），其 P2/P3 补修已并入本轮；RB18 待本轮提交后启动
+
+## R19
+
+- 发现总数: 80（FACT 6；READER-A 20；READER-B 20；READER-C 15；REFUTE 7；DESIGN-D2 12）
+- 处置: ① 13 / ② 0 / ③ 13 / ④ 54 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（`KernelInfo::validate` 跨度 `checked_add`）
+- 成本: agent 7 / token 未采集 / 耗时 约 4.5 小时（面板 + 修复 + 三门）
+- 回读: RB19 与 meta R19 待提交后执行

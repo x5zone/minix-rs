@@ -1345,3 +1345,40 @@
 | R18-P3-01 §3.8 `// Release:` 注释在 `store` 之后 | P3 | ① 移回 `store` 之前，与 `pt_alloc.rs:111-113` 同序 | 引文逐字 |
 | R18-P3-02 REFUTE-03 措辞 | P3 | ① 文档改“C 侧至少四个活读取点”，与台账一致 | §3.4.2 |
 | R18-P3-03 M12 未写“两枚注入负控” | P3 | ① M12 补“两枚注入负控”，与 TODO-04/台账一致 | §5.1 M12 |
+
+## R19 面板轮（2026-11-09，R18 收口后；全角色 + DESIGN 两遍）
+
+> 面板输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round19/`。D1 的 5 条决策是方案，不计入发现；D2 的 12 条发现里 2 条落码、10 条按 D1 方案否决记 ③。总计 80 条：FACT 6（2 主条 + 4 次级）、READER-A 20、READER-B 20、READER-C 15、REFUTE 7、DESIGN-D2 12。
+
+| 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | fact | P1 | 取槽算术 | ① | §2.6.3 正常路径 `p_cr3_v[961+k-1]` 改 `961+k`（`pg_mapkernel` 返回第一个空闲槽） | `pg_utils.c:186-202`、`memory.c:707-718` | 与 §1115 反事实分开 |
+| FACT-02 | fact | P2 | 路标前缀 | ① | §6.1 第二条路标补 `kernel-image:` 前缀 | `lib.rs:396` | grep 命中 |
+| FACT-03、FACT-04、FACT-05、FACT-06 | fact | P3 | 引文口径 | ① | §4.4 引文头声明路径限定符略去；§3.3 删“完整依赖表”并注 `bitflags` 从略；§4.2 引文头标两处未展开段；§2.6.4 行号改 358–361 | 源码对读 | 块头与源码一致 |
+| READER-A-01..20 | reader-a | P1/P2/P3 | 读者障碍 | ④ | §2.6.3 槽号；§1.4 六套计数补“架构×链五行”；§2.8 明列三条论证 + 两条指向；§1.1 表限定 C/x86-32；§3.4.5 标题去批次号、图例补 R14–R18/A+D/裁决 A；§2.4.1.2 只留结论指针；§6.4 GDB 指 `os/kernel-image/Cargo.toml`；§7.5 `load_stack` 拆“无同名对应物”；wire 版本/别名；§7.4 补 `test-cmd-smoke.sh`；`module_init` 关系；§6.1 限定 UEFI；ARM 寄存器括注；§4.5 截断口径；§1.4 MapKey/快照序号；依赖 A/B 映射；§1.3 “五条依赖”；6b；三次注册拆解 | 各条锚点在 panel 内 | 六门 + 原句 grep |
+| READER-B-01 | reader-b | P1 | 取槽算术 | ① | 同 FACT-01，§2.6.3 改 `961+k` | 文档内 §951-953/§1115 | 两处不再冲突 |
+| READER-B-02 | reader-b | P2 | 依赖父子错挂 | ④ | §1.2 改“D5 是建表动作内部”，执行序写 `D2→D1→（D5）→D3→D4` | §2.8 同序 | 两节一致 |
+| READER-B-03 | reader-b | P2 | 计数索引 | ④ | 同 A-02：补第六套与消费者 | §1.4/§3.7 | 六套可对 |
+| READER-B-04 | reader-b | P2 | 腿数/构造入口 | ④ | §3.4.1 改“三条 v1 发送腿”与“两个构造入口” | §3.7/§4.4 | 与权威表一致 |
+| READER-B-05 | reader-b | P2 | 分配器注册歧义 | ④ | §4.4 门链拆“boot bump 区间非 None 即停机”与“`pt_alloc` 由守卫注册” | `lib.rs` `boot_validate_and_prepare` | 与 §3.8/§4.1 一致 |
+| READER-B-06 | reader-b | P2 | 方向词 | ④ | §3.5 “上文”改“下文” | 表在句后 | 方向正确 |
+| READER-B-07 | reader-b | P2 | 输入/输出约束反了 | ④ | §5.1 M2 改 `add_memmap` 的完整取整/丢弃/截断行为 | §2.4 代码 | 与 §2.4 一致 |
+| READER-B-08、READER-B-09 | reader-b | P3 | 死索引/缩写 | ④ | 图例删死项；补 A+D 与裁决 A 定义 | 全文 grep | 回查可落 |
+| READER-B-10 | reader-b | P2 | 边界漏项 | ④ | §1.4 名单补 §5.2.3 `entering scheduler` | §5.2.3 | 边界自洽 |
+| READER-B-11 | reader-b | P2 | 总说与分腿相反 | ④ | §3.4.1 改“不保证已扣除全部占用区” | 同段分腿细节 | 三处一致 |
+| READER-B-12 | reader-b | P3 | TODO 一号两用 | ③ | M6 已改“TODO-05 只登记 1 GiB 首选档；全量走查未登记”，不再复用 | §5.1/§5.3 | 无复用 |
+| READER-B-13 | reader-b | P3 | 落点串联误导 | ④ | §4.9 行加“`build_kernel_info` 仅直核” | §4.4 | 两组入口分清 |
+| READER-B-14 | reader-b | P3 | 边界未覆盖 §3.4.2 | ④ | 同 B-10 的 §1.4 名单 | §3.4.2 | 已列 |
+| READER-B-15、READER-B-16 | reader-b | P3 | 措辞/指针 | ④ | “否决记录”改“裁决记录（三否一采）”；“切换记录”改“切换依据…收口记录/实现现状” | §3.1/§3.1.1 | 指针可落 |
+| READER-B-17 | reader-b | P3 | 三处维护容量 | ④ | §2.4.1.4 只留指针，删 128/64 数字 | §3.4.1/§4.5 | 单一权威 |
+| READER-B-18 | reader-b | P3 | 状态口子 | ④ | §4.8 改“已实现（接线状态见 §3.1.1）” | §3.1.1 | 状态单源 |
+| READER-B-19、READER-B-20 | reader-b | P3 | 承诺过强/消费者错 | ④ | §7.5 改“不保证穷举”；九步消费者改 §4.2.1 | 文档内 | 索引可复核 |
+| READER-C-01..15 | reader-c | P1/P2/P3 | 跨节因果 | ④ | 槽号；§4.1 发送侧不构造 KernelInfo；M6/TODO-05；§2.4.1.3 缺陷分支；`arch=`→`board=`；六套计数；三条 v1 腿；§3.10 指针改 §2.4.2；§1.2 cut 动作指 §2.5；§3.3 grep→sed；两种“覆盖”分开；§1.4 GET_KINFO 指 §3.4.2；checked_shape 范围；§2.1 参数语义限定；门表十二行 | 各条锚点在 panel 内 | 六门 + 原句 grep |
+| REFUTE CLAIM 01 | refute | P1 | GET_KINFO 字段依据 | ① | §3.4.2 改“五个有读者 + 两个 C 布局位（freepde_start 恒 0、vir_kern_start 零读者）” | 仓库 grep | `[ARCH]` 与 §3.9 一致 |
+| REFUTE CLAIM 02 | refute | P1 | 参数分歧计数 | ① | §3.4.2 改五条（补容量丢弃与键大小写），删“截断”措辞；`boot_params` 测试补“后续记录也被拒”断言 | `boot_params.rs:276-288`、C 逐字转录程序 | 五条与测试同源 |
+| REFUTE CLAIM 03、04、07 | refute | — | 反证失败 | ③ | 删除论证、1 GiB/2 MiB 档、覆盖账均成立，保留 | panel 内证据 | — |
+| REFUTE CLAIM 05 | refute | P2 | 跨架构普遍化 | ① | §4.6 改“kernel_identity_mmio_regions 不是 Step 1 窗口清单；x86 分支为空” | `os/arch/src/lib.rs:255`、`os/kernel/src/lib.rs:914-928` | 与同节上文一致 |
+| REFUTE CLAIM 06 | refute | P2 | 调用者枚举错 | ① | §4.7 改“跨镜像腿由 boot-shim；两个直核面在 bootface 初始化并注册” | `bootface.rs:272`、`bootface_a64.rs:256` | 五腿齐全 |
+| DESIGN-D2-01..10 | design-d2 | — | D1 方案否决 | ③ | D1 把 C 形态当现仓/另立表/校验和/最小窗上界/类型状态跨产物等，按现仓裁决与文档事实拒绝；不新增代码 | D2 条目内源码行号 | 不改 |
+| DESIGN-D2-11 | design-d2 | P1 | release 回绕 | ① | `KernelInfo::validate` 的 kernel/module 跨度改 `checked_add`，新增两条溢出负控 | `kernel_info.rs` 新增测试 | `minix-boot` 188 通过 |
+| DESIGN-D2-12 | design-d2 | P2 | 门表未同步 | ① | §4.4 门链/表补接收侧跨度复核行，写明 `checked_add` 与信任边界 | §4.4 | 文档与代码一致 |

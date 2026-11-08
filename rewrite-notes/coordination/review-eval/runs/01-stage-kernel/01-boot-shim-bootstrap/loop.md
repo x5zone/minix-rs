@@ -939,3 +939,61 @@
 - RB17 指出的“冻结面与台账不一致”已按“R18 提交重新冻结”处理；BASELINE 更新见提交后。
 - 轨迹门已按轮次作用域修复（B-51 CLOSED）；剩余 B-52（origin/dup-of）与 B-53（面板读取锚）是下一轮候选，不在 R18 阻塞。
 - 同一文档在面板期间被持续编辑（3332→3386 行），RB17 的基线漂移问题在 R18 仍存在；本轮以“面板读取基线 + 收口基线”两行分别记录。
+
+## R19 面板轮（2026-11-09，R18 收口后）
+
+### §0 基线
+
+- 冻结提交：`87ceaaad6e4e1e5640f65eeb4fad300c514752f1`（R18 最终基线，含轨迹门修复与 meta R18）
+- 文档：3386 行、sha256 `755b762e0aca423a429782873871c982d9e97d37746b5cb0dae28385c29ac64c`
+- 工作树：仅未跟踪 `prompt/resources/`；面板期间禁止面板写仓库
+- Step 0 预检：`.design/01-*.v*.md` 十一份齐全；`design-coverage-check.sh 01-stage-kernel` → ALL DOCS COMPLETE；`doc-code-map --check` 46/46
+- 范围与语料同 R18；R17 的 ② 项（F-R17-01..04）按 follow-ups 档期，不在本轮阻塞
+- 面板：P-FACT、P-DESIGN D1/D2、P-READER A/B/C、P-REFUTE（启动链高风险，全角色）
+
+### R19 §1 面板
+
+- 角色：P-FACT、P-DESIGN D1/D2、P-READER A/B/C、P-REFUTE（全角色）。
+- 原始输出：`panel/round19/`（fact 2 主条 + 4 次级、reader-a 20、reader-b 20、reader-c 15、refute 7 主张、design-d1 5 决策、design-d2 12 条）。
+- 材料隔离同 R18；面板前后 `git status --porcelain` 只有主 agent 的文档/代码改动，无面板写仓库。
+- FACT 报告自述：会话期间主 agent 在同文件写入，结论以 `87ceaaad6` 基线行号为准，漂移已逐处标注。
+
+### R19 §2 发现
+
+- 80 条：FACT 6、READER-A 20、READER-B 20、READER-C 15、REFUTE 7、DESIGN-D2 12。
+- 硬冲突：§2.6.3 正常借槽 `961+k-1` 应为 `961+k`（A-01/B-01/C-01/FACT-01 四源同靶）；§4.1 发送侧“构造 KernelInfo”；GET_KINFO“七个都消费”与“三条分歧”；§4.6 `kernel_identity_mmio_regions` 跨架构普遍化；§4.7 `init` 调用者漏两个直核面。
+- 设计两遍：D1 提 5 条决策；D2 判 NOT PASS（D1 两条现仓锚点错、类型状态跨产物高估、校验和/自包含载荷净增层、缺执行模型），同时抓到现仓 R18 复核的 `checked_add` 回绕（D2-11）与门表未同步（D2-12）。
+
+### R19 §3 归因
+
+- ① 13 条：FACT-01..06、READER-B-01、REFUTE-01/02/05/06、DESIGN-D2-11/12。
+- ④ 54 条：READER-A 20、READER-B 19、READER-C 15。
+- ③ 13 条：REFUTE-03/04/07（反证失败）、DESIGN-D2-01..10（D1 方案否决）。
+- ② 0、⑤ 0；re-litigation 0；adjacent 阻塞 0。
+
+### R19 §4 修复
+
+- 文档：§2.6.3 槽号；§4.1 发送侧构造；§3.4.2 GET_KINFO 五字段+两占位、参数五条分歧（含容量丢弃与键大小写）；§4.6 Step 1/2c 函数归属；§4.7 init 调用者；§4.4 门链/表补跨度复核；§1.2 依赖 A/B 与 D5 父节点；§1.4 六套计数/MapKey/边界名单；§2.8 五条指向；§1.1 表限定；§2.1/§2.4.1.2/.3/§3.3/§3.5/§3.10/§4.9/§5.1/§6.1/§6.4/§7.4/§7.5 的指针、计数、缩略语与路标。
+- 代码：`KernelInfo::validate` 的 kernel/module 跨度改 `checked_add`；`boot_params` 容量测试补“后续记录也被拒”断言；新增两条跨度溢出负控（`kernel_info.rs`）。
+- 测试：`minix-boot` 188、`boot-shim --lib` 135、`ebs_boundary_audit` 4、`minix-kernel --features mock` 860+8、`minix-arch` 287。
+- QEMU：x86/aarch64 shim bootmarks PASS、riscv64 U-Boot shim 6/6 PASS（代码改动后重跑）。
+
+### R19 §5 复验
+
+- 文档六门：anchor 108/108、doc-code-map 46/46、style 0 error、ref 通过、承载门通过、结构/链接 0 问题。
+- 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无新增 warning（仅 `minix-types` 既有 `unused_unsafe`）。
+- RB19 与 meta R19 在提交后执行；R18 的轨迹门修复已按轮次作用域运行。
+
+### R19 §6 指标
+
+见 `metrics.md`：发现 80，处置 ① 13 / ② 0 / ③ 13 / ④ 54 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构 1 实施（D2-11 溢出加固）。
+
+### R19 §7 状态
+
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB17/RB18 已结算、RB19/meta R19 待跑；G8 本轮新增 80 条（仍远大于 0）；G9 ⑥ 项 D2-11/12 已实施，D1 其余方案不采纳。
+
+### R19 §8 给 meta-review 的不确定点
+
+- 四源同靶（A-01/B-01/C-01/FACT-01）说明 R18 漏检的槽号错误只有冷读能抓到；需 meta 判断这是否应升级为“取槽/下标算术”专项探针。
+- D2 连续两轮判 D1 NOT PASS；D1 的方案价值是否已递减到应停跑，需 meta 给结论（当前仍按协议全量跑）。
+- 本轮 80 条里 13 条 ③ 是 D1 否决，仍计入“新发现”；B-52（origin/dup-of）未落码，G8 的零新增口径需 meta 解释。

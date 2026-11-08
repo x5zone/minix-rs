@@ -326,10 +326,17 @@ impl KernelInfo {
         // about to run. Touching is legal (`[a,b)` and `[b,c)`).
         {
             let kbase = self.kern_phys_base.0;
-            let kend = kbase + self.kern_size;
+            // Release builds do not enable overflow checks; a forged
+            // `kern_size` must fail here rather than wrap the end below the
+            // base and turn the predicate into a tautology.
+            let kend = kbase
+                .checked_add(self.kern_size)
+                .expect("KernelInfo: kernel span overflows u64");
             for (i, m) in self.boot_modules.iter().enumerate() {
                 let mb = m.start.0;
-                let me = mb + m.len as u64;
+                let me = mb
+                    .checked_add(m.len as u64)
+                    .expect("KernelInfo: boot module span overflows u64");
                 assert!(
                     me <= kbase || mb >= kend,
                     "KernelInfo: boot_modules[{}] ({}) [0x{:x},0x{:x}) 与内核镜像 [0x{:x},0x{:x}) 相交",
@@ -811,6 +818,27 @@ mod tests {
         ];
         let mut info = make_valid_info();
         info.boot_modules = &OVERLAP;
+        info.validate();
+    }
+
+    #[test]
+    #[should_panic(expected = "kernel span overflows")]
+    fn test_validate_rejects_kernel_span_overflow() {
+        let mut info = make_valid_info();
+        info.kern_size = u64::MAX;
+        info.validate();
+    }
+
+    #[test]
+    #[should_panic(expected = "boot module span overflows")]
+    fn test_validate_rejects_module_span_overflow() {
+        static OVERFLOW: [BootModule; 1] = [BootModule {
+            name: "vm",
+            start: PhysBytes(u64::MAX - 1),
+            len: 4,
+        }];
+        let mut info = make_valid_info();
+        info.boot_modules = &OVERFLOW;
         info.validate();
     }
 

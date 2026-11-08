@@ -396,9 +396,12 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
         # fact.md's secondary bullets and refute.md's numbered claims.
         found += [f"FACT-{n}" for n in re.findall(r"^-\s*\*\*FACT-(\d+)\*\*", text, re.MULTILINE)]
         found += [f"CLAIM-{int(n):02d}" for n in re.findall(r"^##\s+CLAIM\s+(\d+)", text, re.MULTILINE)]
+        found += re.findall(r"^\*\*(DESIGN-D2-\d+)", text, re.MULTILINE)
         if not found:
             report.warn("panel", f"{path.relative_to(panel_dir)} 没有 `## FINDING <ID>` 行")
         ids.extend(found)
+    seen: set[str] = set()
+    ids = [i for i in ids if not (i in seen or seen.add(i))]
     report.ok("panel", f"面板报告解析到 {len(ids)} 条发现（含轮次子目录）")
     return ids
 

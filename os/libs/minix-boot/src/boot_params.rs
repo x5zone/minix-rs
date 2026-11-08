@@ -282,6 +282,9 @@ mod tests {
         if stats.bytes > 0 {
             assert_eq!(out[stats.bytes - 1], 0);
         }
+        // Once a record does not fit, every later record is dropped too.
+        assert!(!out.windows(4).any(|w| w == b"BBBB"));
+        assert!(!out.windows(4).any(|w| w == b"CCCC"));
     }
 
     #[test]
