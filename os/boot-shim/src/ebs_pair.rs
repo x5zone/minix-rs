@@ -225,7 +225,7 @@ pub unsafe fn pair_and_classify(
 /// Append the DTB's records to the shared source partition and re-finalize
 /// its descriptor.
 ///
-/// `Plan::commit` already wrote `sources_byte_len` for the UEFI records; a
+/// `ClassificationPlan::commit` already wrote `sources_byte_len` for the UEFI records; a
 /// push after that point is invisible to the receiver until the descriptor is
 /// written again. Keeping the re-finalization next to the pushes makes the
 /// ordering impossible to split.
@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(scalars.kern_virt_base, 0xFFFF_8000_0000_0000);
     }
 
-    /// A push after `Plan::commit` finalized the UEFI records must re-write
+    /// A push after `ClassificationPlan::commit` finalized the UEFI records must re-write
     /// the source descriptor, or the receiver silently drops the DTB records.
     #[test]
     fn dtb_records_extend_the_source_descriptor_after_the_uefi_commit() {
@@ -930,7 +930,7 @@ mod tests {
         let mut s = Serializer::new(&mut arena, minix_boot::memmap_source::InputObjectId::DtbBootInput).unwrap();
         write_min_envelope(&mut s);
         s.push_source(&uefi).unwrap();
-        s.finish_sources(); // Plan::commit's finalization
+        s.finish_sources(); // ClassificationPlan::commit's finalization
         push_dtb_sources(&mut s, &[dtb]);
         s.patch_runtime_fields(minix_boot::RuntimeFields {
             root_page: 0x1000,

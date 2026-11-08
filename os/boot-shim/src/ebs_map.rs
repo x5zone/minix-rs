@@ -4,7 +4,7 @@
 //! memory tables, and it is the **only** place those rules live. The pairing
 //! loop that writes the handoff arena and the helper that builds the kernel
 //! image's tables from the typed map view both end up in [`classify`] and
-//! [`Plan::write_to`], so one firmware map can never be classified one way on
+//! [`ClassificationPlan::write_to`], so one firmware map can never be classified one way on
 //! the way into the kernel image and another way on the way into the handoff.
 //! Duplicating partition rules is a correctness defect rather than a style
 //! problem: the copy nobody touches gains a check or a diagnostic and the two
@@ -69,7 +69,7 @@
 //!
 //! [`classify`] is the pass that can fail: header shape, per-descriptor policy and
 //! geometry, and the capacity of all three outputs are settled there before
-//! anything is written. It returns a [`Plan`], whose only content is the count of
+//! anything is written. It returns a [`ClassificationPlan`], whose only content is the count of
 //! what fits where. The write pass consumes that plan and reports no error: the
 //! dispositions it re-derives are a pure function of descriptors that have not
 //! moved, and the counts were already proved against the capacities of the very
@@ -485,7 +485,7 @@ impl MapStorage {
     }
 
     /// The side list: the ranges classification kept out of both ordinary
-    /// tables, in firmware order, as written by [`Plan::commit`].
+    /// tables, in firmware order, as written by [`ClassificationPlan::commit`].
     pub fn side(&self) -> &[MemoryRegion] {
         &self.side[..self.side_len]
     }
@@ -650,7 +650,7 @@ pub struct Classification {
 /// Only [`classify`] builds one, and only after every descriptor adjudicated and
 /// every capacity checked — which is what lets the write pass have no error path.
 #[derive(Debug, Clone, Copy)]
-pub struct Plan {
+pub struct ClassificationPlan {
     counts: Classification,
 }
 
@@ -679,7 +679,7 @@ fn rejection(index: usize, desc: &DescriptorRef, failed: PolicyError) -> MapErro
 /// This is the pass that can fail. The two handoff capacities and `side_cap` are
 /// checked here, so a map that cannot be expressed is rejected while nothing has
 /// been written yet.
-pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Result<Plan, MapError> {
+pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Result<ClassificationPlan, MapError> {
     let mut counts = Classification::default();
     for (index, desc) in descs.iter().enumerate() {
         let (disposition, _) =
@@ -729,10 +729,10 @@ pub fn classify(descs: &[DescriptorRef], pa_limit: u64, side_cap: usize) -> Resu
     if counts.side > side_cap {
         return Err(MapError::TooManySideEntries);
     }
-    Ok(Plan { counts })
+    Ok(ClassificationPlan { counts })
 }
 
-impl Plan {
+impl ClassificationPlan {
     /// The counts this plan will produce.
     pub fn counts(&self) -> Classification {
         self.counts
