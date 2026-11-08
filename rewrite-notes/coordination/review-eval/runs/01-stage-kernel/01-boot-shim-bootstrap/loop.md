@@ -743,3 +743,27 @@
 - **Q1 检测模式**：Markdown 源结构破损（表格被空行劈开）五门零覆盖 → 记入 B-44 期望探测器：全文 `|` 表块连续性检查，表头后必须紧跟分隔行且中间无空行。
 - **Q2 流程改进**：C-16 外链基址统一检查（所有 `.md` 链接按文档目录解析，失败即门红），C-17 跨轮 ID 强制 `R<nn>/` 前缀并禁止无前缀行（轨迹门已支持）。
 - **Q3 立即可用**：R17 施工顺序——① 先清 1 P0 + 14 P1（逐条旧串 grep 归零）；② 再按 OPEN-DEBT 清结构项；③ 每条 ② 必须引用本轮新建的 `F-R17-nn`，无行不放行。
+
+## R17（清债批，非新面板轮）
+
+### §0 基线
+
+- 起点：R16 收口 `3fdb6f0ad` 后的工作树；文档 3262 行量级。本轮不冻面板，先清 open-debt。
+
+### §1 处置
+
+- 流程修复 `4da73a37e`：⑥ DESIGN 处置（本轮实施）、L3.5 实施步、fix-guard 重构纪律、G9 收敛门。
+- 文档/代码清理：
+  - 代码：DESIGN-06（DM 候选四遍历提取）、07（identity_windows 内联）、09（四条后置断言负测）、10（memmap∩reserved 交叉校验）、11（删 12 个转发 getter，106 调用点）、12（ValidationLevel 枚举）、13（ebs_failed 删除）、14（PagingWithId/HUGE_PAGE_SHIFT/PTE_HUGE_IDENTIFIER_BIT 删除）、15（Plan→ClassificationPlan）、03（删 UefiBootShim::prepare_boot，裁决 A）。
+  - 文档：A-03（跨文档链接统一）、A-20（两道内联闸覆盖范围）、§1.1 拆段、§1.3 压缩、§2.4.1 四子节、§5 账本收口、§3.4.1 图例、§5.2.1 计数史压缩、§3.2/§3.10/§4.9 标题与口径。
+- DESIGN-05 尝试：把 shim 与接收侧游标合并，QEMU U-Boot shim 门在 3/6 标记处 panic（`bump_end` 是 1024 页页表专用子区间，模块/arena 在其外），已回滚并按“需设计裁决”登记 R18。
+
+### §2 复验
+
+- 宿主：minix-boot 175、boot-shim 134+2、minix-kernel 857、minix-arch 287；三架构 kernel-image 与 riscv64 U-Boot shim 构建绿。
+- QEMU：x86 shim bootmarks PASS、aarch64 shim bootmarks PASS、riscv64 U-Boot shim 6/6 PASS。
+- 五门：锚点 108/108、style 0、ref/承载/code-map 46/46。
+
+### §3 剩余欠账
+
+- 13 行 = 4 个唯一 DESIGN 项（02 BootReport 跨 6 crate；04 arena 双写；05 bump 分区设计；08 FileLoader borrow）+ 1 条相邻（02 篇未生成）。文档类可修项已清零。

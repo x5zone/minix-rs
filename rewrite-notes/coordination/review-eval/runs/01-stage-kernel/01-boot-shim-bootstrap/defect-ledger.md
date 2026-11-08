@@ -857,7 +857,7 @@
 | R14/READER-A-17 | P3 | §2.8"三条在本章给出"把 §2.6 划到章外 | ① | 已修：改为"证据不集中在本节"并逐条指位置；五门 |
 | R14/READER-A-18 | P3 | §2.2 对"装载器负责清零"的转述强于原意 | ③ | 反证：§2.2 原句只陈述"放 .bss 就依赖装载器清零"这一依赖关系；§2.4 随后给出两条装载路径都兑现（LOAD_KERNEL 含 LOAD_BSS），并非无限定断言 |
 | R14/READER-A-19 | P3 | "后两种"指代不明 | ① | 已修（读者体验）：改"前两种情况（lowest == 0 与 0 < lowest < len）" |
-| R14/READER-A-20 | P3 | 内联闸表看不出 `Excluded`/`DevicePath` 是否经过 | ② | 结构项（分类章表格重排），修于 R18
+| R14/READER-A-20 | P3 | 内联闸表看不出 `Excluded`/`DevicePath` 是否经过 | ① | §4.2.2 补两道内联闸覆盖范围说明（Excluded/DevicePath 不过 checked_len）
 | R14/READER-B-01 | P0（读者口径） | §1.2"四条+第5条"与 §2.8"五条"两套口径 | ① | 已修：§1.2 改 1–5 连续编号，字段级单列附注，§2.8 一一对应；五门 |
 | R14/READER-B-02 | P1 | 七套编号无单一索引，靠现场"对账"补丁 | ② | 登记 F-R14-02（编号索引表，需全篇回归） |
 | R14/READER-B-03 | P1 | §3.4 混装结构/台账/wire 协议/探针四类内容 | ② | 登记 F-R14-06（拆节，属结构性重排，风险高于本轮收益） |
@@ -893,17 +893,17 @@
 | R14/DESIGN-02 | P1 | `KernelInfo` 七个 `&static` 切片逼出 44 处 static mut/Box::leak | ② | 登记 F-R14-13（`BootReport<'a>` 重构；跨 6 crate，须单独立项） |
 | R14/DESIGN-03 | P1 | `prepare_boot` 约 250 行零生产调用，与生产入口分叉 | ② | 阻塞于待裁决项 1（删除 BootForm/prepare_boot）；裁决前不动 |
 | R14/DESIGN-04 | P2 | arena 同一内存图 wire/语义双写 | ② | 登记 F-R14-14 |
-| R14/DESIGN-05 | P2 | 同一物理池两个互不知情的 bump 分配器 | ② | 登记 F-R14-15 |
-| R14/DESIGN-06 | P2 | DM 候选顺序抄四遍 | ② | 登记 F-R14-16 |
-| R14/DESIGN-07 | P2 | `build_identity_windows()` 恒空而 `kern_ident` 仍在 | ② | 登记 F-R14-17 |
+| R14/DESIGN-05 | P2 | 同一物理池两个互不知情的 bump 分配器 | ② | R18：分区语义需设计裁决——试合并游标后 QEMU U-Boot shim 门在 3/6 标记处 panic（bump_end 是 1024 页页表专用子区间，模块/arena 在其外），已回滚
+| R14/DESIGN-06 | P2 | DM 候选顺序抄四遍 | ① | R17 已实施（DESIGN-06）
+| R14/DESIGN-07 | P2 | `build_identity_windows()` 恒空而 `kern_ident` 仍在 | ① | R17 已实施（DESIGN-07）
 | R14/DESIGN-08 | P2 | `FileLoader` 返回 `Vec` 强制整份拷贝 | ② | 登记 F-R14-18 |
-| R14/DESIGN-09 | P2 | 后置断言在生产值上不可证伪 | ② | 登记 F-R14-19 |
-| R14/DESIGN-10 | P2 | `memmap ∩ reserved` 未校验，迟到 `AlreadyMapped` | ② | 登记 F-R14-20 |
-| R14/DESIGN-11 | P3 | 13 pub 字段 + 12 个转发 getter 双 API | ② | 登记 F-R14-21 |
-| R14/DESIGN-12 | P3 | 三校验语义用两 bool 编排 | ② | 登记 F-R14-22 |
-| R14/DESIGN-13 | P3 | `ebs_failed` 与 `ebs_attempts>0` 重叠 | ② | 登记 F-R14-23 |
-| R14/DESIGN-14 | P3 | `PagingWithId` 仅测试实现；`HUGE_PAGE_SHIFT` 零读者 | ② | 登记 F-R14-24（先做读者审计再删） |
-| R14/DESIGN-15 | P3 | `Plan` 两遍遍历 | ② | 登记 F-R14-25（建议改名不重构） |
+| R14/DESIGN-09 | P2 | 后置断言在生产值上不可证伪 | ① | R17 已实施（DESIGN-09）
+| R14/DESIGN-10 | P2 | `memmap ∩ reserved` 未校验，迟到 `AlreadyMapped` | ① | R17 已实施（DESIGN-10）
+| R14/DESIGN-11 | P3 | 13 pub 字段 + 12 个转发 getter 双 API | ① | R17 已实施（DESIGN-11）
+| R14/DESIGN-12 | P3 | 三校验语义用两 bool 编排 | ① | R17 已实施（DESIGN-12）
+| R14/DESIGN-13 | P3 | `ebs_failed` 与 `ebs_attempts>0` 重叠 | ① | R17 已实施（DESIGN-13）
+| R14/DESIGN-14 | P3 | `PagingWithId` 仅测试实现；`HUGE_PAGE_SHIFT` 零读者 | ① | R17 已实施（DESIGN-14）
+| R14/DESIGN-15 | P3 | `Plan` 两遍遍历 | ① | R17 已实施（DESIGN-15）
 | R14/RB13R-01 | P2 | §4.6 引文伪造源码注释（SUM 句） | ① | 已修：改回源码原文 `irrespective of sstatus.SUM (SUM only relaxes loads/stores)`；grep 复核 |
 | R14/RB13R-02 | P1 | "预订先于一切分配"不成立（ELF 读到 Vec 先分配） | ① | 已修：文档与两处源码注释改为"预订先于 root/bump/模块；ELF 缓冲更早，重叠则 AllocateAddress fail-closed"；源码对照 |
 | R14/RB13R-03 | P3 | 双空行回归 | ① | 已修：折叠为单空行；全文扫描 |
@@ -949,20 +949,20 @@
 | R15/DESIGN-02 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
 | R15/DESIGN-03 | P2 | ① | 删 `boot_form.rs` 注册表与 6 条测试（裁决 A）；minix-boot 177→171，文档计数同步 | 测试绿 |
 | R15/DESIGN-04 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-05 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-06 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-07 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
+| R15/DESIGN-05 | P2 | ② | 同 R14/DESIGN-05 | 五门/QEMU/U-Boot 门
+| R15/DESIGN-06 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-07 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
 | R15/DESIGN-08 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-09 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-10 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-11 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-12 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-13 | P2 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-14 | P3 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-15 | P3 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-16 | P3 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-17 | P3 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
-| R15/DESIGN-18 | P3 | ② | 代码重构项，修于 R16（F-R14-13..25 同批）；DESIGN-01..03 见待裁决项 1 | — |
+| R15/DESIGN-09 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-10 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-11 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-12 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-13 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-14 | P3 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-15 | P3 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R15/DESIGN-16 | P3 | ③ | 与已实施项重复 | cargo test/五门
+| R15/DESIGN-17 | P3 | ③ | 与已实施项重复 | cargo test/五门
+| R15/DESIGN-18 | P3 | ③ | 与已实施项重复 | cargo test/五门
 | R15/FACT-P1-01 | P2 | ① | VMCTL_CLEARMAPCACHE 显式清零协议补入（§2.6.3/§3.9 两处） | 五门/源码对照 |
 | R15/FACT-P1-02 | P3 | ① | §2.6.4 补 prot_init 重建同一张 pagedir[]；rootdevname 链补 PM 缓存跳 | 五门/源码对照 |
 | R15/FACT-P1-03 | P3 | ① | 改"起点页对齐、长度不保证" | 五门/源码对照 |
@@ -1061,21 +1061,21 @@
 |---|---|---|---|---|
 | R16/DESIGN-01 | P1 | ①部分 | U-Boot `prepare_boot` 已加装载后 root/bump×内核跨度断言（代码，R17）；预防性重排与 arena 扣除仍在 F-R16-01 | uefi 构建绿 |
 | R16/DESIGN-02 | P2 | ② | BootReport 重构，修于 R18（跨 6 crate） | — |
-| R16/DESIGN-03 | P2 | ② | prepare_boot 删除，阻塞于裁决项 1 | — |
+| R16/DESIGN-03 | P2 | ① | R17 删除 UefiBootShim::prepare_boot（裁决 A） | cargo test/五门
 | R16/DESIGN-04 | P2 | ② | arena 双写简化，修于 R18 | — |
-| R16/DESIGN-05 | P2 | ② | 双 bump 分配器统一，修于 R18 | — |
-| R16/DESIGN-06 | P2 | ② | DM 候选顺序提常量，修于 R18 | — |
-| R16/DESIGN-07 | P2 | ② | identity_windows 恒空删除，修于 R18 | — |
+| R16/DESIGN-05 | P2 | ② | 同 R14/DESIGN-05 | 五门/QEMU/U-Boot 门
+| R16/DESIGN-06 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-07 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
 | R16/DESIGN-08 | P2 | ② | FileLoader borrow 接口，修于 R18 | — |
-| R16/DESIGN-09 | P2 | ② | 后置断言独立输入，修于 R18 | — |
-| R16/DESIGN-10 | P2 | ① | 同上 | cargo test 全绿
-| R16/DESIGN-11 | P2 | ② | pub 字段/getter 二选一，修于 R18 | — |
-| R16/DESIGN-12 | P2 | ② | 三校验 enum 化，修于 R18 | — |
-| R16/DESIGN-13 | P2 | ① | 同上 | cargo test 全绿
-| R16/DESIGN-14 | P3 | ② | PagingWithId/HUGE_PAGE_SHIFT 审计后删，修于 R18 | — |
-| R16/DESIGN-15 | P3 | ② | Plan 两遍遍历改名，修于 R18 | — |
-| R16/DESIGN-16 | P3 | ② | 同上 R18 | — |
-| R16/DESIGN-17 | P3 | ② | 同上 R18 | — |
+| R16/DESIGN-09 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-10 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-11 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-12 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-13 | P2 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-14 | P3 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-15 | P3 | ③ | 与已实施的 R14 同号项重复 | cargo test/五门
+| R16/DESIGN-16 | P3 | ③ | 与已实施项重复（Plan/identity 等） | 五门/QEMU/U-Boot 门
+| R16/DESIGN-17 | P3 | ③ | 与已实施项重复 | 五门/QEMU/U-Boot 门
 | R16/FACT-P1-01 | P2 | ① | §2.4.1 右余量段收窄为"存在一种切割形态使下标序≠地址序" | 五门/源码对照 |
 | R16/FACT-P1-02 | P3 | ③ | 复核：§2.6.4 已补 prot_init 重建段 | — |
 | R16/FACT-P1-03 | P3 | ③ | 复核：§2.4 取整条已改"起点页对齐、长度不保证" | — |
@@ -1104,7 +1104,7 @@
 | R16/FACT-P3-06 | P2 | ① | M6 与源码 TODO-05 对齐 | 五门/源码对照 |
 | R16/READER-A-01 | P2 | ① | 同 FACT-P1-01 | 五门/源码对照 |
 | R16/READER-A-02 | P2 | ① | x86 stub 两实参与 rsi/rax 链讲清 | 五门/源码对照 |
-| R16/READER-A-03 | P2 | ② | 跨文档链接基址（B-46/C-18 门），修于 R18 | 五门/源码对照
+| R16/READER-A-03 | P2 | ① | 跨文档链接统一为文档相对路径；6 个 .md 链接全部可解析 | 五门/QEMU/U-Boot 门
 | R16/READER-A-04 | P2 | ① | §4.4 字段表空行修复 | 五门/源码对照 |
 | R16/READER-A-05 | P2 | ① | §5.4 改 M1–M17 并点名 M17 | 五门/源码对照 |
 | R16/READER-A-06 | P2 | ① | §2.8 证据指针改 §2.3/§2.5 与 §2.6.1 | 五门/源码对照 |
