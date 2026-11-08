@@ -80,7 +80,7 @@ use minix_plat::x86_64::early_console;
 use minix_platform;
 use minix_kernel::boot_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -540,29 +540,23 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order).
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+    unsafe { minix_platform::init_from_kinfo(&kernel_info) };
 
     // 3. Production Phase B: protection + trap entry. Then the carrier
     // seam: re-register the dispatcher so vector-14-from-CPL3 lands in
     // the E5(d) arm while every other vector keeps production routing.
-    minix_kernel::init_protection(&result.kernel_info);
+    minix_kernel::init_protection(&kernel_info);
     register_trap_dispatchers(faultloop_trap_dispatch, minix_kernel::trap_dispatch::x86_syscall_dispatch_body);
     early_console::write_str("  protection + IDT live; fault-loop dispatcher registered\n");
 
@@ -571,7 +565,7 @@ fn main() -> Status {
     early_console::write_str("  clock + controller initialized\n");
 
     // 5. Process table (Phase C) + SMP state (Phase D).
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 
@@ -584,7 +578,7 @@ fn main() -> Status {
     // ── E5(d) stages ──
 
     // Adopt + map/query/unmap legs over the live root.
-    if !run_self_pt_legs(result.root_page.0) {
+    if !run_self_pt_legs(root_page.0) {
         write_kbox(0, 0);
         fail();
     }
@@ -592,11 +586,11 @@ fn main() -> Status {
     // Map the three user pages (code exec; data/stack rw; CPL3).
     unsafe {
         early_console::write_str("  map: code\n");
-        map_user_page(result.root_page.0, USER_CODE_VA, USER_CODE_PHYS, true, true);
+        map_user_page(root_page.0, USER_CODE_VA, USER_CODE_PHYS, true, true);
         early_console::write_str("  map: data\n");
-        map_user_page(result.root_page.0, USER_DATA_VA, USER_DATA_PHYS, true, false);
+        map_user_page(root_page.0, USER_DATA_VA, USER_DATA_PHYS, true, false);
         early_console::write_str("  map: stack\n");
-        map_user_page(result.root_page.0, USER_STACK_VA, USER_STACK_PHYS, true, false);
+        map_user_page(root_page.0, USER_STACK_VA, USER_STACK_PHYS, true, false);
     }
     early_console::write_str("  user pages mapped (FAULT_VA intentionally absent)\n");
 

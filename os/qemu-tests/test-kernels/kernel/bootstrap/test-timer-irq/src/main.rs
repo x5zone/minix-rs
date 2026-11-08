@@ -32,7 +32,7 @@ use minix_kernel::boot_alloc;
 use minix_platform;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -159,20 +159,14 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // 3. Protection (Phase B, first half).
@@ -197,13 +191,13 @@ fn main() -> Status {
     // 5. Clock + interrupt controller (kmain Phase B order) — PIT IRQ line
     // stays masked here; the controller's mask_all state is the boot-time
     // starting state.
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+    unsafe { minix_platform::init_from_kinfo(&kernel_info) };
     minix_kernel::init_clock_and_interrupts();
     early_console::write_str("  clock + controller initialized (all lines masked)\n");
 
     // 6. Process table (Phase C) + SMP state (Phase D) — clock_irq_handler
     // reads both for accounting.
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 

@@ -182,11 +182,17 @@ struct DtbArrays {
 }
 
 /// Owned projection tables returned by [`DtbMemoryMap::collect_owned`].
+///
+/// The source records ride along so a caller that keeps its own semantic
+/// tables (the U-Boot shim's `BootStorage`) does not need a second,
+/// `'static` collection just to obtain the provenance list.
 pub struct DtbMapOwned {
     free: [MemoryRegion; DTB_MEMMAP_MAX],
     free_len: usize,
     reserved: [MemoryRegion; DTB_MEMMAP_MAX],
     reserved_len: usize,
+    sources: [SourceRecord; DTB_SOURCE_MAX],
+    sources_len: usize,
 }
 
 impl DtbMapOwned {
@@ -198,6 +204,11 @@ impl DtbMapOwned {
     /// Reachable-but-never-reallocated spans.
     pub fn reserved(&self) -> &[MemoryRegion] {
         &self.reserved[..self.reserved_len]
+    }
+
+    /// Per-declaration provenance records for the two tables above.
+    pub fn sources(&self) -> &[SourceRecord] {
+        &self.sources[..self.sources_len]
     }
 }
 
@@ -1383,6 +1394,8 @@ impl DtbMemoryMap<'_> {
             free_len: arrays.free_n,
             reserved: arrays.reserved,
             reserved_len: arrays.reserved_n,
+            sources: arrays.sources,
+            sources_len: arrays.sources_n,
         })
     }
 

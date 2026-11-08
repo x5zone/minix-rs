@@ -30,7 +30,7 @@
 //! # Boot flow
 //!
 //! AAVMF (QEMU virt UEFI firmware) → this .efi → hand-built
-//! `BootPrepareResult` → production phases in kmain order. Deviations from
+//! `KernelInfo` → production phases in kmain order. Deviations from
 //! the x86 sibling, each bounded: clock init skipped (a no-tick,
 //! single-process story), `smp_init` skipped (one core runs everything; SMP
 //! parity is deferred). The platform global is installed through
@@ -55,7 +55,7 @@ use minix_types::{PhysBytes, VirBytes};
 use minix_plat::arm64::early_console;
 use minix_kernel::boot_alloc;
 use minix_platform;
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -568,24 +568,18 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order).
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+    unsafe { minix_platform::init_from_kinfo(&kernel_info) };
     early_console::write_str("  platform desc installed\n");
 
     // 3. Protection + trap entry.
@@ -620,12 +614,12 @@ fn main() -> Status {
     early_console::write_str("  protection live; carrier vectors on VBAR_EL1\n");
 
     // 4. Kernel information page (Phase B.5).
-    minix_kernel::init_kerninfo(&result.kernel_info);
+    minix_kernel::init_kerninfo(&kernel_info);
     early_console::write_str("  kerninfo page published\n");
 
     // 5. Process table (Phase C) — the VM branch loads the embedded
     //    rt-birth ELF.
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 

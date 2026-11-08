@@ -50,6 +50,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::alloc::{GlobalAlloc, Layout};
 use boot_shim::opensbi_helpers::RiscvUbootBootShim;
+
+/// The U-Boot sender's caller-owned semantic storage (R18 D-1 stage 2).
+/// Single-threaded boot; see `boot_shim::BootStorageCell`.
+static BOOT_STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
 use boot_shim::{raw_serial, raw_serial_line};
 use minix_boot::{ARENA_CAP, BootShim, Serializer};
 
@@ -427,10 +431,13 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     }
 
     // prepare_boot: root page + PT region + kernel copy + 12 module landings
-    // + KernelInfo (memmap/reserved/param from the argv DTB). The bump pool
-    // lives at 0x82000000-0x84000000 (existing constants; inside the
-    // measured free band).
-    let result = <RiscvUbootBootShim as BootShim>::prepare_boot(boot_shim::BOOT_PT_BUMP_PAGES);
+    // + semantic tables (memmap/reserved/sources/param/startup from the argv
+    // DTB), all written into the caller-owned storage. The bump pool lives at
+    // 0x82000000-0x84000000 (existing constants; inside the measured free band).
+    let result = <RiscvUbootBootShim as BootShim>::prepare_boot(
+        BOOT_STORAGE.get(),
+        boot_shim::BOOT_PT_BUMP_PAGES,
+    );
     raw_serial_line("boot-shim: kernel + 12 modules loaded (d73)");
 
     // The bootstrap root's PT pages come from the reserved region prepare_boot
@@ -438,90 +445,51 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // asserts on it.
     minix_kernel::boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
 
-    // The v1 arena: the next bump pages after the module landings, inside
-    // the same pool — identity-mapped by the bootstrap root once enabled
-    // (the same coverage the x86/aarch64 senders rely on for their arenas).
-    let arena_pa = boot_shim::opensbi_helpers::bump_alloc_pages(ARENA_CAP / 4096)
-        .expect("boot-shim: out of bump memory (arena)");
+    // The v1 arena was allocated inside prepare_boot (same pool, after the
+    // module landings) and named by a startup record there. The bootstrap root
+    // identity-maps it once enabled.
+    let arena_pa = result.arena_pa;
     // SAFETY: fresh bump pages below the identity bound; nothing else writes
     // them, and the slice lives for the rest of this `!` function.
     let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa as *mut u8, ARENA_CAP) };
     let mut serializer = Serializer::new(arena, minix_boot::InputObjectId::DtbBootInput)
         .expect("handoff arena too small");
     serializer
-        .write_envelope(&result.kernel_info)
+        .write_envelope_report(&result.report)
         .expect("handoff envelope over capacity");
-    for region in result.kernel_info.memmap {
+    for region in result.report.memmap {
         serializer
             .push_memmap(*region)
             .expect("too many memmap regions for the handoff arena");
     }
     serializer.finish_memmap();
     serializer
-        .write_reserved_regions(result.kernel_info.reserved_regions)
+        .write_reserved_regions(result.report.reserved_regions)
         .expect("too many reserved regions for the handoff arena");
     serializer
-        .write_boot_modules(result.kernel_info.boot_modules)
+        .write_boot_modules(result.report.boot_modules)
         .expect("too many boot modules for the handoff arena");
     serializer
-        .write_platform_sources(result.kernel_info.platform_sources)
+        .write_platform_sources(result.report.platform_sources)
         .expect("too many platform sources for the handoff arena");
     serializer
-        .write_param_buf(result.kernel_info.param_buf)
+        .write_param_buf(result.report.param_buf)
         .expect("param_buf over capacity");
     serializer
-        .write_sources(result.kernel_info.memmap_sources)
+        .write_sources(result.report.memmap_sources)
         .expect("too many memory-map source records for the handoff arena");
-    // Canonical startup set (D01-F07): kernel + modules (already in
-    // `result.kernel_info.startup_objects`) + root page + bump pool + the v1
-    // arena — the bootstrap allocations a provenance consumer must see. The
-    // root/bump/arena values are only known at this serialization point, so
-    // the extension happens here rather than in `prepare_boot`.
-    static mut STARTUP_FULL: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
-        [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
-    // SAFETY: single-threaded boot path; this landing is written once below
-    // and read only through the slice handed to `write_startup`.
-    let startup_full = unsafe {
-        let base = result.kernel_info.startup_objects;
-        assert!(
-            base.len() + 3 <= minix_boot::WIRE_STARTUP_CAP,
-            "boot-shim: startup-object partition over capacity"
-        );
-        let slot = core::ptr::addr_of_mut!(STARTUP_FULL) as *mut minix_boot::SourceRecord;
-        for (i, rec) in base.iter().enumerate() {
-            slot.add(i).write(*rec);
-        }
-        let mut n = base.len();
-        slot.add(n).write(minix_boot::startup_record(
-            n as u16,
-            result.root_page.0,
-            result.root_page.0 + 4096,
-        ));
-        n += 1;
-        slot.add(n).write(minix_boot::startup_record(
-            n as u16,
-            result.bump_base,
-            result.bump_end,
-        ));
-        n += 1;
-        slot.add(n).write(minix_boot::startup_record(
-            n as u16,
-            arena_pa,
-            arena_pa + ARENA_CAP as u64,
-        ));
-        n += 1;
-        core::slice::from_raw_parts(slot, n)
-    };
+    // Canonical startup set (D01-F07) was completed inside prepare_boot:
+    // kernel + modules + root + bump + arena. The report borrows the same
+    // storage, so this write needs no second landing array.
     serializer
-        .write_startup(startup_full)
+        .write_startup(result.report.startup_objects)
         .expect("too many startup-object records for the handoff arena");
 
     raw_serial_line("boot-shim: [raw] entering kernel image v1");
     // SAFETY: the bootstrap root was enabled by `enter_kernel_image_v1`
     // itself; the arena is identity-mapped by it; the jump lands on the
     // receiver's high-half `_start` with `a0` = arena PA.
-    let report = minix_boot::BootReport::from_kernel_info(&result.kernel_info);
-    minix_kernel::enter_kernel_image_v1(arena_pa, &report, result.root_page)
+    minix_kernel::enter_kernel_image_v1(arena_pa, &result.report, result.root_page)
 }
 
 #[panic_handler]

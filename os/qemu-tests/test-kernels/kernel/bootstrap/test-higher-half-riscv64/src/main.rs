@@ -20,7 +20,7 @@ use minix_plat::riscv64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_boot::{KernelInfo, MemoryRegion};
 
 // ── Global allocator (bump allocator on a static heap) ──
 use core::alloc::{GlobalAlloc, Layout};
@@ -139,20 +139,14 @@ pub extern "C" fn rust_main() -> ! {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     // 2. Register boot-stage page table allocator
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. arch_boot performs identity map + kernel map + enable MMU,
     //    then calls HigherHalf::jump_to_kmain → kmain (qemu_test).
-    minix_kernel::arch_boot(&result.kernel_info, result.root_page);
+    minix_kernel::arch_boot(&kernel_info, root_page);
 
     // NOTREACHED — arch_boot calls HigherHalf::jump_to_kmain which never returns.
 }

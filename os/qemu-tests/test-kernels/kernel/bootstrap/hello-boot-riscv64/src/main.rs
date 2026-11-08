@@ -15,7 +15,7 @@
 //! `kernel.elf` from the FAT partition. In this QEMU test, however, the
 //! kernel is loaded directly by QEMU's `-kernel` flag — there is no U-Boot,
 //! no FAT filesystem, and no `BootFileTable`. We therefore construct
-//! `BootPrepareResult` directly with hardcoded values, bypassing the
+//! `KernelInfo` directly with hardcoded values, bypassing the
 //! `BootShim` trait. The `arch_boot_impl` path is still fully exercised.
 
 #![no_std]
@@ -28,7 +28,7 @@ use minix_plat::riscv64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_boot::{KernelInfo, MemoryRegion};
 
 // ── Global allocator (bump allocator on a static heap) ──
 // UEFI targets get this from the `uefi` crate's `global_allocator` feature.
@@ -133,7 +133,7 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
 pub extern "C" fn rust_main() -> ! {
     early_console::write_str("### Booting Minix-RS hello-boot (riscv64, Paging trait)...\n");
 
-    // 1. Construct BootPrepareResult directly (no U-Boot / BootFileTable
+    // 1. Construct KernelInfo directly (no U-Boot / BootFileTable
     //    in the QEMU -kernel test scenario).
     let memmap: &'static [MemoryRegion] = &MEMMAP;
 
@@ -158,19 +158,13 @@ pub extern "C" fn rust_main() -> ! {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     // 2. Register boot-stage page table allocator
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + enable Sv39
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&kernel_info, root_page);
 
     // If we reach here, paging is enabled and the CPU can still execute.
     early_console::write_str("Hello, World!\n");

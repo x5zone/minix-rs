@@ -23,7 +23,7 @@ use minix_arch::pt_alloc;
 use minix_plat::riscv64::early_console;
 use minix_kernel::boot_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_boot::{KernelInfo, MemoryRegion};
 
 #[unsafe(link_section = ".bss")]
 static mut HEAP: [u8; 0x10000] = [0u8; 0x10000];
@@ -126,16 +126,10 @@ extern "C" fn rust_main(_boot_hart: u64, _dtb_phys: u64) -> ! {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled (post-MMU shutdown path)\n");
 
     early_console::write_str("  requesting shutdown via sifive_test FINISHER_PASS\n");

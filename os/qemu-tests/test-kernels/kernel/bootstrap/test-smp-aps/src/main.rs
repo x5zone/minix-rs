@@ -26,7 +26,7 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use minix_arch::pt_alloc;
 use minix_arch::x86_64::paging::X86_64Paging;
-use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_boot::{BootModule, KernelInfo, MemoryRegion, PlatformDescSource};
 use minix_kernel::boot_alloc;
 use minix_plat::x86_64::early_console;
 use minix_platform;
@@ -209,14 +209,23 @@ fn main() -> Status {
     // Must run before exit_boot_services (reads the UEFI config table for
     // the ACPI RSDP); the kernel's init_from_kinfo parses the first source
     // that succeeds — release builds have no QemuVirt fallback.
-    let platform_sources = uefi_helpers::find_platform_sources();
+    static mut PLATFORM_SOURCES: [PlatformDescSource; 4] = [
+        PlatformDescSource::new(minix_boot::RSDP, PhysBytes(0));
+        4
+    ];
+    // SAFETY: single-threaded boot; the array is filled once here and the
+    // slice is read for the rest of the run.
+    let platform_sources: &'static [PlatformDescSource] = unsafe {
+        let sources = &mut *core::ptr::addr_of_mut!(PLATFORM_SOURCES);
+        let n = uefi_helpers::find_platform_sources_into(sources);
+        &sources[..n]
+    };
 
     let kernel_info = KernelInfo {
         memmap: &MEMMAP,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(0x200_000),
         kern_size: 0x200_000,
-        free_upper_idx: Some(280),
         user_sp: VirBytes(0x0000_7fff_ffff_f000),
         kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
         syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
@@ -228,12 +237,6 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe {
@@ -241,18 +244,18 @@ fn main() -> Status {
     }
 
     // 2. Paging (Phase A).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order) — init_protection
     // reads the topology to program the BSP's GS area.
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+    unsafe { minix_platform::init_from_kinfo(&kernel_info) };
 
     // 3. Production Phase B: protection + trap entry (fills the
     // PROTECTION/TRAP_ENTRY globals — the AP tail's init_ap consumes them).
-    minix_kernel::init_protection(&result.kernel_info);
+    minix_kernel::init_protection(&kernel_info);
     early_console::write_str("  protection + IDT live (production phase)\n");
 
     // 4. Clock + interrupt controller (kmain Phase B order).
@@ -260,7 +263,7 @@ fn main() -> Status {
     early_console::write_str("  clock + controller initialized\n");
 
     // 5. Process table (Phase C) + SMP state (Phase D).
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 

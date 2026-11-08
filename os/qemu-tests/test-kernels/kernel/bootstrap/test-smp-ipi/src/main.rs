@@ -30,7 +30,7 @@ use minix_kernel::boot_alloc;
 use minix_platform;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -155,29 +155,23 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order) — init_protection
     // reads the topology to program the BSP's GS area.
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+    unsafe { minix_platform::init_from_kinfo(&kernel_info) };
 
     // 3. Production Phase B: protection + trap entry (fills the
     // PROTECTION/TRAP_ENTRY globals — the AP tail's init_ap consumes them).
-    minix_kernel::init_protection(&result.kernel_info);
+    minix_kernel::init_protection(&kernel_info);
     early_console::write_str("  protection + IDT live (production phase)\n");
 
     // 4. Clock + interrupt controller (kmain Phase B order).
@@ -185,7 +179,7 @@ fn main() -> Status {
     early_console::write_str("  clock + controller initialized\n");
 
     // 5. Process table (Phase C) + SMP state (Phase D).
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 

@@ -23,7 +23,7 @@ use minix_plat::x86_64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo};
+use minix_boot::{KernelInfo};
 use boot_shim::uefi_helpers;
 use uefi::boot::AllocateType;
 use uefi::mem::memory_map::MemoryType;
@@ -85,12 +85,6 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     // N-5 probe: a LOADER_DATA page allocated *after* the memmap snapshot,
     // below 4 GiB — the historical shape of the shim's pool payload pages
@@ -117,11 +111,11 @@ fn main() -> Status {
     let probe_post_ebs = probe_checksum(probe_pa);
 
     // 2. Register boot-stage page table allocator
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + high-half map + enable paging
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     let probe_post_enable = probe_checksum(probe_pa);
 
     early_console::write_str("  n5: pa=0x");
@@ -144,7 +138,7 @@ fn main() -> Status {
     // listed its physical range as conventional, the page holds live payload
     // while being advertised as free — the exact precondition for a later
     // allocator (VM PMM) to hand it out and zero it.
-    let in_free = result.kernel_info.memmap.iter().any(|r| {
+    let in_free = kernel_info.memmap.iter().any(|r| {
         probe_pa >= r.base.0 && probe_pa < r.base.0 + r.len as u64
     });
     early_console::write_str(" in_snapshot_free=");

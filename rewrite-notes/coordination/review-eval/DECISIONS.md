@@ -84,7 +84,7 @@
 
 | decision_id | reviewer_verdict | user_decision | decision_reason | scope | implementation_status | evidence | reopen_condition |
 |---|---|---|---|---|---|---|---|
-| D-013（R18 D-1） | NOT PASS（开放）：生产者侧 `&'static` 切片是假所有权；A1 方向获第三方评审同意 | 采 A1：`BootStorage`（调用方定长数组）+ `BootReport<'a>` 视图；内核侧 `.bss` 存储不动；分腿迁移 | 长期价值最大且不改 wire；否决 B（只改 U-Boot） | cross-crate | 已实施（第一阶段：UEFI 腿）；U-Boot 腿迁移登记为 F-R18-01 | `BootStorage`/`BootReport` + UEFI storage 路径；minix-boot 184 / boot-shim 135 / kernel 868；QEMU 三门 PASS | 迁移破坏任一起动腿或既有不变量 |
+| D-013（R18 D-1） | NOT PASS（开放）：生产者侧 `&'static` 切片是假所有权；A1 方向获第三方评审同意 | 采 A1：`BootStorage`（调用方定长数组）+ `BootReport<'a>` 视图；内核侧 `.bss` 存储不动；分腿迁移 | 长期价值最大且不改 wire；否决 B（只改 U-Boot） | cross-crate | 已实施（两腿：UEFI + U-Boot） | `BootStorage`/`BootReport` + 两腿 storage 路径；minix-boot 183 / boot-shim 135 / kernel 868；QEMU 三门 PASS | 迁移破坏任一起动腿或既有不变量 |
 | D-014（R18 D-2） | NOT PASS（开放）：arena wire 分区与语义分区逐区双写，两份内存图可能漂移 | 采 A2：唯一语义来源，wire 从同源编码、接收侧解码；删 arena 语义分区；wire 版本 8→9 + 版本拒绝负控 | 语义区仅服务发送侧跳转前的 `KernelInfo`，可移入 shim `.bss`；不做发送侧往返 | cross-crate | 已实施 | wire v9；语义分区删除（arena 8 页，source@7872、end@30624）；版本拒绝负控；宿主测试 184/135/868 | wire v9 布局或容量不足，或旧版本混用 |
 | D-015（R18 D-3） | P2：同一物理池两个 bump 分配器，算法与边界无共同来源 | 采 C+A：`BumpRegion` 纯核心、两独立实例、固定分区；编译期常量断言 + 运行期区间断言；B（合并分配器）否决 | 合并游标已被 QEMU U-Boot 门 3/6 panic 证伪；两实例本来就必须分开 | in-scope | 已实施 | `minix-boot::BumpRegion` + 5 项单测；`prepare_boot` 运行期断言；`cargo test -p minix-boot` 180 通过 | 池分区或分配顺序改变 |
 | D-016（R18 D-4） | NOT PASS（开放）：`FileLoader` 返回 `Vec`，强制整份拷贝且接口不表达借用 | 采 A：`FileBytes<'a>`（`Borrowed`/`Owned`）；借用期不可覆盖、源/目标不交检查保留、不长期独占 loader | 显式枚举比 `Cow<'static>` 更贴合跨镜像两条腿；C（静态缓冲）仅作原型 | cross-crate | 已实施 | `FileBytes` Borrowed/Owned；U-Boot 借出、UEFI 拥有；loader 测试与 QEMU 三门 PASS | 借用腿无法满足覆盖检查 |

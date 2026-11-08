@@ -83,5 +83,5 @@
 
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
-| F-R18-01 | D-1 第二阶段 | U-Boot shim 腿仍以一次性 `.bss` 静态量 + `Box::leak`（模块表、平台源、参数）持有载荷；所有权真实但形态未统一 | 已登记（code-excellence 下一批） | `prepare_boot` 接收 `&mut BootStorage`，`BootPrepareResult` 携带报告视图；判据与截止见 `OPEN-DEBT.md` |
+| F-R18-01 | D-1 第二阶段 | U-Boot shim 腿仍以一次性 `.bss` 静态量 + `Box::leak`（模块表、平台源、参数）持有载荷；所有权真实但形态未统一 | ✅ 已修（R18 补记） | `prepare_boot(&mut BootStorage, bump_pages)` 填 storage；arena 在函数内分配、startup 五类记录返回前写齐；`BootPrepareResult<'a>` 携带报告；QEMU U-Boot shim 6/6 PASS |
 | F-R18-02 | P-2 第一版边界 | 表结构/链接门不做标题锚点校验与外部链接存活检查 | 已登记（workflow 候选） | 出现需要时在 `WORKFLOW-VERSIONS.md` 立版本候选，附真实案例 |

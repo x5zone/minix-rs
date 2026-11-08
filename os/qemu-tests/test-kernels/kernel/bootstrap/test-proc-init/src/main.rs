@@ -30,7 +30,7 @@ use minix_arch::{DirectMapArch, CurrentDirectMap, ProtectionArch, TrapEntryArch,
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -204,12 +204,6 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
 
@@ -217,9 +211,9 @@ fn main() -> Status {
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Enable paging (Phase A)
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // 3. Phase B: protection only (no clock/interrupt needed for proc table init)
@@ -241,7 +235,7 @@ fn main() -> Status {
 
     // 4. Phase C: init_proc_and_boot
     early_console::write_str("  calling init_proc_and_boot...\n");
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     // SAFETY: single-threaded boot context in this test kernel; the
     // kernel's own init_proc_and_boot uses the same accessor
     // (proc_table_boot_unchecked, lib.rs:1438).

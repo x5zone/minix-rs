@@ -42,7 +42,7 @@ use minix_types::{PhysBytes, VirBytes};
 use minix_plat::x86_64::early_console;
 use minix_kernel::boot_alloc;
 use minix_platform;
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -162,42 +162,36 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A) — identity + higher-half + Direct Map coverage.
-    minix_kernel::store_kernel_info(&result.kernel_info);
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    minix_kernel::store_kernel_info(&kernel_info);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order).
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+    unsafe { minix_platform::init_from_kinfo(&kernel_info) };
 
     // 3. Production Phase B: protection + trap entry + clock.
-    minix_kernel::init_protection(&result.kernel_info);
+    minix_kernel::init_protection(&kernel_info);
     early_console::write_str("  protection + IDT live (production phase)\n");
 
     minix_kernel::init_clock_and_interrupts();
     early_console::write_str("  clock + controller initialized\n");
 
     // 4.5. Kernel information page (kmain Phase B.5).
-    minix_kernel::init_kerninfo(&result.kernel_info);
+    minix_kernel::init_kerninfo(&kernel_info);
     early_console::write_str("  kerninfo page published\n");
 
     // 5. Process table (Phase C) — the VM branch loads sysboot-rx into the
     // VM boot process; the RS slot gets its privilege + zeroed entry (the
     // real RS image would be exec'd later; this carrier loads it below).
     early_console::write_str("  calling init_proc_and_boot\n");
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     early_console::write_str("  init_proc_and_boot done\n");
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
@@ -246,10 +240,10 @@ fn main() -> Status {
         let root_phys = minix_kernel::current_root_phys()
             .expect("test-sysboot: bootstrap root not set — arch_boot_impl must run first");
         let access = minix_arch::CurrentDirectMap::default();
-        let tx_module = &result.kernel_info.boot_modules()[1]; // "rs"
+        let tx_module = &kernel_info.boot_modules()[1]; // "rs"
         let tx = load_process_elf::<CurrentPaging, _>(
             tx_module,
-            &result.kernel_info,
+            &kernel_info,
             root_phys,
             &mut vm_alloc,
             &access,

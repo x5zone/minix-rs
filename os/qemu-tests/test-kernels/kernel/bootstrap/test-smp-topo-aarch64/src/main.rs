@@ -100,7 +100,9 @@ fn main() -> Status {
 
     // 1. Discover platform sources through boot-shim's real scan
     //    (ACPI2 RSDP preferred over the absent DTB on this firmware).
-    let sources = boot_shim::find_platform_sources();
+    let mut source_slots = [PlatformDescSource::new(minix_boot::RSDP, minix_types::PhysBytes(0)); 4];
+    let n = boot_shim::find_platform_sources_into(&mut source_slots);
+    let sources = &source_slots[..n];
     early_console::write_str("  platform sources: ");
     early_console::write_hex(sources.len() as u64);
     early_console::write_str("\n");

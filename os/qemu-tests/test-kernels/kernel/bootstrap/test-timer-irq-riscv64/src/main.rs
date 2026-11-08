@@ -11,7 +11,7 @@
 //!
 //! Boot flow mirrors the x86 sibling: OpenSBI (-bios default) → `-kernel`
 //! at 0x80200000 → BSS zero + stack setup (carrier shape) →
-//! hand-built `BootPrepareResult` (DTB from OpenSBI's a1) → paging
+//! hand-built `KernelInfo` (DTB from OpenSBI's a1) → paging
 //! (arch_boot_impl) → platform desc → init_protection (production trap
 //! legs registered + stvec loaded) → init_clock_and_interrupts →
 //! init_proc_and_boot + init_smp_state → boot_init_timer → BKL held →
@@ -38,7 +38,7 @@ use core::panic::PanicInfo;
 
 use minix_arch::pt_alloc;
 use minix_arch::riscv64::paging::Riscv64Paging;
-use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_boot::{BootModule, KernelInfo, MemoryRegion};
 use minix_kernel::boot_alloc;
 use minix_plat::riscv64::early_console;
 use minix_types::{PhysBytes, VirBytes};
@@ -223,7 +223,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         "### test_timer_irq (riscv64): SBI timer → production stvec kernel leg → uptime\n",
     );
 
-    // 1. Hand-built BootPrepareResult (hello-boot-riscv64 shape).
+    // 1. Hand-built KernelInfo (hello-boot-riscv64 shape).
     let root_page = PhysBytes(bump(1).expect("root page"));
     // 256 pages (1 MB): the identity map's 2-MiB fallback granularity
     // spends a handful of tables (rt-birth-riscv64 budget finding).
@@ -259,18 +259,12 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     // 2. Paging (Phase A): identity + Sv39 enable (production path).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
     let _info =
-        minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+        minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — the DTB pointer OpenSBI passed in
@@ -294,7 +288,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // riscv64_kernel_trap_vector. No carrier-supplied trap code follows
     // (the rt-birth carrier's post-init stvec re-point is gone — the
     // production leg is the thing under test).
-    minix_kernel::init_protection(&result.kernel_info);
+    minix_kernel::init_protection(&kernel_info);
     early_console::write_str("  protection live; production kernel leg on stvec\n");
 
     // 4. Clock + interrupt controller (kmain Phase B order): PLIC init
@@ -304,7 +298,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 
     // 5. Process table (Phase C) + SMP state — clock_irq_handler reads
     // both for accounting.
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 

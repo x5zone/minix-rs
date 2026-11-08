@@ -21,7 +21,7 @@ use minix_plat::arm64::early_console;
 use minix_kernel::boot_alloc;
 use core::panic::PanicInfo;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo};
+use minix_boot::{KernelInfo};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -53,18 +53,12 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
 
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled (post-MMU shutdown path)\n");
 
     early_console::write_str("  requesting shutdown via semihosting SYS_EXIT\n");

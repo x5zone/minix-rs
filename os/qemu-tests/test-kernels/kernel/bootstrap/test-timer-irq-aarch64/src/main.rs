@@ -23,7 +23,7 @@
 //! the chain needs it.
 //!
 //! Boot flow mirrors the x86 sibling: AAVMF → this .efi → hand-built
-//! `BootPrepareResult` → paging (arch_boot_impl) → platform desc
+//! `KernelInfo` → paging (arch_boot_impl) → platform desc
 //! (ACPI/UEFI handoff) → trap entry (production legs registered + VBAR
 //! loaded) → init_clock_and_interrupts (GIC + software clock) →
 //! init_proc_and_boot + init_smp_state → boot_init_timer → BKL held →
@@ -49,7 +49,7 @@ use core::panic::PanicInfo;
 use boot_shim::uefi_helpers;
 use minix_arch::arm64::paging::AArch64Paging;
 use minix_arch::pt_alloc;
-use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_boot::{BootModule, KernelInfo, MemoryRegion};
 use minix_kernel::boot_alloc;
 use minix_plat::arm64::early_console;
 use minix_platform;
@@ -252,12 +252,6 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe {
@@ -265,10 +259,10 @@ fn main() -> Status {
     }
 
     // 2. Paging (Phase A).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
     let _info =
-        minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
+        minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — this carrier targets QEMU virt
@@ -312,7 +306,7 @@ fn main() -> Status {
 
     // 5. Process table (Phase C) + SMP state — clock_irq_handler reads
     // both for accounting.
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 

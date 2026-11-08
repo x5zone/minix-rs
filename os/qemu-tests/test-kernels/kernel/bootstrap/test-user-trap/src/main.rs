@@ -46,7 +46,7 @@ use minix_kernel::boot_alloc;
 use minix_platform;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -227,29 +227,23 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     uefi_helpers::exit_boot_services();
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery FIRST (kmain order) — init_protection
     // reads the topology to program the BSP's GS area.
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+    unsafe { minix_platform::init_from_kinfo(&kernel_info) };
 
     // 3. Production Phase B: protection + trap entry (IDT live — the
     // vector-33 gate is installed with DPL=3 by install_idt_handlers).
-    minix_kernel::init_protection(&result.kernel_info);
+    minix_kernel::init_protection(&kernel_info);
     early_console::write_str("  protection + IDT live (production phase)\n");
 
     // 4. Clock + interrupt controller (kmain Phase B order).
@@ -259,12 +253,12 @@ fn main() -> Status {
     // 4.5. Kernel information page (kmain Phase B.5) — publishes the
     // MINIX_KERNINFO page so the payload's round-2 call 6 returns OK with
     // the page VA instead of EBADCALL.
-    minix_kernel::init_kerninfo(&result.kernel_info);
+    minix_kernel::init_kerninfo(&kernel_info);
     early_console::write_str("  kerninfo page published\n");
 
     // 5. Process table (Phase C) + SMP state (Phase D).
     early_console::write_str("  calling init_proc_and_boot\n");
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     early_console::write_str("  init_proc_and_boot done\n");
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
@@ -287,11 +281,11 @@ fn main() -> Status {
     // vector 14, kernel mode, in the first bring-up attempt).
     unsafe {
         early_console::write_str("  map: code\n");
-        map_user_page(result.root_page.0, USER_CODE_VA, USER_CODE_PHYS, false, true);
+        map_user_page(root_page.0, USER_CODE_VA, USER_CODE_PHYS, false, true);
         early_console::write_str("  map: data\n");
-        map_user_page(result.root_page.0, USER_DATA_VA, USER_DATA_PHYS, true, false);
+        map_user_page(root_page.0, USER_DATA_VA, USER_DATA_PHYS, true, false);
         early_console::write_str("  map: stack\n");
-        map_user_page(result.root_page.0, USER_STACK_VA, USER_STACK_PHYS, true, false);
+        map_user_page(root_page.0, USER_STACK_VA, USER_STACK_PHYS, true, false);
     }
     early_console::write_str("  user pages mapped (code/data/stack, CPL3)\n");
 
@@ -360,7 +354,7 @@ fn main() -> Status {
         const PAGE_USER: u64 = 0x4;
         let addr_mask = 0x000f_ffff_ffff_f000;
         let leaf_idx = (HZ_BUF_VA >> 21) & 511;
-        let root = result.root_page.0;
+        let root = root_page.0;
         let pml4e = unsafe { core::ptr::read_volatile(root as *const u64) };
         unsafe { core::ptr::write_volatile(root as *mut u64, pml4e | PAGE_USER); }
         let pdp_base = pml4e & addr_mask;

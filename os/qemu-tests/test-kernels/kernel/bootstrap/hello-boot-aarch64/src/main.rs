@@ -16,7 +16,7 @@ use minix_plat::arm64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo};
+use minix_boot::{KernelInfo};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -53,22 +53,16 @@ fn main() -> Status {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     // --- Below this point, UEFI boot services are gone ---
     uefi_helpers::exit_boot_services();
 
     // 2. Register boot-stage page table allocator
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + enable MMU
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&kernel_info, root_page);
 
     // If we reach here, paging is enabled and the CPU can still execute.
     early_console::write_str("Hello, World!\n");

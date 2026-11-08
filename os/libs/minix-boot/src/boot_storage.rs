@@ -23,8 +23,11 @@
 use minix_types::{PhysBytes, VirBytes};
 
 use crate::boot_params::PARAM_BUF_CAP;
-use crate::handoff_v1::{WIRE_MEMMAP_CAP, WIRE_MODULE_CAP, WIRE_PLATFORM_CAP, WIRE_RESERVED_CAP};
-use crate::kernel_info::{BootModule, KernelInfo, MemoryRegion};
+use crate::handoff_v1::{
+    WIRE_MEMMAP_CAP, WIRE_MODULE_CAP, WIRE_PLATFORM_CAP, WIRE_RESERVED_CAP, WIRE_STARTUP_CAP,
+};
+use crate::kernel_info::{BootModule, MemoryRegion};
+use crate::memmap_source::{startup_record, SourceRecord, DTB_SOURCE_CAP};
 use crate::platform::{DTB, PlatformDescSource};
 
 const ZERO_REGION: MemoryRegion = MemoryRegion {
@@ -41,6 +44,8 @@ const ZERO_MODULE: BootModule = BootModule {
 /// The placeholder destination for an unused slot. Only ever read through the
 /// live prefix (`*_len`), so its contents are irrelevant.
 const ZERO_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, PhysBytes(0));
+
+const ZERO_RECORD: SourceRecord = startup_record(0, 0, 0);
 
 /// Fixed-capacity owner of the boot records a sender hands to the kernel.
 ///
@@ -59,6 +64,14 @@ pub struct BootStorage {
     platform_len: usize,
     param_buf: [u8; PARAM_BUF_CAP],
     param_len: usize,
+    /// Provenance records for the memmap/reserved tables (the DTB collector's
+    /// own capacity, 40).
+    memmap_sources: [SourceRecord; DTB_SOURCE_CAP],
+    memmap_sources_len: usize,
+    /// Startup-object records (kernel + modules + bootstrap objects), in the
+    /// wire partition's capacity.
+    startup_objects: [SourceRecord; WIRE_STARTUP_CAP],
+    startup_len: usize,
 }
 
 impl BootStorage {
@@ -75,6 +88,10 @@ impl BootStorage {
             platform_len: 0,
             param_buf: [0u8; PARAM_BUF_CAP],
             param_len: 0,
+            memmap_sources: [ZERO_RECORD; DTB_SOURCE_CAP],
+            memmap_sources_len: 0,
+            startup_objects: [ZERO_RECORD; WIRE_STARTUP_CAP],
+            startup_len: 0,
         }
     }
 
@@ -183,6 +200,55 @@ impl BootStorage {
         self.param_len = len;
     }
 
+    /// The full provenance-record slot array (the DTB collector writes here,
+    /// then commits the count with [`Self::set_memmap_sources_len`]).
+    pub fn memmap_source_slots_mut(&mut self) -> &mut [SourceRecord] {
+        &mut self.memmap_sources
+    }
+
+    /// Commit the live provenance-record prefix length.
+    pub fn set_memmap_sources_len(&mut self, len: usize) {
+        assert!(
+            len <= DTB_SOURCE_CAP,
+            "BootStorage: memmap-source length {len} exceeds capacity {DTB_SOURCE_CAP}"
+        );
+        self.memmap_sources_len = len;
+    }
+
+    /// The full startup-object slot array.
+    pub fn startup_slots_mut(&mut self) -> &mut [SourceRecord] {
+        &mut self.startup_objects
+    }
+
+    /// Commit the live startup-object prefix length.
+    pub fn set_startup_len(&mut self, len: usize) {
+        assert!(
+            len <= WIRE_STARTUP_CAP,
+            "BootStorage: startup length {len} exceeds capacity {WIRE_STARTUP_CAP}"
+        );
+        self.startup_len = len;
+    }
+
+    /// Append one startup-object record. Fails when the partition is full.
+    pub fn push_startup(&mut self, record: SourceRecord) -> Result<(), BootStorageFull> {
+        if self.startup_len >= WIRE_STARTUP_CAP {
+            return Err(BootStorageFull);
+        }
+        self.startup_objects[self.startup_len] = record;
+        self.startup_len += 1;
+        Ok(())
+    }
+
+    /// Live provenance records.
+    pub fn memmap_sources(&self) -> &[SourceRecord] {
+        &self.memmap_sources[..self.memmap_sources_len]
+    }
+
+    /// Live startup-object records.
+    pub fn startup_objects(&self) -> &[SourceRecord] {
+        &self.startup_objects[..self.startup_len]
+    }
+
     /// Live memmap entries.
     pub fn memmap(&self) -> &[MemoryRegion] {
         &self.memmap[..self.memmap_len]
@@ -226,6 +292,8 @@ impl BootStorage {
             boot_modules: self.boot_modules(),
             platform_sources: self.platform_sources(),
             param_buf: self.param_buf(),
+            memmap_sources: self.memmap_sources(),
+            startup_objects: self.startup_objects(),
             kern_virt_base,
             kern_phys_base,
             kern_size,
@@ -258,37 +326,17 @@ pub struct BootReport<'a> {
     pub boot_modules: &'a [BootModule],
     pub platform_sources: &'a [PlatformDescSource],
     pub param_buf: &'a [u8],
+    /// Provenance records for the two map tables (the DTB leg carries them
+    /// across the hop; the UEFI leg writes them during classification).
+    pub memmap_sources: &'a [SourceRecord],
+    /// Startup-object records (kernel + modules + bootstrap allocations).
+    pub startup_objects: &'a [SourceRecord],
     pub kern_virt_base: VirBytes,
     pub kern_phys_base: PhysBytes,
     pub kern_size: u64,
     pub user_sp: VirBytes,
     pub kern_stack_top: VirBytes,
     pub syscall_entry: VirBytes,
-}
-
-impl<'a> BootReport<'a> {
-    /// Borrow a genuine-`'static` [`KernelInfo`] as a report.
-    ///
-    /// Used by the U-Boot leg, whose payloads are owned by one-shot `.bss`
-    /// statics and leaked loader buffers (genuine process-lifetime owners)
-    /// until that leg's storage migration lands. The returned lifetime is
-    /// tied to the `KernelInfo` borrow, so this cannot fabricate ownership
-    /// from a shorter-lived source.
-    pub fn from_kernel_info(info: &'a KernelInfo) -> Self {
-        Self {
-            memmap: info.memmap,
-            reserved_regions: info.reserved_regions,
-            boot_modules: info.boot_modules,
-            platform_sources: info.platform_sources,
-            param_buf: info.param_buf,
-            kern_virt_base: info.kern_virt_base,
-            kern_phys_base: info.kern_phys_base,
-            kern_size: info.kern_size,
-            user_sp: info.user_sp,
-            kern_stack_top: info.kern_stack_top,
-            syscall_entry: info.syscall_entry,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -395,40 +443,4 @@ mod tests {
         storage.set_memmap_len(WIRE_MEMMAP_CAP + 1);
     }
 
-    #[test]
-    fn a_report_borrowed_from_a_kernel_info_carries_the_same_fields() {
-        static MODULES: [BootModule; 1] = [BootModule {
-            name: "vm",
-            start: PhysBytes(0x30_0000),
-            len: 0x1000,
-        }];
-        static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
-            base: PhysBytes(0x1000),
-            len: 0x2000,
-        }];
-        static RESERVED: [MemoryRegion; 1] = [MemoryRegion {
-            base: PhysBytes(0x9000),
-            len: 0x1000,
-        }];
-        let info = KernelInfo {
-            memmap: &MEMMAP,
-            reserved_regions: &RESERVED,
-            memmap_sources: &[],
-            startup_objects: &[],
-            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
-            kern_phys_base: PhysBytes(0x20_0000),
-            kern_size: 0x40_0000,
-            user_sp: VirBytes(minix_types::USER_STACK_TOP),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0000_0000),
-            boot_modules: &MODULES,
-            platform_sources: &[],
-            param_buf: b"ARCH=test\0",
-        };
-        let report = BootReport::from_kernel_info(&info);
-        assert_eq!(report.memmap.len(), 1);
-        assert_eq!(report.boot_modules[0].name, "vm");
-        assert_eq!(report.param_buf, b"ARCH=test\0");
-        assert_eq!(report.kern_phys_base.0, 0x20_0000);
-    }
 }

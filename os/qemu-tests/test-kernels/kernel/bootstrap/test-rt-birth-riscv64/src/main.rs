@@ -29,7 +29,7 @@
 //! # Boot flow
 //!
 //! OpenSBI (-bios default) → `-kernel` at 0x80200000 → BSS zero + stack
-//! setup (carrier shape) → hand-built `BootPrepareResult` (no
+//! setup (carrier shape) → hand-built `KernelInfo` (no
 //! U-Boot/BootFileTable in this scenario — hello-boot-riscv64 shape) →
 //! production phases in kmain order. Deviations from the x86 sibling,
 //! each bounded: `smp_init` skipped (no AP bring-up — one hart runs
@@ -56,7 +56,7 @@ use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
 use minix_plat::riscv64::early_console;
 use minix_kernel::boot_alloc;
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion};
 
 // ── Bump allocator on a static heap (hello-boot-riscv64 shape) ──
 #[unsafe(link_section = ".bss")]
@@ -436,7 +436,7 @@ unsafe extern "C" {
 extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     early_console::write_str("### test_rt_birth (riscv64): first minix-rt user binary on OpenSBI\n");
 
-    // 1. Hand-built BootPrepareResult (hello-boot-riscv64 shape — no
+    // 1. Hand-built KernelInfo (hello-boot-riscv64 shape — no
     //    U-Boot/BootFileTable in the QEMU -kernel scenario).
     let root_page = PhysBytes(bump(1).expect("root page"));
     // 256 pages (1 MB): the identity map's 2-MiB fallback granularity
@@ -479,17 +479,11 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         startup_objects: &[],
     };
 
-    let result = BootPrepareResult {
-        kernel_info,
-        root_page,
-        bump_base,
-        bump_end,
-    };
 
     // 2. Paging (Phase A): identity + Sv39 enable (production path).
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — the DTB pointer OpenSBI passed in
@@ -512,7 +506,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // 3. Protection + trap entry (production Phase B — stvec = the
     //    diagnostic vector). The carrier's U-ecall handler takes over
     //    stvec right after; the diagnostic vector keeps no state.
-    minix_kernel::init_protection(&result.kernel_info);
+    minix_kernel::init_protection(&kernel_info);
     // SAFETY: the stvec write points at the asm handler defined in this
     // module's `global_asm!`; the frame protocol is that handler's.
     unsafe {
@@ -555,12 +549,12 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 
     // 5. Kernel information page (production Phase B.5) — publishes the
     //    page the birth chain will trap-query.
-    minix_kernel::init_kerninfo(&result.kernel_info);
+    minix_kernel::init_kerninfo(&kernel_info);
     early_console::write_str("  kerninfo page published\n");
 
     // 6. Process table (Phase C) — the VM branch loads the embedded
     //    rt-birth ELF (segments, 64 KiB stack, ps_strings, boot context).
-    minix_kernel::init_proc_and_boot(&result.kernel_info);
+    minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 

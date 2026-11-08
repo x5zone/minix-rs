@@ -1189,7 +1189,7 @@
 
 | 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|
-| R18/DESIGN-02 | R14/R15/R16 DESIGN-02 | P1 | 设计/假所有权 | ① | `BootStorage` + `BootReport<'a>`；UEFI 腿改走 storage，内核入口收报告；U-Boot 腿第二阶段登记 F-R18-01 | `cargo test -p minix-boot` 184；`cargo test -p minix-kernel --features mock` 868 | 五门/QEMU 三门 |
+| R18/DESIGN-02 | R14/R15/R16 DESIGN-02 | P1 | 设计/假所有权 | ① | `BootStorage` + `BootReport<'a>`；UEFI 与 U-Boot 两腿都改走 storage，内核入口收报告；UBoot 的 arena 与 startup 记录也在 `prepare_boot` 内完成 | `cargo test -p minix-boot` 183；`cargo test -p minix-kernel --features mock` 868；QEMU U-Boot 6/6 | 五门/QEMU 三门 |
 | R18/DESIGN-04 | R14/R15/R16 DESIGN-04 | P2 | 设计/双写 | ① | 删除 arena 语义分区；wire v9；arena 8 页；分类同时写 storage 与 wire | `arena_partition_arithmetic_matches_the_design`；`rejects_bad_header_fields`（v8/v10 拒绝） | 五门/QEMU 三门 |
 | R18/DESIGN-05 | R14/R15/R16 DESIGN-05 | P2 | 设计/双分配器 | ① | 保留两实例；公共核心 `BumpRegion`；编译期分区断言 + `prepare_boot` 运行期断言 | `cargo test -p minix-boot`（`bump` 5 条）；QEMU U-Boot 6/6 | 五门/QEMU U-Boot |
 | R18/DESIGN-08 | R14/R15/R16 DESIGN-08 | P2 | 设计/强制拷贝 | ① | `FileBytes<'a>` 显式 Borrowed/Owned；U-Boot 借出、UEFI 拥有 | `cargo test -p boot-shim --features test-all` 135；`test_uboot_file_loader_reads_bytes_from_table` | 五门/QEMU 三门 |
