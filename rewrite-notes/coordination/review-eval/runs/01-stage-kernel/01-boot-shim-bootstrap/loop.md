@@ -990,7 +990,7 @@
 
 ### R19 §7 状态
 
-`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 未在 R19 处理，截止日顺延到 R20（R19 的“全修”只指 in-scope 面板项，不含这四项 ②）；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB19 判 NOT PASS（FACT-06 行号）后补修；meta R19 判 IMPROVED / NOT PASS（Trace integrity + 计数差 1），二次补修后三组探针均 FAIL、R18/R19 计数闭合；G8 本轮新增 80 条（仍远大于 0）；G9 ⑥ 项 D2-11/12 已实施，D1 其余方案不采纳。
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 的 F-R17-01..04 未在 R19 处理，截止日顺延到 R20（R19 的“全修”只指 in-scope 面板项，不含这四项 ②）；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB19 判 NOT PASS（FACT-06 行号）后补修；meta R19 最终判 IMPROVED / PASS（初次 NOT PASS 的 Trace integrity、A-09/B-12 处置错与 R18 范围误改均已清零；四组探针 FAIL、R18 98/R19 80 计数闭合）；G8 本轮新增 80 条（仍远大于 0）；G9 ⑥ 项 D2-11/12 已实施，D1 其余方案不采纳。
 
 ### R19 §8 给 meta-review 的不确定点
 

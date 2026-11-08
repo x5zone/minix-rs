@@ -12,23 +12,20 @@
 
 ## 结论速览
 
-**`IMPROVED`，但运行质量仍 `NOT PASS`。**
+**`IMPROVED`，运行质量 `PASS`（二次复核后）。**
 
-进步在产出层：R19 用四条独立冷读抓到 R18 修复批自己写进去的槽号算术错误（`961+k-1` → 应为 `961+k`），抓到 R18 接收侧复核的 release 回绕（D2-11）并落了 `checked_add` 与两条负控；面板误报率从 R18 的约 10.5% 降到约 1%；`BASELINE.txt` 这次与最新 fix head 逐项吻合（R18 meta 残留项已消）；六门、`minix-boot` 188、`boot-shim --lib` 135、`ebs_boundary_audit` 4 均可重放，逐文件计数闭合。
+进步在产出层：R19 用四条独立冷读抓到 R18 修复批自己写进去的槽号算术错误（`961+k-1` → 应为 `961+k`），抓到 R18 接收侧复核的 release 回绕（D2-11）并落了 `checked_add` 与两条负控；面板误报率从 R18 的约 10.5% 降到约 1%；`BASELINE.txt` 与最新 fix head 逐项吻合；六门、`minix-boot` 188、`boot-shim --lib` 135、`ebs_boundary_audit` 4 均可重放，逐文件计数闭合。
 
-以下第一至九节是**初次评审（`a140bb6a0` 时点）的原始读数**，保留不改。`7dbd07f6` 后的复核读数与结论变化见末尾“复核后记（2026-11-09）”。
+以下第一至九节是**初次评审（`a140bb6a0` 时点）的原始读数**，保留不改。`7dbd07f6` 与 `11200ab55` 后的两次复核读数与结论变化见末尾“复核后记（2026-11-09）”与“二次复核后记（2026-11-09）”。
 
-初次评审给出的三条不通过理由，`7dbd07f6` 已修掉前两条与第三条的主体：
+初评点名的三条，加上 `7dbd07f6` 引入的第四条，现已全部关闭：
 
-1. **删除探针只有 2/3 转红**（初评）→ 已修：删 R19 loop 段现报 `FAIL loop-sections`；三组删除/篡改探针全部 FAIL。
-2. **指标分档不可复算**（初评）→ 已修：R19 台账与 `metrics.md` 现在都给出 ① 13 / ② 0 / ③ 14 / ④ 53 / ⑤ 0 = 80。
-3. **`READER-A-09` 未修**（初评）→ 已修：§6.1 复算命令补了 `os/kernel/src/lib.rs`、`os/kernel-image/src/main.rs`、`os/kernel-image/src/bootface*.rs`。
+1. **删除探针只有 2/3 转红**（初评）→ 已修：删 R19 loop 段现报 `FAIL loop-sections`；四组探针（删 R18 台账、删 R19 台账、删 R19 loop、篡改 R19 指标）全部 FAIL。
+2. **指标分档不可复算**（初评）→ 已修：R19 台账与 `metrics.md` 都给出 ① 13 / ② 0 / ③ 14 / ④ 53 / ⑤ 0 = 80；R18 台账与 `metrics.md` 都给出 ① 21 / ② 0 / ③ 21 / ④ 56 / ⑤ 0 = 98。
+3. **`READER-A-09` 未修**（初评）→ 已修：§6.1 复算命令补了 `os/kernel/src/lib.rs`、`os/kernel-image/src/main.rs`、`os/kernel-image/src/bootface*.rs`，并如实标注“串前缀约 10/16 组”。
+4. **R18 台账 READER-B 范围被误改**（`7dbd07f6` 引入）→ 已修：`11200ab55` 改为 `READER-B-01..14、READER-B-16..20`（排除 B-15、保留 B-12），R18 段展开为 98 个唯一 ID。
 
-复核仍判 `NOT PASS`，但阻断项换成一条 `7dbd07f6` 新引入的旁账错误：
-
-- **R18 台账的 READER-B 范围被改错。** 该提交把 R18 段的 `READER-B-01..20` 改成 `READER-B-01..11、READER-B-13..20`，排掉的是 `READER-B-12`；但 R18 的 ③ 是 `READER-B-15`（`defect-ledger.md:1324`）。结果 R18 面板的 B-12 失去处置行，B-15 仍在 ④ 范围内由单行 ③ 精化覆盖，R18 台账唯一 ID 从 20 条降到 19 条（分段展开 97 ≠ metrics 的 98）。这条改动是把 R19 的“排除 B-12”误用到 R18 段；R19 段本身没有范围行，B-12 已是单独 ③，不需要动。
-
-另有若干 P3 残留（`loop.md §3/§7/§8` 计数与状态未同步、R19 台账 FACT-03..06 行仍写 358–361、`metrics.md` 的回读行仍写“待提交后执行”、覆盖门 `scoped or ledger_set` 的空集回退、轮次标签子串匹配），见复核后记。
+剩余是 CONCERN 与 P3，不构成 FAIL：Precision 的分母仍含 10 条 D1 方案否决与若干跨角色重复（B-52 仍 OPEN）；Independence 的面板期间工作树漂移未消除（B-53 仍 OPEN）；Scope 的 `23a001e40` 提交信息仍写“R19 全修”；Cost 的 token 仍“未采集”；§3.4.1 图例列 `R14/R16/R17/R18` 而未列 `R19`（有“等”字，属可选 P3）。
 
 ## 一、Detection — PASS
 
@@ -136,7 +133,7 @@ A-01 / B-01 / C-01 / FACT-01 同一处错误被四个材料隔离的角色分别
 
 ## 八、Trace integrity — FAIL
 
-> 初评读数（`a140bb6a0`）。`7dbd07f6` 后三组探针全部 FAIL、R19 指标与台账可复算，本项已转 PASS；见末尾“复核后记”。
+> 初评读数（`a140bb6a0`）。`7dbd07f6` 后 R19 三组探针 FAIL、R19 指标与台账可复算；`11200ab55` 后四组探针（含删 R18 台账）全部 FAIL，R18/R19 两个 panel-dir 均 `PASS 8 / WARN 1 / FAIL 0`，本项判 PASS。见末尾两节后记。
 
 ### 8.1 删除探针（副本在 `/tmp/meta-r19-probe/`，仓库只读）
 
@@ -358,4 +355,46 @@ R19 的三个硬数据：
 - 原抽样表的两个 FAIL（A-09、B-12）在当前树上按“缺陷成立条件是否消失”重判：A-09 的文件面已消失（P3 pattern 残余）、B-12 的缺陷条件已消失且 R19 已单独记 ③；若按当前树重算，严格一致会从 37/39 变为 39/39。但按合同保留初次评审的 94.9% 读数，不改原表。
 - 修掉 R18 范围这一行（并把上面 P3 清掉）后，下一轮复核可以判 PASS；当前不判。
 
-VERDICT: NOT PASS
+## 二次复核后记（2026-11-09）
+
+- 复核对象：`11200ab55f3bb9ea38710c484bfacb39d0e1ec81`（2026-11-09 06:06:49，`fix(tools): 轨迹门按节保留 ID 集合；修 R18 B 范围与 R19 计数/P3`），基线记录提交 `38c9176d4`（06:06:54）。当前文档 3387 行、sha256 `e6de33a09250244a9fe162726bdadc939affb1bc97f0bc5643c96abf279d3259`；`git show 11200ab55:rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 的 sha/行数与工作树逐项相同。`BASELINE.txt` 的 `r19_fix_head=11200ab55f3bb9ea38710c484bfacb39d0e1ec81`、`r19_fixed_doc_sha256=e6de33a0…`、`r19_fixed_doc_lines=3387` 与提交及工作树一致。
+- 局限不变：**同 agent 验证 + 已重放命令**。原抽样表与 37/39 = 94.9% 的初次读数按要求保留；下文单独给当前树的重判。
+
+### 命令与读数
+
+| 项 | 命令 | 读数 | 结论 |
+|---|---|---|---|
+| 轨迹门自测 | `python3 tools/eval-trace-check.py --self-test` | `self-test PASS: 正确样本通过，缺陷样本被拦截` | PASS |
+| round19 run-dir | `python3 tools/eval-trace-check.py <run-dir> --panel-dir .../panel/round19` | `PASS 8 / WARN 1 / FAIL 0`；`panel: 80`；`metrics: 80`；`ledger: 1196` | PASS |
+| round18 run-dir | 同上，`--panel-dir .../panel/round18` | `PASS 8 / WARN 1 / FAIL 0`；`panel: 98`；`metrics: 98`；`ledger: 1196` | PASS |
+| 探针 A：删 R18 台账表（1296–1348） | 副本 `/tmp/meta-r19-probe3/p18ledger`，`--panel-dir round18` | `FAIL coverage: 面板发现没有处置行`（98 个 ID 全列）；`ledger 1092` | FAIL（符合预期） |
+| 探针 B：删 R19 台账表（1349→EOF） | 副本 `p19ledger`，`--panel-dir round19` | `FAIL coverage: 面板发现没有处置行`（80 个 ID 全列）；`ledger 1111` | FAIL（符合预期） |
+| 探针 C：删 R19 loop 段（943→EOF） | 副本 `p19loop`，`--panel-dir round19` | `FAIL loop-sections: loop.md 缺少 R19 面板轮小节` | FAIL（符合预期） |
+| 探针 D：R19 指标改 `999` / `1/0/1/1/0` | 副本 `pmetrics`，`--panel-dir round19` | `FAIL metrics: 发现总数 999 与五项处置之和 3 不一致` | FAIL（符合预期） |
+| R18 计数复算 | 按 ID 展开 `defect-ledger.md:1296-1348` | ① 21 / ② 0 / ③ 21 / ④ 56 / ⑤ 0 = **98**；B-12 为 ④、B-15 为 ③ | 与 R18 metrics 逐项一致 |
+| R19 计数复算 | 按 ID 展开 `defect-ledger.md:1349-1385` | ① 13 / ② 0 / ③ 14 / ④ 53 / ⑤ 0 = **80**；B-12 单独 ③ | 与 R19 metrics 逐项一致 |
+| `minix-boot` | `cargo test -p minix-boot` | `188 passed; 0 failed` | 与 §5.2.1 一致 |
+
+### 上轮阻断与 P3 的复核
+
+1. **R18 范围已修对。** `defect-ledger.md:1323` 现为 `READER-B-01..14、READER-B-16..20`，展开 19 个 ID，含 B-12、排除 B-15；`:1324` 的 B-15 单行 ③ 作为精化覆盖。R18 段唯一 ID 98，与 metrics 98 一致；轨迹门 `--panel-dir round18` 覆盖与孤儿两项都 PASS。
+2. **轨迹门按节集合已落地。** `parse_ledger` 现在返回 `section_ids`（`tools/eval-trace-check.py:205/312/315`）；coverage 用 `coverage_ledger = scoped`（`:523`，不再 `or ledger_set`）；`scoped` 的节匹配改为 `section.lower().startswith(round_tag.lower())`（`:518`），R18 不再被“R19 … R18 收口后”的标题污染。orphan 也改用 `coverage_ledger`（`:545`）。四组探针全部 FAIL，B-51 的 CLOSED 现在有实测支撑。
+3. **loop 计数与状态已同步。** `loop.md §3` 现为 ④ 53（READER-B 18）、③ 14（B-12 + REFUTE 3 + D2 10）；`§7` 写明 RB19/meta 的 NOT PASS 与二次补修；`§8` 写“14 条 ③（10 条 D1 否决 + 3 条反证失败 + 1 条重复/已消失）”。
+4. **R19 台账 FACT-03..06 行已改 360–363**（`defect-ledger.md:1357`），与文档 `1123` 行及 RB19 子表一致。
+5. **A-09 注释已改实。** §6.1 复算命令现写“按文件覆盖表内全部来源；串前缀扫描约命中 10/16 组，其余走别的宏或裸字符串，见各行位置列”。原缺陷的文件面消失，注释也不再夸大。
+6. **metrics 回读行已改实况。** R19 的“回读”行现写 RB19 判 NOT PASS、补修后 meta 判 IMPROVED/NOT PASS、二次补修后探针 FAIL 与 R18/R19 计数闭合。
+
+### 当前树的重判与剩余项
+
+- 初次抽样表的两个 FAIL 在当前树上按“缺陷成立条件是否消失”重判：**A-09 PASS**（文件面已覆盖，pattern 面 P3 已如实标注）、**B-12 PASS**（R19 单独 ③，R18 已恢复处置行）。按当前树重算，严格一致为 39/39；按合同保留初次的 37/39 = 94.9%，不改原表。
+- **Trace integrity、计数、半修清单均已清**：四组探针 FAIL、两个 panel-dir PASS、R18 98 与 R19 80 各自与 metrics 逐项一致；原半修清单里的 FACT-06、READER-B-13、REFUTE-02、A-09、B-12、BASELINE 均已闭环。
+- 剩余 CONCERN（不构成 FAIL）：Precision 的 80 仍含 10 条 D1 方案否决与若干跨角色重复，B-52（`origin`/`dup-of`）仍 OPEN；Independence 的面板期间工作树漂移未消除，B-53 仍 OPEN；Scope 的 `23a001e40` 提交信息仍写“R19 全修”；Cost 的 token 仍“未采集”。
+- 剩余 P3（可选，不影响判定）：§3.4.1 图例列 `R14/R16/R17/R18` 而未列 `R19`（有“等”字，R19 按类别可读）；`metrics.md` 的 R19 回读行写“三组探针”，本轮实际做了四组。
+
+### 结论变化
+
+- 初次的 `NOT PASS` 由 Trace integrity + A-09/B-12 处置错驱动；这两类在 `7dbd07f6`/`11200ab55` 后均已消失。
+- **本轮最终结论：`IMPROVED` / `PASS`。** 保留初次的 94.9% 抽样读数、`IMPROVED` 评价与“同 agent 验证 + 已重放命令”的局限声明；当前树的抽样一致率为 39/39（100%），但按合同只在正文说明，不改原表。
+- 未改仓库其他文件；探针副本在 `/tmp/meta-r19-probe3/`。
+
+VERDICT: PASS
