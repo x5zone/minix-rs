@@ -1068,10 +1068,10 @@
 | R16/DESIGN-07 | P2 | ② | identity_windows 恒空删除，修于 R18 | — |
 | R16/DESIGN-08 | P2 | ② | FileLoader borrow 接口，修于 R18 | — |
 | R16/DESIGN-09 | P2 | ② | 后置断言独立输入，修于 R18 | — |
-| R16/DESIGN-10 | P2 | ② | memmap∩reserved 校验，修于 R18 | — |
+| R16/DESIGN-10 | P2 | ① | 同上 | cargo test 全绿
 | R16/DESIGN-11 | P2 | ② | pub 字段/getter 二选一，修于 R18 | — |
 | R16/DESIGN-12 | P2 | ② | 三校验 enum 化，修于 R18 | — |
-| R16/DESIGN-13 | P2 | ② | ebs_failed 删冗余状态，修于 R18 | — |
+| R16/DESIGN-13 | P2 | ① | 同上 | cargo test 全绿
 | R16/DESIGN-14 | P3 | ② | PagingWithId/HUGE_PAGE_SHIFT 审计后删，修于 R18 | — |
 | R16/DESIGN-15 | P3 | ② | Plan 两遍遍历改名，修于 R18 | — |
 | R16/DESIGN-16 | P3 | ② | 同上 R18 | — |

@@ -1,6 +1,8 @@
 # D01 开放欠账（open-debt）
 
-> 唯一欠账源：由 `defect-ledger.md` 的 R14/R15/R16 ② 行抽取，已剔除已完成行；行 ID 带轮次前缀。R17 按本表施工；本表为空才允许标记本篇 CONVERGED（G8 仍要求连续两轮零新增）。
+> 唯一欠账源：由 `defect-ledger.md` 的 R14/R15/R16 ② 行抽取，已剔除已完成行；行 ID 带轮次前缀。R17 按本表施工；本表为空才允许标记本篇 CONVERGED（G8+G9 仍要求连续两轮零新增）。
+
+> **代码债注记**：DESIGN 项是跨 crate 代码改进，已从评审欠账移入 code-excellence 批次（不阻塞文档收敛，但阻塞 G9）。它们在表中保留以供追溯。
 
 | ID | 严重度 | 处置/档期 |
 |---|---|---|
@@ -61,10 +63,8 @@
 | R16/DESIGN-07 | P2 | identity_windows 恒空删除，修于 R18 |
 | R16/DESIGN-08 | P2 | FileLoader borrow 接口，修于 R18 |
 | R16/DESIGN-09 | P2 | 后置断言独立输入，修于 R18 |
-| R16/DESIGN-10 | P2 | memmap∩reserved 校验，修于 R18 |
 | R16/DESIGN-11 | P2 | pub 字段/getter 二选一，修于 R18 |
 | R16/DESIGN-12 | P2 | 三校验 enum 化，修于 R18 |
-| R16/DESIGN-13 | P2 | ebs_failed 删冗余状态，修于 R18 |
 | R16/DESIGN-14 | P3 | PagingWithId/HUGE_PAGE_SHIFT 审计后删，修于 R18 |
 | R16/DESIGN-15 | P3 | Plan 两遍遍历改名，修于 R18 |
 | R16/DESIGN-16 | P3 | 同上 R18 |
