@@ -19,7 +19,6 @@
 //! firmware paths invoke the exact same code path; only the loader value
 //! differs.
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_boot::{BootModule, NR_BOOT_MODULES};
@@ -405,25 +404,6 @@ pub fn load_kernel_with_loader_gated<L: FileLoader, G: FnOnce(&KernelLoadResult)
     // and the kernel linker script reserves non-overlapping LMA range.
     unsafe { load_segments_into_phys_memory(elf_data.as_slice())? };
     Ok(layout)
-}
-
-/// Read each named module, copy bytes into pages from `alloc_pages`,
-/// and return a leaked `'static` slice of `BootModule`.
-///
-/// The kernel consumes the result positionally and asserts the count is
-/// `NR_BOOT_MODULES` (12), so a missing module is a boot-time failure, not a
-/// gap to paper over. This therefore **fails fast**: a module that cannot be
-/// read, or whose pages cannot be allocated, panics with the offending name —
-/// surfacing the assembly error here (with the module it is) instead of as an
-/// opaque "expected 12 boot modules, found N" assert deep in the kernel.
-pub fn load_boot_modules_with_loader<L: FileLoader>(
-    loader: &L,
-    alloc_pages: PageAllocator,
-) -> &'static [BootModule] {
-    let mut modules = alloc::vec![ZERO_MODULE; MODULE_NAMES.len()];
-    let n = load_boot_modules_into(loader, alloc_pages, &mut modules);
-    modules.truncate(n);
-    Box::leak(modules.into_boxed_slice())
 }
 
 const ZERO_MODULE: BootModule = BootModule {
@@ -844,7 +824,9 @@ mod tests {
             loader.insert(&build_module_path(name), vec![0x10 + i as u8; 100]);
         }
 
-        let modules = load_boot_modules_with_loader(&loader, mock_alloc);
+        let mut slots = [ZERO_MODULE; MODULE_NAMES.len()];
+        let n = load_boot_modules_into(&loader, mock_alloc, &mut slots);
+        let modules = &slots[..n];
         assert_eq!(modules.len(), MODULE_NAMES.len());
         for (i, name) in MODULE_NAMES.iter().enumerate() {
             assert_eq!(
@@ -866,8 +848,9 @@ mod tests {
             loader.insert(&build_module_path(name), vec![0xAA; 64]);
         }
 
+        let mut slots = [ZERO_MODULE; MODULE_NAMES.len()];
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_boot_modules_with_loader(&loader, mock_alloc);
+            let _ = load_boot_modules_into(&loader, mock_alloc, &mut slots);
         }));
         assert!(
             result.is_err(),

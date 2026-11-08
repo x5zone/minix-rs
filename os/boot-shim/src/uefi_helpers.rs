@@ -1164,7 +1164,7 @@ impl FileLoader for UefiFileLoader {
     }
 }
 
-/// UEFI page allocator used by `load_boot_modules_with_loader`.
+/// UEFI page allocator used by `load_boot_modules_into`.
 ///
 /// Refuses any page range that would overlap the loaded kernel image
 /// (D01-R7 D2-02). The kernel is written to its ELF physical LMAs, which

@@ -53,11 +53,8 @@
 use core::slice;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use minix_boot::{
-    BootPrepareResult, BootShim, BumpRegion, DTB, DtbMemoryMap, KernelInfo, MemoryRegion,
-    PlatformDescSource,
-};
-use minix_types::{PhysBytes, VirBytes};
+use minix_boot::{BootShim, BumpRegion, DTB, PlatformDescSource};
+use minix_types::PhysBytes;
 
 use crate::loader::{self, FileLoader};
 
@@ -663,6 +660,8 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::build_kernel_info;
+    use minix_boot::MemoryRegion;
+    use minix_types::VirBytes;
     use alloc::vec;
 
     /// Build a `BootFileTable` in heap-allocated memory and hand back a

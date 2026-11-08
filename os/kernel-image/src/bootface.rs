@@ -472,7 +472,7 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
 /// copy the sources straight into bump pages; too few entries, a misplaced
 /// name, a source escaping the memmap, a source overlapping the pool, or pool
 /// exhaustion are each reported by name and return `None` (matching the
-/// fail-fast semantics of `load_boot_modules_with_loader` in loader.rs —
+/// fail-fast semantics of `load_boot_modules_into` in loader.rs —
 /// install errors surface on this leg instead of handing the kernel half a
 /// module set).
 ///
