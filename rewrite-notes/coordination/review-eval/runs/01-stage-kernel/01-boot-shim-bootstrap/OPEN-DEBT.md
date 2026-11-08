@@ -6,6 +6,9 @@
 
 | ID | 严重度 | 处置/档期 |
 |---|---|---|
-| F-R17-02 | P2 | UEFI 测试辅助三件套的 feature 门（跨 16 个测试内核）；截止 R20 |
-| F-R17-04 | P2 | `KernelInfo` 增 `ram_authority` 字段（跨 minix-boot/内核/文档 ABI）；截止 R20 前裁决 |
+| F-R17-02 | P2 | UEFI 测试辅助三件套的 feature 门（跨 16 个测试内核）；截止 R21（已逾期一轮） |
+| F-R17-04 | P2 | `KernelInfo` 增 `ram_authority` 字段（跨 minix-boot/内核/文档 ABI）；截止 R21 前裁决（已逾期一轮） |
+| F-R20-01 | P2 | `BootPrepareResult`/`enter_kernel_image_v1` 的 bump/arena 改物理区间类型（跨 crate）；截止 R21 |
+| F-R20-02 | P2 | `MemoryRegion`/`cut(start,size)`/`MemRange` 三套端点约定收敛为 `Range{start,end}`；截止 R21 |
+| F-R20-03 | P2 | 测试内核 `build_memmaps`/`exit_boot_services` 假 `'static` 迁移到 `BootStorage`；截止 R21 |
 | — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |

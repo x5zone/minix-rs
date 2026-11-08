@@ -1436,3 +1436,22 @@
 | §5.2.1 “整条截断”措辞 | P3 | ① 改“整条丢弃” | §3.4.2 合同 |
 | 新增 `checked_add` 缺负控 | P3 | ① `kernel_info` 对每条 memmap/reserved 做 `checked_add`，新增单区间溢出负控；`minix-boot` 189 | `test_validate_rejects_memmap_span_overflow` |
 | QEMU 三门未重放 | — | 回读局限，本轮提交前主 agent 重跑三门 | 见 loop §4 |
+
+### R20 meta-review 补修
+
+`meta/01-boot-shim-bootstrap-r20.md` 判 **IMPROVED / NOT PASS**（抽样 22/28=78.6%，六条 ④ 未修记已修；三组探针 FAIL 成立）。逐条：
+
+| meta 项 | 严重度 | 处置 | 证据 |
+|---|---|---|---|
+| §5.2.1 仍写“整条截断” | P2 | ① 改“整条丢弃” | 3071 行 |
+| A-07 长单元格 | P3 | ① 已拆短：主句 + 分组 + 定义指针 | §3.4.1 `memmap` 行 |
+| A-10 两节标题重复 | P3 | ① 2.4.1.2 标题改“消费者与校验缺口” | 标题 |
+| B-08 “建表最后一步” | P3 | ① 改“建表第三步 `pg_mapkernel`” | 82 行 |
+| B-14 §5.3 双状态词汇 | P3 | ① 列名改“详情（状态口径以 §5.1 为准）” | §5.3 表头 |
+| B-17 §4.9 反事实越界 | P3 | ① 静态池段前加“属 §3.8，只为对照本表行” | §4.9 |
+| B-18 §3.4.1/§4.4 重复 | P3 | ① §4.4 开头加“各腿产出来源以 §3.4.1 为权威” | §4.4 |
+| D2-02 负控只覆盖 memmap | P3 | ② 代表负控已够；其余 12 个调用点同构，登记 F-R20-04（R21）观察 | `kernel_info` 测试 |
+| F-R20-01..03 登记位置 | P2 | ① 移入 `OPEN-DEBT.md`（R21） | OPEN-DEBT |
+| F-R17-01..04 截止过期 | P2 | ① 截止改 R21，并在 OPEN-DEBT 标“已逾期一轮” | OPEN-DEBT |
+| B-54/B-55/B-56 未落盘 | P2 | ① 写入 `BLIND-SPOTS.md` | BLIND-SPOTS |
+| DECISIONS 无 RB20 判决 | P2 | ① 在 `DECISIONS.md` 加 RB20 NOT PASS 与 D1 停跑行 | DECISIONS |

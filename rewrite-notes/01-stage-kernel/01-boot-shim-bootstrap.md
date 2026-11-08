@@ -79,7 +79,7 @@ D3. **页表先于开启分页**，这是本节唯一一条"硬件强制"的次�
 D4. **结构先于内核第一条 C 语句**。`pre_init()` 返回的就是这份结构；它按值或按指针交给 `kmain()`。
 D5. **恒等映射先于内核映射**。`pg_identity()` 排在 `pg_mapkernel()` 之前。这两步各管一个时刻：恒等表管的是**开启分页那一瞬间**——`CR0.PG` 置位后的下一条取指仍在原来的低地址上，靠它才不会跑飞；内核映射管的是稍后进高半执行的那一步，把内核链接时的高半地址指到镜像**实际所在的低物理地址**。两步写的是同一张页目录，写入的下标范围互相重叠，谁后写谁生效——这次覆盖为什么恰好是需要的、反过来排会坏成什么样，逐数字的推演在 §2.6.1。
 
-> **附注（字段级，不计入上面五条步骤级次序）**：建表最后一步 `pg_mapkernel()` 的返回值——第一个空闲页目录下标——要在建表之后写进交接结构（`kinfo.freepde_start`），否则第 2 章要讲的"借槽"机制没有起点（展开见 §2.6.3）。§2.8 的"步骤级共五条"就是上面这五条，编号一致。
+> **附注（字段级，不计入上面五条步骤级次序）**：建表第三步 `pg_mapkernel()` 的返回值——第一个空闲页目录下标——要在建表之后写进交接结构（`kinfo.freepde_start`），否则第 2 章要讲的"借槽"机制没有起点（展开见 §2.6.3）。§2.8 的"步骤级共五条"就是上面这五条，编号一致。
 
 C 的这四样分别落在 `pre_init.c` 与 `pg_utils.c` 两个文件里：收集在 `pre_init.c`，记录与页表在 `pg_utils.c`。这个划分是 Minix3 的既有划分；重写把同一条分界换到了另一处——主线上的准备与运行分属两个可执行体；两个直核形态把引导面留在内核镜像里（"直核"= 不经独立 boot-shim（本篇重写的引导准备可执行体，§1.4 定义）、固件直接跳内核镜像的启动方式；§3.3/§3.7 展开），第 3 章讲这件事。
 
@@ -656,7 +656,7 @@ phys_bytes pg_alloc_page(kinfo_t *cbi)
 
 它取页前在循环体内有三条断言（另有函数入口的 `assert(kernel_may_alloc)`），其中 `assert(!(mmap->mm_length % I386_PAGE_SIZE))` 是"记录里所有长度都必须是页的整数倍"这条不变量在"发页"这一步的校验点（写账一侧由 `add_memmap` 的 `rounddown` 保证，见本节末的取整推演）。
 
-##### 2.4.1.2 `alloc_lowest` 与切除参数错误
+##### 2.4.1.2 `alloc_lowest` 的消费者与校验缺口
 
 `alloc_lowest` 则**不是**一条可行的"从低处分配"路径：切除那一行把长度当成结束地址传给 `cut_memmap`。签名、三种情况与四个前提的完整推演见紧随其后的 2.4.1.3 小节（两条取整规则、退化请求与 `alloc_lowest` 的参数错误）；本节只讲它的消费者与校验缺口。
 
@@ -1590,7 +1590,7 @@ pub struct KernelInfo {
 
 | 列表 | 语义 | 内核侧怎么用 |
 |---|---|---|
-| `memmap` | 可用内存。物理内存管理器从这里分配帧——但列表**不保证已扣除全部占用区**。各腿的归属不同：内核镜像在自引导腿与 U-Boot shim 腿（都不预订跨度，LMA = 装载地址，与 VMA = 执行地址相对；区别的推导归 02 篇，本节只用这两个词。LMA 从 conventional RAM（即 UEFI 内存图里的 `EfiConventionalMemory`——"固件认为空闲、可分配"的那一类；UEFI 的类型标签与分类规则见 §4.2.2）或 DTB free 表划出）在表内；两条 UEFI 腿在 A+D 之后先用 `AllocateAddress`（UEFI 的"在指定物理地址分配页"调用；目标区间已被占用时固件拒绝）把整段 `[kern_phys_base, +kern_size)` 预订成 `LOADER_DATA`（见 §4.2 步骤 2），因此**不在**可用表内、分类落 `ReservedMapped`（前提是固件给该段置了 `WRITE_BACK`；`LOADER_DATA` 且无 `WRITE_BACK` 的描述符按 §4.2.2 落 `Side`）。模块在 DTB 腿的 bump 页上在表内、UEFI 腿是 `LOADER_DATA` 因而不在。分配前必须扣掉占用区（见 §3.8 的扣除表；扣减实现在 `vm_handoff::classify`，在 UEFI 腿上对内核那一行退化为空操作） | 内核不保留可变 memmap 副本（Phase A.2 已移除，`FREE_MEMMAP` 已没有符号定义（仅 `bootface_a64.rs` 的一行注释提及该字符串））；`vm_handoff::classify` 在交接时对 memmap 做扣除，产出 free list 与 deduction record |
+| `memmap` | 可用内存；物理内存管理器从这里分配帧，但列表**不保证已扣除全部占用区**。内核镜像在自举腿与 U-Boot shim 腿的表内；两条 UEFI 腿在 A+D 之后用 `AllocateAddress` 把整段 `[kern_phys_base, +kern_size)` 预订成 `LOADER_DATA`，因此**不在**表内、分类落 `ReservedMapped`（无 `WRITE_BACK` 时落 `Side`，§4.2.2）。模块同理：DTB 腿的 bump 页在表内，UEFI 腿是 `LOADER_DATA` 因而不在。分配前仍须扣掉占用区（§3.8 扣除表；`vm_handoff::classify`，UEFI 腿的内核行退化为空操作）。LMA/VMA、conventional 与 `LOADER_DATA` 的定义见 §3.5/§4.2.2 | 内核不保留可变 memmap 副本（Phase A.2 已移除，`FREE_MEMMAP` 已没有符号定义（仅 `bootface_a64.rs` 的一行注释提及该字符串））；`vm_handoff::classify` 在交接时对 memmap 做扣除，产出 free list 与 deduction record |
 | `reserved_regions` | 可用但不可分配。运行期经 Direct Map 能访问，但不得再分配出去 | Direct Map 覆盖的候选之一（[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 的 source 4） |
 
 五条生产腿产出这两张表的方式不同，形状相同：
@@ -2497,7 +2497,7 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 
 ### 4.4 `KernelInfo` 的构造：两个构造入口与一条校验门链（→3.4、3.5）
 
-五条生产腿（两条 UEFI 链、U-Boot shim、两个直核面——计数口径见 §3.7 术语对账）在**数据形状**上收敛，但构造入口分两组：两个直核面共用 [`fn build_kernel_info`](<os/boot-shim/src/lib.rs:fn build_kernel_info>)（boot-shim 库根导出）；三条 v1 腿（两条 UEFI 链 + U-Boot shim）共用 `BootStorage`/`BootReport` 形状与 arena 协议，发送侧不构造 `KernelInfo`。这是"层内收敛原则"（§3.4 开头：收敛数据形状，不合并引导形态层）的落点：每条路径仍各自产出自己的两张表（`memmap` 与 `reserved_regions`），共享的是形状而不是一个构造函数。
+五条生产腿（两条 UEFI 链、U-Boot shim、两个直核面——计数口径见 §3.7 术语对账）在**数据形状**上收敛，但构造入口分两组（各腿如何产出两张表以 §3.4.1 为权威，本节只讲构造入口）：两个直核面共用 [`fn build_kernel_info`](<os/boot-shim/src/lib.rs:fn build_kernel_info>)（boot-shim 库根导出）；三条 v1 腿（两条 UEFI 链 + U-Boot shim）共用 `BootStorage`/`BootReport` 形状与 arena 协议，发送侧不构造 `KernelInfo`。这是"层内收敛原则"（§3.4 开头：收敛数据形状，不合并引导形态层）的落点：每条路径仍各自产出自己的两张表（`memmap` 与 `reserved_regions`），共享的是形状而不是一个构造函数。
 
 ```rust
 // 代码引用（略去函数文档注释与 `minix_boot::`/`minix_types::` 路径限定符；代码内注释有删节与改述），os/boot-shim/src/lib.rs:fn build_kernel_info。
@@ -2953,7 +2953,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 
 这张表里 `alloc_lowest` 一行标的是"暂未移植"，它也不是"因为不需要所以删掉"：`alloc_lowest` 的服务对象（把 16 位启动代码放到 1MB 以下）属于 AP 启动，而 64 位侧的对应机制（AP 停车邮箱 + 启动记录）在 [`smp.rs`](os/kernel/src/smp.rs) 与 [`main.rs`](os/kernel-image/src/main.rs) 的 `park` 段里，不经过"从记录最低处分配"这条路径。
 
-**把 C 的静态页表池原样搬到 64 位会怎样**（保留"6 页，用完 panic"）。`PG_PAGETABLES = 6` 是两级页表的预算：32 位下 `pg_map` 一次最多挂一个页表页，6 页够用。4 级页表下一次 4KB 映射要穿过 PML4 → PDPT → PD → PT 四级，其中下面三级都可能需要新建页表页；实际需要的页数随地址分布变化（映射分散时每个 PML4 槽都要一条新链）。固定 6 页按每个 PML4 槽最多 3 页算只够两个槽，第三个槽（第二次跨 PML4 边界）就会耗尽，表现为 `panic("no more pagetables")` 落在启动中途——而"6 页"这个数字在 64 位下没有任何依据。
+**把 C 的静态页表池原样搬到 64 位会怎样**（保留"6 页，用完 panic"；这段属 §3.8 的分配器换手，放在 §4.9 表后只为对照 `alloc_pagetable` 行，不是本表的 C→Rust 落点）。`PG_PAGETABLES = 6` 是两级页表的预算：32 位下 `pg_map` 一次最多挂一个页表页，6 页够用。4 级页表下一次 4KB 映射要穿过 PML4 → PDPT → PD → PT 四级，其中下面三级都可能需要新建页表页；实际需要的页数随地址分布变化（映射分散时每个 PML4 槽都要一条新链）。固定 6 页按每个 PML4 槽最多 3 页算只够两个槽，第三个槽（第二次跨 PML4 边界）就会耗尽，表现为 `panic("no more pagetables")` 落在启动中途——而"6 页"这个数字在 64 位下没有任何依据。
 
 ---
 
@@ -3068,7 +3068,7 @@ os/libs/minix-elf/src/lib.rs                       23
 | ~~`opensbi_helpers.rs:test_build_kernel_info_bootstrap_zero_means_no_reclaim`~~ | 字段删除时一并移除——过度回收在类型上不可复发，无测试可保护 |
 | `opensbi_helpers.rs:test_build_kernel_info_riscv64_fields_match_input` | 字段逐一映射（含派生字段 `kern_stack_top`/`syscall_entry`） |
 | `uefi_helpers.rs:test_build_kernel_info_fields` | UEFI builder 的字段装配（该文件 12 条单元测试之一） |
-| `boot_params.rs:generates_arch_and_board_first` 等 8 条 | 参数规范化：生成键、NUL/空白分词、内部键拒绝、非 ASCII/无等号拒绝、重复键首条胜出、整条截断 |
+| `boot_params.rs:generates_arch_and_board_first` 等 8 条 | 参数规范化：生成键、NUL/空白分词、内部键拒绝、非 ASCII/无等号拒绝、重复键首条胜出、整条丢弃 |
 | `kernel_info.rs:test_validate_rejects_*`（14 条）与 `test_validate_accepts_*`（3 条），另加 `test_validate_requiring_sources_*`（4 条）、`test_postconditions_reject_*`（4 条）与 `test_getters_return_field_values`（1 条）= 该文件 26 条 | `validate()` 的全部不变量（含 D2-05 增的有序/不相交与非空/页对齐，两张表各扫一遍）与它们的合法边界；strict 门、postconditions 上界、getter 与字段一致 |
 
 
@@ -3125,7 +3125,7 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 
 ### 5.3 TODO 交接表（对源码工作流的需求输入）
 
-| TODO ID | 机制 | 断言（可观测） | 现状与回退判据 | 交接状态 |
+| TODO ID | 机制 | 断言（可观测） | 详情（状态口径以 §5.1 为准） | 交接状态 |
 |---|---|---|---|---|
 | TODO-01 | M4 深拷序 | 六入口在首个页分配前已完成 `store_kernel_info`（调试钩检查点） | 已覆盖：源码序钉（六入口按各架构最靠近泛型体的委托壳计：三个 `arch_boot` + aarch64 `arch_boot_resume_high_half` + x86/riscv 两个 `resume_after_v1_decode`；共享入口 `arch_boot_resume_v1` 另以 validate < `resume_boot_pt_alloc` < 委托的三步序钉住）；mock 入口 `arch_boot_test` 与 QEMU 测试内核的分阶段调用均绕过 store，故运行期断言不成立（钉注释已写明这次回退的判据） | 已交接完成 |
 | TODO-02 | M7 写一次 | `register` 二次调用在 debug 下失败、release 下被拒 | 已覆盖：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` 与 `register_free`），debug/release 两形态实跑 | 已交接完成 |
