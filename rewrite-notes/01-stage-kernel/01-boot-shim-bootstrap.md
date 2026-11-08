@@ -1438,7 +1438,7 @@ trait 相对"纯 feature gate + 散落条件编译"的收益，列四条，并�
 
 这里故意不列"类型安全"与"封装"——这两条常被记在 trait 头上，实际来自 feature 门控：`uefi_helpers` 与 `opensbi_helpers` 各由 [`lib.rs`](os/boot-shim/src/lib.rs) 的 `#[cfg(feature = ...)]` 门控，开启哪个 feature 就只有哪个固件类型存在，**写错固件名本来就编译不过**，trait 没有为此多提供什么。UEFI 生产入口也没有借 trait 做抽象：[`fn main`](<os/boot-shim/src/main.rs:fn main>) 按具体类型写——`prepare_and_enter_kernel_image(1024)`；UEFI 的 trait 辅助实现已删除（R17 DESIGN-03）。这不是把固件写死在产品里：boot-shim 这个可执行文件只在 UEFI 形态下构建（bin 的 `required-features = ["fw-uefi-image"]` 隐含 `uefi`），固件选择发生在"构建哪个二进制"，不是运行期分派；opensbi 形态的生产路径是 `kernel-image` 自引导面（§3.7），复用 opensbi_helpers 的库函数、不经这份 main.rs。
 
-**OpenSBI 路径的两种角色要分清**（接线状态与覆盖脚本的权威表在 §3.1 现状标注，这里只讲与本 trait 有关的部分）：U-Boot 路径复用 boot-shim 库根的 `build_kernel_info`（`lib.rs:101`）与 opensbi_helpers 的 `BootFileTable`、`bump_alloc_pages`，并走 `BootShim`；`kernel-image` 的直核自举面是另一条机器状态，不经 `prepare_boot`。memmap 源统一下沉的裁决不合并引导形态层——`BootShim` 独立可执行体与 bootface 自举对应不同机器状态，本 trait 只承担前者的固件差异。
+**OpenSBI 路径的两种角色要分清**（接线状态与覆盖脚本的权威表在 §3.1 现状标注，这里只讲与本 trait 有关的部分）：U-Boot 路径复用 boot-shim 库根的 [`build_kernel_info`](os/boot-shim/src/lib.rs:fn build_kernel_info) 与 opensbi_helpers 的 `BootFileTable`、`bump_alloc_pages`，并走 `BootShim`；`kernel-image` 的直核自举面是另一条机器状态，不经 `prepare_boot`。memmap 源统一下沉的裁决不合并引导形态层——`BootShim` 独立可执行体与 bootface 自举对应不同机器状态，本 trait 只承担前者的固件差异。
 
 ### 3.3 crate 依赖方向：boot-shim 依赖内核，内核不依赖 boot-shim
 

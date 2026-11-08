@@ -33,7 +33,7 @@
 | R7-FU-01 | D2-03 | BootForm 注册表：保留/删除/接到真实入口 | ✅ 已裁决（2026-11-08，采 A：删） | 删注册表/电池/数量测试，历史形态留教学文档；随 code-excellence 批次（与 F04/F05 同批） |
 | R7-FU-02 | D2-02 同族 | root/bump 分配先于内核装载，预防需重排两入口步骤 | ✅ 已并入 F-R16-01（R18） | 检测面已有（装载后复核 root/bump 不重叠）；预防面（装载前不相交）并入 F-R16-01 的物理不相交合同，按 D-5 验收项实施 |
 | R7-FU-03 | D2-13 | 内核 LMA 与 AllocatePages 的权衡（是否预留内核区间） | ✅ 已归档（R18：被 A+D 取代） | `reserve_kernel_span` 用 `AllocateAddress` 在内核布局确定后立即预留 LMA 跨度（A+D 方案，R13/R14 落地）；"分配时拒绝 + 装载后复核"退为第二道防线，不再有待裁决的权衡 |
-| R8-FU-01 | DESIGN-R8-02 | 全局 allocator 守卫：pool 分配拒绝内核跨度 | 已登记 | 最小修复仅覆盖 ELF 段 src/dest 断言；完整守卫留 code-excellence |
+| R8-FU-01 | DESIGN-R8-02 | 全局 allocator 守卫：pool 分配拒绝内核跨度 | ✅ 已归档（R18） | UEFI 腿 `alloc_module_pages` 拷贝前拒绝内核跨度；U-Boot/自举腿由 `KERNEL_MAX_LMA_END <= MODULE_REGION_BASE` 编译期断言把池与内核 LMA 跨度钉死；另加装载前 gate |
 | R8-FU-02 | DESIGN-R8-01 | a2 通道真机取证 vs 删通道 | ✅ 已裁决（2026-11-08，采 A：删） | 删 a2 备用通道（asm 注释 + bootface 分支 + 文档表述），DTB `/chosen` 为唯一生产通道；随批次实施 |
 | R10-FU-01 | FACT-R10-01 | CI 增加 kernel-image riscv64 双 feature 构建作业 | ✅ 已裁决（2026-11-08，采 A） | 加 riscv64 `fw-riscv64-none`/`fw-riscv64-uboot` 构建作业并纳入 aarch64；随批次实施 |
 
@@ -43,34 +43,34 @@
 
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
-| F-R14-01 | FACT-P1-06 | `alloc_lowest` 与 `copy_trampoline` 引文块的省略标记统一 | 已登记（R15） | 下一轮修复批按 earm 块的同一写法处理 |
-| F-R14-02 | A-01/B-02 | 七套编号缺单一索引；计数口径靠现场"对账"句 | 已登记（R15） | 在 §1.4 后加"编号索引"表（名字/范围/定义节/消费者），再删重复对账段；需全篇回归 |
-| F-R14-03 | A-14/B-17 | "空闲清单怎么传下去"与"何时换手给 VM"分散在 §2.4.1/§3.4/§3.8/§4.5/§4.7 | 已登记（R15） | 写一条跨节导读（不新增机制），或在 §3.4 收一个兑现点 |
-| F-R14-04 | A-16 | Direct Map 承重但 02 篇未生成 | 已登记（R17（02 篇）） | 02 篇立项时补；本篇保留边界声明 |
-| F-R14-05 | A-20 | §4.2 内联闸表看不出 `Excluded`/`DevicePath` 是否经过 | 已登记（R15） | 分类章表格重排时补一列"是否经闸" |
-| F-R14-06 | B-03 | §3.4 混装结构、字段台账、wire 协议、探针四类内容 | 已登记（R15） | 拆节（wire 协议独立、探针移 §5 邻域）；属结构性重排，单独立项 |
-| F-R14-07 | B-04 | 接线状态"唯一权威表"埋在 §3.1 备选方案之后 | 已登记（R15） | 前移到 §1.4 或独立 §1.5，全文回指改址 |
-| F-R14-08 | B-13 | §4.2 后半的分类判据与"顺序"不同轴 | 已登记（R15） | 拆 §4.2.1 或独立节；标题已先改为"顺序与描述符分类" |
-| F-R14-09 | B-15 | §2.7 结构孤岛；ARM 闭区间 `overlaps` 不入 §5 证据账 | 已登记（R15） | 二选一：降为 §2.5 小注，或在 §5.1 增 M17 登记"无断言" |
-| F-R14-10 | B-16 | §3.4 字段台账结论先于论证 | 已登记（R15） | 论证前置或加一行"论证见 §3.5/§3.9" |
-| F-R14-11 | B-18 | §4.1 两列表按"是否 UEFI"划分，与形态轴（谁建根/谁发送）不符 | 已登记（R15） | 表轴重定义，需同步 §3.7/§4.8 |
-| F-R14-12 | B-19 | §3.10/§4.9/§7.5 三张 C↔Rust 对照表无权威 | 已登记（R15） | 指定 §7.5 为唯一索引，其余两表加"索引见 §7.5" |
+| F-R14-01 | FACT-P1-06 | `alloc_lowest` 与 `copy_trampoline` 引文块的省略标记统一 | ✅ 已修（R16 批） | 引文头统一注明"省略号处为未改动的循环变量声明与方法体其余行" |
+| F-R14-02 | A-01/B-02 | 七套编号缺单一索引；计数口径靠现场"对账"句 | ✅ 已修（R16 批） | §1.4 编号索引表（编号/指什么/定义节/主要消费者） |
+| F-R14-03 | A-14/B-17 | "空闲清单怎么传下去"与"何时换手给 VM"分散在 §2.4.1/§3.4/§3.8/§4.5/§4.7 | ✅ 已修（R16 批） | §3.4 开头一条分工导读把四节职责钉住（C 侧截断/扣减表/七个落地区/换手时序） |
+| F-R14-04 | A-16 | Direct Map 承重但 02 篇未生成 | OPEN（02 篇） | 同 `OPEN-DEBT.md` 的 `R14/READER-A-16`；02 篇立项时补，本篇已保留边界声明 |
+| F-R14-05 | A-20 | §4.2 内联闸表看不出 `Excluded`/`DevicePath` 是否经过 | ✅ 已修（R16 批） | §4.2.2 表后明写两道闸的覆盖范围（`checked_len` 不经过 Step 3 定档者） |
+| F-R14-06 | B-03 | §3.4 混装结构、字段台账、wire 协议、探针四类内容 | ✅ 已修（R16 批） | §3.4 拆为 3.4.1–3.4.4（维度与结构/协议布局/深拷探针/所有权） |
+| F-R14-07 | B-04 | 接线状态"唯一权威表"埋在 §3.1 备选方案之后 | ✅ 已修（R16 批） | 前移为 §3.1.1"接线状态（唯一权威表）"，全文回指改址 |
+| F-R14-08 | B-13 | §4.2 后半的分类判据与"顺序"不同轴 | ✅ 已修（R16 批） | §4.2 拆为 4.2.1（九个动作与约束）/4.2.2（五步判定与两道内联闸） |
+| F-R14-09 | B-15 | §2.7 结构孤岛；ARM 闭区间 `overlaps` 不入 §5 证据账 | ✅ 已修（R16 批） | §5.1 增 M17 行，登记"无运行期断言，仅源码对照" |
+| F-R14-10 | B-16 | §3.4 字段台账结论先于论证 | ✅ 已修（R16 批） | 随 §3.4 拆节把论证放到结论之前 |
+| F-R14-11 | B-18 | §4.1 两列表按"是否 UEFI"划分，与形态轴（谁建根/谁发送）不符 | ✅ 已修（R16 批） | §4.1 表改为按阶段归并的概览，形态轴在 §3.7/§4.8 |
+| F-R14-12 | B-19 | §3.10/§4.9/§7.5 三张 C↔Rust 对照表无权威 | ✅ 已修（R16 批） | §7.5 为唯一权威索引；§3.10/§4.9 加"权威索引在 §7.5" |
 | F-R14-13 | DESIGN-02 | `KernelInfo` 的 `&'static` 切片逼出 static mut/Box::leak | ✅ 已修（R18 D-1 第一阶段） | `BootStorage` + `BootReport<'a>` 落地，UEFI 腿改走 storage 报告；U-Boot 腿第二阶段迁移登记为 F-R18-01 |
 | F-R14-14 | DESIGN-04 | arena wire 分区与语义分区逐区双写 | ✅ 已修（R18 D-2） | 删除语义分区；arena 8 页、wire v9、source@7872/end@30624；版本拒绝负控 |
 | F-R14-15 | DESIGN-05 | 同一物理池两个 bump 分配器（`BUMP_PTR` 与 `BootAlloc`） | ✅ 已修（R18，D-3） | 保留两个独立实例（合并游标已证伪：QEMU U-Boot 门 3/6 panic）；公共算法提为 `minix_boot::BumpRegion`，池分区加编译期断言（对齐/范围/arena 容量）+ `prepare_boot` 运行期断言（root 是池首、PT 子区间紧随其后） |
-| F-R14-16 | DESIGN-06 | DM 候选顺序在四处各写一遍 | 已登记（R16） | 提为单一常量/函数，四处引用 |
-| F-R14-17 | DESIGN-07 | `build_identity_windows()` 恒空而 `kern_ident` 仍在 | 已登记（R16） | 删除函数与字段，或恢复语义；先查 handoff 兼容 |
+| F-R14-16 | DESIGN-06 | DM 候选顺序在四处各写一遍 | ✅ 已修（R17） | `for_each_dm_candidate` 单一候选迭代器，两遍遍历复用 |
+| F-R14-17 | DESIGN-07 | `build_identity_windows()` 恒空而 `kern_ident` 仍在 | ✅ 已修（R17） | 删除函数与测试，空窗口以常量表达；handoff 兼容已查 |
 | F-R14-18 | DESIGN-08 | `FileLoader` 返回 `Vec` 强制整份拷贝 | ✅ 已修（R18 D-4） | `FileBytes<'a>` 显式 Borrowed/Owned；U-Boot 借出、UEFI 拥有 |
-| F-R14-19 | DESIGN-09 | `check_boot_postconditions` 在生产值上不可证伪 | 已登记（R16） | 断言改为对独立输入，或降级为 debug 检查 |
-| F-R14-20 | DESIGN-10 | `memmap ∩ reserved` 未在校验期检查 | 已登记（R16） | `validate` 加交集检查（先确认 C 侧无此约束） |
-| F-R14-21 | DESIGN-11 | 13 个 pub 字段 + 12 个转发 getter | 已登记（R16） | 二选一：字段私有 + getter，或删 getter |
-| F-R14-22 | DESIGN-12 | 三种校验语义用两个 bool 编排 | 已登记（R16） | 改具名 enum/构造器 |
-| F-R14-23 | DESIGN-13 | `ebs_failed` 与 `ebs_attempts > 0` 重叠 | 已登记（R16） | 删一个状态，保留有语义的那个 |
-| F-R14-24 | DESIGN-14 | `PagingWithId` 仅测试实现；`HUGE_PAGE_SHIFT` 零读者 | 已登记（R16） | 先做读者审计（含未来 PCID 计划），再删 |
-| F-R14-25 | DESIGN-15 | `Plan` 两遍遍历 | 已登记（R16） | 建议只改名（`ClassificationPlan`），不重构 |
+| F-R14-19 | DESIGN-09 | `check_boot_postconditions` 在生产值上不可证伪 | ✅ 已修（R17） | 三条 `#[should_panic]` 负测：syscall 越界/栈顶低于基址/user_sp 越界 |
+| F-R14-20 | DESIGN-10 | `memmap ∩ reserved` 未在校验期检查 | ✅ 已修（R17） | `validate_impl_inner` merge-walk 交集检查 + 负测 |
+| F-R14-21 | DESIGN-11 | 13 个 pub 字段 + 12 个转发 getter | ✅ 已修（R17） | 删 12 个转发 getter，106 个调用点改字段访问 |
+| F-R14-22 | DESIGN-12 | 三种校验语义用两个 bool 编排 | ✅ 已修（R17） | `ValidationLevel::{BeforeTables,Standard,Strict{authority}}` |
+| F-R14-23 | DESIGN-13 | `ebs_failed` 与 `ebs_attempts > 0` 重叠 | ✅ 已修（R17） | 删 `ebs_failed`，保留 `ebs_attempts` |
+| F-R14-24 | DESIGN-14 | `PagingWithId` 仅测试实现；`HUGE_PAGE_SHIFT` 零读者 | ✅ 已修（R17） | 删除 `PagingWithId`、死常量与 `MockAsid` |
+| F-R14-25 | DESIGN-15 | `Plan` 两遍遍历 | ✅ 已修（R17） | 改名 `ClassificationPlan`，不重构遍历 |
 | F-R14-26 | DESIGN-03 | `prepare_boot` 约 250 行零生产调用，与生产入口分叉 | ✅ 已修（R17 裁决：删；R18 记账） | 随 `UefiBootShim` 整型删除；`prepare_boot` 只剩 U-Boot 生产入口 `RiscvUbootBootShim` 一处实现 |
 
-> 档期口径：R15 批处理本篇 in-scope 结构项（F-R14-01/02/03/05/06/07/08/09/10/11/12），R16 批处理跨 crate 代码重构（F-R14-13..25）与 `prepare_boot` 裁决；F-R14-04 指向尚未生成的 02 篇，定在 R17。
+> 档期口径（历史）：R15/R16 批处理 in-scope 结构项与跨 crate 代码重构（F-R14-01..12、16..26），均已执行完毕；F-R14-04 指向尚未生成的 02 篇，仍开放（与 `OPEN-DEBT.md` 的 `R14/READER-A-16` 同项）。
 
 ## Round 16 转出（F-R16-nn）
 
