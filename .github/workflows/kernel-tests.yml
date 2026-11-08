@@ -127,3 +127,7 @@ jobs:
       - name: Build aarch64 direct-core image
         working-directory: os
         run: cargo build -p kernel-image --target aarch64-unknown-none --features fw-aarch64-none
+
+      - name: Build riscv64 U-Boot shim binary
+        working-directory: os
+        run: cargo build -p boot-shim --target riscv64gc-unknown-none-elf --features fw-riscv-uboot

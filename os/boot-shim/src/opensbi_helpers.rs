@@ -300,6 +300,25 @@ impl BootShim for RiscvUbootBootShim {
 
         let kern = loader::load_kernel_with_loader(&file_loader)
             .expect("boot-shim: failed to parse kernel ELF");
+        // The U-Boot leg has no `AllocateAddress` reservation (the firmware
+        // placed the image), so the kernel span is only known after the
+        // copy. Reject the layout if the already-allocated bootstrap pages
+        // land inside it: continuing would put page-table stores on top of
+        // the image. The UEFI leg prevents this before allocation; this is
+        // the U-Boot leg's post-layout equivalent.
+        {
+            let k0 = kern.kern_phys_base.0;
+            let k1 = k0.saturating_add(kern.kern_size);
+            for (what, start, end) in [
+                ("root page", root_page.0, root_page.0.saturating_add(4096)),
+                ("bump region", bump_base, bump_end),
+            ] {
+                assert!(
+                    end <= k0 || start >= k1,
+                    "boot-shim: {what} overlaps the kernel image span — halting"
+                );
+            }
+        }
         let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
 
         // OpenSBI passes the DTB physical address in register a1.

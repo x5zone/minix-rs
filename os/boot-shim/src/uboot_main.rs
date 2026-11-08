@@ -49,7 +49,8 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::alloc::{GlobalAlloc, Layout};
-use boot_shim::{raw_serial, raw_serial_line, RiscvUbootBootShim};
+use boot_shim::opensbi_helpers::RiscvUbootBootShim;
+use boot_shim::{raw_serial, raw_serial_line};
 use minix_boot::{BootShim, Serializer, ARENA_CAP};
 
 extern crate alloc;
