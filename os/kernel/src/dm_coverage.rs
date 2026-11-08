@@ -70,7 +70,8 @@
 use crate::boot_alloc;
 use minix_arch::arch::boot_arch::BootArch;
 use minix_arch::arch::boot_dm::{
-    DmPagePolicy, install_prevalidated_boot_dm_range, plan_dm_policy, preflight_boot_dm_range,
+    DmPagePolicy, DmWindow, install_prevalidated_boot_dm_range, plan_dm_policy,
+    preflight_boot_dm_range,
 };
 use minix_arch::paging::{PageFlags, PageTableError};
 use minix_arch::paging_ext::PageSize;
@@ -80,6 +81,61 @@ use minix_types::PhysBytes;
 
 /// 4 KiB — the base leaf size of every current architecture.
 const PAGE_SIZE: u64 = 4096;
+
+/// Iterate every Direct Map candidate in the **semantic installation order**:
+///
+/// 1. kernel-window memmap
+/// 2. kernel-window bootstrap tree
+/// 3. VM-window memmap (clipped)
+/// 4. VM-window bootstrap tree (clipped)
+/// 5. per boot module: VM-window (clipped) then kernel-window
+/// 6. kernel-window reserved regions
+///
+/// Pass 1 (preflight) and pass 2 (install) MUST traverse this same sequence;
+/// extracting it here guarantees they cannot drift apart (R17 DESIGN-06).
+/// `kernel_dm_pa_end` derives its upper bound from the same candidate set.
+fn for_each_dm_candidate<A: BootArch, F>(
+    kernel_info: &KernelInfo,
+    root: PhysBytes,
+    kernel_window: DmWindow<A>,
+    vm_window: DmWindow<A>,
+    mut f: F,
+) -> Result<(), PageTableError>
+where
+    F: FnMut(DmRange, DmWindow<A>) -> Result<(), PageTableError>,
+{
+    let vm_capacity = vm_window.pa_capacity();
+    // 1–2: kernel window
+    for r in memmap_candidates(kernel_info) {
+        f(r, kernel_window)?;
+    }
+    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
+        f(r, kernel_window)?;
+    }
+    // 3–4: VM window
+    for r in memmap_candidates(kernel_info) {
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            f(clipped, vm_window)?;
+        }
+    }
+    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            f(clipped, vm_window)?;
+        }
+    }
+    // 5: per boot module, VM first then kernel
+    for r in boot_module_candidates(kernel_info, root) {
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            f(clipped, vm_window)?;
+        }
+        f(r, kernel_window)?;
+    }
+    // 6: reserved regions, kernel window
+    for r in reserved_regions_candidates(kernel_info, root) {
+        f(r, kernel_window)?;
+    }
+    Ok(())
+}
 
 /// Establish both DM windows on the bootstrap root (§6.1 D8-②).
 ///
@@ -101,124 +157,20 @@ pub unsafe fn establish_boot_dm<A: BootArch>(
 ) -> Result<(), PageTableError> {
     let kernel_window = policy.kernel_window();
     let vm_window = policy.vm_window();
-    let vm_capacity = vm_window.pa_capacity();
 
     // Pass 1: preflight every candidate of both windows before any write.
-    // The candidate generators are pure functions of (kernel_info, root):
-    // they never depend on the bump cursor, so pass 2 sees the same spans.
-    for r in memmap_candidates(kernel_info) {
-        preflight_boot_dm_range(r, kernel_window, policy)?;
-    }
-    for r in bootstrap_tree_candidates(kernel_info, root)
-        .into_iter()
-        .flatten()
-    {
-        preflight_boot_dm_range(r, kernel_window, policy)?;
-    }
-    for r in memmap_candidates(kernel_info) {
-        if let Some(clipped) = r.clipped_to(vm_capacity) {
-            preflight_boot_dm_range(clipped, vm_window, policy)?;
-        }
-    }
-    for r in bootstrap_tree_candidates(kernel_info, root)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(clipped) = r.clipped_to(vm_capacity) {
-            preflight_boot_dm_range(clipped, vm_window, policy)?;
-        }
-    }
-    for r in boot_module_candidates(kernel_info, root) {
-        if let Some(clipped) = r.clipped_to(vm_capacity) {
-            preflight_boot_dm_range(clipped, vm_window, policy)?;
-        }
-        preflight_boot_dm_range(r, kernel_window, policy)?;
-    }
-    for r in reserved_regions_candidates(kernel_info, root) {
-        preflight_boot_dm_range(r, kernel_window, policy)?;
-    }
+    // Candidate generators are pure functions of (kernel_info, root): they
+    // never depend on the bump cursor, so pass 2 sees the same spans.
+    for_each_dm_candidate(kernel_info, root, kernel_window, vm_window, |r, w| {
+        preflight_boot_dm_range(r, w, policy)
+    })?;
 
-    // Pass 2: install the preflighted sequence. Kernel DM first (constraint
-    // ①), then VM DM, then module coverage in both windows, then reserved
-    // regions into the kernel window only.
-    for r in memmap_candidates(kernel_info) {
+    // Pass 2: install the preflighted sequence in the same order.
+    for_each_dm_candidate(kernel_info, root, kernel_window, vm_window, |r, w| {
         // SAFETY: pass 1 validated geometry; the caller owns the boot-context
         // contract.
-        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
-    }
-    for r in bootstrap_tree_candidates(kernel_info, root)
-        .into_iter()
-        .flatten()
-    {
-        // SAFETY: as above.
-        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
-    }
-    for r in memmap_candidates(kernel_info) {
-        if let Some(clipped) = r.clipped_to(vm_capacity) {
-            // SAFETY: as above.
-            unsafe { install_prevalidated_boot_dm_range(root, clipped, vm_window, policy)? };
-        }
-    }
-    for r in bootstrap_tree_candidates(kernel_info, root)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(clipped) = r.clipped_to(vm_capacity) {
-            // SAFETY: as above.
-            unsafe { install_prevalidated_boot_dm_range(root, clipped, vm_window, policy)? };
-        }
-    }
-    for r in boot_module_candidates(kernel_info, root) {
-        if let Some(clipped) = r.clipped_to(vm_capacity) {
-            // SAFETY: as above.
-            unsafe { install_prevalidated_boot_dm_range(root, clipped, vm_window, policy)? };
-        }
-        // SAFETY: as above.
-        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
-    }
-    for r in reserved_regions_candidates(kernel_info, root) {
-        // SAFETY: as above.
-        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
-    }
-    // Forensics probe: print the VM DM window's actual coverage list (the
-    // three-source candidates and their effective ranges after window
-    // clipping). An earlier hierarchical dump proved the faulting PT page sat
-    // at a low-memory PA (lvl2=0x7d027 / lvl1=0), so this probe decides
-    // whether that page is inside the VM window's coverage -- when it is not,
-    // VM's PTE writes are silently lost (the direct mechanism behind the
-    // refault loop). Mock gate: host tests have no port-I/O console (the same
-    // convention as the other probes); without the gate the test process
-    // SIGSEGVs.
-    #[cfg(not(feature = "mock"))]
-    {
-        use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
-        if let Some((base, end)) = boot_alloc::boot_alloc_region() {
-            C0::write_str(" bump=[");
-            C0::write_hex(base);
-            C0::write_str(",");
-            C0::write_hex(end);
-            C0::write_str(")");
-        }
-        C0::write_str("\n");
-        for r in memmap_candidates(kernel_info) {
-            if let Some(c) = r.clipped_to(vm_capacity) {
-                let _ = c;
-            }
-        }
-        for r in bootstrap_tree_candidates(kernel_info, root)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(c) = r.clipped_to(vm_capacity) {
-                let _ = c;
-            }
-        }
-        for r in boot_module_candidates(kernel_info, root) {
-            if let Some(c) = r.clipped_to(vm_capacity) {
-                let _ = c;
-            }
-        }
-    }
+        unsafe { install_prevalidated_boot_dm_range(root, r, w, policy) }
+    })?;
 
     validate_bootstrap_tree(root);
     Ok(())
