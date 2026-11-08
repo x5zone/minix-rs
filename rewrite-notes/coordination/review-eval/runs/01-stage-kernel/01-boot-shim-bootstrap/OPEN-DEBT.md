@@ -1,7 +1,9 @@
 # D01 开放欠账（open-debt）
 
-> 唯一欠账源：由 `defect-ledger.md` 的 R14/R15/R16 ② 行抽取，已剔除已完成行；行 ID 带轮次前缀。R18 实施批与 F-R18-01 完成后，本表只剩一条相邻项；本表非空即不得标记本篇 CONVERGED（G8+G9 仍要求连续两轮零新增）。
+> 本表只收**跨 crate / 需要独立项目**的 ② 项（负责人 + 截止轮次），按 `prompt/review-rules/review-evals.md` §4.1 与 G9 的口径管理。
+> `adjacent` 项不进本表：它们在 `follow-ups.md` 登记目标轮次，按 §4.2 的“adjacent 阻塞 = 0”规则**不阻塞本篇收敛**。
+> 本表为空是“没有跨 crate 欠账”的充分信号，但不是收敛的必要条件；收敛只看 G8（连续两轮无新 in-scope 发现）与 G9（⑥ 项清零）。
 
 | ID | 严重度 | 处置/档期 |
 |---|---|---|
-| R14/READER-A-16 | P2 | 相邻：Direct Map（`kernel_direct_map_size`/`kern_dm_pages`）的读者主要在尚未生成的 02 篇；本篇已保留边界声明，02 篇立项时补 |
+| — | — | 当前无跨 crate 欠账（F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md`） |

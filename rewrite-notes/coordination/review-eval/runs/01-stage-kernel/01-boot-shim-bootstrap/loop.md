@@ -799,7 +799,7 @@
 
 ### §3 剩余欠账
 
-- `OPEN-DEBT.md` 2 行：`R14/READER-A-16`（相邻，02 篇未生成）与 `F-R18-01`（D-1 第二阶段：U-Boot 腿 storage 迁移，截止 code-excellence 下一批）。
+- `OPEN-DEBT.md` 0 行：F-R18-01 已实施；`R14/READER-A-16` 是 adjacent，归 `follow-ups.md`（目标 = 02 篇立项轮），按 §4.2 不阻塞本篇收敛。
 - 本篇状态：**NOT CONVERGED（无新一轮面板）**；基线已封存，等待用户指示是否启动 R17-panel。
 
 ### R18 补记：F-R18-01（D-1 第二阶段）完成
@@ -811,4 +811,4 @@
   - U-Boot 腿：内存图/保留区/来源/参数/模块/平台源全部写入 storage；arena 在 `prepare_boot` 内从同一 bump 池分配；五类 startup 记录返回前写齐；删除 `Box::leak`（模块表、平台源、参数）与 `STARTUP_OBJECTS` 静态量。
   - `BootReport::from_kernel_info` 删除（无生产调用者）；30 个 QEMU 测试内核改为直接持有 `KernelInfo` 与局部变量，不再构造 `BootPrepareResult`；`test-smp-aps`/`test-smp-topo-aarch64` 改用 `find_platform_sources_into`。
 - 复验：`minix-boot` 183、`boot-shim --features test-all` 135 + 2、`minix-kernel --features mock` 868；32 个测试内核 `cargo check` 通过（`test-rt-birth-riscv64` 需构建期 `RT_BIRTH_ELF_PATH`，属既有构建注入，不在本批范围）；QEMU x86/aarch64 shim bootmarks PASS、riscv64 U-Boot shim 6/6 PASS。
-- 欠账：`OPEN-DEBT.md` 只剩 `R14/READER-A-16`（相邻，02 篇未生成）。
+- 欠账：`OPEN-DEBT.md` 为空；`R14/READER-A-16` 是 adjacent（02 篇未生成），按 §4.2 不阻塞本篇收敛。收敛仍未宣告：R18 的架构级改动使旧轮次结论失效，需在新基线上重跑面板满足 G8（G9 已满足）。
