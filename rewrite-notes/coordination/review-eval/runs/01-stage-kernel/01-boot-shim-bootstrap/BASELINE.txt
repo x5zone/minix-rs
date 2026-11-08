@@ -9,11 +9,11 @@ fixed_doc_lines=3332
 # D2-06/D2-08 document sync; those landed in the R18 commit (RB17 N7/H2-H5).
 panel_round=round17
 
-# R18 round
+# R18 round (fix head includes the RB18 residual commit)
 r18_panel_base_head=7a36a9253
 r18_panel_base_doc_sha256=3b8b0bde25d568ce500440570ee451e3832aa820b0db52884f53a39a6bf4ceb3
-r18_fix_head=cba3558deb555d01312b4d6c884875b5cd7c5bac
-r18_fixed_doc_sha256=ec9aa0f83c2e304a2fe9e4b4d3a67d2009cfe63a90a93e9ec817829ec45347c5
+r18_fix_head=01143c2e70606e5f6352eadc371ee20822dd3147
+r18_fixed_doc_sha256=a9a17420ceb069b6367570ba45386421d09f1364fe3dc477ffb4cf422ee8acf2
 r18_fixed_doc_lines=3386
 r18_panel_round=round18
 r18_panel_role_files=fact.md reader-a.md reader-b.md reader-c.md refute.md design-d1.md design-d2.md
