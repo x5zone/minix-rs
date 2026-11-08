@@ -41,9 +41,9 @@
 
 问题在于这些切片的生命周期被写成了 `'static`（“活到程序结束”），但引导层其实没有堆、也没有真正的 `'static` 所有者。为了让编译器接受，代码用了三类手段：
 
-- 约 44 处 `static mut` 全局数组；
+- 约 40 处 `static mut` 全局数组（boot-shim 22 处，其余在 kernel-image 与 minix-boot；rg 行计数口径）；
 - 5 个“一次性”原子布尔守卫，防止第二次写入；
-- 7 处 `Box::leak`，把堆上分配的内存“泄漏”成 `'static`。
+- 13 处 `Box::leak`，把堆上分配的内存“泄漏”成 `'static`（三个 crate 合计）。
 
 U-Boot shim 那一侧更极端：它背着一个约 16 MiB 的 `.bss` 假堆，只为了让 `Box::leak` 有地方落地。
 
@@ -174,6 +174,8 @@ A 或 C，不做 B。分区不是偶然，是“内核页表页必须在 DM 可�
 - UEFI：从 ESP 读文件，必须复制进堆，返回 `Vec`；
 - U-Boot：文件字节本来就已经在 RAM 里（引导器用 `fatload` 放好，boot-shim 的取件表记录了物理地址与长度），但接口仍要求复制成 `Vec`。
 
+接口现状：`fn read(&self, path: &str) -> Option<Vec<u8>>`（`loader.rs`）——签名是 `&self` 而非 `&mut self`；这一点影响“借用型返回”的可行性评估（见 §11.2 D-4）。
+
 于是 U-Boot 腿读内核 ELF 与 12 个模块时，每个文件至少多一次整份复制：从 RAM 里的原位置复制进 `Vec`，装载器再从 `Vec` 复制到最终 LMA。U-Boot shim 的假堆（约 16 MiB `.bss`）也主要是为这些 `Vec` 与 `Box::leak` 准备的。
 
 ### 选项
@@ -288,7 +290,11 @@ UEFI 腿读内核 ELF 时，先用堆分配一个 `Vec` 装文件字节；这时
 
 按你之前的指示，R17 面板没有启动。当前 HEAD 是 `dd46841a2`，宿主测试、三架构构建、x86/aarch64/riscv64 QEMU 门与五门全绿。
 
+第三方（GPT）建议的实施顺序（见 §11.2 P-3）：① 先定 D-1/D-2/D-4 的共同数据模型与边界；② D-5 生命周期证明 + D-6 危险 fallback 修复；③ D-3 分区断言与分配器复用；④ D-7、D-8、P-1、P-2；⑤ 固定代码/文档/workflow 基线，再启动 R17。
+
 ## 9. 一页速答表
+
+> 第三方（GPT）意见与代码核实后的修订版建议见 **§11.5**；本表保留为提出时的原始倾向。
 
 | 编号 | 决策问题 | 选项 | 我的倾向 | 你的选择 |
 |---|---|---|---|---|
@@ -309,3 +315,82 @@ UEFI 腿读内核 ELF 时，先用堆分配一个 `Vec` 装文件字节；这时
 1. 这 5 个设计决策里，哪些其实是同一个根因（“引导期没有堆，却想要拥有型接口”）的不同表现？是否应该合成一个总方案，而不是逐条打补丁？
 2. 哪些改动属于“为了让类型更诚实”而付出过高启动风险？有没有“只加断言、不改结构”的替代路径？
 3. 如果只能做三件事，你会选哪三件？为什么？
+
+## 11. 第三方意见与代码核实（2026-11-09）
+
+### 11.1 代码核实结果（修正 §2 计数，补齐 GPT 要求的两组事实）
+
+| 文档声称 | 核实结果 | 出处 |
+|---|---|---|
+| `KernelInfo` 的 7 个切片全部 `'static` | 属实（逐字段确认） | `kernel_info.rs:33/62/75/85/122/144/172` |
+| 约 44 处 `static mut` | 实测 **40**（boot-shim 22 + kernel-image + minix-boot；rg 行计数） | `rg "static mut" os/boot-shim/src os/kernel-image/src os/libs/minix-boot/src` |
+| 7 处 `Box::leak` | 实测 **13**（同域） | 同上 |
+| 5 处一次性守卫 | 属实：`bootface STARTUP_TAKEN`、`bootface_a64 STARTUP_TAKEN`、`bootface_common PARAM_TAKEN`、`opensbi_helpers STARTUP_TAKEN`、`memmap_source DTB_COLLECT_TAKEN` | 对应文件 |
+| U-Boot 16 MiB 假堆 | 属实：`SHIM_HEAP_LEN = 16 * 1024 * 1024` | `uboot_main.rs:71` |
+| D-2 双份内存图 | 属实：wire 7616 B + semantic 6144 B，同一分类向两侧写 | `handoff_v1_write.rs:362/384`（`push_memmap`/`write_reserved_regions` 调 `write_semantic_region`） |
+| D-3 池布局 | 属实：`MODULE_REGION_BASE=0x8200_0000`、`BUMP_END=+32MiB`、shim 侧 `static mut BUMP_PTR`；内核 `BootAlloc` 由 `prepare_boot(1024)` 的 4 MiB 子区间初始化；root 页先于 bump 分配 | `opensbi_helpers.rs:299-300/503`；`uboot_main.rs:404/410` |
+| D-4 接口 | 属实，且签名是 `read(&self) -> Option<Vec<u8>>`（非 `&mut self`） | `loader.rs:108-111` |
+| D-5 扣除记录不含 arena | 属实：`classify` 推入内核跨度/root/整段 bump/VM 已用后缀/模块五类，无 arena | `vm_handoff.rs:395-440` |
+| D-5 startup 记录含 arena | 属实：UEFI 与 U-Boot 两侧都写 arena 记录 | `uefi_helpers.rs:1094`；`uboot_main.rs:477-480` |
+| D-5 毒化测试 | 存在 `decoded_payloads_survive_arena_poison`，但它只证明“解码后的数组独立于 arena”，**不证明**“VM 自由页发布晚于 arena 最后读取”——GPT 指出的两层证据差距属实 | `handoff_v1_read.rs:1156` |
+| D-5 静态时序链 | `arch_boot_resume_v1` 解码后不保留 `arena_pa`；`build_vm_handoff` 在 `kmain` 内（更晚）——静态上支撑“解码是最后读取”，但**无测试钉住该时序** | `lib.rs` 的 resume 函数体；`lib.rs:2685` |
+| D-6 兜底路径 | 属实：`FALLBACK_BUMP_LEN = 0x100_000`，取 memmap 第一个足够大区间，不排除内核/模块/root | `lib.rs` 的 fallback 段 |
+| D-6 注册覆盖 | 四条生产腿全部在 `arch_boot` 前注册；**30 个引用 `arch_boot` 的 .rs 测试内核全部注册 `init_boot_pt_alloc`，无一依赖兜底**（兜底 vmark 零引用）→ A 的测试成本为零 | `uefi_helpers.rs:916`、`uboot_main.rs:410`、`bootface.rs:272`、`bootface_a64.rs:256`；测试内核普查 |
+| D-7 A+D 已落地 | 属实：`AllocateType::Address` 预订已实现，失败即停机 | `uefi_helpers.rs:54/76` |
+| D-8 | 台账对症：R7-FU-02 与 F-R16-01 同题；R7-FU-03 已被 A+D 取代 | follow-ups |
+
+### 11.2 逐项第三方意见与修订建议
+
+| 项 | 第三方（GPT）意见 | 修订后建议（含代码约束） |
+|---|---|---|
+| D-1 | 支持 A，但拆成“所有者 `BootStorage` + 视图 `BootReport<'a>`”两个类型、不造自引用；真正的静态存储可保留 `'static`；`unsafe` 收在明确边界；分阶段迁移；拒绝 B 与“只改 U-Boot”（两套安全模型） | 采纳为 **A1**：`BootStorage`（调用方持有的定长数组，可位于 `.bss` 或调用方工作区）+ `BootReport<'a>`（只读视图）；wire 协议保持不变；先类型与最内层生产者，再逐腿迁移，每腿过该架构 QEMU 门 |
+| D-2 | 支持 A，但“删语义分区 ≠ 删语义数组”；接收侧仍要解码到存储；解码器提炼为纯函数（输入 wire、输出调用方缓冲）；补四组测试；B 的调试断言不是选择 | 采纳 **A + 测试清单**：编解码逐项相等、未知 tag/错长度/超容量失败关闭、双侧对同一份 wire 得同一报告、不再存在发送侧私有的语义真相 |
+| D-3 | 推荐 C（同一算法、两个独立实例、固定分区）；A 先行（断言），再 C 复用；明确否决 B（3/6 标记实测） | 采纳 **A 先行 + C 复用**；B 否决并附实测依据；编译期断言清单（池起止对齐、root 不与两 bump 区间重叠、kernel bump 与 shim bump 不相交、kernel bump 不越 DM 上界、arena 最大位置不越池尾）；运行期断言（每次分配属本实例区间、shim 游标不进 kernel bump、kernel 游标不越界） |
+| D-4 | 支持 A，但生命周期是 `'a` 不是 `'static`；`Cow<'a, [u8]>` 或显式借用/拥有枚举（偏枚举）；四条钉住条件（RAM 有效、loader 不得覆盖借用、源/目标重叠检查、连续加载不被借用阻塞）；不要断言 16 MiB `.bss` 全可删 | 采纳 **A（显式 `FileBytes<'a>` 枚举）**；C 仅作原型验证、不作长期接口；`.bss` 缩减量按其它 `Vec`/`Box` 统计后再宣告 |
+| D-5 | 不直接接受 A：先闭合生命周期合同（范围/身份记录、最后读取点=解码完成、`build_vm_handoff` 在其后、之前不得把 arena 交给可能复用的分配器、poison 后数据可用测试）；扣除由内核侧产生；无法证明则先排除 arena | 采纳为 **D-5′**：写生命周期合同 + 时序测试（解码后 poison arena → VM 自由页可安全使用）；静态链已支撑“解码是最后读取”，补测试钉住后**维持现状（arena 可回收）**；若测试不成立则 A（内核侧写扣除） |
+| D-6 | 支持 A（生产 fail-closed、测试内核显式分配器）；若存在不注册的受支持生产形态则 B | 采纳 **A**：代码核实无此形态（四腿全注册、30 个测试内核全注册、兜底零依赖）；兜底代码删除或改为带说明的 panic |
+| D-7 | B（保持 fail-closed + 补“ELF 源缓冲与目标 LMA 预订范围重叠必须失败”的测试与文档）；C 仅在失败率不可接受时 | 采纳 **B + 失败测试** |
+| D-8 | 合并 + 归档 | 采纳：R7-FU-02 合并进 F-R16-01；R7-FU-03 标“已被 A+D 取代”归档 |
+| P-1 | 8 字段判决账（decision_id / reviewer_verdict / user_decision / decision_reason / scope / implementation_status / evidence / reopen_condition）；**不得覆盖独立回读的 NOT PASS** | 采纳：轨迹 schema 增字段；用户裁决与审查者原始结论分列，保留 NOT PASS |
+| P-2 | 解析器驱动的表结构 + 跨文档链接门；正/负 fixture；不用全文搜 `.md` | 采纳：表块连续性（表头紧跟分隔行、表体无空行、忽略 fenced code）、相对链接按文档目录解析、排除外链与代码块；fixture 专测检查器自身 |
+| P-3 | 先做关键实施再启动 R17：① D-1/2/4 共同数据模型与边界 ② D-5 生命周期证明 + D-6 修复 ③ D-3 断言+复用 ④ D-7/D-8/P-1/P-2 ⑤ 固定基线 → R17 | 采纳（已写入 §8.3） |
+
+### 11.3 共同根因（GPT 分组，采纳）
+
+| 根因 | 对应项 | 关系 |
+|---|---|---|
+| 数据所有权与生命周期不真实 | D-1、D-4、D-5 | 最值得共同设计，但按阶段实施 |
+| 表示与协议重复 | D-2 | 与 D-1 高度相关，类型边界明确后处理 |
+| 物理内存分区与分配安全 | D-3、D-6、D-7 | 共享内存安全目标，解决机制不同 |
+| 生命周期结束后的物理页回收 | D-5 | 与第一组相关，直接影响第二跳扣除合同 |
+
+明确反对“大而全 `BootMemoryManager`”：按“谁持有字节 / 谁提供借用 / 谁持有固定缓冲 / 谁提供语义视图 / 谁分配物理区间 / 谁保证不越界 / 谁最后使用对象 / 谁生成 VM 自由页”分工——与项目“抽象语义，不抽象机制”的第一原则一致。
+
+### 11.4 如果只能做三件事（GPT 排序，采纳）
+
+1. **D-6 + D-3**（内存安全：兜底 fail-closed + 双 bump 分区断言）
+2. **D-5**（生命周期闭合：先证明时序，再决定回收）
+3. **D-1 + D-4**（核心 Rust 设计，单独分批；D-2 随 D-1）
+
+D-7 保留 fail-closed；D-8 归档；P-1/P-2 作 workflow 基础设施。
+
+### 11.5 修订后的一页速答表
+
+| 编号 | 问题 | 原始倾向 | 第三方（GPT） | 修订后建议 |
+|---|---|---|---|---|
+| D-1 | `KernelInfo` 的假所有权 | A（分阶段） | A（Storage + Report 拆分） | **A1：`BootStorage` 所有者 + `BootReport<'a>` 视图**，分腿迁移 |
+| D-2 | arena 双份内存图 | A | A（删语义分区，保留 wire 权威） | **A + 四组测试** |
+| D-3 | 两个 bump 分配器 | A 或 C | C（同算法两实例），A 先行 | **A 断言先行 + C 复用；B 否决** |
+| D-4 | `FileLoader` 强制拷贝 | A（`Cow<'static>`，或先 C） | A（`'a` 生命周期，显式枚举） | **A：`FileBytes<'a>` 枚举；C 仅原型** |
+| D-5 | arena 未进扣除表 | A | 先闭合生命周期合同，不盲目 A | **D-5′：生命周期合同 + 时序测试；证明后维持现状，否则 A** |
+| D-6 | 兜底 bump 不排除活对象 | A（测试需要则 B） | A | **A（已核实无生产/测试形态依赖兜底）** |
+| D-7 | 全局分配器守卫 | B | B + 重叠失败测试 | **B + 测试** |
+| D-8 | 旧登记 | 合并 + 归档 | 合并 + 归档 | **合并 + 归档** |
+| P-1 | 判决落账字段 | 加 | 加（8 字段，保留 NOT PASS） | **加** |
+| P-2 | 表结构/外链门 | 加 | 加（解析器驱动 + fixture） | **加** |
+| P-3 | 是否启动 R17 | 先做 D-1..D-5 裁决 | 按 ①–⑤ 顺序，实施完固定基线再 R17 | **采纳 ①–⑤ 顺序** |
+
+### 11.6 两个待补证据（GPT 提出）
+
+- **D-5 时序**：静态链已核实（解码后不保留 `arena_pa`；`build_vm_handoff` 在 `kmain`），**缺测试钉住**。D-5′ 的时序测试是闭案前提：解码完成后 poison arena，验证 VM 得到的自由页可安全使用。
+- **D-6 生产入口覆盖**：已核实——四条生产腿全部注册、30 个引用 `arch_boot` 的 .rs 测试内核全部注册、兜底零依赖。A 可直接实施，无 B 的必要条件。
