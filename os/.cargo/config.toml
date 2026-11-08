@@ -10,8 +10,8 @@
 # test is missed.
 #
 # Do not override this for correctness runs: several boot-shim tests assert
-# process-wide allocation counters and the one-shot DTB preflight state, so a
-# multi-thread run can fail for scheduling reasons alone.
+# per-thread allocation counts and the one-shot DTB preflight state, so a
+# multi-thread run can still fail for scheduling reasons.
 #
 # See:
 #   - kernel/src/smp.rs BKL_TEST_LOCK

@@ -818,11 +818,14 @@ mod tests {
             None
         );
         // Zero-length destination strictly inside a live source range.
+        let mut live_src = phdr(0x400000, 0x10);
+        live_src.offset = 0;
+        live_src.filesz = 0x10;
         let mut empty_dst = phdr(0x1008, 0);
         empty_dst.offset = 0;
-        empty_dst.filesz = 0x10;
+        empty_dst.filesz = 0;
         assert_eq!(
-            first_source_destination_overlap(0x1000, &[empty_dst.clone()]),
+            first_source_destination_overlap(0x1000, &[live_src, empty_dst]),
             None
         );
     }

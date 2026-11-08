@@ -397,8 +397,9 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 /// fields into the already-serialized arena, then absolute-jump into the
 /// standalone image.
 ///
-/// The arena is an `ARENA_CAP` (nine-page) loader-data allocation below the identity bound;
-/// the bootstrap root maps it through the identity window, so the in-place
+/// The arena is an `ARENA_CAP` (nine-page) allocation below the identity
+/// bound — `LOADER_DATA` on the two UEFI legs, bump-pool pages on the U-Boot
+/// shim leg; the bootstrap root maps it through the identity window, so the in-place
 /// patch is a plain memory write after paging is live. The architecture-specific
 /// part is only the jump register convention: aarch64 passes the arena in
 /// `x0`, x86-64 in `rbx` (the image trampoline moves it to `rdi` after the
@@ -437,8 +438,9 @@ pub fn enter_kernel_image_v1(arena_pa: u64, kernel_info: &KernelInfo, root_page:
     let (bump_base, bump_end) =
         boot_alloc::boot_alloc_region().expect("enter_kernel_image_v1: bump region not registered");
     let bump_next = boot_alloc::boot_alloc_next();
-    // SAFETY: `arena_pa` is the `ARENA_CAP` LOADER_DATA arena the boot-shim
-    // allocated below `boot_dm_admissible_end`; the root just enabled maps
+    // SAFETY: `arena_pa` is the `ARENA_CAP` arena the boot-shim allocated
+    // below `boot_dm_admissible_end` (LOADER_DATA on UEFI legs, bump pages on
+    // the U-Boot shim leg); the root just enabled maps
     // that physical range identity and writable, and this function owns the
     // patch phase (the shim is the only other party and never writes again).
     let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa as *mut u8, ARENA_CAP) };
@@ -530,8 +532,9 @@ unsafe extern "sysv64" {
     )
 ))]
 pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
-    // SAFETY: the sender allocated an `ARENA_CAP` LOADER_DATA arena below the
-    // identity bound and the live bootstrap root maps it; nothing writes it
+    // SAFETY: the sender allocated an `ARENA_CAP` arena below the identity
+    // bound (LOADER_DATA on UEFI legs, bump pages on the U-Boot shim leg) and
+    // the live bootstrap root maps it; nothing writes it
     // after the jump.
     let arena = unsafe { core::slice::from_raw_parts(arena_pa as *const u8, ARENA_CAP) };
     let scalars = decode_envelope(arena)
@@ -930,8 +933,8 @@ fn build_bootstrap_root_and_enable<A: BootArch>(root_page: PhysBytes, policy: &K
     // NOTE: EXECUTABLE flag is required so the CPU can fetch instructions
     // after the page table switch (CR3/satp/TTBR write).
     // NOTE: We use kernel_read_write() (supervisor-only, no USER_ACCESSIBLE)
-    // because on RISC-V Sv39, a page with U=1 cannot be executed by
-    // supervisor mode unless sstatus.SUM=1. Since we haven't set SUM,
+    // because on RISC-V Sv39 the supervisor may not execute a page with U=1
+    // irrespective of sstatus.SUM (SUM only relaxes loads/stores), so the
     // identity mapping must be supervisor-only.
     let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
 

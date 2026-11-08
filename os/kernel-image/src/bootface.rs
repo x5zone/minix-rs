@@ -79,7 +79,7 @@ use crate::early_console;
 // warm re-entry. The name list therefore exists as a fixed-size byte pool
 // (pure data, no baked pointers) plus literal-check shapes; the backing of
 // `BootModule.name` must be the physical name pool (the kernel's
-// `store_kernel_info` reads it on the physical-address leg, kernel/src/lib.rs:734).
+// `store_kernel_info` reads it on the physical-address leg, os/kernel/src/lib.rs:fn store_kernel_info).
 const _: () = assert!(NR_BOOT_MODULES == 12);
 
 // The name pool/slot width and the pure-function gates (`be_cell`/
@@ -133,9 +133,6 @@ const KERN_SIZE: u64 = 0x40_0000;
 /// under the physical address view hits exactly the invariant pinned in this
 /// module).
 const PT_BUMP_PAGES: usize = 256;
-
-/// Upper bound on memmap entries (multi-region `/memory` on QEMU virt and real
-/// boards is far below this).
 
 // ── Entry ───────────────────────────────────────────────────────
 
@@ -505,7 +502,7 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
 /// `BootModule.name` must also be a physical address — the kernel's
 /// `store_kernel_info` reads `module.name.as_bytes()` once at the `arch_boot`
 /// entry (the physical-address leg after satp is written and before enable;
-/// kernel/src/lib.rs:734), and a baked VMA handed in there blows up on the spot
+/// os/kernel/src/lib.rs:fn store_kernel_info), and a baked VMA handed in there blows up on the spot
 /// as well. After the byte-pool slot (pure data, call-site `auipc` base) is
 /// copied into the physical name pool, the fat pointer is assembled in place —
 /// reachable from both views.

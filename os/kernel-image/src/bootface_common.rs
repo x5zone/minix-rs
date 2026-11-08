@@ -87,9 +87,9 @@ pub(crate) fn table_magic_ok(pa: u64) -> bool {
     if pa % 8 != 0 {
         return false;
     }
-    // SAFETY: the caller guarantees `in_memmap_range(pa, 8)` — the whole
-    // aligned u64 lies inside DTB-reported DRAM and is readable; boot is
-    // single-hart.
+    // SAFETY: the caller guarantees the whole `BootFileTable` (including
+    // this u64) lies inside DTB-reported DRAM via the full-width
+    // `in_memmap_range` gate; boot is single-hart.
     unsafe {
         (pa as *const u64).read_volatile() == boot_shim::opensbi_helpers::boot_file_table_magic()
     }

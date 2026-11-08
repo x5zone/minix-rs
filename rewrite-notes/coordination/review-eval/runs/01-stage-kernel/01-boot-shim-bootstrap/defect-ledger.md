@@ -623,3 +623,42 @@
 | DESIGN-R11-08 | panel-r11 | P3 | 源码注释/孤立右括号 | ① | 已修（与 FACT-R11-05 同批） | main.rs | 编译绿 |
 | DESIGN-R11-09 | panel-r11 | P3 | 源码注释/build_identity_windows 测试前提过期 | ① | 已修：测试注释改"函数无参且不读 arch MMIO 表" | vm_handoff.rs 测试 | 测试绿 |
 | DESIGN-R11-10 | panel-r11 | P3 | 代码/模块源与 bump 池相接判成交 | ① | 已修：相交判据改严格 `>`（相接不算重叠） | 待核代码/文档 | 编译绿 |
+
+# Round 12（12 轮上限；基线 a29ddfdb9）
+
+## R12 面板明细（32 条）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-R12-01 | panel-r12 | P2 | 文档/§2.8 "两条/三条"计数矛盾 | ① | 已修：三条展开 + 两条指向，与 bullet 一致 | 文档 §2.8 | 五门 |
+| FACT-R12-02 | panel-r12 | P3 | 源码注释/config 仍称 process-wide 计数 | ① | 已修：改 per-thread；config 理由改 per-thread | lib.rs；.cargo/config.toml | 编译绿 |
+| FACT-R12-03 | panel-r12 | P3 | 测试/零长夹具 filesz>memsz 非法 | ① | 已修：改用合法段（live_src + 零长 dst） | loader.rs 测试 | 测试绿 |
+| FACT-R12-04 | panel-r12 | P3 | 源码注释/magic SAFETY 仍写 8 字节门 | ① | 已修：改全宽 BootFileTable 门 | bootface_common.rs | 编译绿 |
+| FACT-R12-05 | panel-r12 | P3 | 文档/§4.2 省略括注顺序错 | ① | 已修：record_span/root/bump 在模块行之前 | 文档 §4.2 | 五门 |
+| FACT-R12-06 | panel-r12 | P3 | 源码注释/bootface 孤立 doc 注释 | ① | 已修：删悬空 "Upper bound on memmap entries" 注释 | bootface.rs | 编译绿 |
+| FACT-R12-07 | panel-r12 | P3 | 源码注释/RISC-V SUM 取指说明与规范相反 | ① | 已修：改 "irrespective of SUM；SUM 只放宽 load/store" | lib.rs | 编译绿 |
+| READER-R12-F01 | panel-r12 | P2 | 文档/§2.8 三条/两条矛盾 | ① | 已修（与 FACT-R12-01 同批） | 文档 §2.8 | 五门 |
+| READER-R12-F02 | panel-r12 | P2 | 文档/"产线"未进术语对账 | ① | 已修：对账补"产线=链的别称，不参与计数" | 文档 §3.7 | 五门 |
+| READER-R12-F03 | panel-r12 | P2 | 文档/前提一行号无标签 | ① | 已修：标明 474/311/301 各自对象 | 文档 §2.4.1 | 五门 |
+| READER-R12-F04 | panel-r12 | P2 | 文档/§5.2.3 两条通道超出证据 | ① | 已修：改"DTB 通道可用；a2 无生产者未验证" | 文档 §5.2.3 | 五门 |
+| READER-R12-F05 | panel-r12 | P3 | 文档/§2.6.1 下游指针错 | ① | 已修：改 §2.6.3 | 文档 §2.6.1 | 五门 |
+| READER-R12-F06 | panel-r12 | P3 | 文档/§3.4 边界说明指针错 | ① | 已修：改"§3.4 末的 repr(C) 边界说明" | 文档 §3.4 | 五门 |
+| READER-R12-F07 | panel-r12 | P3 | 文档/"差一个连字符"不实 | ① | 已修：改"名字相近但不是同一个东西" | 文档 §3.3 | 五门 |
+| READER-R12-F08 | panel-r12 | P3 | 文档/kern_size/4MB 未取整 | ① | 已修：两处改 ceil | 文档 §2.6 | 五门 |
+| READER-R12-F09 | panel-r12 | P3 | 文档/§4.9 与 §4.3 overlaps 口径不一 | ①（残留） | 部分修：§4.9 已注明跨段防线；完整不变量合并列入 STUCK-REPORT | 文档 §4.9 | 五门 |
+| READER-R12-F10 | panel-r12 | P3 | 文档/M4 与 TODO-01 入口计数 5 vs 6 | ① | 已修：M4 改六入口（3 arch_boot + 3 decode） | 文档 §5.1 | 五门 |
+| READER-R12-F11 | panel-r12 | P3 | 文档/四术语定义位置与首用不符 | ①（残留） | 部分修：arena/信封已就地定义；EBS/wire 定义位置列入 STUCK-REPORT | 文档 §3.4 | 五门 |
+| READER-R12-F12 | panel-r12 | P3 | 文档/2.4 结算落点错 | ① | 已修：整段移到 §2.4.1 之前（§2.4 收束） | 文档 §2.4 | 五门 |
+| READER-R12-F13 | panel-r12 | P3 | 文档/三处长段阻断冷读 | ①（残留） | 未拆：长段 642/1052/1858，列入 STUCK-REPORT | 文档全文 | 已登记 STUCK-REPORT 残留清单 |
+| DESIGN-R12-01 | panel-r12 | P0 | 文档/U-Boot 入口锚点 fn main 不存在 | ① | 已修：两处改 `:fn uboot_main`；锚点 104/104 | 文档 §3.1/§3.2 | 锚点门 |
+| DESIGN-R12-02 | panel-r12 | P2 | 源码注释/共享 v1 入口把 arena 一律写 LOADER_DATA | ① | 已修：三处按腿陈述（UEFI LOADER_DATA / U-Boot bump） | lib.rs | 编译绿 |
+| DESIGN-R12-03 | panel-r12 | P2 | 源码注释/store_kernel_info 锚 lib.rs:734 | ① | 已修：两处改符号锚 | bootface.rs | 编译绿 |
+| DESIGN-R12-04 | panel-r12 | P2 | 源码注释/计数改 per-thread 后三处未扫尾 | ① | 已修：test_allocations/test_serial/config 三处 | lib.rs；config | 编译绿 |
+| DESIGN-R12-05 | panel-r12 | P2 | 测试/per-thread 计数缺正控 | ① | 已修：新增 allocation_counter_sees_this_thread（132 条） | lib.rs | 测试绿 |
+| DESIGN-R12-06 | panel-r12 | P2 | 文档/四前提与两因素归属互斥 | ① | 已修：642 改"常态第三行压在四前提上" | 文档 §2.4.1 | 五门 |
+| DESIGN-R12-07 | panel-r12 | P3 | 文档/§3.4 段落以分号结尾 | ① | 已修：改句号 | 文档 §3.4 | 五门 |
+| DESIGN-R12-08 | panel-r12 | P3 | 文档/§4.2 省略标记虚构注释 | ① | 已修：改"省略后续注释段，见源文件" | 文档 §4.2 | 五门 |
+| DESIGN-R12-09 | panel-r12 | P3 | 测试/零长第二段用非法段 | ① | 已修（与 FACT-R12-03 同批） | loader.rs | 测试绿 |
+| DESIGN-R12-10 | panel-r12 | P3 | 源码注释/aarch64 place_modules 称有 alignment gate | ① | 已修：改"straight copy + full-width memmap gate" | bootface_a64.rs | 编译绿 |
+| DESIGN-R12-11 | panel-r12 | P3 | 源码注释/行号引用漂移 | ①（残留） | 部分修：store 两处已符号化；main/loader 三处列入 STUCK-REPORT | 源码 | 编译绿 |
+| DESIGN-R12-12 | panel-r12 | P3 | 文档/root/bump "prepare_boot 时还没分配" | ① | 已修：改"prepare_boot 内部分配，序列化时记录" | 文档 §3.4 | 五门 |

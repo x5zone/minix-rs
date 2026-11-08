@@ -417,9 +417,9 @@ fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
 ///
 /// Position is primary and the name is secondary / the source range must clear
 /// three gates / names go into the pool — the semantics match the riscv half's
-/// `place_modules` item by item (straight copy, full-width and alignment gates)
-/// and are not repeated here; the only difference is the bump pool base (the
-/// aarch64 form).
+/// `place_modules` item by item (straight copy and the full-width memmap
+/// gate) and are not repeated here; the only difference is the bump pool base
+/// (the aarch64 form).
 fn place_modules(table: &BootFileTable, memmap: &[MemoryRegion], names_pool: u64) -> Option<()> {
     let entries = table.valid_entries();
     if entries.len() < NR_BOOT_MODULES {

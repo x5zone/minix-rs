@@ -69,7 +69,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     }
 }
 
-/// Number of heap allocations made by the test binary so far.
+/// Number of heap allocations made by the current test thread so far.
 #[cfg(test)]
 pub(crate) fn test_allocations() -> usize {
     TEST_ALLOCATIONS.with(|count| count.get())
@@ -143,8 +143,7 @@ pub(crate) mod test_serial {
     //! This workspace pins `RUST_TEST_THREADS=1`
     //! (`.cargo/config.toml`), so the default path is already serial; the
     //! lock keeps those globals coherent when a caller explicitly overrides
-    //! the thread count. It does not make allocation-counter assertions
-    //! parallel-safe.
+    //! the thread count.
 
     use std::sync::{Mutex, MutexGuard};
 
@@ -152,6 +151,18 @@ pub(crate) mod test_serial {
 
     pub(crate) fn lock() -> MutexGuard<'static, ()> {
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn allocation_counter_sees_this_thread() {
+        let before = super::test_allocations();
+        let v: std::vec::Vec<u8> = std::vec![0u8; 8];
+        let after = super::test_allocations();
+        assert!(
+            after > before,
+            "per-thread allocation counter must see this thread's allocation"
+        );
+        drop(v);
     }
 }
 
