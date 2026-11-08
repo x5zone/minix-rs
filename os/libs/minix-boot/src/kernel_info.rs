@@ -172,6 +172,35 @@ pub struct KernelInfo {
     pub param_buf: &'static [u8],
 }
 
+/// Validation strictness for [`KernelInfo::validate_at`].
+///
+/// Replaces the previous two-`bool` encoding that allowed four combinations
+/// but only three were semantically valid (R17 DESIGN-12).
+#[derive(Debug, Clone, Copy)]
+pub enum ValidationLevel {
+    /// QEMU bootstrap test kernels: no boot modules, no source records.
+    BeforeTables,
+    /// Production gate: requires boot modules to be non-empty.
+    Standard,
+    /// Production + provenance records (strict gate).
+    Strict { authority: crate::memmap_source::InputObjectId },
+}
+
+impl ValidationLevel {
+    fn requires_boot_modules(self) -> bool {
+        !matches!(self, Self::BeforeTables)
+    }
+    fn requires_startup_kernel_record(self) -> bool {
+        matches!(self, Self::Strict { .. })
+    }
+    fn authority(&self) -> Option<crate::memmap_source::InputObjectId> {
+        match self {
+            Self::Strict { authority } => Some(*authority),
+            _ => None,
+        }
+    }
+}
+
 impl KernelInfo {
     /// Validate kernel-info invariants. Called by `kmain` at entry.
     ///
@@ -190,7 +219,12 @@ impl KernelInfo {
     /// This is a fail-fast contract: boot-shim bugs that produce invalid
     /// `KernelInfo` are unrecoverable.
     pub fn validate(&self) {
-        self.validate_impl(None, true);
+        self.validate_at(ValidationLevel::Standard);
+    }
+
+    /// Unified validation entry point (R17 DESIGN-12).
+    fn validate_at(&self, level: ValidationLevel) {
+        self.validate_impl_inner(&level);
     }
 
     /// Structural gate for entries that run before the first page-table
@@ -200,7 +234,7 @@ impl KernelInfo {
     /// not the init-server image). Production still runs the full
     /// [`Self::validate`] at `kmain`.
     pub fn validate_before_tables(&self) {
-        self.validate_impl(None, false);
+        self.validate_at(ValidationLevel::BeforeTables);
     }
 
     /// Production handoff gate: exactly [`Self::validate`], plus the
@@ -215,23 +249,10 @@ impl KernelInfo {
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
     pub fn validate_requiring_sources(&self, authority: crate::memmap_source::InputObjectId) {
-        self.validate_impl_inner(Some(authority), true, true);
+        self.validate_at(ValidationLevel::Strict { authority });
     }
 
-    fn validate_impl(
-        &self,
-        authority: Option<crate::memmap_source::InputObjectId>,
-        require_boot_modules: bool,
-    ) {
-        self.validate_impl_inner(authority, require_boot_modules, false);
-    }
-
-    fn validate_impl_inner(
-        &self,
-        authority: Option<crate::memmap_source::InputObjectId>,
-        require_boot_modules: bool,
-        require_startup_kernel_record: bool,
-    ) {
+    fn validate_impl_inner(&self, level: &ValidationLevel) {
         // 1. Kernel size must be non-zero.
         assert!(
             self.kern_size > 0,
@@ -320,7 +341,7 @@ impl KernelInfo {
 
         // 5. At least one boot module (PM/VM/VFS/RS). Production-only:
         //    bootstrap test kernels hand over no init-server image.
-        if require_boot_modules {
+        if level.requires_boot_modules() {
             assert!(
                 !self.boot_modules.is_empty(),
                 "KernelInfo: boot_modules must not be empty (no init servers?)"
@@ -344,7 +365,7 @@ impl KernelInfo {
         //    RAM authority and requires records from *that* input; a missing
         //    authority is a fail-stop, never a fallback to the other input.
         //    The lenient gate audits whatever records are present.
-        if let Some(authority) = authority {
+        if let Some(authority) = level.authority() {
             assert!(
                 !self.memmap_sources.is_empty(),
                 "KernelInfo: production handoff carries no memory-map source records"
@@ -359,7 +380,7 @@ impl KernelInfo {
                 self.memmap,
                 self.reserved_regions,
                 self.memmap_sources,
-                Some(authority),
+                level.authority(),
             ) {
                 Ok(()) => {}
                 Err(error) => panic!(
@@ -383,7 +404,7 @@ impl KernelInfo {
         // cover the kernel image's physical span. Every production leg writes
         // it; a missing record means a producer regression, not an empty-list
         // corner case.
-        if require_startup_kernel_record {
+        if level.requires_startup_kernel_record() {
             let kern_lo = self.kern_phys_base.0;
             let kern_hi = kern_lo + self.kern_size;
             assert!(
