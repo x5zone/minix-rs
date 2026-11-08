@@ -17,7 +17,10 @@ eval-trace-check.py — review-loop 轨迹完整性检查
   6. 处置类为 ⑤ 或 insufficient 的行，处置列是否写清还缺什么证据；
   7. metrics.md 的必需键是否齐全；
   8. metrics.md 的 `发现总数` 是否等于五项处置之和；
-  9. defect-ledger.md 与 metrics.md 是否残留 TBD/待定 占位。
+  9. defect-ledger.md 与 metrics.md 是否残留 TBD/待定 占位；
+  10. 六步收口合同：loop.md 中编号 ≥ 13 的 `# Round` 小节必须含 `### L6` 与
+      `### L6.5` 收口小节（R0–R12 为历史轮次，豁免；合同见
+      runs/<stage>/<doc>/DECISIONS-PENDING.md 第 5 项裁决）。
 
 用法：
     python3 tools/eval-trace-check.py <run-dir>
@@ -325,6 +328,37 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
     return ids
 
 
+ROUND_HEADER_RE = re.compile(r"^# Round (\d+)", re.MULTILINE)
+
+
+def check_round_closure(loop_text: str, report: Report) -> None:
+    """六步收口合同（DECISIONS-PENDING 第 5 项裁决）：编号 >= 13 的
+    `# Round` 小节必须包含 `### L6`（meta 记录）与 `### L6.5`（三问收口
+    记录）两个三级小节；R0–R12 为历史轮次，豁免。"""
+    matches = list(ROUND_HEADER_RE.finditer(loop_text))
+    rounds = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(loop_text)
+        num = int(m.group(1))
+        if num >= 13:
+            rounds.append((m.group(1), start, end))
+    if not rounds:
+        report.ok("round-closure", "无 R13+ 轮次，收口检查跳过（合同自 R13 起生效）")
+        return
+    for label, start, end in rounds:
+        body = loop_text[start:end]
+        missing = [name for name in ("### L6", "### L6.5") if name not in body]
+        if missing:
+            report.fail(
+                "round-closure",
+                f"Round {label} 缺少收口小节: {'、'.join(missing)}"
+                "（六步收口合同：L6 meta + L6.5 三问记录）",
+            )
+        else:
+            report.ok("round-closure", f"Round {label} 收口小节齐全（### L6 / ### L6.5）")
+
+
 def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
     report = Report()
     if not run_dir.is_dir():
@@ -373,6 +407,7 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
 
     if loop_text is not None:
         check_loop_sections(loop_text, report)
+        check_round_closure(loop_text, report)
         check_placeholders(loop_text, report, "loop.md")
     if metrics_text is not None:
         check_metrics(metrics_text, report)
@@ -507,6 +542,31 @@ def self_test() -> int:
             return 1
         if "不一致" not in messages:
             print("self-test FAIL: 没有报出总数与处置之和不一致")
+            print_report(bad, False)
+            return 1
+
+    # 六步收口合同：R13+ 轮次含 ### L6/### L6.5 → 通过
+    with tempfile.TemporaryDirectory() as tmp:
+        loop_r13 = (
+            GOOD_LOOP
+            + "\n\n# Round 13（六步收口首轮）\n\n### L6\n"
+            + "meta 结论与 BLIND-SPOT-DELTA。\n\n### L6.5\n三问三去处记录。\n"
+        )
+        ok_dir = write_fixture(Path(tmp), loop_r13, GOOD_LEDGER, GOOD_METRICS, GOOD_PANEL)
+        ok = check_run_dir(ok_dir)
+        if ok.failed:
+            print("self-test FAIL: 带 L6/L6.5 收口小节的 R13 被判 FAIL")
+            print_report(ok, False)
+            return 1
+
+    # 六步收口合同：R13+ 轮次缺 ### L6.5 → 拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        loop_bad = GOOD_LOOP + "\n\n# Round 13（六步收口首轮）\n\n### L6\nmeta 结论。\n"
+        bad_dir = write_fixture(Path(tmp), loop_bad, GOOD_LEDGER, GOOD_METRICS, GOOD_PANEL)
+        bad = check_run_dir(bad_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "L6.5" not in messages:
+            print("self-test FAIL: R13 缺 ### L6.5 未被拦截")
             print_report(bad, False)
             return 1
 
