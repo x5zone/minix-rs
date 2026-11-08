@@ -72,3 +72,10 @@
 | F-R14-26 | DESIGN-03 | `prepare_boot` 约 250 行零生产调用，与生产入口分叉 | 已登记（R16，裁决截止） | ② 裁决：等待裁决项 1（删 BootForm/prepare_boot）；选项 保留/删除；R16 前必须裁决 |
 
 > 档期口径：R15 批处理本篇 in-scope 结构项（F-R14-01/02/03/05/06/07/08/09/10/11/12），R16 批处理跨 crate 代码重构（F-R14-13..25）与 `prepare_boot` 裁决；F-R14-04 指向尚未生成的 02 篇，定在 R17。
+
+## Round 16 转出（F-R16-nn）
+
+| ID | 来源 | 事项 | 状态 | 下一步 |
+|---|---|---|---|---|
+| F-R16-01 | DESIGN-01 / RB16-08 | U-Boot shim 腿：root/bump 在读取内核布局之前分配，无"模块/root/bump 不落进内核 LMA 跨度"的守卫；arena 在 `boot_alloc_region()` 区间之后，不在整段扣除内，扣除表未单独排除 | 已登记（R17，代码） | 重排为"读 ELF→算布局→校验跨度→分配 root/bump→拷贝"，或加等价 post-layout 守卫；arena 补进扣除记录 |
+| F-R16-02 | DESIGN-02 | 兜底 bump 选择（`boot_alloc_region()==None`）只取 memmap 第一个够大区间起点，不排除内核/模块/root | 已登记（R17，代码） | 加排除集后重选，或 fail-closed |

@@ -631,7 +631,7 @@ phys_bytes pg_alloc_page(kinfo_t *cbi)
 }
 ```
 
-`pg_alloc_page` 从**下标最高**的条目开始取（`for(m = cbi->mmap_size-1; ...)`），取该条目的最后一页（先减长度，再返回"基址+新长度"）。"下标最高 = 地址最高"并不是一条被维护的不变量：进账按引导器报告的升序写入；切除时左余量回填刚清空的槽（它就是从下标 0 找起的第一个空槽——前提是此前没有更早的空洞），右余量同样从下标 0 找第一个空槽，落点分两种情形：**无更早空洞**时左余量占刚清空的槽 m，右余量占 m+1（或数组末尾，m 之上的条目都还占着）——它的下标高于其上的条目，下标序与地址序在这里断开；**有更早空洞** h<m 时，左余量占 h，m 空出来，右余量落回原槽 m——这一支不破坏序。所以"被切条目之上还有条目 ⇒ 升序必破"只在无更早空洞时成立，不是一条无条件结论。C 代码不维护序，`pg_alloc_page` 的"从最高下标取"是按**下标**取、不是按地址取——这是 C 的真实行为，本篇照实记录；`pg_alloc_page` 在取页时把用量记进 `kernel_allocated_bytes_dynamic`。它取页前在循环体内有三条断言（另有函数入口的 `assert(kernel_may_alloc)`），其中 `assert(!(mmap->mm_length % I386_PAGE_SIZE))` 是"记录里所有长度都必须是页的整数倍"这条不变量在"发页"这一步的校验点（写账一侧由 `add_memmap` 的 `rounddown` 保证，见本节末的取整推演）。
+`pg_alloc_page` 从**下标最高**的条目开始取（`for(m = cbi->mmap_size-1; ...)`），取该条目的最后一页（先减长度，再返回"基址+新长度"）。"下标最高 = 地址最高"并不是一条被维护的不变量：进账按引导器报告的升序写入；切除时左余量回填刚清空的槽（它就是从下标 0 找起的第一个空槽——前提是此前没有更早的空洞），右余量同样从下标 0 找第一个空槽，落点取决于数组此前状态：无更早空洞时左余量占刚清空的槽 m，右余量占 m 之后的第一个空槽；若 m+1 已被占用、右余量落到更后面的空槽（或数组末尾），它的下标就高于 m+1 的条目、地址却低于那个条目——这是一种会让下标序与地址序断开的切割形态。有更早空洞 h<m 时，左余量落进 h，右余量落回 m，这一支里右余量不跳到上方条目之上。所以不能写成"只要上方有条目，升序必破"；能站住的结论只有一条：C 不维护序，并且存在至少一种切割形态使下标序 ≠ 地址序（例如 m+1 被占用时右余量落到更后的空槽），因此 `pg_alloc_page` 按**下标**取不等于按**地址**取。C 代码不维护序，`pg_alloc_page` 的"从最高下标取"是按**下标**取、不是按地址取——这是 C 的真实行为，本篇照实记录；`pg_alloc_page` 在取页时把用量记进 `kernel_allocated_bytes_dynamic`。它取页前在循环体内有三条断言（另有函数入口的 `assert(kernel_may_alloc)`），其中 `assert(!(mmap->mm_length % I386_PAGE_SIZE))` 是"记录里所有长度都必须是页的整数倍"这条不变量在"发页"这一步的校验点（写账一侧由 `add_memmap` 的 `rounddown` 保证，见本节末的取整推演）。
 
 `alloc_lowest` 则**不是**一条可行的"从低处分配"路径，问题出在切除那一行：它写的是 `cut_memmap(cbi, lowest, len)`，而 `cut_memmap(cbi, start, end)` 的第三个参数才是结束地址——这行调用把长度当成了结束地址，完整推演见本节末的"若 `alloc_lowest` 的切除参数写错会怎样"。
 
@@ -1901,7 +1901,7 @@ x86_64 的 `arch_boot` 只做诊断打印并调用 `arch_boot_finish::<X86_64Boo
 
 三处具体事实：
 
-- 交接载荷带 `bump_next`。原因在 §4.7 与 `BootAlloc::resume` 的文档里：两个镜像各链接一份 `BootAlloc`，接收方若从区间基址重新发页，会把 boot-shim 已经用作页表页的页再发一次。两条 UEFI 腿的 arena 由 UEFI `AllocatePages` 单独分配、不占 bump 池，因此没有"载荷页"要跳过；U-Boot shim 腿的 arena 由 `bump_alloc_pages` 从同一物理区间另行分配（它与 `BootAlloc` 是两个独立游标，见 §4.2.1 的"勿混"说明），排在模块落点之后；它落在 `boot_alloc_region()` 的整段之内，因此被 §3.8 的"整段扣除"覆盖，不需要单独排除。交接解码后 arena 即废弃，VM 启动前无人再读。
+- 交接载荷带 `bump_next`。原因在 §4.7 与 `BootAlloc::resume` 的文档里：两个镜像各链接一份 `BootAlloc`，接收方若从区间基址重新发页，会把 boot-shim 已经用作页表页的页再发一次。两条 UEFI 腿的 arena 由 UEFI `AllocatePages` 单独分配、不占 bump 池，因此没有"载荷页"要跳过；U-Boot shim 腿的 arena 由 `bump_alloc_pages` 从同一物理区间另行分配（它与 `BootAlloc` 是两个独立游标，见 §4.2.1 的"勿混"说明），排在模块落点之后；它排在 1024 页的 `boot_alloc_region()` 区间之后（起点不低于 `bump_end`），因此**不在**该区间的整段扣除内；它在 `startup_objects` 里有记录，但扣除表没有单独排除它——这是 F-R16-01 跟踪的缺口。交接解码后 arena 即废弃，VM 启动前无人再读。
 - `in("x0") arena_pa`：arena 基址绑在固定的第一参数寄存器上，而跳转目标放在任意寄存器。代码注释给出了理由——若在 asm 块里写隐式 `mov x0, ...`，寄存器分配器可能把 `entry` 也分配到 `x0`，两条约束顺序不定。
 - 接收侧先把七个分区直接解码进 `store_kernel_info` 的七个 `.bss` 落地区（随后 `store_kernel_info` 因源与目标同址成为 no-op），再只做 additive 阶段（`arch_boot_resume_v1` 之后三架构都先经 `resume_after_v1_decode`；aarch64 的壳再转 [`fn arch_boot_resume_high_half`](<os/kernel/src/lib.rs:fn arch_boot_resume_high_half>)（带两行路标），x86_64/riscv64 的壳直接进 `resume_additive`）：
 
@@ -2847,9 +2847,9 @@ fn rust_image_main(arena_pa: usize) -> ! {
 
 （表的行按"架构 × 链"列——五条生产腿各占一行；上一条术语对账里说的"四种交接路径"按"谁执行装载与建根"归并：两条 UEFI 链与 U-Boot 一族的 shim 生产腿同属 v1 send/receive 一对（该族的直载测试链不参与交接路径计数），riscv64 与 aarch64 的直核面各自一类。）
 
-"四条交接路径"是 §3.7 对账按**协议两段 + 直核两类**的切分（v1 send / v1 receive / riscv64 自引导 / aarch64 direct-core），不是腿数——落到腿上有五条（三条 v1 发送腿同时属于 send 与 receive 两段）。这些腿有两个收敛点，按腿各归其一：直核家族（`arch_boot` 三个 cfg 分支）收敛在 [`arch_boot_finish`](<os/kernel/src/lib.rs:fn arch_boot_finish>)——`arch_boot_impl` 建表后经它跳 `kmain`；跨镜像三腿收敛在 `arch_boot_resume_v1`——三架构都先经 `resume_after_v1_decode`（aarch64 的壳再转 `arch_boot_resume_high_half`，带两行路标），三者在 D01-R1 D2-07 合并后都委托到泛型体 `resume_additive`（validate/落 KernelInfo/记录根/establish DM 的同一组加性阶段在其体内），最后落到同一个 `jump_to_kmain`。发送侧没有"收敛到 arch_boot"——它的终点是跳独立镜像的入口指令：aarch64 用 `br {entry}`、riscv64 用 `jr {entry}`、x86_64 用一段 global-asm stub：它的两个 SysV 实参是 `(entry, arena_pa)`——`rdi` 收 entry、`rsi` 收 arena——stub 内 `mov rbx, rsi; mov rax, rdi; cli; cld; jmp rax`，所以接收侧看到的仍是 `rbx` = arena（§3.7 只引了 aarch64 的 asm）。`arch_boot_resume_v1` 里的 `resume_boot_pt_alloc` 只是 `BootAlloc::resume` 的转发（§4.7 的三种进入方式之一），注册不发生在它里面。
+"四条交接路径"是 §3.7 对账按**协议两段 + 直核两类**的切分（v1 send / v1 receive / riscv64 自引导 / aarch64 direct-core），不是腿数——落到腿上有五条（三条 v1 发送腿同时属于 send 与 receive 两段）。这些腿有两个收敛点，按腿各归其一：直核家族（`arch_boot` 三个 cfg 分支）收敛在 [`arch_boot_finish`](<os/kernel/src/lib.rs:fn arch_boot_finish>)——`arch_boot_impl` 建表后经它跳 `kmain`；跨镜像三腿收敛在 `arch_boot_resume_v1`——三架构都先经 `resume_after_v1_decode`（aarch64 的壳再转 `arch_boot_resume_high_half`，带两行路标），三者在 D01-R1 D2-07 合并后都委托到泛型体 `resume_additive`（validate/落 KernelInfo/记录根/establish DM 的同一组加性阶段在其体内），最后落到同一个 `jump_to_kmain`。发送侧没有"收敛到 arch_boot"——它的终点是跳独立镜像的入口指令：aarch64 用 `br {entry}`、riscv64 用 `jr {entry}`、x86_64 用一段 global-asm stub：它的两个 SysV 实参是 `(entry, arena_pa)`——`rdi` 收 entry、`rsi` 收 arena——stub 内 `mov rbx, rsi; mov rax, rdi; cli; cld; jmp rax`，所以接收侧看到的仍是 `rbx` = arena。§3.7 只引了 aarch64 的 asm；x86 的完整 stub 就是上面这一段。`arch_boot_resume_v1` 里的 `resume_boot_pt_alloc` 只是 `BootAlloc::resume` 的转发（§4.7 的三种进入方式之一），注册不发生在它里面。
 
-`enter_kernel_image_v1` 里跳转前的准备（建根、读游标、补运行期字段）与跳转写法（aarch64 `br {entry}` / riscv64 `jr {entry}` / x86_64 的 stub：实参 `(entry, arena_pa)` 落在 `rdi`/`rsi`，再 `mov rbx, rsi; mov rax, rdi; cli; cld; jmp rax`）在 3.7 已给出。这里补一条与"谁建根"有关的约束：跨镜像路径下，`build_bootstrap_root_and_enable` 被 boot-shim 调用一次、生成的表**已经激活**；接收侧必须避免二次建表（3.7 的反向推演已给后果），而 `bootface` 路径下建表发生在内核镜像自身，`arch_boot` 走的是常规 Step 1–4。
+`enter_kernel_image_v1` 里跳转前的准备（建根、读游标、补运行期字段）与跳转写法（aarch64 `br {entry}` / riscv64 `jr {entry}` / x86_64 的 stub：实参 `(entry, arena_pa)` 落在 `rdi`/`rsi`，再 `mov rbx, rsi; mov rax, rdi; cli; cld; jmp rax`）——§3.7 只给了 aarch64/riscv 的跳转，x86 的 stub 以本节上段为准。这里补一条与"谁建根"有关的约束：跨镜像路径下，`build_bootstrap_root_and_enable` 被 boot-shim 调用一次、生成的表**已经激活**；接收侧必须避免二次建表（3.7 的反向推演已给后果），而 `bootface` 路径下建表发生在内核镜像自身，`arch_boot` 走的是常规 Step 1–4。
 
 两处实现现状：
 
@@ -3066,7 +3066,7 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 
 ### 5.4 自检：写不出可观测断言的机制
 
-逐条问过推导表：**M1–M17 每行都有可观测断言**（M17 是唯一的"未覆盖"项，见 5.1 该行）（是否登记 TODO 看该行 TODO 列；本节不重述登记状态）。按 5.1 的覆盖标签：**M3、M6 与 M13** 仍是**部分覆盖**（M3 的真机路标只证明建表跑通、"不向清单领页"尚无独立运行时断言；M6 的分片策略有宿主测试、全量 4GiB 叶子映射待真机；M13 的宿主可测面只覆盖 `assert_bootstrap_outside_memmap`）；M5 当前映射档真机链覆盖，但 TODO-05（2MiB 回退档真机矩阵）开放——M5 的覆盖强度以 5.1 那行的标签为准。TODO 列标"已关闭"的五条（M4/M7/M8/M12/M14）曾以 TODO 形式交接、后由宿主测试或真机链覆盖，详情见 5.3。其余有可观测断言。本节的第二重收益（暴露不可证伪的机制）不是空的：M5 与 M13 的缺口已登记到 §5.3；M3 的运行时断言缺口与 M6 的全量 4GiB 叶子映射缺口当前未单独登记 TODO（分别见 5.1 的 M3/M6 行与上文引言；M6 的缺口与 TODO-05 的 2MiB 回退档矩阵是两件事）。两条断言的观测强度偏弱、如实标出：M4 的调用序（源码序钉是静态确定性证据；运行期仍只能靠调试钩/真机检查点）与 M14 的"resume 只做 additive"（只能靠真机"没有崩"反证）。
+逐条问过推导表：**M1–M17 每行都有可观测断言**（M17 是唯一的"未覆盖"项，见 5.1 该行）（是否登记 TODO 看该行 TODO 列；本节不重述登记状态）。按 5.1 的覆盖标签：**M3、M6、M12、M13、M14** 仍是**部分覆盖**（M3 的真机路标只证明建表跑通、"不向清单领页"尚无独立运行时断言；M6 的分片策略有宿主测试、全量 4GiB 叶子映射待真机；M13 的宿主可测面只覆盖 `assert_bootstrap_outside_memmap`）；M5 当前映射档真机链覆盖，但 TODO-05（2MiB 回退档真机矩阵）开放——M5 的覆盖强度以 5.1 那行的标签为准。TODO 列标"已关闭"的五条（M4/M7/M8/M12/M14）曾以 TODO 形式交接、后由宿主测试或真机链覆盖，详情见 5.3。其余有可观测断言。本节的第二重收益（暴露不可证伪的机制）不是空的：M5 与 M13 的缺口已登记到 §5.3；M3 的运行时断言缺口与 M6 的全量 4GiB 叶子映射缺口当前未单独登记 TODO（分别见 5.1 的 M3/M6 行与上文引言；M6 的缺口与 TODO-05 的 2MiB 回退档矩阵是两件事）。两条断言的观测强度偏弱、如实标出：M4 的调用序（源码序钉是静态确定性证据；运行期仍只能靠调试钩/真机检查点）与 M14 的"resume 只做 additive"（只能靠真机"没有崩"反证）。
 
 ---
 
