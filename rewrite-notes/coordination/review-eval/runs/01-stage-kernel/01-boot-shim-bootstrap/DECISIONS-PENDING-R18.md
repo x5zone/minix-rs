@@ -43,7 +43,7 @@
 
 - 约 40 处 `static mut` 全局数组（boot-shim 22 处，其余在 kernel-image 与 minix-boot；rg 行计数口径）；
 - 5 个“一次性”原子布尔守卫，防止第二次写入；
-- 13 处 `Box::leak`，把堆上分配的内存“泄漏”成 `'static`（三个 crate 合计）。
+- `Box::leak`：生产代码 7 处（`loader.rs:401`、`opensbi_helpers.rs:287/334`、`dtb_copy.rs:120`、`uefi_helpers.rs:254/279/871`），测试/辅助 6 处，合计 13 处——把堆上分配的内存“泄漏”成 `'static`。
 
 U-Boot shim 那一侧更明显：它背着一个约 16 MiB 的 `.bss` 假堆（`SHIM_HEAP_LEN = 16 * 1024 * 1024`，`uboot_main.rs:71`），只为了让 `Box::leak` 有地方落地——它有分配器和 `Vec`，问题在 backing storage 的所有权模型，不是“没有堆”。
 
@@ -337,7 +337,7 @@ UEFI 腿读内核 ELF 时，先用堆分配一个 `Vec` 装文件字节；这时
 |---|---|---|
 | `KernelInfo` 的 7 个切片全部 `'static` | 属实（逐字段确认） | `kernel_info.rs:33/62/75/85/122/144/172` |
 | 约 44 处 `static mut` | 实测 **40**（boot-shim 22 + kernel-image + minix-boot；rg 行计数） | `rg "static mut" os/boot-shim/src os/kernel-image/src os/libs/minix-boot/src` |
-| 7 处 `Box::leak` | 实测 **13**（同域） | 同上 |
+| 7 处 `Box::leak` | 生产 7 处 + 测试/辅助 6 处 = 13（同域） | 同上 |
 | 5 处一次性守卫 | 属实：`bootface STARTUP_TAKEN`、`bootface_a64 STARTUP_TAKEN`、`bootface_common PARAM_TAKEN`、`opensbi_helpers STARTUP_TAKEN`、`memmap_source DTB_COLLECT_TAKEN` | 对应文件 |
 | U-Boot 16 MiB 假堆 | 属实：`SHIM_HEAP_LEN = 16 * 1024 * 1024` | `uboot_main.rs:71` |
 | D-2 双份内存图 | 属实：wire 7616 B + semantic 6144 B，同一分类向两侧写 | `handoff_v1_write.rs:362/384`（`push_memmap`/`write_reserved_regions` 调 `write_semantic_region`） |
@@ -567,3 +567,74 @@ D-6/D-7 是两个较小代码债，归入“物理分配安全”主题下独立
 ### 13.5 结论
 
 三组材料已补齐；GPT 的 24 字节算术、7616 口径与“节省 6 KiB”三点已用代码事实修正（§13.2）。剩余唯一未闭合的是 D-5 的端到端时序测试——其余十项均可冻结。冻结后按 §13.3 的批次实施：先 D-6/D-7/D-8/P-1/P-2 与 D-3 断言，再 D-1/D-2/D-4 分批迁移，D-5 以合同与测试收尾。
+
+## 14. 第四轮：三个针对性问题的回答与最终冻结（2026-11-09）
+
+> GPT 已确认十项冻结、D-5 方向冻结（验证门保留）。本节回答它最后三个问题，并把 ABI 与装载前检查两条合同补入。
+
+### 14.1 Q1：D-2 的 288 B 增量是什么？
+
+- `36768 − 36480 = 288 = 4 × 72`：**`WIRE_STARTUP_CAP` 从 16 加到 20**（四个 72 B 的 startup 记录槽），对应 D01-F07（2026-11-07）的规范集合（1 内核 + 12 模块 + root + bump + arena = 16，留 4 槽余量）。
+- 该变化已包含在当前 **wire version 8** 里（v8 是 F03 字段删除与 F07 容量调整同批的版本号）；它不是本轮新引入的。
+- **D-2 A2 会再改布局**：删除 6144 B 语义区后 `WIRE_SOURCES_OFFSET`/`WIRE_STARTUP_OFFSET` 前移 6144 B（新终点 30432，arena 9→8 页）。这属于跨镜像 ABI 布局变化，实施合同必须包含：
+  - wire version **8 → 9**，发送端与接收端同版本；
+  - 旧版本明确拒绝（现有 `check_header` 的版本比较即精确匹配）；
+  - 新旧偏移全部进编译期断言（`SEMANTIC_END` 删除后的新偏移集）；
+  - 增加"版本不匹配被拒绝"的负控测试。
+- 不允许只改 `SEMANTIC_END` 与 arena 页数而不动版本。
+
+### 14.2 Q2：U-Boot 装载前的物理不相交证明
+
+- **已有证据**：`os/kernel-image/riscv64.ld:124` 的链接期断言 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000, ...)` → 内核镜像跨度 ≤ 4 MiB；LMA 基址 0x80200000 → LMA 末端 ≤ 0x80600000。shim 池起点 `MODULE_REGION_BASE = 0x8200_0000`（`opensbi_helpers.rs:71`）——静态间隔 26 MiB。
+- **缺什么**：这是两个独立产物之间的常量关系，**没有任何一处跨产物断言把它固定**；`loader.rs` 的拷贝前检查只有"源范围×目标范围"与"目标×目标"（`first_source_destination_overlap` / `first_overlapping_pair`），**不检查目标 LMA 与固定池相交**；`opensbi_helpers` 目前的 root/bump 复核是**装载后**断言（太晚——内核段可能已被覆盖）。
+- **采纳 GPT 的要求**：在 U-Boot 腿写入任何 ELF 段**之前**，由 loader 从 ELF 程序头算出 LMA 跨度，断言 `LMA 范围 ∩ [MODULE_REGION_BASE, BUMP_END) = ∅`（失败即拒绝启动）；并在 shim 侧补一条编译期断言把"内核最大 LMA 末端 ≤ 池起点"的常量关系固定下来。此条并入 **F-R16-01** 的物理不相交合同，不新开设计。
+
+### 14.3 Q3：D-1/D-4 之后的剩余分配清单（16 MiB 假堆能否删除）
+
+生产分配点清点（`os/boot-shim/src`，非测试）：
+
+| 分配点 | 位置 | D-1/D-4 之后的去向 |
+|---|---|---|
+| 模块列表 `Vec<BootModule>` → `Box::leak` | `loader.rs:361/401` | 可改为直接写入 `BootStorage` 的模块数组 |
+| ELF 段 `Vec`（`segments`） | `loader.rs:250` | 段数上限固定，可改定长数组 |
+| `FileLoader::read -> Vec<u8>` | `loader.rs:111` | U-Boot 改 `Borrowed`；UEFI 仍需要读缓冲（协议要求） |
+| 参数 landpad `Box::leak(vec![...])` | `uefi_helpers.rs:279`、`opensbi_helpers.rs:287` | 改为 `BootStorage` 字段 |
+| 平台源 `Box::leak(...)` | `uefi_helpers.rs:254`、`opensbi_helpers.rs:334` | 改为 `BootStorage` 字段 |
+| DTB 拷贝 `Box::leak(vec![...])` | `dtb_copy.rs:120` | 改为 `BootStorage`/固定缓冲 |
+| DTB blob `Box::leak` | `uefi_helpers.rs:871` | 同上 |
+| `format!` 路径字符串（BootFileTable 构建） | `uboot_main.rs:339/395` | 可改定长字节数组，免分配 |
+
+**结论（不承诺全删）**：U-Boot 腿的 16 MiB 假堆在 D-1/D-4 之后**很可能大幅缩小甚至可删**，但剩余分配点（UEFI 文件读缓冲是协议刚需；loader 的段/模块数组、路径字符串可改造）必须逐点清点后按实际峰值确定容量。清点完成前，16 MiB 只作为"待重估"项，不作为本批完成标准。
+
+### 14.4 最终冻结表（全部达成一致）
+
+| 编号 | 裁决 | 状态 |
+|---|---|---|
+| D-1 | A：`BootStorage` + `BootReport<'a>`；内核侧 `.bss` 存储继续作为真 `'static` 所有者；报告不得在缺乏所有者时提升为 `'static` | **方向冻结**（分腿迁移，第一阶段查清生命周期边界） |
+| D-2 | A2：唯一语义来源 + arena 只留 wire；**wire 版本 8→9** + 版本拒绝负控 + 新偏移编译期断言 | **方向冻结**（布局改动按 ABI 合同执行） |
+| D-3 | C + A：统一算法、两实例、保留分区；编译期只断言常量，运行期断言实例区间 | **冻结** |
+| D-4 | A：`FileBytes<'a>`（`Borrowed`/`Owned`）；借用期不可覆盖、源/目标不交检查保留、不长期独占 loader | **方向冻结**（与 D-1 同原则、分开实施） |
+| D-5 | 方向 **C**（满足 `LastRead ≺ Publish(VMFreePages)` 时按生命周期回收，不永久扣除）；验收 = 端到端 poison 测试 + U-Boot 装载前不相交检查 | **方向冻结 + 验证门** |
+| D-6 | A：**删除**危险 fallback（不是只保留 panic），补"缺注册即失败"负控 | **冻结** |
+| D-7 | B：保留 fail-closed；补"ELF 源缓冲与 LMA 预订重叠→停止且不进入段写入"负控 | **冻结** |
+| D-8 | 合并归档：R7-FU-02 → F-R16-01；R7-FU-03 标"被 A+D 取代" | **冻结** |
+| P-1 | 8 字段判决账；`reviewer_verdict` 与 `user_decision` 分列，不覆盖 NOT PASS | **冻结** |
+| P-2 | 解析器驱动表结构 + 内部 `.md` 链接门；fenced code 排除；第一版不做锚点 | **冻结** |
+| P-3 | 实施批次完成后固定基线，再启动 R17-panel | **冻结** |
+
+### 14.5 实施顺序（GPT 最新九步，采纳）
+
+1. D-6 删除危险 fallback + 负控；
+2. D-3 分区断言（编译期 + 运行期）与公共分配算法抽取；
+3. D-7 负控、D-8 归档；
+4. P-1、P-2；
+5. D-1、D-2、D-4 按冻结方向分批迁移（**D-2 含 wire v9 ABI 合同**）；
+6. D-5 poison 测试与 U-Boot 装载前不相交检查；
+7. 全量宿主测试、三架构构建、三个 QEMU 门链；
+8. 固定提交、文档版本与测试基线；
+9. 启动 R17-panel 正式面板。
+
+### 14.6 结论
+
+- GPT 最后三个问题（288 B 来源、U-Boot 装载前证明、分配清单）已全部回答；288 B 归属 D01-F07 且已在 wire v8 内，D-2 另需 v9；U-Boot 的不相交证明缺"跨产物断言 + 拷贝前检查"，已并入 F-R16-01 合同；16 MiB 假堆按清单重估，不作本批完成标准。
+- **至此 11 项全部达成一致**：D-1/D-2/D-4 方向冻结，D-5 方向冻结 + 验证门，其余七项直接冻结。后续进入按批次落码、回归、独立回读，不再为已达成一致的类型与抽象方向开会。
