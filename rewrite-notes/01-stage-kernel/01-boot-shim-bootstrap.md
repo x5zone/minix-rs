@@ -1799,9 +1799,10 @@ where
     A: BootArch,
     H: crate::boot::HigherHalf,
 {
+    // Fail-fast before any page table is built: a malformed handoff must not
+    // reach the mapping machinery and only surface later at kmain. The
     // pre-table gate skips the boot_modules non-empty check because QEMU
     // bootstrap test kernels legally carry no init-server image.
-    // ……（省略后续注释段，见源文件）……
     kernel_info.validate_before_tables();
     kernel_info.check_boot_postconditions();
     store_kernel_info(kernel_info);
@@ -1809,6 +1810,7 @@ where
         .expect("arch_boot: KERNEL_INFO store failed");
     register_panic_diagnostic();
     arch_boot_impl::<A>(kinfo, root_page);
+    // ……（省略 SAFETY 注释，见源文件）……
     unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 ```
@@ -2640,7 +2642,7 @@ Step 1 的注释与循环行为按六条交代：前两条是判据，其后四�
 - 范围是 `IDENTITY_MAP_END`（唯一权威在 [`minix-arch`](os/arch/src/lib.rs) 的 `BOOT_IDENTITY_MAP_END`，值就是低 4GB；kernel 侧是别名 `use minix_arch::BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END`，boot-shim 侧 §4.2 的分配上界以 `BOOT_IDENTITY_MAP_END` 为一个界，再与 VM DM 窗口物理上界取小），不是"可用内存的并集"。理由写在 Step 1 之前的注释里：UEFI 的加载器代码/数据可能落在 `LOADER_DATA`/`LOADER_CODE` 类型的内存里，它们不是 conventional；不覆盖这些区间，切页表后的下一条取指就取不到码。
 - 标志是 `kernel_read_write() | EXECUTABLE`（supervisor-only + 可执行），不是"用户可访问"。RISC-V Sv39 上，S 模式取指一条 `U=1` 的页是被禁止的——`sstatus.SUM` 只放宽 supervisor 对用户页的 load/store，取指不受它影响——所以恒等映射必须是 supervisor-only。（源码 Step 1 的 NOTE 已按同一口径陈述：`Irrespective of SUM, the supervisor may not execute code on pages with U=1`。）C 侧口径见 §2.6.1（`pg_identity` 置 USER 位但在 Ring 0 无实效；`pg_mapkernel` 不置）；Rust 侧的差异是直接不置它。
 
-- 缓存属性是另一处与 C 的差异，两侧的划法不同：C 按单一内存上界划分——上界之上（设备/空洞）统一置 `PWT|PCD`，条目仍 PRESENT（[`pg_identity`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity) 对全部 1024 项都置 `I386_VM_PRESENT`），所以 C 的空洞访问同样不触发页错误——`PWT|PCD` 防的是垃圾字节进缓存，fast-fail 在 C 里本来就没有提供；64 位侧按"登记窗口"划分——登记过的 MMIO 窗口在 Step 1 内按 2MiB 分片置 `DEVICE`（机制在下一条），未登记的空洞统一可缓存 `id_flags`。这个差异连同它的代价要交代清楚：其一，未登记空洞在运行期没有访问者——物理访问只从账本分配的 DRAM 来，会真访问的 MMIO 全部进了登记窗口（原注释口径曾是 "some ranges may not be backed by physical memory, but that's fine; the CPU won't access them"；现注释已改写为 map_huge 错误集口径，见第五条）；其二，fast-fail 的削弱被接受——C 的 `PWT|PCD` 也不提供页错误，被放弃的只是"空洞访问不污染缓存"这层兜底，防线从映射属性换成账本纪律：分配只来自账本、MMIO 只来自登记窗口。
+- 缓存属性是另一处与 C 的差异，两侧的划法不同：C 按单一内存上界划分——上界之上（设备/空洞）统一置 `PWT|PCD`，条目仍 PRESENT（[`pg_identity`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity) 对全部 1024 项都置 `I386_VM_PRESENT`），所以 C 的空洞访问同样不触发页错误——`PWT|PCD` 防的是垃圾字节进缓存，fast-fail 在 C 里本来就没有提供；64 位侧按"登记窗口"划分——登记过的 MMIO 窗口在 Step 1 内按 2MiB 分片置 `DEVICE`（机制见第六条），未登记的空洞统一可缓存 `id_flags`。这个差异连同它的代价要交代清楚：其一，未登记空洞在运行期没有访问者——物理访问只从账本分配的 DRAM 来，会真访问的 MMIO 全部进了登记窗口（原注释口径曾是 "some ranges may not be backed by physical memory, but that's fine; the CPU won't access them"；现注释已改写为 map_huge 错误集口径，见第五条）；其二，fast-fail 的削弱被接受——C 的 `PWT|PCD` 也不提供页错误，被放弃的只是"空洞访问不污染缓存"这层兜底，防线从映射属性换成账本纪律：分配只来自账本、MMIO 只来自登记窗口。
 
 - Step 1 的窗口清单是 `identity_device_windows()`（aarch64 = 平台 MMIO 基窗，riscv64 = `minix_arch::kernel_identity_mmio_regions()` 的 PLIC/UART，x86 = 空——x86 的 LAPIC/IO-APIC 不在 Step 1 置属性，靠固件建立的 MTRR）；Step 2c 的 `device_window_regions()` 是另一条腿，把会从高半访问的固定 MMIO 页装进自举根，x86 的 LAPIC/IO-APIC 走的是它。
 
