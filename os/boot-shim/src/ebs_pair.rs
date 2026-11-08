@@ -127,7 +127,6 @@ pub unsafe fn pair_and_classify(
     serializer: &mut Serializer<'_>,
 ) -> Result<Classification, PairError> {
     let mut ebs_attempts = 0u32;
-    let mut ebs_failed = false;
     // Snapshot instance identity: one increment per successful GetMemoryMap.
     // This is *not* the MapKey — the key is firmware's version credential for
     // ExitBootServices, while the snapshot id names the observation. Two reads
@@ -153,7 +152,7 @@ pub unsafe fn pair_and_classify(
             )
         };
         if status == EFI_BUFFER_TOO_SMALL {
-            return Err(if ebs_failed {
+            return Err(if ebs_attempts > 0 {
                 PairError::BufferReuseInsufficient
             } else {
                 PairError::NeedBiggerBuffer(map_size)
@@ -217,7 +216,6 @@ pub unsafe fn pair_and_classify(
             if ebs_attempts >= EBS_ATTEMPT_LIMIT {
                 return Err(PairError::RetryExhausted);
             }
-            ebs_failed = true;
             continue;
         }
         return Err(PairError::ExitStatus(status));
