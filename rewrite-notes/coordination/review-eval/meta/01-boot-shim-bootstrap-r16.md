@@ -65,7 +65,7 @@ RB16（`panel/round16-rb.md`，22:57）对修复批 `9d8f4ed71` 判 `NOT PASS`�
 - **没有任何运行期验证。** fact 三段跑的是 `cargo test --list`、`gdb-multiarch` 装载、`qemu-system-* -d help`、`check-layout.sh all`（`fact-part3.md:5`），QEMU 客户机一次也没启动。这一点与 R15 相同，不构成退步，但也不构成进步。
 - **新类别都是一次性证据。** 三条新类别各只有一个实例，其中两条是"门没覆盖的机械形态"，不是分析深度的增加。真正的分析增量只有 `READER-C-04` 的因果桥与 `DESIGN-01` 的腿间不对称。
 
-结论：Detection 判 PASS，判据是"复检面扎实"——119 条里绝大多数有原文摘录与源码行号，fact 三段把 `gdb` 断点、`-d` 选项、`check-layout.sh` 真跑了一遍，reader B/C 的每个结构判断都能在文中找到两处以上原句。但这是"覆盖面 PASS"，不是"新发现价值 PASS"。
+结论：Detection 判 PASS，判据是"复检面扎实"——119 条里绝大多数有原文摘录与源码行号，fact 三段把 `gdb` 断点、`-d` 选项、`check-layout.sh` 真跑了一遍，reader B/C 的每个结构判断都能在文中找到两处以上原句；RB16 又把四条修复残留全部抓住并用源码或复算证实。但这是"覆盖面 PASS"，不是"新发现价值 PASS"：面板的 119 条里没有一条代码 P0，新类别各一个实例，最高价值的那四条来自回读而不是面板。
 
 ---
 
