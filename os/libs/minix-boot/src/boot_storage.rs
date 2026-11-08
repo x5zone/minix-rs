@@ -115,7 +115,8 @@ impl BootStorage {
     }
 
     /// The full memmap slot array. The classifier writes entries starting at
-    /// index 0 and then commits the count with [`Self::set_memmap_len`].
+    /// index 0 and then commits both table counts with
+    /// [`Self::commit_map_tables`].
     pub fn memmap_slots_mut(&mut self) -> &mut [MemoryRegion] {
         &mut self.memmap
     }
@@ -130,7 +131,11 @@ impl BootStorage {
     }
 
     /// Commit the live memmap prefix length.
-    pub fn set_memmap_len(&mut self, len: usize) {
+    ///
+    /// Production code must use [`Self::commit_map_tables`]; this single-table
+    /// form exists only for tests that check one side at a time.
+    #[cfg(test)]
+    pub(crate) fn set_memmap_len(&mut self, len: usize) {
         assert!(
             len <= WIRE_MEMMAP_CAP,
             "BootStorage: memmap length {len} exceeds capacity {WIRE_MEMMAP_CAP}"
@@ -144,7 +149,11 @@ impl BootStorage {
     }
 
     /// Commit the live reserved prefix length.
-    pub fn set_reserved_len(&mut self, len: usize) {
+    ///
+    /// Production code must use [`Self::commit_map_tables`]; this single-table
+    /// form exists only for tests that check one side at a time.
+    #[cfg(test)]
+    pub(crate) fn set_reserved_len(&mut self, len: usize) {
         assert!(
             len <= WIRE_RESERVED_CAP,
             "BootStorage: reserved length {len} exceeds capacity {WIRE_RESERVED_CAP}"
@@ -457,6 +466,21 @@ mod tests {
             Err(BootStorageFull),
             "platform list must stop at its capacity"
         );
+    }
+
+    #[test]
+    fn commit_map_tables_commits_both_prefixes_together() {
+        let mut storage = BootStorage::new();
+        storage.memmap_slots_mut()[0] = region(0x1000, 0x2000);
+        storage.reserved_slots_mut()[0] = region(0x9000, 0x1000);
+        storage.commit_map_tables(1, 1);
+        let report = storage.report(
+            VirBytes(0xFFFF_8000_0000_0000),
+            PhysBytes(0x20_0000),
+            0x40_0000,
+        );
+        assert_eq!(report.memmap.len(), 1);
+        assert_eq!(report.reserved_regions.len(), 1);
     }
 
     #[test]

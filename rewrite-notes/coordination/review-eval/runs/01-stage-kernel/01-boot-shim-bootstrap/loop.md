@@ -842,10 +842,10 @@
 
 ### R17 §3 归因
 
-- ①（代码/事实修复）25 条：FACT-01..08、10；READER-C-01（跨节契约）；DESIGN-D2-04..13、17；CLAIM 05/06。
-- ④（读者体验，本轮修）51 条：READER-A/B/C 全部条目。
+- ①（代码/事实修复）26 条：FACT-01..08、10；READER-C-01（跨节契约）；DESIGN-D2-04..13、17；CLAIM 05/06。
+- ④（读者体验，本轮修）48 条：READER-A/B/C 全部条目。
 - ③（误报/不改）10 条：FACT-09（行号正确）、CLAIM 04（反证失败、主张成立）、DESIGN-D2-01/02/03/14/15/16/19/20（D1 前提或表述，不改代码）。
-- ②（转出）1 条：DESIGN-D2-18 → F-R17-04（`KernelInfo` authority 字段，契约变更待裁决）。
+- ②（转出）3 条：DESIGN-D2-12 → F-R17-01、DESIGN-D2-13 → F-R17-02、DESIGN-D2-18 → F-R17-04（均带截止轮次）。
 - re-litigation 0（未命中 DECISIONS 且无新证据的重复项）；adjacent 阻塞 0。
 
 ### R17 §4 修复
@@ -860,3 +860,81 @@
 - 文档六门：anchor 109/109、style 0 error、ref 通过、承载门通过、code-map 46/46、结构/链接门 0 问题。
 - trace 门：`eval-trace-check.py <run-dir> --panel-dir …/panel/round17` 待本轮台账收口后执行。
 - 回读：修复段由主 agent 逐条复读（同 agent 局限已在 §8 标注；reader 条目以原文对读为准）。
+- RB17 独立回读（`panel/round17-rb.md`）判 **NOT PASS**（P0=0、P1=0）：B-07 半修记整修、冻结提交不含 D2-09/05 降级/06·08 文档同步、§4.2/§3.8 引文未同步。逐条处置见 `defect-ledger.md` 的“R17 独立回读（RB17）与补修”，全部补修随 R18 提交。
+
+### R17 §6 指标
+
+见 `metrics.md`：发现 87，处置 ① 26 / ② 3 / ③ 10 / ④ 48 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构提出 8 / 接受 8 / 实施 6 / 登记 2（D2-12、D2-13 转 F-R17-01/02）。
+
+### R17 §7 状态
+
+`NOT CONVERGED`：G1–G4 在本轮修复后为 0；G5 的 ② 均有截止轮次；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 meta 判 **IMPROVED / 运行质量 NOT PASS**（抽样一致性 86.1% < 90%），按规则不得宣告收敛；G8 本轮新增 87 条（远大于 0），需下一轮。G9 本轮 ⑥ 项全部处置（6 实施 + 2 转出带档期）。
+
+### R17 §8 给 meta-review 的不确定点
+
+- 无独立 RB17：本轮用主 agent 逐条复读；meta 已判这是装置倒退（B-44 回读半边 REGRESSED）。R18 起恢复独立 RB。
+- 轨迹门按全文件匹配：R17 段删除后 coverage 仍 PASS（B-31/B-51）；本轮未能修工具（流程改动留 L7 边界）。
+- 半修判定：D2-05/09 在本轮 meta 后补成实修；D2-12/13 降为 ② 带档期。此前的 ① 账面数已按 meta 校正。
+- QEMU 三门为修复后重跑；R18 面板读取的代码基线是 `7a36a9253`，之后只改了 D2-05/09 两处，R18 的相关代码事实需按当前树复核。
+
+## R18 面板轮（2026-11-09，R17 全修后重冻基线）
+
+### §0 基线
+
+- 面板读取基线：`7a36a9253`（R17 修复提交；文档 3332 行 / `3b8b0bde…`）。RB17 回读证明该提交不含 D2-09 实修、D2-05 setter 降级与 D2-06/08 文档同步；那些改动当时只在工作树。R18 面板因此同时读到“冻结点”与“工作树补丁”两个状态，凡涉这三项的结论已按当前树复核。
+- 收口基线（本节）：文档 3386 行 / `ec9aa0f8…`；代码改动见 §4。R18 提交后重新冻结 BASELINE。
+- Step 0 预检：`.design/01-*` 齐全；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE；`doc-code-map --check` 46/46
+- 工作树：面板期间只有主 agent 的文档/台账改动；`0` 是误落仓库根的空文件（内容 `375`），已删除。`prompt/resources/` 按 license 约束保持未跟踪。
+- 范围与语料同 R17；R17 的 ② 项（F-R17-01..04）不在本轮阻塞，按 follow-ups 档期处理
+
+
+### R18 §1 面板
+
+- 角色：P-FACT、P-DESIGN D1/D2、P-READER A/B/C、P-REFUTE（启动链高风险，全角色）。
+- 材料隔离：FACT 拿正文/关联源码/工具；D1 只拿 C 语义与 §1/§2；D2 拿 D1 输出、现有 Rust、§3/§4 与 trait-audit；A/B/C 只拿正文与读者画像；REFUTE 拿正文/源码/设计合同。均禁止历史评审、其他角色输出与 expected/。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round18/`（fact 12 主条 + 9 次级、reader-a 20、reader-b 20、reader-c 18、refute 6 主张、design-d1 5 决策、design-d2 13 条）。
+- 违规检查：面板前后 `git status --porcelain` 只有主 agent 的文档/台账改动；无面板写仓库。
+
+### R18 §2 发现
+
+- 原始发现 98 条（D1 的 5 条决策属方案，不计入）。
+- 重复簇：FACT-01/04 与 §4.4/§3.8 引文；FACT-08/09 与 R17 的引文声明；A-05 = B-10（§2.4.1.1 重复）；A-07 = C-09（§4.2.1 时间序）；A-08/A-09 与 §1.4 栈名表；C-08 = B-13（§1.4 rootdevname 边界）；C-16 = FACT-17（“运行期读者”）；REFUTE-03/04 与 §3.4.2 两处 C 行为。
+- 阻断项：FACT-01/02/03（P0 引文与源码不一致）、REFUTE-05（P0-test-missing：EBS 审计负控不足）、REFUTE-03/04/06（P1 事实/计数）、A-01/02/04/07（P1 阅读路径）。
+- 设计两遍：D1 提 5 条决策；D2 判 NOT PASS，接受 3 条（载荷补字段、删多余偏移、锚点订正）、需裁决 4 条、拒 5 条、部分拒 1 条。D2-10 指出的“接收侧没有内核×模块复核”是现仓真实空白，按 ① 落码；其余 D1 方案与现仓裁决冲突，按 ③ 不采纳。
+
+### R18 §3 归因
+
+- ①（代码/事实修复）21 条：FACT-01..07、10..12、14..18、21；REFUTE-03..06；DESIGN-D2-10。
+- ④（读者体验，本轮修）56 条：READER-A 20、READER-B 19、READER-C 17。
+- ③（误报/不改/D1 否决）21 条：FACT-08/09/13/19/20；READER-B-15；READER-C-10；REFUTE-01/02；DESIGN-D2 的 12 条（01/02/03/04/05/06/07/08/09/11/12/13）。
+- ②（转出）0 条；R17 遗留的 D2-08 测试副本与 D2-04 并发压测已在 RB17 段登记 R19 观察，不重复计数。
+- re-litigation 0；adjacent 阻塞 0。
+
+### R18 §4 修复
+
+- 文档：FACT/READER/REFUTE 各条对应段落，重点为 §1.2 依赖图与 D1、§1.4 名词与计数索引、§2.4.1.1 三态表、§2.4.1.2/.3 标题、§2.7 ARM 宏、§3.4.1 字段边界、§3.4.2 GET_KINFO 与重复键、§3.4.3 arena v8 账、§3.4.5 提交协议与 source 容量、§3.5 生产布局、§3.8 引文、§4.2 `commit_map_tables` 引文、§4.2.1 时间序、§4.2.2 五例、§4.6 缓存范围与 2 MiB 档、§5.1 M2/M6、§5.2.1 计数、§6.1 路标、§6.3 断言时机、§3.4.2 `[ARCH]` 第三条。
+- 代码：`OwnedDtb` 去 `'static`/`Box::leak`（R17 已写，本轮提交）；`load_dumpdtb_blob` 返回 `Option<Vec<u8>>`；`capture` 收 `&[u8]`；`BootStorage` 旧 setter 收进 `#[cfg(test)]`，新增 `commit_map_tables` 单测；`KernelInfo::validate` 增加内核×模块与模块×模块半开区间复核；`ebs_boundary_audit.rs` 增至 4 条。
+- 测试：`minix-boot` 186、`boot-shim --features test-all --lib` 135、`ebs_boundary_audit` 4、`minix-kernel --features mock` 860 通过 + 8 忽略（总 868）、`minix-arch --features "x86_64 runtime-window"` 287。
+- QEMU：x86 shim bootmarks PASS、aarch64 shim bootmarks PASS、riscv64 U-Boot shim 6/6 PASS（本轮代码改动后重跑）。
+
+### R18 §5 复验
+
+- 文档六门：anchor 108/108、doc-code-map 46/46、style 0 error、ref 通过、承载门通过（4 个可判章均有码/命令）、结构/链接 0 问题。
+- 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无 dead_code；`cargo clippy -p minix-boot` 仅 `minix-types` 既有 warning。
+- 回读：RB17 的 P2/P3 已逐条补修并复验（见 `defect-ledger.md` 的 RB17 段）；RB18 待提交后启动。
+- 三门读数：x86/aarch64 串口路标到 `entering scheduler`；riscv64 U-Boot 链 6/6 路标。
+
+### R18 §6 指标
+
+见 `metrics.md`：发现 98，处置 ① 21 / ② 0 / ③ 21 / ④ 56 / ⑤ 0；re-litigation 0；adjacent 阻塞 0；重构 1 实施。
+
+### R18 §7 状态
+
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 meta R18 尚未运行（RB18 与 meta R18 在提交后执行）；G8 本轮新增 98 条（远大于 0），需下一轮；G9 ⑥ 项只有 1 条（D2-10）且已实施，D1 其余方案不采纳。
+
+### R18 §8 给 meta-review 的不确定点
+
+- D2 判 D1 “NOT PASS”，但 D1 是独立方案而非文档缺陷；本轮把 D2 的采纳项压到 D2-10 一条，其余按 ③ 处理。meta 需抽样判断这是否“设计角色只出命名级意见”的相反面（本轮设计侧产出了一条真实代码加固）。
+- RB17 指出的“冻结面与台账不一致”已按“R18 提交重新冻结”处理；BASELINE 更新见提交后。
+- 轨迹门仍是全文件匹配（B-31/B-51），R18 段删除后 coverage 仍可能 PASS；工具修正留 L7 边界。
+- 同一文档在面板期间被持续编辑（3332→3386 行），RB17 的基线漂移问题在 R18 仍存在；本轮以“面板读取基线 + 收口基线”两行分别记录。

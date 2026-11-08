@@ -113,3 +113,36 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         "negative control must flag the injected call: {found:?}"
     );
 }
+
+#[test]
+fn pairing_audit_detects_an_allocate_pages_violation() {
+    let synthetic = "\
+pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
+    raw_serial(\"boot services exited (paired)\");
+    let _ = boot::allocate_pages(uefi::AllocateType::AnyPages, uefi::MemoryType::LOADER_DATA, 1);
+}
+";
+    let body = prepare_and_enter_body(synthetic);
+    let found = violations_after_marker(body, "boot services exited (paired)");
+    assert!(
+        found.iter().any(|v| v.contains("allocate_pages")),
+        "negative control must flag the injected allocation: {found:?}"
+    );
+}
+
+#[test]
+fn comment_only_mentions_are_exempt() {
+    let synthetic = "\
+pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
+    raw_serial(\"boot services exited (paired)\");
+    // uefi::println! would be a violation here; the comment is prose.
+    park();
+}
+";
+    let body = prepare_and_enter_body(synthetic);
+    let found = violations_after_marker(body, "boot services exited (paired)");
+    assert!(
+        found.is_empty(),
+        "comments naming a banned path must not count as calls: {found:?}"
+    );
+}

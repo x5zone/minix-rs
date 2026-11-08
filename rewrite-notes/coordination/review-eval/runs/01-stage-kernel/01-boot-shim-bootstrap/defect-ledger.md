@@ -1207,12 +1207,12 @@
 | FACT-03 | fact | P0 | 事实/引文 | ① | §3.7 `enter_kernel_image_v1` 引文改 `report` 四标量调用 | `lib.rs` 签名与函数体 | 引文与源码对读 |
 | FACT-04 | fact | P1 | 事实/合同 | ① | §4.4 改为"两直核腿共用 builder；三条 v1 腿共用 storage/report 形状" | `build_kernel_info` 调用点 grep | 文档与 §3.4 一致 |
 | FACT-05、FACT-06、READER-A-07、READER-B-03、READER-C-03、CLAIM 03 | 多角色 | P0 | 测试计数 | ① | §5.2.1 逐文件表与求和统一为实测 22/2/21/10，补 bump/boot_storage；kernel_info 拆解改 9/3/4/4/1=21 | `cargo test -- --list` 与 `grep -c '#\[test\]'` | 表、求和式、总数三处一致 |
-| FACT-07 | fact | P2 | 引文省略 | ① | BootPrepareResult 节选标省略；arena 注释补全；trait 文档逐字保留 | `boot_shim.rs` 对读 | 逐字对读 |
+| FACT-07 | fact | P2 | 引文省略 | ① | BootPrepareResult 节选标省略；arena 注释补全；R18 订正块头为"略去 struct 文档注释与 trait 级文档"，`report` 字段中文旁注标为编者加注 | `boot_shim.rs` 对读 | 块头与实际省略一致 |
 | FACT-08 | fact | P2 | 机制误述 | ① | §2.4.2 改为"切走区间、左右余量补回；整条目被覆盖才留零长" | `cut_memmap` 源码 | 与源码机制一致 |
 | FACT-09 | fact | — | — | ③ | 行号 759/760 正确，省略 758 可接受，不构成缺陷 | 源码 grep | — |
 | FACT-10 | fact | P3 | 省略行数 | ① | "约 41 行"改"约 35 行" | 源码段计数 | 文本检查 |
 | READER-A-01、READER-B-01 | reader-a/b | P1 | 结构/编号 | ④ | 把 §3.4.5 整块移到 §3.4.4 之后，编号与阅读顺序一致 | 标题顺序 | `rg '^#### 3.4.[345]'` 递增 |
-| READER-A-02 | reader-a | P1 | 结构/时序 | ④ | §4.2.1 表加"时间序"列（2,1,3,…,9） | 代码块顺序 | 表列与代码一致 |
+| READER-A-02 | reader-a | P1 | 结构/时序 | ④ | §4.2.1 表加"时间序"列；R18 补：首列改"动作 ID"，动作 2 拆成 1（读/预订）/3（拷贝/模块） | 代码块顺序与伪代码 | 动作 2 的模块加载不再被说成时间序 1 |
 | READER-A-03、READER-B-05 | reader-a/b | P2 | 因果/悬空结论 | ④ | §2.2 明确 C 入口不满足 SysV 对齐、风险前提与 Rust 侧对齐/禁 SSE 的对照 | `main.rs` 入口 asm 与 `.cargo/config.toml` | 文档结论含裁决句 |
 | READER-A-04、READER-B-04 | reader-a/b | P1 | 因果/编号 | ④ | §1.2 D1 改"第二步 `pg_identity`"并说明依赖是缓存属性输入；补"编号不是执行序，执行序 D2→D1→D3→D4" | §2.6.1 五步表 | 编号说明与 §2.8 一致 |
 | READER-A-05 | reader-a | P2 | 前提缺失 | ④ | §2.6.1 U/S 句补 `CR4.SMEP = 0` 前提与 Rust 侧不依赖该前提 | `pg_utils.c` 只清 PGE/PSE | 文本含前提 |
@@ -1227,8 +1227,8 @@
 | READER-A-16 | reader-a | P2 | 指针错节 | ④ | 五处 `§3.1 现状表` 改 `§3.1.1 接线状态表` | 标题实际位置 | `rg '§3.1 的?现状'` 零命中 |
 | READER-B-02 | reader-b | P2 | 跨节半账 | ④ | §3.5 给 16+8=24、184−24=160 完整式；§3.9 只回指 | 文档 | 两节不再互指 |
 | READER-B-06、READER-C-12 | reader-b/c | P2 | 指针错节 | ④ | §1.4 时序组改指 §3.4.4 探针 | 节内容 | 指针可落 |
-| READER-B-07 | reader-b | P2 | 句子被标题截断 | ④ | 引导句移入 §3.4.2 标题之后 | 文档 | 冒号后有表 |
-| READER-B-08 | reader-b | P2 | 分账矛盾 | ④ | §2.8 删除"两条/三条"二分，按证据小节逐条列 | 文档 | 五条各给一节 |
+| READER-B-07 | reader-b | P2 | 句子被标题截断 | ④ | 引导句移入 §3.4.2 标题之后（R17 冻结面漏修，R18 补修） | `grep -n "被删的 21 个字段\|^#### 3.4.2"`：标题在前 | 冒号后直接接表 |
+| READER-B-08 | reader-b | P2 | 分账矛盾 | ④ | §2.8 删除"两条/三条"二分，按证据小节逐条列 | 文档 | 五条均有落点（3 条带小标题，2 条在引导句内带过；R18 回读订正复验措辞） |
 | READER-B-09 | reader-b | P2 | 重复 | ④ | §3.9 三前提改为指向 §2.6.3，不复述 | 文档 | 只留 64 位侧三点 |
 | READER-B-10 | reader-b | P2 | 边界混淆 | ④ | §2.4.1 开篇说明 2.4.1.4 是清单生命周期的第三件事 | 文档 | 开篇与子节一致 |
 | READER-B-11 | reader-b | P2 | 开篇与正文不符 | ④ | §2.6.2 开篇改"alloc_pagetable 管页表页；pg_map 调 2.4.1.1 的 pg_alloc_page" | 文档 | 开篇与正文一致 |
@@ -1259,16 +1259,77 @@
 | CLAIM 06 | refute | P2 | 可达停机点缺失 | ① | §2.4.1.4 与 §3.4 补 `VM_BOOT_HANDOFF_MAX_REGIONS=64` 与停机行为 | `vm_handoff.rs:466` | 两级上限写明 |
 | DESIGN-D2-01、DESIGN-D2-02、DESIGN-D2-03 | design-d2 | — | 设计前提 | ③ | 第一遍的 40 槽可变账/AllocAuthority/页目录 typestate 在实现中没有需求方，拒绝采纳 | D2 条目证据 | 不改代码 |
 | DESIGN-D2-04 | design-d2 | P2 | 并发 UB | ① | `pt_alloc::register/register_free` 用 `PT_CLAIMED` swap 抢写权后再写指针、最后发布 | `cargo test -p minix-arch` 287 通过 | 两个写者只一个赢 |
-| DESIGN-D2-05 | design-d2 | P2 | 半提交状态 | ① | 新增 `commit_map_tables(len,len)` 一次提交；两处生产调用点改用 | `boot-shim` 135 通过 | 两表同轮 |
-| DESIGN-D2-06 | design-d2 | P2 | 构造中合法值 | ① | `build_kernel_info` 收 `memmap_sources`/`startup_objects`；两直核腿先算后传，删除事后赋值 | riscv/aarch64 `cargo check` | 无事后补写 |
+| DESIGN-D2-05 | design-d2 | P2 | 半提交状态 | ① | 新增 `commit_map_tables(len,len)` 一次提交；两处生产调用点改用；R18 补：旧 setter 收进 `#[cfg(test)]`（消死代码）、`commit_map_tables` 加单测、§4.2 引文与 §3.4.5 提交协议同步 | `boot-shim` 135 通过；`minix-boot` 186 通过；`cargo check -p minix-boot` 无 dead_code | 两表同轮；生产面只留 used |
+| DESIGN-D2-06 | design-d2 | P2 | 构造中合法值 | ① | `build_kernel_info` 收 `memmap_sources`/`startup_objects`；两直核腿先算后传，删除事后赋值（文档同步在 R18 批次补） | riscv/aarch64 `cargo check` | 无事后补写 |
 | DESIGN-D2-07 | design-d2 | P2 | 容量三处 | ① | `globals.rs` 加四条跨 crate 编译期等式；`FREE_SET_CAP` 引用 store 常量 | `minix-kernel` 860 通过 | 常量漂移编译失败 |
-| DESIGN-D2-08 | design-d2 | P2 | 双枚举器 | ① | 抽 `for_each_live_bootstrap`，`classify` 与 `vm_boot_exclusions` 共用 | `minix-kernel` 860 通过 | 成员单源 |
-| DESIGN-D2-09 | design-d2 | P2 | 假 'static | ① | `OwnedDtb.bytes` 注释写明 shim 生命周期与消费者边界；Phase 栈化登记 F-R17-03 | `dtb_copy.rs` | 注释与消费者一致 |
+| DESIGN-D2-08 | design-d2 | P2 | 双枚举器 | ① | 抽 `for_each_live_bootstrap`，`classify` 与 `vm_boot_exclusions` 共用（文档引文在 R18 批次补） | `minix-kernel` 860 通过 | 成员单源 |
+| DESIGN-D2-09 | design-d2 | P2 | 假 'static | ① | `OwnedDtb` 改 raw pointer + `bytes()`；`dtb_copy` 与 `dumpdtb` 两处 `Box::leak` 移除；`capture` 收 `&[u8]`（代码在 R18 批次提交，R17 冻结面未含） | `grep Box::leak` 两文件零命中 | 两处成立条件消失 |
 | DESIGN-D2-10 | design-d2 | P3 | 死 API | ① | `push_module` 收进 `#[cfg(test)]`；`push_platform_source`/`push_startup` 有生产调用者故保留 | grep 调用点 | 生产面只留 used |
 | DESIGN-D2-11 | design-d2 | P2 | 静默参数 | ① | U-Boot 腿打印 rejected/dropped；两直核腿补 rejected/dropped 十六进制读数 | 三处代码 | 三腿均出声 |
-| DESIGN-D2-12 | design-d2 | P2 | 单实现 trait | ① | trait 文档删除"UEFI aux form"等过时描述；去留裁决登记 F-R17-01 | `boot_shim.rs` | 文档与 impl 数一致 |
-| DESIGN-D2-13 | design-d2 | P2 | 死代码/测试专用 | ① | 删除零调用 `classified_descriptors`；测试三件套 feature 门登记 F-R17-02 | grep 零调用 | 生产面无死函数 |
+| DESIGN-D2-12 | design-d2 | P2 | 单实现 trait | ② | 文档已按事实修正；trait 去留 F-R17-01（截止 R19，待用户裁决） | `boot_shim.rs` | 文档与 impl 数一致；trait 本体保留 |
+| DESIGN-D2-13 | design-d2 | P2 | 死代码/测试专用 | ② | `classified_descriptors` 已删；测试三件套 feature 门 F-R17-02（截止 R19） | grep 零调用 | 生产面已无零调用函数；三件套仍在该批 |
 | DESIGN-D2-14 | design-d2 | — | 反向证据 | ③ | 运行期 enum 是跨边界状态的正确形态，不改 | D2 条目 | — |
 | DESIGN-D2-15、DESIGN-D2-16、DESIGN-D2-19、DESIGN-D2-20 | design-d2 | — | D1 表述 | ③ | 第一遍方案的垫片/Paging/测试/恒等范围表述与实现相反；D2 结论保留实现 | D2 条目 | 不改代码 |
 | DESIGN-D2-17 | design-d2 | — | 容量依据 | ① | `WIRE_MEMMAP_CAP` 注记 128 的推导与实测 12–13；保留 128 | `handoff_v1.rs` | 注释含依据 |
 | DESIGN-D2-18 | design-d2 | P2 | 权威错配 | ② | 给 `KernelInfo` 加 authority 字段属契约变更（13→14），登记 F-R17-04 待裁决 | D2 条目 | 台账有去向 |
+
+### R17 独立回读（RB17）与补修
+
+`panel/round17-rb.md` 判 NOT PASS（P0=0、P1=0；原因是半修记整修、冻结面与台账不一致、引文未同步）。逐条处置：
+
+| RB17 项 | 严重度 | 处置 | 证据 |
+|---|---|---|---|
+| H1 / B-07 引导句仍在标题之前 | P2 | ① R18 已把标题移到引导段之前（`#### 3.4.2` 先于"被删的 21 个字段…"） | `grep -n "被删的 21 个字段\|^#### 3.4.2"`：标题行号更小 |
+| N1 §4.2 两次 setter 引文 | P2 | ① 改 `storage.commit_map_tables(memmap_len, reserved_len)`；§3.4.5 提交协议补一句 | 与 `uefi_helpers.rs:1104` 同形 |
+| N2 §3.8 重复 `PT_REGISTERED.store` | P2 | ① 删重复行，保留 Release 注释后的一条 | 引文与 `pt_alloc.rs:100-116` 同序 |
+| N3 "静态切片" | P2 | ① 改 `Option<Vec<u8>>`（自有缓冲） | 与 `load_dumpdtb_blob` 返回类型一致 |
+| N4 缺 `.as_deref()` | P3 | ① 引文补 `.as_deref()` | 与 `uefi_helpers.rs:1112` 同形 |
+| N5 `memmap_slots_mut` 文档指向死 setter | P3 | ① 改指 `commit_map_tables` | 文档与 `boot_storage.rs` 一致 |
+| N6 setter 死代码 + `commit_map_tables` 零单测 | P2 | ① setter 收进 `#[cfg(test)]`；新增 `commit_map_tables_commits_both_prefixes_together`；`cargo check -p minix-boot` 无 dead_code | `minix-boot` 186 通过 |
+| N7 / H2 / H3 / H4 / H5 冻结面不含 D2-09/05 降级/06·08 文档同步 | P2 | ② 冻结面与台账的差异如实记入本节；这些补修随 R18 提交，BASELINE 在 R18 重新冻结（R17 的 `fix_head` 不再声称包含它们） | `git show 7a36a9253` 与工作树对读 |
+| FACT-07 `report` 字段中文旁注未标 | P3 | ① 块头补"`report` 字段后的中文旁注为编者加注" | 文本检查 |
+| A-02 时间序列不单调 | P3 | ① 动作 2 的时间序改为"1（读/预订）/ 3（拷贝/模块）" | 表与伪代码一致 |
+| B-08 复验语夸大 | P3 | ③ 台账复验语已订正为"3 条带小标题，2 条在引导句内带过" | 本节上表 |
+| D2-08 `#[cfg(test)] classify_regions` 仍手写成员序列 | P3 | ② 测试专用副本不影响生产单源；转 R19 观察，不阻塞 | 生产两处均走 `for_each_live_bootstrap` |
+| D2-04 无并发双写者测试 | P3 | ② 现有两条串行注册测试覆盖契约；并发压测成本高于收益，登记 R19 观察 | `pt_alloc_write_once` 2 通过 |
+
+## R18 面板轮（2026-11-09，用户指示持续循环；全角色 + DESIGN 两遍）
+
+> 面板原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round18/`（fact、reader-a/b/c、refute、design-d1、design-d2）。D1 是独立设计方案，不计文档缺陷；D2 对 D1 的否决按 ③ 记录，其中 D2-10 指出的接收侧空白按 ① 实施。数值口径见 `metrics.md`。
+
+| 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | fact | P0 | 引文/签名 | ① | §4.4 `build_kernel_info` 引文补 `memmap_sources`/`startup_objects` 两参，函数体改为原样转发；删“builder 置空” | `os/boot-shim/src/lib.rs:101` 十参 | 引文与源码对读 |
+| FACT-02 | fact | P0 | 引文/返回类型 | ① | §3.2 UEFI `FileLoader::read` 改 `Option<FileBytes<'a>>` 与 `.map(FileBytes::Owned)` | `uefi_helpers.rs:1144-1155` | 引文逐字 |
+| FACT-03 | fact | P0 | 引文/并发机制 | ① | §3.8/§4.7 改 `PT_CLAIMED.swap(AcqRel)` 抢写权 → 写指针 → 发布；删“先读 PT_REGISTERED” | `pt_alloc.rs:100-116` | 引文与源码同序 |
+| FACT-04 | fact | P1 | 引文归属 | ① | §3.8 扣除段改引 `for_each_live_bootstrap(...)` 与 `boot_bump` 分支 | `vm_handoff.rs:415-440` | 引文可命中 |
+| FACT-05 | fact | P1 | 诊断路标 | ① | §6.1 两条路标前缀 `kernel-image:` → `kernel:`（保留另一条真为 `kernel-image:` 的） | `lib.rs:888/1130` | grep 命中 |
+| FACT-06 | fact | P1 | 作用域 | ① | §2.2 SSE 句拆成内核目标默认 + shim 目标显式禁 SSE 两条 | `.cargo/config.toml:38-46`、`xtask/image.rs:53` | `rustc --print cfg` |
+| FACT-07 | fact | P2 | 锚点 | ① | §2.4.1.3 `arch_system.c:246` 改 `:277-278` | 源码 grep | 锚点可解析 |
+| FACT-08、FACT-09 | fact | P2 | 引文注释 | ③ | 两处块头已分别声明“中文注释为译述”“行内注释有一处截断”，非缺陷 | 引文头原文 | 文本检查 |
+| FACT-10 | fact | P2 | 元注释 | ① | §3.2 块头改“略去 struct 文档注释与 trait 级文档；`report` 字段中文旁注为编者加注” | `boot_shim.rs:17-66` | 块头与实际一致 |
+| FACT-11 | fact | P2 | 引文改写低报 | ① | §3.8 扣除表 `kern_size()` 改回字段名；块头补模块行限定说明 | `vm_handoff.rs:17-40` | 逐字对读 |
+| FACT-12 | fact | P2 | 反事实前提 | ① | §2.4.1.4 改“归并后仍两两不相接且超过 64 条”；补相接区间会被合并 | `vm_handoff.rs:263-307/722-760` | 条件完整 |
+| FACT-13 | fact | P2 | 编号归属 | ③ | §5.1 M2 已写“R16 DESIGN-10，R17 实施批落码”，与源码注释一致 | `kernel_info.rs` 注释 | 无冲突 |
+| FACT-14 | fact | P2 | 常量归属 | ① | §4.1 已写“定义在 `lib.rs`，`main.rs` 传常量”，与 `BOOT_PT_BUMP_PAGES` 一致 | `lib.rs:250` | 归属正确 |
+| FACT-15 | fact | P3 | 复数/单数 | ① | §3.1 注改“`build_memmap()` 返回的 conventional 列表” | `uefi_helpers.rs:486` | 与引文一致 |
+| FACT-16 | fact | P3 | 行号 | ① | §2.6.3 引 `do_vmctl.c:164` | 源码 grep | 锚点正确 |
+| FACT-17 | fact | P3 | 措辞边界 | ① | §3.4.1 改“启动期之后没有读者” | 文本 | 与 §4.4 门链一致 |
+| FACT-18 | fact | P3 | 符号/字符串 | ① | §3.4.1 改“已没有符号定义（仅 `bootface_a64.rs` 一行注释提及该字符串）” | `grep FREE_MEMMAP os` | 阴性声明精确 |
+| FACT-19 | fact | P3 | 未验证前提 | ③ | `CONFIG_MAX_CPUS ≤ 236` 已给公式；跳板体积未实测属文档已声明的边界，不改 | §2.4.1.3 | — |
+| FACT-20 | fact | — | 已核实无问题 | ③ | `load_stack_start` 4096 对齐链已逐项核对通过，无需改 | §2.2 | — |
+| FACT-21 | fact | P3 | 前提缺失 | ① | §3.4.1 补“前提是固件给该段置 `WRITE_BACK`；否则落 `Side`” | `ebs_map.rs` Step 5 | 与 §4.2.2 一致 |
+| READER-A-01..20 | reader-a | P1/P2/P3 | 读者障碍 | ④ | §1.2 D1 拆句；编号→执行序小表；§1.4 补 arena/切根定义与四栈名表；§2.6.3 补 `pde = freepdes[free_pde_idx]`；§2.4.1.1 改三态表；§4.2.2 五例改编号列表并定义 `UNKNOWN_FOR_TESTING`；§4.2.1 首列改动作 ID；§2.7 贴 ARM `overlaps` 宏与循环；§2.2 降级 SSE 断言；§3.4.4 标“无归档日志”；§1.1 改双重否定；§1.1 改 Multiboot 分页表述；§3.1 加“不是同一 trait 两实现”注；§1.4 索引补六套计法；§2.4.1.3 补 236 公式；删批次号；§1.1 拆三句；§3.1 改“两个内存分配接口” | 各条锚点在 panel 文件内 | 六门 + 原句 grep |
+| READER-B-01..20 | reader-b | P2/P3 | 结构/权威 | ④ | §7.5 `overlaps` 改三处落点；§1.4 索引改六套；§2.8 树补 ELF/识别头分支与粗档分支；§3.4.3 改“接收侧构造、发送侧只构造 BootReport”；§3.4.2 指针改 §3.7；§3.4.4 删同节重复“预防性不变量”段；§2.4.2 改“本节两处 + 对照一处”；§2.4.1.2/.3 标题对齐；§2.4.1.1 删重复结论；§2.5/§2.6.1 的链接符号引用统一；§4.3 开篇改“没有编译期检查”；§1.4 rootdevname 边界放宽；卷首改“第 1 段/第 4 段”；§6.1 `build_memmap(s)` 口径；§3.8 定义 `VmBootAllocator`；§5.1 补 TODO-08/09；§3.3 标题限定 `minix-kernel`；§3.1.1 改“第一张表终态、第二张表否决记录”；§3.6 四条理由编号；§2.7 宏块 | 各条锚点在 panel 文件内 | 六门 + 原句 grep |
+| READER-B-15 | reader-b | P3 | 单复数 | ③ | 源码同时存在 `build_memmaps`（诊断、双表）与 `build_memmap`（单表包装）；§6.1 已分别写明，非缺陷 | `uefi_helpers.rs:384/486` | 两名各有定义 |
+| READER-C-01..18 | reader-c | P1/P2/P3 | 跨节因果 | ④ | 图注改“建表第二步”；arena v8 账改四项 36768 B/九页；§4.8 改“两种进入方式（第三种已删除）”；“唯一改硬件状态”改“唯一改 CR0/CR4 模式位”；§5.4 改“未登记 TODO”；M6 明说全量走查未登记；§3.5 改“所有生产链接布局 + VMA=LMA 测试内核”；§1.4 rootdevname 边界；§4.2.1 动作 2 时间序拆 1/3；§4.6 缓存范围改“上界所在 4MB 块及其以上”；§6.3 改“prepare_boot 于装载/建根之前（该路径无 EBS）”；§3.5 删除论证回指本节；§3.4.5 补 40→296 规则；§4.6 “没有访问者”降为显式前提；§3.4.1 改“启动期之后没有读者”；§3.4.2 补 `cttyline`/`cttybaud` 处置；`[ARCH]` 第三条改“C 写但不保证生效” | 各条锚点在 panel 文件内 | 六门 + 原句 grep |
+| READER-C-10 | reader-c | P2 | 历史账不可闭合 | ③ | 该箭头串已在 R17 收口时删除；现只保留逐文件表 + 最终总数 + 实跑读数 | §5.2.1 | 无中间箭头 |
+| REFUTE CLAIM 01、02 | refute | — | 反证失败 | ③ | 主张成立，保留 §4.6 Step 1 错误集与 additive 接收侧叙述 | panel 内证据 | — |
+| REFUTE CLAIM 03 | refute | P1 | C 读者计数 | ① | §3.4.2 GET_KINFO 改“C 侧至少四个活读取点、VM 读 ≥11 字段” | `do_getinfo.c`/`vm` 源码 | 与 grep 一致 |
+| REFUTE CLAIM 04 | refute | P1 | 重复键分支 | ① | §3.4.2 改“首条记录重复时 C 后写胜出；非首条时账上两条、读首条”，并标为与 C 相反的新分歧 | `pre_init.c` 源码推演 | 两分支分开写 |
+| REFUTE CLAIM 05 | refute | P0 | 测试虚构 | ① | `ebs_boundary_audit.rs` 补 `allocate_pages` 注入负控与注释豁免自检，共 4 条；M12/TODO-04 口径改为“两枚注入负控 + 注释豁免自检” | `cargo test --test ebs_boundary_audit` 4 通过 | 负控可独立触发 |
+| REFUTE CLAIM 06 | refute | P1 | 映射档 | ① | §4.6 改“三条生产链当前只能选 2 MiB 回档；1 GiB 是理论首选档，未跑（TODO-05）”；M5 同步 | `boot_policy.rs:90-133`、三份 ld | 与 TODO-05 一致 |
+| DESIGN-D2-01、03、06、07、12 | design-d2 | — | D1 方案前提 | ③ | D1 的最小恒等窗、可变内存账、`Option` 空槽、摘要第 4 条与现仓裁决/C 行为冲突；D2 判拒，本仓保持既有设计 | D2 条目内 C/源码行号 | 不改 |
+| DESIGN-D2-02、05、09、11 | design-d2 | — | D1 方案分歧 | ③ | 可变账 vs 不可变 memmap、`一律停机` vs EBS 重试、四态 typestate vs `KernelMapPolicy`、二选一框架缺直核形态——均按现仓裁决与文档事实拒绝 D1 方案 | D2 条目 | 不改 |
+| DESIGN-D2-04、08、13 | design-d2 | — | D1 载荷/锚点 | ③ | D1 载荷缺 bump 三件套/多出无读者字段/锚点错位；现仓 v1 信封已含 bump 三件套、无多余偏移字段，文档锚点另行核对 | D2 条目与 `handoff_v1.rs` | 不改 |
+| DESIGN-D2-10 | design-d2 | P2 | 接收侧空白 | ① | `KernelInfo::validate` 增加内核镜像×模块、模块×模块半开区间复核（相切放行），补两条负控；§5.1 M2 同步 | `kernel_info.rs` validate | `minix-boot` 186 通过；两条新测试 |

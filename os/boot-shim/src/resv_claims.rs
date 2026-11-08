@@ -276,7 +276,7 @@ static mut DTB_RAW: Option<(u64, u64)> = None;
 /// invent a second failure path for the same input. Claim *capacity* is the
 /// exception: no later gate re-counts claims, so an overflow must surface
 /// here instead of leaving `check_current` with an empty list.
-pub fn capture(bytes: &'static [u8], source: (u64, u64)) -> Result<(), ClaimError> {
+pub fn capture(bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
     // SAFETY: single-threaded boot; capture runs once inside the pairing loop
     // after the owned copy was authorized, and the reader runs on the same
     // thread immediately afterwards.

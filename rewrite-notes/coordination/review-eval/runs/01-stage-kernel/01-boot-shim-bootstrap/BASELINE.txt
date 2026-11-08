@@ -1,0 +1,8 @@
+freeze_head=ec67e3d4f1f625c3d481dd9831bccf0171a3ef4b
+doc_sha256=544ad466b44752797f00dd0adeda5e4874665999c482b3b1fde6ca5e074000e4
+doc_lines=3308
+fix_head=7a36a9253
+fixed_doc_sha256=3b8b0bde25d568ce500440570ee451e3832aa820b0db52884f53a39a6bf4ceb3
+fixed_doc_lines=3332
+panel_round=round17
+panel_role_files=fact.md reader-a.md reader-b.md reader-c.md design-d1.md design-d2.md refute.md

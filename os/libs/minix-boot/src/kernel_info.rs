@@ -319,6 +319,34 @@ impl KernelInfo {
             }
         }
 
+        // Kernel image vs module spans, and module-vs-module spans
+        // (R18 DESIGN-D2-10). The producer asserts this before copying, but the
+        // receive side re-checks the same half-open predicate: a hand-crafted
+        // wire payload must not be able to place a module over the kernel it is
+        // about to run. Touching is legal (`[a,b)` and `[b,c)`).
+        {
+            let kbase = self.kern_phys_base.0;
+            let kend = kbase + self.kern_size;
+            for (i, m) in self.boot_modules.iter().enumerate() {
+                let mb = m.start.0;
+                let me = mb + m.len as u64;
+                assert!(
+                    me <= kbase || mb >= kend,
+                    "KernelInfo: boot_modules[{}] ({}) [0x{:x},0x{:x}) 与内核镜像 [0x{:x},0x{:x}) 相交",
+                    i, m.name, mb, me, kbase, kend
+                );
+                for (j, prev) in self.boot_modules[..i].iter().enumerate() {
+                    let pb = prev.start.0;
+                    let pe = pb + prev.len as u64;
+                    assert!(
+                        me <= pb || mb >= pe,
+                        "KernelInfo: boot_modules[{}] ({}) [0x{:x},0x{:x}) 与 boot_modules[{}] ({}) [0x{:x},0x{:x}) 相交",
+                        i, m.name, mb, me, j, prev.name, pb, pe
+                    );
+                }
+            }
+        }
+
         // 4a. All memory regions must be non-empty and page-aligned.
         //     DESIGN-09 (D01): zero-length or unaligned entries would be
         //     silently skipped by consumers, hiding boot-shim bugs.
@@ -756,6 +784,33 @@ mod tests {
         let mut info = make_valid_info();
         info.memmap = &CONV;
         info.reserved_regions = &RES;
+        info.validate();
+    }
+
+    /// R18 DESIGN-D2-10: the receive side re-checks kernel-vs-module spans so
+    /// a forged payload cannot hand the kernel a module over its own image.
+    #[test]
+    #[should_panic(expected = "与内核镜像")]
+    fn test_validate_rejects_module_overlapping_kernel_image() {
+        static OVER_KERNEL: [BootModule; 1] = [BootModule {
+            name: "vm",
+            start: PhysBytes(0x300_000),
+            len: 0x20_000,
+        }];
+        let mut info = make_valid_info();
+        info.boot_modules = &OVER_KERNEL;
+        info.validate();
+    }
+
+    #[test]
+    #[should_panic(expected = "相交")]
+    fn test_validate_rejects_modules_overlapping_each_other() {
+        static OVERLAP: [BootModule; 2] = [
+            BootModule { name: "vm", start: PhysBytes(0x400_000), len: 0x20_000 },
+            BootModule { name: "pm", start: PhysBytes(0x410_000), len: 0x20_000 },
+        ];
+        let mut info = make_valid_info();
+        info.boot_modules = &OVERLAP;
         info.validate();
     }
 

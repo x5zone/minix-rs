@@ -6,4 +6,6 @@
 
 | ID | 严重度 | 处置/档期 |
 |---|---|---|
-| — | — | 当前无跨 crate 欠账（F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md`） |
+| F-R17-02 | P2 | UEFI 测试辅助三件套的 feature 门（跨 16 个测试内核）；截止 R19 |
+| F-R17-04 | P2 | `KernelInfo` 增 `ram_authority` 字段（跨 minix-boot/内核/文档 ABI）；截止 R19 前裁决 |
+| — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |

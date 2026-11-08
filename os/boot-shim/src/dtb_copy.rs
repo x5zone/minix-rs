@@ -46,14 +46,23 @@ pub enum DtbPageError {
 /// The owned copy plus the firmware range it was taken from.
 #[derive(Debug, Clone, Copy)]
 pub struct OwnedDtb {
-    /// The copied blob. `'static` because the copy buffer is a leaked
-    /// LOADER_DATA allocation owned by this module's global `PHASE`; its
-    /// real validity is the shim's lifetime (until the jump to the kernel),
-    /// not the process lifetime. Consumers (`cross_validate_config_dtb`,
-    /// `report_memmap_source`) run before that jump. Moving `PHASE` onto the
-    /// pairing-loop stack would let this become a real borrow.
-    pub bytes: &'static [u8],
+    /// Copy buffer owned by this module's global `PHASE` (allocated with
+    /// `Box::into_raw`, never freed: the shim exits by jumping to the kernel).
+    /// A raw pointer instead of `&'static [u8]` keeps the type from claiming
+    /// a lifetime it cannot prove; [`Self::bytes`] ties the borrow to the
+    /// `OwnedDtb` value.
+    ptr: *const u8,
+    len: usize,
     pub source: (u64, u64),
+}
+
+impl OwnedDtb {
+    /// The copied blob. Consumers must not outlive the shim's pre-jump phase.
+    pub fn bytes(&self) -> &[u8] {
+        // SAFETY: `ptr`/`len` describe the buffer allocated in `preflight`
+        // and filled before `Phase::Ready`; the allocation is never freed.
+        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -123,8 +132,7 @@ pub fn preflight(descs: &[DescriptorRef]) -> Result<(), DtbPageError> {
                 let mut header = [0u8; HEADER_LEN];
                 core::ptr::copy_nonoverlapping(pa as *const u8, header.as_mut_ptr(), HEADER_LEN);
                 let len = checked_total(pa, &header);
-                let buffer: &'static mut [u8] = Box::leak(vec![0u8; len].into_boxed_slice());
-                let dst = buffer.as_mut_ptr();
+                let dst = Box::into_raw(vec![0u8; len].into_boxed_slice()) as *mut u8;
                 let end = pa + len as u64;
                 assert!(
                     !copy_target_overlaps(dst as u64, len, (pa, end)),
@@ -171,7 +179,8 @@ pub fn authorize_and_copy(descs: &[DescriptorRef]) -> Result<Option<OwnedDtb>, D
                     );
                 }
                 let owned = OwnedDtb {
-                    bytes: core::slice::from_raw_parts(dst, len),
+                    ptr: dst,
+                    len,
                     source,
                 };
                 core::ptr::addr_of_mut!(PHASE).write(Phase::Ready(owned));
@@ -449,7 +458,7 @@ mod tests {
 
         let owned = authorize_and_copy(&map).unwrap().expect("copy authorized");
         assert_eq!(owned.source, (pa, pa + 0x100));
-        assert_eq!(owned.bytes, blob.as_slice(), "copy equals the source bytes");
+        assert_eq!(owned.bytes(), blob.as_slice(), "copy equals the source bytes");
         assert!(matches!(phase(), Phase::Ready(_)));
     }
 
@@ -493,7 +502,7 @@ mod tests {
         let owned = authorize_and_copy(&final_map)
             .unwrap()
             .expect("segmentation does not change coverage");
-        assert_eq!(owned.bytes, blob.as_slice());
+        assert_eq!(owned.bytes(), blob.as_slice());
     }
 
     #[test]
@@ -518,22 +527,22 @@ mod tests {
 
         let owned = authorize_and_copy(&[acpi(pa, 1)]).unwrap().unwrap();
         assert_eq!(
-            &owned.bytes[..HEADER_LEN],
+            &owned.bytes()[..HEADER_LEN],
             &original_header,
             "the header must not be re-read after preflight"
         );
         assert_eq!(
-            owned.bytes.len(),
+            owned.bytes().len(),
             0x100,
             "length comes from the preflight header"
         );
         assert!(
-            owned.bytes[HEADER_LEN..].iter().all(|&b| b == b'B'),
+            owned.bytes()[HEADER_LEN..].iter().all(|&b| b == b'B'),
             "the body must be read at copy time"
         );
         match phase() {
             Phase::Ready(o) => {
-                assert_eq!(o.bytes.as_ptr(), dst_before, "the copy never reallocates")
+                assert_eq!(o.bytes().as_ptr(), dst_before, "the copy never reallocates")
             }
             _ => panic!("ready stage"),
         }
@@ -568,7 +577,7 @@ mod tests {
         let owned = authorize_and_copy(&[acpi(pa, 1)]).unwrap().unwrap();
         let after = crate::test_allocations();
         assert_eq!(before, after, "the authorized copy must not allocate");
-        assert_eq!(owned.bytes, blob.as_slice());
+        assert_eq!(owned.bytes(), blob.as_slice());
     }
 
     #[test]
@@ -585,8 +594,8 @@ mod tests {
         let retry = authorize_and_copy(&[desc(ty::RESERVED, pa, 1)])
             .unwrap()
             .unwrap();
-        assert_eq!(first.bytes.as_ptr(), retry.bytes.as_ptr());
-        assert_eq!(first.bytes, retry.bytes);
+        assert_eq!(first.bytes().as_ptr(), retry.bytes().as_ptr());
+        assert_eq!(first.bytes(), retry.bytes());
     }
 
     #[test]

@@ -85,12 +85,14 @@
 |---|---|---|---|---|
 | F-R18-01 | D-1 第二阶段 | U-Boot shim 腿仍以一次性 `.bss` 静态量 + `Box::leak`（模块表、平台源、参数）持有载荷；所有权真实但形态未统一 | ✅ 已修（R18 补记） | `prepare_boot(&mut BootStorage, bump_pages)` 填 storage；arena 在函数内分配、startup 五类记录返回前写齐；`BootPrepareResult<'a>` 携带报告；QEMU U-Boot shim 6/6 PASS |
 | F-R18-02 | P-2 第一版边界 | 表结构/链接门不做标题锚点校验与外部链接存活检查 | 已登记（workflow 候选） | 出现需要时在 `WORKFLOW-VERSIONS.md` 立版本候选，附真实案例 |
+| F-R18-03 | RB17 / R18 D2-08 | `#[cfg(test)] classify_regions` 仍手写一份成员序列，与生产 `for_each_live_bootstrap` 不完全同源 | adjacent（R19 观察） | 测试副本不影响生产单源；若 R19 出现漂移再合并，不阻塞本篇收敛 |
+| F-R18-04 | RB17 / R18 D2-04 | `pt_alloc` 的两条单测只覆盖串行二次注册，没有并发双写者压测 | adjacent（R19 观察） | 修的是并发 UB；`PT_CLAIMED` swap 的互斥性可由语义与现有串行负控支撑，压测成本高于收益，登记观察 |
 
 ## Round 17 转出（F-R17-nn）
 
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
-| F-R17-01 | DESIGN-D2-12 | `BootShim` 是单实现 trait（1 impl / 0 dyn），唯一调用点是 `<RiscvUbootBootShim as BootShim>::prepare_boot`；当前既非测试接缝也非已验证扩展点 | 待用户裁决（架构去留） | 选项：保留为未来固件腿接口（文档已按事实降级）/ 改成 `opensbi_helpers::prepare_boot` 普通函数并重写 §3.2。不阻塞本轮 |
-| F-R17-02 | DESIGN-D2-13 | UEFI 辅助三件套（`build_memmaps`/`exit_boot_services`/`UefiPoolAllocator` + 四个 `static mut`）只服务 16 个 QEMU 测试内核，生产二进制仍链着 | 已登记（独立批次） | 移到 `#[cfg(feature = "qemu-test-kernels")]` 或独立模块，并同步 16 个测试内核的依赖声明；需单独回归 QEMU |
-| F-R17-03 | DESIGN-D2-09/14 | `dtb_copy::Phase` 住 `static mut`，`OwnedDtb.bytes` 只能是 `'static`（leaked LOADER_DATA）；注释已写明真实生命周期，未改结构 | 已登记（中期重构） | 把 Phase 搬到配对循环栈上，`OwnedDtb` 带真实生命周期，`Box::leak` 换成调用方持有缓冲；与 D2-09 同一动作 |
-| F-R17-04 | DESIGN-D2-18 | `KernelInfo` 不携带 `ram_authority`，strict 门由调用方另传；混合记录表下"DTB 记录 + 声明 UEFI 权威"可能放行 | 待用户裁决（契约变更） | 给 `KernelInfo` 加 `authority: InputObjectId`（wire 已有），`validate_requiring_sources()` 改无参；文档"13 字段"改 14。属 ABI/文档契约变更 |
+| F-R17-01 | DESIGN-D2-12 | `BootShim` 是单实现 trait（1 impl / 0 dyn），唯一调用点是 `<RiscvUbootBootShim as BootShim>::prepare_boot`；当前既非测试接缝也非已验证扩展点 | 待用户裁决（架构去留；截止 R19） | 选项：保留为未来固件腿接口（文档已按事实降级）/ 改成 `opensbi_helpers::prepare_boot` 普通函数并重写 §3.2。不阻塞本轮 |
+| F-R17-02 | DESIGN-D2-13 | UEFI 辅助三件套（`build_memmaps`/`exit_boot_services`/`UefiPoolAllocator` + 四个 `static mut`）只服务 16 个 QEMU 测试内核，生产二进制仍链着 | 已登记（截止 R19） | 移到 `#[cfg(feature = "qemu-test-kernels")]` 或独立模块，并同步 16 个测试内核的依赖声明；需单独回归 QEMU |
+| F-R17-03 | DESIGN-D2-09/14 | `dtb_copy::Phase` 住 `static mut`，`OwnedDtb.bytes` 只能是 `'static`（leaked LOADER_DATA）；注释已写明真实生命周期，未改结构 | 已登记（截止 R19） | `OwnedDtb` 已改 raw pointer + `bytes()`，两处 `Box::leak` 已移除；剩余 Phase 栈化（带真实生命周期）作为 R19 重构 |
+| F-R17-04 | DESIGN-D2-18 | `KernelInfo` 不携带 `ram_authority`，strict 门由调用方另传；混合记录表下"DTB 记录 + 声明 UEFI 权威"可能放行 | 待用户裁决（契约变更；截止 R19） | 给 `KernelInfo` 加 `authority: InputObjectId`（wire 已有），`validate_requiring_sources()` 改无参；文档"13 字段"改 14。属 ABI/文档契约变更 |

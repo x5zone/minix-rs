@@ -827,7 +827,7 @@ fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[Mem
     let owned = crate::dtb_copy::owned().unwrap_or_else(|| {
         panic!("boot-shim: configuration-table DTB present but no owned copy — halting")
     });
-    let bytes = owned.bytes;
+    let bytes = owned.bytes();
     assert!(
         minix_boot::fdt_layout::validate(0, bytes).is_ok(),
         "boot-shim: configuration-table DTB container invalid — halting"
@@ -855,7 +855,7 @@ fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[Mem
 /// process-wide, so a slice captured here would be overwritten by the next
 /// collection (the configuration-table DTB or the claims capture).
 #[cfg(target_arch = "aarch64")]
-fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<&'static [u8]> {
+fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<Vec<u8>> {
     let blob = file_loader.read(loader::DUMPDTB_PATH)?;
     if minix_boot::fdt_layout::validate(0, blob.as_slice()).is_err() {
         panic!("boot-shim: dumpdtb.dtb container invalid");
@@ -863,7 +863,7 @@ fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<&'static [u8]> {
     if fdt::Fdt::new(blob.as_slice()).is_err() {
         panic!("boot-shim: dumpdtb.dtb 不可解析");
     }
-    Some(Box::leak(blob.into_owned().into_boxed_slice()))
+    Some(blob.into_owned())
 }
 
 /// x86_64 / aarch64 UEFI production entry for the v1 handoff.
@@ -885,7 +885,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     #[cfg(target_arch = "aarch64")]
     let dumpdtb_blob = load_dumpdtb_blob(&file_loader);
     #[cfg(target_arch = "x86_64")]
-    let dumpdtb_blob: Option<&'static [u8]> = None;
+    let dumpdtb_blob: Option<Vec<u8>> = None;
     let elf_data = file_loader.read_required(loader::KERNEL_PATH);
     let layout = loader::compute_kernel_layout(elf_data.as_slice()).expect(
         "Failed to parse kernel ELF from ESP — check that the ESP contains \
@@ -1109,7 +1109,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     assert_bootstrap_outside_memmap(report.memmap, root_page.0, PAGE_SIZE);
     assert_bootstrap_outside_memmap(report.memmap, bump_base, bump_end - bump_base);
     assert_bootstrap_outside_memmap(report.memmap, arena_pa.0, ARENA_CAP as u64);
-    report_memmap_source(dumpdtb_blob, report.memmap);
+    report_memmap_source(dumpdtb_blob.as_deref(), report.memmap);
 
     crate::raw_serial("boot-shim: [raw] arena=");
     raw_serial_hex(arena_pa.0);
