@@ -35,3 +35,12 @@ r20_fixed_doc_sha256=709bafe63a2e9b6792d530877f99537e3bba7503835664373c8418c0022
 r20_fixed_doc_lines=3390
 r20_panel_round=round20
 r20_panel_role_files=fact.md reader-a.md reader-b.md reader-c.md refute.md design-d1.md design-d2.md
+
+# R21 round (D1 stopped per D-024; P-FACT MISSING after two dispatches)
+r21_panel_base_head=8c25e499cf731409522cc13e3a4b249f22549a24
+r21_panel_base_doc_sha256=709bafe63a2e9b6792d530877f99537e3bba7503835664373c8418c0022db5d9
+r21_fix_head=573e930e9a0a2a1132efc2ce875735269dce6395
+r21_fixed_doc_sha256=84ed6f34cfb9dfbbfaf281ec8881aa7a3cfa0309143b9d93ab0e38967fe87c0b
+r21_fixed_doc_lines=3390
+r21_panel_round=round21
+r21_status=NOT_CONVERGED
