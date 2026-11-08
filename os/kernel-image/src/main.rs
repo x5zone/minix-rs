@@ -261,11 +261,11 @@ core::arch::global_asm!(
         la sp, kernel_boot_stack_top
         li ra, 0
         li fp, 0
-        # 甲案交接：OpenSBI 递 a0 = boot hartid、a1 = DTB 物理指针；本
-        # riscv64 直核面另留 a2 作 BootFileTable 物理指针的备用通道，仓内无生产者。
+        # 甲案交接：OpenSBI 递 a0 = boot hartid、a1 = DTB 物理指针；a2 的
+        # BootFileTable 备用通道已删除（仓内从未有生产者）。
         # U-Boot shim 的入口是另一个二进制，用 a0/a1 收 (extra_argc, extra_argv)。
-        # 本 boot 面同时读 DTB /chosen/opensbi,boot-file-table，a2 不合法时靠
-        # DTB 通道。`call` 是 PC 相对，不改动 a0–a2，三个入参自然落位 Rust 面。
+        # 本 boot 面读 DTB /chosen/opensbi,boot-file-table。`call` 是 PC 相对，
+        # 不改动 a0–a2，前两个入参自然落位 Rust 面。
         call {rust_image_main}
     3:  wfi
         j 3b
@@ -391,13 +391,13 @@ fn rust_image_main(arena_pa: usize) -> ! {
 
 /// riscv64 image entry: kernel-image is its own bootstrapper (no cross-image
 /// handoff, no BootHandoff). The entry asm has already cleared `.bss` (the
-/// common precondition), and a0/a1/a2 land as three arguments; the real work is
-/// in `bootface`: decode the DTB memmap from a1 → BootFileTable (a2/chosen
-/// dual channel, gated by magic) → load 12 modules → `minix_kernel::arch_boot`
-/// passes the validation gate.
+/// common precondition), and a0/a1 land as two arguments; the real work is
+/// in `bootface`: decode the DTB memmap from a1 → BootFileTable (DTB /chosen,
+/// gated by magic) → load 12 modules → `minix_kernel::arch_boot` passes the
+/// validation gate. The spare `a2` channel was retired (no in-repo producer).
 #[cfg(all(target_arch = "riscv64", not(feature = "fw-riscv64-uboot")))]
-fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! {
-    bootface::bootface(boot_hart, dtb_phys, boot_file_table_pa)
+fn rust_image_main(boot_hart: u64, dtb_phys: u64) -> ! {
+    bootface::bootface(boot_hart, dtb_phys)
 }
 
 /// D-73 receiver product: `a0` = v1 handoff arena PA from the boot-shim's

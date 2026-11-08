@@ -137,9 +137,10 @@ const PT_BUMP_PAGES: usize = 256;
 // ── Entry ───────────────────────────────────────────────────────
 
 /// Rust-side entry of the self-boot form (`main.rs` riscv64 `_start` zeroes
-/// .bss, sets up the stack and `call`s in; a0/a1/a2 become the three
-/// parameters per the RV64 ABI, and `call` does not touch them).
-pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
+/// .bss, sets up the stack and `call`s in; a0/a1 become the two parameters per
+/// the RV64 ABI, and `call` does not touch them). The spare `a2` channel was
+/// retired: no in-repo producer ever set it.
+pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // Touch the anchor: reference it once on the running path so the kernel
     // boot graph is pulled into the link at archive-member granularity (the
     // linker script KEEP is the second safeguard).
@@ -218,19 +219,17 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(memmap[0].len as u64);
     say("\n");
 
-    // 2. BootFileTable: both the spare `a2` channel (no in-repo producer) and
-    //    the DTB /chosen channel must pass the DRAM bound gate
+    // 2. BootFileTable: the DTB /chosen channel must pass the DRAM bound gate
     //    and then the magic gate before dereference (reading a hartid or a
     //    garbage pointer directly is a Load fault; the discipline established
     //    by real-hardware and U-Boot forensics).
     let chosen_pa = fdt_table_pa(&fdt);
-    let table_pa = [Some(table_pa_a2), chosen_pa]
+    let table_pa = chosen_pa
         .into_iter()
-        .flatten()
         .find(|pa| in_memmap_range(memmap, *pa, core::mem::size_of::<BootFileTable>() as u64) && table_magic_ok(*pa));
     let Some(table_pa) = table_pa else {
         say(
-            "### minix-rs kernel image: no BootFileTable (a2/chosen) — module channel not wired, halting\n",
+            "### minix-rs kernel image: no BootFileTable (chosen) — module channel not wired, halting\n",
         );
         crate::halt();
     };
