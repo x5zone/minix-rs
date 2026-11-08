@@ -679,7 +679,7 @@
 - 报告：`rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r15.md`。
 - 结论：**REGRESSED**；运行质量 NOT PASS（严格一致 8/16 = 50%，实质 75%）。
 - 判定：Detection PASS（广度）；Precision CONCERN（误报 1–2、重复 4、纯措辞 ~14）；Independence CONCERN（冻结与并发守住；P-REFUTE 连续第 4 轮缺席；迟交 reader 读旧快照）；Scope FAIL（82 条 ② 中 55 条 in-scope；无 `F-R15-nn`；R16 欠账 ≥107）；Trace FAIL（sev 全 `—`、② 五模板、97/107 数字互斥）；Cost CONCERN（修复吞吐 −65%，欠账复利）。
-- 立即收口：① RB15-01..05 全修（§2.4.1 右余量、§2.6.4 四步、§4.6 Step 4 指针、M2 validate 口径、§5.2.3 时点）；② DESIGN-03 落地——删 `boot_form.rs` 与 6 条测试（裁决 A），minix-boot 177→171，文档计数同步；③ `DECISIONS-PENDING` 第 1 项标为已实施。
+- 立即收口：RB15 判 **NOT PASS**，RB15-01..05 已全修（§2.4.1 右余量、§2.6.4 四步、§4.6 Step 4 指针、M2 validate 口径、§5.2.3 时点）；② DESIGN-03 落地——删 `boot_form.rs` 与 6 条测试（裁决 A），minix-boot 177→171，文档计数同步；③ `DECISIONS-PENDING` 第 1 项标为已实施。
 - 残留：B-41/B-42/B-43 入账（OPEN/DETECTED）；B-40/B-17/B-39 复发。R16 先建 open-debt 表，再跑面板。
 
 ### R15 L6.5
