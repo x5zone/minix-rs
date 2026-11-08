@@ -131,3 +131,10 @@
 | C-11 | 每条 ① 必须写"旧串 → 新串"；复验时全篇 grep 旧串，命中数必须为 0。替代"复验=五门绿"与人工 fix-scope 计数 | D01 R13 FACT-R13-13 被 READER-C-08 复发；R14 FACT-P2-01 留相反口号（B-39） | `prompt/review-rules/fix-guard.md`"修后留痕"；`tools/eval-trace-check.py` 增旧串检查 | 候选，待 L7 |
 | C-12 | `metrics.md` 由台账自动生成（发现数、五类处置、转出档期），`loop.md §6` 只引用生成结果；轨迹门比对三者同一性 | R14 同时存在 90/102/109 三个总数，metrics 停在 R0（B-40） | `tools/eval-trace-check.py`、`review-evals.md` 指标节 | 候选，待 L7 |
 | C-13 | RBn 产出必须先入账并写进下一轮冻结说明，R(n+1) 才允许派发面板；并发派发前先数"存活子 agent + 主线程 + 计划派发数" | R14 RB13 与面板并发，同一缺陷两行；R14 首轮 11 并发被 provider 拒绝（B-37） | `prompt/review-rules/review-panel.md` L1 时序 | 候选，待 L7 |
+
+## 五、候选规则（L6.5 登记，2026-11-08 R15）
+
+| 编号 | 候选 | 案例支撑 | 目标文件 | 现状 |
+|---|---|---|---|---|
+| C-14 | 跨轮缺陷身份键：同一缺陷第二次出现时合并计数并标注"复发"，不再当作新增；`open-debt` 表为唯一欠账源 | R15 DESIGN-02=R14 DESIGN-14、A-26=R14 A-13、BootForm 第三次（B-42） | `review-evals.md` 归因节、台账 schema | 候选，待 L7 |
+| C-15 | 轨迹门三源恒等（面板/台账/metrics）+ 处置类桶检测 + severity 非空 | R15 97/107/112 三数并存、sev 全 `—`、② 五模板（B-40 复发） | `tools/eval-trace-check.py` | 候选，待 L7 |

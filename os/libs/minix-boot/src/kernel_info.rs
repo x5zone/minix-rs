@@ -391,8 +391,8 @@ impl KernelInfo {
     /// chosen resolution for this debt).
     ///
     /// The decision is "equivalent postcondition assertions", not "equal
-    /// entry structure" — the five boot forms (see [`crate::boot_form`])
-    /// each produce `KernelInfo` from a different firmware surface
+    /// entry structure" — the five historical boot forms each produce
+    /// `KernelInfo` from a different firmware surface
     /// (inlined UEFI / cross-image UEFI / OpenSBI bring-up / direct QEMU
     /// kernel load / hart mailbox), and their absolute addresses depend on
     /// the firmware, so they can never be equal one by one; what can be

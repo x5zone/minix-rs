@@ -667,9 +667,25 @@
 
 ### §6 指标
 
-- 发现 107（fact 22 / d2 18 / reader 67）；① 25（23.4%）/ ② 82（76.6%）。零新增计数 0 轮。
+- 发现 112（面板 107 + RB15 5）；① 31（27.7%）/ ② 81（72.3%）。零新增计数 0 轮。
 - 成本：7 份报告 / 面板约 35min；转出比例偏高，L6 需评估是否把 R16 的结构批提前。
 
 ### §7 状态
 
 - **NOT CONVERGED**。进入 RB15 + L6；R16 先执行 R14/R15 转出的结构批，再跑新面板。
+
+### R15 L6
+
+- 报告：`rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r15.md`。
+- 结论：**REGRESSED**；运行质量 NOT PASS（严格一致 8/16 = 50%，实质 75%）。
+- 判定：Detection PASS（广度）；Precision CONCERN（误报 1–2、重复 4、纯措辞 ~14）；Independence CONCERN（冻结与并发守住；P-REFUTE 连续第 4 轮缺席；迟交 reader 读旧快照）；Scope FAIL（82 条 ② 中 55 条 in-scope；无 `F-R15-nn`；R16 欠账 ≥107）；Trace FAIL（sev 全 `—`、② 五模板、97/107 数字互斥）；Cost CONCERN（修复吞吐 −65%，欠账复利）。
+- 立即收口：① RB15-01..05 全修（§2.4.1 右余量、§2.6.4 四步、§4.6 Step 4 指针、M2 validate 口径、§5.2.3 时点）；② DESIGN-03 落地——删 `boot_form.rs` 与 6 条测试（裁决 A），minix-boot 177→171，文档计数同步；③ `DECISIONS-PENDING` 第 1 项标为已实施。
+- 残留：B-41/B-42/B-43 入账（OPEN/DETECTED）；B-40/B-17/B-39 复发。R16 先建 open-debt 表，再跑面板。
+
+### R15 L6.5
+
+- 主导类别：**消化能力**——检测仍有效（新类别 5 个），瓶颈从"找"转到"修与记"。
+- 资源选读（未读优先，本次首读）：`grillme-code-review`（双轴：Standards vs Spec，固定点先钉死）；`fresh-eyes-review-dely0` 的反向验证（把 bug 装回去必须变红）。
+- **Q1 检测模式**：机制生命周期四问（建立/重建/通知/退役）命中 `prot_init`、`VMCTL_CLEARMAPCACHE`、PM 缓存、二次调用四处 → 记入 B-41 期望探测器。
+- **Q2 流程改进**：C-14 跨轮缺陷身份键（同一缺陷第二次出现时合并计数，替代手工去重与借旧行）；C-15 轨迹门三源恒等 + 桶检测 + severity 非空（替代手写 metrics 与只自校验的门）。
+- **Q3 立即可用**：R16 开工顺序——① 先建 open-debt 表（R14/R15 全部 ②，带模块与轮次）；② 每条 ① 写"旧串 → 新串"并当场 grep；③ 面板派发前数并发并给报告头写 sha/HEAD。

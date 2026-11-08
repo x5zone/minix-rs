@@ -9,12 +9,11 @@
 
 #[cfg(test)]
 extern crate alloc;
-// Host tests check on-disk source paths (`BootForm::source_path` existence);
-// `std` is test-only, the production build stays `#![no_std]`.
+// `std` is test-only (host tests read on-disk source paths); the production
+// build stays `#![no_std]`.
 #[cfg(test)]
 extern crate std;
 
-pub mod boot_form;
 pub mod boot_params;
 pub mod boot_shim;
 pub mod fdt_layout;
@@ -25,7 +24,6 @@ pub mod kernel_info;
 pub mod memmap_source;
 pub mod platform;
 
-pub use boot_form::{ALL_BOOT_FORMS, BootForm};
 pub use boot_params::*;
 pub use boot_shim::*;
 pub use handoff_v1::*;
