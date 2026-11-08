@@ -665,7 +665,7 @@ phys_bytes pg_alloc_page(kinfo_t *cbi)
 
 | 名称 | 对象 | 时刻 | 谁做 | 动作 | 为什么 |
 |---|---|---|---|---|---|
-| **切占用** | 内核与全部模块的字节 | `pre_init` → `get_parameters` | `cut_memmap`（本文 2.4） | 从可用记录里切掉 `[mod_start, mod_end)` | 这段内存里躺着模块的字节，页表页与内核数据不能分配到这里 |
+| **切占用**（§2.5 执行，不是 §2.4） | 内核与全部模块的字节 | `pre_init` → `get_parameters` | `cut_memmap`（本文 2.4） | 从可用记录里切掉 `[mod_start, mod_end)` | 这段内存里躺着模块的字节，页表页与内核数据不能分配到这里 |
 | **还 VM 镜像** | 只有 VM 模块的字节 | 内核装载启动进程时（[`arch_boot_proc`](minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc)） | `add_memmap` + 清空模块描述符 | 把模块的字节段复制进目标地址空间后，把这段物理区间加回记录，并把 `mod_start`/`mod_end` 置 0 | 字节已经搬到别处，原地址可以复用；置 0 是"已回收"的标记 |
 | **还引导段** | 内核自己的 unpaged 段 | `kmain` 后段（`cstart`、`system_init` 之后） | `add_memmap(bootstrap_start, bootstrap_len)`（[`main.c`](minix3/minix/kernel/main.c) 的 `kmain` 体内、`system_init` 之后；此时 `kernel_may_alloc` 仍为 1——它要到 `bsp_finish_booting` 末尾、`switch_to_user()` 前一行才写 0） | 归还分页开启前使用的那一小段 | C 的 `unpaged` 段只在启动期需要（本文 §3.5），与模块无关 |
 
@@ -1504,7 +1504,7 @@ pub struct KernelInfo {
 | 保留（同名或近义） | `memmap`<br>`user_sp` | `memmap` 从 `multiboot_memory_map_t memmap[MAXMEMMAP]` 变成 `&'static [MemoryRegion]`，长度自带。C 那条"VM 只读前 `MIN(MAXMEMMAP, NR_MEMS)=16` 条"的截断（§2.4.1 末的"另一件必须单说的事"段）**不再继承**：Rust 把容量提到 128（常量现居 [`globals.rs`](os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN)，C `MAXMEMMAP=40` 提额——UEFI 图常超 40 条），VM 交接消费整份账并以断言守住不超容量——16 条静默截断是 C 的行为，不是 Rust 的 |
 | 改型（C 有、形状变） | `param_buf`：`char[MULTIBOOT_PARAM_BUF_SIZE]` → `&'static [u8]`，上限仍按 1024 校验<br>`module_list[]` → `boot_modules: &'static [BootModule]` | |
 | 改名 | `vir_kern_start` → `kern_virt_base` | （`freepde_start` 曾改名 `free_upper_idx`，D01-F03 起整个字段退场，见 §3.9） |
-| 升为字段 | `kern_phys_base`<br>`kern_size` | C 里这两个值不是 `kinfo_t` 的字段，而是链接脚本导出的符号 `_kern_phys_base`、`_kern_size`（定义见 §3.5 引文；§2.3 未列过这两个）。Rust 把它们放进交接结构，来源改为 boot-shim 解析内核 ELF 的 PT_LOAD 段（§4.4 的字段表）。`kern_size` 用 `u64` 而不是 `usize`——wire 语义需要固定宽度，不随目标指针宽度变（32 位目标是 C 侧的，本仓重写目标全为 64 位，这里钉的是交接协议而非当前目标集） |
+| 升为字段 | `kern_phys_base`<br>`kern_size` | C 里这两个值不是 `kinfo_t` 的字段，而是链接脚本导出的符号 `_kern_phys_base`、`_kern_size`（定义见 §3.5 引文；§2.3 未列过这两个）。Rust 把它们放进交接结构，来源改为 boot-shim 解析内核 ELF 的 PT_LOAD 段（§4.4 的字段表）。`kern_size` 用 `u64` 而不是 `usize`——wire 语义（wire = 跨镜像交接协议里按固定字节宽度写进 arena 的那份表示，与进程内结构相对）需要固定宽度，不随目标指针宽度变（32 位目标是 C 侧的，本仓重写目标全为 64 位，这里钉的是交接协议而非当前目标集） |
 | 删除 | 21 个字段：<br>`mbi`、`mem_high_phys`、`mods_with_kernel`、`kern_mod`、`kmessages`<br>`do_serial_debug`、`serial_debug_baud`、`minix_panicing`、`user_end`、`boot_procs[]`<br>`nr_procs`、`nr_tasks`、`release[]`、`version[]`、`vm_allocated_bytes`<br>`kernel_allocated_bytes`、`kernel_allocated_bytes_dynamic`、`mmap_size`、`freepde_start`<br>`bootstrap_start`、`bootstrap_len` | 逐个的去向见下表（`mmap_size` 由切片长度承载；`freepde_start`/`bootstrap_*` 的删除判据见 §3.9 与 §3.5） |
 | 新增 | `reserved_regions`<br>`memmap_sources`<br>`startup_objects`<br>`kern_stack_top`<br>`syscall_entry`<br>`platform_sources` | 各自来源见下；`memmap_sources` 与 `startup_objects` 是 v1 source/startup 记录，只供启动期 `validate_requiring_sources` 审计（全仓没有运行期读者） |
 
@@ -2253,7 +2253,7 @@ pub fn alloc_root_page() -> PhysBytes {
 
 ### 4.3 两种文件来源共用的装载函数（→3.2）
 
-模块契约是本篇里最容易在改动时踩坏、又最容易在测试里漏掉的东西，因为它的"顺序"部分没有任何编译期检查。装载前还有两道防线：①每个段的文件字节区间与该段及**所有**段的目标 LMA 区间不相交（`first_source_destination_overlap`）；②各段的目标 LMA 区间两两不相交（`first_overlapping_pair`）。文件字节区间彼此之间的重叠不查——只读拷贝无害。任一条命中即 halt。
+模块契约是本篇里最容易在改动时踩坏、又最容易在测试里漏掉的东西，因为它的"顺序"部分没有任何编译期检查。装载前还有两道防线：①每个段的文件字节区间与该段及**所有**段的目标 LMA 区间不相交（`first_source_destination_overlap`）；②各段的目标 LMA 区间两两不相交（`first_overlapping_pair`）。文件字节区间彼此之间的重叠不查——只读拷贝无害。任一条命中即 halt。这两道是 C 的 `overlaps`（§2.5，守模块与内核之间）在 Rust 侧的对应物，但对象从「模块 vs 内核」换成了「内核自身各 PT_LOAD 段」——模块之间的重叠由 §4.3 的按名字顺序装载与页分配隐含排除，不再单独查。
 
 ```rust
 // 代码引用（省略号处为文档注释的说明段），os/boot-shim/src/loader.rs。
@@ -2872,7 +2872,7 @@ TODO 列的状态口径**以本表为唯一权威**：`TODO-n（已关闭）`指
 ```bash
 $ cd os && cargo test -p boot-shim --features test-all --lib
 ...
-test result: ok. 133 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 134 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cd os && cargo test -p minix-boot -p minix-elf
 running 176 tests
@@ -2896,7 +2896,7 @@ $ for f in os/boot-shim/src/loader.rs os/boot-shim/src/opensbi_helpers.rs \
            os/boot-shim/src/dtb_copy.rs os/boot-shim/src/resv_claims.rs \
            os/boot-shim/src/lib.rs os/boot-shim/tests/ebs_boundary_audit.rs; do
   printf '%-50s %s\n' "$f" "$(grep -c '#\[test\]' $f)"; done
-os/boot-shim/src/loader.rs                         20
+os/boot-shim/src/loader.rs                         21
 os/boot-shim/src/opensbi_helpers.rs                11
 os/boot-shim/src/uefi_helpers.rs                   12
 os/boot-shim/src/ebs_map.rs                        44
@@ -2918,7 +2918,7 @@ os/libs/minix-boot/src/lib.rs                      2
 os/libs/minix-elf/src/lib.rs                       23
 ```
 
-20 + 11 + 12 + 44 + 17 + 15 + 13 + 1 = 133（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 5 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair + dtb_copy + resv_claims + lib.rs：133 − `opensbi_helpers` 11 − `lib.rs` 正控 1 = 121；133 这个读数必须带 `test-all`）；`minix-boot` 的 176 = `kernel_info.rs` 的 17（Round 1 D2-04/05 增三条负控） + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 72 + `handoff_v1.rs` 的 2 + `handoff_v1_write.rs` 的 11 + `handoff_v1_read.rs` 的 21 + `fdt_layout.rs` 的 29 + `lib.rs` 的 2（逐 commit 复算：175/125 是 D01-F03 **之前**的读数；F03 删三条 minix-boot 测试（handoff 两文件各一条哨兵 + `test_validate_rejects_nonzero_bootstrap_len`）与一条 boot-shim 测试 → 172/124；F07 加一条 strict 门负控 → 173/124；D2-04/05 加三条负控 → 176/124；R7 D2-02 增五条 M16 负控 → 176/129；R9/R10 loader 跨段与零长测试 → 176/131；R12 分配计数正控 → 176/132；R13 A+D 预订跨度守卫 +1 → 176/133。`minix-elf` 的 23 与实测一致。
+21 + 11 + 12 + 44 + 17 + 15 + 13 + 1 = 134（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 5 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair + dtb_copy + resv_claims + lib.rs：134 − `opensbi_helpers` 11 − `lib.rs` 正控 1 = 122；134 这个读数必须带 `test-all`）；`minix-boot` 的 176 = `kernel_info.rs` 的 17（Round 1 D2-04/05 增三条负控） + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 72 + `handoff_v1.rs` 的 2 + `handoff_v1_write.rs` 的 11 + `handoff_v1_read.rs` 的 21 + `fdt_layout.rs` 的 29 + `lib.rs` 的 2（逐 commit 复算：175/125 是 D01-F03 **之前**的读数；F03 删三条 minix-boot 测试（handoff 两文件各一条哨兵 + `test_validate_rejects_nonzero_bootstrap_len`）与一条 boot-shim 测试 → 172/124；F07 加一条 strict 门负控 → 173/124；D2-04/05 加三条负控 → 176/124；R7 D2-02 增五条 M16 负控 → 176/129；R9/R10 loader 跨段与零长测试 → 176/131；R12 分配计数正控 → 176/132；R13 A+D 预订跨度守卫 +1 → 176/133；R14 零长 segment 负控 +1 → 176/134。`minix-elf` 的 23 与实测一致。
 
 推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 classify/FreeRangeSet 系列（D01-F08 起含 9 条行为锁与对拍；旧 `memmap.rs` 17 条随模块删除）、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 16 条、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 8 条（1 枚落地区行为 + 7 枚超容量负控）。[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零，其单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）；v1 协议的布局门禁由 [`handoff_v1.rs`](os/libs/minix-boot/src/handoff_v1.rs) 的编译期断言与 2 条尺寸/偏移测试覆盖。
 

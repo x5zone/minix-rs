@@ -309,8 +309,14 @@ fn first_source_destination_overlap(
 /// or `None` if all segments are disjoint. Exposed for unit testing.
 fn first_overlapping_pair(segments: &[minix_elf::LoadSegment]) -> Option<(usize, usize)> {
     for (i, a) in segments.iter().enumerate() {
+        if a.memsz == 0 {
+            continue;
+        }
         let a_end = a.paddr.saturating_add(a.memsz);
         for (j, b) in segments.iter().enumerate().skip(i + 1) {
+            if b.memsz == 0 {
+                continue;
+            }
             let b_end = b.paddr.saturating_add(b.memsz);
             // Two half-open ranges [a.paddr, a_end) and [b.paddr, b_end)
             // overlap iff a.paddr < b_end && b.paddr < a_end.
@@ -831,6 +837,16 @@ mod tests {
             first_source_destination_overlap(0x1000, &[live_src, empty_dst]),
             None
         );
+    }
+
+    #[test]
+    fn test_first_overlapping_pair_ignores_zero_length() {
+        // A zero-size segment cannot overwrite anything; it must not be
+        // reported as overlapping even when its paddr sits inside another.
+        let segs = [phdr(0x1000, 0x1000), phdr(0x1800, 0)];
+        assert_eq!(first_overlapping_pair(&segs), None);
+        let segs = [phdr(0x1000, 0), phdr(0x1000, 0)];
+        assert_eq!(first_overlapping_pair(&segs), None);
     }
 
     #[test]
