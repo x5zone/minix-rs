@@ -581,3 +581,41 @@
 - 本轮角色：P-FACT、P-DESIGN D2、P-READER A/B/C 分三角色（不再合并 A+B，针对 campaign meta 的 B-35）。
 - 材料隔离：三角色拿同一份冻结文档；reader 只拿正文与读者画像；fact 拿 C 源与 46 个关联代码文件；d2 只读 §3/§4 与现有实现。面板期间不改文档、不改 `os/`。
 - 重启记录：首轮派发中 reader A、reader B 因 provider 拒绝失败（未产出报告），已按用户"可自行重启任务"授权原提示词重派。
+
+### R14 §1 面板
+
+- P-FACT 分三段（Ch1–2 / Ch3–4 / Ch5–7）：7 + 9 + 8 = 24 条（P0 0 / P1 3 / P2 11 / P3 10）。
+- P-DESIGN D2：15 条（P0 1 / P1 2 / P2 6 / P3 6）。
+- P-READER A：20 条（0/3/13/4）；B：32 条（20 条八字段 + 12 条压缩，自报 2/12/10/8）；C：11 条（1/3/2/5）。
+- RB13 独立回读（子 agent 最终交付）：7 条，结论 NOT PASS（2 条 P1 打穿批三）。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round14/{fact-part1..3,design-d2,reader-a,reader-b,reader-c}.md`；切片在 `slices/`（±only 供 fact 分段，不参与发现计数）。
+- 并发事故：首轮五个角色同时派发时，加上长期存活的旧 subagent 与主线程共 11 个并发，超过供应商上限 10，成批 `Provider rejected the model request`。按用户裁决"同供应商同款模型 + 可自行重启"，在槽位释放后按分段重派；未改串行。此事故记入 B-37（并发上限未纳入 L1 预算）。
+
+### R14 §2 发现与 §3 归因
+
+- 90 个编号发现（重复项跨角色去重后仍按各角色 ID 记）；处置：① 72 条（含 4 条部分修）、② 20 条（F-R14-01..25，其中 DESIGN-03 阻塞于待裁决项 1）、③ 1 条（B-14 摘要重复属设计意图）、④ 7 条（排版/冗余取舍，逐条给理由）。合计 100 条处置行（72+20+1+7）。
+- 本轮最重的四条：DESIGN-01（DTB collector 一次性守卫 ⇒ aarch64 UEFI 同一次引导三次 collect 必 halt，P0 代码）；RB13-05（重复 `#[test]` + 丢属性，M16 正例从未执行，上一轮把 ③ 误报当结论）；READER-C-01（同一恒等映射机制两处相反故障语义，排障方向会反）；FACT-P2-01（辅助形态八步顺序与源码相反，正是 A+D 要消除的次序）。
+- 误报纠正：RB13-03 旧台账记"③ 误报"，本轮独立回读证伪并改判 ①，见 `defect-ledger.md` 的同 ID 行。
+
+### R14 §4 修复
+
+- 批一 `4a0d45d38`：`collect_owned`（P0）+ 两处 post-EBS 消费者切换 + 新增 1 条 minix-boot 测试（176→177）；删重复 `#[test]`、恢复正例属性；文档 20+ 处事实/口径。
+- 批二 `3416c4381`：§1.2 五条编号、§4.1 立 Step 编号、§3.4 两维度分段、arena/bump/LMA 定义、§6.4 GDB/-d、§7.1 描述、历史注释自包含、双空行。
+- 代码面同时清理：`globals.rs` 的 `MAX_CANDIDATES` 陈旧注释、`os/kernel/src/lib.rs` Phase F 的 `bootstrap_len` 陈旧注释、`uefi_helpers.rs` 两处 "before any other allocation"。
+
+### R14 §5 复验
+
+- 文档五门：锚点 107/107、style error 0、ref 全解析、承载门 4/4、code-map 46/46。
+- 测试：boot-shim test-all 134 / 默认 123（唯一名 134）；minix-boot 177；kernel mock 857；aarch64/x86_64 UEFI 交叉编译绿。
+- trace：`--panel-dir round14` 解析 90 条，coverage 全绿（PASS 7 / WARN 6：WARN 均为切片文件不是报告）。
+
+### R14 §6 指标
+
+- 发现数 90（fact 24 / d2 15 / reader 63 / RB 7）——本轮是 R0 以来第二高，仅次于 R13 的 109。
+- 采纳率：① 72/90 = 80%；② 20/90 = 22%；③④ 8/90 = 9%（有重叠，按处置类计数）。
+- SELF-INFLICTED：RB13-01/02/05 与 FACT-P2-01/02 共 5 条源于上一轮 A+D 修复批（约 5.6%），低于 R13 的 27%。
+- 零新增计数：0 轮（R14 非零）。
+
+### R14 §7 状态
+
+- **NOT CONVERGED**（零新增计数 0 轮）。进入 RB14 回读 + L6 meta；R15 继续全篇面板。
