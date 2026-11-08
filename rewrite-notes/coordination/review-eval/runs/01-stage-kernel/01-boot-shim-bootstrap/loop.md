@@ -1054,3 +1054,50 @@
 - 读者条目从 R19 的 53 条降到 48 条，但新发现仍集中在“同一事实多套编号/多套构造入口”的结构性重复；是否应做一次“权威表合并”而非逐条修，需 meta 判断。
 - D2 连续第三轮判 D1 NOT PASS；D1 已降为轻量版，是否停跑需 meta 给结论。
 - ② 项从 0 增到 3（F-R20-01..03），都是跨 crate 类型/所有权改造；是否阻塞 01 收敛按 review-evals §4.2 判。
+
+## R21 面板轮（2026-11-09，R20 meta 收口后；D1 停跑）
+
+### §0 基线
+
+- 冻结提交：`8c25e499cf731409522cc13e3a4b249f22549a24`
+- 文档：3390 行、sha256 `709bafe63a2e9b6792d530877f99537e3bba7503835664373c8418c0022db5d9`
+- 工作树：仅未跟踪 `prompt/resources/`
+- 面板：P-FACT、P-READER A/B/C、P-REFUTE、P-DESIGN D2；按 D-024 停跑 D1 全量设计，D2 直接审文档与现仓差异
+- Step 0：design 快照齐全；doc-code-map 46/46
+
+### R21 §1 面板
+
+- 角色：P-READER A/B/C、P-REFUTE、P-DESIGN D2；按 D-024 停跑 D1。P-FACT 两次派发均未落盘（MISSING），fact 面由 REFUTE-03/05 与六门抽查替代。
+- 原始输出：`panel/round21/`（reader-a 20、reader-b 20、reader-c 11、refute 7、design-d2 5）。
+
+### R21 §2 发现
+
+- 63 条；P1：16 条截断 off-by-one、`pg_alloc_page` 角色替换、EBS 循环普遍化；P2：UEFI arena 回收、M2 `checked_len` 夸大、分歧计数仍缺两条、测试路径假 `'static`、地址类型身份。
+
+### R21 §3 归因
+
+- ① 17；④ 42；② 3（D2-02/03/04 → F-R20-01/03/04）；③ 1（A-03 五条腿列举实为完整）。
+- re-litigation 0；adjacent 阻塞 0。
+
+### R21 §4 修复
+
+- 文档：§2.4.1.4 off-by-one；§3.7 EBS 两路/借用签名；§3.8 页表页/数据页分家；§4.9/§7.5 角色；§3.4.2 十条分歧；§4.7 arena 回收范围；§5.1 M2/M3/M6/M12/M16；§1.1 文本与缩写；§3.2/§3.4.1 测试路径口径。
+- 代码：`kernel_info` 增 memmap/reserved len 页对齐断言 + 负控（190）；UEFI `BootShim` 残留注释清理；`boot_params` 注释 ten。
+- 测试：minix-boot 190、kernel 860+8、三 QEMU 门 PASS。
+
+### R21 §5 复验
+
+- 六门全绿；宿主测试全绿；三 QEMU 门 PASS。RB21/meta R21 未跑（本轮未宣告收敛）。
+
+### R21 §6 指标
+
+发现 63；处置 ①17 / ②3 / ③1 / ④42 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+
+### R21 §7 状态
+
+`NOT CONVERGED`：G8 本轮新增 63 条；G9 的 ② F-R20-01/03/04 待 R22；G7 meta 未跑。R21 不宣告收敛，下一轮从 R22 继续。
+
+### R21 §8 给 meta-review 的不确定点
+
+- P-FACT 两次派发 MISSING，事实层覆盖由 REFUTE 与六门替代，需 meta 判断是否可接受。
+- 63 条中 42 条为读者体验；结构重复（多套计数/权威表）仍未收敛，可能需要一次“权威表合并”而非逐条修。

@@ -38,3 +38,13 @@
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（六处跨度加法 checked_add）
 - 成本: agent 7 / token 未采集 / 耗时 约 40 分钟（面板 + 修复 + 三门）
 - 回读: RB20 判 NOT PASS（LSR 释义/八条未同步等 2 P2 + 5 P3），补修后 minix-boot 189、三门回绿；meta R20 待跑
+
+## R21
+
+- 发现总数: 63（READER-A 20；READER-B 20；READER-C 11；REFUTE 7；DESIGN-D2 5；P-FACT MISSING）
+- 处置: ① 17 / ② 3 / ③ 1 / ④ 42 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 6 / token 未采集 / 耗时 约 50 分钟
+- 回读: RB21/meta R21 未跑（NOT CONVERGED）

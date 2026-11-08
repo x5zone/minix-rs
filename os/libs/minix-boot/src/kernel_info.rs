@@ -382,6 +382,11 @@ impl KernelInfo {
                 "KernelInfo: memmap[{}] base {:#x} is not page-aligned",
                 i, r.base.0
             );
+            assert!(
+                r.len % 0x1000 == 0,
+                "KernelInfo: memmap[{}] length {:#x} is not page-aligned",
+                i, r.len
+            );
         }
         for (i, r) in self.reserved_regions.iter().enumerate() {
             r.base.0
@@ -392,6 +397,11 @@ impl KernelInfo {
                 r.base.0 % 0x1000 == 0,
                 "KernelInfo: reserved_regions[{}] base {:#x} is not page-aligned",
                 i, r.base.0
+            );
+            assert!(
+                r.len % 0x1000 == 0,
+                "KernelInfo: reserved_regions[{}] length {:#x} is not page-aligned",
+                i, r.len
             );
         }
 
@@ -841,6 +851,19 @@ mod tests {
         ];
         let mut info = make_valid_info();
         info.boot_modules = &OVERLAP;
+        info.validate();
+    }
+
+    #[test]
+    #[should_panic(expected = "length 0x1001 is not page-aligned")]
+    fn test_validate_rejects_unaligned_memmap_len() {
+        static UNALIGNED: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(0x1000),
+            len: 0x1001,
+        }];
+        let mut info = make_valid_info();
+        info.memmap = &UNALIGNED;
+        info.reserved_regions = &[];
         info.validate();
     }
 

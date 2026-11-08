@@ -1,8 +1,10 @@
 //! UEFI-specific boot helpers.
 //!
-//! Implements the `BootShim` trait for UEFI firmware. Firmware-specific
-//! concerns live here; the actual kernel/module loading code is generic
-//! and lives in [`crate::loader`].
+//! Provides the production UEFI entry `prepare_and_enter_kernel_image` and
+//! UEFI helper library. It does **not** implement `BootShim`: that trait's
+//! only production implementation is the U-Boot shim. Firmware-specific
+//! concerns live here; the generic kernel/module loading code lives in
+//! [`crate::loader`].
 //!
 //! Responsibilities of this module:
 //! - Wrap UEFI BootServices (memory map, page allocation, exit).
@@ -295,7 +297,7 @@ fn collect_param_buf_into(out: &mut [u8; minix_boot::PARAM_BUF_CAP]) -> minix_bo
     minix_boot::normalize_param_buf(&input, None, out)
 }
 
-/// UEFI implementation of `BootShim`.
+/// UEFI helper surface (not a `BootShim` implementation).
 ///
 /// Uses UEFI BootServices to discover memory, allocate pages, load kernel
 /// and boot modules from the ESP, then exits boot services before handing
