@@ -238,10 +238,12 @@ pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr
 /// [`load_kernel_with_loader`], which calls `compute_kernel_layout` before
 /// this function; direct callers must uphold the same precondition.
 ///
-/// Overlap detection: this function now rejects ELFs whose PT_LOAD
-/// segments overlap in physical memory. Without this, a buggy or
-/// maliciously crafted ELF with overlapping LMA would silently have
-/// later segments overwrite earlier ones, with no error to the caller.
+/// Overlap detection: this function rejects ELFs whose PT_LOAD segments
+/// overlap in physical memory, and panics when any segment's file-byte range
+/// overlaps any segment's destination span (the copy/BSS zero-fill would
+/// otherwise corrupt the source buffer mid-load). Without this, a buggy or
+/// maliciously crafted ELF would silently overwrite earlier segments or the
+/// heap buffer it is read from.
 pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), minix_elf::ElfError> {
     let iter = minix_elf::segment_iter(elf_data)?;
     let segments: Vec<_> = iter.collect();
@@ -282,9 +284,15 @@ fn first_source_destination_overlap(
     segments: &[minix_elf::LoadSegment],
 ) -> Option<(usize, usize)> {
     for (dst_idx, dst) in segments.iter().enumerate() {
+        if dst.memsz == 0 {
+            continue;
+        }
         let d_lo = dst.paddr;
         let d_hi = dst.paddr.saturating_add(dst.memsz);
         for (src_idx, src) in segments.iter().enumerate() {
+            if src.filesz == 0 {
+                continue;
+            }
             let s_lo = elf_base.saturating_add(src.offset);
             let s_hi = s_lo.saturating_add(src.filesz);
             if s_lo < d_hi && d_lo < s_hi {
@@ -792,6 +800,25 @@ mod tests {
         assert_eq!(
             first_source_destination_overlap(0x2ff000, &[seg0, seg1]),
             Some((1, 0))
+        );
+    }
+
+    #[test]
+    fn test_first_source_destination_overlap_ignores_zero_length() {
+        // A zero-length source or destination cannot write or read bytes; it
+        // must not be reported as an overlap even when its address sits
+        // inside another range.
+        let mut empty_src = phdr(0x1000, 0x100);
+        empty_src.filesz = 0;
+        let mut empty_dst = phdr(0x1000, 0);
+        empty_dst.filesz = 0;
+        assert_eq!(
+            first_source_destination_overlap(0x1000, &[empty_src.clone()]),
+            None
+        );
+        assert_eq!(
+            first_source_destination_overlap(0x1000, &[empty_dst.clone()]),
+            None
         );
     }
 

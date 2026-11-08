@@ -95,10 +95,9 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 ///   it is not a handoff field.)
 pub const VM_BOOT_HANDOFF_VERSION: u32 = 8;
 
-/// Maximum kernel identity-window entries the handoff page carries
-/// (version 6). The UEFI memory map's non-conventional RAM
-/// typically occupies a few dozen descriptors; the kernel merges
-/// adjacent ranges before publishing and fails fast on overflow.
+/// Reserved capacity of the retired version-6 identity-window field (64).
+/// Since PD-22 step 2 final the producer writes zero entries and VM rejects a
+/// non-empty field; the constant only keeps the v8 struct size stable.
 pub const VM_BOOT_HANDOFF_MAX_IDENT: usize = 64;
 
 /// Maximum free-region entries the handoff page carries.

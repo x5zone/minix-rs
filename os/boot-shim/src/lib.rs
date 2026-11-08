@@ -134,9 +134,11 @@ pub mod loader;
 #[cfg(test)]
 pub(crate) mod test_serial {
     //! Process-wide lock for tests that touch the one-shot DTB preflight
-    //! globals (`dtb_copy`). Cargo runs one binary's tests on multiple
-    //! threads by default; without this, `ResetOnDrop` in one test races the
-    //! preflight state of another.
+    //! globals (`dtb_copy`). This workspace pins `RUST_TEST_THREADS=1`
+    //! (`.cargo/config.toml`), so the default path is already serial; the
+    //! lock keeps those globals coherent when a caller explicitly overrides
+    //! the thread count. It does not make allocation-counter assertions
+    //! parallel-safe.
 
     use std::sync::{Mutex, MutexGuard};
 

@@ -36,3 +36,4 @@
 
 | R8-FU-01 | DESIGN-R8-02 | 全局 allocator 守卫：pool 分配拒绝内核跨度 | 已登记 | 最小修复仅覆盖 ELF 段 src/dest 断言；完整守卫留 code-excellence |
 | R8-FU-02 | DESIGN-R8-01 | a2 通道真机取证（打印 a2 原值 + 命中日志） | 待用户 | 当前统一为“备用通道、仓内无生产者”；补证据或删通道由用户裁决 |
+| R10-FU-01 | FACT-R10-01 | CI 增加 kernel-image riscv64 双 feature 构建作业 | 已登记 | 当前 qemu-tests CI 不构建 kernel-image，导致 F07 的 `.0` 编译错误长期未拦 |

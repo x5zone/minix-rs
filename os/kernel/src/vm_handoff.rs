@@ -679,9 +679,6 @@ pub(crate) fn build_identity_windows() -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MA
     // `map_kernel` + the bootstrap-root install); this function now
     // produces an empty list, and the v6 handoff's identity field is
     // written empty (VM rejects a non-empty field — check-and-reject).
-    // The function body is retained as the historical documentation of the
-    // former candidate assembly (see git history for the pre-retirement
-    // implementation).
     ([HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT], 0)
 }
 

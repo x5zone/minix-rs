@@ -399,6 +399,7 @@ mod tests {
 
     #[test]
     fn ordinary_reservation_requires_boot_services_data() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x3000, ExpectedEfiType::BootServicesData)];
         assert_eq!(
             check(&claims, &[desc(ty::BOOT_SERVICES_DATA, 0x1000, 4)], None),
@@ -410,6 +411,7 @@ mod tests {
     /// same reservation is not — the coverage formula must reject it.
     #[test]
     fn first_page_correct_and_later_page_wrong_is_rejected() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x4000, ExpectedEfiType::BootServicesData)];
         assert_eq!(
             check(
@@ -432,6 +434,7 @@ mod tests {
     /// the reservation completely.
     #[test]
     fn consecutive_compatible_descriptors_cover_the_claim() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x5000, ExpectedEfiType::BootServicesData)];
         assert_eq!(
             check(
@@ -449,6 +452,7 @@ mod tests {
     /// Form 3: a middle page of the reservation carries an incompatible type.
     #[test]
     fn incompatible_middle_page_is_reported_with_its_type() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x5000, ExpectedEfiType::BootServicesData)];
         assert_eq!(
             check(
@@ -470,6 +474,7 @@ mod tests {
 
     #[test]
     fn uncovered_page_is_rejected() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x4000, ExpectedEfiType::Reserved)];
         assert_eq!(
             check(&claims, &[desc(ty::RESERVED, 0x2000, 1)], None),
@@ -484,6 +489,7 @@ mod tests {
     /// MRB's `should`, but only for pages the DTB object actually occupies.
     #[test]
     fn dtb_pages_accept_acpi_reclaim_for_the_reservation_type() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x3000, ExpectedEfiType::Reserved)];
         let descs = [desc(ty::ACPI_RECLAIM, 0x2000, 1)];
         assert_eq!(
@@ -505,6 +511,7 @@ mod tests {
     /// per page, not per claim.
     #[test]
     fn the_dtb_exception_applies_only_to_the_intersecting_page() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x5000, ExpectedEfiType::Reserved)];
         let descs = [
             desc(ty::RESERVED, 0x2000, 1),
@@ -524,6 +531,7 @@ mod tests {
 
     #[test]
     fn overflowing_descriptor_geometry_is_ignored() {
+        let _serial = crate::test_serial::lock();
         let claims = [claim(0x2000, 0x3000, ExpectedEfiType::Reserved)];
         let skewed = desc(ty::MMIO, 0x2000, u64::MAX);
         assert_eq!(
@@ -537,6 +545,7 @@ mod tests {
 
     #[test]
     fn claims_are_clipped_to_the_memory_panorama() {
+        let _serial = crate::test_serial::lock();
         let records = [
             record(SourceKind::ReservedOrdinary, 0x2000, 0x4000),
             record(SourceKind::ReservedNoMap, 0x9000_0000, 0x9000_1000),
@@ -556,6 +565,7 @@ mod tests {
 
     #[test]
     fn mrb_and_no_map_both_require_the_reserved_type() {
+        let _serial = crate::test_serial::lock();
         let records = [
             record(SourceKind::MrbEntry, 0x2000, 0x3000),
             record(SourceKind::ReservedNoMap, 0x3000, 0x4000),
@@ -575,6 +585,7 @@ mod tests {
 
     #[test]
     fn claim_capacity_overflow_is_a_refusal() {
+        let _serial = crate::test_serial::lock();
         let records = [record(SourceKind::MrbEntry, 0x2000, 0x3000)];
         let panorama = [MemoryRegion {
             base: PhysBytes(0x1000),
@@ -592,6 +603,7 @@ mod tests {
     /// check for this DTB.
     #[test]
     fn capture_claims_surfaces_the_capacity_overflow() {
+        let _serial = crate::test_serial::lock();
         let records = [record(SourceKind::MrbEntry, 0x2000, 0x3000); MAX_CLAIMS + 1];
         let panorama = [MemoryRegion {
             base: PhysBytes(0x1000),
@@ -609,6 +621,7 @@ mod tests {
     /// bytes. Only capacity has no later gate.
     #[test]
     fn capture_leaves_container_failures_to_the_later_gate() {
+        let _serial = crate::test_serial::lock();
         static BAD: [u8; 64] = [0u8; 64];
         assert_eq!(capture(&BAD, (0, 64)), Ok(()));
         assert_eq!(records().len(), 0);

@@ -382,7 +382,7 @@
 ## §5 复验
 
 - 五门：锚点 102/102、style 0、ref 全解、承载门、doc-code-map 46/46。
-- 测试：boot-shim 130+5（8 线程亦全绿）/ minix-boot 176 / kernel 857；kernel-image 0 错。
+- 测试：boot-shim 131+5（默认单线程；`.cargo/config.toml` 固定 RUST_TEST_THREADS=1，显式并行不承诺）/ minix-boot 176 / kernel 857；kernel-image 默认与 riscv64 双 feature 构建 0 错。
 - trace：`--panel-dir round9` PASS（38 条、零孤儿）。
 
 ## §6 指标
@@ -394,3 +394,43 @@
 
 - **NOT CONVERGED → R10**：零未修 P0/P1；新增 38 条仍非零，未达 G8。
 - 趋势：R8 42 → R9 38，降幅小；但 P0 级从 1 升到 6（全部来自 R8 注释改写），说明"修复批回读"仍是主矛盾。R10 d2 第一任务继续是回读 R9 批。
+
+# Round 10
+
+## §0 基线
+
+- HEAD：`a327032d6`；文档 3212 行；配置同 R4-R9。
+
+## §1 面板
+
+- fact：8 条（P0 1 / P2 2 / P3 5）。
+- reader：17 条（P2 8 / P3 9）。
+- d2：R9 修复批 10 条（P2 4 / P3 6）。
+
+## §2-§3 发现与归因
+
+- 35 条全部 ①。P0 是 riscv64 `kernel-image` 编译失败（`bootface.rs` 对 u64 取 `.0`，由 D01-F07 引入、CI 无 kernel-image build 作业兜底）；已修并双 feature 构建验证。
+- 第二组矛盾：R9 的 test_serial 锁只覆盖 preflight 全局态，分配计数测试在显式并线下仍红；结论改为“本仓默认单线程，并行不承诺”，撤销台账/loop 的"8 线程全绿"假证据。
+- U-Boot shim 在跨镜像叙述里的系统性错位（F01/F04/F05/F06/F09）按同一张腿表统一改写。
+
+## §4 修复
+
+- 收尾提交：35 条全修。源码：bootface u64、in_memmap 死码、零长谓词与负控、config 单线程声明、resv_claims 锁、MAX_IDENT/ptr::copy/rustdoc/注释。
+- 文档：接线权威表补 aarch64 直核、§4.1 导航表腿归属、arena 两腿来源、六入口定义、PML4 边界、调用嵌套、§7.3 清单、计数 131/120。
+- R9 迟到件 FACT-R9-11（§3.8 引文漏段）同批补省略标记。
+
+## §5 复验
+
+- 五门：锚点 102/102、style 0、ref 全解、承载门、doc-code-map 48/48。
+- 测试：boot-shim 131+5（默认单线程）/ minix-boot 176 / kernel 857；kernel-image 默认与 riscv64 两个 feature 构建 0 错。
+- trace：`--panel-dir round10` PASS（35 条、零孤儿）。
+
+## §6 指标
+
+- 35 条；处置 ① 35 / ② 0 / ③ 0 / ④ 0 / ⑤ 0。
+- P0 1（编译失败）、P2 14、P3 20；SELF-INFLICTED 约 10 条（R9/R8 修复批的注释与计数残留）。
+
+## §7 状态
+
+- **NOT CONVERGED → R11**：零未修 P0/P1；新增 35 条仍非零。
+- 趋势：42 → 38 → 35，缓慢下降；P0 由编译门兜住（本轮首次）。R11 d2 继续回读 R10 批，fact 增加 riscv64 构建复核。

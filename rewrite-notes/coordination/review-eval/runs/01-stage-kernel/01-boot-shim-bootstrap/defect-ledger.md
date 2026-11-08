@@ -493,7 +493,7 @@
 |---|---|---|---|---|---|---|---|
 | FACT-R9-01 | panel-r9 | P1 | 文档/store_kernel_info 称只有两个调用点 | ① | 已修：改三个调用点（arch_boot_finish/resume_additive/kmain），resume 与 kmain 同址；lib.rs 注释恢复 kmain re-store | 文档 §4.5；lib.rs | 五门+测试 |
 | FACT-R9-02 | panel-r9 | P2 | 文档/§2.8 改 R/M 后残留 N+1 | ① | 已修：末行改 M+1；R 定义补 AVAILABLE | 文档 §2.8 | 五门 |
-| FACT-R9-03 | panel-r9 | P2 | 测试/boot-shim 并行下 preflight 全局态互污染 | ① | 已修：新增 `test_serial` 进程锁；`ResetOnDrop` 持锁，ebs_pair 其余 14 个测试补锁；8 线程 129 全绿 | os/boot-shim/src/{lib,dtb_copy,ebs_pair}.rs | 测试 8 线程 |
+| FACT-R9-03 | panel-r9 | P2 | 测试/boot-shim 并行下 preflight 全局态互污染 | ①（设计选择） | 已修：新增 `test_serial` 锁；`.cargo/config.toml` 固定 RUST_TEST_THREADS=1 并删“可并行覆盖”邀请；分配计数测试不承诺并行（R10-06 纠正） | os/boot-shim/src/{lib,dtb_copy,ebs_pair}.rs；os/.cargo/config.toml | 默认单线程 131 绿 |
 | FACT-R9-04 | panel-r9 | P2 | 源码注释/kern_ident 只保留 v6/v7 与 v8 结构相反 | ① | 已修：vm_handoff 注释改"v8 仍占布局、恒空、v6/v7 精确拒绝"；boot.rs 字段注释同步 | vm_handoff.rs；types/boot.rs | 编译绿 |
 | FACT-R9-05 | panel-r9 | P3 | 文档/§4.3 逐字段补零与 builder 新契约不符 | ① | 已修：改"路径 + 一个 NUL；其余 .bss 零初值；越界由 assert 拦下" | 文档 §4.3 | 五门 |
 | READER-R9-F01 | panel-r9 | P2 | 文档/§1.2 .bss 装载证据指向 §2.8 | ① | 已修：拆两指向（§2.8 推演、§2.4 装载证据） | 文档 §1.2 | 五门 |
@@ -529,3 +529,46 @@
 | FACT-R9-08 | panel-r9 | P2 | 代码/loader 断言只查同段，跨段源破坏仍可过 | ① | 已修（与 DESIGN-R9-01 同批）：全源×全目标谓词 + 跨段宿主测试 | loader.rs | 测试绿 |
 | FACT-R9-09 | panel-r9 | P3 | 源码注释/页取整理由与新测试注释互相矛盾 | ① | 已修：函数注释与调用点注释改"页对齐前提下取整不增加判别力，属防御性写法" | uefi_helpers.rs | 编译绿 |
 | FACT-R9-10 | panel-r9 | P3 | 脚本头注仍把 a2 说成 QEMU 直载通道 | ① | 已修：改"直核面备用 a2，仓内无生产者；QEMU/OpenSBI 只约定 a0/a1" | test-kernel-image-riscv64-bootface.sh | 五门 |
+| FACT-R9-11 | panel-r9 | P3 | 文档/§3.8 pt_alloc 引文漏段未标省略 | ① | 已修：register 与 alloc_pt_page 两处补显式省略标记，写明被省略的 write-once 与不变量说明 | 文档 §3.8 | 五门 |
+
+# Round 10（基线 a327032d6）
+
+## R10 面板明细（32 条）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-R10-01 | panel-r10 | P0 | 代码/riscv64 kernel-image 编译失败（bootface 对 u64 取 .0） | ① | 已修：删两处 `.0`；两个 riscv feature 构建均绿；CI 补 build 作业登记 follow-up | bootface.rs；cargo build riscv64 x2 | 构建绿 |
+| FACT-R10-02 | panel-r10 | P3 | 文档/uboot_main 行号锚点 395→403 | ① | 已修：两处改 403，并用函数名锚点 | 文档 §3.1/§3.2 | 五门 |
+| FACT-R10-03 | panel-r10 | P3 | 代码/in_memmap 成死函数，magic SAFETY 仍指旧函数 | ① | 已修：删 in_memmap；SAFETY 改 in_memmap_range(pa,8) | bootface_common.rs | 编译绿 |
+| FACT-R10-04 | panel-r10 | P3 | 文档/mem_high_phys 引文位置标 §2.4，实际 §2.6.1 | ① | 已修：指针改 §2.6.1 | 文档 §2.8 | 五门 |
+| FACT-R10-05 | panel-r10 | P3 | 代码/重叠谓词对零长段误报 | ① | 已修：filesz/memsz 为 0 跳过；补零长负控测试 | loader.rs | 测试绿 |
+| READER-R10-F01 | panel-r10 | P2 | 文档/enter_kernel_image_v1 被写成 UEFI 专属 | ① | 已修：改"跨镜像 v1 发送，三条腿" | 文档 §3.7 | 五门 |
+| READER-R10-F02 | panel-r10 | P2 | 文档/接线权威表缺 aarch64 直核面 | ① | 已修：表补一行（测试通道、SMP 判据） | 文档 §3.1 | 五门 |
+| READER-R10-F03 | panel-r10 | P2 | 文档/§2.4.1 结算把 §2.5 的切除写成已完成 | ① | 已修：改"将在 §2.5 切掉（本节尚未切）" | 文档 §2.4.1 | 五门 |
+| READER-R10-F04 | panel-r10 | P2 | 文档/arena 由 UEFI 分配覆盖 U-Boot shim | ① | 已修：拆两腿（UEFI allocate_pages；U-Boot shim bump_alloc_pages，含在整段扣除） | 文档 §3.7 | 五门 |
+| READER-R10-F05 | panel-r10 | P2 | 文档/§4.1 导航表把 U-Boot shim 归进直核面 | ① | 已修：列名改直核面，三处单元格注明 U-Boot shim 走 v1/接收 | 文档 §4.1 | 五门 |
+| READER-R10-F06 | panel-r10 | P2 | 文档/§3.1 用辅助 prepare_boot 充当生产证据 | ① | 已修：引文头标"辅助形态无生产调用方"；1311 行加"辅助形态下"限定 | 文档 §3.1 | 五门 |
+| READER-R10-F07 | panel-r10 | P2 | 文档/"内核镜像恒在表内"与 LOADER_* 分流冲突 | ① | 已修：改"UEFI 腿在保留表；DTB 腿在可用表" | 文档 §3.4 | 五门 |
+| READER-R10-F08 | panel-r10 | P2 | 文档/"六入口"两套划分 | ① | 已修：定义按最外层壳（3 arch_boot + 3 decode；aarch64 内层 high_half） | 文档 §5.3 | 五门 |
+| READER-R10-F09 | panel-r10 | P3 | 文档/§6.1 v1 路标位置全写 uefi_helpers | ① | 已修：位置列拆 uefi_helpers（两条 UEFI）/uboot_main（shim） | 文档 §6.1 | 五门 |
+| READER-R10-F10 | panel-r10 | P3 | 文档/§2.8 "逐条如下"只列三条 | ① | 已修：改"其余三条只给指向" | 文档 §2.8 | 五门 |
+| READER-R10-F11 | panel-r10 | P3 | 文档/PML4 256 至 512 越界 | ① | 已修：改 256..511（半开 256..512，256 项） | 文档 §4.7 | 五门 |
+| READER-R10-F12 | panel-r10 | P3 | 文档/§2.4.1 调用序箭头与嵌套关系相反 | ① | 已修：改嵌套表述（arch_init in cstart in kmain；smp_init 晚于 cstart） | 文档 §2.4.1 | 五门 |
+| READER-R10-F13 | panel-r10 | P3 | 文档/"11 个模块"章内无出处 | ① | 已修：改"12 个里除 VM 外 11 个（名单见 §4.3）" | 文档 §2.4.2 | 五门 |
+| READER-R10-F14 | panel-r10 | P3 | 文档/§7.3 源码清单漏 ebs_map/ebs_pair 等 | ① | 已修：补 ebs_map/ebs_pair/boot_params/memmap_source/fdt_layout | 文档 §7.3 | 五门 |
+| READER-R10-F15 | panel-r10 | P3 | 文档/分配上界"同一常量" vs 两界取小 | ① | 已修：改"以 BOOT_IDENTITY_MAP_END 为一界，再与 DM 窗口取小" | 文档 §4.6 | 五门 |
+| READER-R10-F16 | panel-r10 | P3 | 文档/"六个真机脚本"无枚举 | ① | 已修：改"五条门链加 aarch64 直核面这六个组合" | 文档 §3.7 | 五门 |
+| READER-R10-F17 | panel-r10 | P3 | 文档/Step1 可达失败只列 AllocationFailed 论据不足 | ① | 已修：补其余四类不可达判据（地址常量/只映射/尺寸快照/自造标志） | 文档 §4.6 | 五门 |
+| DESIGN-R10-01 | panel-r10 | P2 | 测试/串行锁与进程级分配计数测试不匹配；覆盖档仍红 | ①（设计选择） | 已修：`.cargo/config.toml` 固定 RUST_TEST_THREADS=1 并删"可覆盖"邀请；文档命令即默认串行；并行覆盖不承诺 | os/.cargo/config.toml | 默认 131 绿 |
+| DESIGN-R10-02 | panel-r10 | P2 | 源码+文档/ptr::copy 理由指向被守卫跳过的同址分支 | ① | 已修：改"为部分重叠保留；精确同址由守卫跳过"；expect one-shot 文案改 KERNEL_INFO store failed | lib.rs；文档 §4.5 | 五门+测试 |
+| DESIGN-R10-03 | panel-r10 | P2 | 源码注释/(extra_argc,extra_argv) 记到内核镜像入口 | ① | 已修：改"U-Boot shim 的入口是另一个二进制"；本镜像接收 a0=arena PA 不变 | kernel-image/src/main.rs | 编译绿 |
+| DESIGN-R10-04 | panel-r10 | P2 | 代码/in_memmap 死码与 SAFETY 旧函数 | ① | 已修（与 FACT-R10-03 同批） | bootface_common.rs | 编译绿 |
+| DESIGN-R10-05 | panel-r10 | P3 | 代码/零长段误报且只有正控 | ① | 已修（与 FACT-R10-05 同批）：跳过零长 + 负控 | loader.rs | 测试绿 |
+| DESIGN-R10-06 | panel-r10 | P3 | 源码注释/load_segments rustdoc 未记新 panic | ① | 已修：rustdoc 补源/目标重叠 panic 面 | loader.rs | 编译绿 |
+| DESIGN-R10-07 | panel-r10 | P3 | 代码/resv_claims 同形 static mut 无串行 | ① | 已修：13 个测试统一加 test_serial 锁 | resv_claims.rs | 测试绿 |
+| DESIGN-R10-08 | panel-r10 | P3 | 源码注释/MAX_IDENT 文档仍讲 v6 现在时 | ① | 已修：改"退休字段容量，v8 恒空" | types/boot.rs | 编译绿 |
+| DESIGN-R10-09 | panel-r10 | P3 | 源码注释/bootface bootstrap=(0,0)、vm_handoff body retained 陈旧 | ① | 已修：两处改现状（字段已删；空体无历史保留句） | bootface.rs；vm_handoff.rs | 编译绿 |
+| DESIGN-R10-10 | panel-r10 | P3 | 文档/模块装载后检查三处两种强度 | ① | 已修：统一"防御性复审；可达失败在 alloc_module_pages 拷贝前" | 文档 §4.2/§5.1 M16 | 五门 |
+| FACT-R10-06 | panel-r10 | P2 | 测试/R9 声称 8 线程全绿不可复现；锁只覆盖 preflight 全局态 | ①（设计选择） | 已修：撤销“并行安全”声明；config 固定单线程并禁止覆盖；test_serial 注释限定为“显式覆盖时保护 preflight 全局态” | lib.rs；.cargo/config.toml；loop/台账 | 默认 131 绿 |
+| FACT-R10-07 | panel-r10 | P3 | 文档/§3.6 否决表理由仍写被迫实现 map_huge | ① | 已修：理由收窄为“所有 Paging 实现声明支持大页；map_huge 不在搬移范围” | 文档 §3.6 | 五门 |
+| FACT-R10-08 | panel-r10 | P3 | 源码注释/.bss 清零称碰 rdi/rax/rcx，实际 rdi/rcx | ① | 已修：注释改 rdi/rcx | kernel-image/src/main.rs | 编译绿 |

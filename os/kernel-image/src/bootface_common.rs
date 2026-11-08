@@ -64,17 +64,6 @@ pub(crate) fn be_cell(bytes: &[u8]) -> Option<u64> {
     }
 }
 
-/// Is `pa` inside any memmap range? (Guard: never dereference a hartid or
-/// other garbage value.)
-pub(crate) fn in_memmap(memmap: &[MemoryRegion], pa: u64) -> bool {
-    memmap.iter().any(|r| {
-        r.base
-            .0
-            .checked_add(r.len as u64)
-            .is_some_and(|end| pa >= r.base.0 && pa < end)
-    })
-}
-
 /// Is the whole `[pa, pa + len)` inside one memmap range? `checked_add` keeps
 /// the guard total for any input: overflow is rejected as out of range.
 pub(crate) fn in_memmap_range(memmap: &[MemoryRegion], pa: u64, len: u64) -> bool {
@@ -98,8 +87,8 @@ pub(crate) fn table_magic_ok(pa: u64) -> bool {
     if pa % 8 != 0 {
         return false;
     }
-    // SAFETY: the caller guarantees `in_memmap(pa)` — the address is inside
-    // DTB-reported DRAM and readable; one aligned u64 read; boot is
+    // SAFETY: the caller guarantees `in_memmap_range(pa, 8)` — the whole
+    // aligned u64 lies inside DTB-reported DRAM and is readable; boot is
     // single-hart.
     unsafe {
         (pa as *const u64).read_volatile() == boot_shim::opensbi_helpers::boot_file_table_magic()

@@ -9,8 +9,9 @@
 # RUST_TEST_THREADS=1 is the defense-in-depth guarantee that no global-state
 # test is missed.
 #
-# To override for a specific run (e.g. benchmarking test speed):
-#   RUST_TEST_THREADS=4 cargo test
+# Do not override this for correctness runs: several boot-shim tests assert
+# process-wide allocation counters and the one-shot DTB preflight state, so a
+# multi-thread run can fail for scheduling reasons alone.
 #
 # See:
 #   - kernel/src/smp.rs BKL_TEST_LOCK

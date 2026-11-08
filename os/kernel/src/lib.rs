@@ -225,7 +225,7 @@ where
     kernel_info.check_boot_postconditions();
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
+        .expect("arch_boot: KERNEL_INFO store failed");
     register_panic_diagnostic();
     arch_boot_impl::<A>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity and
@@ -349,7 +349,7 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
     // boot-services pool, which we re-home here so they survive past the PE.
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
-        .expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
+        .expect("arch_boot_resume_v1: KERNEL_INFO store failed");
     register_panic_diagnostic();
     // Step 4: add direct-map coverage to the *active* bootstrap root (additive;
     // `establish_boot_dm` wraps `root_page` and only writes new PTEs).
@@ -1148,9 +1148,10 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         // VA reads zeros (real machine: res=127 zeroed=127 at
         // build_identity_windows). Land the bytes in kernel .bss — mapped
         // for the whole run — and hand the global copy that pointer.
-        // `ptr::copy` (not `copy_nonoverlapping`) because kmain re-stores
-        // the global copy itself: src and dst are then the same range, and
-        // the equality guard below skips that copy.
+        // `ptr::copy` (not `copy_nonoverlapping`) because a partially
+        // overlapping source would be UB under the latter; the exact
+        // same-address case (kmain re-stores the global copy) is skipped by
+        // the equality guard below.
         let store = &mut *crate::globals::RESERVED_REGION_STORE.get();
         let src = kernel_info.reserved_regions;
         assert!(

@@ -31,8 +31,9 @@
 //!    primary, checking the in-table name against the expected literal is
 //!    secondary).
 //! 3. **real arch_boot gate**: build `KernelInfo` (reusing the boot-shim
-//!    library's `build_kernel_info` lane: Sv39 `user_sp`, `bootstrap=(0,0)`
-//!    no-op reclaim semantics), then call `minix_kernel::arch_boot` — which
+//!    library's `build_kernel_info` lane: Sv39 `user_sp`; the old bootstrap
+//!    reclaim interval was deleted with D01-F03), then call
+//!    `minix_kernel::arch_boot` — which
 //!    runs through `validate()` and `jump_to_kmain`; that is the half none of
 //!    the three in-repo carriers (hello-boot / test-rt-birth etc.) ever
 //!    exercised.
@@ -401,8 +402,8 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
         n += 1;
         slot.add(n).write(minix_boot::startup_record(
             n as u16,
-            bump_pool_base().0,
-            bump_end_bound().0,
+            bump_pool_base(),
+            bump_end_bound(),
         ));
         n += 1;
         core::slice::from_raw_parts(slot, n)
