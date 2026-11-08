@@ -1974,7 +1974,7 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 // 节选（略去行号引用；其中 C 对应关系一行按 §2.4.2 的指针改述，见上文），os/kernel/src/vm_handoff.rs 的扣除区间表头与 bump 行。
 //! | Range | Source |
 //! |-------|--------|
-//! | kernel image | `KernelInfo.kern_phys_base()/kern_size()` |
+//! | kernel image | `KernelInfo.kern_phys_base()/kern_size()`（UEFI 腿在 D01-R13 A 之后已预订为 `LOADER_DATA`，本行对 free list 退化为空操作；自引导腿仍是实际扣除） |
 //! | VM self root page | `arch_boot` parameter (= handoff `root_paddr`) |
 //! | boot bump region | `boot_alloc::boot_alloc_region()` (whole range —
 //!   consumed pages and remainder are both kernel-reserved) |
