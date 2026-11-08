@@ -571,3 +571,13 @@
 - **Q1 检测模式**：`verification-before-completion` 的 Gate Function（"claim 前必须在**本条消息内**跑完整命令并读输出"）正好接住本轮 B-29（拆段只报"行数变多"）与 B-30（转述未复验）。→ 已记入 `BLIND-SPOTS.md` B-29/B-30 的期望探测器列。
 - **Q2 流程改进**：`retro` 的"机械违规先建确定性检查，规则只留给判断项"支持把 C-08（渲染层读数）做成 fix-guard 的机械项而非新规则；`writing-for-agents` 的"指针措辞决定触发率"支持把 `review-panel.md` 的冻结基线条款写成命令级指针（`ReviewedDocumentRevision` 字段）而不是叙述。→ 记入 `WORKFLOW-VERSIONS.md` 候选表 C-08/C-09/C-10。
 - **Q3 立即可用**：下一轮修复批照单执行三条——①结构性修复附 pandoc/解析层读数；②"文档指控源码注释"句子当场重跑 grep；③每条 hunk 必须有台账行（这是 `retro` 的"guardrail 优先"与 B-28 的直接组合）。→ 已写入本节，R14 修复批执行。
+
+## R14
+
+### §0 基线
+
+- 冻结：HEAD `d58206530`；文档 sha256 `f6be48e30b49f096e743551e1efe8876d2ec102ac6e29751bb25533ab53ca076`，3254 行；记录在 `panel/round14/BASELINE.txt`。
+- **冻结漂移**：首次冻结写的是 `a752e3790`（sha256 `c56318ac…`）。该次派发的三个面板子 agent 在交付前中止，`round14/` 下无任何报告；随后 R13 fact 终版 9 条落库为 `d58206530`。按用户裁决重启面板，并在当前 HEAD 重新冻结，旧冻结作废（同 B-33 类：基线未随修复推进，已按"重新冻结 + 漂移记录"处理，不把旧基线结论混入）。
+- 本轮角色：P-FACT、P-DESIGN D2、P-READER A/B/C 分三角色（不再合并 A+B，针对 campaign meta 的 B-35）。
+- 材料隔离：三角色拿同一份冻结文档；reader 只拿正文与读者画像；fact 拿 C 源与 46 个关联代码文件；d2 只读 §3/§4 与现有实现。面板期间不改文档、不改 `os/`。
+- 重启记录：首轮派发中 reader A、reader B 因 provider 拒绝失败（未产出报告），已按用户"可自行重启任务"授权原提示词重派。

@@ -162,6 +162,45 @@ static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
     base: PhysBytes(0),
     len: 0,
 }; DTB_MEMMAP_MAX];
+
+/// One collection, in caller-owned storage.
+///
+/// `collect_inner` commits this into the process-wide tables; `collect_owned`
+/// keeps it on the caller's stack. Keeping the two apart is what lets a boot
+/// face have one `'static` consumer (the `KernelInfo` builder) and several
+/// short-lived ones (the post-EBS cross-checks) without a second write to the
+/// static tables.
+struct DtbArrays {
+    free: [MemoryRegion; DTB_MEMMAP_MAX],
+    free_n: usize,
+    reserved: [MemoryRegion; DTB_MEMMAP_MAX],
+    reserved_n: usize,
+    sources: [SourceRecord; DTB_SOURCE_MAX],
+    sources_n: usize,
+    panorama: [MemoryRegion; DTB_MEMMAP_MAX],
+    panorama_n: usize,
+}
+
+/// Owned projection tables returned by [`DtbMemoryMap::collect_owned`].
+pub struct DtbMapOwned {
+    free: [MemoryRegion; DTB_MEMMAP_MAX],
+    free_len: usize,
+    reserved: [MemoryRegion; DTB_MEMMAP_MAX],
+    reserved_len: usize,
+}
+
+impl DtbMapOwned {
+    /// Conventional (allocatable) spans, in the order the collector built them.
+    pub fn free(&self) -> &[MemoryRegion] {
+        &self.free[..self.free_len]
+    }
+
+    /// Reachable-but-never-reallocated spans.
+    pub fn reserved(&self) -> &[MemoryRegion] {
+        &self.reserved[..self.reserved_len]
+    }
+}
+
 /// One-shot guard: production boots must call `collect_inner` at most once.
 /// Tests may re-enter (multiple test cases share the static), so the guard
 /// is compiled out under `cfg(test)`.
@@ -924,35 +963,7 @@ impl DtbMemoryMap<'_> {
         self.collect_inner()
     }
 
-    fn collect_inner(
-        &self,
-    ) -> Result<
-        (
-            &'static [MemoryRegion],
-            &'static [MemoryRegion],
-            &'static [SourceRecord],
-        ),
-        DtbMemMapError,
-    > {
-        // One-shot guard: a second collect on the same boot face overwrites
-        // the `'static` slices returned by the first call, which is UB under
-        // the Rust aliasing model. Tests may re-enter (shared static across
-        // test cases), so the guard is compiled out under `cfg(test)`.
-        #[cfg(not(test))]
-        {
-            assert!(
-                !DTB_COLLECT_TAKEN.swap(true, Ordering::AcqRel),
-                "DtbMemoryMap::collect re-entered: the 'static slices from the \
-                 first call would be invalidated by a second write"
-            );
-        }
-        // Single-hart boot face: written once, then read-only; a re-entry that
-        // zeroes the counters (a second collect on the same face) merely
-        // overwrites the same cells.
-        DTB_FREE_N.store(0, Ordering::Relaxed);
-        DTB_RESERVED_N.store(0, Ordering::Relaxed);
-        DTB_SOURCES_N.store(0, Ordering::Relaxed);
-        DTB_PANORAMA_N.store(0, Ordering::Relaxed);
+    fn collect_arrays(&self) -> Result<DtbArrays, DtbMemMapError> {
         let mut sources = [SourceRecord {
             id: 0,
             raw_type: 0,
@@ -1309,36 +1320,96 @@ impl DtbMemoryMap<'_> {
             }
         }
 
+        Ok(DtbArrays {
+            free,
+            free_n,
+            reserved,
+            reserved_n,
+            sources,
+            sources_n,
+            panorama: memory,
+            panorama_n: memory_n,
+        })
+    }
+
+    /// Copy an owned snapshot into the process-wide tables and hand out
+    /// `'static` slices. This is the one-shot form: the tables are written
+    /// once per boot face and must not be written again while a holder of the
+    /// slices is alive.
+    fn commit_static(&self, arrays: DtbArrays) -> (&'static [MemoryRegion], &'static [MemoryRegion], &'static [SourceRecord]) {
         // SAFETY: single-hart boot face; the statics are written here once and
         // only read afterwards through the returned `'static` slices.
         unsafe {
-            DTB_FREE = free;
-            DTB_RESERVED = reserved;
-            DTB_SOURCES = sources;
-            DTB_PANORAMA = memory;
+            DTB_FREE = arrays.free;
+            DTB_RESERVED = arrays.reserved;
+            DTB_SOURCES = arrays.sources;
+            DTB_PANORAMA = arrays.panorama;
         }
-        DTB_FREE_N.store(free_n, Ordering::Release);
-        DTB_RESERVED_N.store(reserved_n, Ordering::Release);
-        DTB_SOURCES_N.store(sources_n, Ordering::Release);
-        DTB_PANORAMA_N.store(memory_n, Ordering::Release);
+        DTB_FREE_N.store(arrays.free_n, Ordering::Release);
+        DTB_RESERVED_N.store(arrays.reserved_n, Ordering::Release);
+        DTB_SOURCES_N.store(arrays.sources_n, Ordering::Release);
+        DTB_PANORAMA_N.store(arrays.panorama_n, Ordering::Release);
         // SAFETY: all three static arrays hold `n` initialised entries; on the
         // single-hart boot face the read only happens after the write.
-        Ok(unsafe {
+        unsafe {
             (
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(DTB_FREE) as *const MemoryRegion,
-                    free_n,
+                    arrays.free_n,
                 ),
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(DTB_RESERVED) as *const MemoryRegion,
-                    reserved_n,
+                    arrays.reserved_n,
                 ),
                 core::slice::from_raw_parts(
                     core::ptr::addr_of!(DTB_SOURCES) as *const SourceRecord,
-                    sources_n,
+                    arrays.sources_n,
                 ),
             )
+        }
+    }
+
+    /// `collect` for a second consumer on the same boot face.
+    ///
+    /// The `'static` entry points write the process-wide tables and therefore
+    /// admit exactly one consumer; the post-`ExitBootServices` cross-checks
+    /// (the configuration-table DTB and the `/dumpdtb.dtb` panorama) are a
+    /// second and third consumer. They use this owned form, whose arrays live
+    /// on the caller's stack and never alias the static tables.
+    pub fn collect_owned(&self) -> Result<DtbMapOwned, DtbMemMapError> {
+        let arrays = self.collect_arrays()?;
+        Ok(DtbMapOwned {
+            free: arrays.free,
+            free_len: arrays.free_n,
+            reserved: arrays.reserved,
+            reserved_len: arrays.reserved_n,
         })
+    }
+
+    fn collect_inner(
+        &self,
+    ) -> Result<
+        (
+            &'static [MemoryRegion],
+            &'static [MemoryRegion],
+            &'static [SourceRecord],
+        ),
+        DtbMemMapError,
+    > {
+        // One-shot guard: a second `'static` collect on the same boot face
+        // overwrites the slices returned by the first call, which is UB under
+        // the Rust aliasing model. Tests may re-enter (shared static across
+        // test cases), so the guard is compiled out under `cfg(test)`.
+        #[cfg(not(test))]
+        {
+            assert!(
+                !DTB_COLLECT_TAKEN.swap(true, Ordering::AcqRel),
+                "DtbMemoryMap::collect re-entered: the 'static slices from the \
+                 first call would be invalidated by a second write"
+            );
+        }
+        let arrays = self.collect_arrays()?;
+        Ok(self.commit_static(arrays))
     }
 
     /// `/reserved-memory`, distinguishing "absent" from "present but
@@ -1726,6 +1797,30 @@ mod tests {
         let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
         assert_eq!(conv.len(), 2);
         assert!(res.is_empty(), "no-map ranges stay out of both tables");
+    }
+
+    #[test]
+    fn collect_owned_carries_the_same_projections_without_touching_the_statics() {
+        // A boot face has one `'static` consumer and several short-lived
+        // cross-checks. The owned form must produce the same projection while
+        // leaving the `'static` tables intact for the first consumer.
+        let blob = build_fdt(&[(0x8000_0000, 0x4000)], false);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+        let (first_free, first_reserved) =
+            DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        assert_eq!(first_free.len(), 1);
+
+        let owned = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("map fits");
+        assert_eq!(owned.free().len(), first_free.len());
+        assert_eq!(owned.reserved().len(), first_reserved.len());
+        assert_eq!(
+            (owned.free()[0].base.0, owned.free()[0].len),
+            (first_free[0].base.0, first_free[0].len)
+        );
+        // The static slice still reads the first collection's values.
+        assert_eq!((first_free[0].base.0, first_free[0].len), (0x8000_0000, 0x4000));
     }
 
     #[test]

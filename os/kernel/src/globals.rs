@@ -286,12 +286,11 @@ pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCe
 /// store in `arch_boot`/`kmain` deep-copies the bytes here (kernel `.bss`,
 /// mapped for the whole run) and repoints the slice.
 ///
-/// 256 = the `MAX_CANDIDATES` of
-/// `vm_handoff::build_identity_windows` (one constant referenced twice: this
-/// constant is the single authority for that coupling, the vm_handoff side
-/// refers to it, which removes at compile time the drift surface of two
-/// hand-aligned 256s); overflow fails fast in
-/// `store_kernel_info`, never truncates.
+/// 256 = the 127 reserved windows observed on the real machine
+/// (2026-09-21: `ident-windows res=127`), doubled and rounded up to the next
+/// power of two. It is an independent capacity: the VM handoff's identity
+/// limit is `VM_BOOT_HANDOFF_MAX_IDENT = 64`, and the two are not the same
+/// constant. Overflow fails fast in `store_kernel_info`, never truncates.
 pub(crate) const RESERVED_REGION_STORE_LEN: usize = 256;
 
 pub(crate) static RESERVED_REGION_STORE: SyncUnsafeCell<

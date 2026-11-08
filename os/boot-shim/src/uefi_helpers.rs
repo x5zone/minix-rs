@@ -336,8 +336,9 @@ impl BootShim for UefiBootShim {
         // and re-labels the allocated pages as LOADER_DATA in the live map,
         // so a conventional-only snapshot excludes those ranges. The
         // **kernel image** is no longer one of those ranges as of D01-R13
-        // (A): `reserve_kernel_span` claims its LMA span as LOADER_DATA before
-        // any other allocation, so it too is absent from the conventional
+        // (A): `reserve_kernel_span` claims its LMA span as LOADER_DATA once
+        // the ELF layout is known — before the root page, bump region and
+        // module pages — so it too is absent from the conventional
         // snapshot, and its classification lands in `ReservedMapped`. The
         // kernel-side deduction of `kern_phys_base..+kern_size` therefore
         // becomes a no-op on UEFI legs (it still matters on the self-boot
@@ -977,18 +978,18 @@ fn raw_serial_hex(value: u64) {
 /// Print the memmap-source line (and enforce the DTB bound gate) after EBS.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn report_memmap_source(dtb_blob: Option<&[u8]>, conventional: &[MemoryRegion]) {
-    // The collector's storage is process-wide: parse at the point of use so a
-    // later collection (the configuration-table DTB, the claims capture)
-    // cannot silently rewrite the panorama this line reports.
-    let dtb_free = dtb_blob.map(|blob| {
+    // The collector's `'static` storage is claimed once per boot face (the
+    // claims capture inside the pairing loop); this post-EBS check is a later
+    // consumer, so it takes the owned form and never writes those tables.
+    let dtb_map = dtb_blob.map(|blob| {
         let fdt = fdt::Fdt::new(blob).expect("boot-shim: dumpdtb.dtb 不可解析");
         minix_boot::DtbMemoryMap::new(&fdt, 0)
-            .collect()
+            .collect_owned()
             .expect("boot-shim: DTB memmap rejected — halting")
-            .0
     });
-    match dtb_free {
-        Some(dtb) => {
+    match dtb_map {
+        Some(map) => {
+            let dtb = map.free();
             if let Err((base, len)) = minix_boot::dtb_covers_conventional(dtb, conventional) {
                 crate::raw_serial("boot-shim: conventional range outside DTB /memory: base=");
                 raw_serial_hex(base);
@@ -1054,10 +1055,12 @@ fn cross_validate_config_dtb(sources: &[PlatformDescSource], conventional: &[Mem
     let fdt = fdt::Fdt::new(bytes).unwrap_or_else(|e| {
         panic!("boot-shim: configuration-table DTB unparseable ({e:?}) — halting")
     });
-    let (dtb_free, _reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0)
-        .collect()
+    // Owned form: the post-EBS cross-check is a second consumer on the same
+    // boot face, so it must not write the one-shot `'static` tables.
+    let map = minix_boot::DtbMemoryMap::new(&fdt, 0)
+        .collect_owned()
         .expect("boot-shim: configuration-table DTB memmap rejected — halting");
-    match minix_boot::dtb_covers_conventional(dtb_free, conventional) {
+    match minix_boot::dtb_covers_conventional(map.free(), conventional) {
         Ok(()) => {
             crate::raw_serial("boot-shim: platform DTB cross-validated against the UEFI map\r\n")
         }
@@ -1110,9 +1113,15 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
          not mounted the FAT partition, or the build did not embed the \
          kernel binary into the ESP image",
     );
-    // A: claim the span before any allocation. The ELF bytes stay in a pool
-    // buffer; the copy itself happens after root/bump so that the bootstrap
-    // pages are not overwritten by the image.
+    // A: claim the span before the root/bump and module allocations, so those
+    // pages cannot land under the image. The ELF read itself is an earlier
+    // pool allocation (its `Vec` comes from the UEFI allocator) and cannot be
+    // ordered after the claim — the layout is only known once the bytes are
+    // read. If that buffer happens to sit inside the span, `AllocateAddress`
+    // refuses the overlapping claim and the boot halts here, so the failure
+    // is fail-closed rather than a silent overlap. The copy itself happens
+    // after root/bump so that the bootstrap pages are not overwritten by the
+    // image.
     reserve_kernel_span(&layout);
     record_kernel_span(&layout);
     let root_page = alloc_root_page();
@@ -1544,7 +1553,6 @@ mod tests {
 
     // ── kernel-image overlap guards (D01-R7 D2-02) ──
 
-    #[test]
     /// The reservation claim must be page-aligned at both ends. A non-page-
     /// aligned span is a linker-script bug that would make `AllocateAddress`
     /// reject (or over-claim) the reservation, so the guard has to fire.
@@ -1562,6 +1570,7 @@ mod tests {
         reserve_kernel_span(&kern);
     }
 
+    #[test]
     fn test_assert_range_clear_of_kernel_accepts_disjoint_and_abutting() {
         // Abutting before, abutting after, and fully disjoint.
         assert_range_clear_of_kernel("range", 0x1000, 0x2000, 0x2000, 0x3000);

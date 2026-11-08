@@ -1568,8 +1568,9 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // Phase F: bsp_finish_booting.
     // C reclaims the unpaged-kernel section here (`add_memmap(&kinfo,
     // bootstrap_start, bootstrap_len)`); the Rust port runs higher-half from
-    // the first instruction, so `KernelInfo::validate` requires
-    // `bootstrap_len == 0` and there is nothing to reclaim.
+    // the first instruction and the two fields were removed from
+    // `KernelInfo` (D01-F03), so there is nothing to reclaim and no field to
+    // validate.
 
     // D7: bsp_finish_booting() -> ! — never returns.
     // bsp_finish_booting takes &mut ProcessTable + &mut SmpState to
