@@ -21,12 +21,14 @@ use crate::platform::PlatformDescSource;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelInfo {
-    /// Free physical memory regions — **not** pre-filtered (D01-R5 D2-14):
-    /// the kernel image (direct physical writes to its LMAs) is always in
-    /// this list; module blobs are in it on the U-Boot / direct-core legs
-    /// (bump pages) but absent on UEFI legs (`LOADER_DATA`). Each consumer
-    /// deducts the occupied ranges it must not touch (see the `memmap()`
-    /// accessor for the per-consumer split).
+    /// Free physical memory regions — **not** pre-filtered (D01-R5 D2-14).
+    /// What lands here per leg: the kernel image is in this list on the
+    /// self-boot legs (its LMAs are carved from conventional RAM) and absent
+    /// on UEFI legs, where `reserve_kernel_span` claims its span as
+    /// `LOADER_DATA` before any other allocation (D01-R13 A). Module blobs are
+    /// in it on the U-Boot / direct-core legs (bump pages) but absent on UEFI
+    /// legs (`LOADER_DATA`). Each consumer deducts the occupied ranges it must
+    /// not touch (see the `memmap()` accessor for the per-consumer split).
     /// C: kinfo.memmap[] — pg_utils.c add_memmap/cut_memmap
     pub memmap: &'static [MemoryRegion],
 

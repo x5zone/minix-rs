@@ -662,3 +662,33 @@
 | DESIGN-R12-10 | panel-r12 | P3 | 源码注释/aarch64 place_modules 称有 alignment gate | ① | 已修：改"straight copy + full-width memmap gate" | bootface_a64.rs | 编译绿 |
 | DESIGN-R12-11 | panel-r12 | P3 | 源码注释/行号引用漂移 | ①（残留） | 部分修：store 两处已符号化；main/loader 三处列入 STUCK-REPORT | 源码 | 编译绿 |
 | DESIGN-R12-12 | panel-r12 | P3 | 文档/root/bump "prepare_boot 时还没分配" | ① | 已修：改"prepare_boot 内部分配，序列化时记录" | 文档 §3.4 | 五门 |
+
+# Round 13（基线 62d443ce3，冻结基线 sha256 9a782e0c）
+
+> 面板配置变更（用户裁决 A+C 后的第一轮）：面板期间**冻结**被审文档与代码（`panel/round13/BASELINE.txt`），三角色审查同一组输入。本轮 fact 面板在 3 小时内未落盘（两次催写无效），记为"未交付"，由随后的 RB13 回读轮的 fact 角色补齐事实面。
+
+## R13 面板明细（已交付 9 条：d2 4 + reader 5）
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| DESIGN-R13-01 | panel-r13 | P2 | 文档/§4.2 省略段把 root/bump 重查说成在 12 模块行之后 | ① | 已修：改"record_kernel_span 与 root/bump 重查都在 12 模块行之前；assert_modules 在其后" | 文档 §4.2；uefi_helpers.rs 1063/1066/1073/1080/1085 | 五门 |
+| DESIGN-R13-02 | panel-r13 | P2 | 文档/§4.6 转述源码 SUM 注释已过期（源码 R12 已改对） | ① | 已修：删"源码写成除非 SUM=1"，改"源码 NOTE 已同口径" | 文档 §4.6；lib.rs 935-938 | 五门 |
+| DESIGN-R13-03 | panel-r13 | P3 | 文档/§3.4 括注把 arena 分配点归到 prepare_boot | ① | 已修：root/bump 在 prepare_boot 内、arena 在 uboot_main 序列化点 | 文档 §3.4；uboot_main 403/414 | 五门 |
+| DESIGN-R13-04 | panel-r13 | P3 | 源码注释/bootface 把 store_kernel_info 时点写成 satp 之后 | ① | 已修：改"satp 写入之前、建根之前" | bootface.rs 501-508 | 编译绿 |
+| READER-R13-F01 | panel-r13 | P2 | 文档/三处"长段拆分"只插软换行，渲染仍是同段 | ① | 已修：在真拆点插空行；pandoc `<p>` 计数 5/4 复验 | 文档 644/1057/1867 | 渲染复验 |
+| READER-R13-F02 | panel-r13 | P2 | 文档/Step1 两条目被吞并成惰性续行，计数与两处指针失准 | ① | 已修：改"六条交代（前两条判据）"，三条非列表段落升为条目，指针改"第五条" | 文档 §4.6；`<li>` 计数 6 | 渲染复验 |
+| READER-R13-F03 | panel-r13 | P3 | 文档/拆段留下三处双空行 | ① | 已修：全篇空行归一，末尾多余空行去掉 | 全篇 | 结构复验 |
+| READER-R13-F04 | panel-r13 | P3 | 文档/"见上一段"指向错段 | ① | 已修：改"见上文'靠的是两点'那一段" | 文档 §2.4.1 | 五门 |
+| READER-R13-F05 | panel-r13 | P3 | 文档/三处手写行号作判据锚 | ① | 已修：三处改符号锚（cstart/arch_init、smp_init、add_memmap 归还点、`///` 注记） | 文档 §2.4.1/§2.4.2/§4.7 | 五门 |
+
+## R13 前置实施：内核 LMA 预订 A+D（用户裁决 2026-11-08）
+
+| 项 | 内容 | 证据 | 复验 |
+|---|---|---|---|
+| A：`AllocateAddress` 预订 | 新增 `reserve_kernel_span`（`uefi_helpers.rs`）：内核 ELF 读入后、任何分配前，把整段 `[kern_phys_base, +kern_size)` 以 `AllocateType::Address` + `LOADER_DATA` 预订；非页对齐或固件拒绝即 halt（不降级） | x86：`kernel span reserved [0x200000, 0x600000)`；aarch64：`[0x40200000, 0x40600000)` | 两条 UEFI 门链 PASS |
+| D：装载顺序 | 两条 UEFI 入口改为"读 ELF → 预订跨度 → 分配 root/bump → 拷贝段 → 载模块"；`record_kernel_span` 紧随拷贝 | `test-shim-bootmarks-x86.sh` 5/5 标记；`test-shim-bootmarks-aarch64.sh` 3/3 | 门链 PASS |
+| 模型同步 | `kernel_info.rs` 的 memmap 字段文档、`uefi_helpers.rs` 的快照注释、文档 §3.4 memmap 行与 §4.2 步骤 2 全部改为"UEFI 腿内核在 `ReservedMapped`、不在可用表；内核侧扣除退化为空操作" | 文档五门 | 五门绿 |
+| 守卫测试 | `test_reserve_kernel_span_rejects_unaligned_span`（should_panic）→ boot-shim 133 | `cargo test -p boot-shim --features test-all --lib` 133 | 测试绿 |
+| 残余防线 | `alloc_module_pages` 拷贝前拒绝、模块/root/bump/arena 复查保留为第二道 | 代码保留 | 测试绿 |
+
+> 闭案判据（合同第七/第 2 项）：四道验证 = ①两条 UEFI 门链 PASS（已得）②单元测试 133（已得）③kernel 857 / minix-boot 176（已得）④文档五门（已得）。A+D 至此可写"已实施、已验证"。

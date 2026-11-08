@@ -46,6 +46,48 @@ fn record_kernel_span(kern: &loader::KernelLoadResult) {
     KERNEL_SPAN_LO.store(kern.kern_phys_base.0, Ordering::Relaxed);
 }
 
+/// Reserve the kernel image's physical LMA span with the firmware (D01-R13 A).
+///
+/// The kernel segments are written straight to their ELF physical LMAs, which
+/// firmware does not know are occupied: they stay `EfiConventionalMemory` and
+/// `AllocatePages`/`AllocatePool` may hand them out later. Claiming the whole
+/// span as `LOADER_DATA` via `AllocateType::Address` removes that hazard at
+/// the source: no firmware allocation of any kind can return a page inside
+/// the kernel. The claim must cover the exact `[kern_phys_base, +kern_size)`
+/// span, be page-aligned at both ends, and happen **before** anything is
+/// allocated or copied.
+///
+/// The reservation cannot be folded into the classification: a `LOADER_DATA`
+/// descriptor is `ReservedMapped`, so the kernel image leaves the
+/// conventional list instead of being deducted from it by `classify`. That
+/// changes the memmap's shape (documented in §3.4/§4.2), and the kernel-side
+/// deduction of `kern_phys_base..+kern_size` becomes a no-op on UEFI legs
+/// while remaining correct on the self-boot legs.
+fn reserve_kernel_span(kern: &loader::KernelLoadResult) {
+    let base = kern.kern_phys_base.0;
+    let size = kern.kern_size;
+    assert!(size > 0, "boot-shim: kernel image span is empty");
+    assert!(
+        base % PAGE_SIZE == 0 && size % PAGE_SIZE == 0,
+        "boot-shim: kernel image span [0x{base:x}, +0x{size:x}) is not page-aligned — refusing to reserve"
+    );
+    let pages = (size / PAGE_SIZE) as usize;
+    boot::allocate_pages(
+        AllocateType::Address(base),
+        MemoryType::LOADER_DATA,
+        pages,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "boot-shim: firmware refused to reserve the kernel image span [0x{base:x}, +0x{size:x}) ({pages} pages): {e:?} — halting (the span would stay allocatable otherwise)"
+        )
+    });
+    uefi::println!(
+        "boot-shim: kernel span reserved [0x{base:x}, 0x{:x}) as LOADER_DATA",
+        base.saturating_add(size)
+    );
+}
+
 /// Assert that a physical range does not overlap the loaded kernel image
 /// (D01-R7 D2-02). `kern_lo`/`kern_hi` are the kernel's physical span.
 fn assert_range_clear_of_kernel(label: &str, lo: u64, hi: u64, kern_lo: u64, kern_hi: u64) {
@@ -263,9 +305,26 @@ impl BootShim for UefiBootShim {
         // whole machine appear silent. ConOut is confirmed to land on the QEMU
         // serial port (the firmware countdown text is visible).
         uefi::println!("boot-shim: prepare_boot enter");
+        // Same A+D order as the production entry: kernel ELF first, claim its
+        // LMA span, then allocate root/bump, then copy the segments.
+        let file_loader = UefiFileLoader;
+        uefi::println!("boot-shim: loading kernel.elf from ESP…");
+        let elf_data = file_loader.read_required(loader::KERNEL_PATH);
+        let layout = loader::compute_kernel_layout(&elf_data).expect(
+            "Failed to load kernel ELF from ESP — check that the ESP contains \
+             /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
+             not mounted the FAT partition, or the build did not embed the \
+             kernel binary into the ESP image",
+        );
+        reserve_kernel_span(&layout);
+        record_kernel_span(&layout);
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
         uefi::println!("boot-shim: root+bump allocated");
+        // SAFETY: the span is reserved above and identity-mapped.
+        unsafe { loader::load_segments_into_phys_memory(&elf_data) }
+            .expect("boot-shim: kernel segment copy failed after reserving its span");
+        let kern = layout;
         // Ordering correction: the snapshot must come after **all** UEFI
         // LOADER_DATA allocations — the root page, the bump region, and the
         // 12 boot modules (second-layer lesson: the original correction only
@@ -275,27 +334,19 @@ impl BootShim for UefiBootShim {
         // producing fragments that directly exceeded the VmBootRegions
         // capacity). UEFI satisfies allocations from conventional free memory
         // and re-labels the allocated pages as LOADER_DATA in the live map,
-        // so a conventional-only snapshot excludes those ranges. One range is
-        // NOT covered by this mechanism (D01-R6): the **kernel image** is
-        // written straight to its ELF physical LMAs — conventional RAM — so
-        // it still appears in the snapshot; the kernel's A2 classification
-        // deducts it (`classify` pushes kern_phys_base..+kern_size). The PMM
-        // map handed to the kernel is the final pre-EBS free state with the
-        // kernel range cut at classification (matching C: kinfo.memmap is the
-        // cut version).
+        // so a conventional-only snapshot excludes those ranges. The
+        // **kernel image** is no longer one of those ranges as of D01-R13
+        // (A): `reserve_kernel_span` claims its LMA span as LOADER_DATA before
+        // any other allocation, so it too is absent from the conventional
+        // snapshot, and its classification lands in `ReservedMapped`. The
+        // kernel-side deduction of `kern_phys_base..+kern_size` therefore
+        // becomes a no-op on UEFI legs (it still matters on the self-boot
+        // legs, where the pool is carved from conventional RAM).
         // The file accesses between the uefi::println calls depend on
         // SimpleFileSystem and must complete before ExitBootServices; the
         // snapshot only depends on the live map, so it goes last.
         // Both file accesses must happen before ExitBootServices because
         // they depend on the SimpleFileSystem protocol.
-        let file_loader = UefiFileLoader;
-        uefi::println!("boot-shim: loading kernel.elf from ESP…");
-        let kern = loader::load_kernel_with_loader(&file_loader).expect(
-            "Failed to load kernel ELF from ESP — check that the ESP contains \
-             /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
-             not mounted the FAT partition, or the build did not embed the \
-             kernel binary into the ESP image",
-        );
         uefi::println!("boot-shim: kernel loaded (entry staged)");
         record_kernel_span(&kern);
         // Same-family check (D01-R7): root/bump were allocated before the
@@ -1042,25 +1093,40 @@ fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<&'static [u8]> {
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
-    let root_page = alloc_root_page();
-    let (bump_base, bump_end) = alloc_bump_region(bump_pages);
-    // The in-shim kernel copy uses this region for the bootstrap root pages;
-    // the same triple travels in the envelope so the image resumes it.
-    minix_kernel::boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
-
+    // D (D01-R13): read the kernel ELF first, then claim its LMA span with
+    // firmware, and only then allocate root/bump. Every later firmware
+    // allocation (modules, arena, pool buffers) is thereby unable to return a
+    // page inside the kernel image, and no bootstrap page can be placed under
+    // the kernel's copy destination either.
     let file_loader = UefiFileLoader;
     #[cfg(target_arch = "aarch64")]
     let dumpdtb_blob = load_dumpdtb_blob(&file_loader);
     #[cfg(target_arch = "x86_64")]
     let dumpdtb_blob: Option<&'static [u8]> = None;
-    let kern = loader::load_kernel_with_loader(&file_loader).expect(
-        "Failed to load kernel ELF from ESP — check that the ESP contains \
+    let elf_data = file_loader.read_required(loader::KERNEL_PATH);
+    let layout = loader::compute_kernel_layout(&elf_data).expect(
+        "Failed to parse kernel ELF from ESP — check that the ESP contains \
          /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
          not mounted the FAT partition, or the build did not embed the \
          kernel binary into the ESP image",
     );
+    // A: claim the span before any allocation. The ELF bytes stay in a pool
+    // buffer; the copy itself happens after root/bump so that the bootstrap
+    // pages are not overwritten by the image.
+    reserve_kernel_span(&layout);
+    record_kernel_span(&layout);
+    let root_page = alloc_root_page();
+    let (bump_base, bump_end) = alloc_bump_region(bump_pages);
+    // The in-shim kernel copy uses this region for the bootstrap root pages;
+    // the same triple travels in the envelope so the image resumes it.
+    minix_kernel::boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
+    // SAFETY: the span is reserved above and identity-mapped; the source and
+    // destination overlap gate runs inside.
+    unsafe { loader::load_segments_into_phys_memory(&elf_data) }.expect(
+        "Failed to copy kernel ELF segments into their LMAs — the span was reserved but the copy range is malformed",
+    );
+    let kern = layout;
     uefi::println!("boot-shim: kernel loaded (entry staged)");
-    record_kernel_span(&kern);
     // Same-family check (D01-R7): root/bump were allocated before the kernel
     // copy, so they must not sit inside the kernel's LMA span.
     assert_range_clear_of_kernel(
@@ -1479,6 +1545,23 @@ mod tests {
     // ── kernel-image overlap guards (D01-R7 D2-02) ──
 
     #[test]
+    /// The reservation claim must be page-aligned at both ends. A non-page-
+    /// aligned span is a linker-script bug that would make `AllocateAddress`
+    /// reject (or over-claim) the reservation, so the guard has to fire.
+    #[test]
+    #[should_panic(expected = "is not page-aligned")]
+    fn test_reserve_kernel_span_rejects_unaligned_span() {
+        // Pure check: no firmware call is reached because the assert fires
+        // first. Span [0x200001, +0x400000).
+        let kern = loader::KernelLoadResult {
+            kern_phys_base: PhysBytes(0x200001),
+            kern_virt_base: minix_types::VirBytes(0xFFFF_8000_0000_0000),
+            kern_size: 0x40_0000,
+            entry_point: 0,
+        };
+        reserve_kernel_span(&kern);
+    }
+
     fn test_assert_range_clear_of_kernel_accepts_disjoint_and_abutting() {
         // Abutting before, abutting after, and fully disjoint.
         assert_range_clear_of_kernel("range", 0x1000, 0x2000, 0x2000, 0x3000);
