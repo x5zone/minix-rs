@@ -91,7 +91,7 @@ pub use arch::cache_sync::{
     CacheSyncArch, MockCacheSyncArch, mock_last_range, mock_reset_cache_sync, mock_sync_calls,
 };
 
-pub use paging_ext::{PagingWithId, HugePages};
+pub use paging_ext::HugePages;
 pub use direct_map::DirectMapArch;
 pub use arch::boot_dm::{
     BootDmInstaller, DmPagePolicy, DmPolicyError, DmRange, DmWindow, install_boot_dm_range,
@@ -136,9 +136,6 @@ pub use arch::current::{Arch, CurrentArch};
 
 #[cfg(feature = "runtime-window")]
 pub use paging::mock::MockPaging;
-
-#[cfg(feature = "runtime-window")]
-pub use paging::mock::MockAsid;
 
 // ── CurrentPaging type alias ──
 //

@@ -1129,9 +1129,7 @@ impl Paging for AArch64Paging {
 impl HugePages for AArch64Paging {
     const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
     const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
-    const HUGE_PAGE_SHIFT: u32 = 30;
     const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
-    const PTE_HUGE_IDENTIFIER_BIT: u64 = 0;
 
     fn map_huge(
         &mut self,

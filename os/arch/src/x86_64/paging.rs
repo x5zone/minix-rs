@@ -1135,13 +1135,7 @@ fn probe_1gb_page_support() -> bool {
 impl HugePages for X86_64Paging {
     const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
     const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
-    const HUGE_PAGE_SHIFT: u32 = 30;
     const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
-    /// PS bit (bit 7) indicates a huge page at PDPT level (1GB) or PD level (2MB).
-    /// The same bit position is used for both sizes; the level determines the
-    /// actual page size.
-    const PTE_HUGE_IDENTIFIER_BIT: u64 = X64PteFlags::PS.bits();
-
     fn map_huge(
         &mut self,
         vaddr: VirBytes,

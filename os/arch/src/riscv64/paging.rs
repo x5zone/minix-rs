@@ -1124,12 +1124,10 @@ impl Paging for Riscv64Paging {
 impl HugePages for Riscv64Paging {
     const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
     const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
-    const HUGE_PAGE_SHIFT: u32 = 30;
     const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
     /// RISC-V Sv39 does not use a dedicated PTE flag to indicate huge pages;
     /// the page size is determined by which page table level the entry is at.
     /// This constant is 0 to satisfy the `HugePages` trait interface.
-    const PTE_HUGE_IDENTIFIER_BIT: u64 = 0;
 
     fn map_huge(
         &mut self,

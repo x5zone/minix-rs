@@ -774,7 +774,7 @@ pub fn map_kernel<P: Paging>(
 #[cfg(feature = "runtime-window")]
 pub mod mock {
     use super::*;
-    use crate::paging_ext::{PageSize, PagingWithId};
+    use crate::paging_ext::PageSize;
     use alloc::collections::BTreeMap;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -953,9 +953,7 @@ pub mod mock {
         const HUGE_PAGE_SIZES: &'static [PageSize] =
             &[PageSize::GIB_1, PageSize::MIB_2];
         const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
-        const HUGE_PAGE_SHIFT: u32 = 30;           // 1GB shift
         const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
-        const PTE_HUGE_IDENTIFIER_BIT: u64 = 0;    // Mock: no hardware identifier bit
 
         fn map_huge(
             &mut self,
@@ -996,34 +994,12 @@ pub mod mock {
         }
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct MockAsid(u32);
 
-    static MOCK_ASID_COUNTER: AtomicUsize = AtomicUsize::new(1);
-
-    impl PagingWithId for MockPaging {
-        type AddressSpaceId = MockAsid;
-
-        fn alloc_asid(&self) -> Result<MockAsid, PageTableError> {
-            let id = MOCK_ASID_COUNTER.fetch_add(1, Ordering::SeqCst);
-            Ok(MockAsid(id as u32))
-        }
-
-        fn free_asid(&self, _id: MockAsid) {}
-
-        unsafe fn switch_with_asid(&self, _id: MockAsid) { unsafe {
-            ACTIVE_MOCK_TABLE.store(self.id, Ordering::SeqCst);
-        }}
-
-        unsafe fn flush_tlb_asid(&self, _id: MockAsid) {}
-
-        unsafe fn flush_tlb_addr_asid(&self, _vaddr: VirBytes, _id: MockAsid) {}
-    }
 
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::paging_ext::{PagingWithId, HugePages};
+        use crate::paging_ext::HugePages;
 
         #[test]
         fn test_mock_paging_new() {
@@ -1356,31 +1332,6 @@ pub mod mock {
             // Verify after last data page is unmapped
             let unmapped = VirBytes(MOCK_KERNEL_DATA_VBASE + 8 * PAGE_SIZE);
             assert!(pt.query(unmapped).is_none());
-        }
-
-        #[test]
-        fn test_mock_alloc_asid_monotonic() {
-            let pt = MockPaging::new().unwrap();
-            let id1 = pt.alloc_asid().unwrap();
-            let id2 = pt.alloc_asid().unwrap();
-            let id3 = pt.alloc_asid().unwrap();
-
-            assert_ne!(id1, id2);
-            assert_ne!(id2, id3);
-            assert_ne!(id1, id3);
-
-            pt.free_asid(id2);
-            let id4 = pt.alloc_asid().unwrap();
-            assert_ne!(id4, id1);
-            assert_ne!(id4, id3);
-        }
-
-        #[test]
-        fn test_mock_switch_with_asid() {
-            let pt = MockPaging::new().unwrap();
-            let asid = pt.alloc_asid().unwrap();
-
-            unsafe { pt.switch_with_asid(asid); }
         }
 
         #[test]
