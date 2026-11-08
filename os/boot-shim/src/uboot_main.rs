@@ -9,7 +9,7 @@
 //! - **OpenSBI** is the S-mode runtime service provider this leg inherits
 //!   (U-Boot runs under it; the shim does not need SBI calls itself, but the
 //!   kernel may use them after takeover).
-//! - **This shim** consumes the table, prepares memory + `KernelInfo`,
+//! - **This shim** consumes the table, prepares memory + `BootReport`,
 //!   serializes the frozen `BootHandoffV1` arena and jumps into the
 //!   `kernel-uboot` receiver image.
 //!

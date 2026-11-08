@@ -344,7 +344,9 @@ impl KernelInfo {
                 );
                 for (j, prev) in self.boot_modules[..i].iter().enumerate() {
                     let pb = prev.start.0;
-                    let pe = pb + prev.len as u64;
+                    let pe = pb
+                        .checked_add(prev.len as u64)
+                        .expect("KernelInfo: boot module span overflows u64");
                     assert!(
                         me <= pb || mb >= pe,
                         "KernelInfo: boot_modules[{}] ({}) [0x{:x},0x{:x}) 与 boot_modules[{}] ({}) [0x{:x},0x{:x}) 相交",

@@ -982,7 +982,7 @@
 
 - 文档六门：anchor 108/108、doc-code-map 46/46、style 0 error、ref 通过、承载门通过、结构/链接 0 问题。
 - 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无新增 warning（仅 `minix-types` 既有 `unused_unsafe`）。
-- RB19 与 meta R19 在提交后执行；R18 的轨迹门修复已按轮次作用域运行。
+- RB19 独立回读判 **NOT PASS**（13 条 ① 中 12 条成立）：唯一阻断是 FACT-06 的 `protect.c` 区间被改成 358–361（实际 360–363）；另三条 P2/P3 注释/台账偏差。已补修（见 `defect-ledger.md` 的 RB19 段），补修后 `minix-boot` 188、六门全绿；meta R19 在补修提交后执行。
 
 ### R19 §6 指标
 

@@ -1382,3 +1382,17 @@
 | DESIGN-D2-01..10 | design-d2 | — | D1 方案否决 | ③ | D1 把 C 形态当现仓/另立表/校验和/最小窗上界/类型状态跨产物等，按现仓裁决与文档事实拒绝；不新增代码 | D2 条目内源码行号 | 不改 |
 | DESIGN-D2-11 | design-d2 | P1 | release 回绕 | ① | `KernelInfo::validate` 的 kernel/module 跨度改 `checked_add`，新增两条溢出负控 | `kernel_info.rs` 新增测试 | `minix-boot` 188 通过 |
 | DESIGN-D2-12 | design-d2 | P2 | 门表未同步 | ① | §4.4 门链/表补接收侧跨度复核行，写明 `checked_add` 与信任边界 | §4.4 | 文档与代码一致 |
+
+### R19 独立回读（RB19）与补修
+
+`panel/round19-rb.md` 判 NOT PASS（13 条 ① 中 12 条成立，唯一阻断是 FACT-06 行号改错；另三条 P2/P3 备注）。逐条：
+
+| RB19 项 | 严重度 | 处置 | 证据 |
+|---|---|---|---|
+| FACT-06 `protect.c` 区间 | P2 | ① 改 `360-363`（358 是注释收尾、359 空行；四步在 360–363） | `nl -ba protect.c` 逐行 |
+| `boot_params.rs` 注释仍写 three | P3 | ① 改 five observable divergences | 源码注释 |
+| `uboot_main.rs` 注释写 `KernelInfo` | P3 | ① 改 `BootReport`（该腿是 v1 发送腿） | 源码注释 |
+| §4.9 “截断规则”未随五条同步 | P3 | ① 改“整条丢弃规则（五条可观察分歧见 §3.4.2）” | §4.9 |
+| ledger READER-B-13 声称“§4.9 加仅直核”无文本 | P3 | ① 已补“（仅直核面）”，台账与文本一致 | §4.9 行 |
+| ledger FACT-02 证据行号 | P3 | ③ 复核 `grep -rn "DM ok, jumping to kmain"` 只命中 `os/kernel/src/lib.rs:396`；`main.rs:387` 不成立，保留原证据 | 全仓 grep |
+| `pe = pb + prev.len` 裸加 | P3 | ① 同改 `checked_add`，与 kernel span 一致 | `kernel_info.rs` |
