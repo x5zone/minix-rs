@@ -1632,7 +1632,7 @@ pub struct KernelInfo {
 C 的两个专用键在 Rust 侧的处置：`cttyline`/`cttybaud` 不再有专用字段，`normalize_param_buf` 把它们当普通 `key=value` 保留（能进 `param_buf`），但早期串口的选择由 `early_console` 的平台/编译配置固定，运行期不可调。
 
 
-**外部可见面的一条架构演进** `[ARCH: GET_KINFO 载荷收窄为 used-fields subset；其余字段由 GET_IMAGE/GET_MONPARAMS/GET_KMESSAGES 等分开提供]`：C 的 `GET_KINFO` 把整个 `struct kinfo` 拷给调用者（[`do_getinfo.c`](minix3/minix/kernel/system/do_getinfo.c) 的 `length = sizeof(struct kinfo)`）；Rust 只拷 48 字节的 `KinfoStruct`（[`kinfo.rs`](os/libs/minix-types/src/types/kinfo.rs)），只含 **Rust userland 经 `GET_KINFO` 实际消费**的七个字段——`freepde_start`、`user_sp`、`vir_kern_start`、`nr_procs`、`nr_tasks`、`release`、`version`。C 侧读取点不止两处：`dmp_kernel.c` 读四个字段，`procfs/root.c` 读 `nr_procs`/`nr_tasks`，`pci.c` 的 `complete_bars()` 读 `mem_high_phys`，VM 的 `main.c`/`pagetable.c`/`utility.c`/`region.c` 合计读 ≥11 个字段（`memmap`/`mmap_size`、`module_list`/`mods_with_kernel`/`kern_mod`、`boot_procs`、`user_sp`、`vir_kern_start`、`freepde_start`、三个 `_bytes` 等）。Rust 收窄的是**这条系统调用的载荷**，不是"C 只有这些读者"：C 侧其余字段由 `GET_IMAGE`/`GET_MONPARAMS`/`VmBootHandoff` 等替代通道承载，`mem_high_phys` 在 Rust 侧已删除。
+**外部可见面的一条架构演进** `[ARCH: GET_KINFO 载荷收窄为 used-fields subset；其余字段由 GET_IMAGE/GET_MONPARAMS/GET_KMESSAGES 等分开提供]`：C 的 `GET_KINFO` 把整个 `struct kinfo` 拷给调用者（[`do_getinfo.c`](minix3/minix/kernel/system/do_getinfo.c) 的 `length = sizeof(struct kinfo)`）；Rust 只拷 48 字节的 `KinfoStruct`（[`kinfo.rs`](os/libs/minix-types/src/types/kinfo.rs)），只含 **Rust userland 经 `GET_KINFO` 实际消费**的七个字段——`freepde_start`、`user_sp`、`vir_kern_start`、`nr_procs`、`nr_tasks`、`release`、`version`。C 侧至少四个活读取点：`dmp_kernel.c` 读四个字段，`procfs/root.c` 读 `nr_procs`/`nr_tasks`，`pci.c` 的 `complete_bars()` 读 `mem_high_phys`，VM 的 `main.c`/`pagetable.c`/`utility.c`/`region.c` 合计读 ≥11 个字段（`memmap`/`mmap_size`、`module_list`/`mods_with_kernel`/`kern_mod`、`boot_procs`、`user_sp`、`vir_kern_start`、`freepde_start`、三个 `_bytes` 等）。Rust 收窄的是**这条系统调用的载荷**，不是"C 只有这些读者"：C 侧其余字段由 `GET_IMAGE`/`GET_MONPARAMS`/`VmBootHandoff` 等替代通道承载，`mem_high_phys` 在 Rust 侧已删除。
 
 受影响的 C 字段——`memmap[]`/`mmap_size`、`module_list[]`/`boot_procs[]`、`param_buf`、`kmessages` 指针、`bootstrap_start/len` 等——不再经这条系统调用出现：模块表走 `GET_IMAGE`、`param_buf` 走 `GET_MONPARAMS`、`kmessages` 走 `GET_KMESSAGES`；内存账不走 GETINFO——它在 VM 启动前由内核写进固定地址的 boot handoff 页（`VmBootHandoff.free_regions` 加扣除记录），VM 在 `os/servers/vm/src/boot.rs` 读它。行为基线定为 Rust userland 的 `KinfoStruct`；按 C 全布局读被删字段的程序在本仓没有消费者。
 
@@ -1646,7 +1646,7 @@ C 的两个专用键在 Rust 侧的处置：`cttyline`/`cttybaud` 不再有专�
 - `platform_sources`：固件描述符来源列表（DTB / RSDP），按 boot-shim 的偏好排序，内核取第一个解析成功的源。解析归 `04-platform-discovery.md`，本篇只讲它怎么被放进结构体。
 - `param_buf`：对应 C 的 `char param_buf[MULTIBOOT_PARAM_BUF_SIZE]`（1024，`MULTIBOOT_PARAM_BUF_SIZE` 定义在 [`include/multiboot.h`](minix3/sys/arch/i386/include/multiboot.h)）。它是 2.3 那张参数表在 Rust 侧的落点，生产侧由 `minix_boot::normalize_param_buf` 统一规范化：输入按 NUL 或 ASCII 空白分词（UEFI 记录以 NUL 分隔，DTB `bootargs` 以空格分隔），逐条要求可打印 ASCII 的 `key=value`；非 ASCII、无等号、空键与内部键（`ARCH`/`BOARD`）逐条拒绝；`ARCH` 由编译目标生成，`BOARD` 只有真实来源才生成（当前生产调用没有可靠来源，显式传 `None` 省略，不伪造——测试 `generates_arch_and_board_first` 传显式板名验证的正是"有来源才生成"这一支）。
 
-  与 C 的三条可观察分歧，按三档术语纪律统一标注 `[ARCH: 参数表语义规约化——重复键首条生效后到者拒绝、命令行不得覆盖内部键 ARCH/BOARD、BOARD 由编译目标按来源生成（C 无条件必写）]`：其一，重复键——C 的"已存在先删"只对首条记录生效（§2.3 的源码推演），但结果分两支：若重复键的首个副本是第一条记录，旧条被删、新值追加，**后写胜出、只剩一条**；若首个副本不是第一条，旧条留在原位、新值追加到缓冲开头，账上两条而读取返回第一条。Rust 统一为首条生效、后者逐条拒绝，因此在"重复键是第一条"这一支上与 C 相反（C 后写胜出），属于新增的可观察分歧，不是"C 缺陷语义的载体重构"。其二，命令行里的 `ARCH=`/`BOARD=` 词——C 不拒（首条时还会被内核覆写）；Rust 一律拒绝外部输入覆盖内部键。其三，`BOARD`——C 无条件写一条记录，但读取返回首条匹配、可被外部同名键遮蔽，因此不保证生效（§2.3）；Rust 按来源生成、无来源则省略（上文）。三处都落在 `GET_MONPARAMS` 的 wire 上可观察；仓内消费者核查：kernel 与 minix-boot 读 `"board"` 键零命中，无读者受害。容量按整条记录截断到 1024。参数源分两类，按 §3.7 的三类链落到各腿：两条 UEFI 链读当前镜像的 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；U-Boot shim 与两个直核面（按 §3.7 归 U-Boot 一族与直核面两类）读 DTB `/chosen/bootargs`。消费者 `GET_MONPARAMS` 仍按 C 的 1024 字节定长零填充；没有外部输入时缓冲里只有生成的那条 `ARCH=...`——与 C 的 `mb_set_param` 必写行为仅就 ARCH 一项同形。
+  与 C 的三条可观察分歧，按三档术语纪律统一标注 `[ARCH: 参数表语义规约化——重复键首条生效后到者拒绝、命令行不得覆盖内部键 ARCH/BOARD、BOARD 由编译目标按来源生成（C 无条件必写）]`：其一，重复键——C 的"已存在先删"只对首条记录生效（§2.3 的源码推演），但结果分两支：若重复键的首个副本是第一条记录，旧条被删、新值追加，**后写胜出、只剩一条**；若首个副本不是第一条，旧条留在原位、新值追加到缓冲末尾，账上两条而读取返回第一条。Rust 统一为首条生效、后者逐条拒绝，因此在"重复键是第一条"这一支上与 C 相反（C 后写胜出），属于新增的可观察分歧，不是"C 缺陷语义的载体重构"。其二，命令行里的 `ARCH=`/`BOARD=` 词——C 不拒（首条时还会被内核覆写）；Rust 一律拒绝外部输入覆盖内部键。其三，`BOARD`——C 无条件写一条记录，但读取返回首条匹配、可被外部同名键遮蔽，因此不保证生效（§2.3）；Rust 按来源生成、无来源则省略（上文）。三处都落在 `GET_MONPARAMS` 的 wire 上可观察；仓内消费者核查：kernel 与 minix-boot 读 `"board"` 键零命中，无读者受害。容量按整条记录截断到 1024。参数源分两类，按 §3.7 的三类链落到各腿：两条 UEFI 链读当前镜像的 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；U-Boot shim 与两个直核面（按 §3.7 归 U-Boot 一族与直核面两类）读 DTB `/chosen/bootargs`。消费者 `GET_MONPARAMS` 仍按 C 的 1024 字节定长零填充；没有外部输入时缓冲里只有生成的那条 `ARCH=...`——与 C 的 `mb_set_param` 必写行为仅就 ARCH 一项同形。
 
 #### 3.4.3 `#[repr(C)]` 的边界与 arena wire 协议
 
@@ -2018,9 +2018,9 @@ pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>)
     unsafe {
         core::ptr::write(PT_ALLOC.0.get(), alloc_fn);
     }
-    PT_REGISTERED.store(true, Ordering::Release);
     // Release: publish the fn pointer write to any thread that Acquire-loads
     // `is_registered() == true` before calling `alloc_pt_page()`.
+    PT_REGISTERED.store(true, Ordering::Release);
 }
 ...
 #[inline]
@@ -2976,7 +2976,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | M9 | bump 分配器（§3.8/§4.2） | 顺序推进、耗尽拒绝、页对齐、reinit 后归位、跨镜像区间自洽 | 宿主测试 | **已覆盖**：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条 | — |
 | M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十条主编号（L0–L8 全架构 + L9 仅 riscv64） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
 | M11 | 模块顺序契约（§4.3） | 12 项按 `MODULE_NAMES` 顺序返回、缺件 panic；装载前两道防线：目标 LMA 两两不相交（`first_overlapping_pair`）、文件字节区间不与任何目标 LMA 相交（`first_source_destination_overlap`） | 宿主测试＋真机前置检查 | **已覆盖**：`loader.rs` 顺序/缺件测试＋真机链的 `mdir` 前置 | — |
-| M12 | EBS 阶段边界（§4.1） | EBS 之后不再出现固件调用；裸串口路标仍输出 | 真机＋静态检查 | **部分覆盖**：门脚本只断言 `[raw] entering kernel image v1` 一条；退出本身那条与 `[raw] arena=…` 目前无断言（靠日志人工看）。静态检查：文本级静态检查 `os/boot-shim/tests/ebs_boundary_audit.rs` 覆盖生产入口（`prepare_and_enter_kernel_image` 的配对循环成功标记之后），零 `uefi::`/分配/释放/drop，带注入负控与注释豁免自检 | TODO-04（已关闭，见 5.3） |
+| M12 | EBS 阶段边界（§4.1） | EBS 之后不再出现固件调用；裸串口路标仍输出 | 真机＋静态检查 | **部分覆盖**：门脚本只断言 `[raw] entering kernel image v1` 一条；退出本身那条与 `[raw] arena=…` 目前无断言（靠日志人工看）。静态检查：文本级静态检查 `os/boot-shim/tests/ebs_boundary_audit.rs` 覆盖生产入口（`prepare_and_enter_kernel_image` 的配对循环成功标记之后），零 `uefi::`/分配/释放/drop，带两枚注入负控与注释豁免自检 | TODO-04（已关闭，见 5.3） |
 | M13 | UEFI 侧快照函数（§4.2：`build_memmaps`、`assert_bootstrap_outside_memmap` 等） | 两列表对"可分配 / 保留"两档互斥且完备（`Excluded`/`DevicePath`/`Side` 按设计不进表）；root/bump 不与 free 列表相交 | 宿主测试→真机 | **部分覆盖**：`assert_bootstrap_outside_memmap` 的 5 条宿主测试（清单见 §5.3 TODO-07）；`build_memmaps`/`alloc_root_page`/`alloc_bump_region` 调用点单根（Boot Services），宿主无法构造 | TODO-07（部分关闭：纯函数五案已交接，其余开放，见 5.3） |
 | M14 | 交接三形态（§3.7/§4.8） | aarch64 resume 只做 additive（不重建根）；`x0` 分道（空指针→自引导面）；x86 shim 三路标可见 | 真机＋引文 | **部分覆盖**：aarch64 UEFI 链只到 EBS 后的 `memmap source` 行，三条标记都在 `entering kernel image v1` 之前，脚本不判内核随后是否存活，因此"resume 只做 additive"没有真机证据（§5.2.3 已声明该分工）；riscv64 两条覆盖"交接序列走通且路标出现"；x86 `test-cmd-smoke.sh` Stage 3b 已断言三条 shim 路标（`kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1`） | TODO-06（已关闭，见 5.3；aarch64 additive 的缺口记在 §5.4） |
 | M15 | 失败路径防线（§4.2 步骤 8） | root/bump 与 free 列表相交时立刻 panic（配对循环成功后、裸串口可打印） | 真机 | 断言在源码内、每次启动都执行 | — |
@@ -3042,7 +3042,7 @@ os/libs/minix-boot/src/handoff_v1_read.rs          21
 os/libs/minix-boot/src/fdt_layout.rs               29
 os/libs/minix-boot/src/lib.rs                      2
 os/libs/minix-boot/src/bump.rs                    5
-os/libs/minix-boot/src/boot_storage.rs            4
+os/libs/minix-boot/src/boot_storage.rs            5
 os/libs/minix-elf/src/lib.rs                       23
 ```
 

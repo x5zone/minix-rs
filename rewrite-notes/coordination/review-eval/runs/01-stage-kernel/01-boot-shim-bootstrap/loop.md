@@ -921,7 +921,7 @@
 
 - 文档六门：anchor 108/108、doc-code-map 46/46、style 0 error、ref 通过、承载门通过（4 个可判章均有码/命令）、结构/链接 0 问题。
 - 代码门：上述宿主测试全绿；`cargo check -p minix-boot` 无 dead_code；`cargo clippy -p minix-boot` 仅 `minix-types` 既有 warning。
-- 回读：RB17 的 P2/P3 已逐条补修并复验（见 `defect-ledger.md` 的 RB17 段）；RB18 待提交后启动。
+- 回读：RB17 的 P2/P3 已逐条补修并复验（见 `defect-ledger.md` 的 RB17 段）。RB18 独立回读判 **NOT PASS**（P0=0、P1=1、P2=1、P3=3）：21 条 ① 中 20 条成立条件消失、RB17 12 项全部成立，但 §5.2.1 转录漏改 `boot_storage.rs` 4→5、§3.4.2 新补“追加到缓冲开头”与源码相反；五项已补修（见 `defect-ledger.md` 的 RB18 段），补修后需重跑六门与 `minix-boot` 186。
 - 三门读数：x86/aarch64 串口路标到 `entering scheduler`；riscv64 U-Boot 链 6/6 路标。
 
 ### R18 §6 指标
@@ -930,7 +930,7 @@
 
 ### R18 §7 状态
 
-`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 meta R18 尚未运行（RB18 与 meta R18 在提交后执行）；G8 本轮新增 98 条（远大于 0），需下一轮；G9 ⑥ 项只有 1 条（D2-10）且已实施，D1 其余方案不采纳。
+`NOT CONVERGED`：G1–G4 修复后为 0；G5 无 ② 阻塞；G6 六门 + 宿主 + 三 QEMU 门全绿；G7 RB18 判 NOT PASS 后五项残留已补修；meta R18 在补修提交后执行；G8 本轮新增 98 条（远大于 0），需下一轮；G9 ⑥ 项只有 1 条（D2-10）且已实施，D1 其余方案不采纳。
 
 ### R18 §8 给 meta-review 的不确定点
 
