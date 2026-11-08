@@ -14,7 +14,7 @@
 //! gate in `lib.rs`).
 //!
 //! Available implementations:
-//! - `uefi` feature (default): `UefiBootShim` — uses `uefi` crate
+//! - `uefi` feature (default): UEFI production entry — uses `uefi` crate
 //!   (trait-shaped auxiliary form; the production UEFI entry is
 //!   `prepare_and_enter_kernel_image`, which does not go through the trait)
 //! - `opensbi` feature: `RiscvUbootBootShim` — memory comes from the DTB
@@ -196,12 +196,12 @@ pub mod opensbi_helpers;
 // ── Convenience re-export of the active implementation ──
 // Re-exports the *active firmware implementation's* type — callers still
 // write the concrete type. The production UEFI entry calls
-// `uefi_helpers::prepare_and_enter_kernel_image`; `UefiBootShim::prepare_boot`
+// `uefi_helpers::prepare_and_enter_kernel_image`.
 // is the auxiliary `BootShim` form. The Cargo.toml feature selection
 // determines which impl is compiled (no forwarding fn is provided).
 
 #[cfg(feature = "uefi")]
-pub use uefi_helpers::{UefiBootShim, find_platform_sources};
+pub use uefi_helpers::find_platform_sources;
 
 #[cfg(all(feature = "opensbi", not(feature = "uefi")))]
 pub use opensbi_helpers::RiscvUbootBootShim;

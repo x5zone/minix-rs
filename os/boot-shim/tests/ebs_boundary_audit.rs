@@ -4,9 +4,10 @@
 //! free may occur — the three-zero discipline (design §1.5 (6).4). A full
 //! call-graph check needs the pairing loop's final shape; this is the
 //! text-level guard that may land first (a lint script or text-level check
-//! before the full one): it slices the `prepare_boot` body from the source and
-//! asserts that the statements after the `exit_boot_services()` call contain no
-//! `uefi::`/`boot::` path, no allocator entry points and no destructor calls.
+//! before the full one): it slices the `prepare_and_enter_kernel_image` body
+//! from the source and asserts that the statements after the pairing-loop
+//! success marker contain no `uefi::`/`boot::` path, no allocator entry points
+//! and no destructor calls.
 //!
 //! Comments are stripped before scanning: the source legitimately names
 //! `uefi::println!` in prose to explain why it is not used there.
@@ -42,13 +43,6 @@ fn function_body<'a>(source: &'a str, sig: &str) -> &'a str {
     panic!("TODO-04 audit: function body end not found: {sig}");
 }
 
-fn prepare_boot_body(source: &str) -> &str {
-    function_body(
-        source,
-        "fn prepare_boot(bump_pages: usize) -> BootPrepareResult {",
-    )
-}
-
 fn prepare_and_enter_body(source: &str) -> &str {
     function_body(
         source,
@@ -82,34 +76,11 @@ fn violations_after_marker(body: &str, marker: &str) -> Vec<String> {
         }
         for needle in banned {
             if code.contains(needle) {
-                found.push(format!(
-                    "line +{}: {needle} in `{code}`",
-                    offset + 1
-                ));
+                found.push(format!("line +{}: {needle} in `{code}`", offset + 1));
             }
         }
     }
     found
-}
-
-/// Offending calls after the EBS boundary: Boot Services paths plus the
-/// allocation/free/drop entry points the crates expose.
-fn violations_after_ebs(body: &str) -> Vec<String> {
-    violations_after_marker(body, "exit_boot_services();")
-}
-
-#[test]
-fn prepare_boot_has_no_calls_after_exit_boot_services() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/uefi_helpers.rs");
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("TODO-04 audit: cannot read {}: {err}", path.display()));
-    let body = prepare_boot_body(&source);
-    let found = violations_after_ebs(body);
-    assert!(
-        found.is_empty(),
-        "TODO-04: post-EBS statements must be call-free (three-zero discipline); violations:\n{}",
-        found.join("\n")
-    );
 }
 
 #[test]
@@ -141,36 +112,4 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         found.iter().any(|v| v.contains("uefi::")),
         "negative control must flag the injected call: {found:?}"
     );
-}
-
-#[test]
-fn audit_detects_an_injected_violation() {
-    // Negative control: the same scanner must flag a Boot Services call
-    // appended after the boundary.
-    let synthetic = "\
-fn prepare_boot(bump_pages: usize) -> BootPrepareResult {
-    foo();
-    exit_boot_services();
-    uefi::println!(\"after EBS\");
-}
-";
-    let body = prepare_boot_body(synthetic);
-    let found = violations_after_ebs(body);
-    assert!(
-        found.iter().any(|v| v.contains("uefi::")),
-        "negative control must flag the injected call: {found:?}"
-    );
-}
-
-#[test]
-fn comments_after_ebs_are_not_flagged() {
-    // Prose may name the banned paths; only code is scanned.
-    let synthetic = "\
-fn prepare_boot(bump_pages: usize) -> BootPrepareResult {
-    exit_boot_services();
-    // uefi::println! must not be used after EBS (explained here).
-    raw_serial(\"ok\");
-}
-";
-    assert!(violations_after_ebs(prepare_boot_body(synthetic)).is_empty());
 }

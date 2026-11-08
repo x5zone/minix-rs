@@ -4,7 +4,7 @@
 //!   UEFI boot helpers → arch_boot_impl (paging setup) → test output
 //!
 //! See hello-boot/main.rs for why we use individual helpers instead of
-//! `UefiBootShim::prepare_boot`.
+//! the UEFI production entry (`prepare_and_enter_kernel_image`).
 
 #![no_std]
 #![no_main]

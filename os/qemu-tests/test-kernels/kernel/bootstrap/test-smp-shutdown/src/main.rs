@@ -3,9 +3,9 @@
 //! This test follows the same code path as the real kernel:
 //!   UEFI boot helpers → arch_boot_impl (paging setup) → test output
 //!
-//! ## Why not use `UefiBootShim::prepare_boot`?
+//! ## Why not use the UEFI production entry (`prepare_and_enter_kernel_image`)?
 //!
-//! `UefiBootShim::prepare_boot` loads `kernel.elf` from the ESP via
+//! the UEFI production entry (`prepare_and_enter_kernel_image`) loads `kernel.elf` from the ESP via
 //! `FileLoader`, which requires `/EFI/minix/kernel.elf` to exist on the
 //! FAT partition. In QEMU tests, the ESP only contains the test kernel
 //! itself as `BOOTX64.EFI` — there is no separate `kernel.elf`. We

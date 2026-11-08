@@ -206,7 +206,7 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 
 /// OpenSBI implementation of `BootShim`.
 ///
-/// Mirrors `UefiBootShim` step by step; the only differences are how
+/// Mirrors the UEFI production entry step by step; the only differences are how
 /// firmware-specific services are accessed:
 /// - Memory map → `DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect_with_sources()` (DTB `/memory`;
 ///   missing DTB halts).

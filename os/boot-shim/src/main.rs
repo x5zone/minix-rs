@@ -4,8 +4,6 @@
 //! `prepare_and_enter_kernel_image()`: allocate the v1 arena, classify the
 //! final memory map in the ExitBootServices pairing loop, build the
 //! bootstrap root, and jump into the standalone high-half `kernel.elf`.
-//! `UefiBootShim::prepare_boot` is the `BootShim` trait's auxiliary form and
-//! has no production caller.
 //!
 //! After ExitBootServices, UEFI runtime services may still be available
 //! (via GetVariable/SetVariable), but boot services (AllocatePages, etc.)
