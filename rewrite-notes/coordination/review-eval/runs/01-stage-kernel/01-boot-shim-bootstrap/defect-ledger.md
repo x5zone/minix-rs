@@ -977,12 +977,12 @@
 | R15/FACT-P2-03 | 未标 | ① | 启动期只装载 VM，其余 EntrySpec::DEFERRED 由 RS EXEC | 五门/源码对照 |
 | R15/FACT-P2-04 | 未标 | ① | boot-shim 依赖表补 fdt 与 uefi-raw | 五门/源码对照 |
 | R15/FACT-P2-05 | 未标 | ① | collect() → collect_with_sources() | 五门/源码对照 |
-| R15/FACT-P2-06 | P3 | ② | 本篇 in-scope 表述/引文项，修于 R16（与 F-R14-01 合并） | — |
+| R15/FACT-P2-06 | P3 | ③ | 复核： earm head.S 省略标记已补（R14 批） | — |
 | R15/FACT-P3-01 | 未标 | ① | MapError 变体名修正 | 五门/源码对照 |
 | R15/FACT-P3-02 | 未标 | ① | riscv 直核改 break arch_boot；resume_additive 仅 U-Boot 接收镜像 | 五门/源码对照 |
 | R15/FACT-P3-03 | 未标 | ① | arch_boot entered 标为仅 x86_64 | 五门/源码对照 |
 | R15/FACT-P3-04 | 未标 | ① | §6.2 内联注释恢复英文原文 | 五门/源码对照 |
-| R15/FACT-P3-05 | P3 | ② | 本篇 in-scope 表述/引文项，修于 R16（与 F-R14-01 合并） | — |
+| R15/FACT-P3-05 | P3 | ③ | 复核：§2.6.3 mem_clear_mapcache 已补（R15 批） | — |
 | R15/FACT-P3-06 | 未标 | ① | 内存图来源行改"配对循环成功后、startup 与解码之前" | 五门/源码对照 |
 | R15/FACT-P3-07 | 未标 | ① | validate 口径改为"基址对齐 + FreeRangeSet 有序/不相交" | 五门/源码对照 |
 | R15/READER-A-01 | P1 | ① | ① §1.4 编号索引（8 套编号：定义节/消费者）+ §1.2 D1–D5 | 五门/源码对照 |
@@ -1051,7 +1051,7 @@
 | R15/READER-B-17 | P2 | ① | §4.2.1 表头已标“第 1 步排在第 2 步之后”（R16 批） | 五门/源码对照 |
 | R15/READER-B-18 | P2 | ① | §4.1 表轴已改“谁建根”（R16 批） | 五门/源码对照 |
 | R15/READER-B-19 | P2 | ① | §3.10/§4.9 标题已改“非索引”（R16 批） | 五门/源码对照 |
-| R15/READER-B-20 | P2 | ② | 结构项，修于 R16（与 F-R14-06..12 合并） | — |
+| R15/READER-B-20 | P2 | ① | §4.9 overlaps 拆两层映射（R16 批） | — |
 
 ## R16（冻结基线 5193faf4e / sha256 31f21532…；面板 119 + RB16 4 = 123）
 
@@ -1085,17 +1085,17 @@
 | R16/FACT-P1-07 | P3 | ③ | 复核：switch_to_user 已改"前两行" | — |
 | R16/FACT-P1-08 | P3 | ③ | 复核：freepde 用途已改"相近但对象不同" | — |
 | R16/FACT-P1-09 | P3 | ③ | 复核：rootdevname 链已补 PM 缓存跳 | — |
-| R16/FACT-P1-10 | P3 | ② | 事实/引文项，修于 R17 | — |
+| R16/FACT-P1-10 | P3 | ① | §2.4.1 "至今没有暴露"改为条件句（R17 批二） | — |
 | R16/FACT-P2-01 | P2 | ① | §4.8 riscv64 三参数→两参数（P0） | 五门/源码对照 |
 | R16/FACT-P2-02 | P2 | ① | §4.2.2 手算第 4 例改 RUNTIME（P1） | 五门/源码对照 |
 | R16/FACT-P2-03 | P2 | ③ | 复核：FACT-P3-01/P3-03 的 GDB/gdb 验证已覆盖此点 | — |
-| R16/FACT-P2-04 | P2 | ② | 事实/引文项，修于 R17 | — |
+| R16/FACT-P2-04 | P2 | ① | §3.3 验证命令改为 `sed -n` 指向依赖块 | — |
 | R16/FACT-P2-05 | P2 | ③ | 复核：FACT-P3-01 的 gdb 限定名实测已覆盖 | — |
-| R16/FACT-P2-06 | P2 | ② | 事实/引文项，修于 R17 | — |
-| R16/FACT-P2-07 | P2 | ② | 事实/引文项，修于 R17 | — |
-| R16/FACT-P2-08 | P2 | ② | 事实/引文项，修于 R17 | — |
-| R16/FACT-P2-09 | P2 | ② | 事实/引文项，修于 R17 | — |
-| R16/FACT-P2-10 | P2 | ② | 事实/引文项，修于 R17 | — |
+| R16/FACT-P2-06 | P2 | ① | §4.7 `BootAlloc` 引文块头改为"代码引用"，不再声称省略号 | — |
+| R16/FACT-P2-07 | P2 | ① | §4.5 `if region.len > 0` 已压成后果两句（R17 批四） | — |
+| R16/FACT-P2-08 | P2 | ① | §4.8 x86 stub 已补 `mov rax, rdi; cli; cld`（RB16 批） | — |
+| R16/FACT-P2-09 | P2 | ① | §3.7 引文块头改为如实描述省略范围 | — |
+| R16/FACT-P2-10 | P2 | ① | §3.4.1 `memmap_sources` 审计主体改为 validate + strict 双口径 | — |
 | R16/FACT-P3-01 | P2 | ① | paging.rs 16 条归 minix-arch，注明 CI 缺口 | 五门/源码对照 |
 | R16/FACT-P3-02 | P2 | ① | TODO-06 去掉无命令支撑的断言 | 五门/源码对照 |
 | R16/FACT-P3-03 | P2 | ① | M12 降为部分覆盖 | 五门/源码对照 |

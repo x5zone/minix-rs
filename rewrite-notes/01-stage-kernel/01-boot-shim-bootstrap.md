@@ -1489,7 +1489,7 @@ kernel-image ─┬─→ minix-kernel
 
 （图只画主边；条件依赖与 leaf crates 以下方四份依赖表为准，其中 `kernel-image ┄→ boot-shim` 仅 riscv64/aarch64 target 生效。两个名字看起来相近，但指的不是同一个东西：**boot-shim** 是可执行体 crate，**minix-boot** 是共享库 crate——标题里"内核不依赖 boot-shim"说的是不依赖前者这个*可执行体*；图中 `minix-kernel → minix-boot` 是对*库*的依赖，二者不矛盾。）
 
-依据是四份依赖表（boot-shim / kernel / minix-boot / kernel-image 四个 manifest；命令：`grep -n 'minix-' os/boot-shim/Cargo.toml os/kernel/Cargo.toml os/libs/minix-boot/Cargo.toml os/kernel-image/Cargo.toml`。文中另提到的 `minix-elf` 是 boot-shim 的普通依赖，不单列成表）：
+依据是四份依赖表（boot-shim / kernel / minix-boot / kernel-image 四个 manifest；命令：`sed -n '/^\[dependencies\]/,/^\[/p' os/kernel/Cargo.toml`（输出中无 `boot-shim` 也无 `uefi`，即证否定；全仓四 manifest 的完整依赖表见下方四行）。文中另提到的 `minix-elf` 是 boot-shim 的普通依赖，不单列成表）：
 
 - `os/boot-shim/Cargo.toml` 的 `[dependencies]` 里有 `minix-types`、`minix-boot`、`minix-arch`、`minix-kernel`、`minix-plat`；`minix-elf`（共享的 ELF 解析器）；非可选的 `fdt`（U-Boot 腿解 DTB）；`uefi = "0.33"` 与 `uefi-raw = "0.9"` 挂在可选的 `dep:uefi`/`dep:uefi-raw` 上，由 `uefi` feature 一并打开。
 - `os/kernel/Cargo.toml` 的依赖是 `minix-arch`、`minix-plat`、`minix-platform`、`minix-types`、`minix-boot`——**没有 boot-shim，也没有 uefi**。两个名字相近的 crate 分工不同：`minix-plat` 是板级/机器相关的实现层（早期控制台、中断控制器一类与具体硬件打交道的代码，[`early_console.rs`](os/plat/src/early_console.rs)），`minix-platform` 是平台描述符的解析与分发层（`os/libs/minix-platform/`，面向 ACPI/DTB 这类固件描述）。
@@ -1554,7 +1554,7 @@ pub struct KernelInfo {
 | 改名 | `vir_kern_start` → `kern_virt_base` | （`freepde_start` 曾改名 `free_upper_idx`，字段删除时整体退场，见 §3.9） |
 | 升为字段 | `kern_phys_base`<br>`kern_size` | C 里这两个值不是 `kinfo_t` 的字段，而是链接脚本导出的符号 `_kern_phys_base`、`_kern_size`（定义见 §3.5 引文；§2.3 未列过这两个）。Rust 把它们放进交接结构，来源改为 boot-shim 解析内核 ELF 的 PT_LOAD 段（§4.4 的字段表）。`kern_size` 用 `u64` 而不是 `usize`——wire 语义（wire = 跨镜像交接协议里按固定字节宽度写进 arena 的那份表示，与进程内结构相对）需要固定宽度，不随目标指针宽度变（32 位目标是 C 侧的，本仓重写目标全为 64 位，这里钉的是交接协议而非当前目标集） |
 | 删除 | 21 个字段：<br>`mbi`、`mem_high_phys`、`mods_with_kernel`、`kern_mod`、`kmessages`<br>`do_serial_debug`、`serial_debug_baud`、`minix_panicing`、`user_end`、`boot_procs[]`<br>`nr_procs`、`nr_tasks`、`release[]`、`version[]`、`vm_allocated_bytes`<br>`kernel_allocated_bytes`、`kernel_allocated_bytes_dynamic`、`mmap_size`、`freepde_start`<br>`bootstrap_start`、`bootstrap_len` | 逐个的去向见下表（`mmap_size` 由切片长度承载；`freepde_start`/`bootstrap_*` 的删除判据见 §3.9 与 §3.5） |
-| 新增 | `reserved_regions`<br>`memmap_sources`<br>`startup_objects`<br>`kern_stack_top`<br>`syscall_entry`<br>`platform_sources` | 各自来源见下；`memmap_sources` 与 `startup_objects` 是 v1 source/startup 记录，只供启动期 `validate_requiring_sources` 审计（全仓没有运行期读者） |
+| 新增 | `reserved_regions`<br>`memmap_sources`<br>`startup_objects`<br>`kern_stack_top`<br>`syscall_entry`<br>`platform_sources` | 各自来源见下；`memmap_sources` 与 `startup_objects` 是 v1 source/startup 记录，供启动期 `validate_requiring_sources`（strict 门）审计，`KernelInfo::validate`（非 strict）也查来源覆盖；全仓没有运行期读者 |
 
 **先讲清前两格装的是什么：内存图交付成两张表**。`KernelInfo` 携带内存信息只用两个列表，形状固定，来源不固定：
 
@@ -1875,7 +1875,7 @@ x86_64 的 `arch_boot` 只做诊断打印并调用 `arch_boot_finish::<X86_64Boo
 跨镜像交接的产线上多一层（x86_64、aarch64 与 riscv64 U-Boot shim 三条 v1 发送腿同走 `lib.rs` 的 [`fn enter_kernel_image_v1`](<os/kernel/src/lib.rs:fn enter_kernel_image_v1>)；TTBR0/TTBR1 是 aarch64 侧的细节）：内核以独立 ELF 的形式存在于高半（aarch64 侧经 TTBR1），boot-shim 先分配一块九页 arena 并把 v1 协议写进去，在 ExitBootServices 的配对循环里分类最终内存图，然后建表、开分页、把运行期字段补进 arena，最后**绝对跳转**过去；入口寄存器只带 arena 基址——x86_64 用 `rbx`（镜像 trampoline 转到 `rdi`）、aarch64 用 `x0`、riscv64 U-Boot shim 用 `a0`。
 
 ```rust
-// 代码引用（省略号处为步骤注释与校验），os/kernel/src/lib.rs:fn enter_kernel_image_v1。
+// 代码引用（保留公共路径与 aarch64 跳转臂；x86/riscv 跳转臂、步骤注释与校验有省略），os/kernel/src/lib.rs:fn enter_kernel_image_v1。
     #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!("cli", options(nomem, nostack));
@@ -2766,7 +2766,7 @@ Step 3 的 `enable()` 在 x86-64 上做四件事：
 同一份 `BootAlloc` 有三种进入方式：boot-shim 侧的 `init`、跨镜像接收侧的 `resume`、以及内核兜底路径的 `init`。前两种的代码与语义：
 
 ```rust
-// 节选（保留签名与两行注释；注释有改述，函数体以省略号代替），os/kernel/src/boot_alloc.rs。
+// 代码引用（`init` 函数体完整；后续 `resume` 的文档注释与省略段见源文件），os/kernel/src/boot_alloc.rs。
     pub fn init(&self, base: u64, end: u64) {
         self.base.store(base, Ordering::Relaxed);
         self.next.store(base, Ordering::Relaxed);
