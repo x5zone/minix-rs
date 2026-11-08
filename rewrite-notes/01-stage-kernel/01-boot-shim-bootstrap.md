@@ -1060,7 +1060,9 @@ static phys_bytes createpde(
 这就把 `freepde_start` 从"一个返回值"变成了"一套借用机制"——注意它真正被使用是在 `kmain` 之后（同属下游延伸）：它成立需要三个前提——当前页表里确实有连续的未用槽位、借来的窗口只在当前 `CR3` 下有效、借出者自己记账并保证在切换前不再引用该窗口（窗口的失效由下一次地址空间切换自然完成，无需显式清零）。三者在 64 位侧的失效方式见 §3.9。
 
 **若 `pg_mapkernel` 返回的是"最后一个已用槽位"而不是"第一个空闲槽位"会怎样**：`memory_init` 的两行自增会把 `freepdes[0]` 设成内核映射占用的最后一个页目录下标（961 + k - 1，`k` 即内核占用的 4MB 块数 = ceil(`kern_size`/4MB)），`freepdes[1]` 才落到真正的第一个空闲槽。`createpde` 对借来的槽只做两条范围检查（`free_pde_idx` 在 `nfreepdes` 之内、槽号在 1024 之内），不检查它"是否空闲"；而跨空间拷贝的第一个方向固定借 0 号槽（`createpde(srcproc, srclinaddr, &chunk, 0, &changed)` 在 `i386/memory.c` 的 [`lin_lin_copy`](minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy) 里，入口是 `i386/memory.c` 的 [`virtual_copy_f`](minix3/minix/kernel/arch/i386/memory.c:virtual_copy_f)），`vm_memset` 也借 0 号槽（`i386/memory.c` 的 [`vm_memset`](minix3/minix/kernel/arch/i386/memory.c:vm_memset)）。
+
 于是第一次跨地址空间拷贝会把对方地址空间的 PDE 值写进 `p_cr3_v[961 + k - 1]`。这里要说清 `p_cr3_v` 是哪张表：`i386/protect.c` 的 [`arch_post_init`](minix3/minix/kernel/arch/i386/protect.c:arch_post_init) 用 `i386/pg_utils.c` 的 [`pg_info`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_info) 把引导期那张 `pagedir[]` 的物理地址与虚拟指针交给 VM 进程当作它的页表，`lin_lin_copy` 又断言当前 `CR3` 就是它（`i386/memory.c` 的 [`lin_lin_copy`](minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy) 里 `assert(read_cr3() == get_cpulocal_var(ptproc)->p_seg.p_cr3)`）——所以这一改写动的正是**内核此刻正在用的那张表**，不是某个进程的私有页表。
+
 而 `961 + k - 1` 那一条正是内核镜像最后一块 4MB 的映射；`reload_cr3()` 让改写立刻生效，内核在那个 4MB 窗口里的下一次访问就撞上它：对方该槽的条目若不存在（值为 0 或非 present），是一次内核态页错误；若存在，则是静默读到另一个进程的 4MB 内容（内核数据被换成了别人的字节，没有任何报错）。两条路径都经系统任务进入：跨空间拷贝走 SYS_COPY 与 SYS_SAFE_COPY（[`system/do_copy.c`](minix3/minix/kernel/system/do_copy.c)、[`system/do_safecopy.c`](minix3/minix/kernel/system/do_safecopy.c)），清零走 SYS_MEMSET 与 SYS_SAFE_MEMSET（[`system/do_memset.c`](minix3/minix/kernel/system/do_memset.c)、[`system/do_safememset.c`](minix3/minix/kernel/system/do_safememset.c)）——发起方可以是任何服务进程，不限于装载启动镜像那一步。所以最早坏在 `memory_init` 之后第一次跨空间拷贝或清零上。
 
 #### 2.6.4 自举页表的下游：VM 接手时的继承规则
@@ -2085,18 +2087,24 @@ fn main() -> Status {
 // 节选（保留顺序与关键约束；注释有删节），os/boot-shim/src/uefi_helpers.rs:fn prepare_and_enter_kernel_image。
 pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
+
+    // D01-R13 A+D：先读 ELF、预订其 LMA 跨度，再分配 root/bump，最后拷贝段。
+    let file_loader = UefiFileLoader;
+    let elf_data = file_loader.read_required(loader::KERNEL_PATH);
+    let layout = loader::compute_kernel_layout(&elf_data).expect(...);
+    reserve_kernel_span(&layout);      // AllocateAddress([kern_phys_base, +kern_size), LOADER_DATA)
+    record_kernel_span(&layout);
     let root_page = alloc_root_page();
     let (bump_base, bump_end) = alloc_bump_region(bump_pages);
     minix_kernel::boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
-
-    let file_loader = UefiFileLoader;
-    let kern = loader::load_kernel_with_loader(&file_loader).expect(...);
+    unsafe { loader::load_segments_into_phys_memory(&elf_data) }.expect(...);
+    let kern = layout;
     uefi::println!("boot-shim: kernel loaded (entry staged)");
     let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
     uefi::println!("boot-shim: 12 boot modules loaded");
-    // …（record_kernel_span 与 root/bump 重查都在内核装载后、上一条 12 模块行之前；
-    //    assert_modules_clear_of_kernel 在本行之后、alloc_arena 之前；arena 重查紧跟
-    //    alloc_arena、早于 Serializer::new 的整段零化；文字说明见步骤 2 与 §5.1 M16）…
+    // …（record_kernel_span 在预订之后、拷贝之前；root/bump 重查在拷贝之后、12 模块行
+    //    之前；assert_modules_clear_of_kernel 在本行之后、alloc_arena 之前；arena 重查
+    //    紧跟 alloc_arena、早于 Serializer::new 的整段零化；文字说明见步骤 2 与 §5.1 M16）…
     let platform_sources = find_platform_sources();
     let (param_buf, param_stats) = collect_param_buf();
 
@@ -2159,8 +2167,8 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 
 | # | 动作 | 约束 |
 |---|---|---|
-| 1 | 分配根页表页与 bump 区，`init_boot_pt_alloc` | 必须在 DM 可达上界之下；bump 池同时给 shim 建根与接收侧续用 |
-| 2 | 读 `kernel.elf`、预订其 LMA 跨度、分配 root/bump、拷贝段、加载 12 个启动模块 | 必须在 EBS 之前（依赖 `SimpleFileSystem`）。D01-R13 起的顺序是：读 ELF → `reserve_kernel_span` 用 `AllocateAddress` 把 `[kern_phys_base, +kern_size)` 整段预订为 `LOADER_DATA`（失败即 halt，不降级）→ 分配 root/bump → 把段拷进已预订的 LMA。预订先于一切分配，因此固件此后发出的任何页（模块、arena、池缓冲）都不可能在镜像跨度内，root/bump 也不可能落在镜像的拷贝目标之下；`alloc_module_pages` 的拒绝逻辑与 root/bump/模块的复查保留为第二道防线（`record_kernel_span` 仍在拷贝后立即写入） |
+| 1 | 分配根页表页与 bump 区，`init_boot_pt_alloc` | 必须在 DM 可达上界之下；bump 池同时给 shim 建根与接收侧续用。D01-R13 起本步排在第 2 步的 ELF 预订**之后**（先订跨度、再订自举页，避免自举页落进镜像的拷贝目标） |
+| 2 | 读 `kernel.elf`、预订其 LMA 跨度、拷贝段、加载 12 个启动模块 | 必须在 EBS 之前（依赖 `SimpleFileSystem`）。D01-R13 起的顺序是：读 ELF → `reserve_kernel_span` 用 `AllocateAddress` 把 `[kern_phys_base, +kern_size)` 整段预订为 `LOADER_DATA`（失败即 halt，不降级）→ `record_kernel_span` 记下该跨度（在拷贝**之前**）→ 把段拷进已预订的 LMA → 载模块。root/bump 的分配是第 1 步、发生在预订之后；预订先于一切分配，因此固件此后发出的任何页（模块、arena、池缓冲）都不可能在镜像跨度内，root/bump 也不可能落在镜像的拷贝目标之下；`alloc_module_pages` 的拒绝逻辑与 root/bump/模块的复查保留为第二道防线 |
 | 3 | 定位平台描述符来源，归一化 `param_buf` | 必须在 EBS 之前（依赖 Configuration Table——固件在 EBS 前交给应用的描述符表，DTB/RSDP 指针挂在其中——与 `LoadOptions`——固件为本镜像保留的命令行字节串） |
 | 4 | 分配九页 arena（`alloc_arena()` 经 UEFI `boot::allocate_pages(MaxAddress(bootstrap_alloc_limit()))`——该上界为无参函数返回的 DM 可达界；`bump_alloc_pages` 是 OpenSBI 侧的另一个分配器，勿混），`LOADER_DATA` | 整段落在恒等/DM 可达界之下；接收方经恒等窗口读它 |
 | 5 | 写信封、模块、平台源、参数（非内存图载荷） | 第 5 步开头 `Serializer::new` 对前 `ARENA_CAP` 字节整段零化（源文件 `handoff_v1_write.rs`）；信封的标量字段此时已定稿 |
