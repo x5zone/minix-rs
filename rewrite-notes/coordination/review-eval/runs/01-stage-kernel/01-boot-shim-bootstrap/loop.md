@@ -1092,7 +1092,7 @@
 
 ### R21 §6 指标
 
-发现 63；处置 ①14 / ②3 / ③3 / ④43 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+发现 63；处置 ①9 / ②3 / ③1 / ④50 / ⑤0；re-litigation 0；adjacent 阻塞 0。
 
 ### R21 §7 状态
 
@@ -1136,11 +1136,11 @@
 ### R22 §5 复验
 
 - 六门：anchor 107/107（少 1 因 `Type::method` 不计入）、style 0、ref/结构/承载通过。
-- 宿主与 QEMU 全绿。RB22/meta R22 待跑。
+- 宿主全绿；三 QEMU 门 PASS，日志在 `tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/logs/round22-*.log`。RB22 判 **NOT PASS**（14 面中 9 PASS/5 PARTIAL，④ 抽样 12 未修/5 部分），已补修 EAB→EBS、审计表 4→5、生产腿定义、§7.5 口径、A/B/C 抽样项；meta R22 待跑。
 
 ### R22 §6 指标
 
-发现 63；处置 ①14 / ②3 / ③3 / ④43 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+发现 63；处置 ①9 / ②3 / ③1 / ④50 / ⑤0；re-litigation 0；adjacent 阻塞 0。
 
 ### R22 §7 状态
 

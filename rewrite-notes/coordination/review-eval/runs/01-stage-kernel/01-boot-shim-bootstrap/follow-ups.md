@@ -92,10 +92,10 @@
 
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
-| F-R17-01 | DESIGN-D2-12 | `BootShim` 是单实现 trait（1 impl / 0 dyn），唯一调用点是 `<RiscvUbootBootShim as BootShim>::prepare_boot`；当前既非测试接缝也非已验证扩展点 | 待用户裁决（架构去留；截止 R21） | 选项：保留为未来固件腿接口（文档已按事实降级）/ 改成 `opensbi_helpers::prepare_boot` 普通函数并重写 §3.2。不阻塞本轮 |
-| F-R17-02 | DESIGN-D2-13 | UEFI 辅助三件套（`build_memmaps`/`exit_boot_services`/`UefiPoolAllocator` + 四个 `static mut`）只服务 16 个 QEMU 测试内核，生产二进制仍链着 | 已登记（截止 R21） | 移到 `#[cfg(feature = "qemu-test-kernels")]` 或独立模块，并同步 16 个测试内核的依赖声明；需单独回归 QEMU |
-| F-R17-03 | DESIGN-D2-09/14 | `dtb_copy::Phase` 住 `static mut`，`OwnedDtb.bytes` 只能是 `'static`（leaked LOADER_DATA）；注释已写明真实生命周期，未改结构 | 已登记（截止 R21） | `OwnedDtb` 已改 raw pointer + `bytes()`，两处 `Box::leak` 已移除；剩余 Phase 栈化（带真实生命周期）作为 R20 重构 |
-| F-R17-04 | DESIGN-D2-18 | `KernelInfo` 不携带 `ram_authority`，strict 门由调用方另传；混合记录表下"DTB 记录 + 声明 UEFI 权威"可能放行 | 待用户裁决（契约变更；截止 R21） | 给 `KernelInfo` 加 `authority: InputObjectId`（wire 已有），`validate_requiring_sources()` 改无参；文档"13 字段"改 14。属 ABI/文档契约变更 |
+| F-R17-01 | DESIGN-D2-12 | `BootShim` 是单实现 trait（1 impl / 0 dyn），唯一调用点是 `<RiscvUbootBootShim as BootShim>::prepare_boot`；当前既非测试接缝也非已验证扩展点 | 待用户裁决（架构去留；截止 R23） | 选项：保留为未来固件腿接口（文档已按事实降级）/ 改成 `opensbi_helpers::prepare_boot` 普通函数并重写 §3.2。不阻塞本轮 |
+| F-R17-02 | DESIGN-D2-13 | UEFI 辅助三件套（`build_memmaps`/`exit_boot_services`/`UefiPoolAllocator` + 四个 `static mut`）只服务 16 个 QEMU 测试内核，生产二进制仍链着 | 已登记（截止 R23） | 移到 `#[cfg(feature = "qemu-test-kernels")]` 或独立模块，并同步 16 个测试内核的依赖声明；需单独回归 QEMU |
+| F-R17-03 | DESIGN-D2-09/14 | `dtb_copy::Phase` 住 `static mut`，`OwnedDtb.bytes` 只能是 `'static`（leaked LOADER_DATA）；注释已写明真实生命周期，未改结构 | 已登记（截止 R23） | `OwnedDtb` 已改 raw pointer + `bytes()`，两处 `Box::leak` 已移除；剩余 Phase 栈化（带真实生命周期）作为 R20 重构 |
+| F-R17-04 | DESIGN-D2-18 | `KernelInfo` 不携带 `ram_authority`，strict 门由调用方另传；混合记录表下"DTB 记录 + 声明 UEFI 权威"可能放行 | 待用户裁决（契约变更；截止 R23） | 给 `KernelInfo` 加 `authority: InputObjectId`（wire 已有），`validate_requiring_sources()` 改无参；文档"13 字段"改 14。属 ABI/文档契约变更 |
 
 ## Round 20 转出（F-R20-nn）
 
@@ -104,4 +104,4 @@
 | F-R20-01 | DESIGN-D2-01 | `BootPrepareResult`/`enter_kernel_image_v1` 的 `bump_base`/`bump_end`/`arena_pa` 仍是裸 `u64`，与 `root_page: PhysBytes` 并排；非法区间在类型上可表示 | adjacent（R21） | 改为物理区间/`PhysBytes`；改动两处签名与三处调用，需跨 crate 回归 |
 | F-R20-02 | DESIGN-D2-03 | `MemoryRegion{base,len}`、`cut(start,size)`、`MemRange{base,end}` 三套端点/长度约定并存，新调用者可把端点当 size 传 | adjacent（R21） | 引入 `Range{start,end}` 并让 `cut` 收区间；与 F-R20-01 同批 |
 | F-R20-03 | DESIGN-D2-04 | 测试内核 `build_memmaps`/`exit_boot_services` 仍用 `static mut` + 假 `'static` 切片，与 `BootStorage` 所有权模型相反 | adjacent（R21） | 迁到 `&mut BootStorage` 或绑定 `&self` 生命周期的视图；需回归 16 个测试内核 |
-| F-R20-04 | D2-02 残留 | 13 个 `checked_add` 调用点只有 memmap 一条溢出负控；其余同构但不可观测 | adjacent（R21 观察） | 若要逐点可观测，补 reserved/vm_handoff/memmap_source 的 `u64::MAX` 负控；不阻塞收敛 |
+| F-R20-04 | D2-02 残留 | 13 个 `checked_add` 调用点只有 memmap 一条溢出负控；其余同构但不可观测 | adjacent（R23 观察） | 若要逐点可观测，补 reserved/vm_handoff/memmap_source 的 `u64::MAX` 负控；不阻塞收敛 |

@@ -1480,7 +1480,7 @@
 | DESIGN-D2-03 | design-d2 | P3 | 负控覆盖不足 | ② | F-R20-04（R21） | D2 条目 | 不改本轮 |
 | DESIGN-D2-04 | design-d2 | P2 | 物理地址类型身份 | ② | F-R20-01（R21） | D2 条目 | 不改本轮 |
 
-## R22 面板轮（2026-11-09，R21 meta 后；先清 R21 携带）
+## R22 面板轮（R21 meta 后；先清 R21 携带）
 
 > 面板：P-FACT-A 3、P-FACT-B 2、READER-A 20、READER-B 20、READER-C 10、REFUTE 3 条反证成立（7 主张）、DESIGN-D2 5。总计 63 条。R21 携带 36 条已在 L0 补修。
 
