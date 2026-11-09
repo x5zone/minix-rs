@@ -1257,3 +1257,66 @@
 - ✅ **TODO-09 已关闭**（2026-11-09 用户裁决）：CR3 切换后 shim 侧不可观测是 PE/CR3 切换的架构特性（三次尝试实证），不是代码 bug；A→C 间隙的诊断由 QEMU `-d int` 异常追踪覆盖，门链全过为实证背书。关闭理由：修诊断缺口的风险 > 缺口本身。
 
 回归：minix-types 339、minix-boot 196、boot-shim 136+5、minix-kernel 860+8、minix-arch 288、minix-vm 548；QEMU x86/aarch64/riscv U-Boot shim/riscv bootface/riscv kernel-image/aarch64 SMP 全 PASS；文档五门 PASS。
+
+## R24 面板轮（2026-11-09，01 相关 TODO 清零后）
+
+### R24 §0 基线
+
+- 冻结提交：`bd7c53cdb4b767f524f4ad9fe569d52a8a07297b`（文档 3427 行 / `2507c19a…`）。
+- 工作树：`.codex/.trae` 的 V2.2 派生文件为未提交改动（用户侧）；`01-design-learn.md` 未跟踪；无已跟踪代码/文档改动。
+- Step 0 预检：outline v4、outline-review v4、design v3 存在；`01-design-final.v*` 按本篇命名约定不存在（v3 即最新）；`design-coverage-check` 60 篇全齐。
+- 关联代码：`doc-code-map --check` 50/50 通过。
+- 前轮转出：F-R23-01..05、F-R18-02..04、TODO-05/07/09/10 全部关闭；仅 F-R14-04 获准延至 02。
+- 面板：P-FACT 拆机械/引文两路、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 继续停跑。本轮重点核查 R23 后改动：BOOT-SCOPE 最小窗口、bootface 合并、wire v9、`pt_alloc` fail-closed、x86 `DEVICE→PWT|PCD`、文档门新锚点检查。
+- **用户裁决**：READER-B 的 20 条按结构重组批执行（T1–T5 五个任务，见 follow-ups.md R24 段），不逐条修。
+
+### R24 §1 面板
+
+- 角色：P-FACT-A（机械/合同）、P-FACT-B（引文/覆盖/反事实）、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑。
+- 材料隔离：READER 只给正文与读者画像；FACT 给正文、`related-code.txt` 与只读工具；DESIGN 给 §3/§4、实现、`trait-audit` 与项目约束；REFUTE 给正文、源码与冻结决策。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round24/{fact-a,fact-b,reader-a,reader-b,reader-c,refute,design-d2}.md`。
+- 面板运行前后 `git status --porcelain` 无面板侧写入；原始输出的发现标题已规范为 `FINDING <ID>` 以便轨迹门逐 ID 对账，正文未改。
+
+### R24 §2 发现
+
+- 总数 118：FACT-A 15（P0 4 / P1 7 / P2 4）、FACT-B 21（P0 2 / P1 8 / P2 11）、READER-A 20、READER-B 20、READER-C 20、REFUTE 6 条主张（4 条阻断）、DESIGN-D2 16。
+- P0 集中项：EBS 成功分支仍走 `uefi::println!`；§3.7/§4.2 引文停留在 BOOT-SCOPE 前的签名；`pt_alloc` 文档仍写 release 静默保留；`VmBootHandoff.ident` 容量残留；`DEVICE` 未接进 `device_window_flags()`；`map_huge` 重叠语义说明与源码相反。
+- 交叉重复：FACT-A/B 与 DESIGN-02 对 ident、pt_alloc、§3.7 引文重复；按“同源并案、逐 ID 留行”处理，未计为独立缺陷。
+
+### R24 §3 归因
+
+- ① 116 条：全部本轮修复，含文档、代码、测试与注释。
+- ③ 2 条：`READER-B-20`（批次号，§1.4 图例已声明可跳过）、`DESIGN-13`（bootface 整段合并，文件头已显式延后且文档只承诺壳各一份）。
+- ②/④/⑤ 0。冻结决策复查：D-013..D-029 无重提；D-024 继续停 D1；D-027 的窗口边界由 §4.6 重写；D-028 的 `pt_alloc` 语义由 §3.8/§4.7 重写；D-029 保持不做诊断打印。
+- 范围门：全部 in-scope；未把 F-R14-04 或 02 篇问题升级为本轮阻塞。
+
+### R24 §4 修复
+
+- 代码：`device_window_flags()` 接 `DEVICE`；EBS 分类计数改 `raw_serial` 并新增 `ebs_pair` 全模块审计；`BootWindows::push` fail-fast、`push_2m` checked、低 2 MiB 仅 x86、公共窗口 helper；`KernelLayout::ident_regions()` 与 `map_kernel` 空参数删除，VM 解码同步；`ValidationLevel::Strict` 去载荷；`BootReport.records_in_wire`；`PlacementPool`；9 个 QEMU 测试内核删 `free_upper_idx`/改 `find_platform_sources_into`；`test-sysboot` 字段访问修正。
+- 文档：§3.7/§3.8/§4.2/§4.2.2/§4.4/§4.5/§4.6 的引文与反事实重写；§1.2 四框表；§2.2/§2.5/§2.6.2/§2.8 的构建与对齐证据；§3.4 容量去 ident；§3.9 前提分架构；§3.1.1 riscv 门归属；§5.1 M5/M6/M7/M12/M13 与 §5.3 TODO-02/04 状态；§5.2.1 计数 45/136/6、17、21；§6.4 判据。
+- 测试：新增 `boot_window_push_2m_covers_the_descriptor_start_piece`、`boot_windows_reject_reversed_ranges`、`pairing_loop_never_uses_the_uefi_formatter`；`device_window_flags` 测试加 `DEVICE`；arch mock 设备窗口期望改 `RW|DEVICE`。
+
+### R24 §5 复验
+
+- 文档门：`anchor-resolve` 105/105；`doc-code-map --check` 52/52；`doc-style-lint` error=0；`doc-ref-check` PASS；`doc-structure-check` PASS；`doc-code-density-check` 承载门 PASS。
+- 宿主：boot-shim 136 + `ebs_boundary_audit` 6；minix-kernel 862 + 8 ignored；minix-types 339；minix-boot 196；minix-vm 548；minix-arch 288。
+- QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志归档在 `logs/round24-{x86-shim,aarch64-shim,riscv-uboot-shim,riscv-bootface,riscv-kernel-image,aarch64-smp-aps}.log`（各含 `TEST_RESULT: PASS` 或 `RESULT: PASS`）。
+- 修复后文档：3479 行 / `ed281090716b3e65b27cb6eb10ca419c0ce2dd0e38c1107af6f066ae957cfaea`。
+- RB24 首轮：71/80 = 88.8%，NOT PASS；B1/B2 与 N1–N11 已按最小补修逐项处理。第二次定向回读 23/23 = 100%，PASS（13 项定向 + 10 条上轮真修重放；未发现新 P0/P1/P2）。
+- 测试内核：9 个受影响内核在 x86_64 UEFI / aarch64 UEFI 目标下 `cargo check` 通过（`RT_BIRTH_ELF_PATH`/`SYSBOOT_*` 用临时 stub 满足编译期 include）。
+- clippy：`minix-arch`/`minix-boot`/`minix-types`、`boot-shim --test-all --all-targets`、`minix-kernel --features mock`、`minix-vm` 均无 error。
+
+### R24 §6 指标
+
+见 `metrics.md` 的 R24 块：118 / ① 116 / ② 0 / ③ 2 / ④ 0 / ⑤ 0；重构提出 4、实施 3、登记 0。
+
+### R24 §7 状态
+
+`NOT CONVERGED`（本轮 P0/P1/P2/P3 全部处置，文档与代码门全绿；G8 的“连续零新增”尚未满足，需 R25 独立复核确认是否收敛）。
+
+### R24 §8 给 meta-review 的不确定点
+
+- M6 “窗口外不被铺”仍只有源码序与 QEMU 可用性，没有运行期“窗口外必缺页”探针；本轮把它标为部分覆盖，没有新造 TODO。
+- 平台描述符窗口只覆盖起始 2 MiB 片，当前消费者在 Direct Map 之后；已用注释与宿主测试钉住假设，未改 `PlatformDescSource` 长度。
+- `records_in_wire` 是类型上的可见标记，但当前发送侧没有消费者读 source/startup；它防的是未来误用，不是现网行为。
+- READER-B-20 判为 ③：批次号是评审回溯索引，图例已声明可跳过；若 meta 认为仍应清理，可作为下一轮 reader-experience 项。
