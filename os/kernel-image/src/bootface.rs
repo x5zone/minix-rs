@@ -270,7 +270,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
         crate::halt()
     };
     minix_kernel::boot_alloc::init_boot_pt_alloc(pt_base, pt_end);
-    minix_arch::pt_alloc::register(minix_kernel::boot_alloc::boot_pt_alloc);
+    // Registration happens in `boot_validate_and_prepare` under its
+    // `is_registered()` guard, before the first page-table allocation; a
+    // second registration here would hide ordering errors (DESIGN-09).
     say("  root 0x");
     say_hex(root_page.0);
     say(" pt bump 0x");

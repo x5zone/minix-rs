@@ -434,7 +434,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // + semantic tables (memmap/reserved/sources/param/startup from the argv
     // DTB), all written into the caller-owned storage. The bump pool lives at
     // 0x82000000-0x84000000 (existing constants; inside the measured free band).
-    let result = prepare_boot(BOOT_STORAGE.get(), boot_shim::BOOT_PT_BUMP_PAGES);
+    let result = prepare_boot(BOOT_STORAGE.take(), boot_shim::BOOT_PT_BUMP_PAGES);
     raw_serial_line("boot-shim: kernel + 12 modules loaded (d73)");
 
     // The bootstrap root's PT pages come from the reserved region prepare_boot

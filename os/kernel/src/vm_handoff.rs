@@ -389,7 +389,6 @@ pub fn classify(
     kernel_info: &KernelInfo,
     root_paddr: PhysBytes,
     vm_alloc: &VmBootAllocator,
-    vm_module_idx: usize,
 ) -> Classification {
     // The free set starts as the boot report's conventional list (D01-F08:
     // sorted disjoint page-aligned ranges; zero-length entries skipped).
@@ -423,12 +422,9 @@ pub fn classify(
 
     // The remaining members (kernel image, root page, bump region, module
     // blobs) are shared with the pre-allocation exclusion list; see
-    // `for_each_live_bootstrap`.
-    assert!(
-        vm_module_idx < kernel_info.boot_modules.len(),
-        "vm_handoff: VM module index {} out of bounds",
-        vm_module_idx
-    );
+    // `for_each_live_bootstrap`. `classify` deliberately does not exclude the
+    // VM's own module: the deduction record keeps it, and `build_vm_handoff`
+    // filters the VM blob out of the module list afterwards (DESIGN-08).
     for_each_live_bootstrap(
         kernel_info.kern_phys_base,
         kernel_info.kern_size,
@@ -518,7 +514,7 @@ pub fn build_vm_handoff(
     vm_alloc: &VmBootAllocator,
     vm_module_idx: usize,
 ) -> VmBootHandoff {
-    let classification = classify(kernel_info, root_paddr, vm_alloc, vm_module_idx);
+    let classification = classify(kernel_info, root_paddr, vm_alloc);
 
     // Publish the A2 free list for post-first-load frame consumers (see
     // [`VM_PMM_FREE`]) — write-once at the classification point, before
@@ -980,7 +976,7 @@ mod tests {
                     (f.start().0, f.start().0 + PAGE_SIZE)
                 })
                 .collect();
-            (taken, classify(&info, root, &alloc, 0))
+            (taken, classify(&info, root, &alloc))
         };
 
         let (few, c_few) = run(2);

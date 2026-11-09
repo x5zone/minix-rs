@@ -16,9 +16,14 @@
 //! the decoded payloads into its own `.bss` before first use
 //! (`store_kernel_info`); the senders never need that type any more.
 //!
-//! Capacities are the wire partition capacities — the storage is the single
-//! semantic source the wire is encoded from, so the two cannot disagree about
-//! how many entries fit.
+//! Capacities are the wire partition capacities — for **memmap / reserved /
+//! modules / platform / param** the storage is the single semantic source the
+//! wire is encoded from, so the two cannot disagree about how many entries
+//! fit. Source and startup records are the exception on the UEFI legs: the
+//! classifier writes them straight to the wire (its 296-record source budget
+//! does not fit this storage's 40 slots), so `BootReport` is not a complete
+//! view there. The DTB/U-Boot leg fills every slot and is the single-source
+//! case the capacity invariant describes.
 
 use minix_types::{PhysBytes, VirBytes};
 

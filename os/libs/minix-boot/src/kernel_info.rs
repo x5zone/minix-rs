@@ -446,6 +446,39 @@ impl KernelInfo {
         //    authority is a fail-stop, never a fallback to the other input.
         //    The lenient gate audits whatever records are present.
         if let Some(authority) = level.authority() {
+            // Production-only derived-value equalities (DESIGN-01): the three
+            // scalars must match their single source, not merely be in range.
+            // A forged wire can otherwise carry a legal-looking `user_sp`,
+            // `syscall_entry` or `kern_stack_top` that no inequality catches.
+            assert_eq!(
+                self.user_sp.0,
+                minix_types::USER_STACK_TOP,
+                "KernelInfo: production user_sp does not equal USER_STACK_TOP"
+            );
+            assert_eq!(
+                self.syscall_entry.0, self.kern_virt_base.0,
+                "KernelInfo: production syscall_entry does not equal kern_virt_base"
+            );
+            let expected_stack_top = self
+                .kern_virt_base
+                .0
+                .checked_add(self.kern_size)
+                .expect("KernelInfo: kern_virt_base + kern_size overflows u64");
+            assert_eq!(
+                self.kern_stack_top.0, expected_stack_top,
+                "KernelInfo: production kern_stack_top does not equal kern_virt_base + kern_size"
+            );
+            // The module name is positional identity, not a display label:
+            // a forged wire must not pair position 6's image with position 7's
+            // name (DESIGN-02).
+            for (i, module) in self.boot_modules.iter().enumerate() {
+                assert!(
+                    i < MODULE_NAMES.len() && module.name == MODULE_NAMES[i],
+                    "KernelInfo: boot_modules[{i}] name {:?} does not match the canonical position {:?}",
+                    module.name,
+                    MODULE_NAMES.get(i)
+                );
+            }
             assert!(
                 !self.memmap_sources.is_empty(),
                 "KernelInfo: production handoff carries no memory-map source records"
@@ -643,6 +676,16 @@ pub struct MemoryRegion {
 /// C: `NR_BOOT_MODULES` — the user-module tail of `image[NR_BOOT_PROCS]`.
 pub const NR_BOOT_MODULES: usize = 12;
 
+/// Canonical boot-module order and names (DESIGN-02).
+///
+/// This is the shared positional contract: boot-shim loads files in this
+/// order, the kernel binds positions to `BOOT_MODULE_PROC_NRS`, and the strict
+/// gate compares each `BootModule.name` against this table. The array length
+/// pins the count at compile time, so a count change fails both sides.
+pub const MODULE_NAMES: [&str; NR_BOOT_MODULES] = [
+    "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
+];
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BootModule {
@@ -673,10 +716,10 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
             user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0000_0000),
             boot_modules: &[BootModule {
-                name: "vm",
+                name: "ds",
                 start: PhysBytes(0x400000),
                 len: 0x100000,
             }],
@@ -947,6 +990,43 @@ mod tests {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS; // all DtbBootInput
         info.authority = InputObjectId::UefiMemoryMap;
+        info.validate_requiring_sources();
+    }
+
+    #[test]
+    #[should_panic(expected = "production user_sp does not equal USER_STACK_TOP")]
+    fn test_validate_requiring_sources_rejects_noncanonical_user_sp() {
+        let mut info = make_valid_info();
+        info.user_sp = VirBytes(minix_types::USER_STACK_TOP - 0x1000);
+        info.validate_requiring_sources();
+    }
+
+    #[test]
+    #[should_panic(expected = "production syscall_entry does not equal kern_virt_base")]
+    fn test_validate_requiring_sources_rejects_noncanonical_syscall_entry() {
+        let mut info = make_valid_info();
+        info.syscall_entry = VirBytes(info.kern_virt_base.0 + 0x1000);
+        info.validate_requiring_sources();
+    }
+
+    #[test]
+    #[should_panic(expected = "production kern_stack_top does not equal kern_virt_base + kern_size")]
+    fn test_validate_requiring_sources_rejects_noncanonical_stack_top() {
+        let mut info = make_valid_info();
+        info.kern_stack_top = VirBytes(info.kern_virt_base.0 + 0x1000);
+        info.validate_requiring_sources();
+    }
+
+    #[test]
+    #[should_panic(expected = "does not match the canonical position")]
+    fn test_validate_requiring_sources_rejects_misnamed_module_position() {
+        static WRONG_NAME: [BootModule; 1] = [BootModule {
+            name: "mib",
+            start: PhysBytes(0x400000),
+            len: 0x100000,
+        }];
+        let mut info = make_valid_info();
+        info.boot_modules = &WRONG_NAME;
         info.validate_requiring_sources();
     }
 

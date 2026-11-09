@@ -121,7 +121,7 @@ use crate::ebs_pair::{self, PairError, RawOps};
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use core::ffi::c_void;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-use minix_boot::{ARENA_CAP, Serializer, decode_descriptors};
+use minix_boot::{ARENA_CAP, Serializer};
 
 /// The UEFI sender's caller-owned semantic tables (R18 D-1). One boot, one
 /// writer; the wire image is encoded from this storage and the kernel entry
@@ -958,7 +958,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base.0,
         kern.kern_phys_base.0.saturating_add(kern.kern_size),
     );
-    let storage = UEFI_BOOT_STORAGE.get();
+    let storage = UEFI_BOOT_STORAGE.take();
     let module_len = loader::load_boot_modules_into(
         &file_loader,
         alloc_module_pages,
@@ -1120,14 +1120,10 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         .write_startup(&startup[..startup_n])
         .expect("boot-shim: startup-object partition over capacity");
 
-    // The classifier wrote the live prefixes into the storage tables; commit
-    // the lengths the wire descriptors report. From here on the report is the
-    // single semantic view the sender uses — the arena carries no second copy.
-    let descriptors = decode_descriptors(serializer.as_bytes())
-        .expect("boot-shim: handoff descriptors invalid after classification");
-    let memmap_len = (descriptors.memmap_byte_len / 16) as usize;
-    let reserved_len = (descriptors.reserved_byte_len / 16) as usize;
-    storage.commit_map_tables(memmap_len, reserved_len);
+    // The classifier's counts are the same numbers the wire descriptors would
+    // report (commit asserts counts == written). Use them directly; decoding
+    // our own wire here added a needless post-EBS failure path (DESIGN-07).
+    storage.commit_map_tables(classification.conventional, classification.reserved);
     let report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     // The classification must have marked every bootstrap allocation as

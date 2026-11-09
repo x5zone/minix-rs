@@ -140,7 +140,10 @@ pub fn build_kernel_info(
 /// CPU runs, the storage is filled before the wire image is finalized, and it
 /// is read by the same thread before the jump. It is not a general-purpose
 /// shared cell.
-pub struct BootStorageCell(core::cell::UnsafeCell<minix_boot::BootStorage>);
+pub struct BootStorageCell {
+    storage: core::cell::UnsafeCell<minix_boot::BootStorage>,
+    taken: core::sync::atomic::AtomicBool,
+}
 
 // SAFETY: see the type doc — single-threaded boot, one writer, one reader.
 unsafe impl Sync for BootStorageCell {}
@@ -148,15 +151,23 @@ unsafe impl Sync for BootStorageCell {}
 impl BootStorageCell {
     /// An empty cell; usable as a `.bss` static initializer.
     pub const fn new() -> Self {
-        Self(core::cell::UnsafeCell::new(minix_boot::BootStorage::new()))
+        Self {
+            storage: core::cell::UnsafeCell::new(minix_boot::BootStorage::new()),
+            taken: core::sync::atomic::AtomicBool::new(false),
+        }
     }
 
-    /// The storage. Callers must uphold the single-threaded boot contract.
-    #[allow(clippy::mut_from_ref)] // one borrower at a time by the boot contract
-    pub fn get(&self) -> &mut minix_boot::BootStorage {
-        // SAFETY: the boot contract gives this cell exactly one borrower at a
-        // time (no interrupts, no SMP, no re-entry).
-        unsafe { &mut *self.0.get() }
+    /// Take the storage exactly once. A second call is a boot bug and fails
+    /// closed instead of handing out a second `&mut` alias.
+    #[allow(clippy::mut_from_ref)] // the one-shot flag makes this the sole borrow
+    pub fn take(&self) -> &mut minix_boot::BootStorage {
+        assert!(
+            !self.taken.swap(true, core::sync::atomic::Ordering::AcqRel),
+            "BootStorageCell::take called twice — the boot storage has one owner"
+        );
+        // SAFETY: the one-shot flag above proves no other `&mut` was handed
+        // out; the boot contract keeps every access on one thread.
+        unsafe { &mut *self.storage.get() }
     }
 }
 

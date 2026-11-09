@@ -21,7 +21,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_boot::{BootModule, NR_BOOT_MODULES};
+use minix_boot::BootModule;
 use minix_types::{PhysBytes, VirBytes};
 
 /// Path to the kernel ELF (same convention for UEFI ESP and U-Boot FAT).
@@ -64,19 +64,11 @@ pub const MODULES_DIR: &str = "/EFI/minix/modules";
 /// Each name doubles as the file the boot-shim reads under [`MODULES_DIR`] and
 /// as the `p_name` the booted process carries, so the image-packaging step
 /// must install a file with this exact name.
-pub const MODULE_NAMES: &[&str] = &[
-    "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
-];
-
-/// Compile-time guard on the count. `NR_BOOT_MODULES` is the shared
-/// single-source constant from `minix-boot` — the same value the kernel pins
-/// its `BOOT_MODULE_PROC_NRS` array length to (`&[ProcNr; NR_BOOT_MODULES]`).
-/// So if the contract count changes, BOTH boot-shim (this assert) and the
-/// kernel (array type) fail to compile until their lists are updated in
-/// lockstep — the count can no longer drift on one side only. This locks the
-/// count only; the *order* stays a positional contract against the kernel's
-/// `BOOT_MODULE_PROC_NRS` (see the ordering note above).
-const _: () = assert!(MODULE_NAMES.len() == NR_BOOT_MODULES);
+/// The shared canonical list lives in `minix-boot` so the kernel's strict
+/// gate can compare `BootModule.name` against the same positions without
+/// depending on boot-shim (DESIGN-02). The array's type pins the count at
+/// compile time, so a count change fails both sides.
+pub use minix_boot::MODULE_NAMES;
 
 /// Result of computing the kernel's load layout from its ELF header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
