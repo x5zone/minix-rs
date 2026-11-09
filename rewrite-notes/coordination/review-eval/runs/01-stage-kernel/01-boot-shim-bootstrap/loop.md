@@ -1150,3 +1150,18 @@
 
 - FACT-A-03 的 `Type::method` 锚点逃逸是工具文法缺口，登记 B-59。
 - D1 停跑后，设计侧只剩 D2 的差异审查；文档与代码“同错”的整段缺漏无人看。
+
+## R23 前置清债（2026-11-09，不占面板轮）
+
+用户新规则三生效后，R22 的 8 条 ② 欠账必须在进入 R23 前处理；02 篇的 `F-R14-04` 已获准延至 02 轮，其余逐条：
+
+- ✅ F-R17-02：UEFI 测试辅助三件套 + `UefiPoolAllocator` + 四个 static 收进 `qemu-test-kernels` feature；16 个测试内核 manifest 同步；生产 `fw-*-uefi` 不链接。提交 `cdba3058d`。
+- ✅ F-R17-03：`dtb_copy::PHASE` 从 `static mut` 改为 `PhaseCell(UnsafeCell<Phase>)`，`Sync` 安全论证集中一处；无 `static mut`。提交 `63971358d`。
+- ✅ F-R20-01：`BootPrepareResult.bump: PhysRange`、`arena_pa/root_page: PhysBytes`；`enter_kernel_image_v1` 收 `PhysBytes`。提交 `cdba3058d`。
+- ✅ F-R20-02：`PhysRange`（构造拒绝反向）统一 `FreeRangeSet::cut`，调用点不再传 `(start,size)`。提交 `cdba3058d`。
+- ✅ F-R20-03：四个 `static mut` 测试表 → write-once `TestMapTables`（AtomicBool 单写 + Release 发布，初始化后只读），feature 门控，生产不链接。提交 `63971358d`。
+- ✅ F-R20-04：补 reserved / from_memmap / dtb 覆盖的溢出/反向负控；`minix-boot` 192、`minix-kernel` 862+8。提交 `cdba3058d`。
+- ⏳ F-R17-01（`BootShim` 单实现 trait 去留）与 F-R17-04（`KernelInfo` 13→14 字段 ABI）**待用户人工裁决**，按规则三计阻塞，不进入 R23。
+- ✅ F-R14-04（Direct Map / 02 篇）已按用户许可标注延至 02 文档轮。
+
+回归：`minix-boot` 192、`boot-shim --lib` 135、`minix-kernel --features mock` 862+8、`minix-arch` 287；三 QEMU 门 PASS（日志 `logs/round22-*.log` 与 `/tmp/test-shim-bootmarks-*`）。
