@@ -27,6 +27,9 @@ import argparse
 import re
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -34,6 +37,8 @@ INLINE_LINK = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'][^\"']*[\"'])
 SEPARATOR_CELL = re.compile(r"^:?-+:?$")
 EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "ftp://", "file://", "data:")
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+HTML_TAG = re.compile(r"<[^>]+>")
 
 
 def mask_code_spans(line: str) -> str:
@@ -179,12 +184,67 @@ def check_tables(text: str) -> list:
     return issues
 
 
+
+def slugify_heading(text: str) -> str:
+    """GitHub-style heading slug (lowercase, punctuation removed, spaces -> -)."""
+    s = HTML_TAG.sub("", text)
+    s = s.replace("`", "")
+    s = s.lower()
+    out = []
+    for ch in s:
+        if ch.isalnum() or ch in ("_", "-") or ch.isspace():
+            out.append(ch)
+    s = "".join(out).strip()
+    return re.sub(r"\s+", "-", s)
+
+
+def heading_anchors(text: str) -> set:
+    """All anchor slugs in a markdown document, including GitHub duplicates."""
+    anchors = set()
+    counts = {}
+    in_fence = False
+    for raw in text.splitlines():
+        if FENCE.match(raw):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = HEADING.match(raw)
+        if not m:
+            continue
+        base = slugify_heading(m.group(2))
+        n = counts.get(base, 0)
+        anchors.add(base if n == 0 else f"{base}-{n}")
+        counts[base] = n + 1
+    return anchors
+
+
+def check_anchor(path: Path, target: str, lineno: int, cache: dict) -> list:
+    file_part, _, frag = target.partition("#")
+    frag = urllib.parse.unquote(frag)
+    if not frag:
+        return []
+    if file_part:
+        resolved = (path.parent / file_part).resolve()
+    else:
+        resolved = path.resolve()
+    if not resolved.exists():
+        return []  # the path check reports the missing file
+    if resolved not in cache:
+        cache[resolved] = heading_anchors(
+            resolved.read_text(encoding="utf-8", errors="replace")
+        )
+    if frag not in cache[resolved]:
+        return [(lineno, f"标题锚点解析不到：{target}（目标文件无锚点 #{frag}）")]
+    return []
+
+
 def strip_fragment(target: str) -> str:
     return target.split("#", 1)[0]
 
 
-def check_links(path: Path, text: str) -> list:
-    """Return `(lineno, message)` issues for internal `.md` links."""
+def check_links(path: Path, text: str, cache: dict) -> list:
+    """Return `(lineno, message)` issues for internal `.md` links and anchors."""
     issues = []
     for lineno, line in iter_markup_lines(text):
         for match in INLINE_LINK.finditer(line):
@@ -196,7 +256,10 @@ def check_links(path: Path, text: str) -> list:
                 # Non-http schemes (e.g. `os/kernel/src/lib.rs:fn foo`) are
                 # source-symbol anchors, handled by anchor-resolve.sh.
                 continue
-            if target.startswith("#") or not target:
+            if target.startswith("#"):
+                issues.extend(check_anchor(path, target, lineno, cache))
+                continue
+            if not target:
                 continue
             if low.startswith("/"):
                 # Site-absolute targets are not doc-relative; out of scope.
@@ -212,12 +275,37 @@ def check_links(path: Path, text: str) -> list:
                         f"内部 .md 链接解析不到：{target}（按文档目录解析为 {resolved}）",
                     )
                 )
+            else:
+                issues.extend(check_anchor(path, target, lineno, cache))
     return issues
 
 
-def check_file(path: Path) -> list:
+def check_external(path: Path, text: str) -> list:
+    """Return `(lineno, message)` issues for unreachable http(s) links."""
+    issues = []
+    for lineno, line in iter_markup_lines(text):
+        for match in INLINE_LINK.finditer(line):
+            target = match.group(1)
+            if not target.lower().startswith(("http://", "https://")):
+                continue
+            request = urllib.request.Request(target, method="HEAD")
+            try:
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    if response.status >= 400:
+                        issues.append((lineno, f"外部链接不可达（HTTP {response.status}）：{target}"))
+            except urllib.error.HTTPError as error:
+                issues.append((lineno, f"外部链接不可达（HTTP {error.code}）：{target}"))
+            except Exception as error:
+                issues.append((lineno, f"外部链接不可达（{error}）：{target}"))
+    return issues
+
+
+def check_file(path: Path, external: bool, cache: dict) -> list:
     text = path.read_text(encoding="utf-8", errors="replace")
-    return check_tables(text) + check_links(path, text)
+    issues = check_tables(text) + check_links(path, text, cache)
+    if external:
+        issues += check_external(path, text)
+    return issues
 
 
 def iter_files(raw_paths: list) -> list:
@@ -237,14 +325,15 @@ def iter_files(raw_paths: list) -> list:
     return files
 
 
-def run(paths: list) -> int:
+def run(paths: list, external: bool = False) -> int:
     files = iter_files(paths)
     if not files:
         print("doc-structure-check: 没有可检查的 .md 文件", file=sys.stderr)
         return 2
     total = 0
+    cache = {}
     for path in files:
-        issues = check_file(path)
+        issues = check_file(path, external, cache)
         for lineno, message in issues:
             print(f"⛔ {path}:{lineno}: {message}")
             total += 1
@@ -275,7 +364,7 @@ def self_test() -> int:
         checks = []
 
         p = write("good.md", good_table + "[ok](target.md)\n")
-        write("target.md", "# target\n")
+        write("target.md", "# target\n\n## Section\n")
         checks.append(("正夹具（合法表 + 可解析链接）", p, 0))
 
         p = write("split.md", split_table)
@@ -298,13 +387,16 @@ def self_test() -> int:
 
         p = write(
             "anchor.md",
-            "[file](target.md#section)\n[anchor](#local)\n[sym](os/x.rs:fn y)\n",
+            "## Local\n\n[file](target.md#section)\n[anchor](#local)\n[sym](os/x.rs:fn y)\n",
         )
-        checks.append(("正夹具（锚点剥掉后按文件解析；纯锚点与符号链接不查）", p, 0))
+        checks.append(("正夹具（标题锚点可解析；符号链接不查）", p, 0))
+
+        p = write("bad-anchor.md", "[bad](target.md#nope)\n")
+        checks.append(("负夹具（标题锚点不存在）", p, 1))
 
         failures = 0
         for label, path, expected in checks:
-            got = len(check_file(path))
+            got = len(check_file(path, False, {}))
             ok = (got == 0) if expected == 0 else (got > 0)
             print(f"{'PASS' if ok else 'FAIL'} self-test: {label}（问题数 {got}）")
             failures += 0 if ok else 1
@@ -323,12 +415,13 @@ def main() -> int:
     )
     parser.add_argument("paths", nargs="*", help="要检查的 .md 文件或目录")
     parser.add_argument("--self-test", action="store_true", help="用正/负 fixture 测试检查器自身")
+    parser.add_argument("--check-external", action="store_true", help="额外检查 http(s) 链接可达性（网络）")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
     if not args.paths:
         parser.error("至少给一个 .md 文件或目录（或用 --self-test）")
-    return run(args.paths)
+    return run(args.paths, args.check_external)
 
 
 if __name__ == "__main__":

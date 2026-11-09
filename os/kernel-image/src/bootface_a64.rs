@@ -51,6 +51,7 @@
 
 use core::slice;
 
+use crate::bootface_common;
 use minix_boot::{BootModule, DTB, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource};
 use minix_types::{PhysBytes, VirBytes};
 
@@ -170,7 +171,9 @@ pub extern "C" fn bootface_a64() -> ! {
         crate::halt();
     }
     let fdt_total = u32::from_be_bytes(head[4..8].try_into().unwrap_or([0; 4])) as usize;
-    if fdt_total < 40 || !dtb_bounded(DTB_PA, fdt_total) {
+    if fdt_total < 40
+        || !bootface_common::dtb_bounded(DTB_PA, fdt_total, DRAM_BASE, KERN_PHYS_BASE, KERN_SIZE)
+    {
         say("### minix-rs kernel image: DTB blob escapes DRAM bound — halting\n");
         crate::halt();
     }
@@ -267,7 +270,20 @@ pub extern "C" fn bootface_a64() -> ! {
 
     // 4. The 12 modules: locate the table (name alignment check) → copy the
     //    source straight into bump pages.
-    if place_modules(table, memmap, names_pool).is_none() {
+    let module_table = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TABLE) };
+    if bootface_common::place_modules(
+        table,
+        memmap,
+        names_pool,
+        module_table,
+        BUMP_BASE,
+        BUMP_BASE + BUMP_SIZE,
+        bump_alloc_pages,
+        say,
+        say_hex,
+    )
+    .is_none()
+    {
         say("### minix-rs kernel image: module placement failed — halting\n");
         crate::halt();
     }
@@ -395,128 +411,6 @@ pub extern "C" fn bootface_a64() -> ! {
 }
 
 // ── DTB face ───────────────────────────────────────────────────
-
-/// Read `/chosen`'s `opensbi,boot-file-table` (big-endian cells; both 4- and
-/// 8-byte forms are accepted; the property name follows the same convention as
-/// the riscv gate assembly tool, whose gate script writes it with the same
-/// `fdtput` shape).
-///
-/// Lookup goes through `all_nodes` rather than `find_node` (a settled finding:
-/// fdt 0.1.5's `find_node` returns None for the blob QEMU rebuilds for a
-/// `-kernel` direct-kernel chain — `all_nodes` and a host-side python parse both
-/// see /chosen, while `find_node` does not; names are matched with the `@`
-/// suffix stripped, consistent with `find_node`'s lenient semantics).
-/// DTB block bound gate: totalsize is self-described, but the whole block must
-/// lie inside the DRAM shape.
-fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
-    let Some(end) = dtb_pa.checked_add(total as u64) else {
-        return false;
-    };
-    // The collected projections and source records land in this image's
-    // `.bss`, inside [KERN_PHYS_BASE, KERN_PHYS_BASE + KERN_SIZE). A source
-    // blob overlapping that image would be overwritten while later bytes are
-    // still unread, so the bound gate rejects the whole image range too.
-    dtb_pa >= DRAM_BASE
-        && end <= 0x1_0000_0000
-        && (end <= KERN_PHYS_BASE || dtb_pa >= KERN_PHYS_BASE + KERN_SIZE)
-}
-
-/// Landing descriptor table for the 12 modules (`.bss`, read-only once
-/// assembled).
-///
-/// Position is primary and the name is secondary / the source range must clear
-/// three gates / names go into the pool — the semantics match the riscv half's
-/// `place_modules` item by item (straight copy and the full-width memmap
-/// gate) and are not repeated here; the only difference is the bump pool base
-/// (the aarch64 form).
-fn place_modules(table: &BootFileTable, memmap: &[MemoryRegion], names_pool: u64) -> Option<()> {
-    let entries = table.valid_entries();
-    if entries.len() < NR_BOOT_MODULES {
-        say("  table holds 0x");
-        say_hex(entries.len() as u64);
-        say(" entries, kernel contract needs 0x");
-        say_hex(NR_BOOT_MODULES as u64);
-        say("\n");
-        return None;
-    }
-    for i in 0..NR_BOOT_MODULES {
-        let entry = &entries[i];
-        let expect = &NAME_POOL[i];
-        let want_n = expect.iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
-        let base = entry
-            .path
-            .iter()
-            .rposition(|&b| b == b'/')
-            .map_or(0, |p| p + 1);
-        let got = &entry.path[base..];
-        let got_n = got.iter().position(|&b| b == 0).unwrap_or(got.len());
-        if got_n != want_n || got[..want_n] != expect[..want_n] {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" path basename mismatches contract order\n");
-            return None;
-        }
-        let len = entry.len as usize;
-        if len == 0 {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" length 0\n");
-            return None;
-        }
-        if !in_memmap_range(memmap, entry.phys_addr, entry.len) {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" source 0x");
-            say_hex(entry.phys_addr);
-            say("+0x");
-            say_hex(entry.len);
-            say(" escapes memmap\n");
-            return None;
-        }
-        if entry.phys_addr < BUMP_BASE + BUMP_SIZE && entry.phys_addr + entry.len > BUMP_BASE {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" source overlaps bump pool\n");
-            return None;
-        }
-        let pages = len.div_ceil(4096);
-        let dest = bump_alloc_pages(pages)?;
-        // SAFETY: the source just passed the full-width memmap gate and does
-        // not overlap the bump pool; dest = exclusive bump pages (monotonic
-        // cursor), and the copy length is ≤ the length of both intervals.
-        unsafe {
-            core::ptr::copy_nonoverlapping(entry.phys_addr as *const u8, dest as *mut u8, len);
-            core::ptr::write_bytes((dest as *mut u8).add(len), 0, pages * 4096 - len);
-        }
-        let slot = names_pool + (i as u64) * NAME_SLOT as u64;
-        // SAFETY: source = the NAME_POOL byte cells (materialized at the base
-        // call site); destination = name-pool slot i (i < 12 ⇒ offset < one
-        // page).
-        unsafe {
-            core::ptr::copy_nonoverlapping(NAME_POOL[i].as_ptr(), slot as *mut u8, NAME_SLOT);
-        }
-        let n = NAME_POOL[i]
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(NAME_SLOT);
-        let landed: &'static str = unsafe {
-            // SAFETY: the bytes come from the ASCII literal pool; the backing
-            // is an exclusive physical page.
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(slot as *const u8, n))
-        };
-        // SAFETY: single hart on the boot face; each slot is written once and
-        // then read-only.
-        unsafe {
-            MODULE_TABLE[i] = BootModule {
-                name: landed,
-                start: PhysBytes(dest),
-                len,
-            };
-        }
-    }
-    Some(())
-}
-
 // ── Serial face (no heap: fixed-size strings plus hand-rolled hex; PL011
 // identity PA path) ──
 

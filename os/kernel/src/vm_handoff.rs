@@ -47,7 +47,7 @@ use minix_arch::arch::frame::VmBootAllocator;
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{
     BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS, PhysBytes,
-    VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED, VM_BOOT_HANDOFF_MAX_IDENT,
+    VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED,
     VM_BOOT_HANDOFF_MAX_MODULES, VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION, PhysRange,
     VmBootHandoff,
 };
@@ -579,16 +579,9 @@ pub fn build_vm_handoff(
         "kernel tasks + boot modules must fill the boot image table"
     );
 
-    // Handoff v6 identity windows: retired (PD-22 step 2 final). The
-    // producer returns an empty list, VM rejects a non-empty field, and MMIO
-    // consumers use the kernel device window. The field remains part of the
-    // current v8 wire layout (always empty; removing it would change the
-    // struct size again); v6/v7 are rejected by the exact-version check.
-    // PD-22 final: identity windows retired — always empty, always zero.
-    // The v8 wire field is kept (removing it would change struct size);
-    // VM rejects a non-empty field (check-and-reject). R17 DESIGN-07.
-    let kern_ident = [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT];
-    let kern_ident_count = 0usize;
+    // Handoff v9 removed the always-empty v6 identity-window field. MMIO
+    // consumers use the kernel device window; v6/v7/v8 senders are rejected by
+    // the exact-version check.
 
     // Production reaches here after kmain Phase B.5 initialized the
     // kernel-information page. Staged bootstrap test kernels call
@@ -658,8 +651,6 @@ pub fn build_vm_handoff(
         free_regions: classification.free_regions,
         deducted: classification.deducted,
         modules,
-        kern_ident_count: kern_ident_count as u32,
-        kern_ident,
         boot_procs,
     }
 }
@@ -736,15 +727,18 @@ pub(crate) fn classify_regions(
     let mut free = FreeRangeSet::from_memmap(memmap);
 
     let mut record = DeductionCollector::new();
-    record.push(root_paddr.0, PAGE_SIZE);
-    if let Some((base, end)) = boot_bump {
-        record.push(base, end.saturating_sub(base));
-    }
-    for &(start, end) in used_suffixes {
-        if start < end {
-            record.push(start, end - start);
-        }
-    }
+    // Single source for the membership shape: the test entry reuses
+    // `for_each_live_bootstrap` (kernel span empty here; the raw test memmap
+    // has no kernel image), then adds the test-only reserved-module spans.
+    for_each_live_bootstrap(
+        PhysBytes(0),
+        0,
+        &[],
+        Some(root_paddr),
+        boot_bump,
+        used_suffixes,
+        |base, len| record.push(base, len),
+    );
     for &(start, len) in reserved_modules {
         record.push(start, len);
     }
@@ -1195,18 +1189,6 @@ mod tests {
     }
 
     // ── identity-window construction ──
-
-    #[test]
-    fn test_identity_windows_are_retired() {
-        // PD-22 step 2 final: identity windows RETIRED — the producer must
-        // return an empty list (strong form: no VA=PA mapping in process
-        // roots). The device window (slot-mapped high-half) replaced the
-        // identity replay entirely.
-        // PD-22 final: identity windows retired — the field is always empty.
-        // The wire layout keeps the slot; build_vm_handoff writes zeros.
-        // No function to test — the invariant is "kern_ident_count == 0 in
-        // the handoff struct" which is checked by the wire-format gate.
-    }
 
     #[test]
     fn test_arch_mmio_identity_regions_are_page_aligned_and_sorted() {

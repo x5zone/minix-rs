@@ -61,6 +61,7 @@
 
 use core::slice;
 
+use crate::bootface_common;
 use minix_boot::{
     BootModule, DTB, DtbMemoryMap, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource,
 };
@@ -180,7 +181,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
         crate::halt();
     }
     let fdt_total = u32::from_be_bytes(head[4..8].try_into().unwrap_or([0; 4])) as usize;
-    if fdt_total < 40 || !dtb_bounded(dtb_pa, fdt_total) {
+    if fdt_total < 40
+        || !bootface_common::dtb_bounded(dtb_pa, fdt_total, DRAM_BASE, KERN_PHYS_BASE, KERN_SIZE)
+    {
         say("### minix-rs kernel image: DTB blob escapes DRAM bound — halting\n");
         crate::halt();
     }
@@ -284,7 +287,20 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // 4. 12 modules: locate the table (basename check) → copy each source
     //    straight into bump pages (the source has passed the disjointness gate
     //    against the pool, so `copy_nonoverlapping` cannot overlap).
-    if place_modules(table, memmap, names_pool).is_none() {
+    let module_table = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TABLE) };
+    if bootface_common::place_modules(
+        table,
+        memmap,
+        names_pool,
+        module_table,
+        bump_pool_base(),
+        bump_end_bound(),
+        bump_alloc_pages,
+        say,
+        say_hex,
+    )
+    .is_none()
+    {
         say("### minix-rs kernel image: module placement failed — halting\n");
         crate::halt();
     }
@@ -429,41 +445,6 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
 // (clip_firmware has moved to minix-boot's parameterized `clip_reserved`, and
 // its three compile-time guard assertions moved along (_FW_PURE/_FW_CROSS/
 // pass-through unchanged).)
-
-/// Read `/chosen`'s `opensbi,boot-file-table` (big-endian cell; both 4- and
-/// 8-byte widths accepted; the property name follows the same convention as
-/// the riscv gate assembly tool, and the gate script's fdtput uses the same
-/// shape).
-///
-/// The lookup goes through `all_nodes` rather than `find_node`, matching the
-/// aarch64 half: this function is the load-bearing read of the OpenSBI chain
-/// (the main table-address channel), and upstream fdt 0.1.5's `find_node`
-/// returns None for a firmware-rebuilt blob on the sibling chain (observed on
-/// the aarch64 direct-kernel chain); readings on the current riscv chain show
-/// find_node works on this chain's blob, and switching to the full-tree walk is
-/// a zero-behavior-change fallback unification that guards against future DTB
-/// shape drift hitting the same defect.
-/// DTB blob bound gate: totalsize is self-describing, but the whole blob must
-/// be proven to lie inside the addressable DRAM shape — `[DRAM_BASE,
-/// 0x1_0000_0000)` is this platform's (QEMU virt base + 4GiB lower bound)
-/// conservative physical memory upper bound; larger blobs or higher addresses
-/// are rejected outright rather than handing `Fdt::new` an out-of-bounds
-/// window. The real memmap parse happens afterwards (chicken and egg: the tree
-/// can only be walked once the header is known), so this uses the physical form
-/// rather than the lane's values.
-fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
-    let Some(end) = dtb_pa.checked_add(total as u64) else {
-        return false;
-    };
-    // The collected projections and source records land in this image's
-    // `.bss`, inside [KERN_PHYS_BASE, KERN_PHYS_BASE + KERN_SIZE). A source
-    // blob overlapping that image would be overwritten while later bytes are
-    // still unread, so the bound gate rejects the whole image range too.
-    dtb_pa >= DRAM_BASE
-        && end <= 0x1_0000_0000
-        && (end <= KERN_PHYS_BASE || dtb_pa >= KERN_PHYS_BASE + KERN_SIZE)
-}
-
 // ── BootFileTable consumption (kernel-image shape: sources copied straight
 //    into physical bump pages, zero heap) ──
 
@@ -476,148 +457,6 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
         len: 0,
     }
 }; NR_BOOT_MODULES];
-
-/// Consume the first `NR_BOOT_MODULES` entries at their contract positions and
-/// copy the sources straight into bump pages; too few entries, a misplaced
-/// name, a source escaping the memmap, a source overlapping the pool, or pool
-/// exhaustion are each reported by name and return `None` (matching the
-/// fail-fast semantics of `load_boot_modules_into` in loader.rs —
-/// install errors surface on this leg instead of handing the kernel half a
-/// module set).
-///
-/// Why copy directly from the source instead of through staging: the early
-/// design kept a 1 MiB physical scratch for a two-stage copy, but once mfs
-/// embeds an 8 MiB imgrd a single module reaches ~8.9 MiB, blowing the scratch
-/// budget — and the staging existed only to check the length before copying.
-/// `in_memmap_range` already proves the whole source width lies inside the
-/// memmap and the disjointness gate already rules out overlap with the bump
-/// pool, so `copy_nonoverlapping` directly is sufficient (no overlap UB);
-/// dropping the staging both saves memory and removes the size ceiling.
-///
-/// Position primary, name secondary: the table format itself promises no
-/// ordering (a 16-byte slot may hold a kernel slot), so pure positional
-/// consumption would silently treat a misplaced byte stream as some module.
-/// The check compares "the last segment of the in-table path (split on `/`,
-/// matching loader.rs's ESP semantics) byte-for-byte against the expected name
-/// literal" — both the table RAM bytes and the call-site literals are view-safe
-/// shapes and introduce no baked-pointer dereference.
-///
-/// Three gates on the source range: len non-zero; the whole `phys_addr..+len`
-/// inside the memmap (an out-of-range read = fault → warm re-entry); no overlap
-/// with the bump pool (overlapping a direct copy is UB).
-///
-/// `names_pool` is the physical bump page base: the pointer field of
-/// `BootModule.name` must also be a physical address — the kernel's
-/// `store_kernel_info` reads `module.name.as_bytes()` once at the `arch_boot`
-/// entry, before the bootstrap root is built and before `satp` is written
-/// (MMU off, pure physical-address view; os/kernel/src/lib.rs:fn
-/// store_kernel_info), and a baked VMA handed in there blows up on the spot
-/// as well. After the byte-pool slot (pure data, call-site `auipc` base) is
-/// copied into the physical name pool, the fat pointer is assembled in place —
-/// reachable from both views.
-///
-/// The aarch64 half's [`place_modules`] is clause-by-clause identical to this
-/// function (the only difference is the bump pool base); the two point at each
-/// other, so keep them in sync when changing the name gate (structural merging
-/// is out of scope).
-fn place_modules(table: &BootFileTable, memmap: &[MemoryRegion], names_pool: u64) -> Option<()> {
-    let entries = table.valid_entries();
-    if entries.len() < NR_BOOT_MODULES {
-        say("  table holds 0x");
-        say_hex(entries.len() as u64);
-        say(" entries, kernel contract needs 0x");
-        say_hex(NR_BOOT_MODULES as u64);
-        say("\n");
-        return None;
-    }
-    for i in 0..NR_BOOT_MODULES {
-        let entry = &entries[i];
-        // Name check gate: the in-table path basename == the prefix of
-        // byte-pool slot i.
-        let expect = &NAME_POOL[i];
-        let want_n = expect.iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
-        let base = entry
-            .path
-            .iter()
-            .rposition(|&b| b == b'/')
-            .map_or(0, |p| p + 1);
-        let got = &entry.path[base..];
-        let got_n = got.iter().position(|&b| b == 0).unwrap_or(got.len());
-        if got_n != want_n || got[..want_n] != expect[..want_n] {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" path basename mismatches contract order\n");
-            return None;
-        }
-        let len = entry.len as usize;
-        if len == 0 {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" length 0\n");
-            return None;
-        }
-        if !in_memmap_range(memmap, entry.phys_addr, entry.len) {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" source 0x");
-            say_hex(entry.phys_addr);
-            say("+0x");
-            say_hex(entry.len);
-            say(" escapes memmap\n");
-            return None;
-        }
-        if entry.phys_addr < bump_end_bound() && entry.phys_addr + entry.len > bump_pool_base() {
-            say("  module slot 0x");
-            say_hex(i as u64);
-            say(" source overlaps bump pool\n");
-            return None;
-        }
-        let pages = len.div_ceil(4096);
-        let dest = bump_alloc_pages(pages)?;
-        // SAFETY: the source range has just passed the full-width memmap gate
-        // and does not overlap the bump pool (where dest lives); dest = exclusive
-        // bump pages (the cursor advances monotonically without overlap), and the
-        // copy length never exceeds either range's length.
-        unsafe {
-            core::ptr::copy_nonoverlapping(entry.phys_addr as *const u8, dest as *mut u8, len);
-            core::ptr::write_bytes((dest as *mut u8).add(len), 0, pages * 4096 - len);
-        }
-        // Name into the pool: byte-pool slot i (16B, zero padding included) is
-        // copied into the physical name pool and the fat pointer points at the
-        // pool slot — a pure data read that never touches a baked pointer.
-        let slot = names_pool + (i as u64) * NAME_SLOT as u64;
-        // SAFETY: source = the `NAME_POOL` byte cell (base materialized by the
-        // call-site `auipc`, not a baked pointer; reading 16B stays within the
-        // pool); destination = slot i inside the exclusive name pool (i < 12 ⇒
-        // offset < 192 ≤ one page). The length is the byte count before the
-        // first zero boundary in the pool: zero padding never enters the `&str`
-        // (the kernel's strlcpy semantics only need the prefix).
-        unsafe {
-            core::ptr::copy_nonoverlapping(NAME_POOL[i].as_ptr(), slot as *mut u8, NAME_SLOT);
-        }
-        let n = NAME_POOL[i]
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(NAME_SLOT);
-        let landed: &'static str = unsafe {
-            // SAFETY: the bytes come from an ASCII literal pool (all < 0x80
-            // before the zero truncation); the backing is an exclusive physical
-            // page with the same lifetime as `MODULE_TABLE`.
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(slot as *const u8, n))
-        };
-        // SAFETY: single hart on the boot face; each slot is written once and
-        // read-only afterwards.
-        unsafe {
-            MODULE_TABLE[i] = BootModule {
-                name: landed,
-                start: PhysBytes(dest),
-                len,
-            };
-        }
-    }
-    Some(())
-}
-
 // ── Console face (no heap: fixed-length strings + hand-written hex) ─────────
 //
 // `say` / `say_hex` are character-for-character identical to the aarch64 half,

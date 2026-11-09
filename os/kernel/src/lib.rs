@@ -397,6 +397,16 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
     )
 }
 
+macro_rules! boot_stage {
+    ($msg:expr) => {{
+        #[cfg(not(feature = "mock"))]
+        {
+            use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+            Console::write_str($msg);
+        }
+    }};
+}
+
 /// T1 2c/3b sender-side entry: build the bootstrap root, patch the runtime
 /// fields into the already-serialized arena, then absolute-jump into the
 /// standalone image.
@@ -408,6 +418,7 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 /// part is only the jump register convention: aarch64 passes the arena in
 /// `x0`, x86-64 in `rbx` (the image trampoline moves it to `rdi` after the
 /// `.bss` clear).
+
 #[cfg(all(
     not(feature = "mock"),
     any(
@@ -416,12 +427,13 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
         target_arch = "riscv64"
     )
 ))]
-pub fn enter_kernel_image_v1(
+
+pub fn prepare_kernel_image_v1(
     arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
     shim_windows: &[(u64, u64)],
-) -> ! {
+) -> (u64, u64) {
     let arena_pa = arena_pa.0;
     // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
     // face names the type explicitly); the v1 sender names it here instead.
@@ -510,6 +522,42 @@ pub fn enter_kernel_image_v1(
         },
     );
     let entry = core::hint::black_box(report.kern_virt_base.0);
+    (entry, arena_pa)
+}
+
+/// Build the root, then jump into the standalone image (stable public entry).
+#[cfg(all(
+    not(feature = "mock"),
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "riscv64"
+    )
+))]
+pub fn enter_kernel_image_v1(
+    arena_pa: PhysBytes,
+    report: &minix_boot::BootReport<'_>,
+    root_page: PhysBytes,
+    shim_windows: &[(u64, u64)],
+) -> ! {
+    let (entry, arena) = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
+    jump_kernel_image_v1(entry, arena)
+}
+
+/// Absolute jump into the standalone image's high-half entry.
+///
+/// Split from [`prepare_kernel_image_v1`] so the shim can (once TODO-09 is
+/// resolved) print the post-root/pre-jump milestone on its own raw-serial
+/// path.
+#[cfg(all(
+    not(feature = "mock"),
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "riscv64"
+    )
+))]
+pub fn jump_kernel_image_v1(entry: u64, arena_pa: u64) -> ! {
     // SAFETY: paging is enabled and `entry` maps the executable kernel-image
     // `_start`; the arena is a valid physical address below the identity end.
     // The handoff register is bound to a fixed operand so LLVM cannot
@@ -544,7 +592,11 @@ pub fn enter_kernel_image_v1(
             options(noreturn)
         );
     }
+
 }
+
+
+
 
 /// x86-64 machine entry into the standalone image.
 ///
@@ -886,15 +938,6 @@ fn boot_validate_and_prepare<A: BootArch>(
 ///    pre_init.c:230-236, pg_utils.c:162/186/204/247
 /// Boot per-stage markers (EarlyConsole=COM1, same approach as debug.rs's
 /// CurrentEarlyConsole usage; compiled out entirely under mock builds).
-macro_rules! boot_stage {
-    ($msg:expr) => {{
-        #[cfg(not(feature = "mock"))]
-        {
-            use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
-            Console::write_str($msg);
-        }
-    }};
-}
 
 pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
     // Step 0: validate KernelInfo, register the allocator, and collect the

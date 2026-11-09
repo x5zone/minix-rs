@@ -288,9 +288,10 @@ pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCe
 ///
 /// 256 = the 127 reserved windows observed on the real machine
 /// (2026-09-21: `ident-windows res=127`), doubled and rounded up to the next
-/// power of two. It is an independent capacity: the VM handoff's identity
-/// limit is `VM_BOOT_HANDOFF_MAX_IDENT = 64`, and the two are not the same
-/// constant. Overflow fails fast in `store_kernel_info`, never truncates.
+/// power of two. It is an independent capacity: the VM handoff no longer
+/// carries identity windows (v9 removed the always-empty `kern_ident` field),
+/// so this store is not tied to a wire constant. Overflow fails fast in
+/// `store_kernel_info`, never truncates.
 pub(crate) const RESERVED_REGION_STORE_LEN: usize = 256;
 
 pub(crate) static RESERVED_REGION_STORE: SyncUnsafeCell<

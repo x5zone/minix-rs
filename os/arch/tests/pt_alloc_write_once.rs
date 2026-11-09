@@ -1,6 +1,5 @@
 //! Write-once contract for the page-table allocator singletons: a second
-//! `register` / `register_free` must abort in debug builds and be refused
-//! (not overwrite) in release builds.
+//! `register` / `register_free` must abort in **all** build profiles (F-R23-05).
 //!
 //! This lives in `tests/` on purpose: the singleton state is process-global,
 //! and the in-crate test binary already registers an allocator for the
@@ -34,16 +33,12 @@ fn register_is_write_once() {
     assert!(pt_alloc::is_registered());
     assert_eq!(pt_alloc::alloc_pt_page().unwrap().0, PhysBytes(FIRST_ALLOC));
 
-    // Second registration: debug panics, release refuses without writing.
+    // Second registration fails closed in every profile.
     let second = std::panic::catch_unwind(|| pt_alloc::register(alloc_second));
-    if cfg!(debug_assertions) {
-        assert!(second.is_err(), "double register must panic in debug builds");
-    } else {
-        assert!(
-            second.is_ok(),
-            "double register must be refused (not panic) in release builds"
-        );
-    }
+    assert!(
+        second.is_err(),
+        "double register must panic in all build profiles"
+    );
 
     // Either way the first allocator stays installed.
     assert_eq!(
@@ -74,17 +69,10 @@ fn register_free_is_write_once() {
     assert_eq!(FREED.load(Ordering::Relaxed), 0x1001);
 
     let second = std::panic::catch_unwind(|| pt_alloc::register_free(free_second));
-    if cfg!(debug_assertions) {
-        assert!(
-            second.is_err(),
-            "double register_free must panic in debug builds"
-        );
-    } else {
-        assert!(
-            second.is_ok(),
-            "double register_free must be refused (not panic) in release builds"
-        );
-    }
+    assert!(
+        second.is_err(),
+        "double register_free must panic in all build profiles"
+    );
 
     pt_alloc::free_pt_page(PhysBytes(0x2000));
     assert_eq!(

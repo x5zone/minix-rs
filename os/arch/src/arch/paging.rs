@@ -53,9 +53,9 @@ bitflags::bitflags! {
         //   be Normal Non-cacheable (an entirely different MAIR byte):
         //   Device memory additionally forbids speculation, gathering and
         //   reordering, which is the property MMIO registers require.
-        // x86-64: not encoded yet — no mapping in this tree routes x86
-        //   device memory through `PageFlags` today (device access is port
-        //   I/O; the LAPIC MMIO window keeps its current treatment).
+        // x86-64: encoded as PWT|PCD (uncached write-through) in the leaf;
+        //   the LAPIC/IO-APIC high-half device window therefore does not
+        //   depend on firmware MTRRs.
         // riscv64: no encoding — Sv39 PTEs carry no cacheability bits.
         //
         // [ARCH: mmio-device].

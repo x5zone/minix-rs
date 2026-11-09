@@ -93,12 +93,11 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 ///   VM rejects a non-empty field (check-and-reject). (The kernel-side
 ///   `vm_boot_exclusions` list is internal to first-allocation protection;
 ///   it is not a handoff field.)
-pub const VM_BOOT_HANDOFF_VERSION: u32 = 8;
-
-/// Reserved capacity of the retired version-6 identity-window field (64).
-/// Since PD-22 step 2 final the producer writes zero entries and VM rejects a
-/// non-empty field; the constant only keeps the v8 struct size stable.
-pub const VM_BOOT_HANDOFF_MAX_IDENT: usize = 64;
+/// - 9: `kern_ident` / `kern_ident_count` / `VM_BOOT_HANDOFF_MAX_IDENT`
+///   removed. The field had been always empty since v8; carrying 1 KiB of
+///   zeros only kept the v8 struct size. The struct shrinks and the exact
+///   version check rejects v8 senders.
+pub const VM_BOOT_HANDOFF_VERSION: u32 = 9;
 
 /// Maximum free-region entries the handoff page carries.
 ///
@@ -352,13 +351,6 @@ pub struct VmBootHandoff {
     /// module except VM itself — VM's blob was reclaimed after its ELF was
     /// copied, C: protect.c:450-451).
     pub modules: [HandoffModule; VM_BOOT_HANDOFF_MAX_MODULES],
-    /// Valid entries in `kern_ident`.
-    pub kern_ident_count: u32,
-    /// Kernel runtime identity windows (version 6). Always empty since
-    /// PD-22 step 2 final retired the identity replay; the field remains in
-    /// the v8 wire layout for size stability, and VM refuses a non-empty
-    /// value (check-and-reject).
-    pub kern_ident: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT],
     /// C: `kinfo.boot_procs[NR_BOOT_PROCS]` — the full boot image table
     /// (kernel tasks with negative proc_nr first, then user-space servers).
     pub boot_procs: [BootImage; NR_BOOT_PROCS],
@@ -387,20 +379,13 @@ impl VmBootHandoff {
         } else {
             (0xFFFF_8000_0000_0000, 4) // legacy sentinels (see doc)
         };
-        let (ident, ident_count) = if self.version >= 6 {
-            (self.kern_ident, self.kern_ident_count as usize)
-        } else {
-            ([HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT], 0)
-        };
-        Some(KernelLayout::new_with_ident(
+        Some(KernelLayout::new(
             self.kern_virt_base,
             self.kern_phys_base,
             self.kern_text_pages as usize,
             self.kern_data_pages as usize,
             dm_vbase,
             dm_pages,
-            ident,
-            ident_count,
         ))
     }
 
@@ -455,11 +440,6 @@ impl VmBootHandoff {
             "VmBootHandoff: module_count {} exceeds capacity",
             self.module_count
         );
-        assert!(
-            (self.kern_ident_count as usize) <= VM_BOOT_HANDOFF_MAX_IDENT,
-            "VmBootHandoff: kern_ident_count {} exceeds capacity",
-            self.kern_ident_count
-        );
     }
 }
 
@@ -507,8 +487,6 @@ pub struct KernelLayout {
     pub kernel_data_pages: usize,
     pub dm_vbase: u64,
     pub dm_pages: usize,
-    pub ident: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT],
-    pub ident_count: usize,
 }
 
 impl KernelLayout {
@@ -518,11 +496,6 @@ impl KernelLayout {
     /// the boot image / multiboot2 / stivale2 headers have been parsed.
     /// The resulting value is stored in a global (see `vm::global`) and
     /// read by every `init_page_table()` call.
-    ///
-    /// Produces a layout with NO identity windows — [`Self::new_with_ident`]
-    /// is the constructor used for version ≥ 6 handoffs. A layout
-    /// without identity windows is correct only when the kernel really
-    /// executes higher-half (never the UEFI link-in production model).
     pub const fn new(
         kernel_text_vbase: u64,
         kernel_text_pbase: u64,
@@ -538,39 +511,14 @@ impl KernelLayout {
             kernel_data_pages,
             dm_vbase,
             dm_pages,
-            ident: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT],
-            ident_count: 0,
         }
     }
 
-    /// Creates a `KernelLayout` including the kernel runtime identity
-    /// windows (handoff version ≥ 6).
-    pub const fn new_with_ident(
-        kernel_text_vbase: u64,
-        kernel_text_pbase: u64,
-        kernel_text_pages: usize,
-        kernel_data_pages: usize,
-        dm_vbase: u64,
-        dm_pages: usize,
-        ident: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT],
-        ident_count: usize,
-    ) -> Self {
-        Self {
-            kernel_text_vbase,
-            kernel_text_pbase,
-            kernel_text_pages,
-            kernel_data_pages,
-            dm_vbase,
-            dm_pages,
-            ident,
-            ident_count,
-        }
-    }
-
-    /// The valid identity-window prefix (page-aligned `{base, size}`
-    /// pairs, sorted and non-overlapping — `map_kernel` input).
+    /// The valid identity-window prefix. Always empty since handoff v9
+    /// removed `kern_ident`; kept as a zero-length slice so `map_kernel`
+    /// callers stay on one interface.
     pub fn ident_regions(&self) -> &[HandoffMemRegion] {
-        &self.ident[..self.ident_count]
+        &[]
     }
 }
 
@@ -748,8 +696,6 @@ mod tests {
                 free_regions: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_REGIONS],
                 deducted: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_DEDUCTED],
                 modules: [HandoffModule::ZERO; VM_BOOT_HANDOFF_MAX_MODULES],
-                kern_ident_count: 0,
-                kern_ident: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT],
                 boot_procs: [BootImage::empty(); NR_BOOT_PROCS],
             };
             // Handoff::validate expects the field to be zeroed when fresh —
@@ -799,7 +745,7 @@ mod tests {
         /// instead of silently shifting what the consumer sees.
         #[test]
         fn test_vm_boot_handoff_layout_is_pinned() {
-            assert_eq!(core::mem::size_of::<VmBootHandoff>(), 3792);
+            assert_eq!(core::mem::size_of::<VmBootHandoff>(), 2760);
             assert_eq!(core::mem::align_of::<VmBootHandoff>(), 8);
             assert_eq!(core::mem::offset_of!(VmBootHandoff, magic), 0);
             assert_eq!(core::mem::offset_of!(VmBootHandoff, version), 4);
@@ -810,26 +756,6 @@ mod tests {
             assert_eq!(core::mem::offset_of!(VmBootHandoff, module_count), 108);
             assert_eq!(core::mem::offset_of!(VmBootHandoff, deducted), 1136);
             assert_eq!(core::mem::offset_of!(VmBootHandoff, modules), 1888);
-        }
-
-        /// v6: the kernel runtime identity windows flow through.
-        #[test]
-        fn test_kernel_layout_v6_reports_identity_windows() {
-            let mut h = handoff(VM_BOOT_HANDOFF_VERSION);
-            assert_eq!(VM_BOOT_HANDOFF_VERSION, 8);
-            h.kern_ident[0] = HandoffMemRegion {
-                base: 0x1da0_0000,
-                size: 0x40_0000,
-            };
-            h.kern_ident[1] = HandoffMemRegion {
-                base: 0x1f00_0000,
-                size: 0x1000,
-            };
-            h.kern_ident_count = 2;
-            let l = h.kernel_layout().expect("v6 must carry the layout");
-            assert_eq!(l.ident_regions().len(), 2);
-            assert_eq!(l.ident_regions()[0].base, 0x1da0_0000);
-            assert_eq!(l.ident_regions()[1].size, 0x1000);
         }
 
         /// A minimal handoff that `validate` must accept: current version,
@@ -887,14 +813,6 @@ mod tests {
         fn test_handoff_validate_rejects_over_capacity_deductions() {
             let mut h = valid_handoff();
             h.deducted_count = (VM_BOOT_HANDOFF_MAX_DEDUCTED + 1) as u32;
-            h.validate();
-        }
-
-        #[test]
-        #[should_panic(expected = "kern_ident_count")]
-        fn test_handoff_validate_rejects_over_capacity_ident() {
-            let mut h = valid_handoff();
-            h.kern_ident_count = (VM_BOOT_HANDOFF_MAX_IDENT + 1) as u32;
             h.validate();
         }
 

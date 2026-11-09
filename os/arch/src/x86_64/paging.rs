@@ -32,6 +32,8 @@ bitflags::bitflags! {
         const PRESENT  = 1 << 0;   // Present
         const WRITABLE = 1 << 1;   // Read/Write
         const USER     = 1 << 2;   // User/Supervisor
+        const PWT      = 1 << 3;   // Page-level write-through
+        const PCD      = 1 << 4;   // Page-level cache disable
         const PS       = 1 << 7;   // Page Size (huge page indicator)
         const GLOBAL   = 1 << 8;   // Global page
         const NX       = 1 << 63;  // No Execute
@@ -136,6 +138,14 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
     if flags.contains(PageFlags::WRITABLE) { pte |= X64PteFlags::WRITABLE; }
     if flags.contains(PageFlags::USER_ACCESSIBLE) { pte |= X64PteFlags::USER; }
     if flags.contains(PageFlags::GLOBAL) { pte |= X64PteFlags::GLOBAL; }
+    if flags.contains(PageFlags::WRITE_THROUGH) { pte |= X64PteFlags::PWT; }
+    if flags.contains(PageFlags::NO_CACHE) { pte |= X64PteFlags::PCD; }
+    // DEVICE is the strongest cache policy: PWT|PCD yields uncached
+    // write-through behaviour for MMIO. The LAPIC/IO-APIC windows therefore
+    // no longer depend on firmware MTRRs being correct (TODO-10).
+    if flags.contains(PageFlags::DEVICE) {
+        pte |= X64PteFlags::PWT | X64PteFlags::PCD;
+    }
     // NX is inverted: set NX when NOT executable
     if !flags.contains(PageFlags::EXECUTABLE) { pte |= X64PteFlags::NX; }
     pte.bits()
@@ -154,6 +164,8 @@ fn pte_to_flags(pte: u64) -> PageFlags {
     if hw.contains(X64PteFlags::WRITABLE) { flags |= PageFlags::WRITABLE; }
     if hw.contains(X64PteFlags::USER) { flags |= PageFlags::USER_ACCESSIBLE; }
     if hw.contains(X64PteFlags::GLOBAL) { flags |= PageFlags::GLOBAL; }
+    if hw.contains(X64PteFlags::PWT) { flags |= PageFlags::WRITE_THROUGH; }
+    if hw.contains(X64PteFlags::PCD) { flags |= PageFlags::NO_CACHE; }
     // NX inverted: executable iff NX bit is clear.
     if !hw.contains(X64PteFlags::NX) { flags |= PageFlags::EXECUTABLE; }
     // PS bit at PD/PDPT level indicates a huge page. At PT level it is
@@ -1579,6 +1591,17 @@ mod tests {
         let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER_ACCESSIBLE;
         let pte = flags_to_pte(flags);
         assert_eq!(pte_to_flags(pte), flags);
+    }
+
+    #[test]
+    fn test_device_flags_set_pwt_and_pcd() {
+        let flags = PageFlags::kernel_read_write() | PageFlags::DEVICE;
+        let pte = flags_to_pte(flags);
+        assert_ne!(pte & X64PteFlags::PWT.bits(), 0, "DEVICE must set PWT");
+        assert_ne!(pte & X64PteFlags::PCD.bits(), 0, "DEVICE must set PCD");
+        let back = pte_to_flags(pte);
+        assert!(back.contains(PageFlags::WRITE_THROUGH));
+        assert!(back.contains(PageFlags::NO_CACHE));
     }
 
     #[test]

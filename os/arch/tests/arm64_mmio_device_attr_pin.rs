@@ -85,9 +85,7 @@ fn kernel_maps_device_window_addr_window_as_device() {
         "恒等映射的设备分片粒度常量丢失（2 MiB 分片是实现设备窗口属性的前提）"
     );
     assert!(
-        c.contains("fn identity_block_touches_device")
-            && c.contains("fn identity_piece_is_device")
-            && c.contains("fn identity_device_windows"),
+        c.contains("fn identity_piece_is_device") && c.contains("fn identity_device_windows"),
         "设备分片的判定被内联回循环——窗口/分片决策的可测缝丢失"
     );
     assert!(

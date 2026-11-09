@@ -1897,4 +1897,33 @@ mod tests {
         let c = commit_map(&mut storage, &mut s).unwrap();
         assert_eq!(c, Classification::default());
     }
+    /// TODO-07: the free and reserved tables produced by the same
+    /// classification are disjoint and carry the expected counts. This is the
+    /// host-testable half of the UEFI snapshot surface; the firmware
+    /// `GetMemoryMap` call and the root/bump assertion remain covered by their
+    /// own tests.
+    #[test]
+    fn classified_tables_are_disjoint_and_expected() {
+        let mut map = [0u8; 40 * 4];
+        push_desc(&mut map, 0, 40, ty::CONVENTIONAL, 0x10_0000, 4, WB);
+        push_desc(&mut map, 1, 40, ty::LOADER_DATA, 0x20_0000, 2, WB);
+        push_desc(&mut map, 2, 40, ty::RESERVED, 0x30_0000, 1, WB);
+        push_desc(&mut map, 3, 40, ty::MMIO, 0x40_0000, 1, WB);
+        let mut storage = MapStorage::new();
+        storage.parse_raw_map(&map, map.len(), 40, 1, 0).unwrap();
+        let mut arena = [0u8; minix_boot::ARENA_CAP];
+        let mut s = Serializer::new(&mut arena, minix_boot::InputObjectId::UefiMemoryMap).unwrap();
+        let mut free = [ZERO_REGION; minix_boot::WIRE_MEMMAP_CAP];
+        let mut reserved = [ZERO_REGION; minix_boot::WIRE_RESERVED_CAP];
+        let c = storage
+            .classify_into_handoff(PA_LIMIT, &mut s, &mut free, &mut reserved)
+            .unwrap();
+        assert_eq!((c.conventional, c.reserved), (1, 1));
+        let f = free[0];
+        let r = reserved[0];
+        let f_end = f.base.0 + f.len as u64;
+        let r_end = r.base.0 + r.len as u64;
+        assert!(f_end <= r.base.0 || r_end <= f.base.0, "free/reserved overlap");
+    }
+
 }

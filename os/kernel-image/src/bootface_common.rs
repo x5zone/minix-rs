@@ -8,7 +8,9 @@
 //! `say`/`say_hex` pair, whose `early_console` implementation differs by arch.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use minix_boot::{NR_BOOT_MODULES, MemoryRegion};
+use minix_boot::{NR_BOOT_MODULES, BootModule, MemoryRegion};
+
+use boot_shim::opensbi_helpers::BootFileTable;
 
 /// Fixed module-name slot width (16 B; the kernel's `store_kernel_info`
 /// truncates at the same 15-byte bound).
@@ -116,6 +118,131 @@ pub(crate) fn fdt_bootargs<'a>(fdt: &fdt::Fdt<'a>) -> Option<&'a str> {
     let prop = chosen.property("bootargs")?;
     let value = prop.value.strip_suffix(&[0]).unwrap_or(prop.value);
     core::str::from_utf8(value).ok()
+}
+
+/// DTB source bound shared by both self-boot faces.
+///
+/// Rejects overflow, addresses outside the identity VA window, and blobs that
+/// overlap the kernel image (the collected projections land in this image's
+/// `.bss`, so an overlapping source would be overwritten mid-read).
+pub(crate) fn dtb_bounded(
+    dtb_pa: u64,
+    total: usize,
+    dram_base: u64,
+    kern_phys_base: u64,
+    kern_size: u64,
+) -> bool {
+    let Some(end) = dtb_pa.checked_add(total as u64) else {
+        return false;
+    };
+    dtb_pa >= dram_base
+        && end <= 0x1_0000_0000
+        && (end <= kern_phys_base || dtb_pa >= kern_phys_base + kern_size)
+}
+
+/// Consume the first `NR_BOOT_MODULES` table entries at their contract
+/// positions and copy the sources into the caller's bump pages.
+///
+/// Both self-boot faces use the exact same gates (position, basename, source
+/// width, bump-pool disjointness, pool exhaustion); only the bump allocator,
+/// pool bounds and console differ, so they arrive as callbacks (DESIGN-10).
+/// `module_table` is the caller's exclusive landing array.
+pub(crate) fn place_modules<B, S, H>(
+    table: &BootFileTable,
+    memmap: &[MemoryRegion],
+    names_pool: u64,
+    module_table: &mut [BootModule; NR_BOOT_MODULES],
+    pool_start: u64,
+    pool_end: u64,
+    mut bump_alloc_pages: B,
+    say: S,
+    say_hex: H,
+) -> Option<()>
+where
+    B: FnMut(usize) -> Option<u64>,
+    S: Fn(&str),
+    H: Fn(u64),
+{
+    let entries = table.valid_entries();
+    if entries.len() < NR_BOOT_MODULES {
+        say("  table holds 0x");
+        say_hex(entries.len() as u64);
+        say(" entries, kernel contract needs 0x");
+        say_hex(NR_BOOT_MODULES as u64);
+        say("\n");
+        return None;
+    }
+    for i in 0..NR_BOOT_MODULES {
+        let entry = &entries[i];
+        let expect = &NAME_POOL[i];
+        let want_n = expect.iter().position(|&b| b == 0).unwrap_or(NAME_SLOT);
+        let base = entry
+            .path
+            .iter()
+            .rposition(|&b| b == b'/')
+            .map_or(0, |p| p + 1);
+        let got = &entry.path[base..];
+        let got_n = got.iter().position(|&b| b == 0).unwrap_or(got.len());
+        if got_n != want_n || got[..want_n] != expect[..want_n] {
+            say("  module slot 0x");
+            say_hex(i as u64);
+            say(" path basename mismatches contract order\n");
+            return None;
+        }
+        let len = entry.len as usize;
+        if len == 0 {
+            say("  module slot 0x");
+            say_hex(i as u64);
+            say(" length 0\n");
+            return None;
+        }
+        if !in_memmap_range(memmap, entry.phys_addr, entry.len) {
+            say("  module slot 0x");
+            say_hex(i as u64);
+            say(" source 0x");
+            say_hex(entry.phys_addr);
+            say("+0x");
+            say_hex(entry.len);
+            say(" escapes memmap\n");
+            return None;
+        }
+        if entry.phys_addr < pool_end && entry.phys_addr + entry.len > pool_start {
+            say("  module slot 0x");
+            say_hex(i as u64);
+            say(" source overlaps bump pool\n");
+            return None;
+        }
+        let pages = len.div_ceil(4096);
+        let dest = bump_alloc_pages(pages)?;
+        // SAFETY: the source passed the full-width memmap gate and does not
+        // overlap the bump pool; `dest` is exclusive bump space and the copy
+        // length is within both ranges.
+        unsafe {
+            core::ptr::copy_nonoverlapping(entry.phys_addr as *const u8, dest as *mut u8, len);
+            core::ptr::write_bytes((dest as *mut u8).add(len), 0, pages * 4096 - len);
+        }
+        let slot = names_pool + (i as u64) * NAME_SLOT as u64;
+        // SAFETY: source = the NAME_POOL byte cells; destination = slot i
+        // inside the exclusive name pool (i < 12 => offset < 192).
+        unsafe {
+            core::ptr::copy_nonoverlapping(NAME_POOL[i].as_ptr(), slot as *mut u8, NAME_SLOT);
+        }
+        let n = NAME_POOL[i]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(NAME_SLOT);
+        let landed: &'static str = unsafe {
+            // SAFETY: ASCII literal bytes, backed by the caller's exclusive
+            // physical name pool.
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(slot as *const u8, n))
+        };
+        module_table[i] = BootModule {
+            name: landed,
+            start: minix_types::PhysBytes(dest),
+            len,
+        };
+    }
+    Some(())
 }
 
 /// Static landing pad for the normalized `param_buf`.

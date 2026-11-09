@@ -94,14 +94,11 @@ pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>)
     // `is_registered()` so a test kernel may register first; the VM server
     // registers in its own address space.)
     //
-    // Write-once is enforced in both profiles: debug builds abort on the
-    // bug, release builds refuse the second write and keep the first
-    // allocator instead of silently overwriting it.
+    // Write-once is enforced in both profiles. A second registration is a
+    // boot bug: silently keeping the first allocator hides a wiring error
+    // (F-R23-05), so fail closed in release too.
     let claimed = PT_CLAIMED.swap(true, Ordering::AcqRel);
-    debug_assert!(!claimed, "pt_alloc::register called twice");
-    if claimed {
-        return;
-    }
+    assert!(!claimed, "pt_alloc::register called twice");
     // SAFETY: the `PT_CLAIMED` swap above admits exactly one writer; the
     // pointer write happens before `PT_REGISTERED` is published, so a reader
     // that observes `true` also observes the written pointer.
@@ -149,13 +146,10 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
 /// page-table pages takes them back here. Same write-once contract as
 /// [`register`] — callers register during init before concurrent access.
 pub fn register_free(free_fn: PtFreeFn) {
-    // Same write-once contract as `register()`: debug aborts, release keeps
-    // the first hook.
+    // Same write-once contract as `register()`: a second hook is a wiring
+    // bug and fails closed in both profiles.
     let claimed = PT_FREE_CLAIMED.swap(true, Ordering::AcqRel);
-    debug_assert!(!claimed, "pt_alloc::register_free called twice");
-    if claimed {
-        return;
-    }
+    assert!(!claimed, "pt_alloc::register_free called twice");
     // SAFETY: the `PT_FREE_CLAIMED` swap above admits exactly one writer.
     unsafe {
         core::ptr::write(PT_FREE.0.get(), free_fn);
