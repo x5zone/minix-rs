@@ -897,11 +897,53 @@ fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<Vec<u8>> {
 /// Order (frozen by the T1 design): root/bump → load kernel/modules →
 /// platform sources → arena → envelope + non-map payloads → pairing loop
 /// (`GetMemoryMap` → classify → raw `ExitBootServices`) → bootstrap root →
+/// The shim's own PE image range (code/rodata/data/bss).
+///
+/// `LoadedImage.info()` is the firmware's authoritative footprint; the
+/// minimal boot identity map must cover it because the shim keeps executing
+/// here until the high-half jump.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn shim_image_window() -> (u64, u64) {
+    let (base, size) = boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
+        boot::image_handle(),
+    )
+    .map(|image| {
+        let (base, size) = image.info();
+        (base as u64, size)
+    })
+    .unwrap_or((0, 0));
+    assert!(
+        base != 0 && size != 0,
+        "boot-shim: LoadedImage footprint unavailable — cannot build the minimal identity map"
+    );
+    (base, base.saturating_add(size))
+}
+
+/// A conservative window covering the firmware-provided stack below `sp`.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn shim_stack_window() -> (u64, u64) {
+    let sp: u64;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack));
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack));
+    }
+    let top = sp.saturating_add(0xFFF) & !0xFFF;
+    (top.saturating_sub(4 * 1024 * 1024) & !((1 << 21) - 1), top)
+}
+
 /// patch runtime fields → jump (aarch64 passes the arena in `x0`, x86_64 in
 /// `rbx`).
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
+    // The minimal identity map is built later, after EBS; capture the two
+    // firmware facts it needs while Boot Services are still available.
+    let shim_image = shim_image_window();
+    let shim_stack = shim_stack_window();
     // D (D01-R13): read the kernel ELF first, then claim its LMA span with
     // firmware, and only then allocate root/bump. Every later firmware
     // allocation (modules, arena, pool buffers) is thereby unable to return a
@@ -1140,7 +1182,25 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     crate::raw_serial(" res=");
     raw_serial_number(classification.reserved as u64);
     crate::raw_serial("\r\nboot-shim: [raw] entering kernel image v1\r\n");
-    minix_kernel::enter_kernel_image_v1(arena_pa, &report, root_page)
+    let mut shim_windows = [(0u64, 0u64); 3];
+    let mut shim_window_n = 0usize;
+    shim_windows[shim_window_n] = shim_image;
+    shim_window_n += 1;
+    shim_windows[shim_window_n] = shim_stack;
+    shim_window_n += 1;
+    if let Some(blob) = &dumpdtb_blob {
+        if !blob.is_empty() {
+            let start = blob.as_ptr() as u64;
+            shim_windows[shim_window_n] = (start, start + blob.len() as u64);
+            shim_window_n += 1;
+        }
+    }
+    minix_kernel::enter_kernel_image_v1(
+        arena_pa,
+        &report,
+        root_page,
+        &shim_windows[..shim_window_n],
+    )
 }
 
 /// Exit UEFI boot services.

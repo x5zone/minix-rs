@@ -420,6 +420,7 @@ pub fn enter_kernel_image_v1(
     arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
+    shim_windows: &[(u64, u64)],
 ) -> ! {
     let arena_pa = arena_pa.0;
     // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
@@ -448,9 +449,50 @@ pub fn enter_kernel_image_v1(
     };
     let policy = plan_boot_pages::<BootArchImpl>(&support, kernel_layout, &layout)
         .unwrap_or_else(|e| panic!("enter_kernel_image_v1: page-size policy: {e}"));
-    build_bootstrap_root_and_enable::<BootArchImpl>(root_page, &policy.kernel());
     let (bump_base, bump_end) =
         boot_alloc::boot_alloc_region().expect("enter_kernel_image_v1: bump region not registered");
+    // Minimal boot identity windows (BOOT-SCOPE 2a): shim image/stack/temp
+    // buffers + kernel LMA + bootstrap pool + firmware tables + device windows.
+    // The Direct Map is established later by the kernel and covers everything
+    // else; nothing outside these windows is disturbed before then.
+    let mut windows = BootWindows::new();
+    for &(start, end) in shim_windows {
+        windows.push(start, end);
+    }
+    windows.push(
+        report.kern_phys_base.0,
+        report
+            .kern_phys_base
+            .0
+            .checked_add(report.kern_size)
+            .expect("enter_kernel_image_v1: kernel span overflows u64"),
+    );
+    windows.push(
+        root_page.0,
+        root_page
+            .0
+            .checked_add(0x1000)
+            .expect("enter_kernel_image_v1: root page overflows u64"),
+    );
+    windows.push(bump_base, bump_end);
+    windows.push(
+        arena_pa,
+        arena_pa
+            .checked_add(ARENA_CAP as u64)
+            .expect("enter_kernel_image_v1: arena overflows u64"),
+    );
+    push_module_windows(&mut windows, report.boot_modules);
+    push_platform_windows(&mut windows, report.platform_sources);
+    push_device_windows(&mut windows);
+    // x86 boots APs through a real-mode trampoline allocated from the lowest
+    // free page (SMP setup happens after kmain starts). Keep the low 2 MiB
+    // identity-mapped; it is boot work, not a general low-memory window.
+    windows.push(0, DEV_PIECE);
+    build_bootstrap_root_and_enable::<BootArchImpl>(
+        root_page,
+        &policy.kernel(),
+        windows.as_slice(),
+    );
     let bump_next = boot_alloc::boot_alloc_next();
     // SAFETY: `arena_pa` is the `ARENA_CAP` arena the boot-shim allocated
     // below `boot_dm_admissible_end` (LOADER_DATA on UEFI legs, bump pages on
@@ -878,11 +920,39 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     let policy = plan_boot_pages::<A>(&support, kernel_layout, &layout)
         .unwrap_or_else(|e| panic!("arch_boot: page-size policy: {e}"));
 
-    // Steps 1-3: build the bootstrap root (identity + kernel high half + the
-    // aarch64 MMIO window), enable paging, and record the active root. Shared
-    // verbatim with the boot-shim→kernel-image handoff so both
-    // paths build byte-identical tables.
-    build_bootstrap_root_and_enable::<A>(root_page, &policy.kernel());
+    // Minimal boot identity windows: kernel LMA (contains the direct-boot
+    // face and its stack), bootstrap pool, root page, modules, firmware
+    // tables and device windows. Direct Map is Step 4.
+    let mut windows = BootWindows::new();
+    windows.push(
+        kernel_info.kern_phys_base.0,
+        kernel_info
+            .kern_phys_base
+            .0
+            .checked_add(kernel_info.kern_size)
+            .expect("arch_boot: kernel span overflows u64"),
+    );
+    windows.push(
+        root_page.0,
+        root_page
+            .0
+            .checked_add(0x1000)
+            .expect("arch_boot: root page overflows u64"),
+    );
+    if let Some((bump_base, bump_end)) = boot_alloc::boot_alloc_region() {
+        windows.push(bump_base, bump_end);
+    }
+    push_module_windows(&mut windows, kernel_info.boot_modules);
+    push_platform_windows(&mut windows, kernel_info.platform_sources);
+    push_device_windows(&mut windows);
+    // Same low 2 MiB requirement as the handoff path: x86 AP startup writes
+    // its real-mode trampoline from the lowest free page after kmain starts.
+    windows.push(0, DEV_PIECE);
+
+    // Steps 1-3: build the bootstrap root (minimal identity windows + kernel
+    // high half + the aarch64 MMIO window), enable paging, and record the
+    // active root.
+    build_bootstrap_root_and_enable::<A>(root_page, &policy.kernel(), windows.as_slice());
 
     // Step 4: Establish Direct Map coverage on the bootstrap root.
     // 07-paging_init_design §6.1: every candidate is preflighted
@@ -932,16 +1002,6 @@ fn identity_device_windows() -> &'static [(u64, u64)] {
 /// Device-window piece size used by Step 1 (2 MiB).
 const DEV_PIECE: u64 = 1 << 21;
 
-/// Whether a `kern_huge` block starting at `addr` intersects any device
-/// window — the condition that forces the block to be emitted at
-/// `dev_piece` granularity (SD-42).
-fn identity_block_touches_device(addr: u64, kern_huge: u64, windows: &[(u64, u64)]) -> bool {
-    let block_end = addr.saturating_add(kern_huge);
-    windows
-        .iter()
-        .any(|&(base, len)| base < block_end && addr < base.saturating_add(len))
-}
-
 /// Whether one identity piece intersects a device window — those pieces are
 /// emitted with `PageFlags::DEVICE`. A window smaller than the piece widens
 /// to the whole piece: on riscv the UART's 4 KiB page sits inside the QEMU
@@ -960,78 +1020,137 @@ fn identity_piece_is_device(piece: u64, piece_len: u64, windows: &[(u64, u64)]) 
 ///
 /// On return, paging is enabled with TTBR0/TTBR1 (x86: CR3) both pointing at
 /// `root_page`, and the active root is recorded in the kernel global.
-fn build_bootstrap_root_and_enable<A: BootArch>(root_page: PhysBytes, policy: &KernelMapPolicy<A>) {
+/// Capacity of the boot identity-window list. The windows are the pieces of
+/// physical memory the pre-DM boot path actually touches: shim image/stack,
+/// kernel LMA, root/bump/arena, modules, platform tables and device windows.
+const MAX_BOOT_WINDOWS: usize = 32;
+
+/// A tiny fixed-capacity list of physical windows that must be identity-mapped
+/// while the boot path is still running below the Direct Map.
+struct BootWindows {
+    ranges: [(u64, u64); MAX_BOOT_WINDOWS],
+    len: usize,
+}
+
+impl BootWindows {
+    const fn new() -> Self {
+        Self {
+            ranges: [(0, 0); MAX_BOOT_WINDOWS],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, start: u64, end: u64) {
+        if end <= start {
+            return;
+        }
+        assert!(
+            self.len < MAX_BOOT_WINDOWS,
+            "boot identity windows exceed MAX_BOOT_WINDOWS"
+        );
+        self.ranges[self.len] = (start, end);
+        self.len += 1;
+    }
+
+    /// Add a 2 MiB-aligned window covering `addr`.
+    fn push_2m(&mut self, addr: u64) {
+        let base = addr & !(DEV_PIECE - 1);
+        self.push(base, base + DEV_PIECE);
+    }
+
+    fn as_slice(&self) -> &[(u64, u64)] {
+        &self.ranges[..self.len]
+    }
+}
+
+fn push_module_windows(windows: &mut BootWindows, modules: &[minix_boot::BootModule]) {
+    for module in modules {
+        windows.push(
+            module.start.0,
+            module
+                .start
+                .0
+                .checked_add(module.len as u64)
+                .expect("boot window: module span overflows u64"),
+        );
+    }
+}
+
+fn push_platform_windows(
+    windows: &mut BootWindows,
+    sources: &[minix_boot::PlatformDescSource],
+) {
+    for source in sources {
+        windows.push_2m(source.phys_addr().0);
+    }
+}
+
+fn push_device_windows(windows: &mut BootWindows) {
+    for &(base, len) in identity_device_windows() {
+        windows.push(
+            base,
+            base.checked_add(len)
+                .expect("boot window: device window overflows u64"),
+        );
+    }
+}
+
+fn build_bootstrap_root_and_enable<A: BootArch>(
+    root_page: PhysBytes,
+    policy: &KernelMapPolicy<A>,
+    windows: &[(u64, u64)],
+) {
     let kern_huge = policy.page_size();
     let layout = policy.layout();
     let mut paging = A::Paging::new_from_page(root_page);
 
-    // Step 1: Identity mapping — VA = PA for the first 4GB of address space.
-    // C: pg_identity(&kinfo) — pg_utils.c:162
-    // Maps 1024 × 4MB = 4GB (C) or 4 × 1GB (x86-64) or equivalent on other archs.
-    // We must map the entire low address space, not just CONVENTIONAL memory,
-    // because UEFI loader code/data may be in LOADER_DATA/LOADER_CODE regions
-    // that are not marked CONVENTIONAL. Without covering these regions,
-    // the CPU faults immediately after the page table switch.
-    // NOTE: EXECUTABLE flag is required so the CPU can fetch instructions
-    // after the page table switch (CR3/satp/TTBR write).
-    // NOTE: We use kernel_read_write() (supervisor-only, no USER_ACCESSIBLE)
-    // because on RISC-V Sv39 the supervisor may not execute a page with U=1
-    // irrespective of sstatus.SUM (SUM only relaxes loads/stores), so the
-    // identity mapping must be supervisor-only.
+    // Step 1: Minimal boot identity windows — VA = PA only for the pieces
+    // the pre-Direct-Map boot path actually touches (DESIGN: BOOT-SCOPE 2a).
+    //
+    // C maps 4 GiB with `pg_identity` because the 32-bit kernel runs inside
+    // that window; the Rust cross-image leg only needs its shim image/stack,
+    // the kernel LMA span, the bootstrap pool (root/bump/modules/arena), the
+    // firmware tables it reads, and the device windows it drives. Mapping the
+    // whole low 4 GiB kept every hole PRESENT and hid wild accesses; the
+    // minimal windows turn those into page faults.
+    //
+    // The caller supplies the windows; the builder rounds each to 2 MiB and
+    // emits Device flags for any piece inside a device window. Overlapping
+    // windows are harmless: `map_huge` returns `AlreadyMapped` and the loop
+    // ignores it (the root is fresh and every piece is a fixed 2 MiB leaf).
     let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
-
-    // [ARCH: mmio-device] (SD-42): the device MMIO windows must map
-    // Device-nGnRnE, not Normal. MMIO registers require strongly-ordered
-    // access (no speculation, no gathering, no reordering); a Normal WBWA
-    // mapping satisfies that on QEMU but not on real hardware. Device windows
-    // sit low in the address space, inside the first `kern_huge` identity
-    // block: blocks touching a window are emitted at `DEV_PIECE` granularity
-    // with per-piece flags, every other block keeps `kern_huge` granularity.
-    // aarch64 additionally requires the Step-2b high-half alias of the same
-    // window to carry the same attributes (one PA, two attribute sets is
-    // UNPREDICTABLE); riscv64 has no high-half alias of these windows.
     let device_windows = identity_device_windows();
-    assert_eq!(
-        kern_huge.bytes() % DEV_PIECE,
-        0,
-        "a device piece must divide the huge page size"
-    );
-    let mut addr: u64 = 0;
-    while addr < IDENTITY_MAP_END {
-        let block_end = addr + kern_huge.bytes();
-        let mut piece_addr = addr;
-        let piece_size = if identity_block_touches_device(addr, kern_huge.bytes(), device_windows) {
-            PageSize::MIB_2
-        } else {
-            kern_huge
-        };
-        while piece_addr < block_end {
-            let piece_flags =
-                if identity_piece_is_device(piece_addr, piece_size.bytes(), device_windows) {
-                    PageFlags::kernel_read_write() | PageFlags::DEVICE
-                } else {
-                    id_flags
-                };
+    for &(raw_start, raw_end) in windows {
+        let start = raw_start & !(DEV_PIECE - 1);
+        let end = raw_end
+            .checked_add(DEV_PIECE - 1)
+            .expect("boot identity window end overflows u64")
+            & !(DEV_PIECE - 1);
+        assert!(
+            end <= IDENTITY_MAP_END,
+            "boot identity window [0x{raw_start:x},0x{raw_end:x}) exceeds the boot VA ceiling"
+        );
+        let mut addr = start;
+        while addr < end {
+            let piece_flags = if identity_piece_is_device(addr, DEV_PIECE, device_windows) {
+                PageFlags::kernel_read_write() | PageFlags::DEVICE
+            } else {
+                id_flags
+            };
             // Ignore errors: `map_huge` never probes physical memory, so an
-            // unbacked hole cannot produce an error (the old "CPU won't access
-            // holes" rationale named a class this call never returns). The
-            // reachable classes here are `AllocationFailed` (a mid-level page
-            // table page from the boot bump allocator — 1024-page budget
-            // against a handful of mid tables) and `AlreadyMapped`
-            // (structurally excluded: the root is fresh and pieces advance
-            // without revisiting a VA). If allocation ever does fail for a
-            // piece the CPU needs, the fault surfaces at enable() — see the
-            // reverse derivation in doc 01 §4.6.
+            // unbacked hole cannot produce an error. The reachable classes
+            // are `AllocationFailed` (a mid-level table from the boot bump
+            // allocator) and `AlreadyMapped` (overlapping windows). If a
+            // needed piece cannot be mapped, the fault surfaces at enable().
             #[allow(clippy::let_underscore_must_use)]
             let _ = paging.map_huge(
-                VirBytes(piece_addr),
-                PhysBytes(piece_addr),
-                piece_size,
+                VirBytes(addr),
+                PhysBytes(addr),
+                PageSize::MIB_2,
                 piece_flags,
             );
-            piece_addr += piece_size.bytes();
+            addr += DEV_PIECE;
         }
-        addr = block_end;
     }
 
     // Step 2: Kernel high-address mapping.
@@ -5074,30 +5193,9 @@ mod identity_device_map_tests {
     //! The boot map itself only exists on real targets; what is testable here
     //! is the decision — which blocks split, and which pieces go Device.
 
-    use super::{identity_block_touches_device, identity_piece_is_device};
+    use super::identity_piece_is_device;
 
-    const GIB: u64 = 1 << 30;
     const MIB_2: u64 = 1 << 21;
-
-    #[test]
-    fn only_blocks_touching_a_device_window_split() {
-        let riscv = [(0x0C00_0000u64, 0x0020_0000u64), (0x1000_0000, 0x1000)];
-        assert!(
-            identity_block_touches_device(0, GIB, &riscv),
-            "PLIC/UART sit in the first GiB"
-        );
-        assert!(
-            !identity_block_touches_device(GIB, GIB, &riscv),
-            "the second GiB is RAM only"
-        );
-        let aarch64 = [(0x0800_0000u64, 0x0200_0000u64)];
-        assert!(identity_block_touches_device(0, GIB, &aarch64));
-        assert!(!identity_block_touches_device(GIB, GIB, &aarch64));
-        assert!(
-            !identity_block_touches_device(0, GIB, &[]),
-            "architectures without windows keep huge pieces"
-        );
-    }
 
     #[test]
     fn the_uart_page_drives_its_whole_2mib_piece_to_device() {
@@ -5446,40 +5544,35 @@ mod tests {
     }
 
     /// M6 (partial, host-side): the Step-1 piece policy covers the whole
-    /// `IDENTITY_MAP_END` range and marks device-window pieces, without
-    /// depending on a page-table page allocator (the mock `map_huge` would
-    /// expand a 1 GiB leaf into 262144 BTreeMap entries). The full
-    /// `map_huge` range is still a real-machine gate (TODO-05).
+    /// `IDENTITY_MAP_END` is a VA ceiling, not a coverage promise: the boot
+    /// windows are emitted as 2 MiB pieces and device-window pieces carry
+    /// `DEVICE`. This checks the policy without a page-table page allocator.
     #[test]
-    fn identity_piece_policy_covers_low_4gib_and_marks_device_windows() {
-        let kern_huge = 1u64 << 30; // 1 GiB block
-        let windows = &[(0x0800_0000u64, 0x0200_0000u64)]; // 128 MiB + 32 MiB
-        let mut addr = 0u64;
-        while addr < IDENTITY_MAP_END {
-            let block_end = addr + kern_huge;
-            let piece_size = if identity_block_touches_device(addr, kern_huge, windows) {
-                DEV_PIECE
-            } else {
-                kern_huge
-            };
-            assert_eq!(
-                (block_end - addr) % piece_size,
-                0,
-                "piece must divide the block at {addr:#x}"
-            );
-            let mut piece = addr;
-            while piece < block_end {
-                let is_device = identity_piece_is_device(piece, piece_size, windows);
-                let overlaps_window = piece < 0x0A00_0000 && piece + piece_size > 0x0800_0000;
+    fn boot_identity_windows_are_2mib_and_mark_device_pieces() {
+        let device = &[(0x0800_0000u64, 0x0200_0000u64)]; // 128 MiB + 32 MiB
+        let windows = &[
+            (0x0800_0000u64, 0x0a00_0000u64),
+            (0x0020_0000u64, 0x0060_0000u64),
+            (0x4020_0000u64, 0x4060_0000u64),
+        ];
+        let mut mapped_pieces = 0usize;
+        for &(raw_start, raw_end) in windows {
+            let start = raw_start & !(DEV_PIECE - 1);
+            let end = (raw_end + DEV_PIECE - 1) & !(DEV_PIECE - 1);
+            assert!(end <= IDENTITY_MAP_END);
+            let mut addr = start;
+            while addr < end {
+                let is_device = identity_piece_is_device(addr, DEV_PIECE, device);
+                let overlaps = addr < 0x0A00_0000 && addr + DEV_PIECE > 0x0800_0000;
                 assert_eq!(
-                    is_device, overlaps_window,
-                    "device flag mismatch at {piece:#x}"
+                    is_device, overlaps,
+                    "device flag mismatch at {addr:#x}"
                 );
-                piece += piece_size;
+                addr += DEV_PIECE;
+                mapped_pieces += 1;
             }
-            addr = block_end;
         }
-        assert_eq!(addr, IDENTITY_MAP_END);
+        assert!(mapped_pieces > 0);
         let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
         assert!(!id_flags.contains(PageFlags::USER_ACCESSIBLE));
         assert!(id_flags.contains(PageFlags::EXECUTABLE));

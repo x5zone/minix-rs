@@ -59,6 +59,17 @@ use minix_boot::{ARENA_CAP, Serializer};
 
 extern crate alloc;
 
+/// End of the shim image's `.bss` (linker symbol in `riscv64-uboot.ld`).
+///
+/// The minimal boot identity window is `[SHIM_LINK_BASE, __bss_end)`: it
+/// covers the shim's text/rodata/data/bss, including its stack and heap.
+unsafe extern "C" {
+    static __bss_end: u8;
+}
+
+/// Link address of this shim (`riscv64-uboot.ld`).
+const SHIM_LINK_BASE: u64 = 0x8450_0000;
+
 // ── Image-time bump allocator ────────────────────────────────────────
 //
 // Same shape as kernel-image's `ImageBump` (single-source pattern): the
@@ -486,7 +497,14 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // SAFETY: the bootstrap root was enabled by `enter_kernel_image_v1`
     // itself; the arena is identity-mapped by it; the jump lands on the
     // receiver's high-half `_start` with `a0` = arena PA.
-    minix_kernel::enter_kernel_image_v1(arena_pa, &result.report, result.root_page)
+    let shim_end = core::ptr::addr_of!(__bss_end) as u64;
+    let shim_windows = [(SHIM_LINK_BASE, shim_end)];
+    minix_kernel::enter_kernel_image_v1(
+        arena_pa,
+        &result.report,
+        result.root_page,
+        &shim_windows,
+    )
 }
 
 #[panic_handler]

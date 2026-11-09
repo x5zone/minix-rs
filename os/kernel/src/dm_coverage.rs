@@ -35,9 +35,10 @@
 //! 4. **Reserved (occupied) regions** — `KernelInfo::reserved_regions`; the
 //!    UEFI allocations that are neither conventional RAM nor registered
 //!    modules — including the pages the kernel image and stack land in.
-//!    The identity mapping covers `[0, IDENTITY_MAP_END)` so instruction
-//!    and data fetches flow there, but a `kernel_phys_to_virt` (DM alias)
-//!    access into a region outside sources 1–3 faults not-present
+//!    The boot identity windows cover the pre-DM execution footprint (shim,
+//!    kernel LMA, bootstrap pool, firmware tables, device windows), so
+//!    instruction and data fetches flow there, but a `kernel_phys_to_virt`
+//!    (DM alias) access into a region outside sources 1–3 faults not-present
 //!    (forensics from the `-smp4` early-boot #PFs: CR2 was the DM alias of
 //!    stack PAs in the gap between installed candidates — `covered_by=NONE`
 //!    on every reproducing round). Source 4 overlaps a live source-2/3
@@ -281,8 +282,8 @@ fn boot_module_candidates<'a>(
 /// and stack are `EVR/loader`-allocated memory: absent from the
 /// conventional memmap, not registered as boot modules (source 3), not the
 /// bootstrap tree (source 2) — under sources 1–3 alone their DM aliases
-/// were never installed, while the identity mapping `[0,
-/// IDENTITY_MAP_END)` kept instruction/data fetches alive. Any access
+/// were never installed, while the boot identity windows kept
+/// instruction/data fetches alive. Any access
 /// through `kernel_phys_to_virt` (e.g. interrupt-path copies reading a
 /// stack slot) then faulted not-present whenever the UEFI allocator had
 /// landed the stack in a gap between installed candidates — the exact
@@ -396,13 +397,12 @@ fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Opti
 
 /// Boot-time validation (§6.1 eligibility filtering, condition 2): the
 /// bootstrap tree must be
-/// representable in both windows — the identity write channel requires
-/// `PA < IDENTITY_MAP_END`, and VM self page-table walks read/write the
+/// representable in both windows — the boot identity windows include the
+/// root/bump pages, and VM self page-table walks read/write the
 /// root and PT pages through the VM DM window. Violation refuses boot.
 ///
-/// The bound is the same per-arch minimum the boot shim must allocate
-/// under (`min(IDENTITY_MAP_END, VM DM window PA end)`); asserting it here
-/// keeps the kernel side independent of shim-side enforcement.
+/// `IDENTITY_MAP_END` remains the VA ceiling for the boot windows; asserting
+/// it here keeps the kernel side independent of shim-side enforcement.
 fn validate_bootstrap_tree(root: PhysBytes) {
     let bound = core::cmp::min(IDENTITY_MAP_END, CurrentDirectMap::VM_DIRECT_MAP_SIZE);
     assert!(

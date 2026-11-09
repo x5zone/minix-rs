@@ -208,11 +208,12 @@ pub type CurrentProtection = crate::riscv64::protection::Riscv64Protection;
 
 // ── Bootstrap allocation bounds ──
 //
-// End of the boot identity-mapped window: `arch_boot_impl` maps PA
-// `[0, END)` identity on the bootstrap root (C: pg_identity() maps
-// 1024 × 4MiB = 4 GiB — pg_utils.c:162). Bootstrap allocations that must
-// stay identity-write-reachable (the page-table root, the boot bump
-// region) have to sit below this end.
+// VA ceiling for the boot identity windows: the builder maps a minimal set
+// of physical windows (shim image/stack, kernel LMA, bootstrap pool, firmware
+// tables, device windows) below this ceiling. It is **not** a blanket
+// `[0, END)` mapping; C's 4 GiB `pg_identity` is the 32-bit analogue, not the
+// Rust contract. Bootstrap allocations that must stay identity-write-reachable
+// (the page-table root, the boot bump region) have to sit below this end.
 pub const BOOT_IDENTITY_MAP_END: u64 = 0x1_0000_0000;
 
 /// Highest PA *end* any bootstrap-tree allocation (page-table root, boot

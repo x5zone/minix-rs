@@ -90,3 +90,19 @@ boot-shim 退化为纯装载器（读文件、EBS 拿内存图、写 arena、跳
 **但 2b 有一个必须先核实的硬风险**：x86_64 低入口 stub（riscv64/aarch64 有直核腿实证，x86_64 没有）——这正是 §5 第 1 步要核实的事实，也是本档不需要多轮设计讨论的原因：**唯一的不确定性是工程量核实，不是方向之争**。
 
 同时如实记录你的观察：前几轮（D-1 三轮、D-2 容量辩论）确实发生了扩大化——根因是"评审开放式提案"的框架；本档改用"bounded 问题 + 不在射程清单 + 轮次上限"的框架，这是对扩大化倾向的制度性回应。
+
+## 8. 实施记录（2026-11-09，用户补充后）
+
+用户补充裁决口径：**boot 期间建立临时最小页表即可；256MB 或 512MB 量级，够 boot 工作即可**；4GB 只是旧说法，不必按字面坚持。按此选择 **选项 2a**（boot-shim 建最小窗口、跳高入口不变），不选 2b（x86_64 低入口 stub 工程量与 D-6 回炉成本未获收益）。
+
+实施形态（已落码）：
+
+- `BootWindows`（`os/kernel/src/lib.rs`）：固定容量 32 的物理窗口表；每项按 2 MiB 取整、逐片 `map_huge`，窗口内设备片置 `DEVICE`。Step 1 不再有 `[0, IDENTITY_MAP_END)` 全铺循环。
+- 跨镜像腿窗口来源：UEFI `LoadedImage.info()` 的 shim image、当前 SP 向下 4 MiB 的栈窗口、`dumpdtb_blob`（若有）、内核 LMA、root、bump、arena、12 模块、平台描述符、设备窗口；U-Boot shim 用链接符号 `[0x84500000, __bss_end)`。直核腿用内核 LMA、root、bump、模块、平台源、设备窗口。
+- 额外保留低 2 MiB 恒等窗口：x86 SMP AP 的 real-mode trampoline 在 `kmain` 之后才从最低空闲页分配，属于 boot 工作（QEMU x86 首轮失败 CR2=0x5000 的实测证据）。
+- `BOOT_IDENTITY_MAP_END` 降级为窗口 VA 上限；窗口构建断言 `end <= 4 GiB`，shim 落在 4 GiB 之上时 fail-closed（关闭 TODO-08）。
+- `[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4GB]` 已写入 doc 01 §1.2/§4.6 与 `arch/src/lib.rs`/`kernel/src/lib.rs` 注释。
+
+回归证据：QEMU x86 shim、aarch64 shim、riscv64 U-Boot shim、riscv64 `bootface`、riscv64 kernel-image、aarch64 SMP AP 全 PASS；`minix-kernel --features mock` 861 passed + 8 ignored；`boot-shim --features test-all` 135 + ebs 5；文档五门通过。
+
+未做/边界：窗口粒度是 2 MiB，不是 4 KiB 精确 footprint；2b 的低入口 stub 未实施；`BOOT_IDENTITY_MAP_END` 仍作为 VA 上限保留。后续若真机出现窗口外访问，按“把该对象加入窗口表”修，不回退 4GB 全铺。

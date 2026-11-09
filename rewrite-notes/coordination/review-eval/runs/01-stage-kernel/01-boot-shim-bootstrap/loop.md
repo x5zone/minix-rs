@@ -1231,3 +1231,12 @@
 - 104 条中 40 条读者项多为措辞/结构级；是否存在“为修而修”的过度编辑，需要 RB/meta 抽样判断。
 - DESIGN-02 的模块名 strict 检查依赖 `MODULE_NAMES` 与加载表同一常量；协同改写仍不可检出（已在 panel 中标边界）。
 - ② 的 5 条均为结构性重构/用户裁决，是否应由 R24 承接需 meta 判断。
+
+## BOOT-SCOPE 2a 实施（2026-11-09，用户裁决）
+
+用户补充裁决：boot 期间只建临时最小页表，256/512MB 量级即可；4GB 是旧说法。按 `DECISIONS-PENDING-BOOT-SCOPE.md` 的 **2a** 实施（不选 2b 低入口，不维持 2c 4GB 全铺）。
+
+- 代码：`BootWindows`（固定容量 32、2 MiB 片、设备片 `DEVICE`）；跨镜像腿窗口 = shim image（UEFI `LoadedImage.info()`）/栈/`dumpdtb_blob`/内核 LMA/root/bump/arena/模块/平台表/设备窗口 + 低 2 MiB（x86 AP trampoline）；直核腿 = 内核 LMA/root/bump/模块/平台表/设备窗口 + 低 2 MiB。`BOOT_IDENTITY_MAP_END` 降级为窗口 VA 上限，越界断言 fail-closed。
+- `[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4GB]` 已写入 doc 01 §1.2/§4.6、`arch/src/lib.rs`、`kernel/src/lib.rs`。
+- 回归：QEMU x86 shim、aarch64 shim、riscv64 U-Boot shim、riscv64 `bootface`、riscv64 kernel-image、aarch64 SMP AP 全 PASS；`minix-kernel --features mock` 861 passed + 8 ignored；`boot-shim --features test-all` 135 + ebs 5；doc 五门 PASS。
+- 首轮 x86 门失败于 CR2=0x5000（SMP AP trampoline 低页），补低 2 MiB 窗口后 PASS；该事实已记入 `DECISIONS-PENDING-BOOT-SCOPE.md` §8。
