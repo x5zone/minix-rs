@@ -7,8 +7,8 @@
 | ID | 严重度 | 处置/档期 |
 |---|---|---|
 | F-R17-02 | P2 | ✅ 已修：UEFI 测试辅助三件套 + `UefiPoolAllocator` + 四个 static 收进 `qemu-test-kernels` feature；16 个测试内核 manifest 同步；生产 `fw-*-uefi` 不再链接 |
-| F-R17-04 | P2 | `KernelInfo` 增 `ram_authority` 字段（跨 minix-boot/内核/文档 ABI）；截止 R23 前裁决（已逾期两轮） |
-| F-R17-01 | P2 | `BootShim` 单实现 trait 的架构去留（保留为未来固件腿接口 / 改普通函数）；截止 R23 |
+| F-R17-04 | P2 | ✅ 已修（R23 前置）：`KernelInfo` 增第 14 个字段 `authority: InputObjectId`，`validate_requiring_sources()` 改无参读字段；wire 解码复制 `ram_authority`，直核腿传 `DtbBootInput`、UEFI 腿传 `UefiMemoryMap`；文档 13→14 与绑定说明同步；`minix-boot` 192 通过 |
+| F-R17-01 | P2 | ✅ 已修（R23 前置）：删除单实现 `BootShim` trait，U-Boot 腿改普通函数 `opensbi_helpers::prepare_boot`；§3.2 按事实重写；`impl BootShim` 与 `dyn BootShim` 零命中；三 QEMU 门 PASS |
 | F-R17-03 | P2 | ✅ 已修：`static mut PHASE` → `PhaseCell(UnsafeCell<Phase>)`，`Sync` 的安全论证集中一处；无 `static mut` |
 | F-R20-01 | P2 | ✅ 已修：`BootPrepareResult.bump: PhysRange`、`arena_pa/root_page: PhysBytes`；`enter_kernel_image_v1` 收 `PhysBytes` |
 | F-R20-02 | P2 | ✅ 已修：`PhysRange`（构造拒绝反向）统一 `FreeRangeSet::cut`，调用点不再传 `(start,size)` |

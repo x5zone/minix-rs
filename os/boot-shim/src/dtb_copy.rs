@@ -94,6 +94,7 @@ struct PhaseCell(UnsafeCell<Phase>);
 unsafe impl Sync for PhaseCell {}
 
 impl PhaseCell {
+    #[allow(clippy::mut_from_ref)] // one borrower at a time by the boot contract
     fn get(&self) -> &mut Phase {
         // SAFETY: single-threaded boot; see the `Sync` comment.
         unsafe { &mut *self.0.get() }

@@ -33,7 +33,7 @@ static ALLOCATOR: uefi::allocator::Allocator = uefi::allocator::Allocator;
 #[entry]
 fn main() -> Status {
     // 1. UEFI boot preparation via `prepare_and_enter_kernel_image`
-    //    (not the BootShim trait — see the module docs)
+    //    (the UEFI production entry — see the module docs)
     //    Internally: GetMemoryMap → AllocatePages → load kernel ELF from ESP
     //    → load boot modules → serialize BootHandoffV1 (envelope + partitions)
     //    → ExitBootServices

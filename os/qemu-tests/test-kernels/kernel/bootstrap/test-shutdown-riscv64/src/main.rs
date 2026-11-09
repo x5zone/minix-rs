@@ -124,6 +124,7 @@ extern "C" fn rust_main(_boot_hart: u64, _dtb_phys: u64) -> ! {
         reserved_regions: &[],
         memmap_sources: &[],
         startup_objects: &[],
+        authority: minix_boot::InputObjectId::DtbBootInput,
     };
 
 

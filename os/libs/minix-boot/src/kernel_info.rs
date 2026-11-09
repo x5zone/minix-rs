@@ -5,7 +5,7 @@
 
 use minix_types::{PhysBytes, VirBytes};
 
-use crate::memmap_source::{SourceAuditError, SourceRecord};
+use crate::memmap_source::{InputObjectId, SourceAuditError, SourceRecord};
 use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
@@ -170,6 +170,17 @@ pub struct KernelInfo {
     /// C's `MULTIBOOT_PARAM_BUF_SIZE`. Boot-shims that pass larger buffers
     /// violate the contract and trigger a fail-fast panic.
     pub param_buf: &'static [u8],
+
+    /// The input object declared as this boot's RAM authority.
+    ///
+    /// Bound at construction, not at validation: the wire decoder copies
+    /// `BootHandoffV1::ram_authority`, the direct-core legs pass
+    /// [`InputObjectId::DtbBootInput`], and the UEFI legs pass
+    /// [`InputObjectId::UefiMemoryMap`]. [`Self::validate_requiring_sources`]
+    /// reads this field instead of taking a caller-supplied parameter
+    /// (F-R17-04), so the projection and its authority cannot be paired by a
+    /// separate argument at the consumer boundary.
+    pub authority: InputObjectId,
 }
 
 /// Validation strictness for [`KernelInfo::validate_at`].
@@ -249,8 +260,10 @@ impl KernelInfo {
     /// Strict production gate: the leg's declared RAM authority must have
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
-    pub fn validate_requiring_sources(&self, authority: crate::memmap_source::InputObjectId) {
-        self.validate_at(ValidationLevel::Strict { authority });
+    pub fn validate_requiring_sources(&self) {
+        self.validate_at(ValidationLevel::Strict {
+            authority: self.authority,
+        });
     }
 
     fn validate_impl_inner(&self, level: &ValidationLevel) {
@@ -669,6 +682,7 @@ mod tests {
             }],
             platform_sources: &[],
             param_buf: &[],
+            authority: InputObjectId::DtbBootInput,
         }
     }
 
@@ -728,8 +742,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "carries no memory-map source records")]
     fn test_validate_requiring_sources_rejects_an_empty_partition() {
-        make_valid_info()
-            .validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
+        make_valid_info().validate_requiring_sources();
     }
 
     #[test]
@@ -742,7 +755,7 @@ mod tests {
         static KERN_RECORD: [SourceRecord; 1] =
             [crate::memmap_source::startup_record(0, 0x200_000, 0x400_000)];
         info.startup_objects = &KERN_RECORD;
-        info.validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
+        info.validate_requiring_sources();
     }
 
     /// D01-R1 D2-04: a stack top past the image end is representable in
@@ -923,7 +936,7 @@ mod tests {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS;
         info.startup_objects = &[];
-        info.validate_requiring_sources(crate::memmap_source::InputObjectId::DtbBootInput);
+        info.validate_requiring_sources();
     }
 
     /// A declared authority with no records is a fail-stop; it must not fall
@@ -933,7 +946,8 @@ mod tests {
     fn test_validate_requiring_sources_refuses_missing_authority() {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS; // all DtbBootInput
-        info.validate_requiring_sources(crate::memmap_source::InputObjectId::UefiMemoryMap);
+        info.authority = InputObjectId::UefiMemoryMap;
+        info.validate_requiring_sources();
     }
 
     #[test]

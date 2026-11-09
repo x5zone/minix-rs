@@ -1510,3 +1510,12 @@
 | DESIGN-D2-03 | design-d2 | P2 | 测试路径假 static | ② | F-R20-03（R23） | D2 | 不改本轮 |
 | DESIGN-D2-04 | design-d2 | P2 | 负控覆盖 | ② | F-R20-04（R23） | D2 | 不改本轮 |
 | DESIGN-D2-05 | design-d2 | P3 | alloc_lowest 角色措辞 | ① | §4.9/§7.5 统一“暂未移植” | 源码 | 一致 |
+
+## R23 前置裁决落地（2026-11-09，不占面板轮）
+
+> 两条 ② 欠账在 R22 后仍挂“待用户裁决”；结构化提问未获答复。按用户「除 F-R14-04 外必须全修」的现行指令与两条推荐项代裁（`DECISIONS.md` D-026，可回退）。
+
+| 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| F-R17-01（DESIGN-D2-12） | design-d2 | P2 | 单实现 trait | ① | 删 `minix-boot::BootShim`；U-Boot 腿改 `opensbi_helpers::prepare_boot` 普通函数；`uboot_main` 直接调用；§3.2 重写 | `grep -rn "impl BootShim" os/` 零命中；`cargo test -p boot-shim --features test-all` 135+5；QEMU 三门 PASS | 行为不变 |
+| F-R17-04（DESIGN-D2-18） | design-d2 | P2 | 权威错配 | ① | `KernelInfo` 13→14 加 `authority: InputObjectId`；`validate_requiring_sources()` 无参；wire 解码/直核/UEFI 三处绑定；文档 §3.4.1/§4.4 同步 | `minix-boot` 192；`minix-kernel` 862+8；`minix-arch` 287；三 QEMU 门 PASS | 字段表与绑定说明一致 |

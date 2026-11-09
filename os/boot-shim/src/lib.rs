@@ -1,8 +1,9 @@
 //! Boot shim — bridges firmware (UEFI/OpenSBI/...) to the bare-metal kernel.
 //!
-//! The `BootShim` trait is defined in the `minix-boot` library crate
-//! (`minix-boot::boot_shim`), not in `minix-types`. The kernel does **not**
-//! go through this trait at all — its real entry surface is
+//! The boot-prep entry on the U-Boot leg is
+//! `opensbi_helpers::prepare_boot`, a plain function (the single-impl
+//! `BootShim` trait was removed, F-R17-01). The kernel does **not** go
+//! through it at all — its real entry surface is
 //! `arch_boot(&KernelInfo, root_page)` / `enter_kernel_image_v1` (see doc 01
 //! §3.2 for the honest division of labor: only the U-Boot leg's production
 //! path calls `prepare_boot`).
@@ -10,17 +11,15 @@
 //! Feature gates in `Cargo.toml` select which firmware helpers get compiled;
 //! the shared loading logic in `loader.rs` is firmware-agnostic, while
 //! `uefi_helpers` / `opensbi_helpers` carry the firmware-specific pieces
-//! behind `#[cfg(feature = ...)]` gates (7 `cfg(feature` sites + 1 combined
-//! gate in `lib.rs`).
+//! behind `#[cfg(feature = ...)]` gates (7 `cfg(feature` sites in
+//! `lib.rs`, none in business logic).
 //!
 //! Availability:
 //! - `uefi` feature (default): UEFI production entry
-//!   `prepare_and_enter_kernel_image` + helpers; this path does **not**
-//!   implement `BootShim`
-//! - `opensbi` feature: `RiscvUbootBootShim` — the only `BootShim`
-//!   production implementation; memory comes from the DTB
+//!   `prepare_and_enter_kernel_image` + helpers
+//! - `opensbi` feature: `opensbi_helpers::prepare_boot` — the wired U-Boot
+//!   leg (called from `uboot_main.rs`); memory comes from the DTB
 //!   `/memory` node (QEMU virt; no hardcoded map)
-//!   (the wired U-Boot leg; called from `uboot_main.rs`)
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(test, allow(internal_features))]
@@ -80,8 +79,8 @@ pub(crate) fn test_allocations() -> usize {
 #[global_allocator]
 static TEST_ALLOCATOR: CountingAllocator = CountingAllocator;
 
-// Re-export the trait and result type from minix-boot.
-pub use minix_boot::{BootPrepareResult, BootShim};
+// Re-export the result type from minix-boot.
+pub use minix_boot::BootPrepareResult;
 
 // Re-export the ELF parser from the shared minix-elf crate.
 // Both boot-shim and kernel need ELF parsing, so it lives in os/libs/minix-elf.
@@ -110,6 +109,7 @@ pub fn build_kernel_info(
     param_buf: &'static [u8],
     memmap_sources: &'static [minix_boot::SourceRecord],
     startup_objects: &'static [minix_boot::SourceRecord],
+    authority: minix_boot::InputObjectId,
 ) -> minix_boot::KernelInfo {
     minix_boot::KernelInfo {
         memmap,
@@ -127,6 +127,7 @@ pub fn build_kernel_info(
         boot_modules,
         platform_sources,
         param_buf,
+        authority,
     }
 }
 
@@ -151,6 +152,7 @@ impl BootStorageCell {
     }
 
     /// The storage. Callers must uphold the single-threaded boot contract.
+    #[allow(clippy::mut_from_ref)] // one borrower at a time by the boot contract
     pub fn get(&self) -> &mut minix_boot::BootStorage {
         // SAFETY: the boot contract gives this cell exactly one borrower at a
         // time (no interrupts, no SMP, no re-entry).
@@ -203,7 +205,6 @@ pub(crate) mod test_serial {
 }
 
 // ── Firmware-specific modules ──
-// Firmware-specific modules; only the U-Boot shim implements BootShim.
 
 #[cfg(feature = "uefi")]
 pub mod uefi_helpers;
@@ -230,17 +231,11 @@ pub mod resv_claims;
 pub mod opensbi_helpers;
 
 // ── Convenience re-export of the active implementation ──
-// Re-exports the *active firmware implementation's* type — callers still
-// UEFI has no BootShim impl; the production entry is
-// `uefi_helpers::prepare_and_enter_kernel_image`.
-// selects the U-Boot `BootShim` impl; the UEFI feature wires its own
-// production entry instead (no forwarding fn is provided).
+// The UEFI production entry is `uefi_helpers::prepare_and_enter_kernel_image`;
+// the U-Boot leg's entry is `opensbi_helpers::prepare_boot`.
 
 #[cfg(feature = "uefi")]
 pub use uefi_helpers::find_platform_sources_into;
-
-#[cfg(all(feature = "opensbi", not(feature = "uefi")))]
-pub use opensbi_helpers::RiscvUbootBootShim;
 
 /// Maximum page-table subrange the boot-shim hands to the kernel image (in
 /// 4 KiB pages). Both shim call sites (`main.rs` on UEFI, `uboot_main.rs` on

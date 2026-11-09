@@ -8,15 +8,15 @@
 //! There is no `riscv64-unknown-uefi` Rust target, so this kernel is
 //! a bare-metal binary (not a .efi file), loaded by QEMU's -kernel flag.
 //!
-//! ## Why not use `RiscvUbootBootShim::prepare_boot`?
+//! ## Why not use `opensbi_helpers::prepare_boot`?
 //!
 //! In the real boot chain (OpenSBI → U-Boot → boot-shim → kernel), U-Boot
 //! provides a `BootFileTable` via `fatload` so the boot-shim can read
 //! `kernel.elf` from the FAT partition. In this QEMU test, however, the
 //! kernel is loaded directly by QEMU's `-kernel` flag — there is no U-Boot,
 //! no FAT filesystem, and no `BootFileTable`. We therefore construct
-//! `KernelInfo` directly with hardcoded values, bypassing the
-//! `BootShim` trait. The `arch_boot_impl` path is still fully exercised.
+//! `KernelInfo` directly with hardcoded values, bypassing the production
+//! boot-prep entry. The `arch_boot_impl` path is still fully exercised.
 
 #![no_std]
 #![no_main]
@@ -156,6 +156,7 @@ pub extern "C" fn rust_main() -> ! {
         reserved_regions: &[],
         memmap_sources: &[],
         startup_objects: &[],
+        authority: minix_boot::InputObjectId::DtbBootInput,
     };
 
 

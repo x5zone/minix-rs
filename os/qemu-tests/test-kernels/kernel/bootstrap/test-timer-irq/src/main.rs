@@ -157,6 +157,7 @@ fn main() -> Status {
         reserved_regions: &[],
         memmap_sources: &[],
         startup_objects: &[],
+        authority: minix_boot::InputObjectId::UefiMemoryMap,
     };
 
 

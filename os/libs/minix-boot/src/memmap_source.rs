@@ -23,8 +23,9 @@
 //! introducing when a second source gains a consumer that genuinely wants to be
 //! source-agnostic.
 //!
-//! The boot-form layer is **not** merged here (axiom 3: the standalone `BootShim`
-//! executable and the `bootface` self-boot face correspond to different machine
+//! The boot-form layer is **not** merged here (axiom 3: the standalone
+//! `opensbi_helpers::prepare_boot` executable and the `bootface` self-boot
+//! face correspond to different machine
 //! states; this layer only unifies the memmap source underneath).
 //!
 //! Implementation placement: this DTB collector lives in the library (DTB
@@ -34,7 +35,9 @@
 //! point back into this library.
 
 use crate::kernel_info::MemoryRegion;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(test))]
+use core::sync::atomic::AtomicBool;
 use minix_types::PhysBytes;
 
 /// Capacity of the DTB memory map. Symmetric with kernel-image bootface's old

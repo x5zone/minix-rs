@@ -1,10 +1,10 @@
-//! BootShim trait — firmware-agnostic boot preparation interface.
+//! Firmware-agnostic boot preparation result.
 //!
-//! Implemented by the U-Boot production leg (`RiscvUbootBootShim`). The
-//! kernel does **not** depend on this trait — its entry surface is
+//! Produced by the U-Boot production leg's `opensbi_helpers::prepare_boot`.
+//! The kernel does **not** depend on this type — its entry surface is
 //! `arch_boot` / `enter_kernel_image_v1` (doc 01 §3.2).
 
-use crate::boot_storage::{BootReport, BootStorage};
+use crate::boot_storage::BootReport;
 use minix_types::{PhysBytes, PhysRange};
 
 /// Firmware-agnostic result of boot preparation.
@@ -18,7 +18,7 @@ use minix_types::{PhysBytes, PhysRange};
 ///   allocation
 /// - `arena_pa`: the handoff arena the shim reserved from the same pool
 ///
-/// This struct is produced by a `BootShim` implementation and consumed **in
+/// This struct is produced by the boot leg's `prepare_boot` and consumed **in
 /// the same address space**. The cross-image authority is the wire protocol
 /// `BootHandoffV1` ([`crate::handoff_v1`]); the report is the sender-side
 /// semantic view the wire is encoded from. Its lifetime is tied to the
@@ -31,33 +31,4 @@ pub struct BootPrepareResult<'a> {
     /// Handoff arena base (physical), allocated from the same bump pool after
     /// the module landings.
     pub arena_pa: PhysBytes,
-}
-
-/// Firmware-agnostic boot preparation trait.
-///
-/// The kernel does **not** depend on this trait (zero references in
-/// `os/kernel`) — its entry surface is `arch_boot` / `enter_kernel_image_v1`.
-/// Production load: only the U-Boot leg (`RiscvUbootBootShim`, called from
-/// `uboot_main.rs`). The UEFI production entry does not go through this trait.
-///
-/// What the trait actually buys (doc 01 §3.2, with evidence strength):
-/// 1. **Uniform entry shape** — U-Boot leg & test forms only.
-/// 2. **Testability** — `MockLoader` feeds file bytes in loader tests.
-/// 3. **cfg-gate locality** — 8 gate sites, none in business logic.
-/// 4. **"New firmware, kernel untouched"** — design promise, no automated
-///    counterexample yet. Type safety/encapsulation come from the feature
-///    gates, not from this trait.
-pub trait BootShim {
-    /// Prepare boot: discover memory, load kernel and boot modules,
-    /// allocate pages, fill the caller's storage, exit firmware services.
-    ///
-    /// This is called exactly once, before the kernel sets up paging.
-    /// After this call, firmware boot services are no longer available.
-    ///
-    /// The kernel's physical/virtual base and size are determined internally
-    /// by the implementation (e.g., by parsing the kernel ELF's PT_LOAD
-    /// segments). `storage` is owned by the caller (a `.bss` cell); the
-    /// returned report borrows it. The caller only specifies how many bump
-    /// pages to allocate for boot-stage page table construction.
-    fn prepare_boot<'a>(storage: &'a mut BootStorage, bump_pages: usize) -> BootPrepareResult<'a>;
 }

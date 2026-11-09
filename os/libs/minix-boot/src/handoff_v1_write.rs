@@ -494,6 +494,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
+            authority: crate::memmap_source::InputObjectId::DtbBootInput,
         }
     }
 

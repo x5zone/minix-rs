@@ -49,13 +49,13 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::alloc::{GlobalAlloc, Layout};
-use boot_shim::opensbi_helpers::RiscvUbootBootShim;
+use boot_shim::opensbi_helpers::prepare_boot;
 
 /// The U-Boot sender's caller-owned semantic storage (R18 D-1 stage 2).
 /// Single-threaded boot; see `boot_shim::BootStorageCell`.
 static BOOT_STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
 use boot_shim::{raw_serial, raw_serial_line};
-use minix_boot::{ARENA_CAP, BootShim, Serializer};
+use minix_boot::{ARENA_CAP, Serializer};
 
 extern crate alloc;
 
@@ -434,10 +434,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // + semantic tables (memmap/reserved/sources/param/startup from the argv
     // DTB), all written into the caller-owned storage. The bump pool lives at
     // 0x82000000-0x84000000 (existing constants; inside the measured free band).
-    let result = <RiscvUbootBootShim as BootShim>::prepare_boot(
-        BOOT_STORAGE.get(),
-        boot_shim::BOOT_PT_BUMP_PAGES,
-    );
+    let result = prepare_boot(BOOT_STORAGE.get(), boot_shim::BOOT_PT_BUMP_PAGES);
     raw_serial_line("boot-shim: kernel + 12 modules loaded (d73)");
 
     // The bootstrap root's PT pages come from the reserved region prepare_boot

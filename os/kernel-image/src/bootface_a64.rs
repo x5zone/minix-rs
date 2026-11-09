@@ -385,8 +385,9 @@ pub extern "C" fn bootface_a64() -> ! {
         param_buf,
         sources,
         startup_objects,
+        minix_boot::InputObjectId::DtbBootInput,
     );
-    kernel_info.validate_requiring_sources(minix_boot::InputObjectId::DtbBootInput);
+    kernel_info.validate_requiring_sources();
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)
 }

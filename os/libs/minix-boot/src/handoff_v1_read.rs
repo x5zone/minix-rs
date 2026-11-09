@@ -573,6 +573,7 @@ mod tests {
             boot_modules: &MODULES,
             platform_sources: &SOURCES,
             param_buf: PARAM,
+            authority: crate::memmap_source::InputObjectId::DtbBootInput,
         }
     }
 

@@ -1165,3 +1165,14 @@
 - ✅ F-R14-04（Direct Map / 02 篇）已按用户许可标注延至 02 文档轮。
 
 回归：`minix-boot` 192、`boot-shim --lib` 135、`minix-kernel --features mock` 862+8、`minix-arch` 287；三 QEMU 门 PASS（日志 `logs/round22-*.log` 与 `/tmp/test-shim-bootmarks-*`）。
+
+### R23 前置裁决落地（2026-11-09）
+
+两条阻塞项的结构化提问未获用户答复；按用户「除 F-R14-04 外必须全修」的现行指令与两条推荐项代裁（`DECISIONS.md` D-026，可回退）：
+
+- ✅ **F-R17-01**：删除 `minix-boot::BootShim` 单实现 trait；U-Boot 腿改普通函数 `opensbi_helpers::prepare_boot(storage, bump_pages)`，`uboot_main` 直接调用；`BootPrepareResult` 保留；文档 §3.2 按事实重写（标题、收益清单、依赖图、各处交叉引用）。
+- ✅ **F-R17-04**：`KernelInfo` 增第 14 字段 `authority: InputObjectId`；`validate_requiring_sources()` 改无参、读字段；wire 解码复制 `ram_authority`，两个直核面传 `DtbBootInput`，UEFI 腿传 `UefiMemoryMap`；文档 §3.4.1 的 13→14、字段表、§4.4 门表同步；83 处字面量中的 66 处测试/测试内核补字段。
+
+回归读数：`minix-boot` 192 通过；`boot-shim --features test-all` 135 + `ebs_boundary_audit` 5；`minix-kernel --features mock` 862 通过 + 8 忽略；`minix-arch --features runtime-window,test-support` 287 通过；QEMU 三门 PASS（x86 shim bootmarks、aarch64 shim bootmarks、riscv64 U-Boot shim 6/6）。文档门：anchor 106/106、style 0、ref/structure/density/snippet 通过。
+
+阻塞项清零，下一步进入 R23 面板。

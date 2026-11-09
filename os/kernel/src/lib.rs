@@ -653,8 +653,9 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
         boot_modules: unsafe { core::slice::from_raw_parts(module_ptr, module_len) },
         platform_sources: unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) },
         param_buf: unsafe { core::slice::from_raw_parts(param_ptr, param_len) },
+        authority: scalars.ram_authority,
     };
-    kinfo.validate_requiring_sources(scalars.ram_authority);
+    kinfo.validate_requiring_sources();
     kinfo.check_boot_postconditions();
     boot_alloc::resume_boot_pt_alloc(scalars.bump_base, scalars.bump_next, scalars.bump_end);
     resume_after_v1_decode(&kinfo, scalars.root_page)
@@ -5392,6 +5393,7 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
             startup_objects: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
 
         let root_page = PhysBytes(0x1000);
@@ -5544,6 +5546,7 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
             startup_objects: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
         store_kernel_info(&info);
         let stored = crate::kernel_info().expect("store_kernel_info published the global copy");
@@ -5620,6 +5623,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         }
     }
 
@@ -5745,6 +5749,7 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
             startup_objects: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
 
@@ -6024,6 +6029,7 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
             startup_objects: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
@@ -6048,6 +6054,7 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
             startup_objects: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
@@ -6072,6 +6079,7 @@ mod tests {
             reserved_regions: &[],
             memmap_sources: &[],
             startup_objects: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);

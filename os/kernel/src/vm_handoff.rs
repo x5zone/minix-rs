@@ -958,6 +958,7 @@ mod tests {
             boot_modules: MODS,
             platform_sources: &[],
             param_buf: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let root = PhysBytes(0x80_0000);
 
@@ -1072,6 +1073,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
         s.write_envelope(&carrier).unwrap();
         s.push_memmap(mem_region(0x10_0000, 0x80_0000)).unwrap(); // [1 MiB, 9 MiB)
@@ -1112,6 +1114,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
+            authority: minix_boot::InputObjectId::DtbBootInput,
         };
 
         // Last read is done: poison the arena.

@@ -113,6 +113,7 @@ pub extern "C" fn rust_main() -> ! {
         reserved_regions: &[],
         memmap_sources: &[],
         startup_objects: &[],
+        authority: minix_boot::InputObjectId::DtbBootInput,
     };
 
 

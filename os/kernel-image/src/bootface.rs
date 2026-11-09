@@ -50,7 +50,7 @@
 //! dereferenced only after `arch_boot` has built the tables and called
 //! `enable()` — the ordering is guaranteed by `arch_boot` itself.
 //!
-//! Boundary with boot-shim `RiscvUbootBootShim::prepare_boot`: that leg is
+//! Boundary with boot-shim `opensbi_helpers::prepare_boot`: that leg is
 //! "standalone shim installs kernel.elf then jumps", which re-copies **this
 //! image's own segments** and clears NOBITS — self-destructive for a self-boot
 //! image; this face copies only **modules** and never re-copies itself. Module
@@ -411,8 +411,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
         param_buf,
         sources,
         startup_objects,
+        minix_boot::InputObjectId::DtbBootInput,
     );
-    kernel_info.validate_requiring_sources(minix_boot::InputObjectId::DtbBootInput);
+    kernel_info.validate_requiring_sources();
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)
 }

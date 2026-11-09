@@ -53,7 +53,7 @@
 use core::slice;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use minix_boot::{BootShim, BumpRegion, DTB, PlatformDescSource};
+use minix_boot::{BumpRegion, DTB, PlatformDescSource};
 use minix_types::PhysBytes;
 
 use crate::loader::{self, FileLoader};
@@ -220,7 +220,9 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
     }
 }
 
-/// OpenSBI implementation of `BootShim`.
+/// Prepare this leg's boot: discover memory from the DTB, load the kernel
+/// and boot modules, allocate pages, fill the caller's storage, and return
+/// the result the kernel entry consumes.
 ///
 /// Mirrors the UEFI production entry step by step; the only differences are how
 /// firmware-specific services are accessed:
@@ -235,225 +237,220 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 ///
 /// The three roles are kept apart: **U-Boot** is the loader (it stages the
 /// files and hands over via `bootelf`), **OpenSBI** is the S-mode runtime
-/// service provider this leg inherits, and *this* struct is the Minix-RS
-/// boot shim that builds its own `BootFileTable` in `.bss`. The old
-/// `RiscvUbootBootShim` name fused "loader" and "runtime provider" into one
-/// word; the type describes the loader-side contract, so it is named after
-/// U-Boot.
-pub struct RiscvUbootBootShim;
+/// service provider this leg inherits, and *this function* is the Minix-RS
+/// boot shim that builds its own `BootFileTable` in `.bss`. The retired
+/// `RiscvUbootBootShim` type fused "loader" and "runtime provider" into one
+/// name (F-R17-01).
+pub fn prepare_boot<'a>(
+    storage: &'a mut minix_boot::BootStorage,
+    bump_pages: usize,
+) -> minix_boot::BootPrepareResult<'a> {
+    // The shim builds the table itself in .bss
+    // (`uboot_main::build_shim_table`) and installs its address into a
+    // module-private static before calling this. `a0` carries
+    // `(extra_argc, extra_argv)` — not a table address. For unit testing
+    // and headless development we fall back to a panic with a clear
+    // message.
+    let table = boot_file_table().expect(
+        "boot-shim: BootFileTable not installed (install_boot_file_table was not called)",
+    );
+    let file_loader = UbootFileLoader::new(table);
 
-impl BootShim for RiscvUbootBootShim {
-    fn prepare_boot<'a>(
-        storage: &'a mut minix_boot::BootStorage,
-        bump_pages: usize,
-    ) -> minix_boot::BootPrepareResult<'a> {
-        // The shim builds the table itself in .bss
-        // (`uboot_main::build_shim_table`) and installs its address into a
-        // module-private static before calling this. `a0` carries
-        // `(extra_argc, extra_argv)` — not a table address. For unit testing
-        // and headless development we fall back to a panic with a clear
-        // message.
-        let table = boot_file_table().expect(
-            "boot-shim: BootFileTable not installed (install_boot_file_table was not called)",
+    // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
+    // `install_dtb_ptr` is already in place; the collector is built with
+    // `firmware_reserve_end = KERN_PHYS_BASE` — the firmware prefix
+    // [DRAM_BASE, KERN_PHYS_BASE) is carved out as reserved, not
+    // trimmed at 0: on this leg the OpenSBI region is reclaimable and
+    // the module regions are excluded by the kernel's bootstrap-pool
+    // exclusions and covered by the A2 deduction record). A missing DTB
+    // means an honest halt (no fallback; the single-region hardcoding is
+    // exactly the leak surface being closed here).
+    {
+        let dtb_pa = dtb_ptr()
+            .expect("boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）");
+        // SAFETY: a1 is passed in by firmware; the first 8 bytes give
+        // totalsize (same as bootface), `Fdt::new` checks the magic/size
+        // gates, and a bad blob → expect halts.
+        assert!(
+            minix_boot::dtb_blob_aligned(dtb_pa),
+            "boot-shim: DTB pointer not 8-byte aligned — halting"
         );
-        let file_loader = UbootFileLoader::new(table);
-
-        // memmap source = DTB (OpenSBI/U-Boot pass the DTB in a1 and
-        // `install_dtb_ptr` is already in place; the collector is built with
-        // `firmware_reserve_end = KERN_PHYS_BASE` — the firmware prefix
-        // [DRAM_BASE, KERN_PHYS_BASE) is carved out as reserved, not
-        // trimmed at 0: on this leg the OpenSBI region is reclaimable and
-        // the module regions are excluded by the kernel's bootstrap-pool
-        // exclusions and covered by the A2 deduction record). A missing DTB
-        // means an honest halt (no fallback; the single-region hardcoding is
-        // exactly the leak surface being closed here).
-        {
-            let dtb_pa = dtb_ptr()
-                .expect("boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）");
-            // SAFETY: a1 is passed in by firmware; the first 8 bytes give
-            // totalsize (same as bootface), `Fdt::new` checks the magic/size
-            // gates, and a bad blob → expect halts.
-            assert!(
-                minix_boot::dtb_blob_aligned(dtb_pa),
-                "boot-shim: DTB pointer not 8-byte aligned — halting"
-            );
-            let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
-            let total_be = u32::from_be_bytes(head[4..8].try_into().expect("dtb header totalsize"));
-            assert!(
-                minix_boot::dtb_len_ok(total_be),
-                "boot-shim: DTB totalsize outside the accepted range — halting"
-            );
-            assert!(
-                dtb_pa.checked_add(total_be as u64).is_some(),
-                "boot-shim: DTB range overflows the address space — halting"
-            );
-            let total = total_be as usize;
-            let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
-            assert!(
-                minix_boot::fdt_layout::validate(dtb_pa, bytes).is_ok(),
-                "boot-shim: DTB container invalid — halting"
-            );
-            let fdt =
-                fdt::Fdt::new(bytes).expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
-            // Owned tables: the storage below is the only owner, so the leg
-            // does not keep the collector's `'static` tables alive (R18 D-1
-            // stage 2). The source records ride along.
-            let owned = minix_boot::DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
-                .collect_owned()
-                .expect("boot-shim: DTB memmap rejected (capacity or reservation shape) — halting");
-            // Hold the source records and audit coverage before anything is
-            // projected; a span without a record behind it must halt.
-            minix_boot::audit_source_coverage(owned.free(), owned.reserved(), owned.sources())
-                .expect("boot-shim: a projected span has no source record — halting");
-            assert!(
-                !owned.sources().is_empty(),
-                "boot-shim: the DTB leg must carry source records, not an empty partition"
-            );
-            // Copy the map tables into the caller's storage.
-            {
-                let (memmap_slots, reserved_slots) = storage.map_tables_mut();
-                assert!(
-                    owned.free().len() <= memmap_slots.len(),
-                    "boot-shim: DTB free-table over storage capacity"
-                );
-                memmap_slots[..owned.free().len()].copy_from_slice(owned.free());
-                assert!(
-                    owned.reserved().len() <= reserved_slots.len(),
-                    "boot-shim: DTB reserved-table over storage capacity"
-                );
-                reserved_slots[..owned.reserved().len()].copy_from_slice(owned.reserved());
-            }
-            storage.commit_map_tables(owned.free().len(), owned.reserved().len());
-            {
-                let source_slots = storage.memmap_source_slots_mut();
-                assert!(
-                    owned.sources().len() <= source_slots.len(),
-                    "boot-shim: DTB source records over storage capacity"
-                );
-                source_slots[..owned.sources().len()].copy_from_slice(owned.sources());
-            }
-            storage.set_memmap_sources_len(owned.sources().len());
-            // The SBI leg's parameter source is the standard firmware
-            // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
-            let input = fdt.chosen().bootargs().unwrap_or("");
-            let stats =
-                minix_boot::normalize_param_buf(input.as_bytes(), None, storage.param_buf_mut());
-            storage.set_param_len(stats.bytes);
-            crate::raw_serial_line(&alloc::format!(
-                "boot-shim: param_buf bytes={} rejected={} dropped={}",
-                stats.bytes,
-                stats.rejected,
-                stats.dropped
-            ));
-        }
-        let root_page = alloc_root_page();
-        let (bump_base, bump_end) = alloc_bump_region(bump_pages);
-        // Runtime partition check (D-3): the pool's fixed partitions are
-        // handed out in one order — root page first, page-table subrange
-        // second — and the kernel image resumes exactly that subrange from
-        // the wire. If the order ever changes, the root page would sit inside
-        // the kernel's bump region and the resumed cursor would hand out live
-        // page-table pages.
-        assert_eq!(
-            root_page.0,
-            bump_pool_base(),
-            "boot-shim: root page is not the bump pool's first page — halting"
-        );
-        assert_eq!(
-            bump_base,
-            root_page.0 + 4096,
-            "boot-shim: page-table subrange does not start after the root page — halting"
+        let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
+        let total_be = u32::from_be_bytes(head[4..8].try_into().expect("dtb header totalsize"));
+        assert!(
+            minix_boot::dtb_len_ok(total_be),
+            "boot-shim: DTB totalsize outside the accepted range — halting"
         );
         assert!(
-            bump_end <= bump_end_bound(),
-            "boot-shim: page-table subrange runs past the bump pool — halting"
+            dtb_pa.checked_add(total_be as u64).is_some(),
+            "boot-shim: DTB range overflows the address space — halting"
         );
-
-        let kern = loader::load_kernel_with_loader_gated(&file_loader, |layout| {
-            // Pre-copy gate (D-5 / F-R16-01): the ELF program headers give the
-            // kernel's LMA span before any segment byte is written. Refusing
-            // an overlap here is the only point where the pool can still be
-            // protected — a post-copy assertion would report the damage after
-            // the fact.
-            let k0 = layout.kern_phys_base.0;
-            let k1 = k0.saturating_add(layout.kern_size);
-            assert!(
-                k1 <= KERNEL_MAX_LMA_END,
-                "boot-shim: kernel LMA span [0x{k0:x}, 0x{k1:x}) exceeds the linker bound 0x{KERNEL_MAX_LMA_END:x} — refusing before any segment write"
-            );
-            assert!(
-                k1 <= MODULE_REGION_BASE || k0 >= BUMP_END,
-                "boot-shim: kernel LMA span [0x{k0:x}, 0x{k1:x}) overlaps the bump pool [0x{MODULE_REGION_BASE:x}, 0x{BUMP_END:x}) — refusing before any segment write"
-            );
-        })
-        .expect("boot-shim: failed to parse kernel ELF");
-        // The U-Boot leg has no `AllocateAddress` reservation (the firmware
-        // placed the image), so the kernel span is only known after the
-        // copy. Reject the layout if the already-allocated bootstrap pages
-        // land inside it: continuing would put page-table stores on top of
-        // the image. The UEFI leg prevents this before allocation; this is
-        // the U-Boot leg's post-layout equivalent.
+        let total = total_be as usize;
+        let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
+        assert!(
+            minix_boot::fdt_layout::validate(dtb_pa, bytes).is_ok(),
+            "boot-shim: DTB container invalid — halting"
+        );
+        let fdt =
+            fdt::Fdt::new(bytes).expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
+        // Owned tables: the storage below is the only owner, so the leg
+        // does not keep the collector's `'static` tables alive (R18 D-1
+        // stage 2). The source records ride along.
+        let owned = minix_boot::DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
+            .collect_owned()
+            .expect("boot-shim: DTB memmap rejected (capacity or reservation shape) — halting");
+        // Hold the source records and audit coverage before anything is
+        // projected; a span without a record behind it must halt.
+        minix_boot::audit_source_coverage(owned.free(), owned.reserved(), owned.sources())
+            .expect("boot-shim: a projected span has no source record — halting");
+        assert!(
+            !owned.sources().is_empty(),
+            "boot-shim: the DTB leg must carry source records, not an empty partition"
+        );
+        // Copy the map tables into the caller's storage.
         {
-            let k0 = kern.kern_phys_base.0;
-            let k1 = k0.saturating_add(kern.kern_size);
-            for (what, start, end) in [
-                ("root page", root_page.0, root_page.0.saturating_add(4096)),
-                ("bump region", bump_base, bump_end),
-            ] {
-                assert!(
-                    end <= k0 || start >= k1,
-                    "boot-shim: {what} overlaps the kernel image span — halting"
-                );
-            }
+            let (memmap_slots, reserved_slots) = storage.map_tables_mut();
+            assert!(
+                owned.free().len() <= memmap_slots.len(),
+                "boot-shim: DTB free-table over storage capacity"
+            );
+            memmap_slots[..owned.free().len()].copy_from_slice(owned.free());
+            assert!(
+                owned.reserved().len() <= reserved_slots.len(),
+                "boot-shim: DTB reserved-table over storage capacity"
+            );
+            reserved_slots[..owned.reserved().len()].copy_from_slice(owned.reserved());
         }
-        // The loader writes straight into the storage's module slots; no
-        // `Box::leak` and no `'static` slice (R18 D-1 stage 2).
-        let module_len =
-            loader::load_boot_modules_into(&file_loader, alloc_module_pages, storage.module_slots_mut());
-        storage.set_modules_len(module_len);
-
-        // OpenSBI passes the DTB physical address in register a1; the entry
-        // trampoline saved it via `install_dtb_ptr(a1)`. On RISC-V only DTB
-        // is supported (no ACPI), so the list is `[DTB]` or empty.
-        if let Some(pa) = dtb_ptr() {
-            storage
-                .push_platform_source(PlatformDescSource::new(DTB, PhysBytes(pa)))
-                .expect("boot-shim: platform-source partition over capacity");
+        storage.commit_map_tables(owned.free().len(), owned.reserved().len());
+        {
+            let source_slots = storage.memmap_source_slots_mut();
+            assert!(
+                owned.sources().len() <= source_slots.len(),
+                "boot-shim: DTB source records over storage capacity"
+            );
+            source_slots[..owned.sources().len()].copy_from_slice(owned.sources());
         }
+        storage.set_memmap_sources_len(owned.sources().len());
+        // The SBI leg's parameter source is the standard firmware
+        // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
+        let input = fdt.chosen().bootargs().unwrap_or("");
+        let stats =
+            minix_boot::normalize_param_buf(input.as_bytes(), None, storage.param_buf_mut());
+        storage.set_param_len(stats.bytes);
+        crate::raw_serial_line(&alloc::format!(
+            "boot-shim: param_buf bytes={} rejected={} dropped={}",
+            stats.bytes,
+            stats.rejected,
+            stats.dropped
+        ));
+    }
+    let root_page = alloc_root_page();
+    let (bump_base, bump_end) = alloc_bump_region(bump_pages);
+    // Runtime partition check (D-3): the pool's fixed partitions are
+    // handed out in one order — root page first, page-table subrange
+    // second — and the kernel image resumes exactly that subrange from
+    // the wire. If the order ever changes, the root page would sit inside
+    // the kernel's bump region and the resumed cursor would hand out live
+    // page-table pages.
+    assert_eq!(
+        root_page.0,
+        bump_pool_base(),
+        "boot-shim: root page is not the bump pool's first page — halting"
+    );
+    assert_eq!(
+        bump_base,
+        root_page.0 + 4096,
+        "boot-shim: page-table subrange does not start after the root page — halting"
+    );
+    assert!(
+        bump_end <= bump_end_bound(),
+        "boot-shim: page-table subrange runs past the bump pool — halting"
+    );
 
-        // The handoff arena: the next bump pages after the module landings,
-        // inside the same pool. It moves into this function so the complete
-        // startup set (kernel + modules + root + bump + arena) is written
-        // into the storage before the report borrows it.
-        let arena_pa = bump_alloc_pages(minix_boot::ARENA_CAP / 4096)
-            .expect("boot-shim: out of bump memory (arena)");
-
-        // Startup-object records: kernel image, every boot module, the root
-        // page, the bump region and the arena. Over capacity fails closed.
-        push_startup_record(storage, kern.kern_phys_base.0, kern.kern_size);
-        for i in 0..storage.boot_modules().len() {
-            let (start, len) = {
-                let module = &storage.boot_modules()[i];
-                (module.start.0, module.len as u64)
-            };
-            push_startup_record(storage, start, len);
+    let kern = loader::load_kernel_with_loader_gated(&file_loader, |layout| {
+        // Pre-copy gate (D-5 / F-R16-01): the ELF program headers give the
+        // kernel's LMA span before any segment byte is written. Refusing
+        // an overlap here is the only point where the pool can still be
+        // protected — a post-copy assertion would report the damage after
+        // the fact.
+        let k0 = layout.kern_phys_base.0;
+        let k1 = k0.saturating_add(layout.kern_size);
+        assert!(
+            k1 <= KERNEL_MAX_LMA_END,
+            "boot-shim: kernel LMA span [0x{k0:x}, 0x{k1:x}) exceeds the linker bound 0x{KERNEL_MAX_LMA_END:x} — refusing before any segment write"
+        );
+        assert!(
+            k1 <= MODULE_REGION_BASE || k0 >= BUMP_END,
+            "boot-shim: kernel LMA span [0x{k0:x}, 0x{k1:x}) overlaps the bump pool [0x{MODULE_REGION_BASE:x}, 0x{BUMP_END:x}) — refusing before any segment write"
+        );
+    })
+    .expect("boot-shim: failed to parse kernel ELF");
+    // The U-Boot leg has no `AllocateAddress` reservation (the firmware
+    // placed the image), so the kernel span is only known after the
+    // copy. Reject the layout if the already-allocated bootstrap pages
+    // land inside it: continuing would put page-table stores on top of
+    // the image. The UEFI leg prevents this before allocation; this is
+    // the U-Boot leg's post-layout equivalent.
+    {
+        let k0 = kern.kern_phys_base.0;
+        let k1 = k0.saturating_add(kern.kern_size);
+        for (what, start, end) in [
+            ("root page", root_page.0, root_page.0.saturating_add(4096)),
+            ("bump region", bump_base, bump_end),
+        ] {
+            assert!(
+                end <= k0 || start >= k1,
+                "boot-shim: {what} overlaps the kernel image span — halting"
+            );
         }
-        push_startup_record(storage, root_page.0, 4096);
-        push_startup_record(storage, bump_base, bump_end - bump_base);
-        push_startup_record(storage, arena_pa, minix_boot::ARENA_CAP as u64);
+    }
+    // The loader writes straight into the storage's module slots; no
+    // `Box::leak` and no `'static` slice (R18 D-1 stage 2).
+    let module_len =
+        loader::load_boot_modules_into(&file_loader, alloc_module_pages, storage.module_slots_mut());
+    storage.set_modules_len(module_len);
 
-        // No ExitBootServices analogue on OpenSBI — U-Boot already handed
-        // over control before the boot-shim started executing.
-        minix_boot::BootPrepareResult {
-            report: storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size),
-            root_page,
-            bump: minix_types::PhysRange::new(
-                minix_types::PhysBytes(bump_base),
-                minix_types::PhysBytes(bump_end),
-            )
-            .expect("prepare_boot: bump region end precedes its base"),
-            arena_pa: minix_types::PhysBytes(arena_pa),
-        }
+    // OpenSBI passes the DTB physical address in register a1; the entry
+    // trampoline saved it via `install_dtb_ptr(a1)`. On RISC-V only DTB
+    // is supported (no ACPI), so the list is `[DTB]` or empty.
+    if let Some(pa) = dtb_ptr() {
+        storage
+            .push_platform_source(PlatformDescSource::new(DTB, PhysBytes(pa)))
+            .expect("boot-shim: platform-source partition over capacity");
+    }
+
+    // The handoff arena: the next bump pages after the module landings,
+    // inside the same pool. It moves into this function so the complete
+    // startup set (kernel + modules + root + bump + arena) is written
+    // into the storage before the report borrows it.
+    let arena_pa = bump_alloc_pages(minix_boot::ARENA_CAP / 4096)
+        .expect("boot-shim: out of bump memory (arena)");
+
+    // Startup-object records: kernel image, every boot module, the root
+    // page, the bump region and the arena. Over capacity fails closed.
+    push_startup_record(storage, kern.kern_phys_base.0, kern.kern_size);
+    for i in 0..storage.boot_modules().len() {
+        let (start, len) = {
+            let module = &storage.boot_modules()[i];
+            (module.start.0, module.len as u64)
+        };
+        push_startup_record(storage, start, len);
+    }
+    push_startup_record(storage, root_page.0, 4096);
+    push_startup_record(storage, bump_base, bump_end - bump_base);
+    push_startup_record(storage, arena_pa, minix_boot::ARENA_CAP as u64);
+
+    // No ExitBootServices analogue on OpenSBI — U-Boot already handed
+    // over control before the boot-shim started executing.
+    minix_boot::BootPrepareResult {
+        report: storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size),
+        root_page,
+        bump: minix_types::PhysRange::new(
+            minix_types::PhysBytes(bump_base),
+            minix_types::PhysBytes(bump_end),
+        )
+        .expect("prepare_boot: bump region end precedes its base"),
+        arena_pa: minix_types::PhysBytes(arena_pa),
     }
 }
 
@@ -476,13 +473,13 @@ fn push_startup_record(storage: &mut minix_boot::BootStorage, start: u64, len: u
 //
 // `uboot_main` builds the table in `.bss` (`build_shim_table`) and calls
 // `install_boot_file_table(table_pa)` exactly once before invoking
-// `RiscvUbootBootShim::prepare_boot`.
+// `prepare_boot`.
 
 static mut BOOT_FILE_TABLE_PTR: usize = 0;
 
 /// Install the physical address of the shim-built [`BootFileTable`].
 ///
-/// Must be called exactly once, before [`RiscvUbootBootShim::prepare_boot`].
+/// Must be called exactly once, before [`prepare_boot`].
 /// The table is built by `uboot_main::build_shim_table` in the shim's own
 /// `.bss`; U-Boot does not pass a table.
 ///
@@ -529,13 +526,13 @@ pub fn boot_file_table() -> Option<&'static BootFileTable> {
 // OpenSBI passes the Flattened Device Tree (DTB) physical address in
 // register `a1` to the S-mode payload. The entry trampoline is expected
 // to call `install_dtb_ptr(a1)` exactly once before invoking
-// `RiscvUbootBootShim::prepare_boot`.
+// `prepare_boot`.
 
 static mut DTB_PTR: u64 = 0;
 
 /// Install the physical address of the DTB passed by OpenSBI in `a1`.
 ///
-/// Must be called exactly once, before [`RiscvUbootBootShim::prepare_boot`].
+/// Must be called exactly once, before [`prepare_boot`].
 /// Passing 0 is equivalent to "no DTB available" (kernel uses QEMU fallback).
 ///
 /// # Safety
@@ -784,6 +781,7 @@ mod tests {
             &[], // param_buf (no source in this unit test)
             &[], // memmap_sources
             &[], // startup_objects
+            minix_boot::InputObjectId::DtbBootInput,
         );
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit
@@ -845,6 +843,7 @@ mod tests {
             &[],
             &[],
             &[],
+            minix_boot::InputObjectId::DtbBootInput,
         );
         // memmap
         assert_eq!(info.memmap.len(), 1);
