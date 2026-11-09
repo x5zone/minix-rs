@@ -82,9 +82,9 @@
 ## R25
 
 - 发现总数: 124（FACT-A 14；FACT-B 17；READER-A 20；READER-B 31；READER-C 20；REFUTE 6 条主张；DESIGN-D2 16）
-- 处置: ① 98 / ② 0 / ③ 26 / ④ 0 / ⑤ 0
+- 处置: ① 99 / ② 0 / ③ 25 / ④ 0 / ⑤ 0
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 3 / 接受 2 / 实施 2（`PlatformDescSource` 可选长度、`map_kernel` 收 `KernelLayout`）；`records_in_wire`/直核静态落地区维持 D-034 与 D-013 边界
 - 成本: agent 7 / token 未采集 / 耗时 约 2 小时（面板 + P0/P1 修复 + 宿主/QEMU）
-- 回读: 待 RB25；宿主 136+6/865+8/339/196/548/288；QEMU 六门日志 `logs/round25-*.log`；doc 五门 PASS
+- 回读: RB25 46 条 44/46=95.7% PASS；meta25 40/59=67.8% NOT PASS（FLAT / 文档 NOT CONVERGED）；宿主 136+6/865+8/339/196/548/288；QEMU 六门 `logs/round25-*.log`；doc 五门 PASS

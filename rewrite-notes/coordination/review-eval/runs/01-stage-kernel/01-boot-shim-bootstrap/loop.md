@@ -1383,11 +1383,12 @@ RB24 首轮 13 项逐项处置：
 - 宿主：boot-shim 136+6、kernel 865+8、types 339、boot 196、vm 548、arch 288。
 - QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志 `logs/round25-*.log`。
 - RB25：随机 31/124 + 15 条强制 P0 = 46 条；44/46=95.7% PASS。两条必修：FACT-B-11 的 `map_kernel` 参数计数（已改“两参 &KernelLayout”）、READER-A-03 的“shim 只初始化”矛盾（已改为间接注册）。R25 台账 reader-a/severity 列按面板原值校正待收口。
+- meta25：40/59=67.8% NOT PASS；判决 FLAT / 文档 NOT CONVERGED。主要未闭合：26 条 ③ 中 19 条缺反证或属待裁决、R25 台账 severity 列与面板不一致、逐 ID 证据仍是模板、DESIGN-02/09/10 无承接、全历史 trace 11 FAIL（10 存量 + round25-rb 豁免）。R25 不宣告收敛。
 - 文档：3491 行 / `a9588aa0f636a7ee8a2f405a647cb3605a08ecd7ced874f3254ea64f593f2ef3`。
 
 ### R25 §6 指标
 
-见 `metrics.md` 的 R25 块：124 / ① 98 / ② 0 / ③ 26 / ④ 0 / ⑤ 0。
+见 `metrics.md` 的 R25 块：124 / ① 99 / ② 0 / ③ 25 / ④ 0 / ⑤ 0。
 
 ### R25 §7 状态
 

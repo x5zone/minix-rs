@@ -77,3 +77,9 @@ r24_status=NOT_CONVERGED
 r24_meta_head=66aa9c1c2
 r24_meta_verdict=IMPROVED / 运行质量 PASS
 r24_doc_status=NOT_CONVERGED
+
+# R25 fix batch
+r25_fix_head=4d3a0adb1
+r25_fixed_doc_sha256=a9588aa0f636a7ee8a2f405a647cb3605a08ecd7ced874f3254ea64f593f2ef3
+r25_fixed_doc_lines=3491
+r25_status=NOT_CONVERGED
