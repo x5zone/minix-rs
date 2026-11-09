@@ -823,6 +823,46 @@ def self_test() -> int:
             print_report(bad, False)
             return 1
 
+    # 验证轮：零新 in-scope 真缺陷 → 允许 CONVERGED
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_v = """# 台账
+
+## R25 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ① | 修复 | E1 | 测试通过 |
+"""
+        metrics_v = """# 指标
+
+- 发现总数: 1
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: verification
+- 新 in-scope 真缺陷: 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_v, metrics_v)
+        good = check_run_dir(run_dir, panel_dir)
+        if good.failed:
+            print("self-test FAIL: verification 零新增被判 FAIL")
+            print_report(good, False)
+            return 1
+
+    # 验证轮：有新 in-scope 真缺陷 → 不得 CONVERGED
+    with tempfile.TemporaryDirectory() as tmp:
+        metrics_bad = metrics_v.replace("新 in-scope 真缺陷: 0", "新 in-scope 真缺陷: 1")
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_v, metrics_bad)
+        bad = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "不得 CONVERGED" not in messages:
+            print("self-test FAIL: verification 有新发现未被拦截")
+            print_report(bad, False)
+            return 1
+
     # 六步收口合同：R13+ 轮次含 ### L6/### L6.5 → 通过
     with tempfile.TemporaryDirectory() as tmp:
         loop_r13 = (
