@@ -1210,7 +1210,7 @@
 
 - 文档：§1.1 EBS 缩写、§1.2 图例、§1.3 D5、§1.4 边界/计数/图例、§2.1 例外、§2.2 ABI 段、§2.3 拆段、§2.4 结算、§2.4.1.x、§2.5、§2.6.3/2.6.4、§2.7、§3.1 exit_boot_services、§3.2 cfg/FileLoader、§3.3 图、§3.4.1 authority/\(kern_stack_top\)、§3.4.3 arena 求和、§3.4.5 三地址、§3.5 风险表、§3.6 Paging、§3.7 resume_additive/术语表、§4.1 注册、§4.2 引文、§4.2.1 动作表、§4.3 引文、§4.4 引文/字段表/门链、§4.6 设备窗口/MTRR、§4.8 表行、§4.9 cut 行、§5.1 M4/M11/M12/M13/M15、§5.2.1 计数、§5.2.2 L5、§5.3 TODO-10、§6.1 路标、§6.3 断言/文案、§7.3/§7.5。
 - 代码：`KernelInfo` strict 派生等式+模块名核对（3+1 测试）；`MODULE_NAMES` 下沉 minix-boot；`BootStorageCell::take` 一次性；`Classification` 计数替代编码后解码；删 `classify` 死参数；删 bootface 冗余 register；`boot_shim.rs`→`boot_prepare.rs`；`boot_storage.rs` 文档收窄。
-- 测试：minix-boot 196、boot-shim 135+5、kernel 864+8、arch 287；QEMU x86/aarch64/riscv 三门 PASS。
+- 测试：minix-boot 196、boot-shim 135+5、kernel 865+8、arch 287；QEMU x86/aarch64/riscv 三门 PASS。
 
 ### §5 复验
 
@@ -1299,9 +1299,9 @@
 ### R24 §5 复验
 
 - 文档门：`anchor-resolve` 105/105；`doc-code-map --check` 52/52；`doc-style-lint` error=0；`doc-ref-check` PASS；`doc-structure-check` PASS；`doc-code-density-check` 承载门 PASS。
-- 宿主：boot-shim 136 + `ebs_boundary_audit` 6；minix-kernel 864 + 8 ignored；minix-types 339；minix-boot 196；minix-vm 548；minix-arch 288。
+- 宿主：boot-shim 136 + `ebs_boundary_audit` 6；minix-kernel 865 + 8 ignored；minix-types 339；minix-boot 196；minix-vm 548；minix-arch 288。
 - QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志归档在 `logs/round24-{x86-shim,aarch64-shim,riscv-uboot-shim,riscv-bootface,riscv-kernel-image,aarch64-smp-aps}.log`（各含 `TEST_RESULT: PASS` 或 `RESULT: PASS`）。
-- 修复后文档：3477 行 / `a1fcf203ae27131b517ac5b486b70619fe29f5ec29734cfb52d3659259f09962`。
+- 修复后文档：3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
 - 修复提交：`91e652a73`（40 files, +1139/−440）；`BASELINE.txt` 已登记 `r24_fix_head`。
 - RB24 首轮：71/80 = 88.8%，NOT PASS；B1/B2 与 N1–N11 已按最小补修逐项处理。第二次定向回读 23/23 = 100%，PASS（13 项定向 + 10 条上轮真修重放；未发现新 P0/P1/P2）。
 
@@ -1337,6 +1337,6 @@ RB24 首轮 13 项逐项处置：
 ### R24 §8 给 meta-review 的不确定点
 
 - M6 “窗口外不被铺”仍只有源码序与 QEMU 可用性，没有运行期“窗口外必缺页”探针；本轮把它标为部分覆盖，没有新造 TODO。
-- 平台描述符窗口只覆盖起始 2 MiB 片，当前消费者在 Direct Map 之后；已用注释与宿主测试钉住假设，未改 `PlatformDescSource` 长度。
+- 平台描述符窗口按 D-031 补长度：`PlatformDescSource.len` 贯穿 wire 与 `push_platform_windows`，`len == 0` 才回退单片；`platform_window_uses_the_recorded_blob_length` 钉住跨度分支。
 - `records_in_wire` 是类型上的可见标记，但当前发送侧没有消费者读 source/startup；它防的是未来误用，不是现网行为。
 - READER-B-20 判为 ③：批次号是评审回溯索引，图例已声明可跳过；若 meta 认为仍应清理，可作为下一轮 reader-experience 项。

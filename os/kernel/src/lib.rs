@@ -5681,11 +5681,9 @@ mod tests {
         assert!(id_flags.contains(PageFlags::EXECUTABLE));
     }
 
-    /// The platform-descriptor window is deliberately one 2 MiB piece:
-    /// `push_2m` covers the piece containing the address, not a blob-length
-    /// span. The current consumer (`minix_platform::init_from_kinfo`) runs
-    /// after the Direct Map exists, so this is an assumption the window table
-    /// must state, not a hidden full-span guarantee.
+    /// Legacy platform sources may have `len == 0`; the window builder then
+    /// falls back to the 2 MiB piece containing the address. Producers that
+    /// record a length use the full span (tested below).
     #[test]
     fn boot_window_push_2m_covers_the_descriptor_start_piece() {
         let mut windows = BootWindows::new();
@@ -5694,6 +5692,20 @@ mod tests {
             windows.as_slice(),
             &[(0x0800_0000, 0x0800_0000 + DEV_PIECE)]
         );
+    }
+
+    /// D-031: a platform source with an explicit length gets a window over
+    /// the full blob, not just the address's 2 MiB piece.
+    #[test]
+    fn platform_window_uses_the_recorded_blob_length() {
+        let source = minix_boot::PlatformDescSource::with_len(
+            minix_boot::DTB,
+            PhysBytes(0x0800_1234),
+            0x4000,
+        );
+        let mut windows = BootWindows::new();
+        push_platform_windows(&mut windows, &[source]);
+        assert_eq!(windows.as_slice(), &[(0x0800_1234, 0x0800_5234)]);
     }
 
     #[test]
