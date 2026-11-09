@@ -1076,7 +1076,7 @@
 
 ### R21 §3 归因
 
-- ① 17；④ 42；② 3（D2-02/03/04 → F-R20-01/03/04）；③ 1（A-03 五条腿列举实为完整）。
+- ① 17；④ 42；② 3（D2-04→F-R20-01、D2-02→F-R20-03、D2-03→F-R20-04）；③ 1（A-03 五条腿列举实为完整）。
 - re-litigation 0；adjacent 阻塞 0。
 
 ### R21 §4 修复
@@ -1087,15 +1087,16 @@
 
 ### R21 §5 复验
 
-- 六门全绿；宿主测试全绿；三 QEMU 门 PASS。RB21/meta R21 未跑（本轮未宣告收敛）。
+- 六门全绿（仅被审文档口径；全 diff 文风门在 loop/ledger 命中 2 处 SL-4）；宿主测试全绿；三 QEMU 门 PASS。
+- RB21 判 **NOT PASS**：42 条 ④ 中仅约 5 条有 diff，36 条原句未动；meta R21 判 **NOT PASS**（严格一致 14/37=37.8%，Precision/Teaching/Trace FAIL；P-FACT MISSING 造成事实空档）。R22 必须逐 ID 补修，不能继续“转出”。
 
 ### R21 §6 指标
 
-发现 63；处置 ①17 / ②3 / ③1 / ④42 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+发现 63；处置 ①14 / ②3 / ③3 / ④43 / ⑤0；re-litigation 0；adjacent 阻塞 0。
 
 ### R21 §7 状态
 
-`NOT CONVERGED`：G8 本轮新增 63 条；G9 的 ② F-R20-01/03/04 待 R22；G7 meta 未跑。R21 不宣告收敛，下一轮从 R22 继续。
+`NOT CONVERGED`：G8 本轮新增 63 条；G9 的 ② F-R17-01..04、F-R20-01..03 全部逾期未处置（R22 必须处理或明确裁决）；G7 meta R21 NOT PASS。R21 不宣告收敛，R22 先补 36 条 ④，再开面板。
 
 ### R21 §8 给 meta-review 的不确定点
 

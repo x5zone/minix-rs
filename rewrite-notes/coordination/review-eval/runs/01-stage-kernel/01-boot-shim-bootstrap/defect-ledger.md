@@ -1464,12 +1464,12 @@
 |---|---|---|---|---|---|---|---|
 | READER-A-01、READER-C-02、REFUTE-02 | reader/refute | P1 | 16 条截断 off-by-one | ① | §2.4.1.4 的 0-based 下标由 17..=39 改 16..=39 | `NR_MEMS=16`、C 1-based 17–40 | 两处一致 |
 | READER-A-04、READER-A-05、READER-A-06、READER-A-07 | reader-a | P2/P3 | 术语/文本破损/路径 | ④ | 删“快照序号”死引用；修“（规范集合）”重复与“字段删除”断句；UEFI 固件长模式/分页限定；`fn main` 运行环境限定 | 文档内 | 六门 |
-| READER-A-02..03、READER-A-08..20 | reader-a | P2/P3 | 计数/术语/编号 | ④ | 六套计数补成员、索引/编号/术语与重复句按 panel 条目处理；A-03 五条腿列举实为完整（③） | 各条锚点在 panel 内 | 六门 |
+| READER-A-02..03、READER-A-08..20 | reader-a | P2/P3 | 计数/术语/编号 | ④ | **未修，转 R22**（RB21：文档 diff 仅覆盖 A-04/05/06/07；其余原句未动）；A-03 五条腿列举实为完整（③） | RB21 §1/§2 | R22 逐 ID |
 | READER-B-01 | reader-b | P1 | `pg_alloc_page` 角色被替换 | ① | §3.8/§4.9/§7.5 改：页表页来源是 `alloc_pagetable`；`pg_alloc_page` 是 4KB 数据页，Rust 无同名对应物（运行期 VM `phys_mem`） | C `pg_map`/`alloc_pagetable`、`pt_alloc` | 三处一致 |
-| READER-B-02..20 | reader-b | P2/P3 | 结构/权威/重复 | ④ | §3.4.2 `[ARCH]` 与“其一…其十”重复（③ 保留摘要）；§3.10/§4.9/§7.5 权威口径统一；§1.4 定义节补 §3.2/§4.8；§3.4 五主题容器（③）；§4.6 两说法统一；其余指针/计数同步 | 各条锚点在 panel 内 | 六门 |
+| READER-B-02..20 | reader-b | P2/P3 | 结构/权威/重复 | ④ | **未修，转 R22**（RB21：B-02..B-20 全部原句未动）；B-01 已修 | RB21 §2 | R22 逐 ID |
 | READER-C-01 | reader-c | P1 | EBS 循环普遍化 | ① | §3.7 改“两条 UEFI 腿在 EBS 配对循环；riscv64 U-Boot shim 无 EBS，直接读 DTB” | §3.1/§4.8 | 四处一致 |
 | READER-C-03、READER-C-04、READER-C-06、READER-C-07 | reader-c | P2 | 时序/角色/签名/门脚本 | ① | M16 改“布局确定后拷贝前记录跨度”；M3 改“Rust 页表页来自注册分配器，不向 memmap 取页”；§3.7 改“借用 `&KernelInfo` 入口深拷”；M12 补 aarch64/x86 断言 | §4.2.1/§4.4/§5.2.3 | 与源码一致 |
-| READER-C-05、READER-C-08..11 | reader-c | P3 | 边界/指代 | ④ | C-05 已在 R20 修；C-08 “切根”加 §3.7 定义指针；C-09 改“root/bump/arena 三次分配”；C-10 改“本仓门链当前低于 4GiB 但无守护”；C-11 删/限定 `arch_boot entered` | 文档内 | 六门 |
+| READER-C-05、READER-C-08..11 | reader-c | P3 | 边界/指代 | ④ | **未修，转 R22**（RB21：C-05/C-08/C-09/C-11 原句未动） | RB21 §2 | R22 逐 ID |
 | REFUTE CLAIM 01、03、05 | refute | — | 反证成立 | ③ | 核心成立，保留；CLAIM 01 的裸 `=` 边界登记 P3 | panel 内证据 | — |
 | REFUTE CLAIM 02 | refute | P1 | 16 条截断 off-by-one | ① | 同 REFUTE-02 行 | panel 内证据 | 见该行 |
 | REFUTE CLAIM 04 | refute | P2 | 十条分歧 | ① | 同 REFUTE-04 行 | panel 内证据 | 见该行 |
