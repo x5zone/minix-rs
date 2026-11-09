@@ -1254,6 +1254,6 @@
 - ✅ F-R18-02：`doc-structure-check.py` 增加标题锚点解析与 `--check-external`；自测正负 fixture。
 - ✅ F-R18-03：`classify_regions` 测试入口改调 `for_each_live_bootstrap`，只额外加测试专用 reserved-module 跨度。
 - ✅ F-R18-04：新增并发 `pt_alloc` 测试。
-- ⏳ **TODO-09 未完成**：尝试拆分 `prepare_kernel_image_v1`/`jump_kernel_image_v1` 并在 shim 侧打印 `kernel: bootstrap root live; jumping to image entry`；无论函数指针、全局 hook 还是直接拆函数，QEMU 串口均未出现该行（建根返回后的 shim 代码不可观测），已回退到单一 `enter_kernel_image_v1` 稳定形态。唯一残留，需单独定位 PE/win64 返回路径。
+- ✅ **TODO-09 已关闭**（2026-11-09 用户裁决）：CR3 切换后 shim 侧不可观测是 PE/CR3 切换的架构特性（三次尝试实证），不是代码 bug；A→C 间隙的诊断由 QEMU `-d int` 异常追踪覆盖，门链全过为实证背书。关闭理由：修诊断缺口的风险 > 缺口本身。
 
 回归：minix-types 339、minix-boot 196、boot-shim 136+5、minix-kernel 860+8、minix-arch 288、minix-vm 548；QEMU x86/aarch64/riscv U-Boot shim/riscv bootface/riscv kernel-image/aarch64 SMP 全 PASS；文档五门 PASS。
