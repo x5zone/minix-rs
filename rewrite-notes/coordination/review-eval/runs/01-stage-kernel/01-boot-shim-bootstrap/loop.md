@@ -1144,7 +1144,7 @@
 
 ### R22 §7 状态
 
-`NOT CONVERGED`：G8 本轮新增 67 条面板条目；G9 的 ② F-R17-01..04 与 F-R20-01..04 已全部登记 OPEN-DEBT 截止 R23；RB22 已判 NOT PASS、meta R22 复核后为 NOT PASS（Teaching 未清）。R23 继续。
+`NOT CONVERGED`：G8 本轮新增 67 条面板条目；G9 的 ② F-R17-01..04 与 F-R20-01..04 已全部登记 OPEN-DEBT 截止 R23；RB22 判 NOT PASS 后经六轮复核，meta R22 最终 **IMPROVED / PASS**（Teaching/Trace/Precision FAIL 均清；保留 60.9% 历史抽样读数与 Detection/Design/Scope/Cost CONCERN）。R22 收口，G8 仍未满足，R23 继续。
 
 ### R22 §8 给 meta-review 的不确定点
 
