@@ -48,3 +48,13 @@
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 6 / token 未采集 / 耗时 约 50 分钟
 - 回读: RB21 判 NOT PASS（36/42 ④ 未修）；meta R21 判 NOT PASS（严格一致 14/37=37.8%，Precision/Teaching/Trace FAIL），R22 逐 ID 补修
+
+## R22
+
+- 发现总数: 63（FACT-A 3；FACT-B 2；READER-A 20；READER-B 20；READER-C 10；REFUTE 3；DESIGN-D2 5）
+- 处置: ① 14 / ② 3 / ③ 3 / ④ 43 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 7 / token 未采集 / 耗时 约 55 分钟
+- 回读: RB22/meta R22 待跑

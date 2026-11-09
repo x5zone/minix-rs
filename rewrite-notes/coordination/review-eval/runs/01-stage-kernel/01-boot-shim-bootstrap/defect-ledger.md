@@ -1479,3 +1479,32 @@
 | DESIGN-D2-02 | design-d2 | P2 | 测试路径假 'static | ② | F-R20-03（R21） | D2 条目 | 不改本轮 |
 | DESIGN-D2-03 | design-d2 | P3 | 负控覆盖不足 | ② | F-R20-04（R21） | D2 条目 | 不改本轮 |
 | DESIGN-D2-04 | design-d2 | P2 | 物理地址类型身份 | ② | F-R20-01（R21） | D2 条目 | 不改本轮 |
+
+## R22 面板轮（2026-11-09，R21 meta 后；先清 R21 携带）
+
+> 面板：P-FACT-A 3、P-FACT-B 2、READER-A 20、READER-B 20、READER-C 10、REFUTE 3 条反证成立（7 主张）、DESIGN-D2 5。总计 63 条。R21 携带 36 条已在 L0 补修。
+
+| 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-A-01 | fact-a | P1 | 868 读数口径 | ① | §5.2.1 命令补 `--lib`（否则含集成测试得 878） | `cargo test -- --list` | 命令可重放 |
+| FACT-A-02 | fact-a | P1 | “新 impl BootShim”过时 | ① | §3.3 改“新入口/共享库；只有需要 BootShim 语义才新增 impl” | 源码单实现 | 与 §3.2 一致 |
+| FACT-A-03 | fact-a | P2 | `Type::method` 锚点逃逸 | ③ | anchor-resolve 文法不认 `Type::method`；符号存在，转 R23 工具候选（B-59） | `--extract` 零命中 | 不改文档 |
+| FACT-B-01、FACT-B-02 | fact-b | P2/P3 | 引文省略低报 | ① | §4.2 块头补 arena 断言/扩容分支/dumpdtb cfg；§3.2/§4.3 块头改“文档注释整段略去” | 源码对读 | 块头与内容一致 |
+| READER-A-01..20 | reader-a | P1/P2/P3 | 读者障碍 | ④ | §3.1 改 BootHandoffV1 序列化；§2.1 视频字段/模块上限 19；§4.2.1 动作/step 措辞；六套计数与 §3.7 指向；其余术语/交叉引用按各条修 | 各条锚点在 panel 内 | 六门 |
+| READER-B-01..20 | reader-b | P1/P2 | 结构/权威 | ④ | startup 时序改“EBS 后补写”；信封静态标量/运行期字段分开；§3.10/§4.9 权威规则统一；§4.9 `alloc_lowest` 指“SMP 篇尚未生成”；§1.4 定义节逐项；三级容量；§7.2 脚注改行内链接；§4.1 三段补动作 7–8；§5 状态四层收敛 | 各条锚点在 panel 内 | 六门 |
+| READER-C-01..10 | reader-c | P2/P3 | 跨节因果 | ④ | 三级容量统一；§2.6.1 PWT/PCD 两案分开；SMEP+SMAP 前提；ARM “主要差异”补 overlaps；§2.8 不写“只有”；§5.2.3 覆盖范围降级；§5.1 M2 补交叉校验行；§3.7 内联形态标注非生产 | 各条锚点在 panel 内 | 六门 |
+| REFUTE-01 | refute | P1 | EBS 审计切片漏尾 | ① | `ebs_boundary_audit.rs` 的 `function_body` 改花括号配对（处理注释/字符串/字符），新增嵌套块负控；集成测试 5 条 | `cargo test --test ebs_boundary_audit` 5 通过 | 尾部插入 `uefi::` 会红 |
+| REFUTE-02 | refute | P2 | `board=` 双记录全称 | ① | §2.3 补“若后置键被提升为首条则被删、无双记录”分支 | C 逐行复算 | 两分支都写明 |
+| REFUTE-03 | refute | P2 | `nr_tasks` 载体错配 | ① | §3.4.2 行改 `NR_PROCS`/`NR_TASKS`，注明 12 是 `NR_BOOT_MODULES` 不是 `nr_tasks` | C `main.c:431`、`com.rs:67` | 与源码一致 |
+| DESIGN-D2-01、D2-05 | design-d2 | P1/P3 | 测试形态/角色措辞 | ① | §3.2 改“无测试第二实现”；§7.5/§4.9 `alloc_lowest` 统一“暂未移植” | 源码 | 一致 |
+| DESIGN-D2-02、D2-03、D2-04 | design-d2 | P1/P2 | 类型身份/假 'static/负控 | ② | F-R20-01/03/04（R23） | D2 条目 | 不改本轮 |
+
+| 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| CLAIM-01 | refute | P1 | EBS 审计切片 | ① | 同 REFUTE-01 | panel | 5 条测试通过 |
+| CLAIM-02 | refute | P2 | board 双记录 | ① | 同 REFUTE-02 | panel | 两分支写明 |
+| CLAIM-03 | refute | P2 | nr_tasks 载体 | ① | 同 REFUTE-03 | panel | 源码一致 |
+| CLAIM-04、CLAIM-05、CLAIM-06、CLAIM-07 | refute | — | 反证未成立/保留 | ③ | 保留原叙述 | panel | — |
+| DESIGN-D2-03 | design-d2 | P2 | 测试路径假 static | ② | F-R20-03（R23） | D2 | 不改本轮 |
+| DESIGN-D2-04 | design-d2 | P2 | 负控覆盖 | ② | F-R20-04（R23） | D2 | 不改本轮 |
+| DESIGN-D2-05 | design-d2 | P3 | alloc_lowest 角色措辞 | ① | §4.9/§7.5 统一“暂未移植” | 源码 | 一致 |

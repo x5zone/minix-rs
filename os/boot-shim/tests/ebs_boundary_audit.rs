@@ -23,22 +23,75 @@ fn code_part(line: &str) -> &str {
     line.trim()
 }
 
-/// Return a function body (from its signature to the first closing brace
-/// indented by at most four spaces — the real source indents it by four,
-/// synthetic fixtures may use column zero).
+/// Return a function body from its signature through the matching closing
+/// brace. Brace counting (not "first `}` at indent ≤ 4") is required because
+/// the function contains nested loops/blocks; the old indent heuristic ended
+/// the slice at the pairing loop's closing brace and left the post-EBS tail
+/// unscanned.
 fn function_body<'a>(source: &'a str, sig: &str) -> &'a str {
     let start = source
         .find(sig)
         .unwrap_or_else(|| panic!("TODO-04 audit: signature not found: {sig}"));
     let rest = &source[start..];
-    let mut offset = 0usize;
-    for line in rest.split_inclusive('\n') {
-        let indent = line.len() - line.trim_start().len();
-        if line.trim() == "}" && indent <= 4 {
-            let end = offset + indent;
-            return &rest[..end];
+    let open = rest
+        .find('{')
+        .unwrap_or_else(|| panic!("TODO-04 audit: opening brace not found: {sig}"));
+    let bytes = rest.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    let mut in_line = false;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_line {
+            if c == b'\n' {
+                in_line = false;
+            }
+            i += 1;
+            continue;
         }
-        offset += line.len();
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_char {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'\'' {
+                in_char = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                in_line = true;
+                i += 2;
+                continue;
+            }
+            b'"' => in_str = true,
+            b'\'' => in_char = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[..=i];
+                }
+            }
+            _ => {}
+        }
+        i += 1;
     }
     panic!("TODO-04 audit: function body end not found: {sig}");
 }
@@ -127,6 +180,25 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     assert!(
         found.iter().any(|v| v.contains("allocate_pages")),
         "negative control must flag the injected allocation: {found:?}"
+    );
+}
+
+#[test]
+fn pairing_audit_scans_past_nested_blocks() {
+    let synthetic = "\
+pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
+    for _ in 0..1 {
+        foo();
+    }
+    raw_serial(\"boot services exited (paired)\");
+    uefi::println!(\"tail after nested block\");
+}
+";
+    let body = prepare_and_enter_body(synthetic);
+    let found = violations_after_marker(body, "boot services exited (paired)");
+    assert!(
+        found.iter().any(|v| v.contains("uefi::")),
+        "tail after a nested block must be scanned: {found:?}"
     );
 }
 

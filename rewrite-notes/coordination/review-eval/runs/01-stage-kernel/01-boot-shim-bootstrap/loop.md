@@ -1111,3 +1111,42 @@
 - R22 面板读取基线：R22 L0 补修提交（见下） + 文档 3390 行
 - R21 携带：RB21/meta R21 指出的 36 条 ④ 未修项，已在 L0 逐 ID 补修（A-02/A-10/A-16、B-02..B-20 除 B-15、C-05/C-08..C-10）；B-15/C-11/A-03 记 ③ 并给理由
 - 面板：P-FACT 拆两路（机械/引文）、P-READER A/B/C、P-REFUTE、P-DESIGN D2；D1 继续停跑
+
+### R22 §1 面板
+
+- 角色：P-FACT-A（机械）、P-FACT-B（引文/合同）、READER A/B/C、REFUTE、DESIGN-D2；D1 继续停跑。
+- 原始输出：`panel/round22/`（fact-a 3、fact-b 2、reader-a 20、reader-b 20、reader-c 10、refute 7 主张/3 反证成立、design-d2 5）。
+
+### R22 §2 发现
+
+- 63 条；P1：868 命令口径、`新 impl BootShim` 过时、§3.1 `KernelInfo` 序列化、startup 时序、EBS 审计切片漏尾。
+- P2：`board=` 双记录分支、`nr_tasks` 载体错配、引文省略低报、128/64/64 与 128/64 口径、PWT/PCD 两案、SMEP/SMAP 前提。
+
+### R22 §3 归因
+
+- ① 14；④ 43；② 3（D2-02/03/04 → F-R20-01/03/04）；③ 3（FACT-A-03、A-03、B-15/C-11 保留）。
+- re-litigation 0；adjacent 阻塞 0。
+
+### R22 §4 修复
+
+- 文档：§3.1 BootHandoffV1；§3.2 trait 单实现；§3.3 新固件形态；§2.1 视频/模块上限；§3.4.2 nr_tasks；§2.3 board 分支；§3.4.1 startup 时序；§4.2 引文块头；§3.4/§4.9/§7.5 角色与权威；§1.4 定义节；§2.4.1.4 三级容量；§2.6.1 PWT/PCD/SMAP；§2.8 ARM；§5.2.1 868 `--lib`。
+- 代码：`ebs_boundary_audit.rs` 花括号配对 + 嵌套块负控（5 条）。
+- 测试：boot-shim ebs 5、minix-boot 190、kernel 860+8、三 QEMU 门 PASS。
+
+### R22 §5 复验
+
+- 六门：anchor 107/107（少 1 因 `Type::method` 不计入）、style 0、ref/结构/承载通过。
+- 宿主与 QEMU 全绿。RB22/meta R22 待跑。
+
+### R22 §6 指标
+
+发现 63；处置 ①14 / ②3 / ③3 / ④43 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+
+### R22 §7 状态
+
+`NOT CONVERGED`：G8 本轮新增 63 条；G9 的 ② F-R20-01/03/04 + F-R17-01..04 仍未处置；RB22/meta R22 待跑。R23 继续。
+
+### R22 §8 给 meta-review 的不确定点
+
+- FACT-A-03 的 `Type::method` 锚点逃逸是工具文法缺口，登记 B-59。
+- D1 停跑后，设计侧只剩 D2 的差异审查；文档与代码“同错”的整段缺漏无人看。
