@@ -13,7 +13,8 @@ eval-trace-check.py — review-loop 轨迹完整性检查
   2. 每个 panel/*.md 里的 `## FINDING <ID>` 是否在 defect-ledger.md 有处置行；
   3. 台账是否有孤儿行（处置了但面板里没有）；
   4. 每行是否有处置类（①②③④⑤ 或 fix/transfer/fp/wording/insufficient）；
-  5. 处置类为 ① 或 fix 的行，复验列是否非空且不是占位；
+  5. 处置类为 ①、④ 或 fix 的行，复验列是否非空且不是占位（2026-11-09
+     用户裁决“轮转闸”：④ 为读者体验项、必须本轮修，与 ① 同样要求证据）；
   6. 处置类为 ⑤ 或 insufficient 的行，处置列是否写清还缺什么证据；
   7. metrics.md 的必需键是否齐全；
   8. metrics.md 的 `发现总数` 是否等于五项处置之和；
@@ -60,7 +61,7 @@ FINDING_RE = re.compile(r"^#{2,3}\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)", re.MULT
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE)
 METRIC_COUNT_RE = re.compile(r"([①②③④⑤])\s*(\d+)")
-PLACEHOLDERS = {"tbd", "待定", "-", "—", ""}
+PLACEHOLDERS = {"tbd", "待定", "-", "—", "", "（待补）", "待补"}
 DISPOSITION_TOKENS = {
     "①": "①",
     "②": "②",
@@ -283,8 +284,12 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
             continue
         action = cells[current["act"]]
         verify = cells[current["ver"]]
-        if canonical in {"①"} and verify.lower() in PLACEHOLDERS:
-            report.fail("ledger", f"{'、'.join(row_ids)} 处置类为 ①，但复验列为空或占位")
+        if canonical in {"①", "④"} and verify.lower() in PLACEHOLDERS:
+            report.fail(
+                "ledger",
+                f"{'、'.join(row_ids)} 处置类为 {canonical}，但复验列为空或占位"
+                "（轮转闸：可修项必须有已修证据）",
+            )
         if canonical in {"⑤"} and (
             action.lower() in PLACEHOLDERS or len(action) <= 4
         ):
@@ -622,11 +627,12 @@ GOOD_LEDGER = """# 缺陷台账
 |---|---|---|---|---|---|---|---|
 | FACT-01 | P-FACT | P1 | 事实 | ① | 修复 §1.1 | E1 | `grep -n x` 命中 |
 | FACT-02 | P-FACT | P2 | 措辞 | ③ | 误报，反证见 §3 | E3 | 不适用 |
+| READER-A-01 | reader-a | P3 | 措辞 | ④ | 修 §1.2 | E1 | 旧串 grep 归零 |
 """
 GOOD_METRICS = """# 指标
 
-- 发现总数: 2
-- 处置: ① 1 / ② 0 / ③ 1 / ④ 0 / ⑤ 0
+- 发现总数: 3
+- 处置: ① 1 / ② 0 / ③ 1 / ④ 1 / ⑤ 0
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
@@ -659,7 +665,7 @@ def self_test() -> int:
         bad_ledger = GOOD_LEDGER.replace(
             "| FACT-02 | P-FACT | P2 | 措辞 | ③ | 误报，反证见 §3 | E3 | 不适用 |\n", ""
         )
-        bad_metrics = GOOD_METRICS.replace("- 发现总数: 2", "- 发现总数: 3")
+        bad_metrics = GOOD_METRICS.replace("- 发现总数: 3", "- 发现总数: 4")
         bad_dir = write_fixture(
             Path(tmp), GOOD_LOOP, bad_ledger, bad_metrics, GOOD_PANEL
         )
@@ -763,6 +769,20 @@ def self_test() -> int:
         if not result.failed or "FACT-01" not in messages:
             print("self-test FAIL: 轮次作用域未拦截 R1 台账顶替 R2 发现")
             print_report(result, False)
+            return 1
+
+    # 轮转闸（2026-11-09）：④ 行没有已修证据 → 拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_4 = GOOD_LEDGER.replace(
+            "| READER-A-01 | reader-a | P3 | 措辞 | ④ | 修 §1.2 | E1 | 旧串 grep 归零 |",
+            "| READER-A-01 | reader-a | P3 | 措辞 | ④ | 修 §1.2 | E1 | （待补） |",
+        )
+        bad4_dir = write_fixture(Path(tmp), GOOD_LOOP, ledger_4, GOOD_METRICS, GOOD_PANEL)
+        bad4 = check_run_dir(bad4_dir)
+        messages4 = " ".join(item["message"] for item in bad4.items)
+        if not bad4.failed or "轮转闸" not in messages4:
+            print("self-test FAIL: ④ 无证据未被轮转闸拦截")
+            print_report(bad4, False)
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
