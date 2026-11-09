@@ -3168,7 +3168,7 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 | TODO-06 | M14 x86_64 路标链 | x86_64 上 `kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1` 三条路标出现 | 已覆盖：`test-cmd-smoke.sh` Stage 3b 逐条 `grep -qF`，缺任一条即 FAIL 并回打串口尾 12 行。本条判据（三条路标）当前为绿；脚本整体退出码未在本轮复核，du/stat/find 三段的现状不属于本条判据 | 已交接完成 |
 | TODO-07 | §4.2 UEFI 侧宿主可测面 | 两列表互斥完备；root/bump 不与 free 列表相交 | `assert_bootstrap_outside_memmap` 五案；新增 `ebs_map::tests::classified_tables_are_disjoint_and_expected` 覆盖同一分类的 free/reserved 表互斥与计数；`build_memmaps` 仅是固件 `GetMemoryMap` 快照包装，宿主不可构造 | ✅ 已关闭（R23 后） |
 | TODO-08 | §6.3 boot-shim 镜像位于 4 GiB 之上 | 该前提是 boot identity 窗口 VA 上限的隐含条件 | 窗口构建断言 `end <= BOOT_IDENTITY_MAP_END`；shim image/stack 已加入窗口表，越界 fail-closed | ✅ 已关闭（R23 后 BOOT-SCOPE 2a 实施） |
-| TODO-09 | §6.1 建根返回后、跳转前无发送侧路标 | 卡在建根后半与卡在跳转后无法用串口区分 | 尝试拆分 `prepare`/`enter` 并在返回后打印，QEMU 串口未出现（PE/win64 返回路径待查），已回退；保持原状 | ⏳ 未完成（唯一残留） |
+| TODO-09 | §6.1 建根返回后、跳转前无发送侧路标 | 卡在建根后半与卡在跳转后无法用串口区分 | 用户裁决：不做此诊断打印；CR3 切换后 shim 侧不可观测是 PE/CR3 架构特性，A→C 间隙由 QEMU `-d int` 异常追踪覆盖 | ✅ 已关闭（用户裁决，2026-11-09） |
 | TODO-10 | §4.6 x86 LAPIC/IO-APIC 的 UC 语义 | Step 1/2c 的设备窗口以 `PageFlags::DEVICE` 映射；x86 `flags_to_pte` 编码 `PWT|PCD` | 宿主测试 `test_device_flags_set_pwt_and_pcd`；QEMU x86 启动链 PASS | ✅ 已关闭（不再依赖固件 MTRR） |
 
 **交接方式**：TODO-01~10 的详情登记在本表；状态以 §5.1 的覆盖标签为准；源码工作流修复后，本表的覆盖状态随之回填。
@@ -3229,7 +3229,7 @@ pub fn raw_serial(text: &str) {
 
 复算命令（按文件覆盖表内全部来源；串前缀扫描约命中 10/16 组，其余走别的宏或裸字符串，见各行位置列）：`grep -n 'uefi::println!\|raw_serial' os/boot-shim/src/main.rs os/boot-shim/src/uefi_helpers.rs`；`grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kernel-image/src/main.rs os/kernel-image/src/bootface*.rs`。
 
-**删掉 `[raw] entering kernel image v1` 这一行会怎样**：发送侧在调用 `enter_kernel_image_v1` 之前打印 `[raw] arena=…` 与这一行；建根与开分页发生在调用内部。删掉这一行后，串口停点按三档读：`[raw] arena=…` 表示还没进调用；`kernel: v4 capability facts ok` 表示已进调用但 Step 1/2 映射尚未完成（建根前半）；`kernel: step1+2 mappings ok` 表示 Step 1/2 已过（建根后半或跳转之后），若随后出现接收侧 `###`/第二组 `v0` 则接收端已起。第二档与第三档之间仍没有发送侧路标——“卡在建根后半”与“跳转后卡死”无法用串口区分。尝试在 `enter_kernel_image_v1` 建根返回后打印，但该返回路径在 QEMU 串口上不可见（拆分 `prepare`/`enter` 后同样不可见），已回退；这是诊断面的已知缺口，待单独定位 PE/win64 返回路径后再补（TODO-09）。
+**删掉 `[raw] entering kernel image v1` 这一行会怎样**：发送侧在调用 `enter_kernel_image_v1` 之前打印 `[raw] arena=…` 与这一行；建根与开分页发生在调用内部。删掉这一行后，串口停点按三档读：`[raw] arena=…` 表示还没进调用；`kernel: v4 capability facts ok` 表示已进调用但 Step 1/2 映射尚未完成（建根前半）；`kernel: step1+2 mappings ok` 表示 Step 1/2 已过（建根后半或跳转之后），若随后出现接收侧 `###`/第二组 `v0` 则接收端已起。第二档与第三档之间没有专用发送侧路标。这是已知诊断边界，用户裁决不为此增加打印：CR3 切换后 shim 侧不可观测属于 PE/CR3 架构特性（三次尝试实证），A→C 间隙由 QEMU `-d int` 异常追踪覆盖，门链全过为实证背书（TODO-09 已关闭）。
 
 ### 6.2 panic 路径：从静默到可读
 
