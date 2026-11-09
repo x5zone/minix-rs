@@ -251,7 +251,7 @@ impl<'a> Serializer<'a> {
         for (i, source) in sources.iter().enumerate() {
             let off = WIRE_PLATFORM_OFFSET + i * 16;
             put_u32(self.arena, off, source.kind().raw());
-            put_u32(self.arena, off + 4, 0);
+            put_u32(self.arena, off + 4, source.len());
             put_u64(self.arena, off + 8, source.phys_addr().0);
         }
         self.platform_n = sources.len();
@@ -657,8 +657,8 @@ mod tests {
     #[test]
     fn platform_sources_carry_raw_kind_and_address() {
         static SOURCES: [PlatformDescSource; 2] = [
-            PlatformDescSource::new(DTB, PhysBytes(0x4000_0000)),
-            PlatformDescSource::new(RSDP, PhysBytes(0xE0000)),
+            PlatformDescSource::with_len(DTB, PhysBytes(0x4000_0000), 0x1234),
+            PlatformDescSource::with_len(RSDP, PhysBytes(0xE0000), 36),
         ];
         let mut arena = [0u8; ARENA_CAP];
         let mut s = Serializer::new(
@@ -670,9 +670,10 @@ mod tests {
         s.write_platform_sources(&SOURCES).unwrap();
         let b = s.as_bytes();
         assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET), DTB.raw());
-        assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 4), 0);
+        assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 4), 0x1234);
         assert_eq!(get_u64(b, WIRE_PLATFORM_OFFSET + 8), 0x4000_0000);
         assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 16), RSDP.raw());
+        assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 20), 36);
         assert_eq!(get_u64(b, 128), 32);
     }
 

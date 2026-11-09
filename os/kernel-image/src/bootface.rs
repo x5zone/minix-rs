@@ -291,10 +291,12 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     if bootface_common::place_modules(
         table,
         memmap,
-        names_pool,
+        bootface_common::PlacementPool {
+            names: names_pool,
+            bump_start: bump_pool_base(),
+            bump_end: bump_end_bound(),
+        },
         module_table,
-        bump_pool_base(),
-        bump_end_bound(),
         bump_alloc_pages,
         say,
         say_hex,
@@ -314,8 +316,12 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     //    surface).
     // SAFETY: a single hart on the boot face; written once, then read-only
     // (from the next step on).
+    // SAFETY: the DTB is still in the identity/firmware mapping; this face
+    // runs before paging is enabled.
+    let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(dtb_pa)) }.unwrap_or(0);
     unsafe {
-        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) = PlatformDescSource::new(DTB, PhysBytes(dtb_pa));
+        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
+            PlatformDescSource::with_len(DTB, PhysBytes(dtb_pa), dtb_len);
     }
     // SAFETY: as above — a static reference after the write, with no concurrent
     // rewriting; the single array cell and the length-1 slice share the same

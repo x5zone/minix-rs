@@ -151,6 +151,27 @@ fn prepare_and_enter_has_no_calls_after_the_pairing_loop() {
 }
 
 #[test]
+fn pairing_loop_never_uses_the_uefi_formatter() {
+    // The pairing loop owns the success branch that runs *after*
+    // `ExitBootServices`; any `uefi::` path there is a post-EBS firmware
+    // call. Keep the whole module clean rather than relying on a marker
+    // slice, so a future print added above the success branch is reviewed
+    // deliberately instead of slipping through.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/ebs_pair.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("TODO-04 audit: cannot read {}: {err}", path.display()));
+    let violations: Vec<&str> = source
+        .lines()
+        .filter(|line| code_part(line).contains("uefi::"))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "TODO-04: ebs_pair must not call into uefi after the success path; violations:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn pairing_audit_detects_an_injected_violation() {
     let synthetic = "\
 pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {

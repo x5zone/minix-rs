@@ -107,9 +107,11 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2);
 
 /// Platform descriptor source — an opaque handle carried in `KernelInfo`.
 ///
-/// The upper layer sees only `(kind, phys_addr)` — it does not know whether
-/// `kind` is DTB, RSDP, or something else. `minix-platform::parse_by_kind()`
-/// dispatches on `kind` to the appropriate parser.
+/// The upper layer sees `(kind, phys_addr, len)` and dispatches on `kind` to
+/// the appropriate parser. `len` is the blob extent in bytes when the
+/// producer knows it (DTB `totalsize`, ACPI RSDP `length`); `0` means the
+/// producer did not record a length and the consumer must fall back to the
+/// address's 2 MiB piece.
 ///
 /// # Multiple sources (DTB + RSDP coexistence)
 ///
@@ -122,15 +124,32 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2);
 #[derive(Clone, Copy)]
 pub struct PlatformDescSource {
     kind: PlatformDescKind,
+    /// Blob length in bytes; 0 = unknown/legacy producer.
+    len: u32,
     phys_addr: PhysBytes,
 }
 
 impl PlatformDescSource {
-    /// Construct a source handle. Called by boot-shim using constants from
-    /// `minix_platform::kind`.
+    /// Construct a source handle without a known length. Called by tests and
+    /// by producers that only have an address (the window builder then falls
+    /// back to the address's 2 MiB piece).
     pub const fn new(kind: PlatformDescKind, phys_addr: PhysBytes) -> Self {
-        Self { kind, phys_addr }
+        Self {
+            kind,
+            len: 0,
+            phys_addr,
+        }
     }
+
+    /// Construct a source handle with the blob's byte length.
+    pub const fn with_len(kind: PlatformDescKind, phys_addr: PhysBytes, len: u32) -> Self {
+        Self {
+            kind,
+            len,
+            phys_addr,
+        }
+    }
+
     /// Opaque kind tag (for `minix-platform::parse_by_kind()` dispatch).
     pub fn kind(&self) -> PlatformDescKind {
         self.kind
@@ -139,12 +158,77 @@ impl PlatformDescSource {
     pub fn phys_addr(&self) -> PhysBytes {
         self.phys_addr
     }
+    /// Blob length in bytes; 0 when the producer did not record one.
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+    /// Whether the producer recorded an explicit length.
+    pub fn has_len(&self) -> bool {
+        self.len != 0
+    }
+}
+
+/// FDT magic (`0xd00dfeed`).
+pub const FDT_MAGIC: u32 = 0xd00d_feed;
+
+/// Read the FDT `totalsize` from a physical address.
+///
+/// # Safety
+///
+/// `pa` must point at a readable FDT header in the current address space.
+/// Boot producers call this before paging is enabled, while firmware memory
+/// is still identity-accessible.
+pub unsafe fn dtb_total_size(pa: PhysBytes) -> Option<u32> {
+    if pa.0 == 0 {
+        return None;
+    }
+    let p = pa.0 as *const u8;
+    let magic = u32::from_be(unsafe { core::ptr::read_unaligned(p as *const u32) });
+    if magic != FDT_MAGIC {
+        return None;
+    }
+    let size = u32::from_be(unsafe { core::ptr::read_unaligned(p.add(4) as *const u32) });
+    if (8..=64 * 1024 * 1024).contains(&size) {
+        Some(size)
+    } else {
+        None
+    }
+}
+
+/// Read the ACPI RSDP `length` field (ACPI 2.0+) or return the 1.0 size.
+///
+/// # Safety
+///
+/// `pa` must point at a readable ACPI RSDP in the current address space.
+pub unsafe fn rsdp_total_size(pa: PhysBytes) -> Option<u32> {
+    if pa.0 == 0 {
+        return None;
+    }
+    let p = pa.0 as *const u8;
+    let mut sig = [0u8; 8];
+    for (i, byte) in sig.iter_mut().enumerate() {
+        *byte = unsafe { core::ptr::read_unaligned(p.add(i)) };
+    }
+    if &sig != b"RSD PTR " {
+        return None;
+    }
+    let revision = unsafe { core::ptr::read_unaligned(p.add(15)) };
+    if revision == 0 {
+        return Some(20);
+    }
+    let len = u32::from_le(unsafe { core::ptr::read_unaligned(p.add(20) as *const u32) });
+    if (36..=4096).contains(&len) {
+        Some(len)
+    } else {
+        Some(36)
+    }
 }
 
 impl fmt::Debug for PlatformDescSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PlatformDescSource")
             .field("kind", &self.kind)
+            .field("len", &self.len)
             .field("phys_addr", &self.phys_addr)
             .finish()
     }

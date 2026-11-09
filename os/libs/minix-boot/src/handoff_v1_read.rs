@@ -312,8 +312,9 @@ pub fn decode_platform_sources(
     for (i, slot) in out.iter_mut().enumerate().take(count) {
         let off = WIRE_PLATFORM_OFFSET + i * size_of::<WirePlatformDescSource>();
         let kind = PlatformDescKind::new(read_u32(arena, off));
+        let len = read_u32(arena, off + 4);
         let addr = read_u64(arena, off + 8);
-        *slot = PlatformDescSource::new(kind, PhysBytes(addr));
+        *slot = PlatformDescSource::with_len(kind, PhysBytes(addr), len);
     }
     Ok(count)
 }

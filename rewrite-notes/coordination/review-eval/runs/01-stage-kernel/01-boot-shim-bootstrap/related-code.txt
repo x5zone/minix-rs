@@ -46,3 +46,5 @@ os/libs/minix-types/src/types/kerninfo.rs
 os/plat/src/early_console.rs
 os/servers/vm/src/alloc_page.rs
 os/servers/vm/src/vm_server.rs
+os/arch/tests/pt_alloc_concurrent.rs
+os/kernel-image/src/bootface_common.rs

@@ -1210,7 +1210,7 @@
 
 - 文档：§1.1 EBS 缩写、§1.2 图例、§1.3 D5、§1.4 边界/计数/图例、§2.1 例外、§2.2 ABI 段、§2.3 拆段、§2.4 结算、§2.4.1.x、§2.5、§2.6.3/2.6.4、§2.7、§3.1 exit_boot_services、§3.2 cfg/FileLoader、§3.3 图、§3.4.1 authority/\(kern_stack_top\)、§3.4.3 arena 求和、§3.4.5 三地址、§3.5 风险表、§3.6 Paging、§3.7 resume_additive/术语表、§4.1 注册、§4.2 引文、§4.2.1 动作表、§4.3 引文、§4.4 引文/字段表/门链、§4.6 设备窗口/MTRR、§4.8 表行、§4.9 cut 行、§5.1 M4/M11/M12/M13/M15、§5.2.1 计数、§5.2.2 L5、§5.3 TODO-10、§6.1 路标、§6.3 断言/文案、§7.3/§7.5。
 - 代码：`KernelInfo` strict 派生等式+模块名核对（3+1 测试）；`MODULE_NAMES` 下沉 minix-boot；`BootStorageCell::take` 一次性；`Classification` 计数替代编码后解码；删 `classify` 死参数；删 bootface 冗余 register；`boot_shim.rs`→`boot_prepare.rs`；`boot_storage.rs` 文档收窄。
-- 测试：minix-boot 196、boot-shim 135+5、kernel 862+8、arch 287；QEMU x86/aarch64/riscv 三门 PASS。
+- 测试：minix-boot 196、boot-shim 135+5、kernel 864+8、arch 287；QEMU x86/aarch64/riscv 三门 PASS。
 
 ### §5 复验
 
@@ -1299,16 +1299,35 @@
 ### R24 §5 复验
 
 - 文档门：`anchor-resolve` 105/105；`doc-code-map --check` 52/52；`doc-style-lint` error=0；`doc-ref-check` PASS；`doc-structure-check` PASS；`doc-code-density-check` 承载门 PASS。
-- 宿主：boot-shim 136 + `ebs_boundary_audit` 6；minix-kernel 862 + 8 ignored；minix-types 339；minix-boot 196；minix-vm 548；minix-arch 288。
+- 宿主：boot-shim 136 + `ebs_boundary_audit` 6；minix-kernel 864 + 8 ignored；minix-types 339；minix-boot 196；minix-vm 548；minix-arch 288。
 - QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志归档在 `logs/round24-{x86-shim,aarch64-shim,riscv-uboot-shim,riscv-bootface,riscv-kernel-image,aarch64-smp-aps}.log`（各含 `TEST_RESULT: PASS` 或 `RESULT: PASS`）。
-- 修复后文档：3479 行 / `ed281090716b3e65b27cb6eb10ca419c0ce2dd0e38c1107af6f066ae957cfaea`。
+- 修复后文档：3477 行 / `a1fcf203ae27131b517ac5b486b70619fe29f5ec29734cfb52d3659259f09962`。
 - RB24 首轮：71/80 = 88.8%，NOT PASS；B1/B2 与 N1–N11 已按最小补修逐项处理。第二次定向回读 23/23 = 100%，PASS（13 项定向 + 10 条上轮真修重放；未发现新 P0/P1/P2）。
+
+RB24 首轮 13 项逐项处置：
+
+| RB 项 | 处置 | 证据 |
+|---|---|---|
+| B1 §3.7 引文 | ① 改成 `push_common_boot_windows` + `arena_pa` 绑定/`checked_add`/`(entry, arena_pa)` | doc §3.7；`os/kernel/src/lib.rs:431-504` |
+| B2 M11 A/B 标签 | ① 统一为 A 源×目标、B 目标 LMA 间 | doc §4.3/§4.9/§7.5 同序 |
+| N1 §1.2 箭头 | ① 图例/正文改为“竖向位置=读序、箭头=依赖” | doc §1.2；RB2 13/13 |
+| N2 Makefile 行号 | ① 改回 83 行 | `awk 'NR==83' Makefile.inc` |
+| N3 `_start` 次序 | ① 按源码 `cli→cld→.bss→rsp→rdi→call` | doc §4.8；`main.rs:146-166` |
+| N4 BootHandoff 编注 | ① 题注声明 `ram_authority` 编注 | doc §3.4.3 |
+| N5 DEVICE 逆向 | ① 补 `pte_to_flags` 不能还原、查窗口表 | doc §4.6 |
+| N6 TODO-08/09/10 | ① §5.1 加非机制项行 | doc §5.1 |
+| N7 §1.4 索引 | ① 补 A–D/L0–L9/六入口，标题改“主要索引” | doc §1.4 |
+| N8 设备窗口清单 | ① 明确为“设备窗口清单” | doc §4.6 |
+| N9 M12 判据 | ① x86/riscv 门断言 entering；aarch64 两固定+变体 | doc §5.1 |
+| N10 QEMU 日志 | ① 六份 `logs/round24-*.log` 含 PASS | `logs/` |
+| N11 M4 描述 | ① 改为 boot identity VA 上限/逐窗检查 | doc §4.4 |
+
 - 测试内核：9 个受影响内核在 x86_64 UEFI / aarch64 UEFI 目标下 `cargo check` 通过（`RT_BIRTH_ELF_PATH`/`SYSBOOT_*` 用临时 stub 满足编译期 include）。
 - clippy：`minix-arch`/`minix-boot`/`minix-types`、`boot-shim --test-all --all-targets`、`minix-kernel --features mock`、`minix-vm` 均无 error。
 
 ### R24 §6 指标
 
-见 `metrics.md` 的 R24 块：118 / ① 116 / ② 0 / ③ 2 / ④ 0 / ⑤ 0；重构提出 4、实施 3、登记 0。
+见 `metrics.md` 的 R24 块：118 / ① 114 / ② 0 / ③ 4 / ④ 0 / ⑤ 0；重构提出 4、实施 3、登记 0。
 
 ### R24 §7 状态
 

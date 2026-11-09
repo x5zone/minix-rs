@@ -155,6 +155,12 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
 ///
 /// Inverse of `flags_to_pte`. The NX bit (bit 63) is inverted:
 /// NX=0 means executable, NX=1 means non-executable.
+///
+/// `DEVICE` is a one-way label. x86 has no separate device bit: both
+/// `DEVICE` and an explicit `WRITE_THROUGH | NO_CACHE` map to `PWT|PCD`,
+/// so the inverse reports `WRITE_THROUGH | NO_CACHE` and cannot recover
+/// `DEVICE`. Code that needs to know a page is MMIO must consult the
+/// device-window table, not `query()`.
 fn pte_to_flags(pte: u64) -> PageFlags {
     let hw = X64PteFlags::from_bits_truncate(pte);
     let mut flags = PageFlags::empty();

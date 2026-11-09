@@ -68,3 +68,13 @@
 - 重构: 提出 8 / 接受 5 / 实施 5 / 登记 3（bootface 合并、kern_ident 删除、pt_alloc release 语义转 R24；wire 偏移与 landing helper 本轮已实施）
 - 成本: agent 7 / token 未采集 / 耗时 约 4 小时（面板 + 修复 + 三门）
 - 回读与回归: 面板 104 条 + 6 主张全部有处置；doc 五门 PASS；宿主 196/135+5/862+8/287；QEMU x86/aarch64/riscv 三门 PASS（日志 `logs/round23-*.log`）。RB23 首轮 NOT PASS（B1 §4.2 引文旧 decode 路径、B2 假归因；Q1–Q4）→ 补修后 PASS；meta R23 首轮 IMPROVED / 运行质量 NOT PASS（严格一致率 73.3%）→ 5 项收口后第二次审计 IMPROVED / 条件 PASS（最终态 90.0%）
+
+## R24
+
+- 发现总数: 118（FACT-A 15；FACT-B 21；READER-A 20；READER-B 20；READER-C 20；REFUTE 6 条主张；DESIGN-D2 16）
+- 处置: ① 114 / ② 0 / ③ 4 / ④ 0 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 4 / 接受 3 / 实施 3 / 登记 0（`ident_regions` 死接口删除、公共窗口 helper、`PlacementPool`；bootface 整段合并不做）
+- 成本: agent 7 / token 未采集 / 耗时 约 2 小时（面板 + 修复 + 宿主/QEMU）
+- 回读: 宿主 boot-shim 136+6、kernel 864+8、types 339、boot 196、vm 548、arch 288；QEMU x86/aarch64/riscv U-Boot shim、riscv bootface、riscv kernel-image、aarch64 SMP AP 六门 PASS；doc 五门 PASS；RB24 首轮 71/80=88.8% NOT PASS；B1/B2+N1–N11 共 13 项补修后，二次定向回读 23/23=100% PASS（13 定向 + 10 重放；不是 118 条整体抽样）

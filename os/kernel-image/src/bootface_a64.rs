@@ -274,10 +274,12 @@ pub extern "C" fn bootface_a64() -> ! {
     if bootface_common::place_modules(
         table,
         memmap,
-        names_pool,
+        bootface_common::PlacementPool {
+            names: names_pool,
+            bump_start: BUMP_BASE,
+            bump_end: BUMP_BASE + BUMP_SIZE,
+        },
         module_table,
-        BUMP_BASE,
-        BUMP_BASE + BUMP_SIZE,
         bump_alloc_pages,
         say,
         say_hex,
@@ -295,8 +297,12 @@ pub extern "C" fn bootface_a64() -> ! {
     // 5. Platform descriptor source: DTB as the sole source (the slot lives
     //    in .bss).
     // SAFETY: single hart on the boot face; written once, read-only afterwards.
+    // SAFETY: the DTB is still in the firmware/identity mapping; this face
+    // runs before paging is enabled.
+    let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(DTB_PA)) }.unwrap_or(0);
     unsafe {
-        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) = PlatformDescSource::new(DTB, PhysBytes(DTB_PA));
+        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
+            PlatformDescSource::with_len(DTB, PhysBytes(DTB_PA), dtb_len);
     }
     // SAFETY: as above — the static reference is taken after the write; the
     // single array cell and the length-1 slice have the same origin.

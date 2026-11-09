@@ -655,18 +655,6 @@ pub fn build_vm_handoff(
     }
 }
 
-/// Historical identity-window producer — now retired, returning an empty list.
-///
-/// PD-22 step 2 final retired identity windows from process roots (strong-form
-/// acceptance: no VA=PA mapping in any normal process address space). MMIO
-/// consumers reach their registers through the kernel device window
-/// (`map_kernel` segment 5 + the bootstrap-root install), so there is nothing
-/// left to replay. Earlier versions assembled candidates from
-/// `KernelInfo::reserved_regions()` and
-/// [`minix_arch::kernel_identity_mmio_regions()`], page-aligned and merged
-/// them; that construction is preserved only in git history. The v6 handoff's
-/// identity field is written empty, and VM rejects a non-empty field
-
 /// Copies a boot image name into the fixed `proc_name` field (truncate to
 /// 16 bytes, C: `strlcpy`).
 fn copy_name(name: &str) -> [u8; 16] {
@@ -1192,8 +1180,8 @@ mod tests {
 
     #[test]
     fn test_arch_mmio_identity_regions_are_page_aligned_and_sorted() {
-        // The arch table is no longer read by build_identity_windows (the
-        // identity replay is retired); this test only checks the table's own
+        // The arch table is not replayed into process roots (the identity
+        // replay is retired); this test only checks the table's own
         // invariants.
         let mut previous_end = 0u64;
         for &(base, size) in minix_arch::kernel_identity_mmio_regions() {

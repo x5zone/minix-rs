@@ -215,9 +215,13 @@ pub fn find_platform_sources_into(out: &mut [PlatformDescSource]) -> usize {
         {
             for e in entries {
                 if e.guid == ACPI2_GUID || e.guid == ACPI_GUID {
+                    let pa = PhysBytes(e.address as u64);
+                    // SAFETY: the configuration-table pointer is readable in
+                    // the firmware's identity map before EBS.
+                    let len = unsafe { minix_boot::rsdp_total_size(pa) }.unwrap_or(0);
                     sources
                         .borrow_mut()
-                        .push(PlatformDescSource::new(RSDP, PhysBytes(e.address as u64)));
+                        .push(PlatformDescSource::with_len(RSDP, pa, len));
                     break;
                 }
             }
@@ -228,18 +232,26 @@ pub fn find_platform_sources_into(out: &mut [PlatformDescSource]) -> usize {
         {
             for e in entries {
                 if e.guid == DEVICE_TREE_GUID || e.guid == LEGACY_DEVICE_TREE_GUID {
+                    let pa = PhysBytes(e.address as u64);
+                    // SAFETY: the configuration-table pointer is readable in
+                    // the firmware's identity map before EBS.
+                    let len = unsafe { minix_boot::dtb_total_size(pa) }.unwrap_or(0);
                     sources
                         .borrow_mut()
-                        .push(PlatformDescSource::new(DTB, PhysBytes(e.address as u64)));
+                        .push(PlatformDescSource::with_len(DTB, pa, len));
                     break;
                 }
             }
             // Fall back to ACPI if DTB not present.
             for e in entries {
                 if e.guid == ACPI2_GUID || e.guid == ACPI_GUID {
+                    let pa = PhysBytes(e.address as u64);
+                    // SAFETY: the configuration-table pointer is readable in
+                    // the firmware's identity map before EBS.
+                    let len = unsafe { minix_boot::rsdp_total_size(pa) }.unwrap_or(0);
                     sources
                         .borrow_mut()
-                        .push(PlatformDescSource::new(RSDP, PhysBytes(e.address as u64)));
+                        .push(PlatformDescSource::with_len(RSDP, pa, len));
                     break;
                 }
             }
@@ -1166,7 +1178,10 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // report (commit asserts counts == written). Use them directly; decoding
     // our own wire here added a needless post-EBS failure path (DESIGN-07).
     storage.commit_map_tables(classification.conventional, classification.reserved);
-    let report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
+    let mut report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
+    // The classifier wrote the source/startup records directly into the wire;
+    // the storage slices are intentionally empty on this leg.
+    report.records_in_wire = true;
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     // The classification must have marked every bootstrap allocation as
     // non-conventional; a containment here would hand live pages to the VM PMM.

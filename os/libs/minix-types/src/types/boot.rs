@@ -466,9 +466,10 @@ const _: () = assert!(
 ///   (immediately follows text segment in both VA and PA space).
 /// - `dm_vbase`: Virtual address where the kernel direct map starts.
 /// - `dm_pages`: Number of pages in the kernel direct map.
-/// - `ident` / `ident_count`: kernel runtime identity windows —
-///   occupied physical regions to replay identity (VA = PA) into every
-///   process page table. Valid entries are `ident[..ident_count]`.
+///
+/// Identity windows are not part of this layout since handoff v9 removed
+/// the always-empty `kern_ident` field; no process root carries a VA=PA
+/// replay.
 ///
 /// # Safety invariants
 ///
@@ -476,9 +477,6 @@ const _: () = assert!(
 ///   does not overflow `u64`.
 /// - `kernel_text_pbase` must be page-aligned.
 /// - `dm_pages` must not exceed available physical memory.
-/// - `ident_count <= ident.len()`; entries page-aligned, sorted, and
-///   non-overlapping (the kernel builds them that way in
-///   `vm_handoff::build_identity_windows`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernelLayout {
     pub kernel_text_vbase: u64,
@@ -512,13 +510,6 @@ impl KernelLayout {
             dm_vbase,
             dm_pages,
         }
-    }
-
-    /// The valid identity-window prefix. Always empty since handoff v9
-    /// removed `kern_ident`; kept as a zero-length slice so `map_kernel`
-    /// callers stay on one interface.
-    pub fn ident_regions(&self) -> &[HandoffMemRegion] {
-        &[]
     }
 }
 
@@ -723,8 +714,7 @@ mod tests {
         }
 
         /// v5: the kernel's real Direct Map window values flow
-        /// through — no sentinels. v5 predates the identity windows, so
-        /// `ident_regions()` stays empty.
+        /// through — no sentinels.
         #[test]
         fn test_kernel_layout_v5_reports_dm_window() {
             let mut h = handoff(5);
@@ -737,7 +727,6 @@ mod tests {
             let l = h.kernel_layout().expect("v5 must carry the layout");
             assert_eq!(l.dm_vbase, 0xFFFF_8080_0000_0000);
             assert_eq!(l.dm_pages, 0x2_0000);
-            assert_eq!(l.ident_regions().len(), 0);
         }
 
         /// Pins the kernel→VM wire layout: the VM reads this structure through

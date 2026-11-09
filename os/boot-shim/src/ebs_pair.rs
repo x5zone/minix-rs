@@ -206,10 +206,13 @@ pub unsafe fn pair_and_classify(
             // ordinary tables are invisible to the kernel by design, so name
             // their count here rather than leaving the omission to be inferred.
             if classification.side != 0 {
-                uefi::println!(
-                    "boot-shim: memory map left {} range(s) out of both ordinary tables",
-                    classification.side
-                );
+                // Post-EBS: the UEFI formatter is no longer a valid output
+                // path. Use the raw serial channel documented in
+                // `lib.rs::raw_serial`; the count is printed without
+                // allocation so this branch is safe after boot services end.
+                crate::raw_serial("boot-shim: memory map left ");
+                crate::raw_serial_u64(classification.side as u64);
+                crate::raw_serial(" range(s) out of both ordinary tables\r\n");
             }
             return Ok(classification);
         }

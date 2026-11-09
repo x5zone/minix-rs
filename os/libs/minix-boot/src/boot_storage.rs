@@ -331,6 +331,7 @@ impl BootStorage {
             param_buf: self.param_buf(),
             memmap_sources: self.memmap_sources(),
             startup_objects: self.startup_objects(),
+            records_in_wire: false,
             kern_virt_base,
             kern_phys_base,
             kern_size,
@@ -363,11 +364,19 @@ pub struct BootReport<'a> {
     pub boot_modules: &'a [BootModule],
     pub platform_sources: &'a [PlatformDescSource],
     pub param_buf: &'a [u8],
-    /// Provenance records for the two map tables (the DTB leg carries them
-    /// across the hop; the UEFI leg writes them during classification).
+    /// Provenance records for the two map tables. On the DTB/U-Boot/direct
+    /// legs these are the complete slice owned by `BootStorage`; on the UEFI
+    /// leg the classifier writes the records straight into the wire, so this
+    /// slice is empty and `records_in_wire` is true.
     pub memmap_sources: &'a [SourceRecord],
     /// Startup-object records (kernel + modules + bootstrap allocations).
+    /// Empty on the UEFI leg for the same reason as `memmap_sources`.
     pub startup_objects: &'a [SourceRecord],
+    /// True when `memmap_sources` / `startup_objects` are deliberately empty
+    /// because the records live in the wire, not in this view. A consumer
+    /// that needs the records must read the wire in that case; an empty
+    /// slice is not evidence of a producer regression.
+    pub records_in_wire: bool,
     pub kern_virt_base: VirBytes,
     pub kern_phys_base: PhysBytes,
     pub kern_size: u64,

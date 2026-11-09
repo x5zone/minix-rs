@@ -311,6 +311,26 @@ pub fn raw_serial(text: &str) {
 )))]
 pub fn raw_serial(_text: &str) {}
 
+/// Print an unsigned decimal integer through [`raw_serial`].
+///
+/// This exists for post-EBS diagnostics: the UEFI formatter is no longer a
+/// valid output path after `ExitBootServices`, but counts still need to be
+/// reported. The conversion uses a fixed 20-byte stack buffer, so it neither
+/// allocates nor calls back into firmware.
+pub fn raw_serial_u64(mut value: u64) {
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    raw_serial(core::str::from_utf8(&buf[i..]).unwrap_or("?"));
+}
+
 /// Raw-write the serial port byte by byte (bounded wait on the transmit side
 /// + automatic `\r` after `\n`).
 ///

@@ -10,14 +10,13 @@ use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
 
-// `#[repr(C)]` pins the field ORDER (and each POD field's offset) so the
-// boot-shim's by-value write and the high-half kernel image's read (the
-// cross-image handoff) agree. Same-toolchain/profile builds are already
-// deterministic, but making it explicit removes the compiler's freedom to
-// reorder fields between the two separate `cargo` invocations. NOTE: the
-// `&'static [T]` fields' internal (ptr, len) order is still toolchain-defined;
-// the cross-image contract therefore relies on both images being produced by
-// one `xtask image` run (identical rustc + profile) — see `handoff` module doc.
+// `#[repr(C)]` pins the field order and each field's offset for debuggability
+// and for a future FFI boundary. It is NOT a cross-image layout contract:
+// after handoff v9 the sender writes `BootReport` into the wire and the
+// receiver reconstructs `KernelInfo` in its own `.bss`; neither image reads
+// this struct from the other's memory. The `&'static [T]` fields' internal
+// (ptr, len) order is toolchain-defined, which is another reason this type
+// must not be used as an ABI.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelInfo {
@@ -193,8 +192,11 @@ pub enum ValidationLevel {
     BeforeTables,
     /// Production gate: requires boot modules to be non-empty.
     Standard,
-    /// Production + provenance records (strict gate).
-    Strict { authority: crate::memmap_source::InputObjectId },
+    /// Production + provenance records (strict gate). The authority is not
+    /// carried here: it is already a field of `KernelInfo`, and keeping a
+    /// second copy in the level would recreate the pair the no-argument
+    /// entry point removed.
+    Strict,
 }
 
 impl ValidationLevel {
@@ -202,13 +204,10 @@ impl ValidationLevel {
         !matches!(self, Self::BeforeTables)
     }
     fn requires_startup_kernel_record(self) -> bool {
-        matches!(self, Self::Strict { .. })
+        matches!(self, Self::Strict)
     }
-    fn authority(&self) -> Option<crate::memmap_source::InputObjectId> {
-        match self {
-            Self::Strict { authority } => Some(*authority),
-            _ => None,
-        }
+    fn is_strict(self) -> bool {
+        matches!(self, Self::Strict)
     }
 }
 
@@ -261,9 +260,7 @@ impl KernelInfo {
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
     pub fn validate_requiring_sources(&self) {
-        self.validate_at(ValidationLevel::Strict {
-            authority: self.authority,
-        });
+        self.validate_at(ValidationLevel::Strict);
     }
 
     fn validate_impl_inner(&self, level: &ValidationLevel) {
@@ -445,7 +442,8 @@ impl KernelInfo {
         //    RAM authority and requires records from *that* input; a missing
         //    authority is a fail-stop, never a fallback to the other input.
         //    The lenient gate audits whatever records are present.
-        if let Some(authority) = level.authority() {
+        if level.is_strict() {
+            let authority = self.authority;
             // Production-only derived-value equalities (DESIGN-01): the three
             // scalars must match their single source, not merely be in range.
             // A forged wire can otherwise carry a legal-looking `user_sp`,
@@ -493,7 +491,7 @@ impl KernelInfo {
                 self.memmap,
                 self.reserved_regions,
                 self.memmap_sources,
-                level.authority(),
+                Some(self.authority),
             ) {
                 Ok(()) => {}
                 Err(error) => panic!(

@@ -225,7 +225,17 @@ fn main() -> Status {
         mods
     };
 
-    let platform_sources = uefi_helpers::find_platform_sources();
+    static mut PLATFORM_SOURCES: [minix_boot::PlatformDescSource; 4] = [
+        minix_boot::PlatformDescSource::new(minix_boot::RSDP, PhysBytes(0));
+        4
+    ];
+    // SAFETY: single-threaded boot; the array is filled once here and the
+    // slice is read for the rest of the run.
+    let platform_sources: &'static [minix_boot::PlatformDescSource] = unsafe {
+        let sources = &mut *core::ptr::addr_of_mut!(PLATFORM_SOURCES);
+        let n = uefi_helpers::find_platform_sources_into(sources);
+        &sources[..n]
+    };
 
     let memmap: &'static [MemoryRegion] = &MEMMAP;
 
@@ -238,7 +248,6 @@ fn main() -> Status {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(image_base),
         kern_size: 0x200_000,
-        free_upper_idx: Some(280),
         user_sp: VirBytes(0x0000_7fff_ffff_f000),
         // Kernel-stack TOP record (the lower-EL legs would switch to it;
         // this kernel-only carrier never enters EL0).

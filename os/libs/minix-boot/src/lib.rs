@@ -42,7 +42,7 @@ pub use memmap_source::{
 pub use platform::{
     ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, DTB, InterruptControllerDesc, MAX_CPUS,
     PlatformDesc, PlatformDescKind, PlatformDescSource, PlatformParseError, PlatformSource, RSDP,
-    TimerDesc,
+    TimerDesc, dtb_total_size, rsdp_total_size,
 };
 
 /// The devicetree specification requires the blob to start on an 8-byte

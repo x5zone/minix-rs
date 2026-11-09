@@ -611,16 +611,14 @@ pub fn clone_range<P: Paging>(
 
 /// Map kernel address space into a page table.
 ///
-/// Corresponds to Minix3's `pt_mapkernel()`. Establishes four mappings:
+/// Corresponds to Minix3's `pt_mapkernel()`. Establishes three mappings:
 /// 1. Kernel code segment (executable in real impl)
 /// 2. Kernel data segment (non-executable in real impl)
 /// 3. Kernel direct map (all physical memory, supervisor-only in real impl)
-/// 4. Kernel runtime identity windows (handoff v6): occupied physical regions
-///    mapped identity (VA = PA, supervisor-only) — on the UEFI link-in
-///    execution model the kernel's live code/GDT/IDT/TSS sit at the
-///    firmware-relocated low addresses these regions describe, so a
-///    table without them fault-triples the first CR3 switch to it
-///    (see `minix_types::VmBootHandoff` version history v6).
+///
+/// It then installs the high-half device window. The former fourth segment
+/// (runtime identity windows) is retired: handoff v9 removed `kern_ident`,
+/// so no process root carries a VA=PA replay.
 ///
 /// This is NOT arch-specific — it composes `Paging::map()` operations.
 /// Address layout comes from `DirectMapArch`; physical addresses from boot_info.
@@ -637,7 +635,6 @@ pub fn map_kernel<P: Paging>(
     kernel_data_pages: usize,
     dm_vbase: u64,
     dm_pages: usize,
-    ident_regions: &[minix_types::HandoffMemRegion],
 ) -> Result<(), PageTableError> {
     let page_size = P::PAGE_SIZE as u64;
 
@@ -697,50 +694,15 @@ pub fn map_kernel<P: Paging>(
         pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
     }
 
-    // Segment 4: identity windows. The producer
-    // (`vm_handoff::build_identity_windows`) guarantees page-aligned,
-    // sorted, NON-OVERLAPPING regions, so the 4 KiB walks below can
-    // never hit `AlreadyMapped` within this segment; a hit means that
-    // contract broke or a window collides with one of the segments
-    // above — fail fast either way (the error propagates out of
-    // `init_page_table` and VM refuses the process).
+    // The former identity-window replay (segment 4) is retired: handoff v9
+    // removed `kern_ident`, so `KernelLayout` no longer has a window list
+    // and there is no parameter to assert empty. The device window below is
+    // the only MMIO segment in a process root; VA=PA mappings must not
+    // exist here.
     //
-    // Flags: PRESENT|WRITABLE|EXECUTABLE|GLOBAL (supervisor).
-    //
-    // [ARCH] Scope correction (kernel-text W^X batch; full analysis in
-    // rewrite-notes/01-stage-kernel/c-board-rulings-brief.md §11.3): the
-    // claim that one window "mixes the running kernel's text, data and
-    // heap" with the kernel executing at firmware-relocated low addresses
-    // described the pre-T2 inline-execution model and is stale. Since T2,
-    // `build_identity_windows` draws its candidates only from
-    // `kernel_identity_mmio_regions()` (x86: the IO-APIC/LAPIC pages;
-    // riscv64: the 2 MiB PLIC window; aarch64: empty) and no longer
-    // includes a low-address image window — no process root carries an RWX
-    // alias of kernel text. The RWX flag remains correct for these MMIO
-    // windows: they describe device-register occupancy, not W^X intent,
-    // and OVMF boots with EFER.NXE set, so a non-executable identity
-    // window #PFs (present violation, err=0x11) on the first instruction
-    // fetch after the CR3 switch (real machine 2026-09-21, IP=CR2=
-    // 0x1daf0d9d). The kernel's own bootstrap root (its low 4 GiB identity
-    // mapping, coarse RWX leaves) is outside this function's scope and
-    // persists for the bootstrap root's lifetime — see the promise scope.
-    // PD-22 step 2 final: the identity replay is RETIRED. The handoff
-    // must carry no windows (the kernel writes an empty list; the VM
-    // conversion rejects a non-empty field), and this fail-fast is the
-    // last line of defense — a non-empty list here would silently
-    // re-introduce VA=PA mappings into every process root.
-    assert!(
-        ident_regions.is_empty(),
-        "identity windows retired by PD-22 step 2 — non-empty replay \
-         list refused (strong form: VA=PA must not exist)"
-    );
-
-    // Segment 5: the kernel device window (PD-22 step 2 — the successor of
-    // segment 4). Every MMIO region from the device description is mapped
-    // at its reserved high-half slot (`DEVICE_VA_BASE + slot * STRIDE`)
-    // supervisor RW/NX/global. This is the mapping runtime consumers
-    // migrate to; segment 4's identity replay retires once all consumers
-    // use these VAs (final batch). Drivers obtain the VA from
+    // Every MMIO region from the device description is mapped at its
+    // reserved high-half slot (`DEVICE_VA_BASE + slot * STRIDE`)
+    // supervisor RW/NX/global/device. Drivers obtain the VA from
     // `device_window::device_va_for` — never by offsetting physical
     // addresses themselves.
     {
@@ -1244,13 +1206,11 @@ pub mod mock {
                 MOCK_KERNEL_DATA_PAGES,
                 MOCK_DM_VBASE,
                 MOCK_DM_SENTINEL_PAGES,
-                // Segment 4: RETIRED (PD-22 step 2) — must be empty.
-                &[],
             ).unwrap();
 
-            // Segment 4 strong-form scan: no VA=PA mapping may exist for
-            // any device-window physical page (the former identity
-            // replay) — query each region's pages and refuse.
+            // No VA=PA mapping may exist for any device-window physical
+            // page (the former identity replay is retired) — query each
+            // region's pages and refuse.
             for region in crate::arch::device_window::device_window_regions() {
                 let mut pa = region.phys_base;
                 while pa < region.phys_base + region.size {
@@ -1293,7 +1253,11 @@ pub mod mock {
                     .query(VirBytes(va))
                     .expect("device window page must be mapped");
                 assert_eq!(paddr, PhysBytes(r0.phys_base));
-                assert_eq!(flags, PageFlags::kernel_read_write());
+                assert_eq!(
+                    flags,
+                    PageFlags::kernel_read_write() | PageFlags::DEVICE,
+                    "device window must carry the MMIO cache policy"
+                );
                 // Slot 1 base = cumulative span of region 0 (region lengths,
                 // not a fixed stride — the 6 MiB PLIC region consumed what a
                 // fixed 2 MiB stride would have given slots 1-2).

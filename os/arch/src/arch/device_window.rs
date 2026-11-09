@@ -10,7 +10,7 @@
 //!   re-derive them from DTB/ACPI and the boot-time checks must confirm the
 //!   discovered ranges fall inside these windows.
 //! - **Virtual mapping strategy** ([`DEVICE_VA_BASE`] + [`device_va_for`]):
-//!   each region i is mapped, supervisor-only RW/NX/G, at a private 2 MiB
+//!   each region i is mapped, supervisor-only RW/NX/G/device, at a private 2 MiB
 //!   slot `DEVICE_VA_BASE + i * WINDOW_STRIDE`; the VA-reserved-but-absent
 //!   case (ACLINT SSWI without an `aclint=on` DTB node) is a *virtual
 //!   address reservation*, not a claim that the device exists.
@@ -240,10 +240,15 @@ pub const fn device_va_for(
     Some(slot_va_base(regions, slot) + (pa - region.phys_base))
 }
 
-/// Page flags for device-window mappings: supervisor RW, NX, global —
-/// never user-accessible, never executable (W^X; brief §15).
-pub const fn device_window_flags() -> PageFlags {
-    PageFlags::kernel_read_write()
+/// Page flags for device-window mappings: supervisor RW, NX, global,
+/// device memory — never user-accessible, never executable (W^X; brief §15).
+///
+/// `DEVICE` selects the architecture's uncached / strongly-ordered
+/// encoding: x86-64 turns it into `PWT|PCD`, aarch64 selects the MAIR
+/// Device-nGnRnE byte, and riscv64 currently has no Sv39 cache-attribute
+/// bit (platform PMA decides; the semantic label is still carried).
+pub fn device_window_flags() -> PageFlags {
+    PageFlags::kernel_read_write() | PageFlags::DEVICE
 }
 
 #[cfg(test)]
@@ -345,13 +350,15 @@ mod tests {
         assert_eq!(device_va_for(regions, regions.len(), 0), None);
     }
 
-    /// Device-window flags: supervisor RW, NX, global — the W^X contract
-    /// for the new mappings (no user bit, no execute bit).
+    /// Device-window flags: supervisor RW, NX, global, device — the W^X
+    /// contract for the new mappings (no user bit, no execute bit) plus the
+    /// cache policy that makes MMIO accesses strongly ordered.
     #[test]
-    fn device_window_flags_are_rw_nx_global_supervisor() {
+    fn device_window_flags_are_rw_nx_global_device_supervisor() {
         let f = device_window_flags();
         assert!(f.contains(PageFlags::WRITABLE));
         assert!(f.contains(PageFlags::GLOBAL));
+        assert!(f.contains(PageFlags::DEVICE));
         assert!(!f.contains(PageFlags::EXECUTABLE));
         assert!(!f.contains(PageFlags::USER_ACCESSIBLE));
     }

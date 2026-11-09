@@ -140,20 +140,35 @@ pub(crate) fn dtb_bounded(
         && (end <= kern_phys_base || dtb_pa >= kern_phys_base + kern_size)
 }
 
+/// The three physical addresses `place_modules` needs from the caller.
+///
+/// They used to be three adjacent bare `u64` parameters, so swapping the
+/// name-pool address with a bump bound still compiled and produced a
+/// plausible-but-wrong placement. The struct makes the roles explicit and
+/// prevents that class of call-site error.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlacementPool {
+    /// Physical base of the 12 × 16 B module-name landing pool.
+    pub names: u64,
+    /// First byte of the caller's bump region.
+    pub bump_start: u64,
+    /// One past the last byte of the caller's bump region.
+    pub bump_end: u64,
+}
+
 /// Consume the first `NR_BOOT_MODULES` table entries at their contract
 /// positions and copy the sources into the caller's bump pages.
 ///
 /// Both self-boot faces use the exact same gates (position, basename, source
 /// width, bump-pool disjointness, pool exhaustion); only the bump allocator,
-/// pool bounds and console differ, so they arrive as callbacks (DESIGN-10).
-/// `module_table` is the caller's exclusive landing array.
+/// pool addresses and console differ, so they arrive as a [`PlacementPool`]
+/// plus callbacks (DESIGN-10). `module_table` is the caller's exclusive
+/// landing array.
 pub(crate) fn place_modules<B, S, H>(
     table: &BootFileTable,
     memmap: &[MemoryRegion],
-    names_pool: u64,
+    pool: PlacementPool,
     module_table: &mut [BootModule; NR_BOOT_MODULES],
-    pool_start: u64,
-    pool_end: u64,
     mut bump_alloc_pages: B,
     say: S,
     say_hex: H,
@@ -206,7 +221,7 @@ where
             say(" escapes memmap\n");
             return None;
         }
-        if entry.phys_addr < pool_end && entry.phys_addr + entry.len > pool_start {
+        if entry.phys_addr < pool.bump_end && entry.phys_addr + entry.len > pool.bump_start {
             say("  module slot 0x");
             say_hex(i as u64);
             say(" source overlaps bump pool\n");
@@ -221,7 +236,7 @@ where
             core::ptr::copy_nonoverlapping(entry.phys_addr as *const u8, dest as *mut u8, len);
             core::ptr::write_bytes((dest as *mut u8).add(len), 0, pages * 4096 - len);
         }
-        let slot = names_pool + (i as u64) * NAME_SLOT as u64;
+        let slot = pool.names + (i as u64) * NAME_SLOT as u64;
         // SAFETY: source = the NAME_POOL byte cells; destination = slot i
         // inside the exclusive name pool (i < 12 => offset < 192).
         unsafe {

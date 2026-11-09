@@ -55,14 +55,15 @@ pub struct WireBootModule {
     pub len: u64,
 }
 
-/// Wire form of one platform descriptor source (16 B: kind tag + padding +
-/// physical address). The kind is a bare `u32` so no Rust enum representation
-/// participates in the protocol.
+/// Wire form of one platform descriptor source (16 B: kind tag + blob length
+/// + physical address). The kind is a bare `u32` so no Rust enum
+/// representation participates in the protocol. `len = 0` is the legacy
+/// producer's "unknown"; readers must then fall back to one 2 MiB piece.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WirePlatformDescSource {
     pub kind: u32,
-    pub reserved: u32,
+    pub len: u32,
     pub addr: u64,
 }
 
