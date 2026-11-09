@@ -42,7 +42,7 @@
 ## R21
 
 - 发现总数: 63（READER-A 20；READER-B 20；READER-C 11；REFUTE 7；DESIGN-D2 5；P-FACT MISSING）
-- 处置: ① 9 / ② 3 / ③ 1 / ④ 50 / ⑤ 0
+- 处置: ① 14 / ② 3 / ③ 3 / ④ 43 / ⑤ 0
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
@@ -51,8 +51,8 @@
 
 ## R22
 
-- 发现总数: 63（FACT-A 3；FACT-B 2；READER-A 20；READER-B 20；READER-C 10；REFUTE 3；DESIGN-D2 5）
-- 处置: ① 9 / ② 3 / ③ 1 / ④ 50 / ⑤ 0
+- 发现总数: 67（FACT-A 3；FACT-B 2；READER-A 20；READER-B 20；READER-C 10；REFUTE 7 条主张；DESIGN-D2 5）
+- 处置: ① 9 / ② 3 / ③ 5 / ④ 50 / ⑤ 0
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0

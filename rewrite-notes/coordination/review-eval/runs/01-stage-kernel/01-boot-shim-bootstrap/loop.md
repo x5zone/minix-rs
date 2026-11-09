@@ -1092,11 +1092,11 @@
 
 ### R21 §6 指标
 
-发现 63；处置 ①9 / ②3 / ③1 / ④50 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+发现 67；处置 ①9 / ②3 / ③5 / ④50 / ⑤0；re-litigation 0；adjacent 阻塞 0。
 
 ### R21 §7 状态
 
-`NOT CONVERGED`：G8 本轮新增 63 条；G9 的 ② F-R17-01..04、F-R20-01..03 全部逾期未处置（R22 必须处理或明确裁决）；G7 meta R21 NOT PASS。R21 不宣告收敛，R22 先补 36 条 ④，再开面板。
+`NOT CONVERGED`：G8 本轮新增 63 条；G9 的 ② F-R17-01..04、F-R20-01..04 全部登记 R23（已逾期，OPEN-DEBT 有行）；G7 meta R21 NOT PASS。R21 不宣告收敛，R22 先补 36 条 ④，再开面板。
 
 ### R21 §8 给 meta-review 的不确定点
 
@@ -1119,12 +1119,12 @@
 
 ### R22 §2 发现
 
-- 63 条；P1：868 命令口径、`新 impl BootShim` 过时、§3.1 `KernelInfo` 序列化、startup 时序、EBS 审计切片漏尾。
+- 67 条面板条目（其中 REFUTE 4 条非阻断主张）；P1：868 命令口径、`新 impl BootShim` 过时、§3.1 `KernelInfo` 序列化、startup 时序、EBS 审计切片漏尾。
 - P2：`board=` 双记录分支、`nr_tasks` 载体错配、引文省略低报、128/64/64 与 128/64 口径、PWT/PCD 两案、SMEP/SMAP 前提。
 
 ### R22 §3 归因
 
-- ① 14；④ 43；② 3（D2-02/03/04 → F-R20-01/03/04）；③ 3（FACT-A-03、A-03、B-15/C-11 保留）。
+- ① 9；④ 50；② 3（D2-04→F-R20-01、D2-03→F-R20-03、D2-02→F-R20-04）；③ 5（FACT-A-03 + REFUTE 4 条非阻断主张）。
 - re-litigation 0；adjacent 阻塞 0。
 
 ### R22 §4 修复
@@ -1140,7 +1140,7 @@
 
 ### R22 §6 指标
 
-发现 63；处置 ①9 / ②3 / ③1 / ④50 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+发现 67；处置 ①9 / ②3 / ③5 / ④50 / ⑤0；re-litigation 0；adjacent 阻塞 0。
 
 ### R22 §7 状态
 

@@ -1482,7 +1482,7 @@
 
 ## R22 面板轮（R21 meta 后；先清 R21 携带）
 
-> 面板：P-FACT-A 3、P-FACT-B 2、READER-A 20、READER-B 20、READER-C 10、REFUTE 3 条反证成立（7 主张）、DESIGN-D2 5。总计 63 条。R21 携带 36 条已在 L0 补修。
+> 面板：P-FACT-A 3、P-FACT-B 2、READER-A 20、READER-B 20、READER-C 10、REFUTE 7 主张、DESIGN-D2 5。总计 67 条面板条目（其中 REFUTE 4 条非阻断主张）。R21 携带 36 条已在 L0 补修。
 
 | 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|

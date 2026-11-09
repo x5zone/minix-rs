@@ -8,6 +8,8 @@
 |---|---|---|
 | F-R17-02 | P2 | UEFI 测试辅助三件套的 feature 门（跨 16 个测试内核）；截止 R23（已逾期两轮） |
 | F-R17-04 | P2 | `KernelInfo` 增 `ram_authority` 字段（跨 minix-boot/内核/文档 ABI）；截止 R23 前裁决（已逾期两轮） |
+| F-R17-01 | P2 | `BootShim` 单实现 trait 的架构去留（保留为未来固件腿接口 / 改普通函数）；截止 R23 |
+| F-R17-03 | P2 | `dtb_copy::Phase` 栈化（带真实生命周期）；截止 R23 |
 | F-R20-01 | P2 | `BootPrepareResult`/`enter_kernel_image_v1` 的 bump/arena 改物理区间类型（跨 crate）；截止 R23 |
 | F-R20-02 | P2 | `MemoryRegion`/`cut(start,size)`/`MemRange` 三套端点约定收敛为 `Range{start,end}`；截止 R23 |
 | F-R20-03 | P2 | 测试内核 `build_memmaps`/`exit_boot_services` 假 `'static` 迁移到 `BootStorage`；截止 R23 |

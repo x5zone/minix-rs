@@ -242,9 +242,10 @@ impl KernelInfo {
     ///
     /// Every production leg writes one record per projected input unit, so an
     /// empty partition means a producer regression. Hand-built test kernels
-    /// (`os/qemu-tests` fixtures) construct `KernelInfo` directly and use
-    /// [`Self::validate`]; the strict gate is for surfaces that know the wire
-    /// contract was in force.
+    /// (`os/qemu-tests` fixtures) use [`Self::validate_before_tables`] or call
+    /// `arch_boot_impl` directly; the strict gate is for surfaces that know
+    /// the wire contract was in force.
+    ///
     /// Strict production gate: the leg's declared RAM authority must have
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.

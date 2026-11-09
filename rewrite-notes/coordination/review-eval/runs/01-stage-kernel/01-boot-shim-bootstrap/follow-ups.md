@@ -101,7 +101,7 @@
 
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
-| F-R20-01 | DESIGN-D2-01 | `BootPrepareResult`/`enter_kernel_image_v1` 的 `bump_base`/`bump_end`/`arena_pa` 仍是裸 `u64`，与 `root_page: PhysBytes` 并排；非法区间在类型上可表示 | adjacent（R21） | 改为物理区间/`PhysBytes`；改动两处签名与三处调用，需跨 crate 回归 |
-| F-R20-02 | DESIGN-D2-03 | `MemoryRegion{base,len}`、`cut(start,size)`、`MemRange{base,end}` 三套端点/长度约定并存，新调用者可把端点当 size 传 | adjacent（R21） | 引入 `Range{start,end}` 并让 `cut` 收区间；与 F-R20-01 同批 |
-| F-R20-03 | DESIGN-D2-04 | 测试内核 `build_memmaps`/`exit_boot_services` 仍用 `static mut` + 假 `'static` 切片，与 `BootStorage` 所有权模型相反 | adjacent（R21） | 迁到 `&mut BootStorage` 或绑定 `&self` 生命周期的视图；需回归 16 个测试内核 |
+| F-R20-01 | DESIGN-D2-01 | `BootPrepareResult`/`enter_kernel_image_v1` 的 `bump_base`/`bump_end`/`arena_pa` 仍是裸 `u64`，与 `root_page: PhysBytes` 并排；非法区间在类型上可表示 | adjacent（R23） | 改为物理区间/`PhysBytes`；改动两处签名与三处调用，需跨 crate 回归 |
+| F-R20-02 | DESIGN-D2-03 | `MemoryRegion{base,len}`、`cut(start,size)`、`MemRange{base,end}` 三套端点/长度约定并存，新调用者可把端点当 size 传 | adjacent（R23） | 引入 `Range{start,end}` 并让 `cut` 收区间；与 F-R20-01 同批 |
+| F-R20-03 | DESIGN-D2-04 | 测试内核 `build_memmaps`/`exit_boot_services` 仍用 `static mut` + 假 `'static` 切片，与 `BootStorage` 所有权模型相反 | adjacent（R23） | 迁到 `&mut BootStorage` 或绑定 `&self` 生命周期的视图；需回归 16 个测试内核 |
 | F-R20-04 | D2-02 残留 | 13 个 `checked_add` 调用点只有 memmap 一条溢出负控；其余同构但不可观测 | adjacent（R23 观察） | 若要逐点可观测，补 reserved/vm_handoff/memmap_source 的 `u64::MAX` 负控；不阻塞收敛 |

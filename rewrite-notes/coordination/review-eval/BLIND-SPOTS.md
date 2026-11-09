@@ -471,3 +471,17 @@
 - **历史证据**：R20 §5.2.1 “整条截断”在台账/loop/提交信息三处写已改，`git show e4e26862` 的文档 diff 无该段；实际未改。
 - **期望探测器**：每条 ① 的“复验”列必须给 `git show <fix_head>:<file>` 的 hunk 或可重放 grep；没有 diff 回指按未修计。
 - **状态**：OPEN（R20 已补修该条，机制未落码）
+
+## B-59 锚点文法不覆盖 `path:Type::method`
+
+- **类别**：机械门
+- **历史证据**：R22 FACT-A-03：文档 4 处 `path:Type::method`（如 `vm_handoff.rs:FreeRangeSet::cut`）不在 `anchor-resolve.sh` 的 `path:symbol` 文法内，`--extract` 零命中，门不校验其符号是否存在。
+- **期望探测器**：`anchor-resolve.sh` 扩展 `Type::method` / `Trait::method` 形态，或在文档侧统一改 `path:fn` 锚点；两种方案的覆盖读数记入 Gate。
+- **状态**：OPEN
+
+## B-60 抽样驱动修复：只修 RB/meta 抽样到的 ID，范围行仍记整族已修
+
+- **类别**：修复质量 / 记账
+- **历史证据**：R22 RB22 抽 18 条 ④ 中 12 条未修，而台账 `READER-A/B/C` 范围行写“按各条修”；meta 抽 23 条严格一致 14/23=60.9%，按范围行复算只有 30/50 修。
+- **期望探测器**：范围行必须逐 ID 给出“已修/③/未修”三态，并与文档 diff 的 changed-sentences 清单对账；meta 抽到未修即整行 FAIL。
+- **状态**：OPEN（R22 已把多数抽样项补修，机制未落码）

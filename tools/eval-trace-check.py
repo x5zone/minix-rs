@@ -198,11 +198,12 @@ def _prefix_of(token: str) -> str | None:
     return m.group(1) if m else None
 
 
-def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict], dict[str, set[str]]]:
+def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict], dict[str, set[str]], dict[str, dict[str, str]]]:
     lines = text.splitlines()
     ids: list[str] = []
     rows: dict[str, dict] = {}
     section_ids: dict[str, set[str]] = {}
+    section_classes: dict[str, dict[str, str]] = {}
     current: dict[str, int] | None = None
     section = ""
     table_seen: set[str] = set()
@@ -310,9 +311,10 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
                 "section": section,
             }
             section_ids.setdefault(section, set()).add(row_id)
+            section_classes.setdefault(section, {})[row_id] = canonical
             ids.append(row_id)
     report.ok("ledger", f"台账解析到 {len(ids)} 条处置")
-    return ids, rows, section_ids
+    return ids, rows, section_ids, section_classes
 
 
 def _metric_blocks(text: str) -> list[tuple[str, str]]:
@@ -345,7 +347,7 @@ def _pick_metric_block(text: str, report: Report, round_tag: str | None) -> str:
     return blocks[-1][1] if blocks else text
 
 
-def check_metrics(text: str, report: Report, round_tag: str | None = None) -> None:
+def check_metrics(text: str, report: Report, round_tag: str | None = None, expected: dict[str, int] | None = None) -> None:
     body = _pick_metric_block(text, report, round_tag)
     total_match = METRIC_TOTAL_RE.search(body)
     counts = {m.group(1): int(m.group(2)) for m in METRIC_COUNT_RE.finditer(body)}
@@ -364,6 +366,18 @@ def check_metrics(text: str, report: Report, round_tag: str | None = None) -> No
             )
         else:
             report.ok("metrics", f"发现总数与处置之和一致（{total}）")
+        if expected is not None:
+            for token in "①②③④⑤":
+                want = expected.get(token, 0)
+                got = counts.get(token, 0)
+                if want != got:
+                    report.fail(
+                        "metrics",
+                        f"metrics 分档 {token}={got} 与台账本轮逐 ID 聚合 {token}={want} 不一致",
+                    )
+                    break
+            else:
+                report.ok("metrics", "metrics 各分档与台账本轮逐 ID 聚合一致")
 
     required_keys = ["re-litigation", "adjacent 阻塞", "重构", "成本"]
     for key in required_keys:
@@ -500,11 +514,10 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         check_loop_sections(loop_text, report, round_tag)
         check_round_closure(loop_text, report)
         check_placeholders(loop_text, report, "loop.md")
-    if metrics_text is not None:
-        check_metrics(metrics_text, report, round_tag)
+    expected_counts = None
     if ledger_text is not None:
         check_placeholders(ledger_text, report, "defect-ledger.md")
-        ledger_ids, ledger_rows, section_ids = parse_ledger(ledger_text, report)
+        ledger_ids, ledger_rows, section_ids, section_classes = parse_ledger(ledger_text, report)
         panel_set = set(panel_ids)
         ledger_set = set(ledger_ids)
         # Round-scoped coverage: a per-round --panel-dir (round18) must be
@@ -521,6 +534,15 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
             # No fallback to the whole ledger: if this round's section is
             # missing, every panel finding must be reported missing.
             coverage_ledger = scoped
+            from collections import Counter
+            expected_counts: dict[str, int] = {}
+            counter: Counter[str] = Counter()
+            for section, mapping in section_classes.items():
+                if section.lower().startswith(round_tag.lower()):
+                    counter.update(
+                        cls for fid, cls in mapping.items() if fid in panel_set
+                    )
+            expected_counts = dict(counter)
         else:
             coverage_ledger = ledger_set
         # Orphan reference set: IDs that appear in ANY panel file (the
@@ -551,6 +573,9 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
             report.fail("coverage", "台账有孤儿处置行: " + "、".join(orphan))
         else:
             report.ok("coverage", "台账没有孤儿行")
+
+    if metrics_text is not None:
+        check_metrics(metrics_text, report, round_tag, expected_counts)
 
     return report
 
