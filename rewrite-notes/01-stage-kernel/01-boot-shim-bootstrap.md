@@ -1129,7 +1129,7 @@ static phys_bytes createpde(
 
 #### 2.6.4 自举页表的下游：VM 接手时的继承规则
 
-先说清一个容易漏掉的中间步骤：`pre_init` 建完这张 `pagedir[]` 之后，`kmain → cstart → prot_init` 会用同样四步（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`，`minix3/minix/kernel/arch/i386/protect.c:360-363`）把它**整体重建一次**；`vm_enable_paging` 不在这里调用，分页此时已经开着，源码注释写的是"Set up a new post-relocate bootstrap pagetable so that we can map in VM, and we no longer rely on pre-relocated data."。重建后的内容与 `pre_init` 那张等价，`freepde_start` 也不变（`pg_mapkernel` 的返回值在 `prot_init` 里被丢弃，槽号不变所以无害）。这里要补一个区分（§3.7 会展开它的 Rust 侧后果）：C 确实在分页已开时清活动根，它能撑过窗口靠的是"清表与回填之间只执行已被 4MB TLB 项覆盖的代码/栈，且 `pg_load` 在回填之后才重载 CR3"——这是时序脆弱，不是"无害"；源码注释把这四个调用写成连续序列，并声明这段代码与栈在 unpaged 低段、已被现有 4MB 恒等 TLB 项覆盖。§3.7 禁止的是在运行期**没有回填窗口**地重建活动根，不是否定 C 这次重建。重建末尾的 `pg_load` 会重载 CR3、冲刷 TLB，所以"新表生效"不靠旧表项自然失效。下面说的"VM 继承的那张表"指这张重建后的同一张 `pagedir[]`。
+先说清一个容易漏掉的中间步骤：`pre_init` 建完这张 `pagedir[]` 之后，`kmain → cstart → prot_init` 会用同样四步（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`，`minix3/minix/kernel/arch/i386/protect.c:360-363`）把它**整体重建一次**；`vm_enable_paging` 不在这里调用，分页此时已经开着，源码注释写的是"Set up a new post-relocate bootstrap pagetable so that we can map in VM, and we no longer rely on pre-relocated data."。重建后的内容与 `pre_init` 那张等价，`freepde_start` 也不变（`pg_mapkernel` 的返回值在 `prot_init` 里被丢弃，槽号不变所以无害）。这里只讲 C 的时序事实（Rust 侧后果在 §3.7 展开）：C 确实在分页已开时清活动根，它能撑过窗口靠的是"清表与回填之间只执行已被 4MB TLB 项覆盖的代码/栈，且 `pg_load` 在回填之后才重载 CR3"——这是时序脆弱，不是"无害"。"这段代码与栈在 unpaged 低段、已被现有 4MB 恒等 TLB 项覆盖"是本文对时序的推断，C 源没有成文依据（待源码核实）；§3.7 会说明为什么 Rust 侧禁止没有回填窗口地重建活动根。重建末尾的 `pg_load` 会重载 CR3、冲刷 TLB，所以"新表生效"不靠旧表项自然失效。下面说的"VM 继承的那张表"指这张重建后的同一张 `pagedir[]`。
 
 这张自举页表有**两个**下游。第一个是上面讲完的 `freepde_start` 借用窗口——内核自己还要用这张表的高半槽位；**第二个是本节的对象：页目录被交给 VM 的进程表项**——它对表里内容是三条去向：4KB 细粒度条目被继承；大页条目一律不继承——内核映射大页由 VM 自己重建，引导期恒等大页直接丢弃（三条去向在本小节末段交代）。这一步同样越过 `pre_init()` 返回之后（下游延伸）——放在这里，是为了把这张表的最终归属一次交代清楚。这个交接口（`pg_info` 的两个输出参数、`arch_post_init` 的调用点）在 §2.6 的反向推演里已经见过，下面只看它写下的代码：
 
@@ -1824,7 +1824,7 @@ pub trait HugePages: Paging {
 （1）`HugePages: Paging` 是**超集**关系：boot 阶段用 `A: BootArch` 一个 bound 就能同时取到 `A::Paging`（`new_from_page`/`enable`）、`A::DirectMap` 的窗口常量与 `A::DmInstaller` 的装叶实现（`arch_boot_impl<A: BootArch>` 就是这么写的；大页入口经 `HugePages` 另取）。运行时只用 `P: Paging` 的消费者不必携带大页负担。
 （2）标识方式因架构而异，但标识位不进入 trait。x86-64 靠条目的 PS 位（bit 7）区分大页与"指向下一级表"，`map_huge` 在实现内用局部 `huge_flag` 取它；ARM64 与 RISC-V 没有这一位。把标识位提成"三个架构都要提供、其中两个恒为 0"的 trait 常量，等于把架构差异写进共有接口，所以它留在实现里。
 （3）大页是**可选能力**而不是基础能力。x86-64 的首选是 1GB、回退 2MB；把 `map_huge` 放进 `Paging` 会让所有 `Paging` 实现都必须实现它，包括那些不打算支持大页的实现。
-（4）大页能力不塞进 `Paging`：`Paging` 本身已有 20 个成员（`phys_addr_limit`、`validate_virtual_range`、`new`、`new_from_page`、`from_active_root`、`adopt_active_root`、`inherit_supervisor_half`、`map`、`remap`、`unmap`、`update_flags`、`query`、`split_huge`、`grant_user_walk`、`root_paddr`、`enable`、`map_range`、`unmap_range`、`flush_tlb`、`flush_tlb_addr`），职责面并不窄；这里列出的 `new_from_page`/`from_active_root`/`map`/`unmap`/`query`/`enable` 只是与本节论证直接相关的六项。基础 trait 已经承担页表生命周期与范围操作，不应再把可选的块尺寸策略压进去。
+（4）大页能力不塞进 `Paging`：`Paging` 本身已有 22 个成员（`const PAGE_SIZE` 与 21 个方法：`phys_addr_limit`、`validate_virtual_range`、`new`、`new_from_page`、`from_active_root`、`adopt_active_root`、`inherit_supervisor_half`、`destroy`、`map`、`remap`、`unmap`、`update_flags`、`query`、`split_huge`、`grant_user_walk`、`root_paddr`、`enable`、`map_range`、`unmap_range`、`flush_tlb`、`flush_tlb_addr`），职责面并不窄；这里列出的 `new_from_page`/`from_active_root`/`map`/`unmap`/`query`/`enable` 只是与本节论证直接相关的六项。基础 trait 已经承担页表生命周期与范围操作，不应再把可选的块尺寸策略压进去。
 
 被否决的方案：
 
@@ -2278,11 +2278,9 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 
     // ...（startup 分区写入段省略，见下方说明）...
 
-    // 分类已把条目写进 storage；wire 只报长度，arena 里不再有第二份语义表。
-    let descriptors = decode_descriptors(serializer.as_bytes()).expect(...);
-    let memmap_len = (descriptors.memmap_byte_len / 16) as usize;
-    let reserved_len = (descriptors.reserved_byte_len / 16) as usize;
-    storage.commit_map_tables(memmap_len, reserved_len);
+    // 分类已把条目写进 storage；直接提交分类器返回的计数，不再解码自己
+    // 刚写的 wire（DESIGN-07）。arena 里不再有第二份语义表。
+    storage.commit_map_tables(classification.conventional, classification.reserved);
     let report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     assert_bootstrap_outside_memmap(report.memmap, root_page.0, PAGE_SIZE);

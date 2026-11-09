@@ -32,7 +32,7 @@ os/kernel/src/smp.rs
 os/kernel/src/vm_handoff.rs
 os/kernel/tests/store_before_alloc_pin.rs
 os/libs/minix-boot/src/boot_params.rs
-os/libs/minix-boot/src/boot_shim.rs
+os/libs/minix-boot/src/boot_prepare.rs
 os/libs/minix-boot/src/boot_storage.rs
 os/libs/minix-boot/src/bump.rs
 os/libs/minix-boot/src/handoff_v1.rs
