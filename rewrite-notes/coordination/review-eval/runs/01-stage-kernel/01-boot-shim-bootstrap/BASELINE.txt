@@ -80,6 +80,6 @@ r24_doc_status=NOT_CONVERGED
 
 # R25 fix batch
 r25_fix_head=4d3a0adb1
-r25_fixed_doc_sha256=a9588aa0f636a7ee8a2f405a647cb3605a08ecd7ced874f3254ea64f593f2ef3
-r25_fixed_doc_lines=3491
+r25_fixed_doc_sha256=330aefb429d22f41daa98ef373c42b5e748fc55901338c46ff4a9a09ebf47d26
+r25_fixed_doc_lines=3503
 r25_status=NOT_CONVERGED
