@@ -1625,13 +1625,13 @@
 | DESIGN-03 | design-d2 | P2 | design | ① | BootStorageCell 改一次性 `take`，二次 panic | code diff | QEMU 三门 PASS |
 | DESIGN-04 | design-d2 | P2 | design | ① | boot_storage 模块文档收窄 source/startup 在 UEFI 腿直写 wire | code diff | 文档与代码一致 |
 | DESIGN-05 | design-d2 | P3 | design | ③ | `write_envelope(&KernelInfo)` 被跨 crate 测试使用，不是死接口 | grep 调用点 | 保留 |
-| DESIGN-06 | design-d2 | P2 | design | ① | 新增 `envelope_offsets`（全部 `offset_of!`），读写两侧改为 re-export；单一来源 | `handoff_v1.rs` 模块；minix-boot 196 | 编译期偏移同源 |
+| DESIGN-06 | design-d2 | P2 | design | ① | 新增 `envelope_offsets`（全部 `offset_of!`），读写两侧改为 re-export；单一来源（重构豁免：行为由编译期布局门与 round-trip 测试覆盖） | `handoff_v1.rs` 模块；minix-boot 196 | 编译期偏移同源 |
 | DESIGN-07 | design-d2 | P2 | design | ① | 用 `Classification` 计数替代编码后解码 | code diff; ebs 门 PASS | 删除多余解码 |
 | DESIGN-08 | design-d2 | P2 | design | ① | 删 `classify` 的 `vm_module_idx` 死参数 | code diff; kernel 862+8 | 测试通过 |
 | DESIGN-09 | design-d2 | P2 | design | ① | 删两个 bootface 的冗余 `pt_alloc::register` | code diff; QEMU 三门 PASS | 测试通过 |
 | DESIGN-10 | design-d2 | P2 | design | ② | 两个 bootface 流程合并需架构 owner 裁决；R24 | follow-ups.md | 带日期转出 |
 | DESIGN-11 | design-d2 | P2 | design | ② | 删 `VmBootHandoff.kern_ident` 需 wire v9 + VM server 同步；R24 | follow-ups.md | 带日期转出 |
-| DESIGN-12 | design-d2 | P2 | design | ① | 新增 `land_slice<T: Copy>`，五段落地区收成一次调用 | `os/kernel/src/lib.rs`；kernel 862+8 | 测试通过 |
+| DESIGN-12 | design-d2 | P2 | design | ① | 新增 `land_slice<T: Copy>`，五段落地区收成一次调用（重构豁免：行为由 `store_kernel_info` 落地区测试与七条溢出负控覆盖） | `os/kernel/src/lib.rs`；kernel 862+8 | 测试通过 |
 | DESIGN-13 | design-d2 | P2 | design | ② | `pt_alloc` release 二次注册语义需用户裁决；R24 | follow-ups.md | 带日期转出 |
 | DESIGN-14 | design-d2 | P2 | design | ① | 同 FACT-A-01：§4.4 引文补 authority | doc diff | 引文可编译 |
 | DESIGN-15 | design-d2 | P2 | design | ① | §1.4 显式排除 dtb_copy/resv_claims；§7.3 补两文件 | doc diff | 范围声明可见 |

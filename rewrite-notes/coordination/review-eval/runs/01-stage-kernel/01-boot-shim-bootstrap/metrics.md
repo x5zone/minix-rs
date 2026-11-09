@@ -67,5 +67,4 @@
 - adjacent 阻塞: 0
 - 重构: 提出 8 / 接受 5 / 实施 5 / 登记 3（bootface 合并、kern_ident 删除、pt_alloc release 语义转 R24；wire 偏移与 landing helper 本轮已实施）
 - 成本: agent 7 / token 未采集 / 耗时 约 4 小时（面板 + 修复 + 三门）
-- 回读: 面板 104 条 + 6 主张全部有处置；doc 五门 PASS；宿主 196/135+5/862+8/287；QEMU x86/aarch64/riscv 三门 PASS
-- 回读: RB23 首轮 NOT PASS（B1 §4.2 引文旧 decode 路径、B2 假归因；Q1–Q4）；补修后第二次回读 PASS；meta R23 IMPROVED / 运行质量 NOT PASS（严格一致率 73.3%，最终态 90.0%），收口 5 项已处理
+- 回读与回归: 面板 104 条 + 6 主张全部有处置；doc 五门 PASS；宿主 196/135+5/862+8/287；QEMU x86/aarch64/riscv 三门 PASS（日志 `logs/round23-*.log`）。RB23 首轮 NOT PASS（B1 §4.2 引文旧 decode 路径、B2 假归因；Q1–Q4）→ 补修后 PASS；meta R23 首轮 IMPROVED / 运行质量 NOT PASS（严格一致率 73.3%）→ 5 项收口后第二次审计 IMPROVED / 条件 PASS（最终态 90.0%）

@@ -1198,11 +1198,11 @@
 ### §2 发现
 
 - 110 条（104 面板条目 + 6 条 REFUTE 主张）。P0 3：`build_kernel_info` 引文缺 `authority`（A-01/B-01/CLAIM-04/DESIGN-14 同根）、§3.2 “业务逻辑无 feature gate” 与 8 处 `qemu-test-kernels` 不符；另 P1 49 条（全轮 3 P0 / 49 P1 / 53 P2 / 3 P3）（注册失败消息、identity 窗口、EBS 引文、createpde 引文、门链执行序、自举页断言覆盖、M12 标记、VMA/LMA 跨距、arc 表等）。
-- 设计侧：16 条，5 条转 R24（偏移单一来源、bootface 合并、`kern_ident` 删除、landing helper、`pt_alloc` release 语义）。
+- 设计侧：16 条，3 条转 R24（bootface 合并、`kern_ident` 删除、`pt_alloc` release 语义）；偏移单一来源与 landing helper 经 meta 指正改本轮实施。
 
 ### §3 归因
 
-- ① 59 / ② 5 / ③ 6 / ④ 40 / ⑤ 0；re-litigation 0；adjacent 阻塞 0。
+- ① 61 / ② 3 / ③ 6 / ④ 40 / ⑤ 0；re-litigation 0；adjacent 阻塞 0。
 - ③：READER-A-18（条件表已穷举）、READER-B-12（同名函数范围已在表内）、READER-C-17（NUL 后缓冲语义已限定）、DESIGN-05（`write_envelope` 被跨 crate 测试使用）。
 - ②：DESIGN-06/10/11/12/13 转 R24（带日期与理由，见 `follow-ups.md`）。
 
@@ -1215,8 +1215,8 @@
 ### §5 复验
 
 - 文档五门：anchor 105/105、style 0、ref/structure/density/map 通过。
-- 代码门：clippy minix-boot/boot-shim/kernel/arch 通过；QEMU 门日志 `tmp/review-eval/.../logs/round23-*`。
-- RB23 首轮 **NOT PASS**（B1 §4.2 引文旧路径、B2 假归因；Q1–Q4 轨迹/计数/日期），补修后第二次回读 **PASS**（B1/B2 阻断 0；Q2 残项已补）。meta R23 判 **IMPROVED / 运行质量 NOT PASS**，收口前 5 项见 §7。
+- 代码门：clippy minix-boot/boot-shim/kernel/arch 通过；QEMU 门日志归档在 `tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/logs/round23-{x86,a64,rv}.log`。
+- RB23 首轮 **NOT PASS**（B1 §4.2 引文旧路径、B2 假归因；Q1–Q4 轨迹/计数/日期），补修后第二次回读 **PASS**（B1/B2 阻断 0；Q2 残项已补）。meta R23 首轮 **IMPROVED / 运行质量 NOT PASS**；5 项收口处理后第二次审计改判 **条件 PASS**。
 
 ### §6 指标
 
@@ -1224,7 +1224,7 @@
 
 ### §7 状态
 
-`NOT CONVERGED`：G8 新增 110 条；P0 已修；② 由 5 条收窄为 3 条（DESIGN-06/12 经 meta 指正改本轮实施；DESIGN-10/11/13 带日期转 R24，其中 DESIGN-11 进 OPEN-DEBT）。RB23 补修后 PASS；meta R23 IMPROVED / 运行质量 NOT PASS，收口 5 项：提交 Q2 残项、回写 RB 判决、DESIGN-06/12 本轮修、登记 10/11/13、修正 anchor/P1/重构计数与引文块头。
+`NOT CONVERGED`：G8 新增 110 条；P0 已修；② 由 5 条收窄为 3 条（DESIGN-06/12 经 meta 指正改本轮实施；DESIGN-10/11/13 带日期转 R24，其中 DESIGN-11 进 OPEN-DEBT）。RB23 补修后 PASS；meta R23 第二次审计 **IMPROVED / 条件 PASS**（P0/P1 open 0/0，最终态一致率 90.0%）；5 项收口已处理。
 
 ### §8 给 meta-review 的不确定点
 
