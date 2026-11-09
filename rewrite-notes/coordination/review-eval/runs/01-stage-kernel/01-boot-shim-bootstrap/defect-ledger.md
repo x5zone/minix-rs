@@ -1654,121 +1654,121 @@
 
 | 发现 ID | 角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|
-| FACT-A-01 | fact-a | P0 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:7`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-02 | fact-a | P0 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:22`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-03 | fact-a | P0 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:36`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-04 | fact-a | P0 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:50`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-05 | fact-a | P1 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:65`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-06 | fact-a | P1 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:79`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-07 | fact-a | P1 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:92`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-08 | fact-a | P1 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:106`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-09 | fact-a | P1 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:120`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-10 | fact-a | P1 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:133`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-11 | fact-a | P1 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:146`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-12 | fact-a | P2 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:159`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-13 | fact-a | P2 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:172`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-14 | fact-a | P2 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:185`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-A-15 | fact-a | P2 | fact-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-a.md:198`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-01 | fact-b | P0 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:94`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-02 | fact-b | P0 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:118`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-03 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:133`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-04 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:147`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-05 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:161`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-06 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:174`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-07 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:190`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-08 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:205`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-09 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:220`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-10 | fact-b | P1 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:239`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-11 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:255`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-12 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:266`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-13 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:277`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-14 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:288`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-15 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:299`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-16 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:310`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-17 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:321`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-18 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:332`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-19 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:343`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-20 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:354`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| FACT-B-21 | fact-b | P2 | fact-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/fact-b.md:453`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-01 | reader-a | P0 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:5`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-02 | reader-a | P0 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:16`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-03 | reader-a | P0 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:27`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-04 | reader-a | P0 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:38`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-05 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:49`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-06 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:60`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-07 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:71`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-08 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:82`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-09 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:93`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-10 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:104`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-11 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:115`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-12 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:126`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-13 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:137`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-14 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:148`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-15 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:159`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-16 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:170`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-17 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:181`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-18 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:192`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-19 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:203`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-A-20 | reader-a | P1 | reader-a | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-a.md:214`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-01 | reader-b | P0 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:20`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-02 | reader-b | P0 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:30`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-03 | reader-b | P0 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:40`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-04 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:50`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-05 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:60`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-06 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:70`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-07 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:80`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-08 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:90`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-09 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:100`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-10 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:110`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-11 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:120`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-12 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:130`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-13 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:140`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-14 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:150`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-15 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:160`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-16 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:170`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-17 | reader-b | P1 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:180`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-18 | reader-b | P2 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:190`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-19 | reader-b | P2 | reader-b | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-b.md:200`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-B-20 | reader-b | P2 | reader-b | ③ | 反证/复核判定不成立，不计缺陷；保留原取舍 | `panel/round24/reader-b.md:210`；panel + 源码/文档原文 | 无新证据；判据见 panel |
-| READER-C-01 | reader-c | P0 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:11`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-02 | reader-c | P0 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:27`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-03 | reader-c | P0 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:45`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-04 | reader-c | P0 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:60`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-05 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:77`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-06 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:93`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-07 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:109`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-08 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:124`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-09 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:139`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-10 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:155`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-11 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:171`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-12 | reader-c | P1 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:186`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-13 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:202`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-14 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:215`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-15 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:230`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-16 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:246`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-17 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:261`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-18 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:276`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-19 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:291`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| READER-C-20 | reader-c | P2 | reader-c | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/reader-c.md:306`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| CLAIM-01 | refute | P0 | refute | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/refute.md:1`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| CLAIM-02 | refute | P1 | refute | ③ | 反证/复核判定不成立，不计缺陷；保留原取舍 | `panel/round24/refute.md:31`；panel + 源码/文档原文 | 无新证据；判据见 panel |
-| CLAIM-03 | refute | P1 | refute | ③ | 反证/复核判定不成立，不计缺陷；保留原取舍 | `panel/round24/refute.md:57`；panel + 源码/文档原文 | 无新证据；判据见 panel |
-| CLAIM-04 | refute | P0 | refute | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/refute.md:84`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| CLAIM-05 | refute | P0 | refute | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/refute.md:110`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| CLAIM-06 | refute | P0 | refute | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/refute.md:138`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-01 | design-d2 | P0 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:21`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-02 | design-d2 | P0 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:34`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-03 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:47`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-04 | design-d2 | P0 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:60`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-05 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:73`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-06 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:86`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-07 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:99`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-08 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:112`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-09 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:125`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-10 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:138`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-11 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:151`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-12 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:164`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-13 | design-d2 | P2 | design-d2 | ③ | 反证/复核判定不成立，不计缺陷；保留原取舍 | `panel/round24/design-d2.md:177`；panel + 源码/文档原文 | 无新证据；判据见 panel |
-| DESIGN-14 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:190`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-15 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:203`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
-| DESIGN-16 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地：文档改写/代码接线/测试补齐 | `panel/round24/design-d2.md:216`；修复见 `loop.md` §4 | doc 五门 PASS；宿主/QEMU 读数见 `loop.md` §5 |
+| FACT-A-01 | fact-a | P0 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:7`；问题：F01（P0）EBS 之后仍有 `uefi::println!`，与"零 uefi::"声明冲突 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-02 | fact-a | P0 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:22`；问题：F02（P0）§3.7 的 `enter_kernel_image_v1` 代码引用是 BOOT-SCOPE 2a 之前的旧体 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-03 | fact-a | P0 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:36`；问题：F03（P0）`pt_alloc::register` 的构建档行为与文档相反 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-04 | fact-a | P0 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:50`；问题：F04（P0）`VmBootHandoff.ident` 作为 64 条容量上限被引用，但 v9 已删字段与常量 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-05 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:65`；问题：F05（P1）§4.6 的 Step 1 窗口清单漏掉固定低 2 MiB AP 跳板窗口 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-06 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:79`；问题：F06（P1）§4.2.1 动作 7 的"解码在 EBS 之后"与代码时序相反 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-07 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:92`；问题：F07（P1）§4.5 的 `store_kernel_info` 引用块是 R23 `land_slice` 重构前的旧体 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-08 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:106`；问题：F08（P1）§5.2.1 的 boot-shim 测试计数与逐文件表不一致 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-09 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:120`；问题：F09（P1）§4.4 的直核面执行序漏掉 strict 门 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-10 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:133`；问题：F10（P1）§5.2.1 的 `paging.rs` 条数少一条 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-11 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:146`；问题：F11（P1）§3.2 的 `place_modules` 参数清单写成"只传三项" | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-12 | fact-a | P2 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:159`；问题：F12（P2）§4.6 的"跨镜像腿包含 shim 的 PE image / shim 栈"对 U-Boot shim 不成立 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-13 | fact-a | P2 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:172`；问题：F13（P2）§5.1 M7 / §5.2.1 / §5.3 TODO-02 未登记并发注册测试 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-14 | fact-a | P2 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:185`；问题：F14（P2）§7.3 关联 Rust 源码清单漏掉新文件 `bootface_common.rs` | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-A-15 | fact-a | P2 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-a.md:198`；问题：F15（P2）§3.3 依赖图把 `arch_boot` 写成 boot-shim 的调用面 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-01 | fact-b | P0 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:94`；问题：P0-01 pt_alloc “写一次”引文与现行策略相反 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-02 | fact-b | P0 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:118`；问题：P0-02 `VmBootHandoff.ident` 在 v9 已删除，文档仍当活字段引用 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-03 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:133`；问题：P1-01 §3.7 `enter_kernel_image_v1` 引文是旧函数体的拼合 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-04 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:147`；问题：P1-02 §4.2 `prepare_and_enter_kernel_image` 末行调用缺第 4 实参 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-05 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:161`；问题：P1-03 §4.5 `store_kernel_info` 引文把 `land_slice` 内联回主函数 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-06 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:174`；问题：P1-04 §4.4 直核面执行序漏掉 bootface 的 strict 门 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-07 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:190`；问题：P1-05 BOOT-SCOPE 2a 覆盖缺口：窗口怎么来、低 2 MiB 窗口没写 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-08 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:205`；问题：P1-06 bootface 合并（`bootface_common.rs`）只有两句提及 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-09 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:220`；问题：P1-07 测试计数漂移与算术错误 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-10 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:239`；问题：P1-08 文档引作 QEMU 证据的测试内核目前不能编译 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-11 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:255`；问题：P2-01 §4.4 门表把共享不变量只挂在 kmain 门 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-12 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:266`；问题：P2-02 §6.1 把 `step4 DM coverage (preflight + install)` 归给接收侧 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-13 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:277`；问题：P2-03 §3.6/§4.4 对“分配器已注册”的表述互相矛盾 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-14 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:288`；问题：P2-04 §2.4.1.3 跳板尺寸分解把 GDT 说成“每 CPU 一个 8 B 槽” | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-15 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:299`；问题：P2-05 §3.8 `classify` 引文块首两行中文说明未标编注 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-16 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:310`；问题：P2-06 §4.4 `boot_validate_and_prepare` 引文把断言消息换成 `"...“` | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-17 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:321`；问题：P2-07 §6.2 panic 引文把两行结构体字面量压成一行 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-18 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:332`；问题：P2-08 §2.7 earm `head.S` 代码块内替换 6 行英文注释 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-19 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:343`；问题：P2-09 §4.3 “tty/mib 互换”反事实对两个直核腿不成立 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-20 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:354`；问题：P2-10 §3.4.3 arena v8 字节数只有“九页”依据，36768/6144 无现行源可复核 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| FACT-B-21 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/fact-b.md:453`；问题：七条格式/行号/历史数字小项 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-01 | reader-a | P0 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:5`；问题：1. §1.2 四框图与三重编号在开篇叠加，读者建立不起可复用的地图 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-02 | reader-a | P0 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:16`；问题：2. §5.2.1 测试计数自相矛盾：逐文件相加是 135，正文写 136 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-03 | reader-a | P0 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:27`；问题：3. §5.1 与 §5.3 对 TODO-05 的状态给出相反答案 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-04 | reader-a | P0 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:38`；问题：4. §5.1 与 §5.3 对 TODO-07 的状态给出相反答案 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-05 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:49`；问题：5. §3.5 同一个误设险情被介绍两次，第二次称"另一处险情" | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-06 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:60`；问题：6. §2.2 "对齐补位"的说法与后文"栈对齐不满足 SysV 约定"相冲突 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-07 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:71`；问题：7. §2.1 五个 `.long 0` 的"后两个同样按位生效"没有说清由哪一位管 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-08 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:82`；问题：8. §2.5 "下一条再从页对齐处接着放"在引文里看不到对齐动作 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-09 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:93`；问题：9. §2.3 指向 §3.5 解释 `__k_unpaged_` 前缀，但 §3.5 直接用了已加前缀的名字 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-10 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:104`；问题：10. §3.8 反事实里的"下一次 `map_huge`"没有主语，读者不知道它何时发生 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-11 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:115`；问题：11. §4.2.1 九个动作按依赖编号而不按时间编号，读者每走一步都要查表 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-12 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:126`；问题：12. §4.6 "通常与 Step 1 的块尺寸相同"与引文里的固定 2 MiB 不一致（低置信、高价值） | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-13 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:137`；问题：13. §6.1 用 `reslen=0` / `reslen=127` 回指 §3.4.4，但 §3.4.4 的读数是 `res=127 zeroed=127` | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-14 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:148`；问题：14. §7.5 把 `load_stack_start` 的 Rust 对应物写成 `kernel_boot_stack_top`，但 sp 初值是 `kern_stack_top` | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-15 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:159`；问题：15. §1.4 在栈名表里首次使用"2 MiB 收口"，但"收口"到 §4.4 才解释 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-16 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:170`；问题：16. §1.4 的命名陷阱段引入 `mpx.S` 却不说明它是什么 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-17 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:181`；问题：17. §3.4.1 的"三级上限"里有两个 64，"超过 64"没说是哪一个 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-18 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:192`；问题：18. §3.9 承诺"完整字节构成见 §3.5"，§3.5 只给了两个字段的大小与总数 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-19 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:203`；问题：19. §2.4.2 开头说 `pre_init` 里的切除是"临时"的，但"临时"没有定义 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-A-20 | reader-a | P1 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-a.md:214`；问题：20. §2.6.2 的 `pg_map` 隐含前提没有引文，读者无法验证"pde 单调"（低置信、高价值） | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-01 | reader-b | P0 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:20`；问题：- 问题：【前提倒置/图解自相矛盾】图例把"竖线/箭头"定义成**阅读顺序**，但图中框 1 与框 2 之间唯一的箭头（▲）指向框 1，即方向是框 2 → 框 1，恰好逆着阅读顺序；正文紧接着又称它为"逆向箭头"。"逆向"只有在箭头表示依赖时才成立，于是同一支箭头在图例与正文里被赋了两种含义。另外"依赖 B（框 1 → 框 3，跳框）"没有任何箭头，只作为文字写在依赖 A 的箭头旁边，图上读不出这条依赖。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-02 | reader-b | P0 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:30`；问题：- 问题：【章节边界/指代系统】五处指代全部落空或反向：(a) §2.1 说"两个读者的具体落点见本节落链图"，但 §2.1 没有落链图，完整的落链图在 §2.3；(b) §4.2.2 说"下表已给五类落点"，给落点的是它**上面**的五步表，下面的令牌表给的是令牌的"失败落点"；(c) §3.4.1 的"删除"行说"逐个的去向见下表"，关系表之后没有表，21 字段的去向表在 §3.4.2；(d) §3.4.2 的表述里写"仍是活字段，见 §3.4.2"，这句话本身就在 §3.4.2 内，是自指；(e) §1.4 说"本篇只在 §4.2 的时序里交代它们的位置（preflight 在配对循环内、`authorize_and_copy` 在最后一次 `GetMemoryMap` 之后）"，但 §4.2 全节没有出现 `authorize_and_copy`，只交代了 DTB preflight。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-03 | reader-b | P0 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:40`；问题：- 问题：【职责重叠/契约矛盾】§5.1 自称"TODO 列的状态口径**以本表为唯一权威**"，但它与 §5.3 对同两项给出相反状态：M5 行写"TODO-05（开放，见 5.3）"，§5.3 写"✅ 已关闭（R23 后；宿主合成 layout 门）"；M13 行写"TODO-07（部分关闭：纯函数五案已交接，其余开放，见 5.3）"，§5.3 写"✅ 已关闭（R23 后）"。此外 TODO-08/09/10 只登记在 §5.3，§5.1 的 M1–M17 没有任何一行提到它们，因此这三项的"唯一权威状态"在 §5.1 里查不到；§5.3 还在 §5.1 允许的"已关闭/开放/部分关闭/—"之外，另用"已交接完成"标注了七项。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-04 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:50`；问题：- 问题：【前提倒置/归类错误】原文说"下面三条给论证（清单先于建表、恒等先于内核映射、结构先于 `kmain`）"，但三条里只有第一条是本节内自足的论证：第二条（恒等先于内核映射）明写"逐数字的推演在 §2.6.1……这里不重复"，是**指向**；第三条（结构先于 `kmain`）明写"关键那行 `push %eax` 在 §2.2 引文块之外"，关键证据不在本篇可读的引文里。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-05 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:60`；问题：- 问题：【前提倒置/职责重叠】小节标题是"`alloc_lowest` 的消费者与校验缺口"，但首段先给的是**下一小节**的结论（"`alloc_lowest` 则**不是**一条可行的'从低处分配'路径：切除那一行把长度当成结束地址传给 `cut_memmap`"），并在同一段里两次说"见紧随其后的 2.4.1.3 小节"。本小节真正的内容（`copy_trampoline` 是唯一调用点、校验只查上界不查账）被推到第二段。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-06 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:70`；问题：- 问题：【重复/冗余】前一段说"靠的是两点：其一，`pg_alloc_page` 从最高下标取页……其二，跳板的生命周期……（本节末"两个取址方向各有其消费者"一段正是这个分工）"；紧接着的"两个取址方向各有其消费者"段又说"真正兜住的只有取页方向与跳板生命周期（见上文"靠的是两点"那一段）"。两段互相把对方当作完整陈述，读者按任一指针都回到另一段。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-07 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:80`；问题：- 问题：【重复/冗余】两处都在声明"不重复"之后立刻重复。§2.4.1.4 先列出"128/64（`free_regions`）/64（`ident`）"三个数字，再说"这里不重复数字"；§4.4 先说"这是 §3.5 删除论证的现在时态，本节不再重述故障链"，而它前半句"字段删除后，'提供一个可误设的回收区间'这个接口面整体消失，险情在类型上不可复发"与 §3.5 的结论逐字相同。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-08 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:90`；问题：- 问题：【事实/算术】同节引文是「test result: ok. 135 passed」，逐项「22 + 11 + 12 + 44 + 17 + 15 + 13 + 1」也等于 135，但正文写「= 136」，并据 136 推出「136 − `opensbi_helpers` 11 = 125」；按 135 算应是 124。默认 uefi-only 形态的文件和（loader 22 + uefi 12 + ebs_map 44 + ebs_pair 17 + dtb_copy 15 + resv_claims 13 + lib.rs 1）也是 124，不是 125。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-09 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:100`；问题：- 问题：【重复/冗余】表前写"这不是纯假设：早期版本曾把 `bootstrap_len` 填成 `kern_phys_base.0`。下表列的是那次误设会扫进的同一区间……"；表后又写"这张表同时解释了字段历史上的另一处险情：早期版本曾把 `bootstrap_len` 填成 `kern_phys_base.0`（把'上界地址'当'区间长度'）……"。"另一处"指的是同一处：两处的值都是 `kern_phys_base.0`，机制都是把上界地址当长度。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-10 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:110`；问题：- 问题：【章节边界混淆】标题是"旧字段台账：`kinfo_t` 的 21 个字段去哪了"，但 21 字段表之后又装了四类与"字段去哪了"无关的内容：两个专用键（`cttyline`/`cttybaud`）的处置、GET_KINFO 载荷收窄的 `[ARCH]` 演进、`EarlyConsole` 与 `KernelConsole` 两个"控制台"的层次辨析、`param_buf` 的十条可观察分歧（十条分歧占本节近三分之一）。其中 `param_buf` 在 §3.4.1 的关系表里属于"改型"，不属于被删的 21 个字段。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-11 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:120`；问题：- 问题：【职责重叠】首段声明"各腿如何产出两张表以 §3.4.1 为权威，本节只讲构造入口"，但字段表的前两行正是逐腿产出方式：`memmap` 行写"UEFI：配对循环最后一次成功 `GetMemoryMap` 分类出的 conventional 列表；U-Boot/riscv 直核：`DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect_with_sources()`"；`reserved_regions` 行同样逐腿（UEFI 的 `ReservedMapped`、U-Boot/riscv 的 `KERN_PHYS_BASE` 裁剪、aarch64 的 `fw_end = 0`）。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-12 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:130`；问题：- 问题：【职责重叠/索引错位】四个防线在 §4.3 与 §4.9 被命名为 A/B/C/D，但 §5.1 的机制列没有任何一行以 D 命名：M11 只列 A/B 并说"另有 C 守模块×内核跨度"，M16 讲的是内核跨度与模块×内核，D（模块×模块）只在 M2 的"覆盖状态"长句里出现一次——而 M2 的机制名是"内存清单的建与裁"。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-13 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:140`；问题：- 问题：【章节边界混淆】清单自称穷举（"越过上述边界的内容都属**显式声明的下游交代**"），但 §4.7 的后半明确越过边界：扣除表读法（`build_vm_handoff`）、arena 生命周期合同（原文"VM 自由页清单在 `kmain → build_vm_handoff` 才发布"）、VM 侧的 `LiveBootstrap ∩ VM-free = ∅` 复核，全部发生在控制权交给 `kmain` 之后。清单没有列 §4.7。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-14 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:150`；问题：- 问题：【章节边界混淆/重复】这一条在 C 源码分析章里用 64 位 Rust 的窗口清单与 `BOOT_IDENTITY_MAP_END` 来论证"全铺不是必须"，并打上 `[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4GB]`；§4.6 的 Step 1 第一条 bullet 用同一句 ARCH 标注、同一批窗口清单、同一句"`BOOT_IDENTITY_MAP_END` 是 VA 上限"再讲一遍。同一处还用了 LMA，而 §1.4 承诺"本篇从 §3.4 起会直接用 LMA/VMA，首次出现处给指向"——这里没有指向；更早的 §1.4 编号图例（"先读 ELF、预订 LMA 跨度"）也没有指向，承诺在同一节内就被破坏了一次。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-15 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:160`；问题：- 问题：【前提倒置】标题问"让 riscv64 照 aarch64 那样'先建表、再跳镜像'会怎样"，正文回答的是另一件事：riscv64 入口没有 `arena_pa` 入参，照搬协议而不补分道会空指针；末尾又转去"若 aarch64 退回内联执行"。标题里的"先建表、再跳镜像"在正文里没有被分析。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-16 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:170`；问题：- 问题：【重复/冗余导致判据变形】§5.1 M12 与 §5.2.3 表把 aarch64 门定义为"两条固定标记 + 第三个标记的三条变体之一"，§6.4 压缩成"三条标记之一（前两条读文件；第三条是 memmap source 行……）"。后者是一个析取，前者是一个合取，二者不等价。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-17 | reader-b | P1 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:180`；问题：- 问题：【职责重叠】同一条"深拷不变量"的证据被三个节分别持有：§3.4.4 给出两组历史读数（`res=127 zeroed=127` 等）并说"读数与三层判别见 §5.2.3"；§5.2.3 声明"设计章只引用；证据归本节"；§5.1 M4 又把探针读数记成"§3.4 的深拷探针"。三处的所有权声明互相冲突，探针读数的归属在两节之间来回。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-18 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:190`；问题：- 问题：【章节边界混淆】标题列"三种形态：同镜像内调用、跨镜像跳转与直核自引导"，术语对账表也把"形态"计为 3，但正文没有为"同镜像内调用"设任何小节；它只在 §3.7 末尾的"其一，aarch64 退回内联执行"里作为被否决的替代做法出现，且术语表自己注明"同镜像是测试/历史形态，当前生产腿只有跨镜像与直核两类"。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-19 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-b.md:200`；问题：- 问题：【章节边界/自述】四处自述与实际结构不符：(a) 索引把"生产腿"的定义节标成 §3.7，但"腿"一词的定义在 §3.2（"一条腿 = 一个完整启动路径"），§3.7 只给成员表；索引没有区分"词的定义"与"计数表的成员表"；(b) 索引声称"本篇用到的编号不止一套，先给一张索引"，却不收录 A/B/C/D 防线、L0–L9、"六入口"三套编号，而这三套都在正文承担判定；(c) 前置知识说"§1.3 是第一章收束"，§1.3 实际是路由段（"§1.2 已给出……§1.4 给……两者不在这里重述"），实质收束在 §1.2；(d) §2.8 说"`overlaps` 的闭区间差异见 §2.7，不在'只有'之列"，但 §2.7 的原文是"唯一必须按架构另写的**接口层**"，全篇没有"只有"这个引文。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-B-20 | reader-b | P2 | reader-b | ③ | 反证/复核判定不成立或保留取舍，不计缺陷 | `panel/round24/reader-b.md:210`；问题：- 问题：【重复/冗余·低置信高价值】正文携带大量评审批次号与裁决号（`R23 的 F-R17-04`、`R18 之前`、`DESIGN-07`、`Phase A.2`、`R14 已清理`、`本轮删双写测试 −1`、`T2 退役`），编号图例只能事后解释它们"不是源码符号"，不提供含义；目标读者没有评审语境。计数脚手架（§1.4 七行索引 + §3.7 六行对账 + 贯穿 §3.1.1/§3.2/§4.1/§4.4/§4.8/§5.2.3/§6.4 的提醒）为五条生产腿服务，其自述文本量已接近被计数的对象。§3.7 的术语对账表还被一条孤立的 `>` 行切成三段：引用块 + 表 + 空引用 + 引用段，表在渲染上不在引用块内。 | 无新证据；见 panel 原文 |
+| READER-C-01 | reader-c | P0 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:11`；问题：C-01 测试总量与逐文件分解对不上 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-02 | reader-c | P0 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:27`；问题：C-02 同一个 TODO 在 §5.1 与 §5.3 状态相反 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-03 | reader-c | P0 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:45`；问题：C-03 §4.2.2 的摘要与自己的五步表相反 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-04 | reader-c | P0 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:60`；问题：C-04 riscv64 的"QEMU 门链"归属在两行之间摇摆 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-05 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:77`；问题：C-05 反事实里 Step 1 的块尺寸前后相反 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-06 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:93`；问题：C-06 用 Multiboot 规范支撑 boot2 路径的"无栈约定" | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-07 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:109`；问题：C-07 用 Rust 的 12 项模块表去数 C 侧的账 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-08 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:124`；问题：C-08 已被标注"待源码核实"的推断，在别处被当作事实引用 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-09 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:139`；问题：C-09 v1 接收面的执行序含一个没有调用点的门 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-10 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:155`；问题：C-10 `head.o` 如何变成 `unpaged_*.o` 的一环没有写 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-11 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:171`；问题：C-11 编号图例把"裁决 A"的对象说成 UEFI，正文说唯一实现是 U-Boot | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-12 | reader-c | P1 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:186`；问题：C-12 `reslen` 与 `res=127 zeroed=127` 对不上 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-13 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:202`；问题：C-13 "不在表内"与"分类落 ReservedMapped"挨在一起 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-14 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:215`；问题：C-14 概述把交接方式留成"按值或按指针"，正文只有指针 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-15 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:230`；问题：C-15 "64 位侧"的三个前提混用了 aarch64 与 x86-64 的机制 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-16 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:246`；问题：C-16 五条生产腿里，U-Boot shim 的 `authority` 值没有写 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-17 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:261`；问题：C-17 "C 的对应物是 pt_free 还回 alloc_mem"与 C 的 6 页静态池对不上 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-18 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:276`；问题：C-18 "启动期唯一会走到 pg_alloc_page"这个唯一性没有取证 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-19 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:291`；问题：C-19 "fast-fail 的削弱"与"C 本来也没有 fast-fail"方向相反 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| READER-C-20 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/reader-c.md:306`；问题：C-20 两个"接线"不是同一件事 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| CLAIM-01 | refute | P0 | refute | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/refute.md:1`；问题：BOOT-SCOPE 2a 之后，自举恒等映射的范围由调用方传入的窗口表决定，跨镜像腿只覆盖 boot 期间真正访问的窗口，窗口外不再铺低 4GB；内核高半映射仍在 Step 2 建立，Direct Map 仍在 Step 4 由内核建立（文档 §4.6 第 2794 行；D-027）。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| CLAIM-02 | refute | P1 | refute | ③ | 反证/复核判定不成立或保留取舍，不计缺陷 | `panel/round24/refute.md:31`；问题：wire v9 删除 `kern_ident` / `kern_ident_count` / `VM_BOOT_HANDOFF_MAX_IDENT` 之后，VM 侧 `KernelLayout::ident_regions()` 恒为空，且现有消费者不会因此受损（文档 §3.4.2 第 1642 行；D-028）。 | 无新证据；见 panel 原文 |
+| CLAIM-03 | refute | P1 | refute | ③ | 反证/复核判定不成立或保留取舍，不计缺陷 | `panel/round24/refute.md:57`；问题：bootface 合并之后，riscv64 `bootface` 与 aarch64 `bootface_a64` 两个调用点在池边界、console 回调与模块表上仍然等价，共用 `bootface_common::place_modules` 的同一份放置逻辑，调用方只传 bump 分配器、池边界与 console 回调（文档 §3.2 第 1480 行）。 | 无新证据；见 panel 原文 |
+| CLAIM-04 | refute | P0 | refute | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/refute.md:84`；问题：`pt_alloc` 的 `register` / `register_free` 在所有构建档都 fail-closed（二次注册 panic），且这一改动不破坏测试内核与生产入口（D-028；文档 §5.1 M7 第 3005 行、§5.3 TODO-02 第 3164 行）。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| CLAIM-05 | refute | P0 | refute | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/refute.md:110`；问题：x86 的 `PageFlags::DEVICE` 经 `flags_to_pte` 编码成 `PWT\|PCD`，LAPIC/IO-APIC 的设备窗口按这条编码映射，因此不再依赖固件 MTRR；该编码不改变非设备映射（文档 §4.6 第 2799 行、§5.3 TODO-10 第 3172 行）。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| CLAIM-06 | refute | P0 | refute | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/refute.md:138`；问题：R23 的删除与新增已经回填到文档的容量账本与测试计数账本；§4.5 的容量表与 §5.2.1 的逐文件计数、实跑转录可以作为当前值引用（文档第 2743 行、第 3032 行、第 3060 行、第 3080 行；D-028）。 | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-01 | design-d2 | P0 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:21`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-02 | design-d2 | P0 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:34`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-03 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:47`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-04 | design-d2 | P0 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:60`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-05 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:73`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-06 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:86`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-07 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:99`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-08 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:112`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-09 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:125`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-10 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:138`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-11 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:151`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-12 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:164`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-13 | design-d2 | P2 | design-d2 | ③ | 反证/复核判定不成立或保留取舍，不计缺陷 | `panel/round24/design-d2.md:177`；问题：见 design-d2.md | 无新证据；见 panel 原文 |
+| DESIGN-14 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:190`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-15 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:203`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+| DESIGN-16 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:216`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |

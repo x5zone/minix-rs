@@ -199,3 +199,135 @@
 3. **C-31 二次回读口径**（案例：R24 88.8% → 100%、11 vs 13；目标：`review-evals.md` §5.4、`metrics.md` schema）。`metrics.md` 分列首轮随机抽样率/一致率与二次定向范围/通过数；禁止把定向复核写成整体 100%。期望效果：堵住 B-66。回归风险：报告不如现在好看；不改修复行为。
 4. **C-32 台账逐 ID + 证据列**（案例：R24 13 行/118、缺 `证据` 列；目标：`review-evals.md` §3.3、`eval-trace-check.py`）。范围行覆盖 >1 个 ID 时必须逐 ID 给“旧串→新串”或测试名；缺 `证据` 列即 FAIL；批量行允许带 commit hash，但逐行至少给位置。期望效果：堵住 B-54/B-56。回归风险：台账变长；可用生成脚本降低手工成本。
 5. **C-33 REFUTE 非阻断处置类**（案例：R24 `CLAIM-02/03`、R23 `CLAIM-01/03`；目标：`review-evals.md` §4.1、台账 schema）。新增“主张成立/无缺陷”档（或 ⑥ 的保留档），不把反证失败计入 ①/③；`metrics.md` 单列阻断主张数与非阻断主张数。期望效果：堵住 B-26。回归风险：多一个处置类；只影响反证报告。
+
+---
+
+## 第二次审计（2026-11-10）
+
+> 审计对象：HEAD `91da40986`；修复链 `91e652a73`（40 files）→ `d20cd3362`（基线）→ `6a40c61fc`（RB-post 收口）→ `209e5c074`（基线指向收口）→ `91da40986`（裁决证据/计数）。文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`，与 `BASELINE.txt` 的 `r24_fixed_doc_sha256` 一致。
+> 本次重点：上次的 B-65、B-61、B-54、B-56、CLAIM 处置类、二次 100% 口径、工作树干净；D-030..D-034 是否真落码；118 行台账与 metrics 是否自洽。
+> 只读；未改代码/文档；同 agent 验证 + 已重放命令。
+
+### 1. 上次问题逐项复核
+
+| 上次项 | 本次判定 | 证据 |
+|---|---|---|
+| B-65 裁决落地无门 | **实例关闭；机制仍开** | `DECISIONS.md:108-112` 的 D-030..D-034 均为八字段行；`DECISIONS-PENDING-R24.md:9-13` 五项均“已实施”；D-031 的 `PlatformDescSource.len`、wire `off+4`、`push_platform_windows` 跨度与 `platform_window_uses_the_recorded_blob_length` 均存在；D-033 的 `assert_boot_windows_addressable` 与两枚测试均存在。我实跑 `cargo test -p minix-kernel --features mock --lib platform_window_uses_the_recorded_blob_length`、`...boot_windows_accept_ranges_below_the_phys_limit`、`...boot_windows_reject_ranges_above_the_phys_limit`，各 1 passed。仍开的是“机制”：没有工具/角色自动把 `implementation_status` 与代码现状对照，C-29 仍需要。 |
+| B-61 未提交 | **主修复关闭；轨迹两文件仍开** | `git show --stat 91e652a73` 为 40 files、+1139/−440；`git show 6a40c61fc` 补跨度测试；`BASELINE.txt` 的 `r24_fix_head=6a40c61fc`、`r24_fixed_doc_sha256=8aaac0d3…` 与当前文档一致。审计开始时 `git status --porcelain` 仍有 `M loop.md`、`M metrics.md`（内容是新增 RB-post 与提交链两行），另有用户侧 `.codex/.trae` 两项与未跟踪 `01-design-learn.md`；所以“工作树只剩用户侧两项”不成立，但未提交的已不是代码/文档修复，而是两行轨迹记录。 |
+| B-54 范围行 | **关闭** | `defect-ledger.md:1655` 表头含 `发现 ID | 角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验`；R24 段解析到 118 条逐 ID 行，没有范围行；`eval-trace-check.py` 覆盖 PASS。 |
+| B-56 逐 ID 证据 | **仍开（收窄）** | 118 行虽逐 ID，但 `处置` 列几乎全是“按面板最小修复落地：文档改写/代码接线/测试补齐”，`证据` 列只给“panel/round24/*.md:行；修复见 loop.md §4”，`复验` 列只给“doc 五门 PASS；宿主/QEMU 读数见 loop.md §5”。没有逐 ID 的“旧串→新串”、commit hunk 或点名测试；B-32 的“处置列被大桶压缩”原样存在。 |
+| CLAIM 处置类 | **关闭** | `CLAIM-02`、`CLAIM-03` 在台账为 ③（`defect-ledger.md:1754-1755`），理由“反证/复核判定不成立，不计缺陷”；`metrics.md:75` 为 ① 114 / ③ 4，与台账逐 ID 聚合一致。 |
+| 二次 100% 口径 | **关闭（口径已澄清）；新开半分制 concern** | `metrics.md:80` 明写“二次定向回读 23/23=100% PASS（13 定向 + 10 重放；不是 118 条整体抽样）”，并补了 RB-post 29 条 26/29=89.7%。但 RB-post 第二次 13/14=92.9% PASS 是把两项部分通过按 0.5 计；只按完全通过是 12/14=85.7%，低于 90%。这不是代码缺陷，是评分口径变化，见 B-67。 |
+| 工作树干净 | **未干净** | 审计开始时 `git status --porcelain`：`M .codex/skills/review-loop/SKILL.md`、`M .trae/skills/review-loop/SKILL.md`、`M loop.md`、`M metrics.md`、`?? rewrite-notes/01-stage-kernel/01-design-learn.md`。meta 文件审计开始时已跟踪且干净（`91e652a73` 已含第一版），本次写入后为 `M`，属于本次审计输出，不计入 R24 残项。 |
+
+### 2. 九项问卷（第二次）
+
+1. **Detection：PASS。** 六个 P0 均有当前源码/测试支撑：EBS 后 `uefi::` 已改 `raw_serial`（`ebs_pair.rs:207-216`，审计 6 条）；§3.7 引文与 `lib.rs:431-501` 同形；`pt_alloc` 全构建 `assert!`；`ident` 已删；`DEVICE` 接进 `device_window_flags()` 并有测试；`map_huge` 重叠语义与三架构源码一致。D-031/D-033 两项用户裁决也由我实跑测试确认。剩余盲区是轨迹层的逐 ID 证据与 loop §3 计数，不是检测能力。
+2. **Precision：CONCERN。** 118 原始 / 约 85–90 唯一；无 `dup-of`，同根重复仍在。`FACT-B-21` 的第 1 小项是面板误报（当前文档 83 正确，`awk 'NR==83'` 命中），但台账整行仍记 ①，没有标出该子项；`READER-B-20` 的 ③ 是“作者接受取舍”而非反证，仍属 ③/④ 边界。`CLAIM-02/03` 改 ③ 后，清晰误报率低，但“③=误报/主张成立”混类的问题仍在。
+3. **Design quality：PASS。** D-030..D-034 都落码：删 `ident_regions`、`PlatformDescSource.len` + wire `off+4` + 跨度建窗、`push` fail-fast、`assert_boot_windows_addressable` 逐窗上限、`records_in_wire`；另有 `PlacementPool`、`Strict` 无载荷、`repr(C)` 注释。不是命名/注释级；测试覆盖 D-031/D-033 的正反两向。
+4. **Independence：PASS。** RB-post 是提交后随机 29 条，首轮 26/29=89.7% NOT PASS，唯一半修正是 DESIGN-07（平台跨度测试缺失）；补测试后二次 13/14=92.9% PASS（8 条重放）。它抓住了代码真落但测试未落这类残差，不是复述台账。二次 13/14 含 2 项轨迹部分通过并按 0.5 计，严格完全通过是 12/14=85.7%；这削弱了“92.9%”作为整体一致率的可比性，但独立性本身成立。
+5. **Scope discipline：PASS。** `F-R14-04` 仍在 `follow-ups.md:49`，用户批准 2026-11-09 延至 D02，写明唯一跨篇延期项；`adjacent 阻塞=0`、`re-litigation=0`；R24 无 ②；D-030..D-034 已实施，没有把裁决项转成相邻项。
+6. **Teaching quality：CONCERN。** 60 条读者项里 59 条记 ①（98.3%），抽查的计数、TODO 权威、箭头图例、`reslen`、`mapped_pde`、`head.o` 改名、`mpx.S`、两套页表池等都在当前文档修好；真实障碍约 50 条，纯文风/打磨约 8–10 条（13–17%）。但 B-64 仍未关闭：没有第二个冷读者只读改动节；“修了字”与“理解恢复”仍是两件事。RB 首轮曾在 22 条读者抽样里发现 5 条半修/未修，第二次定向补修后才通过。
+7. **Cost：CONCERN。** 7 个面板角色、118 条、RB 两轮加 RB-post、6 个 QEMU 门、约 2 小时；R23 是 110 条/约 4 小时，单位发现成本下降，不是收益递减。但 token 未采集（B-36），`agent 7` 不含 RB/meta；118 是原始条数，唯一实质约 85–90；修复提交 40 files 的一次性成本没有单独记。
+8. **Trace integrity：FAIL。** 形状层 PASS：118 条逐 ID、`证据` 列、metrics 118/114/4、trace check `PASS 8/0/0`、RB24 13 项逐项表、D-030..D-034 八字段。内容层有三处硬伤：其一，`loop.md` 的 R24 §3 仍写“① 116 条 / ③ 2 条”（`:1288-1289`），同文件 §6 与 `metrics.md` 写“① 114 / ③ 4”（`:1333`、`metrics.md:75`），这是 B-55 的复发；其二，`loop.md`/`metrics.md` 两行 RB-post 记录未提交；其三，118 行的处置/证据是同一句模板，B-56/B-32 仍开。工具只校验 metrics 与台账，不校验 loop §3，所以“trace check PASS”不能覆盖这三处。
+9. **本轮最值得但工作流仍看不见的一件事：逐 ID 行只有“行数”，没有“内容”。** 118 行解决了 B-54 的形状问题，但每行的处置仍是“按面板最小修复落地”，读者无法从台账判断某一条到底改了哪一句、哪一个测试、哪一个 commit；这正是 B-56/B-32 的合并形态。比再加一个面板角色更值得做的是：台账行强制带 `old → new` 或测试名/commit hunk，或者由 `loop.md` §4 的修复清单自动生成 118 行的证据列。
+
+### 3. V2.2 R-1..R-5 落地状态
+
+| 规则 | 上次 | 本次 | 依据 |
+|---|---|---|---|
+| R-1 commit 级回归 review + 当场修 + 递归上限 2 层 | FAIL | **CONCERN** | 已有修复链 `91e652a73`→`6a40c61fc`，RB-post 在提交后回读；但 `91e652a73` 是一个 40 files 的大提交，没有按“每个逻辑 commit 后派小型 review”逐段记录；`loop.md` §4 也没有逐 commit 的 diff/回归。R-1 的“有提交可审”成立，“逐逻辑 commit”仍未完全落地。 |
+| R-2 轮转闸：①③④ 全部已修且附证据 | CONCERN | **CONCERN** | 118 行逐 ID 与 `证据` 列已落；RB-post 首轮仍抓到 DESIGN-07 半修，说明“无证据不进下一轮”在代码层有效；但证据列仍是聚合句，没有“旧串 grep 归零”/测试名，门的形状大于内容。 |
+| R-3 拖欠须人工批准 | PASS | **PASS** | R24 无 ②；F-R14-04 有用户批准、目标 D02；`OPEN-DEBT.md` 为空。 |
+| R-4 判决字段 8 项 | FAIL | **PASS** | D-030..D-034 八字段行（`awk -F'|'` 每行 8 列）；`DECISIONS-PENDING-R24.md` 五项均“已实施”并附证据；`reviewer_verdict` 与 `user_decision` 分列。唯一小缺口：PENDING 的 DESIGN-02 证据仍只列 `with_len`/wire/`dtb_total_size`，没有点名 `platform_window_uses_the_recorded_blob_length`；`DECISIONS.md` D-031 已点名。 |
+| R-5 裁决档流程 | CONCERN | **CONCERN** | 模板、详细理由、代码约束、实施状态都在；但“第三方为完整共同设计者”仍没有证据（文件自述“按主 agent 建议裁决”）；裁决与实现的对照现在一致，流程是否闭环仍靠人。 |
+
+### 4. 抽样复判（第二次）
+
+抽样 30/118 = 25.4%，覆盖全部角色、6 个 P0、两项用户裁决（D-031/D-033）与 `CLAIM-02/03`。判据：台账处置类与当前制品是否一致；代码项看源码与测试；用户裁决项按裁决文本判。
+
+| ID | 台账 | 我的判断 | 证据 |
+|---|---|---|---|
+| FACT-A-01 | ① | 真修 | `ebs_pair.rs:207-216` 为 `crate::raw_serial`；`ebs_boundary_audit.rs` 6 条 |
+| FACT-A-02 | ① | 真修 | 文档 `:1949-1995` 四参 `enter_kernel_image_v1` + `push_common_boot_windows` + arena `checked_add`；与 `lib.rs:431-501` 同形 |
+| FACT-A-03 | ① | 真修 | `pt_alloc.rs:100-101` 全构建 `assert!`；文档 `:2081` 无 `debug_assert!`/`if claimed` |
+| FACT-A-04 | ① | 真修 | 文档 `:723/:1594/:2783` 两级容量 + v9 删除；`boot.rs` 无 `ident` 字段 |
+| FACT-A-05 | ① | 真修 | `lib.rs:489-495`、`:970-975` 低 2 MiB 均 `#[cfg(target_arch = "x86_64")]`；文档 `:2838` 分腿 |
+| FACT-A-06 | ① | 真修 | 文档 `:2229`、`:2258`、`:2368` 改为“EBS 后提交分类计数/复核”；`ebs_pair.rs:201-216` 同义 |
+| FACT-A-08 | ① | 真修 | `grep -c '#[test]' ebs_map.rs`=45；文档 `:3107` 45、`:3127` 加式 136；boot-shim `--list` 136 |
+| FACT-A-13 | ① | 真修 | 文档 `:3051` M7、`:3129`、`:3211` 登记 `pt_alloc_concurrent.rs` 1 条；该文件 `:23-45` 有 barrier 测试 |
+| FACT-B-14 | ① | 真修 | 文档 `:712` 写 `GDT_SIZE = 6 + CONFIG_MAX_CPUS`、当前 56 B；`archconst.h:21`、`kernel.h:8` 一致 |
+| FACT-B-21 | ① | 部分 | 当前文档 `:282` 的 83 正确，`awk 'NR==83'` 命中；但第 1 小项是面板误报，台账整行 ① 未标该子项（B-32/B-56 残留） |
+| READER-A-01 | ① | 真修 | 文档 `:42` 图例“竖向位置=读序、箭头=依赖”，`:74` 同义；`grep '不编码依赖'` 零命中 |
+| READER-A-02 | ① | 真修 | 同 FACT-A-08；`136 passed`、45、加式 136 三处一致 |
+| READER-A-11 | ① | 真修 | 文档 `:2358` 补“按时间读是 2 的读/预订 → 1 → 2 的拷贝/模块 → 3 → … → 9” |
+| READER-B-03 | ① | 真修 | 文档 `:3049` M5、`:3057` M13 与 §5.3 一致；`:3062` 非机制项行 |
+| READER-B-12 | ① | 真修 | 文档 `:2446/:3019/:3055/:3468` 四处 A=源×目标、B=目标 LMA 间 |
+| READER-B-20 | ③ | 部分 | 批次号仍在；`§1.4` 图例只声明“可跳过”，这是接受风险，不是反证；低置信配额项 |
+| READER-C-09 | ① | 真修 | 文档 `:2661` 写接收面 `arch_boot_resume_v1` 在 `validate_requiring_sources` 后、`resume_boot_pt_alloc` 前调 `check_boot_postconditions()` |
+| READER-C-11 | ① | 真修 | 文档 `:146` 编号图例改为“删除 `BootShim` trait（唯一实现是 U-Boot 腿）”，与 `:1440` 一致 |
+| READER-C-19 | ① | 真修 | 文档 `:2842` “缓存兜底的削弱”，并说明窗口外更早页错误 |
+| CLAIM-01 | ① | 真修 | 文档 `:2849` 写“第二次 `map_huge` 不会返回 `AlreadyMapped`，而是重写同一叶”；`lib.rs:1199-1203` 注释同义；低 2 MiB 分腿已写 |
+| CLAIM-02 | ③ | 正确 | `refute.md:31` 主张成立；台账 `:1754` ③ 正确 |
+| CLAIM-03 | ③ | 正确 | `refute.md:57` 主张成立；台账 `:1755` ③ 正确 |
+| CLAIM-05 | ① | 真修 | `device_window.rs:250-252` 返回 `kernel_read_write() | DEVICE`；测试 `:357-364` 断言 `DEVICE`；`lib.rs:1349`、`paging.rs:718` 使用 |
+| DESIGN-03 | ① | 真修 | `grep -rn 'ident_regions' os --include=*.rs` 零命中；`map_kernel` 7 参（`paging.rs:630-638`） |
+| DESIGN-07 / D-031 | ① | 真修 | `PlatformDescSource.len/with_len/has_len`（`platform.rs:123-168`）；wire `off+4`（`handoff_v1_write.rs:251-256`、`handoff_v1_read.rs:312-317`）；`push_platform_windows` 跨度（`lib.rs:1118-1136`）；`platform_window_uses_the_recorded_blob_length` 实跑 1 passed |
+| DESIGN-10 / D-033 | ① | 真修 | `assert_boot_windows_addressable`（`lib.rs:1186-1193`），两入口 `:496/:975` 调用；两枚上限测试实跑各 1 passed；旧全局断言已移除 |
+| DESIGN-13 | ③ | 正确 | `bootface_a64.rs:36-43` 文件头显式延后；文档 `:1494` 只承诺入口壳各一份；台账 `:1771` ③ |
+| DESIGN-14 | ① | 真修 | `boot_storage.rs:379` 的 `records_in_wire`；`uefi_helpers.rs:1184` 置 true；文档 `:1734` |
+| DESIGN-15 | ① | 真修 | `kernel_info.rs:190-200` 的 `Strict` 无载荷，唯一构造点直接走 `Strict` |
+| DESIGN-16 | ① | 真修 | `kernel_info.rs:14-21` 注释改为“repr(C) 只钉字段顺序、不是跨镜像 ABI” |
+
+统计：真修/正确 28 条；部分 2 条（`FACT-B-21` 第 1 小项误报残留、`READER-B-20` 的 ③ 边界）。严格一致率 28/30 = **93.3%**，达到 90% 门槛；若把两条部分按 0.5 计为 29/30 = 96.7%，若把两条都按不一致计为 28/30。抽样本身判 PASS；运行质量的 NOT PASS 来自下面的轨迹层，不来自抽样。
+
+### 5. 最终 VERDICT
+
+**IMPROVED（内容、裁决、检测相对第一次审计与 R23 有实质进步）/ 运行质量 NOT PASS（仅轨迹收口）。**
+
+- 内容面：六个 P0 全部有当前源码/测试支撑；D-030..D-034 五项用户裁决全部落码，D-031/D-033 的测试我实跑通过；`cargo test -p minix-kernel --features mock --lib` 为 865 passed + 8 ignored；boot-shim `--list` 为 136；QEMU 六份日志均含 PASS。抽样 28/30 = 93.3%，PASS。
+- 运行质量 NOT PASS 的原因不是文档/代码，而是三处轨迹硬伤：其一，`loop.md` R24 §3 仍写 ① 116 / ③ 2，与同文件 §6 和 `metrics.md` 的 ① 114 / ③ 4 矛盾（B-55 复发，且该矛盾已在 HEAD 提交里）；其二，`loop.md`/`metrics.md` 的 RB-post 两行仍未提交（B-61 轨迹残项；审计开始时工作树并非“只剩用户侧两项”）；其三，118 行的处置/证据仍是同一句模板，B-56/B-32 未关。另有 B-67：RB-post 二次 92.9% 依赖部分通过按 0.5 计，严格完全通过是 12/14=85.7%。
+- 收口条件（做完即可把运行质量改为 PASS）：把 `loop.md` §3 的“① 116 / ③ 2”改为“① 114 / ③ 4”，并在 §3 列出 `CLAIM-02/03` 两条主张成立；提交 `loop.md` 与 `metrics.md` 的两行审计记录；在 `DECISIONS-PENDING-R24.md` 的 DESIGN-02 证据补 `platform_window_uses_the_recorded_blob_length`；在台账逐 ID 行的 `证据`/`复验` 列至少给一条该 ID 的旧串→新串或测试名。
+- 文档仍 `NOT CONVERGED`（`loop.md:1337` 自述；G8 连续零新增未满足）。本轮可以收口为“轮次”，不能宣告文档收敛。
+- 局限：同 agent 验证 + 已重放命令；未重跑 QEMU，只读六份日志；未重跑 types/boot/vm/arch 全量，只实跑 minix-kernel 865+8、boot-shim 136 与 D-031/D-033 定向测试；未做跨工具复核。
+
+### 6. BLIND-SPOT-DELTA（第二次）
+
+**关闭/降级：**
+
+- **B-54 范围行压成单 token：CLOSED（形状）**。118 行逐 ID、`证据` 列、trace check 覆盖 PASS。
+- **B-65 裁决落地无门：实例 CLOSED，机制仍 OPEN**。D-030..D-034 八字段 + 五项已实施 + D-031/D-033 测试；但没有自动门把 `implementation_status` 与代码对照，C-29 仍成立。
+- **B-66 定向复核冒充整体一致率：CLOSED（100% 口径已澄清）**。`metrics.md:80` 明写“不是 118 条整体抽样”，并补 RB-post 29 条 89.7%。
+- **B-44 判决不落账：CLOSED**。RB24 13 项逐项表、RB-post 29 条与二次 13/14、D-030..D-034 均已进 run 轨迹/决策账。
+
+**仍开/部分开：**
+
+- **B-61 未提交：收窄为“轨迹两文件”**。代码/文档修复已提交（`91e652a73`、`6a40c61fc`），但 `loop.md`、`metrics.md` 两行审计记录未提交；审计开始时 `git status` 并非只剩用户侧两项。B-61 不能记 CLOSED，记 **DETECTED（残项）**。
+- **B-56 声称修复无 diff 回指：OPEN**。118 行的 `证据` 列是“panel 行号；修复见 loop §4”，`复验` 是“doc 五门/QEMU”，没有逐 ID 的 commit hunk 或旧串 grep。
+- **B-32 处置列被大桶压缩：OPEN**。118 行有 118 个 ID，但处置文本几乎相同；B-56 的合并形态。
+- **B-55 分档指标不可复算：REGRESSED（复发）**。HEAD 的 `loop.md:1288-1289` 为 ① 116 / ③ 2，`:1333` 与 `metrics.md:75` 为 ① 114 / ③ 4；工具只校验 metrics 与台账，未拦住 loop §3。
+- **B-31 台账无轮次作用域：OPEN**。R24 行仍用 `FACT-A-01` 等短 ID，没有 `R24/` 前缀；同文件其他轮次有同名 ID，靠 `## R24` 段隔离。
+- **B-64 ④ 修复后无冷读者复读：OPEN**。59 条读者 ① 没有第二读者复读；RB-post 只做抽样回读，不是理解复读。
+- **B-33 冻结基线无机械门：OPEN**。`loop.md:1278` 只写“面板运行前后 git status 无面板侧写入”，没有贴输出或 sha 对比。
+- **B-09 门绿但事错：OPEN**。五门全绿时 RB 仍找到 B1；本轮 trace check 绿时 loop §3 仍与 metrics 矛盾。
+- **B-34 代码改动后文档引文无人回读：OPEN**。D-031/D-033/`push` 改动后的引文回读仍靠 FACT/RB，没有机械清单。
+- **B-36 成本无仪表：OPEN**。token 仍未采集；`agent 7` 不含 RB/meta。
+- **B-50 半修记整修：DETECTED（未关）**。DESIGN-07 已由跨度测试补成真修；但 FACT-B-21 的误报子项仍按 ① 整行记，逐 ID 证据仍是模板。
+- **B-60 抽样驱动修复：OPEN**。RB-post 抽到 DESIGN-07 后才补跨度测试；这轮是“抽样驱动”的正例，但机制未变。
+- **B-62 低置信配额噪声：OPEN**。`READER-B-20` 仍是配额项 ③；③ 率 1/4 = 25%，未超过 50%，继续观察。
+- **B-63 G8 计数不区分同根/文风/已判：OPEN**。118 原始 / 约 85–90 唯一；`dup-of`/`origin` 仍未落码。
+
+**新增：**
+
+- **B-67 二审半分制**（度量 / 回读）：RB-post 第二次 13/14 = 92.9% PASS 把两项部分通过按 0.5 计；只按完全通过是 12/14 = 85.7%，低于 90%。案例：RB-post 第 5、6 项（PENDING 证据、工作树干净）都是轨迹项，不是代码项。期望探测器：`metrics.md` 分列“完全通过/部分通过/未通过”，二次复核不得用半分制跨越 90% 门槛；若用半分制，必须同时给出严格读数。
+- **B-68 逐 ID 证据同文**（记账 / 修复质量）：118 行逐 ID 解决了 B-54 的形状，但 `处置`/`证据` 列几乎逐字相同，无法回答“这条改了哪一句/哪个测试”。这不是新机制，是 B-56/B-32 的合并形态；给新编号是为了让 L7 不再把它当“已关闭”。期望探测器：每行至少一条 `old → new` 或测试名/commit hunk；`eval-trace-check.py` 对“同文行占比 > 50%”报 WARN/FAIL。
+
+### 7. 给 L7 的候选（第二次，仅保留仍成立）
+
+1. **C-29 裁决实施门**（继续）：案例 D-031/D-033；目标 `review-evals.md` §3.5、`review-panel.md` P-META/RB、`eval-trace-check.py`。每条用户裁决必须有八字段行；`implementation_status` 改“已实施”必须同时给 commit/测试/grep；RB 必须读 `DECISIONS-PENDING-*`，不只读面板。期望：B-65 机制关闭。风险：每轮多一次对账；只对用户裁决项执行。
+2. **C-30 全轮提交门**（继续，缩小案例）：案例 `loop.md`/`metrics.md` 两行未提交；目标 `review-evals.md` §4f/§5.4、`eval-trace-check.py --require-clean`。L6/meta 入口对文档/代码/轨迹做 `git status` 硬门；不干净即 FAIL。期望：B-61 残项关闭。风险：工作中间态不能跑 meta；只在 L6 执行。
+3. **C-31 二次回读口径**（继续，改为半分制案例）：案例 RB-post 13/14=92.9% vs 严格 12/14=85.7%；目标 `review-evals.md` §5.4、`metrics.md` schema。分列“完全通过/部分通过/未通过”，二次复核不得用半分制跨越 90%；首轮随机抽样率与二次定向范围分开。期望：B-67 关闭。风险：报告不如现在好看；不改修复行为。
+4. **C-32 台账逐 ID + 证据列**（继续，改为内容层）：案例 118 行同文；目标 `review-evals.md` §3.3、`eval-trace-check.py`。每行至少一条 `old → new` 或测试名/commit hunk；同文行占比 >50% 报 WARN/FAIL。期望：B-56/B-32/B-68 关闭。风险：台账变长；可用生成脚本。
+5. **C-34 三源计数门**（新增，替代 C-33 的位置）：案例 `loop.md` §3 116/2 vs §6/metrics 114/4；目标 `eval-trace-check.py`、`metrics.md` schema。metrics、loop §3、loop §6 与台账逐 ID 聚合必须同数；`loop.md` §3 不参与自动生成就禁止写分档数。期望：B-55 复发关闭。风险：loop §3 的叙述性文字要改成引用 metrics；不改内容。
+
+C-33（REFUTE 非阻断处置类）本轮已由 `CLAIM-02/03` ③ 部分满足；保留为低优先，不列入前五。

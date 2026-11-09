@@ -1285,8 +1285,8 @@
 
 ### R24 §3 归因
 
-- ① 116 条：全部本轮修复，含文档、代码、测试与注释。
-- ③ 2 条：`READER-B-20`（批次号，§1.4 图例已声明可跳过）、`DESIGN-13`（bootface 整段合并，文件头已显式延后且文档只承诺壳各一份）。
+- ① 114 条：全部本轮修复，含文档、代码、测试与注释。
+- ③ 4 条：`READER-B-20`（批次号，§1.4 图例已声明可跳过）、`DESIGN-13`（bootface 整段合并，文件头已显式延后且文档只承诺壳各一份）、`CLAIM-02`/`CLAIM-03`（反证失败、主张成立，不是缺陷）。
 - ②/④/⑤ 0。冻结决策复查：D-013..D-029 无重提；D-024 继续停 D1；D-027 的窗口边界由 §4.6 重写；D-028 的 `pt_alloc` 语义由 §3.8/§4.7 重写；D-029 保持不做诊断打印。
 - 范围门：全部 in-scope；未把 F-R14-04 或 02 篇问题升级为本轮阻塞。
 
@@ -1303,6 +1303,8 @@
 - QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志归档在 `logs/round24-{x86-shim,aarch64-shim,riscv-uboot-shim,riscv-bootface,riscv-kernel-image,aarch64-smp-aps}.log`（各含 `TEST_RESULT: PASS` 或 `RESULT: PASS`）。
 - 修复后文档：3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
 - 修复提交：`91e652a73`（40 files, +1139/−440）；`BASELINE.txt` 已登记 `r24_fix_head`。
+- 提交链：`91e652a73`（面板修复）→ `d20cd3362`（基线）→ `6a40c61fc`（RB-post 收口：跨度测试/措辞）→ `209e5c074`（基线指向收口）→ `91da40986`（裁决证据/计数）。HEAD 工作树只剩用户侧 `.codex/.trae` 与未跟踪 `01-design-learn.md`。
+- RB-post（提交后随机 29 条）：首轮 26/29=89.7% NOT PASS（DESIGN-07 半修）→ 补 `platform_window_uses_the_recorded_blob_length` 后二次 13/14=92.9% PASS；118 条整体一致率不由此宣称。
 - RB24 首轮：71/80 = 88.8%，NOT PASS；B1/B2 与 N1–N11 已按最小补修逐项处理。第二次定向回读 23/23 = 100%，PASS（13 项定向 + 10 条上轮真修重放；未发现新 P0/P1/P2）。
 
 RB24 首轮 13 项逐项处置：
