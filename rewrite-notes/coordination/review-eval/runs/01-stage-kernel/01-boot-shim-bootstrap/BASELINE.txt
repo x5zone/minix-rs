@@ -62,3 +62,8 @@ r23_fixed_doc_sha256=0c92afc483dd449ed5e6acd65aeeed6d267cefbda84f8421f103f613112
 r23_fixed_doc_lines=3433
 r23_panel_round=round23
 r23_status=NOT_CONVERGED
+
+# BOOT-SCOPE 2a implementation (after R23 close; R24 baseline)
+boot_scope_fix_head=4f2e9e786c6aba1d6377539e026d9c0c92975bed
+boot_scope_doc_sha256=05ed81ea947ff2e335aec0ee759ead8d2f2d59fe40b19239d91cf46e3839bd08
+boot_scope_doc_lines=3427
