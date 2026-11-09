@@ -146,3 +146,17 @@
 | C-16 | 轨迹设"判决"字段：用户裁决（结论/截止轮次/闭案证据）与回读（VERDICT/残留项/处置）必须落账，不得压成条目清单 | RB15/RB16 两次 NOT PASS 被压成"全修"（B-44）；A+D 截止 R13 未闭案 | `review-evals.md` 轨迹 schema、`loop.md` 模板 | 候选，待 L7 |
 | C-17 | 台账行 ID 强制 `R<nn>/` 前缀；轨迹门按短 ID 归一匹配，禁止无前缀行 | R16 117/119 条 ID 与更早轮次同名，覆盖门近乎失效（B-31） | `tools/eval-trace-check.py`、`review-evals.md` | **已部分生效**（门已支持前缀；R14–R16 台账均已加前缀） |
 | C-18 | 表块连续性检查 + 全文 `.md` 链接按文档目录解析，失败即门红 | R16 §4.4 表被空行劈开、1 个外链从文档目录解析不到（B-46） | `tools/doc-ref-check.sh`、`tools/doc-style-lint.sh` | 候选，待 L7 |
+
+## V2.2（2026-11-09，用户裁决即时晋升——无观察期）
+
+> 用户指令："这些应该是立刻晋升的，不需要观察的（后续观察也是为了确保它们成功正确落地，它们的语义无需考验了）"。晋升依据 = 用户直接裁决（语义由用户定，不需要试点验证）；后续轮次观察的是**落地质量**，不是语义。
+
+| 编号 | 规则 | 案例支撑 | 目标文件 | 状态 |
+|---|---|---|---|---|
+| R-1 | commit 级回归 review 分级 + 当场修 + 复验终止（递归上限 2 层） | R19–R22 修复自引入持续再生（R21 36 条 ④ 未动、R22 18 条未动） | `review-evals.md` §4e、`review-loop.md` L4.6 | **已晋升生效** |
+| R-2 | 轮转闸：无证据不进下一轮（①③④ 全部可修项必须已修且附证据：旧串 grep 归零/测试输出） | R21→R22→R23 恒定滞后一轮的"修上轮欠本轮"模式 | `review-evals.md` §4f、`review-loop.md` L6.9、`eval-trace-check.py`（①/④ 复验列非空 + R13+ 收口小节检查） | **已晋升生效** |
+| R-3 | 拖欠须人工批准：② 转出未经用户批准按未修计、阻断收敛 | F-R17-01..04、F-R20-01..04 从 R17 逾期至 R23 | `review-evals.md` §4g、`review-loop.md` L6.9 | **已晋升生效** |
+| R-4 | 判决字段 8 项（reviewer_verdict 与 user_decision 分列，不得覆盖 NOT PASS） | RB21/RB22 两次 NOT PASS 被压成"全修" | `review-evals.md` §三轨迹契约 | **已晋升生效** |
+| R-5 | 裁决档流程：问题域锚 = Minix3 语义（偏离须 [ARCH] 理由）；不设轮次上限；第三方为完整共同设计者；域外即出界 | 用户裁决（BOOT-SCOPE 档 §5）；纠正"轮数上限+挑漏者"的过度矫正 | `DECISIONS-PENDING-*.md` 模板 | **已晋升生效** |
+
+同步门读数：generate-derived-skills 0 / check-review-rules 0 / lint-review-rules 0 / diff-trae-skills 0（全绿）。
