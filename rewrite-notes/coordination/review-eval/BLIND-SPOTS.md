@@ -475,7 +475,7 @@
 ## B-59 锚点文法不覆盖 `path:Type::method`
 
 - **类别**：机械门
-- **历史证据**：R22 FACT-A-03：文档 4 处 `path:Type::method`（如 `vm_handoff.rs:FreeRangeSet::cut`）不在 `anchor-resolve.sh` 的 `path:symbol` 文法内，`--extract` 零命中，门不校验其符号是否存在。
+- **历史证据**：R22 FACT-A-03：文档 4 处 `path:Type::method`（如 `BootAlloc::alloc`、`X86_64Paging::new_from_page/enable/map`）不在 `anchor-resolve.sh` 的 `path:symbol` 文法内，`--extract` 零命中，门不校验其符号是否存在。
 - **期望探测器**：`anchor-resolve.sh` 扩展 `Type::method` / `Trait::method` 形态，或在文档侧统一改 `path:fn` 锚点；两种方案的覆盖读数记入 Gate。
 - **状态**：OPEN
 

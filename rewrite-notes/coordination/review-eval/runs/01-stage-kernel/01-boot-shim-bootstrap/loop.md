@@ -1092,7 +1092,7 @@
 
 ### R21 §6 指标
 
-发现 67；处置 ①9 / ②3 / ③5 / ④50 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+发现 63；处置 ①14 / ②3 / ③3 / ④43 / ⑤0；re-litigation 0；adjacent 阻塞 0。
 
 ### R21 §7 状态
 
@@ -1124,7 +1124,7 @@
 
 ### R22 §3 归因
 
-- ① 9；④ 50；② 3（D2-04→F-R20-01、D2-03→F-R20-03、D2-02→F-R20-04）；③ 5（FACT-A-03 + REFUTE 4 条非阻断主张）。
+- ① 9；④ 50；② 3（D2-02→F-R20-01、D2-03→F-R20-03、D2-04→F-R20-04）；③ 5（FACT-A-03 + REFUTE 4 条非阻断主张）。
 - re-litigation 0；adjacent 阻塞 0。
 
 ### R22 §4 修复
@@ -1144,7 +1144,7 @@
 
 ### R22 §7 状态
 
-`NOT CONVERGED`：G8 本轮新增 63 条；G9 的 ② F-R20-01/03/04 + F-R17-01..04 仍未处置；RB22/meta R22 待跑。R23 继续。
+`NOT CONVERGED`：G8 本轮新增 67 条面板条目；G9 的 ② F-R17-01..04 与 F-R20-01..04 已全部登记 OPEN-DEBT 截止 R23；RB22 已判 NOT PASS、meta R22 复核后为 NOT PASS（Teaching 未清）。R23 继续。
 
 ### R22 §8 给 meta-review 的不确定点
 
