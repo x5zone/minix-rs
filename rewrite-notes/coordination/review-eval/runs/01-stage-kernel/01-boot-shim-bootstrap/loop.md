@@ -1224,7 +1224,7 @@
 
 ### §7 状态
 
-`NOT CONVERGED`：G8 新增 110 条；P0 已修；② 由 5 条收窄为 3 条（DESIGN-06/12 经 meta 指正改本轮实施；DESIGN-10/11/13 带日期转 R24，其中 DESIGN-11 进 OPEN-DEBT）。RB23 补修后 PASS；meta R23 第二次审计 **IMPROVED / 条件 PASS**（P0/P1 open 0/0，最终态一致率 90.0%）；5 项收口已处理。
+`NOT CONVERGED`：G8 新增 110 条；P0 已修；② 由 5 条收窄为 3 条（DESIGN-06/12 经 meta 指正改本轮实施；DESIGN-10/11/13 带日期转 R24，其中 DESIGN-11 进 OPEN-DEBT）。RB23 补修后 PASS；meta R23 第二次审计 **IMPROVED / 条件 PASS**（P0/P1 open 0/0，最终态一致率 90.0%）；5 项收口已处理；**R23 轮次收口**（文档仍 NOT CONVERGED，G8 新增 110）。
 
 ### §8 给 meta-review 的不确定点
 
