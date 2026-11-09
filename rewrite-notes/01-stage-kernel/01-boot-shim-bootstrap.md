@@ -3167,7 +3167,7 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 | TODO-05 | §4.6 大页首选档 | 构造 1 GiB 对齐、跨度为 1 GiB 整数倍的合成测试镜像后跑真机；现行三个生产布局不可达该档 | 条件式，需先有合成镜像 | 已登记待交接（非生产缺口） |
 | TODO-06 | M14 x86_64 路标链 | x86_64 上 `kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1` 三条路标出现 | 已覆盖：`test-cmd-smoke.sh` Stage 3b 逐条 `grep -qF`，缺任一条即 FAIL 并回打串口尾 12 行。本条判据（三条路标）当前为绿；脚本整体退出码未在本轮复核，du/stat/find 三段的现状不属于本条判据 | 已交接完成 |
 | TODO-07 | §4.2 UEFI 侧宿主可测面 | 两列表互斥完备；root/bump 不与 free 列表相交 | `assert_bootstrap_outside_memmap` 已覆盖（5 条：相离与贴边共用一条通过测试 `test_bootstrap_outside_memmap_accepts_disjoint_and_abutting`；四条 panic 案 `test_bootstrap_outside_memmap_rejects_contained_range` / `test_bootstrap_outside_memmap_rejects_partial_overlap` / `test_bootstrap_outside_memmap_rejects_wrapping_region` / `test_bootstrap_outside_memmap_rejects_wrapping_allocation`）；`build_memmaps` 的调用点单根，可测面随分类循环纯函数化后重定义 | 纯函数五案（5 条宿主测试）已交接完成；其余随分类循环纯函数化 |
-| TODO-08 | §6.3 boot-shim 镜像位于 4 GiB 之上 | 该前提是 boot identity 窗口 VA 上限的隐含条件 | 窗口构建断言 `end <= BOOT_IDENTITY_MAP_END`；shim image/stack 已加入窗口表，越界 fail-closed | ✅ 已关闭（R24 BOOT-SCOPE 2a） |
+| TODO-08 | §6.3 boot-shim 镜像位于 4 GiB 之上 | 该前提是 boot identity 窗口 VA 上限的隐含条件 | 窗口构建断言 `end <= BOOT_IDENTITY_MAP_END`；shim image/stack 已加入窗口表，越界 fail-closed | ✅ 已关闭（R23 后 BOOT-SCOPE 2a 实施） |
 | TODO-09 | §6.1 建根返回后、跳转前无发送侧路标 | 卡在建根后半与卡在跳转后无法用串口区分 | 补一条发送侧路标（不在 R18 改动范围） | 已登记（R18），待诊断路标批 |
 | TODO-10 | §4.6 x86 LAPIC/IO-APIC 的 UC 语义 | Step 1 以可缓存 `id_flags` 覆盖 boot identity 窗口，LAPIC/IO-APIC 的 UC 依赖固件 MTRR；仓内无断言核对 | 真机侧用 LAPIC 写入后读回或中断计数间接验证；（建议）补一条 MTRR 读数诊断 | 已登记（R23），待真机核对 |
 
