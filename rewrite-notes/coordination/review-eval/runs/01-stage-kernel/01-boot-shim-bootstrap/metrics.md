@@ -84,6 +84,7 @@
 - 发现总数: 124（FACT-A 14；FACT-B 17；READER-A 20；READER-B 31；READER-C 20；REFUTE 6 条主张；DESIGN-D2 16）
 - 处置: ① 98 / ② 0 / ④ 15 / ⑤ 3 / ⑥ 0 / FP 8
 - 未闭环: 10
+- 轮型: discovery
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 3 / 接受 2 / 实施 2（`PlatformDescSource` 可选长度、`map_kernel` 收 `KernelLayout`）；`records_in_wire`/直核静态落地区维持 D-034 与 D-013 边界

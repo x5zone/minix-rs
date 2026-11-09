@@ -1347,6 +1347,7 @@ RB24 首轮 13 项逐项处置：
 
 ### R25 §0 基线
 
+- 轮型：discovery（全文发现轮）。
 - 冻结提交：`4ed921800`（R24 收口提交）；文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
 - 工作树：仅 `.codex/.trae` 的 V2.2 派生文件与未跟踪 `01-design-learn.md`（用户侧）；R24 修复/轨迹已提交。
 - Step 0 预检：`01-design.v3` 为最新、`01-outline.v4`/`01-outline-review.v4` 存在；`design-coverage-check 01-stage-kernel` = ALL DOCS COMPLETE（Missing 0）。

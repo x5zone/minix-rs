@@ -171,3 +171,15 @@
 | R-7 | **本轮不闭环不准开下一轮**：`①/④/⑥` 必须有复验；`②` 必须有“用户批准 + YYYY-MM-DD”；`⑤` 与未批准 `②` 一律未闭环；R25+ 的 `metrics.md` 必须有 `未闭环: 0`，否则 `eval-trace-check.py` FAIL | R25 在 ③ 未清、DESIGN-09/10 未闭环时曾准备进 R26；R24 meta PASS 与 R25 10 个 P0 并发 | `review-evals.md` §4f/§5.0/§6A；`review-loop.md` L6.9；`eval-trace-check.py`（当前轮 strict 检查 + ③ 禁用 + 未闭环） | **已晋升生效** |
 
 同步门读数：generate-derived-skills 0 / check-review-rules 0 / lint-review-rules 0 / diff-trae-skills 0；`eval-trace-check.py --self-test` PASS（含 R25+ ③ 拦截与 FP 反证拦截）；R25 scoped 运行现为 FAIL，未闭环 10 项（这是预期，不是回归）。
+
+## V2.4（2026-11-10，用户裁决：直接把流程改向收敛）
+
+> 用户指令：“还是再次回归检查，确保这是一个能收敛的流程，别管什么晋升规则……直接把流程给我往收敛的改！”V2.4 不再增加面板角色，而是改轮次状态机：发现轮只跑一次全集，清空后进入验证轮；验证轮只查修复 hunk/未闭环项/随机 20%，不重开全量读者与设计。
+
+| 编号 | 规则 | 案例支撑 | 目标文件 | 状态 |
+|---|---|---|---|---|
+| R-8 | **轮型状态机**：`discovery`（全文全角色，只跑一次）→ 清空 `未闭环=0` → `verification`（P-FACT 定点、READER 只读修改段及邻句、RB 审最终 HEAD，不跑全量 A/B/C/DESIGN）；verification 新 in-scope 真缺陷=0 才 `CONVERGED`；最多 2 次 verification，第 3 次 `STUCK` 交用户 | R24→R25→R26 连续全量面板，发现量 118→124；R25 meta 判 FLAT/NOT PASS | `review-evals.md` §4.0a/§6A、`review-loop.md` L0/L1/L6.9/L7、`review-panel.md` §3.5 | **已晋升生效** |
+| R-9 | **收敛不再要求“连续两轮无新”**：G8 改为“最近一轮是 verification 且该轮新 in-scope 真缺陷=0”；FP、重复项不计；收敛后写 `FREEZE.md`，只有用户新要求或新证据才重开 | 26 轮中全量面板反复生成 P2/P3/读者偏好，G8 不可达 | `review-evals.md` §6A、`review-loop.md` L7 | **已晋升生效** |
+| R-10 | **RB/commit 发现必须入台账**：写入 `defect-ledger.md` 并计入未闭环；只写在 loop/RB 报告不算入账 | R25 RB 的 B1/B2/N1–N11 只在 loop，未计入 metrics | `review-evals.md` §4f/§4.1、`review-loop.md` L6.9 | **已晋升生效** |
+
+同步门读数：`generate-derived-skills` 0 / `check-review-rules` 0 / `lint-review-rules` 0 / `diff-trae-skills` 0；`eval-trace-check --self-test` PASS；R25 仍为 `NOT CONVERGED`（未闭环 10），验证轮尚未开始。

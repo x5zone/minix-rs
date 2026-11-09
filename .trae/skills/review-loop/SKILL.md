@@ -49,6 +49,7 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 6. 写 `runs/<stage>/<doc-stem>/loop.md §0`：commit、sha256、行数、范围、关联代码、语料条目 ID。
 7. 02/03 阶段先读 `review-eval/doc-set/` 的对账简报；没有简报就先做对账，不进入 L1。
 8. **读本篇前几轮 follow-ups**：如果本篇已跑过面板轮，读 `runs/<stage>/<doc-stem>/follow-ups.md` 中上一轮的未修 ② 项；按文件交集分成两份——"顺手修"（与本篇关联代码重叠的项，本轮 ① 同批处理）与"核销清单"（需要确认是否已被其他轮修复的项，交 P-FACT 在面板中确认状态）。首轮没有前轮 follow-ups 时跳过此步。
+9. **定轮型**：`runs/<stage>/<doc-stem>/loop.md §0` 必须写 `轮型: discovery` 或 `轮型: verification`。首次审全文是 discovery；discovery 收口后只能进 verification；verification 发现新 in-scope 真缺陷时，下一轮仍是 verification（最多 2 次），不得重开全量 discovery。
 
 范围声明模板：
 
@@ -67,6 +68,8 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 - 文档 1500 行及以上：P-FACT、P-DESIGN D1+D2、P-READER A+B+C 分角色；高风险加 P-REFUTE；
 - 关联代码 < 10k 行时跳过 P-DESIGN D1（独立设计成本高于收益，D2 直接对照文档与源码）；
 - P-REFUTE 触发条件：P-FACT 报出 ≥1 条 P0，或本篇属于高风险类（启动链/IPC/内存管理/时钟中断）。
+
+验证轮不按上面的默认全量配置：只派 P-FACT 定点（修复 hunk 涉及的符号/常量/引文）、READER 定点（只读修改段及邻句，不读全文）、RB（审最终 HEAD）；不派全量 READER A/B/C，不派 DESIGN 全量。验证轮的目标是确认“已修项真的修了、没有修出新错”，不是重新发现一遍全文。
 
 派发方式：
 
@@ -147,6 +150,8 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
    - 发现总数: <整数>
    - 处置: ① <整数> / ② <整数> / ④ <整数> / ⑤ <整数> / ⑥ <整数> / FP <整数>
    - 未闭环: <整数>
+   - 轮型: discovery | verification
+   - 新 in-scope 真缺陷: <整数>
    - re-litigation: <整数>
    - adjacent 阻塞: <整数>
    - 重构: 提出 <整数> / 接受 <整数> / 实施 <整数> / 登记 <整数>
@@ -180,17 +185,20 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 进入下一轮面板之前，逐项核对（缺一即停在“待修复”状态，不得派面板）：
 
 1. 本轮全部可修项（①④⑥，含 RBn 与 commit 级回归的再生项）**已修，且每条附证据**；FP 必须有反证，② 必须有用户批准日期，⑤ 与未批准 ② 视为未闭环、禁止进下一轮：文档类 = “旧串全篇 grep 归零”输出；代码类 = 测试输出；
-2. RBn 结论已入账；
+2. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）；
 3. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）；
-4. `eval-trace-check.py` 退出码 0（含 ①/④ 证据检查与 R13+ 收口小节检查）。
+4. `eval-trace-check.py` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、R13+ 收口小节检查）；
+5. **轮型顺序**：discovery 只能接 verification；verification 新 in-scope 真缺陷=0 才 `CONVERGED`；verification 最多 2 次，第 3 次改 `STUCK` 交用户，不自动循环。
 
 ## L7 收敛检查与工作流升版
 
 ### 7a. 文档收敛检查
 
-按 `review-evals.md` §6A 的 G1–G8 判据逐条检查。全满足 → 该篇 `CONVERGED`，进下一篇；不满足 → 继续修。
+按 `review-evals.md` §6A 的 G1–G9 判据逐条检查。G1–G7 全满足 + 最近一轮是 verification + 该轮新 in-scope 真缺陷=0 → 该篇 `CONVERGED`，写 `FREEZE.md`（HEAD、文档 sha、未闭环=0、验证轮证据），进下一篇；不满足 → 只修该验证轮发现，下一轮仍为 verification（最多 2 次）。
 
-**第 5 轮结束时 G1–G4 仍有未清项** → 生成 `STUCK-REPORT.md` → 标记该篇为 `STUCK` → 终止该篇循环 → 进下一篇。
+**verification 第 2 次仍有新 in-scope 真缺陷** → 生成 `STUCK-REPORT.md` → 标记 `STUCK` → 交用户裁决；不得自动开第 3 次验证，更不得重开全量 discovery。
+
+`meta PASS` 不是文档收敛；只有 verification 出口能写 `CONVERGED`。
 
 ### 7b. 陷阱套件
 

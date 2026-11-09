@@ -412,6 +412,20 @@ def check_metrics(text: str, report: Report, round_tag: str | None = None, expec
             )
         else:
             report.ok("metrics", "未闭环 = 0，本轮可关闭")
+        round_type = re.search(r"^-\s*轮型\s*[:：]\s*(discovery|verification)", body, re.MULTILINE)
+        if round_type is None:
+            report.fail("metrics", "metrics.md 缺少 `- 轮型: discovery|verification`（R25+ 强制）")
+        elif round_type.group(1) == "verification":
+            new_find = re.search(r"^-\s*新 in-scope 真缺陷\s*[:：]\s*(\d+)", body, re.MULTILINE)
+            if new_find is None:
+                report.fail("metrics", "verification 轮缺少 `- 新 in-scope 真缺陷: <整数>`")
+            elif int(new_find.group(1)) != 0:
+                report.fail(
+                    "metrics",
+                    f"verification 轮仍有 {new_find.group(1)} 条新 in-scope 真缺陷；不得 CONVERGED",
+                )
+            else:
+                report.ok("metrics", "verification 轮新 in-scope 真缺陷 = 0，可判 CONVERGED")
 
     required_keys = ["re-litigation", "adjacent 阻塞", "重构", "成本"]
     for key in required_keys:
@@ -692,6 +706,7 @@ GOOD_METRICS = """# 指标
 - 发现总数: 3
 - 处置: ① 1 / ② 0 / ④ 1 / ⑤ 0 / ⑥ 0 / FP 1
 - 未闭环: 0
+- 轮型: discovery
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
@@ -849,6 +864,7 @@ def self_test() -> int:
 - 发现总数: 3
 - 处置: ① 0 / ② 0 / ④ 3 / ⑤ 0 / ⑥ 0 / FP 0
 - 未闭环: 0
+- 轮型: discovery
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
