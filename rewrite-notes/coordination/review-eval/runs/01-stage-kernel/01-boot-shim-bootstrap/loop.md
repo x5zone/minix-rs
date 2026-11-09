@@ -1382,7 +1382,8 @@ RB24 首轮 13 项逐项处置：
 - 文档门：anchor 105/105；doc-code-map 52/52；style error=0；ref/structure/density PASS。
 - 宿主：boot-shim 136+6、kernel 865+8、types 339、boot 196、vm 548、arch 288。
 - QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志 `logs/round25-*.log`。
-- 文档：3491 行 / `c4bb307e266d1ff05bfdf3248c1f1001c57ee7036022fb538682977230d3d9ed`。
+- RB25：随机 31/124 + 15 条强制 P0 = 46 条；44/46=95.7% PASS。两条必修：FACT-B-11 的 `map_kernel` 参数计数（已改“两参 &KernelLayout”）、READER-A-03 的“shim 只初始化”矛盾（已改为间接注册）。R25 台账 reader-a/severity 列按面板原值校正待收口。
+- 文档：3491 行 / `a9588aa0f636a7ee8a2f405a647cb3605a08ecd7ced874f3254ea64f593f2ef3`。
 
 ### R25 §6 指标
 
