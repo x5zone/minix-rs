@@ -84,9 +84,9 @@
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
 | F-R18-01 | D-1 第二阶段 | U-Boot shim 腿仍以一次性 `.bss` 静态量 + `Box::leak`（模块表、平台源、参数）持有载荷；所有权真实但形态未统一 | ✅ 已修（R18 补记） | `prepare_boot(&mut BootStorage, bump_pages)` 填 storage；arena 在函数内分配、startup 五类记录返回前写齐；`BootPrepareResult<'a>` 携带报告；QEMU U-Boot shim 6/6 PASS |
-| F-R18-02 | P-2 第一版边界 | 表结构/链接门不做标题锚点校验与外部链接存活检查 | 已登记（workflow 候选） | 出现需要时在 `WORKFLOW-VERSIONS.md` 立版本候选，附真实案例 |
-| F-R18-03 | RB17 / R18 D2-08 | `#[cfg(test)] classify_regions` 仍手写一份成员序列，与生产 `for_each_live_bootstrap` 不完全同源 | adjacent（R19 观察） | 测试副本不影响生产单源；若 R19 出现漂移再合并，不阻塞本篇收敛 |
-| F-R18-04 | RB17 / R18 D2-04 | `pt_alloc` 的两条单测只覆盖串行二次注册，没有并发双写者压测 | adjacent（R19 观察） | 修的是并发 UB；`PT_CLAIMED` swap 的互斥性可由语义与现有串行负控支撑，压测成本高于收益，登记观察 |
+| F-R18-02 | P-2 第一版边界 | 表结构/链接门不做标题锚点校验与外部链接存活检查 | ✅ 已修（R23 后） | `doc-structure-check.py` 增加标题锚点解析；`--check-external` 可选外链存活检查；自测含正负 fixture |
+| F-R18-03 | RB17 / R18 D2-08 | `#[cfg(test)] classify_regions` 仍手写一份成员序列，与生产 `for_each_live_bootstrap` 不完全同源 | ✅ 已修（R23 后） | 测试入口改调 `for_each_live_bootstrap`，只额外加 reserved-module 测试跨度 |
+| F-R18-04 | RB17 / R18 D2-04 | `pt_alloc` 的两条单测只覆盖串行二次注册，没有并发双写者压测 | ✅ 已修（R23 后） | 新增 `tests/pt_alloc_concurrent.rs`：两线程 barrier 同时 register，断言恰好一个赢家 |
 
 ## Round 17 转出（F-R17-nn）
 
@@ -111,7 +111,7 @@
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
 | F-R23-01 | DESIGN-06 | wire 信封偏移有三份定义：结构体 + `offset_of!` 断言 + 写/读两份裸数字；半改不会编译失败 | ✅ 已修（R23 补修） | 新增 `envelope_offsets`（全部 `offset_of!`），读写两侧改 re-export；minix-boot 196 |
-| F-R23-02 | DESIGN-10 | 两个 bootface 仍有约 280 行非注释重复（流程而非常量） | 需用户/架构 owner 裁决（R24，截止 2026-11-16） | 二选一：继续下沉纯 helper 保留两份流程，或抽一个泛型 runner；须跑 riscv/aarch64 直核 QEMU 门 |
-| F-R23-03 | DESIGN-11 | `VmBootHandoff.kern_ident` 自 v8 起恒空，保留 1 KiB 仅为结构体大小稳定 | 需用户裁决（R24，截止 2026-11-16） | 删除字段、`VM_BOOT_HANDOFF_VERSION` 8→9、同步 VM server；或明确标注 v9 删除计划 |
+| F-R23-02 | DESIGN-10 | 两个 bootface 仍有约 280 行非注释重复（流程而非常量） | ✅ 已修（R23 后，选项 a） | `place_modules` 与 `dtb_bounded` 下沉 `bootface_common`，只保留 bump/console 回调；riscv/aarch64 直核门 PASS |
+| F-R23-03 | DESIGN-11 | `VmBootHandoff.kern_ident` 自 v8 起恒空，保留 1 KiB 仅为结构体大小稳定 | ✅ 已修（R23 后） | 删除字段与 `VM_BOOT_HANDOFF_MAX_IDENT`；wire 8→9；VM server 同步；minix-types/kernel/VM 测试通过 |
 | F-R23-04 | DESIGN-12 | `store_kernel_info` 七段落地区五段同构，容量/同址守卫/`ptr::copy` 重复 | ✅ 已修（R23 补修） | 新增 `land_slice<T: Copy>`；param 清零与 modules 名字池特例保留；kernel 862+8 |
-| F-R23-05 | DESIGN-13 | `pt_alloc::register` 的 release 二次注册静默保留第一个，测试锁定该行为 | 需用户裁决（R24，截止 2026-11-16） | 二选一：全构建 panic，或返回 `Result` 由调用方 `expect`；改公开 API/测试契约 |
+| F-R23-05 | DESIGN-13 | `pt_alloc::register` 的 release 二次注册静默保留第一个，测试锁定该行为 | ✅ 已修（R23 后） | 全构建 `assert!`（`register`/`register_free`）；测试改双形态 panic；新增并发双写者测试 |

@@ -331,4 +331,4 @@ B 或 C。如果目标是“把这篇文档交付”，B 足够；如果目标�
 | D-R23-02（DESIGN-11） | 删除 `VmBootHandoff.kern_ident`（恒空 1 KiB） | v8 起生产者写零、消费者只校验上界；删除需 `VM_BOOT_HANDOFF_VERSION` 8→9 并同步 VM server | (a) R24 删除并升版；(b) 保留字段并在文档标 v9 删除计划 | (a)，已登记 `OPEN-DEBT.md` F-R23-03 |
 | D-R23-03（DESIGN-13） | `pt_alloc::register` 二次注册在 release 下静默保留第一个 | 集成测试 `pt_alloc_write_once.rs` 已锁定该行为；debug 下 panic | (a) 全构建 panic；(b) 返回 `Result<(), AlreadyRegistered>` 由调用方 expect | (a)：与启动 fail-closed 纪律一致；改测试契约 |
 
-裁决后更新 `DECISIONS.md` 与 `follow-ups.md` 的状态列；未裁决前按“默认建议”的排序等待，不直接实施行为变更。
+> 2026-11-09 更新：用户要求清空全部 01 相关 TODO，三项按默认建议实施并关闭待裁决状态——D-R23-01 选项 (a)（`place_modules`/`dtb_bounded` 下沉）；D-R23-02 删除 `kern_ident`、wire 8→9；D-R23-03 全构建 panic。证据见 `follow-ups.md` 与 `OPEN-DEBT.md` 的 ✅ 行。

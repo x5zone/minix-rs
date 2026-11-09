@@ -1240,3 +1240,20 @@
 - `[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4GB]` 已写入 doc 01 §1.2/§4.6、`arch/src/lib.rs`、`kernel/src/lib.rs`。
 - 回归：QEMU x86 shim、aarch64 shim、riscv64 U-Boot shim、riscv64 `bootface`、riscv64 kernel-image、aarch64 SMP AP 全 PASS；`minix-kernel --features mock` 861 passed + 8 ignored；`boot-shim --features test-all` 135 + ebs 5；doc 五门 PASS。
 - 首轮 x86 门失败于 CR2=0x5000（SMP AP trampoline 低页），补低 2 MiB 窗口后 PASS；该事实已记入 `DECISIONS-PENDING-BOOT-SCOPE.md` §8。
+
+## R23 后清账（2026-11-09，用户要求清空 01 相关 TODO）
+
+用户指令：和 01 文档相关的 todo（文档 + 代码，无论 P 几）全部完成，仅 F-R14-04 豁免。逐项结果：
+
+- ✅ F-R23-02（DESIGN-10）：`place_modules`/`dtb_bounded` 下沉 `bootface_common`，只留 bump/console 回调；两个 bootface 行数 653+536→492+430。
+- ✅ F-R23-03（DESIGN-11）：删除 `VmBootHandoff.kern_ident`/`kern_ident_count`/`VM_BOOT_HANDOFF_MAX_IDENT`；`VM_BOOT_HANDOFF_VERSION` 8→9；VM server 与测试同步。
+- ✅ F-R23-05（DESIGN-13）：`pt_alloc::register`/`register_free` 全构建 `assert!` 二次注册；测试改双形态 panic；新增 `pt_alloc_concurrent.rs` 并发双写者。
+- ✅ TODO-05：1 GiB 首选档由宿主合成 layout 测试 `picks_the_preferred_size_when_supported_and_aligned` 覆盖；1 GiB 真机镜像不构建。
+- ✅ TODO-07：新增 `ebs_map::tests::classified_tables_are_disjoint_and_expected`；`build_memmaps` 仅固件快照包装。
+- ✅ TODO-10：x86 `flags_to_pte` 把 `DEVICE` 编码为 `PWT|PCD`；新增 `test_device_flags_set_pwt_and_pcd`；LAPIC/IO-APIC 不再依赖 MTRR。
+- ✅ F-R18-02：`doc-structure-check.py` 增加标题锚点解析与 `--check-external`；自测正负 fixture。
+- ✅ F-R18-03：`classify_regions` 测试入口改调 `for_each_live_bootstrap`，只额外加测试专用 reserved-module 跨度。
+- ✅ F-R18-04：新增并发 `pt_alloc` 测试。
+- ⏳ **TODO-09 未完成**：尝试拆分 `prepare_kernel_image_v1`/`jump_kernel_image_v1` 并在 shim 侧打印 `kernel: bootstrap root live; jumping to image entry`；无论函数指针、全局 hook 还是直接拆函数，QEMU 串口均未出现该行（建根返回后的 shim 代码不可观测），已回退到单一 `enter_kernel_image_v1` 稳定形态。唯一残留，需单独定位 PE/win64 返回路径。
+
+回归：minix-types 339、minix-boot 196、boot-shim 136+5、minix-kernel 860+8、minix-arch 288、minix-vm 548；QEMU x86/aarch64/riscv U-Boot shim/riscv bootface/riscv kernel-image/aarch64 SMP 全 PASS；文档五门 PASS。
