@@ -1151,7 +1151,7 @@
 - FACT-A-03 的 `Type::method` 锚点逃逸是工具文法缺口，登记 B-59。
 - D1 停跑后，设计侧只剩 D2 的差异审查；文档与代码“同错”的整段缺漏无人看。
 
-## R23 前置清债（2026-11-09，不占面板轮）
+## R23 前置清债（2026-11-09，清债批次）
 
 用户新规则三生效后，R22 的 8 条 ② 欠账必须在进入 R23 前处理；02 篇的 `F-R14-04` 已获准延至 02 轮，其余逐条：
 
@@ -1176,3 +1176,58 @@
 回归读数：`minix-boot` 192 通过；`boot-shim --features test-all` 135 + `ebs_boundary_audit` 5；`minix-kernel --features mock` 862 通过 + 8 忽略；`minix-arch --features runtime-window,test-support` 287 通过；QEMU 三门 PASS（x86 shim bootmarks、aarch64 shim bootmarks、riscv64 U-Boot shim 6/6）。文档门：anchor 106/106、style 0、ref/structure/density/snippet 通过。
 
 阻塞项清零，下一步进入 R23 面板。
+
+## R23 面板轮（2026-11-09，R23 前置裁决落地后）
+
+### §0 基线
+
+- 冻结提交：`8269805734dfc7781496ccae5e8206562ccbfa02`（文档 3397 行 / `11870c0a…`）。
+- 工作树：仅 `prompt/resources/` 与用户新增 `01-design-learn.md` 未跟踪；无已跟踪改动。
+- Step 0 预检：`01-outline.v4`、`01-outline-review.v4`、`01-design.v3` 均存在；`01-design-final.v*` 按本篇命名约定不存在（v3 即最新设计快照）；`tools/design-coverage-check.sh 01-stage-kernel` 报 60 篇全齐。
+- 关联代码：`doc-code-map.sh --check` 46/46 通过；清单在 `related-code.txt`。
+- 语料：`CORPUS.md` D01（历史计数 3086 行已过时，以本基线 3397 行为准）。
+- 前轮 follow-ups：F-R17-01..04、F-R20-01..04 全部销账（R23 前置清债 + 裁决落地），无“顺手修”遗留。
+- 面板：P-FACT 拆机械/引文两路、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 继续停跑。
+
+### §1 面板
+
+- 角色：P-FACT-A（机械/合同）、P-FACT-B（引文/覆盖/反事实）、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 继续停跑。
+- 原始输出：`panel/round23/`（fact-a 7、fact-b 17、reader-a 24、reader-b 20、reader-c 20、refute 6 主张/3 阻断、design-d2 16；另 `trait-audit.txt`）。
+- 缩编/合并：P-FACT 拆两路（机械与引文），非读者合并；无降档事件。
+
+### §2 发现
+
+- 110 条（104 面板条目 + 6 条 REFUTE 主张）。P0 3：`build_kernel_info` 引文缺 `authority`（A-01/B-01/CLAIM-04/DESIGN-14 同根）、§3.2 “业务逻辑无 feature gate” 与 8 处 `qemu-test-kernels` 不符；另 P1 约 35 条（注册失败消息、identity 窗口、EBS 引文、createpde 引文、门链执行序、自举页断言覆盖、M12 标记、VMA/LMA 跨距、arc 表等）。
+- 设计侧：16 条，5 条转 R24（偏移单一来源、bootface 合并、`kern_ident` 删除、landing helper、`pt_alloc` release 语义）。
+
+### §3 归因
+
+- ① 59 / ② 5 / ③ 6 / ④ 40 / ⑤ 0；re-litigation 0；adjacent 阻塞 0。
+- ③：READER-A-18（条件表已穷举）、READER-B-12（同名函数范围已在表内）、READER-C-17（NUL 后缓冲语义已限定）、DESIGN-05（`write_envelope` 被跨 crate 测试使用）。
+- ②：DESIGN-06/10/11/12/13 转 R24（带日期与理由，见 `follow-ups.md`）。
+
+### §4 修复
+
+- 文档：§1.1 EBS 缩写、§1.2 图例、§1.3 D5、§1.4 边界/计数/图例、§2.1 例外、§2.2 ABI 段、§2.3 拆段、§2.4 结算、§2.4.1.x、§2.5、§2.6.3/2.6.4、§2.7、§3.1 exit_boot_services、§3.2 cfg/FileLoader、§3.3 图、§3.4.1 authority/\(kern_stack_top\)、§3.4.3 arena 求和、§3.4.5 三地址、§3.5 风险表、§3.6 Paging、§3.7 resume_additive/术语表、§4.1 注册、§4.2 引文、§4.2.1 动作表、§4.3 引文、§4.4 引文/字段表/门链、§4.6 设备窗口/MTRR、§4.8 表行、§4.9 cut 行、§5.1 M4/M11/M12/M13/M15、§5.2.1 计数、§5.2.2 L5、§5.3 TODO-10、§6.1 路标、§6.3 断言/文案、§7.3/§7.5。
+- 代码：`KernelInfo` strict 派生等式+模块名核对（3+1 测试）；`MODULE_NAMES` 下沉 minix-boot；`BootStorageCell::take` 一次性；`Classification` 计数替代编码后解码；删 `classify` 死参数；删 bootface 冗余 register；`boot_shim.rs`→`boot_prepare.rs`；`boot_storage.rs` 文档收窄。
+- 测试：minix-boot 196、boot-shim 135+5、kernel 862+8、arch 287；QEMU x86/aarch64/riscv 三门 PASS。
+
+### §5 复验
+
+- 文档五门：anchor 106/106、style 0、ref/structure/density/map 通过。
+- 代码门：clippy minix-boot/boot-shim/kernel/arch 通过；QEMU 门日志 `tmp/review-eval/.../logs/round23-*`。
+- RB23/meta 待跑。
+
+### §6 指标
+
+发现 110；处置 ①59 / ②5 / ③6 / ④40 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+
+### §7 状态
+
+`NOT CONVERGED`：G8 新增 110 条；P0 已修，② 5 条带日期转 R24。待 RB23 与 meta。
+
+### §8 给 meta-review 的不确定点
+
+- 104 条中 40 条读者项多为措辞/结构级；是否存在“为修而修”的过度编辑，需要 RB/meta 抽样判断。
+- DESIGN-02 的模块名 strict 检查依赖 `MODULE_NAMES` 与加载表同一常量；协同改写仍不可检出（已在 panel 中标边界）。
+- ② 的 5 条均为结构性重构/用户裁决，是否应由 R24 承接需 meta 判断。

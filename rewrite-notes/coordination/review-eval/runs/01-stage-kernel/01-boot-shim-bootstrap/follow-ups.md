@@ -105,3 +105,13 @@
 | F-R20-02 | DESIGN-D2-03 | `MemoryRegion{base,len}`、`cut(start,size)`、`MemRange{base,end}` 三套端点/长度约定并存，新调用者可把端点当 size 传 | adjacent（R23） | 引入 `Range{start,end}` 并让 `cut` 收区间；与 F-R20-01 同批 |
 | F-R20-03 | DESIGN-D2-04 | 测试内核 `build_memmaps`/`exit_boot_services` 仍用 `static mut` + 假 `'static` 切片，与 `BootStorage` 所有权模型相反 | adjacent（R23） | 迁到 `&mut BootStorage` 或绑定 `&self` 生命周期的视图；需回归 16 个测试内核 |
 | F-R20-04 | D2-02 残留 | 13 个 `checked_add` 调用点只有 memmap 一条溢出负控；其余同构但不可观测 | adjacent（R23 观察） | 若要逐点可观测，补 reserved/vm_handoff/memmap_source 的 `u64::MAX` 负控；不阻塞收敛 |
+
+## Round 23 转出（F-R23-nn）
+
+| ID | 来源 | 事项 | 状态 | 下一步 |
+|---|---|---|---|---|
+| F-R23-01 | DESIGN-06 | wire 信封偏移有三份定义：结构体 + `offset_of!` 断言 + 写/读两份裸数字；半改不会编译失败 | adjacent（R24） | 暴露 `envelope_offsets`（全部 `offset_of!`），删两份裸数字；需 wire round-trip 回归 |
+| F-R23-02 | DESIGN-10 | 两个 bootface 仍有约 280 行非注释重复（流程而非常量） | 需用户/架构 owner 裁决（R24） | 二选一：继续下沉纯 helper 保留两份流程，或抽一个泛型 runner；须跑 riscv/aarch64 直核 QEMU 门 |
+| F-R23-03 | DESIGN-11 | `VmBootHandoff.kern_ident` 自 v8 起恒空，保留 1 KiB 仅为结构体大小稳定 | 需用户裁决（R24） | 删除字段、`VM_BOOT_HANDOFF_VERSION` 8→9、同步 VM server；或明确标注 v9 删除计划 |
+| F-R23-04 | DESIGN-12 | `store_kernel_info` 七段落地区五段同构，容量/同址守卫/`ptr::copy` 重复 | adjacent（R24） | 抽 `land_slice<T: Copy>`；保留 param 清零与 modules 名字池特例 |
+| F-R23-05 | DESIGN-13 | `pt_alloc::register` 的 release 二次注册静默保留第一个，测试锁定该行为 | 需用户裁决（R24） | 二选一：全构建 panic，或返回 `Result` 由调用方 `expect`；改公开 API/测试契约 |

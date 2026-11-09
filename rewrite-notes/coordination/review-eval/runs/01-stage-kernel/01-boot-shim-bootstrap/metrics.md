@@ -58,3 +58,13 @@
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 7 / token 未采集 / 耗时 约 55 分钟
 - 回读: RB22 判 NOT PASS（EAB/审计表/生产腿/§7.5 等）；六轮复核后 meta R22 **IMPROVED / PASS**（50/50 ④ 全修、探针全 FAIL、67 分档闭合）；保留 60.9% 历史抽样读数
+
+## R23
+
+- 发现总数: 110（FACT-A 7；FACT-B 17；READER-A 24；READER-B 20；READER-C 20；REFUTE 6 条主张；DESIGN-D2 16）
+- 处置: ① 59 / ② 5 / ③ 6 / ④ 40 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 8 / 接受 5 / 实施 5 / 登记 3（② 的 wire 偏移、bootface 合并、kern_ident 删除、landing helper、pt_alloc release 语义转 R24）
+- 成本: agent 7 / token 未采集 / 耗时 约 4 小时（面板 + 修复 + 三门）
+- 回读: 面板 104 条 + 6 主张全部有处置；doc 五门 PASS；宿主 196/135+5/862+8/287；QEMU x86/aarch64/riscv 三门 PASS

@@ -1519,3 +1519,120 @@
 |---|---|---|---|---|---|---|---|
 | F-R17-01（DESIGN-D2-12） | design-d2 | P2 | 单实现 trait | ① | 删 `minix-boot::BootShim`；U-Boot 腿改 `opensbi_helpers::prepare_boot` 普通函数；`uboot_main` 直接调用；§3.2 重写 | `grep -rn "impl BootShim" os/` 零命中；`cargo test -p boot-shim --features test-all` 135+5；QEMU 三门 PASS | 行为不变 |
 | F-R17-04（DESIGN-D2-18） | design-d2 | P2 | 权威错配 | ① | `KernelInfo` 13→14 加 `authority: InputObjectId`；`validate_requiring_sources()` 无参；wire 解码/直核/UEFI 三处绑定；文档 §3.4.1/§4.4 同步 | `minix-boot` 192；`minix-kernel` 862+8；`minix-arch` 287；三 QEMU 门 PASS | 字段表与绑定说明一致 |
+
+## R23 面板轮（2026-11-09，R23 前置裁决落地后）
+
+> 面板：FACT-A 7、FACT-B 17、READER-A 24、READER-B 20、READER-C 20、REFUTE 6 主张、DESIGN-D2 16。合计 104 条面板条目 + 6 条主张。
+
+| 发现 ID | 来源 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-A-01 | fact-a | P0 | fact | ① | §4.4 引文补 `authority` 形参与字段 | doc diff；grep | 引文与源码同形 |
+| FACT-A-02 | fact-a | P1 | fact | ① | §4.4 字段表加 `authority` 行 | doc diff | 14 字段齐全 |
+| FACT-A-03 | fact-a | P1 | fact | ① | §4.2 引文 `arena_pa.0`→`arena_pa` | doc diff | 与 PhysBytes 签名一致 |
+| FACT-A-04 | fact-a | P2 | count | ① | §3.4.5 两个→三个类型化地址 | doc diff | 括号三项一致 |
+| FACT-A-05 | fact-a | P2 | fact | ① | §5.1 M13/§5.2.1 改 build_memmaps 调用点描述 | doc diff | 生产不调用、15 测试内核调用 |
+| FACT-A-06 | fact-a | P2 | scope | ① | related-code 删 memmap.rs，补 5 个生产文件 | doc diff | 48 行逐条存在 |
+| FACT-A-07 | fact-a | P3 | fact | ① | `collect_param_buf`→`collect_param_buf_into` | doc diff | grep 命中 |
+| FACT-B-01 | fact-b | P0 | quote | ① | 同 FACT-A-01：补 `authority` 形参与字段 | doc diff | 引文可编译 |
+| FACT-B-02 | fact-b | P0 | fact | ① | §3.2 cfg 陈述限定 qemu-test-kernels，删“业务逻辑无条件编译”绝对句 | doc diff | 与 8 处 gate 一致 |
+| FACT-B-03 | fact-b | P1 | fact | ① | §4.1 注册失败消息改 `pt_alloc::alloc_pt_page called before register` | doc diff | 与源码断言一致 |
+| FACT-B-04 | fact-b | P1 | fact | ① | §4.6 identity_device_windows 改“整表、无筛选”，Step 2c 另表 | doc diff | 与 minix-arch 表一致 |
+| FACT-B-05 | fact-b | P1 | quote | ① | §3.1 exit_boot_services 引文恢复 SAFETY 注释与 cfg | doc diff | 逐字对读 |
+| FACT-B-06 | fact-b | P1 | coverage | ① | §1.4 边界表加 dtb_copy/resv_claims 行，§7.3 补两文件 | doc diff | 范围声明可见 |
+| FACT-B-07 | fact-b | P1 | coverage | ① | §7.3 补 boot_storage,bump | doc diff | 清单含承重类型 |
+| FACT-B-08 | fact-b | P1 | quote | ① | §3.7 resume_additive 省略说明改为首 3 行/结尾 10 行 | doc diff | 与源码行号一致 |
+| FACT-B-09 | fact-b | P1 | fact | ① | §3.6 Paging 20 成员，列 6 项为举例 | doc diff | 与 paging.rs 一致 |
+| FACT-B-10 | fact-b | P1 | evidence | ① | §3.2 补删除前 rev `5ed051a53` | doc diff | 命令可复算 |
+| FACT-B-11 | fact-b | P1 | quote | ① | §4.3 UbootFileLoader 引文恢复 `|iter|` 与借用合同注释 | doc diff | 逐字对读 |
+| FACT-B-12 | fact-b | P1 | fact | ① | §6.1 补 arch_boot arg/reslen 取证行 | doc diff | 两行在表中 |
+| FACT-B-13 | fact-b | P1 | quote | ① | §2.6.3 createpde 补 `phys_bytes offset;`，省略说明改实 | doc diff | 与 memory.c 一致 |
+| FACT-B-14 | fact-b | P2 | count | ① | 同 FACT-A-04：两个→三个 | doc diff | 三项一致 |
+| FACT-B-15 | fact-b | P2 | fact | ① | §2.4.1.1 升序加“规范不保证”限定 | doc diff | 前提降级 |
+| FACT-B-16 | fact-b | P2 | evidence | ① | §4.6 加 MTRR 未验证前提，§5.3 立 TODO-10 | doc diff | TODO 表含 10 |
+| FACT-B-17 | fact-b | P1 | scope | ① | 同 FACT-A-06：清单删/补 | doc diff | 48/48 存在 |
+| CLAIM-01 | refute | — | claim | ③ | 反证失败，主张成立（自由函数/入口分工） | refute.md | 源码对读 |
+| CLAIM-02 | refute | P2 | fact | ① | §3.2 限定“两条 boot-shim 腿”并改 cfg 计数 | doc diff | 与源码一致 |
+| CLAIM-03 | refute | — | claim | ③ | 主张成立；两处观察并入 §3.4.1（StartupObjects 无生产者）与 §4.4（“生产腿”） | doc diff | 观察已落文 |
+| CLAIM-04 | refute | P1 | quote | ① | 同 FACT-A-01：引文补 authority | doc diff | 引文可编译 |
+| CLAIM-05 | refute | P1 | fact | ① | §4.4 门链改“防线层次”，补腿间执行序（直核 2→3→1→4；v1 4→3→1 无 2） | doc diff | 与 lib.rs 调用点一致 |
+| CLAIM-06 | refute | P1 | fact | ① | §6.3/M15 限定 UEFI 两腿；其余三腿写实际防线 | doc diff | 与调用点一致 |
+| READER-A-01 | reader-a | P1 | reader | ④ | §1.4 计数索引收成“生产腿 5”+§3.7 表 | doc diff | 六门 |
+| READER-A-02 | reader-a | P1 | reader | ④ | §1.3 D5 改“与 D1 并列” | doc diff | 六门 |
+| READER-A-03 | reader-a | P1 | reader | ④ | 编号图例移 §1.4，补 R20–R23 | doc diff | 六门 |
+| READER-A-04 | reader-a | P2 | reader | ④ | §2.1 例外限定为“有结构体字段/参数表查询” | doc diff | 六门 |
+| READER-A-05 | reader-a | P1 | reader | ④ | §2.3 长段拆三条 bullet | doc diff | 六门 |
+| READER-A-06 | reader-a | P1 | reader | ④ | §4.4 表头计数拆三句 | doc diff | 六门 |
+| READER-A-07 | reader-a | P1 | reader | ④ | kern_stack_top 长单元移表后 bullets | doc diff | 六门 |
+| READER-A-08 | reader-a | P1 | reader | ④ | 动作 2 约束移表后 bullets | doc diff | 六门 |
+| READER-A-09 | reader-a | P2 | reader | ④ | 代码块编辑注释移出，只留一行省略 | doc diff | 六门 |
+| READER-A-10 | reader-a | P1 | reader | ④ | 首次出现处定义 k | doc diff | 六门 |
+| READER-A-11 | reader-a | P1 | reader | ④ | 定义“观测常态”并统一用词 | doc diff | 六门 |
+| READER-A-12 | reader-a | P1 | reader | ④ | 动作 ID 标“非时序”，列名同步 | doc diff | 六门 |
+| READER-A-13 | reader-a | P1 | reader | ④ | §3.7 术语对账改表 | doc diff | 六门 |
+| READER-A-14 | reader-a | P2 | reader | ④ | M4/M12 注明 TODO 与覆盖分层 | doc diff | 六门 |
+| READER-A-15 | reader-a | P2 | reader | ④ | §3.3 图补 boot-shim 虚线边 | doc diff | 六门 |
+| READER-A-16 | reader-a | P2 | reader | ④ | §3.5 判据句拆三句 | doc diff | 六门 |
+| READER-A-17 | reader-a | P2 | reader | ④ | §1.4 边界段拆三条 bullet | doc diff | 六门 |
+| READER-A-18 | reader-a | P3 | reader | ③ | 低置信：表已穷举条件组合；保留表并已加 k 定义，不强行压成单一规则 | panel + doc | 无新证据 |
+| READER-A-19 | reader-a | P2 | reader | ④ | §1.2 图加阅读顺序/依赖方向图例 | doc diff | 六门 |
+| READER-A-20 | reader-a | P2 | reader | ④ | §2.5 改“被包含者作 cmp” | doc diff | 六门 |
+| READER-A-21 | reader-a | P2 | reader | ④ | §2.2 第二个 push 注明对齐补位 | doc diff | 六门 |
+| READER-A-22 | reader-a | P2 | reader | ④ | §6.1 “两条腿”点名 | doc diff | 六门 |
+| READER-A-23 | reader-a | P2 | reader | ④ | 信封容量写法统一 | doc diff | 六门 |
+| READER-A-24 | reader-a | P2 | reader | ④ | 1GiB 疑问标“理论路径” | doc diff | 六门 |
+| READER-B-01 | reader-b | P1 | fact | ① | 同 FACT-B-03：注册失败消息 | doc diff | 与源码断言一致 |
+| READER-B-02 | reader-b | P1 | fact | ① | 同 FACT-A-01：补 authority 引文 | doc diff | 引文可编译 |
+| READER-B-03 | reader-b | P1 | fact | ① | §2.4 add_memmap 入口 assert 与空洞的关系 | doc diff | 与 pg_utils.c 一致 |
+| READER-B-04 | reader-b | P2 | reader | ④ | 同 A-02：D5 并列 | doc diff | 六门 |
+| READER-B-05 | reader-b | P1 | fact | ① | §4.8 aarch64/riscv 表行拆开，属性名写清 | doc diff | 与 bootface_a64 一致 |
+| READER-B-06 | reader-b | P2 | reader | ④ | §2.2 ABI 段移到 push 序列之后 | doc diff | 六门 |
+| READER-B-07 | reader-b | P2 | reader | ④ | 同 A-03：编号图例移 §1.4 | doc diff | 六门 |
+| READER-B-08 | reader-b | P2 | reader | ④ | §3.5 历史险情提到表前 | doc diff | 六门 |
+| READER-B-09 | reader-b | P1 | fact | ① | M12 改“两条固定标记+三条变体之一” | doc diff | 与 §5.2.3 一致 |
+| READER-B-10 | reader-b | P2 | reader | ④ | §2.4 结算改“有据可查”，说明框 1 原材料 | doc diff | 六门 |
+| READER-B-11 | reader-b | P2 | reader | ④ | 同 A-12：动作 ID 非时序 | doc diff | 六门 |
+| READER-B-12 | reader-b | P2 | fact | ③ | 低置信：同名函数范围已在表内，总结未夸大到实现体 | panel + doc | 无新证据 |
+| READER-B-13 | reader-b | P2 | reader | ④ | 同 B-13/C-04：条件结论限定 | doc diff | 六门 |
+| READER-B-14 | reader-b | P2 | reader | ④ | 同 A-01：计数索引 | doc diff | 六门 |
+| READER-B-15 | reader-b | P2 | reader | ④ | §2.6.4 改前向指针，不在此下 §3.7 结论 | doc diff | 六门 |
+| READER-B-16 | reader-b | P1 | fact | ① | §5.2.2 明确 VMA 跨距 vs LMA kern_size | doc diff | 与 check-layout L5 一致 |
+| READER-B-17 | reader-b | P1 | fact | ① | arena 求和语序改为“合计 30624，余 2144” | doc diff | 算术一致 |
+| READER-B-18 | reader-b | P2 | reader | ④ | 同 A-15：依赖图补虚线 | doc diff | 六门 |
+| READER-B-19 | reader-b | P2 | reader | ④ | §1.1 缩写表补 EBS | doc diff | 六门 |
+| READER-B-20 | reader-b | P2 | reader | ④ | §6.1 v0–v4 补发送/接收分界 | doc diff | 六门 |
+| READER-C-01 | reader-c | P1 | fact | ① | 同 FACT-B-03：注册失败消息 | doc diff | 与源码断言一致 |
+| READER-C-02 | reader-c | P1 | fact | ① | “任意一次”改“更高下标耗尽/序打乱后下一次” | doc diff | 与 §2.4.1.1 一致 |
+| READER-C-03 | reader-c | P1 | fact | ① | §2.4 取整加“非退化不改变净账本”回指 | doc diff | 与 §2.4.1.3 一致 |
+| READER-C-04 | reader-c | P2 | reader | ④ | 同 B-13：条件结论限定 | doc diff | 六门 |
+| READER-C-05 | reader-c | P1 | fact | ① | 同 REFUTE-05：门链改防线层次 | doc diff | 与 lib.rs 一致 |
+| READER-C-06 | reader-c | P1 | fact | ① | §1.1 “没有报错输出通道”限定为无 printf，panic 屏幕另述 | doc diff | 与 §6.3 一致 |
+| READER-C-07 | reader-c | P1 | fact | ① | §4.3 改“三道装载期 A/B/C + 接收期 D” | doc diff | 与 §4.9 一致 |
+| READER-C-08 | reader-c | P1 | fact | ① | §4.9 “全部 DRAM”限定按腿 | doc diff | 与 §3.4.1 一致 |
+| READER-C-09 | reader-c | P2 | reader | ④ | §2.7 “唯一”限定接口层 | doc diff | 六门 |
+| READER-C-10 | reader-c | P1 | fact | ① | §2.6.4 补 TLB 窗口证据措辞 | doc diff | 源码注释对读 |
+| READER-C-11 | reader-c | P1 | fact | ① | “20 号槽”→“最后一个槽（下标 19）” | doc diff | 计数一致 |
+| READER-C-12 | reader-c | P2 | reader | ④ | 同 B-10：有据可查 | doc diff | 六门 |
+| READER-C-13 | reader-c | P1 | fact | ① | §3.5 风险表首行改 OpenSBI 区间标签 | doc diff | 与 §3.4.1 一致 |
+| READER-C-14 | reader-c | P1 | fact | ① | §6.3 列两种 KernelMapError 文案 | doc diff | 与 boot_policy.rs 一致 |
+| READER-C-15 | reader-c | P1 | fact | ① | “七个落地区”→“七个加名字池” | doc diff | 计数一致 |
+| READER-C-16 | reader-c | P2 | reader | ④ | 同 A-15：依赖图补虚线 | doc diff | 六门 |
+| READER-C-17 | reader-c | P2 | fact | ③ | 低置信：NUL 后行为属 C 缓冲语义，文档已限定扫描范围；不改 | panel + C 源 | 无新证据 |
+| READER-C-18 | reader-c | P1 | fact | ① | §2.4.2 结算改“VM 模块的字节” | doc diff | 与本节末一致 |
+| READER-C-19 | reader-c | P2 | reader | ④ | §7.5 栈数组顶改“数组自身的顶” | doc diff | 六门 |
+| READER-C-20 | reader-c | P1 | fact | ① | M11 改“A/B 两道 + C 见 §4.3” | doc diff | 与 §4.3 一致 |
+| DESIGN-01 | design-d2 | P2 | design | ① | strict 分支加三条派生等式 + 3 条负控 | code diff; minix-boot 196 | 测试通过 |
+| DESIGN-02 | design-d2 | P2 | design | ① | MODULE_NAMES 下沉 minix-boot；strict 按位置核名 + 1 条负控 | code diff; minix-boot 196 | 测试通过 |
+| DESIGN-03 | design-d2 | P2 | design | ① | BootStorageCell 改一次性 `take`，二次 panic | code diff | QEMU 三门 PASS |
+| DESIGN-04 | design-d2 | P2 | design | ① | boot_storage 模块文档收窄 source/startup 在 UEFI 腿直写 wire | code diff | 文档与代码一致 |
+| DESIGN-05 | design-d2 | P3 | design | ③ | `write_envelope(&KernelInfo)` 被跨 crate 测试使用，不是死接口 | grep 调用点 | 保留 |
+| DESIGN-06 | design-d2 | P2 | design | ② | wire 偏移三处定义收敛到 `offset_of!` 单一来源；R24 | follow-ups.md | 带日期转出 |
+| DESIGN-07 | design-d2 | P2 | design | ① | 用 `Classification` 计数替代编码后解码 | code diff; ebs 门 PASS | 删除多余解码 |
+| DESIGN-08 | design-d2 | P2 | design | ① | 删 `classify` 的 `vm_module_idx` 死参数 | code diff; kernel 862+8 | 测试通过 |
+| DESIGN-09 | design-d2 | P2 | design | ① | 删两个 bootface 的冗余 `pt_alloc::register` | code diff; QEMU 三门 PASS | 测试通过 |
+| DESIGN-10 | design-d2 | P2 | design | ② | 两个 bootface 流程合并需架构 owner 裁决；R24 | follow-ups.md | 带日期转出 |
+| DESIGN-11 | design-d2 | P2 | design | ② | 删 `VmBootHandoff.kern_ident` 需 wire v9 + VM server 同步；R24 | follow-ups.md | 带日期转出 |
+| DESIGN-12 | design-d2 | P2 | design | ② | `store_kernel_info` 泛型 landing helper；R24 | follow-ups.md | 带日期转出 |
+| DESIGN-13 | design-d2 | P2 | design | ② | `pt_alloc` release 二次注册语义需用户裁决；R24 | follow-ups.md | 带日期转出 |
+| DESIGN-14 | design-d2 | P2 | design | ① | 同 FACT-A-01：§4.4 引文补 authority | doc diff | 引文可编译 |
+| DESIGN-15 | design-d2 | P2 | design | ① | §1.4 显式排除 dtb_copy/resv_claims；§7.3 补两文件 | doc diff | 范围声明可见 |
+| DESIGN-16 | design-d2 | P2 | design | ① | `boot_shim.rs`→`boot_prepare.rs`，模块名与内容一致 | code diff; 全仓引用更新 | 测试通过 |

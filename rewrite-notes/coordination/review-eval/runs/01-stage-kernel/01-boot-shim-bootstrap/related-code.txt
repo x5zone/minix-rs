@@ -5,11 +5,14 @@ os/arch/src/lib.rs
 os/arch/src/x86_64/ap_early_entry.rs
 os/arch/src/x86_64/paging.rs
 os/arch/tests/pt_alloc_write_once.rs
+os/boot-shim/src/dtb_copy.rs
 os/boot-shim/src/ebs_map.rs
+os/boot-shim/src/ebs_pair.rs
 os/boot-shim/src/lib.rs
 os/boot-shim/src/loader.rs
 os/boot-shim/src/main.rs
 os/boot-shim/src/opensbi_helpers.rs
+os/boot-shim/src/resv_claims.rs
 os/boot-shim/src/uboot_main.rs
 os/boot-shim/src/uefi_helpers.rs
 os/boot-shim/tests/ebs_boundary_audit.rs
@@ -22,7 +25,6 @@ os/kernel/src/dm_coverage.rs
 os/kernel/src/globals.rs
 os/kernel/src/kmess.rs
 os/kernel/src/lib.rs
-os/kernel/src/memmap.rs
 os/kernel/src/misc.rs
 os/kernel/src/proc_table.rs
 os/kernel/src/pte_walk.rs
@@ -31,6 +33,8 @@ os/kernel/src/vm_handoff.rs
 os/kernel/tests/store_before_alloc_pin.rs
 os/libs/minix-boot/src/boot_params.rs
 os/libs/minix-boot/src/boot_shim.rs
+os/libs/minix-boot/src/boot_storage.rs
+os/libs/minix-boot/src/bump.rs
 os/libs/minix-boot/src/handoff_v1.rs
 os/libs/minix-boot/src/handoff_v1_read.rs
 os/libs/minix-boot/src/handoff_v1_write.rs
