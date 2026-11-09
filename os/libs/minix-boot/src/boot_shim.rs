@@ -5,7 +5,7 @@
 //! `arch_boot` / `enter_kernel_image_v1` (doc 01 §3.2).
 
 use crate::boot_storage::{BootReport, BootStorage};
-use minix_types::PhysBytes;
+use minix_types::{PhysBytes, PhysRange};
 
 /// Firmware-agnostic result of boot preparation.
 ///
@@ -26,13 +26,11 @@ use minix_types::PhysBytes;
 pub struct BootPrepareResult<'a> {
     pub report: BootReport<'a>,
     pub root_page: PhysBytes,
-    /// Bump region base address (physical).
-    pub bump_base: u64,
-    /// Bump region end address (physical, exclusive).
-    pub bump_end: u64,
+    /// Bump region `[start, end)` (physical).
+    pub bump: PhysRange,
     /// Handoff arena base (physical), allocated from the same bump pool after
     /// the module landings.
-    pub arena_pa: u64,
+    pub arena_pa: PhysBytes,
 }
 
 /// Firmware-agnostic boot preparation trait.

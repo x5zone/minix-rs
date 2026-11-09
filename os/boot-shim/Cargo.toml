@@ -8,8 +8,10 @@ license = "MIT"
 default = ["uefi"]
 uefi = ["dep:uefi", "dep:uefi-raw"]
 opensbi = []
+# UEFI helpers used only by the in-tree QEMU test kernels (not production).
+qemu-test-kernels = ["uefi"]
 # Enable both impls for `cargo test` so loader/opensbi tests are built.
-test-all = ["uefi", "opensbi"]
+test-all = ["uefi", "opensbi", "qemu-test-kernels"]
 # X-2/NK5 裸机隔离：bin 是 no_std UEFI 镜像（自带 panic_handler/global_allocator），
 # 宿主 `--workspace --bins` 必须跳过；真机构建成对传
 # `--target <triple> --features fw-<arch>-uefi`（与 test-kernels 同词汇表）。

@@ -48,7 +48,7 @@ use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{
     BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS, PhysBytes,
     VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED, VM_BOOT_HANDOFF_MAX_IDENT,
-    VM_BOOT_HANDOFF_MAX_MODULES, VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION,
+    VM_BOOT_HANDOFF_MAX_MODULES, VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION, PhysRange,
     VmBootHandoff,
 };
 
@@ -320,15 +320,12 @@ impl FreeRangeSet {
     /// Removes `[start, start + size)` from the set, rounding the removed
     /// interval outward to page boundaries (old `cut_memmap` contract:
     /// start down, end up). Zero-length is a no-op.
-    pub(crate) fn cut(&mut self, start: u64, size: u64) {
-        if size == 0 {
+    pub(crate) fn cut(&mut self, range: PhysRange) {
+        if range.is_empty() {
             return;
         }
-        let lo = start & !(PAGE_SIZE - 1);
-        let end = start
-            .checked_add(size)
-            .expect("vm_handoff: cut range overflows u64");
-        let hi = end.div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        let lo = range.start().0 & !(PAGE_SIZE - 1);
+        let hi = range.end().0.div_ceil(PAGE_SIZE) * PAGE_SIZE;
         assert!(hi > lo, "vm_handoff: cut range rounds to empty");
         let mut i = 0;
         while i < self.len {
@@ -446,7 +443,13 @@ pub fn classify(
     //    `VmBootRegion::select_multi` — frame.rs invariant 1) ──
     for range in &record.ranges[..record.count] {
         // Every recorded range is page-aligned by construction.
-        free.cut(range.base, range.size);
+        free.cut(
+            PhysRange::new(
+                PhysBytes(range.base),
+                PhysBytes(range.base + range.size),
+            )
+            .expect("vm_handoff: boot range end precedes its base"),
+        );
     }
 
     // ── Clip survivors to VM's Direct Map window ──
@@ -751,7 +754,13 @@ pub(crate) fn classify_regions(
     }
 
     for range in &record.ranges[..record.count] {
-        free.cut(range.base, range.size);
+        free.cut(
+            PhysRange::new(
+                PhysBytes(range.base),
+                PhysBytes(range.base + range.size),
+            )
+            .expect("vm_handoff: boot range end precedes its base"),
+        );
     }
 
     let window_end = minix_arch::CurrentDirectMap::VM_DIRECT_MAP_SIZE;
@@ -1222,6 +1231,10 @@ mod tests {
     // cuts round outward to page boundaries, zero-length is a no-op, the
     // free output is a sorted disjoint page-aligned list.
 
+    fn rng(start: u64, size: u64) -> PhysRange {
+        PhysRange::new(PhysBytes(start), PhysBytes(start + size)).expect("test range")
+    }
+
     fn set(regions: &[(u64, u64)]) -> FreeRangeSet {
         let owned: Vec<MemoryRegion> = regions
             .iter()
@@ -1267,7 +1280,7 @@ mod tests {
     fn assert_page_equal(regions: &[(u64, u64)], cuts: &[(u64, u64)]) {
         let mut s = set(regions);
         for &(b, l) in cuts {
-            s.cut(b, l);
+            s.cut(rng(b, l));
         }
         let got = ranges_of(&s);
         let want = reference_subtract(regions, cuts);
@@ -1290,31 +1303,46 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "memory region span overflows")]
+    fn free_set_from_memmap_rejects_span_overflow() {
+        let _ = FreeRangeSet::from_memmap(&[MemoryRegion {
+            base: PhysBytes(u64::MAX - 1),
+            len: 4,
+        }]);
+    }
+
+    #[test]
+    fn phys_range_rejects_inverted_or_wrapping_bounds() {
+        assert!(PhysRange::new(PhysBytes(0x2000), PhysBytes(0x1000)).is_none());
+        assert!(PhysRange::new(PhysBytes(u64::MAX - 1), PhysBytes(4)).is_none());
+    }
+
+    #[test]
     fn free_set_cut_rounds_outward() {
         // Old contract: cut start rounds down, end rounds up.
         let mut s = set(&[(0x1000, 0x4000)]);
-        s.cut(0x1800, 0x1000); // removes [0x1000, 0x3000) after rounding
+        s.cut(rng(0x1800, 0x1000)); // removes [0x1000, 0x3000) after rounding
         assert_eq!(ranges_of(&s), vec![(0x3000, 0x5000)]);
     }
 
     #[test]
     fn free_set_cut_splits_middle() {
         let mut s = set(&[(0x1000, 0x8000)]);
-        s.cut(0x3000, 0x1000);
+        s.cut(rng(0x3000, 0x1000));
         assert_eq!(ranges_of(&s), vec![(0x1000, 0x3000), (0x4000, 0x9000)]);
     }
 
     #[test]
     fn free_set_zero_length_cut_is_noop() {
         let mut s = set(&[(0x1000, 0x2000)]);
-        s.cut(0x1000, 0);
+        s.cut(rng(0x1000, 0));
         assert_eq!(ranges_of(&s), vec![(0x1000, 0x3000)]);
     }
 
     #[test]
     fn free_set_disjoint_cut_is_noop() {
         let mut s = set(&[(0x5000, 0x1000)]);
-        s.cut(0x1000, 0x1000);
+        s.cut(rng(0x1000, 0x1000));
         assert_eq!(ranges_of(&s), vec![(0x5000, 0x6000)]);
     }
 

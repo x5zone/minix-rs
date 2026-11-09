@@ -443,7 +443,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // The bootstrap root's PT pages come from the reserved region prepare_boot
     // carved out of the same pool; register it before `enter_kernel_image_v1`
     // asserts on it.
-    minix_kernel::boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+    minix_kernel::boot_alloc::init_boot_pt_alloc(result.bump.start().0, result.bump.end().0);
 
     // The v1 arena was allocated inside prepare_boot (same pool, after the
     // module landings) and named by a startup record there. The bootstrap root
@@ -451,7 +451,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     let arena_pa = result.arena_pa;
     // SAFETY: fresh bump pages below the identity bound; nothing else writes
     // them, and the slice lives for the rest of this `!` function.
-    let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa as *mut u8, ARENA_CAP) };
+    let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa.0 as *mut u8, ARENA_CAP) };
     let mut serializer = Serializer::new(arena, minix_boot::InputObjectId::DtbBootInput)
         .expect("handoff arena too small");
     serializer

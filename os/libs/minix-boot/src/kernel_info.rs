@@ -869,6 +869,18 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "reserved span overflows")]
+    fn test_validate_rejects_reserved_span_overflow() {
+        static OVERFLOW: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(u64::MAX - 1),
+            len: 4,
+        }];
+        let mut info = make_valid_info();
+        info.reserved_regions = &OVERFLOW;
+        info.validate();
+    }
+
+    #[test]
     #[should_panic(expected = "memmap[0] span overflows")]
     fn test_validate_rejects_memmap_span_overflow() {
         static OVERFLOW: [MemoryRegion; 1] = [MemoryRegion {

@@ -417,10 +417,11 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
     )
 ))]
 pub fn enter_kernel_image_v1(
-    arena_pa: u64,
+    arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
 ) -> ! {
+    let arena_pa = arena_pa.0;
     // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
     // face names the type explicitly); the v1 sender names it here instead.
     #[cfg(target_arch = "riscv64")]

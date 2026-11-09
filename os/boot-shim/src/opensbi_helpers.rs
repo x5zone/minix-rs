@@ -447,9 +447,12 @@ impl BootShim for RiscvUbootBootShim {
         minix_boot::BootPrepareResult {
             report: storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size),
             root_page,
-            bump_base,
-            bump_end,
-            arena_pa,
+            bump: minix_types::PhysRange::new(
+                minix_types::PhysBytes(bump_base),
+                minix_types::PhysBytes(bump_end),
+            )
+            .expect("prepare_boot: bump region end precedes its base"),
+            arena_pa: minix_types::PhysBytes(arena_pa),
         }
     }
 }

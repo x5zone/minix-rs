@@ -186,3 +186,41 @@ impl PhysBytes {
         }
     }
 }
+
+/// Physical address range, half-open `[start, end)`.
+///
+/// Constructor rejects `end < start`, so an inverted range is not
+/// representable. Use this instead of passing `(base, len)` or `(base, end)`
+/// pairs whose argument order is not type-checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PhysRange {
+    start: PhysBytes,
+    end: PhysBytes,
+}
+
+impl PhysRange {
+    /// Creates a range. Returns `None` when `end < start`.
+    pub const fn new(start: PhysBytes, end: PhysBytes) -> Option<Self> {
+        if start.0 <= end.0 {
+            Some(Self { start, end })
+        } else {
+            None
+        }
+    }
+
+    pub const fn start(self) -> PhysBytes {
+        self.start
+    }
+
+    pub const fn end(self) -> PhysBytes {
+        self.end
+    }
+
+    pub const fn len(self) -> u64 {
+        self.end.0 - self.start.0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.start.0 == self.end.0
+    }
+}

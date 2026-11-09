@@ -13,7 +13,7 @@ minix-arch = { workspace = true, default-features = false }
 minix-plat = { workspace = true }
 minix-types = { workspace = true }
 minix-boot = { workspace = true }
-boot-shim = { workspace = true, features = ["uefi"] }
+boot-shim = { workspace = true, features = ["uefi", "qemu-test-kernels"] }
 
 [[bin]]
 name = "test-memmap-aarch64"

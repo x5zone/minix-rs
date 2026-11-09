@@ -3605,4 +3605,16 @@ mod authority_filter_tests {
                 .is_ok()
         );
     }
+    #[test]
+    #[should_panic(expected = "memory region span overflows")]
+    fn dtb_coverage_rejects_conventional_span_overflow() {
+        let _ = dtb_covers_conventional(
+            &[],
+            &[MemoryRegion {
+                base: minix_types::PhysBytes(u64::MAX - 1),
+                len: 4,
+            }],
+        );
+    }
+
 }

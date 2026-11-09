@@ -11,7 +11,7 @@ minix-platform = { workspace = true }
 minix-types = { workspace = true }
 minix-boot = { workspace = true }
 minix-kernel = { workspace = true, default-features = false }
-boot-shim = { workspace = true, features = ["uefi"] }
+boot-shim = { workspace = true, features = ["uefi", "qemu-test-kernels"] }
 
 [[bin]]
 name = "test-rt-birth-aarch64"

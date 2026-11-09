@@ -152,8 +152,10 @@ const LEGACY_DEVICE_TREE_GUID: Guid = uefi::guid!("b1b621d2-f19c-41c5-8310-daa6f
 /// into boot-shim would reach every boot-shim consumer through feature
 /// unification and conflict with kernels that define their own allocator
 /// (e.g. `test-proc-init`'s hybrid UEFI+bump allocator).
+#[cfg(feature = "qemu-test-kernels")]
 pub struct UefiPoolAllocator;
 
+#[cfg(feature = "qemu-test-kernels")]
 unsafe impl core::alloc::GlobalAlloc for UefiPoolAllocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let size = layout.size();
@@ -366,6 +368,7 @@ fn collect_param_buf_into(out: &mut [u8; minix_boot::PARAM_BUF_CAP]) -> minix_bo
 /// deep-copies both tables into its own `.bss` before anything can allocate from
 /// the free list; the shim never returns and never frees, so those pages are dead
 /// to the firmware afterwards. Keep both orderings if this function is restructured.
+#[cfg(feature = "qemu-test-kernels")]
 static mut UEFI_FREE: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] = [MemoryRegion {
     base: PhysBytes(0),
     len: 0,
@@ -383,6 +386,7 @@ static mut UEFI_SIDE: [MemoryRegion; ebs_map::SIDE_CAP] = [MemoryRegion {
 static mut MAP_STORAGE: ebs_map::MapStorage = ebs_map::MapStorage::new();
 
 
+#[cfg(feature = "qemu-test-kernels")]
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mmap = boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get UEFI memory map");
 
@@ -485,6 +489,7 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
 ///
 /// Only includes CONVENTIONAL memory (free RAM). See `build_memmaps()`
 /// for the reserved-list companion.
+#[cfg(feature = "qemu-test-kernels")]
 pub fn build_memmap() -> &'static [MemoryRegion] {
     build_memmaps().0
 }
@@ -1120,7 +1125,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     crate::raw_serial(" res=");
     raw_serial_number(classification.reserved as u64);
     crate::raw_serial("\r\nboot-shim: [raw] entering kernel image v1\r\n");
-    minix_kernel::enter_kernel_image_v1(arena_pa.0, &report, root_page)
+    minix_kernel::enter_kernel_image_v1(arena_pa, &report, root_page)
 }
 
 /// Exit UEFI boot services.
@@ -1128,6 +1133,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 /// After this call, UEFI boot services (AllocatePages, etc.) are no longer
 /// available. The caller must have completed all UEFI allocations before
 /// calling this.
+#[cfg(feature = "qemu-test-kernels")]
 pub fn exit_boot_services() {
     // SAFETY: caller has finished all uses of boot services; from this
     // point on only runtime services (if any) may be used. The returned
