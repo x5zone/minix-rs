@@ -12,12 +12,11 @@ eval-trace-check.py — review-loop 轨迹完整性检查
   1. loop.md 的九个固定二级标题是否齐全，且每节有内容；
   2. 每个 panel/*.md 里的 `## FINDING <ID>` 是否在 defect-ledger.md 有处置行；
   3. 台账是否有孤儿行（处置了但面板里没有）；
-  4. 每行是否有处置类（①②③④⑤ 或 fix/transfer/fp/wording/insufficient）；
-  5. 处置类为 ①、④ 或 fix 的行，复验列是否非空且不是占位（2026-11-09
-     用户裁决“轮转闸”：④ 为读者体验项、必须本轮修，与 ① 同样要求证据）；
-  6. 处置类为 ⑤ 或 insufficient 的行，处置列是否写清还缺什么证据；
-  7. metrics.md 的必需键是否齐全；
-  8. metrics.md 的 `发现总数` 是否等于五项处置之和；
+  4. 每行是否有处置类（①②④⑤⑥FP 或 fix/transfer/wording/insufficient/refactor/false-positive）；R25+ 拒绝已删除的 ③；
+  5. 处置类为 ①/④/⑥ 的行，复验列是否非空且不是“未修/待修/未实施”；
+  6. 处置类为 ⑤ 的行是否写清取证路径；FP 是否在 `证据` 列给出反证；② 是否有用户批准 + 日期；
+  7. metrics.md 的必需键是否齐全；R25+ 必须有 `未闭环: 0`；
+  8. metrics.md 的 `发现总数` 是否等于六项处置之和；
   9. defect-ledger.md 与 metrics.md 是否残留 TBD/待定 占位；
   10. 六步收口合同：loop.md 中编号 ≥ 13 的 `# Round` 小节必须含 `### L6` 与
       `### L6.5` 收口小节（R0–R12 为历史轮次，豁免；合同见
@@ -60,19 +59,24 @@ FINDING_RE = re.compile(r"^#{2,3}\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)", re.MULT
 # round prefix is part of the ID namespace used in that round's ledger rows.
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE)
-METRIC_COUNT_RE = re.compile(r"([①②③④⑤])\s*(\d+)")
+METRIC_COUNT_RE = re.compile(r"([①②④⑤⑥③]|FP)\s*(\d+)")
 PLACEHOLDERS = {"tbd", "待定", "-", "—", "", "（待补）", "待补"}
 DISPOSITION_TOKENS = {
     "①": "①",
     "②": "②",
-    "③": "③",
     "④": "④",
     "⑤": "⑤",
+    "⑥": "⑥",
+    "FP": "FP",
     "fix": "①",
     "transfer": "②",
-    "fp": "③",
     "wording": "④",
     "insufficient": "⑤",
+    "refactor": "⑥",
+    "false-positive": "FP",
+    "fp": "FP",
+    # Legacy-only token: accepted for rounds before 25, rejected for R25+.
+    "③": "LEGACY",
 }
 
 
@@ -237,6 +241,7 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
                     "cls": cells.index("处置类"),
                     "act": cells.index("处置"),
                     "ver": cells.index("复验"),
+                    "ev": cells.index("证据") if "证据" in cells else -1,
                 }
                 table_seen = set()
                 range_covered = set()
@@ -284,18 +289,22 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
             continue
         action = cells[current["act"]]
         verify = cells[current["ver"]]
-        if canonical in {"①", "④"} and verify.lower() in PLACEHOLDERS:
+        evidence = cells[current["ev"]] if current["ev"] >= 0 else ""
+        if canonical in {"①", "④", "⑥"} and verify.lower() in PLACEHOLDERS:
             report.fail(
                 "ledger",
                 f"{'、'.join(row_ids)} 处置类为 {canonical}，但复验列为空或占位"
                 "（轮转闸：可修项必须有已修证据）",
             )
-        if canonical in {"⑤"} and (
-            action.lower() in PLACEHOLDERS or len(action) <= 4
+        if canonical == "FP" and (
+            evidence.lower() in PLACEHOLDERS
+            or len(evidence) < 20
+            or re.search(r"源码|测试|文档原文|refute|cargo|grep|\.rs|§", evidence) is None
+            or re.search(r"作者取舍|待裁决|未实施|无新证据", evidence) is not None
         ):
             report.fail(
                 "ledger",
-                f"{'、'.join(row_ids)} 处置类为 ⑤，但没有写清还缺什么证据",
+                f"{'、'.join(row_ids)} 处置类为 FP，但 `证据` 列没有给出源码/测试/文档原文反证（或仍写作者取舍/待裁决）",
             )
         id_like_row = re.compile(r"^[A-Z]{2,}-[A-Za-z0-9-]+$")
         round_prefix_row = re.compile(r"^(?:R|D)\d+-\d+$")
@@ -313,6 +322,7 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
                 "class": canonical,
                 "action": action,
                 "verify": verify,
+                "evidence": evidence,
                 "section": section,
             }
             section_ids.setdefault(section, set()).add(row_id)
@@ -356,23 +366,30 @@ def check_metrics(text: str, report: Report, round_tag: str | None = None, expec
     body = _pick_metric_block(text, report, round_tag)
     total_match = METRIC_TOTAL_RE.search(body)
     counts = {m.group(1): int(m.group(2)) for m in METRIC_COUNT_RE.finditer(body)}
-    if total_match is None:
-        report.fail("metrics", "metrics.md 缺少 `- 发现总数: <整数>`")
-    missing = [k for k in "①②③④⑤" if k not in counts]
+    round_num = int(round_tag.lstrip("R")) if round_tag else None
+    new_schema = (round_num is not None and round_num >= 25) or ("未闭环" in body)
+    legacy = not new_schema
+    if legacy:
+        required = list("①②③④⑤")
+    else:
+        required = ["①", "②", "④", "⑤", "⑥", "FP"]
+    missing = [k for k in required if k not in counts]
     if missing:
         report.fail("metrics", "metrics.md 缺少处置计数: " + "、".join(missing))
+    if not legacy and "③" in counts:
+        report.fail("metrics", "R25+ 禁止使用已删除的 ③；误报写 FP 并附反证，否则写 ⑤ 未闭环")
     if total_match is not None and not missing:
         total = int(total_match.group(1))
-        parts = [counts[k] for k in "①②③④⑤"]
+        parts = [counts[k] for k in required]
         if total != sum(parts):
             report.fail(
                 "metrics",
-                f"发现总数 {total} 与五项处置之和 {sum(parts)} 不一致",
+                f"发现总数 {total} 与处置之和 {sum(parts)} 不一致",
             )
         else:
             report.ok("metrics", f"发现总数与处置之和一致（{total}）")
         if expected is not None:
-            for token in "①②③④⑤":
+            for token in required:
                 want = expected.get(token, 0)
                 got = counts.get(token, 0)
                 if want != got:
@@ -384,6 +401,18 @@ def check_metrics(text: str, report: Report, round_tag: str | None = None, expec
             else:
                 report.ok("metrics", "metrics 各分档与台账本轮逐 ID 聚合一致")
 
+    if not legacy:
+        open_match = re.search(r"^-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        if open_match is None:
+            report.fail("metrics", "metrics.md 缺少 `- 未闭环: <整数>`（R25+ 强制）")
+        elif int(open_match.group(1)) != 0:
+            report.fail(
+                "metrics",
+                f"本轮仍有未闭环 {open_match.group(1)} 项；本轮不得关闭，禁止派下一轮面板",
+            )
+        else:
+            report.ok("metrics", "未闭环 = 0，本轮可关闭")
+
     required_keys = ["re-litigation", "adjacent 阻塞", "重构", "成本"]
     for key in required_keys:
         if not re.search(rf"^-\s*{re.escape(key)}\s*[:：]", text, re.MULTILINE):
@@ -392,7 +421,6 @@ def check_metrics(text: str, report: Report, round_tag: str | None = None, expec
     for line in text.splitlines():
         if line.strip().startswith("-") and re.search(r"TBD|待定", line, re.IGNORECASE):
             report.fail("metrics", f"metrics.md 残留占位: {line.strip()}")
-
 
 def check_placeholders(text: str, report: Report, label: str) -> None:
     for line in text.splitlines():
@@ -548,6 +576,36 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                         cls for fid, cls in mapping.items() if fid in panel_set
                     )
             expected_counts = dict(counter)
+            if int(round_tag.lstrip("R")) >= 25:
+                for fid in sorted(scoped):
+                    row = ledger_rows.get(fid)
+                    if row is None:
+                        continue
+                    cls = row["class"]
+                    if cls == "LEGACY":
+                        report.fail(
+                            "round-close",
+                            f"{fid} 使用了已删除的 ③；R25+ 只能写 FP（附反证）或 ⑤（未闭环）",
+                        )
+                    elif cls == "⑤":
+                        report.fail(
+                            "round-close",
+                            f"{fid} 处置类为 ⑤（未闭环）；本轮不得关闭",
+                        )
+                    elif cls == "②":
+                        action = row["action"]
+                        if "用户批准" not in action or re.search(r"20\d{2}-\d{2}-\d{2}", action) is None:
+                            report.fail(
+                                "round-close",
+                                f"{fid} 处置类为 ②，但没有用户批准 + YYYY-MM-DD；按未闭环计",
+                            )
+                    elif cls in {"①", "④", "⑥"} and re.search(
+                        r"未修|待修|未实施|TODO", row["verify"], re.IGNORECASE
+                    ):
+                        report.fail(
+                            "round-close",
+                            f"{fid} 处置类为 {cls}，但复验写“未修/待修/未实施”；本轮不得关闭",
+                        )
         else:
             coverage_ledger = ledger_set
         # Orphan reference set: IDs that appear in ANY panel file (the
@@ -626,13 +684,14 @@ GOOD_LEDGER = """# 缺陷台账
 | 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|
 | FACT-01 | P-FACT | P1 | 事实 | ① | 修复 §1.1 | E1 | `grep -n x` 命中 |
-| FACT-02 | P-FACT | P2 | 措辞 | ③ | 误报，反证见 §3 | E3 | 不适用 |
+| FACT-02 | P-FACT | P2 | 措辞 | FP | 反证见 §3 | 文档原文 §3 明确说 x 不是缺陷，且源码未出现该符号 | 不适用 |
 | READER-A-01 | reader-a | P3 | 措辞 | ④ | 修 §1.2 | E1 | 旧串 grep 归零 |
 """
 GOOD_METRICS = """# 指标
 
 - 发现总数: 3
-- 处置: ① 1 / ② 0 / ③ 1 / ④ 1 / ⑤ 0
+- 处置: ① 1 / ② 0 / ④ 1 / ⑤ 0 / ⑥ 0 / FP 1
+- 未闭环: 0
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
@@ -650,6 +709,22 @@ def write_fixture(root: Path, loop: str, ledger: str, metrics: str, panel: str) 
     return run_dir
 
 
+def write_round_fixture(root: Path, ledger: str, metrics: str) -> tuple[Path, Path]:
+    """R25+ fixture whose panel dir carries the round tag."""
+    run_dir = root / "run"
+    panel_dir = run_dir / "panel" / "round25"
+    panel_dir.mkdir(parents=True)
+    loop = "## R25 面板轮\n\n" + GOOD_LOOP.replace("## ", "### ")
+    (run_dir / "loop.md").write_text(loop, encoding="utf-8")
+    (run_dir / "defect-ledger.md").write_text(ledger, encoding="utf-8")
+    (run_dir / "metrics.md").write_text(metrics, encoding="utf-8")
+    (panel_dir / "fact.md").write_text(
+        "# 面板\n\n## FINDING FACT-01\n- 位置：§1\n- 问题：示例\n",
+        encoding="utf-8",
+    )
+    return run_dir, panel_dir
+
+
 def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         good_dir = write_fixture(
@@ -663,7 +738,7 @@ def self_test() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         bad_ledger = GOOD_LEDGER.replace(
-            "| FACT-02 | P-FACT | P2 | 措辞 | ③ | 误报，反证见 §3 | E3 | 不适用 |\n", ""
+            "| FACT-02 | P-FACT | P2 | 措辞 | FP | 反证见 §3 | 文档原文 §3 明确说 x 不是缺陷，且源码未出现该符号 | 不适用 |\n", ""
         )
         bad_metrics = GOOD_METRICS.replace("- 发现总数: 3", "- 发现总数: 4")
         bad_dir = write_fixture(
@@ -680,6 +755,56 @@ def self_test() -> int:
             return 1
         if "不一致" not in messages:
             print("self-test FAIL: 没有报出总数与处置之和不一致")
+            print_report(bad, False)
+            return 1
+
+    # R25+：已删除的 ③ 必须被拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_legacy = """# 台账
+
+## R25 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ③ | 作者取舍 | 无 | 无 |
+"""
+        metrics_legacy = """# 指标
+
+- 发现总数: 1
+- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 1
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_legacy, metrics_legacy)
+        bad = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "已删除的 ③" not in messages:
+            print("self-test FAIL: R25+ 的 ③ 未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # R25+：FP 没有反证必须被拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_fp = """# 台账
+
+## R25 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | FP | 误报 |  | 不适用 |
+"""
+        metrics_fp = metrics_legacy.replace("| ③ | 作者取舍 | 无 | 无 |", "").replace(
+            "处置: ① 0 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0",
+            "处置: ① 0 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 1",
+        )
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_fp, metrics_fp)
+        bad = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "没有给出源码/测试/文档原文反证" not in messages:
+            print("self-test FAIL: FP 缺反证未被拦截")
             print_report(bad, False)
             return 1
 
@@ -722,7 +847,8 @@ def self_test() -> int:
         metrics_range = """# 指标
 
 - 发现总数: 3
-- 处置: ① 0 / ② 0 / ③ 0 / ④ 3 / ⑤ 0
+- 处置: ① 0 / ② 0 / ④ 3 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
 - re-litigation: 0
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0

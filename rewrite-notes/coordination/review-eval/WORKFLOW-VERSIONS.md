@@ -160,3 +160,14 @@
 | R-5 | 裁决档流程：问题域锚 = Minix3 语义（偏离须 [ARCH] 理由）；不设轮次上限；第三方为完整共同设计者；域外即出界 | 用户裁决（BOOT-SCOPE 档 §5）；纠正"轮数上限+挑漏者"的过度矫正 | `DECISIONS-PENDING-*.md` 模板 | **已晋升生效** |
 
 同步门读数：generate-derived-skills 0 / check-review-rules 0 / lint-review-rules 0 / diff-trae-skills 0（全绿）。
+
+## V2.3（2026-11-10，用户裁决即时晋升：删除 ③ 桶）
+
+> 用户指令：“‘③ 成了合法延期桶’，我甚至想要删除它……先解决这个问题！”晋升依据 = 用户直接裁决；R25 meta 的 B-67 提供案例：26 条 ③ 中 19 条没有 §4.1 要求的反证，1 条是真缺陷已修、3 条是待裁决/未实施、15 条是读者体验项。
+
+| 编号 | 规则 | 案例支撑 | 目标文件 | 状态 |
+|---|---|---|---|---|
+| R-6 | **删除 `③`**。误报只能写 `FP`，且 `证据` 列必须给源码/测试/文档原文反证；无证据的“误报”按 `⑤` 未闭环处理。`FP` 不计修复数，不得承接作者取舍/待裁决/未实施 | R25 meta B-67；`CLAIM-03` 真修记 ③、`DESIGN-02/09/10` 待裁决/未实施记 ③、15 条读者项记 ③ | `review-evals.md` §3.3/§4.1/§4.1a/§4.3/§4f/G5；`review-loop.md` L2/L5/L6.9；`eval-trace-check.py` | **已晋升生效** |
+| R-7 | **本轮不闭环不准开下一轮**：`①/④/⑥` 必须有复验；`②` 必须有“用户批准 + YYYY-MM-DD”；`⑤` 与未批准 `②` 一律未闭环；R25+ 的 `metrics.md` 必须有 `未闭环: 0`，否则 `eval-trace-check.py` FAIL | R25 在 ③ 未清、DESIGN-09/10 未闭环时曾准备进 R26；R24 meta PASS 与 R25 10 个 P0 并发 | `review-evals.md` §4f/§5.0/§6A；`review-loop.md` L6.9；`eval-trace-check.py`（当前轮 strict 检查 + ③ 禁用 + 未闭环） | **已晋升生效** |
+
+同步门读数：generate-derived-skills 0 / check-review-rules 0 / lint-review-rules 0 / diff-trae-skills 0；`eval-trace-check.py --self-test` PASS（含 R25+ ③ 拦截与 FP 反证拦截）；R25 scoped 运行现为 FAIL，未闭环 10 项（这是预期，不是回归）。
