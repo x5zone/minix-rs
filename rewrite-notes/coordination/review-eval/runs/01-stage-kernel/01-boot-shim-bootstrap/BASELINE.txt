@@ -69,7 +69,7 @@ boot_scope_doc_sha256=05ed81ea947ff2e335aec0ee759ead8d2f2d59fe40b19239d91cf46e38
 boot_scope_doc_lines=3427
 
 # R24 fix batch
-r24_fix_head=91e652a73
+r24_fix_head=6a40c61fc
 r24_fixed_doc_sha256=8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4
 r24_fixed_doc_lines=3477
 r24_status=NOT_CONVERGED
