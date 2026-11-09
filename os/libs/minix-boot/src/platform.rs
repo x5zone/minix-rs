@@ -150,6 +150,19 @@ impl PlatformDescSource {
         }
     }
 
+    /// Construct from an optional probed length; `None` (header unreadable)
+    /// falls back to the legacy `len = 0` form.
+    pub const fn with_optional_len(
+        kind: PlatformDescKind,
+        phys_addr: PhysBytes,
+        len: Option<u32>,
+    ) -> Self {
+        match len {
+            Some(len) => Self::with_len(kind, phys_addr, len),
+            None => Self::new(kind, phys_addr),
+        }
+    }
+
     /// Opaque kind tag (for `minix-platform::parse_by_kind()` dispatch).
     pub fn kind(&self) -> PlatformDescKind {
         self.kind

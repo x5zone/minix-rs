@@ -629,14 +629,15 @@ pub fn clone_range<P: Paging>(
 /// survive CR3 switches because the content never changes.
 pub fn map_kernel<P: Paging>(
     pt: &mut P,
-    kernel_text_vbase: u64,
-    kernel_text_pbase: u64,
-    kernel_text_pages: usize,
-    kernel_data_pages: usize,
-    dm_vbase: u64,
-    dm_pages: usize,
+    layout: &minix_types::KernelLayout,
 ) -> Result<(), PageTableError> {
     let page_size = P::PAGE_SIZE as u64;
+    let kernel_text_vbase = layout.kernel_text_vbase;
+    let kernel_text_pbase = layout.kernel_text_pbase;
+    let kernel_text_pages = layout.kernel_text_pages;
+    let kernel_data_pages = layout.kernel_data_pages;
+    let dm_vbase = layout.dm_vbase;
+    let dm_pages = layout.dm_pages;
 
     for i in 0..kernel_text_pages {
         let vaddr = VirBytes(kernel_text_vbase + i as u64 * page_size);
@@ -651,7 +652,8 @@ pub fn map_kernel<P: Paging>(
         // — the riscv RS birth-chain death. Adding X to already-present text is
         // purely additive (it can only enable a fetch, never restrict one), so
         // x86_64/aarch64 behavior is unchanged. RWX matches the RWX boot/identity
-        // mapping already used for the running kernel image (see segment 4 below).
+        // mapping already used for the running kernel image; there is no
+        // identity-window segment after handoff v9.
         //
         // [ARCH: kernel-text-rx] The text-segment flag discriminates on
         // the handoff. `kernel_data_pages > 0` (kernel-text-rx production
@@ -1198,15 +1200,15 @@ pub mod mock {
             const MOCK_DM_SENTINEL_PAGES: usize = 4;
             const PAGE_SIZE_CONST: u64 = MockPaging::PAGE_SIZE as u64;
 
-            super::super::map_kernel(
-                &mut pt,
+            let layout = minix_types::KernelLayout::new(
                 MOCK_KERNEL_TEXT_VBASE,
                 MOCK_KERNEL_TEXT_PBASE,
                 MOCK_KERNEL_TEXT_PAGES,
                 MOCK_KERNEL_DATA_PAGES,
                 MOCK_DM_VBASE,
                 MOCK_DM_SENTINEL_PAGES,
-            ).unwrap();
+            );
+            super::super::map_kernel(&mut pt, &layout).unwrap();
 
             // No VA=PA mapping may exist for any device-window physical
             // page (the former identity replay is retired) — query each

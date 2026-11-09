@@ -1772,3 +1772,132 @@
 | DESIGN-14 | design-d2 | P1 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:190`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
 | DESIGN-15 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:203`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
 | DESIGN-16 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round24/design-d2.md:216`；问题：见 design-d2.md | doc 五门 PASS；测试/QEMU 见 loop §5 |
+
+## R25 面板轮（2026-11-10，R24 meta PASS 后）
+
+| 发现 ID | 角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-A-01 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:26`；问题：F01（P1）§4.2 的中心引文把 UEFI 腿的 `records_in_wire = true` 写丢，且把 `let mut report` 写成 `let report` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-02 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:40`；问题：F02（P1）§3.7 的 `prepare_kernel_image_v1` 引文漏掉 `assert_boot_windows_addressable` 调用，且未在省略声明中列出 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-03 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:53`；问题：F03（P2）§4.4 `memmap` 行把直核面 DTB 来源写成 `a1`，且只覆盖 U-Boot/riscv，缺 aarch64 直核面 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-04 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:67`；问题：F04（P2）§4.4 字段表 `platform_sources` 行未列两个直核面 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-05 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:78`；问题：F05（P2）§5.1 M5 / §5.3 TODO-05 的测试路径写成 `boot_policy::tests::…`，实际模块是 `boot_policy::policy_tests` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-06 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:89`；问题：F06（P2）§4.5 引文把 5 行的 `BootModule` 结构体字面量压成 1 行，未声明重排 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-07 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:100`；问题：F07（P2）§4.7 `resume` 文档注释引文是两句拼接改写，未标〔编注〕/改述 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-08 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:111`；问题：F08（P2）§4.4 `boot_validate_and_prepare` 引文插入两行中文注释，非源码内容且未标〔编注〕 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-09 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:122`；问题：F09（P2）§2.7 `earm/head.S` 引文删去 `.section .startup` 与 `.global MINIX` 之间的 4 行源码注释，无省略标记 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-10 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:133`；问题：F10（P2）§4.4 门表把 `kern_stack_top` 16 字节对齐只挂在 `boot_validate_and_prepare`，共享校验体也查它 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-11 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:144`；问题：F11（P2）D-031 的 wire 兼容合同在 §3.4 无落点：`WirePlatformDescSource` 第二个 `u32` 由 `reserved` 改为 `len`、16 B 与版本 9 不变，设计章未载 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-12 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:158`；问题：F12（P2）§4.2 引文未声明省略函数开头的 `shim_image` / `shim_stack` 捕获 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-13 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:169`；问题：F13（P2）§6.1 把 `step2c device window empty (skip)` 写成“aarch64 直核”专用标记，aarch64 v1 发送侧也走同一分支 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-A-14 | fact-a | P1 | fact-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-a.md:180`；问题：F14（P2）§6.3/TODO-08 把 `end <= BOOT_IDENTITY_MAP_END` 归为“窗口构建断言”，实现位置是 Step 1 映射循环 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-01 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:35`；问题：A01 — §1.2 四框图：阅读顺序、依赖方向、D 编号三套秩序叠在一起，且图上有一条不计入 D1–D5 的箭 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-02 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:56`；问题：A02 — §2.2 栈对齐：空位「让 %esp 在 call 前落在 16 字节边界」与入口 %esp ≡ 0 的结论互相打架 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-03 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:72`；问题：A03 — §3.8 分配器换手：表说 shim 在 Step 0 注册，正文却说 shim「只初始化 bump 池」 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-04 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:90`；问题：A04 — §6.1 诊断表：示例串写 `reslen`，同一行又说「不是 `reslen`」 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-05 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:104`；问题：A05 — §1.2 与 §1.3：D5 是「D3 内部」还是「与 D1 并列」 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-06 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:120`；问题：A06 — §3.7 形态编号：「第三种/第二种形态」与本节标题的列举顺序对不上 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-07 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:140`；问题：A07 — §4.4 门链：同一个编号「4」指两个不同的门，且 `BeforeTables`/`Standard`/`Strict` 未定义 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-08 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:158`；问题：A08 — §5.1 证据账：M2 标「已覆盖」却写「没有同形断言」，M13 标「部分覆盖（可测面已覆盖）」 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-09 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:174`；问题：A09 — §5.1 M4：候选①/②从未被编号，且「TODO-01 已关闭」与「不构成完整覆盖」并置 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-10 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:190`；问题：A10 — §3.4 平台源：`PlatformDescSource` 的形状与 `RSDP` 未交代 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-11 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:206`；问题：A11 — §4.6 窗口：`PLIC`/`ACLINT SSWI` 未定义，两张设备窗口表的关系难跟 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-12 | reader-a | P2 | reader-a | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-a.md:224`；问题：A12 — §4.2.1 九动作：动作 ID 与时间序是两套编号，正文「第 N 步」只指前者 | 无新证据；见 panel 与决策账 |
+| READER-A-13 | reader-a | P2 | reader-a | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-a.md:238`；问题：A13 — §3.4.1 memmap 行：A+D、`ReservedMapped`、`Side` 全是前向引用 | 无新证据；见 panel 与决策账 |
+| READER-A-14 | reader-a | P2 | reader-a | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-a.md:252`；问题：A14 — §4.2.2 描述符分类：五个手算例子挤在一段，读者无法逐例对表 | 无新证据；见 panel 与决策账 |
+| READER-A-15 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:266`；问题：A15 — §3.4.4 / §4.5 / §5.2.3 证据链：两跳指针、候选编号缺失，且「三层」与 §5.2 的「三层证据」撞名 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-16 | reader-a | P2 | reader-a | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-a.md:286`；问题：A16 — 全篇计数体系：腿/链/形态/交接路径/架构×链/门链六套计数，两个「5」成员不同 | 无新证据；见 panel 与决策账 |
+| READER-A-17 | reader-a | P2 | reader-a | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-a.md:302`；问题：A17 — §2.4.1.2/§2.4.1.3：`alloc_lowest` 的缺陷被拆成三段，「条件结论/四个前提」把线索拉断 | 无新证据；见 panel 与决策账 |
+| READER-A-18 | reader-a | P2 | reader-a | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-a.md:316`；问题：A18 — §2.3 `mb_set_param`：删除扫描的 off-by-one 推演需要读者自己当 CPU | 无新证据；见 panel 与决策账 |
+| READER-A-19 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:330`；问题：A19 — §6.1 三档读法：`kernel: v4`/`step1+2` 是发送侧在 shim 进程里打印的，读者会误以为是接收端内核 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-A-20 | reader-a | P2 | reader-a | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-a.md:344`；问题：A20 — §4.6 `map_huge` 忽略错误：先否定旧理由、再列五个错误变体，结论埋在段末 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-01 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:47`；问题：R01｜§3.4 与 §4.4/§4.5 的三方分工，被 §4.4 自己越过 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-02 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:65`；问题：R02｜§5.1、§5.3、§5.4 三处都在管状态，且各有一套词 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-03 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:81`；问题：R03｜§2.1 与 §2.3 都在讲 `rootdevname` 的读者，且重复同一条 grep 结论 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-04 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:93`；问题：R04｜“五条腿/五条门链/三类链/四种交接路径”的计数职责分散在六处 | 无新证据；见 panel 与决策账 |
+| READER-B-05 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:103`；问题：R05｜§2.6.1 与 §4.6 都在讲 C/Rust 缓存属性差异 | 无新证据；见 panel 与决策账 |
+| READER-B-06 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:115`；问题：R06｜§1.2 的“必须凑齐四样”，到 §2.3 被改成“四个字段没有一个来自引导器” | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-07 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:129`；问题：R07｜§1.3 说 D5“与 D1 并列”，§1.2 说 D5 在 D3 内部 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-08 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:141`；问题：R08｜§3.9 的对照表先给“整个物理地址空间”，下一行才用“资格过滤”收窄 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-09 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:151`；问题：R09｜§3.4.2 先断言“C 的同一动作靠 TLB 窗口撑住”，再声明“不能当作已核实的事实引用” | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-10 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:159`；问题：R10｜§5 开头的 M6 缺口描述与 §5.1/§5.4 不是同一件事 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-11 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:175`；问题：R11｜§4.6 说 x86_64 有“跨镜像与直核”两条路径，§3.7 说 x86_64 无直核形态 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-12 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:191`；问题：R12｜§3.2 说“只有一份”装载逻辑，几段之后才限定“仅两条 boot-shim 腿之间” | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-13 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:207`；问题：R13｜§2.2 标题说“只做三件事”，正文有三段长旁支 | 无新证据；见 panel 与决策账 |
+| READER-B-14 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:221`；问题：R14｜§2.4 的“结算”宣告框 1 要到 §2.5 才完成，§2.5 却没有对应的完成标记 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-15 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:229`；问题：R15｜§4.2.1 标题说“九个动作”，正文承认有第十个（6b） | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-16 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:245`；问题：R16｜§4.9 表后的“静态页表池”推演属于 §3.8，作者自己承认 | 无新证据；见 panel 与决策账 |
+| READER-B-17 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:253`；问题：R17｜§4.6 的 Step 4 被声明不展开，但 §3.7 引用的 `resume_additive` 文档里就写着 “establish the direct map” | 无新证据；见 panel 与决策账 |
+| READER-B-18 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:265`；问题：R18｜§4.5 标题说“七个落地区”，表里有八行 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-19 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:281`；问题：R19｜§1.2 的依赖序在相邻两句里说了两遍，D→节映射又重复表列 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-20 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:291`；问题：R20｜§2.1 与 §2.3 的 `grep -rn rootdevname` 结论重复 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-21 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:295`；问题：R21｜§3.9 的“三个前提”在同一段里出现两遍 | 无新证据；见 panel 与决策账 |
+| READER-B-22 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:303`；问题：R22｜§2.4.1.4、§3.4.1、§4.5 三处重复“64/47/v9”这组容量事实 | 无新证据；见 panel 与决策账 |
+| READER-B-23 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:319`；问题：R23｜§5.1 与 §5.2.3 重复 aarch64 链的三条通过标记 | 无新证据；见 panel 与决策账 |
+| READER-B-24 | reader-b | P2 | reader-b | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/reader-b.md:331`；问题：R24｜§4.6 的 Step 2 守卫理由在同一节出现两次 | 无新证据；见 panel 与决策账 |
+| READER-B-25 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:347`；问题：R25｜D4 的读序指针指向 §2.2，而 §2.2 明确把该行推给 02 篇 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-26 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:365`；问题：R26｜§4.4 的“层内收敛原则（§3.4 开头）”在 §3.4 开头不存在 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-27 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:377`；问题：R27｜§4.5 说“三层证据判别统一见 §3.4.4”，§3.4.4 把三层判别交给 §5.2.3 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-28 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:393`；问题：R28｜§4.8 对 §3.7 的跳转覆盖有两句互相矛盾的话 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-29 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:409`；问题：R29｜§4.4 的“门列有五个标签”与表中六个非规划期标签不符 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-30 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:417`；问题：R30｜§2.4 的“框 1 要到 §2.5 才完成”在 §2.5 没有接应 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-B-31 | reader-b | P2 | reader-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-b.md:421`；问题：R31｜§1.4 的编号索引把 M1–M17 的“主要消费者”写成 §5.3，实际定义与状态都在 §5.1 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-01 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:7`；问题：C25-01 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-02 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:18`；问题：C25-02 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-03 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:29`；问题：C25-03 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-04 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:40`；问题：C25-04 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-05 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:51`；问题：C25-05 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-06 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:62`；问题：C25-06 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-07 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:73`；问题：C25-07 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-08 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:84`；问题：C25-08 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-09 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:95`；问题：C25-09 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-10 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:106`；问题：C25-10 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-11 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:117`；问题：C25-11 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-12 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:128`；问题：C25-12 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-13 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:139`；问题：C25-13 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-14 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:150`；问题：C25-14 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-15 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:161`；问题：C25-15 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-16 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:172`；问题：C25-16 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-17 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:183`；问题：C25-17 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-18 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:194`；问题：C25-18 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-19 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:205`；问题：C25-19 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| READER-C-20 | reader-c | P2 | reader-c | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/reader-c.md:216`；问题：C25-20 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| CLAIM-01 | refute | P1 | refute | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/refute.md:5`；问题：平台描述符窗口现在覆盖 blob 全长——`PlatformDescSource.len` 经 wire `off+4` 传递，`push_platform_windows` 按跨度建窗；旧生产者 `len == 0` 回退到地址所在的一个 2 MiB 片。 | 无新证据；见 panel 与决策账 |
+| CLAIM-02 | refute | P1 | refute | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/refute.md:30`；问题：Step 0 不再要求平台覆盖全局 4 GiB，而是逐窗比较 `end <= phys_addr_limit`；并且窗口错误不比旧检查更晚暴露。 | 无新证据；见 panel 与决策账 |
+| CLAIM-03 | refute | P1 | refute | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/refute.md:54`；问题：`records_in_wire` 这个“类型标记”真的能防止 UEFI 腿误用。 | 无新证据；见 panel 与决策账 |
+| CLAIM-04 | refute | P1 | refute | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/refute.md:78`；问题：`ident_regions` 删除后，`map_kernel` 的段 4 消失没有留下其他空通道。 | 无新证据；见 panel 与决策账 |
+| CLAIM-05 | refute | P1 | refute | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/refute.md:101`；问题：`device_window_flags()` 的 `DEVICE` 已接入 Step 2c 与 `map_kernel` 段 5；riscv 没有 cache 位不构成语义倒退。 | 无新证据；见 panel 与决策账 |
+| CLAIM-06 | refute | P1 | refute | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/refute.md:125`；问题：文档 §4.6、§4.4、§3.7 的引文与当前源码同形。 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-01 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:45`；问题：- 位置：`os/libs/minix-boot/src/platform.rs:110-168`；生产调用点 `os/boot-shim/src/uefi_helpers.rs:221,238,251`、`os/kernel-image/src/bootface.rs:321`、`os/kernel-image/src/bootface_a64.rs:302`、`os/boot-shim/src/opensbi_helpers.rs:419`；文档 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2839` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-02 | design-d2 | P2 | design-d2 | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/design-d2.md:56`；问题：- 位置：`os/kernel/src/lib.rs:1064-1103`（`BootWindows`）、`:1186-1193`（`assert_boot_windows_addressable`）、`:496` 与 `:975`（两处生产调用点）、`:1195-1199`（`build_bootstrap_root_and_enable` 签名） | 无新证据；见 panel 与决策账 |
+| DESIGN-03 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:67`；问题：- 位置：`os/libs/minix-boot/src/boot_storage.rs:361-386`；置位点 `os/boot-shim/src/uefi_helpers.rs:1184` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-04 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:78`；问题：- 位置：`os/libs/minix-boot/src/kernel_info.rs:185-212`、`:236-264` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-05 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:89`；问题：- 位置：`os/arch/src/arch/paging.rs:654`（"see segment 4 below"）与 `:697-701`（声明 segment 4 已退役） | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-06 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:100`；问题：- 位置：`os/libs/minix-types/src/types/boot.rs:455-458`、`:490-496`；同类残留 `os/servers/vm/src/vm_server.rs:744-752`（"Open item (boot-info integration): ... parsed from the multiboot2 / stivale2 boot headers"） | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-07 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:111`；问题：- 位置：`os/libs/minix-boot/src/kernel_info.rs:130-134` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-08 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:122`；问题：- 位置：`os/libs/minix-boot/src/boot_storage.rs:320-342`（`report()`）、`:361-386`（`BootReport`）；`os/libs/minix-boot/src/handoff_v1_write.rs:138-152`（`write_envelope_report`）；`os/libs/minix-boot/src/kernel_info.rs:445-468`（接收侧 Strict 等式） | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-09 | design-d2 | P2 | design-d2 | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/design-d2.md:133`；问题：- 位置：`os/kernel-image/src/bootface.rs:311,335,377-420,459,498`；`os/kernel-image/src/bootface_a64.rs:137,140,304,315,353-360`；`os/kernel-image/src/bootface_common.rs:268-282`；对照 `os/libs/minix-boot/src/boot_storage.rs:61-343` | 无新证据；见 panel 与决策账 |
+| DESIGN-10 | design-d2 | P2 | design-d2 | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/design-d2.md:144`；问题：- 位置：`os/kernel/src/lib.rs:1064-1103`、`:1186-1199`；`os/libs/minix-types/src/types/address.rs:196-210`（`PhysRange`） | 无新证据；见 panel 与决策账 |
+| DESIGN-11 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:155`；问题：- 位置：`os/arch/src/arch/paging.rs:612-638`（`map_kernel`）；`os/libs/minix-types/src/types/boot.rs:480-488`（`KernelLayout`）；生产调用点在 `os/servers/vm/src/vmproc/vmproc_handle.rs:386-394`（不在 related-code 清单内，仅作为事实注记，不作为证据基础） | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-12 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:166`；问题：- 位置：`os/libs/minix-boot/src/boot_storage.rs:30,70`；`os/libs/minix-boot/src/boot_params.rs:27`；`os/libs/minix-boot/src/handoff_v1.rs:379`；`os/kernel/src/globals.rs:383-386` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-13 | design-d2 | P2 | design-d2 | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/design-d2.md:177`；问题：- 位置：文档 §4.4 校验门表，`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2678`；代码 `os/libs/minix-boot/src/kernel_info.rs:445-530` | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| DESIGN-14 | design-d2 | P2 | design-d2 | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/design-d2.md:188`；问题：- 位置：`os/libs/minix-boot/src/boot_storage.rs:61-343` | 无新证据；见 panel 与决策账 |
+| DESIGN-15 | design-d2 | P2 | design-d2 | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/design-d2.md:199`；问题：- 位置：`os/boot-shim/src/ebs_map.rs:799-881`（`ClassificationPlan::commit`）；`os/boot-shim/src/ebs_pair.rs:121-130`（`pair_and_classify` 签名）；文档 §3.4.3/§3.4.5 | 无新证据；见 panel 与决策账 |
+| DESIGN-16 | design-d2 | P2 | design-d2 | ③ | 复核为非缺陷/作者取舍或反证主张成立；不强行改型 | `panel/round25/design-d2.md:210`；问题：- 位置：`os/kernel-image/src/bootface_common.rs:143-166`（`PlacementPool`）；调用点 `os/kernel-image/src/bootface.rs:291-300`、`os/kernel-image/src/bootface_a64.rs:274-283` | 无新证据；见 panel 与决策账 |
+| FACT-B-01 | fact-b | P0/P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:15`；问题： | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-02 | fact-b | P0/P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:25`；问题： | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-03 | fact-b | P0/P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:35`；问题： | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-04 | fact-b | P0/P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:48`；问题： | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-05 | fact-b | P0/P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:61`；问题： | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-06 | fact-b | P0/P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:71`；问题： | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-07 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:81`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-08 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:91`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-09 | fact-b | P1 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:101`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-10 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:111`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-11 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:121`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-12 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:131`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-13 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:141`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-14 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:151`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-15 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:161`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-16 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:171`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |
+| FACT-B-17 | fact-b | P2 | fact-b | ① | 按面板最小修复落地（文档/代码/测试） | `panel/round25/fact-b.md:181`；问题：见该行 P0/P1/P2 条目 | doc 五门 PASS；宿主/QEMU 见 loop §5 |

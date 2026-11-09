@@ -743,16 +743,10 @@ impl VmServer {
         // but provided no way to supply correct values. Now the layout is
         // set here, once, during `VmServer::init()`.
         //
-        // Open item (boot-info integration): replace these mock values with real
-        // values parsed from the multiboot2 / stivale2 boot headers or linker
-        // symbols. The kernel text physical base, text/data sizes, and direct
-        // map size all come from boot-time information. Until then, these mock
-        // values match the previous hardcoded constants so behavior is
-        // unchanged, but the mechanism is now in place to supply correct
-        // values without touching `init_page_table()`.
-        //
-        // A version ≥ 3 handoff carries the real kernel layout —
-        // consume it.
+        // The kernel text physical base, text/data sizes, and direct-map size
+        // come from the handoff's kernel layout (or the mock constants in the
+        // test carrier). A version ≥ 3 handoff carries the real layout — consume
+        // it; a missing layout is rejected rather than guessed.
         //
         // A6 (C17 remainder, external-review ruling): a missing
         // kernel_layout means an incomplete input (a real handoff is v5

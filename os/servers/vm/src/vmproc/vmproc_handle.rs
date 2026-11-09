@@ -383,15 +383,7 @@ impl<'a> ActiveProc<'a> {
             //       was not run, rather than silently mapping memory wrong.
             let layout = crate::global::kernel_layout();
 
-            map_kernel(
-                &mut pt,
-                layout.kernel_text_vbase,
-                layout.kernel_text_pbase,
-                layout.kernel_text_pages,
-                layout.kernel_data_pages,
-                layout.dm_vbase,
-                layout.dm_pages,
-            )?;
+            map_kernel(&mut pt, &layout)?;
 
             // Every new root maps the kernel-information page read-only
             // at its fixed user VA. VM owns this mapping and its intermediate

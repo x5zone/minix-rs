@@ -129,9 +129,11 @@ pub struct KernelInfo {
     ///
     /// # Cross-binary safety
     ///
-    /// Each `PlatformDescSource` is pure data `(u32 kind, u64 phys_addr)` —
-    /// safe to pass from boot-shim to kernel even when they are separate
-    /// ELF binaries. No function pointers cross the boundary.
+    /// Each `PlatformDescSource` is pure data `(u32 kind, u32 len, u64 phys_addr)`
+    /// — safe to pass from boot-shim to kernel even when they are separate
+    /// ELF binaries. No function pointers cross the boundary. `len = 0`
+    /// means the producer did not record the blob extent; the window builder
+    /// then falls back to one 2 MiB piece.
     ///
     /// # DTB + RSDP coexistence
     ///
@@ -187,7 +189,7 @@ pub struct KernelInfo {
 /// Replaces the previous two-`bool` encoding that allowed four combinations
 /// but only three were semantically valid (R17 DESIGN-12).
 #[derive(Debug, Clone, Copy)]
-pub enum ValidationLevel {
+pub(crate) enum ValidationLevel {
     /// QEMU bootstrap test kernels: no boot modules, no source records.
     BeforeTables,
     /// Production gate: requires boot modules to be non-empty.

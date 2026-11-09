@@ -139,6 +139,12 @@ impl<'a> Serializer<'a> {
         &mut self,
         report: &crate::boot_storage::BootReport<'_>,
     ) -> Result<(), HandoffV1WriteError> {
+        debug_assert_eq!(report.user_sp.0, minix_types::USER_STACK_TOP);
+        debug_assert_eq!(report.syscall_entry.0, report.kern_virt_base.0);
+        debug_assert_eq!(
+            report.kern_stack_top.0,
+            report.kern_virt_base.0 + report.kern_size
+        );
         self.write_envelope_scalars(
             report.kern_virt_base.0,
             report.kern_phys_base.0,

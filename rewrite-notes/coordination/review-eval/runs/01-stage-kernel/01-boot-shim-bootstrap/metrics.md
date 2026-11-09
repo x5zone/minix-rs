@@ -78,3 +78,13 @@
 - 重构: 提出 4 / 接受 3 / 实施 3 / 登记 0（`ident_regions` 死接口删除、公共窗口 helper、`PlacementPool`；bootface 整段合并不做）
 - 成本: agent 7 / token 未采集 / 耗时 约 2 小时（面板 + 修复 + 宿主/QEMU）
 - 回读: 宿主 boot-shim 136+6、kernel 865+8、types 339、boot 196、vm 548、arch 288；QEMU x86/aarch64/riscv U-Boot shim、riscv bootface、riscv kernel-image、aarch64 SMP AP 六门 PASS；doc 五门 PASS；RB24 首轮 71/80=88.8% NOT PASS；B1/B2+N1–N11 共 13 项补修后，二次定向回读 23/23=100% PASS（13 定向 + 10 重放；不是 118 条整体抽样）；提交后 RB-post 随机 29 条 26/29=89.7% NOT PASS → 补跨度测试后二次 13/14=92.9% PASS；修复提交链 `91e652a73`→`6a40c61fc`→`91da40986`
+
+## R25
+
+- 发现总数: 124（FACT-A 14；FACT-B 17；READER-A 20；READER-B 31；READER-C 20；REFUTE 6 条主张；DESIGN-D2 16）
+- 处置: ① 98 / ② 0 / ③ 26 / ④ 0 / ⑤ 0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 3 / 接受 2 / 实施 2（`PlatformDescSource` 可选长度、`map_kernel` 收 `KernelLayout`）；`records_in_wire`/直核静态落地区维持 D-034 与 D-013 边界
+- 成本: agent 7 / token 未采集 / 耗时 约 2 小时（面板 + P0/P1 修复 + 宿主/QEMU）
+- 回读: 待 RB25；宿主 136+6/865+8/339/196/548/288；QEMU 六门日志 `logs/round25-*.log`；doc 五门 PASS

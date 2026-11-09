@@ -1342,3 +1342,58 @@ RB24 首轮 13 项逐项处置：
 - 平台描述符窗口按 D-031 补长度：`PlatformDescSource.len` 贯穿 wire 与 `push_platform_windows`，`len == 0` 才回退单片；`platform_window_uses_the_recorded_blob_length` 钉住跨度分支。
 - `records_in_wire` 是类型上的可见标记，但当前发送侧没有消费者读 source/startup；它防的是未来误用，不是现网行为。
 - READER-B-20 判为 ③：批次号是评审回溯索引，图例已声明可跳过；若 meta 认为仍应清理，可作为下一轮 reader-experience 项。
+
+## R25 面板轮（2026-11-10，R24 meta PASS 后）
+
+### R25 §0 基线
+
+- 冻结提交：`4ed921800`（R24 收口提交）；文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
+- 工作树：仅 `.codex/.trae` 的 V2.2 派生文件与未跟踪 `01-design-learn.md`（用户侧）；R24 修复/轨迹已提交。
+- Step 0 预检：`01-design.v3` 为最新、`01-outline.v4`/`01-outline-review.v4` 存在；`design-coverage-check 01-stage-kernel` = ALL DOCS COMPLETE（Missing 0）。
+- 关联代码：`doc-code-map --check` 52/52；`trait-audit` 已生成。
+- 前轮状态：R24 118 条处置（① 114 / ③ 4），RB24-post 提交后随机 26/29=89.7% → 补修后 13/14=92.9%，meta 第二次 IMPROVED / 运行质量 PASS；文档仍 NOT CONVERGED（G8 未满足）。
+- 面板：P-FACT-A/B、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑。R25 重点：R24 落码后的 §3.7/§4.6/§4.4 引文、`PlatformDescSource.len` 与 wire 语义、`assert_boot_windows_addressable`、逐 ID 台账证据是否与代码同形。
+
+### R25 §1 面板
+
+- 角色：P-FACT-A/B、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑。
+- 材料隔离同 R24；读者只给正文与画像；DESIGN 只给 §3/§4、实现与 trait-audit。
+- 原始输出：`tmp/review-eval/.../panel/round25/{fact-a,fact-b,reader-a,reader-b,reader-c,refute,design-d2}.md`；发现标题已规范为 `FINDING <ID>`（reader-b 的 R01–R31 全部入账）。
+
+### R25 §2 发现
+
+- 总数 124：FACT-A 14（P1 2 / P2 12）、FACT-B 17（P0 6 / P1 3 / P2 8）、READER-A 20（P0 4 / P1 9 / P2 7）、READER-B 31（P0 2 / P1 8 / P2 21）、READER-C 20（P1 9 / P2 11）、REFUTE 6 条主张（2 条阻断）、DESIGN 16。
+- P0：§3.7 引文缺逐窗断言、§4.2 引文缺 `records_in_wire`、v8 6144 B 误写 4 KiB、恒等映射撤除范围写错、注册槽归属反了、§4.1 非 UEFI 列误写 UEFI 分类、§2.2 栈对齐公式、§6.1 `reslen` 诊断串、D4 读序指针、x86 直核矛盾。
+- 交叉重复：FACT-B 与 READER-A/B/C 对同一批 P0 重复；按“同源并案、逐 ID 留行”处理。
+
+### R25 §3 归因
+
+- ① 98 条：P0/P1 与多数 P2 本轮修复（文档/代码/测试）。
+- ③ 26 条：反证主张成立（CLAIM-01/02/04/05）、作者取舍/教学形式偏好（READER-A-12/13/14/16/17/18、READER-B-04/05/13/16/17/21/22/23/24、DESIGN-02/09/10/14/15/16）；其中 DESIGN-02/09 为需要架构裁决的加固项，未改型。
+- ②/④/⑤ 0；re-litigation 0；adjacent 阻塞 0。
+
+### R25 §4 修复
+
+- 文档：§1.2 依赖边/字段边/执行序；§2.2 栈深公式；§2.5 框 1 完成标记；§3.4.2 恒等撤除范围/注册槽；§3.4.3 平台 wire 兼容；§3.7 逐窗断言引文；§3.8 注册槽；§4.1 非 UEFI 列；§4.2 records_in_wire/shim 窗口/6b；§4.4 strict 覆盖/门计数/栈对齐；§4.6 BootWindows/平台跨度/术语/`map_huge` verdict；§5.1 M2/M5/M6/M12/M13；§6.1 三档路标与 `reslen`；§6.4 关键行。
+- 代码：`PlatformDescSource::with_optional_len`（读头失败显式回退）、`map_kernel(&KernelLayout)`、`write_envelope_report` 三条派生等式 debug 断言、`ValidationLevel` 降为 `pub(crate)`、`map_kernel` 段 4 注释、`KernelLayout`/`vm_server` 陈旧 multiboot 注释、`PARAM_BUF_CAP == WIRE_PARAM_CAP` 编译期断言、`records_in_wire` 决策措辞改为咨询标记。
+
+### R25 §5 复验
+
+- 文档门：anchor 105/105；doc-code-map 52/52；style error=0；ref/structure/density PASS。
+- 宿主：boot-shim 136+6、kernel 865+8、types 339、boot 196、vm 548、arch 288。
+- QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志 `logs/round25-*.log`。
+- 文档：3491 行 / `c4bb307e266d1ff05bfdf3248c1f1001c57ee7036022fb538682977230d3d9ed`。
+
+### R25 §6 指标
+
+见 `metrics.md` 的 R25 块：124 / ① 98 / ② 0 / ③ 26 / ④ 0 / ⑤ 0。
+
+### R25 §7 状态
+
+`NOT CONVERGED`（P0/P1 与大多数 P2 已处置；26 条 ③ 为反证成立或作者取舍；需 RB25/meta25 判断是否收敛）。
+
+### R25 §8 给 meta-review 的不确定点
+
+- DESIGN-02（窗口检查提升为类型约束）与 DESIGN-09（直核静态落地区迁移 `BootStorage`）需要架构裁决；本轮按 D-2 建议保留现状，未改型。
+- READER-A 的编号/计数体系、教学顺序类 6 条判为作者取舍；若 meta 认为仍应修，可作为下一轮 reader-experience 项。
+- `records_in_wire` 已改为“咨询标记”，但代码仍是 `bool`；D-034 的冻结形态未改，只修正了过度声明。

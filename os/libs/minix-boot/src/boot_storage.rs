@@ -29,11 +29,14 @@ use minix_types::{PhysBytes, VirBytes};
 
 use crate::boot_params::PARAM_BUF_CAP;
 use crate::handoff_v1::{
-    WIRE_MEMMAP_CAP, WIRE_MODULE_CAP, WIRE_PLATFORM_CAP, WIRE_RESERVED_CAP, WIRE_STARTUP_CAP,
+    WIRE_MEMMAP_CAP, WIRE_MODULE_CAP, WIRE_PARAM_CAP, WIRE_PLATFORM_CAP, WIRE_RESERVED_CAP,
+    WIRE_STARTUP_CAP,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
 use crate::memmap_source::{startup_record, SourceRecord, DTB_SOURCE_CAP};
 use crate::platform::{DTB, PlatformDescSource};
+
+const _: () = assert!(PARAM_BUF_CAP == WIRE_PARAM_CAP);
 
 const ZERO_REGION: MemoryRegion = MemoryRegion {
     base: PhysBytes(0),

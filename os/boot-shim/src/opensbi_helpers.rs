@@ -416,9 +416,9 @@ pub fn prepare_boot<'a>(
     if let Some(pa) = dtb_ptr() {
         // SAFETY: a1 points at the live DTB in the firmware identity map;
         // this runs before paging is enabled.
-        let len = unsafe { minix_boot::dtb_total_size(PhysBytes(pa)) }.unwrap_or(0);
+        let len = unsafe { minix_boot::dtb_total_size(PhysBytes(pa)) };
         storage
-            .push_platform_source(PlatformDescSource::with_len(DTB, PhysBytes(pa), len))
+            .push_platform_source(PlatformDescSource::with_optional_len(DTB, PhysBytes(pa), len))
             .expect("boot-shim: platform-source partition over capacity");
     }
 

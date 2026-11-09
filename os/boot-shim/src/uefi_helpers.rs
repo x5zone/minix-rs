@@ -218,10 +218,10 @@ pub fn find_platform_sources_into(out: &mut [PlatformDescSource]) -> usize {
                     let pa = PhysBytes(e.address as u64);
                     // SAFETY: the configuration-table pointer is readable in
                     // the firmware's identity map before EBS.
-                    let len = unsafe { minix_boot::rsdp_total_size(pa) }.unwrap_or(0);
+                    let len = unsafe { minix_boot::rsdp_total_size(pa) };
                     sources
                         .borrow_mut()
-                        .push(PlatformDescSource::with_len(RSDP, pa, len));
+                        .push(PlatformDescSource::with_optional_len(RSDP, pa, len));
                     break;
                 }
             }
@@ -235,10 +235,10 @@ pub fn find_platform_sources_into(out: &mut [PlatformDescSource]) -> usize {
                     let pa = PhysBytes(e.address as u64);
                     // SAFETY: the configuration-table pointer is readable in
                     // the firmware's identity map before EBS.
-                    let len = unsafe { minix_boot::dtb_total_size(pa) }.unwrap_or(0);
+                    let len = unsafe { minix_boot::dtb_total_size(pa) };
                     sources
                         .borrow_mut()
-                        .push(PlatformDescSource::with_len(DTB, pa, len));
+                        .push(PlatformDescSource::with_optional_len(DTB, pa, len));
                     break;
                 }
             }
@@ -248,10 +248,10 @@ pub fn find_platform_sources_into(out: &mut [PlatformDescSource]) -> usize {
                     let pa = PhysBytes(e.address as u64);
                     // SAFETY: the configuration-table pointer is readable in
                     // the firmware's identity map before EBS.
-                    let len = unsafe { minix_boot::rsdp_total_size(pa) }.unwrap_or(0);
+                    let len = unsafe { minix_boot::rsdp_total_size(pa) };
                     sources
                         .borrow_mut()
-                        .push(PlatformDescSource::with_len(RSDP, pa, len));
+                        .push(PlatformDescSource::with_optional_len(RSDP, pa, len));
                     break;
                 }
             }

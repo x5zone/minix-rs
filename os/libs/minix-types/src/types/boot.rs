@@ -453,8 +453,8 @@ const _: () = assert!(
 ///
 /// Replaces the hardcoded constants previously guarded by the
 /// `hardcoded_kernel_layout` feature (hardcoded kernel layout fix). The kernel layout is
-/// determined once at boot (from multiboot2/stivale2 headers or linker
-/// symbols) and shared across all user processes — the kernel mapping
+/// determined once at boot (by the boot-shim/bootface from the kernel ELF
+/// and each architecture's linker script) and shared across all user processes — the kernel mapping
 /// is identical in every page table.
 ///
 /// # Fields
@@ -491,7 +491,7 @@ impl KernelLayout {
     /// Creates a `KernelLayout` from raw boot-provided parameters.
     ///
     /// Intended to be called once during VM server initialization, after
-    /// the boot image / multiboot2 / stivale2 headers have been parsed.
+    /// the handoff's kernel layout has been decoded.
     /// The resulting value is stored in a global (see `vm::global`) and
     /// read by every `init_page_table()` call.
     pub const fn new(

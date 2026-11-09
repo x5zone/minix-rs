@@ -318,10 +318,10 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // (from the next step on).
     // SAFETY: the DTB is still in the identity/firmware mapping; this face
     // runs before paging is enabled.
-    let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(dtb_pa)) }.unwrap_or(0);
+    let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(dtb_pa)) };
     unsafe {
         *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
-            PlatformDescSource::with_len(DTB, PhysBytes(dtb_pa), dtb_len);
+            PlatformDescSource::with_optional_len(DTB, PhysBytes(dtb_pa), dtb_len);
     }
     // SAFETY: as above — a static reference after the write, with no concurrent
     // rewriting; the single array cell and the length-1 slice share the same
