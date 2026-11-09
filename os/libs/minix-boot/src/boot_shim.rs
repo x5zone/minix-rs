@@ -59,8 +59,5 @@ pub trait BootShim {
     /// segments). `storage` is owned by the caller (a `.bss` cell); the
     /// returned report borrows it. The caller only specifies how many bump
     /// pages to allocate for boot-stage page table construction.
-    fn prepare_boot<'a>(
-        storage: &'a mut BootStorage,
-        bump_pages: usize,
-    ) -> BootPrepareResult<'a>;
+    fn prepare_boot<'a>(storage: &'a mut BootStorage, bump_pages: usize) -> BootPrepareResult<'a>;
 }

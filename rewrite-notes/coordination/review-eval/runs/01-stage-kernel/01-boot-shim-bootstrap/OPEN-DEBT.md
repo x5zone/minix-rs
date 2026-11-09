@@ -9,9 +9,9 @@
 | F-R17-02 | P2 | ✅ 已修：UEFI 测试辅助三件套 + `UefiPoolAllocator` + 四个 static 收进 `qemu-test-kernels` feature；16 个测试内核 manifest 同步；生产 `fw-*-uefi` 不再链接 |
 | F-R17-04 | P2 | `KernelInfo` 增 `ram_authority` 字段（跨 minix-boot/内核/文档 ABI）；截止 R23 前裁决（已逾期两轮） |
 | F-R17-01 | P2 | `BootShim` 单实现 trait 的架构去留（保留为未来固件腿接口 / 改普通函数）；截止 R23 |
-| F-R17-03 | P2 | `dtb_copy::Phase` 栈化（带真实生命周期）；截止 R23 |
+| F-R17-03 | P2 | ✅ 已修：`static mut PHASE` → `PhaseCell(UnsafeCell<Phase>)`，`Sync` 的安全论证集中一处；无 `static mut` |
 | F-R20-01 | P2 | ✅ 已修：`BootPrepareResult.bump: PhysRange`、`arena_pa/root_page: PhysBytes`；`enter_kernel_image_v1` 收 `PhysBytes` |
 | F-R20-02 | P2 | ✅ 已修：`PhysRange`（构造拒绝反向）统一 `FreeRangeSet::cut`，调用点不再传 `(start,size)` |
-| F-R20-03 | P2 | **部分**：helper 已收进 `qemu-test-kernels`（生产不链接），但 `static mut`/假 `'static` 仍在测试路径；完整迁移受 `KernelInfo: &'static` 约束，见 R23 阻塞项 |
+| F-R20-03 | P2 | ✅ 已修：四个 `static mut` 表 → write-once `TestMapTables`（AtomicBool 单写 + Release 发布，初始化后只读）；`qemu-test-kernels` 门控，生产不链接；`'static` 由真实 static 生命周期支撑 |
 | F-R20-04 | P2 | ✅ 已修：补 reserved / from_memmap / dtb 覆盖的溢出/反向负控；minix-boot 192、kernel 862+8 |
 | — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |

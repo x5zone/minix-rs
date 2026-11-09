@@ -26,6 +26,7 @@
 
 use crate::ebs_map::{DescriptorRef, ty};
 use alloc::{boxed::Box, vec};
+use core::cell::UnsafeCell;
 
 pub const PAGE_BYTES: u64 = 4096;
 
@@ -83,7 +84,23 @@ enum Phase {
     Ready(OwnedDtb),
 }
 
-static mut PHASE: Phase = Phase::Idle;
+/// Single-threaded boot state. `UnsafeCell` keeps mutation out of a
+/// `static mut` (Rust 2024 forbids shared references to it); the safety
+/// argument is the module's single-threaded contract, stated once here.
+struct PhaseCell(UnsafeCell<Phase>);
+
+// SAFETY: the shim is single-threaded; every access below is a short
+// read-modify-write in one boot face, and no reference escapes the call.
+unsafe impl Sync for PhaseCell {}
+
+impl PhaseCell {
+    fn get(&self) -> &mut Phase {
+        // SAFETY: single-threaded boot; see the `Sync` comment.
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+static PHASE: PhaseCell = PhaseCell(UnsafeCell::new(Phase::Idle));
 
 /// Record the configuration table's DTB address.
 ///
@@ -97,7 +114,7 @@ pub fn note(dtb_pa: u64) {
             minix_boot::dtb_blob_aligned(dtb_pa),
             "boot-shim: configuration-table DTB is not 8-byte aligned — halting"
         );
-        core::ptr::addr_of_mut!(PHASE).write(Phase::Noted(dtb_pa));
+        *PHASE.get() = Phase::Noted(dtb_pa);
     }
 }
 
@@ -108,7 +125,7 @@ pub fn note(dtb_pa: u64) {
 /// call.
 pub fn awaiting_preflight() -> bool {
     // SAFETY: read-only access to the single-threaded boot state.
-    unsafe { matches!(core::ptr::addr_of!(PHASE).read(), Phase::Noted(_)) }
+    unsafe { matches!(*PHASE.get(), Phase::Noted(_)) }
 }
 
 /// Authorize the header page(s) on the preflight map, read the header once,
@@ -120,7 +137,7 @@ pub fn awaiting_preflight() -> bool {
 pub fn preflight(descs: &[DescriptorRef]) -> Result<(), DtbPageError> {
     // SAFETY: single-threaded boot; `PHASE` is written only by this module.
     unsafe {
-        match core::ptr::addr_of!(PHASE).read() {
+        match *PHASE.get() {
             Phase::Idle | Phase::Preflighted { .. } | Phase::Ready(_) => Ok(()),
             Phase::Noted(pa) => {
                 let header_end = pa.checked_add(HEADER_LEN as u64).expect(
@@ -138,12 +155,12 @@ pub fn preflight(descs: &[DescriptorRef]) -> Result<(), DtbPageError> {
                     !copy_target_overlaps(dst as u64, len, (pa, end)),
                     "boot-shim: DTB copy target overlaps the firmware blob — halting"
                 );
-                core::ptr::addr_of_mut!(PHASE).write(Phase::Preflighted {
+                *PHASE.get() = Phase::Preflighted {
                     source: (pa, end),
                     dst,
                     len,
                     header,
-                });
+                };
                 Ok(())
             }
         }
@@ -158,7 +175,7 @@ pub fn preflight(descs: &[DescriptorRef]) -> Result<(), DtbPageError> {
 pub fn authorize_and_copy(descs: &[DescriptorRef]) -> Result<Option<OwnedDtb>, DtbPageError> {
     // SAFETY: same single-threaded contract as `preflight`.
     unsafe {
-        match core::ptr::addr_of!(PHASE).read() {
+        match *PHASE.get() {
             Phase::Idle => Ok(None),
             Phase::Noted(_) => {
                 panic!("boot-shim: DTB copy requested before its header preflight — halting")
@@ -183,7 +200,7 @@ pub fn authorize_and_copy(descs: &[DescriptorRef]) -> Result<Option<OwnedDtb>, D
                     len,
                     source,
                 };
-                core::ptr::addr_of_mut!(PHASE).write(Phase::Ready(owned));
+                *PHASE.get() = Phase::Ready(owned);
                 Ok(Some(owned))
             }
             Phase::Ready(owned) => Ok(Some(owned)),
@@ -195,7 +212,7 @@ pub fn authorize_and_copy(descs: &[DescriptorRef]) -> Result<Option<OwnedDtb>, D
 pub fn owned() -> Option<OwnedDtb> {
     // SAFETY: read-only access after the single-threaded writes above.
     unsafe {
-        match core::ptr::addr_of!(PHASE).read() {
+        match *PHASE.get() {
             Phase::Ready(owned) => Some(owned),
             _ => None,
         }
@@ -264,7 +281,7 @@ fn checked_total(pa: u64, head: &[u8; HEADER_LEN]) -> usize {
 #[cfg(test)]
 pub(crate) fn reset() {
     // SAFETY: tests run with `RUST_TEST_THREADS=1`.
-    unsafe { core::ptr::addr_of_mut!(PHASE).write(Phase::Idle) }
+    unsafe { *PHASE.get() = Phase::Idle }
 }
 
 /// Test-only guard: cleans the stage even when an assertion panics.
@@ -368,8 +385,7 @@ mod tests {
     }
 
     fn phase() -> Phase {
-        // SAFETY: tests run with `RUST_TEST_THREADS=1`.
-        unsafe { core::ptr::addr_of!(PHASE).read() }
+        *PHASE.get()
     }
 
     #[test]
@@ -458,7 +474,11 @@ mod tests {
 
         let owned = authorize_and_copy(&map).unwrap().expect("copy authorized");
         assert_eq!(owned.source, (pa, pa + 0x100));
-        assert_eq!(owned.bytes(), blob.as_slice(), "copy equals the source bytes");
+        assert_eq!(
+            owned.bytes(),
+            blob.as_slice(),
+            "copy equals the source bytes"
+        );
         assert!(matches!(phase(), Phase::Ready(_)));
     }
 

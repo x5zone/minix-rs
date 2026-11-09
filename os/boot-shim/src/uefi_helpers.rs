@@ -24,7 +24,8 @@ use uefi::mem::memory_map::{MemoryMap, MemoryType};
 use uefi::system;
 use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::loader::{self, FileBytes, FileLoader};
 
@@ -368,23 +369,38 @@ fn collect_param_buf_into(out: &mut [u8; minix_boot::PARAM_BUF_CAP]) -> minix_bo
 /// deep-copies both tables into its own `.bss` before anything can allocate from
 /// the free list; the shim never returns and never frees, so those pages are dead
 /// to the firmware afterwards. Keep both orderings if this function is restructured.
-#[cfg(feature = "qemu-test-kernels")]
-static mut UEFI_FREE: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] = [MemoryRegion {
+const EMPTY_REGION: MemoryRegion = MemoryRegion {
     base: PhysBytes(0),
     len: 0,
 };
-    ebs_map::MAX_MAP_DESCRIPTORS];
-static mut UEFI_RESERVED: [MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS] = [MemoryRegion {
-    base: PhysBytes(0),
-    len: 0,
-};
-    ebs_map::MAX_MAP_DESCRIPTORS];
-static mut UEFI_SIDE: [MemoryRegion; ebs_map::SIDE_CAP] = [MemoryRegion {
-    base: PhysBytes(0),
-    len: 0,
-}; ebs_map::SIDE_CAP];
-static mut MAP_STORAGE: ebs_map::MapStorage = ebs_map::MapStorage::new();
 
+/// Write-once storage for the QEMU test path. `initialized` enforces a single
+/// writer; after the Release store every read is immutable, so no `static mut`
+/// or post-initialization alias exists. The arrays are `'static` because they
+/// really do live for the process (they are statics, not leaked heap).
+#[cfg(feature = "qemu-test-kernels")]
+struct TestMapTables {
+    initialized: AtomicBool,
+    storage: UnsafeCell<ebs_map::MapStorage>,
+    free: UnsafeCell<[MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS]>,
+    reserved: UnsafeCell<[MemoryRegion; ebs_map::MAX_MAP_DESCRIPTORS]>,
+    side: UnsafeCell<[MemoryRegion; ebs_map::SIDE_CAP]>,
+}
+
+// SAFETY: single-threaded test-kernel initialization; the AtomicBool admits
+// exactly one writer, and no reader observes the cells before that writer
+// publishes `initialized = true` with Release.
+#[cfg(feature = "qemu-test-kernels")]
+unsafe impl Sync for TestMapTables {}
+
+#[cfg(feature = "qemu-test-kernels")]
+static TEST_MAP_TABLES: TestMapTables = TestMapTables {
+    initialized: AtomicBool::new(false),
+    storage: UnsafeCell::new(ebs_map::MapStorage::new()),
+    free: UnsafeCell::new([EMPTY_REGION; ebs_map::MAX_MAP_DESCRIPTORS]),
+    reserved: UnsafeCell::new([EMPTY_REGION; ebs_map::MAX_MAP_DESCRIPTORS]),
+    side: UnsafeCell::new([EMPTY_REGION; ebs_map::SIDE_CAP]),
+};
 
 #[cfg(feature = "qemu-test-kernels")]
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
@@ -425,10 +441,18 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let buffer =
         unsafe { core::slice::from_raw_parts(base as *const u8, descriptor_size * entries) };
 
-    // SAFETY: boot is single-threaded and this leg runs once per image; these
-    // statics have no other holder.
+    // SAFETY: boot is single-threaded; `initialized` admits one writer and
+    // publishes only after the tables are filled.
+    let tables = &TEST_MAP_TABLES;
+    assert!(
+        !tables.initialized.swap(true, Ordering::AcqRel),
+        "boot-shim: build_memmaps called twice on one test kernel"
+    );
     unsafe {
-        let storage = &mut *core::ptr::addr_of_mut!(MAP_STORAGE);
+        let storage = &mut *tables.storage.get();
+        let free = &mut *tables.free.get();
+        let reserved = &mut *tables.reserved.get();
+        let side = &mut *tables.side.get();
         storage
             .parse_raw_map(
                 buffer,
@@ -447,16 +471,16 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
             pa_limit(),
             |_index, disposition, region| match disposition {
                 ebs_map::Disposition::Allocate => {
-                    (*core::ptr::addr_of_mut!(UEFI_FREE))[free_n] = *region;
+                    free[free_n] = *region;
                     free_n += 1;
                 }
                 ebs_map::Disposition::ReservedMapped => {
-                    (*core::ptr::addr_of_mut!(UEFI_RESERVED))[reserved_n] = *region;
+                    reserved[reserved_n] = *region;
                     reserved_n += 1;
                 }
                 ebs_map::Disposition::Side => {
-                    if side_n < (*core::ptr::addr_of!(UEFI_SIDE)).len() {
-                        (*core::ptr::addr_of_mut!(UEFI_SIDE))[side_n] = *region;
+                    if side_n < side.len() {
+                        side[side_n] = *region;
                     }
                     side_n += 1;
                 }
@@ -473,14 +497,8 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
             side_n
         );
         (
-            core::slice::from_raw_parts(
-                core::ptr::addr_of!(UEFI_FREE) as *const MemoryRegion,
-                free_n,
-            ),
-            core::slice::from_raw_parts(
-                core::ptr::addr_of!(UEFI_RESERVED) as *const MemoryRegion,
-                reserved_n,
-            ),
+            core::slice::from_raw_parts(free.as_ptr(), free_n),
+            core::slice::from_raw_parts(reserved.as_ptr(), reserved_n),
         )
     }
 }
