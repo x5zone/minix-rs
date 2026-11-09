@@ -204,12 +204,12 @@ python3 tools/doc-structure-check.py <doc.md>
 | 轮型 | 输入 | 角色 | 出口 |
 |---|---|---|---|
 | 发现轮（discovery） | 全文 + 关联代码 | 全角色（P-FACT A/B、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑） | 全部 `①/④/⑥` 已修、`②` 有用户批准、`FP` 有反证、`⑤`=0、`未闭环=0`；然后**只能**进入验证轮 |
-| 验证轮（verification） | 上轮修复 hunk、上轮未闭环项、随机 20% 未改章节、最终 HEAD 的 RB | P-FACT 定点、READER 定点（只读修改段及邻句）、RB；不跑全量 A/B/C、不跑全量 DESIGN | 新 in-scope 真缺陷=0 → `CONVERGED`；>0 → 只修这些项，下一轮仍为验证轮 |
+| 验证轮（verification） | 上轮修复 hunk、上轮未闭环项、随机 20% 未改章节、最终 HEAD 的 RB | P-FACT 定点、READER 定点（只读修改段及邻句）、RB；不跑全量 A/B/C、不跑全量 DESIGN | 新 in-scope 真缺陷=0 → `CONVERGED`； >0 → 在同一验证轮内修完并复跑 delta 验证；**不得开新轮**，也不得用 R(n+1) 承接 |
 
 硬规则：
 
 1. **发现轮之后不得再开第二个全量发现轮**。验证轮发现的新问题只修该问题；修完继续验证，不重开全量面板。
-2. 验证轮最多 2 次；第 2 次仍出现新的 P0/P1/P2/P3 真缺陷，写 `STUCK-REPORT.md` 并交用户裁决，不得自动转第 3 次。
+2. 验证轮最多在同一轮内跑 2 次 delta；第 2 次仍出现新的 P0/P1/P2/P3 真缺陷，写 `STUCK-REPORT.md` 并交用户裁决，不得新开一轮。**上一轮未闭环 >0 时，禁止出现下一轮小节；这条由 `eval-trace-check.py` 机械检查。**
 3. 验证轮必须审**最终 HEAD**（含本轮所有修复提交）；审旧 sha 的回读不算。
 4. RB/commit 回归的发现必须写入同一 `defect-ledger.md` 并计入 `未闭环`；只写在 loop 或 RB 报告里不算入账。
 5. 收敛后写 `FREEZE.md`（文档 sha、HEAD、未闭环=0、验证轮证据）；之后只有用户明确要求或出现新证据才允许重开，不自动进入下一轮。

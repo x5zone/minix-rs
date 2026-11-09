@@ -49,7 +49,7 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 6. 写 `runs/<stage>/<doc-stem>/loop.md §0`：commit、sha256、行数、范围、关联代码、语料条目 ID。
 7. 02/03 阶段先读 `review-eval/doc-set/` 的对账简报；没有简报就先做对账，不进入 L1。
 8. **读本篇前几轮 follow-ups**：如果本篇已跑过面板轮，读 `runs/<stage>/<doc-stem>/follow-ups.md` 中上一轮的未修 ② 项；按文件交集分成两份——"顺手修"（与本篇关联代码重叠的项，本轮 ① 同批处理）与"核销清单"（需要确认是否已被其他轮修复的项，交 P-FACT 在面板中确认状态）。首轮没有前轮 follow-ups 时跳过此步。
-9. **定轮型**：`runs/<stage>/<doc-stem>/loop.md §0` 必须写 `轮型: discovery` 或 `轮型: verification`。首次审全文是 discovery；discovery 收口后只能进 verification；verification 发现新 in-scope 真缺陷时，下一轮仍是 verification（最多 2 次），不得重开全量 discovery。
+9. **定轮型**：`runs/<stage>/<doc-stem>/loop.md §0` 必须写 `轮型: discovery` 或 `轮型: verification`。首次审全文是 discovery；discovery 收口后只能进 verification；verification 发现新 in-scope 真缺陷时，在**同一轮内**修完并复跑 delta（最多 2 次），不得重开全量 discovery，也不得用下一轮承接；上一轮未闭环 >0 时禁止出现下一轮小节。
 
 范围声明模板：
 
@@ -188,13 +188,13 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 2. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）；
 3. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）；
 4. `eval-trace-check.py` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、R13+ 收口小节检查）；
-5. **轮型顺序**：discovery 只能接 verification；verification 新 in-scope 真缺陷=0 才 `CONVERGED`；verification 最多 2 次，第 3 次改 `STUCK` 交用户，不自动循环。
+5. **轮型顺序**：discovery 只能接 verification；verification 新 in-scope 真缺陷=0 才 `CONVERGED`；同一验证轮内最多 2 次 delta；第 2 次仍有新缺陷即 `STUCK` 交用户，不自动新开一轮。**上一轮未闭环 >0 时禁止出现下一轮小节。**
 
 ## L7 收敛检查与工作流升版
 
 ### 7a. 文档收敛检查
 
-按 `review-evals.md` §6A 的 G1–G9 判据逐条检查。G1–G7 全满足 + 最近一轮是 verification + 该轮新 in-scope 真缺陷=0 → 该篇 `CONVERGED`，写 `FREEZE.md`（HEAD、文档 sha、未闭环=0、验证轮证据），进下一篇；不满足 → 只修该验证轮发现，下一轮仍为 verification（最多 2 次）。
+按 `review-evals.md` §6A 的 G1–G9 判据逐条检查。G1–G7 全满足 + 最近一轮是 verification + 该轮新 in-scope 真缺陷=0 → 该篇 `CONVERGED`，写 `FREEZE.md`（HEAD、文档 sha、未闭环=0、验证轮证据），进下一篇；不满足 → 只修该验证轮发现，在同一轮内复跑 delta（最多 2 次）；不得新开一轮。
 
 **verification 第 2 次仍有新 in-scope 真缺陷** → 生成 `STUCK-REPORT.md` → 标记 `STUCK` → 交用户裁决；不得自动开第 3 次验证，更不得重开全量 discovery。
 

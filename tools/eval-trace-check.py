@@ -503,6 +503,69 @@ def check_round_closure(loop_text: str, report: Report) -> None:
             report.ok("round-closure", f"Round {label} 收口小节齐全（### L6 / ### L6.5）")
 
 
+def _round_open_items(
+    ledger_rows: dict[str, dict],
+    section_classes: dict[str, dict[str, str]],
+) -> dict[int, list[str]]:
+    """Return open IDs per ledger round for R25+."""
+    open_rounds: dict[int, list[str]] = {}
+    for section, mapping in section_classes.items():
+        m = re.match(r"^R(\d+)\b", section)
+        if not m or int(m.group(1)) < 25:
+            continue
+        opened: list[str] = []
+        for fid, cls in mapping.items():
+            row = ledger_rows.get(fid)
+            if row is None:
+                continue
+            if cls in {"LEGACY", "⑤"}:
+                opened.append(fid)
+            elif cls == "②":
+                action = row["action"]
+                if "用户批准" not in action or re.search(r"20\d{2}-\d{2}-\d{2}", action) is None:
+                    opened.append(fid)
+            elif cls in {"①", "④", "⑥"} and re.search(
+                r"未修|待修|未实施|TODO", row["verify"], re.IGNORECASE
+            ):
+                opened.append(fid)
+        if opened:
+            open_rounds[int(m.group(1))] = sorted(opened)
+    return open_rounds
+
+
+def _loop_round_numbers(loop_text: str) -> set[int]:
+    nums = {int(n) for n in re.findall(r"^##\s+R(\d+)\b", loop_text, re.MULTILINE)}
+    nums |= {int(n) for n in re.findall(r"^#\s+Round\s+(\d+)", loop_text, re.MULTILINE)}
+    return nums
+
+
+def check_round_monotonicity(
+    loop_text: str,
+    ledger_rows: dict[str, dict],
+    section_classes: dict[str, dict[str, str]],
+    report: Report,
+) -> None:
+    """A round with open items must not have a later round section."""
+    open_rounds = _round_open_items(ledger_rows, section_classes)
+    loop_rounds = _loop_round_numbers(loop_text)
+    ledger_rounds = {
+        int(m.group(1))
+        for section in section_classes
+        if (m := re.match(r"^R(\d+)\b", section))
+    }
+    all_rounds = loop_rounds | ledger_rounds
+    for r, ids in sorted(open_rounds.items()):
+        later = sorted(x for x in all_rounds if x > r)
+        if later:
+            report.fail(
+                "round-order",
+                f"R{r} 有未闭环 {len(ids)} 项（{', '.join(ids[:5])}{'…' if len(ids) > 5 else ''}），"
+                f"却已出现 R{later[0]}；禁止带病进入下一轮，必须在 R{r} 内修完",
+            )
+        else:
+            report.ok("round-order", f"R{r} 未闭环项未泄漏到下一轮")
+
+
 def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
     report = Report()
     if not run_dir.is_dir():
@@ -562,6 +625,8 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         check_round_closure(loop_text, report)
         check_placeholders(loop_text, report, "loop.md")
     expected_counts = None
+    ledger_rows: dict[str, dict] = {}
+    section_classes: dict[str, dict[str, str]] = {}
     if ledger_text is not None:
         check_placeholders(ledger_text, report, "defect-ledger.md")
         ledger_ids, ledger_rows, section_ids, section_classes = parse_ledger(ledger_text, report)
@@ -653,6 +718,9 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
 
     if metrics_text is not None:
         check_metrics(metrics_text, report, round_tag, expected_counts)
+
+    if loop_text is not None:
+        check_round_monotonicity(loop_text, ledger_rows, section_classes, report)
 
     return report
 
@@ -860,6 +928,37 @@ def self_test() -> int:
         messages = " ".join(item["message"] for item in bad.items)
         if not bad.failed or "不得 CONVERGED" not in messages:
             print("self-test FAIL: verification 有新发现未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # 上一轮未闭环时出现下一轮小节 → 必须拦截（禁止带病进下一轮）
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_open = """# 台账
+
+## R25 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ⑤ | 缺源码核实路径：R26 取证 |  | 未闭环 |
+"""
+        metrics_open = """# 指标
+
+- 发现总数: 1
+- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 1 / ⑥ 0 / FP 0
+- 未闭环: 1
+- 轮型: discovery
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_open, metrics_open)
+        loop = (run_dir / "loop.md").read_text()
+        (run_dir / "loop.md").write_text(loop + "\n## R26 面板轮\n\n### §0 基线\n占位\n", encoding="utf-8")
+        bad = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "禁止带病进入下一轮" not in messages:
+            print("self-test FAIL: 上一轮未闭环却出现 R26 未被拦截")
             print_report(bad, False)
             return 1
 
