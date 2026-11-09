@@ -1302,6 +1302,7 @@
 - 宿主：boot-shim 136 + `ebs_boundary_audit` 6；minix-kernel 864 + 8 ignored；minix-types 339；minix-boot 196；minix-vm 548；minix-arch 288。
 - QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志归档在 `logs/round24-{x86-shim,aarch64-shim,riscv-uboot-shim,riscv-bootface,riscv-kernel-image,aarch64-smp-aps}.log`（各含 `TEST_RESULT: PASS` 或 `RESULT: PASS`）。
 - 修复后文档：3477 行 / `a1fcf203ae27131b517ac5b486b70619fe29f5ec29734cfb52d3659259f09962`。
+- 修复提交：`91e652a73`（40 files, +1139/−440）；`BASELINE.txt` 已登记 `r24_fix_head`。
 - RB24 首轮：71/80 = 88.8%，NOT PASS；B1/B2 与 N1–N11 已按最小补修逐项处理。第二次定向回读 23/23 = 100%，PASS（13 项定向 + 10 条上轮真修重放；未发现新 P0/P1/P2）。
 
 RB24 首轮 13 项逐项处置：
