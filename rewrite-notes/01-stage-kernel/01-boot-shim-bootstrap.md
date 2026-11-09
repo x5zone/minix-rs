@@ -2512,14 +2512,14 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 
 `entry_path_eq` 把"路径必须 NUL 结尾"变成匹配条件的一部分：`entry.path[bytes.len()] == 0`。表由 `uboot_main::build_shim_table` 在 shim 的 `.bss` 内构建：它写入路径字节 + 一个终止 NUL；字段其余字节由 `.bss` 零初值保证，路径超界由构建时的两条 assert 当场拦下（消息 `does not fit the BootFileEntry field`）。因此 `entry_path_eq` 的 NUL 条件是构建器与查表器之间的契约；构建器若写坏路径，`find` 返回 `None`，随后 `read_required` 报"找不到内核"。`BootFileTable::valid_entries` 里 `entry_count` 被夹到容量上限（`(self.entry_count as usize).min(BOOT_FILE_TABLE_MAX_ENTRIES)`），因此一个写坏的 `entry_count` 只会让多余的条目被忽略，不会越界读。
 
-**若把 `MODULE_NAMES` 里 `tty` 与 `mib` 两项互换会怎样**：装载会全部成功（12 个文件都在），`const _: () = assert!(... == NR_BOOT_MODULES)` 也通过——数量没变。但是位置 6 上的 `BootModule` 记的是 `mib` 的镜像与名字，内核按位置把它绑到 `tty` 的进程号上；位置 7 上则是 `tty` 的镜像，被绑到 `mib` 的进程号。启动过程依旧能走到 `kmain`，进程表也能建起来；症状出现在第一次对 `tty` 或 `mib` 发系统调用时——调用被打到错误的进程号，表现为"服务没有响应"或"收到协议外的回复"，与"装载时顺序错了"之间隔着整个启动流程。
+**若把 `MODULE_NAMES` 里 `tty` 与 `mib` 两项互换会怎样**：装载会全部成功（12 个文件都在），数组长度仍是 `[&str; NR_BOOT_MODULES]`（数量没变），strict 门的**按位置核名**也只会看到"每个位置都有名字"，不会发现两个名字互换了。但是位置 6 上的 `BootModule` 记的是 `mib` 的镜像与名字，内核按位置把它绑到 `tty` 的进程号上；位置 7 上则是 `tty` 的镜像，被绑到 `mib` 的进程号。启动过程依旧能走到 `kmain`，进程表也能建起来；症状出现在第一次对 `tty` 或 `mib` 发系统调用时——调用被打到错误的进程号，表现为"服务没有响应"或"收到协议外的回复"，与"装载时顺序错了"之间隔着整个启动流程。
 
 ### 4.4 `KernelInfo` 的构造：两个构造入口与一条校验门链（→3.4、3.5）
 
 五条生产腿（两条 UEFI 链、U-Boot shim、两个直核面——计数口径见 §3.7 术语对账）在**数据形状**上收敛，但构造入口分两组（各腿如何产出两张表以 §3.4.1 为权威，本节只讲构造入口）：两个直核面共用 [`fn build_kernel_info`](<os/boot-shim/src/lib.rs:fn build_kernel_info>)（boot-shim 库根导出）；三条 v1 腿（两条 UEFI 链 + U-Boot shim）共用 `BootStorage`/`BootReport` 形状与 arena 协议，发送侧不构造 `KernelInfo`。这是"层内收敛原则"（§3.4 开头：收敛数据形状，不合并引导形态层）的落点：每条路径仍各自产出自己的两张表（`memmap` 与 `reserved_regions`），共享的是形状而不是一个构造函数。
 
 ```rust
-// 代码引用（略去函数文档注释与 `minix_boot::`/`minix_types::` 路径限定符；代码内注释有删节与改述），os/boot-shim/src/lib.rs:fn build_kernel_info。
+// 代码引用（略去函数文档注释与 `minix_types::` 路径限定符；`minix_boot::InputObjectId` 保留以标出权威类型；代码内注释有删节与改述），os/boot-shim/src/lib.rs:fn build_kernel_info。
 pub fn build_kernel_info(
     memmap: &'static [MemoryRegion],
     reserved_regions: &'static [MemoryRegion],

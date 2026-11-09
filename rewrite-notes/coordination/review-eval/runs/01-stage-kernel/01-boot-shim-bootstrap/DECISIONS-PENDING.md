@@ -320,3 +320,15 @@ B 或 C。如果目标是“把这篇文档交付”，B 足够；如果目标�
 **代码事实**（`os/boot-shim/src/loader.rs`）：装载路径有**两个**断言函数——`first_source_destination_overlap` 检查“每个段的文件字节区间 × 每个段的目标 LMA 区间”的任意交叉（src-vs-dst），`first_overlapping_pair` 检查“目标 LMA 区间两两不相交”（dst-vs-dst）；**两者都不检查文件字节区间之间（src-vs-src）的重叠**。
 
 **据此的判断**：§4.3 的“两两不相交”按字面覆盖了 src∪dst 的并集，范围**宽于**代码（src-vs-src 未查）；但 src-vs-src 重叠对只读拷贝无害，代码是对的，宽的是文档措辞。据此该行属**措辞类 P3**（修复方式是把 §4.3 的句子收窄为“每段的文件字节区间与该段及所有段的目标 LMA 区间不相交，且目标 LMA 区间两两不相交”），不是内容合同冲突。
+
+## R23 新增待裁决（2026-11-09）
+
+以下三项来自 R23 DESIGN-D2，需用户/架构 owner 裁决后才能在 R24 执行：
+
+| ID | 事项 | 事实 | 选项 | 默认建议 |
+|---|---|---|---|---|
+| D-R23-01（DESIGN-10） | 两个直核 bootface 约 280 行非注释重复（流程而非常量） | `bootface.rs` 与 `bootface_a64.rs` 各有一份 `place_modules`、startup 装配与入口骨架；`bootface_common.rs` 已抽出纯 helper | (a) 继续下沉可共享 helper，流程保留两份；(b) 抽一个泛型 runner，arch 文件只留常量与 `say` | 先 (a)：风险低，保留 riscv `satp=0` 的物理视图纪律 |
+| D-R23-02（DESIGN-11） | 删除 `VmBootHandoff.kern_ident`（恒空 1 KiB） | v8 起生产者写零、消费者只校验上界；删除需 `VM_BOOT_HANDOFF_VERSION` 8→9 并同步 VM server | (a) R24 删除并升版；(b) 保留字段并在文档标 v9 删除计划 | (a)，已登记 `OPEN-DEBT.md` F-R23-03 |
+| D-R23-03（DESIGN-13） | `pt_alloc::register` 二次注册在 release 下静默保留第一个 | 集成测试 `pt_alloc_write_once.rs` 已锁定该行为；debug 下 panic | (a) 全构建 panic；(b) 返回 `Result<(), AlreadyRegistered>` 由调用方 expect | (a)：与启动 fail-closed 纪律一致；改测试契约 |
+
+裁决后更新 `DECISIONS.md` 与 `follow-ups.md` 的状态列；未裁决前按“默认建议”的排序等待，不直接实施行为变更。

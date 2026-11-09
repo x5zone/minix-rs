@@ -1625,14 +1625,27 @@
 | DESIGN-03 | design-d2 | P2 | design | ① | BootStorageCell 改一次性 `take`，二次 panic | code diff | QEMU 三门 PASS |
 | DESIGN-04 | design-d2 | P2 | design | ① | boot_storage 模块文档收窄 source/startup 在 UEFI 腿直写 wire | code diff | 文档与代码一致 |
 | DESIGN-05 | design-d2 | P3 | design | ③ | `write_envelope(&KernelInfo)` 被跨 crate 测试使用，不是死接口 | grep 调用点 | 保留 |
-| DESIGN-06 | design-d2 | P2 | design | ② | wire 偏移三处定义收敛到 `offset_of!` 单一来源；R24 | follow-ups.md | 带日期转出 |
+| DESIGN-06 | design-d2 | P2 | design | ① | 新增 `envelope_offsets`（全部 `offset_of!`），读写两侧改为 re-export；单一来源 | `handoff_v1.rs` 模块；minix-boot 196 | 编译期偏移同源 |
 | DESIGN-07 | design-d2 | P2 | design | ① | 用 `Classification` 计数替代编码后解码 | code diff; ebs 门 PASS | 删除多余解码 |
 | DESIGN-08 | design-d2 | P2 | design | ① | 删 `classify` 的 `vm_module_idx` 死参数 | code diff; kernel 862+8 | 测试通过 |
 | DESIGN-09 | design-d2 | P2 | design | ① | 删两个 bootface 的冗余 `pt_alloc::register` | code diff; QEMU 三门 PASS | 测试通过 |
 | DESIGN-10 | design-d2 | P2 | design | ② | 两个 bootface 流程合并需架构 owner 裁决；R24 | follow-ups.md | 带日期转出 |
 | DESIGN-11 | design-d2 | P2 | design | ② | 删 `VmBootHandoff.kern_ident` 需 wire v9 + VM server 同步；R24 | follow-ups.md | 带日期转出 |
-| DESIGN-12 | design-d2 | P2 | design | ② | `store_kernel_info` 泛型 landing helper；R24 | follow-ups.md | 带日期转出 |
+| DESIGN-12 | design-d2 | P2 | design | ① | 新增 `land_slice<T: Copy>`，五段落地区收成一次调用 | `os/kernel/src/lib.rs`；kernel 862+8 | 测试通过 |
 | DESIGN-13 | design-d2 | P2 | design | ② | `pt_alloc` release 二次注册语义需用户裁决；R24 | follow-ups.md | 带日期转出 |
 | DESIGN-14 | design-d2 | P2 | design | ① | 同 FACT-A-01：§4.4 引文补 authority | doc diff | 引文可编译 |
 | DESIGN-15 | design-d2 | P2 | design | ① | §1.4 显式排除 dtb_copy/resv_claims；§7.3 补两文件 | doc diff | 范围声明可见 |
 | DESIGN-16 | design-d2 | P2 | design | ① | `boot_shim.rs`→`boot_prepare.rs`，模块名与内容一致 | code diff; 全仓引用更新 | 测试通过 |
+
+### R23 独立回读（RB23）与补修
+
+`panel/round23-rb.md` 首轮判 **NOT PASS**（抽样 63 条：真修 56、半修 6、处置错 1；④ 16/17）。阻断项逐条补修后第二次回读 **PASS**：
+
+| RB23 项 | 严重度 | 处置 | 证据 |
+|---|---|---|---|
+| B1 §4.2 引文仍写 `decode_descriptors` | P0 | ① 改为 `storage.commit_map_tables(classification.conventional, classification.reserved)` | doc:2283 与 `uefi_helpers.rs:1126` 同形 |
+| B2 “源码注释声明 TLB 覆盖”无源 | P1 | ① 删除归因，改“本文推断，C 源无成文依据（待源码核实）” | doc:1132 与 `protect.c:352-368` 对读 |
+| Q1 related-code 仍列 `boot_shim.rs` | P2 | ① 改 `boot_prepare.rs`，48/48 存在 | `related-code.txt:35` |
+| Q2 `Paging` 20→22；const assert 旧引用 | P2 | ① 改 22 个成员；删 const assert 句 | doc:1827、doc:2515 |
+| Q3 ② 五条无日期 | P3 | ① 补 `2026-11-16` | `follow-ups.md:113-117` |
+| Q4 `§3.7 禁止`仍在 §2.6.4 | P3 | ① 改纯前向指针 | doc:1132 |

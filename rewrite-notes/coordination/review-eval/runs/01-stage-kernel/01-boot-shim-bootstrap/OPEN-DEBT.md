@@ -14,4 +14,5 @@
 | F-R20-02 | P2 | ✅ 已修：`PhysRange`（构造拒绝反向）统一 `FreeRangeSet::cut`，调用点不再传 `(start,size)` |
 | F-R20-03 | P2 | ✅ 已修：四个 `static mut` 表 → write-once `TestMapTables`（AtomicBool 单写 + Release 发布，初始化后只读）；`qemu-test-kernels` 门控，生产不链接；`'static` 由真实 static 生命周期支撑 |
 | F-R20-04 | P2 | ✅ 已修：补 reserved / from_memmap / dtb 覆盖的溢出/反向负控；minix-boot 192、kernel 862+8 |
+| F-R23-03 | P2 | `VmBootHandoff.kern_ident` 自 v8 起恒空；删除需 `VM_BOOT_HANDOFF_VERSION` 8→9 并同步 VM server（跨 crate）。负责人：boot owner；截止 R24（2026-11-16） |
 | — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |

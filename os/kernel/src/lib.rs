@@ -1182,6 +1182,25 @@ fn build_bootstrap_root_and_enable<A: BootArch>(root_page: PhysBytes, policy: &K
 /// kmain Phase A calls this; bootstrap test kernels that bypass kmain call
 /// it explicitly before any consumer of [`KERNEL_INFO`] (e.g.
 /// `dispatch_diagctl`'s kernel-span translation).
+/// Land a boot-shim slice into a kernel `.bss` store (DESIGN-12).
+///
+/// The capacity check is fail-closed; the same-address case is skipped so
+/// `kmain` can re-store its own global copy without `ptr::copy` aliasing UB.
+fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
+    assert!(
+        src.len() <= dst.len(),
+        "store_kernel_info: {what} exceeds the .bss landing pad"
+    );
+    if src.as_ptr() != dst.as_ptr() {
+        // SAFETY: `src.len() <= dst.len()`, the ranges are distinct unless the
+        // pointer equality guard above skipped, and `ptr::copy` tolerates
+        // partial overlap.
+        unsafe {
+            core::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), src.len());
+        }
+    }
+}
+
 pub fn store_kernel_info(kernel_info: &KernelInfo) {
     // SAFETY: boot is single-threaded (before BKL exists); one write, then
     // read-only for the rest of the run.
@@ -1199,13 +1218,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         // the equality guard below.
         let store = &mut *crate::globals::RESERVED_REGION_STORE.get();
         let src = kernel_info.reserved_regions;
-        assert!(
-            src.len() <= store.len(),
-            "store_kernel_info: reserved_regions exceeds the .bss landing pad"
-        );
-        if src.as_ptr() != store.as_ptr() {
-            core::ptr::copy(src.as_ptr(), store.as_mut_ptr(), src.len());
-        }
+        land_slice(src, store, "reserved_regions");
         // The same disease takes the `memmap` and
         // `boot_modules` payloads — both live in the boot-shim's UEFI-pool
         // heap and their pages do not survive the rest of boot (real
@@ -1217,13 +1230,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         // strlcpy-style (15-byte bound, same as `vm_handoff::copy_name`).
         let mstore = &mut *crate::globals::MEMMAP_REGION_STORE.get();
         let msrc = kernel_info.memmap;
-        assert!(
-            msrc.len() <= mstore.len(),
-            "store_kernel_info: memmap exceeds the .bss landing pad"
-        );
-        if msrc.as_ptr() != mstore.as_ptr() {
-            core::ptr::copy(msrc.as_ptr(), mstore.as_mut_ptr(), msrc.len());
-        }
+        land_slice(msrc, mstore, "memmap");
         let bstore = &mut *crate::globals::BOOT_MODULE_STORE.get();
         let bnames = crate::globals::BOOT_MODULE_NAME_STORE.get();
         let bsrc = kernel_info.boot_modules;
@@ -1262,13 +1269,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         // the same landing treatment.
         let pstore = &mut *crate::globals::PLATFORM_SOURCE_STORE.get();
         let psrc = kernel_info.platform_sources;
-        assert!(
-            psrc.len() <= pstore.len(),
-            "store_kernel_info: platform_sources exceeds the .bss landing pad"
-        );
-        if psrc.as_ptr() != pstore.as_ptr() {
-            core::ptr::copy(psrc.as_ptr(), pstore.as_mut_ptr(), psrc.len());
-        }
+        land_slice(psrc, pstore, "platform_sources");
         let param = &mut *crate::globals::PARAM_BUF_STORE.get();
         let csrc = kernel_info.param_buf;
         assert!(
@@ -1287,22 +1288,10 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         // here so `store_kernel_info` really makes the snapshot self-contained.
         let sstore = &mut *crate::globals::SOURCE_RECORD_STORE.get();
         let ssrc = kernel_info.memmap_sources;
-        assert!(
-            ssrc.len() <= sstore.len(),
-            "store_kernel_info: memmap_sources exceeds the .bss landing pad"
-        );
-        if ssrc.as_ptr() != sstore.as_ptr() {
-            core::ptr::copy(ssrc.as_ptr(), sstore.as_mut_ptr(), ssrc.len());
-        }
+        land_slice(ssrc, sstore, "memmap_sources");
         let tstore = &mut *crate::globals::STARTUP_RECORD_STORE.get();
         let tsrc = kernel_info.startup_objects;
-        assert!(
-            tsrc.len() <= tstore.len(),
-            "store_kernel_info: startup_objects exceeds the .bss landing pad"
-        );
-        if tsrc.as_ptr() != tstore.as_ptr() {
-            core::ptr::copy(tsrc.as_ptr(), tstore.as_mut_ptr(), tsrc.len());
-        }
+        land_slice(tsrc, tstore, "startup_objects");
         let mut k = *kernel_info;
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
         k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());

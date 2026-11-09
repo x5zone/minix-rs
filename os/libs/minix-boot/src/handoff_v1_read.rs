@@ -33,28 +33,7 @@ pub const MAX_PAGE_DIR_INDEX: usize = 512;
 
 /// Envelope field offsets (mirror of the producer).
 mod offsets {
-    pub const MAGIC: usize = 0;
-    pub const VERSION: usize = 4;
-    pub const RAM_AUTHORITY: usize = 12;
-    pub const SIZE: usize = 8;
-    pub const ARENA_LEN: usize = 16;
-    pub const KERN_VIRT_BASE: usize = 24;
-    pub const KERN_PHYS_BASE: usize = 32;
-    pub const KERN_SIZE: usize = 40;
-    pub const USER_SP: usize = 48;
-    pub const KERN_STACK_TOP: usize = 56;
-    pub const SYSCALL_ENTRY: usize = 64;
-    pub const ROOT_PAGE: usize = 72;
-    pub const BUMP_BASE: usize = 80;
-    pub const BUMP_NEXT: usize = 88;
-    pub const BUMP_END: usize = 96;
-    pub const MEMMAP_BYTE_LEN: usize = 104;
-    pub const RESERVED_BYTE_LEN: usize = 112;
-    pub const MODULES_BYTE_LEN: usize = 120;
-    pub const PLATFORM_BYTE_LEN: usize = 128;
-    pub const PARAM_BYTE_LEN: usize = 136;
-    pub const SOURCES_BYTE_LEN: usize = 144;
-    pub const STARTUP_BYTE_LEN: usize = 152;
+    pub use crate::handoff_v1::envelope_offsets::*;
 }
 
 /// Decoder failure. Every variant is fail-closed: the receiver must not fall

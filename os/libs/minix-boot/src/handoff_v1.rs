@@ -328,6 +328,38 @@ pub struct BootHandoffV1 {
     pub startup_byte_len: u64,
 }
 
+/// Envelope field offsets, derived from the struct itself (DESIGN-06).
+///
+/// Writer and reader both use these constants; a field rename/reorder changes
+/// the `offset_of!` result, so neither side can keep a stale bare number.
+pub mod envelope_offsets {
+    use super::BootHandoffV1;
+    use core::mem::offset_of;
+
+    pub const MAGIC: usize = offset_of!(BootHandoffV1, magic);
+    pub const VERSION: usize = offset_of!(BootHandoffV1, version);
+    pub const SIZE: usize = offset_of!(BootHandoffV1, size);
+    pub const RAM_AUTHORITY: usize = offset_of!(BootHandoffV1, ram_authority);
+    pub const ARENA_LEN: usize = offset_of!(BootHandoffV1, arena_len);
+    pub const KERN_VIRT_BASE: usize = offset_of!(BootHandoffV1, kern_virt_base);
+    pub const KERN_PHYS_BASE: usize = offset_of!(BootHandoffV1, kern_phys_base);
+    pub const KERN_SIZE: usize = offset_of!(BootHandoffV1, kern_size);
+    pub const USER_SP: usize = offset_of!(BootHandoffV1, user_sp);
+    pub const KERN_STACK_TOP: usize = offset_of!(BootHandoffV1, kern_stack_top);
+    pub const SYSCALL_ENTRY: usize = offset_of!(BootHandoffV1, syscall_entry);
+    pub const ROOT_PAGE: usize = offset_of!(BootHandoffV1, root_page);
+    pub const BUMP_BASE: usize = offset_of!(BootHandoffV1, bump_base);
+    pub const BUMP_NEXT: usize = offset_of!(BootHandoffV1, bump_next);
+    pub const BUMP_END: usize = offset_of!(BootHandoffV1, bump_end);
+    pub const MEMMAP_BYTE_LEN: usize = offset_of!(BootHandoffV1, memmap_byte_len);
+    pub const RESERVED_BYTE_LEN: usize = offset_of!(BootHandoffV1, reserved_regions_byte_len);
+    pub const MODULES_BYTE_LEN: usize = offset_of!(BootHandoffV1, boot_modules_byte_len);
+    pub const PLATFORM_BYTE_LEN: usize = offset_of!(BootHandoffV1, platform_sources_byte_len);
+    pub const PARAM_BYTE_LEN: usize = offset_of!(BootHandoffV1, param_buf_byte_len);
+    pub const SOURCES_BYTE_LEN: usize = offset_of!(BootHandoffV1, sources_byte_len);
+    pub const STARTUP_BYTE_LEN: usize = offset_of!(BootHandoffV1, startup_byte_len);
+}
+
 // ── arena layout (fixed offsets, compile-time arithmetic) ────────────────
 
 /// Envelope budget (the envelope itself must fit; 256 B is the design budget).

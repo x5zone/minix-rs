@@ -110,8 +110,8 @@
 
 | ID | 来源 | 事项 | 状态 | 下一步 |
 |---|---|---|---|---|
-| F-R23-01 | DESIGN-06 | wire 信封偏移有三份定义：结构体 + `offset_of!` 断言 + 写/读两份裸数字；半改不会编译失败 | adjacent（R24，截止 2026-11-16） | 暴露 `envelope_offsets`（全部 `offset_of!`），删两份裸数字；需 wire round-trip 回归 |
+| F-R23-01 | DESIGN-06 | wire 信封偏移有三份定义：结构体 + `offset_of!` 断言 + 写/读两份裸数字；半改不会编译失败 | ✅ 已修（R23 补修） | 新增 `envelope_offsets`（全部 `offset_of!`），读写两侧改 re-export；minix-boot 196 |
 | F-R23-02 | DESIGN-10 | 两个 bootface 仍有约 280 行非注释重复（流程而非常量） | 需用户/架构 owner 裁决（R24，截止 2026-11-16） | 二选一：继续下沉纯 helper 保留两份流程，或抽一个泛型 runner；须跑 riscv/aarch64 直核 QEMU 门 |
 | F-R23-03 | DESIGN-11 | `VmBootHandoff.kern_ident` 自 v8 起恒空，保留 1 KiB 仅为结构体大小稳定 | 需用户裁决（R24，截止 2026-11-16） | 删除字段、`VM_BOOT_HANDOFF_VERSION` 8→9、同步 VM server；或明确标注 v9 删除计划 |
-| F-R23-04 | DESIGN-12 | `store_kernel_info` 七段落地区五段同构，容量/同址守卫/`ptr::copy` 重复 | adjacent（R24，截止 2026-11-16） | 抽 `land_slice<T: Copy>`；保留 param 清零与 modules 名字池特例 |
+| F-R23-04 | DESIGN-12 | `store_kernel_info` 七段落地区五段同构，容量/同址守卫/`ptr::copy` 重复 | ✅ 已修（R23 补修） | 新增 `land_slice<T: Copy>`；param 清零与 modules 名字池特例保留；kernel 862+8 |
 | F-R23-05 | DESIGN-13 | `pt_alloc::register` 的 release 二次注册静默保留第一个，测试锁定该行为 | 需用户裁决（R24，截止 2026-11-16） | 二选一：全构建 panic，或返回 `Result` 由调用方 `expect`；改公开 API/测试契约 |

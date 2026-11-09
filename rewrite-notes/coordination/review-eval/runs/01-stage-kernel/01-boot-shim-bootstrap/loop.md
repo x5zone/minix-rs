@@ -1173,7 +1173,7 @@
 - ✅ **F-R17-01**：删除 `minix-boot::BootShim` 单实现 trait；U-Boot 腿改普通函数 `opensbi_helpers::prepare_boot(storage, bump_pages)`，`uboot_main` 直接调用；`BootPrepareResult` 保留；文档 §3.2 按事实重写（标题、收益清单、依赖图、各处交叉引用）。
 - ✅ **F-R17-04**：`KernelInfo` 增第 14 字段 `authority: InputObjectId`；`validate_requiring_sources()` 改无参、读字段；wire 解码复制 `ram_authority`，两个直核面传 `DtbBootInput`，UEFI 腿传 `UefiMemoryMap`；文档 §3.4.1 的 13→14、字段表、§4.4 门表同步；83 处字面量中的 66 处测试/测试内核补字段。
 
-回归读数：`minix-boot` 192 通过；`boot-shim --features test-all` 135 + `ebs_boundary_audit` 5；`minix-kernel --features mock` 862 通过 + 8 忽略；`minix-arch --features runtime-window,test-support` 287 通过；QEMU 三门 PASS（x86 shim bootmarks、aarch64 shim bootmarks、riscv64 U-Boot shim 6/6）。文档门：anchor 106/106、style 0、ref/structure/density/snippet 通过。
+回归读数：`minix-boot` 192 通过；`boot-shim --features test-all` 135 + `ebs_boundary_audit` 5；`minix-kernel --features mock` 862 通过 + 8 忽略；`minix-arch --features runtime-window,test-support` 287 通过；QEMU 三门 PASS（x86 shim bootmarks、aarch64 shim bootmarks、riscv64 U-Boot shim 6/6）。文档门：anchor 105/105、style 0、ref/structure/density/snippet 通过。
 
 阻塞项清零，下一步进入 R23 面板。
 
@@ -1197,7 +1197,7 @@
 
 ### §2 发现
 
-- 110 条（104 面板条目 + 6 条 REFUTE 主张）。P0 3：`build_kernel_info` 引文缺 `authority`（A-01/B-01/CLAIM-04/DESIGN-14 同根）、§3.2 “业务逻辑无 feature gate” 与 8 处 `qemu-test-kernels` 不符；另 P1 约 35 条（注册失败消息、identity 窗口、EBS 引文、createpde 引文、门链执行序、自举页断言覆盖、M12 标记、VMA/LMA 跨距、arc 表等）。
+- 110 条（104 面板条目 + 6 条 REFUTE 主张）。P0 3：`build_kernel_info` 引文缺 `authority`（A-01/B-01/CLAIM-04/DESIGN-14 同根）、§3.2 “业务逻辑无 feature gate” 与 8 处 `qemu-test-kernels` 不符；另 P1 49 条（全轮 3 P0 / 49 P1 / 53 P2 / 3 P3）（注册失败消息、identity 窗口、EBS 引文、createpde 引文、门链执行序、自举页断言覆盖、M12 标记、VMA/LMA 跨距、arc 表等）。
 - 设计侧：16 条，5 条转 R24（偏移单一来源、bootface 合并、`kern_ident` 删除、landing helper、`pt_alloc` release 语义）。
 
 ### §3 归因
@@ -1214,17 +1214,17 @@
 
 ### §5 复验
 
-- 文档五门：anchor 106/106、style 0、ref/structure/density/map 通过。
+- 文档五门：anchor 105/105、style 0、ref/structure/density/map 通过。
 - 代码门：clippy minix-boot/boot-shim/kernel/arch 通过；QEMU 门日志 `tmp/review-eval/.../logs/round23-*`。
-- RB23/meta 待跑。
+- RB23 首轮 **NOT PASS**（B1 §4.2 引文旧路径、B2 假归因；Q1–Q4 轨迹/计数/日期），补修后第二次回读 **PASS**（B1/B2 阻断 0；Q2 残项已补）。meta R23 判 **IMPROVED / 运行质量 NOT PASS**，收口前 5 项见 §7。
 
 ### §6 指标
 
-发现 110；处置 ①59 / ②5 / ③6 / ④40 / ⑤0；re-litigation 0；adjacent 阻塞 0。
+发现 110；处置 ①61 / ②3 / ③6 / ④40 / ⑤0；re-litigation 0；adjacent 阻塞 0。
 
 ### §7 状态
 
-`NOT CONVERGED`：G8 新增 110 条；P0 已修，② 5 条带日期转 R24。待 RB23 与 meta。
+`NOT CONVERGED`：G8 新增 110 条；P0 已修；② 由 5 条收窄为 3 条（DESIGN-06/12 经 meta 指正改本轮实施；DESIGN-10/11/13 带日期转 R24，其中 DESIGN-11 进 OPEN-DEBT）。RB23 补修后 PASS；meta R23 IMPROVED / 运行质量 NOT PASS，收口 5 项：提交 Q2 残项、回写 RB 判决、DESIGN-06/12 本轮修、登记 10/11/13、修正 anchor/P1/重构计数与引文块头。
 
 ### §8 给 meta-review 的不确定点
 
