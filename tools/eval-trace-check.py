@@ -654,7 +654,12 @@ def check_metrics(
         # `CONVERGED` here is cross-checked by check_v33_lifecycle (round type
         # + certify 新准入); the whitelist blocks free-form status prose.
         if v33_start is not None and (round_num is None or round_num >= v33_start):
-            result_key = re.search(r"^-\s*轮结果\s*[:：]\s*(\S+)", body, re.MULTILINE)
+            result_key = re.search(
+                r"^-\s*轮结果\s*[:：]\s*(ROUND-CLOSED|CONVERGED|NOT CONVERGED"
+                r"|NOT CONVERGING|FREEZE-WITH-BACKLOG|BLOCKED)\b",
+                body,
+                re.MULTILINE,
+            )
             if result_key is None:
                 report.fail(
                     "metrics",
@@ -1275,7 +1280,12 @@ def check_v33_lifecycle(
             prev_edition = edition
         rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
         rtype = rt.group(1) if rt else None
-        result = re.search(r"^-\s*轮结果\s*[:：]\s*(\S+)", body, re.MULTILINE)
+        result = re.search(
+            r"^-\s*轮结果\s*[:：]\s*(ROUND-CLOSED|CONVERGED|NOT CONVERGED"
+            r"|NOT CONVERGING|FREEZE-WITH-BACKLOG|BLOCKED)\b",
+            body,
+            re.MULTILINE,
+        )
         result_val = result.group(1) if result else None
         certify = re.search(r"^-\s*certify 新准入\s*[:：]\s*(\d+)", body, re.MULTILINE)
         certify_new = int(certify.group(1)) if certify else None
