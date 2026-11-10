@@ -666,6 +666,10 @@ def check_metrics(
                     "metrics",
                     f"- 轮结果 `{result_key.group(1)}` 不合法；允许：{sorted(ROUND_RESULT_V33)}",
                 )
+            # V3.3 D-047 治理仪表：代裁决授权与漂移可见性
+            for key in ["代裁决", "ARCH 提案", "用户否决"]:
+                if re.search(rf"^\-\s*{re.escape(key)}\s*[:：]\s*(\d+)", body, re.MULTILINE) is None:
+                    report.fail("metrics", f"V3.3 metrics 缺少治理仪表 `- {key}: <整数>`")
     elif not legacy:
         round_type = re.search(r"^-\s*轮型\s*[:：]\s*(discovery|verification)", body, re.MULTILINE)
         if round_type is None:
@@ -1188,6 +1192,27 @@ def check_v33_admission(
                 f"{fid} 台账严重度 {severity} 与面板标题 {panel_sev} 不一致；"
                 "severity 列必须从面板 FINDING 标题机械同步",
             )
+        # V3.3 D-047: design decisions must declare their class. Unlabeled
+        # implementations are unclassifiable and treated as ARCH (blocked) —
+        # the burden of proof sits on the proxy side (C anchor required).
+        if role.startswith("design") and cls == "⑥":
+            row_text = " ".join(
+                (row.get("action") or "", row.get("evidence") or "", row.get("verify") or "")
+            )
+            tag = re.search(r"\[(MODERN|DEL|ARCH)\]", row_text)
+            if tag is None:
+                report.fail(
+                    "design-class",
+                    f"{fid} 设计实施未分类（需 [MODERN]/[DEL]/[ARCH] 标记）；"
+                    "未分类按 ARCH 阻断——举证责任在代裁侧：[MODERN]/[DEL] 必须能锚定 "
+                    "Minix3 C 语义（D-047）",
+                )
+            elif tag.group(1) == "ARCH" and not re.search(r"D-\d+", row_text):
+                report.fail(
+                    "design-class",
+                    f"{fid} 标记 [ARCH] 却已实施且无判决行引用；ARCH 类必须先落 "
+                    "DECISIONS.md 判决账行（用户裁决）——即便口头说继续也必须落行（D-047）",
+                )
 
 
 def check_v33_lifecycle(
@@ -1276,6 +1301,28 @@ def check_v33_lifecycle(
                     "lifecycle-v33",
                     f"R{n} 确认轮 certify 新准入 = {certify_new}；非 0 不得宣告 CONVERGED",
                 )
+        # V3.3 D-047: an ARCH-blocked round (⑤ rows awaiting user adjudication)
+        # must declare `轮结果: BLOCKED` — the hard stop is a recorded state,
+        # not a chat understanding. 口头"继续"不解锁：解除只认判决行。
+        arch_blocked = [
+            fid
+            for section, mapping in section_classes.items()
+            if section.lower().startswith(f"r{n}".lower())
+            for fid, cls in mapping.items()
+            if cls == "⑤"
+            and "ARCH" in (
+                (ledger_rows.get(fid, {}).get("action") or "")
+                + (ledger_rows.get(fid, {}).get("verify") or "")
+                + (ledger_rows.get(fid, {}).get("evidence") or "")
+            )
+        ]
+        if arch_blocked and result_val not in (None, "BLOCKED"):
+            report.fail(
+                "lifecycle-v33",
+                f"R{n} 存在等待用户 ARCH 裁决的 ⑤ 行（{', '.join(arch_blocked[:3])}…），"
+                f"但轮结果为 `{result_val}`；必须 `BLOCKED`，且解除只认判决账行"
+                "（D-047：口头继续不解除）",
+            )
         if sealed_at is not None and n > sealed_at:
             report.fail(
                 "lifecycle-v33",
@@ -1404,6 +1451,12 @@ def _round_open_items(
             is_open = False
             if cls in {"LEGACY", "⑤"}:
                 is_open = True
+                # V3.3 D-047: a ⑤ row whose action/verify records an approved
+                # deferral (用户批准 + date) is resolved-by-decision.
+                if "用户批准" in (row["action"] + row["verify"]) and re.search(
+                    r"20\d{2}-\d{2}-\d{2}", row["action"] + row["verify"]
+                ):
+                    is_open = False
             elif cls == "②":
                 action = row["action"]
                 if "用户批准" not in action or re.search(r"20\d{2}-\d{2}-\d{2}", action) is None:
@@ -2757,7 +2810,8 @@ def self_test() -> int:
             print_report(debt_report, False)
             return 1
 
-    # V3.3：读者/设计 P3 按 ①/④/⑥ 准入 → FAIL；severity 与面板不一致 → FAIL
+    # V3.3：读者/设计 P3 按 ①/④/⑥ 准入 → FAIL；severity 与面板不一致 → FAIL；
+    # 设计 ⑥ 未分类 → FAIL；[ARCH] 无判决行 → FAIL
     admission_report = Report()
     check_v33_admission(
         {
@@ -2772,6 +2826,24 @@ def self_test() -> int:
                 "severity": "P3",
                 "role": "design-d2",
                 "section": "R31 面板轮",
+                "action": "实施 [MODERN] BootStorage 内部提交断言（外部行为不变）",
+                "evidence": "cargo test",
+            },
+            "DESIGN-D2-02": {
+                "class": "⑥",
+                "severity": "P2",
+                "role": "design-d2",
+                "section": "R31 面板轮",
+                "action": "实施某项改进",
+                "evidence": "cargo test",
+            },
+            "DESIGN-D2-03": {
+                "class": "⑥",
+                "severity": "P1",
+                "role": "design-d2",
+                "section": "R31 面板轮",
+                "action": "实施 [ARCH] 借槽语义改 directMap",
+                "evidence": "cargo test",
             },
             "FACT-B-01": {
                 "class": "①",
@@ -2792,6 +2864,23 @@ def self_test() -> int:
         or "design-d2" not in admission_messages
     ):
         print("self-test FAIL: V3.3 读者/设计 P3 准入 / severity 同步未被拦截")
+        print_report(admission_report, False)
+        return 1
+    class_messages = " ".join(
+        item["message"]
+        for item in admission_report.items
+        if item["check"] == "design-class"
+    )
+    if "DESIGN-D2-02" not in class_messages or "未分类" not in class_messages:
+        print("self-test FAIL: 设计 ⑥ 未分类未被拦截")
+        print_report(admission_report, False)
+        return 1
+    if "DESIGN-D2-03" in class_messages and "判决行" not in class_messages:
+        print("self-test FAIL: [ARCH] 无判决行未被拦截")
+        print_report(admission_report, False)
+        return 1
+    if "DESIGN-D2-01" in class_messages:
+        print("self-test FAIL: 已分类的设计行被误判")
         print_report(admission_report, False)
         return 1
 

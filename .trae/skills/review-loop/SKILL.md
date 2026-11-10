@@ -200,6 +200,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
    - 未闭环: <整数>
    - 轮型: full | structural | confirmation
    - 轮结果: ROUND-CLOSED | CONVERGED | NOT CONVERGED | NOT CONVERGING | FREEZE-WITH-BACKLOG | BLOCKED
+   - 代裁决: <整数> / ARCH 提案: <整数> / 用户否决: <整数>（V3.3 治理仪表）
    - edition: V3.x
    - re-litigation: <整数>
    - adjacent 阻塞: <整数>

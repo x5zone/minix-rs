@@ -320,3 +320,16 @@
 | V3.3 | 改写段再推演 | 合并进既有 certify 硬步骤序列（与所有权复核同型），不新增面板角色 | 零净增；把"下一轮 survey 发现机制错"改成"本轮 certify 回查" |
 
 **同步门读数（V3.3，2026-11-10）**：`generate-derived-skills.sh` / `check-review-rules.sh` / `lint-review-rules.sh` / `diff-trae-skills.sh --only-diff` 四道门全绿（注意：本地非交互 shell 的 `rg` 是 alias、PATH 无 cargo bin 时这四道门会整批误报 command-not-found——须 `PATH="$HOME/.cargo/bin:$PATH"` 后运行，CI 环境不受影响）；`eval-trace-check.py --self-test` PASS（新增 OPEN-DEBT 未销账/逾期、读者 P3 准入、severity 同步、修改轮自判 CONVERGED、确认轮实施 ⑥ 五个负样本夹具）；`trait-audit.py --self-test` PASS。实弹验证：`--round R31` 现况 FAIL，`open-debt` 门点名 R26-design-batch（逾期，截止 R27）——设计批清账前 R31 不得关闭，符合 §4.0f 预期。
+
+### V3.3 追加（D-047：代裁决授权边界 = Minix3 语义锚 + ARCH 硬阻断）
+
+> 用户裁决（2026-11-10）：全代裁 + 事后审阅的效率方案成立，但边界 = Minix3 语义锚
+> （用户判例：借槽→directMap 是删除 Minix3 机制 = ARCH；删翻译残留 = 回归对齐 = 代裁；
+> "把 boot 往小 OS 发展"的趋势由 ARCH 提案的集合级审阅拦截）。ARCH 级硬阻断——
+> 即便用户口头说"继续"，解除只认判决账行（门不认识聊天，只认识行）。
+
+| 编号 | 规则 | 判例 | 检测器 | 期望效果 | 目标文件 | 状态 |
+|---|---|---|---|---|---|---|
+| V3.3-h | 代裁决授权边界：设计 ⑥ 行必须标 `[MODERN]`/`[DEL]`/`[ARCH]`；未分类按 ARCH 阻断（举证责任在代裁侧）；`[ARCH]` 实施缺 `D-xxx` 判决行引用 FAIL；`[ARCH]` P0/P1/P2 → ⑤+`轮结果: BLOCKED`（硬阻断），P3 → 判决账提案（不阻断）；治理仪表 `代裁决`/`ARCH 提案`/`用户否决` 进 metrics | 用户否决史：批准的全是"把 boot 变小"（删 trait/删 kern_ident/删 ident_regions），否决的全是"加责任"（诊断打印/records_in_wire 语义化/4 GiB 断言）；借槽→directMap 判例 | `eval-trace-check.py` 的 `design-class` 门 + `lifecycle-v33` ARCH-BLOCKED 一致性 + metrics 三仪表 | 80% 代裁零等待；20% 纠结区强制用户亲裁且必须落账；语义漂移在集合级可见 | `review-evals.md` §4.1b/§3.4、`review-loop.md` L2/L5、`review-panel.md` DESIGN brief 第 7 条、`eval-trace-check.py` | 已生效 |
+
+减法：`design-class`/治理仪表合并进既有 `admission-v33`/`lifecycle-v33`/`check_metrics`，零新工具文件；`BLOCKED` 载体复用既有 ⑤/round-order 门。ARCH 提案走判决账，不新增第八个处置桶。
