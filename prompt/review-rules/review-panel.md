@@ -65,7 +65,7 @@ V3 没有验证轮。每轮的 survey 阶段派全量角色；fix 之后的 cert
   `OPEN-DEBT.md` 到下一个设计批，否则基线在确认之下移动；
 - 读者 P3 走 §4.0e/§4.0c 的严重度门槛：`## SUGGESTION` 优先，不入台账；
 - `certify 新准入 = 0` → 该篇 `CONVERGED`；> 0 → 确认轮内修完再确认一次
-  （全局最多 2 次）；结构性新根因 → `NOT CONVERGING` 回边界；
+  （每个 CANDIDATE 最多 2 次，edition 更替或批准重开后重新计数）；结构性新根因 → `NOT CONVERGING` 回边界；
 - 确认轮不占 §7.5 的 3 轮修改预算；CONVERGED 之后不得再开轮（新证据走重开决策）。
 
 certify 发现的新准入项进**本轮**台账，在本轮内修完再复跑 certify；不得写成下一轮，

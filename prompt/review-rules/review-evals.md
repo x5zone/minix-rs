@@ -272,7 +272,7 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
 **轮种（V3.3）**：`full`（完整 survey 交易）、`structural`（survey 输入 = 上一轮
 已落盘的完整报告，主体是结构重写 + 机械再对账，不重开面板）、`confirmation`
 （确认轮）。前两种是修改事务，占用 §7.5 的 3 轮预算；确认轮是收口阶段，不占修改
-预算、全局最多 2 次，进入条件与退出条件见 §6A 四态模型。修改轮没有收敛声明权
+预算、每个 CONVERGENCE-CANDIDATE 最多 2 次（edition 更替或用户批准重开后重新计数），进入条件与退出条件见 §6A 四态模型。修改轮没有收敛声明权
 （§6A）。
 
 ### 4.0c 缺陷身份与准入（V3）
@@ -312,7 +312,7 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
 把其中反复出现的模式晋升为规则或读者验收清单项。这是“读者偏好”的合法出口，不是
 `③` 桶的复活：suggestions 不声称是缺陷，也不参与 G1–G9。
 
-**读者项的严重度门槛（V3.3）**：READER 角色的 P3 发现默认不满足准入判据第 2 条——
+**读者/设计项的严重度门槛（V3.3）**：READER 与 DESIGN 角色的 P3 发现默认不满足准入判据第 2 条——
 "措辞/指针/计数枚举可以更好"不等于"读者卡住无法继续"。只有读者明确**卡住无法继续**
 （理解路径断裂、必须外部知识才能往下读）的 P3 才准入台账，且按非阻断 backlog 处理、
 不参与 G1–G8；其余一律 `suggestions.md`。R30 的台账 70% 是 P3、R31 仍产出约 28 条
@@ -362,7 +362,7 @@ P3，而 §6A 旧 G3 要求"准入 P3 = 0"——这是不可达判据，本条�
 
 ### 4.0f 单一未闭环口径：OPEN-DEBT 入门（V3.3，2026-11-10 用户裁决）
 
-`OPEN-DEBT.md`（与 `follow-ups.md` 的同篇行）是未闭环的一部分，**不是账外债**：
+`OPEN-DEBT.md` 是未闭环的一部分，**不是账外债**（adjacent 行在 `follow-ups.md`，按 §4.2 不阻断）：
 `eval-trace-check.py` 逐行核对该表，没有销账证据的行计入 `未闭环`，本轮不得关闭、
 不得派下一轮面板。债务行只有两个合法出口：
 
@@ -582,7 +582,7 @@ V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性�
 - **修改轮没有收敛声明权**：full/structural 轮的 agent 不得宣告 CONVERGED，最多
   ROUND-CLOSED / CONVERGENCE-CANDIDATE（`eval-trace-check.py` 机械检查）。
 - **确认轮**：全量 survey（六个角色），修复权限 = 本轮新准入的 P0/P1/P2 事实与
-  同步项；不实施 ⑥、不扩大重构范围；P3 走 §4.0c 严重度门槛。全局最多 2 次：
+  同步项；不实施 ⑥、不扩大重构范围；P3 走 §4.0c 严重度门槛。每个 CONVERGENCE-CANDIDATE 最多 2 次（跨 edition 重开不累计）：
   第 1 次新准入 > 0 时在确认轮内修完再确认一次；仍 > 0 或出现结构性新根因 →
   `NOT CONVERGING` 回 edition 边界。确认轮不占 §7.5 的修改预算。
 - **CONVERGED 的含义**仍是"确认轮口径下没有 open 项 + 无未销账债务"，不是
@@ -673,7 +673,7 @@ bash tools/doc-symbol-drift.sh --self-test
 
 每个 edition 在同一篇文档上最多跑 **3 轮修改事务**（full / structural）。**确认轮
 不占修改预算**：最后一个修改事务 ROUND-CLOSED 后，edition 进入
-CONVERGENCE-CANDIDATE，由确认轮收口（§6A 四态模型），全局最多 2 次。第 3 轮必须
+CONVERGENCE-CANDIDATE，由确认轮收口（§6A 四态模型），每个 CANDIDATE 最多 2 次。第 3 轮必须
 是**结构轮**：按 `EDITION-RETRO.md` 重写被反复报的段/小节，并在最终 HEAD 跑
 citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 轮结束仍 `open>0`，
 或第 3 轮本身仍是线级补丁：

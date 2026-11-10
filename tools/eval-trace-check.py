@@ -1086,6 +1086,15 @@ def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
         row_text = " | ".join(cells)
         if any(token in row_text for token in DEBT_DONE_TOKENS):
             continue
+        # §4.0f exit 2: a DECISIONS.md-recorded user adjudication — including
+        # an explicitly approved deferral — resolves the row. Approval without
+        # a date is not an adjudication (mirrors the ② gate).
+        if "用户批准" in row_text and re.search(r"20\d{2}-\d{2}-\d{2}", row_text):
+            report.warn(
+                "open-debt",
+                f"{item} 已批准延期；确认 DECISIONS.md 判决账行存在（含日期与去向）",
+            )
+            continue
         deadline = DEBT_DEADLINE_RE.search(row_text)
         deadline_note = ""
         if deadline and closing_round is not None and int(deadline.group(1)) < closing_round:
@@ -1161,11 +1170,16 @@ def check_v33_admission(
         role = (row.get("role") or "").lower()
         severity = (row.get("severity") or "").strip()
         cls = row.get("class")
-        if role.startswith("reader") and severity == "P3" and cls in {"①", "④"}:
+        if (
+            (role.startswith("reader") or role.startswith("design"))
+            and severity == "P3"
+            and cls in {"①", "④", "⑥"}
+        ):
             report.fail(
                 "admission-v33",
-                f"{fid} 是读者 P3 却按 {cls} 准入；G3（V3.3）：措辞/指针类 P3 进"
-                " suggestions.md，只有通过「读者卡住无法继续」测试的才入台账",
+                f"{fid} 是 {role} P3 却按 {cls} 准入；G3（V3.3）：读者/设计的措辞与"
+                "偏好级 P3 进 suggestions.md，只有通过「读者卡住无法继续」或"
+                "「正确性缺陷」测试的才入台账",
             )
         panel_sev = panel_severities.get((section_round, fid))
         if panel_sev and severity and panel_sev != severity:
@@ -1198,6 +1212,7 @@ def check_v33_lifecycle(
     """
     confirmations = 0
     sealed_at: int | None = None
+    prev_edition: str | None = None
     for title, body in _metric_blocks(metrics_text):
         m = re.search(r"\bR(\d+)\b", title)
         if not m:
@@ -1207,6 +1222,18 @@ def check_v33_lifecycle(
             continue
         if schema_start is not None and n < schema_start:
             continue
+        # Per-CANDIDATE counters: a new edition (after NOT CONVERGING, or a
+        # user-approved reopen of a sealed doc) starts a fresh confirmation
+        # allowance and unseals. Without this, any document whose first
+        # confirmation fails twice can never converge (K=3 editions would
+        # exhaust the global counter).
+        ed = re.search(r"^-\s*edition\s*[:：]\s*(V[\d.]+)", body, re.MULTILINE)
+        edition = ed.group(1) if ed else None
+        if edition is not None and prev_edition is not None and edition != prev_edition:
+            confirmations = 0
+            sealed_at = None
+        if edition is not None:
+            prev_edition = edition
         rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
         rtype = rt.group(1) if rt else None
         result = re.search(r"^-\s*轮结果\s*[:：]\s*(\S+)", body, re.MULTILINE)
@@ -2696,7 +2723,7 @@ def self_test() -> int:
             print_report(todo_report, False)
             return 1
 
-    # V3.3：OPEN-DEBT 未销账行 → FAIL 并计入未闭环
+    # V3.3：OPEN-DEBT 未销账行 → FAIL 并计入未闭环；用户批准延期 → WARN 放行
     with tempfile.TemporaryDirectory() as tmp:
         debt = Path(tmp) / "OPEN-DEBT.md"
         debt.write_text(
@@ -2704,6 +2731,7 @@ def self_test() -> int:
             "| ID | 严重度 | 处置/档期 |\n"
             "|---|---|---|\n"
             "| R26-design-batch | P1 | 待实施（R27）；截止 R27 边界 |\n"
+            "| F-X-99 | P2 | ② 用户批准 2026-11-15 延期至 02 篇（D-047） |\n"
             "| F-R17-02 | P2 | ✅ 已修：已完成 |\n",
             encoding="utf-8",
         )
@@ -2714,8 +2742,12 @@ def self_test() -> int:
             print("self-test FAIL: OPEN-DEBT 未销账行未被拦截或逾期未点名")
             print_report(debt_report, False)
             return 1
+        if "已批准延期" not in debt_messages:
+            print("self-test FAIL: 用户批准的延期出口未被识别")
+            print_report(debt_report, False)
+            return 1
 
-    # V3.3：读者 P3 按 ①/④ 准入 → FAIL；severity 与面板不一致 → FAIL
+    # V3.3：读者/设计 P3 按 ①/④/⑥ 准入 → FAIL；severity 与面板不一致 → FAIL
     admission_report = Report()
     check_v33_admission(
         {
@@ -2723,6 +2755,12 @@ def self_test() -> int:
                 "class": "④",
                 "severity": "P3",
                 "role": "reader-a",
+                "section": "R31 面板轮",
+            },
+            "DESIGN-D2-01": {
+                "class": "⑥",
+                "severity": "P3",
+                "role": "design-d2",
                 "section": "R31 面板轮",
             },
             "FACT-B-01": {
@@ -2738,8 +2776,12 @@ def self_test() -> int:
         31,
     )
     admission_messages = " ".join(item["message"] for item in admission_report.items)
-    if "suggestions" not in admission_messages or "面板标题" not in admission_messages:
-        print("self-test FAIL: V3.3 读者 P3 准入 / severity 同步未被拦截")
+    if (
+        "suggestions" not in admission_messages
+        or "面板标题" not in admission_messages
+        or "design-d2" not in admission_messages
+    ):
+        print("self-test FAIL: V3.3 读者/设计 P3 准入 / severity 同步未被拦截")
         print_report(admission_report, False)
         return 1
 
@@ -2802,6 +2844,37 @@ def self_test() -> int:
     if "确认轮实施 ⑥" not in confirm_messages:
         print("self-test FAIL: 确认轮实施 ⑥ 未被拦截")
         print_report(confirm_report, False)
+        return 1
+
+    # V3.3：确认轮计数按 CANDIDATE（edition）重置——跨 edition 的第 3 次确认
+    # 不再触发"最多 2 次"；CONVERGED 后的新 edition（批准重开）也不再 FAIL
+    cross_edition_metrics = (
+        lifecycle_metrics.replace("- 轮型: full", "- 轮型: confirmation")
+        + "\n## R32 确认轮\n\n"
+        + "- 发现总数: 0\n"
+        + "- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0\n"
+        + "- 未闭环: 0\n"
+        + "- certify 新准入: 0\n"
+        + "- 轮型: confirmation\n"
+        + "- 轮结果: CONVERGED\n"
+        + "- edition: V3.3\n"
+    )
+    cross_report = Report()
+    check_v33_lifecycle(
+        cross_edition_metrics,
+        {},
+        {},
+        cross_report,
+        26,
+        31,
+    )
+    cross_messages = " ".join(item["message"] for item in cross_report.items)
+    if cross_report.failed:
+        print("self-test FAIL: 跨 edition 的确认轮被误判（计数应按 CANDIDATE 重置）")
+        print_report(cross_report, False)
+        return 1
+    if "lifecycle-v33" in cross_messages:
+        print("self-test FAIL: 跨 edition 确认轮误报 lifecycle")
         return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")

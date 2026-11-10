@@ -52,7 +52,7 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 9. **定轮型与 edition**：`loop.md §0` 必须写 `轮型: full|structural|confirmation` 与
    `edition: V3.x`。`full` = 完整 survey 交易；`structural` = survey 输入取上一轮
    已落盘报告的结构收口轮（不重开面板）；`confirmation` = 确认轮（§6A 四态模型，
-   全量 survey、修复权限仅限本轮新准入项、不实施 ⑥、全局最多 2 次、不占 §7.5
+   全量 survey、修复权限仅限本轮新准入项、不实施 ⑥、每个 CANDIDATE 最多 2 次、不占 §7.5
    修改预算）。修改轮（full/structural）没有收敛声明权——最多 `ROUND-CLOSED` /
    `CONVERGENCE-CANDIDATE`；R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，其收口按
    certify 阶段执行。
@@ -254,7 +254,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 7. **下一轮**：只能在上一轮关闭后开；修改轮之后是确认轮或下一个修改事务
    （§7.5 预算内），不得用缩减轮承接。上一轮未闭环 >0（含 OPEN-DEBT 未销账）时
    禁止出现下一轮小节。确认轮的权限与退出条件见 §6A：只修本轮新准入项、不实施 ⑥、
-   全局最多 2 次；`certify 新准入=0` 才可宣告 `CONVERGED`。
+   每个 CANDIDATE 最多 2 次（edition 更替或批准重开后重新计数）；`certify 新准入=0` 才可宣告 `CONVERGED`。
 8. **edition 不变**：本轮内不得改规则；确需变更按 `review-evals.md` §7.6 把本轮标 `INVALIDATED` 后在新 edition 重开。
 9. **3 轮试验窗口**：同一 edition 在同一篇上第 3 轮仍 `open>0`，判 `NOT CONVERGING`，写 `EDITION-RETRO.md`，不得开第 4 轮。
 10. **轮内 certify 上限**：同一轮第 3 次 certify 仍有新准入根因 → 本轮标 `BLOCKED`，写 `STUCK-REPORT.md`，交用户或 edition 边界裁决；不得第 4 次 certify，也不得开下一轮。
