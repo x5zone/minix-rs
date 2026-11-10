@@ -528,15 +528,17 @@ def _metric_blocks(text: str) -> list[tuple[str, str]]:
     return blocks
 
 
-def _pick_metric_block(text: str, report: Report, round_tag: str | None) -> str:
+def _pick_metric_block(
+    text: str, report: Report, round_tag: str | None
+) -> tuple[str, str]:
     blocks = _metric_blocks(text)
     if round_tag:
         for title, body in blocks:
             if round_tag.lower() in title.lower():
-                return body
+                return title, body
     # No round heading: a single-block file is the normal case; otherwise the
     # last block is the newest round.
-    return blocks[-1][1] if blocks else text
+    return blocks[-1] if blocks else ("", text)
 
 
 def check_metrics(
@@ -551,10 +553,17 @@ def check_metrics(
     new_roots: int | None = None,
     v33_start: int | None = None,
 ) -> None:
-    body = _pick_metric_block(text, report, round_tag)
+    block_title, body = _pick_metric_block(text, report, round_tag)
     total_match = METRIC_TOTAL_RE.search(body)
     counts = {m.group(1): int(m.group(2)) for m in METRIC_COUNT_RE.finditer(body)}
-    round_num = int(round_tag.lstrip("R")) if round_tag else None
+    if round_tag:
+        round_num = int(round_tag.lstrip("R"))
+    else:
+        # Whole-file mode: judge each block by its OWN round number, so the
+        # V3.3 keys bind from v33_start and never leak onto the last
+        # historical block (archival audit must not grow new reds).
+        m = re.search(r"\bR(\d+)\b", block_title)
+        round_num = int(m.group(1)) if m else None
     if v3:
         legacy = False
     else:
@@ -1207,11 +1216,16 @@ def check_v33_admission(
                     "未分类按 ARCH 阻断——举证责任在代裁侧：[MODERN]/[DEL] 必须能锚定 "
                     "Minix3 C 语义（D-047）",
                 )
-            elif tag.group(1) == "ARCH" and not re.search(r"D-\d+", row_text):
+            elif tag.group(1) == "ARCH" and not (
+                re.search(r"D-\d+", row_text)
+                and "用户批准" in row_text
+                and re.search(r"20\d{2}-\d{2}-\d{2}", row_text)
+            ):
                 report.fail(
                     "design-class",
-                    f"{fid} 标记 [ARCH] 却已实施且无判决行引用；ARCH 类必须先落 "
-                    "DECISIONS.md 判决账行（用户裁决）——即便口头说继续也必须落行（D-047）",
+                    f"{fid} 标记 [ARCH] 却已实施且无判决行引用（需 D-xxx + 用户批准 + 日期）；"
+                    "ARCH 类必须先落 DECISIONS.md 判决账行（用户裁决）——即便口头说继续"
+                    "也必须落行（D-047）",
                 )
 
 
@@ -1643,7 +1657,12 @@ def check_run_dir(
             has_suggestion = bool(
                 re.search(r"^##\s+SUGGESTION\b", text, re.MULTILINE)
             )
-            if has_finding or has_suggestion:
+            # V3.3 D-047: `## ARCH-PROPOSAL` sections are semantic-expansion
+            # proposals transcribed to DECISIONS.md — never ledger rows.
+            has_arch_proposal = bool(
+                re.search(r"^##\s+ARCH-PROPOSAL\b", text, re.MULTILINE)
+            )
+            if has_finding or has_suggestion or has_arch_proposal:
                 continue
             exempt = re.search(
                 rf"无发现面板[：:][^\n]*{re.escape(path.name)}|{re.escape(path.name)}[^\n]*无发现",
