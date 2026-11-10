@@ -1467,19 +1467,29 @@ def enforce_adjacent_only_dispositions(
     A same-document pending-design item must be ⑥ implemented in-round (proxy
     adjudication) or the round goes BLOCKED — never transferred into the next
     round. Sections before `schema_start` are historical and exempt.
+
+    A `②` row carrying `用户批准` + date is a historical adjudicated transfer
+    (legal under V3.0, e.g. R26's D-043 batch): it is exempt here because its
+    debt is separately enforced by the `open-debt` gate — double-flagging the
+    same escape only buries the live signal.
     """
     for fid, row in ledger_rows.items():
         if row.get("class") != "②":
             continue
         section = row.get("section", "")
         section_round = _section_round(section)
+        if section_round is None:
+            # Tables under unparseable headings (处置索引 / Round N 明细) are
+            # pre-V3 history: they cannot be dated, so they are never flagged.
+            continue
         if (
             schema_start is not None
-            and section_round is not None
             and section_round < schema_start
         ):
             continue
         action = row.get("action", "")
+        if "用户批准" in action and re.search(r"20\d{2}-\d{2}-\d{2}", action):
+            continue
         if re.match(r"^\s*②\s*相邻", action) is None:
             preview = action[:36] + ("…" if len(action) > 36 else "")
             report.fail(
