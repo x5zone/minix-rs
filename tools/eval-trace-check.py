@@ -65,16 +65,24 @@ SCHEMA_RE = re.compile(
 
 
 def schema_start_round(text: str | None) -> int | None:
-    """Return the first round governed by the newest schema marker.
+    """Return the first round governed by the V3+ schema markers.
 
-    A transitioning document may carry both `schema: V2.5 from R25` (the
-    historical R25 section) and `schema: V3.0 from R26` (the new edition).
-    The newest version wins, so the start round is 26; `--round R25` then
-    runs the V2.5 per-round checks while R26+ runs V3. A V3-only document
-    (02 onward) writes `from R1` and starts at 1.
+    A layered document carries one marker per schema generation
+    (`schema: V3.0 from R26`, then `schema: V3.3 from R31`). Each marker
+    governs *from* its round, so the V3 base rules bind from the **minimum**
+    `from R<N>` across V3+ markers — a V3.3 marker must not unscope the
+    rounds the V3.0 marker already covered. A V2.5→V3 transition document
+    keeps the historical newest-version-wins behavior for its V2.5 segment.
     """
     if not text:
         return None
+    v3_starts = [
+        int(m.group(3) or 1)
+        for m in SCHEMA_RE.finditer(text)
+        if (int(m.group(1)), int(m.group(2))) >= (3, 0)
+    ]
+    if v3_starts:
+        return min(v3_starts)
     best: tuple[tuple[int, int], int] | None = None
     for m in SCHEMA_RE.finditer(text):
         version = (int(m.group(1)), int(m.group(2)))
@@ -112,6 +120,31 @@ def origin_round(origin: str) -> int | None:
     """
     m = re.search(r"\bR(\d+)\b", origin or "")
     return int(m.group(1)) if m else None
+
+
+V33_MARKER_RE = re.compile(
+    r"schema\s*[:：]\s*V3\.3(?:\s+from\s+R(\d+))?", re.IGNORECASE
+)
+
+
+def v33_start_round(text: str | None, fallback: int | None = None) -> int | None:
+    """First round governed by the V3.3 additions (four-state lifecycle,
+    confirmation rounds, reader-P3 admission, origin/severity semantics).
+
+    Parsed from a `schema: V3.3 from R<N>` marker; without `from R<N>` the
+    V3.3 rules bind from the document's existing schema start.
+    """
+    if not text:
+        return fallback
+    best: int | None = None
+    for m in V33_MARKER_RE.finditer(text):
+        start = int(m.group(1)) if m.group(1) else (fallback or 1)
+        if best is None or start < best:
+            best = start
+    return best if best is not None else fallback
+
+
+ROUND_TYPE_V33 = {"full", "structural", "confirmation"}
 # Round-tagged detailed-section style (fact.md R6 uses `### R6-04　…`): the
 # round prefix is part of the ID namespace used in that round's ledger rows.
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
@@ -310,6 +343,7 @@ def parse_ledger(
                     "ev": cells.index("证据") if "证据" in cells else -1,
                     "root": cells.index("根因 ID") if "根因 ID" in cells else -1,
                     "origin": cells.index("origin") if "origin" in cells else -1,
+                    "sev": cells.index("严重度") if "严重度" in cells else -1,
                     "role": (
                         cells.index("来源角色")
                         if "来源角色" in cells
@@ -388,6 +422,7 @@ def parse_ledger(
         evidence = cells[current["ev"]] if current["ev"] >= 0 else ""
         root_id = cells[current["root"]].strip() if current["root"] >= 0 else ""
         origin = cells[current["origin"]].strip() if current["origin"] >= 0 else ""
+        severity = cells[current["sev"]].strip() if current["sev"] >= 0 else ""
         role = cells[current["role"]].strip() if current["role"] >= 0 else ""
         if current.get("v3_scope"):
             if not root_id:
@@ -449,6 +484,7 @@ def parse_ledger(
                 "evidence": evidence,
                 "root": root_id,
                 "origin": origin,
+                "severity": severity,
                 "role": role,
                 "section": section,
             }
@@ -513,6 +549,7 @@ def check_metrics(
     v3: bool = False,
     root_count: int | None = None,
     new_roots: int | None = None,
+    v33_start: int | None = None,
 ) -> None:
     body = _pick_metric_block(text, report, round_tag)
     total_match = METRIC_TOTAL_RE.search(body)
@@ -584,10 +621,10 @@ def check_metrics(
         round_type = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
         if round_type is None:
             report.fail("metrics", "V3 metrics 缺少 `- 轮型: full`")
-        elif round_type.group(1) != "full":
+        elif round_type.group(1) not in ROUND_TYPE_V33:
             report.fail(
                 "metrics",
-                f"V3 轮型只能是 full，实际 `{round_type.group(1)}`；"
+                f"V3 轮型只能是 full/structural/confirmation，实际 `{round_type.group(1)}`；"
                 "discovery/verification 轮型已删除",
             )
         if re.search(r"^-\s*edition\s*[:：]\s*V\d+\.\d+", body, re.MULTILINE) is None:
@@ -613,6 +650,22 @@ def check_metrics(
                 "metrics",
                 f"本轮新准入 {new_match.group(1)} 与台账 origin=本轮 的根因数 {new_roots} 不一致",
             )
+        # V3.3 four-state: every bound round declares its closing result.
+        # `CONVERGED` here is cross-checked by check_v33_lifecycle (round type
+        # + certify 新准入); the whitelist blocks free-form status prose.
+        if v33_start is not None and (round_num is None or round_num >= v33_start):
+            result_key = re.search(r"^-\s*轮结果\s*[:：]\s*(\S+)", body, re.MULTILINE)
+            if result_key is None:
+                report.fail(
+                    "metrics",
+                    "V3.3 metrics 缺少 `- 轮结果: ROUND-CLOSED|CONVERGED|NOT CONVERGED"
+                    "|NOT CONVERGING|FREEZE-WITH-BACKLOG|BLOCKED`（§6A 四态模型）",
+                )
+            elif result_key.group(1) not in ROUND_RESULT_V33:
+                report.fail(
+                    "metrics",
+                    f"- 轮结果 `{result_key.group(1)}` 不合法；允许：{sorted(ROUND_RESULT_V33)}",
+                )
     elif not legacy:
         round_type = re.search(r"^-\s*轮型\s*[:：]\s*(discovery|verification)", body, re.MULTILINE)
         if round_type is None:
@@ -664,10 +717,11 @@ def check_round_type_sequence(
             rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
             if rt is None:
                 report.fail("round-type", f"{title} 缺少 `- 轮型: full`（V3）")
-            elif rt.group(1) != "full":
+            elif rt.group(1) not in ROUND_TYPE_V33:
                 report.fail(
                     "round-type",
-                    f"{title} 的轮型是 `{rt.group(1)}`；V3 只允许 full（discovery/verification 已删除）",
+                    f"{title} 的轮型是 `{rt.group(1)}`；V3 只允许 full/structural/confirmation"
+                    "（discovery/verification 已删除）",
                 )
         return
     seq: list[tuple[int, str, str]] = []
@@ -961,12 +1015,14 @@ def check_edition_trial(
             continue
         ed = re.search(r"^-\s*edition\s*[:：]\s*(V[\d.]+)", body, re.MULTILINE)
         rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
-        if not ed or not rt or rt.group(1) != "full":
+        if not ed or not rt or rt.group(1) not in {"full", "structural"}:
             continue
         stat = stats.setdefault(ed.group(1), {"rounds": 0, "last_open": None})
         stat["rounds"] += 1
         op = re.search(r"^-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
         stat["last_open"] = int(op.group(1)) if op else None
+    # V3.3: confirmation rounds are excluded by design (they are not
+    # modification transactions), but structural rounds count like full.
     for edition, stat in stats.items():
         if stat["rounds"] >= 3 and (stat["last_open"] is None or stat["last_open"] > 0):
             report.warn(
@@ -978,6 +1034,226 @@ def check_edition_trial(
             report.ok(
                 "edition-trial",
                 f"edition {edition} 试验窗口 {stat['rounds']}/3",
+            )
+
+
+DEBT_DONE_TOKENS = (
+    "✅",
+    "已修",
+    "已实施",
+    "已闭合",
+    "已完成",
+    "已覆盖",
+    "已拒绝",
+    "superseded",
+    "dup-of",
+)
+DEBT_DEADLINE_RE = re.compile(r"截止\s*R(\d+)")
+
+
+def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
+    """V3.3 §4.0f: OPEN-DEBT rows are part of the single open count.
+
+    A debt row has exactly two legal exits: implemented (completion token /
+    `dup-of` pointing at the covering root) or a DECISIONS.md decision row
+    (user adjudication). Anything else keeps the round open. A `截止 R<N>`
+    whose N is below the closing round is overdue and said so by name.
+
+    Returns the open-row count so the caller folds it into `未闭环`.
+    """
+    if not path.is_file():
+        return 0
+    lines = path.read_text(encoding="utf-8").splitlines()
+    current: dict[str, int] | None = None
+    open_rows: list[tuple[str, str]] = []
+    closing_round = int(round_tag.lstrip("R")) if round_tag else None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            current = None
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if all(SEP_RE.fullmatch(cell) for cell in cells):
+            continue
+        if any("ID" == cell or "条目" == cell for cell in cells):
+            current = {"id": 0}
+            continue
+        if current is None or not cells or not cells[0]:
+            continue
+        item = cells[0]
+        if item.startswith("#") or item in {"ID", "条目"}:
+            continue
+        row_text = " | ".join(cells)
+        if any(token in row_text for token in DEBT_DONE_TOKENS):
+            continue
+        deadline = DEBT_DEADLINE_RE.search(row_text)
+        deadline_note = ""
+        if deadline and closing_round is not None and int(deadline.group(1)) < closing_round:
+            deadline_note = f"；已逾期（截止 R{deadline.group(1)}）"
+        open_rows.append((item, deadline_note))
+    for item, note in open_rows:
+        report.fail(
+            "open-debt",
+            f"{item} 未销账{note}；只有两个出口：实施（附代码证据或 dup-of）"
+            "或 DECISIONS.md 判决账行——没有第三个状态（§4.0f）",
+        )
+    if open_rows:
+        report.fail(
+            "open-debt",
+            f"OPEN-DEBT 有 {len(open_rows)} 行未销账；未闭环口径包含本表，"
+            "本轮不得关闭、不得派下一轮面板（§4.0f 单一未闭环口径）",
+        )
+    else:
+        report.ok("open-debt", "OPEN-DEBT 无未销账行")
+    return len(open_rows)
+
+
+ROUND_RESULT_V33 = {
+    "ROUND-CLOSED",
+    "CONVERGED",
+    "NOT CONVERGED",
+    "NOT CONVERGING",
+    "FREEZE-WITH-BACKLOG",
+    "BLOCKED",
+}
+
+
+def _panel_severities(panel_dir: Path | None) -> dict[tuple[int, str], str]:
+    """Map `(round, FINDING ID)` → `P0..P3` from panel headers (`（P0-fact）`).
+
+    Keyed per round because short finding IDs repeat across rounds
+    (READER-A-16 has seven lives in doc 01's history).
+    """
+    if panel_dir is None or not panel_dir.is_dir():
+        return {}
+    out: dict[tuple[int, str], str] = {}
+    for path in sorted(panel_dir.rglob("*.md")):
+        round_match = re.search(r"round(\d+)", str(path.parent))
+        round_num = int(round_match.group(1)) if round_match else 0
+        for m in re.finditer(
+            r"^#{2,3}\s+FINDING\s+([A-Za-z][A-Za-z0-9-]*)\s*[（(]?\s*(P[0-3])",
+            path.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        ):
+            out.setdefault((round_num, m.group(1)), m.group(2))
+    return out
+
+
+def check_v33_admission(
+    ledger_rows: dict[str, dict],
+    panel_severities: dict[tuple[int, str], str],
+    report: Report,
+    round_tag: str | None,
+    v33_start: int | None,
+) -> None:
+    """V3.3 admission rules, scoped to rounds >= v33_start.
+
+    1. Reader-role P3 rows must not enter the ledger as blocking (①/④):
+       they belong in suggestions.md unless they pass the "读者卡住无法
+       继续" admission test (G3).
+    2. Ledger severity must match the panel FINDING header (R30 recorded a
+       P0 finding as P1/P2 rows — the columns diverged).
+    """
+    for fid, row in ledger_rows.items():
+        section_round = _section_round(row.get("section", ""))
+        if v33_start is None or section_round is None or section_round < v33_start:
+            continue
+        role = (row.get("role") or "").lower()
+        severity = (row.get("severity") or "").strip()
+        cls = row.get("class")
+        if role.startswith("reader") and severity == "P3" and cls in {"①", "④"}:
+            report.fail(
+                "admission-v33",
+                f"{fid} 是读者 P3 却按 {cls} 准入；G3（V3.3）：措辞/指针类 P3 进"
+                " suggestions.md，只有通过「读者卡住无法继续」测试的才入台账",
+            )
+        panel_sev = panel_severities.get((section_round, fid))
+        if panel_sev and severity and panel_sev != severity:
+            report.fail(
+                "severity-sync",
+                f"{fid} 台账严重度 {severity} 与面板标题 {panel_sev} 不一致；"
+                "severity 列必须从面板 FINDING 标题机械同步",
+            )
+
+
+def check_v33_lifecycle(
+    metrics_text: str,
+    ledger_rows: dict[str, dict],
+    section_classes: dict[str, dict[str, str]],
+    report: Report,
+    schema_start: int | None,
+    v33_start: int | None,
+) -> None:
+    """V3.3 four-state lifecycle (§6A), anchored on the metrics `- 轮结果:` key
+    (not on loop.md §7 prose — the prose legitimately mentions CONVERGED when
+    narrating a previous round's overturned claim, which false-positives).
+
+    - full/structural rounds close as ROUND-CLOSED at most; a CONVERGED
+      result on a modification round is a false positive (R26/R30 判例).
+    - CONVERGED requires a `confirmation` round with `certify 新准入: 0`;
+      at most two confirmation rounds; none after a sealed one.
+    - A confirmation round implements no ⑥: design items go to OPEN-DEBT
+      for the next design batch, otherwise the baseline moves under the
+      confirmation itself.
+    """
+    confirmations = 0
+    sealed_at: int | None = None
+    for title, body in _metric_blocks(metrics_text):
+        m = re.search(r"\bR(\d+)\b", title)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if v33_start is not None and n < v33_start:
+            continue
+        if schema_start is not None and n < schema_start:
+            continue
+        rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
+        rtype = rt.group(1) if rt else None
+        result = re.search(r"^-\s*轮结果\s*[:：]\s*(\S+)", body, re.MULTILINE)
+        result_val = result.group(1) if result else None
+        certify = re.search(r"^-\s*certify 新准入\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        certify_new = int(certify.group(1)) if certify else None
+        if rtype == "confirmation":
+            confirmations += 1
+            if confirmations > 2:
+                report.fail(
+                    "lifecycle-v33",
+                    f"R{n} 是第 {confirmations} 次确认轮；确认轮全局最多 2 次（§6A）",
+                )
+            if certify_new == 0:
+                sealed_at = n
+            for section, mapping in section_classes.items():
+                if not section.lower().startswith(f"r{n}".lower()):
+                    continue
+                for fid, cls in mapping.items():
+                    row = ledger_rows.get(fid)
+                    if (
+                        row is not None
+                        and row.get("class") == "⑥"
+                        and _section_round(row.get("section", "")) == n
+                    ):
+                        report.fail(
+                            "lifecycle-v33",
+                            f"{fid} 在确认轮实施 ⑥；确认轮只修新准入的 P0/P1/P2 事实与同步项，"
+                            "设计项登记 OPEN-DEBT 到下一个设计批（§4.0d）",
+                        )
+        if result_val == "CONVERGED":
+            if rtype != "confirmation":
+                report.fail(
+                    "lifecycle-v33",
+                    f"R{n} 是 {rtype or '?'} 轮却宣告 CONVERGED；修改轮最多 ROUND-CLOSED / "
+                    "CONVERGENCE-CANDIDATE，收敛声明权只在确认轮（R26/R30 两次假阳性判例）",
+                )
+            elif certify_new != 0:
+                report.fail(
+                    "lifecycle-v33",
+                    f"R{n} 确认轮 certify 新准入 = {certify_new}；非 0 不得宣告 CONVERGED",
+                )
+        if sealed_at is not None and n > sealed_at:
+            report.fail(
+                "lifecycle-v33",
+                f"R{sealed_at} 确认通过（新准入=0）之后出现 R{n}；CONVERGED 后不得再开轮，"
+                "新证据走重开决策（§6A）",
             )
 
 
@@ -1246,6 +1522,10 @@ def check_run_dir(
         or schema_start is None
         or int(round_tag.lstrip("R")) >= schema_start
     )
+    v33_doc_flag = (schema_version(loop_text) or (0, 0)) >= (3, 3)
+    v33_from = (
+        v33_start_round(loop_text, fallback=schema_start) if v33_doc_flag else None
+    )
     if v3 and loop_text is not None:
         if re.search(
             r"^\s*(?:[-*]\s*)?edition\s*[:：]\s*V\d+\.\d+",
@@ -1309,6 +1589,22 @@ def check_run_dir(
         ) = parse_ledger(ledger_text, report, v3=v3, v3_from_round=schema_start)
         if (schema_version(loop_text) or (0, 0)) >= (3, 2):
             enforce_adjacent_only_dispositions(ledger_rows, report, schema_start)
+        # V3.3 additions: four-state lifecycle, confirmation rounds, reader-P3
+        # admission, origin/severity semantics. Scoped from the V3.3 marker's
+        # `from R<N>` so historical rounds stay exempt (01: R31 grandfathered).
+        if v33_doc_flag:
+            panel_severities = _panel_severities(panel_dir)
+            check_v33_admission(
+                ledger_rows, panel_severities, report, round_tag, v33_from
+            )
+            check_v33_lifecycle(
+                metrics_text or "",
+                ledger_rows,
+                section_classes,
+                report,
+                schema_start,
+                v33_from,
+            )
         if v3:
             check_v3_evidence(ledger_rows, report, round_tag, schema_start)
         else:
@@ -1426,6 +1722,18 @@ def check_run_dir(
             ledger_rows, section_classes, schema_start, v3=v3
         )
         actual_open = len(open_map.get(int(round_tag.lstrip("R")), []))
+    # V3.3 §4.0f: OPEN-DEBT is part of the single open count. An unclosed
+    # same-document debt row blocks the round regardless of ledger state.
+    open_debt_path = run_dir / "OPEN-DEBT.md"
+    if open_debt_path.is_file():
+        debt_open = check_open_debt(open_debt_path, report, round_tag)
+        if actual_open is not None:
+            actual_open += debt_open
+        elif debt_open:
+            report.fail(
+                "open-debt",
+                f"OPEN-DEBT 未销账 {debt_open} 行且未指定 --round；全档审计同样不得视为已收敛",
+            )
     if metrics_text is not None:
         check_metrics(
             metrics_text,
@@ -1437,6 +1745,7 @@ def check_run_dir(
             v3=v3,
             root_count=root_count,
             new_roots=new_roots,
+            v33_start=v33_from,
         )
         # The all-round checks follow the document's newest schema; the
         # per-round checks above use `v3` (the selected round's segment).
@@ -2386,6 +2695,114 @@ def self_test() -> int:
             print("self-test FAIL: todo 台账的 `允许开放` 未被拦截")
             print_report(todo_report, False)
             return 1
+
+    # V3.3：OPEN-DEBT 未销账行 → FAIL 并计入未闭环
+    with tempfile.TemporaryDirectory() as tmp:
+        debt = Path(tmp) / "OPEN-DEBT.md"
+        debt.write_text(
+            "# open-debt\n\n"
+            "| ID | 严重度 | 处置/档期 |\n"
+            "|---|---|---|\n"
+            "| R26-design-batch | P1 | 待实施（R27）；截止 R27 边界 |\n"
+            "| F-R17-02 | P2 | ✅ 已修：已完成 |\n",
+            encoding="utf-8",
+        )
+        debt_report = Report()
+        open_count = check_open_debt(debt, debt_report, "R31")
+        debt_messages = " ".join(item["message"] for item in debt_report.items)
+        if open_count != 1 or "未销账" not in debt_messages or "已逾期" not in debt_messages:
+            print("self-test FAIL: OPEN-DEBT 未销账行未被拦截或逾期未点名")
+            print_report(debt_report, False)
+            return 1
+
+    # V3.3：读者 P3 按 ①/④ 准入 → FAIL；severity 与面板不一致 → FAIL
+    admission_report = Report()
+    check_v33_admission(
+        {
+            "READER-A-01": {
+                "class": "④",
+                "severity": "P3",
+                "role": "reader-a",
+                "section": "R31 面板轮",
+            },
+            "FACT-B-01": {
+                "class": "①",
+                "severity": "P1",
+                "role": "P-FACT-B",
+                "section": "R31 面板轮",
+            },
+        },
+        {(31, "FACT-B-01"): "P0"},
+        admission_report,
+        "R31",
+        31,
+    )
+    admission_messages = " ".join(item["message"] for item in admission_report.items)
+    if "suggestions" not in admission_messages or "面板标题" not in admission_messages:
+        print("self-test FAIL: V3.3 读者 P3 准入 / severity 同步未被拦截")
+        print_report(admission_report, False)
+        return 1
+
+    # V3.3：修改轮自判 CONVERGED → FAIL（收敛声明权只在确认轮）
+    lifecycle_loop = (
+        "## R31 完整 survey\n\n### R31 §7 状态\n\n`CERTIFY PASS / CONVERGED（按代理口径 A）`\n"
+    )
+    lifecycle_metrics = """# 指标
+
+## R31 完整 survey
+
+- 发现总数: 1
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- certify 新准入: 0
+- 轮型: full
+- 轮结果: CONVERGED
+- edition: V3.1
+"""
+    lifecycle_report = Report()
+    check_v33_lifecycle(
+        lifecycle_metrics,
+        {},
+        {},
+        lifecycle_report,
+        26,
+        31,
+    )
+    lifecycle_messages = " ".join(item["message"] for item in lifecycle_report.items)
+    if "收敛声明权" not in lifecycle_messages:
+        print("self-test FAIL: 修改轮自判 CONVERGED 未被拦截")
+        print_report(lifecycle_report, False)
+        return 1
+
+    # V3.3：确认轮通过（新准入=0）合法；确认轮实施 ⑥ → FAIL
+    confirm_metrics = lifecycle_metrics.replace("- 轮型: full", "- 轮型: confirmation")
+    confirm_ledger_rows = {
+        "RD-R31-01": {
+            "class": "⑥",
+            "action": "实施",
+            "verify": "cargo test",
+            "root": "RD-R31-01",
+            "origin": "R31",
+            "severity": "P2",
+            "role": "design-d2",
+            "section": "R31 完整 survey",
+        }
+    }
+    confirm_sections = {"R31 完整 survey": {"RD-R31-01": "⑥"}}
+    confirm_report = Report()
+    check_v33_lifecycle(
+        confirm_metrics,
+        confirm_ledger_rows,
+        confirm_sections,
+        confirm_report,
+        26,
+        31,
+    )
+    confirm_messages = " ".join(item["message"] for item in confirm_report.items)
+    if "确认轮实施 ⑥" not in confirm_messages:
+        print("self-test FAIL: 确认轮实施 ⑥ 未被拦截")
+        print_report(confirm_report, False)
+        return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0

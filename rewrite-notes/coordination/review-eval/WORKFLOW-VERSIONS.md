@@ -290,3 +290,33 @@
 | V3.2 | 节选逐行对账 | 替代"节选 structure-only"的豁免 | 净减一个放行面；改写必须显式声明才豁免 |
 
 **同步门读数（V3.2，2026-11-10）**：`generate-derived-skills.sh` / `check-review-rules.sh` / `lint-review-rules.sh` / `diff-trae-skills.sh --only-diff` 四道门全绿；`doc-citation-check.py --self-test`（含新增 节选陈旧行/省略/显式改写 三夹具）与 `doc-symbol-drift.sh --self-test`（含 `--stale-lines` 临时仓库夹具）PASS；`eval-trace-check.py` 无 V3.2 标记时四轮回归 PASS（休眠验证），注入 `schema: V3.2` 探针后 ② 非相邻形态全部 FAIL（强制验证）。
+
+## V3.3（2026-11-10，R30/R31 边界裁决：用户批准四态模型 + 确认轮 + 债务入门）
+
+> 依据：R26/R30 **两次假阳性**（修改轮自判 `CONVERGED`，均被下一轮完整 survey 推翻；
+> R30 借"代理口径 A"越权）；R31（用户要求的追加轮，事实上是一次确认轮）找到
+> 1 P0 + 3 P1，证明强定义正确但规则组合不完整——确认轮在 §7.5 的 3 轮窗口内无处
+> 安放；R26 的 11 条设计债经 ② 批准转入 `OPEN-DEBT.md` 后，在 R27–R31 五轮之间
+> 无任何执行器（阴影账不在门视野内，文件头还自宣布"不是收敛的必要条件"）；
+> R30 台账 70% 是 P3，而旧 G3 要求"准入 P3 = 0"——不可达判据；R29 重写 §2.6.4、
+> R31 在同段找到两份页目录的机制级 P0——"重写段是下轮 P0 的最大来源"三度应验。
+
+| 编号 | 规则 | 判例 | 检测器 | 期望效果 | 目标文件 | 状态 |
+|---|---|---|---|---|---|---|
+| V3.3-a | 四态模型：ROUND-CLOSED / CONVERGENCE-CANDIDATE / CONVERGED / FREEZE-WITH-BACKLOG；修改轮无收敛声明权 | R26、R30 两次假阳性 | `eval-trace-check.py` 的 `lifecycle-v33` 门（V3.3 标记起生效） | 假阳性在声明前被拦截 | `review-evals.md` §6A、`review-loop.md` L0/L6.9/L7a | 已生效 |
+| V3.3-b | 确认轮：全量 survey、只修新准入 P0/P1/P2 事实/同步项、不实施 ⑥、全局最多 2 次、不占修改预算；`certify 新准入=0` 才可 CONVERGED | R31（事实上的首次确认轮，找到 1 P0 + 3 P1，正确拒绝收敛） | `lifecycle-v33` 门 | 收敛声明有唯一合法出口，且出口可机械判定 | `review-evals.md` §6A/§7.5、`review-loop.md` L0/L6.9/L7a、`review-panel.md` §3.6 | 已生效 |
+| V3.3-c | 读者 P3 默认进 suggestions；准入需"读者卡住无法继续"测试；G3 不再要求准入 P3=0 | R30 台账 70% 是 P3；R31 §5 自建议同一改法；用户原始意图（"P3 不影响收敛"） | `admission-v33` 门 | P2/P3 长尾（每轮 ~50 条持平）不再阻断收敛 | `review-evals.md` §4.0c/G3、`review-panel.md` 读者 brief | 已生效 |
+| V3.3-d | OPEN-DEBT 入门：未销账行计入未闭环，只有实施（证据/dup-of）或判决账行两个出口；逾期逐条点名 | D-043 的 11 条五轮无执行器；`OPEN-DEBT.md:5` 自宣布"不是收敛必要条件" | `eval-trace-check.py` 的 `open-debt` 门 | "有债务的循环"从白费变成不可启动 | `review-evals.md` §4.0f、`eval-trace-check.py` | 已生效 |
+| V3.3-e | 改写段源码再推演：本轮改写的机制段，certify 附逐断言 vs C 源推演记录，缺记录 G7 FAIL | R31 §2.6.4（R29 重写、R30 触碰、R31 P0：两份页目录/TLB 论证不存在） | `review-loop.md` L4 第 10 条 + G7 文本 | 机制语义错误在重写当轮被回查 | `review-loop.md` L4、`review-evals.md` G7 | 已生效 |
+| V3.3-f | origin 记引入轮（自引入不记发现轮）；severity 列与面板标题机械同步 | R30：3 条 R29 自引入记 origin R30；面板 P0 1/P1 3 vs 台账 P1 2/P2 15/P3 40 无 P0 行 | `admission-v33` 门（severity）+ §4.0c 文本 | "本轮新准入"跨轮可比；确认轮的 0 准入判据有区分度 | `review-evals.md` §4.0c/§3.3、`eval-trace-check.py` | 已生效 |
+| V3.3-g | 同篇 edition 上限 K=3（软）：超出须判决账行 | V3.1 在第 4 轮（R31）突破窗口，无记录 | `review-evals.md` §7.5、`review-loop.md` L7d 文本 | 无限换规则重试变成显式决定 | `review-evals.md` §7.5、`review-loop.md` L7d | 已生效 |
+
+### V3.3 减法账本
+
+| 版本 | 新装置 | 替代/合并了什么 | 净效果 |
+|---|---|---|---|
+| V3.3 | 四态模型 + 确认轮 | 替代旧 §6A"修改轮自判 CONVERGED"的弱定义与 §4.0a 残留的 verification 概念 | 净减一个声明权（修改轮的）；确认轮复用既有全量面板与交易阶段，零新角色零新工具 |
+| V3.3 | `open-debt` / `admission-v33` / `lifecycle-v33` 三门 | 合并进既有 `eval-trace-check.py`；OPEN-DEBT 门替代"follow-ups 大桶"与"阴影账"实践 | 零净增工具文件；删除 `OPEN-DEBT` 的"非必要条件"豁免面与 G3 的"准入 P3=0"不可达判据 |
+| V3.3 | 改写段再推演 | 合并进既有 certify 硬步骤序列（与所有权复核同型），不新增面板角色 | 零净增；把"下一轮 survey 发现机制错"改成"本轮 certify 回查" |
+
+**同步门读数（V3.3，2026-11-10）**：`generate-derived-skills.sh` / `check-review-rules.sh` / `lint-review-rules.sh` / `diff-trae-skills.sh --only-diff` 四道门全绿（注意：本地非交互 shell 的 `rg` 是 alias、PATH 无 cargo bin 时这四道门会整批误报 command-not-found——须 `PATH="$HOME/.cargo/bin:$PATH"` 后运行，CI 环境不受影响）；`eval-trace-check.py --self-test` PASS（新增 OPEN-DEBT 未销账/逾期、读者 P3 准入、severity 同步、修改轮自判 CONVERGED、确认轮实施 ⑥ 五个负样本夹具）；`trait-audit.py --self-test` PASS。实弹验证：`--round R31` 现况 FAIL，`open-debt` 门点名 R26-design-batch（逾期，截止 R27）——设计批清账前 R31 不得关闭，符合 §4.0f 预期。

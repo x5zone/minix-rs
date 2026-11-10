@@ -1,8 +1,9 @@
 # D01 开放欠账（open-debt）
 
-> 本表只收**跨 crate / 需要独立项目**的 ② 项（负责人 + 截止轮次），按 `prompt/review-rules/review-evals.md` §4.1 与 G9 的口径管理。
-> `adjacent` 项不进本表：它们在 `follow-ups.md` 登记目标轮次，按 §4.2 的“adjacent 阻塞 = 0”规则**不阻塞本篇收敛**。
-> 本表为空是“没有跨 crate 欠账”的充分信号，但不是收敛的必要条件；收敛只看 G8（连续两轮无新 in-scope 发现）与 G9（⑥ 项清零）。
+> 本表只收**跨 crate / 需要独立项目**的 ② 项（负责人 + 截止轮次），按 `prompt/review-rules/review-evals.md` §4.0f（V3.3 单一未闭环口径）与 G9 管理。
+> `adjacent` 项不进本表：它们在 `follow-ups.md` 登记目标轮次。
+> **本表的未销账行计入未闭环（V3.3 §4.0f）**：有未销账行 = 本轮不得关闭、不得派下一轮面板。
+> 只有两个出口：实施（附代码证据或 `dup-of` 指向覆盖根因）或 `DECISIONS.md` 判决账行；没有第三个状态。
 
 | ID | 严重度 | 处置/档期 |
 |---|---|---|
@@ -15,4 +16,5 @@
 | F-R20-03 | P2 | ✅ 已修：四个 `static mut` 表 → write-once `TestMapTables`（AtomicBool 单写 + Release 发布，初始化后只读）；`qemu-test-kernels` 门控，生产不链接；`'static` 由真实 static 生命周期支撑 |
 | F-R20-04 | P2 | ✅ 已修：补 reserved / from_memmap / dtb 覆盖的溢出/反向负控；minix-boot 192、kernel 862+8 |
 | F-R23-03 | P2 | ✅ 已修（R23 后）：删除恒空 `kern_ident`/`kern_ident_count` 与 `VM_BOOT_HANDOFF_MAX_IDENT`；`VM_BOOT_HANDOFF_VERSION` 8→9；VM server 与测试同步 |
+| R26-design-batch | P1 | **待实施（R27）**：DESIGN-D2-01..05、D2-07..12（build_kernel_info 收 struct、wire v10 派生字段删除、RamAuthority、死抽象/容量模型、bootface 300 行合并、adjudicate enum、BootStorage 命名、五实现合并、shim_windows 身份、boot_alloc/pt_alloc 校验、零消费者 API 清理）；负责人 main agent；截止 R27 边界；裁决见 `DECISIONS.md` D-043 |
 | — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |
