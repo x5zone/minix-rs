@@ -149,7 +149,7 @@ ROUND_TYPE_V33 = {"full", "structural", "confirmation"}
 # round prefix is part of the ID namespace used in that round's ledger rows.
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE)
-METRIC_COUNT_RE = re.compile(r"([①②④⑤⑥③]|FP)\s*(\d+)")
+METRIC_COUNT_RE = re.compile(r"([①②④⑤⑥③]|FP|SUGG)\s*(\d+)")
 PLACEHOLDERS = {"tbd", "待定", "-", "—", "", "（待补）", "待补"}
 DISPOSITION_TOKENS = {
     "①": "①",
@@ -167,6 +167,10 @@ DISPOSITION_TOKENS = {
     "fp": "FP",
     # Legacy-only token: accepted for rounds before 25, rejected for R25+.
     "③": "LEGACY",
+    # V3.3 D-047: triage-out class — reader/design P3 findings routed to
+    # suggestions.md. Visible in the ledger, never open, never in G1-G8.
+    "SUGG": "SUGG",
+    "sugg": "SUGG",
 }
 
 
@@ -251,23 +255,6 @@ def check_loop_sections(text: str, report: Report, round_tag: str | None = None)
                 "loop-sections",
                 f"loop.md 的 `{SECTION_TITLES[i]}` 节没有内容",
             )
-
-
-RANGE_RE = re.compile(r"^([A-Z][A-Za-z0-9-]*?)-(\d+)\.\.(\d+)$")
-
-
-def expand_id_token(token: str) -> list[str]:
-    """Expand `READER-A-01..20` into the individual IDs used by panels.
-
-    Range rows keep multi-round ledgers readable; coverage still needs the
-    concrete IDs, otherwise a whole reader family silently escapes the check.
-    """
-    m = RANGE_RE.match(token)
-    if not m:
-        return [token]
-    prefix, start, end = m.group(1), int(m.group(2)), int(m.group(3))
-    width = len(m.group(2))
-    return [f"{prefix}-{i:0{width}d}" for i in range(start, end + 1)]
 
 
 RANGE_RE = re.compile(r"^([A-Z][A-Za-z0-9-]*?)-(\d+)\.\.(\d+)$")
@@ -577,6 +564,10 @@ def check_metrics(
         required = list("①②③④⑤")
     else:
         required = ["①", "②", "④", "⑤", "⑥", "FP"]
+    # V3.3: triage-out findings (reader/design P3 → suggestions) are disposed
+    # as SUGG rows — required in the disposition sum for bound rounds.
+    if v33_start is not None and (round_num is None or round_num >= v33_start):
+        required.append("SUGG")
     missing = [k for k in required if k not in counts]
     if missing:
         report.fail("metrics", "metrics.md 缺少处置计数: " + "、".join(missing))
@@ -1190,9 +1181,18 @@ def check_v33_admission(
         ):
             report.fail(
                 "admission-v33",
-                f"{fid} 是 {role} P3 却按 {cls} 准入；G3（V3.3）：读者/设计的措辞与"
-                "偏好级 P3 进 suggestions.md，只有通过「读者卡住无法继续」或"
-                "「正确性缺陷」测试的才入台账",
+                f"{fid} 是 {role} P3 却按 {cls} 准入；G3（V3.3）：改标 SUGG 并登记"
+                " suggestions.md，只有通过「读者卡住无法继续」或「正确性缺陷」测试的"
+                "才按 ①/④ 入台账",
+            )
+        if cls == "SUGG" and not (
+            (role.startswith("reader") or role.startswith("design"))
+            and severity == "P3"
+        ):
+            report.fail(
+                "admission-v33",
+                f"{fid} 按 SUGG 分流但来源/严重度为 {role or '?'}/{severity or '?'}；"
+                "SUGG 仅限读者/设计的 P3——P0-P2 不得借 SUGG 逃出修复队列（D-047）",
             )
         panel_sev = panel_severities.get((section_round, fid))
         if panel_sev and severity and panel_sev != severity:
@@ -2864,6 +2864,18 @@ def self_test() -> int:
                 "action": "实施 [ARCH] 借槽语义改 directMap",
                 "evidence": "cargo test",
             },
+            "READER-A-02": {
+                "class": "SUGG",
+                "severity": "P3",
+                "role": "reader-a",
+                "section": "R31 面板轮",
+            },
+            "FACT-B-02": {
+                "class": "SUGG",
+                "severity": "P2",
+                "role": "P-FACT-B",
+                "section": "R31 面板轮",
+            },
             "FACT-B-01": {
                 "class": "①",
                 "severity": "P1",
@@ -2900,6 +2912,22 @@ def self_test() -> int:
         return 1
     if "DESIGN-D2-01" in class_messages:
         print("self-test FAIL: 已分类的设计行被误判")
+        print_report(admission_report, False)
+        return 1
+    sugg_escape = any(
+        item["check"] == "admission-v33" and "FACT-B-02" in item["message"]
+        for item in admission_report.items
+    )
+    if not sugg_escape:
+        print("self-test FAIL: P2 借 SUGG 逃逸分流未被拦截")
+        print_report(admission_report, False)
+        return 1
+    reader_sugg_ok = not any(
+        item["check"] == "admission-v33" and "READER-A-02" in item["message"]
+        for item in admission_report.items
+    )
+    if not reader_sugg_ok:
+        print("self-test FAIL: 合法 SUGG 分流被误判")
         print_report(admission_report, False)
         return 1
 

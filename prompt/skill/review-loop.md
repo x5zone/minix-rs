@@ -196,7 +196,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
    - certify 新准入: <整数>
    - 重复合并: <整数>
    - 自引入: <整数>
-   - 处置: ① <整数> / ② <整数> / ④ <整数> / ⑤ <整数> / ⑥ <整数> / FP <整数>
+   - 处置: ① <整数> / ② <整数> / ④ <整数> / ⑤ <整数> / ⑥ <整数> / FP <整数> / SUGG <整数>
    - 未闭环: <整数>
    - 轮型: full | structural | confirmation
    - 轮结果: ROUND-CLOSED | CONVERGED | NOT CONVERGED | NOT CONVERGING | FREEZE-WITH-BACKLOG | BLOCKED
