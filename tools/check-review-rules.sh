@@ -177,6 +177,20 @@ rg -q 'Step 5\.4 L3 grep|Step 5\.5 测试总数' .claude/rules/review-process.md
 [[ "$(grep -c 'Step 0\.5: 生成 structure' prompt/review-rules/review-process.md)" -eq 1 ]] \
   || fail "source review-process.md has duplicate Step 0.5 heading (F-A3-1 regression)"
 
+# V3 起强制减法：每个版本头必须在减法账本里有至少一行（V1–V2.5 grandfather）。
+while IFS= read -r ver; do
+  [[ -n "$ver" ]] || continue
+  major="${ver%%.*}"
+  minor="${ver#*.}"
+  if (( major > 3 || (major == 3 && minor >= 0) )); then
+    rg -q "^\| V${ver} \|" rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md \
+      || fail "missing subtraction-ledger row for V${ver}"
+  fi
+done < <(
+  grep -oE '^## V[0-9]+\.[0-9]+' rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md \
+    | sed 's/^## V//' | sort -u
+)
+
 if (( errors > 0 )); then
   printf '%d review-rule checks failed\n' "$errors" >&2
   exit 1

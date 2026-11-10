@@ -2,6 +2,7 @@
 # doc-ref-check.sh — 文档内部章节引用对账（doc-commit-review bagging：longcat 3.3 / Muse F-9）
 #
 # 查内部引用 `第 N 章` / `第 N.M`(节，节/章字可省) / `§N.M`（数字编号）是否指向本文存在的标题。
+# 标题登记覆盖 `##`–`#####`（含 `2.4.1.4` 这类五级小节）。
 # 跳过：同一行该引用左侧邻近出现 `.md`（外部引用）；CJK 编号（§一/§六）；
 #       栅栏块（``` 围栏）内不扫描——引文/命令块内容是引用物，不是本文内部引用
 #       （判例：14 篇引文块内源码注释「see §3.6 in 14-exception-interrupt.md」，2026-10-19）。
@@ -26,7 +27,7 @@ run_check() {
     # 第一遍：登记标题里的章号(整数)与节号(N.M / N.M.K)
     NR==FNR {
       gsub(/\r$/,"")
-      if ($0 ~ /^#{2,4} /) {
+      if ($0 ~ /^#{2,5} /) {
         h=$0; sub(/^#+ /,"",h)
         if (match(h, /^第 [0-9]+ 章/)) { n=h; sub(/^第 /,"",n); sub(/[^0-9].*/,"",n); head[n]=1 }
         else if (match(h, /^Ch[0-9]+/)) { n=h; sub(/^Ch/,"",n); sub(/[^0-9].*/,"",n); head[n]=1 }
@@ -89,6 +90,9 @@ self_test() {
   # 栅栏块豁免（14 篇判例）：块内 §9.9 应过；块外坏引用仍拦
   printf '# t\n## 第 1 章 概念\n### 1.1 小节\n```c\n// see §9.9 in other.md\n```\n正文见 §1.1 正常。\n' > "$tmp/fence.md"
   run_check "$tmp/fence.md" check >/dev/null 2>&1 && echo "  OK: 栅栏块内引用豁免" || { echo "  FAIL: 栅栏块内引用未豁免"; fail=1; }
+  # 五级小节登记（01 篇判例：§2.4.1.4 指向 `##### 2.4.1.4`）
+  printf '# t\n## 1. 章\n### 1.1 节\n#### 1.1.1 小节\n##### 1.1.1.1 子小节\n见 §1.1.1.1 正常。\n' > "$tmp/deep.md"
+  run_check "$tmp/deep.md" check >/dev/null 2>&1 && echo "  OK: 五级小节引用可解析" || { echo "  FAIL: 五级小节引用未登记"; fail=1; }
   printf '# t\n## 第 1 章 概念\n```\n§9.9\n```\n坏引用见 §8.8。\n' > "$tmp/fence2.md"
   run_check "$tmp/fence2.md" check >/dev/null 2>&1 && { echo "  FAIL: 栅栏外坏引用未拦"; fail=1; } || echo "  OK: 栅栏外仍拦(§8.8)"
   rm -rf "$tmp"

@@ -283,7 +283,8 @@
 
 - 不新增任务命令，不改变六个命令的契约；
 - 不做一次性 review；一次性 review 走 `full-review`；
-- 不在同一轮同时改工作流和修文档；工作流升版只在版本边界，且每次最多晋升两条。
+- 不在同一轮同时改工作流和修文档；工作流升版只在版本边界，且每次最多晋升两条；
+- V3 起每轮是完整交易（survey→inventory→fix→certify），没有 discovery/verification 轮型；下一轮只能在本轮 `open=0` 且 `certify 新准入=0` 后开。
 
 **强制门**：
 

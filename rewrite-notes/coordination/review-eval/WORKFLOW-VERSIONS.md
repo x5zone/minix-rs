@@ -183,3 +183,110 @@
 | R-10 | **RB/commit 发现必须入台账**：写入 `defect-ledger.md` 并计入未闭环；只写在 loop/RB 报告不算入账 | R25 RB 的 B1/B2/N1–N11 只在 loop，未计入 metrics | `review-evals.md` §4f/§4.1、`review-loop.md` L6.9 | **已晋升生效** |
 
 同步门读数：`generate-derived-skills` 0 / `check-review-rules` 0 / `lint-review-rules` 0 / `diff-trae-skills` 0；`eval-trace-check --self-test` PASS；R25 仍为 `NOT CONVERGED`（未闭环 10），验证轮尚未开始。
+
+## V2.5（2026-11-10，用户裁决：回归检查“流程必须能走向收敛”）
+
+> 用户指令：“再回归检查一次，流程要保证能走向收敛，不是拖着问题，永远有问题永远不收敛，不能逗我玩。”回归实证发现：轮次关账命令跑全历史目录，历史 R14 stale 面板/旧 RB 格式/缺行使门永久 FAIL；收口检查只认 `# Round N`，R14–R25 的 `## R<N> 面板轮` 全部逃检；`未闭环` 是手填值，没有和台账实际未闭环数比对。
+
+| 编号 | 规则 | 案例支撑 | 目标文件 | 状态 |
+|---|---|---|---|---|
+| R-11 | **轮次关账必须轮次作用域**：新增 `--round R<N>`，只查该轮的覆盖、收口、未闭环与 round-order；`## R<N>` 与 `# Round N` 两种标题都受 `### L6`/`### L6.5` 合同约束。不带 `--round` 是全历史归档审计，历史旧格式/stale 面板不阻断当前轮；不得删除历史证据来“变绿” | R25 修到 0 后仍被 11 条历史 FAIL 永久卡死；R15–R25 缺 L6/L6.5 却零报警 | `tools/eval-trace-check.py`、`review-loop.md` L2/L5/L6.9、`review-evals.md` §3.4/§4.0a | **已晋升生效** |
+| R-12 | **`未闭环` 必须与台账交叉校验**：声明值 ≠ 台账逐行实际未闭环数（⑤ + 未批准 ② + 复验写“未修/待修/未实施”的 ①/④/⑥）即 FAIL；手填 0 掩盖未修行直接拦截 | R25 台账 10 项未闭环，metrics 可被手改成 0 而不触发旧门 | `tools/eval-trace-check.py`（`actual_open` 交叉校验）、`review-evals.md` §3.4 | **已晋升生效** |
+
+同步门读数：`eval-trace-check.py --self-test` PASS（新增现代标题缺 L6.5 拦截、metrics 手填 0 拦截）；R25 scoped 门剩 10 项未闭环（预期，非回归）；generate-derived-skills / check-review-rules / lint-review-rules / diff-trae-skills 待本批改动后重跑。
+
+**V2.5 追加（同一轮回归检查的第三个洞）**：
+
+| 编号 | 规则 | 案例支撑 | 目标文件 | 状态 |
+|---|---|---|---|---|
+| R-13 | **轮型状态机必须闭包**：`metrics` 只允许一个 `discovery`；`verification` 之后不得出现任何更高轮号（新缺陷在同一轮 delta 内修，最多 2 次）；02 起 `schema: V2.5 from R1`，01 写 `from R25`；缺 schema 标记的 `--round` 直接 FAIL。否则清空 `未闭环` 后把下一轮再标成 `discovery`，25 轮循环原样复现 | 回归检查发现：旧实现只检查 `未闭环` 与 round-order，未阻止“R26=第二次 discovery”；且 02 的 R1 会因轮号 <25 落回旧 schema | `tools/eval-trace-check.py`（`schema_start_round` / `check_round_type_sequence` / `_round_open_items`）、`review-loop.md` L0 步骤 10、`review-evals.md` §4.0a 规则 8 | **已晋升生效** |
+
+自测新增：R1 在 `schema: V2.5 from R1` 下必须按新 schema 检查；缺 schema 标记必须拦截；R25→R26→R27（verification 后再开轮）必须拦截；R25/R26 双 discovery 必须拦截。
+
+## V3.0（MAJOR，2026-11-10，用户裁决：把无限循环改成有限交易）
+
+> 用户指令：“首先需要做的是 review workflow 的改进与收敛。”V3 不再增加面板角色，而是改三件事：轮次是完整交易而不是发现/验证两种轮型；缺陷有稳定身份并按准入判据收窄；规则只在 edition 边界变更并强制减法。V3 从 01 的 R26 或 02 的 R1 起生效；R25 在 `schema: V2.5 from R25` 下收口，只把收口阶段改成 certify，不另开 verification 轮。
+
+| 编号 | 规则 | 案例支撑 | 目标文件 | 状态 |
+|---|---|---|---|---|
+| R-14 | **轮次交易模型**：删除 `discovery`/`verification` 轮型；一轮 = survey→inventory→fix→certify，同一 `edition` 内完成；下一轮只能在上一轮 `open=0` 且 `certify 新准入=0` 后开；每轮都是完整 review，R26 若存在就是完整 review | R17–R25 连续 9 个全量轮，发现量 87→124；R25 10 项未闭环时曾准备开 R26 verification；R25 meta 判 FLAT/NOT PASS | `review-evals.md` §4.0b/§6A、`review-loop.md` L0/L1/L4/L6.9/L7、`review-panel.md` §3.5、`eval-trace-check.py` | **已晋升生效**（V3 起） |
+| R-15 | **缺陷身份**：`根因 ID`/`origin`/`dup-of` 为 V3 台账必填；复发只更新 `last_seen`，不产生新行、不计“新准入”；`发现总数`/`唯一根因数`/`本轮新准入` 三数分列 | R25 124 原始 ≈ 100 唯一、18 个同根簇、约 22 个冗余 ID；READER-A-16 同 ID 出现 7 次；C-14 自 R15 等待 12 轮未落地 | `review-evals.md` §3.4/§4.0c/§10.3、`review-loop.md` L2/L5、`eval-trace-check.py` | **已晋升生效**（V3 起） |
+| R-16 | **准入判据 + 读者验收清单**：位置/判据/证据/反证四条全满足才进台账；清单外偏好写 `suggestions.md`，不进台账、不阻塞；读者清单首版 10 条固定 | R17–R23 读者 ④ 338 条（占同期 43.5%）；R25 71 条读者发现里约 55–60 条是真障碍，8–12 条是纯打磨；`review-panel.md` 的 Top-20 配额制造了每轮固定供给 | `review-evals.md` §4.0c/§4.0e/§4.1、`review-panel.md` §4.4/§5 | **已晋升生效**（V3 起） |
+| R-17 | **修复批次 ≤20 根因/commit + 100% 复验**：不抽样；每个根因有可重放证据；修复引入新缺陷该批回退；同一根因两次复发升级 ⑥ | R24 修 114 条只抽 29 条（40 文件 +1139/−440），R25 抓到 4 个 R24 引入的 P0；R25 修 98 条只抽 46 条；R6–R12 自引入率 25–30% | `review-evals.md` §4.0d、`review-loop.md` L3/L4 | **已晋升生效**（V3 起） |
+| R-18 | **edition 纪律**：版本边界不依赖文档收敛；每个 edition 在同一篇上最多 3 轮，第 3 轮仍 `open>0` 判 `NOT CONVERGING` 并写 `EDITION-RETRO.md`；中途变更当前轮标 `INVALIDATED`；晋升 ≤2 条/边界，强制减法 | 评测期规则改动 7 次（V1→V2.5），每次静默作废旧基线；L7 边界要求 01 收敛，01 不收敛则规则无法正规晋升，只能即时晋升，形成循环依赖；减法账本 3 行 vs 版本表 9 行 | `review-evals.md` §7、`review-loop.md` L7d、`WORKFLOW-VERSIONS.md` 第三节 | **已晋升生效**（V3 起） |
+| R-19 | **机械门**：新增 `doc-citation-check.py`（`代码引用` 块逐行 token 对账、`节选` 只查路径/符号）与 `doc-symbol-drift.sh`（旧符号 grep，支持 `--from-diff`）；`eval-trace-check.py` 自测进 CI；新增本地 pre-commit 安装器 | `doc-snippet-extract.sh:6` 明写“判定是 review 的事”；`arch-gated-test-count.py` 不读 `.md`；`eval-trace-check.py` 不在 CI；无生效 hook；R25 的 §3.7/§4.2 两个 P0 是引文漂移 | `tools/doc-citation-check.py`、`tools/doc-symbol-drift.sh`、`tools/install-review-hooks.sh`、`.github/workflows/rules-consistency.yml` | **已晋升生效**（V3 起） |
+| R-20 | **G7 改为台账/100% 复验**：`CONVERGED` 不再依赖 meta 抽样 ≥90%；meta 的 PASS/NOT PASS 是流程质量指标，FAIL 不阻止文档关闭。收敛证据 = 根因 ID 唯一、origin 完整、未闭环与 metrics 一致、每个 ①/④/⑥ 有可重放复验 | R25 meta 40/59=67.8% NOT PASS 与 R25 10 个 P0 并发；meta 抽样门本身是随机门（历史读数 37.8%/72.7%/67.8%/88.8%/100%），不能作为停机条件 | `review-evals.md` §5.0/§6A、`review-loop.md` L6/L7a | **已晋升生效**（V3 起） |
+| R-21 | **行级证据 / 模板串 / todo 台账三合一门**：①/④/⑥ 的 `复验` 必须含行级 token（path:line / `test::` / grep / 旧串 / commit / 冷读回执）；`五门 PASS`、`见 loop §N` 单独出现不算；同一 `处置`/`复验` 文本 >3 次即 FAIL；reader/design 行额外要求冷读 `CLOSED`/`STILL-BROKEN`；`--audit-templates` 审计历史轮次；`--todo-file` 核对文档级 todo，`允许开放` 必须映射 ②/⑤ | **R24：114/118 行共用同一句 `处置`，113/118 共用同一句 `复验`；R25：97/124 与 97/124。** §2.2 栈对齐同一 P0 被报 7 次，每次记“已修 + 五门 PASS”。全台账 1456 行：机械门-only 933、冷读 2、两者都有 0。`01-todo.md` 4 处 `允许开放` 在门视野外 | `tools/eval-trace-check.py`（`check_v3_evidence` / `audit_template_sections` / `check_todo_ledger`）、`review-loop.md` L6.9、`review-evals.md` §4.0d/§4.1 | **已晋升生效**（V3 起） |
+
+### V3.0 减法账本
+
+| 版本 | 新增 | 替代 / 合并 | 净增理由 |
+|---|---|---|---|
+| V3.0 | 轮次交易模型 | 删除 `discovery`/`verification` 两种轮型，合并为同一轮的 survey/certify 阶段 | 净减一个轮型；不再有“验证轮承接” |
+| V3.0 | 根因 ID/origin/dup-of | 替代每轮重新编号与“新发现”计数 | 无净增；把重复项从“新增”里去掉 |
+| V3.0 | 读者验收清单 + `suggestions.md` | 替代开放式读者偏好 Top-20 与已删除的 ③ 桶 | 无净增；清单外偏好不再进台账 |
+| V3.0 | `doc-citation-check.py` | 替代 P-FACT 手工引文逐块对账 | 无净增；机械项从 LLM 循环移出 |
+| V3.0 | `doc-symbol-drift.sh` | 替代 RB 抽查符号漂移 | 无净增；commit 门替代下一轮发现 |
+| V3.0 | 100% 复验 + 批次 ≤20 根因 | 替代 meta 抽样 ≥90% 作为收敛门 | 无净增；更严但减少返工 |
+| V3.0 | 行级证据/模板串门 | 替代旧“复验非空、且不含未修/待修”的弱检查 | 无净增；`五门 PASS` 这类轮级声明不再能给单行背书 |
+| V3.0 | edition 3 轮试验 | 替代无限全量轮与“01 收敛才升版”的循环依赖 | 净减轮次；不能收敛的是 edition，不是文档 |
+| V3.0 | pre-commit 安装器 | 替代“记得手工跑门” | 无净增；本地兜底，共享门仍在 CI |
+
+**旧候选处置**：C-01..C-18 在第一个 V3 边界统一复核，不再无限等待“L7 / V2 边界 / D02 闭环复核”。每条按“案例 + 检测器 + 替代物”三问裁决：三问齐备的晋升（受每次 ≤2 条约束，可分批）；无检测器、无案例或已被 V3 规则覆盖的标 `OBSOLETE` 并删除；仍有价值但缺检测器的转成“机械门候选”，排在晋升队列前面。
+
+**同步门读数（V3.0，2026-11-10 实跑）**：
+
+| 版本 | `generate-derived-skills.sh` | `check-review-rules.sh` | `lint-review-rules.sh` | `diff-trae-skills.sh --only-diff` | 新工具自测 |
+|---|---|---|---|---|---|
+| V3.0 | exit 0；10 个 skill 与 review-scan 派生件重新生成 | exit 0；源/三端一致 | exit 0；0 个失败 | exit 0；10/10 完全同步 | `eval-trace-check.py --self-test` PASS（含 V3 full/root/certify 正负样本）；`trait-audit.py --self-test` PASS；`doc-citation-check.py --self-test` PASS；`doc-symbol-drift.sh --self-test` PASS |
+
+## V3.1（2026-11-10，R27 `EDITION-RETRO` 边界裁决）
+
+> 依据：R26 判 `CONVERGED`，R27 第二轮完整 review 找到 70 条，其中 P0 是 R26 的 `BootStorage` 合并引入的 `'static` 别名 UB（D2-13）；34 条 P2/P3 读者/结构项进入 backlog。`EDITION-RETRO.md` 判定 V3.0 的修复单位（线级补丁）错误，R28 必须先做结构轮。
+
+| 编号 | 规则 | 案例支撑 | 目标文件 | 状态 |
+|---|---|---|---|---|
+| R-22 | **B 类/复发根因结构重写**：同一段/小节被报 ≥2 个根因，或同一根因第二次出现，该批必须重写整段/整小节（`rewrite`），不得逐句打补丁；A 类事实项可线级修 | R26→R27 的邻句类发现；R27 34 条 backlog 大半是同一段被反复报 | `review-evals.md` §4.0b/§4.0d、`review-loop.md` L3 | **已晋升生效**（V3.1） |
+| R-23 | **certify 所有权/接口顺序复核**：改动触及 `&mut`/`&'static`/生命周期/跨 crate 签名时，重放“写后读”顺序（或 Miri/Stacked Borrows 等价检查），不能只读 diff | R27 D2-13：R26 的 `BootStorage` 合并先洗 `'static` 再 `&mut`，certify 未抓到 | `review-evals.md` §6A G7、`review-loop.md` L4 | **已晋升生效**（V3.1） |
+| R-24 | **读者清单第 9 条三问**：不变量是什么、前提是什么、证据在哪；三问答不出才是 FINDING，“更喜欢另一种写法”进 suggestions | R26/R27 同一段反复被读者报“卡住”，第 9 条无可执行判据 | `review-evals.md` §4.0e、`review-loop.md` L6 | **已晋升生效**（V3.1） |
+| R-25 | **设计快照历史输入**：审查合同 = 文档 + 源码 + `DECISIONS.md`；`.design/*.md` 与文档/源码冲突时以文档/源码为准 | R27 REFUTE 仍把 `.design/01-design.v3.md` 的 Ch2–Ch4 旧条款当合同，找出“七项取代节未覆盖”的阻断项 | `review-evals.md` §7.8、`review-loop.md` L7d、`01-design.v3.md` 头部 | **已晋升生效**（V3.1） |
+| R-26 | **完整 survey 前最终 HEAD 机械再对账**：citation/anchor/symbol-drift 在 survey 前清零，修复 diff 的漂移不留给面板当“新发现” | R27 FACT-A-01/02 是 R26 改代码未回填引文；任何 commit 级 citation 门都能抓到 | `review-evals.md` §7.1、`review-loop.md` L4 | **已晋升生效**（V3.1） |
+| R-27 | **第 3 轮必须是结构轮**：按 `EDITION-RETRO` 重写段/小节 + 机械再对账；若仍是线级补丁或仍 `open>0`，判 `NOT CONVERGING` | R26 的 `CONVERGED` 被 R27 推翻；V3.0 3 轮试验的第 2 轮已暴露修复单位错误 | `review-evals.md` §7.5、`review-loop.md` L7d | **已晋升生效**（V3.1） |
+
+### V3.1 减法账本
+
+| 版本 | 新增 | 替代 / 合并 | 净增理由 |
+|---|---|---|---|
+| V3.1 | B 类结构重写 | 替代“每条发现逐句修”的默认做法 | 无净增；把同一段的多个根因合并为一次重写 |
+| V3.1 | certify 所有权顺序复核 | 替代“certify 只读 diff” | 无净增；合并级 P0 不再漏到下一轮 |
+| V3.1 | 读者三问 | 替代第 9 条“可复述”的空泛判据 | 无净增；把偏好挡在 suggestions |
+| V3.1 | 设计快照历史化 | 替代“快照=合同”的旧读法 | 净减一个假合同源 |
+| V3.1 | survey 前机械再对账 | 替代“下一轮面板发现引文漂移” | 净减面板发现量 |
+| V3.1 | 第 3 轮结构轮 | 替代“无限线级轮” | 净减轮次；不结构就判 NOT CONVERGING |
+
+**同步门读数（V3.1，2026-11-10 R28 结构轮后重跑）**：`tools/generate-derived-skills.sh` 生成 10 个 skill；`tools/check-review-rules.sh` 报 “source, Trae adapters, Claude runtime references, and Codex adapters are consistent”；`tools/lint-review-rules.sh` 0 个失败；`tools/diff-trae-skills.sh --only-diff` 报 10 个 skill 完全同步；`tools/eval-trace-check.py --self-test`、`tools/doc-citation-check.py --self-test`、`tools/doc-symbol-drift.sh --self-test`、`tools/doc-ref-check.sh --self-test` 均 PASS。
+
+## V3.2（2026-11-10，R30 后边界裁决：用户指示收紧 ② 与回归双盲区）
+
+> 依据：R26→R27 与 R29→R30 两轮各出现"1 P0 + 2 P1"的**自引入同步债**——代码批改动
+> 行为后， certify 没有硬步骤拦"文档仍引用旧代码"（R30 FACT-B-01/02）；同时 ② 的
+> "用户裁决"形态被用于同篇设计项转出（R26 的 11 条），与"轮次内修复"的目标冲突。
+> 用户裁决：② 收紧至相邻范围；同篇待裁决项当轮 ⑥ 实施或 BLOCKED，绝不进下一轮；
+> 引文 `节选` 只许省略不许改写；行为级改动必须有 `--stale-lines` 机械网。
+
+| 编号 | 规则 | 判例 | 检测器 | 期望效果 | 目标文件 | 状态 |
+|---|---|---|---|---|---|---|
+| V3.2-a | ② 只允许相邻范围；同篇待裁决项当轮 ⑥ 实施或 BLOCKED，不得开下一轮 | R26 的 11 条 ② design batch；R30 的 0 条 ② | `eval-trace-check.py` 的 `disposition-v32` 门（V3.2 标记起生效） | 转出不再承接"同篇没修完" | `review-evals.md` §4.1/§4.1a/G5/G9、`review-loop.md` L3 | 已生效 |
+| V3.2-b | `节选` 引文只许省略不许改写；显式声明 改写/示意/反例 的块豁免 | R30 FACT-B-01（§4.6 引文停在 `let _ =`，源码已 `match`） | `doc-citation-check.py` 逐行对账扩到 `节选` | 陈旧引文在 commit 门当场拦截 | `tools/doc-citation-check.py` | 已生效 |
+| V3.2-c | 代码批→文档同步硬步骤：`--stale-lines <批前 rev> --strict` 零命中 | R30 FACT-B-01/02（行为改动不删符号，`--from-diff` 扫不到） | `doc-symbol-drift.sh --stale-lines` | 自引入同步债在本轮清零 | `tools/doc-symbol-drift.sh`、`review-loop.md` L4、`review-evals.md` §4.0d/G7 | 已生效 |
+| V3.2-d | 所有权顺序复核升硬步骤：loop §5 必须留逐条推演记录，缺记录 G7 FAIL | R27 D2-13（certify 只读 diff 漏别名 UB） | `review-loop.md` L4 第 9 条 + G7 文本 | 合并级 P0 不再漏到下一轮 | `review-loop.md` L4、`review-evals.md` G7 | 已生效 |
+
+### V3.2 减法账本
+
+| 版本 | 新装置 | 替代/合并了什么 | 净效果 |
+|---|---|---|---|
+| V3.2 | `--stale-lines` 陈旧行网 | 合并进既有 `doc-symbol-drift.sh`（不新增工具文件） | 零净增；把"下一轮面板发现引文漂移"改成"本轮 commit 门拦截" |
+| V3.2 | `disposition-v32` 台账门 | 替代"② 裁决"形态（删除一个处置子类） | 净减：② 从两种形态收到一种 |
+| V3.2 | 节选逐行对账 | 替代"节选 structure-only"的豁免 | 净减一个放行面；改写必须显式声明才豁免 |
+
+**同步门读数（V3.2，2026-11-10）**：`generate-derived-skills.sh` / `check-review-rules.sh` / `lint-review-rules.sh` / `diff-trae-skills.sh --only-diff` 四道门全绿；`doc-citation-check.py --self-test`（含新增 节选陈旧行/省略/显式改写 三夹具）与 `doc-symbol-drift.sh --self-test`（含 `--stale-lines` 临时仓库夹具）PASS；`eval-trace-check.py` 无 V3.2 标记时四轮回归 PASS（休眠验证），注入 `schema: V3.2` 探针后 ② 非相邻形态全部 FAIL（强制验证）。

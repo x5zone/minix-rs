@@ -48,8 +48,9 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 5. 初始化 review 状态：`tools/review-init.sh zcode <doc>`。
 6. 写 `runs/<stage>/<doc-stem>/loop.md §0`：commit、sha256、行数、范围、关联代码、语料条目 ID。
 7. 02/03 阶段先读 `review-eval/doc-set/` 的对账简报；没有简报就先做对账，不进入 L1。
-8. **读本篇前几轮 follow-ups**：如果本篇已跑过面板轮，读 `runs/<stage>/<doc-stem>/follow-ups.md` 中上一轮的未修 ② 项；按文件交集分成两份——"顺手修"（与本篇关联代码重叠的项，本轮 ① 同批处理）与"核销清单"（需要确认是否已被其他轮修复的项，交 P-FACT 在面板中确认状态）。首轮没有前轮 follow-ups 时跳过此步。
-9. **定轮型**：`runs/<stage>/<doc-stem>/loop.md §0` 必须写 `轮型: discovery` 或 `轮型: verification`。首次审全文是 discovery；discovery 收口后只能进 verification；verification 发现新 in-scope 真缺陷时，在**同一轮内**修完并复跑 delta（最多 2 次），不得重开全量 discovery，也不得用下一轮承接；上一轮未闭环 >0 时禁止出现下一轮小节。
+8. **读 follow-ups（V3 只核对已批准项）**：V3 的上一轮必须已关闭，理论上没有“未修”项。读 `runs/<stage>/<doc-stem>/follow-ups.md` 中用户批准的 ②（带日期）与上一轮 `suggestions.md`，确认目的地是否已落地；不得把未批准 ② 或 ⑤ 带入新轮。V2.5 过渡轮仍按旧口径分“顺手修/核销清单”，但同样不得把未批准项带进下一轮。首轮没有前轮 follow-ups 时跳过此步。
+9. **定轮型与 edition**：`loop.md §0` 必须写 `轮型: full` 与 `edition: V3.0`（或当前版本）。V3 没有 discovery/verification 轮型；每轮都是完整 survey→inventory→fix→certify。R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，但其收口按 certify 阶段执行，不另开 verification 轮。
+10. **写 schema 标记**：`loop.md §0` 必须写 `schema: V3.0 from R<N>`。02 及以后写 `from R1`；01 在 R25 收口前保留 `schema: V2.5 from R25`，R26 起写 `V3.0 from R26`。`eval-trace-check.py --round` 缺这个标记直接 FAIL——这是防止新文档落回旧 schema、重新出现无限全量轮的硬门。
 
 范围声明模板：
 
@@ -69,7 +70,7 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 - 关联代码 < 10k 行时跳过 P-DESIGN D1（独立设计成本高于收益，D2 直接对照文档与源码）；
 - P-REFUTE 触发条件：P-FACT 报出 ≥1 条 P0，或本篇属于高风险类（启动链/IPC/内存管理/时钟中断）。
 
-验证轮不按上面的默认全量配置：只派 P-FACT 定点（修复 hunk 涉及的符号/常量/引文）、READER 定点（只读修改段及邻句，不读全文）、RB（审最终 HEAD）；不派全量 READER A/B/C，不派 DESIGN 全量。验证轮的目标是确认“已修项真的修了、没有修出新错”，不是重新发现一遍全文。
+V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派全量角色；fix 之后的 certify 阶段只派定点回读：P-FACT 只查本轮修复 hunk 涉及的符号/常量/引文，READER 只读改动段及邻句（不读全文），RB 审最终 HEAD（含本轮全部修复提交）。certify 不重开全量 READER A/B/C，不派 DESIGN 全量；发现的新问题进**本轮**台账，在本轮内修完，不得用下一轮承接。
 
 派发方式：
 
@@ -88,25 +89,30 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 ## L2 归因与决策
 
 1. 收齐面板输出，按 `review-panel.md` 第五节的编号规则统一编号。
-2. 每条发现按 `review-evals.md` §四 新归因表处置：① 修（P0/P1/P2 一律）、② 用户批准的转出（带批准日期）、④ 读者体验（本轮修）、⑤ 证据不足（本轮不得关闭）、⑥ 设计重构（本轮实施）、FP 有反证的误报。**③ 已删除。** 范围内确认为真缺陷的一律本轮修，不允许无档期转出。
-3. 查 `DECISIONS.md`；命中且无新证据的，记 `re-litigation`，不计文档缺陷。
-4. 标范围：`in-scope` 或 `adjacent`；`adjacent` 标 ② 带日期（哪一轮修）。
-5. 写 `defect-ledger.md`，表头必须含 `发现 ID`、`来源角色`、`严重度`、`类别`、`处置类`、`处置`、`证据`、`复验`。
-6. 写 `loop.md §2` 与 `§3`。
-7. 跑轨迹检查：
+2. **去重与准入（V3）**：按 `review-evals.md` §4.0c 为每条发现分配 `根因 ID`（`RD-NNN`）与 `origin`；同根发现合并到同一行，在 `发现 ID` 列列出。四条准入判据（位置/判据/证据/反证）不全的，写 `suggestions.md`，不进台账、不进 metrics。
+3. 每条准入发现按 `review-evals.md` §4.1 处置：① 修（P0/P1/P2 一律）、② 用户批准的转出（带批准日期）、④ 读者验收清单内项（本轮修）、⑤ 证据不足（本轮不得关闭）、⑥ 设计重构（本轮实施）、FP 有反证的误报。**③ 已删除。** 范围内确认为真缺陷的一律本轮修，不允许无档期转出。
+4. 查 `DECISIONS.md`；命中且无新证据的，记 `re-litigation`，不计文档缺陷。
+5. 标范围：`in-scope` 或 `adjacent`；`adjacent` 标 ② 带日期（哪一轮修）。
+6. 写 `defect-ledger.md`，V3 表头必须含 `根因 ID`、`发现 ID`、`origin`、`来源角色`、`严重度`、`类别`、`处置类`、`处置`、`证据`、`复验`。V2.5 过渡轮保留旧表头。
+7. 写 `loop.md §2` 与 `§3`。
+8. 跑轨迹检查（轮次关账只检查本轮）：
    ```bash
-   python3 tools/eval-trace-check.py rewrite-notes/coordination/review-eval/runs/<stage>/<doc-stem>
+   python3 tools/eval-trace-check.py rewrite-notes/coordination/review-eval/runs/<stage>/<doc-stem> --round R<N>
    ```
-   退出码非 0 时，回到第 1 步补处置；不允许进入 L3。
+   退出码非 0 时，回到第 1 步补处置；不允许进入 L3。**不带 `--round` 是全历史归档审计**，历史轮次的旧格式/stale 面板/缺行不阻断当前轮；归档审计的 FAIL 单独记账，不得删除历史证据来“变绿”。
 
 ## L3 修复
 
-1. 按 `fix-guard`：读目标 ±5 行、grep 确认现状、一次只修一条、修后 grep 验证、写 fix-status。
-2. **每条代码修复必须**：带回归测试（覆盖修复前的失败场景）→ 反向验证（还原→红，恢复→绿）→ fix-scope（发现点名的位置逐处改到，缺一处降 ② 带日期）。
-3. 文档修复与代码修复同批；代码改动必须同步 Ch3、Ch4、§5 与测试。
-4. **”顺手修”清单**与 ① 同批处理：L0 步骤 8 产出的”顺手修”项（前轮 follow-ups 中与本篇关联代码重叠的项），在本轮修复中一并处理。
-5. 代码门：`cargo fmt --check`、`cargo clippy`、`cargo test`；触碰 arch 或 boot 时按 `AGENTS.md` 跑 QEMU。
-6. **受影响 crate 全量绿**：提交前 `cargo test -p <crate>` 必须通过；含 minix-arch。
+1. **按根因分批（V3.1）**：每批 ≤20 个根因；同一根因的多条发现同批处理。批内不混无关改动，批与批之间 commit。**B 类/复发根因按段成批**：同一段/小节被报 ≥2 个根因，或同一根因第二次出现，该批必须重写整段/整小节（`rewrite`），不是逐句打补丁；A 类事实项可线级修。
+2. 按 `fix-guard`：读目标 ±5 行、grep 确认现状、一次只修一条、修后 grep 验证、写 fix-status。
+3. **每条代码修复必须**：带回归测试（覆盖修复前的失败场景）→ 反向验证（还原→红，恢复→绿）→ fix-scope（发现点名的位置逐处改到，缺一处降 ② 带日期）。
+4. 文档修复与代码修复同批；代码改动必须同步 Ch3、Ch4、§5 与测试。
+5. **代码改动触及 pub 签名/结构体字段/常量时**，必须跑 `tools/doc-symbol-drift.sh <doc> --symbol <旧符号>...`（或 `--from-diff <base> --strict`），旧串命中必须为 0；文档引文块改动必须跑 `tools/doc-citation-check.py <doc>`。两者是 commit 门，不留给下一轮面板。
+6. **”顺手修”清单**与 ① 同批处理：L0 步骤 8 产出的”顺手修”项（前轮 follow-ups 中与本篇关联代码重叠的项），在本轮修复中一并处理。
+7. 代码门：`cargo fmt --check`、`cargo clippy`、`cargo test`；触碰 arch 或 boot 时按 `AGENTS.md` 跑 QEMU。
+8. **受影响 crate 全量绿**：提交前 `cargo test -p <crate>` 必须通过；含 minix-arch。
+9. **100% 复验**：本批每个根因都要有可重放证据（旧串 grep 归零 / 测试名 + 输出 / 逐字对照 / 冷读回执），不抽样；R24 的 114 抽 29、R25 的 98 抽 46 是 V3 禁止的做法。修复引入新缺陷 → 该批回退，按上限重做。
+10. 可选：本地跑 `tools/install-review-hooks.sh` 安装 pre-commit；暂存文档的引文对账与门自测会在提交时自动跑（共享门仍在 CI）。
 
 ## L3.5 DESIGN 实施
 
@@ -120,11 +126,16 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 4. 本步完成后，L4 的文档五门与 trace 门用**更新后的文档**跑。
 5. 若本步实施了跨 crate 的设计变更（`wire` 版本、所有权限定、ABI 布局等），旧轮次的收敛结论只对旧基线成立：实施后必须重新固定基线（提交号 + 文档行数/sha256 + 测试计数），重跑受影响门与 QEMU，再判断 G8/G9；不得用旧轮次的“零新增”宣告当前基线收敛。
 
-## L4 复验与回归
+## L4 收口认证（certify）
 
-1. 修复段回读：由发现该问题的角色或同角色冷启动实例，只读修改段及邻句；标签写”修复后回读”。
-2. 台账重放：每条”已修”行给可重放 `grep` 命令与命中输出。
-3. 文档五门：
+V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是闭集：本轮全部修复 hunk、
+本轮未闭环项、受影响的章节与代码。不得用“随机 20% 未改章节”重新发现全文。
+
+1. **100% 修复回读**：本批每个根因都由发现角色或同角色冷启动实例只读修改段及邻句；
+   标签写“修复后回读”。不抽样，不以“整体一致率”代替逐条回执。
+2. **台账重放**：每条“已修”行给可重放 `grep` 命令与命中输出，或测试名与输出，或
+   commit hunk 回指；模板句不算证据。
+3. **文档五门 + 机械门**：
    ```bash
    tools/anchor-resolve.sh --check <doc>
    tools/doc-code-map.sh <doc> --check
@@ -132,15 +143,32 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
    tools/doc-style-lint.sh --diff
    tools/doc-ref-check.sh --check <doc>
    tools/doc-code-density-check.sh --check <doc>
+   python3 tools/doc-citation-check.py <doc>
    ```
-4. 代码块分类：`tools/doc-snippet-extract.sh <doc>`；引文块逐块对账。
-5. 回归扫描：邻句、自引入过程词、端口义、引号、模糊尾巴、跨节复述。
-6. **commit 级回归 review**：每个逻辑 commit 提交后，派一个小型 review（只看该 commit 的改动范围，不是全量面板），按 `review-evals.md` §4e 的定义：
+4. **符号漂移与行为级陈旧行（V3.2 硬步骤）**：本轮改过 pub 签名/结构体字段/常量时，跑
+   `tools/doc-symbol-drift.sh <doc> --symbol <旧符号>...`（或
+   `--from-diff <base> --strict`）；**本轮代码批改了行为/签名/常量（无论是否删符号）时，
+   必须再跑 `tools/doc-symbol-drift.sh <doc> --stale-lines <批前 rev> --strict`**——
+   `let _ =`→`match` 这类行为改动不删任何符号，标识符粒度扫不到（R30 FACT-B-01/02
+   判例）。两项旧串/陈旧行命中必须为 0；命中的是本轮同步债，修完才许关轮。
+5. **代码块分类**：`tools/doc-snippet-extract.sh <doc>`；引文块逐块对账。
+6. **回归扫描**：邻句、自引入过程词、端口义、引号、模糊尾巴、跨节复述。
+7. **commit 级回归 review**：每个逻辑 commit 提交后，派一个小型 review（只看该 commit
+   的改动范围，不是全量面板），按 `review-evals.md` §4e 的定义：
    - 文档 commit → 锚点 + doc-code-map + 改动段 fact 抽查 + 改动节 reader 抽查；
    - 代码 commit → 双轴（规范轴 + 设计意图轴）+ 契约/并发/失败路径；
    - 混合 commit → 两个子集都跑。
-   发现的问题**当场修复**（2026-11-09 用户裁决 §4e-1——旧口径“回 L2 归因不直接修”实测导致修复自引入再生）；修复后复验（旧串 grep 归零）通过才闭合。
-7. 写 `loop.md §4` 与 `§5`。
+   发现的问题**当场修复**（2026-11-09 用户裁决 §4e-1）；修复后复验通过才闭合。
+8. **写 certify 结果**：`loop.md §5` 必须写 `- certify 新准入: <整数>`；只有 `0` 且
+   `未闭环=0` 才允许关轮。新准入项进本轮台账并在本轮修完，不得写成下一轮。
+9. **所有权/接口顺序复核（V3.1；V3.2 升为硬步骤）**：本轮改动触及 `&mut`/`&'static`/
+   生命周期/跨 crate 签名/`unsafe` 时，certify 必须重放“写后读”顺序（或 Miri/Stacked
+   Borrows 等价检查），不能只读 diff；R27 D2-13 的 `BootStorage` 别名 UB 是判例。
+   **复核必须在本轮 `loop.md §5` 留下逐条推演记录**（改了什么顺序假设、为什么新顺序
+   成立）；缺记录 = G7 FAIL，轮次不关闭。
+10. **最终 HEAD 机械再对账**：`doc-citation-check.py`、`anchor-resolve.sh`、
+   `doc-symbol-drift.sh` 全跑；上一批修复引入的引文/符号漂移必须在 certify 前清零。
+11. 写 `loop.md §4` 与 `§5`。
 
 ## L5 轨迹与指标
 
@@ -148,26 +176,39 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 2. 写 `metrics.md`，固定键：
    ```markdown
    - 发现总数: <整数>
+   - 唯一根因数: <整数>
+   - 本轮新准入: <整数>
+   - certify 新准入: <整数>
+   - 重复合并: <整数>
+   - 自引入: <整数>
    - 处置: ① <整数> / ② <整数> / ④ <整数> / ⑤ <整数> / ⑥ <整数> / FP <整数>
    - 未闭环: <整数>
-   - 轮型: discovery | verification
-   - 新 in-scope 真缺陷: <整数>
+   - 轮型: full
+   - edition: V3.0
    - re-litigation: <整数>
    - adjacent 阻塞: <整数>
    - 重构: 提出 <整数> / 接受 <整数> / 实施 <整数> / 登记 <整数>
    - 成本: agent <整数> / token <整数> / 耗时 <文本>
    ```
-3. 再跑一次 `eval-trace-check.py`，确认退出码 0。
-4. 把本轮新增的 follow-up 写进 `follow-ups.md`，每条给目的地。
+   R25 过渡轮仍用 V2.5 的旧键（`轮型: discovery|verification`、`新 in-scope 真缺陷`），
+   但必须补 `- certify 新准入: 0`。
+3. `发现总数` = 本轮台账原始发现 ID 数；`唯一根因数` = 本轮出现的不同 `根因 ID` 数；
+   `本轮新准入` = 本轮 `origin` 首次出现的根因数；`certify 新准入` = certify 阶段首次
+   出现的准入根因数。三个数分开报，禁止用一个数冒充另一个。
+4. 再用 `--round R<N>` 跑一次 `eval-trace-check.py`，确认退出码 0；`未闭环` 必须等于
+   台账逐行实际未闭环数（不是手填）。
+5. 把本轮新增的 follow-up 写进 `follow-ups.md`，每条给目的地；清单外偏好写
+   `suggestions.md`，不进台账。
 
 ## L6 独立 meta-review
 
 1. 按 `review-evals.md` §5.0 的分级决定深度：轮次 1–2 全量九问；轮次 3+ 轻量 3 问；文档收敛时全量收口。
 2. 按 `review-panel.md` 4.6 的 brief 启动冷启动子 agent；输入按 `review-evals.md` 第五节。
-3. 要求它抽样独立复判至少 20% 的发现，并给抽样一致性。
-4. 输出到 `meta/<doc-stem>-review.md`。
-5. 结论为 `REGRESSED` 时，不进入下一篇，先回到 L2 检查归因。
+3. **审计对象是台账与证据，不是重审文档**：P0/P1/未闭环项 100% 复判；P2/P3 随机 20% 校准；逐条检查 `根因 ID`/`origin`/复验证据能否重放。读者项按 §4.0e 的三问复核（不变量/前提/证据），三问答不出才算缺陷；“更喜欢另一种写法”不算。
+4. 输出到 `meta/<doc-stem>-review.md`，必须给 `唯一根因数`、`自引入数`、`重复合并数`、`edition 是否稳定` 四个数。
+5. 结论为 `REGRESSED` 时，记录为**流程缺陷**（进 `BLIND-SPOTS.md` 与 edition 边界），不阻止文档关闭；文档是否收敛只看 §6A 的 G1–G9。
 6. 新增盲区写入 `BLIND-SPOTS.md`，下一轮回归必须复现。
+7. **抽查 `suggestions.md`**：若发现满足四条准入判据却被降级为 suggestion 的，记流程缺陷；建议桶不得成为新的 `③` 延期桶。
 
 ## L6.5 Resource re-consultation
 
@@ -180,25 +221,30 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 3. 有 → 记入 `BLIND-SPOTS.md` 的期望探测器列，下一轮实现。
 4. 没有 → 记录"已查，无新模式"，防止同一资源被反复空读。
 
-## L6.9 轮转闸（2026-11-09 用户裁决：无证据不进下一轮）
+## L6.9 轮关闭闸（V3：本轮不闭合，不准开下一轮）
 
-进入下一轮面板之前，逐项核对（缺一即停在“待修复”状态，不得派面板）：
+进入下一轮之前，逐项核对（缺一即停在“本轮未关闭”状态，不得派下一轮面板）：
 
-1. 本轮全部可修项（①④⑥，含 RBn 与 commit 级回归的再生项）**已修，且每条附证据**；FP 必须有反证，② 必须有用户批准日期，⑤ 与未批准 ② 视为未闭环、禁止进下一轮：文档类 = “旧串全篇 grep 归零”输出；代码类 = 测试输出；
-2. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）；
-3. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）；
-4. `eval-trace-check.py` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、R13+ 收口小节检查）；
-5. **轮型顺序**：discovery 只能接 verification；verification 新 in-scope 真缺陷=0 才 `CONVERGED`；同一验证轮内最多 2 次 delta；第 2 次仍有新缺陷即 `STUCK` 交用户，不自动新开一轮。**上一轮未闭环 >0 时禁止出现下一轮小节。**
+1. 本轮全部可修项（①④⑥，含 RBn 与 commit 级回归的再生项）**已修，且每条附可重放证据**；FP 必须有反证；② 必须有用户批准日期；⑤ 与未批准 ② 视为未闭环。
+2. **100% 复验**：每个根因都有复验，不是抽样；`复验` 列不能是模板句。
+3. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）。
+4. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）。
+5. `eval-trace-check.py --round R<N>` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、本轮 L6/L6.5 收口小节；`未闭环` 与台账实际数一致）。**文档级 todo 台账另跑** `--todo-file rewrite-notes/<stage>/<NN>-todo.md`；`允许开放` 不是合法处置类，必须映射为 ②（用户批准 + 日期）或 ⑤（取证路径 / 阻塞），未映射的按未闭环计。
+6. **轮关闭条件**：`未闭环=0` 且 `certify 新准入=0`。满足才写 `CONVERGED`/`FREEZE.md`。
+7. **下一轮**：只能在上一轮关闭后开；每轮都是完整 review（`轮型: full`），不得用 reduced verification 轮承接。上一轮未闭环 >0 时禁止出现下一轮小节。
+8. **edition 不变**：本轮内不得改规则；确需变更按 `review-evals.md` §7.6 把本轮标 `INVALIDATED` 后在新 edition 重开。
+9. **3 轮试验窗口**：同一 edition 在同一篇上第 3 轮仍 `open>0`，判 `NOT CONVERGING`，写 `EDITION-RETRO.md`，不得开第 4 轮。
+10. **轮内 certify 上限**：同一轮第 3 次 certify 仍有新准入根因 → 本轮标 `BLOCKED`，写 `STUCK-REPORT.md`，交用户或 edition 边界裁决；不得第 4 次 certify，也不得开下一轮。
 
 ## L7 收敛检查与工作流升版
 
 ### 7a. 文档收敛检查
 
-按 `review-evals.md` §6A 的 G1–G9 判据逐条检查。G1–G7 全满足 + 最近一轮是 verification + 该轮新 in-scope 真缺陷=0 → 该篇 `CONVERGED`，写 `FREEZE.md`（HEAD、文档 sha、未闭环=0、验证轮证据），进下一篇；不满足 → 只修该验证轮发现，在同一轮内复跑 delta（最多 2 次）；不得新开一轮。
+按 `review-evals.md` §6A 的 G1–G9 判据逐条检查。G1–G9 全满足 → 该篇 `CONVERGED`，写 `FREEZE.md`（HEAD、文档 sha、`未闭环=0`、`certify 新准入=0`、100% 复验证据），进下一篇；不满足 → 只修本轮未闭环项与 certify 新准入项，在同一轮内再跑 certify；不得新开一轮。
 
-**verification 第 2 次仍有新 in-scope 真缺陷** → 生成 `STUCK-REPORT.md` → 标记 `STUCK` → 交用户裁决；不得自动开第 3 次验证，更不得重开全量 discovery。
+**同一根因连续两次修复仍复发** → 生成 `STUCK-REPORT.md` → 标记该根因 `STUCK` → 交用户裁决；不得用第 3 次措辞修复打补丁，也不得把复发计成“新发现”。
 
-`meta PASS` 不是文档收敛；只有 verification 出口能写 `CONVERGED`。
+`meta PASS` 不是文档收敛；`CONVERGED` 只看 §6A 的 G1–G9。meta 的 `NOT PASS` 记流程缺陷，不阻止文档关闭。
 
 ### 7b. 陷阱套件
 
@@ -210,18 +256,12 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 
 ### 7d. 工作流升版
 
-只在版本边界执行：
-
-- 01 篇之后；
-- 之后每 2 篇（03、05、07、09 之后）；
-- 10 篇之后；
-- 或出现被证实的 Critical/High 盲区。
-
-步骤：
+版本边界**不依赖文档收敛**，在每个轮次关闭后、每篇 FREEZE 后、或同一 edition 连续 3 轮未收敛时执行：
 
 1. 跑版本边界回归：`CORPUS.md` 的 R01–R12 与 T01–T08。
-2. 汇总本轮与前几轮的指标，写 `meta/boundary-V<n>.md`。
-3. 晋升规则：每次最多 2 条；每条带案例 ID、目标文件、期望效果、回归风险、替代物。
+2. 汇总本轮与前几轮的指标，写 `meta/boundary-V<n>.md`；必须给 `唯一根因数`、`自引入数`、`重复合并数`、机械门命中、规则命中率。
+2b. 历史模板审计：`python3 tools/eval-trace-check.py <run-dir> --audit-templates`；报告每轮 `处置`/`复验` 的模板串重复，不改历史、不阻断当前轮。
+3. 晋升规则：每次最多 2 条；每条带案例 ID、检测器、目标文件、期望效果、回归风险、替代/合并的旧装置。优先晋升降低 `r`/`M` 的项（机械门、去重、身份键、读者清单收窄）。
 4. 跑同步门：
    ```bash
    tools/generate-derived-skills.sh
@@ -230,10 +270,15 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
    tools/diff-trae-skills.sh --only-diff
    python3 tools/eval-trace-check.py --self-test
    python3 tools/trait-audit.py --self-test
+   python3 tools/doc-citation-check.py --self-test
+   bash tools/doc-symbol-drift.sh --self-test
    ```
-5. 更新 `WORKFLOW-VERSIONS.md` 的版本表、减法账本、同步门读数。
+5. 更新 `WORKFLOW-VERSIONS.md` 的版本表、减法账本、同步门读数。减法账本行数必须 ≥ 版本表行数。
 6. 全绿后提交；未全绿不升版。
 7. 连续两篇证明某条新规无效果或制造误报，回退并记录。
+8. **3 轮试验**：同一 edition 在同一篇上第 3 轮仍 `open>0`，判 `NOT CONVERGING`，写 `EDITION-RETRO.md`；下一个边界处理最大阻塞项或回退，不得开第 4 轮。
+9. **第 3 轮必须是结构轮**：按 `EDITION-RETRO.md` 重写被反复报的段/小节，并在最终 HEAD 跑 citation/anchor/symbol-drift 机械再对账；若第 3 轮仍是线级补丁或仍 `open>0`，同样判 `NOT CONVERGING`。
+10. **设计快照是历史输入**：审查合同 = 文档 + 源码 + `DECISIONS.md`；`.design/*.md` 与文档/源码冲突时以文档/源码为准，不得把旧快照条款当作“文档偏离合同”。
 
 ## 每篇的提交
 
@@ -250,6 +295,9 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 - 禁止让读者角色读源码；禁止让设计角色先看现有实现再自称独立设计。
 - 禁止没有处置行的发现进入修复。
 - 禁止把相邻问题升级为当前阻塞。
-- 禁止在同一轮同时改工作流和修文档；只有循环本身跑不通的阻塞修复例外。
+- 禁止在轮次中途改规则；确需变更按 `review-evals.md` §7.6 把本轮标 `INVALIDATED` 后在新 edition 重开，旧结论不得静默继承。
 - 禁止用“没有新问题”当收敛；收敛判据见 `review-evals.md` 第六节。
+- 禁止用 reduced verification 轮承接本轮未闭环项；每轮都是完整 review。
+- 禁止对 ①/④/⑥ 抽样复验；每个根因都要有可重放证据。
+- 禁止用 `发现总数` 冒充 `唯一根因数` 或 `本轮新准入`。
 - 禁止把 `prompt/resources/` 的外部文本直接抄进规则源。

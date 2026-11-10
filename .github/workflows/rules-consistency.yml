@@ -25,6 +25,8 @@ on:
       - '.trae/**'
       - '.agents/**'
       - 'tools/**'
+      - 'rewrite-notes/01-stage-kernel/**'
+      - 'rewrite-notes/coordination/review-eval/**'
       - 'AGENTS.md'
       - 'opencode.json'
       - '.github/workflows/rules-consistency.yml'
@@ -37,6 +39,8 @@ on:
       - '.trae/**'
       - '.agents/**'
       - 'tools/**'
+      - 'rewrite-notes/01-stage-kernel/**'
+      - 'rewrite-notes/coordination/review-eval/**'
       - 'AGENTS.md'
       - 'opencode.json'
       - '.github/workflows/rules-consistency.yml'
@@ -96,6 +100,10 @@ jobs:
           bash tools/check-clippy-ratchet.sh --self-test
           python3 tools/notes-link-check.py --self-test
           python3 tools/doc-structure-check.py --self-test
+          python3 tools/eval-trace-check.py --self-test
+          python3 tools/trait-audit.py --self-test
+          python3 tools/doc-citation-check.py --self-test
+          bash tools/doc-symbol-drift.sh --self-test
 
       - name: 表结构与内部 .md 链接门（P-2）
         # 只扫受版本管理的评审产物与试点篇目：历史笔记树的存量表格形态不在本轮范围。
@@ -103,6 +111,15 @@ jobs:
           python3 tools/doc-structure-check.py \
             rewrite-notes/coordination/review-eval \
             rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+
+      - name: 文档引文逐行对账门（V3.2）
+        # `代码引用` 与 `节选` 块的每个代码行都必须在源码中找得到（节选只许
+        # 省略、不许改写；显式声明 改写/示意/反例 的块豁免）。这是 R25
+        # 「引文缺 records_in_wire」与 R30 FACT-B-01（引文停在 let _ =）
+        # 一类 P0 的机械替代。
+        run: |
+          python3 tools/doc-citation-check.py \
+            rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md --root .
 
       - name: 架构门测试计数门（SD-34 防回长：宿主跑不到的 #[test] 不许静默增减）
         run: |

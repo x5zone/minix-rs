@@ -55,6 +55,63 @@ SECTION_TITLES = [
 ]
 
 FINDING_RE = re.compile(r"^#{2,3}\s+FINDING\s+([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
+# 新文档（02 起）从 R1 就会使用 V2.5 状态机；不能靠绝对轮号 >=25 判定，
+# 否则 02 的 R1 会落回旧 schema，重新允许 ③/无未闭环/无限全量轮。
+SCHEMA_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:schema|规则版本)\s*[:：]\s*V(\d+)\.(\d+)"
+    r"(?:\s*from\s*R(\d+))?",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def schema_start_round(text: str | None) -> int | None:
+    """Return the first round governed by the newest schema marker.
+
+    A transitioning document may carry both `schema: V2.5 from R25` (the
+    historical R25 section) and `schema: V3.0 from R26` (the new edition).
+    The newest version wins, so the start round is 26; `--round R25` then
+    runs the V2.5 per-round checks while R26+ runs V3. A V3-only document
+    (02 onward) writes `from R1` and starts at 1.
+    """
+    if not text:
+        return None
+    best: tuple[tuple[int, int], int] | None = None
+    for m in SCHEMA_RE.finditer(text):
+        version = (int(m.group(1)), int(m.group(2)))
+        if version < (2, 5):
+            continue
+        start = int(m.group(3) or 1)
+        if best is None or version > best[0] or (
+            version == best[0] and start > best[1]
+        ):
+            best = (version, start)
+    return best[1] if best else None
+
+
+def schema_version(text: str | None) -> tuple[int, int] | None:
+    if not text:
+        return None
+    best: tuple[int, int] | None = None
+    for m in SCHEMA_RE.finditer(text):
+        version = (int(m.group(1)), int(m.group(2)))
+        if best is None or version > best:
+            best = version
+    return best
+
+
+def is_v3_schema(text: str | None) -> bool:
+    version = schema_version(text)
+    return version is not None and version >= (3, 0)
+
+
+def origin_round(origin: str) -> int | None:
+    """Extract the first `R<N>` from an `origin` cell.
+
+    V3 writes `origin: R<首见>` or `origin: R<首见>；last_seen: R<本轮>`.
+    The first number is the identity round; the rest is history.
+    """
+    m = re.search(r"\bR(\d+)\b", origin or "")
+    return int(m.group(1)) if m else None
 # Round-tagged detailed-section style (fact.md R6 uses `### R6-04　…`): the
 # round prefix is part of the ID namespace used in that round's ledger rows.
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
@@ -203,12 +260,21 @@ def _prefix_of(token: str) -> str | None:
     return m.group(1) if m else None
 
 
-def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict], dict[str, set[str]], dict[str, dict[str, str]]]:
+def parse_ledger(
+    text: str, report: Report, v3: bool = False, v3_from_round: int | None = None
+) -> tuple[
+    list[str],
+    dict[str, dict],
+    dict[str, set[str]],
+    dict[str, dict[str, str]],
+    dict[str, dict],
+]:
     lines = text.splitlines()
     ids: list[str] = []
     rows: dict[str, dict] = {}
     section_ids: dict[str, set[str]] = {}
     section_classes: dict[str, dict[str, str]] = {}
+    root_rows: dict[str, dict] = {}
     current: dict[str, int] | None = None
     section = ""
     table_seen: set[str] = set()
@@ -242,9 +308,39 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
                     "act": cells.index("处置"),
                     "ver": cells.index("复验"),
                     "ev": cells.index("证据") if "证据" in cells else -1,
+                    "root": cells.index("根因 ID") if "根因 ID" in cells else -1,
+                    "origin": cells.index("origin") if "origin" in cells else -1,
+                    "role": (
+                        cells.index("来源角色")
+                        if "来源角色" in cells
+                        else (cells.index("角色") if "角色" in cells else -1)
+                    ),
                 }
                 table_seen = set()
                 range_covered = set()
+                section_round = None
+                section_match = re.match(r"^R(\d+)\b", section)
+                if section_match:
+                    section_round = int(section_match.group(1))
+                # V3 ledger requirements start at schema_start; historical
+                # R17–R25 tables (V2.5) do not have the new columns and must
+                # not turn the transition into a permanent red gate.
+                current["v3_scope"] = int(
+                    v3
+                    and (
+                        v3_from_round is None
+                        or (
+                            section_round is not None
+                            and section_round >= v3_from_round
+                        )
+                    )
+                )
+                if current["v3_scope"] and (current["root"] < 0 or current["origin"] < 0):
+                    report.fail(
+                        "ledger",
+                        f"V3 台账缺少 `根因 ID` 或 `origin` 列（节：{section or '?'}；"
+                        "§4.0c：一行一个根因，复发只更新 last_seen）",
+                    )
             except ValueError:
                 current = None
             continue
@@ -290,6 +386,34 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
         action = cells[current["act"]]
         verify = cells[current["ver"]]
         evidence = cells[current["ev"]] if current["ev"] >= 0 else ""
+        root_id = cells[current["root"]].strip() if current["root"] >= 0 else ""
+        origin = cells[current["origin"]].strip() if current["origin"] >= 0 else ""
+        role = cells[current["role"]].strip() if current["role"] >= 0 else ""
+        if current.get("v3_scope"):
+            if not root_id:
+                report.fail(
+                    "ledger",
+                    f"{'、'.join(row_ids)} 缺少 `根因 ID`（V3 一行一个根因）",
+                )
+            if not origin:
+                report.fail(
+                    "ledger",
+                    f"{'、'.join(row_ids)} 缺少 `origin`（V3 首次出现轮次）",
+                )
+            else:
+                row_round_match = re.match(r"^R(\d+)\b", section)
+                row_round = int(row_round_match.group(1)) if row_round_match else None
+                origin_n = origin_round(origin)
+                if (
+                    row_round is not None
+                    and origin_n is not None
+                    and origin_n > row_round
+                ):
+                    report.fail(
+                        "ledger",
+                        f"{root_id or row_ids[0]} 的 origin R{origin_n} 晚于首次出现节 "
+                        f"R{row_round}；origin 必须是首见轮",
+                    )
         if canonical in {"①", "④", "⑥"} and verify.lower() in PLACEHOLDERS:
             report.fail(
                 "ledger",
@@ -323,13 +447,30 @@ def parse_ledger(text: str, report: Report) -> tuple[list[str], dict[str, dict],
                 "action": action,
                 "verify": verify,
                 "evidence": evidence,
+                "root": root_id,
+                "origin": origin,
+                "role": role,
                 "section": section,
             }
             section_ids.setdefault(section, set()).add(row_id)
             section_classes.setdefault(section, {})[row_id] = canonical
             ids.append(row_id)
+        if root_id:
+            if root_id in root_rows and root_rows[root_id]["section"] == section:
+                report.fail("ledger", f"同一节重复根因 ID: {root_id}")
+            root_rows[root_id] = {
+                "class": canonical,
+                "action": action,
+                "verify": verify,
+                "evidence": evidence,
+                "root": root_id,
+                "origin": origin,
+                "role": role,
+                "finding_ids": list(row_ids),
+                "section": section,
+            }
     report.ok("ledger", f"台账解析到 {len(ids)} 条处置")
-    return ids, rows, section_ids, section_classes
+    return ids, rows, section_ids, section_classes, root_rows
 
 
 def _metric_blocks(text: str) -> list[tuple[str, str]]:
@@ -362,13 +503,30 @@ def _pick_metric_block(text: str, report: Report, round_tag: str | None) -> str:
     return blocks[-1][1] if blocks else text
 
 
-def check_metrics(text: str, report: Report, round_tag: str | None = None, expected: dict[str, int] | None = None) -> None:
+def check_metrics(
+    text: str,
+    report: Report,
+    round_tag: str | None = None,
+    expected: dict[str, int] | None = None,
+    actual_open: int | None = None,
+    schema_start: int | None = None,
+    v3: bool = False,
+    root_count: int | None = None,
+    new_roots: int | None = None,
+) -> None:
     body = _pick_metric_block(text, report, round_tag)
     total_match = METRIC_TOTAL_RE.search(body)
     counts = {m.group(1): int(m.group(2)) for m in METRIC_COUNT_RE.finditer(body)}
     round_num = int(round_tag.lstrip("R")) if round_tag else None
-    new_schema = (round_num is not None and round_num >= 25) or ("未闭环" in body)
-    legacy = not new_schema
+    if v3:
+        legacy = False
+    else:
+        new_schema = (
+            (schema_start is not None and (round_num is None or round_num >= schema_start))
+            or (round_num is not None and round_num >= 25)
+            or ("未闭环" in body)
+        )
+        legacy = not new_schema
     if legacy:
         required = list("①②③④⑤")
     else:
@@ -401,17 +559,61 @@ def check_metrics(text: str, report: Report, round_tag: str | None = None, expec
             else:
                 report.ok("metrics", "metrics 各分档与台账本轮逐 ID 聚合一致")
 
+    declared_open: int | None = None
     if not legacy:
         open_match = re.search(r"^-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
         if open_match is None:
             report.fail("metrics", "metrics.md 缺少 `- 未闭环: <整数>`（R25+ 强制）")
-        elif int(open_match.group(1)) != 0:
+        else:
+            declared_open = int(open_match.group(1))
+            if actual_open is not None and declared_open != actual_open:
+                report.fail(
+                    "metrics",
+                    f"metrics 写未闭环 {declared_open}，但台账本轮实际未闭环 {actual_open}；"
+                    "禁止手填 0 掩盖 ⑤/未批准 ②/未实施 ⑥/复验写“未修”的行",
+                )
+            elif declared_open != 0:
+                report.fail(
+                    "metrics",
+                    f"本轮仍有未闭环 {declared_open} 项；本轮不得关闭，禁止派下一轮面板",
+                )
+            else:
+                report.ok("metrics", "未闭环 = 0，本轮可关闭")
+
+    if v3:
+        round_type = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
+        if round_type is None:
+            report.fail("metrics", "V3 metrics 缺少 `- 轮型: full`")
+        elif round_type.group(1) != "full":
             report.fail(
                 "metrics",
-                f"本轮仍有未闭环 {open_match.group(1)} 项；本轮不得关闭，禁止派下一轮面板",
+                f"V3 轮型只能是 full，实际 `{round_type.group(1)}`；"
+                "discovery/verification 轮型已删除",
             )
-        else:
-            report.ok("metrics", "未闭环 = 0，本轮可关闭")
+        if re.search(r"^-\s*edition\s*[:：]\s*V\d+\.\d+", body, re.MULTILINE) is None:
+            report.fail("metrics", "V3 metrics 缺少 `- edition: V3.x`")
+        for key in ["唯一根因数", "本轮新准入", "certify 新准入", "重复合并", "自引入"]:
+            if re.search(rf"^-\s*{re.escape(key)}\s*[:：]\s*(\d+)", body, re.MULTILINE) is None:
+                report.fail("metrics", f"V3 metrics 缺少 `- {key}: <整数>`")
+        certify = re.search(r"^-\s*certify 新准入\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        if certify is not None and declared_open == 0 and int(certify.group(1)) != 0:
+            report.fail(
+                "metrics",
+                f"certify 新准入 = {certify.group(1)}；本轮不得关闭（必须在本轮内修完再认证）",
+            )
+        unique = re.search(r"^-\s*唯一根因数\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        if root_count is not None and unique is not None and int(unique.group(1)) != root_count:
+            report.fail(
+                "metrics",
+                f"唯一根因数 {unique.group(1)} 与台账根因 ID 数 {root_count} 不一致",
+            )
+        new_match = re.search(r"^-\s*本轮新准入\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        if new_roots is not None and new_match is not None and int(new_match.group(1)) != new_roots:
+            report.fail(
+                "metrics",
+                f"本轮新准入 {new_match.group(1)} 与台账 origin=本轮 的根因数 {new_roots} 不一致",
+            )
+    elif not legacy:
         round_type = re.search(r"^-\s*轮型\s*[:：]\s*(discovery|verification)", body, re.MULTILINE)
         if round_type is None:
             report.fail("metrics", "metrics.md 缺少 `- 轮型: discovery|verification`（R25+ 强制）")
@@ -435,6 +637,349 @@ def check_metrics(text: str, report: Report, round_tag: str | None = None, expec
     for line in text.splitlines():
         if line.strip().startswith("-") and re.search(r"TBD|待定", line, re.IGNORECASE):
             report.fail("metrics", f"metrics.md 残留占位: {line.strip()}")
+
+def check_round_type_sequence(
+    text: str, report: Report, schema_start: int | None = None, v3: bool = False
+) -> None:
+    """Enforce the V2.4 state machine on metrics blocks with explicit `## R<N>`
+    headings: at most one discovery, and **no round after a verification**.
+
+    Without this, clearing `未闭环` and then labeling the next round
+    `discovery` silently reopens the full panel — the exact 25-round loop the
+    state machine exists to stop. A verification round that finds new defects
+    must fix them in the same round (max 2 deltas); it may not hand them to a
+    later round.
+
+    V3 removes both round types. In V3 every round must say `轮型: full`;
+    there is no discovery/verification sequence to enforce.
+    """
+    if v3:
+        for title, body in _metric_blocks(text):
+            m = re.search(r"\bR(\d+)\b", title)
+            if not m:
+                continue
+            n = int(m.group(1))
+            if schema_start is not None and n < schema_start:
+                continue
+            rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
+            if rt is None:
+                report.fail("round-type", f"{title} 缺少 `- 轮型: full`（V3）")
+            elif rt.group(1) != "full":
+                report.fail(
+                    "round-type",
+                    f"{title} 的轮型是 `{rt.group(1)}`；V3 只允许 full（discovery/verification 已删除）",
+                )
+        return
+    seq: list[tuple[int, str, str]] = []
+    for title, body in _metric_blocks(text):
+        m = re.search(r"\bR(\d+)\b", title)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if schema_start is not None and n < schema_start:
+            continue
+        rt = re.search(r"^-\s*轮型\s*[:：]\s*(discovery|verification)", body, re.MULTILINE)
+        if rt:
+            seq.append((n, rt.group(1), title))
+        elif schema_start is not None:
+            report.fail(
+                "round-type",
+                f"{title} 缺少 `- 轮型: discovery|verification`；V2.5 schema 下从 R{schema_start} 起每一轮都必须声明轮型",
+            )
+    if not seq:
+        return
+    discoveries = [x for x in seq if x[1] == "discovery"]
+    if len(discoveries) > 1:
+        report.fail(
+            "round-type",
+            "metrics 出现多个 discovery 轮（"
+            + "、".join(f"R{n}" for n, _, _ in discoveries)
+            + "）；一篇文档只允许一次全量发现，后续必须是 verification",
+        )
+    for n, rtype, _title in seq:
+        if rtype != "verification":
+            continue
+        later = sorted(x for x in seq if x[0] > n)
+        if later:
+            report.fail(
+                "round-type",
+                f"R{n} 是 verification，却出现 R{later[0][0]}；验证轮的新缺陷必须在同一轮 delta 内修完，"
+                "不得开新轮（否则收敛又变成无限循环）",
+            )
+    if any(x[1] == "discovery" for x in seq) and seq[0][1] == "verification":
+        report.fail("round-type", "metrics 在 discovery 之前出现了 verification；轮型顺序非法")
+
+
+def check_verify_templates(rows: dict[str, dict], report: Report) -> None:
+    """Warn when many rows reuse the same `复验` text (template evidence).
+
+    The tool cannot judge whether a grep/test output is genuine, but a single
+    sentence repeated across five or more fixes is almost always a template
+    (R25's `doc 五门 PASS；宿主/QEMU 见 loop §5`). WARN, not FAIL: the meta
+    audit and the per-root evidence requirement remain the authority.
+    """
+    from collections import Counter
+
+    counts = Counter(row["verify"] for row in rows.values() if row.get("verify"))
+    for text, count in counts.items():
+        if count >= 5 and len(text) >= 20:
+            report.warn(
+                "verify-template",
+                f"{count} 条记录复用同一复验文本（疑似模板）：{text[:48]}"
+                "…；逐根因证据才算 100% 复验",
+            )
+
+
+ROW_LEVEL_TOKEN_RE = re.compile(
+    r"os/[\w./-]+\.rs(?::|\s)|[\w./-]+\.(?:rs|md|sh|py):\d+|"
+    r"tests?::[A-Za-z_]|cargo test|grep|旧串|commit\s+[0-9a-f]{7,}|git show|"
+    r"冷读|回读|冷启动|CLOSED|STILL-BROKEN",
+    re.IGNORECASE,
+)
+COLD_READ_TOKEN_RE = re.compile(r"冷读|回读|冷启动|CLOSED|STILL-BROKEN", re.IGNORECASE)
+CONTRADICTION_RE = re.compile(r"矛盾|打架|对不上|不一致|自相矛盾")
+B_CLASS_ROLE_RE = re.compile(r"^(reader-|design-)", re.IGNORECASE)
+
+
+def _section_round(section: str) -> int | None:
+    m = re.match(r"^R(\d+)\b", section or "")
+    return int(m.group(1)) if m else None
+
+
+def check_v3_evidence(
+    ledger_rows: dict[str, dict],
+    report: Report,
+    round_tag: str | None = None,
+    schema_start: int | None = None,
+) -> None:
+    """Enforce per-root evidence, B-class cold reads and no templates (V3).
+
+    `复验` must carry a row-level token (path:line / test::name / grep / old
+    string / commit / cold-read verdict). A round-level `五门 PASS` or
+    `见 loop §N` is not evidence for an individual root. Reader/design rows
+    are B-class and additionally require a cold-read `CLOSED`/`STILL-BROKEN`
+    receipt; a FACT row whose evidence says "矛盾/打架" is treated as B-class.
+    """
+    from collections import Counter
+
+    scope_round = int(round_tag.lstrip("R")) if round_tag else None
+    scoped: list[tuple[str, dict]] = []
+    for fid, row in ledger_rows.items():
+        if row.get("class") not in {"①", "④", "⑥"}:
+            continue
+        section_round = _section_round(row.get("section", ""))
+        if scope_round is not None:
+            # A round-scoped check must not let a section without a round
+            # number (e.g. a historical "RB13" or "R6 面板明细" table) leak
+            # into R26 evidence checks.
+            if section_round != scope_round:
+                continue
+        elif schema_start is not None and section_round is not None and section_round < schema_start:
+            continue
+        scoped.append((fid, row))
+
+    for fid, row in scoped:
+        verify = row.get("verify", "")
+        role = row.get("role", "")
+        if not ROW_LEVEL_TOKEN_RE.search(verify):
+            report.fail(
+                "v3-evidence",
+                f"{fid} 复验没有行级证据（需 path:line / test::name / grep / 旧串 / "
+                "commit / 冷读回执）；`五门 PASS`、`见 loop §N` 不算",
+            )
+        if B_CLASS_ROLE_RE.match(role) and not COLD_READ_TOKEN_RE.search(verify):
+            report.fail(
+                "v3-evidence",
+                f"{fid} 来源 {role} 是 B 类（读者/设计），复验缺冷读 "
+                "CLOSED/STILL-BROKEN 回执",
+            )
+        if (
+            role.lower().startswith("fact-")
+            and CONTRADICTION_RE.search(row.get("evidence", "") + row.get("action", ""))
+            and not COLD_READ_TOKEN_RE.search(verify)
+        ):
+            report.fail(
+                "v3-evidence",
+                f"{fid} 是 FACT 的矛盾类（证据含矛盾/打架/对不上），复验缺冷读回执",
+            )
+
+    for key, label in (("action", "处置"), ("verify", "复验")):
+        counts = Counter(row.get(key, "") for _, row in scoped if row.get(key))
+        for text, count in counts.items():
+            if count > 3 and len(text) >= 10:
+                report.fail(
+                    "v3-template",
+                    f"V3 本轮 {label} 列同一文本出现 {count} 次（>3），疑似模板："
+                    f"{text[:48]}",
+                )
+
+
+def audit_template_sections(ledger_text: str, report: Report) -> None:
+    """Historical audit: flag template repetition in every ledger section.
+
+    This is not part of the normal `--round` gate (R24/R25 are historical);
+    run it explicitly with `--audit-templates` to see what the old rounds
+    actually recorded.
+
+    Parsed independently from `parse_ledger`: that function keys rows by
+    finding ID, and R24/R25 reuse IDs like `FACT-A-01`, so a global dict
+    would let R25 overwrite R24 and undercount the history (R24 114 rows
+    collapsed to 5). The audit must keep every row per section.
+    """
+    from collections import Counter
+
+    lines = ledger_text.splitlines()
+    section = ""
+    current: dict[str, int] | None = None
+    by_section: dict[str, list[dict]] = {}
+    for line in lines:
+        if line.startswith("## "):
+            section = line.strip("# ").strip()
+            current = None
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            current = None
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if all(SEP_RE.fullmatch(cell) for cell in cells):
+            continue
+        if "发现 ID" in cells and "处置" in cells and "复验" in cells:
+            current = {
+                "id": cells.index("发现 ID"),
+                "act": cells.index("处置"),
+                "ver": cells.index("复验"),
+            }
+            continue
+        if current is None or len(cells) <= max(current.values()):
+            continue
+        if not cells[current["id"]]:
+            continue
+        by_section.setdefault(section, []).append(
+            {"act": cells[current["act"]], "ver": cells[current["ver"]]}
+        )
+    for section, rows in by_section.items():
+        for key, label in (("act", "处置"), ("ver", "复验")):
+            counts = Counter(row[key] for row in rows if row[key])
+            for text, count in counts.items():
+                if count > 3 and len(text) >= 10:
+                    report.fail(
+                        "template-audit",
+                        f"{section} 的 {label} 列同一文本出现 {count} 次："
+                        f"{text[:48]}",
+                    )
+
+
+def check_todo_ledger(path: Path, report: Report) -> None:
+    """Reconcile a document-level todo ledger with the review disposition set.
+
+    `01-todo.md` is outside the run directory and was invisible to the gate.
+    It may legitimately carry user-owned or deferred items, but every open
+    item needs a legal disposition: `②` (user approval + date) or `⑤`
+    (evidence path / blocked). `允许开放` is not in the disposition schema and
+    must not be used to keep a newly registered in-scope task out of the
+    review ledger.
+    """
+    if not path.is_file():
+        report.fail("todo-ledger", f"todo 台账不存在: {path}")
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    current: dict[str, int] | None = None
+    open_items = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            current = None
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if all(SEP_RE.fullmatch(cell) for cell in cells):
+            continue
+        if "条目" in cells and "当前状态" in cells:
+            current = {
+                "id": cells.index("条目"),
+                "status": cells.index("当前状态"),
+            }
+            continue
+        if current is None or len(cells) <= max(current.values()):
+            continue
+        item = cells[current["id"]]
+        status = cells[current["status"]]
+        if not item:
+            continue
+        # `允许开放` is illegal regardless of other cells: a grouped row can
+        # contain ✅ for most items and `允许开放` for one (TODO-05).
+        if any("允许开放" in cell for cell in cells):
+            open_items += 1
+            report.fail(
+                "todo-ledger",
+                f"{item} 使用非法状态 `允许开放`；映射为 ②（用户批准 + 日期）"
+                "或 ⑤（取证路径 / 阻塞），不得作为第七个处置桶",
+            )
+            continue
+        # The overview table is free-form: some rows put `✅ 已实施` in the
+        # type column and details in the status column. Treat the whole row
+        # as done if any cell carries a completion token.
+        if any(
+            token in cell
+            for cell in cells
+            for token in ("✅", "已实施", "已修", "已闭合", "closed", "完成")
+        ):
+            continue
+        open_items += 1
+        if any(
+            token in status
+            for token in ("用户批准", "用户裁决", "用户侧", "DEFERRED", "取证", "阻塞")
+        ):
+            report.warn(
+                "todo-ledger",
+                f"{item} 开放（{status}）；确认批准日期或取证路径",
+            )
+        else:
+            report.warn(
+                "todo-ledger",
+                f"{item} 未闭合且无合法处置（{status}）",
+            )
+    report.ok("todo-ledger", f"todo 台账开放项 {open_items} 条（逐条见上）")
+
+
+def check_edition_trial(
+    text: str, report: Report, schema_start: int | None = None
+) -> None:
+    """Warn when one edition has exhausted its 3-round trial on this doc.
+
+    V3 §7.5: an edition gets at most 3 full rounds on the same document. The
+    boundary is a process action, not a document defect, so this is a WARN;
+    the main agent must run L7/EDITION-RETRO instead of opening a 4th round.
+    """
+    stats: dict[str, dict] = {}
+    for title, body in _metric_blocks(text):
+        m = re.search(r"\bR(\d+)\b", title)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if schema_start is not None and n < schema_start:
+            continue
+        ed = re.search(r"^-\s*edition\s*[:：]\s*(V[\d.]+)", body, re.MULTILINE)
+        rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
+        if not ed or not rt or rt.group(1) != "full":
+            continue
+        stat = stats.setdefault(ed.group(1), {"rounds": 0, "last_open": None})
+        stat["rounds"] += 1
+        op = re.search(r"^-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        stat["last_open"] = int(op.group(1)) if op else None
+    for edition, stat in stats.items():
+        if stat["rounds"] >= 3 and (stat["last_open"] is None or stat["last_open"] > 0):
+            report.warn(
+                "edition-trial",
+                f"edition {edition} 在本篇已跑 {stat['rounds']} 轮且最新一轮未闭环；"
+                "按 §7.5 应执行 L7 边界评估或判 NOT CONVERGING，不得开第 4 轮",
+            )
+        else:
+            report.ok(
+                "edition-trial",
+                f"edition {edition} 试验窗口 {stat['rounds']}/3",
+            )
+
 
 def check_placeholders(text: str, report: Report, label: str) -> None:
     for line in text.splitlines():
@@ -472,21 +1017,43 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
     return ids
 
 
-ROUND_HEADER_RE = re.compile(r"^# Round (\d+)", re.MULTILINE)
+# 两种轮次标题：旧格式 `# Round 13`，以及 R14 起实际使用的
+# `## R25 面板轮`。只认旧格式会让 R14–R25 整段逃过 L6/L6.5 收口合同
+# （2026-11-10 回归检查实证：R15–R25 全部缺 L6/L6.5，旧正则零报警）。
+ROUND_HEADER_RE = re.compile(
+    r"^(?:#{1,2}\s+Round\s+(\d+)|##\s+R(\d+)\b)", re.MULTILINE
+)
 
 
-def check_round_closure(loop_text: str, report: Report) -> None:
+def _round_header_number(m: re.Match) -> int:
+    return int(m.group(1) or m.group(2))
+
+
+def check_round_closure(
+    loop_text: str,
+    report: Report,
+    round_tag: str | None = None,
+    v3: bool = False,
+    v3_from_round: int | None = None,
+) -> None:
     """六步收口合同（DECISIONS-PENDING 第 5 项裁决）：编号 >= 13 的
-    `# Round` 小节必须包含 `### L6`（meta 记录）与 `### L6.5`（三问收口
-    记录）两个三级小节；R0–R12 为历史轮次，豁免。"""
+    轮次小节必须包含 `### L6`（meta 记录）与 `### L6.5`（三问收口
+    记录）两个三级小节；R0–R12 为历史轮次，豁免。
+
+    V3 没有历史豁免：每一轮都是交易，关闭时必须有 L6/L6.5 收口记录。
+    `round_tag` 指定时只检查该轮：轮次关账只对本轮负责；全历史缺失
+    是归档审计项，不能永远阻断当前轮（2026-11-10 用户裁决：流程必须
+    能走向收敛，历史欠账不得成为当前轮的永久红灯）。"""
     matches = list(ROUND_HEADER_RE.finditer(loop_text))
     rounds = []
+    want = int(round_tag.lstrip("R")) if round_tag else None
     for i, m in enumerate(matches):
         start = m.start()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(loop_text)
-        num = int(m.group(1))
-        if num >= 13:
-            rounds.append((m.group(1), start, end))
+        num = _round_header_number(m)
+        v3_round = v3 and (v3_from_round is None or num >= v3_from_round)
+        if (num >= 13 or v3_round) and (want is None or num == want):
+            rounds.append((str(num), start, end))
     if not rounds:
         report.ok("round-closure", "无 R13+ 轮次，收口检查跳过（合同自 R13 起生效）")
         return
@@ -506,28 +1073,47 @@ def check_round_closure(loop_text: str, report: Report) -> None:
 def _round_open_items(
     ledger_rows: dict[str, dict],
     section_classes: dict[str, dict[str, str]],
+    schema_start: int | None = None,
+    v3: bool = False,
 ) -> dict[int, list[str]]:
-    """Return open IDs per ledger round for R25+."""
+    """Return open IDs per ledger round for the rounds under the new schema.
+
+    V3 counts open **root causes**, not raw finding IDs: one root row may
+    cover several panel findings, and the round closes only when every root
+    is closed. V2.5 keeps the historical per-finding count.
+    """
     open_rounds: dict[int, list[str]] = {}
     for section, mapping in section_classes.items():
         m = re.match(r"^R(\d+)\b", section)
-        if not m or int(m.group(1)) < 25:
+        if not m:
             continue
-        opened: list[str] = []
+        n = int(m.group(1))
+        if schema_start is not None:
+            if n < schema_start:
+                continue
+        elif n < 25:
+            continue
+        opened: set[str] = set()
         for fid, cls in mapping.items():
             row = ledger_rows.get(fid)
             if row is None:
                 continue
+            is_open = False
             if cls in {"LEGACY", "⑤"}:
-                opened.append(fid)
+                is_open = True
             elif cls == "②":
                 action = row["action"]
                 if "用户批准" not in action or re.search(r"20\d{2}-\d{2}-\d{2}", action) is None:
-                    opened.append(fid)
+                    is_open = True
             elif cls in {"①", "④", "⑥"} and re.search(
                 r"未修|待修|未实施|TODO", row["verify"], re.IGNORECASE
             ):
-                opened.append(fid)
+                is_open = True
+            if is_open:
+                if v3 and row.get("root"):
+                    opened.add(row["root"])
+                else:
+                    opened.add(fid)
         if opened:
             open_rounds[int(m.group(1))] = sorted(opened)
     return open_rounds
@@ -535,7 +1121,7 @@ def _round_open_items(
 
 def _loop_round_numbers(loop_text: str) -> set[int]:
     nums = {int(n) for n in re.findall(r"^##\s+R(\d+)\b", loop_text, re.MULTILINE)}
-    nums |= {int(n) for n in re.findall(r"^#\s+Round\s+(\d+)", loop_text, re.MULTILINE)}
+    nums |= {int(n) for n in re.findall(r"^#{1,2}\s+Round\s+(\d+)", loop_text, re.MULTILINE)}
     return nums
 
 
@@ -544,9 +1130,11 @@ def check_round_monotonicity(
     ledger_rows: dict[str, dict],
     section_classes: dict[str, dict[str, str]],
     report: Report,
+    schema_start: int | None = None,
+    v3: bool = False,
 ) -> None:
     """A round with open items must not have a later round section."""
-    open_rounds = _round_open_items(ledger_rows, section_classes)
+    open_rounds = _round_open_items(ledger_rows, section_classes, schema_start, v3)
     loop_rounds = _loop_round_numbers(loop_text)
     ledger_rounds = {
         int(m.group(1))
@@ -566,7 +1154,44 @@ def check_round_monotonicity(
             report.ok("round-order", f"R{r} 未闭环项未泄漏到下一轮")
 
 
-def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
+def enforce_adjacent_only_dispositions(
+    ledger_rows: dict[str, dict],
+    report: Report,
+    schema_start: int | None,
+) -> None:
+    """V3.2 §4.1a: `②` is adjacent-scope only; `② 裁决` is illegal.
+
+    A same-document pending-design item must be ⑥ implemented in-round (proxy
+    adjudication) or the round goes BLOCKED — never transferred into the next
+    round. Sections before `schema_start` are historical and exempt.
+    """
+    for fid, row in ledger_rows.items():
+        if row.get("class") != "②":
+            continue
+        section = row.get("section", "")
+        section_round = _section_round(section)
+        if (
+            schema_start is not None
+            and section_round is not None
+            and section_round < schema_start
+        ):
+            continue
+        action = row.get("action", "")
+        if re.match(r"^\s*②\s*相邻", action) is None:
+            preview = action[:36] + ("…" if len(action) > 36 else "")
+            report.fail(
+                "disposition-v32",
+                f"{fid} 的 ② 不是相邻范围形态（`{preview}`）；V3.2 起同篇待裁决项"
+                "只能 ⑥ 本轮实施或 BLOCKED，不得转出（§4.1a）",
+            )
+
+
+def check_run_dir(
+    run_dir: Path,
+    panel_dir: Path | None = None,
+    round_tag_override: str | None = None,
+    audit_templates: bool = False,
+) -> Report:
     report = Report()
     if not run_dir.is_dir():
         report.fail("file", f"run 目录不存在: {run_dir}")
@@ -575,6 +1200,17 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
     loop_text = read_text(run_dir / "loop.md", report, "loop.md")
     metrics_text = read_text(run_dir / "metrics.md", report, "metrics.md")
     ledger_text = read_text(run_dir / "defect-ledger.md", report, "defect-ledger.md")
+    schema_start = schema_start_round(loop_text)
+    if schema_start is None and metrics_text is not None:
+        schema_start = schema_start_round(metrics_text)
+    v3_doc = is_v3_schema(loop_text) or is_v3_schema(metrics_text)
+    if round_tag_override and schema_start is None:
+        report.fail(
+            "schema",
+            "缺少 `schema: V2.5|V3.0 from R<N>` 标记；轮次关账必须声明本文档从哪一轮起受"
+            "状态机约束（01 写 `from R25`，02 起写 `from R1`，否则新文档会落回旧 schema"
+            "无限全量轮）",
+        )
     if panel_dir is None:
         panel_dir = run_dir / "panel"
         if not panel_dir.is_dir():
@@ -592,9 +1228,35 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                 if candidate.is_dir():
                     panel_dir = candidate
                     break
+    if round_tag_override:
+        round_tag = round_tag_override
+        if panel_dir is not None:
+            # `--round R25` 自动收窄到 panel/round25；只有显式存在该
+            # 子目录时才切换，避免把单文件测试夹具改坏。
+            scoped_panel = panel_dir / f"round{round_tag.lstrip('R').lstrip('0') or '0'}"
+            if scoped_panel.is_dir():
+                panel_dir = scoped_panel
+    else:
+        round_match = re.search(r"round(\d+)", panel_dir.name) if panel_dir else None
+        round_tag = f"R{int(round_match.group(1))}" if round_match else None
+    # A doc may transition from V2.5 to V3 at a specific round (01: R26).
+    # `--round R25` on such a doc must still run the V2.5 checks.
+    v3 = v3_doc and (
+        round_tag is None
+        or schema_start is None
+        or int(round_tag.lstrip("R")) >= schema_start
+    )
+    if v3 and loop_text is not None:
+        if re.search(
+            r"^\s*(?:[-*]\s*)?edition\s*[:：]\s*V\d+\.\d+",
+            loop_text,
+            re.MULTILINE | re.IGNORECASE,
+        ) is None:
+            report.fail(
+                "schema",
+                "V3 loop.md §0 缺少 `edition: V3.x` 标记（轮次必须绑定到规则版本）",
+            )
     panel_ids = collect_panel_findings(panel_dir, report)
-    round_match = re.search(r"round(\d+)", panel_dir.name) if panel_dir else None
-    round_tag = f"R{int(round_match.group(1))}" if round_match else None
     if loop_text is not None and panel_dir is not None and panel_dir.is_dir():
         # V2 轨迹门：每个 panel 文件要么有 FINDING，要么在 loop.md §1
         # 显式写“无发现面板：<file>（理由）”豁免。WARN 不再是可接受状态。
@@ -606,7 +1268,12 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                 or re.search(r"^##\s+CLAIM\s+\d+", text, re.MULTILINE)
                 or re.search(r"^-\s*\*\*FACT-\d+\*\*", text, re.MULTILINE)
             )
-            if has_finding:
+            # V3: a panel may legitimately report only `## SUGGESTION`
+            # (out-of-rubric preferences that do not enter the ledger).
+            has_suggestion = bool(
+                re.search(r"^##\s+SUGGESTION\b", text, re.MULTILINE)
+            )
+            if has_finding or has_suggestion:
                 continue
             exempt = re.search(
                 rf"无发现面板[：:][^\n]*{re.escape(path.name)}|{re.escape(path.name)}[^\n]*无发现",
@@ -622,14 +1289,50 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
 
     if loop_text is not None:
         check_loop_sections(loop_text, report, round_tag)
-        check_round_closure(loop_text, report)
+        check_round_closure(
+            loop_text, report, round_tag, v3=v3, v3_from_round=schema_start
+        )
         check_placeholders(loop_text, report, "loop.md")
     expected_counts = None
     ledger_rows: dict[str, dict] = {}
     section_classes: dict[str, dict[str, str]] = {}
+    root_count: int | None = None
+    new_roots: int | None = None
     if ledger_text is not None:
         check_placeholders(ledger_text, report, "defect-ledger.md")
-        ledger_ids, ledger_rows, section_ids, section_classes = parse_ledger(ledger_text, report)
+        (
+            ledger_ids,
+            ledger_rows,
+            section_ids,
+            section_classes,
+            root_rows,
+        ) = parse_ledger(ledger_text, report, v3=v3, v3_from_round=schema_start)
+        if (schema_version(loop_text) or (0, 0)) >= (3, 2):
+            enforce_adjacent_only_dispositions(ledger_rows, report, schema_start)
+        if v3:
+            check_v3_evidence(ledger_rows, report, round_tag, schema_start)
+        else:
+            check_verify_templates(ledger_rows, report)
+        if audit_templates:
+            audit_template_sections(ledger_text, report)
+        if v3:
+            if round_tag:
+                current_round = int(round_tag.lstrip("R"))
+                scoped_roots = {
+                    row["root"]
+                    for row in ledger_rows.values()
+                    if row.get("root")
+                    and row.get("section", "").lower().startswith(round_tag.lower())
+                }
+                root_count = len(scoped_roots)
+                new_roots = sum(
+                    1
+                    for root in scoped_roots
+                    if origin_round(root_rows.get(root, {}).get("origin", ""))
+                    == current_round
+                )
+            else:
+                root_count = len(root_rows)
         panel_set = set(panel_ids)
         ledger_set = set(ledger_ids)
         # Round-scoped coverage: a per-round --panel-dir (round18) must be
@@ -655,7 +1358,8 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
                         cls for fid, cls in mapping.items() if fid in panel_set
                     )
             expected_counts = dict(counter)
-            if int(round_tag.lstrip("R")) >= 25:
+            round_n = int(round_tag.lstrip("R"))
+            if (schema_start is not None and round_n >= schema_start) or round_n >= 25:
                 for fid in sorted(scoped):
                     row = ledger_rows.get(fid)
                     if row is None:
@@ -716,11 +1420,34 @@ def check_run_dir(run_dir: Path, panel_dir: Path | None = None) -> Report:
         else:
             report.ok("coverage", "台账没有孤儿行")
 
+    actual_open = None
+    if round_tag and ledger_rows:
+        open_map = _round_open_items(
+            ledger_rows, section_classes, schema_start, v3=v3
+        )
+        actual_open = len(open_map.get(int(round_tag.lstrip("R")), []))
     if metrics_text is not None:
-        check_metrics(metrics_text, report, round_tag, expected_counts)
+        check_metrics(
+            metrics_text,
+            report,
+            round_tag,
+            expected_counts,
+            actual_open,
+            schema_start,
+            v3=v3,
+            root_count=root_count,
+            new_roots=new_roots,
+        )
+        # The all-round checks follow the document's newest schema; the
+        # per-round checks above use `v3` (the selected round's segment).
+        check_round_type_sequence(metrics_text, report, schema_start, v3=v3_doc)
+        if v3_doc:
+            check_edition_trial(metrics_text, report, schema_start)
 
     if loop_text is not None:
-        check_round_monotonicity(loop_text, ledger_rows, section_classes, report)
+        check_round_monotonicity(
+            loop_text, ledger_rows, section_classes, report, schema_start, v3=v3
+        )
 
     return report
 
@@ -797,7 +1524,12 @@ def write_round_fixture(root: Path, ledger: str, metrics: str) -> tuple[Path, Pa
     run_dir = root / "run"
     panel_dir = run_dir / "panel" / "round25"
     panel_dir.mkdir(parents=True)
-    loop = "## R25 面板轮\n\n" + GOOD_LOOP.replace("## ", "### ")
+    loop = (
+        "## R25 面板轮\n\n"
+        + GOOD_LOOP.replace("## ", "### ")
+        + "\n\n### L6\nmeta 结论与 BLIND-SPOT-DELTA。\n"
+        + "\n### L6.5\n三问三去处记录。\n"
+    )
     (run_dir / "loop.md").write_text(loop, encoding="utf-8")
     (run_dir / "defect-ledger.md").write_text(ledger, encoding="utf-8")
     (run_dir / "metrics.md").write_text(metrics, encoding="utf-8")
@@ -805,6 +1537,63 @@ def write_round_fixture(root: Path, ledger: str, metrics: str) -> tuple[Path, Pa
         "# 面板\n\n## FINDING FACT-01\n- 位置：§1\n- 问题：示例\n",
         encoding="utf-8",
     )
+    return run_dir, panel_dir
+
+
+V3_LOOP = (
+    "schema: V3.0 from R1\n\n"
+    "edition: V3.0\n\n"
+    "## R1 面板轮\n\n"
+    + GOOD_LOOP.replace(
+        "## §5 复验\n本节的占位内容。",
+        "## §5 复验\n- certify 新准入: 0。",
+    ).replace("## ", "### ")
+    + "\n\n### L6\nmeta 结论与 BLIND-SPOT-DELTA。\n"
+    + "\n### L6.5\n三问三去处记录。\n"
+)
+
+V3_LEDGER = """# 台账
+
+## R1 面板轮
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD-001 | FACT-01 | R1 | P-FACT | P1 | 事实 | ① | 修 §1 | E1 | 旧串 grep 归零 |
+"""
+
+V3_METRICS = """# 指标
+
+- 发现总数: 1
+- 唯一根因数: 1
+- 本轮新准入: 1
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: full
+- edition: V3.0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+
+
+def write_v3_fixture(
+    root: Path,
+    loop: str = V3_LOOP,
+    ledger: str = V3_LEDGER,
+    metrics: str = V3_METRICS,
+    panel: str = "# 面板\n\n## FINDING FACT-01\n- 位置：§1\n- 问题：示例\n",
+) -> tuple[Path, Path]:
+    run_dir = root / "run"
+    panel_dir = run_dir / "panel" / "round1"
+    panel_dir.mkdir(parents=True)
+    (run_dir / "loop.md").write_text(loop, encoding="utf-8")
+    (run_dir / "defect-ledger.md").write_text(ledger, encoding="utf-8")
+    (run_dir / "metrics.md").write_text(metrics, encoding="utf-8")
+    (panel_dir / "fact.md").write_text(panel, encoding="utf-8")
     return run_dir, panel_dir
 
 
@@ -987,7 +1776,157 @@ def self_test() -> int:
             print_report(bad, False)
             return 1
 
-    # 范围行展开：`READER-A-01..03` 必须覆盖三条具体发现
+    # 六步收口合同：现代标题 `## R25 面板轮` 同样受约束（旧正则只认
+    # `# Round`，R14–R25 曾整段逃检）
+    with tempfile.TemporaryDirectory() as tmp:
+        loop_modern = (
+            "## R25 面板轮\n\n"
+            + GOOD_LOOP.replace("## ", "### ")
+            + "\n\n### L6\nmeta 结论。\n"
+        )
+        bad_dir = write_fixture(Path(tmp), loop_modern, GOOD_LEDGER, GOOD_METRICS, GOOD_PANEL)
+        bad = check_run_dir(bad_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "Round 25" not in messages or "L6.5" not in messages:
+            print("self-test FAIL: 现代 R25 标题缺 ### L6.5 未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # metrics 手填 未闭环: 0 掩盖台账 ⑤ → 必须按台账实际数拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_lie = """# 台账
+
+## R25 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ⑤ | 还缺源码核实，取证路径 X | panel | 未闭环 |
+"""
+        metrics_lie = """# 指标
+
+- 发现总数: 1
+- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 1 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: discovery
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_lie, metrics_lie)
+        bad = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "实际未闭环 1" not in messages:
+            print("self-test FAIL: metrics 手填 0 未被台账实际数拦截")
+            print_report(bad, False)
+            return 1
+
+    # 轮型状态机：verification 之后不得再出现新轮
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger_one = """# 台账
+
+## R25 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ① | 修复 | E1 | 测试通过 |
+"""
+        def metrics_block(round_no: int, rtype: str, extra: str = "") -> str:
+            return f"""## R{round_no}
+
+- 发现总数: 1
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: {rtype}
+{extra}- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        metrics_seq = "# 指标\n\n" + metrics_block(25, "discovery") + metrics_block(
+            26, "verification", "- 新 in-scope 真缺陷: 0\n"
+        ) + metrics_block(27, "verification", "- 新 in-scope 真缺陷: 0\n")
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_one, metrics_seq)
+        bad = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "不得开新轮" not in messages:
+            print("self-test FAIL: verification 之后出现 R27 未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # 轮型状态机：一篇文档只允许一次 discovery
+    with tempfile.TemporaryDirectory() as tmp:
+        metrics_two_discovery = "# 指标\n\n" + metrics_block(25, "discovery") + metrics_block(
+            26, "discovery"
+        )
+        run_dir, panel_dir = write_round_fixture(Path(tmp), ledger_one, metrics_two_discovery)
+        bad = check_run_dir(run_dir, panel_dir)
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "多个 discovery" not in messages:
+            print("self-test FAIL: 第二次 discovery 未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # 新文档（02 起）从 R1 就必须受 V2.5 状态机约束：不能靠轮号 >=25
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        panel_dir = run_dir / "panel" / "round1"
+        panel_dir.mkdir(parents=True)
+        loop_r1 = (
+            "schema: V2.5 from R1\n\n## R1 面板轮\n\n"
+            + GOOD_LOOP.replace("## ", "### ")
+        )
+        ledger_r1 = """# 台账
+
+## R1 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ⑤ | 还缺源码核实，取证路径 X | panel | 未闭环 |
+"""
+        metrics_r1 = """# 指标
+
+- 发现总数: 1
+- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 1 / ⑥ 0 / FP 0
+- 未闭环: 1
+- 轮型: discovery
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        (run_dir / "loop.md").write_text(loop_r1, encoding="utf-8")
+        (run_dir / "defect-ledger.md").write_text(ledger_r1, encoding="utf-8")
+        (run_dir / "metrics.md").write_text(metrics_r1, encoding="utf-8")
+        (panel_dir / "fact.md").write_text(
+            "# 面板\n\n## FINDING FACT-01\n- 位置：§1\n- 问题：x\n", encoding="utf-8"
+        )
+        bad = check_run_dir(run_dir, panel_dir, "R1")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "R1" not in messages or "未闭环" not in messages:
+            print("self-test FAIL: 02 起 R1 的 V2.5 schema 未生效")
+            print_report(bad, False)
+            return 1
+
+    # 新文档不写 schema 标记 → --round 必须拒绝，避免落回旧 schema
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        panel_dir = run_dir / "panel" / "round1"
+        panel_dir.mkdir(parents=True)
+        loop_no_schema = "## R1 面板轮\n\n" + GOOD_LOOP.replace("## ", "### ")
+        (run_dir / "loop.md").write_text(loop_no_schema, encoding="utf-8")
+        (run_dir / "defect-ledger.md").write_text(ledger_r1, encoding="utf-8")
+        (run_dir / "metrics.md").write_text(metrics_r1, encoding="utf-8")
+        (panel_dir / "fact.md").write_text(
+            "# 面板\n\n## FINDING FACT-01\n- 位置：§1\n- 问题：x\n", encoding="utf-8"
+        )
+        bad = check_run_dir(run_dir, panel_dir, "R1")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "缺少 `schema: V2.5" not in messages:
+            print("self-test FAIL: 缺 schema 标记的新文档未被拦截")
+            print_report(bad, False)
+            return 1
+
     with tempfile.TemporaryDirectory() as tmp:
         panel_range = "# 面板\n\n" + "\n\n".join(
             f"## FINDING READER-A-{i:02d}\n- 位置：§1\n- 问题：x\n" for i in (1, 2, 3)
@@ -1066,6 +2005,388 @@ def self_test() -> int:
             print_report(bad4, False)
             return 1
 
+    # V3：完整交易轮（full + root/origin + certify 0）→ 通过
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir, panel_dir = write_v3_fixture(Path(tmp))
+        good = check_run_dir(run_dir, panel_dir, "R1")
+        if good.failed:
+            print("self-test FAIL: V3 完整交易轮被判 FAIL")
+            print_report(good, False)
+            return 1
+
+    # V3：verification 轮型 → 拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        metrics = V3_METRICS.replace("轮型: full", "轮型: verification")
+        run_dir, panel_dir = write_v3_fixture(Path(tmp), metrics=metrics)
+        bad = check_run_dir(run_dir, panel_dir, "R1")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "V3 轮型只能是 full" not in messages:
+            print("self-test FAIL: V3 verification 轮型未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # V3：缺少 certify 新准入 → 拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        metrics = V3_METRICS.replace("- certify 新准入: 0\n", "")
+        run_dir, panel_dir = write_v3_fixture(Path(tmp), metrics=metrics)
+        bad = check_run_dir(run_dir, panel_dir, "R1")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "certify 新准入" not in messages:
+            print("self-test FAIL: V3 缺 certify 新准入未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # V3：台账缺 根因 ID/origin → 拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = """# 台账
+
+## R1 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ① | 修 §1 | E1 | 旧串 grep 归零 |
+"""
+        run_dir, panel_dir = write_v3_fixture(Path(tmp), ledger=ledger)
+        bad = check_run_dir(run_dir, panel_dir, "R1")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "V3 台账缺少" not in messages:
+            print("self-test FAIL: V3 台账缺根因列未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # V3：唯一根因数与台账不一致 → 拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        metrics = V3_METRICS.replace("- 唯一根因数: 1", "- 唯一根因数: 2")
+        run_dir, panel_dir = write_v3_fixture(Path(tmp), metrics=metrics)
+        bad = check_run_dir(run_dir, panel_dir, "R1")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "唯一根因数 2 与台账根因 ID 数 1 不一致" not in messages:
+            print("self-test FAIL: V3 唯一根因数不一致未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # V3：certify 新准入 >0 且未闭环=0 → 不得关闭
+    with tempfile.TemporaryDirectory() as tmp:
+        metrics = V3_METRICS.replace("- certify 新准入: 0", "- certify 新准入: 1")
+        run_dir, panel_dir = write_v3_fixture(Path(tmp), metrics=metrics)
+        bad = check_run_dir(run_dir, panel_dir, "R1")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "不得关闭" not in messages:
+            print("self-test FAIL: V3 certify 新准入>0 未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # V3 过渡：schema: V3.0 from R2 时，历史 R1 台账没有根因列不能被判红；
+    # 只检查 R2 起的新表。
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        panel_dir = run_dir / "panel" / "round2"
+        panel_dir.mkdir(parents=True)
+        sections = GOOD_LOOP.replace(
+            "## §5 复验\n本节的占位内容。",
+            "## §5 复验\n- certify 新准入: 0。",
+        ).replace("## ", "### ")
+        sections_r1 = GOOD_LOOP.replace("## ", "### ")
+        loop = (
+            "schema: V3.0 from R2\n\n"
+            "edition: V3.0\n\n"
+            "## R1 面板轮\n\n"
+            + sections_r1
+            + "\n\n## R2 面板轮\n\n"
+            + sections
+            + "\n\n### L6\nmeta 结论。\n\n### L6.5\n三问记录。\n"
+        )
+        ledger = """# 台账
+
+## R1 面板轮
+
+| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|
+| FACT-01 | P-FACT | P1 | 事实 | ① | 修 | E1 | grep 归零 |
+
+## R2 面板轮
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD-001 | FACT-02 | R2 | P-FACT | P1 | 事实 | ① | 修 | E1 | grep 归零 |
+"""
+        metrics = """# 指标
+
+## R2
+
+- 发现总数: 1
+- 唯一根因数: 1
+- 本轮新准入: 1
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: full
+- edition: V3.0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        (run_dir / "loop.md").write_text(loop, encoding="utf-8")
+        (run_dir / "defect-ledger.md").write_text(ledger, encoding="utf-8")
+        (run_dir / "metrics.md").write_text(metrics, encoding="utf-8")
+        (panel_dir / "fact.md").write_text(
+            "# 面板\n\n## FINDING FACT-02\n- 位置：§1\n- 问题：示例\n",
+            encoding="utf-8",
+        )
+        good = check_run_dir(run_dir, panel_dir, "R2")
+        if good.failed:
+            print("self-test FAIL: V3 过渡轮（R1 历史表无根因列）被判 FAIL")
+            print_report(good, False)
+            return 1
+
+    # V3：同一 edition 第 3 轮仍未闭环 → WARN 要求走 L7/EDITION-RETRO
+    metrics_trial = "# 指标\n\n" + "\n\n".join(
+        f"## R{i}\n\n- 未闭环: 1\n- 轮型: full\n- edition: V3.0"
+        for i in (1, 2, 3)
+    )
+    trial_report = Report()
+    check_edition_trial(metrics_trial, trial_report, 1)
+    if not any(
+        item["level"] == "WARN" and "第 4 轮" in item["message"]
+        for item in trial_report.items
+    ):
+        print("self-test FAIL: 同一 edition 第 3 轮未闭环未触发 L7 WARN")
+        return 1
+
+    # V3：R1 的根因未闭环（⑤）却出现 R2 → 必须拦截（按根因，不按原始 ID）
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        panel_dir = run_dir / "panel" / "round2"
+        panel_dir.mkdir(parents=True)
+        sections = GOOD_LOOP.replace(
+            "## §5 复验\n本节的占位内容。",
+            "## §5 复验\n- certify 新准入: 0。",
+        ).replace("## ", "### ")
+        loop = (
+            "schema: V3.0 from R1\n\n"
+            "edition: V3.0\n\n"
+            "## R1 面板轮\n\n"
+            + sections
+            + "\n\n### L6\nmeta 结论。\n\n### L6.5\n三问记录。\n\n"
+            "## R2 面板轮\n\n"
+            + sections
+            + "\n\n### L6\nmeta 结论。\n\n### L6.5\n三问记录。\n"
+        )
+        ledger = """# 台账
+
+## R1 面板轮
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD-001 | FACT-01 | R1 | P-FACT | P1 | 事实 | ⑤ | 还缺源码核实，取证路径 X | panel | 未闭环 |
+
+## R2 面板轮
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD-002 | FACT-02 | R2 | P-FACT | P1 | 事实 | ① | 修 | E1 | grep 归零 |
+"""
+        metrics = """# 指标
+
+## R1
+
+- 发现总数: 1
+- 唯一根因数: 1
+- 本轮新准入: 1
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 1 / ⑥ 0 / FP 0
+- 未闭环: 1
+- 轮型: full
+- edition: V3.0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+
+## R2
+
+- 发现总数: 1
+- 唯一根因数: 1
+- 本轮新准入: 1
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: full
+- edition: V3.0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        (run_dir / "loop.md").write_text(loop, encoding="utf-8")
+        (run_dir / "defect-ledger.md").write_text(ledger, encoding="utf-8")
+        (run_dir / "metrics.md").write_text(metrics, encoding="utf-8")
+        (panel_dir / "fact.md").write_text(
+            "# 面板\n\n## FINDING FACT-02\n- 位置：§1\n- 问题：示例\n",
+            encoding="utf-8",
+        )
+        bad = check_run_dir(run_dir, panel_dir, "R2")
+        messages = " ".join(item["message"] for item in bad.items)
+        if not bad.failed or "禁止带病进入下一轮" not in messages:
+            print("self-test FAIL: V3 R1 根因未闭环却出现 R2 未被拦截")
+            print_report(bad, False)
+            return 1
+
+    # V3：同一根因跨轮复发（origin=R1）不计“本轮新准入”，R2 可关闭
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        panel_dir = run_dir / "panel" / "round2"
+        panel_dir.mkdir(parents=True)
+        sections = GOOD_LOOP.replace(
+            "## §5 复验\n本节的占位内容。",
+            "## §5 复验\n- certify 新准入: 0。",
+        ).replace("## ", "### ")
+        loop = (
+            "schema: V3.0 from R1\n\n"
+            "edition: V3.0\n\n"
+            "## R1 面板轮\n\n"
+            + sections
+            + "\n\n### L6\nmeta 结论。\n\n### L6.5\n三问记录。\n\n"
+            "## R2 面板轮\n\n"
+            + sections
+            + "\n\n### L6\nmeta 结论。\n\n### L6.5\n三问记录。\n"
+        )
+        ledger = """# 台账
+
+## R1 面板轮
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD-001 | FACT-01 | R1 | P-FACT | P1 | 事实 | ① | 修 | E1 | grep 归零 |
+
+## R2 面板轮
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD-001 | FACT-02 | 复发：origin R1；last_seen R2 | P-FACT | P1 | 事实 | ① | 修 | E1 | grep 归零 |
+"""
+        metrics = """# 指标
+
+## R1
+
+- 发现总数: 1
+- 唯一根因数: 1
+- 本轮新准入: 1
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: full
+- edition: V3.0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+
+## R2
+
+- 发现总数: 1
+- 唯一根因数: 1
+- 本轮新准入: 0
+- certify 新准入: 0
+- 重复合并: 1
+- 自引入: 0
+- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0
+- 未闭环: 0
+- 轮型: full
+- edition: V3.0
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1 / token 1 / 耗时 1min
+"""
+        (run_dir / "loop.md").write_text(loop, encoding="utf-8")
+        (run_dir / "defect-ledger.md").write_text(ledger, encoding="utf-8")
+        (run_dir / "metrics.md").write_text(metrics, encoding="utf-8")
+        (panel_dir / "fact.md").write_text(
+            "# 面板\n\n## FINDING FACT-02\n- 位置：§1\n- 问题：示例\n",
+            encoding="utf-8",
+        )
+        good = check_run_dir(run_dir, panel_dir, "R2")
+        if good.failed:
+            print("self-test FAIL: 同一根因跨轮复发被误判为新准入")
+            print_report(good, False)
+            return 1
+
+    # V3：B 类行只写“五门 PASS” → 行级证据与冷读双 FAIL
+    evidence_report = Report()
+    check_v3_evidence(
+        {
+            "READER-A-01": {
+                "class": "④",
+                "action": "修",
+                "verify": "doc 五门 PASS",
+                "role": "reader-a",
+                "section": "R1 面板轮",
+                "evidence": "§1 读者卡住",
+            }
+        },
+        evidence_report,
+        "R1",
+        1,
+    )
+    evidence_messages = " ".join(item["message"] for item in evidence_report.items)
+    if "行级证据" not in evidence_messages or "B 类" not in evidence_messages:
+        print("self-test FAIL: V3 B 类行只写五门 PASS 未被拦截")
+        print_report(evidence_report, False)
+        return 1
+
+    # V3：同一处置/复验文本 >3 次 → 模板串 FAIL
+    template_report = Report()
+    check_v3_evidence(
+        {
+            f"FACT-0{i}": {
+                "class": "①",
+                "action": "按面板最小修复落地",
+                "verify": "doc 五门 PASS；见 loop §5",
+                "role": "P-FACT",
+                "section": "R1 面板轮",
+                "evidence": "",
+            }
+            for i in range(5)
+        },
+        template_report,
+        "R1",
+        1,
+    )
+    template_messages = " ".join(item["message"] for item in template_report.items)
+    if "疑似模板" not in template_messages:
+        print("self-test FAIL: V3 模板串重复未被拦截")
+        print_report(template_report, False)
+        return 1
+
+    # todo 台账：`允许开放` 是非法第七桶，必须被拦截
+    with tempfile.TemporaryDirectory() as tmp:
+        todo = Path(tmp) / "todo.md"
+        todo.write_text(
+            "# todo\n\n"
+            "| 条目 | 一句话 | 类型 | 当前状态 | 去向 |\n"
+            "|---|---|---|---|---|\n"
+            "| I-30 | 新登记教学任务 | 文档教学 | 允许开放（刚登记） | §5 |\n"
+            "| D-1 | 已完成项 | 代码 | ✅ 已实施 | §2 |\n",
+            encoding="utf-8",
+        )
+        todo_report = Report()
+        check_todo_ledger(todo, todo_report)
+        todo_messages = " ".join(item["message"] for item in todo_report.items)
+        if "非法状态" not in todo_messages:
+            print("self-test FAIL: todo 台账的 `允许开放` 未被拦截")
+            print_report(todo_report, False)
+            return 1
+
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0
 
@@ -1079,7 +2400,22 @@ def main() -> int:
         "--panel-dir",
         help="面板原始输出目录（默认 <run-dir>/panel；规范布局在 tmp/review-eval/ 下）",
     )
+    parser.add_argument(
+        "--round",
+        dest="round_tag",
+        metavar="R25",
+        help="只检查指定轮次（覆盖范围、收口、未闭环、round-order）；轮次关账用这个",
+    )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
+    parser.add_argument(
+        "--audit-templates",
+        action="store_true",
+        help="审计历史轮次的处置/复验模板串重复（R24/R25 的隐式带病）",
+    )
+    parser.add_argument(
+        "--todo-file",
+        help="同时核对该文档的 todo 台账（如 rewrite-notes/01-stage-kernel/01-todo.md）",
+    )
     parser.add_argument("--self-test", action="store_true", help="运行内置自测")
     args = parser.parse_args()
 
@@ -1090,7 +2426,11 @@ def main() -> int:
         return 2
 
     panel_dir = Path(args.panel_dir) if args.panel_dir else None
-    report = check_run_dir(Path(args.run_dir), panel_dir)
+    report = check_run_dir(
+        Path(args.run_dir), panel_dir, args.round_tag, args.audit_templates
+    )
+    if args.todo_file:
+        check_todo_ledger(Path(args.todo_file), report)
     print_report(report, args.json)
     return 1 if report.failed else 0
 
