@@ -199,3 +199,76 @@
 
 - 三问：① 本轮不变量是“文档与当前源码逐符号一致、读者口径跨节一致”；② 前提是旧 V1 run 只作历史、R1 全量 re-survey；③ 证据是 49 行台账、六门读数与 certify #2 的 0 新准入。
 - 资源重读：本轮盲区属“文档-代码同步的符号级漂移”，检测模式已由 `anchor-resolve`/`doc-code-map`/certify 点名复核覆盖；无需新增规则。
+
+## R2 确认轮（V3.3 四态模型）
+
+### R2 §0 基线
+
+- 轮型: confirmation
+- edition: V3.3
+- schema: V3.3 from R1
+- 基线提交：`73e805b01`（R1 修复与轨迹提交之后）
+- 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
+- 文档 sha256：`0888ffb0bbb27b4f67560058c91e99e0749addcc72868e41130d44ceb3a557b2`
+- 行数：1280
+- 工作树：除 3 个既有未跟踪文件外干净
+- 设计快照：02 组 v2–v4 齐备；`design-coverage-check.sh` ALL DOCS COMPLETE
+- 关联代码：`tools/doc-code-map.sh --check` 28/28；清单见 `related-code.txt`
+- 范围声明：同 R1（文档主题 + 28 个关联文件 + 本轮修复触碰的文件）。
+- 轮次语义：确认轮——全量六角色 survey；修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项；不实施 ⑥；读者/设计 P3 走 §4.0c 门槛；`certify 新准入 = 0` 才可宣告 `CONVERGED`。
+
+### R2 §1 面板
+
+- 六角色：fact-a（C 侧）、fact-b（Rust 侧）、design-d2、reader-a、reader-b、reader-c；无缩编。
+- fact-a 3 条（P1 2 / P2 1）；fact-b 1 条 P2；design-d2 9 条（P2 1 / P3 7 / P1 条件 1）；reader-a 1 条 P2；reader-b 1 条 P2；reader-c 6 条 P2。
+- 材料隔离：读者未读源码；设计未读作者解释；事实未读历史评审。工作树前后仅有预期改动。
+- 无发现面板：`certify-fact.md`（该次 certify 无新事实准入，仅 SUGGESTION）
+
+### R2 §2 发现
+
+- 29 条（survey 21 + certify 8）：P0 = 0；P1 = 5（C 侧装载者模型、LMA 重叠报错、D-045 注释改写、前置知识漏 riscv64 载体、§2.3 其一/其二冲突）；P2 = 17；P3 = 7。
+- 关键：§2.1 的 GRUB/`p_paddr` 模型不适用于树内 boot monitor；§2.1 “链接器不会报错”被 GNU ld 实测否证；§3.2 的“任一步失败都 continue”与 `SegmentIter::new`/`parse_phdr` 的未检查加法冲突；§3.4 `syscall_entry` 的“无读者”过宽。
+
+### R2 §3 归因
+
+- 处置：① 22 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 7 = 29；唯一根因 29。
+- 冻结决策：0 条 `re-litigation`；D2-08 的“注释有删改”改为“注释有改写”，按 D-045 的显式声明豁免处理。
+- 范围门：0 条 adjacent 阻塞；设计代码修复（SegmentIter 未检查加法）登记设计批 D2-01，不在确认轮实施 ⑥。
+- ARCH：D-052（BootLayout/token）记判决账，待用户裁决，不阻断。
+
+### R2 §4 修复
+
+- 文档：C 装载者射程声明、LMA 重叠报错、`pg_utils.o` 反事实、`syscall_entry` 读者范围、迭代器 panic 语义、四处“注释有改写”、§4.1 规划层落点、前置知识按腿分列、§2.3 建表列与 hang 停机、§4.2 重叠语义、§5.3 L9 限定、§2.5 ARM 证据限定。
+- 代码：无行为改动；SegmentIter 未检查加法的修复登记设计批。
+
+### R2 §5 复验
+
+- 文档六门：citation `32 块/1 检查/0 失败/31 跳过`；anchor `55/55 zero-def=0`；structure/ref 通过；style-lint 文件级 error=0；density 通过；doc-code-map `28/28`。
+- 旧串归零：`GRUB` 的无条件读法、`链接器不会为此报错`、`函数会落进高一侧的 .text`、`此时还没有到位`、`坏点推迟到恒等映射被移除`、`注释有删改`、`走进 panic 分支` 均为 0（按替换点核）。
+- certify #1：21 条全修；certify #2：新准入 0（见 `certify-*.md`）。
+
+### R2 §6 指标
+
+- 见 `metrics.md` R2 块：发现 29、唯一根因 29、本轮新准入 29、certify 新准入 0、未闭环 0、① 22 / SUGG 7、ARCH 提案 1。
+
+### R2 §7 状态
+
+**CONVERGED**（确认轮出口）。G1–G9：in-scope P0/P1/P2 = 0；读者验收清单待修 = 0；FP 无；⑤ = 0；② = 0；机械门与宿主检查全绿；台账 29 行全部有处置与可重放复验；设计 P2 代码修复登记设计批，ARCH 提案 D-052 不阻断；`certify 新准入 = 0`。
+限制：确认轮口径下的“无 open 项 + 无未销账债务”，不是零未知缺陷保证；设计批（D2-01..06/13、D-052）在下一批实施。
+
+### R2 §8 给 meta-review 的不确定点
+
+1. C 侧装载者模型的修正只做了源码直读 + 等价脚本，未跑 Minix 实际 boot monitor；QEMU 原生引导链未复核。
+2. 设计 P2 代码修复（SegmentIter 未检查加法）只改文档、代码登记设计批；是否削弱确认轮的可信度请 meta 判断。
+3. 读者 C 的 6 条 P2 全部是文档内可判定的矛盾；其中 §2.5 ARM 证据限定为“待补”，未补证据。
+4. QEMU 未跑；无 arch/boot 行为改动。
+
+### L6
+
+- 同 agent 收口：21 条全部处置；P1 3 条全修；CONVERGED 由确认轮出口给出。
+- BLIND-SPOT-DELTA：新增“C 装载者模型按外部装载器写、未覆盖树内 boot monitor”的观察；无新的结构性盲区。
+
+### L6.5
+
+- 三问：① 本轮不变量是“文档对 C 装载链与 Rust 起点的描述必须按腿限定”；② 前提是 R1 已 ROUND-CLOSED、R2 只修新准入事实/同步项；③ 证据是 21 行台账、六门读数与 certify #2 的 0 新准入。
+- 资源重读：本轮盲区属“跨实现模型无条件泛化”，检测模式已由读者 C 的因果链核对覆盖；无需新增规则。

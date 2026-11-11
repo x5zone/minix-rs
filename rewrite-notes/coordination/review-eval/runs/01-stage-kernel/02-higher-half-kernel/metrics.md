@@ -49,3 +49,25 @@
 - 重构: 提出 8 / 接受 8 / 实施 0 / 登记 8（设计批 D2-01..06/13）
 - 成本: agent 5 / token 未采集 / 耗时 约 4 小时
 - 回读与回归: 六门全绿；`cargo test -p boot-shim --lib -- --list` 125、loader `#[test]` 22、minix-elf `#[test]` 23；无代码行为改动，QEMU 未跑
+
+## R2 确认轮
+
+- 发现总数: 29（survey 21 + certify 8：FACT-A 3、FACT-B 1、DESIGN-D2 9、READER-A 1、READER-B 1、READER-C 6、CERT 8）
+- 唯一根因数: 29
+- 本轮新准入: 29
+- certify 新准入: 0（certify #2/#3 的 8 条已在本轮修完；最终回读为 0）
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 22 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 7
+- 未闭环: 0
+- 轮结果: CONVERGED
+- 代裁决: 0
+- ARCH 提案: 1（D-052，待用户裁决）
+- 用户否决: 0
+- 轮型: confirmation
+- edition: V3.3
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 6 / token 未采集 / 耗时 约 2 小时
+- 回读与回归: 六门全绿；certify #1 21 条全修、certify #2 0；无代码行为改动，QEMU 未跑

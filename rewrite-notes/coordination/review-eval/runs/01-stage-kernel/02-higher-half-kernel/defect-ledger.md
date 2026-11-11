@@ -156,3 +156,42 @@
 | CLAIM-06 | 阻断（P1，文档-代码同步） | 并入 RD1-01..RD1-08、RD1-10、RD1-29 |
 | 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|---|---|
+
+## R2 确认轮（V3.3 四态模型）
+
+> 6 角色 21 条 FINDING（FACT-A 3、FACT-B 1、DESIGN-D2 9、READER-A 1、READER-B 1、READER-C 6）。
+> P0 = 0；P1 = 3（C 装载者模型、LMA 重叠报错、D-045 注释改写）；P2 = 11；P3 = 7。
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD2-01 | RD2-FACT-A-01 | R2 | fact-a | P1 | 本轮发现 | ① | 已修：§1.2/§4.2 补射程声明——树内 boot monitor 走 `LOADADDR(p_vaddr)` 低 27 位，`p_paddr` 只对外部 multiboot 装载器（如 GRUB）成立；§2.1 反事实与 §6.1 诊断按外部装载器限定 | panel/round2/fact-a.md:28；minix3/sys/arch/x86/include/loadfile_machdep.h:40；loadfile_elf32.c:336/363 | `grep -n "射程声明" doc` → 1；`grep -n "外部 multiboot 装载器" doc` → 2 |
+| RD2-02 | RD2-FACT-A-02 | R2 | fact-a | P1 | 本轮发现 | ① | 已修：§2.1 改为“现行 GNU ld 对 LMA 重叠报错并拒绝产出；旧工具链才可能覆盖”，`.bss` 改为 `.data` 所在 RW 段的 NOBITS 尾段 | panel/round2/fact-a.md:46；GNU ld 等价脚本实测 | `grep -n "链接器不会为此报错" doc` → 0；`grep -n "现行 GNU ld 对 LMA 重叠报错" doc` → 1 |
+| RD2-03 | RD2-FACT-A-03 | R2 | fact-a | P2 | 本轮发现 | ① | 已修：§2.2 的 `pg_utils.o` 反事实改为链接期未定义符号；删 `pre_init.o` 括注并说明需同时移调用方才可能落高半 | panel/round2/fact-a.md:62；objcopy 实测 | `grep -n "函数会落进高一侧的\\\.text" doc` → 0；`grep -n "链接期会得到" doc` → 1 |
+| RD2-04 | RD2-FACT-B-01 | R2 | fact-b | P2 | 本轮发现 | ① | 已修：§3.4 的 `syscall_entry` 句收窄——生产不把它当入口消费者（入口用 `syscall_entry_va()`），但 validate/postconditions/write debug_assert 仍读取 | panel/round2/fact-b.md；os/kernel/src/lib.rs、handoff_v1_write.rs | `grep -n "生产路径没有把它当 SYSCALL 入口的消费者" doc` → 1 |
+| RD2-05 | RD2-DESIGN-D2-01 | R2 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§3.2 改为“next() 的过滤会 continue；new/parse_phdr 的未检查加法畸形输入会 panic”，代码修复登记设计批 D2-01 | panel/round2/design-d2.md:118；minix-elf/src/lib.rs:333/250 | `grep -n "畸形输入会 panic" doc` → 1；冷读 CLOSED（certify-fact 回读） |
+| RD2-06 | RD2-DESIGN-D2-02 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：entry_point 无独立选择权；已登记 suggestions.md | panel/round2/design-d2.md:132 | 不适用（建议级） |
+| RD2-07 | RD2-DESIGN-D2-03 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：字段去向表称“列全/四种”与实际两消费者不符；已登记 suggestions.md | panel/round2/design-d2.md:146 | 不适用（建议级） |
+| RD2-08 | RD2-DESIGN-D2-04 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：bootface 节选省略说明漏 validate_requiring_sources；已登记 suggestions.md | panel/round2/design-d2.md:160 | 不适用（建议级） |
+| RD2-09 | RD2-DESIGN-D2-05 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：三份 arch link.ld 无生产读者却带假同步；已登记 suggestions.md | panel/round2/design-d2.md:174 | 不适用（建议级） |
+| RD2-10 | RD2-DESIGN-D2-06 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：push 0 + sub rsp,8 可合并；已登记 suggestions.md | panel/round2/design-d2.md:188 | 不适用（建议级） |
+| RD2-11 | RD2-DESIGN-D2-07 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：MockHigherHalf 只写不读；已登记 suggestions.md | panel/round2/design-d2.md:202 | 不适用（建议级） |
+| RD2-12 | RD2-DESIGN-D2-08 | R2 | design-d2 | P1 | 本轮发现 | ① | 已修文档：四处节选头的“注释有删改”改为“注释有改写”，显式声明改写（D-045 豁免形态） | panel/round2/design-d2.md:216 | `grep -n "注释有删改" doc` → 0；`grep -c "注释有改写" doc` → 4；冷读 CLOSED（certify-fact 回读） |
+| RD2-13 | RD2-DESIGN-D2-09 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：状态表用 qemu_test 的 kmain_verify 背书；已登记 suggestions.md | panel/round2/design-d2.md:230 | 不适用（建议级） |
+| RD2-14 | RD2-READER-A-01 | R2 | reader-a | P2 | 本轮发现 | ① | 已修：§4.1 的 “boot_validate_and_prepare 走进 panic” 改为规划层 plan_kernel_mapping 在 arch_boot 里 panic | panel/round2/reader-a.md | `grep -n "走进 panic 分支" doc` → 0；`grep -n "规划层 `plan_kernel_mapping` 在 `arch_boot` 里 panic" doc` → 1；冷读 CLOSED（certify-reader #2 回读） |
+| RD2-15 | RD2-READER-B-01 | R2 | reader-b | P2 | 本轮发现 | ① | 已修：§前置知识改为按腿分列的起点（v1/riscv64 自引导/aarch64 direct-core/inline 载体），不再用单一句覆盖全部路径 | panel/round2/reader-b.md | `grep -n "Rust 生产路径的起点按腿不同" doc` → 1；冷读 CLOSED（certify-reader #2 回读） |
+| RD2-16 | RD2-READER-C-01 | R2 | reader-c | P2 | 本轮发现 | ① | 已修：§2.5 的落地结论限定为 i386 已证、ARM 侧证据待补；§1.1/§2.5 的通则限定为带 AT() 的普通段 | panel/round2/reader-c.md | `grep -n "ARM 侧按同一判据、改名名单与" doc` → 1；冷读 CLOSED（certify-reader #2 回读） |
+| RD2-17 | RD2-READER-C-02 | R2 | reader-c | P2 | 本轮发现 | ① | 已修：§2.3 “还没有到位”改为“不是这两条指令建立的；由 pre_init 五步建表在此之前完成” | panel/round2/reader-c.md | `grep -n "此时还没有到位" doc` → 0；冷读 CLOSED（certify-reader #2 回读） |
+| RD2-18 | RD2-READER-C-03 | R2 | reader-c | P2 | 本轮发现 | ① | 已修：§2.3 “只切栈不跳”的反证改为停在 hang 循环、内核不前进；删除不可达的延迟页错误 | panel/round2/reader-c.md | `grep -n "坏点推迟到恒等映射被移除" doc` → 0；`grep -n "直接症状是停机" doc` → 1；冷读 CLOSED（certify-reader #2 回读） |
+| RD2-19 | RD2-READER-C-04 | R2 | reader-c | P2 | 本轮发现 | ① | 已修：§4.2 重叠反证区分“段间覆盖=数据损坏”与“源/目标重叠=copy_from_nonoverlapping 的 UB” | panel/round2/reader-c.md | `grep -n "后一个段覆盖前一个段的字节是数据损坏" doc` → 1；冷读 CLOSED（certify-reader #2 回读） |
+| RD2-20 | RD2-READER-C-05 | R2 | reader-c | P2 | 本轮发现 | ① | 已修：§5.3 “任一处单独改动”限定为 L9 覆盖的 riscv64 分支，aarch64 只有上界断言 | panel/round2/reader-c.md | `grep -n "在 L9 覆盖的 riscv64 分支上" doc` → 1；冷读 CLOSED（certify-reader #2 回读） |
+| RD2-21 | RD2-READER-C-06 | R2 | reader-c | P2 | 本轮发现 | ① | 已修：§2.5 表格把 ARM32 结论限定为“按同一判据、证据待补” | panel/round2/reader-c.md | `grep -n "ARM 侧按同一判据" doc` → 1；冷读 CLOSED（certify-reader #2 回读） |
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD2-22 | RD2-CERT2-FACT-01 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§2.2 的 `__k_unpaged_*` 清单补 `vm_enable_paging`，与 `pre_init.c:230-234` 五调用一致 | panel/round2/certify2-fact.md:54 | `grep -n "vm_enable_paging" doc` → 命中；最终认证 CLOSED |
+| RD2-23 | RD2-CERT2-FACT-02 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§前置知识改“Rust 侧各启动腿与测试载体的起点按腿不同（测试载体不是生产路径）” | panel/round2/certify2-fact.md:64 | `grep -n "测试载体不是生产路径" doc` → 1；最终认证 CLOSED |
+| RD2-24 | RD2-CERT-READER-01 | R2 | reader-cert | P1 | 本轮发现 | ① | 已修：§前置知识补 riscv64 测试载体（物理视图、PC 高半 VMA），并把“两条路径”改为“各腿” | panel/round2/certify-reader.md:73 | `grep -n "riscv64 测试载体物理视图" doc` → 1；`grep -n "两条路径的起点不同" doc` → 0；冷读 CLOSED（最终回读） |
+| RD2-25 | RD2-CERT-READER-02 | R2 | reader-cert | P1 | 本轮发现 | ① | 已修：§2.3 “其二”的“上一处坏在取指”改为“上一处是停在 hang 停机”，与“其一”一致 | panel/round2/certify-reader.md:85 | `grep -n "上一处坏在取指" doc` → 0；`grep -n "上一处是停在 hang" doc` → 1；冷读 CLOSED（最终回读） |
+| RD2-26 | RD2-CERT-READER-03 | R2 | reader-cert | P2 | 本轮发现 | ① | 已修：§2.1 `.bss` 清零起点改为“`.data` 文件字节之后；独立成段才从段首起” | panel/round2/certify-reader.md:95 | `grep -n "清零范围同样从" doc` → 0；`grep -n "若 `.bss` 独立成段才从段首" doc` → 1；冷读 CLOSED（最终回读） |
+| RD2-27 | RD2-CERT-READER-04 | R2 | reader-cert | P2 | 本轮发现 | ① | 已修：§2.2 删除悬空的“括注”回指，改为“若想用 `pre_init.o` 做同型替换…” | panel/round2/certify-reader.md:105 | `grep -n "括注" doc` → 0；`grep -n "若想用 `pre_init.o`" doc` → 1；冷读 CLOSED（最终回读） |
+| RD2-28 | RD2-CERT2-READER-01 | R2 | reader-cert | P2 | 本轮发现 | ① | 已修：同上，`pre_init.o` 半句补主语与完整因果 | panel/round2/certify2-reader.md:37 | `grep -n "若想用 `pre_init.o` 做同型替换" doc` → 1；冷读 CLOSED（最终回读） |
+| RD2-29 | RD2-CERT3-01 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§2.2 的未定义符号清单补 `add_memmap`/`cut_memmap`，并加“至少”限定 | panel/round2/certify3.md:89 | `grep -n "__k_unpaged_add_memmap" doc` → 1；最终认证 CLOSED |
