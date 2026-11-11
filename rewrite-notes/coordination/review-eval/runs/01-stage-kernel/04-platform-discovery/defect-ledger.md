@@ -166,3 +166,55 @@
 |---|---|---|---|---|---|---|---|---|---|
 | RD4-R1-54 | RD4-CERT-01 | R1 | fact-cert | P2 | 本轮发现 | ① | 已修：§3.1 注释改为源码元组 `(u32 kind, u32 len, u64 phys_addr)` 并保留 len=0 语义 | panel/round1/certify.md | `grep -n "u32 kind, u32 len, u64 phys_addr" doc` → 1；冷读 CLOSED（RD4-R1-54） |
 | RD4-R1-55 | RD4-CERT-02 | R1 | fact-cert | P2 | 本轮发现 | ① | 已修：§4.2 两处节选头改“示意（注释有改写，非逐字）” | panel/round1/certify.md | `grep -n "示意（注释有改写" doc` → 2；冷读 CLOSED（RD4-R1-55） |
+
+## R2 确认轮（V3.3 四态模型）
+
+> 3 角色 40 条 FINDING（FACT 10、DESIGN-D2 16、READER-ABC 14）。
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD4-R2-01 | RD4B-FACT-01 | R2 | fact | P2 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-01） | panel/round2/fact.md | 冷读 CLOSED（R2-01） |
+| RD4-R2-02 | RD4B-FACT-02 | R2 | fact | P2 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-02） | panel/round2/fact.md | 冷读 CLOSED（R2-02） |
+| RD4-R2-03 | RD4B-FACT-03 | R2 | fact | P2 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-03） | panel/round2/fact.md | 冷读 CLOSED（R2-03） |
+| RD4-R2-04 | RD4B-FACT-04 | R2 | fact | P3 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-04） | panel/round2/fact.md | 冷读 CLOSED（R2-04） |
+| RD4-R2-05 | RD4B-FACT-05 | R2 | fact | P3 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-05） | panel/round2/fact.md | 冷读 CLOSED（R2-05） |
+| RD4-R2-06 | RD4B-FACT-06 | R2 | fact | P3 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-06） | panel/round2/fact.md | 冷读 CLOSED（R2-06） |
+| RD4-R2-07 | RD4B-FACT-07 | R2 | fact | P3 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-07） | panel/round2/fact.md | 冷读 CLOSED（R2-07） |
+| RD4-R2-08 | RD4B-FACT-08 | R2 | fact | P3 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-08） | panel/round2/fact.md | 冷读 CLOSED（R2-08） |
+| RD4-R2-09 | RD4B-FACT-09 | R2 | fact | P3 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-09） | panel/round2/fact.md | 冷读 CLOSED（R2-09） |
+| RD4-R2-10 | RD4B-FACT-10 | R2 | fact | P3 | 本轮发现 | ① | 已修：按 R2 最小修复（RD4B-FACT-10） | panel/round2/fact.md | 冷读 CLOSED（R2-10） |
+| RD4-R2-11 | RD4B-DESIGN-D2-01 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码/ARCH（RD4B-DESIGN-D2-01） | panel/round2/design-d2.md | 冷读 CLOSED（R2-11） |
+| RD4-R2-12 | RD4B-DESIGN-D2-02 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-02 | panel/round2/design-d2.md | 冷读 CLOSED（R2-12） |
+| RD4-R2-13 | RD4B-DESIGN-D2-03 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-03 | panel/round2/design-d2.md | 冷读 CLOSED（R2-13） |
+| RD4-R2-14 | RD4B-DESIGN-D2-04 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码/ARCH（RD4B-DESIGN-D2-04） | panel/round2/design-d2.md | 冷读 CLOSED（R2-14） |
+| RD4-R2-15 | RD4B-DESIGN-D2-05 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码/ARCH（RD4B-DESIGN-D2-05） | panel/round2/design-d2.md | 冷读 CLOSED（R2-15） |
+| RD4-R2-16 | RD4B-DESIGN-D2-06 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码/ARCH（RD4B-DESIGN-D2-06） | panel/round2/design-d2.md | 冷读 CLOSED（R2-16） |
+| RD4-R2-17 | RD4B-DESIGN-D2-07 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码/ARCH（RD4B-DESIGN-D2-07） | panel/round2/design-d2.md | 冷读 CLOSED（R2-17） |
+| RD4-R2-18 | RD4B-DESIGN-D2-08 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-08 | panel/round2/design-d2.md | 冷读 CLOSED（R2-18） |
+| RD4-R2-19 | RD4B-DESIGN-D2-09 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-09 | panel/round2/design-d2.md | 冷读 CLOSED（R2-19） |
+| RD4-R2-20 | RD4B-DESIGN-D2-10 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-10 | panel/round2/design-d2.md | 冷读 CLOSED（R2-20） |
+| RD4-R2-21 | RD4B-DESIGN-D2-11 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-11 | panel/round2/design-d2.md | 冷读 CLOSED（R2-21） |
+| RD4-R2-22 | RD4B-DESIGN-D2-12 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-12 | panel/round2/design-d2.md | 冷读 CLOSED（R2-22） |
+| RD4-R2-23 | RD4B-DESIGN-D2-13 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-13 | panel/round2/design-d2.md | 冷读 CLOSED（R2-23） |
+| RD4-R2-24 | RD4B-DESIGN-D2-14 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-14 | panel/round2/design-d2.md | 冷读 CLOSED（R2-24） |
+| RD4-R2-25 | RD4B-DESIGN-D2-15 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：RD4B-DESIGN-D2-15 | panel/round2/design-d2.md | 冷读 CLOSED（R2-25） |
+| RD4-R2-26 | RD4B-DESIGN-D2-16 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码/ARCH（RD4B-DESIGN-D2-16） | panel/round2/design-d2.md | 冷读 CLOSED（R2-26） |
+| RD4-R2-27 | RD4B-READER-A-01 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log（RD4B-READER-A-01） | panel/round2/reader-fix-log.md | 冷读 CLOSED（R2-27） |
+| RD4-R2-28 | RD4B-READER-A-02 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-A-02 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-28） |
+| RD4-R2-29 | RD4B-READER-A-03 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log（RD4B-READER-A-03） | panel/round2/reader-fix-log.md | 冷读 CLOSED（R2-29） |
+| RD4-R2-30 | RD4B-READER-A-04 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log（RD4B-READER-A-04） | panel/round2/reader-fix-log.md | 冷读 CLOSED（R2-30） |
+| RD4-R2-31 | RD4B-READER-A-05 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-A-05 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-31） |
+| RD4-R2-32 | RD4B-READER-A-06 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-A-06 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-32） |
+| RD4-R2-33 | RD4B-READER-A-07 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log（RD4B-READER-A-07） | panel/round2/reader-fix-log.md | 冷读 CLOSED（R2-33） |
+| RD4-R2-34 | RD4B-READER-B-01 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-B-01 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-34） |
+| RD4-R2-35 | RD4B-READER-B-02 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log（RD4B-READER-B-02） | panel/round2/reader-fix-log.md | 冷读 CLOSED（R2-35） |
+| RD4-R2-36 | RD4B-READER-B-03 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-B-03 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-36） |
+| RD4-R2-37 | RD4B-READER-B-04 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-B-04 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-37） |
+| RD4-R2-38 | RD4B-READER-B-05 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-B-05 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-38） |
+| RD4-R2-39 | RD4B-READER-C-01 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-C-01 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-39） |
+| RD4-R2-40 | RD4B-READER-C-04 | R2 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者 P3）：RD4B-READER-C-04 | panel/round2/reader-abc.md | 冷读 CLOSED（R2-40） |
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD4-R2-41 | RD4-R2-CERT-01 | R2 | fact-cert | P1 | 本轮发现 | ① | 已修：§3.4 改为 freeze 之后、intr.init() 之前的 set_plic_va_base 例外 | panel/round2/certify.md | `grep -n "freeze 之后、\`intr.init()\`" doc` → 1；冷读 CLOSED（R2-41） |
+| RD4-R2-42 | RD4-R2-CERT-02 | R2 | fact-cert | P1 | 本轮发现 | ① | 已修：§4.5 改为 UEFI 腿 owned copy 只用于交叉校验/claims，platform_sources 仍是配置表地址 | panel/round2/certify.md | `grep -n "owned copy 只用于交叉校验" doc` → 1；冷读 CLOSED（R2-42） |
+| RD4-R2-43 | RD4-R2-CERT-03 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§4.5 Safety 引文恢复 low 4 GiB 原文，块头标注“旧前提，现行实现见正文” | panel/round2/certify.md | `grep -n "原文写 low 4 GiB" doc` → 1；冷读 CLOSED（R2-43） |

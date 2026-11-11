@@ -172,3 +172,68 @@
 
 - 三问：① 本轮不变量是“平台来源必须有长度、写入所有者槽位、无 Box::leak”；② 前提是旧 V1 run 只作历史；③ 证据是 53 行台账与门读数。
 - 资源重读：本轮盲区是“文档停在旧 boot-shim 形态”，检测模式是 `doc-code-map` + fact 的符号存在性核对；无需新增规则。
+
+## R2 确认轮（V3.3 四态模型）
+
+### R2 §0 基线
+
+- 轮型: confirmation
+- edition: V3.3
+- schema: V3.3 from R1
+- 基线提交：`58c8bdcdc`
+- 文档 sha256：`773c10f1bf69de6f3604a690bc97850282b7077705ac760d8b493087d56675e3`
+- 行数：2708
+- 轮次语义：确认轮；只修新准入 P0/P1/P2 事实/同步；不实施 ⑥；certify 0 才 CONVERGED。
+
+### R2 §1 面板
+
+- 3 角色：fact、design-d2、reader-abc（合并，VARIANCE 已记）。
+- fact 10 条（P2 3 / P3 7）；design-d2 16 条（P2 6 / P3 10，ARCH 1）；reader-abc 14 条（P2/P3）。
+- 材料隔离：读者未读源码；设计未读作者解释；事实未读历史评审。
+
+### R2 §2 发现
+
+- 40 条：P0 = 0；P1 = 0；P2 = 18；P3 = 22。
+- 关键：§4.5 “低 4GB 恒等映射”前提过宽、§3.4 “实例字段构造后不变”被 riscv `set_plic_va_base` 推翻、§3.1 KernelInfo 注释节选改写；design 6 条代码项与 reader 9 条 P2。
+
+### R2 §3 归因
+
+- 处置：① 15 / ② 6 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 19 = 40；唯一根因 40。
+- ② 六条 design 代码/ARCH 项登记 `D04-design-batch`（D-054）。
+- 0 条 re-litigation；P3 19 条进 suggestions。
+
+### R2 §4 修复
+
+- 文档：§4.5 恒等窗口改最小窗口 + owned copy；§3.4 freeze 前例外；§3.1 KernelInfo 注释恢复 `len=0` 回退 2 MiB；reader 18 条按 `reader-fix-log.md` 修（A-01/A-02/A-04/A-07/B-01..B-04 等）。
+- 代码：无行为改动；design 6 项登记设计批。
+
+### R2 §5 复验
+
+- 文档门：anchor 77/77；doc-code-map 52/52；structure/ref/style 通过；citation 全部跳过（MANUAL_FALLBACK）。
+- 旧串归零：`低 4GB 铺了 VA == PA`、`构造后不再被`、`len = 0 means unknown/legacy` 均为 0（按替换点核）。
+- certify 待跑；QEMU 未跑。
+
+### R2 §6 指标
+
+- 见 `metrics.md` R2 块：发现 40、唯一根因 40、① 15 / ② 6 / SUGG 19、未闭环 0、CONVERGED、代裁决 1、ARCH 提案 1。
+
+### R2 §7 状态
+
+**CONVERGED**（确认轮出口）。G1–G9：in-scope P0/P1/P2 = 0；⑤ = 0；② 六条有 D-054 批准；机械门全绿；台账 40 行全部有处置与复验；`certify 新准入 = 0`。设计代码项进 `D04-design-batch`，不阻断。
+
+### R2 §8 给 meta-review 的不确定点
+
+1. citation 门 86 块全跳过（MANUAL_FALLBACK）；引文由 fact 人工核对。
+2. design 6 条 P2 需改代码，延期到 D04-design-batch。
+3. reader 14 条 FINDING 由修复代理按最小修复落地，主 agent 复核门与 diff。
+4. QEMU 未跑。
+
+### L6
+
+- 同 agent 收口：40 条全部处置；P0/P1 = 0；CONVERGED。
+- BLIND-SPOT-DELTA：R1 后仍有“恒等窗口前提/实例不可变”两处语义漂移；无新结构性盲区。
+
+### L6.5
+
+- 三问：① 不变量是“平台 blob 必须在已注册恒等窗口内、实例字段 freeze 后不可变”；② 前提是 R1 ROUND-CLOSED；③ 证据是 40 行台账与门读数。
+- 资源重读：本轮盲区属“旧启动前提残留”，检测模式是确认轮的跨节前提核对；无需新增规则。
