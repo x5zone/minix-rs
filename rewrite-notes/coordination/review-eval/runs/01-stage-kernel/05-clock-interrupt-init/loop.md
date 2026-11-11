@@ -89,3 +89,19 @@
 3. D1 的 `grep '^#'` 带出 Ch3 标题，是否足以作废其 16 条 DECISION；D2 已做逐条对照。
 4. REFUTE CLAIM 04 的 PIT 校准窗口补写是否改变了原文的教学主线；它现在把“定时器不在 cstart”限定为“持久 tick 源”。
 5. `cargo test -p minix-arch` 的 45 个错误使 §5 的测试计数只有静态意义；是否需要把它升级为阻断项。
+
+## R1 完整 survey（V3.3）
+
+### R1 §0 基线
+
+- 轮型: full
+- edition: V3.3
+- schema: V3.3 from R1
+- 基线提交：`da04c7486`
+- 文档：`rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md`
+- 文档 sha256：`f149e932cf7defe1e052794c2673409abba13dfdbd67c819b9341f067b9c533b`
+- 行数：2198
+- 设计快照：05 组齐备；`design-coverage-check.sh` ALL DOCS COMPLETE
+- 关联代码：`doc-code-map --check` 32/32；清单见 `related-code.txt`
+- 范围声明：本篇范围 = 时钟与中断初始化（三架构） + 32 个关联文件 + 本轮修复触碰的文件。
+- 历史说明：旧 §0–§8 为 V1 记录，保留不追溯。
