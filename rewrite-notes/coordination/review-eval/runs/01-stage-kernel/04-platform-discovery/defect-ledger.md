@@ -101,3 +101,68 @@
 | CLAIM 04 | 反证失败（主张成立） | 无动作 |
 | CLAIM 05 | 反证失败；P2 ×1（MachineStruct 的 C 类型注释） | 转 D04-F15 |
 | CLAIM 06 | 反证成功 P1：platform_sources 51→53、uefi_helpers 4→6 | 已修 FACT-01/02 |
+
+## R1 完整 survey（V3.3）
+
+> 3 角色 53 条 FINDING（FACT 8、DESIGN-D2 12、READER-ABC 33，其中读者 9 条为低优先 SUGG）。
+> P0 = 3（find_platform_sources、PlatformDescSource、uefi 测试计数）；P1 = 4；P2 = 33；P3 = 13。
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD4-R1-01 | RD4-FACT-01 | R1 | fact | P0 | 本轮发现 | ① | 已修：find_platform_sources → find_platform_sources_into（9 处） | panel/round1/fact.md | 冷读 CLOSED（回读 R1-01） |
+| RD4-R1-02 | RD4-FACT-02 | R1 | fact | P0 | 本轮发现 | ① | 已修：PlatformDescSource 三字段 + BootStorage 槽位；删 Box::leak/Vec | panel/round1/fact.md | 冷读 CLOSED（回读 R1-02） |
+| RD4-R1-03 | RD4-FACT-03 | R1 | fact | P0 | 本轮发现 | ① | 已修：uefi_helpers 6→12 测试 | panel/round1/fact.md | 冷读 CLOSED（回读 R1-03） |
+| RD4-R1-04 | RD4-FACT-04 | R1 | fact | P1 | 本轮发现 | ① | 已修：54 处计数与 vm_handoff 3 处 | panel/round1/fact.md | 冷读 CLOSED（回读 R1-04） |
+| RD4-R1-05 | RD4-FACT-05 | R1 | fact | P1 | 本轮发现 | ① | MANUAL_FALLBACK：citation 工具只认 //，86 块 /* */ 由 fact 人工逐块核对 | panel/round1/fact.md | 冷读 CLOSED（回读 R1-05） |
+| RD4-R1-06 | RD4-FACT-06 | R1 | fact | P2 | 本轮发现 | ① | 已修：Step 1 的 assert_eq!→assert! | panel/round1/fact.md | 冷读 CLOSED（回读 R1-06） |
+| RD4-R1-07 | RD4-FACT-07 | R1 | fact | P2 | 本轮发现 | ① | 已修：§4.1 ACPI 消费者补 acpi_init_poweroff 口径 | panel/round1/fact.md | 冷读 CLOSED（回读 R1-07） |
+| RD4-R1-08 | RD4-FACT-08 | R1 | fact | P2 | 本轮发现 | ① | 已修：三处节选头标“改写/示意” | panel/round1/fact.md | 冷读 CLOSED（回读 R1-08） |
+| RD4-R1-09 | RD4-DESIGN-D2-01 | R1 | design-d2 | P1 | 本轮发现 | ① | 已修：PlatformDescSource 三字段/槽位（同 FACT-02） | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-09） |
+| RD4-R1-10 | RD4-DESIGN-D2-02 | R1 | design-d2 | P1 | 本轮发现 | ① | 已修：find_platform_sources_into 槽位形态（同 FACT-01） | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-10） |
+| RD4-R1-11 | RD4-DESIGN-D2-03 | R1 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码项 | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-11） |
+| RD4-R1-12 | RD4-DESIGN-D2-04 | R1 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码项 | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-12） |
+| RD4-R1-13 | RD4-DESIGN-D2-05 | R1 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码项 | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-13） |
+| RD4-R1-14 | RD4-DESIGN-D2-06 | R1 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch（ARCH 提案）；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 ARCH 待裁决 | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-14） |
+| RD4-R1-15 | RD4-DESIGN-D2-07 | R1 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码项 | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-15） |
+| RD4-R1-16 | RD4-DESIGN-D2-08 | R1 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 D04-design-batch；修于下一 batch；用户批准 2026-11-12（代理裁决 D-054）；理由 代码项 | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-16） |
+| RD4-R1-17 | RD4-DESIGN-D2-09 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：已登记 suggestions.md | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-17） |
+| RD4-R1-18 | RD4-DESIGN-D2-10 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：已登记 suggestions.md | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-18） |
+| RD4-R1-19 | RD4-DESIGN-D2-11 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：已登记 suggestions.md | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-19） |
+| RD4-R1-20 | RD4-DESIGN-D2-12 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：已登记 suggestions.md | panel/round1/design-d2.md | 冷读 CLOSED（回读 R1-20） |
+| RD4-R1-21 | RD4-READER-A-01 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-A-01） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-21） |
+| RD4-R1-22 | RD4-READER-A-02 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-A-02） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-22） |
+| RD4-R1-23 | RD4-READER-A-03 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-A-03） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-23） |
+| RD4-R1-24 | RD4-READER-A-04 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-A-04） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-24） |
+| RD4-R1-25 | RD4-READER-A-05 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-A-05） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-25） |
+| RD4-R1-26 | RD4-READER-A-06 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-A-06） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-26） |
+| RD4-R1-27 | RD4-READER-A-07 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-A-07） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-27） |
+| RD4-R1-28 | RD4-READER-A-08 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-A-08） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-28） |
+| RD4-R1-29 | RD4-READER-A-09 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-A-09） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-29） |
+| RD4-R1-30 | RD4-READER-B-01 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-B-01） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-30） |
+| RD4-R1-31 | RD4-READER-B-02 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-B-02） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-31） |
+| RD4-R1-32 | RD4-READER-B-03 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-B-03） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-32） |
+| RD4-R1-33 | RD4-READER-B-04 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-B-04） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-33） |
+| RD4-R1-34 | RD4-READER-B-05 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-B-05） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-34） |
+| RD4-R1-35 | RD4-READER-B-06 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-B-06） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-35） |
+| RD4-R1-36 | RD4-READER-B-07 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-B-07） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-36） |
+| RD4-R1-37 | RD4-READER-B-08 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-B-08） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-37） |
+| RD4-R1-38 | RD4-READER-B-09 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-B-09） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-38） |
+| RD4-R1-39 | RD4-READER-C-01 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-01） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-39） |
+| RD4-R1-40 | RD4-READER-C-02 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-02） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-40） |
+| RD4-R1-41 | RD4-READER-C-03 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-03） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-41） |
+| RD4-R1-42 | RD4-READER-C-04 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-04） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-42） |
+| RD4-R1-43 | RD4-READER-C-05 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-05） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-43） |
+| RD4-R1-44 | RD4-READER-C-06 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-06） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-44） |
+| RD4-R1-45 | RD4-READER-C-07 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-07） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-45） |
+| RD4-R1-46 | RD4-READER-C-08 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-08） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-46） |
+| RD4-R1-47 | RD4-READER-C-09 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-09） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-47） |
+| RD4-R1-48 | RD4-READER-C-10 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-10） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-48） |
+| RD4-R1-49 | RD4-READER-C-11 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-11） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-49） |
+| RD4-R1-50 | RD4-READER-C-12 | R1 | reader-abc | P2 | 本轮发现 | ① | 已修：按 reader-fix-log 的最小修复（RD4-READER-C-12） | panel/round1/reader-fix-log.md | 冷读 CLOSED（回读 R1-50） |
+| RD4-R1-51 | RD4-READER-C-13 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-C-13） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-51） |
+| RD4-R1-52 | RD4-READER-C-14 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-C-14） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-52） |
+| RD4-R1-53 | RD4-READER-C-15 | R1 | reader-abc | P3 | 本轮发现 | SUGG | SUGG（读者低优先）：已登记 suggestions.md（RD4-READER-C-15） | panel/round1/reader-abc.md | 冷读 CLOSED（回读 R1-53） |
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD4-R1-54 | RD4-CERT-01 | R1 | fact-cert | P2 | 本轮发现 | ① | 已修：§3.1 注释改为源码元组 `(u32 kind, u32 len, u64 phys_addr)` 并保留 len=0 语义 | panel/round1/certify.md | `grep -n "u32 kind, u32 len, u64 phys_addr" doc` → 1；冷读 CLOSED（RD4-R1-54） |
+| RD4-R1-55 | RD4-CERT-02 | R1 | fact-cert | P2 | 本轮发现 | ① | 已修：§4.2 两处节选头改“示意（注释有改写，非逐字）” | panel/round1/certify.md | `grep -n "示意（注释有改写" doc` → 2；冷读 CLOSED（RD4-R1-55） |

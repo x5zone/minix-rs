@@ -27,3 +27,25 @@
 - DESIGN-01/02/03 三条 P1 转出合理，文件与验收判据都有；D04-F05 的验收不是机械可判。
 - D1 `DEGRADED` 足够、不必作废；D2 的 C 真值是二手的。
 - 局限：同 agent 验证；未跑 QEMU；token 未采集。
+
+## R1 完整 survey
+
+- 发现总数: 55（FACT 8、DESIGN-D2 12、READER-ABC 33、CERT 2）
+- 唯一根因数: 55
+- 本轮新准入: 55
+- certify 新准入: 0（certify 2 条已修；同 agent grep 复核）
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 36 / ② 6 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 13
+- 未闭环: 0
+- 轮结果: ROUND-CLOSED
+- 代裁决: 1（D-054）
+- ARCH 提案: 1（D2-06）
+- 用户否决: 0
+- 轮型: full
+- edition: V3.3
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 6 / 接受 6 / 实施 0 / 登记 6
+- 成本: agent 4 / token 未采集 / 耗时 约 3 小时
+- 回读与回归: 文档六门通过（citation 全跳过，MANUAL_FALLBACK）；anchor 72/72；doc-code-map 52/52

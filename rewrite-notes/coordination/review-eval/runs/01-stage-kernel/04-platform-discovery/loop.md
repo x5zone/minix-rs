@@ -118,3 +118,57 @@
 - L0 预修：删除指向不存在文件 `os/libs/minix-boot/src/boot_form.rs` 的表格行，并把 §5.1 的“53 处”改为 52；该修改记入 R1 台账。
 - 范围声明：本篇范围 = 文档主题（平台发现：ACPI/DTB/多架构） + 52 个关联文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件。
 - 历史说明：本文件顶部的旧 §0–§8 是 V1 记录，保留为历史段、不追溯改账。
+
+### R1 §1 面板
+
+- 3 角色：fact（C+Rust）、design-d2、reader-abc（A/B/C 合并，VARIANCE 已记）。
+- fact 8 条（P0 3 / P1 2 / P2 3）；design-d2 12 条（P1 2 / P2 6 / P3 4，ARCH 提案 1）；reader-abc 33 条（24 FINDING + 9 SUGG）。
+- 材料隔离：读者未读源码；设计未读作者解释；事实未读历史评审。
+- 无发现面板：`reader-fix-log.md`（修复代理的编辑日志，不是面板报告）
+
+### R1 §2 发现
+
+- 53 条：P0 = 3（`find_platform_sources` 不存在、`PlatformDescSource` 两字段/Box::leak 旧形态、uefi 测试计数 6 vs 12）；P1 = 4；P2 = 33；P3 = 13。
+- 关键：平台描述符已改为 `kind + len + phys_addr` 的 BootStorage 槽位；`find_platform_sources_into` 写调用者槽位并返回条数；`&[]` 计数 54。
+
+### R1 §3 归因
+
+- 处置：① 34 / ② 6 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 13 = 53；唯一根因 53。
+- ② 六条：design P2 代码/架构项，登记 `D04-design-batch`（D-054）。
+- 冻结决策：0 条 re-litigation；P3 13 条进 suggestions。
+
+### R1 §4 修复
+
+- 文档：`find_platform_sources_into` 全量改名；§3.1/§3.6/§4.2 平台描述符三字段与槽位；§4.2 节选改 `with_optional_len`/`out[..].copy_from_slice`；riscv 改 `push_platform_source`；uefi 测试 12；54 处计数；C-01 反事实与 C-02 计数；读者 24 条按 `reader-fix-log.md` 逐条修。
+- 代码：无行为改动；design P2 六项登记设计批。
+
+### R1 §5 复验
+
+- 文档门：anchor 72/72；doc-code-map 52/52；structure/ref/style 通过；citation 86 块全跳过（MANUAL_FALLBACK，见 §8）。
+- 旧串归零：`find_platform_sources`（无 `_into`）、`Box::leak`、`上述 52 处`、`切片内容`、`ncpus` 停在已计入 均为 0（按替换点核）。
+- 测试读数：uefi_helpers 12 条、minix-platform 26 条与文档一致；QEMU 未跑。
+
+### R1 §6 指标
+
+- 见 `metrics.md` R1 块：发现 53、唯一根因 53、① 34 / ② 6 / SUGG 13、未闭环 0、ROUND-CLOSED、代裁决 1、ARCH 提案 1。
+
+### R1 §7 状态
+
+**ROUND-CLOSED**（修改轮出口；进入 CONVERGENCE-CANDIDATE）。设计代码项按 §4.0f 登记，不阻断；不宣告 CONVERGED。
+
+### R1 §8 给 meta-review 的不确定点
+
+1. citation 门对本文 86 个 `/* */` 块全部跳过；按 FACT-05 记 `MANUAL_FALLBACK`，引文由 fact 人工逐块核对。
+2. 读者 33 条中 9 条是低优先 SUGG；24 条 FINDING 由修复代理按最小修复落地，主 agent 只复核 diff 与门。
+3. design 6 条 P2 需改代码，延期到 D04-design-batch；是否削弱 ROUND-CLOSED 请 meta 判断。
+4. QEMU 未跑。
+
+### L6
+
+- 同 agent 收口：53 条全部处置；P0 3 条全修；ROUND-CLOSED。
+- BLIND-SPOT-DELTA：平台描述符形态（两字段→三字段+槽位）是本轮最大漂移；无新结构性盲区。
+
+### L6.5
+
+- 三问：① 本轮不变量是“平台来源必须有长度、写入所有者槽位、无 Box::leak”；② 前提是旧 V1 run 只作历史；③ 证据是 53 行台账与门读数。
+- 资源重读：本轮盲区是“文档停在旧 boot-shim 形态”，检测模式是 `doc-code-map` + fact 的符号存在性核对；无需新增规则。
