@@ -643,7 +643,7 @@ static int discover_cpus(void)
 }
 ```
 
-去掉 `acpi_get_lapic_next` 里那句 `if (ret->flags & 1) break;`（只留 `idx++`）会坏在哪：`acpi_get_lapic_next` 在遍历完所有记录后返回 `NULL`，`discover_cpus` 的 `while` 立刻结束，`ncpus` 停在已计入的启用项数；如果第一条记录就是未启用项，结果是 0 颗 CPU，而不是“把所有记录都计进 `ncpus`”。`apicid2cpuid[]` 不会出现未启用项；症状是“少了 CPU”或“一颗都没有”。
+去掉 `acpi_get_lapic_next` 里那句 `if (ret->flags & 1) break;`（只留 `idx++`）会坏在哪：第一次调用就会耗尽全部 LAPIC 记录并返回 `NULL`，`discover_cpus` 的 `while` 立刻结束，`ncpus` 恒为 0——不是“停在已计入的启用项数”。`apicid2cpuid[]` 不会出现未启用项；症状是“少了 CPU”或“一颗都没有”。
 
 ### 2.5 LAPIC 基址：C 只发现了半格
 
@@ -1053,7 +1053,7 @@ pub struct KernelInfo {
     ///
     /// # Cross-binary safety
     ///
-    /// Each `PlatformDescSource` is pure data `(u32 kind, u64 phys_addr)` —
+    /// Each `PlatformDescSource` is pure data `(kind, len: u32, phys_addr: PhysBytes)` —
     /// safe to pass from boot-shim to kernel even when they are separate
     /// ELF binaries. No function pointers cross the boundary.
     ///
@@ -1356,7 +1356,7 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2);
 
 这段话陈述的是设计前提："等到内核成为独立 ELF 之后，boot-shim 的内存会被回收，函数指针随之悬挂。" 它是跨二进制交接选择纯数据的原因，不是当前代码已经拆分的状态。
 
-多来源的规则：`platform_sources` 是有序切片，内核按顺序试、取第一个解析成功的。切片元素是 `PlatformDescSource`（`os/libs/minix-boot/src/platform.rs:struct PlatformDescSource`）：一个 kind 标签加一个物理地址；地址字段的类型 `PhysBytes` 是 `minix-types` 里的一个 `#[repr(transparent)]` newtype（`os/libs/minix-types/src/types/address.rs:struct PhysBytes`，内层是 `u64`）——它比裸 `u64` 多的是类型标签：物理地址与虚拟地址（同文件的 `VirBytes`）在函数签名里不再是同一个可互换的类型，参数位置上混用会在编译期报错。
+多来源的规则：`platform_sources` 是有序切片，内核按顺序试、取第一个解析成功的。切片元素是 `PlatformDescSource`（`os/libs/minix-boot/src/platform.rs:struct PlatformDescSource`）：一个 kind 标签、一个 blob 长度与一个物理地址；地址字段的类型 `PhysBytes` 是 `minix-types` 里的一个 `#[repr(transparent)]` newtype（`os/libs/minix-types/src/types/address.rs:struct PhysBytes`，内层是 `u64`）——它比裸 `u64` 多的是类型标签：物理地址与虚拟地址（同文件的 `VirBytes`）在函数签名里不再是同一个可互换的类型，参数位置上混用会在编译期报错。
 
 | 方案 | 跨二进制安全性 | 否掉的理由 |
 |---|---|---|
@@ -1550,13 +1550,15 @@ Rust 把发现前移的理由不是"把 C 的顺序反过来"，而是消费者�
 ### 4.2 boot-shim 侧：find_platform_sources_into 的三架构扫描（→3.6）
 
 ```rust
-// os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into —— 节选（x86-64 与兜底两段，注释保留）
+// os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into —— 节选（x86-64 与兜底两段，注释保留；函数写入调用者的槽位数组并返回条数）
         // On x86-64, look for ACPI RSDP (prefer ACPI 2.0+).
         #[cfg(target_arch = "x86_64")]
         {
             for e in entries {
                 if e.guid == ACPI2_GUID || e.guid == ACPI_GUID {
-                    sources.borrow_mut().push(PlatformDescSource::new(RSDP, PhysBytes(e.address as u64)));
+                    let pa = PhysBytes(e.address as u64);
+                    let len = unsafe { minix_boot::rsdp_total_size(pa) };
+                    sources.borrow_mut().push(PlatformDescSource::with_optional_len(RSDP, pa, len));
                     break;
                 }
             }
@@ -1571,18 +1573,19 @@ Rust 把发现前移的理由不是"把 C 的顺序反过来"，而是消费者�
         }
     });
 
-    // Leak the Vec so it has 'static lifetime — acceptable for boot-stage
-    // code that runs exactly once (same pattern as build_memmap).
-    Box::leak(sources.into_inner().into_boxed_slice())
+    let sources = sources.into_inner();
+    assert!(sources.len() <= out.len(), "boot-shim: platform-source slot array too small");
+    out[..sources.len()].copy_from_slice(&sources);
+    sources.len()
 ```
 
-| 架构 | 查哪些 GUID | 命中后是否继续 | 切片内容 |
+| 架构 | 查哪些 GUID | 命中后是否继续 | 槽位内容 |
 |---|---|---|---|
-| x86-64 | `ACPI2_GUID` 或 `ACPI_GUID`（同一次判断） | `break` | 最多 1 个元素（RSDP） |
-| aarch64 | 先 `DEVICE_TREE_GUID`（UEFI 2.4+ 规范值 `b1b621d5-f19c-41a5-830b-d9152c69aae0`）或 `LEGACY_DEVICE_TREE_GUID`（pre-2.4 `b1b621d2-f19c-41c5-8310-daa6f018a8d3`），再 `ACPI2_GUID` / `ACPI_GUID`（两段独立循环） | 每段各自 `break` | 最多 2 个元素（DTB 在前） |
-| 其余（含 riscv64 的 UEFI 路径） | 不查 | — | 空切片 |
+| x86-64 | `ACPI2_GUID` 或 `ACPI_GUID`（同一次判断） | `break` | 最多 1 个槽位（RSDP） |
+| aarch64 | 先 `DEVICE_TREE_GUID`（UEFI 2.4+ 规范值 `b1b621d5-f19c-41a5-830b-d9152c69aae0`）或 `LEGACY_DEVICE_TREE_GUID`（pre-2.4 `b1b621d2-f19c-41c5-8310-daa6f018a8d3`），再 `ACPI2_GUID` / `ACPI_GUID`（两段独立循环） | 每段各自 `break` | 最多 2 个槽位（DTB 在前） |
+| 其余（含 riscv64 的 UEFI 路径） | 不查 | — | 空槽位（返回 0） |
 
-`Box::leak` 让切片获得 `'static`：这个函数在启动期只跑一次，泄漏是可接受的（注释里写明与 `build_memmap` 同一模式）。
+`find_platform_sources_into` 不再 `Box::leak`：调用者传入 `BootStorage` 的平台源槽位数组，函数把来源写进槽位并返回条数（`len` 随 `with_optional_len` 进入交接线格式）。
 
 riscv64 的来源走另一条路：
 
@@ -1595,16 +1598,7 @@ riscv64 的来源走另一条路：
         //
         // On RISC-V only DTB is supported (no ACPI). The sources list is
         // either `[DTB source]` or empty.
-        let platform_sources: &'static [PlatformDescSource] = match dtb_ptr() {
-            Some(pa) => {
-                use alloc::boxed::Box;
-                Box::leak(
-                    alloc::vec![PlatformDescSource::new(DTB, PhysBytes(pa))]
-                        .into_boxed_slice(),
-                )
-            }
-            None => &[],
-        };
+            storage.push_platform_source(PlatformDescSource::with_optional_len(DTB, PhysBytes(pa), len));
 ```
 
 aarch64 若写成单次 GUID 判断（`if e.guid == DEVICE_TREE_GUID || e.guid == ACPI2_GUID`）会坏在哪：循环按配置表项顺序扫描，先遇到哪个 GUID 就取哪个——来源由固件给出的表项顺序决定，不由设计意图决定。AAVMF 的表里 ACPI2 在、FDT 两个 GUID 都不在（§5.2 的实测），单次判断在这台机器上取到 ACPI 与两段循环的结果相同；但一台同时提供两者的服务器若把 ACPI 项排在前面，"DTB 优先"这条设计就失效——设计意图是先用更具体的设备树。顺序控制靠两段独立循环实现，不靠 GUID 判断的写法。
@@ -2502,7 +2496,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | `os/kernel/src/kerninfo.rs` / `os/libs/minix-boot/src/handoff_v1_write.rs` | 各 1 | 夹具 |
 | `os/libs/minix-boot/src/kernel_info.rs` | 1 | `KernelInfo` 构造夹具 |
 | `os/kernel/tests/boot_integration.rs` | 1 | 集成测试夹具 |
-| `os/kernel/src/vm_handoff.rs` | 1 | 夹具 |
+| `os/kernel/src/vm_handoff.rs` | 3 | 夹具 |
 | `os/boot-shim/src/ebs_pair.rs` | 1 | 夹具 |
 | 21 个极简测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/` 下，如 `hello-boot` / `test-paging-enable` / `test-protection` 各架构变体；全量即 §6.2 #4 输出里的测试内核条目） | 各 1 | 这些测试内核在 `main.rs` 里直接构造 `KernelInfo`，不经过 boot-shim 的固件发现阶段 |
 
