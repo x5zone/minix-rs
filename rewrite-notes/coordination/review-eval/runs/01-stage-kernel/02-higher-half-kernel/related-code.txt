@@ -1,5 +1,6 @@
 os/arch/src/arch/boot.rs
 os/arch/src/arch/direct_map.rs
+os/arch/src/arch/stacktrace.rs
 os/boot-shim/src/lib.rs
 os/boot-shim/src/loader.rs
 os/boot-shim/src/main.rs
@@ -9,6 +10,7 @@ os/boot-shim/src/uefi_helpers.rs
 os/kernel-image/build.rs
 os/kernel-image/src/bootface.rs
 os/kernel-image/src/bootface_a64.rs
+os/kernel-image/src/bootface_common.rs
 os/kernel-image/src/main.rs
 os/kernel/src/arch/aarch64/higher_half.rs
 os/kernel/src/arch/riscv64/higher_half.rs

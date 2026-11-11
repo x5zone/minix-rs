@@ -27,3 +27,25 @@
 - 新增盲区：B-17 轨迹门只认 `## FINDING` 形状、B-18 跨角色重复计数、B-19 材料矩阵未覆盖作者前置区。
 - 三条 P1 复核：FACT-01 的 113 正确；DESIGN-02 的 aarch64 理由正确；`isb` 修复与 `enable()` 的屏障一致，残留的 §4.3 第 921 行与源码注释已同轮改掉。
 - 局限：同 agent 验证；未跑 QEMU/`check-layout.sh`；token 未采集。
+
+## R1 完整 survey
+
+- 发现总数: 53（survey 33：FACT 14、DESIGN-D2 15、READER-ABC 2、REFUTE P2 2；certify 16：FACT 4、READER 12；另 REFUTE 6 条主张中有 2 条 P2 已并入 CLAIM-01/03 行）
+- 唯一根因数: 53
+- 本轮新准入: 53
+- certify 新准入: 0（certify #1 的 16 条已在本轮修完；certify #2 重读为 0）
+- 重复合并: 0（同根因合并行仍保留独立根因 ID，避免与门的分档聚合冲突）
+- 自引入: 3（RD1-35/36/37 由本轮修复句引入；origin R1；已修）
+- 处置: ① 44 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 2 / SUGG 7
+- 未闭环: 0
+- 轮结果: ROUND-CLOSED
+- 代裁决: 0
+- ARCH 提案: 2（D-050/D-051，待用户裁决）
+- 用户否决: 0
+- 轮型: full
+- edition: V3.3
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 8 / 接受 8 / 实施 0 / 登记 8（设计批 D2-01..06/13）
+- 成本: agent 5 / token 未采集 / 耗时 约 4 小时
+- 回读与回归: 六门全绿；`cargo test -p boot-shim --lib -- --list` 125、loader `#[test]` 22、minix-elf `#[test]` 23；无代码行为改动，QEMU 未跑

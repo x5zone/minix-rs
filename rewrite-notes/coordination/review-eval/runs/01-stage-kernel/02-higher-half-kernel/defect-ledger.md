@@ -72,12 +72,87 @@
 | READER-C-15 | reader-c | P2 | 读者/一致性 | ③ | 误报：`_MINIX_MAGIC` 在 `sys.mk:24-28` 是有条件定义，文档说法正确 | panel/reader-c.md READER-C-15 | 不适用（误报） |
 | READER-C-16 | reader-c | P2 | 读者/一致性 | ② | 转出：follow-ups.md D02-F10（reader C-16 的一致性/指针项） | panel/reader-c.md READER-C-16 | 不适用（转出） |
 
-
 ## P-REFUTE 附加（不属于 `## FINDING` 台账）
 
 | 主张 | 结果 | 处置 |
 |---|---|---|
 | CLAIM 01–03 | 反证失败，主张成立 | 无动作 |
-| CLAIM 04 | 反证成功：aarch64 去 `isb` 的失败推演不可复现 | 已修 §4.3 其二与 §4.3 `isb` 说明 |
-| CLAIM 05 | 主张成立；附 P2 ×2（`FallbackUnsupported` 未入表、aarch64 `KERN_SIZE` 无 L9） | `FallbackUnsupported` 已补；`KERN_SIZE` 对账转 D02-F11 |
-| CLAIM 06 | 主张成立；附 P1 ×1（测试计数 44→113）与 P2 ×3（摆放函数调用前提、重叠射程、`paddr` 措辞） | 已修；调用前提已写进 §4.2 |
+| CLAIM-04 | 反证成功：aarch64 去 `isb` 的失败推演不可复现 | 已修 §4.3 其二与 §4.3 `isb` 说明 |
+| CLAIM-05 | 主张成立；附 P2 ×2（`FallbackUnsupported` 未入表、aarch64 `KERN_SIZE` 无 L9） | `FallbackUnsupported` 已补；`KERN_SIZE` 对账转 D02-F11 |
+| CLAIM-06 | 主张成立；附 P1 ×1（测试计数 44→113）与 P2 ×3（摆放函数调用前提、重叠射程、`paddr` 措辞） | 已修；调用前提已写进 §4.2 |
+
+## R1 完整 survey（V3.3）
+
+> 4 角色 33 条原始发现（FACT 14、DESIGN-D2 15、READER-ABC 2、REFUTE 2 条 P2 附加；REFUTE 另有 4 条反证失败主张）。
+> P0 = 2（stale 符号/签名）、P1 = 8（测试计数、引文、锚点、帧指针、第二份公式）。设计 P2 以文档同步收口，残余代码改进登记设计批。
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD1-34 | RD1-CERT-FACT-01 | R1 | fact-cert | P2 | 本轮发现 | ① | 同根因： RD1-05；riscv64 节选残留的 `.kern_virt_base()` 已删，恢复为字段直读 | panel/round1/certify-fact.md:107 | `grep -n "kern_virt_base()" doc` → 0；冷读 CLOSED（certify 回读同根因） |
+| RD1-35 | RD1-CERT-FACT-02 | R1 | fact-cert | P2 | 本轮发现 | ① | 同根因： RD1-08；`BootStorageCell`/`BUMP_PTR` 已移出 `.bss` 例子（二者初值非零、落 `.data`），`.bss` 只留 `IMAGE_HEAP` 与内核启动全局 | panel/round1/certify-fact.md:118 | `grep -n "BootStorageCell.*\.bss" doc` → 0；冷读 CLOSED（certify 回读同根因） |
+| RD1-36 | RD1-CERT-FACT-03 | R1 | fact-cert | P2 | 本轮发现 | ① | 同根因： RD1-03；§5.4 M7 的“18 测试”改为“22 个中 13 个直接相关” | panel/round1/certify-fact.md:130 | `grep -n "loader 18" doc` → 0；`grep -n "22 个测试中 13 个" doc` → 1；冷读 CLOSED（certify 回读同根因） |
+| RD1-37 | RD1-CERT-FACT-04 | R1 | fact-cert | P2 | 本轮发现 | ① | 同根因： RD1-12；`.usermapped` 供料方补 `kernel/usermapped_data.c` 的 8 个对象，§7.2 补该文件 | panel/round1/certify-fact.md:141 | `grep -n "usermapped_data.c" doc` → 1；冷读 CLOSED（certify 回读同根因） |
+| RD1-38 | RD1-CERT-READER-01 | R1 | reader-cert | P2 | 本轮发现 | ① | 同根因： RD1-32；§2.2 的两种改名情形拆开写（前缀不匹配=链接期未定义符号；一起改名=产物符号值可检查） | panel/round1/certify-reader.md | `grep -n "链接期报未定义符号" doc` → 1；冷读 CLOSED（certify 回读同根因） |
+| RD1-39 | RD1-CERT-READER-02 | R1 | reader-cert | P2 | 本轮发现 | ① | 同根因： RD1-09；§2.3 补边界“未启用帧指针时 Rust 不保证调用链深度可回溯” | panel/round1/certify-reader.md | `grep -n "不保证调用链深度可回溯" doc` → 1；冷读 CLOSED（certify 回读同根因） |
+| RD1-40 | RD1-CERT-READER-03 | R1 | reader-cert | P2 | 本轮发现 | ① | 已修：§2.4 的指向 `§3.3、§4.1` 改为“决策见 §3.3，实现见 §4.2 与 §4.4” | panel/round1/certify-reader.md | `grep -n "实现见 §4.2 与 §4.4" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-41 | RD1-CERT-READER-04 | R1 | reader-cert | P1 | 本轮发现 | ① | 同根因： RD1-15；§3.4 前置条件表把“传入指针”与“kmain 消费的副本”拆成两个对象，失败模式按对象写 | panel/round1/certify-reader.md | `grep -n "跳转传入的指针与" doc` → 1；冷读 CLOSED（certify 回读同根因） |
+| RD1-42 | RD1-CERT-READER-05 | R1 | reader-cert | P2 | 本轮发现 | ① | 已修：三处节选头去掉“省略号处”措辞，改为“仅保留签名/asm 块，说明段/注释未摘录” | panel/round1/certify-reader.md | `grep -n "省略号处为" doc` → 0；`grep -n "未摘录" doc` → 3；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-43 | RD1-CERT-READER-06 | R1 | reader-cert | P2 | 本轮发现 | ① | 同根因： RD1-18；§3.4 表行改为“断言只覆盖 kinfo.kern_stack_top；形参由两个调用点保证” | panel/round1/certify-reader.md | `grep -n "断言只覆盖" doc` → 1；冷读 CLOSED（certify 回读同根因） |
+| RD1-44 | RD1-CERT-READER-07 | R1 | reader-cert | P1 | 本轮发现 | ① | 已修：§4.4 `place_modules` 的语法断裂句改为“源字节直接拷进 bump 页；不做整页清零，只把文件字节之后的尾部余量清零” | panel/round1/certify-reader.md | `grep -n "不清零整页之外的余量" doc` → 0；`grep -n "不做整页清零" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-45 | RD1-CERT-READER-08 | R1 | reader-cert | P2 | 本轮发现 | ① | 已修：两处“模块文档”改为“`bootface.rs` 的模块文档” | panel/round1/certify-reader.md | `grep -n "写在模块文档里" doc` → 0；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-46 | RD1-CERT-READER-09 | R1 | reader-cert | P1 | 本轮发现 | ① | 同根因： RD1-03；M7 的 18 已改为“22 个中 13 个直接相关”，与 §5.1 同口径 | panel/round1/certify-reader.md | `grep -n "loader 18" doc` → 0；冷读 CLOSED（certify 回读同根因） |
+| RD1-47 | RD1-CERT-READER-10 | R1 | reader-cert | P2 | 本轮发现 | ① | 同根因： RD1-17；“严格门”点名 strict 档，“保护测试载体”改为 `test-protection-riscv64` | panel/round1/certify-reader.md | `grep -n "test-protection-riscv64" doc` → 1；冷读 CLOSED（certify 回读同根因） |
+| RD1-48 | RD1-CERT-READER-11 | R1 | reader-cert | P2 | 本轮发现 | ① | 已修：§3.2 补 `NoLoadSegments` 的测试名 `test_compute_kernel_layout_rejects_image_without_load_segments` | panel/round1/certify-reader.md；os/boot-shim/src/loader.rs:605 | `grep -n "rejects_image_without_load_segments" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-49 | RD1-CERT-READER-12 | R1 | reader-cert | P2 | 本轮发现 | ① | 已修：§4.3 的 aarch64 `ldr` 说明改为“literal 读取位置随视图，读出的值始终是链接期绝对值”，与 §4.4 低地址进入一致 | panel/round1/certify-reader.md | `grep -n "literal 的读取位置随视图" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+
+|---|---|---|---|---|---|---|---|---|---|
+| RD1-01 | RD1-FACT-01 | R1 | fact | P0 | 本轮发现 | ① | 已修：两处 `load_boot_modules_with_loader` → `load_boot_modules_into`（§3.2、§5.1） | panel/round1/fact.md:27；os/boot-shim/src/loader.rs:422 | `grep -n "load_boot_modules_with_loader" doc` → 0；anchor `57/57`、zero-def=0 |
+| RD1-02 | RD1-FACT-02 | R1 | fact | P0 | 本轮发现 | ① | 已修：§4.4 `build_kernel_info` 节选改为现行 11 实参（补 sources/startup/authority，删旧 `PhysBytes(0), 0`），头注同步 | panel/round1/fact.md:40；os/kernel-image/src/bootface.rs:427-439；os/boot-shim/src/lib.rs:101-115 | `grep -n "PhysBytes(0)" doc` → 0；citation failed=0 |
+| RD1-03 | RD1-FACT-03 | R1 | fact | P1 | 本轮发现 | ① | 已修：loader 测试 18→22、boot-shim --lib 113→125、M7 同步；复算命令改 `grep -c '#\[test\]'` | panel/round1/fact.md:53；os/boot-shim/src/loader.rs；cargo test -- --list | `grep -n "18 个测试" doc` → 0；`grep -n "125 个测试" doc` → 1 |
+| RD1-04 | RD1-FACT-04 | R1 | fact | P1 | 本轮发现 | ① | 已修：两处“五个 first_overlapping_pair_*”→“六个”，补 `ignores_zero_length`，相关计数 12→13 | panel/round1/fact.md:66；os/boot-shim/src/loader.rs:874-970 | `grep -n "五个 `first_overlapping_pair" doc` → 0；`grep -n "六个 `first_overlapping_pair" doc` → 2 |
+| RD1-05 | RD1-FACT-05 | R1 | fact | P1 | 本轮发现 | ① | 已修：riscv64 节选 `kinfo.kern_virt_base()/kern_phys_base()` → 字段直读 `.0` | panel/round1/fact.md:79；os/kernel/src/arch/riscv64/higher_half.rs:107-110 | `grep -n "kern_virt_base()" doc` → 0；`grep -n "kern_virt_base.0" doc` → 1 |
+| RD1-06 | RD1-FACT-06 | R1 | fact | P1 | 本轮发现 | ① | 已修：`load_segments_into_phys_memory` 块头改“节选”，补 `...` 省源/目标重叠段；正文“三件事”→“四件事”并补 `first_source_destination_overlap` 的 panic 不对称 | panel/round1/fact.md:94；os/boot-shim/src/loader.rs:286-316 | `grep -n "代码引用（保留函数体）" doc` → 0；`grep -n "四件事按顺序" doc` → 1 |
+| RD1-07 | RD1-FACT-07 | R1 | fact | P1 | 本轮发现 | ① | 已修：`place_modules` 锚点改 `bootface_common.rs`，§7.3 清单补该文件 | panel/round1/fact.md:107；os/kernel-image/src/bootface_common.rs:177 | `grep -n "bootface.rs:fn place_modules" doc` → 0；doc-code-map 28/28 |
+| RD1-08 | RD1-FACT-08 | R1 | fact | P1 | 本轮发现 | ① | 已修：删不存在的 `MODULE_TABLE`/`PLATFORM_SOURCE` 例子，改 `IMAGE_HEAP` + 两个 `BootStorageCell`；写明 `BUMP_PTR` 在 `.data` | panel/round1/fact.md:120；os/kernel-image/src/bootface*.rs；main.rs:521 | `grep -n "MODULE_TABLE" doc` → 0；`grep -n "BUMP_PTR" doc` → 1 |
+| RD1-09 | RD1-FACT-09 | R1 | fact | P1 | 本轮发现 | ① | 已修：§2.3/§4.3/§4.3 其三三处帧指针叙述改为“C 的 EBP 由 callee-saved 恢复为 0；Rust 不保存 rbp，链从 0 起”；§5.4 M11 与 §4.4 同步 | panel/round1/fact.md:134；panel/round1/refute.md CLAIM05；os/target/.../kernel 反汇编 | `grep -n "pre_init` 的帧指针" doc` → 0；`grep -n "不保存 `%rbp`" doc` → 1 |
+| RD1-10 | RD1-FACT-10 | R1 | fact | P1 | 本轮发现 | ① | 已修：§3.3 把“没有第二份实现”限定为两族 boot-shim 之间，补 v1 `BootStorage::report()` 的第二处公式并注明锁步 | panel/round1/fact.md:147；os/libs/minix-boot/src/boot_storage.rs:356-380 | `grep -n "没有第二份实现" doc` → 0；`grep -n "BootStorage::report()` 里另有同一公式" doc` → 1 |
+| RD1-11 | RD1-FACT-11 | R1 | fact | P2 | 本轮发现 | ① | 已修：`_MINIX_MAGIC` 补定义条件（`MKMAGIC=yes`/`MKASR=yes`，默认 no） | panel/round1/fact.md:160；minix3/share/mk/sys.mk:25-29 | `grep -n "MKMAGIC=yes" doc` → 1 |
+| RD1-12 | RD1-FACT-12 | R1 | fact | P2 | 本轮发现 | ① | 已修：`.usermapped` 供料方拆开——`usermapped_glo_ipc.S` 供 `.usermapped_glo`，`usermapped_data_arch.c` 三个 `minix_ipcvecs_*` 供 `.usermapped` | panel/round1/fact.md:173；usermapped_glo_ipc.S:10；usermapped_data_arch.c | `grep -n "供料方是.*与" doc` → 0；`grep -n "供 .usermapped_glo" doc` → 1 |
+| RD1-13 | RD1-FACT-13 | R1 | fact | P2 | 本轮发现 | ① | 已修：aarch64 `isb` 注释按源码逐字改为 `defensive barrier; enable() already synchronized TTBR/SCTLR` | panel/round1/fact.md:186；os/kernel/src/arch/aarch64/higher_half.rs:47 | `grep -n "drain write buffer before br" doc` → 0；`grep -n "defensive barrier" doc` → 1 |
+| RD1-14 | RD1-FACT-14 | R1 | fact | P2 | 本轮发现 | ① | 已修：两处载体形态格改为“载体单地址（工具链默认布局）”，并注明 x86/aarch64 载体没有 `link.ld` | panel/round1/fact.md:199；os/qemu-tests/test-kernels/kernel/bootstrap | `grep -n "载体单地址脚本" doc` → 0 |
+| RD1-15 | RD1-DESIGN-D2-01 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§4.4 改为“形参按 ABI 传入，但生产 kmain 第一条语句遮蔽为 KERNEL_INFO 副本，形参此后无读者”，并补第二次根因；移除 shadow 的代码改动登记设计批 | panel/round1/design-d2.md:53；os/kernel/src/lib.rs:1671-1739 | `grep -n "指针本身仍按 ABI" doc` → 0；`grep -n "形参此后无读者" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-16 | RD1-DESIGN-D2-02 | R1 | design-d2 | P2 | 本轮发现 | ① | 同根因： RD1-10；同一根因（kern_stack_top 第二份实现）已在 RD1-10 处置，文档已限定公式来源 | panel/round1/design-d2.md:67 | dup-of RD1-10（不单独计根因）；冷读 CLOSED（certify 回读同根因） |
+| RD1-17 | RD1-DESIGN-D2-03 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§3.4 补 `syscall_entry` 的生产读者为零（LSTAR 用 `syscall_entry_va()`，仅 riscv64 保护测试载体读），线协议 v2 删除登记设计批 | panel/round1/design-d2.md:81；os/libs/minix-boot/src/kernel_info.rs:109-117 | `grep -n "syscall_entry.*reference-only\；冷读 CLOSED（certify-fact/reader 改动段回读） |生产路径没有读者" doc` → 1 |
+| RD1-18 | RD1-DESIGN-D2-04 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§3.4 前置条件表写“两个调用点都传 kinfo.kern_stack_top”，并注明参数是可表示冗余、并回 kinfo 属设计批 | panel/round1/design-d2.md:95；os/kernel/src/lib.rs:232/375 | `grep -n "两个生产调用点都传" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-19 | RD1-DESIGN-D2-05 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§3.2 在 `continue` 段落后标注“静默降级/已知设计缺口（D2-05），引导路径应 fail-closed” | panel/round1/design-d2.md:109；os/libs/minix-elf/src/lib.rs:330-390 | `grep -n "已知设计缺口（设计批 D2-05）" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-20 | RD1-DESIGN-D2-06 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§3.2 补 `InvalidSegment` 归一化丢现场、源/目标重叠走 panic，错误分层登记设计批 D2-06 | panel/round1/design-d2.md:123；os/boot-shim/src/loader.rs:175-341 | `grep -n "错误类型分层属于设计批 D2-06" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-21 | RD1-DESIGN-D2-07 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3，非阻断）：`jump_to_kmain` 一次性令牌；已登记 suggestions.md | panel/round1/design-d2.md:137 | 不适用（建议级） |
+| RD1-22 | RD1-DESIGN-D2-08 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3，非阻断）：HigherHalf trait 的 testability 声明与 Mock 测试不符；已登记 suggestions.md | panel/round1/design-d2.md:151 | 不适用（建议级） |
+| RD1-23 | RD1-DESIGN-D2-09 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3，非阻断）：`let _ = virtual_end` 与两处小残留；已登记 suggestions.md | panel/round1/design-d2.md:165 | 不适用（建议级） |
+| RD1-24 | RD1-DESIGN-D2-10 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3，非阻断）：三个 arch_boot 壳可合一；已登记 suggestions.md | panel/round1/design-d2.md:179 | 不适用（建议级） |
+| RD1-25 | RD1-DESIGN-D2-11 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3，非阻断）：三份 arch link.ld 的 lockstep 读者与文档“无生产读者”措辞；已登记 suggestions.md | panel/round1/design-d2.md:193 | 不适用（建议级） |
+| RD1-26 | RD1-DESIGN-D2-12 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3，非阻断）：模块身份位置+名字双表达；已登记 suggestions.md | panel/round1/design-d2.md:207 | 不适用（建议级） |
+| RD1-27 | RD1-DESIGN-D2-15 | R1 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3，非阻断）：ValidationLevel 由调用者选档；已登记 suggestions.md | panel/round1/design-d2.md:252 | 不适用（建议级） |
+| RD1-28 | RD1-DESIGN-D2-13 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§4.4 补 x86_64 两块临时取证打印（`arch_boot arg=`/`preA rdi=`），标注不属于正式路标；删除/门控登记设计批 | panel/round1/design-d2.md:221；os/kernel/src/lib.rs:246-276/1681-1715 | `grep -n "preA rdi=" doc` → 1；冷读 CLOSED（certify-fact/reader 改动段回读） |
+| RD1-29 | RD1-DESIGN-D2-14 | R1 | design-d2 | P2 | 本轮发现 | ① | 同根因： RD1-02/RD1-05/RD1-06；三处引用已分别在同一批修复（build_kernel_info 11 参、字段直读、重叠 panic 段） | panel/round1/design-d2.md:235 | dup-of RD1-02/RD1-05/RD1-06（不单独计根因）；冷读 CLOSED（certify 回读同根因） |
+| RD1-30 | RD1-READER-A-01 | R1 | reader-a | P2 | 本轮发现 | ① | 同根因： RD1-09；帧指针矛盾已在 RD1-09 修复，§2.3/§4.3 与 §5.4 M11 同口径 | panel/round1/reader-abc.md（A-01） | 冷读 CLOSED（certify-reader 改动段回读） |
+| RD1-31 | RD1-READER-C-01 | R1 | reader-c | P2 | 本轮发现 | ① | 同根因： RD1-09；§5.4 M11 已改为“形参按 ABI 传入但被遮蔽为 .bss 副本”，与 §4.4 一致 | panel/round1/reader-abc.md（C-01） | 冷读 CLOSED（certify-reader 改动段回读） |
+
+| RD1-50 | CLAIM-01 | R1 | refute | P2 | 本轮发现 | ① | 同根因：§2.2 反方向推演不成立，已删（见 RD1-32） | panel/round1/refute.md | 冷读 CLOSED（certify-fact 回读 §2.2 推演段） |
+| RD1-51 | CLAIM-02 | R1 | refute | P2 | 本轮发现 | FP | 反证失败（主张成立，不是缺陷）：链接脚本形态与 p_paddr 判据经 `AT(` 计数复核成立 | panel/round1/refute.md:44 | `grep -n "AT(" doc` → 命中（主张成立，无缺陷） |
+| RD1-52 | CLAIM-03 | R1 | refute | P2 | 本轮发现 | ① | 同根因：§3.3 与 §3.5 矛盾，已修（见 RD1-33） | panel/round1/refute.md | 冷读 CLOSED（certify-fact 回读 §3.3/§3.5 段） |
+| RD1-53 | CLAIM-04 | R1 | refute | P2 | 本轮发现 | FP | 反证失败（主张成立，不是缺陷）：HigherHalf 契约与三架构跳转经源码复核成立 | panel/round1/refute.md:102 | `grep -n "HigherHalf" doc` → 命中（主张成立，无缺陷） |
+| RD1-54 | CLAIM-05 | R1 | refute | P1 | 本轮发现 | ① | 同根因：帧指针事实错误，并入 RD1-09 | panel/round1/refute.md | 冷读 CLOSED（certify-fact 回读帧指针三段） |
+| RD1-55 | CLAIM-06 | R1 | refute | P1 | 本轮发现 | ① | 同根因：文档-代码同步，并入 RD1-01..RD1-08、RD1-10 | panel/round1/refute.md | 冷读 CLOSED（certify-fact 回读同步项） |
+## P-REFUTE 附加
+
+| claim ID | 结果 | 处置 |
+|---|---|---|
+| CLAIM-01 | 反证失败（主张成立；附 §2.2 反方向推演不成立） | 推演已删，见 RD1-32 |
+| CLAIM-02 | 反证失败（主张成立） | 无缺陷 |
+| CLAIM-03 | 反证失败（主张成立；附 §3.3/§3.5 矛盾） | 矛盾已修，见 RD1-33 |
+| CLAIM-04 | 反证失败（主张成立） | 无缺陷 |
+| CLAIM-05 | 阻断（P1，帧指针事实错误） | 并入 RD1-09 |
+| CLAIM-06 | 阻断（P1，文档-代码同步） | 并入 RD1-01..RD1-08、RD1-10、RD1-29 |
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|

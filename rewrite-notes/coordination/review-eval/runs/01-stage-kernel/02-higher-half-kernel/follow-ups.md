@@ -17,3 +17,17 @@
 | D02-F10c | READER-C 11 条 | C-04/06/07/08/09/11/12/13/14/16：悬空反例、两套机制表、四条路径、panic 前缀、外部符号、角色互换、2 MiB 档 | 闭环轮；优先 C-04/C-08/C-11 |
 | D02-F11 | DESIGN-12 | `check-layout.sh` L9 只对 riscv64 做等值对账；aarch64 `bootface_a64.rs` 的 `KERN_SIZE` 只有上界断言 | code/test batch：L9 按架构选文件，riscv64 读 `bootface.rs`、aarch64 读 `bootface_a64.rs` |
 | D02-F12 | 复验 | `cargo test -p minix-arch` 的测试模块编译失败（沿用 D01-F01） | test-audit / code-excellence 批次 |
+
+## R1 设计 P3（suggestions，不阻断）
+
+> 设计角色 P3 按 §4.0c 分流；不实施，下一 edition 边界按频次评估。
+
+| ID | 摘要 | 处置 |
+|---|---|---|
+| RD1-DESIGN-D2-07 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/boot/higher_half.rs:40-48`；文档 §3.4 `:562-568` | 不实施（建议级） |
+| RD1-DESIGN-D2-08 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/lib.rs:6065-6099`；`os/kernel/src/boot/higher_half.rs:21-30` | 不实施（建议级） |
+| RD1-DESIGN-D2-09 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/boot_policy.rs:107-120`；`os/arch/src/arch/boot.rs:461-464`、`734` | 不实施（建议级） |
+| RD1-DESIGN-D2-10 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/lib.rs:236-300`、`785-795` | 不实施（建议级） |
+| RD1-DESIGN-D2-11 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/arch/x86_64/link.ld`、`aarch64/link.ld`、`riscv64/link.ld`（三份均不在 27 文件内，仅按文档与测试引用判断）；`/home/xzhao/github/minix-rs/ | 不实施（建议级） |
+| RD1-DESIGN-D2-12 | - 位置：`/home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs:119-121`、`679-695`、`467-481`；`os/boot-shim/src/loader.rs:519-560` | 不实施（建议级） |
+| RD1-DESIGN-D2-15 | - 位置：`/home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs:187-266`；`os/kernel/src/lib.rs:217-233`；`os/kernel-image/src/bootface.rs:440`；测试载体 `os/q | 不实施（建议级） |

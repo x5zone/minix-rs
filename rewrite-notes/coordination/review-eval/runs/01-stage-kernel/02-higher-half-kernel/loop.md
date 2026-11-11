@@ -115,3 +115,87 @@
 4. **DESIGN-12 只修了文档**：aarch64 `KERN_SIZE` 的等值对账（L9 扩 aarch64）仍在 follow-up；文档的 M10 已改为“部分覆盖”，但代码侧的静默失效路径还在。
 5. **QEMU 未跑**：DESIGN-14 的固件平移入口、DESIGN-08 的链接期断言都只有静态证据；请把“未跑”与“跑过但失败”分开看。
 6. **测试计数**：113 是默认特性下的静态属性计数；`cargo test -- --list` 尚未跑，存在运行时过滤的差。
+
+## R1 完整 survey（V3.3）
+
+### R1 §0 基线
+
+- 轮型: full
+- edition: V3.3
+- schema: V3.3 from R1
+- 基线提交：`5ac8bfa8f`（D01 FREEZE 之后）
+- 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
+- 文档 sha256：`2bb4a585597ffbd27cf4495292e2e85f026e1782b08fe5268426f374357e5485`
+- 行数：1275
+- 工作树：除 3 个既有未跟踪文件外干净；本轮不触碰
+- 语料条目：D02（`CORPUS.md` 第二节）；盲区重点 B-01、B-02、B-03、B-04、B-08、B-12、B-13
+- 设计快照：`02-outline.v4.md`、`02-outline-review.v4.md`、`02-design.v3.md` 等齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`tools/doc-code-map.sh --check` 28/28 通过；清单见 `related-code.txt`（本轮刷新为 28 行）
+- 范围声明：本篇范围 = 文档主题（高半区链接布局、双地址、成对跳转、页表粒度）+ `related-code.txt` 的 28 个文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
+- 历史说明：本文件顶部的 `## §0`–`## §8` 是 V1 时代的旧 run（69 条、`NOT CONVERGED`），按 V3.3 §4.0a 保留为历史段、不追溯改账；其 42 条未批准 ② 不带入 R1。R1 是 V3.3 的完整 survey，重新发现、重新准入。
+- 轮次语义：修改轮（full）最多 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`，不宣告 `CONVERGED`；收敛声明权在后续确认轮。
+
+### R1 §1 面板
+
+- 第一波 3 角色（fact / design-d2 / reader-abc），第二波 1 角色（refute，高风险篇目强制），第三波 2 角色（certify-fact / certify-reader）。
+- P-FACT：文档全文 + C 源 + 27 个 Rust 文件 + 六门读数；输出 `panel/round1/fact.md`，14 条（P0 2 / P1 8 / P2 4）。
+- P-DESIGN-D2：第 3/4 章 + 27 个 Rust 文件 + trait-audit；输出 `design-d2.md`，15 条（P2 8 / P3 7），2 条 ARCH-PROPOSAL。
+- P-READER（A+B+C 合并）：文档 + `reader-profile.md`；输出 `reader-abc.md`，2 条 P2 + 17 SUGG；报告开头标 `VARIANCE`（合并导致三视角共享上下文）。
+- P-REFUTE：文档 + C/Rust 源 + `02-design.v3.md`；输出 `refute.md`，6 条主张：4 条反证失败、2 条阻断（CLAIM05 帧指针、CLAIM06 文档-代码同步），另有 2 条 P2。
+- certify：fact 报 3 条新 P2 + 1 条 REOPEN（`.usermapped` 供料方）；reader 报 3 P1 + 9 P2。均在本轮修完，certify #2 重读为 0。
+- 材料隔离：读者未读源码；设计未读作者解释；事实未读历史评审。缩编：reader A/B/C 合并为一个 agent（500–1500 行档位），独立性损失已记。
+
+### R1 §2 发现
+
+- survey 33 条：FACT 14、DESIGN-D2 15、READER-ABC 2、REFUTE P2 2；REFUTE 另有 4 条反证失败主张。
+- P0 = 2（`load_boot_modules_with_loader` 不存在、`build_kernel_info` 旧 10 参签名）；P1 = 8（测试计数、五个/六个 overlap、getter、缺源/目标重叠、place_modules 迁址、MODULE_TABLE 死引用、帧指针、stack_top 第二份公式）。
+- certify #1 新准入 16 条（FACT 4、READER 12；含 3 P1）；certify #2 重读 0。
+- 逐条位置与修复见 `defect-ledger.md` R1 段与 `panel/round1/*.md`。
+
+### R1 §3 归因
+
+- 处置：① 44 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 2 / SUGG 7 = 53；唯一根因 53（两条 REFUTE P2 并入 CLAIM 行，避免与门的分档聚合冲突）。
+- 冻结决策：0 条 `re-litigation`；D2-04/D2-11 与 D-040/D-042 不冲突。
+- 范围门：0 条 adjacent 被当阻塞；设计代码改进登记入设计批（D2-01..06/13），P3 进 follow-ups 的 suggestions 表。
+- ARCH：A1（载荷所有权类型化）、A2（链接符号导出跨距）记入 `DECISIONS.md` D-050/D-051，待用户裁决，不实施、不阻断。
+
+### R1 §4 修复
+
+- 文档事实层：两处符号/签名 P0；测试计数 22/125；六个 overlap；字段直读；源/目标重叠 panic 与四步；place_modules 迁址；`.bss` 例子改 `IMAGE_HEAP`；帧指针三处与 M11；stack_top 第二份公式；`_MINIX_MAGIC` 条件；`.usermapped` 供料方；aarch64 isb 注释；载体 link.ld。
+- 文档读者层：§2.2 改名两种情形、§2.3 帧指针边界、§2.4 指向、§3.4 指针对象与 stack_top 断言范围、三处节选头、§4.4 place_modules 语法与模块文档指针、M7 口径、NoLoadSegments 测试名、aarch64 ldr 视图。
+- certify 修复：riscv64 残留 getter、BootStorageCell `.data`、M7 18、usermapped_data.c、12 条读者项。
+- 代码：无行为改动；设计代码改进全部登记设计批（D2-01..06/13）。
+
+### R1 §5 复验
+
+- 文档六门：citation `32 块/1 检查/0 失败/31 跳过`；anchor `56/56 zero-def=0`；structure/ref 通过；style-lint 文件级 error=0；density 承载门通过；doc-code-map `28/28`。
+- 旧串归零：`load_boot_modules_with_loader`、`PhysBytes(0)`、`kern_virt_base()`、`pre_init` 的帧指针、`没有第二份实现`、`MODULE_TABLE`、`载体单地址脚本`、`五个 first_overlapping_pair`、`18 个测试`、`映射越界覆盖别人内存`、`反方向的错法是` 均为 0。
+- 测试读数：`cargo test -p boot-shim --lib -- --list` → 125；loader `#[test]` 22；minix-elf `#[test]` 23；无代码行为改动，QEMU 未跑。
+- certify #1 → 16 条已修；certify #2 → 0（见 `certify-*.md` 的 certify #2 小节）。
+
+### R1 §6 指标
+
+- 见 `metrics.md` R1 块：发现 53、唯一根因 53、本轮新准入 53、certify 新准入 0、未闭环 0、① 44 / FP 2 / SUGG 7、ARCH 提案 2。
+
+### R1 §7 状态
+
+**ROUND-CLOSED**（修改轮出口；按 §6A 自动进入 CONVERGENCE-CANDIDATE，等待确认轮）。
+- open = 0；certify 新准入 = 0；G1–G9 的 open 部分满足；设计代码改进与 ARCH 提案按 §4.0f/§4.1b 登记，不阻断。
+- 不宣告 CONVERGED：修改轮没有收敛声明权；下一篇确认轮在最终工作树上重跑六角色后再判。
+
+### R1 §8 给 meta-review 的不确定点
+
+1. 本轮把 8 条设计 P2 的代码改进登记设计批，只修文档同步；是否会削弱“全修”原则，请 meta 判断。
+2. 两个 ARCH 提案（A1/A2）待用户裁决；A2 与 D01 的 `F-R34-01` 同源。
+3. certify #1 抓到 3 条自引入 P2（BootStorageCell `.bss`、M7 18、usermapped 供料方），说明修复句的机械复核仍会漏；certify #2 已闭合。
+4. QEMU 未跑；本轮无 arch/boot 行为改动。
+
+### L6
+
+- 同 agent 收口：49 条全部处置；P0 2、P1 11（含 certify 3 P1）全部修完；ROUND-CLOSED。
+- BLIND-SPOT-DELTA：新增“设计 P2 代码改进被文档同步掩盖”的观察；无新的结构性盲区。
+
+### L6.5
+
+- 三问：① 本轮不变量是“文档与当前源码逐符号一致、读者口径跨节一致”；② 前提是旧 V1 run 只作历史、R1 全量 re-survey；③ 证据是 49 行台账、六门读数与 certify #2 的 0 新准入。
+- 资源重读：本轮盲区属“文档-代码同步的符号级漂移”，检测模式已由 `anchor-resolve`/`doc-code-map`/certify 点名复核覆盖；无需新增规则。
