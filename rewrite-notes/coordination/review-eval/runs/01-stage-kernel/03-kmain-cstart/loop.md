@@ -188,3 +188,56 @@
 - 行数：1384
 - 设计快照与关联代码同 R1；`doc-code-map` 21/21
 - 轮次语义：确认轮；修复权限仅限新准入 P0/P1/P2 事实/同步项；不实施 ⑥；`certify 新准入 = 0` 才可 CONVERGED。
+
+### R2 §1 面板
+
+- 3 角色：fact（C+Rust）、design-d2、reader-abc（A/B/C 合并，VARIANCE 已记）；无 refute（无 survey P0，确认轮按裁剪）。
+- fact 6 条（P0 3 / P2 3）；design-d2 10 条（P1 1 / P2 4 / P3 5）；reader-abc 27 条（P1 12 / P2 15）。
+- 材料隔离：读者未读源码；设计未读作者解释；事实未读历史评审。
+
+### R2 §2 发现
+
+- 48 条（survey 43 + certify 5）：P0 = 5（`bootstrap_start/len` 已删、`GsArea.user_rsp` 被入口写、Rust 无 IOAPIC 64 门表）；P1 = 13；P2 = 22；P3 = 5。
+- 关键：R1 修复后仍有“已删字段/反方向时序/把 C 的 64 门表当成 Rust 扩展”三类残项；读者侧 27 条集中在对象图归属、向量记法、范围声明与术语。
+
+### R2 §3 归因
+
+- 处置：① 41 / ② 2 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 5 = 48；唯一根因 48。
+- ② 两条：design F03（过期注释）与 F04（非 0 BSP 的 TSS 槽 0），登记 `D03-design-batch`（D-053）。
+- 冻结决策：0 条 re-litigation；设计 P3 5 条进 suggestions。
+
+### R2 §4 修复
+
+- 文档：bootstrap 字段删除、`GsArea.user_rsp` 读写、Rust 41 门/IOAPIC 16 IRQ、Phase F 三步、sscratch 时序、3/6 计数、TSS `cs` 行、次序承重小结、五处寄存器读数、`丢弃后重建` 去重、slice 字段名、引导方/装载方定义。
+- 代码：无行为改动；F03/F04 登记设计批。
+
+### R2 §5 复验
+
+- 文档六门：citation 42 块全跳过（`/* */` 盲区）；anchor 75/75；structure/ref 通过；style-lint error=0；doc-code-map 21/21。
+- 旧串归零：`bootstrap_start/len 仍为`、`三个字段……只读`、`Rust 侧相应增加`、`装载后第一个异常`、`各 3 与 7`、`本篇出口状态` 均为 0。
+- certify：见 `panel/round2/certify-*.md`；最终回读 0。
+
+### R2 §6 指标
+
+- 见 `metrics.md` R2 块：发现 48、唯一根因 48、① 41 / ② 2 / SUGG 5、未闭环 0、CONVERGED、代裁决 1。
+
+### R2 §7 状态
+
+**CONVERGED**（确认轮出口）。G1–G9：in-scope P0/P1/P2 = 0；读者清单待修 = 0；⑤ = 0；② 两条有 D-053 批准与日期；机械门全绿；台账 43 行全部有处置与可重放复验；`certify 新准入 = 0`。设计代码项进 `D03-design-batch`，不阻断。
+
+### R2 §8 给 meta-review 的不确定点
+
+1. citation 门 42 块 `/* */` 全跳过（工具只认 `//`），引文核对靠 fact 人工；已登记 D03-citation-tool-batch。
+2. 27 条读者项里多数是结构/术语，R2 只做线级修复，未做整节重写；是否足够请 meta 判断。
+3. F03/F04 是代码项，延期到设计批；R2 的 CONVERGED 只覆盖文档事实层。
+4. QEMU 未跑；无 arch/boot 行为改动。
+
+### L6
+
+- 同 agent 收口：43 条全部处置；P0 3 条全修；CONVERGED 由确认轮出口给出。
+- BLIND-SPOT-DELTA：确认轮在 R1 已修段仍抓到“已删字段/反方向时序/跨实现错配”三类残项，说明 R1 的 certify 覆盖不足；已记录。
+
+### L6.5
+
+- 三问：① 本轮不变量是“已删字段不得回流、C 的 APIC 表不等于 Rust 的 41 门、入口对 GsArea 是读写”；② 前提是 R1 ROUND-CLOSED；③ 证据是 43 行台账、六门读数与 certify 0。
+- 资源重读：本轮盲区属“文档同步后的二次残项”，检测模式是确认轮的跨节复述核对；无需新增规则。

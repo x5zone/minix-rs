@@ -114,7 +114,7 @@
 | RD3-08 | RD3-FACT-08 | R1 | fact | P0 | 本轮发现 | ① | 已修：§2.6 改为 `pg_utils.c` 两份对象/两份 pagedir，`prot_init` 在普通副本建第二张表并切 CR3；删除原地重填/TLB 旧条目的机制与“冷启动照常跑”反事实 | panel/round1/fact.md；refute CLAIM02 | `grep -n "同一个静态页目录数组" doc` → 0；`grep -n "不是同一数组的原地重填" doc` → 1；冷读 CLOSED |
 | RD3-09 | RD3-DESIGN-D2-01 | R1 | design-d2 | P0 | 本轮发现 | ① | 同根因：KERNEL_MAY_ALLOC 已删；并入 RD3-03 | panel/round1/design-d2.md:01 | 冷读 CLOSED（certify 回读）；同 RD3-03 |
 | RD3-10 | RD3-DESIGN-D2-02 | R1 | design-d2 | P0 | 本轮发现 | ① | 同根因：Step 1 旧注释；并入 RD3-04 | panel/round1/design-d2.md:02 | 冷读 CLOSED（certify 回读）；同 RD3-04 |
-| RD3-11 | RD3-DESIGN-D2-03 | R1 | design-d2 | P1 | 本轮发现 | ① | 已修：§3.7/§4.4 的 init/installer 分工改为“set_handler 整条重写门，元数据被覆盖；DPL 双源以 set_handler 为准” | panel/round1/design-d2.md:03；x86_64/trap_stub.rs | `grep -n "TrapEntryArch::init()\` 写元数据" doc` → 0；`grep -n "整条重写门" doc` → 1；冷读 CLOSED |
+| RD3-11 | RD3-DESIGN-D2-03 | R1 | design-d2 | P1 | 本轮发现 | ① | 已修：§3.7/§4.4 的 init/installer 分工改为“set_handler 整条重写门，元数据被覆盖；DPL 双源以 set_handler 为准” | panel/round1/design-d2.md:03；x86_64/trap_stub.rs | `grep -n "TrapEntryArch::init()` 写元数据" doc` → 0；`grep -n "整条重写门" doc` → 1；冷读 CLOSED |
 | RD3-12 | RD3-DESIGN-D2-04 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§3.3 加“只适用 x86-64”限定；§4.7 `prot_init_done` 行标明 non-x86 无状态实现 | panel/round1/design-d2.md:04 | `grep -n "以下讨论只适用 x86-64" doc` → 1；`grep -n "non-x86 不进入全局" doc` → 1；冷读 CLOSED |
 | RD3-13 | RD3-DESIGN-D2-05 | R1 | design-d2 | P2 | 本轮发现 | ① | 已修文档：§3.2 跨架构共性表改为“接口保留形状；当前无运行期消费者，Privilege 仅测试/预留” | panel/round1/design-d2.md:05 | `grep -n "仅测试/接口预留" doc` → 1；冷读 CLOSED |
 | RD3-14 | RD3-DESIGN-D2-10 | R1 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 `D03-design-batch`（下一 design batch）；修于下一 design batch；用户批准 2026-11-12（代理裁决 D-053）；理由 四处代码注释残留，属代码批 | panel/round1/design-d2.md:10 | OPEN-DEBT `D03-design-batch`；D-053；冷读 CLOSED（登记核对） |
@@ -139,7 +139,7 @@
 | RD3-40 | CLAIM-04 | R1 | refute | P1 | 本轮发现 | ① | 同根因：IOPL 可授予，并入 RD3-21 | panel/round1/refute.md | 冷读 CLOSED（certify 回读）；同 RD3-21 |
 | RD3-41 | CLAIM-05 | R1 | refute | P2 | 本轮发现 | FP | 反证失败（主张成立，不是缺陷）：IF=0 到 timer 打开、prot_init_done 读者唯一 | panel/round1/refute.md | `grep -n "prot_init_done" doc` → 命中 |
 | RD3-42 | CLAIM-06 | R1 | refute | P2 | 本轮发现 | FP | 反证失败（主张成立，不是缺陷）：STUB_VECTORS 41 与门集合一致、39=16+23 算术成立 | panel/round1/refute.md | `grep -n "STUB_VECTORS" doc` → 命中 |
-| RD3-43 | RD3-CERT-FACT-01 | R1 | fact-cert | P0 | 本轮发现 | ① | 已修：§2.1 的 `local_cbi` 改为指向 `pre_init` 的 `.unpaged_bss` 暂存副本，memcpy 搬进最终全局；代码块注释改“副本身份关系” | panel/round1/certify-fact.md；certify-reader.md | `grep -n "local_cbi\` 指向的也是这份最终全局" doc` → 0；冷读 CLOSED（二次回读） |
+| RD3-43 | RD3-CERT-FACT-01 | R1 | fact-cert | P0 | 本轮发现 | ① | 已修：§2.1 的 `local_cbi` 改为指向 `pre_init` 的 `.unpaged_bss` 暂存副本，memcpy 搬进最终全局；代码块注释改“副本身份关系” | panel/round1/certify-fact.md；certify-reader.md | `grep -n "local_cbi` 指向的也是这份最终全局" doc` → 0；冷读 CLOSED（二次回读） |
 | RD3-44 | RD3-CERT-FACT-02 | R1 | fact-cert | P0 | 本轮发现 | ① | 已修：§2.1 删 memcpy 的失败点改为 `pg_identity` 的 `assert(cbi->mem_high_phys)`（pg_utils.c:170） | panel/round1/certify-fact.md | `grep -n "boot module 计数检查处失败" doc` → 0；冷读 CLOSED |
 | RD3-45 | RD3-CERT-FACT-03 | R1 | fact-cert | P0 | 本轮发现 | ① | 已修：§5.4 M9 改为“普通副本建第二张表并切 CR3” | panel/round1/certify-fact.md；certify-reader.md | `grep -n "原地重填" doc` → 0；冷读 CLOSED |
 | RD3-46 | RD3-CERT-FACT-04 | R1 | fact-cert | P1 | 本轮发现 | ① | 已修：§3.7 的 3/5 差改为 `CONFIG_SMP` 的 0xF1/0xF2 | panel/round1/certify-fact.md | `grep -n "取决于是否计入两条错误向量" doc` → 0；冷读 CLOSED |
@@ -158,6 +158,8 @@
 |---|---|---|---|---|---|---|---|---|---|
 | RD3-56 | RD3-CERTF2-01 | R1 | fact-cert | P2 | 本轮发现 | ① | 已修：§1.2 系统调用行补 `int $32/$33` 软中断门（libc 主路径），Rust 行补 32–35 软中断门 | panel/round1/certify-final2.md | `grep -n "int $32/$33" doc` → 1；冷读 CLOSED |
 | RD3-57 | RD3-CERTF2-02 | R1 | fact-cert | P2 | 本轮发现 | ① | 已修：§1.2 的 ①②③ 加“§1.1 的”限定，与四行表序解耦 | panel/round1/certify-final2.md | `grep -n "§1.1 的 ②" doc` → 1；冷读 CLOSED |
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
 ## P-REFUTE 附加
 
 | claim ID | 结果 | 处置 |
@@ -172,3 +174,59 @@
 |---|---|---|---|---|---|---|---|---|---|
 | 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|---|---|
+
+## R2 确认轮（V3.3 四态模型）
+
+> 3 角色 43 条 FINDING（FACT 6、DESIGN-D2 10、READER-ABC 27）。
+> P0 = 3（bootstrap 字段已删、GsArea.user_rsp、Rust 无 IOAPIC 64 门）；P1 = 13；P2 = 22；P3 = 5。
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD3-R2-01 | RD3B-FACT-01 | R2 | fact | P0 | 本轮发现 | ① | 已修：§4.1 `bootstrap_start/len` 改为已随 D01-F03 删除 | panel/round2/fact.md | 冷读 CLOSED（二次回读 RD3-R2-01） |
+| RD3-R2-02 | RD3B-FACT-02 | R2 | fact | P0 | 本轮发现 | ① | 已修：§3.4 `GsArea.user_rsp` 改为由 SYSCALL 入口写入 | panel/round2/fact.md | 冷读 CLOSED（二次回读 RD3-R2-02） |
+| RD3-R2-03 | RD3B-FACT-03 | R2 | fact | P0 | 本轮发现 | ① | 已修：§3.7/§4.7 改为 Rust IDT 41 门、IOAPIC 只路由 16 条 ISA IRQ | panel/round2/fact.md | 冷读 CLOSED（二次回读 RD3-R2-03） |
+| RD3-R2-04 | RD3B-FACT-04 | R2 | fact | P2 | 本轮发现 | ① | 已修：§3.6 Phase F 改为 boot_init_timer 的 program→register→gate 三步 | panel/round2/fact.md | 冷读 CLOSED（二次回读 RD3-R2-04） |
+| RD3-R2-05 | RD3B-FACT-05 | R2 | fact | P2 | 本轮发现 | ① | 已修：§4.6 sscratch 时序改为返回前重写、返回后存用户 sp | panel/round2/fact.md | 冷读 CLOSED（二次回读 RD3-R2-05） |
+| RD3-R2-06 | RD3B-FACT-06 | R2 | fact | P2 | 本轮发现 | ① | 已修：§5.1 的 3/7 改为 3/6（grep 含一条注释命中） | panel/round2/fact.md | 冷读 CLOSED（二次回读 RD3-R2-06） |
+| RD3-R2-07 | RD3B-DESIGN-D2-01 | R2 | design-d2 | P1 | 本轮发现 | ① | 已修：同 FACT-01，§4.1 bootstrap 字段已删 | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-07） |
+| RD3-R2-08 | RD3B-DESIGN-D2-02 | R2 | design-d2 | P2 | 本轮发现 | ① | 已修：同 FACT-03，IOAPIC 64 门表不存在 | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-08） |
+| RD3-R2-09 | RD3B-DESIGN-D2-03 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 `D03-design-batch`；修于下一 design batch；用户批准 2026-11-12（代理裁决 D-053）；理由 `bsp_finish_booting` 过期注释属代码批 | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-09） |
+| RD3-R2-10 | RD3B-DESIGN-D2-04 | R2 | design-d2 | P2 | 本轮发现 | ② | ② 相邻：目标 `D03-design-batch`；修于下一 design batch；用户批准 2026-11-12（代理裁决 D-053）；理由 非 0 BSP 的 TSS 槽 0 写错属代码批 | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-10） |
+| RD3-R2-11 | RD3B-DESIGN-D2-05 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：死抽象清理；已登记 suggestions.md | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-11） |
+| RD3-R2-12 | RD3B-DESIGN-D2-06 | R2 | design-d2 | P2 | 本轮发现 | ① | 已修：§5.1/M1 改为 init 门表测试，post-install 覆盖无断言 | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-12） |
+| RD3-R2-13 | RD3B-DESIGN-D2-07 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：cpu_count 写而不读；已登记 suggestions.md | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-13） |
+| RD3-R2-14 | RD3B-DESIGN-D2-08 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：cut_memmap/add_memmap 命名残留；已登记 suggestions.md | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-14） |
+| RD3-R2-15 | RD3B-DESIGN-D2-09 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：§4.1 kmain 节选行重排（D-045）；已登记 suggestions.md | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-15） |
+| RD3-R2-16 | RD3B-DESIGN-D2-10 | R2 | design-d2 | P3 | 本轮发现 | SUGG | SUGG（设计 P3）：§4.6 TSP=0 与 aarch64 载体文件头冲突；已登记 suggestions.md | panel/round2/design-d2.md | 冷读 CLOSED（二次回读 RD3-R2-16） |
+| RD3-R2-17 | RD3B-READER-A-01 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：§2.1 对象副本段与四行证据块不给归属，读者要自行反推 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-17） |
+| RD3-R2-18 | RD3B-READER-A-02 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：`int $32/$33`、`32–35`、`int 0x21` 三种记法混用 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-18） |
+| RD3-R2-19 | RD3B-READER-A-03 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：「software only」与「编程 LAPIC/IOAPIC」互相拆台 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-19） |
+| RD3-R2-20 | RD3B-READER-A-04 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：TSS 字段表 `cs` 行先说「转场期望值」再说「没有读者」 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-20） |
+| RD3-R2-21 | RD3B-READER-A-05 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：目标 ② 要求 `kmain` 的不可交换次序，正文只给五步清单 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-21） |
+| RD3-R2-22 | RD3B-READER-A-06 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：步骤 5 第一次 `memcpy` 没有读者，读者无法判断是否死代码 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-22） |
+| RD3-R2-23 | RD3B-READER-A-07 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：「第 4 步」在节选里没有编号，易对到 `ltr` 上 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-23） |
+| RD3-R2-24 | RD3B-READER-A-08 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：「五处表寄存器」把 CS/DS 与 GDTR/IDTR 混为一类 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-24） |
+| RD3-R2-25 | RD3B-READER-B-01 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：「本轮未跑」「D01-F08」「没有出入可披露」等评审残留 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-25） |
+| RD3-R2-26 | RD3B-READER-B-02 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：「没有丢弃后重建」在三节重复，且引号风格不一致 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-26） |
+| RD3-R2-27 | RD3B-READER-B-03 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：§1.4 逐字重述 §1.2 的「保护结构」定义 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-27） |
+| RD3-R2-28 | RD3B-READER-B-04 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：`Step 1`/`Step 8` 编号从未定义 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-28） |
+| RD3-R2-29 | RD3B-READER-B-05 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：§5.1 九数相加 56，正文写 55，减法过程未写清 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-29） |
+| RD3-R2-30 | RD3B-READER-B-06 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：`finish` 写成「到函数返回前」，实际停在调用者 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-30） |
+| RD3-R2-31 | RD3B-READER-B-07 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：同一组七个 slice 在相邻两段用了两套名字 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-31） |
+| RD3-R2-32 | RD3B-READER-B-08 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：引导方/引导器/装载方三名并存，引号风格分叉 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-32） |
+| RD3-R2-33 | RD3B-READER-B-09 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：§1.4 排除 `sscratch` 交换与返回路径，§4.6 又讲了一遍 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-33） |
+| RD3-R2-34 | RD3B-READER-C-01 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：`sscratch` 的「返回之后不能用」时序反了 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-34） |
+| RD3-R2-35 | RD3B-READER-C-02 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：前移 `init_clock_and_interrupts` 的反事实里「新旧表不匹配」前提不成立 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-35） |
+| RD3-R2-36 | RD3B-READER-C-03 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：`intr_init` 的「防御性次序」是无证据的动机归因 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-36） |
+| RD3-R2-37 | RD3B-READER-C-04 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：「两条理由」里第二条是约束，不是理由 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-37） |
+| RD3-R2-38 | RD3B-READER-C-05 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：`kernel_may_alloc` 的读者在 §2.1 与 §4.1 相互矛盾 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-38） |
+| RD3-R2-39 | RD3B-READER-C-06 | R2 | reader-abc | P1 | 本轮发现 | ① | 已修：`EXTERN`→`table.c` 的结论没有出现在 grep 证据里 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-39） |
+| RD3-R2-40 | RD3B-READER-C-07 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：PWT/PCD 被写成「防止访问出事」，实际只影响缓存 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-40） |
+| RD3-R2-41 | RD3B-READER-C-08 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：先 `lidt` 后 `lgdt` 的失败窗口没有界定 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-41） |
+| RD3-R2-42 | RD3B-READER-C-09 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：收束段只写 x86-64 的出口状态，未限定范围 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-42） |
+| RD3-R2-43 | RD3B-READER-C-10 | R2 | reader-abc | P2 | 本轮发现 | ① | 已修：§1.2「256 个门」与 §2.5「39 条门」冲突 | panel/round2/reader-abc.md | 冷读 CLOSED（二次回读 RD3-R2-43） |
+| RD3-R2-44 | RD3-R2-CERT-01 | R2 | fact-cert | P0 | 本轮发现 | ① | 已修：§2.1 次序承重改为“步骤 3 依赖步骤 2；步骤 5 只需早于启动循环，proc_init 不读 boot_procs” | panel/round2/certify.md | `grep -n "步骤 3 依赖步骤 2" doc` → 1；冷读 CLOSED（RD3-R2-44） |
+| RD3-R2-45 | RD3-R2-CERT-02 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§4.6 sscratch 改为“用户陷阱进入内核后保存用户 sp；返回前重写” | panel/round2/certify.md | `grep -n "用户陷阱进入内核后它保存的是用户 sp" doc` → 1；冷读 CLOSED（RD3-R2-45） |
+| RD3-R2-46 | RD3-R2-CERT-03 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§4.1 七个 slice 恢复中文名并注明具体字段见 §4.2 | panel/round2/certify.md | `grep -n "具体字段名见 §4.2" doc` → 1；冷读 CLOSED（RD3-R2-46） |
+| RD3-R2-47 | RD3-R2-CERT-04 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§5.1 的 13 条 trap 测试拆为 9 init + 2 set_handler + 2 布局 | panel/round2/certify.md | `grep -n "9 条 `init` 门表元数据" doc` → 1；冷读 CLOSED（RD3-R2-47） |
+| RD3-R2-48 | RD3-R2-CERT2-01 | R2 | fact-cert | P0 | 本轮发现 | ① | 已修：§4.1 七个 slice 直接写代码字段名（不再指向 §4.2）；L184 改为启动循环读 image[]、proc_init 不读 | panel/round2/certify2.md | `grep -n "reserved_regions`、`memmap`、`boot_modules" doc` → 1；冷读 CLOSED（RD3-R2-48） |

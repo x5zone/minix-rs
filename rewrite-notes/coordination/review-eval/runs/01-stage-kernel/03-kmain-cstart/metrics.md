@@ -47,3 +47,25 @@
 - 重构: 提出 3 / 接受 3 / 实施 0 / 登记 3
 - 成本: agent 4 / token 未采集 / 耗时 约 3 小时
 - 回读与回归: 文档六门通过（citation 42 块全跳过，见 §8）；anchor 75/75；doc-code-map 21/21；无代码行为改动
+
+## R2 确认轮
+
+- 发现总数: 48（FACT 6、DESIGN-D2 10、READER-ABC 27、CERT 5）
+- 唯一根因数: 48
+- 本轮新准入: 48
+- certify 新准入: 0（certify 的 5 条已修；最终同 agent grep 复核）
+- 重复合并: 0
+- 自引入: 0
+- 处置: ① 41 / ② 2 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 5
+- 未闭环: 0
+- 轮结果: CONVERGED
+- 代裁决: 1（D-053 延期）
+- ARCH 提案: 0
+- 用户否决: 0
+- 轮型: confirmation
+- edition: V3.3
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 2 / 接受 2 / 实施 0 / 登记 2
+- 成本: agent 3 / token 未采集 / 耗时 约 3 小时
+- 回读与回归: 文档六门通过；certify 待跑；无代码行为改动
