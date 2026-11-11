@@ -48,7 +48,7 @@ CPU 在异常/特权级切换时需要预先知道的三件事，以及它们的
 
 C 的 earm-32 与 Rust 的 aarch64 是同一问题的两代载体：§2.7 讲 earm 的 `write_vbar`，§4.6 讲 aarch64 的 `VBAR_EL1`/`TPIDR_EL1`；两者回答同一问题，不要求寄存器名相同。
 
-三张表的一个差别是：§1.1 的 ② 是逐条目不同的（x86 上 256 个门，每类事件一条），§1.1 的 ① 和 ③ 各只有一套（DPL 存在少数几个描述符里、`sp0` 每 CPU 一个字段）。后文 §2.4、§2.5 的装填方式不同正是这个差别带来的——IDT 要按向量逐条建，GDT 与 TSS 只需建少数几条描述符与一个结构体。
+三张表的一个差别是：§1.1 的 ② 是逐条目不同的（x86 上 256 个表项，当前填 39 条门，每类事件一条），§1.1 的 ① 和 ③ 各只有一套（DPL 存在少数几个描述符里、`sp0` 每 CPU 一个字段）。后文 §2.4、§2.5 的装填方式不同正是这个差别带来的——IDT 要按向量逐条建，GDT 与 TSS 只需建少数几条描述符与一个结构体。
 
 §1.1 的 ③ 还带一个"内核态里又出事用哪根栈"的子问题，三架构的答法同样不同：x86 交给 IST（NMI 与 #DF 各有一条专用栈，64 位新增见 §3.1、门里的 IST 见 §4.4）；aarch64 不换栈，继续用 `SP_EL1`；riscv64 也不换栈，用当前 `sp`。陷阱入口如何判断"这次进来的是用户还是内核"（riscv64 用两条入口路径按 `stvec` 切换，进自用户态的那条无条件交换 `sscratch`）属异常/中断与 trap 入口的主题（`14-exception-interrupt.md`，异常与中断篇）。
 
@@ -87,7 +87,7 @@ x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留�
 
 可以安全跳过的一条：描述符的位级格式（`segdesc_s` 的 `base_low`/`base_middle`/`base_high` 与 granularity 字节）不必背下来。本篇只解释三处用到它的代码（S 位的含义、DPL 占哪两位、限长的"0 表示 4G"约定），其余位在代码里各有宏名，读到再看。
 
-本篇沿用 §1.2 的定义：保护结构 = 三张表与四类入口，不含页表；页表由 01/02 篇建好并在运行，§3.5 只解释为什么 Rust 不再重建它。
+保护结构不含页表；页表由 01/02 篇建好并在运行，§3.5 只解释为什么 Rust 不再重建它。
 
 ---
 
@@ -272,7 +272,7 @@ void cstart(void)
 |---|---|---|
 | `prot_init()` | 无（函数自己完成全部前提） | 它是后面所有步骤的前提，无法提前 |
 | `init_clock()` | 无硬依赖；它只初始化 `kclockinfo`/`kloadinfo` 并读 `hz` 环境变量（[`init_clock`](minix3/minix/kernel/clock.c:init_clock)） | 与 `prot_init` 可交换；它的硬件编程不在这里（见下） |
-| `intr_init(0)` | 不依赖 IDT；它只编程 8259 并屏蔽源。保留在 `prot_init` 之后是防御性次序：先把异常入口装好，再动控制器 | 提前到 `prot_init` 之前不会新造中断窗口——可屏蔽中断被 IF=0 挡住；真正的风险是任何 `prot_init` 之前的异常/NMI 都无门可走，与 `intr_init` 无关 |
+| `intr_init(0)` | 不依赖 IDT；它只编程 8259 并屏蔽源。保留在 `prot_init` 之后是因为调用序列如此；先把异常入口装好，再动控制器 | 提前到 `prot_init` 之前不会新造中断窗口——可屏蔽中断被 IF=0 挡住；真正的风险是任何 `prot_init` 之前的异常/NMI 都无门可走，与 `intr_init` 无关 |
 | `arch_init()` | 需要保护结构、控制器都已就绪 | 提前：它里面还会再动一次 TSS 与栈（见 §2.4 末尾） |
 
 `arch_init` 的函数体（`i386/arch_system.c`）做 TSS 二次调用、串口/ACPI/APIC 初始化；在 `USE_APIC && !CONFIG_SMP` 分支它还会调 `apic_single_cpu_init()`，后者编程 LAPIC 并 `apic_idt_init` + `idt_reload` 改写 IDT。所以在 APIC 构建里它会初始化控制器本身；只有 PIC 构建里“控制器已就绪”的前提才完全来自 `cstart` 的调用次序。
@@ -598,7 +598,7 @@ $ awk '/gate_table_exceptions\[\]/,/};/' minix3/minix/kernel/arch/i386/protect.c
 
 **把 `x86_ltr(TSS_SELECTOR(booting_cpu))` 提到 `x86_lgdt(&gdt_desc)` 之前会怎样**：TR 会被装上"用旧 GDT 解释的槽号 6"——引导方表里槽 6 是另一条描述符（或非存在）。`ltr` 本身就要求选择子指向一个 TSS 类型的系统描述符，这一条很可能当场 #GP；即使侥幸通过，随后的第一次 ring3→ring0 转场会按 TR 指向的描述符去取 TSS 基址，读到的是旧表里那个描述符的基址/限长，`sp0` 从那里读出来。后果落在"CPU 转场后压栈的目标地址"上。依据：`prot_load_selectors` 的调用次序、`:tss_init` 只往 `gdt[index]` 写而不写 TR、`prot_init` 的注释说明旧选择子仍在用。
 
-### 2.6 重建页表：四个调用、两条理由、两份 vir2phys
+### 2.6 重建页表：四个调用、一条理由与一条约束、两份 vir2phys
 
 `prot_load_selectors` 之后还有四行，它们与前面四类动作不同类：清空页目录、重建两种映射、装载。这四行在 `pre_init` 里已经出现过一次——同样的 `pg_clear()`、`pg_identity()`、`pg_mapkernel()`、`pg_load()`，`pre_init` 的版本还把 `pg_mapkernel()` 的返回值存进了 `kinfo.freepde_start`（`i386/pre_init.c` 的 [`pre_init`](minix3/minix/kernel/arch/i386/pre_init.c:pre_init)），而 `prot_init` 的版本丢弃返回值。
 
@@ -636,7 +636,7 @@ $ awk '/gate_table_exceptions\[\]/,/};/' minix3/minix/kernel/arch/i386/protect.c
         }
 ```
 
-两处细节可以自己核：恒等映射的权限位里带了 `I386_VM_USER`（对用户态可访问）与 `I386_VM_WRITE`——带 USER 位的原因 C 树没有注释，此处不替它编动机；可核的效果是这些条目都是 BIGPAGE，VM 接手根表时 `pt_init` 的复制循环跳过 BIGPAGE 条目（`vm/pagetable.c` 的 [`pt_init`](minix3/minix/servers/vm/pagetable.c:pt_init)），它们不会进入用户进程的页表；从 `mem_high_phys` 所在的 4MB 对齐块起，后面的目录项被标记为 `PWT|PCD`（直写、禁缓存）：比较用的是 4MB 掩码：`mem_high_phys` 未 4MB 对齐时，它所在的那最后一块真实内存也会被一起标记；对齐时被标记的是内存顶端之上的第一块。那些完全在内存顶端之上的块不是真内存、按普通内存访问会出事。`pg_mapkernel()` 把内核所在的虚拟区段映射到它的物理区段，每项带 `PRESENT|BIGPAGE|WRITE` 而不带 `USER`（`i386/pg_utils.c` 的 [`pg_mapkernel`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel)）。`pg_load()` 把页目录的物理地址写进 CR3：
+两处细节可以自己核：恒等映射的权限位里带了 `I386_VM_USER`（对用户态可访问）与 `I386_VM_WRITE`——带 USER 位的原因 C 树没有注释，此处不替它编动机；可核的效果是这些条目都是 BIGPAGE，VM 接手根表时 `pt_init` 的复制循环跳过 BIGPAGE 条目（`vm/pagetable.c` 的 [`pt_init`](minix3/minix/servers/vm/pagetable.c:pt_init)），它们不会进入用户进程的页表；从 `mem_high_phys` 所在的 4MB 对齐块起，后面的目录项被标记为 `PWT|PCD`（直写、禁缓存）：比较用的是 4MB 掩码：`mem_high_phys` 未 4MB 对齐时，它所在的那最后一块真实内存也会被一起标记；对齐时被标记的是内存顶端之上的第一块。那些完全在内存顶端之上的块不是真内存；PWT/PCD 只改变缓存属性，不改变可访问性。`pg_mapkernel()` 把内核所在的虚拟区段映射到它的物理区段，每项带 `PRESENT|BIGPAGE|WRITE` 而不带 `USER`（`i386/pg_utils.c` 的 [`pg_mapkernel`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel)）。`pg_load()` 把页目录的物理地址写进 CR3：
 
 ```c
 /* 代码引用，minix3/minix/kernel/arch/i386/pg_utils.c:pg_load。 */
