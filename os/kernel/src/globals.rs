@@ -384,6 +384,7 @@ const _: () = assert!(MEMMAP_REGION_STORE_LEN == minix_boot::WIRE_MEMMAP_CAP);
 const _: () = assert!(RESERVED_REGION_STORE_LEN == minix_boot::WIRE_RESERVED_CAP);
 const _: () = assert!(PLATFORM_SOURCE_STORE_LEN == minix_boot::WIRE_PLATFORM_CAP);
 const _: () = assert!(PARAM_BUF_STORE_LEN == minix_boot::WIRE_PARAM_CAP);
+const _: () = assert!(minix_boot::NR_BOOT_MODULES == minix_boot::WIRE_MODULE_CAP);
 
 pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; PARAM_BUF_STORE_LEN]> =
     SyncUnsafeCell::new([0u8; PARAM_BUF_STORE_LEN]);

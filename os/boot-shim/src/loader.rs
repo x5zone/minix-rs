@@ -390,6 +390,15 @@ pub fn load_kernel_with_loader_gated<L: FileLoader, G: FnOnce(&KernelLoadResult)
 ) -> Result<KernelLoadResult, minix_elf::ElfError> {
     let elf_data = loader.read_required(KERNEL_PATH);
     let layout = compute_kernel_layout(elf_data.as_slice())?;
+    // The jump target is `kern_virt_base` (the lowest PT_LOAD VMA), not
+    // `entry_point`; cross-check the ELF header here so a link-script or
+    // section-order change fails loudly instead of jumping into the wrong
+    // address after the page-table switch. `check-layout.sh` also guards
+    // this, but the loader is the last place that sees `e_entry`.
+    assert_eq!(
+        layout.entry_point, layout.kern_virt_base.0,
+        "boot-shim: ELF entry does not equal the first PT_LOAD VMA"
+    );
     layout_gate(&layout);
     // SAFETY: see `load_segments_into_phys_memory`. Both firmware paths
     // satisfy the contract: physical RAM is identity-mapped at this stage,

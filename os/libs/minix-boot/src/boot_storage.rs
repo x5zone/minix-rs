@@ -6,7 +6,7 @@
 //! instead of owned. This module makes the ownership explicit:
 //!
 //! - [`BootStorage`] is the **owner**: fixed-capacity arrays the caller keeps
-//!   in its own `.bss` (or on its stack) and fills during boot preparation;
+//!   in its own static storage (`.data` when `new()` is not all-zero, or on its stack) and fills during boot preparation;
 //! - [`BootReport<'a>`] is the **view**: borrowed slices into that storage,
 //!   plus the scalar fields the kernel entry validates before paging setup.
 //!
@@ -80,10 +80,18 @@ pub struct BootStorage {
     /// wire partition's capacity.
     startup_objects: [SourceRecord; WIRE_STARTUP_CAP],
     startup_len: usize,
+    /// Map slots were handed out but their lengths are not committed yet.
+    map_dirty: bool,
+    modules_committed: bool,
+    platform_committed: bool,
+    param_committed: bool,
+    sources_committed: bool,
+    startup_committed: bool,
 }
 
 impl BootStorage {
-    /// An empty storage. Const-constructible for a `.bss` static.
+    /// An empty storage. Const-constructible for a static; because `new()`
+    /// contains non-zero defaults, such a static lands in `.data`, not `.bss`.
     pub const fn new() -> Self {
         Self {
             memmap: [ZERO_REGION; WIRE_MEMMAP_CAP],
@@ -100,6 +108,12 @@ impl BootStorage {
             memmap_sources_len: 0,
             startup_objects: [ZERO_RECORD; WIRE_STARTUP_CAP],
             startup_len: 0,
+            map_dirty: false,
+            modules_committed: false,
+            platform_committed: false,
+            param_committed: false,
+            sources_committed: false,
+            startup_committed: false,
         }
     }
 
@@ -120,12 +134,14 @@ impl BootStorage {
         );
         self.memmap_len = memmap_len;
         self.reserved_len = reserved_len;
+        self.map_dirty = false;
     }
 
     /// The full memmap slot array. The classifier writes entries starting at
     /// index 0 and then commits both table counts with
     /// [`Self::commit_map_tables`].
     pub fn memmap_slots_mut(&mut self) -> &mut [MemoryRegion] {
+        self.map_dirty = true;
         &mut self.memmap
     }
 
@@ -135,6 +151,7 @@ impl BootStorage {
     /// take two `&mut self` borrows; this method splits the fields inside the
     /// storage.
     pub fn map_tables_mut(&mut self) -> (&mut [MemoryRegion], &mut [MemoryRegion]) {
+        self.map_dirty = true;
         (&mut self.memmap, &mut self.reserved)
     }
 
@@ -149,10 +166,12 @@ impl BootStorage {
             "BootStorage: memmap length {len} exceeds capacity {WIRE_MEMMAP_CAP}"
         );
         self.memmap_len = len;
+        self.map_dirty = false;
     }
 
     /// The full reserved slot array (same protocol as the memmap slots).
     pub fn reserved_slots_mut(&mut self) -> &mut [MemoryRegion] {
+        self.map_dirty = true;
         &mut self.reserved
     }
 
@@ -167,6 +186,7 @@ impl BootStorage {
             "BootStorage: reserved length {len} exceeds capacity {WIRE_RESERVED_CAP}"
         );
         self.reserved_len = len;
+        self.map_dirty = false;
     }
 
     /// The full boot-module slot array. The loader writes entries starting at
@@ -177,11 +197,13 @@ impl BootStorage {
 
     /// Commit the live boot-module prefix length.
     pub fn set_modules_len(&mut self, len: usize) {
+        assert!(!self.modules_committed, "BootStorage: module length already committed");
         assert!(
             len <= WIRE_MODULE_CAP,
             "BootStorage: module length {len} exceeds capacity {WIRE_MODULE_CAP}"
         );
         self.modules_len = len;
+        self.modules_committed = true;
     }
 
     /// Append one boot module. Fails when the fixed list is full.
@@ -205,11 +227,13 @@ impl BootStorage {
 
     /// Commit the live platform-source prefix length.
     pub fn set_platform_len(&mut self, len: usize) {
+        assert!(!self.platform_committed, "BootStorage: platform length already committed");
         assert!(
             len <= WIRE_PLATFORM_CAP,
             "BootStorage: platform length {len} exceeds capacity {WIRE_PLATFORM_CAP}"
         );
         self.platform_len = len;
+        self.platform_committed = true;
     }
 
     /// Append one platform descriptor source. Fails when the list is full.
@@ -217,6 +241,7 @@ impl BootStorage {
         &mut self,
         source: PlatformDescSource,
     ) -> Result<(), BootStorageFull> {
+        assert!(!self.platform_committed, "BootStorage: platform length already committed");
         if self.platform_len >= WIRE_PLATFORM_CAP {
             return Err(BootStorageFull);
         }
@@ -233,11 +258,13 @@ impl BootStorage {
 
     /// Commit the live parameter-buffer prefix length.
     pub fn set_param_len(&mut self, len: usize) {
+        assert!(!self.param_committed, "BootStorage: parameter length already committed");
         assert!(
             len <= PARAM_BUF_CAP,
             "BootStorage: param length {len} exceeds capacity {PARAM_BUF_CAP}"
         );
         self.param_len = len;
+        self.param_committed = true;
     }
 
     /// The full provenance-record slot array (the DTB collector writes here,
@@ -248,11 +275,13 @@ impl BootStorage {
 
     /// Commit the live provenance-record prefix length.
     pub fn set_memmap_sources_len(&mut self, len: usize) {
+        assert!(!self.sources_committed, "BootStorage: source length already committed");
         assert!(
             len <= DTB_SOURCE_CAP,
             "BootStorage: memmap-source length {len} exceeds capacity {DTB_SOURCE_CAP}"
         );
         self.memmap_sources_len = len;
+        self.sources_committed = true;
     }
 
     /// The full startup-object slot array.
@@ -261,16 +290,20 @@ impl BootStorage {
     }
 
     /// Commit the live startup-object prefix length.
-    pub fn set_startup_len(&mut self, len: usize) {
+    #[cfg(test)]
+    pub(crate) fn set_startup_len(&mut self, len: usize) {
+        assert!(!self.startup_committed, "BootStorage: startup length already committed");
         assert!(
             len <= WIRE_STARTUP_CAP,
             "BootStorage: startup length {len} exceeds capacity {WIRE_STARTUP_CAP}"
         );
         self.startup_len = len;
+        self.startup_committed = true;
     }
 
     /// Append one startup-object record. Fails when the partition is full.
     pub fn push_startup(&mut self, record: SourceRecord) -> Result<(), BootStorageFull> {
+        assert!(!self.startup_committed, "BootStorage: startup length already committed");
         if self.startup_len >= WIRE_STARTUP_CAP {
             return Err(BootStorageFull);
         }
@@ -326,6 +359,10 @@ impl BootStorage {
         kern_phys_base: PhysBytes,
         kern_size: u64,
     ) -> BootReport<'_> {
+        assert!(
+            !self.map_dirty,
+            "BootStorage::report called between map slot fill and commit_map_tables"
+        );
         BootReport {
             memmap: self.memmap(),
             reserved_regions: self.reserved_regions(),
@@ -334,7 +371,6 @@ impl BootStorage {
             param_buf: self.param_buf(),
             memmap_sources: self.memmap_sources(),
             startup_objects: self.startup_objects(),
-            records_in_wire: false,
             kern_virt_base,
             kern_phys_base,
             kern_size,
@@ -359,7 +395,7 @@ pub struct BootStorageFull;
 ///
 /// This is what a v1 sender passes to the kernel entry. The kernel image's
 /// [`crate::KernelInfo`] is the `'static` receiver-side form (backed by its
-/// own `.bss`), not a sender type.
+/// own storage), not a sender type.
 #[derive(Clone, Copy)]
 pub struct BootReport<'a> {
     pub memmap: &'a [MemoryRegion],
@@ -370,16 +406,11 @@ pub struct BootReport<'a> {
     /// Provenance records for the two map tables. On the DTB/U-Boot/direct
     /// legs these are the complete slice owned by `BootStorage`; on the UEFI
     /// leg the classifier writes the records straight into the wire, so this
-    /// slice is empty and `records_in_wire` is true.
+    /// slice is empty and the wire is the only authority.
     pub memmap_sources: &'a [SourceRecord],
     /// Startup-object records (kernel + modules + bootstrap allocations).
     /// Empty on the UEFI leg for the same reason as `memmap_sources`.
     pub startup_objects: &'a [SourceRecord],
-    /// True when `memmap_sources` / `startup_objects` are deliberately empty
-    /// because the records live in the wire, not in this view. A consumer
-    /// that needs the records must read the wire in that case; an empty
-    /// slice is not evidence of a producer regression.
-    pub records_in_wire: bool,
     pub kern_virt_base: VirBytes,
     pub kern_phys_base: PhysBytes,
     pub kern_size: u64,

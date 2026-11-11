@@ -102,9 +102,7 @@ const PT_BUMP_PAGES: usize = 256;
 // The name pool/slot width and the pure function gates (`be_cell`/
 // `in_memmap*`/`table_magic_ok`/`fdt_table_pa`) are shared by both self-boot
 // faces and live in `bootface_common`.
-use crate::bootface_common::{
-    NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap_range, table_magic_ok,
-};
+use crate::bootface_common::{fdt_table_pa, in_memmap_range, table_magic_ok};
 
 // ── bump pool (aarch64's own cursor; opensbi_helpers' pool base is riscv DRAM) ──
 
@@ -131,25 +129,25 @@ fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
     }
 }
 
-// ── .bss assembly slots (the boot face writes them exclusively, then read-only) ──
+// ── boot-time static slots (the boot face writes them exclusively, then read-only) ──
 
-/// Platform descriptor source slot (DTB is the sole source).
-static mut PLATFORM_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, PhysBytes(0));
-
-/// Landing descriptor table for the 12 modules.
-static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
-    BootModule {
-        name: "",
-        start: PhysBytes(0),
-        len: 0,
-    }
-}; NR_BOOT_MODULES];
+/// Unified landing storage (DESIGN-09): modules, platform source, parameter
+/// buffer and startup records. One `static mut` plus one one-shot guard
+/// replaces four separate landing areas; `new()` is not all-zero, so this
+/// lands in `.data` rather than zero-fill `.bss`. The size bound is asserted
+/// in `bootface_common`.
 
 // ── Entry ──────────────────────────────────────────────────────
 
 /// aarch64 self-boot face entry (the aarch64 `_start` in `main.rs` zeroes
 /// .bss, establishes the stack, branches on `x0==0`, then `bl`s into here).
 pub extern "C" fn bootface_a64() -> ! {
+    // One-shot landing storage (same contract as the riscv half): every
+    // `'static` slice handed to `KernelInfo` points into this storage, and a
+    // second entry would overwrite them (UB under Rust aliasing).
+    static STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
+    let storage = STORAGE.take();
+
     core::hint::black_box(crate::KERNEL_ENTRY_ANCHOR as usize);
     say("### minix-rs kernel image: aarch64 self-boot (NK4-C sec-406)\n");
 
@@ -270,7 +268,7 @@ pub extern "C" fn bootface_a64() -> ! {
 
     // 4. The 12 modules: locate the table (name alignment check) → copy the
     //    source straight into bump pages.
-    let module_table = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TABLE) };
+    let module_table = storage.module_slots_mut();
     if bootface_common::place_modules(
         table,
         memmap,
@@ -289,30 +287,23 @@ pub extern "C" fn bootface_a64() -> ! {
         say("### minix-rs kernel image: module placement failed — halting\n");
         crate::halt();
     }
-    // SAFETY: `place_modules` has just filled all 12 slots in contract order;
-    // read-only from here on.
-    let modules: &'static [BootModule] = unsafe { &*core::ptr::addr_of!(MODULE_TABLE) };
+    storage.set_modules_len(NR_BOOT_MODULES);
     say("  boot modules placed 12\n");
 
     // 5. Platform descriptor source: DTB as the sole source (the slot lives
-    //    in .bss).
+    //    in .data).
     // SAFETY: single hart on the boot face; written once, read-only afterwards.
     // SAFETY: the DTB is still in the firmware/identity mapping; this face
     // runs before paging is enabled.
     let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(DTB_PA)) };
-    unsafe {
-        *core::ptr::addr_of_mut!(PLATFORM_SOURCE) =
-            PlatformDescSource::with_optional_len(DTB, PhysBytes(DTB_PA), dtb_len);
-    }
-    // SAFETY: as above — the static reference is taken after the write; the
-    // single array cell and the length-1 slice have the same origin.
-    let platform_sources: &'static [PlatformDescSource] =
-        unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1) };
+    storage.platform_slots_mut()[0] =
+        PlatformDescSource::with_optional_len(DTB, PhysBytes(DTB_PA), dtb_len);
+    storage.set_platform_len(1);
 
     // T3: DTB `/chosen/bootargs` is the direct-boot parameter source
     // (QEMU `-append` fills it).
-    let param_buf: &'static [u8] = {
-        let out = crate::bootface_common::param_landing();
+    let (param_ptr, param_len) = {
+        let out = storage.param_buf_mut();
         let input = crate::bootface_common::fdt_bootargs(&fdt).unwrap_or("");
         let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, out);
         say("  param_buf bytes=");
@@ -332,10 +323,9 @@ pub extern "C" fn bootface_a64() -> ! {
             }
         }
         say("\n");
-        let ptr = out.as_ptr();
-        // SAFETY: static landing pad; the slice covers the normalized prefix.
-        unsafe { core::slice::from_raw_parts(ptr, stats.bytes) }
+        (out.as_ptr(), stats.bytes)
     };
+    storage.set_param_len(param_len);
 
     // 6. KernelInfo plus the real arch_boot gate (validate → build the root
     //    → DM → jump_to_kmain; it never returns to this face).
@@ -347,56 +337,63 @@ pub extern "C" fn bootface_a64() -> ! {
         "bootface: DTB legs must carry source records, not an empty partition"
     );
     // Startup-object records: the kernel image and every boot module, in the
-    // second record class with its own capacity.
-    // SAFETY: single-hart boot face; the array is written once here and read
-    // only through the returned slice afterwards.
-    static mut STARTUP_OBJECTS: [minix_boot::SourceRecord; minix_boot::WIRE_STARTUP_CAP] =
-        [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
-    static STARTUP_TAKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-    assert!(
-        !STARTUP_TAKEN.swap(true, core::sync::atomic::Ordering::AcqRel),
-        "bootface_a64: startup-object landing re-entered"
-    );
-    let startup_objects = unsafe {
-        // Over capacity must fail closed: the static array is the whole
-        // partition, so an unchecked write would run past it.
-        assert!(
-            3 + modules.len() <= minix_boot::WIRE_STARTUP_CAP,
-            "bootface: startup-object partition over capacity"
-        );
-        let slot = core::ptr::addr_of_mut!(STARTUP_OBJECTS) as *mut minix_boot::SourceRecord;
-        let mut n = 0usize;
-        slot.add(n).write(minix_boot::startup_record(
+    // second record class with its own capacity. `push_startup` fails closed
+    // when the partition is full.
+    storage
+        .push_startup(minix_boot::startup_record(
             0,
             KERN_PHYS_BASE,
             KERN_PHYS_BASE + KERN_SIZE,
-        ));
-        n += 1;
-        for module in modules {
-            slot.add(n).write(minix_boot::startup_record(
-                n as u16,
+        ))
+        .expect("bootface: startup-object partition over capacity");
+    for i in 0..storage.boot_modules().len() {
+        let module = storage.boot_modules()[i];
+        storage
+            .push_startup(minix_boot::startup_record(
+                storage.startup_objects().len() as u16,
                 module.start.0,
                 module.start.0 + module.len as u64,
-            ));
-            n += 1;
-        }
-        // Root page and bump pool complete the canonical set (D01-F07).
-        slot.add(n).write(minix_boot::startup_record(
-            n as u16,
+            ))
+            .expect("bootface: startup-object partition over capacity");
+    }
+    // Root page and bump pool complete the canonical set (D01-F07).
+    storage
+        .push_startup(minix_boot::startup_record(
+            storage.startup_objects().len() as u16,
             root_page.0,
             root_page.0 + 4096,
-        ));
-        n += 1;
-        // aarch64's own bump pool (D01-R7: the riscv opensbi_helpers
-        // constants describe the U-Boot leg's pool, a different address).
-        slot.add(n).write(minix_boot::startup_record(
-            n as u16,
+        ))
+        .expect("bootface: startup-object partition over capacity");
+    // aarch64's own bump pool (D01-R7: the riscv opensbi_helpers
+    // constants describe the U-Boot leg's pool, a different address).
+    storage
+        .push_startup(minix_boot::startup_record(
+            storage.startup_objects().len() as u16,
             BUMP_BASE,
             BUMP_BASE + BUMP_SIZE,
-        ));
-        n += 1;
-        core::slice::from_raw_parts(slot, n)
-    };
+        ))
+        .expect("bootface: startup-object partition over capacity");
+    // Capture the live prefixes, then end the only `&mut` to the one-shot
+    // storage. Creating the slices after every write is what keeps the
+    // `&'static` views from aliasing a later `&mut` (DESIGN-D2-13).
+    let modules_ptr = storage.boot_modules().as_ptr();
+    let modules_len = storage.boot_modules().len();
+    let platform_ptr = storage.platform_sources().as_ptr();
+    let platform_len = storage.platform_sources().len();
+    let startup_ptr = storage.startup_objects().as_ptr();
+    let startup_len = storage.startup_objects().len();
+    let _ = storage;
+
+    // SAFETY: `BOOT_STORAGE` is a one-shot static whose writer has finished;
+    // no mutation follows, and the pointers cover the committed prefixes.
+    let modules: &'static [BootModule] =
+        unsafe { core::slice::from_raw_parts(modules_ptr, modules_len) };
+    let platform_sources: &'static [PlatformDescSource] =
+        unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) };
+    let param_buf: &'static [u8] =
+        unsafe { core::slice::from_raw_parts(param_ptr, param_len) };
+    let startup_objects: &'static [minix_boot::SourceRecord] =
+        unsafe { core::slice::from_raw_parts(startup_ptr, startup_len) };
 
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,

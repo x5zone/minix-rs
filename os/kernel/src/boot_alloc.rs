@@ -52,6 +52,10 @@ impl BootAlloc {
     ///
     /// Must be called before the first [`Self::alloc`].
     pub fn init(&self, base: u64, end: u64) {
+        assert!(
+            BumpRegion::resumed(base, base, end).is_consistent(),
+            "BootAlloc::init: inconsistent region base={base:#x} end={end:#x}"
+        );
         self.base.store(base, Ordering::Relaxed);
         self.next.store(base, Ordering::Relaxed);
         self.end.store(end, Ordering::Relaxed);
@@ -251,10 +255,10 @@ mod tests {
     #[test]
     fn test_zero_size_region() {
         let alloc = BootAlloc::new();
-        alloc.init(0x3000_0000, 0x3000_0000); // zero size
-
-        let result = alloc.alloc();
-        assert!(result.is_err(), "should fail with zero-size region");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            alloc.init(0x3000_0000, 0x3000_0000); // zero size
+        }));
+        assert!(result.is_err(), "zero-size region must be rejected at init");
     }
 
     /// Verify that re-initialization resets the allocator state.
@@ -339,13 +343,12 @@ mod tests {
     }
 
     /// `region()` validates the same predicate: an inconsistent range that
-    /// entered through `init` (which takes the caller's word) still fails
-    /// fast at the DM-coverage read instead of producing an inverted range.
+    /// `init` now validates the same consistency contract as `resume`, so an
+    /// inverted range fails at the call site instead of deferring to `region`.
     #[test]
-    #[should_panic(expected = "BootAlloc::region")]
+    #[should_panic(expected = "BootAlloc::init")]
     fn test_region_rejects_inverted_init() {
         let alloc = BootAlloc::new();
         alloc.init(0x9000_0000, 0x8000_0000);
-        let _ = alloc.region();
     }
 }

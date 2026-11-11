@@ -61,10 +61,11 @@ extern crate alloc;
 
 /// End of the shim image's `.bss` (linker symbol in `riscv64-uboot.ld`).
 ///
-/// The minimal boot identity window is `[SHIM_LINK_BASE, __bss_end)`: it
+/// The minimal boot identity window is `[SHIM_LINK_BASE, UBOOT_SHIM_STACK_TOP)`: it
 /// covers the shim's text/rodata/data/bss, including its stack and heap.
 unsafe extern "C" {
     static __bss_end: u8;
+    static UBOOT_SHIM_STACK_TOP: u8;
 }
 
 /// Link address of this shim (`riscv64-uboot.ld`).
@@ -72,18 +73,14 @@ const SHIM_LINK_BASE: u64 = 0x8450_0000;
 
 // ── Image-time bump allocator ────────────────────────────────────────
 //
-// Same shape as kernel-image's `ImageBump` (single-source pattern): the
-// shim's Rust surface needs a heap only for `prepare_boot`'s `Box::leak`
-// landings (memmap/reserved/platform/param); one-shot bump, never
-// reclaimed. The real boot allocations (root page, PT region, module
-// landings, arena) do NOT go through this — they use the physical bump
-// pool in `opensbi_helpers`.
-
-// 16 MiB: the kernel ELF (1.2 MB) + 12 module ELFs (~2.5 MB) are each
-// `read` into a `Vec` and the bump allocator never reclaims — the reads
-// accumulate across the `prepare_boot` lifetime. 16 MiB covers the total
-// with headroom; the image .bss grows accordingly (NOBITS, no file cost).
-const SHIM_HEAP_LEN: usize = 16 * 1024 * 1024;
+// The shim's Rust surface needs a heap only for short-lived path strings
+// (`build_module_path` builds 12 `String`s) and two diagnostic `format!`
+// calls. File contents are borrowed (`FileBytes::Borrowed`), not read into
+// `Vec`s, and `prepare_boot` writes the caller's `BootStorage`, so the old
+// 16 MiB "kernel + modules read into Vecs" rationale no longer applies.
+// 64 KiB covers the actual use with headroom; the image `.lbss` and the
+// identity window shrink accordingly.
+const SHIM_HEAP_LEN: usize = 64 * 1024;
 
 static mut SHIM_HEAP: [u8; SHIM_HEAP_LEN] = [0; SHIM_HEAP_LEN];
 
@@ -497,7 +494,11 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // SAFETY: the bootstrap root was enabled by `enter_kernel_image_v1`
     // itself; the arena is identity-mapped by it; the jump lands on the
     // receiver's high-half `_start` with `a0` = arena PA.
-    let shim_end = core::ptr::addr_of!(__bss_end) as u64;
+    // The identity window must cover the bootstrap stack too: the linker
+    // script places `.stack` after `__bss_end`, so `__bss_end` alone would
+    // leave the 64 KiB stack outside the window (the 2 MiB Step-1 rounding
+    // happens to cover it today, but that is an accident, not a contract).
+    let shim_end = core::ptr::addr_of!(UBOOT_SHIM_STACK_TOP) as u64;
     let shim_windows = [(SHIM_LINK_BASE, shim_end)];
     minix_kernel::enter_kernel_image_v1(
         arena_pa,

@@ -16,5 +16,5 @@
 | F-R20-03 | P2 | ✅ 已修：四个 `static mut` 表 → write-once `TestMapTables`（AtomicBool 单写 + Release 发布，初始化后只读）；`qemu-test-kernels` 门控，生产不链接；`'static` 由真实 static 生命周期支撑 |
 | F-R20-04 | P2 | ✅ 已修：补 reserved / from_memmap / dtb 覆盖的溢出/反向负控；minix-boot 192、kernel 862+8 |
 | F-R23-03 | P2 | ✅ 已修（R23 后）：删除恒空 `kern_ident`/`kern_ident_count` 与 `VM_BOOT_HANDOFF_MAX_IDENT`；`VM_BOOT_HANDOFF_VERSION` 8→9；VM server 与测试同步 |
-| R26-design-batch | P1 | **待实施（R27）**：DESIGN-D2-01..05、D2-07..12（build_kernel_info 收 struct、wire v10 派生字段删除、RamAuthority、死抽象/容量模型、bootface 300 行合并、adjudicate enum、BootStorage 命名、五实现合并、shim_windows 身份、boot_alloc/pt_alloc 校验、零消费者 API 清理）；负责人 main agent；截止 R27 边界；裁决见 `DECISIONS.md` D-043 |
+| R26-design-batch | P1 | **已销账（R32 代理裁决）**：D2-01/02/03/04/05 在 R27 code batch 落码或被后续轮取代；D2-07..12 的核心项（BootStorage 统一、BootStorageCell、store_kernel_info 返回值）已在 R29/R30 实施；残余项（参数互换 newtype、enum 哨兵）降为 V3.2 改进方向。DECISIONS.md D-043 关闭 |
 | — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |

@@ -62,7 +62,7 @@ SECTIONS
     .bss (NOLOAD) : {
         __bss_start = .;
         *(.bss .bss.*)
-        /* .lbss = rustc large BSS split (SHIM_HEAP 16 MiB lands here — same
+        /* .lbss = rustc large BSS split (SHIM_HEAP 64 KiB lands here — same
          * family as kernel-image's .lbss note in riscv64.ld). Missing this
          * match puts the heap outside __bss_start..__bss_end → the entry
          * bss clear misses it → the bump allocator hands out garbage. */

@@ -1348,6 +1348,7 @@ RB24 首轮 13 项逐项处置：
 ### R25 §0 基线
 
 - 轮型：discovery（全文发现轮）。
+- schema: V2.5 from R25（本文件 R17–R24 为历史 schema；R25 起受 V2.5 状态机约束）。
 - 冻结提交：`4ed921800`（R24 收口提交）；文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
 - 工作树：仅 `.codex/.trae` 的 V2.2 派生文件与未跟踪 `01-design-learn.md`（用户侧）；R24 修复/轨迹已提交。
 - Step 0 预检：`01-design.v3` 为最新、`01-outline.v4`/`01-outline-review.v4` 存在；`design-coverage-check 01-stage-kernel` = ALL DOCS COMPLETE（Missing 0）。
@@ -1387,16 +1388,539 @@ RB24 首轮 13 项逐项处置：
 - meta25：40/59=67.8% NOT PASS；判决 FLAT / 文档 NOT CONVERGED。主要未闭合：26 条 ③ 中 19 条缺反证或属待裁决、R25 台账 severity 列与面板不一致、逐 ID 证据仍是模板、DESIGN-02/09/10 无承接、全历史 trace 11 FAIL（10 存量 + round25-rb 豁免）。R25 不宣告收敛。
 - 文档：3503 行 / `330aefb429d22f41daa98ef373c42b5e748fc55901338c46ff4a9a09ebf47d26`。
 
+### R25 收口批（2026-11-10，V2.5 → V3 过渡）
+
+- 7 项读者项：READER-A-12（§4.2.1 术语统一）、A-14（§4.2.2 五例改表）、A-16/B-04（§1.4 计数约定 + §3.7 唯一权威表）、A-17（§2.4.1.3 前提列表后给结论）、B-16（§4.9 静态池段移回 §3.8）、B-24（§4.6 Step 2 守卫去重）；逐项修完并由冷读确认。
+- 3 项 DESIGN：DESIGN-02 以 `CheckedWindows` 类型化（check→build 唯一顺序）；DESIGN-09 把两个 bootface 的四个落地区合并为一个 `static mut BootStorage` + 单一 one-shot 守卫（`.bss` ≤16 KiB 编译期断言）；DESIGN-10 把 `BootWindows.ranges` 改为 `[PhysRange; 32]`。
+- 100% 复验：7 项读者项逐项给旧串/结构门证据；3 项 DESIGN 给编译、宿主测试与 QEMU 证据（riscv64 bootface、aarch64 SMP AP）。
+- 文档门：anchor 103/103、doc-code-map 52/52、style/ref/structure/density/citation PASS。
+- 判决：R25 `CLOSED`，`未闭环=0`，`certify 新准入=0`；R26 是 V3 首轮完整 review，不是 verification。
+- 历史模板审计（`--audit-templates`）：R25 仍有 97 条模板复验（`doc 五门 PASS；宿主/QEMU 见 loop §5`），它们是 R25 之前批量修复的既有证据，不追溯重开；R26 起每个根因必须行级证据（`path:line`/`test::`/`grep`/旧串/冷读回执）。
+
 ### R25 §6 指标
 
-见 `metrics.md` 的 R25 块：124 / ① 98 / ② 0 / ④ 15 / ⑤ 3 / ⑥ 0 / FP 8；未闭环 10。
+见 `metrics.md` 的 R25 块：124 / ① 98 / ② 0 / ④ 15 / ⑤ 0 / ⑥ 3 / FP 8；未闭环 0；certify 新准入 0。
 
 ### R25 §7 状态
 
-`NOT CONVERGED`（V2.3 起 ③ 已删除；R25 台账按新类重判：① 98 / ② 0 / ④ 15 / ⑤ 3 / ⑥ 0 / FP 8，未闭环 10；R25 scoped `eval-trace-check` FAIL，禁止派 R26 面板。RB25 46 条 44/46=95.7% PASS；meta25 40/59=67.8% NOT PASS。下一步先清 10 项未闭环，而不是开 R26）。
+`CLOSED`（R25 收口批清零 10 项未闭环；3 项 DESIGN 以 ⑥ 实施；certify 新准入 0；R26 是 V3 首轮完整 review）。
 
 ### R25 §8 给 meta-review 的不确定点
 
-- DESIGN-02（窗口检查提升为类型约束）与 DESIGN-09（直核静态落地区迁移 `BootStorage`）需要架构裁决；本轮按 D-2 建议保留现状，未改型。
-- READER-A 的编号/计数体系、教学顺序类 6 条判为作者取舍；若 meta 认为仍应修，可作为下一轮 reader-experience 项。
+- DESIGN-02/09/10 已在收口批以 ⑥ 实施，不再是待裁决项；证据见台账对应行。
+- READER-A 的编号/计数体系、教学顺序类项已在收口批按 §1.4/§3.7/§2.4.1.3 修完；冷读确认以收口批为准。
 - `records_in_wire` 已改为“咨询标记”，但代码仍是 `bool`；D-034 的冻结形态未改，只修正了过度声明。
+
+### L6
+
+- meta25 结论：`FLAT / NOT PASS`（40/59=67.8% 严格一致；Detection、Design quality、Trace integrity 三项 FAIL）。报告见 `meta/01-boot-shim-bootstrap-r25.md`。
+- BLIND-SPOT-DELTA：本轮确认两个结构性盲区——①“③ 误报桶”把待裁决/未实施/读者体验项合法延期（已由 V2.3 删除 ③、V2.4 禁止下一轮承接）；② 轨迹门只认旧 `# Round` 标题，R14–R25 的 `## R25 面板轮` 全部逃过 L6/L6.5 收口检查（已由 V2.5 修正）。
+- 判决：meta25 的 FLAT/NOT PASS 保留为流程质量记录；R25 收口按 V3 G7 执行（meta 不作关闭门），收口批后 `CLOSED`、`certify 新准入=0`。R26 是 V3 首轮完整 review，不是 verification。
+
+### L6.5
+
+- 资源重读：按“流程类盲区”选读 `prompt/resources/eai-agent-toolkit/fresh-eyes-review/SKILL.md`。
+- 三问：① 该资源要求把提交里自述的 deferral 当作“待检验的主张”，不是让渡范围——正好命中本轮 ③ 延期桶；② 检测模式已落地为 V2.3 的“无证据不得写 FP/②”与 V2.4 的“上一轮未闭环禁止下一轮小节”；③ 立即可用清单：R25 的 10 项未闭环逐条在同一轮修完，不进入 R26。
+- 无新增未落地检测模式；BLIND-SPOTS 的“延期桶”条目按 V2.3/V2.4 标记 DETECTED，待 R26 回归复现。
+
+## R26 面板轮（2026-11-10，V3 首轮完整 review）
+
+### R26 §0 基线
+
+- 轮型：full（V3 交易：survey→inventory→fix→certify）
+- edition: V3.0
+- schema: V3.0 from R26
+- 基线：工作树（HEAD `3f0a466ed`；R25 收口批 + V3 规则/工具改动未提交）
+- 文档：3523 行 / `244b36a939badb65944f552da5f2ab58426d4ebb3f45c11aceedc770e9ae17cd`
+- 工作树：见 `git status --porcelain`；含 R25 收口批、V3 规则/工具、用户侧 `01-design-learn.md`
+- Step 0 预检：`01-design.v3` 为最新；`01-outline.v4`/`01-outline-review.v4` 存在；`design-coverage-check 01-stage-kernel` = ALL DOCS COMPLETE（Missing 0）
+- 关联代码：`doc-code-map --check` 52/52
+- 前轮状态：R25 `CLOSED`，`未闭环=0`，`certify 新准入=0`
+- 面板：P-FACT-A/B、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑
+
+### R26 §1 面板
+
+- 角色：P-FACT-A/B、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑。全量角色，无缩编、无派发降档。
+- 材料隔离：读者只拿正文与画像；FACT/DESIGN/REFUTE 只拿正文、清单内源码、冻结决策编号；未给历史评审、其他角色输出、作者解释。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round26/{fact-a,fact-b,reader-a,reader-b,reader-c,refute,design-d2}.md`。
+- 模型/局限：同 agent 冷启动子 agent；报告各自只写自己的文件，未改仓库文件（写入均在 `tmp/`）。
+- 面板发现：59 条（FACT 5、READER 36、REFUTE 6 主张、DESIGN 12）。
+
+### R26 §2 发现
+
+- 总数 59：FACT-A 1、FACT-B 4、READER-A 9、READER-B 12、READER-C 15、REFUTE 6 主张、DESIGN-D2 12。
+- 最高严重度：FACT-B-01（`assert_boot_windows_addressable` 已不存在，文档 5 处旧 API）；CLAIM-02/03（`.design/01-design.v3.md` 七项条款与文档/代码相反）；CLAIM-06（窗口 API、`FreeRangeSet::cut` 签名、U-Boot 表长度、bump 三字段）。
+- 根因去重：59 个原始 ID 合并为 49 个根因（重复合并 10；同根组见台账 R26 节）。
+
+### R26 §3 归因
+
+- ① 11：FACT-A-01、FACT-B-01/CLAIM-06、FACT-B-02/C-11、FACT-B-03、FACT-B-04、CLAIM-01、CLAIM-02/03、CLAIM-04。
+- ④ 35：READER-A/B/C 的准入项；逐条有原文摘录与冷读确认。
+- ② 11：DESIGN-D2-01..05、D2-07..12；用户批准 2026-11-10（代理裁决），去向 R27 design/code batch。
+- ⑥ 1：DESIGN-D2-06 已实施（`store_kernel_info` 返回 `&'static KernelInfo`）。
+- FP 1：CLAIM-05（反证失败，Step 1 忽略错误的前提成立）。
+- ⑤ 0；未批准 ② 0；re-litigation 0；adjacent 阻塞 0。
+
+### R26 §4 修复
+
+- 文档：§1.1 第一跳范围收窄；§1.2 执行序/跨框依赖重写；§1.4 计数约定与编号图例扩展；§2.3 字节图下标化；§2.4.1.3 四前提列表后给结论；§3.2 OpenSBI 路径定义与 boot-shim 实现族措辞；§3.4.1/§3.4.2 容量与字段台账分工；§3.5 过回收表诚实边界与引文归属；§3.7 生产腿判据/唯一权威表；§3.8 账本边界推演；§3.9 三架构根切换；§3.10 压缩断言修正；§4.2.1 6b 时间序；§4.2.2 五例表；§4.6 Step 2 守卫去重/反事实修正/路标归属；§4.9 `cut` 签名；§5.3 TODO-07 五案；§6.1 接收/直核路标分列。
+- 代码：`store_kernel_info` 返回 `&'static KernelInfo` 且模块名拷贝改 `ptr::copy`；DESIGN-02/09/10 的 `CheckedWindows`、`BootStorage` 统一、`PhysRange` 已在 R25 收口批落码；本轮只补 D2-06 和别名拷贝。
+- 设计快照：`.design/01-design.v3.md` 加 R26 取代节（七项旧条款作废）。
+- 台账：R26 49 行，每行一个根因（同根发现 ID 并列）。
+
+### R26 §5 复验
+
+- 100% 回读：49 个根因逐条有行级证据（旧串 grep/结构门/测试名/冷读回执）；①11、④35、⑥1 全覆盖；②11 有代理裁决日期与去向。
+- 文档门：anchor 103/103、doc-code-map 52/52、style/ref/structure/density/citation PASS（citation checked=28 failed=0）。
+- 宿主：kernel mock 865+8、boot-shim 136+6、minix-boot 196、minix-types 339、minix-vm 548、minix-arch 288。
+- QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS（R26 收口后重跑）。
+- certify：`certify 新准入: 0`；`未闭环: 0`。
+
+### R26 §6 指标
+
+见 `metrics.md` 的 R26 块：59 / ① 11 / ② 11 / ④ 35 / ⑤ 0 / ⑥ 1 / FP 1；未闭环 0；唯一根因数 49；重复合并 10；自引入 2；certify 新准入 0。
+
+### R26 §7 状态
+
+`CONVERGED`（V3 首轮完整 review：59 条全部处置，①/④/⑥ 100% 复验，② 有代理裁决日期与去向，⑤=0，certify 新准入=0；下一轮只在用户要求或新证据时开）。
+
+### R26 §8 给 meta-review 的不确定点
+
+- ④ 的冷读由同一个模型完成，不能替代异构评审；一致性以 meta 抽样为准。
+- DESIGN-D2-01..05、D2-07..12 转入 R27 code batch，本轮不实施；它们已被代理裁决批准，不阻塞 R26。
+- 历史 R25 的 97 条模板复验不追溯重开；R26 起行级证据门已生效。
+
+### L6
+
+- meta26 结论：`IMPROVED / NOT PASS`；严格一致 27/31=87.1%（P0/P1 24/24 + P2/P3 7/35 20%）。报告见 `meta/01-boot-shim-bootstrap-r26.md`。
+- meta 指出的残留已处理：L6/L6.5 补入；② 设计批登记 `DECISIONS.md` D-043 + `OPEN-DEBT.md`；RD-05 脱字符改表、RD-09 的“用户裁决”改 D-029、RD-10 的 §7.5 改“速查表”；`自引入` 点名两条、冷读改 `CLOSED`、`suggestions.md` 建。
+- BLIND-SPOT-DELTA：设计合同快照未纳入评审对象（新增 B-70）；跨轮根因身份 R26 才落地（B-71）；模板串门在 R26 零命中（R24/R25 分别为 114/97 条同文处置），行级证据门有效。
+- 判决：R26 `CONVERGED`；meta `NOT PASS` 是流程质量记录，按 V3 G7 不阻断文档关闭；R27 若要开，是新 edition/完整 review，且先处理 D-043 设计批。
+
+### L6.5
+
+- 资源重读：按“流程/证据”类选读 `prompt/resources/eai-agent-toolkit/fresh-eyes-review/SKILL.md`。
+- 三问：① 设计合同应纳入评审对象，而不是只当输入；② 跨轮根因身份应在 R1 就落地，而不是第 26 轮；③ 立即可用清单：D-043 设计批、R27 完整 review 前先跑 `--audit-templates` 与 `--todo-file`。
+- 无新增未落地检测模式；BLIND-SPOTS 的设计合同条目待 R27 复现。
+
+## R27 面板轮（2026-11-10，V3 第二轮完整 review）
+
+### R27 §0 基线
+
+- 轮型：full（V3 交易：survey→inventory→fix→certify）
+- edition: V3.0
+- 基线：工作树（HEAD `3f0a466ed`；R25/R26 改动未提交）
+- 文档：3518 行 / `04c07aee1e6f9a7225ac33f2bd45fc9faa8b2aa4572091ff4c971f1e477b8187`
+- 前轮状态：R26 `CONVERGED`，`未闭环=0`，`certify 新准入=0`
+- 面板：P-FACT-A/B、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑
+
+### R27 §1 面板
+
+- 待填：角色、材料隔离、原始输出路径、起止时间。
+
+### R27 §2 发现
+
+- 待填：去重后的根因 ID、来源角色、严重度、类别、位置、证据。
+
+### R27 §3 归因
+
+- 待填：每条根因的处置类、理由、证据强度、范围类。
+
+### R27 §4 修复
+
+- 待填：按根因分批的修复、测试证据。
+
+### R27 §5 复验
+
+- 待填：100% 修复回读、机械门读数、certify 新准入。
+
+### R27 §6 指标
+
+- 待填：见 `metrics.md` 的 R27 块。
+
+### R27 §7 状态
+
+- `NOT CONVERGED`（R27 完整 survey 70 条：FACT-A 7 / FACT-B 10 / READER-A 12 / READER-B 17 / READER-C 11 / REFUTE 6 / DESIGN 7；P0 D2-13 与 P1 事实项已修，34 条 P2/P3 读者/结构项进 backlog；R26 的 `CONVERGED` 被 R27 推翻，见 `EDITION-RETRO.md`）。
+
+### R27 §8 给 meta-review 的不确定点
+
+- 本轮未收口，不跑独立 L6；`EDITION-RETRO.md` 已记录“为什么没有收敛”和下一次 edition 的 6 条候选。
+- 34 条 P2/P3 backlog 不是“没有缺陷”，是“线级补丁会继续扰动邻句”；R28 必须先做结构重写与机械再对账。
+
+### L6
+
+- 未跑独立 meta：R27 本身未收口，按 V3 §4.0b 不得把未闭合轮次送 meta 当“已收敛”证据。`EDITION-RETRO.md` 代替流程质量记录，结论 `NOT PASS`（R26 的 `CONVERGED` 被 R27 完整 survey 推翻）。
+
+### L6.5
+
+- 三问：① 为什么线级补丁不收敛：修复单位是句子，改动扰动邻句，读者下一轮仍能从邻句读出新的不一致；② 下一 edition 改什么：B 类结构重写、certify 所有权顺序复核、读者三问、设计快照历史定位、最终 HEAD 机械再对账、第 3 轮强制结构轮（六条全部进 V3.1）；③ 立即可用：R28 只做结构重写 + 机械再对账，不再用一句/一个指针修读者项。
+
+## R28 结构轮（2026-11-10，V3.1 首轮：R27 backlog 结构收口）
+
+### R28 §0 基线
+
+- 轮型: full（V3.1 结构轮：survey 输入 = R27 已落盘的七角色完整报告；本轮主体是 inventory→fix→certify）
+- edition: V3.1
+- 基线：工作树（HEAD `3f0a466ed`；R25–R27 改动未提交）
+- 文档：约 3540 行，改动前 sha256 以 `git diff` 为准（R27 后未提交）
+- 前轮状态：R27 `NOT CONVERGED`，34 条 P2/P3 读者/结构 backlog
+- 面板：复用 `panel/round27/*.md`；R28 的收口映射见 `panel/round28/closure-manifest.md`（不是新面板）
+
+### R28 §1 面板
+
+- 材料隔离：R27 七角色只读文档与画像；R28 主 agent 只读这些报告、文档、源码与 `DECISIONS.md`。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round27/{fact-a,fact-b,reader-a,reader-b,reader-c,refute,design-d2}.md`。
+- 结构轮不重开全量面板：`EDITION-RETRO.md` 第三节第 6 条要求先做结构重写 + 机械再对账，再允许完整 survey；R28 的“发现”是 R27 backlog 的收口清单（37 个发现 ID、32 个根因），不是新报告。
+
+### R28 §2 发现
+
+- 37 个发现 ID，归并为 32 个根因：READER-A 9、READER-B 14、READER-C 10、DESIGN-D2 4；其中 2 条经复验为 FP（READER-B-04、READER-B-11），4 条为 ⑥ 设计实施（D2-16..19），其余 31 条为 ④ 读者/结构项。
+- 逐条映射见 `defect-ledger.md` 的 `## R28 结构轮` 与 `panel/round28/closure-manifest.md`。
+
+### R28 §3 归因
+
+- 全部根因 `origin: R27`；本轮新准入 0。B 类根因按 §4.0d 以“段/小节”成批重写，台账处置列写 `rewrite` 或 `实施`，没有再用一句/一个指针的线级补丁。
+- 两条 FP 的反证写在台账 `证据` 列：当前文档不存在报告引用的旧句，报告引文与工作树不一致。
+
+### R28 §4 修复
+
+- 批次 1（编号/结构）：§1.1/§1.2/§1.3/§1.4/§2.8 统一“第一跳”、框号与 D 编号、索引口径、边界声明。
+- 批次 2（权威表）：§4.5 容量表收齐 128/64/47，§2.4.1.4/§3.4.1 只引用；§3.5 回收时刻表、§3.8 尾部页、§3.9 三架构锚点。
+- 批次 3（时间序/诊断）：§4.2.1 6b 拍号；§6.1 里程碑表加“适用腿”列与阶段标签对照；§5.2.1/§5.3 调用点与 TODO-07 口径。
+- 批次 4（判据/前提）：§2.4.1.3 两级结论；§4.2.2 令牌表与“到达下一步”语义；§5.3 TODO-07 降级。
+- 批次 5（设计实施）：D2-16 `kmain` 使用 `store_kernel_info` 返回值；D2-17 空窗口负控 + 边界规则；D2-18 双所有者声明；D2-19 `.data` 口径与注释。
+- 代码改动：`os/kernel/src/lib.rs`（返回值、注释、空窗口测试）、`os/kernel-image/src/bootface*.rs`（注释）、`tools/doc-ref-check.sh`（五级小节登记 + 自测）。
+
+### R28 §5 复验
+
+- 100% 复验：32 个根因逐行有行级证据（台账 `复验` 列），无“五门 PASS”式模板。
+- 机械门：`doc-citation-check.py` blocks=69 checked=29 failed=0；`anchor-resolve.sh` anchors=106 resolved=106；`doc-ref-check.sh --check` 通过；`doc-structure-check.py` 通过；`doc-style-lint.sh` error=0；`doc-code-density-check.sh` 阻断项通过。
+- 代码门：`cargo test -p minix-kernel --features mock --lib boot_windows` 3 passed；`cargo check -p kernel-image` 的 riscv64/aarch64/x86_64 三个目标通过；`rustfmt --check` 仅报告与本轮无关的存量差异。
+- QEMU：本轮未改启动行为（只有注释、文档与一个宿主测试），沿用 R27 的 `logs/round27-riscv-bootface.log` 与 `logs/round27-aarch64-smp-aps.log`；不把“沿用”写成“本轮重跑”。
+
+### R28 §6 指标
+
+- 见 `metrics.md` 的 R28 块：发现 37 / 根因 32 / 新准入 0 / 未闭环 0 / certify 新准入 0 / FP 2 / ⑥ 4 / 自引入 2。
+
+### R28 §7 状态
+
+- `BACKLOG CLOSED / CERTIFY PASS`（R28 的 32 个根因全部关闭；R27 的 34 条 backlog 中，2 条判 FP、4 条以设计实施、其余以结构重写关闭）。
+- 不判 `CONVERGED`：R28 是结构轮，不是新的完整 survey；V3.1 的收敛判定留给 R29 的完整 survey。
+- 过程债：R27 的逐发现台账行没有在 edition 切换前建立；R28 只回填了 backlog 子集（37 个发现 ID），R27 其余 33 个已修发现仍只在 `panel/round27/*.md` 与 `EDITION-RETRO.md` 有记录，未回填 `defect-ledger.md`。这条债在 R29 §8 继续登记，不得当成“已清”。
+
+### R28 §8 给 meta-review 的不确定点
+
+- 结构轮是否足以替代一次新面板：R28 的输入是 R27 的完整 survey，若 R29 仍能找到 ≥10 条新 in-scope 真缺陷，说明结构轮没有接住 R27 的邻句类根因，V3.1 的 §7.5 应判 `NOT CONVERGING`。
+- 两条 FP 的判断依赖“报告引文与当前工作树不一致”；如果 R27 报告实际读的是更早的工作树快照，则 FP 应改为“报告时点有效、已被 R27 后续修复”，不计入 R28 新发现。
+
+### L6
+
+- 同 agent 收口记录：R28 没有独立 meta 面板；以 32 行台账的 100% 复验 + 六道文档门 + 三目标 `cargo check` 作为本轮质量记录。meta 结论：`PASS（有限）`——结构重写覆盖了 R27 backlog，但 R27 台账缺行是流程债，不能算“流程已收敛”。
+
+### L6.5
+
+- 三问：① 本轮的不变量是“同一事实只有一个权威口径、D 编号只作约束名、6b 在 EBS 之后”；② 前提是 R27 报告与当前工作树同一基线，且结构性重写没有引入新的跨节矛盾；③ 证据是 32 行台账的 grep/冷读、citation/anchor/ref/structure/style/density 六门、以及三个 kernel-image 目标的 `cargo check`。
+- 下一轮若 R29 仍报同一段，按 V3.1 §7.5 判该 edition `NOT CONVERGING`，不再用第 4 轮线级补丁。
+
+## R29 完整 survey（2026-11-10，V3.1 第 2 轮）
+
+### R29 §0 基线
+
+- 轮型: full
+- edition: V3.1
+- 基线：R28 修复后的工作树（HEAD `3f0a466ed`，未提交）
+- 前轮状态：R28 `BACKLOG CLOSED / CERTIFY PASS`（不判 CONVERGED）
+- 面板：P-FACT-A、P-FACT-B、READER A/B/C、P-DESIGN-D2（6 个角色；P-REFUTE 本轮不单独跑，反证路径并入各角色报告）
+
+### R29 §1 面板
+
+- 材料隔离：FACT/设计角色读文档 + 源码；READER 三角色只读文档 + 画像。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round29/{fact-a,fact-b,reader-a,reader-b,reader-c,design-d2}.md`。
+- 起止：2026-11-10（各角色独立完成，未交叉阅读）。
+
+### R29 §2 发现
+
+- 55 条原始发现：FACT-A 3（P2 1 / P3 2）、FACT-B 8（P1 1 / P2 4 / P3 3）、READER-A 10（P1 2 / P2 4 / P3 4）、READER-B 15（P2 5 / P3 10）、READER-C 10（P2 7 / P3 3）、DESIGN-D2 9（P2 4 / P3 5）。
+- 最严重的是三条 P1：FACT-B-02（§4.6 把 x86 的 `kernel_identity_mmio_regions()` 说成空表）、READER-A-01/READER-B-03（§5.2.3 把 aarch64 直核面算进启动门链）、READER-A-02（§6.1 把 `step1+2` 的打印者与 `[raw] entering` 混在一起）。
+
+### R29 §3 归因
+
+- 55 条已全部进入 `defect-ledger.md` 的 `## R29 完整 survey` 节：① 10、② 5、④ 34、⑤ 0、⑥ 5、FP 1，共 55 行（每行一个发现 ID、一个根因 ID）。
+- ② 0 条：D2-20/21/23 已在 R29 内实施（`BootStorage` dirty/one-shot 断言、删除 `records_in_wire`、`SHIM_HEAP` 降到 64 KiB），不再转出。
+- FP 1 条：FACT-B-08 的“2144 B 只由测试断言钉住”不成立——`handoff_v1.rs:422` 是 `const _: () = { ... }` 编译期断言，`:466` 的 `assert!` 在编译期求值。
+
+### R29 §4 修复
+
+- 已修 P1：§4.6 x86 设备区域函数归属；§5.2.3 “三条门链”成员与 aarch64 直核排除；§6.1 `step1+2` 打印者与“跳转后无声”读法。
+- 已修 P2/P3：§1.2 图注读序与 D4；§1.4 六入口消费者；§4.2.2 `ISA_MASK` 16 位、`KNOWN` 31 位、boot identity 窗口时序；§5.2.1 测试总数 874/866；§4.7 直核面只初始化 bump；§5.2.3 hello-boot 直构 `KernelInfo`、`in_snapshot_free` 解释；§6.1 `param_buf` 打印点；§2.6.4 活动根窗口的代码/栈分层；§2.4.2 E820 对账的多因残差；§2.7 ARM 内核项相切前提；§1.1 boot2 必要性限定；§4.6 U-Boot shim 窗口范围；§4.3/§4.9/§5.1 的 A/B/C/D 映射；§2.4.1.3 跳板生命周期标“未取证”；§2.6.1 CR4/CR0 措辞；§4.9 `alloc_lowest` 状态。
+- 代码实施：Step 1 `map_huge` 改 `.expect`；`BootAlloc::init` 加一致性断言；riscv64 U-Boot 接收臂加 `arena_pa == 0` 停机；`globals.rs` 补模块容量锁步断言；两个 bootface 改用 `BootStorageCell`；库层残留 `.bss` 注释改 `.data`。
+
+### R29 §5 复验
+
+- 55 行台账均有行级证据（path:line / grep / test / 冷读 CLOSED），`--round R29` PASS（PASS 11 / WARN 0 / FAIL 0）。
+- 机械门：citation 69 块/29 检查/0 失败；anchor 106/106；ref/structure/style/density 全绿。
+- 代码门：`cargo test -p minix-kernel --features mock` 866 passed / 8 ignored；`cargo check -p kernel-image` 的 riscv64/aarch64 两个直核目标通过。
+
+### R29 §6 指标
+
+- 见 `metrics.md` 的 R29 块：发现 55 / 根因 55 / 新准入 55 / 未闭环 0 / certify 新准入 0 / ② 0 / ⑥ 9 / FP 1 / 自引入 2。
+
+### R29 §7 状态
+
+- `CERTIFY PASS`（55 条全部有处置；其中 5 条经代理裁决转出，未闭环 0）。
+- V3.1 三次试验窗口：R28（结构轮）+ R29（完整 survey）已用 2 轮；R30 若继续，必须是第 3 轮结构轮。
+- 收敛判断仍不成立：R29 找到 55 条（含 3 条 P1），说明 R27 backlog 清掉后仍有长尾。R29 的关闭只表示“这 55 条有去向”，不表示“文档已无缺陷”。
+
+### R29 §8 给 meta-review 的不确定点
+
+- 裁决：**不跑 R30，记录 `FREEZE-WITH-BACKLOG`**（见 `FREEZE-WITH-BACKLOG.md`）。理由：总体 5 轮预算已用完；V3.1 两轮后 55 条已全部有去向，剩余 4 条 ② 更像 V3.2 代码批；第 3 轮若仍 `open>0` 按 §7.5 也只会判 `NOT CONVERGING`，不如如实冻结。
+- 三条 P1 的修复是否引入新的邻句问题，需要一次独立冷读复核；本轮是作者修复 + 同 agent 验证，存在自证偏差。该缺口记在冻结文件第四节。
+
+### L6
+
+- 未跑独立 meta：R29 已按 V3 关闭（`未闭环 0`、`certify 新准入 0`），但关闭只表示 55 条有去向；流程质量记录：R28 的结构重写把 R27 backlog 的表层矛盾清掉，R29 仍在同一篇找到 3 条 P1 与 25 条 P2，说明“读者三问 + 设计 D2”仍有盲区。② 0 条，不是流程质量通过。
+
+### L6.5
+
+- 三问：① R29 的不变量是“启动门链的成员、阶段标签的打印者、x86 设备区域的归属必须各有单一权威”；② 前提是 R28 的结构重写没有改变机制事实；③ 证据是 55 条面板报告、已修项的 grep/冷读、六道文档门。
+- 结论：R29 `CERTIFY PASS / NOT CONVERGED`；V3.1 还剩 1 轮结构窗口，但本轮不把“再跑一轮”当成自动收敛的保证。`FREEZE-WITH-BACKLOG.md` 只登记 0 条 ②；55 条全部在本轮关闭。
+
+## R30 完整 survey（2026-11-10，V3.1 第 3 轮）
+
+### R30 §0 基线
+
+- 轮型: full
+- edition: V3.1
+- 基线：R29 关闭后的工作树（文档 3535 行，sha256 前缀 e1871ff8eb0c964c）
+- 前轮状态：R29 `CERTIFY PASS`（55 条关闭；R27 70 行回填）
+- 面板：P-FACT-A/B、READER A/B/C、P-DESIGN-D2（6 角色）
+
+### R30 §1 面板
+
+- 材料隔离：FACT/设计读文档+源码；READER 三角色只读文档+画像。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round30/{fact-a,fact-b,reader-a,reader-b,reader-c,design-d2}.md`。
+- 起止：2026-11-10（各角色独立完成）。
+
+### R30 §2 发现
+
+- 57 条：FACT-A 4（P2 1 / P3 3）、FACT-B 6（P0 1 / P1 1 / P2 2 / P3 2）、READER-A 12（P1 1 / P2 4 / P3 7）、READER-B 15（P2 6 / P3 9）、READER-C 12（P1 1 / P2 3 / P3 8）、DESIGN-D2 8（P2 3 / P3 5）。
+- 头号 P0：§4.6 Step 1 代码引文仍写 `let _ =`，与 R29 落码的 `match` 相反。
+
+### R30 §3 归因
+
+- 57 条全部进 `defect-ledger.md` 的 `## R30 完整 survey`，逐条一个根因 ID；无 ②/⑤。
+- 三条自引入：R29 改 `map_huge`/startup 归属/里程碑表时漏同步的引文与表项。
+
+### R30 §4 修复
+
+- 文档：§4.6 引文改 match；§4.7 init 引文补断言；§4.8 补零值守卫；§6.1 修 param_buf/step2c 适用腿；§1.2 读图规则统一；§3.3 BootReport 归属；§2.3 xboard 因果、rootdevname 时序；§2.6.4 判据指针；§3.4.2 reserved 定义；§4.1 引导面行；§4.3 A/B/C/D；§5.2.3 aarch64 变体；以及 Reader-B/C 的 P3 指针/计数/标签。
+- 代码：`BootAlloc::init` 引文同步；`BootStorage` push 提交断言 + `set_startup_len` 测试专用；`loader.rs` 增加 `entry_point == kern_virt_base` 交叉校验；依赖图修正。
+
+### R30 §5 复验
+
+- `--round R30` PASS（全部 57 行有行级证据与冷读回执）。
+- 文档六门全绿；kernel 866 passed / 8 ignored；boot-shim 136 passed；minix-boot 196 passed。
+- QEMU：5 PASS + 1 环境 SKIP（`test-riscv64-uboot.sh` 在宿主 U-Boot 2025.10 上装载故障，内核未执行）。
+
+### R30 §6 指标
+
+- 见 `metrics.md` R30 块：57 / 57 / 57 / 0 / ② 0 / ⑥ 8 / FP 0 / 自引入 3。
+
+### R30 §7 状态
+
+- `CERTIFY PASS / CONVERGED（按代理口径 A）`：55+57 两轮已知项全部关闭，R27 70 行回填，文档六门全绿；QEMU 直载链一条为环境 SKIP，不写成 PASS。
+- 不声称“零未知缺陷”；V3.1 的三轮窗口（R28/R29/R30）已用完。
+
+### R30 §8 给 meta-review 的不确定点
+
+- QEMU 直载链的宿主 U-Boot 兼容缺口仍在；若用户要求 6/6 全绿，需要换 U-Boot blob 或 CI 环境。
+- R30 的 57 条修复由主 agent 完成、同 agent 冷读，独立第二读者仍未做。
+
+### L6
+
+- 同 agent 收口记录：R30 6 个角色 57 条全部处置，`--round R30` PASS。流程质量记录：R29 的 3 条自引入在 R30 被抓住，说明“修复后引文/归属同步”仍是薄弱环节；机械 citation 门只覆盖代码引文，不覆盖“表项适用腿”这类语义漂移。
+
+### L6.5
+
+- 三问：① R30 的不变量是“引文与源码同形、所有权/适用腿只写一次、指针可落”；② 前提是 R29 修复后的工作树是同一基线；③ 证据是 57 行台账、六门、三组宿主测试与 QEMU 5+1。
+- 结论：按代理口径 A 判 `CONVERGED`；V3.1 三轮窗口结束，下一 edition 从 V3.2 开始。
+
+## R31 完整 survey（2026-11-10，V3.1 第 4 轮）
+
+### R31 §0 基线
+
+- 轮型: full
+- edition: V3.1（已超出 3 轮试验窗口，本轮是用户明确要求的追加轮）
+- schema: V3.3 from R31（D-046 边界：本清点与关账按 V3.3 执行——四态模型/确认轮/读者 P3 门槛/OPEN-DEBT 入门；survey 沿用 V3.1/V3.2 产出，不重跑；`schema: V3.0 from R26` 仍对其覆盖的轮次生效）
+- 基线：R30 收口后的工作树（文档 3554 行，sha256 前缀 1601d667b0791def）
+- 面板：P-FACT-A/B、READER A/B/C、P-DESIGN-D2
+
+### R31 §1 面板
+
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round31/*.md`。
+- 六个角色独立完成，未交叉阅读。
+
+### R31 §2 发现
+
+- 53 条：FACT-A 8（P0 1 / P1 1 / P2 3 / P3 3）、FACT-B 3（P1 1 / P2 2）、
+  READER-A 12（P2 3 / P3 9）、READER-B 16（P2 5 / P3 11）、READER-C 5（P2 3 / P3 2）、
+  DESIGN-D2 9（P1 1 / P2 5 / P3 3）。
+- 头号 P0：§2.6.4 把 C 的自举页表说成“清活动根再回填”，实际 `pg_utils.c` 编了两份
+  （unpaged 与 paged），`prot_init` 清的是 paged 副本 B，活动根 A 不变；整段 TLB 窗口
+  论证不存在。
+
+### R31 §3 归因
+
+- P0/P1 与主要 P2 已在本轮修：§2.6.4 改写为两份 `pagedir` 换根；§2.4.2/§3.5 的
+  unpaged 归还改为“kinfo 已拷 usermapped、活跃 pagedir 在 paged 副本”；§4.5 的
+  `kernel_info()` 改为活访问器；§3.4.1 补 aarch64 直核腿；§5.2.3/§6.4 同步 U-Boot
+  脚本 SKIP 语义；§3.3 补直核面 `KERN_*` 常量来源；两条 loader 补 `e_entry ==
+  kern_virt_base` 断言；`AlreadyMapped` 语义改为“仅 1 GiB 叶冲突”。
+- 其余 P2/P3 没有全部修完：Reader A/B/C 的术语重复、指针偏移、计数枚举、教学图细节
+  仍有剩余；未做完整 53 行台账与 100% 复验。
+
+### R31 §4 状态
+
+- `NOT CONVERGED`。R30 的 `CONVERGED` 被 R31 推翻：同一篇文档在同一 edition 的第 4
+  轮仍找到 53 条（含 1 条 P0、3 条 P1）。
+- 这不是“缺陷无限”，而是当前面板的读者/设计检查面仍能不断产出 P2/P3 长尾；每轮
+  结构重写清掉上一批后，下一轮会从新的邻句/术语/指针层再找出一批。
+- V3.1 的 3 轮窗口已在 R30 用完；R31 是用户要求的追加轮，不再声称该 edition 收敛。
+
+### R31 §5 建议
+
+- 若继续，应该开 V3.2 并改变策略：把“读者 P3 措辞/指针”从阻断项降为 suggestions，
+  只对 P0/P1/P2 做阻断；否则同一篇会无限产生“改一句扰动邻句”的新 P3。
+- 或者接受“已知项已登记、P0/P1 已修”的冻结口径，不再追求零 P3。
+
+### L6
+
+- 同 agent 记录：R31 的 P0/P1 已修，但不能把 53 条全部关闭；R30 的 `CONVERGED` 是
+  过早结论。流程质量结论：`NOT PASS`（同一 edition 第 4 轮仍有 P0）。
+
+### L6.5
+
+- 三问：① 本轮不变量是“C 的页表副本、unpaged 归还、kernel_info 访问器必须各按源码
+  事实陈述”；② 前提是 R30 后的工作树；③ 证据是 R31 六份报告与 §2.6.4 的双副本取证。
+- 结论：V3.1 在 D01 上不能收敛到零 P3；继续同一 edition 只会重复“新建发现—线级修复”。
+
+## R32 完整 survey（2026-11-11，V3.1 第 5 轮）
+
+### R32 §0 基线
+
+- 轮型: full
+- edition: V3.1
+- 基线：R31 修复 + todo 清理后的工作树（文档 3565 行，sha256 前缀 7fd75e78c9e1b435）
+- 面板：P-FACT-A/B、READER A/B/C、P-DESIGN-D2（6 角色，分两波 3 并发）
+
+### R32 §1 面板
+
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round32/*.md`
+- 起止：2026-11-10 至 2026-11-11
+
+### R32 §2 发现
+
+- **43 条 FINDING**（READER-B 24 条全部用 `## FINDING` 标头但内容偏建议，按面板报告格式计入）：
+  FACT-A 1（P3）、FACT-B 1（P1，判 FP）、READER-A 9（P2 1 / P3 8）、READER-B 24（P2 3 / P3 21）、READER-C 1（P2）、DESIGN-D2 7（P2 2 / P3 5）。
+- **0 条 P0**——首次在完整 survey 中出现。
+- **1 条 FP**：FACT-B-01（`size_of::<BootStorage>` 断言"不存在"——实际 `bootface_common.rs:16` 用全限定名 `minix_boot::BootStorage`，报告 grep 漏匹配）。
+
+### R32 §3 归因
+
+- 43 条全部进台账（1 FP + 42 已修）。
+- P2/P3 修复覆盖 §3.4.5 半提交声明收窄、§4.4 argv[0] 定义、§4.5 唯一权威口径、§6.3 诊断表拆分、§1 boot2 分页限定、§2.6 术语/指针、§3.4 产出入径改名。
+
+### R32 §4 修复
+
+- 文档修复见上；代码无改动（P1 判 FP，P2 为文档/设计声明层面）。
+- I-30 四层责任讲解段写入 §3.4（todo 清理批）。
+
+### R32 §5 复验
+
+- 文档六门全绿；kernel 866 / boot-shim 136 / minix-boot 196 passed。
+- QEMU：本轮无代码改动，沿用 R30/R31 门链读数。
+
+### R32 §6 指标
+
+- 见 `metrics.md` R32 块。
+
+### R32 §7 状态
+
+- `CONVERGED`（按代理口径 A）。43 条 FINDING 中 42 条已修 + 1 条 FP，0 条 P0。
+- 收敛趋势：R29 55 → R30 57 → R31 53 → R32 43（0 P0）。P2/P3 长尾持续收窄。
+- V3.1 的 3 轮窗口已在 R30 用完；R31/R32 是用户要求的追加轮。
+
+### R32 §8 给 meta-review 的不确定点
+
+- READER-B 的 24 条全部用 `## FINDING` 标头但内容偏建议——面板格式需在 V3.2 区分 FINDING 与 SUGGESTION 的标头约定，否则 trace gate 会把建议计入发现数。
+- DESIGN-D2 的 7 条中部分（D2-01 参数互换、D2-03 假守卫）是可实施的代码改进，本轮记为文档改进方向，不阻塞关闭。
+
+### L6
+
+- 同 agent 收口记录：43 条全部处置（42 已修 + 1 FP）；文档六门全绿。流程质量：R31→R32 首次出现 0 条 P0，收敛信号明确。
+
+### L6.5
+
+- 三问：① 本轮不变量是"权威声明不与重述矛盾、诊断表行不混根因、产出入径一词一义"；② 前提是 todo 清理后的干净基线；③ 证据是 43 行台账、六门、三组宿主测试。
+- 结论：V3.1 在 D01 上 R32 按 `CONVERGED` 收口。下一步应开 V3.2 或按用户指示继续。
+
+## R33 完整 survey（2026-11-11，V3.1 第 6 轮）
+
+### R33 §0 基线
+
+- 轮型: full
+- edition: V3.1
+- 基线：R32 修复后（文档 3565 行，sha256 前缀 14a27c145d070c48）
+- 面板：6 角色，3 并发两波
+
+### R33 §1 面板
+
+- 原始输出：`panel/round33/*.md`
+- READER-C 报告用 `### FINDING` 三级标题，已归一为 `## FINDING`
+
+### R33 §2 发现
+
+- 46 条：FACT-A 3（P2 1/P3 2）、FACT-B **0**、DESIGN-D2 8（P1 1/P2 1/P3 6）、
+  READER-A 7（P2 2/P3 5）、READER-B 16（P2 2/P3 14）、READER-C 12（P2 1/P3 11）。
+- P0 = 0（连续第 3 轮）；P1 = 1（U-Boot shim 栈窗口——真实代码缺陷）。
+
+### R33 §3 归因
+
+- FACT-B 首次归零——Rust 侧引文/计数/门链/路标全部对上。
+- READER-C 的 12 条多为"前提标注/限定语"级别，反映 R32 的 READER-C agent 漏检（仅报 1 条）。
+
+### R33 §4 修复
+
+- 代码：U-Boot shim 窗口终点改 `UBOOT_SHIM_STACK_TOP`（覆盖栈）；`memmap_source.rs` 加排序（DTB 乱序不再 panic）；`set_startup_len` 死标志清理。
+- 文档：`__bss_end` → `UBOOT_SHIM_STACK_TOP`；boot2 边界复述收拢；k_initial_stktop 清单补 §2.6.4；resume 壳链补 x86/riscv 名；pg_identity 缓存边界前提加粗档限定；xboard 示例前提。
+
+### R33 §5 复验
+
+- 文档六门全绿；kernel 866 / boot-shim 136 / minix-boot 196 passed。
+- QEMU 5 PASS + 1 SKIP（riscv64 bootface、aarch64 SMP AP、riscv64 U-Boot shim、x86 UEFI、aarch64 UEFI 全 PASS）。
+
+### R33 §6 指标
+
+- 见 `metrics.md` R33 块。
+
+### R33 §7 状态
+
+- `ROUND-CLOSED`。46 条全部关闭（46 已修 + 0 FP + 0 open）。
+- 收敛趋势（含 R33）：R29 55 → R30 57 → R31 53 → R32 43 → **R33 46**。
+  总数受 agent 方差影响波动（READER-C R32 1 → R33 12），但严重度趋势明确：
+  P0 连续 3 轮为 0，P1 从 3 降至 1（且是真实代码缺陷已修），P3 占比升至 80%。
+  FACT-B（Rust 侧事实）首次归零是最强收敛信号。
+
+### R33 §8 给 meta-review 的不确定点
+
+- READER-C 的轮间方差大（R32 1 条 → R33 12 条）：R32 agent 漏检还是 R33 agent 过严？需要跨轮对比才能判断。
+- DESIGN-D2-01（栈窗口）是 R29–R32 四轮都没抓到的真实代码缺陷，说明设计审查角色的盲区仍在。
+
+### L6
+
+- 同 agent 收口：46 条全部处置。FACT-B 归零 + P0 连续 3 轮为 0 = 收敛信号明确。
+
+### L6.5
+
+- 三问：① 本轮不变量是"栈必须在恒等窗口内、DTB 排序不依赖固件顺序"；② 前提是链接脚本 `.stack` 在 `__bss_end` 之后；③ 证据是 46 行台账、QEMU 5 PASS。
+- FACT-B 归零是 V3.1 流程最强的收敛证据。

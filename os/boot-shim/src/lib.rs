@@ -149,7 +149,8 @@ pub struct BootStorageCell {
 unsafe impl Sync for BootStorageCell {}
 
 impl BootStorageCell {
-    /// An empty cell; usable as a `.bss` static initializer.
+    /// An empty cell; usable as a static initializer (`.data`, since the
+    /// contained `BootStorage::new()` is not all-zero).
     pub const fn new() -> Self {
         Self {
             storage: core::cell::UnsafeCell::new(minix_boot::BootStorage::new()),

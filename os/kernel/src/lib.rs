@@ -44,7 +44,7 @@ use minix_arch::arch::boot_arch::BootArch;
 use minix_arch::arch::boot_dm::plan_dm_policy;
 use minix_arch::arch::direct_map::DirectMapLayout;
 use minix_arch::paging_ext::{BootPageSupport, HugePages, PageSize, detect_boot_page_support};
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::{PhysBytes, PhysRange, VirBytes};
 // Handoff types are exercised only by the non-mock VM-loading path
 // (same reason as the `PhysAccess` import below).
 #[cfg(all(
@@ -68,7 +68,7 @@ use minix_arch::arch::boot_arch::AArch64BootArch as BootArchImpl;
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
 use minix_arch::arch::boot_arch::X86_64BootArch as BootArchImpl;
 
-use minix_arch::paging::{PageFlags, Paging};
+use minix_arch::paging::{PageFlags, PageTableError, Paging};
 use minix_boot::{KernelInfo, MemoryRegion};
 // `PhysAccess` is exercised only by the non-mock VM-loading path
 // (`access.frame_virt`, cfg'd out under `feature = "mock"`); a plain
@@ -222,9 +222,7 @@ where
     // bootstrap test kernels legally carry no init-server image.
     kernel_info.validate_before_tables();
     kernel_info.check_boot_postconditions();
-    store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo =
-        crate::kernel_info().expect("arch_boot: KERNEL_INFO store failed");
+    let kinfo = store_kernel_info(kernel_info);
     register_panic_diagnostic();
     arch_boot_impl::<A>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity and
@@ -351,9 +349,7 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
     // Land the KernelInfo slices into this image's `.bss` before anything reads
     // them: the handoff copy's fat pointers still reference the boot-shim's
     // boot-services pool, which we re-home here so they survive past the PE.
-    store_kernel_info(kernel_info);
-    let kinfo: &'static KernelInfo =
-        crate::kernel_info().expect("arch_boot_resume_v1: KERNEL_INFO store failed");
+    let kinfo = store_kernel_info(kernel_info);
     register_panic_diagnostic();
     // Step 4: add direct-map coverage to the *active* bootstrap root (additive;
     // `establish_boot_dm` wraps `root_page` and only writes new PTEs).
@@ -493,12 +489,8 @@ pub fn prepare_kernel_image_v1(
     // low physical memory, so the window is x86-only.
     #[cfg(target_arch = "x86_64")]
     windows.push(0, DEV_PIECE);
-    assert_boot_windows_addressable(&windows, support.phys_addr_limit());
-    build_bootstrap_root_and_enable::<BootArchImpl>(
-        root_page,
-        &policy.kernel(),
-        windows.as_slice(),
-    );
+    let windows = windows.check(support.phys_addr_limit());
+    build_bootstrap_root_and_enable::<BootArchImpl>(root_page, &policy.kernel(), windows);
     let bump_next = boot_alloc::boot_alloc_next();
     // SAFETY: `arena_pa` is the `ARENA_CAP` arena the boot-shim allocated
     // below `boot_dm_admissible_end` (LOADER_DATA on UEFI legs, bump pages on
@@ -972,12 +964,12 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     // aarch64/riscv64 have no real-mode trampoline and do not get the window.
     #[cfg(target_arch = "x86_64")]
     windows.push(0, DEV_PIECE);
-    assert_boot_windows_addressable(&windows, support.phys_addr_limit());
+    let windows = windows.check(support.phys_addr_limit());
 
     // Steps 1-3: build the bootstrap root (minimal identity windows + kernel
     // high half + the aarch64 MMIO window), enable paging, and record the
     // active root.
-    build_bootstrap_root_and_enable::<A>(root_page, &policy.kernel(), windows.as_slice());
+    build_bootstrap_root_and_enable::<A>(root_page, &policy.kernel(), windows);
 
     // Step 4: Establish Direct Map coverage on the bootstrap root.
     // 07-paging_init_design §6.1: every candidate is preflighted
@@ -1059,17 +1051,29 @@ const BOOT_WINDOW_FLOOR: usize =
     3 + 4 + minix_boot::NR_BOOT_MODULES + minix_boot::WIRE_PLATFORM_CAP + 2 + 1;
 const _: () = assert!(MAX_BOOT_WINDOWS >= BOOT_WINDOW_FLOOR);
 
+const EMPTY_PHYS_RANGE: PhysRange = match PhysRange::new(PhysBytes(0), PhysBytes(0)) {
+    Some(range) => range,
+    None => panic!("empty phys range"),
+};
+
 /// A tiny fixed-capacity list of physical windows that must be identity-mapped
 /// while the boot path is still running below the Direct Map.
+///
+/// The element is [`PhysRange`], not a bare `(start, end)` pair: the
+/// constructor rejects a reversed range at the type boundary, so a caller
+/// cannot swap the endpoints into an inverted window. `PhysRange` still admits
+/// an empty range (`start == end`), so `push` rejects it explicitly; the
+/// `EMPTY_PHYS_RANGE` fill value below is a sentinel for uninitialized slots
+/// and is never exposed by `as_slice`.
 struct BootWindows {
-    ranges: [(u64, u64); MAX_BOOT_WINDOWS],
+    ranges: [PhysRange; MAX_BOOT_WINDOWS],
     len: usize,
 }
 
 impl BootWindows {
     const fn new() -> Self {
         Self {
-            ranges: [(0, 0); MAX_BOOT_WINDOWS],
+            ranges: [EMPTY_PHYS_RANGE; MAX_BOOT_WINDOWS],
             len: 0,
         }
     }
@@ -1084,7 +1088,8 @@ impl BootWindows {
             "boot identity windows exceed capacity: len={}, cap={MAX_BOOT_WINDOWS}",
             self.len
         );
-        self.ranges[self.len] = (start, end);
+        self.ranges[self.len] = PhysRange::new(PhysBytes(start), PhysBytes(end))
+            .expect("boot identity window: reversed range rejected by the assertion above");
         self.len += 1;
     }
 
@@ -1097,7 +1102,7 @@ impl BootWindows {
         self.push(base, end);
     }
 
-    fn as_slice(&self) -> &[(u64, u64)] {
+    fn as_slice(&self) -> &[PhysRange] {
         &self.ranges[..self.len]
     }
 }
@@ -1180,22 +1185,34 @@ fn push_common_boot_windows(
     push_device_windows(windows);
 }
 
-/// Every window must be addressable by the platform's physical-address limit.
-/// The check runs after the window table is assembled, so it does not depend
-/// on the retired "platform must cover the whole low 4 GiB" premise.
-fn assert_boot_windows_addressable(windows: &BootWindows, phys_addr_limit: u64) {
-    for &(start, end) in windows.as_slice() {
-        assert!(
-            end <= phys_addr_limit,
-            "boot identity window [0x{start:x},0x{end:x}) exceeds the platform physical-address bound 0x{phys_addr_limit:x}"
-        );
+/// A window list that has passed the platform physical-address bound check.
+///
+/// The only constructor is [`BootWindows::check`]. Passing the checked type
+/// to [`build_bootstrap_root_and_enable`] makes "validate then build" the only
+/// expressible order; a caller cannot hand over an unchecked list.
+#[derive(Clone, Copy)]
+struct CheckedWindows<'a>(&'a [PhysRange]);
+
+impl BootWindows {
+    /// Validate every window against the platform physical-address limit and
+    /// return the token consumed by the page-table builder.
+    fn check(&self, phys_addr_limit: u64) -> CheckedWindows<'_> {
+        for range in self.as_slice() {
+            let start = range.start().0;
+            let end = range.end().0;
+            assert!(
+                end <= phys_addr_limit,
+                "boot identity window [0x{start:x},0x{end:x}) exceeds the platform physical-address bound 0x{phys_addr_limit:x}"
+            );
+        }
+        CheckedWindows(self.as_slice())
     }
 }
 
 fn build_bootstrap_root_and_enable<A: BootArch>(
     root_page: PhysBytes,
     policy: &KernelMapPolicy<A>,
-    windows: &[(u64, u64)],
+    windows: CheckedWindows<'_>,
 ) {
     let kern_huge = policy.page_size();
     let layout = policy.layout();
@@ -1221,7 +1238,9 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     // slot, which cannot happen here because Step 1 never emits 1 GiB leaves.
     let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
     let device_windows = identity_device_windows();
-    for &(raw_start, raw_end) in windows {
+    for range in windows.0 {
+        let raw_start = range.start().0;
+        let raw_end = range.end().0;
         let start = raw_start & !(DEV_PIECE - 1);
         let end = raw_end
             .checked_add(DEV_PIECE - 1)
@@ -1238,19 +1257,22 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
             } else {
                 id_flags
             };
-            // Ignore errors: `map_huge` never probes physical memory, so an
-            // unbacked hole cannot produce an error. The only reachable
-            // class here is `AllocationFailed` (a mid-level table from the
-            // boot bump allocator); `AlreadyMapped` needs a pre-existing
-            // 1 GiB leaf, which Step 1 never creates. If a needed piece
-            // cannot be mapped, the fault surfaces at enable().
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = paging.map_huge(
+            // `map_huge` never probes physical memory, so an unbacked hole
+            // cannot produce an error. Overlapping 2 MiB windows rewrite the
+            // same leaf and return Ok; `AlreadyMapped` only appears when the
+            // slot already holds a 1 GiB leaf. Step 1's fresh root never
+            // creates one, so the arm is defensive; every other error,
+            // including `AllocationFailed`, fails closed here instead of
+            // surfacing at the first instruction fetch after enable().
+            match paging.map_huge(
                 VirBytes(addr),
                 PhysBytes(addr),
                 PageSize::MIB_2,
                 piece_flags,
-            );
+            ) {
+                Ok(()) | Err(PageTableError::AlreadyMapped) => {}
+                Err(error) => panic!("boot identity map: map_huge failed: {error:?}"),
+            }
             addr += DEV_PIECE;
         }
     }
@@ -1398,11 +1420,6 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
     minix_plat::arm64::early_console::use_high_mmio_window();
 }
 
-/// Stores the boot `KernelInfo` into the process-global slot.
-///
-/// kmain Phase A calls this; bootstrap test kernels that bypass kmain call
-/// it explicitly before any consumer of [`KERNEL_INFO`] (e.g.
-/// `dispatch_diagctl`'s kernel-span translation).
 /// Land a boot-shim slice into a kernel `.bss` store (DESIGN-12).
 ///
 /// The capacity check is fail-closed; the same-address case is skipped so
@@ -1422,7 +1439,18 @@ fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
     }
 }
 
-pub fn store_kernel_info(kernel_info: &KernelInfo) {
+/// Stores the boot `KernelInfo` into the process-global slot and returns a
+/// reference into that slot.
+///
+/// kmain Phase A calls this; bootstrap test kernels that bypass kmain call
+/// it explicitly before any consumer of [`KERNEL_INFO`] (e.g.
+/// `dispatch_diagctl`'s kernel-span translation).
+///
+/// The returned reference points at the `.bss` global, not at the caller's
+/// input. A later call updates the slot in place, so callers must not hold
+/// the reference across a second store (boot is single-threaded; after boot
+/// the slot is read-only).
+pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
     // SAFETY: boot is single-threaded (before BKL exists); one write, then
     // read-only for the rest of the run.
     unsafe {
@@ -1468,7 +1496,15 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
                 // landed `&'static str` is derived from the `static` itself
                 // (store-lifetime backing), not from a local borrow.
                 let slot = &mut (*bnames)[i];
-                slot[..n].copy_from_slice(&bytes[..n]);
+                // `copy_from_slice` requires non-overlapping source and
+                // destination. A public caller may pass a `name` that already
+                // points into this landing pool while the module slice itself
+                // lives elsewhere, so use the overlap-safe `ptr::copy` here.
+                // SAFETY: `slot` is a live 16-byte name slot, `bytes` is a
+                // live `&str` slice, and `n <= BOOT_MODULE_NAME_LEN - 1`.
+                unsafe {
+                    core::ptr::copy(bytes.as_ptr(), slot.as_mut_ptr(), n);
+                }
                 // Boot-module names are expected to be ASCII literals
                 // (boot-shim `MODULE_NAMES`), but this function is public and
                 // an arbitrary caller could pass a non-ASCII name whose
@@ -1524,6 +1560,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         k.startup_objects = core::slice::from_raw_parts(tstore.as_ptr(), tsrc.len());
         *KERNEL_INFO.get() = Some(k);
     }
+    crate::kernel_info().expect("store_kernel_info: KERNEL_INFO just written")
 }
 
 /// Kernel main — called after the higher-half transition.
@@ -1698,7 +1735,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         Console::init();
     }
 
-    store_kernel_info(kernel_info);
+    let kernel_info: &KernelInfo = store_kernel_info(kernel_info);
     boot_stage!("kernel: kmain A.1b console+kinfo ok\n");
 
     // Phase A.2 is intentionally empty: the kernel keeps no mutable copy of
@@ -5690,7 +5727,11 @@ mod tests {
         windows.push_2m(0x0800_1234);
         assert_eq!(
             windows.as_slice(),
-            &[(0x0800_0000, 0x0800_0000 + DEV_PIECE)]
+            &[PhysRange::new(
+                PhysBytes(0x0800_0000),
+                PhysBytes(0x0800_0000 + DEV_PIECE)
+            )
+            .unwrap()]
         );
     }
 
@@ -5705,7 +5746,10 @@ mod tests {
         );
         let mut windows = BootWindows::new();
         push_platform_windows(&mut windows, &[source]);
-        assert_eq!(windows.as_slice(), &[(0x0800_1234, 0x0800_5234)]);
+        assert_eq!(
+            windows.as_slice(),
+            &[PhysRange::new(PhysBytes(0x0800_1234), PhysBytes(0x0800_5234)).unwrap()]
+        );
     }
 
     #[test]
@@ -5716,10 +5760,17 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "empty or reversed")]
+    fn boot_windows_reject_empty_ranges() {
+        let mut windows = BootWindows::new();
+        windows.push(0x1000, 0x1000);
+    }
+
+    #[test]
     fn boot_windows_accept_ranges_below_the_phys_limit() {
         let mut windows = BootWindows::new();
         windows.push(0x1000, 0x2000);
-        assert_boot_windows_addressable(&windows, 0x2000);
+        let _ = windows.check(0x2000);
     }
 
     #[test]
@@ -5727,7 +5778,7 @@ mod tests {
     fn boot_windows_reject_ranges_above_the_phys_limit() {
         let mut windows = BootWindows::new();
         windows.push(0x1000, 0x2001);
-        assert_boot_windows_addressable(&windows, 0x2000);
+        let _ = windows.check(0x2000);
     }
 
     /// Regression: `store_kernel_info` must deep-land the

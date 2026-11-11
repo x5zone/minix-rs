@@ -1334,6 +1334,16 @@ impl DtbMemoryMap<'_> {
             }
         }
 
+        // The DT spec does not guarantee `/memory` entries appear in
+        // ascending base order, but `KernelInfo::validate` requires the
+        // free/reserved tables to be sorted. Sort both before returning so
+        // a legal but unordered device tree doesn't fail at kmain with a
+        // message indistinguishable from firmware corruption.
+        let free_slice = &mut free[..free_n];
+        free_slice.sort_by_key(|r| r.base.0);
+        let reserved_slice = &mut reserved[..reserved_n];
+        reserved_slice.sort_by_key(|r| r.base.0);
+
         Ok(DtbArrays {
             free,
             free_n,

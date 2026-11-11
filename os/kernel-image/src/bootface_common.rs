@@ -7,8 +7,18 @@
 //! allocator) stays in its own file with a cross-reference; so does the
 //! `say`/`say_hex` pair, whose `early_console` implementation differs by arch.
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use minix_boot::{NR_BOOT_MODULES, BootModule, MemoryRegion};
+
+/// The direct-boot face owns one `BootStorage` in `.data` (its `new()` value
+/// is not all-zero, so it is loadable data rather than zero-fill `.bss`);
+/// keep the landing footprint bounded so a capacity increase does not
+/// silently eat boot-time image data.
+const _: () = assert!(core::mem::size_of::<minix_boot::BootStorage>() <= 16 * 1024);
+
+/// `place_modules` writes `NR_BOOT_MODULES` slots; the storage's module
+/// partition must be at least that wide. Without this, a capacity mismatch
+/// becomes a boot-time panic instead of a compile error (DESIGN-D2-14).
+const _: () = assert!(minix_boot::WIRE_MODULE_CAP >= NR_BOOT_MODULES);
 
 use boot_shim::opensbi_helpers::BootFileTable;
 
@@ -168,7 +178,7 @@ pub(crate) fn place_modules<B, S, H>(
     table: &BootFileTable,
     memmap: &[MemoryRegion],
     pool: PlacementPool,
-    module_table: &mut [BootModule; NR_BOOT_MODULES],
+    module_table: &mut [BootModule],
     mut bump_alloc_pages: B,
     say: S,
     say_hex: H,
@@ -178,6 +188,11 @@ where
     S: Fn(&str),
     H: Fn(u64),
 {
+    assert!(
+        module_table.len() >= NR_BOOT_MODULES,
+        "place_modules: module table has {} slots, need {NR_BOOT_MODULES}",
+        module_table.len()
+    );
     let entries = table.valid_entries();
     if entries.len() < NR_BOOT_MODULES {
         say("  table holds 0x");
@@ -260,24 +275,3 @@ where
     Some(())
 }
 
-/// Static landing pad for the normalized `param_buf`.
-///
-/// Both boot faces are allocator-free, so the normalized records are written
-/// into this fixed buffer before `arch_boot`; the kernel's `store_kernel_info`
-/// deep-copies them into its own `.bss` immediately afterwards.
-pub(crate) fn param_landing() -> &'static mut [u8] {
-    static mut PARAM_BUF: [u8; minix_boot::PARAM_BUF_CAP] =
-        [0u8; minix_boot::PARAM_BUF_CAP];
-    // One `&'static mut` only: a second call would create two aliasing
-    // mutable references to the same buffer. The boot faces call this once;
-    // fail fast if that contract ever changes.
-    static PARAM_TAKEN: AtomicBool = AtomicBool::new(false);
-    assert!(
-        !PARAM_TAKEN.swap(true, Ordering::AcqRel),
-        "param_landing() called twice; the buffer is a one-shot landing pad"
-    );
-    // SAFETY: one call per boot, single-hart; the buffer lives for the whole
-    // run and `addr_of_mut!` avoids creating a reference to the `static mut`
-    // itself.
-    unsafe { &mut *core::ptr::addr_of_mut!(PARAM_BUF) }
-}

@@ -406,6 +406,12 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64) -> ! {
 /// by the boot-shim is already live and must never be rebuilt.
 #[cfg(all(target_arch = "riscv64", feature = "fw-riscv64-uboot"))]
 fn rust_image_main(arena_pa: usize) -> ! {
+    if arena_pa == 0 {
+        early_console::write_str(
+            "### minix-rs kernel-image: no handoff arena (a0 == 0), halting\n",
+        );
+        halt();
+    }
     let _kernel_entry: usize = core::hint::black_box(KERNEL_ENTRY_ANCHOR as usize);
     early_console::write_str(
         "### minix-rs kernel-image: resuming high-half boot (handoff v1 arena, riscv64)\n",

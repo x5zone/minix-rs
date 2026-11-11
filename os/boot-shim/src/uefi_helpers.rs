@@ -973,6 +973,10 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
          not mounted the FAT partition, or the build did not embed the \
          kernel binary into the ESP image",
     );
+    assert_eq!(
+        layout.entry_point, layout.kern_virt_base.0,
+        "boot-shim: ELF entry does not equal the first PT_LOAD VMA"
+    );
     // A: claim the span before the root/bump and module allocations, so those
     // pages cannot land under the image. The ELF read itself is an earlier
     // pool allocation (its `Vec` comes from the UEFI allocator) and cannot be
@@ -1181,7 +1185,6 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     let mut report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
     // The classifier wrote the source/startup records directly into the wire;
     // the storage slices are intentionally empty on this leg.
-    report.records_in_wire = true;
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     // The classification must have marked every bootstrap allocation as
     // non-conventional; a containment here would hand live pages to the VM PMM.
