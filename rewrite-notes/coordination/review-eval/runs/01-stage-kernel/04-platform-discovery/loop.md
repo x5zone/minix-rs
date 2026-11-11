@@ -101,3 +101,20 @@
 3. 73 条转出项中，reader A/B/C 的 50 条有多少是真正的教学债、多少是文风偏好；本轮未逐条判 ③。
 4. §1.4 的 aarch64 UEFI DTB 交叉校验补写是否足够；它依赖 `dtb_copy` 的三阶段两快照纪律，未跑 QEMU。
 5. 文档 §5.1 的 26→18 测试计数与 `cargo test --list` 的关系；`minix-arch` 测试模块当前不编译，静态计数不等于能跑。
+
+## R1 完整 survey（V3.3）
+
+### R1 §0 基线
+
+- 轮型: full
+- edition: V3.3
+- schema: V3.3 from R1
+- 基线提交：`ce6288154`（D03 FREEZE 之后）
+- 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
+- 文档 sha256：`a8cb91b11e94a2c42daffe1b6cad558850025fcba9c0286e3ee51ab1f8e5e5b5`
+- 行数：2688
+- 设计快照：04 组齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`tools/doc-code-map.sh --check` 52/52 通过；清单见 `related-code.txt`
+- L0 预修：删除指向不存在文件 `os/libs/minix-boot/src/boot_form.rs` 的表格行，并把 §5.1 的“53 处”改为 52；该修改记入 R1 台账。
+- 范围声明：本篇范围 = 文档主题（平台发现：ACPI/DTB/多架构） + 52 个关联文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件。
+- 历史说明：本文件顶部的旧 §0–§8 是 V1 记录，保留为历史段、不追溯改账。

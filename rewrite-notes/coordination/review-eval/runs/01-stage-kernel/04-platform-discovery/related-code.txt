@@ -8,6 +8,7 @@ os/arch/src/riscv64/clock.rs
 os/arch/src/riscv64/smp.rs
 os/arch/src/x86_64/arch_init.rs
 os/arch/src/x86_64/clock.rs
+os/boot-shim/src/ebs_pair.rs
 os/boot-shim/src/opensbi_helpers.rs
 os/boot-shim/src/uefi_helpers.rs
 os/drivers/power/acpi/src/service.rs
@@ -19,8 +20,8 @@ os/kernel/src/misc.rs
 os/kernel/src/sched.rs
 os/kernel/src/smp.rs
 os/kernel/src/trap_dispatch.rs
+os/kernel/src/vm_handoff.rs
 os/kernel/tests/boot_integration.rs
-os/libs/minix-boot/src/boot_form.rs
 os/libs/minix-boot/src/handoff_v1_write.rs
 os/libs/minix-boot/src/kernel_info.rs
 os/libs/minix-boot/src/platform.rs

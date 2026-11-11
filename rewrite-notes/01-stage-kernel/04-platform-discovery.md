@@ -100,7 +100,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
    `KernelInfo.memmap` 各自解 DTB 的 `/memory` 子集——经 minix-boot 的
    `DtbMemoryMap` 单源共享，不属「引导阶段不解析」的违反；除 `/memory`
    外的节点仍归内核平台发现层（本篇）。aarch64 UEFI 腿另有一处更重的例外：
-   `find_platform_sources` 之后 `dtb_copy::preflight` 读 DTB 头、
+   `find_platform_sources_into` 之后 `dtb_copy::preflight` 读 DTB 头、
    `authorize_and_copy` 整块复制、`cross_validate_config_dtb` 解析整棵树并把
    `/memory` 与 UEFI 内存图交叉比对（5 条 panic 停机路径）；它不做 memmap 装配，
    目的是在 EBS 前拒绝不一致的配置表 DTB。
@@ -1547,10 +1547,10 @@ Rust 把发现前移的理由不是"把 C 的顺序反过来"，而是消费者�
 
 把 `init_from_kinfo` 挪到 `init_clock_and_interrupts` 之后会坏在哪：Phase B 的第一个动作 `init_protection` 已经无条件读 `platform_desc()`（用于 BSP logical id），所以无论把调用点挪到 `init_clock_and_interrupts` 之后还是 `boot_init_timer` 之后，都会先在 `init_protection` 触发同一句断言。两次排错的症状是同一句 panic——运行时断言文本是 `"Frozen::get before freeze"`（`Frozen::get` 的断言；文档注释里写作 "frozen before freeze"）——且调用栈相同；区别只是原本要验证的时钟/中断消费者更晚才被到达。`init_protection` 是 x86-64 与 aarch64/riscv64 共有的读取点，`os/kernel/src/lib.rs:fn init_protection`。
 
-### 4.2 boot-shim 侧：find_platform_sources 的三架构扫描（→3.6）
+### 4.2 boot-shim 侧：find_platform_sources_into 的三架构扫描（→3.6）
 
 ```rust
-// os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources —— 节选（x86-64 与兜底两段，注释保留）
+// os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into —— 节选（x86-64 与兜底两段，注释保留）
         // On x86-64, look for ACPI RSDP (prefer ACPI 2.0+).
         #[cfg(target_arch = "x86_64")]
         {
@@ -2329,7 +2329,7 @@ C 行为到 Rust 重表达的四类汇总：
 | 段 | x86-64 | aarch64 | riscv64 | 共同语义 |
 |---|---|---|---|---|
 | ① 固件描述 | UEFI 配置表 → ACPI RSDP | 配置表 → DTB（spec/legacy GUID）或 ACPI RSDP | OpenSBI `a1` → DTB | 固件给出一份只读描述 |
-| ② boot-shim 取址 | `find_platform_sources` 扫 `ACPI2_GUID`/`ACPI_GUID` | 先 DTB 两段，再 ACPI 两段 | `dtb_ptr()` → `PlatformDescSource::new(DTB, ...)` | 只搬物理地址，不解析 |
+| ② boot-shim 取址 | `find_platform_sources_into` 扫 `ACPI2_GUID`/`ACPI_GUID` | 先 DTB 两段，再 ACPI 两段 | `dtb_ptr()` → `PlatformDescSource::new(DTB, ...)` | 只搬物理地址，不解析 |
 | ③ 内核分派 | `parse_by_kind(RSDP)` | `parse_by_kind(DTB/RSDP)` | `parse_by_kind(DTB)` | kind 标签 → 解析器 |
 | ④ 解析产物 | `AcpiDesc`（MADT LAPIC/IOAPIC/拓扑） | `DeviceTreeDesc` 或 `AcpiDesc`（GICv3/GICC/GICD/GICR） | `DeviceTreeDesc`（PLIC/CLINT/ACLINT/拓扑） | 描述符自包含 |
 | ⑤ 冻结 | `Frozen<PlatformContext>` | 同左 | 同左 | 一次 Release 冻结 |
@@ -2471,7 +2471,7 @@ $ rg -n 'test-smp-topo' os/qemu-tests/run_all.sh
 
 预期输出的关键行（三个变体各自的横幅）：`### test_smp_topo: discovering topology (RSDP → MADT)...`（x86_64）、`### test_smp_topo (aarch64): topology discovery pin (ACPI)`、`### test_smp_topo (riscv64): discovering topology (DTB via a1)...`；随后是 `  nr_cpus = 0x0000000000000004`（三个变体这一行都以 `, bsp … = 0x…` 结尾，aarch64 的标签写作 `bsp mpidr/hw_id`）——三个架构的早期控制台都把 `u64` 固定写成 16 位十六进制（`os/plat/src/x86_64/early_console.rs:fn write_hex`，另外两个架构同形），所以个位数也带前导零。接着 x86_64 与 riscv64 变体各打印一组 `  cpu[0x…] hw_id = 0x…`（每颗 CPU 一行，索引与值都是 16 位十六进制；aarch64 变体不打印这一组），末行按变体分别是 `### TEST_RESULT: PASS test-smp-topo ###`、`### TEST_RESULT: PASS test-smp-topo-aarch64 ###`、`### TEST_RESULT: PASS test-smp-topo-riscv64 ###`。
 
-宿主单测证明解析逻辑，真机门证明两件宿主测试覆盖不到的事：固件实际写的字节形状，以及 `find_platform_sources` 的 GUID 扫描（§4.2）。
+宿主单测证明解析逻辑，真机门证明两件宿主测试覆盖不到的事：固件实际写的字节形状，以及 `find_platform_sources_into` 的 GUID 扫描（§4.2）。
 
 把契约写成"APIC ID 必须是 0,1,2,3"会坏在哪：QEMU 的 `-smp` 拓扑参数可以合法地改变 ID 分配，测试会在机器配置变化时误报失败，而解析器是对的。现测试把这组值降级为打印项，只对"数量、互异、执行 CPU 在内"三条与解析器行为直接相关的事实设断言。
 
@@ -2481,7 +2481,7 @@ $ rg -n 'test-smp-topo' os/qemu-tests/run_all.sh
 
 | 缺口 | 影响 | 现有替代覆盖 | TODO |
 |---|---|---|---|
-| `os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources` 没有单测（该文件有 6 条 `#[test]`（1 条测 `KernelInfo` 字段、5 条测 bootstrap memmap 边界），均不覆盖 `find_platform_sources`） | GUID 扫描的匹配逻辑只靠真机验证 | 10 个测试内核直接调用它（`test-smp-aps`、`test-smp-ipi`、`test-timer-irq`、`test-timer-irq-aarch64`、`test-smp-topo-aarch64`、`test-rt-birth`、`test-rt-birth-aarch64`、`test-user-trap`、`test-paging-faultloop`、`test-sysboot`——最后一个经独立脚本 `os/qemu-tests/test-sysboot.sh` 运行），`os/qemu-tests/run_all.sh` 覆盖三架构；`test-smp-topo`（x86_64）自己内联扫描配置表、不经这个函数 | **R04-T05** |
+| `os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into` 没有单测（该文件有 12 条 `#[test]`（1 条测 `KernelInfo` 字段、5 条测 bootstrap memmap 边界），均不覆盖 `find_platform_sources_into`） | GUID 扫描的匹配逻辑只靠真机验证 | 10 个测试内核直接调用它（`test-smp-aps`、`test-smp-ipi`、`test-timer-irq`、`test-timer-irq-aarch64`、`test-smp-topo-aarch64`、`test-rt-birth`、`test-rt-birth-aarch64`、`test-user-trap`、`test-paging-faultloop`、`test-sysboot`——最后一个经独立脚本 `os/qemu-tests/test-sysboot.sh` 运行），`os/qemu-tests/run_all.sh` 覆盖三架构；`test-smp-topo`（x86_64）自己内联扫描配置表、不经这个函数 | **R04-T05** |
 | `os/libs/minix-platform/src/kind.rs:fn parse_by_kind` 只测了未知 kind 一条 | 两个真实分支的返回类型靠各自解析器的单测间接覆盖 | `test_parse_synthetic_acpi`、`test_parse_riscv64_qemu_virt_dtb` 分别覆盖 `Acpi` 与 `DeviceTree` 变体 | **R04-T08** |
 | `aarch64` 的 `device_tree.rs` 分支（`parse_gic` 等）宿主无夹具 | 常规 aarch64 真机门走 ACPI（§5.2） | 真机覆盖在 `test-smp-aps-aarch64`（`-kernel`＋`-dtb` 直核，DTB 单源 → `parse_gic`）；riscv64 变体走的是 `parse_plic` / `parse_clint`，共享的只有 `parse_cpu_topology` 的遍历骨架；`test_check_gic_madt_decision_table` 覆盖 aarch64 的 ACPI 侧决策 | **R04-T04** |
 
@@ -2489,7 +2489,7 @@ $ rg -n 'test-smp-topo' os/qemu-tests/run_all.sh
 
 ```bash
 $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
-53
+54
 ```
 
 口径 = **条**（每一处 `&[]` 表达式算一条）。分布：
@@ -2501,17 +2501,16 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | `os/kernel/src/lib.rs` | 6 | `#[cfg(test)]` 夹具 |
 | `os/kernel/src/kerninfo.rs` / `os/libs/minix-boot/src/handoff_v1_write.rs` | 各 1 | 夹具 |
 | `os/libs/minix-boot/src/kernel_info.rs` | 1 | `KernelInfo` 构造夹具 |
-| `os/libs/minix-boot/src/boot_form.rs` | 1 | `#[cfg(test)]` 夹具（启动形态测试的 `KernelInfo` 构造） |
 | `os/kernel/tests/boot_integration.rs` | 1 | 集成测试夹具 |
 | `os/kernel/src/vm_handoff.rs` | 1 | 夹具 |
 | `os/boot-shim/src/ebs_pair.rs` | 1 | 夹具 |
 | 21 个极简测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/` 下，如 `hello-boot` / `test-paging-enable` / `test-protection` 各架构变体；全量即 §6.2 #4 输出里的测试内核条目） | 各 1 | 这些测试内核在 `main.rs` 里直接构造 `KernelInfo`，不经过 boot-shim 的固件发现阶段 |
 
-判断一处 `&[]` 是正常夹具还是覆盖漏洞的判据：**被测单元是否依赖平台发现**。上述 53 处的被测单元（页表映射、ELF 装载、进程初始化、内核映像布局）都不读平台描述符，所以不需要喂真实 DTB/ACPI；而三个 `test-smp-topo` 变体不在这份名单里——它们自己扫配置表 / 读 `a1` 并构造真实来源，发现链的真机覆盖由它们承担。
+判断一处 `&[]` 是正常夹具还是覆盖漏洞的判据：**被测单元是否依赖平台发现**。上述 52 处的被测单元（页表映射、ELF 装载、进程初始化、内核映像布局）都不读平台描述符，所以不需要喂真实 DTB/ACPI；而三个 `test-smp-topo` 变体不在这份名单里——它们自己扫配置表 / 读 `a1` 并构造真实来源，发现链的真机覆盖由它们承担。
 
 给每个用 `&[]` 的夹具都塞一份真实 DTB 会坏在哪：被测单元不读平台描述符，塞进去的字节没有任何断言会碰它，测试数上升而覆盖面不变；更糟的是这些测试会开始依赖"夹具里的 DTB 与解析器实现同步"，解析器一改就集体失败，失败原因与被测单元无关。
 
-一条给后续新增测试的判定准则：新增测试若涉及平台路径，优先让 boot-shim 端的 `find_platform_sources` 真实工作（走配置表扫描），而不是手工传 `&[]`；确实需要隔离被测单元时，用 mock 描述符而不是空切片。
+一条给后续新增测试的判定准则：新增测试若涉及平台路径，优先让 boot-shim 端的 `find_platform_sources_into` 真实工作（走配置表扫描），而不是手工传 `&[]`；确实需要隔离被测单元时，用 mock 描述符而不是空切片。
 
 ### 5.4 机制 → 需要证明什么（反转核对表）
 
@@ -2541,7 +2540,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | R04-T02 | MADT 遍历对畸形记录（零长 / 越界）的负向载体 | **测试侧** |
 | R04-T03 | ACLINT MTIMER 备用路径（`aclint=on` 形态）的**宿主夹具**（真机已由 `test-smp-ipi-riscv64` 覆盖） | **测试侧** |
 | R04-T04 | aarch64 设备树分支（`parse_gic` 等）的**宿主 DTB 夹具**（真机已由 `test-smp-aps-aarch64` 的 `-dtb` 直核覆盖） | **测试侧** |
-| R04-T05 | `find_platform_sources` 的宿主单测（两段顺序与 DTB 命中路径） | **测试侧** |
+| R04-T05 | `find_platform_sources_into` 的宿主单测（两段顺序与 DTB 命中路径） | **测试侧** |
 | R04-T06 | 多来源顺序与全失败兜底的载体（失败续源、debug 兜底 / release panic） | **测试侧** |
 | R04-T07 | `Frozen` 二次 `freeze` 的 debug 断言测试 | **测试侧** |
 | R04-T08 | `parse_by_kind` 两个真实分支返回类型的直接断言 | **测试侧** |
@@ -2590,7 +2589,7 @@ $ grep -rc '#\[test\]' os/libs/minix-platform --include=*.rs | awk -F: '{s+=$2} 
 
 # 4) platform_sources 空切片的总条数与分布
 $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
-53
+54
 $ rg -c 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | sort -t: -k2 -rn | head -3
 os/kernel/src/dm_coverage.rs:10
 os/arch/src/arch/boot.rs:9
