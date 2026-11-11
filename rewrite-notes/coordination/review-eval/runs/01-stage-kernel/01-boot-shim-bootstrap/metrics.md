@@ -212,3 +212,25 @@
 - 重构: 提出 8 / 接受 8 / 实施 3（D2-01 栈窗口修复、D2-02 DTB 排序、D2-03 死标志清理）
 - 成本: agent 6 / token 未采集 / 耗时 约 2 小时
 - 回读与回归: 文档六门全绿；kernel 866 / boot-shim 136 / minix-boot 196 passed；QEMU 5 PASS + 1 SKIP
+
+## R34 确认轮
+
+- 发现总数: 28（survey 26：FACT-A 6、FACT-B 3、DESIGN-D2 11、READER-A 1、READER-B 3、READER-C 2；certify #1 新准入 2：FACT 1 P0、READER 1 P3）
+- 唯一根因数: 28
+- 本轮新准入: 28（全部 origin R34）
+- certify 新准入: 0（certify #1 的 2 条已在本轮修完；certify #2 重读为 0）
+- 重复合并: 0
+- 自引入: 1（RD34-CERT-FACT-01 由本轮 §3.4.2 修复句引入，origin R34；已修）
+- 处置: ① 10 / ② 4 / ④ 6 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 8
+- 未闭环: 0
+- 轮结果: CONVERGED
+- 代裁决: 1（D-049 批准 R34-design-batch 与 F-R34-01 延期）
+- ARCH 提案: 0
+- 用户否决: 0
+- 轮型: confirmation
+- edition: V3.3
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 4 / 接受 4 / 实施 0 / 登记 4
+- 成本: agent 8 / token 未采集 / 耗时 约 4 小时
+- 回读与回归: 文档六门全绿；certify #1 新准入 2（已修）、certify #2 新准入 0；`cargo test -p minix-kernel --features mock` 866 passed / 0 failed / 8 ignored；QEMU 本轮未跑（无 arch/boot 行为改动）

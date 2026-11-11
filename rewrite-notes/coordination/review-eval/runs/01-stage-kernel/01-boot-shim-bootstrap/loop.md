@@ -1927,3 +1927,94 @@ RB24 首轮 13 项逐项处置：
 
 - 三问：① 本轮不变量是"栈必须在恒等窗口内、DTB 排序不依赖固件顺序"；② 前提是链接脚本 `.stack` 在 `__bss_end` 之后；③ 证据是 46 行台账、QEMU 5 PASS。
 - FACT-B 归零是 V3.1 流程最强的收敛证据。
+
+## R34 确认轮（V3.3 四态模型）
+
+### R34 §0 基线
+
+- 轮型: confirmation
+- edition: V3.3
+- schema: V3.3 from R31
+- 基线提交：`79b1c242f`（R33 收口补正之后；R33 已于本基线 `--round R33` PASS）
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 文档 sha256：`d909c236a373636678e66b13c0ad5ebde769ead738f09d81a846803647fcb98c`
+- 行数：3565
+- 工作树：除 3 个未跟踪文件（`prompt/review-loop-r26-r29-report.md`、`rewrite-notes/01-stage-kernel/01-design-learn.md`、`meta/01-boot-shim-bootstrap-r26.md`）外干净；本轮不触碰
+- 语料条目：D01（`CORPUS.md` 第二节）
+- 设计快照：`01-outline.v4.md`、`01-outline-review.v4.md`、`01-design.v3.md` 等齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`tools/doc-code-map.sh --check` 54/54 通过
+- 范围声明：本篇范围 = 文档主题（boot-shim 引导准备与控制权交接）+ 文档声明的关联代码 + 本轮修复触碰的文件。不在范围 = 相邻篇目、未列入清单的文件、设计批的结构性重构。
+- 轮次语义：确认轮（`review-evals.md` §6A 四态模型）——全量 survey；修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项；不实施 ⑥（设计项登记 `OPEN-DEBT.md`）；读者/设计 P3 走 §4.0c 门槛进 `suggestions.md`。`certify 新准入 = 0` 才可宣告 `CONVERGED`。
+
+### R34 §1 面板
+
+- 并发：第一波 3 角色（fact-a / fact-b / design-d2），第二波 3 角色（reader-a / reader-b / reader-c），第三波 2 角色（certify-fact / certify-reader）。
+- 角色与材料：
+  - P-FACT-A：文档全文 + `minix3/` C 源；未读历史评审、其他面板输出、`expected/`。输出 `panel/round34/fact-a.md`，6 条（P1 1 / P2 2 / P3 3）。
+  - P-FACT-B：文档全文 + `os/` Rust 源与测试；未读 C 侧结论之外的历史评审、其他面板输出。输出 `panel/round34/fact-b.md`，3 条（P1 1 / P2 2）。
+  - P-DESIGN-D2：文档第 3/4 章 + 54 个关联 Rust 文件 + trait-audit 读数；未读作者解释、历史评审、其他面板输出。输出 `panel/round34/design-d2.md`，11 条（P2 4 / P3 7），`## ARCH-PROPOSAL` = 无。
+  - P-READER A/B/C：只读文档全文与 `reader-profile.md`；未读源码、其他文档、其他面板输出。输出 `reader-a.md`（1 条 + 8 SUGG）、`reader-b.md`（3 条 + 11 SUGG）、`reader-c.md`（2 条 + 7 SUGG）。READER-A 首份报告标题缺编号，已退回同角色改标题，正文未变。
+  - certify-fact：只读本轮 25 个改动段与源码；报 1 条 P0（§3.4.2 检索句）。输出 `certify-fact.md`。
+  - certify-reader：只读本轮改动段及邻句；报 1 条 P3（`xboard=1` 笔误）。输出 `certify-reader.md`。
+- 材料隔离：读者未读源码；设计未读作者解释；事实角色未读其他面板。面板前后工作树只含本轮预期改动。
+- 缩编：无。本篇为启动链高风险篇目，六角色全量。
+
+### R34 §2 发现
+
+- survey 26 条：FACT-A 6、FACT-B 3、DESIGN-D2 11、READER-A 1、READER-B 3、READER-C 2。
+- P0 = 0（survey）；P1 = 2（FACT-A-01 `arch=` 读者面；FACT-B-01 版本常量归属）；P2 = 14；P3 = 10。
+- certify #1 新准入 2：`RD34-CERT-FACT-01`（P0，§3.4.2 检索句自引入）、`RD34-CERT-READER-01`（P3，`xboard=1` 笔误）。均在本轮修完。
+- 逐条位置、证据与最小修复见 `defect-ledger.md` R34 段与 `panel/round34/*.md`。
+
+### R34 §3 归因
+
+- 处置分布：① 10 / ② 4 / ④ 6 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 8 = 28。
+- 冻结决策检查：0 条 `re-litigation`；D2-04 的 wire 删除按 `[DEL]` 处理，未与 D-034 的咨询标记冲突。
+- 范围门：0 条 adjacent 被当阻塞。四项设计 P2 同属本篇启动链范围，登记 `R34-design-batch`；aarch64 跨距缺口登记 `F-R34-01`。
+- 设计分类：D2-02/03/05 `[MODERN]`，D2-04 `[DEL]`；确认轮不实施 ⑥，D-049 批准延期到下一 design batch。
+
+### R34 §4 修复
+
+- 文档（facts，①）：
+  - §2.3 三处 `arch=` 读者面改为“内核侧无读点 + 用户态 RAMDS 的 `rc` 经 `sysenv arch` 读”；`xboard=2` 例子补“不是首条记录”前提。
+  - §2.7/§3.5 两处引文块补省略标记；§4.3 `image[NR_BOOT_PROCS]`；§2.6.2 行号 `33-39`；§2.4 `kinfo` 段落改 `.unpaged_bss`。
+  - §2.4.1.4 版本常量改为 `VM_BOOT_HANDOFF_VERSION`；五处 Rust 引文按源码重排；§4.6 栈对齐来源改为“链接脚本 + x86_64 asm + `jump_to_kmain`”。
+- 文档（读者，④）：§3.8 模块清单口径、§3.4.2 审计句、§5.2.2 规划层落点、§3.4.1/§4.4 L9 覆盖、§3.3 收敛层、§4.4 非 strict 来源覆盖。
+- 代码（同步项）：`os/kernel/src/vm_handoff.rs` 的模块清单注释与文档同口径（仅注释）。
+- certify 修复：§3.4.2 检索句改为点名 `boot_params.rs:137/174` 的实际命中；`xboard=1` → `xboard=2`。
+- 未实施（② 转出）：RD34-DESIGN-D2-02/03/04/05 进 `OPEN-DEBT.md` 的 `R34-design-batch`，D-049 批准延期；`F-R34-01` 同表。
+
+### R34 §5 复验
+
+- 文档六门：citation `blocks=69 checked=29 failed=0 skipped=39 warned=1`；anchor `105/105`；structure/ref 通过；style-lint（文件级，`tools/doc-style-lint.sh <doc>`）`error级=0`；density 承载门通过；doc-code-map `54/54`。`doc-style-lint.sh --diff` 的 7 条 SL-4 全部来自台账的 `用户批准 2026-11-11`（② 门要求 ISO 日期），不是正文文档缺陷——见 §8 第 5 条。
+- 旧串归零（逐条）：`仓内没有它的读者`、`arch= 只有写点、没有读点，`、`boot_image image[]`、`protect.c:33-35`、`作为全局对象落在 .bss`、`wire 信封版本 BOOT_HANDOFF_V1_VERSION = 9`、`三个镜像的入口 asm 显式把栈对齐`、`按 C 的 kinfo.module_list[] 排除 VM`、`镜像在 boot_validate_and_prepare 里既进不了`、`L0/L9 构建期对账守住`、`共享同一套取件库与 arch_boot 收敛点`、`两种拼写检索均零命中` 均为 0。
+- 宿主：`cargo test -p minix-kernel --features mock` → 866 passed / 0 failed / 8 ignored；源码仅注释同步，行为与 R33 基线一致。
+- certify #1：新准入 2（P0-fact + P3），均本轮修完；certify #2 重读改动句：新准入 0（`certify-fact.md` 第 217 行、`certify-reader.md` 第 159 行的 certify #2 小节各写明）。
+- QEMU：本轮未跑；无 arch/boot 行为改动，文档与注释同步不触 QEMU 条件。
+
+### R34 §6 指标
+
+- 见 `metrics.md` R34 块：发现 28、唯一根因 28、本轮新准入 28、certify 新准入 0、未闭环 0、① 10 / ④ 6 / ⑥ 4 / SUGG 8。
+
+### R34 §7 状态
+
+**CONVERGED**（确认轮出口）。G1–G9：in-scope P0/P1/P2 = 0；读者验收清单待修 = 0；FP 无；⑤ = 0；② = 0；机械门与宿主检查全绿；台账 28 行全部有处置与可重放复验；② 四项按 §4.0f 登记并由 D-049 销账；certify #2 新准入 = 0。
+限制：本轮是确认轮口径下的“无 open 项 + 无未销账债务”，不是零未知缺陷保证；设计 P2 四项与 aarch64 跨距断言在下一 batch 实施。
+
+### R34 §8 给 meta-review 的不确定点
+
+1. certify #1 抓到的 P0 是本轮修复句自引入的检索读数；说明“改完再读”有效，但也说明事实角色的机械 grep 不能替代 certify 的点名复核。
+2. 设计 P2 四项全部延期到下一 design batch；确认轮不实施 ⑥ 是规则要求，但“延期是否削弱了 CONVERGED 的含金量”值得 meta 判断。
+3. 读者 SUGGESTION 共 26 条（8+11+7）未入台账；其中 S-03/S-04/S-05 是改动段附近的措辞建议，未修，留给下一 edition 边界评估。
+4. QEMU 未跑；本轮无 arch/boot 行为改动，若有环境变化需在下一篇 L0 重新固定基线。
+5. **门冲突**：`doc-style-lint.sh --diff` 的 SL-4 禁止正文日期，而 ② 门的批准要件要求台账写 ISO 日期 `2026-11-11`。本轮按文件级 lint 判文档正文（0 error），台账日期视为门要求的凭证；建议下一 edition 给 `--diff` 增加轨迹文件豁免，否则每个带批准日期的轮次都会假红。
+
+### L6
+
+- 同 agent 收口：survey 26 + certify 2 = 28 条全部处置；P0 = 1（自引入，已修）；P1 = 2（已修）；CONVERGED 由确认轮出口给出。
+- BLIND-SPOT-DELTA：无新增结构性盲区；确认轮在“已修段的二次事实核对”上抓到 1 条 P0，验证了 certify 定点回读的必要性。
+
+### L6.5
+
+- 三问：① 本轮不变量是“文档事实必须可机械复核、读者口径跨节一致、确认轮不移动基线”；② 前提是 R33 已 ROUND-CLOSED、R34 只修新准入事实与同步项；③ 证据是 28 行台账、六门读数与 certify #2 的 0 新准入。
+- 资源重读：本轮盲区属“事实证据句被写成未发生的检索读数”，对应 `prompt/resources/` 的证据纪律类材料；检测模式已在 certify 的“点名复核”步骤体现，无需新增规则。

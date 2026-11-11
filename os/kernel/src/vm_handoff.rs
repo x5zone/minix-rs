@@ -30,7 +30,8 @@
 //!
 //! Note the two module lists are different on purpose: the deduction record
 //! keeps every blob, while the handoff module list (`VmBootHandoff.modules`,
-//! built by [`build_vm_handoff`]) excludes VM — C: `kinfo.module_list[]`.
+//! built by [`build_vm_handoff`]) excludes VM as a Rust-side choice — C's
+//! `kinfo.module_list[]` keeps VM and zeroes its entry after reclaim.
 //!
 //! The free list is then clipped to VM's Direct Map window
 //! (`VM PMM eligible = conventional ∩ DM-representable − LiveBootstrap`).

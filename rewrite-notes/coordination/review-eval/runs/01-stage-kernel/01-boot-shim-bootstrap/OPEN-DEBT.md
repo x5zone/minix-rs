@@ -17,4 +17,6 @@
 | F-R20-04 | P2 | ✅ 已修：补 reserved / from_memmap / dtb 覆盖的溢出/反向负控；minix-boot 192、kernel 862+8 |
 | F-R23-03 | P2 | ✅ 已修（R23 后）：删除恒空 `kern_ident`/`kern_ident_count` 与 `VM_BOOT_HANDOFF_MAX_IDENT`；`VM_BOOT_HANDOFF_VERSION` 8→9；VM server 与测试同步 |
 | R26-design-batch | P1 | ✅ 已实施（用户批准 2026-11-11，代理裁决 D-048）：D2-01/02/03/04/05 在 R27 code batch 落码或被后续轮取代；D2-07..12 的核心项（BootStorage 统一、BootStorageCell、store_kernel_info 返回值）已在 R29/R30 实施；残余项（参数互换 newtype、enum 哨兵）降为改进方向。D-043 由 D-048 销账 |
+| R34-design-batch | P2 | **用户批准 2026-11-11（代理裁决 D-049）延期至下一 design batch**：RD34-DESIGN-D2-02/03/04/05 四项设计改进（U-Boot 腿两个安装型全局参数化、直核腿改用 `collect_owned`、wire 派生标量删除、`store_kernel_info` 同值早返回）。确认轮不实施 ⑥（§3.6），登记后销账；下一 batch 在 D02 循环前评估 |
+| F-R34-01 | P2 | **用户批准 2026-11-11（代理裁决 D-049）延期至下一 code batch**：`check-layout.sh` 的 L9 只覆盖 riscv64 `bootface.rs`，aarch64 `bootface_a64.rs` 的 `KERN_SIZE` 无等价构建期对账；文档 §3.4.1/§4.4 已收窄措辞，代码侧断言待补 |
 | — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |
