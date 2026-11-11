@@ -3,6 +3,7 @@
 ## §0 基线
 
 - 工作流版本：V1（`rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md`）
+- schema: V3.3 from R31（R31 为 V3.3 起约束的首轮；R26–R30 为 V3.0–V3.2 历史段。R32/R33 的 P3 分流与设计分类于 2026-11-11 按本标记补正）
 - 基线提交：`31f3c1829`（V1 脚手架提交；其上 `e364d5f92` 为 WIP 快照）
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 文档基线 sha256：`9f6a2f3922f8c004a9eecd396fad2961dca1eaab502a81c4ce033b7397f655ac`
@@ -1877,6 +1878,7 @@ RB24 首轮 13 项逐项处置：
 
 - 原始输出：`panel/round33/*.md`
 - READER-C 报告用 `### FINDING` 三级标题，已归一为 `## FINDING`
+- 无发现面板：`fact-b.md`（报告自述 FINDING 0 条、SUGGESTION 2 条；Rust 侧断言逐条约 150 处核对无差异）
 
 ### R33 §2 发现
 
@@ -1898,6 +1900,7 @@ RB24 首轮 13 项逐项处置：
 
 - 文档六门全绿；kernel 866 / boot-shim 136 / minix-boot 196 passed。
 - QEMU 5 PASS + 1 SKIP（riscv64 bootface、aarch64 SMP AP、riscv64 U-Boot shim、x86 UEFI、aarch64 UEFI 全 PASS）。
+- V3.3 补正（2026-11-11）：R32/R33 的读者/设计 P3 按 §4.0c 改标 SUGG（36 + 13 行），R32 两条设计 P2 由 ⑥ 改 ①（文档/设计陈述缺陷，非代码重构），R33 两条设计 ⑥ 补 `[MODERN]`；补正明细见 `suggestions.md` 的“R32/R33 补正入账”。补正只改处置分类与证据措辞，不删除任何原始发现或修复记录。
 
 ### R33 §6 指标
 

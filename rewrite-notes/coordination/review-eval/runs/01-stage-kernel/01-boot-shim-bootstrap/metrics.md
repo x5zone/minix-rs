@@ -170,14 +170,14 @@
 
 ## R32 完整 survey
 
-- 发现总数: 19（FACT-A 1；FACT-B 1；READER-A 9；READER-C 1；DESIGN-D2 7；READER-B 0 [24 SUGG]）
-- SUGG: 24（READER-B 全部为建议级，不进台账）
+- 发现总数: 19（FACT-A 1；FACT-B 1；READER-A 9；READER-C 1；DESIGN-D2 7）
+- 面板建议（未入台账）: 24（READER-B 全部为建议级）
 - 唯一根因数: 19
 - 本轮新准入: 19（全部 origin R32）
 - certify 新准入: 0
 - 重复合并: 0（逐发现立根因）
 - 自引入: 0
-- 处置: ① 1 / ② 0 / ④ 10 / ⑤ 0 / ⑥ 7 / FP 1 / SUGG 24
+- 处置: ① 3 / ② 0 / ④ 2 / ⑤ 0 / ⑥ 0 / FP 1 / SUGG 13
 - 未闭环: 0
 - 轮结果: ROUND-CLOSED
 - 代裁决: 0
@@ -199,13 +199,12 @@
 - certify 新准入: 0
 - 重复合并: 0
 - 自引入: 0
-- 处置: ① 3 / ② 0 / ④ 35 / ⑤ 0 / ⑥ 8 / FP 0
+- 处置: ① 3 / ② 0 / ④ 5 / ⑤ 0 / ⑥ 2 / FP 0 / SUGG 36
 - 未闭环: 0
 - 轮结果: ROUND-CLOSED
 - 代裁决: 0
 - ARCH 提案: 0
 - 用户否决: 0
-- SUGG: 14
 - 轮型: full
 - edition: V3.1
 - re-litigation: 0
