@@ -35,25 +35,26 @@ CPU 在异常/特权级切换时需要预先知道的三件事，以及它们的
 
 引导方留下的表不能继续用的另一条理由在 C 代码里能看到：`prot_init` 不打算读它们、也不打算复用它们里的任何一条，而是从 `memset` 开始重建（`i386/protect.c` 的 [`prot_init`](minix3/minix/kernel/arch/i386/protect.c:prot_init)）。这不是"旧表一定坏"，而是新表的所有权与生命周期要由内核自己保证。
 
-### 1.2 三张表与三个问题
+### 1.2 三张表与四类入口
 
-三份答案落在三张表上，每张表的装填方式由它回答的问题决定：
+四类入口落在三张表与系统调用路径上，每张表的装填方式由它回答的问题决定：
 
 | CPU 需要知道的事 | C i386 的承载物 | Rust x86-64 的承载物 | aarch64 的承载物 | riscv64 的承载物 |
 |---|---|---|---|---|
 | 当前特权级与段可访问性 | GDT 段描述符（DPL）；段基址/限长 | GDT 仍保留 DPL，长模式段基址恒 0；访问控制主要靠页表 | 由 CPU 的异常级别决定（EL0/EL1），页表项权限位承载访问控制 | 由 CPU 的模式决定（U/S），页表项权限位承载访问控制 |
-| 异常/中断/syscall 的入口 | IDT 的 8 字节门（每向量一条） | IDT 的 16 字节门（每向量一条，含 IST 字段） | `VBAR_EL1` 指向的定长向量表 | `stvec` 指向的向量（Direct 模式；实现里在两条入口路径之间切换，见 §4.6） |
+| 异常/中断的入口 | IDT 的 8 字节门（每向量一条） | IDT 的 16 字节门（每向量一条，含 IST 字段） | `VBAR_EL1` 指向的定长向量表 | `stvec` 指向的向量（Direct 模式；见 §4.6） |
+| 系统调用入口 | SYSENTER/SYSCALL MSR 与 `int $32/$33` 软中断门（libc 主路径；后者是 IDT 门） | SYSCALL/SYSRET + `LSTAR`，另装 32–35 软中断门 | `svc` 经 `VBAR_EL1` | `ecall` 经 `stvec` |
 | 陷入内核用哪根栈 | TSS 的 `sp0`（32 位 TSS） | TSS 的 `sp0`（64 位 TSS，另加 IST 数组） | EL1 的当前栈指针（EL1h）；栈基址记在 `TPIDR_EL1` | `sscratch` 交换（硬件不换栈，由入口第一条指令交换） |
 
 C 的 earm-32 与 Rust 的 aarch64 是同一问题的两代载体：§2.7 讲 earm 的 `write_vbar`，§4.6 讲 aarch64 的 `VBAR_EL1`/`TPIDR_EL1`；两者回答同一问题，不要求寄存器名相同。
 
-三张表的一个差别是：②是逐条目不同的（x86 上 256 个门，每类事件一条），①和③各只有一套（DPL 存在少数几个描述符里、`sp0` 每 CPU 一个字段）。后文 §2.4、§2.5 的装填方式不同正是这个差别带来的——IDT 要按向量逐条建，GDT 与 TSS 只需建少数几条描述符与一个结构体。
+三张表的一个差别是：§1.1 的 ② 是逐条目不同的（x86 上 256 个门，每类事件一条），§1.1 的 ① 和 ③ 各只有一套（DPL 存在少数几个描述符里、`sp0` 每 CPU 一个字段）。后文 §2.4、§2.5 的装填方式不同正是这个差别带来的——IDT 要按向量逐条建，GDT 与 TSS 只需建少数几条描述符与一个结构体。
 
-③ 还带一个"内核态里又出事用哪根栈"的子问题，三架构的答法同样不同：x86 交给 IST（NMI 与 #DF 各有一条专用栈，64 位新增见 §3.1、门里的 IST 见 §4.4）；aarch64 不换栈，继续用 `SP_EL1`；riscv64 也不换栈，用当前 `sp`。陷阱入口如何判断"这次进来的是用户还是内核"（riscv64 用两条入口路径按 `stvec` 切换，进自用户态的那条无条件交换 `sscratch`）属异常/中断与 trap 入口的主题（`14-exception-interrupt.md`，异常与中断篇）。
+§1.1 的 ③ 还带一个"内核态里又出事用哪根栈"的子问题，三架构的答法同样不同：x86 交给 IST（NMI 与 #DF 各有一条专用栈，64 位新增见 §3.1、门里的 IST 见 §4.4）；aarch64 不换栈，继续用 `SP_EL1`；riscv64 也不换栈，用当前 `sp`。陷阱入口如何判断"这次进来的是用户还是内核"（riscv64 用两条入口路径按 `stvec` 切换，进自用户态的那条无条件交换 `sscratch`）属异常/中断与 trap 入口的主题（`14-exception-interrupt.md`，异常与中断篇）。
 
-x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留了一个槽，装载路径上也有一条 `lldt`（`i386/protect.c` 的 [`prot_load_selectors`](minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors)）。它不回答上面三问中的任何一问，本篇 §2.3 按源码如实处理。
+x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留了一个槽，装载路径上也有一条 `lldt`（`i386/protect.c` 的 [`prot_load_selectors`](minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors)）。它不回答上面四类入口中的任何一类，本篇 §2.3 按源码如实处理。
 
-本篇的"保护结构"一词指上面三张表与它们回答的三个问题。它不含页表：页表已经由 01/02 篇建好并在运行，本篇的 `prot_init` 里确实还有一段重建页表的代码（§2.6），RFC 式的说法是"保护结构初始化顺手把引导页表换成正式版"，C 的写法把两件事放在同一个函数里，Rust 把它们分开了（§3.5）。
+本篇的"保护结构"一词指上面三张表/系统调用路径与它们回答的四类入口。它不含页表：页表已经由 01/02 篇建好并在运行，本篇的 `prot_init` 里确实还有一段重建页表的代码（§2.6），RFC 式的说法是"保护结构初始化顺手把引导页表换成正式版"，C 的写法把两件事放在同一个函数里，Rust 把它们分开了（§3.5）。
 
 ### 1.3 "第一次行使特权"指什么
 
@@ -86,7 +87,7 @@ x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留�
 
 可以安全跳过的一条：描述符的位级格式（`segdesc_s` 的 `base_low`/`base_middle`/`base_high` 与 granularity 字节）不必背下来。本篇只解释三处用到它的代码（S 位的含义、DPL 占哪两位、限长的"0 表示 4G"约定），其余位在代码里各有宏名，读到再看。
 
-本篇沿用 §1.2 的定义：保护结构 = 三张表与三问，不含页表；页表由 01/02 篇建好并在运行，§3.5 只解释为什么 Rust 不再重建它。
+本篇沿用 §1.2 的定义：保护结构 = 三张表与四类入口，不含页表；页表由 01/02 篇建好并在运行，§3.5 只解释为什么 Rust 不再重建它。
 
 ---
 
@@ -137,10 +138,10 @@ void kmain(kinfo_t *local_cbi)
 
 BSS 自检用的是函数内的静态变量 `bss_test`。静态存储期的变量放在 BSS 段，链接脚本把 BSS 声明为一段需要清零的内存，但清零动作由装载方执行（装载器行为：实现分析在 `02-higher-half-kernel.md` §4.2，测试登记在 `01-boot-shim-bootstrap.md` §5.2.1 的 `test_bss_region_is_zeroed_after_load`）。`assert(bss_test == 0)` 在赋值之前读它一次：如果装载方没清，这里读到的是垃圾值，断言当场炸掉，比让它带着垃圾值跑进后续初始化要好。断言通过之后 `bss_test = 1`，这一句的作用是给下一次启动留证据（同一段内存被第二次使用时，值不再是 0）。
 
-第二个动作的两行 `memcpy` 源与目的是同一个对象：`kinfo` 是 [`i386/pre_init.c`](minix3/minix/kernel/arch/i386/pre_init.c) 里的文件级全局变量（`kinfo_t kinfo;`），`pre_init` 的收尾是 `return &kinfo;`，`head.S` 把这个指针压栈后传给 `kmain`，所以 `local_cbi == &kinfo`，第一行是一次全局自拷贝。第二行同理：`glo.h` 的 `#define kmess kmessages` 与 `pre_init` 里的 `cbi->kmess = &kmess;` 说明 `kinfo.kmess` 就是全局缓冲区 `kmessages` 自己的地址。两行代码体现的事实是"启动信息就落在内核自己的静态存储里"——引导侧（`pre_init` 本身就是内核代码）已经把 `kinfo` 与 `kmessages` 放在 `.bss` 上，`kmain` 不是把信息从别处搬进来，而是把这份约定再确认一遍。Rust 侧的情况不同——启动信息的交接形态与随之而来的故障记录见 §4.1。
+第二个动作的两行 `memcpy` 不是自拷贝：`pre_init.o` 经 `objcopy --prefix-symbols=__k_unpaged_` 改名后进入链接，它里的 `kinfo`/`kmessages` 落在 `.unpaged_bss`，是引导期暂存副本；`main.c` 里的 `kinfo`/`kmessages` 是 `usermapped_data.c` 定义的 `.usermapped` 最终全局，`kmain` 的 `local_cbi` 指向 `pre_init` 返回的 `.unpaged_bss` 暂存副本，`memcpy` 把它搬进最终全局。两行是“暂存副本 → 最终全局”的搬运：把 `pre_init` 填好的启动信息搬进 `.usermapped` 副本，之后 VM 等读者才看得到。Rust 侧的情况不同——启动信息由 boot-shim 引用交接，`kmain` 落 `.bss` 副本的故障记录见 §4.1。
 
 ```c
-/* 教学简化（只保留与自拷贝论证有关的四行；函数体省略），三处证据的原文。 */
+/* 教学简化（只保留与副本身份关系有关的四行；函数体省略），三处证据的原文。 */
 return &kinfo;                 // pre_init.c 收尾
 push %eax                      // head.S：把 pre_init 的返回值压给 kmain
 #define kmess kmessages        // glo.h
@@ -149,7 +150,7 @@ cbi->kmess = &kmess;           // pre_init.c
 
 第三步识别板子：`machine.board_id = get_board_id_by_name(env_get(BOARDVARNAME))`。它读的是启动参数里的环境变量，注释写着"We have done this exercise in pre_init so we expect this code to simply work!"——同一件事在 `pre_init` 里已经做过一次，这里只是把结果存进 `machine`。紧随其后的 `#ifdef __arm__` 串口初始化说明为什么 ARM 侧必须早于任何输出：串口没配好之前，调试输出无处可去。
 
-第四步 `kernel_may_alloc = 1` 需要对着定义点读。这个变量在 C 里是 `glo.h` 的 `EXTERN int`（声明），两处**定义**（带初值的那个副本）在 i386 与 earm 各自的 `pre_init.c` 里：
+第四步 `kernel_may_alloc = 1` 需要对着两份对象读。`glo.h` 的 `EXTERN int` 在普通编译单元里展开成零初始化的 BSS 定义（`table.c` 一侧的普通副本），而 `pre_init.c` 的 `int kernel_may_alloc = 1;` 经改名只服务未分页副本（`pg_utils.o` 的 unpaged 一侧）：
 
 ```
 $ grep -rn "int kernel_may_alloc" minix3/minix/kernel/
@@ -158,7 +159,7 @@ minix3/minix/kernel/arch/earm/pre_init.c:38:int kernel_may_alloc = 1;
 minix3/minix/kernel/arch/i386/pre_init.c:33:int kernel_may_alloc = 1;
 ```
 
-也就是说，进入 `kmain` 时它的值已经是 1；`kmain` 这一行是把同一句话再说一遍。真正会翻转它的地方在 `kernel/main.c` 的 [`bsp_finish_booting`](minix3/minix/kernel/main.c:bsp_finish_booting)（置 0，注释"Kernel may no longer use bits of memory as VM will be running soon"）。这个标志的读者是物理内存分配函数：
+也就是说，普通副本（`kmain` 与 `bsp_finish_booting` 使用的那一份）进入 `kmain` 时是 0，`kmain` 这一行是把它置 1 的唯一动作，是承重赋值而不是复述；未分页副本在 `pre_init` 阶段已经是 1，只服务 `pre_init` 自己的 `pg_utils` 路径。真正会翻转普通副本的地方在 `kernel/main.c` 的 [`bsp_finish_booting`](minix3/minix/kernel/main.c:bsp_finish_booting)（置 0，注释"Kernel may no longer use bits of memory as VM will be running soon"）。这个标志的读者是物理内存分配函数：
 
 ```c
 /* 节选（保留函数签名、`lowest` 初值与两处断言；`EMPTY` 在 `alloc_lowest` 函数体内 `#define EMPTY 0xffffffff`；此处以下为区间对齐与 memmap 遍历），minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest。 */
@@ -175,7 +176,7 @@ phys_bytes alloc_lowest(kinfo_t *cbi, phys_bytes len)
 
 第五步 `assert(sizeof(kinfo.boot_procs) == sizeof(image)); memcpy(kinfo.boot_procs, image, ...)` 把链接期就存在的 boot image 表 `image[]` 拷进启动信息。`image[]` 是 [`kernel/table.c`](minix3/minix/kernel/table.c) 里的纯静态表（进程号与名字）；模块的 `start_addr`/`len` 稍后由 `kmain` 在 `cstart` 之后的启动循环按 `kinfo.module_list` 回填（`ip = &image[i]`，[`kernel/main.c`](minix3/minix/kernel/main.c) 的 `ip->start_addr = mb_mod->mod_start;`），循环读写的是 `image[]` 本身。循环结束后，同文件的第二次 `memcpy(kinfo.boot_procs, image, ...)` 把填好 `start_addr`/`len` 的 `image[]` 同步给 `kinfo.boot_procs`；这份副本的读者是用户态 VM（`servers/vm/main.c` 的 `kernel_boot_info.boot_procs`），不是 `proc_init`。
 
-**把第二步的两行自拷贝 `memcpy` 删掉会怎样**：源与目的同一个对象，删掉前后 `kinfo`/`kmessages` 的内容没有区别，这一刀在 C 侧切不出后果；反事实要放到 Rust 侧才成立——Rust 的启动信息由 boot-shim 用引用交接，`kmain` 若不把它落进全局副本、继续用入口参数引用，就会重现 §4.1 记录的故障：参数引用被编译器 spill 到内核栈后读回，经参数读到的字段变成 `.rdata` 的 ASCII 垃圾，`validate` 在第一处不变量上 panic。依据：`i386/pre_init.c` 的 [`pre_init`](minix3/minix/kernel/arch/i386/pre_init.c:pre_init) 的定义与返回、[`lib.rs`](os/kernel/src/lib.rs) 里 `kmain` 的入口注释与 `:fn kernel_info`。
+**把第二步的两行 `memcpy` 删掉会怎样**：最终 `.usermapped` 全局保持全零，`module_list` 与 `kmessages` 丢失，`pg_identity` 的 `assert(cbi->mem_high_phys)`（`i386/pg_utils.c:170`）会在 `cstart`→`prot_init` 链上先炸；不是“切不出后果”。Rust 侧对应的是另一条故障：启动信息由 boot-shim 引用交接，`kmain` 若不把它落进全局副本、继续用入口参数引用，参数引用被编译器 spill 到内核栈后读回会变成 `.rdata` 的 ASCII 垃圾（§4.1）。
 
 ### 2.2 cstart 的调用序列与顺序不变量
 
@@ -452,7 +453,7 @@ int tss_init(unsigned cpu, void * kernel_stack)
 | `ss0` | `KERN_DS_SELECTOR` | CPU 在同一转场时加载到 SS |
 | `cs` | `KERN_CS_SELECTOR` | 转场后 CS 的期望值（由门/选择子决定，字段本身是备份；Minix3 不用硬件任务切换，没有读者） |
 | `ds`/`es`/`fs`/`gs` | `KERN_DS_SELECTOR` | 同上（数据段备份；没有读者） |
-| `iobase` | `sizeof(struct tss_s)` | 高于 TSS 限长（由 `init_param_dataseg` 按 size 折出的限长是 `sizeof - 1`，即恰好 +1 字节）即"没有 I/O 位图"；用户态 `in`/`out` 因此全部被拒 |
+| `iobase` | `sizeof(struct tss_s)` | 高于 TSS 限长（由 `init_param_dataseg` 按 size 折出的限长是 `sizeof - 1`，即恰好 +1 字节）即"没有 I/O 位图"；默认拒绝 CPL > IOPL 的 `in`/`out`，但 `enable_iop`/`SYS_IOPENABLE` 可授予 IOPL=3（`protect.c:51` 写 `psw |= 0x3000`），所以不是绝对全部被拒 |
 | `ist` | 本结构体没有该字段 | 32 位 TSS 没有 IST 数组；64 位才有（§3.1） |
 | 其余（`backlink`/`sp1`/`sp2`/`cr3`/通用寄存器区/`ldt`） | `memset` 清零 | 32 位硬件任务切换才用；Minix3 不用硬件任务切换 |
 
@@ -611,7 +612,7 @@ $ awk '/gate_table_exceptions\[\]/,/};/' minix3/minix/kernel/arch/i386/protect.c
   prot_init_done = 1;
 ```
 
-`pg_clear()` 清空的是同一个静态页目录数组（`i386/pg_utils.c` 的 [`pg_clear`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear)，`memset(pagedir, 0, sizeof(pagedir))`）。`pg_identity()` 把 1024 个页目录项全部填成"恒等映射"，每项 4MB：
+`pg_clear()` 清空的是当前对象里的 `pagedir`。`pg_utils.c` 被编译两份：`unpaged_pg_utils.o`（改名、`.unpaged_bss` 的 `pagedir`，`pre_init` 使用）与普通 `pg_utils.o`（`.bss` 的另一个 `pagedir`，`prot_init` 使用）。`prot_init` 的清空/建表/装载都作用在普通副本上；`pg_load()` 最后把这张新表的物理地址写进 CR3，从旧表切到新表——不是同一数组的原地重填。`pg_identity()` 把 1024 个页目录项全部填成"恒等映射"，每项 4MB：
 
 ```c
 /* 节选（保留循环、权限位组合与 PWT/PCD 分支；本块为连续逐字段落，无省略），minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity。 */
@@ -628,7 +629,7 @@ $ awk '/gate_table_exceptions\[\]/,/};/' minix3/minix/kernel/arch/i386/protect.c
         }
 ```
 
-两处细节可以自己核：恒等映射的权限位里带了 `I386_VM_USER`（对用户态可访问）与 `I386_VM_WRITE`——带 USER 位的原因 C 树没有注释，此处不替它编动机；可核的效果是这些条目都是 BIGPAGE，VM 接手根表时 `pt_init` 的复制循环跳过 BIGPAGE 条目（`vm/pagetable.c` 的 [`pt_init`](minix3/minix/servers/vm/pagetable.c:pt_init)），它们不会进入用户进程的页表；从 `mem_high_phys` 所在的 4MB 对齐块起，后面的目录项被标记为 `PWT|PCD`（直写、禁缓存）：比较用的是 4MB 掩码，所以最后一个仍含真实内存的 4MB 块也会被一起标记；那些完全在内存顶端之上的块不是真内存、按普通内存访问会出事。`pg_mapkernel()` 把内核所在的虚拟区段映射到它的物理区段，每项带 `PRESENT|BIGPAGE|WRITE` 而不带 `USER`（`i386/pg_utils.c` 的 [`pg_mapkernel`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel)）。`pg_load()` 把页目录的物理地址写进 CR3：
+两处细节可以自己核：恒等映射的权限位里带了 `I386_VM_USER`（对用户态可访问）与 `I386_VM_WRITE`——带 USER 位的原因 C 树没有注释，此处不替它编动机；可核的效果是这些条目都是 BIGPAGE，VM 接手根表时 `pt_init` 的复制循环跳过 BIGPAGE 条目（`vm/pagetable.c` 的 [`pt_init`](minix3/minix/servers/vm/pagetable.c:pt_init)），它们不会进入用户进程的页表；从 `mem_high_phys` 所在的 4MB 对齐块起，后面的目录项被标记为 `PWT|PCD`（直写、禁缓存）：比较用的是 4MB 掩码：`mem_high_phys` 未 4MB 对齐时，它所在的那最后一块真实内存也会被一起标记；对齐时被标记的是内存顶端之上的第一块。那些完全在内存顶端之上的块不是真内存、按普通内存访问会出事。`pg_mapkernel()` 把内核所在的虚拟区段映射到它的物理区段，每项带 `PRESENT|BIGPAGE|WRITE` 而不带 `USER`（`i386/pg_utils.c` 的 [`pg_mapkernel`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel)）。`pg_load()` 把页目录的物理地址写进 CR3：
 
 ```c
 /* 代码引用，minix3/minix/kernel/arch/i386/pg_utils.c:pg_load。 */
@@ -658,14 +659,14 @@ phys_bytes vir2phys(void *vir)
 }
 ```
 
-两份实现的差别是"要不要减平移量"，而这件事的前提是它们各自的运行时刻：`pre_init` 在重定位之前执行，那时内核符号还等于物理地址（02 篇 §2.2 的两段式布局），原样返回就是物理地址；`protect.c` 的版本在 `prot_init` 的高半执行期使用，传入的内核符号要减掉 `_kern_vir_base - _kern_phys_base` 才是物理地址。但这不是“任何内核符号都减”：`pg_utils.c` 里的 `pg_load` 也调 `vir2phys(pagedir)`，而 `pg_utils.o` 在改名名单里，它的调用解析到 `pre_init.c` 的恒等版；`pagedir` 本身落在 `.unpaged_bss`（链接在 `_kern_offset` 之前，VMA = 物理地址）。所以判据是“看这个符号/数据落在哪一段”，不是“函数在哪个时刻执行”。函数名相同，语义按符号所在段与调用点不同。C 侧对同一个问题只留了这一个函数名，读代码时按“谁在哪个前提下调它”判断。（两份不会在链接期相撞：`pre_init.o` 与 `pg_utils.o` 都在改名名单里（02 篇 §2.2），它们的调用解析到带前缀的 `__k_unpaged_vir2phys`；`protect.o` 未改名，用自己那份。）
+两份实现的差别是"要不要减平移量"，选择哪一份由对象副本决定：未分页副本处于重定位前布局，内核符号等于物理地址，原样返回即可；普通副本处于高半，传入的内核符号要减掉 `_kern_vir_base - _kern_phys_base`。两份实现绑定到两份 `pg_utils`：未分页副本的引用经改名绑定 `pre_init.c` 的恒等版；普通副本绑定 `protect.c` 的减偏移版（`prot_init` 里的 `pg_load` 调的是后者）。`pagedir` 在两个副本里也各有一份：未分页副本在 `.unpaged_bss`（VMA = 物理地址），普通副本在 `.bss`（高半）。判据同时看对象副本与符号所在段，不是“函数在哪个时刻执行”。
 
 现在可以回答"为什么重建"。源码给的理由在上面的注释里，一共两条，各自有明确的读者：
 
 - "we can map in VM, and we no longer rely on pre-relocated data"——重建后的表是 VM 进程将要载入并运行的那张表（`i386/protect.c` 的 [`arch_boot_proc`](minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc) 把 VM 的 ELF 段直接映射进这张页表）。理由落在**映射拓扑**上：`pre_init` 那张表建立于重定位前的布局，VM 的段与正式 VA 布局都不在其中——注释里的 "pre-relocated data" 指的就是这批映射；重建后的表才是 VM 装载所需的那张。
 - "Still need 1:1 for lapic and video mem and such"——恒等段此时仍未退位。LAPIC 的 MMIO、显存这类"地址就是物理地址"的对象要靠它访问，所以重建时必须立刻把它装回去。
 
-**把 `pg_identity(&kinfo)` 从重建段去掉、或把重建整段删掉只留 `pg_load()` 会怎样**：前者的后果可以逐步推：`pg_clear()` 已经把 1024 个目录项清成 0，恒等窗口在表里消失；清零与重填之间没有写 CR3，这几步自身的取指与写表靠 TLB 里的旧条目继续走——这就是"原地重填"能成立的机制（§3.5 会用同一机制解释 Rust 侧为什么不能照搬）；`pg_load()` 写入 CR3 之后，执行转而依赖重填后的表内容（此时高半已回、恒等未回——本反例删掉了 `pg_identity`），第一个按物理地址访问的对象成为现场——启动期访问 LAPIC 的 MMIO 或写显存时，目标地址在页目录里没有对应项，缺页，而故障地址不是高半地址而是物理地址本身（如 `0xFEE00000` 一段）。后者（删掉清空与重建只留 `pg_load`）在物理地址层面反而看不出差别：`pagedir` 是同一个静态数组的同一块物理内存，`pg_load` 写进 CR3 的值不因此改变；这也解释了为什么这段代码删掉后**冷启动可能照常跑**，它挡的是"第二次进入这段代码"与"此后表内容的正确性"这一类问题——与 §2.3 的 `memset` 是同一族。这里的"第二次进入"指重启路径：上一轮内核运行结束之后由监控程序重新进入内核（`kernel/main.c` 的 [`prepare_shutdown`](minix3/minix/kernel/main.c:prepare_shutdown) 与同文件的 `minix_shutdown`，§2.3）。与第一次进入的差别在字节来源：第一次进入时 `.bss` 的初值由装载方的清零与段体摆放定义（§2.1），第二次进入时 `pagedir` 里是上一轮留下的表项，`pg_clear`/`pg_identity`/`pg_mapkernel` 把 1024 个表项逐个写成本轮需要的值（该前提与 §2.1 `bss_test` 断言的关系见 §2.3 的括注）。依据：`pg_clear` 的清零范围、`pg_identity` 的循环、`prot_init` 的两句注释。
+**把 `pg_identity(&kinfo)` 从重建段去掉、或把重建整段删掉只留 `pg_load()` 会怎样**：前者，`pg_clear()` 把普通副本的新表清空，`pg_identity` 不装回恒等窗口，`pg_load()` 切 CR3 后第一个按物理地址访问的 LAPIC/显存缺页（故障地址是物理地址本身，如 `0xFEE00000` 一段）。后者更严重：普通副本的 `pagedir` 在 `.bss` 冷启动为零，`pg_load()` 切 CR3 后立即缺页/三重故障，不会“照常跑”；重建段的作用是给 VM 装载准备一张按正式 VA 布局建好的表，不是防重启。依据：`pg_clear` 的清零范围、`pg_identity` 的循环、`prot_init` 的两句注释与两份 `pg_utils` 对象。
 
 ### 2.7 earm 的 protect.c：另一份独立实现
 
@@ -776,14 +777,14 @@ GDT 的槽位对照（两张表的长度也一并现算）：
 
 ### 3.2 一条真实的顺序依赖拆出两个 trait（→§2.4、§2.5）
 
-C 的 `prot_init` 内部有两个独立职责：§2.4 的"TSS + 段描述符 + 内核栈"与 §2.5 的"IDT + 门 + 系统调用入口"。两者之间有一条真实的依赖：每个门的 `selector` 字段都写 `KERN_CS_SELECTOR`（`i386/protect.c` 的 [`int_gate`](minix3/minix/kernel/arch/i386/protect.c:int_gate)），所以门的可用性以 GDT 已被装载为前提。Rust 把这两个职责拆成两个 trait，并把顺序依赖写成接口契约（`protection.rs` 的 [`trait ProtectionArch`](os/arch/src/arch/protection.rs:trait ProtectionArch)、`trap_entry.rs` 的 [`trait TrapEntryArch`](os/arch/src/arch/trap_entry.rs:trait TrapEntryArch)）。
+C 的 `prot_init` 内部有两个独立职责：§2.4 的"TSS + 段描述符 + 内核栈"与系统调用 MSR，§2.5 的"IDT + 门"。两者之间有一条真实的依赖：每个门的 `selector` 字段都写 `KERN_CS_SELECTOR`（`i386/protect.c` 的 [`int_gate`](minix3/minix/kernel/arch/i386/protect.c:int_gate)），所以门的可用性以 GDT 已被装载为前提。Rust 把这两个职责拆成两个 trait，并把顺序依赖写成接口契约（`protection.rs` 的 [`trait ProtectionArch`](os/arch/src/arch/protection.rs:trait ProtectionArch)、`trap_entry.rs` 的 [`trait TrapEntryArch`](os/arch/src/arch/trap_entry.rs:trait TrapEntryArch)）。
 
 | 维度 | 单 trait 内 `#[cfg]` 分支 | 两个 trait（现码） |
 |---|---|---|
 | 加载顺序的表达 | 只能写在注释或运行期检查里 | 写在两个 trait 的文档契约里，调用点显式依次调用 |
 | 实现体量 | 每个实现里混进另一职责的分支 | 每个实现只回答自己那组问题 |
 | 单元测试 | 测"保护"要连带构造向量表 | [`protection.rs`](os/arch/src/x86_64/protection.rs) 与 `:trap_entry.rs` 各自可测 |
-| 跨架构共性的表达 | 共性被分支淹没 | `ProtectionArch` 的接口对三个架构都表达"特权级 + 栈" |
+| 跨架构共性的表达 | 共性被分支淹没 | `ProtectionArch` 的接口保留"特权级 + 栈"的形状；当前 OS 层没有特权级的运行期消费者，`Privilege` 类型仅测试/接口预留 |
 
 职责到方法的映射（把 §2.4/§2.5 的 C 函数对上）：
 
@@ -805,7 +806,7 @@ C 的 `prot_init` 内部有两个独立职责：§2.4 的"TSS + 段描述符 + �
 
 ### 3.3 表装进 static 再 load：地址稳定成为接口外的契约（→§2.4）
 
-`lgdt`/`lidt`/`ltr` 把表的地址写进 CPU 的寄存器。写进去的地址在此后一直生效，直到下一次装载；因此"表对象在装载期间不能移动、不能消失"是一条必须满足的前提。C 侧它自动成立：`gdt`/`idt`/`tss` 是文件级静态数组，地址从链接期起就是常量。Rust 侧它不自动成立：表被收进结构体，结构体沿值语义传递，移动与析构都会改变地址或让字节失效。现码的选择是把实例先搬进全局、再装载：
+以下讨论只适用 x86-64（GDT/TSS/IDT 是内存表）；aarch64/riscv64 的保护状态是寄存器，不进入全局。`lgdt`/`lidt`/`ltr` 把表的地址写进 CPU 的寄存器。写进去的地址在此后一直生效，直到下一次装载；因此"表对象在装载期间不能移动、不能消失"是一条必须满足的前提。C 侧它自动成立：`gdt`/`idt`/`tss` 是文件级静态数组，地址从链接期起就是常量。Rust 侧它不自动成立：表被收进结构体，结构体沿值语义传递，移动与析构都会改变地址或让字节失效。现码的选择是把实例先搬进全局、再装载：
 
 ```text
 /* 代码引用，os/kernel/src/lib.rs:fn init_protection（E1 注释原文）。 */
@@ -887,9 +888,9 @@ $ sed -n '/pub fn init_protection/,/^}/p' os/kernel/src/lib.rs | grep -nE 'cr3|p
 （无输出）
 ```
 
-`IDENTITY_MAP_END` 这个常量在 [`lib.rs`](os/kernel/src/lib.rs) 里保留；`build_bootstrap_root_and_enable` 的 Step 1 注释写着它与 C 的对应（`Maps 1024 × 4MB = 4GB (C) or 4 × 1GB (x86-64)…`），常量本身定义在 `os/arch/src/lib.rs`。
+`IDENTITY_MAP_END` 通过 `use ... as` 转出 `BOOT_IDENTITY_MAP_END`（定义在 `os/arch/src/lib.rs:217`）；Step 1 的现行注释记录的是它与 C 的差异（“C maps 4 GiB with `pg_identity`…the Rust cross-image leg only needs…”），不再是 1024×4MB 全量映射。
 
-**把 C 的页表重建照搬进 Rust 的 `init_protection` 会怎样**：C 的"原地重填"成立靠两点——清空与重填之间不写 CR3（取指靠 TLB 旧条目，§2.6），以及 `pagedir` 是一个可以安全重填的静态数组。Rust 侧两点都不成立：正在使用的根表由 `arch_boot_impl` 建立、Direct Map 的叶子登记挂在它上面，清空会把已登记的叶子抹掉，而重填的来源（`arch_boot_impl` 的 Step 划分）不在这个函数里；页表由分配器按页给出，没有 `pagedir` 那样一个原地可重填的静态数组。依据：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 的函数体（无建表调用）与 `:fn arch_boot_impl` 的 Step 划分，以及 02 篇 §4.4 的状态表。
+**把 C 的页表重建照搬进 Rust 的 `init_protection` 会怎样**：C 的 `prot_init` 不是在原表上重填——`pg_utils.c` 编译两份，`pre_init` 在未分页副本的 `pagedir` 上建第一张表，`prot_init` 在普通副本的 `.bss pagedir` 上建第二张表并在末尾切 CR3（§2.6）。Rust 侧没有这两份静态表：正在使用的根表由 `arch_boot_impl` 建立、Direct Map 的叶子登记挂在它上面，清空会把已登记的叶子抹掉；页表由分配器按页给出。依据：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 的函数体（无建表调用）与 `:fn arch_boot_impl` 的 Step 划分，以及 02 篇 §4.4 的状态表。
 
 ### 3.6 把 cstart 拆成两个里程碑（→§2.2）
 
@@ -926,7 +927,7 @@ Phase B 的 `intr.init()` 会编程 LAPIC/IOAPIC 的控制器侧；Phase F 的 `
 
 ### 3.7 门在第一次 load 之前就有真入口（→§2.5）
 
-C 把真实处理函数地址（`mpx.S` 里的标签）在填 IDT 时一次写入；Rust 把这一步显式拆成两段：`TrapEntryArch::init()` 写元数据（DPL、IST、门类型、占位 0），`install_trap_stubs` 把真实入口写进每一个向量，然后才 `load()`。
+C 把真实处理函数地址（`mpx.S` 里的标签）在填 IDT 时一次写入；Rust 侧 `install_trap_stubs` 通过 `set_handler` 整条重写门（x86_64 的 DPL 取自 `user_accessible(vector)`、`is_trap` 决定门类型），`TrapEntryArch::init()` 写的元数据在生产路径上被这次重写覆盖；`load()` 在安装之后。当前实现存在两个 DPL 来源（init 的表与 `user_accessible`），以 `set_handler` 为准，元数据是待清理的死数据。
 
 | 项 | 选择 | 否掉什么 | 代价 |
 |---|---|---|---|
@@ -943,7 +944,7 @@ $ sed -n '/const STUB_VECTORS/,/^];/p' os/arch/src/x86_64/trap_stub.rs | grep -c
 41
 ```
 
-41 = 18（异常，0–8、10–14、16–19，跳过长模式保留的 9/15）+ 4（软中断 32–35）+ 16（PIC 的 0x50–0x57 与 0x70–0x77）+ 3（0xF0 调度 IPI、0xF1 LAPIC 本地定时器、0xFF 伪中断）。C 侧的 39 = 16 + 23，其中 23 条门含向量 9（`COPROC_SEG_VECTOR`，[`include/archconst.h`](minix3/minix/kernel/arch/i386/include/archconst.h)）、不含向量 15。Rust 比 C 少 1 条异常（向量 9）、多 3 条 LAPIC/调度相关向量：41 = 39 − 1 + 3。这条对照只对 `prot_init`/`idt_init` 完成时成立；APIC/SMP 路径还会加 `gate_table_ioapic` 的 64 条门（0x50–0x8F）、spurious 与错误向量，C 的总门数会变成 90/92，Rust 侧也会相应增加。
+41 = 18（异常，0–8、10–14、16–19，跳过长模式保留的 9/15）+ 4（软中断 32–35）+ 16（PIC 的 0x50–0x57 与 0x70–0x77）+ 3（0xF0 调度 IPI、0xF1 LAPIC 本地定时器、0xFF 伪中断）。C 侧的 39 = 16 + 23，其中 23 条门含向量 9（`COPROC_SEG_VECTOR`，[`include/archconst.h`](minix3/minix/kernel/arch/i386/include/archconst.h)）、不含向量 15。Rust 比 C 少 1 条异常（向量 9）、多 3 条 LAPIC/调度相关向量：41 = 39 − 1 + 3。这条对照只对 `prot_init`/`idt_init` 完成时成立；APIC/SMP 路径用 `gate_table_ioapic` 的 64 条门（0x50–0x8F）替换 16 条 PIC 门，再加 spurious/错误向量：39 − 16 + 64 + 3/5 = 90/92（3 与 5 的差来自 `CONFIG_SMP` 的 0xF1/0xF2）；Rust 侧相应增加。
 
 **先 `load()` 再装门入口会怎样**：窗口内到达的异常或中断会走门里偏移 0 的入口——在那个地址上取指，取到的要么是空内存要么是别人；`lidt` 只保证 CPU 找得到门，不保证门有效。Rust 把这条顺序写成纪律与检查：`install_trap_stubs` 在 `load()` 之前一次写齐 41 个入口；`gate_present` 提供"某向量是否已有门"的读数（`trap_entry.rs` 的 [`fn gate_present`](os/arch/src/x86_64/trap_entry.rs:fn gate_present) 的注释："the stub installer cross-checks its coverage against this before the table may go live via `load()`"——执行这条交叉核对的是宿主测试 `test_stub_coverage_matches_idt_gates`，见 §5.1；`load()` 本身不检查，真机载体不调 `install_trap_stubs`（§5.2）、门里保持占位 0 也能通过，正说明这一点）。依据：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 里 `install_trap_stubs` 在 `load` 之前、[`lib.rs`](os/arch/src/lib.rs) 里 `install_trap_stubs` 的 x86_64 分支转发到 `trap_stub.rs` 的 [`fn install_idt_handlers`](os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers) 的遍历，以及 `:fn test_stub_coverage_matches_idt_gates`。
 
@@ -961,11 +962,11 @@ C 的 Phase A 五步在 Rust 侧有一处结构性变化：全局副本不是“
         .expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
 ```
 
-`store_kernel_info` 做的七块落地（保留区间、memmap、模块表+名字池、平台源列表、启动参数缓冲、`memmap_sources`、`startup_objects`）见 `lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)。随后三步各有 C 侧对应：`KERNEL_MAY_ALLOC.store(true, Ordering::Release)`（闸门；Rust 侧的 [`fn kernel_may_alloc`](os/kernel/src/lib.rs:fn kernel_may_alloc) getter 只被 [`memmap.rs`](os/kernel/src/memmap.rs) 的 `add_memmap` production `debug_assert` 使用）、`minix_platform::init_from_kinfo`（平台描述符，早于时钟与中断）。**Phase A.2 在现行 Rust 里故意为空**：内核不保留可变 memmap 副本，`FREE_MEMMAP` 已不存在；内核镜像的保留由 `vm_handoff::classify` 在构造 VM 交接记录时用 `cut_memmap` 扣除并记录，`init_proc_and_boot` 与 Phase F 都没有 `add_memmap` 调用。`bootstrap_start/len` 仍为 `(0, 0)`。
+`store_kernel_info` 做的七块落地（保留区间、memmap、模块表+名字池、平台源列表、启动参数缓冲、`memmap_sources`、`startup_objects`）见 `lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)。随后一步有 C 侧对应：`minix_platform::init_from_kinfo`（平台描述符，早于时钟与中断）；C 的 `kernel_may_alloc` 闸门已随 D01-F08 淘汰（唯一读者 `add_memmap` 断言已删，`lib.rs:3916-3919` 的 Step 8 注释写明没有对应物），引导期写权限由调用图与 FreeRangeSet 保证。**Phase A.2 在现行 Rust 里故意为空**：内核不保留可变 memmap 副本，`FREE_MEMMAP` 已不存在；内核镜像的保留由 `vm_handoff::classify` 在构造 VM 交接记录时用 `cut_memmap` 扣除并记录，`init_proc_and_boot` 与 Phase F 都没有 `add_memmap` 调用。`bootstrap_start/len` 仍为 `(0, 0)`。
 
 C 的“把内核镜像自己也切一刀”在 Rust 侧由 `vm_handoff::classify` 的扣除记录接上：UEFI 路径上内核镜像不在 conventional memmap 里，扣除对 free list 是空操作；OpenSBI 路径上它防止 GET_MEMINFO 把内核镜像当空闲内存报出去。
 
-**不切全局副本、继续使用入口参数引用会怎样**：源码注释记录的现象是：参数经栈槽读回后字段变垃圾，`validate` 在第一处不变量上 panic；诊断块留下的四个读数（`rdi`、全局槽指针、`rsp`、`bootstrap_len`）就是为此加的。依据：`lib.rs` 的 [`fn kernel_info`](os/kernel/src/lib.rs:fn kernel_info) 与 `:fn store_kernel_info`（后者落七个 slice）。
+**不切全局副本、继续使用入口参数引用会怎样**：源码注释记录的现象是：参数经栈槽读回后字段变垃圾，`validate` 在第一处不变量上 panic；诊断块留下的三个读数（`rdi`、全局槽指针、`rsp`）就是为此加的。依据：`lib.rs` 的 [`fn kernel_info`](os/kernel/src/lib.rs:fn kernel_info) 与 `:fn store_kernel_info`（后者落七个 slice）。
 
 ### 4.2 init_protection 的逐步落地（→3.2、3.3、3.7）
 
@@ -1170,12 +1171,13 @@ pub(crate) fn set_entry_stack_base(base: VirBytes) {
 
 **aarch64 的 `init` 直接 `msr SP_EL1, kernel_stack_top` 会怎样**：`SP_EL1` 在 EL1 可访问（HCR_EL2.TSP=0）；真正的问题是它把当前活动栈指针换掉，函数尾声从新栈弹 `x29/x30`，启动期崩溃。真正的栈基址因此停在 `TPIDR_EL1`，由 `restore_to_user` 在 `eret` 前重装。依据：`protection.rs` 的 [`fn init`](os/arch/src/arm64/protection.rs:fn init) 与 [`fn set_entry_sp`](os/arch/src/arm64/protection.rs:fn set_entry_sp) 的注释，以及 `test-protection-aarch64` 的只读 `SP_EL1` 探针。
 
-把三架构的 Rust 落点按 §1.2 的三问收一张表：
+把三架构的 Rust 落点按 §1.2 的四类入口收一张表：
 
-| 三问 | x86-64 | aarch64 | riscv64 |
+| 四类入口 | x86-64 | aarch64 | riscv64 |
 |---|---|---|---|
 | 当前特权级 | GDT DPL + CS.RPL | EL0/EL1 | U/S mode |
-| 异常/中断/syscall 入口 | IDT 41 门（16 字节门） | `VBAR_EL1` 的 16 槽向量表 | `stvec` 的内核腿/用户腿 |
+| 异常/中断入口 | IDT 41 门（16 字节门） | `VBAR_EL1` 的 16 槽向量表 | `stvec` 的内核腿/用户腿 |
+| 系统调用入口 | SYSCALL/SYSRET + `LSTAR`（不是 IDT 门） | `svc` 经 `VBAR_EL1` | `ecall` 经 `stvec` |
 | 陷入内核用哪根栈 | TSS.sp0 + IST + GS 区 | SP_EL1 + `TPIDR_EL1` | `sscratch` + `prepare_user_return` |
 
 ### 4.7 与 Minix3 C 的对照（→§2.1–§2.7）
@@ -1184,7 +1186,7 @@ pub(crate) fn set_entry_stack_base(base: VirBytes) {
 |---|---|---|---|
 | `kmain` 拷 `kinfo` 到全局 | [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)（把七个 slice 落进 `.bss`、发布全局副本） | 改型 | 值语义与 `.bss` 落地；引用不能跨镜像存活（01 篇 §3.4） |
 | `bss_test` 断言 | 无对应物 | 淘汰 | BSS 清零由 boot-shim 装载器保证（测试覆盖见 `01-boot-shim-bootstrap.md` §5.2.1） |
-| `kernel_may_alloc` 闸门 | [`static KERNEL_MAY_ALLOC`](os/kernel/src/globals.rs:static KERNEL_MAY_ALLOC)（Phase A 置 true） | 保留（改型为原子量） | 同一语义：VM 启动前允许内核直接分配 |
+| `kernel_may_alloc` 闸门 | 无对应物（D01-F08 删除唯一读者） | 淘汰 | 引导期写权限由调用图与 FreeRangeSet 保证（`lib.rs:3916-3919`） |
 | `cstart` 单函数 | [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) + `:fn init_clock_and_interrupts` | 改型 | 按里程碑拆分（§3.6） |
 | `prot_init` 的表清单 | `:fn init_protection` 的两段（保护结构 + trap 层） | 改型 | 两个 trait 的职责划分（§3.2） |
 | `tss_init` 的 `sp0` 与栈顶保留字 | [`fn setup_tss_for_cpu`](os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu) + `:fn stamp_cpu_id` | 保留（宽度随 64 位） | 保留字从 2×4 字节变 2×8 字节 |
@@ -1192,7 +1194,7 @@ pub(crate) fn set_entry_stack_base(base: VirBytes) {
 | per-CPU 入口标签 + `k_percpu_stacks` | [`struct GsArea`](os/arch/src/x86_64/trap_stub.rs:struct GsArea) + `:fn program_gs` | 改型 | 入口从 GS 区取栈顶 |
 | `prot_load_selectors` 的 `lldt` | [`fn load_with_tss`](os/arch/src/x86_64/protection.rs:fn load_with_tss) 注释说明不执行 `lldt` | 淘汰 | 长模式不使用 LDT |
 | 重建页表（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`） | [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 建一次 | 淘汰重建 | §3.5 |
-| `prot_init_done` 标志 | 全局 `Option` + `with_protection`/`with_trap_entry` 的 panic 契约 | 改型 | 未初始化成为一个确定的失败点 |
+| `prot_init_done` 标志 | x86-64：全局 `Option` + `with_protection`/`with_trap_entry` 的 panic 契约；aarch64/riscv64：无状态实现（accessor 造哑实例） | 改型（x86 限定） | 未初始化在 x86 是确定失败点；non-x86 不进入全局 |
 | `gate_table_*` 39 条门 | [`const STUB_VECTORS`](os/arch/src/x86_64/trap_stub.rs:const STUB_VECTORS) 41 项 + `:fn install_idt_handlers` | 改型 | 长模式保留 9/15、增加 LAPIC/调度向量（PIC 对照；APIC 路径另加 IOAPIC 门） |
 
 本篇做完之后，系统处在这样一个状态：三张表都已装载生效、门里有真入口（§3.7），而**尚未放行任何中断源**（IF=0 一直保持；`intr.init()` 已编程 LAPIC/IOAPIC，时钟门在 Phase F 放行）；进程与用户态都还没有。下一件必须做的事是 `kmain` Phase B 的剩余部分：时钟与中断控制器的初始化（`lib.rs` 的 [`fn init_clock_and_interrupts`](os/kernel/src/lib.rs:fn init_clock_and_interrupts)），它的次序与内部拆分是 `05-clock-interrupt-init.md` 的主题。
@@ -1218,7 +1220,7 @@ os/arch/src/riscv64/trap_entry.rs: 1
 os/arch/src/riscv64/trap_stub.rs: 7
 ```
 
-这 9 个文件是与本篇直接相关的子集（合计 56）；arch crate 全量 `src/*.rs` 是 375 个测试/54 文件，`os/arch/tests/*.rs` 另有 94 个/20 文件。
+这 9 个文件是与本篇直接相关的子集（按锚定 `#[test]` 去重后合计 55；`riscv64/trap_stub.rs` 的一条注释命中已剔除）；arch crate 全量 `src/**/*.rs` 是 373 个测试/54 文件，`os/arch/tests/*.rs` 另有 87 个/21 文件。
 
 x86_64 的 16 个保护测试里与本篇直接相关的几类：TSS 布局（`tss64_size_is_104_bytes`、`tss64_offsets_correct`）、描述符位组合（`gdt_descriptors_have_correct_dpl`、`gdt_descriptors_are_flat_mode`、`tss_descriptor_is_64bit`）、描述符与结构体地址的一致性（`tss_descriptor_high_half_carries_base_above_4gib`、`init_creates_tss_descriptor_in_gdt`）、`sp0` 算术（`set_kernel_stack_updates_sp0`、`init_sets_tss_sp0_below_reserved_area`）。13 个 trap 测试覆盖门表：异常区存在性、保留向量非存在、软中断 DPL=3、PIC 区 DPL=0、NMI/#DF 的 IST。IPC 门（向量 33）由 `install_trap_stubs` 装 stub，不再单列门测试。11 个 trap_stub 测试里有一条覆盖检查，把 `STUB_VECTORS` 与 `X86_64TrapEntry::init` 标记的门对齐核验。
 
@@ -1270,10 +1272,10 @@ x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protec
 | M6 | 描述符地址稳定（§3.3） | 实例搬迁后 TSS 描述符指向最终地址 | 部分覆盖 | 宿主无法构造（需真实地址）；由首次用户态进入的真机链间接覆盖 → **R03-T02** |
 | M7 | 跨架构入口与交换（§4.6） | `stvec` 非零且 Direct；`sscratch = kern_stack_top`；`CurrentEL`/`VBAR_EL1`/`DAIF`；`SP_EL1` 只读 | 已覆盖 | 真机 `test-protection` aarch64/riscv64 的寄存器判据 |
 | M8 | `sscratch` 返回重锚（§4.6） | 返回路径在每次用户返回前把本 hart 的 `sscratch` 重写为调度方传入的 `stack_top`（per-hart，无共享单元） | 未覆盖（本篇） | 属"用户→内核→用户"往返，归异常/中断篇的载体 → **R03-T06**（跨篇） |
-| M9 | 重建页表的原地重填（§2.6，C 侧） | 清零→重填窗口内取指可行（TLB 旧条目）；`pg_load` 后表内容齐全 | 说明性 | 架构行为与 C 侧逻辑，不在本仓测试面；Rust 侧以淘汰代替（§3.5）→ **R03-T07**（登记，无动作） |
+| M9 | 重建页表：普通副本建第二张表并切 CR3（§2.6，C 侧） | 清零→建表→`pg_load` 切 CR3；两张表分别是未分页副本与普通副本 | 说明性 | 架构行为与 C 侧逻辑，不在本仓测试面；Rust 侧以淘汰代替（§3.5）→ **R03-T07**（登记，无动作） |
 | M10 | 本篇出口状态（§4.7） | 门就位、无源放行（控制器已编程、IF=0） | 部分覆盖 | 真机链的时序读数；完整形态（时钟门放行）归 `05-clock-interrupt-init.md` → **R03-T01 附属**（顺序负向同族） |
 
-（§5.3 的缺口分别对到本表 M3、M5、M6 与 M1 的断言化；缺口 ID 与分流见 §5.3，本表只把它们对到机制断言。）
+（§5.3 的缺口分别对到本表 M3、M5、M6 与 M1 的断言化；T03/T06/T07 在 §5.4 就地定义（跨篇/登记），其余缺口 ID 与分流见 §5.3；本表只把它们对到机制断言。）
 
 ---
 
@@ -1369,7 +1371,7 @@ gdb <被调试的工件>
 
 ### 7.3 关联 Rust 源码清单
 
-- `os/kernel/src/{lib,globals,memmap,smp}.rs`
+- `os/kernel/src/{lib,globals,smp}.rs`
 - `os/arch/src/arch/{protection,trap_entry}.rs`
 - `os/arch/src/{x86_64,arm64,riscv64}/{protection,trap_entry,trap_stub}.rs`
 - `os/arch/src/x86_64/timer_irq_gate.rs`、`os/kernel/src/trap_dispatch.rs`

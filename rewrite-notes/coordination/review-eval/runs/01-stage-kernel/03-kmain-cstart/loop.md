@@ -104,3 +104,74 @@
 6. D2 本轮看到了 D1 并做了对照，但 D1 的 14 条 DECISION 没有进台账；请判是否需要把设计提案也纳入轨迹门（B-17）。
 7. **修复覆盖**：meta-review 判 24 条 ① 里只有 17 条全改到；补修后仍有 `cargo test -p minix-arch --no-run` 的 45 个错误，文档 §5.1 的 375 个测试只是静态计数。请把“静态计数”与“能跑”分开看。
 8. **新增盲区**：B-20（修复语句自身事实未复算）、B-21（文档修正与被引用代码注释脱钩）、B-22（处置类按来源角色分配）；对应候选 C-25/C-26。
+
+## R1 完整 survey（V3.3）
+
+### R1 §0 基线
+
+- 轮型: full
+- edition: V3.3
+- schema: V3.3 from R1
+- 基线提交：`e5ca3bb55`（D02 FREEZE 之后）
+- 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
+- 文档 sha256：`469727d74e1ec63c90720ffc81a0fb4804a50b108b22566791ff2b19bd8e11a2`
+- 行数：1382
+- 工作树：除 3 个既有未跟踪文件外干净
+- 设计快照：03 组齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`tools/doc-code-map.sh --check` 21/21 通过；清单见 `related-code.txt`
+- 范围声明：本篇范围 = 文档主题（C 入口 `kmain`/`cstart`、trap entry、三架构） + 21 个关联文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
+- L0 预修：删除了对不存在文件 `os/kernel/src/memmap.rs` 的两处引用（正文与 §7.3），`doc-code-map` 由 1/22 缺失转为 21/21；该修改记入 R1 台账。
+- 历史说明：本文件顶部的旧 §0–§8 是 V1 时代记录，保留为历史段、不追溯改账；其未批准 ② 不带入 R1。
+
+### R1 §1 面板
+
+- 4 角色：fact（C+Rust）、design-d2、reader-abc（A/B/C 合并，VARIANCE 已记）、refute（P0 触发）。
+- fact 8 条（P0 4 / P1 1 / P2 2 / P3 1）；design-d2 16 条（P0 2 / P1 1 / P2 5 / P3 8）；reader-abc 4 条 FINDING + 21 SUGG；refute 6 条主张（4 条反证成功、2 条失败）。
+- 材料隔离：读者未读源码；设计未读作者解释；事实未读历史评审。
+
+### R1 §2 发现
+
+- 43 条（survey 34 + certify 9）：P0 = 9（memcpy 自拷贝误判、kernel_may_alloc 复述误判、KERNEL_MAY_ALLOC 已删、Step 1 旧引文、pg_utils 双副本、kmain 全局副本语义）；P1 = 3；P2 = 14；P3 = 8；FP 2。
+- 最关键的是文档把 `pre_init` 的 `.unpaged_bss` 暂存副本与 `main.c` 的 `.usermapped` 最终全局混为一谈，以及把 `pg_utils.c` 的两份对象当成同一份。
+
+### R1 §3 归因
+
+- 处置：① 29 / ② 4 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 2 / SUGG 8 = 43；唯一根因 43。
+- 冻结决策：0 条 re-litigation；D2-16 按 ARCH 提案登记 D-053，不实施。
+- 范围门：0 条 adjacent 阻塞；三条代码设计项进 `D03-design-batch`。
+
+### R1 §4 修复
+
+- 文档：§2.1 memcpy/kernel_may_alloc 两段重写；§2.6 pg_utils 双副本、vir2phys 绑定、反事实重写；§3.5 Step 1 引文；§4.1/§4.7 KERNEL_MAY_ALLOC 淘汰；§4.4 诊断读数；§5 计数；§2.6 PWT/PCD 条件；§3.2/§3.3/§4.7 的 x86 限定与特权级预留；§3.7 门数算式；§1.2/§4.6 入口表拆行；§2.4 IOPL 表述。
+- 代码：无行为改动；三条设计项登记 `D03-design-batch`（D-053）。
+
+### R1 §5 复验
+
+- 文档六门：citation 42 块全部跳过（`/* */` 标注，工具只认 `//`，见 §8）；anchor 75/75；structure/ref 通过；style-lint error=0；doc-code-map 21/21。
+- 旧串归零：`全局自拷贝`、`把同一句话再说一遍`、`KERNEL_MAY_ALLOC`、`Maps 1024`、`同一个静态页目录数组`、`39 + 64`、`异常/中断/syscall`、`因此全部被拒` 均为 0。
+- certify：#1 见 `panel/round1/certify-*.md`；本轮无代码行为改动，QEMU 未跑。
+
+### R1 §6 指标
+
+- 见 `metrics.md` R1 块：发现 43、唯一根因 43、① 29 / ② 3 / FP 2 / SUGG 8、未闭环 0、ROUND-CLOSED、代裁决 1、ARCH 提案 1。
+
+### R1 §7 状态
+
+**ROUND-CLOSED**（修改轮出口；进入 CONVERGENCE-CANDIDATE，等待确认轮）。open = 0；设计代码项按 §4.0f/§4.1b 登记，不阻断；不宣告 CONVERGED。
+
+### R1 §8 给 meta-review 的不确定点
+
+1. citation 门对本文 42 个 `/* */` 引文块全部跳过（工具只认 `//` 标注），引文核对主要靠 fact 的人工逐块；下一 edition 应修工具或改标注。
+2. 6 条 P0 全是“文档把历史机制/已删代码当成现行实现”，说明本篇自 2026-11 后未随代码同步；R1 是首次 V3.3 全量。
+3. 三条代码设计项（注释、断言、ARCH 契约）延期到 design batch；是否削弱 ROUND-CLOSED 请 meta 判断。
+4. QEMU 未跑；本轮无 arch/boot 行为改动。
+
+### L6
+
+- 同 agent 收口：29 条全部处置；P0 6 条全修；ROUND-CLOSED。
+- BLIND-SPOT-DELTA：新增“文档未随 D01-F08/BOOT-SCOPE 删除回写”的系统性漂移；无新结构性盲区。
+
+### L6.5
+
+- 三问：① 本轮不变量是“C 的两份对象/两份页目录与 Rust 的现行实现必须逐符号对上”；② 前提是旧 V1 run 只作历史；③ 证据是 29 行台账、六门读数与 fact/refute 的源码直读。
+- 资源重读：本轮盲区是“历史文档与删除提交脱钩”，检测模式已由 `doc-code-map` + fact 的符号存在性核对覆盖；citation 工具的 `/* */` 盲区另记。
