@@ -809,7 +809,7 @@ C 的 `prot_init` 内部有两个独立职责：§2.4 的"TSS + 段描述符 + �
 
 两个 trait 的文档里各自写了顺序要求。`ProtectionArch` 的注释是 `ProtectionArch::init() + load() must complete before TrapEntryArch::init() is called, because trap entry descriptors (e.g., IDT gate descriptors on x86-64) reference segment selectors that must be valid in the GDT.`；`TrapEntryArch` 的注释是同一句话的另一半。它对应 §2.5 里 `int_gate` 固定写 `KERN_CS_SELECTOR` 这一事实——门的可用性以 GDT 已装载为前提。
 
-**把两个 `load` 合成一个函数、并在它内部先 `lidt` 后 `lgdt` 会怎样**：`lidt` 会让 IDTR 指向一张门里写满 `KERN_CS_SELECTOR` 的表，而此刻 GDT 还是引导方的那张——同一个槽号在两张表里的含义不同。装载后第一个异常到达时，CPU 用新 IDT 找到门、用门里的选择子去当前 GDT 里查代码段，查到的要么非代码段要么非存在，异常递送的第一步就 #GP。依据：`TrapEntryArch` 的文档契约与 `int_gate` 里固定的内核 CS 选择子（`KERN_CS_SELECTOR`）。
+**把两个 `load` 合成一个函数、并在它内部先 `lidt` 后 `lgdt` 会怎样**：`lidt` 会让 IDTR 指向一张门里写满 `KERN_CS_SELECTOR` 的表，而此刻 GDT 还是引导方的那张——同一个槽号在两张表里的含义不同。在 `lidt` 与 `lgdt` 之间到达的异常，CPU 会用新 IDT 找到门、用门里的选择子去当前（旧）GDT 里查代码段，查到的要么非代码段要么非存在，异常递送的第一步就 #GP。依据：`TrapEntryArch` 的文档契约与 `int_gate` 里固定的内核 CS 选择子（`KERN_CS_SELECTOR`）。
 
 ### 3.3 表装进 static 再 load：地址稳定成为接口外的契约（→§2.4）
 
@@ -1042,7 +1042,7 @@ TSS 的装填在 `setup_tss_for_cpu`：
 
 `X86_64_STACK_TOP_RESERVED` 是 `2 * size_of::<u64>()` = 16 字节，与 C 的 `2 * sizeof(reg_t)` 同构；保留字里的 CPU 号由 `stamp_cpu_id` 写（写 `usable_top + 8`，即两个 64 位字里的第二个），`init` 给 BSP 写、`set_kernel_stack` 给 AP 写。`ist_stack_top` 从一个静态数组的两个槽位里取栈顶（`IST_STACKS[slot][cpu]`，每栈 8 KiB），NMI 与 #DF 的专用栈由此而来。
 
-`load_with_tss` 是装载序列，其中第 4 步与 GS 区的次序构成一条被记录过的坑：
+`load_with_tss` 是装载序列，其中第 4 步（`xor`+`mov fs/gs` 那一步）与 GS 区的次序构成一条被记录过的坑：
 
 ```rust
 /* 节选（保留 lgdt、远跳重载 CS、数据段重载、FS/GS 清零、ltr 五步；省略号处为各条 asm 的操作数绑定、options 与说明注释），os/arch/src/x86_64/protection.rs:fn load_with_tss。 */
@@ -1280,7 +1280,7 @@ x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protec
 | M7 | 跨架构入口与交换（§4.6） | `stvec` 非零且 Direct；`sscratch = kern_stack_top`；`CurrentEL`/`VBAR_EL1`/`DAIF`；`SP_EL1` 只读 | 已覆盖 | 真机 `test-protection` aarch64/riscv64 的寄存器判据 |
 | M8 | `sscratch` 返回重锚（§4.6） | 返回路径在每次用户返回前把本 hart 的 `sscratch` 重写为调度方传入的 `stack_top`（per-hart，无共享单元） | 未覆盖（本篇） | 属"用户→内核→用户"往返，归异常/中断篇的载体 → **R03-T06**（跨篇） |
 | M9 | 重建页表：普通副本建第二张表并切 CR3（§2.6，C 侧） | 清零→建表→`pg_load` 切 CR3；两张表分别是未分页副本与普通副本 | 说明性 | 架构行为与 C 侧逻辑，不在本仓测试面；Rust 侧以淘汰代替（§3.5）→ **R03-T07**（登记，无动作） |
-| M10 | 本篇出口状态（§4.7） | 门就位、无源放行（控制器已编程、IF=0） | 部分覆盖 | 真机链的时序读数；完整形态（时钟门放行）归 `05-clock-interrupt-init.md` → **R03-T01 附属**（顺序负向同族） |
+| M10 | x86-64 出口状态（§4.7；non-x86 见 §4.6 末表） | 门就位、无源放行（控制器已编程、IF=0） | 部分覆盖 | 真机链的时序读数；完整形态（时钟门放行）归 `05-clock-interrupt-init.md` → **R03-T01 附属**（顺序负向同族） |
 
 （§5.3 的缺口分别对到本表 M3、M5、M6 与 M1 的断言化；T03/T06/T07 在 §5.4 就地定义（跨篇/登记），其余缺口 ID 与分流见 §5.3；本表只把它们对到机制断言。）
 
