@@ -1902,9 +1902,9 @@ fn check_gic_madt(
 `parse` 拿到手的只是一个物理地址，能被直接解引用，靠的是 boot 早期的恒等映射：`os/libs/minix-platform/src/device_tree.rs:fn parse` 里 `fdt::Fdt::from_ptr(dtb_phys as *const u8)` 把物理地址当指针传给 `fdt` crate，前提是此时内核已启用分页，且该物理地址落在 `arch_boot_impl` Step 1 的最小启动恒等窗口内（不是低 4GB 全铺；窗口由 `push_platform_windows` 按每个 source 的长度建，`len=0` 才退回 2 MiB 片）。DTB 在直核腿是 boot-shim 留在低地址的静态固件内存；UEFI 腿的 `dtb_copy` owned copy 只用于交叉校验与 claims，内核 `platform_sources` 里仍是配置表 DTB 地址。两者都必须落在已注册窗口内。模块注释的 Safety 段把这条前提列成解析前置条件：
 
 ```text
-// os/libs/minix-platform/src/device_tree.rs —— 节选（模块文档 Safety 段；原文写 low 4 GiB，是旧前提，现行实现见正文）
+// os/libs/minix-platform/src/device_tree.rs —— 节选（模块文档 Safety 段；原文写 low 4 GB，是旧前提，现行实现见正文）
 //! - Early boot identity mapping covers the physical address: during boot
-//!   the kernel enables paging with an identity mapping over the low 4 GiB
+//!   the kernel enables paging with an identity mapping over the low 4 GB
 //!   (C `pg_identity()` semantics, `os/kernel/src/lib.rs:fn arch_boot_impl`), and the
 //!   DTB lives in static firmware memory far below that bound — so the raw
 //!   physical address can be dereferenced as a virtual address (VA == PA).
@@ -2368,7 +2368,7 @@ C 行为到 Rust 重表达的四类汇总：
 | 段 | x86-64 | aarch64 | riscv64 | 共同语义 |
 |---|---|---|---|---|
 | ① 固件描述 | UEFI 配置表 → ACPI RSDP | 配置表 → DTB（spec/legacy GUID）或 ACPI RSDP | OpenSBI `a1` → DTB | 固件给出一份只读描述 |
-| ② boot-shim 取址 | `find_platform_sources_into` 扫 `ACPI2_GUID`/`ACPI_GUID` | 先 DTB 两段，再 ACPI 两段 | `dtb_ptr()` → `PlatformDescSource::new(DTB, ...)` | 只搬物理地址与表头长度，不解析表体 |
+| ② boot-shim 取址 | `find_platform_sources_into` 扫 `ACPI2_GUID`/`ACPI_GUID` | 先 DTB 两段，再 ACPI 两段 | `dtb_ptr()` → `PlatformDescSource::with_optional_len(DTB, ...)` | 只搬物理地址与表头长度，不解析表体 |
 | ③ 内核分派 | `parse_by_kind(RSDP)` | `parse_by_kind(DTB/RSDP)` | `parse_by_kind(DTB)` | kind 标签 → 解析器 |
 | ④ 解析产物 | `AcpiDesc`（MADT LAPIC/IOAPIC/拓扑） | `DeviceTreeDesc` 或 `AcpiDesc`（GICv3/GICC/GICD/GICR） | `DeviceTreeDesc`（PLIC/CLINT/ACLINT/拓扑） | 描述符自包含 |
 | ⑤ 冻结 | `Frozen<PlatformContext>` | 同左 | 同左 | 一次 Release 冻结 |
@@ -2464,7 +2464,7 @@ $ grep -rc '#\[test\]' os/libs/minix-platform --include=*.rs | awk -F: '{s+=$2} 
 |---|---|---|---|
 | `test-smp-topo`（x86_64） | 扫 UEFI 配置表的 `ACPI2_GUID` / `ACPI_GUID` | `PlatformDescSource::new(RSDP, ...)` → `parse_by_kind` → MADT LAPIC | `nr_cpus == 4`；`hw_id` 两两互异；固件 `bsp_id` hint 在集合内；执行 CPU 的 CPUID APIC ID 在集合内 |
 | `test-smp-topo-aarch64` | 同上（注释写明 AAVMF 不给 FDT，配置表只有 ACPI2） | `RSDP` → `parse_by_kind` → MADT GICC | 同上；执行 CPU 的 MPIDR_EL1.Aff0 在集合内 |
-| `test-smp-topo-riscv64` | OpenSBI 的 `a1`（非 UEFI 二进制，QEMU 直接 `-kernel` 装载 ELF） | `PlatformDescSource::new(DTB, ...)` → `parse_by_kind` → 设备树 `cpus` 节点 | 同上；OpenSBI `a0` 引导 hart 在集合内 |
+| `test-smp-topo-riscv64` | OpenSBI 的 `a1`（非 UEFI 二进制，QEMU 直接 `-kernel` 装载 ELF） | `PlatformDescSource::with_optional_len(DTB, ...)` → `parse_by_kind` → 设备树 `cpus` 节点 | 同上；OpenSBI `a0` 引导 hart 在集合内 |
 
 x86_64 变体的关键段落：
 
@@ -2565,7 +2565,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | M4 | MADT 遍历两道闸（§4.4） | 零长记录被拒（解析器不挂死）；越界记录被拒 | 部分覆盖 | 负向测试覆盖 MADT 校验和；**零长/越界记录、签名与超长仍无载体** → **R04-T02** |
 | M5 | GICC/GICD/GICR 完备性决策（§4.4） | 八条判定全对（含 GICv2 形状被拒、GICD 缺失优先） | 已覆盖 | 宿主 `test_check_gic_madt_decision_table`（八断言）＋真机 aarch64 变体 |
 | M6 | 设备树解析（riscv64：PLIC/CLINT/拓扑/SSWI/PSCI）（§4.5） | 真实 DTB 的关键字段提取；`a1` 交接链 | 部分覆盖 | 宿主真实 DTB 端到端＋真机 riscv64 变体；ACLINT MTIMER 备用路径（`aclint=on` 形态）已由真机覆盖——`test-smp-ipi-riscv64` 以 `-machine virt,aclint=on` 点火并走 `a1` DTB 解析（复核：`rg -n "aclint=on" os/qemu-tests/test-smp-ipi-riscv64.sh` 命中点火行与头注；载体 `os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi-riscv64/src/main.rs` 经 `parse_by_kind(DTB)`）；**宿主夹具仍缺** → **R04-T03** |
-| M7 | 设备树解析（aarch64：`parse_gic` 等）（§4.5） | `reg` 两格提取 GICD/GICR；与 ACPI 路径同构的拓扑提取 | 部分覆盖 | 真机经 `test-smp-aps-aarch64` 的 `-kernel`＋`-dtb` 直核，DTB 单源装在 `os/kernel-image/src/bootface_a64.rs:fn bootface_a64`（`PlatformDescSource::new(DTB, DTB_PA)` → `parse_gic`）（复核：`rg -n "\-dtb" os/qemu-tests/test-smp-aps-aarch64.sh` → 直核点火行含 `-dtb "$QEMU_DTB"`）；**宿主 DTB 夹具缺** → **R04-T04** |
+| M7 | 设备树解析（aarch64：`parse_gic` 等）（§4.5） | `reg` 两格提取 GICD/GICR；与 ACPI 路径同构的拓扑提取 | 部分覆盖 | 真机经 `test-smp-aps-aarch64` 的 `-kernel`＋`-dtb` 直核，DTB 单源装在 `os/kernel-image/src/bootface_a64.rs:fn bootface_a64`（`PlatformDescSource::with_optional_len(DTB, DTB_PA, dtb_len)` → `parse_gic`）（复核：`rg -n "\-dtb" os/qemu-tests/test-smp-aps-aarch64.sh` → 直核点火行含 `-dtb "$QEMU_DTB"`）；**宿主 DTB 夹具缺** → **R04-T04** |
 | M8 | 多来源顺序与兜底（§3.5、§4.7） | 解析失败继续下一来源；全失败时 debug 兜底 / release panic | 未覆盖（本篇） | 真机上首个来源即成功；失败路径与多来源切换无载体 → **R04-T06** |
 | M9 | `Frozen` 一次性冻结（§3.7、§4.7） | 二次 `freeze` 在 debug 构建被断言拦下；AP 上线后并发只读 | 部分覆盖 | 断言在类型内（`debug_assert!`）；宿主未见直接测试 → **R04-T07**；并发只读由 SMP 真机间接覆盖 |
 | M10 | aarch64 高半别名（§4.8） | 第一次切根之后 MMIO 访问仍可达（`mmio_translate` 生效） | 已覆盖 | 真机 aarch64（启动越过第一次切根；注释记录未翻译时的实测故障） |

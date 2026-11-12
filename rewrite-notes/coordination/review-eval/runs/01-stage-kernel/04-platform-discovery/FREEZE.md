@@ -6,7 +6,7 @@
 - 冻结提交：`bc232e627`
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
 - 行数：2729
-- 文档 sha256：`719b75c67d9d4e131a30047ef15030e9676da78baba53d4a3612ca36f66a41dc`
+- 文档 sha256：`5ea4e0554403a63c1e002dcc12d5b4738ed11191d1d2e82b54d7b3915905c078`
 - 关联代码：`tools/doc-code-map.sh --check` 52/52 通过
 
 ## 收敛证据
@@ -34,3 +34,9 @@
 - 出现新的 P0/P1 事实或行为缺陷证据；
 - D04-design-batch 实施导致基线改变；
 - 用户明确要求重开。
+
+## 回归 review（2026-11-13）
+
+- 回归审查判 PASS，附 REG-D04-01 P2：两处 `PlatformDescSource::new(DTB, …)` 应为 `with_optional_len`；另有 P3 `low 4 GiB` 与源码 `low 4 GB` 的措辞差。
+- 两处已改为 `with_optional_len`，Safety 引文恢复 `low 4 GB` 并在块头标注旧前提；`anchor 77/77`、`doc-code-map 52/52`、`--round R2` 仍 PASS（12/2/0）。
+- 文档 sha256 更新为 `5ea4e055…`；回归结论维持 **PASS**。

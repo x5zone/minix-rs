@@ -77,8 +77,8 @@ x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留�
 |---|---|
 | 引导器契约、启动信息的收集与内存记账、页表的建立与开启 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` |
 | 高半地址、按装载地址摆放、成对跳转 | `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` |
-| 平台的参数发现（ACPI/设备树分支、平台描述符） | `04-platform-discovery.md`（本篇不引节号） |
-| 时钟与中断控制器的初始化、中断使能时序 | `05-clock-interrupt-init.md`（本篇不引节号） |
+| 平台的参数发现（ACPI/设备树分支、平台描述符） | `04-platform-discovery.md` |
+| 时钟与中断控制器的初始化、中断使能时序 | `05-clock-interrupt-init.md` |
 | 页表的多级结构、页表接口与 Direct Map 的完整语义 | `rewrite-notes/02-stage-vm/07-pagetable-struct.md`；01 篇 §2.6 已用到的部分不重复 |
 | 异常处理体、trap frame 布局与"用户→内核→用户"的完整寄存器保存/恢复 | 异常/中断与 trap 入口主题（`14-exception-interrupt.md`）与切用户篇（`10-switch-to-user.md`）；本篇只到入口就位与 `sscratch` 的栈交换契约（§4.6 讲契约，不讲完整往返） |
 | 系统调用的分派与各调用语义 | syscall 分派主题（`13-syscall-dispatch.md`，系统调用分派篇），本篇只到"入口地址与段选择子写进 MSR"为止 |
@@ -955,7 +955,7 @@ $ sed -n '/const STUB_VECTORS/,/^];/p' os/arch/src/x86_64/trap_stub.rs | grep -c
 
 41 = 18（异常，0–8、10–14、16–19，跳过长模式保留的 9/15）+ 4（软中断 32–35）+ 16（PIC 的 0x50–0x57 与 0x70–0x77）+ 3（0xF0 调度 IPI、0xF1 LAPIC 本地定时器、0xFF 伪中断）。C 侧的 39 = 16 + 23，其中 23 条门含向量 9（`COPROC_SEG_VECTOR`，[`include/archconst.h`](minix3/minix/kernel/arch/i386/include/archconst.h)）、不含向量 15。Rust 比 C 少 1 条异常（向量 9）、多 3 条 LAPIC/调度相关向量：41 = 39 − 1 + 3。这条对照只对 `prot_init`/`idt_init` 完成时成立；APIC/SMP 路径用 `gate_table_ioapic` 的 64 条门（0x50–0x8F）替换 16 条 PIC 门，再加 spurious/错误向量：39 − 16 + 64 + 3/5 = 90/92（3 与 5 的差来自 `CONFIG_SMP` 的 0xF1/0xF2）。Rust 侧 IDT 仍是 41 门：IOAPIC 只路由 16 条 ISA IRQ，pins ≥16 屏蔽，没有 64 门表；C 的 0xF0=timer/0xF1=sched，Rust 相反（0xF0=sched/0xF1=timer），对照时按各自编号读。
 
-**先 `load()` 再装门入口会怎样**：窗口内到达的异常或中断会走门里偏移 0 的入口——在那个地址上取指，取到的要么是空内存要么是别人；`lidt` 只保证 CPU 找得到门，不保证门有效。Rust 把这条顺序写成纪律与检查：`install_trap_stubs` 在 `load()` 之前一次写齐 41 个入口；`gate_present` 提供"某向量是否已有门"的读数（`trap_entry.rs` 的 [`fn gate_present`](os/arch/src/x86_64/trap_entry.rs:fn gate_present) 的注释："the stub installer cross-checks its coverage against this before the table may go live via `load()`"——执行这条交叉核对的是宿主测试 `test_stub_coverage_matches_idt_gates`，见 §5.1；`load()` 本身不检查，真机载体不调 `install_trap_stubs`（§5.2）、门里保持占位 0 也能通过，正说明这一点）。依据：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 里 `install_trap_stubs` 在 `load` 之前、[`lib.rs`](os/arch/src/lib.rs) 里 `install_trap_stubs` 的 x86_64 分支转发到 `trap_stub.rs` 的 [`fn install_idt_handlers`](os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers) 的遍历，以及 `:fn test_stub_coverage_matches_idt_gates`。
+**先 `load()` 再装门入口会怎样**：窗口内到达的异常或中断会走门里偏移 0 的入口——在那个地址上取指，取到的要么是空内存要么是别人；`lidt` 只保证 CPU 找得到门，不保证门有效。Rust 把这条顺序写成纪律与检查：`install_trap_stubs` 在 `load()` 之前一次写齐 41 个入口；`gate_present` 提供"某向量是否已有门"的读数（`trap_entry.rs` 的 [`fn gate_present`](os/arch/src/x86_64/trap_entry.rs:fn gate_present) 的注释："the stub installer cross-checks its coverage against this before the table may go live via `load()`"——执行这条交叉核对的是宿主测试 `test_stub_coverage_matches_idt_gates`，见 §5.1；`load()` 本身不检查，真机载体不调 `install_trap_stubs`（§5.2）、门里保持占位 0 也能通过，说明 `load()` 本身不检查门有效性）。依据：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 里 `install_trap_stubs` 在 `load` 之前、[`lib.rs`](os/arch/src/lib.rs) 里 `install_trap_stubs` 的 x86_64 分支转发到 `trap_stub.rs` 的 [`fn install_idt_handlers`](os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers) 的遍历，以及 `:fn test_stub_coverage_matches_idt_gates`。
 
 ---
 
@@ -971,7 +971,7 @@ C 的 Phase A 五步在 Rust 侧有一处结构性变化：全局副本不是“
         .expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
 ```
 
-`store_kernel_info` 做的七块落地（保留区间、memmap、模块表+名字池、平台源列表、启动参数缓冲、`memmap_sources`、`startup_objects`）见 `lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)。随后一步有 C 侧对应：`minix_platform::init_from_kinfo`（平台描述符，早于时钟与中断）；C 的 `kernel_may_alloc` 闸门在 Rust 无对应物（D01-F08 删除；C 侧读者是 `alloc_lowest` 的 `assert(kernel_may_alloc)`，Rust 侧没有同名机制），引导期写权限由调用图与 FreeRangeSet 保证。**Phase A.2 在现行 Rust 里故意为空**：内核不保留可变 memmap 副本，`FREE_MEMMAP` 已不存在；内核镜像的保留由 `vm_handoff::classify` 在构造 VM 交接记录时用 `cut_memmap` 扣除并记录，`init_proc_and_boot` 与 Phase F 都没有 `add_memmap` 调用。`bootstrap_start/len` 两字段已随 D01-F03 从 `KernelInfo` 删除（`lib.rs:1858-1863`；01 篇（`01-boot-shim-bootstrap.md`）§3.5/§3.9），不再存在 `(0,0)` 占位。
+`store_kernel_info` 做的七块落地（保留区间、memmap、模块表+名字池、平台源列表、启动参数缓冲、`memmap_sources`、`startup_objects`）见 `lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)。随后一步有 C 侧对应：`minix_platform::init_from_kinfo`（平台描述符，早于时钟与中断）；C 的 `kernel_may_alloc` 闸门在 Rust 无对应物（该闸门已删除；C 侧读者是 `alloc_lowest` 的 `assert(kernel_may_alloc)`，Rust 侧没有同名机制），引导期写权限由调用图与 FreeRangeSet 保证。**Phase A.2 在现行 Rust 里故意为空**：内核不保留可变 memmap 副本，`FREE_MEMMAP` 已不存在；内核镜像的保留由 `vm_handoff::classify` 在构造 VM 交接记录时用 `cut_memmap` 扣除并记录，`init_proc_and_boot` 与 Phase F 都没有 `add_memmap` 调用。`bootstrap_start/len` 两字段已随 D01-F03 从 `KernelInfo` 删除（`lib.rs:1858-1863`；01 篇（`01-boot-shim-bootstrap.md`）§3.5/§3.9），不再存在 `(0,0)` 占位。
 
 C 的“把内核镜像自己也切一刀”在 Rust 侧由 `vm_handoff::classify` 的扣除记录接上：UEFI 路径上内核镜像不在 conventional memmap 里，扣除对 free list 是空操作；OpenSBI 路径上它防止 GET_MEMINFO 把内核镜像当空闲内存报出去。
 
@@ -1195,7 +1195,7 @@ pub(crate) fn set_entry_stack_base(base: VirBytes) {
 |---|---|---|---|
 | `kmain` 拷 `kinfo` 到全局 | [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)（把七个 slice 落进 `.bss`、发布全局副本） | 改型 | 值语义与 `.bss` 落地；引用不能跨镜像存活（01 篇 §3.4） |
 | `bss_test` 断言 | 无对应物 | 淘汰 | BSS 清零由 boot-shim 装载器保证（测试覆盖见 `01-boot-shim-bootstrap.md` §5.2.1） |
-| `kernel_may_alloc` 闸门 | 无对应物（D01-F08 删除唯一读者） | 淘汰 | 引导期写权限由调用图与 FreeRangeSet 保证（`lib.rs:3916-3919`） |
+| `kernel_may_alloc` 闸门 | 无对应物（闸门已删除） | 淘汰 | 引导期写权限由调用图与 FreeRangeSet 保证（`lib.rs:3916-3919`） |
 | `cstart` 单函数 | [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) + `:fn init_clock_and_interrupts` | 改型 | 按里程碑拆分（§3.6） |
 | `prot_init` 的表清单 | `:fn init_protection` 的两段（保护结构 + trap 层） | 改型 | 两个 trait 的职责划分（§3.2） |
 | `tss_init` 的 `sp0` 与栈顶保留字 | [`fn setup_tss_for_cpu`](os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu) + `:fn stamp_cpu_id` | 保留（宽度随 64 位） | 保留字从 2×4 字节变 2×8 字节 |
@@ -1276,8 +1276,8 @@ x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protec
 | M1 | 三张表的建表（§2.3–§2.5） | GDT 槽位/访问字节/DPL；TSS 描述符两半与字段；IDT 门字段与分布 | 部分覆盖 | 宿主：16 个保护测试 + 13 个 init 门表测试；post-install 41 门/`user_accessible`/`set_gate_ist` 无直接断言（设计批 D2-06） |
 | M2 | 一次装载让表生效（§2.5） | 装载后 GDTR/IDTR/TR 指向内核自己的表 | 已覆盖（x86_64/riscv64 走生产 trait；aarch64 是探针） | 真机 `test-protection`：x86_64 读 GDTR/IDTR/TR/CS/DS；riscv64 读 `stvec`/`sscratch`；**aarch64 是独立探针**（自己写 `VBAR_EL1`/`DAIF`，不调 `TrapEntryArch::load`） |
 | M3 | 门入口覆盖不变量（§3.7） | 41 个向量写齐；present 门 ↔ stub 一一对应；`load()` 在装齐之后 | 部分覆盖 | 宿主 `test_stub_coverage_matches_idt_gates`（正向）；`test-user-trap` 走生产 `init_protection` 以 CPL3 `int $0x21`（十进制 33）进门（真机正向）；**负向（先 load 后装门）无载体** → §5.3 缺口行；**R03-T01** |
-| M4 | 系统调用入口 MSR（§4.5） | STAR/LSTAR/SFMASK/EFER 的值与写入次序；AP 上重写 | 部分覆盖 | 宿主不覆盖 MSR 面；x86 载体在 `configure_syscall` 后用 `rdmsr` 校验 STAR/LSTAR/SFMASK/EFER.SCE；**AP 侧重写仍是行为性、无自动断言** → **R03-T03**；本轮未跑 QEMU |
-| M5 | 栈交接：`sp0`/保留字/GS 次序（§2.4、§4.3、§4.5） | 首次 CPL3→CPL0 用 `sp0`；GS 基址未被装载序列清掉 | 部分覆盖 | 宿主 `sp0` 算术 2 条；`init_ap` 的 production 断言校验 AP `sp0 == 自己的栈顶 - 16`；生产 `smp_init` 的 sp0 写入由 `test-smp-aps` 端到端覆盖（本轮未跑）；`test-smp-ap-alive-mb` 手工设置 sp0 后调 `init_ap`；第一次跨 ring 由 `test-user-trap` 覆盖；AP 的 MSR 重写仍无自动断言 → **R03-T03**；aarch64 no-op 归 **R03-T04** |
+| M4 | 系统调用入口 MSR（§4.5） | STAR/LSTAR/SFMASK/EFER 的值与写入次序；AP 上重写 | 部分覆盖 | 宿主不覆盖 MSR 面；x86 载体在 `configure_syscall` 后用 `rdmsr` 校验 STAR/LSTAR/SFMASK/EFER.SCE；**AP 侧重写仍是行为性、无自动断言** → **R03-T03**；QEMU 未跑 |
+| M5 | 栈交接：`sp0`/保留字/GS 次序（§2.4、§4.3、§4.5） | 首次 CPL3→CPL0 用 `sp0`；GS 基址未被装载序列清掉 | 部分覆盖 | 宿主 `sp0` 算术 2 条；`init_ap` 的 production 断言校验 AP `sp0 == 自己的栈顶 - 16`；生产 `smp_init` 的 sp0 写入由 `test-smp-aps` 端到端覆盖（QEMU 未跑）；`test-smp-ap-alive-mb` 手工设置 sp0 后调 `init_ap`；第一次跨 ring 由 `test-user-trap` 覆盖；AP 的 MSR 重写仍无自动断言 → **R03-T03**；aarch64 no-op 归 **R03-T04** |
 | M6 | 描述符地址稳定（§3.3） | 实例搬迁后 TSS 描述符指向最终地址 | 部分覆盖 | 宿主无法构造（需真实地址）；由首次用户态进入的真机链间接覆盖 → **R03-T02** |
 | M7 | 跨架构入口与交换（§4.6） | `stvec` 非零且 Direct；`sscratch = kern_stack_top`；`CurrentEL`/`VBAR_EL1`/`DAIF`；`SP_EL1` 只读 | 已覆盖 | 真机 `test-protection` aarch64/riscv64 的寄存器判据 |
 | M8 | `sscratch` 返回重锚（§4.6） | 返回路径在每次用户返回前把本 hart 的 `sscratch` 重写为调度方传入的 `stack_top`（per-hart，无共享单元） | 未覆盖（本篇） | 属"用户→内核→用户"往返，归异常/中断篇的载体 → **R03-T06**（跨篇） |
@@ -1343,7 +1343,7 @@ gdb <被调试的工件>
 (gdb) break init_protection
 (gdb) continue
 (gdb) info registers gdtr idtr tr      # 此刻 gdtr/idtr 仍是引导方的值
-(gdb) finish                            # 停在调用者（bsp_finish_booting 返回后）——IDT 的装载在函数体后半段（§4.2 的次序）
+(gdb) finish                            # 停在调用者 `kmain`（`init_protection` 在 `kmain` 内调用）——IDT 的装载在函数体后半段（§4.2 的次序）
 (gdb) info registers gdtr idtr tr
 # 预期输出：两条 info 打印 gdtr/idtr 的基址与限长（tr 是选择子不是基址）；后一条的 gdtr.base 落在工件的高半地址段、
 #           idtr.base 变为 IDT 数组地址、tr 的选择子非 0。不要用单条 `next` 代替 `finish`——IDT 装载隔着一串调用，

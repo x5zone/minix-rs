@@ -6,7 +6,7 @@
 - 冻结提交：`b00c44292`（R2 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
 - 文档行数：1393
-- 文档 sha256：`da85d6cfedbce7f77c2911a827c71210cffad4955d08ab5a0b2d57a9f3438caa`
+- 文档 sha256：`98ba23c2488e6e5b2205f050b47d794d5b203a3a205da3ca4561b2061e1ba1fb`
 - 关联代码：`tools/doc-code-map.sh --check` 21/21 通过
 
 ## 收敛证据
@@ -40,3 +40,9 @@
 - 出现新的 P0/P1 事实或行为缺陷证据；
 - `D03-design-batch` 或 citation 工具修完导致基线改变；
 - 用户明确要求重开。
+
+## 回归 review（2026-11-13）
+
+- 回归审查判 FAIL：RD3-R2-25 的“已修”不实（正文残留 2×`本轮未跑`、2×`本篇不引节号`、1×`正说明这一点`、2×`D01-F08`），另有 REG-D03-01 P2（GDB `finish` 停点写成 `bsp_finish_booting`，实为 `kmain`）。
+- 两条均已在正文修正；`anchor 75/75`、`doc-code-map 21/21`、`doc-ref` 通过，`--round R2` 仍 PASS（11/1/0）。
+- 文档 sha256 更新为 `98ba23c2…`；回归结论改为 **PASS**。
