@@ -6,7 +6,7 @@
 - 冻结提交：`b00c44292`（R2 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
 - 文档行数：1396
-- 文档 sha256：`7f3fe6a0d918eff04a13eabfac737d0ee2b6089b03dc2a97e102a8a4ec2702ef`
+- 文档 sha256：`e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`
 - 关联代码：`tools/doc-code-map.sh --check` 21/21 通过
 
 ## 收敛证据
@@ -56,3 +56,16 @@
 - 最终文档 sha256 `7f3fe6a0…`；anchor 75/75、doc-code-map 21/21、structure/ref/style 全绿。
 
 **结论：回归通过，D03 维持 CONVERGED。** 依据是独立冷读对重写段的 PASS，不是主 agent 自检。
+
+## 完整 review（2026-11-18，D-055 恢复独立读者后）
+
+用户要求对 D03 做完整 review。五角色（FACT、DESIGN-D2、READER A/B/C 独立）全量 survey：
+
+- 33 条发现：P0 = 0、P1 = 0、P2 = 9、P3 + SUGG = 24。
+- 6 条 P2 文档修复已提交（`26f42e25d`）；certify 抓到 4 条更细粒度 P2 也已修（`c65a5f90e`）。
+- 1 条 arm64 代码注释残留（UNDEFINED 口径）登记 D03-design-batch。
+- 独立冷读 certify 最终 6/6 CLOSED（第 4 条 P2 残项修正后）。
+- 机械门：anchor 75/75、doc-code-map 21/21、structure/ref/style 全绿。
+- 最终文档 sha256 `e54cad69…`。
+
+**结论：完整 review 通过，D03 维持 CONVERGED。** 残余为 4 条 certify 微调（已修）与 5 条设计 P3 + 2 条 ARCH 提案（D-053 延期）。
