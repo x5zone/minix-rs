@@ -5,7 +5,7 @@
 
 > **目标读者**：熟悉操作系统基本概念（特权级、分页、地址空间、链接与装载）与 C 语言的开发者；Rust 一侧读到 enum/match/trait/内联汇编大意即可。
 
-> **前置知识**：Rust 侧各启动腿与测试载体的起点按腿不同（测试载体不是生产路径）：v1 send 在交接前是“分页已开、shim 低恒等视图”；riscv64 自引导从“分页未开、物理视图”开始（Step 3 才开）；aarch64 direct-core 低地址进入、物理视图；riscv64 测试载体物理视图、PC 在高半 VMA；inline 测试载体低地址视图。C 侧 i386 自举从“分页未开”开始（§2.3 的 `vm_enable_paging` 正是开分页的那一步）；各腿起点不同，正文在 §2.3/§4.3 分别标注。另需 ELF 的 `PT_LOAD` 段与 `p_paddr`/`vaddr` 的区别、链接脚本的 `AT()` 与位置计数器。**前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) 的 §2.6（`pg_mapkernel` 的位表）、§3.7（交接形态）与 §5.2（`check-layout.sh` 的 L0–L9 断言清单——本篇四处结论依赖它）。
+> **前置知识**：Rust 生产路径的起点按腿不同（详见 §3.1 五腿分类表与 §4.4 路径图），C 侧也不同。C 侧 i386 自举从“分页未开”开始（§2.3 的 `vm_enable_paging` 正是开分页的那一步）。另需 ELF 的 `PT_LOAD` 段与 `p_paddr`/`vaddr` 的区别、链接脚本的 `AT()` 与位置计数器。**前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) 的 §2.6（`pg_mapkernel` 的位表）、§3.7（交接形态）与 §5.2（`check-layout.sh` 的 L0–L9 断言清单——本篇四处结论依赖它）。
 
 > **后续**：[03-kmain-cstart.md](03-kmain-cstart.md)（保护结构与 `cstart` 三行调用）、[07 篇页表结构与接口](../02-stage-vm/07-pagetable-struct.md)（页表多级结构与接口的完整定义——本篇 §4.1 只用到基址选择这一面）。
 
@@ -516,7 +516,7 @@ pub struct LoadSegment {
 
 C 侧的负担：`k_initial_stktop` 是一个链接符号，`head.S` 用一条绝对立即数指令把它的值写进 `%esp`（§2.3）。这个做法把"栈顶是多少"与"链接脚本怎么摆段"绑在一起：换一个布局，符号值跟着变。Rust 侧如果照搬，内核就要在源码里声明一个外部链接符号，而"内核被链接进谁"有三种形态（§3.1）——符号的值在每种形态下由不同的脚本决定，且测试载体根本没有这个符号。
 
-改成按值交接：装载方算好一个地址，放进 `KernelInfo`，跳转处只消费它（`kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo) 的 `kern_stack_top` 字段）。算它的公式在 boot-shim 的共享 builder 里（[`os/boot-shim/src/lib.rs`](os/boot-shim/src/lib.rs) 的 [`fn build_kernel_info`](os/boot-shim/src/lib.rs:fn build_kernel_info)；`uefi_helpers.rs` 与 `opensbi_helpers.rs` 只 `use crate::build_kernel_info`，两个自引导面都 `use boot_shim::build_kernel_info`，在两族 boot-shim 之间只有这一份实现；v1 发送侧的 `BootStorage::report()` 里另有同一公式的第二处（`kern_stack_top = kern_virt_base + kern_size`），二者必须锁步）：
+改成按值交接：装载方算好一个地址，放进 `KernelInfo`，跳转处只消费它（`kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo) 的 `kern_stack_top` 字段）。算它的公式在 boot-shim 的共享 builder 里（[`os/boot-shim/src/lib.rs`](os/boot-shim/src/lib.rs) 的 [`fn build_kernel_info`](os/boot-shim/src/lib.rs:fn build_kernel_info)；`uefi_helpers.rs` 与 `opensbi_helpers.rs` 的测试模块只 `use crate::build_kernel_info`，两个自引导面都 `use boot_shim::build_kernel_info`，在两族 boot-shim 之间只有这一份实现；v1 发送侧的 `BootStorage::report()` 里另有同一公式的第二处（`kern_stack_top = kern_virt_base + kern_size`），二者必须锁步）：
 
 ```rust
 /* 节选（保留赋值行），os/boot-shim/src/lib.rs:fn build_kernel_info。 */
@@ -793,7 +793,7 @@ VPN[2] = (vaddr >> 30) & 0x1FF
 接着是算布局（`loader.rs` 的 [`fn compute_kernel_layout`](os/boot-shim/src/loader.rs:fn compute_kernel_layout)）：
 
 ```rust
-/* 节选（保留函数体；注释有改写），os/boot-shim/src/loader.rs:fn compute_kernel_layout。 */
+/* 节选（保留函数体；注释有删节（循环体内 4 行源注释删除），os/boot-shim/src/loader.rs:fn compute_kernel_layout。 */
 pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_elf::ElfError> {
     let mut iter = minix_elf::segment_iter(elf_data)?;
     let entry_point = iter.ehdr().e_entry;
@@ -867,7 +867,7 @@ pub unsafe fn load_segments_into_phys_memory(
 
 四件事按顺序：先把迭代器收进 `Vec`（后面要两两比较，不能边迭代边比较）；再做段间重叠检测（`loader.rs` 的 [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) 用半开区间判交叠：`a.paddr < b_end && b.paddr < a_end`，相邻不算重叠）；再做源/目标重叠检测（[`fn first_source_destination_overlap`](os/boot-shim/src/loader.rs:fn first_source_destination_overlap)，命中即 panic——段目标跨度覆盖任何段的 ELF 文件字节都会在装载中破坏源；这是 panic 而不是返回值，与段间重叠的 `InvalidSegment` 不对称）；最后逐段按 `paddr` 拷贝 `filesz` 字节并清零 `[filesz, memsz)`。注意"清零"的条件是 `memsz > filesz`——`filesz == memsz` 的段（例如 `.text`）不会被额外写零，`filesz == 0` 的段（`.bss`）只清零。
 
-可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI 与 OpenSBI 两条路径在生产代码里调用前者（直接写物理地址），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`file_end <= buf.len()` 与 `mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 与 follow-ups 的 D02-F04。另外，物理地址版自身不拒绝 `filesz > memsz` 或 `paddr + memsz` 溢出，调用者必须先跑 `compute_kernel_layout`；生产路径由 `load_kernel_with_loader` 保证这个顺序，直接调用这个 `pub unsafe fn` 的读者必须自己先校验（D02-F05）。
+可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.4 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`file_end <= buf.len()` 与 `mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 与 follow-ups 的 D02-F04。另外，物理地址版自身不拒绝 `filesz > memsz` 或 `paddr + memsz` 溢出，调用者必须先跑 `compute_kernel_layout`；生产路径由 `load_kernel_with_loader` 保证这个顺序，直接调用这个 `pub unsafe fn` 的读者必须自己先校验（D02-F05）。
 
 **把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面的 `BootStorageCell`（`STORAGE`）初值非零、落在 `.data`；`bootface_a64.rs` 的 bump 游标 `BUMP_PTR` 初值为 `BUMP_BASE`（非零），也落在 `.data`，所以它们不是这个例子的成员。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
 
