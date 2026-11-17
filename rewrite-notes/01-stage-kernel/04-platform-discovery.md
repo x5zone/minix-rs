@@ -6,7 +6,7 @@
 > **Rust 实现**：`os/libs/minix-boot/src/{platform,kernel_info}.rs`、`os/libs/minix-platform/src/{lib,desc,kind,global,acpi,device_tree,qemu_virt}.rs`、`os/libs/minix-platform/src/arch/{mod,x86_64,aarch64,riscv64}.rs`、`os/libs/minix-types/src/types/{cell,address}.rs`、`os/boot-shim/src/{uefi_helpers,opensbi_helpers}.rs`、`os/kernel/src/{lib,misc,smp,trap_dispatch}.rs`、`os/arch/src/{riscv64,arm64}/smp.rs`、`os/arch/src/arch/{clock,arch_init}.rs`、`os/arch/src/{x86_64,arm64,riscv64}/clock.rs`、`os/arch/src/x86_64/arch_init.rs`、`os/plat/src/{lib,interrupt,early_console}.rs`、`os/plat/src/{x86_64,arm64,riscv64}/interrupt.rs`、`os/servers/sched/src/sef.rs`、`os/qemu-tests/run_all.sh`、`os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo{,-aarch64,-riscv64}/src/main.rs`
 > **本篇主题**：内核怎么知道自己跑在哪块板子上——把固件给的描述（设备树 / ACPI 表 / QEMU 假定值）变成可用的硬件描述。
 > **目标读者**：熟悉操作系统基本概念（固件引导、分页、MMIO、中断控制器大意）与 C 语言的开发者；Rust 一侧读到 trait、`no_std` 静态全局与 `unsafe` 契约大意即可。
-> **前置知识**：启动信息已由 boot-shim 交接给内核（含 `KernelInfo.platform_sources`）、高半地址空间与低 4GB 恒等映射已建立、保护结构已装好（01–03 篇的出口）；`kmain` 的 Phase A.5 是本篇的第一条主线。
+> **前置知识**：启动信息已由 boot-shim 交接给内核（含 `KernelInfo.platform_sources`）、高半地址空间已建立、**最小启动恒等窗口**已注册（不是低 4GB 全铺，见 §4.5）、保护结构已装好（01–03 篇的出口）；`kmain` 的 Phase A.5 是本篇的第一条主线。
 > **教学目标**：①内核开机要问硬件的四组问题与各自的消费者（§1.1）；②三种固件的答法与 C 侧两套做法（§1.2、§2.9）；③启动窗口的两条硬边界与"只搬地址与长度"的职责切分（§1.3、§1.5）；④Rust 八项核心设计决策与七项实现层决策索引（§3）；⑤实现链：引导方定位 → 分派 → 解析 → 冻结 → 消费（§4）；⑥测试与诊断（§5、§6）；C 侧覆盖边界见 §1.6。
 > **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) 交出启动信息与内存记账（含 `KernelInfo.platform_sources` 字段的存放）、[02-higher-half-kernel.md](02-higher-half-kernel.md) 建立高半地址空间与恒等映射（DTB 物理地址能被直接解引用就靠它）、[03-kmain-cstart.md](03-kmain-cstart.md) 装上保护结构（`init_protection` 与 `init_clock_and_interrupts` 的先后由 kmain 的 Phase 决定）。
 > **后续**：时钟与中断控制器的初始化从本篇产出的描述符里取地址与频率（[05-clock-interrupt-init.md](05-clock-interrupt-init.md) §4.1 是描述符消费的逐步走查）；CPU 拓扑的完整使用在 SMP 篇（`16-smp.md`，尚未重生成）。
@@ -29,7 +29,7 @@
 
 四组问题的答案来源**不是同一套机制**：
 
-| 要问的问题 | C x86-64 的答案从哪来 | 是否来自固件描述 |
+| 要问的问题 | C i386 的答案从哪来（C 树只有 i386/earm 两棵） | 是否来自固件描述 |
 |---|---|---|
 | IOAPIC 基址 | ACPI 的 MADT 记录（`acpi_ioa->address`） | 是 |
 | LAPIC 基址 | 常量 `LOCAL_APIC_DEF_ADDR`（`0xfee00000`） | **否** |
@@ -37,7 +37,7 @@
 | CPU 拓扑 | ACPI 的 MADT LAPIC 记录 | 是 |
 | 早期控制台 | 常量（COM1 的三个端口宏 `COM1_LCR`/`COM1_DLL`/`COM1_DLM`） | 否 |
 
-LAPIC 那一格是空的：MADT 的表头里明明有一个 `local_apic_address` 字段，C 从头到尾没读过它（§2.5 给出全部检索证据）。四组问题里真正走固件发现的只有中断控制器地址与 CPU 拓扑两组，且"中断控制器"这一组自己也只发现了半格——IOAPIC 地址来自表、LAPIC 基址仍是常量；定时器与控制台两组完全由编译期常量回答。
+LAPIC 那一格是空的：MADT 的表头里明明有一个 `local_apic_address` 字段，C 从头到尾没读过它（§2.5 给出全部检索证据）。上表是 **C 侧（i386/earm 两棵 arch 树里 i386 这一支）的答案**：四组里真正走固件发现的只有中断控制器地址与 CPU 拓扑两组，且"中断控制器"这一组自己也只发现了半格——IOAPIC 地址来自表、LAPIC 基址仍是常量；定时器与控制台两组完全由编译期常量回答。§1.2 的三架构表会显示 Rust/ARM/RISC-V 侧走固件的形式更多，两表射程不同，不要互相套用。
 
 把这一格写死会坏在哪，可以落到一个具体地址上：`minix3/minix/kernel/arch/i386/apic.h` 定义 `LOCAL_APIC_DEF_ADDR` 为 `0xfee00000`，`minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init` 无条件采用它。同一台机器的 IOAPIC 地址却是从表里读出来的——若固件把 LAPIC 窗口重定位，LAPIC 的读写会持续落在 `0xFEE0_0000` 这一片不再被解码的物理地址上，而 IOAPIC 的编程看起来一切正常：一个通、一个不通，故障现象是"IPI 发不出去但 IOAPIC 初始化成功"。
 
@@ -84,7 +84,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 
 这条切分要成立，交接物必须能跨二进制存活。Rust 侧为此把交接物做成纯数据对，并把理由写在模块注释里（§3.6）。
 
-把"解析"也挤进窗口内会坏在哪：引导阶段的内存分配器是临时的（01 篇的引导期页表页分配器与固件池分配器都在这个窗口里工作），解析产生的中间结构要么占用那块临时内存、要么要求引导方实现内核侧的类型；而一旦内核与引导方是两个独立 ELF，这些中间结构还要跨二进制传递。当前设计把窗口内的平台发现动作压到最小——只搬地址与描述长度（x86-64 一个、aarch64 至多两个，§4.2）；描述长度由 `rsdp_total_size` / `dtb_total_size` 现场读表头得到，memmap 装配所需的 `/memory` 解析也属例外，三者在 §1.4 列出。
+把"解析"也挤进窗口内会坏在哪：引导阶段的内存分配器是临时的（01 篇的引导期页表页分配器与固件池分配器都在这个窗口里工作），解析产生的中间结构要么占用那块临时内存、要么要求引导方实现内核侧的类型；而一旦内核与引导方是两个独立 ELF，这些中间结构还要跨二进制传递。当前设计把窗口内的平台发现动作压到最小——只搬地址与描述长度（x86-64 一个、aarch64 至多两个，§4.2）。规则的准确表述是**不解析表体**：取长度必须读表头，这是规则的组成部分，不算例外；真正的例外只有两处——（甲）memmap 装配所需的 DTB 子集解析（三条腿共用的 `collect_arrays` 解 `/memory`、`/reserved-memory` 与 MRB；UEFI 腿的 memmap 本体仍来自 `GetMemoryMap`，不走 DTB），（乙）aarch64 UEFI 腿 `dtb_copy` 的两段式解析（EBS 前 claims、EBS 后交叉校验）。这两处是唯一口径，§4.2 按同一编号展开。
 
 ### 1.4 发现要跨过哪几道关口
 
@@ -95,9 +95,8 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
      riscv64: OpenSBI 的 a1 寄存器 → DTB
         │
         ▼
-② 引导阶段只取地址与长度（不解析表体）——窗口内动作最小化（§1.3）。例外注记：
-   引导阶段另有三处例外：memmap 装配所需的 `/memory` 子集、aarch64
-   UEFI 腿的 DTB 预校验，以及取描述长度时的表头读取
+② 引导阶段只取地址与长度（不解析表体）——窗口内动作最小化（§1.3）。
+   「取长度」本身要读表头，属规则组成部分，不计例外
    （`rsdp_total_size` 读 RSDP 的签名/revision(+15)/length(+20)，
    `dtb_total_size` 读 DTB 的 magic/totalsize）；详见 §4.2 与
    [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)。
@@ -123,7 +122,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 
 | 段 | 输入 | 输出 | 谁做的（C 侧） |
 |---|---|---|---|
-| ① | 固件自己的约定位置 | 描述所在物理地址 | 固件 |
+| ① | 固件自己的约定位置 | 描述所在物理地址 | 固件；**注意此处 C 与 Rust 不同**：C 的 x86 由内核扫描 EBDA/BIOS 区找 RSDP（固件不直接交、只把表放在约定位置），Rust 的 x86 由 boot-shim 读 UEFI 配置表项拿到地址 |
 | ② | 物理地址 | 交接记录里的一个地址字段 | C：内核自己扫描 EBDA/BIOS 区并填 `machine.acpi_rsdp`（§2.2）；Rust：boot-shim 从配置表/`a1` 取地址装进 `KernelInfo.platform_sources`（§4.2） |
 | ③ | 物理地址 | 结构化的一组值 | 内核：`minix3/minix/kernel/arch/i386/acpi.c:acpi_init` |
 | ④ | 结构化的一组值 | 可反复读取的全局 | 内核：ACPI 私有静态 + `machine.acpi_rsdp` |
@@ -537,11 +536,11 @@ static int acpi_read_sdt_at(phys_bytes addr,
 
 这里有一个要手算的边界：`acpi_init` 传进去的 `size` 是 `sizeof(struct acpi_rsdt)`，即 `sizeof(struct acpi_sdt_header)` 加 `35 × sizeof(u32_t)`。SDT 头是 4+4+1+1+6+8+4+4+4 = 36 字节，所以缓冲区长 36 + 140 = 176 字节。`if (size < tb->length)` 这道闸的含义就是"RSDT 声明的长度不得超过 176 字节"——**表项数的上限由编译期常量 `MAX_RSDT` 决定，不由 ACPI 规范决定**。
 
-去掉这道闸会坏在哪，要按两层看，**别把受害对象说错**。
+去掉这道闸会坏在哪，要按两层看，**别把受害对象说错**。先把 `acpi_read_sdt_at` 的失败面说全：它一共 6 处 `return -1`，其中启动期可达的有三处——签名不符、容量闸 `size < tb->length`、校验和失败（另外三处是 `tb == NULL` 的尺寸探测分支与两次读失败，`acpi_phys_copy` 在 `!vm_running` 下无条件 `memcpy` 并返回 0，走不到）。三条可达路径的下游完全相同：调用方拿到 `s = -1`，再按下面的算式算出正的 `sdt_count`。
 
 第一层不是写穿而是**越界读**：那次拷贝是 `read_func(addr, tb, size)`，`size` 是调用方给的缓冲区长度（`acpi_init` 传 `sizeof(struct acpi_rsdt)`，176），**与表头 `length` 无关**——少了这道闸，这次拷贝仍只写 176 字节。真正拿 `tb->length` 当长度用的是紧随其后的 `acpi_check_csum(tb, tb->length)`（`minix3/minix/kernel/arch/i386/acpi.c` 的 `acpi_read_sdt_at` 里那处调用）：它按表头声明的长度去读校验和，越过了 176 字节的缓冲区做**越界读**。
 
-第二层才是写越界，路径在别处：`acpi_init` 的循环里由表头长度算出 `sdt_count = (s - 36)/4`，随后 `for (i = 0; i < sdt_count; i++)` 读 `rsdt.data[i]`（越界读）并写 `sdt_trans[i].signature`（越界**写**，`sdt_trans` 只有 35 项）。这里有一个容易读错的算术：`s` 是 `int`、`sizeof` 是无符号类型，`-1` 在减法前被提升成 32 位无符号数，`(-1 - 36) / 4` 得到的是**正数 1073741814**（不是"负值"）——循环会进入，越界在 `i=35` 处开始（数组只有 35 个元素，`i=0..34` 仍在界内）；`read_func` 在启动期是 `acpi_phys_copy`，`!vm_running` 时无条件 `memcpy` 并 `return 0`，不会打印 ERROR 后退出——循环会继续到越界访问触发缺页/崩溃。被污染的是 `sdt_trans[]`：`acpi_get_table_base("APIC")` 从此按被覆盖的签名做 `strncmp`，找表失败或找到错的表。
+第二层是写越界。它的触发面比第一层宽：第一层要求"去掉容量闸**且** `length > 176`"；第二层只要上述三条可达路径里任意一条发生（不需要去掉闸）——`acpi_init` 随后由这个 `s = -1` 算出 `sdt_count = (s - 36)/4`，随后 `for (i = 0; i < sdt_count; i++)` 读 `rsdt.data[i]`（越界读）并写 `sdt_trans[i].signature`（越界**写**，`sdt_trans` 只有 35 项）。这里有一个容易读错的算术：`s` 是 `int`、`sizeof` 是无符号类型，`-1` 在减法前被提升成 32 位无符号数，`(-1 - 36) / 4` 得到的是**正数 1073741814**（不是"负值"）——循环会进入，越界在 `i=35` 处开始（数组只有 35 个元素，`i=0..34` 仍在界内）；`read_func` 在启动期是 `acpi_phys_copy`，`!vm_running` 时无条件 `memcpy` 并 `return 0`，不会打印 ERROR 后退出。越界写落在数组之外，破坏的是紧邻的 `sdt_count` 等静态量；`sdt_trans[0..35]` 这 35 项本身是正常写入。接下来有两种收场，取决于数组与 `sdt_count` 的实际布局：若越界写覆盖到 `sdt_count`，循环上界会在迭代中被本句自己改写（`acpi.c:325` 每次重读），于是循环提前收尾、留下被破坏的遍历边界；若没覆盖到，循环继续到越界访问触发缺页/崩溃。两种收场的下游一致：后续 `acpi_get_table_base("APIC")` 的边界被破坏，找表失败或命中错的表。布局相关的部分按 C 标准不保证，这里按"等静态量"的相邻关系描述。
 
 ### 2.4 MADT 记录的游标遍历与 CPU 拓扑的雏形
 
@@ -632,7 +631,7 @@ static u32_t acpi_phys2vir(u32_t p)
 }
 ```
 
-发现只能发生在 VM 起来之前。VM 跑起来之后 `vm_running` 为真，任何"把任意物理地址当虚拟地址用"的动作直接 panic——这条约束与 Rust 侧"boot 早期恒等映射覆盖低 4GB、DTB 可被直接解引用"（§4.5）是同一件事的两侧表达。
+发现只能发生在 VM 起来之前。VM 跑起来之后 `vm_running` 为真，任何"把任意物理地址当虚拟地址用"的动作直接 panic——这条约束与 Rust 侧"平台 blob 必须落在已注册的最小启动恒等窗口内、DTB 才可被直接解引用"（§4.5）对应，但范围不同：C 的 `acpi_phys2vir` 假定整个低 4GB 恒等，Rust 只注册按 source 长度建的窗口。
 
 `discover_cpus` 是这条链的终点，也是 CPU 拓扑的消费者：
 
@@ -1011,13 +1010,13 @@ void kmain(kinfo_t *local_cbi)
 
 第一步是 `pre_init()`（`minix3/minix/kernel/arch/earm/pre_init.c`）里的 `set_machine_id()`：它从启动参数取**短名**（`A335BONE`/`BBXM`/`A335BNLT`）经 `get_board_id_by_short_name` 查表；`board_name=` 缺失或查表返回 0 时，它执行 `POORMANS_FAILURE_NOTIFICATION`（即 `svc #00`，源码注释写着 "there is no safe escape"）——此时还没进 `kmain`，更没到 `intr_init`。
 
-第二步才是本节的 `machine.board_id = get_board_id_by_name(env_get(BOARDVARNAME))`：它用**全名**查另一张表（`board_id2name[]`；第一步的短名走 `shortname2id[]`）。因此"板号为 0 导致 `intr_init` 走 `else` 执行 `panic("Can not do the interrupt setup. machine (0x%08x) is unknown\n", machine.board_id)`"这条路，只在**绕过了 pre_init 的情形**下才会走到（例如全名在 `board` 环境里丢了）；正常引导里它在 pre_init 就停住了。板号是这些分支的唯一判据，而它不是硬件给的。
+第二步才是本节的 `machine.board_id = get_board_id_by_name(env_get(BOARDVARNAME))`：它用**全名**查另一张表（`board_id2name[]`；第一步的短名走 `shortname2id[]`）。因此"板号为 0 导致 `intr_init` 走 `else` 执行 `panic("Can not do the interrupt setup. machine (0x%08x) is unknown\n", machine.board_id)`"这条路，只在**绕过了 pre_init 的情形**下才会走到。反例要说清是哪一种绕过："全名在 `board` 环境里丢了"对应的是**第二步查表失败、板号保持 0**，`pre_init` 本身并未被绕过——它先通过（短名命中），随后本步才失败；真正绕过 `pre_init` 的是"短名也不在表里"那种情形。两种情形都以 `machine.board_id == 0` 收场，区别只在停在哪一步。板号是这些分支的唯一判据，而它不是硬件给的。
 
 换一块板子要改的地方，从这个结构里可以直接读出来：BSP 头文件里的基址常量、`bsp_init` 的四步映射、每个 `BOARD_IS_*` 分支，以及启动参数里的板名。
 
 ### 2.10 本章归纳
 
-| 要问的问题 | C x86-64 的答案来源 | C ARM 的答案来源 | 是否来自固件描述 |
+| 要问的问题 | C i386 的答案来源 | C ARM 的答案来源 | 是否来自固件描述 |
 |---|---|---|---|
 | IOAPIC 基址 | MADT 记录 | `BOARD_IS_*` 分支选 `OMAP3_*_INTR_BASE` | x86 是 / ARM 否 |
 | LAPIC 基址 | 常量 `LOCAL_APIC_DEF_ADDR`（MADT 字段无读者） | 不适用 | 否 |
@@ -1026,7 +1025,7 @@ void kmain(kinfo_t *local_cbi)
 | 早期控制台 | COM1 的三个端口宏 | BSP 串口常量 | 否 |
 | CPU 主频 | 不适用（用 TSC 校准） | 常量 `660`（`cpu_info[cpu].freq`） | 否 |
 
-C 的做法可以概括成：x86-64 是**半发现**（IOAPIC 地址与 CPU 拓扑来自表，LAPIC 基址与早期控制台来自常量），ARM 这一侧是**零发现**（板级常量加启动参数板号）。发现结果一部分留在 ACPI 模块的私有静态里，一部分进跨特权级的 `machine`；发现动作在启动期可能被调用多次（`arch_init` 里一次，`apic_single_cpu_init`/`smp_init` 内部各一次），默认配置下只走其中一次——选哪一次由构建配置与启动参数 `no_apic` 共同决定（§2.7）。
+C 的做法可以概括成：i386 是**半发现**（IOAPIC 地址与 CPU 拓扑来自表，LAPIC 基址与早期控制台来自常量），ARM 这一侧是**零发现**（板级常量加启动参数板号）。发现结果一部分留在 ACPI 模块的私有静态里，一部分进跨特权级的 `machine`；发现动作在启动期可能被调用多次（`arch_init` 里一次，`apic_single_cpu_init`/`smp_init` 内部各一次），默认配置下只走其中一次——选哪一次由构建配置与启动参数 `no_apic` 共同决定（§2.7）。
 
 把它搬到"三架构统一"的 Rust 实现里，会立刻遇到三个问题：
 
@@ -1047,6 +1046,8 @@ C 侧的发现结果里没有"来源"这个概念。`machine` 的六个字段里
 C 章在末尾把 C 的做法收束成三个结构性问题（§2.10）：发现该放在哪一层、三种来源怎么统一、结果怎么保存。本章按这个次序给出八项核心设计决策（§3.1–§3.8）与七项实现层决策索引（§3.9），§4 再回到实现。
 
 ### 3.1 解析职责的切分：boot-shim 只定位，kernel 自己解析（→§2.1、§2.8）
+
+> 例外：aarch64 UEFI 腿的 `dtb_copy` 分两段——EBS **前** `authorize_and_copy` 整块复制并由 `resv_claims::capture` 解析 `/memory`/`/reserved-memory`/MRB 生成保留声明；EBS **后** `cross_validate_config_dtb` 解析整棵树做交叉校验。两段都不装配 `KernelInfo.memmap`；但 claims 阶段产生的 `SourceRecord` **会**经 `push_dtb_sources` 写进 wire（`KernelInfo.memmap_sources`），内核仍从 `platform_sources` 的原始地址自行解析表体。
 
 C 的发现全在内核内：`acpi_init` 是 kernel 的函数（`minix3/minix/kernel/arch/i386/acpi.c:acpi_init`），调用点也在 kernel 内（`minix3/minix/kernel/arch/i386/arch_system.c:arch_init`），引导器只负责把 `kinfo` 填好。"内核自己理解硬件"是微内核的职责边界。Rust 保留这条边界，把 boot-shim 的工作限制在"把固件给的物理指针取回来"。
 
@@ -1640,7 +1641,7 @@ riscv64 的来源走另一条路：
 
 aarch64 若写成单次 GUID 判断（`if e.guid == DEVICE_TREE_GUID || e.guid == ACPI2_GUID`）会坏在哪：循环按配置表项顺序扫描，先遇到哪个 GUID 就取哪个——来源由固件给出的表项顺序决定，不由设计意图决定。AAVMF 的表里 ACPI2 在、FDT 两个 GUID 都不在（§5.2 的实测），单次判断在这台机器上取到 ACPI 与两段循环的结果相同；但一台同时提供两者的服务器若把 ACPI 项排在前面，"DTB 优先"这条设计就失效——设计意图是先用更具体的设备树。顺序控制靠两段独立循环实现，不靠 GUID 判断的写法。
 
-引导阶段的三处例外也在这一侧（§1.4 的例外注记在此展开）。其一，来源扫描里的 `rsdp_total_size` / `dtb_total_size` 读表头取长度（RSDP：签名、revision(+15)、length(+20)；DTB：magic、totalsize），只读表头、不碰表体。其二，boot-shim（OpenSBI/U-Boot 腿）与 bootface（直核腿）为装配 `KernelInfo.memmap` 各自解 DTB 的 `/memory` 子集——经 minix-boot 的 `DtbMemoryMap` 单源共享，不属「引导阶段不解析」的违反；除 `/memory` 外的节点仍归内核平台发现层（本篇）。其三，aarch64 UEFI 腿在 `find_platform_sources_into` 之后另有一步：`dtb_copy::preflight` 读 DTB 头、`authorize_and_copy` 整块复制、`cross_validate_config_dtb` 解析整棵树并把 `/memory` 与 UEFI 内存图交叉比对（5 条 panic 停机路径）；它不做 memmap 装配，目的是在 EBS 前拒绝不一致的配置表 DTB。
+引导阶段的例外按 §1.3 的口径是**两处**（取长度读表头属规则组成部分，不计）。其一（甲），memmap 装配所需的 DTB 子集解析：三条腿共用 minix-boot 的 `collect_arrays`，都解 `/memory`、`/reserved-memory` 与设备树 memory reservation block（MRB，记为 `MrbEntry`、映射到 `EfiReservedMemoryType`，`memmap_source.rs:1152`、`resv_claims.rs:97`）；UEFI 腿的 memmap 本体来自 `GetMemoryMap`，只有 claims 走这条 DTB 路径。除这些子集外的节点仍归内核平台发现层。其二（乙），aarch64 UEFI 腿 `dtb_copy` 的两段式，分 EBS 前后：EBS **前** `preflight` 读头 → `authorize_and_copy` 整块复制 → `resv_claims::capture` 生成保留声明（`ebs_pair.rs:190-194`，此后到 EBS 不得再分配）；EBS **后** `cross_validate_config_dtb` 解析整棵树，把 `/memory` 与 UEFI 内存图交叉比对（`uefi_helpers.rs:1188`，5 条 panic 停机路径）。它不装配 `KernelInfo.memmap`，但**会**把 DTB 派生的 `SourceRecord` 经 `push_dtb_sources` 写进 wire（`ebs_pair.rs:194`、`handoff_v1_write.rs:327-334`），内核解码后存入 `KernelInfo.memmap_sources`（`lib.rs:711/725`）；这些记录在 UEFI 腿的覆盖证明里被 `authority` 过滤排除，但它们确实跨了 ABI。
 
 ### 4.3 分派：parse_by_kind 与它的构造点（→3.6）
 
@@ -1899,7 +1900,11 @@ fn check_gic_madt(
 //!   and safe to store globally.
 ```
 
-`parse` 拿到手的只是一个物理地址，能被直接解引用，靠的是 boot 早期的恒等映射：`os/libs/minix-platform/src/device_tree.rs:fn parse` 里 `fdt::Fdt::from_ptr(dtb_phys as *const u8)` 把物理地址当指针传给 `fdt` crate，前提是此时内核已启用分页，且该物理地址落在 `arch_boot_impl` Step 1 的最小启动恒等窗口内（不是低 4GB 全铺；窗口由 `push_platform_windows` 按每个 source 的长度建，`len=0` 才退回 2 MiB 片）。DTB 在直核腿是 boot-shim 留在低地址的静态固件内存；UEFI 腿的 `dtb_copy` owned copy 只用于交叉校验与 claims，内核 `platform_sources` 里仍是配置表 DTB 地址。两者都必须落在已注册窗口内。模块注释的 Safety 段把这条前提列成解析前置条件：
+`parse` 拿到手的只是一个物理地址，能被直接解引用，前提是此时内核已启用分页，且该物理地址落在 `arch_boot_impl` Step 1 的最小启动恒等窗口内——`os/libs/minix-platform/src/device_tree.rs:fn parse` 里 `fdt::Fdt::from_ptr(dtb_phys as *const u8)` 把物理地址当指针传给 `fdt` crate（不是低 4GB 全铺；窗口由 `push_platform_windows` 按每个 source 的长度建，`len=0` 才退回 2 MiB 片）。DTB 在直核腿是 boot-shim 留在低地址的静态固件内存；UEFI 腿的 `dtb_copy` owned copy 只用于交叉校验与 claims，内核 `platform_sources` 里仍是配置表 DTB 地址。两者都必须落在已注册窗口内。
+
+**窗口覆盖的已知缺口（ACPI 链）**：`push_platform_windows` 按 `platform_sources` 里每个 source 的 `phys_addr + len` 建窗口，因此 RSDP/DTB **本体**被覆盖；但 ACPI 的表链是 RSDP 内部指针给出的——`rsdt_addr`/`xsdt_addr` 指向 RSDT/XSDT，后者再指向 MADT 等表，这些地址既不在 `platform_sources` 里、也不在任何注册窗口内，窗口还按 2 MiB 片向外取整（`lib.rs:1244-1248`）。QEMU 能跑通的**推断**原因是固件把整条表链放在 RSDP 同一 2 MiB 片内（推断依据是 `push_platform_windows` 的 2 MiB 取整 + `readelf`/QEMU 表地址；串口日志不含 ACPI 地址，故未直接读出），属布局偶然，不是契约。DTB 链没有这个问题（DTB 是单块 blob，长度已在 `len` 里）。这个缺口登记为 `R04-T13`；文档不把它写成已解决。
+
+模块注释的 Safety 段把这条前提列成解析前置条件：
 
 ```text
 // os/libs/minix-platform/src/device_tree.rs —— 节选（模块文档 Safety 段；原文写 low 4 GB，是旧前提，现行实现见正文）
@@ -2589,6 +2594,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | R04-T10 | 多 IOAPIC 的 `ApicDesc`/GSI-range 模型（当前只表示首个 IOAPIC） | **设计/代码侧** |
 | R04-T11 | aarch64 ACPI 的 GICC UID → GICR 帧索引假设（非 QEMU 固件不保证） | **设计/测试侧** |
 | R04-T12 | `init_smp_state` 的 `unwrap_or(topo.bsp_id as usize)` 把 hw_id 当逻辑槽位：非连续 hw_id 时会选错槽位或越界（`CpuId::new_unchecked` 不检查上界）；需改成有界的保守回退 | **设计/代码侧** |
+| R04-T13 | ACPI 表链（RSDT/XSDT/MADT）不在任何已注册恒等窗口内；2 MiB 片取整让 QEMU 侥幸通过，非契约（§4.5） | **设计/代码侧** |
 
 ---
 

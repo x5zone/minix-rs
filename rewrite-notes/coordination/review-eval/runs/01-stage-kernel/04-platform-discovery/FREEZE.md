@@ -5,8 +5,8 @@
 - 确认轮：R2（`轮型: confirmation`）
 - 冻结提交：`bc232e627`
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
-- 行数：2729
-- 文档 sha256：`5ea4e0554403a63c1e002dcc12d5b4738ed11191d1d2e82b54d7b3915905c078`
+- 行数：2735
+- 文档 sha256：`a6a7cba7f803a35f4f0c2da1c7e787ca9e4029ec43d055ce017179219d898375`
 - 关联代码：`tools/doc-code-map.sh --check` 52/52 通过
 
 ## 收敛证据
@@ -39,4 +39,16 @@
 
 - 回归审查判 PASS，附 REG-D04-01 P2：两处 `PlatformDescSource::new(DTB, …)` 应为 `with_optional_len`；另有 P3 `low 4 GiB` 与源码 `low 4 GB` 的措辞差。
 - 两处已改为 `with_optional_len`，Safety 引文恢复 `low 4 GB` 并在块头标注旧前提；`anchor 77/77`、`doc-code-map 52/52`、`--round R2` 仍 PASS（12/2/0）。
-- 文档 sha256 更新为 `5ea4e055…`；回归结论维持 **PASS**。
+
+## 回归 review（2026-11-17，恢复独立读者后重做）
+
+用户裁决 D-055 后重做回归：
+
+- **独立三角色**共报 17 条（READER-A 3、B 12、C 2，含 4 条 P1）；合并版当时 14 条里没有「恒等映射前提三处互斥」「§1.3 规则自我否定」「§1.1 与 §1.2 结论相反」这些结构矛盾。
+- **独立冷读 certify 三轮**：7 条、6 条、2 条新准入。按 §4.0b 记 `BLOCKED` 并写 `STUCK-REPORT.md`。
+- 结构性重写：§2.3 两层因果改为正面陈述「6 处 return -1、三处可达」；§1.3/§4.2 例外清单统一为（甲）（乙）；§3.1 承认 `SourceRecord` 跨 ABI；§2.10 列头改 `C i386`。
+- 独立闭集冷读判 `§2.3 验证 = PASS`、`结构性重写验证 = PASS`（其余三点）。
+- 新增真实缺口并登记：`R04-T13`（ACPI 表链 RSDT/XSDT/MADT 不在任何已注册恒等窗口内，QEMU 通过靠 2 MiB 片取整的布局偶然）。
+- 最终文档 sha256 `a6a7cba7…`；anchor 77/77、doc-code-map 52/52、structure/ref/style 全绿。
+
+**结论：回归通过，D04 维持 CONVERGED**，另附 `R04-T13` 为已登记的相邻缺口（D-054 延期）。
