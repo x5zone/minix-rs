@@ -375,6 +375,9 @@ loop.md §4/§5。
 **入账约定（V3.4-r8）**：`rb.md` 是 certify 回执，不按面板覆盖门核对（三类清单
 不需要 `## FINDING` ID 命名空间）；其中 NEW 项由主 agent 按 §4.0c 准入进**本轮**
 台账，REOPEN 项按未闭环计。
+**入库约定（V3.5）**：同一次 certify 的回执须复制/另存为
+`runs/<stage>/<doc>/certify/round<N>-<k>.md`（制品链以该路径为准；rb.md 留在 panel
+目录仅作角色记录）。
 
 ## 五、输出格式与编号
 

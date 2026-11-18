@@ -96,7 +96,10 @@ V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派
 6. 把 `review-panel.md` 第四节对应 brief 逐字作为任务，替换尖括号占位符；不要补充作者的解释、结论、历史评审。
 7. 子 agent 只写 `tmp/review-eval/<stage>/<doc-stem>/panel/<role>.md`；禁止修改仓库文件。
 8. 面板运行前后各跑一次 `git status --porcelain`；出现新改动即判违规，丢弃该角色输出并重跑。
-9. 面板原始输出逐字保留，不合并、不润色。
+9. 面板原始输出逐字保留，不合并、不润色。**V3.5 制品链**：面板输出入库
+   `runs/<stage>/<doc>/panel/round<N>/` 并用 `python3 tools/panel-index.py` 生成
+   `INDEX.md`（哈希索引）；tmp 只作工作副本。certify 独立回执入库
+   `runs/<stage>/<doc>/certify/round<N>-*.md`。
 
 `loop.md §1` 记录：角色、拿到什么、没拿到什么、模型、起止时间、原始输出路径、缩编理由与风险、派发降档/升档事件。
 
