@@ -1673,16 +1673,24 @@ def check_round_monotonicity(
                 continue
             if r in ledger_rounds or (r in metrics_rounds and r not in metrics_open):
                 continue
+            # r15（P0-1 判例）：无后继轮的注入（伪造最大轮号）同样必须 FAIL——
+            # 「未闭合」本身即FAIL，不以「是否有后继轮」为条件（原实现让注入的
+            # 最大轮静默逃逸）。
             later = sorted(x for x in all_rounds if x > r)
+            why = (
+                "metrics 自报未闭环>0" if r in metrics_open
+                else "既无台账节也无 metrics 块（未闭合轮）"
+            )
             if later:
-                why = (
-                    "metrics 自报未闭环>0" if r in metrics_open
-                    else "既无台账节也无 metrics 块（未闭合轮）"
-                )
                 report.fail(
                     "round-order",
                     f"R{r} 在 loop.md 有轮次小节，但{why}；"
                     f"却已出现 R{later[0]}——未关闭轮不得静默越序（N0）",
+                )
+            elif round_tag is None or r <= int(round_tag.lstrip("R") or 0):
+                report.fail(
+                    "round-order",
+                    f"R{r} 在 loop.md 有轮次小节，但{why}——无账轮次不得关闭（N0）",
                 )
 
 
@@ -1838,12 +1846,13 @@ def check_run_dir(
             r"|待|暂|拟|存疑|\?"
         )
         _title_all = [ln for ln in _ft.splitlines() if re.match(r"^#{1,2}\s+.*FREEZE", ln)]
+        # r15（P0-2 判例）：正文一行「NOT CONVERGED」（无 FREEZE 字样）即解锁——
+        # 毒化扩展：① 任意行出现终态词+邻接否定（NOT/未/没/尚未 CONVERGED）；
+        # ② 任意行出现 REOPEN（FREEZE 正文提及重开 = 冻结已失效）。
         _terminal_titles = [
             ln for ln in _title_lines if re.search(_TERMINAL, ln)
         ]
-        _poison = any(
-            re.search(_NEG, ln, re.IGNORECASE) for ln in _title_all
-        )
+        _poison = any(re.search(_NEG, ln, re.IGNORECASE) for ln in _title_all)
         _freeze_ok = (
             len(_ft.strip()) > 0
             and bool(_terminal_titles)
@@ -2241,7 +2250,8 @@ def check_run_dir(
                         elif re.search(
                             r"NOT\s*PASS|未通过|没通过"
                             r"|结论\s*[:：]\s*(FAIL|REOPEN)"
-                            r"|^\s*REOPEN\b",
+                            r"|^\s*REOPEN\b"
+                            r"|未(修|完成|实施|落地)(?!.*已补)",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
                         ):
