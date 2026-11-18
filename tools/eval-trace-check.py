@@ -1775,9 +1775,15 @@ def check_run_dir(
     # r14（P0-1 判例）：from 轮标记本身可注入——`schema: V3.4 from R99` 写进
     # loop 时 schema_start=99，V3 门对 <99 轮全体休眠且钳回锚点=注入值。
     # 自校验：起点轮不得晚于「已见最大轮号 + 1」，否则标记自报无效，钳回 1。
-    _led_hdrs_early = {
-        int(n) for n in re.findall(r"^##\s+R(\d+)\b", ledger_text or "", re.MULTILINE)
-    }
+    _led_hdrs_early = set()
+    _cur_hdr = None
+    for _ln in (ledger_text or "").splitlines():
+        if _ln.startswith("## "):
+            _cur_hdr = _ln
+        elif _ln.startswith("|") and not re.match(r"^\|[\s-]+\|", _ln) and _cur_hdr:
+            _m_h = re.match(r"^##\s+R(\d+)\b", _cur_hdr)
+            if _m_h:
+                _led_hdrs_early.add(int(_m_h.group(1)))
     _max_seen_loop_early = max(
         (r for r in _loop_round_numbers(loop_text or "") if r in _led_hdrs_early),
         default=0,
@@ -1871,7 +1877,7 @@ def check_run_dir(
         )
         # r18（P0-① 判例）：零宽字符（ZWSP/ZWNJ/ZWJ/BOM）使极性扫描失明——剥离。
         _ft = re.sub(
-            r"[\u200b-\u200f\ufeff\u00ad\u180e\u2060-\u2064"
+            r"[\u200b-\u200f\u2060-\u2069\ufeff\u00ad\u180e"
             r"\ufe00-\ufeff\U0001d173-\U0001d17a\U000e0000-\U000e007f]",
             "",
             _ft,
@@ -1916,7 +1922,7 @@ def check_run_dir(
         _v34_from = (
             int(_m34.group(1))
             if _m34 and _m34.group(1)
-            else (schema_start or 1)
+            else 1  # r21：fallback 不复用可能被幽灵头撑大的 schema_start
         )
         # r13（P0-5 判例）：from 轮零校验——注入 `from R99` 可豁免全部轮的制品链。
         # 起点轮不得晚于「已见最大轮号 + 1」；越界即视为自报无效，钳回 schema_start。
@@ -2329,7 +2335,7 @@ def check_run_dir(
                             re.IGNORECASE | re.MULTILINE,
                         ) or re.search(
                             # r19（P0-3 判例）：裸 P0 遗留标记
-                            r"^\s*[-*]?\s*P[01]\b",
+                            r"^\s*[-*]?\s*P[01](?!\d)",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
                         )
