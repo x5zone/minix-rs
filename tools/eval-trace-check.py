@@ -152,6 +152,8 @@ METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE
 METRIC_COUNT_RE = re.compile(r"([①②④⑤⑥③]|FP|SUGG)\s*(\d+)")
 def _strip_invisible(text: str) -> str:
     """V3.4-r26：白名单过滤器。"""
+    import re as _re
+    text = _re.sub(r"[\u2010-\u2015\u2212]", "-", text)
     return "".join(
         c
         for c in text
@@ -160,7 +162,7 @@ def _strip_invisible(text: str) -> str:
             or 0x4E00 <= ord(c) <= 0x9FFF
             or 0x3400 <= ord(c) <= 0x4DBF
             or 0x3000 <= ord(c) <= 0x303F
-            or 0xFF00 <= ord(c) <= 0xFFEF
+            or (0xFF01 <= ord(c) <= 0xFFEF and ord(c) != 0xFFA0)
             or c in '\n\t'
         )
     )
