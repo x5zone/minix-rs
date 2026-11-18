@@ -1483,7 +1483,7 @@ def collect_panel_findings(
         # 仅对制品必需文档启用：历史冻结轮（V3.3 旧口径，SUGG 不入台账）不追溯。
         if collect_sugg_ids:
             found += re.findall(
-                r"^##\s+SUGGESTION\s+([A-Za-z][A-Za-z0-9-]*)", text, re.MULTILINE
+                r"^#{2,3}\s+SUGGESTION\s+([A-Za-z][A-Za-z0-9-]*)", text, re.MULTILINE
             )
         found += re.findall(r"^\*\*(DESIGN-D2-\d+)", text, re.MULTILINE)
         if not found:
@@ -1811,15 +1811,21 @@ def check_run_dir(
     _freeze_path = run_dir / "FREEZE.md"
     if _freeze_path.is_file():
         _ft = _freeze_path.read_text(encoding="utf-8")
-        # r10（P0-③ 判例）：子串匹配让「NOT CONVERGED」「尚未 CONVERGED」
-        # 「历史曾 CONVERGED」的笔记解锁全链豁免——只认**正向状态行**。
-        _pos = [
-            ln
-            for ln in _ft.splitlines()
-            if re.search(r"\bCONVERGED\b|\bFREEZE-WITH-BACKLOG\b", ln)
-            and not re.search(r"NOT\s+CONVERGED|尚未|曾|未", ln)
-        ]
-        _freeze_ok = len(_ft.strip()) > 0 and bool(_pos)
+        # r11（P0-1 判例）：r10 的否定词黑名单是实例级修复——「还没 CONVERGED。」
+        # 「目标：达成 CONVERGED 后冻结。」「CONVERGED-CANDIDATE（待确认）」
+        # 「是否 CONVERGED？待复核。」全部绕过。改**肯定式判据**：FREEZE 标题行
+        # （`# … FREEZE …`）必须携带终态（CONVERGED / FREEZE-WITH-BACKLOG）。
+        # 这是 FREEZE 文档自身的标题契约，一句话事故无法满足。
+        _freeze_ok = (
+            len(_ft.strip()) > 0
+            and bool(
+                re.search(
+                    r"^#\s+.*FREEZE.*\b(CONVERGED|FREEZE-WITH-BACKLOG)\b",
+                    _ft,
+                    re.MULTILINE | re.IGNORECASE,
+                )
+            )
+        )
     _v34_from = (
         v33_start_round(loop_text, fallback=schema_start)
         if (schema_version(loop_text) or (0, 0)) >= (3, 4)
@@ -1900,7 +1906,13 @@ def check_run_dir(
                         continue
                     _nf = len(re.findall(r"^##\s+FINDING\b", _text, re.MULTILINE))
                     _nc = len(re.findall(r"^##\s+CLAIM\s+\d+", _text, re.MULTILINE))
-                    _ns = len(re.findall(r"^##\s+SUGGESTION\b", _text, re.MULTILINE))
+                    _ns = len(
+                        re.findall(
+                            r"^#{2,3}\s+SUGGESTION\s+[A-Za-z][A-Za-z0-9-]*",
+                            _text,
+                            re.MULTILINE,
+                        )
+                    )
                     if _nf + _nc + _ns == 0 and "无发现" not in _text:
                         report.fail(
                             "panel-artifact",
@@ -2172,24 +2184,42 @@ def check_run_dir(
                     )
                 else:
                     _bad_certs = []
+                    # 全角 ASCII 归一（r11 P0-2：ＮＯＴ　ＰＡＳＳ 绕过词表）
+                    _fw = str.maketrans(
+                        {chr(0xFF01 + i): chr(0x21 + i) for i in range(94)}
+                    )
                     for _cert in _cert_files:
-                        _ct = _cert.read_text(encoding="utf-8")
+                        _ct = _cert.read_text(encoding="utf-8").translate(_fw)
                         # r10（P0-④ 判例）：字节数被纯标点绕过——按**有效字符**
-                        # （字母/数字/汉字）计数；否定词表补 结论：REOPEN/未通过。
-                        _eff = len(
-                            re.sub(r"[^\w\u4e00-\u9fff]", "", _ct)
-                        )
+                        # 计数。
+                        _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
                         if _eff < 20:
                             _bad_certs.append(
                                 f"{_cert.name} 有效字符不足（{_eff}）"
                             )
                         elif re.search(
-                            r"NOT\s*PASS|未通过|结论\s*[:：]\s*(FAIL|REOPEN)",
+                            r"NOT\s*PASS|未通过|没通过"
+                            r"|结论\s*[:：]\s*(FAIL|REOPEN)"
+                            r"|^\s*REOPEN\b",
+                            _ct,
+                            re.IGNORECASE | re.MULTILINE,
+                        ):
+                            _bad_certs.append(
+                                f"{_cert.name} 含否定性结论"
+                                "（NOT PASS/未通过/没通过/结论 FAIL|REOPEN/独行 REOPEN）"
+                            )
+                        elif not re.search(
+                            r"(结论|判定|验证|确认)[^\n]{0,24}"
+                            r"(\bPASS\b|\bCLOSED\b|通过|闭环)",
                             _ct,
                             re.IGNORECASE,
                         ):
+                            # r11（P0-2）：词表不可穷尽——改**肯定式结论要求**：
+                            # 回执必须自带一行显式通过性结论（结论/判定/验证/确认
+                            # + PASS/CLOSED/通过/闭环）。
                             _bad_certs.append(
-                                f"{_cert.name} 含否定性结论（NOT PASS/FAIL/REOPEN/未通过）"
+                                f"{_cert.name} 缺少显式通过性结论行"
+                                "（结论/判定/验证/确认 + PASS/CLOSED/通过/闭环）"
                             )
                     if _bad_certs:
                         report.fail(
@@ -3783,7 +3813,7 @@ def self_test() -> int:
         if not any("面板制品未入库" in i["message"] for i in rpg.items if i["level"] == "FAIL"):
             print("self-test FAIL: 空 FREEZE 解锁了制品豁免")
             return 1
-        (rg / "FREEZE.md").write_text("CONVERGED（测试夹具）\n", encoding="utf-8")
+        (rg / "FREEZE.md").write_text("# 测试 FREEZE —— 夹具（CONVERGED）\n", encoding="utf-8")
         rpg2 = check_run_dir(rg, None, "R1")
         if any("面板制品未入库" in i["message"] for i in rpg2.items if i["level"] == "FAIL"):
             print("self-test FAIL: 有效 FREEZE 未豁免制品链")
@@ -3903,6 +3933,107 @@ def self_test() -> int:
         rpr = check_run_dir(rr, external, "R1")
         if not any("run 目录之外" in i["message"] for i in rpr.items if i["level"] == "FAIL"):
             print("self-test FAIL: 外部 --panel-dir 未被拦（r10 复核）")
+            return 1
+
+    # ===== r11 判别夹具 =====
+    # (a) FREEZE 肯定式：否定措辞的 FREEZE 不豁免（黑名单绕过四型中抽两型）。
+    with tempfile.TemporaryDirectory() as th:
+        rh = _write_artifact_run(Path(th))
+        (rh / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        (rh / "FREEZE.md").write_text("还没 CONVERGED。\n", encoding="utf-8")
+        rph = check_run_dir(rh, None, "R1")
+        if not any("面板制品未入库" in i["message"] for i in rph.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 「还没 CONVERGED」FREEZE 仍解锁（r11 P0-1）")
+            return 1
+        (rh / "FREEZE.md").write_text("目标：达成 CONVERGED 后冻结。\n", encoding="utf-8")
+        rph2 = check_run_dir(rh, None, "R1")
+        if not any("面板制品未入库" in i["message"] for i in rph2.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 「目标达成 CONVERGED」FREEZE 仍解锁（r11 P0-1）")
+            return 1
+
+    # (b) SUGG 形状契约：### 层级带 ID 的 SUGGESTION 被三处同口径收集。
+    with tempfile.TemporaryDirectory() as tj:
+        rj = _write_artifact_run(Path(tj))
+        pd = rj / "panel" / "round1"
+        pd.mkdir(parents=True)
+        body = (
+            "# fact\n\n## FINDING F-1\n- 位置：§1\n\n"
+            "### SUGGESTION RD-S-02\n- 建议：结构\n\n"
+            "## SUGGESTION\n- 无 ID 聚合段：不计入\n"
+        )
+        (pd / "fact.md").write_text(body, encoding="utf-8")
+        h = _hl.sha256(body.encode()).hexdigest()
+        (pd / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| fact.md | {h} | 1 | 1 | 0 | finding |\n", encoding="utf-8")
+        (rj / "defect-ledger.md").write_text(
+            "## R1 面板轮\n\n| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n"
+            "| RD-1 | F-1 | R1 | fact | P2 | 事实 | ① | 修 | e | grep x |\n"
+            "| RD-2 | RD-S-02 | R1 | fact | P3 | 建议 | SUGG | 登记 | e | 无 |\n",
+            encoding="utf-8")
+        (rj / "metrics.md").write_text(
+            "# 指标\n\n## R1 面板轮\n\n- 发现总数: 2\n- 唯一根因数: 2\n"
+            "- 本轮新准入: 2\n- certify 新准入: 0\n- 重复合并: 0\n- 自引入: 0\n"
+            "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 1\n- 未闭环: 0\n"
+            "- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 代裁决: 0\n- ARCH 提案: 0\n"
+            "- 用户否决: 0\n- edition: V3.4\n", encoding="utf-8")
+        rpj = check_run_dir(rj, None, "R1")
+        _mj = [i["message"] for i in rpj.items if i["level"] == "FAIL"]
+        if any("计数与 INDEX 不一致" in x for x in _mj):
+            print("self-test FAIL: ### 层级 SUGG 与 INDEX 计数口径不一致（r11 P0-3）")
+            return 1
+        if any("没有处置行" in x and "RD-S-02" in x for x in _mj):
+            print("self-test FAIL: ### 层级 SUGG 未被覆盖率收集（r11 P0-3）")
+            return 1
+
+    # (c) certify 肯定式结论：缺结论行 / 各种否定形态必须 FAIL；显式结论通过。
+    with tempfile.TemporaryDirectory() as tk:
+        rk = _write_artifact_run(Path(tk))
+        pd = rk / "panel" / "round1"
+        pd.mkdir(parents=True)
+        body = "# fact\n\n## FINDING F-1\n- 位置：§1\n"
+        (pd / "fact.md").write_text(body, encoding="utf-8")
+        h = _hl.sha256(body.encode()).hexdigest()
+        (pd / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| fact.md | {h} | 1 | 0 | 0 | finding |\n", encoding="utf-8")
+        cd = rk / "certify"
+        cd.mkdir()
+        (cd / "round1-1.md").write_text(
+            "# 独立冷读回执\n\n逐条回读完成。\n" + "内容详述。" * 8, encoding="utf-8")
+        rpk = check_run_dir(rk, None, "R1")
+        if not any("缺少显式通过性结论" in i["message"] for i in rpk.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 无结论行回执未被拦（r11 P0-2 肯定式）")
+            return 1
+        (cd / "round1-2.md").write_text(
+            "# 回执\n\n" + "内容。" * 10 + "\n\n没通过。\n", encoding="utf-8")
+        (cd / "round1-3.md").write_text(
+            "# 回执\n\n" + "内容。" * 10 + "\n\nＮＯＴ　ＰＡＳＳ。\n", encoding="utf-8")
+        rpk2 = check_run_dir(rk, None, "R1")
+        _neg = sum(
+            1 for i in rpk2.items if i["level"] == "FAIL" and "否定性结论" in i["message"]
+        )
+        if _neg < 1:
+            print("self-test FAIL: 没通过/全角 NOT PASS 未被拦（r11 P0-2）")
+            return 1
+        (cd / "round1-2.md").unlink()
+        (cd / "round1-3.md").unlink()
+        (cd / "round1-4.md").write_text(
+            "# 回执\n\n" + "内容。" * 10 + "\n\n结论：通过，全部闭环。\n", encoding="utf-8")
+        (cd / "round1-1.md").write_text(
+            "# 独立冷读回执\n\n逐条回读完成。\n\n结论：CLOSED。\n" + "详述。" * 6,
+            encoding="utf-8")
+        rpk3 = check_run_dir(rk, None, "R1")
+        if any(
+            ("缺少显式通过性结论" in i["message"] or "否定性结论" in i["message"])
+            for i in rpk3.items if i["level"] == "FAIL"
+        ):
+            print("self-test FAIL: 显式结论回执被误拦（r11 P0-2）")
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
