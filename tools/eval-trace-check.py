@@ -150,6 +150,27 @@ ROUND_TYPE_V33 = {"full", "structural", "confirmation"}
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE)
 METRIC_COUNT_RE = re.compile(r"([①②④⑤⑥③]|FP|SUGG)\s*(\d+)")
+def _strip_invisible(text: str) -> str:
+    """r22（对抗建议采纳）：Default_Ignorable + Cf 属性归一——不再逐码点枚举。
+
+    移除所有 Unicode Default_Ignorable Code Points（UD#）+ Format Characters（Cf）
+    + 零宽系列，覆盖现有与未来全部不可见字符变体。
+    """
+    import unicodedata as _ud
+    return "".join(
+        c
+        for c in text
+        if not (
+            _ud.category(c) in ("Cf", "Mn")
+            or c in "\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad\u180e"
+            or (0x2060 <= ord(c) <= 0x2069)
+            or (0xFE00 <= ord(c) <= 0xFE0F)
+            or (0xE0000 <= ord(c) <= 0xE007F)
+            or (0x1D173 <= ord(c) <= 0x1D17A)
+        )
+    )
+
+
 PLACEHOLDERS = {"tbd", "待定", "-", "—", "", "（待补）", "待补", "(待补)", "(待定)"}  # r16：全角归一后括号变半角，两形态都算占位
 DISPOSITION_TOKENS = {
     "①": "①",
@@ -1876,12 +1897,7 @@ def check_run_dir(
             for c in _ft
         )
         # r18（P0-① 判例）：零宽字符（ZWSP/ZWNJ/ZWJ/BOM）使极性扫描失明——剥离。
-        _ft = re.sub(
-            r"[\u200b-\u200f\u2060-\u2069\ufeff\u00ad\u180e"
-            r"\ufe00-\ufeff\U0001d173-\U0001d17a\U000e0000-\U000e007f]",
-            "",
-            _ft,
-        )
+        _ft = _strip_invisible(_ft)
         _nonempty = [ln for ln in _ft.splitlines() if ln.strip()]
         _title_lines = [
             ln for ln in _nonempty[:3] if re.match(r"^#\s+.*FREEZE", ln)
@@ -2315,12 +2331,7 @@ def check_run_dir(
                         _ct = _cert.read_text(encoding="utf-8").translate(_fw)
                         # r10（P0-④ 判例）：字节数被纯标点绕过——按**有效字符**
                         # 计数。
-                        _ct = re.sub(
-                            r"[\u200b-\u200f\ufeff\u00ad\u180e\u2060-\u2064"
-                            r"\ufe00-\ufeff\U0001d173-\U0001d17a\U000e0000-\U000e007f]",
-                            "",
-                            _ct,
-                        )
+                        _ct = _strip_invisible(_ct)
                         _neg_hit = re.search(
                             r"NOT\s*PASS|未通过|没通过"
                             r"|结论\s*[:：]\s*(FAIL|REOPEN)"
@@ -2335,7 +2346,7 @@ def check_run_dir(
                             re.IGNORECASE | re.MULTILINE,
                         ) or re.search(
                             # r19（P0-3 判例）：裸 P0 遗留标记
-                            r"^\s*[-*]?\s*P[01](?!\d)",
+                            r"(?:^\s*[-*]?\s*|^\s*\d+[.)]\s*)P[01](?!\d)",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
                         )
