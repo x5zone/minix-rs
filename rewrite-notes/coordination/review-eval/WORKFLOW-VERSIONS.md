@@ -530,6 +530,18 @@ R31=16（授权，strict 后增，同根因 R31 无账）、R32/R33/R34 各 1、
 - **修复**：① max_seen 只计有账轮次（台账或 metrics 标题头交集）；② FREEZE 不可见字符剥离扩 7 区段；③ certify 全局否定补 `^\s*[-*]?\s*P[01]\b` + 零宽剥离；④ schema_start 钳回阈值 max_seen+1 → max_seen。
 - 判定 NOT PASS（P0×4 已修），协议第 10 轮结束。**用户指示补 8 轮（r20–r27）**。
 
+## V3.4-r26（2026-11-19，收敛循环第 26 轮——结构性修复）
+
+- **r26**：对抗+机械两队。边界外 P0×2——① strip_invisible 第 4 轮换码点逃逸（U+115A/115B/E0300/31EF/E000）；② 裸 P0 CJK 左邻（遗留P0/遗留P00/𝐏𝟎/全角Ｐ０）。另有 process-violation：r20–r25 六轮落账虚假（WORKFLOW-VERSIONS 零条目）、r19–r25 五轮夹具判别力存疑。
+- **结构性修复**：_strip_invisible 改白名单过滤器——只保留 ASCII 可打印 + CJK Unified/Extension A + CJK Symbols/Punctuation + Fullwidth Forms + newline/tab。FREEZE 与 certify 是项目内部工件，任何不在白名单内的字符一律剥离。**关闭 r9–r26 六轮换码点对抗的整类攻击面**（不是又一个补丁，是类级消除）。裸 P0 CJK 左邻修复（\b 在 CJK 旁失效改 (?<![a-zA-Z0-9])）。
+- 判定待 r27 确认（最后一轮）。
+
+## V3.4-r26（2026-11-19，收敛循环第 26 轮——结构性修复）
+
+- **r26**：对抗+机械两队。边界外 P0×2——① strip_invisible 第 4 轮换码点逃逸（U+115A/115B/E0300/31EF/E000）；② 裸 P0 CJK 左邻（遗留P0/遗留P00/𝐏𝟎/全角Ｐ０）。
+- **结构性修复**：_strip_invisible 改白名单过滤器——只保留 ASCII 可打印 + CJK Unified/Extension A + CJK Symbols/Punctuation + Fullwidth Forms + newline/tab。关闭 r9–r26 六轮换码点对抗的整类攻击面（类级消除）。裸 P0 CJK 左邻修复（\b → (?<![a-zA-Z0-9])）。
+- 判定待 r27 确认。
+
 ## V3.5（2026-11-18，用户裁决：制品链换证据类型 + 威胁模型写死）
 
 > 依据：r6–r8 三轮对抗审查每轮在门层发现新 P0（R31 断链 → 自报键伪造 → 空目录

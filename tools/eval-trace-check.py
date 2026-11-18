@@ -151,27 +151,17 @@ FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTIL
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE)
 METRIC_COUNT_RE = re.compile(r"([①②④⑤⑥③]|FP|SUGG)\s*(\d+)")
 def _strip_invisible(text: str) -> str:
-    """r22（对抗建议采纳）：Default_Ignorable + Cf 属性归一——不再逐码点枚举。
-
-    移除所有 Unicode Default_Ignorable Code Points（UD#）+ Format Characters（Cf）
-    + 零宽系列，覆盖现有与未来全部不可见字符变体。
-    """
-    import unicodedata as _ud
+    """V3.4-r26：白名单过滤器。"""
     return "".join(
         c
         for c in text
-        if not (
-            _ud.category(c) in ("Cf", "Mn")
-            or c in "\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad\u180e"
-            or (0x115C <= ord(c) <= 0x11FF)  # Hangul Jungseong/Jongseong (filler)
-            or (0x3164 <= ord(c) <= 0x3164)  # Hangul Filler
-            or (0xFFA0 <= ord(c) <= 0xFFDC)  # Halfwidth Hangul
-            or (0x2060 <= ord(c) <= 0x2069)
-            or (0xFE00 <= ord(c) <= 0xFE0F)
-            or (0xE0000 <= ord(c) <= 0xE02FF)  # Tags + Variation Selectors Supplement
-            or (0x1D173 <= ord(c) <= 0x1D17A)
-            or (0x2800 <= ord(c) <= 0x28FF)  # Braille (visually empty)
-            or (0xFFF0 <= ord(c) <= 0xFFFF)  # Cn reserved area
+        if (
+            0x20 <= ord(c) <= 0x7E
+            or 0x4E00 <= ord(c) <= 0x9FFF
+            or 0x3400 <= ord(c) <= 0x4DBF
+            or 0x3000 <= ord(c) <= 0x303F
+            or 0xFF00 <= ord(c) <= 0xFFEF
+            or c in '\n\t'
         )
     )
 
@@ -2351,7 +2341,7 @@ def check_run_dir(
                             re.IGNORECASE | re.MULTILINE,
                         ) or re.search(
                             # r19（P0-3 判例）：裸 P0 遗留标记
-                            r"\bP[01]+(?![0-9])",
+                            r"(?<![a-zA-Z0-9])P[01]+(?![0-9])",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
                         )
