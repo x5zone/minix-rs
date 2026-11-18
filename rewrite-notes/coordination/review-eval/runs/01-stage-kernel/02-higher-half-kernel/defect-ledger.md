@@ -206,5 +206,6 @@
 | RD2R-READER-B | RD2R-READER-B-01..06 | REG-2026-11-18 | P-READER-B | P2/P3 | 读者 | ① | 已修（批次级） | `fe49cd804` | 同上 |
 | RD2R-READER-C | RD2R-READER-C-01 | REG-2026-11-18 | P-READER-C | P2 | 读者 | ① | 已修 | `afdd867b7`（PC 行枚举补 aarch64 direct-core） | `git show afdd867b7` |
 | RD2R-CERT | RD2R-CERT-01、02（certify 抓到 3 REOPEN + 2 新 P2 的残项） | REG-2026-11-18 | certify | P2 | 同步 | ① | 补修完成；最终独立确认 3 PASS / 1 FAIL（FAIL 为 certify 误用 D03 格式，非缺陷） | `final-verify.md`；`afdd867b7` | 面板 final-verify.md |
-| RD2R-DESIGN | design-d2.md 头 FINDING 1 条 + 「翻译残留六类」清单（FREEZE 口径 9 条）+ ARCH-PROPOSAL 1 条 | REG-2026-11-18 | P-DESIGN-D2 | P2/P3 | 设计 | ①/SUGG/提案 | P2（machine_type 零读者）已修；其余 P3/SUGG 入 suggestions；ARCH-PROPOSAL 待用户亲裁（与 D-050/051/052 同类挂账） | `panel/regress/design-d2.md` | FREEZE 回归节 |
+| RD2R-DESIGN | design-d2.md 头 FINDING 1 条（machine_type 零读者）+「翻译残留六类」清单（FREEZE 口径 9 条） | REG-2026-11-18 | P-DESIGN-D2 | P2/P3 | 设计 | ① | P2 已修；P3/SUGG 部分入 suggestions（批次级证据） | `fe49cd804`；`panel/regress/design-d2.md` | FREEZE 回归节 |
+| RD2R-DESIGN-ARCH | design-d2.md 的 ARCH-PROPOSAL 1 条 | REG-2026-11-18 | P-DESIGN-D2 | — | 设计提案 | SUGG | 待用户亲裁（挂账，与 D-050/051/052 同类）；不阻断 | `panel/regress/design-d2.md`；DECISIONS.md | — |
 | RD2R-SUGG | FACT S1/S2、READER C-S1..S6、A/B/FACT 聚合 SUGG 段 | REG-2026-11-18 | 各角色 | — | 建议 | SUGG | 入 suggestions，不阻断 | `panel/regress/*.md` | — |

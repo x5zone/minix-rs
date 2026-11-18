@@ -255,5 +255,6 @@
 | RD5F-DESIGN-D2-01 | [MODERN] §3.7 括注 is_trap 与重写路径不符 | FULL | P-DESIGN-D2 | P2/P3 | 设计 | ① | 已修（文档侧） | `26f42e25d`（括注歧义主题） | FREEZE |
 | RD5F-DESIGN-D2-02 | [DEL] arm64 模块注释 UNDEFINED 残留 | FULL | P-DESIGN-D2 | P2 | 设计 | ② | 登记 D03-design-batch（FREEZE 明载；D-053 顺延）——V3.2 下 ② 须相邻/批准，此处为登记既有批次的存量路径，r6 注记：严格口径应在 D-053 行追加该项 | `OPEN-DEBT.md`（D03-design-batch 行）；FREEZE 完整 review 节 | — |
 | RD5F-DESIGN-D2-03/04 | [DEL] x86 LDT 尾注失实；trap_entry 15 个零消费者向量名 | FULL | P-DESIGN-D2 | P2 | 设计 | ①/SUGG | 03 已修（26f42e25d「LDT 残留」主题）；04（死导出）批次级处理 | `26f42e25d` | FREEZE |
-| RD5F-DESIGN-D2-05..09 | [DEL/SUGG] cpu_count 只写、Privilege 接口族去留（需裁决）、kmain 临时诊断块、errcode 布尔列、锚点格式 | FULL | P-DESIGN-D2 | P3 | 设计 | SUGG/提案 | 入 suggestions；D2-06 去留属契约裁决 → 待用户亲裁（挂账，与 D-050/051/052 同类） | `panel/full/design-d2.md` | — |
+| RD5F-DESIGN-D2-05、07、08、09 | [DEL] cpu_count 只写；kmain 临时诊断块含无消费者 MSR 读；errcode 布尔列；§3.2 锚点格式 | FULL | P-DESIGN-D2 | P3 | 设计 | SUGG | 入 suggestions，不阻断 | `panel/full/design-d2.md` | — |
+| RD5F-DESIGN-D2-06 | [DEL] Privilege/PrivilegeLevel 接口族无运行期消费者，去留属契约裁决 | FULL | P-DESIGN-D2 | P3 | 设计 | SUGG | 待用户亲裁（挂账，与 D-050/051/052 同类）；不阻断 | `panel/full/design-d2.md`；DECISIONS.md | — |
 | RD5F-SUGG | 各文件聚合 SUGG 段（3 条口径） | FULL | 各角色 | — | 建议 | SUGG | 入 suggestions | `panel/full/*.md` | — |
