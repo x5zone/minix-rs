@@ -16,3 +16,15 @@
 | D05-F12 | READER-C 21 条 | C-01..C-21：全屏蔽口径、定时器理由、三段对照层错位、EFER/CNTP 推演、PROBE_TICKS 除零、LAPIC 证据、arch_init 竞态、向量来源 | 闭环轮；优先 C-01/C-02/C-04/C-07/C-08 |
 | D05-F13 | REFUTE P2 | CLAIM 01/02/03 的 P2：`arch_init` 最后缺构建条件、主片屏蔽字位置、APIC 初始化失败回退 | 闭环轮逐条核对 |
 | D05-F14 | 复验 | `cargo test -p minix-arch` 的测试模块编译失败（沿用 D01-F01） | test-audit / code-excellence 批次 |
+
+
+## r7 citation 门预检发现（2026-11-18，R1 面板启动时并入清点）
+
+citation 门扩容（第四标注形态 + .S/.lds/.inc 路径）后本文 checked 0→45，新检出 3 条
+doc-代码漂移（P2 级，未裁决——留给 R1 的 FACT 角色核实是文档错还是代码改了没同步）：
+
+1. block 1048-1086：`use minix_plat::{InterruptRouter, CurrentInterruptController};` 不在现行源码；
+2. block 1682-1709：`clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());` 与现行源码不符；
+3. block 1979-2008：`unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };` 与现行源码不符。
+
+注：本节为预登记，不计入任何轮次台账；R1 survey 产出台账后按 §4.0c 正常准入。

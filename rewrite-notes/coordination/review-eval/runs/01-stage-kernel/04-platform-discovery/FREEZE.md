@@ -52,3 +52,12 @@
 - 最终文档 sha256 `a6a7cba7…`；anchor 77/77、doc-code-map 52/52、structure/ref/style 全绿。
 
 **结论：回归通过，D04 维持 CONVERGED**，另附 `R04-T13` 为已登记的相邻缺口（D-054 延期）。
+
+
+## r7 citation 门扩容补记（2026-11-18）
+
+citation 门新增第四标注形态（`// path —— kind`）与 `.S/.lds/.inc` 路径支持后，
+本文 checked 35→75（修 import 后该块仍实检，另有一块因标注可解析新增实检），新检出 1 条真实陈旧引文：§4.11 区块内 `use minix_platform::
+{platform_desc, PlatformDesc}` 与现行源码（`os/kernel/src/lib.rs:1962`）的导出名
+顺序相反——已按源码修正为 `{PlatformDesc, platform_desc}`。修正后 citation 门
+`failed=0`。本文档 sha256 更新为 `ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`；按 §4h（FREEZE append 语义）追加本节。

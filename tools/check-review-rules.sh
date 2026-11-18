@@ -191,6 +191,12 @@ done < <(
     | sed 's/^## V//' | sort -u
 )
 
+# V3.4-r7（N7 判例复发）：.claude/rules/fix-guard.md 是规范源声明的「内容同源」运行时
+# 副本，曾两度漂移缺节且无门覆盖。副本与源 diff 必须为空。
+if ! diff -q prompt/review-rules/fix-guard.md .claude/rules/fix-guard.md >/dev/null 2>&1; then
+  fail ".claude/rules/fix-guard.md 与规范源 prompt/review-rules/fix-guard.md 漂移（AGENTS.md 声明内容同源）"
+fi
+
 if (( errors > 0 )); then
   printf '%d review-rule checks failed\n' "$errors" >&2
   exit 1

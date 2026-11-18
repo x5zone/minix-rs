@@ -56,9 +56,13 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
    修改预算）。修改轮（full/structural）没有收敛声明权——最多 `ROUND-CLOSED` /
    `CONVERGENCE-CANDIDATE`；R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，其收口按
    certify 阶段执行。
-10. **写 schema 标记**：`loop.md §0` 必须写 `schema: V3.3 from R<N>`。02 及以后写
-   `from R1`；01 现行写 `schema: V3.3 from R31`（R31 为 V3.3 起约束的首轮，R26–R30
-   为 V3.0–V3.2 历史段；分层标记按各自 `from R<N>` 生效，不互相作废）。
+10. **写 schema 标记**：`loop.md §0` 必须写当前生效版本的 schema。**新开篇目
+   （05 起）写 `schema: V3.4 from R1`**（V3.4 最小内核的门只对 `schema: V3.4` 起的
+   文档生效；写 V3.3 = 新门静默失效）；02–04 已 FREEZE 的轮次保持各自历史标记
+   （01 现行 `V3.3 from R31`，02/03/04 `V3.3 from R1`），不追溯、不改写。已在旧
+   schema 下立基线又需切新版的（如 05 的 R1 §0 已写 V3.3）：面板启动前更正 §0 的
+   schema 行并在 loop 记一行 VARIANCE——这是基线修正，不是轮中途改规则（L6.9.8
+   管辖的是轮内改 edition，不覆盖此动作）。
    `eval-trace-check.py --round` 缺这个标记直接 FAIL——这是防止新文档落回旧 schema、
    重新出现无限全量轮的硬门。
 
@@ -72,15 +76,13 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 
 ## L1 独立审查面板
 
-按 `review-panel.md` 第三节选择角色，按第七节决定是否缩编。默认配置：
-
-- 文档少于 500 行：P-FACT、P-DESIGN D2、P-READER 合并为 A+B+C 一个 agent；
-- 文档 500 行及以上：**P-READER A、B、C 各自独立全文**（`review-panel.md` §7）；
-  不得以“成本”为由合并——三角色的独立性本身是检出能力的一部分，合并即降档；
-- 文档 1500 行及以上另加 P-DESIGN D1+D2；
-- 高风险篇目（启动链/IPC/内存管理/时钟中断）加 P-REFUTE，且读者三角色强制独立；
-- 关联代码 < 10k 行时跳过 P-DESIGN D1（独立设计成本高于收益，D2 直接对照文档与源码）；
-- P-REFUTE 触发条件：P-FACT 报出 ≥1 条 P0，或本篇属于高风险类（启动链/IPC/内存管理/时钟中断）。
+按 `review-panel.md` 第三节选择角色，按第七节决定是否缩编。**档位唯一源是
+`review-panel.md` §七（V3.4-r7：此前 L1 与 §七各写一套阈值——<500 行合并形状相反、
+D1 触发三口径——执行者会用到先读到的那份）**。不可让与的原则：读者 A/B/C 的独立性
+本身是检出能力（≥500 行不得以成本合并）；高风险篇目（启动链/IPC/内存管理/时钟中断）
+加 P-REFUTE 且读者强制独立；P-REFUTE 触发与档位判据一律按 §七表执行。派 D1 前查
+`DECISIONS.md` D-024（D1 停跑）——档位表判应派而 D-024 命中时，在 loop §1 记
+VARIANCE 并引用 D-024，未裁决前默认不派。
 
 V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派全量角色；fix 之后的 certify 阶段只派定点回读：P-FACT 只查本轮修复 hunk 涉及的符号/常量/引文，READER 只读改动段及邻句（不读全文），RB 审最终 HEAD（含本轮全部修复提交）。certify 不重开全量 READER A/B/C，不派 DESIGN 全量；发现的新问题进**本轮**台账，在本轮内修完，不得用下一轮承接。
 
@@ -101,7 +103,7 @@ V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派
 ## L2 归因与决策
 
 1. 收齐面板输出，按 `review-panel.md` 第五节的编号规则统一编号。
-2. **去重与准入（V3）**：按 `review-evals.md` §4.0c 为每条发现分配 `根因 ID`（`RD-NNN`）与 `origin`；同根发现合并到同一行，在 `发现 ID` 列列出。四条准入判据（位置/判据/证据/反证）不全的，写 `suggestions.md`，不进台账、不进 metrics。
+2. **去重与准入（V3）**：按 `review-evals.md` §4.0c 为每条发现分配 `根因 ID`（`RD-NNN`）与 `origin`；同根发现合并到同一行，在 `发现 ID` 列列出。四条准入判据（位置/判据/证据/反证）不全的，写 `suggestions.md`；以 SUGG 行入台账登记并计入 metrics 的 `SUGG` 键（V3.3 起为合法处置类；不进阻断集、不参与 G1–G9）。
 3. 每条准入发现按 `review-evals.md` §4.1 处置：① 修（P0/P1/P2 一律）、② 用户批准的转出（带批准日期）、④ 读者验收清单内项（本轮修）、⑤ 证据不足（本轮不得关闭）、⑥ 设计重构（本轮实施）、FP 有反证的误报。**③ 已删除。** 范围内确认为真缺陷的一律本轮修，不允许无档期转出。**读者/设计的 P3 不按 ①/④ 准入**——标 `SUGG` 行登记 suggestions.md（§4.0c 严重度门槛）。
 3b. **设计类决策（DESIGN 角色的 ⑥）必须标分类**（§4.1b，D-047）：`[MODERN]`（C 有此语义，换现代表达）与 `[DEL]`（C 没有此物，删翻译残留）= 代裁，当轮实施；`[ARCH]`（改变 boot 是什么）**不得实施**——P0/P1/P2 入台账 ⑤ + `轮结果: BLOCKED`（解除只认判决账行），P3 进 suggestions。未分类 = 按 ARCH 阻断。
 4. 查 `DECISIONS.md`；命中且无新证据的，记 `re-litigation`，不计文档缺陷。
@@ -112,7 +114,11 @@ V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派
    ```bash
    python3 tools/eval-trace-check.py rewrite-notes/coordination/review-eval/runs/<stage>/<doc-stem> --round R<N>
    ```
-   退出码非 0 时，回到第 1 步补处置；不允许进入 L3。**不带 `--round` 是全历史归档审计**，历史轮次的旧格式/stale 面板/缺行不阻断当前轮；归档审计的 FAIL 单独记账，不得删除历史证据来“变绿”。
+   退出码非 0 时，回到第 1 步补处置；不允许进入 L3。**L2 时点的豁免（V3.4-r7，
+   R6-e 判例）**：`--round` 在 L2 只裁决「面板发现 ↔ 台账处置」的覆盖与处置类合法
+   性——round-closure（L6/L6.5 收口小节）与 metrics 数字类（发现总数/轮型/轮结果
+   等）是 L5/L6 的产物，L2 时点必然 FAIL，**不计入本步的回炉条件**；同一条命令的
+   exit-0 全量通过是 L6.9 关账条件。**不带 `--round` 是全历史归档审计**，历史轮次的旧格式/stale 面板/缺行不阻断当前轮；归档审计的 FAIL 单独记账，不得删除历史证据来“变绿”。
 
 ## L3 修复
 
@@ -190,7 +196,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
    仍存活到 R31 survey 的 P0）。缺记录 = G7 FAIL。
 11. **最终 HEAD 机械再对账**：`doc-citation-check.py`、`anchor-resolve.sh`、
    `doc-symbol-drift.sh` 全跑；上一批修复引入的引文/符号漂移必须在 certify 前清零。
-11. 写 `loop.md §4` 与 `§5`。
+12. 写 `loop.md §4` 与 `§5`。
 
 ## L5 轨迹与指标
 
@@ -229,9 +235,11 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 1. **meta 修约（V3.4 最小内核，§5.0）**：轮次级独立 meta 不再逐轮要求——**收敛时
    （FREEZE 前）必须一次独立冷启动全量收口 meta**；其余轮次由主 agent 在 `### L6`
    写同 agent 收口并如实标注；每 2 篇做一次跨篇 meta。
-2. 按 `review-panel.md` 4.6 的 brief 启动冷启动子 agent；输入按 `review-evals.md` 第五节。
+2. 按 `review-panel.md` 4.6 的 brief 启动冷启动子 agent；输入按 `review-evals.md`
+   第五节。**（V3.4-r7 修约限定：本步只适用于两个时点——收敛前全量收口 meta 与
+   每 2 篇跨篇 meta；其余轮次主 agent 自收口并如实标注，不派子 agent。）**
 3. **审计对象是台账与证据，不是重审文档**：P0/P1/未闭环项 100% 复判；P2/P3 随机 20% 校准；逐条检查 `根因 ID`/`origin`/复验证据能否重放。读者项按 §4.0e 的三问复核（不变量/前提/证据），三问答不出才算缺陷；“更喜欢另一种写法”不算。
-4. 输出到 `meta/<doc-stem>-review.md`，必须给 `唯一根因数`、`自引入数`、`重复合并数`、`edition 是否稳定` 四个数。
+4. 输出到 `meta/<doc-stem>-review.md`（仅上一步限定的两个时点），必须给 `唯一根因数`、`自引入数`、`重复合并数`、`edition 是否稳定` 四个数。
 5. 结论为 `REGRESSED` 时，记录为**流程缺陷**（进 `BLIND-SPOTS.md` 与 edition 边界），不阻止文档关闭；文档是否收敛只看 §6A 的 G1–G9。
 6. 新增盲区写入 `BLIND-SPOTS.md`，下一轮回归必须复现。
 7. **抽查 `suggestions.md`**：若发现满足四条准入判据却被降级为 suggestion 的，记流程缺陷；建议桶不得成为新的 `③` 延期桶。
@@ -285,7 +293,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 
 `meta PASS` 不是文档收敛；`CONVERGED` 只看 §6A。meta 的 `NOT PASS` 记流程缺陷，不阻止文档关闭。
 
-**FREEZE 后回归审计（V3.4 最小内核，§4g-2）**：进下一篇 L0 前必须完成一次独立回归
+**FREEZE 后回归审计（V3.4 最小内核，§4h；载体 `REGRESSION.md` + FREEZE 追加回归节）**：进下一篇 L0 前必须完成一次独立回归
 审查（D-055 两墙口径）；回归轮的全部发现必须入 `defect-ledger.md` 行级账并在
 `loop.md` 留索引节；FREEZE append-only（只允许追加回归节与更新 sha 行）。
 

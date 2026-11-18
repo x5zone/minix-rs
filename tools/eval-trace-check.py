@@ -521,7 +521,7 @@ def _pick_metric_block(
     blocks = _metric_blocks(text)
     if round_tag:
         for title, body in blocks:
-            if round_tag.lower() in title.lower():
+            if _round_key_matches(title, round_tag):
                 return title, body
     # No round heading: a single-block file is the normal case; otherwise the
     # last block is the newest round.
@@ -684,7 +684,7 @@ def check_metrics(
                 and result_key is not None
                 and result_key.group(1) in {"CONVERGED", "ROUND-CLOSED"}
                 and re.search(
-                    r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成)",
+                    r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成|未执行|没跑|延后|排期未定)",
                     body,
                     re.IGNORECASE,
                 )
@@ -1295,11 +1295,16 @@ def check_v33_lifecycle(
             re.MULTILINE,
         )
         _open_early = re.search(r"^\s*-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        # r7（对抗判例）：两行伪造的 `full`+`ROUND-CLOSED` 空块也计入 mod_closed——
+        # 计入要件加「块内有 `发现总数` 键」（真实轮必有；伪造须造全套 metrics，
+        # 而全套伪造在 N0 双源与 coverage 门射程内）。
+        _has_total = re.search(r"^\s*-\s*发现总数\s*[:：]", body, re.MULTILINE)
         if (
             _rt_early is not None
             and _rt_early.group(1) in {"full", "structural"}
             and _res_early is not None
             and _res_early.group(1) == "ROUND-CLOSED"
+            and _has_total is not None
             and (_open_early is None or int(_open_early.group(1)) == 0)
         ):
             mod_closed.append(n)
@@ -1347,7 +1352,7 @@ def check_v33_lifecycle(
             if certify_new == 0:
                 sealed_at = n
             for section, mapping in section_classes.items():
-                if not section.lower().startswith(f"r{n}".lower()):
+                if not _round_key_matches(section, f"R{n}"):
                     continue
                 for fid, cls in mapping.items():
                     row = ledger_rows.get(fid)
@@ -1379,7 +1384,7 @@ def check_v33_lifecycle(
         arch_blocked = [
             fid
             for section, mapping in section_classes.items()
-            if section.lower().startswith(f"r{n}".lower())
+            if _round_key_matches(section, f"R{n}")
             for fid, cls in mapping.items()
             if cls == "⑤"
             and "ARCH" in (
@@ -1547,6 +1552,12 @@ def _round_open_items(
     return open_rounds
 
 
+def _round_key_matches(key: str, target: str) -> bool:
+    """`R1` 不得匹配 `R10`/`R12`（r7 前缀串扰判例：--round R1 把 R10+ 台账节并入
+    作用域，产出假 FAIL；反向则污染分档聚合）。"""
+    return re.match(rf"{re.escape(target.lower())}\b", key.lower()) is not None
+
+
 def _loop_round_numbers(loop_text: str) -> set[int]:
     nums = {int(n) for n in re.findall(r"^##\s+R(\d+)\b", loop_text, re.MULTILINE)}
     nums |= {int(n) for n in re.findall(r"^#{1,2}\s+Round\s+(\d+)", loop_text, re.MULTILINE)}
@@ -1575,11 +1586,18 @@ def check_round_monotonicity(
     # 未关闭轮」结构性逃逸。双源补洞：metrics 块（须含真实账目键，防一行空标题
     # 绕过；区间标题按全部轮号登记）也算账。
     metrics_rounds: set[int] = set()
+    metrics_open: set[int] = set()
     if metrics_text:
         for title, body in _metric_blocks(metrics_text):
             if not re.search(r"发现总数|轮结果|未闭环", body):
                 continue
-            metrics_rounds.update(int(n) for n in re.findall(r"\bR(\d+)\b", title))
+            ns = [int(n) for n in re.findall(r"\bR(\d+)\b", title)]
+            metrics_rounds.update(ns)
+            # r7（对抗判例）：双源只看「有没有账」不看「账说什么」——metrics 自报
+            # 未闭环>0 的轮同样不得静默越序。
+            _mo = re.search(r"^\s*-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
+            if _mo and int(_mo.group(1)) > 0:
+                metrics_open.update(ns)
     all_rounds = loop_rounds | ledger_rounds | metrics_rounds
     want = int(round_tag.lstrip("R")) if round_tag else None
     for r, ids in sorted(open_rounds.items()):
@@ -1601,14 +1619,18 @@ def check_round_monotonicity(
                 continue
             if want is not None and r > want:
                 continue
-            if r in ledger_rounds or r in metrics_rounds:
+            if r in ledger_rounds or (r in metrics_rounds and r not in metrics_open):
                 continue
             later = sorted(x for x in all_rounds if x > r)
             if later:
+                why = (
+                    "metrics 自报未闭环>0" if r in metrics_open
+                    else "既无台账节也无 metrics 块（未闭合轮）"
+                )
                 report.fail(
                     "round-order",
-                    f"R{r} 在 loop.md 有轮次小节，但既无台账节也无 metrics 块（未闭合轮）；"
-                    f"却已出现 R{later[0]}——不写台账的未关闭轮不得静默越序（N0）",
+                    f"R{r} 在 loop.md 有轮次小节，但{why}；"
+                    f"却已出现 R{later[0]}——未关闭轮不得静默越序（N0）",
                 )
 
 
@@ -1816,7 +1838,7 @@ def check_run_dir(
                     row["root"]
                     for row in ledger_rows.values()
                     if row.get("root")
-                    and row.get("section", "").lower().startswith(round_tag.lower())
+                    and _round_key_matches(row.get("section", ""), round_tag)
                 }
                 root_count = len(scoped_roots)
                 new_roots = sum(
@@ -1837,7 +1859,7 @@ def check_run_dir(
             scoped = {
                 fid
                 for section, fids in section_ids.items()
-                if section.lower().startswith(round_tag.lower())
+                if _round_key_matches(section, round_tag)
                 for fid in fids
             }
             # No fallback to the whole ledger: if this round's section is
@@ -1847,7 +1869,7 @@ def check_run_dir(
             expected_counts: dict[str, int] = {}
             counter: Counter[str] = Counter()
             for section, mapping in section_classes.items():
-                if section.lower().startswith(round_tag.lower()):
+                if _round_key_matches(section, round_tag):
                     counter.update(
                         cls for fid, cls in mapping.items() if fid in panel_set
                     )
@@ -1972,7 +1994,7 @@ def check_run_dir(
                         else len(loop_text)
                     )
                     if re.search(
-                        r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成)",
+                        r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成|未执行|没跑|延后|排期未定)",
                         loop_text[_m.start() : _end],
                         re.IGNORECASE,
                     ):
@@ -3092,7 +3114,7 @@ def self_test() -> int:
     # V3.3：确认轮通过（新准入=0）合法；确认轮实施 ⑥ → FAIL
     # （r6 R6-a：确认轮前置须有已关闭修改轮——按文档计，故补一个 R30 收口轮）
     _closed_mod = (
-        "## R30 修改轮\n\n- 未闭环: 0\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n\n"
+        "## R30 修改轮\n\n- 发现总数: 1\n- 未闭环: 0\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n\n"
     )
     confirm_metrics = lifecycle_metrics.replace(
         "- 轮型: full", "- 轮型: confirmation"
@@ -3170,7 +3192,7 @@ def self_test() -> int:
         print("self-test FAIL: 无前置修改轮的确认轮 CONVERGED 未被拦截")
         return 1
     _r6a_good = (
-        "# 指标\n\n## R1 修改轮\n\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 未闭环: 0\n\n"
+        "# 指标\n\n## R1 修改轮\n\n- 发现总数: 1\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 未闭环: 0\n\n"
         "## R2 确认轮\n\n- 轮型: confirmation\n- 轮结果: CONVERGED\n- certify 新准入: 0\n"
     )
     rep_r6a2 = Report()
@@ -3230,6 +3252,45 @@ def self_test() -> int:
                              metrics_text=_metrics_n0, round_tag="R3")
     if not any("N0" in i["message"] for i in rep_scope2.items if i["level"] == "FAIL"):
         print("self-test FAIL: --round R3 未抓到 R2 断链")
+        return 1
+
+    # r7：R6-a 实质要件——无发现总数键的两行伪造不得计入 mod_closed。
+    _forge = (
+        "# 指标\n\n## R1 修改轮\n\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n\n"
+        "## R2 确认轮\n\n- 轮型: confirmation\n- 轮结果: CONVERGED\n"
+        "- certify 新准入: 0\n"
+    )
+    _fr = Report()
+    check_v33_lifecycle(_forge, {}, {}, _fr, 1, 1)
+    if not any("R6-a" in i["message"] for i in _fr.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 无发现总数键的伪造修改轮仍计入 mod_closed")
+        return 1
+
+    # r7：N0 读 metrics 未闭环值——自报 open 的轮不得静默越序。
+    _mo_loop = (
+        "schema: V3.4 from R1\n\nedition: V3.4\n\n## R1 面板轮\n\n### §7 状态\nNOT CONVERGED\n\n"
+        "## R2 面板轮\n\n### §7 状态\nCONVERGED\n"
+    )
+    _mo_metrics = (
+        "# 指标\n\n## R1 面板轮\n\n- 发现总数: 1\n- 未闭环: 1\n\n"
+        "## R2 面板轮\n\n- 发现总数: 0\n- 未闭环: 0\n"
+    )
+    _mr = Report()
+    check_round_monotonicity(_mo_loop, {}, {}, _mr, schema_start=1, v3=True,
+                             metrics_text=_mo_metrics)
+    if not any("N0" in i["message"] for i in _mr.items if i["level"] == "FAIL"):
+        print("self-test FAIL: metrics 自报未闭环>0 的轮静默越序")
+        return 1
+
+    # r7：前缀串扰——词边界助手双向判定。
+    if _round_key_matches("R10 面板轮", "R1"):
+        print("self-test FAIL: R1 仍匹配 R10（词边界失效）")
+        return 1
+    if not _round_key_matches("R1 面板轮", "R1"):
+        print("self-test FAIL: R1 不再匹配自身")
+        return 1
+    if _round_key_matches("R12 面板轮", "R1"):
+        print("self-test FAIL: R1 仍匹配 R12")
         return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")

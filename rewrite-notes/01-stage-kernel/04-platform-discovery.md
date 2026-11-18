@@ -2226,7 +2226,7 @@ pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 ```rust
 // os/kernel/src/lib.rs:fn init_smp_state —— 节选（第一个 unsafe 块）
 pub fn init_smp_state() {
-    use minix_platform::{platform_desc, PlatformDesc};
+    use minix_platform::{PlatformDesc, platform_desc};
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
         let topo = platform_desc().cpu_topology();

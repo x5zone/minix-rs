@@ -49,9 +49,11 @@ ANNOTATION_RE = re.compile(
 C_ANNOTATION_RE = re.compile(r"^/\*\s*(?P<inner>.+?)\s*\*/$")
 C_KIND_RE = re.compile(
     r"(?P<paths>.+?)\s*(?:——|—|--)\s*"
-    r"(?P<kind>代码引用|逐字引用|节选|改写|示意|反例)\s*(?:（(?P<notes>[^）]*)）)?\s*$"
+    r"(?P<kind>代码引用|逐字引用|节选|改写|示意|签名示意|反例)\s*(?:（(?P<notes>[^）]*)）)?\s*$"
 )
-PATH_RE = re.compile(r"(?:os/[\w./-]+\.rs|minix3/[\w./-]+\.[ch])")
+PATH_RE = re.compile(
+    r"(?:os/[\w./-]+\.(?:rs|S|lds|ld|inc)|minix3/[\w./-]+\.(?:[chS]|lds|ld|inc))"
+)
 ANCHOR_KIND_RE = re.compile(
     r"\b(fn|struct|trait|impl|const|static|type|enum|mod|union)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
@@ -121,6 +123,9 @@ def should_skip(line: str) -> bool:
     # V3.4：C 侧块注释行（`/* … */`、`* …` 续行、行尾 `*/`）跳过。
     if stripped.startswith("/*") or stripped.startswith("* ") or stripped.startswith("*/"):
         return True
+    # r7：make/asm 的 `# 注释` 跳过（`#include`/`#define`/`#if` 是代码，不跳）。
+    if re.match(r"^#\s", stripped):
+        return True
     if "..." in stripped or "…" in stripped:
         return True
     if NON_ASCII_RE.search(stripped):
@@ -136,7 +141,18 @@ def _parse_annotation(line: str) -> dict | None:
     m = ANNOTATION_RE.match(line)
     if m:
         return {"kind": m.group(1), "notes": m.group(2) or "", "rest": m.group(3)}
-    c = C_ANNOTATION_RE.match(line.strip())
+    # r7：第四形态 `// path:sym —— kind（notes）`（D04/D05 实用）——`//` 行同样
+    # 按 C 侧破折号语序解析。
+    s = line.strip()
+    if s.startswith("//"):
+        k = C_KIND_RE.match(s[2:].strip())
+        if k:
+            return {
+                "kind": k.group("kind"),
+                "notes": k.group("notes") or "",
+                "rest": k.group("paths"),
+            }
+    c = C_ANNOTATION_RE.match(s)
     if c:
         k = C_KIND_RE.match(c.group("inner"))
         if k:
@@ -300,7 +316,7 @@ def check_block(block: dict, root: Path) -> dict:
     # structure-only 放过的陈旧行。显式声明了 改写/示意/反例/重排/译述 的
     # 块才豁免逐行检查：它们声明了自己不是逐字引文，机械对账无从执行，
     # 只能靠 review-evals §4.0e 第 8 条的显式标记兜底。
-    rewrite_declared = kind in {"改写", "示意", "反例"} or any(
+    rewrite_declared = kind in {"改写", "示意", "反例"} or "示意" in kind or any(
         word in notes for word in ("改写", "示意", "反例", "重排", "译述")
     )
     if rewrite_declared:
@@ -530,9 +546,57 @@ def self_test() -> int:
             print("self-test FAIL: `/* kind，path */` 形态（D03）被判 FAIL")
             return 1
 
+        # r7：第四形态 `// path —— kind`（D04/D05）+ .S/.inc 路径 + `#` 注释。
+        (root / "minix3" / "k").mkdir(parents=True, exist_ok=True)
+        (root / "minix3" / "k" / "head.S").write_text(
+            "multiboot_init:\n    mov $k_initial_stktop, %esp\n    jmp main\n",
+            encoding="utf-8",
+        )
+        fourth = root / "fourth.md"
+        fourth.write_text(
+            "```asm\n"
+            "// minix3/k/head.S:multiboot_init —— 代码引用（换栈与跳转段）\n"
+            "mov $k_initial_stktop, %esp\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        _, code = check_doc(fourth, root)
+        if code != 0:
+            print("self-test FAIL: 第四形态 `// path —— kind` 被判 FAIL")
+            return 1
+        fourth_stale = root / "fourth_stale.md"
+        fourth_stale.write_text(
+            "```asm\n"
+            "// minix3/k/head.S:multiboot_init —— 节选\n"
+            "not_in_source_at_all();\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        _, code = check_doc(fourth_stale, root)
+        if code == 0:
+            print("self-test FAIL: 第四形态陈旧行未被拦截")
+            return 1
+        mk = root / "mk.md"
+        (root / "minix3" / "k" / "Makefile.inc").write_text(
+            "# some object files we give a symbol prefix\nobj-y += main.o\n",
+            encoding="utf-8",
+        )
+        mk.write_text(
+            "```make\n"
+            "/* 代码引用，minix3/k/Makefile.inc（前缀说明）。 */\n"
+            "# 文档侧注释行——刻意不在源码中，验证 `#` 跳过规则在工作\n"
+            "obj-y += main.o\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        _, code = check_doc(mk, root)
+        if code != 0:
+            print("self-test FAIL: Makefile.inc 路径与 `#` 注释形态被判 FAIL")
+            return 1
+
     print(
         "self-test PASS: 正确引文通过；缺行/缺文件/缺符号/节选陈旧行被拦截；"
-        "省略与显式改写豁免；C 侧三形态与陈旧行对账"
+        "省略与显式改写豁免；C 侧三形态与陈旧行对账；第四形态与 .S/.inc 对账"
     )
     return 0
 
