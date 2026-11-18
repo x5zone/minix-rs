@@ -1776,7 +1776,8 @@ def check_run_dir(
     # loop 时 schema_start=99，V3 门对 <99 轮全体休眠且钳回锚点=注入值。
     # 自校验：起点轮不得晚于「已见最大轮号 + 1」，否则标记自报无效，钳回 1。
     _max_seen_loop_early = max(_loop_round_numbers(loop_text or ""), default=0)
-    if schema_start is not None and schema_start > _max_seen_loop_early + 1:
+    if schema_start is not None and schema_start > _max_seen_loop_early:
+        # r19（P0-4 判例）：+1 余量让 from R2+仅 R1 逃逸——收紧为 ≤ max_seen。
         schema_start = 1
     v3_doc = is_v3_schema(loop_text) or is_v3_schema(metrics_text)
     if round_tag_override and schema_start is None:
@@ -1863,7 +1864,12 @@ def check_run_dir(
             for c in _ft
         )
         # r18（P0-① 判例）：零宽字符（ZWSP/ZWNJ/ZWJ/BOM）使极性扫描失明——剥离。
-        _ft = re.sub(r"[\u200b-\u200d\ufeff]", "", _ft)
+        _ft = re.sub(
+            r"[\u200b-\u200d\ufeff\u00ad\u180e\u2060-\u2064"
+            r"\ufe00-\ufeff\U0001d173-\U0001d17a\U000e0000-\U000e007f]",
+            "",
+            _ft,
+        )
         _nonempty = [ln for ln in _ft.splitlines() if ln.strip()]
         _title_lines = [
             ln for ln in _nonempty[:3] if re.match(r"^#\s+.*FREEZE", ln)
@@ -1908,7 +1914,17 @@ def check_run_dir(
         )
         # r13（P0-5 判例）：from 轮零校验——注入 `from R99` 可豁免全部轮的制品链。
         # 起点轮不得晚于「已见最大轮号 + 1」；越界即视为自报无效，钳回 schema_start。
-        _max_seen = max(_loop_round_numbers(loop_text), default=0)
+        # r19（P0-1 判例）：幽灵轮头（只有标题无台账无 metrics）抬 max_seen 使
+        # from 标记合法化——max_seen 只计有账轮次。
+        _led_hdrs = {int(n) for n in re.findall(r"^##\s+R(\d+)\b", ledger_text or "", re.MULTILINE)}
+        _met_hdrs = {
+            int(n)
+            for title, body in _metric_blocks(metrics_text or "")
+            if re.search(r"发现总数|轮结果|未闭环", body)
+            for n in re.findall(r"^R(\d+)", title)
+        }
+        _backed = set(_loop_round_numbers(loop_text)) & (_led_hdrs | _met_hdrs)
+        _max_seen = max(_backed, default=0)
         # r18（P0-③ 判例）：max_seen+1 的余量正是注入向量（from R2 = max_seen+1
         # 的一行注入 + 轮型 discovery + 无制品面板 = 整门 exit 0）。收紧为
         # from ≤ max_seen——V3.4 标记声明的是历史事实，不是未来计划。
@@ -2286,6 +2302,15 @@ def check_run_dir(
                             r"|(复验|验证|回读|确认)\s*失败"
                             r"|未(修|完成|实施|落地)(?!.*已补)",
                             _ct.translate(str.maketrans({chr(0xFF01 + i): chr(0x21 + i) for i in range(94)})),
+                            re.IGNORECASE | re.MULTILINE,
+                        ) or re.search(
+                            # r19（P0-3 判例）：裸 P0 遗留标记
+                            r"^\s*[-*]?\s*P[01]\b",
+                            re.sub(
+                                r"[\u200b-\u200d\ufeff\u00ad\u180e\u2060-\u2064\ufe00-\ufeff]",
+                                "",
+                                _ct,
+                            ),
                             re.IGNORECASE | re.MULTILINE,
                         )
                         _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
