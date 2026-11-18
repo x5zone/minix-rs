@@ -580,6 +580,10 @@ def check_metrics(
         report.fail("metrics", "metrics.md 缺少处置计数: " + "、".join(missing))
     if not legacy and "③" in counts:
         report.fail("metrics", "R25+ 禁止使用已删除的 ③；误报写 FP 并附反证，否则写 ⑤ 未闭环")
+    if v3 and total_match is None:
+        # r10（P0-② 判例）：缺 `发现总数` 键会让和校验、不变式、分档对账、INDEX
+        # 对账四个校验静默全跳——V3 轮必须有该键。
+        report.fail("metrics", "V3 metrics 缺少 `- 发现总数: <整数>` 键")
     if total_match is not None and not missing:
         total = int(total_match.group(1))
         parts = [counts[k] for k in required]
@@ -1472,6 +1476,11 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
         # fact.md's secondary bullets and refute.md's numbered claims.
         found += [f"FACT-{n}" for n in re.findall(r"^-\s*\*\*FACT-(\d+)\*\*", text, re.MULTILINE)]
         found += [f"CLAIM-{int(n):02d}" for n in re.findall(r"^##\s+CLAIM\s+(\d+)", text, re.MULTILINE)]
+        # r10（P0-① 判例）：带 ID 的 SUGGESTION 也是面板发现——SUGG 行入台账并
+        # 计入 metrics 后，覆盖率门必须能看见它们，否则合规记账双 FAIL。
+        found += re.findall(
+            r"^##\s+SUGGESTION\s+([A-Za-z][A-Za-z0-9-]*)", text, re.MULTILINE
+        )
         found += re.findall(r"^\*\*(DESIGN-D2-\d+)", text, re.MULTILINE)
         if not found:
             report.warn("panel", f"{path.relative_to(panel_dir)} 没有 `## FINDING <ID>` 行")
@@ -1798,10 +1807,15 @@ def check_run_dir(
     _freeze_path = run_dir / "FREEZE.md"
     if _freeze_path.is_file():
         _ft = _freeze_path.read_text(encoding="utf-8")
-        _freeze_ok = (
-            len(_ft.strip()) > 0
-            and ("CONVERGED" in _ft or "FREEZE-WITH-BACKLOG" in _ft)
-        )
+        # r10（P0-③ 判例）：子串匹配让「NOT CONVERGED」「尚未 CONVERGED」
+        # 「历史曾 CONVERGED」的笔记解锁全链豁免——只认**正向状态行**。
+        _pos = [
+            ln
+            for ln in _ft.splitlines()
+            if re.search(r"\bCONVERGED\b|\bFREEZE-WITH-BACKLOG\b", ln)
+            and not re.search(r"NOT\s+CONVERGED|尚未|曾|未", ln)
+        ]
+        _freeze_ok = len(_ft.strip()) > 0 and bool(_pos)
     _v34_from = (
         v33_start_round(loop_text, fallback=schema_start)
         if (schema_version(loop_text) or (0, 0)) >= (3, 4)
@@ -1900,7 +1914,7 @@ def check_run_dir(
                             f"（FINDING {_nf}≠{_rec['findings']} / SUGG {_ns}≠{_rec['suggestions']}"
                             f" / CLAIM {_nc}≠{_rec['claims']}；重跑 panel-index.py）",
                         )
-                    _panel_total += _nf + _nc
+                    _panel_total += _nf + _nc + _ns
                 for _name in _files:
                     if _name not in _rows:
                         report.fail(
@@ -1914,7 +1928,7 @@ def check_run_dir(
                     if _mt is not None and int(_mt.group(1)) != _panel_total:
                         report.fail(
                             "panel-artifact",
-                            f"面板原始发现数 {_panel_total}（INDEX FINDING+CLAIM）与 metrics "
+                            f"面板原始发现数 {_panel_total}（INDEX FINDING+SUGGESTION+CLAIM，均须带 ID）与 metrics "
                             f"发现总数 {_mt.group(1)} 不一致（r9 判例：三账必须同源）",
                         )
 
@@ -2154,15 +2168,22 @@ def check_run_dir(
                     _bad_certs = []
                     for _cert in _cert_files:
                         _ct = _cert.read_text(encoding="utf-8")
-                        if len(_ct.strip()) < 50:
+                        # r10（P0-④ 判例）：字节数被纯标点绕过——按**有效字符**
+                        # （字母/数字/汉字）计数；否定词表补 结论：REOPEN/未通过。
+                        _eff = len(
+                            re.sub(r"[^\w\u4e00-\u9fff]", "", _ct)
+                        )
+                        if _eff < 20:
                             _bad_certs.append(
-                                f"{_cert.name} 内容过短（{len(_ct.strip())} 字节）"
+                                f"{_cert.name} 有效字符不足（{_eff}）"
                             )
                         elif re.search(
-                            r"NOT\s*PASS|结论\s*[:：]\s*FAIL", _ct, re.IGNORECASE
+                            r"NOT\s*PASS|未通过|结论\s*[:：]\s*(FAIL|REOPEN)",
+                            _ct,
+                            re.IGNORECASE,
                         ):
                             _bad_certs.append(
-                                f"{_cert.name} 含否定性结论（NOT PASS/FAIL）"
+                                f"{_cert.name} 含否定性结论（NOT PASS/FAIL/REOPEN/未通过）"
                             )
                     if _bad_certs:
                         report.fail(
@@ -3760,6 +3781,122 @@ def self_test() -> int:
         rpg2 = check_run_dir(rg, None, "R1")
         if any("面板制品未入库" in i["message"] for i in rpg2.items if i["level"] == "FAIL"):
             print("self-test FAIL: 有效 FREEZE 未豁免制品链")
+            return 1
+
+    # ===== r10 判别夹具（四个 P0）=====
+    # (1) SUGG 账目：合规记账（面板 FINDING+SUGG、台账两行、metrics 总数 2）不得双 FAIL。
+    with tempfile.TemporaryDirectory() as ts:
+        rs = _write_artifact_run(Path(ts))
+        pd = rs / "panel" / "round1"
+        pd.mkdir(parents=True)
+        body = (
+            "# fact\n\n## FINDING F-1\n- 位置：§1\n\n"
+            "## SUGGESTION RD-S-01\n- 建议：措辞\n"
+        )
+        (pd / "fact.md").write_text(body, encoding="utf-8")
+        h = _hl.sha256(body.encode()).hexdigest()
+        (pd / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| fact.md | {h} | 1 | 1 | 0 | finding |\n", encoding="utf-8")
+        lt = rs / "defect-ledger.md"
+        lt.write_text(
+            "## R1 面板轮\n\n| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n"
+            "| RD-1 | F-1 | R1 | fact | P2 | 事实 | ① | 修 | e | grep x |\n"
+            "| RD-2 | RD-S-01 | R1 | fact | P3 | 建议 | SUGG | 登记 | e | 无 |\n",
+            encoding="utf-8")
+        (rs / "metrics.md").write_text(
+            "# 指标\n\n## R1 面板轮\n\n- 发现总数: 2\n- 唯一根因数: 2\n"
+            "- 本轮新准入: 2\n- certify 新准入: 0\n- 重复合并: 0\n- 自引入: 0\n"
+            "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 1\n- 未闭环: 0\n"
+            "- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 代裁决: 0\n- ARCH 提案: 0\n"
+            "- 用户否决: 0\n- edition: V3.4\n", encoding="utf-8")
+        rps = check_run_dir(rs, None, "R1")
+        _msgs = [i["message"] for i in rps.items if i["level"] == "FAIL"]
+        if any("面板原始发现数" in x for x in _msgs):
+            print("self-test FAIL: 合规 SUGG 记账仍触发三账对账 FAIL（r10 P0-①）")
+            return 1
+        if any("分档 SUGG" in x or "SUGG=0" in x for x in _msgs):
+            print("self-test FAIL: 分档聚合仍看不见 SUGG 行（r10 P0-①）")
+            return 1
+
+    # (2) 缺 `发现总数` 键必须 FAIL。
+    _mt = Report()
+    check_metrics(
+        "## R1 面板轮\n- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n"
+        "- 未闭环: 0\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 代裁决: 0\n"
+        "- ARCH 提案: 0\n- 用户否决: 0\n- edition: V3.4\n",
+        _mt, "R1", None, 0, 1, v3=True, root_count=None, new_roots=None,
+        v33_start=1, v34=True,
+    )
+    if not any("发现总数" in i["message"] for i in _mt.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 缺发现总数键未被判 FAIL（r10 P0-②）")
+        return 1
+
+    # (3) 否定措辞的 FREEZE 不解锁豁免。
+    with tempfile.TemporaryDirectory() as tn:
+        rn = _write_artifact_run(Path(tn))
+        # 改成 V3.3 未冻结文档（制品要求来自 V3.3+未FREEZE 分支）
+        (rn / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        (rn / "FREEZE.md").write_text("状态：NOT CONVERGED——尚有 53 项未清点。\n", encoding="utf-8")
+        rpn = check_run_dir(rn, None, "R1")
+        if not any("面板制品未入库" in i["message"] for i in rpn.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 否定措辞 FREEZE 仍解锁豁免（r10 P0-③）")
+            return 1
+
+    # (4) 纯标点回执与 结论：REOPEN 型回执必须 FAIL。
+    with tempfile.TemporaryDirectory() as tp:
+        rp4 = _write_artifact_run(Path(tp))
+        pd4 = rp4 / "panel" / "round1"
+        pd4.mkdir(parents=True)
+        body = "# fact\n\n## FINDING F-1\n- 位置：§1\n"
+        (pd4 / "fact.md").write_text(body, encoding="utf-8")
+        h = _hl.sha256(body.encode()).hexdigest()
+        (pd4 / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| fact.md | {h} | 1 | 0 | 0 | finding |\n", encoding="utf-8")
+        cd4 = rp4 / "certify"
+        cd4.mkdir()
+        (cd4 / "round1-1.md").write_text("。" * 50, encoding="utf-8")
+        rp4a = check_run_dir(rp4, None, "R1")
+        if not any("有效字符不足" in i["message"] for i in rp4a.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 纯标点回执未被拦（r10 P0-④）")
+            return 1
+        (cd4 / "round1-2.md").write_text(
+            "# 独立冷读回执\n\n" + "逐条回读完成。" * 5 + "\n\n结论：REOPEN——两处未落地。\n",
+            encoding="utf-8")
+        rp4b = check_run_dir(rp4, None, "R1")
+        if not any("否定性结论" in i["message"] for i in rp4b.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 结论 REOPEN 型回执未被拦（r10 P0-④/F-r10-1）")
+            return 1
+
+    # (5) 空文件面板 + 外部 --panel-dir（r10 补充判别）。
+    with tempfile.TemporaryDirectory() as tq:
+        rq = _write_artifact_run(Path(tq))
+        pdq = rq / "panel" / "round1"
+        pdq.mkdir(parents=True)
+        (pdq / "empty.md").write_text("", encoding="utf-8")
+        hq = _hl.sha256(b"").hexdigest()
+        (pdq / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| empty.md | {hq} | 0 | 0 | 0 | no-finding |\n", encoding="utf-8")
+        rpq = check_run_dir(rq, None, "R1")
+        if not any("是空文件" in i["message"] for i in rpq.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 空文件面板未被拦（r9-③/r10 复核）")
+            return 1
+    with tempfile.TemporaryDirectory() as tr:
+        rr = _write_artifact_run(Path(tr))
+        external = Path(tr) / "external-panel"
+        external.mkdir()
+        (external / "fact.md").write_text("## FINDING F-1\n", encoding="utf-8")
+        rpr = check_run_dir(rr, external, "R1")
+        if not any("run 目录之外" in i["message"] for i in rpr.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 外部 --panel-dir 未被拦（r10 复核）")
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")

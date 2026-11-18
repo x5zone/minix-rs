@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 
 FINDING_RE = re.compile(r"^##\s+FINDING\b", re.MULTILINE)
-SUGG_RE = re.compile(r"^##\s+SUGGESTION\b", re.MULTILINE)
+SUGG_RE = re.compile(r"^##\s+SUGGESTION\s+[A-Za-z][A-Za-z0-9-]*", re.MULTILINE)  # r10：与门同口径——仅计带 ID 的 SUGGESTION
 CLAIM_RE = re.compile(r"^##\s+CLAIM\s+\d+", re.MULTILINE)
 HEADER = "# 面板制品索引（panel-index，生成物——勿手改）"
 TABLE_HEAD = "| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |"
