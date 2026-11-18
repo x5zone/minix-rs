@@ -163,13 +163,14 @@ def _strip_invisible(text: str) -> str:
         if not (
             _ud.category(c) in ("Cf", "Mn")
             or c in "\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad\u180e"
-            or (0x115F <= ord(c) <= 0x11FF)  # Hangul Jungseong/Jongseong (filler)
+            or (0x115C <= ord(c) <= 0x11FF)  # Hangul Jungseong/Jongseong (filler)
             or (0x3164 <= ord(c) <= 0x3164)  # Hangul Filler
             or (0xFFA0 <= ord(c) <= 0xFFDC)  # Halfwidth Hangul
             or (0x2060 <= ord(c) <= 0x2069)
             or (0xFE00 <= ord(c) <= 0xFE0F)
-            or (0xE0000 <= ord(c) <= 0xE00FF)  # Tags + Variation Selectors Supplement
+            or (0xE0000 <= ord(c) <= 0xE02FF)  # Tags + Variation Selectors Supplement
             or (0x1D173 <= ord(c) <= 0x1D17A)
+            or (0x2800 <= ord(c) <= 0x28FF)  # Braille (visually empty)
             or (0xFFF0 <= ord(c) <= 0xFFFF)  # Cn reserved area
         )
     )
@@ -2350,7 +2351,7 @@ def check_run_dir(
                             re.IGNORECASE | re.MULTILINE,
                         ) or re.search(
                             # r19（P0-3 判例）：裸 P0 遗留标记
-                            r"(?:^\s*[-*>]?\s*|^\s*\d+[.)]\s*)P[01]+(?![0-9])",
+                            r"\bP[01]+(?![0-9])",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
                         )
