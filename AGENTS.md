@@ -79,7 +79,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 3. **Blocker Gates**（0 / A / B / C / D / D-6 / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
 4. **产出**：scan.md（单文件汇总：Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List / structure 摘要）+ structure.md（文档 review 的 12 节骨架分析）+ SYMBOLS.md（覆盖率穷举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED）
 5. **修复原则**：P0 全修完才可 CONVERGED；文档与代码保持同步；严格遵守 `prompt/review-rules/fix-guard.md`
-6. **收敛停止**（Step 7.1）：同篇 ≥5 轮强制交付 / 连续两轮新增 P1 ≤ 1 视为收敛 / 本轮成本 > 上一轮 80% 而新发现 < 20% 停止 / 首轮零发现触漏检自检（随机抽 3 项重跑，仍零发现才交付）
+6. **收敛停止**（Step 7.1）：同篇 ≥5 轮强制交付 / 连续两轮新增 P1 ≤ 1 视为收敛 / 本轮成本 > 上一轮 80% 而新发现 < 20% 停止 / 首轮零发现触漏检自检（随机抽 3 项重跑，仍零发现才交付）。**本条只适用于普通 review 命令；review-loop 轨道的收敛判定以 `review-evals.md` §6A 四态模型为准**（V3.4-r8 消歧，不得混用两套收敛定义）
 7. **每次 review 必答 Step 5.7 Rule Discovery**（是否发现新模式）——规则集靠此自演进
 
 ## 任务命令与技能

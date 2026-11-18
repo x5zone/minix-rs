@@ -320,10 +320,13 @@ def check_block(block: dict, root: Path) -> dict:
         word in notes for word in ("改写", "示意", "反例", "重排", "译述")
     )
     if rewrite_declared:
+        # r8（对抗判例）：声明式豁免此前计为 checked，虚高「引文已对账」读数——
+        # 改为 WARN：不阻断，但覆盖率只数真正逐行对账的块。
         return {
-            "status": "PASS",
+            "status": "WARN",
             "location": location,
             "kind": kind,
+            "reason": "声明为非逐字引文（structure-only），未做逐行对账",
             "mode": "structure-only(declared-rewrite)",
         }
 
@@ -497,9 +500,13 @@ def self_test() -> int:
             "```\n",
             encoding="utf-8",
         )
-        _, code = check_doc(declared_rewrite, root)
+        dr_results, code = check_doc(declared_rewrite, root)
         if code != 0:
             print("self-test FAIL: 显式声明改写的块被误拦")
+            return 1
+        # r8 判别：声明式豁免必须计 WARN、不计 checked（否则虚高覆盖率）。
+        if not any(r["status"] == "WARN" for r in dr_results):
+            print("self-test FAIL: structure-only 块未计 WARN（覆盖率虚高）")
             return 1
 
         # V3.4：C 侧三种形态。

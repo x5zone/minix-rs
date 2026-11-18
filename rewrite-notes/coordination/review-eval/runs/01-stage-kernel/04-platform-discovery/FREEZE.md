@@ -6,7 +6,7 @@
 - 冻结提交：`bc232e627`
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
 - 行数：2735
-- 文档 sha256：`a6a7cba7f803a35f4f0c2da1c7e787ca9e4029ec43d055ce017179219d898375`
+- 文档 sha256：`ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`
 - 关联代码：`tools/doc-code-map.sh --check` 52/52 通过
 
 ## 收敛证据
@@ -49,7 +49,7 @@
 - 结构性重写：§2.3 两层因果改为正面陈述「6 处 return -1、三处可达」；§1.3/§4.2 例外清单统一为（甲）（乙）；§3.1 承认 `SourceRecord` 跨 ABI；§2.10 列头改 `C i386`。
 - 独立闭集冷读判 `§2.3 验证 = PASS`、`结构性重写验证 = PASS`（其余三点）。
 - 新增真实缺口并登记：`R04-T13`（ACPI 表链 RSDT/XSDT/MADT 不在任何已注册恒等窗口内，QEMU 通过靠 2 MiB 片取整的布局偶然）。
-- 最终文档 sha256 `a6a7cba7…`；anchor 77/77、doc-code-map 52/52、structure/ref/style 全绿。
+- 最终文档 sha256 `ff8aad7e…`；anchor 77/77、doc-code-map 52/52、structure/ref/style 全绿。
 
 **结论：回归通过，D04 维持 CONVERGED**，另附 `R04-T13` 为已登记的相邻缺口（D-054 延期）。
 

@@ -424,3 +424,53 @@ R04-T13 判决行缺失（已在 OPEN-DEBT 注记，待用户裁决或并入 des
 16/16 宣称落地、实弹对账吻合、四门全绿，**判定通过**；新发现 11 条均 P2/P3（账面
 勘误、恒绿夹具、死代码、措辞张力），其中 4 条已随本批清除（FREEZE 74→75 勘误、
 mk 夹具改为可判、夹具死代码删除、§七优先级措辞），其余登记 V3.5 候选。
+
+### V3.4-r8 跨模型确认修正（2026-11-18，四队独立 review + 修复 + 回归）
+
+跨模型确认轮：4 支独立队（端到端演练 / 对抗猎手 / 机械审计 / 规则冷读，报告
+`tmp/process-review/r8/`）复核 r7 后的版本，确认 2 个新 P0、若干 P1 与规则内部冲突，
+全部修复如下。
+
+| # | 发现（判例） | 修复 |
+|---|---|---|
+| r8-1 P0 | R6-a 仍可伪造：`发现总数: 0` 两行空块计入 mod_closed（r7 的 `_has_total` 只查键）；`# R<N>` 单级标题使轮块不可见 | mod_closed 加**台账节要件**（`_has_round_ledger`：该轮台账节且非空）；`_pick_metric_block` 在 V3 的 `--round` 模式**不回退**（块缺失即 FAIL）；夹具 5 处同步 |
+| r8-2 P0 | 零面板可关轮（coverage/severity/admission 空转，只 WARN）——D05 式阴影账可机械通关 | V3 关轮**必须有 panel 目录**，缺席 FAIL（实弹：伪造 run 16 FAIL 含面板证据项） |
+| r8-3 P1 | N0 双源缺 `未闭环` 键即默认已关闭 | 缺键按开放计 + 夹具 |
+| r8-4 P1 | P1-7 词表 17/20 绕过（待复跑/尚未启动/回读未做/pending/not run/推迟/TODO…） | 词表扩充（metrics 与 loop 两侧） |
+| r8-5 P1 | citation 声明式豁免（`签名示意`/notes 子串）计为 checked——虚高「引文已对账」读数 | structure-only 块改 **WARN** 不计 checked；实弹新口径：01 28+5W、02 25+3W、03 32、04 69+6W、05 40+3F+5W（failed 数不变，D05 三条为已预登记漂移） |
+| r8-6 P1 | 台账行无编号节归属（无 `## R<N>` 标题的行对所有 scope 检查不可见） | §4.0c 明文：台账行必须放在 `## R<N>` 编号节下；§4h 补回归行归属（`## REG-<date>` 节，不参与 --round，由回归审计人工全核） |
+| r8-7 P1 | L2 豁免漏 `loop-sections`（同族 L2 时点必然 FAIL） | L2.8 豁免补 loop-sections |
+| r8-8 P1 | §八.10 标注不准确：P-REFUTE 的 CLAIM 覆盖有机械面（主台账），附加表形状不被解析 | 标注更正（r8） |
+| r8-9 P1 | ARCH「延期 → ⑤」是死选项（⑤ 与 lifecycle ARCH-BLOCKED 强制冲突，永久 BLOCKED） | 延期改为**转 OPEN-DEBT + 判决账行**（P0/P1 须风险接受；P2/P3 批准即销账） |
+| r8-10 P1 | RB 回执无入账约定（三类清单无 FINDING ID） | §4.7 补入账约定：rb.md 不按覆盖门核对，NEW 项由主 agent 按 §4.0c 准入 |
+| r8-11 P1 | 跨篇 meta 无执行定义（Who/When/Where） | §5.0 补最小定义（`meta/cross-<a>-<b>.md`，输入输出，同 agent 标注） |
+| r8-12 P1 | SUGG 适用范围与工具不一致（规则说所有角色，工具限读者/设计 P3） | §3.3/§4.0c/§4.1/panel 两处对齐工具：SUGG 限读者/设计项；事实类证据不足写 ⑤ |
+| r8-13 P1 | §3.4「轮型只能是 full」与 structural/confirmation 并存；§4.0b rule2 与 structural 轮种张力 | 轮型枚举补全；rule2 加 structural 输入口径 |
+| r8-14 P1 | L6.9.5 无条件 `--todo-file`（D05 无 todo 文件必 FAIL）；L0.8 对上一 V1 轮未关闭的存量旧 ② 无处置口径；D05「预登记不计入台账」制造第四状态 | todo 文件可缺省（注明）；L0.8 补存量裁决口径；D05 note 改为「R1 后按 §4.0c 准入，不得驻留台账外」 |
+| r8-15 P1 | AGENTS.md 收敛停止与 review-loop 轨道收敛定义冲突（两套并存未点名） | AGENTS §6 加轨道消歧（普通 review vs loop §6A） |
+| r8-16 卫生 | 04 OPEN-DEBT 表格 4 列 vs 3 表头（r7 注记破坏，doc-structure CI 必红）；D04 FREEZE sha 行未更新；README 版本行仍 V1；r7 表「41 块」实测 40 | 全部修正：注记移出表格、sha 行更新为 `ff8aad7e…`、README 导航行更新、r7 表注解为「形态行 41 / 实检新增 40」 |
+| r8-17 登记补漏 | panel §4.3 的「D1 缺席回退」块在首轮表内未登记 | 已补入本节（F10） |
+
+**修复回归（独立子 agent，修复后判定）**：首轮判定「需补丁」——F1 面板门只查目录
+存在（`mkdir panel` 可绕）、F2 六项新逻辑零判别夹具、F3 预期红计数因 strict 变化
+失真（R27 4→9、R31 6→16）、F4 rb.md 与覆盖门冲突、F6 ARCH 延期缺落地处置类、
+F8 `todo` 词误伤等；全部修复，复验通过（F1 伪造 19 FAIL 含面板证据、F2 变异抽验
+判别有效、F3 计数更新如下）。
+
+**读数（r8 终态实跑）**：四道规则同步门全绿；六自测 PASS（新增 8 组判别夹具：台账
+要件/缺键开放/词表扩充/strict 不回退/空面板/ARCH 延期两态/结构豁免 WARN）；轨迹
+矩阵 16 格 = 10 PASS / 6 FAIL——**逐项计数更新**：R27=9（存量，strict 后增）、
+R31=16（授权，strict 后增，同根因 R31 无账）、R32/R33/R34 各 1、D05 R1=16（授权，
+空面板 +1）、02/03/04 六轮全 PASS；citation 新口径五篇 0 failed（D05 3 FAIL 为
+预登记漂移）；doc-structure 04 OPEN-DEBT 单文件通过（全目录仍 6 个存量文件红）。
+
+**修复回归轮新增修复（F4–F10）**：rb.md 覆盖门豁免（§4.7 回执）；ARCH 延期三要素
+（⑤ + 用户批准 + 日期 + D-xxx）工具豁免 BLOCKED；SUGG 角色范围三处对齐（§3.3/
+§4.0c/panel §五）；L0.8 例证事实更正（72 条在 R1 台账与 follow-ups 两处）且
+「补日期不得事后追认」；`todo` 词移出 P1-7 词表；panel §4.3 D1 缺席回退块登记入表。
+
+**未修登记**：§3.2 重号；§4.1/§4.1a 点号风格；「五门」三处成员不一致；降档阶梯
+6→3→1 对 7 角色；panel「五个角色/五段」计数；字段数 6/7/8 三口径；§3.3 八列旧表头
+与 §4.0c 十列并存；review-core/review-process 两份浓缩镜像与「同源」措辞（需用户
+裁决是否改措辞或加锚点门）；CI 的 pattern-gate/command-boundary 存量红与 doc-structure 的 6 个存量文件红（DECISIONS/01-suggestions/02-三件/03-ledger，均为 HEAD 前既有、本批未触碰）；R04-T13
+判决行；3 个 11-10 untracked 入库——均登记为 V3.5 候选或用户裁决项。

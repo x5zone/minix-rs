@@ -27,4 +27,4 @@ doc-代码漂移（P2 级，未裁决——留给 R1 的 FACT 角色核实是文
 2. block 1682-1709：`clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());` 与现行源码不符；
 3. block 1979-2008：`unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };` 与现行源码不符。
 
-注：本节为预登记，不计入任何轮次台账；R1 survey 产出台账后按 §4.0c 正常准入。
+注：本节为预登记——R1 survey 前尚无编号轮可计，暂不构成阻断；R1 台账建立后按 §4.0c 正常准入（判据完整者进编号轮行，不全者走 SUGG/⑤），不得沿用「预登记」名义驻留台账之外（V3.4-r8：不存在第三状态）。

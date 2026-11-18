@@ -516,13 +516,19 @@ def _metric_blocks(text: str) -> list[tuple[str, str]]:
 
 
 def _pick_metric_block(
-    text: str, report: Report, round_tag: str | None
+    text: str, report: Report, round_tag: str | None, strict: bool = False
 ) -> tuple[str, str]:
     blocks = _metric_blocks(text)
     if round_tag:
         for title, body in blocks:
             if _round_key_matches(title, round_tag):
                 return title, body
+        # r8（对抗判例）：V3 的 `--round` 模式不得回退到最后一块——块缺失（含被
+        # 写成 `# R<N>` 单级标题的旁路）必须由调用方判 FAIL；V2.5 历史夹具保留
+        # 回退语义。
+        if strict:
+            return "", ""
+        return blocks[-1] if blocks else ("", text)
     # No round heading: a single-block file is the normal case; otherwise the
     # last block is the newest round.
     return blocks[-1] if blocks else ("", text)
@@ -541,7 +547,7 @@ def check_metrics(
     v33_start: int | None = None,
     v34: bool = False,
 ) -> None:
-    block_title, body = _pick_metric_block(text, report, round_tag)
+    block_title, body = _pick_metric_block(text, report, round_tag, strict=v3)
     total_match = METRIC_TOTAL_RE.search(body)
     counts = {m.group(1): int(m.group(2)) for m in METRIC_COUNT_RE.finditer(body)}
     if round_tag:
@@ -684,7 +690,7 @@ def check_metrics(
                 and result_key is not None
                 and result_key.group(1) in {"CONVERGED", "ROUND-CLOSED"}
                 and re.search(
-                    r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成|未执行|没跑|延后|排期未定)",
+                    r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成|未执行|没跑|延后|排期未定|待复跑|未复跑|尚未启动|回读未做|pending|not run|推迟)",
                     body,
                     re.IGNORECASE,
                 )
@@ -1253,6 +1259,15 @@ def check_v33_admission(
                 )
 
 
+def _has_round_ledger(n: int, section_classes: dict[str, dict[str, str]]) -> bool:
+    """r8（对抗判例）：`发现总数: 0` 两行伪造仍可满足 mod_closed——真实修改轮的
+    台账必须有该轮的行。计入要件 = metrics 骨架 + 台账该轮节且非空。"""
+    return any(
+        _round_key_matches(sec, f"R{n}") and bool(mapping)
+        for sec, mapping in section_classes.items()
+    )
+
+
 def check_v33_lifecycle(
     metrics_text: str,
     ledger_rows: dict[str, dict],
@@ -1305,6 +1320,7 @@ def check_v33_lifecycle(
             and _res_early is not None
             and _res_early.group(1) == "ROUND-CLOSED"
             and _has_total is not None
+            and _has_round_ledger(n, section_classes)
             and (_open_early is None or int(_open_early.group(1)) == 0)
         ):
             mod_closed.append(n)
@@ -1391,6 +1407,13 @@ def check_v33_lifecycle(
                 (ledger_rows.get(fid, {}).get("action") or "")
                 + (ledger_rows.get(fid, {}).get("verify") or "")
                 + (ledger_rows.get(fid, {}).get("evidence") or "")
+            )
+            # V3.4-r8（修复回归 F6）：已批准延期（用户批准 + 日期 + D-xxx 判决行
+            # 引用）不触发 ARCH 硬阻断——否则「延期」是死选项。
+            and not (
+                "用户批准" in (ledger_rows.get(fid, {}).get("action") or "")
+                and re.search(r"20\d{2}-\d{2}-\d{2}", ledger_rows.get(fid, {}).get("action") or "")
+                and re.search(r"\bD-\d{2,3}\b", ledger_rows.get(fid, {}).get("action") or "")
             )
         ]
         if arch_blocked and result_val not in (None, "BLOCKED"):
@@ -1596,7 +1619,8 @@ def check_round_monotonicity(
             # r7（对抗判例）：双源只看「有没有账」不看「账说什么」——metrics 自报
             # 未闭环>0 的轮同样不得静默越序。
             _mo = re.search(r"^\s*-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
-            if _mo and int(_mo.group(1)) > 0:
+            # r8（对抗判例）：缺键不得默认已关闭——无 `未闭环` 键的轮按开放计。
+            if _mo is None or int(_mo.group(1)) > 0:
                 metrics_open.update(ns)
     all_rounds = loop_rounds | ledger_rounds | metrics_rounds
     want = int(round_tag.lstrip("R")) if round_tag else None
@@ -1751,11 +1775,29 @@ def check_run_dir(
                 "schema",
                 "V3 loop.md §0 缺少 `edition: V3.x` 标记（轮次必须绑定到规则版本）",
             )
+    if v3_doc and round_tag_override:
+        # r8（对抗判例 + 修复回归 F1）：面板证据是 coverage/severity/admission
+        # 的输入；缺席或空目录时它们空转。V3 轮关闭必须有**非空**面板目录
+        # （`mkdir panel` 不算——至少一个角色报告）。
+        _empty_panel = panel_dir is None or not panel_dir.is_dir()
+        if not _empty_panel:
+            _empty_panel = not any(panel_dir.rglob("*.md"))
+        if _empty_panel:
+            report.fail(
+                "panel",
+                "V3 轮关闭要求面板证据：找不到 panel 目录或目录为空（至少一个角色报告；"
+                "run-dir/panel 或 tmp/review-eval/<stage>/<doc>/panel）",
+            )
     panel_ids = collect_panel_findings(panel_dir, report)
     if loop_text is not None and panel_dir is not None and panel_dir.is_dir():
         # V2 轨迹门：每个 panel 文件要么有 FINDING，要么在 loop.md §1
         # 显式写“无发现面板：<file>（理由）”豁免。WARN 不再是可接受状态。
         for path in sorted(panel_dir.glob("*.md")):
+            # V3.4-r8（修复回归 F4）：rb.md 是 certify 回执（§4.7 三类清单，无
+            # FINDING ID），不按面板覆盖门核对。
+            if path.name == "rb.md":
+                report.ok("panel-exemption", "rb.md 为 certify 回执，豁免覆盖门")
+                continue
             text = path.read_text(encoding="utf-8")
             has_finding = bool(
                 FINDING_RE.search(text)
@@ -1994,7 +2036,7 @@ def check_run_dir(
                         else len(loop_text)
                     )
                     if re.search(
-                        r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成|未执行|没跑|延后|排期未定)",
+                        r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成|未执行|没跑|延后|排期未定|待复跑|未复跑|尚未启动|回读未做|pending|not run|推迟|todo)",
                         loop_text[_m.start() : _end],
                         re.IGNORECASE,
                     ):
@@ -2129,6 +2171,8 @@ V3_LEDGER = """# 台账
 """
 
 V3_METRICS = """# 指标
+
+## R1 面板轮
 
 - 发现总数: 1
 - 唯一根因数: 1
@@ -3131,11 +3175,19 @@ def self_test() -> int:
             "section": "R31 完整 survey",
         }
     }
-    confirm_sections = {"R31 完整 survey": {"RD-R31-01": "⑥"}}
+    confirm_sections = {
+        "R31 完整 survey": {"RD-R31-01": "⑥"},
+        "R30 修改轮": {"RD-30": "①"},
+    }
+    _closed_rows = {
+        "RD-30": {"class": "①", "action": "修", "verify": "grep x", "root": "RD-30",
+                  "origin": "R30", "severity": "P2", "role": "fact",
+                  "section": "R30 修改轮"},
+    }
     confirm_report = Report()
     check_v33_lifecycle(
         confirm_metrics,
-        confirm_ledger_rows,
+        {**confirm_ledger_rows, **_closed_rows},
         confirm_sections,
         confirm_report,
         26,
@@ -3163,10 +3215,11 @@ def self_test() -> int:
         + "- edition: V3.3\n"
     )
     cross_report = Report()
+    cross_sections = {"R30 修改轮": {"RD-30": "①"}}
     check_v33_lifecycle(
         cross_edition_metrics,
-        {},
-        {},
+        _closed_rows,
+        cross_sections,
         cross_report,
         26,
         31,
@@ -3196,13 +3249,20 @@ def self_test() -> int:
         "## R2 确认轮\n\n- 轮型: confirmation\n- 轮结果: CONVERGED\n- certify 新准入: 0\n"
     )
     rep_r6a2 = Report()
-    check_v33_lifecycle(_r6a_good, {}, {}, rep_r6a2, 1, 1)
+    _r6a_rows = {
+        "RD-1": {"class": "①", "action": "修", "verify": "grep x", "root": "RD-1",
+                 "origin": "R1", "severity": "P2", "role": "fact",
+                 "section": "R1 修改轮"},
+    }
+    _r6a_sections = {"R1 修改轮": {"RD-1": "①"}}
+    check_v33_lifecycle(_r6a_good, _r6a_rows, _r6a_sections, rep_r6a2, 1, 1)
     if any("R6-a" in i["message"] for i in rep_r6a2.items if i["level"] == "FAIL"):
         print("self-test FAIL: 有前置修改轮的确认轮被误拦")
         return 1
 
     # P1-7：certify 待跑 × 闭合态（限 schema V3.4）。
     _p17_metrics = (
+        "## R1 确认轮\n"
         "- 发现总数: 1\n- 唯一根因数: 1\n- 本轮新准入: 1\n- certify 新准入: 0\n"
         "- 重复合并: 0\n- 自引入: 0\n"
         "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
@@ -3232,8 +3292,8 @@ def self_test() -> int:
         "## R3 面板轮\n\n### §7 状态\nCONVERGED\n"
     )
     _metrics_n0 = (
-        "# 指标\n\n## R1 面板轮\n\n- 发现总数: 0\n\n"
-        "## R3 面板轮\n\n- 发现总数: 0\n"
+        "# 指标\n\n## R1 面板轮\n\n- 发现总数: 0\n- 未闭环: 0\n\n"
+        "## R3 面板轮\n\n- 发现总数: 0\n- 未闭环: 0\n"
     )
     rep_n0 = Report()
     check_round_monotonicity(_loop_n0, {}, {}, rep_n0, schema_start=1, v3=True,
@@ -3291,6 +3351,111 @@ def self_test() -> int:
         return 1
     if _round_key_matches("R12 面板轮", "R1"):
         print("self-test FAIL: R1 仍匹配 R12")
+        return 1
+
+    # ===== V3.4-r8 判别夹具（删除对应新逻辑必须变红）=====
+    # (1) mod_closed 台账要件：有发现总数但无台账节的伪造轮不得计入。
+    _forge3 = (
+        "# 指标\n\n## R1 修改轮\n\n- 发现总数: 0\n- 轮型: full\n"
+        "- 轮结果: ROUND-CLOSED\n- 未闭环: 0\n\n"
+        "## R2 确认轮\n\n- 轮型: confirmation\n- 轮结果: CONVERGED\n"
+        "- certify 新准入: 0\n"
+    )
+    _f3 = Report()
+    check_v33_lifecycle(_forge3, {}, {}, _f3, 1, 1)
+    if not any("R6-a" in i["message"] for i in _f3.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 有发现总数但无台账节的伪造轮仍计入 mod_closed")
+        return 1
+
+    # (2) N0 缺 `未闭环` 键按开放计。
+    _nk_loop = (
+        "schema: V3.4 from R1\n\nedition: V3.4\n\n## R1 面板轮\n\n### §7 状态\nNOT CONVERGED\n\n"
+        "## R2 面板轮\n\n### §7 状态\nCONVERGED\n"
+    )
+    _nk_metrics = (
+        "# 指标\n\n## R1 面板轮\n\n- 发现总数: 1\n\n"
+        "## R2 面板轮\n\n- 发现总数: 0\n- 未闭环: 0\n"
+    )
+    _nkr = Report()
+    check_round_monotonicity(_nk_loop, {}, {}, _nkr, schema_start=1, v3=True,
+                             metrics_text=_nk_metrics)
+    if not any("N0" in i["message"] for i in _nkr.items if i["level"] == "FAIL"):
+        print("self-test FAIL: metrics 缺未闭环键的轮未按开放计")
+        return 1
+
+    # (3) P1-7 词表扩充生效。
+    _p17b = (
+        "## R1 确认轮\n"
+        "- 发现总数: 1\n- 唯一根因数: 1\n- 本轮新准入: 1\n- certify 新准入: 0\n"
+        "- 重复合并: 0\n- 自引入: 0\n"
+        "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
+        "- 轮型: confirmation\n- 轮结果: CONVERGED\n- 代裁决: 0\n- ARCH 提案: 0\n"
+        "- 用户否决: 0\n- edition: V3.4\n- re-litigation: 0\n- adjacent 阻塞: 0\n"
+        "- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0\n- 成本: agent 1\n"
+        "- 回读与回归: certify 待复跑\n"
+    )
+    _p17r = Report()
+    check_metrics(_p17b, _p17r, "R1", None, 0, 1, v3=True,
+                  root_count=None, new_roots=None, v33_start=1, v34=True)
+    if not any("P1-7" in i["message"] for i in _p17r.items if i["level"] == "FAIL"):
+        print("self-test FAIL: P1-7 词表扩充未生效（certify 待复跑）")
+        return 1
+
+    # (4) strict 不回退：块标题写成一/三级 `# R2` 时 --round 必须 FAIL。
+    _strictr = Report()
+    check_metrics("# 指标\n\n# R2 面板轮\n\n- 发现总数: 0\n", _strictr, "R2",
+                  None, 0, 1, v3=True, root_count=None, new_roots=None,
+                  v33_start=1, v34=True)
+    if not _strictr.failed:
+        print("self-test FAIL: 轮块标题旁路（# R2）未被 strict 模式拦住")
+        return 1
+
+    # (5) 零/空面板关轮必须 FAIL。
+    with tempfile.TemporaryDirectory() as t8:
+        r8d = Path(t8) / "run"
+        r8d.mkdir()
+        (r8d / "loop.md").write_text(
+            "schema: V3.4 from R1\n\nedition: V3.4\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        (r8d / "defect-ledger.md").write_text(
+            "## R1 面板轮\n\n| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |\n"
+            "|---|---|---|---|---|---|---|---|\n| F-1 | fact | P2 | 事实 | ① | 修 | e | g |\n",
+            encoding="utf-8")
+        (r8d / "metrics.md").write_text(
+            "# 指标\n\n## R1 面板轮\n\n- 发现总数: 1\n"
+            "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
+            "- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 代裁决: 0\n- ARCH 提案: 0\n"
+            "- 用户否决: 0\n- edition: V3.4\n", encoding="utf-8")
+        _pr = check_run_dir(r8d, None, "R1")
+        if not any("面板证据" in i["message"] for i in _pr.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 零面板关轮未被拦截")
+            return 1
+
+    # (6) ARCH ⑤ 行：批准延期（用户批准+日期+D 行）不触发 BLOCKED；未批准触发。
+    _arch_metrics = (
+        "# 指标\n\n## R1 面板轮\n\n- 发现总数: 1\n"
+        "- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 1 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 1\n"
+        "- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 代裁决: 0\n- ARCH 提案: 0\n"
+        "- 用户否决: 0\n- edition: V3.4\n"
+    )
+    _arch_secs = {"R1 面板轮": {"F-9": "⑤"}}
+    _arch_pending = {"F-9": {"class": "⑤", "action": "[ARCH] 待用户裁决",
+                             "verify": "-", "root": "F-9", "origin": "R1",
+                             "severity": "P1", "role": "design-d2",
+                             "section": "R1 面板轮"}}
+    _ar = Report()
+    check_v33_lifecycle(_arch_metrics, _arch_pending, _arch_secs, _ar, 1, 1)
+    if not any("ARCH" in i["message"] for i in _ar.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 未批准的 ARCH ⑤ 行未触发 BLOCKED")
+        return 1
+    _arch_ok = {"F-9": {"class": "⑤", "action": "[ARCH] 待用户裁决；用户批准 2026-11-18；D-056",
+                        "verify": "-", "root": "F-9", "origin": "R1",
+                        "severity": "P1", "role": "design-d2",
+                        "section": "R1 面板轮"}}
+    _ar2 = Report()
+    check_v33_lifecycle(_arch_metrics, _arch_ok, _arch_secs, _ar2, 1, 1)
+    if any("ARCH" in i["message"] for i in _ar2.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 已批准延期的 ARCH 行仍被硬阻断")
         return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
