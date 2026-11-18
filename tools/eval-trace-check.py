@@ -160,14 +160,7 @@ def _strip_invisible(text: str) -> str:
     return "".join(
         c
         for c in text
-        if not (
-            _ud.category(c) in ("Cf", "Mn")
-            or c in "\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad\u180e"
-            or (0x2060 <= ord(c) <= 0x2069)
-            or (0xFE00 <= ord(c) <= 0xFE0F)
-            or (0xE0000 <= ord(c) <= 0xE007F)
-            or (0x1D173 <= ord(c) <= 0x1D17A)
-        )
+        if _ud.category(c)[0] in "LNPSZ"
     )
 
 
@@ -2346,7 +2339,7 @@ def check_run_dir(
                             re.IGNORECASE | re.MULTILINE,
                         ) or re.search(
                             # r19（P0-3 判例）：裸 P0 遗留标记
-                            r"(?:^\s*[-*]?\s*|^\s*\d+[.)]\s*)P[01](?!\d)",
+                            r"(?:^\s*[-*>]?\s*|^\s*\d+[.)]\s*)P[01]\b",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
                         )
