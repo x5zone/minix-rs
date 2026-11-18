@@ -482,6 +482,12 @@ R31=16（授权，strict 后增，同根因 R31 无账）、R32/R33/R34 各 1、
 - **r11**：对抗+机械两队。边界外 P0×3——① FREEZE 正向行是黑名单（「还没 CONVERGED。」「目标：达成 CONVERGED 后冻结。」「CONVERGED-CANDIDATE（待确认）」「是否 CONVERGED？」四型绕过）；② certify 否定词表不穷尽（裸 REOPEN/结论 FAIL 空格/没通过/全角 NOT PASS）+ 无肯定式结论要求；③ 带 ID SUGGESTION 借标题形状（###/复数/中文 ID）漏出三账，且规范无形状契约。P1：INDEX 复点与 panel-index 口径分叉。**修复改为肯定式判据**：FREEZE 豁免 = 标题行（`# … FREEZE …`）必须携带终态；certify = 必须自带显式通过性结论行（结论/判定/验证/确认 + PASS/CLOSED/通过/闭环）+ 否定扫描（含全角归一与独行 REOPEN）；SUGG 形状契约写进规则并三正则同形（`#{2,3} SUGGESTION <ASCII-ID>`）。判定 NOT PASS，修复已落地。
 - **计数随口径演进**：R27 9→10、R31 16→17（r10 缺总数键检查新增一行）；D05 R1 19（SUGG 制品口径）。D-057 行已注「以最新实测为准」。
 
+## V3.4-r12（2026-11-19，收敛循环第 12 轮）
+
+- **r12**：对抗+机械两队。边界外 P0×3——① FREEZE 标题位六型绕过（否定后缀进标题/`CONVERGED-CANDIDATE`/小写/正文 H1：r11 的标题正则不看极性）；② certify 结论行无极性检查（「判定：两项未闭环。」「验证确认了不可能 PASS」「结论：应该通过吗？」被当通过性结论）；③ panel-index.py 未随 r11 同形（`^##\s+` vs `#{2,3}`，`### SUGGESTION` 官方工具与门必然死锁）。P1×2：metrics 单载体升 V3.4 时历史层被制品链追溯（V33_MARKER_RE 硬编码 V3.3，从不解析 V3.4 from R<N>）；SUGG ID 下划线截断。
+- **修复（全部肯定式/同形收口）**：FREEZE 改「标题行以终态收尾 + 标题行否定/未定标记扫描」双重判据；certify 结论行加行内极性（未/没/REOPEN/NOT PASS/FAIL/? 的行不算通过性结论）；panel-index/collect/复点三正则真正同形（`#{2,3} SUGGESTION <ASCII-ID>` 含下划线）并补**经过官方生成器**的夹具；V3.4 起点轮改专用标记解析（loop 优先、metrics 兜底）。判定 NOT PASS，修复已落地，收敛待 r13。
+- 另核：pattern-gate/command-boundary 存量红披露升级为逐项列明待办（P18 锚点越界 11 项、violation 3 项，引入 10-19/11-03）。
+
 ## V3.5（2026-11-18，用户裁决：制品链换证据类型 + 威胁模型写死）
 
 > 依据：r6–r8 三轮对抗审查每轮在门层发现新 P0（R31 断链 → 自报键伪造 → 空目录

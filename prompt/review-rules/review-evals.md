@@ -123,7 +123,7 @@ tmp/review-eval/<stage>/<doc-stem>/logs/
   P0 记成台账 P1/P2 且整轮无 P0 行——列分叉即 `severity-sync` FAIL；
 - `处置类` 只能是 `①` / `②` / `④` / `⑤` / `⑥` / `FP` / `SUGG`（V3.3 起，见下条），或对应的英文标记 `fix` / `transfer` / `wording` / `insufficient` / `refactor` / `false-positive`；
 - **`③` 已删除，不再接受**。误报只能写 `FP`，且 `证据` 列必须给出源码、测试或文档原文的反证；没有反证的“误报”按 `⑤` 未闭环处理，不得当作已处置。**`SUGG`（V3.3 起）为合法处置类**（**形状契约，V3.4-r11**：面板标头必须是
-`## SUGGESTION <ASCII-ID>` 或 `### SUGGESTION <ASCII-ID>`——与 FINDING 同规则；
+`##/### SUGGESTION <ASCII-ID>`（ID 字符集与 FINDING 同，含下划线）——与 FINDING 同规则；
 无 ID 的聚合段落是散文，不计入 INDEX/发现总数/覆盖率）：限读者/设计角色的 P3 建议与准入判据不全的读者/设计项——以 SUGG 行入台账、计入 metrics 的 `SUGG` 键与发现总数（七项之和），不参与 G1–G9；FACT/DESIGN 事实类证据不足写 `⑤`（V3.4-r8 与工具对齐）；
 - `处置类` 为 `①` / `④` / `⑥` 的行，`复验` 必须非空，且不能是 `TBD`、`待定`、`-`；
 - `处置类` 为 `②` 的行，`处置` 必须含“用户批准”和 `YYYY-MM-DD` 日期、去向批次/篇目；缺一项即按未批准计，阻断本轮关闭；

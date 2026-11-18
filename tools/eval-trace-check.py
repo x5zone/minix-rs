@@ -1483,7 +1483,7 @@ def collect_panel_findings(
         # 仅对制品必需文档启用：历史冻结轮（V3.3 旧口径，SUGG 不入台账）不追溯。
         if collect_sugg_ids:
             found += re.findall(
-                r"^#{2,3}\s+SUGGESTION\s+([A-Za-z][A-Za-z0-9-]*)", text, re.MULTILINE
+                r"^#{2,3}\s+SUGGESTION\s+([A-Za-z][A-Za-z0-9_-]*)", text, re.MULTILINE
             )
         found += re.findall(r"^\*\*(DESIGN-D2-\d+)", text, re.MULTILINE)
         if not found:
@@ -1811,26 +1811,39 @@ def check_run_dir(
     _freeze_path = run_dir / "FREEZE.md"
     if _freeze_path.is_file():
         _ft = _freeze_path.read_text(encoding="utf-8")
-        # r11（P0-1 判例）：r10 的否定词黑名单是实例级修复——「还没 CONVERGED。」
-        # 「目标：达成 CONVERGED 后冻结。」「CONVERGED-CANDIDATE（待确认）」
-        # 「是否 CONVERGED？待复核。」全部绕过。改**肯定式判据**：FREEZE 标题行
-        # （`# … FREEZE …`）必须携带终态（CONVERGED / FREEZE-WITH-BACKLOG）。
-        # 这是 FREEZE 文档自身的标题契约，一句话事故无法满足。
-        _freeze_ok = (
-            len(_ft.strip()) > 0
-            and bool(
-                re.search(
-                    r"^#\s+.*FREEZE.*\b(CONVERGED|FREEZE-WITH-BACKLOG)\b",
-                    _ft,
-                    re.MULTILINE | re.IGNORECASE,
-                )
-            )
+        # r12（P0-1 判例）：r11 标题判定被六型绕过（否定后缀进标题、CANDIDATE、
+        # 小写、正文 H1）。改**双重肯定式**：存在 `# … FREEZE …` 标题行，该行以
+        # 终态收尾（CONVERGED / FREEZE-WITH-BACKLOG，可选全角括号），且该行无
+        # 否定/未定标记（尚未/未/没/NOT/CANDIDATE/待/?）——标题是 FREEZE 文档
+        # 自身的契约位，事故单行无法同时满足形状+极性。
+        _title_lines = [
+            ln for ln in _ft.splitlines() if re.match(r"^#\s+.*FREEZE", ln)
+        ]
+        _freeze_ok = len(_ft.strip()) > 0 and any(
+            re.search(r"\b(CONVERGED|FREEZE-WITH-BACKLOG)\s*）?\s*$", ln)
+            and not re.search(r"尚未|未|没|NOT|CANDIDATE|待|\?", ln, re.IGNORECASE)
+            for ln in _title_lines
         )
-    _v34_from = (
-        v33_start_round(loop_text, fallback=schema_start)
-        if (schema_version(loop_text) or (0, 0)) >= (3, 4)
-        else None
-    )
+    # r12（P1-1 判例）：V3.4 起点轮必须解析 V3.4 专属标记——V33_MARKER_RE 硬编码
+    # V3.3，从不匹配 `schema: V3.4 from R<N>`，导致起点轮退回 schema_start、历史层
+    # 回放被制品链追溯。载体 = V3.4 标记所在文件（loop 优先，metrics 兜底）。
+    if (schema_version(loop_text) or (0, 0)) >= (3, 4):
+        _carrier34 = loop_text
+    elif _combined_ver >= (3, 4):
+        _carrier34 = metrics_text or ""
+    else:
+        _carrier34 = None
+    if _carrier34 is not None:
+        _m34 = re.search(
+            r"schema\s*[:：]\s*V3\.4(?:\s+from\s+R(\d+))?", _carrier34, re.IGNORECASE
+        )
+        _v34_from = (
+            int(_m34.group(1))
+            if _m34 and _m34.group(1)
+            else (schema_start or 1)
+        )
+    else:
+        _v34_from = None
     _round_no = int(round_tag_override.lstrip("R")) if round_tag_override else None
     _artifact_required = False
     if round_tag_override:
@@ -1908,7 +1921,7 @@ def check_run_dir(
                     _nc = len(re.findall(r"^##\s+CLAIM\s+\d+", _text, re.MULTILINE))
                     _ns = len(
                         re.findall(
-                            r"^#{2,3}\s+SUGGESTION\s+[A-Za-z][A-Za-z0-9-]*",
+                            r"^#{2,3}\s+SUGGESTION\s+[A-Za-z][A-Za-z0-9_-]*",
                             _text,
                             re.MULTILINE,
                         )
@@ -2208,11 +2221,17 @@ def check_run_dir(
                                 f"{_cert.name} 含否定性结论"
                                 "（NOT PASS/未通过/没通过/结论 FAIL|REOPEN/独行 REOPEN）"
                             )
-                        elif not re.search(
-                            r"(结论|判定|验证|确认)[^\n]{0,24}"
-                            r"(\bPASS\b|\bCLOSED\b|通过|闭环)",
-                            _ct,
-                            re.IGNORECASE,
+                        elif not any(
+                            re.search(
+                                r"(结论|判定|验证|确认)[^\n]{0,24}"
+                                r"(\bPASS\b|\bCLOSED\b|通过|闭环)",
+                                ln,
+                                re.IGNORECASE,
+                            )
+                            and not re.search(
+                                r"未|没|REOPEN|NOT\s*PASS|FAIL|\?|？", ln, re.IGNORECASE
+                            )
+                            for ln in _ct.splitlines()
                         ):
                             # r11（P0-2）：词表不可穷尽——改**肯定式结论要求**：
                             # 回执必须自带一行显式通过性结论（结论/判定/验证/确认
@@ -4034,6 +4053,108 @@ def self_test() -> int:
             for i in rpk3.items if i["level"] == "FAIL"
         ):
             print("self-test FAIL: 显式结论回执被误拦（r11 P0-2）")
+            return 1
+
+    # ===== r12 判别夹具 =====
+    # (a) FREEZE 标题位否定后缀三型 → 不豁免。
+    with tempfile.TemporaryDirectory() as tu:
+        ru = _write_artifact_run(Path(tu))
+        (ru / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        for title in (
+            "# FREEZE 计划（尚未 CONVERGED）\n",
+            "# 01 FREEZE——CONVERGED-CANDIDATE（待确认）\n",
+            "# 01 FREEZE——NOT-CONVERGED\n",
+        ):
+            (ru / "FREEZE.md").write_text(title, encoding="utf-8")
+            rpu = check_run_dir(ru, None, "R1")
+            if not any(
+                "面板制品未入库" in i["message"] for i in rpu.items if i["level"] == "FAIL"
+            ):
+                print(f"self-test FAIL: 标题位否定变体解锁了豁免（r12 P0-1）: {title!r}")
+                return 1
+
+    # (b) certify 结论行极性：未闭环/不可能/疑问句不算通过性结论。
+    with tempfile.TemporaryDirectory() as tv2:
+        rv2 = _write_artifact_run(Path(tv2))
+        pd2 = rv2 / "panel" / "round1"
+        pd2.mkdir(parents=True)
+        body = "# fact\n\n## FINDING F-1\n- 位置：§1\n"
+        (pd2 / "fact.md").write_text(body, encoding="utf-8")
+        h = _hl.sha256(body.encode()).hexdigest()
+        (pd2 / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| fact.md | {h} | 1 | 0 | 0 | finding |\n", encoding="utf-8")
+        cd2 = rv2 / "certify"
+        cd2.mkdir()
+        (cd2 / "round1-1.md").write_text(
+            "# 回执\n\n" + "内容。" * 10 + "\n\n判定：两项未闭环。\n", encoding="utf-8")
+        rp2a = check_run_dir(rv2, None, "R1")
+        if not any("缺少显式通过性结论" in i["message"] for i in rp2a.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 「判定：两项未闭环」被当通过性结论（r12 P0-2）")
+            return 1
+        (cd2 / "round1-2.md").write_text(
+            "# 回执\n\n" + "内容。" * 10 + "\n\n验证确认了不可能 PASS。\n", encoding="utf-8")
+        rp2b = check_run_dir(rv2, None, "R1")
+        if not any("缺少显式通过性结论" in i["message"] for i in rp2b.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 「不可能 PASS」被当通过性结论（r12 P0-2）")
+            return 1
+        (cd2 / "round1-3.md").write_text(
+            "# 回执\n\n" + "内容。" * 10 + "\n\n结论：应该通过吗？\n", encoding="utf-8")
+        rp2c = check_run_dir(rv2, None, "R1")
+        if not any("缺少显式通过性结论" in i["message"] for i in rp2c.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 疑问句结论被当通过（r12 P0-2）")
+            return 1
+
+    # (c) ### SUGG 经官方生成器与门同口径。
+    import importlib as _imp
+
+    _pi_spec = _imp.util.spec_from_file_location(
+        "panel_index", Path(__file__).resolve().parent / "panel-index.py"
+    )
+    _pi = _imp.util.module_from_spec(_pi_spec)
+    _pi_spec.loader.exec_module(_pi)
+    with tempfile.TemporaryDirectory() as tw:
+        rw = _write_artifact_run(Path(tw))
+        pdw = rw / "panel" / "round1"
+        pdw.mkdir(parents=True)
+        (pdw / "fact.md").write_text(
+            "# fact\n\n## FINDING F-1\n- 位置：§1\n\n"
+            "### SUGGESTION RD-S-02\n- 建议：结构\n", encoding="utf-8")
+        if _pi.write_index(pdw) != 0:
+            print("self-test FAIL: 官方生成器失败")
+            return 1
+        rp2d = check_run_dir(rw, None, "R1")
+        _m12 = [i["message"] for i in rp2d.items if i["level"] == "FAIL"]
+        if any("计数与 INDEX 不一致" in x for x in _m12):
+            print("self-test FAIL: 官方生成器与门计数分叉（r12 F-r12-2）")
+            return 1
+
+    # (d) metrics 载体携带 V3.4 from R5：历史层 R2 不要求制品。
+    with tempfile.TemporaryDirectory() as tx:
+        rx = Path(tx) / "run"
+        rx.mkdir()
+        (rx / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R2 确认轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        (rx / "defect-ledger.md").write_text(
+            "## R2 确认轮\n\n| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |\n"
+            "|---|---|---|---|---|---|---|---|\n| F-1 | fact | P2 | 事实 | ① | 修 | e | g |\n",
+            encoding="utf-8")
+        (rx / "metrics.md").write_text(
+            "# 指标\n\nschema: V3.4 from R5\n\n## R2 确认轮\n\n- 发现总数: 1\n"
+            "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
+            "- 轮型: confirmation\n- 轮结果: CONVERGED\n- certify 新准入: 0\n"
+            "- 代裁决: 0\n- ARCH 提案: 0\n- 用户否决: 0\n- edition: V3.3\n",
+            encoding="utf-8")
+        (rx / "certify").mkdir()
+        (rx / "certify" / "round2-1.md").write_text(
+            "# 回执\n\n" + "内容。" * 10 + "\n\n结论：CLOSED。\n", encoding="utf-8")
+        rpx = check_run_dir(rx, None, "R2")
+        if any("面板制品未入库" in i["message"] for i in rpx.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 历史层回放被制品链追溯（r12 P1-1）")
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
