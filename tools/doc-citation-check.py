@@ -39,10 +39,19 @@ import tempfile
 from pathlib import Path
 
 FENCE_RE = re.compile(r"^(```+|~~~+)\s*([A-Za-z0-9_+-]*)\s*$")
+# V3.4 最小内核（P2-8 判例：D03/D04 的 C 侧引文 42/86 块全部静默跳过，门读数
+# 「failed=0」实为「checked=0」的假绿）：标注支持三种形态——`// kind，rest`、
+# `/* kind，rest。 */`（D03 形态）、`/* path:sym —— kind（notes） */`（D04 形态）；
+# 路径扩展 `minix3/*.c|h`。kind 词表补「逐字引用」（D04 实用）。
 ANNOTATION_RE = re.compile(
-    r"^\s*//\s*(代码引用|节选|改写|示意|反例)(?:\s*（([^）]*)）)?\s*[，,]\s*(.+?)\s*。?\s*$"
+    r"^\s*(?://|/\*)\s*(代码引用|逐字引用|节选|改写|示意|反例)(?:\s*（([^）]*)）)?\s*[，,]\s*(.+?)\s*。?\s*(?:\*/)?\s*$"
 )
-PATH_RE = re.compile(r"os/[\w./-]+\.rs")
+C_ANNOTATION_RE = re.compile(r"^/\*\s*(?P<inner>.+?)\s*\*/$")
+C_KIND_RE = re.compile(
+    r"(?P<paths>.+?)\s*(?:——|—|--)\s*"
+    r"(?P<kind>代码引用|逐字引用|节选|改写|示意|反例)\s*(?:（(?P<notes>[^）]*)）)?\s*$"
+)
+PATH_RE = re.compile(r"(?:os/[\w./-]+\.rs|minix3/[\w./-]+\.[ch])")
 ANCHOR_KIND_RE = re.compile(
     r"\b(fn|struct|trait|impl|const|static|type|enum|mod|union)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
@@ -70,6 +79,8 @@ def normalize(line: str) -> str:
     """
     line = line.strip()
     line = re.sub(r"\s+//.*$", "", line).strip()
+    # V3.4：C 侧行内块注释剔除后再比对。
+    line = re.sub(r"/\*.*?\*/", " ", line).strip()
     line = re.sub(r"\bpub(?:\([^)]*\))?\s+", "", line)
     for prefix in ("crate::", "minix_boot::", "minix_types::", "core::"):
         line = line.replace(prefix, "")
@@ -107,6 +118,9 @@ def should_skip(line: str) -> bool:
         return True
     if stripped.startswith("//"):
         return True
+    # V3.4：C 侧块注释行（`/* … */`、`* …` 续行、行尾 `*/`）跳过。
+    if stripped.startswith("/*") or stripped.startswith("* ") or stripped.startswith("*/"):
+        return True
     if "..." in stripped or "…" in stripped:
         return True
     if NON_ASCII_RE.search(stripped):
@@ -114,6 +128,24 @@ def should_skip(line: str) -> bool:
     if SKIP_LINE_RE.fullmatch(stripped):
         return True
     return False
+
+
+def _parse_annotation(line: str) -> dict | None:
+    """Parse `//`-style and (V3.4) `/* … —— kind（notes） */`-style annotations
+    into one internal dict so downstream checks share a single shape."""
+    m = ANNOTATION_RE.match(line)
+    if m:
+        return {"kind": m.group(1), "notes": m.group(2) or "", "rest": m.group(3)}
+    c = C_ANNOTATION_RE.match(line.strip())
+    if c:
+        k = C_KIND_RE.match(c.group("inner"))
+        if k:
+            return {
+                "kind": k.group("kind"),
+                "notes": k.group("notes") or "",
+                "rest": k.group("paths"),
+            }
+    return None
 
 
 def parse_blocks(text: str) -> list[dict]:
@@ -143,15 +175,18 @@ def parse_blocks(text: str) -> list[dict]:
         end = i + 1
         annotation = None
         annotation_line = None
-        if body and ANNOTATION_RE.match(body[0]):
-            annotation_line = body[0]
-            annotation = ANNOTATION_RE.match(body[0])
-            body = body[1:]
-        elif start >= 2:
+        if body:
+            parsed = _parse_annotation(body[0])
+            if parsed is not None:
+                annotation_line = body[0]
+                annotation = parsed
+                body = body[1:]
+        if annotation is None and start >= 2:
             prev = lines[start - 2].strip()
-            if ANNOTATION_RE.match(prev):
+            parsed = _parse_annotation(prev)
+            if parsed is not None:
                 annotation_line = prev
-                annotation = ANNOTATION_RE.match(prev)
+                annotation = parsed
         blocks.append(
             {
                 "start": start,
@@ -212,9 +247,9 @@ def check_block(block: dict, root: Path) -> dict:
     annotation = block["annotation"]
     if annotation is None:
         return {"status": "SKIP", "reason": "无引文标注"}
-    kind = annotation.group(1)
-    notes = annotation.group(2) or ""
-    rest = annotation.group(3)
+    kind = annotation["kind"]
+    notes = annotation["notes"]
+    rest = annotation["rest"]
     paths = parse_paths(rest)
     location = f"{block['start']}-{block['end']}"
     if not paths:
@@ -222,7 +257,7 @@ def check_block(block: dict, root: Path) -> dict:
             "status": "WARN",
             "location": location,
             "kind": kind,
-            "reason": "标注里没有 os/*.rs 路径",
+            "reason": "标注里没有可对账的源码路径（os/*.rs 或 minix3/*.c|h）",
         }
 
     sources: list[str] = []
@@ -451,9 +486,53 @@ def self_test() -> int:
             print("self-test FAIL: 显式声明改写的块被误拦")
             return 1
 
+        # V3.4：C 侧三种形态。
+        (root / "minix3" / "k").mkdir(parents=True)
+        (root / "minix3" / "k" / "main.c").write_text(
+            "int cstart(void) {\n    boot();\n    return 0;\n}\n",
+            encoding="utf-8",
+        )
+        c_d04 = root / "c_d04.md"
+        c_d04.write_text(
+            "```c\n"
+            "/* minix3/k/main.c:cstart —— 代码引用 */\n"
+            "int cstart(void) {\n    boot();\n    return 0;\n}\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        _, code = check_doc(c_d04, root)
+        if code != 0:
+            print("self-test FAIL: C 侧 path——kind 形态被判 FAIL")
+            return 1
+        c_stale = root / "c_stale.md"
+        c_stale.write_text(
+            "```c\n"
+            "/* minix3/k/main.c:cstart —— 节选（省略号处为其余初始化） */\n"
+            "int cstart(void) {\n    not_in_source();\n    return 0;\n"
+            "    /* 旁注：这行应被跳过 */\n}\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        _, code = check_doc(c_stale, root)
+        if code == 0:
+            print("self-test FAIL: C 侧节选里的陈旧行未被拦截")
+            return 1
+        c_d03 = root / "c_d03.md"
+        c_d03.write_text(
+            "```c\n"
+            "/* 代码引用，minix3/k/main.c:cstart（函数头到 boot 调用）。 */\n"
+            "int cstart(void) {\n    boot();\n    return 0;\n}\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        _, code = check_doc(c_d03, root)
+        if code != 0:
+            print("self-test FAIL: `/* kind，path */` 形态（D03）被判 FAIL")
+            return 1
+
     print(
         "self-test PASS: 正确引文通过；缺行/缺文件/缺符号/节选陈旧行被拦截；"
-        "省略与显式改写豁免"
+        "省略与显式改写豁免；C 侧三形态与陈旧行对账"
     )
     return 0
 

@@ -226,7 +226,9 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 
 ## L6 独立 meta-review
 
-1. 按 `review-evals.md` §5.0 的分级决定深度：轮次 1–2 全量九问；轮次 3+ 轻量 3 问；文档收敛时全量收口。
+1. **meta 修约（V3.4 最小内核，§5.0）**：轮次级独立 meta 不再逐轮要求——**收敛时
+   （FREEZE 前）必须一次独立冷启动全量收口 meta**；其余轮次由主 agent 在 `### L6`
+   写同 agent 收口并如实标注；每 2 篇做一次跨篇 meta。
 2. 按 `review-panel.md` 4.6 的 brief 启动冷启动子 agent；输入按 `review-evals.md` 第五节。
 3. **审计对象是台账与证据，不是重审文档**：P0/P1/未闭环项 100% 复判；P2/P3 随机 20% 校准；逐条检查 `根因 ID`/`origin`/复验证据能否重放。读者项按 §4.0e 的三问复核（不变量/前提/证据），三问答不出才算缺陷；“更喜欢另一种写法”不算。
 4. 输出到 `meta/<doc-stem>-review.md`，必须给 `唯一根因数`、`自引入数`、`重复合并数`、`edition 是否稳定` 四个数。
@@ -265,7 +267,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
    每个 CANDIDATE 最多 2 次（edition 更替或批准重开后重新计数）；`certify 新准入=0` 才可宣告 `CONVERGED`。
 8. **edition 不变**：本轮内不得改规则；确需变更按 `review-evals.md` §7.6 把本轮标 `INVALIDATED` 后在新 edition 重开。
 9. **3 轮试验窗口**：同一 edition 在同一篇上第 3 轮仍 `open>0`，判 `NOT CONVERGING`，写 `EDITION-RETRO.md`，不得开第 4 轮。
-10. **轮内 certify 上限**：同一轮第 3 次 certify 仍有新准入根因 → 本轮标 `BLOCKED`，写 `STUCK-REPORT.md`，交用户或 edition 边界裁决；不得第 4 次 certify，也不得开下一轮。
+10. **轮内 certify 上限**：同一轮第 3 次 certify 仍有新准入根因 → 本轮标 `BLOCKED`，写 `STUCK-REPORT.md`；解除按 `review-evals.md` §4.0b 的两级分流（第一级独立冷读仲裁，第二级用户病因讨论且结论落判决账）；不得第 4 次 certify，也不得开下一轮。
 
 ## L7 收敛检查与工作流升版
 
@@ -282,6 +284,10 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 **同一根因连续两次修复仍复发** → 生成 `STUCK-REPORT.md` → 标记该根因 `STUCK` → 交用户裁决；不得用第 3 次措辞修复打补丁，也不得把复发计成“新发现”。
 
 `meta PASS` 不是文档收敛；`CONVERGED` 只看 §6A。meta 的 `NOT PASS` 记流程缺陷，不阻止文档关闭。
+
+**FREEZE 后回归审计（V3.4 最小内核，§4g-2）**：进下一篇 L0 前必须完成一次独立回归
+审查（D-055 两墙口径）；回归轮的全部发现必须入 `defect-ledger.md` 行级账并在
+`loop.md` 留索引节；FREEZE append-only（只允许追加回归节与更新 sha 行）。
 
 ### 7b. 陷阱套件
 

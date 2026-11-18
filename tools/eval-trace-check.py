@@ -539,6 +539,7 @@ def check_metrics(
     root_count: int | None = None,
     new_roots: int | None = None,
     v33_start: int | None = None,
+    v34: bool = False,
 ) -> None:
     block_title, body = _pick_metric_block(text, report, round_tag)
     total_match = METRIC_TOTAL_RE.search(body)
@@ -675,6 +676,24 @@ def check_metrics(
             for key in ["代裁决", "ARCH 提案", "用户否决"]:
                 if re.search(rf"^\-\s*{re.escape(key)}\s*[:：]\s*(\d+)", body, re.MULTILINE) is None:
                     report.fail("metrics", f"V3.3 metrics 缺少治理仪表 `- {key}: <整数>`")
+            # V3.4 最小内核（P1-7 判例：D03/D04 的「certify 待跑」与 CONVERGED 同轮
+            # 并存且门放行）：闭合声明不得与 certify 未完成标记同存。作用域限定
+            # `schema: V3.4`——01–04 已 FREEZE 的存量记录不追溯（r5 回归审查 H1）。
+            if (
+                v34
+                and result_key is not None
+                and result_key.group(1) in {"CONVERGED", "ROUND-CLOSED"}
+                and re.search(
+                    r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成)",
+                    body,
+                    re.IGNORECASE,
+                )
+            ):
+                report.fail(
+                    "metrics",
+                    "轮结果为闭合态，但记录仍写「certify 待跑/未跑」；闭合声明缺闭合"
+                    "证据——先跑完 certify 再改轮结果（P1-7）",
+                )
     elif not legacy:
         round_type = re.search(r"^-\s*轮型\s*[:：]\s*(discovery|verification)", body, re.MULTILINE)
         if round_type is None:
@@ -1257,11 +1276,33 @@ def check_v33_lifecycle(
     confirmations = 0
     sealed_at: int | None = None
     prev_edition: str | None = None
+    # V3.4 最小内核（r6 R6-a 判例）：确认轮验证的是修改轮的收口——此前必须存在
+    # 已关闭的修改轮（full/structural 且 ROUND-CLOSED 且未闭环=0），否则「确认」
+    # 是伪造收敛。按文档计（不按 edition）：R34 型跨 edition 确认合法（D-057 口径）。
+    mod_closed: list[int] = []
     for title, body in _metric_blocks(metrics_text):
         m = re.search(r"\bR(\d+)\b", title)
         if not m:
             continue
         n = int(m.group(1))
+        # mod_closed 追踪在 edition/era 过滤之前：已关闭的修改轮按文档计，
+        # 跨 edition（甚至 V3.3 前）的收口也算数——D-057 的 R34 型口径。
+        _rt_early = re.search(r"^\s*-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
+        _res_early = re.search(
+            r"^\s*-\s*轮结果\s*[:：]\s*(ROUND-CLOSED|CONVERGED|NOT CONVERGED"
+            r"|NOT CONVERGING|FREEZE-WITH-BACKLOG|BLOCKED)\b",
+            body,
+            re.MULTILINE,
+        )
+        _open_early = re.search(r"^\s*-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
+        if (
+            _rt_early is not None
+            and _rt_early.group(1) in {"full", "structural"}
+            and _res_early is not None
+            and _res_early.group(1) == "ROUND-CLOSED"
+            and (_open_early is None or int(_open_early.group(1)) == 0)
+        ):
+            mod_closed.append(n)
         if v33_start is not None and n < v33_start:
             continue
         if schema_start is not None and n < schema_start:
@@ -1295,6 +1336,13 @@ def check_v33_lifecycle(
                 report.fail(
                     "lifecycle-v33",
                     f"R{n} 是第 {confirmations} 次确认轮；确认轮全局最多 2 次（§6A）",
+                )
+            if result_val == "CONVERGED" and not mod_closed:
+                report.fail(
+                    "lifecycle-v33",
+                    f"R{n} 确认轮宣告 CONVERGED，但本文档此前没有任何已关闭的修改轮"
+                    "（full/structural 且 ROUND-CLOSED 且未闭环=0）；确认轮验证的是修改轮"
+                    "的收口，无前置修改轮的「确认」是伪造收敛（r6 R6-a）",
                 )
             if certify_new == 0:
                 sealed_at = n
@@ -1512,6 +1560,8 @@ def check_round_monotonicity(
     report: Report,
     schema_start: int | None = None,
     v3: bool = False,
+    metrics_text: str | None = None,
+    round_tag: str | None = None,
 ) -> None:
     """A round with open items must not have a later round section."""
     open_rounds = _round_open_items(ledger_rows, section_classes, schema_start, v3)
@@ -1521,7 +1571,17 @@ def check_round_monotonicity(
         for section in section_classes
         if (m := re.match(r"^R(\d+)\b", section))
     }
-    all_rounds = loop_rounds | ledger_rounds
+    # V3.4 最小内核（N0/R31 判例）：轮序门原只从台账行推 open 集——「不写台账的
+    # 未关闭轮」结构性逃逸。双源补洞：metrics 块（须含真实账目键，防一行空标题
+    # 绕过；区间标题按全部轮号登记）也算账。
+    metrics_rounds: set[int] = set()
+    if metrics_text:
+        for title, body in _metric_blocks(metrics_text):
+            if not re.search(r"发现总数|轮结果|未闭环", body):
+                continue
+            metrics_rounds.update(int(n) for n in re.findall(r"\bR(\d+)\b", title))
+    all_rounds = loop_rounds | ledger_rounds | metrics_rounds
+    want = int(round_tag.lstrip("R")) if round_tag else None
     for r, ids in sorted(open_rounds.items()):
         later = sorted(x for x in all_rounds if x > r)
         if later:
@@ -1532,6 +1592,24 @@ def check_round_monotonicity(
             )
         else:
             report.ok("round-order", f"R{r} 未闭环项未泄漏到下一轮")
+    # 双源断链检查：loop 有轮次小节但台账与 metrics 双缺 = 未闭合轮，不得静默
+    # 越序；`--round R<N>` 只对本轮及更早负责——更晚的断链在该轮时点尚不存在，
+    # 不得追溯判红（r5 回归审查 H5）。
+    if schema_start is not None:
+        for r in sorted(loop_rounds):
+            if r < schema_start:
+                continue
+            if want is not None and r > want:
+                continue
+            if r in ledger_rounds or r in metrics_rounds:
+                continue
+            later = sorted(x for x in all_rounds if x > r)
+            if later:
+                report.fail(
+                    "round-order",
+                    f"R{r} 在 loop.md 有轮次小节，但既无台账节也无 metrics 块（未闭合轮）；"
+                    f"却已出现 R{later[0]}——不写台账的未关闭轮不得静默越序（N0）",
+                )
 
 
 def enforce_adjacent_only_dispositions(
@@ -1640,6 +1718,7 @@ def check_run_dir(
     v33_from = (
         v33_start_round(loop_text, fallback=schema_start) if v33_doc_flag else None
     )
+    v34_doc_flag = (schema_version(loop_text) or (0, 0)) >= (3, 4)
     if v3 and loop_text is not None:
         if re.search(
             r"^\s*(?:[-*]\s*)?edition\s*[:：]\s*V\d+\.\d+",
@@ -1865,16 +1944,54 @@ def check_run_dir(
             root_count=root_count,
             new_roots=new_roots,
             v33_start=v33_from,
+            v34=v34_doc_flag,
         )
         # The all-round checks follow the document's newest schema; the
         # per-round checks above use `v3` (the selected round's segment).
         check_round_type_sequence(metrics_text, report, schema_start, v3=v3_doc)
         if v3_doc:
             check_edition_trial(metrics_text, report, schema_start)
+        # V3.4 最小内核（r5 回归审查 B4）：P1-7 同样覆盖 loop 轮次小节——D04 的
+        # 「certify 待跑」写在 loop §5 而非 metrics，只扫 metrics 会漏。
+        if v34_doc_flag and round_tag and loop_text is not None:
+            _bt, _bb = _pick_metric_block(metrics_text, report, round_tag)
+            _closes = re.search(
+                r"^-\s*轮结果\s*[:：]\s*(CONVERGED|ROUND-CLOSED)\b",
+                _bb,
+                re.MULTILINE,
+            )
+            if _closes:
+                _matches = list(ROUND_HEADER_RE.finditer(loop_text))
+                _want = int(round_tag.lstrip("R"))
+                for _i, _m in enumerate(_matches):
+                    if _round_header_number(_m) != _want:
+                        continue
+                    _end = (
+                        _matches[_i + 1].start()
+                        if _i + 1 < len(_matches)
+                        else len(loop_text)
+                    )
+                    if re.search(
+                        r"certify[^\n]{0,16}(?:待跑|未跑|待补|待安排|未完成)",
+                        loop_text[_m.start() : _end],
+                        re.IGNORECASE,
+                    ):
+                        report.fail(
+                            "round-closure",
+                            f"{round_tag} 的 loop 记录写「certify 待跑/未跑」而 metrics "
+                            "轮结果为闭合态；闭合声明缺闭合证据（P1-7，loop 侧）",
+                        )
 
     if loop_text is not None:
         check_round_monotonicity(
-            loop_text, ledger_rows, section_classes, report, schema_start, v3=v3
+            loop_text,
+            ledger_rows,
+            section_classes,
+            report,
+            schema_start,
+            v3=v3,
+            metrics_text=metrics_text,
+            round_tag=round_tag,
         )
 
     return report
@@ -2973,7 +3090,13 @@ def self_test() -> int:
         return 1
 
     # V3.3：确认轮通过（新准入=0）合法；确认轮实施 ⑥ → FAIL
-    confirm_metrics = lifecycle_metrics.replace("- 轮型: full", "- 轮型: confirmation")
+    # （r6 R6-a：确认轮前置须有已关闭修改轮——按文档计，故补一个 R30 收口轮）
+    _closed_mod = (
+        "## R30 修改轮\n\n- 未闭环: 0\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n\n"
+    )
+    confirm_metrics = lifecycle_metrics.replace(
+        "- 轮型: full", "- 轮型: confirmation"
+    ).replace("# 指标\n\n", "# 指标\n\n" + _closed_mod, 1)
     confirm_ledger_rows = {
         "RD-R31-01": {
             "class": "⑥",
@@ -3005,7 +3128,9 @@ def self_test() -> int:
     # V3.3：确认轮计数按 CANDIDATE（edition）重置——跨 edition 的第 3 次确认
     # 不再触发"最多 2 次"；CONVERGED 后的新 edition（批准重开）也不再 FAIL
     cross_edition_metrics = (
-        lifecycle_metrics.replace("- 轮型: full", "- 轮型: confirmation")
+        lifecycle_metrics.replace(
+            "- 轮型: full", "- 轮型: confirmation"
+        ).replace("# 指标\n\n", "# 指标\n\n" + _closed_mod, 1)
         + "\n## R32 确认轮\n\n"
         + "- 发现总数: 0\n"
         + "- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0\n"
@@ -3031,6 +3156,80 @@ def self_test() -> int:
         return 1
     if "lifecycle-v33" in cross_messages:
         print("self-test FAIL: 跨 edition 确认轮误报 lifecycle")
+        return 1
+
+    # ===== V3.4 最小内核夹具（r6 重实施） =====
+    # R6-a：确认轮前置修改轮。
+    _r6a_bad = (
+        "# 指标\n\n## R1 确认轮\n\n- 轮型: confirmation\n- 轮结果: CONVERGED\n"
+        "- certify 新准入: 0\n"
+    )
+    rep_r6a = Report()
+    check_v33_lifecycle(_r6a_bad, {}, {}, rep_r6a, 1, 1)
+    if not any("R6-a" in i["message"] for i in rep_r6a.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 无前置修改轮的确认轮 CONVERGED 未被拦截")
+        return 1
+    _r6a_good = (
+        "# 指标\n\n## R1 修改轮\n\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n- 未闭环: 0\n\n"
+        "## R2 确认轮\n\n- 轮型: confirmation\n- 轮结果: CONVERGED\n- certify 新准入: 0\n"
+    )
+    rep_r6a2 = Report()
+    check_v33_lifecycle(_r6a_good, {}, {}, rep_r6a2, 1, 1)
+    if any("R6-a" in i["message"] for i in rep_r6a2.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 有前置修改轮的确认轮被误拦")
+        return 1
+
+    # P1-7：certify 待跑 × 闭合态（限 schema V3.4）。
+    _p17_metrics = (
+        "- 发现总数: 1\n- 唯一根因数: 1\n- 本轮新准入: 1\n- certify 新准入: 0\n"
+        "- 重复合并: 0\n- 自引入: 0\n"
+        "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
+        "- 轮型: confirmation\n- 轮结果: CONVERGED\n- 代裁决: 0\n- ARCH 提案: 0\n"
+        "- 用户否决: 0\n- edition: V3.4\n- re-litigation: 0\n- adjacent 阻塞: 0\n"
+        "- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0\n- 成本: agent 1 / token 1 / 耗时 1min\n"
+        "- 回读与回归: certify 待跑\n"
+    )
+    rep_p17 = Report()
+    check_metrics(_p17_metrics, rep_p17, "R1", None, 0, 1, v3=True,
+                  root_count=None, new_roots=None, v33_start=1, v34=True)
+    if not any("P1-7" in i["message"] for i in rep_p17.items if i["level"] == "FAIL"):
+        print("self-test FAIL: V3.4 下「certify 待跑」并存未被拦截")
+        return 1
+    rep_p17b = Report()
+    check_metrics(_p17_metrics, rep_p17b, "R1", None, 0, 1, v3=True,
+                  root_count=None, new_roots=None, v33_start=1, v34=False)
+    if any("P1-7" in i["message"] for i in rep_p17b.items if i["level"] == "FAIL"):
+        print("self-test FAIL: V3.3 schema 被 P1-7 追溯判红")
+        return 1
+
+    # N0：双源断链 + --round 作用域。
+    _loop_n0 = (
+        "schema: V3.4 from R1\n\nedition: V3.4\n\n"
+        "## R1 面板轮\n\n### §7 状态\nCONVERGED\n\n"
+        "## R2 面板轮\n\n### §7 状态\nCONVERGED\n\n"
+        "## R3 面板轮\n\n### §7 状态\nCONVERGED\n"
+    )
+    _metrics_n0 = (
+        "# 指标\n\n## R1 面板轮\n\n- 发现总数: 0\n\n"
+        "## R3 面板轮\n\n- 发现总数: 0\n"
+    )
+    rep_n0 = Report()
+    check_round_monotonicity(_loop_n0, {}, {}, rep_n0, schema_start=1, v3=True,
+                             metrics_text=_metrics_n0)
+    if not any("N0" in i["message"] for i in rep_n0.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 无台账无 metrics 的未闭合轮越序未被拦截")
+        return 1
+    rep_scope = Report()
+    check_round_monotonicity(_loop_n0, {}, {}, rep_scope, schema_start=1, v3=True,
+                             metrics_text=_metrics_n0, round_tag="R1")
+    if any("N0" in i["message"] for i in rep_scope.items if i["level"] == "FAIL"):
+        print("self-test FAIL: --round R1 追溯判了 R2 断链（作用域过宽）")
+        return 1
+    rep_scope2 = Report()
+    check_round_monotonicity(_loop_n0, {}, {}, rep_scope2, schema_start=1, v3=True,
+                             metrics_text=_metrics_n0, round_tag="R3")
+    if not any("N0" in i["message"] for i in rep_scope2.items if i["level"] == "FAIL"):
+        print("self-test FAIL: --round R3 未抓到 R2 断链")
         return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")

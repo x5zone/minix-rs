@@ -11,7 +11,7 @@
 | V1 | 2026-11-07 | 建立外层循环脚手架：`review-panel.md`、`review-evals.md`、`review-loop` 技能、`eval-trace-check.py`、`trait-audit.py`、固定语料、盲区账本、冻结决策账本、八个对抗样本；修正 `check-review-rules.sh` 的 `grep -c` 零命中中断与 `diff-trae-skills.sh` 漏认 `review-loop` 两处工具缺口 | W-6、W-16、`prompt/code-review-subagent.md:4`（设计死代码）、`69-75`（冷读）、`484-498`（范围纪律）；DOC-ITER 台账的 14 篇引文事故 | 无（V1 只搭脚手架，不删除旧装置） | 四门全绿（见第四节） | 生效 |
 | V2 | 2026-11-07 | 晋升 C-20 轨迹门 v2 与 C-23 禁止 follow-up 大桶：无发现面板必须显式豁免、P-REFUTE 主张入附加表、`dup-of` 合并；`eval-trace-check.py` 增加 `panel-exemption` 检查 | D02/D03 meta-review：B-17 轨迹门 WARN 仍 PASS、B-18 跨角色重复无归并、D03-F10 把 36 条读者项压成一行 | C-20 替代 V1 的“WARN 可接受”；C-23 替代“follow-up 大桶”实践 | 待跑 | 生效 |
 | V2.1 | 2026-11-07 | 全修策略（P0/P1/P2/④ 一律本轮修，不允许无档期转出）+ ② 收窄为两种带日期形态 + 测试充分性门（回归测试 + 反向验证 + 含 minix-arch 全量绿 + QEMU）+ commit 级回归 review（文档轴/代码双轴/混合）+ meta 分级（1–2 全量 / 3+ 轻量 / 收敛时收口）+ 收敛判据双层（文档 G1–G8 / 工作流原八条）+ 过拟合护栏（§十）+ resource re-consultation（L6.5）+ reader ④ 必修 + Top-20 输出上限 + fact 已知清单 + 派发降档协议 | D01–D04 转出率 56%→83%；B-20/B-23/B-24；D05 面板 5h48m；meta 一致性四轮 <90% | ②大桶转出被排期制替代；全量 review 被 commit 级回归 review 替代；④可选被必修替代；resource 一次性输入被持续引用替代 | 四道门 | 生效 |
-
+| **V3.4** | **2026-11-18** | **最小内核重实施（经 D-056/D-057）**：R6-a 确认轮前置修改轮校验、R6-c BLOCKED 两级解除、P1-7 certify 待跑门（schema V3.4 + loop 侧）、N0 轮序双源（--round 作用域）、P2-8 citation C 侧三形态、P0-3 meta 修约、P1-5/R6-b 回归审计入账与 FREEZE append 语义 | r6 四队验收 + D-056（丢失→批准重实施）；traps 边界读数 boundary-V3.4（零翻转） | 逐条见本节减法子表 | 见本节同步门读数 | 生效（D05 起标 `schema: V3.4`） |
 ### V2 执行状态（D04 复核）
 
 - C-20 的 `panel-exemption` 已落地（D01–D04 轨迹门均通过）；`dup-of` 合并与 P-REFUTE 映射校验尚未工具化（B-23/B-24），V2.1 处理。
@@ -333,3 +333,52 @@
 | V3.3-h | 代裁决授权边界：设计 ⑥ 行必须标 `[MODERN]`/`[DEL]`/`[ARCH]`；未分类按 ARCH 阻断（举证责任在代裁侧）；`[ARCH]` 实施缺 `D-xxx` 判决行引用 FAIL；`[ARCH]` P0/P1/P2 → ⑤+`轮结果: BLOCKED`（硬阻断），P3 → 判决账提案（不阻断）；治理仪表 `代裁决`/`ARCH 提案`/`用户否决` 进 metrics | 用户否决史：批准的全是"把 boot 变小"（删 trait/删 kern_ident/删 ident_regions），否决的全是"加责任"（诊断打印/records_in_wire 语义化/4 GiB 断言）；借槽→directMap 判例 | `eval-trace-check.py` 的 `design-class` 门 + `lifecycle-v33` ARCH-BLOCKED 一致性 + metrics 三仪表 | 80% 代裁零等待；20% 纠结区强制用户亲裁且必须落账；语义漂移在集合级可见 | `review-evals.md` §4.1b/§3.4、`review-loop.md` L2/L5、`review-panel.md` DESIGN brief 第 7 条、`eval-trace-check.py` | 已生效 |
 
 减法：`design-class`/治理仪表合并进既有 `admission-v33`/`lifecycle-v33`/`check_metrics`，零新工具文件；`BLOCKED` 载体复用既有 ⑤/round-order 门。ARCH 提案走判决账，不新增第八个处置桶。
+
+## V3.4（2026-11-18，重实施：最小内核；首版全量实现被并发硬重置丢弃，经 D-056 重立）
+
+> 历史：V3.4 全量版（a–m）于 2026-11-18 实施并通过四队回归，随后被并发会话硬重置
+> 丢弃（reflog：`13fe44d6e` 上 `reset: moving to HEAD`；D-056 全弧线）。用户批准按
+> r6 验收建议重实施**最小内核**（8 项）；其余项（V3.4-d/e/f 其余、k、档位 <500、
+> N9、N12、R4-c、R4-e、R3-c/e、N13、R01–R12 刷新）登记为 V3.5 候选。
+
+| 编号 | 规则 | 判例 | 检测器 | 状态 |
+|---|---|---|---|---|
+| V3.4-m1（R6-a） | 确认轮宣告 CONVERGED 前必须存在已关闭修改轮（文档级，跨 edition 合法） | r6 伪造确认轮路径（lifecycle 0 FAIL） | `lifecycle-v33` R6-a 检查 + 夹具 | 已生效 |
+| V3.4-m2（R6-c） | certify 型 BLOCKED 两级解除（独立冷读仲裁 → 用户讨论落判决账） | R3-b/R6-c 死锁判例 | §4.0b 文本 | 已生效（文本） |
+| V3.4-m3（P1-7） | 闭合态轮不得含「certify 待跑/未跑」；覆盖 metrics + loop §5；限 `schema: V3.4` | D03/D04 同轮并存穿透旧门 | eval-trace-check + 夹具（v34 双向） | 已生效 |
+| V3.4-m4（N0） | 轮序双源（台账 + metrics 账目键）；`--round` 只对本轮及更早负责 | R31 断链走到 CONVERGED；R26 追溯误红 | round-order 双源 + 夹具 | 已生效（D-057 授权预期红） |
+| V3.4-m5（P2-8） | citation 门支持 C 侧三形态标注 + `minix3/*.c|h` 路径 + `/* */` 行跳过 | D03/D04 42/86 块假绿 | doc-citation-check + 夹具 | 已生效 |
+| V3.4-m6（P0-3） | meta 修约：收敛时一次独立冷启动 meta；其余主 agent 收口如实标注 | R27 起停摆无修约 | §5.0 文本 | 已生效（文本） |
+| V3.4-m7（P1-5+R6-f） | FREEZE append-only（追加回归节 + 更新 sha 行之外不得改写） | 02 sha 原位改写无规则定义 | §4g-2 文本 | 已生效（文本） |
+| V3.4-m8（R6-b） | 回归轮必须在台账建行级账 + loop 索引节；只写 FREEZE 散文 = 轨迹缺口 | 02/03 回归轮（30/33 条）零台账行 | §4g-2 文本；02/03 已补账 | 已生效（文本+补账落地） |
+
+### V3.4 减法账本（重实施版）
+
+| 版本 | 新增 | 替代 / 合并 | 净效果 |
+|---|---|---|---|
+| V3.4 | 最小内核 m1–m8 总览（逐条见下 8 行） | 替代「确认轮无前置 / BLOCKED 死锁 / certify 待跑容忍 / 台账单源 / citation 假绿 / meta 停摆 / FREEZE 无 append 语义 / 回归轮散文载体」八项旧态 | 5 项合并进既有门、1 项净减义务、2 项净增（仲裁者一级 + 行级账义务）；全部有判例 |
+| V3.4-m1 | 确认轮前置校验 | 替代「确认轮无前置」的执法空洞 | 合并进 lifecycle 门 |
+| V3.4-m2 | 两级解除协议 | 替代「交用户」单级出口与死锁 | 净增仲裁者一级（配给层） |
+| V3.4-m3 | certify 待跑门 | 替代占位文本容忍 | 合并进 metrics/round-closure |
+| V3.4-m4 | 轮序双源 | 替代台账单源 open 集 | 合并进 round-order |
+| V3.4-m5 | citation C 侧 | 替代 `/* */` 全跳过假绿 | 净增覆盖；无新工具 |
+| V3.4-m6 | meta 修约 | 替代「契约逐轮、实践停摆」 | 净减义务（逐轮→收敛时） |
+| V3.4-m7 | FREEZE append 语义 | 替代「可原位改写」无定义态 | 文本合同 |
+| V3.4-m8 | 回归轮入账 | 替代 FREEZE 散文载体 | 行级账义务（02/03 已落地） |
+
+**同步门读数（2026-11-18 重实施实跑）**：`generate-derived-skills.sh` 10 skill；
+`check-review-rules.sh` exit 0；`lint-review-rules.sh` 0 失败；`diff-trae-skills --only-diff`
+10/10；`eval-trace-check.py --self-test` PASS（新增 R6-a/P1-7 双向/N0 三态夹具）；
+`doc-citation-check.py --self-test` PASS（C 侧三形态 + 陈旧行）。
+
+**边界回归读数**：`meta/boundary-V3.4.md`（已入库）——T01–T08 阳性 6/6、阴性 2/2、
+误报 0，与 V1 边界零翻转（11-18 实测，D-055 规则面；最小内核只增门不删检测，读数
+继续有效；下一边界复跑）。
+
+**预期红（D-057 授权）**：D01 `--round R31–R34` 各 1 项 round-order FAIL（同一根因：
+R31 断链）；R26–R30 各自 PASS。存量债（非本门所致）：D01 `--round R27`（待填遗留）、
+D05 `--round R1`（V2 基线未迁移）。解除路径 = R31 补清点或判决行。
+
+**V3.5 候选（未实施项去向）**：V3.4-d/e/f 其余（假完成子串、债务到点 FAIL、超窗
+FAIL、核查事件键）、V3.4-k（边界读数门）、档位 <500 冲突、N9/N12、R4-c/R4-e、
+R3-c/e、N13 小项、R01–R12 刷新——按 §7.2 每边界 ≤2 条逐批处理。
