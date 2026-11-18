@@ -1775,7 +1775,13 @@ def check_run_dir(
     # r14（P0-1 判例）：from 轮标记本身可注入——`schema: V3.4 from R99` 写进
     # loop 时 schema_start=99，V3 门对 <99 轮全体休眠且钳回锚点=注入值。
     # 自校验：起点轮不得晚于「已见最大轮号 + 1」，否则标记自报无效，钳回 1。
-    _max_seen_loop_early = max(_loop_round_numbers(loop_text or ""), default=0)
+    _led_hdrs_early = {
+        int(n) for n in re.findall(r"^##\s+R(\d+)\b", ledger_text or "", re.MULTILINE)
+    }
+    _max_seen_loop_early = max(
+        (r for r in _loop_round_numbers(loop_text or "") if r in _led_hdrs_early),
+        default=0,
+    )
     if schema_start is not None and schema_start > _max_seen_loop_early:
         # r19（P0-4 判例）：+1 余量让 from R2+仅 R1 逃逸——收紧为 ≤ max_seen。
         schema_start = 1
@@ -1865,7 +1871,7 @@ def check_run_dir(
         )
         # r18（P0-① 判例）：零宽字符（ZWSP/ZWNJ/ZWJ/BOM）使极性扫描失明——剥离。
         _ft = re.sub(
-            r"[\u200b-\u200d\ufeff\u00ad\u180e\u2060-\u2064"
+            r"[\u200b-\u200f\ufeff\u00ad\u180e\u2060-\u2064"
             r"\ufe00-\ufeff\U0001d173-\U0001d17a\U000e0000-\U000e007f]",
             "",
             _ft,
@@ -1916,7 +1922,19 @@ def check_run_dir(
         # 起点轮不得晚于「已见最大轮号 + 1」；越界即视为自报无效，钳回 schema_start。
         # r19（P0-1 判例）：幽灵轮头（只有标题无台账无 metrics）抬 max_seen 使
         # from 标记合法化——max_seen 只计有账轮次。
-        _led_hdrs = {int(n) for n in re.findall(r"^##\s+R(\d+)\b", ledger_text or "", re.MULTILINE)}
+        _led_secs = {}
+        for _ln in (ledger_text or "").splitlines():
+            if _ln.startswith("|") and "|" in _ln[1:]:
+                _led_secs[_ln] = True
+        _led_hdrs = set()
+        _cur_hdr = None
+        for _ln in (ledger_text or "").splitlines():
+            if _ln.startswith("## "):
+                _cur_hdr = _ln
+            elif _ln.startswith("|") and not re.match(r"^\|[\s-]+\|", _ln) and _cur_hdr:
+                _m_h = re.match(r"^##\s+R(\d+)\b", _cur_hdr)
+                if _m_h:
+                    _led_hdrs.add(int(_m_h.group(1)))
         _met_hdrs = {
             int(n)
             for title, body in _metric_blocks(metrics_text or "")
@@ -2291,6 +2309,12 @@ def check_run_dir(
                         _ct = _cert.read_text(encoding="utf-8").translate(_fw)
                         # r10（P0-④ 判例）：字节数被纯标点绕过——按**有效字符**
                         # 计数。
+                        _ct = re.sub(
+                            r"[\u200b-\u200f\ufeff\u00ad\u180e\u2060-\u2064"
+                            r"\ufe00-\ufeff\U0001d173-\U0001d17a\U000e0000-\U000e007f]",
+                            "",
+                            _ct,
+                        )
                         _neg_hit = re.search(
                             r"NOT\s*PASS|未通过|没通过"
                             r"|结论\s*[:：]\s*(FAIL|REOPEN)"
@@ -2306,11 +2330,7 @@ def check_run_dir(
                         ) or re.search(
                             # r19（P0-3 判例）：裸 P0 遗留标记
                             r"^\s*[-*]?\s*P[01]\b",
-                            re.sub(
-                                r"[\u200b-\u200d\ufeff\u00ad\u180e\u2060-\u2064\ufe00-\ufeff]",
-                                "",
-                                _ct,
-                            ),
+                            _ct,
                             re.IGNORECASE | re.MULTILINE,
                         )
                         _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
