@@ -1862,6 +1862,8 @@ def check_run_dir(
             else c
             for c in _ft
         )
+        # r18（P0-① 判例）：零宽字符（ZWSP/ZWNJ/ZWJ/BOM）使极性扫描失明——剥离。
+        _ft = re.sub(r"[\u200b-\u200d\ufeff]", "", _ft)
         _nonempty = [ln for ln in _ft.splitlines() if ln.strip()]
         _title_lines = [
             ln for ln in _nonempty[:3] if re.match(r"^#\s+.*FREEZE", ln)
@@ -1907,7 +1909,10 @@ def check_run_dir(
         # r13（P0-5 判例）：from 轮零校验——注入 `from R99` 可豁免全部轮的制品链。
         # 起点轮不得晚于「已见最大轮号 + 1」；越界即视为自报无效，钳回 schema_start。
         _max_seen = max(_loop_round_numbers(loop_text), default=0)
-        if _v34_from > _max_seen + 1:
+        # r18（P0-③ 判例）：max_seen+1 的余量正是注入向量（from R2 = max_seen+1
+        # 的一行注入 + 轮型 discovery + 无制品面板 = 整门 exit 0）。收紧为
+        # from ≤ max_seen——V3.4 标记声明的是历史事实，不是未来计划。
+        if _v34_from > _max_seen:
             _v34_from = schema_start or 1
     _round_no = int(round_tag_override.lstrip("R")) if round_tag_override else None
     _artifact_required = False
@@ -2276,10 +2281,11 @@ def check_run_dir(
                             r"|^\s*REOPEN\b"
                             r"|^\s*[-*>]\s*.*\b(FAIL|REOPEN)\b"
                             r"|^\s*(?:\d+[.)]|#{1,6})\s*.*\b(FAIL|REOPEN)\b"
-                            r"|\bFAIL\s*[:：]"
+                            r"|\bFAIL\s*[:：\u2014\u2013\u2010\u2012\u2015\u2212（(]"
+                            r"|\bREOPEN\b"
                             r"|(复验|验证|回读|确认)\s*失败"
                             r"|未(修|完成|实施|落地)(?!.*已补)",
-                            _ct,
+                            _ct.translate(str.maketrans({chr(0xFF01 + i): chr(0x21 + i) for i in range(94)})),
                             re.IGNORECASE | re.MULTILINE,
                         )
                         _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
@@ -4242,7 +4248,7 @@ def self_test() -> int:
             "|---|---|---|---|---|---|---|---|\n| F-1 | fact | P2 | 事实 | ① | 修 | e | g |\n",
             encoding="utf-8")
         (rx / "metrics.md").write_text(
-            "# 指标\n\nschema: V3.4 from R3\n\n## R2 确认轮\n\n- 发现总数: 1\n"
+            "# 指标\n\nschema: V3.4 from R2\n\n## R2 确认轮\n\n- 发现总数: 1\n"
             "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
             "- 轮型: confirmation\n- 轮结果: CONVERGED\n- certify 新准入: 0\n"
             "- 代裁决: 0\n- ARCH 提案: 0\n- 用户否决: 0\n- edition: V3.3\n",
@@ -4250,9 +4256,11 @@ def self_test() -> int:
         (rx / "certify").mkdir()
         (rx / "certify" / "round2-1.md").write_text(
             "# 回执\n\n" + "内容。" * 10 + "\n\n结论：CLOSED。\n", encoding="utf-8")
+        # r18 收紧后：from R2 ≤ max_seen 2 → V3.4 从 R2 起约束 → R2 要求制品。
+        # 夹具断言反转：标记被正确解析（未入库 → FAIL 证明 V3.4 from R2 生效）。
         rpx = check_run_dir(rx, None, "R2")
-        if any("面板制品未入库" in i["message"] for i in rpx.items if i["level"] == "FAIL"):
-            print("self-test FAIL: 历史层回放被制品链追溯（r12 P1-1）")
+        if not any("面板制品未入库" in i["message"] for i in rpx.items if i["level"] == "FAIL"):
+            print("self-test FAIL: V3.4 from R2 标记未被解析（r18 收紧后应要求制品）")
             return 1
 
     # (g) from 轮封顶（r13 P0-5）：from R99 注入被钳回 schema_start。
