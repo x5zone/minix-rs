@@ -195,3 +195,16 @@
 | RD2-27 | RD2-CERT-READER-04 | R2 | reader-cert | P2 | 本轮发现 | ① | 已修：§2.2 删除悬空的“括注”回指，改为“若想用 `pre_init.o` 做同型替换…” | panel/round2/certify-reader.md:105 | `grep -n "括注" doc` → 0；`grep -n "若想用 `pre_init.o`" doc` → 1；冷读 CLOSED（最终回读） |
 | RD2-28 | RD2-CERT2-READER-01 | R2 | reader-cert | P2 | 本轮发现 | ① | 已修：同上，`pre_init.o` 半句补主语与完整因果 | panel/round2/certify2-reader.md:37 | `grep -n "若想用 `pre_init.o` 做同型替换" doc` → 1；冷读 CLOSED（最终回读） |
 | RD2-29 | RD2-CERT3-01 | R2 | fact-cert | P2 | 本轮发现 | ① | 已修：§2.2 的未定义符号清单补 `add_memmap`/`cut_memmap`，并加“至少”限定 | panel/round2/certify3.md:89 | `grep -n "__k_unpaged_add_memmap" doc` → 1；最终认证 CLOSED |
+
+
+## REG-2026-11-18 回归轮补账（r6 R6-b：回归轮入账；面板 tmp/review-eval/01-stage-kernel/02-higher-half-kernel/panel/regress/）
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD2R-FACT | RD2R-FACT-01、02、03 | REG-2026-11-18 | P-FACT | P3 | 事实 | ① | 已修（回归修复批） | `fe49cd804`+`afdd867b7`（批次级；逐条-提交映射未入库） | FREEZE 回归节：anchor 55/55、structure/ref/style 绿 |
+| RD2R-READER-A | RD2R-READER-A-01、02（P1：前置块塞五腿细节、OpenSBI/shim 混淆） | REG-2026-11-18 | P-READER-A | P1 | 读者 | ① | 已修（合并读者漏报、独立 A 抓到——D-055 必要性判例） | `fe49cd804` | FREEZE 回归节 |
+| RD2R-READER-B | RD2R-READER-B-01..06 | REG-2026-11-18 | P-READER-B | P2/P3 | 读者 | ① | 已修（批次级） | `fe49cd804` | 同上 |
+| RD2R-READER-C | RD2R-READER-C-01 | REG-2026-11-18 | P-READER-C | P2 | 读者 | ① | 已修 | `afdd867b7`（PC 行枚举补 aarch64 direct-core） | `git show afdd867b7` |
+| RD2R-CERT | RD2R-CERT-01、02（certify 抓到 3 REOPEN + 2 新 P2 的残项） | REG-2026-11-18 | certify | P2 | 同步 | ① | 补修完成；最终独立确认 3 PASS / 1 FAIL（FAIL 为 certify 误用 D03 格式，非缺陷） | `final-verify.md`；`afdd867b7` | 面板 final-verify.md |
+| RD2R-DESIGN | design-d2.md 头 FINDING 1 条 + 「翻译残留六类」清单（FREEZE 口径 9 条）+ ARCH-PROPOSAL 1 条 | REG-2026-11-18 | P-DESIGN-D2 | P2/P3 | 设计 | ①/SUGG/提案 | P2（machine_type 零读者）已修；其余 P3/SUGG 入 suggestions；ARCH-PROPOSAL 待用户亲裁（与 D-050/051/052 同类挂账） | `panel/regress/design-d2.md` | FREEZE 回归节 |
+| RD2R-SUGG | FACT S1/S2、READER C-S1..S6、A/B/FACT 聚合 SUGG 段 | REG-2026-11-18 | 各角色 | — | 建议 | SUGG | 入 suggestions，不阻断 | `panel/regress/*.md` | — |

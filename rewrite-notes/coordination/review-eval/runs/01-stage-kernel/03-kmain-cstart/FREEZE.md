@@ -61,7 +61,7 @@
 
 用户要求对 D03 做完整 review。五角色（FACT、DESIGN-D2、READER A/B/C 独立）全量 survey：
 
-- 33 条发现：P0 = 0、P1 = 0、P2 = 9、P3 + SUGG = 24。
+- 面板编号发现 22 条（含 FACT-04 面板自注撤回）：FACT 3(+1 撤回)、READER-A 1、READER-B 4、CERT 4、DESIGN-D2 9（其中 5 条自标 SUGGESTION 级）；「33 条」为含未编号 SUGG 段的聚合口径（reader-c 0 条 FINDING）。r6 补账按面板 ID 列明（见 defect-ledger FULL-2026-11-18 节）。
 - 6 条 P2 文档修复已提交（`26f42e25d`）；certify 抓到 4 条更细粒度 P2 也已修（`c65a5f90e`）。
 - 1 条 arm64 代码注释残留（UNDEFINED 口径）登记 D03-design-batch。
 - 独立冷读 certify 最终 6/6 CLOSED（第 4 条 P2 残项修正后）。

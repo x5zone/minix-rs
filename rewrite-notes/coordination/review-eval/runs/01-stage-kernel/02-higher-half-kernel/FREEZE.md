@@ -47,9 +47,9 @@
 用户裁决 D-055 后重做回归，独立五角色（FACT、DESIGN、READER A/B/C）共报 30 条：
 - FACT 3 条 P3（`use crate::build_kernel_info` 是测试引用、bootface 省略标注不对应、compute_kernel_layout 注释应为删节）；无 P0/P1/P2。
 - DESIGN 9 条：零 P0/P1；1 条 P2（machine_type 全仓零读者）、8 条 P3；设计骨架与代码逐项一致。
-- READER 独立 A/B/C 共 18 条（24 FINDING 中的 7 条 + 17 SUGG 中的 7 条已入）；其中 P1 两条（前置块塞五腿细节、OpenSBI/OpenSBI shim 混淆）已修。
+- READER 独立 A/B/C 共 9 条 FINDING（A 2、B 6、C 1）+ 6 条编号 SUGG（C-S1..S6）+ 3 条聚合 SUGG 段；其中 P1 两条（前置块塞五腿细节、OpenSBI/shim 混淆）已修。原文「18 条（24 中的 7 + 17 中的 7）」计数笔误（7+7=14≠18），r6 补账时按面板实数更正（见 defect-ledger REG-2026-11-18 节）。
 
-修复 7 条 P1/P2 后，独立冷读 certify 抓到 3 条 REOPEN（部分修复未落地）+ 2 条新 P2。补修后最终独立确认 3 PASS / 1 FAIL（FAIL 项为跨文档混淆——该文档不用 ①②③ 表标记，certify 误用了 D03 的格式），实际无缺陷。
+修复 7 条 P1/P2 后（批次证据：`fe49cd804` 4 hunk + `afdd867b7` 2 hunk——提交信息称 6 条、diff 实为 4 主题 §1.2①/PC 行/例外清单/U-Boot 消歧，按 diff 记 4），独立冷读 certify 抓到 3 条 REOPEN（部分修复未落地）+ 2 条新 P2。补修后最终独立确认 3 PASS / 1 FAIL（FAIL 项为跨文档混淆——该文档不用 ①②③ 表标记，certify 误用了 D03 的格式），实际无缺陷。
 
 最终文档 sha256 `829b3a71…`；anchor 55/55、doc-code-map 28/28、structure/ref/style 全绿。
 

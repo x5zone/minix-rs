@@ -241,3 +241,10 @@
 
 - 三问：① 本轮不变量是“已删字段不得回流、C 的 APIC 表不等于 Rust 的 41 门、入口对 GsArea 是读写”；② 前提是 R1 ROUND-CLOSED；③ 证据是 43 行台账、六门读数与 certify 0。
 - 资源重读：本轮盲区属“文档同步后的二次残项”，检测模式是确认轮的跨节复述核对；无需新增规则。
+
+
+## REG2/FULL 补账索引（r6 R6-b，非编号轮）
+
+- 2026-11-17 回归轮（D-055 重做，独立三角色 + certify 三轮 7/3/1 → BLOCKED → 结构性重写）：台账见 `defect-ledger.md` REG2 节；面板 `tmp/review-eval/01-stage-kernel/03-kmain-cstart/panel/regress/`。
+- 2026-11-18 完整 review（五角色 33 条聚合口径 / 面板编号 22 条）：台账见 FULL 节；面板 `panel/full/`。
+- 两轮均不改变 FREEZE 时点的收敛状态（出口在 FREEZE 回归/完整 review 节）。

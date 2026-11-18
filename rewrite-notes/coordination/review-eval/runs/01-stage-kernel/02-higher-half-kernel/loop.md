@@ -272,3 +272,9 @@
 
 - 三问：① 本轮不变量是“文档对 C 装载链与 Rust 起点的描述必须按腿限定”；② 前提是 R1 已 ROUND-CLOSED、R2 只修新准入事实/同步项；③ 证据是 21 行台账、六门读数与 certify #2 的 0 新准入。
 - 资源重读：本轮盲区属“跨实现模型无条件泛化”，检测模式已由读者 C 的因果链核对覆盖；无需新增规则。
+
+
+## REG-2026-11-18 补账索引（r6 R6-b，非编号轮）
+
+- D-055 恢复独立读者后的回归轮：独立五角色 30 条口径、面板逐条 ID 见 `defect-ledger.md` 的 REG-2026-11-18 节；面板原件 `tmp/review-eval/01-stage-kernel/02-higher-half-kernel/panel/regress/`。
+- 轮型：回归载体（r6 R6-b 语义）；不宣告收敛状态变更（维持 FREEZE 时点的 CONVERGED，FREEZE 回归节为出口）。
