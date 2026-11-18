@@ -1810,19 +1810,31 @@ def check_run_dir(
     _freeze_ok = False
     _freeze_path = run_dir / "FREEZE.md"
     if _freeze_path.is_file():
-        _ft = _freeze_path.read_text(encoding="utf-8")
-        # r12（P0-1 判例）：r11 标题判定被六型绕过（否定后缀进标题、CANDIDATE、
-        # 小写、正文 H1）。改**双重肯定式**：存在 `# … FREEZE …` 标题行，该行以
-        # 终态收尾（CONVERGED / FREEZE-WITH-BACKLOG，可选全角括号），且该行无
-        # 否定/未定标记（尚未/未/没/NOT/CANDIDATE/待/?）——标题是 FREEZE 文档
-        # 自身的契约位，事故单行无法同时满足形状+极性。
+        # r13（P0-3/4 判例）：全角字符绕过极性扫描（ＮＯＴ/ＣＡＮＤＩＤＡＴＥ/全角？）、
+        # 未定词残缺（暂判/拟）、双 H1 一否定一肯定时 any() 取一、正文 H1 深处
+        # 解锁。修：全文全角归一；标题候选限**前三非空行**；带终态的标题行只要
+        # 有一条被否定/未定标记污染即**毒化**整个 FREEZE（all 语义，不是 any）。
+        _fw_tbl = str.maketrans(
+            {chr(0xFF01 + i): chr(0x21 + i) for i in range(94)}
+        )
+        _ft = _freeze_path.read_text(encoding="utf-8").translate(_fw_tbl)
+        _nonempty = [ln for ln in _ft.splitlines() if ln.strip()]
         _title_lines = [
-            ln for ln in _ft.splitlines() if re.match(r"^#\s+.*FREEZE", ln)
+            ln for ln in _nonempty[:3] if re.match(r"^#\s+.*FREEZE", ln)
         ]
-        _freeze_ok = len(_ft.strip()) > 0 and any(
-            re.search(r"\b(CONVERGED|FREEZE-WITH-BACKLOG)\s*）?\s*$", ln)
-            and not re.search(r"尚未|未|没|NOT|CANDIDATE|待|\?", ln, re.IGNORECASE)
+        _TERMINAL = r"\b(CONVERGED|FREEZE-WITH-BACKLOG)\s*[）)]?\s*$"
+        _NEG = r"尚未|未|没|NOT|CANDIDATE|待|暂|拟|存疑|\?"
+        _terminal_titles = [
+            ln for ln in _title_lines if re.search(_TERMINAL, ln)
+        ]
+        _poison = any(
+            re.search(_TERMINAL, ln) and re.search(_NEG, ln, re.IGNORECASE)
             for ln in _title_lines
+        )
+        _freeze_ok = (
+            len(_ft.strip()) > 0
+            and bool(_terminal_titles)
+            and not _poison
         )
     # r12（P1-1 判例）：V3.4 起点轮必须解析 V3.4 专属标记——V33_MARKER_RE 硬编码
     # V3.3，从不匹配 `schema: V3.4 from R<N>`，导致起点轮退回 schema_start、历史层
@@ -1842,8 +1854,11 @@ def check_run_dir(
             if _m34 and _m34.group(1)
             else (schema_start or 1)
         )
-    else:
-        _v34_from = None
+        # r13（P0-5 判例）：from 轮零校验——注入 `from R99` 可豁免全部轮的制品链。
+        # 起点轮不得晚于「已见最大轮号 + 1」；越界即视为自报无效，钳回 schema_start。
+        _max_seen = max(_loop_round_numbers(loop_text), default=0)
+        if _v34_from > _max_seen + 1:
+            _v34_from = schema_start or 1
     _round_no = int(round_tag_override.lstrip("R")) if round_tag_override else None
     _artifact_required = False
     if round_tag_override:
@@ -2229,7 +2244,10 @@ def check_run_dir(
                                 re.IGNORECASE,
                             )
                             and not re.search(
-                                r"未|没|REOPEN|NOT\s*PASS|FAIL|\?|？", ln, re.IGNORECASE
+                                r"未|没|不|REOPEN|NOT\s*PASS|FAIL|暂|拟|待|存疑|可能"
+                                r"|\?|？",
+                                ln,
+                                re.IGNORECASE,
                             )
                             for ln in _ct.splitlines()
                         ):
@@ -4144,7 +4162,7 @@ def self_test() -> int:
             "|---|---|---|---|---|---|---|---|\n| F-1 | fact | P2 | 事实 | ① | 修 | e | g |\n",
             encoding="utf-8")
         (rx / "metrics.md").write_text(
-            "# 指标\n\nschema: V3.4 from R5\n\n## R2 确认轮\n\n- 发现总数: 1\n"
+            "# 指标\n\nschema: V3.4 from R3\n\n## R2 确认轮\n\n- 发现总数: 1\n"
             "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
             "- 轮型: confirmation\n- 轮结果: CONVERGED\n- certify 新准入: 0\n"
             "- 代裁决: 0\n- ARCH 提案: 0\n- 用户否决: 0\n- edition: V3.3\n",
@@ -4155,6 +4173,26 @@ def self_test() -> int:
         rpx = check_run_dir(rx, None, "R2")
         if any("面板制品未入库" in i["message"] for i in rpx.items if i["level"] == "FAIL"):
             print("self-test FAIL: 历史层回放被制品链追溯（r12 P1-1）")
+            return 1
+
+    # (g) from 轮封顶（r13 P0-5）：from R99 注入被钳回 schema_start。
+    with tempfile.TemporaryDirectory() as ty:
+        ry = Path(ty) / "run"
+        ry.mkdir()
+        (ry / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        (ry / "defect-ledger.md").write_text(
+            "## R1 面板轮\n\n| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |\n"
+            "|---|---|---|---|---|---|---|---|\n| F-1 | fact | P2 | 事实 | ① | 修 | e | g |\n",
+            encoding="utf-8")
+        (ry / "metrics.md").write_text(
+            "# 指标\n\nschema: V3.4 from R99\n\n## R1 面板轮\n\n- 发现总数: 1\n"
+            "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
+            "- 轮型: full\n- 轮结果: ROUND-CLOSED\n", encoding="utf-8")
+        rpy = check_run_dir(ry, None, "R1")
+        if not any("面板制品未入库" in i["message"] for i in rpy.items if i["level"] == "FAIL"):
+            print("self-test FAIL: from R99 注入仍豁免制品链（r13 P0-5）")
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
