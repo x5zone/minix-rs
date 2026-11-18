@@ -1453,7 +1453,9 @@ def check_placeholders(text: str, report: Report, label: str) -> None:
             report.fail("placeholder", f"{label} 残留占位: {line.strip()}")
 
 
-def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
+def collect_panel_findings(
+    panel_dir: Path, report: Report, collect_sugg_ids: bool = False
+) -> list[str]:
     if not panel_dir.is_dir():
         report.warn("panel", f"没有 panel 目录: {panel_dir}")
         return []
@@ -1478,9 +1480,11 @@ def collect_panel_findings(panel_dir: Path, report: Report) -> list[str]:
         found += [f"CLAIM-{int(n):02d}" for n in re.findall(r"^##\s+CLAIM\s+(\d+)", text, re.MULTILINE)]
         # r10（P0-① 判例）：带 ID 的 SUGGESTION 也是面板发现——SUGG 行入台账并
         # 计入 metrics 后，覆盖率门必须能看见它们，否则合规记账双 FAIL。
-        found += re.findall(
-            r"^##\s+SUGGESTION\s+([A-Za-z][A-Za-z0-9-]*)", text, re.MULTILINE
-        )
+        # 仅对制品必需文档启用：历史冻结轮（V3.3 旧口径，SUGG 不入台账）不追溯。
+        if collect_sugg_ids:
+            found += re.findall(
+                r"^##\s+SUGGESTION\s+([A-Za-z][A-Za-z0-9-]*)", text, re.MULTILINE
+            )
         found += re.findall(r"^\*\*(DESIGN-D2-\d+)", text, re.MULTILINE)
         if not found:
             report.warn("panel", f"{path.relative_to(panel_dir)} 没有 `## FINDING <ID>` 行")
@@ -1953,7 +1957,9 @@ def check_run_dir(
                 "V3 轮关闭要求面板证据：找不到 panel 目录或目录为空（至少一个角色报告；"
                 "run-dir/panel 或 tmp/review-eval/<stage>/<doc>/panel）",
             )
-    panel_ids = collect_panel_findings(panel_dir, report)
+    panel_ids = collect_panel_findings(
+        panel_dir, report, collect_sugg_ids=_artifact_required
+    )
 
     if loop_text is not None:
         check_loop_sections(loop_text, report, round_tag)
