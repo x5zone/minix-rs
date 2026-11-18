@@ -1851,11 +1851,22 @@ def check_run_dir(
             {chr(0xFF01 + i): chr(0x21 + i) for i in range(94)}
         )
         _ft = _freeze_path.read_text(encoding="utf-8").translate(_fw_tbl)
+        # r17（P0-1 判例）：Unicode 连字符族（– — ‐ ‑ ‒ −）与数学字母（𝐑𝟏）对
+        # 极性/标题扫描隐身——归一为 ASCII 等价物（连字符→-；数学字母→其基数字符）。
+        _ft = re.sub(r"[\u2010-\u2015\u2212]", "-", _ft)
+        _ft = "".join(
+            chr(ord(c) - 0x1D400 + ord("A"))
+            if 0x1D400 <= ord(c) <= 0x1D419  # 数学粗体大写 A–Z
+            else chr(ord(c) - 0x1D7CE + ord("0"))
+            if 0x1D7CE <= ord(c) <= 0x1D7D7  # 数学粗体数字 0–9
+            else c
+            for c in _ft
+        )
         _nonempty = [ln for ln in _ft.splitlines() if ln.strip()]
         _title_lines = [
             ln for ln in _nonempty[:3] if re.match(r"^#\s+.*FREEZE", ln)
         ]
-        _TERMINAL = r"(?<![A-Za-z-])(CONVERGED|FREEZE-WITH-BACKLOG)\s*[）)]?\s*$"
+        _TERMINAL = r"(?<![A-Za-z0-9_-])(CONVERGED|FREEZE-WITH-BACKLOG)\s*[）)]?\s*$"
         # r14（P0-2）：词表补 不/非/无/曾/将/可能/勿/REOPEN——「非 CONVERGED」
         # 「CONVERGED 未达成」类单行不再解锁；r14（P0-3）：毒化扫描**全部含
         # FREEZE 的标题行**（H1/H2，不带终态的否定行同样毒化），不再只看带终态
@@ -2259,24 +2270,27 @@ def check_run_dir(
                         _ct = _cert.read_text(encoding="utf-8").translate(_fw)
                         # r10（P0-④ 判例）：字节数被纯标点绕过——按**有效字符**
                         # 计数。
-                        _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
-                        if _eff < 20:
-                            _bad_certs.append(
-                                f"{_cert.name} 有效字符不足（{_eff}）"
-                            )
-                        elif re.search(
+                        _neg_hit = re.search(
                             r"NOT\s*PASS|未通过|没通过"
                             r"|结论\s*[:：]\s*(FAIL|REOPEN)"
                             r"|^\s*REOPEN\b"
-                            r"|^\s*[-*]\s*.*\b(FAIL|REOPEN)\b"
+                            r"|^\s*[-*>]\s*.*\b(FAIL|REOPEN)\b"
+                            r"|^\s*(?:\d+[.)]|#{1,6})\s*.*\b(FAIL|REOPEN)\b"
+                            r"|\bFAIL\s*[:：]"
                             r"|(复验|验证|回读|确认)\s*失败"
                             r"|未(修|完成|实施|落地)(?!.*已补)",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
-                        ):
+                        )
+                        _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
+                        if _neg_hit:
                             _bad_certs.append(
                                 f"{_cert.name} 含否定性结论"
                                 "（NOT PASS/未通过/没通过/结论 FAIL|REOPEN/独行 REOPEN）"
+                            )
+                        elif _eff < 20:
+                            _bad_certs.append(
+                                f"{_cert.name} 有效字符不足（{_eff}）"
                             )
                         elif not any(
                             re.search(
@@ -4395,10 +4409,49 @@ def self_test() -> int:
         cdk = rk2 / "certify"
         cdk.mkdir()
         (cdk / "round1-1.md").write_text(
-            "# 回执\n\n结论：通过。\n\n- FAIL（REOPEN 两处未落地）\n", encoding="utf-8")
+            "# 回执\n\n结论：通过。\n\n- FAIL（两处未收口）\n", encoding="utf-8")
         rpk2 = check_run_dir(rk2, None, "R1")
         if not any("否定性结论" in i["message"] for i in rpk2.items if i["level"] == "FAIL"):
             print("self-test FAIL: bullet-FAIL 行放行（r16 P0-3）")
+            return 1
+
+    # ===== r17 判别夹具 =====
+    # (h) FREEZE 连字符族（UN–CONVERGED / 0CONVERGED）→ 不豁免。
+    with tempfile.TemporaryDirectory() as t20:
+        r20 = _write_artifact_run(Path(t20))
+        (r20 / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        for title in (
+            "# 01 FREEZE——UN\u2013CONVERGED\n",
+            "# 01 FREEZE——0CONVERGED\n",
+        ):
+            (r20 / "FREEZE.md").write_text(title, encoding="utf-8")
+            rp20 = check_run_dir(r20, None, "R1")
+            if not any(
+                "面板制品未入库" in i["message"] for i in rp20.items if i["level"] == "FAIL"
+            ):
+                print(f"self-test FAIL: 连字符族/前缀数字绕过终态左边界（r17 P0-1）: {title!r}")
+                return 1
+
+    # (i) certify 编号列表 FAIL（r17 P0-2）。
+    with tempfile.TemporaryDirectory() as t21:
+        r21 = _write_artifact_run(Path(t21))
+        pd21 = r21 / "panel" / "round1"
+        pd21.mkdir(parents=True)
+        (pd21 / "fact.md").write_text("## FINDING F-1\n", encoding="utf-8")
+        h21 = _hl.sha256(b"## FINDING F-1\n").hexdigest()
+        (pd21 / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| fact.md | {h21} | 1 | 0 | 0 | finding |\n", encoding="utf-8")
+        cd21 = r21 / "certify"
+        cd21.mkdir()
+        (cd21 / "round1-1.md").write_text(
+            "# 回执\n\n结论：通过。\n\n1. FAIL——两处未收口。\n", encoding="utf-8")
+        rp21 = check_run_dir(r21, None, "R1")
+        if not any("否定性结论" in i["message"] for i in rp21.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 编号列表 FAIL 放行（r17 P0-2）")
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
