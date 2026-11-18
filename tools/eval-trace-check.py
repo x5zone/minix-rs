@@ -150,7 +150,7 @@ ROUND_TYPE_V33 = {"full", "structural", "confirmation"}
 FINDING_ROUND_RE = re.compile(r"^#{2,3}\s+((?:R|D)\d+-\d+)\s*[　\s]", re.MULTILINE)
 METRIC_TOTAL_RE = re.compile(r"^-\s*发现总数\s*[:：]\s*(\d+)", re.MULTILINE)
 METRIC_COUNT_RE = re.compile(r"([①②④⑤⑥③]|FP|SUGG)\s*(\d+)")
-PLACEHOLDERS = {"tbd", "待定", "-", "—", "", "（待补）", "待补"}
+PLACEHOLDERS = {"tbd", "待定", "-", "—", "", "（待补）", "待补", "(待补)", "(待定)"}  # r16：全角归一后括号变半角，两形态都算占位
 DISPOSITION_TOKENS = {
     "①": "①",
     "②": "②",
@@ -1189,9 +1189,10 @@ def _panel_severities(panel_dir: Path | None) -> dict[tuple[int, str], str]:
     for path in sorted(panel_dir.rglob("*.md")):
         round_match = re.search(r"round(\d+)", str(path.parent))
         round_num = int(round_match.group(1)) if round_match else 0
+        _FWS = str.maketrans({chr(0xFF01 + i): chr(0x21 + i) for i in range(94)})
         for m in re.finditer(
             r"^#{2,3}\s+FINDING\s+([A-Za-z][A-Za-z0-9-]*)\s*[（(]?\s*(P[0-3])",
-            path.read_text(encoding="utf-8"),
+            path.read_text(encoding="utf-8").translate(_FWS),
             re.MULTILINE,
         ):
             out.setdefault((round_num, m.group(1)), m.group(2))
@@ -1472,7 +1473,8 @@ def collect_panel_findings(
         report.warn("panel", f"面板目录没有任何 .md（含轮次子目录）: {panel_dir}")
         return []
     for path in paths:
-        text = path.read_text(encoding="utf-8")
+        _FWC = str.maketrans({chr(0xFF01 + i): chr(0x21 + i) for i in range(94)})
+        text = path.read_text(encoding="utf-8").translate(_FWC)
         found = FINDING_RE.findall(text) + FINDING_ROUND_RE.findall(text)
         # Non-`## FINDING` shapes still count as findings in a round's panel:
         # fact.md's secondary bullets and refute.md's numbered claims.
@@ -1642,7 +1644,15 @@ def check_round_monotonicity(
         for title, body in _metric_blocks(metrics_text):
             if not re.search(r"发现总数|轮结果|未闭环", body):
                 continue
-            ns = [int(n) for n in re.findall(r"\bR(\d+)\b", title)]
+            # r16（P0-1 判例）：非锚定匹配让「标题提及他轮」即视为有账——只认
+            # 块标题开头的轮号及显式区间。
+            _mt_head = re.match(r"R(\d+)(?:\s*[–-]\s*R(\d+))?", title)
+            ns = (
+                [int(_mt_head.group(1))]
+                + ([int(_mt_head.group(2))] if _mt_head.group(2) else [])
+                if _mt_head
+                else []
+            )
             metrics_rounds.update(ns)
             # r7（对抗判例）：双源只看「有没有账」不看「账说什么」——metrics 自报
             # 未闭环>0 的轮同样不得静默越序。
@@ -1750,6 +1760,15 @@ def check_run_dir(
     loop_text = read_text(run_dir / "loop.md", report, "loop.md")
     metrics_text = read_text(run_dir / "metrics.md", report, "metrics.md")
     ledger_text = read_text(run_dir / "defect-ledger.md", report, "defect-ledger.md")
+    # r16（P0-4 判例）：全角 Ｒ/ＮＯＴ 等载体绕过全部标题与词表匹配——三件套
+    # 读入即做全角 ASCII 归一（面板文本在 collect/_panel_severities 内同样归一）。
+    _FW_TBL = str.maketrans({chr(0xFF01 + i): chr(0x21 + i) for i in range(94)})
+    if loop_text is not None:
+        loop_text = loop_text.translate(_FW_TBL)
+    if metrics_text is not None:
+        metrics_text = metrics_text.translate(_FW_TBL)
+    if ledger_text is not None:
+        ledger_text = ledger_text.translate(_FW_TBL)
     schema_start = schema_start_round(loop_text)
     if schema_start is None and metrics_text is not None:
         schema_start = schema_start_round(metrics_text)
@@ -1836,19 +1855,17 @@ def check_run_dir(
         _title_lines = [
             ln for ln in _nonempty[:3] if re.match(r"^#\s+.*FREEZE", ln)
         ]
-        _TERMINAL = r"\b(CONVERGED|FREEZE-WITH-BACKLOG)\s*[）)]?\s*$"
+        _TERMINAL = r"(?<![A-Za-z-])(CONVERGED|FREEZE-WITH-BACKLOG)\s*[）)]?\s*$"
         # r14（P0-2）：词表补 不/非/无/曾/将/可能/勿/REOPEN——「非 CONVERGED」
         # 「CONVERGED 未达成」类单行不再解锁；r14（P0-3）：毒化扫描**全部含
         # FREEZE 的标题行**（H1/H2，不带终态的否定行同样毒化），不再只看带终态
         # 后缀的行——「… CONVERGED 未达成」+「… CONVERGED」双行逃逸关闭。
         _NEG = (
             r"尚未|未|没|不|非|无|曾|将|可能|勿|NOT|CANDIDATE|REOPEN"
-            r"|待|暂|拟|存疑|\?"
+            r"|待|暂|拟|存疑|FAIL|解除|撤|吊销|\?"
         )
         _title_all = [ln for ln in _ft.splitlines() if re.match(r"^#{1,2}\s+.*FREEZE", ln)]
-        # r15（P0-2 判例）：正文一行「NOT CONVERGED」（无 FREEZE 字样）即解锁——
-        # 毒化扩展：① 任意行出现终态词+邻接否定（NOT/未/没/尚未 CONVERGED）；
-        # ② 任意行出现 REOPEN（FREEZE 正文提及重开 = 冻结已失效）。
+        # r15 裁定：正文毒化撤销（误伤合法历史叙述），FREEZE 状态以标题契约为准。
         _terminal_titles = [
             ln for ln in _title_lines if re.search(_TERMINAL, ln)
         ]
@@ -2251,6 +2268,8 @@ def check_run_dir(
                             r"NOT\s*PASS|未通过|没通过"
                             r"|结论\s*[:：]\s*(FAIL|REOPEN)"
                             r"|^\s*REOPEN\b"
+                            r"|^\s*[-*]\s*.*\b(FAIL|REOPEN)\b"
+                            r"|(复验|验证|回读|确认)\s*失败"
                             r"|未(修|完成|实施|落地)(?!.*已补)",
                             _ct,
                             re.IGNORECASE | re.MULTILINE,
@@ -4299,6 +4318,87 @@ def self_test() -> int:
             "面板制品未入库" in i["message"] for i in rpv3.items if i["level"] == "FAIL"
         ):
             print("self-test FAIL: 否定行+肯定行双 H1 毒化逃逸（r14 P0-3）")
+            return 1
+
+    # ===== r16 判别夹具（4 P0）=====
+    # (a) 全角载体：Ｒ１ 标题的伪造确认轮必须被生命周期看见（R6-a）。
+    with tempfile.TemporaryDirectory() as tfw:
+        rfw = Path(tfw) / "run"
+        rfw.mkdir()
+        (rfw / "loop.md").write_text(
+            "schema: V3.4 from R1\n\nedition: V3.4\n\n## Ｒ１ 确认轮\n\n"
+            "### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        (rfw / "defect-ledger.md").write_text(
+            "## Ｒ１ 确认轮\n\n| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |\n"
+            "|---|---|---|---|---|---|---|---|\n| F-1 | fact | P2 | 事实 | ① | 修 | e | g |\n",
+            encoding="utf-8")
+        (rfw / "metrics.md").write_text(
+            "# 指标\n\n## Ｒ１ 确认轮\n\n- 发现总数: 1\n"
+            "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
+            "- 轮型: confirmation\n- 轮结果: CONVERGED\n- certify 新准入: 0\n"
+            "- 代裁决: 0\n- ARCH 提案: 0\n- 用户否决: 0\n- edition: V3.4\n",
+            encoding="utf-8")
+        rpfw = check_run_dir(rfw, None, "R1")
+        if not any("R6-a" in i["message"] for i in rpfw.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 全角 Ｒ１ 载体对生命周期隐身（r16 P0-4）")
+            return 1
+
+    # (b) metrics 标题提及他轮 ≠ 有账（r16 P0-1）。
+    with tempfile.TemporaryDirectory() as tg2:
+        rg2 = Path(tg2) / "run"
+        rg2.mkdir()
+        (rg2 / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        (rg2 / "defect-ledger.md").write_text(
+            "## R2 确认轮\n\n| 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |\n"
+            "|---|---|---|---|---|---|---|---|\n| F-1 | fact | P2 | 事实 | ① | 修 | e | g |\n",
+            encoding="utf-8")
+        (rg2 / "metrics.md").write_text(
+            "# 指标\n\n## R2 确认轮（R1 遗留已清）\n\n- 发现总数: 1\n"
+            "- 处置: ① 1 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n- 未闭环: 0\n"
+            "- 轮型: full\n- 轮结果: ROUND-CLOSED\n", encoding="utf-8")
+        rpg2 = check_run_dir(rg2, None, "R2")
+        if not any("N0" in i["message"] for i in rpg2.items if i["level"] == "FAIL"):
+            print("self-test FAIL: 标题提及他轮被当作有账（r16 P0-1）")
+            return 1
+
+    # (c) FREEZE 词表/左边界：FAIL 解除型 + UN-CONVERGED → 不豁免。
+    with tempfile.TemporaryDirectory() as th2:
+        rh2 = _write_artifact_run(Path(th2))
+        (rh2 / "loop.md").write_text(
+            "schema: V3.3 from R1\n\nedition: V3.3\n\n## R1 面板轮\n\n"
+            "### §7\nx\n\n### L6\na\n\n### L6.5\nb\n", encoding="utf-8")
+        for title in (
+            "# 01 FREEZE——FAIL 解除后 CONVERGED\n",
+            "# 01 FREEZE——UN-CONVERGED\n",
+        ):
+            (rh2 / "FREEZE.md").write_text(title, encoding="utf-8")
+            rph2 = check_run_dir(rh2, None, "R1")
+            if not any(
+                "面板制品未入库" in i["message"] for i in rph2.items if i["level"] == "FAIL"
+            ):
+                print(f"self-test FAIL: FREEZE 词表/左边界绕过（r16 P0-2）: {title!r}")
+                return 1
+
+    # (d) certify bullet-FAIL 行（r16 P0-3）。
+    with tempfile.TemporaryDirectory() as tk2:
+        rk2 = _write_artifact_run(Path(tk2))
+        pdk = rk2 / "panel" / "round1"
+        pdk.mkdir(parents=True)
+        (pdk / "fact.md").write_text("## FINDING F-1\n", encoding="utf-8")
+        hk = _hl.sha256(b"## FINDING F-1\n").hexdigest()
+        (pdk / "INDEX.md").write_text(
+            "# 面板制品索引\n\n| 文件 | sha256 | FINDING | SUGGESTION | CLAIM | 形态 |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| fact.md | {hk} | 1 | 0 | 0 | finding |\n", encoding="utf-8")
+        cdk = rk2 / "certify"
+        cdk.mkdir()
+        (cdk / "round1-1.md").write_text(
+            "# 回执\n\n结论：通过。\n\n- FAIL（REOPEN 两处未落地）\n", encoding="utf-8")
+        rpk2 = check_run_dir(rk2, None, "R1")
+        if not any("否定性结论" in i["message"] for i in rpk2.items if i["level"] == "FAIL"):
+            print("self-test FAIL: bullet-FAIL 行放行（r16 P0-3）")
             return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
