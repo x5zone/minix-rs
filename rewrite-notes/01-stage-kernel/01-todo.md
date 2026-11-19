@@ -36,6 +36,7 @@
 | I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；遗留 = D-68（T4 批） | §3 |
 | I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **closed（本批落码，grep 判据归零，真机门 `cd os/qemu-tests && bash run_all.sh` → 37 passed / 2 failed / 0 skipped / 0 build failures（本树现跑；两条红 `test-smp-aps`/`test-smp-ipi` 在同一台机器上用**未改动的 rewrite 尖子 `2b72a1e62` 重新构建同一载体**复现同一 `### PANIC … arch/src/x86_64/protection.rs:0x1c3`，判为既有、非本批引入））**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
 | I-29（本轮新登记） | UEFI 内存图分类双份实现；测试图不反映快照后（条件性）分配；分类判据用地址代替类型（`RESERVED`/`UNUSABLE`/`UNACCEPTED`/未知区间被塞进「可访问」保留表）；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **架构设计与目标合同冻结（v12 终审）**：唯一解析/分类、零分配 + 预分配输出、`ram_top` 删除（不留 characterization test）、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17，含四组合落定）。**暂缓冻结（各有验收门）**：属性政策矩阵逐行批准（凭原型 ①+三架构证据）、三架构 WB 合同（I-29-16）、Pass 1/2 具体 API（归原型 ①）、路径 A 运行验收（原型 ②）。设计讨论结束，转原型与实现（§7 执行序列） | §3 |
+| I-34（本轮新登记） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 设计裁决 + 代码改造 | 已裁决（D-067，用户 2026-11-20）；待实施——详见 §3 的 I-34 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -512,6 +513,81 @@ L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立�
 **现状**：01 篇 §3.4 明说两组真机读数（`res=127 zeroed=127`；"DM 建立时完好、分类点读零"）指向同一设计结论（入口尽早深拷），但**机制归因未定案**——两条候选（页表不重放 1:1 映射 / 被当空闲复用清零）各带可检验推论，文档标注"可作为后续取证的切入口"。T1 的受控复制设计**不依赖**该归因（拷贝先于一切分配），所以不是 T1 的阻塞项；但证据链缺最后一环，且它决定"池页可读窗口"的教科书式解释。
 
 **修法（定向调查）**：按文档给的两条推论各做一次定向读数——（a）若"页表不重放"：在切根前后各读同一池页地址，读数应在切根时刻突变；（b）若"复用清零"：在 `store_kernel_info` 之前人为推迟消费（测试内核）并在首个 `pg_alloc_page` 之后回读，读数应随复用时点零化。落点：`tmp/` 取证或 qemu 测试内核探针。**验收**：归因结论落盘（一句话 + 读数），01 篇 §3.4/§4.5 相应句从"未定案"改为定案或保留双候选并写明判别结果。**状态**：✅ 01TODO-N5。探针在 `test-kernel-map`：快照之后分配一枚低于 4GiB 的 LOADER_DATA 页、填位置标记，EBS 前/后/开分页后三次整页校验和；读数 `pa=0x5e9b000`、`pre=post_ebs=post_enable=0x4a00_0000_0001_ff00`、`verdict=replayed`、`in_snapshot_free=0`。判别：①"页表不重放 1:1"对该形态不成立（映射重放、字节未变）；②"被当空闲复用"的结构前提未出现；历史零化读数的剩余解释是深拷之前的入口引用链（NK4-A），与深拷落地后症状消失一致。01 篇 §3.4 两处已按读数改写，探针保留为可复跑证据。
+
+
+### I-34（已裁决·可立即开工）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
+
+**裁决**：用户 2026-11-20，判决行 `D-067`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `BOOTSTORAGE-fill-api` 行同步。来源：`R35/DESIGN-D2-02`（P2，[MODERN]）。
+
+**现状（为什么这是个问题）**：`BootStorage` 存七类载荷，每族都是「槽数组 + 一个 `usize` 长度」两个独立事实。唯一的一致性防护是 `map_dirty`，它只覆盖内存图两族；其余五族（modules / platform / param / sources / startup）没有任何拦截。文档 `01-boot-shim-bootstrap.md:1767` 却写「报告永远看不到未写槽」，同一段 `:1769` 又如实写「其余五族……没有 `map_dirty` 级的 report 拦截」——两句互相拆台。
+
+**关键纠正（讨论中查实，推翻了面板的最小修复）**：面板建议「每族补一个 dirty 位」，但那个方案**拦不住它自己的反例**。反例是：
+
+```rust
+platform_slots_mut()[0] = 真源;   // 只写第 0 条
+set_platform_len(4);              // 容量 4，断言全过 → dirty 被清、committed 置位
+```
+
+按 A 的规格（访问器置位、`set_*_len` 清位、`report` 断言全假），第 2 步就把 dirty 清掉了，`report()` 照样放行。**现有 `map_dirty` 同理**：写 128 条后 `set_memmap_len(128)` 也会清位。结论：dirty 机制防的是「忘了提交」，而真实故障是「提交了错的数」。
+
+后果链（不是内存损坏，是误导性故障）：3 条 `ZERO_SOURCE = PlatformDescSource::new(DTB, PhysBytes(0))`（`boot_storage.rs:54`，**占位不是全零**）被当真实源 → 内核 `push_platform_windows`（`kernel/src/lib.rs:1123-1141`）对 `has_len()==false` 的源调 `push_2m(0)` → 为物理地址 0 建 2 MiB 恒等窗口 → 解析地址 0 的「DTB」失败 → 停机，但报错指向 DTB 解析而非真实原因（与 D-061 的 `x0==0` 判别同一类「症状误导」）。
+
+**为什么删 `map_dirty` 是安全的**：borrow checker 已经免费禁掉了「边写边读」。`memmap_slots_mut(&mut self) -> &mut [MemoryRegion]` 借用期间，`report(&self)` 无法编译（E0502）。它剩的窗口只有「写手作用域结束、commit 未调用的那一小段」，而实际代码里 `map_tables_mut()` 之后紧接 `commit_map_tables()`（`uefi_helpers.rs:1117` → `:1184`），窗口为零。生产路径上 `map_dirty` 从未触发过——它是纯保险，而它保的险它又防不住。
+
+**做法（E：`fill_*` 闭包）**：
+
+1. 每族加一个 `fill_*` 方法，闭包拿到槽数组、返回实际写入量、方法内部当场提交：
+
+```rust
+// boot_storage.rs —— 形状示意
+pub fn fill_platform<F>(&mut self, write: F)
+where F: FnOnce(&mut [PlatformDescSource]) -> usize,
+{
+    assert!(!self.platform_committed, "platform already committed");
+    let written = write(&mut self.platform_sources);
+    assert!(written <= WIRE_PLATFORM_CAP, "over capacity");
+    self.platform_len = written;
+    self.platform_committed = true;
+}
+```
+
+两个直核腿的 `platform_slots_mut()[0] = …; set_platform_len(1)` 变成 `fill_platform(|s| { s[0] = …; 1 })`；UEFI/U-Boot 两条腿的 `find_platform_sources_into(storage.platform_slots_mut())` + `set_platform_len(n)` 变成 `fill_platform(|s| find_platform_sources_into(s))`。闭包内可加断言。
+
+2. 删 `map_dirty`（`boot_storage.rs:84` 字段、`:111` 初值、`:137`/`:144`/`:154`/`:169`/`:174`/`:189` 六处赋值、`:362-365` 的 `report()` 断言），并删 `memmap_slots_mut`/`reserved_slots_mut`/`set_memmap_len`/`set_reserved_len` 四个「单表」入口（生产必须用 `fill_map_tables`，单表形态已无存在理由）。
+
+3. 内存图两族用一次提交两表的 `fill_map_tables<F>(&mut self, write: F) where F: FnOnce(&mut [MemoryRegion], &mut [MemoryRegion]) -> MapCounts`，**替代** `map_tables_mut` + `commit_map_tables`。
+
+4. 新增值对象（放 `boot_storage.rs`，紧跟 `BootStorage`）：
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapCounts { pub memmap: usize, pub reserved: usize }
+```
+
+`commit_map_tables(memmap_len: usize, reserved_len: usize)` 改收 `MapCounts`。两处生产调用点显式写字段名：
+
+```rust
+// uefi_helpers.rs:1184
+storage.commit_map_tables(MapCounts { memmap: classification.conventional, reserved: classification.reserved });
+// opensbi_helpers.rs:324
+storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owned.reserved().len() });
+```
+
+5. **`ParamStats` 不动**（pub 字段保留）。裁决理由：`stats.bytes = 1024` 这类改法是调用方主动改自己刚收到的返回值，肉眼可见，由评审覆盖；为它私有化字段 + getter 是用类型系统防一个一眼可见的手误，成本大于收益。
+
+6. **文档同批**：§4.1 把 `:1767` 的「报告永远看不到未写槽」与 `:1769` 的「五族无拦截」合成一句准确表述——**写完即提交，故报告只看得到已提交的前缀**（不再声称某种"屏障"，因为不再存在两段式状态）。
+
+**验收**：
+- `grep -rn "map_dirty" os/ --include="*.rs"` → 0；
+- `grep -rn "memmap_slots_mut\|reserved_slots_mut\|set_memmap_len\|set_reserved_len\|map_tables_mut" os/ --include="*.rs"` → 0（测试里的等价物按新 API 重写）；
+- 五族的 `*_slots_mut` / `*_buf_mut` 全部消失，替换为 `fill_*`；
+- `cargo test -p minix-boot`、`cargo test -p boot-shim --features test-all`、`cargo test -p minix-kernel --features mock` 全绿；
+- 五条 QEMU 门链（x86 UEFI、aarch64 UEFI、aarch64 直核 SMP、riscv U-Boot shim、riscv 直核 bootface）PASS；
+- 文档六门（anchor/citation/structure/ref/style/density）+ `doc-symbol-drift.sh --from-diff` 零命中。
+
+**风险与回退**：`fill_*` 借用 `&mut self` 期间无法再取另一族的 `&mut`，因此**禁止「先写 A 族、再写 B 族、最后一起提交」的交错风格**。已核实当前五个生产调用点都是「写一族 → 提交一族」的严格顺序，不冲突；若将来出现合法的交错需求，回退改用 B 的计数令牌或恢复 dirty 机制，并重开 D-067（该条件已写进判决行的 `reopen_condition`）。
+
+**为什么现在不做**：本条与 D-062（wire v10 删 `startup` 族）和 D-065（直核腿统一 owned 路径，sources 族写入者从 1 条腿变成 3 条腿）改同一批行。实施顺序由后续统筹规划决定（族数与写入者数量在 D-062/D-065 落地后才定稿），本条不写顺序约束。
 
 ---
 
