@@ -74,7 +74,7 @@
 
 ## R3 确认轮
 
-- 发现总数: 95（FINDING 41 + SUGGESTION 48 + CLAIM 6；与 `panel/round3/INDEX.md` 同源。refute 原用 `RD3-CLAIM-<NN>` 编号，主 agent 在文件末尾追加了机器可读的 `## CLAIM 1..6` 索引行，正文未改动）
+- 发现总数: 95（FINDING 41 + SUGGESTION 48 + CLAIM 6；与 `panel/round3/INDEX.md` 同源。refute 原用 `RD3-CLAIM-<NN>` 编号，主 agent 在文件末尾追加了机器可读的 `## CLAIM 11..16` 索引行，正文未改动）
 - 唯一根因数: 37（RD-R3-01..37，按角色/严重度/处置类聚簇）
 - 本轮新准入: 37
 - certify 新准入: 0
@@ -84,8 +84,8 @@
 - 未闭环: 0
 - 轮型: confirmation
 - 轮结果: CONVERGED
-- 代裁决: 1（D-061：11 条设计 P1/P2 延期到 R3-design-batch）
-- ARCH 提案: 2（RD3-ARCH-01/02，待用户裁决）
+- 代裁决: 1（D-063：11 条设计 P1/P2 延期到 R3-design-batch）
+- ARCH 提案: 2（RD3-A01/02，待用户裁决）
 - 用户否决: 0
 - edition: V3.4
 - re-litigation: 0

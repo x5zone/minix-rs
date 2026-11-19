@@ -3,7 +3,7 @@
 ## §0 基线
 
 - 工作流版本：V1（`rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md`）
-- schema: V3.4 from R3（V3.5 制品链起约束的首轮；重开依据 D-061。R1/R2 保持各自历史标记，不追溯）
+- schema: V3.4 from R3（V3.5 制品链起约束的首轮；重开依据 D-063。R1/R2 保持各自历史标记，不追溯）
 - 基线提交：`691cde1bf`（V1 边界回归提交之后）
 - 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
 - 文档基线 sha256：`6e5ffc3ce0398405b6666311e60e3c7152876deb7b349032c46f00c413a917b3`
@@ -280,7 +280,7 @@
 - D-055 恢复独立读者后的回归轮：独立五角色 30 条口径、面板逐条 ID 见 `defect-ledger.md` 的 REG-2026-11-18 节；面板原件 `tmp/review-eval/01-stage-kernel/02-higher-half-kernel/panel/regress/`。
 - 轮型：回归载体（r6 R6-b 语义）；不宣告收敛状态变更（维持 FREEZE 时点的 CONVERGED，FREEZE 回归节为出口）。
 
-## R3 确认轮（V3.4 四态模型；D-061 授权的重开）
+## R3 确认轮（V3.4 四态模型；D-063 授权的重开）
 
 ### R3 §0 基线
 
@@ -295,7 +295,7 @@
 - 关联代码：`doc-code-map --check` 28/28（本轮新增一处 `os/arch/src/riscv64/paging.rs` 引用，改后 29/29）
 - 语料条目：D02（`CORPUS.md` 第二节）
 - 范围声明：高半区链接布局与成对跳转 + 关联文件 + 本轮修复触碰的文件；不在范围 = 相邻模块与下一批次结构性重构
-- 重开依据：D-061
+- 重开依据：D-063
 
 ### R3 §1 面板
 
@@ -304,21 +304,21 @@
   - P-DESIGN-D2：16 条 FINDING + 2 ARCH-PROPOSAL（`design-d2.md`）；D1 停跑（D-024），基线为「文档主张 ↔ 源码事实」，记 VARIANCE
   - P-READER-A：4 + 19（`reader-a.md`）；P-READER-B：9 + 15（`reader-b.md`）；P-READER-C：4 + 10（`reader-c.md`）
   - P-REFUTE：6 条 CLAIM（阻断 0 / 非阻断 1 / 反证失败 5），`refute.md`
-- **VARIANCE 1**：refute 的标题用 `## CLAIM RD3-CLAIM-<NN>`，轨迹门的 `CLAIM <数字>` 正则识别不到，因此 6 条 CLAIM 不计入 INDEX/发现总数/覆盖率（D01 R35 用的是 `## CLAIM <数字>`，本次标注形式不同）。影响：refute 的唯一非阻断发现已并入 reader 侧同根条目（§4.4 PC 行），无处置遗漏。
+- **VARIANCE 1**：refute 正文用 `## CLAIM RD3-CLAIM-<NN>`，轨迹门的 `CLAIM <数字>` 正则识别不到；主 agent 在文件末尾追加了机器可读的 `## CLAIM 11..16` 索引（编号刻意避开 R1 已用的 `CLAIM 01..06`，防跨轮身份键覆盖；正文未改动）。6 条 CLAIM 因此计入 INDEX 与发现总数，并在台账立 RD-R3-35..37 三行。
 - **VARIANCE 2**：fact 角色首次派发被平台截断，重派后完成；两次都只读允许材料。
 - 制品入库：`panel/round3/` + `INDEX.md`（6 文件：FINDING 41 / SUGGESTION 48 / CLAIM 0）。
 - 工作树：面板前后 `git status` 只有本轮要提交的轨迹文件与文档。
 
 ### R3 §2 发现
 
-- 89 条机器可计：FINDING 41（fact 8、design-d2 16、reader-a 4、reader-b 9、reader-c 4）+ SUGGESTION 48；另有 refute 6 条 CLAIM（见 §1 VARIANCE 1）。
+- 95 条机器可计：FINDING 41（fact 8、design-d2 16、reader-a 4、reader-b 9、reader-c 4）+ SUGGESTION 48 + CLAIM 6（refute 末尾追加的 `## CLAIM 11..16` 索引；见 §1 VARIANCE 1）。
 - 严重度：P0 = 0；P1 = 11（fact 0、design 2、reader-a 2、reader-b 4、reader-c 0、其余为 design P2 与 reader P1/P2 分布）；P2 = 30 左右；P3 若干。逐条见 `panel/round3/`。
 - 面板抓到 3 条**本仓文档的真实错误**：§4.4 状态表把 aarch64 direct-core 的跳转后 PC 写成「低地址进入」、§3.1 把 riscv64 测试载体并入「低地址执行视图」、§3.4 的「四条前置条件」与表格行对不上。
 
 ### R3 §3 归因
 
 - 34 个根因（RD-R3-01..34，按角色/严重度/处置类聚簇）。
-- 冻结决策检查：无命中；设计项的 11 条 P1/P2 按 §3.6 记 ② 延期（D-061）；2 条 ARCH 提案进判决账待裁。
+- 冻结决策检查：无命中；设计项的 11 条 P1/P2 按 §3.6 记 ② 延期（D-063）；2 条 ARCH 提案进判决账待裁。
 - 范围：全部 in-scope。
 - 归因结论：本轮 P1 全部是文档内部一致性（同一事实两处说法冲突），不是源码事实错误；设计的 2 条 P1 是代码契约风险（别名、fail-open），按确认轮权限不实施。
 
@@ -336,13 +336,13 @@
 
 ### R3 §6 指标
 
-- 与 `metrics.md` 的 `## R3 确认轮` 块一致：发现总数 89、唯一根因数 34、本轮新准入 34、certify 新准入 0、处置 ① 12 / ② 11 / ④ 17 / SUGG 49、未闭环 0。
+- 与 `metrics.md` 的 `## R3 确认轮` 块一致：发现总数 95、唯一根因数 37、本轮新准入 37、certify 新准入 0、处置 ① 13 / ② 11 / ④ 17 / FP 5 / SUGG 49、未闭环 0。
 - 轮型 `confirmation`；轮结果 `CONVERGED`。
 
 ### R3 §7 状态
 
 - `CONVERGED`。前提：R1 是已关闭的修改轮（ROUND-CLOSED），R3 certify 新准入 0。
-- 未闭环 0；`OPEN-DEBT` 的 `R3-design-batch` 有 D-061 判决行与日期。
+- 未闭环 0；`OPEN-DEBT` 的 `R3-design-batch` 有 D-063 判决行与日期。
 - `CONVERGED` 的语义限制同 D01：确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
 
 ### R3 §8 给 meta-review 的不确定点
