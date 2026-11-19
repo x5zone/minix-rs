@@ -308,6 +308,44 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
 
+### I-33（已裁决·可立即开工）直核腿统一到 owned 路径，删第二套静态表
+
+**裁决**：用户 2026-11-20，判决行 `D-065`。**状态：已批准待实施**。来源：`RD34-DESIGN-D2-03`（P2，[MODERN]）。用户表述：「统一总是我的最优选」。
+
+**现状**：`DtbMemoryMap` 有三个输出入口，五条腿分成两套。
+
+| 腿 | 现在用 | 数据落点 |
+|---|---|---|
+| x86 UEFI、aarch64 UEFI、U-Boot shim | `collect_owned()` | `BootStorage` 槽位 |
+| **riscv 直核、aarch64 直核** | `collect_with_sources()` | `DTB_FREE`/`DTB_RESERVED`/`DTB_SOURCES` 静态表 |
+
+改后五条腿全部走 owned。
+
+**做法**：
+
+1. `os/kernel-image/src/bootface.rs:213` 与 `bootface_a64.rs:203-204` 的 `collect_with_sources()` 改成 `collect_owned()`；
+2. 按 U-Boot 腿的三步（`opensbi_helpers.rs:299-320` 是模板）：`owned` → `audit_source_coverage` → 拷入 `storage.map_tables_mut()` / `set_memmap_sources_len` 提交；
+3. `build_kernel_info` 的三个实参（`bootface.rs:428-430` 的 `memmap`/`reserved`/`sources`）改读 `storage.*()`；
+4. 删 `memmap_source.rs` 的 `DTB_FREE`（`:160`）/`DTB_RESERVED`（`:164`）/`DTB_SOURCES`（`:619`）、三个 `AtomicUsize`（`:223-224`/`:632`）、`collect()`/`collect_with_sources()` 与第二套一次性守卫（`:1360-1395`）；
+5. 文档 §3.4.5 删掉「让 DTB 收集器保持单一写入点」这条理由——**它是错的**（U-Boot 腿用 `collect_owned` 同时做到了单一写入点与全量 owner）。
+
+**关键澄清（讨论中查实，纠正面板估算）**：
+
+- **不是「增加 9 KiB」，是「净减 3 KiB」**。两个直核腿**早已持有完整 `BootStorage`**（`bootface.rs:147`、`bootface_a64.rs:148` 的 `static STORAGE: BootStorageCell`），其中 memmap(128)/reserved(256)/sources(40) ≈ 9024 B 一直闲放在 `.bss`；改后只是从「空着」变成「写入」，不增一字节。删掉的三张 `DTB_*` 静态表约 3136 B 释放，**净减约 3 KiB**。对省空间的嵌入式场景是改善。
+- **顺带消除一个行为差异**：直核腿 free 表上限 `DTB_MEMMAP_MAX = 8`（`memmap_source.rs:46`），v1 腿 `WIRE_MEMMAP_CAP = 128`（`handoff_v1.rs:375`）。同一份 `/memory` 描述超过 8 段的板子，直核启动 halt 而 v1 腿正常启动。`DtbMemMapError::TooManyFreeRegions` 的注释明写容量是策略输入、不允许静默截断。
+
+**验收**：
+- `grep -rn "DTB_FREE\|DTB_RESERVED\|DTB_SOURCES\|collect_with_sources" os/ --include="*.rs"` → 0；
+- 两个直核腿的 `KernelInfo.memmap` 指向 `BootStorage` 落地区（可在 bootface 里断言切片指针落在 storage 范围内）；
+- `cargo test -p minix-boot`、`cargo test -p boot-shim --features test-all` 全绿；
+- riscv 直核 bootface 门与 aarch64 直核 SMP 门 PASS（含 `-kernel` 直核形态不回归）；
+- `bootface_common.rs:16` 的 16 KiB `.bss` 断言仍通过（改为净减后应更宽松）；
+- 文档 §3.4.5 不再有「单一写入点」这条理由。
+
+**风险与回退**：直核腿从「发布静态表」变成「写入 storage」，须确认没有其他代码依赖 `DTB_*` 的符号存在（`grep` 已确认 `os/kernel-image` 与 `os/kernel` 零命中）。若某腿的 `/memory` 段数超过 `WIRE_*_CAP`，会从原来的 `TooManyFreeRegions` halt 变成 storage 容量断言 halt——两者都是 fail-closed，但阈值不同（8 → 128，放宽）。
+
+**为什么现在不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。裁决已生效，实施留待下一 design/code batch。
+
 ### I-32（已裁决·可立即开工）U-Boot 腿两个安装型全局：检查强度对齐
 
 **裁决**：用户 2026-11-20，判决行 `D-064`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `R34-design-batch` 行已注记。来源：`RD34-DESIGN-D2-02`（P2）。
