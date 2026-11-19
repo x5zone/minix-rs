@@ -40,6 +40,7 @@
 | I-34（本轮新登记） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 设计裁决 + 代码改造 | 已裁决（D-067，用户 2026-11-20）；待实施——详见 §3 的 I-34 | §3 |
 | I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `Frozen::freeze` 的 `debug_assert` + `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
+| I-37（本轮新登记） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 设计裁决 + 代码改造 | 已裁决（D-073，用户 2026-11-20）：采 A（`PreparedJump { entry: VirBytes, arena_pa: PhysBytes }`）；保持两函数分开；`shim_windows` 固件边界不动。待实施 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -580,6 +581,75 @@ assert!(
 
 **为什么现在不做**：用户 2026-11-20 明确要求「不实施，只记账」。
 
+
+
+### I-37（已裁决·待实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
+
+**裁决**：用户 2026-11-20，判决行 `D-073`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户「按照你的建议来」即批准方案；本条为记账，不实施）。来源：`R35/DESIGN-D2-07`（P3，[MODERN]）。
+
+**现状（为什么这是个问题）**：
+
+```rust
+// os/kernel/src/lib.rs:427
+pub fn prepare_kernel_image_v1(..) -> (u64, u64) {
+    let entry = core::hint::black_box(report.kern_virt_base.0);   // :510
+    (entry, arena_pa)                                            // :511 两个裸 u64
+}
+// :546
+pub fn jump_kernel_image_v1(entry: u64, arena_pa: u64) -> ! { .. }
+// :529-530（唯一调用点）
+let (entry, arena) = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
+jump_kernel_image_v1(entry, arena)
+```
+
+| 值 | 语义 | 应有类型 |
+|---|---|---|
+| `entry` | **虚拟**入口（`report.kern_virt_base`）——跳转目标 | `VirBytes` |
+| `arena_pa` | **物理** arena 基址——传给接收镜像 | `PhysBytes` |
+
+两者都是 `u64`，**交换后仍能编译**。交换后果：跳转目标变成 arena 的物理地址 → 分页刚开、跳转后第一次取指就故障；`scause`/`CR2` 指向的地址与真实原因无关，排查者会往页表方向查，而真实原因是参数顺序。**属最难归因的启动故障。**
+
+**两点核实**：
+- **不是固件边界豁免**：`shim_windows: &[(u64, u64)]`（`:427`）是外部 ABI 形状，文档允许裸地址对；本处是内核内部调用，两端都是本仓代码，无豁免理由。
+- **`black_box` 必须保留**：`:510` 的 `core::hint::black_box(report.kern_virt_base.0)` 是编译器屏障（防 LLVM 把跳转目标折叠成编译期字面量，破坏内联汇编的 `in(reg)` 约束）。改造后位置变成 `VirBytes(core::hint::black_box(report.kern_virt_base.0))`。
+
+**先例（同一模式已有两次）**：
+- `PlacementPool`（`os/kernel-image/src/bootface_common.rs:151-167`），文档原话：「They used to be three adjacent bare `u64` parameters, so swapping the name-pool address with a bump bound still compiled and produced a plausible-but-wrong placement.」
+- `MapCounts { memmap, reserved }`（D-067）。
+
+**做法（A）**：
+
+1. 新增私有值对象（放 `os/kernel/src/lib.rs`，紧邻两个函数）：
+
+```rust
+#[derive(Debug, Clone, Copy)]
+struct PreparedJump {
+    /// Virtual entry of the standalone image's `_start`.
+    entry: VirBytes,
+    /// Physical base of the handoff arena.
+    arena_pa: PhysBytes,
+}
+```
+
+2. `prepare_kernel_image_v1` 签名改返回 `PreparedJump`，末尾 `(entry, arena_pa)` 改为 `PreparedJump { entry: VirBytes(entry), arena_pa: PhysBytes(arena_pa) }`（`black_box` 保留在 `entry` 的取值处）。
+3. `jump_kernel_image_v1(jump: PreparedJump)`，函数体内取 `jump.entry.0` / `jump.arena_pa.0` 供三段 `#[cfg]` 汇编臂使用——**asm 块本身不变**。
+4. `enter_kernel_image_v1`（`:529-530`）改为 `let jump = prepare_kernel_image_v1(..); jump_kernel_image_v1(jump)`。
+
+**不做的事（裁决明确）**：
+- **保持两个函数分开**：拆分理由（TODO-09 的 post-root/pre-jump 路标位置）虽已由 D-029 判决「不强制增加该诊断打印」而失效，但拆分本身无害，留着不花钱；合并会丢掉将来插路标的位置。
+- **`shim_windows: &[(u64, u64)]` 不动**：固件边界是外部 ABI 形状，类型化会引入与固件定义的对齐负担。
+
+**验收**：
+- `grep -n "-> (u64, u64)" os/kernel/src/lib.rs` 在 `prepare_kernel_image_v1` 处归零；
+- `grep -n "fn jump_kernel_image_v1" -A 1 os/kernel/src/lib.rs` 形参为 `PreparedJump`；
+- `grep -c "core::hint::black_box(report.kern_virt_base.0)" os/kernel/src/lib.rs` → 1（保留）；
+- `cargo test -p minix-kernel --features mock`、三架构 `cargo check -p minix-kernel`（含生产形态）全绿；
+- 五条 QEMU 门链（x86 UEFI、aarch64 UEFI、aarch64 直核 SMP、riscv U-Boot shim、riscv 直核 bootface）PASS——本改动触及全部跳转路径，门链不可省；
+- 文档 §4.8 若引用这两个函数的签名，同批更新。
+
+**风险与回退**：`PreparedJump` 是私有类型，不跨 crate、不改变外部 ABI；唯一风险是某架构的汇编臂读取字段时类型不匹配（`VirBytes.0` / `PhysBytes.0` 都是 `u64`，直接取 `.0` 即可）。若某臂需要裸值做别的用途 → 在臂内局部解构，不改结构体形状。
+
+**为什么现在不做**：用户 2026-11-20 明确只做记账。
 
 ### I-36（未裁决·待裁决）`UbootFileLoader::read` 的 ELF 修剪上移（+ 一次核查事故记录）
 
