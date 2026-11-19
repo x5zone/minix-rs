@@ -80,7 +80,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 | 动作 | 必须发生在 | 理由 |
 |---|---|---|
 | 取到描述的物理地址 | 启动早期（固件服务退出前） | 配置表/系统表只在窗口内有效 |
-| 解析描述 | 可以在内核里慢慢做 | 解析只依赖那份物理地址指向的字节，只要字节还在 |
+| 解析描述 | 可以在内核里慢慢做 | 解析只依赖那份物理地址指向的字节，只要字节还在（这是 DTB 单块形态；ACPI 的表链不在这条保证内，见 §4.5 的 R04-T13） |
 
 这条切分要成立，交接物必须能跨二进制存活。Rust 侧为此把交接物做成纯数据对，并把理由写在模块注释里（§3.6）。
 
@@ -130,7 +130,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 
 这张图在 §4.1 会用 Rust 侧的实际类型再走一遍，两处对照着看能看出哪些段换了承载物、哪些段的位置变了。
 
-把第 ④ 段（保存为只读全局）省掉、让每个消费者各自去读一遍会坏在哪：C 侧会撞上 `acpi_phys2vir` 的 `vm_running` 检查——发现函数在 VM 起来之后拒绝工作（§1.3），而消费者（`apic_single_cpu_init`、`discover_cpus`）分散在启动序列的不同位置（SMP 构建下第二处跟在更晚的 `smp_init` 里）；Rust 侧同一错排会让 `init_clock_and_interrupts` 的第一行 `platform_desc()` 触发 `Frozen` 的读取断言（§4.1）。
+把第 ④ 段（保存为只读全局）省掉、让每个消费者各自去读一遍会坏在哪：C 侧约束会放大：`acpi_phys2vir` 的 `vm_running` 检查让「每个消费者自己读」的写法必须整体赶在 VM 起来之前完成（§1.3），而消费者（`apic_single_cpu_init`、`discover_cpus`）分散在启动序列的不同位置（SMP 构建下第二处跟在更晚的 `smp_init` 里）——至于是否真有消费者运行在 `vm_running` 置位之后，本篇未取证，成立的只是约束放大本身；Rust 侧同一错排的失败点不是时钟初始化自己——Phase A.5 的 `init_from_kinfo` 在 `init_clock_and_interrupts` **之前**就无条件调 `init_protection` 读 `platform_desc()`，断言在那里就触发（§4.1/§6.1 的排错记录）；时钟/中断的消费者反而永远到不了。
 
 ### 1.5 本篇范围与可以安全跳过的内容
 
@@ -1006,7 +1006,7 @@ void kmain(kinfo_t *local_cbi)
 
 板号在时钟侧同样是一道分支：`minix3/minix/kernel/arch/earm/arch_clock.c:init_local_timer` 按 `BOARD_IS_BBXM` / `BOARD_IS_BB` 给 `tsc_per_ms[0]` 取 `16250` 或 `15000`，两个都不成立时执行 `panic("Can not do the clock setup. machine (0x%08x) is unknown\n", machine.board_id)`。
 
-板号在两步里落地，缺名或查表失败**在更早的一步就已经中止**：
+板号在两步里落地，两步的失败停点不同：短名缺失停在第一步（`pre_init` 的 `svc #00`，源码注释 "there is no safe escape"），到不了后面的任何 panic；只有全名查表失败（板号 0）才会走到 `intr_init` 的 panic——
 
 第一步是 `pre_init()`（`minix3/minix/kernel/arch/earm/pre_init.c`）里的 `set_machine_id()`：它从启动参数取**短名**（`A335BONE`/`BBXM`/`A335BNLT`）经 `get_board_id_by_short_name` 查表；`board_name=` 缺失或查表返回 0 时，它执行 `POORMANS_FAILURE_NOTIFICATION`（即 `svc #00`，源码注释写着 "there is no safe escape"）——此时还没进 `kmain`，更没到 `intr_init`。
 
@@ -1062,7 +1062,7 @@ C 的发现全在内核内：`acpi_init` 是 kernel 的函数（`minix3/minix/ke
 选 C 的收益不只是"职责清晰"。解析在内核里意味着解析产物可以**只**是内核类型，不必先变成 `KernelInfo` 的 ABI 字段再搬一次：
 
 ```rust
-// os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo —— 节选（本字段的文档注释；省略号处为其余字段）
+// os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo —— 节选（本字段的文档注释；句序相对源注释有重排；省略号处为其余字段）
 pub struct KernelInfo {
     ...
     /// Platform descriptor sources — opaque handles carrying firmware table
@@ -1151,7 +1151,7 @@ $ rg -o 'Self::(DeviceTree|Acpi|QemuVirt)' os/libs/minix-platform/src/global.rs 
 
 口径 = **条**（`Self::…` 变体匹配算一条；不含构造点，也不含 `psci_conduit()` 的 `_ => None` 兜底臂——含兜底臂则 26）。这 25 条分布在 `Debug` 实现（3 条）与八个转发方法（22 条）里。这里要分清两件事：**消费方只认接口**成立；**维护方只有一处分支**不成立——`PlatformDescEnum` 自己就是那张 25 条的分派表。
 
-改成 `Box<dyn PlatformDesc>` 会坏在哪：`os/libs/minix-platform/src/lib.rs` 是 `#![no_std]`，全局是 `static PLATFORM: Frozen<PlatformContext>`，引导早期还没有分配器（堆尚未建立），`Box::new` 无处可取内存。`os/libs/minix-platform/src/global.rs` 的 enum 文档把这条理由写在"为什么不用 `Box<dyn PlatformDesc>`"一段里（`no_std`——避免引导期依赖分配器；enum 分派不需要为每个描述符做一次堆分配）。这不是"多花一点开销"的取舍，而是当前阶段不可用。
+改成 `Box<dyn PlatformDesc>` 会坏在哪：`os/libs/minix-platform/src/lib.rs` 是 `#![no_std]`，全局是 `static PLATFORM: Frozen<PlatformContext>`，引导早期还没有分配器（堆尚未建立），`Box::new` 无处可取内存。`os/libs/minix-platform/src/global.rs` 的 enum 文档把这条理由写在"为什么不用 `Box<dyn PlatformDesc>`"一段里（`no_std`——避免引导期依赖分配器；enum 分派零开销、不经 vtable——这两条是源注释的原话，「省掉每描述符一次堆分配」是本文的推论，不是源注释原文）。这不是"多花一点开销"的取舍，而是当前阶段不可用。
 
 `vtable` 是一张按 trait 方法声明次序排列的函数指针表：`&dyn PlatformDesc` 这类 trait object 由数据指针与 vtable 指针两个机器字组成，调用 `pd.timer()` 时先取表里第 n 项、再间接跳转。`platform_desc()` 的返回类型是 `&'static dyn PlatformDesc`，所以外层仍有一次 vtable；enum 省掉的是"为每个描述符分配一个 `Box`"，以及 enum 内部转发时不再经过第二层 trait object。子描述符方法（如 `nr_irqs()`）仍经一次 vtable，§3.3 的"经 vtable"与这里不矛盾。
 
@@ -1424,7 +1424,7 @@ pub struct Frozen<T> {
 }
 ```
 
-同一文件里 `get` 的 Panics 注释（断言文本的出处）：
+同一文件里 `get` 的 Panics **注释**写的是另一句措辞（注意区分：下面引的是注释文本，不是运行时断言文本；真正的 `assert!` 消息是 "Frozen::get before freeze"，见 §4.1/§6.1 引的运行时症状）：
 
 ```text
 // os/libs/minix-types/src/types/cell.rs:impl Frozen —— 节选（`get` 的 Panics 注释）
@@ -1641,7 +1641,7 @@ riscv64 的来源走另一条路：
 
 aarch64 若写成单次 GUID 判断（`if e.guid == DEVICE_TREE_GUID || e.guid == ACPI2_GUID`）会坏在哪：循环按配置表项顺序扫描，先遇到哪个 GUID 就取哪个——来源由固件给出的表项顺序决定，不由设计意图决定。AAVMF 的表里 ACPI2 在、FDT 两个 GUID 都不在（§5.2 的实测），单次判断在这台机器上取到 ACPI 与两段循环的结果相同；但一台同时提供两者的服务器若把 ACPI 项排在前面，"DTB 优先"这条设计就失效——设计意图是先用更具体的设备树。顺序控制靠两段独立循环实现，不靠 GUID 判断的写法。
 
-引导阶段的例外按 §1.3 的口径是**两处**（取长度读表头属规则组成部分，不计）。其一（甲），memmap 装配所需的 DTB 子集解析：三条腿共用 minix-boot 的 `collect_arrays`，都解 `/memory`、`/reserved-memory` 与设备树 memory reservation block（MRB，记为 `MrbEntry`、映射到 `EfiReservedMemoryType`，`memmap_source.rs:1152`、`resv_claims.rs:97`）；UEFI 腿的 memmap 本体来自 `GetMemoryMap`，只有 claims 走这条 DTB 路径。除这些子集外的节点仍归内核平台发现层。其二（乙），aarch64 UEFI 腿 `dtb_copy` 的两段式，分 EBS 前后：EBS **前** `preflight` 读头 → `authorize_and_copy` 整块复制 → `resv_claims::capture` 生成保留声明（`ebs_pair.rs:190-194`，此后到 EBS 不得再分配）；EBS **后** `cross_validate_config_dtb` 解析整棵树，把 `/memory` 与 UEFI 内存图交叉比对（`uefi_helpers.rs:1188`，5 条 panic 停机路径）。它不装配 `KernelInfo.memmap`，但**会**把 DTB 派生的 `SourceRecord` 经 `push_dtb_sources` 写进 wire（`ebs_pair.rs:194`、`handoff_v1_write.rs:327-334`），内核解码后存入 `KernelInfo.memmap_sources`（`lib.rs:711/725`）；这些记录在 UEFI 腿的覆盖证明里被 `authority` 过滤排除，但它们确实跨了 ABI。
+引导阶段的例外按 §1.3 的口径是**两处**（取长度读表头属规则组成部分，不计）。其一（甲），memmap 装配所需的 DTB 子集解析：三条腿共用 minix-boot 的 `collect_arrays`，都解 `/memory`、`/reserved-memory` 与设备树 memory reservation block（MRB，记为 `MrbEntry`、映射到 `EfiReservedMemoryType`，`os/libs/minix-boot/src/memmap_source.rs:1152`、`os/boot-shim/src/resv_claims.rs:97`）；UEFI 腿的 memmap 本体来自 `GetMemoryMap`，只有 claims 走这条 DTB 路径。除这些子集外的节点仍归内核平台发现层。其二（乙），aarch64 UEFI 腿 `dtb_copy` 的两段式，分 EBS 前后：EBS **前** `preflight` 读头 → `authorize_and_copy` 整块复制 → `resv_claims::capture` 生成保留声明（`ebs_pair.rs:190-194`，此后到 EBS 不得再分配）；EBS **后** `cross_validate_config_dtb` 解析整棵树，把 `/memory` 与 UEFI 内存图交叉比对（定义在 `uefi_helpers.rs:855-895`，函数体内 4 条 panic 停机路径——:866/874/880/885；`:1188` 是调用点，紧随其后的 :899/902 属下一函数 `load_dumpdtb_blob`）。它不装配 `KernelInfo.memmap`，但**会**把 DTB 派生的 `SourceRecord` 经 `push_dtb_sources` 写进 wire（`push_dtb_sources` 定义在 `ebs_pair.rs:237`，`:327-334` 是其调用的 `push_source`），内核解码后存入 `KernelInfo.memmap_sources`（`lib.rs:711/725`）；不过这些 DTB 记录不参与 UEFI 腿的来源覆盖审计：`audit_source_coverage_for`（`memmap_source.rs:361`）在 UEFI 腿只以 `UefiMemoryMap` 这一类记录为**权威来源**（`authority` 参数只收它；DTB 记录被排除在「必须解释投影」的清单之外，机制见 `memmap_source.rs:354-360` 的注释）——所以它们跨了 ABI，但不承担覆盖证明的义务。
 
 ### 4.3 分派：parse_by_kind 与它的构造点（→3.6）
 
@@ -2145,7 +2145,7 @@ impl PlatformDesc for PlatformContext {
 aarch64 的中断控制器多一步地址翻译：
 
 ```rust
-// os/plat/src/arm64/interrupt.rs:fn new —— 节选（注释有删改：行首的过程编号未保留）
+// os/plat/src/arm64/interrupt.rs:fn new —— 节选（注释为中文转述、非源码逐字，行首过程编号未保留；代码逐字）
     fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
         let gicv3 = desc.as_any()
             .downcast_ref::<Gicv3Desc>()
@@ -2224,7 +2224,7 @@ pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 `cpu_topology()` 的产物在本篇展开三处（另有 aarch64 的 `enable_sched_sgi_for_cpu`、riscv64 的 `s_mode_context_for_current_cpu` 与三个 `smp_init` 变体，见 `16-smp.md`（尚未重生成））。第一处是 SMP 状态的构造：
 
 ```rust
-// os/kernel/src/lib.rs:fn init_smp_state —— 节选（第一个 unsafe 块）
+// os/kernel/src/lib.rs:fn init_smp_state —— 节选（第一个 unsafe 块；块内注释为中文转述式压缩，非源码逐字——源注释首句 not the truth: OpenSBI may hand control… 被压缩）
 pub fn init_smp_state() {
     use minix_platform::{PlatformDesc, platform_desc};
     // SAFETY: boot is single-threaded before BKL exists.
@@ -2469,7 +2469,9 @@ $ grep -rc '#\[test\]' os/libs/minix-platform --include=*.rs | awk -F: '{s+=$2} 
 |---|---|---|---|
 | `test-smp-topo`（x86_64） | 扫 UEFI 配置表的 `ACPI2_GUID` / `ACPI_GUID` | `PlatformDescSource::new(RSDP, ...)` → `parse_by_kind` → MADT LAPIC | `nr_cpus == 4`；`hw_id` 两两互异；固件 `bsp_id` hint 在集合内；执行 CPU 的 CPUID APIC ID 在集合内 |
 | `test-smp-topo-aarch64` | 同上（注释写明 AAVMF 不给 FDT，配置表只有 ACPI2） | `RSDP` → `parse_by_kind` → MADT GICC | 同上；执行 CPU 的 MPIDR_EL1.Aff0 在集合内 |
-| `test-smp-topo-riscv64` | OpenSBI 的 `a1`（非 UEFI 二进制，QEMU 直接 `-kernel` 装载 ELF） | `PlatformDescSource::with_optional_len(DTB, ...)` → `parse_by_kind` → 设备树 `cpus` 节点 | 同上；OpenSBI `a0` 引导 hart 在集合内 |
+| `test-smp-topo-riscv64` | OpenSBI 的 `a1`（非 UEFI 二进制，QEMU 直接 `-kernel` 装载 ELF） | `PlatformDescSource::new(DTB, PhysBytes(dtb_phys))`（len=0，不带长度；与 boot-shim 生产腿的 `with_optional_len` 不同）→ `parse_by_kind` → 设备树 `cpus` 节点 | 同上；OpenSBI `a0` 引导 hart 在集合内 |
+
+三个变体构造器的差异（随 RD04-FACT-01 补记）：x86_64 与 aarch64 的 UEFI 腿用 `new(RSDP, …)`（表基址已知、无长度语义）；boot-shim 的 DTB 生产腿用 `with_optional_len(DTB, …)`（`len` 复用旧 `reserved` 槽位、0 表示未知，消费者按 2 MiB 片覆盖）；riscv64 测试内核用 `new(DTB, …)`（len=0，同样按 2 MiB 片覆盖）。三者落到 wire 的都是同一条 16 B 记录，`len` 位是否有效由写者决定。
 
 x86_64 变体的关键段落：
 
@@ -2564,7 +2566,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 
 | # | 机制（正文位置） | 需要证明什么（可观测断言） | 测试覆盖状态 | 现有证据 / TODO |
 |---|---|---|---|---|
-| M1 | boot-shim 来源定位（§4.2） | 两段 GUID 扫描的顺序（设备树优先）；命中即停；切片内容与顺序正确 | 部分覆盖 | 真机 10 个测试内核走 ACPI 命中路径；**DTB GUID 命中路径从未在真机上命中**（AAVMF 的配置表里 spec/legacy 两个 GUID 都不在）→ **R04-T05** |
+| M1 | boot-shim 来源定位（§4.2） | 两段 GUID 扫描的顺序（设备树优先）；命中即停；切片内容与顺序正确 | 部分覆盖 | 真机 10 个测试内核直接调用它（名单见 §5.3，与本行同一个计数）且全部走 ACPI 命中路径；**DTB GUID 命中路径从未在真机上命中**（AAVMF 的配置表里 spec/legacy 两个 GUID 都不在；`test-smp-aps-aarch64` 走 `-kernel`+`-dtb` 直核 DTB 单源、不经此函数，见 M7）→ **R04-T05** |
 | M2 | 分派 `parse_by_kind`（§4.3） | 两个真实分支各返回对应变体；未知 kind 报 `UnknownKind` | 部分覆盖 | 宿主只测未知 kind（`test_parse_by_kind_unknown_returns_error`）；两真实分支为间接覆盖 → **R04-T08** |
 | M3 | ACPI 链解析（RSDP → 根表 → MADT）（§4.4） | 合成链端到端可解析；rev 2 走 XSDT、rev < 2 回落 RSDT；四道负向闸拒绝坏表 | 部分覆盖 | 宿主 `test_parse_synthetic_acpi`（rev 2 形态）＋四个负向测试＋真机 x86_64/aarch64 变体；**RSDT 回落路径无载体** → **R04-T01** |
 | M4 | MADT 遍历两道闸（§4.4） | 零长记录被拒（解析器不挂死）；越界记录被拒 | 部分覆盖 | 负向测试覆盖 MADT 校验和；**零长/越界记录、签名与超长仍无载体** → **R04-T02** |

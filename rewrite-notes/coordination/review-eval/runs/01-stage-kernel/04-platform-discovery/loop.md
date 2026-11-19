@@ -3,6 +3,7 @@
 ## §0 基线
 
 - 工作流版本：V2（`rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md`）
+- schema: V3.4 from R3（V3.5 制品链起约束的首轮；重开依据 D-070。R1/R2 保持各自历史标记，不追溯）
 - 基线提交：`fc1fe0c71`
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
 - 文档基线 sha256：`0cfaa66fdb9eb7b2916129b8d7c97abf6f4e82b912ebb2c9d9c823c25a02af67`
@@ -211,7 +212,7 @@
 
 - 文档门：anchor 77/77；doc-code-map 52/52；structure/ref/style 通过；citation 全部跳过（MANUAL_FALLBACK）。
 - 旧串归零：`低 4GB 铺了 VA == PA`、`构造后不再被`、`len = 0 means unknown/legacy` 均为 0（按替换点核）。
-- certify 待跑；QEMU 未跑。
+- certify 已跑（R2 收口时完成 3 条修复，同 agent grep 复核，见 FREEZE 的收敛证据节）；QEMU 未跑。
 
 ### R2 §6 指标
 
@@ -237,3 +238,80 @@
 
 - 三问：① 不变量是“平台 blob 必须在已注册恒等窗口内、实例字段 freeze 后不可变”；② 前提是 R1 ROUND-CLOSED；③ 证据是 40 行台账与门读数。
 - 资源重读：本轮盲区属“旧启动前提残留”，检测模式是确认轮的跨节前提核对；无需新增规则。
+
+## R3 确认轮（V3.4 四态模型；D-070 授权的重开）
+
+### R3 §0 基线
+
+- 轮型: confirmation
+- edition: V3.4
+- schema: V3.4 from R3
+- 基线提交：`a16191022`（D03 收尾提交；本轮修复未提交时的工作树）
+- 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
+- 文档基线 sha256：`ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`（R2 FREEZE 值，与面板启动时一致）
+- 行数：2735（修复后 2737）
+- 设计快照：04 组齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`doc-code-map --check` 52/52（修复后 54/54——两处裸锚点补全路径后计数入册）
+- 语料条目：D04（`CORPUS.md` 第二节）
+- 范围声明：平台发现（DTB/ACPI 双源、描述符分类、GIC、CPU 拓扑）+ 52 个关联文件 + 本轮修复触碰的文件；不在范围 = 相邻模块与下一批次结构性重构
+- 重开依据：D-070
+
+### R3 §1 面板
+
+- 六角色全量、独立子 agent；读者 A/B/C 独立（文档 2735 行 ≥ 500）：
+  - P-FACT：6 条 FINDING + 3 SUGGESTION（`fact.md`）——实测 26 条测试计数与逐文件分布精确吻合、13 个具名测试全存在、C 侧 20 余函数逐字核对通过
+  - P-DESIGN-D2：9 条 FINDING + 1 ARCH-PROPOSAL（`design-d2.md`）；D1 停跑（D-024），基线「文档主张 ↔ 源码事实」，记 VARIANCE
+  - P-READER-A：1 + 10（`reader-a.md`）；P-READER-B：7 + 12（`reader-b.md`）；P-READER-C：4 + 12（`reader-c.md`）
+  - P-REFUTE：6 条 CLAIM（阻断 0 / 非阻断 1 / 反证失败 5），`refute.md`
+- **VARIANCE（派发降档）**：平台并发上限 3，六角色按 3+3 两波派发（第一波 fact/reader-a/design-d2，第二波 reader-b/reader-c/refute）；按 L1.1 降档协议记档。
+- 制品入库：`panel/round3/` + `INDEX.md`（6 文件：FINDING 27 / SUGGESTION 37 / CLAIM 6）。
+- certify 回执：`certify/round3-certify.md`（12/12 CLOSED，首轮即 PASS）。
+
+### R3 §2 发现
+
+- 70 条机器可计。严重度：P0 = 0；P1 = 1（READER-C-01：§1.4 的 Rust 失败点位与 §4.1/§6.1 矛盾）；P2 = 15；P3 = 54。
+- 面板要点：fact 的对账质量很高（26 条测试计数逐文件精确吻合）；设计侧的画像仍是「统一抽象的隐性税」+ 一条真问题（`enable_sched_sgi_for_cpu` 的 BSP 身份分叉，一行可修）；读者侧抓到 1 条 P1（概述与实现给出互斥的失败点位）。
+
+### R3 §3 归因
+
+- 29 个根因（RD-R3-01..29）。
+- 冻结决策检查：无命中；3 条设计 P2 记 ② 延期（D-070）；ARCH 提案 RD04-A1 进判决账待裁；CLAIM 11..15 反证失败记 FP、CLAIM-16 非阻断已修记 ①。
+- 范围：全部 in-scope。
+
+### R3 §4 修复
+
+- 12 处文档修改点：§1.4 Rust 失败点位（init_from_kinfo/init_protection 先于时钟初始化）、C 侧约束放大口径、§1.3 DTB 单形态限定、§3.7 双措辞区分、§4.2 authority 过滤机制句、§2.9 板号两步失败停点、§5.4 M1 与 §5.3 口径、§5.2 riscv64 topo 行构造器、§4.2 cross_validate/push_dtb_sources 锚点组、三处引文标注（句序重排/中文转述/中文转述）、§3.2 enum 理由原话与推论区分、两个裸锚点补全路径、§5.2 表下补三变体构造器差异说明。
+- 文档六门：anchor 77/77、citation `checked=68 failed=0 warned=7`、structure/ref/style(error=0)/density 通过、doc-code-map 54/54。
+
+### R3 §5 复验
+
+- 独立回执 `certify/round3-certify.md`：12 条全部 CLOSED，首轮即 PASS；每条附源码 grep/sed 读数（含 `cell.rs:246/250` 双措辞、`memmap_source.rs:354-366`、`main.rs:110`、`uefi_helpers.rs:855-895` 等）。
+- `certify 新准入 = 0` 口径：certify 输入闭集 = 12 个修改点；回执覆盖全部。
+- 代码行为：本轮无代码改动；QEMU 未跑。
+
+### R3 §6 指标
+
+- 与 `metrics.md` 的 `## R3 确认轮` 块一致：发现总数 70、唯一根因数 29、本轮新准入 29、certify 新准入 0、处置 ① 10 / ② 3 / ④ 7 / FP 5 / SUGG 45、未闭环 0。
+- 轮型 `confirmation`；轮结果 `CONVERGED`。
+
+### R3 §7 状态
+
+- `CONVERGED`。前提：R1 是已关闭的修改轮，R3 certify 新准入 0。
+- 未闭环 0；`OPEN-DEBT` 的 `R3-design-batch` 有 D-070 判决行与日期。
+- `CONVERGED` 的语义限制同 D01–D03。
+
+### R3 §8 给 meta-review 的不确定点
+
+1. 3 条设计 P2 里 D2-03（BSP 身份分叉）读起来像真缺陷（SGI 门可能开错 redistributor），确认轮只能延期；若 meta 认为应按事实缺陷在轮内修，本轮不能以确认轮关闭。
+2. 设计 P3 里 D2-08/09 被面板标注「需用户裁决」，但按 §4.0c 门槛它们是 P3 → SUGG；「需用户裁决」与「不阻断登记」的界线没有明文。
+3. refute 的 CLAIM-16（非阻断 P2）的精度瑕疵（4 条停机路径、push_dtb_sources 归属）由主 agent 按源码改正，certify 未单列复核——依赖 certify 第 9 条的覆盖。
+
+### L6
+
+- 同 agent 收口（另有独立 certify 回执，见 §5）。流程质量记录：fact 对账密度高（26 条测试计数逐文件吻合）而读者侧只报 1 条 P1，说明 D04 在 R2 后的文档质量同样已经很高；设计侧继续给「隐性税」画像 + 一条一行可修的真分叉。
+- 流程质量结论：`IMPROVED`（ certify 首轮 12/12，是四篇中唯一一次首轮全过；说明前两篇的修改模式已被吸收）。
+
+### L6.5
+
+- 三问：① 不变量是「确认轮在最终工作树上 certify 新准入 = 0」；② 前提是 R1 已 ROUND-CLOSED；③ 证据是 certify 回执 12/0 与六门读数。
+- 资源重读：盲区属「流程类」，查 `fresh-eyes-review`；无新检测模式，记 BLIND-SPOTS 候选。

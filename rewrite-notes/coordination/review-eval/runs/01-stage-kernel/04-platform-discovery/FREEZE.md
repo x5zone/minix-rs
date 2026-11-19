@@ -5,8 +5,8 @@
 - 确认轮：R2（`轮型: confirmation`）
 - 冻结提交：`bc232e627`
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
-- 行数：2735
-- 文档 sha256：`ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`
+- 行数：2735（R2 时点）；R3 时点 2737
+- 文档 sha256：`90179b7b4d7a4428fe2a1591502aaf64b3ec4cd98947617d97f126529ea3545d`（R3 复核后；R2 原值 `ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`）
 - 关联代码：`tools/doc-code-map.sh --check` 52/52 通过
 
 ## 收敛证据
@@ -61,3 +61,14 @@ citation 门新增第四标注形态（`// path —— kind`）与 `.S/.lds/.inc
 {platform_desc, PlatformDesc}` 与现行源码（`os/kernel/src/lib.rs:1962`）的导出名
 顺序相反——已按源码修正为 `{PlatformDesc, platform_desc}`。修正后 citation 门
 `failed=0`。本文档 sha256 更新为 `ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`；按 §4h（FREEZE append 语义）追加本节。
+
+## R3 确认轮（V3.4；D-070 授权的重开确认，append-only 追加）
+
+- 上一节记录的是 V3.3 口径下的 R2 确认（含 2026-11-17 D-055 重做回归与 2026-11-18 citation 扩容补记）；按 D-070（用户指令 `prompt/EXECUTE-D01-D06-CONVERGENCE.md`）在 V3.5 制品链下重开一次，轮次号 R3、edition V3.4、`schema: V3.4 from R3`。
+- **R3 确认轮**：六角色全量 survey（fact 6、design-d2 9、reader-a 1、reader-b 7、reader-c 4 条 FINDING；SUGGESTION 37；refute 6 条 CLAIM）。无 P0，1 条 P1（READER-C-01：§1.4 的 Rust 失败点位与 §4.1/§6.1 矛盾），15 条 P2。
+- **修复**：12 处文档修改点（§1.4 失败点位改 `init_from_kinfo`/`init_protection`、C 侧约束放大口径、§1.3 DTB 单形态限定、§3.7 双措辞区分、§4.2 authority 过滤机制句、§2.9 板号两步失败停点、§5.4 M1 口径、§5.2 riscv64 topo 构造器、§4.2 cross_validate/push_dtb_sources 锚点组、三处引文标注、§3.2 enum 理由原话/推论区分、两处裸锚点补路径、三变体构造器差异说明）。
+- **certify**：`certify/round3-certify.md`（本轮新派发的冷启动子 agent）——12/12 CLOSED，**四篇中唯一首轮即 PASS**。
+- **面板后处理**：无（本篇面板标题层级规范）；派发按平台并发 3+3 两波（L1.1 降档协议）。
+- **机械门**：`--round R3` PASS（11/2/0）；`--round R1/R2` 仍 PASS；anchor 77/77；citation `checked=68 failed=0 warned=7`；structure/ref/style(error=0)/density 通过；doc-code-map 54/54；`panel-index --check` 6 文件哈希一致。
+- **未闭环 = 0**。`OPEN-DEBT` 的 `R3-design-batch`（3 条设计 P2 + 6 条设计 P3 + ARCH 提案 RD04-A1）有 D-070 判决行与 2026-11-20 日期。
+- 限制同前：`CONVERGED` = 确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。

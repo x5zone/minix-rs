@@ -70,4 +70,26 @@
 - adjacent 阻塞: 0
 - 重构: 提出 6 / 接受 6 / 实施 0 / 登记 6
 - 成本: agent 3 / token 未采集 / 耗时 约 3 小时
-- 回读与回归: 文档门通过；certify 待跑；无代码行为改动
+- 回读与回归: 文档门通过；certify 已跑（R2 收口时完成 3 条修复，同 agent grep 复核，见 FREEZE）；无代码行为改动
+
+## R3 确认轮
+
+- 发现总数: 70（FINDING 27 + SUGGESTION 37 + CLAIM 6；与 `panel/round3/INDEX.md` 同源）
+- 唯一根因数: 29（RD-R3-01..29，按角色/严重度/处置类聚簇）
+- 本轮新准入: 29
+- certify 新准入: 0
+- 重复合并: 0（聚簇内多发现同行，未跨簇合并）
+- 自引入: 0
+- 处置: ① 10 / ② 3 / ④ 7 / ⑤ 0 / ⑥ 0 / FP 5 / SUGG 45
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 1（D-070：3 条设计 P2 延期到 R3-design-batch）
+- ARCH 提案: 1（RD04-A1：aarch64 ACPI 腿的 PSCI conduit，待用户裁决）
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 3 / 接受 3 / 实施 0 / 登记 3
+- 成本: agent 9（六角色 + certify）/ token 未采集 / 耗时 约 3 小时
+- 回读与回归: 文档六门绿（anchor 77/77、citation checked=68 failed=0 warned=7、structure/ref/style error=0/density 通过、doc-code-map 54/54）；独立回执 certify/round3-certify.md（12/12 CLOSED 首轮即 PASS）
