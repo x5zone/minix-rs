@@ -47,7 +47,7 @@
 - adjacent 阻塞: 0
 - 重构: 提出 6 / 接受 6 / 实施 4（D2-01 注释、D2-04 删方法、D2-05 re-export、D2-06 debug_assert）/ 登记 2（D2-02/03 的文档半边随 fact 批修）
 - 成本: agent 10（六角色，reader-b/refute 各超时重试一次）/ token 未采集 / 耗时 约 5 小时
-- 回读与回归: 文档六门绿（anchor 106/106、citation checked=43 failed=0、structure/ref/style error=0/density 通过、doc-code-map 33/33）；`cargo check -p minix-arch` 绿、`cargo test -p minix-kernel --features mock --lib` 866/0；独立回执 certify/round1-certify.md（首轮 12/3，其中 2 条为任务书笔误混入的 D04 条目；残留 5 处按证据改正后以复核为准）
+- 回读与回归: 文档六门绿（anchor 105/105、citation checked=43 failed=0、structure/ref/style error=0/density 通过、doc-code-map 33/33）；`cargo check -p minix-arch` 绿、`cargo test -p minix-kernel --features mock --lib` 866/0；独立回执 certify/round1-certify.md（首轮 12/3，其中 2 条为任务书笔误混入的 D04 条目；残留 5 处按证据改正后以复核为准）
 
 ## R2 确认轮
 
@@ -69,4 +69,4 @@
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 9（六角色 + certify）/ token 未采集 / 耗时 约 3 小时
-- 回读与回归: 文档六门绿（anchor 106/106、citation checked=43 failed=0、structure/ref/style error=0/density 通过、doc-code-map 33/33）；`cargo check -p minix-arch` 绿；独立回执 certify/round2-certify.md（8/8 CLOSED 首轮即 PASS）
+- 回读与回归: 文档六门绿（anchor 105/105、citation checked=43 failed=0、structure/ref/style error=0/density 通过、doc-code-map 33/33）；`cargo check -p minix-arch` 绿；独立回执 certify/round2-certify.md（8/8 CLOSED 首轮即 PASS）

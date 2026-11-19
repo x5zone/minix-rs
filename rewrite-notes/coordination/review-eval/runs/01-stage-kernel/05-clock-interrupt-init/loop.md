@@ -153,7 +153,7 @@
 
 - **文档侧**（13 处修改点）：3 条 citation failed 引文逐字修复（use 顺序×2、`&result.kernel_info`）、§4.7/§4.9/§4.8 三块注释转述标注、`apic.c:139→arch_clock.c:139`（宏行 140）、§3.6 Phase A.2 历史注记、`S-8 stub path`→`trap stub path`、`init_cpu_interface`→`init_cpu_interface_current`、riscv 载体行锚 360-364、ClockArch 示意默认体注、§4.1 两条 assert_eq 补省略、§1.4 三处位置矛盾统一到调用链依据、§2.1 内存图读值句、§2.4「第四步」、§4.7 推演 1 的前提差异、§3.2 推演的记账路径点名（misc.rs:1065）、§3.8 K-3 行锚点改指 arch 定义、L740 代价格改 re-export 口径。
 - **代码侧**（4 项 ⑥）：`disable_timer_irq` 从 trait 与三份实现删除（全仓零调用者）；`os/kernel/src/clock.rs` 的 DEFAULT_HZ 改 `pub use minix_arch::arch::clock::DEFAULT_HZ`；arm64/riscv64 重挂回退前加 `debug_assert!`（release 行为不变）；`os/arch/src/arch/clock.rs` 的过期注释（CLINT mtimecmp/MMIO）改 SBI/time-CSR 口径 + 映射表 x86 行修正。
-- 文档六门：anchor 106/106、citation `checked=43 failed=0`、structure/ref/style(error=0)/density 通过、doc-code-map 33/33。
+- 文档六门：anchor 105/105、citation `checked=43 failed=0`、structure/ref/style(error=0)/density 通过、doc-code-map 33/33。
 - 宿主：`cargo check -p minix-arch` 绿；`cargo test -p minix-kernel --features mock --lib` 866 passed / 0 failed / 8 ignored。
 
 ### R1 §5 复验
@@ -165,7 +165,7 @@
 
 ### R1 §6 指标
 
-- 与 `metrics.md` 的 `## R1 完整修改轮` 块一致：发现总数 70、唯一根因数 29、本轮新准入 29、certify 新准入 0、处置 ① 15 / ⑥ 6 / ④ 7 / FP 5 / SUGG 37、未闭环 0。
+- 与 `metrics.md` 的 `## R1 完整修改轮` 块一致：发现总数 70、唯一根因数 29、本轮新准入 29、certify 新准入 0、处置 ① 15 / ⑥ 4 / ④ 7 / FP 5 / SUGG 39、未闭环 0。
 - 轮型 `full`；轮结果 `ROUND-CLOSED`（修改轮无收敛声明权，进 CONVERGENCE-CANDIDATE）。
 
 ### R1 §7 状态
@@ -230,7 +230,7 @@
 ### R2 §4 修复
 
 - 10 处修改点：arch/clock.rs 注释改 re-export 口径（P1 根）、文档 §3.2 引文块同步、§3.8 K-3 锚点、L782 尾段（幽灵注释句退役 + with_hz(60) 口径改写）、§1.4 幽灵引文改退役声明、§3.1 Send+Sync 释义（PIT 单系统设备）、§3.7 推演 2 形态限定、§2.1 内存图读值句、§3.2 反事实记账路径点名、三个引文标注（SUG-01/02/03）。
-- 文档六门：anchor 106/106、citation `checked=43 failed=0`、structure/ref/style(error=0)/density 通过、doc-code-map 33/33。
+- 文档六门：anchor 105/105、citation `checked=43 failed=0`、structure/ref/style(error=0)/density 通过、doc-code-map 33/33。
 
 ### R2 §5 复验
 

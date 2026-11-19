@@ -24,6 +24,6 @@
 
 ## 收敛证据
 
-- `--round R1` 与 `--round R2` 均 PASS；anchor 106/106；citation `checked=43 failed=0`；structure/ref/style(error=0)/density 通过；doc-code-map 33/33；`panel-index --check` 两个 round 目录哈希一致。
+- `--round R1` 与 `--round R2` 均 PASS；anchor 105/105；citation `checked=43 failed=0`；structure/ref/style(error=0)/density 通过；doc-code-map 33/33；`panel-index --check` 两个 round 目录哈希一致。
 - 限制：`CONVERGED` = 确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
 - 重开条件：新 P0/P1 证据；design batch 实施改变基线；用户明确要求。
