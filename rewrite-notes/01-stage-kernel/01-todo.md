@@ -308,6 +308,48 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
 
+### I-30（已裁决·可立即开工）aarch64 形态判别改链接期分叉
+
+**裁决**：用户 2026-11-19 选择「向 riscv64 看齐」，判决行 `D-061`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——裁决本身已生效，实施尚未开始；`OPEN-DEBT.md` 的 `ARCH-01-aarch64-link-split` 行同步。
+
+**现状（为什么这是个问题）**：`os/kernel-image/src/main.rs:376-382` 的 aarch64 入口用一个运行期判断分流两条腿：
+
+```rust
+#[cfg(target_arch = "aarch64")]
+fn rust_image_main(arena_pa: usize) -> ! {
+    if arena_pa == 0 { bootface_a64::bootface_a64(); }
+    minix_kernel::arch_boot_resume_v1(arena_pa as u64)
+}
+```
+
+`arena_pa` 就是 `x0`。同一个 `kernel.elf` 靠「`x0` 是否为零」区分直核 `-kernel` 启动与 boot-shim v1 交接。而 `x0` 零值**不是任何规范承诺**——文档 §4.8（第 3046 行）自述「QEMU 观察到不设 `x0` 参数——非规范保证，仅本仓 QEMU 虚机实测；真板 `-kernel` 行为以板级文档为准」。任何在 `x0` 放非零值的加载器（aarch64 U-Boot 的 `booti`、真板固件、QEMU 未来版本改默认值）都会把直核启动误判成 v1 接收。
+
+**失效症状**：`kernel-image: handoff v1 envelope invalid` panic。它发生在 `early_console` 初始化**之后**——串口能看到消息，但指向的是「交接协议坏了」，而不是「入口形态没识别」。误导方向。
+
+**做法（与 riscv64 同构，不是新机制）**：riscv64 已经是编译期分叉的：
+
+- `os/kernel-image/Cargo.toml:35` — `fw-riscv64-uboot = ["fw-none-image"]`
+- `os/kernel-image/src/main.rs:398` — `#[cfg(all(target_arch = "riscv64", not(feature = "fw-riscv64-uboot")))]`
+- `os/kernel-image/src/main.rs:407` — `#[cfg(all(target_arch = "riscv64", feature = "fw-riscv64-uboot"))]`
+
+aarch64 照此加一个 feature 门（如 `fw-aarch64-uefi-recv`），两条 `rust_image_main` 各归一个 `cfg`：直核变体只编 `bootface_a64::bootface_a64()`，v1 变体只编 `arch_boot_resume_v1`。入口签名不再需要 `arena_pa == 0` 这个哨兵。
+
+**三处一致计划**（D-061 已记）：
+1. 文档：§3.7 的启动路径计数表与 §4.8 的 aarch64 分道段改为「形态由构建产物决定」；§3.1.1 的接线状态表补上两个 aarch64 变体。
+2. 设计契约：`kernel-image` 的 aarch64 入口 ABI（`_start` 与 `rust_image_main` 的签名）与链接脚本选择；`xtask image` 的 aarch64 产物清单。
+3. 代码：`os/kernel-image/src/main.rs` 的分道、`bootface_a64` 的触发点、`os/qemu-tests/test-smp-aps-aarch64.sh` 的镜像选择、UEFI 门脚本的产物路径。
+
+**验收**：
+- `grep -n "arena_pa == 0" os/kernel-image/src/main.rs` → 0（aarch64 下不再有运行期哨兵判别）；
+- 两个 aarch64 产物各自构建成功，`xtask image` 产物清单含两项；
+- aarch64 直核门（`test-smp-aps-aarch64.sh`）与 aarch64 UEFI 门链均 PASS；
+- §3.7 / §4.8 / §3.1.1 三处文档与实现同形；
+- `cargo build` 三架构不回归。
+
+**风险与回退**：新增一个构建变体与产物清单；改一个入口签名、一个链接脚本选择点、两个门脚本。若任一 aarch64 门链回归 → 回退到运行期判别并重开 D-061（该条件已写进判决行的 `reopen_condition`）。
+
+**为什么现在不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥（设计实施会让 certify 失效、基线在确认之下移动）。裁决已生效，实施留待下一 design/code batch。
+
 ### D-71：`BootForm::source_path` 悬空 + 测试无存在性检查
 
 路径改 `os/libs/minix-boot/src/handoff.rs`；`test_each_boot_form_has_distinct_source` 补五条落点的存在性断言；顺带核其余四条落点。证据：`ls os/boot-shim/src/handoff.rs`（不存在）vs `ls os/libs/minix-boot/src/handoff.rs`。验收：`cargo test -p minix-boot` 全绿。**状态**：✅ 01TODO-B1（路径已改，五落点 `repo_root.join(source_path()).exists()` 断言入测试；首跑以错拼 `../..` 的红验证断言有鉴别力）。

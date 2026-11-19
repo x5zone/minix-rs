@@ -372,3 +372,17 @@ $ awk 'NR>=63 && NR<=85 {print NR": "$0}' minix3/minix/kernel/arch/i386/pg_utils
 - **冷启动派发不可验证**：两份 certify 回执的文件时间（21:32、21:39）晚于面板文件，但“本轮新派发的冷启动子 agent”是过程声明，文件内容本身不能证明；本次只核回执内容与计数。
 - **结论边界**：若只审 `FREEZE.md` 的文档层断言（sha、行数、六门、制品存在性），全部一致；本次 FAIL 的对象是包含 `loop.md`、`metrics.md`、`defect-ledger.md` 的冻结轨迹包。轨迹包内的 28/78 矛盾与 origin 矛盾必须先消解，才能把 R35 的 `CONVERGED` 作为可复核结论接受。
 - **写入范围核对**：`git status --porcelain` 中本任务涉及的改动只有本文件（`M .../REGRESSION.md`）；仓库另有审查前已存在的未跟踪文件（`prompt/review-loop-r26-r29-report.md`、`rewrite-notes/01-stage-kernel/01-design-learn.md`、`rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r26.md`），本次未触碰。
+
+## R35 回归审计的补修记录（主 agent，append-only）
+
+上面这一节是独立审计者的原始结论（FAIL，5 项轨迹不一致）。按 §4h「P2 及以下当场修复 + 回归节记录」，5 项已全部处置，提交 `94a254231`：
+
+| # | 审计发现 | 处置 | 复验 |
+|---|---|---|---|
+| 1 | `loop.md` 写 28 根因/28 新准入，与 metrics/台账的 78 不一致 | loop §3 改为「逐发现立根因 78 个」并说明不合并的理由（面板 ID 与历史轮重名）；§6 数字同步 | `python3 tools/eval-trace-check.py <run-dir> --round R35` → PASS 13 / WARN 3 / FAIL 0 |
+| 2 | 两条自引入项的 origin 全记 R35，新准入应为 76 | RD-R35-28 与 RD-R35-38 的 origin 改 `R31；last_seen: R35`；metrics `本轮新准入: 76` | 同上门的 `new_roots` 校验通过 |
+| 3 | FREEZE 称 OPEN-DEBT 含 7 条设计 P3，实际只在 suggestions | OPEN-DEBT 的 `R35-design-batch` 补入 RD35-DESIGN-D2-07..13 七项 | `grep -n "七项设计 P3" OPEN-DEBT.md` 命中 |
+| 4 | RD-R35-06 证据指针 `doc:2584`，实际 2583 | 台账改为 2583 | `sed -n '2583p' <doc>` 命中反事实段落 |
+| 5 | `certify 新准入 = 0` 无字段可复算 | loop §5 补计算口径：certify 输入闭集 = 21+12 个修改点，回执全 CLOSED、无新增修改点，故准入根因数 0；台账无 certify 角色行是该口径的结果 | 口径说明见 loop §5 |
+
+补修后重新实测：`--round R31/R32/R33/R34/R35` 五轮逐轮 PASS；anchor 108/108、citation `checked=29 failed=0`、doc-code-map 54/54、panel-index 7 文件哈希一致。
