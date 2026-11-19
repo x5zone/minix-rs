@@ -2076,10 +2076,10 @@ RB24 首轮 13 项逐项处置：
 
 ### R35 §3 归因
 
-- 去重后 28 个根因（RD-R35-01..28）。合并 7 条：B-02 并入 RD-R35-01、C-02 并入 RD-R35-02、FACT-B-S01 并入 RD-R35-03、CLAIM-01..05 并为一行。
+- 逐发现立根因：78 个根因（RD-R35-01..78，对应 35 FINDING + 37 SUGGESTION + 6 CLAIM）。本轮不做跨发现合并——面板 ID 与历史轮重名，合并会让台账行与面板原文失去一一对应；跨轮的同根关系改由「证据」列的面板原文指针表达（如 B-02 与 C-01 同根、C-02 与 FACT-B-01 同根）。
 - 冻结决策检查：DESIGN 的 6 条 P2 与 ARCH-PROPOSAL-01 均需改代码/契约，按 §3.6 确认轮不实施 ⑥，落 `R35-design-batch`（D-060）；refute 的 5 条反证失败（主张成立）记 FP。
 - 范围：全部 in-scope；无 adjacent。
-- **自引入 2 条**：§4.1 的「四条架构」与 §4.6 的 mock 分叉段是我在 R31 补清点批里写下的，被本轮 FACT-B 抓到并已改——按 §4.0c 的 origin 规则记 R31 引入、R35 发现。
+- **自引入 2 条**：§4.1 的「四条架构」与 §4.6 的 mock 分叉段是 R31 补清点批写下的，被本轮 FACT-B 抓到并已改——按 §4.0c 的 origin 规则，对应台账行（RD-R35-06 与 RD-R35-07）的 origin 写 `R31；last_seen: R35`，因此 `本轮新准入 = 78 − 2 = 76`。
 
 ### R35 §4 修复
 
@@ -2094,6 +2094,7 @@ RB24 首轮 13 项逐项处置：
 - 独立冷读回执一：`certify/round35-fact.md` 21 条修改点逐条 CLOSED（含 `realprot.S:150-152`、`pre_init.c:237`/`head.S:84-87`、`glo.h:9-12`/`table.c:30-32`、`0x82000000−0x80200000`、`aarch64.ld` 的 ASSERT、`KinfoStruct` 48 B 加法等）。
 - 独立冷读回执二：`certify/round35-reader.md` 12 条读者项逐条 CLOSED。
 - 台账重放：每行 ①/④ 的「复验」列给可重放 grep/sed 读数；SUGG 与 ② 行给面板原文与 OPEN-DEBT/判决账指针。
+- **`certify 新准入 = 0` 的计算口径**（供独立复算）：certify 阶段是同一轮的关闭阶段，输入闭集 = 本轮全部修改点。两份回执逐条核对了 21 个事实修改点与 12 个读者修改点，结论全部 CLOSED、STILL-BROKEN 0；回执之外 no 新增修改点，故 certify 阶段首次出现的准入根因数 = 0。台账里 R35 节没有任何「来源角色 = certify」的行——这是该口径的结果，不是缺账。
 - 机械门读数见 §4；`--round R35` 的通过是本节结论的机械化。
 - **文风门 MANUAL_FALLBACK**：`doc-style-lint.sh <doc>`（文件级）`error级=0` 绿；`--diff` 级另报 SL-4（正文日期）16 处与 SL-11 1 处，全部落在 `runs/…/defect-ledger.md`、`DECISIONS.md`、`OPEN-DEBT.md`、`certify/*.md` 与导入的历史面板 `panel/round3{1,2,3}/*.md`——这些位置是 §4.1a/§4.0f 强制要求写「用户批准 YYYY-MM-DD」、判决行日期与回执原文（回执不得改写）。文档正文本身零命中。判 MANUAL_FALLBACK，理由：门的作用域是正文，轨迹产物的日期是合同证据；不得为过门删日期（那会破坏 ② 批准证据与判决账）。
 - 代码行为：本轮无代码行为改动；`cargo test -p minix-kernel --features mock` 未重跑（上轮读数 863/3 只作 D2-39 的反证材料）。
@@ -2101,7 +2102,7 @@ RB24 首轮 13 项逐项处置：
 
 ### R35 §6 指标
 
-- 与 `metrics.md` 的 `## R35 确认轮` 块一致：发现总数 78、唯一根因数 28、本轮新准入 28、certify 新准入 0、处置 ① 17 / ② 13 / ④ 8 / FP 5 / SUGG 35、未闭环 0。
+- 与 `metrics.md` 的 `## R35 确认轮` 块一致：发现总数 78、唯一根因数 78、本轮新准入 76、certify 新准入 0、处置 ① 17 / ② 13 / ④ 8 / FP 5 / SUGG 35、未闭环 0。
 - 轮型 `confirmation`；轮结果 `CONVERGED`。
 
 ### R35 §7 状态
