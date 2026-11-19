@@ -5,8 +5,8 @@
 - 确认轮：R2（`轮型: confirmation`）
 - 冻结提交：`b00c44292`（R2 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
-- 文档行数：1396（R2 时点）；R3 时点 1396（行数不变）
-- 文档 sha256：`42646faa93f43007f2a9b4bfc2cedbda39d42bf0fc5dad6260171267d1b5e918`（R3 复核后；R2 原值 `e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`）
+- 文档行数：R2 冻结提交（b00c44292）时点 1393；R3 面板基线（c65a5f90e）时点 1396；R3 修复后 1396
+- 文档 sha256：R2 冻结时点 `da85d6cf…`；R3 面板基线 `e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`；R3 修复后 `64659b6c…`（最终工作树实测）
 - 关联代码：`tools/doc-code-map.sh --check` 21/21 通过
 
 ## 收敛证据
