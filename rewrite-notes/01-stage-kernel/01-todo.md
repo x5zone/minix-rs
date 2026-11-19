@@ -41,6 +41,7 @@
 | I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `Frozen::freeze` 的 `debug_assert` + `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（本轮新登记） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 设计裁决 + 代码改造 | 已裁决（D-073，用户 2026-11-20）：采 A（`PreparedJump { entry: VirBytes, arena_pa: PhysBytes }`）；保持两函数分开；`shim_windows` 固件边界不动。待实施 | §3 |
+| I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -582,6 +583,102 @@ assert!(
 **为什么现在不做**：用户 2026-11-20 明确要求「不实施，只记账」。
 
 
+
+
+### I-38（已裁决·待实施，前置 I-31）`boot_validate_and_prepare` 的四个位置实参改 `BootScalars`
+
+**裁决**：用户 2026-11-20，判决行 `D-074`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户批准方案，本条只记账）。**前置依赖：I-31（D-062）**。来源：`R35/DESIGN-D2-04`（P2，[MODERN]）。
+
+**为什么有前置依赖（I-31 先做）**：
+
+`BootScalars` 的字段集取决于 `KernelInfo`/`BootReport` 在 I-31 之后还剩什么。I-31 会删除 `kern_stack_top`（连同 `user_sp`/`syscall_entry`）。所以：
+
+| 顺序 | `BootScalars` 定型 |
+|---|---|
+| **I-31 先**（推荐） | **三字段**：`kern_virt_base` / `kern_phys_base` / `kern_size`；`boot_validate_and_prepare` 内部派生 `kern_stack_top = kern_virt_base + kern_size` |
+| D2-04 先 | 四字段；I-31 落地后再改一次，`BootScalars` 定型两次 |
+
+**现状（为什么这是个问题）**：
+
+```rust
+// os/kernel/src/lib.rs:839-844
+fn boot_validate_and_prepare<A: BootArch>(
+    kern_virt_base: VirBytes,     // ← VirBytes
+    kern_phys_base: PhysBytes,
+    kern_size: u64,
+    kern_stack_top: VirBytes,     // ← VirBytes（与第一个同类型，可互换）
+) -> BootPageSupport<A>
+```
+
+三个调用点全是「从结构体抄四字段」，四行抄三遍：
+
+| 行 | 调用者 | 来源 |
+|---|---|---|
+| `:334-339` | `resume_additive` | `kernel_info: &KernelInfo` |
+| `:446-451` | `prepare_kernel_image_v1` | `report: &BootReport` |
+| `:929-934` | `arch_boot_impl` | `kernel_info: &KernelInfo` |
+
+**为什么函数调用比结构体字面量更危险（用户提问的回答，记录在案）**：Rust 结构体字面量按**字段名**配对，书写顺序无关——「错序」不存在；「名字对、值错」存在但 A 也拦不住。函数调用的形参名**不出现在调用点**，调用者只能按记忆排位置，属**被动犯错**；结构体字面量必须名字与值写在同一行，属**主动犯错**。
+
+**A 的真正价值是「收敛暴露面」而非「防错」**：现状 3 个调用点 × 4 个位置槽 = 3 个独立出错点（每处还有两个相邻同类型槽）；A 之后是 1 个构造函数内的 4 行「名字 + 值同行」配对，出错面缩为 1 处。三个调用点的四行抄字段也随之消失。
+
+**现有防线为什么拦不住**：函数内两条对齐断言（`:874-882`）——`kv.is_multiple_of(0x1000)` 与 `kern_stack_top.0.is_multiple_of(16)`——在交换后**都仍通过**（栈顶通常也页对齐、基址 2 MiB 对齐必然 16 对齐）。而 `KernelInfo` 的严格模式断言（`kernel_info.rs:465-470`）检查的是**结构体自身字段关系**，与**传参顺序**无关，同样拦不住。
+
+**后果评估（比面板描述的轻）**：面板称「内核按错误虚拟基址规划映射，现场与页表建错难以区分」。**核实后不成立**——映射规划的 `KernelLayout` 是从 `report`/`kernel_info` **直接取字段**构造的（`:456-462`），不经过该函数的形参；该函数返回 `BootPageSupport<A>`（`paging_ext.rs:130-136`，四个字段全是平台能力，不含那四参数）。所以接反的真实后果限于「断言检查了错误对象」（且两个都对齐，仍通过）。**但这不降低改造价值**：它是隐患——函数名叫 validate *and prepare*，将来若真用 `kv` 算布局，接反立刻变真故障。
+
+**做法**：
+
+1. 新增值对象（放 `os/kernel/src/lib.rs`，紧邻 `boot_validate_and_prepare`）：
+
+```rust
+#[derive(Debug, Clone, Copy)]
+struct BootScalars {
+    kern_virt_base: VirBytes,
+    kern_phys_base: PhysBytes,
+    kern_size: u64,
+    // I-31 落地后此字段删除，改为在 `boot_validate_and_prepare` 内部派生
+    kern_stack_top: VirBytes,
+}
+
+impl BootScalars {
+    /// Named constructors, not `From`: the two sources would read ambiguously
+    /// as `BootScalars::from(x)`.
+    fn from_kernel_info(ki: &KernelInfo) -> Self {
+        let s = Self {
+            kern_virt_base: ki.kern_virt_base,
+            kern_phys_base: ki.kern_phys_base,
+            kern_size: ki.kern_size,
+            kern_stack_top: ki.kern_stack_top,
+        };
+        // The only hole `BootScalars` cannot close: same-typed fields bound to
+        // each other's values. This equality is checked in `KernelInfo`'s
+        // strict mode (`kernel_info.rs:465-470`); repeat it here so the
+        // constructor is self-contained.
+        debug_assert_eq!(
+            s.kern_stack_top.0,
+            s.kern_virt_base.0 + s.kern_size,
+            "BootScalars: kern_stack_top must equal kern_virt_base + kern_size"
+        );
+        s
+    }
+    fn from_report(r: &minix_boot::BootReport<'_>) -> Self { /* 同形 */ }
+}
+```
+
+2. `boot_validate_and_prepare<A>(scalars: BootScalars) -> BootPageSupport<A>`，函数体内 `let kv = scalars.kern_virt_base.0;` 等。
+3. 三个调用点改为 `boot_validate_and_prepare::<X>(BootScalars::from_kernel_info(kernel_info))` / `(BootScalars::from_report(report))`。
+4. **I-31 落地后的收尾**：删 `kern_stack_top` 字段，`boot_validate_and_prepare` 内 `let kern_stack_top = VirBytes(kv.checked_add(ks).expect(...))`；`from_*` 的等式断言随之删除（派生值天然成立）。
+
+**验收**：
+- `grep -n "fn boot_validate_and_prepare" -A 6 os/kernel/src/lib.rs` 形参为单个 `BootScalars`；
+- `grep -c "kernel_info.kern_virt_base\|report.kern_virt_base" os/kernel/src/lib.rs` 在三个调用点处归零（改为构造函数内）；
+- `cargo test -p minix-kernel --features mock`、三架构 `cargo check -p minix-kernel`（生产形态）全绿；
+- 五条 QEMU 门链 PASS（本改动触及全部启动腿）；
+- 文档若引用该函数签名，同批更新。
+
+**风险与回退**：`BootScalars` 私有、单 crate、不改外部 ABI。唯一风险是 `KernelInfo.kern_size` 与 `BootReport.kern_size` 若类型不同则构造函数无法共用（已核：**两者都是 `u64`**，`kernel_info.rs:97`/`boot_storage.rs:416`）。若将来变成不同 newtype，构造函数各自持有字段类型即可。
+
+**为什么现在不做**：用户 2026-11-20 批准方案但只做记账；且本条**必须等 I-31 落地**后实施，否则 `BootScalars` 要定型两次。
 
 ### I-37（已裁决·待实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
 
