@@ -3,6 +3,7 @@
 ## §0 基线
 
 - 工作流版本：V1（`rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md`）
+- schema: V3.4 from R3（V3.5 制品链起约束的首轮；重开依据 D-066。R1/R2 保持各自历史标记，不追溯）
 - 基线提交：`859dd2216`
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
 - 文档基线 sha256：`56b81ad4fdea99fbb802721d2312d23282fcf92c67b7192413fc38d14933efb4`
@@ -248,3 +249,83 @@
 - 2026-11-17 回归轮（D-055 重做，独立三角色 + certify 三轮 7/3/1 → BLOCKED → 结构性重写）：台账见 `defect-ledger.md` REG2 节；面板 `tmp/review-eval/01-stage-kernel/03-kmain-cstart/panel/regress/`。
 - 2026-11-18 完整 review（五角色 33 条聚合口径 / 面板编号 22 条）：台账见 FULL 节；面板 `panel/full/`。
 - 两轮均不改变 FREEZE 时点的收敛状态（出口在 FREEZE 回归/完整 review 节）。
+
+## R3 确认轮（V3.4 四态模型；D-066 授权的重开）
+
+### R3 §0 基线
+
+- 轮型: confirmation
+- edition: V3.4
+- schema: V3.4 from R3
+- 基线提交：`32d4fa164`（D02 收尾提交；本轮修复未提交时的工作树）
+- 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
+- 文档基线 sha256：`e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`（R2 FREEZE 值，与面板启动时一致）
+- 行数：1396（修复后仍 1396）
+- 设计快照：03 组齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`doc-code-map --check` 21/21
+- 语料条目：D03（`CORPUS.md` 第二节）
+- 范围声明：保护结构初始化与 cstart 序列 + 21 个关联文件 + 本轮修复触碰的文件；不在范围 = 相邻模块与下一批次结构性重构
+- 重开依据：D-066
+
+### R3 §1 面板
+
+- 六角色全量、独立子 agent；读者 A/B/C 独立（文档 1396 行 ≥ 500）：
+  - P-FACT：2 条 FINDING + 2 SUGGESTION（`fact.md`）——面板实测 25 处引文逐字一致、约 90 项常量现算一致、13 个点名测试全存在、21 组反事实前提成立，文档事实质量高
+  - P-DESIGN-D2：15 条 FINDING + 2 ARCH-PROPOSAL（`design-d2.md`）；D1 停跑（D-024），基线「文档主张 ↔ 源码事实」，记 VARIANCE
+  - P-READER-A：3 + 16（`reader-a.md`）；P-READER-B：0 + 21（`reader-b.md`）；P-READER-C：2 + 7（`reader-c.md`）
+  - P-REFUTE：6 条 CLAIM（阻断 0 / 非阻断 1 / 反证失败 5），`refute.md`
+- **VARIANCE 1（派发降档）**：平台并发上限实测为 3，六角色按 3+3 两波派发（第一波 fact/reader-a/design-d2，第二波 reader-b/reader-c/refute）；第一次派发尝试 6 并发被限流 3 个，已作废重派。按 L1.1 的降档协议记档；风险：两波之间无交叉阅读，材料隔离不变。
+- **VARIANCE 2（面板标题层级规范化）**：design-d2 原用 `### FINDING <ID>` + 裸 `## FINDING` 标题、refute 的机器索引挤成单标题——都会让 INDEX 计数与覆盖率口径分叉。主 agent 把 15 条 `### FINDING` 升为 `##`、删裸标题、refute 索引重排为 `## CLAIM 11..16` 六条；正文内容未改动。面板文件 sha256 以规范化后的 INDEX 为准。
+- 制品入库：`panel/round3/` + `INDEX.md`（6 文件：FINDING 22 / SUGGESTION 46 / CLAIM 6）。
+- certify 回执：`certify/round3-certify.md`（首轮 6 CLOSED / 2 STILL-BROKEN；按证据改正 3 处后复核 8/0 PASS）。
+
+### R3 §2 发现
+
+- 74 条机器可计：FINDING 22（fact 2、design-d2 15、reader-a 3、reader-b 0、reader-c 2）+ SUGGESTION 46 + CLAIM 6。
+- 严重度：P0 = 0；P1 = 0；P2 = 8（fact 0、design 5、reader-a 2、reader-c 1）；P3 = 66。
+- 面板要点：文档的引文保真与常量对账几乎全绿（fact 实测 25 块引文逐字一致）；设计侧抓到的是「统一抽象为兼容三架构付出的隐性税」（死写点、三处错误码编码、哑实例哨兵、零消费者关联类型）；读者侧两条 P2 是真矛盾（tss_init 参数位次、user_accessible 覆盖口径）。
+
+### R3 §3 归因
+
+- 29 个根因（RD-R3-01..29）。
+- 冻结决策检查：无命中；5 条设计 P2 按 §3.6 记 ② 延期（D-066）；2 条 ARCH 提案进判决账待裁；CLAIM 11..16 中 5 条反证失败记 FP、1 条非阻断已修记 ①。
+- 范围：全部 in-scope。
+
+### R3 §4 修复
+
+- 8 处文档修改点：§2.8 `tss_init` 参数位次（第一→第二参）、§5.4 M1 的 user_accessible 口径与 §5.1 对齐、§3.3 E1 指针、§5.1 测试计数口径（行首 `#[test]` 属性 + 374/95 的文件数辨析）、§4.2 两处省略号内容区分（含方向与行数按 certify 证据改正）、§4.3 门类型两个写点（init 的 8 个 trap gate + set_handler 重写）、§2.5 lgdt→lidt 窗口补「异常递送轴不设防」、§2.1 反事实补「先炸排序没有取证」、§2.4/§3.2 两处引文精度（`1 * sizeof(reg_t)`、trap_entry 文件头覆盖半边）。
+- 文档六门：anchor 75/75、citation `checked=32 failed=0`、structure/ref/style(error=0)/density 通过、doc-code-map 21/21。
+
+### R3 §5 复验
+
+- 独立回执 `certify/round3-certify.md`：首轮 8 条判 6 CLOSED / 2 STILL-BROKEN（第 4 条 374/95 口径串位、第 8 条 env_get 排序限定未写入），另指出第 5 条的方向/行数措辞偏差；三处按证据改正后复核 8/0 PASS。
+- **回执抓到主 agent 两处实质问题**：①「374/95」把 tests 侧的 95 处命中写成 src 文件数；② §4.2 省略标注把「拓扑计算在调用之前」写成「其后」。均已按 path:line 改正。
+- `certify 新准入 = 0` 口径：certify 输入闭集 = 8 个修改点；回执覆盖全部，复核后无新增修改点。
+- 代码行为：本轮无代码改动；QEMU 未跑。
+
+### R3 §6 指标
+
+- 与 `metrics.md` 的 `## R3 确认轮` 块一致：发现总数 74、唯一根因数 29、本轮新准入 29、certify 新准入 0、处置 ① 5 / ② 5 / ④ 3 / FP 5 / SUGG 56、未闭环 0。
+- 轮型 `confirmation`；轮结果 `CONVERGED`。
+
+### R3 §7 状态
+
+- `CONVERGED`。前提：R1 是已关闭的修改轮，R3 certify 新准入 0。
+- 未闭环 0；`OPEN-DEBT` 的 `R3-design-batch` 有 D-066 判决行与日期。
+- `CONVERGED` 的语义限制同 D01/D02。
+
+### R3 §8 给 meta-review 的不确定点
+
+1. 本轮 5 条设计 P2 全是「翻译税」类（死写点/三处编码/哑实例/零消费者），修正都要动代码；确认轮权限把它们推入 design batch。若 meta 认为其中 [DEL] 类应视为事实缺陷在轮内修，本轮不能以确认轮关闭。
+2. refute 的机器索引由主 agent 追加并重排（VARIANCE 2），正文未改动；这个「面板后处理」的边界（允许动什么）规则没有明文。
+3. 派发降档（VARIANCE 1）是平台并发限制，不是流程选择；两波之间的独立性没有机制保障。
+
+### L6
+
+- 同 agent 收口（另有独立 certify 回执，见 §5）。流程质量记录：fact 角色实测「25 块引文逐字一致、约 90 项常量现算一致」说明 D03 在 R2 后的文档质量已经很高（只报 2 条 P3 事实项）；设计侧的「翻译税」画像与 D01/D02 的发现同型（统一抽象的隐性代价）。
+- 流程质量结论：`IMPROVED`（面板 74 条里 P2 仅 8 条、P0/P1 为 0，比 D01 R35 的密度显著下降；certify 抓到的两处主 agent 错误说明回执纪律持续有效）。
+
+### L6.5
+
+- 三问：① 不变量是「确认轮在最终工作树上 certify 新准入 = 0」；② 前提是 R1 已 ROUND-CLOSED；③ 证据是 certify 回执 8/0 与六门读数。
+- 资源重读：盲区属「流程类」（面板后处理边界），查 `fresh-eyes-review`；无新检测模式，记 BLIND-SPOTS 候选。

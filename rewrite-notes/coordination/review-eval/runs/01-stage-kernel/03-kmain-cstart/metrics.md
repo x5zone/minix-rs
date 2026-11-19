@@ -68,4 +68,26 @@
 - adjacent 阻塞: 0
 - 重构: 提出 2 / 接受 2 / 实施 0 / 登记 2
 - 成本: agent 3 / token 未采集 / 耗时 约 3 小时
-- 回读与回归: 文档六门通过；certify 待跑；无代码行为改动
+- 回读与回归: 文档六门通过；certify 已跑（R2 收口时完成，见 R2 节回执指针）；无代码行为改动
+
+## R3 确认轮
+
+- 发现总数: 74（FINDING 22 + SUGGESTION 46 + CLAIM 6；与 `panel/round3/INDEX.md` 同源）
+- 唯一根因数: 29（RD-R3-01..29，按角色/严重度/处置类聚簇）
+- 本轮新准入: 29
+- certify 新准入: 0
+- 重复合并: 0（聚簇内多发现同行，未跨簇合并）
+- 自引入: 0
+- 处置: ① 5 / ② 5 / ④ 3 / ⑤ 0 / ⑥ 0 / FP 5 / SUGG 56
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 1（D-066：5 条设计 P2 延期到 R3-design-batch）
+- ARCH 提案: 2（RD03-A1/A2，待用户裁决）
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 5 / 接受 5 / 实施 0 / 登记 5
+- 成本: agent 9（六角色 + certify 首轮 + 复核）/ token 未采集 / 耗时 约 3.5 小时
+- 回读与回归: 文档六门绿（anchor 75/75、citation checked=32 failed=0、structure/ref/style error=0/density 通过、doc-code-map 21/21）；独立回执 certify/round3-certify.md（首轮 6/2，改 3 处后 8/0 PASS）

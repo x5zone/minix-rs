@@ -5,8 +5,8 @@
 - 确认轮：R2（`轮型: confirmation`）
 - 冻结提交：`b00c44292`（R2 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
-- 文档行数：1396
-- 文档 sha256：`e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`
+- 文档行数：1396（R2 时点）；R3 时点 1396（行数不变）
+- 文档 sha256：`42646faa93f43007f2a9b4bfc2cedbda39d42bf0fc5dad6260171267d1b5e918`（R3 复核后；R2 原值 `e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`）
 - 关联代码：`tools/doc-code-map.sh --check` 21/21 通过
 
 ## 收敛证据
@@ -69,3 +69,15 @@
 - 最终文档 sha256 `e54cad69…`。
 
 **结论：完整 review 通过，D03 维持 CONVERGED。** 残余为 4 条 certify 微调（已修）与 5 条设计 P3 + 2 条 ARCH 提案（D-053 延期）。
+
+## R3 确认轮（V3.4；D-066 授权的重开确认，append-only 追加）
+
+- 上一节记录的是 V3.3 口径下的 R2 确认；按 D-066（用户指令 `prompt/EXECUTE-D01-D06-CONVERGENCE.md`）在 V3.5 制品链下重开一次，轮次号 R3、edition V3.4、`schema: V3.4 from R3`。
+- **R3 确认轮**：六角色全量 survey（fact 2、design-d2 15、reader-a 3、reader-b 0、reader-c 2 条 FINDING；SUGGESTION 46；refute 6 条 CLAIM）。无 P0、无 P1；8 条 P2。fact 角色实测 25 块引文逐字一致、约 90 项常量现算一致——R2 后的文档事实质量已经很高。
+- **修复**：8 处文档修改点（`tss_init` 参数位次、M1 的 user_accessible 口径、E1 指针、测试计数口径、§4.2 省略标注、门类型两个写点、lgdt→lidt 窗口的递送轴限定、反事实「先炸」排序限定、两处引文精度）。
+- **certify**：`certify/round3-certify.md`（本轮新派发的冷启动子 agent）。首轮 8 条 6 CLOSED / 2 STILL-BROKEN；按证据改正 3 处后复核 **8/0 PASS**。回执抓到主 agent 两处实质问题（374/95 口径串位、§4.2 省略方向写反）。
+- **面板后处理（VARIANCE）**：design-d2 的 `### FINDING` 升为 `##` 并删裸标题、refute 索引重排为 `## CLAIM 11..16`——正文未改动；派发按平台并发 3+3 两波（L1.1 降档协议）。
+- **机械门**：`--round R3` PASS；anchor 75/75；citation `checked=32 failed=0`；structure/ref/style(error=0)/density 通过；doc-code-map 21/21；`panel-index --check` 6 文件哈希一致；`--round R1/R2` 仍 PASS（历史面板已入库以支持按轮作用域）。
+- **未闭环 = 0**。`OPEN-DEBT` 的 `R3-design-batch`（5 条设计 P2 + 10 条设计 P3）有 D-066 判决行与 2026-11-20 日期。
+- **ARCH 提案 2 条**（RD03-A1/A2）待用户亲裁，不阻断。
+- 限制同前：`CONVERGED` = 确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
