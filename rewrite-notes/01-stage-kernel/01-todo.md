@@ -38,6 +38,7 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（本轮新登记） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 设计裁决 + 代码改造 | 已裁决（D-067，用户 2026-11-20）；待实施——详见 §3 的 I-34 | §3 |
+| I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `Frozen::freeze` 的 `debug_assert` + `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -517,6 +518,66 @@ L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立�
 
 **修法（定向调查）**：按文档给的两条推论各做一次定向读数——（a）若"页表不重放"：在切根前后各读同一池页地址，读数应在切根时刻突变；（b）若"复用清零"：在 `store_kernel_info` 之前人为推迟消费（测试内核）并在首个 `pg_alloc_page` 之后回读，读数应随复用时点零化。落点：`tmp/` 取证或 qemu 测试内核探针。**验收**：归因结论落盘（一句话 + 读数），01 篇 §3.4/§4.5 相应句从"未定案"改为定案或保留双候选并写明判别结果。**状态**：✅ 01TODO-N5。探针在 `test-kernel-map`：快照之后分配一枚低于 4GiB 的 LOADER_DATA 页、填位置标记，EBS 前/后/开分页后三次整页校验和；读数 `pa=0x5e9b000`、`pre=post_ebs=post_enable=0x4a00_0000_0001_ff00`、`verdict=replayed`、`in_snapshot_free=0`。判别：①"页表不重放 1:1"对该形态不成立（映射重放、字节未变）；②"被当空闲复用"的结构前提未出现；历史零化读数的剩余解释是深拷之前的入口引用链（NK4-A），与深拷落地后症状消失一致。01 篇 §3.4 两处已按读数改写，探针保留为可复跑证据。
 
+
+
+### I-35（已裁决·待实施）`KERNEL_INFO` 的 write-once 承诺与二次写 + 两处注释失真
+
+**裁决**：用户 2026-11-20，判决行 `D-071`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户明确要求「只记账不实施」）。来源：`R34/DESIGN-D2-05`（P2，[MODERN]）。**编号注记**：本条是 `I-35`，与本节下方的 `D-71`（`BootForm::source_path`，已修）不是一回事——后者是历史编号，前者是 2026-11-20 的判决行。
+
+**现状（为什么这是个问题）**：`globals.rs:271-277` 的 `KERNEL_INFO` 承诺两句话——「stored once during kmain, read-only thereafter」与「Only written once during boot (single-threaded, before BKL needed)」。实际每条生产腿写两次：`arch_boot_finish:225`（或 v1 接收腿的 `resume_additive:352`）一次，`kmain:1738` 再一次。
+
+**全仓 write-once 承诺审计（2026-11-20，共 11 处实质承诺）**——这是本条的取证面，结论是 `KERNEL_INFO` 是唯一「承诺一次、实际二次」的真缺陷：
+
+| # | 位置 | 承诺 | 实际 | 判定 |
+|---|---|---|---|---|
+| 1 | `globals.rs:271-275` `KERNEL_INFO` | stored/only written once | 每腿 2 次 + 测试 9 处 | **违背**（本条主体）|
+| 2 | `globals.rs:545` `IPC_FILTER_POOL` | only written once | 初始化 1 次，但 `ipc_filter_pool_with():3689` 返回 `&'static mut`，3 处可变借用 | 注释失真（并入本条）|
+| 3 | `globals.rs:621` `MINIX_KERNINFO_USER` | written once by init_kerninfo | 未见二次写 | 符合 |
+| 4 | `globals.rs:621` `CURRENT_ROOT_PHYS` | written once by arch_boot_impl | 两腿各 1 次、互斥（直核 `:1413` / v1 `:348`）| 符合（措辞可收窄到"每腿一次"）|
+| 5 | `globals.rs:180` GDT/TSS/IDT | written once by init_protection | `set_kernel_stack` 只写 sp0，不写表体 | 符合 |
+| 6 | `vm_handoff.rs:122-131` `VM_PMM_FREE` | write-once at classification | 唯一调用点 `lib.rs:2972`，不在循环内 | 符合 |
+| 7 | `memmap_source.rs:1361` `commit_static` | written once per boot face | **有守卫**：`DTB_COLLECT_TAKEN.swap+assert`（`:1432-1435`，`cfg(not(test))`）| 符合（实现最好）|
+| 8 | `pt_alloc.rs:49/77` `PtAllocSlot` | written exactly once | **有守卫**：`PT_CLAIMED.swap+assert`（`:100-101`/`:152`）| 符合 |
+| 9 | `types/cell.rs:176/228` `Frozen<T>` | written exactly once | `debug_assert!`（release 失效）| **同类缺陷**（并入 I-32）|
+| 10 | `resv_claims.rs:256` `DTB_RECORDS` | write-once inside capture | `capture` 在 EBS 重试循环内（`ebs_pair.rs:193`），每 attempt 前先归零 | 注释可收窄为「write-once per attempt」 |
+| 11 | `bootface.rs:320` / `bootface_a64.rs:295` | written once, read-only | 直核腿入口只跑一次 | 符合 |
+
+**二次写的必要性（用户问「后面的写不是必要的吗」的答案：不必要）**：`kmain:1738` 的实参是 `:1687` 刚从全局槽读出的同一个 `&'static`；`store_kernel_info` 内部 `let mut k = *kernel_info`（`:1551`，14 字段拷栈）+ 7 次同址指针重定向 + `*KERNEL_INFO.get() = Some(k)`（`:1562`）写回同槽——产出物与输入完全相同，无副作用也无收益。它的存在是 `30b66fd3a` 把 `store_kernel_info` 返回类型从 `()` 改成 `&'static KernelInfo` 时编译器要求接收返回值的产物；作者在 `:1682` 已自注「This shadow can be deleted once the diagnostics below confirm it」。**另需注意**：`kmain:1673` 的形参在函数体内从未被读（`:1687` 用同名局部变量遮蔽它），而 `:1738` 那行恰好"用"了形参、吃掉了 `unused_variables` 警告——删行后会暴露警告，所以第 ② 步必须同步改名。
+
+**做法（四步）**：
+
+1. 删 `lib.rs:1738` 的 `let kernel_info: &KernelInfo = store_kernel_info(kernel_info);`——`kmain` 内 `:1687` 已取全局引用。
+2. `kmain:1673` 形参改 `_kernel_info`（如实表达「不可信」并消除警告）。
+3. `store_kernel_info`（`:1453`）开头加一次性守卫：
+
+```rust
+assert!(
+    KERNEL_INFO.get().is_none(),
+    "store_kernel_info: a second store would rewrite a live &'static slot"
+);
+```
+
+4. `globals.rs:271-275` 注释改为「written once per leg before `kmain`; `kmain` reads only」与对应的 SAFETY 措辞。
+
+**测试适配**：`lib.rs:5878` 的 `store_kernel_info(stored)` re-store 断言改成 `#[should_panic(expected = "second store")]` 负控——把「禁令」变成有鉴别力的测试（删掉 assert 后它变绿，证明测试有效）。
+
+**并账两项**：
+- **并入 I-32（D-064）**：`Frozen::freeze`（`os/libs/minix-types/src/types/cell.rs:228`）用 `debug_assert!`，release 下二次 freeze 静默改写。D-064 只点了 `opensbi_helpers` 两处，未覆盖公共类型；I-32 的验收 grep 扩为 `grep -rn "debug_assert" os/libs os/arch` 归零。
+- **本条内一并**：`globals.rs:545` 的 `IPC_FILTER_POOL` 注释「Only written once during boot」与 `ipc_filter_pool_with():3689` 返回 `&'static mut`、`proc_table.rs:1277`/`syscall.rs:760,958` 三处可变借用矛盾。改注释为「初始化一次，此后在 BKL 下可变」。
+- **登记不改（注释可收窄，无害）**：`resv_claims.rs:256` 的 `DTB_RECORDS` —— `capture` 在 EBS 重试循环内（最多 2 次 attempt），每次 attempt 前先 `DTB_RECORDS_N = 0` 归零再写，实际安全；注释可改成「write-once per attempt」。
+
+**验收**：
+- `sed -n '1738p' os/kernel/src/lib.rs` 不再含 `store_kernel_info`；
+- `grep -n "assert!(KERNEL_INFO.get().is_none()" os/kernel/src/lib.rs` → 1；
+- `grep -rn "debug_assert" os/libs os/arch` → 0；
+- `grep -c "Only written once during boot" os/kernel/src/globals.rs` → 0（`KERNEL_INFO` 与 `IPC_FILTER_POOL` 两处措辞都已改）；
+- `cargo test -p minix-kernel --features mock`、`cargo test -p minix-types`、`cargo test -p minix-platform` 全绿；
+- 新增/改造的 `#[should_panic]` 负控在删 assert 后变绿（鉴别力验证）；
+- 五条 QEMU 门链不回归（`kmain` 改动触及所有腿）。
+
+**风险与回退**：`kmain` 的形参是 ABI（`jump_to_kmain` 传值），只改名不删参；若某腿依赖「`kmain` 入口形参」做诊断打印，改名会破坏该打印（已核：只有 `#[cfg(target_arch = "x86_64")]` 的取证块读寄存器，不读形参）。若一次性 assert 在既有 9 处测试调用上无法适配（它们需要多次 store），退化为 `#[cfg(not(test))]` 门控并重开 D-071。
+
+**为什么现在不做**：用户 2026-11-20 明确要求「不实施，只记账」。
 
 ### I-34（已裁决·可立即开工）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
