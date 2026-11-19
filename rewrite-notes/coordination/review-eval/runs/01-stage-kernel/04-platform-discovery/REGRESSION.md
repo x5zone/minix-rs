@@ -105,3 +105,124 @@
 - **未重跑全部文档门**：只重跑了 FREEZE 列出的 sha/行数/`doc-code-map`/`anchor`/`doc-ref`/`eval-trace --round R2` 与 `cargo test -p minix-platform`；citation（86 块 `/* */` 的 MANUAL_FALLBACK）、style-lint、structure 与承载门未重跑，引用 FREEZE 与 R2 修复日志的结论。
 - **设计批未重裁**：`D04-design-batch`（D-054）的 12 条代码/架构项与 P3/SUGGESTION 仍按登记状态存在，本次未重开；`R04-T01`..`R04-T12` 的测试/代码 TODO 也未实施。
 - **抽样不是穷举**：10 条样本覆盖 P0/P1/P2 与事实/代码/读者三类，但不等于 43 条全部可重放；未抽到的“冷读 CLOSED”行仍可能有同类误记（REG-D04-01 即由关键事实核对而非抽样发现）。
+
+---
+
+# D04 回归审查（R3 确认轮后）
+
+- 审查日期：2026-11-20
+- 基线提交：`5c95ec2063ad7b1de9988bb4be397862f2f3e207`（2026-11-20 04:13:55 +0800，`fix(04): R3 V3.4 确认轮——D04 在 V3.5 制品链下重新收敛`；工作树除 3 个与本篇无关的未跟踪文件外干净）
+- 审查对象：`FREEZE.md` R3 节及其引用的全部制品（`loop.md`、`metrics.md`、`defect-ledger.md`、`OPEN-DEBT.md`、`certify/round3-certify.md`、`panel/round3/`、`suggestions.md`、`DECISIONS.md` D-070）与最终工作树
+- **结论：FAIL**（两处记录层不一致：FAIL-1 严重度分布、FAIL-2 台账复验列与 suggestions.md 脱节。其余全部核对项——文档哈希/行数、三轮轨迹门、panel-index、六门、metrics 全部数值、D-070 判决链、抽查 5 行——均与 FREEZE 记录一致。两处 FAIL 均不动摇六门与制品链读数，属冻结记录文字/登记缺陷）
+
+## R3-1. FREEZE 记录复核表
+
+| 项 | FREEZE 记录 | 实测命令与输出 | 结果 |
+|---|---|---|---|
+| 文档 sha256 | `90179b7b…ea3545d`（R3 复核后） | `sha256sum rewrite-notes/01-stage-kernel/04-platform-discovery.md` → `90179b7b4d7a4428fe2a1591502aaf64b3ec4cd98947617d97f126529ea3545d` | 一致 |
+| 文档行数 | 2737（R3 时点） | `wc -l` → `2737` | 一致 |
+| 冻结头字段 | 头部保留 R2 口径（冻结日期 2026-11-12、edition V3.3、确认轮 R2） | R3 节为 append-only 追加（FREEZE.md 第 65–74 行），含 edition V3.4、`schema: V3.4 from R3`、D-070 引用 | 符合 §4h append 语义 |
+
+## R3-2. 轨迹门与制品链
+
+| 项 | FREEZE/loop 记录 | 实测命令与输出 | 结果 |
+|---|---|---|---|
+| `eval-trace-check --round R3` | PASS（11/2/0） | `python3 -I tools/eval-trace-check.py <run-dir> --round R3` → `汇总: PASS 11 / WARN 2 / FAIL 0`、`结论: PASS` | 一致 |
+| `--round R1` | 仍 PASS | 同命令 → `汇总: PASS 11 / WARN 3 / FAIL 0`、`结论: PASS` | 一致 |
+| `--round R2` | 仍 PASS | 同命令 → `汇总: PASS 11 / WARN 3 / FAIL 0`、`结论: PASS` | 一致 |
+| `panel-index --check` | 6 文件哈希一致 | `python3 -I tools/panel-index.py <run-dir>/panel/round3 --check` → `panel-index: 6 个文件哈希与计数一致` | 一致 |
+| panel INDEX 计数 | FINDING 27 / SUGGESTION 37 / CLAIM 6 | INDEX.md 实表逐列求和：FINDING 9+6+1+7+4+0=27、SUGGESTION 0+3+10+12+12=37、CLAIM 6 | 一致 |
+| certify 回执 | 12/12 CLOSED，首轮即 PASS | `certify/round3-certify.md`：`结论：PASS`、`核验条数：12`、`CLOSED：12；STILL-BROKEN：0` | 一致 |
+| 制品存在性 | FREEZE R3 全部引用 | `panel/round3/{fact,design-d2,reader-a,reader-b,reader-c,refute}.md`+`INDEX.md`、`certify/round3-certify.md`、`loop.md` R3 §0–§8+L6/L6.5、`metrics.md` R3 块、`defect-ledger.md` R3 节（29 行）、`OPEN-DEBT.md` R3-design-batch 行、`suggestions.md` R3 段、`DECISIONS.md:151` D-070、`prompt/EXECUTE-D01-D06-CONVERGENCE.md`（`git log --oneline -1 562b9fe6e` → 确为该文件新增提交）、`design-d2.md:165` ARCH-PROPOSAL RD04-A1 —— 全部存在 | 一致 |
+
+## R3-3. 六门读数（任务列 7 条命令，全部实测）
+
+| 门 | FREEZE 记录 | 实测命令与输出 | 结果 |
+|---|---|---|---|
+| `anchor-resolve.sh --check` | 77/77 | `anchors=77 resolved=77 zero-def=0 multi-def=0` | 一致 |
+| `doc-citation-check.py` | checked=68 failed=0 warned=7 | `blocks=87 checked=68 failed=0 skipped=12 warned=7` | 一致 |
+| `doc-structure-check.py` | 通过 | `✅ doc-structure-check: 1 个文件表结构与内部 .md 链接均可解析` | 一致 |
+| `doc-ref-check.sh --check` | 通过 | `✅ doc-ref-check: … 内部章节引用均可解析` | 一致 |
+| `doc-style-lint.sh` | error=0 | `命中汇总：\| error级=0` | 一致 |
+| `doc-code-density-check.sh --check` | 通过 | `✅ 承载门阻断项通过（4 个可判章均有码/命令）` | 一致 |
+| `doc-code-map.sh --check` | 54/54 | `（共 54 个文件；存在性 54/54 通过）` | 一致 |
+
+## R3-4. metrics R3 块 vs 台账逐 ID 聚合
+
+| 指标 | metrics R3 | 台账聚合（29 行逐行求和） | 结果 |
+|---|---|---|---|
+| 处置 ① | 10 | RD-R3-01(1)+02(3)+03(3)+04(2)+29(1)=10 | 一致 |
+| 处置 ② | 3 | RD-R3-05(3)=3 | 一致 |
+| 处置 ④ | 7 | RD-R3-08(1)+13(3)+20(1)+21(2)=7 | 一致 |
+| FP | 5 | RD-R3-27(3)+28(2)=5（CLAIM-11..15 反证失败/主张成立） | 一致 |
+| SUGG | 45 | 17 行 45 成员 = 读者 SUGGESTION 34（RA-S 10+RB-S 12+RC-S 12）+ DESIGN-D2-04..09（6）+ finding 形态 P3 5（READER-B-04..07、READER-C-04） | 一致（登记缺口见 FAIL-2） |
+| 发现总数 | 70 | 70 个唯一成员 ID、零重复；形态分布 FACT 6+SUG 3 / DESIGN-D2 9 / READER-A 1+RA-S 10 / READER-B 7+RB-S 12 / READER-C 4+RC-S 12 / CLAIM 6 —— 与 INDEX 三类计数逐类吻合 | 一致 |
+| 唯一根因数 | 29 | 29 行 RD-R3-01..29 | 一致 |
+| 本轮新准入 | 29 | 29 行 origin 列全部 = `R3` | 一致 |
+| certify 新准入 | 0 | 回执 12/12 CLOSED、0 STILL-BROKEN、无新增发现 | 一致 |
+| 未闭环 | 0 | 29 行处置均终态（①已修 / ②D-070 批准延期 / SUGG 登记 / FP / CLAIM①已修） | 一致 |
+
+### FAIL-1：严重度分布记录不一致
+
+- FREEZE.md R3：「无 P0，1 条 P1（READER-C-01…），**15 条 P2**」；loop.md R3 §2：「P0 = 0；P1 = 1；**P2 = 15；P3 = 54**」。
+- 实测 A（`defect-ledger.md` 严重度列按成员加权）：`grep "^| RD-R3-" … | awk -F'|' …$6` → P1=1、**P2=11**（RD-R3-01/05/08/13/21/29，成员 1+3+1+3+2+1）、**P3=58**。
+- 实测 B（panel 六文件显式严重度标注，Python 逐节解析）：P1=1（READER-C-01）、**P2=11**（fact 1、design-d2 3、reader-a 1、reader-b 3、reader-c 2、refute CLAIM-06 1）、P3 显式 26，其余为「建议/S」或未标注。
+- 两套独立真值互相一致（P2=11 / P3=58），FREEZE 与 loop 的 15/54 在任一制品中都数不出来；P0=0、P1=1 两条正确。`metrics.md` R3 块无严重度行，不受影响；`eval-trace-check` 不依赖该数字。
+- 判：**FAIL（记录不一致）**。需把 FREEZE.md R3 节与 loop.md R3 §2 的严重度行改为 P2=11/P3=58（或给出 15/54 的可复算口径）。
+
+### FAIL-2：RD-R3-14/15/22 复验列声称已登记 suggestions.md，实际缺 5 条
+
+- 台账复验列实文：RD-R3-14「RD04-READER-B-04 等 3 条已登记 suggestions.md 的 R3 段」、RD-R3-15「RD04-READER-B-07 等 3 条已登记 suggestions.md 的 R3 段」、RD-R3-22「RD04-READER-C-04 等 3 条已登记 suggestions.md 的 R3 段」。
+- `suggestions.md` R3 段实际仅 4 行：RA-S01..S10（10）+ RB-S01..S12（12）+ RC-S01..S12（12）+ DESIGN-D2-04..09（6）= **40 条**。
+- READER-B-04/05/06/07、READER-C-04（finding 形态 P3、处置 SUGG）不在其中；SUGG 处置合计 45 vs suggestions.md 40，差 5 恰为这 5 条。
+- 判：**FAIL（复验证据与登记制品不一致）**。P3→SUGG 降档不实施的处置本身合规（§4.0c），缺的是登记动作；需把 5 条补进 suggestions.md R3 段或更正台账复验列。
+
+## R3-5. 未闭环与债务
+
+- 未闭环 = 0（聚合见 R3-4；无任何行处于 open 态）。
+- `OPEN-DEBT.md` R3-design-batch 行存在：「用户批准 2026-11-20（代理裁决 D-070）延期至下一 design batch」，列 RD04-DESIGN-D2-01/02/03 三项设计 P2 + 6 条设计 P3 + ARCH 提案 RD04-A1 —— 与 FREEZE R3「有 D-070 判决行与 2026-11-20 日期」一致。
+- `DECISIONS.md:151` D-070（2026-11-20）：重开 D04 升 edition V3.4、12 处文档修改点本轮修、3 条设计 P2 记 `R3-design-batch`、RD04-A1 待用户亲裁；状态「已实施」。
+- 旧账未动（FREEZE 亦未声称销账）：`D04-design-batch`（D-054）与 `R04-T13`（含 r7「判决行缺失」注记）仍在 OPEN-DEBT —— 一致。
+
+## R3-6. 一致性抽查（5 行，①/②/④/SUGG/FP 五类各 ≥1）
+
+| 台账行（类） | 台账声称 | 重放证据（实际命令与输出） | 结果 |
+|---|---|---|---|
+| RD-R3-01（①，RD04-FACT-01，P2） | 文档该变体解析路径已改为 `new(DTB, PhysBytes(dtb_phys))` | `sed -n '2472p' <doc>` → 「`PlatformDescSource::new(DTB, PhysBytes(dtb_phys))`（len=0，不带长度；与 boot-shim 生产腿的 `with_optional_len` 不同）」；`sed -n '110p' os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs` → `let source = PlatformDescSource::new(DTB, PhysBytes(dtb_phys));` | PASS |
+| RD-R3-05（②，DESIGN-D2-01..03，P2） | early-console 描述链死抽象、无活消费者；延期 R3-design-batch（D-070） | `grep -rn "early_console\|ConsoleDesc" os/libs/minix-platform/src os/libs/minix-boot/src` → 声明/转发集中于 `global.rs:69-70/151-157`、`platform.rs:356/448`；唯一其他引用 `global.rs:319` 位于 `#[cfg(test)]` 的 `test_qemu_virt_dispatch_via_enum` —— 生产代码零活消费者成立 | PASS |
+| RD-R3-08（④，READER-A-01，P2） | §4.2 authority 过滤句已改为可解析机制描述 | `<doc>:1644` 含「`audit_source_coverage_for`（`memmap_source.rs:361`）在 UEFI 腿只以 `UefiMemoryMap` …机制见 `memmap_source.rs:354-360` 的注释」；`sed -n '354,361p' os/libs/minix-boot/src/memmap_source.rs` → 注释原文（"Only the memory-map records are authoritative…"）与 `pub fn audit_source_coverage_for(` 均在 | PASS |
+| RD-R3-06（SUGG，DESIGN-D2-04..06，P3） | `Frozen::freeze` 防重闸是 `debug_assert!`；已登记 suggestions | `sed -n '227,228p' os/libs/minix-types/src/types/cell.rs` → `pub fn freeze(&self, value: T)` + `debug_assert!(`；suggestions.md R3 段含 DESIGN-D2-04..09（随 R3-design-batch 评估） | PASS |
+| RD-R3-27（FP，CLAIM-11..13，P3） | 反证失败（主张成立）：aarch64 两段独立循环、DTB GUID 在前 | `sed -n '234,253p' os/boot-shim/src/uefi_helpers.rs` → :234 `DEVICE_TREE_GUID \|\| LEGACY_DEVICE_TREE_GUID`、:242 `break`、:246 第二段 `for`、:247 `ACPI2_GUID \|\| ACPI_GUID` —— 两段独立循环、DTB 在前，与文档一致 | PASS |
+
+抽查 5/5 PASS；两处 FAIL 均为记录层（R3-4），不在抽查行的事实内容里。
+
+## R3-7. 非阻断观察（不计入 FAIL）
+
+1. 「12 处文档修改点」的枚举列出 13 个点（两个 §5.2 点是否合并计一处未写明）；certify 恰 12 条且无「三变体构造器差异说明」专条——loop.md §8.3 已自报 certify 覆盖依赖其第 9 条。
+2. metrics R3「重构: 提出 3 / 接受 3 / 实施 0 / 登记 3」无逐条映射；数量与 ② 3 条（D2-01/02/03 延期登记）吻合，属推断，未独立验证。
+3. FREEZE R3「四篇中唯一首轮即 PASS」：`runs/01-stage-kernel/` 下仅 02/03/04 三个 run 目录有 `round3-certify.md`；第四篇的制品不在本篇允许读取范围内，未验证。
+
+## R3-8. 局限声明
+
+- **同 agent 审计**：本审查与 FREEZE/面板/修复同模型；全部命令与输出已列出，可第三方复算。
+- **只读**：除本文件追加节外未修改任何文件。
+- **允许清单约束**：未读 `prompt/` 规范全文与兄弟 run 的 loop/ledger 正文（仅目录清单），FAIL-1 的「15」来源与「四篇」计数只能列出不一致、不能定位成因。
+- **测试未重跑**：R3 无代码改动（loop.md §5 声明），本审计未重跑 cargo 测试与 QEMU；六门 + 三轮轨迹门 + panel-index 哈希门全部机械重放。
+- 「自引入 0」「重复合并 0」按 70 唯一 ID 与面板形态对账验证；语义级自引入（同根因换皮）无法机械排除。
+- certify 12 条未逐字重放（其读数与六门独立成立）；抽查覆盖五类处置各 1 行，非全量复验。
+
+## R3-9. 收口条件
+
+维持冻结记录一致性需完成两件小事：① 把 FREEZE.md R3 节与 loop.md R3 §2 的严重度行改为 P2=11/P3=58（或给出 15/54 的可复算口径）；② 把 READER-B-04/05/06/07、READER-C-04 五条补进 suggestions.md R3 段，或更正 defect-ledger.md RD-R3-14/15/22 的复验列。完成后本审计的全部读数即与 FREEZE 记录一致，可改判 PASS。
+
+## R3 回归审计的补修记录（主 agent，append-only）
+
+上面是独立审计者的原始结论（FAIL，2 条记录层不一致）。按 §4h 已全部处置：
+
+| # | 审计发现 | 处置 | 复验 |
+|---|---|---|---|
+| 1 | FREEZE/loop 写 P2=15/P3=54，台账实为 P2=11/P3=58 | 两处改为 11/58 | 台账逐 ID 聚合即审计者实测 |
+| 2 | RD-R3-14/15/22 的复验列声称已登记 suggestions.md，实际 5 条 finding 形态 P3（READER-B-04..07、READER-C-04）漏登 | 补登 suggestions.md 的 R3 段（4+1 条） | suggestions.md R3 段现含 45 条（34+4+1+6） |
+| 附 | 「12 处修改点」实为 13 | FREEZE/loop 改 13 | 枚举清单 13 项 |
+
+补修后实测：`--round R1/R2/R3` 三轮 PASS；anchor 77/77、citation 68/0、panel-index 6 文件哈希一致。
