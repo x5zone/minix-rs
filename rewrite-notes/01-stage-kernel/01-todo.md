@@ -308,6 +308,45 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
 
+### I-32（已裁决·可立即开工）U-Boot 腿两个安装型全局：检查强度对齐
+
+**裁决**：用户 2026-11-20，判决行 `D-064`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `R34-design-batch` 行已注记。来源：`RD34-DESIGN-D2-02`（P2）。
+
+**做法（路线 B）**：把两个 `debug_assert!` 改成 `assert!`，并给 `DTB_PTR` 补同形检查；结构不动。
+
+```rust
+// os/boot-shim/src/opensbi_helpers.rs:490-506（现状；debug_assert! 在 :500）
+pub unsafe fn install_boot_file_table(addr: u64) {
+    debug_assert!(BOOT_FILE_TABLE_PTR == 0, "install_boot_file_table called twice");
+    unsafe { BOOT_FILE_TABLE_PTR = addr as usize; }
+}
+
+// 改为：assert!（release 下同样 fail closed）
+pub unsafe fn install_boot_file_table(addr: u64) {
+    assert!(BOOT_FILE_TABLE_PTR == 0, "boot-shim: install_boot_file_table called twice");
+    unsafe { BOOT_FILE_TABLE_PTR = addr as usize; }
+}
+```
+
+`install_dtb_ptr`（`:547`，单行 `debug_assert!`）同形改法。
+
+**为什么选路线 B 而不是参数化**：用户约束是「多架构函数签名尽可能一致」。`prepare_boot` 是 U-Boot 腿唯一入口，与 UEFI 腿的 `prepare_and_enter_kernel_image` 各自面对不同固件、输入本就不同；一致性由数据契约层（`FileLoader` trait / `BootStorage` / `BootPrepareResult` / `build_kernel_info` / `arch_boot`）保证，不由各链入口签名保证。且两条路线**安全性等价**——都只解决「指针被第二次 install 偷换」，`assert!` 在 release 下同样停机。
+
+**附带澄清（讨论中确认）**：传参不解决内容安全。表内容有效性仍靠 magic 校验，内容不被改写仍靠「`SHIM_TABLE` 在 `.bss` 只写一次」的纪律；`debug_assert!` 从来没防过这两条。因此路线 A 的额外收益仅为结构上少两个 unsafe 全局，不构成安全收益。
+
+**为什么现状算问题**：同一份启动契约里，`BootStorageCell::take`（`boot-shim/src/lib.rs:164-172`）与 `pt_alloc::register`（`arch/src/arch/pt_alloc.rs:97-101`，注释明写「so fail closed in release too」）都用两档 `assert!`，唯独这两个安装型全局用 `debug_assert!`。release 下第二次安装会静默改写指针，而 `FileBytes::Borrowed` 的「底层存储不得被覆盖」合同正依赖这张表的地址稳定。
+
+**验收**：
+- `grep -n "debug_assert" os/boot-shim/src/opensbi_helpers.rs` → 0（该文件内不再有 debug-only 的一次性检查）；
+- 新增负控测试：同一安装函数调用两次，第二次 `#[should_panic]`（若测试环境能构造；否则在注释里写明为何不可测——单线程启动期无重入路径）；
+- `cargo test -p boot-shim --features test-all` 全绿；
+- riscv U-Boot shim 门链（`os/qemu-tests/test-riscv64-uboot.sh`）PASS；
+- 文档 §3.4.5 的所有权段若提及这两个全局，补一句检查强度已对齐（当前文档未点名，可能无需改）。
+
+**风险与回退**：`assert!` 在 release 下保留检查，会增加两条分支（启动期一次性执行，无性能影响）。若某天出现「表在更早的汇编跳板里装好」的合法两次安装形态 → 回退本裁决并重开 D-064（该条件已写进判决行 `reopen_condition`）。
+
+**为什么现在不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。裁决已生效，实施留待下一 design/code batch。
+
 ### I-31（已裁决·可立即开工）wire v10：删除三个字段/分区
 
 **裁决**：用户 2026-11-20，判决行 `D-062`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `WIRE-v10-batch` 行同步。
