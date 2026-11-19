@@ -234,3 +234,47 @@
 - 重构: 提出 4 / 接受 4 / 实施 0 / 登记 4
 - 成本: agent 8 / token 未采集 / 耗时 约 4 小时
 - 回读与回归: 文档六门全绿；certify #1 新准入 2（已修）、certify #2 新准入 0；`cargo test -p minix-kernel --features mock` 866 passed / 0 failed / 8 ignored；QEMU 本轮未跑（无 arch/boot 行为改动）
+
+## R31 完整 survey
+
+- 发现总数: 53（FACT-A 8、FACT-B 3、DESIGN-D2 9、READER-A 12、READER-B 16、READER-C 5）
+- 唯一根因数: 24（RD-R31-01..24）
+- 本轮新准入: 24
+- certify 新准入: 0
+- 重复合并: 29
+- 自引入: 0
+- 处置: ① 17 / ② 0 / ④ 10 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 26
+- 未闭环: 0
+- 轮型: full
+- 轮结果: ROUND-CLOSED
+- 代裁决: 0
+- ARCH 提案: 0
+- 用户否决: 0
+- edition: V3.3
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 1（独立冷读）/ token 未采集 / 耗时 约 3 小时
+- 回读与回归: 文档六门绿（anchor 105/105、citation failed=0、structure/ref/style/density 通过）；独立冷读 `certify/round31-backfill-coldread.md` 判 CLOSED 33 / STILL-BROKEN 20；STILL-BROKEN 的 20 条中 12 条本轮修文档、8 条按读者/设计 P3 门槛登记 SUGG；`cargo test -p minix-kernel --features mock` 863 passed / 3 failed 是 D2-39 收紧尝试的实测反证，代码已回退
+
+## R35 确认轮
+
+- 发现总数: 78（FINDING 35 + SUGGESTION 37 + CLAIM 6，与 `panel/round35/INDEX.md` 同源）
+- 唯一根因数: 78（RD-R35-01..78，逐发现立根因）
+- 本轮新准入: 78
+- certify 新准入: 0
+- 重复合并: 0（逐发现立根因；跨轮同根关系由面板原文与 OPEN-DEBT 指针表达）
+- 自引入: 2（§4.1 的「四条架构」与 §4.6 的 mock 分叉段均为 R31 补清点批引入、R35 面板块抓到并已修）
+- 处置: ① 17 / ② 13 / ④ 8 / ⑤ 0 / ⑥ 0 / FP 5 / SUGG 35
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 1（D-060：批准 6 条设计 P2 与 1 条 ARCH 提案延期到 `R35-design-batch`）
+- ARCH 提案: 1（ARCH-PROPOSAL-01：aarch64 `arena_pa == 0` 形态判别改链接期分叉，待用户裁决）
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 13 / 接受 13 / 实施 0 / 登记 13
+- 成本: agent 8（六角色 + 两次 certify）/ token 未采集 / 耗时 约 5 小时
+- 回读与回归: 文档六门绿（anchor 108/108、citation `checked=29 failed=0`、structure/ref/style/density 通过、doc-code-map 54/54）；独立回执 `certify/round35-fact.md` 21/21 CLOSED、`certify/round35-reader.md` 12/12 CLOSED；`cargo test -p minix-kernel --features mock` 的 D2-39 收紧尝试已回退，本轮无代码行为改动，QEMU 未跑

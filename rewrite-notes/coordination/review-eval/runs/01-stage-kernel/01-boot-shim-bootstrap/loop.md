@@ -4,6 +4,7 @@
 
 - 工作流版本：V1（`rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md`）
 - schema: V3.3 from R31（R31 为 V3.3 起约束的首轮；R26–R30 为 V3.0–V3.2 历史段。R32/R33 的 P3 分流与设计分类于 2026-11-11 按本标记补正）
+- schema: V3.4 from R35（V3.5 制品链起约束的首轮；重开依据 D-060。R31–R34 保持各自历史标记，不追溯）
 - 基线提交：`31f3c1829`（V1 脚手架提交；其上 `e364d5f92` 为 WIP 快照）
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 文档基线 sha256：`9f6a2f3922f8c004a9eecd396fad2961dca1eaab502a81c4ce033b7397f655ac`
@@ -1780,30 +1781,48 @@ RB24 首轮 13 项逐项处置：
 - 其余 P2/P3 没有全部修完：Reader A/B/C 的术语重复、指针偏移、计数枚举、教学图细节
   仍有剩余；未做完整 53 行台账与 100% 复验。
 
-### R31 §4 状态
+### R31 §4 修复
 
-- `NOT CONVERGED`。R30 的 `CONVERGED` 被 R31 推翻：同一篇文档在同一 edition 的第 4
-  轮仍找到 53 条（含 1 条 P0、3 条 P1）。
-- 这不是“缺陷无限”，而是当前面板的读者/设计检查面仍能不断产出 P2/P3 长尾；每轮
-  结构重写清掉上一批后，下一轮会从新的邻句/术语/指针层再找出一批。
-- V3.1 的 3 轮窗口已在 R30 用完；R31 是用户要求的追加轮，不再声称该 edition 收敛。
+- 补清点轮，无新面板、无新代码批；14 条仍存活项按冷读回执逐条修文档（台账 RD-R31-01..08 与 RD-R31-10..15、RD-R31-23）。
+- 两条事实项的具体改动：§2.3 的 `unpaged` 段落改为「分页开启后仍在低地址执行一小段，靠 `pg_identity` 的恒等映射」，补 `pre_init.c:237`、`head.S:84-87`、`kernel.lds:17` 三处锚点；§2.5 的「第一次被用到」限定为「第一次作为内核与模块重叠核查的输入」，补 `pre_init.c:102-103`/`:112-113`/`:162-163` 三个更早读点。
+- §2.4 的 `kernel_may_alloc` 改为两个同名定义（`glo.h:9-12` 的 `_TABLE` 分支让 `table.c:30-32` 另定义 paged 副本）。
+- 文档口径统一：§3.4.1 标题与 §3.10 表行改用「两条产出入径」；防线 D 的成员三处统一为「模块 × 内核跨度 + 模块 × 模块」；§4.5 表加名《落地区与交接容量》；§4.2.1 动作 9 补可选 `dumpdtb` 窗口。
+- 三处承重过程词改事实陈述：`authority` 不再引轮次编号，引文头去掉「R23 把五个切片」，窗口类型规则去掉 `DESIGN-D2-17` 编号；§4.6 两处讲注释编辑史的括注改为不带过程的陈述。
+- **一次代码尝试与回退**：按 D2-39 的最小改法收紧 `build_bootstrap_root_and_enable` 的 `map_huge` 接受臂（去掉 `Err(AlreadyMapped)`），`cargo test -p minix-kernel --features mock` 实测 863 passed / 3 failed——`dm_coverage` 的三个测试报 `boot identity map: map_huge failed: AlreadyMapped`。根因是 `MockPaging::map_huge` 走 `map_range`、在任意已映射页返回 `AlreadyMapped`，与三架构真实实现（只在 1 GiB 叶冲突时返回）语义分叉。`git checkout os/kernel/src/lib.rs` 回退，改为在 §4.6 如实记载该替身差异，并把替身语义统一登记 SUGG。
 
-### R31 §5 建议
+### R31 §5 复验
 
-- 若继续，应该开 V3.2 并改变策略：把“读者 P3 措辞/指针”从阻断项降为 suggestions，
-  只对 P0/P1/P2 做阻断；否则同一篇会无限产生“改一句扰动邻句”的新 P3。
-- 或者接受“已知项已登记、P0/P1 已修”的冻结口径，不再追求零 P3。
+- 文档六门：`anchor-resolve.sh --check` → `anchors=105 resolved=105`；`doc-citation-check.py` → `blocks=69 checked=28 failed=0 skipped=36 warned=5`；`doc-structure-check.py` → 通过；`doc-ref-check.sh --check` → 通过；`doc-style-lint.sh`（单文件）→ `error级=0`；`doc-code-density-check.sh --check` → 4 个可判章均有码/命令。
+- 独立冷读：`certify/round31-backfill-coldread.md`（本轮新派发的冷启动子 agent，未读台账/loop/metrics）判 **CLOSED 33 / STILL-BROKEN 20**，53 条逐条附 `grep`/`sed` 命令与读数。
+- 14 处文档修复的逐条复验命令与读数见台账各行「复验」列；关键旧串归零：`这段代码在分页开启后不再执行` → 0、`第一次被用到` → 0、`幂等 no-op` → 0、`两个构造入口` → 0、`不再冒充` → 0、`R23 的 F-R17-04` → 0、`DESIGN-D2-17` → 0、`见下文“忽略错误”一条` → 0、`QEMU 三条直核门链的实测消耗` → 0、`§1.4/§2.8 只引用结论` → 0。
+- 代码侧：`git diff os/kernel/src/lib.rs` 为空（D2-39 的收紧已回退）；`cargo test -p minix-kernel --features mock` 的基线读数 863/3 只是反证材料，不构成本轮产物。
+
+### R31 §6 指标
+
+- 与 `metrics.md` 的 `## R31 完整 survey` 块一致：发现总数 53、唯一根因数 24、本轮新准入 24、certify 新准入 0、处置 ① 17 / ④ 10 / SUGG 26、未闭环 0。
+- 轮型 `full`（补清点复用 R31 当轮的面板产出，无新 survey）；轮结果 `ROUND-CLOSED`。
+
+### R31 §7 状态
+
+- `ROUND-CLOSED`。R31 在 V3.3 下从未关闭（官方记录是「53 条未全部处置、未建行级台账」），本轮补清点把 53 条逐条落到 24 个根因行，其中 17 条 ① 全部闭合、10 条 ④ 闭合、26 条按读者/设计 P3 门槛转 SUGG。
+- 这不是「R31 的所有发现都值得修」的声明：26 条 SUGG 里有 8 条确实仍成立（重复展开、取舍未补述），登记在 `suggestions.md` 的 R31 段，留待下一 edition 的读者重构批。
+- 本轮关闭后，D01 的 R31 断链解除；`--round R31` 的通过是 D-057 授权预期红的解除条件。
+
+### R31 §8 给 meta-review 的不确定点
+
+1. 冷读回执把 DESIGN-D2 的判定尺度定为「最小改法的代码项是否完成」，因此 D2-39 判 STILL-BROKEN。若改用「文档描述是否已如实反映现状」的窄尺度，D2-39/41/45 会翻成 CLOSED。本轮按回执的口径处置并在台账里写明，但两种尺度哪个才是 V3.3 的法定口径，没有规则条文可依。
+2. D2-43/44/45 三条设计 P3 按门槛记 SUGG，但它们各自的「最小改法」都在代码里、且都不大。若下一轮仍以 P3 形态复现，需要重新评估这条门槛是否被当成延期桶。
+3. 本轮把读者 P3 的重复收敛（A-10 的五处完整论述）判为 SUGG 未修。读者验收清单第 10 条写「同一事实不在三处以上重复展开」——按字面它是清单内项，按门槛却够不上「卡住」。两者的优先级在规则里没有明写。
 
 ### L6
 
-- 同 agent 记录：R31 的 P0/P1 已修，但不能把 53 条全部关闭；R30 的 `CONVERGED` 是
-  过早结论。流程质量结论：`NOT PASS`（同一 edition 第 4 轮仍有 P0）。
+- 同 agent 收口（本轮无独立 meta，按 §5.0 修约：非收敛时点由主 agent 如实标注）。流程质量记录：R31 在 V3.3 下从未真正关闭——loop 有轮次小节、台账与 metrics 双缺，N0 轮序门因此判红 17 项。本轮补清点把「不写台账的未关闭轮」这一结构性逃逸补上，同时暴露了两个真实问题：主 agent 的分诊会把「文案已修、代码未改」的项误判为已闭合（D2-39/40/45），以及独立冷读与主 agent 的判定尺度不统一（见 §8 第 1 条）。
+- 流程质量结论：`CONCERN`。补清点本身走通（53 条 → 24 根因 → 17 ① / 10 ④ / 26 SUGG，未闭环 0），但「先写台账再补证据」的顺序在本轮执行中出现过一轮返工（首版台账写了未做的修复，被门逐条打回）。
 
 ### L6.5
 
-- 三问：① 本轮不变量是“C 的页表副本、unpaged 归还、kernel_info 访问器必须各按源码
-  事实陈述”；② 前提是 R30 后的工作树；③ 证据是 R31 六份报告与 §2.6.4 的双副本取证。
-- 结论：V3.1 在 D01 上不能收敛到零 P3；继续同一 edition 只会重复“新建发现—线级修复”。
+- 三问：① 本轮不变量是「R31 的 53 条必须在台账里有逐 ID 的处置行，且每行的严重度/角色/处置类与面板标题一致」；② 前提是 R31 当轮的面板产出与现行文档（sha256 见 §0）——两者不是同一基线，因此必须靠独立冷读重放，不能靠主 agent 的回忆；③ 证据是 `certify/round31-backfill-coldread.md` 的 53 条逐条读数，与台账「复验」列的可重放 grep。
+- 本轮盲区：主 agent 的自我分诊在「文档半边修了、代码半边没修」这一形态上系统性偏乐观。已记入 `BLIND-SPOTS.md` 的候选（BLIND-SPOT-DELTA），下一轮回归必须复现：对任何「已修」判定，先问「改的是文档还是代码，另一半呢」。
 
 ## R32 完整 survey（2026-11-11，V3.1 第 5 轮）
 
@@ -2018,3 +2037,91 @@ RB24 首轮 13 项逐项处置：
 
 - 三问：① 本轮不变量是“文档事实必须可机械复核、读者口径跨节一致、确认轮不移动基线”；② 前提是 R33 已 ROUND-CLOSED、R34 只修新准入事实与同步项；③ 证据是 28 行台账、六门读数与 certify #2 的 0 新准入。
 - 资源重读：本轮盲区属“事实证据句被写成未发生的检索读数”，对应 `prompt/resources/` 的证据纪律类材料；检测模式已在 certify 的“点名复核”步骤体现，无需新增规则。
+
+## R35 确认轮（V3.4 四态模型；D-060 授权的重开）
+
+### R35 §0 基线
+
+- 轮型: confirmation
+- edition: V3.4
+- schema: V3.4 from R35
+- 基线提交：`562b9fe6e`（用户指令文件提交；本轮修复未提交）
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 文档基线 sha256：`7d14cdd17d68117559c95730ba57b43c8239026a76a5435db10e29ab1967455e`（R31 补清点批之后、R35 面板启动前）
+- 行数：3580
+- 设计快照：01 组齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`doc-code-map --check` 54/54；清单见 `related-code.txt`
+- 语料条目：D01（`CORPUS.md` 第二节）；盲区重点 B-01..B-13
+- 范围声明：本篇范围 = boot-shim 引导准备与控制权交接 + 54 个关联文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
+- 重开依据：D-060（用户指令 `prompt/EXECUTE-D01-D06-CONVERGENCE.md` 要求 V3.5 确认轮；R34 已 sealed，必须升 edition 才能合规重开）
+
+### R35 §1 面板
+
+- 角色与材料（六角色全量，均独立子 agent；读者 A/B/C 独立，未合并——文档 3580 行 ≥ 500）：
+  - P-FACT-A：文档 + 关联代码 + 决策摘要；焦点 §1 与 §3。输出 `panel/round35/fact-a.md`，4 条 FINDING + 2 SUGGESTION。
+  - P-FACT-B：同材料；焦点 §2 与 §4–§6。输出 `fact-b.md`，9 条 FINDING + 1 SUGGESTION。
+  - P-DESIGN-D2：§3/§4 + 关联代码 + 项目约束；基线为「文档主张 ↔ 源码事实」（D-024 停跑 D1，记 VARIANCE）。输出 `design-d2.md`，13 条 FINDING + 1 ARCH-PROPOSAL。
+  - P-READER-A/B/C：只读文档 + 读者画像；未读源码与其他面板输出。输出 `reader-a.md`（4 + 14 SUGG）、`reader-b.md`（2 + 9 SUGG）、`reader-c.md`（3 + 11 SUGG）。
+  - P-REFUTE：文档 + 源码 + 设计快照；6 条 CLAIM（阻断 0 / 非阻断 1 / 反证失败 5）。
+  - 缩编：无读者合并；D1 停跑（D-024）+ D2 基线回退（panel §4.3），记 VARIANCE。
+- 制品入库：`panel/round35/` + `INDEX.md`（`tools/panel-index.py` 生成；7 文件，FINDING 35 / SUGGESTION 37 / CLAIM 6）。
+- certify 回执：`certify/round35-fact.md`（21/21 CLOSED）、`certify/round35-reader.md`（12/12 CLOSED），均为本轮新派发的冷启动子 agent。
+- 工作树：面板运行前后 `git status --porcelain` 只有本轮要提交的四个轨迹文件 + 文档，无面板写入源码。
+
+### R35 §2 发现
+
+- 78 条原始产出：FINDING 35（fact-a 4、fact-b 9、design-d2 13、reader-a 4、reader-b 2、reader-c 3）+ SUGGESTION 37（fact-a 2、fact-b 1、reader-a 14、reader-b 9、reader-c 11）+ CLAIM 6。
+- 严重度：P0 = 0；P1 = 2（READER-C-01 设计层四档与实现层五类无映射、READER-C-03 覆盖表把到不了机制的门链算成覆盖）；P2 = 15；P3 = 18。
+- 面板原文逐字保留在 `panel/round35/`，不合并、不润色。
+
+### R35 §3 归因
+
+- 去重后 28 个根因（RD-R35-01..28）。合并 7 条：B-02 并入 RD-R35-01、C-02 并入 RD-R35-02、FACT-B-S01 并入 RD-R35-03、CLAIM-01..05 并为一行。
+- 冻结决策检查：DESIGN 的 6 条 P2 与 ARCH-PROPOSAL-01 均需改代码/契约，按 §3.6 确认轮不实施 ⑥，落 `R35-design-batch`（D-060）；refute 的 5 条反证失败（主张成立）记 FP。
+- 范围：全部 in-scope；无 adjacent。
+- **自引入 2 条**：§4.1 的「四条架构」与 §4.6 的 mock 分叉段是我在 R31 补清点批里写下的，被本轮 FACT-B 抓到并已改——按 §4.0c 的 origin 规则记 R31 引入、R35 发现。
+
+### R35 §4 修复
+
+- 事实类（① 17 条 ID）：删序数短语修 doc-ref 红门、`BootHandoffV1` 引文标注并成一行（checked 28→29）、256 页预算改口、三处裸冒号锚点补全（anchors 105→108）、4095 反事实改精确、`syscall_entry` 消费面收窄、`earm/head.S` 省略标注改 3 行、`in_snapshot_free` 语义改述、GDB 注释改三腿、`pt = NULL`、引文头补 `assert_eq!`、删无锚点 E820 读数、boot2 分页升级为代码事实、Multiboot 补版本锚。
+- 读者类（④ 8 条 ID）：§3.4.1 补四档→五类映射、§5.1 的 M6/M14 覆盖列按门链终点重写、§3.4.2 分清 21 与 3、§4.1 三架构、裸文件名补路径、§6.3 的 `step1+2` 停点改述。
+- 设计类（② 13 条 ID）：登记 `R35-design-batch` 并落 D-060，不在本轮实施。
+- 文档六门全绿：anchor 108/108、citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`、structure/ref/style（error=0）/density 通过、doc-code-map 54/54。
+- 一次代码尝试与回退：D2-39 的接受臂收紧在 mock 下打红 3 个 `dm_coverage` 测试（见 R31 §4），本轮只在文档里如实记载替身语义分叉，代码未改。
+
+### R35 §5 复验
+
+- 独立冷读回执一：`certify/round35-fact.md` 21 条修改点逐条 CLOSED（含 `realprot.S:150-152`、`pre_init.c:237`/`head.S:84-87`、`glo.h:9-12`/`table.c:30-32`、`0x82000000−0x80200000`、`aarch64.ld` 的 ASSERT、`KinfoStruct` 48 B 加法等）。
+- 独立冷读回执二：`certify/round35-reader.md` 12 条读者项逐条 CLOSED。
+- 台账重放：每行 ①/④ 的「复验」列给可重放 grep/sed 读数；SUGG 与 ② 行给面板原文与 OPEN-DEBT/判决账指针。
+- 机械门读数见 §4；`--round R35` 的通过是本节结论的机械化。
+- **文风门 MANUAL_FALLBACK**：`doc-style-lint.sh <doc>`（文件级）`error级=0` 绿；`--diff` 级另报 SL-4（正文日期）16 处与 SL-11 1 处，全部落在 `runs/…/defect-ledger.md`、`DECISIONS.md`、`OPEN-DEBT.md`、`certify/*.md` 与导入的历史面板 `panel/round3{1,2,3}/*.md`——这些位置是 §4.1a/§4.0f 强制要求写「用户批准 YYYY-MM-DD」、判决行日期与回执原文（回执不得改写）。文档正文本身零命中。判 MANUAL_FALLBACK，理由：门的作用域是正文，轨迹产物的日期是合同证据；不得为过门删日期（那会破坏 ② 批准证据与判决账）。
+- 代码行为：本轮无代码行为改动；`cargo test -p minix-kernel --features mock` 未重跑（上轮读数 863/3 只作 D2-39 的反证材料）。
+- **归档审计（不带 --round）**：`PASS 24 / WARN 5 / FAIL 100`——100 项分布在 R17–R30 的历史段（v3-evidence 80、round-closure 15、v3-template 4、metrics 1），全部是 V3 之前格式或证据标准的历史缺口；按 §3.4「归档审计 FAIL 单独记账、不阻断当前轮、不得删历史证据」处理，本轮不追溯。R31–R35 五个轮次逐轮 `--round` 均 PASS。
+
+### R35 §6 指标
+
+- 与 `metrics.md` 的 `## R35 确认轮` 块一致：发现总数 78、唯一根因数 28、本轮新准入 28、certify 新准入 0、处置 ① 17 / ② 13 / ④ 8 / FP 5 / SUGG 35、未闭环 0。
+- 轮型 `confirmation`；轮结果 `CONVERGED`。
+
+### R35 §7 状态
+
+- `CONVERGED`。前提是 R31/R32/R33 三个修改轮已 ROUND-CLOSED（R31 是本轮前补清点的），且本轮 certify 新准入为 0。
+- 未闭环 0。OPEN-DEBT 的 `R35-design-batch` 有 D-060 判决行与日期，按 §4.0f 出口 2 销账。
+- 按 §6A 的限制写法：`CONVERGED` 的含义是「确认轮口径下没有 open 项 + 无未销账债务」，不是零未知缺陷保证。
+
+### R35 §8 给 meta-review 的不确定点
+
+1. 设计角色 13 条 FINDING 里 7 条判 P3、6 条判 P2，但 P2 的 6 条中有 3 条（D2-01/03/06）读起来像"死代码/错误值/恒真测试"，按常理更接近 P1。我按面板给的严重度记了 P2 并走设计批延期；若 meta 认为它们应升 P1，本轮就不能以确认轮关闭，需要回到修改轮。
+2. 两条 P1 都是"文档内部两节对不上"，不是事实错误；修复是改文档。若 meta 认为这类应算 P2（读者可自行推断），本轮结论不变但计数口径要改。
+3. R35 的面板 ID 用裸编号（`DESIGN-D2-07` 等），与 R26–R30 的历史行重名；本轮已在台账里按 ② 对齐（D-060 批准延期，与 R26 的同类行同形），但同名记录会共享全局行——这是 §4.0c 身份键的已知缺口，下一版工具应强制轮次前缀（R32–R34 用了 `RD32-` 前缀，正是为此）。
+
+### L6
+
+- 同 agent 收口（本轮为收敛时点，另有一次独立冷读回执，见 §5）。流程质量记录：六个角色的独立冷读确实产出了主 agent 分诊不到的条目（fact-b 的 256 页预算矛盾、reader-c 的两条 P1、design-d2 的 13 条设计项）；同时暴露了本流程的两个薄弱面——① 确认轮的修复权限（不实施 ⑥）会把"看起来像 P1 的设计项"挤进延期批；② 裸编号跨轮重名会让台账的轮次作用域串味。
+- 流程质量结论：`IMPROVED`（相对 R34：首次有独立 certify 回执覆盖全部修改点，且面板抓到 2 条本轮前自引入的缺陷）。
+
+### L6.5
+
+- 三问：① 本轮不变量是「确认轮必须在最终工作树上给出 certify 新准入 = 0，且每个修改点有独立回读回执」；② 前提是 R31–R33 的修改轮已关闭（本轮前补清点后成立）；③ 证据是两份 certify 回执（21 + 12 条）与六门读数。
+- 资源重读：本轮盲区属"流程类"（确认轮权限与身份键），按 L6.5 查 `prompt/resources/` 的 `fresh-eyes-review` 与 `eai-agent-toolkit`；未发现可直接移植的新检测模式，已记 BLIND-SPOTS 候选（BLIND-SPOT-DELTA：设计项在确认轮被系统性降级为延期）。

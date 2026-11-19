@@ -5,8 +5,8 @@
 - 确认轮：R34（`轮型: confirmation`）
 - 冻结提交：`5c7134fbd`（R34 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
-- 文档行数：3579
-- 文档 sha256：`3284d47a7f21529626e7a7b8933aa91a37c0501d4abd56244e45b3d503145b97`
+- 文档行数：3579（R34 时点）；R35 时点 3582
+- 文档 sha256：`1a71cb515d29db66735255a362f1804369c3d5854ce29185a615f57f3b4d68d7`（R35 复核后；R34 原值 `3284d47a7f21529626e7a7b8933aa91a37c0501d4abd56244e45b3d503145b97`）
 - 关联代码：`tools/doc-code-map.sh --check` 54/54 通过
 
 ## 收敛证据
@@ -40,3 +40,16 @@
 - 出现新的 P0/P1 事实或行为缺陷证据；
 - 下一 design/code batch 实施后基线改变（需重新固定基线并重跑受影响门）；
 - 用户明确要求重开。
+
+## R35 确认轮（V3.4；D-060 授权的重开确认，append-only 追加）
+
+- 上一节记录的是 V3.3 口径下的 R34 确认；按 D-060（用户指令 `prompt/EXECUTE-D01-D06-CONVERGENCE.md`）在 V3.5 制品链下重开一次，轮次号 R35、edition V3.4、`schema: V3.4 from R35`。
+- **R31 补清点先行**：R31 断链（D-057 授权的预期红）按「R31 补清点」解除——53 条找到 24 个根因行，独立冷读 `certify/round31-backfill-coldread.md` 判 CLOSED 33 / STILL-BROKEN 20；20 条中 12 条本轮修文档、8 条按 §4.0c 门槛登记 SUGG。`--round R31` 与 `--round R34` 均恢复 PASS。
+- **R35 确认轮**：六角色全量 survey（fact-a 4、fact-b 9、design-d2 13、reader-a 4、reader-b 2、reader-c 3 条 FINDING；SUGGESTION 37； CLAIM 6）。无 P0，2 条 P1。面板制品入库 `panel/round35/` + `INDEX.md`（7 文件，FINDING 35 / SUGGESTION 37 / CLAIM 6）。
+- **certify**：`certify/round35-fact.md` 21/21 CLOSED、`certify/round35-reader.md` 12/12 CLOSED，均为本轮新派发的冷启动子 agent（D-055 墙 2）。`certify 新准入 = 0`。
+- **机械门**：`--round R35` PASS（13 PASS / 3 WARN / 0 FAIL）；anchor 108/108；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`panel-index.py --check` 7 文件哈希一致。
+- **未闭环 = 0**。`OPEN-DEBT.md` 的 `R35-design-batch`（6 条设计 P2 + 7 条设计 P3 + 1 条 ARCH 提案）有 D-060 判决行与 2026-11-19 日期，按 §4.0f 出口 2 销账。
+- **自引入 2 条**（§4.1 的「四条架构」与 §4.6 的 mock 分叉段，均为 R31 补清点批写下的）已在本轮修掉，并在 metrics 记 `自引入: 2`。
+- **归档审计**（不带 `--round`）：PASS 24 / WARN 5 / FAIL 100，全部落在 R17–R30 的历史段（V3 之前格式）；按 §3.4 单独记账、不追溯、不阻断本轮。
+- FREEZE 的限制照旧：`CONVERGED` 的含义是「确认轮口径下没有 open 项 + 无未销账债务」，不是零未知缺陷保证。新增两条已知限制：① 设计项在确认轮被系统性降级为 `R35-design-batch` 延期（§3.6 的代价）；② 面板裸编号与历史轮重名，本轮靠 `RD35-` 前缀在台账里区分（§4.0c 身份键的已知缺口）。
+- 重开条件不变：出现新的 P0/P1 事实或行为缺陷证据；`R35-design-batch` 实施导致基线改变；用户明确要求重开。
