@@ -3,6 +3,7 @@
 ## §0 基线
 
 - 工作流版本：V1（`rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md`）
+- schema: V3.4 from R3（V3.5 制品链起约束的首轮；重开依据 D-061。R1/R2 保持各自历史标记，不追溯）
 - 基线提交：`691cde1bf`（V1 边界回归提交之后）
 - 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
 - 文档基线 sha256：`6e5ffc3ce0398405b6666311e60e3c7152876deb7b349032c46f00c413a917b3`
@@ -278,3 +279,84 @@
 
 - D-055 恢复独立读者后的回归轮：独立五角色 30 条口径、面板逐条 ID 见 `defect-ledger.md` 的 REG-2026-11-18 节；面板原件 `tmp/review-eval/01-stage-kernel/02-higher-half-kernel/panel/regress/`。
 - 轮型：回归载体（r6 R6-b 语义）；不宣告收敛状态变更（维持 FREEZE 时点的 CONVERGED，FREEZE 回归节为出口）。
+
+## R3 确认轮（V3.4 四态模型；D-061 授权的重开）
+
+### R3 §0 基线
+
+- 轮型: confirmation
+- edition: V3.4
+- schema: V3.4 from R3
+- 基线提交：`94a254231`（D01 收尾提交；本轮修复未提交）
+- 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
+- 文档基线 sha256：`829b3a71d141d99110588e30d33c446939ed97c7b07de57b66bdef45054ae21b`（R2 FREEZE 值，本轮面板启动前）
+- 行数：1280（R3 修复后 1283）；最终 sha256 `4f096ea9997eae5aae99ad648967d2b8001256d22e7a63c017d6ea9de16804ce`
+- 设计快照：02 组齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE
+- 关联代码：`doc-code-map --check` 28/28（本轮新增一处 `os/arch/src/riscv64/paging.rs` 引用，改后 29/29）
+- 语料条目：D02（`CORPUS.md` 第二节）
+- 范围声明：高半区链接布局与成对跳转 + 关联文件 + 本轮修复触碰的文件；不在范围 = 相邻模块与下一批次结构性重构
+- 重开依据：D-061
+
+### R3 §1 面板
+
+- 六角色全量、独立子 agent；读者 A/B/C 独立（文档 1280 行 ≥ 500，D-055 墙 1）：
+  - P-FACT：8 条 FINDING + 4 SUGGESTION（`fact.md`）
+  - P-DESIGN-D2：16 条 FINDING + 2 ARCH-PROPOSAL（`design-d2.md`）；D1 停跑（D-024），基线为「文档主张 ↔ 源码事实」，记 VARIANCE
+  - P-READER-A：4 + 19（`reader-a.md`）；P-READER-B：9 + 15（`reader-b.md`）；P-READER-C：4 + 10（`reader-c.md`）
+  - P-REFUTE：6 条 CLAIM（阻断 0 / 非阻断 1 / 反证失败 5），`refute.md`
+- **VARIANCE 1**：refute 的标题用 `## CLAIM RD3-CLAIM-<NN>`，轨迹门的 `CLAIM <数字>` 正则识别不到，因此 6 条 CLAIM 不计入 INDEX/发现总数/覆盖率（D01 R35 用的是 `## CLAIM <数字>`，本次标注形式不同）。影响：refute 的唯一非阻断发现已并入 reader 侧同根条目（§4.4 PC 行），无处置遗漏。
+- **VARIANCE 2**：fact 角色首次派发被平台截断，重派后完成；两次都只读允许材料。
+- 制品入库：`panel/round3/` + `INDEX.md`（6 文件：FINDING 41 / SUGGESTION 48 / CLAIM 0）。
+- 工作树：面板前后 `git status` 只有本轮要提交的轨迹文件与文档。
+
+### R3 §2 发现
+
+- 89 条机器可计：FINDING 41（fact 8、design-d2 16、reader-a 4、reader-b 9、reader-c 4）+ SUGGESTION 48；另有 refute 6 条 CLAIM（见 §1 VARIANCE 1）。
+- 严重度：P0 = 0；P1 = 11（fact 0、design 2、reader-a 2、reader-b 4、reader-c 0、其余为 design P2 与 reader P1/P2 分布）；P2 = 30 左右；P3 若干。逐条见 `panel/round3/`。
+- 面板抓到 3 条**本仓文档的真实错误**：§4.4 状态表把 aarch64 direct-core 的跳转后 PC 写成「低地址进入」、§3.1 把 riscv64 测试载体并入「低地址执行视图」、§3.4 的「四条前置条件」与表格行对不上。
+
+### R3 §3 归因
+
+- 34 个根因（RD-R3-01..34，按角色/严重度/处置类聚簇）。
+- 冻结决策检查：无命中；设计项的 11 条 P1/P2 按 §3.6 记 ② 延期（D-061）；2 条 ARCH 提案进判决账待裁。
+- 范围：全部 in-scope。
+- 归因结论：本轮 P1 全部是文档内部一致性（同一事实两处说法冲突），不是源码事实错误；设计的 2 条 P1 是代码契约风险（别名、fail-open），按确认轮权限不实施。
+
+### R3 §4 修复
+
+- 19 处文档修改点：§4.4 PC 行、§3.1 测试载体分类与复算口径、§3.2 外部装载器口径、§3.4 四条前置条件编号与表格对应、§1.1 两套地址限定到高半段、§2.1 补三个基址常量定义行、§5.1 M5 改「部分覆盖」、§6.2 `$rsp` 按架构分列、§6.2 `$rip` 的 riscv64 delta、§4.1 基址反事实改 2 MiB 口径、§3.4 对齐算式（只去 `sub` 也坏）、§3.5 panic 消息路径、§4.3 源码注释口径、§3.3「只 use」措辞、§3.5 引文前脚本注释与实现不符的说明、§6.2 第四组 `check_exception` 语义、§6.2 第五组寄存器名按架构、§3.1 六处命中口径、§2.3 前提倒置。
+- 文档六门：anchor 55/55、citation `checked=25 failed=0`、structure/ref/style(error=0)/density 通过、doc-code-map 29/29。
+
+### R3 §5 复验
+
+- 独立回执 `certify/round3-certify.md`：三轮复核——首轮 19 条 14 CLOSED / 5 STILL-BROKEN；按证据改正 5 条后 18/1（余 §6.2 `:1242` 的 aarch64 前缀）；再改后 18/1（余 §3.5 panic 消息两层顺序）；第三次改正后 19/0 PASS。
+- **回执抓到主 agent 的四处实质错误**：① 把 `0xffff7fffbfe00000`（L4 平移量）当成 aarch64 栈地址；② 误称 riscv64 的 `map_huge` 不检查 1 GiB 降级；③ §3.4 对齐算式方向写反；④ panic 消息的两层包装顺序写反。四条均已按回执给出的 path:line 改正。
+- `certify 新准入 = 0` 口径：certify 输入闭集 = 上述 19 个修改点；回执覆盖全部，复核后无新增修改点。
+- 代码行为：本轮无代码改动；QEMU 未跑。
+
+### R3 §6 指标
+
+- 与 `metrics.md` 的 `## R3 确认轮` 块一致：发现总数 89、唯一根因数 34、本轮新准入 34、certify 新准入 0、处置 ① 12 / ② 11 / ④ 17 / SUGG 49、未闭环 0。
+- 轮型 `confirmation`；轮结果 `CONVERGED`。
+
+### R3 §7 状态
+
+- `CONVERGED`。前提：R1 是已关闭的修改轮（ROUND-CLOSED），R3 certify 新准入 0。
+- 未闭环 0；`OPEN-DEBT` 的 `R3-design-batch` 有 D-061 判决行与日期。
+- `CONVERGED` 的语义限制同 D01：确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
+
+### R3 §8 给 meta-review 的不确定点
+
+1. 本轮的 2 条设计 P1（`store_kernel_info` 别名契约、`SegmentIter` fail-open）是代码正确性风险，确认轮不实施 ⑥ 把它们推入 `R3-design-batch`；若 meta 认为它们应按事实缺陷在轮内修，本轮就不能以确认轮关闭。
+2. reader-a 的 2 条 P1（§2.1 缺常量定义行、§3.4 四条与表格不符）本是「文档承诺了但没给」类缺陷，修复是补内容；若 meta 认为这属结构性重写而非确认轮权限，需回修改轮。
+3. refute 的 CLAIM 未被机器计数（§1 VARIANCE 1）——本轮靠人工确认其唯一非阻断发现已并入 reader 条目，机制上没有强制。
+
+### L6
+
+- 同 agent 收口（另有独立 certify 回执，见 §5）。流程质量记录：独立冷读在本轮抓到主 agent 三处实质错误（L4 平移量当栈地址、riscv64 AlreadyMapped、对齐算式方向），证明「回执必须给命令与读数」这条设计有效；同时暴露确认轮的固有张力——11 条设计 P1/P2 只能延期。
+- 流程质量结论：`IMPROVED`（相对 R2：首次在 D02 上做独立六角色全量 + 独立 certify，且回执推翻了主 agent 的三处判断）。
+
+### L6.5
+
+- 三问：① 不变量是「确认轮必须在最终工作树上 certify 新准入 = 0，且每个修改点有独立回读」；② 前提是 R1 已 ROUND-CLOSED（成立）；③ 证据是 `certify/round3-certify.md` 的逐条读数与六门读数。
+- 资源重读：盲区属「流程类」（确认轮的设计项降级），查 `prompt/resources/fresh-eyes-review`；无新检测模式，记 BLIND-SPOTS 候选。

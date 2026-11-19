@@ -19,7 +19,7 @@
 
 ### 1.1 同一个镜像的两套地址
 
-x86-32 内核的链接脚本开头给出两个基址（物理 0x00400000、虚拟 0xF0400000）和两者之差（0xF0000000）；具体的脚本行、`AT()` 表达式与复算见 §2.1。同一份镜像因此有两套地址：链接器把函数与全局变量的地址解析成 0xF0400000 一段的值，而这段字节在内存里位于 0x00400000 一段。
+x86-32 内核的链接脚本开头给出两个基址（物理 0x00400000、虚拟 0xF0400000）和两者之差（0xF0000000）；具体的脚本行、`AT()` 表达式与复算见 §2.1。同一份镜像因此有两套地址，但**只对带 `AT()` 的高半段成立**：链接器把高半段里的函数与全局变量的地址解析成 0xF0400000 一段的值，而这段字节在内存里位于 0x00400000 一段。低侧段（`.unpaged_*`，`head.o`/`pre_init.o`/`pg_utils.o` 等）不走 `AT()`，它们的符号值与字节都在 0x00400000 一段（判据见 §2.1 的脚本摘录）。
 
 `head.S` 里有一条指令与一个调用可以看见这两套地址各自的用法（`i386/head.S` 的 [`multiboot_init`](minix3/minix/kernel/arch/i386/head.S:multiboot_init) 的尾部）：
 
@@ -31,7 +31,7 @@ x86-32 内核的链接脚本开头给出两个基址（物理 0x00400000、虚�
         call    _C_LABEL(kmain)
 ```
 
-`kmain` 是一个符号，它的值由链接脚本决定；`k_initial_stktop` 也是一个符号，它落在哪一侧要到 §2.4 才有判据。这两条指令要成立，前提是"这段代码知道自己运行在哪个地址上"，而这件事在分页开启前后是两个问题。把三个参与者分开看：
+`kmain` 是一个符号，它的值由链接脚本决定；`k_initial_stktop` 也是一个符号，它落在哪一侧要到 §2.4 才有判据——本节后文（§2.3 末）用到「写进 `%esp` 的是 0xF04… 一侧的值」时，那是**待 §2.4 判据确认后**的引用，不是本节已证的结论。这两条指令要成立，前提是"这段代码知道自己运行在哪个地址上"，而这件事在分页开启前后是两个问题。把三个参与者分开看：
 
 ```text
 链接期（链接脚本说话）          装载期（装载器说话）              运行期（页表说话）
@@ -88,7 +88,10 @@ x86-32 内核的链接脚本开头给出两个基址（物理 0x00400000、虚�
 链接脚本的 `SECTIONS` 块从位置计数器（`.`）开始设置地址。x86-32 的做法是：先把位置计数器放到物理基址上，收完一批"分页开启前必须能执行"的段，加上偏移，再开始收普通段（`minix3/minix/kernel/arch/i386/kernel.lds`）：
 
 ```ld
-/* 节选（保留位置计数器起点、三组 .unpaged_* 段、两段 usermapped 与 .text 的头部；省略号处为 .unpaged_data/.unpaged_bss 的段体），minix3/minix/kernel/arch/i386/kernel.lds。 */
+/* 节选（先给三个基址常量定义行，再保留位置计数器起点与各段头部；省略号处为段体与别名），minix3/minix/kernel/arch/i386/kernel.lds。
+_kern_phys_base = 0x00400000;	/* phys 4MB aligned for convenient remapping */
+_kern_vir_base =  0xF0400000;	/* map kernel high for max. user vir space */
+_kern_offset = (_kern_vir_base - _kern_phys_base);
 	. = _kern_phys_base;
 	__k_unpaged__kern_unpaged_start = .;
 
@@ -353,13 +356,13 @@ SECTIONS
 
 三份脚本的地址写法有两种：x86_64 的位置计数器起点是 `KERNEL_HIGH_BASE + KERNEL_PHYS_BASE`（首段的虚拟地址里直接含有物理基址，`AT` 表达式减去 `KERNEL_HIGH_BASE` 就得到物理地址）；aarch64 与 riscv64 的起点是 `KERNEL_VIRT_BASE`，`AT` 表达式写成 `AT(ADDR(sec) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)`（[`aarch64.ld`](os/kernel-image/aarch64.ld)、[`riscv64.ld`](os/kernel-image/riscv64.ld)）。两种写法保证的是同一条不变量：所有段的"虚拟地址 − 装载地址"相等。这条不变量由 `check-layout.sh` 的 L4 断言检查（该脚本在 `01-boot-shim-bootstrap.md` §5.2 已逐条列出，本节只说它与 `AT()` 的因果关系）。
 
-另一套形态在 `os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld` 里：三份脚本都声明了 `KERN_VIRT_BASE` 与 `KERN_PHYS_BASE`，但**没有任何 `AT()`**，因此每个可加载段的装载地址默认等于虚拟地址。x86_64 那份的头注释把意图写明了（`No AT() directives — boot-shim handles LMA placement`），而脚本本身只给出虚拟地址一套布局。本仓的构建脚本里检索不到把它们作为链接输入的路径（复算：`grep -rn 'src/arch/.*link.ld' os/qemu-tests/*.sh os/xtask/src/*.rs` 无命中；把检索面扩到全仓的 `*.rs`/`*.toml`/`*.sh`/Makefile 后仍无命中——只有注释引用脚本里的常量），它们记录的是预期布局而不是当前被链接的产物（三份脚本的常量当前与生产脚本一致，实读比对；并由 `os/kernel/tests/link_ld_lockstep.rs` 做常量锁步断言——测试只锁常量，不证明这些脚本被链接）；载体（QEMU 测试内核；其中一部分目录带自己的 `link.ld`，其余沿用工具链默认布局）在带脚本的形态下各自用单地址脚本，以合成的 `KernelInfo` 走进同一段引导代码。
+另一套形态在 `os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld` 里：三份脚本都声明了 `KERN_VIRT_BASE` 与 `KERN_PHYS_BASE`，但**没有任何 `AT()`**，因此每个可加载段的装载地址默认等于虚拟地址。x86_64 那份的头注释把意图写明了（`No AT() directives — boot-shim handles LMA placement`），而脚本本身只给出虚拟地址一套布局。本仓的构建脚本里检索不到把它们作为链接输入的路径（复算：`grep -rn 'src/arch/.*link.ld' os/qemu-tests/*.sh os/xtask/src/*.rs` 在**构建输入**上无命中；把检索面扩到全仓的 `*.rs`/`*.toml`/`*.sh`/Makefile 后仍有 6 处命中，全部是注释引用（5 处脚本常量注释 + `os/kernel/tests/link_ld_lockstep.rs` 的一处测试头注释），无构建输入常量），它们记录的是预期布局而不是当前被链接的产物（三份脚本的常量当前与生产脚本一致，实读比对；并由 `os/kernel/tests/link_ld_lockstep.rs` 做常量锁步断言——测试只锁常量，不证明这些脚本被链接）；载体（QEMU 测试内核；其中一部分目录带自己的 `link.ld`，其余沿用工具链默认布局）在带脚本的形态下各自用单地址脚本，以合成的 `KernelInfo` 走进同一段引导代码。
 
 第三种形态在载体侧：[`link.ld`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/link.ld) 只有一套地址（`. = 0x80200000`），段没有 `AT()`，收尾一行 `__stack_top = . + 0x10000`。载体被固件放在低地址执行，不需要两套地址。
 
 三种形态的判据归结为一件事：**有谁按 `p_paddr` 摆放到与符号地址不同的位置，才需要低地址的 LMA；摆放位置与符号地址一致（或没有读者）时，一套地址就够。**
 
-**生产交接形态（v1 handoff）**：UEFI（x86_64/aarch64）与 riscv64 的 U-Boot 腿都走 `prepare_and_enter_kernel_image`/`prepare_boot` → `enter_kernel_image_v1` → 独立镜像 `_start` → `arch_boot_resume_v1`。接收侧只做 additive 阶段：把 arena 里的七块载荷（memmap/reserved/modules/platform/param/sources/startup）落进本镜像 `.bss`、记录已活动根、建 Direct Map 覆盖，然后跳 `kmain`；它不重建 bootstrap 根，因为 `new_from_page` 会把正在使用的活动根清零。direct 面（riscv64 自引导、aarch64 direct-core）走 `bootface`/`bootface_a64` → `arch_boot` → `arch_boot_impl`，在物理视图里建根、开分页、建 DM；riscv64 再用条件 delta 跳 `kmain`，aarch64 用 `ldr` 的绝对值跳。测试载体走 inline `arch_boot`，是低地址执行视图，不是生产路径。
+**生产交接形态（v1 handoff）**：UEFI（x86_64/aarch64）与 riscv64 的 U-Boot 腿都走 `prepare_and_enter_kernel_image`/`prepare_boot` → `enter_kernel_image_v1` → 独立镜像 `_start` → `arch_boot_resume_v1`。接收侧只做 additive 阶段：把 arena 里的七块载荷（memmap/reserved/modules/platform/param/sources/startup）落进本镜像 `.bss`、记录已活动根、建 Direct Map 覆盖，然后跳 `kmain`；它不重建 bootstrap 根，因为 `new_from_page` 会把正在使用的活动根清零。direct 面（riscv64 自引导、aarch64 direct-core）走 `bootface`/`bootface_a64` → `arch_boot` → `arch_boot_impl`，在物理视图里建根、开分页、建 DM；riscv64 再用条件 delta 跳 `kmain`，aarch64 用 `ldr` 的绝对值跳。测试载体分两类，不是一个视图：x86_64/aarch64 测试载体走 inline `arch_boot`、是低地址视图；riscv64 测试载体虽然也直接调 `arch_boot`，但它链接在物理地址上、`direct leg` 加 `delta`，跳转完成时 PC 落在高半 VMA（下表第 5 行）。两类都不是生产路径。
 
 三套分类不是同一件事，后面的表按这张登记表换算：
 
@@ -401,7 +404,7 @@ x86_64 的 `kern_virt_base` 不是 `KERNEL_HIGH_BASE` 本身：首段 VMA 是 `K
 
 ### 3.2 ELF 解析器自建（→§2.1）
 
-C 侧的负担：装载器要按 `p_paddr` 摆放、按 `p_memsz - p_filesz` 清零，这些都是 ELF 程序头里的字段；C 侧外部 multiboot 装载器（如 GRUB）读它们，树内 boot monitor 走 `LOADADDR(p_vaddr)` 的低 27 位，内核自己一行解析代码都没有。Rust 侧没有这个外部角色，字段要自己读。需要的字段只有几个：`p_paddr`、`p_vaddr`、`p_offset`、`p_filesz`、`p_memsz`、`p_flags`（`p_flags` 在装载内核镜像时用不到，在装载用户 ELF 时要用，见本节末的处置表）。符号表、重定位、section header 都不在射程内。
+C 侧的负担：装载器要按 `p_paddr` 摆放、按 `p_memsz - p_filesz` 清零，这些都是 ELF 程序头里的字段；C 侧外部 multiboot 装载器（如 GRUB）读它们，树内 boot monitor 走 `LOADADDR(p_vaddr)` 的低 27 位，内核自己一行解析代码都没有。Rust 侧不存在 C 那种「内核代码之外、由另一个程序按 `p_paddr` 摆放镜像」的角色——Rust 的 boot-shim 与内核镜像分属两个可执行体，装载发生在 shim 内、由 shim 自己按 `p_paddr` 摆放（§3.1 的表把 shim 记为装载方），所以这些字段由 shim 自己读，内核侧一行解析代码也没有。需要的字段只有几个：`p_paddr`、`p_vaddr`、`p_offset`、`p_filesz`、`p_memsz`、`p_flags`（`p_flags` 在装载内核镜像时用不到，在装载用户 ELF 时要用，见本节末的处置表）。符号表、重定位、section header 都不在射程内。
 
 解析器放在 `os/libs/minix-elf`，是一个独立 crate，被五个 crate 依赖（复算：`grep -rl 'minix-elf =' os/*/Cargo.toml os/*/*/Cargo.toml` 输出 `os/arch/Cargo.toml`、`os/boot-shim/Cargo.toml`、`os/servers/vfs/Cargo.toml`、`os/servers/vm/Cargo.toml`、`os/servers/rs/Cargo.toml` 五行）。用途按调用点分四类：boot-shim 用它装载**内核镜像**（模块是按原字节整块拷贝的，不经解析——`loader.rs` 的 [`fn load_boot_modules_into`](os/boot-shim/src/loader.rs:fn load_boot_modules_into) 里没有段迭代）；`boot.rs` 的 [`fn load_vm_elf`](os/arch/src/arch/boot.rs:fn load_vm_elf) 用它把用户 ELF 逐页映射进进程地址空间；[`trap_api.rs`](os/servers/rs/src/trap_api.rs) 的 exec 路径用它读段与入口点；[`vm_server.rs`](os/servers/vm/src/vm_server.rs) 的 bootstrap 装载用 `entry_point` 与 `segment_iter` 取入口与段表。vfs 的 exec 路径只在常量上借用它（`ET_EXEC`/`PT_LOAD`），表头解析是 [`exec_worker.rs`](os/servers/vfs/src/exec_worker.rs) 自带的 `ElfHead`。同一份"段迭代"语义被多个调用方共用，是它成为共享 crate 而不是某个模块内部实现的理由。
 
@@ -516,7 +519,7 @@ pub struct LoadSegment {
 
 C 侧的负担：`k_initial_stktop` 是一个链接符号，`head.S` 用一条绝对立即数指令把它的值写进 `%esp`（§2.3）。这个做法把"栈顶是多少"与"链接脚本怎么摆段"绑在一起：换一个布局，符号值跟着变。Rust 侧如果照搬，内核就要在源码里声明一个外部链接符号，而"内核被链接进谁"有三种形态（§3.1）——符号的值在每种形态下由不同的脚本决定，且测试载体根本没有这个符号。
 
-改成按值交接：装载方算好一个地址，放进 `KernelInfo`，跳转处只消费它（`kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo) 的 `kern_stack_top` 字段）。算它的公式在 boot-shim 的共享 builder 里（[`os/boot-shim/src/lib.rs`](os/boot-shim/src/lib.rs) 的 [`fn build_kernel_info`](os/boot-shim/src/lib.rs:fn build_kernel_info)；`uefi_helpers.rs` 与 `opensbi_helpers.rs` 的测试模块只 `use crate::build_kernel_info`，两个自引导面都 `use boot_shim::build_kernel_info`，在两族 boot-shim 之间只有这一份实现；v1 发送侧的 `BootStorage::report()` 里另有同一公式的第二处（`kern_stack_top = kern_virt_base + kern_size`），二者必须锁步）：
+改成按值交接：装载方算好一个地址，放进 `KernelInfo`，跳转处只消费它（`kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo) 的 `kern_stack_top` 字段）。算它的公式在 boot-shim 的共享 builder 里（[`os/boot-shim/src/lib.rs`](os/boot-shim/src/lib.rs) 的 [`fn build_kernel_info`](os/boot-shim/src/lib.rs:fn build_kernel_info)；`uefi_helpers.rs` 与 `opensbi_helpers.rs` 的测试模块都从 crate 根导入 `build_kernel_info`（各自另有 `use super::*` 与其他依赖导入），两个自引导面都 `use boot_shim::build_kernel_info`，在两族 boot-shim 之间只有这一份实现；v1 发送侧的 `BootStorage::report()` 里另有同一公式的第二处（`kern_stack_top = kern_virt_base + kern_size`），二者必须锁步）：
 
 ```rust
 /* 节选（保留赋值行），os/boot-shim/src/lib.rs:fn build_kernel_info。 */
@@ -559,7 +562,7 @@ pub trait HigherHalf {
 }
 ```
 
-方法上方的 Safety 段列了四条前置条件：分页已启用且恒等映射与内核高映射都已建立；`kinfo` 在高地址有效可访问；`stack_top` 是一个有效的、16 字节对齐的高半虚拟地址；只从引导 CPU 调用一次。四条里哪一条由类型系统兜住、哪一条只能靠调用者（表末一行是返回类型，与四条并列列出）：
+方法上方的 Safety 段列了四条前置条件：①分页已启用且恒等映射与内核高映射都已建立；②`kinfo` 在高地址有效可访问；③`stack_top` 是一个有效的、16 字节对齐的高半虚拟地址；④只从引导 CPU 调用一次。下表按顺序对上这四条（第 1、2、3、5 行），第 4 行记的是**返回类型**（`-> !`）——它与四条并列，但**不是前置条件**：
 
 | 前置条件 | 谁保证 | 违反时的落点 |
 |---|---|---|
@@ -586,7 +589,7 @@ pub trait HigherHalf {
 
 表里四条是调用者要保证的；还有一条是链接布局的前提：“调用点的执行地址 = 链接地址”。x86_64 的 `call` 要求它，代码不做运行时检查，靠链接布局保证；aarch64 的 `ldr` 取链接期绝对值，但 literal 读取是 PC 相对的，同一镜像内 literal 与代码一起被摆放，所以不需要调用点 = 链接地址；riscv64 的 `la` 是 PC 相对，direct leg 不满足它，所以实现用 `auipc/bltu` 读当前 PC，在低于 `kern_virt_base` 时补 `delta`。这不是“实现内部处理”的三合一：x86_64 侧没有检查，riscv64 侧才有显式补偿；把它写成调用者前置条件会把 riscv64 的实现细节推给调用者，所以留在实现里，但 x86_64 的链接期前提必须单独说清。
 
-再算一次对齐这笔账（x86_64）：`mov rsp, stack_top` 之后 RSP = stack_top；`and rsp, -16` 对已经 16 字节对齐的值是空操作；`push 0` 减 8，`sub rsp, 8` 再减 8，使 `call` 前的 RSP 回到 16 字节边界；`call` 压返回地址再减 8，进入 `kmain` 时 RSP = stack_top − 24，即 8 mod 16——这正是 System V 在函数入口要求的 `(RSP + 8)` 为 16 的倍数。生产 `kmain` 是普通 Rust 函数（`naked_asm!` 只用于 `qemu_test` 载体），所以这条 psABI 对齐是必须的；`sp_aligned` 断言相应检查 `sp & 0xF == 8`。`and rsp, -16` 与 `sub rsp, 8` 一起把这条不变量钉在本地，而不是修补上游。真正会坏的是"断言、`and`、`sub` 都去掉"：一个非 16 对齐的 `stack_top` 会一路传到 `kmain`，入口栈指针不再满足 psABI，落到入口处需要 16 字节对齐的指令上。
+再算一次对齐这笔账（x86_64）：`mov rsp, stack_top` 之后 RSP = stack_top；`and rsp, -16` 对已经 16 字节对齐的值是空操作；`push 0` 减 8，`sub rsp, 8` 再减 8，使 `call` 前的 RSP 回到 16 字节边界；`call` 压返回地址再减 8，进入 `kmain` 时 RSP = stack_top − 24，即 8 mod 16——这正是 System V 在函数入口要求的 `(RSP + 8)` 为 16 的倍数。生产 `kmain` 是普通 Rust 函数（`naked_asm!` 只用于 `qemu_test` 载体），所以这条 psABI 对齐是必须的；`sp_aligned` 断言相应检查 `sp & 0xF == 8`。`and rsp, -16` 与 `sub rsp, 8` 一起把这条不变量钉在本地，而不是修补上游。真正会坏的有两种情形：①三者都去掉时，一个非 16 对齐的 `stack_top` 会一路传到 `kmain`；②**只去掉 `sub rsp, 8` 也会坏**——按上面的算式，`push 0` 之后 `and` 不再有作用，`call` 前 RSP 是 8 mod 16；`call` 压返回地址后入口 RSP 变成 0 mod 16，而 System V 要求入口 `(RSP+8) % 16 == 0` 即 RSP ≡ 8 mod 16，正好违反。`and` 只修正上游的 `stack_top`，`sub` 才是补 `call` 那 8 字节的那一步。
 
 ### 3.5 镜像跨距收口：布局要满足映射粒度（→§2.2）
 
@@ -609,7 +612,7 @@ let page_size = if preferred.supported() && layout_satisfies(preferred.size(), l
 };
 ```
 
-`arch_boot` 把 `NoKernelPageSize` panic 成 `arch_boot: page-size policy: no kernel page size satisfies the layout`；消息只报"无可用粒度"，不含三个量的数值。这一步发生在任何页表写入之前。
+`arch_boot_impl` 调用 `plan_boot_pages`，后者以 `BootPagePolicyError` 返回失败；`arch_boot` 把该错误 panic 成两层包装的消息：外层 `arch_boot: page-size policy: {e}`（`os/kernel/src/lib.rs`），内层 `Display` 是 `kernel mapping policy: {e}`（`os/kernel/src/boot_policy.rs`），完整形如 `arch_boot: page-size policy: kernel mapping policy: no kernel page size satisfies the layout`，消息只报"无可用粒度"，不含三个量的数值。这一步发生在任何页表写入之前。
 
 三档的判据与后果：
 
@@ -620,7 +623,7 @@ let page_size = if preferred.supported() && layout_satisfies(preferred.size(), l
 | 两者都不整除 | 无 | panic（消息只报 `no kernel page size satisfies the layout`，不点名三个量），发生在任何页表写入之前 |
 | 两者都不整除且回退档不受支持 | 无 | `FallbackUnsupported`（消息 `fallback page size … is not supported`），不是 `NoKernelPageSize` |
 
-链接脚本为此在 `.bss` 末尾加了一条对齐语句（[`riscv64.ld`](os/kernel-image/riscv64.ld)，x86_64 与 aarch64 同形）：
+链接脚本为此在 `.bss` 末尾加了一条对齐语句（[`riscv64.ld`](os/kernel-image/riscv64.ld)，x86_64 与 aarch64 同形）。**注意脚本注释与现行实现不符**：选映射粒度的是 `plan_kernel_mapping`（`os/kernel/src/boot_policy.rs`），`boot_validate_and_prepare` 只采集能力事实——下面引文保留原文，按此口径读：
 
 ```ld
 /* 代码引用，os/kernel-image/riscv64.ld（.bss 末尾的收口语句及其注释）。 */
@@ -752,7 +755,7 @@ VPN[2] = (vaddr >> 30) & 0x1FF
 
 这类"把下级页表指针写到已有叶子条目上"的动作，映射接口本身会拦一次：各架构的 `map_huge` 命中叶子就返回 `PageTableError::AlreadyMapped`，而不是把叶子降级成表指针。页表多级结构与叶子判定的完整定义在 [`rewrite-notes/02-stage-vm/07-pagetable-struct.md`](../02-stage-vm/07-pagetable-struct.md)（该文已存在）；本节只用到基址选择的结论：riscv64 基址取 `0xFFFFFFC000000000`（VPN[2]=256），`0xFFFFFC…`/`0xFFFFC…` 因 VPN[2]=0 会与恒等映射共用槽位。
 
-**把基址写成 `0xFFFFFC0000000000` 会怎样**：内核高半映射要写的是 VPN[2] = 0 那个槽，而引导期的恒等映射已经在那里放了 1GiB 叶子；如果映射接口不检查叶子，后写的下级页表指针会把叶子覆盖掉，恒等映射的覆盖范围从 1GiB 缩到 2MiB 一块。CPU 此刻正在低半执行，取指一离开这 2MiB 就失败——故障地址是低半的一条指令地址，而根因写在链接脚本的基址常量上；有了这道检查，同一个错误会在建表时以 `AlreadyMapped` 提前报出来。
+**把基址写成 `0xFFFFFC0000000000` 会怎样**：内核高半映射要写的是 VPN[2] = 0 那个槽，而引导期的恒等映射已经在那一槽落下 2 MiB 叶子（Step 1 固定用 2 MiB，不产生 1 GiB 叶）；真正的风险是**映射粒度不一致**：若这里改写成 1 GiB 叶，后写的叶条目会把整槽的 2 MiB 项一并顶掉，恒等映射的覆盖范围从「若干 2 MiB 片」缩成一块；反过来若上层已是 1 GiB 叶、这里写 2 MiB，x86_64 与 riscv64 的 `map_huge` 都会以 `AlreadyMapped` 拒绝 1 GiB 叶降级（见 `os/arch/src/x86_64/paging.rs` 与 `os/arch/src/riscv64/paging.rs`）。CPU 此刻正在低半执行，取指一离开这 2MiB 就失败——故障地址是低半的一条指令地址，而根因写在链接脚本的基址常量上；有了这道检查，同一个错误会在建表时以 `AlreadyMapped` 提前报出来。
 
 **把 `.lbss` 从 `.bss` 的通配里去掉会怎样**：`--gc-sections` 之外，`.lbss` 节会被链接器当作孤儿节处理：放在它遇到的位置之后（通常是 `.bss` 之后、`ALIGN(0x200000)` 之前或之后取决于链接器版本），跨距随之变化——最坏情况是跨距不再是 2MiB 整数倍，L5 判定失败、规划层 `plan_kernel_mapping` 在 `arch_boot` 里 panic（`boot_validate_and_prepare` 只采集能力事实）。把 `KEEP(*(.text.boot))` 从 `.text` 首位挪走：`_start` 不再落在首段开头，L6a 红（它比的是 `e_entry` 与按脚本常量算出的预期首段 VMA）；L6b 仍绿——它比的是 `nm` 出来的 `_start` 符号与 `e_entry`，两者由 `ENTRY(_start)` 绑在一起、同时移动。装载方（或固件）从 `ENTRY` 得到入口后仍然能跳，但 §4.3 里"链接地址与执行地址的关系"这一前提要重新论证。把 `. = ALIGN(0x200000)` 删掉：L5 与 L9 红（§3.5）。
 
@@ -991,7 +994,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 **三条推演（riscv64 direct leg 去掉条件 `add t1, t1, t2`；aarch64 去掉 `isb`；x86_64 去掉 `xor rbp, rbp`）**：
 
-其一，riscv64 去掉 `add t1, t1, t2`。`jalr` 的目标落在符号的物理地址上，PC 留在低半（`0x8020…`）；启动能走完（低半此时仍有恒等映射），坏点在首次地址空间切换之后——内核按高半 VMA 建了进程根表，切换后取指落在没有映射的低半地址，`scause` 记下取指错误。源码注释把这条记录为"内核从未迁到它的高半 VMA"。
+其一，riscv64 去掉 `add t1, t1, t2`。`jalr` 的目标落在符号的物理地址上，PC 留在低半（`0x8020…`）；启动能走完（低半此时仍有恒等映射），坏点在首次地址空间切换之后——内核按高半 VMA 建了进程根表，切换后取指落在没有映射的低半地址，`scause` 记下取指错误。源码注释（`os/kernel/src/arch/riscv64/higher_half.rs:41-52`）对这一形态的表述是：direct leg 的代码仍在 `kern_virt_base` 之下执行，只有跳转目标被抬到高半——即"PC 仍留在低地址"，而不是"内核从未迁到高半 VMA"。
 
 其二，aarch64 去掉 `isb`。`enable()` 在写完 `ttbr0_el1`/`ttbr1_el1` 之后已经执行 `dsb sy; isb`，写完 `sctlr_el1`（置 M=1）之后又执行一次 `isb`；三条 aarch64 路径都经过 `enable()`，`establish_boot_dm` 之后到跳转之间不再写 TTBR/SCTLR。所以删掉 `jump_to_kmain` 里的 `isb` 不会产生“按旧映射取指”的失败；这条屏障是防御性保留，不是正确性前提。
 
@@ -1069,7 +1072,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 | 项 | 跳转完成时的值 | 依据 |
 |---|---|---|
-| 程序计数器 | v1 send/receive 与 aarch64 跨镜像：`kmain` 的高半 VMA；aarch64 direct-core：低地址进入（`ldr` 取高半绝对值跳）；riscv64 自引导 direct leg：加 `delta` 后的高半 VMA；测试载体：x86_64/aarch64 低地址、riscv64 高半 VMA（§4.3/§4.4） | [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 的三份实现 |
+| 程序计数器 | v1 send/receive 与 aarch64 跨镜像：`kmain` 的高半 VMA；aarch64 direct-core：高半 VMA（`ldr` 取绝对值跳）；riscv64 自引导 direct leg：加 `delta` 后的高半 VMA；测试载体：x86_64/aarch64 低地址、riscv64 高半 VMA（§4.3/§4.4） | [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 的三份实现 |
 | 栈指针 | x86_64：入口 RSP = stack_top − 24（8 mod 16，System V）；aarch64/riscv64：入口 SP = stack_top（16 字节对齐，AAPCS64/RISC-V ABI）；帧指针为 0 | [`fn kmain_verify`](os/kernel/src/lib.rs:fn kmain_verify) 的三条断言（展开见 §5.2） |
 | 分页 | 已启用；恒等映射与内核高半映射并存；Direct Map 覆盖已建立；设备窗口（Step 2b aarch64 高半别名、Step 2c 设备窗口）已建立 | v1：shim 的 `build_bootstrap_root_and_enable` + 接收侧 `establish_boot_dm`；direct：`arch_boot_impl` 的 Step 1–4 与 2b/2c |
 | 保护结构 | **未建立**：`kmain` 的早期阶段（Phase A，完整划分见 `03-kmain-cstart.md`）只做校验与信息收存，保护结构 `init_protection`（GDT/TSS 或 VBAR_EL1/stvec）是 Phase B 的首件事——在那之前任何异常都无法处理 | [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 的文档注释（`This must be the very first thing called in kmain, because without valid GDT/TSS … any exception will cause an unrecoverable triple fault`） |
@@ -1156,7 +1159,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 | M2 | 两段式布局的段归属（§2.2） | `.unpaged_*` 段 VMA=LMA；改名名单决定归属 | 部分覆盖 | 清单与判据可静态核；**无断言检查段归属**（由链接脚本决定，L0–L9 不含此项）→ **R02-T01** |
 | M3 | `head.S` 的成对换栈跳转（§2.3） | 设栈+跳转的次序、位移与绝对值各自的前提 | 部分覆盖 | 真机链（§5.2 三断言覆盖结果）；**C 侧次序本身无自动断言** |
 | M4 | `k_initial_stktop` 落段（§2.4） | 栈符号落在高半段、栈区不与其他内容重叠 | 部分覆盖 | **无自动断言**；L7 检查的是 Rust `kernel_boot_stack_*`（64 KiB、末段内），不是 C `k_initial_stktop`；C 侧落段只有静态阅读 → **R02-T01** |
-| M5 | Rust 三种脚本形态的判据（§3.1） | 生产脚本有 `AT()` 且常量与预期表一致；arch link.ld 无链接读者 | 已覆盖（L0/L3c/L4 + 锁步测试） | L0/L3c/L4 覆盖生产脚本；`os/kernel/tests/link_ld_lockstep.rs` 把 arch link.ld 的常量与生产脚本锁住 |
+| M5 | Rust 三种脚本形态的判据（§3.1） | 生产脚本有 `AT()` 且常量与预期表一致；arch link.ld 无链接读者 | **部分覆盖** | 「生产脚本有 `AT()` 且常量一致」由 L0/L3c/L4 与 `os/kernel/tests/link_ld_lockstep.rs` 覆盖；「arch link.ld 无链接读者」只有一次性的 `grep` 证据（§3.1 自述锁步测试「不证明这些脚本被链接」），没有测试钉住 |
 | M6 | ELF 解析器的五道校验与九个变体（§3.2） | 每种畸形输入返回对应变体 | 已覆盖 | minix-elf 23 测试（五道校验/迭代器/字段/仿真）；`NoLoadSegments` 与 `InvalidSegment` 由 boot-shim loader 的测试覆盖，不在 minix-elf 的 23 个里 |
 | M7 | 按 `p_paddr` 摆放与 BSS 清零（§4.2） | 段体写到 `paddr`；NOBITS 区清零；重叠拒绝 | 部分覆盖 | loader 的 22 个测试中 13 个直接相关（`bss_zeroed`、`rejects_overlapping`、三个新守卫等，名单见 §5.1）；**`p_paddr` 物理写入只有真机链**，宿主只跑 buffer 孪生 |
 | M8 | 三架构成对跳转的指令序列（§4.3） | 切栈+跳转按序、对齐、清帧指针、`delta` 处理 | 部分覆盖 | 真机载体三架构（`sp_ok`/`sp_aligned`/`fp_zero` 三断言）；**PC 判据缺——x86_64/aarch64 按低地址进入不可判，riscv64 载体 PC 已在高半、可判而未判；`delta` 路径无断言** → **R02-T03（射程：给 riscv64 载体加 PC 判据即可）** |
@@ -1214,10 +1217,10 @@ echo $?                                         # 0 = 全过；1 = 任一断言�
 
 # 第四组：真机链的异常追踪
 os/qemu-tests/run_qemu.sh x86_64 <test-efi>     # 脚本内部用 -d int,cpu_reset -D /tmp/qemu_int.log
-# 关键行：qemu_int.log 里异常记录的 check_exception 行（含出错类型与故障地址）；
+# 关键行：qemu_int.log 里的 check_exception 行给向量（出错类型）；故障地址在紧随其后的异常明细行（x86 看 CR2，arm/riscv 看对应字段）；
 #         串口日志里的 ### TEST_RESULT: PASS test-higher-half ###。
 
-# 第五组：GDB 远程调试（确认跳转后 PC 与 SP 各落在哪一侧）
+# 第五组：GDB 远程调试（确认跳转后 PC 与 SP 各落在哪一侧；下面的 $rip/$rsp 是 x86_64 寄存器名，aarch64/riscv64 用 $pc/$sp）
 # 给上一组的 QEMU 调用加两个调试开关：-s 开 gdbstub，-S 在第一条指令前暂停；
 # 裸 QEMU 的起法（含各架构固件路径）见 `01-boot-shim-bootstrap.md` §6.4 的三层调试法，本节不重复。
 gdb <被调试的工件>
@@ -1226,8 +1229,8 @@ gdb <被调试的工件>
 (gdb) print/x $rip
 (gdb) print/x $rsp
 # 预期输出：$rip 与 `nm <工件> | grep kmain` 读出的符号值一致（v1 send/receive 与自引导 direct leg
-#           都应当是高半地址；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址，riscv64 测试载体是高半 VMA，见 §4.3 的第三种形态）；
-#           $rsp 落在 kern_virt_base 之上（0xffff8000… 一段），即 §4.3 的"切栈已生效"。
+#           都应当是高半地址；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址，riscv64 测试载体是高半 VMA 但等于 `nm` 值加 `delta`，见下一条汇总与 §4.3 的第三种形态）；
+#           $rsp 落在该架构的 kern_virt_base 之上（x86_64 是 0xffff8000… 一段；aarch64 是 0xffff8000… 一段（`aarch64.ld` 的 `KERNEL_VIRT_BASE = 0xFFFF800000000000`；`0xffff7fffbfe00000` 是 L4 平移量，不是栈地址）；riscv64 是 0xffffffc0… 一段），即 §4.3 的"切栈已生效"。
 ```
 
 五组命令的预期输出：
@@ -1236,7 +1239,7 @@ gdb <被调试的工件>
 - 第二组：`grep -c ': AT('` 对三份生产脚本各输出 4、对 `os/kernel/src/arch/*/link.ld` 各输出 0。这条读数必须带口径：把模式放宽成 `AT(` 会把注释里的字样算进来，x86_64 的 arch 脚本会从 0 变 2。两条 `printf` 分别输出 `961` 与 `0xf0000000`。
 - 第三组：全绿时最后一行是 `CHECK-LAYOUT=PASS（x86_64）`、退出码 0；任一断言失败时对应行是 `  [Ln] FAIL …` 且最后一行 `CHECK-LAYOUT=FAIL（…）`。
 - 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not at the architecture's entry alignment`、`FP not zero` 三者之一），而 `INFO: PC not at high address (expected in test kernel)` 是参考信息行、不参与成败判定，别把它读成失败原因（它只在失败分支里出现；x86_64 与 aarch64 的低地址进入会带上它，riscv64 的载体 PC 在高半、不会出现这一行）；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
-- 第五组：断在 `kmain` 后 `$rip` 应等于 `nm <工件> | grep kmain` 读出的符号值（v1 send/receive 与自引导 direct leg 下是高半地址；x86_64/aarch64 测试载体内联形态下是低地址，riscv64 测试载体是高半 VMA）；`$rsp` 应落在 `kern_virt_base` 之上（`0xffff8000…` 一段）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
+- 第五组：断在 `kmain` 后 `$rip` 应等于该腿的入口值——v1 send/receive 与自引导 direct leg 下等于 `nm <工件> | grep kmain` 的符号值（高半）；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址；**riscv64 测试载体不是 `nm` 值本身**：它链接在物理地址上，`$rip` = `nm` 值 + `delta`（`delta = kern_virt_base − kern_phys_base`），例如加载基址 `0x80200000` 时 `nm` 给出 `0x80200160`，而 `$rip` 是 `0xffffffc000200160`；`$rsp` 应落在该架构的 `kern_virt_base` 之上（x86_64 `0xffff8000…`、aarch64 `0xffff8000…`、riscv64 `0xffffffc0…`）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
 
 ---
 

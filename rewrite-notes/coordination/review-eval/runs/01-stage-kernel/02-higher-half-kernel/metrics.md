@@ -71,3 +71,25 @@
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 6 / token 未采集 / 耗时 约 2 小时
 - 回读与回归: 六门全绿；certify #1 21 条全修、certify #2 0；无代码行为改动，QEMU 未跑
+
+## R3 确认轮
+
+- 发现总数: 95（FINDING 41 + SUGGESTION 48 + CLAIM 6；与 `panel/round3/INDEX.md` 同源。refute 原用 `RD3-CLAIM-<NN>` 编号，主 agent 在文件末尾追加了机器可读的 `## CLAIM 1..6` 索引行，正文未改动）
+- 唯一根因数: 37（RD-R3-01..37，按角色/严重度/处置类聚簇）
+- 本轮新准入: 37
+- certify 新准入: 0
+- 重复合并: 0（聚簇内多发现同行，未跨簇合并）
+- 自引入: 0
+- 处置: ① 13 / ② 11 / ④ 17 / ⑤ 0 / ⑥ 0 / FP 5 / SUGG 49
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 1（D-061：11 条设计 P1/P2 延期到 R3-design-batch）
+- ARCH 提案: 2（RD3-ARCH-01/02，待用户裁决）
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 11 / 接受 11 / 实施 0 / 登记 11
+- 成本: agent 8（六角色 + certify + 复核）/ token 未采集 / 耗时 约 4 小时
+- 回读与回归: 文档六门绿（anchor 55/55、citation checked=25 failed=0、structure/ref/style error=0/density 通过、doc-code-map 29/29）；独立回执 certify/round3-certify.md（首轮 19 条 14 CLOSED / 5 STILL-BROKEN，5 条按证据改正后复核）
