@@ -418,11 +418,11 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 2. **类型层**：`KernelInfo` 的三个字段（`user_sp`/`kern_stack_top`/`syscall_entry`）删除或降为接收侧派生；`startup_objects` 字段与 `BootStorage` 的 20 槽删除。
 3. **生产者**：五个写入点（`uefi_helpers.rs:1155-1176`、`opensbi_helpers.rs:434-444`、`bootface.rs:368-398`、`bootface_a64.rs:343-370`、以及 `boot-shim/src/lib.rs:101-132` 的 `report()`）删对应赋值；`push_startup`/`startup_record` 一并删除。
 4. **消费者**：`resume_after_v1_decode` 按公式补 `user_sp`/`kern_stack_top`；strict 门三条 `assert_eq!` 删除、改为 ③ 的等价区间检查。
-5. **文档**：§3.4.1（字段表）、§3.4.3（wire 结构表与字节账）、§4.4（strict 门表）、§4.5（落地区容量表）同步。
+5. **文档**：§3.4.1（字段表）、§3.4.3（wire 结构表与字节账）、§4.4（strict 门表）、§4.5（落地区容量表）同步；**§4.1 的「其余五族（modules/platform/param/sources/startup）的 `push_*`/`set_*_len` 各自有 one-shot 提交断言」必须改写为「四族」**（D-072 补入：startup 族的 one-shot 断言是死代码，`startup_committed` 永不置真，对四族为真、对 startup 为假——同质化误述，I-31 落地后该句否则仍是假的）。
 
 **验收**：
 - `grep -rn "syscall_entry\|kern_stack_top" os/libs os/boot-shim os/kernel-image --include="*.rs"` → 0（`kernel/src` 侧可保留派生值，但不得从 wire 读）；
-- `grep -rn "startup_objects\|push_startup\|startup_record" os/ --include="*.rs"` → 0（或只剩测试常量的等价物）；
+- `grep -rn "startup_objects\|push_startup\|startup_record\|startup_committed\|startup_slots_mut\|set_startup_len" os/ --include="*.rs"` → 0（**D-072 补强**：原口径只查前三项，漏掉 `startup_committed`/`startup_slots_mut`/`set_startup_len` 三个不含 `startup_objects` 子串的名字——它们随族删除一并消失，但不被原 grep 看见）；
 - wire 字节账重算：删 startup 分区后 `WIRE_STARTUP_END` 从 30624 降为 29184（= `WIRE_SOURCES_END`，少 20×72=1440）；三个标量各 8 B 在信封内（`user_sp`@48、`kern_stack_top`@56、`syscall_entry`@64），删掉后 `root_page` 从 72 前移到 48，其后 `bump_end`/`memmap_byte_len`/`param_buf_byte_len`/`sources_byte_len`/`startup_byte_len` 全部前移 24 B，信封尺寸缩小 24 B；`handoff_v1.rs:440-455` 的 `offset_of!` 断言与 `WIRE_*_OFFSET` 常量全部按新布局重算；
 - `cargo test -p minix-boot`、`cargo test -p boot-shim --features test-all`、`cargo test -p minix-kernel --features mock` 全绿；
 - 五条 QEMU 门链（x86 UEFI、aarch64 UEFI、aarch64 直核 SMP、riscv U-Boot shim、riscv 直核 bootface）PASS；
