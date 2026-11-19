@@ -190,11 +190,19 @@ impl ClockArch for Riscv64ClockArch {
         // riscv64 analogue of the x86 LAPIC ICR re-arm
         // (`kernel::clock::local_tick` calls this after every tick).
         let interval = TICK_INTERVAL.load(core::sync::atomic::Ordering::Relaxed);
+        if interval == 0 {
+            debug_assert!(
+                false,
+                "local_timer_eoi before init_timer: TICK_INTERVAL is 0 (wiring bug)"
+            );
+        }
         let interval = if interval == 0 {
             // `local_timer_eoi` before any `init_timer` would be a wiring
             // bug (the gate opens only after the source is armed);
             // fall back to the descriptor frequency at DEFAULT_HZ rather
-            // than arming a zero interval (an interrupt storm).
+            // than arming a zero interval (an interrupt storm). The fallback
+            // stays as the last line of defence for interrupt context;
+            // debug builds fail loudly above.
             self.freq / crate::clock::DEFAULT_HZ as u64
         } else {
             interval

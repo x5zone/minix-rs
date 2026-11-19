@@ -40,11 +40,19 @@ impl AArch64ClockArch {
     /// re-arm (`kernel::clock::local_tick` calls this after every tick).
     fn rearm_next_tick() {
         let interval = TICK_INTERVAL.load(core::sync::atomic::Ordering::Relaxed);
+        if interval == 0 {
+            debug_assert!(
+                false,
+                "rearm_next_tick before init_timer: TICK_INTERVAL is 0 (wiring bug)"
+            );
+        }
         let interval = if interval == 0 {
             // `local_timer_eoi` before any `init_timer` would be a wiring
             // bug (the gate opens only after the source is armed);
             // fall back to CNTFRQ at DEFAULT_HZ rather than arming a zero
-            // interval (an interrupt storm).
+            // interval (an interrupt storm). The fallback stays as the
+            // last line of defence for interrupt context; debug builds
+            // fail loudly above.
             let freq: u64;
             // SAFETY: side-effect-free counter-frequency read.
             unsafe {

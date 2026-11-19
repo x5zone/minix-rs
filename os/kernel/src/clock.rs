@@ -699,14 +699,15 @@ pub(crate) fn decrement_quantum_in_with_delta(
 
 // ── Constants ──
 
-/// Default clock frequency in Hz.
-/// C: `DEFAULT_HZ` — include/arch/i386/include/archconst.h:4 (60) / earm (1000)
+/// Default clock tick frequency in Hz — re-exported from the arch crate
+/// (`minix_arch::arch::clock::DEFAULT_HZ`) so the value has a single
+/// authoritative definition; the former independent copy here carried a
+/// "avoid a cross-crate dependency" rationale that no longer holds (the
+/// kernel unconditionally depends on minix-arch). C:
+/// `DEFAULT_HZ` — include/arch/i386/include/archconst.h:4 (60) / earm (1000);
 /// Architecture-evolution annotation: [ARCH: K-3] (doc
 /// 05-clock-interrupt-init.md §3.8: 60/1000 → 100 Hz).
-/// Rust picks 100 as the default (design decision D7 in doc 15 §3.7), which
-/// differs from C's 60; boot code can request `with_hz(60)` when exact C
-/// parity is required.
-pub const DEFAULT_HZ: u32 = 100;
+pub use minix_arch::arch::clock::DEFAULT_HZ;
 
 /// Timer "never expires" sentinel.
 /// C: `TMR_NEVER` = `((clock_t)TMRDIFF_MAX + 1)` — include/minix/timers.h:48

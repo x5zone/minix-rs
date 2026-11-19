@@ -37,7 +37,7 @@
 //! # Three-architecture coverage (the `[ARCH: gate-semantics]` decision of
 //! 2026-09-09)
 //!
-//! `enable_timer_irq` / `disable_timer_irq` open and close the *module-local*
+//! `enable_timer_irq` opens the *module-local*
 //! gate of the current boot clock source. The gate genuinely differs across
 //! the three architectures, so they stay in a trait — this is the
 //! architecture capability boundary:
@@ -48,7 +48,7 @@
 //! | aarch64: CNTP | `CNTP_CTL_EL0` Enable/IMASK + `isb` | Enable=1, IMASK=0 + `isb` |
 //! | riscv64: CLINT mtimecmp | `sie.STIE` (bit 5) | `csrs sie` STIE |
 //!
-//! `disable_timer_irq` mirrors each enable. The controller-side delivery
+//! The controller-side delivery
 //! gate (IOAPIC redtbl / GICR_ISENABLER0 bit 30 / — none for the RISC-V
 //! local timer) is *not* this trait's job: it lives behind
 //! `IrqManager::register_hook`'s C-parity unmask, driven by
@@ -83,10 +83,6 @@ pub trait TimerIrqGate: Sized {
     /// the gate exists to prevent. See 05-clock-interrupt-init.md §3.7.
     fn enable_timer_irq();
 
-    /// Mask the timer IRQ.
-    ///
-    /// Used during critical sections where timer delivery is undesirable.
-    fn disable_timer_irq();
 }
 
 #[cfg(test)]

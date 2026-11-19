@@ -3,7 +3,7 @@
 //!
 //! # Semantics — `[ARCH: gate-semantics]` (settled 2026-09-09)
 //!
-//! `TimerIrqGate::enable_timer_irq` / `disable_timer_irq` open and close
+//! `TimerIrqGate::enable_timer_irq` open and close
 //! the *module-local* gate of the current boot clock source. On x86-64 the
 //! boot clock source is the 8254 PIT (`X86_64ClockArch::init_timer`
 //! programs it), and the PIT has no module-local gate: its output enters
@@ -50,9 +50,4 @@ impl TimerIrqGate for X86_64TimerIrqGate {
         // LAPIC LVT Timer mask.
     }
 
-    fn disable_timer_irq() {
-        // Mirror of `enable_timer_irq`: nothing to close on the PIT path.
-        // (Masking an unprogrammed LVT timer here would silently break the
-        // future LAPIC-timer source's assumptions instead of helping.)
-    }
 }

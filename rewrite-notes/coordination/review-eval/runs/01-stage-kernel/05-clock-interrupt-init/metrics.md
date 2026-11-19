@@ -26,3 +26,47 @@
 - 新增盲区：B-25 台账 ID 重编号、B-26 非 FINDING 面板豁免、B-27 平台回收角色缩编、B-28 暂存 diff 无反向对账。
 - 四条 P0 设计项中 3 条 follow-up 有文件与验收判据；DESIGN-04 的代码行为无文件/验收，转用户裁决。
 - 局限：同 agent 验证；未跑 QEMU 与完整测试；token 未采集。
+
+## R1 完整修改轮
+
+- 发现总数: 70（FINDING 25 + SUGGESTION 39 + CLAIM 6；与 `panel/round1/INDEX.md` 同源）
+- 唯一根因数: 29（RD-R1-01..29，按角色/严重度/处置类聚簇；D2-03 与 FACT-11 同根按 dup-of 合并、D2-06 记 SUGG）
+- 本轮新准入: 29
+- certify 新准入: 0
+- 重复合并: 0（聚簇内多发现同行，未跨簇合并）
+- 自引入: 0
+- 处置: ① 15 / ② 0 / ④ 7 / ⑤ 0 / ⑥ 4 / FP 5 / SUGG 39
+- 未闭环: 0
+- 轮型: full
+- 轮结果: ROUND-CLOSED
+- 代裁决: 1（D-075：6 条设计项按 [MODERN]/[DEL] 当轮 ⑥ 实施；ARCH 提案 RD05-A1 待用户亲裁）
+- ARCH 提案: 1（RD05-A1：设备窗口校验与 VA 注入收进控制器接口）
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 6 / 接受 6 / 实施 4（D2-01 注释、D2-04 删方法、D2-05 re-export、D2-06 debug_assert）/ 登记 2（D2-02/03 的文档半边随 fact 批修）
+- 成本: agent 10（六角色，reader-b/refute 各超时重试一次）/ token 未采集 / 耗时 约 5 小时
+- 回读与回归: 文档六门绿（anchor 106/106、citation checked=43 failed=0、structure/ref/style error=0/density 通过、doc-code-map 33/33）；`cargo check -p minix-arch` 绿、`cargo test -p minix-kernel --features mock --lib` 866/0；独立回执 certify/round1-certify.md（首轮 12/3，其中 2 条为任务书笔误混入的 D04 条目；残留 5 处按证据改正后以复核为准）
+
+## R2 确认轮
+
+- 发现总数: 69（FINDING 21 + SUGGESTION 42 + CLAIM 6；与 `panel/round2/INDEX.md` 同源）
+- 唯一根因数: 28（RD-R2-01..28，按角色/严重度/处置类聚簇）
+- 本轮新准入: 28
+- certify 新准入: 0
+- 重复合并: 0（聚簇内多发现同行）
+- 自引入: 0
+- 处置: ① 17 / ② 0 / ④ 6 / ⑤ 0 / ⑥ 0 / FP 3 / SUGG 43
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 0
+- ARCH 提案: 0
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 成本: agent 9（六角色 + certify）/ token 未采集 / 耗时 约 3 小时
+- 回读与回归: 文档六门绿（anchor 106/106、citation checked=43 failed=0、structure/ref/style error=0/density 通过、doc-code-map 33/33）；`cargo check -p minix-arch` 绿；独立回执 certify/round2-certify.md（8/8 CLOSED 首轮即 PASS）

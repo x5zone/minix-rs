@@ -3,7 +3,7 @@
 //! Programs the ARMv8-A Generic Timer for timer IRQ delivery:
 //! - `enable_timer_irq`: sets CNTP_CTL_EL0.Enable (bit 0) + clears
 //!   CNTP_CTL_EL0.IMASK (bit 1), then `isb`
-//! - `disable_timer_irq`: clears CNTP_CTL_EL0.Enable + sets IMASK, then `isb`
+//! - enable path onlyMASK, then `isb`
 //!
 //! C: Minix3's 32-bit ARM port routes the timer through the BSP
 //! (`earm/arch_clock.c:182` → `bsp_register_timer_handler`, `omap_timer.c:136`;
@@ -45,16 +45,4 @@ impl TimerIrqGate for AArch64TimerIrqGate {
         }
     }
 
-    fn disable_timer_irq() {
-        // CNTP_CTL_EL0: Enable=0, IMASK=1 masks the timer IRQ.
-        // SAFETY: same as `enable_timer_irq`.
-        unsafe {
-            core::arch::asm!(
-                "msr CNTP_CTL_EL0, {ctrl}",
-                "isb",
-                ctrl = in(reg) 2u64, // Enable=0, IMASK=1
-                options(nostack, preserves_flags),
-            );
-        }
-    }
 }

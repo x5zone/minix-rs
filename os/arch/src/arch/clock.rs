@@ -37,9 +37,12 @@
 /// with coarse timers; 64-bit platforms have high-resolution timers and
 /// don't need 1ms ticks. 100 Hz matches typical server/desktop kernels.
 ///
-/// **Authoritative definition**: this is the arch-level constant. The kernel
-/// crate (`os/kernel/src/clock.rs`) has an independent copy to avoid a
-/// cross-crate dependency; modify here first, then sync.
+/// **Authoritative definition**: this arch-level constant is the single
+/// source of truth; the kernel crate re-exports it (`os/kernel/src/clock.rs`
+/// `pub use minix_arch::arch::clock::DEFAULT_HZ`) instead of keeping its own
+/// copy — the former "independent copy" rationale (avoid a cross-crate
+/// dependency) no longer holds since the kernel unconditionally depends on
+/// minix-arch.
 pub const DEFAULT_HZ: u32 = 100;
 
 /// Number of load history slots for load average calculation.
@@ -79,9 +82,9 @@ pub enum ProfileClockError {
 /// | Method | x86-64 | ARM64 | RISC-V |
 /// |--------|--------|-------|--------|
 /// | `new()` | store PIT freq from `PitDesc` | no-op (CNTFRQ read at runtime) | store CLINT addrs from `ClintDesc` |
-/// | `init_timer()` | 8254 PIT divisor / LAPIC Timer | ARM Generic Timer (CNTFRQ/CNTPCT) | CLINT mtimecmp |
-/// | `read_ticks()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
-/// | `read_tsc()` | TSC (rdtsc) | CNTPCT_EL0 | mtime (MMIO) |
+/// | `init_timer()` | 8254 PIT divisor (LAPIC LVT timer gate is handled by timer_irq_gate) | ARM Generic Timer (CNTFRQ/CNTP) | SBI `sbi_set_timer` (supervisor timer extension) |
+/// | `read_ticks()` | TSC (rdtsc) | CNTPCT_EL0 | `time` CSR via `read_time_csr` |
+/// | `read_tsc()` | TSC (rdtsc) | CNTPCT_EL0 | `time` CSR (same counter as `read_ticks`) |
 ///
 /// C: init_clock() hardware portion + arch_init() APIC timer
 pub trait ClockArch: Sized + Send + Sync {
@@ -107,11 +110,12 @@ pub trait ClockArch: Sized + Send + Sync {
     /// generates periodic interrupts at `hz` Hz.
     ///
     /// `cpu_id` identifies the CPU (RISC-V: hart) whose timer is configured.
-    /// Only RISC-V uses it: the CLINT is a single MMIO block with one
-    /// `mtimecmp` per hart at `mtimecmp_base + cpu_id * mtimecmp_stride`, so
-    /// the hart id is required to reach the local comparator. x86-64 (PIT +
-    /// per-CPU LAPIC) and aarch64 (CNTP_* system registers) address the
-    /// current CPU's timer implicitly and ignore the argument.
+    /// Under OpenSBI all timer programming goes through the SBI call from the
+    /// calling hart, so the current implementations (x86-64 PIT + per-CPU
+    /// LAPIC, aarch64 CNTP_* system registers, riscv64 SBI `sbi_set_timer`)
+    /// address the current CPU's timer implicitly and ignore the argument;
+    /// the parameter is kept for a future direct-comparator implementation
+    /// that would need the hart id.
     ///
     /// C: init_clock() hardware portion + arch_init() APIC timer
     fn init_timer(&mut self, hz: u32, cpu_id: u32);
@@ -187,8 +191,8 @@ pub trait ClockArch: Sized + Send + Sync {
     /// Timer (ARM64), or CLINT timer (RISC-V) to prevent interrupts
     /// during the halt.
     ///
-    /// `cpu_id` has the same role as in `init_timer`: RISC-V needs it to
-    /// locate this hart's `mtimecmp`; the other architectures ignore it.
+    /// `cpu_id` has the same role as in `init_timer`; the current
+    /// implementations address the current hart implicitly and ignore it.
     ///
     /// C: `stop_local_timer()` — arch_clock.c:155; the x86 implementation
     /// delegates to `lapic_stop_timer()` (apic.c:564), and the SMP halt path

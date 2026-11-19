@@ -2,7 +2,6 @@
 //!
 //! Programs the S-mode timer interrupt enable:
 //! - `enable_timer_irq`: sets sie.STIE (S-mode Timer Interrupt Enable, bit 5)
-//! - `disable_timer_irq`: clears sie.STIE
 //!
 //! The actual timer firing is controlled by mtimecmp, programmed through
 //! the SBI TIME extension by `ClockArch::init_timer` (S-mode cannot write
@@ -26,18 +25,6 @@ impl TimerIrqGate for Riscv64TimerIrqGate {
         unsafe {
             core::arch::asm!(
                 "csrs sie, {bits}",
-                bits = in(reg) 0x20u64, // STIE = bit 5
-                options(nostack, preserves_flags),
-            );
-        }
-    }
-
-    fn disable_timer_irq() {
-        // Clear STIE (S-mode Timer Interrupt Enable) = bit 5 in sie.
-        // SAFETY: same as `enable_timer_irq`.
-        unsafe {
-            core::arch::asm!(
-                "csrc sie, {bits}",
                 bits = in(reg) 0x20u64, // STIE = bit 5
                 options(nostack, preserves_flags),
             );
