@@ -919,9 +919,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp: VirBytes(0x7fff_ffff_ffff_0000),
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &EMPTY_MODULES,
             platform_sources: &[],
             param_buf: &[],
@@ -1021,7 +1018,9 @@ mod tests {
             .expect("test: single region is descending & disjoint");
         let mut vm_alloc = VmBootAllocator::new(regions);
 
-        let user_sp = VirBytes(0x5_0000); // VM VA stack high (above the 256 KiB runway)
+        // v10 (D-062): `user_sp` is no longer a `KernelInfo` field; the loader
+        // reads `minix_types::USER_STACK_TOP` directly.
+        let user_sp = VirBytes(minix_types::USER_STACK_TOP);
 
         let kinfo = KernelInfo {
             memmap: &[minix_boot::MemoryRegion {
@@ -1031,9 +1030,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp,
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -1148,9 +1144,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp,
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -1228,9 +1221,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp: VirBytes(0x5_0000),
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -1343,9 +1333,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp: VirBytes(0x5_0000),
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -1466,9 +1453,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp: VirBytes(0x5_0000),
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -1548,9 +1532,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp: VirBytes(0x5_0000),
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -1609,9 +1590,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp: VirBytes(0x5_0000),
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -1686,9 +1664,6 @@ mod tests {
             kern_virt_base: VirBytes(0xffff_8000_0000_0000),
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
-            user_sp: VirBytes(0x5_0000),
-            kern_stack_top: VirBytes(0),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
