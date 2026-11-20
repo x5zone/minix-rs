@@ -196,6 +196,13 @@ pub struct DtbMapOwned {
     reserved_len: usize,
     sources: [SourceRecord; DTB_SOURCE_MAX],
     sources_len: usize,
+    /// Unclipped `/memory` panorama (I-33-丙 / D-086): the EBS-side
+    /// reservation cross-check (`resv_claims::capture`) needs it, and the
+    /// owned form is the only shape that can serve a second collection on
+    /// the same boot face — the `'static` entry points would trip the
+    /// `DTB_COLLECT_TAKEN` guard on UEFI's standard EBS-retry attempt 2.
+    panorama: [MemoryRegion; DTB_MEMMAP_MAX],
+    panorama_len: usize,
 }
 
 impl DtbMapOwned {
@@ -212,6 +219,13 @@ impl DtbMapOwned {
     /// Per-declaration provenance records for the two tables above.
     pub fn sources(&self) -> &[SourceRecord] {
         &self.sources[..self.sources_len]
+    }
+
+    /// The unclipped `/memory` panorama (exact duplicates folded) — the
+    /// input view that still carries declarations outside `/memory`'s
+    /// clipped RAM range.
+    pub fn panorama(&self) -> &[MemoryRegion] {
+        &self.panorama[..self.panorama_len]
     }
 }
 
@@ -1409,6 +1423,8 @@ impl DtbMemoryMap<'_> {
             reserved_len: arrays.reserved_n,
             sources: arrays.sources,
             sources_len: arrays.sources_n,
+            panorama: arrays.panorama,
+            panorama_len: arrays.panorama_n,
         })
     }
 
@@ -1855,6 +1871,41 @@ mod tests {
         );
         // The static slice still reads the first collection's values.
         assert_eq!((first_free[0].base.0, first_free[0].len), (0x8000_0000, 0x4000));
+        // I-33-丙 / D-086: the owned form now carries the unclipped panorama
+        // too, so the EBS-side cross-check needs no `'static` collection.
+        assert_eq!(owned.panorama().len(), 1);
+        assert_eq!(
+            (owned.panorama()[0].base.0, owned.panorama()[0].len),
+            (0x8000_0000, 0x4000)
+        );
+    }
+
+    /// I-33-丙 / D-086: a SECOND owned collection on the same boot face must
+    /// succeed. This is the shape UEFI's standard EBS retry forces on the
+    /// EBS-side cross-check (`resv_claims::capture` runs once per attempt):
+    /// the `'static` entry points would trip `DTB_COLLECT_TAKEN` on attempt 2
+    /// (and the guard is `cfg(not(test))`, so the old `collect_with_panorama`
+    /// path had this panic hidden from every test). Owned collections never
+    /// write the statics, so re-entry is safe — and this test proves it in
+    /// the same `cfg(test)` form that used to mask the defect.
+    #[test]
+    fn second_owned_collection_on_the_same_face_is_safe() {
+        let blob = build_fdt(&[(0x8000_0000, 0x4000)], false);
+        let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+
+        let first = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("attempt 1 must collect");
+        let second = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("attempt 2 must collect (UEFI EBS retry shape)");
+
+        assert_eq!(first.sources().len(), second.sources().len());
+        assert_eq!(first.panorama().len(), second.panorama().len());
+        assert_eq!(
+            (first.panorama()[0].base.0, first.panorama()[0].len),
+            (second.panorama()[0].base.0, second.panorama()[0].len)
+        );
     }
 
     #[test]

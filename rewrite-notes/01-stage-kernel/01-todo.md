@@ -59,7 +59,7 @@
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施 + 三轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证；**第三批（`minix-arch` 测试面）同日补修**，见 §3。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
-| I-33（⚠ 已拆三项·待实施） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **D-086（用户 2026 年 11 月 21 日）拆为三项**：**丙**（新，最高优先）给 `DtbMapOwned` 加 `panorama` + `resv_claims::capture` 改走 `collect_owned`——**修复真机 EBS 重试 attempt 2 的 panic**（`DTB_COLLECT_TAKEN` 守卫与 UEFI 标准重试冲突，且被 `#[cfg(not(test))]` + 测试形态掩盖）；**甲**（两直核腿改 owned）；**乙**（删四张静态表 + 62 处测试改写）。丙为甲乙前置；选「丙-2 加 panorama」而非「丙-1 移出循环」因后者治标。详见 §3 的 I-33 | §3 的 I-33 |
+| I-33（已拆三项·**丙已实施**，甲乙待做） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **D-086（用户 2026 年 11 月 21 日）拆为三项**：**丙**（最高优先）给 `DtbMapOwned` 加 `panorama` + `resv_claims::capture` 改走 `collect_owned`——**修复真机 EBS 重试 attempt 2 的 panic**（`DTB_COLLECT_TAKEN` 守卫与 UEFI 标准重试冲突，且被 `#[cfg(not(test))]` + 测试形态掩盖）。✅ **丙已实施（2026-11-21）**：①② `DtbMapOwned` 加 `panorama`/`panorama_len` + 访问器 ③ `collect_owned` 投影 ④ `capture` 改 `collect_owned()`（带出处注释：UEFI 规范允许首次 EBS 返回 `EFI_INVALID_PARAMETER` 要求重试）⑤ 新增两条对照测试——memmap_source 的 `second_owned_collection_on_the_same_face_is_safe`（守卫语义对照）+ resv_claims 的 `capture_twice_on_the_same_face_is_safe_uefi_retry_shape`（最小 72 字节 FDT，两次 capture 幂等）。验收：`collect_with_panorama` 生产侧 **0 代码命中**；minix-boot **184/0**（docker）、boot-shim **144 全绿**。**甲**（两直核腿改 owned，复用 owned 形态）与**乙**（删四张静态表 + 62 处测试改写）按依赖顺序待做，甲的前置已满足。详见 §3 的 I-33 | §3 的 I-33 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -530,6 +530,17 @@ cargo test -p boot-shim --features test-all
 **原五处遗漏的处理**：#1（四张表）与 #2（panorama 消费者）由丙吸收；#3（`DtbMapOwned` 缺 panorama）就是丙本身；#4（62 处测试）归乙；#5（`&'static` 参数）归甲，实现形状见原记录的「早段借用切片、末尾建 `'static` 视图」。
 
 **当前状态**：代码改动已回退（`git checkout -- os/kernel-image/src/bootface.rs os/kernel-image/src/bootface_a64.rs`），工作树无本条改动。`grep -c "collect_with_sources" os/kernel-image/src/bootface.rs` → 1（原样）。
+
+**丙实施记录（2026 年 11 月 21 日）**：
+
+五处改动按裁决落地：① `DtbMapOwned` 加 `panorama: [MemoryRegion; DTB_MEMMAP_MAX]` + `panorama_len: usize`，字段 doc 写明动机（EBS 侧 cross-check 需要它，且 owned 是唯一能服务同 boot face 第二次 collection 的形态）；② `panorama()` 访问器；③ `collect_owned` 投影 `arrays.panorama` / `arrays.panorama_n`；④ `resv_claims::capture` 改 `collect_owned()`，注释写明 attempt 2 panic 链路（UEFI 规范允许首次 `ExitBootServices` 返回 `EFI_INVALID_PARAMETER`）；⑤ 两条新测试：
+
+- `memmap_source.rs` `second_owned_collection_on_the_same_face_is_safe`——同一 boot face 两次 `collect_owned` 幂等成功。这是守卫语义的对照测试：`'static` 入口第二次必撞 `DTB_COLLECT_TAKEN`，owned 第二次安全；doc 写明旧 `collect_with_panorama` 路径的 panic 被守卫的 `cfg(not(test))` 从所有测试里藏掉的病史。
+- `resv_claims.rs` `capture_twice_on_the_same_face_is_safe_uefi_retry_shape`——UEFI 重试形状下两次 `capture` 幂等（自建 72 字节最小合法 FDT：header version 17/last-comp 16 + 空 rsvmap + 空根节点，穿过 `fdt_layout::validate` 与 `fdt::Fdt::new` 全链），断言 attempt 2 与 attempt 1 记录数一致。
+
+**验收读数**：`grep -rn "collect_with_panorama" os/ --include=*.rs | grep -v memmap_source.rs` → **0 代码命中**（唯一命中是新测试 doc 里的文字引用）；`cargo test -p minix-boot` → docker（CI 同构）**184 通过 / 0 失败**（宿主有 I-51 已定性的并行漂移，docker 单线程为准）；`cargo test -p boot-shim --features test-all` → **144 全绿**（宿主）。新增测试都跑在 `cfg(test)`——丙之后 capture 不再碰静态表，守卫与 test/prod 形态无关，对照测试可以在 test 形态下常驻。
+
+**丙之后的生产侧 `'static` 消费者剩两个**（两直核腿）——**甲**的前置已满足；乙（删四张静态表 + 62 处测试改写）等甲落地。
 
 **实施记录（2026 年 11 月 20 日，实施后回退，`⚠ 待裁决`）**：仅记录受阻过程与上述五处遗漏，不改变代码。
 

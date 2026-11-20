@@ -291,12 +291,15 @@ pub fn capture(bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
     let Ok(fdt) = fdt::Fdt::new(bytes) else {
         return Ok(());
     };
-    let Ok((_, _, sources, panorama)) =
-        minix_boot::DtbMemoryMap::new(&fdt, 0).collect_with_panorama()
-    else {
+    // D-086（I-33-丙）：owned 形态——数组在调用者栈上，不写 `DTB_*` 静态
+    // 表、不撞 `DTB_COLLECT_TAKEN` 守卫。capture 在 EBS 配对循环的每个
+    // attempt 都会跑（UEFI 规范允许 `ExitBootServices` 首次返回
+    // `EFI_INVALID_PARAMETER` 要求重试），`'static` 形态的第二次 collect
+    // 在真机 attempt 2 必然 panic——这是丙要消除的生产隐患。
+    let Ok(owned) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect_owned() else {
         return Ok(());
     };
-    capture_claims(sources, panorama, source)
+    capture_claims(owned.sources(), owned.panorama(), source)
 }
 
 /// Fill the static claim and record stores from already-parsed DTB facts.
@@ -626,5 +629,54 @@ mod tests {
         assert_eq!(capture(&BAD, (0, 64)), Ok(()));
         assert_eq!(records().len(), 0);
         assert_eq!(check_current(&[]), Ok(()));
+    }
+
+    /// I-33-丙 / D-086: `capture` runs once per EBS attempt, and UEFI's
+    /// spec allows `ExitBootServices` to return `EFI_INVALID_PARAMETER`
+    /// once ("memory map changed — retry"). The old `'static`
+    /// `collect_with_panorama` path would trip the `DTB_COLLECT_TAKEN`
+    /// guard on attempt 2 — a panic hidden from every test because the
+    /// guard is `cfg(not(test))`. The owned form never writes the statics,
+    /// so two captures on the same face must both succeed and agree.
+    /// The blob is a minimal valid FDT (header + empty root node): capture
+    /// walks the whole owned-collection path on both attempts.
+    #[test]
+    fn capture_twice_on_the_same_face_is_safe_uefi_retry_shape() {
+        let _serial = crate::test_serial::lock();
+        let blob = minimal_fdt_blob();
+        assert_eq!(capture(&blob, (0, blob.len() as u64)), Ok(()));
+        let first_records = records().len();
+        assert_eq!(capture(&blob, (0, blob.len() as u64)), Ok(()));
+        assert_eq!(
+            records().len(),
+            first_records,
+            "attempt 2 must agree with attempt 1 (no claim drift)"
+        );
+    }
+
+    /// 72-byte minimal FDT: 40-byte header (version 17 / last-comp 16 per
+    /// `fdt_layout`), a 16-byte empty memory-reservation block, a structure
+    /// block holding an empty root node, and an empty strings block.
+    fn minimal_fdt_blob() -> Vec<u8> {
+        let mut b = Vec::new();
+        // Header (40 bytes, all fields big-endian).
+        b.extend_from_slice(&0xd00d_feed_u32.to_be_bytes()); // magic
+        b.extend_from_slice(&72u32.to_be_bytes()); // totalsize
+        b.extend_from_slice(&40u32.to_be_bytes()); // off_struct
+        b.extend_from_slice(&72u32.to_be_bytes()); // off_strings
+        b.extend_from_slice(&56u32.to_be_bytes()); // off_mem_rsvmap
+        b.extend_from_slice(&17u32.to_be_bytes()); // version
+        b.extend_from_slice(&16u32.to_be_bytes()); // last_comp_version
+        b.extend_from_slice(&0u32.to_be_bytes()); // boot_cpuid
+        b.extend_from_slice(&0u32.to_be_bytes()); // size_strings
+        b.extend_from_slice(&16u32.to_be_bytes()); // size_struct
+        // Memory reservation block: one (0, 0) pair terminates it.
+        b.extend_from_slice(&[0u8; 16]);
+        // Structure block: BEGIN_NODE("") END_NODE END.
+        b.extend_from_slice(&1u32.to_be_bytes()); // FDT_BEGIN_NODE
+        b.extend_from_slice(&[0u8; 4]); // root name ""
+        b.extend_from_slice(&2u32.to_be_bytes()); // FDT_END_NODE
+        b.extend_from_slice(&9u32.to_be_bytes()); // FDT_END
+        b
     }
 }
