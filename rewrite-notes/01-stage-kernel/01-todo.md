@@ -36,7 +36,7 @@
 | I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；遗留 = D-68（T4 批） | §3 |
 | I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **closed（本批落码，grep 判据归零，真机门 `cd os/qemu-tests && bash run_all.sh` → 37 passed / 2 failed / 0 skipped / 0 build failures（本树现跑；两条红 `test-smp-aps`/`test-smp-ipi` 在同一台机器上用**未改动的 rewrite 尖子 `2b72a1e62` 重新构建同一载体**复现同一 `### PANIC … arch/src/x86_64/protection.rs:0x1c3`，判为既有、非本批引入））**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
-| I-29-impl（实施中：门①③已落，门④路径 A 已落，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；曾阻塞门链验证的 I-43 x86 载体 `enable()` 静默停已由 I-43 二层专项关闭（2026-11-20，hello-boot 新鲜二进制 PASS），门④端到端六项验收（§2.7）已可跑。详见 §3 的 I-29-impl 补记 | §3 |
+| I-29-impl（实施中：门①③④已过验收，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；曾阻塞门链验证的 I-43 x86 载体 `enable()` 静默停已由 I-43 二层专项关闭（2026-11-20，hello-boot 新鲜二进制 PASS）。✅ **门④端到端六项验收已过（2026-11-21，§2.7 六项逐项取证 + hello-boot 端到端 PASS）**——逐项证据见 §3 的 I-29-impl 补记。门②（三架构 WB 合同）仍待专项。详见 §3 的 I-29-impl 补记 | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**实施中：步①–④已落，步⑤ E+R1 已关闭、R2 待真机**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
@@ -226,6 +226,17 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 >
 > **门④落地内容**：① `uefi_helpers::build_memmaps` 的分类逻辑整体抽到 `classify_map_bytes_into_test_tables(buffer, map_size, desc_size, desc_version)`——全树唯一分类器现在同时服务退出前（`build_memmaps`，仅存于不退出的 inspect-only 载体）与退出后两条路径；② 新增 `exit_boot_services_and_classify()`：**保留** `boot::exit_boot_services` 返回的 `MemoryMapOwned`（旧 `exit_boot_services()` 以 `let _mmap` 丢弃它），用 `meta().map_size`（非 `buffer().len()`——前者是有效长度，后者含冗余，设计文档 §2.7 前提一）取原始字节交唯一分类器，写入一次性表后返回 `'static` 切片；③ 12 条 UEFI 测试内核迁移到路径 A 流程（先分配 → 退出+分类 → 建 `KernelInfo`），编译全 0 error。
 >
+> **门④端到端六项验收（2026-11-21，全部通过）**——§2.7 六项逐项取证：
+
+| 验收 | 标准 | 证据 |
+|---|---|---|
+| 原始内存图访问 | 用 `buffer()` + `meta().map_size`，不用分配长度 | `exit_boot_services_and_classify`（`uefi_helpers.rs:1287-1293`）：`meta.map_size` 构造切片且传参同值；doc 写明前提一。对照退出前腿 `build_memmaps` 用 `descriptor_size * entries` 精确切出的有效长度，两腿都对 |
+| 分类零分配 | 分类路径无临时堆分配 | `ebs_map.rs` 全文件 **0 处 `alloc::` 引用**；`parse_raw_map` 写预分配 `descs` 数组、`classify` 返回值类型 `ClassificationPlan`、`write_to` 经闭包写静态表——全链零堆分配 |
+| 输出零分配 | 输出容器指向预分配存储 | `TEST_MAP_TABLES` 一次性静态表（free/reserved/side 三数组，`uefi_helpers.rs:491-494`），`&'static` 切片返回 |
+| 错误退出 | 退出后分类失败走裸串口 fail-stop | `:503/:506` 双 `unwrap_or_else(panic!)`；载体的 `#[panic_handler]` 用 `early_console::write_str` + `hlt` 循环（hello-boot 实读），不触碰引导服务 |
+| 析构安全 | `MemoryMapOwned` 析构不调失效服务 | 全仓 `helpers::init` / `logger::init` **零调用点**（grep 空）+ 设计文档前提三的两层保障（`MemoryMapBackingMemory::drop` 的 EBS 后分支跳过 `free_pool`；`exit_boot_services` 第一步 `logger::disable()`） |
+| 输出生命周期 | 消费期可访问且不进可用表 | `TEST_MAP_TABLES` 在 boot-shim PE 镜像内 → I-43 二层后 20 载体用 `shim_image_window()` 精确足迹声明 → 恒等窗口 + DM 覆盖（hello-boot 端到端 **PASS** 实证消费期可访问）；「不进可用表」＝`LOADER_DATA → Disposition::ReservedMapped`（`ebs_map.rs:647`）→ shim 页进 reserved 不进 free（test-sysboot 深跑消费实证：proc table + smp_init completed 后才在深层 fault，I-43 三层残留与门④无关——设计文档明言六项通过后夹具无需各自实现 EBS 事务循环） |
+
 > **端到端验证阻塞已解除（2026-11-20）**：hello-boot（x86）新鲜二进制在 `step1+2 mappings ok` 后静默停的问题，已由 I-43 二层专项关闭（真因＝载体硬编码装载基址 + 直核腿缺调用者栈窗口，见 §3 的 I-43 二层闭合记录；stash 对照当时即确认非路径 A 引入）。hello-boot 现以新鲜二进制 **PASS**。门④的端到端六项验收（§2.7）已可跑。
 >
 > **迁移名单（12 条，全部编译 0 error）**：hello-boot{,-aarch64}、test-higher-half{,-aarch64}、test-kernel-map{,-aarch64}、test-paging-enable{,-aarch64}、test-protection{,-aarch64}、test-shutdown-aarch64、test-smp-shutdown。未迁移：test-memmap{,-aarch64}（inspect-only，不退出，pre-exit 图即测试主体）；其余手绘 MEMMAP 载体（test-timer-irq 等）不消费 `build_memmap`。
