@@ -1135,7 +1135,9 @@ mod tests {
             .expect("test: single region is descending & disjoint");
         let mut vm_alloc = VmBootAllocator::new(regions);
 
-        let user_sp = VirBytes(0x5_0000); // above the 256 KiB runway
+        // v10 (D-062): the loader reads `USER_STACK_TOP` directly; the old
+        // `KernelInfo.user_sp` tripwire value (0x5_0000) is gone with the field.
+        let user_sp = VirBytes(minix_types::USER_STACK_TOP);
         let kinfo = KernelInfo {
             memmap: &[minix_boot::MemoryRegion {
                 base: PhysBytes(0x1000),

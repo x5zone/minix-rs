@@ -602,7 +602,12 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 - **为什么前两批没扫到**：`minix-arch` 的测试不在 `cargo check -p boot-shim --features test-all`（编 boot-shim）也不在 `cargo check -p minix-kernel --features mock`（编 kernel）的编译面；而 `cargo check --workspace` **默认不编测试代码**。要用 `cargo test -p minix-arch --no-run` 才看得见。
 - **修法**：删 7 处三字段字面量；其中一处把 `let user_sp = VirBytes(0x5_0000)` 改成 `VirBytes(minix_types::USER_STACK_TOP)`——因为生产代码 `:661` 早已只读常量、不再读字段，而该测试的断言（`assert_eq!(result.sp.0, user_sp.0 - 64)`）会跟着常量走。
 - **读数**：`cargo test -p minix-arch --no-run` 的 error 数 **60 → 39**，我的 21 个归零。
-- **剩余 39 个是既有问题，与本条无关**（用 `git stash` 对照确认：改动前 60、改动后 39，差额恰为我的 21 个）。构成：`paging::mock` 模块缺失（8）、`MockTrapReturn` 未定义（9）、`vec!` 宏缺失（6）、`Box`/`Vec`/`std` 未导入（10）、其余 6。**这批使 `minix-arch` 的测试面现在跑不起来**，因此本条那两处断言修正**无法用测试验证**——已如实标注。
+- **剩余 39 个不是代码缺陷，是跑测试时没带对 feature**（当日续查结论，推翻上一版的判断）：
+  - `MockPaging` 挂在 `os/arch/src/arch/paging.rs` 的 `#[cfg(feature = "runtime-window")]` 下；`cargo test -p minix-arch`（默认 feature）看不到它，于是 7 个用 `MockPaging` 的 `#[test]` 全数编译失败，连带 `vec!`/`Box`/`Vec`/`std` 的缺失错误（那些测试正经由 `alloc` 路径）。
+  - 正确命令是 **`cargo test -p minix-arch --features runtime-window`**：该命令 **0 error、288 passed / 0 failed**。
+  - 顺带纠正一处文档错误：`02-stage-vm/draft/07`、`06` 里写的 `cargo test -p minix-arch --features mock`，`minix-arch` **没有 `mock` 这个 feature**（有它的是 `minix-kernel`/`minix-plat`）——照抄会报 "does not contain this feature"。
+- **这条链路的验证面还有两个既有缺口，都登记不改**（不是本条职责）：① `cargo test -p minix-arch` 裸跑会失败（需显式带 `runtime-window`），crate 自己没有机制让自己的测试自动开自己的 feature；② CI 的 `vm-tests.yml` 里 `os/libs/minix-arch/**` 这个 path filter 指向**不存在的路径**（实际目录是 `os/arch/`），且它只跑 `minix-vm`，**完全不跑 `minix-arch` 的测试**——因此上面那个 feature 问题长期无人发现。
+- **本轮实测结论**：带对 feature 后 `minix-arch` **288 passed / 0 failed**，其中包含本条补漏批三改动的两处 `user_sp` 断言——**它们现在是真跑过并通过的**，不再是"静态推理、无法验证"。
 
 - **那条 panic 的真因（既有缺陷，与本条无关）**：`BOOT_MODULES: [BootModule; 12]` 是全零数组，内核只填 `mods[8]` 一项，却把**整个 12 槽数组**当成 `boot_modules` 切片交出。`push_module_windows` 逐项 push，遍历到第 0 槽（`start=0, len=0`）就撞 `BootWindows::push` 的 `assert!(start < end)`。同一形态出现在 `test-rt-birth-aarch64` / `test-rt-birth-riscv64` / `test-timer-irq-aarch64`。这四条的修法（要么让测试内核交出真实前缀 `&mods[8..9]`，要么让 `push_module_windows` 跳过空模块）需要单独裁决——**不在本条射程**，已登记为 I-43。
 
