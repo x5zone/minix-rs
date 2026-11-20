@@ -82,7 +82,7 @@
 > 历史条目（D-001–D-012）保留散文形态。`reviewer_verdict` 与 `user_decision`
 > 分列：用户接受风险时前者仍保留 `NOT PASS`。
 
-> **已知空缺**：D-059（历史空缺，从未分配；`tools/decision-ref-check.py` 据此不报缺口）。
+> **已知空缺**：D-059[D-REF-OK]（历史空缺，从未分配；`tools/decision-ref-check.py` 据此不报缺口）。
 
 | decision_id | reviewer_verdict | user_decision | decision_reason | scope | implementation_status | evidence | reopen_condition |
 |---|---|---|---|---|---|---|---|

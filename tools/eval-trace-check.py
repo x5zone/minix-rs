@@ -577,6 +577,7 @@ def _count_adopted_rows(text: str) -> int:
         return 0
     rows = 0
     in_fence = False
+    adopt_idx: int | None = None
     for line in text[m.end():].splitlines():
         stripped = line.strip()
         if stripped.startswith("```") or stripped.startswith("~~~"):
@@ -591,13 +592,26 @@ def _count_adopted_rows(text: str) -> int:
         cells = [c.strip() for c in stripped.strip("|").split("|")]
         if not cells or all(set(c) <= set("-: ") for c in cells):
             continue
+        # r6-F05：先认表头里的「采纳」列；有则**只认该列**，避免别的列恰好写
+        # `是` 被误计（原实现扫任意格）。
+        if adopt_idx is None and any("采纳" in c or c.lower() in {"adopted", "adopt"} for c in cells):
+            for _i, _c in enumerate(cells):
+                if "采纳" in _c or _c.lower() in {"adopted", "adopt"}:
+                    adopt_idx = _i
+                    break
+            continue
         if cells[0] in {"加法提案", "提案", "proposal", "Proposal", "加法"}:
             continue
         if cells[0] in _SUBTRACTION_PLACEHOLDERS or re.match(
             r"^(?:无提案|无|未提出|—|–|N/A|none)(?:[（(]|$|\s)", cells[0], re.IGNORECASE
         ):
             continue
-        if any(c.strip().lower() in {"是", "采纳", "adopted", "yes"} for c in cells):
+        if adopt_idx is not None:
+            if adopt_idx < len(cells) and cells[adopt_idx].strip().lower() in {
+                "是", "采纳", "adopted", "yes"
+            }:
+                rows += 1
+        elif any(c.strip().lower() in {"是", "采纳", "adopted", "yes"} for c in cells):
             rows += 1
     return rows
 
@@ -740,6 +754,16 @@ def check_subtraction(
                 "design-d2.md 既无 `- 三问：` 字段也无「本轮无新增抽象提案」声明："
                 "无法判定是否存在加法提案（V3.6 契约：二者必居其一）",
             )
+    # r6-e2e：`## ARCH-PROPOSAL` 段数与 metrics 的 `ARCH 提案` 对账（不再隐形）。
+    _arch_n = len(re.findall(r"^##\s+ARCH-PROPOSAL\b", d2_text, re.MULTILINE))
+    _mb_full = _pick_metric_block(metrics_text, report, round_tag, strict=True)[1]
+    _arch_claim = re.search(r"^-\s*ARCH\s*提案\s*[:：]\s*(\d+)", _mb_full, re.MULTILINE)
+    if _arch_n and (_arch_claim is None or int(_arch_claim.group(1)) < _arch_n):
+        report.fail(
+            "subtraction",
+            f"D2 有 {_arch_n} 段 `## ARCH-PROPOSAL`，metrics 的 `ARCH 提案` 为 "
+            f"{_arch_claim.group(1) if _arch_claim else '缺失'}（V3.6-r6：提案必须被计数）",
+        )
     if adopted > said:
         report.fail(
             "subtraction",
@@ -1575,18 +1599,20 @@ def check_open_debt(
         # 已被三轮对抗证明不可靠。无 token 的旧行落回启发式并 WARN（存量兼容）。
         # r5-C02：token 必须在**某个格的开头**（规则：处置格以 token 开头）。
         # 原实现用 row_text 全文搜索，`未修…；注：上游旧账 [CLOSED]` 会被判销账。
-        _tok_cell = None
+        # r6-F02：token 只看**处置格**（第 3 格；不足 3 格时看末格）。
+        # 原实现按格序取第一个 token，`| X-1 | [CLOSED] 旧账已销 | [OPEN] 未修 |`
+        # 会因严重度格里的 CLOSED 先命中而把真实未修行关掉。
+        _disp = cells[2] if len(cells) >= 3 else (cells[-1] if cells else "")
         _tok_kind = None
-        for _c in cells:
-            _m_tok = re.match(
-                r"^\s*[\[【]\s*(CLOSED|OPEN)\s*[\]】]\s*(.*)$",
-                _c,
-                re.IGNORECASE,
-            )
-            if _m_tok:
-                _tok_cell, _tok_kind = _c, _m_tok.group(1).upper()
-                _tok_rest = _m_tok.group(2).strip()
-                break
+        _tok_rest = ""
+        _m_tok = re.match(
+            r"^\s*[\[【]\s*(CLOSED|OPEN)\s*[\]】]\s*(.*)$",
+            _disp,
+            re.IGNORECASE,
+        )
+        if _m_tok:
+            _tok_kind = _m_tok.group(1).upper()
+            _tok_rest = _m_tok.group(2).strip()
         if _tok_kind == "OPEN":
             # 明确保持打开：**优先于任何完成词与「用户批准延期」分支**（r5）。
             _deadline_o = DEBT_DEADLINE_RE.search(row_text)
@@ -1600,8 +1626,13 @@ def check_open_debt(
             open_rows.append((item, _note_o))
             continue
         elif _tok_kind == "CLOSED":
-            # 裸 `[CLOSED]`（无任何证据文字）不算——§4.0f 要求实施附证据。
-            if len(_tok_rest) >= 10:
+            # `[CLOSED]` 必须带**可辨认的证据**（§4.0f：实施附代码证据或 dup-of）。
+            # r6-F02b：用证据形态而不是字数——`旧账已销` 四个字不是证据。
+            if re.search(
+                r"D-\d{3}|[0-9a-f]{7,40}|[\w./-]+\.(?:rs|md|sh|py|toml):\d+"
+                r"|test::|grep|dup-of|见\s*[`\w]",
+                _tok_rest,
+            ):
                 continue
         else:
             if v36:
@@ -2343,6 +2374,18 @@ def check_run_dir(
                 if _m36:
                     break
         _v36_from = int(_m36.group(1)) if _m36 and _m36.group(1) else schema_start
+        # r6-F01：`from R99` 是逃逸口——与 V3.4 分支同构地钳回已见最大轮号。
+        _max_seen6 = max(
+            (
+                int(n)
+                for title, body in _metric_blocks(metrics_text or "")
+                if re.search(r"发现总数|轮结果|未闭环", body)
+                for n in re.findall(r"^R(\d+)", title)
+            ),
+            default=0,
+        )
+        if _v36_from > _max_seen6:
+            _v36_from = schema_start or 1
     # r9（考场判例）：制品链四项加固——
     # ① 适用面按组合 schema（loop ∪ metrics，防载体分脑）与 v34 标记起点轮
     #    （历史层回放不追溯）；② FREEZE 豁免要求文件非空且含 CONVERGED/
@@ -5388,6 +5431,49 @@ def self_test() -> int:
         if not any(i["level"] == "FAIL" and "token" in i["message"] for i in _rr.items):
             print("self-test FAIL: V3.6 缺 token 未判 FAIL（V3.6-r6）")
             return 1
+
+    # ===== V3.6 r6b 轮 6 修复的夹具 =====
+    # (cc) token 只看处置格：严重度格里的 CLOSED 不得关掉 OPEN 行。
+    with tempfile.TemporaryDirectory() as _td2:
+        _p2 = Path(_td2) / "OPEN-DEBT.md"
+        _p2.write_text(
+            "| ID | 严重度 | 处置 |\n|---|---|---|\n"
+            "| X-1 | [CLOSED] 旧账已销 | [OPEN] 未修 |\n"
+        )
+        _r2 = Report()
+        if check_open_debt(_p2, _r2, "R3", v36=True) != 1:
+            print("self-test FAIL: 严重度格的 CLOSED 关掉了处置格的 OPEN（V3.6-r6b）")
+            return 1
+    # (dd) `[CLOSED]` 必须带可辨认证据（不是字数）。
+    for _row, _want in (
+        ("[CLOSED] 旧账已销", 0),
+        ("[CLOSED] 已修，证据 a.rs:1 测试通过", 1),
+        ("[CLOSED] dup-of F-R17-02", 1),
+    ):
+        with tempfile.TemporaryDirectory() as _td3:
+            _p3 = Path(_td3) / "OPEN-DEBT.md"
+            _p3.write_text(f"| ID | 严重度 | 处置 |\n|---|---|---|\n| X-1 | P2 | {_row} |\n")
+            _r3 = Report()
+            if check_open_debt(_p3, _r3, "R3", v36=True) == _want:
+                print(f"self-test FAIL: [CLOSED] 证据判据错（V3.6-r6b）: {_row!r}")
+                return 1
+    # (ee) 采纳列绑定：别的列写「是」不算采纳。
+    _d2_bind = (
+        "## SUBTRACTION-TABLE\n\n"
+        "| 加法提案 | 减法替代 | 拦不住的理由 | 保障对比 | 新增概念数 | 采纳 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| A | 是 | x | y | z | 否 |\n\n## VERDICT\nok\n"
+    )
+    if _count_adopted_rows(_d2_bind) != 0:
+        print("self-test FAIL: 非「采纳」列的「是」被计为采纳（V3.6-r6b）")
+        return 1
+    # (ff) ARCH-PROPOSAL 必须被 metrics 计数。
+    _d2_arch = "## ARCH-PROPOSAL\n- 扩张内容：x\n\n本轮无新增抽象提案。\n"
+    _r4 = Report()
+    check_subtraction(_d2_arch, "## R1 x\n\n- 减法: 提案 0 / 采纳 0\n- ARCH 提案: 0\n", _r4, "R1")
+    if not any("ARCH-PROPOSAL" in i["message"] for i in _r4.items if i["level"] == "FAIL"):
+        print("self-test FAIL: ARCH 提案未与 metrics 对账（V3.6-r6b）")
+        return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0

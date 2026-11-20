@@ -766,4 +766,20 @@ D 号唯一性与引用存在性门（p5）、style-lint 对 runs/DECISIONS 日�
 | r6-d **`采纳` 对账** | `metrics` 的 `减法: 采纳` 必须等于 D2 表「采纳」列填 `是` 的行数（整格精确匹配，`不是/未采纳` 不算） | 夹具 2 组（一致 PASS / 超出 FAIL） |
 
 **规则文本同步**：`review-panel.md` §4.3 减法表加「采纳」列；`review-evals.md` §3.4 采纳口径、
-§4.0f token 缺失 = FAIL；`DECISIONS.md` 登记已知空缺 D-059。
+§4.0f token 缺失 = FAIL；`DECISIONS.md` 登记已知空缺 D-059[D-REF-OK]。
+
+### V3.6-r6b 轮 6 修复（2026-11-21）
+
+| 项 | 缺陷 | 修法 |
+|---|---|---|
+| F01 | `schema: V3.6 from R99` 逃逸口（`--round R5` 时减法门整条不跑） | `from > 已见最大轮号` → 回退 `schema_start`（与 V3.4 分支同构） |
+| F02 | token 按格序取第一个：严重度格的 `[CLOSED]` 关掉处置格的 `[OPEN]` | token 只看处置格；`[CLOSED]` 需证据形态（路径:行/commit/test/D 号/dup-of） |
+| F03 | `[D-REF-OK]` 整行豁免 | 豁免必须指名编号 |
+| F04 | 扫描器扫未跟踪文件 | 默认 `git ls-files` 过滤；显式 `--scan` 不过滤 |
+| F05 | 采纳对账不绑定列 | 先认表头「采纳」列，有则只认该列 |
+| F09 | 扫描器不识别围栏 | 跳过围栏 |
+| F10 | `is_relative_to` 需 Python 3.9 | 改 `try/except` |
+| e2e | ARCH-PROPOSAL 不计入 metrics | 与 `ARCH 提案` 对账（段数 > 声明数 → FAIL） |
+
+**判定**：轮 6 仍 2 个 P0（已修）；六轮合计 21 个 P0 全部修复；当前 HEAD 无已知未修 P0。
+**可用，不收敛**——继续加轮只产出同类契约边角，残余风险需 V3.7 的结构化契约。
