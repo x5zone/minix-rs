@@ -40,11 +40,13 @@
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**实施中：步①–④已落，步⑤ E+R1 已关闭、R2 待真机**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
-| I-43（已裁决·三层中两层闭合） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **D-081 采 A**（载体侧真实 span）。**一层已闭合**（12 载体全部 `PLACEHOLDER_SPAN` + 全 12 槽交出）。**二层已闭合（2026-11-20）**：`enable()` 后静默停的真因是双重的——载体硬编码 `kern_phys_base`/`kern_size` vs 固件运行期装载地址（修法：20 载体改用生产同款 `shim_image_window()`，LoadedImage 协议精确足迹），加上直核腿窗口清单漏了「调用者栈」类别（修法：`arch_boot_impl` 补压当前栈窗口，`shim_stack_window` 同型；`cfg(not(test))` 排除宿主假阳性）。**实证**：x86 14 条中 13 条 PASS（faultloop 的失败是其专用故障臂的深层缺陷、已现形）；aarch64 五条基础门全 PASS；riscv `hello-boot` PASS。三层残留（VM 加载 trap、深跑载体故障臂路由、rt-birth-riscv64 自身 bump 断言）各自需要专项、现已全部可诊断。另登记 I-48（宿主套件存量红）。详见 §3 的 I-43 | §3 |
+| I-43（✅ 已闭合·一层二层完成） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | ✅ **D-087（用户 2026 年 11 月 21 日）采 C 关闭**：一层（12 载体全 `PLACEHOLDER_SPAN` + 全 12 槽）与二层（`enable()` 后静默停双根因：载体装载地址改用 `shim_image_window()` + `arch_boot_impl` 补压调用者栈窗口）均已达成原始验收（零 `[0x0,0x0)` + 三架构 0 error；x86 14 中 13 PASS、aarch64 5 全 PASS、riscv hello-boot PASS）。三层残留按性质拆出：三条地址假设失配 → **I-52**；故障臂路由 → **I-53**；`test-rt-birth-riscv64` 的 `bump(256)` 断言为本条关闭时的明示遗留（先于本修复即存在）| §3 的 I-43 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | ✅ **已实施（2026 年 11 月 21 日，D-082）**：① `UbootFileLoader::read` 删 `segment_iter`（对已修剪数据的幂等无效功）+ 删错误的「表存槽容量」注释，回归纯字节来源 ② 新增 `elf_file_end`（复用 `minix_elf::segment_iter`，零新解析器），`load_boot_modules_into` 接统一修剪——U-Boot 腿幂等、UEFI 腿从此修剪，`BootModule.len` 跨腿一致 ③ 非 ELF/畸形镜像保持全长。**前置验证 36/36**（12 模块 × 3 架构：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，裁掉的只有 .comment/.symtab/.debug_*）。boot-shim 143 全绿；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + U-Boot shim 链 6/6 全 PASS。连带登记 I-50（.lbss 无 PT_LOAD 覆盖）。详见 §3 的 I-36 | §3 |
 | I-50（待裁决·I-36 前置验证的副产物） | x86 模块的 `.lbss`（`-mcmodel=large` 大 BSS，如 minix-fs-mfs 的 4 MiB）不在任何 PT_LOAD 内——VM/exec 装载路径只映射 PT_LOAD 并清零 `[filesz, memsz)`，`.lbss` 的运行期映射与清零无载体 | 定位 + 设计裁决 | **未裁决**。36 模块 ELF 巡检实证：全部 12 个 x86_64 模块有 `.lbss`（WAl，NOBITS，零文件字节），riscv64/aarch64 无此节。riscv U-Boot 链实测可用（模块在 riscv 跑通），x86 生产模块路径从未真跑（QEMU 门链全是 stub）——`.lbss` 变量首次写入是否落进未映射页未验证。候选：a) 链接脚本收编 `.lbss` 进 PT_LOAD 的 memsz b) 装载路径按节表补映射 c) 禁用 large model。需先验证问题真实性（x86 模块真跑一次） | §3 |
 | I-51（待裁决·I-48 解锁测试面后的存量发现） | minix-vm 测试面并行隔离失败：10 条测试共享进程级全局单例（`pt_alloc::register called twice` / `register_page_alloc: overwriting different allocator`），并行跑必红；**I-41 验收途中新增同型实证**——minix-boot 的 memmap_source 族（`dtb_source_capacity` / `dtb_every_input_declaration`）全量跑漂移失败、单跑过、重跑全绿 | 测试基建 | **未裁决**。vm `--test-threads=1` 下 548 全过——纯隔离问题，非功能回归。HEAD 上因 vm 测试面编译错误不可见（I-48 顺带补了 `SimPaging` 的两个 required 方法后解锁）。修法同 kernel `test_sync::lock_boot_globals` 先例（全局锁守卫）；也可能单条修复（让这些测试用自己的 pt_alloc 域）。射程扩为「vm 全局单例 + minix-boot memmap_source 族」两处同型。独立小专项 | §3 |
+| I-52（待裁决·I-43 三层残留之一） | 深跑路径的地址假设失配：riscv VM trap（`stval` 高半形态）/ aarch64 timer-irq sync exc / x86 sysboot page fault | 定位 + 设计裁决 | **未裁决**（D-087 拆出）。三条性质相同（载体低链 vs 生产路径高半假设）但 `test-sysboot` 的 `cr2=0x7ba7000` 是低地址，**可能不同根**；倾向先 `-d int` 单步取证再决定统一修还是各自修 | §3 的 I-52 |
+| I-53（待裁决·I-43 三层残留之二） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception（`test-paging-faultloop` 与 `test-user-trap` 同一行号） | 设计裁决 + 代码修正 | **未裁决**（D-087 拆出）。**纯内核缺陷**（`trap_dispatch.rs`），两个独立载体撞同一处说明是生产问题；倾向先审查 CPL/error-code 路由，不推荐载体侧绕过 | §3 的 I-53 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（待裁决·前置 I-48 已落地） | `load_segments_into_phys_memory` 的 Safety 前提无类型载体（函数不自查段表）+ UEFI 腿绕过 wrapper | 设计裁决 | **前置已满足（I-48 落地，2026-11-21）**：`segment_iter(...)?` 现以 `Result` 自查段表，实质风险已消。裁决时只剩三件事（删 SAFETY 第 2 条 / 文档失真重新定位 / UEFI 腿是否改 wrapper）。面板建议的 `ValidatedKernelImage` 与改 wrapper 形状两案均倾向于不做 | §3 的 I-46 |
 | I-47（待裁决·前置 I-48 已落地） | `load_segments_into_buffer` 的计数与语义三处不一致（文档说 loaded、`:258` 无条件计数、`:235` 越界段不计数；且缺段间重叠检测） | 代码改造 | **前置已满足（I-48 落地，2026-11-21）**：本函数签名已随 I-48 改为 `Result<usize, _>`（坏段不再折叠成 0）；计数与语义三处不一致仍在射程内待裁决。裁决时按候选 A（返回改名 + 补重叠检测 + 文档改「测试投影」）。面板的 `copy_segment(seg, sink)` 抽象不采纳（覆盖不了整组重叠检测）| §3 的 I-47 |
@@ -1284,7 +1286,7 @@ cargo test -p minix-kernel --features mock
 
 **实施记录（2026 年 11 月 21 日）**：三处改动按裁决落地——`report()` 删三行赋值与过时的「派生字段合同」doc 段；`BootReport` 删三个 `pub` 字段并留 D-085 出处注释（零读者实测 + 三个可派生来源，防止将来有人把恒等式抄回来）；测试删三条断言。验收：生产读者 grep **0**；docker（CI 同构 1.94）`-p minix-boot` **183 通过 / 0 失败**、`-p minix-kernel --features mock` **864 通过 / 0 失败**、`-p boot-shim --features test-all` 143 全绿（宿主跑）；QEMU 门链 x86 hello-boot / test-proc-init / test-timer-irq **PASS**、aarch64 hello-boot **PASS**、riscv U-Boot shim 链 **6/6 PASS**。**验收途中发现**：宿主 minix-boot 全量跑漂移失败（memmap_source 族两条不同测试先后挂、单跑均过、重跑全绿）——并行隔离病型，并入 I-51 射程；docker 无此现象（单线程 `-j 1`）。
 
-### I-43（未裁决·I-31 补漏副产物）编译修好后暴露的测试内核运行期缺陷
+### I-43（已闭合·一层二层完成，残留拆出）编译修好后暴露的测试内核运行期缺陷
 
 **来源**：I-31 补漏批二（修 30 个测试内核编译失败）时，编译修好后跑 QEMU 暴露。
 
@@ -1384,6 +1386,36 @@ cargo check --workspace --all-targets  # 三架构 0 error
 **宿主套件存量红（登记为 I-48，非本条射程）**：HEAD 上 `cargo test -p minix-kernel --features mock` 就红且非确定——8 MiB 默认测试线程栈下多个家族轮流栈溢出（misc::dispatch / syscall_clock 等，失败集逐轮漂移）；`RUST_MIN_STACK=16MiB` 下 861 通过 / 3 失败（BKL 持有不变量族 `smp.rs:2043` + `switch_address_space`，同样逐轮漂移）。CI（`kernel-tests.yml`）无 `RUST_MIN_STACK` 且 2026-10-12 全绿——其后某次改动放大了宿主测试栈消耗或环境差异。本条改动在 `cfg(test)` 下与 HEAD 代码逐字节一致（栈窗口块整体编译剔除），不可能是其诱因；stash 对照实证。
 
 **验收（若走 A）**：四条各自 `run_all.sh` 对应测试 PASS；`cargo check` 三架构 0 error。
+
+**闭合裁决（D-087，用户 2026-11-21）：采 C——本条关闭（一层二层均已达成验收），三层残留按性质拆出。**
+
+**为什么可以关闭**：本条的原始验收是「零 `boot identity window is empty or reversed` + 三架构 `cargo check` 0 error」，两层闭合后已全部达成：
+
+| 层 | 内容 | 状态与证据 |
+|---|---|---|
+| 一层 | 12 个载体的空槽 `BOOT_MODULES` | **闭合**（D-081 采 A，全改 `PLACEHOLDER_SPAN` + 全 12 槽交出；`init_proc_and_boot` 断言 `NR_BOOT_MODULES == 12` 是生产契约，前缀切片永远过不了）|
+| 二层 | `enable()` 后静默停 | **闭合**（双根因：载体硬编码 `kern_phys_base`/`kern_size` vs 固件运行期装载地址 → 20 个 UEFI 载体改用 `shim_image_window()`；直核腿窗口清单漏「调用者栈」类别 → `arch_boot_impl` 补压当前栈窗口）|
+| 三层 | 五个残留 | **全部从「不可诊断的静默停」变成「带完整寄存器现场的可诊断缺陷」**（见下拆项）|
+
+**二层的门链证据（全部新鲜二进制）**：x86 generic 门 ×14 **13 PASS**；aarch64 基础门 ×5 全 PASS；riscv `hello-boot-riscv64` **PASS**（直核静默停顺带闭合）。
+
+**三层残留按性质拆为两个新条目 + 一个明示遗留**：
+
+| 原残留 | 性质 | 去向 |
+|---|---|---|
+| riscv VM 加载 trap（`stval=0xffffffc0_cffff000`）| 深跑路径的地址假设失配 | **I-52** |
+| aarch64 `test-timer-irq` 深跑 sync exception（`far=0xffff80804ffff000`）| 同上 | **I-52** |
+| x86 `test-sysboot` 深跑 page fault（`cr2=0x7ba7000`）| 同上 | **I-52** |
+| faultloop 故障臂路由（CPL3 载荷 fault 被当 kernel exception）| 内核 `trap_dispatch.rs` 路由缺陷 | **I-53** |
+| `test-rt-birth-riscv64` 的 `bump(256)` 断言 | **先于本修复即存在**的载体自身缺陷 | **本条关闭时的明示遗留**（不计入 I-52/I-53，见下）|
+
+**拆分理由（为什么不留在本条）**：
+
+1. **性质不同**：残留 1/2/3 是同一类（深跑路径上的地址假设失配），残留 4 是载体自身、残留 5 是纯内核路由缺陷——三者的修法、影响面、验收标准完全不同。
+2. **工程形态不同**：三个地址假设失配都需要 **QEMU 单步（`-d int`）级取证**；`trap_dispatch.rs` 的路由缺陷是代码审查可定位的；载体 `bump` 断言则需要重新核算槽容量。把它们挂在一个条目里会给人「I-43 还没做完，修完就好」的错觉。
+3. **本条的核心因果链已表达完**：`git log -S` 确认的「12 零槽 + stub 家族自 BOOT-SCOPE 2a（`4f2e9e786`）起就是运行期坏的、历次 PASS 来自陈旧二进制」这条家族级定论已经写在本条正文里，关闭不会丢失它。
+
+**明示遗留（`test-rt-birth-riscv64` 的 `bump(256)` 断言）**：该断言**先于本修复即存在**（原文记录「`test-rt-birth-riscv64` 载体自身 `bump(256)` 断言（先于本修复即存在）」），不是 I-43 引入的。它是载体自身的 bump 池容量不足，与「12 零槽」无关、与 `enable()` 后静默停无关。**登记在此作为关闭时的已知遗留，不另立条目**——因为它属于单个载体的容量核算，修复成本低于立项成本。
 
 ### I-49（已定案·环境差异，非代码回归）宿主内核测试套件在 HEAD 上红且非确定
 
@@ -2067,6 +2099,62 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 | riscv64 | **PMA 前提声明**（模块级文档块）：Sv39 PTE 无缓存属性位，WB 是平台 PMA 前提而非编码事实；QEMU virt DDR 在 PMA 声明为可缓存，memmap 全部落在该区间；本项目**不使能** Svpbmt（mencfg.PBMTE 保持 0，PTE[62:61]=0=PMA 模式），**Sv39 不存在「强制 WB」的 PBMT 取值**——WB 只能来自 PMA；真机换板需按该板 PMA 核对 DDR 缓存性 | `riscv64/paging.rs` 模块级文档块 |
 
 读数：三架构生产 target 各 0 error。I-29-16 合同自此在三架构各自的最小可验收形态落地；政策表的「完全冻结」仍按设计文档等原型证据与真机验收（不因本批宣告）。
+
+### I-52（待裁决·I-43 三层残留之一）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc / x86 sysboot page fault）
+
+**来源**：I-43 的三层残留（D-087 拆出）。**状态：待裁决。**
+
+**三个缺陷（同一性质，均已带完整寄存器读数）**：
+
+| # | 载体 | 现场 |
+|---|---|---|
+| 1 | `test-timer-irq-riscv64` 的 VM 加载路径 | store page fault，`stval = 0xffffffc0_cffff000` —— **生产 riscv 内核的高半基址形态**（`riscv64.ld` 的 `KERNEL_VIRT_BASE`）|
+| 2 | `test-timer-irq-aarch64` 深跑 | sync exception，`far = 0xffff80804ffff000` |
+| 3 | `test-sysboot`（x86）深跑 | page fault，`cr2 = 0x7ba7000` |
+
+**共同性质**：三条载体的内核链在**低物理视图**（`VMA=LMA`，如 riscv 的 `0x80200000`），而路径里有代码按**生产高半假设**写内存/取地址。生产内核链在高半、载体链在物理视图，这个差异在深跑路径（进入 `init_proc_and_boot` / `load_vm_elf` / 深跑中断）时暴露。
+
+**为什么这三条归一条**：都是「载体链址假设 vs 生产路径代码的地址换算」同一类问题，且都需要 **QEMU 单步（`-d int`）级取证**才能定根因。修复方式可能是同一个抽象（把「当前是低链载体」变成一个显式参数或查询），而不是三处独立补丁。
+
+**待裁决的方向**：
+
+| 选项 | 内容 |
+|---|---|
+| **A** | 先对三条各做一轮 `-d int` 单步取证，确定是否同根；同根则统一修一个抽象，不同根则再拆 |
+| **B** | 直接按「载体链址假设」建一个共享查询（如 `boot_is_low_linked()` 或把 `frame_virt` 的换算做成显式参数），三条一起试 |
+| **C** | 接受三条载体深跑不 PASS（它们的门链本来就不是必跑集合），只登记不修 |
+
+**我的倾向：A**。理由：三条都只有寄存器现场、没有根因定位；先取证再决定「统一修」还是「各自修」，比先设计抽象更省。而且 `test-sysboot` 的 `cr2=0x7ba7000` 是个**低地址**（约 123 MiB），与前两条的高半形态不同——**这可能不是同一个根因**，需要取证确认。
+
+**验收**：三条载体各自深跑到下一条已知路标（或 PASS）；若确认同根，补一条宿主可测的等价测试。
+
+**边界**：不触碰内核生产路径——生产内核链在高半，这些换算本来就对；问题只在低链载体上。
+
+### I-53（待裁决·I-43 三层残留之二）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
+
+**来源**：I-43 的三层残留（D-087 拆出）。**状态：待裁决。**
+
+**两个载体同一症状**：
+
+| 载体 | 现象 |
+|---|---|
+| `test-paging-faultloop` | CPL3 载荷按设计在 `FAULT_VA` fault，故障臂把它当 kernel exception 处理并 PANIC |
+| `test-user-trap` | CPL3 三页映射完成、载荷已跑，随后 kernel 模式 page fault 在 dispatch PANIC（**同一行号**，`trap_dispatch.rs`）|
+
+**性质**：**纯内核缺陷**（`trap_dispatch.rs` 的路由判断），与载体、与地址假设都无关。两个载体各自独立地撞到了同一处路由缺陷，说明它是生产代码的问题。
+
+**为什么单独成条**：I-43 的其它残留都是「载体链址假设」，这一条是**内核故障臂的 CPL 路由**——修法完全不同（代码审查可定位，不需要 QEMU 单步），影响面也不同（所有用户态 fault 的路径都经过它）。
+
+**待裁决的方向**：
+
+| 选项 | 内容 |
+|---|---|
+| **A** | 先审查 `trap_dispatch.rs` 的 CPL/error-code 路由，确认「CPL3 fault 是否被正确分派到用户态故障臂」；修完两个载体应同时 PASS |
+| **B** | 只在载体侧绕过（把测试载荷改成触发 kernel-mode fault）——**不推荐**，掩盖生产缺陷 |
+
+**我的倾向：A**。理由：两个独立载体撞同一处**同一行号**，这不是载体问题。
+
+**验收**：`test-paging-faultloop.sh` 与 `test-user-trap.sh` 各自 PASS；补一条宿主可测的路由测试（构造 CPL3 fault 的 error code，断言分派到用户态臂）。
 
 ### I-42（已实施）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 
