@@ -2270,6 +2270,12 @@ r2 post-cut free n=0x0000000000000002 bytes=0x000000000774f000 tx_frames=0x00000
 
 **post = pre − tx_frames 精确成立**（0x7ba7000 − 0x458000 = 0x774f000）：`cut_consumed_span` 在真实 free list 上精确裁掉 TX 消耗的全部字节；region 数不变（两 region 均为 trim 非整删）；下一个读者（调度器/VM 服务）看到的列表已不含 spent 帧。宿主 `free_set_cut_*` 单测族（trim 头/尾、拆分跨界、整删全消费、rounding outward、page-equivalent）全绿。**R2 关闭，I-44 五步全部实施完毕**。
 
+**动态取证补充（2026-11-21，QEMU 级闭环——边界口径的 QEMU 部分先行完成）**：
+
+`test-rt-birth`（x86）新鲜载体深跑（`-d int` 全程）——覆盖面：per-image root 装载（A' 的 `new_from_page(KernelDm)`）→ VM heap eviction（`split_huge → free_child_tables → free_pt_page` **归还链真实执行**，load_vm_elf 后 :3006 段，bootstrap identity huge leaf 存在故 split 分支必走）→ per-image 页表全部页表帧经 `pt_alloc` 归还/再分配 → 调度器切换。
+
+**读数**：全程 **0 条 page fault**（`v=0e` 计数 = 0，int log 6686 行全为时钟/中断记录）——归还页表页再分配后**无 stale PTE 残留可撞**，与 minix3 的 `reload_cr3`-before-recycle 纪律（`memory.c:192`）语义一致（Rust 侧 `destroy` 的「调用方保证非活跃」契约 + `write_entry` 的 `invlpg` 保守 flush 足以维持一致性）。**E/R1 的动态一致性确认**；真机/SMP 门的 `-d int` 口径保留为证据增强（非缺口）。
+
 **边界重申**：E/R1 的证据是代码时序与启动顺序的静态核实；QEMU `-d int` 级动态取证（TLB 实际行为）留给首个真机/SMP 门。
 
 **门②（I-29-16 三架构 WB 合同）落地（同日，本批）**：
