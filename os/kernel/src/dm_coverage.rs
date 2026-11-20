@@ -15,10 +15,10 @@
 //! identity range flows through the kernel channel from that point on
 //! (§6.1 constraint ①).
 //!
-//! # Candidate union (four sources)
+//! # Candidate union (five sources)
 //!
 //! Mapping candidates are the union of (the two-source union of §6.1,
-//! extended by source 3 and by source 4):
+//! extended by sources 3, 4 and 5):
 //!
 //! 1. **Resource-classified memmap ranges** — `KernelInfo.memmap`; the boot
 //!    shim already restricts it to conventional RAM (the source of VM PMM
@@ -41,17 +41,21 @@
 //!    (DM alias) access into a region outside sources 1–3 faults not-present
 //!    (forensics from the `-smp4` early-boot #PFs: CR2 was the DM alias of
 //!    stack PAs in the gap between installed candidates — `covered_by=NONE`
-//!    on every reproducing round). Source 4 overlaps a live source-2/3
-//!    candidate whenever one UEFI descriptor spans both (they are all
-//!    `LOADER_DATA`), so its non-overlapping tail stays uncovered; that
-//!    residual gap is tracked as an open item, not claimed to be closed.
+//!    on every reproducing round).
+//! 5. **Kernel image span** — `kern_phys_base`/`kern_size`, the
+//!    reserved-class fact the kernel owns directly. It is installed as its
+//!    own source so the DM alias of every image page exists even when the
+//!    KernelInfo's memmap/reserved tables do not describe the image (the
+//!    synthetic QEMU carriers) — the A1 `dispatch_diagctl` DstPageFault was
+//!    a kernel-stack local whose PA sat above the declared memmap.
 //!
-//! A source-2 candidate overlapping a memmap range (fallback/test paths
-//! where the bump region lives inside conventional RAM) is dropped —
-//! union semantics, no double mapping. Source 4 is kernel-DM only (the VM
-//! PMM eligibility filter keeps its memmap-based semantics) and drops any
-//! range partially overlapping an earlier candidate for the same
-//! `AlreadyMapped` reason.
+//! A candidate overlapping an earlier source is normalized by priority
+//! interval difference: memmap is highest, then the bootstrap tree, boot
+//! modules, the kernel image span, and finally reserved regions — each
+//! source contributes only its non-overlapping remainders, so no leaf is
+//! installed twice and no non-overlapping tail is dropped (D-59 gate).
+//! Source 5 is kernel-DM only. Source 4 is kernel-DM only as well (the VM
+//! PMM eligibility filter keeps its memmap-based semantics).
 //!
 //! All PTE writes go through the bootstrap root's identity write channel
 //! (`VA = PA`, the boot write-channel closure that establishes the DM); on
@@ -90,7 +94,8 @@ const PAGE_SIZE: u64 = 4096;
 /// 3. VM-window memmap (clipped)
 /// 4. VM-window bootstrap tree (clipped)
 /// 5. per boot module: VM-window (clipped) then kernel-window
-/// 6. kernel-window reserved regions
+/// 6. kernel image span, kernel-window
+/// 7. kernel-window reserved regions
 ///
 /// Pass 1 (preflight) and pass 2 (install) MUST traverse this same sequence;
 /// extracting it here guarantees they cannot drift apart (R17 DESIGN-06).
@@ -131,7 +136,12 @@ where
         }
         f(r, kernel_window)?;
     }
-    // 6: reserved regions, kernel window
+    // 6: kernel image span (kernel window; the image is never a VM
+    // resource, so it gets no VM-window alias)
+    for r in kernel_image_candidates(kernel_info, root) {
+        f(r, kernel_window)?;
+    }
+    // 7: reserved regions, kernel window
     for r in reserved_regions_candidates(kernel_info, root) {
         f(r, kernel_window)?;
     }
@@ -207,6 +217,9 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
         note(r);
     }
     for r in boot_module_candidates(kernel_info, root) {
+        note(r);
+    }
+    for r in kernel_image_candidates(kernel_info, root) {
         note(r);
     }
     for r in reserved_regions_candidates(kernel_info, root) {
@@ -307,6 +320,42 @@ fn subtract_range(range: DmRange, sub: &[DmRange]) -> alloc::vec::Vec<DmRange> {
     pieces
 }
 
+/// Source 5: the kernel **image span** (`kern_phys_base`/`kern_size`) —
+/// the one reserved-class fact the kernel itself owns.
+///
+/// In the UEFI legs the image is LOADER_DATA above the conventional
+/// memmap. The production shim surfaces those pages through
+/// `reserved_regions`, but that list is a *derived* view of a firmware
+/// snapshot: a carrier may legitimately hand the kernel a KernelInfo
+/// whose memmap and reserved table do not describe the image at all
+/// (the `test-sysboot` carrier declares a synthetic 128 MiB memmap while
+/// OVMF loads the image at ~218 MiB, with `reserved_regions` empty).
+/// The DM alias of an image page is not optional, though: the
+/// cross-space copy destination for kernel-memory endpoints resolves a
+/// kernel-stack local through `kernel_phys_to_virt`, whose DM leaf then
+/// must exist. A1 forensics (2026-11-21) caught exactly that shape —
+/// `dispatch_diagctl` returned DstPageFault for the stack PA
+/// `0x0dfffcc8` while the source walk was healthy.
+///
+/// Priority: lower than memmap / bootstrap tree / boot modules (those are
+/// installed first and subtracted out here), higher than
+/// `reserved_regions` (which subtracts this span in turn). A module blob
+/// embedded in the image (the QEMU carriers embed their user ELFs as
+/// static blobs) is already installed by source 3 and therefore excluded
+/// from the image remainders; `install_boot_dm_range` never sees the
+/// same leaf twice.
+fn kernel_image_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> alloc::vec::Vec<DmRange> {
+    use alloc::vec::Vec;
+    let image = DmRange::new(kernel_info.kern_phys_base.0, kernel_info.kern_size);
+    if image.len == 0 {
+        return Vec::new();
+    }
+    let mut subtracted: Vec<DmRange> = memmap_candidates(kernel_info).collect();
+    subtracted.extend(bootstrap_tree_candidates(kernel_info, root).into_iter().flatten());
+    subtracted.extend(boot_module_candidates(kernel_info, root));
+    subtract_range(image, &subtracted[..])
+}
+
 /// Source 4: reserved (occupied) physical regions — the kernel's own
 /// runtime footprint plus firmware/bootloader allocations.
 ///
@@ -369,6 +418,11 @@ fn reserved_regions_candidates<'a>(
     let mut subtracted: Vec<DmRange> = memmap_candidates(kernel_info).collect();
     subtracted.extend(bootstrap_tree_candidates(kernel_info, root).into_iter().flatten());
     subtracted.extend(boot_module_candidates(kernel_info, root));
+    // The kernel image span is installed as its own source (source 5);
+    // subtract the raw span here so a reserved descriptor that contains
+    // the image (the UEFI loader-data shape) cannot double-install its
+    // leaves.
+    subtracted.push(DmRange::new(kernel_info.kern_phys_base.0, kernel_info.kern_size));
     kernel_info
         .reserved_regions
         .iter()
@@ -657,6 +711,85 @@ mod tests {
             kernel_dm_pa_end(&info, PhysBytes(0x1000)),
             0x1de5_0000,
             "module end 0x1de0e000+0x42000=0x1de50000 is the highest candidate"
+        );
+    }
+
+    /// Source 5: the kernel image span is DM-covered even when the
+    /// KernelInfo tables do not describe it — the synthetic QEMU carriers
+    /// declare a 128 MiB memmap while OVMF loads the image above it and
+    /// `reserved_regions` is empty. This is the A1 `dispatch_diagctl`
+    /// shape: the kernel-stack local at image offset 0x5ffcc8 resolved to
+    /// PA 0x0dfffcc8 and the destination guard found no DM leaf.
+    /// An embedded module blob (the carriers embed their user ELFs as
+    /// static blobs inside the image) keeps its source-3 leaf and is
+    /// subtracted from the image remainders.
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_kernel_image_candidates_fill_dm_gap() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        use minix_boot::{BootModule, MemoryRegion};
+
+        static MODS: &[BootModule] = &[BootModule {
+            name: "tx",
+            start: PhysBytes(0x0db0_0000),
+            len: 0x42_000,
+        }];
+        let info = KernelInfo {
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0),
+                len: 0x800_0000,
+            }],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x0da0_0000),
+            kern_size: 0x00c0_0000,
+            boot_modules: MODS,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: &[],
+            memmap_sources: &[],
+            authority: minix_boot::InputObjectId::UefiMemoryMap,
+        };
+        boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → dropped
+        let cands = kernel_image_candidates(&info, PhysBytes(0x1000));
+        assert_eq!(
+            cands,
+            alloc::vec![
+                DmRange::new(0x0da0_0000, 0x10_0000),
+                DmRange::new(0x0db4_2000, 0x0e60_0000 - 0x0db4_2000),
+            ],
+            "image minus the embedded module blob"
+        );
+        const STACK_PA: u64 = 0x0dff_fcc8;
+        assert!(
+            cands
+                .iter()
+                .any(|r| STACK_PA >= r.base && STACK_PA < r.base + r.len),
+            "the A1 destination PA must fall inside an image candidate"
+        );
+        assert_eq!(
+            kernel_dm_pa_end(&info, PhysBytes(0x1000)),
+            0x0e60_0000,
+            "kernel_dm_pa_end must follow source 5 above the declared memmap"
+        );
+
+        // A reserved descriptor containing the image (the production UEFI
+        // loader-data shape) must not re-install the image leaves.
+        let its = KernelInfo {
+            reserved_regions: &[minix_boot::MemoryRegion {
+                base: PhysBytes(0x0d80_0000),
+                len: 0x1000_0000,
+            }],
+            ..info
+        };
+        let reserved: alloc::vec::Vec<DmRange> =
+            reserved_regions_candidates(&its, PhysBytes(0x1000)).collect();
+        assert_eq!(
+            reserved,
+            alloc::vec![
+                DmRange::new(0x0d80_0000, 0x20_0000),
+                DmRange::new(0x0e60_0000, 0x0f20_0000),
+            ],
+            "reserved keeps only its non-image remainders"
         );
     }
 
