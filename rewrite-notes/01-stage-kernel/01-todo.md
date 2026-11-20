@@ -2321,6 +2321,25 @@ r2 post-cut free n=0x0000000000000002 bytes=0x000000000774f000 tx_frames=0x00000
 - **aarch64（UEFI 真机）**：① 启动到调度器；② 读 MAIR_EL1 应为 `0xFF`；③ 抽查一个 RAM 叶子的 AttrIndx=0（Normal WBWA）与一个 DEVICE 叶子 AttrIndx=1；④ 记录该 SoC 的 memory attribute/PMA 文档口径。
 - **riscv64（U-Boot/OpenSBI 真机）**：① 启动到调度器；② 核对板级 PMA：DDR 区间声明为可缓存；③ 确认 `menvcfg.PBMTE=0`（本项目不使能 Svpbmt，PTE[62:61]=0 走 PMA）；④ 记录「Sv39 无强制 WB 取值、WB 依赖 PMA」的前提与板级证据。
 
+### I-29-8 属性策略矩阵——裁决材料（C1，2026-11-21；待用户逐项批准）
+
+**材料边界**：政策全文已冻结在 `01-design-note-memmap-consolidation.md` §2.5.7.1（类型）、§2.5.7.6（属性）、§2.5.7.7（穷尽表 + 五步顺序）、§2.5.7.8（side list）；本节只给「需要用户点头的决策点 + 现状对照」，不重复全文。**实现现状**：五步顺序已逐条落进 `os/boot-shim/src/ebs_map.rs:fn adjudicate`（步骤编号与设计一致：未知/ISA → 拒绝启动 → 类型强制 → 独立属性 → WB 准入），`Disposition` 已含 `Allocate`/`ReservedMapped`/`Side`/`Excluded`/`DevicePath`。
+
+| # | 决策点 | 建议 | 现状与理由 |
+|---|---|---|---|
+| C1-1 | 五步裁决顺序（未知/ISA fail-closed → `UNACCEPTED`/`PAL_CODE` 拒绝启动 → 类型强制处置 → 普通候选 × 独立属性 → WB 准入） | **批准冻结** | 已是 `adjudicate` 的实际顺序；四个悬空组合按此落定：`RESERVED+NV`/`UNUSABLE+SP` → `Excluded`（类型胜属性）、`MMIO+RUNTIME` → 设备路径、`PAL_CODE+NV` → 拒绝启动 |
+| C1-2 | 类型强制处置优先于独立属性（`RESERVED`/`UNUSABLE`/`MMIO` 不因属性位改判，属性只进诊断） | **批准** | 类型回答「是什么」、属性回答「可以怎么用」；把「不可触碰」改判成「政策不映射」会让诊断按原因归档失真 |
+| C1-3 | `BOOT_SERVICES_CODE/DATA`(3/4) 与 `ACPI_RECLAIM`(9) 第一版**永久不回收**（保留 + 普通 DM） | **批准（保守政策成文）** | 回收时机与池空闲块合并语义未验证，第一版不引入；WB 缺失时按逐类处置表降为 side |
+| C1-4 | `RUNTIME_SERVICES_*`(5/6) 与 `ACPI_NVS`(10)：保留、**不建普通 DM**（本项目不调用运行时服务；NVS 无消费者） | **批准** | 运行时映射需 `SetVirtualAddressMap()`，与普通 DM 是两回事；将来支持时按 RUNTIME 合同另开 |
+| C1-5 | `PERSISTENT`(14)：完整范围进 side list（不只留计数）+ 当前不分配；`UNACCEPTED`(15)/`PAL_CODE`(13)：出现即拒绝启动 | **批准** | 「边界处大声失败」；范围清单为将来实现保留恢复能力 |
+| C1-6 | `WB` 缺失的逐类处置（`CONVENTIONAL` 不进 PMM、`LOADER_*`/`BOOT_SERVICES_*`/`ACPI_RECLAIM` 不建普通 DM、全部进 side list） | **批准** | 总原则：属性可收窄资格、不得让缺 WB 的描述符继续进普通 WB 映射；无后门 |
+| C1-7 | 独立属性统一规则：`RUNTIME`/`NV`/`SP` 任一命中 → 不进 PMM + 不建普通 DM + side list（第一版无放行例外） | **批准** | 与「不支持运行时服务/持久内存」的立场一致；`CONVENTIONAL+WB+RUNTIME` 是宿主测试必测反例（已存在） |
+| C1-8 | side list 是**第一版分类器内部诊断输出**，不进 `KernelInfo`、不构成跨引导协议；容量由调用方提供、分类器零分配 | **批准** | 未来内核消费需另建交接途径；当前 `Classification.side` 与 sink 已按此形状 |
+| C1-9 | 规范基线 **UEFI 2.10**；2.11 新位（如 `HOT_PLUGGABLE`）按未知属性 fail-closed | **批准** | 不为「穷尽」引入 2.11 体系；升级是独立政策决定 |
+| C1-10 | `PA_LIMIT`（分类器可表达性）与 DM 覆盖（映射规划验收）是两个合同：保留表的每个区间都需独立 DM 覆盖验收 | **批准**；DM 侧现状 = `dm_coverage` 的 source 4/5（含本轮 D-59/A1 收口） | 可分配性与可访问性不能脱节；分类器不做 DM 检查，交接层补 |
+
+**批准后的动作**：C1-1..C1-10 无需改代码（实现已按此形状）；批准即把政策表从「讨论基线」升为「第一版冻结」，并在 §7 穷测矩阵点名四个组合用例（`RESERVED+NV`/`UNUSABLE+SP`/`MMIO+RUNTIME`/`PAL_CODE+NV`）。若任一项被否决，按否决项回改 `adjudicate` 与设计文档对应行，不得只改文档。
+
 ### I-52（✅ 已关闭·三条全部销账）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc）
 
 **来源**：I-43 的三层残留（D-087 拆出）。**状态：已裁决（D-092）。**
