@@ -309,11 +309,57 @@ mod global_alloc_binding {
             if layout.align() > 8 {
                 return core::ptr::null_mut();
             }
-            crate::alloc(layout.size())
+            let p = crate::alloc(layout.size());
+            if p.is_null() {
+                oom_report(layout.size());
+            }
+            p
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
             crate::free(ptr);
+        }
+    }
+
+    /// One attribution line on an out-of-memory allocation: the requested
+    /// size plus `argv[0]` (both read without allocating). The pool has no
+    /// free path to the heap, so an OOM that names the binary and size is
+    /// the difference between a five-second attribution and an afternoon of
+    /// serial archaeology.
+    fn oom_report(size: usize) {
+        let mut buf = [0u8; 112];
+        let mut n = 0usize;
+        let mut put = |bytes: &[u8], n: &mut usize| {
+            for &b in bytes {
+                if *n < buf.len() {
+                    buf[*n] = b;
+                    *n += 1;
+                }
+            }
+        };
+        put(b"[rt-oom] size=", &mut n);
+        put(b"0x", &mut n);
+        let mut started = false;
+        for i in (0..16).rev() {
+            let nib = ((size >> (i * 4)) & 0xf) as u8;
+            if nib != 0 || started || i == 0 {
+                started = true;
+                let c = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+                put(&[c], &mut n);
+            }
+        }
+        put(b" argv0=", &mut n);
+        if let Some(a0) = crate::crt0::args().next() {
+            for &b in a0.iter().take(48) {
+                put(&[if b.is_ascii_graphic() { b } else { b'?' }], &mut n);
+            }
+        }
+        put(b"\n", &mut n);
+        if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+            let _ = minix_sys::syscall::sys_diagctl_write(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                s,
+            );
         }
     }
 
