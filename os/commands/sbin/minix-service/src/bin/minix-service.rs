@@ -194,7 +194,17 @@ fn real_main() -> ! {
     let reply = minix_sys::sendrec(minix_sys::Endpoint::RS, &mut msg);
     match reply {
         Ok(()) => {
-            // C `:845`: `result = m.m_type`.
+            // C `:845`: `result = m.m_type`. A non-OK reply is the RS error
+            // code; C exits silently with it, but on this tree's bring-up
+            // path a silent exit hides which gate rejected the request — the
+            // same reasoning as C's own `failure()` line for transport
+            // errors, applied to the reply arm.
+            if msg.m_type != 0 {
+                support::warn(
+                    format!("minix-service: request 0x{:x} failed: {}\n", request.call_nr(), msg.m_type)
+                        .as_bytes(),
+                );
+            }
             support::terminate(msg.m_type)
         }
         Err(e) => {
@@ -243,11 +253,11 @@ fn prepare_up_image(args: &Args) -> Result<minix_service::RequestImage, String> 
         let pkg = format!("{PATH_SYSTEM_CONF_PKG_DIR}/{progname}");
         let dir = format!("{PATH_SYSTEM_CONF_DIR}/{progname}");
         if let Ok(text) = support::read_file(&pkg) {
-            (text, pkg)
+                    (text, pkg)
         } else if let Ok(text) = support::read_file(&dir) {
-            (text, dir)
+                    (text, dir)
         } else {
-            (
+                    (
                 support::read_file(PATH_SYSTEM_CONF)
                     .map_err(|_| String::from("cannot read the system config"))?,
                 String::from(PATH_SYSTEM_CONF),
@@ -263,8 +273,9 @@ fn prepare_up_image(args: &Args) -> Result<minix_service::RequestImage, String> 
         service_uid: minix_service::resolve_service_uid(&users),
         ..RsStartDefaults::default()
     };
-    build_up_request(&lines, &progname, &defaults, args, Some(users.as_str()))
-        .map_err(|e| e.message)
+    let built = build_up_request(&lines, &progname, &defaults, args, Some(users.as_str()))
+        .map_err(|e| e.message);
+    built
 }
 
 #[cfg(all(not(test), target_os = "none"))]
