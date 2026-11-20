@@ -1,0 +1,11 @@
+# Cargo config discovery bridge (2026-11-21, I-51 review):
+# cargo finds .cargo/config.toml by walking up from the CURRENT working
+# directory, not from the manifest path. Running `cargo test
+# --manifest-path os/Cargo.toml` from the repo root therefore never
+# discovered os/.cargo/config.toml -- its [env] pins (RUST_TEST_THREADS=1,
+# RUST_MIN_STACK) and target rustflags silently vanished, which is the
+# fourth root cause behind the I-51 flaky-test observations (D-091) and
+# the I-49 host-suite stack overflows. Including it here restores those
+# pins for any working directory. Note: include paths resolve relative
+# to the directory that CONTAINS this file (.cargo/), hence the ../.
+include = ["../os/.cargo/config.toml"]
