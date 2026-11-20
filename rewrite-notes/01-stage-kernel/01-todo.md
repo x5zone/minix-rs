@@ -49,6 +49,7 @@
 | I-53（已裁决·原定性作废，拆 I-57/I-58） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception | 设计裁决 | **已裁决（D-093，用户 2026 年 11 月 21 日）**：**原定性作废**——审查证实 `is_user_mode=(cs&3)==3` 与 `is_nested=!is_user` 都是对的（C 的双入口 `mpx.S:368/382` 语义已正确映射），wrapper 判据与注册顺序也正确。真实病因两条、均在载体侧：**I-57**（`test-paging-faultloop` 的 `carrier_pagefault` 在 CPL0 执行，`walk_leaf:314` 的 `alloc_pt_page().expect` 在 bump 耗尽时 panic）、**I-58**（`test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 `trap_dispatch:465-472`）。两条均待 `-d int` 取证 | §3 的 I-53 / I-57 / I-58 |
 | I-57（待裁决·I-53 拆出） | `test-paging-faultloop` 载体自身在 CPL0 panic：`carrier_pagefault` 内的 `walk_leaf` 取页失败 / VM 槽未就绪 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`walk_leaf:314` 的 `pt_alloc::alloc_pt_page().expect("carrier: pt page")`（`alloc=true` 分支必取页）、`:437-440` 的 `get_mut(ProcNr(8)).expect("VM boot proc exists")`；I-43 二层已记录「反复 64 次把 32 MB bump 区耗尽」 | §3 的 I-57 |
 | I-58（待裁决·I-53 拆出） | `test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`trap_dispatch.rs:465-472` 的 panic 是**正确的前置条件**（文档：User origin + None = no scheduler step ever ran → wiring bug）；载体若在 scheduler bring-up 前让 CPL3 载荷 fault 即触发 | §3 的 I-58 |
+| I-59（待裁决·I-52 步③拆出：x86 根因已到） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 定位 + 设计裁决 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） | §3 的 I-59 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（已裁决·待实施） | `load_segments_into_phys_memory` 的 SAFETY 契约过期（仍写「调用者必须先 compute」）+ entry 断言两份拷贝 | 注释修正 | **已裁决（D-088，用户 2026 年 11 月 21 日）**：I-48 前置已落地（`a25305c66`），复核后发现 ① SAFETY 第 2 条**现在是错的**（迭代器已自查 `filesz > memsz`，`loader.rs:275-279` 仍写「本函数不拒绝」）→ **必做改写**；② 面板称的文档失真**实测不存在** → 销账；③ entry 断言两份拷贝**不合并**（两份的守卫时机不同：wrapper 在 `layout_gate` 前、UEFI 腿在 `reserve_kernel_span` 前）。面板的 `ValidatedKernelImage` / 改 wrapper 形状两案均不采纳（I-48 之后净收益为零） | §3 的 I-46 |
 | I-47（已裁决·待实施） | `load_segments_into_buffer` 的校验前置与装不下语义（照 Minix3 C 的两循环结构重排） | 代码改造 | **已裁决（D-089，用户 2026 年 11 月 21 日）采乙**：照 `minix3/minix/lib/libexec/exec_elf.c` 的 `libexec_load_elf`——① 校验前置（`sanity check binary before wiping out the target process`：先 collect + 校验 `buf` 覆盖全部段，**校验不通过不写任何字节**）；② 装不下返回 `Err(TargetBufferTooSmall{..})` 而非静默跳过（C 用 `ENOEXEC`；本项目有 `ElfError` 可给精确变体）；③ `count` 语义自动一致；④ 文档改为「测试投影 + 前置校验」并列出共享/不共享的校验项。**不补段间重叠检测**（C 也没在装载循环里做，其重叠防线在 mmap/copymem 实现侧）| §3 的 I-47 |
@@ -2315,6 +2316,33 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 **验收**：三条载体各自深跑到下一条已知路标（或 PASS）；补一条宿主可测的等价测试（若某条能在宿主复现其地址换算）。
 
 **边界**：不触碰内核生产路径——生产内核链在高半，这些换算本来就对；问题只在低链载体上。
+
+### I-59（待裁决·I-52 步③拆出，x86 根因已到）`Paging` 页表写路径的裸恒等前提 vs VM free-list 帧
+
+**来源**：I-52（D-092）步③——x86 `test-sysboot` 深跑根因定位已到「源文件行 + 帧地址推导」级，按 D-092 ③「若 x86 确认与链址假设无关，移出单独登记」执行。**取证无需 `-d int`**：代码考古 + `vm_handoff` 读数闭环。
+
+**完整证据链（2026-11-21）**：
+
+| 环节 | 读数 |
+|---|---|
+| fault 现场 | `vector 14 err 0x2`（supervisor write not-present）`cs 0x8` `cr2 0x7ba7000`，串口止于「smp_init completed」（TX 装载零进度输出） |
+| 帧地址推导 | `vm_handoff` 读数 `free n=2`，region2 `[0x1001000, 0x7ba8000)`；`VmBootAllocator`「frames downward from region end」→ **首帧 = 0x7ba8000 − 0x1000 = 0x7ba7000 = cr2**（严格吻合，非巧合） |
+| 写点 | `X86_64Paging::new_from_page`（`os/arch/src/x86_64/paging.rs:627-642`）root 清零 `phys_to_ptr(root_page.0)`；`phys_to_ptr`（`:127`）= **裸恒等** `phys as *mut u64`，doc 自认前提「UEFI identity mapping during boot」 |
+| 调用链 | carrier `load_process_elf`（`arch/boot.rs:805`，**唯一生产调用者**）→ `vm_alloc.alloc_page()`（VM free-list 帧）→ `new_from_page` → 恒等写窗口外帧 → fault |
+| 生产链为何从未暴露 | 生产 boot 链走 `load_vm_elf` + `CurrentPaging::from_active_root`（包装活 root，无清零）+ 段帧经 `access.phys_to_virt`（DM 高地址）——**三帧源全部绕开恒等前提**；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，恒等窗口内）也不 fault |
+| 同型面 | 三架构 `new_from_page` 同构裸恒等；缺口仅「root/清零帧来自 VM free list」的场景 |
+
+**候选修法**：
+
+| 选项 | 内容 | 代价 |
+|---|---|---|
+| A | 写路径按「DM 是否已建立」阶段化（step4 后 `phys_to_ptr` 走 `DM_BASE + pa`） | 动三架构 Paging 写路径核心；需要「DM established」全局事实；bootstrap 阶段（step1-3，DM 未建）的恒等存活事实要成文为机制前提 |
+| B | `load_process_elf` 的 root 从 `pt_alloc::alloc_pt_page()`（bump，恒等可用）拿 | **本会话曾实施后撤回**（`git checkout` 复原）：① `load_process_elf_oom_when_region_exhausted` 的「单页供给」以 root 消耗第一页为前提，测试语义要重写 ② `pt_alloc::register` 全局一次与 x86 paging 测试的注册冲突需要 `register_if_unset` 类 API ③ minix-arch 测试二进制内两处 register 撞 `PT_CLAIMED` 断言 |
+| C | 载体在 arch_boot_impl 后手工往 bootstrap root 补 VM free 区恒等映射（faultloop `map_user_page` 同型） | 声明面扩到 free list 全区，与最小窗口哲学相逆；每腿各写页表代码 |
+
+**DM 覆盖事实（A 的前提，已核实）**：`memmap_candidates`（`dm_coverage.rs`）= **kernel_info.memmap 全部 region**——step4 DM 覆盖含 VM free 区，`phys_to_virt(0x7ba7000)` 在 step4 后可访问。A 的阶段切换点真实存在。
+
+**裁决前状态**：sysboot 深跑保持「可诊断已知缺陷」——根因、调用链、帧推导全在案，修复等裁决。
 
 ### I-53（已裁决·原定性作废，拆为 I-57/I-58）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
 
