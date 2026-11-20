@@ -330,17 +330,23 @@ impl<'a> LineReader<'a> {
             let Some(word) = self.read_word()? else {
                 break;
             };
-            // A `{` with no head words is unparsable and used to advance
+            // `read_word` stopped at `{` before collecting anything: the
+            // empty placeholder is the brace signal, not a line word. A
+            // brace with no head words is unparsable and used to advance
             // nothing (the same non-advancing shape the backtick exposed).
-            if self.lexer.text.get(self.lexer.pos) == Some(&b'{') && words.is_empty() {
-                return Err(ConfigError {
-                    line: self.lexer.line,
-                    message: String::from("parse error at '{'"),
-                });
-            }
-            // C `:320-334`: a `{` after a non-empty line head opens a nested
-            // sublist; its words land in the container's `list`.
-            if self.lexer.text.get(self.lexer.pos) == Some(&b'{') && !words.is_empty() {
+            // The placeholder test keeps `foo{` (C accepts a brace with no
+            // separating space) and `""{` (an empty string is a real head
+            // word) on the sublist path.
+            let brace_placeholder = word.word.is_empty() && word.flags == 0;
+            if self.lexer.text.get(self.lexer.pos) == Some(&b'{') && brace_placeholder {
+                if words.is_empty() {
+                    return Err(ConfigError {
+                        line: self.lexer.line,
+                        message: String::from("parse error at '{'"),
+                    });
+                }
+                // C `:320-334`: a `{` after a non-empty line head opens a
+                // nested sublist; its words land in the container's `list`.
                 self.lexer.pos += 1;
                 let mut sub = Vec::new();
                 loop {
@@ -479,6 +485,25 @@ mod tests {
         let got = config_read_text("service lwip {\nuid 0;\n", "t", 0, &|_| None).unwrap();
         assert!(got[0].is_sub());
         assert_eq!(got[0].list[1].word, "lwip");
+    }
+
+    #[test]
+    fn a_brace_without_separating_space_opens_the_sublist() {
+        // C `read_word` stops the atom at `{` (it is not a SPECIAL char,
+        // `configfile.c:152`) and `read_line` sees the non-empty head before
+        // the brace (`:320-334`), so `lwip{` is one sublist line.
+        let got = config_read_text("service lwip{\n uid 0;\n}\n", "t", 0, &|_| None).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].list[0].word, "service");
+        assert_eq!(got[0].list[1].word, "lwip");
+        assert!(got[0].list[2].is_sub());
+        assert_eq!(got[0].list[2].list[1].word, "0");
+    }
+
+    #[test]
+    fn a_brace_with_no_head_word_is_a_parse_error() {
+        let e = config_read_text("{}\n", "t", 0, &|_| None).unwrap_err();
+        assert_eq!(e.message, "parse error at '{'");
     }
 }
 
