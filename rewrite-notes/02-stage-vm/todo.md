@@ -88,6 +88,8 @@ VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件已在 `
 
 不做大规模 errno 重构；`From<模块错误> for VmError` 集中表即最优。V12 新发现两处残余并入本条跟踪：`vir_region.rs:428` 第二个同名 `VmError`（单变体 `InvalidParam`）与 `CacheError`/`VfsQueueError` 无 errno 收敛路径（dispatcher.rs:1664/:1812 直接外泄 `VfsQueueError`）。复核 ✅ 2026-09-09（两处锚点均在）。
 
+**残余闭环（2026-11-21 对账，§18.9 Fix #75）**：上段两处残余均已结清——① 同名 `VmError` 改名 `VirRegionError`（`rg "enum VmError"` 全仓唯一，extend/split 四个生产调用方零行为变更）；② 「dispatcher 直接外泄 VfsQueueError」勘误为 `#[cfg(test)]` 区的 nop 回调签名、非生产路径（生产面 VfsQueueError 三归宿各有设计：enqueue_fdio 映入 CowError / free_region_pages 失败 audit+drop / handle_reply 边界消费）；③ `CacheError` 无需 From（唯一生产消费点 `dispatch_setcache` 已按 C cache.c:222-226 映射 EINVAL，为映射而映射是无调用方死代码）。**DEFERRED 判定本身维持**——收敛锚点（对外唯一 `minix_types::VmError`）已达成。
+
 ### ✅ G-V12-7（P1）`SharedMemory` 无 `ev_delete` 覆写：源区域 `remaps` 永不递减——已修复 2026-09-09（§18.9 Fix #64）
 
 复核 ✅ 2026-09-09：`memtype.rs:34` 默认 `ev_delete` 为空实现；memtype.rs:1178 的非空 `ev_delete` 属于 **MappedFile**（清 fdref），SharedMemory 仍走默认空实现。全仓 `remaps` 写点仅 fork 复制（fork.rs:102）与递增（vmproc/table.rs:481 一带）。修复见 §18.9 Fix #64（落点设计变更：递减由删除漏斗承担而非 ev_delete，理由见 12-memtype.md §3.7）。
@@ -108,9 +110,9 @@ VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件已在 `
 
 复核 ✅：该依赖方向是 MINIX3 自己的架构形状——C `memtype.h:18/:21/:22` 的回调签名直接收 `struct vmproc *vmp`（策略钩子合法地需要跨进程查找与调用方内存访问）。Rust 的 `&VmProcTable`/`&mut ActiveProc` 显式传参是同形翻译且更干净。memtype.rs:7 已加判定注释。详见 §18.9 Fix #76。
 
-### V12-P2-3（P2）错误类型两处残余（并入 V10-P2-3 收敛面）
+### ✅ V12-P2-3（P2）错误类型两处残余（并入 V10-P2-3 收敛面）——残余已随 Fix #75 闭环（2026-11-21 对账）
 
-见上文 V10-P2-3 条（已含重锚点）。
+见上文 V10-P2-3 条——两处残余（同名 `VmError` 改名 `VirRegionError` / VfsQueueError 勘误为测试区签名）已由 §18.9 Fix #75 结清，本条无独立残余。
 
 ### ✅ V12-P2-4（P2）死状态/死链路批（逐项"删/接线/标注"三分处置，对照 T19 先例）——已处置 2026-09-09（§18.9 Fix #70）
 

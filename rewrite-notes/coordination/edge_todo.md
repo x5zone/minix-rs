@@ -39,7 +39,7 @@
 | §0 02-stage-vm campaign 顺序表(T1–T36) | 全部完成 | 2026-09-07 |
 | E3 VmBootHandoff 补 kernel text/data span | 完成 | 2026-09-08 |
 | E-RSSTART rs_start_t 字节 ABI + copy_rs_start 解码 | 改判关单(接线转入 03-stage-rs §21) | 2026-09-07 |
-| E-VMMCPWIRE vmmcp reply.addr 64 位化 | 完成(宽度对账余件转低优先扫描项) | 2026-09-08 |
+| E-VMMCPWIRE vmmcp reply.addr 64 位化 | 完成(宽度对账余件已被 V13-P2-6 的五专属 wire struct + 断言族实质消费，2026-11-21 对账；「低优先扫描项」指针作废) | 2026-09-08 |
 
 ---
 
@@ -302,6 +302,8 @@
 
 > **进度（RS 回复通道线序对齐，claim/F10-REPLYSIGN2-qoder）**：本条的三域接口此前都跑在一条错线上——RS 的回复收口 `servers/rs/src/lib.rs:reply_unless_suppressed` 把**正号** errno 直接交给回复腿，而 C 的 RS 以 `_SYSTEM` 编译（`minix3/minix/servers/rs/inc.h:7`），`main.c:124-129` 写回 `m_type` 的错码带负号，仓内 RS 客户端（`minix-sys/src/rs.rs:179-190`/`:216-222`/`:279-285`）一直按 `reply < 0` 判错——于是 RS 的每一次拒绝在真机上都被读成成功。本轮在收口处走单源 `minix_types::reply_status`（`EDONTREPLY` 的静默判断仍留在判定面的正号常量），并加一枚形状钉测试（生产回复腿在宿主不可达，钉的是「折号发生在唯一收口」这一不变量）。真机验证走 `os/qemu-tests/test-e5-ds.sh`（全系统启动含 RS 的出生/发布链，串口 0 次 `tries to exit`）。**本条余项不变**：三域同型批（进程/虚存/调度的生产接线）与本条无交集。
 
+> **对账更新（2026-11-21，D02 台账审计）**：上文多处「VmApi 挂 02-stage-vm T12/T13 的 rs.rs 对端」**已过期**——T12/T13 早随 V11 存档闭合（`rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md` 的 Fix #40/#42：RS_PREPARE 步骤 5 `map_proc_dyn_data` 与 RS_UPDATE 步骤 4-7 落地），VM 侧 rs.rs 对端全实现（`os/servers/vm/src/rs.rs:191` `handle_rs_prepare` 五步 / `:357` `handle_rs_update`），且 VmApi wrapper 三件（vm_rs_set_priv_via / vm_rs_memctl_via / vm_rs_update_via）✅（`d0abe5143`，2026-09-16）。**E9 的 VmApi 分域无 D02 侧残余**；余下仅为 E5 通电族的对端断言补齐与 RS 侧 KernelApi 换装（后者已随 edge3 S17 于 2026-09-20 收口）。
+
 ---
 
 ## E-KERNINFO MINIX_KERNINFO 内核信息共享 + release/version 字段（= 01-stage-kernel todo.md I-2，2026-09-07 移交）
@@ -414,6 +416,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 > **复核（2026-09-15，现状更新）**：「grep 零命中」已失效——`MiscFlagsBits::FLUSH_TLB` 已定义（proc.rs:181/:206 别名）且被 `vmctl_vminhibit_set` 设置（syscall.rs:2327），但全内核无消费者（dispatch/restore 路径不读该标志；lib.rs:2582-2584 自注 single-CPU parity 省略；vmctl_vminhibit_clear 注释 :2336 自述 "stale TLB fill not yet implemented"）。同根跳过优化本体已迁至 lib.rs:2534-2555（:2550-2552）。剩余工作不变：调度点消费（刷新先于同根比较）+ 设置点对账 + 单测。
 
 > **进度（2026-09-15，✅ 机制半闭环；SMP 拓扑验收仍挂 E5）**：C 机制三件套全数落地——(1) **pick 点判定**（C proc.c:345-347）：scheduler_loop 在 proc_ptr 记录之后、switch_address_space 之前（C 同序，因后者会改写 ptproc）计算 `tlb_must_refresh = picked.needs_tlb_refresh(current_ptproc_nr())`，新 KProcess 方法钉住"旗标置位 **且** 是本 CPU ptproc"的双半判据；(2) **switch_to_user 消费**（C proc.c:458-464）：finish_and_restore step 5 由"CONFIG_SMP-only 省略"改为实装——`consume_flush_tlb_flag` 助手（闭包注入 flush 动词，宿主可测旗标生命周期，proc_cr3 注入同型）在旗标置位且常驻时执行 `TlbArch::flush_all()`（C refresh_tlb 等价物，arch 已有），旗标无条件清除；(3) **设置点**：vmctl_vminhibit_set 本地路径已设旗标（先在），对账完成。**裁决记录**：C 的旗标设置与消费整体 `#if CONFIG_SMP`，C 单核构建根本不设此位；Rust 的 vmctl 设置是无条件的（先在事实），若消费侧继续缺席，旗标将成为只增不清的死位——故消费无条件实装，与 C-SMP 行为一致；对用户代码语义透明（TLB 刷新只改变缓存哪些翻译，不改变翻译的值），不构成外部行为偏差。**余件**：(a) SMP IPI 路径（schedule_vminhibit）的旗标设置完备性 + 真拓扑验证归 E5 SMP 冒烟（"fork 后父子并发写 CoW 页"用例）；(b) C VM 侧四处 `sys_vmctl(SELF, VMCTL_FLUSHTLB)` 的评估——按 02-stage-vm §18.2 V13-P2-1(b) 既定 ARCH 偏差（direct map 下翻译恒定、VM 自刷不需要）不移植，已登记。验证：`cargo test -p minix-kernel --lib` 751 passed（新增 ×4：判定两半 ×3 场景 + 消费生命周期 ×3 场景）；clippy 44=44 零新增；既有 finish_and_restore 三测试穿参 `false` 保持宿主安全。
+
+> **⚠ 销账同步（D-096，2026-11-21）**：本条已销账（判决行 `rewrite-notes/coordination/review-eval/DECISIONS.md` 的 D-096；02-stage-vm/todo.md §18 的 V13-P2-1(c) 更正块与 01-stage-kernel/01-todo.md 的 E-VMTLB 行同步在案）。九项组件逐项核实全部实现：`MiscFlagsBits::FLUSH_TLB = 0x10000`（proc.rs:205）、`mark_flush_tlb` 无条件置位（syscall.rs:3058，两臂之外，C do_vmctl.c:133-135 同形）、`needs_tlb_refresh` 双条件判定（proc.rs:1134）、判定在 `switch_address_space` **之前**（lib.rs:5279-5282，注释明写 C 的顺序依赖）、`consume_flush_tlb_flag`（lib.rs:4870）、`flush_all` 与 C `refresh_tlb`（klib.S:642-645）**逐指令等价**、内核页 GLOBAL + CR4.PGE 同构、活 CR3 直读（`CurrentTlbArch::get_active_root`，lib.rs:4666）。**上段「余件 (a)」的前半已被覆盖**：`schedule_vminhibit` 的旗标设置完备性即九组件的第 2 项（syscall.rs:3051）；「同根跳过优化」已改成读活 CR3 并修了 mirror 漂移 bug（lib.rs:4657-4665，注释记录）。**保留一条**：销账依据是代码实现完整 + C 语义逐项对应，**非 SMP 真机实证**（宿主测试只验证标志生命周期）——真拓扑验证（"fork 后父子并发写 CoW 页"用例）仍归 E5 SMP 冒烟；若 SMP 门跑出陈旧翻译，重开并指向「`flush_all` 是否真的刷新了目标进程的翻译」。
 
 ---
 
