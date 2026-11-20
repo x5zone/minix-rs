@@ -310,6 +310,27 @@ pub fn plan(
                 "fw-user-none",
             ],
         );
+        // V20-P1-1 batch 1 (RS dynamic-spawn stepping stone): the spawned
+        // service body plus the `minix-service up` trigger. Same readiness
+        // list as e5-ds — the spawn rides the boot services the E5(f)
+        // carrier already proves live on these architectures.
+        cargo_release(
+            &mut actions,
+            "e5-spawned 载体构建（V20-P1-1 批一动态 spawn 服务体）",
+            &[
+                "-p",
+                "e5-spawned",
+                "--target",
+                arch.module_target(),
+                "--features",
+                "fw-user-none",
+            ],
+        );
+        cargo_release(
+            &mut actions,
+            "minix-service 构建（RS_UP 动态 spawn 触发）",
+            &["-p", "minix-service", "--target", arch.module_target()],
+        );
     }
 
     // 2. boot-shim (production switch: default features off, only this
@@ -427,6 +448,8 @@ pub fn plan(
     ];
     if e5_ds_ready {
         bins.push(("e5-ds", bin_rel("e5-ds")));
+        bins.push(("e5-spawned", bin_rel("e5-spawned")));
+        bins.push(("minix-service", bin_rel("minix-service")));
     }
     let bin_refs: Vec<(&str, &str)> = bins.iter().map(|(n, p)| (*n, p.as_str())).collect();
     actions.push(Action::Write {
@@ -902,7 +925,7 @@ pub fn generate_etc_proto(
 ) -> Result<Vec<u8>> {
     // Existence is verified here; the content is read from the host by
     // mkfs_mfs's StdHost at seed time.
-    for required in ["rc", "ttys"] {
+    for required in ["rc", "ttys", "system.conf"] {
         let path = etc_dir.join(required);
         if !path.is_file() {
             bail!(
@@ -925,6 +948,7 @@ pub fn generate_etc_proto(
     proto.push_str(&format!("rc ---755 0 0 {}\n", rc_host.unwrap_or("etc/rc")));
     proto.push_str(
         "ttys ---644 0 0 etc/ttys\n\
+         system.conf ---644 0 0 etc/system.conf\n\
          $\n\
          dev d--755 0 0\n\
          console c--600 0 0 4 0\n\

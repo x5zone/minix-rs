@@ -1,0 +1,26 @@
+[package]
+name = "e5-spawned"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "e5-spawned"
+path = "src/main.rs"
+# Freestanding user image: never compile a host test harness.
+test = false
+
+required-features = ["fw-user-none"]
+
+[dependencies]
+# No `alloc-global`: this service body allocates nothing (marker + receive
+# loop only), and the 4 MiB static pool the allocator feature adds to `.bss`
+# is what the dynamic-exec leg trips over (E5(d) batch-1 forensics: a
+# 2.5 MiB heap allocation failure right after `minix-service up`).
+minix-rt = { path = "../../../../libs/minix-rt", default-features = false, features = [
+    "panic-handler",
+] }
+minix-sys = { workspace = true }
+minix-types = { workspace = true }
+
+[features]
+fw-user-none = []
