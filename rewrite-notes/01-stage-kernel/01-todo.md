@@ -49,8 +49,9 @@
 | I-53（已裁决·原定性作废，拆 I-57/I-58） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception | 设计裁决 | **已裁决（D-093，用户 2026 年 11 月 21 日）**：**原定性作废**——审查证实 `is_user_mode=(cs&3)==3` 与 `is_nested=!is_user` 都是对的（C 的双入口 `mpx.S:368/382` 语义已正确映射），wrapper 判据与注册顺序也正确。真实病因两条、均在载体侧：**I-57**（`test-paging-faultloop` 的 `carrier_pagefault` 在 CPL0 执行，`walk_leaf:314` 的 `alloc_pt_page().expect` 在 bump 耗尽时 panic）、**I-58**（`test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 `trap_dispatch:465-472`）。两条均待 `-d int` 取证 | §3 的 I-53 / I-57 / I-58 |
 | I-57（已销账·症状不再复现） | `test-paging-faultloop` 载体自身在 CPL0 panic：`carrier_pagefault` 内的 `walk_leaf` 取页失败 / VM 槽未就绪 | 载体修正 | ✅ **已销账（2026-11-21）**：其失效现场是 I-43 三层数据页窗口缺失的下游（内核在 zero-mailbox 阶段 fault，CPL3 载荷从未启动）——数据页窗口修复（ds 槽指真实 span）后 `test-paging-faultloop.sh` **PASS**（E5(d) 全链：#PF → carrier_pagefault → PTE 写回 → resume → 无 re-fault），`walk_leaf` 取页与 VM 槽消费全部按设计走通，不再需要 `-d int` | §3 的 I-57 |
 | I-58（已销账·症状不再复现） | `test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 | 载体修正 | ✅ **已销账（2026-11-21）**：同 I-57——数据页窗口修复后 `test-user-trap.sh` **PASS**（E1 slice 5 trap 往返 + E-KERNINFO publication 双验证），CPL3 载荷的 fault 走 `cs & 3 == 3` 路由进故障臂、调度器 bring-up 完整执行，`proc_ptr=None` 前置条件不再触发 | §3 的 I-58 |
-| I-59（已裁决·扩为三条共同根因） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 定位 + 设计裁决 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） | §3 的 I-59 |
+| I-59（已裁决·扩为三条共同根因） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 代码改造 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） | §3 的 I-59 | ✅ **已实施（2026-11-21，D-094 修正版 A'）**：`PteChannel` 加 `Identity` 变体（doc 写明适用条件：bootstrap 阶段 DM 未建、根帧在声明窗口内）；三架构 `new_from_page(root_page, channel)` 签名与 `from_active_root(root, channel)` 对称（I-44/D-078 先例），清零改走 `channel_to_ptr(phys, channel)`（消除「构造 channel=KernelDm 但清零走裸恒等」的自相矛盾——D-094 ②）；两个生产调用点各传各的通道：`lib.rs` bootstrap 构建传 `Identity`（DM 未建）、`load_process_elf` 传 `KernelDm`（DM 已建覆盖全 memmap）；MockPaging/SimPaging 替身签名同步（mock 无 MMU 不路由）。**实证**：docker（CI 同构）minix-kernel **864/0** + minix-arch **294/0**；宿主 arch 294、vm 548（单线程）、boot-shim 146；QEMU 门链 x86 三门 + aarch64 两门（含 timer-irq）+ riscv 直核全 PASS；**sysboot 深跑越过原 fault 点**——TX ELF 装载成功（原串口止于 smp_init）、RX+TX runnable、进入调度器，新 FAIL 是更深层（TX→RX 用户态 IPC 链，与 rt-birth 用户链同族，另行专项）。**I-60 的后续评估**：A' 落地后 `new_from_page` 的双轨消除；`map_huge`/`split_huge` 的恒等使用点维持（D-095 已定性按阶段分工正确）。详见 §3 的 I-59 |
 | I-60（✅ 已销账·伪缺陷） | `phys_to_ptr` 与 `channel_to_ptr` 双通道并存 | 设计裁决 | ✅ **D-095（用户 2026 年 11 月 21 日）销账**：双通道是**按阶段分工**而非并存竞争——裸恒等用于 DM 未建阶段（`new_from_page` bootstrap / `map_huge` 的 5 处生产调用全在 `build_bootstrap_root_and_enable` 内 / `install_leaf` 是 DM 安装器本身）、KDM 用于 DM 建立后；每个使用点都正确，且 SAFETY 文档分散在各函数（`is_identity_table:1580`、`X86_64BootDmInstaller:1341`）。**唯一真错的是 `new_from_page` 在 `load_process_elf` 处的调用点，已含在 I-59**。另修正 I-59 的 A' 范围：27 处 → **仅 `new_from_page` 1 处 × 3 架构 + 2 个调用点** | §3 的 I-60 |
+| E-VMTLB（✅ 已销账·D02 指控过期） | kernel 侧目标进程 TLB 刷新机制（C `MF_FLUSH_TLB` + 调度点刷新） | 跨阶段（D02 登记，`随 D01 SMP 处置`） | ✅ **D-096（用户 2026 年 11 月 21 日）销账**：九项组件全部实现——`FLUSH_TLB` 标志（`proc.rs:205`）、`mark_flush_tlb` 无条件置位（`syscall.rs:3058`）、`needs_tlb_refresh` 双条件判定（`proc.rs:1134`）、判定在 `switch_address_space` 之前（`lib.rs:5279-5282`，注释明写 C 顺序依赖）、`consume_flush_tlb_flag`（`lib.rs:4870`）、`flush_all` 与 C `refresh_tlb`（`klib.S:642-645`）**逐指令等价**。**「同根跳过优化」已改成读活 CR3（`lib.rs:4657-4665`，注释记录了 mirror 漂移 bug 的修复）**。D02 `:187` 的「零命中」是历史快照。**保留**：依据是代码+C 语义对应，**非 SMP 真机实证** | §3 的 E-VMTLB |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（已实施） | `load_segments_into_phys_memory` 的 SAFETY 契约过期（仍写「调用者必须先 compute」）+ entry 断言两份拷贝 | 注释修正 | ✅ **已实施（2026 年 11 月 21 日，D-088）**：① SAFETY 第 2 条改写完成——`loader.rs` 的「this function itself does not reject filesz > memsz」段换成 I-48 后的真实现状（迭代器自查 `FileszExceedsMemsz`/`PhdrOutOfBounds`/`SegmentOutOfBounds`，消费者冒泡 `Err` 后才写； caller 剩余义务只剩物理映射一项），并留 D-088 出处；② 文档失真销账 ③ entry 断言两份拷贝不合并（守卫时机不同），维持原状。boot-shim 143+6+2 全绿 | §3 的 I-46 |
 | I-47（已实施） | `load_segments_into_buffer` 的校验前置与装不下语义（照 Minix3 C 的两循环结构重排） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-089 乙）**：照 C `libexec_load_elf` 两循环重排——① **校验前置循环**（先 collect 全部段 + 校验 buf 覆盖（`file_end`/`mem_end` 取大），任一不满足 → 整装载失败且**零字节写入**；below-base 段的 skip 语义两循环一致）② 新增 `ElfError::TargetBufferTooSmall { needed_end, buf_len }` 精确变体 ③ count 语义自动一致（全部段先证可装）④ doc 改「测试投影 + 前置校验」并写明共享/不共享校验项（共享：段形迭代器 + BSS 清零；不共享：物理映射/重叠门）。**鉴别力测试 ×2**：too-small 案 byte-for-byte 证明零写入（旧代码半装载段 1）；fitting 案 count==段数 + 拷贝/BSS/sentinel 三区内容验证。boot-shim 146 全绿；U-Boot shim 链 6/6 回归 PASS | §3 的 I-47 |
@@ -2712,6 +2713,54 @@ last PT_LOAD : vaddr 0x1230390  memsz 0x410c80  →  结束于 0x1641010
 **销账条件**：① 复核那 16 处 register/unregister 配对与 `memmap_source` 族在并行下的稳定性（甲/乙/丙三选一）；**若判丙（偶然），须补全局锁并重跑 ≥10 次全绿才销账**。
 
 **不立新条目**：本条已定位到位，复核与收尾两项并入本条目。
+
+### E-VMTLB（✅ 已销账·D02 的三个指控全部过期）kernel 侧目标进程 TLB 刷新机制
+
+**来源**：D02 的 `02-stage-vm/todo.md:187`，原文「登记 edge，**随 01-stage-kernel SMP 工作处置**」——**D01 此前完全没有登记这一条**，本轮补录并裁决。
+
+**原指控（D02 的三半）**：
+
+| # | 指控 |
+|---|---|
+| ① | 「Rust 内核无任何对应物」（`rg "MF_FLUSH_TLB|tlb_must_refresh" os/kernel/src` **零命中**）|
+| ② | 「调度器 `switch_address_space` 带"同根跳过重载"优化（`syscall.rs:2410-2417` 自述 mirror 比对语义）」——与 ① 叠加在真 SMP + 共享页（CoW 父子、shm）场景下有陈旧翻译窗口 |
+| ③ | 「当前单核无影响；随 D01 SMP 工作处置」|
+
+**裁决前逐项核查（2026-11-21，九项组件 + 两处被证伪的指控）**：
+
+| # | C 侧 | Rust 对应 | 位置 | 等价性 |
+|---|---|---|---|---|
+| 1 | `MF_FLUSH_TLB = 0x10000`（`proc.h:253`）| `MiscFlagsBits::FLUSH_TLB = 0x10000` | `proc.rs:205` | **值相同** |
+| 2 | `do_vmctl.c:118-131` 本地/IPI 两臂 | `vminhibit_park_local` / `smp.schedule_vminhibit` | `syscall.rs:3055` / `:3051` | ✓ |
+| 3 | `do_vmctl.c:133-135` **在两臂之外无条件置位** | `mark_flush_tlb`，两臂之后无条件调用 | `syscall.rs:3058` | ✓ |
+| 4 | `proc.c:345-347` 双条件（`FLUSH_TLB && ptproc == p`）| `needs_tlb_refresh(current_ptproc)` | `proc.rs:1134` | **注释逐字引用 C 行号并解释「Both halves matter」** |
+| 5 | 判定发生在 `switch_address_space` **之前**（C 顺序：`:346` 判定 → `:349` 切换，切换会改 ptproc）| `tlb_must_refresh` 在 `:5280` 算、`switch_address_space` 在 `:5282` 调 | `lib.rs:5279-5282` | **注释明写「Computed BEFORE switch_address_space, which may retarget ptproc (C's order)」——比 C 的顺序依赖处理得更显式** |
+| 6 | `proc.c:459-463` 消费 + 清标志 | `consume_flush_tlb_flag(p, must_refresh, flush)` | `lib.rs:4870` | **注释逐字引用 C 行号** |
+| 7 | `refresh_tlb()` = `mov %cr3,%eax; mov %eax,%cr3` | `flush_all()` = 同两条指令 | C `klib.S:642-645` / Rust `tlb.rs:36-38` | **逐指令等价** |
+| 8 | `mov cr3` 只刷非 global 页 | 内核页设 `GLOBAL`（`pte_walk.rs:129`）+ `enable()` 启 `CR4.PGE`（`paging.rs:782`）| —— | **同构**（kernel 页跨进程共享、不该被刷；只刷 per-process 用户翻译，正是要刷的那部分）|
+| 9 | `switch_address_space` 比较**活 CR3**（`klib.S:618` `mov %cr3,%ecx`）| `CurrentTlbArch::get_active_root()` | `lib.rs:4666` | ✓ **且注释记录了一次真实 bug 的修复** |
+
+**指控 ② 的处置——"同根跳过优化"已被修复，且修复记录了自己**：`switch_address_space`（`lib.rs:4657-4665`）的注释原文：
+
+> Read the **LIVE hardware register** (CR3/TTBR0/satp) instead of the software mirror `CURRENT_ROOT_PHYS`. The C scheduler does `mov %cr3, %ecx` (klib.S:618) — comparing against the actual loaded root. The mirror could diverge from hardware when `VMCTL_SETADDRSPACE` updates `p_seg.phys_root` for a not-yet-running process and a later `set_current_root_phys` writes only the mirror; **in that scenario the old mirror-based check falsely skipped the hardware load, leaving TTBR0 pointing at a foreign page table.**
+
+**D02 担心的正是这段注释描述的 bug——它已经修了。**
+
+**指控 ① 为什么过期**：D02 的 `:187` 那句是**历史快照**（当时确实零命中）。现在 `rg "MF_FLUSH_TLB|tlb_must_refresh" os/kernel/src` 有 8 处命中（`proc.rs:205/1129/1130`、`syscall.rs:3027/3072`、`lib.rs:4704/4857/4997`）。
+
+**裁决（D-096，用户 2026-11-21）：E-VMTLB 销账。**
+
+| 项 | 内容 |
+|---|---|
+| **E-VMTLB** | **销账**——九项组件全部实现，含逐指令等价的 `flush_all`；「同根跳过」已改成读活 CR3 并修了 mirror 漂移 bug |
+| **D02 todo `:187`** | 加更正注记：该句为历史快照，kernel 侧机制已全部实现 |
+| **D01 不立实施条目** | 无剩余代码工作 |
+
+**唯一的保留（必须随销账一起记）**：
+
+**销账依据是「代码实现完整 + C 语义逐项对应」，不是「SMP 真机验证通过」。** `consume_flush_tlb_flag` 的注释自陈「The flush verb is injected so **host tests** can exercise the flag lifecycle without touching the MMU」——宿主测试只验证标志生命周期，**没有验证真 SMP 下的翻译一致性**。
+
+**若将来 SMP 门跑出陈旧翻译 → 重开本行并指向「`flush_all` 是否真的刷新了目标进程的翻译」这一点。**
 
 ### I-42（已实施）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 

@@ -197,6 +197,14 @@ pub enum PteChannel {
     KernelDm,
     /// VM context: PTE pages accessed via the VM Direct Map.
     VmDm,
+    /// Identity view: PTE pages accessed at VA == PA. Valid only while the
+    /// firmware/bootstrap identity windows cover the page — the
+    /// `build_bootstrap_root_and_enable` stage (Steps 1–3) constructs the
+    /// bootstrap root itself from a `pt_alloc`/UEFI-allocated frame inside
+    /// the declared windows, before the Direct Map exists (I-59 A' /
+    /// D-094: the two `new_from_page` production call sites face opposite
+    /// DM states, so the constructor takes the channel from its caller).
+    Identity,
 }
 
 pub trait Paging {
@@ -248,7 +256,7 @@ pub trait Paging {
     /// x86-64:   zero-fill root_page, return PML4 struct
     /// aarch64:  zero-fill root_page, return TTBR0/TTBR1 struct
     /// riscv64:  zero-fill root_page, return Sv39/Sv48 struct
-    fn new_from_page(root_page: PhysBytes) -> Self;
+    fn new_from_page(root_page: PhysBytes, channel: PteChannel) -> Self;
 
     /// Wrap an already-active page table root without modifying it.
     ///
@@ -866,9 +874,10 @@ pub mod mock {
             self.state == PagingState::Inherited
         }
 
-        fn new_from_page(_root_page: PhysBytes) -> Self {
+        fn new_from_page(_root_page: PhysBytes, _channel: PteChannel) -> Self {
             // External: the caller owns the root page; this handle must not
-            // destroy it (D-081 / I-44).
+            // destroy it (D-081 / I-44). The channel is recorded by the
+            // real arches; the mock has no MMU to route through.
             let mut pt = Self::new_mock().expect("MockPaging::new_from_page should not fail");
             pt.state = PagingState::External;
             pt
@@ -1061,7 +1070,7 @@ pub mod mock {
     /// §5.4 item 3: `new_from_page` is External for the same reason.
     #[test]
     fn destroy_new_from_page_panics() {
-        let pt = MockPaging::new_from_page(minix_types::PhysBytes(0x2000));
+        let pt = MockPaging::new_from_page(minix_types::PhysBytes(0x2000), PteChannel::Identity);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             unsafe { pt.destroy() };
         }));

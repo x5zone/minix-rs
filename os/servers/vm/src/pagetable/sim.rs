@@ -97,10 +97,11 @@ impl Paging for SimPaging {
         Ok(Self::new())
     }
 
-    fn new_from_page(root_page: PhysBytes) -> Self {
+    fn new_from_page(root_page: PhysBytes, _channel: PteChannel) -> Self {
         let mut sim = Self::new();
         sim.root = root_page.0;
-        // External: the caller owns the root page (D-081 / I-44).
+        // External: the caller owns the root page (D-081 / I-44). The mock
+        // has no MMU to route through, so the channel is unused.
         sim.state = PagingState::External;
         sim
     }

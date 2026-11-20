@@ -1333,7 +1333,11 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
 ) {
     let kern_huge = policy.page_size();
     let layout = policy.layout();
-    let mut paging = A::Paging::new_from_page(root_page);
+    // I-59 A' (D-094): the bootstrap root is constructed BEFORE the Direct
+        // Map exists (Step 4 comes after Steps 1–3), so its zeroing must go
+        // through the identity view — the root frame sits inside the
+        // declared UEFI windows.
+        let mut paging = A::Paging::new_from_page(root_page, minix_arch::paging::PteChannel::Identity);
 
     // Step 1: Minimal boot identity windows — VA = PA only for the pieces
     // the pre-Direct-Map boot path actually touches (DESIGN: BOOT-SCOPE 2a).
@@ -2908,7 +2912,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                         )
                     });
                 let mut vm_alloc = VmBootAllocator::new(regions);
-                let mut paging = MockPaging::new_from_page(PhysBytes(0));
+                let mut paging = MockPaging::new_from_page(PhysBytes(0), minix_arch::paging::PteChannel::Identity);
                 let access = MockDirectMap;
                 let vm_result =
                     load_vm_elf(module, kernel_info, &mut paging, &mut vm_alloc, &access)
@@ -5741,7 +5745,7 @@ mod tests {
         };
 
         let root_page = PhysBytes(0x1000);
-        let mut paging = MockPaging::new_from_page(root_page);
+        let mut paging = MockPaging::new_from_page(root_page, minix_arch::paging::PteChannel::Identity);
 
         let huge_size = MockPaging::FALLBACK_HUGE_PAGE_SIZE;
 
@@ -6128,7 +6132,7 @@ mod tests {
             memmap_sources: &[],
             authority: minix_boot::InputObjectId::DtbBootInput,
         };
-        let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
+        let mut paging = MockPaging::new_from_page(PhysBytes(0x1000), minix_arch::paging::PteChannel::Identity);
 
         // Identity pass should be a no-op with zero regions
         for _region in info.memmap { /* empty */ }
@@ -6194,7 +6198,7 @@ mod tests {
     /// Verify MockPaging queries work correctly after mapping.
     #[test]
     fn test_mock_paging_query_after_map() {
-        let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
+        let mut paging = MockPaging::new_from_page(PhysBytes(0x1000), minix_arch::paging::PteChannel::Identity);
         paging
             .map_huge(
                 VirBytes(0x200000),

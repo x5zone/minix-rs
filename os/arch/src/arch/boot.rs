@@ -35,6 +35,7 @@
 
 use minix_boot::{BootModule, KernelInfo};
 use minix_types::{PhysBytes, PhysFrame, VirBytes};
+use crate::paging::PteChannel;
 
 /// Shared single source for the process number (kernel and arch trait
 /// signatures use the same newtype). Re-exported so the historical
@@ -820,7 +821,11 @@ pub fn load_process_elf<P: Paging, A: PhysAccess>(
     //    boot-phase contract (no global allocator; UEFI identity or DM
     //    coverage of the root page) is the same phase this function runs
     //    in — alongside `load_vm_elf` at boot.
-    let mut paging = P::new_from_page(root);
+    // I-59 A' (D-094): this call site runs AFTER step 4 established the
+    // Direct Map (covering the whole memmap), so the root frame — allocated
+    // here from the VM free list, outside the minimal identity windows —
+    // is reachable through the kernel Direct Map.
+    let mut paging = P::new_from_page(root, PteChannel::KernelDm);
 
     // ③ The new root starts kernel-less; inherit the supervisor half
     //    from the live bootstrap root so traps into the kernel map.

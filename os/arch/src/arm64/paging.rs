@@ -227,6 +227,7 @@ pub struct AArch64Paging {
 #[inline]
 fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
     match channel {
+        PteChannel::Identity => phys as *mut u64,
         PteChannel::KernelDm => {
             AArch64DirectMap::kernel_phys_to_virt(PhysBytes(phys)).0 as *mut u64
         }
@@ -583,12 +584,16 @@ impl Paging for AArch64Paging {
     /// `AllocatePages` and passes it here. There is no kernel page allocator
     /// at this point, so `new()` (which would allocate internally) cannot be
     /// used. See `Paging::new()` for the runtime variant.
-    fn new_from_page(root_page: PhysBytes) -> Self {
-        let ptr = unsafe { phys_to_ptr(root_page.0) };
+    fn new_from_page(root_page: PhysBytes, channel: PteChannel) -> Self {
+        // I-59 A' (D-094): the caller declares the access channel — the
+        // bootstrap root construction (pre-DM) passes `Identity`,
+        // per-process roots after step 4 pass `KernelDm`; the zeroing uses
+        // the same channel the handle's later operations will use.
+        let ptr = unsafe { channel_to_ptr(root_page.0, channel) };
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
         Self {
             root_paddr: root_page.0,
-            channel: PteChannel::KernelDm,
+            channel,
             state: PagingState::External,
         }
     }

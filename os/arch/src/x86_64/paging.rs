@@ -197,6 +197,7 @@ fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
     // memory via `set_mock_vm_base` — mirroring the VM-side test funnel.
     // Production keeps the x86_64 constant base.
     match channel {
+        PteChannel::Identity => phys as *mut u64,
         PteChannel::KernelDm => {
             X86_64DirectMap::kernel_phys_to_virt(PhysBytes(phys)).0 as *mut u64
         }
@@ -624,19 +625,26 @@ impl Paging for X86_64Paging {
     /// `AllocatePages` and passes it here. There is no kernel page allocator
     /// at this point, so `new()` (which would allocate internally) cannot be
     /// used. See `Paging::new()` for the runtime variant.
-    fn new_from_page(root_page: PhysBytes) -> Self {
+    fn new_from_page(root_page: PhysBytes, channel: PteChannel) -> Self {
         // SAFETY: root_page must be a valid, 4KB-aligned physical address
         // that is writable through the current page table (UEFI identity map
         // during boot). The page must not be aliased by any other live
         // reference. phys_to_ptr converts the physical address to a virtual
         // address using the UEFI identity mapping.
-        let ptr = unsafe { phys_to_ptr(root_page.0) };
+        // I-59 A' (D-094): the caller declares the access channel — the two
+        // production call sites face opposite DM states (bootstrap root
+        // construction runs BEFORE the Direct Map exists and passes
+        // `Identity`; `load_process_elf`'s per-process root runs AFTER and
+        // passes `KernelDm`). The zeroing goes through the same channel the
+        // handle's later operations will use, so "zero via identity, then
+        // write via KDM" can no longer disagree.
+        let ptr = unsafe { channel_to_ptr(root_page.0, channel) };
         // SAFETY: ptr points to a 4KB-aligned, 512-entry PML4 table.
         // write_bytes zeroes all entries, marking them "not present".
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
         Self {
             root_paddr: root_page.0,
-            channel: PteChannel::KernelDm,
+            channel,
             state: PagingState::External,
         }
     }
