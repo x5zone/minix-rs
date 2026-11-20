@@ -2728,7 +2728,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             proc.priv_id = Some(priv_id);
         } else {
             // Don't let the process run for now.
-            // C: RTS_SET(rp, RTS_NO_PRIV | RTS_NO_QUANTUM) — main.c:226
+            // C: RTS_SET(rp, RTS_NO_PRIV | RTS_NO_QUANTUM) — main.c:253
             proc.p_rts_flags
                 .set(RtsFlagsBits::NO_PRIV | RtsFlagsBits::NO_QUANTUM);
         }
@@ -3006,7 +3006,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
 
         // VM inhibit: all user processes except VM must wait for VM to
         // create their page tables.
-        // C: main.c:267-270
+        // C: main.c:264-267
         if nr != proc_nr::VM_PROC_NR {
             proc.p_rts_flags
                 .set(RtsFlagsBits::VMINHIBIT | RtsFlagsBits::BOOTINHIBIT);
