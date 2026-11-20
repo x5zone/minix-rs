@@ -106,6 +106,16 @@ pub(crate) mod icache_bridge;
 pub(crate) mod vmdm_bridge;
 
 
+/// E5(d) (V11-P1-1) boot-shim-chain milestone printer: one
+/// SYS_DIAGCTL call through the real trap backend, best-effort (a failed
+/// diagnostic write must never take the boot down).
+pub(crate) fn e5d_diag(text: &str) {
+    let _ = minix_sys::syscall::sys_diagctl_write(
+        &minix_sys::syscall::DirectKernelCallTransport,
+        text,
+    );
+}
+
 pub use vm_server::VmServer;
 #[allow(unused_imports)]
 pub use vm_server::{BootRoute, boot_route, install_server, run_installed, with_installed_server};

@@ -54,9 +54,19 @@
 
 > 复核方法（Step 0.7 staleness check，模式 70 CTOS）：每条 grep 现状 + 重读关键行。结论：**12 条全部真实开口、无一条失效**；V12 轮后代码增量（Fix #59–#62）使部分行号漂移，本节为重校后的锚点。条目正文与判定过程见 V12 存档 §17。
 
-### ✅ V11-P1-1 【解封】KernelIpcTransport 落地路径——宿主半核验闭环（2026-09-19），真机半挂 E5(d)
+### 🔄 V11-P1-1 真机半——E5(d) 端到端用例已落地，推进到 VM init 中段（2026-11-21）
 
 VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件已在 `403e47022` 落地（`ipc_call_rs_init`：`sys_safecopyfrom(RS, rproctab_gid, 0, …)` 取整表 + 逐行 `read_unaligned` 解码到 `RprocEntry`，`os/servers/vm/src/vm_server.rs:2403-2451`）。**宿主半闭环**：`init()` 调用 `mark_initialized`（`vm_server.rs:720`），传输的 `receive` 委托 `minix_sys::ipc::DirectTrapTransport`（`ipc/transport.rs:224-240`），后者在真 boot 镜像构建（`cfg(kernel_trap)`，由 `os/libs/minix-sys/build.rs:32` 依 freestanding 或 `real-trap` feature 置位）下走真实 trap 腿。**剩余只有真机端到端**：boot shim 拉起 VM → `init_vm_self_pt` → map/query/unmap 测试页 → 串口结果，即 edge E5 的 (d) 项。
+
+**E5(d) 端到端用例落地（2026-11-21，底座 = D-73 riscv64 U-Boot shim 链）**：
+
+**实施**：① `VmServer::e5d_self_pt_test()`（`vm_server.rs`）——从 VM 分配器取真实帧 → `vm_self_mappages` → `vm_self_query` 物理比对 → `vm_self_unmap` → query None 断言——map/query/unmap 全边；② `main.rs` 加 SYS_DIAGCTL 路标（`e5d: vm-main-enter` → `boot-params-read` → `vm-init-done` → `E5D-VM-SELF-PT PASS/FAIL`）；③ `init()` 内五段路标（`vm-init-enter`/`vm-relocate-done`/`vm-global-state-done`/`vm-self-pt-adopted`/`vm-boot-procs-seeded`）经 `e5d_diag` helper（best-effort diagctl）。
+
+**读数（D-73 链 + `-d int`）**：**VM main 真跑**（`e5d: vm-main-enter` 上串口——boot shim 拉起 VM 的用户态执行证实）→ handoff 消费链通（`boot-params-read`，validate 过）→ **A1 adoption 成功（`vm-self-pt-adopted`——`init_vm_self_pt` 采纳 bootstrap root）** → relocate 完成（vm_self_mappages 在真实页表工作）→ `vm-global-state-done`。**卡点**：`init_vm_slot → init_proc` 段（`vm-vm-slot-done` 未达）。
+
+**诊断链发现**：VM 的 diagctl 通道**已证通**（kernel 侧 probe-diagctl 捕获 caller=8 七次）；panic 后的 ecall 静默（panic handler 卡在 ecall 前段）——`init_page_table FAILED` 诊断前置行未触发 = init_page_table 本身未失败，卡点在其相邻段；int log 尾部 user_ecall 高频循环（epc 0x2d02a/0x2d16e）为服务进程 crt0 的 E-BOOTFRAME 现状（stack/ps_str=0）。`-d int` 全程**零 page fault**。
+
+**下一步**：① init_vm_slot 内部细分路标（get_empty/activate/init_page_table 三点）抓确切卡点；② diagctl 静默根因（panic handler 的 ecall 前段）；③ E5(d) 判据固化（`E5D-VM-SELF-PT PASS` 串口 grep）待卡点解后收口。
 
 
 

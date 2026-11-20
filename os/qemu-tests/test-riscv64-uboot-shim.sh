@@ -189,6 +189,7 @@ timeout "$TIMEOUT_SECS" qemu-system-riscv64 \
     -kernel "$UBOOT" \
     -drive "if=virtio,format=raw,file=$WORK/disk.img" \
     -nographic -serial "file:$SERIAL" -monitor none \
+    ${D73_INT:+-d int -D /tmp/d73-int.log} \
     > "$WORK/qemu.stdout" 2>&1 &
 QEMU_PID=$!
 kill_qemu() { kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true; }

@@ -3283,6 +3283,15 @@ fn dispatch_diagctl(
     msg: &Message,
     priv_table: &mut PrivTable,
 ) -> KcallResult {
+    // D-02 E5(d) forensics probe (kernel-side, always-reachable console):
+    // who is calling diagctl and with what code. Removal tracked with the
+    // E5(d) closure.
+    {
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+        Console::write_str("probe-diagctl caller=");
+        Console::write_hex(caller_nr.0 as u64);
+        Console::write_str("\n");
+    }
     msg.debug_check_m_type_any(&[Syscall::Diagctl as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let diag_msg = unsafe { &msg.m_u.m_lsys_krn_sys_diagctl };

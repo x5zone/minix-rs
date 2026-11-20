@@ -54,7 +54,15 @@ fn real_main() -> ! {
         // adoption (init_vm_self_pt), and the A2 deduction record is
         // reconciled at this consumer boundary before the allocator is
         // built (07-paging_init_design §6.0).
+        let _ = minix_sys::syscall::sys_diagctl_write(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            "e5d: before-read-boot-params\n",
+        );
         let params = read_boot_params();
+        let _ = minix_sys::syscall::sys_diagctl_write(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            "e5d: boot-params-read\n",
+        );
 
         // C: main.c:101-108 — if(is_first_time()) { init_vm();
         // __vm_init_fresh=1; } — rerouted through the image-slot router
@@ -62,6 +70,14 @@ fn real_main() -> ! {
         // image-resident, so a warm start in the same process finds the
         // slot full and skips init; a re-exec'd process finds it empty,
         // which C has no usable semantics for — the loud rejection stays).
+        // E5(d) (V11-P1-1): the VM image is alive — first boot-shim-chain
+        // milestone, printed through the kernel diagnostic channel
+        // (rt-birth panic-handler precedent, minix-rt lib.rs:438).
+        let _ = minix_sys::syscall::sys_diagctl_write(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            "e5d: vm-main-enter\n",
+        );
+
         match boot_route(params.is_first_time) {
             BootRoute::ColdInit => {
                 let server = VmServer::new_with_boot_params(params);
@@ -69,7 +85,37 @@ fn real_main() -> ! {
                 if install_server(server).is_err() {
                     panic!("VM cold boot: the image slot already holds a server");
                 }
-                with_installed_server(|server| server.init());
+                with_installed_server(|server| {
+                    server.init();
+                    // E5(d) milestone: the handoff was consumed (A1 adoption
+                    // ran inside init — init_vm_self_pt accepted the
+                    // bootstrap root), allocator registered, boot procs
+                    // seeded.
+                    let _ = minix_sys::syscall::sys_diagctl_write(
+                        &minix_sys::syscall::DirectKernelCallTransport,
+                        "e5d: vm-init-done\n",
+                    );
+                    // E5(d) core: map/query/unmap against VM's own page
+                    // table with a real frame from the boot free list.
+                    match server.e5d_self_pt_test() {
+                        Ok(()) => {
+                            let _ = minix_sys::syscall::sys_diagctl_write(
+                                &minix_sys::syscall::DirectKernelCallTransport,
+                                "E5D-VM-SELF-PT PASS\n",
+                            );
+                        }
+                        Err(why) => {
+                            let _ = minix_sys::syscall::sys_diagctl_write(
+                                &minix_sys::syscall::DirectKernelCallTransport,
+                                why,
+                            );
+                            let _ = minix_sys::syscall::sys_diagctl_write(
+                                &minix_sys::syscall::DirectKernelCallTransport,
+                                "\nE5D-VM-SELF-PT FAIL\n",
+                            );
+                        }
+                    }
+                });
             }
             BootRoute::WarmRun => {}
             BootRoute::WarmNoState => panic!(

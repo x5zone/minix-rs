@@ -408,6 +408,8 @@ impl VmServer {
         // create a fresh one.
         #[cfg(not(test))]
         init_vm_self_pt(params.root_paddr);
+        #[cfg(not(test))]
+        crate::e5d_diag("e5d: vm-self-pt-adopted\n");
 
         // Copy the boot process list (C: kernel_boot_info.boot_procs[]).
         let mut boot_procs = [BootImage::empty(); NR_BOOT_PROCS];
@@ -675,16 +677,23 @@ impl VmServer {
         //
         // Relocation requires real page tables (vm_self_mappages); skipped in tests.
         #[cfg(not(test))]
-        self.relocate();
+        {
+            crate::e5d_diag("e5d: vm-init-enter\n");
+            self.relocate();
+            crate::e5d_diag("e5d: vm-relocate-done\n");
+        }
 
         // Phase 1: Memory detection — initialize global state with total page count.
         self.init_global_state();
+        crate::e5d_diag("e5d: vm-global-state-done\n");
 
         // Phase 2a: init_proc(VM_PROC_NR) — main.c:474.
         self.init_vm_slot();
+        crate::e5d_diag("e5d: vm-vm-slot-done\n");
 
         // Phase 2b: mem_add_total_pages() call points — main.c:485-495.
         self.account_boot_memory();
+        crate::e5d_diag("e5d: vm-account-done\n");
 
         // PageFrames after total_pages is known, BEFORE the boot-proc loop:
         // C orders `mem_init()` (main.c:471 — the all-physical bookkeeping
@@ -703,11 +712,13 @@ impl VmServer {
         if let Some(frames) = self.ctx.page_frames.as_mut() {
             crate::global::register_reclaim(&mut self.ctx.page_cache, frames);
         }
+        crate::e5d_diag("e5d: vm-page-frames-done\n");
 
         // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc
         // landed; the initial stack frame ABI waits on edge
         // E-BOOTFRAME).
         self.init_boot_procs();
+        crate::e5d_diag("e5d: vm-boot-procs-seeded\n");
 
         // Phase 2d: VM instance mark — main.c:577-579.
         self.mark_vm_instance();
@@ -720,6 +731,43 @@ impl VmServer {
         self.transport.borrow_mut().mark_initialized();
 
         self.initialized = true;
+    }
+
+    /// E5(d) (V11-P1-1 / D-094 lineage) end-to-end self-test: map a freshly
+    /// allocated frame into VM's own page table, query it back, unmap, and
+    /// verify the slot is gone — the whole map/query/unmap edge the
+    /// boot-shim chain must demonstrate before the transport hand-off. Runs
+    /// after `init()` (self-pt adopted + allocator registered), before the
+    /// main loop, in the real boot image.
+    pub fn e5d_self_pt_test(&mut self) -> Result<(), &'static str> {
+        use crate::phys_mem::PageAllocFlags;
+        use crate::pagetable::vm_self_map::{vm_self_mappages, vm_self_query, vm_self_unmap};
+        use crate::pagetable::PageFlags;
+        // Spare VA one page above the HeapArena's live window: never used by
+        // the allocator, representable in VM's adopted root.
+        const E5D_VA: VirBytes = VirBytes(0x0000_0014_4000_0000);
+        // One page from the VM allocator — a real frame from the boot free
+        // list (the same source the HeapArena will draw from).
+        let phys = self
+            .ctx
+            .page_alloc
+            .alloc_phys(1, PageAllocFlags::empty())
+            .map_err(|_| "e5d: frame allocation failed")?;
+        let pa = PhysBytes(phys.as_u64());
+        vm_self_mappages(E5D_VA, pa, PageFlags::read_write())
+            .map_err(|_| "e5d: map failed")?;
+        let (got_pa, _) = vm_self_query(E5D_VA).ok_or("e5d: query None after map")?;
+        if got_pa != pa {
+            return Err("e5d: query physical mismatch");
+        }
+        let unmap_pa = vm_self_unmap(E5D_VA).map_err(|_| "e5d: unmap failed")?;
+        if unmap_pa != pa {
+            return Err("e5d: unmap physical mismatch");
+        }
+        if vm_self_query(E5D_VA).is_some() {
+            return Err("e5d: still mapped after unmap");
+        }
+        Ok(())
     }
 
     fn init_global_state(&mut self) {
@@ -1315,6 +1363,12 @@ impl VmServer {
         // stack inserts depend on both. Rust: explicit init on the handle
         // (SimPaging stands in for the arch table in test builds).
         proc.init_page_table().unwrap_or_else(|e| {
+            // I-35(a)-style diagnostic-first: the panic handler's diagctl
+            // write has proven silent on this chain (D-02 E5(d) forensics),
+            // so print the failure BEFORE panicking — if this line reaches
+            // the serial, the failure is in init_page_table; if it never
+            // appears, the kernel-side diagctl path itself is broken.
+            crate::e5d_diag("e5d: init_page_table FAILED\n");
             let alloc = crate::global::page_alloc_mut();
             let stats = alloc.phys_alloc().memstats();
             panic!(
