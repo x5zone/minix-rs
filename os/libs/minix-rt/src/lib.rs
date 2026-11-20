@@ -360,6 +360,9 @@ mod global_alloc_binding {
         }
         put(b"\n", &mut n);
         if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+            //[SD19-gate] an out-of-memory reporter has no higher channel to
+            // report its own failure to; the transport-side park is the
+            // documented fallback (panic.c:66), so the result is dropped.
             let _ = minix_sys::syscall::sys_diagctl_write(
                 &minix_sys::syscall::DirectKernelCallTransport,
                 s,

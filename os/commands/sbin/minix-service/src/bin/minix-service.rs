@@ -277,9 +277,8 @@ fn prepare_up_image(args: &Args) -> Result<minix_service::RequestImage, String> 
         service_uid: minix_service::resolve_service_uid(&users),
         ..RsStartDefaults::default()
     };
-    let built = build_up_request(&lines, &progname, &defaults, args, Some(users.as_str()))
-        .map_err(|e| e.message);
-    built
+    build_up_request(&lines, &progname, &defaults, args, Some(users.as_str()))
+        .map_err(|e| e.message)
 }
 
 #[cfg(all(not(test), target_os = "none"))]
