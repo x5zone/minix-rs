@@ -2392,7 +2392,15 @@ r2 post-cut free n=0x0000000000000002 bytes=0x000000000774f000 tx_frames=0x00000
 
 **裁决前状态**：sysboot 深跑保持「可诊断已知缺陷」——根因、调用链、帧推导全在案，修复等裁决。
 
-**附：rt-birth 用户链深跑的当前现场（2026-11-21，`-m 256M` 修复推进后的下一层，未入裁决射程）**：`test-rt-birth-aarch64` 在 `-m` 修复后推进到 rt-birth 用户镜像已执行、main 已入口——fatal 于 `ec=0x24`（EL0 Data Abort）`DFSC=0x07`（L3 translation fault）`far=0x7ffffffff000`（= USER_STACK_TOP，栈映射循环 `[stack_high − VM_STACK_SIZE, stack_high)` 的**端点本身未映射**）。elr 在用户镜像 memset 内、lr=`main+0x48`（main 的两个 memset 均为 sp 相对、落在已映射区）——访问栈顶页的操作者尚待 rt-birth 用户镜像 × minix_rt crt0 的栈合同交叉取证（`ps_strings`/`progname` 读窗 vs 映射范围）。x86/riscv 兄弟腿预期同型。
+**附：rt-birth 用户链深跑的当前现场（2026-11-21，`-m 256M` 修复推进后的下一层，未入裁决射程）**：`test-rt-birth-aarch64` 在 `-m` 修复后推进到 rt-birth 用户镜像已执行、main 已入口——fatal 于 `ec=0x24`（EL0 Data Abort）`DFSC=0x07`（L3 translation fault）`far=0x7ffffffff000`（= USER_STACK_TOP，栈映射循环 `[stack_high − VM_STACK_SIZE, stack_high)` 的**端点本身未映射**）。elr 在用户镜像 memset 内、lr=`main+0x48`（main 的两个 memset 均为 sp 相对、落在已映射区）——访问栈顶页的操作者——**取证闭环（2026-11-21，QEMU `-d int` + gdb 硬件断点）**：
+
+| 步骤 | 读数 | 结论 |
+|---|---|---|
+| gdb 断 memset 入口 `0x1400035bc` | fault 时刻前 main 的两次调用 `dst=0x7ffffffc6c42 / len=110 / sp=0x7ffffffc6c30`——**全部落在已映射栈内** | fatal 打印的 `elr/lr` 是**帧读取错位**（不可信），`far` 为硬件直读（可信） |
+| 条件断点 `dst >= 0x7fffffffe000` | **零命中**（进程正常走完） | 无任何 memset 的 dst 落在栈顶区——**main 不是肇事者** |
+| QEMU `-d int` | fault 前一条 **FP/SIMD 捕获**（`Taking exception 1 [Undefined Instruction]`，ESR `0x7`，ELR=`memset+0x28` 的 `dup v0.4h`）→ **进 EL1 PC `0x4c75ec00`**（production VBAR，非载体自装 VBAR）→ production 臂 eret 重执行 → 随即 Data Abort `far=0x7ffffffff000` | **寄存器污染假说成立**：载体注释自述「installs its own VBAR and bypasses the production vector table」（`main.rs:413`），但 FP trap 实际进了 production VBAR——production 的 `aarch64_fpu_trap_body` 按「当前进程上下文」保存/恢复，对载体的 boot-proc 帧恢复错位 → eret 后用户寄存器（含 memset 的 dst/x10）被污染 → fault 于 `far=USER_STACK_TOP` |
+
+**I-59 附记的下层专项定性**：rt-birth 用户链的实质 = **载体自装 VBAR 与 production VBAR 的冲突**——载体的 FPEN 臂（`:408-427`）设计为 bypass production，但 FP trap 实际进了 production VBAR（安装顺序/覆盖关系待查：载体 VBAR 装在 `switch_to_user` 前还是后、production 的 `init_protection` 与载体安装的先后）。**修复方向候选**：载体侧确保自装 VBAR 在 production 之后安装；或 production FP 臂对「无活跃上下文」诚实 fail 而非恢复错位帧。x86/riscv 兄弟腿同型预期（x86 是 FP 延迟保存链、riscv 无 FP trap 但有类似 VBAR/stvec 冲突面）。
 
 **裁决前状态**：sysboot 深跑保持「可诊断已知缺陷」——根因、调用链、帧推导全在案，修复等裁决。
 
