@@ -38,7 +38,7 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
-| I-44（已裁决·API 形态复查中） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；**API 形态经减法审查发现过度设计（11 个调用点 vs 12 个新命名项）** | 设计裁决 + 代码改造 | **取证与五条真实缺陷保留；API 形态重开裁决**（文档第十一版 §0 新增设计原则与四处自查：双凭证应删 / 类型状态应降级为 `bool` / `classify_range` 应降级 / 三 handle 待裁）；两项独立实施门 R1 / R2 不变 | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十一版） |
+| I-44（已裁决·待实施） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；**设计收束为一个 `PagingState` 三态 + 五条入口断言，十二个命名项全部废止** | 设计裁决 + 代码改造 | **设计已收束（文档第十二版 §4ter）**：`destroy` 入口断言 / `inherit` 状态转换 / `Inherited` 拒写共享范围 / 共享子树回收用前置约束替代停止机制；实施 A–G 七阶段，A–D 可立即开始，E 与 D 合并验收；两项独立实施门 R1 / R2 不变 | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十二版） |
 | I-42（待裁决） | `BootStorage` 的 `push_*` 死子系统（`push_module` / `push_platform_source` / `BootStorageFull` 调用者归零） | 代码删除 | **未裁决**（I-34 实施副产物）；A 删 / B 留，见 §3 的 I-42 | §3 |
 | I-43（待裁决） | 四个 QEMU 测试内核把全零 12 槽 `BOOT_MODULES` 当 `boot_modules` 切片交出，撞 `boot identity window is empty or reversed: [0x0,0x0)` | 测试载体修正 | **未裁决**（I-31 补漏批二中发现）；四条见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
@@ -1409,22 +1409,31 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **验收（实施阶段）**：文档 §5 的六项三架构测试清单（私有上半场释放 / 共享上半场不释放 / 根页归属 / 范围拒绝 / 批量操作原子性 / 源共享行为与陈旧映射判定）。
 
-**状态**：D-078 的取证与五条真实缺陷**保留不变**；API 形态**重开裁决**，见文档第十一版。
+**状态**：取证与五条真实缺陷保留不变；**API 形态已按减法裁决收敛为最小方案**（文档第十二版 §4ter）。
 
-文档第十一版新增 §0「设计原则」，对本文档建议的 API 做了减法自查，结论是**有过度设计**：
+文档第十二版（终版，1722 行）新增 §0「设计原则」并做了减法审查，外部评审逐项裁决，**四处自查全部确认为过度设计**：
 
-| 自查项 | 结论 |
-|---|---|
-| `BorrowedRootMut<'a>` / `SharedPageTableSource<'source>` | **应删**——零业务字段 + `PhantomData`，不提供任何编译期保证，作用只是把 `unsafe` 合同换个类型名承载 |
-| `PrivateSupervisor` / `BorrowedSupervisor<'source>` 类型状态 | **应降级为 `bool` + `assert!`**——`inherit_supervisor_half` 只有 **1** 个生产调用点，按 C-33 构造点 ≥2 的门槛不够格判缺陷级；类型状态要把泛型参数穿过六个签名 |
-| `classify_range` + `PagingRangeClass` 三值枚举 | **应降级为每个架构一个三行函数 + 断言**——`CrossesBoundary` 可由两个端点比较替代 |
-| 三种 handle 类型 | **需裁决**——这一处收益真实（`destroy` 目前在 trait 上，任何实例都能调），但要改 `CurrentPaging` 用法与至少六个泛型签名 |
+| 自查项 | 裁决 | 最终处理 |
+|---|---|---|
+| `BorrowedRootMut` / `SharedPageTableSource` 双凭证 | **过度，应删** | 删除——零业务字段 + `PhantomData`，不建立真实借用关系 |
+| `PrivateSupervisor` / `BorrowedSupervisor` 类型状态 | **过度，应删** | 改为内部运行期状态 + 状态转换 |
+| `classify_range` + `PagingRangeClass` | **过度，应删** | 改为架构谓词 `is_supervisor_va` + 首尾两端点断言 |
+| 三种 handle | **当前过度** | 保留单个具体 `Paging` 类型 + `destroy` 入口断言 |
+| `PagingBackend` 层 | **过度，应删** | 没有 wrapper 要保护，不必单独成层 |
 
-**实测比例**：七个操作、合计 **11** 个生产调用点，而文档建议新增 **12** 个命名项。
+**最终方案（§4ter）**：一个私有 `PagingState` 三态（`Owned` / `External` / `Inherited`）+ 五条入口断言：
 
-**不变的部分**：§0.4 的五条真实缺陷（`destroy` 无条件 `free_pt_page` / 无钩子时清零根页 / `free_child_tables` 递归进入共享子树 / R1 源结构稳定性 / R2 TX 与 VM free-list 重叠）与全部取证工作不受 API 形态争议影响。**尤其 R2 是独立的物理内存分配一致性问题，不能因本次重构而搁置。**
+1. 构造时记状态（`new()` → `Owned`；`new_from_page()` / `from_active_root()` → `External`）
+2. `destroy(self)` 消费型 + `assert_eq!(state, Owned)`，**在任何内存操作之前**
+3. `inherit_supervisor_half` 只许 `External` 进入 + 检查目标半场为空 + 复制后才转 `Inherited`
+4. `Inherited` 状态下所有写入口拒绝进入共享上半场（首尾两端点检查，批量操作改前先查）
+5. 不公开任何能销毁 / 回收 `External` / `Inherited` 的接口
 
-**下一步**：用户把第十一版交外部评审，按 §0.5 三问裁决 API 形态（是否过度 / 断言版会漏什么 / 有没有只改 `destroy()` 的更简方案）。裁决落定后再指派实施。
+**关键减法**：共享子树回收**不实现跳过机制**，用前置约束解决——`Owned` 不继承、`inherit` 只许 `External`、`destroy` 只接受 `Owned`，所以 `free_child_tables` 只会作用于自有私有树，继续遍历全部顶层条目即可。
+
+**实测比例**：七个操作、合计 **11** 个生产调用点；原方案要 **12** 个新命名项，现已全部废止。
+
+**下一步**：按文档 §5.1 的 A–G 七阶段实施。A–D 可立即开始；E 与 D 合并验收；F（R1）与 G（R2）是独立门。
 
 ### I-42（待裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统
 

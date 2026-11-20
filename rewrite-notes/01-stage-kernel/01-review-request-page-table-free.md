@@ -1,9 +1,10 @@
 # 独立评审请求：页表页归还的共享子树与所有权表达
 
 > 本文是为了交给一个**没有任何本仓库上下文**的外部评审者而写的自包含文档。
-> **版本说明**：这是**第十一版**。
-> **状态变更**：第十版曾宣布"概念设计冻结"。本版**收回该冻结**——在冻结之后做了减法审查，发现文档建议的 API 形态有过度设计风险（详见 §0.3 的四处自查），需要评审者重新裁决 API 形态。
-> **不变的部分**：§0.4 列出的五条真实缺陷（含 R1 / R2）与全部取证工作，不受 API 形态争议影响。
+> **版本说明**：这是**第十二版（终版）**。
+> **状态**：设计已收束。第十版曾宣布冻结、第十一版收回冻结做减法审查、本版采纳减法审查的裁决结果——**十二个命名项全部废止，只保留一个状态字段 + 一组入口断言**。
+> **现行 API 只有 §4ter。** §7 的 7.1–7.10 是历史记录，其中的类型名已全部废止。
+> **不变的资产**：§1–§3 的取证、§4bis 的五组补充证据、§4ter.7 的 R1/R2 两个独立验证门。
 >
 > 各版演进（变更对照见 §7）：
 >
@@ -19,7 +20,8 @@
 > | 八 | 更正三处事实；把风险范围缩到一处；补 `classify_range` / 双凭证 / `'static` 限制；`retire` 取代 `reclaim`；给 A–H 分期 | 设计冻结通过；要求补四处实施基线、同步六处文档不一致 |
 > | 九 | 补四处实施基线；同步六处旧 API 残留；拆 Q3 为三种变化；细化 TX 保留区并点出容量数据缺失；给六项测试验收清单 | 设计冻结通过；要求补三处实施接口 |
 > | 十 | 补三处实施接口；同步六处文档残留；冻结范围改为"签名允许实现中调整" | 概念设计冻结通过 |
-> | **十一（本版）** | **新增 §0「设计原则」**（四条判据 + 十一调用点 / 十二命名的比例 + **四处过度设计自查**）；**收回第十版的冻结**，API 形态重开裁决 | 待评审 |
+> | 十一 | 新增 §0「设计原则」（四条判据 + 十一调用点 / 十二命名的比例 + 四处过度设计自查）；收回第十版的冻结 | **四处自查全部确认为过度设计** |
+> | **十二（本版，终版）** | **按裁决压缩全篇**：§4ter 重写为「一状态 + 五断言」最小方案；§4ter.6 列十二个已废止命名；§5 改为实施清单与验收门；2678 → 1722 行 | 待评审 |
 
 ---
 
@@ -49,7 +51,7 @@
 
 如果需要读者先记住十二个类型的名字才能判断"这段代码会不会误释放"，**那这个设计就算把缺陷修好了，也仍然是不合格的设计。**
 
-### 0.3 本设计的自查（请评审者按 §0.1 逐条裁决）
+### 0.3 本设计的自查（第十一版提出，外部评审已裁决——结果见 §0.5）
 
 下列数字均为实测，不是估计：**七个操作、合计十一个生产调用点**。
 
@@ -143,11 +145,41 @@ fn is_supervisor_va(v: VirBytes) -> bool;   // x86: v.0 >= 0xffff_8000_0000_0000
 
 **第 4、5 条与所有权模型无关，尤其 R2 是纯粹的物理内存分配一致性问题，不能因为本次重构而搁置。**
 
-### 0.5 请评审者回答的三个问题
+### 0.5 四处自查的裁决结果
 
-1. §0.3 的四处自查，哪些确实属于过度设计？哪些我低估了必要性？
-2. 如果采用断言版（三字段 + 三断言，约三十至四十行改动、零新类型），**会漏掉哪种真实可发生的故障**？（要具体到"哪个调用点、什么条件下、编译器或测试为什么看不见"。）
-3. 是否存在**比断言版更简的方案**——例如只改 `destroy()` 一条（把无条件 `free_pt_page` 改成按来源判断），其余保持现状？
+第十一版提出四处自查，外部评审逐项裁决，**四项全部确认为过度设计**：
+
+| 自查项 | 裁决 | 采纳的处理 |
+|---|---|---|
+| `BorrowedRootMut` / `SharedPageTableSource` 双凭证 | **过度，应删** | 删除。零业务字段 + `PhantomData` 不建立真实借用关系；`PhantomData<&'a mut ()>` 也阻止不了另一个调用点从同一 `PhysBytes` 造第二个 handle |
+| `PrivateSupervisor` / `BorrowedSupervisor` 类型状态 | **过度，应删** | 改为内部运行期状态 + 状态转换 |
+| `classify_range` + `PagingRangeClass` 三值枚举 | **过度，应删** | 改为架构谓词 `is_supervisor_va` + 首尾两端点断言 |
+| 三种 handle | **当前过度** | 保留单个具体 `Paging` 类型，`destroy` 入口断言 |
+| `PagingBackend` 层 | **过度，应删** | 没有 handle wrapper 要保护，不必单独成层 |
+
+**评审对"断言版会漏什么"的回答**：在状态初始化正确、所有写入口完整检查、断言在任何修改之前执行的前提下，**找不到一个当前调用点可触发、却会被静默放过的具体故障**。但要诚实区分两者差异：
+
+| 情况 | 断言方案 | 编译期 handle |
+|---|---|---|
+| 外部根上调用 `destroy()` | 运行到入口 panic | 编译失败 |
+| 重复继承 | 运行到入口 panic | 类型状态可禁止调用 |
+| 对共享上半场 `map()` | 运行到范围检查 panic | **仍需要范围检查** |
+| 多个 handle 指向同一物理根 | 不能自动识别 | **也不能自动识别** |
+| 其他 CPU 仍用旧翻译 | 不能自动证明 | **也不能自动证明** |
+| 源根释放继承者仍在用的子树 | 不能自动阻止 | **仅靠凭证的 `unsafe from_raw` 也不能证明** |
+
+**结论**：编译期方案的真实优势是"让本地代码更难误用"，**不是自动解决物理页表生命周期、同步与 TLB 问题**。对当前主要是可信内部代码、只有 2 个生产销毁调用点且都确认为 `Paging::new()` 的项目，运行期断言是合理取舍。
+
+**四项实施要求**（断言版成立的前提）：
+
+1. 状态字段**私有**，只能由构造函数与 `inherit` 方法修改；
+2. 每个构造函数都设置正确状态；
+3. `destroy()` 用 `assert!`，且在**任何内存操作之前**执行；
+4. 测试覆盖**所有**构造方式，不只是 `Paging::new()`。
+
+**一条重要边界**：所有公开 PTE 修改入口必须经过检查。不能只在 `map()` 加断言却漏掉 `map_huge` / `split_huge` / `grant_user_walk`；直接写 PTE 的内部辅助函数也不能被外部调用绕开。**这才是断言方案的真实安全边界。**
+
+**最终方案见 §4ter。**
 
 ---
 
@@ -836,641 +868,249 @@ boot_alloc::resume_boot_pt_alloc(base, checkpoint, end);   // 已有
 
 ---
 
-## 4ter. 所有权合同草案（第三版主体，第四至第六版按评审修订）
+## 4ter. 最终方案：一个状态字段 + 一组入口断言
 
-第二版评审建议"以所有权模型为主体"。我把 **三个独立维度** 拆开表达，而不是我第一版那个 `enum RootKind { Owned, Adopted, Inherited }`。
+前面 §4bis 的取证与 §3 的问题清单是资产，保留。但从第三版到第十版累积的 API 处方（三层结构、三种 handle、两类凭证、类型状态、范围分类枚举）**经减法审查后整体废止**。本节是唯一有效的 API 合同。
 
-### 4ter.1 三个维度，且第三个要分开名字
+### 4ter.1 为什么不用类型系统
 
-| 维度 | 要回答的问题 | 取值 |
+前十轮评审把"必须正确表达的资源责任"逐步扩张成了"必须由独立 Rust 类型表达的每一种概念"。这两件事不等价。
+
+判据（见 §0.1）：真实危险只有三条（§0.4 的第 1、2、3 条），而它们对应的生产调用点合计 **11 个**；建议的类型方案需要 **12 个新命名项**。按 §0.1 判据三，其中三处的构造点不足 2（`inherit_supervisor_half` 只有 1 个、`enable` 只有 1 个、`adopt_active_root` 只有 1 个）。
+
+更关键的一条：**类型方案最强的能力，是让某个变量在语法上没有 `destroy` 方法。它并不能证明别处没有对同一个物理页表做销毁、修改或激活。** 而后者才是真实风险所在（跨 CPU、TLB、另一个 handle 别名）。这些无论如何都要靠 `unsafe` 合同 + 实证。
+
+所以采用：**一个具体 `Paging` 类型 + 一个私有状态字段 + 一组入口断言。**
+
+### 4ter.2 状态机（三态，不是三维度）
+
+```rust
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PagingState {
+    /// 根页及其页表树由本 PT_ALLOC 域拥有（Paging::new() 建）
+    Owned,
+    /// 根页由外部管理；本 handle 不得释放它
+    External,
+    /// 外部根 + 已继承的共享上半场
+    Inherited,
+}
+
+pub struct X86_64Paging {
+    root_paddr: u64,
+    channel: PteChannel,
+    state: PagingState,      // 私有；只有构造函数与 inherit 能改
+}
+```
+
+aarch64、riscv64、`SimPaging` 同语义各一份。
+
+**`External` 特意同时覆盖 `new_from_page()` 与 `from_active_root()`**: 两者初始化语义不同，但就"当前 handle 不拥有释放根页的权利"这一点，规则是同一条。`Inherited` 在此基础上多一个事实：上半场有共享子树。
+
+#### 状态转移表
+
+| 构造或操作 | 结果状态 | 允许的行为 |
 |---|---|---|
-| **A. 根页所有权** | 这个 handle 有没有义务把根页还回去？还回哪个分配器？| `OwnedByPtAlloc` / `CallerManaged` / `Borrowed` |
-| **B. 子树所有权** | 根页以下的中间表页，哪些是自分配的、哪些是共享借用的？| `AllOwn` / `SomeShared(upper_half)` / `BorrowedUnknown` |
-| **C. 分配来源与释放策略** | 被这个 handle 拥有的页面，应由谁释放？| **每个可释放资源都能确定其来源与责任**（合同要求，非实现形式）|
+| `Paging::new()` | `Owned` | 可销毁 |
+| `new_from_page()` | `External` | 不可销毁；可建映射 |
+| `from_active_root()` | `External` | 不可销毁；可在同步合同下修改 |
+| `inherit_supervisor_half()` | `Inherited` | 不可销毁；**禁止修改继承上半场** |
 
-**维度 C 的名字从"分配域"改成"分配来源与释放策略"**（采纳第三版评审 §3.2）。原来的名字会让人误以为它是一个全局单值，而实际有两个不同的东西被我塞在一个词里：
+### 4ter.3 三处入口断言
 
-| | 是什么 | 谁决定 |
-|---|---|---|
-| **默认分配器绑定** | 后续 `alloc_pt_page()` 落到哪个函数 | 当前映像的 `PT_ALLOC` 全局静态 |
-| **物理页的分配来源** | 某一个具体页面当初由谁掏出 | 那一页自己的 provenance |
+**`destroy()`**
 
-维度 C 讲的是**后者**。所以不能因为"默认 `pt_alloc` 是全局配置"就推断"整个 `Paging` 对象只有一个分配来源"——`new_from_page()` 的根页与它随后 `map()` 出来的中间表页，就来自**两个不同的来源**（§4bis.1b + §4bis.5）。
-
-**但"每页记录 provenance"是过度设计**（采纳第四版评审 §5 末段）。我上一版把合同要求写成了实现形式要求。按当前已知路径，正确的回收行为完全可以从三个已有的量推导出来：
-
-```
-根页责任（A：OwnedByPtAlloc / CallerManaged / Borrowed）
-  + 私有/共享子树状态（B：AllOwn / SomeShared / BorrowedUnknown）
-  + 当前映像的 pt_alloc 释放策略
-```
-
-**不需要给每一张中间页保存 provenance 标签。** 只有将来允许同一棵树里的私有页表页由多个独立分配域提供时，才需要更细粒度。
-
-所以维度 C 的正确表述是**合同要求**：
-
-> 每个可释放资源必须能够确定其**分配来源**和**释放责任**。
-
-而不是"每一页都要存一个标签"。
-
-**A 的取值用 `CallerManaged` 而不是 `OwnedByCaller`**（采纳第三版评审 §4.3）：如果调用者仍然拥有根页，那么对 `Paging` 来说它实际是"外部管理"，而不是"`Paging` 自己拥有但委托给调用者"。这两个说法在出问题时的追问方向不同——前者问"`Paging` 有没有越权处置"，后者问"调用者有没有履约"。
-
-**为什么三个维度不能合并**（采纳第三版评审 §3.2 的收尾）：
-
-| 机制 | 解决什么 | 不能替代谁 |
-|---|---|---|
-| `PtDomain { alloc, free }` | 内部页表页的分配器与释放器配对 | 不能回答 A（根页归属）|
-| `RootOwnership` | 根页归属 | 不能回答 B（共享子树）|
-| `SubtreeOwnership` | 共享子树 | 不能回答 A |
-
-三者可以同时出现在一个对象上，例如：
-
-```
-root:          UEFI AllocatePages      → A = CallerManaged
-lower subtree: pt_alloc                → B = AllOwn, C = 本域
-upper subtree: bootstrap root 共享     → B = SomeShared(upper_half)
+```rust
+unsafe fn destroy(self) {          // 由 &mut self 改消费型
+    assert_eq!(
+        self.state, PagingState::Owned,
+        "destroy called on externally managed page table"
+    );
+    // 原有的 CPU 静止与 TLB 前提不变
+    // 原有的私有树递归销毁不变
+}
 ```
 
-**这正是第一版 `enum RootKind` 表达不出来的组合**：`Inherited` 一个值同时暗示了 A（根页来自别处）和 B（子树共享），但它俩可以独立组合。
+**这个断言必须在任何根页清零、递归遍历、物理页释放之前执行。** 位置错了就无效：
 
-### 4ter.2 建议的构造合同
+```rust
+// 错误：先按 free 钩子分支，再断言 —— 清零已经发生
+if !pt_alloc::is_free_registered() { zero_root(); return; }
+assert_eq!(self.state, PagingState::Owned, ...);
 
-| 构造函数 | A. 根页 | B. 子树 | `destroy(self)` 应做什么 | 是否该有 `destroy` |
-|---|---|---|---|---|
-| `new()` | `OwnedByPtAlloc` | `AllOwn` | 递归释放全部 + 归还根页 | **是** |
-| `new_from_page(p)` | **`CallerManaged`**（四种来源都不是 `pt_alloc`）| `AllOwn`（调用者之后可能 `inherit`）| **不归还根页**；只回收自己建的中间表页 | **是** |
-| `from_active_root(p)` | `Borrowed` | **`BorrowedUnknown`** | —— | **否** |
-| `adopt_active_root(p)` | `Borrowed` | **`BorrowedUnknown`** | —— | **否** |
+// 正确：先断言
+assert_eq!(self.state, PagingState::Owned, ...);
+if !pt_alloc::is_free_registered() { /* 原有降级行为 */ }
+```
 
-**`from_active_root` / `adopt_active_root` 的 B 从 `AllOwn` 改成 `BorrowedUnknown`**（采纳第三版评审 §3.3）。上一版写"`AllOwn`（但无人能证明）"是自相矛盾的：既然无人能证明，就不能标成"全部自有"。这两个构造函数包装的是**已经存在**的活动根，对整棵树都没有回收授权。
+**没有 `PT_FREE` 时物理页不归还**这一行为不变，写进文档即可，不增加返回值类型。
 
-只有两种树有资格标 `AllOwn`：
+**`inherit_supervisor_half()`**
 
-1. `new()` 建的空树——从零开始，每一页都是自己掏的；
-2. `new_from_page()` 之后由本 handle 逐步 `map()` 出来的私有子树（根页仍是 `CallerManaged`）。
+```rust
+unsafe fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
+    assert_eq!(self.state, PagingState::External, "already inherited");
+    assert!(self.supervisor_half_is_empty(), "target half not empty");
+    // SAFETY: 调用者保证源树有效与稳定（见 §4ter.5 的 R1）
+    self.copy_supervisor_entries(source_root);
+    self.state = PagingState::Inherited;      // 复制完成之后才转移
+}
+```
 
-**`new_from_page()` 的"可写"与"可释放"必须分开**（采纳第三版评审 §3.4）。它 zero-fill 根页，所以调用者必须授权它**独占修改**；但**允许修改不等于转移释放责任**。这两件事在上一版被混在一起了。
+三条要求：只能从 `External` 进入（重复继承自然失败）；复制**之前**检查目标上半场为空；复制**之后**才改状态。
 
-**第四版评审 §4.1 指出 `CallerManaged` 这个词还漏了第三件事**，我接受。这里其实是**三个独立责任**：
+**修改入口的共享范围保护**
 
-| 责任 | 负责人 |
+```rust
+fn ensure_writable_range(&self, start: VirBytes, len: usize) {
+    if self.state == PagingState::Inherited {
+        assert_private_range::<Self>(start, len);
+    }
+}
+```
+
+```rust
+fn assert_private_range<P: Paging>(start: VirBytes, len: usize) {
+    if len == 0 { return; }
+    let last = start.0.checked_add(len as u64 - 1)
+        .expect("virtual range overflow");
+    assert!(!P::is_supervisor_va(start));
+    assert!(!P::is_supervisor_va(VirBytes(last)));
+}
+```
+
+**首尾两端点检查足以覆盖当前边界**，不需要三值枚举：
+
+| 区间 | 结果 |
 |---|---|
-| 保证根页物理内存持续有效（不释放、不复用）| **调用者** |
-| handle 存活期间不让其他主体同时修改根页 | **调用者授权，handle 独占修改** |
-| 以后决定如何释放根页 | **调用者** |
+| 全在私有区域 | 接受 |
+| 全在借用上半场 | 拒绝 |
+| 私有 → 借用（跨界）| 拒绝（末端点命中）|
+| 借用 → 私有（跨界）| 拒绝（首端点命中）|
 
-只写 `CallerManaged` 会让两个方向都误读：
+**必须覆盖全部写入口**，不能只加在 `map()`：
 
-- 调用者以为已经转移了所有权 → 期望 `Paging` 去释放（但 `Paging` 不会）
-- `Paging` 以为调用者仍在管理 → 但它已经在 zero-fill 和后续 `map()` 里一直写这一页
-
-**建议的表达方式（两个层次）**：
-
-**首选手法：显式访问凭证**（第四版评审 §4.2）
-
-```rust
-struct CallerManagedRoot<'a> {
-    phys: PhysBytes,
-    // 调用者把根页的独占修改权借给当前 handle 的这个生命周期
-    _exclusive: PhantomData<&'a mut ()>,
-}
-
-fn new_from_page(root: CallerManagedRoot<'_>) -> CallerManagedPageTable<'_>;
-```
-
-凭证表达的是**访问权与生命周期**，不是 allocator provenance——它不需要知道这一页来自 UEFI 还是 bump 池。
-
-**低成本退路：狭窄的 `unsafe` 构造边界**（第四版评审 §4.3）
-
-引导期的裸物理页很难表达 Rust 借用关系（`root_page` 是 `PhysBytes`，没有对应的所有者对象）。这种情况下允许：
-
-```rust
-unsafe fn new_from_caller_managed_page(root: PhysBytes) -> Self;
-```
-
-`SAFETY` 合同必须写四条（评审给的清单，我原样采纳）：
-
-1. 根页已分配，且在 handle 生命周期内不会被释放或复用
-2. 调用者授权该 handle 独占修改根页
-3. 初始化时根页不被其他活动页表或任何 CPU 使用
-4. handle 结束前，调用者不得另行修改、释放或复用该页
-
-**明确不做的**（评审 §4.3 末句）：**不为此发明全局物理页所有权登记表。** 引导期根页的所有者信息只存在于调用点，硬要登记成全局表会引入比问题本身更大的复杂度。
-
-| 语义 | 含义 |
+| 入口 | 检查 |
 |---|---|
-| `CallerManaged` | 调用者管生命周期与释放；`Paging` 有独占修改权，但**绝不**把根页交给 `pt_alloc::free_pt_page()` |
-| `OwnedByPtAlloc` | 根页所有权明确转移给 `Paging`，且必须携带能正确释放它的凭证 |
+| `map` / `map_range` / `map_huge` | 目标范围（`map_huge` 按**实际映射大小**，不能只查起始 VA）|
+| `unmap` / `unmap_range` | 整个解除范围 |
+| `remap` | **源与目标都查**，两项都过才动手 |
+| `update_flags` | 目标地址 |
+| `grant_user_walk` | 目标范围 |
+| `split_huge` | 被拆分地址 |
 
-四种真实来源（§4bis.1b）**都没有**展示与 `pt_alloc` 配套的单页释放能力，所以 `new_from_page()` 应定义为前者。
+批量操作**必须在修改任何 PTE 之前**检查完整范围——不能先改私有区、遍历到边界才发现跨界。
 
-**具体改法建议（6 步，按依赖顺序；第 1 步已按评审调整）**：
+`query` / `root_paddr` / `walk` 不需要；`enable` 不是范围操作，不走这个 guard，但保留其原有安全条件。
 
-1. **拆分拥有型与借用型 handle，从类型上消除借用活动根调用 `destroy()` 的可能**。
+**`is_supervisor_va` 的语义**：按**当前页表继承的顶层地址范围**定义，不是查某个 PTE 的 User/Supervisor 权限位。两者不是同一个概念。每架构三行：
 
-   **第四版评审 §2.1 指出我上一版给的方案是错的，我核实后完全接受。** 上一版写"`trait Paging` 去掉 `destroy`、`trait OwnedPaging` 加上 `destroy`"——这**根本不能隔离**。
-
-   原因：Rust 的 trait 实现关联于**类型**，不是某一次构造出来的对象。核实当前代码：
-
-   ```rust
-   // os/arch/src/x86_64/paging.rs:282
-   pub struct X86_64Paging {
-       root_paddr: u64,
-       channel: PteChannel,     // ← 只有这两个字段
-   }
-   // :580
-   impl Paging for X86_64Paging { ... }
-   ```
-
-   四个构造函数（`:213`/`:235`/`:260`/`:287`）**全都返回 `Self`，也就是同一个 `X86_64Paging`**。所以只要
-
-   ```rust
-   impl OwnedPaging for X86_64Paging {}
-   ```
-
-   那么 `X86_64Paging::from_active_root(root)` 得到的对象**照样能调用 `destroy()`**。编译器不知道它是哪个构造函数产生的。**类型系统里根本没有"这个实例是怎么来的"这个信息。**
-
-   更关键的约束：`X86_64Paging` 只有 `root_paddr` 与 `channel` 两个字段，**没有任何字段能表达所有权状态**。所以问题不只是"trait 拆得不够"，而是**当前那个具体类型本身承载不了所有权信息**。
-
-   #### 可行的两个方向
-
-   **方向甲：给具体类型加一个所有权状态字段，`destroy` 改为带状态检查**
-
-   最小改动形态是在 `X86_64Paging` 加一个字段（三架构各加一份）：
-
-   ```rust
-   pub struct X86_64Paging {
-       root_paddr: u64,
-       channel: PteChannel,
-       ownership: PagingOwnership,     // 新增
-   }
-
-   enum PagingOwnership {
-       OwnedByPtAlloc,                 // new()
-       CallerManaged,                  // new_from_page()
-       Borrowed,                       // from_active_root() / adopt_active_root()
-   }
-   ```
-
-   `destroy(self)` 在 `Borrowed` 状态下 `panic!`（或干脆不提供入口）。**优点**：改动面小，四个构造函数原地改。**缺点**：这仍然是**运行期检查**，不是编译期隔离——`destroy()` 依然在类型上可见，只是会在运行期拒绝。评审者要的"类型上真的成为三种对象"没做到。
-
-   **方向乙：外层 handle 类型（第四版评审 §2.2 推荐）**
-
-   ```rust
-   trait PagingOps {                  // 纯操作，无 destroy
-       fn map(&mut self, ...) -> ...;
-       fn unmap(&mut self, ...) -> ...;
-       fn query(&self, ...) -> Option<...>;
-       // … walk / remap / update_flags / split_huge / flush_tlb
-   }
-
-   struct OwnedPageTable<P>         { inner: P }   // destroy(self)
-   struct CallerManagedPageTable<P> { inner: P }   // into_permanent_root(self)
-   struct BorrowedPageTable<P>       { inner: P }   // 无终结操作
-   ```
-
-   构造入口按 handle 类型分开：
-
-   ```rust
-   impl<P: PagingOps> OwnedPageTable<P>         { fn new() -> Result<Self, _>; }
-   impl<P: PagingOps> CallerManagedPageTable<P> { fn new_from_page(r: CallerManagedRoot<'_>) -> Self; }
-   impl<P: PagingOps> BorrowedPageTable<P>      { fn from_active_root(r: PhysBytes) -> Self; }
-                                               { fn adopt_active_root(r: PhysBytes) -> Self; }
-   ```
-
-   **优点**：编译期隔离，`BorrowedPageTable` 上**不存在** `destroy` 这个名字。**缺点**：`CurrentPaging` 是架构关联类型（`os/arch/src/lib.rs:149` `pub type CurrentPaging = <CurrentBootArch as BootArch>::Paging;`），要给它套 handle 就要改 `load_elf_into`/`load_vm_elf`/`load_process_elf` 的泛型签名（现在是 `P: Paging`），以及 VM 侧 `PageTable` 别名（`os/servers/vm/src/pagetable/mod.rs:32`，且 `cfg(test)` 下换成 `sim::SimPaging`——**两个类型都要满足 handle 的 bound**）。
-
-   #### 我的判断
-
-   **方向乙**符合评审者的目标（"三种不同资源责任在 Rust 类型上确实成为三种不同的对象"），也是唯一能实现编译期隔离的路径。
-
-   但它有一个必须先回答的问题：**`BorrowedPageTable` 没有 `destroy`，那它怎么"结束"？** 答案是不需要结束——它本来就不拥有任何需要归还的东西，`Drop` 什么都不做。这反而简化了 `from_active_root` 的 4 处生产调用点（`kerninfo.rs:143`、`lib.rs:1707`、`lib.rs:2928`、`vm_self_map.rs:102`），它们全都不调 destroy，改成 `BorrowedPageTable` 后一行代码都不用改逻辑。
-
-   **`CallerManagedPageTable` 的终结动词不能叫 `destroy`**（采纳第四版评审 §2.2）：
-
-   ```rust
-   unsafe fn into_permanent_root(self) -> PhysBytes;   // 受 BorrowedSupervisor<'static> 限制
-   ```
-
-   它回收**自己 `map()` 过程中建的中间表页**，然后把根页的访问凭证还给调用者。名字里不出现"destroy"是刻意的:它没有销毁外部根页，只回收自己拥有的部分。
-
-   #### 与 `CurrentPaging` 的关系
-
-   两条方向都需要回答同一件事：`CurrentPaging` 现在是 `X86_64Paging` / `AArch64Paging` / `Riscv64Paging` / `SimPaging` 四个具体类型之一，`BootArch::Paging` 的 bound 是 `HugePages`（`os/arch/src/arch/paging_ext.rs:75` `pub trait HugePages: Paging`）。
-
-   如果走方向乙，`Paging` 这个 trait 名要么保留为"纯操作"（把 `destroy` 摘出去），要么改名为 `PagingOps` 并给 `HugePages: PagingOps`。**前者改动面小得多**：只需把 `destroy` 从 `Paging` 移到新的 `OwnedPaging` trait 上，同时**把四个构造函数从 `Paging` 上摘走**（它们是"创建 handle"的入口，不属于"操作"能力）。
-
-#### 两个必须一起改的泛型调用点
-
-核实后确认，`new_from_page` 有两处**在泛型上下文里**被调用，它们决定了方案不能只改具体类型：
-
-| 位置 | 形态 | 改法 |
-|---|---|---|
-| `os/kernel/src/lib.rs:1292` | `let mut paging = A::Paging::new_from_page(root_page);`（`A: BootArch`）| 需要 `A::Paging` 能满足 `CallerManagedPageTable` 的构造入口。要么给 `BootArch` 加一个 handle 关联类型，要么这里直接换成 `CallerManagedPageTable::<A::Paging>::new_from_page(...)` |
-| `os/arch/src/arch/boot.rs:820` | `let mut paging = P::new_from_page(root);`（`P: Paging`）| 同上；`P` 的 bound 要从 `Paging` 收窄/换型 |
-
-另外 `os/kernel/src/lib.rs:991` 的文档注释写着 "`P: HugePages` implies `P: Paging`, so we get `new_from_page`, `enable`, `map`"——**这句话本身就暴露了当前设计的问题**：它把"创建 handle 的能力"和"操作页表的能力"当成同一套 trait 提供的。改完之后这句注释必须重写。
-
-2. **明确四个构造函数的 root 合同**。尤其 `new_from_page()`：根页不由默认 `pt_alloc` 自动接管释放责任（`CallerManaged`）。
-3. **明确子树所有权**。`inherit_supervisor_half()` 不能只复制 PTE，还必须更新 handle 的所有权状态；回收只遍历私有子树。**不能一律跳过上半场**（见 4ter.3）。
-4. **`destroy(&mut self)` → `destroy(self)`**。消费型签名降低重复销毁与销毁后继续使用的风险，但**不是完整的安全证明**（第三版评审 §4.2）：它不能证明没有别的 handle 引用同一棵树、没有 CPU 仍在走这棵树、TLB 与页表遍历者已失效、共享子树已从所有权图里排除。这些必须继续写在 `unsafe` 合同里。
-5. **增加三架构回收测试**。第三版评审特别强调：**不能只数"释放了几个页"，还要验具体物理页的归属**——测试要能区分根页、私有中间页、共享中间页，确认没有误释放。
-6. **最后处理失败路径与性能**。不在所有权修复里扩展成通用 allocator 事务系统（理由见 §4bis.5 结论）。
-
-**为什么第 1 步仍排最前，但理由要改**：不是为了"零成本"，而是因为它是**唯一一个能同时关掉两条错误链**的改动——既关 §3.2 的共享子树误回收，又关 §3.3.3 的"清零活动根"。其余五步都是在收紧合同，而第 1 步是把一整类对象从危险能力里摘出去。
-
-### 4ter.3 不能靠"所有时候都跳过上半场"来修
-
-这是我看完两套并存策略后确认的**反例**，也是我认为问题 C 不能照搬 C 侧 `pt_free` 的原因。
-
-| 路径 | 内核上半场页表页 | 谁分配 | 正确回收 |
-|---|---|---|---|
-| `Paging::new()` + `map_kernel`（`vmproc_handle.rs:364`→`:386`）| **自己分配**（`map()` 缺中间层时调 `alloc_pt_page`）| 本域 | **必须释放** |
-| `new_from_page()` + `inherit_supervisor_half`（`boot.rs:818`→`:822`）| **共享 bootstrap**（PTE 值复制）| 别人 | **不能释放** |
-
-**同一个 `free_child_tables` 面对两种对象。** 如果按"上半场是内核空间、内核空间不归 VM 管"去一律跳过 256..512，那么第一条路径的中间表页会全部泄漏——而那条路径是 VM 的**每进程常规路径**（`init_page_table` 每建一个进程页表就走一次）。
-
-反之，如果一律不跳过，第二条路径就会打穿共享子树。
-
-**所以修法必须是"handle 记住自己是哪一种"，不是"循环里改个边界"。** 这也解释了为什么问题 D（根页所有权）与问题 C（共享子树）在实践中总是同时出现：它们都是"handle 不知道自己是什么"的症状。
-
-#### 4ter.3.1 共享状态用什么表示：语义枚举，不是 `bool`
-
-第四版评审 §5 给了明确结论，我采纳：**按当前实现，一个二值语义枚举就够，不需要记录"共享到第几层"。**
-
-理由（三条都来自评审，我核实后认同）：
-
-- 三个架构都只在**根页的顶层条目**里复制固定范围：256..512；
-- 共享关系只由一次 `inherit_supervisor_half()` 建立；
-- 被共享的是整个顶层条目所指的子树。
-
-所以释放时只需**在根页遍历时跳过这一组被继承的顶层条目**，不需要递归到更深层再判断共享状态。
-
-```rust
-enum SupervisorSubtree<'source> {
-    Private,
-    Borrowed(SharedPageTableSource<'source>),   // ← 带源树的稳定性凭证
-}
-```
-
-**用语义枚举而不是 `bool`**，避免以后出现"`true`/`false` 与架构概念之间的隐式约定"。
-
-**`Borrowed` 变体要带凭证，不只是一个标记**（采纳第五版评审 §4.3）。理由：复制 PTE 之后，目标页表不只依赖"一个抽象的共享状态"，还**依赖源页表及其子树继续有效**。如果只存一个 `Borrowed` 标记，源 owner 先结束生命周期时没有任何东西能阻止它——保存 `SharedPageTableSource<'source>` 至少把这份依赖连到源树的稳定性凭证上。
-
-对当前永久存活的 bootstrap root，`'source` 最终是 `'static`，不给调用点增加实质负担。
-
-如果将来根页所有者与共享源的生命周期无法自然合并，就**用两个生命周期参数**，不要为"只有一个参数"而牺牲真实关系。
-
-**三个必须遵守的实现条件**：
-
-1. `inherit_supervisor_half()` **只能在约定的构造状态执行**——建议禁止重复继承（当前代码没有禁止，重复调用会静默覆盖同一批条目）。
-2. **继承发生时目标根的上半场必须为空**（采纳第五版评审 §6）。这是新加的一条，理由如下。
-
-   若目标根原本已有本 handle 私自建立的上半场子树，而 `inherit_supervisor_half()` 直接覆盖对应的顶层 PTE，就会：
-
-   | 步 | 后果 |
-   |---|---|
-   | ① 原本有私有上半场子树 | —— |
-   | ② 继承覆盖顶层 PTE | 原有子树的**根入口**消失 |
-   | ③ handle 把整个上半场标成 `Borrowed` | —— |
-   | ④ 释放时按 `Borrowed` 跳过整个上半场 | **原有私有子树再也无法回收** |
-
-   造成泄漏，甚至留下仍有其他引用的悬空结构。
-
-   **当前已知路径满足这个条件，但靠的是构造路径而非方法自身**：`new_from_page()` 会清零根页，所以 `load_process_elf`（`boot.rs:818`→`:822`）的上半场必然为空。这是 `new_from_page` 提供的保证，不是 `inherit_supervisor_half` 的保证。所以要么在 `unsafe` 合同里写明，要么在实现里检查目标上半场没有 Present 条目。
-
-3. `free_child_tables()` 必须在**根层遍历时直接跳过**共享顶层条目，**不能先递归进入、再只跳过最终的 `free_pt_page()`**。后者会在一次遍历里进入共享子树、把里层的私有页判断错。
-
-   对应的根层释放逻辑（第五版评审 §6 末）：
-
-   | 状态 | 遍历范围 |
-   |---|---|
-   | `SupervisorSubtree::Private` | 根页全部顶层条目 |
-   | `SupervisorSubtree::Borrowed(_)` | 根层只遍历私有区域，**直接跳过**共享顶层条目 |
-
-**什么时候需要更细的表示**：只有当日后允许"任意范围共享"或"多个来源的部分子树"时，才需要按根条目维护所有权掩码。当前不需要。
-
-### 4ter.4 `load_process_elf` 的失败路径（第四版按评审重写）
-
-**上一版这一节漏了一半。** 第三版评审 §5 指出：我只讨论了回滚 `VmBootAllocator`，忽略了 `paging.map()` 内部的中间表页走的是**另一套分配器**。核实后确认这条批评完全成立。
-
-`load_elf_into` 用 `?` 传播错误（`boot.rs:825`），且：
-
-- `Paging` / `PageTable` 在 `os/arch/src` 里**没有任何 `impl Drop`**（`grep -rn "impl.*Drop for" os/arch/src` 零命中）
-- `VmBootAllocator` 无 `free`
-
-所以任一步失败，**两套分配器**都已消耗，且都无回收：
-
-| 分配来源 | 失败时已消耗什么 | 有回滚能力吗 |
-|---|---|---|
-| `VmBootAllocator`（`frame.rs:639`）| 进程根页、ELF 镜像页、栈页 | **没有**（无 `free`、无 `checkpoint`，`idx` 无读取入口）|
-| `pt_alloc` → 当前注册的钩子 | 映射过程中新建的中间表页（`x86_64/paging.rs:949`、`:989` 等）| **看钩子**：测试内核注册 `boot_pt_alloc`，而它有 `resume`（§4bis.5）|
-
-**两个反直觉的结论**：
-
-1. **独占借用的 `VmBootAllocator` 反而没有 rewind 能力**，因为它的状态是 `{ regions, idx, cursor, used_frames }` 四项，一次分配跨 region 时 `idx` 会变；只回退 `cursor` 不够（第三版评审 §5.2）。
-2. **非独占的 `BootAlloc` 反而有 checkpoint 能力**（`boot_alloc_next()` 读 + `resume_boot_pt_alloc()` 写，带一致性校验），但它不是事务——别的代码也能推进它。
-
-**因此我采纳第三版评审 §5.4 的建议，不给 `VmBootAllocator` 加通用 `release_page()`。** 三个理由：
-
-- 它本来就是单调、一次性的启动分配器；没有逐页释放能力不必然是缺陷
-- 真要做事务，得先给 `VmBootAllocator` 加 `checkpoint()`/`rollback()`（含 `idx` 与 `used_frames`），再给 `BootAlloc` 加独占保证——而**当前没有任何生产重试需求**（唯一调用者是 QEMU 测试内核，失败即 `panic!`）
-- 为理论上的释放引入一套通用 allocator 事务系统，成本远超收益
-
-**第四版评审 §3.3 对"加断言"这条给了更严谨的替代，我采纳并改写。**
-
-单独一条 `debug_assert` **并不能禁止调用者重试**——断言只能证明"我以为你不会重试"，不能阻止。真正有效的合同要落在**调用点**：
-
-> `load_process_elf()` 返回错误后，调用者**必须终止本次启动流程**，不得继续使用已经消耗资源的启动分配器进行重试。
-
-最好由唯一调用点（`test-sysboot/src/main.rs:254-260`）直接体现——错误转成启动失败，而不是返回给一个可能重试的上层策略。当前该调用点已经写成 `.unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"))`（`:260`），**事实上符合这个合同**，只是没有写下来。
-
-**改为文档化，不依赖断言**：
-
-- 在 `load_process_elf` 的文档里写明"失败即放弃整个启动池，不支持重试"
-- 明确记录"`pt_alloc` 侧消耗的中间表页在失败后同样不回滚"
-- 不新增 `debug_assert`（它做不到评审要求的约束力）
-
-#### 关于 BKL 能否作为独占证明（第四版评审 §3.1）
-
-评审 §3.1 给了一个我可以走但不建议走的路：**如果 `load_process_elf` 全程持有 BKL，且所有能调 `alloc_pt_page()` 的路径都必须在同一把 BKL 下**，就能证明期间无人推进游标。
-
-但评审同时点出两件不能混的事：
-
-- `load_process_elf()` 的**调用者**持有 BKL；
-- `BootAlloc` **自身**保证所有分配受 BKL 保护。
-
-**前者不自动推出后者。** 核实后确认：`BootAlloc` 用的是 `AtomicU64`，`alloc()` 内部是 `load → 计算 → store` 三步，**完全不要求调用者持锁**（`boot_alloc.rs` 模块文档自己写着 "Treat the allocator as boot-only and single-threaded; a future SMP path needs a CAS loop or a per-CPU allocator"）。
-
-评审的结论我照录：
-
-> BKL 可以作为当前调用环境的证据，但不必为了这次评审把它提升为事务系统的基础设施。
-
-所以：**不为了证明独占性开启大规模锁审查，也不把 `BootAlloc` 改成锁保护。** 当前测试场景的独占性来自"单执行流 + 调用点顺序"，这是环境事实，写进文档而不是写成类型约束。
-
-**定性（采纳第三版与第四版评审）**：
-
-> 失败路径的资源管理**没有明确合同**，值得写成文档；但在单次启动、单调 bump 的场景下，**未回收不自动等于运行期内存泄漏**，因此不升级为当前 P1 缺陷。**不回滚的决策正确**，且与 `BootAlloc` 已具备 checkpoint 接口**不矛盾**——有能力不等于该用。
-
----
-
-## 4quater. 生命周期合同与收敛后的 API 形态（第六版新增，第五版评审要求）
-
-第五版评审在冻结概念设计前要求补齐两件事。这一节是答卷。
-
-### 4quater.0 收敛到的 API 形态（第五版评审 §2、§8）
-
-第五版评审给了完整的结构建议。我采纳，并记录它对我上一版方案的四处具体修正。
-
-#### 三层层分
-
-```rust
-// 第 1 层：只有操作，没有构造、没有销毁
-trait Paging {
-    fn map(&mut self, ...) -> Result<(), PageTableError>;
-    fn unmap(&mut self, ...) -> Result<PhysBytes, PageTableError>;
-    fn query(&self, ...) -> Option<(PhysBytes, PageFlags)>;
-    // remap / update_flags / walk / split_huge / flush_tlb / map_range
-}
-
-// 第 2 层：架构后端，承载根页操作。实际应为 pub(crate) 或 sealed，
-// 防止调用方绕过 wrapper 直接造出没有所有权约束的裸后端
-trait PagingBackend: Paging {
-    fn create_owned_root() -> Result<Self, PageTableError>;
-    unsafe fn initialize_external_root(root: PhysBytes) -> Self;
-    unsafe fn view_active_root(root: PhysBytes, channel: PteChannel) -> Self;
-    unsafe fn inherit_supervisor_half(&mut self, source: PhysBytes);
-    unsafe fn destroy_private_subtrees(&mut self, supervisor: SupervisorOwnership);
-}
-
-// 第 3 层：三个 handle，能力各不相同
-pub struct OwnedPageTable<P>                { inner: P }
-pub struct CallerManagedPageTable<'root, S, P> {
-    inner: P,
-    root: CallerManagedRoot<'root>,
-    supervisor: S,                          // PrivateSupervisor | BorrowedSupervisor<'source>
-}
-pub struct BorrowedPageTable<'a, P>         { inner: P, root: BorrowedRootMut<'a> }
-```
-
-#### 四处对我上一版的修正
-
-| 项 | 我上一版 | 第五版评审 | 采纳 |
-|---|---|---|---|
-| 后端是否也分层 | 只有 handle 与 `Paging` | **后端单独一层 `PagingBackend`**，保留三架构实现不动 | 是 |
-| handle 是否实现 `Paging` | 隐含 | **三个 handle 都实现 `Paging`**（delegate 到 `inner`），这样 `map_kernel`/`load_elf_into` 等泛型函数不用改约束 | **部分采纳**：只实现 `Paging` 不够，`HugePages` 等扩展必须一并代理（§4quinquies.1h）|
-| `CurrentPaging` | 想把它换成 handle | **保留为后端类型**，另加三个别名 `CurrentOwnedPageTable` / `CurrentCallerManagedPageTable<'a>` / `CurrentBorrowedPageTable<'a>` | 是 |
-| `adopt_active_root` 命名 | 沿用 | `adopt` 让读者误以为发生了所有权转移，建议改为 `from_active_root_vm_dm()` 或显式 `PteChannel` 参数 | **是**：并入 `from_active_root(root, channel: PteChannel)`，`adopt_active_root` 名字退役（§4quater.0）|
-
-#### 方法归属表（第五版评审 §2.3，我照录）
-
-| 方法 | 归属 |
+| 架构 | 判据 |
 |---|---|
-| `map` / `unmap` / `query` / `walk` | `Paging` |
-| `new()` | `OwnedPageTable<P>` |
-| `new_from_page()` | `CallerManagedPageTable<'root, PrivateSupervisor, P>` |
-| `from_active_root(root, channel: PteChannel)` | `BorrowedPageTable<'a, P>`（原 `adopt_active_root` 并入此签名）|
-| `inherit_supervisor_half()` | `CallerManagedPageTable<'root, PrivateSupervisor, P>` → `…, BorrowedSupervisor<'source>, P` |
-| `destroy(self)` | `OwnedPageTable<P>` |
-| `into_permanent_root(self)` | `CallerManagedPageTable<'root, BorrowedSupervisor<'static>, P>` |
-| ~~`retire_owned_subtrees(self)`~~ | **未来预留，不属于当前公开 API**（§4quinquies.1f）|
+| x86-64 | `va.0 >= 0xffff_8000_0000_0000`（PML4 条目 ≥256）|
+| aarch64 | `va.0 >= 0xffff_0000_0000_0000`（TTBR1 区，T1SZ=16）|
+| riscv64 | Sv39 规范高半场（bit 38 起全 1）|
 
-**`inherit_supervisor_half()` 从通用 `Paging` 上摘走这一条我要单独记**：评审说得对——它不是普通映射操作，而是"建立共享子树关系，并改变当前 handle 的回收责任"。如果它留在所有 `Paging` 对象都能调的通用方法上，wrapper 就无法可靠维护自己的所有权状态。
+**为什么断言而不是 `Result`**：当前继承路径属于可信内部代码，越过已继承的共享边界是调用方违反内部不变量 → `assert!` 合适。**必须用 `assert!`，不能用发布构建会消失的 `debug_assert!`。** 将来若该接口接收未经信任的输入，应改返回错误。
 
-底层架构仍需提供复制顶层 PTE 的机制（`PagingBackend::inherit_supervisor_half`），但那个机制**不应暴露成所有 handle 都能随意调用的公共接口**。
+### 4ter.4 问题 3 的答案：只改 `destroy()` 不够，但只需要这五条
 
-#### 未来 `retire_owned_subtrees` 需要说明"无 free 钩子"时的行为（第五版评审 §3.2；当前不实现，见 §4quinquies.1f）
-
-这是我上一版完全没写的一处。要区分两件事：
-
-| 动作 | 含义 |
+| 只改什么 | 为什么不够 |
 |---|---|
-| ① 清除私有子树的 PTE | 当前根不再引用它们 |
-| ② 把这些物理页真正还给 allocator | 它们可以再次分配 |
+| 只改 `is_free_registered()` 判断 | 不能证明根页属于这个 allocator |
+| 只改 `destroy()` 的行为 | 无 free 钩子时旧代码仍清零根页；且继承后的 `map()` 仍能改共享上半场 |
 
-**①不等于②。** 内核映像不注册 `PT_FREE`，所以 `pt_alloc::free_pt_page()` 在内核映像里是空操作（`uninit_free`）。
+**最小充分修复就是上面那五条**：构造记状态 → `destroy` 只许 `Owned` → `inherit` 只许 `External` 并检查空半场 → `Inherited` 拒绝写共享范围 → 不公开任何能销毁 / 回收 `External` / `Inherited` 的接口。
 
-评审给的两种合同选择，我采纳后者：
+### 4ter.5 三条真实危险如何被覆盖
 
-> 若允许在 bump allocator 上结束 handle、但物理页只能永久消耗，那么必须明确这是 **abandon/retire**，不能让名称暗示物理页已归还。
-
-**所以未来 `retire_owned_subtrees` 的文档必须写清**：它保证①，②取决于当前映像是否注册了 free 钩子。**不能让它在 VM 映像里真归还、在内核映像里静默不归还，而没有文档区分。** 这条约束现在就写下来，是为了避免将来实现时重新踩一遍。
-
-当前没有调用需求，所以只需写进 `unsafe` 合同，**不为此设计新的 allocator trait**。
-
-### 4quater.1 `ProcessLoad` 的所有权交接（第五版评审 §5、§9）
-
-**评审的问题**：`ProcessLoad` 的成功结果究竟是"需要长期保有、以后可能销毁的页表对象"，还是"只在 QEMU 测试启动期间使用、整个启动池永久保留"？
-
-**核实答案：两者都是，而且这正是问题所在。**
-
-#### 事实链
-
-`load_process_elf` 全仓只有 **1 个调用点**：`os/qemu-tests/test-kernels/kernel/bootstrap/test-sysboot/src/main.rs:254`（QEMU 测试内核）。生产内核**不走这条路径**（生产 VM 用 `load_vm_elf` 映射进 bootstrap 根，见 `os/kernel/src/lib.rs:2865`/`:2935`）。
-
-但这个唯一调用点拿到 `tx` 之后做了三件事：
-
-| 行 | 动作 |
+| 危险 | 覆盖方式 |
 |---|---|
-| `:287` | `tx.root` 作为目标 PML4 物理地址，往里补抄内核槽位 |
-| `:326` | `tx.pc` / `tx.sp` / `tx.ps_strings` 用来构建 RS 槽的 CPU 上下文 |
-| `:332` | **`rs.p_seg.phys_root = tx.root`** —— 写进进程段描述符 |
+| **① 外部根页被交给 `pt_free`** | `new_from_page()` 得到 `External`，`destroy()` 入口断言拒绝。UEFI / boot-shim / `bootface_a64` / `VmBootAllocator` 四种根页都不会进入 `free_pt_page(root_paddr)`。不需要记录每页 provenance |
+| **② 无 free 钩子时清零借用活动根** | 同一入口断言阻止。**注意断言位置**（§4ter.3 的正误对照）|
+| **③ 递归释放共享子树** | **用前置约束解决，不实现跳过机制**：`Owned` 由 `Paging::new()` 建、不继承；`inherit` 只许 `External` 进入；继承后成为 `Inherited`；`destroy` 只接受 `Owned`。所以 `free_child_tables()` 只会作用于自有私有树，**可以继续遍历全部顶层条目，不需要理解共享关系** |
 
-**第 332 行是关键。** 从此这个根页不再只是"加载结果"，而是 **RS 进程的活地址空间**，被调度器的地址空间切换与 `syscall_copy` 系列（全仓 `p_seg.phys_root` 共 **82 处**读取）持续使用。
+**第 ③ 条的减法**：过去打算用"遍历时识别共享条目"解决，现在用更简单的前置约束解决——**共享页表不允许进入销毁路径**。比实现根层跳过机制简单，也符合当前没有回收需求的事实。将来真出现"外部根要释放自己建的私有中间表但保留共享子树"的调用点，再加专用回收路径。
 
-#### 所以"裸 `PhysBytes`"丢掉的到底是什么
+### 4ter.6 明确不做的事
 
-按第五版 API，`CallerManagedPageTable<P>` 携带的信息有四项：
+| 不做 | 理由 |
+|---|---|
+| `PagingBackend` 层 | 没有 handle wrapper 要保护，不必为它单独加一层 |
+| 三种 handle（`OwnedPageTable` / `CallerManagedPageTable` / `BorrowedPageTable`）| 对 11 个调用点过重；最强能力只是"语法上没有 `destroy`"，证明不了别名/跨 CPU |
+| 两类凭证（`BorrowedRootMut` / `SharedPageTableSource`）| 零业务字段 + `PhantomData`，文档自己承认不建立真实借用关系，纯把 `unsafe` 合同换类型名 |
+| 类型状态（`PrivateSupervisor` / `BorrowedSupervisor`）| 单调用点；`bool` + `assert!` 等价 |
+| `classify_range` + `PagingRangeClass` | 首尾两端点比较够用 |
+| `CallerManagedRoot` / `into_permanent_root` | 调用点本来就有 `PhysBytes`，不加凭证 |
+| `SupervisorSubtree` / `SupervisorOwnership` | 状态机已表达 |
+| `RetireDisposition` / `RetireResult` / `RetainedPageTableRoot` / `retire_owned_subtrees` | 无实际调用需求，不提前概念化 |
 
-1. 根页是 `CallerManaged`（**不是** `pt_alloc` 的）
-2. 私有子树是这个 handle 建的
-3. 上半场是共享借用的
-4. 将来回收时该跳过哪些子树
+**这些名字不是永久禁止，是"没有真实使用需要时不提前变成项目概念"。**
 
-`ProcessLoad { root: PhysBytes, ... }` **四项全丢**。而 `p_seg.phys_root` 已经是 `PhysBytes`（`os/kernel/src/proc.rs:881`），所以这个丢失是**贯穿到底的**——从 handle 到进程表都没有任何地方记得"这个根不是 `pt_alloc` 发的"。
+### 4ter.7 缺陷仍然要修，证据责任不因减法而缩小
 
-#### 我的判断
+**R1（源根修改是否破坏继承者）**——`Inherited` 只保护目标根不主动改共享范围，**不能**阻止源根替换顶层入口、释放旧子树、复用继承者可达的页表页、或改叶 PTE 后漏 TLB。**删除凭证类型不会让 R1 的安全保证减少**：凭证本身没有真实 owner，替代不了对源根修改路径的实际核实。R1 仍是真实 bootstrap 继承路径的验证门。
 
-评审说"这一项比继续争论 `reclaim_owned_subtrees` 的命名更值得优先处理"——我同意，并且我认为核实结果让它的优先级**更高**，理由有二：
+#### R1 的三种变化与处理
 
-1. 这个根**真的会长期存活**（RS 进程活多久它就活多久），不是说"理论上有回收需求"；
-2. 但**没有任何东西会去销毁它**：`os/qemu-tests` 的生产代码 `.destroy()` 零命中，`destroy()` 的 2 处生产调用都在 VM 映像且都在 `Paging::new()` 的根上。
 
-**所以当前这是一个"只创建、不销毁"的对象。** 泄漏不存在（因为不销毁），所有权语义丢失也不产生故障（因为没人来收）——**但这是因为没有回收方，不是因为合同正确**。
+先前只写了一句"源树在继承者存活期间必须稳定"。第八版评审指出这句话**过宽**——它会把真正需要保证的事情说得太大，也可能漏掉危险情况。核实后采纳它的三分拆解：
 
-#### 建议的两条路
+#### 三种变化，三种处理
 
-**路一（如果 `ProcessLoad` 要泛型化并持 handle）**
-
-```rust
-pub struct ProcessLoad<P> {
-    paging: CallerManagedPageTable<'static, P>,
-    pc: VirBytes,
-    sp: VirBytes,
-    ps_strings: VirBytes,
-    allocated_bytes: usize,
-}
-
-impl<P> ProcessLoad<P> {
-    fn root_phys(&self) -> PhysBytes { self.paging.root_phys() }   // 需要裸地址时
-}
-```
-
-`'static` 仅作示意，实际应绑定 bootstrap root 的所有者生命周期。
-
-**代价**：`ProcessLoad` 从无泛型变泛型，`load_process_elf<P, A>` 的返回类型跟着变，`test-sysboot` 要改写 `tx.root`/`tx.pc` 的访问方式（`tx.root` 变 `tx.root_phys()`）。**而 `rs.p_seg.phys_root = tx.root` 这一行无论如何都要拿裸地址**——所以泛型化并不消除裸地址，只是让"谁有权给裸地址"变清楚。
-
-**路二（如果保持裸 `PhysBytes`）**
-
-必须明确写出评审给的那句话：
-
-> 该路径将页表结构的生命周期交给整个启动池，不支持后续通过 `Paging::destroy()` 回收。
-
-**我的倾向：路二，加上明确的文档**。理由：
-
-- 唯一调用者是测试内核，它的根页进的是启动池（`VmBootAllocator`），本来就没有 free 方法（§4bis.2）
-- 泛型化 `ProcessLoad` 会让一个只有 1 个调用者的 API 变复杂
-- 真正需要 handle 语义的是**生产路径**（VM 建进程页表），而那条路径现在走 `Paging::new()`，根页来自 `pt_alloc`，所有权是清楚的
-
-**但无论选哪条，都必须把这句话写进 `ProcessLoad` 的文档**——当前文档只说 "The caller records it in the process's segment descriptor"（`os/arch/src/arch/boot.rs:745-748`），没说过"不能回收"。
-
-### 4quater.2 `BorrowedRoot` 说的"生命周期"必须是真的（第五版评审 §4.1）
-
-**评审的技术要求，我完全接受**：
-
-> 只给 `PhysBytes` 加一个 `PhantomData` **不能**建立借用关系。因为 `phys` 是一个整数地址，它与任何实际的 Rust 借用都没有联系。安全构造函数让编译器凭空推断 `'a`，并没有真正证明根页存活。
-
-我上一版之所以想问"要不要现在就带 `'a`"，正是因为我隐约知道这个问题——**但当时的方案确实只是给 `PhysBytes` 套了个 `PhantomData`，那是假的生命周期**。
-
-#### 当前有没有可以真实借出的所有者对象
-
-核实答案：**没有。** 三个 `from_active_root` 生产调用点拿到的 root 来源：
-
-| 调用点 | root 从哪来 | 有 Rust 所有者对象吗 |
+| 变化 | 机制 | 处理 |
 |---|---|---|
-| `os/kernel/src/kerninfo.rs:143` | `crate::current_root_phys()`（读 CpuLocal 里的 `PhysBytes`）| **没有** |
-| `os/kernel/src/lib.rs:1707` | 同上的 `root` | **没有** |
-| `os/kernel/src/lib.rs:2928` | `root_phys` 参数透传 | **没有** |
-| `os/servers/vm/src/pagetable/vm_self_map.rs:102` | `VmSelfPageTable::adopt(root_paddr)` 的入参 | **没有** |
+| **① 修改共享子表中的叶 PTE 或权限** | 目标根复制的是源根**顶层 PTE 的值**，两个根随后指向同一批下级页表页。源根通过这些共享页表页改叶 PTE，目标根也会看到 | **可以有意图地做，不应一概禁止。** 但必须满足共同同步合同 |
+| **② 替换源根自己的顶层入口** | 目标根有自己的根页，继承时只复制了顶层 PTE 值。源根后来替换那个 PTE，**目标根不会自动收到** | **目标根继续引用旧子树**——即使旧子树暂未释放，也是**语义陈旧**；若被释放或复用，变成**悬空** |
+| **③ 释放或复用任何仍可从目标根继承入口到达的页表页** | —— | **必须禁止**，除非已解除所有继承关系，或有能同步更新所有继承者的机制 |
 
-**四处全是裸 `PhysBytes`。** 内核的活动根登记在 `CpuLocal::root_phys`（`os/kernel/src/lib.rs:4152` 附近），那是一个 per-CPU 字段，不是可以借出的 Rust 对象。
+#### 采纳的精确合同（评审原文）
 
-#### 因此只能走评审的方式 B，而且要拆成两个凭证（第九版评审 §4.3）
+> 继承者存活期间，源根不得使继承者持有的顶层入口变成悬空引用。共享子树内部允许在统一同步合同下修改；但不得释放或复用仍可能由继承者到达的页表页。若源根替换自己的顶层入口，必须保证旧子树在继承者不再引用前仍保持有效；若要求继承者看到新映射，则必须通过共享子树内部更新或明确的继承者同步机制实现。
 
-单纯一个 `BorrowedRoot<'a>` + `PhantomData<&'a ()>` 有两个问题：
+#### 关于 TLB：锁不能替代失效合同
 
-1. `PhantomData` **不建立真实借用关系**（第八版评审 §4.1 已指出）；
-2. 它把"能修改活动根"与"保证共享源存活"两种不同权限混成一个凭证（第九版评审 §4.3）。
+评审特别强调一条，我照录：
 
-所以拆成两个：
+> 只拿着源根的 `&mut`，或者只持有 BKL，**并不能自动证明所有使用者的旧翻译都已失效**。
 
-```rust
-/// 不拥有根页，但获得受同步合同约束的**修改能力**。
-pub struct BorrowedRootMut<'a> {
-    phys: PhysBytes,
-    _exclusive: PhantomData<&'a mut ()>,
-}
+修改共享子表要协调的**不只是修改源根的 CPU**，还包括所有可能使用这些共享子树的地址空间与 CPU，以及各架构要求的 TLB 失效。**BKL 存在不等于 TLB 合同成立。**
 
-impl BorrowedRootMut<'_> {
-    /// # Safety
-    /// Caller must guarantee:
-    /// 1. the root page and **every page-table page reachable through
-    ///    the entries used by this handle** stay allocated and valid for `'a`;
-    /// 2. the caller is entitled to modify this root;
-    /// 3. other modifiers are coordinated through the same mechanism;
-    /// 4. page-table changes, address-space activation, CPU participation
-    ///    and TLB invalidation satisfy the architecture contract;
-    /// 5. there is no uncoordinated concurrent modification.
-    unsafe fn from_raw(root: PhysBytes) -> Self { ... }
-}
+#### 当前可以不建登记表，但成立条件要落实到具体路径
 
-/// 不拥有源树，只保留"源树有效且结构稳定"的**保活合同**。
-pub struct SharedPageTableSource<'source> {
-    phys: PhysBytes,
-    _source: PhantomData<&'source ()>,
-}
+不引入全局共享子树登记表或通用引用计数（评审不要求）。但"当前不需要引用计数"的依据必须是这四条，**不能泛化成"所有未来调用者都能靠源根自律"**：
 
-impl SharedPageTableSource<'_> {
-    /// # Safety
-    /// Same item 1 as `BorrowedRootMut` (the whole reachable tree),
-    /// plus: the source root will not replace or release any shared
-    /// top-level entry's subtree while inheritors exist (cf. §4quinquies.1c).
-    unsafe fn from_raw(root: PhysBytes) -> Self { ... }
-}
-```
-
-**`BorrowedPageTable` 用前者，`SupervisorSubtree::Borrowed` / `BorrowedSupervisor<'source>` 用后者。** 两者都走狭窄的 `unsafe from_raw`，都不需要全局 owner 表。
-
-**这不是"消除不了 `unsafe` 的妥协"，而是当前资源形态的准确表达**：引导期根页的所有者信息只存在于调用点，没有 Rust 对象可借。
-
-评审说的"不要为了消除所有 `unsafe`，硬造一个不反映真实资源所有权的 Rust owner 对象"——我照这一条办。
-
-#### 一个真实的约束：`'a` / `'source` 现在只能填 `'static`
-
-四个调用点借的都是**内核的永久活动根**（bootstrap 根 / VM 自举根），它们的实际存活期是整个内核运行期。所以在这些调用点上 `'a = 'source = 'static`。
-
-**这意味着引入 `'a` 之后，这些调用点在类型上立刻就"诚实"了**——不是"我们猜它够久"，而是"我们声明它是 `'static` 并写了 `unsafe` 理由"。
-
-### 4quater.3 第五版评审的其余裁决（记录，不再展开）
-
-| 事项 | 评审裁决 | 我的处理 |
+| # | 依据 | 当前状态 |
 |---|---|---|
-| `reclaim_owned_subtrees(self) -> CallerManagedRoot` | **值得**（第五版时的裁决）| 已被第八版降级为暂不实现，改名 `retire_owned_subtrees`（§4quinquies.1f）|
-| `BorrowedPageTable` 现在就带 `'a` | **应该** | §4quater.2 已纳入 |
-| 仅 `PhantomData` 能否证明物理页生命周期 | **不能** | §4quater.2 已改为 `unsafe fn from_raw` |
-| 共享状态是否按层记录 | 不需要；但 `Borrowed` 最好保存源根凭证 | §4ter.3.1 已改为 `SupervisorSubtree::Borrowed(SharedPageTableSource<'source>)` |
-| `inherit_supervisor_half` 前置检查 | **需要**：目标上半场必须为空，只允许一次继承 | §4ter.3.1 第 1 条已写，见下一节补充 |
-| `ProcessLoad` 是否只存 `PhysBytes` | 若表需存活并可能销毁，**不应丢弃 handle** | §4quater.1 给了两条路与倾向 |
-| 方向甲可作最终设计吗 | 不建议，只可作短期过渡 | §4ter.2 已标注 |
-| 失败回滚、逐页映射重开吗 | 不需要 | 不动 |
+| 1 | 共享源限定为**永久存活**的 bootstrap 根 | 有据 |
+| 2 | 共享子树页来自**永久保留**的引导期分配区，不会被 allocator 释放或重新分配 | **较有依据**（§4quinquies.1 已证 bump 区整块 deduct）|
+| 3 | 源根允许的后续修改**经核实不会让继承者持有失效入口** | **未闭合** |
+| 4 | 对共享页表内容的修改遵守覆盖所有使用者的**同步和 TLB 合同** | **未闭合** |
 
----
+#### 第 3、4 项需要核实什么（评审列的清单，照录）
 
-## 4quinquies. 证据、合同与实施分期（第六至第八版评审逐轮增补）
+`harden_kernel_text`（`lib.rs:1707`）与 heap-window eviction（`lib.rs:2928`）**不能只记录它们调用过 `split_huge` / `update_flags` / `unmap`**，还要确认：
 
-第六版评审要两组材料，并提出四项需要纳入正式合同的细节。这一节是答卷。
+- 写入的是**共享子树里的某个下级页表页**，还是**源根自己的顶层入口**？
+- 是否会**清除一个仍被继承者根页直接引用的入口**？
+- 释放或复用的物理页**是否可能仍在继承者的可达集合内**？
+- TLB 失效**覆盖哪些地址空间和 CPU**？
 
-### 4quinquies.1 组一：`VmBootAllocator` 的页如何进入物理内存保留合同
+**结论（评审原文）**：
+
+> 不建登记表，但 Q3 必须作为共享 handle 接入生产路径前的**验证门**。如果核实发现这些路径可能替换或释放继承者仍依赖的结构，不能靠补一句 SAFETY 文档解决；届时要么约束这些操作，要么引入明确的解除继承/同步机制。
+
+
+**R1 需要核实什么**（`harden_kernel_text` `lib.rs:1707`、heap-window eviction `lib.rs:2928` 不能只记录"调用过 `split_huge`/`update_flags`/`unmap`"）：
+
+- 写入的是**共享子树里的下级页表页**，还是**源根自己的顶层入口**？
+- 是否**清除一个仍被继承者根页直接引用的入口**？
+- 释放或复用的物理页**是否仍在继承者可达集合内**？
+- TLB 失效**覆盖哪些地址空间和 CPU**？
+
+**关于 TLB**（锁不能替代）：协调对象不只是改源根的 CPU，还包括所有可能使用这些共享子树的地址空间与 CPU。**BKL 存在不等于 TLB 合同成立。**
+
+**R2（TX 与 VM free-list 重叠）**——与所有权 API 无关，类型变复杂或变简单都不改变这个事实。真实 VM 消费 free-list 前必须关闭。
+
 
 **这条时间线上有两处需要更正。** 第八版评审指出两处，核实后确认都成立，并且真实结构比先前设想的清楚。
 
@@ -1580,344 +1220,7 @@ VmBootAllocator::new(快照) (:248)
 
 **关键要求**（评审原文）：不能让同一份旧快照被多个独立 allocator 当作当前可用集合。
 
-### 4quinquies.1b 范围分类接口：共享上半场禁改的落地前提（第八版评审 §3）
 
-第八版评审确认了我上一版提的遗留问题并给了正式方案。采纳。
-
-#### 为什么后端必须提供这个接口
-
-架构间的顶层划分不同（x86-64 PML4 条目、aarch64 L0 条目、riscv64 Sv39 L2 条目）。**通用层不能硬编码 256..512**，否则就把架构机制泄漏回共享层——这正是项目第一原则禁止的（"抽象语义，不描述机制"）。
-
-所以判定必须由后端回答，通用层只表达语义：
-
-```rust
-enum PagingRangeClass {
-    Private,
-    Borrowed,
-    CrossesBoundary,
-}
-
-trait PagingBackend: Paging {
-    fn classify_range(range: VirtRange) -> Result<PagingRangeClass, PageTableError>;
-}
-```
-
-各架构实现负责算顶层索引、判断范围是否跨界。**通用 handle 不需要知道 PML4 / L0 / Sv39。**
-
-#### 所有修改入口必须统一走这条检查
-
-`CallerManagedPageTable` 在 `PrivateSupervisor` 状态时可以修改整个根；转成 `BorrowedSupervisor<'source>` 之后，**所有**普通修改操作必须先过：
-
-```rust
-fn ensure_private_range(&self, range: VirtRange) -> Result<(), PageTableError> {
-    match P::classify_range(range)? {
-        PagingRangeClass::Private => Ok(()),
-        PagingRangeClass::Borrowed | PagingRangeClass::CrossesBoundary
-            => Err(PageTableError::PermissionDenied),
-    }
-}
-```
-
-**不能只覆盖 `map()`。** 至少要审查这些入口（第八版评审 §3.2 的清单，照录）：
-
-| 操作 | 要求 |
-|---|---|
-| `map` / `map_range` | 检查目标范围 |
-| `unmap` / `unmap_range` | 检查整个解除映射范围 |
-| `remap` | 检查**源**与**目标**两个范围 |
-| `update_flags` | 检查目标地址范围 |
-| `grant_user_walk` | 检查目标范围 |
-| `split_huge` | 检查被拆分的地址 |
-| 其他会改页表结构或 PTE 的方法 | 一律纳入检查 |
-
-**批量操作的额外要求**（评审明确点出，这条最容易被漏）：`unmap_range` / `map_range` 必须在**修改任何 PTE 之前**检查整个范围。不能先改私有区域、遍历到边界才发现跨入借用区域。
-
-#### handle 是策略边界，backend 是机制边界
-
-第六版说"三个 handle 都实现 `Paging` 并 delegate 给 inner"。方向对，但**具体含义必须修正**（第八版评审 §3.3）：
-
-```
-调用方
-  ↓
-CallerManagedPageTable::map()
-  ↓
-检查当前 Supervisor 状态 + 目标范围
-  ↓
-PagingBackend::map()
-```
-
-**不是**无条件的 `inner.map()`。**如果 wrapper 只负责转发，那些所有权与访问权合同就仍然只是文档。**
-
-### 4quinquies.1c 源页表的修改合同：拆成三种变化（第八版评审 Q3）
-
-先前只写了一句"源树在继承者存活期间必须稳定"。第八版评审指出这句话**过宽**——它会把真正需要保证的事情说得太大，也可能漏掉危险情况。核实后采纳它的三分拆解：
-
-#### 三种变化，三种处理
-
-| 变化 | 机制 | 处理 |
-|---|---|---|
-| **① 修改共享子表中的叶 PTE 或权限** | 目标根复制的是源根**顶层 PTE 的值**，两个根随后指向同一批下级页表页。源根通过这些共享页表页改叶 PTE，目标根也会看到 | **可以有意图地做，不应一概禁止。** 但必须满足共同同步合同 |
-| **② 替换源根自己的顶层入口** | 目标根有自己的根页，继承时只复制了顶层 PTE 值。源根后来替换那个 PTE，**目标根不会自动收到** | **目标根继续引用旧子树**——即使旧子树暂未释放，也是**语义陈旧**；若被释放或复用，变成**悬空** |
-| **③ 释放或复用任何仍可从目标根继承入口到达的页表页** | —— | **必须禁止**，除非已解除所有继承关系，或有能同步更新所有继承者的机制 |
-
-#### 采纳的精确合同（评审原文）
-
-> 继承者存活期间，源根不得使继承者持有的顶层入口变成悬空引用。共享子树内部允许在统一同步合同下修改；但不得释放或复用仍可能由继承者到达的页表页。若源根替换自己的顶层入口，必须保证旧子树在继承者不再引用前仍保持有效；若要求继承者看到新映射，则必须通过共享子树内部更新或明确的继承者同步机制实现。
-
-#### 关于 TLB：锁不能替代失效合同
-
-评审特别强调一条，我照录：
-
-> 只拿着源根的 `&mut`，或者只持有 BKL，**并不能自动证明所有使用者的旧翻译都已失效**。
-
-修改共享子表要协调的**不只是修改源根的 CPU**，还包括所有可能使用这些共享子树的地址空间与 CPU，以及各架构要求的 TLB 失效。**BKL 存在不等于 TLB 合同成立。**
-
-#### 当前可以不建登记表，但成立条件要落实到具体路径
-
-不引入全局共享子树登记表或通用引用计数（评审不要求）。但"当前不需要引用计数"的依据必须是这四条，**不能泛化成"所有未来调用者都能靠源根自律"**：
-
-| # | 依据 | 当前状态 |
-|---|---|---|
-| 1 | 共享源限定为**永久存活**的 bootstrap 根 | 有据 |
-| 2 | 共享子树页来自**永久保留**的引导期分配区，不会被 allocator 释放或重新分配 | **较有依据**（§4quinquies.1 已证 bump 区整块 deduct）|
-| 3 | 源根允许的后续修改**经核实不会让继承者持有失效入口** | **未闭合** |
-| 4 | 对共享页表内容的修改遵守覆盖所有使用者的**同步和 TLB 合同** | **未闭合** |
-
-#### 第 3、4 项需要核实什么（评审列的清单，照录）
-
-`harden_kernel_text`（`lib.rs:1707`）与 heap-window eviction（`lib.rs:2928`）**不能只记录它们调用过 `split_huge` / `update_flags` / `unmap`**，还要确认：
-
-- 写入的是**共享子树里的某个下级页表页**，还是**源根自己的顶层入口**？
-- 是否会**清除一个仍被继承者根页直接引用的入口**？
-- 释放或复用的物理页**是否可能仍在继承者的可达集合内**？
-- TLB 失效**覆盖哪些地址空间和 CPU**？
-
-**结论（评审原文）**：
-
-> 不建登记表，但 Q3 必须作为共享 handle 接入生产路径前的**验证门**。如果核实发现这些路径可能替换或释放继承者仍依赖的结构，不能靠补一句 SAFETY 文档解决；届时要么约束这些操作，要么引入明确的解除继承/同步机制。
-
-### 4quinquies.1d 两种凭证必须分开（第八版评审 §4.3）
-
-我上一版把 `BorrowedRoot` 定义成"独占修改权 + 不拥有释放责任"，然后**同时用于两个场合**。第八版评审指出这是概念冲突，我接受：
-
-| 用处 | 需要什么权限 |
-|---|---|
-| `BorrowedPageTable` 包装活动根并修改其 PTE | **修改授权** + 调用者负责同步其他 CPU 与页表使用者 |
-| `SupervisorSubtree::Borrowed` 保留源根凭证 | 只需**源树存活与结构稳定**的保证；**不应因此获得修改源根的权限** |
-
-所以拆成两个类型：
-
-```rust
-struct BorrowedRootMut<'a> {
-    // 不拥有根页，但获得受同步合同约束的修改能力
-}
-
-struct SharedPageTableSource<'source> {
-    // 不拥有源树，只保留"源树有效且结构稳定"的合同
-}
-```
-
-两者都走狭窄的 `unsafe from_raw`，都不需要全局 owner 表。`BorrowedPageTable` 用前者，`SupervisorSubtree::Borrowed` 用后者。
-
-**这不是增加所有权状态机，而是避免"能修改活动根"与"保证共享源存活"被同一个凭证混为一谈。**
-
-### 4quinquies.1e `into_permanent_root` 必须限制为 `'static` 源（第八版评审 §4.1、§4.2）
-
-这是我上一版的一个**类型漏洞**：
-
-```rust
-unsafe fn into_permanent_root(self) -> PhysBytes;   // ← 丢掉了 'source
-```
-
-消费 handle 后 `BorrowedSupervisor<'source>` 被丢弃，只返回裸物理地址。**但目标根的上半场仍含指向源子树的 PTE**，所以目标根的有效期仍依赖源页表树。若 `'source` 不是 `'static`，类型就不再表达这个物理依赖。
-
-采纳评审给的限制：**只允许永久源**。
-
-```rust
-impl<'root, P> CallerManagedPageTable<'root, BorrowedSupervisor<'static>, P> {
-    unsafe fn into_permanent_root(self) -> PhysBytes;
-}
-```
-
-这条限制表达了一个有价值的约束：**只有源页表及其可达子树确实永久有效时，才能把仍引用它们的目标根转成不带生命周期的裸地址。**
-
-将来若需支持非 `'static` 源，则应返回携带 `'source` 的根凭证，或让调用者通过另一条明确的 `unsafe` 转换承担永久保留责任。
-
-**当前 `test-sysboot` 的 bootstrap 场景不受影响**（bootstrap 根是 `'static`）。
-
-### 4quinquies.1f `reclaim_owned_subtrees` 降级为暂不承诺（第八版评审 §2）
-
-第八版评审不接受"只写文档差异表"作为最终 API 合同，但也不建议为一个无生产调用者的方法引入回收策略抽象。它给的两步方案我采纳：
-
-**第一步（当前实施）**：`reclaim_owned_subtrees` **暂不公开、暂不实现**。只实现实际需要的三个：
-
-- `OwnedPageTable::destroy(self)`
-- `CallerManagedPageTable::into_permanent_root(self)`（`'static` 源限制）
-- `BorrowedPageTable` 的非拥有操作能力（含范围检查）
-
-**第二步（将来有真实调用点再做）**：显式报告物理页处置结果，并采用 `retire` 而非 `reclaim` 命名：
-
-```rust
-enum RetireDisposition {
-    ReturnedToAllocator,
-    PermanentlyRetired,
-}
-
-struct RetireResult<'root> {
-    root: CallerManagedRoot<'root>,
-    disposition: RetireDisposition,
-}
-
-unsafe fn retire_owned_subtrees(self) -> RetireResult<'root>;
-```
-
-**评选用 `retire` 而非 `reclaim` 的理由我认同**：
-
-| | 含义 |
-|---|---|
-| `retire` | 从当前页表树解除资源使用关系 |
-| `ReturnedToAllocator` | 物理页确实重新进入分配器 |
-| `PermanentlyRetired` | 不再被页表引用，但没有重新进入分配器 |
-
-**这比一个叫 `reclaim` 的方法再在文档里解释"有时真回收、有时只是不用了"更诚实。**
-
-评审同时提醒：返回枚举也**不能**凭空证明 free 回调真执行了正确释放，`PT_FREE` 的注册合同仍须保证回调与分配来源配对。
-
-**本轮不实现这个枚举，也不新增 allocator trait。**
-
-### 4quinquies.1g `BorrowedRootMut::from_raw` 的 SAFETY 合同（第八版评审 §5）
-
-第八版评审指出一个我前几版隐含假设的错误：
-
-> `&mut BorrowedPageTable` 只能约束这个 Rust handle 的独占访问，**不能自动约束同一个物理根的其他 handle、其他 CPU 或硬件页表遍历器**。
-
-例如两个 handle 都能从同一个 `root` 构造并各自拿到 `&mut self`，它们可能同时修改同一张页表。
-
-所以 SAFETY 合同不能只写生命周期与物理页有效性，必须包括四条（照录）：
-
-1. 调用者**有权修改**该根；
-2. 其他修改者已经通过**同一同步机制**协调；
-3. 页表修改与地址空间激活、CPU 参与集合、TLB 失效满足架构合同；
-4. **不会出现未经协调的并发修改**。
-
-按本项目的执行模型，实施时需分别核对：
-
-| 场景 | 同步依据 |
-|---|---|
-| 内核侧四个调用点 | 相应路径是否始终受 BKL 或其它同步机制保护 |
-| VM 自映射路径 | 单线程事件循环是否覆盖所有操作及其生命周期 |
-
-**不为此再做一次全仓锁审计**（评审明确不要求），但**四个实际调用点的同步依据必须在实施记录中留下**。
-
-### 4quinquies.1h 扩展 trait 必须一并代理（第八版评审 §「Paging 以外的公开修改能力」）
-
-第八版评审指出我 v8 有一处断言不成立：**"三个 handle 都实现 `Paging`，所以 `map_kernel`/`load_elf_into` 的泛型约束不用改"**。
-
-核实后确认这句话是错的，而且有一个直接反例：
-
-| 事实 | 位置 |
-|---|---|
-| `map_kernel<P: Paging>` 的约束确实只要求 `Paging` | `os/arch/src/arch/paging.rs:630` |
-| **但 `build_bootstrap_root_and_enable` 里的 `paging.map_huge(...)` 用的是 `A::Paging`** | `os/kernel/src/lib.rs:1340`（`match paging.map_huge(VirBytes(addr), PhysBytes(addr), PageSize::MIB_2, piece_flags)`）|
-| `BootArch::Paging` 的 bound 是 **`HugePages`**，不是 `Paging` | `os/arch/src/arch/boot_arch.rs:22` `type Paging: HugePages;` |
-| `HugePages: Paging` 且另有 `map_huge` / `supports_huge_page` 等方法 | `os/arch/src/arch/paging_ext.rs:75` |
-
-所以若 `new_from_page` 返回 `CallerManagedPageTable<P>` 而该 handle **只** 实现了 `Paging`，`lib.rs:1340` 这一行**编译期就失败**。
-
-**结论**：handle 必须代理**所有**扩展 trait，不只是 `Paging`。至少 `HugePages`（`map_huge` / `supports_huge_page` / 三个关联常量），以及 `os/arch/src/arch/paging.rs` 里 `map_kernel` 之外任何被 `A::Paging` 调用的能力。
-
-#### 采纳的 API 合同（第八版评审原文）
-
-> 所有公开的页表结构或 PTE 修改入口，无论来自 `Paging`、`HugePages` 还是其他扩展 trait，都必须经过 handle 的授权检查。内部 backend 不得通过公开接口绕过该检查。
-
-**这带来两个具体要求**：
-
-1. **`HugePages` 的代理不能只是转发**——`map_huge` 会改页表结构，同样要过 `ensure_private_range`。
-2. 要么给每个 handle 实现相应扩展 trait并委托，要么调整具体 helper 的泛型约束。**不能把"handle 实现了 `Paging`"等同于"现有所有泛型调用都不用改"。**
-
-**这不推翻三层 API**，只是把 wrapper 必须覆盖的能力范围定义完整。
-
-### 4quinquies.1i 根层跳过共享条目也归 `PagingBackend`（第八版评审 §「根层跳过」）
-
-v8 只解决了"通用层不能硬编码 256..512"这件事的一半。另一半是：
-
-**释放私有子树时，由谁识别并跳过共享的顶层入口？**
-
-通用 handle 只知道自己是 `PrivateSupervisor` 还是 `BorrowedSupervisor<'source>`，**它不应该知道 x86-64 PML4 / aarch64 L0 / Sv39 L2 的顶层索引**。
-
-所以不能让通用层自己遍历根页再按 256..512 跳过。应由后端提供内部机制：
-
-```rust
-unsafe fn destroy_private_subtrees(
-    &mut self,
-    supervisor: SupervisorOwnership,     // Private | Borrowed
-);
-```
-
-合同（照录评审）：
-
-- **`PagingBackend` 根据架构决定哪些根层条目属于继承范围**；
-- `Borrowed` 时从根层**直接跳过**共享条目；
-- 通用 handle 只传递语义状态；
-- 后端**不对共享条目指向的子树递归，也不释放它们**。
-
-**`classify_range` 不能代替这个接口**：它判断的是**虚拟地址范围**，而递归回收要判断的是**物理页表根层入口**。二者相关，但不是同一个问题。
-
-### 4quinquies.1j `OwnedPageTable::destroy` 也有物理处置差异（第八版评审 §1）
-
-第八版评审指出：`retire` 被延后了，但 `destroy(self)` **仍然存在同类问题**。
-
-| 所在映像 | `PT_FREE` | 当前 `destroy()` 的效果 |
-|---|---|---|
-| VM 映像 | 已注册 | 遍历并释放私有子表，归还根页 |
-| 内核映像 | 未注册 | 清零根页后返回，**不递归归还子表** |
-
-对 `OwnedPageTable` 而言这**不再造成"把外部根页交给错误 allocator"**——它的根页和中间页本来就来自 `pt_alloc`。**但物理处置结果仍然不同。**
-
-采纳评审的处理：
-
-**保留 `destroy(self)`，不增加 `DestroyOutcome`，但必须写清**：
-
-> `destroy` 保证页表对象不再由该 handle 管理；物理页是否重新进入 allocator，**取决于当前映像提供的分配/释放合同**。没有释放能力时，页表页**永久消耗**。
-
-**外加一个 Rust API 问题**（评审提出，我认同）：`OwnedPageTable` 如果没有 `Drop` 自动释放，直接 drop handle 就会遗失显式销毁机会；而销毁还要求 CPU 停止使用、TLB 同步等条件，**不能简单在 `Drop` 里无条件释放**。所以：
-
-| 决定 | 理由 |
-|---|---|
-| `destroy(self)` 保持**显式**操作，保留 `unsafe` 条件 | 销毁的前提（CPU 停用、TLB）无法自动判定 |
-| 普通 `Drop` **不执行物理回收** | 同上 |
-| 用 `#[must_use]` + 文档明确"丢弃未销毁的 owned handle 会遗留页表资源" | 防止把普通 drop 当成 destroy |
-
-### 4quinquies.1k `load_process_elf` 必须真正执行显式交接（第八版评审 §4）
-
-v8 引入了 `into_permanent_root` 这个动词，但**现有流程片段仍然直接返回裸地址**。若只补文档不改代码，就会出现：类型系统里有了 `SharedPageTableSource` 与 `into_permanent_root`，生产代码却绕开这两个边界、直接用裸地址构造和返回。
-
-采纳评审要求，实施时改成：
-
-```rust
-// 伪代码：实际类型与错误处理按最终 API 调整
-let root = unsafe { paging.into_permanent_root() };
-
-Ok(ProcessLoad {
-    root,
-    // ...
-})
-```
-
-**并且 `load_process_elf` 接收的共享源不应再是裸 `PhysBytes`**，而应由调用者在明确的 `unsafe` 边界创建 `SharedPageTableSource<'static>` 再传入继承操作。
-
-### 4quinquies.1l `into_permanent_root` 的 SAFETY 必须分两条（第八版评审 Q5）
-
-`unsafe fn into_permanent_root(self) -> PhysBytes` **不只丢弃 `'source`，也丢弃 `CallerManagedRoot<'root>`**。所以 SAFETY 要分别说明：
-
-| 条 | 内容 | 当前靠什么 |
-|---|---|---|
-| ① | 源根及其可达共享子树确实永久有效 | `BorrowedSupervisor<'static>` 的 bound |
-| ② | **目标根页及其私有子树由调用者永久保留**，不得在目标进程地址空间仍可能使用时释放或复用 | **调用点承担，不是类型保证** |
-
-**第二条不能被第一条自动覆盖。** 对当前 `test-sysboot` 路径，这个责任应与 TX 专用保留区方案（§4quinquies.1m）一起落实；在真实 VM PMM 可能消费同一批页之前，**不能只凭 `VmBootAllocator` 没有 `free()` 就宣称永久保留成立**。
-
-### 4quinquies.1m TX 专用保留区：方案与实际容量核查（第八版评审 Q4）
 
 第八版评审赞成"专用保留区"方向，并给了一个关键的落地约束：
 
@@ -1952,7 +1255,9 @@ Boot reserved region
 
 这里**不能下结论说不够**，因为 `test-sysboot` 只在 `arch_boot_impl` 之后才消耗 `pt_alloc`，而引导期上半场映射的页表页数量我没实测。**但这正是评审说的"当前材料没有容量数据，因此还不能宣称方案三已经具备直接落地条件"**——需要实测。列为实施前置任务（§5 Q4）。
 
-### 4quinquies.2 组二：四个活动根调用点实际调了哪些 `Paging` 方法
+
+### 4ter.8 四个活动根调用点实际调了哪些方法
+
 
 第六版评审要区分"只查询 / 修改 PTE / 映射 / 是否涉及 TLB 同步"。逐个核实：
 
@@ -1979,365 +1284,80 @@ Boot reserved region
 
 **并且 `PhantomData<&'a ()>` 那种共享借用标记表达不了独占修改权**——所以 `BorrowedRoot` 的凭证语义必须是"独占修改权 + 不拥有释放责任"，不是"共享只读借用"。
 
-### 4quinquies.1n `PrivateSupervisor` 也需要终结路径，且 `enable` 要归位（第十版评审 §2.1）
-
-这是第十轮评审认为第九版**最值得再补一笔**的地方，核实后同意：它指出了 A 阶段会立刻卡住的缺口。
-
-#### 缺口
-
-`new_from_page()` 有**两个**生产调用路径：
-
-| 路径 | 位置 | 继承上半场？ | 第九版给的状态 |
-|---|---|---|---|
-| `build_bootstrap_root_and_enable`（建内核 bootstrap 根）| `os/kernel/src/lib.rs:1292` | **否** | `CallerManagedPageTable<'root, PrivateSupervisor, P>` |
-| `load_process_elf`（建 TX 根）| `os/arch/src/arch/boot.rs:820` | **是**（`:824`）| `CallerManagedPageTable<'root, BorrowedSupervisor<'static>, P>` |
-
-第九版只为**第二条**定义了 `into_permanent_root`。**第一条没有出口**，但 bootstrap 根同样要长期保留、且最终成为活动根（`set_current_root_phys(root_page)` 在 `lib.rs:343` / `:1486`）。
-
-#### 补齐：两条路径都提供受约束的实现
-
-```rust
-impl<'root, P> CallerManagedPageTable<'root, PrivateSupervisor, P> {
-    /// SAFETY: 调用者永久保留该根页及其私有子树。
-    unsafe fn into_permanent_root(self) -> PhysBytes;
-}
-
-impl<'root, P> CallerManagedPageTable<'root, BorrowedSupervisor<'static>, P> {
-    /// SAFETY: 上述条件 + 共享源及其可达子树永久有效（由 'static bound 表达）。
-    unsafe fn into_permanent_root(self) -> PhysBytes;
-}
-```
-
-**两者 SAFETY 不同，不能合并成一个无约束的泛型实现。** 评审核可"用经过约束的 sealed trait 合并两种实现"——实现时按哪种方便走哪种，但**两种状态都必须有出口**。
-
-#### `enable` 的归属必须进 A 阶段清单
-
-第九版补了 `HugePages` 代理，但**没明确 `enable` 在新 API 里归谁**。核实实际使用：
-
-| 事实 | 位置 |
-|---|---|
-| `unsafe fn enable(&self) -> PhysBytes` 是 `Paging` 的方法 | `os/arch/src/arch/paging.rs:339` |
-| `build_bootstrap_root_and_enable` 的函数体确实调用它 | `os/kernel/src/lib.rs:1285` 起（函数名即 `…_and_enable`）|
-
-评审判断照录：
-
-> `enable` 属于**地址空间激活能力**，应通过 handle 或明确的架构激活接口进行，**不能因为它不是 PTE 修改就遗漏**。激活后的根页和页表子树仍由调用者永久保留。
-
-所以 A 阶段的方法清单要包含三类，不只是"PTE 修改"：
-
-| 类别 | 方法 | 是否过范围检查 |
-|---|---|---|
-| 页表修改 | `map` / `unmap` / `remap` / `update_flags` / `map_huge` / `split_huge` / `grant_user_walk` | **是** |
-| 查询 | `query` / `root_paddr` / `walk` | 否 |
-| **地址空间激活** | **`enable`** | 否（不是范围操作），但**必须经 handle 或明确激活接口**；激活后根页与子树责任仍在调用者 |
-
-### 4quinquies.1o 共享子树回收测试走 backend 内部入口（第十版评审 §2.2）
-
-第九版有一处实施逻辑不一致：决定当前不公开 `retire_owned_subtrees`，但六项测试里又要求验证"继承后的目标根销毁私有子树时，共享子表物理页不得进入释放回调"。
-
-第十轮评审的解法采纳：这项测试**仍然做**，但明确它是 **backend 内部单元测试**，不需要恢复公开 API。
-
-```rust
-// 测试内直接调 backend 的内部机制
-destroy_private_subtrees(&mut backend, SupervisorOwnership::Borrowed);
-```
-
-测试形态：用受控的模拟页分配器记录每个物理页的来源，然后直接检查 backend 是否跳过了共享顶层入口。
-
-**这样同时做到三件事**（评审原文）：
-
-- 实现并验证三架构的根层跳过机制；
-- 不为尚无生产调用点的 `retire` 增加公开 API；
-- 将来真正实现 `retire` 时**复用已经验证的机制**。
-
-一句话：**机制现在实现和测试，面向调用者的终结 API 暂缓。**
-
-### 4quinquies.1p `#[must_use]` 不是销毁保证（第十版评审 §2.3）
-
-第九版的措辞需要收紧。评审指出：`#[must_use]` 能提醒调用者不要直接忽略创建结果，**却不能保证一个已绑定变量、使用过、随后离开作用域的 handle 一定调用了 `destroy()`**。
-
-采纳评审给的措辞：
-
-> `#[must_use]` 用于提醒调用者显式处理页表资源；**它不构成销毁保证**。普通 `Drop` 不执行物理回收，未调用 `destroy()` 而丢弃 handle **会留下资源消耗**。
-
-并明确一条：**不要为了让 `Drop` 强制调用销毁而引入一套难以证明安全的自动清理机制。**
-
-### 4quinquies.3 四项纳入正式合同的细节
-
-#### （1）`PagingBackend` 不能成为绕过 handle 的第二套公共构造 API（评审 §1）
-
-采纳。两条具体约束：
-
-- `PagingBackend` **`pub(crate)` 或 sealed**，`initialize_external_root` 等入口不对外。
-- **`CallerManagedRoot.phys` 必须与后端 `root_paddr` 一致，且只能由唯一私有构造入口建立。**
-
-第二条是我上一版没写的一个真实风险：`CallerManagedPageTable` 里 `root: CallerManagedRoot<'a>` 与 `inner: P` 都可能保存根页物理地址。若两者能各自独立构造，就会不一致。约束是：**两个字段只能由一个私有构造函数一次写入，之后不可独立替换。**
-
-#### （2）`BorrowedRootMut` / `SharedPageTableSource` 的 SAFETY 都要覆盖整棵可达页表树（评审 §3.1；第九版拆成两个凭证）
-
-采纳，SAFETY 合同原文照录：
-
-```rust
-/// # Safety
-/// The caller guarantees that the root page and every page-table
-/// page reachable through the entries used by this handle remain
-/// allocated and valid for `'a`.
-```
-
-**`every page-table page reachable` 这个措辞是关键**——我上一版只写了"根页有效"，那不够：根页活着但下面的某个 PDPT/PD/PT 被释放或复用时，遍历照样不安全。
-
-对 `SharedPageTableSource<'source>` 还要额外保证（评审 §3.1）：
-
-- 被复制的根条目及其后续子表在借用期内不能被释放或复用；
-- 源树结构若发生修改，必须遵守共享页表的同步合同；
-- 若某个源子树被解除映射或替换，**目标根的对应条目也必须得到一致处理**。
-
-#### （3）两个生命周期参数：`'root` 与 `'source`（评审 §4）
-
-采纳评审的推荐。**但理由要按它自己的纠正写**：不是因为"两个资源来自不同 owner"，而是因为**终结时根页凭证不该被缩短**。
-
-```rust
-unsafe fn retire_owned_subtrees(self) -> RetireResult<'root>;      // 未来预留
-```
-
-返回的凭证只依赖 `'root`。若强行共用一个 `'a = min('root, 'source)`，那么"共享源已销毁"这个事件会**无必要地**让仍然有效的根页凭证失活。
-
-**类型状态也采纳**（评审 §4.2）：
-
-```rust
-struct PrivateSupervisor;
-struct BorrowedSupervisor<'source> { source: SharedPageTableSource<'source> }
-
-struct CallerManagedPageTable<'root, S, P> {
-    inner: P,
-    root: CallerManagedRoot<'root>,
-    supervisor: S,
-}
-```
-
-构造返回 `CallerManagedPageTable<'root, PrivateSupervisor, P>`；`inherit_supervisor_half()` 消费 `self` 返回 `<'root, BorrowedSupervisor<'source>, P>`。
-
-**副产品：重复继承变成类型错误。** 但评审提醒的一点我也记下：类型状态保证不了底层物理页没有残留 Present 条目，所以"目标上半场必须为空"的检查仍然要做。
-
-**不做更多层级**（评审 §4.2 末）：只这两种状态，不引入更多类型状态机。
-
-#### （4）`ProcessLoad` 的出口要有显式动词（评审 §2.3）
-
-采纳。当前是从"局部变量离开作用域"隐式丢弃，改成可审计的边界：
-
-```rust
-impl<'r, 's, P> CallerManagedPageTable<'r, 's, P> {
-    /// 结束 handle 管理，把整棵页表树永久保留。
-    /// 不释放根页或私有子树。调用者承担永久保留责任。
-    unsafe fn into_permanent_root(self) -> PhysBytes;
-}
-```
-
-三个终结动词的语义区分（评审列的，我照录并补第四行）：
-
-| 动词 | 归属 | 释放根页 | 回收私有子树 | 保留整棵树 |
-|---|---|---|---|---|
-| `destroy(self)` | `OwnedPageTable` | **是** | **是** | 否 |
-| ~~`reclaim_owned_subtrees(self)`~~ | **未来 `retire_owned_subtrees`，当前不实现** | 否 | 是 | 否 |
-| `into_permanent_root(self)` | `CallerManagedPageTable` | 否 | 否 | **是** |
-| （无终结动作）| `BorrowedPageTable` | 否 | 否 | 否（借来的，本来就不处置）|
-
-**建议名字可取 `into_permanent_root`，但"permanent"的成立性依赖 §4quinquies.1 的保留合同**——所以这个名字本身也在提醒调用者：用它可以，但要保证那些页真的永久保留。
-
-### 4quinquies.4 未来 `retire_owned_subtrees` 返回前必须清除共享条目（评审 §6；当前不实现）
-
-采纳。这是我上一版漏掉的一步，而且它是逻辑闭合的必要条件。
-
-若不清除：
-
-| 步 | 状态 |
-|---|---|
-| ① handle 结束 | —— |
-| ② `SharedPageTableSource<'source>` 凭证丢弃 | 共享依赖的**类型层**保证消失 |
-| ③ 返回的根页仍保留指向共享子树的 PTE | **物理层依赖仍在** |
-| ④ 根页 owner 拿到一个仍依赖已失效共享源的根 | **依赖没有真正结束** |
-
-**正确的顺序**（评审 §6 给的，我照录）：
-
-```
-确保目标根不再被任何 CPU 使用
-        ↓
-执行必要的 TLB 失效及同步
-        ↓
-清除目标根的借用上半场条目
-        ↓
-递归回收目标根私有子树（跳过借用上半场，不进入共享子树）
-        ↓
-清空目标根页
-        ↓
-返回 CallerManagedRoot<'root>
-```
-
-两条注意（评审明确点出）：
-
-1. `free_child_tables()` 必须跳过借用上半场，**不能进入共享子树**。
-2. **清除借用条目不等于释放源页表页**——源页表结构仍由其原始 owner 管理。
-
-闭合后的语义：返回的凭证代表一个**仍然存在、但已清空**的外部根页。
-
-#### 物理页是否归还要显式区分（评审 §6.1）
-
-采纳"必须显式"这一要求，但对具体形式我给一个更轻的取舍。
-
-评审建议两种形式：`enum RetireOutcome { ReturnedToAllocator, PermanentlyRetired }` 返回值，或"要求调用时具备回收能力"。
-
-**我当时的判断是不引入新枚举，只在文档写差异表。第八版评审否掉了这个做法**，改为"暂不公开该 API"（§4quinquies.1f）。理由成立：既然没有生产调用者，最干净的处理是**先不承诺语义**，而不是承诺一个语义模糊的公开方法。
-
-**但必须做的**：把差异写进 API 文档的合同表（评审 §6.1 那张表，我照录）：
-
-| 动作 | 内核 bump 映像 | VM 可回收映像 |
-|---|---|---|
-| 从目标根清除私有子树入口 | 是 | 是 |
-| 清除共享上半场入口 | 是 | 是 |
-| 递归清理私有子树页 | 是 | 是 |
-| **将物理页放回 allocator** | **否** | **是** |
-
-**并明确写一句**：未来的 `retire_owned_subtrees` 在两种映像下**物理回收结果不同**，调用者必须按自己所在映像理解那个动词的含义。不要依赖 `PT_FREE` 是否注册来静默决定语义。
-
-### 4quinquies.5 共享上半场也要约束后续映射（评审 §5）
-
-采纳，这是本轮最有实际价值的新增约束。
-
-目前的合同只说了"回收时跳过共享条目"。但还有一条链没堵：
-
-```
-① CallerManagedPageTable 从 bootstrap root 继承上半场
-② 它的 Paging 实现把操作委托给 inner
-③ 调用者通过 map()/unmap() 修改上半场的虚拟地址
-④ 这个修改实际进入共享子树
-```
-
-**这会破坏源页表及其他继承者正在使用的结构。**
-
-原来的注释 "user mappings never touch the upper half" 证明**设计意图**是这样，但**泛型 `Paging::map()` 接受任意 `VirBytes`，不会自动维护这个边界**。
-
-采纳评审的建议（不为每种操作发明 handle，而在 handle 上定地址范围合同）：
-
-- `map` / `unmap` / `remap` / `update_flags` 等普通操作**不得修改借用上半场**；
-- 若确需修改共享内核映射，必须走明确授权的全局 owner 路径；
-- **由架构后端识别对应的顶层范围，通用层只表达"不得修改借用的共享子树"这一语义。**
-
-**测试要求**（评审给的，照录）：
-
-> 对 `SupervisorSubtree::Borrowed` 的 handle，尝试修改继承范围内的地址，应被拒绝，且源根和其他继承者的 PTE 不发生变化。
-
-这样共享状态才真正参与**整个操作合同**，而不是只在 `destroy()` 时发挥作用。
-
-### 4quinquies.6 第六版评审的其余裁决（记录）
-
-| 事项 | 裁决 | 落点 |
-|---|---|---|
-| 三层 API | 接受 | §4quater.0 |
-| `PagingBackend` 内部约束 | **需要**：pub(crate)/sealed + 凭证与后端根页一致 | §4quinquies.3（1）|
-| `ProcessLoad` 路二 | **有条件接受**：需证明物理页持续保留 | §4quinquies.1 |
-| `BorrowedRoot` 生命周期 | 覆盖**整棵可达页表树**，不只是根页 | §4quinquies.3（2）|
-| 两个生命周期 | **推荐** `'root` / `'source` 分开 | §4quinquies.3（3）|
-| `Borrowed` 是否只读 | **不是**；需确认实际调用点 | §4quinquies.2（四个全写）|
-| 共享范围的后续映射 | **必须禁止**普通操作修改借用子树 | §4quinquies.5 |
-| `reclaim` 返回前清共享条目 | **建议清除**，再返回凭证 | §4quinquies.4 |
-| 无 free 钩子的终结语义 | 明确 `retire` 与真回收的差异 | §4quinquies.4 |
-| 失败回滚 / 逐页映射 / 池化 | 不扩展本轮 | 不动 |
 
 ---
 
-## 5. 当前开放事项（已按第九版评审收敛）
+## 5. 实施清单、验收门与测试
 
-第八版的 Q1–Q6 已全部由第九版评审回答。**这里只留仍未闭合的实质风险与待核实项**，不再放已裁决的设计问题。
+设计已在 §4ter 收束为「一个状态字段 + 一组入口断言」。本节只列实施与验收。
 
-### 已裁决（记录结论，不再是开放问题）
+### 5.1 实施顺序
 
-| 原问题 | 第九版裁决 | 落点 |
+| 阶段 | 工作 | 验收标准 |
 |---|---|---|
-| Q1 `RetireDisposition` 三态？ | **二值足够**，不加 `PartiallyReturned`。"部分归还"不是当前模型的正常结果；若未来一棵子树混合多个分配来源，那需要重新设计来源表达，不是加个枚举值 | §4quinquies.1f |
-| Q1 附带：`destroy` 也有处置差异 | **成立**，见下"已落实" | §4quinquies.1j |
-| Q2 `classify_range` 关联函数还是方法？ | **关联函数**。它分类的是架构地址布局中的位置，不读当前根页顶层 PTE，不需要 Direct Map | §4quinquies.1b |
-| Q2 `CrossesBoundary` 要不要？ | **保留**。不能把"调用者通常不跨界"当 API 安全条件 | §4quinquies.1b |
-| Q5 非 `'static` 源的返回类型？ | 需要**同时携带 `'root` 与 `'source`** 的不可拆散凭证；当前 `'static` 限制合理，不要提前泛型化 `ProcessLoad` | 见下"待实现" |
-| Q6 D/E 能否合并？ | **分开开发、合并验收**。锁解决并发协调，TLB 失效解决旧翻译——两者不能互相替代 | 见下"D/E 验收门" |
+| **A** | 三架构 `PagingState` 字段 + 三个构造函数设状态 | 状态字段私有；每个构造方式都设对 |
+| **B** | `destroy(self)` 消费型 + 入口断言 | 外部根上 `destroy` 必然 panic；断言在**任何内存操作之前** |
+| **C** | `inherit_supervisor_half` 状态转换 + 目标半场为空检查 | 重复继承 panic；覆盖私有半场被拒 |
+| **D** | `is_supervisor_va` 三架构 + 全部写入口范围断言 | 六行清单全覆盖；批量操作改前先查 |
+| **E** | 四个活动根调用点的同步与 TLB 依据 | 每点答三问（见 5.3）|
+| **F** | R1 实证：源根修改路径核实 | 四个问题逐个有结论 |
+| **G** | R2 修复：TX 专用保留区 + 容量实测 | 真实 VM 接入前必须关闭 |
 
-### 仍未闭合的两项实质风险
+**D 与 E 分开开发、合并验收**：D 完成而 E 未过时，代码已有范围检查却仍允许修改一个缺乏同步证明的活动根——**不能标记为"生产安全改造完成"**。
 
-| # | 风险 | 关闭条件 |
-|---|---|---|
-| **R1（= Q3）** | 源根后续修改是否会让继承者持有**陈旧或悬空入口** | `harden_kernel_text` 与 heap-window eviction 的四个问题必须核实（§4quinquies.1c）。**这是共享 handle 接入生产路径前的验证门** |
-| **R2（= Q4）** | TX 启动分配是否会与**未来 VM PMM 消费的 free list** 重叠 | 专用保留区方案落地 + **容量实测**（§4quinquies.1m 已算出现有 512 页 bump 区要同时装 PT allocator 与 TX 镜像，容量数据缺失）|
+### 5.2 两条独立的证据责任（减法不削减它们）
 
-**评审对此的定性**：这两项都不要求推迟整个页表 handle 重构，应作为**独立实施门**——R1 决定共享页表方案能否安全用于当前 bootstrap 路径；R2 决定 `ProcessLoad` 永久保留方案能否安全用于真实 VM 拓扑。
-
-### D/E 验收门（采纳第九版评审 Q6）
-
-**D 与 E 分开开发，作为两个独立工作项；但只在两者都完成后验收 borrowed handle 的生产迁移。**
-
-| 阶段 | 验证对象 | 核心问题 | 证据类型 |
+| # | 门 | 内容 | 关闭条件 |
 |---|---|---|---|
-| **D** | handle 对地址范围的操作授权 | 能否阻止修改借用上半场？ | 架构分类 + wrapper 检查 + 测试 |
-| **E** | 对活动根与共享页表的并发、TLB 使用合同 | 被授权的修改能否**安全执行**？ | 四个调用点各自的同步依据 |
+| **R1** | 源根结构稳定性 | `Inherited` 只保护目标根不主动改共享范围，**不能**阻止源根替换顶层入口 / 释放旧子树 / 复用继承者可达的页表页 / 改叶 PTE 后漏 TLB | `harden_kernel_text`（`lib.rs:1707`）与 heap-window eviction（`lib.rs:2928`）的四个问题逐个核实（§4ter.7）|
+| **R2** | TX 与 VM free-list 重叠 | 与所有权 API 无关；类型变复杂或变简单都不改变这个事实 | TX 专用保留区落地 + 容量实测（§4ter.7）|
 
-**E 的验收记录必须对四个调用点分别回答三问**（评审原文）：
+**删除凭证类型不会让 R1 的安全保证减少**：凭证本身没有真实 owner，替代不了对源根修改路径的实际核实。
 
-1. 哪个锁、单线程约束或启动顺序防止未协调的并发修改？
+### 5.3 E 门：四个调用点各答三问
+
+| 调用点 | 位置 | 实际调用的写方法 |
+|---|---|---|
+| `init_kerninfo` | `kerninfo.rs:143` | `query` + **`map`** |
+| `harden_kernel_text` | `lib.rs:1707` | **`split_huge`** + **`update_flags`** |
+| heap-window eviction | `lib.rs:2928` | `query` + **`split_huge`** + **`grant_user_walk`** + **`unmap`** |
+| VM 自映射 | `vm_self_map.rs:102` | **`map` / `unmap` / `unmap_range`** |
+
+**四个全部会写页表，没有一个只查询。**
+
+每个调用点必须回答：
+
+1. 哪个锁、单线程约束或启动顺序**防止未协调的并发修改**？
 2. 修改时可能有哪些 CPU 正在使用该根，或使用共享子树的其他根？
-3. 修改后由谁执行 TLB 失效，失效覆盖哪些 CPU、地址空间和翻译缓存范围？
+3. 修改后由谁执行 TLB 失效，覆盖哪些 CPU、地址空间、翻译缓存范围？
 
-**评审的警告我照录**：
+> 锁解决并发修改协调，TLB 失效解决旧翻译仍可能被使用；两者不能相互替代。**BKL 存在，也不能单独证明 TLB 合同成立。**
 
-> 锁解决的是并发修改协调，TLB 失效解决的是旧翻译仍可能被使用；两者不能相互替代。BKL 存在，也不能单独证明 TLB 合同成立。
+### 5.4 三架构测试清单（六项）
 
-**D 完成而 E 未过时的中间状态**：代码已具备范围检查，却仍允许对一个缺乏全局同步证明的活动根进行修改。**这种状态不能标记为"生产安全改造完成"。**
-
-### 待实现（未来预留，不在当前 API 面）
-
-| 项 | 形态 | 何时做 |
-|---|---|---|
-| `retire_owned_subtrees(self) -> RetireResult<'root>` | `RetireDisposition::{ReturnedToAllocator, PermanentlyRetired}` | 出现真实 `CallerManagedPageTable` 私有子树的回收需求时 |
-| 非 `'static` 源的终结凭证 | `RetainedPageTableRoot<'root, 'source>`：根凭证与共享源凭证**作为不可拆散的安全结果**返回 | 出现非 `'static` 源时 |
-| TX 专用保留区 | `Boot reserved region` 拆成 `PT allocator range` + `TX image range` | R2 关闭时，**真实 VM 接入前** |
-
-**一个必须记住的边界**（评审指出）：`RetireDisposition` 只能**报告已约定的释放策略，不能证明回调实现正确**。`PtFreeFn` 返回 `()`，调用者无法从返回值验证 allocator 是否真的接受了每一页。`ReturnedToAllocator` 成立的前提仍是注册时保证 `PT_FREE` 与该映像的 `PT_ALLOC` 来源配对。
-
-### 已落实（第九版新增的四处合同）
-
-| 项 | 内容 | 位置 |
-|---|---|---|
-| 扩展 trait 代理 | `HugePages` 等也必须经 wrapper 检查；`BootArch::Paging: HugePages` 而 `lib.rs:1340` 直接调 `map_huge` —— 只实现 `Paging` 会编译失败 | §4quinquies.1h |
-| 根层跳过的归属 | 由 `PagingBackend::destroy_private_subtrees(&mut self, supervisor)` 决定；通用层不硬编码 256..512 | §4quinquies.1i |
-| `destroy` 的处置差异 | 保留 `destroy(self)` 不加返回值，但文档写清"无释放能力时页表页永久消耗"；`Drop` 不回收，用 `#[must_use]` 防误丢 | §4quinquies.1j |
-| `load_process_elf` 真交接 | 实施时必须真的改写成 `into_permanent_root()` + `SharedPageTableSource<'static>` 入参，不能只补文档 | §4quinquies.1k |
-
-### 三架构测试验收清单（第九版评审给，六项）
-
-不能只检查"总共释放了几页"。至少覆盖：
+不能只检查"总共释放了几页"。
 
 | # | 行为 |
 |---|---|
-| 1 | **私有上半场**：`OwnedPageTable` 建立的上半场私有子表，销毁时应被释放 |
-| 2 | **共享上半场**：继承后的目标根销毁私有子树时，**共享子表物理页不得进入释放回调** |
-| 3 | **根页归属**：`CallerManaged` 根页不能进入 `pt_free`；`Borrowed` 根页不能被清零或释放 |
-| 4 | **范围拒绝**：继承后尝试 `map`/`unmap`/`update_flags`/`split_huge` 修改借用范围，**必须在写入任何 PTE 前失败** |
-| 5 | **批量操作原子性**：跨边界的 `map_range`/`unmap_range`/`remap` 被拒绝后，**私有区域也不能留下部分修改** |
-| 6 | **源共享行为**：共享子表内部允许的修改会被继承者看到；同时验证源根替换入口或解除映射时**不会释放仍被继承者引用的页** |
+| 1 | **私有上半场**：`Owned` 页表销毁时，私有子表应被释放 |
+| 2 | **根页归属**：`External` / `Inherited` 根页**不得**进入 `free_pt_page`，也**不得**被清零 |
+| 3 | **状态拒绝**：在 `External` / `Inherited` 上调用 `destroy` 必须 panic；重复 `inherit` 必须 panic |
+| 4 | **范围拒绝**：`Inherited` 状态下 `map` / `unmap` / `update_flags` / `split_huge` / `map_huge` 修改共享范围，**必须在写入任何 PTE 前失败** |
+| 5 | **批量原子性**：跨边界的 `map_range` / `unmap_range` / `remap` 被拒后，**私有区域也不能留下部分修改** |
+| 6 | **源共享行为**：共享子表内部允许的修改会被继承者看到；源根替换入口或解映射时**不得释放仍被继承者引用的页** |
 
-**第 6 项尤其重要**（评审原文）：前五项证明目标 handle 不会越权修改共享区域，**但还不能证明源页表不会把目标根弄成悬空或陈旧状态**。
+**第 3、4 项是断言版的命门**：它们直接验证"断言在任何修改之前执行"这条实施要求。
 
-**第 6 项的测试还要再补一格**（第十版评审）：当源根顶层入口被替换时，目标根可能继续指向旧子树——这**可能是暂时安全但语义陈旧**的状态。所以测试不能只断言"旧子树没有释放"，还要按最终选定的合同明确：**这种陈旧映射是允许的，还是必须在替换时同步更新/拒绝替换。**
+**第 6 项还要补一格**：源根顶层入口被替换时，目标根可能仍指向旧子树——这**可能是暂时安全但语义陈旧**的状态。测试不能只断言"旧子树没释放"，还要按最终选定的合同明确：**陈旧映射是允许的，还是必须在替换时同步更新 / 拒绝替换。**
 
-### R2 落地时必须记录的指标（第十版评审）
+### 5.5 已确认的行为，写进文档而非加类型
 
-专用保留区是首选方案，但当前只有最低使用量，**没有 PT allocator 的实际高水位**，所以不能判断现有 512 页（2 MiB）是否够。实施时须同时采集：
-
-| 指标 | 需要得到的数 |
+| 行为 | 处理 |
 |---|---|
-| PT allocator | `arch_boot_impl` 全程实际分配页数**及高水位** |
-| TX allocator | 根页、ELF、栈的**实际总页数** |
-| 保留区 | PT 与 TX 两个子区间的**大小、边界及对齐** |
-| VM handoff | 外层完整保留区间是否**仍被整体排除** |
-
-**一个不能搞混的点**（评审原文）：外层 reservation 的范围与 `BootAlloc` 自己可分配的子区间是**两个概念**——不能因为拆分 allocator 区间而缩小 handoff 的保留范围。
+| 无 `PT_FREE` 时物理页不归还 | 写进 `destroy` 文档（"页表对象不再由 handle 管理，物理页不重新进入 allocator"），不加返回值类型 |
+| `Drop` 不自动回收 | 保持显式 `destroy`；`#[must_use]` 只提醒，**不构成销毁保证** |
+| `enable` 不是范围操作 | 不走范围 guard，保留原有安全条件 |
+| `ProcessLoad` 保持裸 `PhysBytes` | 唯一调用者是 QEMU 测试内核；补一行"该路径不支持后续回收"的文档，不加泛型 |
 
 ---
 
@@ -2411,6 +1431,9 @@ map_kernel(&mut pt, &layout)?;      // ← 逐页映射内核空间，自分配�
 ---
 
 ## 7. 版本变更对照
+
+> **⚠ 读这一节前必读**：§7.1–§7.10 是**历史记录**，其中出现的 `PagingBackend`、三种 handle、`BorrowedRootMut`、`SharedPageTableSource`、`PrivateSupervisor`、`BorrowedSupervisor`、`classify_range`、`into_permanent_root` 等名称**全部已废止**（见 §4ter.6 的不做清单）。保留这些历史是为了让评审者看到"为什么走到了最小方案"，**不是现行 API**。**现行 API 只有 §4ter。**
+
 
 ### 7.1 第一版 → 第二版
 
@@ -2676,3 +1699,24 @@ map_kernel(&mut pt, &layout)?;      // ← 逐页映射内核空间，自分配�
 **本版的核心变化是把判据从"设计是否完备"翻转成"设计是否值得它的成本"。** 前十轮评审的方向是单向加码，本版开始做反向压力测试。
 
 **请评审者特别注意 §0.5 第 3 问**：是否存在只改 `destroy()` 一条（按来源决定是否 `free_pt_page` + `Borrowed` 时跳过共享条目）就覆盖了大部分真实危险的方案。如果存在，前面十轮的类型体系就应当整体降级。
+
+### 7.12 第十一版 → 第十二版
+
+| 项 | 第十一版 | 第十二版 |
+|---|---|---|
+| **文档规模** | 2678 行 | **1722 行**（压缩 36%）|
+| **API 处方** | §4ter 至 §4quinquies 全部保留三层结构、三 handle、双凭证、类型状态、范围枚举 | **整段替换为单一最小方案**（§4ter：一个 `PagingState` 三态 + 五条入口断言）|
+| **废止命名** | 建议保留或待裁 | **十二个全部废止**（§4ter.6 明确列名 + 理由）；三个延后项同样不提前概念化 |
+| **`destroy` 签名** | `destroy(&mut self)` 依 handle 类型区分 | **统一 `destroy(self)` 消费型 + 状态断言** |
+| **共享子树回收** | 要实现的根层跳过机制 | **用前置约束解决**：共享页表不允许进入销毁路径，`free_child_tables` 继续遍历全部条目 |
+| **凭证 / 生命周期** | 两个 `PhantomData` 类型 + `into_permanent_root` | **全部删除**；调用点本来就有 `PhysBytes` |
+| **§5 的性质** | 开放问答 | **实施清单 + 两条证据门 + 六项测试** |
+| **R1 / R2** | 两个待核实项 | **不变，且明确"删凭证不减少 R1 的安全保证"** |
+
+**评审的取向我照录作为本文档的收尾**：
+
+> 一个优秀的 OS API，不应该让读者先学习一套所有权类型系统，才能看懂页表页的生命周期。读者看到 `Paging::new()` 就知道这是由页表分配器创建、由 `destroy()` 负责结束的页表；看到 `new_from_page()` 就知道根页来自外部、当前 handle 不会释放它；看到 `inherit_supervisor_half()` 就知道这个根从此有一段共享区域、普通映射操作不能改它；看到 `destroy()` 就知道它只接受自有页表。
+
+> 这套叙事足够直观，而且与 Minix3 C 代码的阅读路径接近：**先看谁分配，再看谁修改，最后看谁释放。**
+
+**实施起点**：§5.1 的 A–G 七阶段。A–D 可立即开始；E 与 D 合并验收；F（R1）与 G（R2）是独立门，不阻止 A–D，也不允许 A–D 掩盖它们。
