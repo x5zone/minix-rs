@@ -5,7 +5,7 @@
 | D03-F01 | DESIGN-01 | NMI 配 IST1 改变 C 的嵌套 NMI 语义；代码注释写作 "C gate_table_exceptions parity"，但 C 的 32 位 TSS 无 IST 字段，且无 `[ARCH]` 标注 | **✅ 已裁决（D-100，2026-11-21）**：保留 IST1/IST2，拆三件——F01a 注释事实修正、F01b `[ARCH]` 三处标注、F01c（F08 对齐 + NMI 重入守卫）登记；实施归 F01 家族批（见 OPEN-DEBT） |
 | D03-F02 | DESIGN-02 | kernel `MAX_CPUS=32` 与 x86 保护结构 8 个 TSS/GS/AP 栈不一致；9 核机器启动即 panic | **✅ 已裁决（D-101，2026-11-21）**：采 A′——`minix-types` 单一定义 `MAX_CPUS=32` + 五处派生（smp/proc/AP_STACK_COUNT/protection/GsAreas）+ `program_gs` 守卫 + `smp_init` 带名超界 panic；验收 `SMP=9` 现成脚本 + BSS 复核；实施归 F02 家族批（见 OPEN-DEBT） |
 | D03-F03 | DESIGN-03 | 门的 DPL 有 `init` 硬编码与 `user_accessible()` 两个真相源，安装后只后者生效 | code batch：单一来源 + 安装后表断言 |
-| D03-F04 | DESIGN-04 | `load()` 是安全 `&self` 可重入方法，x86 第二次 `ltr` 会撞 busy TSS 描述符 #GP | 用户裁决：标 `unsafe`/一次性令牌，或加 `debug_assert` + 文档 |
+| D03-F04 | DESIGN-04 | `load()` 是安全 `&self` 可重入方法，x86 第二次 `ltr` 会撞 busy TSS 描述符 #GP | **✅ 已裁决（D-102，2026-11-21）**：采 A′——trait doc 对齐 `init_ap` 的 "Called once per AP" 句式（补 once + busy #GP + 第二实例静默换表三句）+ `load_with_tss` 的 busy 位硬断言；不采 `unsafe`/令牌/幂等化；可选载体负控；实施归 F04 家族批（见 OPEN-DEBT）。**本条落账后三条 V1-era P1 孤儿（F01/F02/F04）全部清账** |
 | D03-F05 | DESIGN-05 | 门的 IST 字段与 TSS `ist[]` 槽的对应只对 2/8 恢复，其余向量可能失配 | code batch：统一 IST 分配表 |
 | D03-F06 | DESIGN-06 | `kernel_stack_top == 0` 同时表示“无”和“合法零值” | code batch：`Option<VirBytes>` |
 | D03-F07 | DESIGN-07/08/15 | `cpu_count` 只写不读；`boot_cpu_id` 与 BSP 选择重叠；多 CPU 共用同一内核栈可表示 | code batch：删只写字段，加 per-CPU 栈断言 |
