@@ -17,9 +17,8 @@ use crate::handoff_v1::{
     ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1, WIRE_MEMMAP_CAP,
     WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
     WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
-    WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET, WIRE_STARTUP_CAP,
-    WIRE_STARTUP_OFFSET, WireBootModule, WireMemoryRegion, WirePlatformDescSource,
-    WireSourceRecord,
+    WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_OFFSET, WireBootModule,
+    WireMemoryRegion, WirePlatformDescSource, WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
 use crate::memmap_source::SourceRecord;
@@ -66,14 +65,16 @@ pub enum HandoffV1ReadError {
 }
 
 /// Verified envelope scalars, copied out of the arena by value.
+///
+/// v10 dropped `user_sp` / `kern_stack_top` / `syscall_entry` (D-062): the
+/// receiver derives the first two (`USER_STACK_TOP` and
+/// `kern_virt_base + kern_size`) and takes the syscall entry from
+/// `syscall_entry_va()` like every other consumer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandoffScalars {
     pub kern_virt_base: u64,
     pub kern_phys_base: u64,
     pub kern_size: u64,
-    pub user_sp: u64,
-    pub kern_stack_top: u64,
-    pub syscall_entry: u64,
     pub root_page: u64,
     pub bump_base: u64,
     pub bump_next: u64,
@@ -84,7 +85,6 @@ pub struct HandoffScalars {
     pub platform_byte_len: u64,
     pub param_byte_len: u64,
     pub sources_byte_len: u64,
-    pub startup_byte_len: u64,
     pub ram_authority: crate::memmap_source::InputObjectId,
 }
 
@@ -127,11 +127,10 @@ pub struct HandoffDescriptors {
     pub platform_byte_len: u64,
     pub param_byte_len: u64,
     pub sources_byte_len: u64,
-    pub startup_byte_len: u64,
 }
 
-/// Validate the header and return the seven payload descriptors only
-/// (memmap/reserved/modules/platform/param/sources/startup).
+/// Validate the header and return the six payload descriptors only
+/// (memmap/reserved/modules/platform/param/sources).
 ///
 /// This is the sender-side read: it deliberately does not touch the runtime
 /// fields, which are patched later in the boot sequence.
@@ -144,7 +143,6 @@ pub fn decode_descriptors(arena: &[u8]) -> Result<HandoffDescriptors, HandoffV1R
         platform_byte_len: read_u64(arena, offsets::PLATFORM_BYTE_LEN),
         param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
         sources_byte_len: read_u64(arena, offsets::SOURCES_BYTE_LEN),
-        startup_byte_len: read_u64(arena, offsets::STARTUP_BYTE_LEN),
     })
 }
 
@@ -178,9 +176,6 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         kern_virt_base: read_u64(arena, offsets::KERN_VIRT_BASE),
         kern_phys_base: read_u64(arena, offsets::KERN_PHYS_BASE),
         kern_size: read_u64(arena, offsets::KERN_SIZE),
-        user_sp: read_u64(arena, offsets::USER_SP),
-        kern_stack_top: read_u64(arena, offsets::KERN_STACK_TOP),
-        syscall_entry: read_u64(arena, offsets::SYSCALL_ENTRY),
         root_page,
         bump_base,
         bump_next,
@@ -191,7 +186,6 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         platform_byte_len: read_u64(arena, offsets::PLATFORM_BYTE_LEN),
         param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
         sources_byte_len: read_u64(arena, offsets::SOURCES_BYTE_LEN),
-        startup_byte_len: read_u64(arena, offsets::STARTUP_BYTE_LEN),
         ram_authority,
     })
 }
@@ -363,47 +357,6 @@ pub fn decode_sources(
     Ok(count)
 }
 
-/// Decode the startup-object records into `out`, returning the count.
-///
-/// They live in their own partition with their own capacity, so the memory
-/// map's 256 slots can never crowd them out.
-pub fn decode_startup_objects(
-    arena: &[u8],
-    scalars: &HandoffScalars,
-    out: &mut [SourceRecord],
-) -> Result<usize, HandoffV1ReadError> {
-    let count = element_count(
-        scalars.startup_byte_len,
-        WIRE_SOURCE_RECORD_SIZE,
-        WIRE_STARTUP_CAP,
-    )?;
-    if count > out.len() {
-        return Err(HandoffV1ReadError::OutputTooSmall);
-    }
-    for (i, slot) in out.iter_mut().enumerate().take(count) {
-        let off = WIRE_STARTUP_OFFSET + i * WIRE_SOURCE_RECORD_SIZE;
-        let wire = WireSourceRecord {
-            start: read_u64(arena, off),
-            end_lo: read_u64(arena, off + 8),
-            end_hi: read_u64(arena, off + 16),
-            attribute: read_u64(arena, off + 24),
-            virtual_start: read_u64(arena, off + 32),
-            snapshot: read_u64(arena, off + 40),
-            cut: read_u64(arena, off + 48),
-            id: u16::from_le_bytes(arena[off + 56..off + 58].try_into().unwrap()),
-            local: u16::from_le_bytes(arena[off + 58..off + 60].try_into().unwrap()),
-            a: u16::from_le_bytes(arena[off + 60..off + 62].try_into().unwrap()),
-            b: u16::from_le_bytes(arena[off + 62..off + 64].try_into().unwrap()),
-            kind: arena[off + 64],
-            origin_tag: arena[off + 65],
-            input_object: arena[off + 66],
-            address_domain: arena[off + 67],
-            raw_type: read_u32(arena, off + 68),
-        };
-        *slot = wire.decode().ok_or(HandoffV1ReadError::BadSourceRecord)?;
-    }
-    Ok(count)
-}
 
 /// Decode the `param_buf` bytes into `out`, returning the byte count.
 pub fn decode_param_buf(
@@ -526,12 +479,7 @@ mod tests {
         },
     ];
 
-    /// Kernel image + two modules, in the startup-object class.
-    static STARTUP: [SourceRecord; 3] = [
-        startup_record(0, 0x20_0000, 0x60_0000),
-        startup_record(1, 0x20_0000, 0x21_0000),
-        startup_record(2, 0x21_0000, 0x23_0000),
-    ];
+
 
     const ROOT: u64 = 0x1000;
     const BUMP_BASE: u64 = 0x20_0000;
@@ -543,13 +491,9 @@ mod tests {
             memmap: &MEMMAP,
             reserved_regions: &RESERVED,
             memmap_sources: &[],
-            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &MODULES,
             platform_sources: &SOURCES,
             param_buf: PARAM,
@@ -572,7 +516,6 @@ mod tests {
             s.write_platform_sources(info.platform_sources).unwrap();
             s.write_param_buf(info.param_buf).unwrap();
             s.write_sources(&RECORDS).unwrap();
-            s.write_startup(&STARTUP).unwrap();
             for region in info.memmap {
                 s.push_memmap(*region).unwrap();
             }
@@ -741,14 +684,14 @@ mod tests {
     #[test]
     fn rejects_bad_root_and_bump_triple() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 72, 0x1234);
+        put_u64(&mut arena, offsets::ROOT_PAGE, 0x1234);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadRootPage
         );
 
         let mut arena = build_arena();
-        put_u64(&mut arena, 72, 0);
+        put_u64(&mut arena, offsets::ROOT_PAGE, 0);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadRootPage
@@ -756,7 +699,7 @@ mod tests {
 
         // Inverted range: base above end.
         let mut arena = build_arena();
-        put_u64(&mut arena, 80, BUMP_END + 0x1000);
+        put_u64(&mut arena, offsets::BUMP_BASE, BUMP_END + 0x1000);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -764,7 +707,7 @@ mod tests {
 
         // Cursor before the base.
         let mut arena = build_arena();
-        put_u64(&mut arena, 88, BUMP_BASE - 0x1000);
+        put_u64(&mut arena, offsets::BUMP_NEXT, BUMP_BASE - 0x1000);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -772,7 +715,7 @@ mod tests {
 
         // Cursor past the end.
         let mut arena = build_arena();
-        put_u64(&mut arena, 88, BUMP_END + 0x1000);
+        put_u64(&mut arena, offsets::BUMP_NEXT, BUMP_END + 0x1000);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -780,9 +723,9 @@ mod tests {
 
         // The empty region is not a valid bump pool for this protocol.
         let mut arena = build_arena();
-        put_u64(&mut arena, 80, BUMP_BASE);
-        put_u64(&mut arena, 88, BUMP_BASE);
-        put_u64(&mut arena, 96, BUMP_BASE);
+        put_u64(&mut arena, offsets::BUMP_BASE, BUMP_BASE);
+        put_u64(&mut arena, offsets::BUMP_NEXT, BUMP_BASE);
+        put_u64(&mut arena, offsets::BUMP_END, BUMP_BASE);
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadBumpRange
@@ -816,117 +759,17 @@ mod tests {
     }
 
     /// The startup-object partition is decoded on its own and never eats into
-    /// the memory-map partition (or vice versa).
-    #[test]
-    fn round_trip_startup_objects() {
-        let arena = build_arena();
-        let s = decode_envelope(&arena).unwrap();
-        assert_eq!(
-            s.startup_byte_len,
-            (STARTUP.len() * WIRE_SOURCE_RECORD_SIZE) as u64
-        );
-        let mut out = [STARTUP[0]; WIRE_STARTUP_CAP];
-        let n = decode_startup_objects(&arena, &s, &mut out).unwrap();
-        assert_eq!(n, STARTUP.len());
-        assert_eq!(&out[..n], &STARTUP[..]);
-        let mut mem = [RECORDS[0]; WIRE_SOURCES_CAP];
-        let n = decode_sources(&arena, &s, &mut mem).unwrap();
-        assert_eq!(n, RECORDS.len());
-        assert_eq!(&mem[..n], &RECORDS[..]);
-    }
 
     /// Exactly `WIRE_STARTUP_CAP` startup records are accepted while the
-    /// memory partition is simultaneously full at its own cap; the 17th
-    /// startup record is refused by the startup capacity alone.
-    #[test]
-    fn startup_partition_accepts_exactly_its_capacity() {
-        let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(
-            &mut arena,
-            crate::memmap_source::InputObjectId::DtbBootInput,
-        )
-        .unwrap();
-        s.write_envelope(&info()).unwrap();
-        s.patch_runtime_fields(RuntimeFields {
-            root_page: ROOT,
-            bump_base: BUMP_BASE,
-            bump_next: BUMP_NEXT,
-            bump_end: BUMP_END,
-        });
-        let memmap_full = [RECORDS[0]; WIRE_SOURCES_CAP];
-        s.write_sources(&memmap_full).unwrap();
-        let startup_full = [STARTUP[0]; WIRE_STARTUP_CAP];
-        s.write_startup(&startup_full).unwrap();
-        let startup_over = [STARTUP[0]; WIRE_STARTUP_CAP + 1];
-        assert_eq!(
-            s.write_startup(&startup_over).unwrap_err(),
-            HandoffV1WriteError::TooManySourceRecords
-        );
-        let scalars = decode_envelope(&arena).unwrap();
-        assert_eq!(
-            scalars.sources_byte_len,
-            (WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE) as u64
-        );
-        assert_eq!(
-            scalars.startup_byte_len,
-            (WIRE_STARTUP_CAP * WIRE_SOURCE_RECORD_SIZE) as u64
-        );
-    }
-
-    #[test]
-    fn rejects_startup_over_capacity() {
-        let mut arena = build_arena();
-        // Startup descriptor is the u64 at offset 152.
-        put_u64(
-            &mut arena,
-            152,
-            ((WIRE_STARTUP_CAP as u64) + 1) * WIRE_SOURCE_RECORD_SIZE as u64,
-        );
-        let s = decode_envelope(&arena).unwrap();
-        let mut out = [STARTUP[0]; WIRE_STARTUP_CAP];
-        assert_eq!(
-            decode_startup_objects(&arena, &s, &mut out).unwrap_err(),
-            HandoffV1ReadError::DescriptorOverflowsPartition
-        );
-    }
 
     /// The EBS retry clears the classification snapshot only; startup-object
-    /// records describe the image and must survive it.
-    #[test]
-    fn reset_map_partitions_keeps_the_startup_partition() {
-        let mut arena = [0u8; ARENA_CAP];
-        let mut s = Serializer::new(
-            &mut arena,
-            crate::memmap_source::InputObjectId::DtbBootInput,
-        )
-        .unwrap();
-        s.write_envelope(&info()).unwrap();
-        s.write_sources(&RECORDS).unwrap();
-        s.write_startup(&STARTUP).unwrap();
-        s.patch_runtime_fields(RuntimeFields {
-            root_page: ROOT,
-            bump_base: BUMP_BASE,
-            bump_next: BUMP_NEXT,
-            bump_end: BUMP_END,
-        });
-        s.reset_map_partitions();
-        let scalars = decode_envelope(&arena).unwrap();
-        assert_eq!(scalars.sources_byte_len, 0);
-        assert_eq!(
-            scalars.startup_byte_len,
-            (STARTUP.len() * WIRE_SOURCE_RECORD_SIZE) as u64
-        );
-        let mut out = [STARTUP[0]; WIRE_STARTUP_CAP];
-        let n = decode_startup_objects(&arena, &scalars, &mut out).unwrap();
-        assert_eq!(&out[..n], &STARTUP[..]);
-    }
 
     #[test]
     fn rejects_sources_over_capacity() {
         let mut arena = build_arena();
         put_u64(
             &mut arena,
-            144,
+            offsets::SOURCES_BYTE_LEN,
             ((WIRE_SOURCES_CAP as u64) + 1) * WIRE_SOURCE_RECORD_SIZE as u64,
         );
         let s = decode_envelope(&arena).unwrap();
@@ -1024,7 +867,7 @@ mod tests {
     #[test]
     fn rejects_descriptor_over_capacity() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 104, (WIRE_MEMMAP_CAP as u64 + 1) * 16);
+        put_u64(&mut arena, offsets::MEMMAP_BYTE_LEN, (WIRE_MEMMAP_CAP as u64 + 1) * 16);
         let s = decode_envelope(&arena).unwrap();
         let mut out = [MemoryRegion {
             base: PhysBytes(0),
@@ -1039,7 +882,7 @@ mod tests {
     #[test]
     fn rejects_non_divisible_descriptor() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 104, 24);
+        put_u64(&mut arena, offsets::MEMMAP_BYTE_LEN, 24);
         let s = decode_envelope(&arena).unwrap();
         let mut out = [MemoryRegion {
             base: PhysBytes(0),
@@ -1073,7 +916,7 @@ mod tests {
     #[test]
     fn rejects_param_over_capacity() {
         let mut arena = build_arena();
-        put_u64(&mut arena, 136, WIRE_PARAM_CAP as u64 + 1);
+        put_u64(&mut arena, offsets::PARAM_BYTE_LEN, WIRE_PARAM_CAP as u64 + 1);
         let s = decode_envelope(&arena).unwrap();
         let mut param = [0u8; WIRE_PARAM_CAP + 1];
         assert_eq!(

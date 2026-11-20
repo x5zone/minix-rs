@@ -19,7 +19,7 @@
 //! Capacities are the wire partition capacities — for **memmap / reserved /
 //! modules / platform / param** the storage is the single semantic source the
 //! wire is encoded from, so the two cannot disagree about how many entries
-//! fit. Source and startup records are the exception on the UEFI legs: the
+//! fit. Source records are the exception on the UEFI legs: the
 //! classifier writes them straight to the wire (its 296-record source budget
 //! does not fit this storage's 40 slots), so `BootReport` is not a complete
 //! view there. The DTB/U-Boot leg fills every slot and is the single-source
@@ -30,7 +30,6 @@ use minix_types::{PhysBytes, VirBytes};
 use crate::boot_params::PARAM_BUF_CAP;
 use crate::handoff_v1::{
     WIRE_MEMMAP_CAP, WIRE_MODULE_CAP, WIRE_PARAM_CAP, WIRE_PLATFORM_CAP, WIRE_RESERVED_CAP,
-    WIRE_STARTUP_CAP,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
 use crate::memmap_source::{startup_record, SourceRecord, DTB_SOURCE_CAP};
@@ -76,17 +75,12 @@ pub struct BootStorage {
     /// own capacity, 40).
     memmap_sources: [SourceRecord; DTB_SOURCE_CAP],
     memmap_sources_len: usize,
-    /// Startup-object records (kernel + modules + bootstrap objects), in the
-    /// wire partition's capacity.
-    startup_objects: [SourceRecord; WIRE_STARTUP_CAP],
-    startup_len: usize,
     /// Map slots were handed out but their lengths are not committed yet.
     map_dirty: bool,
     modules_committed: bool,
     platform_committed: bool,
     param_committed: bool,
     sources_committed: bool,
-    startup_committed: bool,
 }
 
 impl BootStorage {
@@ -106,14 +100,11 @@ impl BootStorage {
             param_len: 0,
             memmap_sources: [ZERO_RECORD; DTB_SOURCE_CAP],
             memmap_sources_len: 0,
-            startup_objects: [ZERO_RECORD; WIRE_STARTUP_CAP],
-            startup_len: 0,
             map_dirty: false,
             modules_committed: false,
             platform_committed: false,
             param_committed: false,
             sources_committed: false,
-            startup_committed: false,
         }
     }
 
@@ -284,42 +275,9 @@ impl BootStorage {
         self.sources_committed = true;
     }
 
-    /// The full startup-object slot array.
-    pub fn startup_slots_mut(&mut self) -> &mut [SourceRecord] {
-        &mut self.startup_objects
-    }
-
-    /// Commit the live startup-object prefix length.
-    #[cfg(test)]
-    pub(crate) fn set_startup_len(&mut self, len: usize) {
-        assert!(!self.startup_committed, "BootStorage: startup length already committed");
-        assert!(
-            len <= WIRE_STARTUP_CAP,
-            "BootStorage: startup length {len} exceeds capacity {WIRE_STARTUP_CAP}"
-        );
-        self.startup_len = len;
-        self.startup_committed = true;
-    }
-
-    /// Append one startup-object record. Fails when the partition is full.
-    pub fn push_startup(&mut self, record: SourceRecord) -> Result<(), BootStorageFull> {
-        assert!(!self.startup_committed, "BootStorage: startup length already committed");
-        if self.startup_len >= WIRE_STARTUP_CAP {
-            return Err(BootStorageFull);
-        }
-        self.startup_objects[self.startup_len] = record;
-        self.startup_len += 1;
-        Ok(())
-    }
-
     /// Live provenance records.
     pub fn memmap_sources(&self) -> &[SourceRecord] {
         &self.memmap_sources[..self.memmap_sources_len]
-    }
-
-    /// Live startup-object records.
-    pub fn startup_objects(&self) -> &[SourceRecord] {
-        &self.startup_objects[..self.startup_len]
     }
 
     /// Live memmap entries.
@@ -370,7 +328,7 @@ impl BootStorage {
             platform_sources: self.platform_sources(),
             param_buf: self.param_buf(),
             memmap_sources: self.memmap_sources(),
-            startup_objects: self.startup_objects(),
+
             kern_virt_base,
             kern_phys_base,
             kern_size,
@@ -410,7 +368,7 @@ pub struct BootReport<'a> {
     pub memmap_sources: &'a [SourceRecord],
     /// Startup-object records (kernel + modules + bootstrap allocations).
     /// Empty on the UEFI leg for the same reason as `memmap_sources`.
-    pub startup_objects: &'a [SourceRecord],
+
     pub kern_virt_base: VirBytes,
     pub kern_phys_base: PhysBytes,
     pub kern_size: u64,

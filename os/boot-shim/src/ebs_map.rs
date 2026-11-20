@@ -1524,8 +1524,8 @@ mod tests {
             }
         );
         let b = s.as_bytes();
-        assert_eq!(get_u64(b, 104), 16, "memmap descriptor = 1 x 16");
-        assert_eq!(get_u64(b, 112), 16, "reserved descriptor = 1 x 16");
+        assert_eq!(get_u64(b, minix_boot::handoff_v1::envelope_offsets::MEMMAP_BYTE_LEN), 16, "memmap descriptor = 1 x 16");
+        assert_eq!(get_u64(b, minix_boot::handoff_v1::envelope_offsets::RESERVED_BYTE_LEN), 16, "reserved descriptor = 1 x 16");
         assert_eq!(get_u64(b, minix_boot::WIRE_MEMMAP_OFFSET), 0x10_0000);
         assert_eq!(get_u64(b, minix_boot::WIRE_MEMMAP_OFFSET + 8), 0x200 * 4096);
         assert_eq!(get_u64(b, minix_boot::WIRE_RESERVED_OFFSET), 0x40_0000);
@@ -1570,7 +1570,7 @@ mod tests {
             .unwrap();
         let c = commit_map(&mut storage, &mut s).unwrap();
         assert_eq!(c.conventional, 2);
-        assert_eq!(get_u64(s.as_bytes(), 104), 32);
+        assert_eq!(get_u64(s.as_bytes(), minix_boot::handoff_v1::envelope_offsets::MEMMAP_BYTE_LEN), 32);
     }
 
     #[test]
@@ -1768,8 +1768,8 @@ mod tests {
             })
         ));
         // Nothing reached the wire: an un-nameable map is refused whole.
-        assert_eq!(get_u64(s.as_bytes(), 128), 0);
-        assert_eq!(get_u64(s.as_bytes(), 136), 0);
+        assert_eq!(get_u64(s.as_bytes(), minix_boot::handoff_v1::envelope_offsets::MODULES_BYTE_LEN), 0);
+        assert_eq!(get_u64(s.as_bytes(), minix_boot::handoff_v1::envelope_offsets::PLATFORM_BYTE_LEN), 0);
     }
 
     #[test]

@@ -73,16 +73,6 @@ pub struct KernelInfo {
     /// this field as `&[]` and use the lenient gate.
     pub memmap_sources: &'static [SourceRecord],
 
-    /// Startup-object records — the canonical set (D01-F07): the kernel
-    /// image, every boot module, the root page, the bump pool, and the
-    /// handoff arena (when the leg has one). All four producer legs write
-    /// the same set (four writer sites across the five legs — the two
-    /// UEFI chains share one writer); `validate_requiring_sources` fails closed unless at
-    /// least one record covers the kernel image. They have their own
-    /// partition and capacity, so they are never counted against
-    /// memmap_sources.
-    pub startup_objects: &'static [SourceRecord],
-
     /// Kernel virtual base address.
     /// C: kinfo.vir_kern_start = &_kern_vir_base — pre_init.c:113
     pub kern_virt_base: VirBytes,
@@ -95,26 +85,6 @@ pub struct KernelInfo {
     /// C: kern_kernlen = &_kern_size — pg_utils.c linker symbol
     /// Uses u64 instead of usize to avoid truncation on 32-bit targets.
     pub kern_size: u64,
-
-    /// User-space stack top.
-    /// C: kinfo.user_sp = USR_STACKTOP — pre_init.c:156
-    pub user_sp: VirBytes,
-
-    /// Kernel initial stack top (virtual address).
-    /// C: k_boot_stktop / k_initial_stktop — linker symbol, used by
-    /// tss_init(0, &k_boot_stktop) in prot_init() — arch/i386/protect.c:338
-    /// x86-64: TSS.sp0, aarch64: SP_EL1, riscv64: sscratch
-    pub kern_stack_top: VirBytes,
-
-    /// System call entry point (virtual address).
-    /// System call handler entry virtual address (= kern_virt_base + offset).
-    /// Kernel metadata recorded for all architectures; only x86-64 uses it
-    /// to configure LSTAR MSR. aarch64/riscv64 determine the entry at
-    /// compile time (exception/trap vector), so this field is for reference only.
-    /// C: STAR MSR (AMD_MSR_STAR, 32-bit AMD SYSCALL) — set by tss_init() SYSCALL
-    /// MSR setup — arch/i386/protect.c:189-205. Note: C is 32-bit, uses STAR;
-    /// Rust x86-64 long mode uses LSTAR (different MSR, same semantic role).
-    pub syscall_entry: VirBytes,
 
     /// Boot process images (PM, VM, VFS, RS etc.).
     /// C: kinfo.module_list[] — pre_init.c memcpy from GRUB
@@ -214,6 +184,28 @@ impl ValidationLevel {
 }
 
 impl KernelInfo {
+    /// The kernel's initial stack top, derived from the image span.
+    ///
+    /// v10 (D-062) removed `kern_stack_top` from both the wire and this
+    /// struct: every producing leg computed it as `kern_virt_base + kern_size`
+    /// (the loader places the boot stack at the image tail; `bootface`'s `.ld`
+    /// pins `KERN_STACK_TOP` to the same expression), so carrying it across
+    /// the hop was restating an arithmetic identity on both ends.
+    ///
+    /// # Panics
+    ///
+    /// Panics on overflow — a `kern_virt_base + kern_size` that wraps u64
+    /// means the image span itself is corrupt, and every consumer below
+    /// would otherwise work with a bogus stack pointer.
+    pub fn kern_stack_top(&self) -> VirBytes {
+        VirBytes(
+            self.kern_virt_base
+                .0
+                .checked_add(self.kern_size)
+                .expect("KernelInfo: kern_virt_base + kern_size overflows u64"),
+        )
+    }
+
     /// Validate kernel-info invariants. Called by `kmain` at entry.
     ///
     /// `KernelInfo` fields remain `pub` for cross-crate
@@ -221,9 +213,8 @@ impl KernelInfo {
     /// method enforces runtime invariants that the type system cannot:
     ///
     /// 1. `kern_size > 0` — boot-shim must have loaded a non-empty kernel.
-    /// 2. `kern_stack_top % 16 == 0` — stack alignment (AAPCS64 / SysV ABI).
-    /// 3. `!memmap.is_empty()` — at least one free memory region required.
-    /// 4. `!boot_modules.is_empty()` — at least PM/VM/VFS/RS required.
+    /// 2. `!memmap.is_empty()` — at least one free memory region required.
+    /// 3. `!boot_modules.is_empty()` — at least PM/VM/VFS/RS required.
     ///
     /// # Panics
     ///
@@ -270,13 +261,6 @@ impl KernelInfo {
         assert!(
             self.kern_size > 0,
             "KernelInfo: kern_size must be non-zero (boot-shim did not load kernel?)"
-        );
-
-        // 3. Stack pointer must be 16-byte aligned (AAPCS64 / SysV ABI).
-        assert!(
-            self.kern_stack_top.0.is_multiple_of(16),
-            "KernelInfo: kern_stack_top (0x{:x}) must be 16-byte aligned",
-            self.kern_stack_top.0
         );
 
         // 4. At least one free memory region.
@@ -446,28 +430,12 @@ impl KernelInfo {
         //    The lenient gate audits whatever records are present.
         if level.is_strict() {
             let authority = self.authority;
-            // Production-only derived-value equalities (DESIGN-01): the three
-            // scalars must match their single source, not merely be in range.
-            // A forged wire can otherwise carry a legal-looking `user_sp`,
-            // `syscall_entry` or `kern_stack_top` that no inequality catches.
-            assert_eq!(
-                self.user_sp.0,
-                minix_types::USER_STACK_TOP,
-                "KernelInfo: production user_sp does not equal USER_STACK_TOP"
-            );
-            assert_eq!(
-                self.syscall_entry.0, self.kern_virt_base.0,
-                "KernelInfo: production syscall_entry does not equal kern_virt_base"
-            );
-            let expected_stack_top = self
-                .kern_virt_base
-                .0
-                .checked_add(self.kern_size)
-                .expect("KernelInfo: kern_virt_base + kern_size overflows u64");
-            assert_eq!(
-                self.kern_stack_top.0, expected_stack_top,
-                "KernelInfo: production kern_stack_top does not equal kern_virt_base + kern_size"
-            );
+            // v10 (D-062) removed the three derived-value equalities that
+            // used to live here. They asserted `user_sp == USER_STACK_TOP`,
+            // `syscall_entry == kern_virt_base` and
+            // `kern_stack_top == kern_virt_base + kern_size` — all three
+            // restated an identity that the receiver now derives instead of
+            // receiving, so there is no wire value left to forge.
             // The module name is positional identity, not a display label:
             // a forged wire must not pair position 6's image with position 7's
             // name (DESIGN-02).
@@ -518,16 +486,26 @@ impl KernelInfo {
         // it; a missing record means a producer regression, not an empty-list
         // corner case.
         if level.requires_startup_kernel_record() {
+            // v10 (D-062) replaced the startup-object `any()` check with an
+            // equivalent test over data that is already on the wire: the
+            // kernel span must be covered by a `memmap` or `reserved_regions`
+            // span. The five legs were verified to satisfy this before the
+            // partition was removed (UEFI legs claim the span as
+            // `ReservedMapped`; the U-Boot shim and the two direct-core legs
+            // get it from the DTB `/memory` projection).
             let kern_lo = self.kern_phys_base.0;
             let kern_hi = kern_lo
                 .checked_add(self.kern_size)
                 .expect("KernelInfo: kernel span overflows u64");
+            let covered = |spans: &[MemoryRegion]| {
+                spans.iter().any(|r| {
+                    let end = r.base.0.saturating_add(r.len as u64);
+                    r.base.0 <= kern_lo && kern_hi <= end
+                })
+            };
             assert!(
-                self.startup_objects.iter().any(|r| {
-                    r.range.start <= kern_lo && u128::from(kern_hi) <= r.range.end_exclusive
-                }),
-                "KernelInfo: startup_objects must carry a record covering the kernel image [{kern_lo:#x}, {kern_hi:#x}) — got {} record(s)",
-                self.startup_objects.len()
+                covered(self.memmap) || covered(self.reserved_regions),
+                "KernelInfo: the kernel image span [{kern_lo:#x}, {kern_hi:#x}) must lie in a memmap or reserved_regions span (v10 derives this from the map tables)"
             );
         }
     }
@@ -574,57 +552,22 @@ impl KernelInfo {
     /// Any failing postcondition fails fast (there is no recovery surface
     /// during boot; same weight as `validate`).
     pub fn check_boot_postconditions(&self) {
-        // 1. The syscall entry lies inside the kernel image: the field's own
-        //    doc says "= kern_virt_base + offset", and no form may point the
-        //    entry outside the image — exactly where an `entry_start_pa`
-        //    style typo is caught.
-        let entry_off = self
-            .syscall_entry
-            .0
-            .checked_sub(self.kern_virt_base.0)
-            .unwrap_or(u64::MAX);
+        // v10 (D-062) removed the three scalars these four assertions used to
+        // read, so they are gone with their data source rather than rewritten
+        // against derived values — a check on `kern_virt_base + kern_size`
+        // that just recomputed the same expression would be a tautology, and
+        // a `USER_STACK_TOP` check would compare a compile-time constant with
+        // itself. What still has to hold is the one relation that the
+        // remaining fields can falsify: the kernel image must lie in the
+        // higher half, which is the property the user/kernel split rests on.
+        //
+        // The syscall-entry placement check moved with its single source:
+        // `syscall_entry_va()` is now the only authority (it always was for
+        // execution; the field was only a mirror).
         assert!(
-            entry_off < self.kern_size,
-            "KernelInfo postcond: syscall_entry (0x{:x}) 不在内核镜像 [0x{:x}, 0x{:x}) 内",
-            self.syscall_entry.0,
-            self.kern_virt_base.0,
-            self.kern_virt_base.0.saturating_add(self.kern_size)
-        );
-
-        // 2. The kernel's initial stack top lies in the higher half (≥ the
-        //    kernel virtual base): all three forms are higher-half kernels,
-        //    so the stack must not drop into the user half.
-        assert!(
-            self.kern_stack_top.0 >= self.kern_virt_base.0,
-            "KernelInfo postcond: kern_stack_top (0x{:x}) 低于 higher-half 内核基 (0x{:x})",
-            self.kern_stack_top.0,
+            self.kern_virt_base.0 > u64::from(u32::MAX),
+            "KernelInfo postcond: kern_virt_base (0x{:x}) 不在 higher half",
             self.kern_virt_base.0
-        );
-
-        // 3. The user stack top is strictly below the kernel's higher-half
-        //    base: the bottom line of user/kernel address-space separation,
-        //    and where overlapping misplacement (zeroing a kernel page in
-        //    use as if it were free) is caught.
-        assert!(
-            self.user_sp.0 < self.kern_virt_base.0,
-            "KernelInfo postcond: user_sp (0x{:x}) 未严格低于内核基 (0x{:x})",
-            self.user_sp.0,
-            self.kern_virt_base.0
-        );
-
-        // 4. The initial stack top does not sit past the image end: the
-        //    constructor derives `kern_stack_top = kern_virt_base +
-        //    kern_size` (builder) or pins it at the image tail (bootface
-        //    `.ld` constants), so a value beyond `base + size` is a
-        //    paper-constant error of the `entry_start_pa` family — first
-        //    push after `mov sp` would land in unmapped memory. If a future
-        //    layout legally moves the boot stack out of the image, relax
-        //    this together with the producer that justifies it.
-        assert!(
-            self.kern_stack_top.0 <= self.kern_virt_base.0.saturating_add(self.kern_size),
-            "KernelInfo postcond: kern_stack_top (0x{:x}) 越过镜像尾 (0x{:x})",
-            self.kern_stack_top.0,
-            self.kern_virt_base.0.saturating_add(self.kern_size)
         );
     }
 }
@@ -693,13 +636,9 @@ mod tests {
                 len: 0x1000,
             }],
             memmap_sources: &[],
-            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0000_0000),
             boot_modules: &[BootModule {
                 name: "ds",
                 start: PhysBytes(0x400000),
@@ -774,52 +713,24 @@ mod tests {
     fn test_validate_requiring_sources_accepts_covering_records() {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS;
-        // D01-F07: the strict gate also requires a startup record covering
-        // the kernel image (here kern_phys_base 0x200000 + kern_size
-        // 0x200000 → [0x200000, 0x400000)).
-        static KERN_RECORD: [SourceRecord; 1] =
-            [crate::memmap_source::startup_record(0, 0x200_000, 0x400_000)];
-        info.startup_objects = &KERN_RECORD;
+        // v10 (D-062): the strict gate no longer needs a startup record; it
+        // now requires the kernel span to lie in a memmap or reserved span.
+        // `make_valid_info`'s map already covers [0x100000, 0x1100000) +
+        // [0x1da00000, +0x1000), and kern_phys_base 0x200000 + 0x200000 lands
+        // inside the first one, so the call below passes on the map tables
+        // alone.
         info.validate_requiring_sources();
     }
 
     /// D01-R1 D2-04: a stack top past the image end is representable in
     /// the type but semantically impossible — the postcondition gate must
     /// catch it (first push after `mov sp` would hit unmapped memory).
-    #[test]
-    #[should_panic(expected = "越过镜像尾")]
-    fn test_postconditions_reject_stack_top_past_image_end() {
-        let mut info = make_valid_info();
-        info.kern_stack_top = VirBytes(info.kern_virt_base.0 + info.kern_size + 0x1000);
-        info.check_boot_postconditions();
-    }
 
     /// R17 DESIGN-09: each postcondition needs a negative test that feeds
     /// hand-crafted invalid input, proving the assertion can fire on
     /// independent data (not just builder-consistent values).
-    #[test]
-    #[should_panic(expected = "不在内核镜像")]
-    fn test_postconditions_reject_syscall_entry_outside_image() {
-        let mut info = make_valid_info();
-        info.syscall_entry = VirBytes(info.kern_virt_base.0 + info.kern_size + 0x2000);
-        info.check_boot_postconditions();
-    }
 
-    #[test]
-    #[should_panic(expected = "低于 higher-half 内核基")]
-    fn test_postconditions_reject_stack_top_below_higher_half() {
-        let mut info = make_valid_info();
-        info.kern_stack_top = VirBytes(0x1000); // far below any higher-half base
-        info.check_boot_postconditions();
-    }
 
-    #[test]
-    #[should_panic(expected = "未严格低于内核基")]
-    fn test_postconditions_reject_user_sp_above_kernel_base() {
-        let mut info = make_valid_info();
-        info.user_sp = VirBytes(info.kern_virt_base.0 + 0x1000);
-        info.check_boot_postconditions();
-    }
 
     /// D01-R1 D2-05: an out-of-order memmap violates the firmware delivery
     /// contract and must fail fast at validate.
@@ -955,12 +866,17 @@ mod tests {
     /// D01-F07: without a startup record covering the kernel image, the
     /// strict production gate fails closed even when source records cover
     /// the memory projections.
+
+    /// v10 (D-062) replacement for the deleted startup-record test: the
+    /// kernel span must lie in a memmap or reserved span, so a map that
+    /// covers neither must fail the strict gate.
     #[test]
-    #[should_panic(expected = "startup_objects must carry a record covering the kernel image")]
-    fn test_validate_requiring_sources_rejects_missing_kernel_startup_record() {
+    #[should_panic(expected = "must lie in a memmap or reserved_regions span")]
+    fn test_validate_requiring_sources_rejects_kernel_span_outside_map() {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS;
-        info.startup_objects = &[];
+        // Point the kernel outside both tables (base 0x40000000, size 0x200000).
+        info.kern_phys_base = PhysBytes(0x4000_0000);
         info.validate_requiring_sources();
     }
 
@@ -975,29 +891,8 @@ mod tests {
         info.validate_requiring_sources();
     }
 
-    #[test]
-    #[should_panic(expected = "production user_sp does not equal USER_STACK_TOP")]
-    fn test_validate_requiring_sources_rejects_noncanonical_user_sp() {
-        let mut info = make_valid_info();
-        info.user_sp = VirBytes(minix_types::USER_STACK_TOP - 0x1000);
-        info.validate_requiring_sources();
-    }
 
-    #[test]
-    #[should_panic(expected = "production syscall_entry does not equal kern_virt_base")]
-    fn test_validate_requiring_sources_rejects_noncanonical_syscall_entry() {
-        let mut info = make_valid_info();
-        info.syscall_entry = VirBytes(info.kern_virt_base.0 + 0x1000);
-        info.validate_requiring_sources();
-    }
 
-    #[test]
-    #[should_panic(expected = "production kern_stack_top does not equal kern_virt_base + kern_size")]
-    fn test_validate_requiring_sources_rejects_noncanonical_stack_top() {
-        let mut info = make_valid_info();
-        info.kern_stack_top = VirBytes(info.kern_virt_base.0 + 0x1000);
-        info.validate_requiring_sources();
-    }
 
     #[test]
     #[should_panic(expected = "does not match the canonical position")]
@@ -1026,13 +921,6 @@ mod tests {
         info.validate();
     }
 
-    #[test]
-    #[should_panic(expected = "must be 16-byte aligned")]
-    fn test_validate_rejects_misaligned_stack() {
-        let mut info = make_valid_info();
-        info.kern_stack_top = VirBytes(0xFFFF_8000_0040_0001); // odd address
-        info.validate();
-    }
 
     #[test]
     #[should_panic(expected = "memmap must not be empty")]

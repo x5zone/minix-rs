@@ -49,7 +49,6 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
-        startup_objects: &[],
         authority: minix_boot::InputObjectId::UefiMemoryMap,
     };
 

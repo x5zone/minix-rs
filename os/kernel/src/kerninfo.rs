@@ -116,7 +116,8 @@ fn fill_kerninfo_page(kernel_info: &KernelInfo) {
     let page = unsafe { &mut *KERNINFO_PAGE.get() };
     page.user = KuserInfo {
         kui_size: size_of::<KuserInfo>() as u64,
-        kui_user_sp: kernel_info.user_sp.0,
+        // v10 (D-062): derived (was `KernelInfo.user_sp`, always this constant).
+        kui_user_sp: minix_types::USER_STACK_TOP,
     };
 }
 
@@ -211,15 +212,11 @@ mod kerninfo_tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::DtbBootInput,
         }
     }
@@ -243,7 +240,7 @@ mod kerninfo_tests {
 
         // kuserinfo is filled from boot info (C main.c:438-440)...
         assert_eq!(page.user.kui_size, size_of::<KuserInfo>() as u64);
-        assert_eq!(page.user.kui_user_sp, info.user_sp.0);
+        assert_eq!(page.user.kui_user_sp, minix_types::USER_STACK_TOP);
 
         // ...while the top-level struct still shows the pre-publish state:
         // magic stamped (const init), but no pointer/flag fixups yet. The

@@ -655,17 +655,19 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // C kernel seeds 64 KiB and lets VM self-grow (reservedqueue.mappedin);
     // we lack the self-grow, so the eager runway IS the whole allowance
     // (see VM_STACK_SIZE doc above for the rationale).
-    // Use the getter method (preferred API).
-    let stack_high = kernel_info.user_sp;
-    // Defensive: a caller-supplied `user_sp` below the runway clamps the
-    // window to [0, stack_high) rather than underflowing the subtraction
-    // (production `user_sp` = 0x7fffffff_f000, far above VM_STACK_SIZE).
-    let stack_bottom = stack_high.0.saturating_sub(VM_STACK_SIZE);
+    // v10 (D-062): the value is derived, not received. It was a wire
+    // scalar (`KernelInfo.user_sp`) that every producer filled with this
+    // same compile-time constant.
+    let stack_high = minix_types::USER_STACK_TOP;
+    // Defensive: a lower stack top would clamp the window to [0, stack_high)
+    // rather than underflowing the subtraction (the constant is
+    // 0x7fffffff_f000, far above VM_STACK_SIZE).
+    let stack_bottom = stack_high.saturating_sub(VM_STACK_SIZE);
 
     let stack_flags = crate::paging::PageFlags::read_write();
     let stack_align = stack_bottom & !(page_size - 1);
     let mut stack_addr = stack_align;
-    while stack_addr < stack_high.0 {
+    while stack_addr < stack_high {
         // User stack frames also come from the bootstrap allocator
         // (direction D: PA is chosen, not assumed VA == PA).
         let frame = vm_alloc
@@ -699,7 +701,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // startup code reads the descriptor via its register, not via SP), so
     // this only shifts the frame down by 8 bytes. Ruling: C-board
     // C8/SD-21 external review, c-board-rulings-brief.md §11.4-11.5.
-    let sp = VirBytes((stack_high.0 - PS_STRINGS_SIZE - ARGC_ARGV_ENVP) & !15);
+    let sp = VirBytes((stack_high - PS_STRINGS_SIZE - ARGC_ARGV_ENVP) & !15);
     let ps_strings = VirBytes(sp.0 + ARGC_ARGV_ENVP);
 
     // Resolve the kernel VA of the *top* stack page (`stack_high -
@@ -714,13 +716,13 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // SAFETY: `ps_strings` and `sp` sit inside the top stack page
     // that the loop above mapped. The stores below write into the
     // frame-backing memory, not the (possibly unmapped) VM VA.
-    let top_page_va = VirBytes(stack_high.0 - page_size);
+    let top_page_va = VirBytes(stack_high - page_size);
     let top_page_pa = paging.query(top_page_va)
         .ok_or(VmLoadError::MappingFailed)?
         .0;
     let top_frame_kva = access.frame_virt(PhysFrame::new(top_page_pa));
     unsafe {
-        let frame_offset = ps_strings.0 - (stack_high.0 - page_size);
+        let frame_offset = ps_strings.0 - (stack_high - page_size);
         let psp = (top_frame_kva.0 + frame_offset) as *mut u8;
         let argvstr = sp.0 + core::mem::size_of::<usize>() as u64;  // after the argc word
         let envstr = argvstr + core::mem::size_of::<usize>() as u64;
@@ -925,7 +927,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1038,7 +1039,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1156,7 +1156,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         // The "live" bootstrap root — mock inherit is a no-op, only the
@@ -1237,7 +1236,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let result = load_process_elf::<crate::paging::mock::MockPaging, _>(
@@ -1353,7 +1351,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1477,7 +1474,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1560,7 +1556,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1622,7 +1617,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1700,7 +1694,6 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();

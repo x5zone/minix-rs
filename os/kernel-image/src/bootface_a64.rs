@@ -336,43 +336,10 @@ pub extern "C" fn bootface_a64() -> ! {
         !sources.is_empty(),
         "bootface: DTB legs must carry source records, not an empty partition"
     );
-    // Startup-object records: the kernel image and every boot module, in the
-    // second record class with its own capacity. `push_startup` fails closed
-    // when the partition is full.
-    storage
-        .push_startup(minix_boot::startup_record(
-            0,
-            KERN_PHYS_BASE,
-            KERN_PHYS_BASE + KERN_SIZE,
-        ))
-        .expect("bootface: startup-object partition over capacity");
-    for i in 0..storage.boot_modules().len() {
-        let module = storage.boot_modules()[i];
-        storage
-            .push_startup(minix_boot::startup_record(
-                storage.startup_objects().len() as u16,
-                module.start.0,
-                module.start.0 + module.len as u64,
-            ))
-            .expect("bootface: startup-object partition over capacity");
-    }
-    // Root page and bump pool complete the canonical set (D01-F07).
-    storage
-        .push_startup(minix_boot::startup_record(
-            storage.startup_objects().len() as u16,
-            root_page.0,
-            root_page.0 + 4096,
-        ))
-        .expect("bootface: startup-object partition over capacity");
-    // aarch64's own bump pool (D01-R7: the riscv opensbi_helpers
-    // constants describe the U-Boot leg's pool, a different address).
-    storage
-        .push_startup(minix_boot::startup_record(
-            storage.startup_objects().len() as u16,
-            BUMP_BASE,
-            BUMP_BASE + BUMP_SIZE,
-        ))
-        .expect("bootface: startup-object partition over capacity");
+    // v10 (D-062) removed the startup-object set that used to be pushed here:
+    // its single reader (a strict-gate coverage check) is now answered by the
+    // map tables, and the kernel span is already in `memmap` on this leg.
+
     // Capture the live prefixes, then end the only `&mut` to the one-shot
     // storage. Creating the slices after every write is what keeps the
     // `&'static` views from aliasing a later `&mut` (DESIGN-D2-13).
@@ -380,8 +347,6 @@ pub extern "C" fn bootface_a64() -> ! {
     let modules_len = storage.boot_modules().len();
     let platform_ptr = storage.platform_sources().as_ptr();
     let platform_len = storage.platform_sources().len();
-    let startup_ptr = storage.startup_objects().as_ptr();
-    let startup_len = storage.startup_objects().len();
     let _ = storage;
 
     // SAFETY: `BOOT_STORAGE` is a one-shot static whose writer has finished;
@@ -392,9 +357,6 @@ pub extern "C" fn bootface_a64() -> ! {
         unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) };
     let param_buf: &'static [u8] =
         unsafe { core::slice::from_raw_parts(param_ptr, param_len) };
-    let startup_objects: &'static [minix_boot::SourceRecord] =
-        unsafe { core::slice::from_raw_parts(startup_ptr, startup_len) };
-
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,
         reserved,
@@ -405,7 +367,6 @@ pub extern "C" fn bootface_a64() -> ! {
         platform_sources,
         param_buf,
         sources,
-        startup_objects,
         minix_boot::InputObjectId::DtbBootInput,
     );
     kernel_info.validate_requiring_sources();

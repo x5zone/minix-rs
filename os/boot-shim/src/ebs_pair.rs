@@ -412,13 +412,9 @@ mod tests {
             memmap: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            user_sp: VirBytes(0x8000_0000),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -805,7 +801,11 @@ mod tests {
         assert_eq!(c.conventional, 1);
         let get_u64 =
             |off: usize| u64::from_le_bytes(s.as_bytes()[off..off + 8].try_into().unwrap());
-        assert_eq!(get_u64(104), 16, "descriptor must not accumulate entries");
+        assert_eq!(
+            get_u64(minix_boot::handoff_v1::envelope_offsets::MEMMAP_BYTE_LEN),
+            16,
+            "descriptor must not accumulate entries"
+        );
     }
 
     /// The production sender writes the envelope and the non-map payloads
@@ -833,13 +833,9 @@ mod tests {
             memmap: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &MODULES,
             platform_sources: &SOURCES,
             param_buf: b"ARCH=test\0",

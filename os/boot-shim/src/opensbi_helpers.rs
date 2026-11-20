@@ -422,26 +422,11 @@ pub fn prepare_boot<'a>(
             .expect("boot-shim: platform-source partition over capacity");
     }
 
-    // The handoff arena: the next bump pages after the module landings,
-    // inside the same pool. It moves into this function so the complete
-    // startup set (kernel + modules + root + bump + arena) is written
-    // into the storage before the report borrows it.
+    // The handoff arena: the next bump pages after the module landings, inside
+    // the same pool. (v10 / D-062 removed the startup-object set that used to
+    // be written here; its one reader is served by the map tables.)
     let arena_pa = bump_alloc_pages(minix_boot::ARENA_CAP / 4096)
         .expect("boot-shim: out of bump memory (arena)");
-
-    // Startup-object records: kernel image, every boot module, the root
-    // page, the bump region and the arena. Over capacity fails closed.
-    push_startup_record(storage, kern.kern_phys_base.0, kern.kern_size);
-    for i in 0..storage.boot_modules().len() {
-        let (start, len) = {
-            let module = &storage.boot_modules()[i];
-            (module.start.0, module.len as u64)
-        };
-        push_startup_record(storage, start, len);
-    }
-    push_startup_record(storage, root_page.0, 4096);
-    push_startup_record(storage, bump_base, bump_end - bump_base);
-    push_startup_record(storage, arena_pa, minix_boot::ARENA_CAP as u64);
 
     // No ExitBootServices analogue on OpenSBI — U-Boot already handed
     // over control before the boot-shim started executing.
@@ -455,21 +440,6 @@ pub fn prepare_boot<'a>(
         .expect("prepare_boot: bump region end precedes its base"),
         arena_pa: minix_types::PhysBytes(arena_pa),
     }
-}
-
-/// Append one startup-object record to the caller's storage.
-///
-/// A zero-length object is skipped (the wire's canonical set contains only
-/// real spans); an over-capacity append panics because silently dropping the
-/// last records would hand the kernel an incomplete list.
-fn push_startup_record(storage: &mut minix_boot::BootStorage, start: u64, len: u64) {
-    if len == 0 {
-        return;
-    }
-    let index = storage.startup_objects().len() as u16;
-    storage
-        .push_startup(minix_boot::startup_record(index, start, start + len))
-        .expect("boot-shim: startup-object partition over capacity");
 }
 
 // ── BootFileTable handoff ──
@@ -797,14 +767,12 @@ mod tests {
             &[], // platform_sources (empty = no source)
             &[], // param_buf (no source in this unit test)
             &[], // memmap_sources
-            &[], // startup_objects
             minix_boot::InputObjectId::DtbBootInput,
         );
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit
         // value; the Sv39 value range is pinned on riscv64 targets by
         // minix_types' compile-time invariant).
-        assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP);
         assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
         assert!(info.platform_sources.is_empty());
     }
@@ -859,7 +827,6 @@ mod tests {
             &[],
             &[],
             &[],
-            &[],
             minix_boot::InputObjectId::DtbBootInput,
         );
         // memmap
@@ -870,16 +837,13 @@ mod tests {
         assert_eq!(info.kern_virt_base, VirBytes(0xFFFF_FFFF_8000_0000));
         assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
         assert_eq!(info.kern_size, 0x100_000);
-        // Derived fields
+        // Derived fields (v10 / D-062): `kern_stack_top` is an accessor,
+        // `user_sp` is the compile-time constant, and the syscall entry comes
+        // from `syscall_entry_va()` — none of them is carried on the wire.
         assert_eq!(
-            info.kern_stack_top,
+            info.kern_stack_top(),
             VirBytes(0xFFFF_FFFF_8000_0000u64 + 0x100_000)
         );
-        assert_eq!(info.syscall_entry, VirBytes(0xFFFF_FFFF_8000_0000));
-        // user_sp is the single authority constant (independent of the
-        // inputs); host tests take the non-riscv branch, and the Sv39 value
-        // range is pinned on riscv64 by minix_types' compile-time invariant.
-        assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP);
         // module + platform_sources
         assert_eq!(info.boot_modules.len(), 0);
         assert!(info.platform_sources.is_empty());

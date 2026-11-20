@@ -3,11 +3,11 @@
 //! A [`Serializer`] owns a caller-provided arena (`&mut [u8]`) and writes the
 //! v1 wire image into it at the fixed offsets from [`crate::handoff_v1`]:
 //! envelope first, then the wire partition (memmap / reserved regions / boot
-//! modules / platform sources / param bytes) and the two independent record
-//! partitions (`write_sources` for the provenance records and `write_startup`
-//! for the startup-object records). The wire is the only map representation
-//! in the arena (R18 D-2); the sender's semantic tables live in its own
-//! `BootStorage` and the receiver decodes the wire into its own `.bss`.
+//! modules / platform sources / param bytes) and the independent record
+//! partition (`write_sources` for the provenance records). The wire is the
+//! only map representation in the arena (R18 D-2); the sender's semantic
+//! tables live in its own `BootStorage` and the receiver decodes the wire into
+//! its own `.bss`.
 //!
 //! The arena is a plain byte slice here on purpose: the boot legs construct it
 //! from their `AllocatePages` result (the only `unsafe` step, documented at
@@ -24,7 +24,7 @@ use crate::handoff_v1::{
     WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP, WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET,
     WIRE_PLATFORM_CAP, WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
     WIRE_SOURCE_RECORD_SIZE, WIRE_SOURCES_CAP, WIRE_SOURCES_END, WIRE_SOURCES_OFFSET,
-    WIRE_STARTUP_CAP, WIRE_STARTUP_OFFSET, WireSourceRecord,
+    WireSourceRecord,
 };
 use crate::kernel_info::{BootModule, KernelInfo, MemoryRegion};
 use crate::memmap_source::SourceRecord;
@@ -139,43 +139,25 @@ impl<'a> Serializer<'a> {
         &mut self,
         report: &crate::boot_storage::BootReport<'_>,
     ) -> Result<(), HandoffV1WriteError> {
-        debug_assert_eq!(report.user_sp.0, minix_types::USER_STACK_TOP);
-        debug_assert_eq!(report.syscall_entry.0, report.kern_virt_base.0);
-        debug_assert_eq!(
-            report.kern_stack_top.0,
-            report.kern_virt_base.0 + report.kern_size
-        );
-        self.write_envelope_scalars(
-            report.kern_virt_base.0,
-            report.kern_phys_base.0,
-            report.kern_size,
-            report.user_sp.0,
-            report.kern_stack_top.0,
-            report.syscall_entry.0,
-        )
+        self.write_envelope_scalars(report.kern_virt_base.0, report.kern_phys_base.0, report.kern_size)
     }
 
     /// Write the protocol header and the kernel scalars (receiver-side
     /// `KernelInfo` form; direct-core legs still use it).
     pub fn write_envelope(&mut self, info: &KernelInfo) -> Result<(), HandoffV1WriteError> {
-        self.write_envelope_scalars(
-            info.kern_virt_base.0,
-            info.kern_phys_base.0,
-            info.kern_size,
-            info.user_sp.0,
-            info.kern_stack_top.0,
-            info.syscall_entry.0,
-        )
+        self.write_envelope_scalars(info.kern_virt_base.0, info.kern_phys_base.0, info.kern_size)
     }
 
+    /// Write the protocol header and the three kernel scalars.
+    ///
+    /// v10 dropped `user_sp` / `kern_stack_top` / `syscall_entry` (D-062):
+    /// the first two are derivable on both sides, the third was a producer's
+    /// restatement of `kern_virt_base` that no consumer read.
     fn write_envelope_scalars(
         &mut self,
         kern_virt_base: u64,
         kern_phys_base: u64,
         kern_size: u64,
-        user_sp: u64,
-        kern_stack_top: u64,
-        syscall_entry: u64,
     ) -> Result<(), HandoffV1WriteError> {
         put_u32(self.arena, offsets::MAGIC, BOOT_HANDOFF_V1_MAGIC);
         put_u32(self.arena, offsets::VERSION, BOOT_HANDOFF_V1_VERSION);
@@ -184,9 +166,6 @@ impl<'a> Serializer<'a> {
         put_u64(self.arena, offsets::KERN_VIRT_BASE, kern_virt_base);
         put_u64(self.arena, offsets::KERN_PHYS_BASE, kern_phys_base);
         put_u64(self.arena, offsets::KERN_SIZE, kern_size);
-        put_u64(self.arena, offsets::USER_SP, user_sp);
-        put_u64(self.arena, offsets::KERN_STACK_TOP, kern_stack_top);
-        put_u64(self.arena, offsets::SYSCALL_ENTRY, syscall_entry);
         Ok(())
     }
 
@@ -299,25 +278,6 @@ impl<'a> Serializer<'a> {
             self.arena,
             offsets::SOURCES_BYTE_LEN,
             (sources.len() * WIRE_SOURCE_RECORD_SIZE) as u64,
-        );
-        Ok(())
-    }
-
-    /// Write the startup-object partition (its own capacity; never counted
-    /// against the memory-source partition).
-    pub fn write_startup(&mut self, records: &[SourceRecord]) -> Result<(), HandoffV1WriteError> {
-        if records.len() > WIRE_STARTUP_CAP {
-            return Err(HandoffV1WriteError::TooManySourceRecords);
-        }
-        for (i, record) in records.iter().enumerate() {
-            let wire = WireSourceRecord::encode(record);
-            let off = WIRE_STARTUP_OFFSET + i * WIRE_SOURCE_RECORD_SIZE;
-            self.write_wire_source_at(off, &wire);
-        }
-        put_u64(
-            self.arena,
-            offsets::STARTUP_BYTE_LEN,
-            (records.len() * WIRE_SOURCE_RECORD_SIZE) as u64,
         );
         Ok(())
     }
@@ -469,13 +429,9 @@ mod tests {
             memmap: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -508,7 +464,7 @@ mod tests {
             core::mem::size_of::<BootHandoffV1>() as u32
         );
         assert_eq!(get_u64(&arena, 16), ARENA_CAP as u64);
-        assert_eq!(get_u64(&arena, 24), 0xFFFF_8000_0000_0000);
+        assert_eq!(get_u64(&arena, offsets::KERN_VIRT_BASE), 0xFFFF_8000_0000_0000);
         assert_eq!(get_u64(&arena, 32), 0x20_0000);
         assert_eq!(get_u64(&arena, 40), 0x20_0000);
         // Descriptors start empty.
@@ -533,10 +489,10 @@ mod tests {
             bump_next: 0x21_0000,
             bump_end: 0x30_0000,
         });
-        assert_eq!(get_u64(s.as_bytes(), 72), 0x1000);
-        assert_eq!(get_u64(s.as_bytes(), 80), 0x20_0000);
-        assert_eq!(get_u64(s.as_bytes(), 88), 0x21_0000);
-        assert_eq!(get_u64(s.as_bytes(), 96), 0x30_0000);
+        assert_eq!(get_u64(s.as_bytes(), offsets::ROOT_PAGE), 0x1000);
+        assert_eq!(get_u64(s.as_bytes(), offsets::BUMP_BASE), 0x20_0000);
+        assert_eq!(get_u64(s.as_bytes(), offsets::BUMP_NEXT), 0x21_0000);
+        assert_eq!(get_u64(s.as_bytes(), offsets::BUMP_END), 0x30_0000);
     }
 
     /// The free function patches a fully serialized arena without zeroing it:
@@ -564,18 +520,23 @@ mod tests {
             },
         );
         assert_eq!(get_u32(&arena, 0), BOOT_HANDOFF_V1_MAGIC);
-        assert_eq!(get_u64(&arena, 24), 0xFFFF_8000_0000_0000);
-        assert_eq!(get_u64(&arena, 136), 10);
+        assert_eq!(get_u64(&arena, offsets::KERN_VIRT_BASE), 0xFFFF_8000_0000_0000);
+        assert_eq!(get_u64(&arena, offsets::PARAM_BYTE_LEN), 10);
+        // The runtime fields (root_page + bump triple) occupy a contiguous
+        // 32-byte run; skip exactly that window when proving nothing else
+        // changed.
+        let runtime_window =
+            offsets::ROOT_PAGE..offsets::BUMP_END + core::mem::size_of::<u64>();
         for (i, (old, new)) in before.iter().zip(arena.iter()).enumerate() {
-            if (72..104).contains(&i) {
+            if runtime_window.contains(&i) {
                 continue;
             }
             assert_eq!(old, new, "byte {i} outside the runtime fields changed");
         }
-        assert_eq!(get_u64(&arena, 72), 0x9000);
-        assert_eq!(get_u64(&arena, 80), 0x40_0000);
-        assert_eq!(get_u64(&arena, 88), 0x40_1000);
-        assert_eq!(get_u64(&arena, 96), 0x50_0000);
+        assert_eq!(get_u64(&arena, offsets::ROOT_PAGE), 0x9000);
+        assert_eq!(get_u64(&arena, offsets::BUMP_BASE), 0x40_0000);
+        assert_eq!(get_u64(&arena, offsets::BUMP_NEXT), 0x40_1000);
+        assert_eq!(get_u64(&arena, offsets::BUMP_END), 0x50_0000);
     }
 
     #[test]
@@ -597,11 +558,11 @@ mod tests {
         assert_eq!(get_u64(b, WIRE_MEMMAP_OFFSET + 16), 0x20_0000);
         assert_eq!(get_u64(b, WIRE_MEMMAP_OFFSET + 24), 0x2000);
         // Descriptor = count × 16.
-        assert_eq!(get_u64(b, 104), 32);
+        assert_eq!(get_u64(b, offsets::MEMMAP_BYTE_LEN), 32);
         // The deleted semantic partition's bytes are no longer part of the
         // layout: the source partition starts right after the wire payload.
         assert_eq!(
-            get_u64(b, 144),
+            get_u64(b, offsets::SOURCES_BYTE_LEN),
             0,
             "sources descriptor stays zero until the producer writes records"
         );
@@ -621,7 +582,7 @@ mod tests {
         let b = s.as_bytes();
         assert_eq!(get_u64(b, WIRE_RESERVED_OFFSET), 0x1DA0_0000);
         assert_eq!(get_u64(b, WIRE_RESERVED_OFFSET + 8), 0x3000);
-        assert_eq!(get_u64(b, 112), 16);
+        assert_eq!(get_u64(b, offsets::RESERVED_BYTE_LEN), 16);
     }
 
     #[test]
@@ -657,7 +618,7 @@ mod tests {
         assert_eq!(get_u64(b, WIRE_MODULES_OFFSET + 24), 0x1000);
         let second = WIRE_MODULES_OFFSET + 32;
         assert_eq!(&b[second..second + 6], b"memory");
-        assert_eq!(get_u64(b, 120), 64);
+        assert_eq!(get_u64(b, offsets::MODULES_BYTE_LEN), 64);
     }
 
     #[test]
@@ -680,7 +641,7 @@ mod tests {
         assert_eq!(get_u64(b, WIRE_PLATFORM_OFFSET + 8), 0x4000_0000);
         assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 16), RSDP.raw());
         assert_eq!(get_u32(b, WIRE_PLATFORM_OFFSET + 20), 36);
-        assert_eq!(get_u64(b, 128), 32);
+        assert_eq!(get_u64(b, offsets::PLATFORM_BYTE_LEN), 32);
     }
 
     #[test]
@@ -697,7 +658,7 @@ mod tests {
             &s.as_bytes()[WIRE_PARAM_OFFSET..WIRE_PARAM_OFFSET + payload.len()],
             payload
         );
-        assert_eq!(get_u64(s.as_bytes(), 136), payload.len() as u64);
+        assert_eq!(get_u64(s.as_bytes(), offsets::PARAM_BYTE_LEN), payload.len() as u64);
     }
 
     #[test]

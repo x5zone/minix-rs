@@ -310,9 +310,6 @@ pub struct BootHandoffV1 {
     pub kern_virt_base: WireVirtAddr,
     pub kern_phys_base: WirePhysAddr,
     pub kern_size: u64,
-    pub user_sp: WireVirtAddr,
-    pub kern_stack_top: WireVirtAddr,
-    pub syscall_entry: WireVirtAddr,
     // ── runtime handoff fields (patched after the root switch) ──
     pub root_page: u64,
     pub bump_base: u64,
@@ -325,8 +322,6 @@ pub struct BootHandoffV1 {
     pub platform_sources_byte_len: u64,
     pub param_buf_byte_len: u64,
     pub sources_byte_len: u64,
-    /// Startup-object records (their own partition and capacity).
-    pub startup_byte_len: u64,
 }
 
 /// Envelope field offsets, derived from the struct itself (DESIGN-06).
@@ -345,9 +340,6 @@ pub mod envelope_offsets {
     pub const KERN_VIRT_BASE: usize = offset_of!(BootHandoffV1, kern_virt_base);
     pub const KERN_PHYS_BASE: usize = offset_of!(BootHandoffV1, kern_phys_base);
     pub const KERN_SIZE: usize = offset_of!(BootHandoffV1, kern_size);
-    pub const USER_SP: usize = offset_of!(BootHandoffV1, user_sp);
-    pub const KERN_STACK_TOP: usize = offset_of!(BootHandoffV1, kern_stack_top);
-    pub const SYSCALL_ENTRY: usize = offset_of!(BootHandoffV1, syscall_entry);
     pub const ROOT_PAGE: usize = offset_of!(BootHandoffV1, root_page);
     pub const BUMP_BASE: usize = offset_of!(BootHandoffV1, bump_base);
     pub const BUMP_NEXT: usize = offset_of!(BootHandoffV1, bump_next);
@@ -358,7 +350,6 @@ pub mod envelope_offsets {
     pub const PLATFORM_BYTE_LEN: usize = offset_of!(BootHandoffV1, platform_sources_byte_len);
     pub const PARAM_BYTE_LEN: usize = offset_of!(BootHandoffV1, param_buf_byte_len);
     pub const SOURCES_BYTE_LEN: usize = offset_of!(BootHandoffV1, sources_byte_len);
-    pub const STARTUP_BYTE_LEN: usize = offset_of!(BootHandoffV1, startup_byte_len);
 }
 
 // ── arena layout (fixed offsets, compile-time arithmetic) ────────────────
@@ -403,18 +394,11 @@ pub const WIRE_SOURCES_OFFSET: usize = WIRE_END;
 pub const WIRE_SOURCES_END: usize =
     WIRE_SOURCES_OFFSET + WIRE_SOURCES_CAP * WIRE_SOURCE_RECORD_SIZE;
 
-/// Startup-object records: the second record class, with its own slots so the
-/// memory-map partition can never crowd them out (and vice versa).
-pub const WIRE_STARTUP_CAP: usize = 20;
-pub const WIRE_STARTUP_OFFSET: usize = WIRE_SOURCES_END;
-pub const WIRE_STARTUP_END: usize =
-    WIRE_STARTUP_OFFSET + WIRE_STARTUP_CAP * WIRE_SOURCE_RECORD_SIZE;
-
 /// Whole-arena capacity: 8 pages (32 KiB) — envelope + wire payload up to
-/// `WIRE_END`, the 296-slot memory-source partition, and the 20-slot
-/// startup-object partition; 2144 bytes of design spare remain after
-/// `WIRE_STARTUP_END` (32768 − 30624). The ninth page the v8 layout needed
-/// (for the deleted semantic partition) is gone.
+/// `WIRE_END` and the 296-slot memory-source partition; 3584 bytes of design
+/// spare remain after `WIRE_SOURCES_END` (32768 − 29184). The ninth page the
+/// v8 layout needed (for the deleted semantic partition) is gone, and v10
+/// returned the 1440-byte startup partition to that spare.
 pub const ARENA_CAP: usize = 8 * 4096;
 
 // ── layout gate ──────────────────────────────────────────────────────────
@@ -433,7 +417,7 @@ const _: () = {
     assert!(size_of::<WireVirtAddr>() == 8);
 
     // Envelope: fits the budget, 8-byte aligned, key offsets pinned.
-    assert!(size_of::<BootHandoffV1>() == 160);
+    assert!(size_of::<BootHandoffV1>() == 128);
     assert!(align_of::<BootHandoffV1>() == 8);
     assert!(size_of::<BootHandoffV1>() <= ENVELOPE_CAP);
     assert!(offset_of!(BootHandoffV1, magic) == 0);
@@ -443,14 +427,12 @@ const _: () = {
     assert!(offset_of!(BootHandoffV1, arena_len) == 16);
     assert!(offset_of!(BootHandoffV1, kern_virt_base) == 24);
     assert!(offset_of!(BootHandoffV1, kern_phys_base) == 32);
-    assert!(offset_of!(BootHandoffV1, user_sp) == 48);
-    assert!(offset_of!(BootHandoffV1, syscall_entry) == 64);
-    assert!(offset_of!(BootHandoffV1, root_page) == 72);
-    assert!(offset_of!(BootHandoffV1, bump_end) == 96);
-    assert!(offset_of!(BootHandoffV1, memmap_byte_len) == 104);
-    assert!(offset_of!(BootHandoffV1, param_buf_byte_len) == 136);
-    assert!(offset_of!(BootHandoffV1, sources_byte_len) == 144);
-    assert!(offset_of!(BootHandoffV1, startup_byte_len) == 152);
+    assert!(offset_of!(BootHandoffV1, root_page) == 48);
+    assert!(offset_of!(BootHandoffV1, bump_end) == 72);
+    assert!(offset_of!(BootHandoffV1, memmap_byte_len) == 80);
+    assert!(offset_of!(BootHandoffV1, param_buf_byte_len) == 112);
+    assert!(offset_of!(BootHandoffV1, sources_byte_len) == 120);
+
 
     // Arena partitions: element-aligned, disjoint, exact, and fitting the cap.
     assert!(WIRE_MEMMAP_OFFSET.is_multiple_of(align_of::<WireMemoryRegion>()));
@@ -462,10 +444,7 @@ const _: () = {
     assert!(WIRE_SOURCES_OFFSET.is_multiple_of(align_of::<WireSourceRecord>()));
     assert!(WIRE_SOURCES_OFFSET == WIRE_END);
     assert!(WIRE_SOURCES_END == 29184);
-    assert!(WIRE_STARTUP_OFFSET == WIRE_SOURCES_END);
-    assert!(WIRE_STARTUP_END == 30624); // 20 × 72 = 1440
     assert!(WIRE_SOURCES_END <= ARENA_CAP);
-    assert!(WIRE_STARTUP_END <= ARENA_CAP);
     assert!(ARENA_CAP.is_multiple_of(4096));
 };
 
@@ -478,7 +457,7 @@ mod tests {
         assert_eq!(size_of::<WireMemoryRegion>(), 16);
         assert_eq!(size_of::<WireBootModule>(), 32);
         assert_eq!(size_of::<WirePlatformDescSource>(), 16);
-        assert_eq!(size_of::<BootHandoffV1>(), 160);
+        assert_eq!(size_of::<BootHandoffV1>(), 128);
         assert_eq!(size_of::<WireSourceRecord>(), 72);
     }
 
@@ -490,8 +469,9 @@ mod tests {
         // source partition starts immediately after the payload.
         assert_eq!(WIRE_SOURCES_OFFSET, WIRE_END);
         assert_eq!(WIRE_SOURCES_END, 29184);
-        // Envelope + wire + sources + startup = 30624; the eight-page arena
-        // leaves 2144 bytes of design spare.
-        assert_eq!(ARENA_CAP - WIRE_STARTUP_END, 2144);
+        // Envelope + wire + sources = 29184; the eight-page arena leaves
+        // 3584 bytes of design spare (v10 returned the 1440-byte startup
+        // partition to it).
+        assert_eq!(ARENA_CAP - WIRE_SOURCES_END, 3584);
     }
 }

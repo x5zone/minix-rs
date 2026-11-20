@@ -483,12 +483,8 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     serializer
         .write_sources(result.report.memmap_sources)
         .expect("too many memory-map source records for the handoff arena");
-    // Canonical startup set (D01-F07) was completed inside prepare_boot:
-    // kernel + modules + root + bump + arena. The report borrows the same
-    // storage, so this write needs no second landing array.
-    serializer
-        .write_startup(result.report.startup_objects)
-        .expect("too many startup-object records for the handoff arena");
+    // v10 (D-062) removed the startup-object partition; the kernel span
+    // coverage check it fed is now answered by the map tables.
 
     raw_serial_line("boot-shim: [raw] entering kernel image v1");
     // SAFETY: the bootstrap root was enabled by `enter_kernel_image_v1`

@@ -45,7 +45,7 @@
 | I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
 | I-40（本轮新登记） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`minix-boot/src/kernel_info.rs:640`）与 `KernelInfo::memmap()`（`kernel/src/vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **未裁决**（I-39 mini review 中发现，与 D-077 同一缺陷类但位置不同、超出该裁决授权）；待用户裁决是否并入 I-39 口径直接删/改写，见 §3 的 I-40 | §3 |
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
-| I-31（已裁决·可开工） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 协议契约变更 + 代码改造 | 已裁决（D-062，用户 2026-11-20）：三条一次升版。待实施——验收 grep 六项、文档同步含 §4.1 五族句（D-072 补强），详见 §3 的 I-31 | §3 |
+| I-31（已实施） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条 QEMU 门链全 PASS**。mini review 抓到两个漏项（`uboot_main` bin 未编、`VmBootHandoff.user_sp` 误删）。验收读数与口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
 | I-33（⚠ 改回待裁决） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **原裁决（D-065，用户 2026 年 11 月 20 日）已被实施受阻推翻**：实测发现第四张 `DTB_PANORAMA` 仍有生产消费者（`resv_claims.rs` 的 EBS 后 claim 捕获），且 `DtbMapOwned` 不带 panorama、测试改写面 62 处。三选一待裁决（A 扩权到 panorama / B 缩小为「只统一直核腿」/ C 拆成两项）。代码改动已全部回退——详见 §3 的 I-33 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
@@ -534,7 +534,41 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 
 **风险与回退**：wire 版本升级是协议契约变更，收发两侧必须同批改——各自单独提交会导致一侧拒绝另一侧。若某条腿回归且定位不到，回退到 v9 并重开 D-062。
 
-**为什么现在不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。裁决已生效，实施留待下一 design/code batch。
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+三条一次升版全部落地，`BOOT_HANDOFF_V1_VERSION` 9 → 10。契约、类型、生产者、消费者、测试、文档六层同批改完——wire 版本升级不能拆批（收发两侧各自单独提交会导致一侧拒收另一侧），所以下面这些改动是一个原子提交的内容。
+
+| 层 | 改动 |
+|---|---|
+| 契约 | `handoff_v1.rs`：版本 9→10；信封 struct 删 `user_sp`/`kern_stack_top`/`syscall_entry`（各 8 B）与 `startup_byte_len`（8 B），`size_of` 160 → **128**；`envelope_offsets` 删四个常量，`ROOT_PAGE` 72→48、`BUMP_END` 96→72、`MEMMAP_BYTE_LEN` 104→80、`PARAM_BYTE_LEN` 136→112、`SOURCES_BYTE_LEN` 144→120；`WIRE_STARTUP_CAP/OFFSET/END` 三常量删除，`WIRE_SOURCES_END`（29184）成为报文末端，arena 余量 2144 → **3584** |
+| 类型 | `KernelInfo` 删 4 个字段（14 → 10 个），新增 `pub fn kern_stack_top() -> VirBytes`（`kern_virt_base + kern_size`，checked_add，溢出 panic）；`BootStorage` 删 startup 槽 + `startup_len` + `startup_committed` + `push_startup`/`startup_slots_mut`/`set_startup_len`/`startup_objects()`；`BootReport` 删 `startup_objects` 切片；`HandoffScalars`/`HandoffDescriptors` 删对应成员；`decode_startup_objects` 删除 |
+| 生产 | 五处写入点：`uefi_helpers` 的 EBS 后 startup 集合写入段、`opensbi_helpers` 的 `push_startup_record` 与五条调用、`uboot_main` 的 `write_startup`、`bootface`/`bootface_a64` 的 startup 集合与 `build_kernel_info` 的 `startup_objects` 实参。`build_kernel_info` 11 → 10 参（同时少了三个派生标量，实际是 14 个入参减到 10） |
+| 消费 | `arch/src/arch/boot.rs` 的用户栈映射改读 `USER_STACK_TOP` 常量；`vm_handoff` 的 `build_vm_handoff` 同改；`kerninfo` 的 `kui_user_sp` 同改；`misc` 的 `GET_KINFO` 同改；kernel 内 5 处 `kern_stack_top` 改调访问器；strict 门删三条派生值 `assert_eq!`（改由访问器/常量表达），`startup_objects` 的 `any()` 换成「内核跨度落在 memmap 或 reserved 区间」 |
+| 测试 | 12 条字段专属测试删除（4 条后置条件、3 条 strict 派生值、1 条 startup 覆盖、2 条 startup 分区、1 条 alignment、1 条 startup 落地区溢出）；新增 1 条等价负控 `test_validate_requiring_sources_rejects_kernel_span_outside_map`；`minix-boot` 里 8 处硬编码 envelope offset 改为引用 `offsets::` 常量（这一项顺带修掉了一个既有的脆弱点：布局再变不会再让测试静默漂移） |
+
+**mini review 抓到的两个真漏项（都是我自己漏的）**：
+
+1. **`uboot_main.rs` 的 `write_startup` 没被抓到**：它是 `[[bin]]`，`cargo check -p boot-shim --features test-all` 只编 lib 不编 bin。补跑 `cargo check -p boot-shim --features fw-riscv-uboot --bin riscv64-uboot-shim --target riscv64gc-unknown-none-elf` 才发现（2 条 error）。这类「bin 不在默认 check 面」的坑以后每批都要显式补跑。
+2. **`VmBootHandoff` 的 `user_sp` 被我的批量正则误删过一次**：它是内核→VM 的上层交接契约（todo §6 明写「不在 01 篇射程」），不是 `KernelInfo` 的字段。症状是 `missing field user_sp in initializer of VmBootHandoff`，当批修回。教训是批量替换前要先确认同名符号有几个不同身份。
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -rn "startup_objects\|push_startup\|startup_committed\|startup_slots_mut\|set_startup_len" os/ --include=*.rs` | **0**（`startup_record` 仍在：它是 `memmap_source` 的通用记录构造器，与 startup 分区无关） |
+| A2 | 信封尺寸 | `size_of::<BootHandoffV1>()` 编译期断言 **== 128**（原 160） |
+| A3 | 报文末端 | `WIRE_SOURCES_END == 29184`（原 `WIRE_STARTUP_END == 30624`）；`ARENA_CAP - WIRE_SOURCES_END == 3584`（原 2144） |
+| A4 | `cargo test -p minix-boot` | **183 passed / 0 failed**（原 195，删 12 条） |
+| A5 | `cargo test -p minix-kernel --features mock` | **864 passed / 0 failed / 8 ignored**（原 866，删 2 条） |
+| A6 | `cargo test -p boot-shim --features test-all` | **136 + 6 + 2 passed / 0 failed** |
+| A7 | `cargo check --workspace` | **0 error** |
+| A8 | `cargo check -p kernel-image` 四个变体（riscv 直核 / aarch64 直核 / aarch64 recv / riscv U-Boot） | 全部 **0 error** |
+| A9 | **五条 QEMU 门链** | x86 UEFI **PASS**；aarch64 UEFI **PASS**；riscv U-Boot shim **PASS**（6/6 标记）；aarch64 直核 SMP **PASS**；riscv 直核 bootface **PASS** |
+| A10 | 文档门（01 篇） | anchor **108/108**；citation `blocks=69 checked=29 failed=0`（修 3 处引文）；structure/style(error=0)/density(**承载门通过**) 通过；doc-code-map **54/54** |
+
+**验收口径的一处偏差（如实记录）**：规格原文写 `grep -rn "syscall_entry\|kern_stack_top" os/libs os/boot-shim os/kernel-image --include="*.rs"` **→ 0**。实测做不到，因为 `os/libs` 里有**四个同名异义的对象**：`VmBootHandoff.user_sp`（内核→VM 上层契约，射程外）、`KuserInfo.kui_user_sp`（系统调用页字段）、`KinfoStruct.user_sp`（GET_KINFO 载荷）、`minix-sys/src/stack.rs` 的 `user_sp` 函数参数（用户态栈工具）。`KernelInfo` 侧的那三个字段已经清零，但全目录字面归零会误伤另外四个。这与 I-32 的 `debug_assert` 口径、I-30 的 `arena_pa == 0` 口径属**同一类问题**：规格给的 grep 是「按符号名全目录扫」，没有先把同名异义者排除。本条按裁决意图（`KernelInfo` 不再携带这三个值）判定达成，并把这个口径问题记在此处，供后续规格起草时参考。
+
+**为什么此前不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。本条在裁决后由用户单独指示实施。
 
 ### I-30（已裁决·可立即开工）aarch64 形态判别改链接期分叉
 

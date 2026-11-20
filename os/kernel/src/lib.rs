@@ -58,7 +58,7 @@ use minix_types::{PhysBytes, PhysRange, VirBytes};
 use minix_boot::{
     ARENA_CAP, BootModule, RuntimeFields, WIRE_MODULE_CAP, WireBootModule, decode_envelope,
     decode_memmap, decode_modules, decode_param_buf, decode_platform_sources,
-    decode_reserved_regions, decode_sources, decode_startup_objects, patch_runtime_fields_in,
+    decode_reserved_regions, decode_sources, patch_runtime_fields_in,
 };
 #[cfg(not(feature = "mock"))]
 use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
@@ -227,9 +227,9 @@ where
     arch_boot_impl::<A>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity and
     // kernel high mappings. kinfo is the kernel-.bss copy — valid at the
-    // high address. kern_stack_top is a valid high virtual address from
-    // KernelInfo.
-    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    // high address. kern_stack_top() derives the image-tail stack top from
+    // the two image-span fields (v10 / D-062).
+    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top()) }
 }
 
 /// Architecture-specific boot entry (called by boot-shim after ExitBootServices).
@@ -335,7 +335,7 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
         kernel_info.kern_virt_base,
         kernel_info.kern_phys_base,
         kernel_info.kern_size,
-        kernel_info.kern_stack_top,
+        kernel_info.kern_stack_top(),
     );
     let layout = DirectMapLayout::<A>::from_arch();
     let dm = plan_dm_policy::<A>(&support, &layout)
@@ -372,7 +372,7 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
     // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
     // image's high-half-resident `.bss` copy; `kern_stack_top` is the high
     // virtual stack the inline boot used successfully.
-    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top()) }
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
@@ -757,24 +757,15 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
         .unwrap_or_else(|e| panic!("kernel-image: handoff v1 sources invalid: {e:?}"));
     let source_ptr = source_store.as_ptr();
 
-    let startup_store = unsafe { &mut *crate::globals::STARTUP_RECORD_STORE.get() };
-    let startup_len = decode_startup_objects(arena, &scalars, startup_store)
-        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 startup objects invalid: {e:?}"));
-    let startup_ptr = startup_store.as_ptr();
-
     let kinfo = KernelInfo {
-        // SAFETY: all five pointers reference the `.bss` stores filled above;
+        // SAFETY: all four pointers reference the `.bss` stores filled above;
         // their lengths are the decoder's validated element counts.
         memmap: unsafe { core::slice::from_raw_parts(memmap_ptr, memmap_len) },
         reserved_regions: unsafe { core::slice::from_raw_parts(reserved_ptr, reserved_len) },
         memmap_sources: unsafe { core::slice::from_raw_parts(source_ptr, source_len) },
-        startup_objects: unsafe { core::slice::from_raw_parts(startup_ptr, startup_len) },
         kern_virt_base: VirBytes(scalars.kern_virt_base),
         kern_phys_base: PhysBytes(scalars.kern_phys_base),
         kern_size: scalars.kern_size,
-        user_sp: VirBytes(scalars.user_sp),
-        kern_stack_top: VirBytes(scalars.kern_stack_top),
-        syscall_entry: VirBytes(scalars.syscall_entry),
         boot_modules: unsafe { core::slice::from_raw_parts(module_ptr, module_len) },
         platform_sources: unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) },
         param_buf: unsafe { core::slice::from_raw_parts(param_ptr, param_len) },
@@ -975,7 +966,7 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
         kernel_info.kern_virt_base,
         kernel_info.kern_phys_base,
         kernel_info.kern_size,
-        kernel_info.kern_stack_top,
+        kernel_info.kern_stack_top(),
     );
     boot_stage!("kernel: step0 validate ok\n");
 
@@ -1585,16 +1576,15 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
             param.fill(0);
             param[..csrc.len()].copy_from_slice(csrc);
         }
-        // Provenance records are the last two slices with the same disease:
+        // Provenance records are the last slice with the same disease:
         // the v1 decoder already lands them in `.bss`, but the direct and
-        // auxiliary faces can hand over a firmware-pool pointer. Land both
+        // auxiliary faces can hand over a firmware-pool pointer. Land it
         // here so `store_kernel_info` really makes the snapshot self-contained.
+        // (v10 / D-062 removed the startup-object class: its only reader was
+        // a strict-gate check, now served by the map tables.)
         let sstore = &mut *crate::globals::SOURCE_RECORD_STORE.get();
         let ssrc = kernel_info.memmap_sources;
         land_slice(ssrc, sstore, "memmap_sources");
-        let tstore = &mut *crate::globals::STARTUP_RECORD_STORE.get();
-        let tsrc = kernel_info.startup_objects;
-        land_slice(tsrc, tstore, "startup_objects");
         let mut k = *kernel_info;
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
         k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());
@@ -1602,7 +1592,6 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         k.platform_sources = core::slice::from_raw_parts(pstore.as_ptr(), psrc.len());
         k.param_buf = core::slice::from_raw_parts(param.as_ptr(), csrc.len());
         k.memmap_sources = core::slice::from_raw_parts(sstore.as_ptr(), ssrc.len());
-        k.startup_objects = core::slice::from_raw_parts(tstore.as_ptr(), tsrc.len());
         *KERNEL_INFO.get() = Some(k);
     }
     crate::kernel_info().expect("store_kernel_info: KERNEL_INFO just written")
@@ -2272,7 +2261,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // pointing at reused stack memory. The global also gives the AP tail
     // (smp_init's registered continuation) access to init_ap without a
     // second instance.
-    let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);
+    let prot = CurrentProtection::init(0, kernel_info.kern_stack_top());
     store_protection(prot);
     // E1: the instance's address changed when it moved into the global —
     // the TSS descriptors embedded in the GDT still encode the pre-move
@@ -2296,7 +2285,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     let bsp_logical = (0..topo.nr_cpus as usize)
         .find(|&i| topo.cpus[i].hw_id == bsp_hw)
         .unwrap_or(0) as u32;
-    with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top));
+    with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top()));
 
     // Step 2: Prepare the trap entry table metadata.
     // x86-64: IDT metadata + SYSCALL MSR; aarch64: VBAR_EL1 metadata;
@@ -5021,7 +5010,7 @@ fn finish_and_restore(
         let cpu = crate::current_cpu_id();
         let stack_top = if cpu == smp.bsp_cpu_id() {
             crate::kernel_info()
-                .map(|k| k.kern_stack_top.0)
+                .map(|k| k.kern_stack_top().0)
                 .unwrap_or(0)
         } else {
             crate::smp::ap_kernel_stack_top(cpu.raw())
@@ -5656,15 +5645,11 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000, // 2MB kernel
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::DtbBootInput,
         };
 
@@ -5867,15 +5852,11 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: MODULES,
             platform_sources: PLATFORM,
             param_buf: PARAM,
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::DtbBootInput,
         };
         store_kernel_info(&info);
@@ -5943,13 +5924,9 @@ mod tests {
             memmap: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
@@ -6049,19 +6026,6 @@ mod tests {
         store_kernel_info(&info);
     }
 
-    /// Fail-fast: more startup records than the startup landing pad aborts
-    /// before any copy.
-    #[test]
-    #[should_panic(expected = "startup_objects exceeds the .bss landing pad")]
-    fn test_store_kernel_info_rejects_startup_overflow() {
-        let _boot = crate::test_sync::lock_boot_globals();
-        static OVERFLOW: [minix_boot::SourceRecord; crate::globals::STARTUP_RECORD_STORE_LEN + 1] =
-            [minix_boot::startup_record(0, 0, 0); crate::globals::STARTUP_RECORD_STORE_LEN + 1];
-        let mut info = minimal_store_info();
-        info.startup_objects = &OVERFLOW;
-        store_kernel_info(&info);
-    }
-
     /// Verify empty memmap is handled gracefully (identity pass is a no-op).
     #[test]
     fn test_boot_empty_memmap() {
@@ -6070,15 +6034,11 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
-            user_sp: VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
@@ -6350,15 +6310,11 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x1001), // not page-aligned
             kern_size: 0x200_000,
-            user_sp: VirBytes(0),
-            kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let root_page = PhysBytes(0x1000);
@@ -6375,40 +6331,11 @@ mod tests {
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0, // zero size
-            user_sp: VirBytes(0),
-            kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
-            syscall_entry: VirBytes(0),
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            startup_objects: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
-        };
-        let root_page = PhysBytes(0x1000);
-        let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
-    }
-
-    /// Verify that arch_boot_impl rejects misaligned kern_stack_top.
-    #[test]
-    #[should_panic(expected = "kern_stack_top must be 16-byte aligned")]
-    fn test_arch_boot_rejects_misaligned_stack_top() {
-        let memmap: &'static [minix_boot::MemoryRegion] = &[];
-        let info = KernelInfo {
-            memmap,
-            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
-            kern_phys_base: PhysBytes(0x200_000),
-            kern_size: 0x200_000,
-            user_sp: VirBytes(0),
-            kern_stack_top: VirBytes(0xFFFF_8000_0020_0008), // not 16-byte aligned
-            syscall_entry: VirBytes(0),
-            boot_modules: &[],
-            platform_sources: &[],
-            param_buf: &[],
-            reserved_regions: &[],
-            memmap_sources: &[],
-            startup_objects: &[],
             authority: minix_boot::InputObjectId::DtbBootInput,
         };
         let root_page = PhysBytes(0x1000);

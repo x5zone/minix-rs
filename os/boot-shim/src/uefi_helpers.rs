@@ -1141,42 +1141,9 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     };
     crate::raw_serial("boot-shim: [raw] boot services exited (paired)\r\n");
 
-    // Startup-object records: the second record class, in its own partition.
-    // Producer-side capacity proof before any write: kernel image + every
-    // module + the three bootstrap objects this leg owns (root page, bump
-    // region, arena). The serializer still rejects an over-capacity write,
-    // but that must not be the first time the count is noticed.
-    assert!(
-        1 + storage.boot_modules().len() + 3 <= minix_boot::WIRE_STARTUP_CAP,
-        "boot-shim: startup-object list needs {} slots, partition holds {}",
-        1 + storage.boot_modules().len() + 3,
-        minix_boot::WIRE_STARTUP_CAP
-    );
-    let mut startup = [minix_boot::startup_record(0, 0, 0); minix_boot::WIRE_STARTUP_CAP];
-    let mut startup_n = 0usize;
-    let mut push_startup = |start: u64, len: u64| {
-        if len == 0 {
-            return;
-        }
-        // Over capacity must fail closed: silently dropping the last records
-        // would hand the kernel an incomplete startup-object list.
-        assert!(
-            startup_n < startup.len(),
-            "boot-shim: startup-object partition over capacity"
-        );
-        startup[startup_n] = minix_boot::startup_record(startup_n as u16, start, start + len);
-        startup_n += 1;
-    };
-    push_startup(kern.kern_phys_base.0, kern.kern_size);
-    for module in storage.boot_modules() {
-        push_startup(module.start.0, module.len as u64);
-    }
-    push_startup(root_page.0, PAGE_SIZE);
-    push_startup(bump_base, bump_end - bump_base);
-    push_startup(arena_pa.0, ARENA_CAP as u64);
-    serializer
-        .write_startup(&startup[..startup_n])
-        .expect("boot-shim: startup-object partition over capacity");
+    // v10 (D-062) removed the startup-object partition: its only reader was
+    // a strict-gate check that the kernel span is covered, which the map
+    // tables now answer directly.
 
     // The classifier's counts are the same numbers the wire descriptors would
     // report (commit asserts counts == written). Use them directly; decoding
@@ -1330,7 +1297,6 @@ mod tests {
             &[], // platform_sources (empty = no source)
             &[], // param_buf (no source in this unit test)
             &[], // memmap_sources
-            &[], // startup_objects
             minix_boot::InputObjectId::UefiMemoryMap,
         );
 

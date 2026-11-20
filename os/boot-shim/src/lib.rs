@@ -94,10 +94,14 @@ pub use minix_elf;
 /// firmware memory, DTB-clipped firmware ranges); pass `&[]` when the surface
 /// has none. `param_buf` is the already-normalized `key=value\0` byte string
 /// ([`minix_boot::normalize_param_buf`]); pass `&[]` when the leg has no
-/// source. The derived fields follow the boot layout contract:
-/// `kern_stack_top = kern_virt_base + kern_size`, `syscall_entry =
-/// kern_virt_base`, and the per-arch user stack top
-/// from `minix_types::USER_STACK_TOP`.
+/// source.
+///
+/// v10 (D-062) removed three parameters that were pure restatements of the
+/// two image-span arguments (`user_sp = USER_STACK_TOP`, `kern_stack_top =
+/// kern_virt_base + kern_size`, `syscall_entry = kern_virt_base`) plus the
+/// startup-object slice. Consumers derive them from `KernelInfo` instead
+/// (`KernelInfo::kern_stack_top()`, `minix_types::USER_STACK_TOP`,
+/// `syscall_entry_va()`).
 pub fn build_kernel_info(
     memmap: &'static [minix_boot::MemoryRegion],
     reserved_regions: &'static [minix_boot::MemoryRegion],
@@ -108,22 +112,15 @@ pub fn build_kernel_info(
     platform_sources: &'static [minix_boot::PlatformDescSource],
     param_buf: &'static [u8],
     memmap_sources: &'static [minix_boot::SourceRecord],
-    startup_objects: &'static [minix_boot::SourceRecord],
     authority: minix_boot::InputObjectId,
 ) -> minix_boot::KernelInfo {
     minix_boot::KernelInfo {
         memmap,
         reserved_regions,
         memmap_sources,
-        startup_objects,
         kern_virt_base,
         kern_phys_base,
         kern_size,
-        // Per-arch user stack top; the single authority is
-        // `minix_types::USER_STACK_TOP`.
-        user_sp: minix_types::VirBytes(minix_types::USER_STACK_TOP),
-        kern_stack_top: minix_types::VirBytes(kern_virt_base.0 + kern_size),
-        syscall_entry: minix_types::VirBytes(kern_virt_base.0),
         boot_modules,
         platform_sources,
         param_buf,
