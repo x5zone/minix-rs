@@ -1426,7 +1426,15 @@ cargo check --workspace --all-targets  # 三架构 0 error
 | riscv64 | `hello-boot-riscv64` **PASS**（直核静默停顺带闭合） |
 | 专用脚本 | `test-rt-birth.sh`：推进到调度器入口（`RESULT: FAIL`，深层）；`test-sysboot.sh`：过 proc 表 + smp_init 后精确 page fault（vector 14，cr2 有值）；`test-paging-faultloop.sh`：CPL3 载荷按设计在 `FAULT_VA` fault，故障臂把它当 kernel exception PANIC（路由缺陷现形）；`test-user-trap.sh`：CPL3 三页映射完成、载荷已跑，随后 kernel 模式 page fault 在 dispatch PANIC（同族路由缺陷，`trap_dispatch.rs` 同一行号） |
 
-**三层残留清单（全部从「不可诊断的静默停」变为「带完整寄存器现场的可诊断缺陷」，各自专项）**：riscv VM 加载 trap（`stval=0xffffffc0_cffff000` 高半基址形态，同上文第 1 条）；aarch64 `test-timer-irq` 深跑 sync exception（`far=0xffff80804ffff000`）；x86 `test-sysboot` 深跑 page fault（`cr2=0x7ba7000`）；`test-rt-birth-riscv64` 载体自身 `bump(256)` 断言（先于本修复即存在）；faultloop 故障臂路由。
+**三层残留清单（全部从「不可诊断的静默停」变为「带完整寄存器现场的可诊断缺陷」，各自专项）**：riscv VM 加载 trap（`stval=0xffffffc0_cffff000` 高半基址形态，同上文第 1 条）；aarch64 `test-timer-irq` 深跑 sync exception（`far=0xffff80804ffff000`）；x86 `test-sysboot` 深跑 page fault（`cr2=0x7ba7000`）；`test-rt-birth-riscv64` 载体自身 `bump(256)` 断言（先于本修复即存在）；x86 `test-rt-birth` 深跑（switch_to_user 后用户态无输出，`vm_handoff` 扣减正常——`load_vm_elf` 链深层）。**【2026-11-21 更新】faultloop / user-trap 已闭合**（见下）。
+
+**【2026-11-21 追加】faultloop / user-trap 数据页窗口闭合（三层残留第二项销账）**：
+
+`test-paging-faultloop.sh` 与 `test-user-trap.sh` 的失败现场（`err=0x2` supervisor write、`cs=0x8`、`cr2=0x400_1000`）定性为**载体数据页缺恒等窗口**，不是故障臂路由缺陷：CPL3 路由（`cs & 3 == 3 → carrier_pagefault`）一直正确，fault 发生在更早的「zero the mailbox + copy payload」阶段——载体的注释「identity map makes the first 4 GiB kernel-writable」是 BOOT-SCOPE 2a 之前的假设，最小窗口机制下载体的 CPL3 配套物理页（user code/data/stack 0x400_0000/1000/2000、FAULT_FRAME 0x400_3000、kernel box 0x400_5000）无人声明。
+
+修法（载体侧，零内核改动）：把 `ds` name-only 槽的 span 从通用 `PLACEHOLDER_SPAN` 改指真实数据页块 `[0x400_0000, 0x402_0000)`（`CARRIER_DATA_SPAN` / `_LEN` 常量）——PLACEHOLDER_SPAN 机制的文档语义本来就是「span 只用于恒等窗口与扣减记录」；窗口构建器的 2 MiB 取整让单个模块槽覆盖整块，扣减记录还把这些页从 VM free list 排除（比分配 mailbox 页给服务器更诚实）。
+
+实证（两门历史首次新鲜二进制 PASS）：`test-paging-faultloop` **PASS**（E5(d) 全链：#PF 进 carrier_pagefault → PTE 写回 → resume 重执行成功 → kernel box `fault count==1` 无 re-fault + `0xFEED` adopt/map/query/unmap legs OK + user mailbox read-back `0x5A5A…` + `0xBEEF`）；`test-user-trap` **PASS**（E1 slice 5 trap 往返 + E-KERNINFO publication 双验证）。
 
 **宿主套件存量红（登记为 I-48，非本条射程）**：HEAD 上 `cargo test -p minix-kernel --features mock` 就红且非确定——8 MiB 默认测试线程栈下多个家族轮流栈溢出（misc::dispatch / syscall_clock 等，失败集逐轮漂移）；`RUST_MIN_STACK=16MiB` 下 861 通过 / 3 失败（BKL 持有不变量族 `smp.rs:2043` + `switch_address_space`，同样逐轮漂移）。CI（`kernel-tests.yml`）无 `RUST_MIN_STACK` 且 2026-10-12 全绿——其后某次改动放大了宿主测试栈消耗或环境差异。本条改动在 `cfg(test)` 下与 HEAD 代码逐字节一致（栈窗口块整体编译剔除），不可能是其诱因；stash 对照实证。
 

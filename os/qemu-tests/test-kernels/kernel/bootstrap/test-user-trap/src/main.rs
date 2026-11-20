@@ -90,7 +90,7 @@ unsafe impl GlobalAlloc for HybridAllocator {
 static ALLOCATOR: HybridAllocator = HybridAllocator;
 
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "ds",    start: PhysBytes(CARRIER_DATA_SPAN), len: CARRIER_DATA_SPAN_LEN }, // I-43 三层: CPL3 数据页恒等窗口
     BootModule { name: "rs",    start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
     BootModule { name: "pm",    start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
     BootModule { name: "sched", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
@@ -108,6 +108,22 @@ static mut BOOT_MODULES: [BootModule; 12] = [
 /// Phase C are DEFERRED; the span exists so the boot identity windows are
 /// real `[start, end)` ranges, never empty).
 const PLACEHOLDER_SPAN: u64 = 0x100_0000;
+
+/// Identity-window declaration for the carrier's CPL3 data pages
+/// (I-43 三层修复，2026-11-21): the user code/data/stack pages
+/// (0x400_0000/1000/2000), the FAULT_FRAME (0x400_3000) and the kernel
+/// box (0x400_5000) all sit in this one 2 MiB block. BOOT-SCOPE 2a's
+/// minimal window mechanism only maps DECLARED spans — the old
+/// "identity map makes the first 4 GiB kernel-writable" premise is gone,
+/// so the carrier publishes its data pages through the one channel the
+/// window builder consumes from `KernelInfo`: a boot-module span
+/// (`push_module_windows`). The `ds` name-only slot (Phase C DEFERRED —
+/// RS loads it at runtime, the span feeds only the identity windows and
+/// the VM deductions) carries the real span instead of the generic
+/// placeholder. Deducting the block from the VM free list is also more
+/// honest than allocating mailbox pages to servers.
+const CARRIER_DATA_SPAN: u64 = 0x0400_0000;
+const CARRIER_DATA_SPAN_LEN: usize = 0x0020_0000; // one 2 MiB window block
 
 static MEMMAP: [MemoryRegion; 2] = [
     MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
