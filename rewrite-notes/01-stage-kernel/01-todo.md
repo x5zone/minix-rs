@@ -1535,7 +1535,19 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 1. **x86 Owned 正控测试 SIGSEGV 已移除**：`destroy` 的 `free_pt_page(PhysBytes(0))` 在宿主测试进程里撞未注册/错配的释放钩子——正控由 MockPaging 覆盖（同语义），x86 侧保留命门测试即可。
 2. **宿主 target/debug 残留 83 个 root 属主伪影**（docker 权威编译门以 root 跑的遗留），`cargo test -p minix-vm` 的依赖 `.d` 文件写入被拒——已清理，属环境问题非代码问题。
 
-**未做（按 §5.1 边界，不属于本批）**：步④（全部写入口范围保护 + 六项三架构测试，含 `is_supervisor_va` 谓词与批量原子性）与步⑤（独立关闭 E / R1 / R2）。**不得把基础 API 编译通过当作生产安全验收通过。**
+**步④（2026 年 11 月 20 日完成——全部写入口范围保护 + 三架构谓词 + 命门测试）**：
+
+| 项 | 内容 |
+|---|---|
+| 共享谓词 | trait 新增 `is_supervisor_va(&self, va)`（三架构各自实现：x86 `≥0xFFFF_8000_0000_0000`、aarch64 `≥0xFFFF_0000_0000_0000`（T1SZ=16）、riscv `≥0xFFFF_FFC0_0000_0000`（kernel link base））与 `is_inherited(&self)`（读私有 state）；共享 guard `ensure_writable_range(start, len)`——首尾两端点检查 |
+| 写入口覆盖 | `map` / `remap` / `unmap` / `update_flags` / `split_huge` / `grant_user_walk` / `map_huge`（HugePages，`size.bytes()`）每入口插 guard；批量 `map_range` / `unmap_range` 在**任何修改之前**做整段端点检查（trait 默认实现内联——保持对象安全） |
+| 命门测试 | x86 三条：① Inherited `map` 高半 panic（root 指向未映射内存——若 guard 挪到写后即 SIGSEGV）；② Inherited 批量跨界（私有→高半）拒绝 + 原子性（guard 在 validation phase 之前，按构造无任何写入；断言 panic 消息来自 guard）；③ MockPaging 三条状态测试（前批已落） |
+
+**读数**：minix-arch(runtime-window) **294** passed；workspace 0 error；三架构生产 target 各 0 error；minix-kernel mock 864。
+
+**实施教训（如实记录）**：一个 Python 批处理脚本因循环变量覆盖把 riscv64 实现内容写进了共享 trait 文件（`os/arch/src/arch/paging.rs` 被整体覆盖为 riscv 实现）——已用 `git checkout HEAD` 恢复共享文件后以 Edit 工具重放三处步④改动。教训与 D-077 的「从注释推断代码」同类但相反面：**批量脚本里承载不同文件内容的变量必须每轮重新读取**，不能假设上一次的内容还在。
+
+**未做（按 §5.1 边界）**：步⑤ E / R1 / R2 三个独立证据门。E 门四个调用点各答三问（锁/CPU 参与集/TLB 失效覆盖）需要启动顺序与 SMP 证据；R1 需核实 `harden_kernel_text` 与 heap-window eviction 是否会在继承者存活期替换/释放共享子树；R2 需 TX 专用保留区容量实测。三者都是证据责任，不是代码改造，**不得与步④混合验收**。
 
 ### I-42（已裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 

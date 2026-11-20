@@ -535,6 +535,16 @@ fn arm64_parange() -> u64 {
 }
 
 impl Paging for AArch64Paging {
+    fn is_supervisor_va(&self, va: VirBytes) -> bool {
+        // T1SZ = 16: the TTBR1 region starts at VA 0xffff_0000_0000_0000
+        // (L0 entries 256..512).
+        va.0 >= 0xFFFF_0000_0000_0000
+    }
+
+    fn is_inherited(&self) -> bool {
+        self.state == PagingState::Inherited
+    }
+
     const PAGE_SIZE: usize = 4096;
 
     /// `1 << 48`, guarded by the implementation's `PARange` capability.
@@ -775,6 +785,7 @@ impl Paging for AArch64Paging {
         paddr: PhysBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         // 4KB alignment check.
         if vaddr.0 & 0xFFF != 0 || paddr.0 & 0xFFF != 0 {
             return Err(PageTableError::InvalidAddress);
@@ -799,6 +810,7 @@ impl Paging for AArch64Paging {
         paddr: PhysBytes,
         flags: PageFlags,
     ) -> Result<Option<(PhysBytes, PageFlags)>, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         if vaddr.0 & 0xFFF != 0 || paddr.0 & 0xFFF != 0 {
             return Err(PageTableError::InvalidAddress);
         }
@@ -822,6 +834,7 @@ impl Paging for AArch64Paging {
     }
 
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & Arm64PteFlags::VALID.bits() != 0 => {
                 let old_paddr = PhysBytes(pte & ADDR_MASK);
@@ -839,6 +852,7 @@ impl Paging for AArch64Paging {
         vaddr: VirBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & Arm64PteFlags::VALID.bits() != 0 => {
                 // Preserve the physical address and the descriptor level
@@ -919,6 +933,7 @@ impl Paging for AArch64Paging {
     /// `vaddr` alone is not enough — stale entries for neighbours would
     /// keep the caller's later `unmap`/`map` pair non-coherent.
     fn split_huge(&mut self, vaddr: VirBytes) -> Result<bool, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         let ch = self.channel;
         // The broadcast `tlbi vmalle1is` below is an EL1 privileged
         // instruction, so a `VmDm` (EL0) handle would fault exactly like
@@ -1077,6 +1092,7 @@ impl Paging for AArch64Paging {
     ///   caller must `split_huge` first; granting user on the whole
     ///   1 GiB / 2 MiB range would be a security regression.
     fn grant_user_walk(&mut self, vaddr: VirBytes) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         let ch = self.channel;
         const APTABLE: u64 = 1 << 60;
         let valid = Arm64PteFlags::VALID.bits();
@@ -1146,6 +1162,7 @@ impl HugePages for AArch64Paging {
         size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, size.bytes());
         if !Self::supports_huge_page(size) {
             return Err(PageTableError::NotSupported);
         }

@@ -642,6 +642,17 @@ fn sv39_canonical(vaddr: u64) -> bool {
 }
 
 impl Paging for Riscv64Paging {
+    fn is_supervisor_va(&self, va: VirBytes) -> bool {
+        // Sv39 canonical high half: the kernel link base is
+        // 0xFFFFFFC0_00000000 (see `riscv64.ld`); the whole canonical high
+        // range is the supervisor half the inherit copies.
+        va.0 >= 0xFFFF_FFC0_0000_0000
+    }
+
+    fn is_inherited(&self) -> bool {
+        self.state == PagingState::Inherited
+    }
+
     const PAGE_SIZE: usize = 4096;
 
     /// `min(platform bound, Sv39 encoding bound)` = 1 << 48 here.
@@ -818,6 +829,7 @@ impl Paging for Riscv64Paging {
         paddr: PhysBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         // 4KB alignment check.
         if vaddr.0 & 0xFFF != 0 || paddr.0 & 0xFFF != 0 {
             return Err(PageTableError::InvalidAddress);
@@ -849,6 +861,7 @@ impl Paging for Riscv64Paging {
         paddr: PhysBytes,
         flags: PageFlags,
     ) -> Result<Option<(PhysBytes, PageFlags)>, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         if vaddr.0 & 0xFFF != 0 || paddr.0 & 0xFFF != 0 {
             return Err(PageTableError::InvalidAddress);
         }
@@ -880,6 +893,7 @@ impl Paging for Riscv64Paging {
     }
 
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
                 let old_paddr = PhysBytes(pte_to_paddr(pte));
@@ -900,6 +914,7 @@ impl Paging for Riscv64Paging {
         vaddr: VirBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
                 // Preserve the physical address (PPN), replace only flag bits.
@@ -989,6 +1004,7 @@ impl Paging for Riscv64Paging {
     /// `paddr_to_pte(child_pa) | V` (R=W=X=U=0); the leaf permission lives
     /// entirely in the replicated leaf PTEs one level down.
     fn split_huge(&mut self, vaddr: VirBytes) -> Result<bool, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         let ch = self.channel;
         // `sfence.vma` (both the per-slot flush inside `write_pte_dm` and
         // the global flush below) is a supervisor instruction: a `VmDm`
@@ -1100,6 +1116,7 @@ impl Paging for Riscv64Paging {
     /// (caller must `split_huge` first — granting over a whole 2 MiB range
     /// would be a security regression).
     fn grant_user_walk(&mut self, vaddr: VirBytes) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         let ch = self.channel;
         let v = Sv39PteFlags::V.bits();
         let nonleaf_mask = Sv39PteFlags::R.bits() | Sv39PteFlags::W.bits() | Sv39PteFlags::X.bits();
@@ -1144,6 +1161,7 @@ impl HugePages for Riscv64Paging {
         size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, size.bytes());
         if !Self::supports_huge_page(size) {
             return Err(PageTableError::NotSupported);
         }

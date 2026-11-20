@@ -584,8 +584,15 @@ unsafe fn propagate_user_to_intermediates(root_paddr: u64, vaddr: u64, channel: 
     }
     // The PT level needs nothing: the leaf itself carries U.
 }
-
 impl Paging for X86_64Paging {
+    fn is_supervisor_va(&self, va: VirBytes) -> bool {
+        va.0 >= 0xFFFF_8000_0000_0000
+    }
+
+    fn is_inherited(&self) -> bool {
+        self.state == PagingState::Inherited
+    }
+
     const PAGE_SIZE: usize = 4096;
 
     /// Physical address width of the 4-level PML4 PTE format.
@@ -832,6 +839,7 @@ impl Paging for X86_64Paging {
         paddr: PhysBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         // 4KB alignment check.
         if vaddr.0 & 0xFFF != 0 || paddr.0 & 0xFFF != 0 {
             return Err(PageTableError::InvalidAddress);
@@ -867,6 +875,7 @@ impl Paging for X86_64Paging {
         paddr: PhysBytes,
         flags: PageFlags,
     ) -> Result<Option<(PhysBytes, PageFlags)>, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         if vaddr.0 & 0xFFF != 0 || paddr.0 & 0xFFF != 0 {
             return Err(PageTableError::InvalidAddress);
         }
@@ -890,6 +899,7 @@ impl Paging for X86_64Paging {
     }
 
     fn unmap(&mut self, vaddr: VirBytes) -> Result<PhysBytes, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & X64PteFlags::PRESENT.bits() != 0 => {
                 let old_paddr = PhysBytes(pte & ADDR_MASK);
@@ -907,6 +917,7 @@ impl Paging for X86_64Paging {
         vaddr: VirBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         // User leaf: the intermediate-level U raise works exactly as in map
         // (see propagate_user_to_intermediates).
         if flags.contains(PageFlags::USER_ACCESSIBLE) {
@@ -960,6 +971,7 @@ impl Paging for X86_64Paging {
     /// covers speculative huge-leaf entries for addresses other than
     /// `vaddr`. Subsequent `unmap` of the evicted page flushes precisely.
     fn split_huge(&mut self, vaddr: VirBytes) -> Result<bool, PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         let ch = self.channel;
         let table_flags_mask =
             (X64PteFlags::PRESENT | X64PteFlags::WRITABLE | X64PteFlags::USER).bits();
@@ -1067,6 +1079,7 @@ impl Paging for X86_64Paging {
     /// caller must `split_huge` first; OR-ing USER into a huge leaf
     /// would grant CPL3 access to the WHOLE 2 MiB / 1 GiB range.
     fn grant_user_walk(&mut self, vaddr: VirBytes) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, Self::PAGE_SIZE as u64);
         let ch = self.channel;
         let present = X64PteFlags::PRESENT.bits();
         let user = X64PteFlags::USER.bits();
@@ -1196,6 +1209,7 @@ impl HugePages for X86_64Paging {
         size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        self.ensure_writable_range(vaddr, size.bytes());
         if !Self::supports_huge_page(size) {
             return Err(PageTableError::NotSupported);
         }
@@ -1585,6 +1599,64 @@ mod tests {
             unsafe { pt.destroy() };
         }));
         assert!(result.is_err(), "External destroy must panic");
+    }
+
+    /// D-081 / I-44 §5.4 item 4: an Inherited handle must refuse to write
+    /// the shared supervisor half. `map` targets the high half directly —
+    /// the guard fires before any PTE write (the root here is unmapped
+    /// host memory, so any real write would segfault instead of panicking).
+    #[test]
+    fn inherited_map_supervisor_range_panics() {
+        let mut pt = X86_64Paging {
+            root_paddr: 0xDEAD_B000,
+            channel: PteChannel::VmDm,
+            state: PagingState::Inherited,
+        };
+        let high_va = minix_types::VirBytes(0xFFFF_8000_0000_0000);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = pt.map(high_va, minix_types::PhysBytes(0x1000), PageFlags::read_write());
+        }));
+        assert!(result.is_err(), "Inherited map into the supervisor half must panic");
+    }
+
+    /// §5.4 item 5: a batch straddling private → supervisor must be
+    /// rejected with NO partial modification — the low-half pages inside
+    /// the batch stay unmapped.
+    #[test]
+    fn inherited_map_range_straddling_rejected_atomically() {
+        let mut pt = X86_64Paging {
+            root_paddr: 0xDEAD_D000,
+            channel: PteChannel::VmDm,
+            state: PagingState::Inherited,
+        };
+        // 3 pages starting just below the supervisor base: the last page
+        // crosses into the shared half.
+        let start = minix_types::VirBytes(0xFFFF_7FFF_FFFF_F000);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = Paging::map_range(
+                &mut pt,
+                start,
+                minix_types::PhysBytes(0x2000_0000),
+                3,
+                PageFlags::read_write(),
+            );
+        }));
+        let Err(payload) = result else {
+            panic!("straddling batch must be rejected");
+        };
+        // Atomicity (§5.4 item 5): the guard runs before map_range's
+        // validation phase, so no PTE write of any kind occurred —
+        // provable by construction; a query-based check would itself
+        // fault on this deliberately unmapped root.
+        let msg = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("shared supervisor range"),
+            "the rejection must come from the range guard (got: {msg:?})"
+        );
     }
 
 

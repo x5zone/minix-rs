@@ -337,6 +337,44 @@ pub trait Paging {
     /// - All mappings have been properly unmapped, or caller accepts memory leak
     unsafe fn destroy(self);
 
+    /// Whether `va` lies in this architecture's supervisor (kernel) half —
+    /// the half that `inherit_supervisor_half` shares with the source root.
+    ///
+    /// D-081 / I-44 range guard: an `Inherited` handle must never write
+    /// here, because the entries are shared with the source root's tree.
+    fn is_supervisor_va(&self, va: VirBytes) -> bool;
+
+    /// Whether this handle carries an inherited shared supervisor half.
+    ///
+    /// Reads the private `PagingState`; the trait cannot see impl fields.
+    fn is_inherited(&self) -> bool;
+
+    /// Range guard for every write entry (D-081 / I-44 §4ter.3): an
+    /// `Inherited` handle must not modify the shared supervisor half.
+    ///
+    /// Endpoint-only check is sufficient: a range entirely below the
+    /// supervisor base passes, one entirely inside the supervisor half is
+    /// rejected by the first endpoint, and any straddling range is rejected
+    /// by the last endpoint. Zero length is a no-op.
+    fn ensure_writable_range(&self, start: VirBytes, len: u64) {
+        if !self.is_inherited() || len == 0 {
+            return;
+        }
+        let last = VirBytes(
+            start
+                .0
+                .checked_add(len - 1)
+                .expect("ensure_writable_range: virtual range overflows u64"),
+        );
+        assert!(
+            !self.is_supervisor_va(start) && !self.is_supervisor_va(last),
+            "Inherited page table: refusing to modify the shared supervisor range \
+             [0x{:x}, 0x{:x}]",
+            start.0,
+            last.0
+        );
+    }
+
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
 
@@ -466,6 +504,17 @@ pub trait Paging {
         pages: usize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        // D-081 / I-44: whole-range endpoint guard (inlined — these default
+        // methods keep the trait object-safe, so the guard helper is not
+        // callable here). Batch atomicity: check everything before the
+        // first modification (§5.4 item 5).
+        if self.is_inherited() && pages > 0 {
+            let end = VirBytes(vaddr_start.0 + (pages as u64) * (Self::PAGE_SIZE as u64) - 1);
+            assert!(
+                !self.is_supervisor_va(vaddr_start) && !self.is_supervisor_va(end),
+                "Inherited page table: refusing to modify the shared supervisor range"
+            );
+        }
         // Phase 1: Pre-validate — ensure no address in the range is already mapped
         for i in 0..pages {
             let offset = (i as u64)
@@ -503,6 +552,15 @@ pub trait Paging {
         vaddr_start: VirBytes,
         pages: usize,
     ) -> Result<(), PageTableError> {
+        // D-081 / I-44: whole-range endpoint guard before the first unmap
+        // (batch atomicity, §5.4 item 5).
+        if self.is_inherited() && pages > 0 {
+            let end = VirBytes(vaddr_start.0 + (pages as u64) * (Self::PAGE_SIZE as u64) - 1);
+            assert!(
+                !self.is_supervisor_va(vaddr_start) && !self.is_supervisor_va(end),
+                "Inherited page table: refusing to modify the shared supervisor range"
+            );
+        }
         for i in 0..pages {
             let offset = (i as u64)
                 .checked_mul(Self::PAGE_SIZE as u64)
@@ -796,6 +854,16 @@ pub mod mock {
                 return Err(PageTableError::InvalidAddress);
             }
             Ok(())
+        }
+
+        fn is_supervisor_va(&self, _va: VirBytes) -> bool {
+            // In-memory model: no supervisor half exists to share, so no
+            // range can be "shared" and the guard never fires.
+            false
+        }
+
+        fn is_inherited(&self) -> bool {
+            self.state == PagingState::Inherited
         }
 
         fn new_from_page(_root_page: PhysBytes) -> Self {
