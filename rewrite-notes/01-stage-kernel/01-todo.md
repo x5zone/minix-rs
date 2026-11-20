@@ -759,7 +759,7 @@ L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立�
 
 
 
-### I-35（已裁决·待实施）`KERNEL_INFO` 的 write-once 承诺与二次写 + 两处注释失真
+### I-35（已裁决·待实施·行号与前提已复核）`KERNEL_INFO` 的 write-once 承诺与二次写 + 两处注释失真
 
 **裁决**：用户 2026-11-20，判决行 `D-071`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户明确要求「只记账不实施」）。来源：`R34/DESIGN-D2-05`（P2，[MODERN]）。**编号注记**：本条是 `I-35`，与本节下方的 `D-71`（`BootForm::source_path`，已修）不是一回事——后者是历史编号，前者是 2026-11-20 的判决行。
 
@@ -805,8 +805,27 @@ assert!(
 - **本条内一并**：`globals.rs:545` 的 `IPC_FILTER_POOL` 注释「Only written once during boot」与 `ipc_filter_pool_with():3689` 返回 `&'static mut`、`proc_table.rs:1277`/`syscall.rs:760,958` 三处可变借用矛盾。改注释为「初始化一次，此后在 BKL 下可变」。
 - **登记不改（注释可收窄，无害）**：`resv_claims.rs:256` 的 `DTB_RECORDS` —— `capture` 在 EBS 重试循环内（最多 2 次 attempt），每次 attempt 前先 `DTB_RECORDS_N = 0` 归零再写，实际安全；注释可改成「write-once per attempt」。
 
+**2026-11-20 复核（RD3/DESIGN-D2-01 同一缺陷的第二次面板发现）**：
+
+D02 的 `R3/DESIGN-D2-01`（P1）从**别名模型**角度报告同一处代码——`store_kernel_info` 是安全函数却返回 `&'static` 并在内部原地改写同一槽（`*KERNEL_INFO.get() = Some(k)`）。这是 D-071 已裁决缺陷的重复发现，**不另立判决行**，记为 `dup-of: D-071`。
+
+复核同时修正了本条的三处过期事实（I-31 / I-38 合并后行号全面漂移）：
+
+| 项 | 登记时 | 复核实测 |
+|---|---|---|
+| 二次 store 位置 | `lib.rs:1738` | **`lib.rs:1858`** |
+| `kmain` 的全局读 | `lib.rs:1687` | **`lib.rs:1807-1808`** |
+| 唯一写入点 | `lib.rs:1561`/`:1562` | **`lib.rs:1676`** |
+| `store_kernel_info` 定义 | `lib.rs:1453` | **`lib.rs:1570`** |
+| 落地区溢出断言 | `:1538` | `:1547` |
+| 测试 re-store | `lib.rs:5878` | **`lib.rs:5991`** |
+
+**关于「形参从未被读」的前提**：复核确认**仍然成立**，但成因比原文写的更精确——`kmain:1807` 的 `let kernel_info: &KernelInfo = crate::kernel_info().expect(...)` **遮蔽了形参**，所以形参从 `:1807` 起在函数体内再无读者；`:1858` 那行是它唯一的"使用"，恰好吃掉 `unused_variables` 警告。因此第 ② 步（形参改 `_kernel_info`）**必须与第 ① 步同时做**——只删行会立刻暴露警告。
+
+**与 Minix3 C 的对照（裁决理由的补强）**：`minix3/minix/kernel/arch/i386/pre_init.c:20` 的 `kinfo_t kinfo` 是内核自己的 `.bss` 全局；`:224` 的 `get_parameters(ebx, &kinfo)` 从 boot 提供的 multiboot info **拷贝一次**（`:123` 的 `memcpy((void *)mbi, (void *)ebx, sizeof(*mbi))`），`:237` 返回 `&kinfo`，此后只读。**C 侧拷贝只发生一次，且没有"再存一次"的合法需求。** Rust 侧第二次 `store_kernel_info` 的源已是 `.bss` 里的自身（`land_slice` 的指针相等守卫 `:1549` 跳过元素拷贝），净效果是"把 A 拷到栈再写回 A"——与 C 模型不符。
+
 **验收**：
-- `sed -n '1738p' os/kernel/src/lib.rs` 不再含 `store_kernel_info`；
+- `sed -n '1858p' os/kernel/src/lib.rs` 不再含 `store_kernel_info`；
 - `grep -n "assert!(KERNEL_INFO.get().is_none()" os/kernel/src/lib.rs` → 1；
 - `grep -rn "debug_assert" os/libs os/arch` → 0；
 - `grep -c "Only written once during boot" os/kernel/src/globals.rs` → 0（`KERNEL_INFO` 与 `IPC_FILTER_POOL` 两处措辞都已改）；
