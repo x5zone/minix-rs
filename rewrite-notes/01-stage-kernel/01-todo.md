@@ -49,7 +49,7 @@
 | I-53（待裁决·I-43 三层残留之二） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception（`test-paging-faultloop` 与 `test-user-trap` 同一行号） | 设计裁决 + 代码修正 | **未裁决**（D-087 拆出）。**纯内核缺陷**（`trap_dispatch.rs`），两个独立载体撞同一处说明是生产问题；倾向先审查 CPL/error-code 路由，不推荐载体侧绕过 | §3 的 I-53 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（已裁决·待实施） | `load_segments_into_phys_memory` 的 SAFETY 契约过期（仍写「调用者必须先 compute」）+ entry 断言两份拷贝 | 注释修正 | **已裁决（D-088，用户 2026 年 11 月 21 日）**：I-48 前置已落地（`a25305c66`），复核后发现 ① SAFETY 第 2 条**现在是错的**（迭代器已自查 `filesz > memsz`，`loader.rs:275-279` 仍写「本函数不拒绝」）→ **必做改写**；② 面板称的文档失真**实测不存在** → 销账；③ entry 断言两份拷贝**不合并**（两份的守卫时机不同：wrapper 在 `layout_gate` 前、UEFI 腿在 `reserve_kernel_span` 前）。面板的 `ValidatedKernelImage` / 改 wrapper 形状两案均不采纳（I-48 之后净收益为零） | §3 的 I-46 |
-| I-47（待裁决·前置 I-48 已落地） | `load_segments_into_buffer` 的计数与语义三处不一致（文档说 loaded、`:258` 无条件计数、`:235` 越界段不计数；且缺段间重叠检测） | 代码改造 | **前置已满足（I-48 落地，2026-11-21）**：本函数签名已随 I-48 改为 `Result<usize, _>`（坏段不再折叠成 0）；计数与语义三处不一致仍在射程内待裁决。裁决时按候选 A（返回改名 + 补重叠检测 + 文档改「测试投影」）。面板的 `copy_segment(seg, sink)` 抽象不采纳（覆盖不了整组重叠检测）| §3 的 I-47 |
+| I-47（已裁决·待实施） | `load_segments_into_buffer` 的校验前置与装不下语义（照 Minix3 C 的两循环结构重排） | 代码改造 | **已裁决（D-089，用户 2026 年 11 月 21 日）采乙**：照 `minix3/minix/lib/libexec/exec_elf.c` 的 `libexec_load_elf`——① 校验前置（`sanity check binary before wiping out the target process`：先 collect + 校验 `buf` 覆盖全部段，**校验不通过不写任何字节**）；② 装不下返回 `Err(TargetBufferTooSmall{..})` 而非静默跳过（C 用 `ENOEXEC`；本项目有 `ElfError` 可给精确变体）；③ `count` 语义自动一致；④ 文档改为「测试投影 + 前置校验」并列出共享/不共享的校验项。**不补段间重叠检测**（C 也没在装载循环里做，其重叠防线在 mmap/copymem 实现侧）| §3 的 I-47 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
@@ -1835,9 +1835,9 @@ cargo check --workspace --all-targets
 
 **风险与回退**：① 是纯文档改动，零行为变化。若某未来调用者确实需要一个"我已校验过"的类型凭证，那时再引入 `ValidatedKernelImage`——但当前七个消费者全部走 `segment_iter`，凭证无处可用。
 
-### I-47（待裁决·**有前置依赖 I-48，前置未落地前禁止裁决**）`load_segments_into_buffer` 的计数与语义三处不一致
+### I-47（已裁决·待实施）`load_segments_into_buffer` 的校验前置与装不下语义（照 C 两循环结构重排）
 
-**来源**：`R3/DESIGN-D2-04`（P2，[MODERN]），D02 的 R3 面板。**状态：待裁决，由 I-48（D-084）阻塞。**
+**来源**：`R3/DESIGN-D2-04`（P2，[MODERN]），D02 的 R3 面板。**状态：已裁决（D-089）；I-48 前置已落地（`a25305c66`）。**
 
 > **⛔ 前置依赖（用户裁定）**：本条的改动面与 I-48 在**同一个函数**上重叠——I-48 把 `segment_iter` 的 `Item` 改成 `Result` 后，本函数的 `match minix_elf::segment_iter(elf_data) { Ok(i) => i, Err(_) => return 0 }`（`loader.rs:225-228`）**必须重写**。因此裁决与实施都排在 I-45 之后；在此之前裁决会基于"迭代器返回 `None`"这个即将消失的行为去设计返回值。
 
@@ -1879,7 +1879,87 @@ cargo check --workspace --all-targets
 
 **禁止裁决的原因**：I-48 会改变本函数对"整个 ELF 打不开"的表达方式（`Err(_) => return 0` → 必须重写），此时若先裁决计数语义，落地的返回值类型可能与 I-45 之后的协议冲突。
 
-**解锁条件**：I-48（D-084）实施完成并验证 → 本条解除阻塞，按 A 裁决。
+**I-48 落地后的实测复核（本条前提第三次修正）**：
+
+| 原判断 | I-48 之后实测 |
+|---|---|
+| ① 返回 `usize` 且文档写「number of segments loaded」 | **已部分做**：返回类型已是 `Result<usize, minix_elf::ElfError>`（`loader.rs:253-257`），文档也加了「or an error for a malformed image」。但**内部 `count` 语义仍失真** |
+| ② `count += 1` 无条件执行 | **仍在**（`loader.rs:288`）——`:281-283` 的 `if file_end <= buf.len()` 只决定要不要拷，装不下的段仍被计入 |
+| ③ `seg.paddr < buf_base_paddr` 的段 `continue` 且不计入 | **仍在**（`:266`）|
+| ④ 缺段间重叠检测 | **仍在**——`first_overlapping_pair`（`:383`）只被物理版用，缓冲版零调用 |
+
+**所以 I-48 只改掉了"整个 ELF 打不开"的表达方式（`Err(_) => return 0` → `?`），没碰计数语义与校验结构。**
+
+**Minix3 C 的做法（`minix3/minix/lib/libexec/exec_elf.c` 的 `libexec_load_elf`，逐行核实）**：
+
+```c
+/* sanity check binary before wiping out the target process */
+for (i = 0; i < hdr->e_phnum; i++) {
+    Elf_Phdr *ph = &phdr[i];
+    off_t file_limit = ph->p_offset + ph->p_filesz;
+    if(execi->filesize < file_limit) {
+        return ENOEXEC;
+    }
+}
+
+if(execi->clearproc) execi->clearproc(execi);     /* ← 之后才动手 */
+
+for (i = 0; i < hdr->e_phnum; i++) { ... }        /* 真正的装载 */
+```
+
+三条可迁移的做法：
+
+| # | C 的做法 | 对我们的含义 |
+|---|---|---|
+| ① | **先校验全部段，再动手任何一步**（注释明写 `before wiping out the target process`）| 「装不下」的校验必须前置到**任何写入之前** |
+| ② | **装不下 = `return ENOEXEC`**，不是静默跳过 | 选「乙：返回 `Err`」 |
+| ③ | **校验与装载是两个独立循环**（第一个只算，第二个才写）| 函数结构要重排为「先 collect + 校验，再循环写」 |
+
+**C 把两类失败分得很清楚，这是本次裁决的关键依据**：
+
+| 失败类型 | C 的处置 | 本例归属 |
+|---|---|---|
+| 输入数据与目标不匹配（ELF 畸形、装不下）| `return ENOEXEC` | **「目标太小」属于这一类** |
+| 调用者未满足契约（`copymem`/`clearmem` 指针为 NULL）| `assert(...)` | 不属于本例 |
+
+**所以「目标太小」用 `Err` 而非 `assert`**——它不是调用者违约，是输入与目标容量不匹配。
+
+**裁决（D-089，用户 2026-11-21）：采乙，并照 C 的「校验前置 + 两循环」结构重排。**
+
+| # | 改动 | C 依据 |
+|---|---|---|
+| **①** | 先 `collect` 全部段并校验 `buf` 是否覆盖每一个段的目标范围；**校验不通过时不写任何字节** | `sanity check binary before wiping out the target process` |
+| **②** | 新增 `ElfError::TargetBufferTooSmall { seg_index: usize, needed: usize, have: usize }`（或等价的静态变体 + 动态消息）| C 用 `ENOEXEC`（其错误码空间有限）；本项目已有 `ElfError` 枚举，可以给精确变体——**「装不下」与「ELF 畸形」是两类失败，处置不同**（一个改 `buf` 大小，一个拒绝文件）|
+| **③** | `count` 语义自动一致（校验通过后每段必成功），不再需要单独修 | ②的副产品 |
+| **④** | 文档改为「测试投影 + 前置校验」，并列出与物理版的**共享/不共享**校验项 | 消除「测试通过 = 生产通过」的错觉 |
+
+**两项不采纳（第二轮修正）**：
+
+| 曾考虑 | 不采纳理由 |
+|---|---|
+| 面板的 `copy_segment(seg, sink)` 抽象 | 物理版的段间重叠检测在**循环之前对整组段**做，不在段拷贝内部；抽象只覆盖拷贝动作，覆盖不了真正的差异 |
+| 补段间重叠检测到缓冲版 | 缓冲版的 `buf` 长度上界已独立挡住越界写；补重叠检测会让孪生「看起来更等价」而不更真。**C 也没有在装载循环里做重叠检测**——它的重叠防线在 `mmap`/`copymem` 的实现侧 |
+
+**文档改法（④ 的具体内容）**：
+
+说明缓冲版与物理版的校验分工：
+
+| 校验项 | 缓冲版 | 物理版 |
+|---|---|---|
+| `segment_iter` 的畸形拒绝（`SegmentOutOfBounds` / `FileszExceedsMemsz` / `PhdrOutOfBounds`）| **有**（I-48 统一）| **有**（I-48 统一）|
+| 目标容量 | **有**（前置校验，本裁决新增）| 无（物理地址无"容量"概念）|
+| 段间物理重叠 | 无 | **有**（`first_overlapping_pair`）|
+
+**验收**：
+
+```bash
+# ① 装不下时零写入（构造 buf 只容第一段的 fixture）
+#    断言返回 Err(TargetBufferTooSmall{..}) 且 buf 未被写入
+cargo test -p boot-shim --features test-all
+cargo check --workspace --all-targets
+```
+
+**风险与回退**：`ElfError` 加新变体属公共枚举扩展（非破坏性，但下游 `match` 若是穷尽匹配需补臂——`grep -rn "ElfError::" os/ --include=*.rs` 确认）。回退：改用现有 `InvalidSegment` 变体并在文档说明"容量不足也归此类"。
 
 ### I-34（已实施）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
