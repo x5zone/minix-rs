@@ -138,12 +138,27 @@ where
     }
     // 6: kernel image span (kernel window; the image is never a VM
     // resource, so it gets no VM-window alias)
-    for r in kernel_image_candidates(kernel_info, root) {
-        f(r, kernel_window)?;
+    {
+        let mut out = [DmRange::new(0, 0); MAX_DM_PIECES];
+        let n = kernel_image_pieces(kernel_info, root, &mut out);
+        for r in &out[..n] {
+            f(*r, kernel_window)?;
+        }
     }
     // 7: reserved regions, kernel window
-    for r in reserved_regions_candidates(kernel_info, root) {
-        f(r, kernel_window)?;
+    {
+        let mut out = [DmRange::new(0, 0); MAX_DM_PIECES];
+        for r in kernel_info.reserved_regions.iter() {
+            let n = reserved_piece_count(
+                kernel_info,
+                root,
+                DmRange::new(r.base.0, r.len as u64),
+                &mut out,
+            );
+            for p in &out[..n] {
+                f(*p, kernel_window)?;
+            }
+        }
     }
     Ok(())
 }
@@ -219,11 +234,26 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
     for r in boot_module_candidates(kernel_info, root) {
         note(r);
     }
-    for r in kernel_image_candidates(kernel_info, root) {
-        note(r);
+    {
+        let mut out = [DmRange::new(0, 0); MAX_DM_PIECES];
+        let n = kernel_image_pieces(kernel_info, root, &mut out);
+        for r in &out[..n] {
+            note(*r);
+        }
     }
-    for r in reserved_regions_candidates(kernel_info, root) {
-        note(r);
+    {
+        let mut out = [DmRange::new(0, 0); MAX_DM_PIECES];
+        for r in kernel_info.reserved_regions.iter() {
+            let n = reserved_piece_count(
+                kernel_info,
+                root,
+                DmRange::new(r.base.0, r.len as u64),
+                &mut out,
+            );
+            for p in &out[..n] {
+                note(*p);
+            }
+        }
     }
     max_end.div_ceil(PAGE_SIZE) * PAGE_SIZE
 }
@@ -281,47 +311,101 @@ fn boot_module_candidates<'a>(
         })
 }
 
-/// Compute `range − subtracted` as a list of non-overlapping remainders
-/// (D-59 coverage-loss gate: the subtracted union may touch a range
-/// anywhere, so its non-overlapping tails must survive as their own
-/// segments instead of the whole range being dropped).
+/// Upper bound on the piece count one priority-interval difference can
+/// produce: each subtracted range splits at most one existing piece, so
+/// `1 + candidates` pieces. The candidate sources are wire-bounded
+/// (memmap ≤ 128, bootstrap tree ≤ 2, boot modules ≤ 12) plus the image
+/// span itself, so 160 leaves headroom with no allocator involved.
+const MAX_DM_PIECES: usize = 160;
+
+/// The higher-priority candidate sources, in installation order: memmap,
+/// the bootstrap tree and the boot modules. Source 5 (the kernel image
+/// span) appends itself where it is the range being subtracted; a caller
+/// subtracting *from* source 5 must not include it.
+fn higher_priority_subs<'a>(
+    kernel_info: &'a KernelInfo,
+    root: PhysBytes,
+) -> impl Iterator<Item = DmRange> + 'a {
+    memmap_candidates(kernel_info)
+        .chain(bootstrap_tree_candidates(kernel_info, root).into_iter().flatten())
+        .chain(boot_module_candidates(kernel_info, root))
+}
+
+/// The raw kernel image span (`kern_phys_base`/`kern_size`).
+fn kernel_image_range(kernel_info: &KernelInfo) -> DmRange {
+    DmRange::new(kernel_info.kern_phys_base.0, kernel_info.kern_size)
+}
+
+/// Compute `range − subs` into `out`, returning the piece count.
 ///
-/// The inputs are boot-time candidate lists (bounded, tens of entries),
-/// so the quadratic scan is deliberate: it keeps the function heap-free
-/// apart from the scratch `Vec`s `alloc` provides before `arch_boot`
-/// finishes.
-fn subtract_range(range: DmRange, sub: &[DmRange]) -> alloc::vec::Vec<DmRange> {
-    use alloc::vec::Vec;
-    let mut pieces: Vec<DmRange> = alloc::vec![range];
-    for s in sub {
-        let mut next: Vec<DmRange> = Vec::new();
-        for p in &pieces {
+/// This is the D-59 priority-interval difference: the subtracted union may
+/// touch a range anywhere, and the non-overlapping remainders must survive
+/// as their own segments instead of the whole range being dropped.
+///
+/// **Allocation-free by necessity**: this runs inside `arch_boot` before
+/// the kernel's runtime heap exists. Both the working set and the scratch
+/// copy are fixed arrays; an over-budget piece count is a fail-closed
+/// assert, never a silent truncation of coverage.
+fn subtract_into(
+    range: DmRange,
+    subs: impl Iterator<Item = DmRange>,
+    out: &mut [DmRange; MAX_DM_PIECES],
+) -> usize {
+    let mut scratch = [DmRange::new(0, 0); MAX_DM_PIECES];
+    let mut n = 1usize;
+    out[0] = range;
+    // Push with an explicit budget check: the piece count is bounded by
+    // `1 + candidate count`, but a fail-closed panic is cheaper than
+    // trusting that arithmetic across future candidate sources.
+    let mut push = |buf: &mut [DmRange; MAX_DM_PIECES], m: &mut usize, p: DmRange| {
+        assert!(
+            *m < MAX_DM_PIECES,
+            "dm_coverage: candidate piece budget exceeded (raise MAX_DM_PIECES)"
+        );
+        buf[*m] = p;
+        *m += 1;
+    };
+    for s in subs {
+        let s_end = s.base + s.len;
+        let mut m = 0usize;
+        for i in 0..n {
+            let p = out[i];
             let p_end = p.base + p.len;
-            let s_end = s.base + s.len;
             // No overlap: piece survives unchanged.
             if s_end <= p.base || s.base >= p_end {
-                next.push(*p);
+                push(&mut scratch, &mut m, p);
                 continue;
             }
             // Head remainder [p.base, s.base) survives when the subtraction
             // starts inside the piece.
             if s.base > p.base {
-                next.push(DmRange::new(p.base, s.base - p.base));
+                push(&mut scratch, &mut m, DmRange::new(p.base, s.base - p.base));
             }
             // Tail remainder [s_end, p_end) survives when the subtraction
             // ends before the piece does.
             if s_end < p_end {
-                next.push(DmRange::new(s_end, p_end - s_end));
+                push(&mut scratch, &mut m, DmRange::new(s_end, p_end - s_end));
             }
         }
-        pieces = next;
+        out[..m].copy_from_slice(&scratch[..m]);
+        n = m;
+        if n == 0 {
+            return 0;
+        }
     }
-    pieces.retain(|p| p.len > 0);
-    pieces
+    // Drop zero-length pieces (`DmRange` requires non-zero lengths).
+    let mut k = 0usize;
+    for i in 0..n {
+        if out[i].len > 0 {
+            out[k] = out[i];
+            k += 1;
+        }
+    }
+    k
 }
 
-/// Source 5: the kernel **image span** (`kern_phys_base`/`kern_size`) —
-/// the one reserved-class fact the kernel itself owns.
+/// Source 5 pieces: the kernel image span minus the higher-priority
+/// sources, written into `out`.
 ///
 /// In the UEFI legs the image is LOADER_DATA above the conventional
 /// memmap. The production shim surfaces those pages through
@@ -338,22 +422,38 @@ fn subtract_range(range: DmRange, sub: &[DmRange]) -> alloc::vec::Vec<DmRange> {
 /// `0x0dfffcc8` while the source walk was healthy.
 ///
 /// Priority: lower than memmap / bootstrap tree / boot modules (those are
-/// installed first and subtracted out here), higher than
-/// `reserved_regions` (which subtracts this span in turn). A module blob
-/// embedded in the image (the QEMU carriers embed their user ELFs as
-/// static blobs) is already installed by source 3 and therefore excluded
-/// from the image remainders; `install_boot_dm_range` never sees the
-/// same leaf twice.
-fn kernel_image_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> alloc::vec::Vec<DmRange> {
-    use alloc::vec::Vec;
-    let image = DmRange::new(kernel_info.kern_phys_base.0, kernel_info.kern_size);
+/// installed first and subtracted out), higher than `reserved_regions`
+/// (which subtracts this span in turn). A module blob embedded in the
+/// image (the QEMU carriers embed their user ELFs as static blobs) is
+/// already installed by source 3 and therefore excluded from the image
+/// remainders; `install_boot_dm_range` never sees the same leaf twice.
+fn kernel_image_pieces(
+    kernel_info: &KernelInfo,
+    root: PhysBytes,
+    out: &mut [DmRange; MAX_DM_PIECES],
+) -> usize {
+    let image = kernel_image_range(kernel_info);
     if image.len == 0 {
-        return Vec::new();
+        return 0;
     }
-    let mut subtracted: Vec<DmRange> = memmap_candidates(kernel_info).collect();
-    subtracted.extend(bootstrap_tree_candidates(kernel_info, root).into_iter().flatten());
-    subtracted.extend(boot_module_candidates(kernel_info, root));
-    subtract_range(image, &subtracted[..])
+    subtract_into(image, higher_priority_subs(kernel_info, root), out)
+}
+
+/// The surviving remainders of one reserved descriptor: subtract the
+/// higher-priority sources and the raw kernel image span, write the pieces
+/// into `out`, return the count.
+fn reserved_piece_count(
+    kernel_info: &KernelInfo,
+    root: PhysBytes,
+    reserved: DmRange,
+    out: &mut [DmRange; MAX_DM_PIECES],
+) -> usize {
+    let image = kernel_image_range(kernel_info);
+    subtract_into(
+        reserved,
+        higher_priority_subs(kernel_info, root).chain(core::iter::once(image)),
+        out,
+    )
 }
 
 /// Source 4: reserved (occupied) physical regions — the kernel's own
@@ -380,57 +480,26 @@ fn kernel_image_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> alloc::
 ///
 /// Priority-interval difference (D-59 coverage-loss gate): a reserved
 /// range is laid against the union of the earlier candidates (memmap ∪
-/// root/bump ∪ surviving modules) and only its non-overlapping
-/// remainders are installed as their own segments. Earlier candidates
-/// keep their crisp ranges; the reserved descriptor no longer vanishes
-/// whole the moment it touches one of them, so its unrelated tails stop
-/// losing their kernel-DM leaf. The remainders are pairwise disjoint by
-/// construction, which is what `install_boot_dm_range`'s `AlreadyMapped`
-/// refusal needs. Real-machine proof of the restored tails stays on the
-/// real-machine gate chain; the host-side invariant is
-/// `test_reserved_regions_candidates_union`.
+/// root/bump ∪ surviving modules ∪ the image span) and only its
+/// non-overlapping remainders are installed as their own segments.
+/// Earlier candidates keep their crisp ranges; the reserved descriptor no
+/// longer vanishes whole the moment it touches one of them, so its
+/// unrelated tails stop losing their kernel-DM leaf. The remainders are
+/// pairwise disjoint by construction, which is what
+/// `install_boot_dm_range`'s `AlreadyMapped` refusal needs. Real-machine
+/// proof of the restored tails stays on the real-machine gate chain; the
+/// host-side invariant is `test_reserved_regions_candidates_union`.
 ///
-/// A reserved∩reserved overlap double-installs the same slot too; the
+/// A reserved∩reserved overlap would double-install the same slot: the
 /// shim emits one entry per descriptor from a single `GetMemoryMap`
-/// snapshot, whose descriptors are disjoint by construction, so that
-/// shape cannot arise from the partition itself.
+/// snapshot, whose descriptors are disjoint by construction, so that shape
+/// cannot arise from the partition itself. Should a future producer
+/// violate it, the install pass fails closed with `AlreadyMapped` (boot
+/// refusal), never silent corruption.
 ///
-/// Kernel DM only: the VM DM intentionally stays on sources 1–3 so PMM
+/// Kernel DM only: the VM DM intentionally stays on sources 1–5 so PMM
 /// resource qualification semantics are unchanged (§6.1 eligibility
 /// filtering).
-///
-/// Heap-free by necessity — same `arch_boot`-before-heap constraint as
-/// [`boot_module_candidates`].
-fn reserved_regions_candidates<'a>(
-    kernel_info: &'a KernelInfo,
-    root: PhysBytes,
-) -> impl Iterator<Item = DmRange> + 'a {
-    use alloc::vec::Vec;
-
-    // D-59 coverage-loss gate: the earlier candidates (memmap ∪ bootstrap
-    // tree ∪ boot modules) are the higher-priority installation order — a
-    // reserved region partially overlapping one of them used to be dropped
-    // WHOLE, silently losing its non-overlapping tails (dm_coverage.rs's
-    // documented residual gap: a kernel_phys_to_virt access into the tail
-    // faults not-present). Priority-interval difference: keep the earlier
-    // candidates intact, retain only the reserved region's non-overlapping
-    // remainders as their own segments.
-    let mut subtracted: Vec<DmRange> = memmap_candidates(kernel_info).collect();
-    subtracted.extend(bootstrap_tree_candidates(kernel_info, root).into_iter().flatten());
-    subtracted.extend(boot_module_candidates(kernel_info, root));
-    // The kernel image span is installed as its own source (source 5);
-    // subtract the raw span here so a reserved descriptor that contains
-    // the image (the UEFI loader-data shape) cannot double-install its
-    // leaves.
-    subtracted.push(DmRange::new(kernel_info.kern_phys_base.0, kernel_info.kern_size));
-    kernel_info
-        .reserved_regions
-        .iter()
-        .map(|r| DmRange::new(r.base.0, r.len as u64))
-        .flat_map(move |r| subtract_range(r, &subtracted[..]))
-        .collect::<Vec<DmRange>>()
-        .into_iter()
-}
 
 /// Source 1: conventional RAM ranges (the boot shim already type-filtered).
 fn memmap_candidates(kernel_info: &KernelInfo) -> impl Iterator<Item = DmRange> + '_ {
@@ -525,6 +594,31 @@ use crate::IDENTITY_MAP_END;
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
+    /// Source-5 pieces for tests (`Vec` is fine on the host).
+    fn image_pieces_vec(info: &KernelInfo, root: PhysBytes) -> Vec<DmRange> {
+        let mut out = [DmRange::new(0, 0); MAX_DM_PIECES];
+        let n = kernel_image_pieces(info, root, &mut out);
+        out[..n].to_vec()
+    }
+
+    /// Source-4 remainders for tests.
+    fn reserved_pieces_vec(info: &KernelInfo, root: PhysBytes) -> Vec<DmRange> {
+        let mut out = [DmRange::new(0, 0); MAX_DM_PIECES];
+        let mut v = Vec::new();
+        for r in info.reserved_regions.iter() {
+            let n = reserved_piece_count(
+                info,
+                root,
+                DmRange::new(r.base.0, r.len as u64),
+                &mut out,
+            );
+            v.extend_from_slice(&out[..n]);
+        }
+        v
+    }
+
     use super::*;
 
     #[cfg(feature = "mock")]
@@ -750,7 +844,7 @@ mod tests {
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → dropped
-        let cands = kernel_image_candidates(&info, PhysBytes(0x1000));
+        let cands = image_pieces_vec(&info, PhysBytes(0x1000));
         assert_eq!(
             cands,
             alloc::vec![
@@ -781,8 +875,7 @@ mod tests {
             }],
             ..info
         };
-        let reserved: alloc::vec::Vec<DmRange> =
-            reserved_regions_candidates(&its, PhysBytes(0x1000)).collect();
+        let reserved = reserved_pieces_vec(&its, PhysBytes(0x1000));
         assert_eq!(
             reserved,
             alloc::vec![
@@ -844,8 +937,7 @@ mod tests {
             authority: minix_boot::InputObjectId::UefiMemoryMap,
         };
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → source 2 drops
-        let cands: alloc::vec::Vec<DmRange> =
-            reserved_regions_candidates(&info, PhysBytes(0x1000)).collect();
+        let cands = reserved_pieces_vec(&info, PhysBytes(0x1000));
         // D-59 coverage-loss gate semantics: the memmap-contained range
         // vanishes entirely (union), the module-overlapping range survives
         // as its NON-OVERLAPPING TAIL ([0x1de5_0000, 0x1de5_1000) — the
@@ -904,7 +996,7 @@ mod tests {
         let root = PhysBytes(0x1000);
         let policy = mock_dm_policy();
         let window = policy.kernel_window();
-        for r in reserved_regions_candidates(&info, root) {
+        for r in reserved_pieces_vec(&info, root) {
             preflight_boot_dm_range(r, window, &policy)
                 .expect("mock kernel window reserved coverage preflight");
             // SAFETY: host test mock records leaves; no page tables are touched.
@@ -994,7 +1086,7 @@ mod tests {
             "kernel_dm_pa_end must follow source 4 so the handoff's kern_dm_pages \
              covers the installed kernel-window leaf set"
         );
-        let cands: alloc::vec::Vec<DmRange> = reserved_regions_candidates(&info, root).collect();
+        let cands = reserved_pieces_vec(&info, root);
         assert_eq!(
             cands,
             alloc::vec![DmRange::new(0x1f00_0000, 0x4000)],
