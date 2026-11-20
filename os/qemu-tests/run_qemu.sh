@@ -125,6 +125,16 @@ case "$ARCH" in
             -machine virt,gic-version=3
             -cpu max
             -smp 4
+            # I-52 (2026-11-21): the aarch64 carriers declare a 256 MiB
+            # memmap (`base=0x4000_0000, len=0x1000_0000`); without `-m`,
+            # `machine virt` defaults to 128 MiB and the upper half of every
+            # declared region has no backing — a kernel write to the VM
+            # bootstrap allocator's first frame (region end − 0x1000 =
+            # 0x4ffff000) landed in that hole and died as a Synchronous
+            # External abort (ESR DFSC=0x10, far = KERNEL_DIRECT_MAP_BASE +
+            # 0x4ffff000). Keep `-m` in sync with the declared memmap, the
+            # same contract the riscv64 carrier scripts pin in writing.
+            -m 256M
             -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on"
             -drive "if=pflash,format=raw,unit=1,file=$FW_VARS"
             -drive "$DISK_DRIVE"
