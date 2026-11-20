@@ -455,6 +455,26 @@ unsafe extern "C" fn rt_birth_svc_dispatch(frame: *mut u64) {
         early_console::write_str(" x8=");
         early_console::write_hex(*frame.add(8));
         early_console::write_str("\n");
+        // A2 forensics (hook authorized): the frame-offset reads above are
+        // suspect (elr/lr did not match gdb), so ALSO print the hardware
+        // elr_el1/far_el1 directly plus the elr offset relative to the user
+        // image base (0x140000000 = USER_CODE_VA) — offline `nm rt-birth`
+        // maps that offset to the exact symbol.
+        {
+            let hw_elr: u64;
+            let hw_far: u64;
+            unsafe {
+                asm!("mrs {}, elr_el1", out(reg) hw_elr, options(nomem, nostack));
+                asm!("mrs {}, far_el1", out(reg) hw_far, options(nomem, nostack));
+            }
+            early_console::write_str("  [a2] hw-elr=");
+            early_console::write_hex(hw_elr);
+            early_console::write_str(" hw-elr-off=0x");
+            early_console::write_hex(hw_elr.wrapping_sub(0x140000000));
+            early_console::write_str(" hw-far=");
+            early_console::write_hex(hw_far);
+            early_console::write_str("\n");
+        }
         {
             let sctlr: u64;
             let ttbr0: u64;
