@@ -627,24 +627,6 @@ impl KernelInfo {
             self.kern_virt_base.0.saturating_add(self.kern_size)
         );
     }
-
-    // ── Getter methods (preferred API over direct field access) ──
-    //
-    // These getters are the recommended API. Direct field access remains
-    // `pub` for backward compatibility with boot-shim construction and
-    // test assertions, but new code should prefer these methods.
-
-
-
-
-
-
-
-
-
-
-
-
 }
 
 #[repr(C)]
@@ -1087,36 +1069,5 @@ mod tests {
         let mut info = make_valid_info();
         info.param_buf = &MAX_BUF[..];
         info.validate();
-    }
-
-    #[test]
-    fn test_getters_return_field_values() {
-        // Getter methods should return the same values as direct field access.
-        // Slice types lack PartialEq, so compare lengths and first elements.
-        let info = make_valid_info();
-        // Scalar fields: direct equality.
-        assert_eq!(info.kern_virt_base, info.kern_virt_base);
-        assert_eq!(info.kern_phys_base, info.kern_phys_base);
-        assert_eq!(info.kern_size, info.kern_size);
-        assert_eq!(info.user_sp, info.user_sp);
-        assert_eq!(info.kern_stack_top, info.kern_stack_top);
-        assert_eq!(info.syscall_entry, info.syscall_entry);
-        // Slice fields: compare length and first element address.
-        assert_eq!(info.memmap.len(), info.memmap.len());
-        assert_eq!(info.memmap.as_ptr(), info.memmap.as_ptr());
-        assert_eq!(info.reserved_regions.len(), info.reserved_regions.len());
-        assert_eq!(
-            info.reserved_regions.as_ptr(),
-            info.reserved_regions.as_ptr()
-        );
-        assert_eq!(info.boot_modules.len(), info.boot_modules.len());
-        assert_eq!(info.boot_modules.as_ptr(), info.boot_modules.as_ptr());
-        assert_eq!(info.platform_sources.len(), info.platform_sources.len());
-        assert_eq!(
-            info.platform_sources.as_ptr(),
-            info.platform_sources.as_ptr()
-        );
-        assert_eq!(info.param_buf.len(), info.param_buf.len());
-        assert_eq!(info.param_buf.as_ptr(), info.param_buf.as_ptr());
     }
 }

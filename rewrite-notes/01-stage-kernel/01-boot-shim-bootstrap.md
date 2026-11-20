@@ -3180,8 +3180,8 @@ $ cd os && cargo test -p boot-shim --features test-all --lib
 test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cd os && cargo test -p minix-boot -p minix-elf
-running 196 tests
-test result: ok. 196 passed; 0 failed; ...
+running 195 tests
+test result: ok. 195 passed; 0 failed; ...
 running 23 tests
 test result: ok. 23 passed; 0 failed; ...
 ```
@@ -3211,7 +3211,7 @@ os/boot-shim/src/dtb_copy.rs                       15
 os/boot-shim/src/resv_claims.rs                    13
 os/boot-shim/tests/ebs_boundary_audit.rs           6
 os/boot-shim/src/lib.rs                            1
-os/libs/minix-boot/src/kernel_info.rs              32
+os/libs/minix-boot/src/kernel_info.rs              31
 os/libs/minix-boot/src/platform.rs                 8
 os/libs/minix-boot/src/boot_params.rs              8
 os/libs/minix-boot/src/memmap_source.rs            74
@@ -3225,7 +3225,7 @@ os/libs/minix-boot/src/boot_storage.rs            5
 os/libs/minix-elf/src/lib.rs                       23
 ```
 
-22 + 11 + 12 + 45 + 17 + 15 + 13 + 1 = 136（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 6 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair + dtb_copy + resv_claims + lib.rs：136 − `opensbi_helpers` 11 = 125；136 这个读数必须带 `test-all`）；`minix-boot` 的 196 = `kernel_info.rs` 的 32（含 R17 的三条后置负控、R18 的两条跨度复核负控、R19/R20 的三条跨度溢出负控与 R21 的一条长度对齐负控） + `platform.rs` 的 8 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 74 + `handoff_v1.rs` 的 2 + `handoff_v1_write.rs` 的 10（删双写测试 −1） + `handoff_v1_read.rs` 的 21 + `fdt_layout.rs` 的 29 + `lib.rs` 的 2 + `bump.rs` 的 5 + `boot_storage.rs` 的 5。（历史读数与逐次增删见 git 记录；当前值以本逐文件表为准：minix-boot 196、boot-shim 136。）`minix-elf` 的 23 与实测一致。
+22 + 11 + 12 + 45 + 17 + 15 + 13 + 1 = 136（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 6 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair + dtb_copy + resv_claims + lib.rs：136 − `opensbi_helpers` 11 = 125；136 这个读数必须带 `test-all`）；`minix-boot` 的 195 = `kernel_info.rs` 的 31（含 R17 的三条后置负控、R18 的两条跨度复核负控、R19/R20 的三条跨度溢出负控与 R21 的一条长度对齐负控；删去 D-077 的恒真测试 −1） + `platform.rs` 的 8 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 74 + `handoff_v1.rs` 的 2 + `handoff_v1_write.rs` 的 10（删双写测试 −1） + `handoff_v1_read.rs` 的 21 + `fdt_layout.rs` 的 29 + `lib.rs` 的 2 + `bump.rs` 的 5 + `boot_storage.rs` 的 5。（历史读数与逐次增删见 git 记录；当前值以本逐文件表为准：minix-boot 195、boot-shim 136。）`minix-elf` 的 23 与实测一致。
 
 推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 classify/FreeRangeSet 系列共 21 条（含 11 条 FreeRangeSet 行为锁/对拍；旧 `memmap.rs` 17 条随模块删除）、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 17 条（属 **minix-arch** 包，不在 `minix-kernel --features mock --lib` 的 874 条（`cargo test -p minix-kernel --features mock --lib`，当前实测：866 passed + 8 ignored）里；可跑形态需 `--features "x86_64 runtime-window"`，CI 当前未采集）、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 8 条（1 枚落地区行为 + 7 枚超容量负控）。[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零，其单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条与 [`pt_alloc_concurrent.rs`](os/arch/tests/pt_alloc_concurrent.rs) 1 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）；v1 协议的布局门禁由 [`handoff_v1.rs`](os/libs/minix-boot/src/handoff_v1.rs) 的编译期断言与 2 条尺寸/偏移测试覆盖。
 
@@ -3246,7 +3246,7 @@ os/libs/minix-elf/src/lib.rs                       23
 | `opensbi_helpers.rs:test_build_kernel_info_riscv64_fields_match_input` | 字段逐一映射（含派生字段 `kern_stack_top`/`syscall_entry`） |
 | `uefi_helpers.rs:test_build_kernel_info_fields` | UEFI builder 的字段装配（该文件 12 条单元测试之一） |
 | `boot_params.rs:generates_arch_and_board_first` 等 8 条 | 参数规范化：生成键、NUL/空白分词、内部键拒绝、非 ASCII/无等号拒绝、重复键首条胜出、整条丢弃 |
-| `kernel_info.rs:test_validate_rejects_*`（16 条）与 `test_validate_accepts_*`（3 条），另加 `test_validate_requiring_sources_*`（8 条）、`test_postconditions_reject_*`（4 条）与 `test_getters_return_field_values`（1 条）= 该文件 32 条 | `validate()` 的全部不变量（含 D2-05 增的有序/不相交与非空/页对齐，两张表各扫一遍）与它们的合法边界；strict 门、postconditions 上界、getter 与字段一致 |
+| `kernel_info.rs:test_validate_rejects_*`（16 条）与 `test_validate_accepts_*`（3 条），另加 `test_validate_requiring_sources_*`（8 条）与 `test_postconditions_reject_*`（4 条）= 该文件 31 条 | `validate()` 的全部不变量（含 D2-05 增的有序/不相交与非空/页对齐，两张表各扫一遍）与它们的合法边界；strict 门、postconditions 上界 |
 
 
 M13 的覆盖状态见 §5.1；TODO 详情见 §5.3：UEFI 侧四个函数里，纯判定函数 `assert_bootstrap_outside_memmap` 已有五案宿主测试（清单见 §5.3 TODO-07）。`build_memmaps` 在生产入口没有调用（生产走 `ebs_pair`）；它的单表包装 `build_memmap()` 被 15 个 QEMU 测试内核各自调用，两侧都需要 Boot Services，宿主无法构造。`alloc_root_page` 与 `alloc_bump_region` 的生产调用点在 `prepare_and_enter_kernel_image` 内（[`uefi_helpers.rs`](os/boot-shim/src/uefi_helpers.rs)）；`main.rs` 的 [`fn main`](<os/boot-shim/src/main.rs:fn main>) 只是入口，它调用 `prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)`。明细与去向见 5.3 的 TODO-07。

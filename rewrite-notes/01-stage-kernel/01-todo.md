@@ -41,8 +41,9 @@
 | I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35。原文中的第三项 `Frozen::freeze` 的 `debug_assert` 已由 I-32 销账（2026 年 11 月 20 日），不再属本条 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（本轮新登记） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 设计裁决 + 代码改造 | 已裁决（D-073，用户 2026-11-20）：采 A（`PreparedJump { entry: VirBytes, arena_pa: PhysBytes }`）；保持两函数分开；`shim_windows` 固件边界不动。待实施 | §3 |
-| I-39（本轮新登记） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 32 条覆盖 | 测试清理 | 已裁决（D-077，用户 2026-11-20）：采 A 删两处残骸；文档计数 32→31；**先于 I-31**（否则 I-31 会撞字段不存在）。待实施 | §3 |
+| I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
+| I-40（本轮新登记） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`minix-boot/src/kernel_info.rs:640`）与 `KernelInfo::memmap()`（`kernel/src/vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **未裁决**（I-39 mini review 中发现，与 D-077 同一缺陷类但位置不同、超出该裁决授权）；待用户裁决是否并入 I-39 口径直接删/改写，见 §3 的 I-40 | §3 |
 | I-30（已裁决·待实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 设计裁决 + 代码改造 | 已裁决（D-061，用户 2026-11-19）：照 riscv64 加 feature 门，两条 `rust_image_main` 各归一个 cfg。待实施——详见 §3 的 I-30 | §3 |
 | I-31（已裁决·可开工） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 协议契约变更 + 代码改造 | 已裁决（D-062，用户 2026-11-20）：三条一次升版。待实施——验收 grep 六项、文档同步含 §4.1 五族句（D-072 补强），详见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
@@ -658,7 +659,64 @@ assert!(
 
 **风险与回退**：纯删除，零行为变化。唯一风险是文档计数改错（用 `grep -c '#\[test\]'` 实跑核对，不靠手算）。若某处代码真的在调用 getter（当前全仓零命中）→ 回退并重开 D-077 评估 B。
 
-**为什么现在不做**：用户 2026-11-20 批准方案但只做记账。
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+D-077 授权的三项全部落地；实现时发现文档计数不止 §5.2.1 一处，同批补拓两处（见下表 3b/3c）：
+
+| # | 改动 | 位置 |
+|---|---|---|
+| ① | 删 12 行空 getter 注释段与 11 行空白，`impl` 以 `}` 闭合 | `os/libs/minix-boot/src/kernel_info.rs`（原 `:631-648`） |
+| ② | 删 `test_getters_return_field_values`（17 条 `assert_eq!(x,x)`） | 同文件（原 `:1092-1121`） |
+| ③a | 逐文件表计数 32 → 31 | `01-boot-shim-bootstrap.md:3214` |
+| ③b | §5.2.1 覆盖行去掉「`test_getters_return_field_values`（1 条）」与「getter 与字段一致」，合计 32 → 31 | 同篇 `:3249` |
+| ③c | **mini review 补拓**：同一篇的转录块 `running 196 tests` → `running 195 tests`、逐文件复算句 `minix-boot 的 196 = kernel_info.rs 的 32` → `195 = 31`，并注明「删去 D-077 的恒真测试 −1」 | 同篇 `:3183-3184`、`:3228` |
+
+3b/3c 超出一句授权文本，但不是扩范围：§5.2.1 的 31 若只改覆盖行而不改同节的逐文件表与合计式，文档内部三个数会互相矛盾——按 D-077 的 `reopen_condition`（「删测试后 §5.2.1 计数与 `grep -c '#[test]'` 对账不上 → 按 test-audit 全文件复核」）这正是要求同批对账的情形。
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -c "Getter methods" os/libs/minix-boot/src/kernel_info.rs` | **0** |
+| A2 | `grep -c "test_getters_return_field_values" os/libs/minix-boot/src/kernel_info.rs` | **0** |
+| A3 | 全文恒真 `assert_eq` 扫描（Python 逐行比对左右操作数文本） | **0 命中** |
+| A4 | `grep -c '#\[test\]' os/libs/minix-boot/src/kernel_info.rs` | **31**（与文档 §5.2.1 一致） |
+| A5 | 逐文件复算 31+8+8+74+2+10+21+29+2+5+5 | **195**（与 `cargo test` 实跑一致） |
+| A6 | `cargo test -p minix-boot` | **195 passed / 0 failed** |
+| A7 | `cargo test -p minix-boot -p minix-elf --release` | **195 + 23 passed / 0 failed** |
+| A8 | `cargo check --workspace` | **0 error**（`kernel_info` 相关新警告 0） |
+| A9 | `cargo clippy -p minix-boot --all-targets` | **0 error** |
+| A10 | 文档门（01 篇） | anchor **108/108**；citation `blocks=69 checked=29 failed=0`；structure/ref/style(error=0)/density 通过；doc-code-map **54/54**；`eval-trace-check --round R35` **PASS(13/6/0)** |
+
+**mini review 发现并登记的两处同源残骸（未修，超出 D-077 授权）**：`kernel_info.rs:640` 的 `/// deliver, in \`KernelInfo::boot_modules()\`.` 与 `os/kernel/src/vm_handoff.rs:108` 的「from the raw \`KernelInfo::memmap()\`」——`KernelInfo` 上这两个方法都不存在（`boot_modules` 是 pub 字段；`pub fn boot_modules()` 只在 `BootStorage` 上，`memmap` 同理）。与 D-077 处理的 getter 段是**同一缺陷类**（注释承诺不存在的 API），但位置不同、不属于本次裁决授权。已登记为 **I-40**（见 §3）待裁决，不在本次修改中改动。
+
+**取证方法（对照 D-077 判决行记的三次失误）**：D-077 的前身失误模式是「从注释推断代码、未逐行核对」。本次反其道执行：① 删测试前先用 Python 逐行比对 `assert_eq!` 左右操作数文本，独立确认 17 条全为 `x == x`（没有只读测试顶部的 `// compare lengths and first elements` 注释就下结论）；② 删之前先用 `grep -c '#\[test\]'` 实跑拿到 32（与 §5.2.1 记录一致），删后再跑拿到 31；③ `cargo test` 实跑 196→195，不是按减一推算。三处读数全部来自命令输出。
+
+**为什么此前不做**：用户于 2026 年 11 月 20 日批准方案但只做记账；本条在裁决后由用户单独指示实施，并按 D-077 的排序要求**先于 I-31** 完成。
+
+### I-40（未裁决·I-39 的实现副产物）两处 ghost API 注释
+
+**来源**：I-39 实施时的 mini review。D-077 修掉的是「`impl` 末尾承诺一段 getter，实际一个都没有」；实施后按同一判据（注释是否点名一个不存在的方法）扫全文件，又发现两处：
+
+| # | 位置 | 现文 | 事实 |
+|---|---|---|---|
+| ① | `os/libs/minix-boot/src/kernel_info.rs:640` | `/// deliver, in \`KernelInfo::boot_modules()\`.` | `KernelInfo` 的 `boot_modules` 是 **pub 字段**；`pub fn boot_modules()` 只存在于 `BootStorage`（`boot_storage.rs:336`） |
+| ② | `os/kernel/src/vm_handoff.rs:108` | `/// select from this list, not from the raw \`KernelInfo::memmap()\`: the` | 同上：`memmap` 在 `KernelInfo` 上是字段，方法只在 `BootStorage` 上 |
+
+**为什么没有顺手改**：D-077 是用户裁决，授权范围写明是「空 getter 段 + 恒真测试 + 文档计数 32→31」三件；这两处虽属同一缺陷类（注释点名不存在的 API，读者会白搜一次），但位置与对象都不同。按 `fix-guard` 的「一次一条」，混入本次提交会让裁决边界变模糊——尤其 ② 在 `minix-kernel` 而不在 `minix-boot`，跨 crate。
+
+**待裁决的两个选项**：
+
+- **A（推荐）**：直接改写措辞，把它们指回真实载体——① 改「`in \`BootStorage::boot_modules()\``」，② 改「`from the raw \`KernelInfo::memmap\` field`」。纯注释，零行为变化，与 D-077 采 A（删/改残骸而不造 API）同一取向。
+- **B**：给 `KernelInfo` 真的加这两个访问器。与 D-077 否决 B 的理由相同（字段已全 `pub`，造 getter 会制造两套等价 API，与 I-34/D-067 消灭「两个可不一致的事实」的方向相反），不推荐。
+
+**验收（若走 A）**：
+
+- `grep -rn "KernelInfo::boot_modules()\|KernelInfo::memmap()" --include=*.rs os/` → 0；
+- 全 workspace `cargo check` 0 error（纯注释改动）；
+- `cargo test -p minix-boot -p minix-kernel --features minix-kernel/mock` 全绿。
+
+**风险与回退**：纯注释，无。若将来 `KernelInfo` 真的加访问器接口 → 重开本条评估 B。
 
 ### I-38（已裁决·待实施，前置 I-31）`boot_validate_and_prepare` 的四个位置实参改 `BootScalars`
 
