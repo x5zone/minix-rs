@@ -207,10 +207,16 @@ parts = re.split(r"^(#{2,3}\s+.*)$", t, flags=re.M)
 lrows = 0
 for i in range(1, len(parts), 2):
     if "减法账本" in parts[i]:
-        lrows += len([
-            l for l in parts[i + 1].splitlines()
-            if re.match(r"^\|\s*V[\d.]+(?:-r\d+)?\s*\|", l)
-        ])
+        in_fence = False
+        for line in parts[i + 1].splitlines():
+            s = line.strip()
+            if s.startswith("```") or s.startswith("~~~"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if re.match(r"^\|\s*V[\d.]+(?:-r\d+)?\s*\|", line):
+                lrows += 1
 print(f"{lrows} {vrows}")
 PY
 )

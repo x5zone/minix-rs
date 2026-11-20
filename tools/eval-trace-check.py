@@ -628,21 +628,20 @@ def check_subtraction(
             r"|无需减法|无减法必要",
             d2_text,
         )
-        # V3.6-r3-R2F-04：原 `_has_add` 不看极性——D2 写「无需 newtype」
-        # 「不新增字段」「拒绝（newtype 成本高）」都会被判「只列加法」，
-        # 把 F1 消灭的反向激励换了个位置重演。先剥掉否定语境，再找**处方**。
-        _stripped = re.sub(
-            r"(?:无需|不需要|不必|不建议|不新增|未新增|无新增|无需新增|不引入|拒绝|否决|放弃)[^。\n]{0,40}",
-            "",
-            d2_text,
-        )
+        # V3.6-r4（结构性修复，替代 r2/r3 的极性剥离）：**不再从散文猜「有没有加法提案」**。
+        # 三轮对抗证明极性剥离无底洞（无需 newtype / 无新增字段，但建议新增 / 拒绝旧方案改用 /
+        # 无需额外分配，应新增 …，每轮都能绕过）。改读 §4.3 已强制要求的结构化字段：
+        #   一个 FINDING 只有写了 `- 三问：`（类型级提案的必填行）才算「加法提案」。
+        # 字段在 = 提案在；字段不在 = 不是提案。这是可判定的字面契约，与极性无关。
         _has_add = re.search(
-            r"^(?:##+\s+FINDING|##\s+ARCH-PROPOSAL)", _stripped, re.MULTILINE
-        ) is not None and re.search(
-            r"应(?:新增|引入|改用|改为|采用)|建议(?:新增|引入|改用|采用)"
-            r"|新增(?:一个|两个|类型|字段|trait|抽象|守卫|token)"
-            r"|newtype|值对象|typestate",
-            _stripped,
+            r"^(?:##+\s+FINDING|##\s+ARCH-PROPOSAL)[^\n]*\n(?:.*?\n)*?"
+            r"-\s*三问\s*[:：]",
+            d2_text,
+            re.MULTILINE | re.DOTALL,
+        ) is not None
+        # 兼容旧写法：ARCH-PROPOSAL 段本身即扩张提案（不要求三问字段）。
+        _has_add = _has_add or re.search(
+            r"^##\s+ARCH-PROPOSAL", d2_text, re.MULTILINE
         ) is not None
         if _no_prop and not _has_add:
             report.ok(
@@ -749,6 +748,7 @@ _UNDONE_RE = re.compile(
     r"未修(?!改)|未实施|未完成|未落地|待实施|待修|待补|待办|尚未|未开始|未做"
     r"|(?:^|[：:，,；;（(])\s*(?:FAIL|REOPEN)(?![^\n]{0,8}(?:清零|已修|已解决|已关闭))"
     r"|(?:复验|验证|回读|测试|检查|仍|尚|但)[^。\n]{0,6}(?:FAIL|REOPEN)"
+    r"|(?:FAIL|REOPEN)\s*(?:未|仍|还)"
     r"|不适用"
     r"|(?:^|[：:，,；;（(])\s*(?:延期|搁置|回退|作废)(?:到|至|给|了|待|处理|$)"
 )
@@ -766,6 +766,9 @@ def _panel_empty_ok(
     """
     if "无发现" in text:
         return True
+    # V3.6-r4：P-SUBTRACT 的产物是 `## SUBTRACT <ID>` + `## VERDICT`，不含 FINDING。
+    if re.search(r"^##\s+SUBTRACT\b", text, re.MULTILINE):
+        return True
     if not loop_text:
         return False
     # V3.6-r3-R2F-12：声明只在**该轮**的小节内有效。原实现扫整份 loop.md，
@@ -780,6 +783,10 @@ def _panel_empty_ok(
         )
         if _m:
             scoped = _m.group(0)
+        else:
+            # V3.6-r4-R4-05：找不到本轮小节 → 不认任何跨轮声明（原实现退回全文，
+            # R10 的声明会豁免 R1）。
+            return False
     return bool(
         re.search(rf"无发现面板[^\n]{{0,200}}{re.escape(name)}", scoped)
     )
@@ -1436,7 +1443,9 @@ DEBT_DONE_TOKENS = (
 DEBT_DEADLINE_RE = re.compile(r"截止\s*R(\d+)")
 
 
-def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
+def check_open_debt(
+    path: Path, report: Report, round_tag: str | None, v36: bool = False
+) -> int:
     """V3.3 §4.0f: OPEN-DEBT rows are part of the single open count.
 
     A debt row has exactly two legal exits: implemented (completion token /
@@ -1479,9 +1488,22 @@ def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
             continue
         candidate_rows += 1
         row_text = " | ".join(cells)
-        # V3.6 销账判据（b3b/b3c/r1-F3/F5 四轮收敛的单一入口，见 _debt_row_closed）。
-        if _debt_row_closed(cells):
-            continue
+        # V3.6-r4（结构性修复）：**token 优先**。V3.6+ 的 OPEN-DEBT 行必须在处置格
+        # 以 `[CLOSED]` 或 `[OPEN]` 开头——散文状态（完成度 / 未修 / 延期 / FAIL 清零）
+        # 已被三轮对抗证明不可靠。无 token 的旧行落回启发式并 WARN（存量兼容）。
+        _token = re.search(r"\[\s*(CLOSED|OPEN)\s*\]", row_text, re.IGNORECASE)
+        if _token:
+            if _token.group(1).upper() == "CLOSED":
+                continue
+            # [OPEN] 明确要求保持打开
+        else:
+            if v36:
+                report.warn(
+                    "open-debt",
+                    f"{item} 缺 `[CLOSED]`/`[OPEN]` 状态 token（V3.6 契约；按启发式判定）",
+                )
+            if _debt_row_closed(cells):
+                continue
         # §4.0f exit 2: a DECISIONS.md-recorded user adjudication — including
         # an explicitly approved deferral — resolves the row. Approval without
         # a date is not an adjudication (mirrors the ② gate).
@@ -2197,6 +2219,7 @@ def check_run_dir(
         v33_start_round(loop_text, fallback=schema_start) if v33_doc_flag else None
     )
     v34_doc_flag = _combined_ver >= (3, 4)
+    v36_doc_flag = _combined_ver >= (3, 6)
     # r9（考场判例）：制品链四项加固——
     # ① 适用面按组合 schema（loop ∪ metrics，防载体分脑）与 v34 标记起点轮
     #    （历史层回放不追溯）；② FREEZE 豁免要求文件非空且含 CONVERGED/
@@ -2651,7 +2674,9 @@ def check_run_dir(
     # same-document debt row blocks the round regardless of ledger state.
     open_debt_path = run_dir / "OPEN-DEBT.md"
     if open_debt_path.is_file():
-        debt_open = check_open_debt(open_debt_path, report, round_tag)
+        debt_open = check_open_debt(
+            open_debt_path, report, round_tag, v36=v36_doc_flag
+        )
         if actual_open is not None:
             actual_open += debt_open
         elif debt_open:
@@ -4927,8 +4952,10 @@ def self_test() -> int:
     _m = "## R1 面板轮\n\n- 减法: 提案 {s} / 采纳 {a}\n"
     # V3.6-r2 修约：0 行不再无条件 FAIL——区分「诚实零」与「只列加法」。
     _d2_honest_zero = "## SUBTRACTION-TABLE\n\n本轮无新增抽象提案。\n\n## VERDICT\nok\n"
+    # 新契约（r4）：类型级提案必须带 `- 三问：` 字段——判据读字段，不读散文。
     _d2_add_only = (
-        "## FINDING DESIGN-D2-01（P1）\n- 问题：应新增 newtype 承载这个标量\n\n"
+        "## FINDING DESIGN-D2-01（P1）\n- 问题：应新增 newtype 承载这个标量\n"
+        "- 三问：① 同一调用点用错；② 未拦住；③ 最坏后果=静默跳错\n\n"
         "## VERDICT\nok\n"
     )
     for label, d2, said, adopted, want_fail, want_sub in (
