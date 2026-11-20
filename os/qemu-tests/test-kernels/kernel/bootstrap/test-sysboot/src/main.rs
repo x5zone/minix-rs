@@ -130,6 +130,12 @@ static SYSBOOT_TX_ELF: AlignedBlob<{ include_bytes!(env!("SYSBOOT_TX_ELF_PATH"))
 
 #[entry]
 fn main() -> Status {
+    // I-43 二层修复：UEFI 固件把 PE 加载到运行期地址——内核的恒等窗口
+    // 必须覆盖真实镜像而非硬编码基址（BOOT-SCOPE 2a 之后窗口是最小的）。
+    let (image_lo, image_hi) = uefi_helpers::shim_image_window();
+    let image_base = image_lo & !0x001F_FFFF;
+    let image_end = (image_hi + 0x001F_FFFF) & !0x001F_FFFF;
+
     early_console::write_str("### test_sysboot (x86_64): multi-process boot carrier\n");
 
     // 1. UEFI boot preparation (test-rt-birth shape).
@@ -166,8 +172,8 @@ fn main() -> Status {
     let kernel_info = KernelInfo {
         memmap: &MEMMAP,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
-        kern_phys_base: PhysBytes(0x200_000),
-        kern_size: 0x200_000,
+        kern_phys_base: PhysBytes(image_base),
+        kern_size: image_end - image_base,
         boot_modules,
         platform_sources,
         param_buf: &[],

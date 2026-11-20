@@ -1037,6 +1037,49 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     // aarch64/riscv64 have no real-mode trampoline and do not get the window.
     #[cfg(target_arch = "x86_64")]
     windows.push(0, DEV_PIECE);
+    // Direct-core leg: the caller keeps executing on its pre-entry stack —
+    // the UEFI firmware stack in the bootstrap carriers, the firmware-given
+    // stack in the direct-boot face. The v1 sender covers its own stack via
+    // `shim_stack_window` (boot-shim/src/uefi_helpers.rs) before the handoff;
+    // the direct-core entry has no sender, and the caller's stack IS the boot
+    // path's own stack, so it belongs in the window list under the same
+    // category ("shim image/stack", cf. the list documented above). Without
+    // it the first stack access after enable() — the `ret` that follows the
+    // CR3/TTBR/satp load — faults into an unmapped page with no IDT/VBAR/
+    // stvec installed: the I-43 layer-2 silent stop (hello-boot fresh binary:
+    // rsp=0x7E6_6470 while the image window was [0x5E0_0000,0x600_0000)).
+    // Window shape matches `shim_stack_window`: 4 MiB below the page-aligned
+    // SP, rounded down to a 2 MiB boundary. Overlapping windows are harmless
+    // (fixed 2 MiB leaves with identical flags).
+    //
+    // `cfg(not(test))`: on the host the mock tests call this entry in-process,
+    // where the real SP is a Linux user-stack address far above the boot VA
+    // ceiling — the assert below would fire on a false positive (the host
+    // never actually enables paging). On firmware targets the SP always sits
+    // inside the boot-mappable range, and if a future port ever violates
+    // that, the assert stays fail-closed: omitting the window silently would
+    // reintroduce exactly the post-enable silent stop this window prevents.
+    #[cfg(not(test))]
+    {
+        let sp: u64;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack));
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack));
+        }
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("mv {}, sp", out(reg) sp, options(nomem, nostack));
+        }
+        let top = sp.saturating_add(0xFFF) & !0xFFF;
+        windows.push(
+            top.saturating_sub(4 * 1024 * 1024) & !((1 << 21) - 1),
+            top,
+        );
+    }
     let windows = windows.check(support.phys_addr_limit());
 
     // Steps 1-3: build the bootstrap root (minimal identity windows + kernel
@@ -1117,11 +1160,12 @@ const MAX_BOOT_WINDOWS: usize = 32;
 
 /// Lower bound derivable from the fixed producers: at most 3 shim windows,
 /// kernel + root + bump + arena (4), 12 modules, 4 platform sources,
-/// 2 identity device windows, and the x86 low-2 MiB trampoline window.
-/// The extra headroom covers future one-off windows; the const assertion
-/// turns a capacity regression into a compile error instead of a boot panic.
+/// 2 identity device windows, the direct-core caller's stack window, and the
+/// x86 low-2 MiB trampoline window. The extra headroom covers future one-off
+/// windows; the const assertion turns a capacity regression into a compile
+/// error instead of a boot panic.
 const BOOT_WINDOW_FLOOR: usize =
-    3 + 4 + minix_boot::NR_BOOT_MODULES + minix_boot::WIRE_PLATFORM_CAP + 2 + 1;
+    3 + 4 + minix_boot::NR_BOOT_MODULES + minix_boot::WIRE_PLATFORM_CAP + 2 + 1 + 1;
 const _: () = assert!(MAX_BOOT_WINDOWS >= BOOT_WINDOW_FLOOR);
 
 const EMPTY_PHYS_RANGE: PhysRange = match PhysRange::new(PhysBytes(0), PhysBytes(0)) {

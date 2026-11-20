@@ -36,11 +36,11 @@
 | I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；遗留 = D-68（T4 批） | §3 |
 | I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **closed（本批落码，grep 判据归零，真机门 `cd os/qemu-tests && bash run_all.sh` → 37 passed / 2 failed / 0 skipped / 0 build failures（本树现跑；两条红 `test-smp-aps`/`test-smp-ipi` 在同一台机器上用**未改动的 rewrite 尖子 `2b72a1e62` 重新构建同一载体**复现同一 `### PANIC … arch/src/x86_64/protection.rs:0x1c3`，判为既有、非本批引入））**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
-| I-29-impl（实施中：门①③已落，门④路径 A 已落，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；全部门链验证被 I-43 的 x86 载体 `enable()` 静默停阻塞（stash 对照确认非路径 A 引入）。详见 §3 的 I-29-impl 补记 | §3 |
+| I-29-impl（实施中：门①③已落，门④路径 A 已落，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；曾阻塞门链验证的 I-43 x86 载体 `enable()` 静默停已由 I-43 二层专项关闭（2026-11-20，hello-boot 新鲜二进制 PASS），门④端到端六项验收（§2.7）已可跑。详见 §3 的 I-29-impl 补记 | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**实施中：步①–④已落，步⑤ E+R1 已关闭、R2 待真机**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
-| I-43（已裁决·部分实施） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **已裁决（D-081，用户 2026 年 11 月 20 日）采 A**（测试载体侧交出真实前缀/真实 span）；否决 B（内核跳过空槽会把生产中不存在的语义写进内核）。**实测 12 个内核中 6 条已修（`PLACEHOLDER_SPAN`）、6 条仍为全零槽未修**（后者不在必跑门链集合内故未暴露，`test-sysboot` 因两个不连续槽需改用 `PLACEHOLDER_SPAN` 而非 `&mods[8..9]`）。另卸出三层后续缺陷各需专项：riscv VM 加载 trap / x86 两载体 `enable()` 后静默挂 / riscv 直核静默停。详见 §3 的 I-43 | §3 |
+| I-43（已裁决·三层中两层闭合） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **D-081 采 A**（载体侧真实 span）。**一层已闭合**（12 载体全部 `PLACEHOLDER_SPAN` + 全 12 槽交出）。**二层已闭合（2026-11-20）**：`enable()` 后静默停的真因是双重的——载体硬编码 `kern_phys_base`/`kern_size` vs 固件运行期装载地址（修法：20 载体改用生产同款 `shim_image_window()`，LoadedImage 协议精确足迹），加上直核腿窗口清单漏了「调用者栈」类别（修法：`arch_boot_impl` 补压当前栈窗口，`shim_stack_window` 同型；`cfg(not(test))` 排除宿主假阳性）。**实证**：x86 14 条中 13 条 PASS（faultloop 的失败是其专用故障臂的深层缺陷、已现形）；aarch64 五条基础门全 PASS；riscv `hello-boot` PASS。三层残留（VM 加载 trap、深跑载体故障臂路由、rt-birth-riscv64 自身 bump 断言）各自需要专项、现已全部可诊断。另登记 I-45（宿主套件存量红）。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已裁决·待实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | **已裁决（D-082，用户 2026 年 11 月 20 日）采「删重复 + 修剪上移」**：① 删 `read` 里的 `segment_iter`（实测输入的 `entry.len` 已是修剪值，纯冗余）② 修剪上移到 `load_boot_modules_into` ③ 复用 `minix_elf::segment_iter`，不新增第三个解析器。**否决「抽象修剪 trait + 空实现」**（无哪个腿不需要修剪）。② 落地前须验证 12 个模块的 PT_LOAD 覆盖真实内容 | §3 的 I-36 |
 | I-45（已裁决·待实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | **已裁决（D-084，用户 2026 年 11 月 20 日）梭哈 A**：`Item` 直接改 `Result<LoadSegment, ElfError>`，不走 B 过渡（无外部消费者、保留旧函数等于给缺陷留后门）；`filesz > memsz` 检查收进迭代器；`load_segments_into_buffer` 返回类型同批改 | §3 的 I-45 |
@@ -219,7 +219,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 >
 > **门④落地内容**：① `uefi_helpers::build_memmaps` 的分类逻辑整体抽到 `classify_map_bytes_into_test_tables(buffer, map_size, desc_size, desc_version)`——全树唯一分类器现在同时服务退出前（`build_memmaps`，仅存于不退出的 inspect-only 载体）与退出后两条路径；② 新增 `exit_boot_services_and_classify()`：**保留** `boot::exit_boot_services` 返回的 `MemoryMapOwned`（旧 `exit_boot_services()` 以 `let _mmap` 丢弃它），用 `meta().map_size`（非 `buffer().len()`——前者是有效长度，后者含冗余，设计文档 §2.7 前提一）取原始字节交唯一分类器，写入一次性表后返回 `'static` 切片；③ 12 条 UEFI 测试内核迁移到路径 A 流程（先分配 → 退出+分类 → 建 `KernelInfo`），编译全 0 error。
 >
-> **端到端验证被阻塞（非本批引入）**：hello-boot（x86）新鲜二进制在 `step1+2 mappings ok` 后静默停——**stash 对照确认无路径 A 改动的基线同样停在同一位置**。这与 I-43 已记录的「x86 载体 `enable()` 漂移层」同一症状（test-proc-init / test-timer-irq / test-protection-riscv64 均同型），现确认 hello-boot 也在其列。这些载体的历史 PASS 全部来自陈旧二进制。门④的端到端六项验收（§2.7）必须等 I-43 二层（`paging.enable()` 后静默停）专项关闭后才能跑。
+> **端到端验证阻塞已解除（2026-11-20）**：hello-boot（x86）新鲜二进制在 `step1+2 mappings ok` 后静默停的问题，已由 I-43 二层专项关闭（真因＝载体硬编码装载基址 + 直核腿缺调用者栈窗口，见 §3 的 I-43 二层闭合记录；stash 对照当时即确认非路径 A 引入）。hello-boot 现以新鲜二进制 **PASS**。门④的端到端六项验收（§2.7）已可跑。
 >
 > **迁移名单（12 条，全部编译 0 error）**：hello-boot{,-aarch64}、test-higher-half{,-aarch64}、test-kernel-map{,-aarch64}、test-paging-enable{,-aarch64}、test-protection{,-aarch64}、test-shutdown-aarch64、test-smp-shutdown。未迁移：test-memmap{,-aarch64}（inspect-only，不退出，pre-exit 图即测试主体）；其余手绘 MEMMAP 载体（test-timer-irq 等）不消费 `build_memmap`。
 
@@ -1228,7 +1228,45 @@ cargo check --workspace --all-targets  # 三架构 0 error
 
 **给后续专项的边界**：这两层都是「载体从未在新鲜二进制下运行过」的累积漂移，修复载体不会触碰内核生产路径；每条都需要 QEMU 单步（`-d int`）级取证，不适合在本条内继续剥。
 
+**二层闭合（2026-11-20 续）：`enable()` 后静默停的真因定位与修复。**
+
+上文「剩余两层」第 2 条对 x86 静默挂的描述（「载体链址假设 vs 当前 `enable()` 实现的系统性漂移」）是笼统猜测；本轮用串口诊断打印（`rsp` + `image_base`，取证后撤除）拿到了精确根因，是**两个独立缺陷的叠加**：
+
+1. **载体侧：硬编码 `kern_phys_base`/`kern_size` vs 固件运行期装载地址。** hello-boot 实证：`image_base=0x5E0_0000`（OVMF 把 PE 装到 94 MiB 处，硬编码 `0x200_000` 完全错误）。BOOT-SCOPE 2a 之后窗口清单是最小集，真实代码从此不在窗口内。先修成 `main` 锚点 + 固定 2 MiB（test-timer-irq-aarch64 既有模式），随后发现它罩不住大镜像载体（见 2 的伴生证据），最终升级为**生产同款**：`boot-shim::uefi_helpers::shim_image_window()` 改 `pub`，20 个 UEFI 载体的 `kern_phys_base`/`kern_size` 从 LoadedImage 协议的精确足迹派生（基址 2 MiB 下取、终点 2 MiB 上取，满足 `boot_policy::layout_satisfies` 的倍数约束）。伴生证据：test-proc-init 内嵌 2 MiB `.bss` 堆，固定 2 MiB 窗口下过 `enable()` 后在 step4 打印前静默三重故障（无 IDT 阶段任何 fault 都无声）；换成精确足迹后 **PASS**。
+
+2. **内核侧：直核腿窗口清单漏了「调用者栈」类别。** 诊断实证：hello-boot 的固件栈 `rsp=0x7E6_6470`，镜像窗口 `[0x5E0_0000,0x600_0000)` 不含它——CR3 装载后的第一个栈访问（`ret`）即 fault。窗口清单自己的文档（`os/kernel/src/lib.rs` `arch_boot_impl` 段）列明类别含「shim image/stack」；生产 v1 腿由发送方 `shim_stack_window` 自压，直核腿没有发送方、调用者的栈就是 boot path 自己的栈，却无人压窗。修法：`arch_boot_impl` 在 `push_common_boot_windows` 后补压当前栈窗口（SP 页对齐向上取整后向下 4 MiB、2 MiB 下取，与 `shim_stack_window` 完全同型），三架构内联 asm 读 SP；`BOOT_WINDOW_FLOOR` 注释与产能同步 +1。宿主 mock 测试经 `cfg(not(test))` 排除（宿主 SP 是 Linux 用户栈地址、远超 boot VA 天花板，会触发断言假阳性；先例：`restart_local_timer`）。生产固件上若未来有栈超天花板的端口，断言保持 fail-closed——静默跳过会重新引入本窗口要防的静默停。
+
+3. **一层收尾（D-081-A 执行完毕）**：上文「未修六条」全部按 `PLACEHOLDER_SPAN` 修掉（`test-sysboot` 此前已修）；三种 `&mods[8..9]` 写法（`test-timer-irq-aarch64` / `test-rt-birth-aarch64` / `test-rt-birth-riscv64`）改为 `&mods[..]` 全 12 槽——`init_proc_and_boot` 断言生产契约 `NR_BOOT_MODULES == 12`（main.c:160-162 C 对等），前缀切片永远过不了；这批载体的历史 PASS 同样全部来自陈旧二进制。
+
+**二层闭合的门链证据（全部新鲜二进制）**：
+
+| 腿 | 结果 |
+|---|---|
+| x86 generic 门 ×14 | **13 PASS**（hello-boot / proc-init / timer-irq / protection / paging-enable / higher-half / smp-topo / ap-alive / memmap / kernel-map / smp-aps / smp-ipi / smp-shutdown）；`test-paging-faultloop` 走专用脚本（其 generic 运行的 PANIC 是它的故障臂深层缺陷，见下） |
+| aarch64 基础门 ×5 | hello-boot / higher-half / paging-enable / protection / shutdown 全 **PASS** |
+| riscv64 | `hello-boot-riscv64` **PASS**（直核静默停顺带闭合） |
+| 专用脚本 | `test-rt-birth.sh`：推进到调度器入口（`RESULT: FAIL`，深层）；`test-sysboot.sh`：过 proc 表 + smp_init 后精确 page fault（vector 14，cr2 有值）；`test-paging-faultloop.sh`：CPL3 载荷按设计在 `FAULT_VA` fault，故障臂把它当 kernel exception PANIC（路由缺陷现形）；`test-user-trap.sh`：CPL3 三页映射完成、载荷已跑，随后 kernel 模式 page fault 在 dispatch PANIC（同族路由缺陷，`trap_dispatch.rs` 同一行号） |
+
+**三层残留清单（全部从「不可诊断的静默停」变为「带完整寄存器现场的可诊断缺陷」，各自专项）**：riscv VM 加载 trap（`stval=0xffffffc0_cffff000` 高半基址形态，同上文第 1 条）；aarch64 `test-timer-irq` 深跑 sync exception（`far=0xffff80804ffff000`）；x86 `test-sysboot` 深跑 page fault（`cr2=0x7ba7000`）；`test-rt-birth-riscv64` 载体自身 `bump(256)` 断言（先于本修复即存在）；faultloop 故障臂路由。
+
+**宿主套件存量红（登记为 I-45，非本条射程）**：HEAD 上 `cargo test -p minix-kernel --features mock` 就红且非确定——8 MiB 默认测试线程栈下多个家族轮流栈溢出（misc::dispatch / syscall_clock 等，失败集逐轮漂移）；`RUST_MIN_STACK=16MiB` 下 861 通过 / 3 失败（BKL 持有不变量族 `smp.rs:2043` + `switch_address_space`，同样逐轮漂移）。CI（`kernel-tests.yml`）无 `RUST_MIN_STACK` 且 2026-10-12 全绿——其后某次改动放大了宿主测试栈消耗或环境差异。本条改动在 `cfg(test)` 下与 HEAD 代码逐字节一致（栈窗口块整体编译剔除），不可能是其诱因；stash 对照实证。
+
 **验收（若走 A）**：四条各自 `run_all.sh` 对应测试 PASS；`cargo check` 三架构 0 error。
+
+### I-45（未裁决·I-43 二层工作时的存量发现）宿主内核测试套件在 HEAD 上红且非确定
+
+**来源**：I-43 二层验证时跑 `cargo test -p minix-kernel --features mock` 发现。**与本会话改动无关**：stash 对照实证 HEAD 同样红；本条改动在 `cfg(test)` 构建下与 HEAD 逐字节一致。
+
+**现象（两层）**：
+
+1. **默认环境（8 MiB 测试线程栈）**：多个测试家族轮流 `stack overflow`（已见 `misc::tests::test_dispatch_*`、`syscall_clock::tests::test_t6_setalarm_*`、`proc_table::tests::test_process_misc_flags_*`），溢出即 SIGABRT 整个测试进程，失败集逐轮漂移（并行调度 + 共享全局态）。
+2. **`RUST_MIN_STACK=16MiB`**：859–861 通过 / 3–5 失败，失败集中在 BKL 持有不变量族（`smp.rs:2043` 的 `assume_held` 断言，`test_finish_and_restore_*` / `test_idle_*` / `test_interrupt_stop_*`）与 `test_switch_address_space_kernel_task_is_noop`（`lib.rs` root-mirror 断言）、`vm_handoff::test_bootstrap_frames_*`——同样逐轮漂移。
+
+**对照事实**：CI `kernel-tests.yml` 无 `RUST_MIN_STACK` 设置且 2026-10-12 跑出 831 通过 / 0 失败；本机 WSL2、rustc `e408947bfd200af42db322daf0fadfe7e26d3bd1`。其间大量提交落库（I-29/31/34/35/37/38/42/44 等），某个改动放大了宿主测试的栈消耗或引入共享态竞争，也可能纯是环境差异（CI 容器栈上限不同）。
+
+**需要裁决的方向**：a) 先在 CI 同构环境（docker `minix-ci:1.94`）复跑，分清「代码回归」vs「环境差异」；b) 若是代码回归，用 `git bisect` 定位提交；c) BKL 不变量族失败与栈溢出是否同根（深递归把栈打到限，`lock_boot_globals` 串行化不足）。
+
+**验收**：CI 同构环境全绿，或失败集收敛且逐条归因。
 
 ### I-37（已裁决·待实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
 

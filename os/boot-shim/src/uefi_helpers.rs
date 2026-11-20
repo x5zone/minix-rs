@@ -940,8 +940,14 @@ fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<Vec<u8>> {
 /// `LoadedImage.info()` is the firmware's authoritative footprint; the
 /// minimal boot identity map must cover it because the shim keeps executing
 /// here until the high-half jump.
+///
+/// `pub`（I-43 二层）：直核引导载体（UEFI 测试内核）与生产 shim 走同一
+/// 最小窗口机制，也必须声明同一精确足迹——载体的 `kern_phys_base`/
+/// `kern_size` 用它派生，不再猜（`main` 锚点 + 固定 2 MiB 的写法罩不住
+/// 带 2 MiB `.bss` 堆的大载体，test-proc-init 实证：过 enable() 后在
+/// step4 前静默三重故障）。
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-fn shim_image_window() -> (u64, u64) {
+pub fn shim_image_window() -> (u64, u64) {
     let (base, size) = boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
         boot::image_handle(),
     )

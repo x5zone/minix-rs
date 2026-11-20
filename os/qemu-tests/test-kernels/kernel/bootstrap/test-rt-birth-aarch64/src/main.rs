@@ -590,11 +590,11 @@ fn main() -> Status {
             start: PhysBytes(RT_BIRTH_ELF.as_ptr() as usize as u64),
             len: RT_BIRTH_ELF.len(),
         };
-        // Publish only the slot this carrier fills: the rest of the array is
-        // all-zero placeholder (`start = 0, len = 0`), and handing the whole
-        // array over makes `push_module_windows` emit a `[0x0, 0x0)` window
-        // that trips `BootWindows::push`'s `assert!(start < end)`.
-        &mods[8..9]
+        // Publish the whole 12-slot array (D-081-A): the name-only slots carry
+        // `PLACEHOLDER_SPAN` (real RAM, never `[0x0,0x0)`), and
+        // `init_proc_and_boot` asserts the production `NR_BOOT_MODULES == 12`
+        // contract (main.c:160-162) — a `[8..9]` prefix cannot ever satisfy it.
+        &mods[..]
     };
 
     static mut PLATFORM_SOURCES: [minix_boot::PlatformDescSource; 4] = [
@@ -616,13 +616,15 @@ fn main() -> Status {
     // and the VM bootstrap region selector key off `kern_phys_base`. The
     // hello-boot-aarch64 constant (0x4020_0000) was wrong for this image
     // and left the running image eligible for bootstrap allocations.
-    let image_base = (main as usize as u64) & !0x001f_ffff; // 2 MiB aligned
+    let (image_lo, image_hi) = uefi_helpers::shim_image_window();
+    let image_base = image_lo & !0x001F_FFFF;
+    let image_end = (image_hi + 0x001F_FFFF) & !0x001F_FFFF;
 
     let kernel_info = KernelInfo {
         memmap,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(image_base),
-        kern_size: 0x200_000,
+        kern_size: image_end - image_base,
         // Kernel-stack TOP for SP_EL1. The carrier does not install SP_EL1
         // (AAVMF rejects the write — see the protection-phase note); its
         // vector loads `rt_birth_kstack_top` itself, so `KernelInfo` no longer

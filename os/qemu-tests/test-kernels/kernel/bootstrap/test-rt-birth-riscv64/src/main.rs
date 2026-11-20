@@ -513,11 +513,11 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
             start: PhysBytes(RT_BIRTH_ELF.as_ptr() as usize as u64),
             len: RT_BIRTH_ELF.len(),
         };
-        // Publish only the slot this carrier fills: the rest of the array is
-        // all-zero placeholder (`start = 0, len = 0`), and handing the whole
-        // array over makes `push_module_windows` emit a `[0x0, 0x0)` window
-        // that trips `BootWindows::push`'s `assert!(start < end)`.
-        &mods[8..9]
+        // Publish the whole 12-slot array (D-081-A): the name-only slots carry
+        // `PLACEHOLDER_SPAN` (real RAM, never `[0x0,0x0)`), and
+        // `init_proc_and_boot` asserts the production `NR_BOOT_MODULES == 12`
+        // contract (main.c:160-162) — a `[8..9]` prefix cannot ever satisfy it.
+        &mods[..]
     };
 
     let kernel_info = KernelInfo {

@@ -232,11 +232,11 @@ fn main() -> Status {
             start: PhysBytes(core::ptr::addr_of!(VM_ELF_STUB) as usize as u64),
             len: 64,
         };
-        // Publish only the slot this carrier fills: the rest of the array is
-        // all-zero placeholder (`start = 0, len = 0`), and handing the whole
-        // array over makes `push_module_windows` emit a `[0x0, 0x0)` window
-        // that trips `BootWindows::push`'s `assert!(start < end)`.
-        &mods[8..9]
+        // Publish the whole 12-slot array (D-081-A): the name-only slots carry
+        // `PLACEHOLDER_SPAN` (real RAM, never `[0x0,0x0)`), and
+        // `init_proc_and_boot` asserts the production `NR_BOOT_MODULES == 12`
+        // contract (main.c:160-162) — a `[8..9]` prefix cannot ever satisfy it.
+        &mods[..]
     };
 
     static mut PLATFORM_SOURCES: [minix_boot::PlatformDescSource; 4] = [
@@ -255,13 +255,15 @@ fn main() -> Status {
 
     // Kernel image range from the live image address (rt-birth-aarch64
     // finding: UEFI relocates the .efi anywhere in DRAM).
-    let image_base = (main as usize as u64) & !0x001f_ffff; // 2 MiB aligned
+    let (image_lo, image_hi) = uefi_helpers::shim_image_window();
+    let image_base = image_lo & !0x001F_FFFF;
+    let image_end = (image_hi + 0x001F_FFFF) & !0x001F_FFFF;
 
     let kernel_info = KernelInfo {
         memmap,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(image_base),
-        kern_size: 0x200_000,
+        kern_size: image_end - image_base,
         // Kernel-stack TOP record (the lower-EL legs would switch to it;
         // this kernel-only carrier never enters EL0).
         boot_modules,
