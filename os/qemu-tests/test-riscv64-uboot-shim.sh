@@ -168,8 +168,8 @@ fatload virtio 0 0x87600000 m_tty
 fatload virtio 0 0x87700000 m_mib
 fatload virtio 0 0x87800000 m_vm
 fatload virtio 0 0x87900000 m_pfs
-fatload virtio 0 0x87a00000 m_mfs
-fatload virtio 0 0x87b00000 m_init
+fatload virtio 0 0x88000000 m_mfs
+fatload virtio 0 0x89000000 m_init
 fatload virtio 0 0x8c000000 qemu.dtb
 fatload virtio 0 \${loadaddr} shim.elf
 if test \$? -ne 0; then echo UBOOT-SHIM: fatload failed; else

@@ -184,8 +184,36 @@ pub mod uboot_layout {
     pub const KERNEL_FILE_STAGE: u64 = 0x8600_0000;
     /// Per-module file staging base (fatload target for module i).
     pub const MODULE_FILE_STAGE_BASE: u64 = 0x8700_0000;
-    /// Stride between module file staging slots (each < 1 MiB).
+    /// Stride between the small module slots (each < 1 MiB).
     pub const MODULE_FILE_STAGE_STRIDE: u64 = 0x10_0000;
+    /// Dedicated `mfs` staging slot. `mfs` embeds the packaged ramdisk
+    /// (`include_bytes!` payload, ~8.5 MiB), so the 1 MiB stride cannot
+    /// hold it; this slot reserves 16 MiB.
+    pub const MODULE_FILE_STAGE_MFS: u64 = 0x8800_0000;
+    /// Dedicated `init` staging slot (after the `mfs` slot).
+    pub const MODULE_FILE_STAGE_INIT: u64 = 0x8900_0000;
+    /// Capacity of the `mfs` slot.
+    pub const MFS_SLOT_SIZE: u64 = 16 * 1024 * 1024;
+    /// Capacity of every other module slot.
+    pub const MODULE_SLOT_SIZE: u64 = 0x10_0000;
+
+    /// Staging address for module `idx` (`MODULE_NAMES` order).
+    pub const fn module_file_stage(idx: usize) -> u64 {
+        match idx {
+            10 => MODULE_FILE_STAGE_MFS,
+            11 => MODULE_FILE_STAGE_INIT,
+            i => MODULE_FILE_STAGE_BASE + (i as u64) * MODULE_FILE_STAGE_STRIDE,
+        }
+    }
+
+    /// Staging slot capacity for module `idx`.
+    pub const fn module_slot_size(idx: usize) -> u64 {
+        if idx == 10 {
+            MFS_SLOT_SIZE
+        } else {
+            MODULE_SLOT_SIZE
+        }
+    }
     /// DTB staging (fatload target).
     pub const DTB_STAGE: u64 = 0x8c00_0000;
     /// Boot module names in `MODULE_NAMES` order (must match
@@ -246,7 +274,7 @@ const MODULE_NAMES: &[&str] = uboot_layout::MODULE_NAMES;
 
 /// Module file staging address for the given index.
 fn module_file_stage(idx: usize) -> u64 {
-    uboot_layout::MODULE_FILE_STAGE_BASE + (idx as u64) * uboot_layout::MODULE_FILE_STAGE_STRIDE
+    uboot_layout::module_file_stage(idx)
 }
 
 /// The shim-built MNXBOOT1 table lives here (written at boot, before
@@ -385,11 +413,11 @@ unsafe fn build_shim_table() -> u64 {
             for i in 0..8 {
                 e.add(64 + i).write_volatile(a_bytes[i]);
             }
-            let slot = 1u64 * 1024 * 1024; // 1 MB module slot
+            let slot = uboot_layout::module_slot_size(mi);
             let used = staged_elf_used_len(a, slot).unwrap_or(slot);
             if used > slot {
                 raw_serial_line(
-                    "boot-shim: module ELF exceeds the 1 MiB staging slot — truncating: ",
+                    "boot-shim: module ELF exceeds its staging slot — truncating: ",
                 );
                 raw_serial_line(name);
                 raw_serial_line("\n");
