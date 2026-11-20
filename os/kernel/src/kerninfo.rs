@@ -36,6 +36,7 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use minix_arch::paging::PageFlags;
+use minix_arch::paging::PteChannel;
 use minix_arch::{CurrentPaging, paging::Paging as _};
 use minix_boot::KernelInfo;
 use minix_types::{KERNINFO_MAGIC, KuserInfo, MINIX_KIF_USERINFO, MinixKerninfo, VirBytes};
@@ -140,7 +141,10 @@ fn map_and_publish() {
     let page_virt = core::ptr::addr_of!(KERNINFO_PAGE) as usize as u64;
     let root = crate::current_root_phys()
         .expect("init_kerninfo: bootstrap root not set — arch_boot_impl must run first");
-    let mut paging = CurrentPaging::from_active_root(root);
+    // D-081 / I-44 E-gate call site #1 (`init_kerninfo`): kernel-channel
+    // handle; the ownership model records this as External (write under the
+    // boot-order synchronization contract, BKL held, single CPU active).
+    let mut paging = CurrentPaging::from_active_root(root, PteChannel::KernelDm);
     let (page_phys, _flags) = paging
         .query(VirBytes(page_virt))
         .expect("init_kerninfo: kerninfo page VA not mapped in the active root");

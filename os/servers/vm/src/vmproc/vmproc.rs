@@ -183,7 +183,7 @@ impl VmProc {
             // behind it), so destroy() has nothing valid to zero — skip it.
             #[cfg(not(test))]
             unsafe {
-                self.vm_pt.assume_init_mut().destroy();
+                self.vm_pt.assume_init_read().destroy();
             }
         }
 

@@ -416,7 +416,9 @@ impl<'a> ActiveProc<'a> {
         if self.inner.vm_pt_initialized {
             // SAFETY: vm_pt_initialized is true, so vm_pt was initialized by
             // init_page_table(). Caller guarantees page table is not active on any CPU.
-            unsafe { self.inner.vm_pt.assume_init_mut().destroy(); }
+            // D-081 / I-44: `destroy` is consuming — read the table out of the
+            // MaybeUninit so the ownership assertion can run on the owned value.
+            unsafe { self.inner.vm_pt.assume_init_read().destroy(); }
             self.inner.vm_pt_initialized = false;
         }
     }

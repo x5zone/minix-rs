@@ -183,6 +183,22 @@ impl core::fmt::Display for PageTableError {
 /// control intermediate-level entries. If finer control is needed in the future (e.g.,
 /// THP split/merge, migration entries), this trait can be extended or a new
 /// `PagingLevel` trait can be introduced.
+/// Which Direct Map window PTE pages are reached through, pinned at
+/// handle construction (D-081 / I-44: lifted from the three per-arch
+/// private enums — all three were identical `KernelDm | VmDm`).
+///
+/// Production kernels use [`PteChannel::KernelDm`]; the VM-context handle
+/// (former `adopt_active_root`, merged into `from_active_root`) uses
+/// [`PteChannel::VmDm`] because the supervisor-only kernel window is
+/// unreachable from user space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PteChannel {
+    /// Kernel context: PTE pages accessed via the kernel Direct Map.
+    KernelDm,
+    /// VM context: PTE pages accessed via the VM Direct Map.
+    VmDm,
+}
+
 pub trait Paging {
     const PAGE_SIZE: usize;
 
@@ -257,34 +273,7 @@ pub trait Paging {
     /// page table root that is accessible through the direct map. The
     /// returned `Paging` instance must not outlive the page table it wraps
     /// (i.e., don't call `destroy()` on it unless you own the table).
-    fn from_active_root(root_phys: PhysBytes) -> Self;
-
-    /// Wrap an already-active page table root for VM-context access.
-    ///
-    /// Identical to [`Paging::from_active_root`] except for the PTE access
-    /// channel: the returned handle reads and writes page-table entries
-    /// through the **VM Direct Map** (`DirectMapArch::vm_phys_to_virt`),
-    /// because the handle is exercised while VM — a user-space process —
-    /// runs, and the kernel Direct Map window is supervisor-only. The
-    /// channel is pinned at construction; all `map`/`unmap`/`query`
-    /// operations on this handle use the same channel.
-    ///
-    /// # Use case
-    ///
-    /// VM's address-space identity adoption: VM's initial page table IS the
-    /// bootstrap root the kernel built and enabled, so VM wraps that root
-    /// (identified by the physical address handed over at boot) instead of
-    /// creating a fresh one. Unlike `from_active_root` (kernel boot
-    /// context), the VM-context handle must be able to reach the page-table
-    /// pages from user space, which only the VM Direct Map provides.
-    ///
-    /// # Safety contract (caller responsibility)
-    ///
-    /// Same as `from_active_root`: `root_phys` must point to a valid,
-    /// currently-active page table root. Additionally, every page-table
-    /// page reachable from the root must be covered by the VM Direct Map
-    /// window — the handle's only way to reach them.
-    fn adopt_active_root(root_phys: PhysBytes) -> Self;
+    fn from_active_root(root_phys: PhysBytes, channel: PteChannel) -> Self;
 
     /// Copy the supervisor (kernel) half of a source root table into this
     /// root's supervisor half.
@@ -346,7 +335,7 @@ pub trait Paging {
     /// - This page table is not currently active on any CPU
     /// - The page table has been unbound from any process
     /// - All mappings have been properly unmapped, or caller accepts memory leak
-    unsafe fn destroy(&mut self);
+    unsafe fn destroy(self);
 
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>;
@@ -742,11 +731,22 @@ pub mod mock {
     use alloc::collections::BTreeMap;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Ownership state, same semantics as the production arches (D-081 /
+    /// I-44): `new`/`new_mock` own their (simulated) tree; the wrapping
+    /// constructors do not.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PagingState {
+        Owned,
+        External,
+        Inherited,
+    }
+
     #[derive(Debug)]
     pub struct MockPaging {
         id: usize,
         mappings: BTreeMap<u64, (u64, PageFlags)>,
         root_phys: u64,
+        state: PagingState,
     }
 
     static MOCK_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -761,6 +761,7 @@ pub mod mock {
                 id,
                 mappings: BTreeMap::new(),
                 root_phys: 0x1000 + (id as u64 * 0x1000),
+                state: PagingState::Owned,
             })
         }
 
@@ -798,7 +799,11 @@ pub mod mock {
         }
 
         fn new_from_page(_root_page: PhysBytes) -> Self {
-            Self::new_mock().expect("MockPaging::new_from_page should not fail")
+            // External: the caller owns the root page; this handle must not
+            // destroy it (D-081 / I-44).
+            let mut pt = Self::new_mock().expect("MockPaging::new_from_page should not fail");
+            pt.state = PagingState::External;
+            pt
         }
 
         /// Wrap an already-active root without zeroing it.
@@ -807,20 +812,18 @@ pub mod mock {
         /// no real MMU state, so "wrapping an active root" just creates a
         /// fresh mapping table. The `root_phys` parameter is recorded for
         /// `root_paddr()` parity with real arches.
-        fn from_active_root(root_phys: PhysBytes) -> Self {
+        fn from_active_root(root_phys: PhysBytes, _channel: PteChannel) -> Self {
+            // External: wrapping a live root never grants destroy rights.
+            // The mock has no DM windows to choose between, so the channel
+            // is recorded nowhere; the `root_phys` parity guarantee is what
+            // matters (D-081 / I-44 merged the former `adopt_active_root`).
             let id = MOCK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
             Self {
                 id,
                 mappings: BTreeMap::new(),
                 root_phys: root_phys.0,
+                state: PagingState::External,
             }
-        }
-
-        /// VM-context variant — same in-memory behavior as
-        /// `from_active_root` (the mock has no DM windows to choose
-        /// between); the `root_phys` parity guarantee is what matters.
-        fn adopt_active_root(root_phys: PhysBytes) -> Self {
-            Self::from_active_root(root_phys)
         }
 
         unsafe fn enable(&self) -> PhysBytes {
@@ -835,9 +838,17 @@ pub mod mock {
             Self::new_mock()
         }
 
-        unsafe fn destroy(&mut self) {
-            self.mappings.clear();
-            if ACTIVE_MOCK_TABLE.load(Ordering::SeqCst) == self.id {
+        unsafe fn destroy(self) {
+            // D-081 / I-44: the ownership assertion runs before any state
+            // mutation — an externally managed root must never be cleared.
+            assert_eq!(
+                self.state,
+                PagingState::Owned,
+                "destroy called on externally managed page table"
+            );
+            let mut me = self;
+            me.mappings.clear();
+            if ACTIVE_MOCK_TABLE.load(Ordering::SeqCst) == me.id {
                 ACTIVE_MOCK_TABLE.store(NO_ACTIVE_TABLE, Ordering::SeqCst);
             }
         }
@@ -963,6 +974,39 @@ pub mod mock {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+    /// D-081 / I-44 §5.4 item 3: `destroy` on an externally managed handle
+    /// must panic — the ownership assertion runs before any mutation.
+    #[test]
+    fn destroy_external_panics() {
+        let pt = MockPaging::from_active_root(
+            minix_types::PhysBytes(0xDEAD_BEEF_0000),
+            PteChannel::VmDm,
+        );
+        // SAFETY: the call is expected to panic before touching any state.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            unsafe { pt.destroy() };
+        }));
+        assert!(result.is_err(), "External destroy must panic");
+    }
+
+    /// §5.4 item 3: `new_from_page` is External for the same reason.
+    #[test]
+    fn destroy_new_from_page_panics() {
+        let pt = MockPaging::new_from_page(minix_types::PhysBytes(0x2000));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            unsafe { pt.destroy() };
+        }));
+        assert!(result.is_err(), "new_from_page (External) destroy must panic");
+    }
+
+    /// §5.4 item 1 (positive control): Owned destroy succeeds.
+    #[test]
+    fn destroy_owned_succeeds() {
+        let pt = MockPaging::new_mock().expect("new_mock");
+        // SAFETY: Owned handles are the only destroyable state.
+        unsafe { pt.destroy() };
+    }
         use crate::paging_ext::HugePages;
 
         #[test]

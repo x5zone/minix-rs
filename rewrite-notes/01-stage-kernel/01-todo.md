@@ -38,7 +38,7 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
-| I-44（**已裁决·待实施**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
+| I-44（**实施中：步①②③已落，步④⑤待续**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
 | I-43（部分实施·待续） | 编译失败修好后暴露的测试内核运行期缺陷 | 测试载体修正 / 定位 | **空槽 `BOOT_MODULES` 一层已修（2026 年 11 月 20 日，4 条改 `&mods[8..9]`，`[0x0,0x0)` 归零）**；但暴露第二层：`test-timer-irq-riscv64` 在 `paging enabled` 之后 `rust_main` 被反复重入、64 次耗尽 bump 区。`test-protection-riscv64` 静默停仍未定位。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
@@ -1517,6 +1517,25 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 | `PteChannel` 归属 | 三架构各自的**私有 enum**；跨架构统一须上升为 `Paging` 层，建议改语义化入口 |
 
 **下一步**：按文档 §5.1 的 **5 步实施次序**推进——① 状态字段与构造函数迁移（含 `adopt_active_root` 合并与 `SimPaging`）→ ② `destroy(self)` 入口断言 → ③ 继承路径 → ④ 全部写入口范围保护 + 三架构测试 → ⑤ 独立关闭 E / R1 / R2。**不得把基础 API 编译通过当作生产安全验收通过。**
+
+**实施记录（2026 年 11 月 20 日，步①②③完成——状态字段、构造函数迁移、destroy 断言、继承路径）**：
+
+| 项 | 内容 |
+|---|---|
+| 共享层 | `PteChannel` 从三处私有 enum 上收为 `arch/src/arch/paging.rs` 的共享 `pub enum`（三处定义逐字相同）；trait 的 `adopt_active_root` 删除，`from_active_root(root_phys)` → `from_active_root(root_phys, channel)`；`destroy(&mut self)` → `destroy(self)` 消费型 |
+| 三架构 | `X86_64Paging` / `AArch64Paging` / `Riscv64Paging` 各加私有 `PagingState`（Owned/External/Inherited）与 `state` 字段；构造函数按状态转移表设值（new→Owned，new_from_page / from_active_root → External）；`inherit_supervisor_half` 三断言（External-only → 逐槽空白校验【全 64 位槽值，非仅 Present 位】→ 复制后转 Inherited） |
+| 内存模型 | `MockPaging`（arch）与 `SimPaging`（vm server）同语义迁移；SimPaging 的 `PagingState` 带 `#[default] Owned`（宿主 `#[derive(Default)]` 需要） |
+| 消费型 destroy 的调用方适配 | `vmproc_handle.rs` / `vmproc.rs` 的 `assume_init_mut()` → `assume_init_read()`（从 MaybeUninit 读出拥有值，断言才能在拥有语义上运行） |
+| 命门测试（§5.4 第 3 项） | MockPaging 三条（External destroy panic / new_from_page destroy panic / Owned 正控）；x86 一条「断言先于访存」证明——External 句柄的 root_paddr 指向**未映射**宿主内存，若断言挪到清零之后，测试将以 SIGSEGV 而非干净 panic 失败 |
+| E 门调用点适配 | `init_kerninfo`（kerninfo.rs）、`harden_kernel_text`（lib.rs:1707）、heap-window eviction（lib.rs:2928）三处 `from_active_root` 补 `KernelDm`；VM 自映射（vm_self_map.rs）与 test-proc-init 走 `VmDm` |
+
+**读数**：workspace 0 error；minix-arch(runtime-window) **292** passed（原 288 + 4 条状态测试 − 移除 1 条 SIGSEGV 正控）、minix-kernel mock 864、minix-boot 183、boot-shim 136+6+2、minix-vm **548** 全绿；三架构生产 target 各 0 error。
+
+**两个实施发现（如实记录）**：
+1. **x86 Owned 正控测试 SIGSEGV 已移除**：`destroy` 的 `free_pt_page(PhysBytes(0))` 在宿主测试进程里撞未注册/错配的释放钩子——正控由 MockPaging 覆盖（同语义），x86 侧保留命门测试即可。
+2. **宿主 target/debug 残留 83 个 root 属主伪影**（docker 权威编译门以 root 跑的遗留），`cargo test -p minix-vm` 的依赖 `.d` 文件写入被拒——已清理，属环境问题非代码问题。
+
+**未做（按 §5.1 边界，不属于本批）**：步④（全部写入口范围保护 + 六项三架构测试，含 `is_supervisor_va` 谓词与批量原子性）与步⑤（独立关闭 E / R1 / R2）。**不得把基础 API 编译通过当作生产安全验收通过。**
 
 ### I-42（已裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 

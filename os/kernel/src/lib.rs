@@ -1704,7 +1704,12 @@ fn harden_kernel_text() {
     // context the VM window is unreachable and its first PTE read faults
     // (observed: kernel-leg load page fault at VM_DM+root_paddr+0x800).
     // Single hart + BKL per the window contract above.
-    let mut pt = unsafe { <CurrentPaging as minix_arch::paging::Paging>::from_active_root(root) };
+    let mut pt = unsafe {
+        <CurrentPaging as minix_arch::paging::Paging>::from_active_root(
+            root,
+            minix_arch::paging::PteChannel::KernelDm,
+        )
+    };
     Console::write_str("kernel: text harden adopted\n");
 
     let mut leaf = kern_virt; // image base, 2 MiB aligned (link-script closure)
@@ -2925,7 +2930,8 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     "init_proc_and_boot: bootstrap root not set \
                              — arch_boot_impl must run first",
                 );
-                let mut paging = CurrentPaging::from_active_root(root_phys);
+                let mut paging =
+                    CurrentPaging::from_active_root(root_phys, minix_arch::paging::PteChannel::KernelDm);
                 // B-X (2026-09-09): the per-arch ZST selection moved to the
                 // sanctioned `CurrentDirectMap` alias in minix-arch
                 // (mirrors each `Arch` bundle's `type Dm`) — kernel code
@@ -6854,7 +6860,7 @@ mod tests {
         use minix_arch::paging::mock::MockPaging;
 
         let root_phys = minix_types::PhysBytes(0x10_0000);
-        let paging = MockPaging::from_active_root(root_phys);
+        let paging = MockPaging::from_active_root(root_phys, minix_arch::paging::PteChannel::KernelDm);
         assert_eq!(
             paging.root_paddr(),
             root_phys,
@@ -6878,7 +6884,8 @@ mod tests {
         // address, even one that would be unusual for `new_mock`'s
         // internal counter-based scheme.
         let unusual_root = minix_types::PhysBytes(0xDEAD_BEEF_0000);
-        let paging = MockPaging::from_active_root(unusual_root);
+        let paging =
+            MockPaging::from_active_root(unusual_root, minix_arch::paging::PteChannel::KernelDm);
         assert_eq!(
             paging.root_paddr(),
             unusual_root,

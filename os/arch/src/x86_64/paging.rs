@@ -13,7 +13,7 @@
 //! handles (`new`, `adopt_active_root`) use the VM Direct Map
 //! (`DirectMapArch::vm_phys_to_virt`).
 
-use crate::paging::{Paging, PageFlags, PageTableError};
+use crate::paging::{Paging, PageFlags, PageTableError, PteChannel};
 use crate::paging_ext::{HugePages, PageSize};
 use crate::direct_map::{DirectMapArch, X86_64DirectMap};
 use crate::pte_walk_arch::PteWalkArch;
@@ -190,14 +190,6 @@ fn pte_to_flags(pte: u64) -> PageFlags {
 /// the VM window. The channel is chosen by the constructor:
 /// `new_from_page`/`from_active_root` pin `KernelDm`, `new()` (whose
 /// production callers are all VM-side) and `adopt_active_root` pin `VmDm`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PteChannel {
-    /// Kernel context: PTE pages accessed via the kernel Direct Map.
-    KernelDm,
-    /// VM context: PTE pages accessed via the VM Direct Map.
-    VmDm,
-}
-
 #[inline]
 fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
     // In this crate's own test build (mock feature), the VM window
@@ -283,6 +275,22 @@ pub struct X86_64Paging {
     root_paddr: u64,
     /// PTE access channel pinned at construction (see [`PteChannel`]).
     channel: PteChannel,
+    /// Ownership state (D-081 / I-44): private; only the constructors and
+    /// `inherit_supervisor_half` transition it.
+    state: PagingState,
+}
+
+/// Ownership state of the handle's root page and page-table tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PagingState {
+    /// Root page and tree were allocated by `Paging::new()` via this
+    /// PT_ALLOC domain — the only state `destroy` accepts.
+    Owned,
+    /// Root page managed externally (`new_from_page` / `from_active_root`);
+    /// this handle must not release or zero it.
+    External,
+    /// External root plus an inherited shared supervisor half.
+    Inherited,
 }
 
 /// Whether the CPU supports global pages (CPUID.01H:EDX.PGE, bit 13).
@@ -619,7 +627,11 @@ impl Paging for X86_64Paging {
         // SAFETY: ptr points to a 4KB-aligned, 512-entry PML4 table.
         // write_bytes zeroes all entries, marking them "not present".
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
-        Self { root_paddr: root_page.0, channel: PteChannel::KernelDm }
+        Self {
+            root_paddr: root_page.0,
+            channel: PteChannel::KernelDm,
+            state: PagingState::External,
+        }
     }
 
     /// Wrap an already-active PML4 root without zeroing it.
@@ -643,11 +655,35 @@ impl Paging for X86_64Paging {
     /// - The PML4 must be currently loaded into CR3 (or accessible via
     ///   the kernel Direct Map, which `walk_read`/`walk_alloc` rely on).
     /// - The returned handle must not outlive the page table it wraps.
-    fn from_active_root(root_phys: PhysBytes) -> Self {
-        Self { root_paddr: root_phys.0, channel: PteChannel::KernelDm }
+    fn from_active_root(root_phys: PhysBytes, channel: PteChannel) -> Self {
+        Self {
+            root_paddr: root_phys.0,
+            channel,
+            state: PagingState::External,
+        }
     }
 
     fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
+        // D-081 / I-44 entry assertions: only a freshly wrapped External
+        // root may inherit (a second inherit would overwrite shared
+        // entries), and every supervisor slot of the target must be blank
+        // — checked by full 64-bit slot value, not just the Present bit,
+        // before any entry is copied.
+        assert_eq!(
+            self.state,
+            PagingState::External,
+            "inherit_supervisor_half called on a non-External root"
+        );
+        for i in 256usize..512 {
+            let slot = (i as u64) * 8;
+            // SAFETY: same direct-map access contract as the copy loop
+            // below; the target root is RAM-covered by the pinned channel.
+            let cur = unsafe { read_pte_dm(self.root_paddr + slot, PteChannel::KernelDm) };
+            assert_eq!(
+                cur, 0,
+                "inherit target supervisor slot {i} is not blank (0x{cur:016x})"
+            );
+        }
         // PML4 entries 256..512 = the higher half (VAs ≥
         // 0xffff_8000_0000_0000): kernel text/data, stacks and the DM
         // windows. Raw entry copy — the entries may point at shared
@@ -666,21 +702,9 @@ impl Paging for X86_64Paging {
                 write_pte_dm(self.root_paddr + slot, entry, 0, PteChannel::KernelDm)
             };
         }
-    }
-
-    /// Wrap an already-active PML4 root for VM-context access.
-    ///
-    /// Same wrapping semantics as `from_active_root`, but the handle's PTE
-    /// access channel is the VM Direct Map: the handle is exercised while
-    /// VM (a user-space process) runs, where the supervisor-only kernel
-    /// window is unreachable. See [`PteChannel`].
-    ///
-    /// # Safety contract (caller responsibility)
-    ///
-    /// Same as `from_active_root`, plus: every page-table page reachable
-    /// from the root must be covered by the VM Direct Map window.
-    fn adopt_active_root(root_phys: PhysBytes) -> Self {
-        Self { root_paddr: root_phys.0, channel: PteChannel::VmDm }
+        // The copy is complete: this handle now carries the shared
+        // supervisor half, so every later write must pass the range guard.
+        self.state = PagingState::Inherited;
     }
 
     unsafe fn enable(&self) -> PhysBytes {
@@ -754,12 +778,23 @@ impl Paging for X86_64Paging {
         // SAFETY: alloc_pt_page returns a fresh, 4KB-aligned page that is
         // not aliased by any other live reference. Direct Map must be active.
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
-        Ok(Self { root_paddr: root_phys.0, channel: PteChannel::VmDm })
+        Ok(Self {
+            root_paddr: root_phys.0,
+            channel: PteChannel::VmDm,
+            state: PagingState::Owned,
+        })
     }
 
-
-
-    unsafe fn destroy(&mut self) {
+    unsafe fn destroy(self) {
+        // D-081 / I-44: the ownership assertion runs before ANY memory
+        // operation — zeroing or freeing an externally managed root would
+        // wipe a live page table (External) or the shared supervisor half
+        // (Inherited).
+        assert_eq!(
+            self.state,
+            PagingState::Owned,
+            "destroy called on externally managed page table"
+        );
         // Full four-level reclaim when a pt_free function is
         // registered (the VM process-exit path — C pagetable.c:1427-1437
         // `pt_free` parity, previously "accept the intermediate-table
@@ -1535,6 +1570,24 @@ unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
 mod tests {
     use super::*;
 
+    /// D-081 / I-44 §5.4 item 3 + the "assertion before mutation" proof:
+    /// destroying an External handle whose root_paddr points at *unmapped*
+    /// host memory must panic from the ownership assertion. If the
+    /// assertion ever moved after the zeroing loop, this test would
+    /// segfault instead of panicking cleanly.
+    #[test]
+    fn destroy_external_panics_before_any_memory_access() {
+        let pt = X86_64Paging::from_active_root(
+            minix_types::PhysBytes(0xDEAD_B000),
+            PteChannel::VmDm,
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            unsafe { pt.destroy() };
+        }));
+        assert!(result.is_err(), "External destroy must panic");
+    }
+
+
     #[test]
     fn canonical_and_phys_limit_follow_target_configuration() {
         assert!(x86_64_canonical(0x1000));
@@ -1765,6 +1818,7 @@ mod tests {
         let mut pt = X86_64Paging {
             root_paddr: 0,
             channel: PteChannel::VmDm,
+            state: PagingState::Owned,
         };
         unsafe { pt.destroy() };
 
@@ -1826,6 +1880,7 @@ mod tests {
         let mut pt = X86_64Paging {
             root_paddr: 0,
             channel: PteChannel::VmDm,
+            state: PagingState::External,
         };
         let vaddr = minix_types::VirBytes(0x200_000);
         let paddr = minix_types::PhysBytes(0xE000);

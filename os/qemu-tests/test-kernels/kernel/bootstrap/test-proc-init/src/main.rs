@@ -421,7 +421,7 @@ fn main() -> Status {
     //     never-translated VA, so no stale TLB entry can exist and no
     //     translation-cache maintenance is required (the conditional
     //     privileged step of the P1-c protocol is vacuous here).
-    let mut vm_pt = X86_64Paging::adopt_active_root(root);
+    let mut vm_pt = X86_64Paging::from_active_root(root, minix_arch::paging::PteChannel::VmDm);
     if vm_pt.root_paddr() != root {
         early_console::write_str("  FAIL: adopt does not wrap the bootstrap root\n");
         fail();

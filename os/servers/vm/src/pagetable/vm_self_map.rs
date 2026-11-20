@@ -99,7 +99,7 @@ impl VmSelfPageTable {
             root_paddr.0
         );
         Self {
-            inner: PageTable::adopt_active_root(root_paddr),
+            inner: PageTable::from_active_root(root_paddr, minix_arch::paging::PteChannel::VmDm),
         }
     }
 

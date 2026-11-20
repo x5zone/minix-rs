@@ -14,14 +14,28 @@ use core::cell::Cell;
 
 use alloc::collections::BTreeMap;
 
-use minix_arch::paging::{PageFlags, PageTableError};
+use minix_arch::paging::{PageFlags, PageTableError, PteChannel};
 use minix_types::{PhysBytes, VirBytes};
 
 use super::Paging;
 
+/// Ownership state of the simulated handle (D-081 / I-44); identical
+/// semantics to the production architectures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PagingState {
+    /// Default: a fresh simulated table owns its (synthetic) tree.
+    #[default]
+    Owned,
+    External,
+    Inherited,
+}
+
 /// Software page table: `vaddr → (paddr, flags)` per 4 KiB page.
 #[derive(Debug, Default)]
 pub struct SimPaging {
+    /// Ownership state (D-081 / I-44): the constructors set it exactly
+    /// like the production architectures.
+    state: PagingState,
     /// Fake root physical address (reported by `root_paddr`).
     root: u64,
     /// vaddr → (paddr, flags), keyed by page base.
@@ -44,6 +58,7 @@ impl SimPaging {
             root: 0xCAFE_0000,
             entries: BTreeMap::new(),
             flush_count: core::cell::Cell::new(0),
+            state: PagingState::Owned,
         }
     }
 
@@ -85,18 +100,17 @@ impl Paging for SimPaging {
     fn new_from_page(root_page: PhysBytes) -> Self {
         let mut sim = Self::new();
         sim.root = root_page.0;
+        // External: the caller owns the root page (D-081 / I-44).
+        sim.state = PagingState::External;
         sim
     }
 
-    fn from_active_root(root_phys: PhysBytes) -> Self {
+    fn from_active_root(root_phys: PhysBytes, _channel: PteChannel) -> Self {
         let mut sim = Self::new();
         sim.root = root_phys.0;
-        sim
-    }
-
-    fn adopt_active_root(root_phys: PhysBytes) -> Self {
-        let mut sim = Self::new();
-        sim.root = root_phys.0;
+        // External: wrapping a live root never grants destroy rights
+        // (D-081 / I-44 merged the former `adopt_active_root`).
+        sim.state = PagingState::External;
         sim
     }
 
@@ -104,8 +118,16 @@ impl Paging for SimPaging {
         PhysBytes(self.root)
     }
 
-    unsafe fn destroy(&mut self) {
-        self.entries.clear();
+    unsafe fn destroy(self) {
+        // D-081 / I-44: the ownership assertion runs before any state
+        // mutation — an externally managed root must never be cleared.
+        assert_eq!(
+            self.state,
+            PagingState::Owned,
+            "destroy called on externally managed page table"
+        );
+        let mut me = self;
+        me.entries.clear();
     }
 
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)

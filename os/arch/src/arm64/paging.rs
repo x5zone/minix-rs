@@ -33,7 +33,7 @@
 //! - Bit 53: PXN (Privileged Execute Never)
 //! - Bit 54: XN  (Execute Never for EL0)
 
-use crate::paging::{Paging, PageFlags, PageTableError};
+use crate::paging::{Paging, PageFlags, PageTableError, PteChannel};
 use crate::paging_ext::{HugePages, PageSize};
 use crate::direct_map::{DirectMapArch, AArch64DirectMap};
 use crate::pte_walk_arch::PteWalkArch;
@@ -186,10 +186,24 @@ fn pte_to_flags(pte: u64) -> PageFlags {
     flags
 }
 
+/// Ownership state of the handle's root page and page-table tree
+/// (D-081 / I-44); identical semantics to the other architectures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PagingState {
+    /// Root page and tree allocated by `Paging::new()` — destroyable.
+    Owned,
+    /// Root page managed externally — destroy forbidden.
+    External,
+    /// External root plus an inherited shared supervisor half.
+    Inherited,
+}
+
 pub struct AArch64Paging {
     root_paddr: u64,
     /// PTE access channel pinned at construction (see [`PteChannel`]).
     channel: PteChannel,
+    /// Ownership state (D-081 / I-44); see the per-arch `PagingState` docs.
+    state: PagingState,
 }
 
 // ── Page table walk helpers (runtime, via Direct Map) ──
@@ -204,14 +218,6 @@ pub struct AArch64Paging {
 /// channel is chosen by the constructor: `new_from_page`/`from_active_root`
 /// pin `KernelDm`, `new()` (whose production callers are all VM-side) and
 /// `adopt_active_root` pin `VmDm`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PteChannel {
-    /// Kernel context: PTE pages accessed via the kernel Direct Map.
-    KernelDm,
-    /// VM context: PTE pages accessed via the VM Direct Map.
-    VmDm,
-}
-
 #[inline]
 fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
     match channel {
@@ -564,35 +570,45 @@ impl Paging for AArch64Paging {
     fn new_from_page(root_page: PhysBytes) -> Self {
         let ptr = unsafe { phys_to_ptr(root_page.0) };
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
-        Self { root_paddr: root_page.0, channel: PteChannel::KernelDm }
+        Self {
+            root_paddr: root_page.0,
+            channel: PteChannel::KernelDm,
+            state: PagingState::External,
+        }
     }
 
     /// Wrap an already-active L0 translation table root without zeroing it.
     ///
-    /// Unlike `new_from_page`, this constructor assumes the root page table
-    /// at `root_phys` is already initialized and currently loaded into
-    /// TTBR0_EL1 (via a prior `enable()` call). It creates a handle that
-    /// can perform `map`/`remap`/`query` operations on the live page table.
-    ///
-    /// # Use case
-    ///
-    /// `arch_boot_impl` creates the bootstrap page table, enables paging,
-    /// and drops the `Paging` instance. Later phases (e.g.,
-    /// `init_proc_and_boot` loading the VM ELF) need to add mappings to
-    /// the *same* page table. `from_active_root` lets them obtain a handle
-    /// without re-allocating or zeroing the root.
-    ///
-    /// # Safety contract (caller responsibility)
-    ///
-    /// - `root_phys` must point to a valid, 4KB-aligned L0 translation table.
-    /// - The L0 table must be currently loaded into TTBR0_EL1 (or accessible
-    ///   via the kernel Direct Map, which `walk_read`/`walk_alloc` rely on).
-    /// - The returned handle must not outlive the page table it wraps.
-    fn from_active_root(root_phys: PhysBytes) -> Self {
-        Self { root_paddr: root_phys.0, channel: PteChannel::KernelDm }
+    /// Absorbs the former `adopt_active_root` (D-081 / I-44): pass
+    /// `PteChannel::VmDm` for the VM-context handle.
+    fn from_active_root(root_phys: PhysBytes, channel: PteChannel) -> Self {
+        Self {
+            root_paddr: root_phys.0,
+            channel,
+            state: PagingState::External,
+        }
     }
 
     fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
+        // D-081 / I-44 entry assertions: only a freshly wrapped External
+        // root may inherit, and every supervisor slot of the target must be
+        // blank (full 64-bit slot value, not just the Present bit) before
+        // any entry is copied.
+        assert_eq!(
+            self.state,
+            PagingState::External,
+            "inherit_supervisor_half called on a non-External root"
+        );
+        for i in 256usize..512 {
+            let slot = (i as u64) * 8;
+            // SAFETY: same direct-map access contract as the copy loop
+            // below; the target root is RAM-covered by the pinned channel.
+            let cur = unsafe { read_pte_dm(self.root_paddr + slot, PteChannel::KernelDm) };
+            assert_eq!(
+                cur, 0,
+                "inherit target supervisor slot {i} is not blank (0x{cur:016x})"
+            );
+        }
         // L0 entries 256..512 = the TTBR1 region (VAs ≥
         // 0xffff_0000_0000_0000, T1SZ=16): kernel text/data and the DM
         // windows. This crate pins TTBR0_EL1 and TTBR1_EL1 to the SAME
@@ -615,21 +631,9 @@ impl Paging for AArch64Paging {
                 write_pte_dm(self.root_paddr + slot, entry, 0, PteChannel::KernelDm)
             };
         }
-    }
-
-    /// Wrap an already-active L0 translation table root for VM-context access.
-    ///
-    /// Same wrapping semantics as `from_active_root`, but the handle's PTE
-    /// access channel is the VM Direct Map: the handle is exercised while
-    /// VM (a user-space process) runs, where the supervisor-only kernel
-    /// window is unreachable. See [`PteChannel`].
-    ///
-    /// # Safety contract (caller responsibility)
-    ///
-    /// Same as `from_active_root`, plus: every page-table page reachable
-    /// from the root must be covered by the VM Direct Map window.
-    fn adopt_active_root(root_phys: PhysBytes) -> Self {
-        Self { root_paddr: root_phys.0, channel: PteChannel::VmDm }
+        // The copy is complete: this handle now carries the shared
+        // supervisor half, so every later write must pass the range guard.
+        self.state = PagingState::Inherited;
     }
 
     unsafe fn enable(&self) -> PhysBytes {
@@ -732,10 +736,14 @@ impl Paging for AArch64Paging {
         // SAFETY: alloc_pt_page returns a fresh, 4KB-aligned page that is
         // not aliased by any other live reference. Direct Map must be active.
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
-        Ok(Self { root_paddr: root_phys.0, channel: PteChannel::VmDm })
+        Ok(Self {
+            root_paddr: root_phys.0,
+            channel: PteChannel::VmDm,
+            state: PagingState::Owned,
+        })
     }
 
-    unsafe fn destroy(&mut self) {
+    unsafe fn destroy(self) {
         // Without a registered free hook this degrades to zeroing only the root
         // L0 (preventing use-after-free on reuse); once one is registered, all
         // intermediate table frames (L1/L2/L3) are reclaimed depth-first before
