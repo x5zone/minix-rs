@@ -39,7 +39,7 @@
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**已裁决·待实施**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
-| I-42（待裁决） | `BootStorage` 的 `push_*` 死子系统（`push_module` / `push_platform_source` / `BootStorageFull` 调用者归零） | 代码删除 | **未裁决**（I-34 实施副产物）；A 删 / B 留，见 §3 的 I-42 | §3 |
+| I-42（已裁决·待实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | **已裁决（D-080，用户 2026 年 11 月 20 日）采 A 删掉**：删 `boot_storage.rs:291-293` 的注释与 struct、`lib.rs:31` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
 | I-43（待裁决） | 四个 QEMU 测试内核把全零 12 槽 `BOOT_MODULES` 当 `boot_modules` 切片交出，撞 `boot identity window is empty or reversed: [0x0,0x0)` | 测试载体修正 | **未裁决**（I-31 补漏批二中发现）；四条见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
@@ -1466,31 +1466,49 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **下一步**：按文档 §5.1 的 **5 步实施次序**推进——① 状态字段与构造函数迁移（含 `adopt_active_root` 合并与 `SimPaging`）→ ② `destroy(self)` 入口断言 → ③ 继承路径 → ④ 全部写入口范围保护 + 三架构测试 → ⑤ 独立关闭 E / R1 / R2。**不得把基础 API 编译通过当作生产安全验收通过。**
 
-### I-42（待裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统
+### I-42（已裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 
 **来源**：I-34 实施时的 mini review。
 
-**现状**：`fill_*` 落地后，`BootStorage` 上这三个东西的调用者**全部归零**：
+**现状（裁决时实测，射程比条目登记时更小）**：`fill_*` 落地后登记了三个符号，核实发现前两个**已经不存在**：
 
-| 符号 | 位置 | 调用者 |
-|---|---|---|
-| `push_module(&mut self, BootModule) -> Result<(), BootStorageFull>` | `boot_storage.rs`（`#[cfg(test)]`） | **0**（调用者仅为 `boot_storage` 自己的测试，那些测试已改用 `fill_modules`） |
-| `push_platform_source(&mut self, PlatformDescSource) -> Result<(), BootStorageFull>` | 同文件 | **0**（原唯一生产调用 `opensbi_helpers.rs:421` 已改成 `fill_platform` 闭包） |
-| `BootStorageFull` | 同文件 | **0** 直接引用；只作为上面两个 `push_*` 的返回类型 |
+| 符号 | 裁决时实测 |
+|---|---|
+| `push_module` | **已不存在**（定义与调用都无）|
+| `push_platform_source` | **已不存在** |
+| `BootStorageFull` | **仍存在**，两处：定义 `boot_storage.rs:291-293`（含文档注释 `/// The fixed list a push_* call targeted is full.`）、re-export `lib.rs:31` |
 
-**注意**：`kernel/src/lib.rs:1256` 的 `push_module_windows` 是**内核侧的同名不同物**（窗口表构造函数），不是这三个的调用者。
+**所以本条的实际射程只有一件：删掉这个为已删函数而留的空结构体。**
+
+它的文档注释仍在描述一个不存在的 `push_*`，与 D-077（空 getter 段）、D-079（ghost 注释）属同一类残骸，取向也一致：**删掉，不造新东西**。
+
+**注意**：`kernel/src/lib.rs:1183` 的 `push_module_windows` 是**内核侧的同名不同物**（窗口表构造函数），与本条无关。
 
 **为什么不是 I-34 的一部分**：D-067 的授权文本点名的是「五族的 `*_slots_mut`/`*_buf_mut` 全部消失，替换为 `fill_*`」，`push_*` 不在其中。I-34 实施后它们才变成死代码，属实施副产物。
 
-**待裁决的两个选项**：
+**裁决（D-080，用户 2026-11-20）：采 A——删掉 `BootStorageFull`。**
 
-- **A（推荐）**：删三个符号。纯删除，零行为变化（调用者已实测为零）。顺带删 `BootStorageFull` 的 `lib.rs` re-export。
-- **B**：保留。`push_*` 是「逐条构造」的便利形态，将来若出现新的测试载体需要它，可省一次改写。
+具体改动两处：
 
-**验收（若走 A）**：
+| # | 位置 | 动作 |
+|---|---|---|
+| ① | `os/libs/minix-boot/src/boot_storage.rs:291-293` | 删文档注释 + `pub struct BootStorageFull;` |
+| ② | `os/libs/minix-boot/src/lib.rs:31` | `pub use` 去掉 `BootStorageFull` |
 
-- `grep -rn "push_module\|push_platform_source\|BootStorageFull" os/ --include=*.rs` → 仅剩 `push_module_windows`（内核侧同名不同物）；
-- `cargo test -p minix-boot`、`cargo test -p boot-shim --features test-all` 全绿。
+`boot_storage.rs:288` 的 `impl Default for BootStorage` **不动**——它服务于 `BootStorage`，与本条无关。
+
+**否决 B（保留）**：D-067 的裁决已把 `push_*` 整体换成 `fill_*` 闭包，方向已定；保留一个指向已废弃入口的错误类型，正是 D-067 想消灭的"两套可不一致事实"。
+
+**一个必须写明的边界**：`BootStorageFull` 虽零消费者，但**已通过 `pub use` 暴露**，`minix-boot` 被 `boot-shim` / `kernel` / `kernel-image` 三方依赖——删一个 `pub` 符号属 API 表面变动。当前零消费者，但需 `cargo check --workspace --all-targets` 全绿才算证明。
+
+**验收**：
+
+```bash
+grep -rn "BootStorageFull" os/ --include=*.rs        # 删除后应为 0
+grep -rn "push_module_windows" os/kernel/src/lib.rs  # 应仍命中（同名不同物，不受影响）
+cargo check --workspace --all-targets                # 必须 0 error
+cargo test -p minix-boot                             # 含 boot_storage 自身的 fill_* 测试
+```
 
 ### I-34（原依赖说明，保留作历史）本条与 D-062 / D-065 的关系
 
