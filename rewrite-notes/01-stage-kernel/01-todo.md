@@ -1793,7 +1793,7 @@ impl<'a> Iterator for SegmentIter<'a> {
 
 **I-46 / I-47 解锁**：前置（I-48 落地并验证）已满足，两表行状态已同步更新。
 
-### I-46（已裁决·待实施）`load_segments_into_phys_memory` 的 Safety 契约过期 + entry 断言两份拷贝
+### I-46（✅ 已实施）`load_segments_into_phys_memory` 的 Safety 契约过期 + entry 断言两份拷贝
 
 **来源**：`R3/DESIGN-D2-03`（P2，[MODERN]），D02 的 R3 面板。**状态：已裁决（D-088），I-48 前置已落地（`a25305c66`）。**
 
@@ -1883,7 +1883,7 @@ cargo check --workspace --all-targets
 
 **风险与回退**：① 是纯文档改动，零行为变化。若某未来调用者确实需要一个"我已校验过"的类型凭证，那时再引入 `ValidatedKernelImage`——但当前七个消费者全部走 `segment_iter`，凭证无处可用。
 
-### I-47（已裁决·待实施）`load_segments_into_buffer` 的校验前置与装不下语义（照 C 两循环结构重排）
+### I-47（✅ 已实施）`load_segments_into_buffer` 的校验前置与装不下语义（照 C 两循环结构重排）
 
 **来源**：`R3/DESIGN-D2-04`（P2，[MODERN]），D02 的 R3 面板。**状态：已裁决（D-089）；I-48 前置已落地（`a25305c66`）。**
 
