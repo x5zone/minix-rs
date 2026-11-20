@@ -141,7 +141,9 @@ pub extern "C" fn rust_main() -> ! {
     prot.load();
 
     let mut trap = CurrentTrapEntry::init();
-    trap.configure_syscall(info.syscall_entry);
+    // v10 (D-062): the entry comes from `syscall_entry_va()`, the same single
+    // authority `kmain` uses; `KernelInfo` no longer carries this value.
+    trap.configure_syscall(minix_arch::syscall_entry_va());
     trap.load();
 
     early_console::write_str("  protection structures loaded\n");
