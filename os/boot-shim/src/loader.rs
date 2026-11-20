@@ -302,11 +302,15 @@ pub fn load_segments_into_buffer(
 /// during boot, and the kernel linker script guarantees non-overlapping
 /// LMA placement.
 ///
-/// The caller must also have run [`compute_kernel_layout`] (or an equivalent
-/// validation) first: this function itself does not reject `filesz > memsz`
-/// or address arithmetic overflow. The production path goes through
-/// [`load_kernel_with_loader`], which calls `compute_kernel_layout` before
-/// this function; direct callers must uphold the same precondition.
+/// Segment-shape validation is built in since I-48 (D-084): the iterator
+/// self-checks `filesz > memsz` (`FileszExceedsMemsz`), phdr-table
+/// arithmetic (`PhdrOutOfBounds`) and file bytes past the image end
+/// (`SegmentOutOfBounds`), and every consumer — this function included —
+/// surfaces those as `Err` before any write. (D-088 rewrote the previous
+/// wording, which still claimed the function "does not reject `filesz >
+/// memsz`" — that stopped being true when the guard moved into the
+/// iterator.) The caller's remaining obligation is the physical one below,
+/// not segment-shape validation.
 ///
 /// Overlap detection: this function rejects ELFs whose PT_LOAD segments
 /// overlap in physical memory, and panics when any segment's file-byte range
