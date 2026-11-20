@@ -2304,6 +2304,23 @@ r2 post-cut free n=0x0000000000000002 bytes=0x000000000774f000 tx_frames=0x00000
 
 读数：三架构生产 target 各 0 error。I-29-16 合同自此在三架构各自的最小可验收形态落地；政策表的「完全冻结」仍按设计文档等原型证据与真机验收（不因本批宣告）。
 
+**B1 门② QEMU 证据固化（2026-11-21）**：三条代码半在每次启动都真实执行，以下门链 PASS 即「断言未触发 / 映射点合同成立」的通过证据（命令在 `os/` 下）：
+
+| 腿 | 门命令 | 读数 |
+|---|---|---|
+| x86 | `./qemu-tests/test-shim-bootmarks-x86.sh`（生产 shim + 独立镜像） | **PASS**（`entering scheduler`；`Paging::enable()` 的 IA32_PAT PA0=WB 断言执行且未触发） |
+| x86 | `./qemu-tests/test-rt-birth.sh` | **PASS**（同一 enable 路径 + 用户态深跑） |
+| aarch64 | `bash ./qemu-tests/test-timer-irq-aarch64.sh` | **PASS**（`enable()` 写 MAIR=0xFF + RAM 叶子 AttrIndx=0 路径执行；timer IRQ 往返） |
+| riscv64 | `./qemu-tests/test-riscv64-uboot-shim.sh` | **PASS**（6/6 路标；riscv `enable()` satp 切换 + PMA 前提生效） |
+
+**QEMU 能力边界（不能证明什么）**：QEMU 不模拟缓存属性失败——x86 PAT/MTRR 恒 WB、aarch64 MAIR 全通、riscv virt PMA 恒 WB。因此「WB 承诺被破坏时当场停机」的失败路径无法在 QEMU 注入验证；该半只能挂真机门链。
+
+**真机验收清单（挂真机门链，未执行；逐项带读数才算通过）**：
+
+- **x86（UEFI 真机）**：① 启动到 `entering scheduler`（enable 的 PAT 断言未触发）；② 调试器或自检 rdmsr IA32_PAT（0x277）复核 PA0=WB；③ 抽查 IA32_MTRR_DEF_TYPE 与可变 MTRR 范围，确认无 RAM 被 UC/WC 覆盖；④ 同一镜像跑 `test-memmap` 等价载体与 rt-birth，记录串口读数。
+- **aarch64（UEFI 真机）**：① 启动到调度器；② 读 MAIR_EL1 应为 `0xFF`；③ 抽查一个 RAM 叶子的 AttrIndx=0（Normal WBWA）与一个 DEVICE 叶子 AttrIndx=1；④ 记录该 SoC 的 memory attribute/PMA 文档口径。
+- **riscv64（U-Boot/OpenSBI 真机）**：① 启动到调度器；② 核对板级 PMA：DDR 区间声明为可缓存；③ 确认 `menvcfg.PBMTE=0`（本项目不使能 Svpbmt，PTE[62:61]=0 走 PMA）；④ 记录「Sv39 无强制 WB 取值、WB 依赖 PMA」的前提与板级证据。
+
 ### I-52（✅ 已关闭·三条全部销账）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc）
 
 **来源**：I-43 的三层残留（D-087 拆出）。**状态：已裁决（D-092）。**
