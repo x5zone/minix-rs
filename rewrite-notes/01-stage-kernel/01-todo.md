@@ -50,7 +50,7 @@
 | I-57（已销账·症状不再复现） | `test-paging-faultloop` 载体自身在 CPL0 panic：`carrier_pagefault` 内的 `walk_leaf` 取页失败 / VM 槽未就绪 | 载体修正 | ✅ **已销账（2026-11-21）**：其失效现场是 I-43 三层数据页窗口缺失的下游（内核在 zero-mailbox 阶段 fault，CPL3 载荷从未启动）——数据页窗口修复（ds 槽指真实 span）后 `test-paging-faultloop.sh` **PASS**（E5(d) 全链：#PF → carrier_pagefault → PTE 写回 → resume → 无 re-fault），`walk_leaf` 取页与 VM 槽消费全部按设计走通，不再需要 `-d int` | §3 的 I-57 |
 | I-58（已销账·症状不再复现） | `test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 | 载体修正 | ✅ **已销账（2026-11-21）**：同 I-57——数据页窗口修复后 `test-user-trap.sh` **PASS**（E1 slice 5 trap 往返 + E-KERNINFO publication 双验证），CPL3 载荷的 fault 走 `cs & 3 == 3` 路由进故障臂、调度器 bring-up 完整执行，`proc_ptr=None` 前置条件不再触发 | §3 的 I-58 |
 | I-59（已裁决·扩为三条共同根因） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 定位 + 设计裁决 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） | §3 的 I-59 |
-| I-60（待裁决·I-59 拆出） | `phys_to_ptr` 与 `channel_to_ptr` 双通道并存，边界无文档无断言；`map_huge`/`split_huge` 用前者、`map`/`unmap` 用后者 | 设计裁决 | **未裁决**（D-094 副产物）。倾向 B（补文档 + `debug_assert!` 检查 PA 在恒等窗口内）先做，A（`PteChannel` 加 `Identity` 变体统一入口）待 I-59 落地后评估——A 波及三架构约 10 处调用点 | §3 的 I-60 |
+| I-60（✅ 已销账·伪缺陷） | `phys_to_ptr` 与 `channel_to_ptr` 双通道并存 | 设计裁决 | ✅ **D-095（用户 2026 年 11 月 21 日）销账**：双通道是**按阶段分工**而非并存竞争——裸恒等用于 DM 未建阶段（`new_from_page` bootstrap / `map_huge` 的 5 处生产调用全在 `build_bootstrap_root_and_enable` 内 / `install_leaf` 是 DM 安装器本身）、KDM 用于 DM 建立后；每个使用点都正确，且 SAFETY 文档分散在各函数（`is_identity_table:1580`、`X86_64BootDmInstaller:1341`）。**唯一真错的是 `new_from_page` 在 `load_process_elf` 处的调用点，已含在 I-59**。另修正 I-59 的 A' 范围：27 处 → **仅 `new_from_page` 1 处 × 3 架构 + 2 个调用点** | §3 的 I-60 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（已裁决·待实施） | `load_segments_into_phys_memory` 的 SAFETY 契约过期（仍写「调用者必须先 compute」）+ entry 断言两份拷贝 | 注释修正 | **已裁决（D-088，用户 2026 年 11 月 21 日）**：I-48 前置已落地（`a25305c66`），复核后发现 ① SAFETY 第 2 条**现在是错的**（迭代器已自查 `filesz > memsz`，`loader.rs:275-279` 仍写「本函数不拒绝」）→ **必做改写**；② 面板称的文档失真**实测不存在** → 销账；③ entry 断言两份拷贝**不合并**（两份的守卫时机不同：wrapper 在 `layout_gate` 前、UEFI 腿在 `reserve_kernel_span` 前）。面板的 `ValidatedKernelImage` / 改 wrapper 形状两案均不采纳（I-48 之后净收益为零） | §3 的 I-46 |
 | I-47（已裁决·待实施） | `load_segments_into_buffer` 的校验前置与装不下语义（照 Minix3 C 的两循环结构重排） | 代码改造 | **已裁决（D-089，用户 2026 年 11 月 21 日）采乙**：照 `minix3/minix/lib/libexec/exec_elf.c` 的 `libexec_load_elf`——① 校验前置（`sanity check binary before wiping out the target process`：先 collect + 校验 `buf` 覆盖全部段，**校验不通过不写任何字节**）；② 装不下返回 `Err(TargetBufferTooSmall{..})` 而非静默跳过（C 用 `ENOEXEC`；本项目有 `ElfError` 可给精确变体）；③ `count` 语义自动一致；④ 文档改为「测试投影 + 前置校验」并列出共享/不共享的校验项。**不补段间重叠检测**（C 也没在装载循环里做，其重叠防线在 mmap/copymem 实现侧）| §3 的 I-47 |
@@ -2470,7 +2470,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 
 
-### I-60（待裁决·I-59 拆出的结构问题）`phys_to_ptr` 与 `channel_to_ptr` 双通道并存，边界无文档无断言
+### I-60（✅ 已销账·伪缺陷）`phys_to_ptr` 与 `channel_to_ptr` 双通道并存
 
 **来源**：I-59（D-094 深入调查的副产物）。**状态：待裁决。**
 
@@ -2505,6 +2505,47 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 **我的倾向：B 先做、A 待 I-59 落地后评估。** 理由：A 会波及三架构 paging 的全部写路径（约 10 处调用点 + 该枚举三份定义），而 B 是零风险的第一步——`debug_assert!` 能把"PA 不在恒等窗口内"变成可观测，而且**不动任何签名**。
 
 **验收（若走 B）**：`phys_to_ptr` 内加 `debug_assert!` 检查 PA 落在恒等窗口内（窗口上界从调用点传入或走一个全局事实）；跑现有测试确认无假阳性。
+
+**裁决前调查（逐点核实，推翻「结构缺陷」定性）**：
+
+**双通道是按阶段分工，每个使用点都正确**：
+
+| 通道 | 使用者 | 运行阶段 | 为何正确 |
+|---|---|---|---|
+| `phys_to_ptr`（裸恒等）| `new_from_page` 清零（`x86:633`）| bootstrap（DM 未建）| 那时只有恒等可用 |
+| | **`map_huge`（5 处生产）** | **全在 `build_bootstrap_root_and_enable` 内**（`lib.rs:1329` 起，调用点在 `:1384`–`:1502`）| 该函数在 `establish_boot_dm`（`lib.rs:1097`）**之前**执行 |
+| | **`install_leaf`（`BootDmInstaller`）** | **DM 建立过程中**（`boot_dm.rs:467` 的 `install_prevalidated_boot_dm_range` → `:481` 调 `install_leaf`）| 它就是要建 DM 的那个组件，DM 尚不存在 |
+| | `is_identity_table`（`:1591`）、`install_leaf`（`:1360`）| 同上 | SAFETY 明写「identity-mapped (VA = PA)」，**刻意设计、有文档** |
+| `channel_to_ptr`（KDM）| `map`/`unmap`/`query`/`remap`/`update_flags`/`destroy`/`split_huge` | **DM 建立后** | KDM 可用；`split_huge:997` 的注释自陈「channel's Direct Map active」 |
+
+**所以不是「并存竞争」，是「按阶段分工」**，且文档分散在各函数的 SAFETY 里（`is_identity_table:1580-1588`、`X86_64BootDmInstaller:1341-1358` 的「Two mappings exist before DM establishment」），不是「没有文档」。
+
+**唯一真正错的是 `new_from_page` 的一个调用点**：
+
+| 调用点 | DM 状态 | 当前通道 | 正确？ |
+|---|---|---|---|
+| `lib.rs:1292`（`build_bootstrap_root_and_enable`）| **未建** | 裸恒等 | ✓ |
+| `arch/boot.rs:820`（`load_process_elf`）| **已建** | 裸恒等 | **✗ 这就是 I-59 的 fault** |
+
+**而这个问题已完整地包含在 I-59 里，不需要独立成条。**
+
+**另一个我上一轮的错误**：我曾建议「`phys_to_ptr` 里加 `debug_assert!(phys < BOOT_IDENTITY_MAP_END)`」——**那个断言拦不住 I-59 的真实故障**。证据：`cr2 = 0x7ba7000`（123 MiB）**远低于** `BOOT_IDENTITY_MAP_END = 0x1_0000_0000`（4 GiB），而 `minix-arch` 只有这个粗上界、**没有实际窗口清单**；`minix-arch/src/lib.rs:212-216` 的文档自己写明「It is **not** a blanket `[0, END)` mapping」。所以该断言会放行真实故障地址，给人「已防住」的错觉——比不做更危险。
+
+**裁决（D-095，用户 2026-11-21）：I-60 销账（伪缺陷）。**
+
+**同时修正 I-59 的 A' 范围**：由「27 处调用点 × 3 架构 + 6 处签名」缩小为——
+
+| 改动 | 数量 |
+|---|---|
+| `new_from_page` 加 `channel: PteChannel` 参数 | 三架构各 1 处 |
+| `PteChannel` 加 `Identity` 变体 | 三架构各 1 处 |
+| 调用点传参 | **2 处生产**（`lib.rs:1292` 传恒等、`boot.rs:820` 传 `KernelDm`）+ 测试 |
+
+**`map_huge` / `split_huge` / `install_leaf` / `is_identity_table` 全部不用动**——它们的通道选择已经正确。
+
+**附带一条文档同步**（随 I-59 落地）：`new_from_page` 的 trait doc（`paging.rs:230-251`）现在写「Used during boot when no global allocator exists... after that no allocator exists」——**预设了「只在 boot 早期用」**，而 `load_process_elf` 在 DM 已建后调用它，违反该预设。A' 落地后须改写为「两阶段各有通道，由 `channel` 参数声明」。
+
+
 
 ### I-53（已裁决·原定性作废，拆为 I-57/I-58）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
 
