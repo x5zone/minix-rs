@@ -307,36 +307,28 @@ pub fn prepare_boot<'a>(
             !owned.sources().is_empty(),
             "boot-shim: the DTB leg must carry source records, not an empty partition"
         );
-        // Copy the map tables into the caller's storage.
-        {
-            let (memmap_slots, reserved_slots) = storage.map_tables_mut();
-            assert!(
-                owned.free().len() <= memmap_slots.len(),
-                "boot-shim: DTB free-table over storage capacity"
-            );
+        // Copy the map tables into the caller's storage (one step: fill and
+        // commit together).
+        storage.fill_map_tables(|memmap_slots, reserved_slots| {
             memmap_slots[..owned.free().len()].copy_from_slice(owned.free());
-            assert!(
-                owned.reserved().len() <= reserved_slots.len(),
-                "boot-shim: DTB reserved-table over storage capacity"
-            );
             reserved_slots[..owned.reserved().len()].copy_from_slice(owned.reserved());
-        }
-        storage.commit_map_tables(owned.free().len(), owned.reserved().len());
-        {
-            let source_slots = storage.memmap_source_slots_mut();
-            assert!(
-                owned.sources().len() <= source_slots.len(),
-                "boot-shim: DTB source records over storage capacity"
-            );
+            minix_boot::MapCounts {
+                memmap: owned.free().len(),
+                reserved: owned.reserved().len(),
+            }
+        });
+        storage.fill_memmap_sources(|source_slots| {
             source_slots[..owned.sources().len()].copy_from_slice(owned.sources());
-        }
-        storage.set_memmap_sources_len(owned.sources().len());
+            owned.sources().len()
+        });
         // The SBI leg's parameter source is the standard firmware
         // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
         let input = fdt.chosen().bootargs().unwrap_or("");
-        let stats =
-            minix_boot::normalize_param_buf(input.as_bytes(), None, storage.param_buf_mut());
-        storage.set_param_len(stats.bytes);
+        let mut stats = minix_boot::ParamStats { bytes: 0, rejected: 0, dropped: 0 };
+        storage.fill_param(|buf| {
+            stats = minix_boot::normalize_param_buf(input.as_bytes(), None, buf);
+            stats.bytes
+        });
         crate::raw_serial_line(&alloc::format!(
             "boot-shim: param_buf bytes={} rejected={} dropped={}",
             stats.bytes,
@@ -407,20 +399,23 @@ pub fn prepare_boot<'a>(
     // The loader writes straight into the storage's module slots; no
     // `Box::leak` and no `'static` slice (R18 D-1 stage 2).
     let module_len =
-        loader::load_boot_modules_into(&file_loader, alloc_module_pages, storage.module_slots_mut());
-    storage.set_modules_len(module_len);
+        storage.fill_modules(|slots| {
+        loader::load_boot_modules_into(&file_loader, alloc_module_pages, slots)
+    });
 
     // OpenSBI passes the DTB physical address in register a1; the entry
     // trampoline saved it via `install_dtb_ptr(a1)`. On RISC-V only DTB
     // is supported (no ACPI), so the list is `[DTB]` or empty.
-    if let Some(pa) = dtb_ptr() {
+    storage.fill_platform(|slots| {
+        let Some(pa) = dtb_ptr() else {
+            return 0;
+        };
         // SAFETY: a1 points at the live DTB in the firmware identity map;
         // this runs before paging is enabled.
         let len = unsafe { minix_boot::dtb_total_size(PhysBytes(pa)) };
-        storage
-            .push_platform_source(PlatformDescSource::with_optional_len(DTB, PhysBytes(pa), len))
-            .expect("boot-shim: platform-source partition over capacity");
-    }
+        slots[0] = PlatformDescSource::with_optional_len(DTB, PhysBytes(pa), len);
+        1
+    });
 
     // The handoff arena: the next bump pages after the module landings, inside
     // the same pool. (v10 / D-062 removed the startup-object set that used to

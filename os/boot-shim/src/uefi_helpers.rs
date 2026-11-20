@@ -1017,12 +1017,9 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base.0.saturating_add(kern.kern_size),
     );
     let storage = UEFI_BOOT_STORAGE.take();
-    let module_len = loader::load_boot_modules_into(
-        &file_loader,
-        alloc_module_pages,
-        storage.module_slots_mut(),
-    );
-    storage.set_modules_len(module_len);
+    storage.fill_modules(|slots| {
+        loader::load_boot_modules_into(&file_loader, alloc_module_pages, slots)
+    });
     uefi::println!("boot-shim: 12 boot modules loaded");
     // Same second line as `prepare_boot` (D01-R7 D2-02): the allocator refuses
     // kernel-overlapping pages before copying; this verifies the returned
@@ -1032,10 +1029,16 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base.0,
         kern.kern_phys_base.0.saturating_add(kern.kern_size),
     );
-    let platform_len = find_platform_sources_into(storage.platform_slots_mut());
-    storage.set_platform_len(platform_len);
-    let param_stats = collect_param_buf_into(storage.param_buf_mut());
-    storage.set_param_len(param_stats.bytes);
+    storage.fill_platform(|slots| find_platform_sources_into(slots));
+    // `fill_param` commits the byte count; the stats ride out through a
+    // captured local so the diagnostic line below can still print them.
+    let mut param_stats = None;
+    storage.fill_param(|buf| {
+        let stats = collect_param_buf_into(buf);
+        param_stats = Some(stats);
+        stats.bytes
+    });
+    let param_stats = param_stats.expect("collect_param_buf_into always runs");
     uefi::println!(
         "boot-shim: param_buf bytes={} rejected={} dropped={}",
         param_stats.bytes,
@@ -1087,7 +1090,14 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     };
     let image_handle = uefi::boot::image_handle();
     let mut buffer_bytes = probe_map_buffer_size(boot_services_raw);
-    let classification = loop {
+    // The retry loop lives *inside* the `fill_map_tables` closure: it needs
+    // `&mut serializer` (a sibling local) and both map tables at once, and a
+    // `fill_*` call owns `&mut self` for its whole duration. Moving the loop
+    // in is what keeps "fill and commit are one step" true across retries —
+    // an aborted attempt simply re-enters and the final counts are the ones
+    // committed.
+    let mut classification = None;
+    storage.fill_map_tables(|memmap_slots, reserved_slots| loop {
         let buffer_ptr = alloc_map_buffer(buffer_bytes);
         // SAFETY: fresh pool allocation of `buffer_bytes` bytes.
         let buffer = unsafe { core::slice::from_raw_parts_mut(buffer_ptr, buffer_bytes) };
@@ -1114,7 +1124,6 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         // serializer writes only into the arena. On success the call has
         // performed ExitBootServices and no further boot-service call is made.
         match unsafe {
-            let (memmap_slots, reserved_slots) = storage.map_tables_mut();
             ebs_pair::pair_and_classify(
                 &ops,
                 boot_services_raw,
@@ -1126,7 +1135,17 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
                 reserved_slots,
             )
         } {
-            Ok(classification) => break classification,
+            Ok(result) => {
+                // Leave the loop with the counts the classifier produced; the
+                // closure returns them so `fill_map_tables` commits both in
+                // one step.
+                let counts = minix_boot::MapCounts {
+                    memmap: result.conventional,
+                    reserved: result.reserved,
+                };
+                classification = Some(result);
+                break counts;
+            }
             Err(PairError::NeedBiggerBuffer(needed)) => {
                 assert!(
                     needed > buffer_bytes,
@@ -1138,7 +1157,8 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
                 panic!("boot-shim: EBS pairing loop failed: {error:?}");
             }
         }
-    };
+    });
+    let classification = classification.expect("the pairing loop returns only on success");
     crate::raw_serial("boot-shim: [raw] boot services exited (paired)\r\n");
 
     // v10 (D-062) removed the startup-object partition: its only reader was
@@ -1148,7 +1168,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // The classifier's counts are the same numbers the wire descriptors would
     // report (commit asserts counts == written). Use them directly; decoding
     // our own wire here added a needless post-EBS failure path (DESIGN-07).
-    storage.commit_map_tables(classification.conventional, classification.reserved);
+
     let mut report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
     // The classifier wrote the source/startup records directly into the wire;
     // the storage slices are intentionally empty on this leg.

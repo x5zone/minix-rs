@@ -37,7 +37,7 @@
 | I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **closed（本批落码，grep 判据归零，真机门 `cd os/qemu-tests && bash run_all.sh` → 37 passed / 2 failed / 0 skipped / 0 build failures（本树现跑；两条红 `test-smp-aps`/`test-smp-ipi` 在同一台机器上用**未改动的 rewrite 尖子 `2b72a1e62` 重新构建同一载体**复现同一 `### PANIC … arch/src/x86_64/protection.rs:0x1c3`，判为既有、非本批引入））**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
-| I-34（本轮新登记） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 设计裁决 + 代码改造 | 已裁决（D-067，用户 2026-11-20）；待实施——详见 §3 的 I-34 | §3 |
+| I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
@@ -1281,7 +1281,64 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **风险与回退**：`fill_*` 借用 `&mut self` 期间无法再取另一族的 `&mut`，因此**禁止「先写 A 族、再写 B 族、最后一起提交」的交错风格**。已核实当前五个生产调用点都是「写一族 → 提交一族」的严格顺序，不冲突；若将来出现合法的交错需求，回退改用 B 的计数令牌或恢复 dirty 机制，并重开 D-067（该条件已写进判决行的 `reopen_condition`）。
 
-**为什么现在不做**：本条与 D-062（wire v10 删 `startup` 族）和 D-065（直核腿统一 owned 路径，sources 族写入者从 1 条腿变成 3 条腿）改同一批行。实施顺序由后续统筹规划决定（族数与写入者数量在 D-062/D-065 落地后才定稿），本条不写顺序约束。
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+前置已满足：I-31 已落（startup 族删除，族集由五族定稿为四族 + 内存图两表）；`sources` 族的写入者数量不影响 `fill_*` 的 API 形状（owned 路径三条腿早就在跑），所以 I-33 的受阻没有传导到本条。
+
+| 层 | 改动 |
+|---|---|
+| 新增 | `MapCounts { memmap: usize, reserved: usize }`（值对象，两表计数按字段名带回）；六族 `fill_*`：`fill_map_tables`（闭包收两表、返回 `MapCounts`）、`fill_modules`、`fill_platform`、`fill_param`（闭包收 `&mut [u8; PARAM_BUF_CAP]`）、`fill_memmap_sources` |
+| 删除 | `map_dirty` 字段与全部七处赋值；`report()` 里的 dirty 断言；`memmap_slots_mut` / `reserved_slots_mut` / `map_tables_mut` / `commit_map_tables` / `set_memmap_len` / `set_reserved_len` / `module_slots_mut` / `set_modules_len` / `platform_slots_mut` / `set_platform_len` / `param_buf_mut` / `set_param_len` / `memmap_source_slots_mut` / `set_memmap_sources_len` |
+| 生产调用点 | 25 处重写：`uefi_helpers` 的模块/平台/参数/内存图四族，`opensbi_helpers` 的四族（含把 `push_platform_source` 的 if-let 并入闭包），两个直核腿的模块/平台/参数三族 |
+
+**一处需要设计判断的改造（mini review 记录）**：`uefi_helpers` 的 EBS 配对循环原本是「循环外 `map_tables_mut()` 取两表、循环反复调 `pair_and_classify`、循环后 `commit_map_tables`」。改成 `fill_map_tables` 后，**整个重试循环被搬进了闭包里**——因为闭包独占 `&mut self`，而循环内的 `NeedBiggerBuffer` 分支还要重新分配缓冲、重新进入。这是正确的：一次失败的 attempt 不应提交任何计数，只有成功的那次才带 `MapCounts` 出来，与「写与提交是一步」的语义一致。`classification` 通过闭包外的 `Option` 带出。
+
+**mini review 报出的死子系统（登记为 I-42，未删）**：`fill_*` 落地后，`push_module` / `push_platform_source` / `BootStorageFull` 三者的调用者归零（`grep` 实测零命中；`BootStorageFull` 只被这两个 `push_*` 的返回类型引用）。D-067 的授权文本只点名「五族的 `*_slots_mut`/`*_buf_mut` 全部消失，替换为 `fill_*`」，没提 `push_*`；它们在 I-31 删掉 startup 后也只剩这两族。按 fix-guard「一次一条」登记为 I-42，不在本次改动里删。
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -rn "map_dirty" os/ --include=*.rs` | **0** |
+| A2 | `grep -rn "memmap_slots_mut\|reserved_slots_mut\|set_memmap_len\|set_reserved_len\|map_tables_mut\|commit_map_tables"` | **0** |
+| A3 | 全族 `*_slots_mut` / `*_buf_mut` / 对应 `set_*_len` | **0**（生产与测试均无残留） |
+| A4 | `cargo test -p minix-boot` | **183 passed / 0 failed**（测试已按新 API 重写，条数不变） |
+| A5 | `cargo test -p boot-shim --features test-all` | **136 + 6 + 2 passed** |
+| A6 | `cargo test -p minix-kernel --features mock` | **864 passed / 8 ignored** |
+| A7 | `cargo check --workspace` | **0 error** |
+| A8 | `cargo check -p kernel-image` 四个变体 | 全部 **0 error** |
+| A9 | **五条 QEMU 门链** | x86 UEFI **PASS**；aarch64 UEFI **PASS**；riscv U-Boot shim **PASS**（6/6）；aarch64 直核 SMP **PASS**；riscv 直核 bootface **PASS** |
+| A10 | 文档门（01 篇） | anchor **108/108**；citation `blocks=69 checked=29 failed=0`；structure/style(error=0)/density(承载门通过) 通过 |
+
+**为什么此前不做**：本条与 D-062（wire v10 删 `startup` 族）和 D-065（直核腿统一 owned 路径）改同一批行；族数与写入者数量在它们落地后才定稿。D-062 已落（I-31），D-065 虽受阻（I-33 待裁决）但不影响本条的 API 形状，故本条可在 I-31 之后独立实施。
+
+### I-42（待裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统
+
+**来源**：I-34 实施时的 mini review。
+
+**现状**：`fill_*` 落地后，`BootStorage` 上这三个东西的调用者**全部归零**：
+
+| 符号 | 位置 | 调用者 |
+|---|---|---|
+| `push_module(&mut self, BootModule) -> Result<(), BootStorageFull>` | `boot_storage.rs`（`#[cfg(test)]`） | **0**（调用者仅为 `boot_storage` 自己的测试，那些测试已改用 `fill_modules`） |
+| `push_platform_source(&mut self, PlatformDescSource) -> Result<(), BootStorageFull>` | 同文件 | **0**（原唯一生产调用 `opensbi_helpers.rs:421` 已改成 `fill_platform` 闭包） |
+| `BootStorageFull` | 同文件 | **0** 直接引用；只作为上面两个 `push_*` 的返回类型 |
+
+**注意**：`kernel/src/lib.rs:1256` 的 `push_module_windows` 是**内核侧的同名不同物**（窗口表构造函数），不是这三个的调用者。
+
+**为什么不是 I-34 的一部分**：D-067 的授权文本点名的是「五族的 `*_slots_mut`/`*_buf_mut` 全部消失，替换为 `fill_*`」，`push_*` 不在其中。I-34 实施后它们才变成死代码，属实施副产物。
+
+**待裁决的两个选项**：
+
+- **A（推荐）**：删三个符号。纯删除，零行为变化（调用者已实测为零）。顺带删 `BootStorageFull` 的 `lib.rs` re-export。
+- **B**：保留。`push_*` 是「逐条构造」的便利形态，将来若出现新的测试载体需要它，可省一次改写。
+
+**验收（若走 A）**：
+
+- `grep -rn "push_module\|push_platform_source\|BootStorageFull" os/ --include=*.rs` → 仅剩 `push_module_windows`（内核侧同名不同物）；
+- `cargo test -p minix-boot`、`cargo test -p boot-shim --features test-all` 全绿。
+
+### I-34（原依赖说明，保留作历史）本条与 D-062 / D-065 的关系
 
 ---
 

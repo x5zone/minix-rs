@@ -28,7 +28,7 @@ pub mod platform;
 
 pub use boot_params::*;
 pub use boot_prepare::*;
-pub use boot_storage::{BootReport, BootStorage, BootStorageFull};
+pub use boot_storage::{BootReport, BootStorage, BootStorageFull, MapCounts};
 pub use bump::{BUMP_PAGE_SIZE, BumpRegion};
 pub use handoff_v1::*;
 pub use handoff_v1_read::*;

@@ -292,26 +292,27 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // 4. 12 modules: locate the table (basename check) → copy each source
     //    straight into bump pages (the source has passed the disjointness gate
     //    against the pool, so `copy_nonoverlapping` cannot overlap).
-    let module_table = storage.module_slots_mut();
-    if bootface_common::place_modules(
-        table,
-        memmap,
-        bootface_common::PlacementPool {
-            names: names_pool,
-            bump_start: bump_pool_base(),
-            bump_end: bump_end_bound(),
-        },
-        module_table,
-        bump_alloc_pages,
-        say,
-        say_hex,
-    )
-    .is_none()
-    {
-        say("### minix-rs kernel image: module placement failed — halting\n");
-        crate::halt();
-    }
-    storage.set_modules_len(NR_BOOT_MODULES);
+    storage.fill_modules(|module_table| {
+        if bootface_common::place_modules(
+            table,
+            memmap,
+            bootface_common::PlacementPool {
+                names: names_pool,
+                bump_start: bump_pool_base(),
+                bump_end: bump_end_bound(),
+            },
+            module_table,
+            bump_alloc_pages,
+            say,
+            say_hex,
+        )
+        .is_none()
+        {
+            say("### minix-rs kernel image: module placement failed — halting\n");
+            crate::halt();
+        }
+        NR_BOOT_MODULES
+    });
     say("  boot modules placed 12\n");
 
     // 5. Platform descriptor source: riscv has only the DTB (same lane as the
@@ -322,14 +323,17 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // SAFETY: the DTB is still in the identity/firmware mapping; this face
     // runs before paging is enabled.
     let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(dtb_pa)) };
-    storage.platform_slots_mut()[0] =
-        PlatformDescSource::with_optional_len(DTB, PhysBytes(dtb_pa), dtb_len);
-    storage.set_platform_len(1);
+    storage.fill_platform(|slots| {
+        slots[0] = PlatformDescSource::with_optional_len(DTB, PhysBytes(dtb_pa), dtb_len);
+        1
+    });
 
     // T3: the direct-boot parameter source is the standard firmware channel,
     // DTB `/chosen/bootargs` (QEMU `-append` fills it).
-    let (param_ptr, param_len) = {
-        let out = storage.param_buf_mut();
+    // `fill_param` commits the byte count; the pointer for the later
+    // `build_kernel_info` and the diagnostic text are captured inside.
+    let mut param_ptr = core::ptr::null::<u8>();
+    storage.fill_param(|out| {
         let input = crate::bootface_common::fdt_bootargs(&fdt).unwrap_or("");
         let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, out);
         say("  param_buf bytes=");
@@ -349,9 +353,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
             }
         }
         say("\n");
-        (out.as_ptr(), stats.bytes)
-    };
-    storage.set_param_len(param_len);
+        param_ptr = out.as_ptr();
+        stats.bytes
+    });
 
     // 6. KernelInfo (boot-shim `build_kernel_info` lane) + the real arch_boot
     //    gate (validate → build root → DM → jump_to_kmain, never returning to
@@ -384,6 +388,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
         unsafe { core::slice::from_raw_parts(modules_ptr, modules_len) };
     let platform_sources: &'static [PlatformDescSource] =
         unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) };
+    let param_len = storage.param_buf().len();
     let param_buf: &'static [u8] =
         unsafe { core::slice::from_raw_parts(param_ptr, param_len) };
     let kernel_info: KernelInfo = build_kernel_info(

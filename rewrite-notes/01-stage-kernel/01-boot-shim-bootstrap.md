@@ -1759,7 +1759,7 @@ arena 的分区是固定偏移：信封住首部，其后依次是内存图、�
 v8 之前的发送侧有一处"假所有权"：UEFI 腿把 `KernelInfo` 的 `&'static` 切片直接指向 arena 的语义分区，模块、平台源与参数的切片则靠 `Box::leak` 凑出 `'static`；类型上写着"活到进程结束"，实际上只在跳转前有效。v9 把两件事分开：
 
 - **`BootStorage` 是所有者**。调用方自己持有的一份定长数组结构（UEFI 腿在 shim 的静态区，两个直核腿在 kernel-image 的静态区；内存图 128 项、保留区 256 项、模块 12 项、平台源 4 项、参数 1024 B——这五类载荷的容量与 wire 分区一致，两边不能各自漂移；另有来源记录 40 项（DTB 收集器的输入上限；DTB 腿序列化时把 40 条前缀写入 wire 的 296 项分区，超过 40 条由收集器 fail-closed；UEFI 腿由分类器直接写 wire，不受这 40 槽限制）与 startup 记录 20 项（wire 分区容量））。分类器把内存图与保留区同时写进 storage 与 wire；模块装载器直接写进 storage 的模块槽；平台源与参数也一样。数组长度只有在写入前缀之后才提交（两张内存表由 `commit_map_tables` 一次提交，其余表由各自的 `set_*_len` 提交），报告永远看不到未写槽。来源记录只有 DTB 发送腿写入 storage；UEFI 腿的 source 记录由分类器直写 wire，startup 记录在 `ExitBootServices` 之后由省略段直写 wire，所以 UEFI 腿 storage 的 source/startup 槽都留空。
-- **`BootReport<'a>` 是视图**。它借用 storage 的六个切片（五类载荷加 source 记录），加上三个标量：`kern_virt_base`、`kern_phys_base`、`kern_size`（v10 起 `user_sp`/`kern_stack_top`/`syscall_entry` 不再随报文交接）。UEFI 腿的 `memmap_sources` 切片为空（分类器直写 wire）；这里不再用布尔标志提示“记录在 wire”，空切片加“UEFI 腿的 wire 是唯一权威”这条静态约定即可。生命周期参数把它绑定在 storage 上：没有 `'static` 所有者时，报告无法被提升为 `'static`。内核入口 `enter_kernel_image_v1` 的第二个参数就是 `&BootReport<'_>`，跳转前只读它；接收镜像仍然用 `KernelInfo` 的 `'static` 切片，因为那里的切片指向自己 `.bss` 里的深拷落地区，是真实所有权。**半提交状态由类型/断言挡住（仅限内存表）**：`map_tables_mut`/`memmap_slots_mut`/`reserved_slots_mut` 会置 `map_dirty`，`commit_map_tables` 清除；`report()` 在 `map_dirty` 时直接 panic，所以内存表的"槽已写、长度未提交"视图不能流到消费者。其余四族（modules/platform/param/sources——v10 删掉 startup 后由五族变四族）的 `set_*_len` 各自有 one-shot 提交断言，但没有 `map_dirty` 级的 report 拦截——它们的半提交状态依赖调用纪律，不靠 report() 挡。四个生产 setter（`set_modules_len`/`set_platform_len`/`set_param_len`/`set_memmap_sources_len`）各自只允许提交一次，第二次调用 panic。
+- **`BootReport<'a>` 是视图**。它借用 storage 的六个切片（五类载荷加 source 记录），加上三个标量：`kern_virt_base`、`kern_phys_base`、`kern_size`（v10 起 `user_sp`/`kern_stack_top`/`syscall_entry` 不再随报文交接）。UEFI 腿的 `memmap_sources` 切片为空（分类器直写 wire）；这里不再用布尔标志提示“记录在 wire”，空切片加“UEFI 腿的 wire 是唯一权威”这条静态约定即可。生命周期参数把它绑定在 storage 上：没有 `'static` 所有者时，报告无法被提升为 `'static`。内核入口 `enter_kernel_image_v1` 的第二个参数就是 `&BootReport<'_>`，跳转前只读它；接收镜像仍然用 `KernelInfo` 的 `'static` 切片，因为那里的切片指向自己 `.bss` 里的深拷落地区，是真实所有权。**半提交状态不存在，不是被挡住**（D-067 / I-34）：每一族都经一个 `fill_*` 方法写入——闭包拿到槽数组、返回实际写入量，方法在返回前提交该计数（`fill_map_tables` 一次提交两表，用 `MapCounts` 按字段名带回两个数）。**写与提交是同一步**，所以"槽已写、长度未提交"不是可表示的状态，也就不再有 `map_dirty` 这个拦截位、不再需要 `report()` 里的断言。五个生产填充点是 `fill_map_tables`（分类器，一次带两表）、`fill_modules`、`fill_platform`、`fill_param`、`fill_memmap_sources`；四族各自的 one-shot 提交标志（`modules_committed`/`platform_committed`/`param_committed`/`sources_committed`）保留，第二次 fill 同一族仍然 panic。**顺序约束**：`fill_*` 在调用期间独占 `&mut self`，因此不能"先写 A 族、再写 B 族、最后一起提交"；五个生产调用点都本就是「写一族 → 提交一族」的严格顺序，不冲突（D-067 的 `reopen_condition` 记的正是这条）。
 - **U-Boot 腿同构**。`opensbi_helpers::prepare_boot` 收 `&mut BootStorage`，内存图/保留区/来源记录/参数/模块/平台源全部写进 storage；arena 也在该函数内从同一 bump 池分配，五类 startup 记录（内核、模块、root、bump、arena）在返回前写齐。`BootPrepareResult<'a>` 只携带报告视图与三个类型化地址（`root_page: PhysBytes`、`bump: PhysRange`、`arena_pa: PhysBytes`），UBoot 主函数用 `write_envelope_report` 和同一份报告序列化，不再有 `Box::leak` 或 `from_kernel_info`。
 - **直核自举面同构（DESIGN-09）**。两个 `bootface` 各在自己的静态区放一个 `BootStorageCell`（内部是 `BootStorage`），模块、平台源、参数三类走 `set_*_len` 提交，startup 走 `push_startup` 逐条追加；不再有四个独立的落地区。整块由 `BootStorageCell::take` 的 one-shot 语义覆盖（重入即 panic）。**段归属与所有权边界要说准**：`BootStorage::new()` 不是全零初值（平台源的 `kind = DTB = 1`、模块名的非空悬挂指针都是非零值），所以这个静态落在 **`.data`**（可装载数据），不是零填充的 `.bss`；容量断言 `size_of::<BootStorage>() <= 16 KiB` 约束的是这块 `.data` 的大小，不是 `.bss`。所有权也是**两类**：`BootStorage` 只承载 modules、platform、param、startup 四类；`memmap`、`reserved` 与 source 记录仍由 DTB 收集器的进程级静态量持有（`DTB_FREE`/`DTB_RESERVED`/`DTB_SOURCES`，自带一套一次性守卫）。因此直核腿在信任边界上有两个所有者，`BootStorage` 的 memmap/reserved/source 槽在直核腿留空（约 9 KiB 闲置容量）。这是当前刻意的取舍：让 DTB 收集器保持单一写入点，代价是"一份存储、一套守卫"的目标只完成了一半；若将来把这三类也搬进 storage，需要同时删掉收集器的静态量与第二套守卫。
 - **`FileBytes<'a>` 显式区分借用与拥有**（D-4）。`FileLoader::read` 返回 `FileBytes::Borrowed(&'a [u8])` 或 `FileBytes::Owned(Vec<u8>)`：U-Boot 腿的 `fatload` 已经把文件放在 RAM 里，直接借出（不再 `to_vec`）；UEFI 腿经固件协议读文件，必须拥有一个新缓冲。借用期间的合同是三条：持有者存在时底层存储不得被覆盖（U-Boot 表在 shim 运行前写好、之后不再改）；源/目标重叠检查保留（loader 的 `first_source_destination_overlap` 仍然在拷贝前运行）；loader 本身不被长期独占（借用只跟随一次读调用，不把 `&self` 存进结果之外的结构）。`FileBytes::into_owned()` 只在确实需要拥有时复制，不改变默认零拷贝路径。
@@ -2335,19 +2335,14 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // 语义表住在 shim 自己的静态区（`.data`：`BootStorage::new()` 非全零；见 §3.4.5）；loader 直接写进它的模块槽。
     let storage = UEFI_BOOT_STORAGE.take();
     // …（root/bump 的 assert_range_clear_of_kernel 略：位置在本行之前，见动作 2）…
-    let module_len = loader::load_boot_modules_into(
-        &file_loader,
-        alloc_module_pages,
-        storage.module_slots_mut(),
-    );
-    storage.set_modules_len(module_len);
+    storage.fill_modules(|slots| {
+        loader::load_boot_modules_into(&file_loader, alloc_module_pages, slots)
+    });
     uefi::println!("boot-shim: 12 boot modules loaded");
     // …（模块的 assert_modules_clear_of_kernel 略：位置在本行之后，
     //    说明见动作 2 与 §5.1 M16）…
-    let platform_len = find_platform_sources_into(storage.platform_slots_mut());
-    storage.set_platform_len(platform_len);
-    let param_stats = collect_param_buf_into(storage.param_buf_mut());
-    storage.set_param_len(param_stats.bytes);
+    storage.fill_platform(|slots| find_platform_sources_into(slots));
+    storage.fill_param(|buf| collect_param_buf_into(buf).bytes);
 
     let arena_pa = alloc_arena();
     let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa.0 as *mut u8, ARENA_CAP) };

@@ -268,7 +268,7 @@ pub extern "C" fn bootface_a64() -> ! {
 
     // 4. The 12 modules: locate the table (name alignment check) → copy the
     //    source straight into bump pages.
-    let module_table = storage.module_slots_mut();
+    storage.fill_modules(|module_table| {
     if bootface_common::place_modules(
         table,
         memmap,
@@ -287,7 +287,8 @@ pub extern "C" fn bootface_a64() -> ! {
         say("### minix-rs kernel image: module placement failed — halting\n");
         crate::halt();
     }
-    storage.set_modules_len(NR_BOOT_MODULES);
+    NR_BOOT_MODULES
+    });
     say("  boot modules placed 12\n");
 
     // 5. Platform descriptor source: DTB as the sole source (the slot lives
@@ -296,14 +297,17 @@ pub extern "C" fn bootface_a64() -> ! {
     // SAFETY: the DTB is still in the firmware/identity mapping; this face
     // runs before paging is enabled.
     let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(DTB_PA)) };
-    storage.platform_slots_mut()[0] =
-        PlatformDescSource::with_optional_len(DTB, PhysBytes(DTB_PA), dtb_len);
-    storage.set_platform_len(1);
+    storage.fill_platform(|slots| {
+        slots[0] = PlatformDescSource::with_optional_len(DTB, PhysBytes(DTB_PA), dtb_len);
+        1
+    });
 
     // T3: DTB `/chosen/bootargs` is the direct-boot parameter source
     // (QEMU `-append` fills it).
-    let (param_ptr, param_len) = {
-        let out = storage.param_buf_mut();
+    // `fill_param` commits the byte count; the pointer for the later
+    // `build_kernel_info` and the diagnostic text are captured inside.
+    let mut param_ptr = core::ptr::null::<u8>();
+    storage.fill_param(|out| {
         let input = crate::bootface_common::fdt_bootargs(&fdt).unwrap_or("");
         let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, out);
         say("  param_buf bytes=");
@@ -323,9 +327,9 @@ pub extern "C" fn bootface_a64() -> ! {
             }
         }
         say("\n");
-        (out.as_ptr(), stats.bytes)
-    };
-    storage.set_param_len(param_len);
+        param_ptr = out.as_ptr();
+        stats.bytes
+    });
 
     // 6. KernelInfo plus the real arch_boot gate (validate → build the root
     //    → DM → jump_to_kmain; it never returns to this face).
@@ -356,7 +360,7 @@ pub extern "C" fn bootface_a64() -> ! {
     let platform_sources: &'static [PlatformDescSource] =
         unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) };
     let param_buf: &'static [u8] =
-        unsafe { core::slice::from_raw_parts(param_ptr, param_len) };
+        unsafe { core::slice::from_raw_parts(param_ptr, storage.param_buf().len()) };
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,
         reserved,

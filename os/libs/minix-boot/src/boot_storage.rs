@@ -54,12 +54,35 @@ const ZERO_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, PhysBytes(0
 
 const ZERO_RECORD: SourceRecord = startup_record(0, 0, 0);
 
+/// The two map-table counts, named so a swap is a struct-literal typo.
+///
+/// [`BootStorage::fill_map_tables`] takes this back from the classifier: both
+/// tables come from one pass, so committing them must be one step (D-067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapCounts {
+    pub memmap: usize,
+    pub reserved: usize,
+}
+
 /// Fixed-capacity owner of the boot records a sender hands to the kernel.
 ///
-/// Fill the map slots through [`Self::memmap_slots_mut`] /
-/// [`Self::reserved_slots_mut`] (then commit the live prefix with the `set_*`
-/// methods), and the counted lists through the `push_*` methods. Every setter
-/// checks its bound, so a report can never expose an unwritten slot.
+/// Every payload family is filled through its `fill_*` method: the closure
+/// receives the slot array, returns how many entries it wrote, and the
+/// method commits that count before returning. **Write and commit are one
+/// step**, so a report can only ever see a committed prefix — there is no
+/// "slots written, length not committed" half-state to intercept, and
+/// therefore no dirty flag (D-067 / I-34).
+///
+/// The map pair is the exception in shape only: [`Self::fill_map_tables`]
+/// hands out both tables and takes back a [`MapCounts`], because the
+/// classifier produces both from one pass and a caller that updated one
+/// length alone would expose a report whose two tables came from different
+/// rounds.
+///
+/// **Ordering rule**: a `fill_*` call borrows `&mut self` for its duration,
+/// so two families cannot be interleaved ("write A, write B, then commit
+/// both"). Every production call site is strictly "write one family, commit
+/// it, move on", which is also what the retired two-step API relied on.
 pub struct BootStorage {
     memmap: [MemoryRegion; WIRE_MEMMAP_CAP],
     memmap_len: usize,
@@ -75,8 +98,6 @@ pub struct BootStorage {
     /// own capacity, 40).
     memmap_sources: [SourceRecord; DTB_SOURCE_CAP],
     memmap_sources_len: usize,
-    /// Map slots were handed out but their lengths are not committed yet.
-    map_dirty: bool,
     modules_committed: bool,
     platform_committed: bool,
     param_committed: bool,
@@ -100,7 +121,6 @@ impl BootStorage {
             param_len: 0,
             memmap_sources: [ZERO_RECORD; DTB_SOURCE_CAP],
             memmap_sources_len: 0,
-            map_dirty: false,
             modules_committed: false,
             platform_committed: false,
             param_committed: false,
@@ -108,170 +128,94 @@ impl BootStorage {
         }
     }
 
-    /// Commit both map-table lengths as one step.
+    /// Fill both map tables from one classification pass, then commit both
+    /// counts.
     ///
-    /// The classifier fills the two tables from one classification pass; a
-    /// caller that updates only one length would expose a report whose two
-    /// tables come from different rounds. This commit makes that half-state
-    /// unrepresentable at the call site.
-    pub fn commit_map_tables(&mut self, memmap_len: usize, reserved_len: usize) {
+    /// The two tables come from the same pass, so they are handed out and
+    /// committed together: a caller that updated one count alone would expose
+    /// a report whose tables disagreed. The closure returns a [`MapCounts`]
+    /// with both counts written out by field name, so a swap of the two
+    /// numbers is a struct-literal typo rather than a positional one
+    /// (D-067 / I-34).
+    pub fn fill_map_tables<F>(&mut self, write: F)
+    where
+        F: FnOnce(&mut [MemoryRegion], &mut [MemoryRegion]) -> MapCounts,
+    {
+        let counts = write(&mut self.memmap, &mut self.reserved);
         assert!(
-            memmap_len <= WIRE_MEMMAP_CAP,
-            "BootStorage: memmap length {memmap_len} exceeds capacity {WIRE_MEMMAP_CAP}"
+            counts.memmap <= WIRE_MEMMAP_CAP,
+            "BootStorage: memmap length {} exceeds capacity {WIRE_MEMMAP_CAP}",
+            counts.memmap
         );
         assert!(
-            reserved_len <= WIRE_RESERVED_CAP,
-            "BootStorage: reserved length {reserved_len} exceeds capacity {WIRE_RESERVED_CAP}"
+            counts.reserved <= WIRE_RESERVED_CAP,
+            "BootStorage: reserved length {} exceeds capacity {WIRE_RESERVED_CAP}",
+            counts.reserved
         );
-        self.memmap_len = memmap_len;
-        self.reserved_len = reserved_len;
-        self.map_dirty = false;
+        self.memmap_len = counts.memmap;
+        self.reserved_len = counts.reserved;
     }
 
-    /// The full memmap slot array. The classifier writes entries starting at
-    /// index 0 and then commits both table counts with
-    /// [`Self::commit_map_tables`].
-    pub fn memmap_slots_mut(&mut self) -> &mut [MemoryRegion] {
-        self.map_dirty = true;
-        &mut self.memmap
-    }
-
-    /// Both map tables as one disjoint pair of mutable slices.
-    ///
-    /// A caller that needs to fill both in one call (the classifier) cannot
-    /// take two `&mut self` borrows; this method splits the fields inside the
-    /// storage.
-    pub fn map_tables_mut(&mut self) -> (&mut [MemoryRegion], &mut [MemoryRegion]) {
-        self.map_dirty = true;
-        (&mut self.memmap, &mut self.reserved)
-    }
-
-    /// Commit the live memmap prefix length.
-    ///
-    /// Production code must use [`Self::commit_map_tables`]; this single-table
-    /// form exists only for tests that check one side at a time.
-    #[cfg(test)]
-    pub(crate) fn set_memmap_len(&mut self, len: usize) {
-        assert!(
-            len <= WIRE_MEMMAP_CAP,
-            "BootStorage: memmap length {len} exceeds capacity {WIRE_MEMMAP_CAP}"
-        );
-        self.memmap_len = len;
-        self.map_dirty = false;
-    }
-
-    /// The full reserved slot array (same protocol as the memmap slots).
-    pub fn reserved_slots_mut(&mut self) -> &mut [MemoryRegion] {
-        self.map_dirty = true;
-        &mut self.reserved
-    }
-
-    /// Commit the live reserved prefix length.
-    ///
-    /// Production code must use [`Self::commit_map_tables`]; this single-table
-    /// form exists only for tests that check one side at a time.
-    #[cfg(test)]
-    pub(crate) fn set_reserved_len(&mut self, len: usize) {
-        assert!(
-            len <= WIRE_RESERVED_CAP,
-            "BootStorage: reserved length {len} exceeds capacity {WIRE_RESERVED_CAP}"
-        );
-        self.reserved_len = len;
-        self.map_dirty = false;
-    }
-
-    /// The full boot-module slot array. The loader writes entries starting at
-    /// index 0 and then commits the count with [`Self::set_modules_len`].
-    pub fn module_slots_mut(&mut self) -> &mut [BootModule] {
-        &mut self.modules
-    }
-
-    /// Commit the live boot-module prefix length.
-    pub fn set_modules_len(&mut self, len: usize) {
+    /// Fill the boot-module slots, then commit the count.
+    pub fn fill_modules<F>(&mut self, write: F)
+    where
+        F: FnOnce(&mut [BootModule]) -> usize,
+    {
         assert!(!self.modules_committed, "BootStorage: module length already committed");
+        let written = write(&mut self.modules);
         assert!(
-            len <= WIRE_MODULE_CAP,
-            "BootStorage: module length {len} exceeds capacity {WIRE_MODULE_CAP}"
+            written <= WIRE_MODULE_CAP,
+            "BootStorage: module length {written} exceeds capacity {WIRE_MODULE_CAP}"
         );
-        self.modules_len = len;
+        self.modules_len = written;
         self.modules_committed = true;
     }
 
-    /// Append one boot module. Fails when the fixed list is full.
-    ///
-    /// Production loaders write the slot array directly; this append form is
-    /// used by tests that build a storage record by record.
-    #[cfg(test)]
-    pub fn push_module(&mut self, module: BootModule) -> Result<(), BootStorageFull> {
-        if self.modules_len >= WIRE_MODULE_CAP {
-            return Err(BootStorageFull);
-        }
-        self.modules[self.modules_len] = module;
-        self.modules_len += 1;
-        Ok(())
-    }
-
-    /// The full platform-source slot array (same protocol as the module slots).
-    pub fn platform_slots_mut(&mut self) -> &mut [PlatformDescSource] {
-        &mut self.platform_sources
-    }
-
-    /// Commit the live platform-source prefix length.
-    pub fn set_platform_len(&mut self, len: usize) {
+    /// Fill the platform-source slots, then commit the count.
+    pub fn fill_platform<F>(&mut self, write: F)
+    where
+        F: FnOnce(&mut [PlatformDescSource]) -> usize,
+    {
         assert!(!self.platform_committed, "BootStorage: platform length already committed");
+        let written = write(&mut self.platform_sources);
         assert!(
-            len <= WIRE_PLATFORM_CAP,
-            "BootStorage: platform length {len} exceeds capacity {WIRE_PLATFORM_CAP}"
+            written <= WIRE_PLATFORM_CAP,
+            "BootStorage: platform length {written} exceeds capacity {WIRE_PLATFORM_CAP}"
         );
-        self.platform_len = len;
+        self.platform_len = written;
         self.platform_committed = true;
     }
 
-    /// Append one platform descriptor source. Fails when the list is full.
-    pub fn push_platform_source(
-        &mut self,
-        source: PlatformDescSource,
-    ) -> Result<(), BootStorageFull> {
-        assert!(!self.platform_committed, "BootStorage: platform length already committed");
-        if self.platform_len >= WIRE_PLATFORM_CAP {
-            return Err(BootStorageFull);
-        }
-        self.platform_sources[self.platform_len] = source;
-        self.platform_len += 1;
-        Ok(())
-    }
-
-    /// The parameter landing buffer. The caller normalizes into it and then
-    /// commits the live prefix with [`Self::set_param_len`].
-    pub fn param_buf_mut(&mut self) -> &mut [u8; PARAM_BUF_CAP] {
-        &mut self.param_buf
-    }
-
-    /// Commit the live parameter-buffer prefix length.
-    pub fn set_param_len(&mut self, len: usize) {
+    /// Fill the parameter buffer, then commit the byte count.
+    ///
+    /// The closure receives the whole fixed-size buffer and returns the
+    /// number of bytes it used.
+    pub fn fill_param<F>(&mut self, write: F)
+    where
+        F: FnOnce(&mut [u8; PARAM_BUF_CAP]) -> usize,
+    {
         assert!(!self.param_committed, "BootStorage: parameter length already committed");
+        let written = write(&mut self.param_buf);
         assert!(
-            len <= PARAM_BUF_CAP,
-            "BootStorage: param length {len} exceeds capacity {PARAM_BUF_CAP}"
+            written <= PARAM_BUF_CAP,
+            "BootStorage: param length {written} exceeds capacity {PARAM_BUF_CAP}"
         );
-        self.param_len = len;
+        self.param_len = written;
         self.param_committed = true;
     }
 
-    /// The full provenance-record slot array (the DTB collector writes here,
-    /// then commits the count with [`Self::set_memmap_sources_len`]).
-    pub fn memmap_source_slots_mut(&mut self) -> &mut [SourceRecord] {
-        &mut self.memmap_sources
-    }
-
-    /// Commit the live provenance-record prefix length.
-    pub fn set_memmap_sources_len(&mut self, len: usize) {
+    /// Fill the provenance-record slots, then commit the count.
+    pub fn fill_memmap_sources<F>(&mut self, write: F)
+    where
+        F: FnOnce(&mut [SourceRecord]) -> usize,
+    {
         assert!(!self.sources_committed, "BootStorage: source length already committed");
+        let written = write(&mut self.memmap_sources);
         assert!(
-            len <= DTB_SOURCE_CAP,
-            "BootStorage: memmap-source length {len} exceeds capacity {DTB_SOURCE_CAP}"
+            written <= DTB_SOURCE_CAP,
+            "BootStorage: memmap-source length {written} exceeds capacity {DTB_SOURCE_CAP}"
         );
-        self.memmap_sources_len = len;
+        self.memmap_sources_len = written;
         self.sources_committed = true;
     }
 
@@ -317,10 +261,9 @@ impl BootStorage {
         kern_phys_base: PhysBytes,
         kern_size: u64,
     ) -> BootReport<'_> {
-        assert!(
-            !self.map_dirty,
-            "BootStorage::report called between map slot fill and commit_map_tables"
-        );
+        // No dirty-flag assertion here any more (D-067 / I-34): every family
+        // is filled and committed in one `fill_*` call, so "slots written,
+        // length not committed" is not a representable state.
         BootReport {
             memmap: self.memmap(),
             reserved_regions: self.reserved_regions(),
@@ -400,18 +343,26 @@ mod tests {
     #[test]
     fn report_exposes_only_the_committed_prefixes() {
         let mut storage = BootStorage::new();
-        storage.memmap_slots_mut()[0] = region(0x1000, 0x2000);
-        storage.set_memmap_len(1);
-        storage.reserved_slots_mut()[0] = region(0x9000, 0x1000);
-        storage.set_reserved_len(1);
-        storage
-            .push_module(module("vm", 0x30_0000, 0x1000))
-            .unwrap();
-        storage
-            .push_platform_source(PlatformDescSource::new(DTB, PhysBytes(0x4000_0000)))
-            .unwrap();
-        storage.param_buf_mut()[..3].copy_from_slice(b"a=b");
-        storage.set_param_len(3);
+        storage.fill_map_tables(|memmap, reserved| {
+            memmap[0] = region(0x1000, 0x2000);
+            reserved[0] = region(0x9000, 0x1000);
+            MapCounts {
+                memmap: 1,
+                reserved: 1,
+            }
+        });
+        storage.fill_modules(|slots| {
+            slots[0] = module("vm", 0x30_0000, 0x1000);
+            1
+        });
+        storage.fill_platform(|slots| {
+            slots[0] = PlatformDescSource::new(DTB, PhysBytes(0x4000_0000));
+            1
+        });
+        storage.fill_param(|buf| {
+            buf[..3].copy_from_slice(b"a=b");
+            3
+        });
 
         let report = storage.report(
             VirBytes(0xFFFF_8000_0000_0000),
@@ -451,35 +402,28 @@ mod tests {
         assert!(report.param_buf.is_empty());
     }
 
+    /// A second fill of the same family is refused: the one-shot commit
+    /// flags survive (`fill_*` replaced the old "slots now, length later"
+    /// pair, but the commit is still once per boot face).
     #[test]
-    fn fixed_lists_reject_the_entry_past_capacity() {
+    #[should_panic(expected = "module length already committed")]
+    fn fill_modules_twice_is_refused() {
         let mut storage = BootStorage::new();
-        for i in 0..WIRE_MODULE_CAP {
-            storage.push_module(module("vm", i as u64, 1)).unwrap();
-        }
-        assert_eq!(
-            storage.push_module(module("vm", 0, 1)),
-            Err(BootStorageFull),
-            "module list must stop at its capacity"
-        );
-        for i in 0..WIRE_PLATFORM_CAP {
-            storage
-                .push_platform_source(PlatformDescSource::new(DTB, PhysBytes(i as u64)))
-                .unwrap();
-        }
-        assert_eq!(
-            storage.push_platform_source(PlatformDescSource::new(DTB, PhysBytes(0))),
-            Err(BootStorageFull),
-            "platform list must stop at its capacity"
-        );
+        storage.fill_modules(|_| 0);
+        storage.fill_modules(|_| 0);
     }
 
     #[test]
-    fn commit_map_tables_commits_both_prefixes_together() {
+    fn fill_map_tables_commits_both_prefixes_together() {
         let mut storage = BootStorage::new();
-        storage.memmap_slots_mut()[0] = region(0x1000, 0x2000);
-        storage.reserved_slots_mut()[0] = region(0x9000, 0x1000);
-        storage.commit_map_tables(1, 1);
+        storage.fill_map_tables(|memmap, reserved| {
+            memmap[0] = region(0x1000, 0x2000);
+            reserved[0] = region(0x9000, 0x1000);
+            MapCounts {
+                memmap: 1,
+                reserved: 1,
+            }
+        });
         let report = storage.report(
             VirBytes(0xFFFF_8000_0000_0000),
             PhysBytes(0x20_0000),
@@ -491,9 +435,12 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "exceeds capacity")]
-    fn committing_a_memmap_length_past_capacity_panics() {
+    fn fill_map_tables_past_capacity_panics() {
         let mut storage = BootStorage::new();
-        storage.set_memmap_len(WIRE_MEMMAP_CAP + 1);
+        storage.fill_map_tables(|_, _| MapCounts {
+            memmap: WIRE_MEMMAP_CAP + 1,
+            reserved: 0,
+        });
     }
 
 }
