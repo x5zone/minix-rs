@@ -2402,6 +2402,8 @@ r2 post-cut free n=0x0000000000000002 bytes=0x000000000774f000 tx_frames=0x00000
 
 **I-59 附记的下层专项定性**：rt-birth 用户链的实质 = **载体自装 VBAR 与 production VBAR 的冲突**——载体的 FPEN 臂（`:408-427`）设计为 bypass production，但 FP trap 实际进了 production VBAR（安装顺序/覆盖关系待查：载体 VBAR 装在 `switch_to_user` 前还是后、production 的 `init_protection` 与载体安装的先后）。**修复方向候选**：载体侧确保自装 VBAR 在 production 之后安装；或 production FP 臂对「无活跃上下文」诚实 fail 而非恢复错位帧。x86/riscv 兄弟腿同型预期（x86 是 FP 延迟保存链、riscv 无 FP trap 但有类似 VBAR/stvec 冲突面）。
 
+**gdb 硬件断点复核（2026-11-21 续）——修正「寄存器污染」假说**：断在 `0x4c75ec00`（Data Abort 槽，即载体向量表 + 0xc00）命中成功；向量槽定位澄清——**载体链的 production `init_protection` 被 AAVMF 约束跳过**（`msr SP_EL1` 在 SPSel=1 下 architecturally UNDEFINED，`main.rs:659-672` 的 live-probe 记录），VBAR 全程由载体自装——`0x4c75e000` 就是 `rt_birth_vectors` 本体（非 production 表），异常走 `+0xc00` 槽是 **AAVMF 遗留 SPSel=1** 的路由形态（current-EL 段）。关键实证：**gdb 断在 `0x140000a18`（main 的 bl memset）实测 `dst=x0=0x7ffffffc6c42 / len=110 / sp=0x7ffffffc6c30`——全部落在已映射栈内**，且条件断点（`dst >= 0x7fffffffe000`）全程**零命中**——**main 的 memset 无辜，fatal 打印的 `elr/lr` 是 stub 帧读取错位**（IDX_ELR/偏移错误）。真 fault 者定位的下一步已明确：**断 0xc00 槽命中后 dump `$x0`（frame 指针）全量帧**（本轮已验证该断点可命中，仅因 AAVMF vars 状态非确定性未稳定复现——重置 vars 后可稳定抓帧），从真 elr 反查访问者。
+
 **裁决前状态**：sysboot 深跑保持「可诊断已知缺陷」——根因、调用链、帧推导全在案，修复等裁决。
 
 **深入调查（2026-11-21，第二批）：三条载体同根，且发现通道双轨制的结构问题。**
