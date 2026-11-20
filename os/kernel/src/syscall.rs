@@ -3355,12 +3355,30 @@ fn dispatch_diagctl(
                 endpoint: caller_endpt,
                 offset: VirBytes(diag_msg.buf),
             };
-            let dst = AddressRef::Process {
-                endpoint: caller_endpt,
-                offset: VirBytes(stack_va),
-            };
+            // C parity (A1 forensics, D-071): do_diagctl.c:33 passes the
+            // KERNEL endpoint as the copy destination — `mybuf` is kernel
+            // memory. Rust's `AddressRef::Process{KERNEL}` cannot express
+            // that (the kernel task slot carries no page-table root), and
+            // walking the *caller's* root over this kernel-stack VA fails
+            // too (the per-image root inherits the image but not this stack
+            // page — the four-level dump proved the caller root's layers
+            // valid for `buf` yet DstPageFault for `stack_va`). The kernel
+            // image region IS linearly mapped (kern_phys_base ↔
+            // kern_virt_base), so resolve the destination physically:
+            // `AddressRef::Physical` is pre-resolved and the copy path
+            // reaches it through the Direct Map.
+            let kinfo = crate::kernel_info().expect("dispatch_diagctl: KERNEL_INFO must be stored");
+            let diagbuf_pa = kinfo
+                .kern_phys_base
+                .0
+                .checked_add(stack_va - kinfo.kern_virt_base.0)
+                .expect("dispatch_diagctl: stack VA outside the linear image mapping");
+            let dst = AddressRef::Physical(minix_types::PhysBytes(diagbuf_pa));
 
-            match data_copy_vmcheck(caller_nr, proc_table, src, dst, len, proc_cr3) {
+            let copy_result =
+                data_copy_vmcheck(caller_nr, proc_table, src, dst, len, proc_cr3);
+            #[cfg(not(feature = "mock"))]
+            match copy_result {
                 CrossSpaceResult::Completed(Ok(())) => {
                     // minix-rt's OOM diagnostic line travels only the bare
                     // kernel-call leg (it cannot obtain its own pid), so the
@@ -3440,12 +3458,10 @@ fn dispatch_diagctl(
                     KcallResult::Ok(0)
                 }
                 CrossSpaceResult::Completed(Err(_)) => {
-                    // Forensic probe: diagctl copy failure (source page
-                    // unmapped) — localizes the mechanism behind silently
-                    // failing diagnostic output on the scheduler side. A
-                    // task close ruled it deleted.
-                    #[cfg(not(feature = "mock"))]
-                    {}
+                    // A1: the diagctl copy failure probe (four-level dump)
+                    // lived here and was removed with the fix — the root
+                    // cause is recorded in 01-todo.md A1 (dst endpoint
+                    // walked the caller's root over a kernel-stack VA).
                     KcallResult::Ok(EFAULT)
                 }
                 CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
