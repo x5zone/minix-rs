@@ -1152,6 +1152,30 @@ I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"�
 - **为什么诊断是必要的**：`bump()` 在源码里只有 2 处调用、都无循环，但诊断打印出现 64 次且 `cur` 单调递增——这个矛盾只有「`rust_main` 被反复重入」能解释。诊断用 `cur/need/end` 三次打印取证，之后**已完全撤除**（`grep -c "DBG bump"` → 0）。
 - **这一层不属于本条**：它不是「空槽模块」问题，是 `arch_boot_impl` 之后的路径在 riscv 直核腿上崩溃并重入。需要单独定位（`init_protection` / `init_clock_and_interrupts` / 进程表 三者之一，或 `arch_boot_impl` 返回时的栈/寄存器状态）。已在本条内记录现象与取证方法，待后续专项。
 
+**家族级定论与全量修复（2026 年 11 月 20 日续）**：
+
+`git log -S` 确认 `push_module_windows` 自 BOOT-SCOPE 2a（提交 `4f2e9e786`）引入起**从不跳过空槽**——「12 零槽 + stub」载体家族从那天起就是运行期坏的，历次 PASS 全部来自陈旧二进制。I-31 只是用强制重编揭开了它。
+
+实证范围（全部用新编译的二进制直跑 QEMU 复核）：
+
+| 载体 | 修前（新二进制） | 修复后 |
+|---|---|---|
+| `test-proc-init`（x86） | `[0x0,0x0)` panic | 过窗口层，`step1+2` 后静默挂（下一层，见下） |
+| `test-timer-irq`（x86） | 同上 | 同上 |
+| `test-timer-irq-riscv64` | 同上 | **推进到 `init_proc_and_boot` 内部**：DTB 窗口 + 12 有效 span 后过 `protection live`，现困在 VM 加载路径 |
+| `test-rt-birth-aarch64` / `-riscv64` / `test-timer-irq-aarch64` | 同上 | 编译 0 error，未逐一跑门链 |
+
+**修法（按裁决 A 落地，六条全改）**：12 槽全部带有效 span——11 个 name-only 槽用编译期常量占位（x86 `0x100_0000`、aarch64 `0x4100_0000`、riscv `DRAM_BASE + 0x0100_0000`，都在各自 MEMMAP 内），vm 槽运行时指向真实 stub。占位 span 不是伪造数据：name-only 槽在 Phase C 是 `EntrySpec::DEFERRED`（`kernel/src/lib.rs` else 分支明写「Other user processes have no ELF loaded at boot. RS will load them at runtime」），span 只用于恒等窗口与扣减记录。
+
+**test-timer-irq-riscv64 的第二层定位**：DTB 解析崩溃的根因是 **DTB 物理地址不在任何恒等窗口内**——载体把 `platform_sources` 留空，而 `push_platform_windows` 只为声明过的 source 建窗。修法：运行时填 `PLATFORM_SOURCES[0] = PlatformDescSource::new(DTB, PhysBytes(dtb_phys))` 再交给 `KernelInfo`（生产 `bootface.rs` 的同构做法，且生产顺序是先解析后 `arch_boot`）。此后 `platform desc installed (DTB)` 与 `protection live` 均通过。
+
+**剩余两层（各自需要专项，均已定位到具体位置）**：
+
+1. **`test-timer-irq-riscv64` 的 VM 加载 trap**：`init_proc_and_boot` 的 VM 分支（`load_vm_elf`）触发 store page fault，`stval = 0xffffffc0_cffff000`——**生产 riscv 内核的高半基址形态**（`riscv64.ld` 的 `KERNEL_VIRT_BASE`）。生产 VM 加载路径假设内核链在高半；这条载体链在 `0x80200000` 物理视图（VMA=LMA），路径里有代码按高半假设写内存。需要专项核对 `frame_virt`/`CurrentPaging` 在低链载体上的地址换算。
+2. **x86 两载体的静默挂**：`test-proc-init` / `test-timer-irq` 过窗口层后停在 `paging.enable()`（`step1+2` 之后无输出、无 panic）。同 `test-protection-riscv64` 的形态——`enable()` 换根之后串口路径或栈假设失效。三个载体同一症状，指向**载体链址假设 vs 当前 `enable()` 实现的系统性漂移**，不是各 Carrier 的孤立 bug。
+
+**给后续专项的边界**：这两层都是「载体从未在新鲜二进制下运行过」的累积漂移，修复载体不会触碰内核生产路径；每条都需要 QEMU 单步（`-d int`）级取证，不适合在本条内继续剥。
+
 **验收（若走 A）**：四条各自 `run_all.sh` 对应测试 PASS；`cargo check` 三架构 0 error。
 
 ### I-37（已裁决·待实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`

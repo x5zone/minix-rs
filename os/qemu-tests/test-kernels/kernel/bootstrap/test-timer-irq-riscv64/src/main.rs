@@ -78,70 +78,84 @@ static ALLOCATOR: BootAllocator = BootAllocator;
 
 // ── QEMU virt constants (hello-boot-riscv64 shape) ──
 const DRAM_BASE: u64 = 0x8000_0000;
+/// Placeholder module span: real RAM, inside the bump-free lower region.
+const PLACEHOLDER_SPAN: u64 = DRAM_BASE + 0x0100_0000;
 /// The kernel image load address — QEMU `-kernel` hands control to OpenSBI,
 /// which jumps here (Domain0 Next Address).
 const KERNEL_LOAD_PA: u64 = 0x8020_0000;
 
+// Every slot points at the 64-byte stub so each module yields a real span:
+// `arch_boot_impl`'s `push_module_windows` turns every entry into an identity
+// window and `BootWindows::push` rejects empty `[0x0,0x0)` ranges, while
+// `init_proc_and_boot` requires exactly 12 entries (and VM-loads the stub,
+// which is a valid minimal ELF with e_phnum = 0 — Phase C bookkeeping
+// succeeds, VM is never scheduled).
+// Every slot carries a real (non-empty) span: `arch_boot_impl`'s
+// `push_module_windows` turns every entry into an identity window and
+// `BootWindows::push` rejects empty `[0x0,0x0)` ranges, while
+// `init_proc_and_boot` requires exactly 12 entries. The 11 non-VM slots use a
+// fixed in-RAM placeholder (their names alone matter at Phase C — the load
+// entries are DEFERRED); the vm slot is re-pointed at the real stub below.
 static mut BOOT_MODULES: [BootModule; 12] = [
     BootModule {
         name: "ds",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "rs",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "pm",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "sched",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "vfs",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "memory",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "tty",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "mib",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "vm",
-        start: PhysBytes(0),
-        len: 0,
-    }, // patched at runtime
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
     BootModule {
         name: "pfs",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "mfs",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
     BootModule {
         name: "init",
-        start: PhysBytes(0),
-        len: 0,
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
     },
 ];
 
@@ -238,11 +252,20 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
             start: PhysBytes(core::ptr::addr_of!(VM_ELF_STUB) as usize as u64),
             len: 64,
         };
-        // Publish only the slot this carrier fills: the rest of the array is
-        // all-zero placeholder (`start = 0, len = 0`), and handing the whole
-        // array over makes `push_module_windows` emit a `[0x0, 0x0)` window
-        // that trips `BootWindows::push`'s `assert!(start < end)`.
-        &mods[8..9]
+        mods
+    };
+
+    // Phase A.5 runs *after* paging is on, so the DTB's physical address needs
+    // an identity window by then. `push_common_boot_windows` builds one for
+    // every declared platform source; declare it here (a runtime-filled static
+    // because `dtb_phys` arrives in `a1`).
+    static mut PLATFORM_SOURCES: [minix_boot::PlatformDescSource; 1] = [
+        minix_boot::PlatformDescSource::new(minix_boot::DTB, PhysBytes(0)),
+    ];
+    // SAFETY: single-threaded boot; filled once before `KernelInfo` is built.
+    let platform_sources: &'static [minix_boot::PlatformDescSource] = unsafe {
+        PLATFORM_SOURCES[0] = minix_boot::PlatformDescSource::new(minix_boot::DTB, PhysBytes(dtb_phys));
+        &*core::ptr::addr_of!(PLATFORM_SOURCES)
     };
 
     let kernel_info = KernelInfo {
@@ -253,7 +276,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         // Kernel-stack TOP for the sscratch swap on U→S entry (the user
         // leg is wired but unreachable in this kernel-only carrier).
         boot_modules,
-        platform_sources: &[],
+        platform_sources,
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
@@ -295,7 +318,6 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // 4. Clock + interrupt controller (kmain Phase B order): PLIC init
     // (mask_all) + software clock into CLOCK_STATE.
     minix_kernel::init_clock_and_interrupts();
-    early_console::write_str("  clock + controller initialized (PLIC masked)\n");
 
     // 5. Process table (Phase C) + SMP state — clock_irq_handler reads
     // both for accounting.

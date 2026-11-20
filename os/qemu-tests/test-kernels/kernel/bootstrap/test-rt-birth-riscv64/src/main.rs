@@ -93,23 +93,80 @@ static ALLOCATOR: BootAllocator = BootAllocator;
 
 // ── QEMU virt constants (hello-boot-riscv64 shape) ──
 const DRAM_BASE: u64 = 0x8000_0000;
+/// Placeholder module span: real RAM inside MEMMAP (name-only slots at
+/// Phase C are DEFERRED; the span exists so the boot identity windows are
+/// real `[start, end)` ranges, never empty).
+const PLACEHOLDER_SPAN: u64 = DRAM_BASE + 0x0100_0000;
 /// The kernel image load address — QEMU `-kernel` hands control to OpenSBI,
 /// which jumps here (Domain0 Next Address).
 const KERNEL_LOAD_PA: u64 = 0x8020_0000;
 
+// All 12 slots carry a real (non-empty) span: `arch_boot_impl`'s
+// `push_module_windows` turns every entry into an identity window and
+// `BootWindows::push` rejects empty `[0x0,0x0)` ranges, while
+// `init_proc_and_boot` requires exactly 12 entries. Name-only slots are
+// DEFERRED at Phase C; the vm slot is re-pointed at the real stub below.
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule {
+        name: "ds",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "rs",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "pm",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "sched",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "memory",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "tty",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "mib",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "vm",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
+    BootModule {
+        name: "init",
+        start: PhysBytes(PLACEHOLDER_SPAN),
+        len: 64,
+    },
 ];
 
 static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
