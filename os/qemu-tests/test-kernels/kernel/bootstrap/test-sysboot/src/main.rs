@@ -251,6 +251,15 @@ fn main() -> Status {
             // the kernel image, bump region, VM's bootstrap frames and
             // the reserved module blobs — no extra exclusions needed.
             let (free_regions, n_free) = minix_kernel::vm_handoff::vm_pmm_free_regions();
+            let pre_bytes: u64 = free_regions[..n_free]
+                .iter()
+                .map(|r| r.len as u64)
+                .sum();
+            early_console::write_str("  r2 pre-cut free n=");
+            early_console::write_hex(n_free as u64);
+            early_console::write_str(" bytes=");
+            early_console::write_hex(pre_bytes);
+            early_console::write_str("\n");
             VmBootRegion::select_multi(&free_regions[..n_free], &[])
                 .expect("test-sysboot: bootstrap region selection failed")
                 .unwrap_or_else(|| panic!("test-sysboot: no free memory for the TX load"))
@@ -285,6 +294,19 @@ fn main() -> Status {
             if start < region.end.0 {
                 minix_kernel::vm_handoff::cut_consumed_span(start, region.end.0);
             }
+        }
+        // R2 end-to-end verification readout (I-44): the published list after
+        // the cut must equal pre-cut minus the consumed span.
+        {
+            let (post_regions, post_n) = minix_kernel::vm_handoff::vm_pmm_free_regions();
+            let post_bytes: u64 = post_regions[..post_n].iter().map(|r| r.len as u64).sum();
+            early_console::write_str("  r2 post-cut free n=");
+            early_console::write_hex(post_n as u64);
+            early_console::write_str(" bytes=");
+            early_console::write_hex(post_bytes);
+            early_console::write_str(" tx_frames=");
+            early_console::write_hex(tx.allocated_bytes as u64);
+            early_console::write_str("\n");
         }
         early_console::write_str("  TX ELF loaded into the RS slot (per-image root)\n");
         {

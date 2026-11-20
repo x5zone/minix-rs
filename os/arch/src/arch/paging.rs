@@ -239,15 +239,24 @@ pub trait Paging {
         Self: Sized;
 
     /// Create a page table root from a known physical page.
-    /// Used during boot when no global allocator exists.
     ///
     /// Unlike `new()` (which allocates the root page internally via the
     /// kernel page allocator), this method takes a pre-allocated physical
-    /// page from the caller. During boot, UEFI's `AllocatePages` provides
-    /// this page before `ExitBootServices`; after that no allocator exists.
+    /// page from the caller. The implementation zero-fills it **through
+    /// `channel`** — I-59 A' (D-094): the two production call sites face
+    /// opposite Direct-Map states, so the caller declares which access view
+    /// is valid for the frame:
     ///
-    /// The caller (boot-uefi shim) allocates a free physical page from UEFI's
-    /// AllocatePages and passes it here. The implementation zero-fills it.
+    /// - `PteChannel::Identity` — the bootstrap root construction
+    ///   (`build_bootstrap_root_and_enable`), which runs **before** the DM
+    ///   exists; the frame sits inside the declared firmware windows.
+    /// - `PteChannel::KernelDm` — per-process roots loaded after Step 4
+    ///   (`load_process_elf`), whose frames come from the VM free list and
+    ///   are reachable only through the kernel Direct Map.
+    ///
+    /// The zeroing and every later operation on the returned handle use the
+    /// same channel, so "zero via identity, then write via KDM" can no
+    /// longer disagree.
     ///
     /// C: pagedir[1024] — pre_init.c:268 pg_clear()
     ///
