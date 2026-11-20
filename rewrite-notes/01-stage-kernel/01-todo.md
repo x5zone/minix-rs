@@ -42,7 +42,7 @@
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
 | I-43（已裁决·部分实施） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **已裁决（D-081，用户 2026 年 11 月 20 日）采 A**（测试载体侧交出真实前缀/真实 span）；否决 B（内核跳过空槽会把生产中不存在的语义写进内核）。**实测 12 个内核中 6 条已修（`PLACEHOLDER_SPAN`）、6 条仍为全零槽未修**（后者不在必跑门链集合内故未暴露，`test-sysboot` 因两个不连续槽需改用 `PLACEHOLDER_SPAN` 而非 `&mods[8..9]`）。另卸出三层后续缺陷各需专项：riscv VM 加载 trap / x86 两载体 `enable()` 后静默挂 / riscv 直核静默停。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
-| I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
+| I-36（已裁决·待实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | **已裁决（D-082，用户 2026 年 11 月 20 日）采「删重复 + 修剪上移」**：① 删 `read` 里的 `segment_iter`（实测输入的 `entry.len` 已是修剪值，纯冗余）② 修剪上移到 `load_boot_modules_into` ③ 复用 `minix_elf::segment_iter`，不新增第三个解析器。**否决「抽象修剪 trait + 空实现」**（无哪个腿不需要修剪）。② 落地前须验证 12 个模块的 PT_LOAD 覆盖真实内容 | §3 的 I-36 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
@@ -1318,7 +1318,7 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 
 **为什么此前不做**：用户于 2026 年 11 月 20 日明确只做记账；本条在裁决后由用户单独指示实施。
 
-### I-36（未裁决·待裁决）`UbootFileLoader::read` 的 ELF 修剪上移（+ 一次核查事故记录）
+### I-36（已裁决·待裁决队列已清）`FileLoader` 的 ELF 修剪上移（+ 一次核查事故记录）
 
 **来源**：`R35/DESIGN-D2-05`（P2，[MODERN]）。**状态：未裁决**（本条待用户裁决，见文末三选项）。
 
@@ -1349,19 +1349,41 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 - `01-boot-shim-bootstrap.md:1502` 写「两个实现都在 `read` 里**只处理字节来源**」——对 U-Boot 腿为假；
 - `:1518` 写「两条 `read` 的差别在字节来源」——同一句也是假的（差别还包含 ELF 语义）。
 
-（`:1518` 是 R35 批修的，当时把「幂等 no-op」改成「对已在槽内的输入是 no-op」，但仍保留了「差别在字节来源」这个错误前提。）
+**裁决（D-082，用户 2026-11-20）：采「删重复 + 修剪上移」，不引入新 trait。**
 
-**三个候选（待用户裁决）**：
+**裁决时核实出的决定性事实（推翻了本条登记时的两条判断）**：
 
-| 选项 | 做法 | 代价 | 收益 |
-|---|---|---|---|
-| **A. 修剪上移**（面板建议） | 把 ELF 修剪移到共享消费者（`load_boot_modules_into` 或 `load_kernel_with_loader`），`read` 只返回原始字节 | `loader.rs` 一处新增 + `opensbi_helpers.rs` 一处删除 + `staged_elf_used_len` 并入 | 接口恢复「只处理字节来源」；腿间 `len` 差异消失；文档不用改 |
-| **B. 只改文档** | 把 `:1502`/`:1518` 改成「U-Boot 腿的 `read` 额外做装载视图修剪」 | 两处文字 | 零风险；但腿间差异仍然存在，且"文件来源接口藏着 ELF 语义"这个抽象泄漏保留 |
-| **C. UEFI 侧补齐修剪** | 让 UEFI 的 `read` 也做同一修剪，两腿对齐 | `uefi_helpers.rs` 一处 + 复用修剪逻辑 | 腿间差异消失（对外可观察行为统一）；但仍把 ELF 语义留在 `read` 里 |
+| 登记时的说法 | 实测 |
+|---|---|
+| 「表存的是槽容量，不是文件长度」（`opensbi_helpers.rs:206-209` 的注释）| **注释是错的**。`uboot_main.rs:build_shim_table` 写表时用 `let used = staged_elf_used_len(addr, slot).unwrap_or(slot)`，**写进去的已经是 `max(p_offset + p_filesz)` 的修剪值**（kernel 槽 `:build_shim_table` 内、模块槽同段）|
+| 「`staged_elf_used_len` 与 `read` 的修剪是同一逻辑的两份实现」| `read` 的 `segment_iter` 修剪的是**已经修剪过的数据**——**纯重复工作**，不是"第二份实现" |
 
-**我的建议：A。** 理由：这条的根因不是"两腿行为不同"（那可以用 C 对齐），而是**`FileLoader` 这个抽象里藏了 ELF 语义**——面板原文写的是「`read` 不只是字节来源」。A 修的是抽象边界，C 只是让两边一致地泄漏。而且 `staged_elf_used_len` 与 `read` 的修剪是同一逻辑的两份实现（`uboot_main.rs:267-320` 与 `opensbi_helpers.rs:211-216`），A 能顺带合并它们。
+**因此 `UbootFileLoader::read` 的 `segment_iter` 是冗余的**：输入的 `entry.len` 已是修剪值，再跑一遍 `segment_iter` 是幂等的无效功。
 
-**为什么现在不裁决/不实施**：本条不在用户的裁决队列里（用户此前只要求先处理 D2-01 与 D2-05 的记账）；且 A 的改动触及所有五条腿的模块装载路径，需要与 I-31/I-33 的实施顺序协调。
+**采纳的三处改动（零新类型、零新 trait）**：
+
+| # | 改动 | 效果 |
+|---|---|---|
+| ① | 删 `opensbi_helpers.rs:211-216` 的 `segment_iter` 段；`read` 改为返回 `&slice[..entry.len as usize]` | `read` 恢复纯字节来源；同时删掉那段错误的「表存的是槽容量」注释 |
+| ② | `loader.rs` 的 `load_boot_modules_into` 加一行修剪：`let used = elf_file_end(data.as_slice()).unwrap_or(data.len());`，写进 `BootModule.len` | 修剪移到唯一真正需要 ELF 语义的层；U-Boot 腿幂等（输入已是修剪值），UEFI 腿从此开始修剪 |
+| ③ | `elf_file_end` 直接用现成的 `minix_elf::segment_iter`（`loader.rs` 已依赖 `minix-elf`，见 `:175-195` 的 `compute_kernel_layout`）| **不新增第三个手写解析器** |
+
+**`staged_elf_used_len` 保持原样不动**：它受裸地址输入限制（读 `pa + off` 而非 `&[u8]`），无法复用 `segment_iter`；且它做的事（`fatload` 之后、拷进模块区之前算长度）在架构上必要。
+
+**否决「抽象一个修剪 trait + 不需要的给空实现」**：核实后确认**没有哪个腿「不需要修剪」**——上移之后两条腿都走同一条路，U-Boot 腿只是输入恰好已是修剪值（幂等）。空实现无处可放；且 `FileLoader` 只有一个生产实现（UEFI）+ 一个（U-Boot）+ 一个测试替身，构造点不足以支撑新 trait（V3.6 C-33）。
+
+**否决旧候选 B（只改文档）/ C（UEFI 侧补齐修剪）**：B 保留抽象泄漏；C 只是让两边一致地泄漏，仍把 ELF 语义留在 `read` 里。
+
+**② 的前置验证（必须做，否则不能落 ②）**：
+`load_boot_modules_into` 开始给 UEFI 腿修剪后，`BootModule.len` 会变小。必须确认 **12 个模块的 ELF 里最后一个 PT_LOAD 之后没有需要保留的数据**（签名段 / `.comment` / 调试段）。若将来某个模块加了签名段，② 会**静默裁掉它**。验证方式：对 12 个模块逐个 `readelf -l` 确认 `max(p_offset+p_filesz)` 到文件尾之间无非 PT_LOAD 内容。
+
+**验收**：
+- `grep -c "segment_iter" os/boot-shim/src/opensbi_helpers.rs` → 0（① 之后）；
+- `grep -n "fn elf_file_end" os/boot-shim/src/loader.rs` → 命中 1（③）；
+- 五条 QEMU 门链全 PASS（本改动触及所有腿的模块装载路径，门链不可省）；
+- `cargo test -p boot-shim --features test-all` 全绿。
+
+**风险与回退**：U-Boot 腿行为不变（幂等）；UEFI 腿 `BootModule.len` 变小——若某个模块的 PT_LOAD 未覆盖真实内容，该模块会被部分裁掉，表现为运行期缺数据。回退方式：删 ② 的一行即可恢复原状。
 
 ### I-34（已裁决·可立即开工）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
