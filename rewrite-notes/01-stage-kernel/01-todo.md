@@ -38,14 +38,14 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（本轮新登记） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 设计裁决 + 代码改造 | 已裁决（D-067，用户 2026-11-20）；待实施——详见 §3 的 I-34 | §3 |
-| I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `Frozen::freeze` 的 `debug_assert` + `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35 | §3 |
+| I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35。原文中的第三项 `Frozen::freeze` 的 `debug_assert` 已由 I-32 销账（2026 年 11 月 20 日），不再属本条 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（本轮新登记） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 设计裁决 + 代码改造 | 已裁决（D-073，用户 2026-11-20）：采 A（`PreparedJump { entry: VirBytes, arena_pa: PhysBytes }`）；保持两函数分开；`shim_windows` 固件边界不动。待实施 | §3 |
 | I-39（本轮新登记） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 32 条覆盖 | 测试清理 | 已裁决（D-077，用户 2026-11-20）：采 A 删两处残骸；文档计数 32→31；**先于 I-31**（否则 I-31 会撞字段不存在）。待实施 | §3 |
 | I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
 | I-30（已裁决·待实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 设计裁决 + 代码改造 | 已裁决（D-061，用户 2026-11-19）：照 riscv64 加 feature 门，两条 `rust_image_main` 各归一个 cfg。待实施——详见 §3 的 I-30 | §3 |
 | I-31（已裁决·可开工） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 协议契约变更 + 代码改造 | 已裁决（D-062，用户 2026-11-20）：三条一次升版。待实施——验收 grep 六项、文档同步含 §4.1 五族句（D-072 补强），详见 §3 的 I-31 | §3 |
-| I-32（已裁决·可开工） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!` | 代码改造 | 已裁决（D-064，用户 2026-11-20）：路线 B（检查强度对齐，结构不动）。**验收范围含 `Frozen::freeze`**（D-071 并账）。待实施——详见 §3 的 I-32 | §3 |
+| I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
 | I-33（已裁决·可开工） | 直核腿统一到 owned 路径，删三张 `DTB_*` 静态表 | 代码改造 | 已裁决（D-065，用户 2026-11-20）：「统一总是我的最优选」。待实施——详见 §3 的 I-33 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -396,7 +396,37 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 
 **风险与回退**：`assert!` 在 release 下保留检查，会增加两条分支（启动期一次性执行，无性能影响）。若某天出现「表在更早的汇编跳板里装好」的合法两次安装形态 → 回退本裁决并重开 D-064（该条件已写进判决行 `reopen_condition`）。
 
-**为什么现在不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。裁决已生效，实施留待下一 design/code batch。
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+改动四处：
+1. `os/boot-shim/src/opensbi_helpers.rs:503` `install_boot_file_table` 与 `:552` `install_dtb_ptr` 的 `debug_assert!` → `assert!`（消息保持原形，不加 crate 前缀——panic handler 自己会打 `boot-shim(uboot) panic: `，兄弟守卫 `BootStorageCell::take`/`pt_alloc::register` 也只是 `X called twice`）；
+2. `os/libs/minix-types/src/types/cell.rs:238` `Frozen::freeze` 的 `debug_assert!` → `assert!`（D-071 并账项），Safety contract 注释 `(debug builds assert)` → `(every build asserts)`，`freeze` 的文档补 `# Panics` 段；
+3. `os/boot-shim/tests/install_write_once.rs` 新建（两条负控，见下）；
+4. `rewrite-notes/01-stage-kernel/04-platform-discovery.md` 四处回写（D04 逐字引了 `Frozen` 的 Safety contract，又在 §3.7/§1/§5.4 明写「`freeze` 里只有 `debug_assert!`，发布构建静默覆盖」；R04-T07 建议行改「已销」）。D04 的 `FREEZE.md` 追加了冻结后同步段（行数与 sha 更新）。
+
+**负控为何不在 `opensbi_helpers` 的 `mod tests` 里**（本条规格原写「`#[should_panic]`，若测试环境能构造；否则注释写明」）：`DTB_PTR`/`BOOT_FILE_TABLE_PTR` 是进程级 `static mut`，`#[should_panic]` 会在 panic 展开后把安装值永久留在静态里，而同进程的 `test_boot_file_table_validates_magic` 等测试与未来任何 `boot_file_table()` 调用都会读到它——本文件的注释原本就写着「测试不能安全地装全局」。所以放进 `tests/install_write_once.rs`（集成测试有独立进程，从干净状态起步），并用 `catch_unwind` 而不是 `#[should_panic]`——这样「第二次被拒」之后还能继续断言「被拒的那次没有覆盖已装值」，与 `os/arch/tests/pt_alloc_write_once.rs` 同一范式。
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -c "debug_assert" os/boot-shim/src/opensbi_helpers.rs` | **0** |
+| A2 | `grep -rn "debug_assert" os/libs os/arch --include=*.rs \| grep -ic "freeze\|called twice"` | **0**（write-once 家族已无残留；该目录另有 29 条热路径不变量检查用 `debug_assert`，**不属本条射程**——D-071 判决行「`grep -rn "debug_assert" os/libs os/arch` 归零」的字面口径与这批热路径冲突，按裁决意图（write-once 守卫对齐）取本行为准） |
+| A3 | `cargo test -p boot-shim --features test-all --lib` | **136 passed / 0 failed** |
+| A4 | `cargo test -p boot-shim --features test-all --test install_write_once` | **2 passed / 0 failed** |
+| A5 | `cargo test -p boot-shim --features test-all --release`（含 lib + 集成） | **136 + 6 + 2 全绿** |
+| A6 | `./os/qemu-tests/test-riscv64-uboot-shim.sh` | **PASS**（D-73 全链 6/6 标记，进入调度器） |
+| A7 | `cargo test -p minix-types --lib types::cell` | **8 passed / 0 failed**（含新增 3 条 `frozen_tests`） |
+| A8 | `cargo test -p minix-types` | **339 passed / 0 failed** |
+| A9 | `cargo test -p minix-kernel --features mock` | **866 passed / 0 failed / 8 ignored** |
+| A10 | `cargo test -p minix-platform` | **18 passed / 0 failed** |
+| A11 | D04 文档门（改动后） | anchor 77/77；structure/ref/style(error=0) 通过；citation 87 块 `failed=0`；doc-code-map 54/54；`eval-trace-check --round R3` PASS(11/2/0) |
+
+**鉴别力验证（删检查即变绿的反向证明）**：把两处 `assert!` 临时还原成 `debug_assert!` → `cargo test -p boot-shim --features test-all --release --test install_write_once` **0 passed / 2 failed**（`double install_* must panic in all build profiles`）；`Frozen` 同理 → `cargo test -p minix-types --lib types::cell --release` **7 passed / 1 failed**（`a second freeze must panic in all build profiles`）。恢复后两者 release 全绿。debug 构建对 `debug_assert!` 不敏感（debug 下 `debug_assert!` 也生效），所以这条验证必须用 `--release`。
+
+**范围外发现（不修，留记录）**：`globals.rs:545` 的 `IPC_FILTER_POOL` 注释失真属 D-071 的 (b) 并账项，裁决归入 I-35；`Frozen` 的 `unsafe impl<T: Send> Sync` 缺 `T: Sync` 属 D04 的 `D04-design-batch`（DESIGN-01），均未在本条改动中触碰。
+
+**本条在确认轮结束后由用户单独指示实施**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥，故在 2026 年 11 月 20 日之前一直是「已裁决待实施」。
 
 ### I-31（已裁决·可立即开工）wire v10：删除三个字段/分区
 
@@ -546,7 +576,7 @@ L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立�
 | 6 | `vm_handoff.rs:122-131` `VM_PMM_FREE` | write-once at classification | 唯一调用点 `lib.rs:2972`，不在循环内 | 符合 |
 | 7 | `memmap_source.rs:1361` `commit_static` | written once per boot face | **有守卫**：`DTB_COLLECT_TAKEN.swap+assert`（`:1432-1435`，`cfg(not(test))`）| 符合（实现最好）|
 | 8 | `pt_alloc.rs:49/77` `PtAllocSlot` | written exactly once | **有守卫**：`PT_CLAIMED.swap+assert`（`:100-101`/`:152`）| 符合 |
-| 9 | `types/cell.rs:176/228` `Frozen<T>` | written exactly once | `debug_assert!`（release 失效）| **同类缺陷**（并入 I-32）|
+| 9 | `types/cell.rs:176/228` `Frozen<T>` | written exactly once | `debug_assert!`（release 失效）→ **已改 `assert!`**（2026 年 11 月 20 日，随 I-32） | **已修**（原「同类缺陷」）|
 | 10 | `resv_claims.rs:256` `DTB_RECORDS` | write-once inside capture | `capture` 在 EBS 重试循环内（`ebs_pair.rs:193`），每 attempt 前先归零 | 注释可收窄为「write-once per attempt」 |
 | 11 | `bootface.rs:320` / `bootface_a64.rs:295` | written once, read-only | 直核腿入口只跑一次 | 符合 |
 
@@ -570,7 +600,7 @@ assert!(
 **测试适配**：`lib.rs:5878` 的 `store_kernel_info(stored)` re-store 断言改成 `#[should_panic(expected = "second store")]` 负控——把「禁令」变成有鉴别力的测试（删掉 assert 后它变绿，证明测试有效）。
 
 **并账两项**：
-- **并入 I-32（D-064）**：`Frozen::freeze`（`os/libs/minix-types/src/types/cell.rs:228`）用 `debug_assert!`，release 下二次 freeze 静默改写。D-064 只点了 `opensbi_helpers` 两处，未覆盖公共类型；I-32 的验收 grep 扩为 `grep -rn "debug_assert" os/libs os/arch` 归零。
+- **并入 I-32（D-064）**：`Frozen::freeze`（`os/libs/minix-types/src/types/cell.rs:228`）原用 `debug_assert!`，release 下二次 freeze 静默改写。D-064 只点了 `opensbi_helpers` 两处，未覆盖公共类型；I-32 的验收 grep 扩为 `grep -rn "debug_assert" os/libs os/arch` 归零。**已实施（2026 年 11 月 20 日，随 I-32 一并落码）**：该守卫改为 `assert!`，实测字面口径不可达（该目录另有 29 条热路径不变量检查仍用 `debug_assert`，与 write-once 无关），实取 write-once 家族归零；详见 I-32 的「实施记录」A2 行。
 - **本条内一并**：`globals.rs:545` 的 `IPC_FILTER_POOL` 注释「Only written once during boot」与 `ipc_filter_pool_with():3689` 返回 `&'static mut`、`proc_table.rs:1277`/`syscall.rs:760,958` 三处可变借用矛盾。改注释为「初始化一次，此后在 BKL 下可变」。
 - **登记不改（注释可收窄，无害）**：`resv_claims.rs:256` 的 `DTB_RECORDS` —— `capture` 在 EBS 重试循环内（最多 2 次 attempt），每次 attempt 前先 `DTB_RECORDS_N = 0` 归零再写，实际安全；注释可改成「write-once per attempt」。
 

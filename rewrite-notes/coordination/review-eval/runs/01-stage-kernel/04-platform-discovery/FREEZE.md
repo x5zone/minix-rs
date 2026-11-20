@@ -72,3 +72,21 @@ citation 门新增第四标注形态（`// path —— kind`）与 `.S/.lds/.inc
 - **机械门**：`--round R3` PASS（11/2/0）；`--round R1/R2` 仍 PASS；anchor 77/77；citation `checked=68 failed=0 warned=7`；structure/ref/style(error=0)/density 通过；doc-code-map 54/54；`panel-index --check` 6 文件哈希一致。
 - **未闭环 = 0**。`OPEN-DEBT` 的 `R3-design-batch`（3 条设计 P2 + 6 条设计 P3 + ARCH 提案 RD04-A1）有 D-070 判决行与 2026-11-20 日期。
 - 限制同前：`CONVERGED` = 确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
+
+## 冻结后同步（2026 年 11 月 20 日，D-064 / I-32 代码改动的文档侧回写）
+
+代码侧把 `Frozen::freeze` 的二次冻结守卫从 `debug_assert!` 换成 `assert!`（`os/libs/minix-types/src/types/cell.rs`，验收见 `rewrite-notes/01-stage-kernel/01-todo.md` 的 I-32）；本篇有三处正文与一条建议行的口径随之失真，同批回写：
+
+| 位置 | 原口径 | 现口径 |
+|---|---|---|
+| §3.7 引文块（`cell.rs:struct Frozen` 节选） | `freeze` must be called at most once (**debug builds assert**) | `freeze` must be called at most once (**every build asserts**)——源码注释的逐字节引用，随代码同步 |
+| §5 前 §3.7 否决段 | `freeze` 里只有 `debug_assert!`，发布构建重复 `freeze` 静默覆盖 | `freeze` 开头是 `assert!`，两种构建形态下都当场 panic |
+| §1 概述（C「发现跑两次」对照段） | 开发构建报错、发布构建静默覆盖 | 两种构建形态下都 panic |
+| §5.4 M9 覆盖表 | 断言在类型内（`debug_assert!`）；R04-T07 未销 | 断言在类型内（`assert!`）；R04-T07 已由 `types::cell::frozen_tests::test_freeze_twice_panics_and_keeps_first_value` 销账 |
+| §5.5 R04-T07 建议行 | 「`Frozen` 二次 `freeze` 的 debug 断言测试」 | 注记已销与销账测试名 |
+
+不动的东西：`Frozen` 的 `Sync` bound（`T: Send` 而缺 `T: Sync`）仍是 `D04-design-batch` 的 DESIGN-01 项，与本条并账无关。
+
+- 行数：2737（与 R3 时点一致，改动全为等行数替换）
+- 文档 sha256：`c66408797925f85d299700b883dd39db84a1d645c5088e4d92606daa643e1ae8`（本段追加前的 R3 值 `90179b7b…` 已被这次同步替换）
+- 门：`--round R3` 仍 PASS（11 PASS / 2 WARN / 0 FAIL）；anchor 77/77；structure/ref/style(error=0) 通过；doc-code-map 54/54

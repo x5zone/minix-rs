@@ -494,10 +494,13 @@ static mut BOOT_FILE_TABLE_PTR: usize = 0;
 pub unsafe fn install_boot_file_table(addr: u64) {
     // Catch double-install: if a caller (e.g., a buggy trampoline) calls
     // this twice without `boot_file_table()` clearing the pointer, we'd
-    // silently overwrite and lose track. The `debug_assert!` fires only
-    // in debug builds; release builds skip the check to avoid a load.
+    // silently overwrite and lose track. The check is an unconditional
+    // `assert!` so it fails closed in release too — `FileBytes::Borrowed`
+    // relies on this table's address stability, and the sibling installers
+    // (`BootStorageCell::take`, `pt_alloc::register`) already check in
+    // both builds (D-064).
     // SAFETY: single-writer during early boot before secondary harts run.
-    debug_assert!(
+    assert!(
         BOOT_FILE_TABLE_PTR == 0,
         "install_boot_file_table called twice"
     );
@@ -544,7 +547,9 @@ static mut DTB_PTR: u64 = 0;
 /// if non-zero. The blob must remain valid for the entire boot-shim lifetime.
 pub unsafe fn install_dtb_ptr(addr: u64) {
     // SAFETY: single-writer during early boot before secondary harts run.
-    debug_assert!(DTB_PTR == 0, "install_dtb_ptr called twice");
+    // `assert!` for release parity with the sibling installers (D-064): a
+    // second install would silently swap the blob every consumer reads.
+    assert!(DTB_PTR == 0, "install_dtb_ptr called twice");
     unsafe {
         DTB_PTR = addr;
     }
@@ -751,6 +756,15 @@ mod tests {
         );
         assert!(loader.read("/missing").is_none());
     }
+
+    // D-064 / I-32 的两条安装型全局负控**不在本模块**：`DTB_PTR` /
+    // `BOOT_FILE_TABLE_PTR` 是进程级静态，装过一次就无法在本进程内复位，
+    // 而本模块的其它测试（以及 `prepare_boot` 的未来测试）会读它们。
+    // 反例就在下面 —— `test_boot_file_table_validates_magic` 明写「测试不能
+    // 安全地装全局」。所以负控放在 `tests/install_write_once.rs`：集成测试
+    // 有独立进程，从「未安装」的干净状态起步，并用 `catch_unwind` 断言
+    // 第二次安装被拒且没有覆盖已装值（与 `arch/tests/pt_alloc_write_once.rs`
+    // 同一范式）。
 
     #[test]
     fn test_boot_file_table_validates_magic() {

@@ -194,7 +194,7 @@ mod tests {
 ///
 /// # Safety contract
 ///
-/// - `freeze` must be called at most once (debug builds assert).
+/// - `freeze` must be called at most once (every build asserts).
 /// - `freeze` happens-before any `get`: the writer stores `frozen` with
 ///   `Release` after writing the value; readers `Acquire`-load `frozen`
 ///   before touching the value. The first reader that observes `frozen ==
@@ -222,10 +222,18 @@ impl<T> Frozen<T> {
     }
 
     /// Freeze `value` into the cell. Must be called at most once, before
-    /// any `get` (debug builds assert; the boot order enforces it: the
-    /// freezing phase is strictly before the readers exist).
+    /// any `get`.
+    ///
+    /// The guard is an unconditional `assert!`, not a `debug_assert!`: a
+    /// second freeze would silently overwrite a value other CPUs may already
+    /// be reading, while the check itself costs one acquire load on a
+    /// once-per-boot path (D-064 / I-32).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `freeze` has already run (`"Frozen::freeze called twice"`).
     pub fn freeze(&self, value: T) {
-        debug_assert!(
+        assert!(
             !self.frozen.load(core::sync::atomic::Ordering::Acquire),
             "Frozen::freeze called twice",
         );
@@ -270,5 +278,41 @@ impl<T: core::fmt::Debug> core::fmt::Debug for Frozen<T> {
         } else {
             f.write_str("<unfrozen>")
         }
+    }
+}
+
+#[cfg(test)]
+mod frozen_tests {
+    use super::*;
+
+    #[test]
+    fn test_freeze_then_get() {
+        let cell = Frozen::new();
+        cell.freeze(7u32);
+        assert_eq!(*cell.get(), 7);
+    }
+
+    /// The `freeze` guard must hold in **every** build profile: a second
+    /// freeze would silently replace a value other CPUs may already be
+    /// reading (D-064 / I-32). `catch_unwind` rather than `#[should_panic]`
+    /// so the assertion after the panic still runs — the rejected freeze
+    /// must leave the first value in place.
+    #[test]
+    fn test_freeze_twice_panics_and_keeps_first_value() {
+        let cell = Frozen::new();
+        cell.freeze(1u32);
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cell.freeze(2u32)));
+        assert!(
+            second.is_err(),
+            "a second freeze must panic in all build profiles"
+        );
+        assert_eq!(*cell.get(), 1, "the rejected freeze must not overwrite");
+    }
+
+    #[test]
+    fn test_get_before_freeze_panics() {
+        let cell: Frozen<u32> = Frozen::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| *cell.get()));
+        assert!(result.is_err(), "get before freeze must panic");
     }
 }

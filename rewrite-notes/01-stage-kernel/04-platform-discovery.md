@@ -1033,7 +1033,7 @@ C 的做法可以概括成：i386 是**半发现**（IOAPIC 地址与 CPU 拓扑
 2. **三种来源怎么统一**——x86 走表链、ARM 走常量、RISC-V 走设备树，上层（时钟、中断）怎么才能不关心来源。
 3. **结果怎么保存**——C 用 `static` 加约定，且 `machine` 还是跨特权级的；Rust 需要表达"启动期写一次、之后所有 CPU 只读"这条约定。
 
-照搬 C 的"发现跑两次"会坏在哪：Rust 侧同一份描述符会被解析两次并冻结两次，而 `Frozen::freeze` 里只有 `debug_assert!(!self.frozen.load(Acquire), "Frozen::freeze called twice")`——开发构建在第二次冻结时报错，发布构建静默覆盖第一次的值（§3.7）。C 侧那两次调用是"重扫一遍表、覆盖同一组静态变量"，Rust 侧对应的动作会直接撞上冻结协议。
+照搬 C 的"发现跑两次"会坏在哪：Rust 侧同一份描述符会被解析两次并冻结两次，而 `Frozen::freeze` 开头的 `assert!(!self.frozen.load(Acquire), "Frozen::freeze called twice")` 会在第二次冻结时当场 panic——两种构建形态下都是（§3.7）。C 侧那两次调用是"重扫一遍表、覆盖同一组静态变量"，Rust 侧对应的动作会直接撞上冻结协议。
 
 C 侧的发现结果里没有"来源"这个概念。`machine` 的六个字段里没有任何一个说明 RSDP 是从 EBDA 还是 BIOS 区找到的，也没有字段说明用的是哪张表。诊断"参数看起来不对"时，能查的只有最终地址值。Rust 侧的描述符多带一个"来源"标签（§3.6），"走了兜底"与"解析成功但表内容属于另一台机器"因此成为两种可区分的状态——前者能直接判定，后者要靠地址值比对（§6.1 的诊断表按这条分叉）。
 
@@ -1412,7 +1412,7 @@ C 用 `static` 全局加约定：ACPI 模块的三个私有静态谁写谁读靠
 // os/libs/minix-types/src/types/cell.rs:struct Frozen —— 节选（Safety contract 注释段与结构体定义）
 /// # Safety contract
 ///
-/// - `freeze` must be called at most once (debug builds assert).
+/// - `freeze` must be called at most once (every build asserts).
 /// - `freeze` happens-before any `get`: the writer stores `frozen` with
 ///   `Release` after writing the value; readers `Acquire`-load `frozen`
 ///   before touching the value. The first reader that observes `frozen ==
@@ -1466,7 +1466,7 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
 
 `AssumeSyncCell` 是这次替换的前身，它仍在仓库里（`os/libs/minix-types/src/types/cell.rs`，与 `Frozen` 同一个文件），只是不再用于 `PLATFORM`。替换的理由写在 `static PLATFORM` 的文档注释里：AP 上线之后会与 BSP 并发读 `platform_desc()`，"永远无并发访问"的证明形状在 AP 上线那一刻失效。
 
-`Frozen` 给的检查不是强制：`freeze` 里只有 `debug_assert!(!self.frozen.load(Acquire), "Frozen::freeze called twice")`——发布构建里重复 `freeze` 不会报错，会直接覆盖值。保证"只冻结一次"的最终依据是启动顺序（`init_from_kinfo` 只在 Phase A.5 调一次，§4.1）。
+`Frozen` 的检查是无条件的：`freeze` 开头是 `assert!(!self.frozen.load(Acquire), "Frozen::freeze called twice")`——两种构建形态下重复 `freeze` 都会当场 panic，不会覆盖已冻结的值（这条检查是 D-064 / I-32 对齐之后的形态：此前它是 `debug_assert!`，发布构建里重复 `freeze` 会静默覆盖；同族的 `BootStorageCell::take`、`pt_alloc::register` 一直用两档 `assert!`，`Frozen` 现在是第三个对齐点）。保证"只冻结一次"的第一依据仍是启动顺序（`init_from_kinfo` 只在 Phase A.5 调一次，§4.1），`assert!` 是它的运行期兜底。
 
 继续用 `AssumeSyncCell` 会坏在哪：它的契约要求调用方保证单线程独占，而 AP 上线后 `platform_desc()` 会被多个 CPU 并发调用（`os/libs/minix-platform/src/global.rs:static PLATFORM` 的注释记着这个事实）。此时契约不再成立，而类型本身没有任何机制能发现这件事——读者拿到的 `&T` 与写者的关系只能靠人工时序论证。`Frozen` 把读者侧从"独占"改成"只读共享"，契约形状与真实访问模式一致。换成 `Mutex` 也不坏，但读路径会为一份不可变数据付出加锁代价。
 
@@ -2574,7 +2574,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | M6 | 设备树解析（riscv64：PLIC/CLINT/拓扑/SSWI/PSCI）（§4.5） | 真实 DTB 的关键字段提取；`a1` 交接链 | 部分覆盖 | 宿主真实 DTB 端到端＋真机 riscv64 变体；ACLINT MTIMER 备用路径（`aclint=on` 形态）已由真机覆盖——`test-smp-ipi-riscv64` 以 `-machine virt,aclint=on` 点火并走 `a1` DTB 解析（复核：`rg -n "aclint=on" os/qemu-tests/test-smp-ipi-riscv64.sh` 命中点火行与头注；载体 `os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi-riscv64/src/main.rs` 经 `parse_by_kind(DTB)`）；**宿主夹具仍缺** → **R04-T03** |
 | M7 | 设备树解析（aarch64：`parse_gic` 等）（§4.5） | `reg` 两格提取 GICD/GICR；与 ACPI 路径同构的拓扑提取 | 部分覆盖 | 真机经 `test-smp-aps-aarch64` 的 `-kernel`＋`-dtb` 直核，DTB 单源装在 `os/kernel-image/src/bootface_a64.rs:fn bootface_a64`（`PlatformDescSource::with_optional_len(DTB, DTB_PA, dtb_len)` → `parse_gic`）（复核：`rg -n "\-dtb" os/qemu-tests/test-smp-aps-aarch64.sh` → 直核点火行含 `-dtb "$QEMU_DTB"`）；**宿主 DTB 夹具缺** → **R04-T04** |
 | M8 | 多来源顺序与兜底（§3.5、§4.7） | 解析失败继续下一来源；全失败时 debug 兜底 / release panic | 未覆盖（本篇） | 真机上首个来源即成功；失败路径与多来源切换无载体 → **R04-T06** |
-| M9 | `Frozen` 一次性冻结（§3.7、§4.7） | 二次 `freeze` 在 debug 构建被断言拦下；AP 上线后并发只读 | 部分覆盖 | 断言在类型内（`debug_assert!`）；宿主未见直接测试 → **R04-T07**；并发只读由 SMP 真机间接覆盖 |
+| M9 | `Frozen` 一次性冻结（§3.7、§4.7） | 二次 `freeze` 在两种构建形态下都被断言拦下；AP 上线后并发只读 | 已覆盖 | 断言在类型内（`assert!`，D-064 / I-32 对齐后两档均生效）；宿主负控 `types::cell::frozen_tests::test_freeze_twice_panics_and_keeps_first_value`，`--release` 下同样红/绿可辨；并发只读由 SMP 真机间接覆盖 |
 | M10 | aarch64 高半别名（§4.8） | 第一次切根之后 MMIO 访问仍可达（`mmio_translate` 生效） | 已覆盖 | 真机 aarch64（启动越过第一次切根；注释记录未翻译时的实测故障） |
 | M11 | 平台发现的出口契约（§5.2） | `nr_cpus == 4`；`hw_id` 两两互异；固件 `bsp_id` hint 与执行 CPU 身份都属于发现集合 | 已覆盖 | 真机三变体（三架构同断言；执行 CPU 身份分别用 CPUID/MPIDR/a0） |
 
@@ -2590,7 +2590,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | R04-T04 | aarch64 设备树分支（`parse_gic` 等）的**宿主 DTB 夹具**（真机已由 `test-smp-aps-aarch64` 的 `-dtb` 直核覆盖） | **测试侧** |
 | R04-T05 | `find_platform_sources_into` 的宿主单测（两段顺序与 DTB 命中路径） | **测试侧** |
 | R04-T06 | 多来源顺序与全失败兜底的载体（失败续源、debug 兜底 / release panic） | **测试侧** |
-| R04-T07 | `Frozen` 二次 `freeze` 的 debug 断言测试 | **测试侧** |
+| R04-T07 | `Frozen` 二次 `freeze` 的断言测试（**已由 `types::cell::frozen_tests::test_freeze_twice_panics_and_keeps_first_value` 补上**，D-064 / I-32） | **测试侧**（已销） |
 | R04-T08 | `parse_by_kind` 两个真实分支返回类型的直接断言 | **测试侧** |
 | R04-T09 | 支持重定位 LAPIC/IOAPIC 的动态设备窗口（当前是 check-and-reject） | **设计/代码侧** |
 | R04-T10 | 多 IOAPIC 的 `ApicDesc`/GSI-range 模型（当前只表示首个 IOAPIC） | **设计/代码侧** |
