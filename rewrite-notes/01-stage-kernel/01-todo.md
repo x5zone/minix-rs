@@ -56,7 +56,7 @@
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施 + 三轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证；**第三批（`minix-arch` 测试面）同日补修**，见 §3。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
-| I-33（⚠ 改回待裁决） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **原裁决（D-065，用户 2026 年 11 月 20 日）已被实施受阻推翻**：实测发现第四张 `DTB_PANORAMA` 仍有生产消费者（`resv_claims.rs` 的 EBS 后 claim 捕获），且 `DtbMapOwned` 不带 panorama、测试改写面 62 处。三选一待裁决（A 扩权到 panorama / B 缩小为「只统一直核腿」/ C 拆成两项）。代码改动已全部回退——详见 §3 的 I-33 | §3 |
+| I-33（⚠ 已拆三项·待实施） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **D-086（用户 2026 年 11 月 21 日）拆为三项**：**丙**（新，最高优先）给 `DtbMapOwned` 加 `panorama` + `resv_claims::capture` 改走 `collect_owned`——**修复真机 EBS 重试 attempt 2 的 panic**（`DTB_COLLECT_TAKEN` 守卫与 UEFI 标准重试冲突，且被 `#[cfg(not(test))]` + 测试形态掩盖）；**甲**（两直核腿改 owned）；**乙**（删四张静态表 + 62 处测试改写）。丙为甲乙前置；选「丙-2 加 panorama」而非「丙-1 移出循环」因后者治标。详见 §3 的 I-33 | §3 的 I-33 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -341,7 +341,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
 
-### I-33（⚠ 待裁决——实施受阻，原裁决的前提不完整）直核腿统一到 owned 路径，删第二套静态表
+### I-33（⚠ 已拆为三项·待重裁）直核腿统一到 owned 路径，删第二套静态表
 
 **裁决**：用户 2026-11-20，判决行 `D-065`。**状态：已批准待实施**。来源：`RD34-DESIGN-D2-03`（P2，[MODERN]）。用户表述：「统一总是我的最优选」。
 
@@ -437,6 +437,94 @@ startup_objects: &'static [minix_boot::SourceRecord],
 | **C. 另立新项** | 本条只保留直核腿统一（同 B）；把「panorama 消费者改 owned + 删四张静态表 + 62 处测试」立为新条目，单独裁决与排期 | 与 B 的实施内容相同，区别是 backlog 形态更诚实（一个大项拆成两个可独立验收的项） |
 
 **我的判断**：倾向 **C**。理由是本条规格的「关键澄清」已经把两件事混在一句里（「五条腿全部走 owned」与「删第二套静态表」），而它们的实际耦合度比规格假设的高：静态表服务于 panorama 消费者，不服务于直核腿。拆开后，第一件（直核腿统一）今天就能独立验收，第二件（去静态表）需要连 `resv_claims` 一起裁，值得单独一轮。
+
+**重裁（D-086，用户 2026-11-21）：采 C（拆项），并按「更干净的方案」处理新查出的 EBS 重试冲突。**
+
+**深入调查的新发现（超出上述五处遗漏）**：
+
+**第六处：`DTB_COLLECT_TAKEN` 在 EBS 重试的 attempt 2 会 panic——这是当前就存在的生产隐患。**
+
+链路（逐行核实）：
+
+```
+ebs_pair.rs 的配对循环（EBS_ATTEMPT_LIMIT = 2，`:55`）
+  ↓ 每次 attempt 都跑（capture 在 `:193`，在 `return`/`continue` 之前）
+resv_claims::capture
+  ↓
+DtbMemoryMap::new(&fdt, 0).collect_with_panorama()   （`:295`）
+  ↓
+collect_inner → DTB_COLLECT_TAKEN.swap(true)          （`memmap_source.rs:1427-1433`）
+```
+
+守卫自身的消息写着：
+
+> a second `'static` collect on the same boot face overwrites the slices returned by the first call, which is **UB under the Rust aliasing model**
+
+**后果**：真机上若 `ExitBootServices` 第一次返回 `EFI_INVALID_PARAMETER`（"内存图变了，请重试"——这是 UEFI 规范定义的标准行为），attempt 2 直接 panic。
+
+**第七处：这条路径从未在 `not(test)` 下走过。**
+
+守卫是 `#[cfg(not(test))]`；而唯一走两次 attempt 的测试 `ebs_retry_then_success`（`ebs_pair.rs:731`，`fw.ebs_status = [EFI_INVALID_PARAMETER, EFI_SUCCESS]`）跑在 `cfg(test)` 下——**守卫被编译掉了**。测试形态恰好掩盖了生产缺陷。
+
+**生产侧 `'static` 消费者实测只有三处**（全仓 `DtbMemoryMap::new` 的逐点核实）：
+
+| 消费者 | 入口 | 用途 |
+|---|---|---|
+| `resv_claims.rs:295` | `collect_with_panorama()` | EBS 之后捕获 reservation claims |
+| `kernel-image/bootface.rs:213` | `collect_with_sources()` | riscv64 直核腿 |
+| `kernel-image/bootface_a64.rs:203` | `collect_with_sources()` | aarch64 直核腿 |
+
+**其余（`uefi_helpers.rs:830/904`、`opensbi_helpers.rs:294`）已经走 `collect_owned`。**
+
+**裁决：拆为三项，按依赖顺序排期。**
+
+| 子项 | 内容 | 依赖 | 可立即做 |
+|---|---|---|---|
+| **I-33-丙（新，最高优先）** | 给 `DtbMapOwned` 加 `panorama` 字段 + 访问器，`collect_owned` 一并投影；`resv_claims::capture` 改走 `collect_owned()` | 无 | **是** |
+| **I-33-甲** | 两个直核腿 `collect_with_sources()` → `collect_owned()` + 拷入 `storage`（已验证可编译可测）| 丙（复用 owned 形态）| **是**（丙之后）|
+| **I-33-乙** | 删四张静态表 + `commit_static` + 三个 `collect_*` 的 `'static` 入口 + 62 处测试改写 | 甲 + 丙 | 甲丙之后 |
+
+**为什么选「丙-2（给 owned 加 panorama）」而不是「丙-1（capture 移出循环）」**：
+
+用户裁决「选更干净的」。两者都能消除 attempt 2 的 panic：
+
+| 方案 | 做法 | 评价 |
+|---|---|---|
+| 丙-1 | `capture` 移出 `ebs_pair` 循环（DTB 在 EBS 之前不变，重复 capture 本就是浪费） | 小、安全，但**治标**——`'static` 形态仍在，`DTB_COLLECT_TAKEN` 守卫仍假设「每 boot face 一次」，其他潜在第二消费者仍会撞 |
+| **丙-2（采纳）** | `DtbMapOwned` 加 `panorama`，`capture` 改 `collect_owned()` | **治本**——`capture` 不再写静态表，守卫的语义前提恢复为真；且这正是 `collect_owned` 文档（`memmap_source.rs:1395-1402`）已经声明的意图：「the post-`ExitBootServices` cross-checks … are a second and third consumer. They use this owned form, whose arrays live on the caller's stack and never alias the static tables」——**代码早就写明该这么用，只是 `DtbMapOwned` 缺 panorama 而做不到** |
+
+**丙的具体改动**：
+
+| # | 位置 | 动作 |
+|---|---|---|
+| ① | `memmap_source.rs:192-199` `DtbMapOwned` | 加 `panorama: [MemoryRegion; DTB_MEMMAP_MAX]` 与 `panorama_len: usize` |
+| ② | `:201-` 的 `impl DtbMapOwned` | 加 `pub fn panorama(&self) -> &[MemoryRegion]` |
+| ③ | `:1403-1413` `collect_owned` | 投影 `arrays.panorama` / `arrays.panorama_n` |
+| ④ | `resv_claims.rs:294-296` | `collect_with_panorama()` → `collect_owned()`，解构取 `.sources()` / `.panorama()` |
+| ⑤ | `ebs_boundary_audit.rs` 等测试 | 按新形态改 |
+
+**丙的收益**：
+
+- **消除真机 panic**（UEFI 标准重试行为下必然触发）
+- **恢复守卫语义**：`DTB_COLLECT_TAKEN` 只在真有第二个 `'static` 消费者时才会被撞，而丙之后生产侧只剩两个直核腿（甲会把它们也改掉）
+- **解除乙的阻塞**：乙要删静态表，而 `resv_claims` 是最后一个 `'static` 生产消费者；丙改掉它，乙才能推进
+- **修复测试盲区**：丙之后可以在 `cfg(test)` 下补一条「两次 owned collect 不冲突」的测试，与 `not(test)` 守卫形成对照
+
+**丙的验收**：
+
+```bash
+grep -rn "collect_with_panorama" os/ --include=*.rs | grep -v memmap_source.rs   # 期望 0（生产侧）
+cargo test -p minix-boot
+cargo test -p boot-shim --features test-all
+# 新增测试：EBS 两次 attempt 下 capture 不 panic（cfg(test) 即可，
+# 因为丙之后它不再碰静态表，守卫与 test/prod 形态无关）
+```
+
+**甲的验收**（沿用原规格，去掉静态表部分）：两个直核腿的 `KernelInfo.memmap` 指向 `BootStorage` 落地区；riscv64 直核 bootface 门与 aarch64 直核 SMP 门 PASS。
+
+**乙的验收**（原规格的静态表部分）：`grep -rn "DTB_FREE|DTB_RESERVED|DTB_SOURCES|DTB_PANORAMA|commit_static|collect_with_sources|collect_with_panorama" os/ --include=*.rs` → 0（测试改写完成）。
+
+**原五处遗漏的处理**：#1（四张表）与 #2（panorama 消费者）由丙吸收；#3（`DtbMapOwned` 缺 panorama）就是丙本身；#4（62 处测试）归乙；#5（`&'static` 参数）归甲，实现形状见原记录的「早段借用切片、末尾建 `'static` 视图」。
 
 **当前状态**：代码改动已回退（`git checkout -- os/kernel-image/src/bootface.rs os/kernel-image/src/bootface_a64.rs`），工作树无本条改动。`grep -c "collect_with_sources" os/kernel-image/src/bootface.rs` → 1（原样）。
 
