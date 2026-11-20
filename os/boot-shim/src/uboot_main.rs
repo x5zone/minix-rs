@@ -304,9 +304,10 @@ const _: () = assert!(
 
 /// Read a staged ELF file's used length from its program headers.
 ///
-/// The U-Boot script only stages files; the table stores the slot capacity.
-/// Parsing the staged ELF header gives the real file end (`max(p_offset +
-/// p_filesz)` over PT_LOAD), so `BootModule.len` is not the 1 MiB/2 MiB slot.
+/// The U-Boot script only stages files; this function computes the length the
+/// table entry stores. Parsing the staged ELF header gives the real file end
+/// (`max(p_offset + p_filesz)` over PT_LOAD), so `BootModule.len` is the
+/// trimmed runtime file length, not the 1 MiB/2 MiB slot capacity.
 /// Returns `None` for a non-ELF payload or a header that does not fit the
 /// slot; the caller then falls back to the slot capacity.
 ///
