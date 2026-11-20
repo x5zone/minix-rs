@@ -986,7 +986,7 @@ C 的“把内核镜像自己也切一刀”在 Rust 侧由 `vm_handoff::classif
 
 ```rust
 /* 节选（保留保护结构、门装配与装载的次序；两处省略号内容不同——第一处除 `program_entry_base` 的 BSP 调用外，还省了它之前的 BSP 拓扑计算实代码：cpu_topology 一行加四个派生量赋值，按物理行 5 行、扣去函数调用行 4 行；第二处省的是 `register_current_arch` 的说明注释，注册调用行本身保留在正文；段间说明注释按节选略去），os/kernel/src/lib.rs:fn init_protection。 */
-    let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);
+    let prot = CurrentProtection::init(0, kernel_info.kern_stack_top());
     store_protection(prot);
     with_protection_mut(|prot| prot.refresh_descriptors());
     with_protection(|prot| prot.load());

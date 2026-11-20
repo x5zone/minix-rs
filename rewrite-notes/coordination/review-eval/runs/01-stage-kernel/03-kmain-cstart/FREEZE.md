@@ -81,3 +81,12 @@
 - **未闭环 = 0**。`OPEN-DEBT` 的 `R3-design-batch`（5 条设计 P2 + 10 条设计 P3）有 D-066 判决行与 2026-11-20 日期。
 - **ARCH 提案 2 条**（RD03-A1/A2）待用户亲裁，不阻断。
 - 限制同前：`CONVERGED` = 确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
+
+## citation 漂移修复（2026-11-21，用户指示的一行修复，append-only 追加）
+
+- **漂移**：`doc-citation-check.py` 报 `blocks=42 checked=31 failed=1`——块 §4.2 节选（文档 985-1002）行 `let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);` 缺调用括号，源码实为 `kernel_info.kern_stack_top()`（`os/kernel/src/lib.rs:2368`）。
+- **根因**：**I-31（`2a345f566`，2026-11-20 16:06）** 把 `KernelInfo` 的 `kern_stack_top` 从字段改为方法调用，落地在 **R3 确认轮的引文门之后**（R3 时点读数为 `checked=32 failed=0`，该读数当时为真）；文档引文未随 I-31 同步。另：原 `D03-citation-tool-batch`（工具只认 `//` 标注、42 个 `/* */` 块全跳过）已由 V3.5 的 `ce95ba0b3` 修复，本条正是工具修好后才暴露的**文档侧漂移**。
+- **修复**：文档 `:989` 一行补 `()`。修后 `doc-citation-check.py`：**`blocks=42 checked=32 failed=0 skipped=10`**。
+- **门复跑（修复后工作树）**：`anchor-resolve --check` 75/75（zero-def=0 / multi-def=0）；`doc-code-map --check` 21/21；`doc-ref-check --check` 通过；`doc-code-density-check --check` 承载门阻断项通过；`doc-style-lint --diff` error=0。
+- **新文档 sha256**：`1e6037125cf95a79ef940a94be6356243392ae1d8135c697595d0b1cfcb1a22f`（1396 行）。R3 修复后记录值 `64659b6c…` 自此被本行取代。
+- **性质**：事实同步修复（Doc Code Sync），非轮次重开、不改任何实质结论；`CONVERGED` 状态维持。重开条件不变（见上文「重开条件」）。
