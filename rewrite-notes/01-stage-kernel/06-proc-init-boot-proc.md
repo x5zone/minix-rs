@@ -50,7 +50,7 @@ EXTERN struct proc proc[NR_TASKS + NR_PROCS];	/* process table */
 
 这一步的位置在 `kernel/main.c` 的 [`kmain`](minix3/minix/kernel/main.c:kmain)：`cstart()` 之后、`IPCF_POOL_INIT()`（IPC 过滤池的初始化宏，紧随其后）与 boot 循环之前。
 
-**把 `proc_init()` 排到 boot 循环之后会怎样**：`proc_addr(n)` 的算式会先把槽指针算出来（BSS 里地址是有效的），但槽里的 `p_endpoint` 还是 BSS 零——而 boot 循环第二行就是 `ip->endpoint = rp->p_endpoint;`，把 0 号端点的值回填进清单条目；`p_priv` 也是零，`get_priv` 之前的任何一次 `priv(rp)` 都会解引用空指针。清表语句的位置不是风格问题，它决定了后面几步读到的是什么。
+**把 `proc_init()` 排到 boot 循环之后会怎样**：`proc_addr(n)` 的算式会先把槽指针算出来（BSS 里地址是有效的），但槽里的 `p_endpoint` 还是 BSS 零——而 boot 循环开头几行里就有 `ip->endpoint = rp->p_endpoint;`，把 0 号端点的值回填进清单条目；`p_priv` 也是零，`get_priv` 之前的任何一次 `priv(rp)` 都会解引用空指针。清表语句的位置不是风格问题，它决定了后面几步读到的是什么。
 
 ### 1.2 三张表与它们各自的容量
 
@@ -131,7 +131,7 @@ struct boot_image image[NR_BOOT_PROCS] = {
 
 17 个条目，前 5 个是内核 task（进程号为负），后 12 个是用户态模块。两类成员的差别不在名字上，而在"代码内容是谁放进内存的"：内核 task 编在内核镜像里，用户模块是引导器按 `boot.cfg` 的 `module` 指令加载进来的独立文件。这决定了 boot 循环里必须有一个分支——`i >= NR_TASKS` 的条目才需要去 `kinfo.module_list` 取地址。
 
-表的静态部分只写"谁、什么号、叫什么"三样。`struct boot_image` 的另外两个字段是空的：
+表的静态部分只写"谁、什么号、叫什么"三样。`struct boot_image` 的另外三个字段（`endpoint`/`start_addr`/`len`）此时是空的：
 
 ```c
 /* 代码引用，minix3/minix/include/minix/type.h:struct boot_image */
@@ -146,7 +146,7 @@ struct boot_image {
 
 `start_addr` 与 `len` 由 boot 循环从模块链表回填，`endpoint` 由 boot 循环从进程槽读出来再写回清单（`main.c:kmain` 的 `ip->endpoint = rp->p_endpoint;`）。方向是从槽到清单：清单本来是常量，却在启动期被改写成"这一次启动的实况"，而这份改写后的副本随后被交给 VM。
 
-**把模块取址的下标漏掉 `NR_TASKS` 偏移会怎样**：第 j 个模块的地址被读成第 j+5 项、末 5 次读越过 12 项数组的末尾——这是"编号错位"族的一例，族里现象最完整的一条（端点互换 + VM `panic("no init_proc")`）见 §1.4.1 的反推。
+**把模块取址的下标漏掉 `NR_TASKS` 偏移会怎样**：清单第 j 项会读到第 j 个模块的地址——这个地址本该属于第 j+5 项；末 5 项（下标 12..16）越过 12 项数组的末尾——这是"编号错位"族的一例，族里现象最完整的一条（端点互换 + VM `panic("no init_proc")`）见 §1.4.1 的反推。
 
 ### 1.4 本篇的终点状态：就位但暂停
 
@@ -262,7 +262,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 ### 2.1 `struct proc` 字段全集
 
-`struct proc` 有 40 个顶层成员。按"谁读它、在什么时机写"分成六组，导航如下表；本节逐组展开。
+`struct proc` 有 40 个顶层成员（口径：按 `CONFIG_SMP` 定义、`DEBUG_TRACE` 未定义的内核配置计）。按"谁读它、在什么时机写"分成六组，导航如下表；本节逐组展开。
 
 | 组 | 成员 | 本节 | boot 期是否被写 |
 |---|---|---|---|
@@ -272,7 +272,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 | 执行上下文与 VM 请求 | `p_reg` `p_seg` `p_pending` `p_defer` `p_vmrequest` | §2.1.4 | `arch_proc_reset` 写 `p_reg`/`p_seg`；`p_defer`/`p_vmrequest` 不写 |
 | 记账与统计 | `p_accounting` `p_dequeued` `p_user_time` `p_sys_time` `p_virt_left` `p_prof_left` `p_cycles` `p_kcall_cycles` `p_kipc_cycles` `p_tick_cycles` `p_cpuavg` | §2.1.5 | 只写 `p_accounting` 六个子字段（`reset_proc_accounting`） |
 | 生命周期控制 | `p_rts_flags` `p_misc_flags` | §2.1.6 | 全部 17 项都要定状态 |
-| 条件编译（不分组） | 1 | 仅 `p_schedules`（`DEBUG_TRACE` 下的调度计数）——调试用途，本篇不展开其语义（Rust 对位见 §4.4） |
+| 条件编译（不分组） | `p_schedules` | §4.4 | 仅 `p_schedules`（`DEBUG_TRACE` 下的调度计数）——调试用途，本篇不展开其语义（Rust 对位见 §4.4） |
 
 口径说明：40 这个数按"顶层成员"计——37 个具名声明 + 3 个匿名聚合类型（`p_accounting`、`p_vmrequest`、`p_defer`）；`p_cpu_mask`/`p_stale_tlb` 在 `CONFIG_SMP` 下、`p_schedules` 在 `DEBUG_TRACE` 下，按声明行一并计入。复算方式见 §6.2。
 
@@ -324,7 +324,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 `p_scheduler` 指向该进程的用户态调度器；清表时写成 `NULL`，判定宏 `proc_kernel_scheduler(p)` 把 `NULL` 与"指向自己"都当作"由内核默认策略调度"（`kernel/proc.h` 的 [`proc_kernel_scheduler`](minix3/minix/kernel/proc.h:proc_kernel_scheduler)）。
 
-`p_cpu_mask` 与 `p_stale_tlb` 在 32 位架构（i386/ARM32）下是位图数组，前者按注释是"允许在哪些 CPU 上运行"的白名单，后者记录"哪些 CPU 上可能有该进程的陈旧 TLB 项"。这两个字段在当前 C 树里的读者很少：`p_cpu_mask` 全树只有声明与 `do_update` 槽交换时的一次整块拷贝，启动路径不写它、调度路径不读它；`p_stale_tlb` 的写入点在 `do_vmctl` 的 `VMINHIBIT` 解除分支（`bits_fill`）。`p_cpu` 记录最近一次被分配到哪个 CPU。
+`p_cpu_mask` 与 `p_stale_tlb` 在 32 位架构（i386/ARM32）下是位图数组，前者按注释是"允许在哪些 CPU 上运行"的白名单，后者记录"哪些 CPU 上可能有该进程的陈旧 TLB 项"。这两个字段在当前 C 树里的读者很少：`p_cpu_mask` 全树只有声明与 `do_update` 槽交换时的一次整块拷贝，启动路径不写它、调度路径不读它；`p_stale_tlb` 的写入点在三处：`do_vmctl` 的 `VMINHIBIT` 清除分支、`do_update` 的槽交换路径（两处均 `bits_fill`），以及 `memory.c` 跨空间拷贝路径的 `UNSET_BIT`。`p_cpu` 记录最近一次被分配到哪个 CPU。
 
 #### 2.1.3 IPC 链接与消息组
 
@@ -471,7 +471,7 @@ void reset_proc_accounting(struct proc *p)
 
 18 个位，位值同样不连续：`0x00010`、`0x00020` 与 `0x00800` 三个位置未被占用。位宽的上限是 21 位（最高位 `0x100000`），离 32 位还有余量。
 
-这 18 个位里，boot 期唯一会被写的是 `MF_FPU_INITIALIZED` 的反向操作——`do_clear` 在回收一个槽时把它清掉（`system/do_clear.c` 的 [`do_clear`](minix3/minix/kernel/system/do_clear.c:do_clear)）：
+boot 期这 18 个位全都不被写（`p_misc_flags` 保持 BSS 零）；本篇叙述涉及到的唯一一次 MF 位写动作在运行期的槽回收——`do_clear` 清 `MF_FPU_INITIALIZED`（`system/do_clear.c` 的 [`do_clear`](minix3/minix/kernel/system/do_clear.c:do_clear)）：
 
 ```c
 /* 代码引用，minix3/minix/kernel/system/do_clear.c:do_clear —— 回收那一段 */
@@ -595,7 +595,7 @@ void reset_proc_accounting(struct proc *p)
 
 表里有两行属于"定义与使用不对称"的实例，单独说明如下。
 
-`RTS_VMREQTARGET` 在整个 C 树里只有三处出现：定义（`proc.h`）、`debug.c` 的打印、以及 [`mib/proc.c`](minix3/minix/servers/mib/proc.c) 里的一次读取。没有 `RTS_SET(p, RTS_VMREQTARGET)` 这样的置位语句。也就是说这个位在当前代码里是一个"有名字、有打印、有人读，但没人置"的位——读它的人永远读到零。给出这个结论的检索必须覆盖空白变体，因为 `proc.h` 里 `#define RTS_VMREQTARGET` 后面是制表符而不是空格。下面三条按检索输出的实际顺序列出（`^I` 表示制表符）：
+`RTS_VMREQTARGET` 在整个 C 树里只有三处出现：定义（`proc.h`）、`debug.c` 的打印、以及 [`mib/proc.c`](minix3/minix/servers/mib/proc.c) 里的一次读取。没有 `RTS_SET(p, RTS_VMREQTARGET)` 这样的置位语句。也就是说这个位在当前代码里是一个"有名字、有打印、有人读，但没人置"的位——读它的人永远读到零。给出这个结论的检索必须覆盖空白变体，因为 `proc.h` 里 `#define RTS_VMREQTARGET` 后面是制表符而不是空格。下面三条按文件路径排序的稳定顺序列出（`^I` 表示制表符）：
 
 ```text
 minix3/minix/kernel/debug.c:156:^IFLAG(RTS_VMREQTARGET);
@@ -622,7 +622,7 @@ Rust 侧的对应路径是 `syscall_process.rs` 的 [`dispatch_clear`](os/kernel
 特权结构的声明如下（代码引用，31 个字段）：
 
 ```c
-/* 代码引用，minix3/minix/kernel/priv.h:struct priv —— 完整结构体 */
+/* 代码引用，minix3/minix/kernel/priv.h:struct priv —— 节选（省略空行与源注释） */
 struct priv {
   proc_nr_t s_proc_nr;		/* number of associated process */
   sys_id_t s_id;		/* index of this system structure */
@@ -690,7 +690,7 @@ struct priv {
 特权槽分两段，边界写在地址宏里（[`kernel/priv.h`](minix3/minix/kernel/priv.h)）：`BEG_STATIC_PRIV_ADDR` 到 `END_STATIC_PRIV_ADDR` 是 `NR_STATIC_PRIV_IDS` 个静态槽，之后到 `END_PRIV_ADDR` 是动态槽。分配函数有两条路径：
 
 ```c
-/* 代码引用，minix3/minix/kernel/system.c:get_priv —— 完整函数体 */
+/* 代码引用，minix3/minix/kernel/system.c:get_priv —— 节选（省略空行与源注释） */
 int get_priv(
   register struct proc *rc,		/* new (child) process pointer */
   int priv_id				/* privilege id */
@@ -1296,7 +1296,7 @@ endpoint 是"槽号 + 代"的打包值。三个宏给出打包与拆包：
 |---|---|
 | 内核 task（5 项） | 名字已写、权限模板已填（idle 用 `IDL_F`，其余 `TSK_F`；CLOCK/SYSTEM 的 trap 掩码为 `CSK_T`）、`RTS_PROC_STOP` 置位、`SLOT_FREE` 已清 |
 | 可调度用户进程（VM、RS） | 权限模板已填（VM `VM_F`、RS `RSYS_F`）、优先级与时间片已给、`RTS_PROC_STOP` 置位。**名字**：VM 已写（`arch_proc_init` 在 `arch_boot_proc` 的 VM 分支里调用）、RS 未写（RS 属"其余 11 个"，名字在它自己 exec 时写——§2.1.1）；**双闸**：RS 带 `VMINHIBIT|BOOTINHIBIT`（§1.4），VM 不带；VM 的 ELF 已在 bootstrap 页表里 |
-| 其余用户模块（10 项） | 名字与模块地址已登记、`RTS_NO_PRIV \| RTS_NO_QUANTUM` 置位、双闸置位、`RTS_PROC_STOP` 置位；ELF 与页表等 VM |
+| 其余用户模块（10 项） | 模块地址已登记（名字仅前 6 项有：其余 11 个用户模块 boot 期没有名字，见 §2.1.1）、`RTS_NO_PRIV \| RTS_NO_QUANTUM` 置位、双闸置位、`RTS_PROC_STOP` 置位；ELF 与页表等 VM |
 | 全部 17 项 | `SLOT_FREE` 已清；`p_cpu_time_left == 0`；记账六项已归零 |
 
 两表的差别在分工：清表只写"这个槽存在"，填充才写"这个槽是谁、能做什么"。而"现在能不能跑"由 16 个位共同表达，其中 4 个位在填充阶段被置上、等待不同角色的解除者。
@@ -1468,7 +1468,7 @@ pub enum CapabilityTemplate {
 末尾那一步是 C 的终态来源：
 
 ```rust
-        // D-58 (C main.c:244): route the seed template mask through the
+        // C main.c:244: route the seed template mask through the
         // whole-table fill. The fill guards clear the process's own bit
         // (C boot terminal state: a process never holds its own IPC bit —
         // self-send is meaningless and the reciprocity invariant is
@@ -1478,7 +1478,7 @@ pub enum CapabilityTemplate {
         self.fill_sendto_mask(priv_id, template.ipc_mask());
 ```
 
-（代码引用，`kpriv.rs` 的 [`PrivTable::grant_capability`](os/kernel/src/kpriv.rs:PrivTable::grant_capability) 末段；块内 `D-58` 是仓库内部阶段编号，按原文引用。）
+（代码引用，`kpriv.rs` 的 [`PrivTable::grant_capability`](os/kernel/src/kpriv.rs:PrivTable::grant_capability) 末段；按当前源码原样引用。）
 
 模板给出的是意图（服务类角色是 `ALL`，含自位），`fill_sendto_mask` 把它走成 C 的终态（自位被守卫清掉）。这条分工不能省：若把模板掩码直接赋给 `s_ipc_to`，自位就留在掩码里（§2.3.3 的反向推演已经算过后果）。
 
@@ -1889,12 +1889,12 @@ pub enum VmLoadError {
     /// (image PA ∈ segment VA range). Boot-identity eviction would
     /// destroy not-yet-copied bytes; a real UEFI layout never produces
     /// this overlap, so it is rejected explicitly rather than read
-    /// through a stale mapping (NK4-A first-light, 2026-09-21).
+    /// through a stale mapping.
     ImageInsideSegments,
 }
 ```
 
-（代码引用，`boot.rs` 的 [`enum VmLoadError`](os/arch/src/arch/boot.rs:enum VmLoadError)——末一变体的注释里含仓库内部阶段编号与日期，按原文保留。）
+（代码引用，`boot.rs` 的 [`enum VmLoadError`](os/arch/src/arch/boot.rs:enum VmLoadError)——按当前源码原样引用。）
 
 四类失败对应四个不同的现场：格式不对（模块文件不是 ELF 或没有可装载段）、内存不够（bootstrap 分配器取不到帧）、映射失败（页表装不下去）、以及一种布局拒绝——镜像的物理区间落在它自己要映射的虚拟段范围内，此时驱逐恒等映射会把还没复制完的镜像字节抹掉，函数宁可返回错误也不读陈旧映射。最后一类在真实的 UEFI 布局里不会出现，属于防御性分支。
 
@@ -1957,10 +1957,8 @@ pub(crate) struct SyncUnsafeCell<T: ?Sized> {
 启动期需要临时集合的地方也走固定数组。VM 引导区选择要排除内核与所有 boot 模块占用的物理区间，这个排除集在零堆下是这样表达的：
 
 ```rust
-                let mut exclusions = [MemoryRegion {
-                    base: PhysBytes(0),
-                    len: 0,
-                }; crate::proc::NR_BOOT_MODULES + 1];
+                let mut exclusions =
+                    [MemoryRegion { base: PhysBytes(0), len: 0 }; VM_BOOT_EXCLUSION_CAP];
                 let mut n_excl = 0usize;
                 push_exclusion(
                     &mut exclusions,
@@ -1975,7 +1973,7 @@ pub(crate) struct SyncUnsafeCell<T: ?Sized> {
 
 （代码引用，`lib.rs` 的 [`init_proc_and_boot`](os/kernel/src/lib.rs:init_proc_and_boot) 生产分支的排除集段。）
 
-数组长度是 `NR_BOOT_MODULES + 1`：1 个内核镜像区间加 12 个模块区间。`push_exclusion` 在越界时 `assert`——不是"丢弃多的条目"，因为排除集少一项会让 VM 的段帧与某个已占用区间重叠（§4.7 会讲后果）。
+数组长度是 `VM_BOOT_EXCLUSION_CAP = NR_BOOT_MODULES + 3`（`lib.rs:2557`）：1 个内核镜像区间加 12 个模块区间之外，还为 root 页表页与引导 bump 区各留一格。`push_exclusion` 在越界时 `assert`——不是"丢弃多的条目"，因为排除集少一项会让 VM 的段帧与某个已占用区间重叠（§4.7 会讲后果）。
 
 | 选什么 | 否掉什么 | 代价 |
 |---|---|---|
@@ -1994,7 +1992,7 @@ C 的负担是四位分散在四处置位、又由四类不同角色解除（§1
 ```rust
         } else {
             // Don't let the process run for now.
-            // C: RTS_SET(rp, RTS_NO_PRIV | RTS_NO_QUANTUM) — main.c:226
+            // C: RTS_SET(rp, RTS_NO_PRIV | RTS_NO_QUANTUM) — main.c:253
             proc.p_rts_flags.set(RtsFlagsBits::NO_PRIV | RtsFlagsBits::NO_QUANTUM);
         }
 ```
@@ -2002,7 +2000,7 @@ C 的负担是四位分散在四处置位、又由四类不同角色解除（§1
 ```rust
         // VM inhibit: all user processes except VM must wait for VM to
         // create their page tables.
-        // C: main.c:267-270
+        // C: main.c:264-267
         if nr != proc_nr::VM_PROC_NR {
             proc.p_rts_flags.set(RtsFlagsBits::VMINHIBIT | RtsFlagsBits::BOOTINHIBIT);
         }
@@ -2469,7 +2467,7 @@ C 的内核先给 64 KiB 栈、之后由 VM 自己按需扩张（`reservedqueue.
 
 ```rust
     /// The three words below ps_strings — argc, argv, envp — each one
-    /// full pointer word (SD-17 对齐轮 2026-10-06：旧值 `2*usize + i32`＝
+    /// full pointer word (旧值 `2*usize + i32`＝
     /// 20B，argc 槽只有 4B 且令出生 sp 落在 4-mod-8 非全字对齐上；exec 路径
     /// minix-sys/stack.rs 早已是 WORD 槽。上游只有 i386/ARM32 的
     /// protect.c（int 与指针同宽故两形重合），64 位无 C 真源可抄——统一
@@ -2479,7 +2477,7 @@ C 的内核先给 64 KiB 栈、之后由 VM 自己按需扩张（`reservedqueue.
     const ARGC_ARGV_ENVP: u64 = 3 * core::mem::size_of::<usize>() as u64;
 ```
 
-（代码引用，`boot.rs` 的 [`fn load_elf_into`](os/arch/src/arch/boot.rs:fn load_elf_into) 的 `ARGC_ARGV_ENVP` 常量与它的文档注释；注释内含仓库内部编号与日期，按原文保留。）
+（代码引用，`boot.rs` 的 [`fn load_elf_into`](os/arch/src/arch/boot.rs:fn load_elf_into) 的 `ARGC_ARGV_ENVP` 常量与它的文档注释；按当前源码原样引用，注释已无内部编号与日期，按原文保留。）
 
 C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 12 字节（三个 4 字节字，与"三个指针"重合），在 64 位上是 20 字节——`argc` 槽只有 4 字节，出生 sp 落在 4 字节边界。Rust 统一成三个整字（24 字节），出生 sp 回到 8 字节对齐。
 
@@ -2784,7 +2782,7 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 
 三架构把 §4.1 差异面表的对应行固定成回归读数：`kernel_task_uses_init_task_psw` 与 `user_process_uses_init_psw`（x86-64 的两个初值状态字）、`inherit_fpu_state_propagates_lazy_user_policy`（x86-64）、`inherit_fpu_state_propagates_fpu_enable_el0`（aarch64）、`inherit_fpu_state_copies_sstatus`（riscv64）。
 
-这些读数跑在 `feature = "mock"` 的构建下（`os/kernel/Cargo.toml` 的 `default = ["mock"]` 就是宿主测试形态，生产形态走 `--no-default-features`）：[`lib.rs`](os/kernel/src/lib.rs) 里成对的 `#[cfg(not(feature = "mock"))]` 与 `#[cfg(all(test, feature = "mock"))]` 分支用替身顶替真实的物理内存访问与空闲内存图，所以"测试通过"与"真机行为"之间隔着这一层替身。
+这些读数跑在 `feature = "mock"` 的构建下（`os/kernel/Cargo.toml` 的 `default = []`——SD-30/U-1 已摘默认形态，宿主测试必须显式 `--features mock`，裸跑 `cargo test -p minix-kernel` 会撞 `form_contract` 编译期绊线；生产形态走 `--no-default-features`）：[`lib.rs`](os/kernel/src/lib.rs) 里成对的 `#[cfg(not(feature = "mock"))]` 与 `#[cfg(all(test, feature = "mock"))]` 分支用替身顶替真实的物理内存访问与空闲内存图，所以"测试通过"与"真机行为"之间隔着这一层替身。
 
 宿主测试能证明的部分：表的每槽初值、访问原语的边界、位图的取值与跃迁判定、掩码的自位清除与互惠、ELF 装载器的解析与错误分类。宿主测试不能证明的部分：真实页表的映射后果（`paging.query` 在测试里是 mock）、真机上的首次调度与用户态取指、以及"启动期没有堆分配"这条约束本身（它靠代码审查与构建配置保证，不靠单测）。
 
@@ -2905,7 +2903,7 @@ grep -c '^#define RTS_[A-Z_]*[[:space:]]*0x' minix3/minix/kernel/proc.h
 grep -c '^#define MF_[A-Z_]*[[:space:]]*0x' minix3/minix/kernel/proc.h
 # 预期输出：16 与 18；操作宏另算（grep -c '^#define RTS_[A-Z]*(' → 4）
 
-# 3) 结构体成员计数（口径：顶层声明行；proc 含 2 个匿名聚合，priv 无匿名）
+# 3) 结构体成员计数（口径：顶层声明行；proc 含 3 个匿名聚合——p_accounting/p_vmrequest 多行写法由 `struct {` 行计入、p_defer 单行由具名行计入，priv 无匿名）
 awk '/^struct proc \{/,/^\};/' minix3/minix/kernel/proc.h | grep -cE '^  [a-zA-Z_].*;|^  struct \{$'
 awk '/^struct priv \{/,/^\};/' minix3/minix/kernel/priv.h | grep -cE '^  [a-zA-Z_].*;'
 # 预期输出：40（37 具名 + 3 个匿名聚合类型）与 31

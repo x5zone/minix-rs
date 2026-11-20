@@ -1,0 +1,1 @@
+| R1-design-batch | P1 | **用户批准 2026-11-20（代理裁决 D-077）延期至下一 design batch**：RD06-DESIGN-D2-01/06/07/08 四项设计 P1（CapabilityTemplate::Vm 的 flag 集对齐 C VM_F、内核 task 初始优先级 USER_Q→TASK_Q、三族表访问器借用化/守卫化、§3.9 文档与拆分 API 的矛盾裁决）——四项都是**行为级**代码修改（调度时序/能力面/签名），需要 QEMU 三架构真机门与回归测试，超出本轮文档评审的验证面；文档半边的偏离登记已修。含 9 条设计 P2 与 ARCH 提案 RD06-A1/A2 |
