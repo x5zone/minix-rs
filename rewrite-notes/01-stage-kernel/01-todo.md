@@ -2315,6 +2315,16 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 | 2 aarch64 | **地址位域被污染**（128×4GiB 说明 bit38 附近被写入垃圾，不是"偏移算错"）|
 | 3 x86 | **低地址访问**（123 MiB 是合理地址，疑与"高半假设"无关；可能是载体自身的装载/stub 地址被错误访问）|
 
+**取证更新（2026-11-21，代码考古 + 新鲜二进制重跑；无需 `-d int` 即闭环两条）**：
+
+| # | 载体 | 现状 | 取证结论 |
+|---|---|---|---|
+| 1 | `test-timer-irq-riscv64` | **PASS**（tick uptime 走满，`test-timer-irq-riscv64.sh` 全绿）——I-43 记录的 trap 来自**更旧二进制**时代，已被 I-43 二层修复（调用者栈窗口 + 12 有效槽 + DTB 声明）顺带治愈 | **销账** |
+| 3 | `test-sysboot`（x86） | 深跑 fault——**根因已定案**，按 D-092 ③拆出 **I-59**（`new_from_page` 裸恒等前提 vs VM free-list 帧） | **移出（I-59）** |
+| 2 | `test-timer-irq-aarch64` | 深跑 sync exception——**far 解构推翻「位域污染」推测**：`far = 0xffff8080_4ffff000` 精确等于 `AArch64DirectMap::KERNEL_DIRECT_MAP_BASE(0xffff8080_00000000) + 0x4ffff000`，pa `0x4ffff000` = **aarch64 memmap 顶（0x50000000）− 0x1000**——与 x86/riscv 完全同型：**VM 首帧（VmBootAllocator region 末尾 − 0x1000）的 DM 写 fault**。D-092 表中「128×4GiB 位域污染」实际就是 DM base 自身的 PML4 高位，非垃圾 | 本条余项，收窄为「aarch64：VM 首帧 DM 写 fault」单一问题 |
+
+**三条归一后的新认识**：riscv 现场同型（stval = riscv DM base + 0x8ffff000 = riscv memmap 顶 − 0x1000）——riscv 现在能过是因 riscv 直核的 VM 加载链（`load_vm_elf` + `from_active_root`）绕开了该帧写；aarch64 仍在 fault 的差异点待查（aarch64 step4 的 DM 装载范围 / `vm_window.pa_capacity` 是否覆盖 memmap 顶）。**I-52 余项收窄为一条**：aarch64 VM 首帧 DM 写——取证到「far 是合法 DM VA、pa 是合法 memmap 帧」，下一步查 aarch64 step4 对该段的实际安装（`-d int` 或代码考古皆可）。
+
 **裁决（D-092，用户 2026-11-21）：不预分三条，I-52 保持一条，把三例的属性差异写清，下一步做 `-d int`。**
 
 **步③ 已执行（2026-11-21）：x86 那条移出，登记为 I-59。**
