@@ -1206,42 +1206,57 @@ impl HugePages for Riscv64Paging {
         {
             return Err(PageTableError::InvalidAddress);
         }
-        let size = size
-            .try_as_usize()
-            .ok_or(PageTableError::InvalidAddress)?;
+        let size_bytes = size.bytes();
         let pte_flags = flags_to_pte(flags);
 
-        let l2 = unsafe { phys_to_ptr(self.root_paddr) };
-        let i2 = l2_index(vaddr.0);
-        let e2 = unsafe { read_entry(l2, i2) };
+        // All table access goes through the handle's pinned channel
+        // (I-59 A' / E5(d)): a VM handle writes its own tables through the
+        // VM Direct Map at CPL3, where the bare identity VA is unmapped.
+        let i2 = l2_index(vaddr.0) as u64;
+        let l2e = unsafe { read_pte_dm(self.root_paddr + i2 * 8, self.channel) };
+        let present2 = l2e & Sv39PteFlags::V.bits() != 0;
 
-        if size >= 1 << 30 {
-            // 1GB huge page: write directly into the L2 (root) table.
-            unsafe { write_entry(l2, i2, paddr_to_pte(paddr.0) | pte_flags) };
+        if size_bytes == 1 << 30 {
+            if present2 {
+                return Err(PageTableError::AlreadyMapped);
+            }
+            unsafe {
+                write_pte_dm(
+                    self.root_paddr + i2 * 8,
+                    paddr_to_pte(paddr.0) | pte_flags,
+                    vaddr.0,
+                    self.channel,
+                )
+            };
             return Ok(());
         }
 
-        // 2MB huge page: need an L1 page table under this L2 entry.
-        let l1 = if e2 & Sv39PteFlags::V.bits() != 0 {
-            // L2 entry is valid — check whether it's a leaf or a table pointer.
-            if pte_is_leaf(e2) {
-                // L2 entry is already a 1GB leaf (R/W/X set). Demoting it to
-                // a table pointer would silently corrupt the existing 1GB mapping.
-                // Return AlreadyMapped to signal the conflict.
+        let l1 = if present2 {
+            if pte_is_leaf(l2e) {
+                // A 1 GiB leaf blocks the finer install.
                 return Err(PageTableError::AlreadyMapped);
             }
-            // Non-leaf entry: PPN points to an existing L1 page table.
-            pte_to_paddr(e2) as *mut u64
+            pte_to_paddr(l2e)
         } else {
-            // Allocate a new L1 page table.
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-            let page = phys.0;
-            unsafe { write_entry(l2, i2, paddr_to_pte(page) | Sv39PteFlags::V.bits()) };
-            unsafe { phys_to_ptr(page) }
+            let entry = paddr_to_pte(phys.0) | Sv39PteFlags::V.bits();
+            unsafe { write_pte_dm(self.root_paddr + i2 * 8, entry, 0, self.channel) };
+            phys.0
         };
 
-        let i1 = l1_index(vaddr.0);
-        unsafe { write_entry(l1, i1, paddr_to_pte(paddr.0) | pte_flags) };
+        let i1 = l1_index(vaddr.0) as u64;
+        let l1e = unsafe { read_pte_dm(l1 + i1 * 8, self.channel) };
+        if l1e & Sv39PteFlags::V.bits() != 0 {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        unsafe {
+            write_pte_dm(
+                l1 + i1 * 8,
+                paddr_to_pte(paddr.0) | pte_flags,
+                vaddr.0,
+                self.channel,
+            )
+        };
         Ok(())
     }
 

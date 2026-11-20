@@ -1193,46 +1193,68 @@ impl HugePages for AArch64Paging {
         {
             return Err(PageTableError::InvalidAddress);
         }
-        let size = size
-            .try_as_usize()
-            .ok_or(PageTableError::InvalidAddress)?;
+        let size_bytes = size.bytes();
         let pte_flags = flags_to_pte(flags);
+        const TABLE_FLAGS: u64 =
+            Arm64PteFlags::VALID.bits() | Arm64PteFlags::AF.bits() | Arm64PteFlags::TABLE.bits();
 
-        let l0 = unsafe { phys_to_ptr(self.root_paddr) };
-        let i0 = l0_index(vaddr.0);
-        let e0 = unsafe { read_entry(l0, i0) };
+        // All table access goes through the handle's pinned channel
+        // (I-59 A' / E5(d)): a VM handle writes its own tables through the
+        // VM Direct Map at CPL0/EL0, where the bare identity VA is
+        // unmapped.
+        let i0 = l0_index(vaddr.0) as u64;
+        let e0 = unsafe { read_pte_dm(self.root_paddr + i0 * 8, self.channel) };
         let l1 = if e0 & Arm64PteFlags::VALID.bits() != 0 {
-            (e0 & ADDR_MASK) as *mut u64
+            e0 & ADDR_MASK
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-            let page = phys.0;
-            unsafe { write_entry(l0, i0, page | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits()) };
-            unsafe { phys_to_ptr(page) }
+            unsafe {
+                write_pte_dm(self.root_paddr + i0 * 8, phys.0 | TABLE_FLAGS, 0, self.channel)
+            };
+            phys.0
         };
 
-        if size >= 1 << 30 {
-            unsafe { write_entry(l1, l1_index(vaddr.0), (paddr.0 & ADDR_MASK) | pte_flags) };
+        let i1 = l1_index(vaddr.0) as u64;
+        let e1 = unsafe { read_pte_dm(l1 + i1 * 8, self.channel) };
+        if size_bytes == 1 << 30 {
+            if e1 & Arm64PteFlags::VALID.bits() != 0 {
+                return Err(PageTableError::AlreadyMapped);
+            }
+            unsafe {
+                write_pte_dm(
+                    l1 + i1 * 8,
+                    (paddr.0 & ADDR_MASK) | pte_flags,
+                    vaddr.0,
+                    self.channel,
+                )
+            };
             return Ok(());
         }
-
-        let i1 = l1_index(vaddr.0);
-        let e1 = unsafe { read_entry(l1, i1) };
-        // Check if L1 entry is already a 1GB block (Valid + !Table).
-        // If so, demoting it would corrupt the existing mapping.
+        // A 1 GiB block descriptor blocks the finer install.
         if e1 & Arm64PteFlags::VALID.bits() != 0 && e1 & Arm64PteFlags::TABLE.bits() == 0 {
             return Err(PageTableError::AlreadyMapped);
         }
         let l2 = if e1 & Arm64PteFlags::VALID.bits() != 0 {
-            (e1 & ADDR_MASK) as *mut u64
+            e1 & ADDR_MASK
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-            let page = phys.0;
-            unsafe { write_entry(l1, i1, page | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits()) };
-            unsafe { phys_to_ptr(page) }
+            unsafe { write_pte_dm(l1 + i1 * 8, phys.0 | TABLE_FLAGS, 0, self.channel) };
+            phys.0
         };
 
-        let i2 = l2_index(vaddr.0);
-        unsafe { write_entry(l2, i2, (paddr.0 & ADDR_MASK) | pte_flags) };
+        let i2 = l2_index(vaddr.0) as u64;
+        let e2 = unsafe { read_pte_dm(l2 + i2 * 8, self.channel) };
+        if e2 & Arm64PteFlags::VALID.bits() != 0 {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        unsafe {
+            write_pte_dm(
+                l2 + i2 * 8,
+                (paddr.0 & ADDR_MASK) | pte_flags,
+                vaddr.0,
+                self.channel,
+            )
+        };
         Ok(())
     }
 

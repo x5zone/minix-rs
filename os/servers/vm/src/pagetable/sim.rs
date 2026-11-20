@@ -15,6 +15,7 @@ use core::cell::Cell;
 use alloc::collections::BTreeMap;
 
 use minix_arch::paging::{PageFlags, PageTableError, PteChannel};
+use minix_arch::paging_ext::{HugePages, PageSize};
 use minix_types::{PhysBytes, VirBytes};
 
 use super::Paging;
@@ -189,5 +190,45 @@ impl Paging for SimPaging {
 
     unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {
         self.flush_count.set(self.flush_count.get() + 1);
+    }
+}
+
+/// Simulated huge pages: model a huge leaf as its base-page translations.
+/// `map_kernel`'s Direct Map replay asks for 2 MiB leaves; the simulator
+/// has no MMU, so the observable result is the same set of 4 KiB entries
+/// the 4 KiB path would have produced (E5(d): the production VM uses real
+/// huge leaves — this stands in only for `cargo test` builds).
+impl HugePages for SimPaging {
+    const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
+    const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
+    const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
+
+    fn map_huge(
+        &mut self,
+        vaddr: VirBytes,
+        paddr: PhysBytes,
+        size: PageSize,
+        flags: PageFlags,
+    ) -> Result<(), PageTableError> {
+        if !Self::supports_huge_page(size) {
+            return Err(PageTableError::NotSupported);
+        }
+        if vaddr.0 % size.bytes() != 0 || paddr.0 % size.bytes() != 0 {
+            return Err(PageTableError::InvalidAddress);
+        }
+        let mut off = 0u64;
+        while off < size.bytes() {
+            self.map(
+                VirBytes(vaddr.0 + off),
+                PhysBytes(paddr.0 + off),
+                flags,
+            )?;
+            off += Self::PAGE_SIZE as u64;
+        }
+        Ok(())
+    }
+
+    fn supports_huge_page(size: PageSize) -> bool {
+        Self::HUGE_PAGE_SIZES.contains(&size)
     }
 }

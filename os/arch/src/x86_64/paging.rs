@@ -1261,52 +1261,78 @@ impl HugePages for X86_64Paging {
         {
             return Err(PageTableError::InvalidAddress);
         }
-        let size = size
-            .try_as_usize()
-            .ok_or(PageTableError::InvalidAddress)?;
+        let size_bytes = size.bytes();
         let pte_flags = flags_to_pte(flags);
-        let shift = if size >= 1 << 30 { PDPT_SHIFT } else { PD_SHIFT };
+        // Intermediate entries follow walk_alloc: PRESENT|WRITABLE, plus
+        // USER when the leaf does (U/S is ANDed at every level).
+        let mid_flags = X64PteFlags::PRESENT
+            | X64PteFlags::WRITABLE
+            | if pte_flags & X64PteFlags::USER.bits() != 0 {
+                X64PteFlags::USER
+            } else {
+                X64PteFlags::empty()
+            };
         // PS bit (bit 7) is the same for both 1GB (PDPT.PS) and 2MB (PD.PS) pages.
         let huge_flag = X64PteFlags::PS.bits();
 
-        let pml4 = unsafe { phys_to_ptr(self.root_paddr) };
-        let i4 = pml4_index(vaddr.0);
-        let e4 = unsafe { read_entry(pml4, i4) };
-
+        // All table access goes through the handle's pinned channel
+        // (I-59 A' / E5(d)): a VM handle writes its own tables through the
+        // VM Direct Map at CPL3, where the bare identity VA is unmapped.
+        let i4 = pml4_index(vaddr.0) as u64;
+        let e4 = unsafe { read_pte_dm(self.root_paddr + i4 * 8, self.channel) };
         let pdpt = if e4 & X64PteFlags::PRESENT.bits() != 0 {
-            (e4 & ADDR_MASK) as *mut u64
+            e4 & ADDR_MASK
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-            let page = phys.0;
-            unsafe { write_entry(pml4, i4, page | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits()) };
-            unsafe { phys_to_ptr(page) }
+            unsafe {
+                write_pte_dm(self.root_paddr + i4 * 8, phys.0 | mid_flags.bits(), 0, self.channel)
+            };
+            phys.0
         };
 
-        let i3 = pdpt_index(vaddr.0);
-        let e3 = unsafe { read_entry(pdpt, i3) };
-
-        if shift == PDPT_SHIFT {
-            unsafe { write_entry(pdpt, i3, (paddr.0 & ADDR_MASK) | pte_flags | huge_flag) };
+        let i3 = pdpt_index(vaddr.0) as u64;
+        let e3 = unsafe { read_pte_dm(pdpt + i3 * 8, self.channel) };
+        if size_bytes == 1 << 30 {
+            if e3 & X64PteFlags::PRESENT.bits() != 0 {
+                return Err(PageTableError::AlreadyMapped);
+            }
+            unsafe {
+                write_pte_dm(
+                    pdpt + i3 * 8,
+                    (paddr.0 & ADDR_MASK) | pte_flags | huge_flag,
+                    vaddr.0,
+                    self.channel,
+                )
+            };
             return Ok(());
         }
-
-        // Check if PDPT entry is already a 1GB leaf (PRESENT + PS both set).
-        // If so, demoting it would corrupt the existing mapping.
         if e3 & X64PteFlags::PRESENT.bits() != 0 && e3 & X64PteFlags::PS.bits() != 0 {
+            // A 1 GiB leaf blocks the finer install.
             return Err(PageTableError::AlreadyMapped);
         }
-
         let pd = if e3 & X64PteFlags::PRESENT.bits() != 0 {
-            (e3 & ADDR_MASK) as *mut u64
+            e3 & ADDR_MASK
         } else {
             let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-            let page = phys.0;
-            unsafe { write_entry(pdpt, i3, page | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits()) };
-            unsafe { phys_to_ptr(page) }
+            unsafe {
+                write_pte_dm(pdpt + i3 * 8, phys.0 | mid_flags.bits(), 0, self.channel)
+            };
+            phys.0
         };
 
-        let i2 = pd_index(vaddr.0);
-        unsafe { write_entry(pd, i2, (paddr.0 & ADDR_MASK) | pte_flags | huge_flag) };
+        let i2 = pd_index(vaddr.0) as u64;
+        let e2 = unsafe { read_pte_dm(pd + i2 * 8, self.channel) };
+        if e2 & X64PteFlags::PRESENT.bits() != 0 {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        unsafe {
+            write_pte_dm(
+                pd + i2 * 8,
+                (paddr.0 & ADDR_MASK) | pte_flags | huge_flag,
+                vaddr.0,
+                self.channel,
+            )
+        };
         Ok(())
     }
 
