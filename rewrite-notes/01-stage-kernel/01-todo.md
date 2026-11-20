@@ -45,7 +45,7 @@
 | I-36（已实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | ✅ **已实施（2026 年 11 月 21 日，D-082）**：① `UbootFileLoader::read` 删 `segment_iter`（对已修剪数据的幂等无效功）+ 删错误的「表存槽容量」注释，回归纯字节来源 ② 新增 `elf_file_end`（复用 `minix_elf::segment_iter`，零新解析器），`load_boot_modules_into` 接统一修剪——U-Boot 腿幂等、UEFI 腿从此修剪，`BootModule.len` 跨腿一致 ③ 非 ELF/畸形镜像保持全长。**前置验证 36/36**（12 模块 × 3 架构：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，裁掉的只有 .comment/.symtab/.debug_*）。boot-shim 143 全绿；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + U-Boot shim 链 6/6 全 PASS。连带登记 I-50（.lbss 无 PT_LOAD 覆盖）。详见 §3 的 I-36 | §3 |
 | I-50（✅ 已销账·前提不成立） | x86 模块的 `.lbss` 不在任何 PT_LOAD 内——原判「装载路径无载体」 | 定位 | ✅ **D-090（用户 2026 年 11 月 21 日）销账**：对 115 个 x86_64 ELF 做 `readelf -SW`/`-lW` 对账，**112 个带 `.lbss` 的全部完整落在某 PT_LOAD 的 `memsz` 内**（`minix-fs-mfs` 的 4 MiB `.lbss` 上界 `0x1641010` 与最后一个 PT_LOAD 的 `memsz` 结束地址**完全相等**）。它不在 `filesz` 内是 NOBITS 的正常语义；装载路径「拷 `[0,filesz)` → 清零 `[filesz,memsz)`」已自动覆盖。候选 a 要修的东西不存在、候选 b 会重复映射。**证据边界**：x86 生产模块路径仍未真跑，本次是静态检查+代码语义推理、非运行时实证；若真跑发现 `.lbss` 脏值则重开并指向「NOBITS 尾清零」 | §3 的 I-50 |
 | I-51（待复核后销账·两症状均已消失） | 测试面并行隔离失败：vm 10 条测试共享 `PAGE_ALLOC_PTR` 全局单例；minix-boot 的 `memmap_source` 族漂移 | 测试基建 | **D-091（用户 2026 年 11 月 21 日）判「待复核后销账」**：① 症状 1 实测消失（`cargo test -p minix-vm --lib` 连跑 3 次 548/0，`overwriting different allocator` 零命中）；**成因已定位**——`register_page_alloc` 用 `compare_exchange`，而 16 处测试自己 `unregister`/`register` 配对、各用栈上 allocator，并行时互相抹指针。② 症状 2 已复核（`589aa8afb` 落地后 `minix-boot` 恢复编译，连跑 3 次 184/0，漂移未复现），但**成因未定位**（也可能同属偶然性问题）。**销账条件**：复核甲已加隔离/乙测试被改/丙偶然三选一；**判丙则须补 `test_sync` 式全局锁并重跑 ≥10 次全绿** | §3 的 I-51 |
-| I-52（待裁决·I-43 三层残留之一） | 深跑路径的地址假设失配：riscv VM trap（`stval` 高半形态）/ aarch64 timer-irq sync exc / x86 sysboot page fault | 定位 + 设计裁决 | **未裁决**（D-087 拆出）。三条性质相同（载体低链 vs 生产路径高半假设）但 `test-sysboot` 的 `cr2=0x7ba7000` 是低地址，**可能不同根**；倾向先 `-d int` 单步取证再决定统一修还是各自修 | §3 的 I-52 |
+| I-52（已裁决·待实施） | 深跑路径的地址假设失配：riscv VM trap / aarch64 timer-irq sync exc / x86 sysboot page fault | 定位 + 设计裁决 | **已裁决（D-092，用户 2026 年 11 月 21 日）：不预分三条，保持一条，下一步 `-d int`**。裁决前地址形态实测推翻「同根」：riscv `stval=0xffffffc0cffff000` 是 Sv39 规范高半、偏移 `0xcffff000`≈3.3GiB；aarch64 `far=0xffff80804ffff000` 是 VA48 规范（上一版误用 Sv39 判非规范）、偏移 `0x804ffff000`=128×4GiB+0x50000000（疑位域污染）；x86 `cr2=0x7ba7000` 是规范低地址≈123MiB，疑与高半假设无关。**不预分三条的理由**：拆分前提是性质不同，而当前只是地址形态推测、未到根因 | §3 的 I-52 |
 | I-53（待裁决·I-43 三层残留之二） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception（`test-paging-faultloop` 与 `test-user-trap` 同一行号） | 设计裁决 + 代码修正 | **未裁决**（D-087 拆出）。**纯内核缺陷**（`trap_dispatch.rs`），两个独立载体撞同一处说明是生产问题；倾向先审查 CPL/error-code 路由，不推荐载体侧绕过 | §3 的 I-53 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（已裁决·待实施） | `load_segments_into_phys_memory` 的 SAFETY 契约过期（仍写「调用者必须先 compute」）+ entry 断言两份拷贝 | 注释修正 | **已裁决（D-088，用户 2026 年 11 月 21 日）**：I-48 前置已落地（`a25305c66`），复核后发现 ① SAFETY 第 2 条**现在是错的**（迭代器已自查 `filesz > memsz`，`loader.rs:275-279` 仍写「本函数不拒绝」）→ **必做改写**；② 面板称的文档失真**实测不存在** → 销账；③ entry 断言两份拷贝**不合并**（两份的守卫时机不同：wrapper 在 `layout_gate` 前、UEFI 腿在 `reserve_kernel_span` 前）。面板的 `ValidatedKernelImage` / 改 wrapper 形状两案均不采纳（I-48 之后净收益为零） | §3 的 I-46 |
@@ -2237,9 +2237,9 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 读数：三架构生产 target 各 0 error。I-29-16 合同自此在三架构各自的最小可验收形态落地；政策表的「完全冻结」仍按设计文档等原型证据与真机验收（不因本批宣告）。
 
-### I-52（待裁决·I-43 三层残留之一）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc / x86 sysboot page fault）
+### I-52（已裁决·待实施）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc / x86 sysboot page fault）
 
-**来源**：I-43 的三层残留（D-087 拆出）。**状态：待裁决。**
+**来源**：I-43 的三层残留（D-087 拆出）。**状态：已裁决（D-092）。**
 
 **三个缺陷（同一性质，均已带完整寄存器读数）**：
 
@@ -2263,7 +2263,35 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **我的倾向：A**。理由：三条都只有寄存器现场、没有根因定位；先取证再决定「统一修」还是「各自修」，比先设计抽象更省。而且 `test-sysboot` 的 `cr2=0x7ba7000` 是个**低地址**（约 123 MiB），与前两条的高半形态不同——**这可能不是同一个根因**，需要取证确认。
 
-**验收**：三条载体各自深跑到下一条已知路标（或 PASS）；若确认同根，补一条宿主可测的等价测试。
+**裁决前实测（地址形态分析，推翻「同根」假设）**：
+
+| # | 载体 | 故障地址 | 规范地址？ | 与内核基址的关系 |
+|---|---|---|---|---|
+| 1 | `test-timer-irq-riscv64` | `stval = 0xffffffc0_cffff000` | **Sv39 规范高半**（bit38..63 = `0x3ffffff` 全 1）| `- KERNEL_VIRT_BASE(0xffffffc0_00000000)` = **`0xcffff000` ≈ 3.3 GiB** |
+| 2 | `test-timer-irq-aarch64` | `far = 0xffff8080_4ffff000` | **VA48 规范**（bit48=1 且 bit63..49 = `0x7fff` 全 1）——**上一版用 Sv39 规则判它"非规范"是错的** | `- KERN_VIRT_BASE(0xffff8000_00000000)` = **`0x804ffff000` = 128×4GiB + `0x50000000`** |
+| 3 | `test-sysboot`（x86）| `cr2 = 0x7ba7000` | 规范**低地址** | ≈ **123 MiB**；落在 I-43 二层实证的载体装载区附近（`image_base = 0x5E0_0000` = 94 MiB）|
+
+**三条的性质不同，不是同一根因**：
+
+| # | 疑似成因 |
+|---|---|
+| 1 riscv | **高半基址 + 错误偏移**（偏移 ≈ 4 GiB 量级，疑为窗口大小/取整错误）|
+| 2 aarch64 | **地址位域被污染**（128×4GiB 说明 bit38 附近被写入垃圾，不是"偏移算错"）|
+| 3 x86 | **低地址访问**（123 MiB 是合理地址，疑与"高半假设"无关；可能是载体自身的装载/stub 地址被错误访问）|
+
+**裁决（D-092，用户 2026-11-21）：不预分三条，I-52 保持一条，把三例的属性差异写清，下一步做 `-d int`。**
+
+**为什么不预分三条**：拆分的前提是"性质不同"，而当前只是从**地址形态**推测性质不同，**尚未到根因**。若取证发现 riscv 与 aarch64 同属"高半基址换算"、x86 独立，预分就错了。D-087 把三条从 I-43 拆出时就是按"同性质"合的，现在证明不同 —— **但"不同"要到根因级别才能立条**。
+
+**下一步（实施前必做）**：
+
+| # | 动作 |
+|---|---|
+| ① | 三条各做一轮 QEMU `-d int` 单步，定位到具体指令与源文件行 |
+| ② | 按根因判定：同根的合并修一个抽象；不同根的各立子条目 |
+| ③ | 若 x86 那条确认与"载体链址假设"无关，从本条移出、单独登记 |
+
+**验收**：三条载体各自深跑到下一条已知路标（或 PASS）；补一条宿主可测的等价测试（若某条能在宿主复现其地址换算）。
 
 **边界**：不触碰内核生产路径——生产内核链在高半，这些换算本来就对；问题只在低链载体上。
 
