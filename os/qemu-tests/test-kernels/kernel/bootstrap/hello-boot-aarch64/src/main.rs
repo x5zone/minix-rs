@@ -42,9 +42,6 @@ fn main() -> Status {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(0x4020_0000), // QEMU virt RAM starts at 0x4000_0000
         kern_size: 0x200_000,
-        user_sp: VirBytes(0x0000_7fff_ffff_f000),
-        kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
-        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
         boot_modules: &[],
         platform_sources: &[],
         param_buf: &[],

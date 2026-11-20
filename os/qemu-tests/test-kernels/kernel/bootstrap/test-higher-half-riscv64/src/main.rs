@@ -127,10 +127,7 @@ pub extern "C" fn rust_main() -> ! {
         kern_virt_base: VirBytes(kern_virt_base),
         kern_phys_base: PhysBytes(DRAM_BASE),
         kern_size,
-        user_sp: VirBytes(0x0000_003f_ffff_f000),
         // Stack top at end of mapped kernel region (same pattern as x86_64/aarch64).
-        kern_stack_top: VirBytes(kern_virt_base + kern_size as u64),
-        syscall_entry: VirBytes(kern_virt_base + 0x100_000),
         boot_modules: &[],
         platform_sources: &[],
         param_buf: &[],

@@ -120,9 +120,6 @@ pub extern "C" fn rust_main() -> ! {
         kern_virt_base: VirBytes(DRAM_BASE),
         kern_phys_base: PhysBytes(DRAM_BASE),
         kern_size: 0x200_000,
-        user_sp: VirBytes(0x0000_003f_ffff_f000),
-        kern_stack_top: VirBytes(DRAM_BASE + 0x200_000),
-        syscall_entry: VirBytes(DRAM_BASE),
         boot_modules: &[],
         platform_sources: &[],
         param_buf: &[],
@@ -140,7 +137,7 @@ pub extern "C" fn rust_main() -> ! {
     early_console::write_str("  Sv39 MMU enabled\n");
 
     // 3. init_protection — same sequence as kmain's Phase B
-    let prot = CurrentProtection::init(0, info.kern_stack_top);
+    let prot = CurrentProtection::init(0, info.kern_stack_top());
     prot.load();
 
     let mut trap = CurrentTrapEntry::init();
@@ -170,7 +167,7 @@ pub extern "C" fn rust_main() -> ! {
     unsafe {
         asm!("csrr {}, sscratch", out(reg) sscratch, options(nomem, nostack, preserves_flags));
     }
-    let expected_sp = info.kern_stack_top.get();
+    let expected_sp = info.kern_stack_top().get();
     if sscratch != expected_sp {
         early_console::write_str("  FAIL: sscratch mismatch\n");
         fail();

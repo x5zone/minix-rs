@@ -248,11 +248,8 @@ fn main() -> Status {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(image_base),
         kern_size: 0x200_000,
-        user_sp: VirBytes(0x0000_7fff_ffff_f000),
         // Kernel-stack TOP record (the lower-EL legs would switch to it;
         // this kernel-only carrier never enters EL0).
-        kern_stack_top: VirBytes(image_base + 0x200_000),
-        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
         boot_modules,
         platform_sources,
         param_buf: &[],

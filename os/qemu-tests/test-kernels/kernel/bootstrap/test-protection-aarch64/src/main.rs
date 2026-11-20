@@ -330,9 +330,6 @@ fn main() -> Status {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(0x4020_0000),
         kern_size: 0x200_000,
-        user_sp: VirBytes(0x0000_7fff_ffff_f000),
-        kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
-        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
         boot_modules: &[],
         platform_sources: &[],
         param_buf: &[],
@@ -435,7 +432,7 @@ fn main() -> Status {
     // 8. Verify kern_stack_top is a valid virtual address
     // SP_EL1 is accessible (TSP=0). The protection.rs init() now correctly
     // saves/restores SP when writing SP_EL1 to avoid stack corruption.
-    let stack_top = info.kern_stack_top.get();
+    let stack_top = info.kern_stack_top().get();
     if stack_top < info.kern_virt_base.0 {
         early_console::write_str("  FAIL: kern_stack_top below kern_virt_base\n");
         fail();

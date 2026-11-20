@@ -561,14 +561,12 @@ fn main() -> Status {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(image_base),
         kern_size: 0x200_000,
-        user_sp: VirBytes(0x0000_7fff_ffff_f000),
-        // Kernel-stack TOP for SP_EL1. The carrier does not install
-        // SP_EL1 (AAVMF rejects the write — see the protection-phase
-        // note); its vector loads `rt_birth_kstack_top` itself. The value
-        // here is the carrier's own stack top so the record matches what
-        // the trap leg actually uses.
-        kern_stack_top: VirBytes(0x0000_0000_4781_0000),
-        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+        // Kernel-stack TOP for SP_EL1. The carrier does not install SP_EL1
+        // (AAVMF rejects the write — see the protection-phase note); its
+        // vector loads `rt_birth_kstack_top` itself, so `KernelInfo` no longer
+        // carries that value (wire v10 / D-062): the derived image-tail top
+        // only feeds the 16-byte-alignment gate, and the trap leg's real
+        // stack top lives in `rt_birth_kstack_top`.
         boot_modules,
         platform_sources,
         param_buf: &[],

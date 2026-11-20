@@ -38,6 +38,8 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
+| I-42（待裁决） | `BootStorage` 的 `push_*` 死子系统（`push_module` / `push_platform_source` / `BootStorageFull` 调用者归零） | 代码删除 | **未裁决**（I-34 实施副产物）；A 删 / B 留，见 §3 的 I-42 | §3 |
+| I-43（待裁决） | 四个 QEMU 测试内核把全零 12 槽 `BOOT_MODULES` 当 `boot_modules` 切片交出，撞 `boot identity window is empty or reversed: [0x0,0x0)` | 测试载体修正 | **未裁决**（I-31 补漏批二中发现）；四条见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
@@ -45,7 +47,7 @@
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
 | I-40（本轮新登记） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`minix-boot/src/kernel_info.rs:640`）与 `KernelInfo::memmap()`（`kernel/src/vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **未裁决**（I-39 mini review 中发现，与 D-077 同一缺陷类但位置不同、超出该裁决授权）；待用户裁决是否并入 I-39 口径直接删/改写，见 §3 的 I-40 | §3 |
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
-| I-31（已实施） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条 QEMU 门链全 PASS**。mini review 抓到两个漏项（`uboot_main` bin 未编、`VmBootHandoff.user_sp` 误删）。验收读数与口径偏差见 §3 的 I-31 | §3 |
+| I-31（已实施 + 两轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
 | I-33（⚠ 改回待裁决） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **原裁决（D-065，用户 2026 年 11 月 20 日）已被实施受阻推翻**：实测发现第四张 `DTB_PANORAMA` 仍有生产消费者（`resv_claims.rs` 的 EBS 后 claim 捕获），且 `DtbMapOwned` 不带 panorama、测试改写面 62 处。三选一待裁决（A 扩权到 panorama / B 缩小为「只统一直核腿」/ C 拆成两项）。代码改动已全部回退——详见 §3 的 I-33 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
@@ -570,6 +572,31 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 
 **为什么此前不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。本条在裁决后由用户单独指示实施。
 
+**补漏批二（2026 年 11 月 20 日）：30 个 QEMU 测试内核编译失败**：
+
+这是本条第二个「不在默认 check 面」的漏项，比 `uboot_main` 那批大得多。
+
+- **现象**：30 个 `os/qemu-tests/test-kernels/kernel/bootstrap/*/src/main.rs` 仍在 `KernelInfo` 字面量里写 `user_sp:` / `kern_stack_top:` / `syscall_entry:`，字段已删 → `error[E0560]: struct KernelInfo has no field named ...`。
+- **为什么第一轮没发现**：这些包的目标带 `required-features`（`fw-x86-uefi` / `fw-aarch64-uefi` / `fw-riscv64-none`），所以 `cargo check --workspace` 与 `cargo check -p kernel-image` 都**不编译它们**。而五条生产 QEMU 门链跑的是 `kernel-image` 的四个产物、不是这些测试内核，所以门链全绿也没暴露。全仓带 `required-features` 的目标共 **46 个**（`tomllib` 实查），这批只是其中一部分。
+- **修法**：按 `kern_stack_top` 的字面量是否等价于派生值 `kern_virt_base + kern_size` 分三类：
+
+| 类 | 条数 | 处理 | 依据 |
+|---|---|---|---|
+| **A 等价** | 26 | 删三行字面量，消费点改 `.kern_stack_top()` | 字面量就是 `kern_virt_base + kern_size`（`0xFFFF_8000_0020_0000` / `kern_virt_base + kern_size` / riscv 的 `DRAM_BASE + 0x200_000`，其中 `DRAM_BASE == kern_virt_base`） |
+| **B 不等价（物理基址）** | 3（`test-rt-birth-riscv64`、`test-timer-irq-riscv64`、`test-timer-irq-aarch64`） | 同 A 删字面量 | 它们写的是 `KERNEL_LOAD_PA + size` / `image_base + size`。实测这三个值在该内核里**只用于 16 字节对齐断言**，而派生值同样 16 对齐 → 断言照过，无行为影响 |
+| **C 刻意偏离** | 1（`test-rt-birth-aarch64`） | 同 A 删字面量 + 把原注释改写为说明「值已由 `rt_birth_kstack_top` 承担」 | 原值 `0x4781_0000` 是载体自己的 32 KiB 内核栈顶（`KSTACK` 数组，`global_asm` 里 `rt_birth_kstack_top = KSTACK + 0x8000`）。它本来就不该走 `KernelInfo`——字段删除恰好让这个事实显式化 |
+
+- **验证**：46 个带 `required-features` 的目标**逐个 `cargo check`**（带对应 target 与 feature），全部 **0 error**。其中 `test-rt-birth` / `test-sysboot` 另有 `RT_BIRTH_ELF_PATH` / `SYSBOOT_*_ELF_PATH` 环境变量依赖（由门脚本注入），单独 `cargo check` 会报 env-var 缺失，与本条无关。
+- **QEMU 全套对照（`run_all.sh`）**：改动前 **13 passed / 26 failed / 5 build failures**，改动后 **11 passed / 28 failed / 1 build failure**。build failure 从 5 降到 1（剩 `test-protection-riscv64`）。
+- **数字下降的解释（不是回归）**：`test-timer-irq-riscv64` 在改前那份读数里显示 PASS，但同一份读数也把它列在 `build-failed packages` 里——它当时**编译失败**，PASS 来自 `target/` 里残留的旧二进制（`run_all.sh` 的 `run_test` 在二进制存在时直接加载）。我的改动让它真正编译成功，新二进制跑起来暴露了它自身的既有缺陷：
+
+```
+### PANIC in test-timer-irq-riscv64: kernel/src/lib.rs boot identity window is empty or reversed: [0x0,0x0)
+```
+
+- **那条 panic 的真因（既有缺陷，与本条无关）**：`BOOT_MODULES: [BootModule; 12]` 是全零数组，内核只填 `mods[8]` 一项，却把**整个 12 槽数组**当成 `boot_modules` 切片交出。`push_module_windows` 逐项 push，遍历到第 0 槽（`start=0, len=0`）就撞 `BootWindows::push` 的 `assert!(start < end)`。同一形态出现在 `test-rt-birth-aarch64` / `test-rt-birth-riscv64` / `test-timer-irq-aarch64`。这四条的修法（要么让测试内核交出真实前缀 `&mods[8..9]`，要么让 `push_module_windows` 跳过空模块）需要单独裁决——**不在本条射程**，已登记为 I-43。
+
+
 ### I-30（已裁决·可立即开工）aarch64 形态判别改链接期分叉
 
 **裁决**：用户 2026-11-19 选择「向 riscv64 看齐」，判决行 `D-061`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——裁决本身已生效，实施尚未开始；`OPEN-DEBT.md` 的 `ARCH-01-aarch64-link-split` 行同步。
@@ -1054,6 +1081,29 @@ I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"�
 - 五条 QEMU 门链不回归（`BootReport` 参与全部 v1 发送腿）。
 
 **为什么没有并入 I-38**：D-074 的授权范围是 `boot_validate_and_prepare` 的形参改造，不含 `minix-boot` 的类型删减（跨 crate）。按 fix-guard「一次一条」登记。
+
+### I-43（未裁决·I-31 补漏批二副产物）四个测试内核的空槽 `BOOT_MODULES`
+
+**来源**：I-31 补漏批二（修 30 个测试内核编译失败）时，编译修好后跑 QEMU 暴露。
+
+**现象**：四条内核在 `arch_boot_impl` 的 `step0 validate ok` 之后立刻 panic：
+
+```
+### PANIC in test-timer-irq-riscv64: kernel/src/lib.rs boot identity window is empty or reversed: [0x0,0x0)
+```
+
+**真因（已定位）**：这四条内核用同一个构造模式——`static mut BOOT_MODULES: [BootModule; 12]` 是全零数组，内核只填 `mods[8]` 一项，却把**整个 12 槽数组**当成 `boot_modules` 切片交出。`push_common_boot_windows` 里的 `push_module_windows` 逐项 `windows.push(start, start + len)`，遍历到第 0 槽（`0, 0`）就撞 `BootWindows::push` 的 `assert!(start < end)`。
+
+**为什么此前没人发现**：I-31 之前这四条**编译不过**，`run_all.sh` 记 build failure、不跑 QEMU。唯一在读数里显示 PASS 的 `test-timer-irq-riscv64` 是 `target/` 里残留旧二进制被直接加载的结果（同一份读数把它同时列在 `build-failed packages` 里，自相矛盾）。
+
+**待裁决的两个修法**：
+
+- **A（推荐，测试载体侧）**：四条各自把 `boot_modules` 改成真实前缀 `&mods[8..9]`（或让 `BOOT_MODULES` 只留实际使用的那一项）。修正测试载体自己的构造错误，不碰内核。
+- **B（内核侧）**：让 `push_module_windows` 跳过 `start == 0 && len == 0` 的模块槽。这会把「空槽是合法哨兵」写进内核——而生产腿上 `boot_modules` 永远是已提交的真实前缀，不存在空槽。B 会让内核容忍一种它本不该见到的输入形态。
+
+**我倾向 A**：空槽是测试载体自己造出来的，内核没有义务为它开例外。
+
+**验收（若走 A）**：四条各自 `run_all.sh` 对应测试 PASS；`cargo check` 三架构 0 error。
 
 ### I-37（已裁决·待实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
 

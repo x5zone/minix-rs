@@ -246,11 +246,8 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         kern_virt_base: VirBytes(DRAM_BASE),
         kern_phys_base: PhysBytes(KERNEL_LOAD_PA),
         kern_size: 0x200_000,
-        user_sp: VirBytes(0x0000_003f_ffff_f000),
         // Kernel-stack TOP for the sscratch swap on U→S entry (the user
         // leg is wired but unreachable in this kernel-only carrier).
-        kern_stack_top: VirBytes(KERNEL_LOAD_PA + 0x200_000),
-        syscall_entry: VirBytes(DRAM_BASE),
         boot_modules,
         platform_sources: &[],
         param_buf: &[],

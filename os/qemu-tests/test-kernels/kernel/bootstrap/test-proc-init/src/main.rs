@@ -192,9 +192,6 @@ fn main() -> Status {
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(0x200_000),
         kern_size: 0x200_000,
-        user_sp: VirBytes(0x0000_7fff_ffff_f000),
-        kern_stack_top: VirBytes(0xFFFF_8000_0020_0000),
-        syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
         boot_modules,
         platform_sources: &[],
         param_buf: &[],
@@ -216,7 +213,7 @@ fn main() -> Status {
     early_console::write_str("  paging enabled\n");
 
     // 3. Phase B: protection only (no clock/interrupt needed for proc table init)
-    let prot = CurrentProtection::init(0, info.kern_stack_top);
+    let prot = CurrentProtection::init(0, info.kern_stack_top());
     prot.load();
     // As of 2026-09-14, the IDT may only go live with real handlers in
     // every present gate (the no-empty-gate stage invariant) — install the
