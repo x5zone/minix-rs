@@ -43,6 +43,7 @@
 | I-43（已裁决·部分实施） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **已裁决（D-081，用户 2026 年 11 月 20 日）采 A**（测试载体侧交出真实前缀/真实 span）；否决 B（内核跳过空槽会把生产中不存在的语义写进内核）。**实测 12 个内核中 6 条已修（`PLACEHOLDER_SPAN`）、6 条仍为全零槽未修**（后者不在必跑门链集合内故未暴露，`test-sysboot` 因两个不连续槽需改用 `PLACEHOLDER_SPAN` 而非 `&mods[8..9]`）。另卸出三层后续缺陷各需专项：riscv VM 加载 trap / x86 两载体 `enable()` 后静默挂 / riscv 直核静默停。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已裁决·待实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | **已裁决（D-082，用户 2026 年 11 月 20 日）采「删重复 + 修剪上移」**：① 删 `read` 里的 `segment_iter`（实测输入的 `entry.len` 已是修剪值，纯冗余）② 修剪上移到 `load_boot_modules_into` ③ 复用 `minix_elf::segment_iter`，不新增第三个解析器。**否决「抽象修剪 trait + 空实现」**（无哪个腿不需要修剪）。② 落地前须验证 12 个模块的 PT_LOAD 覆盖真实内容 | §3 的 I-36 |
+| I-45（已裁决·待实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | **已裁决（D-084，用户 2026 年 11 月 20 日）梭哈 A**：`Item` 直接改 `Result<LoadSegment, ElfError>`，不走 B 过渡（无外部消费者、保留旧函数等于给缺陷留后门）；`filesz > memsz` 检查收进迭代器；`load_segments_into_buffer` 返回类型同批改 | §3 的 I-45 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
@@ -1403,6 +1404,79 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 - `cargo test -p boot-shim --features test-all` 全绿。
 
 **风险与回退**：U-Boot 腿行为不变（幂等）；UEFI 腿 `BootModule.len` 变小——若某个模块的 PT_LOAD 未覆盖真实内容，该模块会被部分裁掉，表现为运行期缺数据。回退方式：删 ② 的一行即可恢复原状。
+
+### I-45（已裁决·待实施）`SegmentIter` 把畸形 ELF 静默当成"没有这个段"
+
+**来源**：`R3/DESIGN-D2-02`（P1，[MODERN]），D02 的 R3 面板。**状态：已裁决**（`D-084`）。
+
+**问题**：`SegmentIter::next`（`os/libs/minix-elf/src/lib.rs:352-399`）有**六条 `continue`**，只有一条是正常过滤，其余五条都是"这个 ELF 坏了"：
+
+| 行 | 分支 | 真实含义 |
+|---|---|---|
+| `:359-361` | `index.checked_mul(e_phentsize)` 溢出 | **畸形** |
+| `:363-366` | `e_phoff + entry_off` 溢出 | **畸形** |
+| `:373-376` | `parse_phdr` 返回 `Err` | **畸形** |
+| `:381-383` | `p_offset + p_filesz` 溢出 | **畸形** |
+| `:385-387` | `seg_end > image.len()` | **畸形**（截断或损坏）|
+| `:379` | `p_type != PT_LOAD` | **正常过滤** |
+
+**五条畸形与一条过滤，全都表现为 `next()` 返回 `None`**——调用方看到的是"段比预期少"，无法区分"这个 ELF 本来没有这个段"和"这个段坏了"。
+
+**后果（四个消费者逐一核实）**：
+
+| 消费者 | 位置 | 当前行为 |
+|---|---|---|
+| 引导 `compute_kernel_layout` | `loader.rs:176-215` | 只挡 `!found_load`（一段都没有）；**中间段坏被跳过 → `kern_size` 偏小、少拷一段、内核照常启动** |
+| `load_segments_into_buffer` | `loader.rs:224-240` | `Err(_) => return 0`；**返回 `usize`，调用方无法区分"装载 0 段"与"ELF 坏了"** |
+| `load_segments_into_phys_memory` | `loader.rs:286-291` | `.collect()` 成 `Vec<LoadSegment>`——**若 `Item` 变成 `Result`，`Vec<Result<..>>` 会静默保留 `Err` 元素**，必须显式处理 |
+| rs exec | `rs/trap_api.rs:443-455` | 只挡 `!copied_any`；**少拷一段代码/数据后继续 exec** |
+| VM bootstrap | `vm_server.rs:890-893` | `.collect()` 成偏小的段表，照它建映射 |
+| `arch_boot` 的 `load_elf_into` | `arch/boot.rs:461` | 只 `map_err`，不检查段数 |
+| `opensbi_helpers` 的槽长修剪 | `opensbi_helpers.rs:211-216` | `.ok().and_then(max)`，畸形时回退整个槽 |
+
+**另有一处只有引导路径检查的危险条件**：`filesz > memsz`（`loader.rs:188-191` 有检查，其余六处**都没有**）。后果不是"少段"而是**越界写**——`sys_datacopy(seg.filesz)` 会写到 `vaddr + filesz`，超过声明的 `memsz`。
+
+**C 侧对照**：C 把畸形镜像的拒绝交给**外部装载器**；Rust 侧已建了 `ElfError` 枚举（`TooShort` / `BadMagic` / `PhdrOutOfBounds` / `NoLoadSegments` …），但它只覆盖"打开文件"阶段，**遍历阶段的畸形没有错误路径**。
+
+**裁决（D-084，用户 2026-11-20）：梭哈 A——`Item` 直接改 `Result`，不走 B 过渡。**
+
+**否决 B（新增 `try_segment_iter` + 旧函数标 `deprecated`）**，三条理由：
+
+1. **没有过渡窗口**：5 个依赖 crate 全在本仓、7 个生产调用点可同批改完，不存在"暂时改不完"的场景。
+2. **B 会让缺陷继续存活**：只要 `segment_iter` 还在就有人用它（尤其 `opensbi_helpers.rs:211` 那种"我只用 `max()`，无所谓"的用法）。保留一个已知有缺陷的公开函数等于给缺陷留后门。
+3. **A 才是本条的核心价值**：`Item` 改成 `Result` 之后，**每个调用点必须显式回答"遇到畸形 ELF 怎么办"**。当前 7 个点的答案是沉默；A 之后每个点都要写出自己的策略（boot 冒泡 `Err` / exec 转 `ENOEXEC` / VM 拒绝 boot image / 槽长修剪显式回退）。B 做不到这件事——用旧函数的路径可以继续沉默。
+
+**A 的形态**：
+
+```rust
+impl<'a> Iterator for SegmentIter<'a> {
+    type Item = Result<LoadSegment, ElfError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < self.ehdr.e_phnum {
+            // 非 PT_LOAD → continue（正常过滤，不进结果集）
+            // 畸形 → return Some(Err(...))
+            // 正常 → return Some(Ok(seg))
+        }
+        None
+    }
+}
+```
+
+**外加把 `filesz > memsz` 检查收进迭代器**（不留在调用方），让七个消费者免费获得越界写防护。
+
+**同批必须改的下游签名**：`load_segments_into_buffer`（`loader.rs:224`）现返回 `usize`，`Err(_) => return 0`。改成 `Result` 后它**自己的签名也要跟着改**（`Result<usize, ElfError>`），否则它会把"坏段"再次压成"0 段"——**这是同一条缺陷在下一层的复制，只改迭代器等于把缺陷往下推一层**。
+
+**`load_segments_into_phys_memory`（`loader.rs:286`）的 `.collect()` 必须显式处理 `Err` 元素**（当前 `Vec<LoadSegment>`；改成 `Item = Result` 后会变成 `Vec<Result<..>>`，若不处理就会静默保留坏段）。
+
+**验收**：
+
+1. 面板核心测试：构造一个「中间一个 PT_LOAD 的 `p_offset + p_filesz` 越界」的 ELF，断言 **boot / exec / VM 三个消费者都拒绝**而不是少段启动。
+2. 补一条 `filesz > memsz` 的构造 ELF，断言三个消费者都拒绝（当前只有 boot 检查）。
+3. `minix-elf` 自身单测：畸形 phdr 时返回 `Some(Err(..))` 而不是提前 `None` 结束。
+4. `grep -rn "minix_elf::segment_iter(" os/ --include=*.rs` → 每处都已处理 `Result`；`loader.rs:288` 的 `.collect()` 已改为显式 `Result` 收集。
+5. `cargo test -p minix-elf`（23 条基础 + 新增）、`cargo check --workspace --all-targets`、五条 QEMU 门链全 PASS。
+
+**风险与回退**：`minix-elf` 的公开 API 破坏性变更，但无外部消费者。回退方式：`Item` 改回 `LoadSegment` 并恢复五条 `continue`（不推荐——那会回到本缺陷）。
 
 ### I-34（已裁决·可立即开工）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
