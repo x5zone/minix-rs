@@ -43,7 +43,7 @@
 | I-43（✅ 已闭合·一层二层完成） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | ✅ **D-087（用户 2026 年 11 月 21 日）采 C 关闭**：一层（12 载体全 `PLACEHOLDER_SPAN` + 全 12 槽）与二层（`enable()` 后静默停双根因：载体装载地址改用 `shim_image_window()` + `arch_boot_impl` 补压调用者栈窗口）均已达成原始验收（零 `[0x0,0x0)` + 三架构 0 error；x86 14 中 13 PASS、aarch64 5 全 PASS、riscv hello-boot PASS）。三层残留按性质拆出：三条地址假设失配 → **I-52**；故障臂路由 → **I-53**；`test-rt-birth-riscv64` 的 `bump(256)` 断言为本条关闭时的明示遗留（先于本修复即存在）| §3 的 I-43 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | ✅ **已实施（2026 年 11 月 21 日，D-082）**：① `UbootFileLoader::read` 删 `segment_iter`（对已修剪数据的幂等无效功）+ 删错误的「表存槽容量」注释，回归纯字节来源 ② 新增 `elf_file_end`（复用 `minix_elf::segment_iter`，零新解析器），`load_boot_modules_into` 接统一修剪——U-Boot 腿幂等、UEFI 腿从此修剪，`BootModule.len` 跨腿一致 ③ 非 ELF/畸形镜像保持全长。**前置验证 36/36**（12 模块 × 3 架构：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，裁掉的只有 .comment/.symtab/.debug_*）。boot-shim 143 全绿；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + U-Boot shim 链 6/6 全 PASS。连带登记 I-50（.lbss 无 PT_LOAD 覆盖）。详见 §3 的 I-36 | §3 |
-| I-50（待裁决·I-36 前置验证的副产物） | x86 模块的 `.lbss`（`-mcmodel=large` 大 BSS，如 minix-fs-mfs 的 4 MiB）不在任何 PT_LOAD 内——VM/exec 装载路径只映射 PT_LOAD 并清零 `[filesz, memsz)`，`.lbss` 的运行期映射与清零无载体 | 定位 + 设计裁决 | **未裁决**。36 模块 ELF 巡检实证：全部 12 个 x86_64 模块有 `.lbss`（WAl，NOBITS，零文件字节），riscv64/aarch64 无此节。riscv U-Boot 链实测可用（模块在 riscv 跑通），x86 生产模块路径从未真跑（QEMU 门链全是 stub）——`.lbss` 变量首次写入是否落进未映射页未验证。候选：a) 链接脚本收编 `.lbss` 进 PT_LOAD 的 memsz b) 装载路径按节表补映射 c) 禁用 large model。需先验证问题真实性（x86 模块真跑一次） | §3 |
+| I-50（✅ 已销账·前提不成立） | x86 模块的 `.lbss` 不在任何 PT_LOAD 内——原判「装载路径无载体」 | 定位 | ✅ **D-090（用户 2026 年 11 月 21 日）销账**：对 115 个 x86_64 ELF 做 `readelf -SW`/`-lW` 对账，**112 个带 `.lbss` 的全部完整落在某 PT_LOAD 的 `memsz` 内**（`minix-fs-mfs` 的 4 MiB `.lbss` 上界 `0x1641010` 与最后一个 PT_LOAD 的 `memsz` 结束地址**完全相等**）。它不在 `filesz` 内是 NOBITS 的正常语义；装载路径「拷 `[0,filesz)` → 清零 `[filesz,memsz)`」已自动覆盖。候选 a 要修的东西不存在、候选 b 会重复映射。**证据边界**：x86 生产模块路径仍未真跑，本次是静态检查+代码语义推理、非运行时实证；若真跑发现 `.lbss` 脏值则重开并指向「NOBITS 尾清零」 | §3 的 I-50 |
 | I-51（待裁决·I-48 解锁测试面后的存量发现） | minix-vm 测试面并行隔离失败：10 条测试共享进程级全局单例（`pt_alloc::register called twice` / `register_page_alloc: overwriting different allocator`），并行跑必红；**I-41 验收途中新增同型实证**——minix-boot 的 memmap_source 族（`dtb_source_capacity` / `dtb_every_input_declaration`）全量跑漂移失败、单跑过、重跑全绿 | 测试基建 | **未裁决**。vm `--test-threads=1` 下 548 全过——纯隔离问题，非功能回归。HEAD 上因 vm 测试面编译错误不可见（I-48 顺带补了 `SimPaging` 的两个 required 方法后解锁）。修法同 kernel `test_sync::lock_boot_globals` 先例（全局锁守卫）；也可能单条修复（让这些测试用自己的 pt_alloc 域）。射程扩为「vm 全局单例 + minix-boot memmap_source 族」两处同型。独立小专项 | §3 |
 | I-52（待裁决·I-43 三层残留之一） | 深跑路径的地址假设失配：riscv VM trap（`stval` 高半形态）/ aarch64 timer-irq sync exc / x86 sysboot page fault | 定位 + 设计裁决 | **未裁决**（D-087 拆出）。三条性质相同（载体低链 vs 生产路径高半假设）但 `test-sysboot` 的 `cr2=0x7ba7000` 是低地址，**可能不同根**；倾向先 `-d int` 单步取证再决定统一修还是各自修 | §3 的 I-52 |
 | I-53（待裁决·I-43 三层残留之二） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception（`test-paging-faultloop` 与 `test-user-trap` 同一行号） | 设计裁决 + 代码修正 | **未裁决**（D-087 拆出）。**纯内核缺陷**（`trap_dispatch.rs`），两个独立载体撞同一处说明是生产问题；倾向先审查 CPL/error-code 路由，不推荐载体侧绕过 | §3 的 I-53 |
@@ -2282,6 +2282,43 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 **我的倾向：A**。理由：两个独立载体撞同一处**同一行号**，这不是载体问题。
 
 **验收**：`test-paging-faultloop.sh` 与 `test-user-trap.sh` 各自 PASS；补一条宿主可测的路由测试（构造 CPL3 fault 的 error code，断言分派到用户态臂）。
+
+### I-50（✅ 已销账·前提不成立）x86 模块的 `.lbss` 不在任何 PT_LOAD 内
+
+**来源**：I-36（D-082）前置验证的副产物。**状态：已销账（D-090）。**
+
+**原描述**：36 模块 ELF 巡检得出「全部 12 个 x86_64 模块有 `.lbss`（WAl，NOBITS，零文件字节），**不在任何 PT_LOAD 内**」；推理是「VM/exec 装载路径只映射 PT_LOAD 并清零 `[filesz, memsz)`，`.lbss` 的运行期映射与清零无载体」。候选修法：a) 链接脚本收编 `.lbss` 进 PT_LOAD 的 memsz；b) 装载路径按节表补映射；c) 禁用 large model。
+
+**裁决前实测（推翻前提）**：对 `os/target/x86_64-unknown-none/release/` 下**全部 115 个 ELF** 做 `readelf -SW` + `readelf -lW` 对账：
+
+| 检查 | 结果 |
+|---|---|
+| ELF 总数 | **115** |
+| 带 `.lbss` 的 | **112**（`kernel` / `rt-birth` / `sysboot-rx` / `sysboot-tx` 无此节）|
+| `.lbss` **完整落在某个 PT_LOAD 的 `memsz` 内** | **112 / 112 = 全部** |
+
+**决定性样本**（4 MiB 大 BSS 那个，也是原描述点名的例子）：
+
+```
+last PT_LOAD : vaddr 0x1230390  memsz 0x410c80  →  结束于 0x1641010
+.lbss        : addr  0x1241000  size  0x400010  →  结束于 0x1641010
+```
+
+**上界完全相等**——`.lbss` 恰好填满最后一个 PT_LOAD 的 `memsz` 尾部。
+
+**所以「不在任何 PT_LOAD 内」是错的**：它不在任何 PT_LOAD 的 **`filesz`** 内（NOBITS 节零文件字节，这是 NOBITS 的正常语义），但在 **`memsz`** 内。
+
+**装载路径本来就有载体**：`load_segments_into_phys_memory` 与 VM/exec 的段装载都是「拷 `[0, filesz)` 文件字节 → 清零 `[filesz, memsz)`」。`.lbss` 因落在 `memsz` 内而自动被清零。
+
+**因此候选 a（链接脚本收编）要修的东西不存在；候选 b（按节表补映射）会重复映射同一范围。**
+
+**裁决（D-090，用户 2026-11-21）：前提不成立，销账。**
+
+**附一条证据边界（必须记下）**：原描述称「x86 生产模块路径从未真跑（QEMU 门链全是 stub）」——**这一点仍成立**。所以本次验证是「静态 ELF 检查 + 装载路径语义」两段推理，**不是运行时实证**。
+
+若将来 x86 模块真跑起来发现 `.lbss` 变量读回脏值，**重开本条目并指向具体点**：「装载路径对 NOBITS 尾的清零是否覆盖 `.lbss`」。当前该路径的 `.fill(0)` / VM 段装载在代码上覆盖 `[filesz, memsz)`，静态可信。
+
+**不立新条目**：本条已查清，销账即可。
 
 ### I-42（已实施）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 
