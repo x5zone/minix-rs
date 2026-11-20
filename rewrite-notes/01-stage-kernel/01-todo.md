@@ -45,7 +45,7 @@
 | I-36（已实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | ✅ **已实施（2026 年 11 月 21 日，D-082）**：① `UbootFileLoader::read` 删 `segment_iter`（对已修剪数据的幂等无效功）+ 删错误的「表存槽容量」注释，回归纯字节来源 ② 新增 `elf_file_end`（复用 `minix_elf::segment_iter`，零新解析器），`load_boot_modules_into` 接统一修剪——U-Boot 腿幂等、UEFI 腿从此修剪，`BootModule.len` 跨腿一致 ③ 非 ELF/畸形镜像保持全长。**前置验证 36/36**（12 模块 × 3 架构：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，裁掉的只有 .comment/.symtab/.debug_*）。boot-shim 143 全绿；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + U-Boot shim 链 6/6 全 PASS。连带登记 I-50（.lbss 无 PT_LOAD 覆盖）。详见 §3 的 I-36 | §3 |
 | I-50（✅ 已销账·前提不成立） | x86 模块的 `.lbss` 不在任何 PT_LOAD 内——原判「装载路径无载体」 | 定位 | ✅ **D-090（用户 2026 年 11 月 21 日）销账**：对 115 个 x86_64 ELF 做 `readelf -SW`/`-lW` 对账，**112 个带 `.lbss` 的全部完整落在某 PT_LOAD 的 `memsz` 内**（`minix-fs-mfs` 的 4 MiB `.lbss` 上界 `0x1641010` 与最后一个 PT_LOAD 的 `memsz` 结束地址**完全相等**）。它不在 `filesz` 内是 NOBITS 的正常语义；装载路径「拷 `[0,filesz)` → 清零 `[filesz,memsz)`」已自动覆盖。候选 a 要修的东西不存在、候选 b 会重复映射。**证据边界**：x86 生产模块路径仍未真跑，本次是静态检查+代码语义推理、非运行时实证；若真跑发现 `.lbss` 脏值则重开并指向「NOBITS 尾清零」 | §3 的 I-50 |
 | I-51（待复核后销账·两症状均已消失） | 测试面并行隔离失败：vm 10 条测试共享 `PAGE_ALLOC_PTR` 全局单例；minix-boot 的 `memmap_source` 族漂移 | 测试基建 | **D-091（用户 2026 年 11 月 21 日）判「待复核后销账」**：① 症状 1 实测消失（`cargo test -p minix-vm --lib` 连跑 3 次 548/0，`overwriting different allocator` 零命中）；**成因已定位**——`register_page_alloc` 用 `compare_exchange`，而 16 处测试自己 `unregister`/`register` 配对、各用栈上 allocator，并行时互相抹指针。② 症状 2 已复核（`589aa8afb` 落地后 `minix-boot` 恢复编译，连跑 3 次 184/0，漂移未复现），但**成因未定位**（也可能同属偶然性问题）。**销账条件**：复核甲已加隔离/乙测试被改/丙偶然三选一；**判丙则须补 `test_sync` 式全局锁并重跑 ≥10 次全绿** | §3 的 I-51 |
-| I-52（已裁决·待实施） | 深跑路径的地址假设失配：riscv VM trap / aarch64 timer-irq sync exc / x86 sysboot page fault | 定位 + 设计裁决 | **已裁决（D-092，用户 2026 年 11 月 21 日）：不预分三条，保持一条，下一步 `-d int`**。裁决前地址形态实测推翻「同根」：riscv `stval=0xffffffc0cffff000` 是 Sv39 规范高半、偏移 `0xcffff000`≈3.3GiB；aarch64 `far=0xffff80804ffff000` 是 VA48 规范（上一版误用 Sv39 判非规范）、偏移 `0x804ffff000`=128×4GiB+0x50000000（疑位域污染）；x86 `cr2=0x7ba7000` 是规范低地址≈123MiB，疑与高半假设无关。**不预分三条的理由**：拆分前提是性质不同，而当前只是地址形态推测、未到根因 | §3 的 I-52 |
+| I-52（已裁决·待实施·x86 条已移出至 I-59） | 深跑路径的地址假设失配：riscv VM trap / aarch64 timer-irq sync exc | 定位 + 设计裁决 | **已裁决（D-092，用户 2026 年 11 月 21 日）：不预分三条，保持一条，下一步 `-d int`**。裁决前地址形态实测推翻「同根」：riscv `stval=0xffffffc0cffff000` 是 Sv39 规范高半、偏移 `0xcffff000`≈3.3GiB；aarch64 `far=0xffff80804ffff000` 是 VA48 规范（上一版误用 Sv39 判非规范）、偏移 `0x804ffff000`=128×4GiB+0x50000000（疑位域污染）；x86 `cr2=0x7ba7000` 是规范低地址≈123MiB，疑与高半假设无关。**不预分三条的理由**：拆分前提是性质不同，而当前只是地址形态推测、未到根因 | §3 的 I-52 |
 | I-53（已裁决·原定性作废，拆 I-57/I-58） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception | 设计裁决 | **已裁决（D-093，用户 2026 年 11 月 21 日）**：**原定性作废**——审查证实 `is_user_mode=(cs&3)==3` 与 `is_nested=!is_user` 都是对的（C 的双入口 `mpx.S:368/382` 语义已正确映射），wrapper 判据与注册顺序也正确。真实病因两条、均在载体侧：**I-57**（`test-paging-faultloop` 的 `carrier_pagefault` 在 CPL0 执行，`walk_leaf:314` 的 `alloc_pt_page().expect` 在 bump 耗尽时 panic）、**I-58**（`test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 `trap_dispatch:465-472`）。两条均待 `-d int` 取证 | §3 的 I-53 / I-57 / I-58 |
 | I-57（待裁决·I-53 拆出） | `test-paging-faultloop` 载体自身在 CPL0 panic：`carrier_pagefault` 内的 `walk_leaf` 取页失败 / VM 槽未就绪 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`walk_leaf:314` 的 `pt_alloc::alloc_pt_page().expect("carrier: pt page")`（`alloc=true` 分支必取页）、`:437-440` 的 `get_mut(ProcNr(8)).expect("VM boot proc exists")`；I-43 二层已记录「反复 64 次把 32 MB bump 区耗尽」 | §3 的 I-57 |
 | I-58（待裁决·I-53 拆出） | `test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`trap_dispatch.rs:465-472` 的 panic 是**正确的前置条件**（文档：User origin + None = no scheduler step ever ran → wiring bug）；载体若在 scheduler bring-up 前让 CPL3 载荷 fault 即触发 | §3 的 I-58 |
@@ -904,7 +904,7 @@ L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立�
 
 
 
-### I-35（已裁决·待实施·行号与前提已复核）`KERNEL_INFO` 的 write-once 承诺与二次写 + 两处注释失真
+### I-35（部分实施·(b) 注释项已落，(a) 四步待实施）`KERNEL_INFO` 的 write-once 承诺与二次写 + 两处注释失真
 
 **裁决**：用户 2026-11-20，判决行 `D-071`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户明确要求「只记账不实施」）。来源：`R34/DESIGN-D2-05`（P2，[MODERN]）。**编号注记**：本条是 `I-35`，与本节下方的 `D-71`（`BootForm::source_path`，已修）不是一回事——后者是历史编号，前者是 2026-11-20 的判决行。
 
@@ -1268,7 +1268,7 @@ I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"�
 
 **为什么此前不做**：用户 2026 年 11 月 20 日批准方案但只做记账；且本条**必须等 I-31 落地**后实施，否则 `BootScalars` 要定型两次。I-31 于同日完成后本条随即实施。
 
-### I-41（已裁决·待实施）`BootReport` 上三个零读者的派生字段
+### I-41（✅ 已实施）`BootReport` 上三个零读者的派生字段
 
 **来源**：I-38 实施时的 mini review。
 
@@ -1323,6 +1323,10 @@ cargo test -p minix-kernel --features mock
 **五条 QEMU 门链不回归**（`BootReport` 参与全部 v1 发送腿——虽然生产读者为零，但它是 `prepare_kernel_image_v1` 的入参类型，删字段改变了类型形状）。
 
 **为什么没有并入 I-38**：D-074 的授权范围是 `boot_validate_and_prepare` 的形参改造，不含 `minix-boot` 的类型删减（跨 crate）。按 fix-guard「一次一条」登记。
+
+**实施记录（2026 年 11 月 21 日，D-085 采 A 落地）**：三处改动全部完成并核实——① `boot_storage.rs:306-313` 三字段已删，留 D-085 出处注释（说明它们是 D-062 从 wire 删掉的同一批纯 restatement、v10 清扫漏了非 wire 类型、三个可派生来源）；② `report()` 的三行赋值已删；③ `test_load_segments...` 相关的三条断言已删（`:385-387` 处现为空）。
+
+**代码实证**：`grep -c "pub user_sp: VirBytes|pub kern_stack_top: VirBytes|pub syscall_entry: VirBytes" os/libs/minix-boot/src/boot_storage.rs` → **0**；`cargo test -p minix-boot` → **184 通过 / 0 失败**（连跑 3 次一致）；`cargo test -p minix-kernel --features mock` → 864/0。 
 
 **验收（若走 A）**：
 
@@ -1599,7 +1603,7 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 
 **为什么此前不做**：用户于 2026 年 11 月 20 日明确只做记账；本条在裁决后由用户单独指示实施。
 
-### I-36（已裁决·待实施）`FileLoader` 的 ELF 修剪上移（+ 一次核查事故记录）
+### I-36（✅ 已实施）`FileLoader` 的 ELF 修剪上移（+ 一次核查事故记录）
 
 **来源**：`R35/DESIGN-D2-05`（P2，[MODERN]）。**状态：已裁决（D-082），待实施**——裁决内容见本节「裁决（D-082…）」段。
 
@@ -1658,7 +1662,17 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 **② 的前置验证（必须做，否则不能落 ②）**：
 `load_boot_modules_into` 开始给 UEFI 腿修剪后，`BootModule.len` 会变小。必须确认 **12 个模块的 ELF 里最后一个 PT_LOAD 之后没有需要保留的数据**（签名段 / `.comment` / 调试段）。若将来某个模块加了签名段，② 会**静默裁掉它**。验证方式：对 12 个模块逐个 `readelf -l` 确认 `max(p_offset+p_filesz)` 到文件尾之间无非 PT_LOAD 内容。
 
-**验收**：
+**实施记录（2026 年 11 月 21 日，D-082 三处改动全部落地并核实）**：
+
+| # | 改动 | 实证 |
+|---|---|---|
+| ① | 删 `opensbi_helpers.rs` 的 `read` 里的 `segment_iter` 段 | `read` 现直接 `Some(FileBytes::Borrowed(slice))`（`:216`），注释注明「表里的 `entry.len` 已是 `staged_elf_used_len` 算出的修剪值；再跑 `segment_iter` 是对已修剪数据的幂等无效功」 |
+| ② | 修剪上移到 `load_boot_modules_into` | `:489` 的 `let used = elf_file_end(data).unwrap_or(data.len()); let data = &data[..used];`，注释记录「U-Boot 腿幂等、UEFI 腿从此开始修剪、`BootModule.len` 跨腿一致」与 36 模块前置验证结论 |
+| ③ | 复用 `minix_elf::segment_iter`，不新增第三个解析器 | `elf_file_end`（`:227-241`）直接 `minix_elf::segment_iter(data).ok()?` + `seg.ok()?` |
+
+**代码实证**：`grep -c "minix_elf::segment_iter(slice)" os/boot-shim/src/opensbi_helpers.rs` → **0**；`grep -n "elf_file_end" os/boot-shim/src/loader.rs` → 定义 `:227`、调用 `:489`、测试 `:980/987/994`；`cargo test -p boot-shim --features test-all` → 143 全绿。
+
+**原验收**：
 - `grep -c "segment_iter" os/boot-shim/src/opensbi_helpers.rs` → 0（① 之后）；
 - `grep -n "fn elf_file_end" os/boot-shim/src/loader.rs` → 命中 1（③）；
 - 五条 QEMU 门链全 PASS（本改动触及所有腿的模块装载路径，门链不可省）；
@@ -1678,7 +1692,7 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 
 **连带登记**：巡检发现 x86 全部 12 个模块带 `.lbss`（`-mcmodel=large` 大 BSS，NOBITS，零文件字节）**不在任何 PT_LOAD 内**——VM/exec 装载路径只映射 PT_LOAD 并清零 `[filesz, memsz)`，`.lbss` 的运行期映射与清零无载体（riscv/aarch64 无此节）。riscv U-Boot 链实测可用、x86 生产模块路径从未真跑，问题真实性未验证 → 登记 **I-50**；vm 测试面并行隔离失败 → 登记 **I-51**。
 
-### I-48（已裁决·待实施）`SegmentIter` 把畸形 ELF 静默当成"没有这个段"
+### I-48（✅ 已实施）`SegmentIter` 把畸形 ELF 静默当成"没有这个段"
 
 **来源**：`R3/DESIGN-D2-02`（P1，[MODERN]），D02 的 R3 面板。**状态：已裁决**（`D-084`）。
 
@@ -1993,7 +2007,7 @@ cargo check --workspace --all-targets
 
 **风险与回退**：`ElfError` 加新变体属公共枚举扩展（非破坏性，但下游 `match` 若是穷尽匹配需补臂——`grep -rn "ElfError::" os/ --include=*.rs` 确认）。回退：改用现有 `InvalidSegment` 变体并在文档说明"容量不足也归此类"。
 
-### I-34（已实施）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
+### I-34（✅ 已实施）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
 **裁决**：用户 2026-11-20，判决行 `D-067`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `BOOTSTORAGE-fill-api` 行同步。来源：`R35/DESIGN-D2-02`（P2，[MODERN]）。
 
@@ -2096,7 +2110,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **为什么此前不做**：本条与 D-062（wire v10 删 `startup` 族）和 D-065（直核腿统一 owned 路径）改同一批行；族数与写入者数量在它们落地后才定稿。D-062 已落（I-31），D-065 虽受阻（I-33 待裁决）但不影响本条的 API 形状，故本条可在 I-31 之后独立实施。
 
-### I-44（已实施：步①–⑤ + R1 关闭，R2 已落 cut_consumed_span）页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）
+### I-44（实施中·步①–④已落，⑤ E+R1 已关闭，R2 待真机）页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）
 
 **来源**：`R35` 面板 `DESIGN-D2-11`（P3，`panel/round35/design-d2.md:167`），原结论为"拒绝（本期不动）"——理由是"改动会牵连测试内核的销毁路径，收益仅是防未来回归"。用户于 2026-11-20 要求重启，并以**十轮外部独立评审**收敛为完整的所有权模型。
 
@@ -2259,7 +2273,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 读数：三架构生产 target 各 0 error。I-29-16 合同自此在三架构各自的最小可验收形态落地；政策表的「完全冻结」仍按设计文档等原型证据与真机验收（不因本批宣告）。
 
-### I-52（已裁决·待实施）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc / x86 sysboot page fault）
+### I-52（已裁决·待实施·x86 条已移出至 I-59）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc）
 
 **来源**：I-43 的三层残留（D-087 拆出）。**状态：已裁决（D-092）。**
 
@@ -2291,7 +2305,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 |---|---|---|---|---|
 | 1 | `test-timer-irq-riscv64` | `stval = 0xffffffc0_cffff000` | **Sv39 规范高半**（bit38..63 = `0x3ffffff` 全 1）| `- KERNEL_VIRT_BASE(0xffffffc0_00000000)` = **`0xcffff000` ≈ 3.3 GiB** |
 | 2 | `test-timer-irq-aarch64` | `far = 0xffff8080_4ffff000` | **VA48 规范**（bit48=1 且 bit63..49 = `0x7fff` 全 1）——**上一版用 Sv39 规则判它"非规范"是错的** | `- KERN_VIRT_BASE(0xffff8000_00000000)` = **`0x804ffff000` = 128×4GiB + `0x50000000`** |
-| 3 | `test-sysboot`（x86）| `cr2 = 0x7ba7000` | 规范**低地址** | ≈ **123 MiB**；落在 I-43 二层实证的载体装载区附近（`image_base = 0x5E0_0000` = 94 MiB）|
+| ~~3~~ | ~~`test-sysboot`（x86）~~ | ~~`cr2 = 0x7ba7000`~~ | ~~规范低地址~~ | **已移出至 I-59**（D-092 步③执行：根因定位到「VM free-list 首帧 `0x7ba8000 − 0x1000 = 0x7ba7000` 与 `cr2` 严格吻合 + `new_from_page` 的裸恒等写」级，与链址假设无关）|
 
 **三条的性质不同，不是同一根因**：
 
@@ -2302,6 +2316,21 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 | 3 x86 | **低地址访问**（123 MiB 是合理地址，疑与"高半假设"无关；可能是载体自身的装载/stub 地址被错误访问）|
 
 **裁决（D-092，用户 2026-11-21）：不预分三条，I-52 保持一条，把三例的属性差异写清，下一步做 `-d int`。**
+
+**步③ 已执行（2026-11-21）：x86 那条移出，登记为 I-59。**
+
+`test-sysboot` 的深跑根因已定位到「源文件行 + 帧地址推导」级，**无需 `-d int`**（代码考古 + `vm_handoff` 读数闭环）：
+
+| 环节 | 读数 |
+|---|---|
+| fault 现场 | `vector 14 err 0x2`（supervisor write not-present）`cs 0x8` `cr2 0x7ba7000`；串口止于「smp_init completed」（TX 装载零进度输出）|
+| 帧推导 | `vm_handoff` 读数 `free n=2`、region2 `[0x1001000, 0x7ba8000)`；`VmBootAllocator` 从 region end 向下分配 → **首帧 = `0x7ba8000 - 0x1000 = 0x7ba7000` = `cr2`**（严格吻合，非巧合）|
+| 写点 | `X86_64Paging::new_from_page`（`x86_64/paging.rs:627-642`）的 root 清零走 `phys_to_ptr`（`:127`）——**裸恒等** `phys as *mut u64` |
+| 调用链 | 载体 `load_process_elf`（`arch/boot.rs:805`）→ `vm_alloc.alloc_page()`（VM free-list 帧）→ `new_from_page` → 恒等写窗口外帧 → fault |
+
+**结论：与「载体链址假设」无关**，是 `Paging` 写路径的裸恒等前提在「VM free-list 帧」上不成立。按 D-092 步③移出，登记 **I-59**。
+
+**I-52 现在只剩 riscv 与 aarch64 两条**，仍待 `-d int` 定位。
 
 **为什么不预分三条**：拆分的前提是"性质不同"，而当前只是从**地址形态**推测性质不同，**尚未到根因**。若取证发现 riscv 与 aarch64 同属"高半基址换算"、x86 独立，预分就错了。D-087 把三条从 I-43 拆出时就是按"同性质"合的，现在证明不同 —— **但"不同"要到根因级别才能立条**。
 
