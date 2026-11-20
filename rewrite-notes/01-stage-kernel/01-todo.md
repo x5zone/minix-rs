@@ -43,9 +43,9 @@
 | I-43（已裁决·三层中两层闭合） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **D-081 采 A**（载体侧真实 span）。**一层已闭合**（12 载体全部 `PLACEHOLDER_SPAN` + 全 12 槽交出）。**二层已闭合（2026-11-20）**：`enable()` 后静默停的真因是双重的——载体硬编码 `kern_phys_base`/`kern_size` vs 固件运行期装载地址（修法：20 载体改用生产同款 `shim_image_window()`，LoadedImage 协议精确足迹），加上直核腿窗口清单漏了「调用者栈」类别（修法：`arch_boot_impl` 补压当前栈窗口，`shim_stack_window` 同型；`cfg(not(test))` 排除宿主假阳性）。**实证**：x86 14 条中 13 条 PASS（faultloop 的失败是其专用故障臂的深层缺陷、已现形）；aarch64 五条基础门全 PASS；riscv `hello-boot` PASS。三层残留（VM 加载 trap、深跑载体故障臂路由、rt-birth-riscv64 自身 bump 断言）各自需要专项、现已全部可诊断。另登记 I-48（宿主套件存量红）。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已裁决·待实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | **已裁决（D-082，用户 2026 年 11 月 20 日）采「删重复 + 修剪上移」**：① 删 `read` 里的 `segment_iter`（实测输入的 `entry.len` 已是修剪值，纯冗余）② 修剪上移到 `load_boot_modules_into` ③ 复用 `minix_elf::segment_iter`，不新增第三个解析器。**否决「抽象修剪 trait + 空实现」**（无哪个腿不需要修剪）。② 落地前须验证 12 个模块的 PT_LOAD 覆盖真实内容 | §3 的 I-36 |
-| I-45（已裁决·待实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | **已裁决（D-084，用户 2026 年 11 月 20 日）梭哈 A**：`Item` 直接改 `Result<LoadSegment, ElfError>`，不走 B 过渡（无外部消费者、保留旧函数等于给缺陷留后门）；`filesz > memsz` 检查收进迭代器；`load_segments_into_buffer` 返回类型同批改 | §3 的 I-45 |
-| I-46（待裁决·**被 I-45 阻塞**） | `load_segments_into_phys_memory` 的 Safety 前提无类型载体（函数不自查段表）+ UEFI 腿绕过 wrapper | 设计裁决 | **未裁决，且有硬性前置依赖**：实质风险会被 I-45（`SegmentIter` 改 `Result`）顺手消掉，故必须在 I-45 落地并验证后才能裁决；裁决时只剩三件事（删 SAFETY 第 2 条 / 文档失真重新定位 / UEFI 腿是否改 wrapper）。面板建议的 `ValidatedKernelImage` 与改 wrapper 形状两案均倾向于不做 | §3 的 I-46 |
-| I-47（待裁决·**被 I-45 阻塞**） | `load_segments_into_buffer` 的计数与语义三处不一致（文档说 loaded、`:258` 无条件计数、`:235` 越界段不计数；且缺段间重叠检测） | 代码改造 | **未裁决，有硬性前置依赖**：与 I-45 在同一函数上重叠，I-45 改迭代器协议后本函数的 `match` 必须重写；裁决时按候选 A（返回改名 + 补重叠检测 + 文档改「测试投影」）。面板的 `copy_segment(seg, sink)` 抽象不采纳（覆盖不了整组重叠检测）| §3 的 I-47 |
+| I-48（已裁决·待实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | **已裁决（D-084，用户 2026 年 11 月 20 日）梭哈 A**：`Item` 直接改 `Result<LoadSegment, ElfError>`，不走 B 过渡（无外部消费者、保留旧函数等于给缺陷留后门）；`filesz > memsz` 检查收进迭代器；`load_segments_into_buffer` 返回类型同批改 | §3 的 I-45 |
+| I-46（待裁决·**被 I-48 阻塞**） | `load_segments_into_phys_memory` 的 Safety 前提无类型载体（函数不自查段表）+ UEFI 腿绕过 wrapper | 设计裁决 | **未裁决，且有硬性前置依赖**：实质风险会被 I-48（`SegmentIter` 改 `Result`）顺手消掉，故必须在 I-45 落地并验证后才能裁决；裁决时只剩三件事（删 SAFETY 第 2 条 / 文档失真重新定位 / UEFI 腿是否改 wrapper）。面板建议的 `ValidatedKernelImage` 与改 wrapper 形状两案均倾向于不做 | §3 的 I-46 |
+| I-47（待裁决·**被 I-48 阻塞**） | `load_segments_into_buffer` 的计数与语义三处不一致（文档说 loaded、`:258` 无条件计数、`:235` 越界段不计数；且缺段间重叠检测） | 代码改造 | **未裁决，有硬性前置依赖**：与 I-48 在同一函数上重叠，I-48 改迭代器协议后本函数的 `match` 必须重写；裁决时按候选 A（返回改名 + 补重叠检测 + 文档改「测试投影」）。面板的 `copy_segment(seg, sink)` 抽象不采纳（覆盖不了整组重叠检测）| §3 的 I-47 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
@@ -441,7 +441,7 @@ startup_objects: &'static [minix_boot::SourceRecord],
 
 **为什么此前不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。裁决已生效，实施留待下一 design/code batch——现在因为上述前提缺失，需要先补裁再排期。
 
-### I-32（已裁决·可立即开工）U-Boot 腿两个安装型全局：检查强度对齐
+### I-32（已实施）U-Boot 腿两个安装型全局：检查强度对齐
 
 **裁决**：用户 2026-11-20，判决行 `D-064`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `R34-design-batch` 行已注记。来源：`RD34-DESIGN-D2-02`（P2）。
 
@@ -510,7 +510,7 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 
 **本条在确认轮结束后由用户单独指示实施**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥，故在 2026 年 11 月 20 日之前一直是「已裁决待实施」。
 
-### I-31（已裁决·可立即开工）wire v10：删除三个字段/分区
+### I-31（已实施 + 多轮补漏）wire v10：删除三个字段/分区
 
 **裁决**：用户 2026-11-20，判决行 `D-062`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `WIRE-v10-batch` 行同步。
 
@@ -625,7 +625,7 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 - **那条 panic 的真因（既有缺陷，与本条无关）**：`BOOT_MODULES: [BootModule; 12]` 是全零数组，内核只填 `mods[8]` 一项，却把**整个 12 槽数组**当成 `boot_modules` 切片交出。`push_module_windows` 逐项 push，遍历到第 0 槽（`start=0, len=0`）就撞 `BootWindows::push` 的 `assert!(start < end)`。同一形态出现在 `test-rt-birth-aarch64` / `test-rt-birth-riscv64` / `test-timer-irq-aarch64`。这四条的修法（要么让测试内核交出真实前缀 `&mods[8..9]`，要么让 `push_module_windows` 跳过空模块）需要单独裁决——**不在本条射程**，已登记为 I-43。
 
 
-### I-30（已裁决·可立即开工）aarch64 形态判别改链接期分叉
+### I-30（已实施）aarch64 形态判别改链接期分叉
 
 **裁决**：用户 2026-11-19 选择「向 riscv64 看齐」，判决行 `D-061`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——裁决本身已生效，实施尚未开始；`OPEN-DEBT.md` 的 `ARCH-01-aarch64-link-split` 行同步。
 
@@ -876,7 +876,7 @@ D-071 把本条拆成三项，其中两项已有归属：`Frozen::freeze` 随 I-
 
 
 
-### I-39（已裁决·待实施，先于 I-31）`KernelInfo` 的空 getter 段与恒真测试
+### I-39（已实施）`KernelInfo` 的空 getter 段与恒真测试
 
 **裁决**：用户 2026-11-20，判决行 `D-077`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**。**实施顺序：先于 I-31**。来源：`R35/DESIGN-D2-06`（P2，[DEL]）。
 
@@ -948,7 +948,7 @@ D-077 授权的三项全部落地；实现时发现文档计数不止 §5.2.1 �
 
 **为什么此前不做**：用户于 2026 年 11 月 20 日批准方案但只做记账；本条在裁决后由用户单独指示实施，并按 D-077 的排序要求**先于 I-31** 完成。
 
-### I-40（已裁决·I-39 的实现副产物）两处 ghost API 注释
+### I-40（已实施）两处 ghost API 注释
 
 **来源**：I-39 实施时的 mini review。D-077 修掉的是「`impl` 末尾承诺一段 getter，实际一个都没有」；实施后按同一判据（注释是否点名一个不存在的方法）扫全文件，又发现两处：
 
@@ -996,7 +996,7 @@ cargo test -p minix-boot && cargo test -p minix-kernel --features mock
 
 **风险与回退**：纯注释，无。若将来 `KernelInfo` 真的加访问器接口 → 重开本条评估 B。
 
-### I-38（已裁决·待实施，前置 I-31）`boot_validate_and_prepare` 的四个位置实参改 `BootScalars`
+### I-38（已实施）`boot_validate_and_prepare` 的四个位置实参改 `BootScalars`
 
 **裁决**：用户 2026-11-20，判决行 `D-074`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户批准方案，本条只记账）。**前置依赖：I-31（D-062）**。来源：`R35/DESIGN-D2-04`（P2，[MODERN]）。
 
@@ -1254,7 +1254,7 @@ cargo check --workspace --all-targets  # 三架构 0 error
 
 **验收（若走 A）**：四条各自 `run_all.sh` 对应测试 PASS；`cargo check` 三架构 0 error。
 
-### I-48（未裁决·I-43 二层工作时的存量发现）宿主内核测试套件在 HEAD 上红且非确定
+### I-49（未裁决·I-43 二层工作时的存量发现）宿主内核测试套件在 HEAD 上红且非确定
 
 **来源**：I-43 二层验证时跑 `cargo test -p minix-kernel --features mock` 发现。**与本会话改动无关**：stash 对照实证 HEAD 同样红；本条改动在 `cfg(test)` 构建下与 HEAD 逐字节一致。
 
@@ -1269,7 +1269,7 @@ cargo check --workspace --all-targets  # 三架构 0 error
 
 **验收**：CI 同构环境全绿，或失败集收敛且逐条归因。
 
-### I-37（已裁决·待实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
+### I-37（已实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
 
 **裁决**：用户 2026-11-20，判决行 `D-073`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户「按照你的建议来」即批准方案；本条为记账，不实施）。来源：`R35/DESIGN-D2-07`（P3，[MODERN]）。
 
@@ -1445,7 +1445,7 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 
 **风险与回退**：U-Boot 腿行为不变（幂等）；UEFI 腿 `BootModule.len` 变小——若某个模块的 PT_LOAD 未覆盖真实内容，该模块会被部分裁掉，表现为运行期缺数据。回退方式：删 ② 的一行即可恢复原状。
 
-### I-45（已裁决·待实施）`SegmentIter` 把畸形 ELF 静默当成"没有这个段"
+### I-48（已裁决·待实施）`SegmentIter` 把畸形 ELF 静默当成"没有这个段"
 
 **来源**：`R3/DESIGN-D2-02`（P1，[MODERN]），D02 的 R3 面板。**状态：已裁决**（`D-084`）。
 
@@ -1518,11 +1518,11 @@ impl<'a> Iterator for SegmentIter<'a> {
 
 **风险与回退**：`minix-elf` 的公开 API 破坏性变更，但无外部消费者。回退方式：`Item` 改回 `LoadSegment` 并恢复五条 `continue`（不推荐——那会回到本缺陷）。
 
-### I-46（待裁决·**有前置依赖 I-45，前置未落地前禁止裁决**）`load_segments_into_phys_memory` 的 Safety 前提无类型载体 + UEFI 腿绕过 wrapper
+### I-46（待裁决·**有前置依赖 I-48，前置未落地前禁止裁决**）`load_segments_into_phys_memory` 的 Safety 前提无类型载体 + UEFI 腿绕过 wrapper
 
-**来源**：`R3/DESIGN-D2-03`（P2，[MODERN]），D02 的 R3 面板。**状态：待裁决，但被 I-45（D-084）硬性阻塞。**
+**来源**：`R3/DESIGN-D2-03`（P2，[MODERN]），D02 的 R3 面板。**状态：待裁决，但被 I-48（D-084）硬性阻塞。**
 
-> **⛔ 前置依赖（原文规定）**：本条的实质风险（"函数不自查段表、依赖调用者先 `compute_kernel_layout`"）会**被 I-45 顺手消掉**——I-45 落地后 `load_segments_into_phys_memory` 内部的 `segment_iter(...)?` 会用 `Result` 自查，`filesz > memsz` 与所有畸形段都不再依赖调用者。**因此必须在 I-45 落地并验证之后才能裁决本条**；在此之前任何裁决都是对过期事实的判断。
+> **⛔ 前置依赖（原文规定）**：本条的实质风险（"函数不自查段表、依赖调用者先 `compute_kernel_layout`"）会**被 I-48 顺手消掉**——I-48 落地后 `load_segments_into_phys_memory` 内部的 `segment_iter(...)?` 会用 `Result` 自查，`filesz > memsz` 与所有畸形段都不再依赖调用者。**因此必须在 I-45 落地并验证之后才能裁决本条**；在此之前任何裁决都是对过期事实的判断。
 
 **问题（按 I-45 落地前的现状描述）**：
 
@@ -1583,13 +1583,13 @@ assert_eq!(layout.entry_point, layout.kern_virt_base.0,
 
 **禁止裁决的原因**：若在 I-45 之前裁决，会基于"函数不自查"这个即将消失的事实去设计类型（`ValidatedKernelImage`），落地后发现多余。
 
-**解锁条件**：I-45（D-084）实施完成并验证（`cargo test -p minix-elf` + 五条 QEMU 门链 PASS）→ 本条解除阻塞，重新裁决。
+**解锁条件**：I-48（D-084）实施完成并验证（`cargo test -p minix-elf` + 五条 QEMU 门链 PASS）→ 本条解除阻塞，重新裁决。
 
-### I-47（待裁决·**有前置依赖 I-45，前置未落地前禁止裁决**）`load_segments_into_buffer` 的计数与语义三处不一致
+### I-47（待裁决·**有前置依赖 I-48，前置未落地前禁止裁决**）`load_segments_into_buffer` 的计数与语义三处不一致
 
-**来源**：`R3/DESIGN-D2-04`（P2，[MODERN]），D02 的 R3 面板。**状态：待裁决，由 I-45（D-084）阻塞。**
+**来源**：`R3/DESIGN-D2-04`（P2，[MODERN]），D02 的 R3 面板。**状态：待裁决，由 I-48（D-084）阻塞。**
 
-> **⛔ 前置依赖（用户裁定）**：本条的改动面与 I-45 在**同一个函数**上重叠——I-45 把 `segment_iter` 的 `Item` 改成 `Result` 后，本函数的 `match minix_elf::segment_iter(elf_data) { Ok(i) => i, Err(_) => return 0 }`（`loader.rs:225-228`）**必须重写**。因此裁决与实施都排在 I-45 之后；在此之前裁决会基于"迭代器返回 `None`"这个即将消失的行为去设计返回值。
+> **⛔ 前置依赖（用户裁定）**：本条的改动面与 I-48 在**同一个函数**上重叠——I-48 把 `segment_iter` 的 `Item` 改成 `Result` 后，本函数的 `match minix_elf::segment_iter(elf_data) { Ok(i) => i, Err(_) => return 0 }`（`loader.rs:225-228`）**必须重写**。因此裁决与实施都排在 I-45 之后；在此之前裁决会基于"迭代器返回 `None`"这个即将消失的行为去设计返回值。
 
 **问题（三处互相矛盾）**：
 
@@ -1627,11 +1627,11 @@ assert_eq!(layout.entry_point, layout.kern_virt_base.0,
 
 **待裁决时还要定的**（面板给的验收）：补一个「`buf` 只能容纳第一段、第二段越界」的测试，断言返回**不是** 2。I-45 落地后这个测试的形态会变成"断言返回 `Err` 而不是 `Ok(2)`"。
 
-**禁止裁决的原因**：I-45 会改变本函数对"整个 ELF 打不开"的表达方式（`Err(_) => return 0` → 必须重写），此时若先裁决计数语义，落地的返回值类型可能与 I-45 之后的协议冲突。
+**禁止裁决的原因**：I-48 会改变本函数对"整个 ELF 打不开"的表达方式（`Err(_) => return 0` → 必须重写），此时若先裁决计数语义，落地的返回值类型可能与 I-45 之后的协议冲突。
 
-**解锁条件**：I-45（D-084）实施完成并验证 → 本条解除阻塞，按 A 裁决。
+**解锁条件**：I-48（D-084）实施完成并验证 → 本条解除阻塞，按 A 裁决。
 
-### I-34（已裁决·可立即开工）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
+### I-34（已实施）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
 **裁决**：用户 2026-11-20，判决行 `D-067`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `BOOTSTORAGE-fill-api` 行同步。来源：`R35/DESIGN-D2-02`（P2，[MODERN]）。
 
@@ -1734,7 +1734,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **为什么此前不做**：本条与 D-062（wire v10 删 `startup` 族）和 D-065（直核腿统一 owned 路径）改同一批行；族数与写入者数量在它们落地后才定稿。D-062 已落（I-31），D-065 虽受阻（I-33 待裁决）但不影响本条的 API 形状，故本条可在 I-31 之后独立实施。
 
-### I-44（已裁决·待指派实施）页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）
+### I-44（已实施：步①–⑤ + R1 关闭，R2 已落 cut_consumed_span）页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）
 
 **来源**：`R35` 面板 `DESIGN-D2-11`（P3，`panel/round35/design-d2.md:167`），原结论为"拒绝（本期不动）"——理由是"改动会牵连测试内核的销毁路径，收益仅是防未来回归"。用户于 2026-11-20 要求重启，并以**十轮外部独立评审**收敛为完整的所有权模型。
 
@@ -1897,7 +1897,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 读数：三架构生产 target 各 0 error。I-29-16 合同自此在三架构各自的最小可验收形态落地；政策表的「完全冻结」仍按设计文档等原型证据与真机验收（不因本批宣告）。
 
-### I-42（已裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
+### I-42（已实施）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 
 **来源**：I-34 实施时的 mini review。
 
