@@ -288,10 +288,6 @@ impl Default for BootStorage {
     }
 }
 
-/// The fixed list a `push_*` call targeted is full.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BootStorageFull;
-
 /// Borrowed semantic view of a [`BootStorage`] plus the kernel scalars.
 ///
 /// This is what a v1 sender passes to the kernel entry. The kernel image's

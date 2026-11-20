@@ -105,7 +105,7 @@ pub(crate) const PAGE_SIZE: u64 = 0x1000;
 ///
 /// Consumers that allocate frames AFTER the first boot-image load —
 /// multi-image boot loaders (a boot loader's second image) — must
-/// select from this list, not from the raw `KernelInfo::memmap()`: the
+/// select from this list, not from the raw `KernelInfo::memmap` field: the
 /// raw map still advertises the frames the first load consumed
 /// (segments, stack, page-table pages, handoff page), and handing them
 /// out a second time overwrites the first image's memory. The first

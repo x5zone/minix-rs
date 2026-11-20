@@ -39,14 +39,14 @@
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**已裁决·待实施**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
-| I-42（已裁决·待实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | **已裁决（D-080，用户 2026 年 11 月 20 日）采 A 删掉**：删 `boot_storage.rs:291-293` 的注释与 struct、`lib.rs:31` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
+| I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
 | I-43（待裁决） | 编译失败修好后暴露的测试内核运行期缺陷：5 条（4 条空槽 `BOOT_MODULES` 撞 `[0x0,0x0)`，1 条 `test-protection-riscv64` 静默卡在 `paging.enable()` 之后） | 测试载体修正 / 定位 | **未裁决**（I-31 补漏批二/三中发现）；五条见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
-| I-40（已裁决·待实施） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`kernel_info.rs:583`）与 `KernelInfo::memmap()`（`vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **已裁决（D-079，用户 2026 年 11 月 20 日）采 A 改写措辞指回真实载体**：① 去掉 `()` 指字段 ② 补 `field` 后缀。否决 B（造访问器会制造两套等价 API）。第三处 `kern_stack_top()` 经核实**不是** ghost，已排除 | §3 的 I-40 |
+| I-40（已实施） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`kernel_info.rs:583`）与 `KernelInfo::memmap()`（`vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | ✅ **已实施（2026 年 11 月 20 日，D-079 采 A）**：① 去掉 `()` 指字段 ② 补 `field` 后缀。否决 B（造访问器会制造两套等价 API）。第三处 `kern_stack_top()` 经核实**不是** ghost，已排除 | §3 的 I-40 |
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施 + 三轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证；**第三批（`minix-arch` 测试面）同日补修**，见 §3。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
@@ -949,6 +949,19 @@ cargo check --workspace --all-targets                        # 纯注释，0 err
 cargo test -p minix-boot && cargo test -p minix-kernel --features mock
 ```
 
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：两处注释按 D-079 采 A 改写（去掉 `()`，指回字段）。验收逐条：
+
+| 项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -rn "KernelInfo::boot_modules()" os/ --include=*.rs` | **0** |
+| A2 | `grep -rn "KernelInfo::memmap()" os/ --include=*.rs` | **0** |
+| A3 | `grep -rn "KernelInfo::kern_stack_top()" os/ --include=*.rs` | 仍命中 `boot-shim/src/lib.rs:103`（非 ghost，按裁决保留） |
+| A4 | `grep -n "pub fn kern_stack_top" os/libs/minix-boot/src/kernel_info.rs` | 命中 `:200`（方法确实存在） |
+| A5 | `cargo check --workspace` | **0 error**（纯注释） |
+| A6 | `cargo test -p minix-boot` / `-p minix-kernel --features mock` | **183 / 864 passed** |
+
+**为什么合并到一次提交**：D-079 与 D-080 都是纯删除/纯注释、零行为变化、都在并发会话的同一天裁决；分两次提交只增加记账成本，不增加可追溯性（两段 §3 记录各自独立）。
+
 **风险与回退**：纯注释，无。若将来 `KernelInfo` 真的加访问器接口 → 重开本条评估 B。
 
 ### I-38（已裁决·待实施，前置 I-31）`boot_validate_and_prepare` 的四个位置实参改 `BootScalars`
@@ -1516,6 +1529,15 @@ grep -rn "push_module_windows" os/kernel/src/lib.rs  # 应仍命中（同名不�
 cargo check --workspace --all-targets                # 必须 0 error
 cargo test -p minix-boot                             # 含 boot_storage 自身的 fill_* 测试
 ```
+
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+| 项 | 动作 |
+|---|---|
+| ① | 删 `os/libs/minix-boot/src/boot_storage.rs` 的 `/// The fixed list a \`push_*\` call targeted is full.` 与 `pub struct BootStorageFull;`（含 `#[derive(...)]`） |
+| ② | `os/libs/minix-boot/src/lib.rs:31` 的 `pub use boot_storage::{...}` 去掉 `BootStorageFull` |
+
+验收：`grep -rn "BootStorageFull" os/ --include=*.rs` → **0**；`cargo check --workspace` → **0 error**；`cargo test -p minix-boot` 183 / `-p minix-kernel --features mock` 864 / `-p boot-shim --features test-all` 136+6 全绿。
 
 ### I-34（原依赖说明，保留作历史）本条与 D-062 / D-065 的关系
 

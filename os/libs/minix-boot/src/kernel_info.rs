@@ -580,7 +580,7 @@ pub struct MemoryRegion {
 }
 
 /// Number of user-space boot modules the kernel expects the boot-shim to
-/// deliver, in `KernelInfo::boot_modules()`.
+/// deliver, in the `KernelInfo::boot_modules` field.
 ///
 /// This is the **shared boot-module count contract** between the two
 /// independent consumers, both of which depend on this crate:
