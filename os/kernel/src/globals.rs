@@ -542,8 +542,12 @@ pub(crate) static SMP_STATE: SyncUnsafeCell<Option<crate::smp::SmpState>> =
 /// Populated by `kmain()` Phase C.5 (IPCF_POOL_INIT).
 /// Used by `dispatch_statectl` AddIpcBlFilter/AddIpcWlFilter (implemented).
 ///
-/// SAFETY: Only written once during boot (single-threaded, before BKL needed).
-/// After boot, accessed under BKL protection.
+/// SAFETY: initialized once during boot (single-threaded, before BKL is
+/// needed). Afterwards the pool stays **mutable** and every access goes
+/// through `ipc_filter_pool_with(&BklSection)` — three mutating callers
+/// (`proc_table.rs`, `syscall.rs` ×2) each pass a BKL witness. So this is
+/// not a write-once global like `KERNEL_INFO`: the *initialization* is
+/// one-shot, the *contents* are not (D-071).
 pub(crate) static IPC_FILTER_POOL: SyncUnsafeCell<crate::ipc_filter::IpcFilterPool> =
     SyncUnsafeCell::new(crate::ipc_filter::IpcFilterPool::new());
 

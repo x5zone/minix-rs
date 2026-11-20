@@ -38,7 +38,7 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（本轮新登记） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 设计裁决 + 代码改造 | 已裁决（D-067，用户 2026-11-20）；待实施——详见 §3 的 I-34 | §3 |
-| I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35。原文中的第三项 `Frozen::freeze` 的 `debug_assert` 已由 I-32 销账（2026 年 11 月 20 日），不再属本条 | §3 |
+| I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
@@ -47,7 +47,7 @@
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已裁决·可开工） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 协议契约变更 + 代码改造 | 已裁决（D-062，用户 2026-11-20）：三条一次升版。待实施——验收 grep 六项、文档同步含 §4.1 五族句（D-072 补强），详见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
-| I-33（已裁决·可开工） | 直核腿统一到 owned 路径，删三张 `DTB_*` 静态表 | 代码改造 | 已裁决（D-065，用户 2026-11-20）：「统一总是我的最优选」。待实施——详见 §3 的 I-33 | §3 |
+| I-33（⚠ 改回待裁决） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **原裁决（D-065，用户 2026 年 11 月 20 日）已被实施受阻推翻**：实测发现第四张 `DTB_PANORAMA` 仍有生产消费者（`resv_claims.rs` 的 EBS 后 claim 捕获），且 `DtbMapOwned` 不带 panorama、测试改写面 62 处。三选一待裁决（A 扩权到 panorama / B 缩小为「只统一直核腿」/ C 拆成两项）。代码改动已全部回退——详见 §3 的 I-33 | §3 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -322,7 +322,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
 
-### I-33（已裁决·可立即开工）直核腿统一到 owned 路径，删第二套静态表
+### I-33（⚠ 待裁决——实施受阻，原裁决的前提不完整）直核腿统一到 owned 路径，删第二套静态表
 
 **裁决**：用户 2026-11-20，判决行 `D-065`。**状态：已批准待实施**。来源：`RD34-DESIGN-D2-03`（P2，[MODERN]）。用户表述：「统一总是我的最优选」。
 
@@ -358,7 +358,72 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **风险与回退**：直核腿从「发布静态表」变成「写入 storage」，须确认没有其他代码依赖 `DTB_*` 的符号存在（`grep` 已确认 `os/kernel-image` 与 `os/kernel` 零命中）。若某腿的 `/memory` 段数超过 `WIRE_*_CAP`，会从原来的 `TooManyFreeRegions` halt 变成 storage 容量断言 halt——两者都是 fail-closed，但阈值不同（8 → 128，放宽）。
 
-**为什么现在不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。裁决已生效，实施留待下一 design/code batch。
+**⚠ 2026 年 11 月 20 日实施受阻 —— 状态改回「待裁决」**：
+
+按本规格动了两个直核腿（`bootface.rs` / `bootface_a64.rs` 的 `collect_with_sources()` → `collect_owned()` + 拷入 `storage`），代码可编译、`cargo test -p minix-boot` 195 通过 / `cargo test -p boot-shim --features test-all --lib` 136 通过。但继续做「删第二套静态表」时发现规格的前提不完整，**改动已全部回退**（`git checkout` 复原，工作树无本条改动）。下面是受阻的硬证据。
+
+**规格的第 1 处遗漏：不是三张静态表，是四张，且它们共用一个写入点。**
+
+规格列出的删除目标是 `DTB_FREE` / `DTB_RESERVED` / `DTB_SOURCES`，但 `memmap_source.rs` 里还有第四张 `DTB_PANORAMA`（`:638`），它和前三张在同一个 `commit_static()`（`:1363`）里一起写：
+
+```
+:1367            DTB_FREE = arrays.free;
+:1368            DTB_RESERVED = arrays.reserved;
+:1369            DTB_SOURCES = arrays.sources;
+:1370            DTB_PANORAMA = arrays.panorama;
+```
+
+三个 `collect` 入口（`collect` `:925`、`collect_with_panorama` `:940`、`collect_with_sources` `:967`）全部走 `collect_inner` → `commit_static`（`:1438`）。只删三张而不动第四张，`commit_static` 仍在、机制没消失。
+
+**规格的第 2 处遗漏：`DTB_PANORAMA` 有活的生产消费者。**
+
+`os/boot-shim/src/resv_claims.rs:295`：
+
+```rust
+let Ok((_, _, sources, panorama)) =
+    minix_boot::DtbMemoryMap::new(&fdt, 0).collect_with_panorama()
+```
+
+它只要 `sources` + `panorama`（`free`/`reserved` 用 `_` 丢弃），跑在 `ebs_pair.rs:193` 的 EBS 重试循环里（`EBS_ATTEMPT_LIMIT = 2`，`:55`）、每次 attempt 前先归零自己的记录。这是「EBS 之后的一次性静态表」——`collect_inner` 的 `DTB_COLLECT_TAKEN` 守卫（`:1427-1433`，`cfg(not(test))`）对它会构成第二次 `collect` 的直接冲突。
+
+**规格的第 3 处遗漏：`DtbMapOwned` 不带 panorama，所以「全部走 owned」不是一行改动。**
+
+`DtbMapOwned`（`:192-199`）只有 `free`/`reserved`/`sources` 三个切片，没有 `panorama`；而 `DtbArrays`（`:176-186`）里已经有 `panorama`/`panorama_n`。要让它也走 owned，需要给 `DtbMapOwned` 加两个字段与一个访问器，再改 `resv_claims::capture` 的调用形状。这是**规格未授权的类型扩展**（D-065 只裁了「直核腿统一到 owned」）。
+
+**规格的第 4 处遗漏：测试改写面是 62 处，不是「测试里的等价物按新 API 重写」一句能覆盖的。**
+
+- `memmap_source.rs` 内 `.collect()` 调用 **62 处**，其中 `DtbMemoryMap::new(&fdt[N])`.collect()` 形态 **42 处**；
+- `collect_with_panorama` / `collect_with_sources` 在测试里还有 **17 处**。
+
+全部要改成 `collect_owned()` 并接受 `DtbMapOwned` 的访问器形态——这比「删三个 static」是多一个数量级的工作量。
+
+**规格的第 5 处遗漏（我在实施中撞到的真实编译约束）**：直核腿改成 owned 之后，`build_kernel_info`（`os/boot-shim/src/lib.rs:101-113`）的十个参数里有五个要求 `&'static`：
+
+```rust
+memmap: &'static [minix_boot::MemoryRegion],
+reserved_regions: &'static [minix_boot::MemoryRegion],
+...
+memmap_sources: &'static [minix_boot::SourceRecord],
+startup_objects: &'static [minix_boot::SourceRecord],
+```
+
+所以直核腿仍要在末尾用 `from_raw_parts` 从 `storage` 造五个 `'static` 视图（与既有的 `modules_ptr` 块同位置）。而这三个 memmap 视图不能在早段（`in_memmap_range` / `place_modules` 要用）就建，否则 `storage.module_slots_mut()`（`:295`）、`set_modules_len`（`:314`）、`platform_slots_mut()`（`:325`）、`push_startup` 全部撞 `E0502`（借出冲突）。正确形状是「早段读 `owned` 的借用切片、末尾建 `'static` 视图」，这使实现比规格设想的「改三个实参」复杂，也引入两套名字（`memmap_early` / `memmap`）。
+
+**待用户裁决的问题（三选一）**：
+
+| 选项 | 内容 | 代价 |
+|---|---|---|
+| **A. 扩权到 panorama** | 给 `DtbMapOwned` 加 `panorama`（字段 + 访问器），`resv_claims::capture` 改 `collect_owned()`，然后四张静态表 + `commit_static` + 三个 `collect_*` 入口一次删净；62 处测试改 `collect_owned` | 规格未授权的类型扩展 + cross-crate（`minix-boot` / `boot-shim`）+ 大批测试改写；但只有这样才真正「一套机制」 |
+| **B. 缩小 I-33 范围** | 只做「两个直核腿改 owned」（可编译可测，已验证），静态表与 `collect_*` 入口**明确保留**并改注释说明「panorama 消费者仍在」；I-33 的验收 grep 从「`DTB_*` → 0」改为「直核腿不再调 `collect_with_sources`」 | 保持规格边界，但「第二套机制」的抽象泄漏只修一半；`collect_with_sources` 变成零生产调用（仅测试用），迟早要再裁一次 |
+| **C. 另立新项** | 本条只保留直核腿统一（同 B）；把「panorama 消费者改 owned + 删四张静态表 + 62 处测试」立为新条目，单独裁决与排期 | 与 B 的实施内容相同，区别是 backlog 形态更诚实（一个大项拆成两个可独立验收的项） |
+
+**我的判断**：倾向 **C**。理由是本条规格的「关键澄清」已经把两件事混在一句里（「五条腿全部走 owned」与「删第二套静态表」），而它们的实际耦合度比规格假设的高：静态表服务于 panorama 消费者，不服务于直核腿。拆开后，第一件（直核腿统一）今天就能独立验收，第二件（去静态表）需要连 `resv_claims` 一起裁，值得单独一轮。
+
+**当前状态**：代码改动已回退（`git checkout -- os/kernel-image/src/bootface.rs os/kernel-image/src/bootface_a64.rs`），工作树无本条改动。`grep -c "collect_with_sources" os/kernel-image/src/bootface.rs` → 1（原样）。
+
+**实施记录（2026 年 11 月 20 日，实施后回退，`⚠ 待裁决`）**：仅记录受阻过程与上述五处遗漏，不改变代码。
+
+**为什么此前不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥。裁决已生效，实施留待下一 design/code batch——现在因为上述前提缺失，需要先补裁再排期。
 
 ### I-32（已裁决·可立即开工）U-Boot 腿两个安装型全局：检查强度对齐
 
@@ -666,6 +731,38 @@ assert!(
 **风险与回退**：`kmain` 的形参是 ABI（`jump_to_kmain` 传值），只改名不删参；若某腿依赖「`kmain` 入口形参」做诊断打印，改名会破坏该打印（已核：只有 `#[cfg(target_arch = "x86_64")]` 的取证块读寄存器，不读形参）。若一次性 assert 在既有 9 处测试调用上无法适配（它们需要多次 store），退化为 `#[cfg(not(test))]` 门控并重开 D-071。
 
 **为什么现在不做**：用户 2026-11-20 明确要求「不实施，只记账」。
+
+**实施记录（2026 年 11 月 20 日，(b) 注释项已完成；(a) 主项仍不实施）**：
+
+D-071 把本条拆成三项，其中两项已有归属：`Frozen::freeze` 随 I-32 落码（已记在并账项里），`KERNEL_INFO` 四步方案用户明确「不实施」。本轮只做第三项 **`IPC_FILTER_POOL` 注释失真**——它是纯注释修正，不动代码，不改变任何行为。
+
+| # | 改动 | 位置 |
+|---|---|---|
+| ① | 「Only written once during boot」→「initialized once during boot」+ 明确说明此后池**仍可变**、每次访问经 `ipc_filter_pool_with(&BklSection)`、并列出三个改动调用者 | `os/kernel/src/globals.rs` 的 `IPC_FILTER_POOL` SAFETY 段 |
+
+**为什么这条注释是错的（核实证据，逐条）**：
+
+| 事实 | 命令 / 位置 | 读数 |
+|---|---|---|
+| 池在 boot 之后仍被**可变**访问 | `os/kernel/src/lib.rs:3734` 的 `unsafe { &mut *IPC_FILTER_POOL.get() }`（返回值类型 `&'static mut IpcFilterPool`） | 确认返回可变引用 |
+| 三个改动调用者 | `grep -rn "ipc_filter_pool_with" os/kernel/src/proc_table.rs os/kernel/src/syscall.rs` | **3 处**（`proc_table.rs:1277`、`syscall.rs:760`、`syscall.rs:958`），与 D-071 判决行的记录逐字吻合 |
+| 没有绕过 witness 的写路径 | `grep -rn "IPC_FILTER_POOL" os/ --include=*.rs`（排除注释） | 只有 4 处：定义（`globals.rs:551`）、`use` 列表（`lib.rs:161`）、boot 期初始化（`lib.rs:1876`）、witness 访问器（`lib.rs:3734`）。初始化那一处是启动期单线程，符合新注释 |
+| witness 是证据类型而不是锁 | `os/kernel/src/smp.rs:1995-2040` 的 `BklSection` 定义与 `from_held` 风格构造 | 证明「锁在某处被持有」，不证明每次写入都持锁。所以新注释写「each pass a BKL witness」而不是「因此安全」——后者会是对类型能力的过度声称 |
+
+**mini review 抓到的一处措辞风险（已修）**：初稿写「three mutating callers each **hold** the BKL witness」，读起来像「持有锁」的强断言。`BklSection` 可以被 `from_held` 凭上游约定构造，实质是「证据在某处成立」而非「此处必然持锁」——改为「each **pass** a BKL witness」，与类型的实际能力对齐。
+
+**范围外发现（未改，留记录）**：`os/kernel/src/lib.rs` 的 `ipc_filter_pool_with` 文档有两处瑕疵——① 「Get a mutable reference to the global IPC filter pool.」出现两次（一次在函数头、一次紧邻签名）；② 其中一句写「Caller must ensure BKL is held」而函数签名收 `&BklSection`（witness 已经表达这层前提，措辞冗余）。这两处不在 D-071 (b) 的授权文本内（该授权只点名「`globals.rs:545` 的注释」），按 fix-guard 一次一条不顺手改，登记待后续批次。
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -c "Only written once during boot" os/kernel/src/globals.rs` | **1**（`KERNEL_INFO` 那处仍在——那条属 (a) 主项，用户明确不实施；`IPC_FILTER_POOL` 那处已改） |
+| A2 | `cargo check -p minix-kernel --features mock` | **0 error** |
+| A3 | `cargo test -p minix-kernel --features mock` | **866 passed / 0 failed / 8 ignored** |
+| A4 | 改动性质 | 纯注释，零行为变化（diff 只有 `globals.rs` 的 4 行 SAFETY 文本） |
+
+**为什么 (a) 主项仍不做**：用户 2026 年 11 月 20 日明确要求「不实施，只记账」。(b) 之所以能做，是因为它是 D-071 明确授权的独立小项、且不触碰 `KERNEL_INFO` 的四步方案。
 
 
 
