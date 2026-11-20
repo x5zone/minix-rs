@@ -6,8 +6,9 @@
 //! surface: RS allocates a slot, forks itself, execs this image, installs
 //! privileges and publishes the label. This binary's only jobs are:
 //!
-//! 1. prove it ran: print `E5SPAWN: running` on stdout (the VFS leg the
-//!    other user commands use); and
+//! 1. prove it ran: print `E5SPAWN: running` through the kernel diagnostic
+//!    channel (SYS_DIAGCTL), the only console path a freshly spawned service
+//!    owns — it inherits no VFS file table; and
 //! 2. stay alive as a service: park in `receive(ANY)` and answer every
 //!    ordinary message, so the slot stays IN_USE and a later `down`/update
 //!    has something to act on.
@@ -55,7 +56,10 @@ use minix_types::{Endpoint, Message};
 const MARKER: &str = "E5SPAWN: running\n";
 
 fn run() -> i32 {
-    // A lost marker makes the gate FAIL; do not swallow the write error.
+    // A lost marker makes the gate FAIL. There is no higher channel for a
+    // spawned service to report the failed write to, so the result is
+    // deliberately dropped; the gate's missing marker is the report.
+    //[SD19-gate] diagnostic sink: failure has nowhere higher to go.
     let _ = sys_diagctl_write(&DirectKernelCallTransport, MARKER);
 
     // Service body: park in receive(ANY), reply to everything that is not
