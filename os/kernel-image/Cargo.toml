@@ -27,6 +27,13 @@ fw-none-image = ["minix-kernel/kernel-text-rx"]
 fw-x86-none = ["fw-none-image"]
 fw-aarch64-none = ["fw-none-image"]
 fw-riscv64-none = ["fw-none-image"]
+# D-61: the aarch64 UEFI receiver product. Same link script and LMA layout as
+# the direct product, but `rust_image_main` is the v1 handoff receiver
+# (`x0` = arena PA → `arch_boot_resume_v1`); the direct `-kernel` face
+# (`bootface_a64`) is not compiled in. Two cargo invocations = two build
+# products, mirroring `fw-riscv64-uboot` (D-73): the entry form must not be
+# guessed at run time from `x0 == 0`, which no firmware promises.
+fw-aarch64-uefi-recv = ["fw-none-image"]
 # D-73: the U-Boot receiver product. Same link script and LMA layout as the
 # direct product, but the riscv64 `_start` is the v1 handoff receiver
 # (`a0` = arena PA → `arch_boot_resume_v1`); there is no bootface election

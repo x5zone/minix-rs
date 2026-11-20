@@ -83,7 +83,7 @@ impl Arch {
             Self::Aarch64 => Some(UefiSlots {
                 shim_target: "aarch64-unknown-uefi",
                 shim_feature: "fw-aarch64-uefi",
-                kernel_none_feature: "fw-aarch64-none",
+                kernel_none_feature: "fw-aarch64-uefi-recv",
                 loader: "BOOTAA64.EFI",
             }),
             Self::Riscv64 => None,
@@ -102,6 +102,11 @@ struct UefiSlots {
     /// Public feature name of `kernel-image` (same target triple as
     /// [`Arch::module_target`], which [`kernel_elf_path`] already assumes when
     /// picking the artifact).
+    ///
+    /// This is the feature that selects the **entry form** of the product.
+    /// On aarch64 the disk form is the v1 receiver (`fw-aarch64-uefi-recv`,
+    /// D-61); the direct-`-kernel` form (`fw-aarch64-none`) is built by the
+    /// direct-boot gates instead, never by this assembly plan.
     kernel_none_feature: &'static str,
     /// Firmware default load-option filename under `/EFI/BOOT/` on the ESP.
     loader: &'static str,
@@ -1271,8 +1276,8 @@ mod tests {
         );
         assert_eq!(
             step_flag("kernel-image", "--features"),
-            "fw-aarch64-none",
-            "kernel-image 腿必须用 fw-aarch64-none（M3.2 定的词汇表）"
+            "fw-aarch64-uefi-recv",
+            "kernel-image 腿必须用 fw-aarch64-uefi-recv（D-61：盘面产物是 v1 接收形态；直核形态由直核门自己构建）"
         );
         // Reverse assertion: none of x86's four hardcoded values may appear
         // (otherwise the table did not take effect).

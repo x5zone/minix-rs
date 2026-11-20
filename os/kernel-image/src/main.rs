@@ -315,13 +315,21 @@ core::arch::global_asm!(
     rust_image_main = sym rust_image_main,
 );
 
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+// The shared self-bootstrap helpers are used only by the two direct-boot faces
+// (`bootface` on riscv64, `bootface_a64` on aarch64). The aarch64 v1 receiver
+// product (`fw-aarch64-uefi-recv`) does not boot itself, so neither the
+// helpers nor `bootface_a64` are reachable there — leaving them compiled in
+// would produce eight `never used` warnings for code that cannot run.
+#[cfg(any(
+    target_arch = "riscv64",
+    all(target_arch = "aarch64", not(feature = "fw-aarch64-uefi-recv"))
+))]
 mod bootface_common;
 
 #[cfg(target_arch = "riscv64")]
 mod bootface;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(feature = "fw-aarch64-uefi-recv")))]
 mod bootface_a64;
 
 /// Rust-surface entry (x86_64 shape; aarch64/riscv64 have their own wiring
@@ -356,28 +364,34 @@ fn rust_image_main(arena_pa: usize) -> ! {
     minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
 
-/// aarch64 image entry: boot-shim builds the tables + enables translation,
-/// then jumps absolutely into this image's high-half `_start` with `x0` =
-/// physical address of the T1 handoff arena (identity reachable). `_start`'s
-/// `bl` leaves `x0` untouched, so it arrives as the first argument.
+/// aarch64 image entry (v1 receiver product, `fw-aarch64-uefi-recv`): boot-shim
+/// builds the tables + enables translation, then jumps absolutely into this
+/// image's high-half `_start` with `x0` = physical address of the T1 handoff
+/// arena (identity reachable). `_start`'s `bl` leaves `x0` untouched, so it
+/// arrives as the first argument.
 ///
-/// This image links at the high half (`aarch64.ld`'s `KERN_VIRT_BASE`), so
-/// when `x0 != 0` we hand over to `minix_kernel::arch_boot_resume_v1`: it
-/// decodes the seven payload partitions from the arena, copies them into the
-/// T5 landing area inside this image's `.bss`, validates `KernelInfo`, then runs
-/// the additive-only high-half resume (record root, build DM, jump to kmain)
-/// and **never rebuilds the root** — the root was built by boot-shim and is
-/// active right now; zeroing it via `new_from_page` would immediately destroy
-/// our own instruction-fetch mapping.
+/// This image links at the high half (`aarch64.ld`'s `KERN_VIRT_BASE`) and
+/// hands over to `minix_kernel::arch_boot_resume_v1`: it decodes the seven
+/// payload partitions from the arena, copies them into the T5 landing area
+/// inside this image's `.bss`, validates `KernelInfo`, then runs the
+/// additive-only high-half resume (record root, build DM, jump to kmain) and
+/// **never rebuilds the root** — the root was built by boot-shim and is active
+/// right now; zeroing it via `new_from_page` would immediately destroy our own
+/// instruction-fetch mapping.
 ///
-/// `x0 == 0` is the direct-kernel `-kernel` path (QEMU passes no arguments),
-/// which uses the `bootface_a64` self-bootstrap face; both chains share this
-/// entry and `.text.boot`.
-#[cfg(target_arch = "aarch64")]
+/// The direct-`-kernel` form is a **different build product**
+/// (`fw-aarch64-none`, whose entry is `bootface_a64::bootface_a64`); D-61
+/// replaced the old `x0 == 0` run-time election because no firmware promises
+/// `x0` is zero on a direct boot. A stray zero here means the shim failed to
+/// hand off, not that another boot form was requested, so this halts honestly.
+#[cfg(all(target_arch = "aarch64", feature = "fw-aarch64-uefi-recv"))]
 fn rust_image_main(arena_pa: usize) -> ! {
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
     if arena_pa == 0 {
-        bootface_a64::bootface_a64();
+        early_console::write_str(
+            "### minix-rs kernel-image: no handoff arena (x0 == 0), halting\n",
+        );
+        return halt();
     }
     // Use the TTBR1 high-half MMIO alias (this image's own HIGH_MMIO_LIVE
     // global) to prove the cross-image high-half console works; the resume
@@ -387,6 +401,16 @@ fn rust_image_main(arena_pa: usize) -> ! {
         "### minix-rs kernel-image: resuming high-half boot (handoff v1 arena)\n",
     );
     minix_kernel::arch_boot_resume_v1(arena_pa as u64)
+}
+
+/// aarch64 image entry (direct `-kernel` product, `fw-aarch64-none`): QEMU
+/// passes no handoff arena, so the image is its own bootstrapper through the
+/// `bootface_a64` self-bootstrap face. Built as a separate product per D-61 —
+/// the entry form is decided at build time, never guessed from a register.
+#[cfg(all(target_arch = "aarch64", not(feature = "fw-aarch64-uefi-recv")))]
+fn rust_image_main(_arena_pa: usize) -> ! {
+    let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
+    bootface_a64::bootface_a64()
 }
 
 /// riscv64 image entry: kernel-image is its own bootstrapper (no cross-image

@@ -44,7 +44,7 @@
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
 | I-40（本轮新登记） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`minix-boot/src/kernel_info.rs:640`）与 `KernelInfo::memmap()`（`kernel/src/vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **未裁决**（I-39 mini review 中发现，与 D-077 同一缺陷类但位置不同、超出该裁决授权）；待用户裁决是否并入 I-39 口径直接删/改写，见 §3 的 I-40 | §3 |
-| I-30（已裁决·待实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 设计裁决 + 代码改造 | 已裁决（D-061，用户 2026-11-19）：照 riscv64 加 feature 门，两条 `rust_image_main` 各归一个 cfg。待实施——详见 §3 的 I-30 | §3 |
+| I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已裁决·可开工） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 协议契约变更 + 代码改造 | 已裁决（D-062，用户 2026-11-20）：三条一次升版。待实施——验收 grep 六项、文档同步含 §4.1 五族句（D-072 补强），详见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
 | I-33（已裁决·可开工） | 直核腿统一到 owned 路径，删三张 `DTB_*` 静态表 | 代码改造 | 已裁决（D-065，用户 2026-11-20）：「统一总是我的最优选」。待实施——详见 §3 的 I-33 | §3 |
@@ -512,6 +512,55 @@ aarch64 照此加一个 feature 门（如 `fw-aarch64-uefi-recv`），两条 `ru
 **风险与回退**：新增一个构建变体与产物清单；改一个入口签名、一个链接脚本选择点、两个门脚本。若任一 aarch64 门链回归 → 回退到运行期判别并重开 D-061（该条件已写进判决行的 `reopen_condition`）。
 
 **为什么现在不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥（设计实施会让 certify 失效、基线在确认之下移动）。裁决已生效，实施留待下一 design/code batch。
+
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+D-061 的三处一致计划全部落地：
+
+| 层 | 改动 |
+|---|---|
+| 构建特性 | `os/kernel-image/Cargo.toml` 新增 `fw-aarch64-uefi-recv = ["fw-none-image"]`（与 `fw-riscv64-uboot` 同形） |
+| 代码分道 | `os/kernel-image/src/main.rs`：原来一条 `#[cfg(target_arch = "aarch64")] fn rust_image_main` 拆成两条——`all(aarch64, feature = "fw-aarch64-uefi-recv")` 的接收臂（只编 `arch_boot_resume_v1`）与 `all(aarch64, not(feature = ...))` 的直核臂（只编 `bootface_a64::bootface_a64()`） |
+| 产物清单 | `os/xtask/src/image.rs` 的 `Arch::Aarch64` 盘面特性从 `fw-aarch64-none` 改成 `fw-aarch64-uefi-recv`（UEFI 盘启动必然是 v1 接收形态）；同步改写它自己的计划断言与字段注释 |
+
+**行为变化（三处，都必须知道）**：
+
+1. **接收臂的 `arena_pa == 0` 语义变了**：改造前它表示「该走直核自举」，现在只表示「门面没交接 arena」——所以是诚实停机（打印 `no handoff arena (x0 == 0), halting`），不再静默转 `bootface_a64`。这是 D-061 的核心：入口形态由构建产物决定，不再从寄存器猜。
+2. **直核臂不再读 `x0`**：形参写成 `_arena_pa`，函数体直接调 `bootface_a64`。旧代码「先判 `x0` 再决定要不要自举」的结构消失。
+3. **`mod bootface_common` / `mod bootface_a64` 的 cfg 收窄**：接收臂不用这两个模块，编译进去会留一片 unreachable 代码（见下 mini review）。
+
+**mini review 抓到的一处真问题（我自己引入的）**：
+
+第一次改完跑 `cargo check` 两个变体都 0 error，但**接收变体比直核变体多 8 条 `never used` 警告**——`bootface_common` 的 `place_modules`/`PlacementPool`/`dtb_bounded`/`fdt_table_pa`/`fdt_bootargs`/`in_memmap_range`/`table_magic_ok`/`be_cell` 在接收臂里一个调用者都没有。修法：把 `mod bootface_common` 的 cfg 从 `any(riscv64, aarch64)` 收窄为 `any(riscv64, all(aarch64, not(fw-aarch64-uefi-recv)))`，与 `bootface_a64` 同门。修后两个变体都是 19 条（riscv 直核 18 条），**警告数对齐**。
+
+**鉴别力验证（结构级，比行为级更强）**：
+
+在接收变体里故意写回旧分道——把 `halt()` 那段换成 `bootface_a64::bootface_a64()`：
+
+```
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `bootface_a64`
+```
+
+**编译期就失败**。这不是「测试失败」而是「这个形态在接收产物里根本无法表达」——比运行期断言强，因为连代码都编不进去。恢复后 0 error。
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -n "arena_pa == 0" os/kernel-image/src/main.rs` | **4 处**——x86（`:350`，无直核面，诚实失败）、aarch64 接收臂（`:385`，诚实失败）、riscv 接收臂（`:428`，诚实失败），另 1 处是类型文档的说明句。**aarch64 的「形态判别」语义已消除**；规格原文的「→ 0」口径把 x86/riscv 的合法诚实失败也算了进去，与 I-32 的 grep 口径同属「字面归零不可达」，此处按裁决意图（不再用 `x0` 猜形态）判定 |
+| A2 | `cargo check -p kernel-image --target aarch64-unknown-none --features fw-aarch64-none` | **0 error** |
+| A3 | 同上 `--features fw-aarch64-uefi-recv` | **0 error**，且 dead-code 警告数与直核变体同为 **19** |
+| A4 | `cargo check -p kernel-image --target riscv64gc-unknown-none-elf --features fw-riscv64-none` | **0 error**，dead-code **18**（未回归） |
+| A5 | `cargo run -p xtask -- image --arch aarch64 --release` | **镜像就绪**（`BOOTAA64.EFI` + `kernel.elf` + 12 模块） |
+| A6 | `test-shim-bootmarks-aarch64.sh`（盘面/接收形态） | **PASS** |
+| A7 | `test-smp-aps-aarch64.sh`（`-kernel` 直核形态） | **PASS**（AP entered scheduler; SGI+timer gates open） |
+| A8 | `check-layout.sh aarch64` | **PASS**（L0–L8 全过，入口 `0xffff800000000000`） |
+| A9 | 文档门（01 篇） | anchor **108/108**；citation `blocks=69 checked=29 failed=0`；structure/style(error=0) 通过 |
+| A10 | 引文逐字核对 | 两个 cfg 臂的 8 处关键行与源码逐字一致（Python 逐行比对） |
+
+**范围外发现（不修，留记录）**：`cargo test -p xtask` 的 `manifest::tests::boot_module_order_matches_boot_shim_module_names` 失败——**在我改动之前（HEAD）就已失败**（用 `git stash` 暂存我的改动后复跑确认），原因是它从 `boot-shim/src/loader.rs` 抽 `MODULE_NAMES` 时解析失败，与本条无关，也未在本条改动中触碰。
+
+**为什么此前不做**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥（设计实施会让 certify 失效、基线在确认之下移动）。本条在裁决后由用户单独指示实施。
 
 ### D-71：`BootForm::source_path` 悬空 + 测试无存在性检查
 

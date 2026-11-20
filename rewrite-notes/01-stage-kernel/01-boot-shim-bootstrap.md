@@ -1451,7 +1451,9 @@ pub fn exit_boot_services() {
 > | riscv64 U-Boot shim | 已接线：U-Boot 用 `bootelf` 装载 `riscv64-uboot-shim`，shim 建根后跳进 `kernel-uboot` 的高半入口 | 门脚本 `test-riscv64-uboot-shim.sh` 的六个串口路标（直到 `entering scheduler`）全部出现 |
 > | riscv64 UEFI shim | **未接线**，原因是工具链事实而非工程欠账：Rust 编译器至今没有提供 riscv64 的 UEFI 目标（`*-unknown-uefi` 目标列表不含 riscv64） | 等编译器支持后再接 |
 > | riscv64 直核自引导 | 辅助/嵌入式形态（非主线）；QEMU 的 `test-kernel-image-riscv64-bootface.sh` 走它 | 它是硬件规范支持的真实形态（理由见下段“例外条款的背景”），但该门只验证 DTB 表址与模块定位失败的错误路径（§5.2.3）；“启动成功”的主线证据是 riscv64 U-Boot shim 的六路标门（手工门），两者不能混读 |
-> | aarch64 直核面 | 测试通道，无专用启动门脚本；由 `test-smp-aps-aarch64.sh` 用 `-kernel` 间接驱动 | 判据是 SMP 交付（`ap-arrived`/`ap-irq-ready`），不是启动路标门，见 §5.2.3 |
+> | aarch64 直核面 | 测试通道，无专用启动门脚本；由 `test-smp-aps-aarch64.sh` 用 `-kernel` 驱动 | 判据是 SMP 交付（`ap-arrived`/`ap-irq-ready`），不是启动路标门，见 §5.2.3。**形态由构建产物决定（D-061）**：该门用 `fw-aarch64-none` 编出的直核产物（入口只编 `bootface_a64` 自引导臂）；UEFI 盘面装的是 `fw-aarch64-uefi-recv` 产物（入口只编 v1 接收臂，`x0` 为零时诚实停机而非转自举） |
+
+> **两个 aarch64 产物（D-061）**：仓库现在产出两个 aarch64 `kernel-image` 变体——直核 `fw-aarch64-none`（`bootface_a64` 自引导，`-kernel` 门用）与盘面 `fw-aarch64-uefi-recv`（v1 接收臂，`xtask image --arch aarch64` 装盘用）。旧形态是「一个镜像靠 `x0 == 0` 在运行期判别」，D-061 把它换成编译期分叉：`x0` 零值不是任何固件承诺（QEMU 观察到不设参数，属实测而非规范），一旦某个加载器在 `x0` 放非零/零值就会把形态判反，而症状是 `handoff v1 envelope invalid` panic——指向交接协议而非入口形态。
 
 > **例外条款的背景**：RISC-V 的固件形态规范（OpenSBI 的 `FW_PAYLOAD` 模式）允许把下一级镜像打包进固件本体，boot 时固件直接跳进 S-mode 目标——真板上这类极简装机（省掉 U-Boot 与文件系统）不需要引导器存在，QEMU 的 `-kernel` 模拟的正是这个时序。所以"引导面长在内核镜像里"是硬件规范支持的真实形态。§3.1 分工表的第三列描述的是 U-Boot shim 路径（`opensbi_helpers::prepare_boot`，由 `os/boot-shim/src/uboot_main.rs:fn uboot_main` 调用）；各路径的接线状态与"未接线的 riscv64 UEFI-shim 路径"指哪一条，见上面的现状标注表，这里不重复。
 
@@ -3054,14 +3056,17 @@ Step 3 的 `enable()` 在 x86-64 上做四件事：
 三架构按“架构 × 链”五行并列。分道代码在 `os/kernel-image/src/main.rs` 的 `rust_image_main`——注意不是 boot-shim 的 `main.rs`（那个文件的入口骨架在 §4.1 引过，分道臂不在其中）——本节按架构逐臂给出；先从 aarch64 的接收面看起：
 
 ```rust
-// 节选（保留分道与 resume 调用；注释改述为机制陈述），os/kernel-image/src/main.rs:fn rust_image_main（aarch64）。
-#[cfg(target_arch = "aarch64")]
+// 代码引用（保留两个 cfg 臂的完整分道；注释节选），os/kernel-image/src/main.rs:fn rust_image_main（aarch64，按交付形态分特性）。
+// 盘面产物（fw-aarch64-uefi-recv）：boot-shim 建表、开翻译，然后把 v1 arena 的
+// 物理地址留在 x0 上绝对跳进本镜像的高半 `_start`。
+#[cfg(all(target_arch = "aarch64", feature = "fw-aarch64-uefi-recv"))]
 fn rust_image_main(arena_pa: usize) -> ! {
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
-    // 两条链的分道：直核 `-kernel`（QEMU 观察到不设 `x0` 参数——非规范保证，仅本仓 QEMU 虚机实测；真板 `-kernel` 行为以板级文档为准）走自引导面；
-    // boot-shim UEFI 链 x0=arena 物理地址走 v1 解码 + 高半 resume 面。
     if arena_pa == 0 {
-        bootface_a64::bootface_a64();
+        early_console::write_str(
+            "### minix-rs kernel-image: no handoff arena (x0 == 0), halting\n",
+        );
+        return halt();
     }
     early_console::use_high_mmio_window();
     early_console::write_str(
@@ -3069,9 +3074,16 @@ fn rust_image_main(arena_pa: usize) -> ! {
     );
     minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
+
+// 直核产物（fw-aarch64-none）：QEMU `-kernel` 不给交接 arena，本镜像自己自举。
+#[cfg(all(target_arch = "aarch64", not(feature = "fw-aarch64-uefi-recv")))]
+fn rust_image_main(_arena_pa: usize) -> ! {
+    let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
+    bootface_a64::bootface_a64()
+}
 ```
 
-（`bootface_a64()` 的返回类型是 `!`——自引导面正常不会返回；`arena_pa == 0` 是唯一走直核的取值，v1 链不会传 0。）
+（`bootface_a64()` 的返回类型是 `!`——自引导面正常不会返回。接收臂里的 `arena_pa == 0` 只剩「门面没交接」这一种含义：它诚实停机，而**不再**被解释成「该走直核自举」——直核形态是另一个构建产物，判据在编译期就定了。）
 
 ```rust
 // 代码引用（保留两个 cfg 臂的完整分道；注释节选），os/kernel-image/src/main.rs:fn rust_image_main（riscv64，按交付形态分特性）。
@@ -3117,7 +3129,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 - x86_64 的独立镜像入口已实现（接线状态见 §3.1.1）：`rust_image_main(arena_pa)` 从 `rbx` 取 arena 基址，调用 `arch_boot_resume_v1`；`_start` trampoline 按源码次序执行 `cli`、`cld`、清 `.bss`（只碰 rdi/rcx）、设栈、把 `rbx` 转进 SysV 第一参数 `rdi`、再 `call rust_image_main`。内核镜像的产出与布局校验仍由 `check-layout.sh` 的 L0–L9 守住。
 - riscv64 在 QEMU `-kernel` 直核场景下镜像按物理基址视图执行（源码注释把这一实测事实记作 `medany`）。"两基址相等"发生在哪类产物要说准：**QEMU 直核测试内核**按 VMA=LMA 平铺链接（如 `test-paging-enable-riscv64` 的 `link.ld`，其位置计数器一行即 `. = 0x80200000`——VMA=LMA 平铺），`kern_virt_base == kern_phys_base`，§4.6 的 Step 2 守卫（相等即跳过 Step 2）就是为它们写的；**生产直核镜像**与 U-Boot 接收镜像共用高半 VMA 的 `riscv64.ld`，两基址不等、守卫走正常分支。生产链（`bootface` + 文件系统 + 高半链接）走的是另一套布局。U-Boot 链的 `kernel-image`（启用 `fw-riscv64-uboot`）接收镜像与直核镜像共用同一份 `riscv64.ld`（高半 VMA `0xFFFFFFC000000000`、物理装载基址 `0x80200000`），差别只在入口分道特性与交给它的第一个参数；shim 侧则是一片独立的物理链接产物（VMA=LMA，见 `os/boot-shim/riscv64-uboot.ld`）。两条布局的基址常量以链接脚本为准，复算命令：`grep -n 'KERNEL_VIRT_BASE\|KERNEL_PHYS_BASE\|ENTRY' os/kernel-image/*.ld`（该命令对三份脚本各命中若干行，这里只摘 riscv64 的三个值： `KERNEL_VIRT_BASE = 0xFFFFFFC000000000`、`KERNEL_PHYS_BASE = 0x80200000`、`ENTRY(_start)`）。
 
-**让 riscv64 照搬 aarch64 的 `arena_pa` 分道协议会怎样**（问题不在“建表/跳转次序”——两者都先建根再跳；差别在入口参数通道）。aarch64 的镜像入口之所以直核与 UEFI 两种场景都能用，靠的是入口里的一条分道：`rust_image_main(arena_pa)` 在 `arena_pa == 0` 时走自引导面（`-kernel` 直核下 QEMU 不设 `x0`）、非零时走高半 resume 面；x86_64 没有直核面，`0` 只作诚实失败。riscv64 的入口（`rust_image_main(boot_hart, dtb_phys)`）没有"交接指针"这个入参——直核场景只给 hartid 与 DTB，表址从 DTB `/chosen` 取；若照搬 aarch64 的协议而不补一条分道，空指针解引用会发生在 `early_console` 初始化之前（主语限定为**非 U-Boot 特性**的 riscv64 直核入口——`fw-riscv64-uboot` 构建的接收臂有 `arena_pa` 入参、已由分道处理，这个反事实只适用于直核形态，串口上没有任何输出）。反过来，若 aarch64 退回内联执行，撞的是 §3.7 第一处替代做法已经推演过的同一个问题（TTBR0 被换掉、取指映射作废），现场证据（`elr`/`vbar` 钉在同一低地址）也在那里。
+**让 riscv64 照搬 x86_64 的「一个镜像 + 空指针诚实失败」形态会怎样**（问题不在“建表/跳转次序”——两者都先建根再跳；差别在入口参数通道）。三条架构现在都按**交付形态分构建产物**：aarch64 的盘面产物（`fw-aarch64-uefi-recv`）只编 v1 接收臂、直核产物（`fw-aarch64-none`）只编自引导臂，盘面产物里的 `arena_pa == 0` 只作诚实失败；riscv64 的 `fw-riscv64-uboot` 接收镜像同理（`a0` 为零只作诚实失败），直核产物只编 `bootface`。x86_64 没有直核面，`0` 只作诚实失败。riscv64 的直核入口（`rust_image_main(boot_hart, dtb_phys)`）没有"交接指针"这个入参——直核场景只给 hartid 与 DTB，表址从 DTB `/chosen` 取；若照搬 x86_64 的「一个镜像承载两种形态」而不补一条分道，空指针解引用会发生在 `early_console` 初始化之前（主语限定为**非 U-Boot 特性**的 riscv64 直核入口——`fw-riscv64-uboot` 构建的接收臂有 `arena_pa` 入参，这个反事实只适用于直核形态，串口上没有任何输出）。反过来，若 aarch64 退回内联执行，撞的是 §3.7 第一处替代做法已经推演过的同一个问题（TTBR0 被换掉、取指映射作废），现场证据（`elr`/`vbar` 钉在同一低地址）也在那里。
 
 ### 4.9 与 Minix3 C 的函数落点对照（差异表，非索引）
 
