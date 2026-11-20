@@ -1572,6 +1572,15 @@ fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
 /// the reference across a second store (boot is single-threaded; after boot
 /// the slot is read-only).
 pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
+    // I-35(a) (D-071): the slot is written exactly once per leg, before
+    // kmain. A second store would overwrite a live `&'static KernelInfo`
+    // handed out to earlier readers — fail closed instead of silently
+    // aliasing.
+    // SAFETY: the one-shot slot; read before the single write below.
+    assert!(
+        unsafe { (*crate::globals::KERNEL_INFO.get()).is_none() },
+        "store_kernel_info: a second store would rewrite a live &'static slot"
+    );
     // SAFETY: boot is single-threaded (before BKL exists); one write, then
     // read-only for the rest of the run.
     unsafe {
@@ -1794,7 +1803,7 @@ fn harden_kernel_text() {
 ///
 /// C: main.c:115-147
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
-pub fn kmain(kernel_info: &KernelInfo) -> ! {
+pub fn kmain(_kernel_info: &KernelInfo) -> ! {
     use minix_platform::platform_desc;
 
     // Root-cause fix on the consuming side: switch to the KernelInfo copy that
@@ -1859,7 +1868,12 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         Console::init();
     }
 
-    let kernel_info: &KernelInfo = store_kernel_info(kernel_info);
+    // I-35(a) (D-071): no re-store here. The global slot was written once
+    // per leg before kmain (prepare_kernel_image_v1 / rust_image_main), and
+    // `kernel_info` above already reads that .bss copy — re-storing it wrote
+    // the identical value back with no effect, and a second store would
+    // rewrite a live &'static slot (now a guard failure, see
+    // store_kernel_info). C parity: main.c reads kerninfo, never re-stores.
     boot_stage!("kernel: kmain A.1b console+kinfo ok\n");
 
     // Phase A.2 is intentionally empty: the kernel keeps no mutable copy of
@@ -5991,18 +6005,16 @@ mod tests {
             "param_buf must be repointed to the .bss landing pad"
         );
         assert_eq!(stored.param_buf, PARAM);
-        // The test re-stores the global copy itself: idempotent, no double copy.
-        store_kernel_info(stored);
-        let again = crate::kernel_info().expect("re-store republished");
-        assert_eq!(again.memmap.as_ptr(), stored.memmap.as_ptr());
-        assert_eq!(again.boot_modules.as_ptr(), stored.boot_modules.as_ptr());
-        assert_eq!(
-            again.platform_sources.as_ptr(),
-            stored.platform_sources.as_ptr()
+        // I-35(a) (D-071): the re-store is now a guard failure, not an
+        // idempotent no-op — this negative control gives the one-shot
+        // contract its bite (deleting the guard turns this test red).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store_kernel_info(stored);
+        }));
+        assert!(
+            result.is_err(),
+            "a second store must fail closed on the I-35(a) one-shot guard"
         );
-        assert_eq!(again.param_buf.as_ptr(), stored.param_buf.as_ptr());
-        assert_eq!(again.boot_modules[1].name, "vm");
-        assert_eq!(again.param_buf, PARAM);
         // Release the one-shot slot for other boot-global tests.
         // SAFETY: boot-globals lock held; single writer.
         unsafe { *crate::globals::KERNEL_INFO.get() = None };
