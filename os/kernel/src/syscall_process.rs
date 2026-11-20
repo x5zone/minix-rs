@@ -306,82 +306,102 @@ pub fn dispatch_exec(
     // C: do_exec.c:37-42 — copy process name from caller's address space
     // C: data_copy(src, dst, sizeof(rp->p_name)) + null termination (do_exec.c:43)
     {
-        use crate::cross_space::data_copy_vmcheck;
         use crate::proc::{PROC_NAME_LEN, ProcName};
-        use crate::vm::{AddressRef, CrossSpaceResult};
         use minix_types::VirBytes;
 
-        let name_ptr = exec_msg.name;
-
-        // Capture caller's endpoint and CR3 before mutable borrow.
-        let caller_endpt = proc_table
-            .get(caller_nr)
-            .map(|c| c.p_endpoint)
-            .expect("dispatch_exec: caller slot must exist");
-        let caller_cr3 = proc_table
-            .get(caller_nr)
-            .map(|c| c.p_seg.phys_root)
-            .expect("dispatch_exec: caller slot must exist");
-
         let mut name_buf = [0u8; PROC_NAME_LEN];
-
-        let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                None
+        // C parity, external behavior: do_exec.c:37-42 always issues the
+        // copy and falls back to "<unset>" when it fails. A faulting copy in
+        // this port returns `VmSuspend`, and the caller here is VM itself
+        // (exec_bootproc) — resolving the fault through VM would suspend VM
+        // waiting for itself (the E5(d) U-Boot deadlock: riscv's bootstrap
+        // root does not map user VA 0, while x86's low identity window made
+        // the same copy silently succeed and store garbage). A zero name
+        // pointer means "no name supplied": take the C fallback directly and
+        // never issue the copy.
+        if exec_msg.name == 0 {
+            const UNSET: &[u8] = b"<unset>";
+            name_buf[..UNSET.len()].copy_from_slice(UNSET);
+            if UNSET.len() < PROC_NAME_LEN {
+                name_buf[UNSET.len()] = 0;
             }
-        };
-
-        let src = AddressRef::Process {
-            endpoint: caller_endpt,
-            offset: VirBytes(name_ptr),
-        };
-        // Root cause of the boot panic: `name_buf` is a kernel-stack local whose
-        // VA lands in the higher-half kernel image segment [KERN_VIRT_BASE,
-        // KERNEL_DIRECT_MAP_BASE). That segment lies outside both Direct Map
-        // windows, so `CurrentDirectMap::virt_to_phys`'s DM subtraction yields a
-        // bogus physical address (real hardware showed `virt=0xffff8000003ffb30
-        // -> phys=0xffff7fff803ffb30`, i.e. bit 47 carried through) →
-        // cross_space_copy writes into the wrong place → early boot panic. Use
-        // AddressRef::Process instead: the caller's CR3 also maps the kernel
-        // higher-half (SYSCALL does not switch page tables), so
-        // `resolve_physical` walks the real page table and gets the correct PA.
-        // Semantically equivalent to C `data_copy(..., (vir_bytes)&name, ...)`
-        // (using a kernel stack address directly), and the same shape as the
-        // `copy_struct_from_user` fix in syscall.rs.
-        let dst = AddressRef::Process {
-            endpoint: caller_endpt,
-            offset: VirBytes(name_buf.as_mut_ptr() as u64),
-        };
-
-        match data_copy_vmcheck(caller_nr, proc_table, src, dst, PROC_NAME_LEN, proc_cr3) {
-            CrossSpaceResult::Completed(Ok(())) => {
-                // C: ensure null termination (do_exec.c:43)
-                name_buf[PROC_NAME_LEN - 1] = 0;
-                if let Some(rp) = proc_table.get_mut(target_nr) {
-                    rp.p_name = ProcName::from_array(name_buf);
-                }
+            if let Some(rp) = proc_table.get_mut(target_nr) {
+                rp.p_name = ProcName::from_array(name_buf);
             }
-            // C do_exec.c:38-40: a failed name copy is NON-FATAL — C falls
-            // through with the literal "<unset>"; arch_proc_init (the
-            // context install below) runs unconditionally. This port
-            // previously returned EFAULT here, so every boot-module exec
-            // with name_ptr=0 (VM's exec_bootproc convention) aborted
-            // BEFORE the context install — the process restored with its
-            // zero seed context and #PF'd at rip=0 (2026-09-22; on the wire
-            // the positive-errno reply masked that fault).
-            CrossSpaceResult::Completed(Err(_)) => {
-                const UNSET: &[u8] = b"<unset>";
-                name_buf[..UNSET.len()].copy_from_slice(UNSET);
-                if UNSET.len() < PROC_NAME_LEN {
-                    name_buf[UNSET.len()] = 0;
+        } else {
+            use crate::cross_space::data_copy_vmcheck;
+            use crate::vm::{AddressRef, CrossSpaceResult};
+
+            let name_ptr = exec_msg.name;
+
+            // Capture caller's endpoint and CR3 before mutable borrow.
+            let caller_endpt = proc_table
+                .get(caller_nr)
+                .map(|c| c.p_endpoint)
+                .expect("dispatch_exec: caller slot must exist");
+            let caller_cr3 = proc_table
+                .get(caller_nr)
+                .map(|c| c.p_seg.phys_root)
+                .expect("dispatch_exec: caller slot must exist");
+
+            let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
+                if endpt == caller_endpt {
+                    Some(caller_cr3)
+                } else {
+                    None
                 }
-                if let Some(rp) = proc_table.get_mut(target_nr) {
-                    rp.p_name = ProcName::from_array(name_buf);
+            };
+
+            let src = AddressRef::Process {
+                endpoint: caller_endpt,
+                offset: VirBytes(name_ptr),
+            };
+            // Root cause of the boot panic: `name_buf` is a kernel-stack local whose
+            // VA lands in the higher-half kernel image segment [KERN_VIRT_BASE,
+            // KERNEL_DIRECT_MAP_BASE). That segment lies outside both Direct Map
+            // windows, so `CurrentDirectMap::virt_to_phys`'s DM subtraction yields a
+            // bogus physical address (real hardware showed `virt=0xffff8000003ffb30
+            // -> phys=0xffff7fff803ffb30`, i.e. bit 47 carried through) →
+            // cross_space_copy writes into the wrong place → early boot panic. Use
+            // AddressRef::Process instead: the caller's CR3 also maps the kernel
+            // higher-half (SYSCALL does not switch page tables), so
+            // `resolve_physical` walks the real page table and gets the correct PA.
+            // Semantically equivalent to C `data_copy(..., (vir_bytes)&name, ...)`
+            // (using a kernel stack address directly), and the same shape as the
+            // `copy_struct_from_user` fix in syscall.rs.
+            let dst = AddressRef::Process {
+                endpoint: caller_endpt,
+                offset: VirBytes(name_buf.as_mut_ptr() as u64),
+            };
+
+            match data_copy_vmcheck(caller_nr, proc_table, src, dst, PROC_NAME_LEN, proc_cr3) {
+                CrossSpaceResult::Completed(Ok(())) => {
+                    // C: ensure null termination (do_exec.c:43)
+                    name_buf[PROC_NAME_LEN - 1] = 0;
+                    if let Some(rp) = proc_table.get_mut(target_nr) {
+                        rp.p_name = ProcName::from_array(name_buf);
+                    }
                 }
+                // C do_exec.c:38-40: a failed name copy is NON-FATAL — C falls
+                // through with the literal "<unset>"; arch_proc_init (the
+                // context install below) runs unconditionally. This port
+                // previously returned EFAULT here, so every boot-module exec
+                // with name_ptr=0 (VM's exec_bootproc convention) aborted
+                // BEFORE the context install — the process restored with its
+                // zero seed context and #PF'd at rip=0 (2026-09-22; on the wire
+                // the positive-errno reply masked that fault).
+                CrossSpaceResult::Completed(Err(_)) => {
+                    const UNSET: &[u8] = b"<unset>";
+                    name_buf[..UNSET.len()].copy_from_slice(UNSET);
+                    if UNSET.len() < PROC_NAME_LEN {
+                        name_buf[UNSET.len()] = 0;
+                    }
+                    if let Some(rp) = proc_table.get_mut(target_nr) {
+                        rp.p_name = ProcName::from_array(name_buf);
+                    }
+                }
+                CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
             }
-            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
         }
     }
 
@@ -1484,30 +1504,67 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Exec as i32;
         msg.m_u.m_lsys_krn_sys_exec.endpt = target_endpoint.0;
-        // name = 0 (null pointer) — data_copy_vmcheck will suspend
-        // on the page fault (source address 0 not mapped).
-
+        // name = 0 means "no name supplied": C's `data_copy(NULL)` fails and
+        // the name falls back to "<unset>"; the exec itself completes. A
+        // faulting copy must NOT suspend here — the caller is VM itself
+        // (exec_bootproc) in the boot leg, and a suspend would deadlock
+        // (E5(d), riscv U-Boot chain).
         let result = dispatch_exec(ProcNr(0), &mut proc_table, &msg);
-        // Name copy suspends (null name pointer → page fault → VmSuspend).
-        // C: do_exec.c:37-42 — name copy via data_copy; fault → VMSUSPEND.
-        assert_eq!(result, KcallResult::VmSuspend);
+        assert_eq!(result, KcallResult::Ok(0), "zero name pointer completes");
 
-        // DELIVERMSG is cleared BEFORE the name copy (do_exec.c:32-34),
-        // so it should be cleared even though the name copy suspended.
         let target = proc_table.get(target_nr).unwrap();
+        // DELIVERMSG is cleared BEFORE the name copy (do_exec.c:32-34).
         assert!(!target.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
-
-        // RECEIVING and EXT_REG_INITIALIZED are cleared AFTER the name copy
-        // (do_exec.c:51,55-57), so they should still be set.
-        assert!(target.p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+        // The completed path runs to the tail (do_exec.c:51,55-57).
+        assert!(!target.p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
         assert!(
-            target
+            !target
                 .p_misc_flags
                 .is_set(MiscFlagsBits::EXT_REG_INITIALIZED)
         );
+        assert_eq!(target.p_name.as_str(), "<unset>");
 
         // Caller should be unmodified
         assert!(!caller.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+    }
+
+    /// A non-zero name pointer still goes through the copy: a fault there
+    /// must suspend (VM resolves user pages), and the fields cleared after
+    /// the copy stay untouched until the retry.
+    #[test]
+    fn test_dispatch_exec_nonzero_name_fault_suspends() {
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let target_nr: ProcNr = ProcNr(0);
+        proc_table
+            .get_mut(target_nr)
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
+        let target_endpoint = proc_table.get(target_nr).unwrap().p_endpoint;
+        proc_table
+            .get_mut(target_nr)
+            .unwrap()
+            .p_misc_flags
+            .set(MiscFlagsBits::DELIVERMSG);
+        proc_table
+            .get_mut(target_nr)
+            .unwrap()
+            .p_rts_flags
+            .set(RtsFlagsBits::RECEIVING);
+
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Exec as i32;
+        msg.m_u.m_lsys_krn_sys_exec.endpt = target_endpoint.0;
+        // 0x1000 is unmapped in the mock page-table walk (all None).
+        msg.m_u.m_lsys_krn_sys_exec.name = 0x1000;
+
+        let result = dispatch_exec(ProcNr(0), &mut proc_table, &msg);
+        assert_eq!(result, KcallResult::VmSuspend);
+
+        let target = proc_table.get(target_nr).unwrap();
+        assert!(!target.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        // Cleared only after a successful copy.
+        assert!(target.p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
     }
 
     #[test]
