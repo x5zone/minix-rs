@@ -44,6 +44,7 @@
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已裁决·待实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | **已裁决（D-082，用户 2026 年 11 月 20 日）采「删重复 + 修剪上移」**：① 删 `read` 里的 `segment_iter`（实测输入的 `entry.len` 已是修剪值，纯冗余）② 修剪上移到 `load_boot_modules_into` ③ 复用 `minix_elf::segment_iter`，不新增第三个解析器。**否决「抽象修剪 trait + 空实现」**（无哪个腿不需要修剪）。② 落地前须验证 12 个模块的 PT_LOAD 覆盖真实内容 | §3 的 I-36 |
 | I-45（已裁决·待实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | **已裁决（D-084，用户 2026 年 11 月 20 日）梭哈 A**：`Item` 直接改 `Result<LoadSegment, ElfError>`，不走 B 过渡（无外部消费者、保留旧函数等于给缺陷留后门）；`filesz > memsz` 检查收进迭代器；`load_segments_into_buffer` 返回类型同批改 | §3 的 I-45 |
+| I-46（待裁决·**被 I-45 阻塞**） | `load_segments_into_phys_memory` 的 Safety 前提无类型载体（函数不自查段表）+ UEFI 腿绕过 wrapper | 设计裁决 | **未裁决，且有硬性前置依赖**：实质风险会被 I-45（`SegmentIter` 改 `Result`）顺手消掉，故必须在 I-45 落地并验证后才能裁决；裁决时只剩三件事（删 SAFETY 第 2 条 / 文档失真重新定位 / UEFI 腿是否改 wrapper）。面板建议的 `ValidatedKernelImage` 与改 wrapper 形状两案均倾向于不做 | §3 的 I-46 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
@@ -1477,6 +1478,73 @@ impl<'a> Iterator for SegmentIter<'a> {
 5. `cargo test -p minix-elf`（23 条基础 + 新增）、`cargo check --workspace --all-targets`、五条 QEMU 门链全 PASS。
 
 **风险与回退**：`minix-elf` 的公开 API 破坏性变更，但无外部消费者。回退方式：`Item` 改回 `LoadSegment` 并恢复五条 `continue`（不推荐——那会回到本缺陷）。
+
+### I-46（待裁决·**有前置依赖 I-45，前置未落地前禁止裁决**）`load_segments_into_phys_memory` 的 Safety 前提无类型载体 + UEFI 腿绕过 wrapper
+
+**来源**：`R3/DESIGN-D2-03`（P2，[MODERN]），D02 的 R3 面板。**状态：待裁决，但被 I-45（D-084）硬性阻塞。**
+
+> **⛔ 前置依赖（原文规定）**：本条的实质风险（"函数不自查段表、依赖调用者先 `compute_kernel_layout`"）会**被 I-45 顺手消掉**——I-45 落地后 `load_segments_into_phys_memory` 内部的 `segment_iter(...)?` 会用 `Result` 自查，`filesz > memsz` 与所有畸形段都不再依赖调用者。**因此必须在 I-45 落地并验证之后才能裁决本条**；在此之前任何裁决都是对过期事实的判断。
+
+**问题（按 I-45 落地前的现状描述）**：
+
+`loader.rs:286` 的 `pub unsafe fn load_segments_into_phys_memory` 的 SAFETY 契约（`:275-279`）要求两件事：
+
+1. 目标物理地址已映射、可写、不与 boot-shim / 固件结构重叠；
+2. **调用者必须先跑 `compute_kernel_layout`（或等价校验）**。
+
+第 2 条它自己承认做不到（`:276-279` 原文）：
+
+> this function itself does not reject `filesz > memsz` or address arithmetic overflow
+
+**唯一的 `filesz > memsz` 拒绝在 `compute_kernel_layout`（`loader.rs:188-191`）**。没有它，`filesz > memsz` 会让拷贝长度大于声明区间，把字节写到 `paddr + memsz` 之外。
+
+**调用面实测（三条路径）**：
+
+| 调用点 | 走 wrapper？ | 说明 |
+|---|---|---|
+| `loader.rs:406` | —— | wrapper 内部直调 |
+| `opensbi_helpers.rs:362` | **是**（`load_kernel_with_loader_gated`）| gate 里做 `reserve_kernel_span` / LMA 上界断言 / bump 池不相交断言 |
+| `uefi_helpers.rs:1030` | **否**（直调）| 自己在 `:1000` compute、`:1004-1007` 断言 entry、`:1023-1024` reserve+record、`:1027` alloc_root、`:1028` alloc_bump、`:1029` init_pt_alloc，然后 `:1030` copy |
+
+**UEFI 腿的顺序靠书写纪律维持**：它凑巧是对的（compute 在 copy 之前 30 行），但无机制保证将来重排仍对。
+
+**为什么 UEFI 腿用不了 wrapper（这是面板没讲透的关键）**：
+
+`load_kernel_with_loader_gated` 的 gate 签名是 `G: FnOnce(&KernelLoadResult)`——**只读回调，不能返回东西**。而 UEFI 腿在 compute 之后、copy 之前**还要做三步分配**（`alloc_root_page` / `alloc_bump_region` / `init_boot_pt_alloc`），这三步发生在 gate 之后。当前 wrapper 的形状表达不了"gate 之后还能继续分配再 copy"。`opensbi_helpers` 能用是因为它的 gate 只做区间校验、不分配。
+
+**面板建议的两个修法**（我记录但暂不采纳，理由见"裁决时的待办"）：
+
+| 选项 | 做法 | 我的评估 |
+|---|---|---|
+| 面板首选 | `compute_kernel_layout` 返回不透明 `ValidatedKernelImage<'a>`，`load_segments_into_phys_memory` 只接受它 | **收益会被 I-45 消掉**——该类型只能证明"layout 算过"，而 I-45 之后函数自查；且它证明不了 SAFETY 第 1 条（物理地址已映射），`unsafe` 仍要保留 |
+| 面板备选 | UEFI 腿改走 wrapper（需把 gate 改成可返回值的形状）| **为一个调用点改通用 API 形状**，且 I-45 之后 wrapper 的 gate 对 UEFI 腿已无必要 |
+
+**文档修改项（本条的未来动作，待裁决后执行）**：
+
+面板称「文档 §4.2 第 870 行说『生产路径由 `load_kernel_with_loader` 保证这个顺序』，与源码不符」。**裁决前实测：该句在 `01-boot-shim-bootstrap.md` 中已不存在**——全文 `grep -c "load_kernel_with_loader"` 仅 1 处命中（`:3166` 的 M16 覆盖行），且不涉及"生产路径保证顺序"的声称。**因此这一项需在裁决时重新定位**：若确认无可改之处则销账，若发现同类失真表述（例如把 UEFI 腿的 `reserve_kernel_span` 说成"由 wrapper 保证"）则按实际位置改写。
+
+**第二份拷贝（同一断言的两次实现）**：
+
+`loader.rs:396-401`（wrapper 内）与 `uefi_helpers.rs:1004-1007` 是**同一个 entry 断言的两份实现**：
+
+```rust
+assert_eq!(layout.entry_point, layout.kern_virt_base.0,
+    "boot-shim: ELF entry does not equal the first PT_LOAD VMA");
+```
+
+属 D-067/I-34 想消灭的"两套可不一致事实"。**但该断言很小，两份拷贝的风险低于改 wrapper 形状的成本**——是否合并留待裁决时权衡。
+
+**前置依赖落地后（I-45 完成）本条应只剩三件事**：
+
+| # | 待办 | 是否仍成立 |
+|---|---|---|
+| ① | SAFETY 契约删掉第 2 条（"必须先 compute"），改为"本函数自查段表，调用者只需保证目标物理地址已映射且不重叠" | **必做**（I-45 之后第 2 条自动失效，留着是错误文档）|
+| ② | 文档失真表述核查与修正（须重新定位，见上） | **待核实** |
+| ③ | UEFI 腿是否改走 wrapper / 是否合并 entry 断言第二份拷贝 | **待权衡，倾向不做** |
+
+**禁止裁决的原因**：若在 I-45 之前裁决，会基于"函数不自查"这个即将消失的事实去设计类型（`ValidatedKernelImage`），落地后发现多余。
+
+**解锁条件**：I-45（D-084）实施完成并验证（`cargo test -p minix-elf` + 五条 QEMU 门链 PASS）→ 本条解除阻塞，重新裁决。
 
 ### I-34（已裁决·可立即开工）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
