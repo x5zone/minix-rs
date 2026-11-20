@@ -91,11 +91,11 @@ C 的这四样分别落在 `pre_init.c` 与 `pg_utils.c` 两个文件里：收�
 
 ### 1.3 从第一章到第二章
 
-§1.2 已给出四样东西、五条次序约束（D1–D5）与跨框依赖，§1.4 给本篇范围与编号索引；这里只给读法，不重述定义。往下读时按 D1–D5 对照第 2 章的 C 源码：第 3 章看 Rust 把"准备"与"运行"分到哪里，第 4 章逐处实现，第 5、6 章是测试与诊断。
+§1.2 已给出四样东西、五条次序约束（D1–D5）与跨框依赖，§1.4 给本篇范围、术语与编号索引；这里只给读法，不重述定义。往下读时按 D1–D5 对照第 2 章的 C 源码：第 3 章看 Rust 把"准备"与"运行"分到哪里，第 4 章逐处实现，第 5、6 章是测试与诊断。
 
 读第 2 章时先看符号再看注释：本篇引用的 C 行为以函数体、链接脚本与调用序为准，源码注释只作线索；两者冲突时以代码为准，未闭合的口径记在 §5.1 的覆盖状态列与 §5.3 的 TODO 详情里。D1–D5 是给第 2 章的**论证**排序的，不决定节序（节序按 C 代码顺序，框表与约束的对照见 §1.2），也不是第 3 章的设计提纲。
 
-### 1.4 本篇范围与可以安全跳过的内容
+### 1.4 本篇范围、术语与编号索引
 
 本篇覆盖从引导器跳进内核（或跳进替它准备的那段代码）起，到控制权交给内核主流程为止的全部动作：引导器契约、参数收集、内存记账、模块装载的检查、页表建立与分页开启、以及这段代码在新设计里的组织方式。
 
@@ -3157,6 +3157,8 @@ fn rust_image_main(arena_pa: usize) -> ! {
 
 ### 5.1 机制 → 需要证明什么（推导表）
 
+> **分工说明**：本表只给“需要证明什么 + 状态 + 一句话证据指针”；测试名、负控尺寸与调用序钉的展开在 §5.2/§5.3，重复是「索引 → 详情」的分工，不是第二份口径。
+
 | # | 机制（正文位置） | 需要证明什么（可观测、可证伪） | 证据类型 | 覆盖状态 | TODO |
 |---|---|---|---|---|---|
 | M1 | 第一跳设栈与传参（§2.2，C 侧） | 内核入口 esp 指向 `load_stack_start`（代码事实；“必须”对 boot2 未证明）；`pre_init` 收到 `(magic, ebx)` | 引文对账 | 引文块逐字对账（C 侧无执行面，不在本仓测试面）；真机链只覆盖 Rust 等价路径的第一跳，不覆盖 C 侧 `head.S` | — |
@@ -3312,7 +3314,7 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 | UEFI + ESP 盘（x86_64） | `os/qemu-tests/test-shim-bootmarks-x86.sh` | 同一条 v1 链在 x86_64 上读盘、交接、进入调度器 | 5 条：`kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1` / `resuming high-half boot (handoff v1 arena, x86_64)` / `entering scheduler` |
 | U-Boot shim（riscv64 U-Boot 路径） | `os/qemu-tests/test-riscv64-uboot-shim.sh` | `riscv64-uboot-shim` 构建表、装内核与 12 模块、交接到 U-Boot 接收镜像 | 6 条：`uboot leg enter (d73)` / `table built (MNXBOOT1` / `kernel + 12 modules loaded (d73)` / `[raw] entering kernel image v1` / `resuming high-half … riscv64` / `entering scheduler` |
 
-真机门链五条以本节表格五行为准（两条 UEFI 链、riscv64 U-Boot 直载测试链、riscv64 U-Boot shim、riscv64 直核——这五条各有独立脚本；aarch64 直核面由 `test-smp-aps-aarch64.sh` 用 `-kernel` 驱动，但该脚本判的是 SMP 交付（`ap-arrived`/`ap-irq-ready`），不是启动路标门，**不计入**这五条。此处"链"指**有脚本门覆盖的组合**，与 §3.7 对账的"五条生产腿"同数不同集，不混用：**§3.7 是生产腿计数的唯一权威，本节是门链计数的唯一权威**，两者不互相改写），跑法与"关键行缺失时怎么办"见 §6.4 第一层。本节只负责"证明什么"与通过标准。三条 aarch64/riscv64 门链（aarch64 UEFI+ESP、riscv64 U-Boot shim、riscv64 直核 bootface；riscv64 U-Boot 直载测试链另见上表）的终点各不相同：aarch64 UEFI+ESP 链通常只到 EBS 后的 `memmap source` 行（`DTB_CFGTABLE=1` 变体以 EBS 前的 `DTB preflight failed…` 为终点，见本节表格）；riscv64 U-Boot shim 到 6/6 路标（含 `entering scheduler`）；riscv64 直核 `bootface` 的 PASS 是故意让模块定位失败以验错误路径。x86 UEFI 与 U-Boot shim 链的标记集另含 `entering scheduler`（`kmain` 尾段），但调度器之后（用户态服务）的存活由后续各篇（如 `02-higher-half-kernel.md`）的门链接手，不在本篇判定范围。aarch64 直核面不在这些启动门链里：它由 `test-smp-aps-aarch64.sh` 驱动，判的是 SMP 交付，不是启动路标门。**五条生产腿与五条门链的差集有两项**：aarch64 直核面在生产腿里没有专用启动门；riscv64 U-Boot 直载测试链在门链里但不是生产腿。本篇证据总账的缺口是前者（只有 SMP 门间接覆盖，§5.1 M14）。`BootFileTable` 取件车道不在 riscv64 U-Boot 直载测试链的测试内核里（它直构 `KernelInfo`、绕过 `prepare_boot`），覆盖它的是 OpenSBI 直载路径的脚本（`test-riscv64-boot-full.sh` 一类会在设备树上注入 `opensbi,boot-file-table`）。
+真机门链五条以本节表格五行为准（计数换算法见 §3.7 的术语表，本节不另立计数）（两条 UEFI 链、riscv64 U-Boot 直载测试链、riscv64 U-Boot shim、riscv64 直核——这五条各有独立脚本；aarch64 直核面由 `test-smp-aps-aarch64.sh` 用 `-kernel` 驱动，但该脚本判的是 SMP 交付（`ap-arrived`/`ap-irq-ready`），不是启动路标门，**不计入**这五条。此处"链"指**有脚本门覆盖的组合**，与 §3.7 对账的"五条生产腿"同数不同集，不混用：**§3.7 是生产腿计数的唯一权威，本节是门链计数的唯一权威**，两者不互相改写），跑法与"关键行缺失时怎么办"见 §6.4 第一层。本节只负责"证明什么"与通过标准。三条 aarch64/riscv64 门链（aarch64 UEFI+ESP、riscv64 U-Boot shim、riscv64 直核 bootface；riscv64 U-Boot 直载测试链另见上表）的终点各不相同：aarch64 UEFI+ESP 链通常只到 EBS 后的 `memmap source` 行（`DTB_CFGTABLE=1` 变体以 EBS 前的 `DTB preflight failed…` 为终点，见本节表格）；riscv64 U-Boot shim 到 6/6 路标（含 `entering scheduler`）；riscv64 直核 `bootface` 的 PASS 是故意让模块定位失败以验错误路径。x86 UEFI 与 U-Boot shim 链的标记集另含 `entering scheduler`（`kmain` 尾段），但调度器之后（用户态服务）的存活由后续各篇（如 `02-higher-half-kernel.md`）的门链接手，不在本篇判定范围。aarch64 直核面不在这些启动门链里：它由 `test-smp-aps-aarch64.sh` 驱动，判的是 SMP 交付，不是启动路标门。**五条生产腿与五条门链的差集有两项**：aarch64 直核面在生产腿里没有专用启动门；riscv64 U-Boot 直载测试链在门链里但不是生产腿。本篇证据总账的缺口是前者（只有 SMP 门间接覆盖，§5.1 M14）。`BootFileTable` 取件车道不在 riscv64 U-Boot 直载测试链的测试内核里（它直构 `KernelInfo`、绕过 `prepare_boot`），覆盖它的是 OpenSBI 直载路径的脚本（`test-riscv64-boot-full.sh` 一类会在设备树上注入 `opensbi,boot-file-table`）。
 
 退出码语义（表中五个脚本一致）：0 = PASS，1 = FAIL，2 = SKIP（前置工具缺失，或宿主 U-Boot 与脚本/镜像不兼容；`test-riscv64-uboot.sh` 在装载故障时打印 `SKIP: host U-Boot could not load…` 与版本）。这条区分让"没跑"与"跑了但失败"在手工运行时可以分辨：没有 U-Boot 的开发机上，riscv64 U-Boot 直载测试链返回 2 而不是 1。当前 CI 只接线了这五条门链里的 `test-riscv64-uboot.sh`，其余四条是手工门（另有独立的一套 `test-cmd-smoke*.sh` 命令冒烟链也在 CI，其中 `test-cmd-smoke.sh` 的 Stage 3b 断言了 x86 shim 的三条交接路标——那套判的是命令面，不是本节的门链终点）；这里的“接线”指 **CI 作业接入**，与 §3.1.1 的“代码路径已接线”不是同一件事。表中“覆盖”指手工验证过，不等于 CI 常态守护。
 

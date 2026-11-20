@@ -2126,3 +2126,62 @@ RB24 首轮 13 项逐项处置：
 
 - 三问：① 本轮不变量是「确认轮必须在最终工作树上给出 certify 新准入 = 0，且每个修改点有独立回读回执」；② 前提是 R31–R33 的修改轮已关闭（本轮前补清点后成立）；③ 证据是两份 certify 回执（21 + 12 条）与六门读数。
 - 资源重读：本轮盲区属"流程类"（确认轮权限与身份键），按 L6.5 查 `prompt/resources/` 的 `fresh-eyes-review` 与 `eai-agent-toolkit`；未发现可直接移植的新检测模式，已记 BLIND-SPOTS 候选（BLIND-SPOT-DELTA：设计项在确认轮被系统性降级为延期）。
+
+## R36 确认轮（V3.4；基线变更重开）
+
+### R36 §0 基线
+
+- 轮型：`confirmation`；edition：`V3.4`；schema：`V3.4 from R35`（R36 延续，不改写 R35 及以前的历史标记）。
+- 重开依据：`FREEZE.md` 重开条件第 2 条（R35-design-batch 实施后基线改变，需重新固定基线并重跑受影响门）+ 用户 2026-11-21 指令（review loop D01 直至收敛，授予代裁权）。
+- 基线提交：`e04e61cb5`（R36 预门修正之后）；工作树 `git status --porcelain` 只有三个审查前已存在的未跟踪文件（`prompt/review-loop-r26-r29-report.md`、`rewrite-notes/01-stage-kernel/01-design-learn.md`、`rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r26.md`），无源码/正文改动。
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 文档基线 sha256：`c68d92ebd4bf8d9d5eb22fd3e18e6b52b540de11a977023fcffc78c96db308b0`
+- 行数：3586
+- 基线变更：R35 之后落地 6 个设计批提交——`a3214de10`（I-39/D-077 删空 getter 与恒真测试）、`2e82208e2` 之前的 R31 补清点不重列；本轮范围链为 `abb8bf135`（I-37/D-073 PreparedJump）、`72d62d35e`（I-30/D-061 aarch64 链接期分叉）、`2a345f566`（I-31/D-062 wire v10）、`19cf646d9`（I-38/D-074 BootScalars）、`b1a114400`（I-34/D-067 BootStorage fill API）。R36 预门另修 `e04e61cb5`（§3.6 的 map_huge 引文同步会话内 2 MiB 通道化实现）。
+- 设计快照：`01-outline.v4.md`、`01-outline-review.v4.md`、`01-design.v3.md` 齐备；`design-coverage-check.sh 01-stage-kernel` → ALL DOCS COMPLETE。
+- 关联代码：`doc-code-map.sh --check` 54/54；清单见 `related-code.txt`。
+- 语料条目：D01（`CORPUS.md` 第二节，启动链/三架构）；盲区重点 B-01..B-13。
+- 范围声明：本篇范围 = boot-shim 引导准备与控制权交接 + 54 个关联文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
+- 预门读数（最终 HEAD）：anchor 108/108 zero-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；`--stale-lines 2e82208e2 --strict` PASS（候选 728 行）；`--from-diff 2e82208e2` 只报 `window`/`write`/`with` 等通用词 WARN（工具按删除行抽标识符，通用词非旧符号，记已知假阳性，不阻断）。
+- follow-ups（L0 步骤 8）：已读 `follow-ups.md` 与 `OPEN-DEBT.md`；R35-design-batch 的 13 项均有 D-060 判决行与 2026-11-19 日期，实施状态按 OPEN-DEBT 的逐项注记（I-30/I-31/I-34/I-37/I-38/I-39 已落码；D2-05/I-36 经二次核实未实施，仍归设计批，不在确认轮实施 ⑥）；无未批准 ② 被带入本轮。
+
+### R36 §1 面板
+
+- 角色与材料（七角色全量，均独立子 agent；读者 A/B/C 独立，未合并——文档 3586 行 ≥ 500）：
+  - P-FACT-A：文档 + 关联代码 + 决策摘要 + follow-ups；焦点 §1–§3（第 17–2268 行）。输出 `panel/round36/fact-a.md`，15 条 FINDING + 4 条 SUGGESTION。
+  - P-FACT-B：同材料；焦点 §4–§6（第 2269–3517 行）。输出 `fact-b.md`，19 条 FINDING + 4 条 SUGGESTION。
+  - P-DESIGN-D2：§3/§4 + 关联代码 + `trait-audit.json` + AGENTS.md；基线为「文档主张 ↔ 源码事实」（D-024 停跑 D1，记 VARIANCE）。输出 `design-d2.md`，9 条 FINDING + 8 行减法表；0 条 ARCH-PROPOSAL。
+  - P-READER-A/B/C：只读文档 + 读者画像；未读源码与其他面板输出。输出 `reader-a.md`（4 + 10 SUGG）、`reader-b.md`（9 + 10 SUGG）、`reader-c.md`（6 + 5 SUGG）。
+  - P-REFUTE：文档 + 关联源码 + 设计快照；6 条 CLAIM（阻断 4 / 反证失败 2）。
+  - 缩编：无读者合并；D1 停跑（D-024）+ D2 基线回退（panel §4.3），记 VARIANCE。
+- 技能调用 VARIANCE：本运行时可用技能清单里没有 `review-process-skill` 与 `review-doc-skill`（只有 `full-review`/`review-loop` 等派生技能）；主 agent 直接加载规范源 `prompt/review-rules/review-process.md`、`review-doc-checklist.md` 与 `prompt/skill/review-loop.md`，以等价材料执行。Skill Invocation Log 只记实际调用的 `review-loop`，不伪记未发生的调用。
+- 模型：面板全部为同一模型（opencode-go-chat/deepseek-v4.1-flash）的独立冷启动实例；无跨模型复核，限制写进 §8 与 certify。
+- 起止：2026-11-21 约 07:00–07:55（并行；各角色 wall 17–48 分钟）；无 10 分钟无输出重试，无降档/升档事件。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/`；制品入库 `panel/round36/` + `INDEX.md`（`tools/panel-index.py` 生成；7 文件，FINDING 62 / SUGGESTION 33 / CLAIM 6）；`panel-index.py --check` 通过。
+- 工作树：面板运行前后 `git status --porcelain` 只显示面板前已有的未跟踪文件；面板只写 `tmp/review-eval/...`，无源码/文档写入。
+
+### R36 §2 发现
+
+- 101 条原始产出（93 个 ID 承载）：FINDING 62（fact-a 15、fact-b 19、design-d2 9、reader-a 4、reader-b 9、reader-c 6）+ SUGGESTION 33（fact-a 4 条未编号、fact-b 4 条未编号、reader-a 10、reader-b 10、reader-c 5）+ CLAIM 6。
+- 严重度（FINDING）：P0 = 10、P1 = 21、P2 = 25、P3 = 6；CLAIM 另有阻断 4（P0×2、P1×2）与反证失败 2。
+- 最高严重度簇：wire 版本号未升（FACT-A-01/FACT-B-01/D2-01/REFUTE-03 独立同根）；v10/D-062 删除未传播（startup/6b/strict/postconditions/调用点/幽灵 API，FACT-A-03/05/07/15、FACT-B-02/03/04/05、REFUTE-04）；测试账与 loader 引文整体过期（FACT-A-04/05、FACT-B-06/12、REFUTE-06）；`SHIM_TABLE` 未对齐 UB（D2-07）；aarch64 bump 第二份边界检查（D2-04）。
+- 面板原文逐字保留在 `panel/round36/`，不合并、不润色。
+
+### R36 §3 归因
+
+- 根因：93 个（RD-R36-001..093；逐 ID 立根因，R35 同形）。跨角色同根关系（wire 版本、v10 删除、测试账等）由每行 action/evidence 的组文本表达，不另并根。另有 8 条 fact 角色未编号建议单列，不参与根因分档。
+- 冻结决策检查：D-061（aarch64 编译期分叉）、D-062（wire v10）、D-067（fill API）、D-071（kmain 不重存）、D-086（单所有权）均为本轮修复的依据；无 re-litigation。D2-05 是新设计项，未在旧账本中裁决过。
+- 范围：全部 in-scope；无 adjacent 阻塞。
+- 设计项：D2-05（安装型全局参数化）按确认轮 §3.6 不实施 ⑥，批准延期 `R36-design-batch`（D-104，用户批准日期 2026-11-21）；D2-03/D2-09 为 P3 建议，进 suggestions。
+- 读者项：P1/P2 且造成理解断裂或错误判据的按 ④ 本轮修；B-05/B-06/B-08 是「换一种讲法更好」的结构建议，按 §4.0e 门槛降为 P3 SUGG，登记 suggestions。
+- 自引入：0（本轮修复未在 certify 前引入新根因；certify 后按回执更新）。
+
+### R36 §4 修复
+
+- 代码批：commit `da9581437`——wire 版本 9→10 + 版本历史；U-Boot `SHIM_TABLE` 改 `BootFileTable` 类型静态 + `size_of` 断言；aarch64 bump 改 `BumpRegion` + `AtomicU64`。验证：minix-boot 184→185/0、boot-shim 146/0、kernel-image 8/0；`test-sysboot.sh` PASS、`test-riscv64-uboot-shim.sh` 6/6 PASS；aarch64 `test-rt-birth-aarch64.sh` 到达 `entering scheduler`，其 user-chain Data Abort 在 stash 对照下与改动前同一处（已知 A2 遗留，非本批因果）。
+- 文档批一：commit `882ae3fb8`——v10/startup/6b/七→六/arena 两口径/幽灵 API/strict 门/postconditions/调用点/测试账/loader 引文/aarch64 x0/Paging 成员/PteChannel/map_huge 语义/探针来源/行号锚点/gate 计数/land_slice/字段台账/user_sp/ceil/step1+2；新增 `test_boot_postconditions_reject_low_virtual_base`。
+- 文档批二：commit `cd2b31f97`——系统任务/AP/DM 定义；aarch64 门链变体；五腿五门链差集；§3.7 计数权威改为换算基准；生产者 `staged_elf_used_len` 注释改事实。
+- 机械门（最终 HEAD）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines 2e82208e2 --strict` PASS。
+- 未实施（②）：D2-05 → `R36-design-batch`（D-104 + OPEN-DEBT 行）。
+- 未实施（P3 SUGG）：D2-03、D2-09、B-05/B-06/B-08 与全部面板建议 → `suggestions.md` R36 段。
+

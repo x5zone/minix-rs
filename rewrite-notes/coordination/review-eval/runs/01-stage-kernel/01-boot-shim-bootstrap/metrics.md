@@ -278,3 +278,26 @@
 - 重构: 提出 13 / 接受 13 / 实施 0 / 登记 13
 - 成本: agent 8（六角色 + 两次 certify）/ token 未采集 / 耗时 约 5 小时
 - 回读与回归: 文档六门绿（anchor 108/108、citation `checked=29 failed=0`、structure/ref/style/density 通过、doc-code-map 54/54）；独立回执 `certify/round35-fact.md` 21/21 CLOSED、`certify/round35-reader.md` 12/12 CLOSED；`cargo test -p minix-kernel --features mock` 的 D2-39 收紧尝试已回退，本轮无代码行为改动，QEMU 未跑
+
+## R36 确认轮
+
+- 发现总数: 93（ID 承载：FINDING 62 + 编号 SUGGESTION 25 + CLAIM 6；另有 8 条 fact 角色未编号建议，单列不参与分档）
+- 唯一根因数: 93（RD-R36-001..093；逐 ID 立根因，R35 同形；跨角色同根关系由 action/evidence 的组文本表达）
+- 本轮新准入: 93
+- certify 新准入: 0（round36-fact 与 round36-reader 两份独立回执全 CLOSED；无新增修改点）
+- 重复合并: 0（逐 ID 立根因；8 条未编号 fact 建议另计）
+- 自引入: 0（certify 回执未发现本轮修复引入的新根因）
+- 处置: ① 44 / ② 1 / ④ 16 / ⑤ 0 / ⑥ 0 / FP 2 / SUGG 30
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 1（D-104：批准 D2-05 延期到 R36-design-batch）
+- ARCH 提案: 0
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 1 / 接受 1 / 实施 0 / 登记 1
+- 减法: 提案 8 / 采纳 4（D2 SUBTRACTION-TABLE）
+- 成本: agent 9（7 面板 + 2 certify）/ token 未采集 / 耗时 约 6 小时
+- 回读与回归: 文档六门绿（anchor 110/110、citation checked=29 failed=0、structure/ref/style error=0/density、doc-code-map 54/54）；`--stale-lines 2e82208e2 --strict` PASS；minix-boot 185/0、boot-shim 146/0、minix-elf 27/0、kernel mock 866/0/8；test-sysboot PASS、test-riscv64-uboot-shim 6/6 PASS；aarch64 rt-birth 门在同一处 user-chain Data Abort（stash 对照，已知 A2 遗留，非本轮因果）
