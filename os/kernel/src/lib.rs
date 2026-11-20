@@ -403,6 +403,38 @@ macro_rules! boot_stage {
     }};
 }
 
+/// The two values that cross the shim→image jump, each in its own coordinate
+/// space.
+///
+/// They used to be two adjacent bare `u64`s (`-> (u64, u64)` and
+/// `jump_kernel_image_v1(entry: u64, arena_pa: u64)`), so swapping them still
+/// compiled. The swap is close to the worst possible boot failure: the branch
+/// target becomes the arena's *physical* address, so the first instruction
+/// fetch after paging comes up faults, and `scause`/`CR2` report an address
+/// unrelated to the real cause. Same pattern as `PlacementPool`
+/// (`kernel-image/src/bootface_common.rs`) and `MapCounts` (D-067).
+///
+/// Visibility follows the two functions that name it: both stay `pub` because
+/// the shim may call them separately (the documented post-root/pre-jump
+/// milestone split, TODO-09), so a `pub(crate)` type would trip
+/// `private_interfaces`. This is not a wire type — it never crosses an image
+/// boundary, it only carries the two locals between two adjacent calls.
+#[cfg(all(
+    not(feature = "mock"),
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "riscv64"
+    )
+))]
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedJump {
+    /// Virtual entry of the standalone image's `_start`.
+    pub entry: VirBytes,
+    /// Physical base of the handoff arena (the `x0`/`rbx`/`a0` handoff value).
+    pub arena_pa: PhysBytes,
+}
+
 /// T1 2c/3b sender-side entry: build the bootstrap root, patch the runtime
 /// fields into the already-serialized arena, then absolute-jump into the
 /// standalone image.
@@ -429,7 +461,7 @@ pub fn prepare_kernel_image_v1(
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
     shim_windows: &[(u64, u64)],
-) -> (u64, u64) {
+) -> PreparedJump {
     let arena_pa = arena_pa.0;
     // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
     // face names the type explicitly); the v1 sender names it here instead.
@@ -507,8 +539,15 @@ pub fn prepare_kernel_image_v1(
             bump_end,
         },
     );
-    let entry = core::hint::black_box(report.kern_virt_base.0);
-    (entry, arena_pa)
+    // The `black_box` is a compiler barrier, not a value sanitizer: it stops
+    // LLVM from folding the branch target into a compile-time literal, which
+    // would break the inline-asm `in(reg)` constraint below. Keep it on the
+    // inner `u64` and wrap after.
+    let entry = VirBytes(core::hint::black_box(report.kern_virt_base.0));
+    PreparedJump {
+        entry,
+        arena_pa: PhysBytes(arena_pa),
+    }
 }
 
 /// Build the root, then jump into the standalone image (stable public entry).
@@ -526,8 +565,8 @@ pub fn enter_kernel_image_v1(
     root_page: PhysBytes,
     shim_windows: &[(u64, u64)],
 ) -> ! {
-    let (entry, arena) = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
-    jump_kernel_image_v1(entry, arena)
+    let jump = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
+    jump_kernel_image_v1(jump)
 }
 
 /// Absolute jump into the standalone image's high-half entry.
@@ -543,7 +582,13 @@ pub fn enter_kernel_image_v1(
         target_arch = "riscv64"
     )
 ))]
-pub fn jump_kernel_image_v1(entry: u64, arena_pa: u64) -> ! {
+pub fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
+    // Destructure into the two bare `u64`s the asm arms need. The names stay
+    // in one place so a future reader cannot reorder them by accident.
+    let PreparedJump {
+        entry: VirBytes(entry),
+        arena_pa: PhysBytes(arena_pa),
+    } = jump;
     // SAFETY: paging is enabled and `entry` maps the executable kernel-image
     // `_start`; the arena is a valid physical address below the identity end.
     // The handoff register is bound to a fixed operand so LLVM cannot

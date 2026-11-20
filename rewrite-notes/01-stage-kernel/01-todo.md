@@ -40,7 +40,7 @@
 | I-34（本轮新登记） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 设计裁决 + 代码改造 | 已裁决（D-067，用户 2026-11-20）；待实施——详见 §3 的 I-34 | §3 |
 | I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35。原文中的第三项 `Frozen::freeze` 的 `debug_assert` 已由 I-32 销账（2026 年 11 月 20 日），不再属本条 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
-| I-37（本轮新登记） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 设计裁决 + 代码改造 | 已裁决（D-073，用户 2026-11-20）：采 A（`PreparedJump { entry: VirBytes, arena_pa: PhysBytes }`）；保持两函数分开；`shim_windows` 固件边界不动。待实施 | §3 |
+| I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
 | I-40（本轮新登记） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`minix-boot/src/kernel_info.rs:640`）与 `KernelInfo::memmap()`（`kernel/src/vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **未裁决**（I-39 mini review 中发现，与 D-077 同一缺陷类但位置不同、超出该裁决授权）；待用户裁决是否并入 I-39 口径直接删/改写，见 §3 的 I-40 | §3 |
@@ -877,9 +877,50 @@ struct PreparedJump {
 - 五条 QEMU 门链（x86 UEFI、aarch64 UEFI、aarch64 直核 SMP、riscv U-Boot shim、riscv 直核 bootface）PASS——本改动触及全部跳转路径，门链不可省；
 - 文档 §4.8 若引用这两个函数的签名，同批更新。
 
-**风险与回退**：`PreparedJump` 是私有类型，不跨 crate、不改变外部 ABI；唯一风险是某架构的汇编臂读取字段时类型不匹配（`VirBytes.0` / `PhysBytes.0` 都是 `u64`，直接取 `.0` 即可）。若某臂需要裸值做别的用途 → 在臂内局部解构，不改结构体形状。
+**风险与回退**：`PreparedJump` 不改变外部 ABI；唯一风险是某架构的汇编臂读取字段时类型不匹配（`VirBytes.0` / `PhysBytes.0` 都是 `u64`，直接取 `.0` 即可）。若某臂需要裸值做别的用途 → 在臂内局部解构，不改结构体形状。
 
-**为什么现在不做**：用户 2026-11-20 明确只做记账。
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+D-073 的四步全部落地，另有两处 mini review 的修正：
+
+| # | 改动 | 说明 |
+|---|---|---|
+| ① | 新增 `PreparedJump { entry: VirBytes, arena_pa: PhysBytes }` | 紧邻两个函数，带 `#[cfg(all(not(feature="mock"), any(三个 target_arch)))]`——**规格没写这条 cfg**（见下 mini review 第 2 条） |
+| ② | `prepare_kernel_image_v1` 返回 `PreparedJump` | `black_box` 保留在内层 `u64` 上，包在 `VirBytes(...)` 里（顺序不能反：屏障要作用在值上） |
+| ③ | `jump_kernel_image_v1(jump: PreparedJump)` | 函数体开头用结构体解构 `let PreparedJump { entry: VirBytes(entry), arena_pa: PhysBytes(arena_pa) } = jump;`，**三段汇编块逐字未动** |
+| ④ | `enter_kernel_image_v1` 改为 `let jump = ...; jump_kernel_image_v1(jump)` | 消除了原来的 `let (entry, arena) = ...` 元组解构 |
+| ⑤ | 文档 §4.8 引文块同步 | 签名三处、`PreparedJump` 定义段、以及块前的说明文字 |
+
+**mini review 修正的两处（都是我自己引入的，不是规格问题）**：
+
+1. **`private_interfaces` 警告 ×2**（三个生产目标各报两条）。规格与 D-073 都写「私有值对象」，但那两个函数是 `pub`——`pub fn` 的签名里出现私有类型，外部 crate 拿到返回值却无法命名它，rustc 报 `private_interfaces`。修法：类型改为 `pub`（字段也 `pub`），并在类型文档里写明为什么不能更私有。这不是放弃封装——该类型不是 wire 类型，只在本仓两处相邻调用之间传递。
+2. **mock 形态 `never constructed`**：两个函数被 `not(feature = "mock")` cfg 掉，结构体就成了孤儿。修法：给 `PreparedJump` 加与函数完全相同的 `#[cfg]`。
+
+**鉴别力验证（两个方向，第二个才是 I-37 的目标）**：
+
+| 方向 | 做法 | 结果 |
+|---|---|---|
+| 反向（应失败） | 把 `enter_kernel_image_v1` 改回旧形状 `let (entry, arena) = prepare_...(..); jump_kernel_image_v1(entry, arena)` | **编译失败**：`E0308`（元组无法匹配 `PreparedJump`）+ `E0061`（`jump_kernel_image_v1` 只收 1 个参数，给了 2 个）——旧的位置传参形状已被类型系统拒绝，这正是 I-37 要拦的错序类 |
+| 正向（应通过，但实际也通过） | 故意把字段值写反：`entry: VirBytes(arena_pa), arena_pa: PhysBytes(entry.0)` | **编译通过**。这不是缺陷：`VirBytes`/`PhysBytes` 都是 `u64` 的 newtype，防的是「位置错序」（被动犯错），不防「显式写错字段值」（主动犯错）。D-074 的判决行对 `BootScalars` 记的是同一结论（「结构体字面量可防错序不可防错值」），那一项由等式 `debug_assert` 补；`PreparedJump` 没有可供断言的等式关系（`entry` 与 `arena_pa` 本就无关），所以没有对应的补丁，也不该有 |
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -n -F -- "-> (u64, u64)" os/kernel/src/lib.rs` | `prepare_kernel_image_v1` 处**已归零**（另两处命中是类型文档的说明句与无关函数 `require_boot_region`） |
+| A2 | `grep -n "fn jump_kernel_image_v1"` | `pub fn jump_kernel_image_v1(jump: PreparedJump) -> !` |
+| A3 | `grep -c "core::hint::black_box(report.kern_virt_base.0)"` | **1**（保留） |
+| A4 | `cargo test -p minix-kernel --features mock` | **866 passed / 0 failed / 8 ignored** |
+| A5 | `cargo check -p minix-kernel` 三架构（x86_64/aarch64/riscv64 none 目标） | **0 error**，且 `PreparedJump` 相关警告 **0** |
+| A6 | x86 UEFI 门 `test-shim-bootmarks-x86.sh` | **PASS** |
+| A7 | aarch64 UEFI 门 `test-shim-bootmarks-aarch64.sh` | **PASS** |
+| A8 | aarch64 直核 SMP 门 `test-smp-aps-aarch64.sh` | **PASS**（AP 进入调度器，SGI+定时器门打开） |
+| A9 | riscv U-Boot shim 门 `test-riscv64-uboot-shim.sh` | **PASS**（6/6 标记，进入调度器） |
+| A10 | riscv 直核门 `test-kernel-image-riscv64-bootface.sh` | **PASS** |
+| A11 | 文档门（01 篇） | anchor **108/108**；citation `blocks=69 checked=29 failed=0`；structure/style(error=0) 通过；`doc-code-map` 54/54 |
+| A12 | 引文逐字核对 | `PreparedJump` 定义段 5 行、签名/调用/解构 10 处全部与源码逐字一致（Python 逐行比对，非目视） |
+
+**为什么此前不做**：用户于 2026 年 11 月 20 日明确只做记账；本条在裁决后由用户单独指示实施。
 
 ### I-36（未裁决·待裁决）`UbootFileLoader::read` 的 ELF 修剪上移（+ 一次核查事故记录）
 

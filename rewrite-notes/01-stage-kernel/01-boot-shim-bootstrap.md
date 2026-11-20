@@ -1977,16 +1977,24 @@ x86_64 的 `arch_boot` 只做诊断打印并调用 `arch_boot_finish::<X86_64Boo
 
 跨镜像交接的产线上多一层（x86_64、aarch64 与 riscv64 U-Boot shim 三条 v1 发送腿同走 `lib.rs` 的 [`fn enter_kernel_image_v1`](<os/kernel/src/lib.rs:fn enter_kernel_image_v1>)；TTBR0/TTBR1 是 aarch64 侧的细节）：内核以独立 ELF 的形式存在于高半（aarch64 侧经 TTBR1），boot-shim 先分配一块八页 arena 并把 v1 协议写进去，然后建表、开分页、把运行期字段补进 arena，最后**绝对跳转**过去；内存图来源分两路：两条 UEFI 腿在 `ExitBootServices` 的配对循环里分类最终快照，riscv64 U-Boot shim 没有 EBS，直接从 DTB `/memory` 取表；入口寄存器只带 arena 基址——x86_64 用 `rbx`（镜像 trampoline 转到 `rdi`）、aarch64 用 `x0`、riscv64 U-Boot shim 用 `a0`。
 
+「虚拟入口」与「物理 arena 基址」这两个值在跳转那一跳上同处。过去它们是一对相邻的裸 `u64`（`-> (u64, u64)` 与 `jump_kernel_image_v1(entry: u64, arena_pa: u64)`），交换后仍能编译：跳转目标会变成 arena 的物理地址，分页刚开后第一次取指就故障，而 `scause`/`CR2` 指向的地址与真实原因无关。现在改由一个值对象按字段名承载。该类型与两个函数同可见性——函数保持 `pub`（shim 可以分两次调用它们，见下文的路标拆分理由），所以类型不能更私有，否则 `private_interfaces` 报警；它不是 wire 类型，只在本仓两处相邻调用之间传递。
+
 ```rust
-// 代码引用（保留稳定的公共入口、窗口构造、建根调用与 aarch64 跳转臂；错误消息、SAFETY 注释与 x86/riscv 跳转臂有省略），os/kernel/src/lib.rs:fn enter_kernel_image_v1 + fn prepare_kernel_image_v1 + fn jump_kernel_image_v1。
+// 代码引用（保留稳定的公共入口、窗口构造、建根调用与 aarch64 跳转臂；错误消息、SAFETY 注释与 x86/riscv 跳转臂有省略；`PreparedJump` 保留定义原文，略去 `#[cfg]` 与 `#[derive]` 两行），os/kernel/src/lib.rs:fn enter_kernel_image_v1 + fn prepare_kernel_image_v1 + fn jump_kernel_image_v1 + struct PreparedJump。
+pub struct PreparedJump {
+    /// Virtual entry of the standalone image's `_start`.
+    pub entry: VirBytes,
+    /// Physical base of the handoff arena (the `x0`/`rbx`/`a0` handoff value).
+    pub arena_pa: PhysBytes,
+}
 pub fn enter_kernel_image_v1(
     arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
     shim_windows: &[(u64, u64)],
 ) -> ! {
-    let (entry, arena) = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
-    jump_kernel_image_v1(entry, arena)
+    let jump = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
+    jump_kernel_image_v1(jump)
 }
 
 pub fn prepare_kernel_image_v1(
@@ -1994,7 +2002,7 @@ pub fn prepare_kernel_image_v1(
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
     shim_windows: &[(u64, u64)],
-) -> (u64, u64) {
+) -> PreparedJump {
     let arena_pa = arena_pa.0;
     // ……（riscv64 cfg 别名、x86 cli、Step 0、policy 选择见源文件）……
     let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
@@ -2025,11 +2033,18 @@ pub fn prepare_kernel_image_v1(
     build_bootstrap_root_and_enable::<BootArchImpl>(root_page, &policy.kernel(), windows);
     let bump_next = boot_alloc::boot_alloc_next();
     // ……（arena 映射与 patch_runtime_fields_in 见源文件）……
-    let entry = core::hint::black_box(report.kern_virt_base.0);
-    (entry, arena_pa)
+    let entry = VirBytes(core::hint::black_box(report.kern_virt_base.0));
+    PreparedJump {
+        entry,
+        arena_pa: PhysBytes(arena_pa),
+    }
 }
 
-pub fn jump_kernel_image_v1(entry: u64, arena_pa: u64) -> ! {
+pub fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
+    let PreparedJump {
+        entry: VirBytes(entry),
+        arena_pa: PhysBytes(arena_pa),
+    } = jump;
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
