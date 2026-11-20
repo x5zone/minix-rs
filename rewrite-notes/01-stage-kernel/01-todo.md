@@ -42,7 +42,7 @@
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
-| I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
+| I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
 | I-40（本轮新登记） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`minix-boot/src/kernel_info.rs:640`）与 `KernelInfo::memmap()`（`kernel/src/vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **未裁决**（I-39 mini review 中发现，与 D-077 同一缺陷类但位置不同、超出该裁决授权）；待用户裁决是否并入 I-39 口径直接删/改写，见 §3 的 I-40 | §3 |
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条 QEMU 门链全 PASS**。mini review 抓到两个漏项（`uboot_main` bin 未编、`VmBootHandoff.user_sp` 误删）。验收读数与口径偏差见 §3 的 I-31 | §3 |
@@ -991,7 +991,69 @@ impl BootScalars {
 
 **风险与回退**：`BootScalars` 私有、单 crate、不改外部 ABI。唯一风险是 `KernelInfo.kern_size` 与 `BootReport.kern_size` 若类型不同则构造函数无法共用（已核：**两者都是 `u64`**，`kernel_info.rs:97`/`boot_storage.rs:416`）。若将来变成不同 newtype，构造函数各自持有字段类型即可。
 
-**为什么现在不做**：用户 2026-11-20 批准方案但只做记账；且本条**必须等 I-31 落地**后实施，否则 `BootScalars` 要定型两次。
+**实施记录（2026 年 11 月 20 日完成，`✅ 已实施`）**：
+
+I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"四字段再改三字段"的二次定型）。
+
+| # | 改动 | 位置 |
+|---|---|---|
+| ① | 新增 `struct BootScalars { kern_virt_base: VirBytes, kern_phys_base: PhysBytes, kern_size: u64 }` | `os/kernel/src/lib.rs`，紧邻被改造函数 |
+| ② | 两个命名构造函数 `from_kernel_info(&KernelInfo)` / `from_report(&BootReport)` | 同上 |
+| ③ | `boot_validate_and_prepare<A>(scalars: BootScalars)`，函数体开头 `let kv = scalars.kern_virt_base.0; …`，并就地派生 `kern_stack_top = kv.checked_add(ks)`（溢出 panic） | 同上 |
+| ④ | 三个调用点改 `BootScalars::from_kernel_info(..)` / `::from_report(..)` | `:334` 的 `resume_additive`、`:473` 的 `prepare_kernel_image_v1`、`:1007` 的 `arch_boot_impl` |
+
+**一处必须如实记录的论证变化（我实施时才确认）**：D-074 的分析写在本条裁决时，那时 `boot_validate_and_prepare` 是**四个**位置实参，其中 `kern_virt_base` 与 `kern_stack_top` **同为 `VirBytes`**——交换后仍能编译，这是本条原始风险的来源。但 **I-31 先落地删掉了 `kern_stack_top`**，剩余三个参数是 `VirBytes` / `PhysBytes` / `u64`，**三个不同类型，交换即编译失败**。也就是说：
+
+- **原来的「同类型槽互换」风险已经由 I-31 消除**，不是由本条消除的；
+- 本条的实际收益只剩「收敛暴露面」：三个调用点各抄三字段（共 9 行重复 → 2 个构造函数内各 3 行「名字 + 值同行」）；
+- 交叉赋值仍拦得住（`kern_virt_base: report.kern_phys_base` → `E0308`，已实测），但那是 `VirBytes`/`PhysBytes` 类型差异的功劳，I-31 之前也有。
+
+按 D-074 的 `reopen_condition`（「出现 `boot_validate_and_prepare` 需要第五个标量且该标量来自不同来源」）没有触发，所以本条仍按裁决实施；但**如果当初按「I-31 先做」的真实收益重算，本条的优先级会低于裁决时的判断**。这一点留在记录里，供后续同类裁决参考：**值对象的收益取决于同类型槽的数量，而削参数本身可能先把同类型槽消灭掉**。
+
+**为什么 `BootReport` 的三个派生字段没有一起删（登记不改）**：`BootReport` 上仍有 `user_sp`/`kern_stack_top`/`syscall_entry` 三个字段，且 `BootReport::report()` 仍在算它们（`boot_storage.rs:335-338`）。实测它们的**生产侧读者为零**——`grep -rn "report.user_sp\|report.kern_stack_top\|report.syscall_entry" os/` 除 `boot_storage.rs` 自己的三条测试断言外无命中，且 I-38 改造后 `report.kern_stack_top` 连 `boot_validate_and_prepare` 也不再读。这与 I-31 删 `KernelInfo` 三字段是**同一缺陷类**（发送侧视图保留了两端可算的派生值），但 D-074 的授权范围只有 `boot_validate_and_prepare` 的形参。按 fix-guard「一次一条」登记为 **I-41**（见 §3），不在本次改动里动。
+
+**验收读数（本机实测，2026 年 11 月 20 日）**：
+
+| 验收项 | 命令 | 读数 |
+|---|---|---|
+| A1 | `grep -n "fn boot_validate_and_prepare" -A 3 os/kernel/src/lib.rs` | 形参为单个 `scalars: BootScalars` |
+| A2 | 三个调用点的 `kernel_info.kern_virt_base` / `report.kern_virt_base` 抄字段 | **归零**（改为构造函数内），三处均变为 `boot_validate_and_prepare::<X>(BootScalars::from_*(..))` |
+| A3 | `cargo test -p minix-kernel --features mock` | **864 passed / 0 failed / 8 ignored**（与 I-31 后一致，本条零测试增减） |
+| A4 | `cargo check -p minix-kernel` 三架构生产形态 | 全部 **0 error** |
+| A5 | `cargo check --workspace` | **0 error** |
+| A6 | **五条 QEMU 门链** | x86 UEFI **PASS**；aarch64 UEFI **PASS**；riscv U-Boot shim **PASS**（6/6 标记）；aarch64 直核 SMP **PASS**；riscv 直核 bootface **PASS** |
+| A7 | 文档门（01 篇） | anchor **108/108**；citation `blocks=69 checked=29 failed=0`；structure/style(error=0) 通过 |
+
+**鉴别力验证**：在 `from_report` 里故意写 `kern_virt_base: report.kern_phys_base` → `error[E0308]: mismatched types`（编译期拒绝）。如上面的论证变化所述，这条鉴别力来自 newtype 类型差异，不是本条新增的。
+
+**为什么此前不做**：用户 2026 年 11 月 20 日批准方案但只做记账；且本条**必须等 I-31 落地**后实施，否则 `BootScalars` 要定型两次。I-31 于同日完成后本条随即实施。
+
+### I-41（待裁决·I-38 的实施副产物）`BootReport` 上三个零读者的派生字段
+
+**来源**：I-38 实施时的 mini review。
+
+**现状**：`BootReport`（`os/libs/minix-boot/src/boot_storage.rs`）仍有三个字段，`BootReport::report()` 每次调用都算：
+
+| 字段 | 当前来源 | 生产侧读者 |
+|---|---|---|
+| `user_sp` | `VirBytes(minix_types::USER_STACK_TOP)`（`:336` 附近） | **零**（唯一命中是 `boot_storage.rs:440` 的测试断言） |
+| `kern_stack_top` | `VirBytes(kern_virt_base.0 + kern_size)` | **零**（`:438` 的测试断言；I-38 改造后连 `boot_validate_and_prepare` 也不再读） |
+| `syscall_entry` | `VirBytes(kern_virt_base.0)` | **零**（`:439` 的测试断言） |
+
+它们是 I-31 删掉 `KernelInfo` 同名三字段后的**发送侧残留**：`BootReport` 是 shim 进程内的借用视图（`&BootReport<'_>` 传给 `enter_kernel_image_v1`），不是 wire 类型，所以 I-31 的 v10 升版没有波及它；但它同样在「把恒等式抄一遍」。
+
+**待裁决的两个选项**：
+
+- **A（推荐）**：删三个字段与 `report()` 里的三行赋值，连同三条测试断言。纯删除，零行为变化——生产侧读者实测为零。
+- **B**：保留，等将来真出现第三个消费者再说。
+
+**验收（若走 A）**：
+
+- `grep -rn "report.user_sp\|report.kern_stack_top\|report.syscall_entry" os/ --include=*.rs` → 0；
+- `cargo test -p minix-boot`、`cargo test -p boot-shim --features test-all`、`cargo test -p minix-kernel --features mock` 全绿；
+- 五条 QEMU 门链不回归（`BootReport` 参与全部 v1 发送腿）。
+
+**为什么没有并入 I-38**：D-074 的授权范围是 `boot_validate_and_prepare` 的形参改造，不含 `minix-boot` 的类型删减（跨 crate）。按 fix-guard「一次一条」登记。
 
 ### I-37（已裁决·待实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
 

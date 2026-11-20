@@ -2697,10 +2697,14 @@ pub fn build_kernel_info(
 `boot_validate_and_prepare` 是这份结构在内核侧的入口校验（`arch_boot` 的调试打印已先读过部分字段），它在建表之前先做校验：
 
 ```rust
-// 节选（保留校验段；尺寸阶梯与诊断路标宏略去——阶梯的代码与解码在 §3.6；注释省略，分配器注册检查以省略号代替），os/kernel/src/lib.rs:fn boot_validate_and_prepare。
-    let kv = kern_virt_base.0;
-    let kp = kern_phys_base.0;
-    let ks = kern_size;
+// 节选（保留校验段；尺寸阶梯与诊断路标宏略去——阶梯的代码与解码在 §3.6；注释省略，分配器注册检查以省略号代替），os/kernel/src/lib.rs:fn boot_validate_and_prepare。签名是 fn boot_validate_and_prepare<A: BootArch>(scalars: BootScalars)。
+    let kv = scalars.kern_virt_base.0;
+    let kp = scalars.kern_phys_base.0;
+    let ks = scalars.kern_size;
+    // 派生，非入参（wire v10 / D-062）：四个位置实参在 I-38 收成一个
+    // `BootScalars`，`kern_stack_top` 在函数内由两个镜像跨度字段算出。
+    let kern_stack_top =
+        VirBytes(kv.checked_add(ks).expect("arch_boot: kern_virt_base + kern_size overflows u64"));
 
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
     assert!(
