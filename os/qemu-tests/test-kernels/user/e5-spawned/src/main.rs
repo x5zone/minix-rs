@@ -63,10 +63,7 @@ fn run() -> i32 {
     // this body never sees one in the stepping stone).
     loop {
         let mut msg = Message::default();
-        if DirectTrapTransport
-            .receive(Endpoint::ANY, &mut msg)
-            .is_ok()
-        {
+        if DirectTrapTransport.receive(Endpoint::ANY, &mut msg).is_ok() {
             if msg.m_source != Endpoint::SYSTEM {
                 msg.m_type = 0;
                 let _ = DirectTrapTransport.send(msg.m_source, &msg);

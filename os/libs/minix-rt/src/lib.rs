@@ -344,7 +344,11 @@ mod global_alloc_binding {
             let nib = ((size >> (i * 4)) & 0xf) as u8;
             if nib != 0 || started || i == 0 {
                 started = true;
-                let c = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+                let c = if nib < 10 {
+                    b'0' + nib
+                } else {
+                    b'a' + nib - 10
+                };
                 put(&[c], &mut n);
             }
         }

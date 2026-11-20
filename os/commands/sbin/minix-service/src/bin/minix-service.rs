@@ -201,8 +201,12 @@ fn real_main() -> ! {
             // errors, applied to the reply arm.
             if msg.m_type != 0 {
                 support::warn(
-                    format!("minix-service: request 0x{:x} failed: {}\n", request.call_nr(), msg.m_type)
-                        .as_bytes(),
+                    format!(
+                        "minix-service: request 0x{:x} failed: {}\n",
+                        request.call_nr(),
+                        msg.m_type
+                    )
+                    .as_bytes(),
                 );
             }
             support::terminate(msg.m_type)
@@ -253,11 +257,11 @@ fn prepare_up_image(args: &Args) -> Result<minix_service::RequestImage, String> 
         let pkg = format!("{PATH_SYSTEM_CONF_PKG_DIR}/{progname}");
         let dir = format!("{PATH_SYSTEM_CONF_DIR}/{progname}");
         if let Ok(text) = support::read_file(&pkg) {
-                    (text, pkg)
+            (text, pkg)
         } else if let Ok(text) = support::read_file(&dir) {
-                    (text, dir)
+            (text, dir)
         } else {
-                    (
+            (
                 support::read_file(PATH_SYSTEM_CONF)
                     .map_err(|_| String::from("cannot read the system config"))?,
                 String::from(PATH_SYSTEM_CONF),
