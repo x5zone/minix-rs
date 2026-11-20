@@ -222,6 +222,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
    - re-litigation: <整数>
    - adjacent 阻塞: <整数>
    - 重构: 提出 <整数> / 接受 <整数> / 实施 <整数> / 登记 <整数>
+   - 减法: 提案 <整数> / 采纳 <整数>（V3.6，C-34；提案=D2 SUBTRACTION-TABLE 行数）
    - 成本: agent <整数> / token <整数> / 耗时 <文本>
    ```
    R25 过渡轮仍用 V2.5 的旧键（`轮型: discovery|verification`、`新 in-scope 真缺陷`），

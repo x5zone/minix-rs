@@ -533,6 +533,84 @@ def _metric_blocks(text: str) -> list[tuple[str, str]]:
     return blocks
 
 
+def _count_subtraction_rows(text: str) -> int:
+    """Count data rows under `## SUBTRACTION-TABLE`（V3.6，C-34 的机械读数）。
+
+    段不存在 → 0（D2 未给减法表）。数据行 = 以 `|` 开头的行，排除分隔行
+    （单元格全由 `-:` 与空格构成）与表头行（第一格是 加法提案 / 提案 /
+    proposal / 加法）。遇到下一个 `## ` 标题停止。
+    """
+    m = re.search(r"^##\s+SUBTRACTION-TABLE\b", text, re.MULTILINE)
+    if not m:
+        return 0
+    rows = 0
+    for line in text[m.end():].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            break
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cells or all(set(c) <= set("-: ") for c in cells):
+            continue
+        if cells[0] in {"加法提案", "提案", "proposal", "Proposal", "加法"}:
+            continue
+        rows += 1
+    return rows
+
+
+def check_subtraction(
+    d2_text: str,
+    metrics_text: str,
+    report: Report,
+    round_tag: str | None,
+) -> None:
+    """V3.6 C-34：减法提案计数必须与 D2 实物一致。
+
+    `metrics.md` 的 `- 减法: 提案 <N> / 采纳 <M>`：
+      - 缺键 → FAIL（V3.6 轮必须有该键，否则奖励回路仍然只奖励加法）；
+      - 提案数 ≠ `## SUBTRACTION-TABLE` 数据行数 → FAIL（自报数与实物不符）；
+      - 提案数 = 0 → FAIL（D2 只列加法，报告不完整，§4.3 纪律）；
+      - 采纳数 > 提案数 → FAIL（不可能）。
+    """
+    rows = _count_subtraction_rows(d2_text)
+    body = _pick_metric_block(metrics_text, report, round_tag, strict=True)[1]
+    sub = re.search(
+        r"^-\s*减法\s*[:：]\s*提案\s*(\d+)\s*/\s*采纳\s*(\d+)",
+        body,
+        re.MULTILINE,
+    )
+    if sub is None:
+        report.fail(
+            "subtraction",
+            "V3.6 metrics 缺少 `- 减法: 提案 <整数> / 采纳 <整数>` 键"
+            "（C-34 反奖励回路）",
+        )
+        return
+    said, adopted = int(sub.group(1)), int(sub.group(2))
+    if said != rows:
+        report.fail(
+            "subtraction",
+            f"metrics 声明减法提案 {said} 与 design-d2.md 的 "
+            f"SUBTRACTION-TABLE 数据行 {rows} 不一致（C-34：提案数必须来自 D2 实物）",
+        )
+    elif rows == 0:
+        report.fail(
+            "subtraction",
+            "design-d2.md 的 SUBTRACTION-TABLE 为 0 行：报告只列加法"
+            "（review-panel.md §4.3 纪律，报告不完整）",
+        )
+    if adopted > said:
+        report.fail(
+            "subtraction",
+            f"减法采纳数 {adopted} > 提案数 {said}（采纳不得多于提案）",
+        )
+    elif said == rows and rows > 0:
+        report.ok(
+            "subtraction", f"减法提案 {said} / 采纳 {adopted} 与 D2 实物一致"
+        )
+
+
 def _pick_metric_block(
     text: str, report: Report, round_tag: str | None, strict: bool = False
 ) -> tuple[str, str]:
@@ -2108,6 +2186,28 @@ def check_run_dir(
     panel_ids = collect_panel_findings(
         panel_dir, report, collect_sugg_ids=_artifact_required
     )
+
+    # V3.6（C-34）：减法提案计数门。`metrics.md` 的 `- 减法: 提案 <N> / 采纳 <M>`
+    # 的提案数必须等于 design-d2.md 里 `## SUBTRACTION-TABLE` 的数据行数。
+    # D2 报告在、但减法提案 0 行 → 报告不完整（review-panel.md §4.3 纪律）。
+    # 只对 V3.6+ 生效（V3.5 存量文档不追溯）。逻辑在 check_subtraction 内，
+    # 供自测直接调用。
+    if _combined_ver >= (3, 6) and round_tag_override:
+        _d2_path = None
+        for _cand in (
+            run_dir / "panel" / f"round{round_tag_override.lstrip('R').lstrip('0') or '0'}" / "design-d2.md",
+            (panel_dir / "design-d2.md") if panel_dir else None,
+        ):
+            if _cand is not None and _cand.is_file():
+                _d2_path = _cand
+                break
+        if _d2_path is not None and metrics_text is not None:
+            check_subtraction(
+                _d2_path.read_text(encoding="utf-8"),
+                metrics_text,
+                report,
+                round_tag_override,
+            )
 
     if loop_text is not None:
         check_loop_sections(loop_text, report, round_tag)
@@ -4520,6 +4620,45 @@ def self_test() -> int:
         if not any("否定性结论" in i["message"] for i in rp21.items if i["level"] == "FAIL"):
             print("self-test FAIL: 编号列表 FAIL 放行（r17 P0-2）")
             return 1
+
+    # ===== V3.6 C-34 判别夹具（直接测 check_subtraction 单元）=====
+    # (j) 减法表 0 行 → FAIL（只列加法的 D2 报告不完整）。
+    _d2_none = "# D2\n\n## DIFF-TABLE\n\n| 维度 | 判断 |\n|---|---|\n| a | b |\n\n## VERDICT\nok\n"
+    _d2_two = (
+        "## SUBTRACTION-TABLE\n\n"
+        "| 加法提案 | 减法替代 | 拦不住的理由 | 保障对比 | 新增概念数 |\n"
+        "|---|---|---|---|---|\n"
+        "| 新类型 A | 闭包 | 闭包不能跨调用保存 | 等效 | 1→0 |\n"
+        "| 守卫字段 B | 断言 | 断言在 release 下消失 | 略弱 | +1→0 |\n\n"
+        "## VERDICT\nok\n"
+    )
+    _m = "## R1 面板轮\n\n- 减法: 提案 {s} / 采纳 {a}\n"
+    for label, d2, said, adopted, want_fail, want_sub in (
+        ("0 行声明 0", _d2_none, 0, 0, "SUBTRACTION-TABLE 为 0 行", None),
+        ("0 行声明 1", _d2_none, 1, 0, "不一致", None),
+        ("2 行声明 2/1", _d2_two, 2, 1, None, "减法提案 2 / 采纳 1"),
+        ("2 行声明 2/3", _d2_two, 2, 3, "采纳数 3 > 提案数 2", None),
+        ("2 行声明 1", _d2_two, 1, 0, "不一致", None),
+    ):
+        rep34 = Report()
+        check_subtraction(d2, _m.format(s=said, a=adopted), rep34, "R1")
+        if want_fail is not None:
+            if not any(i["level"] == "FAIL" and want_fail in i["message"] for i in rep34.items):
+                print(f"self-test FAIL: C-34 夹具「{label}」未按预期拦红")
+                return 1
+        else:
+            if any(i["level"] == "FAIL" for i in rep34.items):
+                print(f"self-test FAIL: C-34 正控「{label}」在合规样本上变红")
+                return 1
+            if not any(want_sub in i["message"] for i in rep34.items):
+                print(f"self-test FAIL: C-34 正控「{label}」未产生读数")
+                return 1
+    # (j2) 缺键 → FAIL（V3.6 轮必须有该键）。
+    rep34b = Report()
+    check_subtraction(_d2_two, "## R1 面板轮\n\n- 发现总数: 1\n", rep34b, "R1")
+    if not any("缺少 `- 减法" in i["message"] for i in rep34b.items if i["level"] == "FAIL"):
+        print("self-test FAIL: V3.6 轮缺减法键未拦截（C-34）")
+        return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0

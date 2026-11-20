@@ -13,6 +13,7 @@
 | V2.1 | 2026-11-07 | 全修策略（P0/P1/P2/④ 一律本轮修，不允许无档期转出）+ ② 收窄为两种带日期形态 + 测试充分性门（回归测试 + 反向验证 + 含 minix-arch 全量绿 + QEMU）+ commit 级回归 review（文档轴/代码双轴/混合）+ meta 分级（1–2 全量 / 3+ 轻量 / 收敛时收口）+ 收敛判据双层（文档 G1–G8 / 工作流原八条）+ 过拟合护栏（§十）+ resource re-consultation（L6.5）+ reader ④ 必修 + Top-20 输出上限 + fact 已知清单 + 派发降档协议 | D01–D04 转出率 56%→83%；B-20/B-23/B-24；D05 面板 5h48m；meta 一致性四轮 <90% | ②大桶转出被排期制替代；全量 review 被 commit 级回归 review 替代；④可选被必修替代；resource 一次性输入被持续引用替代 | 四道门 | 生效 |
 | **V3.4** | **2026-11-18** | **最小内核重实施（经 D-056/D-057）**：R6-a 确认轮前置修改轮校验、R6-c BLOCKED 两级解除、P1-7 certify 待跑门（schema V3.4 + loop 侧）、N0 轮序双源（--round 作用域）、P2-8 citation C 侧三形态、P0-3 meta 修约、P1-5/R6-b 回归审计入账与 FREEZE append 语义 | r6 四队验收 + D-056（丢失→批准重实施）；traps 边界读数 boundary-V3.4（零翻转） | 逐条见本节减法子表 | 见本节同步门读数 | 生效（D05 起标 `schema: V3.4`） |
 | **V3.5** | **2026-11-18** | **MAJOR（证据类型切换）制品链**：面板与 certify 回执入库 + INDEX.md 哈希索引（panel-index.py）+ 轨迹门制品校验；威胁模型（门防事故不防全伪造）与门收敛判据（两轮零新增 P0/P1 + 判别夹具）写死 | r8 后用户质询「每轮出新 P0」+ 四轮对抗判例；用户裁决「按照你的建议来吧」 | 见本节减法子表 | 见本节同步门读数 | 生效（D05 起） |
+| **V3.6** | **2026-11-20** | **MAJOR（判据重构）设计形态判据 + 减法对抗**：C-31 威胁模型三问 / C-33 可判边界 / C-32 减法优先 / C-35 教学概念账 / C-36a checklist §2.5 化 / C-36b 解除 excellence §17.2 与 C-31 活冲突 / C-34 减法计数 / C-37 触发式减法倡导者 | D-067 用户裁决（闭包 vs guard 字段）；2026-11-20 强模型复审（加载路由不对称 + §17.2 活冲突取证）；用户 goal「完整实施 V3.6」 | 见本节减法子表 | 见 V3.6 节同步门读数 | 生效（新开篇指标 `schema: V3.6`） |
 ### V2 执行状态（D04 复核）
 
 - C-20 的 `panel-exemption` 已落地（D01–D04 轨迹门均通过）；`dup-of` 合并与 P-REFUTE 映射校验尚未工具化（B-23/B-24），V2.1 处理。
@@ -616,3 +617,112 @@ R31=16（授权，strict 后增，同根因 R31 无账）、R32/R33/R34 各 1、
 `review-evals.md:565` 的「tmp 不入库」改为「工作副本」；rb.md 与 certify 路径补约定。
 修复后自测全绿、矩阵 10/6 维持；05 R1 现 18 FAIL（含 panel-artifact 三项：制品缺失/空面板/外部面板），随 D-057 同步。**按 §6B-2 判据，r9 不通过，需连续第二轮（r10）
 零新增 P0/P1 方可判收敛**；r10 未跑前，状态为「修复已落地，收敛待第二轮确认」。
+
+## V3.6（2026-11-20，用户裁决：设计形态判据 + 减法对抗；目标锚=最佳设计与教学可读性）
+
+> **目标锚（用户原话）**：本项目目标是「中文社区最好的 OS 教程」。在这个目标下，
+> 「闭包能解决却新增类型」不是纯工程取舍——它同时伤害设计最优性与教学可读性。
+>
+> **登记→晋升流程**：C-31..C-37 于 2026-11-20 登记（`220de18f2`），同日用户裁决「完整实施」
+> （本 goal）。按 §7.2「一次升版最多晋升 2 条增量规则」，本版按 **MAJOR edition 例外**定义
+> （判据主干 + 三层执行器是一次模型重构，不是七条独立增量规则）：主干 C-31 是判据，其余六条
+> 分别是它在 panel 准入层（C-32/C-33/C-35/C-37）、metrics 层（C-34）、code-checklist 执行层
+> （C-36a）与 excellence 相容层的落点。七条共同回答一个问题——**「这个新增抽象是必要的，
+> 还是只是让代码看起来更安全？」**
+
+### V3.6 规则表
+
+| 项 | 规则 | 判例 | 落点 | 检测器 | 状态 |
+|---|---|---|---|---|---|
+| V3.6-1（C-31） | **防御形态按威胁模型分层**：新增类型级防御必须回答三问——①故障由谁制造（外部攻击者→`Result`+完整校验；**本仓其他模块 bug（可信链）→优先 fail-fast 断言，零类型成本**；同一调用点用错→才考虑类型）；②borrow checker/类型系统是否已拦住（拦不住真故障的新增字段应删）；③发生率×后果代价 vs 理解成本（新增字段数/API 表面倍数/调用点改动数） | D-067（删 `map_dirty`/否决"每族补 dirty"/取 E 闭包/保留浅层 `MapCounts`）；D-030；D-026；反例 D-042（`PhysRange` 保留因接反静默） | `review-code-checklist.md` §3.5；`review-panel.md` §4.3；`review-code-excellence.md` §16.6 范围刹车 | checklist §3.5 三问项（Check 04b）；D2 brief 强制字段 | 已生效 |
+| V3.6-2（C-33） | **新类型的可判边界**：值得判缺陷级需同时满足「构造点 ≥2」且「接反/错用是静默的（编译器与测试都看不见）」；不满足者判卓越性 P2 建议而非正确性缺陷 | 正例 D-067/D-042/D-073（构造点多、接反静默）；反例侧 D-035（`CheckedWindows` 两调用点→不引入）、D-026（单实现 trait→删） | 同上 | §3.5 边界两条（Check 04b） | 已生效 |
+| V3.6-3（C-32） | **减法优先（必答）**：D2 报告必须先列减法方案再列加法；每个新增类型/字段/trait/层都要写出「更少概念替代」（闭包/fn 参数/现有类型/不做）；填不出「减法为什么拦不住」的加法提案视为报告不完整。同一要求下放到 checklist §11（full-review/todo-fix 主路径） | D-067（D2 原提案全为加法，减法由用户在裁决时补） | `review-panel.md` §4.3（`## SUBTRACTION-TABLE` + 输出顺序）；`review-code-checklist.md` §11 | `check_subtraction`（metrics 提案数 ↔ D2 数据行）；checklist §11 减法必答项 | 已生效 |
+| V3.6-4（C-35） | **教学面成本入判据**：任何新增抽象须记教学概念账（新概念引入数 / 讲解段落增量 / 与既有叙事冲突）；同等保障下「能让读者少记一个概念」的方案优先 | 项目目标；D-067 的 E 闭包 vs guard 字段 | `review-code-excellence.md` §5.1.5；`review-panel.md` §4.3 FINDING 字段 | §5.1.5 产物模板；D2 FINDING 必填行 | 已生效 |
+| V3.6-5（C-36a） | **checklist 类型条款 §2.5 化**：§1-1/1-4 加前提句（C-31 三问浓缩）；§3 增「类型质量评估」小节（= C-33 边界，落 checklist 因为 full-review/todo-fix 只加载 checklist）；§11 开放式刹车句补处方式必答 | 加载路由不对称取证：`review-cmds.md:82` full-review 只加载 checklist（`:93` 明确不做卓越性），`:208` todo-fix 同；C-31/C-33/C-35 落点全在 excellence+panel | `review-code-checklist.md` §1/§3.5/§11；派生 `prompt/skill/review-scan/checks/code.md` Check 04b/12 | 同上（Check 04b） | 已生效 |
+| V3.6-6（C-36b） | **C-31 的强制伴随修订**：excellence §17.2 的 `rg "if.*== 0\|if.*is_none\|panic!"` 从「命中即 P1」改为「候选清单 + 逐条按 §3.5 三问分流」——**可信链上的 `assert!`/`panic!` 是正确形态，不报**；§17.1「编译时保证」加威胁模型限定；§16.5 表 `Option<T>`→typestate 行加「仅当存在真实不可表达的非法态」 | 活冲突取证：`os/libs/minix-boot/src/kernel_info.rs` 三层 assert 是可信链 fail-fast 的标准实证；不修则同一行代码被 panel 判合理、被 excellence §17.2 判 P1 | `review-code-excellence.md` §16.5/§16.6/§17.1/§17.2；派生 `checks/excellence.md` §16.6/§17 | §17.2 分流条款（3 条分支） | 已生效 |
+| V3.6-7（C-34） | **减法也要计数**：`metrics.md` 增 `- 减法: 提案 <N> / 采纳 <M>`，提案数必须 = design-d2 的 `SUBTRACTION-TABLE` 数据行数；0 行 → 报告不完整 FAIL | D2 只报加法的实际分布（D-026/D-030/D-042 均用户侧纠偏） | `review-evals.md` §3.4；`review-loop.md` L5；`tools/eval-trace-check.py` `check_subtraction` | `check_subtraction` + 6 组判别夹具（0 行/声明≠实物/采纳>提案/缺键/正控 2 组） | 已生效 |
+| V3.6-8（C-37） | **减法对抗按触发分层**：①常轨 = D2 强制 `SUBTRACTION-TABLE`（不设常设角色）；②高压轨 = 入判决账的提案（`[ARCH]`/D-0xx）交用户裁决前过一次独立冷启动 P-SUBTRACT「减法倡导者」，只构造减法替代并判够不够；③裁决分工：主 agent 按 §3.5/§2.5 机械判据判，不按品味判；判不了的边界进判决账；倡导者不做终审 | 用户动议（对抗子 agent）；纪律散文失效判例 D-067（D2 brief 纪律句在场仍产全加法）；强制产物+专职对抗成功判例（18 轮门层对抗、r2 复核） | `review-panel.md` §3 矩阵 / §4.3b brief / §3.5 certify 裁剪 / §八 关系表 | D2 表计数（V3.6-7）+ §4.3b 触发条件文本 | 已生效 |
+
+**MAJOR 例外登记**：本条按 §7.2 MAJOR edition 例外一次定义（判据主干 + 三层执行器属一次模型重构），
+但不是「删除轮型/引入缺陷身份」级模型替换——**不改变轮次状态机、不改变收敛判据、不改变制品链**。
+它改变的是「什么算值得做的抽象」这一判据本身，因此按 MAJOR 记版但不重新标定基线。
+
+### V3.6 减法账本
+
+| 版本 | 新增 | 替代 / 合并 | 净效果 |
+|---|---|---|---|
+| V3.6 | checklist §3.5 类型质量评估（三问 + 可判边界） | 替代 §1-8/§11 的开放式刹车疑问句（它们没有可判边界，发现后不知如何处置） | 净化：把疑问句换成与 §2.5 同构的可判边界；不新增检查项总数（§1-1/1-4 是改句不是加句） |
+| V3.6 | §11「减法必答」+「教学概念账」 | 替代 §11 原有的「是否可以用更简单的模型」单句 | 合并进既有刹车节，不提级新节 |
+| V3.6 | D2 `SUBTRACTION-TABLE` + metrics `减法` 两键 | 替代「面板只报加法」的奖励回路；**不新增工具**（计数在既有 `eval-trace-check.py` 内） | 净增 2 个 metrics 键 + 1 个 D2 段；替代物是 D2 brief 底部的纪律散文（已证明无效，D-067） |
+| V3.6 | P-SUBTRACT 减法倡导者（触发式） | 替代 D2 纪律句「bool 不一定都要换成 enum」这类**事后靠主 agent 自觉**的机制 | 净增 1 个触发式角色；**不常设**（常设即加法，本条自身过 C-31 三问） |
+| V3.6 | §17.2 三分支分流 | 替代「`panic!` 命中即卓越性 P1」的单条规则 | **净减**：删掉了对可信链 fail-fast 的误报源 |
+| V3.6 | §5.1.5 教学概念账 | 替代无 | 净增 1 个产物模板；理由：教学成本此前只在 §19「自解释」里隐含，从未可判 |
+| V3.6 | 派生件 `checks/code.md` Check 04b / Check 12 两项、`checks/excellence.md` §16.6/§17 | 与规范源同源派生（`generate-derived-skills.sh`） | 无净增：派生件是规范源的镜像 |
+
+**净增项理由（§7.7 要求）**：P-SUBTRACT 与 §5.1.5 是唯二没有替代对象的净增。旧装置接不住的具体证据：
+① D-067 证明 D2 纪律散文在场而减法提案仍为零——纪律句无法产生产物，只有强制表 + 计数能；
+② 教学成本在 §19 只有「自解释」这一模糊条目，从未有产物承载，故 D-067 的取舍只能靠用户在裁决时
+口头补（无记录可复算）。两条都将在下一个边界接受效果读数：若两篇内 `减法: 提案` 恒为 0 或
+P-SUBTRACT 结论总被忽略，按 §7.4 回退。
+
+### V3.6 期望效果与回归风险
+
+- **期望效果**：① `减法: 提案` 恒 > 0（D2 报告必须给减法方案）；② code review 对「闭包可解决却新增类型」
+  有可判边界（不再只靠 reviewer 品味）；③ 可信链 fail-fast 不再被 excellence §17.2 误报为缺陷。
+- **回归风险**：① MAJOR 判据本身增加评审工作量（每个新增类型都要三问）——缓解：三问与 §2.5 同构，
+  且只在**提案**层强制，不改存量代码判级；② `减法: 提案` 可能与既有 D2 报告的「最小化机会」小节重复
+  ——缓解：该小节正是本表的来源，不另开产物；③ P-SUBTRACT 触发条件若被宽化到「任何提案」会稀释
+  注意——缓解：只限 `[ARCH]` / D-0xx / 新增类型级，且触发时必在 `loop.md §1` 记录。
+
+### V3.6 同步门读数
+
+**四道规则同步门（2026-11-20 实跑，全部全绿）**：
+```
+tools/generate-derived-skills.sh        → GEN 6 个 review-scan 派生件
+tools/check-review-rules.sh            → Review source, Trae adapters, Claude runtime
+                                         references, and Codex adapters are consistent.
+tools/lint-review-rules.sh             → 0 个失败（L1–L9 全 OK）
+tools/diff-trae-skills.sh --only-diff  → 全部 10 个 skill 完全同步 (规范化对比)
+```
+**工具自测（七项全 PASS）**：
+```
+python3 tools/eval-trace-check.py --self-test  → PASS（含 V3.6 C-34 六组新夹具）
+python3 tools/trait-audit.py --self-test       → PASS
+python3 tools/doc-citation-check.py --self-test → PASS
+bash tools/doc-symbol-drift.sh --self-test     → PASS
+python3 tools/panel-index.py --self-test       → PASS
+bash tools/lint-review-rules.sh --self-test    → PASS
+```
+
+**存量回归读数（V3.6 不追溯 V3.5 存量文档）**：六篇归档审计 FAIL 数与 HEAD 基线逐篇一致
+（01:100 / 02:77 / 03:84 / 04:16 / 05:17 / 06:0）——新门作用域 `_combined_ver >= (3,6)`
+正确，零新增红。
+
+**C-34 判别夹具清单**（`check_subtraction` 单元级，5 组）：
+0 行声明 0 → FAIL（报告不完整）；0 行声明 1 → FAIL（与实物不一致）；2 行声明 2/1 → PASS（正控）；
+2 行声明 2/3 → FAIL（采纳 > 提案）；2 行声明 1 → FAIL（不一致）；另加缺键 → FAIL。
+
+### V3.6 实施记录（2026-11-20）
+
+**改动文件（规范源 6 + 派生件 8 + 工具 1 + 账本 1）**：
+
+| 文件 | 改动 | 对应 |
+|---|---|---|
+| `prompt/review-rules/review-code-checklist.md` | §1-1/1-4 前提句；新增 §3.5 类型质量评估（三问 + 可判边界 + 与 §2.5/§1-8/§11 的关系）；§11 增减法必答 + 教学概念账 | V3.6-1/2/3/4/5 |
+| `prompt/review-rules/review-code-excellence.md` | §16.5 `Option<T>` 行限定；§16.6 范围刹车加 §3.5 优先级；§17.1/§17.2 三分支分流（可信链 fail-fast 不报）；新增 §5.1.5 教学概念账 | V3.6-6/4 |
+| `prompt/review-rules/review-panel.md` | §三 加 P-SUBTRACT 行 + 触发规则；§3.5 certify 裁剪声明不派 SUBTRACT；§4.3 D2 brief 加减法优先/三问/教学账 + `## SUBTRACTION-TABLE` + FINDING 三新字段 + `先减法后加法` 纪律；新增 §4.3b P-SUBTRACT brief + 裁决分工；§八 关系表加行 | V3.6-1/3/4/7/8 |
+| `prompt/review-rules/review-evals.md` | §3.4 metrics 固定键加 `- 减法: 提案/采纳` + 规则说明（0 提案 = 流程缺陷进 BLIND-SPOTS） | V3.6-7 |
+| `prompt/skill/review-loop.md` | L5 metrics 固定键同步加 `- 减法` 键 | V3.6-7 |
+| `prompt/skill/review-scan/checks/code.md` | Check 01 前提句；新增 Check 04b（类型质量评估）；Check 12 加减法必答/教学账 | V3.6-1/2/3/4/5 |
+| `prompt/skill/review-scan/checks/excellence.md` | §16.6 加 §3.5 优先级；§17 Execute 1/2 加限定 + 可信链不报声明 | V3.6-6 |
+| `tools/eval-trace-check.py` | 新增 `_count_subtraction_rows` + `check_subtraction`；调用点（`_combined_ver >= (3,6)` + `--round`）；5+1 组夹具 | V3.6-7 |
+| 派生件（`.claude/` `.codex/` review-scan 6+6、`.trae/` 10 skill、`.claude/rules` 无改） | `generate-derived-skills.sh` 再生成 | 同步门 |
+
+**未做的（登记去向，不是遗漏）**：
+- C-32 的 `SUBTRACTION-TABLE` 列定义留在「晋升时定稿」的开放度——本版采用了 5 列（加法提案 /
+  减法替代 / 拦不住的理由 / 保障对比 / 新增概念数），门只数**行数**不校验列名，因此列名后续可演进
+  而不破门。
+- P-SUBTRACT 的 `<!-- @if:claude -->` 条件块不需要：它是 panel 内部角色，走 `review-panel.md`
+  的 brief 分发，不经过 `review-scan` 派生链。
+- `review-process.md` 的 Gate 表未改：V3.6 判据不是新 Gate，是既有 checklist/brief 的判据替换。
+
