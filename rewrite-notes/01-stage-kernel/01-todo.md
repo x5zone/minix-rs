@@ -38,18 +38,18 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施中：门①③④已过验收，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；曾阻塞门链验证的 I-43 x86 载体 `enable()` 静默停已由 I-43 二层专项关闭（2026-11-20，hello-boot 新鲜二进制 PASS）。✅ **门④端到端六项验收已过（2026-11-21，§2.7 六项逐项取证 + hello-boot 端到端 PASS）**——逐项证据见 §3 的 I-29-impl 补记。门②（三架构 WB 合同）仍待专项。详见 §3 的 I-29-impl 补记 | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
-| I-44（**实施中：步①–④已落，步⑤ E+R1 已关闭、R2 待真机**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
+| I-44（✅ 全部实施完毕：步①–⑤ + E/R1/R2 全关闭） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | ✅ **五步全部落地**：① 状态字段与构造函数迁移 ② destroy 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ E（四调用点三问）+ R1（四问）+ **R2（`cut_consumed_span` 切除法）**。**R2 端到端验收（2026-11-21，阻塞解除后完成）**：`test-sysboot` 新鲜载体（I-43 二层 + I-59 A' 后越过原 fault 点）加 pre/post-cut 对照读数——pre `n=2 bytes=0x7ba7000`，post `n=2 bytes=0x774f000`，`tx_frames=0x458000`——**post = pre − tx_frames 精确相等**，cut 在真实载体上精确裁剪 TX 消耗的全部字节、region 数不变（两 region trim 未整删）。宿主 free_set_cut_* 单测族全绿。边界重申不变：E/R1 的 `-d int` 级动态取证留给首个真机/SMP 门。详见 §3 的 I-44 | §3 的 I-44 |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
 | I-43（✅ 已闭合·一层二层完成） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | ✅ **D-087（用户 2026 年 11 月 21 日）采 C 关闭**：一层（12 载体全 `PLACEHOLDER_SPAN` + 全 12 槽）与二层（`enable()` 后静默停双根因：载体装载地址改用 `shim_image_window()` + `arch_boot_impl` 补压调用者栈窗口）均已达成原始验收（零 `[0x0,0x0)` + 三架构 0 error；x86 14 中 13 PASS、aarch64 5 全 PASS、riscv hello-boot PASS）。三层残留按性质拆出：三条地址假设失配 → **I-52**；故障臂路由 → **I-53**；`test-rt-birth-riscv64` 的 `bump(256)` 断言为本条关闭时的明示遗留（先于本修复即存在）| §3 的 I-43 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | ✅ **已实施（2026 年 11 月 21 日，D-082）**：① `UbootFileLoader::read` 删 `segment_iter`（对已修剪数据的幂等无效功）+ 删错误的「表存槽容量」注释，回归纯字节来源 ② 新增 `elf_file_end`（复用 `minix_elf::segment_iter`，零新解析器），`load_boot_modules_into` 接统一修剪——U-Boot 腿幂等、UEFI 腿从此修剪，`BootModule.len` 跨腿一致 ③ 非 ELF/畸形镜像保持全长。**前置验证 36/36**（12 模块 × 3 架构：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，裁掉的只有 .comment/.symtab/.debug_*）。boot-shim 143 全绿；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + U-Boot shim 链 6/6 全 PASS。连带登记 I-50（.lbss 无 PT_LOAD 覆盖）。详见 §3 的 I-36 | §3 |
 | I-50（✅ 已销账·前提不成立） | x86 模块的 `.lbss` 不在任何 PT_LOAD 内——原判「装载路径无载体」 | 定位 | ✅ **D-090（用户 2026 年 11 月 21 日）销账**：对 115 个 x86_64 ELF 做 `readelf -SW`/`-lW` 对账，**112 个带 `.lbss` 的全部完整落在某 PT_LOAD 的 `memsz` 内**（`minix-fs-mfs` 的 4 MiB `.lbss` 上界 `0x1641010` 与最后一个 PT_LOAD 的 `memsz` 结束地址**完全相等**）。它不在 `filesz` 内是 NOBITS 的正常语义；装载路径「拷 `[0,filesz)` → 清零 `[filesz,memsz)`」已自动覆盖。候选 a 要修的东西不存在、候选 b 会重复映射。**证据边界**：x86 生产模块路径仍未真跑，本次是静态检查+代码语义推理、非运行时实证；若真跑发现 `.lbss` 脏值则重开并指向「NOBITS 尾清零」 | §3 的 I-50 |
-| I-51（待复核后销账·两症状均已消失） | 测试面并行隔离失败：vm 10 条测试共享 `PAGE_ALLOC_PTR` 全局单例；minix-boot 的 `memmap_source` 族漂移 | 测试基建 | **D-091（用户 2026 年 11 月 21 日）判「待复核后销账」**：① 症状 1 实测消失（`cargo test -p minix-vm --lib` 连跑 3 次 548/0，`overwriting different allocator` 零命中）；**成因已定位**——`register_page_alloc` 用 `compare_exchange`，而 16 处测试自己 `unregister`/`register` 配对、各用栈上 allocator，并行时互相抹指针。② 症状 2 已复核（`589aa8afb` 落地后 `minix-boot` 恢复编译，连跑 3 次 184/0，漂移未复现），但**成因未定位**（也可能同属偶然性问题）。**销账条件**：复核甲已加隔离/乙测试被改/丙偶然三选一；**判丙则须补 `test_sync` 式全局锁并重跑 ≥10 次全绿** ✅ **复核完成、销账（2026-11-21）**：**第四种成因定案**——cargo 的 config 发现按**当前工作目录**向上查找（非 manifest 路径），从仓库根跑 `cargo test --manifest-path os/Cargo.toml` 时 `os/.cargo/config.toml` 的 `[env] RUST_TEST_THREADS=1` 防御 pin **根本未被发现** → 并行执行 → 16 处栈上 allocator 配对竞态（甲「顺带加隔离」否：`git log global.rs` 无人动 register 逻辑；乙「测试删改」否：16 处全在）。修复 = 仓库根 `.cargo/config.toml` `include = ["../os/.cargo/config.toml"]` 桥（任何 cwd 恢复 pin；include 路径相对 config 所在目录解析）。**验收**：minix-vm 从仓库根 **10/10 全绿**（548 ×10）；**症状 2 判乙**：I-33 乙结构性删除 `DTB_*` 静态——`memmap_source` 测试的共享可变状态物理基础已消失（`collect_owned` 只写调用者栈上 `DtbMapOwned`），删除属 D-086 裁决范围非掩盖，minix-boot 从仓库根 **5/5 全绿**（184 ×5）佐证。**附带收益**：bridge 同样让 I-49 的 `RUST_MIN_STACK` pin 在根跑法下生效。详见 §3 的 I-51| §3 的 I-51 |
+| I-51（✅ 已销账·第四种成因定案） | 测试面并行隔离失败：vm 10 条测试共享 `PAGE_ALLOC_PTR` 全局单例；minix-boot 的 `memmap_source` 族漂移 | 测试基建 | ✅ **D-098（2026-11-21）销账**：**成因是第四种**——cargo 的 config 发现按 cwd 向上查找、非 manifest 路径；从仓库根跑 `cargo test --manifest-path os/Cargo.toml` 时 `os/.cargo/config.toml` 的 `[env]` 钉（`RUST_TEST_THREADS=1` / `RUST_MIN_STACK`）未被发现 → 并发 → 16 处栈上 allocator 配对竞态。**修复**：根 `.cargo/config.toml` 加 `include = ["../os/.cargo/config.toml"]` 桥（`c1f17a449`）。验收：minix-vm 548×10 全绿、minix-boot 184×5、kernel mock 864/0。**附带**：该 bridge 亦让 I-49 的 `RUST_MIN_STACK` 在根跑法下生效——I-49 的「环境差异」实为 config 未被发现 | §3 的 I-51 |
 | I-52（✅ 已关闭·三条全部销账） | 深跑路径的地址假设失配：riscv VM trap / aarch64 timer-irq sync exc | 定位 + 设计裁决 | ✅ **已关闭（三条全部销账）**：① **x86 条** → I-59（根因＝`new_from_page` 裸恒等清零 vs VM free-list 帧，已按 D-094 修正版 A' 实施，`b6a2c7011`）；② **riscv 条** PASS 销账（`ffdd86e19`）；③ **aarch64 条**销账于 `df7277766`——`run_qemu.sh` aarch64 腿补 `-m 256M`，VM 首帧不再落无 Backing 段的 external abort。**D-092 的三条地址形态推测全部被后续取证推翻**（riscv/aarch64 的「错误偏移/位域污染」实为各自的正常机制）。详见 §3 的 I-52 | §3 的 I-52 |
-| I-53（已裁决·原定性作废，拆 I-57/I-58） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception | 设计裁决 | **已裁决（D-093，用户 2026 年 11 月 21 日）**：**原定性作废**——审查证实 `is_user_mode=(cs&3)==3` 与 `is_nested=!is_user` 都是对的（C 的双入口 `mpx.S:368/382` 语义已正确映射），wrapper 判据与注册顺序也正确。真实病因两条、均在载体侧：**I-57**（`test-paging-faultloop` 的 `carrier_pagefault` 在 CPL0 执行，`walk_leaf:314` 的 `alloc_pt_page().expect` 在 bump 耗尽时 panic）、**I-58**（`test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 `trap_dispatch:465-472`）。两条均待 `-d int` 取证 | §3 的 I-53 / I-57 / I-58 |
+| I-53（✅ 已销账·两条子项均结清） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception | 设计裁决 | 原定性「CPL3 载荷 fault 被当作 kernel exception」**经审查作废**（`is_user_mode = (cs & 3) == 3` / `is_nested = !is_user` 都是对的，C 双入口 `mpx.S:368/382` 语义已正确映射），拆出的 **I-57 / I-58 均已销账**（D-097：两条门链实跑 PASS）。真正根因在更早的「zero mailbox + copy payload」阶段（载体数据页未声明恒等窗口），非本条的故障臂路由 | §3 的 I-53 / I-57 / I-58 |
 | I-57（已销账·症状不再复现） | `test-paging-faultloop` 载体自身在 CPL0 panic：`carrier_pagefault` 内的 `walk_leaf` 取页失败 / VM 槽未就绪 | 载体修正 | ✅ **已销账（2026-11-21）**：其失效现场是 I-43 三层数据页窗口缺失的下游（内核在 zero-mailbox 阶段 fault，CPL3 载荷从未启动）——数据页窗口修复（ds 槽指真实 span）后 `test-paging-faultloop.sh` **PASS**（E5(d) 全链：#PF → carrier_pagefault → PTE 写回 → resume → 无 re-fault），`walk_leaf` 取页与 VM 槽消费全部按设计走通，不再需要 `-d int` | §3 的 I-57 |
 | I-58（已销账·症状不再复现） | `test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 | 载体修正 | ✅ **已销账（2026-11-21）**：同 I-57——数据页窗口修复后 `test-user-trap.sh` **PASS**（E1 slice 5 trap 往返 + E-KERNINFO publication 双验证），CPL3 载荷的 fault 走 `cs & 3 == 3` 路由进故障臂、调度器 bring-up 完整执行，`proc_ptr=None` 前置条件不再触发 | §3 的 I-58 |
-| I-59（已裁决·扩为三条共同根因） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 代码改造 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） ✅ **已实施（2026-11-21，D-094 修正版 A'）**：`PteChannel` 加 `Identity` 变体（doc 写明适用条件：bootstrap 阶段 DM 未建、根帧在声明窗口内）；三架构 `new_from_page(root_page, channel)` 签名与 `from_active_root(root, channel)` 对称（I-44/D-078 先例），清零改走 `channel_to_ptr(phys, channel)`（消除「构造 channel=KernelDm 但清零走裸恒等」的自相矛盾——D-094 ②）；两个生产调用点各传各的通道：`lib.rs` bootstrap 构建传 `Identity`（DM 未建）、`load_process_elf` 传 `KernelDm`（DM 已建覆盖全 memmap）；MockPaging/SimPaging 替身签名同步（mock 无 MMU 不路由）。**实证**：docker（CI 同构）minix-kernel **864/0** + minix-arch **294/0**；宿主 arch 294、vm 548（单线程）、boot-shim 146；QEMU 门链 x86 三门 + aarch64 两门（含 timer-irq）+ riscv 直核全 PASS；**sysboot 深跑越过原 fault 点**——TX ELF 装载成功（原串口止于 smp_init）、RX+TX runnable、进入调度器，新 FAIL 是更深层（TX→RX 用户态 IPC 链，与 rt-birth 用户链同族，另行专项）。**I-60 的后续评估**：A' 落地后 `new_from_page` 的双轨消除；`map_huge`/`split_huge` 的恒等使用点维持（D-095 已定性按阶段分工正确）。详见 §3 的 I-59| §3 的 I-59 |
+| I-59（已实施·D-094 修正版 A'） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 代码改造 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） ✅ **已实施（2026-11-21，D-094 修正版 A'）**：`PteChannel` 加 `Identity` 变体（doc 写明适用条件：bootstrap 阶段 DM 未建、根帧在声明窗口内）；三架构 `new_from_page(root_page, channel)` 签名与 `from_active_root(root, channel)` 对称（I-44/D-078 先例），清零改走 `channel_to_ptr(phys, channel)`（消除「构造 channel=KernelDm 但清零走裸恒等」的自相矛盾——D-094 ②）；两个生产调用点各传各的通道：`lib.rs` bootstrap 构建传 `Identity`（DM 未建）、`load_process_elf` 传 `KernelDm`（DM 已建覆盖全 memmap）；MockPaging/SimPaging 替身签名同步（mock 无 MMU 不路由）。**实证**：docker（CI 同构）minix-kernel **864/0** + minix-arch **294/0**；宿主 arch 294、vm 548（单线程）、boot-shim 146；QEMU 门链 x86 三门 + aarch64 两门（含 timer-irq）+ riscv 直核全 PASS；**sysboot 深跑越过原 fault 点**——TX ELF 装载成功（原串口止于 smp_init）、RX+TX runnable、进入调度器，新 FAIL 是更深层（TX→RX 用户态 IPC 链，与 rt-birth 用户链同族，另行专项）。**I-60 的后续评估**：A' 落地后 `new_from_page` 的双轨消除；`map_huge`/`split_huge` 的恒等使用点维持（D-095 已定性按阶段分工正确）。详见 §3 的 I-59| §3 的 I-59 |
 | I-60（✅ 已销账·伪缺陷） | `phys_to_ptr` 与 `channel_to_ptr` 双通道并存 | 设计裁决 | ✅ **D-095（用户 2026 年 11 月 21 日）销账**：双通道是**按阶段分工**而非并存竞争——裸恒等用于 DM 未建阶段（`new_from_page` bootstrap / `map_huge` 的 5 处生产调用全在 `build_bootstrap_root_and_enable` 内 / `install_leaf` 是 DM 安装器本身）、KDM 用于 DM 建立后；每个使用点都正确，且 SAFETY 文档分散在各函数（`is_identity_table:1580`、`X86_64BootDmInstaller:1341`）。**唯一真错的是 `new_from_page` 在 `load_process_elf` 处的调用点，已含在 I-59**。另修正 I-59 的 A' 范围：27 处 → **仅 `new_from_page` 1 处 × 3 架构 + 2 个调用点** | §3 的 I-60 |
 | E-VMTLB（✅ 已销账·D02 指控过期） | kernel 侧目标进程 TLB 刷新机制（C `MF_FLUSH_TLB` + 调度点刷新） | 跨阶段（D02 登记，`随 D01 SMP 处置`） | ✅ **D-096（用户 2026 年 11 月 21 日）销账**：九项组件全部实现——`FLUSH_TLB` 标志（`proc.rs:205`）、`mark_flush_tlb` 无条件置位（`syscall.rs:3058`）、`needs_tlb_refresh` 双条件判定（`proc.rs:1134`）、判定在 `switch_address_space` 之前（`lib.rs:5279-5282`，注释明写 C 顺序依赖）、`consume_flush_tlb_flag`（`lib.rs:4870`）、`flush_all` 与 C `refresh_tlb`（`klib.S:642-645`）**逐指令等价**。**「同根跳过优化」已改成读活 CR3（`lib.rs:4657-4665`，注释记录了 mirror 漂移 bug 的修复）**。D02 `:187` 的「零命中」是历史快照。**保留**：依据是代码+C 语义对应，**非 SMP 真机实证** | §3 的 E-VMTLB |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
@@ -2112,7 +2112,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **为什么此前不做**：本条与 D-062（wire v10 删 `startup` 族）和 D-065（直核腿统一 owned 路径）改同一批行；族数与写入者数量在它们落地后才定稿。D-062 已落（I-31），D-065 虽受阻（I-33 待裁决）但不影响本条的 API 形状，故本条可在 I-31 之后独立实施。
 
-### I-44（实施中·步①–④已落，⑤ E+R1 已关闭，R2 待真机）页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）
+### I-44（✅ 全部实施完毕·五步 + E/R1/R2 全关闭）页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）
 
 **来源**：`R35` 面板 `DESIGN-D2-11`（P3，`panel/round35/design-d2.md:167`），原结论为"拒绝（本期不动）"——理由是"改动会牵连测试内核的销毁路径，收益仅是防未来回归"。用户于 2026-11-20 要求重启，并以**十轮外部独立评审**收敛为完整的所有权模型。
 
@@ -2261,7 +2261,14 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 修复后 QEMU 验证被 I-43 二层阻塞（`test-sysboot` 新鲜二进制在 `enable()` 后静默停——与 test-proc-init / test-timer-irq / hello-boot 同型，stash 对照确认为既有漂移非本批引入），但代码按构造正确：cut 在 TX 消费完成后立即执行，下一个读者必然看到裁剪后的列表；容量前置消失（不需要预保留区——消费多少切多少）。
 
-**R2 状态更新**：代码修复已落；**真机/端到端验收**仍待 I-43 二层关闭（需要能跑起来的新鲜载体）。
+**R2 状态更新（终局，2026-11-21）**：阻塞链（I-43 二层静默停 → I-59 A' 恒等清零 fault）全部闭合后，`test-sysboot` 新鲜载体越过原 fault 点（TX 装载成功）。端到端验收读数（载体加 pre/post-cut 对照行，永久留存）：
+
+```
+r2 pre-cut  free n=0x0000000000000002 bytes=0x0000000007ba7000
+r2 post-cut free n=0x0000000000000002 bytes=0x000000000774f000 tx_frames=0x0000000000458000
+```
+
+**post = pre − tx_frames 精确成立**（0x7ba7000 − 0x458000 = 0x774f000）：`cut_consumed_span` 在真实 free list 上精确裁掉 TX 消耗的全部字节；region 数不变（两 region 均为 trim 非整删）；下一个读者（调度器/VM 服务）看到的列表已不含 spent 帧。宿主 `free_set_cut_*` 单测族（trim 头/尾、拆分跨界、整删全消费、rounding outward、page-equivalent）全绿。**R2 关闭，I-44 五步全部实施完毕**。
 
 **边界重申**：E/R1 的证据是代码时序与启动顺序的静态核实；QEMU `-d int` 级动态取证（TLB 实际行为）留给首个真机/SMP 门。
 
@@ -2358,7 +2365,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **边界**：不触碰内核生产路径——生产内核链在高半，这些换算本来就对；问题只在低链载体上。
 
-### I-59（已裁决·扩为三条载体共同根因）`Paging` 写通道双轨：`new_from_page` 的清零用裸恒等 vs 后续操作用 KDM
+### I-59（已实施·D-094 修正版 A'）`Paging` 写通道双轨：`new_from_page` 的清零用裸恒等 vs 后续操作用 KDM
 
 **来源**：I-52（D-092）步③——x86 `test-sysboot` 深跑根因定位已到「源文件行 + 帧地址推导」级，按 D-092 ③「若 x86 确认与链址假设无关，移出单独登记」执行。**取证无需 `-d int`**：代码考古 + `vm_handoff` 读数闭环。
 
@@ -2548,7 +2555,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 
 
-### I-53（已裁决·原定性作废，拆为 I-57/I-58）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
+### I-53（✅ 已销账·两条子项均结清）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
 
 **来源**：I-43 的三层残留（D-087 拆出）。**状态：已裁决（D-093），原定性作废，拆为 I-57/I-58。**
 
@@ -2598,6 +2605,17 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 **为什么保留「待 `-d int` 取证」**：以上全部是**代码层推理**（路由判据、注册顺序、panic 文本位置），**没有运行时证据确认实际 panic 文本**。取证要做的事：跑两条专用脚本（`test-paging-faultloop.sh` / `test-user-trap.sh`），抓完整串口输出，确认 panic 来自 `#[panic_handler]`（载体）还是 `trap_dispatch.rs` 的断言（内核）。
 
 **声明**：本条已查清定性、不复存在「CPL 路由缺陷」这一缺陷类；I-57 / I-58 是两条载体缺陷。若取证推翻上述推理，重开本条。
+
+**收尾（D-098，2026-11-21）：两条子项均已结清，本条关闭。**
+
+| 子项 | 结果 | 依据 |
+|---|---|---|
+| **I-57** | ✅ 销账 | D-097——`test-paging-faultloop.sh` PASS（kbox `fault count==1` 无 re-fault + `0xFEED` legs OK）|
+| **I-58** | ✅ 销账 | D-097——`test-user-trap.sh` PASS（E1 slice 5 + E-KERNINFO）|
+
+**根因证伪了我的两条候选，且印证了本条的审查结论**：真正的 fault 在**更早的「zero the mailbox + copy payload」阶段**（载体数据页未声明恒等窗口，`BOOT-SCOPE 2a` 之前的假设），**不是** `walk_leaf:314` 的 `expect`、**不是** `:437-440` 的 VM 槽 `expect`、**不是** `proc_ptr = None` 触发。**CPL 路由（`is_user_mode = (cs & 3) == 3` / `is_nested = !is_user`）经两个载体实跑证明是对的。**
+
+**本条作为「一类定性作废 + 两个子项结清」的记录保留，不再有剩余动作。**
 
 ### I-57（✅ 已销账·症状不再复现）`test-paging-faultloop` 载体自身在 CPL0 panic
 
@@ -2725,7 +2743,7 @@ last PT_LOAD : vaddr 0x1230390  memsz 0x410c80  →  结束于 0x1641010
 
 **不立新条目**：本条已查清，销账即可。
 
-### I-51（待复核后销账·原始症状消失，成因已定位）测试面并行隔离失败
+### I-51（✅ 已销账·第四种成因定案）测试面并行隔离失败
 
 **来源**：I-48 解锁测试面后的存量发现（I-41 验收途中新增同型实证）。**状态：待复核后销账（D-091）。**
 
@@ -2754,6 +2772,32 @@ last PT_LOAD : vaddr 0x1230390  memsz 0x410c80  →  结束于 0x1641010
 | **② 症状 2 已复核（通过）** | `589aa8afb`（I-33-乙）落地后 `minix-boot` 恢复编译，`cargo test -p minix-boot` **连跑 3 次 184/0**，`memmap_source` 族漂移**未复现**。**但成因未定位**：该族在 I-41 验收途中的漂移是并行隔离病型（单跑过、全量漂移），现在全绿也可能是同一偶然性问题——与 ① 同源，一并复核 |
 
 **销账条件**：① 复核那 16 处 register/unregister 配对与 `memmap_source` 族在并行下的稳定性（甲/乙/丙三选一）；**若判丙（偶然），须补全局锁并重跑 ≥10 次全绿才销账**。
+
+**复核完成（2026-11-21，`c1f17a449`）——成因是第四种，推翻我提出的甲/乙/丙三分。**
+
+**真正成因**：**cargo 的 config 发现按当前工作目录向上查找，不是按 manifest 路径。** 从仓库根跑 `cargo test --manifest-path os/Cargo.toml` 时，`os/.cargo/config.toml` 里的 `[env]` 防御 pin（`RUST_TEST_THREADS=1`、`RUST_MIN_STACK`）**根本没被 cargo 发现** → 测试并发执行 → 16 处栈上 allocator 配对竞态（正是我上一轮定位的机制）。
+
+| 我提的选项 | 实测 |
+|---|---|
+| **甲**（并发会话顺带加了隔离）| **否**——`git log` 无人动 `register_page_alloc` 逻辑 |
+| **乙**（测试被删除/改写）| **否**——16 处配对全在 |
+| **丙**（偶然）| **否**——不是调度偶然，是**确定的环境配置缺失** |
+| **第四种（真正成因）** | **cargo config 按 cwd 发现** → `os/.cargo/config.toml` 的 pin 失效 |
+
+**修复**：仓库根 `.cargo/config.toml` 加 `include = ["../os/.cargo/config.toml"]` 桥（`include` 路径相对 config 所在目录解析）——**任何 cwd 都恢复单线程 pin + `RUST_MIN_STACK`**。
+
+**症状 2 判乙（真删除、非掩盖）**：`I-33` 乙结构性删除 `DTB_*` 静态表后，`memmap_source` 测试的共享可变状态**物理基础已消失**（`collect_owned` 只写调用者栈上的 `DtbMapOwned`）；删除属 D-086 裁决范围，不是为绕过缺陷而删。
+
+**验收（D-091 判丙路线的替代达成）**：
+- `minix-vm` 从仓库根 **10/10 全绿**（每次 548 通过）
+- `minix-boot` **5/5**（每次 184 通过）
+- `kernel mock` **864 / 0**
+
+**附带收益**：该 bridge 同样让 I-49 的 `RUST_MIN_STACK` pin 在仓库根跑法下生效——**这解释了 I-49 定案的"环境差异"到底差在哪**（不是 WSL2 vs 容器，而是 config 没被发现自己加了 `RUST_MIN_STACK`）。
+
+**裁决（D-098，用户 2026-11-21）：I-51 销账。**
+
+我此前推荐「若判丙则补 `test_sync` 式全局锁」——**该建议不成立**：成因不是调度偶然，配置修复后 16 处配对在单线程下是安全的（单线程保证同一时刻只有一处 register/unregister 在跑），**不需要全局锁**。
 
 **不立新条目**：本条已定位到位，复核与收尾两项并入本条目。
 
