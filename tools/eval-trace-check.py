@@ -533,20 +533,38 @@ def _metric_blocks(text: str) -> list[tuple[str, str]]:
     return blocks
 
 
+# V3.6-r1-F1：减法表的占位首格——这些不是「提案」，不得计入提案数。
+_SUBTRACTION_PLACEHOLDERS = {
+    "无", "—", "–", "-", "", "N/A", "n/a", "none", "None", "（无）", "(无)", "无提案",
+}
+
+
 def _count_subtraction_rows(text: str) -> int:
     """Count data rows under `## SUBTRACTION-TABLE`（V3.6，C-34 的机械读数）。
 
-    段不存在 → 0（D2 未给减法表）。数据行 = 以 `|` 开头的行，排除分隔行
-    （单元格全由 `-:` 与空格构成）与表头行（第一格是 加法提案 / 提案 /
-    proposal / 加法）。遇到下一个 `## ` 标题停止。
+    段不存在 → 0（D2 未给减法表）。数据行 = 以 `|` 开头的行，排除：
+      - 分隔行（单元格全由 `-:` 与空格构成）；
+      - 表头行（第一格是 加法提案 / 提案 / proposal / 加法）；
+      - **占位行**（V3.6-r1-F1 判例：首格是 `无` / `—` / `–` / `-` / `N/A` /
+        `none` 的行不是提案）。没有这条，D2 写「本轮无减法提案」并用 `无`
+        占位会被数成 N 条提案——**诚实报告 FAIL、编造 PASS**，与 C-34 的
+        反奖励回路目的完全相反。
+      - 围栏代码块内的行（V3.6-r1-F6：D2 可能给「格式示例」表，示例不算实物）。
+    以 `## ` **或 `### `** 标题停止（F6：`###` 子节也终止本段）。
     """
     m = re.search(r"^##\s+SUBTRACTION-TABLE\b", text, re.MULTILINE)
     if not m:
         return 0
     rows = 0
+    in_fence = False
     for line in text[m.end():].splitlines():
         stripped = line.strip()
-        if stripped.startswith("## "):
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if re.match(r"^#{2,3}\s", stripped):
             break
         if not stripped.startswith("|"):
             continue
@@ -554,6 +572,8 @@ def _count_subtraction_rows(text: str) -> int:
         if not cells or all(set(c) <= set("-: ") for c in cells):
             continue
         if cells[0] in {"加法提案", "提案", "proposal", "Proposal", "加法"}:
+            continue
+        if cells[0] in _SUBTRACTION_PLACEHOLDERS:
             continue
         rows += 1
     return rows
@@ -630,33 +650,98 @@ def _pick_metric_block(
     return blocks[-1] if blocks else ("", text)
 
 
-def _has_lingering_severity(text: str) -> bool:
-    """V3.6-b5（轨迹分析判例）：回执里的 `P0`/`P1` 是否构成「遗留」证据。
+def _debt_row_closed(cells: list[str]) -> bool:
+    """V3.6 §4.0f exit 1/2：这一行是否已销账（代码证据 / dup-of / 用户批准）。
 
-    原 r19 实现用一条裸 `P[01]+` 正则，把「P0 = 0」「无 P0」「P0：无」这类
-    **如实报告零 P0** 的行判成否定结论——六篇回执因此全部不敢写 P0 字样
-    （真实读数被规则逼成盲区，summary 里 certify「P0/P1 一律不出现」即此果）。
+    历史教训链（三轮都栽在同一处，判据必须同时满足三条）：
+      - b3b：整行子串匹配 → 长散文句尾「已修」吃掉整条欠账；
+      - b3c 修法：首格占位符 + 末格含完成词 → **又**把
+        `| — | P2 | 待实施；同族项已在 R32 已修 |` 判成销账（题干「待实施」）；
+      - V3.6-r1-F3：只看前缀 → `✅ 已登记，待实施（未修）` /
+        `✅ 已修，但 R34 复验 FAIL` / `完成度 40%，未实施` 全放行。
 
-    判据改为按**行**判，且只认「P0/P1 后紧跟计数/遗留词」的形态：
-      - 同行 `P0`/`P1` 后 12 字符内出现 `= 0`、`：0`、`0 条`、`零`、`无`、
-        `没有`、`未发现` → 如实报告，**不计**；
-      - 出现 `遗留`、`尚有`、`未修`、`仍存`、`REOPEN`、或非零计数 → 计；
-      - 只出现裸标记而无计数（`P0 = 0` 除外）→ 保守起见计（r19 的原意）。
-    以行为单位的理由是：一条正则无法可靠区分「P0/P1 无残留」与「P0 遗留一项」
-    这类跨词序形态，而逐行枚举正负词表是可审计的。
+    正确判据 = **闭合词出现在格首 AND 格内没有否定/未完成词**。否定词优先级高于
+    完成词：一行同时说「已修」和「未实施」的，是未销账。
     """
+    for cell in cells:
+        if not _DONE_PREFIX_RE.match(cell):
+            continue
+        # 该格声称完成，但格内若出现否定/未完成语，按未销账处理。
+        if _UNDONE_RE.search(cell):
+            return False
+        return True
+    # 无 ID 的整行状态叙述（历史合法形态）：末格短、且**不含**否定语。
+    if cells and cells[0] in {"—", "–", "-"}:
+        last = cells[-1]
+        if (
+            len(last) <= 120
+            and any(tok in last for tok in DEBT_DONE_TOKENS)
+            and not _UNDONE_RE.search(last)
+        ):
+            return True
+    # §4.0f exit 1 的 `dup-of`（F5；门自己的 FAIL 文案就写了这个出口）。
+    # 它在**处置格**（第 3 格），不必在首格。
+    if any(re.match(r"^\s*dup-of\b", cell, re.IGNORECASE) for cell in cells):
+        return True
+    return False
+
+
+_DONE_PREFIX_RE = re.compile(
+    r"^\s*(?:✅|✔|完成|已修|已实施|已闭合|已完成|已覆盖|已拒绝|superseded)"
+    r"|^\s*（[^）]{0,24}）\s*已修"
+)
+# 否定/未完成语——出现在同一个格里就否决该格的完成声明。
+_UNDONE_RE = re.compile(
+    r"未修|未实施|未完成|未落地|待实施|待修|待补|待办|尚未|未开始|未做"
+    r"|FAIL|REOPEN|延期|搁置|作废|回退|不适用"
+    r"|完成度\s*\d*%?\s*(?:40|50|60|70|80|90)?\s*[,，]?\s*未"
+)
+
+
+def _has_lingering_severity(text: str, require_decl: bool = False) -> bool:
+    """回执是否声明了**遗留**的 P0/P1。
+
+    ⛔ 设计决定（V3.6-r1，F4/F10 判例）：**不再靠散文极性判断**。
+    三轮对抗都把「P0 = 0 / 无 P0 / P0（0） / P0 无新增，P1 遗留 1 项 /
+    P0/P1：0 / 2 / 本次无 P0/P1 遗留」逐个打补丁——这正是本项目 18 轮
+    文本门循环的病根：散文的极性表达是开放集合，正则永远补不完。
+
+    新形态（`require_decl=True`，V3.6+ 回执强制）：
+      回执必须有一行**机器可读的计数声明**：
+        `- 遗留 P0: <n> / P1: <n>`（或 `遗留 P0/P1: <n> / <n>`）
+      门只读这两个数：全为 0 → 无遗留；任一非 0 → 有遗留；**缺失 → 视为不合规**
+      （回执没有可判定读数，与「含否定结论」同等处理）。
+    旧形态（`require_decl=False`，V3.5 及更早回执）：保留原启发式——它们
+    已封存，不追溯，只需不误伤。
+    """
+    if require_decl:
+        decl = re.search(
+            r"^-\s*遗留\s*(?:P0|P0/P1|\s*P0\s*/\s*P1)\s*(?:\s*/\s*P1)?\s*[:：]\s*"
+            r"(\d+)\s*(?:/\s*(\d+))?",
+            text,
+            re.MULTILINE,
+        )
+        if decl is None:
+            return True   # 无可判定读数 = 不合规（fail-closed）
+        p0 = int(decl.group(1))
+        p1 = int(decl.group(2)) if decl.group(2) is not None else 0
+        return p0 > 0 or p1 > 0
+    # ---- 旧回执的启发式（不追溯）----
     for line in text.splitlines():
+        if re.match(r"^-\s*遗留\s*(?:P0|P0/P1)", line.strip()):
+            continue  # 显式声明行交给上面的分支判定，启发式不重复解读
         for m in re.finditer(r"(?<![a-zA-Z0-9])P[01]+(?![0-9])", line, re.IGNORECASE):
-            head = line[max(0, m.start() - 10): m.start()]
-            tail = line[m.end(): m.end() + 12]
-            # 前缀否定：`无 P0` / `没有 P0` / `本次无 P0/P1`。
+            if re.match(r"-[\dA-Za-z②③④⑤⑥]", line[m.end():]):
+                continue
+            head = re.split(r"[,，;；。:：|/]", line[max(0, m.start() - 10): m.start()])[-1]
+            tail = re.split(r"[,，;；。]", line[m.end(): m.end() + 12])[0]
             if re.search(r"无|没有|未发现|零", head):
                 continue
-            if re.search(r"(?:[=:：]|\s)\s*(?:0|零)\b|0\s*条|零条", tail):
-                continue                       # P0 = 0 / P0：0 / P0 0 条
+            if re.search(r"(?:[=:：]|\s)\s*[(（]?\s*(?:0|零)\s*[)）]?\b|0\s*条|零条", tail):
+                continue
             if re.search(r"无|没有|未发现|均已?清|全部闭合", tail):
-                continue                       # P0：无 / P0 无残留
-            return True                        # 遗留 / 尚有 / 非零计数 / 裸标记
+                continue
+            return True
     return False
 
 
@@ -1193,10 +1278,16 @@ def check_edition_trial(
         rt = re.search(r"^-\s*轮型\s*[:：]\s*(\S+)", body, re.MULTILINE)
         if not ed or not rt or rt.group(1) not in {"full", "structural"}:
             continue
-        stat = stats.setdefault(ed.group(1), {"rounds": 0, "last_open": None})
+        stat = stats.setdefault(ed.group(1), {"rounds": 0, "last_open": None, "last_n": 0})
+        # V3.6-r1-F11：`last_open` 必须是**轮号最大**那一轮的读数，不是
+        # 文件里最后出现的那个块（metrics 的块顺序可能倒挂，如 R6 写在
+        # R4/R5 之前）。原实现按文件顺序覆盖，`R6(open=2),R4(0),R5(0)`
+        # → `PASS 试验窗口 3/3`。
+        if n >= stat["last_n"]:
+            stat["last_n"] = n
+            op = re.search(r"^-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
+            stat["last_open"] = int(op.group(1)) if op else None
         stat["rounds"] += 1
-        op = re.search(r"^-\s*未闭环\s*[:：]\s*(\d+)", body, re.MULTILINE)
-        stat["last_open"] = int(op.group(1)) if op else None
     # V3.3: confirmation rounds are excluded by design (they are not
     # modification transactions), but structural rounds count like full.
     #
@@ -1283,26 +1374,8 @@ def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
             continue
         candidate_rows += 1
         row_text = " | ".join(cells)
-        # V3.6-b3b（轨迹分析判例）：完成词必须**出现在单元格开头**（可带
-        # `✅` / `（R23 前置）` 之类前缀）。原实现对整行做子串匹配，于是
-        # D06 的「文档半边的偏离登记**已修**」这种长散文句尾把整条欠账判成
-        # 已销账；反之把窗口收窄到「短格」会误杀 D01 那 9 条长处置格
-        # （`✅ 已修：…` 格里带完整证据链）。正确判据是**位置**而不是长度：
-        # 格首 `✅`/`已修`/`已实施`… = 状态声明；句中出现的 `已修` = 叙述。
-        _DONE_PREFIX_RE = re.compile(
-            r"^\s*(?:✅|✔|完成|已修|已实施|已闭合|已完成|已覆盖|已拒绝|superseded)"
-            r"|^\s*（[^）]{0,24}）\s*已修"
-        )
-        if any(_DONE_PREFIX_RE.match(cell) for cell in cells):
-            continue
-        # V3.6-b3c：**无 ID 的整行状态叙述**（`| — | — | F-R18-01 已实施；… |`）
-        # 是历史合法形态——首格是占位符且末格 ≤ 120 字并含完成词。把窗口限定
-        # 到「短行」才放行，避免长散文句尾再次吃掉真实欠账（b3b 的原判例）。
-        if (
-            cells[0] in {"—", "–", "-", ""}
-            and len(cells[-1]) <= 120
-            and any(tok in cells[-1] for tok in DEBT_DONE_TOKENS)
-        ):
+        # V3.6 销账判据（b3b/b3c/r1-F3/F5 四轮收敛的单一入口，见 _debt_row_closed）。
+        if _debt_row_closed(cells):
             continue
         # §4.0f exit 2: a DECISIONS.md-recorded user adjudication — including
         # an explicitly approved deferral — resolves the row. Approval without
@@ -1341,8 +1414,7 @@ def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
     return len(open_rows)
 
 
-ROUND_RESULT_V33 = {
-    "ROUND-CLOSED",
+ROUND_RESULT_V33 = {    "ROUND-CLOSED",
     "CONVERGED",
     "NOT CONVERGED",
     "NOT CONVERGING",
@@ -2271,21 +2343,41 @@ def check_run_dir(
     # 只对 V3.6+ 生效（V3.5 存量文档不追溯）。逻辑在 check_subtraction 内，
     # 供自测直接调用。
     if _combined_ver >= (3, 6) and round_tag_override:
+        _rk6 = round_tag_override.lstrip("R").lstrip("0") or "0"
         _d2_path = None
         for _cand in (
-            run_dir / "panel" / f"round{round_tag_override.lstrip('R').lstrip('0') or '0'}" / "design-d2.md",
+            run_dir / "panel" / f"round{_rk6}" / "design-d2.md",
             (panel_dir / "design-d2.md") if panel_dir else None,
         ):
             if _cand is not None and _cand.is_file():
                 _d2_path = _cand
                 break
-        if _d2_path is not None and metrics_text is not None:
-            check_subtraction(
-                _d2_path.read_text(encoding="utf-8"),
-                metrics_text,
-                report,
-                round_tag_override,
-            )
+        if metrics_text is not None:
+            # V3.6-r1-F2（判例）：D2 缺失不得静默跳过。原实现在
+            # `_d2_path is None` 时**整条减法门不执行**——metrics 可以自报
+            # 「提案 3 / 采纳 3」而没有任何 D2 实物，门一个字都不说。
+            # fail-closed：V3.6 轮没有 D2 报告 = 设计审查缺席，直接 FAIL；
+            # metrics 已自报提案数 > 0 而 D2 缺失，另加一条更明确的 FAIL。
+            if _d2_path is None:
+                _claimed = re.search(
+                    r"^-\s*减法\s*[:：]\s*提案\s*(\d+)",
+                    metrics_text,
+                    re.MULTILINE,
+                )
+                _n_claimed = int(_claimed.group(1)) if _claimed else 0
+                report.fail(
+                    "subtraction",
+                    f"panel/round{_rk6}/design-d2.md 缺失：V3.6 轮必须有 D2 报告"
+                    f"（其 `## SUBTRACTION-TABLE` 是减法提案的唯一实物；"
+                    f"metrics 当前自报提案 {_n_claimed}）",
+                )
+            else:
+                check_subtraction(
+                    _d2_path.read_text(encoding="utf-8"),
+                    metrics_text,
+                    report,
+                    round_tag_override,
+                )
 
     if loop_text is not None:
         check_loop_sections(loop_text, report, round_tag)
@@ -2519,7 +2611,9 @@ def check_run_dir(
                             r"|未(修|完成|实施|落地)(?!.*已补)",
                             _ct.translate(str.maketrans({chr(0xFF01 + i): chr(0x21 + i) for i in range(94)})),
                             re.IGNORECASE | re.MULTILINE,
-                        ) or _has_lingering_severity(_ct)
+                        ) or _has_lingering_severity(
+                            _ct, require_decl=_combined_ver >= (3, 6)
+                        )
                         _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
                         if _neg_hit:
                             _bad_certs.append(
@@ -4809,17 +4903,88 @@ def self_test() -> int:
         print("self-test FAIL: 恰好 3 轮且已收口被误报超限（V3.6-b4 反向）")
         return 1
 
-    # (s) 回执的 P0/P1 极性（V3.6-b5）：如实报告零 P0 不得被判否定结论。
-    _sev_ok = ["P0 = 0", "无 P0", "P0 事项 0 条", "P0：无", "P0/P1 无残留", "本次无 P0/P1 遗留"]
-    _sev_linger = ["遗留 P0 一项", "P0 共 2 条", "P1 尚有 1", "P1 事项 2 条"]
-    for _s in _sev_ok:
-        if _has_lingering_severity(_s):
-            print(f"self-test FAIL: 零化表述被判为遗留（V3.6-b5）: {_s!r}")
+    # (s) 回执遗留计数（V3.6，F4/F10 判例：不再靠散文极性猜）。
+    _decl_ok = ["- 遗留 P0: 0 / P1: 0", "- 遗留 P0/P1: 0 / 0"]
+    _decl_bad = ["- 遗留 P0: 1 / P1: 2", "- 遗留 P0/P1: 0 / 3"]
+    _decl_missing = ["结论：通过（P0 = 0）", "无 P0"]   # 无可判定读数 → fail-closed
+    for _s in _decl_ok:
+        if _has_lingering_severity(_s, require_decl=True):
+            print(f"self-test FAIL: 零遗留声明被判有遗留（V3.6-decl）: {_s!r}")
             return 1
-    for _s in _sev_linger:
-        if not _has_lingering_severity(_s):
-            print(f"self-test FAIL: 遗留表述未被抓（V3.6-b5）: {_s!r}")
+    for _s in _decl_bad:
+        if not _has_lingering_severity(_s, require_decl=True):
+            print(f"self-test FAIL: 非零遗留未被抓（V3.6-decl）: {_s!r}")
             return 1
+    for _s in _decl_missing:
+        if not _has_lingering_severity(_s, require_decl=True):
+            print(f"self-test FAIL: 无声明未 fail-closed（V3.6-decl）: {_s!r}")
+            return 1
+    # 旧回执不追溯：无声明时走启发式，六篇已封存回执不得被误伤。
+    for _s in ("P0 = 0", "无 P0", "P0 事项 0 条", "P0：无", "P0/P1 无残留"):
+        if _has_lingering_severity(_s, require_decl=False):
+            print(f"self-test FAIL: 旧回执零化表述被误伤（V3.6-b5）: {_s!r}")
+            return 1
+    for _s in ("遗留 P0 一项", "P0 共 2 条", "P1 尚有 1"):
+        if not _has_lingering_severity(_s, require_decl=False):
+            print(f"self-test FAIL: 旧回执遗留表述未被抓（V3.6-b5）: {_s!r}")
+            return 1
+
+    # (t) 销账判据（b3b/b3c/F3/F5 四轮收敛后的单一入口）——正负各 5 例。
+    for _row, _want_open in (
+        ("✅ 已修：附完整证据链与测试读数", 0),
+        ("（R23 前置）已修：删单实现 BootShim", 0),
+        ("dup-of F-R17-02", 0),
+        ("用户批准 2026-11-20 延期至下一 batch", 0),
+        ("✅ 已实施（commit e74db99e4）", 0),
+        ("✅ 已登记，待实施（未修）", 1),
+        ("✅ 已修，但 R34 复验 FAIL", 1),
+        ("完成度 40%，未实施", 1),
+        ("待实施；同族项已在 R32 已修", 1),
+        ("无批准，待评估", 1),
+    ):
+        _with_id, _no_id = True, _want_open
+        for _pfx in ("| X-1 | P1 | ", "| — | P2 | "):
+            _rep_t = Report()
+            with tempfile.TemporaryDirectory() as _td:
+                _pp = Path(_td) / "OPEN-DEBT.md"
+                _pp.write_text(
+                    "| ID | 严重度 | 处置 |\n|---|---|---|\n" + _pfx + _row + " |\n",
+                    encoding="utf-8",
+                )
+                _n_t = check_open_debt(_pp, _rep_t, "R3")
+            if _n_t != _want_open:
+                print(
+                    f"self-test FAIL: 销账判据错（V3.6-F3/F5）: {_pfx}{_row!r} "
+                    f"open={_n_t} want={_want_open}"
+                )
+                return 1
+
+    # (u) 减法表占位行不得计为提案（F1：诚实报告 FAIL、编造 PASS 是本末倒置）。
+    _d2_placeholder = (
+        "## SUBTRACTION-TABLE\n\n"
+        "| 加法提案 | 减法替代 | 拦不住的理由 | 保障对比 | 新增概念数 |\n"
+        "|---|---|---|---|---|\n"
+        "| 无 | — | — | — | — |\n"
+        "| 无 | — | — | — | — |\n\n## VERDICT\nok\n"
+    )
+    if _count_subtraction_rows(_d2_placeholder) != 0:
+        print("self-test FAIL: 减法表占位行被计为提案（V3.6-F1）")
+        return 1
+    # 围栏内的「格式示例」表不得计为提案（F6）。
+    _d2_fenced = (
+        "## SUBTRACTION-TABLE\n\n本轮无减法提案。\n\n```markdown\n"
+        "| 加法提案 | 减法替代 |\n|---|---|\n| A | 闭包 |\n```\n\n## VERDICT\nok\n"
+    )
+    if _count_subtraction_rows(_d2_fenced) != 0:
+        print("self-test FAIL: 围栏内示例表被计为提案（V3.6-F6）")
+        return 1
+    # `###` 子节必须终止本段（F6）。
+    _d2_sub = (
+        "## SUBTRACTION-TABLE\n\n| A | 闭包 |\n\n### 备注\n\n| B | 断言 |\n"
+    )
+    if _count_subtraction_rows(_d2_sub) != 1:
+        print("self-test FAIL: `###` 子节未终止减法段（V3.6-F6）")
+        return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0
