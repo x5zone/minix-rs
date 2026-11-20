@@ -575,7 +575,7 @@ def _count_subtraction_rows(text: str) -> int:
             continue
         # r2（F1 变体）：`无提案（本轮无新增类型）` 这类**带括注的占位**也要认。
         if cells[0] in _SUBTRACTION_PLACEHOLDERS or re.match(
-            r"^(?:无|—|–|N/A|none)(?:[（(]|$)", cells[0], re.IGNORECASE
+            r"^(?:无提案|无|未提出|—|–|N/A|none)(?:[（(]|$|\s)", cells[0], re.IGNORECASE
         ):
             continue
         rows += 1
@@ -628,11 +628,21 @@ def check_subtraction(
             r"|无需减法|无减法必要",
             d2_text,
         )
-        _has_add = re.search(
-            r"^(?:##+\s+FINDING|##\s+ARCH-PROPOSAL)", d2_text, re.MULTILINE
-        ) is not None and re.search(
-            r"新增(?:类型|字段|trait|抽象|守卫|token)|newtype|值对象|typestate",
+        # V3.6-r3-R2F-04：原 `_has_add` 不看极性——D2 写「无需 newtype」
+        # 「不新增字段」「拒绝（newtype 成本高）」都会被判「只列加法」，
+        # 把 F1 消灭的反向激励换了个位置重演。先剥掉否定语境，再找**处方**。
+        _stripped = re.sub(
+            r"(?:无需|不需要|不必|不建议|不新增|未新增|无新增|无需新增|不引入|拒绝|否决|放弃)[^。\n]{0,40}",
+            "",
             d2_text,
+        )
+        _has_add = re.search(
+            r"^(?:##+\s+FINDING|##\s+ARCH-PROPOSAL)", _stripped, re.MULTILINE
+        ) is not None and re.search(
+            r"应(?:新增|引入|改用|改为|采用)|建议(?:新增|引入|改用|采用)"
+            r"|新增(?:一个|两个|类型|字段|trait|抽象|守卫|token)"
+            r"|newtype|值对象|typestate",
+            _stripped,
         ) is not None
         if _no_prop and not _has_add:
             report.ok(
@@ -696,7 +706,9 @@ def _debt_row_closed(cells: list[str]) -> bool:
         if not _DONE_PREFIX_RE.match(cell):
             continue
         # 该格声称完成，但格内若出现否定/未完成语，按未销账处理。
-        if _UNDONE_RE.search(cell):
+        # V3.6-r3-R2F-02：`✅ 完成度 40%（进行中）` 曾因 ✅ 分支先命中而判销账——
+        # 「完成度」是百分比读数，与「完成」是两回事，出现即否决。
+        if _UNDONE_RE.search(cell) or "完成度" in cell:
             return False
         # V3.6-r2-F3（对抗判例）：**裸**状态词不算销账。§4.0f 的出口是
         # 「实施（附代码证据或 dup-of）」——一个只写「已实施」「已拒绝」的格
@@ -729,14 +741,22 @@ _DONE_PREFIX_RE = re.compile(
     r"|^\s*（[^）]{0,24}）\s*已修"
 )
 # 否定/未完成语——出现在同一个格里就否决该格的完成声明。
+# V3.6-r3-R2F-11：否定词必须指向**本条目的状态**，不能命中解释性短语。
+#   `未修改前的实现已删除`（叙述历史） / `回退路径已验证`（名词短语） /
+#   `延期逻辑已移除`（名词短语）都不该否决完成声明。
+#   口径：`未修(?!改)`；`回退|延期|搁置|作废` 只在句首或标点后作谓语时才算。
 _UNDONE_RE = re.compile(
-    r"未修|未实施|未完成|未落地|待实施|待修|待补|待办|尚未|未开始|未做"
-    r"|FAIL|REOPEN|延期|搁置|作废|回退|不适用"
-    r"|完成度\s*\d*%?\s*(?:40|50|60|70|80|90)?\s*[,，]?\s*未"
+    r"未修(?!改)|未实施|未完成|未落地|待实施|待修|待补|待办|尚未|未开始|未做"
+    r"|(?:^|[：:，,；;（(])\s*(?:FAIL|REOPEN)(?![^\n]{0,8}(?:清零|已修|已解决|已关闭))"
+    r"|(?:复验|验证|回读|测试|检查|仍|尚|但)[^。\n]{0,6}(?:FAIL|REOPEN)"
+    r"|不适用"
+    r"|(?:^|[：:，,；;（(])\s*(?:延期|搁置|回退|作废)(?:到|至|给|了|待|处理|$)"
 )
 
 
-def _panel_empty_ok(name: str, text: str, loop_text: str | None) -> bool:
+def _panel_empty_ok(
+    name: str, text: str, loop_text: str | None, round_tag: str | None = None
+) -> bool:
     """V3.6-r2-F4：面板是否可判为「有内容」或「已声明无发现」。
 
     合法形态（`review-evals.md` 第 9 条）：
@@ -748,8 +768,20 @@ def _panel_empty_ok(name: str, text: str, loop_text: str | None) -> bool:
         return True
     if not loop_text:
         return False
+    # V3.6-r3-R2F-12：声明只在**该轮**的小节内有效。原实现扫整份 loop.md，
+    # R1 的一句声明会豁免 R5 的同名空壳面板。
+    scoped = loop_text
+    if round_tag:
+        _m = re.search(
+            rf"^#{{1,2}}\s*(?:Round\s*{re.escape(round_tag.lstrip('R').lstrip('0') or '0')}\b"
+            rf"|R{re.escape(round_tag.lstrip('R'))}\b)(.*?)(?=^#{{1,2}}\s|\Z)",
+            loop_text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if _m:
+            scoped = _m.group(0)
     return bool(
-        re.search(rf"无发现面板[^\n]{{0,200}}{re.escape(name)}", loop_text)
+        re.search(rf"无发现面板[^\n]{{0,200}}{re.escape(name)}", scoped)
     )
 
 
@@ -784,14 +816,20 @@ def _has_lingering_severity(text: str, require_decl: bool = False) -> bool:
             return True   # 无可判定读数 = 不合规（fail-closed）
         head = decl.group(1).replace(" ", "")
         rest = decl.group(2)
-        nums = [int(x) for x in re.findall(r"\d+", rest)]
+        # V3.6-r3-R2F-06：**不完整声明 = 不合规**（fail-closed）。
+        # 原实现把缺 P1 的 `- 遗留 P0: 0` 当 0/0 放行，把 `P0: 无 / P1: 无`
+        # 里的 `P1` 数字 1 误当 P0（返回 True）。契约要求两个数都写。
         if head == "P0/P1":
-            p0 = nums[0] if nums else 0
-            p1 = nums[1] if len(nums) > 1 else 0
+            _nums = re.findall(r"\d+", rest)
+            if len(_nums) < 2:
+                return True                    # 缺数 → 不合规
+            p0, p1 = int(_nums[0]), int(_nums[1])
         else:
-            p0 = nums[0] if nums else 0
+            _p0 = re.search(r"^\s*(\d+)", rest)
             _p1 = re.search(r"P1\s*[:：]?\s*(\d+)", rest)
-            p1 = int(_p1.group(1)) if _p1 else 0
+            if _p0 is None or _p1 is None:
+                return True                    # 缺 P0 或 P1 的数 → 不合规
+            p0, p1 = int(_p0.group(1)), int(_p1.group(1))
         return p0 > 0 or p1 > 0
     # ---- 旧回执的启发式（不追溯）----
     for line in text.splitlines():
@@ -2351,7 +2389,7 @@ def check_run_dir(
                     # reviewer 会被判「空壳面板」。现在两处都认：本体声明 **或** loop §1
                     # 的具名声明（必须点名该文件，防止一句空话豁免所有面板）。
                     if _nf + _nc + _ns == 0 and not _panel_empty_ok(
-                        _name, _text, loop_text
+                        _name, _text, loop_text, round_tag_override
                     ):
                         report.fail(
                             "panel-artifact",
@@ -5101,6 +5139,59 @@ def self_test() -> int:
         return 1
     if _panel_empty_ok("fact.md", "# FACT\n\n## DECISION 01\n", None):
         print("self-test FAIL: 真空壳面板（无声明无发现）被放行（V3.6-r2-F4）")
+        return 1
+
+    # ===== V3.6 r3 判别夹具（轮 2 修复引入的回归）=====
+    # (w) 「完成度」是百分比读数，不是完成声明（R2F-02）。
+    for _cell, _want in (
+        ("✅ 完成度 40%（进行中）", False),
+        ("✅ 已实施：完成度 40%", False),
+        ("✅ 已修：`a.rs:1` 已落地，测试通过", True),
+        ("✅ 已修：未修改前的实现已删除", True),      # 叙述历史，不是状态
+        ("✅ 已闭合：回退路径已验证", True),          # 名词短语
+        ("✅ 已完成：FAIL 已清零", True),            # FAIL 清白
+        ("✅ 已修，但 R34 复验 FAIL", False),         # 复验失败
+        ("✅ 已修：延期到下一批", False),             # 延期谓语
+        ("✅ 已修", False),                          # 裸状态词
+    ):
+        if _debt_row_closed(["X-1", "P2", _cell]) != _want:
+            print(f"self-test FAIL: 销账判据回归（V3.6-r3）: {_cell!r}")
+            return 1
+    # (x) 回执声明不完整 → fail-closed；P1 标签里的 1 不得当 P0（R2F-06）。
+    for _decl, _want in (
+        ("- 遗留 P0: 0", True),
+        ("- 遗留 P0: 0 / P1:", True),
+        ("- 遗留 P0/P1: 0", True),
+        ("- 遗留 P0: 无 / P1: 无", True),
+        ("- 遗留 P0: 0 / P1: 0", False),
+        ("- 遗留 P0/P1: 0 / 0", False),
+        ("- 遗留 P0: 0 / P1: 2", True),
+    ):
+        if _has_lingering_severity(_decl, require_decl=True) != _want:
+            print(f"self-test FAIL: 回执声明解析回归（V3.6-r3）: {_decl!r}")
+            return 1
+    # (y) 减法表：`无提案（…）` 是占位；「无需 newtype」不是加法提案（R2F-04）。
+    if _count_subtraction_rows(
+        "## SUBTRACTION-TABLE\n\n| 无提案（本轮无新增类型） | — | — | — | — |\n"
+    ) != 0:
+        print("self-test FAIL: 带括注的占位行被计为提案（V3.6-r3）")
+        return 1
+    _d2_neg = (
+        "## FINDING DESIGN-D2-01\n- 结论：无需 newtype，现有类型足够\n\n"
+        "## VERDICT\nok\n"
+    )
+    _rep_neg = Report()
+    check_subtraction(_d2_neg, "## R1 x\n\n- 减法: 提案 0 / 采纳 0\n", _rep_neg, "R1")
+    if any(i["level"] == "FAIL" for i in _rep_neg.items):
+        print("self-test FAIL: 「无需 newtype」被判只列加法（V3.6-r3 极性）")
+        return 1
+    # (z) 无发现面板声明只在**该轮**有效（R2F-12）。
+    _loop_two = "## R1 轮\n\n- 无发现面板：`fact.md`（理由）\n\n## R5 轮\n\n无声明\n"
+    if not _panel_empty_ok("fact.md", "# F\n", _loop_two, "R1"):
+        print("self-test FAIL: 轮内声明未生效（V3.6-r3）")
+        return 1
+    if _panel_empty_ok("fact.md", "# F\n", _loop_two, "R5"):
+        print("self-test FAIL: 跨轮声明被错误继承（V3.6-r3）")
         return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")

@@ -137,7 +137,7 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 | 检查项 | 说明 | Evidence 级别 |
 |--------|------|-------------|
 | 类型系统利用 | newtype、phantom、typestate | [DIRECT] |
-| 编译时保证 | 用编译时替代运行时检查（**限外部输入 / 不可信边界的校验**；可信链上的 fail-fast 断言不算本项缺陷，见 §17.2 前提） | [MEDIUM] |
+| 编译时保证 | 用编译时替代运行时检查（**限外部输入 / 不可信边界的校验**；可信链上的 `assert!` fail-fast 不算本项缺陷，见 §17.2 前提；**`debug_assert!` 在 release 被编译掉，只是开发期辅助，不算保证**） | [MEDIUM] |
 | 命名表达意图 | 命名表达"做什么"而非"怎么做" | [MEDIUM] |
 | 迭代器/组合子 | 用迭代器替代显式循环 | [DIRECT] |
 | 模式匹配 | 用 match 替代 if-else 链 | [DIRECT] |
@@ -146,8 +146,8 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 > **前提（V3.6，C-36b；C-31 的强制伴随修订）**：本节任何"可用新类型 / typestate 替代"
 > 的判级，都必须先过 `review-code-checklist.md` §3.5 的三问与可判边界。特别是：**可信链
-> （本仓其他模块 → 内核，如 boot → kernel）上的 `assert!` / `debug_assert!` 是刻意选择的
-> 正确形态，不是"可用 typestate 替代"的证据源**——把它们报成卓越性 P1 会与 C-31 直接
+> （本仓其他模块 → 内核，如 boot → kernel）上的 `assert!` 是刻意选择的
+> 正确形态，不是"可用 typestate 替代"的证据源；`debug_assert!` 在 release 被编译掉，不是保证**——把它们报成卓越性 P1 会与 C-31 直接
 > 矛盾（同一行代码被 panel 判合理、被本节判缺陷）。`os/libs/minix-boot/src/kernel_info.rs`
 > 的三层 `assert` 校验是本项目对此的标准实证。
 
@@ -165,6 +165,7 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
    → 命中只是**候选清单**，不构成缺陷判定。逐条按 §3.5 三问分流：
    - 外部输入校验 → 已用 `Result` 的不报；用 `panic!` 的对不可信输入 → P1（应改 `Result`）；
    - 可信链不变量 → **`assert!` / `panic!` 是正确形态，不报**（fail-fast 阻止腐化扩散）；
+     `debug_assert!` 在 release 被编译掉，**不构成可信链保证**，单独提请注意；
    - 其余能用 typestate 在**不新增类型**的前提下消掉的 → 卓越性 P1；需要新增类型才能消掉的
      → 按 §3.5 边界判 P2 建议或维持现状。
 

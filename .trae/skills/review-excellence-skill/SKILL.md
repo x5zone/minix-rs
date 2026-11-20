@@ -253,8 +253,8 @@ description: Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.5
 
 > **V3.6 前提（C-36b 的镜像同步）**：本节任何"可用新类型 / typestate 替代"的判级，必须先过
 > `review-code-checklist.md` §3.5 的三问与可混淆面判据。特别是**可信链（本仓其他模块 → 内核）
-> 上的 `assert!` / `debug_assert!` / `panic!` 是刻意选择的正确形态，不是"可用 typestate 替代"的
-> 证据源**——把 `rg "if.*== 0|if.*is_none|panic!"` 的命中一律判卓越性 P1 会与 C-31 直接矛盾。
+> 上的 `assert!` / `panic!` 是刻意选择的正确形态，不是"可用 typestate 替代"的证据源；
+> `debug_assert!` 在 release 被编译掉，只是开发期辅助，不算保证**——把 `rg "if.*== 0|if.*is_none|panic!"` 的命中一律判卓越性 P1 会与 C-31 直接矛盾。
 
 **检查项**：类型系统利用 / 编译时保证 / 命名表达意图 / 迭代器组合子 / 模式匹配
 
