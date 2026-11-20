@@ -38,7 +38,7 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施中：门①③已落，门④路径 A 已落，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；全部门链验证被 I-43 的 x86 载体 `enable()` 静默停阻塞（stash 对照确认非路径 A 引入）。详见 §3 的 I-29-impl 补记 | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
-| I-44（**实施中：步①②③已落，步④⑤待续**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
+| I-44（**实施中：步①–④已落，步⑤ E+R1 已关闭、R2 待真机**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
 | I-43（部分实施·待续） | 编译失败修好后暴露的测试内核运行期缺陷 | 测试载体修正 / 定位 | **空槽 `BOOT_MODULES` 一层已修（2026 年 11 月 20 日，4 条改 `&mods[8..9]`，`[0x0,0x0)` 归零）**；但暴露第二层：`test-timer-irq-riscv64` 在 `paging enabled` 之后 `rust_main` 被反复重入、64 次耗尽 bump 区。`test-protection-riscv64` 静默停仍未定位。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
@@ -1558,6 +1558,36 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 **实施教训（如实记录）**：一个 Python 批处理脚本因循环变量覆盖把 riscv64 实现内容写进了共享 trait 文件（`os/arch/src/arch/paging.rs` 被整体覆盖为 riscv 实现）——已用 `git checkout HEAD` 恢复共享文件后以 Edit 工具重放三处步④改动。教训与 D-077 的「从注释推断代码」同类但相反面：**批量脚本里承载不同文件内容的变量必须每轮重新读取**，不能假设上一次的内容还在。
 
 **未做（按 §5.1 边界）**：步⑤ E / R1 / R2 三个独立证据门。E 门四个调用点各答三问（锁/CPU 参与集/TLB 失效覆盖）需要启动顺序与 SMP 证据；R1 需核实 `harden_kernel_text` 与 heap-window eviction 是否会在继承者存活期替换/释放共享子树；R2 需 TX 专用保留区容量实测。三者都是证据责任，不是代码改造，**不得与步④混合验收**。
+
+**步⑤ E 门 + R1 关闭（同日，证据落文）**：
+
+**E 门：四个调用点各答三问**
+
+| 调用点 | Q1 防并发修改的约束 | Q2 可能在使用该根的 CPU | Q3 TLB 失效覆盖 |
+|---|---|---|---|
+| `init_kerninfo`（kerninfo.rs:143） | kmain Phase B.5，BKL 持有、smp_init 之前——单 CPU（BSP） | 仅 BSP；无 AP 已释放 | 新 USER_VA 从未映射过，无任何 CPU 持有它的陈旧 TLB 项；无需失效 |
+| `harden_kernel_text`（lib.rs:1974） | kmain 内、BKL 持有、smp_init 之前（源码注释原文「no AP has loaded the kernel root before its release」） | 仅 BSP；进程根已建但全部 PROC_STOP，从未装入任何 MMU | PTE 写路径的本地失效已覆盖；被改的是共享子树里的条目，但无 inheritor 有任何缓存翻译（从未 dispatched） |
+| heap-window eviction（lib.rs:2928，init_proc_and_boot 内） | Phase C，BKL 持有、单 CPU、VM 尚未执行 | 仅 BSP；VM 进程已创建但 BOOTINHIBIT+PROC_STOP | `unmap` 内建本地失效覆盖 BSP；无其它 CPU |
+| VM 自映射（vm_self_map.rs:102） | VM 单线程（SAFETY 注释原文）；`VM_SELF_PT_STORAGE` 单写者 | 仅 VM 自身（用户态单线程进程） | 句柄自带 flush_tlb 计数；单线程无跨 CPU 需求 |
+
+**E 门结论**：四处的 Q1 都是「kmain 启动顺序 + BKL + smp_init 尚未运行」或「VM 单线程」；Q2 都是「除当前 CPU 外无其它 CPU 持有该根或共享子树的翻译」；Q3 都是「本地失效足够 / 新映射无需失效」。**锁解决并发修改、TLB 失效解决旧翻译——两合同各自成立。**
+
+**R1：源根结构稳定性（四问逐一核实）**
+
+`harden_kernel_text` 与 heap-window eviction 都修改 **bootstrap 根**的 supervisor 半（共享子树所在）。关键时序（生产 kmain，`lib.rs:1749`）：`init_proc_and_boot`（`:1897`，Phase C，建进程根并 `inherit_supervisor_half`）→ `harden_kernel_text`（`:1974`）→ `smp_init`。
+
+| # | 问题 | 答案 |
+|---|---|---|
+| 1 | 写的是共享子树的叶 PTE 还是源根顶层入口？ | `split_huge` 在共享父表中把 2 MiB 叶替换为新 4 KiB 表指针（继承者走共享子树会看到新表）；`update_flags` 只写**新表内**的叶 PTE（该表 split 后才分配，split 前 inherit 者不存在→非共享）；heap eviction 的 `unmap` 写共享父表条目（清掉 boot-identity 遗留） |
+| 2 | 是否清除仍被继承者直接引用的入口？ | 否——旧 2 MiB 叶的物理页是内核 text/data 本体，split 后由新 4 KiB 页继续映射（同一物理页集），无映射消失；heap eviction 清掉的 boot-identity 条目按设计就是「boot 期间专用」的遗留，Phase C 后无消费者 |
+| 3 | 释放的物理页是否仍在继承者可达集合内？ | `split_huge` 与 heap eviction **均不释放**物理页（`free_child_tables` 的 PS-bit 跳过规则；unmap 只清条目不归还页）——无释放即无回收冲突 |
+| 4 | TLB 失效覆盖继承者？ | 全部进程根处于 PROC_STOP + 从未装入任何 CPU → 继承者 TLB 为空；BSP 本地失效覆盖自己 |
+
+**R1 结论**：两个源根修改路径都**不**在继承者存活期替换/释放继承者可达的页——安全性由 kmain 的启动顺序（修改发生在 Phase C 之后的窗口、smp_init 之前、全部继承者 stopped）与「不释放只重写」的形态共同保证。**R1 关闭**。
+
+**R2 维持 open**：TX 专用保留区与容量实测需要真实 VM 接入（QEMU 测试内核跑桩镜像不消费 free list），**保持真实 VM 接入门**不变。
+
+**边界重申**：E/R1 的证据是代码时序与启动顺序的静态核实；QEMU `-d int` 级动态取证（TLB 实际行为）留给首个真机/SMP 门。
 
 **门②（I-29-16 三架构 WB 合同）落地（同日，本批）**：
 
