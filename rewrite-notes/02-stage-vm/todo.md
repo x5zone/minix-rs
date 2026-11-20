@@ -3,6 +3,7 @@
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2 ｜ `stopgap landed` 3。两条真未做：实时更新（热更）的活与重启状态机、启动进程的可执行文件装载链。
 > **`2026-10-31` 现查（A 板 A14 第一腿，claim/A14-VM-qoder）**：① **启动进程的可执行文件装载链已落**——`vm_server.rs::exec_bootproc`（`:785`）走 `minix_elf::entry_point` + `segment_iter` 的 PT_LOAD 遍历、逐段页对齐落页（注释写明 RS 入口段 `vaddr=0x2246c0` 非页对齐的旧缺陷与修法）、按 `memsz` 留堆/BSS 尾、随后建初始栈帧；判据 `cargo test -p minix-vm --lib` → **543 / 0**。② **热更/重启状态机是唯一剩下的腿**，已升级为本文件 §20 的可执行条目 `V20-P1-1`（见下）：它不是缺一段代码，而是缺一个 **跨重启状态承载的架构决定**——C 的 `is_first_time()` 靠 BSS 全局在 `RTS_BOOTINHIBIT` 清后存活，Rust 的状态在 `VmServer` 实例里、实例随进程消失；现行为是**响亮拒绝**（`main.rs:73` 的 panic），panic 文案里指的 `G-V12-10` 在本文件并无对应条目（旧引用悬空），本笔把条目立起来并把文案改指它。
 > **本表有多行已过期**，按代码为准刷新：虚存服务向根服务要表已由真实的安全拷贝取回替代（不再返回空表）、调用屏蔽字面宽已拓宽到六十四位、进程内陷入层的占位实现已被直通陷入传输取代。逐条命令见 `../coordination/TODO-LEDGER-INDEX.md` §4。
+> **`2026-11-21` 台账刷新（仅记账，未改代码）**：上句所指的滞后行已逐条对齐到代码现状——V11-P1-1（宿主半核验闭环，`vm_server.rs:720` 的 `mark_initialized` + `ipc/transport.rs:224-240` 委托真 trap 后端；真机半挂 E5(d)）、V13-P2-2（`call_mask: u64`，`vm_server.rs:2484`/`:2104`/`:2439`）、V13-P2-5（真掩码三段全通，`kernel_gateway.rs:431` → `dispatcher.rs:973-1013` → `rs.rs:136-144`）、V13-P2-6（`f125e84a42` 收口）、V13-P3-1 之 2（`purge_by_owner`，`vfs_queue.rs:267-286` + `exit.rs:58`）、V14-P2-1（`0b0f050bc` 方案 A 落地）、E-VMTLB（D-096 销账）。**权威对账表**：`rewrite-notes/coordination/edge3.md:103` 的「已闭单勿领」早已记下 V13-P2-2/P2-5/P2-6 在 `403e47022` 闭环而 stage todo 未刷新，本轮即补这一笔。
 > 跨阶段联动项（虚存地址空间标识刷新、根服务接线、端到端联调）的状态权威在 `../coordination/TODO-LEDGER-OPEN.md` §4；本文件条目描述与修法仍是权威，本轮只加本摘要不改条目。
 
 > 来源：2026-08-16 架构级代码审查（关注整体/分层架构，非逐函数审查）。
@@ -21,10 +22,10 @@
 | 轮次 | 代表条目 | 状态 |
 |------|---------|------|
 | 第一轮~第六轮 | P0-1 map_lazy 语义矛盾 / P1-1 全局 bump 泄漏 / P1-2 VmContext 收敛 / P2-1 表驱动分发 / P3-1 clippy 归零 + T1–T36 campaign | ✅ 全部闭环（V11 存档） |
-| V11 遗留 | V11-P1-1 / V11-P2-8 / V10-P2-3 | 开口（§1，均为通电件或判定维持） |
+| V11 遗留 | V11-P1-1 / V11-P2-8 / V10-P2-3 | ✅ 三条全部结清（§1）：V11-P1-1 宿主半闭环、真机半挂 edge E5(d)；V11-P2-8 (a)(b) 均已落地；V10-P2-3 维持 DEFERRED 判定 |
 | V12（2026-09-08） | P0 两项（G-V12-8 缺页链写 PTE、V12-P1-3 wire 字宽）+ G-V12-10 + V12-P1-2 已修（Fix #59–#62）；开口 12 条 | 修 4 / 开 12（开口见 §1，正文在 V12 存档） |
-| **V13（2026-09-09）** | **V13-P1-1 + V13-P2-1..6 + V13-P3-1** | **开口（§18）** |
-| 增补（2026-09-16） | V14-P2-1（VM SEF 接线预登记，会话决议非扫描轮） | 开口（§19） |
+| **V13（2026-09-09）** | **V13-P1-1 + V13-P2-1..6 + V13-P3-1** | **全条结清（§18）**：P1-1/P2-1(a)(b)(c 销账)/P2-2/P2-3/P2-4/P2-5/P2-6/P3-1(之1)(之2) 均有落点 |
+| 增补（2026-09-16） | V14-P2-1（VM SEF 接线预登记，会话决议非扫描轮） | ✅ 已落（2026-09-19，`0b0f050bc` 方案 A：VM 收编 minix-sef 第四消费方 + E1 信号抵达裁决） |
 
 ### 0.2 V13 轮速览（本轮新增）
 
@@ -35,11 +36,11 @@
 | P2 | `V13-P2-2` | ✅ **已落（`2026-10-10` 复核）**：`RprocEntry.call_mask` 现为 `u64`（vm_server.rs:2296，带注释"截为 u32 会丢 +32..+48 授权位"），`from_bits_truncate(entry.call_mask)` 无 `as u64` cast（:1930），解码 `call_mask: w.vm_call_mask` 从 wire u64 直取（:2251）；读回测 `assert_eq!(vfs_rprocpub_call_mask(), 0x0000_0300_0000_00ff)`（:4016，含高位）在 `cargo test -p minix-vm --lib` 542/0 内绿→截断已不可能。（E-RSWIRE 解码整体激活仍另计，本行仅指 u32→u64 字宽修复。） |
 | P2 | `V13-P2-3` | ✅ **已落（`2026-10-10` 复核，Fix #66）**：分发闸的 fail-open 形状（`if let Some(..) && check`）已收口为 `match table.get_active(caller_slot) { Some(proc) => proc.acl_check(..).is_err(), None => true }`（`vm_server.rs:1852-1854`，注释自陈“the gate has no skip lane”、对齐 default-deny `[ARCH: A-11]`）；EXITING caller 被拒回归钉 `test_run_once_exiting_caller_denied_enosys`（`vm_server.rs:2651`）。详情块 line 197 早已标 ✅，本行同步为代码现状。核实（容器外 target）：`cargo test -p minix-vm --lib` → 542/0。 |
 | P2 | `V13-P2-4` | ✅ **已处置（`2026-10-10` 复核，Fix #68：登记豁免、非代码改动）**：MAKE_VM 恒 `Err(RsError::MakeVmFailed)`→EPERM 是有意的单实例收缩；拒绝点 `rs.rs:511-517` 注释已指向 C 行号锚点（rs.c:218）与偏差登记 25-rs-services.md §3.9（A-8）/§3.10，本行即 todo 侧豁免条目——文档/设计/代码三处一致齐备。回归钉 `test_memctl_make_vm_not_found`（`rs.rs:814`）。详情块 line 204 早已标 ✅，本行同步为已处置。核实：`grep -n "25-rs-services" os/servers/vm/src/rs.rs` 命中。 |
-| P2 | V13-P2-5 | RS_SET_PRIV 的 call_mask 硬编码 None：C 走 sys_datacopy，M2 wire 无法表达，safecopy 可用前权限下发链断裂（§18.2） |
+| P2 | `V13-P2-5` | ✅ **已落（2026-09-16，`403e47022`）**：`m2l1` 缓冲指针非零时由 `KernelGateway::sys_datacopy_from`（`kernel_gateway.rs:431` 生产实现 → `minix_sys::syscall::sys_vircopy`，C `sys_datacopy` 的 LP64 等价）拷入 `VM_CALL_MASK_SIZE = 2` 个 u32 chunk，`lo \| (hi << 32)` 合成 u64 掩码交给 `acl_set`；系统进程 + 空掩码的拒绝（`rs.rs:141`）保留 C `rs.c:55-57` 语义。回归钉 `test_set_priv_sys_proc_with_mask_ok` / `test_set_priv_updates_acl`。 |
 | P2 | `V13-P2-6` | ✅ **已落（`2026-10-10` 复核 + 收口）**：五结构均有 Rust 专属 wire struct（`minix-types::ipc::vm` 的 `MessLcVmGetphys`/`MessLsysVmGetref`/`MessLsysVmInfo`/`MessLsysVmRusage`/`MessLsysVmUpdate`，字段按 LP64 逐位对位 `ipc.h:1487-1534`）并入 `message.rs` 命名 union 域；五个解码 handler 全切到专属结构（`dispatcher.rs` 的 getphys/getref/update/rusage 此前已切，本轮补 `call_info` 从 `m_m2` overlay 切 `m_lsys_vm_info`——`what@0/ep@4/count@8/next@24` 与 `m2i1/m2i2/m2i3/m2l2` 逐字段同偏移，行为等价）。size 断言缺口亦补齐：`message.rs:4558-4618` 对全部 VM payload struct 断言 `== MESSAGE_PAYLOAD_SIZE`，`vm.rs:1774-1860` 另加 `== 56` 与逐字段 `offset_of` 断言。核实：`cargo test -p minix-vm --lib` → 542/0、`cargo test -p minix-types --lib` → 326/0（含线形断言），`cargo clippy -p minix-vm` 0 error。 |
-| P3 | `V13-P3-1` | ✅ **部分已落（`2026-10-10` 复核，Fix #67）·之 1 已落、之 2 挂 `E-VFSWIRE`**：之 1（VM_PAGEFAULT 伪造源仅 debug_assert、release 零观测）已在 `vm_server.rs:1819-1821` 补 `audit_log!`（`is_from_kernel` 失败时 release 也记录，对位 C main.c:154-157）；之 2（exit 不清 `vfs_queue` 挂起请求）依赖按 owner 取消 API、wire 未通前无实际后果，挂 `E-VFSWIRE`。详情块 line 224 早已分 之1/之2 标注，本行同步为代码现状。核实：`grep -n "faked pagefault source" os/servers/vm/src/vm_server.rs` 命中。 |
-| edge | E-VMTLB（新） | kernel 侧目标进程 TLB 刷新机制（C MF_FLUSH_TLB）缺失 + 同根跳过优化耦合——真 SMP 正确性前提 |
-| edge | E-RSWIRE 增补 | ACL u64 掩码对账（V13-P2-2）+ RS_SET_PRIV 真掩码（V13-P2-5）随 wire 工作面一并定稿 |
+| P3 | `V13-P3-1` | ✅ **两条全部落地（`2026-10-10` 复核之 1 / `2026-09-19` 之 2）**：之 1（VM_PAGEFAULT 伪造源仅 debug_assert、release 零观测）已在 `vm_server.rs:1819-1821` 补 `audit_log!`（`is_from_kernel` 失败时 release 也记录，对位 C main.c:154-157）；之 2（exit 不清 `vfs_queue` 挂起请求）已由 `VfsRequestQueue::purge_by_owner`（`vfs_queue.rs:267-286`，含迟到回复墓碑 `cancelled`）接线到退出漏斗（`exit.rs:58`，先于该进程的 FdClose 入队），commit `058fdbe22`。核实：`grep -n "purge_by_owner" os/servers/vm/src/exit.rs` 命中。 |
+| edge | E-VMTLB | ✅ **已销账（D-096，`2026-11-21`）**：九项组件全部实现（`MiscFlagsBits::FLUSH_TLB` / `mark_flush_tlb` / `needs_tlb_refresh` / `consume_flush_tlb_flag` / `flush_all` 与 C `refresh_tlb` 逐指令等价），「同根跳过」已改为读活 CR3。控制点：真 SMP 门跑出陈旧翻译才重开（见 §18 的 D-096 更正注记） |
+| edge | E-RSWIRE 增补 | ✅ **三项均已落地**：ACL u64 掩码（V13-P2-2，`403e47022`）+ RS_SET_PRIV 真掩码（V13-P2-5，同 commit）+ 五消息专属 wire struct + 断言族（V13-P2-6，`f125e84a42` 起至 `2026-10-10` 收口） |
 
 验证命令（2026-09-09 实测基线，与 V12 修复批次后记录 490/507/490 一致，无回归；Fix #63 后基线见 §18.9）：
 - `cargo test -p minix-vm --lib`：**490 passed / 0 failed**
@@ -53,13 +54,25 @@
 
 > 复核方法（Step 0.7 staleness check，模式 70 CTOS）：每条 grep 现状 + 重读关键行。结论：**12 条全部真实开口、无一条失效**；V12 轮后代码增量（Fix #59–#62）使部分行号漂移，本节为重校后的锚点。条目正文与判定过程见 V12 存档 §17。
 
-### V11-P1-1 【解封】KernelIpcTransport 落地路径（通电挂 E1/E2）
+### ✅ V11-P1-1 【解封】KernelIpcTransport 落地路径——宿主半核验闭环（2026-09-19），真机半挂 E5(d)
 
-VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件挂 E-RSWIRE。**剩余工作只有"真实通电"**，VM 侧无待办。验证：E1/E2 落地后 QEMU 冒烟（edge E5）。
+VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件已在 `403e47022` 落地（`ipc_call_rs_init`：`sys_safecopyfrom(RS, rproctab_gid, 0, …)` 取整表 + 逐行 `read_unaligned` 解码到 `RprocEntry`，`os/servers/vm/src/vm_server.rs:2403-2451`）。**宿主半闭环**：`init()` 调用 `mark_initialized`（`vm_server.rs:720`），传输的 `receive` 委托 `minix_sys::ipc::DirectTrapTransport`（`ipc/transport.rs:224-240`），后者在真 boot 镜像构建（`cfg(kernel_trap)`，由 `os/libs/minix-sys/build.rs:32` 依 freestanding 或 `real-trap` feature 置位）下走真实 trap 腿。**剩余只有真机端到端**：boot shim 拉起 VM → `init_vm_self_pt` → map/query/unmap 测试页 → 串口结果，即 edge E5 的 (d) 项。
 
-### V11-P2-8 进程退出的中间页表页回收（余件）
 
-x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64 同型回收；(b) VM/kernel 侧 `register_free` 接线。仍挂 edge E4。
+
+### ✅ V11-P2-8 进程退出的中间页表页回收（余件）——(a)(b) 均已落地（2026-11-21 复核）
+
+原余件两项的现状（逐项核实，非推断）：
+
+| # | 余件 | 现状 | 代码锚点 |
+|---|---|---|---|
+| **(a)** | aarch64 同型回收 | **已落地** | `os/arch/src/arm64/paging.rs:255-273`（`free_child_tables`，四层 L0→L1→L2→L3 与 x86 的 PML4→PDPT→PD→PT、riscv 的 L2→L1→L0 完全对称）+ `:785`（`destroy` 内递归调用）+ `:790`（`free_pt_page(root_paddr)`）|
+| **(b)** | VM 侧 `register_free` 接线 | **已落地** | `os/servers/vm/src/vm_server.rs:391`（`minix_arch::pt_alloc::register_free(crate::alloc_page::vm_pt_free)`）+ `alloc_page.rs:67`（`vm_pt_free` 实现：`page_alloc_mut().free_page(...)`）|
+| **(b)** | kernel 侧 `register_free` | **不需要——设计行为** | 内核映像的 `PT_FREE` 恒为 `uninit_free`（`os/kernel/src` 零 `register_free`），`destroy()` 走「只零根、不递归」分支；这是 D-078 第四版 §4ter.3 的裁决内容：`Owned` 才进递归销毁，而内核 bootstrap 根是 `CallerManaged`/`External`，本来就不该递归回收 |
+
+**三架构同构的实测**：`grep -c "free_pt_page(minix_types::PhysBytes(child))"` 在 `x86_64` / `arm64` / `riscv64` 各 **1** 处——回收路径三架构一致。
+
+**为什么此前挂 edge E4**：E4 是「页表页回收」这条线的主体；(a)(b) 是它的最后两个余件。现在两件都落地，**edge E4 的实质内容已全部闭合**。
 
 ### ⏸ V10-P2-3 DEFERRED 判定（错误枚举收敛，判定维持闭合）
 
@@ -194,7 +207,7 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 
 ### `V13-P2-2`（P2，潜伏 wire 消费 bug）`RprocEntry.call_mask: u32` 必截断 64 位调用掩码 — **✅ 已落（`2026-10-10` 复核）**
 
-> **状态校正（滞后）**：下述“内部 u32、待 E-RSWIRE 一并加宽”已过期——`RprocEntry.call_mask` 现为 `u64`（`vm_server.rs:2296`，注释已内化“截为 u32 会丢 +32..+48 位”的理由），`from_bits_truncate(entry.call_mask)` 无 `as u64` cast（`:1930`），`call_mask: w.vm_call_mask` 从 wire u64 直取（`:2251`），`grep call_mask: *u32` 零命中；读回测 `vfs_rprocpub_call_mask()==0x0000_0300_0000_00ff`（`:4016`，含高位）证截断已不可能。保留下列原分析作背景。
+> **状态校正（滞后，2026-11-21 重锚）**：下述“内部 u32、待 E-RSWIRE 一并加宽”已过期——`RprocEntry.call_mask` 现为 `u64`（`vm_server.rs:2484`，注释已内化“截为 u32 会丢 +32..+48 位”的理由），`from_bits_truncate(entry.call_mask)` 无 `as u64` cast（`:2104`），`call_mask: w.vm_call_mask` 从 wire u64 直取（`:2439`），`grep "call_mask: u32" os/servers/vm/src` 零命中；读回测 `vfs_rprocpub_call_mask()==0x0000_0300_0000_00ff`（`:4334`，含高位）证截断已不可能。保留下列原分析作背景（原引行号 1594/1340/1540 均为当时快照，重锚后见上）。
 
 - **证据**：minix-types 的 wire 已是正确 64 位——`RprocPubWire.vm_call_mask: u64`（os/libs/minix-types/src/ipc/rprocpub.rs:89，注释明示 2×u32 chunks little-endian 合并）。VM 内部表示是 `RprocEntry.call_mask: u32`（vm_server.rs:1594-1599），消费点 `AclMask::from_bits_truncate(entry.call_mask as u64)`（vm_server.rs:1340）。E-RSWIRE 落地时 `ipc_call_rs_init` 解码 rproctab 必经 wire→RprocEntry 转换——u64→u32 截断使调用号 +32..+48 的 9 个调用（VM_INFO/RS_UPDATE/RS_MEMCTL/REMAP_RO/PROCCTL/VFS_MMAP/GETRUSAGE/RS_PREPARE 等）**永远无法经握手授权**（掩码高位丢弃）。
 - **类型**：潜伏 bug——当前 `ipc_call_rs_init` 诚实返回 NotImplemented（vm_server.rs:1540 一带，E-RSWIRE 门控）故不可达；与 V12 轮 pattern 84 候选（wire 字宽逐字段对账）同族，但截断点在 VM 内部类型而非 wire 本身。
@@ -213,12 +226,14 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 - **勘误（fix-guard 复核）**：V13 扫描称"任何 todo/文档都没有登记"**不准确**——25-rs-services.md 已把 MAKE_VM 登记为 **A-8 缺口**（§3.9/:440/:477 差异表 ❌ 行）。真实残余只有两小件：rs.rs 的拒绝注释没有指向该偏差行（后人无从发现登记）、todo 侧无豁免条目。
 - **处置**：rs.rs:504 注释改为指向 25-rs-services.md §3.9/§3.10 + C 行号锚点（✅）；本条即 todo 侧登记（✅）。
 
-### V13-P2-5（P2 权限链断裂，fail-closed 方向）RS_SET_PRIV 的 call_mask 硬编码 None
+### ✅ V13-P2-5（P2 权限链断裂，fail-closed 方向）RS_SET_PRIV 的 call_mask 硬编码 None——**已落（2026-09-16，`403e47022`）**
 
-- **证据**：C 用 `sys_datacopy` 从 RS 地址空间拷入调用者提供的掩码（minix3/minix/servers/vm/rs.c:41-56）。Rust 解码层硬编码 `let mask = None`（dispatcher.rs:1091-1102，注释自述 M2 无法承载）；`handle_rs_set_priv` 对系统进程 + None 报错（rs.rs:146-148 一带）→ RS 运行时无法给系统服务授予特权掩码，live-update 后服务拿不到 C 语义的 ACL。方向是 fail-closed（偏紧），非放权漏洞。
-- **修改方案**：依赖 E2（SYS_SAFECOPYFROM 用户态包装）可用后按 C 语义补真值——M2 的 `m2l1` 是掩码缓冲指针，语义即"从 RS 进程 safecopy"。**登记在 E-RSWIRE/E2 协同面**（edge_todo E-RSWIRE 增补第 2 点），本条为 VM 侧活指针。
+- **证据（历史快照）**：C 用 `sys_datacopy` 从 RS 地址空间拷入调用者提供的掩码（`minix3/minix/servers/vm/rs.c:41-56`）。当时 Rust 解码层硬编码 `let mask = None`（dispatcher 旧行号 1091-1102，注释自述 M2 无法承载）；`handle_rs_set_priv` 对系统进程 + None 报错 → RS 运行时无法给系统服务授予特权掩码。方向是 fail-closed（偏紧），非放权漏洞。
+- **现状（2026-11-21 复核，代码为准）**：三段全通——① **网关动词**：`KernelGateway::sys_datacopy_from(src, src_addr, buf)`（`os/servers/vm/src/kernel_gateway.rs:141` 声明、`:431` 生产实现走 `minix_sys::syscall::sys_vircopy(src, SELF, …)` 即 C `sys_datacopy` 的 LP64 等价，`os/libs/minix-sys/src/syscall.rs:594`）；② **解码层**：`call_rs_set_priv` 读 `m2l1` 作缓冲指针，非零即按 `MASK_BYTES = 2 * 4`（`VM_CALL_MASK_SIZE = BITMAP_CHUNKS(49)`，`com.h:769-770` + `sys/sys/types.h:124` 的 `bitchunk_t = uint32_t`）拷入两个 chunk 并 `lo | (hi << 32)` 合成 u64 掩码；`sys_datacopy_from` 失败按 C 直通 errno 映射 `InvalidParam`（`dispatcher.rs:973-1013`）；③ **调用面**：`MessageDispatcher::dispatch_rs_set_priv(..., mask, is_sys_proc)` 两臂（`dispatcher.rs:1005`/`:1011`）+ `handle_rs_set_priv` 的 `mask.is_none() && is_sys_proc` 拒绝保留（`rs.rs:139-141`，C `rs.c:55-57` 「sys procs don't share!」）。
+- **关账依据**：`rewrite-notes/coordination/edge3.md:103` 的「已闭单勿领」已记「V13-P2-2 / P2-5 / P2-6 均已在 commit `403e47022` 闭环（stage todo 未刷新）」——本轮即补刷该滞后。回归钉：`test_set_priv_sys_proc_with_mask_ok` / `test_set_priv_updates_acl`（`rs.rs:732`/`:752`）。
 
-### V13-P2-6（P2 结构缺失族）五个 C 消息结构无 Rust 专属 struct：overlay 解码与 C 字段语义错位 + size 断言缺口
+
+### ✅ V13-P2-6（P2 结构缺失族）五个 C 消息结构无 Rust 专属 struct——**已落（2026-10-10）**：五 struct 入 `minix-types::ipc::vm` + 五 handler 全切 + 全 payload 断言
 
 > **状态校正（已落，`2026-10-10`）**：下述“Rust 无专属结构”“仅 MessVmmcpReply 有 56 字节断言”“解码经 overlay”三项均过期——五个专属 struct 已入 `minix-types::ipc::vm` 并接为 `message.rs` 命名 union 域；`dispatcher.rs` 五 handler 全切到专属结构（`call_info` 为本轮收口的一笔）；`message.rs:4558-4618` 已对全部 VM payload 断言 `== MESSAGE_PAYLOAD_SIZE`，`vm.rs` 补 `== 56` 与逐字段 `offset_of` 断言。下表原分析保留作背景（它精确记录了“按 C i386 libc 语义写 minix-sys 消费方时会接错字段”这一历史风险，而专属 struct 正是对该风险的防线）。
 
@@ -229,11 +244,12 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
   - `mess_lsys_vm_update`——偏移恰好一致（src/dst/flags 三个 i32），但同样无专属结构。
 - **判定**：minix-rs 的两端（Rust 内核/libc 侧未来统一用 minix-types）自洽，**当下不是通信 bug**；错位意味着"按 C libc 语义写 minix-sys 消费方时会接错字段"——与 V12 已修的 vmmcp reply 同族风险，且丢掉了 C "一结构一 `_ASSERT_MSG_SIZE` 断言"的防线（12 个 VM payload 结构仅 MessVmmcpReply 有 56 字节断言，message.rs:3606）。
 - **修改方案**：按 `minix-types::ipc::rs_start`/`rprocpub` 的既有样式（Fix #81/#85 模板）为五结构补专属 wire struct + `size_of`/`offset_of` 断言；解码函数从 overlay 切到专属结构。顺带补齐其余 VM 结构缺失的 56 字节断言（D5）。**时点**：可与 E-RSWIRE/minix-sys 消费定稿同批（edge E-RSWIRE 增补第 3 点），纯单测可先行。
+- **落点（2026-11-21 复核）**：五 struct 落地与四 handler（getphys/getref/update/rusage）的切换在 `403e47022`（E-RSWIRE VM 侧半）已完成；最后一个 `call_info` 的 overlay→专属 struct 切换由 `f125e84a42`（2026-10-10）收口，该 commit 同时把本条台账回勾为已落。断言面在 `message.rs:4558-4618` 与 `minix-types/src/ipc/vm.rs:1774-1860`。
 
-### ✅ V13-P3-1（P3 观测与卫生批）之 1——已修复 2026-09-09（§18.9 Fix #67）；之 2 挂 E-VFSWIRE
+### ✅ V13-P3-1（P3 观测与卫生批）——之 1 代码已改到 2026-09-09（§18.9 Fix #67）；之 2 已落 2026-09-19（`058fdbe22`）
 
 1. **VM_PAGEFAULT 伪造源检查仅 debug_assert**：C 对非内核来源的故障消息 release 也 printf（main.c:154-157，之后仍处理）；Rust 仅 `debug_assert!(rcv_sts.is_from_kernel())`（vm_server.rs:1245-1248 一带）→ release 下零观测。~~修复：补一行 `audit_log!`~~ ✅ Fix #67。
-2. **exit 不清 vfs_queue 挂起请求**：`VfsRequestQueue` 无按 owner 取消 API（vfs_queue.rs 全部 pub fn 清单无 purge/cancel）；进程退出后其 FdIo/FdLookup 请求留队。VFS wire 未通（E-VFSWIRE）前无实际后果；wire 落地时 `handle_reply` 需要死进程路径兜底（对照 C do_vfs_reply 的 vm_isokendpt 检查）——挂 E-VFSWIRE 时点对账，暂不立项。
+2. **exit 不清 vfs_queue 挂起请求**：~~`VfsRequestQueue` 无按 owner 取消 API（vfs_queue.rs 全部 pub fn 清单无 purge/cancel）；进程退出后其 FdIo/FdLookup 请求留队。~~ ✅ **已落（2026-09-19，`058fdbe22`）**——`VfsRequestQueue::purge_by_owner`（`vfs_queue.rs:267-286`）：排队请求直接丢弃，已发送的 active 请求无法撤回，故删槽并把 `req_id` 记入 `cancelled` 墓碑，迟到的 VFS 回复由 `handle_reply` 丢弃（`vfs_queue.rs:223-228`）而非报 `UnexpectedReply`。接线点在退出漏斗、且**先于**该进程的 FdClose 入队（`exit.rs:54-58` 注释说明了这个顺序的理由：close 是合法请求，必须活得比 purge 久）。
 
 ### 18.3 复核认定无缺口的面（防重复扫描，本轮已查）
 
@@ -241,7 +257,7 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 |---|---|
 | munmap 的 PTE 生命周期 | **闭合**——四个拆分臂都把 `page_table_mut()` 传入 `free_region_pages`（munmap.rs:216/:238/:261/:276），后者逐页 `pt.unmap`（region/mod.rs:31-36）再 `free_range` 归还物理页；部分区间经 head/middle/tail 拆分等价 C pt_unmap |
 | brk 收缩 | **闭合**——shrink 路径同样经 `free_region_pages(…, pt, …)`（brk.rs:166/:190-191） |
-| exit 资源闭环 | 页表整树 destroy + 物理页归还 + fdref deref 入队（exit.rs:54/:86-142）；余件仅 E4 的 aarch64/register_free（§1） |
+| exit 资源闭环 | 页表整树 destroy + 物理页归还 + fdref deref 入队（exit.rs:54/:86-142）；原「余件仅 E4 的 aarch64/register_free」已随 V11-P2-8 全部落地（§1） |
 | fault 消息对死进程的防御 | `dispatch_pagefault` 先 `vm_isokendpt` + `get_active` 双检（vm_server.rs:1399-1408），失败回 InvalidProcess |
 | MappedFile `writable()==false` | **C parity**——C mem_file.c:173-175 "We are never writable"，不是缺口（V13-P1-1 的问题在 CoW 快路不换型，不在此处） |
 | CoW 慢路 | 拷贝 + `MEM_TYPE_ANON` 换型 + sync 三步与 C cow_block 语义一致（cow_exec_pf.rs:276-285） |
@@ -251,10 +267,10 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 
 ### 18.4 edge 增补指针（本轮登记，详见 edge_todo.md）
 
-| edge 编号 | 内容 | 对应本文件条目 |
-|---|---|---|
-| **E-VMTLB**（新） | kernel 侧目标进程 TLB 刷新机制（C MF_FLUSH_TLB + tlb_must_refresh）缺失 + switch_address_space 同根跳过优化的耦合 | V13-P2-1(c) |
-| **E-RSWIRE 增补** | 解码落地时 RprocEntry.call_mask 必须 u64；RS_SET_PRIV 真掩码随 SYS_SAFECOPYFROM 补；五消息结构专属 wire struct + 断言族同批定稿 | V13-P2-2 / P2-5 / P2-6 |
+| edge 编号 | 内容 | 对应本文件条目 | 现状 |
+|---|---|---|---|
+| **E-VMTLB**（新） | kernel 侧目标进程 TLB 刷新机制（C MF_FLUSH_TLB + tlb_must_refresh）缺失 + switch_address_space 同根跳过优化的耦合 | V13-P2-1(c) | ✅ **已销账（D-096）**——两个指控均为历史快照；控制点见 §18 更正块 |
+| **E-RSWIRE 增补** | 解码落地时 RprocEntry.call_mask 必须 u64；RS_SET_PRIV 真掩码随 SYS_SAFECOPYFROM 补；五消息结构专属 wire struct + 断言族同批定稿 | V13-P2-2 / P2-5 / P2-6 | ✅ **三项全落**：u64 掩码（`403e47022`）、真掩码（同 commit）、五 struct + 断言（`f125e84a42` 起至 `2026-10-10`） |
 
 ### 18.5 Rule Discovery（Step 5.7）
 
@@ -503,7 +519,9 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 > 来源：2026-09-16 会话决议（minix-sef 消费方盘点），非完整 review 轮——无 Step 0 / Gate A 产出，不改变 V13 轮已记录的收敛评估；编号预占 V14，下一次完整扫描轮顺延使用。
 > 背景：`os/libs/minix-sef` 已随 E-ISWIRE(1)（609e73f22，2026-09-16）从 5 行占位实装为 SEF 接收循环库（`SefIpc` 动词注入 + `sef_receive_status` 分类核 + RS ping 拦截，对照 C libsys sef.c:149-260 / sef_ping.c:21-38）；edge_todo.md E-ISWIRE 登记的生产接线消费方为 IS（首个深度消费方）、MIB（第二）、devman（第三），**VM 不在名单中**——而 VM 恰是 SEF 协议面实现得最完整的一个（内联自持，见下条证据）。
 
-### V14-P2-1（P2 接线债）VM 的 SEF 协议面内联自持、未列入 minix-sef 消费方——同一 C 协议存在两份 Rust 实现
+### ✅ V14-P2-1（P2 接线债）VM 的 SEF 协议面内联自持、未列入 minix-sef 消费方——**已落（2026-09-19，`0b0f050bc` 方案 A）**
+
+> **结清注记（2026-11-21）**：本条在提出后三天即以候选方案 A 落地，不是待裁决项。落地内容见 commit `0b0f050bc`（`feat(vm): S20b V14-P2-1 方案 A——VM 收编 minix-sef 第四消费方 + E1 信号抵达裁决`），与 `rewrite-notes/coordination/edge3.md:51` 的 S20 行「✅ 2026-09-19」一致。三个观测点：`minix-sef` 已是 `os/servers/vm/Cargo.toml:14-16` 的依赖（注释直写 `V14-P2-1 (plan A)`）；`run_once` 的接收半改由 `minix_sef::sef_receive_status` 承担（`vm_server.rs:1676-1699`，经 `SefAdapter` 把 `IpcTransport` 呈现为 `SefIpc`，`ipc/transport.rs:309`）；信号抵达走 `effective_kernel_signal` 的兜底值换算 → `handle_signal`（`vm_server.rs:1426`，后续由 `ee950cd3e` 按号分派收口）。下列原始分析保留作背景（它记录的三个成本正是方案 A 要消除的东西）。
 
 - **证据**：VM 无 minix-sef 依赖（`os/servers/vm/Cargo.toml` 无声明），SEF 等价逻辑全部内联并各自锚定 C：
   - 启动握手：main.rs:51-54（自述 "C: sef_local_startup()"，握手折叠进主循环优先级 2 分派——该形状本身有文档登记：01-vm-init-main.md §3.4）+ `rs_handshake`（vm_server.rs:1234，对照 C sef_startup + sef_cb_init_fresh）+ RS_INIT 解包（vm_server.rs:1114-1122，对照 do_sef_init_request）；
