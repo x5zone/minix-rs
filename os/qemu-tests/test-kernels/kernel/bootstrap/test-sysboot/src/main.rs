@@ -75,6 +75,11 @@ unsafe impl GlobalAlloc for HybridAllocator {
                 if next > heap_len || aligned < current {
                     return core::ptr::null_mut();
                 }
+                // Advance the bump cursor: without this store every
+                // post-EBS allocation returns the same address, so any two
+                // live allocations alias (A1 forensics: two Vecs in step 4
+                // DM coverage shared one buffer).
+                HEAP_PTR = next;
                 (base + aligned) as *mut u8
             }
         }

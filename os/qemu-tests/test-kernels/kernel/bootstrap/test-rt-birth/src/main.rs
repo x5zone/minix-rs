@@ -71,6 +71,9 @@ unsafe impl GlobalAlloc for HybridAllocator {
                 if next > heap_len || aligned < current {
                     return core::ptr::null_mut();
                 }
+                // Advance the bump cursor (see test-sysboot: a missing store
+                // aliases every live post-EBS allocation).
+                HEAP_PTR = next;
                 (base + aligned) as *mut u8
             }
         }
