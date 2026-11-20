@@ -539,6 +539,32 @@ _SUBTRACTION_PLACEHOLDERS = {
 }
 
 
+def _split_panel_blocks(text: str) -> list[str]:
+    """V3.6-r5：按 `## `/`### `/`#### ` 标题切块，跳过围栏代码块内的伪标题。
+
+    用途：判断某个 FINDING 块自身是否带 `- 三问：` 字段——必须按块作用域，
+    否则前一块会借用后一块的字段（r5-C01）。
+    """
+    blocks: list[str] = []
+    cur: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("```") or s.startswith("~~~"):
+            in_fence = not in_fence
+            cur.append(line)
+            continue
+        if not in_fence and re.match(r"^#{2,4}\s+", line):
+            if cur:
+                blocks.append("\n".join(cur))
+            cur = [line]
+        else:
+            cur.append(line)
+    if cur:
+        blocks.append("\n".join(cur))
+    return blocks
+
+
 def _count_subtraction_rows(text: str) -> int:
     """Count data rows under `## SUBTRACTION-TABLE`（V3.6，C-34 的机械读数）。
 
@@ -628,21 +654,24 @@ def check_subtraction(
             r"|无需减法|无减法必要",
             d2_text,
         )
-        # V3.6-r4（结构性修复，替代 r2/r3 的极性剥离）：**不再从散文猜「有没有加法提案」**。
-        # 三轮对抗证明极性剥离无底洞（无需 newtype / 无新增字段，但建议新增 / 拒绝旧方案改用 /
-        # 无需额外分配，应新增 …，每轮都能绕过）。改读 §4.3 已强制要求的结构化字段：
-        #   一个 FINDING 只有写了 `- 三问：`（类型级提案的必填行）才算「加法提案」。
-        # 字段在 = 提案在；字段不在 = 不是提案。这是可判定的字面契约，与极性无关。
-        _has_add = re.search(
-            r"^(?:##+\s+FINDING|##\s+ARCH-PROPOSAL)[^\n]*\n(?:.*?\n)*?"
-            r"-\s*三问\s*[:：]",
-            d2_text,
-            re.MULTILINE | re.DOTALL,
-        ) is not None
-        # 兼容旧写法：ARCH-PROPOSAL 段本身即扩张提案（不要求三问字段）。
-        _has_add = _has_add or re.search(
-            r"^##\s+ARCH-PROPOSAL", d2_text, re.MULTILINE
-        ) is not None
+        # V3.6-r4/r5（结构性修复，替代 r2/r3/r4 的极性剥离与跨块正则）：
+        # **不再从散文猜「有没有加法提案」**，改读 §4.3 强制的结构化字段。
+        # r5 修三个实现缺陷：
+        #   ① 模板原句是 `- 三问（V3.6，C-31；仅类型级提案必填）：…`，`三问` 与冒号之间
+        #      有括注——原正则 `-\s*三问\s*[:：]` 不匹配，**照模板写反而被判无提案**；
+        #   ② 正则跨 FINDING 块（`.*?` 可越过 `## FINDING` 标题），前一块借用后一块的字段；
+        #   ③ 围栏代码块里的 `## ARCH-PROPOSAL` 被当成真提案。
+        _blocks = _split_panel_blocks(d2_text)
+        _has_add = False
+        for _blk in _blocks:
+            if not re.match(r"^#{2,4}\s*(?:FINDING|ARCH-PROPOSAL)\b", _blk):
+                continue
+            if re.search(r"^##\s+ARCH-PROPOSAL\b", _blk, re.MULTILINE):
+                _has_add = True
+                break
+            if re.search(r"^-\s*三问[^\n]{0,40}[:：]", _blk, re.MULTILINE):
+                _has_add = True
+                break
         if _no_prop and not _has_add:
             report.ok(
                 "subtraction", "D2 显式声明本轮无新增抽象提案（合法零）"
@@ -653,10 +682,18 @@ def check_subtraction(
                 "design-d2.md 有新增抽象提案但 SUBTRACTION-TABLE 为 0 行："
                 "报告只列加法（review-panel.md §4.3 纪律，报告不完整）",
             )
-        else:
+        elif _no_prop:
             report.ok(
                 "subtraction",
-                "D2 未提出新增抽象且无减法表（无对象可减，合法零）",
+                "D2 显式声明本轮无新增抽象提案（合法零）",
+            )
+        else:
+            # r5-C01：契约缺口——既没有 `- 三问：` 字段、也没有显式无提案声明，
+            # 无法区分「真的没有提案」与「提案漏写字段」。fail-closed 要求补声明。
+            report.fail(
+                "subtraction",
+                "design-d2.md 既无 `- 三问：` 字段也无「本轮无新增抽象提案」声明："
+                "无法判定是否存在加法提案（V3.6 契约：二者必居其一）",
             )
     if adopted > said:
         report.fail(
@@ -748,7 +785,7 @@ _UNDONE_RE = re.compile(
     r"未修(?!改)|未实施|未完成|未落地|待实施|待修|待补|待办|尚未|未开始|未做"
     r"|(?:^|[：:，,；;（(])\s*(?:FAIL|REOPEN)(?![^\n]{0,8}(?:清零|已修|已解决|已关闭))"
     r"|(?:复验|验证|回读|测试|检查|仍|尚|但)[^。\n]{0,6}(?:FAIL|REOPEN)"
-    r"|(?:FAIL|REOPEN)\s*(?:未|仍|还)"
+    r"|(?:FAIL|REOPEN)\s*未(?:清零|处理|修复|解决)"
     r"|不适用"
     r"|(?:^|[：:，,；;（(])\s*(?:延期|搁置|回退|作废)(?:到|至|给|了|待|处理|$)"
 )
@@ -1491,11 +1528,36 @@ def check_open_debt(
         # V3.6-r4（结构性修复）：**token 优先**。V3.6+ 的 OPEN-DEBT 行必须在处置格
         # 以 `[CLOSED]` 或 `[OPEN]` 开头——散文状态（完成度 / 未修 / 延期 / FAIL 清零）
         # 已被三轮对抗证明不可靠。无 token 的旧行落回启发式并 WARN（存量兼容）。
-        _token = re.search(r"\[\s*(CLOSED|OPEN)\s*\]", row_text, re.IGNORECASE)
-        if _token:
-            if _token.group(1).upper() == "CLOSED":
+        # r5-C02：token 必须在**某个格的开头**（规则：处置格以 token 开头）。
+        # 原实现用 row_text 全文搜索，`未修…；注：上游旧账 [CLOSED]` 会被判销账。
+        _tok_cell = None
+        _tok_kind = None
+        for _c in cells:
+            _m_tok = re.match(
+                r"^\s*[\[【]\s*(CLOSED|OPEN)\s*[\]】]\s*(.*)$",
+                _c,
+                re.IGNORECASE,
+            )
+            if _m_tok:
+                _tok_cell, _tok_kind = _c, _m_tok.group(1).upper()
+                _tok_rest = _m_tok.group(2).strip()
+                break
+        if _tok_kind == "OPEN":
+            # 明确保持打开：**优先于任何完成词与「用户批准延期」分支**（r5）。
+            _deadline_o = DEBT_DEADLINE_RE.search(row_text)
+            _note_o = ""
+            if (
+                _deadline_o
+                and closing_round is not None
+                and int(_deadline_o.group(1)) < closing_round
+            ):
+                _note_o = f"；已逾期（截止 R{_deadline_o.group(1)}）"
+            open_rows.append((item, _note_o))
+            continue
+        elif _tok_kind == "CLOSED":
+            # 裸 `[CLOSED]`（无任何证据文字）不算——§4.0f 要求实施附证据。
+            if len(_tok_rest) >= 10:
                 continue
-            # [OPEN] 明确要求保持打开
         else:
             if v36:
                 report.warn(
@@ -4961,7 +5023,7 @@ def self_test() -> int:
     for label, d2, said, adopted, want_fail, want_sub in (
         ("0 行 + 有加法无表", _d2_add_only, 0, 0, "只列加法", None),
         ("0 行 + 显式无提案", _d2_honest_zero, 0, 0, None, "显式声明本轮无新增抽象提案"),
-        ("0 行 + 无加法无表", _d2_none, 0, 0, None, "无对象可减"),
+        ("0 行 + 无声明（fail-closed）", _d2_none, 0, 0, "无法判定是否存在加法提案", None),
         ("0 行声明 1", _d2_none, 1, 0, "不一致", None),
         ("2 行声明 2/1", _d2_two, 2, 1, None, "减法提案 2 / 采纳 1"),
         ("2 行声明 2/3", _d2_two, 2, 3, "采纳数 3 > 提案数 2", None),
@@ -5203,9 +5265,18 @@ def self_test() -> int:
     ) != 0:
         print("self-test FAIL: 带括注的占位行被计为提案（V3.6-r3）")
         return 1
+    # r5-C01：照 §4.3 模板抄的 `- 三问（V3.6，C-31；仅类型级提案必填）：…` 必须算提案。
+    _d2_tmpl = (
+        "## FINDING DESIGN-D2-01（P1）\n"
+        "- 三问（V3.6，C-31；仅类型级提案必填）：① … ② … ③ …\n\n"
+        "## VERDICT\nok\n"
+    )
+    if not re.search(r"^-\s*三问[^\n]{0,40}[:：]", _d2_tmpl, re.MULTILINE):
+        print("self-test FAIL: 模板形态的三问行未被识别（V3.6-r5）")
+        return 1
     _d2_neg = (
         "## FINDING DESIGN-D2-01\n- 结论：无需 newtype，现有类型足够\n\n"
-        "## VERDICT\nok\n"
+        "本轮无新增抽象提案。\n\n## VERDICT\nok\n"
     )
     _rep_neg = Report()
     check_subtraction(_d2_neg, "## R1 x\n\n- 减法: 提案 0 / 采纳 0\n", _rep_neg, "R1")
