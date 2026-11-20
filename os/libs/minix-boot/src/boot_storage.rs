@@ -250,11 +250,6 @@ impl BootStorage {
     }
 
     /// Build the borrowed report for the kernel entry.
-    ///
-    /// The derived fields follow the boot layout contract:
-    /// `kern_stack_top = kern_virt_base + kern_size` and
-    /// `syscall_entry = kern_virt_base`; `user_sp` comes from the single
-    /// per-arch authority `minix_types::USER_STACK_TOP`.
     pub fn report(
         &self,
         kern_virt_base: VirBytes,
@@ -275,9 +270,6 @@ impl BootStorage {
             kern_virt_base,
             kern_phys_base,
             kern_size,
-            user_sp: VirBytes(minix_types::USER_STACK_TOP),
-            kern_stack_top: VirBytes(kern_virt_base.0 + kern_size),
-            syscall_entry: VirBytes(kern_virt_base.0),
         }
     }
 }
@@ -311,9 +303,12 @@ pub struct BootReport<'a> {
     pub kern_virt_base: VirBytes,
     pub kern_phys_base: PhysBytes,
     pub kern_size: u64,
-    pub user_sp: VirBytes,
-    pub kern_stack_top: VirBytes,
-    pub syscall_entry: VirBytes,
+    // D-085（I-41）: no `user_sp` / `kern_stack_top` / `syscall_entry` here —
+    // the same pure restatements D-062 dropped from the wire, surviving on
+    // the shim-side struct because v10's sweep missed the non-wire type.
+    // Zero production readers (verified pre-adjudication): `user_sp` is the
+    // `minix_types::USER_STACK_TOP` constant, `syscall_entry` has
+    // `syscall_entry_va()`, and `kern_stack_top` has no shim-side meaning.
 }
 
 #[cfg(test)]
@@ -382,9 +377,6 @@ mod tests {
         assert_eq!(report.boot_modules[0].name, "vm");
         assert_eq!(report.platform_sources.len(), 1);
         assert_eq!(report.param_buf, b"a=b");
-        assert_eq!(report.kern_stack_top.0, 0xFFFF_8000_0040_0000);
-        assert_eq!(report.syscall_entry.0, 0xFFFF_8000_0000_0000);
-        assert_eq!(report.user_sp.0, minix_types::USER_STACK_TOP);
     }
 
     #[test]
