@@ -17,6 +17,8 @@
 > 索引表（§2/§5），细节沉淀在 git 历史（本文件 2026-09-09 之前的版本 + 各 Fix 的 commit）。
 > 未完成项（§22 全部、§3.6 EDGE 清单）保留全文。
 
+> **本轮 D03 复核（2026-11-21，D03 任务：可完成 todo 清零核验）**：跨阶段台账的 `open 0` 经三条证据复核成立——① 生产面零 stub：`grep -rn "unimplemented!()\|todo!()" os/servers/rs/src` → **0**；② 宿主门：`cargo test -p minix-rs --lib` → **359 passed / 0 failed**（A15 快照 357，本轮净增 2）；③ T7 接线门：`tools/check-rs-unwired.sh` → **PASS: no unwired markers in production RS code**。两条旧 `open` 的现状：二十四符号接线面已实现为 trait 双腿（A15 `2026-10-31`，本轮复核仍成立）；根服务自升级余量在 19 号进程/IPC 缝（E-1/E-11），按「不代做 19 前置」的裁决**不属 D03 可实施 todo**。R40 的 13/14 号域测试随迁是**观察项**（条内既定方案 a：随 handler 触碰渐进，零专项成本），不属于「可完成 todo」，本轮不做机械迁移；R41/R42 为记录/防误修项。**结论：D03 当前可实施的 todo 为 0**，本任务以复核证据收口。
+
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
 
 | 维度 | 现状 | 评价 |
