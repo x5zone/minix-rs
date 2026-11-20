@@ -154,25 +154,21 @@ pub enum DtbMemMapError {
     TooManySourceRecords,
 }
 
-// `static mut`: the same form as bootface's MEMMAP_STORAGE — the single-hart
-// boot face writes once and the storage is read-only afterwards; the read side
-// never hands out `&mut` (addr_of! base plus from_raw_parts).
-static mut DTB_FREE: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
-    base: PhysBytes(0),
-    len: 0,
-}; DTB_MEMMAP_MAX];
-static mut DTB_RESERVED: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
-    base: PhysBytes(0),
-    len: 0,
-}; DTB_MEMMAP_MAX];
+// I-33-乙 (D-086): the four process-wide `'static` tables (`DTB_FREE` /
+// `DTB_RESERVED` / `DTB_SOURCES` / `DTB_PANORAMA`), their counters, the
+// `DTB_COLLECT_TAKEN` one-shot guard, `commit_static`, `collect_inner` and
+// the three `'static` entry points are gone. Their last two production
+// consumers were converted to the owned form — `resv_claims::capture`
+// (I-33-丙) and the two direct-core bootfaces (I-33-甲) — so every
+// collection now lands on the caller's stack via `collect_owned`, and the
+// guard's "one `'static` collect per boot face" premise holds trivially:
+// there is no `'static` collect left to re-enter.
 
 /// One collection, in caller-owned storage.
 ///
-/// `collect_inner` commits this into the process-wide tables; `collect_owned`
-/// keeps it on the caller's stack. Keeping the two apart is what lets a boot
-/// face have one `'static` consumer (the `KernelInfo` builder) and several
-/// short-lived ones (the post-EBS cross-checks) without a second write to the
-/// static tables.
+/// `collect_owned` projects this onto the caller's stack. The former split
+/// ("one `'static` consumer + several short-lived ones") collapsed when the
+/// last `'static` consumers converted to the owned form (I-33-丙/甲/乙).
 struct DtbArrays {
     free: [MemoryRegion; DTB_MEMMAP_MAX],
     free_n: usize,
@@ -229,13 +225,10 @@ impl DtbMapOwned {
     }
 }
 
-/// One-shot guard: production boots must call `collect_inner` at most once.
-/// Tests may re-enter (multiple test cases share the static), so the guard
-/// is compiled out under `cfg(test)`.
-#[cfg(not(test))]
-static DTB_COLLECT_TAKEN: AtomicBool = AtomicBool::new(false);
-static DTB_FREE_N: AtomicUsize = AtomicUsize::new(0);
-static DTB_RESERVED_N: AtomicUsize = AtomicUsize::new(0);
+// I-33-乙 (D-086): the `DTB_COLLECT_TAKEN` one-shot guard and the
+// `DTB_FREE_N` / `DTB_RESERVED_N` counters went with the static tables —
+// `collect_owned` writes nothing process-wide, so "re-entry overwrites a
+// live `'static` slice" is no longer a representable hazard.
 
 /// Capacity of the source-record buffer. The bound comes from the **input**
 /// caps this collector enforces, not from the projection tables: `/memory`
@@ -630,30 +623,12 @@ impl InputObjectId {
     }
 }
 
-static mut DTB_SOURCES: [SourceRecord; DTB_SOURCE_MAX] = [SourceRecord {
-    id: 0,
-    raw_type: 0,
-    kind: SourceKind::Memory,
-    origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
-    range: SourceRange::new(0, 0),
-    input_object: InputObjectId::DtbBootInput,
-    address_domain: crate::memmap_source::AddressDomain::Physical,
-    local_source: 0,
-    snapshot_id: 0,
-    attribute: 0,
-    virtual_start: 0,
-}; DTB_SOURCE_MAX];
-static DTB_SOURCES_N: AtomicUsize = AtomicUsize::new(0);
-/// The deduplicated `/memory` panorama the projections were built from.
-/// UEFI's static-reservation type cross-check needs it to decide which
-/// reservation pages are claims on RAM at all (a framebuffer-style
-/// reservation outside `/memory` claims no RAM and must not be compared
-/// against the EFI map's MMIO descriptors).
-static mut DTB_PANORAMA: [MemoryRegion; DTB_MEMMAP_MAX] = [MemoryRegion {
-    base: PhysBytes(0),
-    len: 0,
-}; DTB_MEMMAP_MAX];
-static DTB_PANORAMA_N: AtomicUsize = AtomicUsize::new(0);
+// I-33-乙 (D-086): the `DTB_SOURCES` / `DTB_PANORAMA` tables and their
+// counters went with the other two static tables — source records and the
+// panorama ride on the caller's stack inside `DtbMapOwned`. The panorama's
+// role is unchanged: the deduplicated `/memory` view the UEFI
+// static-reservation type cross-check uses to decide which reservation
+// pages claim RAM at all.
 
 /// Clip the part of `[start, start+len)` that falls inside the resident
 /// firmware area (`[0, fw_end)`, a lower-bound semantic measured in PAs from
@@ -925,24 +900,6 @@ impl<'a> DtbMemoryMap<'a> {
 }
 
 impl DtbMemoryMap<'_> {
-    /// Return the two `'static` tables `(conventional, reserved)`.
-    ///
-    /// Conventional holds the pages the PMM may allocate. Reserved holds pages
-    /// that stay reachable but are never reallocated: the firmware-resident
-    /// prefix and the declared reservations without `no-map`. A `no-map`
-    /// reservation and every memory-reservation-block entry leave both tables,
-    /// because that data may not be accessed at all.
-    ///
-    /// Borrowing `self` reads the DTB a second time is not required: the tables
-    /// live in this library's static storage, so the returned slices outlive
-    /// the borrow of the blob.
-    pub fn collect(
-        &self,
-    ) -> Result<(&'static [MemoryRegion], &'static [MemoryRegion]), DtbMemMapError> {
-        let (free, reserved, _) = self.collect_inner()?;
-        Ok((free, reserved))
-    }
-
     /// The same collection, plus the unclipped per-declaration records the
     /// projections were built from. A `no-map` or MRB range outside `/memory`
     /// appears in neither table, so this is the only output that still carries
@@ -951,44 +908,25 @@ impl DtbMemoryMap<'_> {
     /// duplicates folded). Consumers that reconcile DTB reservations against
     /// firmware tables use it to tell a RAM reservation from an out-of-RAM
     /// declaration.
-    pub fn collect_with_panorama(
-        &self,
-    ) -> Result<
-        (
-            &'static [MemoryRegion],
-            &'static [MemoryRegion],
-            &'static [SourceRecord],
-            &'static [MemoryRegion],
-        ),
-        DtbMemMapError,
-    > {
-        let (free, reserved, sources) = self.collect_inner()?;
-        // SAFETY: same single-hart write-once contract as the other tables;
-        // the count is published with Release by collect_inner.
-        let panorama = unsafe {
-            core::slice::from_raw_parts(
-                core::ptr::addr_of!(DTB_PANORAMA) as *const MemoryRegion,
-                DTB_PANORAMA_N.load(Ordering::Acquire),
-            )
-        };
-        Ok((free, reserved, sources, panorama))
-    }
-
-    /// The same collection plus the unclipped per-declaration records the
-    /// projections were built from. A `no-map` or MRB range outside `/memory`
-    /// appears in neither table, so this is the only output that still carries
-    /// those facts.
-    pub fn collect_with_sources(
-        &self,
-    ) -> Result<
-        (
-            &'static [MemoryRegion],
-            &'static [MemoryRegion],
-            &'static [SourceRecord],
-        ),
-        DtbMemMapError,
-    > {
-        self.collect_inner()
+    ///
+    /// I-33-乙 (D-086): this is the only collection entry point. The former
+    /// `'static` forms (`collect` / `collect_with_panorama` /
+    /// `collect_with_sources`, plus `collect_inner` / `commit_static` and
+    /// the four process-wide tables they wrote) are gone — every consumer
+    /// now owns its tables on the stack, so the former one-shot guard's
+    /// "re-entry overwrites a live `'static` slice" hazard cannot occur.
+    pub fn collect_owned(&self) -> Result<DtbMapOwned, DtbMemMapError> {
+        let arrays = self.collect_arrays()?;
+        Ok(DtbMapOwned {
+            free: arrays.free,
+            free_len: arrays.free_n,
+            reserved: arrays.reserved,
+            reserved_len: arrays.reserved_n,
+            sources: arrays.sources,
+            sources_len: arrays.sources_n,
+            panorama: arrays.panorama,
+            panorama_len: arrays.panorama_n,
+        })
     }
 
     fn collect_arrays(&self) -> Result<DtbArrays, DtbMemMapError> {
@@ -1370,90 +1308,6 @@ impl DtbMemoryMap<'_> {
         })
     }
 
-    /// Copy an owned snapshot into the process-wide tables and hand out
-    /// `'static` slices. This is the one-shot form: the tables are written
-    /// once per boot face and must not be written again while a holder of the
-    /// slices is alive.
-    fn commit_static(&self, arrays: DtbArrays) -> (&'static [MemoryRegion], &'static [MemoryRegion], &'static [SourceRecord]) {
-        // SAFETY: single-hart boot face; the statics are written here once and
-        // only read afterwards through the returned `'static` slices.
-        unsafe {
-            DTB_FREE = arrays.free;
-            DTB_RESERVED = arrays.reserved;
-            DTB_SOURCES = arrays.sources;
-            DTB_PANORAMA = arrays.panorama;
-        }
-        DTB_FREE_N.store(arrays.free_n, Ordering::Release);
-        DTB_RESERVED_N.store(arrays.reserved_n, Ordering::Release);
-        DTB_SOURCES_N.store(arrays.sources_n, Ordering::Release);
-        DTB_PANORAMA_N.store(arrays.panorama_n, Ordering::Release);
-        // SAFETY: all three static arrays hold `n` initialised entries; on the
-        // single-hart boot face the read only happens after the write.
-        unsafe {
-            (
-                core::slice::from_raw_parts(
-                    core::ptr::addr_of!(DTB_FREE) as *const MemoryRegion,
-                    arrays.free_n,
-                ),
-                core::slice::from_raw_parts(
-                    core::ptr::addr_of!(DTB_RESERVED) as *const MemoryRegion,
-                    arrays.reserved_n,
-                ),
-                core::slice::from_raw_parts(
-                    core::ptr::addr_of!(DTB_SOURCES) as *const SourceRecord,
-                    arrays.sources_n,
-                ),
-            )
-        }
-    }
-
-    /// `collect` for a second consumer on the same boot face.
-    ///
-    /// The `'static` entry points write the process-wide tables and therefore
-    /// admit exactly one consumer; the post-`ExitBootServices` cross-checks
-    /// (the configuration-table DTB and the `/dumpdtb.dtb` panorama) are a
-    /// second and third consumer. They use this owned form, whose arrays live
-    /// on the caller's stack and never alias the static tables.
-    pub fn collect_owned(&self) -> Result<DtbMapOwned, DtbMemMapError> {
-        let arrays = self.collect_arrays()?;
-        Ok(DtbMapOwned {
-            free: arrays.free,
-            free_len: arrays.free_n,
-            reserved: arrays.reserved,
-            reserved_len: arrays.reserved_n,
-            sources: arrays.sources,
-            sources_len: arrays.sources_n,
-            panorama: arrays.panorama,
-            panorama_len: arrays.panorama_n,
-        })
-    }
-
-    fn collect_inner(
-        &self,
-    ) -> Result<
-        (
-            &'static [MemoryRegion],
-            &'static [MemoryRegion],
-            &'static [SourceRecord],
-        ),
-        DtbMemMapError,
-    > {
-        // One-shot guard: a second `'static` collect on the same boot face
-        // overwrites the slices returned by the first call, which is UB under
-        // the Rust aliasing model. Tests may re-enter (shared static across
-        // test cases), so the guard is compiled out under `cfg(test)`.
-        #[cfg(not(test))]
-        {
-            assert!(
-                !DTB_COLLECT_TAKEN.swap(true, Ordering::AcqRel),
-                "DtbMemoryMap::collect re-entered: the 'static slices from the \
-                 first call would be invalidated by a second write"
-            );
-        }
-        let arrays = self.collect_arrays()?;
-        Ok(self.commit_static(arrays))
-    }
-
     /// `/reserved-memory`, distinguishing "absent" from "present but
     /// unreachable": upstream path lookup is known to miss nodes in some
     /// firmware-rebuilt blobs, and reading an unreachable reservation node as
@@ -1777,9 +1631,10 @@ mod tests {
     fn dtb_single_memory_region_fw_end_zero() {
         let blob = build_fdt(&[(0x8000_0000, 0x4000_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("规范形 stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0)
-            .collect()
+        let owned1 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, res) = (owned1.free(), owned1.reserved());
         assert_eq!(conv.len(), 1);
         assert_eq!(conv[0].base.0, 0x8000_0000);
         assert_eq!(conv[0].len, 0x4000_0000 as usize);
@@ -1797,7 +1652,7 @@ mod tests {
         let blob = build_fdt(&regions, false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::TooManyFreeRegions)
         ));
     }
@@ -1819,7 +1674,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        let owned2 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("map fits");
+        let (conv, res) = (owned2.free(), owned2.reserved());
         assert_eq!(conv.len(), 2, "the hole splits the span in two");
         assert_eq!((conv[0].base.0, conv[0].len), (0x8000_0000, 0x4000));
         assert_eq!((conv[1].base.0, conv[1].len), (0x8000_5000, 0xb000));
@@ -1844,7 +1702,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        let owned3 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("map fits");
+        let (conv, res) = (owned3.free(), owned3.reserved());
         assert_eq!(conv.len(), 2);
         assert!(res.is_empty(), "no-map ranges stay out of both tables");
     }
@@ -1856,8 +1717,10 @@ mod tests {
         // leaving the `'static` tables intact for the first consumer.
         let blob = build_fdt(&[(0x8000_0000, 0x4000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (first_free, first_reserved) =
-            DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        let owned4 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("map fits");
+        let (first_free, first_reserved) = (owned4.free(), owned4.reserved());
         assert_eq!(first_free.len(), 1);
 
         let owned = DtbMemoryMap::new(&fdt, 0)
@@ -1925,9 +1788,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned14 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("map fits");
+        let (_, _, sources) = (owned14.free(), owned14.reserved(), owned14.sources());
         let record = sources
             .iter()
             .find(|r| r.kind == SourceKind::ReservedNoMap)
@@ -1954,9 +1818,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned15 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("map fits");
+        let (_, _, sources) = (owned15.free(), owned15.reserved(), owned15.sources());
         let record = sources
             .iter()
             .find(|r| r.kind == SourceKind::MrbEntry)
@@ -1986,9 +1851,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned16 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("map fits");
+        let (conv, res, sources) = (owned16.free(), owned16.reserved(), owned16.sources());
         assert_eq!(conv.len(), 1);
         assert!(res.is_empty());
         let record = sources
@@ -2019,9 +1885,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned17 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("map fits");
+        let (conv, res, sources) = (owned17.free(), owned17.reserved(), owned17.sources());
         assert_eq!(
             sources.len(),
             3,
@@ -2060,12 +1927,16 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv_a, res_a) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        let owned5 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("map fits");
+        let (conv_a, res_a) = (owned5.free(), owned5.reserved());
         let conv_a: Vec<(u64, usize)> = conv_a.iter().map(|r| (r.base.0, r.len)).collect();
         let res_a: Vec<(u64, usize)> = res_a.iter().map(|r| (r.base.0, r.len)).collect();
-        let (conv_b, res_b, _) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned18 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("map fits");
+        let (conv_b, res_b, _) = (owned18.free(), owned18.reserved(), owned18.sources());
         let conv_b: Vec<(u64, usize)> = conv_b.iter().map(|r| (r.base.0, r.len)).collect();
         let res_b: Vec<(u64, usize)> = res_b.iter().map(|r| (r.base.0, r.len)).collect();
         assert_eq!(conv_a, conv_b);
@@ -2089,7 +1960,7 @@ mod tests {
             .collect();
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        let result = DtbMemoryMap::new(&fdt, 0).collect_owned().map(|_| ());
         assert!(
             matches!(result, Err(DtbMemMapError::TooManyReservedRegions)),
             "expected the declaration cap, got {result:?}"
@@ -2128,7 +1999,7 @@ mod tests {
             .collect();
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        let result = DtbMemoryMap::new(&fdt, 0).collect_owned().map(|_| ());
         assert!(
             matches!(result, Err(DtbMemMapError::TooManyReservedRegions)),
             "expected one shared cap, got {result:?}"
@@ -2155,9 +2026,10 @@ mod tests {
             .collect();
         let blob = build_fdt_ex(&memory, true, &rows, &memrsv, 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0x8000_8000)
-            .collect_with_sources()
+        let owned19 = DtbMemoryMap::new(&fdt, 0x8000_8000)
+            .collect_owned()
             .expect("capacity is exactly enough");
+        let (_, _, sources) = (owned19.free(), owned19.reserved(), owned19.sources());
         assert_eq!(sources.len(), DTB_SOURCE_MAX);
         let count = |kind: SourceKind| sources.iter().filter(|r| r.kind == kind).count();
         assert_eq!(count(SourceKind::Memory), DTB_MEMMAP_MAX);
@@ -2172,9 +2044,10 @@ mod tests {
         // `/memory` record it was cut from.
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0x8000_4000)
-            .collect_with_sources()
+        let owned20 = DtbMemoryMap::new(&fdt, 0x8000_4000)
+            .collect_owned()
             .expect("map fits");
+        let (_, _, sources) = (owned20.free(), owned20.reserved(), owned20.sources());
         let prefix = sources
             .iter()
             .find(|r| r.kind == SourceKind::FirmwarePrefix)
@@ -2273,9 +2146,10 @@ mod tests {
             &[(0x8000_0000, 0x4000), (0x8000_0000, 0x4000)],
         )]);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (free, _, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned21 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("an exact duplicate is not an overlap");
+        let (free, _, sources) = (owned21.free(), owned21.reserved(), owned21.sources());
         assert_eq!(free.len(), 1, "the projection holds the span once");
         let records: Vec<_> = sources
             .iter()
@@ -2313,9 +2187,10 @@ mod tests {
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, reserved, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned22 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("duplicate is not an overlap");
+        let (_, reserved, sources) = (owned22.free(), owned22.reserved(), owned22.sources());
         assert_eq!(reserved.len(), 1, "the projection holds the range once");
         let records: Vec<_> = sources
             .iter()
@@ -2347,9 +2222,10 @@ mod tests {
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, reserved, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned23 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("same intent is a duplicate");
+        let (_, reserved, sources) = (owned23.free(), owned23.reserved(), owned23.sources());
         assert_eq!(reserved.len(), 1);
         assert_eq!(
             sources
@@ -2381,7 +2257,7 @@ mod tests {
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        let result = DtbMemoryMap::new(&fdt, 0).collect_owned().map(|_| ());
         assert!(
             matches!(
                 result,
@@ -2409,7 +2285,7 @@ mod tests {
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        let result = DtbMemoryMap::new(&fdt, 0).collect_owned().map(|_| ());
         assert!(
             matches!(
                 result,
@@ -2432,7 +2308,7 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        let result = DtbMemoryMap::new(&fdt, 0).collect_owned().map(|_| ());
         assert!(
             matches!(result, Err(DtbMemMapError::OverlappingMemoryRanges)),
             "expected the RAM overlap refusal, got {result:?}"
@@ -2452,7 +2328,7 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        let result = DtbMemoryMap::new(&fdt, 0).collect_owned().map(|_| ());
         assert!(
             matches!(result, Err(DtbMemMapError::OverlappingMemoryReservations)),
             "expected the overlap refusal, got {result:?}"
@@ -2479,7 +2355,7 @@ mod tests {
         ];
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &rows, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let result = DtbMemoryMap::new(&fdt, 0).collect().map(|_| ());
+        let result = DtbMemoryMap::new(&fdt, 0).collect_owned().map(|_| ());
         assert!(
             matches!(
                 result,
@@ -2511,9 +2387,10 @@ mod tests {
         let memrsv = [(0x8000_6000u64, 0x1000u64)];
         let blob = build_fdt_ex(&memory, false, &rows, &memrsv, 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (_, _, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned24 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("map fits");
+        let (_, _, sources) = (owned24.free(), owned24.reserved(), owned24.sources());
         assert_eq!(sources.len(), 5, "2 memory + 1 MRB + 2 reservations");
         let mut origins: Vec<_> = sources
             .iter()
@@ -2558,9 +2435,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8000_4000)
-            .collect()
+        let owned6 = DtbMemoryMap::new(&fdt, 0x8000_4000)
+            .collect_owned()
             .expect("map fits");
+        let (conv, res) = (owned6.free(), owned6.reserved());
         assert_eq!(conv.len(), 1);
         assert_eq!((conv[0].base.0, conv[0].len), (0x8000_4000, 0xc000));
         assert_eq!(res.len(), 1, "the prefix entry alone");
@@ -2584,7 +2462,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        let owned7 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("map fits");
+        let (conv, res) = (owned7.free(), owned7.reserved());
         assert_eq!(conv.len(), 1);
         assert_eq!((conv[0].base.0, conv[0].len), (0x8000_0000, 0x1_0000));
         assert!(res.is_empty());
@@ -2602,7 +2483,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect().expect("map fits");
+        let owned8 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
+            .expect("map fits");
+        let (conv, res) = (owned8.free(), owned8.reserved());
         assert_eq!(conv.len(), 2);
         assert_eq!((conv[0].base.0, conv[0].len), (0x8000_0000, 0x8000));
         assert_eq!((conv[1].base.0, conv[1].len), (0x8000_9000, 0x7000));
@@ -2636,7 +2520,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::OverlappingReservedRanges)
         ));
     }
@@ -2657,7 +2541,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::RangeOverflow)
         ));
     }
@@ -2677,9 +2561,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (free, reserved, sources) = DtbMemoryMap::new(&fdt, 0)
-            .collect_with_sources()
+        let owned25 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("map fits");
+        let (free, reserved, sources) = (owned25.free(), owned25.reserved(), owned25.sources());
         assert_eq!(audit_source_coverage(free, reserved, sources), Ok(()));
     }
 
@@ -2835,7 +2720,7 @@ mod tests {
         let blob = build_fdt(&[(0xffff_ffff_ffff_f000, 0x1000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedPhysicalAddressEnd)
         ));
     }
@@ -2856,7 +2741,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedPhysicalAddressEnd)
         ));
     }
@@ -2880,7 +2765,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedPhysicalAddressEnd)
         ));
     }
@@ -2892,7 +2777,7 @@ mod tests {
         let blob = build_fdt(&[(u64::MAX - 0x10, 0x100)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::RangeOverflow)
         ));
     }
@@ -2915,7 +2800,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::MismatchedReservedMemoryCells)
         ));
     }
@@ -2947,7 +2832,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::MissingReservedMemoryRanges)
         ));
     }
@@ -2978,7 +2863,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::MissingReservedMemoryCells)
         ));
     }
@@ -3020,7 +2905,7 @@ mod tests {
         let blob = build_fdt_child(&[("size", &size)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedDynamicReservation)
         ));
     }
@@ -3032,7 +2917,7 @@ mod tests {
         let blob = build_fdt_child(&[], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedReservedDeclaration)
         ));
     }
@@ -3047,17 +2932,20 @@ mod tests {
         let plain = build_fdt_child(&[], true);
         let fdt_a = fdt::Fdt::new(&with_size).expect("stub must parse");
         let fdt_b = fdt::Fdt::new(&plain).expect("stub must parse");
-        let a = DtbMemoryMap::new(&fdt_a, 0)
-            .collect_with_sources()
+        let a_owned = DtbMemoryMap::new(&fdt_a, 0)
+            .collect_owned()
             .expect("static reservation that also carries size");
-        let b = DtbMemoryMap::new(&fdt_b, 0)
-            .collect_with_sources()
+        let b_owned = DtbMemoryMap::new(&fdt_b, 0)
+            .collect_owned()
             .expect("same reservation without size");
-        assert_eq!(a.0.len(), b.0.len());
-        assert_eq!(a.1.len(), b.1.len());
-        assert_eq!(a.2.len(), b.2.len());
+        assert_eq!(a_owned.free().len(), b_owned.free().len());
+        assert_eq!(a_owned.reserved().len(), b_owned.reserved().len());
+        assert_eq!(a_owned.sources().len(), b_owned.sources().len());
         assert_eq!(
-            (a.2[1].range.start, a.2[1].range.end_exclusive),
+            (
+                a_owned.sources()[1].range.start,
+                a_owned.sources()[1].range.end_exclusive
+            ),
             (0x8000_4000, 0x8000_5000)
         );
     }
@@ -3078,7 +2966,7 @@ mod tests {
         let blob = build_fdt_ex(&[(0x8000_0000, 0x2_0000)], false, &reservations, &[], 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::TooManyFreeRegions)
         ));
     }
@@ -3105,7 +2993,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedReservedMemoryRanges)
         ));
     }
@@ -3127,7 +3015,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::ConflictingReservationAttributes)
         ));
     }
@@ -3154,7 +3042,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::NonEmptyReservationAttribute)
         ));
     }
@@ -3177,7 +3065,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::MismatchedReservedMemoryCells)
         ));
     }
@@ -3194,7 +3082,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::OverlappingMemoryReservations)
         ));
     }
@@ -3210,7 +3098,7 @@ mod tests {
         let blob = build_fdt_ex(&[(0x8000_0000, 0x1_0000)], false, &[], &entries, 2);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::TooManyMemoryReservations)
         ));
     }
@@ -3232,7 +3120,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedMemoryNodeStatus)
         ));
     }
@@ -3254,7 +3142,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::HotpluggableMemoryUnsupported)
         ));
     }
@@ -3272,7 +3160,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::ZeroLengthMemoryReservation)
         ));
     }
@@ -3287,9 +3175,10 @@ mod tests {
             true,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, _res) = DtbMemoryMap::new(&fdt, 0)
-            .collect()
+        let owned9 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, _res) = (owned9.free(), owned9.reserved());
         assert_eq!(conv.len(), 2, "两段 /memory → 2 条（含 unit-address 变体）");
         assert_eq!(conv[0].base.0, 0x8000_0000);
         assert_eq!(conv[1].base.0, 0x8800_0000);
@@ -3301,9 +3190,10 @@ mod tests {
         // → free = [0x8020_0000, +62MiB), reserved = [0x8000_0000, 2MiB)
         let blob = build_fdt(&[(0x8000_0000, 0x400_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000)
-            .collect()
+        let owned10 = DtbMemoryMap::new(&fdt, 0x8020_0000)
+            .collect_owned()
             .expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, res) = (owned10.free(), owned10.reserved());
         assert_eq!(conv.len(), 1);
         assert_eq!(conv[0].base.0, 0x8020_0000, "削界后 free 起点抬到 fw_end");
         assert_eq!(conv[0].len, (0x400_0000 - 0x20_0000) as usize);
@@ -3319,9 +3209,10 @@ mod tests {
         // consumer seeing an empty table halts honestly).
         let blob = build_fdt(&[(0x8000_0000, 0x10_0000)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0x8020_0000)
-            .collect()
+        let owned11 = DtbMemoryMap::new(&fdt, 0x8020_0000)
+            .collect_owned()
             .expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, res) = (owned11.free(), owned11.reserved());
         assert!(
             conv.is_empty(),
             "整段固件区 → free 空（诚实停机由消费方判）"
@@ -3333,9 +3224,10 @@ mod tests {
     fn dtb_no_memory_node_yields_empty() {
         let blob = build_fdt(&[], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub 必须可解析");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0)
-            .collect()
+        let owned12 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("test map fits DTB_MEMMAP_MAX");
+        let (conv, res) = (owned12.free(), owned12.reserved());
         assert!(conv.is_empty(), "无 /memory → 空（诚实停机由消费方判）");
         assert!(res.is_empty());
     }
@@ -3433,7 +3325,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedMemoryReg)
         ));
     }
@@ -3443,7 +3335,7 @@ mod tests {
         let blob = build_fdt(&[(0x8000_0000, 0)], false);
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedMemoryReg)
         ));
     }
@@ -3474,7 +3366,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedReservedDeclaration)
         ));
     }
@@ -3498,7 +3390,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::MrbConflictingReservation)
         ));
     }
@@ -3519,7 +3411,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::MrbConflictingReservation)
         ));
     }
@@ -3542,7 +3434,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::MrbConflictingReservation)
         ));
     }
@@ -3564,9 +3456,10 @@ mod tests {
             2,
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
-        let (conv, res) = DtbMemoryMap::new(&fdt, 0)
-            .collect()
+        let owned13 = DtbMemoryMap::new(&fdt, 0)
+            .collect_owned()
             .expect("compatible pair");
+        let (conv, res) = (owned13.free(), owned13.reserved());
         assert_eq!(conv.len(), 2);
         assert!(
             res.is_empty(),
@@ -3590,7 +3483,7 @@ mod tests {
         );
         let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
         assert!(matches!(
-            DtbMemoryMap::new(&fdt, 0).collect(),
+            DtbMemoryMap::new(&fdt, 0).collect_owned(),
             Err(DtbMemMapError::UnsupportedReservedDeclaration)
         ));
     }

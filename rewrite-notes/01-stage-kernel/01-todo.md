@@ -44,7 +44,7 @@
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | ✅ **已实施（2026 年 11 月 21 日，D-082）**：① `UbootFileLoader::read` 删 `segment_iter`（对已修剪数据的幂等无效功）+ 删错误的「表存槽容量」注释，回归纯字节来源 ② 新增 `elf_file_end`（复用 `minix_elf::segment_iter`，零新解析器），`load_boot_modules_into` 接统一修剪——U-Boot 腿幂等、UEFI 腿从此修剪，`BootModule.len` 跨腿一致 ③ 非 ELF/畸形镜像保持全长。**前置验证 36/36**（12 模块 × 3 架构：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，裁掉的只有 .comment/.symtab/.debug_*）。boot-shim 143 全绿；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + U-Boot shim 链 6/6 全 PASS。连带登记 I-50（.lbss 无 PT_LOAD 覆盖）。详见 §3 的 I-36 | §3 |
 | I-50（✅ 已销账·前提不成立） | x86 模块的 `.lbss` 不在任何 PT_LOAD 内——原判「装载路径无载体」 | 定位 | ✅ **D-090（用户 2026 年 11 月 21 日）销账**：对 115 个 x86_64 ELF 做 `readelf -SW`/`-lW` 对账，**112 个带 `.lbss` 的全部完整落在某 PT_LOAD 的 `memsz` 内**（`minix-fs-mfs` 的 4 MiB `.lbss` 上界 `0x1641010` 与最后一个 PT_LOAD 的 `memsz` 结束地址**完全相等**）。它不在 `filesz` 内是 NOBITS 的正常语义；装载路径「拷 `[0,filesz)` → 清零 `[filesz,memsz)`」已自动覆盖。候选 a 要修的东西不存在、候选 b 会重复映射。**证据边界**：x86 生产模块路径仍未真跑，本次是静态检查+代码语义推理、非运行时实证；若真跑发现 `.lbss` 脏值则重开并指向「NOBITS 尾清零」 | §3 的 I-50 |
-| I-51（待裁决·I-48 解锁测试面后的存量发现） | minix-vm 测试面并行隔离失败：10 条测试共享进程级全局单例（`pt_alloc::register called twice` / `register_page_alloc: overwriting different allocator`），并行跑必红；**I-41 验收途中新增同型实证**——minix-boot 的 memmap_source 族（`dtb_source_capacity` / `dtb_every_input_declaration`）全量跑漂移失败、单跑过、重跑全绿 | 测试基建 | **未裁决**。vm `--test-threads=1` 下 548 全过——纯隔离问题，非功能回归。HEAD 上因 vm 测试面编译错误不可见（I-48 顺带补了 `SimPaging` 的两个 required 方法后解锁）。修法同 kernel `test_sync::lock_boot_globals` 先例（全局锁守卫）；也可能单条修复（让这些测试用自己的 pt_alloc 域）。射程扩为「vm 全局单例 + minix-boot memmap_source 族」两处同型。独立小专项 | §3 |
+| I-51（待复核后销账·症状 1 已消失） | 测试面并行隔离失败：vm 10 条测试共享 `PAGE_ALLOC_PTR` 全局单例；minix-boot 的 `memmap_source` 族漂移 | 测试基建 | **D-091（用户 2026 年 11 月 21 日）判「待复核后销账」**：① 症状 1 实测消失（`cargo test -p minix-vm --lib` 连跑 3 次 548/0，`overwriting different allocator` 零命中）；**成因已定位**——`register_page_alloc` 用 `compare_exchange`，而 16 处测试自己 `unregister`/`register` 配对、各自用栈上 allocator，并行时互相抹指针；**须复核「为什么现在全绿」（甲已加隔离/乙测试被改/丙偶然），若判丙须补 `test_sync::lock_boot_globals` 式全局锁**。② 症状 2 **当前无法验证**（`minix-boot` 测试面编译失败，因 D-086 丙批量替换误把 4 处 `Iterator::collect()` 写成 `collect_owned()`，未提交工作树改动，归该条收尾；本条不插手）| §3 的 I-51 |
 | I-52（待裁决·I-43 三层残留之一） | 深跑路径的地址假设失配：riscv VM trap（`stval` 高半形态）/ aarch64 timer-irq sync exc / x86 sysboot page fault | 定位 + 设计裁决 | **未裁决**（D-087 拆出）。三条性质相同（载体低链 vs 生产路径高半假设）但 `test-sysboot` 的 `cr2=0x7ba7000` 是低地址，**可能不同根**；倾向先 `-d int` 单步取证再决定统一修还是各自修 | §3 的 I-52 |
 | I-53（待裁决·I-43 三层残留之二） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception（`test-paging-faultloop` 与 `test-user-trap` 同一行号） | 设计裁决 + 代码修正 | **未裁决**（D-087 拆出）。**纯内核缺陷**（`trap_dispatch.rs`），两个独立载体撞同一处说明是生产问题；倾向先审查 CPL/error-code 路由，不推荐载体侧绕过 | §3 的 I-53 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
@@ -59,7 +59,7 @@
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施 + 三轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证；**第三批（`minix-arch` 测试面）同日补修**，见 §3。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
-| I-33（已拆三项·**丙、甲已实施**，乙待做） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **D-086（用户 2026 年 11 月 21 日）拆为三项**。✅ **丙已实施（2026-11-21）**：`DtbMapOwned` 加 `panorama` + `capture` 改 `collect_owned()`，修真机 EBS 重试 attempt 2 panic；minix-boot 184/0、boot-shim 144。✅ **甲已实施（2026-11-21）**：两直核腿（`bootface.rs` / `bootface_a64.rs`）`collect_with_sources()` → `collect_owned()`——栈上借用切片供早段消费（`in_memmap_range` / `place_modules`），`fill_map_tables` + `fill_memmap_sources` 提交后与 modules/platform/param 同批建 `&'static` 视图（原规格遗漏 #5 的「早段借用、末尾建视图」形状）；opensbi_helpers 过时注释随修。验收：bootface 门（riscv64）**PASS**、aarch64 直核 SMP 门 **PASS**（AP entered scheduler）、`-kernel` 直核形态 **PASS**、bootface_common 16 KiB `.bss` 断言过（编译期）。**乙**（删四张静态表 + 62 处测试改写）前置已满足、待做——两直核腿改 owned 后生产侧 `'static` 消费者已**归零**。详见 §3 的 I-33 | §3 的 I-33 |
+| I-33（已拆三项·**丙、甲、乙全部实施完毕**） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **D-086（用户 2026 年 11 月 21 日）拆为三项**。✅ **丙已实施（2026-11-21）**：`DtbMapOwned` 加 `panorama` + `capture` 改 `collect_owned()`，修真机 EBS 重试 attempt 2 panic；minix-boot 184/0、boot-shim 144。✅ **甲已实施（2026-11-21）**：两直核腿（`bootface.rs` / `bootface_a64.rs`）`collect_with_sources()` → `collect_owned()`——栈上借用切片供早段消费（`in_memmap_range` / `place_modules`），`fill_map_tables` + `fill_memmap_sources` 提交后与 modules/platform/param 同批建 `&'static` 视图（原规格遗漏 #5 的「早段借用、末尾建视图」形状）；opensbi_helpers 过时注释随修。验收：bootface 门（riscv64）**PASS**、aarch64 直核 SMP 门 **PASS**（AP entered scheduler）、`-kernel` 直核形态 **PASS**、bootface_common 16 KiB `.bss` 断言过（编译期）。✅ **乙已实施（2026-11-21）**：删四张静态表（`DTB_FREE`/`DTB_RESERVED`/`DTB_SOURCES`/`DTB_PANORAMA`）+ 四个计数器 + `DTB_COLLECT_TAKEN` 守卫 + `commit_static` + `collect_inner` + 三个 `'static` 入口（`collect`/`collect_with_panorama`/`collect_with_sources`）；测试调用点约 77 处改写为 `collect_owned()` + 访问器（25 处解构批量 + 49 处内联 + 3 处手工；迭代器 `Vec::collect` 同名误伤按 rustc 错误行精确回滚 13 处）。`DtbMemoryMap` 从此只有**一个**收集入口 `collect_owned`（doc 写明守卫语义消亡）。乙验收：grep 判据（`DTB_FREE|DTB_RESERVED|DTB_SOURCES|DTB_PANORAMA|commit_static|collect_with_sources|collect_with_panorama`）生产符号 **0 命中**（余下全是出处注释）；minix-boot **184/0**（docker CI 同构）、boot-shim **144**；三门全 PASS（riscv bootface / aarch64 直核 SMP / `-kernel` 直核）。详见 §3 的 I-33 | §3 的 I-33 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -344,7 +344,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
 
-### I-33（已拆为三项·丙甲已实施，乙待做）直核腿统一到 owned 路径，删第二套静态表
+### I-33（已拆为三项·全部实施完毕）直核腿统一到 owned 路径，删第二套静态表
 
 **裁决**：用户 2026-11-20，判决行 `D-065`。**状态：已批准待实施**。来源：`RD34-DESIGN-D2-03`（P2，[MODERN]）。用户表述：「统一总是我的最优选」。
 
@@ -543,6 +543,16 @@ cargo test -p boot-shim --features test-all
 **验收读数**：`test-kernel-image-riscv64-bootface` **PASS**（B1/B2/B3 全子项）；`test-smp-aps-aarch64` **PASS**（AP entered scheduler，SGI+timer gates open——aarch64 直核 SMP 门）；`test-kernel-image-riscv64` **PASS**（`-kernel` 直核形态不回归）；`cargo test -p minix-boot` **184**、`-p boot-shim --features test-all` **144** 全绿；`bootface_common` 的 16 KiB `.bss` 断言随 kernel-image 编译通过（净减后更宽松）。`collect_with_sources` 生产侧命中归零（剩 memmap_source.rs 定义本体，归乙删除）。
 
 **乙的前置已满足**：两直核腿改 owned 后，生产侧 `'static` 消费者**归零**（丙清掉 resv_claims、甲清掉两直核腿）——静态表只剩测试消费者，删除 + 62 处测试改写可以独立成批。
+
+**乙实施记录（2026 年 11 月 21 日）**：
+
+**生产侧删除**（`os/libs/minix-boot/src/memmap_source.rs`）：四张进程级表（`DTB_FREE` / `DTB_RESERVED` / `DTB_SOURCES` / `DTB_PANORAMA`）、四个 `AtomicUsize` 计数器、`DTB_COLLECT_TAKEN` 一次性守卫（含其 `cfg(not(test))` 门）、`commit_static`、`collect_inner`、三个 `'static` 入口（`collect` / `collect_with_panorama` / `collect_with_sources`）。删除总量约 160 行；`DtbMemoryMap` 只剩**一个**收集入口 `collect_owned`，其 doc 改写为「唯一入口 + 守卫语义消亡」（re-entry 无 `'static` 切片可覆写，危害不再可表达——丙甲之后这正是事实）。每处删除点留 I-33-乙/D-086 出处注释。
+
+**测试改写**（约 77 处）：25 处解构形态批量转换（`let (conv, res) = ...collect().expect(..)` → `let ownedN = ...collect_owned().expect(..)` + `let (conv, res) = (ownedN.free(), ownedN.reserved())`，owned 名全局递增避免借用互撞）、49 处内联形态（`matches!` 的 Err 判断 / `map(|_| ())` 丢弃 Ok——Err 类型与生产一致，直接换入口）、3 处手工（`collect_with_sources` 双镜像对照、`Vec<ReservedRow>` 迭代器 collect 误伤、索引元组断言 `a.0/a.1/a.2` → 访问器）。
+
+**批量脚本的三次教训（都发生在 memmap_source.rs，逐次被 rustc 拦住）**：① 替换模板把已捕获的 `DtbMemoryMap::new(...)` 文本再包一层 `new(...)`——双重包裹 25 处，`DtbMemoryMap::new(DtbMemoryMap::new(` 全局去重修复；② `[^)]*` 捕参把 `new(&fdt, 0)` 的右括号留在原文、模板又补一个——尾括号遗留 25 处，按 `let ownedN` 行锚定修复；③ 全局 `.collect()` → `.collect_owned()` 误伤迭代器 `Vec::collect` 13 处（I-48 裁决书点名过的同名陷阱）——按 rustc E0599 错误行精确回滚。**规律**：`collect` 这个名字在文件里同时是「领域入口」与「std 迭代器终结子」，任何全局替换都必须先区分两者；rustc 错误行清单比正则猜想可靠。
+
+**验收读数**：grep 判据（`DTB_FREE|DTB_RESERVED|DTB_SOURCES|DTB_PANORAMA|commit_static|collect_with_sources|collect_with_panorama`）生产符号 **0 命中**（余下全是 I-33 出处注释的文字引用）；`cargo test -p minix-boot` 宿主 **184/0**、docker（CI 同构 1.94）**184/0**（`tmp/i33yi-docker-verify.log`）；`cargo test -p boot-shim --features test-all` **144**；三门全 PASS——`test-kernel-image-riscv64-bootface`（B1/B2/B3）、`test-smp-aps-aarch64`（AP entered scheduler）、`test-kernel-image-riscv64`（`-kernel` 直核不回归）。
 
 **丙实施记录（2026 年 11 月 21 日）**：
 
@@ -2319,6 +2329,36 @@ last PT_LOAD : vaddr 0x1230390  memsz 0x410c80  →  结束于 0x1641010
 若将来 x86 模块真跑起来发现 `.lbss` 变量读回脏值，**重开本条目并指向具体点**：「装载路径对 NOBITS 尾的清零是否覆盖 `.lbss`」。当前该路径的 `.fill(0)` / VM 段装载在代码上覆盖 `[filesz, memsz)`，静态可信。
 
 **不立新条目**：本条已查清，销账即可。
+
+### I-51（待复核后销账·原始症状消失，成因已定位）测试面并行隔离失败
+
+**来源**：I-48 解锁测试面后的存量发现（I-41 验收途中新增同型实证）。**状态：待复核后销账（D-091）。**
+
+**原描述的两个症状**：
+
+| # | 症状 | 范围 |
+|---|---|---|
+| 1 | `minix-vm` 10 条测试共享进程级全局单例，并行跑必红（`pt_alloc::register called twice` / `register_page_alloc: overwriting different allocator`）| vm |
+| 2 | `minix-boot` 的 `memmap_source` 族全量跑漂移失败、单跑过、重跑全绿 | minix-boot |
+
+**裁决前实测（症状 1 已消失）**：`cargo test -p minix-vm --lib` **连跑 3 次，每次 548 通过 / 0 失败**；日志里 `register called twice` / `overwriting different allocator` **零命中**。
+
+**成因已定位（为什么现在能过）**：`register_page_alloc`（`global.rs:577-602`）用 `compare_exchange` 判三种情形——`null → new_ptr`（首次，正常）、`old_ptr == new_ptr`（**幂等 re-registration，安全 no-op**）、`old_ptr != new_ptr`（`panic!("overwriting different allocator")`）。而测试的模式是「先 `unregister_page_alloc()` 清空、再 `register_page_alloc(&mut 栈上 allocator)`」——**每个测试注册自己的栈上 `VmPageAllocator`，地址各不相同**。并行时测试 A 注册 → 测试 B 的 `unregister` 抹掉 A 的指针 → B 注册；若 A 还在用即 panic。
+
+`global.rs` 里 `unregister` / `register` 配对出现 **16 处**（`:331`/`:349-351`/`:370`/`:378`/`:393`/`:408` 等），即**隔离是每个测试自己做的**，不是全局锁。所以"现在全绿"的原因需要复核：**可能是调度顺序变了（并行度/线程数），而不是缺陷被修**。
+
+**症状 2 当前无法验证**：`cargo test -p minix-boot` **编译失败**（22 个错误），原因是并发会话 D-086（I-33-丙）实施时的**脚本化批量替换错误**——`memmap_source.rs` 有 4 处把 `Iterator` 的 `.map(|r| ...).collect()` 误替换成 `.map(|r| ...).collect_owned()`（`Iterator` 上没有 `collect_owned`）。该文件是**未提交的工作树改动**。
+
+**裁决（D-091，用户 2026-11-21）：判「原始症状已消失，需复核成因后销账」，并明确两条。**
+
+| # | 内容 |
+|---|---|
+| **① 复核项（必做）** | 那 16 处 register/unregister 配对在并行下为什么现在全绿——三选一：**甲**（并发会话顺带加了隔离）、**乙**（测试被删除/改写）、**丙**（偶然，资源调度未撞上）。**若判丙，本条会以更隐蔽的形态回来**（失败集随负载漂移），须改为真正的全局锁（照 kernel `test_sync::lock_boot_globals` 的 `Mutex<()>` 先例，`unwrap_or_else(|e| e.into_inner())` 容忍毒锁）|
+| **② 边界（必记）** | 症状 2（`memmap_source` 族漂移）**当前无法验证**：`minix-boot` 测试面编译失败，原因是 D-086 丙的批量替换错误（4 处 `Iterator::collect()` → `collect_owned()`）。该文件是**未提交的工作树改动**，归 D-086 丙的实施收尾——**本条不插手**（避免与并发会话冲突）|
+
+**销账条件**：① 复核结论明确且若非丙则补锁；② D-086 丙收尾、`minix-boot` 测试面恢复编译后，重跑 `memmap_source` 族全量 3 次全绿。
+
+**不立新条目**：本条已定位到位，复核与收尾两项并入本条目。
 
 ### I-42（已实施）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 
