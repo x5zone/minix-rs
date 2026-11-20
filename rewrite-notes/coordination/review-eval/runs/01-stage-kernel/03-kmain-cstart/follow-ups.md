@@ -2,7 +2,7 @@
 
 | ID | 来源 | 事项 | 去处 |
 |---|---|---|---|
-| D03-F01 | DESIGN-01 | NMI 配 IST1 改变 C 的嵌套 NMI 语义；代码注释写作 "C gate_table_exceptions parity"，但 C 的 32 位 TSS 无 IST 字段，且无 `[ARCH]` 标注 | 用户裁决：保留 IST1 并标 `[ARCH]`，或改回 C 的嵌套行为 |
+| D03-F01 | DESIGN-01 | NMI 配 IST1 改变 C 的嵌套 NMI 语义；代码注释写作 "C gate_table_exceptions parity"，但 C 的 32 位 TSS 无 IST 字段，且无 `[ARCH]` 标注 | **✅ 已裁决（D-100，2026-11-21）**：保留 IST1/IST2，拆三件——F01a 注释事实修正、F01b `[ARCH]` 三处标注、F01c（F08 对齐 + NMI 重入守卫）登记；实施归 F01 家族批（见 OPEN-DEBT） |
 | D03-F02 | DESIGN-02 | kernel `MAX_CPUS=32` 与 x86 保护结构 8 个 TSS/GS/AP 栈不一致；9 核机器启动即 panic | code batch：文件 `os/arch/src/x86_64/protection.rs:83`、`os/arch/src/x86_64/trap_stub.rs:661`、`os/kernel/src/smp.rs:1585`；验收 = 编译期关联断言或 9-CPU QEMU 启动不 panic |
 | D03-F03 | DESIGN-03 | 门的 DPL 有 `init` 硬编码与 `user_accessible()` 两个真相源，安装后只后者生效 | code batch：单一来源 + 安装后表断言 |
 | D03-F04 | DESIGN-04 | `load()` 是安全 `&self` 可重入方法，x86 第二次 `ltr` 会撞 busy TSS 描述符 #GP | 用户裁决：标 `unsafe`/一次性令牌，或加 `debug_assert` + 文档 |
