@@ -25,6 +25,7 @@
 //! and the offending line number so the caller decides (the registered
 //! divergence from C's in-reader exit).
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -174,6 +175,24 @@ impl<'a> LineReader<'a> {
             if quote == 0 {
                 let is_special = SPECIAL.as_bytes().contains(&ch);
                 if !ch.is_ascii_alphanumeric() && ch < 0x80 && !is_special {
+                    // `{` is the sublist opener the line reader consumes
+                    // after the head words; leave it for the caller.
+                    if ch == b'{' {
+                        break;
+                    }
+                    // C `parse_err` (`configfile.c:153-166`) is fatal on a
+                    // character no word rule accepts. This port answers the
+                    // error to its caller; the one shape that must NOT
+                    // happen is returning an empty word with the cursor
+                    // unmoved — that made the line loop spin forever and
+                    // grow its word list until the allocator died (the
+                    // `/etc/system.conf` backtick in a comment found it).
+                    if word.is_empty() {
+                        return Err(ConfigError {
+                            line: start_line,
+                            message: format!("parse error at '{}'", ch as char),
+                        });
+                    }
                     break;
                 }
             } else {
@@ -311,8 +330,14 @@ impl<'a> LineReader<'a> {
             let Some(word) = self.read_word()? else {
                 break;
             };
-            let head_is_sublist_candidate = word.word != "include" && !words.is_empty();
-            let _ = head_is_sublist_candidate;
+            // A `{` with no head words is unparsable and used to advance
+            // nothing (the same non-advancing shape the backtick exposed).
+            if self.lexer.text.get(self.lexer.pos) == Some(&b'{') && words.is_empty() {
+                return Err(ConfigError {
+                    line: self.lexer.line,
+                    message: String::from("parse error at '{'"),
+                });
+            }
             // C `:320-334`: a `{` after a non-empty line head opens a nested
             // sublist; its words land in the container's `list`.
             if self.lexer.text.get(self.lexer.pos) == Some(&b'{') && !words.is_empty() {
@@ -454,5 +479,32 @@ mod tests {
         let got = config_read_text("service lwip {\nuid 0;\n", "t", 0, &|_| None).unwrap();
         assert!(got[0].is_sub());
         assert_eq!(got[0].list[1].word, "lwip");
+    }
+}
+
+#[cfg(test)]
+mod system_conf_probe {
+    /// The image's `/etc/system.conf` must parse: `minix-service up` reads
+    /// it before every dynamic spawn.
+    #[test]
+    fn shipped_etc_system_conf_parses() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../etc/system.conf"),
+        )
+        .expect("read os/etc/system.conf");
+        let got = super::config_read_text(&text, "system.conf", 0, &|_| None)
+            .expect("our /etc/system.conf must parse");
+        assert!(!got.is_empty());
+    }
+
+    /// A character no word rule accepts must be a parse error, never a
+    /// non-advancing token loop (the backtick regression: the lexer used to
+    /// break out of `read_word` with an empty word and an unmoved cursor,
+    /// so `read_line` pushed empty words until the allocator died).
+    #[test]
+    fn unparsable_character_is_an_error_not_a_loop() {
+        let err = super::config_read_text("`oops`\n", "t", 0, &|_| None)
+            .expect_err("backtick must be rejected");
+        assert!(err.message.contains("parse error"), "{}", err.message);
     }
 }
