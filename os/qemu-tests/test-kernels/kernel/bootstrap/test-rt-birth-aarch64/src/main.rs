@@ -532,7 +532,11 @@ fn main() -> Status {
             start: PhysBytes(RT_BIRTH_ELF.as_ptr() as usize as u64),
             len: RT_BIRTH_ELF.len(),
         };
-        mods
+        // Publish only the slot this carrier fills: the rest of the array is
+        // all-zero placeholder (`start = 0, len = 0`), and handing the whole
+        // array over makes `push_module_windows` emit a `[0x0, 0x0)` window
+        // that trips `BootWindows::push`'s `assert!(start < end)`.
+        &mods[8..9]
     };
 
     static mut PLATFORM_SOURCES: [minix_boot::PlatformDescSource; 4] = [

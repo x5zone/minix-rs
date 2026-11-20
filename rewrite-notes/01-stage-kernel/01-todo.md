@@ -40,7 +40,7 @@
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**已裁决·待实施**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
-| I-43（待裁决） | 编译失败修好后暴露的测试内核运行期缺陷：5 条（4 条空槽 `BOOT_MODULES` 撞 `[0x0,0x0)`，1 条 `test-protection-riscv64` 静默卡在 `paging.enable()` 之后） | 测试载体修正 / 定位 | **未裁决**（I-31 补漏批二/三中发现）；五条见 §3 的 I-43 | §3 |
+| I-43（部分实施·待续） | 编译失败修好后暴露的测试内核运行期缺陷 | 测试载体修正 / 定位 | **空槽 `BOOT_MODULES` 一层已修（2026 年 11 月 20 日，4 条改 `&mods[8..9]`，`[0x0,0x0)` 归零）**；但暴露第二层：`test-timer-irq-riscv64` 在 `paging enabled` 之后 `rust_main` 被反复重入、64 次耗尽 bump 区。`test-protection-riscv64` 静默停仍未定位。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
@@ -1143,6 +1143,14 @@ I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"�
 **我倾向 A**：空槽是测试载体自己造出来的，内核没有义务为它开例外。
 
 **追加第 5 条（同日发现，形态不同）**：`test-protection-riscv64` 也是「编译失败掩盖运行期缺陷」的受害者，但症状不同——它**没有 panic，而是静默卡住**。串口停在 `kernel: step1+2 mappings ok`，之后 `paging.enable()` 与返回都不出声，测试自己的 `"  Sv39 MMU enabled\n"` 从未出现。它的 I-31 相关改动只有一处、且在 `arch_boot_impl` **返回之后**（`trap.configure_syscall(minix_arch::syscall_entry_va())`），卡点在 `arch_boot_impl` **内部**，所以与本条无关。需要单独定位「riscv 直核腿 `paging.enable()` 之后的静默停」。
+
+**实施进展（2026 年 11 月 20 日）：4 条空槽 `BOOT_MODULES` 已按 A 修掉，但暴露了第二层缺陷。**
+
+- **改动**：四条内核把 `mods`（整个 12 槽数组）改成 `&mods[8..9]`（只交出真正填过的那一槽），并在注释里写明为什么。四条均编译 0 error。
+- **效果**：`boot identity window is empty or reversed: [0x0,0x0)` **不再出现**（grep 零命中）——这一层已闭合。
+- **暴露的第二层（`test-timer-irq-riscv64`）**：`rust_main` 在 `paging enabled` 之后**被重新进入**——串口紧接重打印标题行 `### test_timer_irq (riscv64): …`。内核在 `arch_boot_impl` 返回之后、`init_protection` 之前崩溃/异常并跳回 `_start`，反复 64 次把 32 MB 的 bump 区耗尽，最终 `bump(256)` 返回 `None` 触发 `panic!("bump region")`。
+- **为什么诊断是必要的**：`bump()` 在源码里只有 2 处调用、都无循环，但诊断打印出现 64 次且 `cur` 单调递增——这个矛盾只有「`rust_main` 被反复重入」能解释。诊断用 `cur/need/end` 三次打印取证，之后**已完全撤除**（`grep -c "DBG bump"` → 0）。
+- **这一层不属于本条**：它不是「空槽模块」问题，是 `arch_boot_impl` 之后的路径在 riscv 直核腿上崩溃并重入。需要单独定位（`init_protection` / `init_clock_and_interrupts` / 进程表 三者之一，或 `arch_boot_impl` 返回时的栈/寄存器状态）。已在本条内记录现象与取证方法，待后续专项。
 
 **验收（若走 A）**：四条各自 `run_all.sh` 对应测试 PASS；`cargo check` 三架构 0 error。
 
