@@ -33,7 +33,7 @@
 | **D-73（本轮新登记）** | riscv64 独立 boot-shim 腿：三架构统一主线 = shim + 独立内核镜像，自引导面降为特定嵌入式形态（FW_PAYLOAD / `-kernel` 测试） | ✅ U-Boot → boot-shim → kernel-uboot 全链 PASS（6/6 路标到 entering scheduler）；直核腿不回归；门读数见 §2.8 实施记录 | 交付=`riscv64-uboot-shim`（物理链接 VMA=LMA=0x84500000，自带 bootstrap 栈与 MNXBOOT1 表自建）+ `kernel-uboot` 接收镜像（`fw-riscv64-uboot` 特性，`arch_boot_resume_v1` 加性恢复）；入口 ABI=`bootelf -p <img> <dtb_addr>` 的 `argv[0]`=DTB 物理地址（表由 shim 在 .bss 自建，避开 staging 共变问题）；三处实施期修正：jump_to_kmain 执行位置探针（接收腿不加链接偏移）、shim memmap `firmware_reserve_end`=0x80200000（bootface 同源，堵 OpenSBI 足迹漏进 VM 空闲表）、门脚本 build 失败不再被 `set +x` 掩盖；门=`test-riscv64-uboot-shim.sh` | §2.8 |
 | **N-1~N-5（本轮新登记）** | `BootAlloc::resume` 无区间校验 / vm_handoff 头注释与实现不一致 / 零消费者便利包装 / bootface 双份名字池与常量 / 池页零化机制归因未定案 | 直修或取证 | N-1/N-2/N-3 ✅（01TODO-B1）；N-4 ✅（01TODO-B4）；N-5 ✅（01TODO-N5 探针：映射重放成立、复用前提未出现） | §3 |
 | D-60 | `IDENTITY_MAP_END` 双定义 | 闭合 | ✅ 双定义归一为全仓单定义（回勾确认）；01 篇 §4.6 措辞随修（见 §5） | §3 |
-| I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；遗留 = D-68（T4 批） | §3 |
+| I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；~~遗留 = D-68~~（D-68 已在 T4 批 ✅ 实施销账，本行引用已过时——2026-11-21 清理） | §3 |
 | I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **closed（本批落码，grep 判据归零，真机门 `cd os/qemu-tests && bash run_all.sh` → 37 passed / 2 failed / 0 skipped / 0 build failures（本树现跑；两条红 `test-smp-aps`/`test-smp-ipi` 在同一台机器上用**未改动的 rewrite 尖子 `2b72a1e62` 重新构建同一载体**复现同一 `### PANIC … arch/src/x86_64/protection.rs:0x1c3`，判为既有、非本批引入））**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施中：门①③④已过验收，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；曾阻塞门链验证的 I-43 x86 载体 `enable()` 静默停已由 I-43 二层专项关闭（2026-11-20，hello-boot 新鲜二进制 PASS）。✅ **门④端到端六项验收已过（2026-11-21，§2.7 六项逐项取证 + hello-boot 端到端 PASS）**——逐项证据见 §3 的 I-29-impl 补记。门②（三架构 WB 合同）仍待专项。详见 §3 的 I-29-impl 补记 | §3 |
@@ -203,7 +203,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 ## 3. 直修批（无设计依赖，可立即可做）
 
-### I-22 收尾回勾（代码已落地，三件尾巴）
+### I-22 收尾回勾（✅ 全部完成——三件尾巴均已清）
 
 1. `todo.md` §7.1 的 I-22 条目改记「代码已落地（丁案 A–F 除 aarch64 直核腿外），遗留 D-68 与文档连带」；
 2. **文档连带 ①–⑦ 逐一核对**（todo.md I-22 条目所列：01 篇 L1265/L1945/L2288 三表、opensbi_helpers 顶注（→I-26）、bootface 头注、§3.7/§4.8 合流句、04 篇平台发现分工段）——未见专查记录，回勾时逐项过；
@@ -211,7 +211,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **状态**：✅ 01TODO-B2——①–⑦ 逐项核过：① §3.1 L1265 表、② L1961「内存与参数准备」行、③ L2288 `memmap` 行、④ opensbi 顶注（I-26 已修）、⑤ bootface 头注（本批修正对已删 `build_memmap` 的指涉）、⑥ §3.7/§4.8 合流句、⑦ 04 篇 §3.1 平台发现分工段，全部已按新口径在位；`grep -cE '硬编码的 QEMU virt DRAM 布局|单条 DRAM'` → 0。第 1 件（`todo.md` §7.1 改记）已在本批台账行同步；遗留仅 D-68（T4 批）。
 
-### I-28（本轮新登记）`MemoryMapSource` trait 零多态载荷：删除与否待设计专项裁决
+### I-28（✅ 已关闭·trait 已删，D-067 批落码）`MemoryMapSource` trait 零多态载荷
 
 **现状**：`os/libs/minix-boot/src/memmap_source.rs` 的 [`trait MemoryMapSource`](os/libs/minix-boot/src/memmap_source.rs:trait MemoryMapSource) 全仓**无任何多态使用**——既无泛型约束也无 `dyn`；四个调用点写 `use MemoryMapSource as _` 或 `<DtbMemoryMap as MemoryMapSource>::collect`，只为把方法引入作用域，改成固有方法后这四处可原样删。三个 impl 的活死状态：`DtbMemoryMap` 活跃（riscv 直核面 [`fn bootface`](os/kernel-image/src/bootface.rs:fn bootface)、aarch64 直核面 [`fn bootface_a64`](os/kernel-image/src/bootface_a64.rs:fn bootface_a64)、OpenSBI/U-Boot shim [`impl RiscvUbootBootShim`](os/boot-shim/src/opensbi_helpers.rs:impl RiscvUbootBootShim) 三处产出内存图；aarch64 UEFI 生产入口 [`fn prepare_and_enter_kernel_image`](os/boot-shim/src/uefi_helpers.rs:fn prepare_and_enter_kernel_image) 另有一处调用，用途是 DTB 越界校验、不产出内存图）；`UefiMemoryMap` 的唯一消费者是 [`impl BootShim for UefiBootShim`](os/boot-shim/src/uefi_helpers.rs:impl BootShim for UefiBootShim) 的 `prepare_boot`，而该函数**全仓零调用方**；`MultibootMemoryMap` 返回空表，零引用。注意 `build_memmaps`/`build_memmap` 不能删——14 个 QEMU 测试内核经 `build_memmap()` 调用它，死的是包在外面的那层 `UefiMemoryMap` 壳。
 
