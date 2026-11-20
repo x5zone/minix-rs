@@ -85,20 +85,28 @@ unsafe impl GlobalAlloc for HybridAllocator {
 #[global_allocator]
 static ALLOCATOR: HybridAllocator = HybridAllocator;
 
+// All 12 slots carry a real (non-empty) span: `push_module_windows` turns
+// every entry into an identity window and `BootWindows::push` rejects empty
+// `[0x0,0x0)` ranges. Slots 1 (rs=TX) and 8 (vm=RX) are re-pointed at their
+// real ELF images below; the rest keep a placeholder span in MEMMAP RAM
+// (name-only slots are DEFERRED at Phase C).
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },  // ← sysboot-tx
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // ← sysboot-rx
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule { name: "ds", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "rs", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "pm", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "sched", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "vfs", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "memory", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "tty", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "mib", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "vm", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "pfs", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "mfs", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
+    BootModule { name: "init", start: PhysBytes(PLACEHOLDER_SPAN), len: 64 },
 ];
+
+/// Placeholder module span: real RAM inside MEMMAP.
+const PLACEHOLDER_SPAN: u64 = 0x100_0000;
 
 static MEMMAP: [MemoryRegion; 2] = [
     MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
@@ -255,6 +263,23 @@ fn main() -> Status {
             &access,
         )
         .unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"));
+        // R2 fix (D-081 / I-44): the TX load consumed frames from the A2
+        // free-list snapshot — cut the consumed span out of the published
+        // list so the next consumer (a real VM service) never sees spent
+        // frames. The allocator hands frames downward from each region's
+        // end: fully-consumed regions (idx < current) lost their whole
+        // span; the current region lost [cursor, end).
+        for idx in 0..=vm_alloc.current_region_idx() {
+            let region = vm_alloc.regions().get(idx).expect("region idx in range");
+            let start = if idx == vm_alloc.current_region_idx() {
+                vm_alloc.cursor().0
+            } else {
+                region.start.0
+            };
+            if start < region.end.0 {
+                minix_kernel::vm_handoff::cut_consumed_span(start, region.end.0);
+            }
+        }
         early_console::write_str("  TX ELF loaded into the RS slot (per-image root)\n");
         {
         {

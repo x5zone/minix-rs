@@ -1606,7 +1606,16 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **R1 结论**：两个源根修改路径都**不**在继承者存活期替换/释放继承者可达的页——安全性由 kmain 的启动顺序（修改发生在 Phase C 之后的窗口、smp_init 之前、全部继承者 stopped）与「不释放只重写」的形态共同保证。**R1 关闭**。
 
-**R2 维持 open**：TX 专用保留区与容量实测需要真实 VM 接入（QEMU 测试内核跑桩镜像不消费 free list），**保持真实 VM 接入门**不变。
+**R2 代码修复落地（2026 年 11 月 20 日，本批）**：采用**切除法**（替代原「拆保留区」首选方案——后者需要 512 页 bump 区容量实测前置，切除法按 C parity 直接把消费掉的 span 从发布列表中去掉，无容量前置）：
+
+| 项 | 内容 |
+|---|---|
+| `vm_handoff::cut_consumed_span(start, end)` | 从 `VM_PMM_FREE` 原地裁掉被消费的 span（trim 头/尾、拆分跨界、整删全消费），count 收缩同步 Release 发布。单线程 boot 写入——写-一次合同更新为「分类发布 + 每 loader 一次 cut」 |
+| `test-sysboot` 接线 | TX `load_process_elf` 之后，按分配器的 `current_region_idx()`/`cursor()` 算出全部已消费 span，逐个调 `cut_consumed_span`。下一个消费者（真实 VM 服务）看到的 free list 已不含 TX 用掉的帧 |
+
+修复后 QEMU 验证被 I-43 二层阻塞（`test-sysboot` 新鲜二进制在 `enable()` 后静默停——与 test-proc-init / test-timer-irq / hello-boot 同型，stash 对照确认为既有漂移非本批引入），但代码按构造正确：cut 在 TX 消费完成后立即执行，下一个读者必然看到裁剪后的列表；容量前置消失（不需要预保留区——消费多少切多少）。
+
+**R2 状态更新**：代码修复已落；**真机/端到端验收**仍待 I-43 二层关闭（需要能跑起来的新鲜载体）。
 
 **边界重申**：E/R1 的证据是代码时序与启动顺序的静态核实；QEMU `-d int` 级动态取证（TLB 实际行为）留给首个真机/SMP 门。
 

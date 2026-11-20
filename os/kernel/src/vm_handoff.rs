@@ -158,6 +158,64 @@ pub fn vm_pmm_free_regions() -> ([MemoryRegion; VM_BOOT_HANDOFF_MAX_REGIONS], us
     (out, count)
 }
 
+/// Cut a consumed span `[start, end)` out of the published A2 free list
+/// (R2 fix, D-081 / I-44): a multi-image loader that allocated frames from
+/// [`vm_pmm_free_regions`] must remove them from the published list, or
+/// the next consumer sees spent frames and overwrites the earlier image's
+/// memory. C parity: `pg_alloc_page` consumers walk the **mutated**
+/// memmap (pg_utils.c:138-160) — the Rust snapshot now mutates too.
+///
+/// Entries are trimmed or removed in place; the count shrinks when whole
+/// entries vanish. Single-threaded boot (no scheduler yet) — plain writes.
+pub fn cut_consumed_span(start: u64, end: u64) {
+    assert!(start < end, "cut_consumed_span: empty/reversed span");
+    // SAFETY: single-threaded boot; the write-once publication at
+    // classification is followed by this R2 mutation (one per loader),
+    // and readers run after it on the same thread.
+    let slot = unsafe { &mut *VM_PMM_FREE.get() };
+    let mut count = VM_PMM_FREE_COUNT.load(Ordering::Acquire);
+    let mut i = 0usize;
+    while i < count {
+        let base = slot[i].base;
+        let size = slot[i].size;
+        let entry_end = base + size as u64;
+        // No overlap → keep.
+        if end <= base || start >= entry_end {
+            i += 1;
+            continue;
+        }
+        // Overlap: keep the head [base, start) and the tail [end, entry_end).
+        let head_len = start.saturating_sub(base);
+        let tail_base = if end < entry_end { end } else { entry_end };
+        let tail_len = entry_end.saturating_sub(tail_base);
+        if head_len > 0 && tail_len > 0 {
+            // Split: keep head in slot i, move tail into a new slot at the end.
+            slot[i].size = head_len;
+            assert!(
+                count < VM_BOOT_HANDOFF_MAX_REGIONS,
+                "cut_consumed_span: region table full while splitting"
+            );
+            slot[count] = HandoffMemRegion { base: tail_base, size: tail_len };
+            count += 1;
+        } else if head_len > 0 {
+            slot[i].size = head_len;
+        } else if tail_len > 0 {
+            slot[i].base = tail_base;
+            slot[i].size = tail_len;
+        } else {
+            // Fully consumed: remove by shifting the tail down.
+            for j in i..count - 1 {
+                slot[j] = slot[j + 1];
+            }
+            slot[count - 1] = HandoffMemRegion::ZERO;
+            count -= 1;
+            continue; // re-examine index i (shifted content)
+        }
+        i += 1;
+    }
+    VM_PMM_FREE_COUNT.store(count, Ordering::Release);
+}
+
 /// A2 classification output — the free list and the deduction record.
 ///
 /// The record is what the kernel cut from the memmap; the free list is
