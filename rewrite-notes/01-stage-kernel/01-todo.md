@@ -69,7 +69,7 @@
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-27 + L1424 | 01 篇 L1422/L2624「还没裁决」口径 + 张力指针 | 文档回修 | ✅ 已修（01TODO-B1；OQ-N6 口径与张力指针同批） | §3 |
-| TODO-01~07 | 01 篇 §5.3 交接表七条测试缺口 | 测试缺口 | TODO-01/02/03/06/07 ✅；TODO-04 ✅（文本级，T1 接线后升级）；TODO-05 ⑤ 真机窗口不可得（QEMU-only 环境）；取证路径 = 真机 2 MiB 启动或 x86 `-cpu qemu64,-pse` 能力压制腿（另行立项，01-todo §4） | §4 |
+| TODO-01~07 | 01 篇 §5.3 交接表七条测试缺口 | 测试缺口 | TODO-01/02/03/06/07 ✅；TODO-04 ✅（文本级，T1 接线后升级）；**TODO-05 ✅ 已关闭（2026-11-21 口径同步——01 篇 §5.3 权威：验收重定义为宿主合成 layout 门 `picks_the_preferred_size_when_supported_and_aligned`，实测通过；1 GiB 首选档由合成 layout 覆盖选择路径、2 MiB 现行档由既有 QEMU 门覆盖、真机镜像不构建的理由 = 会引入 1 GiB artifact 而无额外证据；`-pse` 压制腿判零增量——压制 2MiB 后 fallback 不 supported，测的是 `FallbackUnsupported` halt 负控而非回退路径）** | §4 |
 | I-17/I-18/I-19 | 01 篇 §2.6 拆节 / 章头体检 / 讲解条续扫 | 文档结构 | ✅ 已改（01TODO-DOC） | §5 |
 | I-23 / I-24 + L1378/L1408 | §3.7 fw_payload 段 / §3.1 否决表拆行 | 文档内容 | ✅ 已改（01TODO-DOC；设计侧 [ARCH] 镜像在主树工作区，未代提交） | §5 |
 | L1488 / L1532 | 01 篇读者待办（`reserved_regions` 退场学习项 / 张力块性质澄清） | 读者侧 | ✅ 已关闭（D-068，用户 2026-11-20）：两项均是首次人工审阅文档时留下的待办；此后 review 流程已加入对抗性读者视角（P-READER A/B/C 独立冷读），讲解可读性由该机制持续覆盖，且相关代码形态已大幅变动（x86 已切独立镜像，`kern_ident` 已删除，旧内联窗口场景不复存在）。用户明确表示无需再理解旧设计 | §5 |
@@ -2924,7 +2924,7 @@ cargo test -p minix-boot                             # 含 boot_storage 自身�
 | TODO-02 | M7 分配器写一次 | 二次 `register` debug 失败、release 拒改写 | ✅ 已覆盖：`pt_alloc_write_once.rs` 2 条（`register`/`register_free`，debug panic、release 拒改写且指针不变） | 已交接完成 |
 | TODO-03 | M8 落地区容量 fail-fast | 超容量输入 fail-fast（不截断） | ✅ 已覆盖：三枚超容量 `should_panic`（reserved 257 / memmap 129 / modules 13，各持 boot-globals 锁） | 已交接完成 |
 | TODO-04 | M12 EBS 阶段边界 | EBS 后路径不出现 `uefi::` 调用 | ✅ 已覆盖：`os/boot-shim/tests/ebs_boundary_audit.rs` 文本级审计（切函数体、去注释、扫 EBS 后语句；注入负控 + 注释豁免自检）；T1CUT 接线后已按最终形状升级为两条入口（`prepare_boot` 与 `prepare_and_enter_kernel_image`）各一套，5/0 | 已交接完成 |
-| TODO-05 | §4.6 大页回退档 | 2MiB 回退档下真机启动 | 仍 open：当前环境 QEMU-only（无真机，窗口不可得），真机断言保持开放；软件路径的 QEMU 等价覆盖存在候选——能力压制腿（如 x86 `-cpu qemu64,-pse` 关 2MiB PSE，逐架构类推）可逼 `plan_dm_policy` 走回退档，尚未实施、未排期 | 真机窗口项（等硬件）；候选软路径腿另行立项 |
+| TODO-05 | §4.6 大页回退档 | 2MiB 回退档下真机启动 | ✅ **已关闭（2026-11-21 口径同步）**：01 篇 §5.3 权威——验收重定义为**宿主合成 layout 门**：`boot_policy::policy_tests::picks_the_preferred_size_when_supported_and_aligned` 用合成 1 GiB layout 覆盖**首选档选择路径**（实测通过）；2 MiB 现行档由既有 QEMU 门链覆盖；1 GiB 真机镜像不构建（会引入 artifact 而无额外证据）。`-cpu qemu64,-pse` 压制腿**判零增量**：2MiB 被压制后 `supports_huge_page(MIB_2)` 仍恒 true 的现状下无效；若补 PSE 检查则 fallback 不 supported → 测的是 `FallbackUnsupported` **halt 负控**而非回退路径——另立负控项时可再议 | 已关闭 |
 | TODO-06 | M14 x86_64 路标链 | `kernel loaded`/`12 boot modules loaded`/`handing control` 三路标 | ✅ 已覆盖：`test-cmd-smoke.sh` Stage 3b 逐条 `grep -qF`；本批实跑三行全在。脚本后续 du/stat/find 腿在主树 HEAD 亦失败，属既有问题不在本条 | 已交接完成 |
 | TODO-07 | §4.2 UEFI 侧宿主可测面 | 两列表互斥完备、root/bump 不与 free 相交 | ✅ 纯函数已覆盖：`assert_bootstrap_outside_memmap` 3 条（相离/贴边通过、包含/跨界 panic）；`build_memmaps` 调用点单根，可测面随 T1 分类循环纯函数化后重定义 | 纯函数三案完成；其余随 T1 |
 
