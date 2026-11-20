@@ -77,6 +77,27 @@ VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件已在 `
 
 
 
+### 🔄 V20-P1-1 批一（RS 动态 spawn 垫脚石）——载体与镜像面已落地，RS 运行时阻塞已取证（2026-11-21）
+
+**用户裁决基线**：目标形态 = **场景 ②（RS 热更/动态 spawn，非 kill+re-exec）**；RS 不变量 = reply_status 单一来源、SEF 三段单点、rproctab 行宽真源 `RprocpubSnap`、决策/动作分层；C 对位以 `manager.c`/`update.c`/`utility.c` 为真值。三批顺序：**批一（动态 spawn，可先行）→ 批二（RS↔VM 热更 prepare，严格在 A1 收口后）→ 批三（fork+状态拷+swap）**。A1 已于本日收口（见 01 篇），批二前置已解除，但批一仍是其前置。
+
+**批一已落地（可复用、已过编译与宿主门）**：
+
+1. **新载体 `/bin/e5-spawned`**（`os/qemu-tests/test-kernels/user/e5-spawned`）：被 RS 动态拉起后经 SYS_DIAGCTL 打印 `E5SPAWN: running` 并停在 `receive(ANY)` 回环；无堆（自定义 `NeverAlloc`，避免 4 MiB rt 静态池进入镜像）。
+2. **镜像面**：`xtask image` 在 `E5_DS_READY` 架构上增建 `e5-spawned` 与 `minix-service` 并播种 `/bin/`；新增 `/etc/system.conf`（`service e5-spawned` 块，C dstest 形状的权限集），proto 同步（`system.conf ---644 0 0 etc/system.conf`）。
+3. **两个真 bug 修复（非批一专属，独立价值）**：
+   - **配置词法器无限循环**（`os/commands/bin/proctools/src/configfile.rs`）：`read_word` 遇到非 `SPECIAL` 的原子字符（反引号/逗号/括号）时不消费游标就返回空词，`read_line` 每轮 push 空词直到 Vec 增长耗尽内存（真机 `rt-oom size=0x280000 argv0=/bin/minix-service`，聚焦测试复现为 SIGKILL）。修复：空词起始的不可解析字符返回 `ConfigError`（C `parse_err` 语义的返回式表达）；`{` 留给行读取器的 sublist 分支；ship 的 `/etc/system.conf` 注释按 C 兼容规则写成「空白 + #」（否则行首 `#` 是词不是注释）。测试：`shipped_etc_system_conf_parses` + `unparsable_character_is_an_error_not_a_loop`。
+   - **rt 全局分配器 OOM 归因**（`os/libs/minix-rt/src/lib.rs`）：分配失败时经 SYS_DIAGCTL 打一行 `[rt-oom] size=0x… argv0=…`（栈上格式化、零分配），把「哪个进程的哪次分配」从串口考古变成一行读数。
+   - `minix-service` 在 RS 回复非零时补一行失败诊断（与 C `failure()` 对传输错误的处理同精神；成功路径不增输出）。
+
+**批一当前阻塞（已取证，未闭合，不假完成）**：加载触发线（rc 的 `minix-service up /bin/e5-spawned -label e5spawn` + 门的 `E5SPAWN` 断言）在取证期间**已撤回**，避免阻塞共享镜像的 rc 与 ATF 腿。阻塞链条逐段读数：
+1. minix-service 真跑（探针 `minix-service: verb=0x700`），发送 RS_UP；
+2. RS 真收到：内核 kcall 探针显示 `caller=2 type=0x62c`（SYS_DIAGCTL）且 **kcall 掩码放行**（`allowed call=0x2c`，RS 模板为 `KCallMask::ALL`）；
+3. 但 **`dispatch_diagctl` 入口探针从未对 caller=2 触发**（同一探针对 VM caller=8 等正常触发 104 次），说明调用在「掩码门 → handler」之间丢失或被提前拒绝；
+4. 紧随其后 RS 经 panic handler 的 `_exit(1)` 退出（PM 串口：`system process 2 (<unset>) tries to exit()`），而 panic 文本拍在 RS 自己的 diagctl 通道上——该通道正是当日失败点，故无文本。
+
+**下一步（批一续）**：① 用非 diagctl 的可观测面定位「mask 门后到 handler」的丢失点（候选：kcall 返回路径/消息字段；已排除掩码拒绝）；② 定位 RS 为何在首次 RS_UP 时 panic（怀疑 RS 的地址空间/VM 区域表对自身代码页的登记与需求调页不一致，导致 panic 前的某次用户拷贝 fault）；③ 修后恢复 rc 触发线与 `E5SPAWN` 断言，跑通后再进批二（RS↔VM prepare 段）。**批二/批三按用户裁决严格等待批一**。
+
 ### ✅ V11-P2-8 进程退出的中间页表页回收（余件）——(a)(b) 均已落地（2026-11-21 复核）
 
 原余件两项的现状（逐项核实，非推断）：
