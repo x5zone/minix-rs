@@ -38,6 +38,7 @@
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
+| I-44（已裁决·待指派） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：十轮外部评审收敛为三层 API + 三种 handle + 两类凭证；问题 C/D 成立、问题 B 撤回 | 设计裁决 + 代码改造 | **设计冻结（D-078，用户 2026 年 11 月 20 日）**：实施分 A–H，A–D 可立即启动，D/E 合并验收；两项独立实施门 R1（共享源结构稳定性）/ R2（TX 与 VM free-list 重叠） | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十版） |
 | I-42（待裁决） | `BootStorage` 的 `push_*` 死子系统（`push_module` / `push_platform_source` / `BootStorageFull` 调用者归零） | 代码删除 | **未裁决**（I-34 实施副产物）；A 删 / B 留，见 §3 的 I-42 | §3 |
 | I-43（待裁决） | 四个 QEMU 测试内核把全零 12 槽 `BOOT_MODULES` 当 `boot_modules` 切片交出，撞 `boot identity window is empty or reversed: [0x0,0x0)` | 测试载体修正 | **未裁决**（I-31 补漏批二中发现）；四条见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
@@ -1361,6 +1362,54 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 | A10 | 文档门（01 篇） | anchor **108/108**；citation `blocks=69 checked=29 failed=0`；structure/style(error=0)/density(承载门通过) 通过 |
 
 **为什么此前不做**：本条与 D-062（wire v10 删 `startup` 族）和 D-065（直核腿统一 owned 路径）改同一批行；族数与写入者数量在它们落地后才定稿。D-062 已落（I-31），D-065 虽受阻（I-33 待裁决）但不影响本条的 API 形状，故本条可在 I-31 之后独立实施。
+
+### I-44（已裁决·待指派实施）页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）
+
+**来源**：`R35` 面板 `DESIGN-D2-11`（P3，`panel/round35/design-d2.md:167`），原结论为"拒绝（本期不动）"——理由是"改动会牵连测试内核的销毁路径，收益仅是防未来回归"。用户于 2026-11-20 要求重启，并以**十轮外部独立评审**收敛为完整的所有权模型。
+
+**裁决**：`D-078`。**概念设计冻结通过；代码实施现在开始；生产安全验收有条件通过。**
+
+**设计文档（唯一合同源，自包含、可交外部评审）**：
+`rewrite-notes/01-stage-kernel/01-review-request-page-table-free.md`（第十版，2532 行，`tools/doc-style-lint.sh` 0 error）
+
+**十轮评审的结论摘要**（细节与证据链见文档 §3、§4bis、§4ter、§4quater、§4quinquies、§7）：
+
+| 议题 | 结论 |
+|---|---|
+| 问题 B（跨域归还）| **撤回**。`minix_arch::pt_alloc` 的 `static PT_ALLOC`/`PT_FREE` 在"内核映像"与"VM 映像"里各有一份；`os/kernel/src` 与 `os/kernel-image/src` 的 `register_free` **零命中** |
+| 问题 C（共享子树被递归归还）| **成立**。`inherit_supervisor_half` 复制顶层 PTE 建共享子树；`free_child_tables` 遍历 0..512 无跳过；三架构同形。注释 "sound because user mappings never touch the upper half" 只证明**映射**语义，不证明**释放**语义 |
+| 问题 D（根页所有权）| **成立，且比 C 更基础**。`destroy()` 末尾无条件 `free_pt_page(root)`，而 `new_from_page` 的**四种**真实根页来源（UEFI 分配服务 / boot-shim bump 游标 / `bootface_a64` 私有 `BUMP_PTR` / `VmBootAllocator`）**全都不在 `pt_alloc` 释放域** |
+| `free_pt_page` 的 Acquire | 原判"无效"经外部评审自纠后**撤回**——Acquire 语义不依赖返回值被使用 |
+| `destroy()` 无 free 钩子时 | **不是空操作，是清零根页**。对借用型 handle 等于当场抹掉活动页表，比跨域归还更直接 |
+| `trait Paging`/`OwnedPaging` 拆分 | **方案被证伪**。Rust trait 实现关联于类型；`X86_64Paging` 只有 `root_paddr`/`channel` 两字段，四个构造函数都返回 `Self`，故任何借用型实例仍可调 `destroy` |
+| 最终 API | 三层：`Paging`（操作）/ `PagingBackend`（架构机制，`pub(crate)`/sealed）/ 三种 handle（`OwnedPageTable`、`CallerManagedPageTable<'root, S, P>`、`BorrowedPageTable<'a, P>`）；类型状态 `PrivateSupervisor` / `BorrowedSupervisor<'source>`；两类凭证 `BorrowedRootMut<'a>`（改权）/ `SharedPageTableSource<'source>`（保活） |
+
+**冻结范围**（第十版评审措辞，照录）：
+> 冻结所有权模型、共享子树语义、三层 API 架构与安全合同；具体 Rust 方法签名、泛型边界与调用点迁移，**允许在实现中根据编译器和测试结果调整**。
+
+**三项不再退回争论**：① 不再用单个 `RootKind` 枚举替代三种 handle；② 不再"一律跳过上半场"；③ 不再把 borrowed 当只读（四个活动根调用点全部会写页表）。
+
+**实施分期**（文档 §7.8，A–D 可立即启动）：
+
+| 阶段 | 工作 | 状态 |
+|---|---|---|
+| A | 三层 API 与 handle 骨架（含 `HugePages` 等扩展 trait 代理、`enable` 归位）| 可开始 |
+| B | 构造、根页凭证、终结能力（borrowed 不可 destroy）| 可开始 |
+| C | 共享状态与 backend 根层遍历（内部测试验证物理页归属）| 可开始（真实 bootstrap 接入依赖 R1）|
+| D | 修改范围检查（全部公开修改入口，批量操作先整体检查）| 可开始 |
+| E | 活动根与共享树同步（四个调用点各答：锁 / CPU 参与集合 / TLB 失效覆盖）| **D+E 合并验收** |
+| F | bootstrap／TX 显式生命周期交接（`PrivateSupervisor` 与 `BorrowedSupervisor<'static>` 两条路径都闭合）| 有条件 |
+| G | TX 专用保留区（容量实测、区间不重叠）| 真实 VM 接入前阻塞 |
+| H | 未来 `retire_owned_subtrees` | 暂缓 |
+
+**两项独立实施门**（不得被本次重构掩盖）：
+
+- **R1 共享源结构稳定性**：`harden_kernel_text`（`lib.rs:1707`）与 heap-window eviction（`lib.rs:2928`）都修改活动根，**是否会在继承者存活期间替换或释放共享子树，现有材料未证明**。关闭条件：四个问题逐一核实（写入的是共享子树的叶 PTE 还是源根顶层入口 / 是否清除仍被继承者直接引用的入口 / 释放的物理页是否仍在继承者可达集合内 / TLB 失效覆盖范围）。
+- **R2 TX 与 VM free-list 快照重叠**：`test-sysboot:242` 读的是 `:203` 由 `init_proc_and_boot` 发布的快照（write-once），`:254` 之后 TX 从该快照消耗的帧**从未 cut 出去**。当前未触发是因为该 test kernel 的 VM 槽跑桩镜像 `sysboot-rx`（不消费 free list）；真实 VM 服务接入前必须修。首选方案：`Boot reserved region` 拆 `PT allocator range` + `TX image range`，但**容量数据缺失**（512 页 bump 区要同时装 PT allocator 高水位 + TX 镜像，未实测）。
+
+**验收（实施阶段）**：文档 §5 的六项三架构测试清单（私有上半场释放 / 共享上半场不释放 / 根页归属 / 范围拒绝 / 批量操作原子性 / 源共享行为与陈旧映射判定）。
+
+**状态**：**设计冻结，实施待指派**（本轮仅落裁决与文档，用户明确不实施）。
 
 ### I-42（待裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统
 
