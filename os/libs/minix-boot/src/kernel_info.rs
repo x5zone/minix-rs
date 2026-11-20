@@ -958,4 +958,16 @@ mod tests {
         info.param_buf = &MAX_BUF[..];
         info.validate();
     }
+
+    #[test]
+    #[should_panic(expected = "不在 higher half")]
+    fn test_boot_postconditions_reject_low_virtual_base() {
+        // v10 (D-062) removed the three derived-scalar relations this gate used
+        // to read; the remaining assertion is the higher-half property. This is
+        // its negative control (the positive side is exercised by every boot
+        // path and by `make_valid_info`).
+        let mut info = make_valid_info();
+        info.kern_virt_base = VirBytes(0x1000_0000);
+        info.check_boot_postconditions();
+    }
 }

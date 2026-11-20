@@ -6,7 +6,7 @@
 >
 > **教学目标**（读完本篇应能独立讲出）：① 引导器交棒时机器处于什么状态、为什么第一跳必须是汇编（§1.1/§2.2）；② x86-32 从 `head.S` 入口到 `pre_init` 返回的完整链条、内存清单的建立与裁剪（§2.2–§2.5）；③ 页表建立：恒等映射与内核映射的次序、重叠语义、借槽窗口（§2.6）；④ 引导期内存账：页从哪里来、何时换手给 VM、空闲清单怎么传下去（§2.4/§2.4.2/§2.6/§3.8/§4.5/§4.7）；⑤ 三架构交接形态的差异与设计理由（§3.7/§4.8；各路径当前接线状态见 §3.1.1）；⑥ Rust 实现落点与运行阶段边界：EBS（UEFI 的 `ExitBootServices`，退出固件服务那次调用）前后、快照口径与深拷不变量（§4.1/§4.2/§4.5；本页各条的名词都在正文首次出现处展开）；⑦ 引导期故障怎么用串口路标与断言定位（§6）；⑧ 每条核心机制靠什么证据成立、哪些还没有断言（§5 的证据总账）；⑨ ARM32 的同名函数对照：哪些步骤同构、哪一步必须按引导器重写（§2.7）。
 
-内核不是从零开始的。它被放进内存时，机器已经由固件（UEFI 或 BIOS）与引导加载器（MINIX 自带的 boot2、GRUB 或 U-Boot）跑过一段路：内存控制器已经初始化，可执行文件已经被读进 RAM。地址翻译这一步两条路不一样——UEFI 上的固件是开着分页进来的，而 BIOS 上的引导器（boot2 或 GRUB）在本仓核对到的路径上交棒（**关着分页**这一状态对 GRUB 类合规引导器由 Multiboot 规范支撑；boot2 侧的代码事实是：`stand/lib/realprot.S:150-152` 只置 `CR0.PE`，整个 `minix3/sys/arch/i386/stand/` 目录对 `CR0_PG` 零写点，即 boot2 路径不置分页位）（C 的 `vm_enable_paging` 仍先清 `PG`，是防御性写法）（这就是 1.1 那张阶段表里"分页未开（x86-32）"的来处）。
+内核不是从零开始的。它被放进内存时，机器已经由固件（UEFI 或 BIOS）与引导加载器（MINIX 自带的 boot2、GRUB 或 U-Boot）跑过一段路：内存控制器已经初始化，可执行文件已经被读进 RAM。地址翻译这一步两条路不一样——UEFI 上的固件是开着分页进来的，而 BIOS 上的引导器在本仓核对到的路径上交棒：GRUB 类合规引导器的**分页未开**由 Multiboot 规范支撑；boot2 只核实到代码事实——`stand/lib/realprot.S:150-152` 只置 `CR0.PE`，整个 `minix3/sys/arch/i386/stand/` 目录对 `CR0_PG` 零写点，即 boot2 路径不置分页位，它交棒时的实际 `CR0.PG` 状态未证明（阶段表同此口径）（C 的 `vm_enable_paging` 仍先清 `PG`，是防御性写法）（这就是 1.1 那张阶段表里"分页未开（x86-32）"的来处）。
 
 但这些成果并不是内核可以直接使用的形式——它们要么散在别人填的结构体里，要么被别的代码写在某个寄存器里，要么只数到"哪几段物理地址可用"这一层：真正空闲的页帧要内核自己记账，而引导器给的这份内存信息还分粗细两档（展开见 §2.4）。
 
@@ -136,7 +136,7 @@ C 的这四样分别落在 `pre_init.c` 与 `pg_utils.c` 两个文件里：收�
 |---|---|---|---|
 | D1–D5 | 五条次序约束（依赖约束；非执行序） | §1.2 | §2.8 |
 | C 建表五步 | `pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`/`vm_enable_paging` | §2.6.1 | §4.6、§4.9 |
-| shim 九步 + 6b | `prepare_and_enter_kernel_image` 的九个动作，另加 EBS 后补写 startup 的 6b | §4.2.1 | §4.2.1 的动作表 / §4.2 的代码引文 |
+| shim 九步 | `prepare_and_enter_kernel_image` 的九个动作；v10（D-062）之前还有一个 EBS 后补写 startup 的 6b，现仅作历史定位 | §4.2.1 | §4.2.1 的动作表 / §4.2 的代码引文 |
 | 描述符判定五步 | `adjudicate` 对单条描述符的判定 | §4.2.2 | §4.2.2 / §5.2.1 的 `ebs_map.rs` 45 条 |
 | Step 0–4 | 内核侧启动阶段编号 | §4.1 | §4.6、§6.1 |
 | 生产腿 5（本篇主计数） | 五条生产腿；“腿”的定义在 §3.2，形态 3 / 协议段（交接面）4 / 三类链 6 / 架构×链五行 5 / 门链 5 等其余计法见 §3.7 的术语对账表 | §3.2（定义）/ §3.7（计法） | §3.1.1、§4.8、§5.2.3 |
@@ -253,7 +253,7 @@ menu=Start MINIX 3:load_mods /boot/minix_default/mod*;multiboot /boot/minix_defa
 
 ### 2.2 head.S：第一跳的三件事与三个配套教学点
 
-这条路径上的引导器（§2.1 已点名：MINIX 自带的第二级引导 boot2）跳到 `MINIX` 标签后，入口标签紧接的一条 `jmp multiboot_init` 先跳过识别头（这一步在下面引文之外；`MINIX:` 与这条 `jmp` 在源文件里紧挨在 §2.1 引文段之前——那段引文本身从 `.balign 8` 截起），随后 `i386/head.S` 的 [`multiboot_init`](minix3/minix/kernel/arch/i386/head.S:multiboot_init) 只做三件事：设栈、清帧指针与标志、按 C 调用约定把两个寄存器值变成两个参数。**第一跳（`multiboot_init`）的第一条指令必须是设栈**——这一条只能是汇编，理由在 §1.1；下面先看完整的入口，再逐行解码它为什么先设栈。
+这条路径上的引导器（§2.1 已点名：MINIX 自带的第二级引导 boot2）跳到 `MINIX` 标签后，入口标签紧接的一条 `jmp multiboot_init` 先跳过识别头（这一步在下面引文之外；`MINIX:` 与这条 `jmp` 在源文件里紧挨在 §2.1 引文段之前——那段引文本身从 `.balign 8` 截起），随后 `i386/head.S` 的 [`multiboot_init`](minix3/minix/kernel/arch/i386/head.S:multiboot_init) 只做三件事：设栈、清帧指针与标志、按 C 调用约定把两个寄存器值变成两个参数。**第一跳（`multiboot_init`）的第一条指令必须是设栈**——这条必要性对 Multiboot 合规引导器成立，对 boot2 只取证到它实际执行这条指令（边界见 §1.4）；这一条只能是汇编，理由在 §1.1；下面先看完整的入口，再逐行解码它为什么先设栈。
 
 ```asm
 /*
@@ -1525,7 +1525,7 @@ U-Boot 侧的实现见 §4.3 的 `entry_path_eq` 与 `UbootFileLoader`；两条 
 
 - **入口形状固定**（只在 U-Boot 生产腿成立）：`prepare_boot` 的 `storage`/`bump_pages` 语义与 `BootPrepareResult<'a>` 的返回形状由签名钉住；但"统一"的对象只有这一条腿，UEFI 与直核面各有自己的入口，不能把它说成跨固件统一。
 - **可测试性来自 `FileLoader`**（代码证据，测试形态成立）：`FileLoader` 是 trait——[`loader.rs`](os/boot-shim/src/loader.rs) 的 tests 里有内存表实现 `MockLoader`（`impl FileLoader for MockLoader`），涉及装载的单元测试都经由它喂文件字节。
-- **条件编译的落点收敛**（按构建形态成立）：**固件选择**相关的 `cfg` 只出现在 [`lib.rs`](os/boot-shim/src/lib.rs) 的模块与再导出声明处（7 处 `#[cfg(feature ...)]` 属性：6 条 `uefi` 加 1 条 `opensbi`）。另有一组 `qemu-test-kernels` gate（8 处）在 `uefi_helpers.rs`，只门控测试内核辅助物（`UefiPoolAllocator`、`TestMapTables`、`build_memmaps`/`build_memmap`、`exit_boot_services`）；生产构建不链接它们。因此准确说法是"固件分支不在业务逻辑里"，不是"整个 crate 只有 7 处 feature 属性"。
+- **条件编译的落点收敛**（按构建形态成立）：**固件选择**相关的 `cfg` 只出现在 [`lib.rs`](os/boot-shim/src/lib.rs) 的模块与再导出声明处（7 处 `#[cfg(feature ...)]` 属性：6 条 `uefi` 加 1 条 `opensbi`）。另有一组 `qemu-test-kernels` gate（10 处）在 `uefi_helpers.rs`，只门控测试内核辅助物（`UefiPoolAllocator`、`TestMapTables`、`build_memmaps`/`build_memmap`、`exit_boot_services`、`classify_map_bytes_into_test_tables`、`exit_boot_services_and_classify`）；生产构建不链接它们。因此准确说法是"固件分支不在业务逻辑里"，不是"整个 crate 只有 7 处 feature 属性"。
 - **换固件不动内核**（设计承诺，观察，尚无自动化反例）：新增一种固件形态，改动是 boot-shim 侧的新入口或共享库调用，不需要预先实现一个 trait；`kernel.elf` 不必重新构建（两者分属 `os/kernel-image` 与 `os/boot-shim` 两个产物，这条分界的后果在 §3.7 与 §4.8）。边界要说准：boot-shim 屏蔽的是**固件差异**，板级差异仍落到内核侧的平台发现（[`minix-platform`](os/libs/minix-platform/src/) 的 `PlatformDesc` 与内核侧平台源解析），不能把它说成"新板子只需写 boot-shim"。
 
 这里故意不列"类型安全"与"封装"——这两条常被记在 trait 头上，实际来自 feature 门控：`uefi_helpers` 与 `opensbi_helpers` 各由 [`lib.rs`](os/boot-shim/src/lib.rs) 的 `#[cfg(feature = ...)]` 门控，开启哪个 feature 就只有哪个固件类型存在，**写错固件名本来就编译不过**。UEFI 生产入口也没有借 trait 做抽象：[`fn main`](<os/boot-shim/src/main.rs:fn main>) 按具体类型写——`prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)`。这不是把固件写死在产品里：boot-shim 这个可执行文件只在 UEFI 形态下构建（bin 的 `required-features = ["fw-uefi-image"]` 隐含 `uefi`），固件选择发生在"构建哪个二进制"，不是运行期分派；opensbi 形态的生产路径是 riscv64 U-Boot shim（§3.1.1/§3.7）的 `opensbi_helpers::prepare_boot`；`kernel-image` 自引导面是辅助/嵌入式形态，复用同一组库函数但不经这份 main.rs。
@@ -1580,9 +1580,9 @@ C 里 `kinfo` 是一个全局变量。`pre_init.c` 开头就定义 `kinfo_t kinf
 
 Rust 侧把这份共享状态改成一段**显式交接**，分两个维度说。
 
-本节的交付形状与另外四节分工，读的时候不要混：C 侧"清单被截到 16 条"在 §2.4.1 末；扣减表与 bump 整段保留在 §3.8；接收方的七个落地区在 §4.5；换手给 VM 的时序在 §4.7。本节只讲"交过去的是什么形状"。
+本节的交付形状与另外四节分工，读的时候不要混：C 侧"清单被截到 16 条"在 §2.4.1 末；扣减表与 bump 整段保留在 §3.8；接收方的六个落地区加一个名字池在 §4.5；换手给 VM 的时序在 §4.7。本节只讲"交过去的是什么形状"。
 
-**维度一：通道形态**（交接怎么送到接收方）随交接形态变；"跨镜像 / 直核 / 三形态"的定义在 §3.7，这里先用。x86_64 与 aarch64 的 UEFI 链都走跨镜像跳转：boot-shim 建好自举根、开分页，把一块八页 arena（定义与分区见本节后半）的物理地址递给独立 `kernel.elf` 的高半入口（x86_64 用 `rbx`，aarch64 用 `x0`，见 §3.7）；接收方从 arena 解码七个分区、落进自己的 `.bss`，再走只增量的高半 resume。riscv64 的 U-Boot shim 走第三条跨镜像 v1 腿（同样只递 arena 基址，入口寄存器 `a0`，见 §4.8）；riscv64 的直核自引导没有独立 shim，引导面在同一镜像内直接调 `arch_boot`；这是硬件形态决定的辅助启动路径（§3.3 问题二），与两条 UEFI 产线不同源。
+**维度一：通道形态**（交接怎么送到接收方）随交接形态变；"跨镜像 / 直核 / 三形态"的定义在 §3.7，这里先用。x86_64 与 aarch64 的 UEFI 链都走跨镜像跳转：boot-shim 建好自举根、开分页，把一块八页 arena（定义与分区见本节后半）的物理地址递给独立 `kernel.elf` 的高半入口（x86_64 用 `rbx`，aarch64 用 `x0`，见 §3.7）；接收方从 arena 解码六个分区、落进自己的 `.bss`，再走只增量的高半 resume。riscv64 的 U-Boot shim 走第三条跨镜像 v1 腿（同样只递 arena 基址，入口寄存器 `a0`，见 §4.8）；riscv64 的直核自引导没有独立 shim，引导面在同一镜像内直接调 `arch_boot`；这是硬件形态决定的辅助启动路径（§3.3 问题二），与两条 UEFI 产线不同源。
 
 **维度二：载荷内容**（送过去的是什么）三形态一致：必须按值深拷进接收方的私有存储，不能靠指针跨边界存活。理由：跨镜像档里两个分别编译的二进制各有自己的 `.bss`，指针在接收方指向完全无关的内存，连 `&'static KernelInfo` 也只保证生命周期、不保证页在对方页表里被映射；直核面虽然没有跨镜像指针，但同一套落地区把三形态收成一条路径（少一套特例），也让"解码之后再消费"成为统一次序。三形态一致的是"必须深拷进私有存储"这一条要求；具体来源分两组：v1 三条腿的切片由固定分区与 `byte_len` 描述符重建，接收方按分区偏移与元素类型解码、不再解释裸 `(ptr, len)`；两个直核面的切片由 `build_kernel_info` 的 `&'static` 输入直接给出，没有 wire 解码步骤（§4.4）。
 
@@ -1609,7 +1609,7 @@ pub struct KernelInfo {
 ```
 
 
-`kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs) 共 10 个字段。字段删除时去掉了 `free_upper_idx`、`bootstrap_start`、`bootstrap_len` 三个（见 §3.5 与 §3.9）；`authority` 是后来加入的那一个，总数由 13 变成 14；wire v10（D-062）又删掉 `startup_objects`、`user_sp`、`kern_stack_top`、`syscall_entry` 四个，落到 10。按与 C 的关系分成下面几类：
+`kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs) 共 10 个字段。字段删除时去掉了 `free_upper_idx`、`bootstrap_start`、`bootstrap_len` 三个（见 §3.5 与 §3.9）；`authority` 是后来加入的那一个，总数由 13 变成 14；wire v10（D-062）又删掉 `startup_objects`（当时既是 `KernelInfo` 字段、也是 wire 分区与 builder 参数）、`user_sp`、`kern_stack_top`、`syscall_entry` 四个，落到 10。按与 C 的关系分成下面几类：
 
 读表前先立三个局部术语：`A+D`（完整定义见 §4.2.1 动作 2：先读 ELF 预订 LMA 跨度、再分配 root/bump、最后拷贝段）；`ReservedMapped` = 固件声明为保留、但运行期可经 Direct Map 访问的档；`Side` = 既不进 free list 也不进保留表的侧桶（§4.2.2 完整判定）。
 
@@ -1624,7 +1624,7 @@ pub struct KernelInfo {
 
 > **v10 删掉的四个成员（D-062）**：`user_sp`（每腿都填 `USER_STACK_TOP`，接收侧改为直接读该常量）、`kern_stack_top`（每腿都填 `kern_virt_base + kern_size`，改为 `KernelInfo::kern_stack_top()` 访问器在消费点派生）、`syscall_entry`（生产侧填 `kern_virt_base`、仓内零读者，真值来自 `syscall_entry_va()`），以及 `startup_objects` 分区（唯一读者是 strict 门的一条覆盖断言，现由内存图两表回答）。wire 信封 160 → 128 字节，报文末尾的 startup 分区（20 × 72 = 1440 B）退场，`WIRE_STARTUP_END`（30624）随之消失，八页 arena 的设计余量从 2144 B 变成 3584 B。`BOOT_HANDOFF_V1_VERSION` 9 → 10，收发两侧精确比较，v9 与 v10 互相拒收。
 
-**权威与内存图绑定（F-R17-04）**。`authority` 记录这份内存图是从哪个输入对象投影出来的：`DtbBootInput`（设备树）、`UefiMemoryMap`（`GetMemoryMap` 快照）或 `StartupObjects`（镜像自身的活对象；当前没有任何 **`KernelInfo.authority = StartupObjects` 的权威生产者**——wire 解码只接受 0/1，两个直核面传 `DtbBootInput`，UEFI 腿传 `UefiMemoryMap`，所以它不是一条活的 authority 通道。注意区分：`startup_record` 里的 `InputObjectId::StartupObjects` 是记录身份字段，不是 `KernelInfo.authority` 的取值）。它由构造点写入——wire 解码把 [`BootHandoffV1`](os/libs/minix-boot/src/handoff_v1.rs) 信封里的 `ram_authority` 复制进来：两个直核面在 `build_kernel_info` 调用点传 `DtbBootInput`，两条 UEFI 腿传 `UefiMemoryMap`，riscv64 U-Boot shim 发送侧在 `Serializer::new` 里声明 `DtbBootInput`（它从 DTB `/memory` 取表，没有 EBS 快照）。`validate_requiring_sources()` 因此不再收参数，直接读字段。改之前权威是调用方的另一个实参，`KernelInfo` 与权威在类型上可以任意配对；混合记录表里"DTB 记录 + 声明 UEFI 权威"这类错配只会在下一次覆盖审计时才暴露。把权威放进结构体没有让错误的构造变得不可能（构造点仍可传错），但它把"图和它的声明"变成同一个值，解码路径不再有两个可以接反的参数。
+**权威与内存图绑定（F-R17-04）**。`authority` 记录这份内存图是从哪个输入对象投影出来的：`DtbBootInput`（设备树）、`UefiMemoryMap`（`GetMemoryMap` 快照）或 `StartupObjects`（镜像自身的活对象；当前没有任何 **`KernelInfo.authority = StartupObjects` 的权威生产者**——wire 解码只接受 0/1，两个直核面传 `DtbBootInput`，UEFI 腿传 `UefiMemoryMap`，所以它不是一条活的 authority 通道。注意区分：`startup_record` 里的 `InputObjectId::StartupObjects` 是记录身份字段，不是 `KernelInfo.authority` 的取值；v10 后该记录没有生产者，wire 数值只作保留位）。它由构造点写入——wire 解码把 [`BootHandoffV1`](os/libs/minix-boot/src/handoff_v1.rs) 信封里的 `ram_authority` 复制进来：两个直核面在 `build_kernel_info` 调用点传 `DtbBootInput`，两条 UEFI 腿传 `UefiMemoryMap`，riscv64 U-Boot shim 发送侧在 `Serializer::new` 里声明 `DtbBootInput`（它从 DTB `/memory` 取表，没有 EBS 快照）。`validate_requiring_sources()` 因此不再收参数，直接读字段。改之前权威是调用方的另一个实参，`KernelInfo` 与权威在类型上可以任意配对；混合记录表里"DTB 记录 + 声明 UEFI 权威"这类错配只会在下一次覆盖审计时才暴露。把权威放进结构体没有让错误的构造变得不可能（构造点仍可传错），但它把"图和它的声明"变成同一个值，解码路径不再有两个可以接反的参数。
 
 **先讲清前两格装的是什么：内存图交付成两张表**。`KernelInfo` 携带内存信息只用两个列表，形状固定，来源不固定：
 
@@ -1652,23 +1652,24 @@ pub struct KernelInfo {
 
 **"升为字段"行的一个设计细节：为什么三个布局数字由 shim 从 ELF 算出，而不是由调用者传入**。设想把接口改成 `prepare_boot(storage, kern_virt_base, kern_phys_base, kern_size, bump_pages)`。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，"把内核映射到高地址"那一步会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。让 shim 自己解析镜像，"数字与镜像一致"就不再是调用者的责任，而是唯一数据来源（镜像本身）的自然结果。**两个直核面是例外**：`bootface`/`bootface_a64` 用自己文件里的 `KERN_VIRT_BASE`/`KERN_PHYS_BASE`/`KERN_SIZE` 常量，不从 ELF 头解析；它们与镜像布局的一致性：riscv64 直核面的跨距由 `check-layout.sh` 的 L9 对账，aarch64 直核面目前只有 L0/L3 的间接基址对账与 `aarch64.ld` 的一条上界 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)`，跨距没有与 riscv64 L9 等价的等值对账（缺口登记见 `rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/OPEN-DEBT.md` 的 F-R34-01）。源码注释记录过这类常量漂移导致高半只映射半个镜像、`kern_stack_top` 落进 `.bss` 的静默损坏。因此“三个数字来自镜像”只对三条 v1 发送腿成立，直核面是“常量 + 部分构建期对账”的另一条来源。
 
-#### 3.4.2 旧字段台账与外部面：`kinfo_t` 的 21 个字段去哪了
+#### 3.4.2 旧字段台账与外部面：`kinfo_t` 的 22 个字段去哪了
 
-字段名以 §3.4.1 的“删除”行为准；本表只给逐个去向，不重复定义。**先分清两个计数**：这 21 个是 C `kinfo_t` → Rust `KernelInfo` 的累计退场台账（C 有、Rust 不再保留的全部字段）；而 §3.5/§3.9 与 §3.4.1 说的「字段删除」是一次具体裁决——从 `KernelInfo` 里删掉 `free_upper_idx`、`bootstrap_start`、`bootstrap_len` 三个，使字段数由 16 变成 13、`authority` 加入后为 14。21 个字段的退场多数是换载体，少数是随读者消失而退役。多数：C 的 `kinfo` 是全局变量，编译期常量、内核自有状态、记账表都顺手堆在里面；Rust 的 `KernelInfo` 收窄为纯交接结构，只装引导侧必须告知、接收方无法自行导出的内容。于是职责归位成三类：**上浮为常量**——编译期已知的布局与规模事实（`nr_procs`/`nr_tasks`）与构建身份（`release[]`/`version[]`）；`user_end` 不属此类（Rust 未回传、无消费者，见下表）；**移交专门设施或记录结构**——内核自有的诊断与记账状态（`kmessages`、`do_serial_debug`/`serial_debug_baud`、`minix_panicing`、三个以 `_bytes` 结尾的记账字段）；**换表达不换信息**——内容改由 `KernelInfo` 现存字段承载或推导（`mbi` 的内容散布进各字段，`mods_with_kernel`/`kern_mod` 由 `kern_phys_base`/`kern_size` 直接表达，`boot_procs[]` 从 `boot_modules` 现算）。找不到新读者的不只 `mem_high_phys`（恒等映射只短暂存在、帧分配直接遍历 memmap，该标量随之退役）；`bootstrap_start/len` 与 `freepde_start` 也在该次删除中因无真实读者退场（§3.5/§3.9）。
+字段名以 §3.4.1 的“删除”行为准；本表只给逐个去向，不重复定义。**先分清两个计数**：这 22 个是 C `kinfo_t` → Rust `KernelInfo` 的累计退场台账（C 有、Rust 不再保留的全部字段）；而 §3.5/§3.9 与 §3.4.1 说的「字段删除」是一次具体裁决——从 `KernelInfo` 里删掉 `free_upper_idx`、`bootstrap_start`、`bootstrap_len` 三个，使字段数由 16 变成 13、`authority` 加入后为 14。22 个字段的退场多数是换载体，少数是随读者消失而退役。多数：C 的 `kinfo` 是全局变量，编译期常量、内核自有状态、记账表都顺手堆在里面；Rust 的 `KernelInfo` 收窄为纯交接结构，只装引导侧必须告知、接收方无法自行导出的内容。于是职责归位成三类：**上浮为常量**——编译期已知的布局与规模事实（`nr_procs`/`nr_tasks`）与构建身份（`release[]`/`version[]`）；`user_end` 不属此类（Rust 未回传、无消费者，见下表）；**移交专门设施或记录结构**——内核自有的诊断与记账状态（`kmessages`、`do_serial_debug`/`serial_debug_baud`、`minix_panicing`、三个以 `_bytes` 结尾的记账字段）；**换表达不换信息**——内容改由 `KernelInfo` 现存字段承载或推导（`mbi` 的内容散布进各字段，`mods_with_kernel`/`kern_mod` 由 `kern_phys_base`/`kern_size` 直接表达，`boot_procs[]` 从 `boot_modules` 现算）。找不到新读者的不只 `mem_high_phys`（恒等映射只短暂存在、帧分配直接遍历 memmap，该标量随之退役）；`bootstrap_start/len` 与 `freepde_start` 也在该次删除中因无真实读者退场（§3.5/§3.9）。
 
-被删的 21 个字段逐个的去向（"接管者"一栏给的是 `KernelInfo` 侧去向；`nr_procs`/`nr_tasks`/`release`/`version` 四个字段在 `KernelInfo` 侧上浮为常量/构建身份，但在 `GET_KINFO` 的 `KinfoStruct` 里仍是活字段，见本节 GET_KINFO 段）：
+被删的 22 个字段逐个的去向（"接管者"一栏给的是 `KernelInfo` 侧去向；`nr_procs`/`nr_tasks`/`release`/`version` 四个字段在 `KernelInfo` 侧上浮为常量/构建身份，但在 `GET_KINFO` 的 `KinfoStruct` 里仍是活字段，见本节 GET_KINFO 段）：
 
 | C 字段 | 接管者 / 去哪了 | 依据 |
 |---|---|---|
 | `mbi` | 不进内核：UEFI/SBI 没有 Multiboot 结构体，交接信息由 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs) 另行承载 | - |
-| `mem_high_phys` | 删除。C 里它是"最高物理地址"标量，有真实读者：恒等映射铺满整个 4GB 目录，靠它把 RAM 顶以上没有内存的段标成禁缓存；PCI 驱动另拿它找 RAM 之上的 MMIO 空洞。Rust 的 boot 恒等映射只覆盖最小窗口；启动后只在 `load_elf_into` 的 ELF 段页与 64 MiB VM heap 窗口做 4 KiB 粒度驱逐（撤销这些页的 4 KiB 映射）（不重建根——重建会清零活动根、下一条取指页错误，见 §3.7 反向推演；C 侧不重建活动根，它用 paged/unpaged 两份 `pagedir` 副本换根，见 §2.6.4；逐页拆解本篇不展开，边界见 §1.4），其余 boot identity 窗口保留在 bootstrap 根上。帧分配器直接遍历 memmap 区域列表——`mem_high_phys` 这个标量在 Rust 里没有读者，维护它只是写后即弃的状态 | C 读者：[`pg_identity()`](minix3/minix/kernel/arch/i386/pg_utils.c)、[`complete_bars()`](minix3/minix/drivers/bus/pci/pci.c) |
+| `mem_high_phys` | 删除。C 里它是"最高物理地址"标量，有真实读者：恒等映射铺满整个 4GB 目录，靠它把 RAM 顶以上没有内存的段标成禁缓存；PCI 驱动另拿它找 RAM 之上的 MMIO 空洞。Rust 的 boot 恒等映射只覆盖最小窗口；启动后只在 `load_elf_into` 的 ELF 段页与 64 MiB VM heap 窗口做 4 KiB 粒度驱逐（撤销这些页的 4 KiB 映射）（不重建根——重建会清零活动根、下一个冷取指页错误（TLB 残留可能先跑几条），见 §3.7 反向推演；C 侧不重建活动根，它用 paged/unpaged 两份 `pagedir` 副本换根，见 §2.6.4；逐页拆解本篇不展开，边界见 §1.4），其余 boot identity 窗口保留在 bootstrap 根上。帧分配器直接遍历 memmap 区域列表——`mem_high_phys` 这个标量在 Rust 里没有读者，维护它只是写后即弃的状态 | C 读者：[`pg_identity()`](minix3/minix/kernel/arch/i386/pg_utils.c)、[`complete_bars()`](minix3/minix/drivers/bus/pci/pci.c) |
 | `mods_with_kernel` | 删除：C 里它只为一个用途——把内核临时登记成第 M+1 个模块（M = 模块数），让重叠检查与 memmap 扣除一并处理内核自身（[`pre_init()`](minix3/minix/kernel/arch/i386/pre_init.c) 的登记段）。Rust 里内核布局由 `kern_phys_base`/`kern_size` 单独表达，扣除与检查各自直接用区间，不需要这个计数 | - |
 | `kern_mod` | 删除：C 里它是上面那个"临时第 M+1 个模块"的下标，随 `mods_with_kernel` 一起消失 | - |
 | `kmessages` | 独立的内核消息/诊断设施 | [`kmess.rs`](os/kernel/src/kmess.rs)（`KernelConsole`） |
 | `do_serial_debug` | 早期控制台初始化自己决定串口 | [`early_console.rs`](os/plat/src/early_console.rs) |
 | `serial_debug_baud` | 同上（平台实现固定串口分频，不保留可调波特率状态） | 同上 |
 | `minix_panicing` | 内核侧由 `PANIC_DIAG_ACTIVE` 维护互斥；boot-shim 的 `fn panic` 只是 panic 出口，不承载该状态 | `PANIC_DIAG_ACTIVE`（`os/kernel/src/lib.rs` 的 panic 诊断互斥静态量）、[`fn register_panic_diagnostic`](<os/kernel/src/lib.rs:fn register_panic_diagnostic>) |
-| `user_end` | C 侧是 `USR_DATATOP`（i386 上等于 `USR_STACKTOP`）；Rust 未回传该字段，也没有消费者 | [`const USER_STACK_TOP`](<os/libs/minix-types/src/types/boot.rs:const USER_STACK_TOP>) 是 `user_sp` 的唯一权威（v10 起后者不再是 `KernelInfo` 字段） |
+| `user_end` | C 侧是 `USR_DATATOP`（i386 上等于 `USR_STACKTOP`）；Rust 未回传该字段，也没有消费者 | [`const USER_STACK_TOP`](<os/libs/minix-types/src/types/boot.rs:const USER_STACK_TOP>) 是用户栈顶的唯一权威 |
+| `user_sp` | v10（D-062）删除：每腿都填 `USER_STACK_TOP`，接收侧改为直接读该常量 | 同上一行 |
 | `boot_procs[]` | 内核侧从 `boot_modules` 构造 boot image 表 | [`fn build_vm_handoff`](<os/kernel/src/vm_handoff.rs:fn build_vm_handoff>) |
 | `nr_procs` / `nr_tasks` | 常量与表长度 | [`const NR_PROCS`](<os/kernel/src/proc_table.rs:const NR_PROCS>)、[`const NR_TASKS`](<os/kernel/src/proc_table.rs:const NR_TASKS>)（12 是启动模块数 `NR_BOOT_MODULES`，不是 `nr_tasks` 的载体） |
 | `release[]` / `version[]` | 内核构建身份，来源为 `minix-types` 里与 config.h 对位的固定字符串常量（`OS_RELEASE`/`OS_VERSION`） | [`misc.rs`](os/kernel/src/misc.rs) 的 GET_KINFO 段、[`kerninfo.rs`](os/libs/minix-types/src/types/kerninfo.rs) |
@@ -1710,7 +1711,7 @@ C 的两个专用键在 Rust 侧的处置：`cttyline`/`cttybaud` 不再有专�
 
 #### 3.4.3 `#[repr(C)]` 的边界与 arena wire 协议
 
-`#[repr(C)]` 在 `KernelInfo` 上的作用需要说清楚边界：字段顺序被钉住，切片内部 `(ptr, len)` 的顺序仍由工具链决定；因此 `KernelInfo` 继续只作为进程内结构使用（直核面、QEMU 测试内核，以及 UEFI 接收侧解码后在进程内构造的值；发送侧只构造 `BootReport` 借用视图），不承担跨镜像布局契约。跨镜像三腿（两条 UEFI 产线 + riscv64 U-Boot shim）改用独立协议 `BootHandoffV1`：标量全部写成固定宽度，载荷放进一个八页 arena（arena：boot-shim 预留的一块定长物理内存，里面摆着 v1 交接协议的信封与各载荷分区，分区布局见本节末）的固定分区，描述符只记 `byte_len`——地址由 arena 基址加协议偏移推导，`(ptr, len)` 不再上线。协议有两层版本号，读时不要混：**协议身份**恒为 v1（`BOOT_HANDOFF_V1_MAGIC`/名字里的 v1，指"第一代交接协议"这个族）；**信封版本号**（`BOOT_HANDOFF_V1_VERSION`，当前 9）随信封内布局变更递增、收发双方精确比对——本文出现的"版本 8→9"都是后者（"wire 版本"是同一计数器的另一个叫法；7→8 与 8→9 都指它）。
+`#[repr(C)]` 在 `KernelInfo` 上的作用需要说清楚边界：字段顺序被钉住，切片内部 `(ptr, len)` 的顺序仍由工具链决定；因此 `KernelInfo` 继续只作为进程内结构使用（直核面、QEMU 测试内核，以及 UEFI 接收侧解码后在进程内构造的值；发送侧只构造 `BootReport` 借用视图），不承担跨镜像布局契约。跨镜像三腿（两条 UEFI 产线 + riscv64 U-Boot shim）改用独立协议 `BootHandoffV1`：标量全部写成固定宽度，载荷放进一个八页 arena（arena：boot-shim 预留的一块定长物理内存，里面摆着 v1 交接协议的信封与各载荷分区，分区布局见本节末）的固定分区，描述符只记 `byte_len`——地址由 arena 基址加协议偏移推导，`(ptr, len)` 不再上线。协议有两层版本号，读时不要混：**协议身份**恒为 v1（`BOOT_HANDOFF_V1_MAGIC`/名字里的 v1，指"第一代交接协议"这个族）；**信封版本号**（`BOOT_HANDOFF_V1_VERSION`，当前 10）随信封内布局变更递增、收发双方精确比对——本文出现的"版本 8→9"与"9→10"都是后者（"wire 版本"是同一计数器的另一个叫法；7→8、8→9 与 9→10 都指它）。
 
 ```rust
 // 代码引用（略去字段文档注释；ram_authority 行的编注为读者说明、不在源码；末尾 arena 分区注释为改述，源文件为英文原文且其 ARENA_CAP 文档另见），os/libs/minix-boot/src/handoff_v1.rs:struct BootHandoffV1。
@@ -1720,7 +1721,7 @@ pub struct BootHandoffV1 {
     pub magic: u32,
     pub version: u32,
     pub size: u32,
-    pub ram_authority: u32,   // 〔编注〕内存图的权威来源：0 = boot DTB、1 = UEFI 内存图；接收方只认这两个值，声明了权威却无对应 source 记录则 fail-closed（§3.4 的 startup/source 规范集合与 §4.4 的 `validate_requiring_sources`）
+    pub ram_authority: u32,   // 〔编注〕内存图的权威来源：0 = boot DTB、1 = UEFI 内存图；接收方只认这两个值，声明了权威却无对应 source 记录则 fail-closed（§3.4 的 source 规范集合与 §4.4 的 `validate_requiring_sources`）
     pub arena_len: u64,
     pub kern_virt_base: WireVirtAddr,
     pub kern_phys_base: WirePhysAddr,
@@ -1739,18 +1740,23 @@ pub struct BootHandoffV1 {
 
 // 八页 arena（32768 B）自低往高：信封（容量上限 256 B）→ wire 分区（memmap/reserved/modules/
 // platform/param 五段，至 WIRE_END=7872）→ source 分区（至 29184）。
-// （v10 / D-062 删掉了报文末尾的 startup 分区：20 × 72 = 1440 B，原止于 30624。）
-// 信封与各组分区合计 30624 B（信封 256 B + wire 分区 7616 B + source 分区
-// 21312 B）≤ 32768，余 3584 B。v9 删掉了 v8 的 6144 B（6 KiB）语义工作分区（两张 `MemoryRegion` 表：128×16 + 256×16）；v10（D-062）又删掉报文末尾的 startup 分区 1440 B（20 × 72）。v8 的 arena 是九页 36864 B（30624 + 6144 = 36768，向上取整到 9 页）；v9 删掉 6144 B 后回到八页 32768 B，已用 30624 B；v10 再减 1440 B，已用 29184 B（= `WIRE_SOURCES_END`）。29184 由编译期断言钉住，余量 3584 是 `ARENA_CAP` 与 29184 的差，测试里另有一条 `assert_eq!(ARENA_CAP - WIRE_SOURCES_END, 3584)`；发送侧的语义表
+// （v10 / D-062 又删掉了报文末尾的 startup 分区：20 × 72 = 1440 B，原止于 30624。）
+// v9 的合计是 30624 B，v10 的合计是 29184 B（信封 256 B + wire 分区 7616 B + source 分区
+// 21312 B），余 3584 B。v9 删掉了 v8 的 6144 B（6 KiB）语义工作分区（两张 `MemoryRegion`
+// 表：128×16 + 256×16）；v10（D-062）再删掉报文末尾的 startup 分区 1440 B（20 × 72）。
+// v8 的 arena 是九页 36864 B（30624 + 6144 = 36768，向上取整到 9 页）；v9 删掉 6144 B 后
+// 回到八页 32768 B，已用 30624 B；v10 再减 1440 B，已用 29184 B（= `WIRE_SOURCES_END`）。
+// 29184 由编译期断言钉住，余量 3584 是 `ARENA_CAP` 与 29184 的差，测试里另有一条
+// `assert_eq!(ARENA_CAP - WIRE_SOURCES_END, 3584)`；发送侧的语义表
 // 住进 shim 自己的 `BootStorage`，arena 里只剩 wire 这一份表示。
 pub const ARENA_CAP: usize = 8 * 4096;
 ```
 
-arena 的分区是固定偏移：信封住首部，其后依次是内存图、保留区、模块、平台源、参数字节的 wire 形式；v9 之后 arena 里**没有**第二份语义表——发送侧的分类结果同时写进它自己的 `BootStorage`（调用方持有的定长数组）和 wire，接收方再按 `byte_len` 把 wire 复制进自己的 `.bss` 落地区。这样 arena 只有一份权威表示，发送侧构造进程内视图时借用 `BootReport<'a>`（`BootStorage` 的视图），不再用 `'static` 切片指向 arena。平台源记录是 16 B 的 `kind u32 | len u32 | addr u64`：`len` 复用旧 `reserved` 槽位，旧生产者写 0 表示未知、新读者回退单片；因此尺寸与信封版本 9 不变。接收方先校验 `magic`、`version`、`size` 与 `arena_len`，再按各 `byte_len` 把七个分区复制进自己的 `.bss` 落地区；越界、不能整除或容量不足都在构造任何引用之前失败。运行期字段（根页表物理地址与 bump 三件套）在 shim 建好根之后原地补进信封，因此三腿都只需传 arena 基址一个数（x86_64 `rbx`、aarch64 `x0`、riscv64 U-Boot shim `a0`）。
+arena 的分区是固定偏移：信封住首部，其后依次是内存图、保留区、模块、平台源、参数字节的 wire 形式；v9 之后 arena 里**没有**第二份语义表——发送侧的分类结果同时写进它自己的 `BootStorage`（调用方持有的定长数组）和 wire，接收方再按 `byte_len` 把 wire 复制进自己的 `.bss` 落地区。这样 arena 只有一份权威表示，发送侧构造进程内视图时借用 `BootReport<'a>`（`BootStorage` 的视图），不再用 `'static` 切片指向 arena。平台源记录是 16 B 的 `kind u32 | len u32 | addr u64`：`len` 复用旧 `reserved` 槽位，旧生产者写 0 表示未知、新读者回退单片；因此该记录仍是 16 B，v10 的版本号变化只来自 §3.4.1 列出的四个成员。接收方先校验 `magic`、`version`、`size` 与 `arena_len`，再按各 `byte_len` 把六个分区复制进自己的 `.bss` 落地区；越界、不能整除或容量不足都在构造任何引用之前失败。运行期字段（根页表物理地址与 bump 三件套）在 shim 建好根之后原地补进信封，因此三腿都只需传 arena 基址一个数（x86_64 `rbx`、aarch64 `x0`、riscv64 U-Boot shim `a0`）。
 
 #### 3.4.4 深拷不变量与真机探针
 
-**不做深拷、把 `KernelInfo` 的切片按原指针存进内核的全局槽会怎样**。两条 UEFI 产线的七个分区都由 boot-shim 在启动服务池或 arena 里产出；无论哪一条，接收方都必须在首次进程根切换之前把值搬进自己的 `.bss`——arena 只在恒等窗口存活，池页在历史真机上还出现过零化。真机记录给了这一现象的两组读数（无归档日志，仅为当时观察；可靠性低于可复跑探针），零化时点不同：`res=127 zeroed=127`（`res` 是到达分类点的 `reserved_regions` 条目数，`zeroed` 是其中因长度读回零而被拒的条数——127 对 127，也就是全部读成了零），以及"15 条 conventional 条目在建立 Direct Map 覆盖时还完好、到 VM 交接分类点长度全读成 0"。后者的后果不是某个字段错，而是 VM 的自由内存清单塌成零条——VM 在启动参数校验处 panic，而"内存图丢了"这件事在 panic 输出里看不到。两组读数指向同一个设计结论（值必须在入口尽早深拷——这是一条预防性不变量，它的依据是"零化发生过且无法在故障输出里归因"，不是"某条机制已由实验证实"）；机制上有两条候选：**候选①（页表不重放）**——源码注释给过的一条是“内核自己的页表不重放这些堆页的 1:1 映射”；**候选②（复用清零）**——“建立 Direct Map 覆盖时还完好”这组读数更像的“被当空闲复用后清零”。两条候选各带可检验的推论——"页表不重放"说与切表时点相关、"复用清零"说与快照/复用的时序相关——本篇用本仓探针初步排除了候选①；候选②仍未排除（读数与三层判别见 §5.2.3）。这条不变量与 §2.4.1.3 的“跳板生命周期”同级：都是**观测/预防性**前提，不是“某条机制已由实验证实”的结论；把它写成已证设计会高估证据强度。
+**不做深拷、把 `KernelInfo` 的切片按原指针存进内核的全局槽会怎样**。两条 UEFI 产线的六个分区都由 boot-shim 在启动服务池或 arena 里产出；无论哪一条，接收方都必须在首次进程根切换之前把值搬进自己的 `.bss`——arena 只在恒等窗口存活，池页在历史真机上还出现过零化。真机记录给了这一现象的两组读数（无归档日志，仅为当时观察；可靠性低于可复跑探针），零化时点不同：`res=127 zeroed=127`（`res` 是到达分类点的 `reserved_regions` 条目数，`zeroed` 是其中因长度读回零而被拒的条数——127 对 127，也就是全部读成了零），以及"15 条 conventional 条目在建立 Direct Map 覆盖时还完好、到 VM 交接分类点长度全读成 0"。后者的后果不是某个字段错，而是 VM 的自由内存清单塌成零条——VM 在启动参数校验处 panic，而"内存图丢了"这件事在 panic 输出里看不到。两组读数指向同一个设计结论（值必须在入口尽早深拷——这是一条预防性不变量，它的依据是"零化发生过且无法在故障输出里归因"，不是"某条机制已由实验证实"）；机制上有两条候选：**候选①（页表不重放）**——源码注释给过的一条是“内核自己的页表不重放这些堆页的 1:1 映射”；**候选②（复用清零）**——“建立 Direct Map 覆盖时还完好”这组读数更像的“被当空闲复用后清零”。两条候选各带可检验的推论——"页表不重放"说与切表时点相关、"复用清零"说与快照/复用的时序相关——本篇用本仓探针初步排除了候选①；候选②仍未排除（读数与三层判别见 §5.2.3）。这条不变量与 §2.4.1.3 的“跳板生命周期”同级：都是**观测/预防性**前提，不是“某条机制已由实验证实”的结论；把它写成已证设计会高估证据强度。
 
 
 
@@ -1758,10 +1764,10 @@ arena 的分区是固定偏移：信封住首部，其后依次是内存图、�
 
 v8 之前的发送侧有一处"假所有权"：UEFI 腿把 `KernelInfo` 的 `&'static` 切片直接指向 arena 的语义分区，模块、平台源与参数的切片则靠 `Box::leak` 凑出 `'static`；类型上写着"活到进程结束"，实际上只在跳转前有效。v9 把两件事分开：
 
-- **`BootStorage` 是所有者**。调用方自己持有的一份定长数组结构（UEFI 腿在 shim 的静态区，两个直核腿在 kernel-image 的静态区；内存图 128 项、保留区 256 项、模块 12 项、平台源 4 项、参数 1024 B——这五类载荷的容量与 wire 分区一致，两边不能各自漂移；另有来源记录 40 项（DTB 收集器的输入上限；DTB 腿序列化时把 40 条前缀写入 wire 的 296 项分区，超过 40 条由收集器 fail-closed；UEFI 腿由分类器直接写 wire，不受这 40 槽限制）与 startup 记录 20 项（wire 分区容量））。分类器把内存图与保留区同时写进 storage 与 wire；模块装载器直接写进 storage 的模块槽；平台源与参数也一样。数组长度只有在写入前缀之后才提交（两张内存表由 `commit_map_tables` 一次提交，其余表由各自的 `set_*_len` 提交），报告永远看不到未写槽。来源记录只有 DTB 发送腿写入 storage；UEFI 腿的 source 记录由分类器直写 wire，startup 记录在 `ExitBootServices` 之后由省略段直写 wire，所以 UEFI 腿 storage 的 source/startup 槽都留空。
+- **`BootStorage` 是所有者**。调用方自己持有的一份定长数组结构（UEFI 腿在 shim 的静态区，两个直核腿在 kernel-image 的静态区；内存图 128 项、保留区 256 项、模块 12 项、平台源 4 项、参数 1024 B——这五类载荷的容量与 wire 分区一致，两边不能各自漂移；另有来源记录 40 项（DTB 收集器的输入上限；DTB 腿序列化时把 40 条前缀写入 wire 的 296 项分区，超过 40 条由收集器 fail-closed；UEFI 腿由分类器直接写 wire，不受这 40 槽限制））。分类器把内存图与保留区同时写进 storage 与 wire；模块装载器直接写进 storage 的模块槽；平台源与参数也一样。数组长度只有在写入前缀之后才提交：两张内存表由 `fill_map_tables` 闭包返回 `MapCounts` 时与表内容一步提交，其余四族由各自的 `fill_*` 在返回前提交，报告永远看不到未写槽。来源记录只有 DTB 发送腿写入 storage；UEFI 腿的 source 记录由分类器直写 wire，所以 UEFI 腿 storage 的 source 槽留空。v10（D-062）删掉了 startup 落地区与它的 wire 分区。
 - **`BootReport<'a>` 是视图**。它借用 storage 的六个切片（五类载荷加 source 记录），加上三个标量：`kern_virt_base`、`kern_phys_base`、`kern_size`（v10 起 `user_sp`/`kern_stack_top`/`syscall_entry` 不再随报文交接）。UEFI 腿的 `memmap_sources` 切片为空（分类器直写 wire）；这里不再用布尔标志提示“记录在 wire”，空切片加“UEFI 腿的 wire 是唯一权威”这条静态约定即可。生命周期参数把它绑定在 storage 上：没有 `'static` 所有者时，报告无法被提升为 `'static`。内核入口 `enter_kernel_image_v1` 的第二个参数就是 `&BootReport<'_>`，跳转前只读它；接收镜像仍然用 `KernelInfo` 的 `'static` 切片，因为那里的切片指向自己 `.bss` 里的深拷落地区，是真实所有权。**半提交状态不存在，不是被挡住**（D-067 / I-34）：每一族都经一个 `fill_*` 方法写入——闭包拿到槽数组、返回实际写入量，方法在返回前提交该计数（`fill_map_tables` 一次提交两表，用 `MapCounts` 按字段名带回两个数）。**写与提交是同一步**，所以"槽已写、长度未提交"不是可表示的状态，也就不再有 `map_dirty` 这个拦截位、不再需要 `report()` 里的断言。五个生产填充点是 `fill_map_tables`（分类器，一次带两表）、`fill_modules`、`fill_platform`、`fill_param`、`fill_memmap_sources`；四族各自的 one-shot 提交标志（`modules_committed`/`platform_committed`/`param_committed`/`sources_committed`）保留，第二次 fill 同一族仍然 panic。**顺序约束**：`fill_*` 在调用期间独占 `&mut self`，因此不能"先写 A 族、再写 B 族、最后一起提交"；五个生产调用点都本就是「写一族 → 提交一族」的严格顺序，不冲突（D-067 的 `reopen_condition` 记的正是这条）。
-- **U-Boot 腿同构**。`opensbi_helpers::prepare_boot` 收 `&mut BootStorage`，内存图/保留区/来源记录/参数/模块/平台源全部写进 storage；arena 也在该函数内从同一 bump 池分配，五类 startup 记录（内核、模块、root、bump、arena）在返回前写齐。`BootPrepareResult<'a>` 只携带报告视图与三个类型化地址（`root_page: PhysBytes`、`bump: PhysRange`、`arena_pa: PhysBytes`），UBoot 主函数用 `write_envelope_report` 和同一份报告序列化，不再有 `Box::leak` 或 `from_kernel_info`。
-- **直核自举面同构（DESIGN-09）**。两个 `bootface` 各在自己的静态区放一个 `BootStorageCell`（内部是 `BootStorage`），模块、平台源、参数三类走 `set_*_len` 提交，startup 走 `push_startup` 逐条追加；不再有四个独立的落地区。整块由 `BootStorageCell::take` 的 one-shot 语义覆盖（重入即 panic）。**段归属与所有权边界要说准**：`BootStorage::new()` 不是全零初值（平台源的 `kind = DTB = 1`、模块名的非空悬挂指针都是非零值），所以这个静态落在 **`.data`**（可装载数据），不是零填充的 `.bss`；容量断言 `size_of::<BootStorage>() <= 16 KiB` 约束的是这块 `.data` 的大小，不是 `.bss`。所有权也是**两类**：`BootStorage` 只承载 modules、platform、param、startup 四类；`memmap`、`reserved` 与 source 记录仍由 DTB 收集器的进程级静态量持有（`DTB_FREE`/`DTB_RESERVED`/`DTB_SOURCES`，自带一套一次性守卫）。因此直核腿在信任边界上有两个所有者，`BootStorage` 的 memmap/reserved/source 槽在直核腿留空（约 9 KiB 闲置容量）。这是当前刻意的取舍：让 DTB 收集器保持单一写入点，代价是"一份存储、一套守卫"的目标只完成了一半；若将来把这三类也搬进 storage，需要同时删掉收集器的静态量与第二套守卫。
+- **U-Boot 腿同构**。`opensbi_helpers::prepare_boot` 收 `&mut BootStorage`，内存图/保留区/来源记录/参数/模块/平台源全部写进 storage；arena 也在该函数内从同一 bump 池分配。`BootPrepareResult<'a>` 只携带报告视图与三个类型化地址（`root_page: PhysBytes`、`bump: PhysRange`、`arena_pa: PhysBytes`），UBoot 主函数用 `write_envelope_report` 和同一份报告序列化，不再有 `Box::leak` 或 `from_kernel_info`。
+- **直核自举面同构（DESIGN-09）**。两个 `bootface` 各在自己的静态区放一个 `BootStorageCell`（内部是 `BootStorage`），模块、平台源、参数三类走 `fill_modules`/`fill_platform`/`fill_param` 提交，内存图与保留区走 `fill_map_tables`、来源记录走 `fill_memmap_sources`；不再有四个独立的落地区。整块由 `BootStorageCell::take` 的 one-shot 语义覆盖（重入即 panic）。**段归属与所有权边界要说准**：`BootStorage::new()` 不是全零初值（平台源的 `kind = DTB = 1`、模块名的非空悬挂指针都是非零值），所以这个静态落在 **`.data`**（可装载数据），不是零填充的 `.bss`；容量断言 `size_of::<BootStorage>() <= 16 KiB` 约束的是这块 `.data` 的大小，不是 `.bss`。所有权是**一个**：`BootStorage` 承载内存图、保留区、来源记录、模块、平台源、参数六类载荷；DTB 收集器已改为调用方持有的 `collect_owned` 路径（I-33-甲/乙，D-086），进程级静态量与第二套一次性守卫已删除。因此直核腿在信任边界上只有一个所有者，之前写成“闲置”的 memmap/reserved/source 槽现在正是唯一的落地区。
 - **`FileBytes<'a>` 显式区分借用与拥有**（D-4）。`FileLoader::read` 返回 `FileBytes::Borrowed(&'a [u8])` 或 `FileBytes::Owned(Vec<u8>)`：U-Boot 腿的 `fatload` 已经把文件放在 RAM 里，直接借出（不再 `to_vec`）；UEFI 腿经固件协议读文件，必须拥有一个新缓冲。借用期间的合同是三条：持有者存在时底层存储不得被覆盖（U-Boot 表在 shim 运行前写好、之后不再改）；源/目标重叠检查保留（loader 的 `first_source_destination_overlap` 仍然在拷贝前运行）；loader 本身不被长期独占（借用只跟随一次读调用，不把 `&self` 存进结果之外的结构）。`FileBytes::into_owned()` 只在确实需要拥有时复制，不改变默认零拷贝路径。
 
 协议头带版本号，接收方拒绝不认识的版本。这一点把跨镜像契约从"两个镜像恰好由同一工具链构建"的工序假设，变成可显式验证的版本化 ABI；旧的一页 `BootHandoff` blob 因此在切根（从自举根切到运行期根）落地后删除。
@@ -1869,7 +1875,7 @@ pub trait HugePages: Paging {
 （1）`HugePages: Paging` 是**超集**关系：boot 阶段用 `A: BootArch` 一个 bound 就能同时取到 `A::Paging`（`new_from_page`/`enable`）、`A::DirectMap` 的窗口常量与 `A::DmInstaller` 的装叶实现（`arch_boot_impl<A: BootArch>` 就是这么写的；大页入口经 `HugePages` 另取）。运行时只用 `P: Paging` 的消费者不必携带大页负担。
 （2）标识方式因架构而异，但标识位不进入 trait。x86-64 靠条目的 PS 位（bit 7）区分大页与"指向下一级表"，`map_huge` 在实现内用局部 `huge_flag` 取它；ARM64 与 RISC-V 没有这一位。把标识位提成"三个架构都要提供、其中两个恒为 0"的 trait 常量，等于把架构差异写进共有接口，所以它留在实现里。
 （3）大页是**可选能力**而不是基础能力。x86-64 的首选是 1GB、回退 2MB；把 `map_huge` 放进 `Paging` 会让所有 `Paging` 实现都必须实现它，包括那些不打算支持大页的实现。
-（4）大页能力不塞进 `Paging`：`Paging` 本身已有 22 个成员（`const PAGE_SIZE` 与 21 个方法：`phys_addr_limit`、`validate_virtual_range`、`new`、`new_from_page`、`from_active_root`、`adopt_active_root`、`inherit_supervisor_half`、`destroy`、`map`、`remap`、`unmap`、`update_flags`、`query`、`split_huge`、`grant_user_walk`、`root_paddr`、`enable`、`map_range`、`unmap_range`、`flush_tlb`、`flush_tlb_addr`），职责面并不窄；这里列出的 `new_from_page`/`from_active_root`/`map`/`unmap`/`query`/`enable` 只是与本节论证直接相关的六项。基础 trait 已经承担页表生命周期与范围操作，不应再把可选的块尺寸策略压进去。
+（4）大页能力不塞进 `Paging`：`Paging` 本身已有 24 个成员（`const PAGE_SIZE` 与 23 个方法：`phys_addr_limit`、`validate_virtual_range`、`new`、`new_from_page`、`from_active_root`、`inherit_supervisor_half`、`enable`、`destroy`、`is_supervisor_va`、`is_inherited`、`ensure_writable_range`、`map`、`remap`、`unmap`、`update_flags`、`query`、`split_huge`、`grant_user_walk`、`root_paddr`、`flush_tlb`、`flush_tlb_addr`、`map_range`、`unmap_range`），职责面并不窄；这里列出的 `new_from_page`/`from_active_root`/`map`/`unmap`/`query`/`enable` 只是与本节论证直接相关的六项。基础 trait 已经承担页表生命周期与范围操作，不应再把可选的块尺寸策略压进去。
 
 被否决的方案：
 
@@ -1916,7 +1922,7 @@ x86-64 的实现给出这套设计的两个可核对点（`paging.rs` 的 [`impl
 ```
 
   三条件（虚拟基址、物理基址、长度）同时对齐到首选尺寸才用它；首选不受硬件支持时先降级而不是先看对齐。这条阶梯不是风格：`check-layout.sh` 的 L5 断言要求镜像跨距按 2MiB 对齐，正是为了让它至少能落进回退档（断言清单见 §5.2）。
-- `AlreadyMapped` 守卫处理的是"目标槽位已经是一个 1GB 大页"的情形。注释给了理由："A 1 GiB leaf blocks the finer install."（1GB 分支本身也先拒绝任何已存在的 PDPT 条目，注释见 `if size_bytes == 1 << 30` 段。）这条守卫也回应本节的问题本身：扩展 trait 承担的不只是尺寸查询，还有"不得降级已有大页"这条非平凡契约——若把 `map_huge` 收进基础 trait，所有 `Paging` 实现都得背上它，哪怕该架构根本没有 1GB 叶。
+- `AlreadyMapped` 守卫处理的是"目标块已被占用"的两类情形：1 GiB 分支先拒绝任何已存在的 PDPT 条目（注释见 `if size_bytes == 1 << 30` 段）；2 MiB 分支先拒绝已存在的 1 GiB 叶（"A 1 GiB leaf blocks the finer install."），再拒绝已存在的 2 MiB 叶。这条守卫也回应本节的问题本身：扩展 trait 承担的不只是尺寸查询，还有"不得把已有大页降级、也不得重复安装同一个叶"这条非平凡契约——若把 `map_huge` 收进基础 trait，所有 `Paging` 实现都得背上它，哪怕该架构根本没有 1GB 叶。
 
 **去掉 `AlreadyMapped` 守卫会怎样**：直接按 2MB 路径往下走。`e3` 里原本存的是 `paddr | PRESENT | PS`（因为 1GB 大页的 PDPT 条目就是叶条目），代码会把 `e3 & ADDR_MASK` 当成下级 PD 页的物理地址。接下来 `read_pte_dm(pd + i2*8, ...)` 与 `write_pte_dm(pd + i2*8, ...)` 访问的是 `(e3 & ADDR_MASK) + i2*8`——也就是那个 1GB 物理块的基址加上偏移（这里的 `pd` 与 `map_huge` 的形参 `paddr` 同名不同物；`paddr` 只作为写入值参与）：这段内存正被 1GB 映射覆盖，可能就是内核自己的数据页。写完之后 1GB 映射还在（条目没变），但它的前 4KB 已经被当成页表改写。守卫的代价是"这次 2MB 映射失败"，去掉守卫的代价是"被映射的那段物理内存头部被写坏"。
 
@@ -2056,7 +2062,7 @@ pub fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
 
 - 交接载荷带 `bump_next`。原因在 §4.7 与 `BootAlloc::resume` 的文档里：两个镜像各链接一份 `BootAlloc`，接收方若从区间基址重新发页，会把 boot-shim 已经用作页表页的页再发一次。两条 UEFI 腿的 arena 由 UEFI `AllocatePages` 单独分配、不占 bump 池，因此没有"载荷页"要跳过；U-Boot shim 腿的 arena 由 `bump_alloc_pages` 从同一物理区间另行分配（它与 `BootAlloc` 是两个独立游标，见 §4.2.1 的"勿混"说明），排在模块落点之后；它排在 1024 页的 `boot_alloc_region()` 区间之后（起点不低于 `bump_end`），因此**不在**该区间的整段扣除内；v10 之前它在 `startup_objects` 里有记录（该分区已随 D-062 删除，arena 的归属由下面的生命周期合同单独成立）；扣除表没有单独排除它，而是按生命周期合同处理：解码是 arena 的最后一次读，VM 自由页在那之后才发布，因此这些帧可以重新发给 VM（§4.7 的 poison 测试钉住这条时序）。
 - `in("x0") arena_pa`：arena 基址绑在固定的第一参数寄存器上，而跳转目标放在任意寄存器。代码注释给出了理由——若在 asm 块里写隐式 `mov x0, ...`，寄存器分配器可能把 `entry` 也分配到 `x0`，两条约束顺序不定。
-- 接收侧先把七个分区直接解码进 `store_kernel_info` 的七个 `.bss` 落地区（随后 `store_kernel_info` 因源与目标同址成为 no-op），再只做 additive 阶段（接收壳的分派次序见 §4.8，这里不重复）：
+- 接收侧先把六个分区直接解码进 `store_kernel_info` 的六个 `.bss` 落地区（`resume_additive` 的 store 因源与目标同址成为 no-op），再只做 additive 阶段（接收壳的分派次序见 §4.8，这里不重复）：
 
 ```rust
 // 代码引用（略去首 3 行摘要与结尾 10 行——结尾那段不是设计史注记，而是 TTBR1 高半免疫 `switch_address_space` 的现时理由与加性序列枚举 `validate（内含 pt_alloc 注册）→ DM plan → record root → store → register_panic_diagnostic → establish DM → jump`（英文摘要把 register 与 validate 并列是分组说明，不是逐字次序）；保留段逐字；末行在源文件里与后续内容同行，此处截断至句号），
@@ -2073,7 +2079,7 @@ pub fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
 /// instruction fetch would fault.
 ```
 
-引文里的 `establish the direct map` 就是 §4.6 的 Step 4；本篇按 §1.4 的边界不展开该机制，只保留引文中的时序位置。
+引文里的 `establish the direct map` 就是 §4.6 的 Step 4；本篇按 §1.4 的边界不展开该机制，只保留引文中的时序位置。`new_from_page` 的真实签名是 `new_from_page(root_page, channel: PteChannel)`（I-59 A'/D-094）：根的清零与后续 PTE 访问必须走调用方声明的写视图——bootstrap 建根用 `PteChannel::Identity`（Direct Map 尚未建立），运行期进程根用 `KernelDm`，VM 自有根用 `VmDm`。引文省略了该参数，但“清零活动根”的结论不变：三个通道只是同一根的不同写入口。
 
 riscv64 上是**直核自引导形态**的出生地：内核镜像自己就是引导体——在没有 U-Boot 与文件系统的 `-kernel` 场景里，入口是 [`main.rs`](os/kernel-image/src/main.rs) 按架构分道的 `rust_image_main`，riscv64 的实现是 [`fn bootface`](<os/kernel-image/src/bootface.rs:fn bootface>)（aarch64 的对应面是 `bootface_a64.rs` 的 [`fn bootface_a64`](<os/kernel-image/src/bootface_a64.rs:fn bootface_a64>)，只在该架构构建时编译），从设备树解析内存、按 `BootFileTable` 取模块——模块来源只有表这一条，表的**地址**只有 DTB `/chosen` 的 `opensbi,boot-file-table` 属性一条通道（仓库内六个脚本——`test-atf-riscv64`、`test-cmd-smoke-riscv64`、`test-kernel-image-riscv64-bootface`、`test-riscv64-boot-full`、`test-smp-aps-aarch64`、`test-smp-aps-riscv64`——都用 `fdtput` 注入表址）。曾经的备用 `a2` 参数通道在 D01 裁决项 3 中删除（仓内从未有生产者：QEMU/OpenSBI 只约定 `a0`/`a1`）；表址先过 `in_memmap_range` 再过魔数，失败即 halt。细节在 `bootface.rs` 的入口段，本篇不展开。
 
@@ -2083,7 +2089,7 @@ U-Boot shim 腿自建表、不经过此通道——它把表与模块序列化�
 
 其一，aarch64 退回内联执行。内联时内核代码住在 PE 镜像的运行物理地址上（低半、`VA = PA`、在 TTBR0 覆盖范围内）。第一次 `switch_address_space` 会换 TTBR0 到进程页表并发 `tlbi vmalle1is`，内核自身的取指映射随之消失——现场证据（`elr`/`vbar` 钉在同一个低地址上）外包给 [`rewrite-notes/01-stage-kernel/01-code-design.md`](01-code-design.md)；本篇只登记这条指向，不自称独立可核。跨镜像形态把这个问题的根去掉：内核代码链接在高半（TTBR1），而 TTBR1 在上下文切换中不被替换。
 
-其二，接收侧按"干净启动"重建 bootstrap 根（调 `Paging::new_from_page`）。该函数的第一件事是把 512 个根条目清零（`write_bytes(ptr, 0, 512)`），而此时这个根**正在被使用**——承载当前函数的那条指令所在的 L0 槽就在其中。清零本身不会立刻作废已缓存的 TLB 项——三个架构都不因改写页表而自动清 TLB——故障落在下一个**冷**取指上（TLB 回填或切换后的 kmain 入口取指）：之前靠 TLB 残留还能跑几条指令，这段"还能跑"的窗口让故障点与根因隔得更远，栈上多半连一条 panic 消息都来不及打印；"resume 面只做 additive 阶段"这条约束就是从这里来的。
+其二，接收侧按"干净启动"重建 bootstrap 根（调 `Paging::new_from_page(root_page, channel)`）。该函数的第一件事是把 512 个根条目清零（`write_bytes(ptr, 0, 512)`），而此时这个根**正在被使用**——承载当前函数的那条指令所在的 L0 槽就在其中。清零本身不会立刻作废已缓存的 TLB 项——三个架构都不因改写页表而自动清 TLB——故障落在下一个**冷**取指上（TLB 回填或切换后的 kmain 入口取指）：之前靠 TLB 残留还能跑几条指令，这段"还能跑"的窗口让故障点与根因隔得更远，栈上多半连一条 panic 消息都来不及打印；"resume 面只做 additive 阶段"这条约束就是从这里来的。
 
 **直核自引导在真板上的位置** `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`。`FW_PAYLOAD` 直核形态的规范背景与真板意义见 §3.1 例外条款段（一句话版：固件打包下一级镜像直接跳 S 模式目标，QEMU `-kernel` 模拟同一时序）。三架构的落位并不对称：
 
@@ -2268,7 +2274,7 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 
 ## 4. 实现详解
 
-本章把第 3 章的设计决策落到代码：4.1–4.3 走一遍入口与两条固件路径的调用链（含共用装载函数），4.4–4.5 看两条产出入径（`build_kernel_info` 与 `BootStorage`/`BootReport`）、校验与七个 `.bss` 落地区，4.6–4.7 是自举根建立/开分页与分配器换手的落地，4.8 是跨镜像交接与直核自引导，4.9 收成 C 函数对照表。各节标题后的 `→` 指回它所实现的设计决策。
+本章把第 3 章的设计决策落到代码：4.1–4.3 走一遍入口与两条固件路径的调用链（含共用装载函数），4.4–4.5 看两条产出入径（`build_kernel_info` 与 `BootStorage`/`BootReport`）、校验与六个 `.bss` 落地区加一个名字池，4.6–4.7 是自举根建立/开分页与分配器换手的落地，4.8 是跨镜像交接与直核自引导，4.9 收成 C 函数对照表。各节标题后的 `→` 指回它所实现的设计决策。
 
 ### 4.1 入口与调用链（→3.1、3.2、3.8）
 
@@ -2300,7 +2306,7 @@ fn main() -> Status {
 
 逐行解码：
 
-- `main.rs` 的 [`fn main`](<os/boot-shim/src/main.rs:fn main>) 传给 `prepare_and_enter_kernel_image` 的 `boot_shim::BOOT_PT_BUMP_PAGES` 是**页表页预算**（常量值 1024，定义在 `lib.rs`；1024 页 = 4MiB；两个直核面另用 `bootface` 的 `PT_BUMP_PAGES = 256`）。第一段注释把这份预算的构成列了出来：恒等映射、内核高地址映射、Direct Map 覆盖建立、引导身份窗口的逐页拆解（只拆 `load_elf_into` 的 ELF 段页与 64 MiB VM heap 窗口，不是把全部 boot 恒等窗口撤掉）、以及交接 arena 之后的页表链条——它们都从同一个 bump 池里取页。预算是"上限"而不是"必须用完"：`BootAlloc` 只在分配时推进游标。**1024 与 256 的差别来自两条路径各自要建的东西**：跨镜像腿要额外建 Direct Map 覆盖、ELF 段的逐页拆解与 arena 之后的页表链，三架构各自的中层表加起来需要更大余量；两个直核面走的是同一片注册给 `pt_alloc` 的 bump 池，覆盖范围按 `bootface.rs` 的常量注释是「Sv39 root + identity low half + high half + two DM windows」——**DM 窗口也算在这 256 页里**，只是窗口数与逐页拆解面远小于跨镜像腿，所以 1 MiB 够用。两者没有共享常量，因为它们描述的不是同一个上界；实际消耗由 `boot_alloc_used_bytes()` 在交接时记为 `kernel_allocated_dynamic`（`os/kernel/src/vm_handoff.rs:605`），不靠预算反推。**未用部分不退回**——VM 交接记录按 `boot_alloc_region()` 把整段扣除（见 §3.8 的扣除表），用掉的与剩下的都算内核保留。（UEFI 路径下 bump 区本就不在 conventional 列表里，这条扣除对 free list 是空操作；扣整段防的是自引导等路径把 bump 区记进清单的情形。映射责任移交 VM 之后，`vmctl_set_addr_space` 不再向这个池取 kerninfo 注入页，预算只剩启动期本身的消耗。）
+- `main.rs` 的 [`fn main`](<os/boot-shim/src/main.rs:fn main>) 传给 `prepare_and_enter_kernel_image` 的 `boot_shim::BOOT_PT_BUMP_PAGES` 是**页表页预算**（常量值 1024，定义在 `lib.rs`；1024 页 = 4MiB；两个直核面另用 `bootface` 的 `PT_BUMP_PAGES = 256`）。第一段注释把这份预算的构成列了出来：恒等映射、内核高地址映射、Direct Map 覆盖建立、引导身份窗口的逐页拆解（只拆 `load_elf_into` 的 ELF 段页与 64 MiB VM heap 窗口，不是把全部 boot 恒等窗口撤掉）、以及交接 arena 之后的页表链条——它们都从同一个 bump 池里取页。预算是"上限"而不是"必须用完"：`BootAlloc` 只在分配时推进游标。**1024 与 256 的差别来自两条路径各自要建的东西**：跨镜像腿要额外建 Direct Map 覆盖、ELF 段的逐页拆解与 arena 之后的页表链，三架构各自的中层表加起来需要更大余量；两个直核面走的是同一片注册给 `pt_alloc` 的 bump 池，覆盖范围按 `bootface.rs` 的常量注释是「Sv39 root + identity low half + high half + two DM windows」——**DM 窗口也算在这 256 页里**，只是窗口数与逐页拆解面远小于跨镜像腿，所以 1 MiB 够用。两者没有共享常量，因为它们描述的不是同一个上界；实际消耗由 `boot_alloc_used_bytes()` 在交接时记为 `kernel_allocated_dynamic`（`os/kernel/src/vm_handoff.rs:fn build_vm_handoff` 的 `kernel_allocated_dynamic` 赋值点），不靠预算反推。**未用部分不退回**——VM 交接记录按 `boot_alloc_region()` 把整段扣除（见 §3.8 的扣除表），用掉的与剩下的都算内核保留。（UEFI 路径下 bump 区本就不在 conventional 列表里，这条扣除对 free list 是空操作；扣整段防的是自引导等路径把 bump 区记进清单的情形。映射责任移交 VM 之后，`vmctl_set_addr_space` 不再向这个池取 kerninfo 注入页，预算只剩启动期本身的消耗。）
 - 两条 UEFI 产线的入口是同一个 `prepare_and_enter_kernel_image`：arena 分配、载荷序列化、配对循环都在 EBS 之前，EBS 之后提交分类计数并复核、构造 `BootReport`、建根、补字段与跳转（发送侧不构造 `KernelInfo`；`KernelInfo` 由接收镜像解码后形成）。分界线之后的代码不再出现任何 `uefi::` 调用（`prepare_and_enter_kernel_image` 与 `ebs_pair` 两个模块都如此，后者的分类计数打印也在 EBS 成功分支改走裸串口）；路标走裸串口。
 - 进入内核的分道只剩接收端的一处：x86_64 的 `rust_image_main` 从 `rbx` 取 arena 基址，aarch64 从 `x0` 取；两者都调用 `arch_boot_resume_v1`，再从既有的自举根上做增量阶段（`rust_image_main` 的分道臂代码——含 riscv64 的两种交付形态——逐臂引在 §4.8，本节只讲 boot-shim 侧的入口链）。内核不再有"链进 PE 低地址内联执行"的生产路径，VM 也就不再需要在进程页表里复现低地址窗口（`reserved_regions` 的恒等重放半随恒等窗口退场，DM 候选半保留，见 §3.4）。
 
@@ -2356,31 +2362,39 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     serializer.write_param_buf(report.param_buf).expect(...);
 
     let mut buffer_bytes = probe_map_buffer_size(boot_services_raw);
-    let classification = loop {
+    // 配对循环整体在 fill_map_tables 闭包内：闭包返回 MapCounts 时
+    // storage 两表与计数在同一步提交（D-067 的不变量）。
+    let mut classification = None;
+    storage.fill_map_tables(|memmap_slots, reserved_slots| loop {
         let buffer_ptr = alloc_map_buffer(buffer_bytes);
         let buffer = unsafe { core::slice::from_raw_parts_mut(buffer_ptr, buffer_bytes) };
+        // …（DTB preflight 省略，见下方说明）…
         match unsafe {
-            let (memmap_slots, reserved_slots) = storage.map_tables_mut();
             ebs_pair::pair_and_classify(&ops, boot_services_raw,
                 image_handle.as_ptr() as usize, buffer, pa_limit(), &mut serializer,
                 memmap_slots, reserved_slots)
         } {
-            Ok(classification) => break classification,
+            Ok(result) => {
+                classification = Some(result);
+                break minix_boot::MapCounts {
+                    memmap: result.conventional,
+                    reserved: result.reserved,
+                };
+            }
             Err(PairError::NeedBiggerBuffer(needed)) => { /* 扩容后重试 */ }
             Err(error) => {
                 panic!("boot-shim: EBS pairing loop failed: {error:?}");
             }
         }
-    };
+    });
+    let classification = classification.expect("the pairing loop returns only on success");
     crate::raw_serial("boot-shim: [raw] boot services exited (paired)\r\n");
 
-    // ...（startup 分区写入段省略，见下方说明）...
+    // v10（D-062）删掉了 startup 对象分区：它唯一的读者是 strict 门的
+    // 内核跨度覆盖检查，现在由内存图两表直接回答。
 
-    // 分类已把条目写进 storage；直接提交分类器返回的计数，不再解码自己
-    // 刚写的 wire（DESIGN-07）。arena 里不再有第二份语义表。
-    storage.commit_map_tables(classification.conventional, classification.reserved);
     let mut report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
-    // UEFI 腿的 source 记录由分类器直写 wire；startup 记录在 EBS 后由省略段直写 wire；storage 槽为空。
+    // UEFI 腿的 source 记录由分类器直写 wire；storage 的 source 切片为空。
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     assert_bootstrap_outside_memmap(report.memmap, root_page.0, PAGE_SIZE);
     assert_bootstrap_outside_memmap(report.memmap, bump_base, bump_end - bump_base);
@@ -2403,9 +2417,9 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 
 引文的省略段说明：v10（D-062）删掉了原来 EBS 之后写 startup 分区的那约 38 行，现在该处只留一条说明注释；配对循环体内另有一处省略（DTB 头 preflight），它发生在首次 `GetMemoryMap` 之后、`ExitBootServices` 之前，不是配对成功后的额外一次调用；`authorize_and_copy` 也在最后一次 `GetMemoryMap` 之后、`ExitBootServices` 之前执行，正文只用这一句交代它的时序，不展开实现（§1.4 的下游交代清单）。引文里的 `dumpdtb_blob` 是 `Option<Vec<u8>>`（DTB 暂存区的自有缓冲，不是静态切片），`ops` 是 EBS 配对用的函数表包装，两者都在省略段之前的准备步骤中产生。末行的 `shim_windows[..shim_window_n]` 也不是可省略的装饰：函数开头从 `LoadedImage.info()` 与当前 SP 捕获 shim image/stack，EBS 前若存在 `dumpdtb_blob` 再把它的缓冲并入，最多三个窗口；它们与内核 LMA、root/bump/arena、模块、平台源、设备窗口一起交给内核建根，不对应任何一次固件调用。
 
-#### 4.2.1 九个动作 + 一个 EBS 后补写（6b）与每步的约束
+#### 4.2.1 九个动作与每步的约束
 
-九个动作与每步的约束（正文用**动作 N** 指动作 ID，用**时间序第 N 拍**指执行顺序；动作 ID 按依赖分组编号、**不按时间序**，真实执行顺序见第二列——按时间读是 **2 的读/预订 → 1 → 2 的拷贝/模块 → 3 → 4 → 5 → 动作 6（拍 7）→ 6b（拍 7 与拍 8 之间）→ 动作 7（拍 8）→ 8 → 9**；另注意三套编号的共存：本节的动作 ID、本节的时间拍、§4.2.2 的描述符判定五步；§4.1 的 Step 0–4 是另一套阶段编号，只作概览，不参与本节计数）：
+九个动作与每步的约束（正文用**动作 N** 指动作 ID，用**时间序第 N 拍**指执行顺序；动作 ID 按依赖分组编号、**不按时间序**，真实执行顺序见第二列——按时间读是 **2 的读/预订 → 1 → 2 的拷贝/模块 → 3 → 4 → 5 → 动作 6（拍 7）→ 动作 7（拍 8）→ 8 → 9**；另注意三套编号的共存：本节的动作 ID、本节的时间拍、§4.2.2 的描述符判定五步；§4.1 的 Step 0–4 是另一套阶段编号，只作概览，不参与本节计数）：
 
 | 动作 ID（非时序） | 时间序 | 动作 | 约束 |
 |---|---|---|---|
@@ -2415,13 +2429,13 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 | 4 | 5 | 分配八页 arena（`alloc_arena()` 经 UEFI `boot::allocate_pages(MaxAddress(bootstrap_alloc_limit()))`——该上界为无参函数返回的 DM 可达界；`bump_alloc_pages` 是 OpenSBI 侧的另一个分配器，勿混），`LOADER_DATA` | 整段落在恒等/DM 可达界之下；接收方经恒等窗口读它 |
 | 5 | 6 | 从 `BootStorage` 的报告写信封、模块、平台源、参数（非内存图载荷） | 动作 5 开头 `Serializer::new` 对前 `ARENA_CAP` 字节整段零化（源文件 `handoff_v1_write.rs`）；信封的静态标量字段此时定稿（root/bump 等运行期字段在建根后回填）；载荷切片来自 storage，不是 `'static` 指向 arena |
 | 6 | 7 | 分配 `GetMemoryMap` 缓冲，进入配对循环 | 循环内先 `GetMemoryMap`，再分类进 memmap/reserved 两个内存图分区并写 source 记录分区，最后用同一 MapKey 调 raw `ExitBootServices` |
-| 7 | 8 | 提交分类器返回的 `conventional`/`reserved` 计数给 `BootStorage`（`commit_map_tables`） | 描述符解码与分类在配对循环内、`ExitBootServices` **之前**完成；EBS 成功后只提交计数，不再解码描述符。只有分类成功的那一份内存图存活；重试前 `reset_map_partitions` 清掉旧 wire 条目；分类同时写进 storage 与 wire，不存在第二份 arena 语义表 |
+| 7 | 8 | 由 `fill_map_tables` 闭包返回 `MapCounts` 提交分类器返回的 `conventional`/`reserved` 计数 | 描述符解码与分类在配对循环内、`ExitBootServices` **之前**完成；EBS 成功后闭包返回计数，`fill_map_tables` 在同一步提交两表（写与提交不可分）。只有分类成功的那一份内存图存活；重试前 `reset_map_partitions` 清掉旧 wire 条目；分类同时写进 storage 与 wire，不存在第二份 arena 语义表 |
 | 8 | 9 | 构造 `BootReport<'a>`，再用它复核 root/bump/arena 都不在 conventional 列表里 | 断言消费动作 7 提交的 storage 视图；失败即裸串口打印后停机（此时已无 Boot Services 可退）；报告的生命周期绑定 storage，内核入口只借用它，不提升为 `'static` |
 | 9 | 10 | 建根、开分页、把运行期字段补进 arena、跳转 | `build_bootstrap_root_and_enable` 返回之后到跳转之前不再从 UEFI 分配；建根动作内部的 bump 取页已结束，`patch_runtime_fields_in` 不再分配、也不零化 arena。窗口表此时已包含 shim image/stack（UEFI）或 `[SHIM_LINK_BASE, UBOOT_SHIM_STACK_TOP)`（U-Boot），以及可选 `dumpdtb` 临时缓冲窗口（EBS 前存在时才建）、内核 LMA、root/bump/arena、模块、平台源、设备窗口；x86 另含低 2 MiB AP 跳板窗口 |
 
-动作 5 只写非内存图载荷；startup 分区在配对循环成功、`ExitBootServices` 之后由省略段补写（canonical 五类记录，见 §3.4）。它是上表九个动作之外的一个动作，记为 6b：**6b 没有动作 ID，也没有自己的拍号**；它夹在动作 6（拍 7，EBS）与动作 7（拍 8，`commit_map_tables`）之间，表中的拍号已经把这段时间算进去——动作 7–9 的拍号 8–10 是在 6b 之后继续数的，不是 6b 之前。
+动作 5 只写非内存图载荷。v10（D-062）之前这里还有一个 6b：配对循环成功、`ExitBootServices` 之后由省略段补写 startup 分区（canonical 五类记录）。D-062 删掉了该分区与它的唯一读者，因此现在的执行序在动作 6（拍 7，EBS）之后直接进入动作 7（拍 8）；本节不再给它动作 ID 或拍号。
 
-按时间重建 EBS 前后序列时，正确读法是：拍 7 的 `ExitBootServices` 成功之后，省略段补写 startup，然后才进入拍 8 的 `commit_map_tables`；把 6b 放到拍 6 与拍 7 之间（即 EBS 之前）会与"startup 分区在 EBS 之后补写"的因果直接冲突。
+按时间重建 EBS 前后序列时，正确读法是：拍 7 的 `ExitBootServices` 成功之后直接进入拍 8 的 count 提交与 storage 定稿，中间没有第三个写段；引文里保留的“``（v10 删掉的 startup 写入段）``”注释只作历史定位，不是现行动作。
 
 **MapKey 是什么**：UEFI 给每次 `GetMemoryMap` 的结果发一个标识符（`MapKey`，一个 `usize`）；此后任何改变内存图的操作（包括 `ExitBootServices` 内部的簿记）都会使旧 key 失效。`ExitBootServices` 的契约要求调用方传入"我最后一次 `GetMemoryMap` 时的 key"——固件用它确认调用者看到的内存图与它自己记录的一致；不一致就以 `EFI_INVALID_PARAMETER` 拒绝，调用方重取内存图、重新分类、再试。这就是分类必须与退出共用同一循环的原因：两者必须读同一份快照。
 
@@ -2553,6 +2567,11 @@ pub fn load_boot_modules_into<L: FileLoader>(
         });
         let data = data.as_slice();
 
+        // D-082（I-36）：修剪到 ELF 的运行期文件长度（最后一个 PT_LOAD 的
+        // 文件尾）——模块装载里唯一需要 ELF 语义的层；两条腿的输入在此统一。
+        let used = elf_file_end(data).unwrap_or(data.len());
+        let data = &data[..used];
+
         let num_pages = (data.len() + 4095) / 4096;
         let phys_base = alloc_pages(num_pages).unwrap_or_else(|| {
             panic!(
@@ -2583,10 +2602,10 @@ pub fn load_boot_modules_into<L: FileLoader>(
 
 四处具体事实：
 
-- `num_pages = (data.len() + 4095) / 4096`：向上取整到页。分子写 4095 而不是 4096 是按整数除法做 ceil 的标准形——`x/4096` 本身向下取整，先加 `4096-1` 才让任何非零余数进位；写 4096 会在 `data.len()` 恰为整页时多要一页，写小了（加数 A ≤ 4094）时，只有余数 r 满足 `r > 4096 - A` 才会少一页——反例：`data.len()=4095`（r=4095）、`A=4094` 时 `(4095+4094)/4096 = 1`，仍是一页。所以 A=4095 是让「任何非零余数都进位」成立的最小加数，写成「只要余数非零就会少一页」是不成立的强结论。
-- 分配出来的页里，`data.len()` 之后的余量被显式清零（`write_bytes(dest.add(data.len()), 0, remaining)`）。模块镜像按文件字节数拷贝，页尾的余量清零保证同一页内的任何对齐空洞都是确定值，而不是上一轮使用留下的内容。
-- `BootModule.len` 记录的是**文件字节数**，不是页数。消费者按 `[start, start+len)` 计算占用区间。
-- 缺件是 panic 而不是 `continue`。错误消息里带着模块名、路径与总数，落点在 boot-shim 侧；如果改成静默跳过，错误会推迟到内核侧的数量断言，那里只有"期望 12、实际 N"，没有缺失的名字。
+- `num_pages = (data.len() + 4095) / 4096`：向上取整到页。分子写 4095 而不是 4096 是按整数除法做 ceil 的标准形——`x/4096` 本身向下取整，先加 `4096-1` 才让任何非零余数进位；写 4096 会在 `data.len()` 恰为整页时多要一页，写小了（加数 A ≤ 4094）时，只有余数 r 满足 `r > 0 && r < 4096 - A` 才会少一页——反例：`data.len()=4095`（r=4095）、`A=4094` 时 `(4095+4094)/4096 = 1`，仍是一页。所以 A=4095 是让「任何非零余数都进位」成立的最小加数。
+- 分配出来的页里，`data.len()` 之后的余量被显式清零（`write_bytes(dest.add(data.len()), 0, remaining)`）。模块镜像按 ELF 运行期文件长度（最后 PT_LOAD 的文件尾）拷贝；非 ELF 或畸形头回退整段。页尾的余量清零保证同一页内的任何对齐空洞都是确定值，而不是上一轮使用留下的内容。
+- `BootModule.len` 记录的是**修剪后的运行期文件长度**，不是页数，也不是盘上整份文件字节数（`.comment`/`.symtab`/`.debug_*` 等非 ALLOC 尾部被裁掉）。消费者按 `[start, start+len)` 计算占用区间。
+- 缺件是 panic 而不是 `continue`。错误消息里带着模块名、路径与总数，落点在 boot-shim 侧；如果改成静默跳过，错误会推迟到内核侧：`validate` 只查 `boot_modules` 非空，按位置绑定会静默少初始化几个进程，现场没有缺失的名字。
 
 OpenSBI 路径的 `FileLoader` 实现是查表：
 
@@ -2608,26 +2627,19 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // and not concurrently modified.
         let slice =
             unsafe { slice::from_raw_parts(entry.phys_addr as *const u8, entry.len as usize) };
-        // 表里的长度已在生产者 build_shim_table 里按最后一个 PT_LOAD
-        // 修剪过（超槽容量时生产者已截断到槽边界并打印 truncating）；
-        // 这里对已在槽内的输入是 no-op，对非 ELF 回退整槽的输入才生效。
-        // 〔编注〕源码同处的英文注释说 "The table stores the slot capacity,
-        // not the file length" 已与实现不符（build_shim_table 在 fatload 之后
-        // 解析已落位的字节，能算出文件尾）；以代码为准，该注释待同步。
-        let used = minix_elf::segment_iter(slice)
-            .ok()
-            .and_then(|iter| iter.map(|seg| (seg.offset + seg.filesz) as usize).max())
-            .filter(|&end| end > 0 && end <= slice.len())
-            .unwrap_or(slice.len());
+        // D-082（I-36）：`read` 只处理字节来源，不做任何 ELF 语义。表里的
+        // `entry.len` 已是 `build_shim_table` 用 `staged_elf_used_len` 算出
+        // 的修剪值——这里再跑 `segment_iter` 是对已修剪数据的幂等无效功。
+        // 模块装载层的唯一修剪点在 `loader::load_boot_modules_into`。
         // U-Boot staged the file in RAM; hand out a borrow instead of a copy
         // (R18 D-4). The table is written once before the shim runs and is
         // not modified while the bytes are in use.
-        Some(crate::loader::FileBytes::Borrowed(&slice[..used]))
+        Some(crate::loader::FileBytes::Borrowed(slice))
     }
 }
 ```
 
-`entry_path_eq` 把"路径必须 NUL 结尾"变成匹配条件的一部分：`entry.path[bytes.len()] == 0`。表由 `uboot_main::build_shim_table` 在 shim 的 `.bss` 内构建：它写入路径字节 + 一个终止 NUL；字段其余字节由 `.bss` 零初值保证，路径超界由构建时的两条 assert 当场拦下（消息 `does not fit the BootFileEntry field`）。因此 `entry_path_eq` 的 NUL 条件是构建器与查表器之间的契约；构建器若写坏路径，`find` 返回 `None`，随后 `read_required` 报"找不到内核"。`BootFileTable::valid_entries` 里 `entry_count` 被夹到容量上限（`(self.entry_count as usize).min(BOOT_FILE_TABLE_MAX_ENTRIES)`），因此一个写坏的 `entry_count` 只会让多余的条目被忽略，不会越界读。
+`entry_path_eq` 把"路径必须 NUL 结尾"变成匹配条件的一部分：`entry.path[bytes.len()] == 0`。表由 `uboot_main::build_shim_table` 用 `BootFileTable` 类型在 shim 的 `.bss` 内构建：它写入路径字节 + 一个终止 NUL；字段其余字节由零初值保证，路径超界由构建时的两条 assert 当场拦下（消息 `does not fit the BootFileEntry field`）。因此 `entry_path_eq` 的 NUL 条件是构建器与查表器之间的契约；构建器若写坏路径，`find` 返回 `None`，随后 `read_required` 报"找不到内核"。`BootFileTable::valid_entries` 里 `entry_count` 被夹到容量上限（`(self.entry_count as usize).min(BOOT_FILE_TABLE_MAX_ENTRIES)`），因此一个写坏的 `entry_count` 只会让多余的条目被忽略，不会越界读。
 
 **若把 `MODULE_NAMES` 里 `tty` 与 `mib` 两项互换会怎样**：分腿看。boot-shim 三条链的装载会全部成功（12 个文件都在），数组长度仍是 `[&str; NR_BOOT_MODULES]`（数量没变），strict 门的**按位置核名**也只会看到“每个位置都有名字”，不会发现两个名字互换了。两个直核腿不同：`bootface_common` 的 `NAME_POOL` 与 `boot_shim::loader::MODULE_NAMES` 有逐字节的编译期对账，互换会让构建直接失败——反事实只对 boot-shim 三条链成立。但是位置 6 上的 `BootModule` 记的是 `mib` 的镜像与名字，内核按位置把它绑到 `tty` 的进程号上；位置 7 上则是 `tty` 的镜像，被绑到 `mib` 的进程号。启动过程依旧能走到 `kmain`，进程表也能建起来；症状出现在第一次对 `tty` 或 `mib` 发系统调用时——调用被打到错误的进程号，表现为"服务没有响应"或"收到协议外的回复"，与"装载时顺序错了"之间隔着整个启动流程。
 
@@ -2723,8 +2735,8 @@ pub fn build_kernel_info(
 
 **窗口类型的边界规则**（裸地址对与类型化地址对之间的取舍）：裸 `(u64, u64)` 只允许出现在固件/分配器边界——`enter_kernel_image_v1`/`prepare_kernel_image_v1` 的 `shim_windows` 形参、`boot_alloc_region()` 的返回值、U-Boot 主函数把 `BootPrepareResult.bump` 拆成两个数交给 `init_boot_pt_alloc` 的那一处；进入内核内部一律 `PhysRange`。`BootWindows::push` 是转换点：`PhysRange::new` 拒绝反向区间，`push` 自己拒绝空区间（`start < end`），两条负控都有宿主测试（`boot_windows_reject_reversed_ranges` / `boot_windows_reject_empty_ranges`）。`EMPTY_PHYS_RANGE` 只是未用槽的填充哨兵，`as_slice` 只暴露已提交前缀，不会把它当成窗口。公共入口的类型化留作后续批，本次不改。
 2. `validate_before_tables`（pre-table gate）：`kern_size != 0`、`memmap` 非空、`param_buf.len() <= 1024`——它**不查** `boot_modules` 非空（QEMU 测试内核合法携带空模块表）。
-3. `check_boot_postconditions`：高半地址关系（`syscall_entry` 落在镜像跨度内；`kern_stack_top` 不越过跨度上界，恰等于镜像尾合法；用户栈不越入内核半区等）。
-4. `KernelInfo::validate`（`kmain` 入口）与生产腿的 `validate_requiring_sources`（strict 变体）：前者复核非地址不变量、检查生产内核的 `boot_modules` 非空，并复核内核镜像与各模块、模块与模块的半开区间不重叠（相切放行；跨度加法用 `checked_add`，防 release 回绕把判断变成恒真）；非 strict 在 `memmap_sources` 非空时也查“来源记录覆盖投影内存图”（条件性检查，见 §3.4.1）。`ValidationLevel` 三档是 `BeforeTables`/`Standard`/`Strict`；`Strict` 不带载荷，`authority` 从 `KernelInfo.authority` 读取，`validate_requiring_sources()` 无参。后者按结构体自带的 `authority` 要求 `memmap_sources` 覆盖投影内存图，另要求 `startup_objects` 至少一条覆盖内核镜像跨度（startup 不按 authority 过滤）。
+3. `check_boot_postconditions`：高半地址关系。v10（D-062）之后只剩一条可被剩余字段证伪的关系——`kern_virt_base` 必须在 higher half；“`syscall_entry` 落在镜像跨度内 / `kern_stack_top` 不越过跨度上界 / 用户栈不越入内核半区”三条读取派生字段的断言随字段一起删除（用派生值重算同一条等式只是重抄，不构成检查）。
+4. `KernelInfo::validate`（`kmain` 入口）与生产腿的 `validate_requiring_sources`（strict 变体）：前者复核非地址不变量、检查生产内核的 `boot_modules` 非空，并复核内核镜像与各模块、模块与模块的半开区间不重叠（相切放行；跨度加法用 `checked_add`，防 release 回绕把判断变成恒真）；非 strict 在 `memmap_sources` 非空时也查“来源记录覆盖投影内存图”（条件性检查，见 §3.4.1）。`ValidationLevel` 三档是 `BeforeTables`/`Standard`/`Strict`；`Strict` 不带载荷，`authority` 从 `KernelInfo.authority` 读取，`validate_requiring_sources()` 无参。后者按结构体自带的 `authority` 要求 `memmap_sources` 覆盖投影内存图，并要求内核物理跨度落在某条 `memmap` 或 `reserved_regions` 区间内（v10 之前这条由 `startup_objects` 的一条记录回答；该字段与分区已随 D-062 删除）。
 
 腿间实际执行序要说清：直核面是 **strict（`validate_requiring_sources`，两个 `bootface` 在调 `arch_boot` 之前显式调用）→ pre-table（2）→ postconditions（3）→ boot_validate（1，`arch_boot_impl` 开头）→ kmain validate**；v1 接收面是 **strict → postconditions（3）→ boot_validate（1）**，且**不经过** pre-table（`resume_additive` 体内没有 `validate_before_tables`），`kmain` 入口的 `validate` 再跑一次。接收面的 3 有可见调用点：`arch_boot_resume_v1` 在 `kinfo.validate_requiring_sources()` 之后、`boot_alloc::resume_boot_pt_alloc` 之前调用 `kinfo.check_boot_postconditions()`。下表按门列 bug 类，不按时间排序。
 
@@ -2734,26 +2746,26 @@ pub fn build_kernel_info(
 |---|---|---|
 | `boot_validate_and_prepare` | `ks > 0` | boot-shim 没装载成功却继续往下走 |
 | `boot_validate_and_prepare` | 两个基址页对齐 | 布局常量写错（链接脚本改了而工具没跟） |
-| `boot_validate_and_prepare` + 共享校验体（三档都跑） | `kern_stack_top` 16 字节对齐 | ABI 要求（AAPCS64 / SysV 的栈对齐） |
+| `boot_validate_and_prepare` | `kern_stack_top` 16 字节对齐 | ABI 要求（AAPCS64 / SysV 的栈对齐） |
 | `boot_validate_and_prepare` + 窗口组装后 | `detect_boot_page_support` 成功；每个窗口 `end <= phys_addr_limit`（`BootWindows::check` 返回 `CheckedWindows`，建根只收该 token） | 页大小能力缺失，或某个 boot identity 窗口越过平台物理地址上限（启动最早、最难归因） |
 | `validate_before_tables` | `kern_size != 0` | `kmain` 之前就拿到空镜像 |
 | `validate_before_tables` | `memmap` 非空 | 内存图丢了 |
 | `validate_before_tables` | `param_buf.len() <= 1024` | 参数缓冲超过 C 的固定容量 |
-| `check_boot_postconditions` | `syscall_entry` 落在镜像跨度内；`kern_stack_top` 不越过跨度上界（恰等于镜像尾合法）；用户栈不越入内核半区 | 高半地址关系错（镜像内入口/栈顶偏移写错，或用户栈上界越入内核半区） |
+| `check_boot_postconditions` | `kern_virt_base` 在 higher half（v10 后唯一剩余的后置条件） | 内核镜像落进低半区，用户/内核地址划分失去依据 |
 | `KernelInfo::validate`（`kmain` 入口） | 复核 `kern_size`/`memmap`/`param_buf` 非地址不变量；`boot_modules` 非空（仅生产内核；QEMU 测试内核合法为空）；`memmap_sources` 非空时另查来源覆盖（条件性，见 §3.4.1） | 同前几行，在更晚的入口再挡一次；模块装载失败 |
 | 共享校验体（`BeforeTables`/`Standard`/`Strict` 都跑；`kmain` 入口再跑一次） | `memmap` 与 `reserved_regions` 不相交 | 保留区被当成空闲页发出 |
 | 共享校验体（三档都跑；接收侧 strict 再复核一次） | 内核镜像与各模块、模块与模块按半开区间互不重叠（相切放行；跨度加法 `checked_add`） | 跨二进制载荷把模块放到内核或另一个模块身上（信任边界上的第二道复核） |
-| `validate_requiring_sources`（生产腿 strict；三条 v1 接收腿与两个直核面都调用） | 按 `KernelInfo.authority` 查 `memmap_sources` 覆盖投影内存图；`startup_objects` 至少一条覆盖内核镜像跨度（不按 authority 过滤）；按共享 `MODULE_NAMES` 的位置核对 `boot_modules[i].name`；核对三条派生标量（`user_sp`/`syscall_entry`/`kern_stack_top`）等于其唯一来源 | 生产者漏写 provenance、声明了没有记录的权威、伪造了模块名或派生标量 |
+| `validate_requiring_sources`（生产腿 strict；三条 v1 接收腿与两个直核面都调用） | 按 `KernelInfo.authority` 查 `memmap_sources` 覆盖投影内存图；内核物理跨度落在某条 `memmap` 或 `reserved_regions` 区间内；按共享 `MODULE_NAMES` 的位置核对 `boot_modules[i].name` | 生产者漏写 provenance、声明了没有记录的权威、伪造了模块名，或内核跨度没有任何内存图记录解释 |
 | 规划期（不是门） | `plan_kernel_mapping` 的首选/回退选择 | 镜像跨距不满足回退尺寸对齐 → 规划阶段给出可读错误 |
 
 **"去掉 `bootstrap_len == 0` 断言"在当前代码里已无从谈起**：字段与断言已随字段删除（论证见 §3.5），这条反向推演保留的是它曾对应的真实险情。字段删除后，“提供一个可误设的回收区间”这个接口面整体消失，险情在类型上不可复发（完整故障链见 §3.5）。
 
-### 4.5 内核侧第一步：`store_kernel_info` 的七个落地区加一个名字池（→3.4）
+### 4.5 内核侧第一步：`store_kernel_info` 的六个落地区加一个名字池（→3.4）
 
 `arch_boot` 的早期动作是把按值传入的结构深拷进内核自己的 `.bss`（`lib.rs` 的 [`fn store_kernel_info`](<os/kernel/src/lib.rs:fn store_kernel_info>)），然后只使用这份副本。
 
 ```rust
-// 节选（五个切片落地区收敛到 `land_slice`；保留 helper、五处调用、仍内联的模块名/param 两块与指针回填；注释与相邻接续行有省略），os/kernel/src/lib.rs:fn land_slice + fn store_kernel_info。
+// 节选（四个切片落地区收敛到 `land_slice`；保留 helper、四处调用、仍内联的模块名/param 两块与指针回填；开头的一次性守卫 assert 与相邻接续行有省略），os/kernel/src/lib.rs:fn land_slice + fn store_kernel_info。
 fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
     assert!(
         src.len() <= dst.len(),
@@ -2834,7 +2846,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
 }
 ```
 
-**表名：《落地区与交接容量》**。七个落地区、一个名字池、一行 `KernelInfo.memmap` 切片视图与两个 `VmBootHandoff` 交接字段的容量与溢出行为；**这张表是全文交接容量的唯一权威**；§2.4.1.4 与 §3.4.1 引用本表并可在行内重复数字以服务上下文，但不另立权威口径：
+**表名：《落地区与交接容量》**。六个落地区、一个名字池、一行 `KernelInfo.memmap` 切片视图与两个 `VmBootHandoff` 交接字段的容量与溢出行为；**这张表是全文交接容量的唯一权威**；§2.4.1.4 与 §3.4.1 引用本表并可在行内重复数字以服务上下文，但不另立权威口径：
 
 | 落地区 / 交接字段 | 容量常量 | 值 | 溢出行为 |
 |---|---|---|---|
@@ -2844,17 +2856,17 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
 | `PLATFORM_SOURCE_STORE` | `PLATFORM_SOURCE_STORE_LEN` | 4（真实上限 2 × 有意余量） | panic |
 | `PARAM_BUF_STORE` | `PARAM_BUF_STORE_LEN` | 1024（C 的 `MULTIBOOT_PARAM_BUF_SIZE`） | panic（先清零再复制） |
 | `SOURCE_RECORD_STORE` | `SOURCE_RECORD_STORE_LEN` | 296 条记录（`WIRE_SOURCES_CAP`；wire 分区容量 21312 B，每条 72 B）。发送侧 `BootStorage` 的 source 槽是 40（DTB 收集器输入上限，超过 fail-closed），wire/接收侧 stores 是 296 | panic |
-| `STARTUP_RECORD_STORE` | `STARTUP_RECORD_STORE_LEN` | 20 条记录（`WIRE_STARTUP_CAP`，规范集合定稿后；wire 分区容量 1440 B） | panic |
+| `STARTUP_RECORD_STORE`（**v10 已删除**） | 无 | v10（D-062）删掉了 startup 对象分区与它唯一的落地区；原 20 条记录的规范集合不再存在 | 不适用 |
 | `BOOT_MODULE_NAME_STORE`（名字字节池） | `BOOT_MODULE_NAME_LEN` | 16（每槽，复制时截到 15 字节） | 截断（不 panic） |
 | `KernelInfo.memmap`（交接字段） | 无独立容量（`&'static [MemoryRegion]`，长度自带） | 长度 = `MEMMAP_REGION_STORE` 已提交条数 | 不适用（切片） |
 | `VmBootHandoff.free_regions` | `VM_BOOT_HANDOFF_MAX_REGIONS` | 64 | 交接前容量断言 panic（fail-closed） |
 | `VmBootHandoff.deducted` | `VM_BOOT_HANDOFF_MAX_DEDUCTED` | 47 | 交接前容量断言 panic（fail-closed） |
 
-在全部落地区（七个加名字池）里，名字池是唯一允许截断的（`param_buf` 的超长在规范化阶段已按整条记录丢弃，不会超容量落到这里）：`n = bytes.len().min(BOOT_MODULE_NAME_LEN - 1)`（16 - 1 = 15），保留一个字节给 NUL 语义上的余量。截断后用 `core::str::from_utf8` 造 `&'static str`；若 15 字节截断切开了多字节序列，取 `valid_up_to()` 的最长合法前缀，而不是用 `from_utf8_unchecked` 把非法字节当成 `str`。生产名字全是 ASCII，但函数是公开的，不能把安全性寄托在调用者的内容上。测试内核路径用 write-once 静态表（`AtomicBool` 单写者 + 初始化后只读，无 `static mut`/别名面），并收进 `qemu-test-kernels` feature（生产不链接）；完整 `BootStorage` 迁移见 F-R20-03。
+在全部落地区（六个加名字池）里，名字池是唯一允许截断的（`param_buf` 的超长在规范化阶段已按整条记录丢弃，不会超容量落到这里）：`n = bytes.len().min(BOOT_MODULE_NAME_LEN - 1)`（16 - 1 = 15），保留一个字节给 NUL 语义上的余量。截断后用 `core::str::from_utf8` 造 `&'static str`；若 15 字节截断切开了多字节序列，取 `valid_up_to()` 的最长合法前缀，而不是用 `from_utf8_unchecked` 把非法字节当成 `str`。生产名字全是 ASCII，但函数是公开的，不能把安全性寄托在调用者的内容上。测试内核路径用 write-once 静态表（`AtomicBool` 单写者 + 初始化后只读，无 `static mut`/别名面），并收进 `qemu-test-kernels` feature（生产不链接）；完整 `BootStorage` 迁移见 F-R20-03。
 
-`land_slice` 里的 `if src.as_ptr() != dst.as_ptr()` 不是防御性假设：`store_kernel_info` 有三个调用点——`arch_boot_finish` 传原始 handoff（真正拷贝一次）；`arch_boot_resume_v1` 先把七个分区直接解码进这七个 store，随后 `resume_additive` 的 store 源就是 store 本身（同址，跳过）；`kmain` 拿到的是全局副本、再存一次也是同址。三个生产调用点现在都使用返回值：`kmain` 用 `let kernel_info = store_kernel_info(kernel_info);` 继续读同一槽。`kernel_info()` 不是第二通道：`GET_KINFO`/`GET_IMAGE`、`phys_ram_view`、`harden_kernel_text` 与 `kmain` 都还通过它读取同一 `.bss` 槽；两条取用路径指向同一存储，区别只在“刚存完的这次调用拿返回值、其余调用拿全局访问器”。`ptr::copy` 是为**部分重叠**保留（`copy_nonoverlapping` 对部分重叠是 UB）；精确同址由守卫跳过，不会调用到拷贝。
+`land_slice` 里的 `if src.as_ptr() != dst.as_ptr()` 不是防御性假设：生产路径有两个 `store_kernel_info` 调用点——`arch_boot_finish` 传原始 handoff（真正拷贝一次）；`resume_additive` 的 store 源已是前一步解码落进 store 的切片（同址，跳过）。`kmain` 不再调用 `store_kernel_info`（D-071 / I-35(a)）：它通过 `kernel_info()` 读同一 `.bss` 槽；`store_kernel_info` 顶部的一次性守卫会让第二次调用直接 panic，不是同址 no-op。`kernel_info()` 不是第二通道：`GET_KINFO`/`GET_IMAGE`、`phys_ram_view`、`harden_kernel_text` 与 `kmain` 都还通过它读取同一 `.bss` 槽；两条取用路径指向同一存储，区别只在“刚存完的这次调用拿返回值、其余调用拿全局访问器”。`ptr::copy` 是为**部分重叠**保留（`copy_nonoverlapping` 对部分重叠是 UB）；精确同址由守卫跳过，不会调用到拷贝。
 
-三个容量各有来由：`RESERVED_REGION_STORE_LEN = 256` 是真机记录（无归档日志，可靠性低于可复跑探针）的 127 条 reserved 翻倍后向上取整到 2 的幂（独立容量；与 VM 侧 `free_regions` 64 / `deducted` 47 不是同一常量——那两个是本表下方的交接字段行，分属"内核落地区"与"VM 交接"两层）；`MEMMAP_REGION_STORE_LEN = 128` 直接定居 globals.rs——C 形状账本模块（`memmap.rs` 的 add/cut + 空洞 + 高水位）删除后，交接扣减由 [`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `FreeRangeSet`（有序不相交页对齐集合）承担（扣减换手后），行为契约由"与参考区间减法逐页等价"的对拍测试锁住（读数与归因限定见 §3.4 的"不做深拷…会怎样"，实现侧增量见本节末）；`BOOT_MODULE_NAME_LEN = 16` 与 `vm_handoff::copy_name` 的 16 字节 `proc_name` 字段同宽，落地不会比既有长度契约更紧。另外几个容量定案：`PLATFORM_SOURCE_STORE_LEN = 4` 是"一个 DTB/ACPI 源加一个回退"的真实上限再乘二；`PARAM_BUF_STORE_LEN = 1024` 直接对齐 C 的定长语义，复制前先清零，短缓冲留下的尾部因此是全零而不是上一轮内容；`SOURCE_RECORD_STORE_LEN` 与 `STARTUP_RECORD_STORE_LEN` 直接取 wire 分区容量（296 与 20），与解码端同一口径；startup 容量 16→20 是规范集合的余量（1 内核 + 12 模块 + root + bump + arena = 16，留 4 槽给新增腿）。
+三个容量各有来由：`RESERVED_REGION_STORE_LEN = 256` 是真机记录（无归档日志，可靠性低于可复跑探针）的 127 条 reserved 翻倍后向上取整到 2 的幂（独立容量；与 VM 侧 `free_regions` 64 / `deducted` 47 不是同一常量——那两个是本表下方的交接字段行，分属"内核落地区"与"VM 交接"两层）；`MEMMAP_REGION_STORE_LEN = 128` 直接定居 globals.rs——C 形状账本模块（`memmap.rs` 的 add/cut + 空洞 + 高水位）删除后，交接扣减由 [`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 `FreeRangeSet`（有序不相交页对齐集合）承担（扣减换手后），行为契约由"与参考区间减法逐页等价"的对拍测试锁住（读数与归因限定见 §3.4 的"不做深拷…会怎样"，实现侧增量见本节末）；`BOOT_MODULE_NAME_LEN = 16` 与 `vm_handoff::copy_name` 的 16 字节 `proc_name` 字段同宽，落地不会比既有长度契约更紧。另外几个容量定案：`PLATFORM_SOURCE_STORE_LEN = 4` 是"一个 DTB/ACPI 源加一个回退"的真实上限再乘二；`PARAM_BUF_STORE_LEN = 1024` 直接对齐 C 的定长语义，复制前先清零，短缓冲留下的尾部因此是全零而不是上一轮内容；`SOURCE_RECORD_STORE_LEN` 直接取 wire 分区容量（296），与解码端同一口径；v10（D-062）删掉了 startup 落地区（原容量 20 的规范集合不再存在），所以本表的 startup 行只作删除记录，不再有现役第七行。
 
 **只做一半深拷会怎样**：`reserved_regions` 深拷进去，但 `memmap` 与 `boot_modules` 保持原指针。后果是 free list 退化成空记录，第一次物理页分配失败时，现场离"三个切片里有两个没落地"隔着整个分类阶段。机制与读数见 §3.4.4，三层证据判别见 §5.2.3；本节不重复。
 
@@ -2917,15 +2929,15 @@ Step 1 的注释与循环行为按六条交代：前两条是判据，其后四�
   - U-Boot shim 腿：shim 自身只加一个窗口 `[SHIM_LINK_BASE, UBOOT_SHIM_STACK_TOP)`；它是 ELF 物理链接产物，没有 UEFI `LoadedImage`，栈在 `.stack` 段（`__bss_end` 之后），窗口终点 `UBOOT_SHIM_STACK_TOP` 覆盖到栈顶。内核 LMA、root/bump/arena、模块、平台源与设备窗口仍由 `push_common_boot_windows` 另加，不在这个窗口里。
   - 两个直核腿：内核 LMA、root/bump、模块、平台源与设备窗口。
   - x86_64 的跨镜像路径与测试内核直核调用（`arch_boot_impl`）在各自窗口表末尾额外压入 `(0, 2 MiB)`，供 AP 实模式跳板使用（`AP_STARTUP_PA = 0x5000`）；aarch64/riscv64 走 PSCI/SBI，没有这个窗口。
-  每个窗口按 2 MiB 取整，窗口内的设备 piece 置 `DEVICE`。平台描述符窗口按 `PlatformDescSource.len` 扩到 blob 全长：DTB 生产者读 `totalsize`、ACPI 生产者读 RSDP 的 `length`，`push_platform_windows` 用这个跨度建窗口；`len == 0`（旧生产者、测试，或新生产者读 blob 头失败）才回退到“地址所在的那一个 2 MiB 片”。wire 仍为 16 B：`kind u32 | len u32 | addr u64`，`len` 复用旧 `reserved` 槽位；旧生产者写 0 仍可读，信封版本仍为 9（见 §3.4.3）。是否在 Direct Map 之后才消费不影响窗口语义：窗口现在覆盖整段 blob，不再依赖“只读起始片”的假设。`BootWindows` 的容量是 32 个窗口，编译期 `BOOT_WINDOW_FLOOR` 保证至少容纳 shim/内核/root/bump/arena/模块/平台源/设备窗口/x86 低 2 MiB；`push` 对 `start >= end` 直接 panic，`push_2m` 用 `checked_add`，窗口表写错在组装点就停机，不会拖到 `enable()` 后取指。公共窗口类别（内核 LMA、root、可选 bump、模块、平台表、设备窗口）由 `push_common_boot_windows` 一处定义，v1 发送侧只额外加 shim/arena，直核侧不加；新增类别不会只落到一条腿。`BOOT_IDENTITY_MAP_END`（唯一权威在 [`minix-arch`](os/arch/src/lib.rs) 的 `BOOT_IDENTITY_MAP_END`）是**VA 上限**（窗口不得越过），不是“铺满 `[0, END)`”的覆盖承诺。`[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4GB]`：4GB 全铺是 C 32-bit `pg_identity` 的继承；Rust 只覆盖 boot 期间真正访问的窗口，Direct Map 仍由内核在 Step 4 建立。
+  每个窗口按 2 MiB 取整，窗口内的设备 piece 置 `DEVICE`。平台描述符窗口按 `PlatformDescSource.len` 扩到 blob 全长：DTB 生产者读 `totalsize`、ACPI 生产者读 RSDP 的 `length`，`push_platform_windows` 用这个跨度建窗口；`len == 0`（旧生产者、测试，或新生产者读 blob 头失败）才回退到“地址所在的那一个 2 MiB 片”。wire 仍为 16 B：`kind u32 | len u32 | addr u64`，`len` 复用旧 `reserved` 槽位；旧生产者写 0 仍可读，信封版本为 10（见 §3.4.3）。是否在 Direct Map 之后才消费不影响窗口语义：窗口现在覆盖整段 blob，不再依赖“只读起始片”的假设。`BootWindows` 的容量是 32 个窗口，编译期 `BOOT_WINDOW_FLOOR` 保证至少容纳 shim/内核/root/bump/arena/模块/平台源/设备窗口/x86 低 2 MiB；`push` 对 `start >= end` 直接 panic，`push_2m` 用 `checked_add`，窗口表写错在组装点就停机，不会拖到 `enable()` 后取指。公共窗口类别（内核 LMA、root、可选 bump、模块、平台表、设备窗口）由 `push_common_boot_windows` 一处定义，v1 发送侧只额外加 shim/arena，直核侧不加；新增类别不会只落到一条腿。`BOOT_IDENTITY_MAP_END`（唯一权威在 [`minix-arch`](os/arch/src/lib.rs) 的 `BOOT_IDENTITY_MAP_END`）是**VA 上限**（窗口不得越过），不是“铺满 `[0, END)`”的覆盖承诺。`[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4GB]`：4GB 全铺是 C 32-bit `pg_identity` 的继承；Rust 只覆盖 boot 期间真正访问的窗口，Direct Map 仍由内核在 Step 4 建立。
 - 标志是 `kernel_read_write() | EXECUTABLE`（supervisor-only + 可执行），不是"用户可访问"。RISC-V Sv39 上，S 模式取指一条 `U=1` 的页是被禁止的——`sstatus.SUM` 只放宽 supervisor 对用户页的 load/store，取指不受它影响——所以恒等映射必须是 supervisor-only。（这里的 ISA 语义按 RISC-V 特权规范陈述，不引用源码注释。）C 侧口径见 §2.6.1（`pg_identity` 置 USER 位，但只有在固件未置 SMEP/SMAP 的前提下才无实效；`pg_mapkernel` 不置）；Rust 侧的差异是直接不置它。
 
 - 缓存属性是另一处与 C 的差异，两侧的划法不同：C 的 4 MB 上界规则与 `pg_identity` 逐项置 PRESENT 的细节见 §2.6.1；64 位侧按“登记窗口”划分——登记过的 MMIO 窗口在 Step 1 内按 2MiB 分片置 `DEVICE`（机制见下文“设备窗口分片”一条），未登记的空洞统一可缓存 `id_flags`。这个差异连同它的代价要交代清楚：其一，**前提：未登记空洞在运行期没有访问者**——物理访问只从账本分配的 DRAM 来，会真访问的 MMIO 全部进了登记窗口；这条前提当前没有运行期断言，靠代码审查与平台源登记维持（原注释用 "some ranges may not be backed by physical memory, but that's fine; the CPU won't access them" 作理由；现行注释按 `map_huge` 的错误集陈述，见下文“窗口建表失败怎么处理”一条）；其二，缓存兜底的削弱被接受——C 的 `PWT|PCD` 也不提供页错误，被放弃的只是“空洞访问不污染缓存”这一层；窗口**外**的地址现在直接未映射，访问会触发页错误，比 C 更早暴露，而窗口**内**未登记的空洞仍是可缓存映射。防线从映射属性换成账本纪律：分配只来自账本、MMIO 只来自登记窗口。
 
 - Step 1 的**设备窗口**清单是 `identity_device_windows()`（aarch64 = 平台 MMIO 基窗；riscv64 直接返回 `minix_arch::kernel_identity_mmio_regions()` 整表，不做筛选，表内只有 PLIC（平台级中断控制器）+ UART（串口）两项；x86 上 `identity_device_windows()` 返回空）。x86 的 LAPIC/IO-APIC 不在 Step 1 置属性；它们由 Step 2c 的高半设备窗口安装，`device_window_flags()` 当前返回 `kernel_read_write() | DEVICE`，`x86_64::paging` 的 `flags_to_pte` 把 `PageFlags::DEVICE` 编码成 `PWT|PCD`（uncached write-through），因此不再依赖固件 MTRR 的正确性（TODO-10 已关闭）。这条属性不是只改了编码函数：`device_window_flags()` 返回 `kernel_read_write() | DEVICE` 是 Step 2c 正确性的必要条件；少了 `DEVICE`，Step 2c 安装的就是普通可缓存映射，MMIO 访问在真机上不可靠。当前实现把 `DEVICE` 接进窗口标志并补了断言测试。反向不可恢复：x86 的 `pte_to_flags` 从 `PWT|PCD` 只能还原成 `WRITE_THROUGH|NO_CACHE`，不能还原 `DEVICE`（硬件没有独立 device 位）；要判断一个页是不是设备页，必须查 `device_window_regions()`，不能查 `query()` 的标志。
 
-- Step 1 的 `map_huge(...)` 用 `match` 区分两类结果：`AlreadyMapped` 只在目标槽位已经是一个 **1 GiB 叶**时返回；Step 1 的新根里不产生 1 GiB 叶，所以这条臂在当前根初始化路径下不可达，保留它是防御性写法（未来前置根若带 1 GiB 叶，接受它会把冲突当成功，届时要收紧）。**宿主 mock 是实现差异**：`MockPaging::map_huge` 走 `map_range`，在**任意已映射**的虚拟页上返回 `AlreadyMapped`，而三架构真实实现只在槽位已是 1 GiB 叶时返回——因此这条臂在 mock 下是重叠窗口的常态返回、在真机上不可达。两处语义分叉是本仓测试替身的已知缺口（`rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/suggestions.md` 的 R31 段），不影响生产路径的判定。其余错误（唯一可达的是 `AllocationFailed`，即某块需要新配一级中层页表、而引导 bump 分配器发不出页）立即 `panic!("boot identity map: map_huge failed: …")`。把失败留在建表点而不是拖到 `enable()` 后第一次取指，是为了让现场带 `map_huge failed` 的文字与地址；aarch64 若恰好是 UART 窗口本身没建上，panic 输出可能仍不可见，这是唯一保留的例外。预算在 UEFI/U-Boot 腿是 1024 页（两个直核面是 256 页），实际只需几张中层表，正常不会触发。
-  **重叠窗口的真实语义**：同一 2 MiB 片被两个窗口各写一次时，三个架构的 2 MiB 路径都直接重写同一个叶并返回 `Ok(())`；`AlreadyMapped` 只在槽位已是 1 GiB 叶时出现。“重叠无害”的依据是“每个 piece 是 2 MiB、标志只由 piece 地址决定”，不是“错误被忽略”；Step 1 的接受臂是防御性例外，不是重叠路径的常规返回值。
+- Step 1 的 `map_huge(...)` 用 `match` 区分两类结果：`AlreadyMapped` 在目标块已被占用时返回——1 GiB 分支对任何已存在的 PDPT 条目返回它；2 MiB 分支对已存在的 1 GiB 叶或已存在的 2 MiB 叶返回它。Step 1 的重叠窗口会合法地走到 2 MiB 这一支：同一 2 MiB 片被两个窗口各写一次时，第二次安装拒绝重写并返回 `AlreadyMapped`，调用方把这个返回值当成功吸收；因此这条臂在根初始化路径下**可达**，是重叠窗口的常态返回，不是防御性例外。**宿主 mock 的判断粒度更细**：`MockPaging::map_huge` 把 2 MiB 展开成 4 KiB 的 `map_range`，目标块内任一页已映射就返回 `AlreadyMapped`；生产实现只判断块叶本身。两者在“目标叶已存在”上同向，差异只在部分覆盖的粒度。其余错误（如 `AllocationFailed`——某块需要新配一级中层页表、而引导 bump 分配器发不出页）立即 `panic!("boot identity map: map_huge failed: …")`。把失败留在建表点而不是拖到 `enable()` 后第一次取指，是为了让现场带 `map_huge failed` 的文字与地址；aarch64 若恰好是 UART 窗口本身没建上，panic 输出可能仍不可见，这是唯一保留的例外。预算在 UEFI/U-Boot 腿是 1024 页（两个直核面是 256 页），实际只需几张中层表，正常不会触发。
+  **重叠窗口的真实语义**：同一 2 MiB 片被两个窗口各写一次时，第二次 `map_huge` 返回 `AlreadyMapped`，不重写已有叶；调用方把它当成功吸收。“重叠无害”的依据是“每个 piece 是 2 MiB、标志只由 piece 地址决定，第二次写入不会带来新信息”，不是“错误被忽略”；`AlreadyMapped` 的语义是“已有等价块”，不是失败。
 - 设备窗口分片对 aarch64 与 riscv64 都适用。Step 1 的**每个 piece 都是 2 MiB**，`identity_piece_is_device(addr, DEV_PIECE, ...)` 决定该 piece 是否置 `DEVICE`；同一窗口表里不存在 1 GiB 叶与 2 MiB 分片混排，因此"先写 1 GiB 后写 2 MiB 覆盖"的互斥疑问不成立。Step 2c 是另一条腿（把会从高半访问的固定 MMIO 页装进自举根的窗口集合 `device_window_regions()`），与 Step 1 的窗口表不共享槽位判定。`identity_device_windows()` 返回两类窗口——aarch64 的 MMIO 物理窗口，以及 riscv64 的 PLIC/UART 固定窗口（`minix_arch::kernel_identity_mmio_regions()`）。MMIO 寄存器要求强序访问（不投机、不合并、不重排），普通可缓存映射在 QEMU 上能过、真机上不行；注释同时要求 Step 1 的恒等别名与 Step 2b 的高半别名对同一物理页使用同一套属性（ARM 手册：同一物理页用两种属性映射，结果不可预测）。
 
 Step 2 的守卫 `if kern_virt != kern_phys` 记录在注释里：两基址相等时，Step 1 的窗口已经覆盖内核 LMA 段（Step 2 是它的子集），跳过 Step 2 可以避免同一个 VPN[2] 槽位被二次写入。为什么 `kern_huge` 选中 1 GiB 时不能**做 Step 2**，见本节末“若 `kern_virt == kern_phys` 时照做 Step 2”的推演；这里只留守卫本身，不重复那段因果。
@@ -2964,7 +2976,7 @@ Step 3 的 `enable()` 在 x86-64 上做四件事：
 顺序是：置 `EFER.NXE` → 写 `CR3` → 置 `CR0.PG` 与 `CR0.WP` → 按能力置 `CR4.PGE`。（注意 x86_64 的 UEFI 链进来时固件分页已在运行：这一步实际生效的动作是"换 `CR3` 根"，`CR0.PG` 的置位是与"固件未开分页"形态（如 C 的 BIOS 引导链）统一的写法——本仓生产链不存在那条 BIOS 链，此处指 C 侧语义的统一，不是本仓有一条 BIOS 产线；`NXE` 必须最先的理由见下一条。）
 
 - `EFER.NXE` 必须最先：`NX` 是页表条目里的最高位（bit 63），它的使能开关在 `EFER` 这个 MSR 的 `NXE` 位（bit 11）上；`EFER.NXE = 0` 时任何带 NX 的页表条目在走表时被视为保留位，触发页错误且错误码 bit3（保留位）为 1。内核的 Direct Map 叶与用户数据/栈叶都带 NX，所以准确的要求是"第一条带 NX 的条目被使用之前必须先置 NXE"（放进 `enable` 即可满足）。注释指出 UEFI 交接时恰好置了它，但这条不变量被当作"我们自己的"，不依赖固件。
-- `CR3` 写的是内核自己的根：`build_bootstrap_root_and_enable` 返回前会把根页表物理地址记进内核全局（`set_current_root_phys(root_page)`），后续阶段（如装载 VM 的 ELF 时给同一张表加映射）通过 `Paging::from_active_root` 取回一个句柄。`from_active_root` 与 `new_from_page` 的区别是后者会清零根（`write_bytes(ptr, 0, 512)`），前者不会。
+- `CR3` 写的是内核自己的根：`build_bootstrap_root_and_enable` 返回前会把根页表物理地址记进内核全局（`set_current_root_phys(root_page)`），后续阶段（如装载 VM 的 ELF 时给同一张表加映射）通过 `Paging::from_active_root` 取回一个句柄。`from_active_root` 与 `new_from_page` 的区别是后者会清零根（`write_bytes(ptr, 0, 512)`），前者不会；两者都带 `PteChannel` 参数，声明这次 PTE 访问走哪个写视图。
 - `PGE` 与 C 的 `vm_enable_paging` 对应（2.6 的 `pgeok`）：只在 CPU 支持时置，且必须在 `PG` 之后。
 
 五步与 C 的一一对应及差异，见 §4.9 的函数对照表（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`/`vm_enable_paging` 五行），这里不重复。表外还有 Step 2b（aarch64 设备 MMIO 窗口的高半别名）与 Step 2c（x86/riscv 设备窗口装入自举根）——C 没有对应物：x86 的串口是端口 I/O，ARM 侧是纯 MMIO、必须走内存映射；LAPIC/IO-APIC 与 PLIC/UART 在启动期就要经固定高半 VA 访问。
@@ -3018,13 +3030,13 @@ Step 3 的 `enable()` 在 x86-64 上做四件事：
 - `init(base, end)` 把游标置回 `base`：跨镜像腿由 boot-shim 在进入内核之前设定区间（UEFI 两条路径都在 `prepare_and_enter_kernel_image` 内；U-Boot shim 在 `prepare_boot` 返回后）；两个直核面在自己的 `bootface`/`bootface_a64` 里**只初始化 bump 区间**，注册发生在随后调用的 `boot_validate_and_prepare`（`is_registered()` 守卫）。`minix-kernel` 自身不再调用 `init`：Step 0 看到 `boot_alloc_region()` 为 `None` 时直接停机。
 - `resume(base, next, end)` 从"已被消耗到的位置"继续：跨镜像路径必须用这一种，因为接收侧链接的是这份分配器的另一份副本（`resume` 的文档注释写明了这一点）。跨镜像接收侧的 `arch_boot_resume_v1`（三架构同一入口）在解码信封后、进入本架构委托壳之前调用它；委托壳的分派见 §4.8。
 
-两种方式的次序约束：跨镜像路径上必须先 `resume_boot_pt_alloc`、再进各架构委托壳——三架构都经 `resume_after_v1_decode`（`os/kernel/src/lib.rs:741`），其中 aarch64 的壳再转 `arch_boot_resume_high_half`，x86_64 与 riscv64 的壳直接转 `resume_additive`。顺序反了的话，Step 0 会看到 `boot_alloc_region()` 为 `None`——兜底已删，后果是 fail-closed 停机，而不是把游标重置回某段 memmap 的起点。
+两种方式的次序约束：跨镜像路径上必须先 `resume_boot_pt_alloc`、再进各架构委托壳——三架构都经 `resume_after_v1_decode`（三个同名 cfg 壳最终都转 `os/kernel/src/lib.rs:fn resume_additive`），其中 aarch64 的壳再转 `arch_boot_resume_high_half`，x86_64 与 riscv64 的壳直接转 `resume_additive`。顺序反了的话，Step 0 会看到 `boot_alloc_region()` 为 `None`——兜底已删，后果是 fail-closed 停机，而不是把游标重置回某段 memmap 的起点。
 
 扣除表的读法：`build_vm_handoff` 把"内核保留"与"引导已用"两类区间收进同一份记录（见 3.8 引用的表），其中 bump 区是**整段**；`VmBootAllocator` 的已用后缀（该分配器从每个区间末端向下消耗，已用部分是连续尾段——表里第二类）是同段内的另一笔。两份记录随交接页一起交给 VM，VM 在消费侧校验 `LiveBootstrap ∩ VM-free = ∅`——也就是说，"内核记账对不对"这件事不是靠 kernel 单方面声明，而是在 VM 侧再复核一次。
 
 **两个 bump 实例共享一套算法**。U-Boot shim 的固定池从 `MODULE_REGION_BASE` 起按"根页 → 1024 页页表子区间 → 模块页 → arena"的顺序发放；内核镜像的 `BootAlloc` 只续用其中的页表子区间。两个实例**不共享游标**——合并曾被试过：shim 的游标跨过子区间末尾（模块与 arena 在子区间之外），`BootAlloc::resume` 直接看到 `next > end`，QEMU U-Boot 门在 3/6 个路标处 panic，合并方案已回滚。共享的是纯值核心 `minix_boot::BumpRegion { start, next, end }`：`alloc_pages` 的边界检查、`used_bytes` 与一致性谓词都只有这一份。编译期断言固定常量：池基址与大小按 4 KiB 对齐、`KERNEL_MAX_LMA_END <= MODULE_REGION_BASE`、根页 + 页表子区间 + `ARENA_CAP` 不超过池大小、`BUMP_END <= boot_dm_admissible_end()`；运行期断言实例区间：`prepare_boot` 分配后检查根页就是池首页、页表子区间紧接其后且不越池尾，`BootAlloc::resume`/`region` 用 `BumpRegion::is_consistent` 校验跨镜像三元组。编译期只断言常量，运行时输入的合法性不假装编译期已证。
 
-**arena 生命周期合同**。`arch_boot_resume_v1` 的解码是 arena 的最后一次读取：七个载荷全部复制进内核 `.bss` store，`KernelInfo` 的切片指向这些 store，`arena_pa` 不保留。VM 自由页清单在 `kmain → build_vm_handoff` 才发布，严格晚于解码，于是 `LastRead(arena) ≺ Publish(VMFreePages)`——arena 页可以按生命周期回收，不做永久扣除。这条合同只对 arena 会落进 conventional 的腿有意义（U-Boot shim 与合成测试）；两条 UEFI 腿的 arena 是 `LOADER_DATA`→`ReservedMapped`，从不在 free list 里，回收与否对 VM 无影响。startup-object 记录仍保留 arena 的身份（记录的是"它曾经是什么"，不是"它还活着"）。宿主测试 `decoded_map_survives_arena_poison_and_reissues_the_arena_frames` 用真实序列化 arena 解码后整块 poison（写入哨兵值，模拟 arena 被复用），再跑与 VM 相同的 `classify_regions`：自由清单与解码值一致，落在 conventional 区间里的 arena 页被重新发给 VM，内核镜像仍被扣除。若未来有人在跳转后读 arena，必须同时移动解码边界或把 arena 加进扣除表，否则 VM 可能发到一份活的 wire 镜像。
+**arena 生命周期合同**。`arch_boot_resume_v1` 的解码是 arena 的最后一次读取：六个载荷全部复制进内核 `.bss` store，`KernelInfo` 的切片指向这些 store，`arena_pa` 不保留。VM 自由页清单在 `kmain → build_vm_handoff` 才发布，严格晚于解码，于是 `LastRead(arena) ≺ Publish(VMFreePages)`——arena 页可以按生命周期回收，不做永久扣除。这条合同只对 arena 会落进 conventional 的腿有意义（U-Boot shim 与合成测试）；两条 UEFI 腿的 arena 是 `LOADER_DATA`→`ReservedMapped`，从不在 free list 里，回收与否对 VM 无影响。v10 之后内核不再保留 startup-object 记录，也不再有它指向的 arena 身份（该分区与落地区已随 D-062 删除）。宿主测试 `decoded_map_survives_arena_poison_and_reissues_the_arena_frames` 用真实序列化 arena 解码后整块 poison（写入哨兵值，模拟 arena 被复用），再跑与 VM 相同的 `classify_regions`：自由清单与解码值一致，落在 conventional 区间里的 arena 页被重新发给 VM，内核镜像仍被扣除。若未来有人在跳转后读 arena，必须同时移动解码边界或把 arena 加进扣除表，否则 VM 可能发到一份活的 wire 镜像。
 
 **去掉内核侧 `is_registered()` 守卫会怎样**：让 `boot_validate_and_prepare` 无条件 `register(boot_alloc::boot_pt_alloc)`。`register` 里先原子 `PT_CLAIMED.swap(true, AcqRel)` 抢写权，抢到的写者再写函数指针、最后 `PT_REGISTERED.store(true, Release)` 发布；`assert!(!claimed, ...)` 在**两种构建档**都生效，第二次注册直接 panic，不存在“release 下静默保留第一个注册者”的分支（F-R23-05 / TODO-02）。因此第二次注册不会改写函数指针，也不会让 boot 继续：若第一个注册者是某个测试内核（它用了一个避开内核镜像的池），后续注册会在启动现场停机，而不是悄悄沿用测试池。`is_registered()` 守卫因此是所有构建档的硬前置条件，不再只是给测试内核让路的便利。
 
@@ -3091,7 +3103,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 |---|---|---|---|---|
 | x86_64 | boot-shim | boot-shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`rbx`） | 独立镜像高半 `_start` |
 | aarch64（UEFI 链） | boot-shim | boot-shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`x0`） | 独立镜像高半 `_start` |
-| aarch64（直核） | 内核镜像自身（[`bootface_a64`](<os/kernel-image/src/bootface_a64.rs:fn bootface_a64>)） | 内核镜像自身（`arch_boot` → `enable`） | 无入参（`x0=0` 分道，DTB 从 RAM 基址固定位置读）；模块来源是 `BootFileTable`，表址只有 DTB `/chosen` 的 `opensbi,boot-file-table` 属性一条通道（由 `bootface_a64` 的 DTB 解析给出，与 riscv64 直核面同名属性；取件库复用 opensbi_helpers——§3.2 断言的证据落点） | 独立镜像 `_start` |
+| aarch64（直核） | 内核镜像自身（[`bootface_a64`](<os/kernel-image/src/bootface_a64.rs:fn bootface_a64>)） | 内核镜像自身（`arch_boot` → `enable`） | 无入参（直核产物 `fw-aarch64-none` 的入口只编 `bootface_a64` 臂、忽略传入值；UEFI 接收产物 `fw-aarch64-uefi-recv` 的 `x0 == 0` 只作诚实停机——D-061，DTB 从 RAM 基址固定位置读）；模块来源是 `BootFileTable`，表址只有 DTB `/chosen` 的 `opensbi,boot-file-table` 属性一条通道（由 `bootface_a64` 的 DTB 解析给出，与 riscv64 直核面同名属性；取件库复用 opensbi_helpers——§3.2 断言的证据落点） | 独立镜像 `_start` |
 | riscv64（`-kernel` 直核） | 内核镜像自身（`bootface`） | 内核镜像自身（`arch_boot` → `enable`） | `a0`=hartid、`a1`=DTB；表址只从 DTB `/chosen` 的 `opensbi,boot-file-table` 属性取；原有备用 `a2` 参数通道已在 D01 裁决项 3 删除（仓内从未有生产者） | 独立镜像 `_start` |
 | riscv64（U-Boot 一族 / shim 生产腿） | `riscv64-uboot-shim` | shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`a0`） | 独立镜像高半 `_start` |
 
@@ -3154,13 +3166,13 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | M5 | 页表建立与开分页（§2.6 C / §4.6 Rust） | 开分页后的下一条取指有映射（能打印第一个内核路标） | 真机＋宿主 | 真机链覆盖现行实际映射档（2 MiB）；1 GiB 首选档由宿主合成 layout 测试 `boot_policy::policy_tests::picks_the_preferred_size_when_supported_and_aligned` 覆盖选择路径，不构建 1 GiB 真机镜像（无额外证据） | TODO-05（已关闭，见 5.3） |
 | M6 | boot identity 窗口覆盖 boot footprint（§4.6 Step 1） | 窗口内全部有映射、标志 supervisor-only；窗口外不被铺 | 宿主测试＋源码序＋真机 | **部分覆盖**：宿主 `boot_identity_windows_are_2mib_and_mark_device_pieces` 验证 2 MiB piece 与 DEVICE 标记，另有 `boot_window_push_2m_covers_the_descriptor_start_piece`、`platform_window_uses_the_recorded_blob_length`、`boot_windows_reject_reversed_ranges`、`boot_windows_accept_ranges_below_the_phys_limit`、`boot_windows_reject_ranges_above_the_phys_limit` 覆盖 D-031/D-032/D-033；Step 1 的循环只遍历调用方窗口表（源码序）；真机侧只有 x86 UEFI 门（到 `entering scheduler`）、riscv64 U-Boot shim 门（6/6 路标）与 aarch64 SMP AP 门跑到 Step 1 之后——aarch64 UEFI 门止于 EBS 后的 `memmap source`（在 `enter_kernel_image_v1` 之前），riscv 直核 `bootface` 门是故意的模块定位失败路径（在 `arch_boot` 之前），二者都不覆盖 Step 1。"窗口外不被铺"没有运行期探针（QEMU 只能证明所需窗口可用，不能证明窗口外不存在映射）；这条子项依赖源码序与 §5.4 的说明 | — |
 | M7 | 分配器"写一次"（§3.8） | 二次 `register` 在两种构建档都 fail-closed（panic），第一个注册者不会被替换 | 宿主测试 | **已覆盖**：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` / `register_free` 各一：两种构建档都 `assert!` 停止，`catch_unwind` 断言 panic 后指针不变）；[`pt_alloc_concurrent.rs`](os/arch/tests/pt_alloc_concurrent.rs) 1 条（barrier 双写者恰好一个赢家、输者 panic） | TODO-02（已关闭，见 5.3） |
-| M8 | 落地区容量与 fail-fast（§4.5） | 超过容量时快速失败而非截断 | 宿主测试 | **已覆盖**：落地区行为（`test_store_kernel_info_lands_firmware_slices`）+ 七枚超容量负控（`test_store_kernel_info_rejects_{reserved,memmap,boot_module,platform,param,source,startup}_overflow`） | TODO-03（已关闭，见 5.3） |
+| M8 | 落地区容量与 fail-fast（§4.5） | 超过容量时快速失败而非截断 | 宿主测试 | **已覆盖**：落地区行为（`test_store_kernel_info_lands_firmware_slices`）+ 六枚超容量负控（`test_store_kernel_info_rejects_{reserved,memmap,boot_module,platform,param,source}_overflow`） | TODO-03（已关闭，见 5.3） |
 | M9 | bump 分配器（§3.8/§4.2） | 顺序推进、耗尽拒绝、页对齐、reinit 后归位、跨镜像区间自洽 | 宿主测试 | **已覆盖**：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条 | — |
 | M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十条主编号（L0–L8 全架构 + L9 仅 riscv64） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
 | M11 | 模块顺序契约（§4.3） | 12 项按 `MODULE_NAMES` 顺序返回、缺件 panic；装载与模块顺序的四道防线 A/B/C/D：A 文件字节区间不与任何目标 LMA 相交（`first_source_destination_overlap`）、B 目标 LMA 两两不相交（`first_overlapping_pair`）、C 模块×内核跨度（`alloc_module_pages`/`assert_modules_clear_of_kernel`，见 §4.3）、D 接收侧复核（`KernelInfo::validate`：模块×模块 + 内核×模块；内核×模块与 C 故意重复） | 宿主测试＋真机前置检查 | **已覆盖**：`loader.rs` 顺序/缺件测试＋真机链的 `mdir` 前置；A/B/C/D 的映射见 §4.3 与 §4.9 | — |
 | M12 | EBS 阶段边界（§4.1） | EBS 之后不再出现固件调用；裸串口路标仍输出 | 真机＋静态检查 | **部分覆盖**：x86 shim 与 riscv64 U-Boot shim 门脚本各自断言 `[raw] entering kernel image v1`；aarch64 门没有这一行，通过条件见 §5.2.3 的 aarch64 行（两条固定标记 + 第三变体之一）；x86 的五条标记含 `entering scheduler`；退出本身那条与 `[raw] arena=…` 仍靠日志人工看。静态检查：`os/boot-shim/tests/ebs_boundary_audit.rs` 对生产入口的配对循环成功标记之后切片断言零 `uefi::`/分配/释放/drop；另对 `ebs_pair.rs` 整模块只断言零 `uefi::`（分配/释放/drop 未做模块级审计）；带三枚注入负控与注释豁免自检 | TODO-04（已关闭，见 5.3；TODO-04 指 EBS 后的文本级审计，门链标记覆盖是另一件事） |
-| M13 | UEFI 侧快照函数（§4.2：`build_memmaps`、`assert_bootstrap_outside_memmap` 等） | 两列表对"可分配 / 保留"两档互斥且完备（`Excluded`/`DevicePath`/`Side` 按设计不进表）；root/bump 不与 free 列表相交 | 宿主测试→真机 | **已覆盖（可测面）**：`assert_bootstrap_outside_memmap` 的 5 条宿主测试；`ebs_map::tests::classified_tables_are_disjoint_and_expected` 覆盖同一分类的 free/reserved 表互斥与计数；`build_memmaps` 生产不调用、其单表包装被 15 个测试内核调用，`alloc_root_page`/`alloc_bump_region` 的调用点单根（Boot Services），宿主无法构造——这三项按设计排除，不是开放缺口 | TODO-07（已关闭，见 5.3） |
-| M14 | 交接三形态（§3.7/§4.8） | aarch64 resume 只做 additive（不重建根）；`x0` 分道（空指针→自引导面）；x86 shim 三路标可见 | 真机＋引文 | **部分覆盖**：aarch64 UEFI 链只到 EBS 后的 `memmap source` 行，三条标记都在 `entering kernel image v1` 之前，脚本不判内核随后是否存活，因此"resume 只做 additive"没有真机证据（§5.2.3 已声明该分工）；riscv64 U-Boot shim 门覆盖"交接序列走通且路标出现"；riscv64 U-Boot 直载测试链不在覆盖列——它的测试内核直构 `KernelInfo`、绕过 `prepare_boot`，只证明 U-Boot 的 `fatload`/`bootelf` 交棒透明，不经过 v1 握手；x86 `test-cmd-smoke.sh` Stage 3b 已断言三条 shim 路标（`kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1`） | TODO-06（已关闭，见 5.3；aarch64 additive 的缺口记在 §5.4） |
+| M13 | UEFI 侧快照函数（§4.2：`build_memmaps`、`assert_bootstrap_outside_memmap` 等） | 两列表对"可分配 / 保留"两档互斥且完备（`Excluded`/`DevicePath`/`Side` 按设计不进表）；root/bump 不与 free 列表相交 | 宿主测试→真机 | **已覆盖（可测面）**：`assert_bootstrap_outside_memmap` 的 5 条宿主测试；`ebs_map::tests::classified_tables_are_disjoint_and_expected` 覆盖同一分类的 free/reserved 表互斥与计数；`build_memmaps` 生产不调用；其单表包装 `build_memmap()` 被 2 个测试内核直接调用（`test-memmap` / `test-memmap-aarch64`），UEFI 内存图辅助物的 15 个使用内核是它与 `exit_boot_services_and_classify()` 的并集，`alloc_root_page`/`alloc_bump_region` 的调用点单根（Boot Services），宿主无法构造——这三项按设计排除，不是开放缺口 | TODO-07（已关闭，见 5.3） |
+| M14 | 交接三形态（§3.7/§4.8） | aarch64 resume 只做 additive（不重建根）；`x0` 分道（空指针→自引导面）；x86 shim 三路标可见 | 真机＋引文 | **部分覆盖**：aarch64 形态由构建产物分叉（D-061），接收臂 `x0 == 0` 只诚实停机；aarch64 UEFI 链只到 EBS 后的 `memmap source` 行，三条标记都在 `entering kernel image v1` 之前，脚本不判内核随后是否存活，因此"resume 只做 additive"没有真机证据（§5.2.3 已声明该分工）；riscv64 U-Boot shim 门覆盖"交接序列走通且路标出现"；riscv64 U-Boot 直载测试链不在覆盖列——它的测试内核直构 `KernelInfo`、绕过 `prepare_boot`，只证明 U-Boot 的 `fatload`/`bootelf` 交棒透明，不经过 v1 握手；x86 `test-cmd-smoke.sh` Stage 3b 已断言三条 shim 路标（`kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1`） | TODO-06（已关闭，见 5.3；aarch64 additive 的缺口记在 §5.4） |
 | M15 | 失败路径防线（§4.2 动作 8） | root/bump 与 free 列表相交时立刻 panic（配对循环成功后、裸串口可打印） | 真机 | **部分覆盖**：断言只在两条 UEFI 腿的 `prepare_and_enter_kernel_image` 每次启动执行；U-Boot shim 与两个直核面没有这条断言，走内核侧 `vm_handoff::classify` 的整段扣除与编译期池不相交（见 M16） | — |
 | M16 | 内核镜像重叠防线（§4.2：`record_kernel_span`、`alloc_module_pages`、生产入口重查） | 模块页分配落在内核镜像物理跨度之外（拷贝前拒绝）；装载后按页取整重查模块，并复核 root/bump/arena 均不与内核重叠 | 真机＋源码＋宿主测试 | 断言助手为纯函数（`assert_range_clear_of_kernel` / `assert_modules_clear_of_kernel`），5 条宿主测试覆盖相离/相切、包含、部分重叠、内核在区间内、模块字节越界；UEFI 生产入口每次启动执行：内核布局确定后、拷贝前记录跨度；`alloc_module_pages` 拷贝前拒绝；装载后按页取整复审模块并复核 root/bump（防御性；可达失败在 `alloc_module_pages` 拷贝前），`prepare_and_enter_kernel_image` 另查 arena；`alloc_module_pages` 的 `AllocatePages` 分配面宿主不可构造（Boot Services）。其余腿：U-Boot shim 的 `opensbi_helpers::prepare_boot` 在装载前经 `load_kernel_with_loader_gated` 加了一道门——从 ELF 程序头算出 LMA 跨度，先断言它不越过链接期 4 MiB 上界（`KERNEL_MAX_LMA_END = KERN_PHYS_BASE + 0x40_0000`，另有编译期断言 `KERNEL_MAX_LMA_END <= MODULE_REGION_BASE`），再断言它不与 bump 池相交，任一失败都在**第一个段字节写入之前**停机；装载后的 root/bump 复核保留为第二道防线。UEFI 之外的三条腿没有同形的运行期"目标跨度拒绝"：U-Boot 腿的 `alloc_module_pages` 是纯 bump 分配，由编译期池不相交断言与装载前 gate 覆盖；两个直核面共用的 `place_modules` 另有"源区间 × bump 池"的拷贝前检查，目标侧同样由编译期池不相交关系覆盖 | — |
 | M17 | ARM32 闭区间 `overlaps`（§2.7） | 闭区间只在 8MB 槽距、`mod_end` 各留一页的固定布局下无害；换成会相切的布局即误报 | 引文对账 | **未覆盖**：无运行期断言，§2.7 只有源码对照 | — |
@@ -3181,13 +3193,13 @@ TODO 列的状态口径**以本表为唯一权威**：`TODO-n（已关闭）`指
 ```bash
 $ cd os && cargo test -p boot-shim --features test-all --lib
 ...
-test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 146 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cd os && cargo test -p minix-boot -p minix-elf
-running 195 tests
-test result: ok. 195 passed; 0 failed; ...
-running 23 tests
-test result: ok. 23 passed; 0 failed; ...
+running 185 tests
+test result: ok. 185 passed; 0 failed; ...
+running 27 tests
+test result: ok. 27 passed; 0 failed; ...
 ```
 
 测试数口径：本节所有数字按"`#[test]` 出现次数"计，含 `#[should_panic]` 标注的条目，不含构造辅助函数与 mock 类型；下面的逐文件表与上面的 `cargo test` 转录来自同一天实跑（输出按 boot-shim / minix-boot / minix-elf 分组重排，数字逐字来自实跑；`for` 列表的枚举顺序不参与输出顺序）。逐文件复算：
@@ -3206,32 +3218,32 @@ $ for f in os/boot-shim/src/loader.rs os/boot-shim/src/opensbi_helpers.rs \
            os/boot-shim/src/dtb_copy.rs os/boot-shim/src/resv_claims.rs \
            os/boot-shim/src/lib.rs os/boot-shim/tests/ebs_boundary_audit.rs; do
   printf '%-50s %s\n' "$f" "$(grep -c '#\[test\]' $f)"; done
-os/boot-shim/src/loader.rs                         22
+os/boot-shim/src/loader.rs                         31
 os/boot-shim/src/opensbi_helpers.rs                11
 os/boot-shim/src/uefi_helpers.rs                   12
 os/boot-shim/src/ebs_map.rs                        45
 os/boot-shim/src/ebs_pair.rs                       17
 os/boot-shim/src/dtb_copy.rs                       15
-os/boot-shim/src/resv_claims.rs                    13
+os/boot-shim/src/resv_claims.rs                    14
 os/boot-shim/tests/ebs_boundary_audit.rs           6
 os/boot-shim/src/lib.rs                            1
-os/libs/minix-boot/src/kernel_info.rs              31
+os/libs/minix-boot/src/kernel_info.rs              24
 os/libs/minix-boot/src/platform.rs                 8
 os/libs/minix-boot/src/boot_params.rs              8
-os/libs/minix-boot/src/memmap_source.rs            74
+os/libs/minix-boot/src/memmap_source.rs            75
 os/libs/minix-boot/src/handoff_v1.rs               2
 os/libs/minix-boot/src/handoff_v1_write.rs         10
-os/libs/minix-boot/src/handoff_v1_read.rs          21
+os/libs/minix-boot/src/handoff_v1_read.rs          17
 os/libs/minix-boot/src/fdt_layout.rs               29
 os/libs/minix-boot/src/lib.rs                      2
 os/libs/minix-boot/src/bump.rs                    5
 os/libs/minix-boot/src/boot_storage.rs            5
-os/libs/minix-elf/src/lib.rs                       23
+os/libs/minix-elf/src/lib.rs                       27
 ```
 
-22 + 11 + 12 + 45 + 17 + 15 + 13 + 1 = 136（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 6 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair + dtb_copy + resv_claims + lib.rs：136 − `opensbi_helpers` 11 = 125；136 这个读数必须带 `test-all`）；`minix-boot` 的 195 = `kernel_info.rs` 的 31（含 R17 的三条后置负控、R18 的两条跨度复核负控、R19/R20 的三条跨度溢出负控与 R21 的一条长度对齐负控；删去 D-077 的恒真测试 −1） + `platform.rs` 的 8 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 74 + `handoff_v1.rs` 的 2 + `handoff_v1_write.rs` 的 10（删双写测试 −1） + `handoff_v1_read.rs` 的 21 + `fdt_layout.rs` 的 29 + `lib.rs` 的 2 + `bump.rs` 的 5 + `boot_storage.rs` 的 5。（历史读数与逐次增删见 git 记录；当前值以本逐文件表为准：minix-boot 195、boot-shim 136。）`minix-elf` 的 23 与实测一致。
+31 + 11 + 12 + 45 + 17 + 15 + 14 + 1 = 146（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 6 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair + dtb_copy + resv_claims + lib.rs：146 − `opensbi_helpers` 11 = 135；146 这个读数必须带 `test-all`）；`minix-boot` 的 185 = `kernel_info.rs` 的 24 + `platform.rs` 的 8 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 75 + `handoff_v1.rs` 的 2 + `handoff_v1_write.rs` 的 10 + `handoff_v1_read.rs` 的 17 + `fdt_layout.rs` 的 29 + `lib.rs` 的 2 + `bump.rs` 的 5 + `boot_storage.rs` 的 5。（当前值以本逐文件表为准：minix-boot 185、boot-shim 146。）`minix-elf` 的 27 与实测一致。
 
-推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 classify/FreeRangeSet 系列共 21 条（含 11 条 FreeRangeSet 行为锁/对拍；旧 `memmap.rs` 17 条随模块删除）、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 17 条（属 **minix-arch** 包，不在 `minix-kernel --features mock --lib` 的 874 条（`cargo test -p minix-kernel --features mock --lib`，当前实测：866 passed + 8 ignored）里；可跑形态需 `--features "x86_64 runtime-window"`，CI 当前未采集）、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 8 条（1 枚落地区行为 + 7 枚超容量负控）。[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零，其单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条与 [`pt_alloc_concurrent.rs`](os/arch/tests/pt_alloc_concurrent.rs) 1 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）；v1 协议的布局门禁由 [`handoff_v1.rs`](os/libs/minix-boot/src/handoff_v1.rs) 的编译期断言与 2 条尺寸/偏移测试覆盖。
+推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 的 classify/FreeRangeSet 系列共 21 条（含 11 条 FreeRangeSet 行为锁/对拍；旧 `memmap.rs` 17 条随模块删除）、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 11 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 20 条（属 **minix-arch** 包，不在 `minix-kernel --features mock --lib` 的 874 条（`cargo test -p minix-kernel --features mock --lib`，当前实测：866 passed + 8 ignored）里；可跑形态需 `--features "x86_64 runtime-window"`，CI 当前未采集）、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 7 条（1 枚落地区行为 + 6 枚超容量负控）。[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零，其单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条与 [`pt_alloc_concurrent.rs`](os/arch/tests/pt_alloc_concurrent.rs) 1 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）；v1 协议的布局门禁由 [`handoff_v1.rs`](os/libs/minix-boot/src/handoff_v1.rs) 的编译期断言与 2 条尺寸/偏移测试覆盖。
 
 列出的测试各自挡的是哪条契约（选列，未逐条穷举）：
 
@@ -3247,13 +3259,13 @@ os/libs/minix-elf/src/lib.rs                       23
 | `opensbi_helpers.rs:test_bump_alloc_advances_pointer` | 连续分配严格递增 |
 | `opensbi_helpers.rs:test_boot_file_table_validates_magic` | 魔数不匹配即拒（防 `a0` 指错） |
 | ~~`opensbi_helpers.rs:test_build_kernel_info_bootstrap_zero_means_no_reclaim`~~ | 字段删除时一并移除——过度回收在类型上不可复发，无测试可保护 |
-| `opensbi_helpers.rs:test_build_kernel_info_riscv64_fields_match_input` | 字段逐一映射（含派生字段 `kern_stack_top`/`syscall_entry`） |
+| `opensbi_helpers.rs:test_build_kernel_info_riscv64_fields_match_input` | 字段逐一映射（`kern_stack_top` 由访问器派生；`user_sp`/`syscall_entry` 已不上线） |
 | `uefi_helpers.rs:test_build_kernel_info_fields` | UEFI builder 的字段装配（该文件 12 条单元测试之一） |
 | `boot_params.rs:generates_arch_and_board_first` 等 8 条 | 参数规范化：生成键、NUL/空白分词、内部键拒绝、非 ASCII/无等号拒绝、重复键首条胜出、整条丢弃 |
-| `kernel_info.rs:test_validate_rejects_*`（16 条）与 `test_validate_accepts_*`（3 条），另加 `test_validate_requiring_sources_*`（8 条）与 `test_postconditions_reject_*`（4 条）= 该文件 31 条 | `validate()` 的全部不变量（含 D2-05 增的有序/不相交与非空/页对齐，两张表各扫一遍）与它们的合法边界；strict 门、postconditions 上界 |
+| `kernel_info.rs:test_validate_rejects_*`（15 条）与 `test_validate_accepts_*`（3 条），另加 `test_validate_requiring_sources_*`（5 条）与 `test_boot_postconditions_reject_low_virtual_base`（1 条）= 该文件 24 条 | `validate()` 的全部不变量（含 D2-05 增的有序/不相交与非空/页对齐，两张表各扫一遍）与它们的合法边界；strict 门；`check_boot_postconditions` 的 higher-half 断言（v10 后唯一剩余条件） |
 
 
-M13 的覆盖状态见 §5.1；TODO 详情见 §5.3：UEFI 侧四个函数里，纯判定函数 `assert_bootstrap_outside_memmap` 已有五案宿主测试（清单见 §5.3 TODO-07）。`build_memmaps` 在生产入口没有调用（生产走 `ebs_pair`）；它的单表包装 `build_memmap()` 被 15 个 QEMU 测试内核各自调用，两侧都需要 Boot Services，宿主无法构造。`alloc_root_page` 与 `alloc_bump_region` 的生产调用点在 `prepare_and_enter_kernel_image` 内（[`uefi_helpers.rs`](os/boot-shim/src/uefi_helpers.rs)）；`main.rs` 的 [`fn main`](<os/boot-shim/src/main.rs:fn main>) 只是入口，它调用 `prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)`。明细与去向见 5.3 的 TODO-07。
+M13 的覆盖状态见 §5.1；TODO 详情见 §5.3：UEFI 侧四个函数里，纯判定函数 `assert_bootstrap_outside_memmap` 已有五案宿主测试（清单见 §5.3 TODO-07）。`build_memmaps` 在生产入口没有调用（生产走 `ebs_pair`）；它被 `build_memmap()`（2 个测试内核直接调用）与 `exit_boot_services_and_classify()`（12 个测试内核调用）两族使用，合计 15 个内核；两者都需要 Boot Services，宿主无法构造。`alloc_root_page` 与 `alloc_bump_region` 的生产调用点在 `prepare_and_enter_kernel_image` 内（[`uefi_helpers.rs`](os/boot-shim/src/uefi_helpers.rs)）；`main.rs` 的 [`fn main`](<os/boot-shim/src/main.rs:fn main>) 只是入口，它调用 `prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)`。明细与去向见 5.3 的 TODO-07。
 
 **把缺件处理改回静默跳过会怎样**：`load_boot_modules_into` 里换成 `if let Some(data) = loader.read(&path) { ... }`。`test_load_boot_modules_panics_on_missing` 立刻变红——这条测试的可观测形式正是 panic，它挡的正是"错误被推迟到内核侧"那条路；那条链的完整走向（内核侧只剩"期望 12、实际 N"）在 §4.3 已经给过。
 
@@ -3288,19 +3300,19 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 
 #### 5.2.3 真机层：探针与各链（各链各自证明什么）
 
-**深拷探针读数（本仓 QEMU/OVMF）**：在 `test-kernel-map`（`os/qemu-tests/test-kernels/kernel/` 下的 QEMU 测试内核）加一枚对照页——内存快照之后经 `AllocatePages(MaxAddress(4 GiB − 4 KiB), LOADER_DATA)` 分配、填位置标记，然后在三个时点整页校验和：EBS 前、EBS 后、`arch_boot_impl` 开分页后。读数为 `pa=0x5e9b000`、`pre = post_ebs = post_enable = 0x4a00_0000_0001_ff00`、`verdict=replayed`，即该页的 1:1 映射在内核自举根下落成、内容未被触碰。**`in_snapshot_free=0` 不能当作“快照未把该页列为空闲”的证据**：探针页是 `LOADER_DATA`，最终 EBS 快照本来就会把它列进保留类型；这个读数只说明“最终快照没有把它列成 conventional”，不能反推历史快照的归类。
+**深拷探针读数（本仓 QEMU/OVMF）**：在 `test-kernel-map`（`os/qemu-tests/test-kernels/kernel/` 下的 QEMU 测试内核）加一枚对照页——在最终 EBS 内存图之前经 `AllocatePages(MaxAddress(4 GiB − 4 KiB), LOADER_DATA)` 分配、填位置标记，然后在三个时点整页校验和：EBS 前、EBS 后、`arch_boot_impl` 开分页后。读数为 `pa=0x5e9b000`、`pre = post_ebs = post_enable = 0x4a00_0000_0001_ff00`、`verdict=replayed`，即该页的 1:1 映射在内核自举根下落成、内容未被触碰。**`in_snapshot_free=0` 不能当作“快照未把该页列为空闲”的证据**：探针页是 `LOADER_DATA`，最终 EBS 快照本来就会把它列进保留类型；这个读数只说明“最终快照没有把它列成 conventional”，不能反推历史快照的归类。
 
-以下三层判别是本条不变量的权威记录（设计章只引用；证据归本节），§4.5、§5.1 M4、§6.3 只引用、不重述。探针证明了什么、没证明什么，分三层说。**第一层（探针已排除）**：候选①"页表不重放 1:1"对**本次 OVMF 形态、低于 4 GiB、快照后分配、单页样本**的 LOADER_DATA 页不成立——排除范围限于这个样本，不自动推广到"该类页面全体"，更不跨到历史真机形态。**第二层（探针未排除）**：候选②“被当空闲复用清零”的结构前提（快照把该页列为空闲）在本次 OVMF 形态**没有被本探针检验**——`test-kernel-map` 里的 `in_snapshot_free` 读的是该测试内核自己 `build_memmap()` 产出的 conventional-only 投影（在探针分配之前取得，且它没有生产侧的 EBS 配对/分类循环），所以 `in_snapshot_free=0` 是「探针页不在那份投影里」的构造结果，既不是对历史快照归类的观测，也不是对候选②的检验；历史真机的快照怎么列、零化时序长什么样，探针也没有覆盖——候选②对两组历史零化读数**仍未排除**。**第三层（独立假设）**："入口引用被跨 `noreturn` 跳转打坏"不在本探针的检验范围；它目前唯一的支撑是"深拷后症状消失"，这是干预相关性，不是对该机制的观测——要把它从假设升级为结论，需要一次直接观测（例如在入口与首个读者处各记录一次引用值/页表项作对照）。所以本探针的准确表述是**初步排除一个候选**，不是完成判别。探针保留在 `test-kernel-map`（只加打印、不改 PASS 判据），作为该不变量的可复跑证据。
+以下三层判别是本条不变量的权威记录（设计章只引用；证据归本节），§4.5、§5.1 M4、§6.3 只引用、不重述。探针证明了什么、没证明什么，分三层说。**第一层（探针已排除）**：候选①"页表不重放 1:1"对**本次 OVMF 形态、低于 4 GiB、最终快照前分配、单页样本**的 LOADER_DATA 页不成立——排除范围限于这个样本，不自动推广到"该类页面全体"，更不跨到历史真机形态。**第二层（探针未排除）**：候选②“被当空闲复用清零”的结构前提（快照把该页列为空闲）在本次 OVMF 形态**没有被本探针检验**——`test-kernel-map` 里的 `in_snapshot_free` 读的是 `exit_boot_services_and_classify()` 对 `ExitBootServices` 返回的最终内存图分类的结果（在探针分配之后取得），所以 `in_snapshot_free=0` 只说明最终分类把探针页列为非 conventional，既不是对历史快照归类的观测，也不是对候选②的检验；历史真机的快照怎么列、零化时序长什么样，探针也没有覆盖——候选②对两组历史零化读数**仍未排除**。**第三层（独立假设）**："入口引用被跨 `noreturn` 跳转打坏"不在本探针的检验范围；它目前唯一的支撑是"深拷后症状消失"，这是干预相关性，不是对该机制的观测——要把它从假设升级为结论，需要一次直接观测（例如在入口与首个读者处各记录一次引用值/页表项作对照）。所以本探针的准确表述是**初步排除一个候选**，不是完成判别。探针保留在 `test-kernel-map`（只加打印、不改 PASS 判据），作为该不变量的可复跑证据。
 
 | 链 | 脚本 | 这条链证明什么 | 判定标记 |
 |---|---|---|---|
-| UEFI + ESP 盘（aarch64） | `os/qemu-tests/test-shim-bootmarks-aarch64.sh` | boot-shim 能自己从 ESP 读内核与 12 个模块（读文件这一半） | `boot-shim: kernel loaded (entry staged)`、`boot-shim: 12 boot modules loaded` 与第三个标记之一（有 dumpdtb 的形态出 `boot-shim: memmap source: …`；无 dumpdtb 形态出同前缀的无 dumpdtb 变体；`DTB_CFGTABLE=1` 注入形态则出 `DTB preflight failed…`、**没有** memmap source 行）三条路标都出现——前两条（读文件）在 `ExitBootServices` 之前；第三条是内存图来源行，在 startup 写入与三道断言之后（不再解码 wire）（`DTB_CFGTABLE=1` 形态则是配对循环内、EBS 之前的 DTB preflight 拒绝行），脚本不判内核随后是否存活（`panicked at` 只作提前收尾的快速失败，不是通过条件） |
+| UEFI + ESP 盘（aarch64） | `os/qemu-tests/test-shim-bootmarks-aarch64.sh` | boot-shim 能自己从 ESP 读内核与 12 个模块（读文件这一半） | `boot-shim: kernel loaded (entry staged)`、`boot-shim: 12 boot modules loaded` 与第三个标记槽位——**前两条固定**，第三条随变体：有/无 dumpdtb 的形态出 `boot-shim: memmap source: …`（前缀有/无 dumpdtb 变体），`DTB_CFGTABLE=1` 注入形态出配对循环内、EBS 之前的 `DTB preflight failed…`，**没有** memmap source 行。三条槽位都必须出现；脚本不判内核随后是否存活（`panicked at` 只作提前收尾的快速失败，不是通过条件） |
 | OpenSBI + U-Boot（riscv64 U-Boot 直载测试链） | `os/qemu-tests/test-riscv64-uboot.sh` | U-Boot 的 `fatload` → `bootelf` 交棒透明可用：与 OpenSBI 直载路径同一个测试内核（`hello-boot-*`，非生产内核）经 U-Boot 装载也能走到一致的 PASS（内核入口之后不依赖固件服务） | `### TEST_RESULT: PASS hello-boot-riscv64 ###`（由被装载的测试内核打印，脚本从串口日志匹配） |
 | `-kernel` 直核（riscv64 自引导面） | `os/qemu-tests/test-kernel-image-riscv64-bootface.sh` | DTB `/chosen` 表址通道可用：表址被解析、表被消费并 fail-fast（脚本故意让模块定位失败、不假装模块存在）；备用 `a2` 通道已删除（裁决项 3），本门只验 DTB `/chosen` 通道 | `### TEST_RESULT: PASS test-kernel-image-riscv64-bootface ###`——条件含表址行、`table holds 0x0000000000000000 entries` 与 `module placement failed` 的行序 |
 | UEFI + ESP 盘（x86_64） | `os/qemu-tests/test-shim-bootmarks-x86.sh` | 同一条 v1 链在 x86_64 上读盘、交接、进入调度器 | 5 条：`kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1` / `resuming high-half boot (handoff v1 arena, x86_64)` / `entering scheduler` |
 | U-Boot shim（riscv64 U-Boot 路径） | `os/qemu-tests/test-riscv64-uboot-shim.sh` | `riscv64-uboot-shim` 构建表、装内核与 12 模块、交接到 U-Boot 接收镜像 | 6 条：`uboot leg enter (d73)` / `table built (MNXBOOT1` / `kernel + 12 modules loaded (d73)` / `[raw] entering kernel image v1` / `resuming high-half … riscv64` / `entering scheduler` |
 
-真机门链五条以本节表格五行为准（两条 UEFI 链、riscv64 U-Boot 直载测试链、riscv64 U-Boot shim、riscv64 直核——这五条各有独立脚本；aarch64 直核面由 `test-smp-aps-aarch64.sh` 用 `-kernel` 驱动，但该脚本判的是 SMP 交付（`ap-arrived`/`ap-irq-ready`），不是启动路标门，**不计入**这五条。此处"链"指**有脚本门覆盖的组合**，与 §3.7 对账的"五条生产腿"同数不同集，不混用：**§3.7 是生产腿计数的唯一权威，本节是门链计数的唯一权威**，两者不互相改写），跑法与"关键行缺失时怎么办"见 §6.4 第一层。本节只负责"证明什么"与通过标准。三条 aarch64/riscv64 门链（aarch64 UEFI+ESP、riscv64 U-Boot shim、riscv64 直核 bootface；riscv64 U-Boot 直载测试链另见上表）的终点各不相同：aarch64 UEFI+ESP 链通常只到 EBS 后的 `memmap source` 行（`DTB_CFGTABLE=1` 变体以 EBS 前的 `DTB preflight failed…` 为终点，见本节表格）；riscv64 U-Boot shim 到 6/6 路标（含 `entering scheduler`）；riscv64 直核 `bootface` 的 PASS 是故意让模块定位失败以验错误路径。x86 UEFI 与 U-Boot shim 链的标记集另含 `entering scheduler`（`kmain` 尾段），但调度器之后（用户态服务）的存活由后续各篇（如 `02-higher-half-kernel.md`）的门链接手，不在本篇判定范围。aarch64 直核面不在这些启动门链里：它由 `test-smp-aps-aarch64.sh` 驱动，判的是 SMP 交付，不是启动路标门。**五条生产腿减去五条门链，缺的正是 aarch64 直核面的专用启动门**；它只有 SMP 门间接覆盖，这是本篇证据总账里的已知缺口（§5.1 M14）。`BootFileTable` 取件车道不在 riscv64 U-Boot 直载测试链的测试内核里（它直构 `KernelInfo`、绕过 `prepare_boot`），覆盖它的是 OpenSBI 直载路径的脚本（`test-riscv64-boot-full.sh` 一类会在设备树上注入 `opensbi,boot-file-table`）。
+真机门链五条以本节表格五行为准（两条 UEFI 链、riscv64 U-Boot 直载测试链、riscv64 U-Boot shim、riscv64 直核——这五条各有独立脚本；aarch64 直核面由 `test-smp-aps-aarch64.sh` 用 `-kernel` 驱动，但该脚本判的是 SMP 交付（`ap-arrived`/`ap-irq-ready`），不是启动路标门，**不计入**这五条。此处"链"指**有脚本门覆盖的组合**，与 §3.7 对账的"五条生产腿"同数不同集，不混用：**§3.7 是生产腿计数的唯一权威，本节是门链计数的唯一权威**，两者不互相改写），跑法与"关键行缺失时怎么办"见 §6.4 第一层。本节只负责"证明什么"与通过标准。三条 aarch64/riscv64 门链（aarch64 UEFI+ESP、riscv64 U-Boot shim、riscv64 直核 bootface；riscv64 U-Boot 直载测试链另见上表）的终点各不相同：aarch64 UEFI+ESP 链通常只到 EBS 后的 `memmap source` 行（`DTB_CFGTABLE=1` 变体以 EBS 前的 `DTB preflight failed…` 为终点，见本节表格）；riscv64 U-Boot shim 到 6/6 路标（含 `entering scheduler`）；riscv64 直核 `bootface` 的 PASS 是故意让模块定位失败以验错误路径。x86 UEFI 与 U-Boot shim 链的标记集另含 `entering scheduler`（`kmain` 尾段），但调度器之后（用户态服务）的存活由后续各篇（如 `02-higher-half-kernel.md`）的门链接手，不在本篇判定范围。aarch64 直核面不在这些启动门链里：它由 `test-smp-aps-aarch64.sh` 驱动，判的是 SMP 交付，不是启动路标门。**五条生产腿与五条门链的差集有两项**：aarch64 直核面在生产腿里没有专用启动门；riscv64 U-Boot 直载测试链在门链里但不是生产腿。本篇证据总账的缺口是前者（只有 SMP 门间接覆盖，§5.1 M14）。`BootFileTable` 取件车道不在 riscv64 U-Boot 直载测试链的测试内核里（它直构 `KernelInfo`、绕过 `prepare_boot`），覆盖它的是 OpenSBI 直载路径的脚本（`test-riscv64-boot-full.sh` 一类会在设备树上注入 `opensbi,boot-file-table`）。
 
 退出码语义（表中五个脚本一致）：0 = PASS，1 = FAIL，2 = SKIP（前置工具缺失，或宿主 U-Boot 与脚本/镜像不兼容；`test-riscv64-uboot.sh` 在装载故障时打印 `SKIP: host U-Boot could not load…` 与版本）。这条区分让"没跑"与"跑了但失败"在手工运行时可以分辨：没有 U-Boot 的开发机上，riscv64 U-Boot 直载测试链返回 2 而不是 1。当前 CI 只接线了这五条门链里的 `test-riscv64-uboot.sh`，其余四条是手工门（另有独立的一套 `test-cmd-smoke*.sh` 命令冒烟链也在 CI，其中 `test-cmd-smoke.sh` 的 Stage 3b 断言了 x86 shim 的三条交接路标——那套判的是命令面，不是本节的门链终点）；这里的“接线”指 **CI 作业接入**，与 §3.1.1 的“代码路径已接线”不是同一件事。表中“覆盖”指手工验证过，不等于 CI 常态守护。
 
@@ -3314,10 +3326,10 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 |---|---|---|---|---|
 | TODO-01 | M4 深拷序 | 六入口在首个页分配前已完成 `store_kernel_info`（调试钩检查点） | 已覆盖：源码序钉（六入口按各架构最靠近泛型体的委托壳计：三个 `arch_boot` + aarch64 `arch_boot_resume_high_half` + x86/riscv 两个 `resume_after_v1_decode`；共享入口 `arch_boot_resume_v1` 另以 validate < `resume_boot_pt_alloc` < 委托的三步序钉住）；mock 入口 `arch_boot_test` 与 QEMU 测试内核的分阶段调用均绕过 store，故运行期断言不成立（钉注释已写明这次回退的判据） | 已交接完成 |
 | TODO-02 | M7 写一次 | `register` 二次调用在两种构建档都 fail-closed（panic） | 已覆盖：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` 与 `register_free`，`catch_unwind` 断言 panic 且指针不变）；[`pt_alloc_concurrent.rs`](os/arch/tests/pt_alloc_concurrent.rs) 1 条（barrier 双写者恰好一个赢家） | 已交接完成 |
-| TODO-03 | M8 落地区溢出 | 超容量输入触发 fail-fast（不截断） | 已覆盖：七枚 `should_panic`（reserved 257 / memmap 129 / boot modules 13 / platform 5 / param 1025 / source 297 / startup 21），各持 boot-globals 锁 | 已交接完成 |
+| TODO-03 | M8 落地区溢出 | 超容量输入触发 fail-fast（不截断） | 已覆盖：六枚 `should_panic`（reserved 257 / memmap 129 / boot modules 13 / platform 5 / param 1025 / source 297），各持 boot-globals 锁 | 已交接完成 |
 | TODO-04 | M12 EBS 边界 | EBS 之后的代码路径中不出现 `uefi::` 调用 | 已覆盖（文本级）：`os/boot-shim/tests/ebs_boundary_audit.rs` 切出 `prepare_and_enter_kernel_image` 体，去注释后扫配对循环成功之后的语句（零 `uefi::`/`uefi::boot::`/allocate/free/Box/Vec/alloc/drop），并另扫整个 `ebs_pair.rs`（EBS 成功后的分类计数打印已改走裸串口）；带三枚注入负控（`uefi::`、`allocate_pages`、嵌套块尾部）与注释豁免自检 | 已交接完成（文本级） |
 | TODO-05 | §4.6 大页首选档 | 构造 1 GiB 对齐、跨度为 1 GiB 整数倍的合成 layout 验证首选档选择；现行三个生产布局不可达该档 | 宿主测试 `boot_policy::policy_tests::picks_the_preferred_size_when_supported_and_aligned` 用合成 1 GiB layout 覆盖选择路径；1 GiB 真机镜像会引入 1 GiB artifact 而无额外证据，不构建 | ✅ 已关闭（宿主合成 layout 门） |
-| TODO-06 | M14 x86_64 路标链 | x86_64 上 `kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1` 三条路标出现 | 已覆盖：`test-cmd-smoke.sh` Stage 3b 逐条 `grep -qF`，缺任一条即 FAIL 并回打串口尾 12 行。本条判据（三条路标）当前为绿；脚本整体退出码本记录未复核，du/stat/find 三段的现状不属于本条判据 | 已交接完成 |
+| TODO-06 | M14 x86_64 路标链 | x86_64 上 `kernel loaded` / `12 boot modules loaded` / `[raw] entering kernel image v1` 三条路标出现 | 已覆盖：`test-cmd-smoke.sh` Stage 3b 逐条 `grep -qF`，缺任一条即 FAIL 并回打串口尾 12 行。本条判据 = 三条 `grep -qF` 路标；脚本整体退出码另由脚本自身的通过条件判定，du/stat/find 三段不在本条判据内 | 已交接完成 |
 | TODO-07 | §4.2 UEFI 侧宿主可测面 | 两列表互斥；fixture 的期望计数相符；root/bump 不与 free 列表相交 | `assert_bootstrap_outside_memmap` 五案：`test_bootstrap_outside_memmap_accepts_disjoint_and_abutting`、`..._rejects_contained_range`、`..._rejects_partial_overlap`、`..._rejects_wrapping_region`、`..._rejects_wrapping_allocation`（`os/boot-shim/src/uefi_helpers.rs` 测试模块）；`ebs_map::tests::classified_tables_are_disjoint_and_expected` 覆盖同一分类的 free/reserved 表互斥与 fixture 期望计数；`build_memmaps` 仅是固件 `GetMemoryMap` 快照包装，宿主不可构造——这是**覆盖边界**，不是"所有输入下的完备性已证" | ✅ 已关闭（覆盖边界已写明） |
 | TODO-08 | §6.3 boot-shim 镜像位于 4 GiB 之上 | 该前提是 boot identity 窗口 VA 上限的隐含条件 | Step 1 映射循环断言 `end <= BOOT_IDENTITY_MAP_END`（2 MiB 上取整后）；shim image/stack 已加入窗口表，越界 fail-closed | ✅ 已关闭（BOOT-SCOPE 2a 实施） |
 | TODO-09 | §6.1 建根返回后、跳转前无发送侧路标 | 卡在建根后半与卡在跳转后无法用串口区分 | 冻结决策 D-029：不做此诊断打印；CR3 切换后 shim 侧不可观测是 PE/CR3 架构特性，A→C 间隙由 QEMU `-d int` 异常追踪覆盖 | ✅ 已关闭（D-029） |
@@ -3374,7 +3386,7 @@ pub fn raw_serial(text: &str) {
 | `kernel-image: step4 DM coverage (additive on active root)` / `kernel-image: DM ok, jumping to kmain (high half)` | 接收端 additive 阶段路标 | 仅 aarch64 v1 接收腿；x86_64/riscv64 的 `resume_after_v1_decode` 给 `resume_additive` 传空串，不打印这两行 | [`arch_boot_resume_high_half`](os/kernel/src/lib.rs:fn arch_boot_resume_high_half) |
 | `kernel: step0 validate ok` | `boot_validate_and_prepare` 的**完成**标记（内部子步是 `kernel: v0`–`v4` 那一行） | **仅直核面**；v1 发送腿只打子步、不打完成标记，v1 接收腿也不打 | [`lib.rs`](os/kernel/src/lib.rs) 的 `arch_boot_impl` |
 | `kernel: step1+2 mappings ok` | Step 1/2 已过（建根后半、**跳转前**） | 两个直核面 + 三条 v1 发送腿（`build_bootstrap_root_and_enable` 内） | [`lib.rs`](os/kernel/src/lib.rs) 的 `boot_stage!` |
-| `kernel: step4 DM coverage ok` | 直核建表完成 | **仅直核面**（`arch_boot_impl`）；v1 接收腿打的是 `kernel-image: step4 …` 那一行 | [`lib.rs`](os/kernel/src/lib.rs) 的 `boot_stage!` |
+| `kernel: step4 DM coverage ok` | 直核建表完成 | **仅直核面**（`arch_boot_impl`）；aarch64 v1 接收腿另打 `kernel-image: step4 …` 那一行（x86_64/riscv64 接收腿传空串，不打印） | [`lib.rs`](os/kernel/src/lib.rs) 的 `boot_stage!` |
 | `kernel: step2c device window empty (skip)` | 设备窗口为空时的跳过标记 | 仅 aarch64（直核与 v1 发送侧）；x86/riscv 的 `device_window_regions()` 非空，不打印 | `lib.rs` 的 `boot_stage!` |
 | `kernel: step4 DM coverage (preflight + install)` | **直核路径**（`arch_boot_impl`）DM 覆盖的两段（preflight 与 install） | 仅直核面；aarch64 接收侧打印 `kernel-image: step4 DM coverage (additive on active root)`，x86_64/riscv64 接收侧不打印 | 同上 |
 | `  param_buf bytes=… first=…`（两个前导空格，无 `boot-shim:` 前缀） | 直核面参数源读数；`first` 是第一条记录 | 两个直核面 | 两个 bootface 的 `normalize_param_buf` 调用点 |
@@ -3450,14 +3462,14 @@ fn panic(info: &PanicInfo) -> ! {
 | 模块缺失 | `loader.rs:load_boot_modules_into` | `boot-shim: required boot module 'X' not found at <路径>` | 核对盘上 12 个模块名（脚本的 `mdir` 前置检查会先报） |
 | 内核 ELF 读不到 | `FileLoader::read_required` | `boot-shim: required file not found: /EFI/minix/kernel.elf` | 核对 ESP 的 `/EFI/minix/kernel.elf` 与固件是否挂载了该分区 |
 | bump 区间耗尽 | `BootAlloc::alloc` 返回 `AllocationFailed` | 内核侧 `map_huge`/`boot_pt_alloc` 失败，或 `enter_kernel_image_v1: bump region not registered` | 复算 `prepare_and_enter_kernel_image(N)` 的页数预算与镜像规模 |
-| v1 信封/载荷无效 | `arch_boot_resume_v1` 的 `decode_*` | `kernel-image: handoff v1 envelope invalid: <变体>`（或 memmap/reserved/modules/platform/param/source/startup 七个分区中任一段的对应行） | 核对 shim 的序列化顺序与描述符长度；先看 `[raw] arena=… conv=… res=…` 是否已打印 |
-| 发送侧走完、接收端未起（无声卡死） | `[raw] entering kernel image v1` 之后、接收侧 `### minix-rs kernel-image: resuming high-half boot…` 之前 | 串口最后一行通常是 `kernel: step1+2 mappings ok`（卡在建根的后半段：Step 1/2 映射已过，但 Step 2b/2c/3 与跳转尚未完成），更早则是 `kernel: v4 capability facts ok` 或 `[raw] arena=…`——三档读法见 §6.1 末段；接收侧第二组 `v0` 不出现 | 按 §6.1 末段三档先定位发送侧停点；再按 §6.4 第三层在 `enter_kernel_image_v1` 或接收侧委托链下断点 |
+| v1 信封/载荷无效 | `arch_boot_resume_v1` 的 `decode_*` | `kernel-image: handoff v1 envelope invalid: <变体>`（或 memmap/reserved/modules/platform/param/source 六个分区中任一段的对应行） | 核对 shim 的序列化顺序与描述符长度；先看 `[raw] arena=… conv=… res=…` 是否已打印 |
+| 发送侧走完、接收端未起（无声卡死） | `[raw] entering kernel image v1` 之后、接收侧 `### minix-rs kernel-image: resuming high-half boot…` 之前 | 串口最后一行通常是 `kernel: step1+2 mappings ok`（卡在建根的后半段：Step 1/2 映射已过、Step 2b/2c 也已完成，卡在 Step 3 `enable` 或跳转），更早则是 `kernel: v4 capability facts ok` 或 `[raw] arena=…`——三档读法见 §6.1 末段；接收侧第二组 `v0` 不出现 | 按 §6.1 末段三档先定位发送侧停点；再按 §6.4 第三层在 `enter_kernel_image_v1` 或接收侧委托链下断点 |
 | ~~`bootstrap_len` 非零~~ | （字段与断言均已删除，该失败模式不可复发） | 历史消息曾是 `bootstrap_len must be 0 (Rust port has no unpaged section), got N`——现行代码 grep 不到它，排障不要按这条找 | — |
-| boot-shim 自身镜像被装载在 4GiB 之上 | 固件装载器（UEFI 无此保证：规范不约束 loader 镜像的物理落点） | boot identity 窗口的 VA 上限是 `BOOT_IDENTITY_MAP_END`；shim 从 `LoadedImage.info()` 取自己的 image/stack 并加入窗口表，Step 1 映射循环断言 `end <= BOOT_IDENTITY_MAP_END`（2 MiB 上取整后）——落在 4GiB 之上会以可读消息 fail-closed，不再静默落到无映射区 | 已由窗口断言覆盖（见 §5.3 TODO-08 的关闭记录） |
+| boot-shim 自身镜像被装载在 4GiB 之上 | 固件装载器（UEFI 无此保证：规范不约束 loader 镜像的物理落点） | boot identity 窗口的 VA 上限是 `BOOT_IDENTITY_MAP_END`；shim image 取自 `LoadedImage.info()`、stack 取自当前 SP（`shim_stack_window()`）并加入窗口表，Step 1 映射循环断言 `end <= BOOT_IDENTITY_MAP_END`（2 MiB 上取整后）——落在 4GiB 之上会以可读消息 fail-closed，不再静默落到无映射区 | 已由窗口断言覆盖（见 §5.3 TODO-08 的关闭记录） |
 | 快照位置错（自举页被报成可用） | `assert_bootstrap_outside_memmap` | `conventional memmap [a,b) overlaps bootstrap allocation [c,d)` | 核对快照调用点在三次分配（root/bump/arena）之后 |
 | 大页阶梯无档可用 | 规划层 `plan_boot_pages`（两个调用点：直核 `arch_boot` 家族与 v1 发送侧 `enter_kernel_image_v1`——后者服务 x86_64、aarch64、riscv64 U-Boot shim 三条腿） | 两条消息前缀对应两族：`arch_boot: page-size policy: …`（直核）/ `enter_kernel_image_v1: page-size policy: …`（v1 发送三腿）；消息体按变体分两种：`NoKernelPageSize` 是 `no kernel page size satisfies the layout`，`FallbackUnsupported` 是 `fallback page size <N> is not supported`（后者表示回退档本身不被硬件支持） | 跑 `check-layout.sh` 的 L3/L4/L5 |
 | 页表切换后取指故障 | `Paging::enable` 之后第一条指令 | QEMU `-d int` 日志里的异常记录；`CR2`/`EPC` 指向当前指令 | 核对恒等映射范围是否覆盖该地址（§4.6） |
-| `KernelInfo` 切片读回全零 | `vm_handoff::classify` 或后续消费者 | VM 侧"no free memory regions"类 panic | 核对 `store_kernel_info` 是否落了七块（§4.5） |
+| `KernelInfo` 切片读回全零 | `vm_handoff::classify` 或后续消费者 | VM 侧"no free memory regions"类 panic | 核对 `store_kernel_info` 是否落了六块（§4.5） |
 
 **把 `assert_bootstrap_outside_memmap` 降级为 `debug_assert` 会怎样**（release 构建下它就消失了）：它挡的是"活的页表页与 bump 池被当作空闲内存交给 VM"这一类问题，而这类问题的发作要经过"VM 取帧 → 覆盖页表页 → 切换 CR3 → 取指失败"四步。这条断言只在两条 UEFI 腿的 `prepare_and_enter_kernel_image` 里运行：配对循环成功之后、建根之前，检查 root/bump/arena 三段（此时消息仍可经裸串口输出，消息里同时给出 conventional 区间与自举区间两个坐标）。它**不在** `prepare_boot` 路径上，也不在两个直核面里：那三条腿的自举页保护是另一组机制——U-Boot shim 在装载前用 ELF 程序头算出的 LMA 跨度对链接上界与 bump 池做编译期/运行期断言，两个直核面用 `place_modules` 的源区间 × bump 池检查，内核侧再由 `vm_handoff::classify` 按 `for_each_live_bootstrap` 整段扣除。把 UEFI 这条断言降级，等于把一段可读的坐标信息换成一次无坐标的崩溃；其余三腿本来就没有这条消息，排查时不要按它去找。
 
@@ -3500,7 +3512,7 @@ $ gdb-multiarch image.elf
 (gdb) target remote :1234
 (gdb) break kernel::rust_image_main   # `kernel` 是 kernel-image 这个 bin 的 crate 名（见 os/kernel-image/Cargo.toml）；裸短名匹配不到 mangled 符号
 (gdb) break minix_kernel::arch_boot   # 三个 cfg 版本互斥，断点落在当前架构那一份
-(gdb) break minix_kernel::arch_boot_resume_high_half   # 仅 aarch64 镜像有；riscv 直核会话改 break minix_kernel::arch_boot（U-Boot shim、x86_64 与 aarch64 三条 v1 接收腿都调用 `resume_additive`，只是各自的委托壳不同：U-Boot 与 x86_64 直接进，aarch64 经 `arch_boot_resume_high_half`）
+(gdb) break minix_kernel::arch_boot_resume_high_half   # 仅 aarch64 镜像有；riscv 直核会话改 break minix_kernel::arch_boot（riscv64 U-Boot 接收镜像、x86_64 与 aarch64 三条 v1 接收腿都调用 `resume_additive`，只是各自的委托壳不同：U-Boot 与 x86_64 直接进，aarch64 经 `arch_boot_resume_high_half`）
 (gdb) continue
 (gdb) info registers
 ```
