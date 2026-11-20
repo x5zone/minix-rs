@@ -130,6 +130,17 @@ impl Paging for SimPaging {
         me.entries.clear();
     }
 
+    fn is_supervisor_va(&self, _va: VirBytes) -> bool {
+        // In-memory model: no supervisor half exists to share, so no
+        // range can be "shared" and the guard never fires (mirrors the
+        // arch crate's SimPaging).
+        false
+    }
+
+    fn is_inherited(&self) -> bool {
+        self.state == PagingState::Inherited
+    }
+
     fn map(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<(), PageTableError>
     {

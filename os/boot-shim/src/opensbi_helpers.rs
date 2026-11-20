@@ -210,7 +210,20 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // A non-ELF payload (tests, future formats) keeps the full slot.
         let used = minix_elf::segment_iter(slice)
             .ok()
-            .and_then(|iter| iter.map(|seg| (seg.offset + seg.filesz) as usize).max())
+            .and_then(|iter| {
+                // Any malformed program header makes the trim untrustworthy:
+                // fall back to the full slot explicitly (I-48 / D-084 — the
+                // old `.map(..).max()` silently skipped malformed segments
+                // and could trim to a shorter-than-real file).
+                let mut max_end = 0usize;
+                for seg in iter {
+                    let Ok(seg) = seg else { return None };
+                    // Ok items are iterator-validated: offset+filesz fits
+                    // inside the slice, so this add cannot overflow.
+                    max_end = max_end.max((seg.offset + seg.filesz) as usize);
+                }
+                Some(max_end)
+            })
             .filter(|&end| end > 0 && end <= slice.len())
             .unwrap_or(slice.len());
         // U-Boot staged the file in RAM; hand out a borrow instead of a copy

@@ -181,14 +181,15 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
     let mut kern_end_phys = 0u64;
     let mut found_load = false;
 
-    while let Some(seg) = iter.next() {
+    while let Some(seg_result) = iter.next() {
+        // A malformed program header (truncated segment, unreadable phdr,
+        // filesz > memsz) means the image cannot be trusted for a boot
+        // layout: bubbling the error up beats the old silent skip, which
+        // produced a smaller-but-bootable layout (I-48 / D-084). The
+        // filesz > memsz overwrite guard now lives inside the iterator, so
+        // every consumer gets it without a per-caller check.
+        let seg = seg_result?;
         found_load = true;
-        // A file segment larger than its memory image would copy bytes past
-        // the declared range; the overlap gate uses `memsz`, so it would not
-        // catch the overwrite. Reject it before any arithmetic.
-        if seg.filesz > seg.memsz {
-            return Err(minix_elf::ElfError::InvalidSegment);
-        }
         let seg_end = seg
             .paddr
             .checked_add(seg.memsz)
@@ -220,15 +221,21 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
 /// [`load_segments_into_phys_memory`] to write directly to physical
 /// addresses.
 ///
-/// Returns the number of segments loaded.
-pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr: u64) -> usize {
-    let iter = match minix_elf::segment_iter(elf_data) {
-        Ok(i) => i,
-        Err(_) => return 0,
-    };
+/// Returns the number of segments loaded, or an error for a malformed
+/// image (unparsable header/phdr table, or a malformed program header
+/// surfaced by the iterator). The old form folded every failure into
+/// "`0` segments", which made "empty image" indistinguishable from
+/// "broken image" (I-48 / D-084).
+pub fn load_segments_into_buffer(
+    elf_data: &[u8],
+    buf: &mut [u8],
+    buf_base_paddr: u64,
+) -> Result<usize, minix_elf::ElfError> {
+    let iter = minix_elf::segment_iter(elf_data)?;
 
     let mut count = 0;
-    for seg in iter {
+    for seg_result in iter {
+        let seg = seg_result?;
         // A segment below the buffer base is a fixture/input error, not a
         // reason to copy it to offset 0; skip it rather than silently
         // relocating it.
@@ -257,7 +264,7 @@ pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr
 
         count += 1;
     }
-    count
+    Ok(count)
 }
 
 /// Copy each PT_LOAD segment to its physical address and zero-fill BSS.
@@ -285,7 +292,11 @@ pub fn load_segments_into_buffer(elf_data: &[u8], buf: &mut [u8], buf_base_paddr
 /// heap buffer it is read from.
 pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), minix_elf::ElfError> {
     let iter = minix_elf::segment_iter(elf_data)?;
-    let segments: Vec<_> = iter.collect();
+    // Explicit `Result` collection (I-48 / D-084): a bare `collect()` on a
+    // `Result`-item iterator would silently keep `Err` entries as
+    // `Vec<Result<..>>` — the same "malformed looks like fewer segments"
+    // disease one layer down.
+    let segments: Vec<_> = iter.collect::<Result<Vec<_>, minix_elf::ElfError>>()?;
     if let Some(_) = first_overlapping_pair(&segments) {
         return Err(minix_elf::ElfError::InvalidSegment);
     }
@@ -623,9 +634,11 @@ mod tests {
         assert!(
             matches!(
                 compute_kernel_layout(&elf),
-                Err(minix_elf::ElfError::InvalidSegment)
+                Err(minix_elf::ElfError::FileszExceedsMemsz)
             ),
-            "filesz > memsz must be rejected with InvalidSegment"
+            "filesz > memsz must be rejected with FileszExceedsMemsz \
+             (I-48 / D-084 moved the guard into the iterator, which reports \
+             the precise variant instead of the caller's generic InvalidSegment)"
         );
     }
 
@@ -643,6 +656,89 @@ mod tests {
                 Err(minix_elf::ElfError::InvalidSegment)
             ),
             "paddr + memsz overflow must be rejected with InvalidSegment"
+        );
+    }
+
+    // ── I-48 / D-084 panel tests: a mid-image malformed PT_LOAD must
+    // reject the whole image, not shrink it silently. ──
+
+    /// Build a two-segment ELF whose SECOND PT_LOAD's file bytes extend
+    /// past the image end (the classic truncation/corruption shape). The
+    /// first segment is fully valid — the old silent-skip behavior would
+    /// produce a one-segment layout with a smaller `kern_size` and boot
+    /// anyway.
+    fn build_two_segment_elf_second_truncated() -> Vec<u8> {
+        let mut image = vec![0u8; 0x2000];
+        image[0] = 0x7f;
+        image[1] = b'E';
+        image[2] = b'L';
+        image[3] = b'F';
+        image[4] = ELFCLASS64;
+        image[5] = ELFDATA2LSB;
+        image[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+        image[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        image[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        image[56..58].copy_from_slice(&2u16.to_le_bytes());  // e_phnum = 2
+
+        // Phdr 1: valid — p_offset=0x1000, filesz=0x800, memsz=0x800.
+        let ph1 = &mut image[64..120];
+        ph1[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        ph1[8..16].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph1[24..32].copy_from_slice(&0x200000u64.to_le_bytes());
+        ph1[32..40].copy_from_slice(&0x800u64.to_le_bytes());
+        ph1[40..48].copy_from_slice(&0x800u64.to_le_bytes());
+        ph1[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+        // Phdr 2: truncated — p_offset=0x1800 + filesz=0x1000 → 0x2800 >
+        // image length 0x2000.
+        let ph2 = &mut image[120..176];
+        ph2[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        ph2[8..16].copy_from_slice(&0x1800u64.to_le_bytes());
+        ph2[24..32].copy_from_slice(&0x300000u64.to_le_bytes());
+        ph2[32..40].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph2[40..48].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph2[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+        image
+    }
+
+    /// Boot layout consumer: a truncated mid-image segment must bubble the
+    /// iterator's error up (a smaller-but-bootable layout is the exact
+    /// silent failure I-48 exists to kill).
+    #[test]
+    fn test_compute_kernel_layout_rejects_truncated_mid_segment() {
+        let elf = build_two_segment_elf_second_truncated();
+        assert!(
+            matches!(
+                compute_kernel_layout(&elf),
+                Err(minix_elf::ElfError::SegmentOutOfBounds)
+            ),
+            "truncated second segment must reject the layout, not shrink kern_size"
+        );
+    }
+
+    /// Physical-memory load consumer: the same image must fail the load
+    /// before any segment write.
+    #[test]
+    fn test_load_segments_into_phys_memory_rejects_truncated_mid_segment() {
+        let elf = build_two_segment_elf_second_truncated();
+        let result = unsafe { load_segments_into_phys_memory(&elf) };
+        assert!(
+            matches!(result, Err(minix_elf::ElfError::SegmentOutOfBounds)),
+            "truncated second segment must fail the physical load"
+        );
+    }
+
+    /// Buffer load consumer: the error must propagate as `Err`, not fold
+    /// into "`0` segments" (the old `usize` return's blindness).
+    #[test]
+    fn test_load_segments_into_buffer_propagates_truncated_mid_segment() {
+        let elf = build_two_segment_elf_second_truncated();
+        let mut buf = vec![0u8; 0x4000];
+        let result = load_segments_into_buffer(&elf, &mut buf, 0x200000);
+        assert!(
+            matches!(result, Err(minix_elf::ElfError::SegmentOutOfBounds)),
+            "truncated second segment must propagate as Err, not count as 0 loaded"
         );
     }
 
@@ -783,7 +879,8 @@ mod tests {
         let mut buf = vec![0xCCu8; memsz as usize + 1];
 
         // Run the safe loader against the buffer; it must clear [filesz, memsz).
-        let count = load_segments_into_buffer(&elf, &mut buf, buf_base);
+        let count = load_segments_into_buffer(&elf, &mut buf, buf_base)
+            .expect("fixture ELF must load cleanly");
         assert_eq!(count, 1, "exactly one PT_LOAD should be loaded");
 
         // (a) filesz region preserved: file bytes copied as-is.

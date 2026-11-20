@@ -43,13 +43,14 @@
 | I-43（已裁决·三层中两层闭合） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **D-081 采 A**（载体侧真实 span）。**一层已闭合**（12 载体全部 `PLACEHOLDER_SPAN` + 全 12 槽交出）。**二层已闭合（2026-11-20）**：`enable()` 后静默停的真因是双重的——载体硬编码 `kern_phys_base`/`kern_size` vs 固件运行期装载地址（修法：20 载体改用生产同款 `shim_image_window()`，LoadedImage 协议精确足迹），加上直核腿窗口清单漏了「调用者栈」类别（修法：`arch_boot_impl` 补压当前栈窗口，`shim_stack_window` 同型；`cfg(not(test))` 排除宿主假阳性）。**实证**：x86 14 条中 13 条 PASS（faultloop 的失败是其专用故障臂的深层缺陷、已现形）；aarch64 五条基础门全 PASS；riscv `hello-boot` PASS。三层残留（VM 加载 trap、深跑载体故障臂路由、rt-birth-riscv64 自身 bump 断言）各自需要专项、现已全部可诊断。另登记 I-48（宿主套件存量红）。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（已裁决·待实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | **已裁决（D-082，用户 2026 年 11 月 20 日）采「删重复 + 修剪上移」**：① 删 `read` 里的 `segment_iter`（实测输入的 `entry.len` 已是修剪值，纯冗余）② 修剪上移到 `load_boot_modules_into` ③ 复用 `minix_elf::segment_iter`，不新增第三个解析器。**否决「抽象修剪 trait + 空实现」**（无哪个腿不需要修剪）。② 落地前须验证 12 个模块的 PT_LOAD 覆盖真实内容 | §3 的 I-36 |
-| I-48（已裁决·待实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | **已裁决（D-084，用户 2026 年 11 月 20 日）梭哈 A**：`Item` 直接改 `Result<LoadSegment, ElfError>`，不走 B 过渡（无外部消费者、保留旧函数等于给缺陷留后门）；`filesz > memsz` 检查收进迭代器；`load_segments_into_buffer` 返回类型同批改 | §3 的 I-45 |
-| I-46（待裁决·**被 I-48 阻塞**） | `load_segments_into_phys_memory` 的 Safety 前提无类型载体（函数不自查段表）+ UEFI 腿绕过 wrapper | 设计裁决 | **未裁决，且有硬性前置依赖**：实质风险会被 I-48（`SegmentIter` 改 `Result`）顺手消掉，故必须在 I-45 落地并验证后才能裁决；裁决时只剩三件事（删 SAFETY 第 2 条 / 文档失真重新定位 / UEFI 腿是否改 wrapper）。面板建议的 `ValidatedKernelImage` 与改 wrapper 形状两案均倾向于不做 | §3 的 I-46 |
-| I-47（待裁决·**被 I-48 阻塞**） | `load_segments_into_buffer` 的计数与语义三处不一致（文档说 loaded、`:258` 无条件计数、`:235` 越界段不计数；且缺段间重叠检测） | 代码改造 | **未裁决，有硬性前置依赖**：与 I-48 在同一函数上重叠，I-48 改迭代器协议后本函数的 `match` 必须重写；裁决时按候选 A（返回改名 + 补重叠检测 + 文档改「测试投影」）。面板的 `copy_segment(seg, sink)` 抽象不采纳（覆盖不了整组重叠检测）| §3 的 I-47 |
+| I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
+| I-46（待裁决·前置 I-48 已落地） | `load_segments_into_phys_memory` 的 Safety 前提无类型载体（函数不自查段表）+ UEFI 腿绕过 wrapper | 设计裁决 | **前置已满足（I-48 落地，2026-11-21）**：`segment_iter(...)?` 现以 `Result` 自查段表，实质风险已消。裁决时只剩三件事（删 SAFETY 第 2 条 / 文档失真重新定位 / UEFI 腿是否改 wrapper）。面板建议的 `ValidatedKernelImage` 与改 wrapper 形状两案均倾向于不做 | §3 的 I-46 |
+| I-47（待裁决·前置 I-48 已落地） | `load_segments_into_buffer` 的计数与语义三处不一致（文档说 loaded、`:258` 无条件计数、`:235` 越界段不计数；且缺段间重叠检测） | 代码改造 | **前置已满足（I-48 落地，2026-11-21）**：本函数签名已随 I-48 改为 `Result<usize, _>`（坏段不再折叠成 0）；计数与语义三处不一致仍在射程内待裁决。裁决时按候选 A（返回改名 + 补重叠检测 + 文档改「测试投影」）。面板的 `copy_segment(seg, sink)` 抽象不采纳（覆盖不了整组重叠检测）| §3 的 I-47 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
 | I-40（已实施） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`kernel_info.rs:583`）与 `KernelInfo::memmap()`（`vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | ✅ **已实施（2026 年 11 月 20 日，D-079 采 A）**：① 去掉 `()` 指字段 ② 补 `field` 后缀。否决 B（造访问器会制造两套等价 API）。第三处 `kern_stack_top()` 经核实**不是** ghost，已排除 | §3 的 I-40 |
+| I-41（已裁决·待实施） | `BootReport` 上三个零读者的派生字段（`user_sp` / `kern_stack_top` / `syscall_entry`）——I-31 清扫 wire 侧时漏掉的 shim 进程内结构体 | 代码删除 | **已裁决（D-085，用户 2026 年 11 月 21 日）采 A 删三字段 + 三行赋值 + 三条测试断言**；否决 B（三个都是可派生值：常量 / 专门函数 / shim 内无语义）。裁决前实测：生产读者零、`from_report` 只读三个 `kern_*`、wire 编码器不读它们 | §3 的 I-41 |
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施 + 三轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证；**第三批（`minix-arch` 测试面）同日补修**，见 §3。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
@@ -1126,7 +1127,7 @@ I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"�
 
 **为什么此前不做**：用户 2026 年 11 月 20 日批准方案但只做记账；且本条**必须等 I-31 落地**后实施，否则 `BootScalars` 要定型两次。I-31 于同日完成后本条随即实施。
 
-### I-41（待裁决·I-38 的实施副产物）`BootReport` 上三个零读者的派生字段
+### I-41（已裁决·待实施）`BootReport` 上三个零读者的派生字段
 
 **来源**：I-38 实施时的 mini review。
 
@@ -1140,10 +1141,47 @@ I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"�
 
 它们是 I-31 删掉 `KernelInfo` 同名三字段后的**发送侧残留**：`BootReport` 是 shim 进程内的借用视图（`&BootReport<'_>` 传给 `enter_kernel_image_v1`），不是 wire 类型，所以 I-31 的 v10 升版没有波及它；但它同样在「把恒等式抄一遍」。
 
-**待裁决的两个选项**：
+**裁决（D-085，用户 2026-11-21）：采 A——删三个字段 + 三行赋值 + 三条测试断言。**
 
-- **A（推荐）**：删三个字段与 `report()` 里的三行赋值，连同三条测试断言。纯删除，零行为变化——生产侧读者实测为零。
-- **B**：保留，等将来真出现第三个消费者再说。
+**裁决前核实（A 的前提，逐项实测）**：
+
+| 核实项 | 结果 |
+|---|---|
+| 三个字段的生产读者 | **零**。`grep -rn "report\.user_sp\|report\.kern_stack_top\|report\.syscall_entry" os/ --include=*.rs` 仅 3 处命中，全在 `boot_storage.rs:385-387` 的同一测试内 |
+| `BootScalars::from_report`（`lib.rs:905`）读什么 | **只读三个 `kern_*`**：`report.kern_virt_base` / `.kern_phys_base` / `.kern_size` |
+| wire 编码器是否读它们 | **否**。`handoff_v1_write.rs:142` 的 `write_envelope_scalars(report.kern_virt_base.0, report.kern_phys_base.0, report.kern_size)` 只收三个 `kern_*`；`:153` 的注释明写「v10 dropped `user_sp` / `kern_stack_top` / `syscall_entry` (D-062)」 |
+
+**所以 A 的前提成立**：删掉它们不影响 wire、不影响 `BootScalars`、不影响任何生产路径。
+
+**否决 B（保留）**，三条理由：
+
+1. **`user_sp` 是编译期常量**：`minix_types::USER_STACK_TOP`——任何需要它的地方直接引用常量，不需要中转字段。
+2. **`syscall_entry` 有专门函数**：`syscall_entry_va()`——同上有正式来源。
+3. **`kern_stack_top` 在 shim 进程内没有语义**：它是内核高半的栈顶，shim 自己不用。
+
+**本条的本质**：这三个字段是 D-062 已判定该消失的东西（「pure restatements」），**I-31 只清扫了 wire 侧、漏了 shim 进程内的结构体**（`BootReport` 不是 wire 类型，v10 升版没波及它）。
+
+**具体改动**：
+
+| # | 位置 | 动作 |
+|---|---|---|
+| ① | `boot_storage.rs:314-316` | 删三个 `pub` 字段 |
+| ② | `boot_storage.rs:278-280` | 删 `report()` 里的三行赋值 |
+| ③ | `boot_storage.rs:385-387` | 删三条测试断言 |
+
+**验收**：
+
+```bash
+grep -rn "report.user_sp|report.kern_stack_top|report.syscall_entry" os/ --include=*.rs   # 期望 0
+grep -rn "user_sp|kern_stack_top|syscall_entry" os/libs/minix-boot/src/boot_storage.rs    # 期望 0
+cargo test -p minix-boot
+cargo test -p boot-shim --features test-all
+cargo test -p minix-kernel --features mock
+```
+
+**五条 QEMU 门链不回归**（`BootReport` 参与全部 v1 发送腿——虽然生产读者为零，但它是 `prepare_kernel_image_v1` 的入参类型，删字段改变了类型形状）。
+
+**为什么没有并入 I-38**：D-074 的授权范围是 `boot_validate_and_prepare` 的形参改造，不含 `minix-boot` 的类型删减（跨 crate）。按 fix-guard「一次一条」登记。
 
 **验收（若走 A）**：
 
@@ -1517,6 +1555,32 @@ impl<'a> Iterator for SegmentIter<'a> {
 5. `cargo test -p minix-elf`（23 条基础 + 新增）、`cargo check --workspace --all-targets`、五条 QEMU 门链全 PASS。
 
 **风险与回退**：`minix-elf` 的公开 API 破坏性变更，但无外部消费者。回退方式：`Item` 改回 `LoadSegment` 并恢复五条 `continue`（不推荐——那会回到本缺陷）。
+
+**实施记录（2026 年 11 月 21 日）**：
+
+**迭代器（`os/libs/minix-elf/src/lib.rs`）**：`type Item = Result<LoadSegment, ElfError>`。五条畸形 `continue` 逐一显式化——phdr 表寻址两处溢出 → `PhdrOutOfBounds`；`parse_phdr` 失败 → 原样冒泡其 `ElfError`；`p_offset + p_filesz` 溢出或越出镜像 → **新变体 `SegmentOutOfBounds`**；`p_filesz > p_memsz` → **新变体 `FileszExceedsMemsz`**（守卫从 `compute_kernel_layout` 上移，七处消费者免费获得）。PT_LOAD 过滤保持静默（正常语义，`test_segment_iter_non_load_filter_stays_silent` 钉死）。错误非粘滞：扫描从下一个 phdr 继续，每个 `Ok` 项都完整校验过——文档写明消费者应在首个 `Err` 短路。
+
+**七个调用点逐个显式回答策略**：
+
+| 调用点 | 策略 |
+|---|---|
+| `loader.rs` `compute_kernel_layout` | `seg_result?` 冒泡；原 `filesz > memsz` 检查删除（守卫上移迭代器） |
+| `loader.rs` `load_segments_into_buffer` | 签名改 `Result<usize, ElfError>`（裁决书点名的下一层复制缺陷同批消灭） |
+| `loader.rs` `load_segments_into_phys_memory` | `.collect::<Result<Vec<_>, _>>()?` 显式收集 |
+| `opensbi_helpers.rs` 槽长修剪 | 任一 `Err` → 显式回退全槽（旧 `.map(..).max()` 会静默把畸形槽修短） |
+| `rs/trap_api.rs` exec | `map_err(|_| Errno::ENOEXEC)?`（畸形镜像拒绝 exec，绝不静默少拷一段） |
+| `vm_server.rs` VM boot image | `.collect::<Result<..>>().map_err(|_| "boot image has a malformed PT_LOAD segment")?`（拒绝建截断地址空间） |
+| `arch/boot.rs` `load_elf_into` | `map_err(|_| VmLoadError::InvalidElf)?` |
+
+**测试**：minix-elf +3（中间段越界 `Some(Err)` 非 `None`、`FileszExceedsMemsz`、PT_NOTE 过滤静默）；boot-shim +4（面板核心：`compute_kernel_layout` / `load_segments_into_phys_memory` / `load_segments_into_buffer` 三消费者对「第二段截断」ELF 全拒绝 + 既有 filesz 测试改精确变体）。验收 #1 的 exec/VM 两腿：两者拒绝行为是 `for` 循环 `?` 与 `collect` 短路的直接后果（std 保证），迭代器侧已单测钉死，不再为消费者单独架线（exec 的 `ENOEXEC` 映射与 VM 的拒绝串各一行，编译期显式）。
+
+**验收读数**：`cargo test -p minix-elf` **27 通过**；`cargo test -p boot-shim --features test-all` **139+6+2 通过**；`-p minix-rs` **359**；`-p minix-arch --features runtime-window` **294+8+2**；`-p minix-vm` **548 通过（单线程）**。QEMU 门链：x86 hello-boot / test-proc-init / test-timer-irq **PASS**，aarch64 hello-boot **PASS**，riscv 直核 hello-boot **PASS**，**riscv U-Boot shim 链 6/6 PASS**（opensbi_helpers 槽修剪改动无回归）。
+
+**连带补漏（I-44 步④的测试面遗漏）**：`minix-vm` 的 `SimPaging`（`servers/vm/src/pagetable/sim.rs`）缺 I-44 步④新增的 required 方法 `is_supervisor_va` / `is_inherited`——HEAD 上 vm 测试面**编译不过**（被本批解锁前不可见）。按 arch 侧 SimPaging 同型补齐（`is_supervisor_va` 返回 false：内存模型无共享半；`is_inherited` 读 `PagingState`）。
+
+**新发现（登记待办）**：vm 测试面解锁后暴露 **10 条并行测试隔离失败**（`pt_alloc::register called twice` / `register_page_alloc: overwriting different allocator`——并行测试共享进程级全局单例），`--test-threads=1` 下 **548 全过**。非本批引入（HEAD 上因编译错误不可见）；修法同 kernel 的 `test_sync::lock_boot_globals` 先例，另行立项。
+
+**I-46 / I-47 解锁**：前置（I-48 落地并验证）已满足，两表行状态已同步更新。
 
 ### I-46（待裁决·**有前置依赖 I-48，前置未落地前禁止裁决**）`load_segments_into_phys_memory` 的 Safety 前提无类型载体 + UEFI 腿绕过 wrapper
 

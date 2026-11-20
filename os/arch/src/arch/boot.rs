@@ -479,7 +479,10 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // (PA ≠ VA by design). Per page the loader does
     // `alloc → zero → copy → map` so a frame is fully constructed before
     // it enters the VM address space.
-    for seg in iter {
+    for seg_result in iter {
+        // A malformed program header must fail the load, not silently map a
+        // truncated image (I-48 / D-084).
+        let seg = seg_result.map_err(|_| VmLoadError::InvalidElf)?;
         let flags = elf_flags_to_page_flags(seg.flags);
         let page_mask = page_size - 1;
         let vaddr_start = seg.vaddr;

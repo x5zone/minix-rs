@@ -888,10 +888,13 @@ impl VmServer {
 
         // Parse + walk PT_LOAD segments (C: libexec_load_elf → elf_exec_hdr).
         let entry = minix_elf::entry_point(image).map_err(|_| "boot image is not a valid ELF")?;
-        // SegmentIter yields PT_LOAD segments only (p_type filter inside).
+        // SegmentIter yields PT_LOAD segments only (p_type filter inside);
+        // a malformed program header rejects the boot image rather than
+        // silently building a truncated address space (I-48 / D-084).
         let segments: alloc::vec::Vec<minix_elf::LoadSegment> = minix_elf::segment_iter(image)
             .map_err(|_| "boot image phdrs unreadable")?
-            .collect();
+            .collect::<Result<alloc::vec::Vec<_>, minix_elf::ElfError>>()
+            .map_err(|_| "boot image has a malformed PT_LOAD segment")?;
 
         let frames = self
             .ctx

@@ -440,7 +440,10 @@ impl PmApi for TrapKernelApi {
         //    vaddr; the same shape as the sys_datacopy self-copy in exec.c:130-150
         //    read_seg).
         let mut copied_any = false;
-        for seg in minix_elf::segment_iter(exec).map_err(|_| Errno::ENOEXEC)? {
+        for seg_result in minix_elf::segment_iter(exec).map_err(|_| Errno::ENOEXEC)? {
+            // A malformed program header must reject the exec, not silently
+            // load a truncated image and run it (I-48 / D-084).
+            let seg = seg_result.map_err(|_| Errno::ENOEXEC)?;
             let src = &exec[seg.offset as usize..(seg.offset + seg.filesz) as usize];
             syscall::sys_datacopy(
                 &self.kernel,

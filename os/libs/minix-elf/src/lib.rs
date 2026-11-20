@@ -174,6 +174,16 @@ pub enum ElfError {
     /// PT_LOAD segments overlap in physical memory.
     /// Reason is a static label — see `LoaderError` for the dynamic message.
     InvalidSegment,
+    /// A PT_LOAD segment's file bytes extend past the end of the image
+    /// (`p_offset + p_filesz` overflows, or the end exceeds the image
+    /// length) — the image is truncated or corrupt (I-48 / D-084).
+    SegmentOutOfBounds,
+    /// A PT_LOAD segment declares more file bytes than memory bytes
+    /// (`p_filesz > p_memsz`); copying it would write past the declared
+    /// memory image. Checked inside the iterator since I-48 / D-084 so
+    /// every consumer gets the overwrite guard (previously only the boot
+    /// path checked it).
+    FileszExceedsMemsz,
 }
 
 // ── Parsing functions ──
@@ -299,14 +309,17 @@ fn parse_phdr(image: &[u8], offset: usize, entsize: u16) -> Result<Elf64Phdr, El
 
 /// Iterator over PT_LOAD segments in an ELF64 image.
 ///
-/// Created by [`segment_iter`]. Yields `LoadSegment` values in program
-/// header order (not sorted by paddr — the caller can sort if needed).
+/// Created by [`segment_iter`]. Yields `Result<LoadSegment, ElfError>` in
+/// program header order (not sorted by paddr — the caller can sort if
+/// needed). A malformed program header surfaces as `Err`, never as a
+/// silent skip (I-48 / D-084); short-circuit on the first `Err`.
 ///
 /// # Example
 ///
 /// ```ignore
 /// let iter = minix_elf::segment_iter(&image)?;
 /// for seg in iter {
+///     let seg = seg?; // malformed phdr → reject the image
 ///     // copy image[seg.offset..seg.offset+seg.filesz] to seg.paddr
 ///     // zero-fill [seg.paddr+seg.filesz, seg.paddr+seg.memsz)
 /// }
@@ -350,42 +363,65 @@ impl<'a> SegmentIter<'a> {
 }
 
 impl<'a> Iterator for SegmentIter<'a> {
-    type Item = LoadSegment;
+    type Item = Result<LoadSegment, ElfError>;
 
+    /// Yield each PT_LOAD segment (`Ok`), or surface the first malformed
+    /// program header as `Some(Err(..))`.
+    ///
+    /// Non-LOAD program header types are silently skipped — that is normal
+    /// filtering, not an error. Everything else that the old implementation
+    /// swallowed with a `continue` is a malformation (phdr-table arithmetic
+    /// overflow, unreadable phdr, segment file bytes past the image end,
+    /// `p_filesz > p_memsz`) and now comes out as `Some(Err(..))` (I-48 /
+    /// D-084: the old form made a corrupt image indistinguishable from
+    /// "fewer segments", so a mid-image failure produced a silently smaller
+    /// kernel/exec/VM image). After an error the scan continues from the
+    /// next program header; every `Ok` item is individually fully
+    /// validated, but a consumer that ignores `Err` items is still walking
+    /// a corrupt image — short-circuit on the first `Err`.
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < self.ehdr.e_phnum {
             let Some(entry_off) = (self.index as usize)
                 .checked_mul(self.ehdr.e_phentsize as usize)
             else {
                 self.index += 1;
-                continue;
+                return Some(Err(ElfError::PhdrOutOfBounds));
             };
             let Some(offset) = (self.ehdr.e_phoff as usize).checked_add(entry_off) else {
                 self.index += 1;
-                continue;
+                return Some(Err(ElfError::PhdrOutOfBounds));
             };
             self.index += 1;
 
             // parse_phdr already validated bounds in new(), but be defensive
             let phdr = match parse_phdr(self.image, offset, self.ehdr.e_phentsize) {
                 Ok(p) => p,
-                Err(_) => continue,
+                Err(e) => return Some(Err(e)),
             };
 
             if phdr.p_type != PT_LOAD {
                 continue;
             }
 
-            // Validate segment data fits within image
-            let Some(seg_end) = (phdr.p_offset as usize).checked_add(phdr.p_filesz as usize)
-            else {
-                continue;
+            // Segment file bytes must fit within the image: an offset
+            // overflow or an end past the image means truncation/corruption.
+            let seg_end = match (phdr.p_offset as usize).checked_add(phdr.p_filesz as usize) {
+                Some(end) => end,
+                None => return Some(Err(ElfError::SegmentOutOfBounds)),
             };
             if seg_end > self.image.len() {
-                continue;
+                return Some(Err(ElfError::SegmentOutOfBounds));
+            }
+            // A file image larger than the memory image would copy bytes
+            // past the declared range. Checked here — not per-consumer —
+            // since I-48 (D-084): every consumer gets the overwrite guard
+            // (previously only the boot path checked it, six other call
+            // sites did not).
+            if phdr.p_filesz > phdr.p_memsz {
+                return Some(Err(ElfError::FileszExceedsMemsz));
             }
 
-            return Some(LoadSegment {
+            return Some(Ok(LoadSegment {
                 paddr: phdr.p_paddr,
                 vaddr: phdr.p_vaddr,
                 offset: phdr.p_offset,
@@ -393,7 +429,7 @@ impl<'a> Iterator for SegmentIter<'a> {
                 memsz: phdr.p_memsz,
                 align: phdr.p_align,
                 flags: phdr.p_flags,
-            });
+            }));
         }
         None
     }
@@ -401,14 +437,17 @@ impl<'a> Iterator for SegmentIter<'a> {
 
 /// Create an iterator over PT_LOAD segments in an ELF64 image.
 ///
-/// Convenience wrapper around `SegmentIter::new`.
+/// Convenience wrapper around `SegmentIter::new`. Each yielded item is
+/// `Ok(segment)` or `Err(..)` for a malformed program header — a malformed
+/// image must never silently look like "fewer segments" (I-48 / D-084).
+/// Non-LOAD phdr types are filtered silently (normal case).
 /// The caller should:
 /// 1. Copy `image[seg.offset..seg.offset+seg.filesz]` to `seg.paddr`
 /// 2. Zero-fill `[seg.paddr+seg.filesz, seg.paddr+seg.memsz)` for BSS
 ///
 /// # Errors
 ///
-/// Returns `ElfError` if the image is malformed.
+/// Returns `ElfError` if the image header or phdr table is malformed.
 pub fn segment_iter(image: &[u8]) -> Result<SegmentIter<'_>, ElfError> {
     SegmentIter::new(image)
 }
@@ -440,7 +479,8 @@ mod tests {
     /// Returns the number of segments found.
     fn collect_segments(iter: &mut SegmentIter<'_>, buf: &mut [LoadSegment; MAX_TEST_SEGMENTS]) -> usize {
         let mut count = 0;
-        while let Some(seg) = iter.next() {
+        while let Some(seg_result) = iter.next() {
+            let seg = seg_result.expect("fixture ELF segments must be well-formed");
             if count < buf.len() {
                 buf[count] = seg;
             }
@@ -618,6 +658,115 @@ mod tests {
         assert_eq!(buf[1].vaddr, 0xFFFFFFFF80000000);
     }
 
+    // ── I-48 / D-084: malformed program headers surface as Err items ──
+
+    /// Two PT_LOADs where the second's file bytes extend past the image
+    /// end. The first segment must still come out as `Ok`, and the
+    /// corruption must be visible as `Some(Err(..))` — not silently
+    /// skipped into a "one-segment image" (the old `continue` behavior).
+    #[test]
+    fn test_segment_iter_truncated_mid_segment_is_err() {
+        let mut image = [0u8; 0x2000];
+        image[0] = 0x7f; image[1] = b'E'; image[2] = b'L'; image[3] = b'F';
+        image[4] = ELFCLASS64;
+        image[5] = ELFDATA2LSB;
+        image[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+        image[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        image[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        image[56..58].copy_from_slice(&2u16.to_le_bytes());  // e_phnum = 2
+
+        // Phdr 1: valid — p_offset=0x1000, filesz=0x800, memsz=0x800.
+        let ph1 = &mut image[64..120];
+        ph1[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        ph1[8..16].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph1[24..32].copy_from_slice(&0x200000u64.to_le_bytes());
+        ph1[32..40].copy_from_slice(&0x800u64.to_le_bytes());
+        ph1[40..48].copy_from_slice(&0x800u64.to_le_bytes());
+        ph1[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+        // Phdr 2: truncated — p_offset=0x1800, filesz=0x1000 → end 0x2800
+        // > image length 0x2000.
+        let ph2 = &mut image[120..176];
+        ph2[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        ph2[8..16].copy_from_slice(&0x1800u64.to_le_bytes());
+        ph2[24..32].copy_from_slice(&0x300000u64.to_le_bytes());
+        ph2[32..40].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph2[40..48].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph2[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+        let mut iter = segment_iter(&image).unwrap();
+        let first = iter.next().expect("first segment must be yielded");
+        assert!(first.is_ok(), "first segment must be Ok");
+        let second = iter.next().expect("the malformed phdr must be yielded as Err");
+        assert_eq!(second, Err(ElfError::SegmentOutOfBounds));
+        assert_eq!(iter.next(), None);
+    }
+
+    /// `p_filesz > p_memsz` means copying the segment would write past the
+    /// declared memory image. The iterator must surface it (previously
+    /// only the boot path checked this — six other call sites got a free
+    /// out-of-bounds-write).
+    #[test]
+    fn test_segment_iter_filesz_exceeds_memsz_is_err() {
+        let mut image = [0u8; 0x2000];
+        image[0] = 0x7f; image[1] = b'E'; image[2] = b'L'; image[3] = b'F';
+        image[4] = ELFCLASS64;
+        image[5] = ELFDATA2LSB;
+        image[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+        image[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        image[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        image[56..58].copy_from_slice(&1u16.to_le_bytes());  // e_phnum = 1
+
+        // p_offset=0x1000, filesz=0x1000 (ends exactly at image end), but
+        // memsz=0x800 < filesz → overwrite hazard.
+        let ph = &mut image[64..120];
+        ph[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        ph[8..16].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph[24..32].copy_from_slice(&0x200000u64.to_le_bytes());
+        ph[32..40].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph[40..48].copy_from_slice(&0x800u64.to_le_bytes());
+        ph[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+        let mut iter = segment_iter(&image).unwrap();
+        assert_eq!(
+            iter.next(),
+            Some(Err(ElfError::FileszExceedsMemsz)),
+            "filesz > memsz must surface as Err, not as a loadable segment"
+        );
+    }
+
+    /// Non-LOAD program header types are normal filtering, not errors: a
+    /// PT_NOTE next to a PT_LOAD must yield exactly one `Ok` and no `Err`.
+    #[test]
+    fn test_segment_iter_non_load_filter_stays_silent() {
+        let mut image = [0u8; 0x2000];
+        image[0] = 0x7f; image[1] = b'E'; image[2] = b'L'; image[3] = b'F';
+        image[4] = ELFCLASS64;
+        image[5] = ELFDATA2LSB;
+        image[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+        image[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        image[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        image[56..58].copy_from_slice(&2u16.to_le_bytes());  // e_phnum = 2
+
+        // Phdr 1: PT_NOTE (type 4) — filtered silently, whatever its fields.
+        let ph1 = &mut image[64..120];
+        ph1[0..4].copy_from_slice(&4u32.to_le_bytes());
+
+        // Phdr 2: valid PT_LOAD.
+        let ph2 = &mut image[120..176];
+        ph2[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        ph2[8..16].copy_from_slice(&0x1000u64.to_le_bytes());
+        ph2[24..32].copy_from_slice(&0x200000u64.to_le_bytes());
+        ph2[32..40].copy_from_slice(&0x800u64.to_le_bytes());
+        ph2[40..48].copy_from_slice(&0x800u64.to_le_bytes());
+        ph2[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
+
+        let mut iter = segment_iter(&image).unwrap();
+        let first = iter.next().expect("the PT_LOAD must be yielded");
+        assert!(first.is_ok(), "PT_NOTE filtering must not produce Err");
+        assert_eq!(iter.next(), None);
+    }
+
     /// Simulate the kernel loading logic: parse PT_LOAD segments,
     /// compute kern_phys_base, kern_virt_base, kern_size, and entry_point.
     /// This mirrors what `loader::load_kernel_with_loader` does internally.
@@ -631,7 +780,8 @@ mod tests {
         let mut kern_virt_base = u64::MAX;
         let mut kern_end_phys = 0u64;
 
-        while let Some(seg) = iter.next() {
+        while let Some(seg_result) = iter.next() {
+            let seg = seg_result.expect("fixture ELF segments must be well-formed");
             kern_phys_base = kern_phys_base.min(seg.paddr);
             kern_virt_base = kern_virt_base.min(seg.vaddr);
             kern_end_phys = kern_end_phys.max(seg.paddr + seg.memsz);
@@ -696,7 +846,8 @@ mod tests {
         let mut kern_virt_base = u64::MAX;
         let mut kern_end_phys = 0u64;
 
-        while let Some(seg) = iter.next() {
+        while let Some(seg_result) = iter.next() {
+            let seg = seg_result.expect("fixture ELF segments must be well-formed");
             kern_phys_base = kern_phys_base.min(seg.paddr);
             kern_virt_base = kern_virt_base.min(seg.vaddr);
             kern_end_phys = kern_end_phys.max(seg.paddr + seg.memsz);
@@ -726,7 +877,8 @@ mod tests {
         // Segment: paddr=0x200000, filesz=0x1000, memsz=0x2000
         let mut phys_mem = [0xAAu8; 0x2000]; // Fill with 0xAA to detect zero-fill
 
-        while let Some(seg) = iter.next() {
+        while let Some(seg_result) = iter.next() {
+            let seg = seg_result.expect("fixture ELF segments must be well-formed");
             // In real code, dest = seg.paddr as *mut u8
             // Here we simulate by writing into our buffer
             let src = &image[seg.offset as usize..(seg.offset + seg.filesz) as usize];
@@ -839,15 +991,41 @@ mod tests {
     }
 
     #[test]
-    fn test_segment_iter_skips_segment_data_out_of_bounds() {
+    fn test_segment_iter_reports_segment_data_out_of_bounds() {
         let mut image = build_test_elf();
         // Set p_filesz to a huge value so seg_end > image.len()
         // p_filesz is at phdr offset 32 (relative to phdr start at byte 64)
         image[64 + 32..64 + 40].copy_from_slice(&0xFFFF_FFFFu64.to_le_bytes());
-        // The segment should be silently skipped (not yielded)
-        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, align: 0, flags: 0 }; MAX_TEST_SEGMENTS];
-        let count = collect_segments(&mut segment_iter(&image).unwrap(), &mut buf);
-        assert_eq!(count, 0);
+        // I-48 / D-084: a segment whose file bytes end past the image must
+        // surface as an error, not be silently skipped. The old form made a
+        // truncated image indistinguishable from "fewer segments", so every
+        // consumer (boot layout, rs exec, VM bootstrap) silently loaded a
+        // smaller image.
+        let mut iter = segment_iter(&image).unwrap();
+        assert!(matches!(
+            iter.next(),
+            Some(Err(ElfError::SegmentOutOfBounds))
+        ));
+        assert!(iter.next().is_none());
+    }
+
+    /// I-48 / D-084: `p_filesz > p_memsz` must surface as a precise error
+    /// from the iterator itself, so every consumer (boot layout, rs exec,
+    /// VM bootstrap) gets the overwrite guard without a per-caller check.
+    /// Before this, only the boot path checked it and the other consumers
+    /// would `sys_datacopy(filesz)` past the declared `memsz`.
+    #[test]
+    fn test_segment_iter_rejects_filesz_greater_than_memsz() {
+        let mut image = build_test_elf();
+        // p_filesz at phdr offset 32, p_memsz at 40 (phdr starts at byte 64)
+        image[64 + 32..64 + 40].copy_from_slice(&0x1000u64.to_le_bytes());
+        image[64 + 40..64 + 48].copy_from_slice(&0x800u64.to_le_bytes());
+        let mut iter = segment_iter(&image).unwrap();
+        assert!(matches!(
+            iter.next(),
+            Some(Err(ElfError::FileszExceedsMemsz))
+        ));
+        assert!(iter.next().is_none());
     }
 
     #[test]
@@ -1017,7 +1195,8 @@ mod tests {
         let mut kern_end_phys = 0u64;
         let mut seg_count = 0;
 
-        while let Some(seg) = iter.next() {
+        while let Some(seg_result) = iter.next() {
+            let seg = seg_result.expect("fixture ELF segments must be well-formed");
             seg_count += 1;
             kern_phys_base = kern_phys_base.min(seg.paddr);
             kern_virt_base = kern_virt_base.min(seg.vaddr);
