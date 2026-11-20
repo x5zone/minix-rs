@@ -574,8 +574,17 @@ unsafe impl GlobalAlloc for ImageBump {
             // written only by this allocator through address arithmetic (no
             // concurrent references); the offset is explicitly bounded by
             // `end <= IMAGE_HEAP_LEN` above.
-            Ok(new_end) => unsafe {
-                (&raw const IMAGE_HEAP).cast::<u8>().add(new_end - layout.size()) as *mut u8
+            //
+            // `fetch_update` returns the PREVIOUS cursor, not the new end
+            // (a previous revision subtracted `layout.size()` from it and
+            // handed out blocks *behind* the cursor: the first allocation
+            // underflowed to `-size`, and every later block overlapped its
+            // predecessor, so any two live allocations aliased — the
+            // test-shim bootmarks DM pass died on a corrupted candidate
+            // vector because of it).
+            Ok(prev) => unsafe {
+                let aligned = (prev + layout.align() - 1) & !(layout.align() - 1);
+                (&raw const IMAGE_HEAP).cast::<u8>().add(aligned) as *mut u8
             },
             // Arena exhausted: hand back null, which the `GlobalAlloc` contract
             // turns into the caller's allocation failure.
