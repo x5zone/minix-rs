@@ -454,12 +454,38 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let buffer =
         unsafe { core::slice::from_raw_parts(base as *const u8, descriptor_size * entries) };
 
+    // D-081 / I-44 门④（路径 A 前置重构）：分类逻辑整体抽到
+    // `classify_map_bytes_into_test_tables`，本函数只保留退出前的读图半——
+    // 退出后的分类由 `exit_boot_services_and_classify` 走同一分类器。
+    self::classify_map_bytes_into_test_tables(
+        buffer,
+        buffer.len(),
+        descriptor_size,
+        ebs_map::MEMORY_DESCRIPTOR_VERSION,
+    )
+}
+
+/// Classify raw descriptor bytes into the one-shot test tables (path A,
+/// I-29 prototype ②): the ONLY classifier in the tree runs on whatever
+/// bytes it is handed — pre-exit (`build_memmaps`) or post-exit
+/// (`exit_boot_services_and_classify`) — so "分类所依据的图 = 退出所用的图"
+/// holds by construction on the post-exit path.
+///
+/// Fail contract (design doc §2.7 前提二): on the post-exit path every
+/// classification failure is fail-stop — panic (raw early console + halt
+/// via the carrier's panic handler), never a return into UEFI boot services.
+fn classify_map_bytes_into_test_tables(
+    buffer: &[u8],
+    map_size: usize,
+    descriptor_size: usize,
+    descriptor_version: u32,
+) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     // SAFETY: boot is single-threaded; `initialized` admits one writer and
     // publishes only after the tables are filled.
     let tables = &TEST_MAP_TABLES;
     assert!(
         !tables.initialized.swap(true, Ordering::AcqRel),
-        "boot-shim: build_memmaps called twice on one test kernel"
+        "boot-shim: test-map tables claimed twice on one test kernel"
     );
     unsafe {
         let storage = &mut *tables.storage.get();
@@ -469,9 +495,9 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
         storage
             .parse_raw_map(
                 buffer,
-                buffer.len(),
+                map_size,
                 descriptor_size,
-                ebs_map::MEMORY_DESCRIPTOR_VERSION,
+                descriptor_version,
                 0,
             )
             .unwrap_or_else(|err| panic!("boot-shim: memory map rejected: {err:?}"));
@@ -1224,6 +1250,47 @@ pub fn exit_boot_services() {
     unsafe {
         let _mmap = boot::exit_boot_services(MemoryType::LOADER_DATA);
     }
+}
+
+/// Exit boot services and classify the **post-exit** memory map (path A,
+/// I-29 prototype ② / gate ④).
+///
+/// The `uefi` crate's `exit_boot_services` already implements the paired
+/// sequence — allocate buffer → `GetMemoryMap` → `ExitBootServices` with
+/// the same key — and returns the resulting `MemoryMapOwned`. This helper
+/// **keeps** that value (the old `exit_boot_services()` discarded it with
+/// `let _mmap`), hands its raw bytes to the one production classifier, and
+/// writes the result into the one-shot test tables. The classification
+/// therefore runs on exactly the map the firmware validated at exit —
+/// "分类所依据的图 = 退出所用的图" holds by construction, and post-exit
+/// allocations (there are none — the carrier has already allocated) cannot
+/// diverge from it.
+///
+/// Returns `(memmap, reserved_regions)` as `'static` slices into the
+/// one-shot tables. Failures after exit are fail-stop by design (the
+/// classifier panics; the carrier's panic handler parks on the raw console).
+#[cfg(feature = "qemu-test-kernels")]
+pub fn exit_boot_services_and_classify() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
+    // SAFETY: caller has finished all uses of boot services; from this
+    // point on only runtime services (if any) may be used.
+    let owned = unsafe { boot::exit_boot_services(MemoryType::LOADER_DATA) };
+    // Path A premise (verified against uefi 0.33): `meta().map_size` is the
+    // effective map length while `buffer().len()` is the allocated capacity
+    // (with slack past the descriptors firmware wrote) — the parser must
+    // receive `map_size`, never `buffer().len()`.
+    let meta = owned.meta();
+    // SAFETY: `buffer()` points at the backing page the crate filled with
+    // `meta().map_size` bytes of descriptors; the borrow lives as long as
+    // `owned`, which is held for the whole classification below.
+    let buffer = unsafe {
+        core::slice::from_raw_parts(owned.buffer().as_ptr(), meta.map_size)
+    };
+    self::classify_map_bytes_into_test_tables(
+        buffer,
+        meta.map_size,
+        meta.desc_size,
+        meta.desc_version,
+    )
 }
 
 // ── UEFI implementation of FileLoader ──

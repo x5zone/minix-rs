@@ -61,7 +61,6 @@ fn main() -> Status {
     early_console::write_str("### test_kernel_map: verify high-half mapping\n");
 
     // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
-    let memmap = uefi_helpers::build_memmap();
     let root_page = uefi_helpers::alloc_root_page();
     let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(64);
 
@@ -69,18 +68,6 @@ fn main() -> Status {
     let kern_phys_base: u64 = 0x200_000; // 2MB-aligned for 2MB huge pages
     let kern_size: u64 = 0x200_000;
 
-    let kernel_info = KernelInfo {
-        memmap,
-        kern_virt_base: VirBytes(kern_virt_base),
-        kern_phys_base: PhysBytes(kern_phys_base),
-        kern_size,
-        boot_modules: &[],
-        platform_sources: &[],
-        param_buf: &[],
-        reserved_regions: &[],
-        memmap_sources: &[],
-        authority: minix_boot::InputObjectId::UefiMemoryMap,
-    };
 
 
     // N-5 probe: a LOADER_DATA page allocated *after* the memmap snapshot,
@@ -104,7 +91,21 @@ fn main() -> Status {
     let probe_pre = probe_checksum(probe_pa);
 
     // --- Below this point, UEFI boot services are gone ---
-    uefi_helpers::exit_boot_services();
+    // I-29-impl 门④（路径 A）：保留退出函数返回的最终内存图并立即分类——
+    // 分类所依据的图 = 退出所用的图（设计文档 §2.7）。
+    let (memmap, _reserved_regions) = uefi_helpers::exit_boot_services_and_classify();
+    let kernel_info = KernelInfo {
+        memmap,
+        kern_virt_base: VirBytes(kern_virt_base),
+        kern_phys_base: PhysBytes(kern_phys_base),
+        kern_size,
+        boot_modules: &[],
+        platform_sources: &[],
+        param_buf: &[],
+        reserved_regions: &[],
+        memmap_sources: &[],
+        authority: minix_boot::InputObjectId::UefiMemoryMap,
+    };
     let probe_post_ebs = probe_checksum(probe_pa);
 
     // 2. Register boot-stage page table allocator

@@ -36,7 +36,7 @@
 | I-22 | `MemoryMapSource` trait 收口三链 | 代码已落地 | ✅ 代码落地；文档连带 ①–⑦ 已逐项核（⑤ bootface 头注随 01TODO-B2 修正）；遗留 = D-68（T4 批） | §3 |
 | I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **closed（本批落码，grep 判据归零，真机门 `cd os/qemu-tests && bash run_all.sh` → 37 passed / 2 failed / 0 skipped / 0 build failures（本树现跑；两条红 `test-smp-aps`/`test-smp-ipi` 在同一台机器上用**未改动的 rewrite 尖子 `2b72a1e62` 重新构建同一载体**复现同一 `### PANIC … arch/src/x86_64/protection.rs:0x1c3`，判为既有、非本批引入））**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
-| I-29-impl（实施） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **待实施（D-069，用户 2026-11-20 批准拆分）**：四个门 ① 属性政策矩阵逐行批准（凭原型 ①）② 三架构普通 WB 合同（I-29-16）③ Pass1/Pass2 具体 API（归原型 ①）④ 路径 A 端到端运行验收（原型 ②）。执行序列见 §3 的 I-29 段末（原型 ① → 原型 ② ∥ 三架构 WB → 政策矩阵 → 冻结实现规格进生产） | §3 |
+| I-29-impl（实施中：门①③已落，门④路径 A 已落，门②待专项） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；全部门链验证被 I-43 的 x86 载体 `enable()` 静默停阻塞（stash 对照确认非路径 A 引入）。详见 §3 的 I-29-impl 补记 | §3 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**实施中：步①②③已落，步④⑤待续**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
@@ -210,6 +210,16 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 ### I-29（本轮新登记）UEFI 内存图分类双份实现：`classify_map` 与 `build_memmaps`
 
 > **状态拆分（D-069，用户 2026-11-20）**：本条在总览里拆成两行——`I-29（设计）` 已完成（v12 冻结），`I-29-impl（实施）` 待实施。本节的冻结内容仍是设计部分的权威记录；实施按四个验收门推进，四个门与执行序列见本节末的「正式冻结宣告」与「v11 剩余工作」两段。
+
+> **I-29-impl 实施补记（门④路径 A 落地）**：
+>
+> **四门现状**：门①（原型 ① 生产解析器 + 预分配 sink + 五步裁决 + 零分配 + 描述符携带属性）**已落生产代码**（`ebs_map.rs` 的 `adjudicate` / `DescriptorRef.attribute` / `parse_raw_map`，基线 acd1302d3 批）；门③（Pass1/Pass2 API）随门①已落；**门④路径 A 本批落地**；门②（三架构普通 WB 合同，I-29-16）未动——x86 PAT 读/初始化与 riscv PBMTE 启用链在全仓 grep 零命中，需要三架构各自的硬件前提取证，不属于纯代码改造。
+>
+> **门④落地内容**：① `uefi_helpers::build_memmaps` 的分类逻辑整体抽到 `classify_map_bytes_into_test_tables(buffer, map_size, desc_size, desc_version)`——全树唯一分类器现在同时服务退出前（`build_memmaps`，仅存于不退出的 inspect-only 载体）与退出后两条路径；② 新增 `exit_boot_services_and_classify()`：**保留** `boot::exit_boot_services` 返回的 `MemoryMapOwned`（旧 `exit_boot_services()` 以 `let _mmap` 丢弃它），用 `meta().map_size`（非 `buffer().len()`——前者是有效长度，后者含冗余，设计文档 §2.7 前提一）取原始字节交唯一分类器，写入一次性表后返回 `'static` 切片；③ 12 条 UEFI 测试内核迁移到路径 A 流程（先分配 → 退出+分类 → 建 `KernelInfo`），编译全 0 error。
+>
+> **端到端验证被阻塞（非本批引入）**：hello-boot（x86）新鲜二进制在 `step1+2 mappings ok` 后静默停——**stash 对照确认无路径 A 改动的基线同样停在同一位置**。这与 I-43 已记录的「x86 载体 `enable()` 漂移层」同一症状（test-proc-init / test-timer-irq / test-protection-riscv64 均同型），现确认 hello-boot 也在其列。这些载体的历史 PASS 全部来自陈旧二进制。门④的端到端六项验收（§2.7）必须等 I-43 二层（`paging.enable()` 后静默停）专项关闭后才能跑。
+>
+> **迁移名单（12 条，全部编译 0 error）**：hello-boot{,-aarch64}、test-higher-half{,-aarch64}、test-kernel-map{,-aarch64}、test-paging-enable{,-aarch64}、test-protection{,-aarch64}、test-shutdown-aarch64、test-smp-shutdown。未迁移：test-memmap{,-aarch64}（inspect-only，不退出，pre-exit 图即测试主体）；其余手绘 MEMMAP 载体（test-timer-irq 等）不消费 `build_memmap`。
 
 **现状**：UEFI 侧有两份功能相同的分流实现——生产路径的 [`fn classify_map`](os/boot-shim/src/ebs_map.rs:fn classify_map)（经 [`fn pair_and_classify`](os/boot-shim/src/ebs_pair.rs:fn pair_and_classify) 调用）与 [`fn build_memmaps`](os/boot-shim/src/uefi_helpers.rs:fn build_memmaps)（只被辅助入口 A1 与 14 个 QEMU 测试内核经单数形式 `build_memmap()` 调用）。三条分流规则逐条相同（`CONVENTIONAL` 进可用表；`MMIO`/端口空间丢弃；其余且起点低于 RAM 顶进保留表），**校验强度与一致性保证不同**：`classify_map` 有版本/尺寸/对齐/边界/零页数/溢出/物理上限七类自建校验与“同一次读图取键退出”的结构配对；`build_memmaps` 无自建校验（解析交给第三方 `uefi` 库）、不判 `PA_LIMIT`（该常量就在同文件相邻处却只被生产路径使用）、零页数会产出长度 0 的区间，且分类快照与退出是先后两次读图，一致性靠“其间不分配”的顺序纪律维持。
 

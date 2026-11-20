@@ -31,10 +31,15 @@ fn main() -> Status {
     early_console::write_str("### test_paging_enable (aarch64): boot → enable MMU → verify alive\n");
 
     // 1. UEFI boot preparation — use individual helpers (no kernel.elf needed)
-    let memmap = uefi_helpers::build_memmap();
     let root_page = uefi_helpers::alloc_root_page();
     let (bump_base, bump_end) = uefi_helpers::alloc_bump_region(64);
 
+
+
+    // --- Below this point, UEFI boot services are gone ---
+    // I-29-impl 门④（路径 A）：保留退出函数返回的最终内存图并立即分类——
+    // 分类所依据的图 = 退出所用的图（设计文档 §2.7）。
+    let (memmap, _reserved_regions) = uefi_helpers::exit_boot_services_and_classify();
     let kernel_info = KernelInfo {
         memmap,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
@@ -47,10 +52,6 @@ fn main() -> Status {
         memmap_sources: &[],
         authority: minix_boot::InputObjectId::UefiMemoryMap,
     };
-
-
-    // --- Below this point, UEFI boot services are gone ---
-    uefi_helpers::exit_boot_services();
 
     // 2. Register boot-stage page table allocator
     boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
