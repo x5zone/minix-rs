@@ -46,7 +46,7 @@
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
 | I-39（已实施） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 31/32 覆盖 | 测试清理 | ✅ **已实施（2026 年 11 月 20 日）**：D-077 三项 + mini review 补拓两处文档计数（32→31、196→195）；**先于 I-31** 完成。验收与同源残骸登记见 §3 的 I-39 | §3 |
 | I-38（已实施） | `boot_validate_and_prepare` 的位置实参改 `BootScalars` 值对象 | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：三字段 `BootScalars` + 两个命名构造函数；**I-31 已先落，故按三字段形态一次定型**。五条 QEMU 门链全 PASS。内容见 §3 的 I-38 | §3 |
-| I-40（本轮新登记） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`minix-boot/src/kernel_info.rs:640`）与 `KernelInfo::memmap()`（`kernel/src/vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **未裁决**（I-39 mini review 中发现，与 D-077 同一缺陷类但位置不同、超出该裁决授权）；待用户裁决是否并入 I-39 口径直接删/改写，见 §3 的 I-40 | §3 |
+| I-40（已裁决·待实施） | 两处 ghost API 注释：`KernelInfo::boot_modules()`（`kernel_info.rs:583`）与 `KernelInfo::memmap()`（`vm_handoff.rs:108`）——`KernelInfo` 上没有这两个方法（同名方法只存在于 `BootStorage`） | 注释修正 | **已裁决（D-079，用户 2026 年 11 月 20 日）采 A 改写措辞指回真实载体**：① 去掉 `()` 指字段 ② 补 `field` 后缀。否决 B（造访问器会制造两套等价 API）。第三处 `kern_stack_top()` 经核实**不是** ghost，已排除 | §3 的 I-40 |
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施 + 三轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证；**第三批（`minix-arch` 测试面）同日补修**，见 §3。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
@@ -911,7 +911,7 @@ D-077 授权的三项全部落地；实现时发现文档计数不止 §5.2.1 �
 
 **为什么此前不做**：用户于 2026 年 11 月 20 日批准方案但只做记账；本条在裁决后由用户单独指示实施，并按 D-077 的排序要求**先于 I-31** 完成。
 
-### I-40（未裁决·I-39 的实现副产物）两处 ghost API 注释
+### I-40（已裁决·I-39 的实现副产物）两处 ghost API 注释
 
 **来源**：I-39 实施时的 mini review。D-077 修掉的是「`impl` 末尾承诺一段 getter，实际一个都没有」；实施后按同一判据（注释是否点名一个不存在的方法）扫全文件，又发现两处：
 
@@ -922,16 +922,27 @@ D-077 授权的三项全部落地；实现时发现文档计数不止 §5.2.1 �
 
 **为什么没有顺手改**：D-077 是用户裁决，授权范围写明是「空 getter 段 + 恒真测试 + 文档计数 32→31」三件；这两处虽属同一缺陷类（注释点名不存在的 API，读者会白搜一次），但位置与对象都不同。按 `fix-guard` 的「一次一条」，混入本次提交会让裁决边界变模糊——尤其 ② 在 `minix-kernel` 而不在 `minix-boot`，跨 crate。
 
-**待裁决的两个选项**：
+**裁决（D-079，用户 2026-11-20）：采 A——改写措辞指回真实载体。**
 
-- **A（推荐）**：直接改写措辞，把它们指回真实载体——① 改「`in \`BootStorage::boot_modules()\``」，② 改「`from the raw \`KernelInfo::memmap\` field`」。纯注释，零行为变化，与 D-077 采 A（删/改残骸而不造 API）同一取向。
-- **B**：给 `KernelInfo` 真的加这两个访问器。与 D-077 否决 B 的理由相同（字段已全 `pub`，造 getter 会制造两套等价 API，与 I-34/D-067 消灭「两个可不一致的事实」的方向相反），不推荐。
+| # | 现文 | 改为 |
+|---|---|---|
+| ① | `/// deliver, in \`KernelInfo::boot_modules()\`.` | `/// deliver, in \`KernelInfo::boot_modules\`.` |
+| ② | `/// select from this list, not from the raw \`KernelInfo::memmap()\`: the` | `/// select from this list, not from the raw \`KernelInfo::memmap\` field: the` |
 
-**验收（若走 A）**：
+**否决 B（真加两个访问器）**：与 D-077 否决 B 的理由完全相同——`KernelInfo` 字段已全 `pub`，造 getter 会制造两套等价 API，与 I-34/D-067 消灭「两个可不一致的事实」的方向相反。
 
-- `grep -rn "KernelInfo::boot_modules()\|KernelInfo::memmap()" --include=*.rs os/` → 0；
-- 全 workspace `cargo check` 0 error（纯注释改动）；
-- `cargo test -p minix-boot -p minix-kernel --features minix-kernel/mock` 全绿。
+**范围界定（重要）**：全仓扫 `KernelInfo::[a-z_]*(` 共三处命中，第三处 `os/boot-shim/src/lib.rs:103` 的 `KernelInfo::kern_stack_top()` **不是 ghost**——`os/libs/minix-boot/src/kernel_info.rs:200` 确有 `pub fn kern_stack_top(&self) -> VirBytes`（I-31 删字段后补的派生方法）。主 agent 初判时曾误以为第三处也是 ghost，核实后排除。
+
+**验收**：
+
+```bash
+grep -rn "KernelInfo::boot_modules()" os/ --include=*.rs     # 期望 0 行
+grep -rn "KernelInfo::memmap()" os/ --include=*.rs           # 期望 0 行
+grep -rn "KernelInfo::kern_stack_top()" os/ --include=*.rs   # 期望仍命中 boot-shim/src/lib.rs:103
+grep -n "pub fn kern_stack_top" os/libs/minix-boot/src/kernel_info.rs   # 期望命中 :200
+cargo check --workspace --all-targets                        # 纯注释，0 error
+cargo test -p minix-boot && cargo test -p minix-kernel --features mock
+```
 
 **风险与回退**：纯注释，无。若将来 `KernelInfo` 真的加访问器接口 → 重开本条评估 B。
 
