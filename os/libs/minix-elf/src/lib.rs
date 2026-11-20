@@ -184,6 +184,17 @@ pub enum ElfError {
     /// every consumer gets the overwrite guard (previously only the boot
     /// path checked it).
     FileszExceedsMemsz,
+    /// A loader's destination buffer cannot hold a segment the image
+    /// declares. `needed_end` is the byte offset one past the segment's
+    /// destination extent (file or BSS end, whichever reached further)
+    /// relative to the buffer base; `buf_len` is what the caller offered
+    /// (I-47 / D-089: the buffer loader must refuse the whole image before
+    /// writing any byte, mirroring C's sanity-check loop
+    /// `minix3/minix/lib/libexec/exec_elf.c:160-165`).
+    TargetBufferTooSmall {
+        needed_end: usize,
+        buf_len: usize,
+    },
 }
 
 // ── Parsing functions ──

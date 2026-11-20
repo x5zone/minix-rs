@@ -245,24 +245,36 @@ fn elf_file_end(data: &[u8]) -> Option<usize> {
 /// [`load_segments_into_phys_memory`] to write directly to physical
 /// addresses.
 ///
-/// Returns the number of segments loaded, or an error for a malformed
-/// image (unparsable header/phdr table, or a malformed program header
-/// surfaced by the iterator). The old form folded every failure into
-/// "`0` segments", which made "empty image" indistinguishable from
-/// "broken image" (I-48 / D-084).
+/// I-47 / D-089 (乙): restructured after C's `libexec_load_elf`
+/// (`minix3/minix/lib/libexec/exec_elf.c:127`) two-loop shape —
+///
+/// 1. **Sanity-check loop** (C: "sanity check binary before wiping out
+///    the target process", `:160-165`): every segment is collected and
+///    checked against the buffer *before any byte is written*. A malformed
+///    program header (I-48 `Err` item) or a segment whose destination
+///    extent does not fit in `[0, buf.len())` fails the whole load with
+///    the precise error — nothing is half-loaded.
+/// 2. **Load loop** (C: `clearproc` + per-segment copy/clear): copy file
+///    bytes, zero-fill `[filesz, memsz)`, count.
+///
+/// Returns the number of segments loaded. Shared with the physical-memory
+/// loader: segment-shape validation (I-48 iterator), BSS zero-fill. Not
+/// shared: physical-address mapping/overlap gates (this loader writes a
+/// caller-owned buffer at a caller-chosen base; segments below
+/// `buf_base_paddr` are skipped as a fixture error, matching the
+/// pre-I-47 behavior).
 pub fn load_segments_into_buffer(
     elf_data: &[u8],
     buf: &mut [u8],
     buf_base_paddr: u64,
 ) -> Result<usize, minix_elf::ElfError> {
-    let iter = minix_elf::segment_iter(elf_data)?;
-
-    let mut count = 0;
-    for seg_result in iter {
+    // ── Sanity-check loop: validate everything before wiping any byte. ──
+    let mut segs = alloc::vec::Vec::new();
+    for seg_result in minix_elf::segment_iter(elf_data)? {
         let seg = seg_result?;
-        // A segment below the buffer base is a fixture/input error, not a
-        // reason to copy it to offset 0; skip it rather than silently
-        // relocating it.
+        // Same skip rule as the load loop below (a segment below the
+        // buffer base is a fixture error, silently skipped rather than
+        // relocated to offset 0) — applied consistently in both loops.
         let Some(seg_offset_in_buf) = seg.paddr.checked_sub(buf_base_paddr) else {
             continue;
         };
@@ -273,16 +285,28 @@ pub fn load_segments_into_buffer(
         let Some(mem_end) = seg_offset_in_buf.checked_add(seg.memsz as usize) else {
             continue;
         };
-
-        if file_end <= buf.len() {
-            let Some(src_end) = (seg.offset as usize).checked_add(seg.filesz as usize) else {
-                continue;
-            };
-            let src = &elf_data[seg.offset as usize..src_end];
-            buf[seg_offset_in_buf..file_end].copy_from_slice(src);
+        let dest_end = file_end.max(mem_end);
+        if dest_end > buf.len() {
+            return Err(minix_elf::ElfError::TargetBufferTooSmall {
+                needed_end: dest_end,
+                buf_len: buf.len(),
+            });
         }
+        segs.push(seg);
+    }
 
-        if mem_end <= buf.len() && seg.memsz > seg.filesz {
+    // ── Load loop: the buffer is proven to hold every segment. ──
+    let mut count = 0;
+    for seg in segs {
+        let seg_offset_in_buf = (seg.paddr - buf_base_paddr) as usize;
+        let file_end = seg_offset_in_buf + seg.filesz as usize;
+        let mem_end = seg_offset_in_buf + seg.memsz as usize;
+
+        let src_end = seg.offset as usize + seg.filesz as usize;
+        let src = &elf_data[seg.offset as usize..src_end];
+        buf[seg_offset_in_buf..file_end].copy_from_slice(src);
+
+        if seg.memsz > seg.filesz {
             buf[file_end..mem_end].fill(0);
         }
 
@@ -779,6 +803,59 @@ mod tests {
             matches!(result, Err(minix_elf::ElfError::SegmentOutOfBounds)),
             "truncated second segment must propagate as Err, not count as 0 loaded"
         );
+    }
+
+    // ── I-47 / D-089: the sanity-check loop must not write any byte ──
+
+    /// Two-segment ELF where the FIRST segment fits but the SECOND's BSS
+    /// extent runs past the buffer. The pre-I-47 load loop wrote segment 1
+    /// and silently skipped segment 2 (a half-loaded image); D-089 乙
+    /// requires the C shape: the whole load fails BEFORE any byte is
+    /// written. Proven byte-for-byte: the buffer must be untouched.
+    #[test]
+    fn test_load_segments_into_buffer_too_small_writes_nothing() {
+        let mut elf = build_minimal_elf(); // paddr=0x200000, filesz=0x800, memsz=0x800
+        // Widen segment 1's memsz so its BSS extent runs past the buffer.
+        // buf will be 0x1000 bytes at base 0x200000; memsz 0x1800 →
+        // mem_end = 0x1800 > 0x1000.
+        elf[64 + 40..64 + 48].copy_from_slice(&0x1800u64.to_le_bytes()); // p_memsz
+        let mut buf = vec![0xC3u8; 0x1000];
+        let before = buf.clone();
+
+        let result = load_segments_into_buffer(&elf, &mut buf, 0x200000);
+        assert_eq!(
+            result,
+            Err(minix_elf::ElfError::TargetBufferTooSmall {
+                needed_end: 0x1800,
+                buf_len: 0x1000,
+            }),
+            "the over-BSS segment must fail the whole load with the precise variant"
+        );
+        assert_eq!(buf, before, "sanity-check failure must write zero bytes");
+    }
+
+    /// The pass-through case still loads and counts: a buffer that fits
+    /// both file bytes and BSS produces count == segment count with correct
+    /// content (D-089 ③: count semantics settle automatically once every
+    /// segment is proven to fit).
+    #[test]
+    fn test_load_segments_into_buffer_fitting_load_counts_all() {
+        let mut elf = build_minimal_elf();
+        elf[64 + 40..64 + 48].copy_from_slice(&0xC00u64.to_le_bytes()); // p_memsz (BSS 0x400)
+        // Fill the file-byte region so the copy is distinguishable from the
+        // BSS clear (build_minimal_elf's file region is zero by default).
+        for byte in elf[0x1000..0x1800].iter_mut() {
+            *byte = 0xAB;
+        }
+        let mut buf = vec![0xC3u8; 0x1000];
+        let count = load_segments_into_buffer(&elf, &mut buf, 0x200000)
+            .expect("buffer covers file and BSS extent");
+        assert_eq!(count, 1);
+        assert_eq!(buf[0], 0xAB, "file bytes copied");
+        assert_eq!(buf[0x7ff], 0xAB, "file bytes copied (last byte)");
+        assert_eq!(buf[0x800], 0, "BSS zero-filled");
+        assert_eq!(buf[0xBFF], 0, "BSS zero-filled (last byte)");
+        assert_eq!(buf[0xC00], 0xC3, "sentinel past memsz untouched");
     }
 
     /// A zero-length memory image at a non-zero paddr yields `kern_size == 0`
