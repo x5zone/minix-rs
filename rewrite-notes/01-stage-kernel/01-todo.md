@@ -45,11 +45,12 @@
 | I-36（已实施） | `FileLoader` 抽象里藏着 ELF 语义（U-Boot 腿的 `read` 做修剪），腿间 `BootModule.len` 不同 | 设计裁决 | ✅ **已实施（2026 年 11 月 21 日，D-082）**：① `UbootFileLoader::read` 删 `segment_iter`（对已修剪数据的幂等无效功）+ 删错误的「表存槽容量」注释，回归纯字节来源 ② 新增 `elf_file_end`（复用 `minix_elf::segment_iter`，零新解析器），`load_boot_modules_into` 接统一修剪——U-Boot 腿幂等、UEFI 腿从此修剪，`BootModule.len` 跨腿一致 ③ 非 ELF/畸形镜像保持全长。**前置验证 36/36**（12 模块 × 3 架构：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，裁掉的只有 .comment/.symtab/.debug_*）。boot-shim 143 全绿；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + U-Boot shim 链 6/6 全 PASS。连带登记 I-50（.lbss 无 PT_LOAD 覆盖）。详见 §3 的 I-36 | §3 |
 | I-50（✅ 已销账·前提不成立） | x86 模块的 `.lbss` 不在任何 PT_LOAD 内——原判「装载路径无载体」 | 定位 | ✅ **D-090（用户 2026 年 11 月 21 日）销账**：对 115 个 x86_64 ELF 做 `readelf -SW`/`-lW` 对账，**112 个带 `.lbss` 的全部完整落在某 PT_LOAD 的 `memsz` 内**（`minix-fs-mfs` 的 4 MiB `.lbss` 上界 `0x1641010` 与最后一个 PT_LOAD 的 `memsz` 结束地址**完全相等**）。它不在 `filesz` 内是 NOBITS 的正常语义；装载路径「拷 `[0,filesz)` → 清零 `[filesz,memsz)`」已自动覆盖。候选 a 要修的东西不存在、候选 b 会重复映射。**证据边界**：x86 生产模块路径仍未真跑，本次是静态检查+代码语义推理、非运行时实证；若真跑发现 `.lbss` 脏值则重开并指向「NOBITS 尾清零」 | §3 的 I-50 |
 | I-51（待复核后销账·两症状均已消失） | 测试面并行隔离失败：vm 10 条测试共享 `PAGE_ALLOC_PTR` 全局单例；minix-boot 的 `memmap_source` 族漂移 | 测试基建 | **D-091（用户 2026 年 11 月 21 日）判「待复核后销账」**：① 症状 1 实测消失（`cargo test -p minix-vm --lib` 连跑 3 次 548/0，`overwriting different allocator` 零命中）；**成因已定位**——`register_page_alloc` 用 `compare_exchange`，而 16 处测试自己 `unregister`/`register` 配对、各用栈上 allocator，并行时互相抹指针。② 症状 2 已复核（`589aa8afb` 落地后 `minix-boot` 恢复编译，连跑 3 次 184/0，漂移未复现），但**成因未定位**（也可能同属偶然性问题）。**销账条件**：复核甲已加隔离/乙测试被改/丙偶然三选一；**判丙则须补 `test_sync` 式全局锁并重跑 ≥10 次全绿** | §3 的 I-51 |
-| I-52（已裁决·待实施·x86 条已移出至 I-59） | 深跑路径的地址假设失配：riscv VM trap / aarch64 timer-irq sync exc | 定位 + 设计裁决 | **已裁决（D-092，用户 2026 年 11 月 21 日）：不预分三条，保持一条，下一步 `-d int`**。裁决前地址形态实测推翻「同根」：riscv `stval=0xffffffc0cffff000` 是 Sv39 规范高半、偏移 `0xcffff000`≈3.3GiB；aarch64 `far=0xffff80804ffff000` 是 VA48 规范（上一版误用 Sv39 判非规范）、偏移 `0x804ffff000`=128×4GiB+0x50000000（疑位域污染）；x86 `cr2=0x7ba7000` 是规范低地址≈123MiB，疑与高半假设无关。**不预分三条的理由**：拆分前提是性质不同，而当前只是地址形态推测、未到根因 | §3 的 I-52 |
+| I-52（✅ 已关闭·三条全并入 I-59） | 深跑路径的地址假设失配：riscv VM trap / aarch64 timer-irq sync exc | 定位 + 设计裁决 | **已裁决（D-092，用户 2026 年 11 月 21 日）：不预分三条，保持一条，下一步 `-d int`**。裁决前地址形态实测推翻「同根」：riscv `stval=0xffffffc0cffff000` 是 Sv39 规范高半、偏移 `0xcffff000`≈3.3GiB；aarch64 `far=0xffff80804ffff000` 是 VA48 规范（上一版误用 Sv39 判非规范）、偏移 `0x804ffff000`=128×4GiB+0x50000000（疑位域污染）；x86 `cr2=0x7ba7000` 是规范低地址≈123MiB，疑与高半假设无关。**不预分三条的理由**：拆分前提是性质不同，而当前只是地址形态推测、未到根因 | §3 的 I-52 |
 | I-53（已裁决·原定性作废，拆 I-57/I-58） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception | 设计裁决 | **已裁决（D-093，用户 2026 年 11 月 21 日）**：**原定性作废**——审查证实 `is_user_mode=(cs&3)==3` 与 `is_nested=!is_user` 都是对的（C 的双入口 `mpx.S:368/382` 语义已正确映射），wrapper 判据与注册顺序也正确。真实病因两条、均在载体侧：**I-57**（`test-paging-faultloop` 的 `carrier_pagefault` 在 CPL0 执行，`walk_leaf:314` 的 `alloc_pt_page().expect` 在 bump 耗尽时 panic）、**I-58**（`test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 `trap_dispatch:465-472`）。两条均待 `-d int` 取证 | §3 的 I-53 / I-57 / I-58 |
 | I-57（待裁决·I-53 拆出） | `test-paging-faultloop` 载体自身在 CPL0 panic：`carrier_pagefault` 内的 `walk_leaf` 取页失败 / VM 槽未就绪 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`walk_leaf:314` 的 `pt_alloc::alloc_pt_page().expect("carrier: pt page")`（`alloc=true` 分支必取页）、`:437-440` 的 `get_mut(ProcNr(8)).expect("VM boot proc exists")`；I-43 二层已记录「反复 64 次把 32 MB bump 区耗尽」 | §3 的 I-57 |
 | I-58（待裁决·I-53 拆出） | `test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`trap_dispatch.rs:465-472` 的 panic 是**正确的前置条件**（文档：User origin + None = no scheduler step ever ran → wiring bug）；载体若在 scheduler bring-up 前让 CPL3 载荷 fault 即触发 | §3 的 I-58 |
-| I-59（待裁决·I-52 步③拆出：x86 根因已到） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 定位 + 设计裁决 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） | §3 的 I-59 |
+| I-59（已裁决·扩为三条共同根因） | `Paging` 页表写路径的裸恒等前提在「VM free-list 帧」上不成立（`new_from_page` 清零 TX root 即 fault） | 定位 + 设计裁决 | **根因已定案（2026-11-21，无需 `-d int`）**：`test-sysboot` 深跑 fault 现场（`err=0x2` supervisor write、`cr2=0x7ba7000`）经代码考古定位——`vm_handoff` 读数 region2=[0x1001000,0x7ba8000) + `VmBootAllocator` 向下分配 → 首帧 = region 末尾 − 0x1000 = **0x7ba7000 = cr2**；写点 = `X86_64Paging::new_from_page`（`paging.rs:627`）的 root 清零，`phys_to_ptr`（`:127`）实现**裸恒等**（`phys as *mut u64`，doc 自认「UEFI identity mapping」前提）。调用链：carrier `load_process_elf`（唯一生产调用者）→ `vm_alloc.alloc_page()`（free-list 帧）→ `new_from_page` → 恒等写窗口外帧。**生产链从未暴露的原因**：`load_vm_elf` + `from_active_root`（活 root 无清零）+ 段帧走 `access` DM——三帧源全绕开恒等前提。**同型确认**：三架构 `new_from_page` 同构裸恒等；`walk_alloc` 的 PT 中间帧来自 `pt_alloc`（bump，窗口内）不 fault——缺口仅「root/清零帧来自 VM free list」。**候选**：A 写路径按 DM 建立阶段化（动三架构核心，需「DM established」全局事实成文）/ B root 改 `pt_alloc`（撤回实测：OOM 测试语义破坏 + register 全局一次冲突）/ C 载体手工恒等补窗（与最小窗口哲学相逆）。**裁决前保持「可诊断已知缺陷」**。候选 B 曾实施后撤回（`git checkout`，工作树无改动） | §3 的 I-59 |
+| I-60（待裁决·I-59 拆出） | `phys_to_ptr` 与 `channel_to_ptr` 双通道并存，边界无文档无断言；`map_huge`/`split_huge` 用前者、`map`/`unmap` 用后者 | 设计裁决 | **未裁决**（D-094 副产物）。倾向 B（补文档 + `debug_assert!` 检查 PA 在恒等窗口内）先做，A（`PteChannel` 加 `Identity` 变体统一入口）待 I-59 落地后评估——A 波及三架构约 10 处调用点 | §3 的 I-60 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（已裁决·待实施） | `load_segments_into_phys_memory` 的 SAFETY 契约过期（仍写「调用者必须先 compute」）+ entry 断言两份拷贝 | 注释修正 | **已裁决（D-088，用户 2026 年 11 月 21 日）**：I-48 前置已落地（`a25305c66`），复核后发现 ① SAFETY 第 2 条**现在是错的**（迭代器已自查 `filesz > memsz`，`loader.rs:275-279` 仍写「本函数不拒绝」）→ **必做改写**；② 面板称的文档失真**实测不存在** → 销账；③ entry 断言两份拷贝**不合并**（两份的守卫时机不同：wrapper 在 `layout_gate` 前、UEFI 腿在 `reserve_kernel_span` 前）。面板的 `ValidatedKernelImage` / 改 wrapper 形状两案均不采纳（I-48 之后净收益为零） | §3 的 I-46 |
 | I-47（已裁决·待实施） | `load_segments_into_buffer` 的校验前置与装不下语义（照 Minix3 C 的两循环结构重排） | 代码改造 | **已裁决（D-089，用户 2026 年 11 月 21 日）采乙**：照 `minix3/minix/lib/libexec/exec_elf.c` 的 `libexec_load_elf`——① 校验前置（`sanity check binary before wiping out the target process`：先 collect + 校验 `buf` 覆盖全部段，**校验不通过不写任何字节**）；② 装不下返回 `Err(TargetBufferTooSmall{..})` 而非静默跳过（C 用 `ENOEXEC`；本项目有 `ElfError` 可给精确变体）；③ `count` 语义自动一致；④ 文档改为「测试投影 + 前置校验」并列出共享/不共享的校验项。**不补段间重叠检测**（C 也没在装载循环里做，其重叠防线在 mmap/copymem 实现侧）| §3 的 I-47 |
@@ -2273,7 +2274,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 读数：三架构生产 target 各 0 error。I-29-16 合同自此在三架构各自的最小可验收形态落地；政策表的「完全冻结」仍按设计文档等原型证据与真机验收（不因本批宣告）。
 
-### I-52（已裁决·待实施·x86 条已移出至 I-59）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc）
+### I-52（✅ 已关闭·三条全并入 I-59）深跑路径的地址假设失配（riscv VM trap / aarch64 timer-irq sync exc）
 
 **来源**：I-43 的三层残留（D-087 拆出）。**状态：已裁决（D-092）。**
 
@@ -2356,7 +2357,7 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **边界**：不触碰内核生产路径——生产内核链在高半，这些换算本来就对；问题只在低链载体上。
 
-### I-59（待裁决·I-52 步③拆出，x86 根因已到）`Paging` 页表写路径的裸恒等前提 vs VM free-list 帧
+### I-59（已裁决·扩为三条载体共同根因）`Paging` 写通道双轨：`new_from_page` 的清零用裸恒等 vs 后续操作用 KDM
 
 **来源**：I-52（D-092）步③——x86 `test-sysboot` 深跑根因定位已到「源文件行 + 帧地址推导」级，按 D-092 ③「若 x86 确认与链址假设无关，移出单独登记」执行。**取证无需 `-d int`**：代码考古 + `vm_handoff` 读数闭环。
 
@@ -2382,6 +2383,124 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 **DM 覆盖事实（A 的前提，已核实）**：`memmap_candidates`（`dm_coverage.rs`）= **kernel_info.memmap 全部 region**——step4 DM 覆盖含 VM free 区，`phys_to_virt(0x7ba7000)` 在 step4 后可访问。A 的阶段切换点真实存在。
 
 **裁决前状态**：sysboot 深跑保持「可诊断已知缺陷」——根因、调用链、帧推导全在案，修复等裁决。
+
+**深入调查（2026-11-21，第二批）：三条载体同根，且发现通道双轨制的结构问题。**
+
+**证据一：`phys_to_ptr` 与 `channel_to_ptr` 是两条不同的通道。**
+
+| 函数 | 实现 | 语义 |
+|---|---|---|
+| `phys_to_ptr(phys)` | `phys as *mut u64`（x86 `:127`、arm64 `:108`、riscv 同构）| **裸恒等** |
+| `channel_to_ptr(phys, KernelDm)` | `phys + KERNEL_DIRECT_MAP_BASE`（`:194-202`）| **DM 高地址** |
+
+**证据二：同一类型内两条通道并存，且分工没有文档。**
+
+| 操作 | 通道 | 位置 |
+|---|---|---|
+| `map` / `unmap` / `remap` / `query` / `update_flags` / `destroy` | **`channel_to_ptr(self.channel)` = KDM** | `x86_64/paging.rs:843`/`:853`/`:876`/`:886`/`:892`/… |
+| **`new_from_page` 的 root 清零** | **`phys_to_ptr`（裸恒等）** | `:633` |
+| **`map_huge`（生产代码）** | **`phys_to_ptr`（裸恒等）** | `:1264`/`:1274`/`:1297` |
+| `split_huge` 系列（生产代码） | **`phys_to_ptr`（裸恒等）** | `:1394`/`:1425`/`:1529`/`:1566`/`:1593` |
+
+**`mod tests` 起于 `:1608`——上表全部是生产代码。**
+
+**自相矛盾的具体形态**：`new_from_page` 构造出的 handle 字段是 `channel: PteChannel::KernelDm`（`:640`），**但它的清零不用 `self.channel`**。如果后续操作都信任 `self.channel`，清零凭什么例外？**没有文档、没有断言回答这个问题。**
+
+**证据三：I-52 的 aarch64 与 riscv 条与 I-59 同根。**
+
+`far` / `stval` 减去各自的 `KERNEL_DIRECT_MAP_BASE` 后，**都是页对齐的正常物理地址**：
+
+| 架构 | `KERNEL_DIRECT_MAP_BASE` | 故障地址 | 差值 | 页对齐 | 量级 |
+|---|---|---|---|---|---|
+| x86 | `0xffff8080_00000000` | `cr2 = 0x7ba7000` | **（裸恒等，非 KDM）** | ✓ | 123 MiB |
+| aarch64 | `0xffff8080_00000000` | `far = 0xffff8080_4ffff000` | **`0x4ffff000`** | ✓ | 1280 MiB |
+| riscv64 | `0xffffffc0_40000000` | `stval = 0xffffffc0_cffff000` | **`0x8ffff000`** | ✓ | 2303 MiB |
+
+**所以三条都不是"地址算错"，而是「访问了一个没有映射的合法物理地址」。** 上一版把 aarch64 判为「位域污染（128×4GiB）」是**错的**——`0xffff8080_00000000` 恰好等于 128×4GiB 边界只是巧合，它是 KDM 常量本身。
+
+**证据四：DM 在 `load_process_elf` 之前已建立 → 修法 A' 的前提成立。**
+
+`arch_boot_impl` **内部**执行 Step 4（`lib.rs:360` 的 `establish_boot_dm`）；`test-sysboot` 在 `:193` 调 `arch_boot_impl`、`:264` 才调 `load_process_elf`。**所以调用时 DM 已建。**
+
+**证据五：`load_elf_into` 的所有帧访问都走 `access.frame_virt`，只有 root 清零裸恒等。**
+
+`arch/boot.rs:560-600` 的段拷贝用 `PhysAccess::frame_virt`（DM 抽象），`:686` 的栈页同。**唯一裸恒等的就是 `new_from_page(root)`。**
+
+**裁决（D-094，用户 2026-11-21）：I-59 扩为三条载体共同根因；I-52 关闭（三条全并入）；新立 I-60；修法采 A'。**
+
+| 项 | 内容 |
+|---|---|
+| **I-59 范围** | 从「x86 `test-sysboot`」扩为「**三条载体**的深跑 fault，同一根因：写通道与实际映射不匹配」|
+| **I-52 状态** | **关闭**（三条已全部归入 I-59——D-092 步③"移出"执行得比预期更彻底）|
+| **新立 I-60** | `phys_to_ptr` / `channel_to_ptr` 双通道并存的结构问题（P2，当前无故障但同类风险温床）|
+| **修法 A'** | `new_from_page` 的 root 清零改用 `channel_to_ptr(root_page.0, PteChannel::KernelDm)`——**清零与后续操作走同一条通道**，且恰好复用 handle 已有的 `channel` 字段；前提是 DM 已建（证据四已证） |
+| **D-092 更正** | aarch64/riscv 的「位域污染 / 错误偏移」判断错误，实为 KDM 基址 + 正常 PA |
+
+**否决 B（root 改从 `pt_alloc::alloc_pt_page()` 拿）**：本会话曾实施后撤回，三处代价已记录（`load_process_elf_oom_when_region_exhausted` 测试语义、`pt_alloc::register` 全局一次与 x86 paging 测试冲突、minix-arch 测试二进制内 `PT_CLAIMED` 断言）。
+
+**否决 C（载体补恒等映射）**：声明面扩到 free list 全区，与最小窗口哲学（BOOT-SCOPE 2a）相逆。
+
+**为什么 A' 优于"按 DM 是否已建立阶段化"（原选项 A）**：A 要引入「DM established」全局事实并改三架构写路径核心；**A' 只改一个函数的一行**（清零处把 `phys_to_ptr` 换成 `channel_to_ptr`），因为**构造出的 handle 本来就用 KDM**——清零与后续操作保持一致即可，不需要新阶段概念。
+
+**A' 的风险（第一版 A' 的错误，已修正）**：我最初写「`new_from_page` 的清零改成 `channel_to_ptr(KernelDm)` 即可」——**那是错的**。`new_from_page` 有两个生产调用点，DM 状态不同：
+
+| 调用点 | DM 状态 | 若统一改 KDM |
+|---|---|---|
+| `os/kernel/src/lib.rs:1292`（`build_bootstrap_root_and_enable`）| **DM 未建**（Step 4 在 Step 1–3 之后）| **立刻 fault**——当前裸恒等正是为这一步服务的 |
+| `os/arch/src/arch/boot.rs:820`（`load_process_elf`）| DM 已建（`arch_boot_impl` 内 Step 4 已完成）| 正确 |
+
+**修正后的 A'：给 `new_from_page` 加 `channel: PteChannel` 参数，与 `from_active_root(root, channel)` 对称。**
+
+这个对称性有现成先例——I-44（D-078）已经给 `from_active_root` 加了 `channel` 参数（`paging.rs:276`：`fn from_active_root(root_phys: PhysBytes, channel: PteChannel) -> Self;`），**`new_from_page` 是唯一还没加的那个**。
+
+| 调用点 | 传入 |
+|---|---|
+| `lib.rs:1292`（bootstrap）| **恒等通道**——需要一个新枚举变体 `PteChannel::Identity`（当前只有 `KernelDm` / `VmDm`） |
+| `arch/boot.rs:820`（`load_process_elf`）| `PteChannel::KernelDm` |
+
+**这条修法的实质**：把「root 页怎么到达」与「清零用哪条通道」解耦——**调用者声明通道，构造函数按声明写**。它同时解决了 I-60 描述的双轨制问题（`map_huge` / `split_huge` 仍在用裸恒等，那些也需要同样的通道参数化，但影响面更大，留 I-60）。
+
+**A' 的代价**：`PteChannel` 加一个 `Identity` 变体（三个架构各自的私有 enum 都要加），`new_from_page` 加一个参数（两个生产调用点 + 测试），以及 `map_huge` / `split_huge` 的同类改造（I-60）。
+
+
+
+
+
+### I-60（待裁决·I-59 拆出的结构问题）`phys_to_ptr` 与 `channel_to_ptr` 双通道并存，边界无文档无断言
+
+**来源**：I-59（D-094 深入调查的副产物）。**状态：待裁决。**
+
+**问题**：同一个 `Paging` 实现里有两条"物理地址 → 可写指针"的通道，分工没有文档：
+
+| 通道 | 实现 | 适用条件 |
+|---|---|---|
+| `phys_to_ptr(phys)` | `phys as *mut u64` | **只在该 PA 落在当前活动恒等窗口内时成立** |
+| `channel_to_ptr(phys, KernelDm)` | `phys + KERNEL_DIRECT_MAP_BASE` | **只在 DM 已建立且覆盖该 PA 时成立** |
+
+**两条都对，但适用条件不同，而代码没有把条件表达出来。**
+
+**使用分布（生产代码，`mod tests` 起于 `x86_64/paging.rs:1608`）**：
+
+| 操作 | 通道 | 位置 |
+|---|---|---|
+| `map` / `unmap` / `remap` / `query` / `update_flags` / `destroy` | `channel_to_ptr(self.channel)` | `:843`/`:853`/`:876`/`:886`/`:892`/… |
+| `new_from_page` 的 root 清零 | **`phys_to_ptr`** | `:633` |
+| `map_huge` | **`phys_to_ptr`** | `:1264`/`:1274`/`:1297` |
+| `split_huge` 系列 | **`phys_to_ptr`** | `:1394`/`:1425`/`:1529`/`:1566`/`:1593` |
+
+**`map_huge` 的具体风险**：它是生产路径（`build_bootstrap_root_and_enable:1340` 调用）。bootstrap 阶段恒等窗口在，所以可用；**但若在 DM 建立之后被调用且目标 PA 不在最小恒等窗口内，就会 fault**。当前没有这种调用点，**但 `map_huge` 的 SAFETY 契约里没有说这个前提**。
+
+**待裁决方向**：
+
+| 选项 | 内容 |
+|---|---|
+| **A（推荐）** | 给 `PteChannel` 加 `Identity` 变体，`phys_to_ptr` 改名为 `channel_to_ptr(phys, PteChannel::Identity)`——**两条通道统一成一个入口，调用者必须显式声明**。`map_huge` / `split_huge` / `new_from_page` 全部加 channel 参数 |
+| **B** | 只补文档与 `debug_assert!`（在 `phys_to_ptr` 里断言 PA 在恒等窗口内），不改签名 |
+| **C** | 不做（当前无故障）|
+
+**我的倾向：B 先做、A 待 I-59 落地后评估。** 理由：A 会波及三架构 paging 的全部写路径（约 10 处调用点 + 该枚举三份定义），而 B 是零风险的第一步——`debug_assert!` 能把"PA 不在恒等窗口内"变成可观测，而且**不动任何签名**。
+
+**验收（若走 B）**：`phys_to_ptr` 内加 `debug_assert!` 检查 PA 落在恒等窗口内（窗口上界从调用点传入或走一个全局事实）；跑现有测试确认无假阳性。
 
 ### I-53（已裁决·原定性作废，拆为 I-57/I-58）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
 
