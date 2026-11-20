@@ -215,6 +215,30 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
     })
 }
 
+/// File offset one past the last PT_LOAD's file bytes — the runtime file
+/// length of an ELF image (kernel or module).
+///
+/// D-082（I-36）: the ELF trim lives here, the only layer of module loading
+/// that legitimately needs ELF semantics. `None` = not an ELF, no PT_LOAD,
+/// a malformed program header (I-48 `Err` item), or an all-zero file end —
+/// the caller keeps the full length: a non-ELF payload must not be
+/// shortened by an ELF rule, and a malformed image is the runtime parser's
+/// to reject.
+fn elf_file_end(data: &[u8]) -> Option<usize> {
+    let iter = minix_elf::segment_iter(data).ok()?;
+    let mut end = 0usize;
+    for seg in iter {
+        let seg = seg.ok()?;
+        // `Ok` items are iterator-validated (offset+filesz fits inside the
+        // image), but `checked_add` keeps this helper honest on its own.
+        end = end.max((seg.offset as usize).checked_add(seg.filesz as usize)?);
+    }
+    if end == 0 {
+        return None;
+    }
+    Some(end.min(data.len()))
+}
+
 /// Load PT_LOAD segments from an ELF image into a destination buffer.
 ///
 /// Pure function — used by tests; production code uses
@@ -453,6 +477,17 @@ pub fn load_boot_modules_into<L: FileLoader>(
             )
         });
         let data = data.as_slice();
+
+        // D-082（I-36）：修剪到 ELF 的运行期文件长度（最后一个 PT_LOAD 的
+        // 文件尾）——这是模块装载里唯一需要 ELF 语义的层，两条腿的输入在
+        // 此统一：U-Boot 腿的 `entry.len` 已是 `staged_elf_used_len` 的修剪
+        // 值（此处幂等），UEFI 腿是固件给出的确切文件长度（从此开始修剪），
+        // `BootModule.len` 从此跨腿一致。非 ELF 或畸形镜像保持全长
+        // （fail-safe：运行期解析者会拒绝它）。前置验证（36 个模块 ELF =
+        // 12 × 3 架构）：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，
+        // 裁掉的只有 .comment/.symtab/.debug_*。
+        let used = elf_file_end(data).unwrap_or(data.len());
+        let data = &data[..used];
 
         let num_pages = (data.len() + 4095) / 4096;
         let phys_base = alloc_pages(num_pages).unwrap_or_else(|| {
@@ -931,8 +966,65 @@ mod tests {
                 modules[i].name, *name,
                 "module {i} must keep contract order"
             );
+            // Non-ELF payloads keep the full length (I-36 / D-082: the ELF
+            // trim must not shorten a non-ELF module).
             assert_eq!(modules[i].len, 100);
         }
+    }
+
+    // ── I-36 / D-082: the ELF trim lives in the module-loading layer ──
+
+    /// `elf_file_end` returns one past the last PT_LOAD's file bytes.
+    /// `build_minimal_elf`: single PT_LOAD at p_offset=0x1000, filesz=0x800.
+    #[test]
+    fn test_elf_file_end_returns_last_load_file_end() {
+        let elf = build_minimal_elf();
+        assert_eq!(elf_file_end(&elf), Some(0x1800));
+    }
+
+    /// Non-ELF bytes → `None` → the caller keeps the full length.
+    #[test]
+    fn test_elf_file_end_non_elf_is_none() {
+        assert_eq!(elf_file_end(&[0x42u8; 100]), None);
+    }
+
+    /// A malformed program header (I-48 `Err` item) makes the trim
+    /// untrustworthy → `None` → full length; the runtime parser rejects it.
+    #[test]
+    fn test_elf_file_end_malformed_segment_is_none() {
+        let elf = build_two_segment_elf_second_truncated();
+        assert_eq!(elf_file_end(&elf), None);
+    }
+
+    /// `load_boot_modules_into` trims an ELF module carrying trailing
+    /// non-loaded bytes down to the last PT_LOAD's file end — the UEFI
+    /// leg's new behavior (its `read` returns the exact firmware length,
+    /// which includes .comment/.symtab tails). A non-ELF sibling module
+    /// keeps its full length.
+    #[test]
+    fn test_load_boot_modules_into_trims_elf_to_file_end() {
+        let mut elf = build_minimal_elf(); // runtime content ends at 0x1800
+        elf.extend_from_slice(&[0xDDu8; 0x100]); // non-loaded trailing bytes
+        let mut loader = MockLoader::new();
+        loader.insert(&build_module_path("ds"), elf);
+        for (i, name) in MODULE_NAMES.iter().enumerate() {
+            if *name != "ds" {
+                loader.insert(&build_module_path(name), vec![0x10 + i as u8; 100]);
+            }
+        }
+
+        let mut slots = [ZERO_MODULE; MODULE_NAMES.len()];
+        let n = load_boot_modules_into(&loader, mock_alloc, &mut slots);
+        let modules = &slots[..n];
+        assert_eq!(modules.len(), MODULE_NAMES.len());
+        assert_eq!(
+            modules[0].len, 0x1800,
+            "ELF module must be trimmed to the last PT_LOAD's file end"
+        );
+        assert_eq!(
+            modules[1].len, 100,
+            "non-ELF module must keep its full length"
+        );
     }
 
     #[test]

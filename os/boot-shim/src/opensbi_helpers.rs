@@ -203,33 +203,15 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // and not concurrently modified.
         let slice =
             unsafe { slice::from_raw_parts(entry.phys_addr as *const u8, entry.len as usize) };
-        // The table stores the slot capacity, not the file length (the shim
-        // does not know the size before `fatload`). Trim to the end of the
-        // last PT_LOAD segment so `BootModule.len` and the module-page
-        // allocation reflect the actual file, not the 1 MiB/2 MiB slot.
-        // A non-ELF payload (tests, future formats) keeps the full slot.
-        let used = minix_elf::segment_iter(slice)
-            .ok()
-            .and_then(|iter| {
-                // Any malformed program header makes the trim untrustworthy:
-                // fall back to the full slot explicitly (I-48 / D-084 — the
-                // old `.map(..).max()` silently skipped malformed segments
-                // and could trim to a shorter-than-real file).
-                let mut max_end = 0usize;
-                for seg in iter {
-                    let Ok(seg) = seg else { return None };
-                    // Ok items are iterator-validated: offset+filesz fits
-                    // inside the slice, so this add cannot overflow.
-                    max_end = max_end.max((seg.offset + seg.filesz) as usize);
-                }
-                Some(max_end)
-            })
-            .filter(|&end| end > 0 && end <= slice.len())
-            .unwrap_or(slice.len());
+        // D-082（I-36）：`read` 只处理字节来源，不做任何 ELF 语义。表里的
+        // `entry.len` 已是 `build_shim_table` 用 `staged_elf_used_len` 算出
+        // 的修剪值（「表存的是槽容量」是登记时的误判，已核实推翻）——这里
+        // 再跑 `segment_iter` 是对已修剪数据的幂等无效功。模块装载层的唯一
+        // 修剪点在 `loader::load_boot_modules_into`（`elf_file_end`）。
         // U-Boot staged the file in RAM; hand out a borrow instead of a copy
         // (R18 D-4). The table is written once before the shim runs and is
         // not modified while the bytes are in use.
-        Some(crate::loader::FileBytes::Borrowed(&slice[..used]))
+        Some(crate::loader::FileBytes::Borrowed(slice))
     }
 }
 
