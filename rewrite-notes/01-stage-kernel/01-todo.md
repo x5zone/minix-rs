@@ -40,7 +40,7 @@
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（**实施中：步①–④已落，步⑤ E+R1 已关闭、R2 待真机**） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | **设计已通过、可以实施（文档第十三版 §4ter 为基线）**：① 状态字段与构造函数迁移（含 `adopt_active_root` 合并、`SimPaging`）② `destroy(self)` 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ 独立关闭 E / R1 / R2；**不得以编译通过替代生产安全验收** | §3 的 I-44（设计文档 `01-review-request-page-table-free.md` 第十三版） |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
-| I-43（部分实施·待续） | 编译失败修好后暴露的测试内核运行期缺陷 | 测试载体修正 / 定位 | **空槽 `BOOT_MODULES` 一层已修（2026 年 11 月 20 日，4 条改 `&mods[8..9]`，`[0x0,0x0)` 归零）**；但暴露第二层：`test-timer-irq-riscv64` 在 `paging enabled` 之后 `rust_main` 被反复重入、64 次耗尽 bump 区。`test-protection-riscv64` 静默停仍未定位。详见 §3 的 I-43 | §3 |
+| I-43（已裁决·部分实施） | 编译失败修好后暴露的测试内核运行期缺陷：全零 12 槽 `BOOT_MODULES` 整组当 `boot_modules` 交出 | 测试载体修正 / 定位 | **已裁决（D-081，用户 2026 年 11 月 20 日）采 A**（测试载体侧交出真实前缀/真实 span）；否决 B（内核跳过空槽会把生产中不存在的语义写进内核）。**实测 12 个内核中 6 条已修（`PLACEHOLDER_SPAN`）、6 条仍为全零槽未修**（后者不在必跑门链集合内故未暴露，`test-sysboot` 因两个不连续槽需改用 `PLACEHOLDER_SPAN` 而非 `&mods[8..9]`）。另卸出三层后续缺陷各需专项：riscv VM 加载 trap / x86 两载体 `enable()` 后静默挂 / riscv 直核静默停。详见 §3 的 I-43 | §3 |
 | I-35（部分实施） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户于 2026 年 11 月 20 日）。**(b) 注释项已实施（2026 年 11 月 20 日）**：`IPC_FILTER_POOL` 的「Only written once during boot」改为「初始化一次、此后在 BKL 下可变」，并核对三处可变借用（`proc_table.rs` + `syscall.rs` ×2）。**(a) `KERNEL_INFO` 四步方案仍不实施**（用户明确要求）。第三项 `Frozen::freeze` 已由 I-32 销账。详见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（已实施） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四步 + mini review 修正两处（`private_interfaces`、mock 孤儿）；五条 QEMU 门链全 PASS。验收与鉴别力双向验证见 §3 的 I-37 | §3 |
@@ -1145,12 +1145,33 @@ I-31 已先落地，所以本条按**三字段**形态一次定型（不需要"�
 
 **为什么此前没人发现**：I-31 之前这四条**编译不过**，`run_all.sh` 记 build failure、不跑 QEMU。唯一在读数里显示 PASS 的 `test-timer-irq-riscv64` 是 `target/` 里残留旧二进制被直接加载的结果（同一份读数把它同时列在 `build-failed packages` 里，自相矛盾）。
 
-**待裁决的两个修法**：
+**裁决（D-081，用户 2026-11-20）：采 A——测试载体侧交出真实前缀 / 真实 span。**
 
-- **A（推荐，测试载体侧）**：四条各自把 `boot_modules` 改成真实前缀 `&mods[8..9]`（或让 `BOOT_MODULES` 只留实际使用的那一项）。修正测试载体自己的构造错误，不碰内核。
-- **B（内核侧）**：让 `push_module_windows` 跳过 `start == 0 && len == 0` 的模块槽。这会把「空槽是合法哨兵」写进内核——而生产腿上 `boot_modules` 永远是已提交的真实前缀，不存在空槽。B 会让内核容忍一种它本不该见到的输入形态。
+**否决 B（内核侧跳过空槽）**：`boot_modules` 在生产腿上**永远是已提交的真实前缀**（boot-shim 按 `MODULE_NAMES` 逐项填，`NR_BOOT_MODULES` 是编译期常量），不存在"空槽哨兵"这个概念。B 会把一个生产中不存在的语义写进内核，并把真实的生产不变量（"每个模块窗口都必须非空"）降级成"可以有例外"。
 
-**我倾向 A**：空槽是测试载体自己造出来的，内核没有义务为它开例外。
+**射程（裁决时实测，与历史记录不同）**：全仓 **12 个**测试内核都用 `static mut BOOT_MODULES: [BootModule; 12]` 模式，其中 **6 条已按 A 修过**（带 `PLACEHOLDER_SPAN`，见下方"家族级定论"段），**另 6 条仍为全零槽 + `mods` 整组交出，未修**：
+
+| 已修 | 未修（全零槽 + `mods` 整组交出）|
+|---|---|
+| `test-timer-irq` / `-aarch64` / `-riscv64` | `test-sysboot`（`:143`）|
+| `test-rt-birth-aarch64` / `-riscv64` | `test-rt-birth`（`:134`）|
+| `test-proc-init` | `test-smp-ipi`（`:133`）|
+| | `test-paging-faultloop`（`:521`）|
+| | `test-user-trap`（`:208`）|
+| | `test-smp-aps`（`:206`）|
+
+**未修六条的形态与已修六条完全相同**，只是它们当时不在 QEMU 门链的必跑集合里，所以没被暴露。**跟进项：把这六条也改成 `PLACEHOLDER_SPAN` 形态。**
+
+**建议统一到 `PLACEHOLDER_SPAN`，而不是 `&mods[8..9]`**：`test-sysboot` 填了 `mods[1]` 与 `mods[8]` 两个**不连续**槽，`&mods[8..9]` 套不上；`PLACEHOLDER_SPAN` 让 12 槽全部带有效 span，不依赖连续性，也不容易在新增模块时写错。
+
+两种写法在已修六条上并存（实施时的历史遗留）：`test-timer-irq-aarch64:239`、`test-rt-birth-riscv64:520`、`test-rt-birth-aarch64:597` 用 `&mods[8..9]`；`test-timer-irq`、`test-timer-irq-riscv64`、`test-proc-init` 用 12 槽全有效。
+
+**验收**：
+
+```bash
+cd os/qemu-tests && bash run_all.sh    # 期望：零 "boot identity window is empty or reversed"
+cargo check --workspace --all-targets  # 三架构 0 error
+```
 
 **追加第 5 条（同日发现，形态不同）**：`test-protection-riscv64` 也是「编译失败掩盖运行期缺陷」的受害者，但症状不同——它**没有 panic，而是静默卡住**。串口停在 `kernel: step1+2 mappings ok`，之后 `paging.enable()` 与返回都不出声，测试自己的 `"  Sv39 MMU enabled\n"` 从未出现。它的 I-31 相关改动只有一处、且在 `arch_boot_impl` **返回之后**（`trap.configure_syscall(minix_arch::syscall_entry_va())`），卡点在 `arch_boot_impl` **内部**，所以与本条无关。需要单独定位「riscv 直核腿 `paging.enable()` 之后的静默停」。
 
