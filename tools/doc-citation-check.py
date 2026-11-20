@@ -128,7 +128,13 @@ def should_skip(line: str) -> bool:
         return True
     if "..." in stripped or "…" in stripped:
         return True
-    if NON_ASCII_RE.search(stripped):
+    # V3.6-b1（轨迹分析判例，替代「含非 ASCII 整行跳过」）：非 ASCII 判定必须
+    # 在**剔除行内注释之后**做。原实现在原始行上判，于是
+    # `Err(X) => { /* 扩容后重试 */ }` 这类「真代码 + 中文块注释」整行被豁免——
+    # 中文化成了错代码的豁免卡（实测 152/~4000 引文行受影响，其中含无 `//`
+    # 的真代码行）。先 normalize（已剔 `//` 尾注与 `/* */`），再判残余非 ASCII：
+    # 残余非 ASCII 只可能来自字符串字面量或 CJK 标识符，那才是无可对账的形态。
+    if NON_ASCII_RE.search(normalize(stripped)):
         return True
     if SKIP_LINE_RE.fullmatch(stripped):
         return True

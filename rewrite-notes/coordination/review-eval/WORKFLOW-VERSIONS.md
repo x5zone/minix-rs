@@ -726,3 +726,24 @@ bash tools/lint-review-rules.sh --self-test    → PASS
   的 brief 分发，不经过 `review-scan` 派生链。
 - `review-process.md` 的 Gate 表未改：V3.6 判据不是新 Gate，是既有 checklist/brief 的判据替换。
 
+### V3.6 轨迹驱动修复（b1/b3/b3b/b3c/b4/b5，2026-11-20）
+
+> 来源：`prompt/V35-TRAIL-DEFECTS.md`（V3.5 六篇执行轨迹的实读分析）。
+> 这六项是**既有门的实现缺陷**，不是新规则——因此不计入 §7.2 的两条增量预算。
+
+| 项 | 缺陷 | 修法 | 夹具 |
+|---|---|---|---|
+| b1 | citation 门的非 ASCII 整行跳过成了错代码豁免卡（152/~4000 行受影响） | 非 ASCII 判定移到 `normalize()`（剔注释）之后 | `tmp/cit-probe/probe3.md` 复现，修后 exit 1 |
+| b3 | OPEN-DEBT 无表头时整表不可见（D02/D06 的债行从未被门看见） | 取消表头入口条件；不可解析表格 fail-closed | 5 组 |
+| b3b | 完成词子串匹配把长散文句尾「已修」判成整行销账 | 位置判据：完成标记须在单元格开头 | 2 组 |
+| b3c | 无 ID 的整行状态叙述（历史合法形态） | 首格占位符 + 末格 ≤120 字含完成词 → 放行 | 1 组 |
+| b4 | edition-trial 把超限算 PASS（D01 的 V3.1 五轮读数 `5/3 PASS`） | `rounds > 3` 独立报超限，与未闭环解耦 | 2 组 |
+| b5 | certify 回执的 `P0 = 0` 被判否定结论（六篇回执因此全不敢写 P0） | 按行判 + 前后否定词表 | 12 用例 |
+
+**复验读数（2026-11-20）**：六篇归档审计 FAIL 数与 HEAD 基线逐篇完全一致
+（100/77/84/16/17/0，零误伤）；六篇**最终轮** `--round` 全部 `结论: PASS`；
+轨迹门自测全 PASS（新增夹具 20 组累计）。
+
+**登记不修（V3.7 候选，见 `prompt/V35-TRAIL-DEFECTS.md` §二）**：确认轮 survey 发现量
+入 metrics（p1）、读者档位机械门（p2）、角色显式枚举（p3）、refute 处置类语义（p4）、
+D 号唯一性与引用存在性门（p5）、style-lint 对 runs/DECISIONS 日期的豁免（p6）。

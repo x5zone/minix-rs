@@ -630,6 +630,36 @@ def _pick_metric_block(
     return blocks[-1] if blocks else ("", text)
 
 
+def _has_lingering_severity(text: str) -> bool:
+    """V3.6-b5（轨迹分析判例）：回执里的 `P0`/`P1` 是否构成「遗留」证据。
+
+    原 r19 实现用一条裸 `P[01]+` 正则，把「P0 = 0」「无 P0」「P0：无」这类
+    **如实报告零 P0** 的行判成否定结论——六篇回执因此全部不敢写 P0 字样
+    （真实读数被规则逼成盲区，summary 里 certify「P0/P1 一律不出现」即此果）。
+
+    判据改为按**行**判，且只认「P0/P1 后紧跟计数/遗留词」的形态：
+      - 同行 `P0`/`P1` 后 12 字符内出现 `= 0`、`：0`、`0 条`、`零`、`无`、
+        `没有`、`未发现` → 如实报告，**不计**；
+      - 出现 `遗留`、`尚有`、`未修`、`仍存`、`REOPEN`、或非零计数 → 计；
+      - 只出现裸标记而无计数（`P0 = 0` 除外）→ 保守起见计（r19 的原意）。
+    以行为单位的理由是：一条正则无法可靠区分「P0/P1 无残留」与「P0 遗留一项」
+    这类跨词序形态，而逐行枚举正负词表是可审计的。
+    """
+    for line in text.splitlines():
+        for m in re.finditer(r"(?<![a-zA-Z0-9])P[01]+(?![0-9])", line, re.IGNORECASE):
+            head = line[max(0, m.start() - 10): m.start()]
+            tail = line[m.end(): m.end() + 12]
+            # 前缀否定：`无 P0` / `没有 P0` / `本次无 P0/P1`。
+            if re.search(r"无|没有|未发现|零", head):
+                continue
+            if re.search(r"(?:[=:：]|\s)\s*(?:0|零)\b|0\s*条|零条", tail):
+                continue                       # P0 = 0 / P0：0 / P0 0 条
+            if re.search(r"无|没有|未发现|均已?清|全部闭合", tail):
+                continue                       # P0：无 / P0 无残留
+            return True                        # 遗留 / 尚有 / 非零计数 / 裸标记
+    return False
+
+
 def check_metrics(
     text: str,
     report: Report,
@@ -1169,11 +1199,24 @@ def check_edition_trial(
         stat["last_open"] = int(op.group(1)) if op else None
     # V3.3: confirmation rounds are excluded by design (they are not
     # modification transactions), but structural rounds count like full.
+    #
+    # V3.6-b4（轨迹分析判例）：原条件 `rounds >= 3 and last_open > 0` 把
+    # 「已超限但自报未闭环=0」判成 PASS（D01 的 V3.1 跑了 5 个修改轮，
+    # 门读数 `试验窗口 5/3` PASS）。超限本身即须边界评估，与未闭环无关；
+    # 未闭环 > 0 只是额外加重。改为：rounds > 3 → WARN（超限），
+    # rounds == 3 and last_open > 0 → WARN（窗口用尽且未收口）。
     for edition, stat in stats.items():
-        if stat["rounds"] >= 3 and (stat["last_open"] is None or stat["last_open"] > 0):
+        if stat["rounds"] > 3:
             report.warn(
                 "edition-trial",
-                f"edition {edition} 在本篇已跑 {stat['rounds']} 轮且最新一轮未闭环；"
+                f"edition {edition} 在本篇已跑 {stat['rounds']} 个修改轮（§7.5 上限 3）；"
+                "超限必须先在 DECISIONS.md 落授权行（范围/理由/日期），否则该篇"
+                "不得声明收敛（V3.6-b4：超限不再因「未闭环=0」而计 PASS）",
+            )
+        elif stat["rounds"] == 3 and (stat["last_open"] is None or stat["last_open"] > 0):
+            report.warn(
+                "edition-trial",
+                f"edition {edition} 在本篇已跑 3 轮且最新一轮未闭环；"
                 "按 §7.5 应执行 L7 边界评估或判 NOT CONVERGING，不得开第 4 轮",
             )
         else:
@@ -1205,32 +1248,61 @@ def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
     (user adjudication). Anything else keeps the round open. A `截止 R<N>`
     whose N is below the closing round is overdue and said so by name.
 
+    V3.6-b3（轨迹分析判例）：**表头不是入口条件**。原实现只在见过
+    `| ID |` / `| 条目 |` 表头后才开始收集行，于是 D02/D06 那种「无表头、
+    直接以数据行开头」的 OPEN-DEBT 整表被判「0 行未销账」——一笔真实欠账
+    对门完全不可见（D06 的 D-077 悬空引用正是这样漏掉的）。现在：
+    数据行无论是否有表头都收集；**有表格却无法识别任何数据行 →
+    按「格式无法解析」FAIL**（用 fail-closed 取代静默放行）。
+
     Returns the open-row count so the caller folds it into `未闭环`.
     """
     if not path.is_file():
         return 0
     lines = path.read_text(encoding="utf-8").splitlines()
-    current: dict[str, int] | None = None
     open_rows: list[tuple[str, str]] = []
     closing_round = int(round_tag.lstrip("R")) if round_tag else None
+    table_lines = 0          # 任意表格行（含表头/分隔）
+    candidate_rows = 0       # 看起来是数据行（首格非表头词）
+    header_seen = False
     for line in lines:
         stripped = line.strip()
         if not stripped.startswith("|"):
-            current = None
             continue
+        table_lines += 1
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
         if all(SEP_RE.fullmatch(cell) for cell in cells):
             continue
         if any("ID" == cell or "条目" == cell for cell in cells):
-            current = {"id": 0}
+            header_seen = True
             continue
-        if current is None or not cells or not cells[0]:
+        if not cells or not cells[0]:
             continue
         item = cells[0]
-        if item.startswith("#") or item in {"ID", "条目"}:
+        if item.startswith("#"):
             continue
+        candidate_rows += 1
         row_text = " | ".join(cells)
-        if any(token in row_text for token in DEBT_DONE_TOKENS):
+        # V3.6-b3b（轨迹分析判例）：完成词必须**出现在单元格开头**（可带
+        # `✅` / `（R23 前置）` 之类前缀）。原实现对整行做子串匹配，于是
+        # D06 的「文档半边的偏离登记**已修**」这种长散文句尾把整条欠账判成
+        # 已销账；反之把窗口收窄到「短格」会误杀 D01 那 9 条长处置格
+        # （`✅ 已修：…` 格里带完整证据链）。正确判据是**位置**而不是长度：
+        # 格首 `✅`/`已修`/`已实施`… = 状态声明；句中出现的 `已修` = 叙述。
+        _DONE_PREFIX_RE = re.compile(
+            r"^\s*(?:✅|✔|完成|已修|已实施|已闭合|已完成|已覆盖|已拒绝|superseded)"
+            r"|^\s*（[^）]{0,24}）\s*已修"
+        )
+        if any(_DONE_PREFIX_RE.match(cell) for cell in cells):
+            continue
+        # V3.6-b3c：**无 ID 的整行状态叙述**（`| — | — | F-R18-01 已实施；… |`）
+        # 是历史合法形态——首格是占位符且末格 ≤ 120 字并含完成词。把窗口限定
+        # 到「短行」才放行，避免长散文句尾再次吃掉真实欠账（b3b 的原判例）。
+        if (
+            cells[0] in {"—", "–", "-", ""}
+            and len(cells[-1]) <= 120
+            and any(tok in cells[-1] for tok in DEBT_DONE_TOKENS)
+        ):
             continue
         # §4.0f exit 2: a DECISIONS.md-recorded user adjudication — including
         # an explicitly approved deferral — resolves the row. Approval without
@@ -1246,6 +1318,12 @@ def check_open_debt(path: Path, report: Report, round_tag: str | None) -> int:
         if deadline and closing_round is not None and int(deadline.group(1)) < closing_round:
             deadline_note = f"；已逾期（截止 R{deadline.group(1)}）"
         open_rows.append((item, deadline_note))
+    if table_lines >= 2 and candidate_rows == 0 and not header_seen:
+        report.fail(
+            "open-debt",
+            "OPEN-DEBT 有表格但无可解析的数据行（格式无法解析不等于没有欠账；"
+            "V3.6-b3 判例：静默放行会让整表欠账对门隐形）",
+        )
     for item, note in open_rows:
         report.fail(
             "open-debt",
@@ -2441,12 +2519,7 @@ def check_run_dir(
                             r"|未(修|完成|实施|落地)(?!.*已补)",
                             _ct.translate(str.maketrans({chr(0xFF01 + i): chr(0x21 + i) for i in range(94)})),
                             re.IGNORECASE | re.MULTILINE,
-                        ) or re.search(
-                            # r19（P0-3 判例）：裸 P0 遗留标记
-                            r"(?<![a-zA-Z0-9])P[01]+(?![0-9])",
-                            _ct,
-                            re.IGNORECASE | re.MULTILINE,
-                        )
+                        ) or _has_lingering_severity(_ct)
                         _eff = len(re.sub(r"[^\w\u4e00-\u9fff]", "", _ct))
                         if _neg_hit:
                             _bad_certs.append(
@@ -4660,9 +4733,96 @@ def self_test() -> int:
         print("self-test FAIL: V3.6 轮缺减法键未拦截（C-34）")
         return 1
 
+    # ===== V3.6 b3/b3b/b3c: OPEN-DEBT 可见性判别夹具 =====
+    def _debt_rows(text: str, rnd: str = "R3") -> tuple[int, list[str]]:
+        rep = Report()
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "OPEN-DEBT.md"
+            p.write_text(text, encoding="utf-8")
+            n = check_open_debt(p, rep, rnd)
+        return n, [i["message"] for i in rep.items if i["level"] == "FAIL"]
+
+    # (l) 无表头、直接数据行 → 行必须被看见（原实现静默 0 行）。
+    n, fails = _debt_rows("| R3-design-batch | P2 | 待评估（无批准） |\n")
+    if n != 1:
+        print("self-test FAIL: 无表头 OPEN-DEBT 的行未被看见（V3.6-b3）")
+        return 1
+    # (m) 有表头 + 已批准延期 → 不判未销账（WARN 级）。
+    n, fails = _debt_rows(
+        "| ID | 严重度 | 处置/档期 |\n|---|---|---|\n"
+        "| R3-batch | P2 | 用户批准 2026-11-20 延期 |\n"
+    )
+    if n != 0:
+        print("self-test FAIL: 已批准延期的 debt 行被判未销账（V3.6-b3 过度收紧）")
+        return 1
+    # (n) 长散文句尾含「已修」→ 仍判未销账（b3b 判例：词尾不得吃掉欠账）。
+    n, fails = _debt_rows(
+        "| R1-design-batch | P1 | 四项设计 P1 待实施；文档半边的偏离登记已修 |\n"
+    )
+    if n != 1:
+        print("self-test FAIL: 句中「已修」把整条欠账判成已销账（V3.6-b3b）")
+        return 1
+    # (o) 格首状态声明 → 已销账，不受长度影响（b3b 的修法不得误杀 D01 形态）。
+    n, fails = _debt_rows(
+        "| F-R20-01 | P2 | ✅ 已修：`BootPrepareResult.bump: PhysRange`、"
+        "`arena_pa/root_page: PhysBytes`；`enter_kernel_image` 同步；附完整证据链与测试读数 |\n"
+    )
+    if n != 0:
+        print("self-test FAIL: 格首 `✅ 已修` 的长处置格被误判未销账（V3.6-b3b 反向）")
+        return 1
+    # (p) 无 ID 的整行状态叙述（历史合法形态）→ 放行。
+    n, fails = _debt_rows("| — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 follow-ups.md |\n")
+    if n != 0:
+        print("self-test FAIL: 无 ID 的整行状态叙述被误判未销账（V3.6-b3c）")
+        return 1
+    # (q) 有表格但无可解析数据行（表头+分隔线、无数据）→ 不 fail-closed
+    #     （空表 = 真的没有欠账）；**有数据行却解析不出 ID** 的形态才 fail-closed。
+    n, fails = _debt_rows("| ID | 严重度 | 处置/档期 |\n|---|---|---|\n")
+    if n != 0 or fails:
+        print("self-test FAIL: 空表头的 OPEN-DEBT 被误判（应为 0 行、无 FAIL）")
+        return 1
+    n, fails = _debt_rows("|  |  |  |\n|---|---|---|\n|  |  |  |\n")
+    if not fails or not any("格式无法解析" in f for f in fails):
+        print("self-test FAIL: 解析不出 ID 的 OPEN-DEBT 表格未 fail-closed（V3.6-b3）")
+        return 1
+
+    # (r) edition-trial：>3 个修改轮 → WARN 超限，不因「未闭环=0」判 PASS（V3.6-b4）。
+    _ed = "# 指标\n\n"
+    for _i in range(1, 5):
+        _ed += (
+            f"## R{_i} 完整 survey\n\n"
+            f"- 发现总数: 0\n- 唯一根因数: 0\n- 本轮新准入: 0\n- certify 新准入: 0\n"
+            f"- 重复合并: 0\n- 自引入: 0\n"
+            f"- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0\n"
+            f"- 未闭环: 0\n- 轮型: full\n- 轮结果: ROUND-CLOSED\n- edition: V3.1\n\n"
+        )
+    _ed_rep = Report()
+    check_edition_trial(_ed, _ed_rep, None)
+    if not any("超限" in i["message"] for i in _ed_rep.items if i["level"] == "WARN"):
+        print("self-test FAIL: 4 个修改轮未报超限（V3.6-b4：超限被算 PASS）")
+        return 1
+    # 3 轮且未闭环=0 → PASS（不误报）。
+    _ed3 = _ed.split("## R4")[0]
+    _ed3_rep = Report()
+    check_edition_trial(_ed3, _ed3_rep, None)
+    if any(i["level"] == "WARN" for i in _ed3_rep.items):
+        print("self-test FAIL: 恰好 3 轮且已收口被误报超限（V3.6-b4 反向）")
+        return 1
+
+    # (s) 回执的 P0/P1 极性（V3.6-b5）：如实报告零 P0 不得被判否定结论。
+    _sev_ok = ["P0 = 0", "无 P0", "P0 事项 0 条", "P0：无", "P0/P1 无残留", "本次无 P0/P1 遗留"]
+    _sev_linger = ["遗留 P0 一项", "P0 共 2 条", "P1 尚有 1", "P1 事项 2 条"]
+    for _s in _sev_ok:
+        if _has_lingering_severity(_s):
+            print(f"self-test FAIL: 零化表述被判为遗留（V3.6-b5）: {_s!r}")
+            return 1
+    for _s in _sev_linger:
+        if not _has_lingering_severity(_s):
+            print(f"self-test FAIL: 遗留表述未被抓（V3.6-b5）: {_s!r}")
+            return 1
+
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(
