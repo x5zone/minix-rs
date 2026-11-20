@@ -8,6 +8,8 @@
 
 use minix_types::{PhysBytes, VirBytes};
 
+use crate::paging_ext::{HugePages, PageSize};
+
 bitflags::bitflags! {
     /// Page table entry flags
     ///
@@ -691,7 +693,7 @@ pub fn clone_range<P: Paging>(
 /// After `map_kernel()` completes, the kernel direct map PTEs are never modified
 /// (read-only invariant). This makes the Global bit (G=1) safe — TLB entries
 /// survive CR3 switches because the content never changes.
-pub fn map_kernel<P: Paging>(
+pub fn map_kernel<P: Paging + HugePages>(
     pt: &mut P,
     layout: &minix_types::KernelLayout,
 ) -> Result<(), PageTableError> {
@@ -754,10 +756,36 @@ pub fn map_kernel<P: Paging>(
         pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
     }
 
-    for i in 0..dm_pages {
-        let vaddr = VirBytes(dm_vbase + i as u64 * page_size);
-        let paddr = PhysBytes(i as u64 * page_size);
-        pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
+    // Direct Map window: 2 MiB leaves where both sides align.
+    //
+    // E5(d) forensics (U-Boot riscv, -m 512M): the VM replays this window
+    // into every fresh process root. At 4 KiB granularity `dm_pages` is
+    // 655,360 for a 2.5 GiB span, and the boot chain spent minutes per boot
+    // process inside this loop (the first root finished, the second started
+    // from zero, so the gate saw no progress). The kernel's own boot-time
+    // DM coverage already installs huge leaves (D-59); the per-root replay
+    // must use the same geometry. `dm_len` is the contiguous superset
+    // documented above — unbacked holes stay supervisor-only translations
+    // nobody touches, exactly as at 4 KiB.
+    const DM_HUGE: PageSize = PageSize::MIB_2;
+    let dm_len = dm_pages as u64 * page_size;
+    if dm_vbase % DM_HUGE.bytes() == 0 && dm_len % DM_HUGE.bytes() == 0 {
+        let mut off = 0u64;
+        while off < dm_len {
+            pt.map_huge(
+                VirBytes(dm_vbase + off),
+                PhysBytes(off),
+                DM_HUGE,
+                PageFlags::kernel_read_write(),
+            )?;
+            off += DM_HUGE.bytes();
+        }
+    } else {
+        for i in 0..dm_pages {
+            let vaddr = VirBytes(dm_vbase + i as u64 * page_size);
+            let paddr = PhysBytes(i as u64 * page_size);
+            pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
+        }
     }
 
     // The former identity-window replay (segment 4) is retired: handoff v9
