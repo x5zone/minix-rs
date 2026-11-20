@@ -474,6 +474,11 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
 /// Fail contract (design doc §2.7 前提二): on the post-exit path every
 /// classification failure is fail-stop — panic (raw early console + halt
 /// via the carrier's panic handler), never a return into UEFI boot services.
+///
+/// Test-path only: it fills [`TEST_MAP_TABLES`], which exists solely under
+/// `qemu-test-kernels`. The production legs classify post-exit through
+/// `ebs_map` directly and must keep compiling without this feature.
+#[cfg(feature = "qemu-test-kernels")]
 fn classify_map_bytes_into_test_tables(
     buffer: &[u8],
     map_size: usize,
