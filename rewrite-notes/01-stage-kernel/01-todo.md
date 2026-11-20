@@ -46,7 +46,9 @@
 | I-50（✅ 已销账·前提不成立） | x86 模块的 `.lbss` 不在任何 PT_LOAD 内——原判「装载路径无载体」 | 定位 | ✅ **D-090（用户 2026 年 11 月 21 日）销账**：对 115 个 x86_64 ELF 做 `readelf -SW`/`-lW` 对账，**112 个带 `.lbss` 的全部完整落在某 PT_LOAD 的 `memsz` 内**（`minix-fs-mfs` 的 4 MiB `.lbss` 上界 `0x1641010` 与最后一个 PT_LOAD 的 `memsz` 结束地址**完全相等**）。它不在 `filesz` 内是 NOBITS 的正常语义；装载路径「拷 `[0,filesz)` → 清零 `[filesz,memsz)`」已自动覆盖。候选 a 要修的东西不存在、候选 b 会重复映射。**证据边界**：x86 生产模块路径仍未真跑，本次是静态检查+代码语义推理、非运行时实证；若真跑发现 `.lbss` 脏值则重开并指向「NOBITS 尾清零」 | §3 的 I-50 |
 | I-51（待复核后销账·两症状均已消失） | 测试面并行隔离失败：vm 10 条测试共享 `PAGE_ALLOC_PTR` 全局单例；minix-boot 的 `memmap_source` 族漂移 | 测试基建 | **D-091（用户 2026 年 11 月 21 日）判「待复核后销账」**：① 症状 1 实测消失（`cargo test -p minix-vm --lib` 连跑 3 次 548/0，`overwriting different allocator` 零命中）；**成因已定位**——`register_page_alloc` 用 `compare_exchange`，而 16 处测试自己 `unregister`/`register` 配对、各用栈上 allocator，并行时互相抹指针。② 症状 2 已复核（`589aa8afb` 落地后 `minix-boot` 恢复编译，连跑 3 次 184/0，漂移未复现），但**成因未定位**（也可能同属偶然性问题）。**销账条件**：复核甲已加隔离/乙测试被改/丙偶然三选一；**判丙则须补 `test_sync` 式全局锁并重跑 ≥10 次全绿** | §3 的 I-51 |
 | I-52（已裁决·待实施） | 深跑路径的地址假设失配：riscv VM trap / aarch64 timer-irq sync exc / x86 sysboot page fault | 定位 + 设计裁决 | **已裁决（D-092，用户 2026 年 11 月 21 日）：不预分三条，保持一条，下一步 `-d int`**。裁决前地址形态实测推翻「同根」：riscv `stval=0xffffffc0cffff000` 是 Sv39 规范高半、偏移 `0xcffff000`≈3.3GiB；aarch64 `far=0xffff80804ffff000` 是 VA48 规范（上一版误用 Sv39 判非规范）、偏移 `0x804ffff000`=128×4GiB+0x50000000（疑位域污染）；x86 `cr2=0x7ba7000` 是规范低地址≈123MiB，疑与高半假设无关。**不预分三条的理由**：拆分前提是性质不同，而当前只是地址形态推测、未到根因 | §3 的 I-52 |
-| I-53（待裁决·I-43 三层残留之二） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception（`test-paging-faultloop` 与 `test-user-trap` 同一行号） | 设计裁决 + 代码修正 | **未裁决**（D-087 拆出）。**纯内核缺陷**（`trap_dispatch.rs`），两个独立载体撞同一处说明是生产问题；倾向先审查 CPL/error-code 路由，不推荐载体侧绕过 | §3 的 I-53 |
+| I-53（已裁决·原定性作废，拆 I-57/I-58） | 故障臂路由：CPL3 载荷 fault 被当作 kernel exception | 设计裁决 | **已裁决（D-093，用户 2026 年 11 月 21 日）**：**原定性作废**——审查证实 `is_user_mode=(cs&3)==3` 与 `is_nested=!is_user` 都是对的（C 的双入口 `mpx.S:368/382` 语义已正确映射），wrapper 判据与注册顺序也正确。真实病因两条、均在载体侧：**I-57**（`test-paging-faultloop` 的 `carrier_pagefault` 在 CPL0 执行，`walk_leaf:314` 的 `alloc_pt_page().expect` 在 bump 耗尽时 panic）、**I-58**（`test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 `trap_dispatch:465-472`）。两条均待 `-d int` 取证 | §3 的 I-53 / I-57 / I-58 |
+| I-57（待裁决·I-53 拆出） | `test-paging-faultloop` 载体自身在 CPL0 panic：`carrier_pagefault` 内的 `walk_leaf` 取页失败 / VM 槽未就绪 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`walk_leaf:314` 的 `pt_alloc::alloc_pt_page().expect("carrier: pt page")`（`alloc=true` 分支必取页）、`:437-440` 的 `get_mut(ProcNr(8)).expect("VM boot proc exists")`；I-43 二层已记录「反复 64 次把 32 MB bump 区耗尽」 | §3 的 I-57 |
+| I-58（待裁决·I-53 拆出） | `test-user-trap` 触发生产 body 的 `proc_ptr=None` wiring 断言 | 载体修正 | **未裁决**，待 `-d int` 取证。证据：`trap_dispatch.rs:465-472` 的 panic 是**正确的前置条件**（文档：User origin + None = no scheduler step ever ran → wiring bug）；载体若在 scheduler bring-up 前让 CPL3 载荷 fault 即触发 | §3 的 I-58 |
 | I-48（已实施） | `SegmentIter` 把畸形 ELF 静默当成"没有这个段"（五条畸形 `continue` 与一条正常过滤无法区分） | 代码改造 | ✅ **已实施（2026 年 11 月 21 日，D-084 梭哈 A）**：`Item = Result<LoadSegment, ElfError>`（新变体 `SegmentOutOfBounds` / `FileszExceedsMemsz`，表寻址溢出沿用 `PhdrOutOfBounds`）；`filesz > memsz` 收进迭代器（七处消费者免费获得越界写防护）；七个调用点逐个显式回答策略（boot 冒泡 / exec `ENOEXEC` / VM 拒绝 boot image / `load_segments_into_buffer` 改 `Result<usize, _>` / `load_segments_into_phys_memory` 显式 `Result` 收集 / U-Boot 槽修剪显式回退全槽 / `load_elf_into` 转 `VmLoadError::InvalidElf`）。宿主 5 crate 全绿（minix-elf 27、boot-shim 139、rs 359、arch 294、vm 548 单线程）；QEMU 门链 x86 ×3 + aarch64 + riscv 直核 + riscv U-Boot shim 链 6/6 全 PASS。**I-46 / I-47 解除阻塞**。详见 §3 的 I-48 | §3 |
 | I-46（已裁决·待实施） | `load_segments_into_phys_memory` 的 SAFETY 契约过期（仍写「调用者必须先 compute」）+ entry 断言两份拷贝 | 注释修正 | **已裁决（D-088，用户 2026 年 11 月 21 日）**：I-48 前置已落地（`a25305c66`），复核后发现 ① SAFETY 第 2 条**现在是错的**（迭代器已自查 `filesz > memsz`，`loader.rs:275-279` 仍写「本函数不拒绝」）→ **必做改写**；② 面板称的文档失真**实测不存在** → 销账；③ entry 断言两份拷贝**不合并**（两份的守卫时机不同：wrapper 在 `layout_gate` 前、UEFI 腿在 `reserve_kernel_span` 前）。面板的 `ValidatedKernelImage` / 改 wrapper 形状两案均不采纳（I-48 之后净收益为零） | §3 的 I-46 |
 | I-47（已裁决·待实施） | `load_segments_into_buffer` 的校验前置与装不下语义（照 Minix3 C 的两循环结构重排） | 代码改造 | **已裁决（D-089，用户 2026 年 11 月 21 日）采乙**：照 `minix3/minix/lib/libexec/exec_elf.c` 的 `libexec_load_elf`——① 校验前置（`sanity check binary before wiping out the target process`：先 collect + 校验 `buf` 覆盖全部段，**校验不通过不写任何字节**）；② 装不下返回 `Err(TargetBufferTooSmall{..})` 而非静默跳过（C 用 `ENOEXEC`；本项目有 `ElfError` 可给精确变体）；③ `count` 语义自动一致；④ 文档改为「测试投影 + 前置校验」并列出共享/不共享的校验项。**不补段间重叠检测**（C 也没在装载循环里做，其重叠防线在 mmap/copymem 实现侧）| §3 的 I-47 |
@@ -2314,9 +2316,9 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **边界**：不触碰内核生产路径——生产内核链在高半，这些换算本来就对；问题只在低链载体上。
 
-### I-53（待裁决·I-43 三层残留之二）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
+### I-53（已裁决·原定性作废，拆为 I-57/I-58）故障臂路由：CPL3 载荷 fault 被当作 kernel exception
 
-**来源**：I-43 的三层残留（D-087 拆出）。**状态：待裁决。**
+**来源**：I-43 的三层残留（D-087 拆出）。**状态：已裁决（D-093），原定性作废，拆为 I-57/I-58。**
 
 **两个载体同一症状**：
 
@@ -2338,7 +2340,78 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **我的倾向：A**。理由：两个独立载体撞同一处**同一行号**，这不是载体问题。
 
-**验收**：`test-paging-faultloop.sh` 与 `test-user-trap.sh` 各自 PASS；补一条宿主可测的路由测试（构造 CPL3 fault 的 error code，断言分派到用户态臂）。
+**裁决前审查（逐条核实，原定性不成立）**：
+
+| # | 原描述的隐含前提 | 审查结论 |
+|---|---|---|
+| 1 | 「CPL3 fault 被路由到 kernel 异常臂」 | **不成立**。`is_user_mode = (frame.cs & 3) == 3`（`os/arch/src/x86_64/exception.rs:55-57`，标准判据）|
+| 2 | 「`is_nested` 判错了」 | **不成立**。`is_nested = !is_user`（`trap_dispatch.rs:501`）正是 C 的等价映射——C 有**两个汇编入口**：`exception_entry` push `$0`（ring3 起源，`mpx.S:368`）、`exception_entry_nested` push `$1`（内核起源，`mpx.S:382`）|
+| 3 | 「载体的 wrapper 没生效」 | **不成立**。`faultloop_trap_dispatch`（`test-paging-faultloop/src/main.rs:382`）判据 `frame.vector == 14 && frame.cs & 3 == 3` 正确；注册在 `init_protection` **之后**（`:577` vs `init_protection` 内部的 `register_current_arch()` `lib.rs:2400`），故 wrapper 覆盖生产 body |
+| 4 | 两个载体同一缺陷 | **不成立**。原描述自身已给出分界线——`test-paging-faultloop` 是 **CPL3** fault，`test-user-trap` 是「**kernel 模式** page fault」|
+
+**两条真实病因（各自独立，均在载体侧，非内核 `trap_dispatch` 路由）**：
+
+| 载体 | 实际路径 | 证据 |
+|---|---|---|
+| `test-paging-faultloop` | CPL3 fault → wrapper 命中 → `carrier_pagefault` 在 **CPL0** 执行 → 内部 `alloc_pt_page().expect("carrier: pt page")`（`:314`）在 bump 池耗尽时 panic（走 `#[panic_handler]` `:720`，**不经过** `x86_trap_dispatch_body`）；另有 `get_mut(ProcNr(8)).expect("VM boot proc exists")`（`:437-440`）同类风险 | `walk_leaf` 的 `alloc: bool` 分支（`:310-318`）在 `alloc=true` 时必取页；I-43 二层已记录「反复 64 次把 32 MB bump 区耗尽」的现象 |
+| `test-user-trap` | CPL0 fault → 生产 body → **`proc_ptr = None` 的 wiring 断言**（`trap_dispatch.rs:465-472`：「user exception before scheduler bring-up (proc_ptr = None on cpu …) — wiring bug」） | 该断言是**正确的前置条件**，不是缺陷：其文档明写「User origin + None = no scheduler step ever ran on this CPU, so no CPL3 code could have faulted」；载体若在 scheduler 未 bring-up 前让 CPL3 载荷 fault 即触发 |
+
+**裁决（D-093，用户 2026-11-21）：原定性（CPL 路由缺陷）作废；拆为 I-57 / I-58；两条均标「待 `-d int` 取证」。**
+
+| 新条目 | 内容 |
+|---|---|
+| **I-57** | `test-paging-faultloop` 载体自身在 CPL0 panic（`walk_leaf` 的 `alloc_pt_page().expect` + `get_mut(ProcNr(8)).expect`）|
+| **I-58** | `test-user-trap` 触发生产 body 的 `proc_ptr = None` wiring 断言（载体未在 CPL3 载荷前建立 `proc_ptr`）|
+
+**为什么保留「待 `-d int` 取证」**：以上全部是**代码层推理**（路由判据、注册顺序、panic 文本位置），**没有运行时证据确认实际 panic 文本**。取证要做的事：跑两条专用脚本（`test-paging-faultloop.sh` / `test-user-trap.sh`），抓完整串口输出，确认 panic 来自 `#[panic_handler]`（载体）还是 `trap_dispatch.rs` 的断言（内核）。
+
+**声明**：本条已查清定性、不复存在「CPL 路由缺陷」这一缺陷类；I-57 / I-58 是两条载体缺陷。若取证推翻上述推理，重开本条。
+
+### I-57（待裁决·I-53 拆出）`test-paging-faultloop` 载体自身在 CPL0 panic
+
+**来源**：I-53（D-093 拆分）。**状态：待裁决，待 `-d int` 取证。**
+
+**路径**：CPL3 载荷在 `FAULT_VA` fault → `faultloop_trap_dispatch`（`:382`）判据 `vector == 14 && cs & 3 == 3` 命中 → `carrier_pagefault` 在 **CPL0** 执行 → 内部某步 panic（走载体的 `#[panic_handler]` `:720`，**不经过** `x86_trap_dispatch_body`）。
+
+**两处候选（均在 CPL0 执行）**：
+
+| 位置 | 风险 |
+|---|---|
+| `walk_leaf:314` 的 `pt_alloc::alloc_pt_page().expect("carrier: pt page")` | `alloc=true` 分支**必取页**；bump 池耗尽即 panic |
+| `:437-440` 的 `get_mut(ProcNr(8)).expect("VM boot proc exists")` | VM 槽未就绪即 panic |
+
+**已有关联证据**：I-43 二层记录「`rust_main` 被反复重入，反复 64 次把 32 MB bump 区耗尽，最终 `bump(256)` 返回 `None` 触发 `panic!("bump region")`」——**同一族「bump 池耗尽」现象**。
+
+**待裁决方向**：
+
+| 选项 | 内容 |
+|---|---|
+| **A（推荐）** | `-d int` 取证确认 panic 来源后，按实际位置修：若 `alloc_pt_page` 失败则检查 bump 池容量（`alloc_bump_region(64)` 是否够）、若是 VM 槽则检查 `init_proc_and_boot` 是否已跑 |
+| **B** | 直接把 `expect` 改成带诊断的 `fail()`（输出当前 bump 游标），先让故障可观测 |
+| **C** | 扩 bump 池容量并观察是否消失（治标）|
+
+**验收**：`test-paging-faultloop.sh` PASS，或至少 FAIL 输出具体到「哪一步、什么值」。
+
+### I-58（待裁决·I-53 拆出）`test-user-trap` 触发生产 body 的 `proc_ptr = None` 断言
+
+**来源**：I-53（D-093 拆分）。**状态：待裁决，待 `-d int` 取证。**
+
+**路径**：CPL0（kernel 模式）fault → `x86_trap_dispatch_body` → `trap_dispatch.rs:465-472` 的 `proc_ptr = None` 断言 panic。
+
+**这个断言本身是对的**（`:444-456` 的文档）：
+
+> User origin + None = no scheduler step ever ran on this CPU, so no CPL3 code could have faulted — wiring bug, same alarm as the SYSCALL arm.
+
+**所以问题是载体**：`test-user-trap` 若在 scheduler bring-up 之前让 CPL3 载荷 fault，就触发了这条正确的断言。
+
+**待裁决方向**：
+
+| 选项 | 内容 |
+|---|---|
+| **A（推荐）** | 取证确认后，在载体侧补齐「CPL3 载荷必须在 `proc_ptr` 建立之后才跑」的前置条件（`init_proc_and_boot` / `init_smp_state` 顺序）|
+| **B** | 把断言改成容忍 `None`（**不推荐**——那条断言拦的正是"CPL3 在无 proc 的情况 fault"这类 wiring bug）|
+
+**验收**：`test-user-trap.sh` PASS，或输出明确是「CPL3 载荷早于 scheduler」这一前置条件违例。
 
 ### I-50（✅ 已销账·前提不成立）x86 模块的 `.lbss` 不在任何 PT_LOAD 内
 
