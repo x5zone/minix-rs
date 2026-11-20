@@ -280,6 +280,8 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 - **I-29-8 类型生命周期政策**：当前把 `BOOT_SERVICES_CODE/DATA`、`ACPI_RECLAIM` 一并永久放保留表 = 永不复用，属保守政策需成文；`PERSISTENT`/`UNACCEPTABLE` 是「碰巧进保留表」，无显式论证。
 - **I-29-9 反向偏差**：`boot::memory_map` 返回的 `MemoryMapOwned` 在 `build_memmaps` 内是局部变量，函数返回时 `Drop` 在引导服务仍存活的前提下 `free_pool` **释放**了那块缓冲，而快照里它仍是 `LOADER_DATA` → 保留表**多报**一块实际已可用的内存。生产路径的读图缓冲用裸 `allocate_pool` 且从不释放，不受此影响。
 
+**I-29-9 六步探针实测（2026-11-21，OVMF x86 / `test-memmap` 载体）**：步骤 1/5 的快照改用静态缓冲的裸 `GetMemoryMap`（快照自身零分配，避免快照缓冲遮蔽被测页），步骤 2 用第三方 `boot::memory_map(LOADER_DATA)`，步骤 3 记录缓冲 `buf=0xe76c018 len=0x1ad0`，步骤 4 析构，步骤 6 逐页比较。读数：pre 两页 `type=7`（CONVENTIONAL）、post 两页 `type=7`、两次描述符数均 128 → **裁决 1「立刻恢复为常规内存、保留表多报」成立**。修复：`build_memmaps` 对局部 `MemoryMapOwned` 执行 `core::mem::forget`（一次性泄漏），使快照里的 LOADER_DATA 标签到交接时仍为真；生产路径的裸 `alloc_map_buffer` 本就不释放，无需改动。同批按 §2.5.9 改写 `build_memmaps` 的顺序性注释（深拷贝只保护内容；「可用表不含自举在用页」由两条顺序性保证）。门读数：`test-memmap` PASS（`[i29-9]` 四行 + 原断言），探针保留在载体作回归观测。
+
 **路径 A 前提已核实（v4）**：`uefi` 0.33.0 的 `trait MemoryMap` 公开 `meta()` / `buffer()` / `entries()`，`MemoryMapOwned` 实现该 trait → 退出后可把原始字节交给生产解析器（**目标二可行**）；注意 `meta().map_size` 是有效长度、`buffer().len()` 含冗余条目，不可混用。`MemoryMapBackingMemory::Drop` 先判 `are_boot_services_active()`，退出后不释放。补失败契约：退出后分类出错走不依赖引导服务与动态分配的 fail-stop（裸串口 + 停机）。
 
 **`0.33` 版本下的 `Drop` 与实现位置**：`MemoryMapBackingMemory` 在 `src/mem/memory_map/impl_.rs`，`MemoryMapOwned` 同文件；`boot::memory_map` 在 `src/boot.rs` 返回 `MemoryMapOwned`。

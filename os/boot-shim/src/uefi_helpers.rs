@@ -379,9 +379,18 @@ fn collect_param_buf_into(out: &mut [u8; minix_boot::PARAM_BUF_CAP]) -> minix_bo
 /// happening.
 ///
 /// The kernel's first action in `arch_boot` is `store_kernel_info`, which
-/// deep-copies both tables into its own `.bss` before anything can allocate from
-/// the free list; the shim never returns and never frees, so those pages are dead
-/// to the firmware afterwards. Keep both orderings if this function is restructured.
+/// deep-copies both tables into its own `.bss`. That copy guarantees the
+/// kernel's *view* cannot be overwritten by later shim allocations; it
+/// does **not** by itself guarantee the delivered free table contains no
+/// pages the shim is still using. Two separate orderings carry that
+/// property, and both must be kept if this function is restructured:
+///
+/// - every bootstrap allocation happens **before** the snapshot, so no
+///   shim page is labelled CONVENTIONAL; and
+/// - the snapshot's own buffer stays allocated until handoff (I-29-9;
+///   the six-step probe showed the third-party `MemoryMapOwned` Drop
+///   returns its pages to CONVENTIONAL, so the buffer is explicitly
+///   leaked below instead of being dropped with the local).
 const EMPTY_REGION: MemoryRegion = MemoryRegion {
     base: PhysBytes(0),
     len: 0,
@@ -453,6 +462,16 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     // the buffer firmware just filled; nothing else writes it on this boot face.
     let buffer =
         unsafe { core::slice::from_raw_parts(base as *const u8, descriptor_size * entries) };
+
+    // I-29-9 six-step probe verdict (OVMF, 2026-11-21): dropping the local
+    // `MemoryMapOwned` calls `free_pool`, and the very next `GetMemoryMap`
+    // reports the buffer's pages as CONVENTIONAL again — so a snapshot that
+    // classified them as LOADER_DATA would over-report memory that is free
+    // by handoff time. Keep the buffer alive instead (the same contract the
+    // production leg's `alloc_map_buffer` states: "never freed until
+    // ExitBootServices"), making the snapshot's label true for the whole
+    // run. This is a one-shot leak by design, not an oversight.
+    core::mem::forget(mmap);
 
     // D-081 / I-44 门④（路径 A 前置重构）：分类逻辑整体抽到
     // `classify_map_bytes_into_test_tables`，本函数只保留退出前的读图半——
