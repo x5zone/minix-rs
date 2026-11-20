@@ -565,6 +565,43 @@ def _split_panel_blocks(text: str) -> list[str]:
     return blocks
 
 
+def _count_adopted_rows(text: str) -> int:
+    """V3.6-r6：数减法表里标记为「已采纳」的数据行。
+
+    一个数据行算「采纳」当且仅当它的**某个单元格**正好是 `是` / `采纳` / `adopted`
+    （大小写不敏感，允许两侧空白）。用整格精确匹配而不是子串：`不是` / `未采纳`
+    这类否定不会误命中。
+    """
+    m = re.search(r"^##\s+SUBTRACTION-TABLE\b", text, re.MULTILINE)
+    if not m:
+        return 0
+    rows = 0
+    in_fence = False
+    for line in text[m.end():].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if re.match(r"^#{2,3}\s", stripped):
+            break
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cells or all(set(c) <= set("-: ") for c in cells):
+            continue
+        if cells[0] in {"加法提案", "提案", "proposal", "Proposal", "加法"}:
+            continue
+        if cells[0] in _SUBTRACTION_PLACEHOLDERS or re.match(
+            r"^(?:无提案|无|未提出|—|–|N/A|none)(?:[（(]|$|\s)", cells[0], re.IGNORECASE
+        ):
+            continue
+        if any(c.strip().lower() in {"是", "采纳", "adopted", "yes"} for c in cells):
+            rows += 1
+    return rows
+
+
 def _count_subtraction_rows(text: str) -> int:
     """Count data rows under `## SUBTRACTION-TABLE`（V3.6，C-34 的机械读数）。
 
@@ -637,6 +674,14 @@ def check_subtraction(
         )
         return
     said, adopted = int(sub.group(1)), int(sub.group(2))
+    # V3.6-r6：`采纳` 不再自报——必须等于 D2 减法表里标了「是 / 采纳 / adopted」的行数。
+    _adopted_rows = _count_adopted_rows(d2_text)
+    if adopted != _adopted_rows:
+        report.fail(
+            "subtraction",
+            f"metrics 声明减法采纳 {adopted} 与 D2 表中标「采纳」的行 {_adopted_rows} "
+            "不一致（V3.6-r6：采纳数必须来自 D2 实物，不得自报）",
+        )
     if said != rows:
         report.fail(
             "subtraction",
@@ -1560,9 +1605,10 @@ def check_open_debt(
                 continue
         else:
             if v36:
-                report.warn(
+                report.fail(
                     "open-debt",
-                    f"{item} 缺 `[CLOSED]`/`[OPEN]` 状态 token（V3.6 契约；按启发式判定）",
+                    f"{item} 缺 `[CLOSED]`/`[OPEN]` 状态 token"
+                    "（V3.6 契约：每行必须以 token 开头；见 review-evals §4.0f）",
                 )
             if _debt_row_closed(cells):
                 continue
@@ -2282,6 +2328,21 @@ def check_run_dir(
     )
     v34_doc_flag = _combined_ver >= (3, 4)
     v36_doc_flag = _combined_ver >= (3, 6)
+    # V3.6-r6：减法门（C-34）只对 **`schema: V3.6 from R<N>` 的 N 及之后** 的轮生效。
+    # 理由：D05/D06 这类「历史轮 + 新 schema」的文档，早期轮早于 V3.6，不得追溯。
+    _v36_from: int | None = None
+    if v36_doc_flag:
+        _m36 = None
+        for _carrier in (loop_text, metrics_text):
+            if _carrier:
+                _m36 = re.search(
+                    r"schema\s*[:：]\s*V3\.6(?:\s+from\s+R(\d+))?",
+                    _carrier,
+                    re.IGNORECASE,
+                )
+                if _m36:
+                    break
+        _v36_from = int(_m36.group(1)) if _m36 and _m36.group(1) else schema_start
     # r9（考场判例）：制品链四项加固——
     # ① 适用面按组合 schema（loop ∪ metrics，防载体分脑）与 v34 标记起点轮
     #    （历史层回放不追溯）；② FREEZE 豁免要求文件非空且含 CONVERGED/
@@ -2540,7 +2601,13 @@ def check_run_dir(
     # D2 报告在、但减法提案 0 行 → 报告不完整（review-panel.md §4.3 纪律）。
     # 只对 V3.6+ 生效（V3.5 存量文档不追溯）。逻辑在 check_subtraction 内，
     # 供自测直接调用。
-    if _combined_ver >= (3, 6) and round_tag_override:
+    _round_no6 = int(round_tag_override.lstrip("R")) if round_tag_override else None
+    _v36_in_scope = (
+        v36_doc_flag
+        and round_tag_override
+        and (_v36_from is None or _round_no6 is None or _round_no6 >= _v36_from)
+    )
+    if _v36_in_scope:
         _rk6 = round_tag_override.lstrip("R").lstrip("0") or "0"
         _d2_path = None
         for _cand in (
@@ -5003,12 +5070,13 @@ def self_test() -> int:
     # ===== V3.6 C-34 判别夹具（直接测 check_subtraction 单元）=====
     # (j) 减法表 0 行 → FAIL（只列加法的 D2 报告不完整）。
     _d2_none = "# D2\n\n## DIFF-TABLE\n\n| 维度 | 判断 |\n|---|---|\n| a | b |\n\n## VERDICT\nok\n"
+    # r6：表必须带「采纳」列——`减法: 采纳` 与实物对账。
     _d2_two = (
         "## SUBTRACTION-TABLE\n\n"
-        "| 加法提案 | 减法替代 | 拦不住的理由 | 保障对比 | 新增概念数 |\n"
-        "|---|---|---|---|---|\n"
-        "| 新类型 A | 闭包 | 闭包不能跨调用保存 | 等效 | 1→0 |\n"
-        "| 守卫字段 B | 断言 | 断言在 release 下消失 | 略弱 | +1→0 |\n\n"
+        "| 加法提案 | 减法替代 | 拦不住的理由 | 保障对比 | 新增概念数 | 采纳 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 新类型 A | 闭包 | 闭包不能跨调用保存 | 等效 | 1→0 | 是 |\n"
+        "| 守卫字段 B | 断言 | 断言在 release 下消失 | 略弱 | +1→0 | 否 |\n\n"
         "## VERDICT\nok\n"
     )
     _m = "## R1 面板轮\n\n- 减法: 提案 {s} / 采纳 {a}\n"
@@ -5291,6 +5359,35 @@ def self_test() -> int:
     if _panel_empty_ok("fact.md", "# F\n", _loop_two, "R5"):
         print("self-test FAIL: 跨轮声明被错误继承（V3.6-r3）")
         return 1
+
+    # ===== V3.6 r6 四项收尾的夹具 =====
+    # (aa) 采纳数必须来自 D2 实物（r6-d）。
+    _d2_adopt = (
+        "## SUBTRACTION-TABLE\n\n"
+        "| 加法提案 | 减法替代 | 拦不住的理由 | 保障对比 | 新增概念数 | 采纳 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| A | 闭包 | x | 等效 | 1→0 | 是 |\n"
+        "| B | 断言 | y | 略弱 | +1→0 | 否 |\n\n## VERDICT\nok\n"
+    )
+    _ra = Report()
+    check_subtraction(_d2_adopt, "## R1 x\n\n- 减法: 提案 2 / 采纳 1\n", _ra, "R1")
+    if any(i["level"] == "FAIL" for i in _ra.items):
+        print("self-test FAIL: 采纳数与 D2 一致仍被判红（V3.6-r6）")
+        return 1
+    _rb = Report()
+    check_subtraction(_d2_adopt, "## R1 x\n\n- 减法: 提案 2 / 采纳 2\n", _rb, "R1")
+    if not any("采纳 2" in i["message"] for i in _rb.items if i["level"] == "FAIL"):
+        print("self-test FAIL: 自报采纳数超出 D2 实物未被拦截（V3.6-r6）")
+        return 1
+    # (bb) V3.6 文档缺 token → FAIL（不再是 WARN）。
+    with tempfile.TemporaryDirectory() as _td:
+        _pp = Path(_td) / "OPEN-DEBT.md"
+        _pp.write_text("| ID | 严重度 | 处置 |\n|---|---|---|\n| X-1 | P2 | 待处理 |\n")
+        _rr = Report()
+        check_open_debt(_pp, _rr, "R3", v36=True)
+        if not any(i["level"] == "FAIL" and "token" in i["message"] for i in _rr.items):
+            print("self-test FAIL: V3.6 缺 token 未判 FAIL（V3.6-r6）")
+            return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0

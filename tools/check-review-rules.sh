@@ -234,6 +234,11 @@ if ! diff -q prompt/review-rules/fix-guard.md .claude/rules/fix-guard.md >/dev/n
   fail ".claude/rules/fix-guard.md 与规范源 prompt/review-rules/fix-guard.md 漂移（AGENTS.md 声明内容同源）"
 fi
 
+# V3.6-r6：判决账编号唯一性与引用存在性（三次撞号 + 一处悬空引用的判例）。
+if ! python3 tools/decision-ref-check.py >/dev/null 2>&1; then
+  fail "decision-ref-check: 判决账编号重复或有悬空 D-NNN 引用（python3 tools/decision-ref-check.py 查看）"
+fi
+
 if (( errors > 0 )); then
   printf '%d review-rule checks failed\n' "$errors" >&2
   exit 1

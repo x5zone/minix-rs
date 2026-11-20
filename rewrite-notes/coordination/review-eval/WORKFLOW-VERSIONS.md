@@ -755,3 +755,15 @@ bash tools/lint-review-rules.sh --self-test    → PASS
 **登记不修（V3.7 候选，见 `prompt/V35-TRAIL-DEFECTS.md` §二）**：确认轮 survey 发现量
 入 metrics（p1）、读者档位机械门（p2）、角色显式枚举（p3）、refute 处置类语义（p4）、
 D 号唯一性与引用存在性门（p5）、style-lint 对 runs/DECISIONS 日期的豁免（p6）。
+
+### V3.6-r6 四项收尾（2026-11-20）
+
+| 项 | 改动 | 检测器 |
+|---|---|---|
+| r6-a **D 号唯一性与引用存在性** | 新增 `tools/decision-ref-check.py`：重复编号 FAIL、悬空引用 FAIL、缺口 WARN、`[D-REF-OK]` 豁免、`已知空缺` 登记；接入 `check-review-rules.sh` | 工具自测 4 组 + 接入 CI |
+| r6-b **OPEN-DEBT token 收紧** | V3.6 文档缺 `[CLOSED]/[OPEN]` 从 WARN 改 **FAIL**；V3.5 及更早不追溯 | 夹具（v36=True FAIL） |
+| r6-c **减法门 `from R<N>` 作用域** | 只对 `schema: V3.6 from R<N>` 的 N 及之后生效——D05/D06 这类「历史轮 + 新 schema」不再被追溯 | 集成夹具：from R1 → R1 在范围内；from R2 → R1 跳过 |
+| r6-d **`采纳` 对账** | `metrics` 的 `减法: 采纳` 必须等于 D2 表「采纳」列填 `是` 的行数（整格精确匹配，`不是/未采纳` 不算） | 夹具 2 组（一致 PASS / 超出 FAIL） |
+
+**规则文本同步**：`review-panel.md` §4.3 减法表加「采纳」列；`review-evals.md` §3.4 采纳口径、
+§4.0f token 缺失 = FAIL；`DECISIONS.md` 登记已知空缺 D-059。

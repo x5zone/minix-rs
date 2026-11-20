@@ -82,6 +82,8 @@
 > 历史条目（D-001–D-012）保留散文形态。`reviewer_verdict` 与 `user_decision`
 > 分列：用户接受风险时前者仍保留 `NOT PASS`。
 
+> **已知空缺**：D-059（历史空缺，从未分配；`tools/decision-ref-check.py` 据此不报缺口）。
+
 | decision_id | reviewer_verdict | user_decision | decision_reason | scope | implementation_status | evidence | reopen_condition |
 |---|---|---|---|---|---|---|---|
 | D-013（R18 D-1） | NOT PASS（开放）：生产者侧 `&'static` 切片是假所有权；A1 方向获第三方评审同意 | 采 A1：`BootStorage`（调用方定长数组）+ `BootReport<'a>` 视图；内核侧 `.bss` 存储不动；分腿迁移 | 长期价值最大且不改 wire；否决 B（只改 U-Boot） | cross-crate | 已实施（两腿：UEFI + U-Boot） | `BootStorage`/`BootReport` + 两腿 storage 路径；minix-boot 183 / boot-shim 135 / kernel 868；QEMU 三门 PASS | 迁移破坏任一起动腿或既有不变量 |
