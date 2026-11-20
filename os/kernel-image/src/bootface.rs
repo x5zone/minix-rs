@@ -208,13 +208,19 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // The memmap source goes through `DtbMemoryMap` (minix-boot); the firmware
     // reserved-region clipping semantics are unchanged (fw_end =
     // KERN_PHYS_BASE, a functional trim pinned on real hardware).
-    // The source records are held, not discarded: `audit_source_coverage`
+    // I-33-甲 (D-086): owned form — the arrays live on this face's stack and
+    // are committed into `storage` after the fill stages below; the
+    // collector's `'static` tables are not written (U-Boot-leg shape). The
+    // source records are held, not discarded: `audit_source_coverage`
     // refuses to boot when a projected span has no record behind it.
-    let (memmap, reserved, sources) = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
-        .collect_with_sources()
+    let owned = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
+        .collect_owned()
         .expect("bootface: DTB memmap rejected (capacity or reservation shape) — halting");
-    minix_boot::audit_source_coverage(memmap, reserved, sources)
+    minix_boot::audit_source_coverage(owned.free(), owned.reserved(), owned.sources())
         .expect("bootface: a projected span has no source record — halting");
+    let memmap = owned.free();
+    let reserved = owned.reserved();
+    let sources = owned.sources();
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
         crate::halt();
@@ -361,13 +367,24 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     //    gate (validate → build root → DM → jump_to_kmain, never returning to
     //    this face).
     //
-    // The records the collector just produced back the map it produced; the
-    // consumer-boundary audit inside `KernelInfo::validate` re-checks the
-    // pairing, so the handover is not a promise but a verified fact.
-    assert!(
-        !sources.is_empty(),
-        "bootface: DTB legs must carry source records, not an empty partition"
-    );
+    // I-33-甲 (D-086): commit the owned map tables into `storage` — the
+    // storage is the only owner, and the `&'static` slices `build_kernel_info`
+    // consumes point into the same landing store as the module / platform /
+    // parameter views below. The consumer-boundary audit inside
+    // `KernelInfo::validate` re-checks the pairing, so the handover is not a
+    // promise but a verified fact.
+    storage.fill_map_tables(|memmap_slots, reserved_slots| {
+        memmap_slots[..memmap.len()].copy_from_slice(memmap);
+        reserved_slots[..reserved.len()].copy_from_slice(reserved);
+        minix_boot::MapCounts {
+            memmap: memmap.len(),
+            reserved: reserved.len(),
+        }
+    });
+    storage.fill_memmap_sources(|source_slots| {
+        source_slots[..sources.len()].copy_from_slice(sources);
+        sources.len()
+    });
     // v10 (D-062) removed the startup-object set that used to be pushed here:
     // its single reader (a strict-gate coverage check) is now answered by the
     // map tables, and the kernel span is already in `memmap` on this leg.
@@ -380,6 +397,12 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     let modules_len = storage.boot_modules().len();
     let platform_ptr = storage.platform_sources().as_ptr();
     let platform_len = storage.platform_sources().len();
+    let memmap_ptr = storage.memmap().as_ptr();
+    let memmap_len = storage.memmap().len();
+    let reserved_ptr = storage.reserved_regions().as_ptr();
+    let reserved_len = storage.reserved_regions().len();
+    let sources_ptr = storage.memmap_sources().as_ptr();
+    let sources_len = storage.memmap_sources().len();
     let _ = storage;
 
     // SAFETY: `BOOT_STORAGE` is a one-shot static whose writer has finished;
@@ -388,6 +411,12 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
         unsafe { core::slice::from_raw_parts(modules_ptr, modules_len) };
     let platform_sources: &'static [PlatformDescSource] =
         unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) };
+    let memmap: &'static [minix_boot::MemoryRegion] =
+        unsafe { core::slice::from_raw_parts(memmap_ptr, memmap_len) };
+    let reserved: &'static [minix_boot::MemoryRegion] =
+        unsafe { core::slice::from_raw_parts(reserved_ptr, reserved_len) };
+    let sources: &'static [minix_boot::SourceRecord] =
+        unsafe { core::slice::from_raw_parts(sources_ptr, sources_len) };
     let param_len = storage.param_buf().len();
     let param_buf: &'static [u8] =
         unsafe { core::slice::from_raw_parts(param_ptr, param_len) };

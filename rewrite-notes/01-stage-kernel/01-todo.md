@@ -59,7 +59,7 @@
 | I-30（已实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：新增 `fw-aarch64-uefi-recv` 特性、两条 `rust_image_main` 各归一个 cfg、xtask 盘面特性切换；接收臂的 `x0==0` 改为诚实停机。mini review 修掉 8 条死码；结构鉴别力已证（接收产物里编不进 `bootface_a64`）。验收见 §3 的 I-30 | §3 |
 | I-31（已实施 + 三轮补漏） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六层同批落地（契约 9→10、信封 160→128、`KernelInfo` 14→10 字段、五处生产者、五处消费者、12 条测试删除 + 1 条等价负控替代）；**五条生产 QEMU 门链全 PASS**。**两个 mini review 补漏批**：① `uboot_main` bin 未编（`[[bin]]` 不在默认 check 面）；② **30 个 QEMU 测试内核全部编译失败**（同因 `required-features` 遮蔽，`run_all.sh` 实测当时 5 个 build failure）。两批均已落地并全数验证；**第三批（`minix-arch` 测试面）同日补修**，见 §3。验收读数与三处口径偏差见 §3 的 I-31 | §3 |
 | I-32（已实施） | U-Boot 腿两个安装型全局：`debug_assert!` → `assert!`（含 D-071 并账的 `Frozen::freeze`） | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：四处改动 + `tests/install_write_once.rs` 两条负控 + D04 四处文档回写；验收读数与鉴别力验证见 §3 的 I-32「实施记录」 | §3 |
-| I-33（已拆三项·**丙已实施**，甲乙待做） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **D-086（用户 2026 年 11 月 21 日）拆为三项**：**丙**（最高优先）给 `DtbMapOwned` 加 `panorama` + `resv_claims::capture` 改走 `collect_owned`——**修复真机 EBS 重试 attempt 2 的 panic**（`DTB_COLLECT_TAKEN` 守卫与 UEFI 标准重试冲突，且被 `#[cfg(not(test))]` + 测试形态掩盖）。✅ **丙已实施（2026-11-21）**：①② `DtbMapOwned` 加 `panorama`/`panorama_len` + 访问器 ③ `collect_owned` 投影 ④ `capture` 改 `collect_owned()`（带出处注释：UEFI 规范允许首次 EBS 返回 `EFI_INVALID_PARAMETER` 要求重试）⑤ 新增两条对照测试——memmap_source 的 `second_owned_collection_on_the_same_face_is_safe`（守卫语义对照）+ resv_claims 的 `capture_twice_on_the_same_face_is_safe_uefi_retry_shape`（最小 72 字节 FDT，两次 capture 幂等）。验收：`collect_with_panorama` 生产侧 **0 代码命中**；minix-boot **184/0**（docker）、boot-shim **144 全绿**。**甲**（两直核腿改 owned，复用 owned 形态）与**乙**（删四张静态表 + 62 处测试改写）按依赖顺序待做，甲的前置已满足。详见 §3 的 I-33 | §3 的 I-33 |
+| I-33（已拆三项·**丙、甲已实施**，乙待做） | 直核腿统一到 owned 路径，删 `DTB_*` 第二套静态表 | 设计裁决 + 代码改造 | **D-086（用户 2026 年 11 月 21 日）拆为三项**。✅ **丙已实施（2026-11-21）**：`DtbMapOwned` 加 `panorama` + `capture` 改 `collect_owned()`，修真机 EBS 重试 attempt 2 panic；minix-boot 184/0、boot-shim 144。✅ **甲已实施（2026-11-21）**：两直核腿（`bootface.rs` / `bootface_a64.rs`）`collect_with_sources()` → `collect_owned()`——栈上借用切片供早段消费（`in_memmap_range` / `place_modules`），`fill_map_tables` + `fill_memmap_sources` 提交后与 modules/platform/param 同批建 `&'static` 视图（原规格遗漏 #5 的「早段借用、末尾建视图」形状）；opensbi_helpers 过时注释随修。验收：bootface 门（riscv64）**PASS**、aarch64 直核 SMP 门 **PASS**（AP entered scheduler）、`-kernel` 直核形态 **PASS**、bootface_common 16 KiB `.bss` 断言过（编译期）。**乙**（删四张静态表 + 62 处测试改写）前置已满足、待做——两直核腿改 owned 后生产侧 `'static` 消费者已**归零**。详见 §3 的 I-33 | §3 的 I-33 |
 | I-30（本轮新登记） | 01 篇正文补「内存图生产的四层责任」概念讲解 | 文档教学批 | ✅ 已实施（R32 批，代理裁决）：§3.4 开头新增四层责任段（固件事务 → 描述符解析 → 语义分类 → 映射分配），政策细节句指向设计笔记 v12 对应节；涉及 I-29 政策矩阵批准的行文均标注"待 I-29 实施批同批校准" | §5 |
 | D-71 | `BootForm::source_path` 悬空路径 | 注释/登记回修 | ✅ 已修（01TODO-B1） | §3 |
 | I-26 | opensbi_helpers 孤儿注释 + "hardcoded" 顶注 | 注释回修 | ✅ 已修（01TODO-B1） | §3 |
@@ -344,7 +344,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 **证据与方案展开**：`rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md`（**v12 冻结版**：篇头冻结宣告、§2.5.7.7 五步裁决顺序 + 四组合表、§5.2 I-29-17、§5.3 执行序列、§7 穷测矩阵三分支 ISA + 裁决顺序行）。**状态**：I-28 设计冻结；I-29 架构设计与目标合同冻结；属性政策矩阵 / 三架构 WB 合同 / 具体 API / 路径 A 验收暂缓（各有验收门）；**下一步 = 原型 ① 与 ②**。
 
-### I-33（⚠ 已拆为三项·待重裁）直核腿统一到 owned 路径，删第二套静态表
+### I-33（已拆为三项·丙甲已实施，乙待做）直核腿统一到 owned 路径，删第二套静态表
 
 **裁决**：用户 2026-11-20，判决行 `D-065`。**状态：已批准待实施**。来源：`RD34-DESIGN-D2-03`（P2，[MODERN]）。用户表述：「统一总是我的最优选」。
 
@@ -530,6 +530,19 @@ cargo test -p boot-shim --features test-all
 **原五处遗漏的处理**：#1（四张表）与 #2（panorama 消费者）由丙吸收；#3（`DtbMapOwned` 缺 panorama）就是丙本身；#4（62 处测试）归乙；#5（`&'static` 参数）归甲，实现形状见原记录的「早段借用切片、末尾建 `'static` 视图」。
 
 **当前状态**：代码改动已回退（`git checkout -- os/kernel-image/src/bootface.rs os/kernel-image/src/bootface_a64.rs`），工作树无本条改动。`grep -c "collect_with_sources" os/kernel-image/src/bootface.rs` → 1（原样）。
+
+**甲实施记录（2026 年 11 月 21 日）**：
+
+两直核腿按裁决 + 原遗漏 #5 的形状落地（`os/kernel-image/src/bootface.rs` / `bootface_a64.rs`）：
+
+- **收集段**：`collect_with_sources()` → `collect_owned()`；`owned.free()` / `.reserved()` / `.sources()` 作为栈上借用切片供早段全部消费（`in_memmap_range` 的 BootFileTable 搜索、`place_modules`、`audit_source_coverage`、空表 halt）。`audit_source_coverage` 与「sources 非空」断言按 U-Boot 模板上移到投影之前——投影前先拒绝无记录的 span。
+- **提交段**：`fill_param` 之后新增 `fill_map_tables` + `fill_memmap_sources`（`MapCounts` 计数随 owned 实测长度）——storage 成为 map 表唯一 owner。
+- **视图段**：在既有 `let _ = storage` 模式处把六组 ptr/len（modules/platform/**memmap/reserved/sources**/param）一并捕获，同批建 `&'static` 视图；`build_kernel_info` 五个 `&'static` 实参全部改指 storage 落地区（原规格遗漏 #5 的「早段借用切片、末尾建 `'static` 视图」，同名 shadowing 而非两套名字）。
+- 连带修正 `opensbi_helpers.rs:224` 的过时 doc（还写着 `collect_with_sources`）。
+
+**验收读数**：`test-kernel-image-riscv64-bootface` **PASS**（B1/B2/B3 全子项）；`test-smp-aps-aarch64` **PASS**（AP entered scheduler，SGI+timer gates open——aarch64 直核 SMP 门）；`test-kernel-image-riscv64` **PASS**（`-kernel` 直核形态不回归）；`cargo test -p minix-boot` **184**、`-p boot-shim --features test-all` **144** 全绿；`bootface_common` 的 16 KiB `.bss` 断言随 kernel-image 编译通过（净减后更宽松）。`collect_with_sources` 生产侧命中归零（剩 memmap_source.rs 定义本体，归乙删除）。
+
+**乙的前置已满足**：两直核腿改 owned 后，生产侧 `'static` 消费者**归零**（丙清掉 resv_claims、甲清掉两直核腿）——静态表只剩测试消费者，删除 + 62 处测试改写可以独立成批。
 
 **丙实施记录（2026 年 11 月 21 日）**：
 

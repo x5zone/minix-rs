@@ -221,8 +221,9 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 ///
 /// Mirrors the UEFI production entry step by step; the only differences are how
 /// firmware-specific services are accessed:
-/// - Memory map → `DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect_with_sources()` (DTB `/memory`;
-///   missing DTB halts).
+/// - Memory map → `DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect_owned()` (DTB `/memory`;
+///   missing DTB halts; I-33-甲/乙 unified every DTB consumer onto the owned
+///   form).
 /// - Page allocation → tiny bump allocator (no UEFI `AllocatePages`).
 /// - File access → [`UbootFileLoader`] over a `BootFileTable`.
 /// - Exit firmware services → nothing to do; U-Boot has already handed
