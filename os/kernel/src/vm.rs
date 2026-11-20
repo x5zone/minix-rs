@@ -524,7 +524,6 @@ fn physical_range_in_dm_window(
     let mut page = start;
     while page <= end {
         if walk(root, VirBytes(page)).is_none() {
-            // A1 forensics: which (root, dm-page) broke the guard walk.
             return false;
         }
         page += PAGE;
@@ -583,21 +582,6 @@ impl CopySide {
     }
 }
 
-/// A1 forensics helper: the VA a CopySide is reading at `done`.
-#[cfg(not(feature = "mock"))]
-fn src_va_for_probe(side: &AddressRef, done: usize) -> u64 {
-    match side {
-        AddressRef::Physical(p) => p.0 + done as u64,
-        AddressRef::Process { offset, .. } => offset.0 + done as u64,
-    }
-}
-#[cfg(not(feature = "mock"))]
-fn dst_va_for_probe(side: &AddressRef, done: usize) -> u64 {
-    match side {
-        AddressRef::Physical(p) => p.0 + done as u64,
-        AddressRef::Process { offset, .. } => offset.0 + done as u64,
-    }
-}
 
 /// Perform a cross-address-space memory copy.
 ///

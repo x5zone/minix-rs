@@ -3321,15 +3321,15 @@ fn dispatch_diagctl(
                 .expect("dispatch_diagctl: caller slot must exist");
 
             let mut diagbuf = [0u8; DIAGBUFSIZE];
-            // `diagbuf` is a kernel-STACK local, not a kernel-image VA, so the
-            // boot-span identity `kern_phys_base + (va - kern_virt_base)` (valid
-            // only for the linearly-mapped image) under-flows here and yields a
-            // stray-bit47 pseudo-phys; writing through it would clobber an
-            // arbitrary physical page. SYSCALL does not switch CR3, so the
-            // caller's page table maps the kernel higher-half including this
-            // stack frame — resolve the destination through `AddressRef::Process`
-            // on `caller_endpt` (a real page-table walk → the true phys), the same
-            // pattern as the `copy_struct_from_user` and mcontext sites.
+            // `diagbuf` sits in the kernel image's `.bss` tail (the stack
+            // runs up to `kern_stack_top`), so its VA is inside
+            // `[kern_virt_base, kern_virt_base + kern_size)` and the
+            // boot-span linear identity is exact: A1 forensics read
+            // stackva=0xffff8000005ffcc8 with kvirt=0xffff800000000000 and
+            // ksize=0x600000. The copy path reaches the destination through
+            // the Direct Map, so the image span's DM leaves must exist —
+            // dm_coverage installs them as its own source 5, independent of
+            // what the KernelInfo's reserved table says.
             let stack_va = diagbuf.as_mut_ptr() as u64;
 
             let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
@@ -3346,16 +3346,11 @@ fn dispatch_diagctl(
                 endpoint: caller_endpt,
                 offset: VirBytes(diag_msg.buf),
             };
-            // C parity (A1 forensics, D-071): do_diagctl.c:33 passes the
-            // KERNEL endpoint as the copy destination — `mybuf` is kernel
-            // memory. Rust's `AddressRef::Process{KERNEL}` cannot express
-            // that (the kernel task slot carries no page-table root), and
-            // walking the *caller's* root over this kernel-stack VA fails
-            // too (the per-image root inherits the image but not this stack
-            // page — the four-level dump proved the caller root's layers
-            // valid for `buf` yet DstPageFault for `stack_va`). The kernel
-            // image region IS linearly mapped (kern_phys_base ↔
-            // kern_virt_base), so resolve the destination physically:
+            // C parity (D-071): do_diagctl.c:33 passes the KERNEL endpoint as
+            // the copy destination — `mybuf` is kernel memory. Rust's
+            // `AddressRef::Process{KERNEL}` cannot express that (the kernel
+            // task slot carries no page-table root), so resolve the
+            // destination physically through the image's linear mapping:
             // `AddressRef::Physical` is pre-resolved and the copy path
             // reaches it through the Direct Map.
             let kinfo = crate::kernel_info().expect("dispatch_diagctl: KERNEL_INFO must be stored");
@@ -3987,27 +3982,6 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         // request chain + wake up VM via mini_notify(SYSTEM→VM). The
         // tables arrive as parameters (split borrows established by
         // kernel_call's own caller) — no global accessor needed.
-        // Forensic probe of every SYSCALL-leg suspend: the full scene —
-        // caller endpoint/nr + ctx.target + fault range + m_type + pdmv, to
-        // locate the requester of the crash's memreq (target=11 start=0x0
-        // len=0x90). A task close ruled it deleted.
-        #[cfg(not(feature = "mock"))]
-        #[cfg(target_arch = "x86_64")]
-        {
-            use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            {
-                static SUS: AtomicUsize = AtomicUsize::new(0);
-                if SUS.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-                    let p = proc_table.get(caller_nr);
-                    let (ep, pdmv) =
-                        p.map_or((0i32, 0u64), |q| (q.p_endpoint.0, q.p_delivermsg_vir.0));
-                    let ctxf = p
-                        .and_then(|q| q.p_vm_suspend.as_ref())
-                        .map(|c| (c.target.0, c.check_params.start.0, c.check_params.length.0));
-                }
-            }
-        }
         proc_table.vm_enqueue_and_notify_vm(caller_nr, priv_table);
         // Release BKL — process is suspended waiting for VM.
         // Other CPUs can enter the kernel while we wait.
@@ -4080,30 +4054,8 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         // the receive spun and RS starved permanently).
         let root = proc_table.get(caller_nr).map(|p| p.p_seg.phys_root);
         let buf_va = proc_table.get(caller_nr).map(|p| p.p_delivermsg_vir.0);
-        // Sentinel (a task close ruled it deleted): if the caller is RS,
-        // re-read the monitored PTE before the direct write — the reply's
-        // own DM direct write is a candidate clobberer, and a pre-write
-        // observation either clears it or convicts it. The LAST state is
-        // global and must be gated on ep==2.
-        #[cfg(not(feature = "mock"))]
-        #[cfg(target_arch = "x86_64")]
-        if let Some(r) = root.filter(|_| {
-            proc_table
-                .get(caller_nr)
-                .is_some_and(|p| p.p_endpoint.0 == 2)
-        }) {}
         if let (Some(root), Some(buf_va)) = (root, buf_va) {
             let bytes = core::mem::size_of::<minix_types::Message>();
-            // Live print for RS reply direct writes: each chunk's target and
-            // the first written word — a deduplicating probe would mask
-            // repeated writes, and the clobber end-game needs unconditional
-            // per-write evidence (raising the cap to 4096: 48 lines were
-            // exhausted during boot, leaving no scene at the crash window).
-            #[cfg(not(feature = "mock"))]
-            #[cfg(target_arch = "x86_64")]
-            let rs_trace = proc_table
-                .get(caller_nr)
-                .is_some_and(|p| p.p_endpoint.0 == 2);
             let mut off = 0usize;
             while off < bytes {
                 let va = buf_va + off as u64;
@@ -4111,67 +4063,7 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                 // write the physical page through the DM).
                 match crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va)) {
                     Some((pa, _fl)) => {
-                        // Double-walk reconciliation extended to the finw
-                        // path: the reply direct write is a per-kcall user
-                        // memory write (leading corruption suspect; the
-                        // earlier localization hit at the printf boundary)
-                        // — immediately re-walk the same (root,va) and
-                        // compare; differing PAs are direct evidence of walk
-                        // nondeterminism.
-                        #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-                        if let Some((pa2, _)) =
-                            crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va))
-                        {
-                            if pa2.0 != pa.0 {
-                                crate::vm::nk4a_walk_reconcile(root.0, va, pa.0, pa2.0);
-                            }
-                        }
                         let chunk = core::cmp::min(bytes - off, (0x1000 - (va & 0xfff)) as usize);
-                        #[cfg(not(feature = "mock"))]
-                        #[cfg(target_arch = "x86_64")]
-                        if rs_trace {
-                            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                            static TXN: AtomicUsize = AtomicUsize::new(0);
-                            // Review fix: cap 4096 -> 512 (worst-case serial
-                            // time drops to the order of seconds and does
-                            // not blow the timeout) + a visible marker on
-                            // hitting the cap + guarded byte reads (the old
-                            // shape read [u8;8], which creates an unaligned
-                            // reference when buf_va is not 8-aligned and
-                            // runs past the reply tail).
-                            let tn = TXN.fetch_add(1, AtomicOrd::Relaxed);
-                            if tn == 512 {
-                                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
-                            }
-                            if tn < 512 {
-                                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
-                                let rb = |o: usize| -> u64 {
-                                    let base = &reply as *const minix_types::Message as *const u8;
-                                    let mut b = [0u8; 8];
-                                    unsafe {
-                                        // SAFETY: o+i<bytes keeps the read inside the Message (80B) object; per-byte reads avoid unaligned access, out-of-range bytes are filled with 0
-                                        for i in 0..8 {
-                                            if o + i < bytes {
-                                                b[i] = *base.add(o + i);
-                                            }
-                                        }
-                                    }
-                                    u64::from_le_bytes(b)
-                                };
-                                // The clobber point lands at buf+56 (the
-                                // self slot); also print the reply word at
-                                // buf base +56/+64 (first chunk only) so it
-                                // can be compared offline against the value
-                                // written.
-                                if off == 0 {
-                                    C0::write_str(" t56=");
-                                    C0::write_hex(rb(56));
-                                    C0::write_str(" t64=");
-                                    C0::write_hex(rb(64));
-                                }
-                                C0::write_str("\n");
-                            }
-                        }
                         let dm = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa.0)).0;
                         // SAFETY: the DM window covers all physical memory;
                         // the page holds the caller-resident message buffer;
