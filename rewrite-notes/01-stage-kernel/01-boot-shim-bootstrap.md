@@ -1889,13 +1889,12 @@ x86-64 的实现给出这套设计的两个可核对点（`paging.rs` 的 [`impl
 ...
         let huge_flag = X64PteFlags::PS.bits();
 ...
-        if shift == PDPT_SHIFT {
-            unsafe { write_entry(pdpt, i3, (paddr.0 & ADDR_MASK) | pte_flags | huge_flag) };
-            return Ok(());
-        }
-
-        // Check if PDPT entry is already a 1GB leaf (PRESENT + PS both set).
-        // If so, demoting it would corrupt the existing mapping.
+        if size_bytes == 1 << 30 {
+            if e3 & X64PteFlags::PRESENT.bits() != 0 {
+                return Err(PageTableError::AlreadyMapped);
+            }
+...
+        // A 1 GiB leaf blocks the finer install.
         if e3 & X64PteFlags::PRESENT.bits() != 0 && e3 & X64PteFlags::PS.bits() != 0 {
             return Err(PageTableError::AlreadyMapped);
         }
@@ -1917,9 +1916,9 @@ x86-64 的实现给出这套设计的两个可核对点（`paging.rs` 的 [`impl
 ```
 
   三条件（虚拟基址、物理基址、长度）同时对齐到首选尺寸才用它；首选不受硬件支持时先降级而不是先看对齐。这条阶梯不是风格：`check-layout.sh` 的 L5 断言要求镜像跨距按 2MiB 对齐，正是为了让它至少能落进回退档（断言清单见 §5.2）。
-- `AlreadyMapped` 守卫处理的是"目标槽位已经是一个 1GB 大页"的情形。注释给了理由："demoting it would corrupt the existing mapping." 这条守卫也回应本节的问题本身：扩展 trait 承担的不只是尺寸查询，还有"不得降级已有大页"这条非平凡契约——若把 `map_huge` 收进基础 trait，所有 `Paging` 实现都得背上它，哪怕该架构根本没有 1GB 叶。
+- `AlreadyMapped` 守卫处理的是"目标槽位已经是一个 1GB 大页"的情形。注释给了理由："A 1 GiB leaf blocks the finer install."（1GB 分支本身也先拒绝任何已存在的 PDPT 条目，注释见 `if size_bytes == 1 << 30` 段。）这条守卫也回应本节的问题本身：扩展 trait 承担的不只是尺寸查询，还有"不得降级已有大页"这条非平凡契约——若把 `map_huge` 收进基础 trait，所有 `Paging` 实现都得背上它，哪怕该架构根本没有 1GB 叶。
 
-**去掉 `AlreadyMapped` 守卫会怎样**：直接按 2MB 路径往下走。`e3` 里原本存的是 `paddr | PRESENT | PS`（因为 1GB 大页的 PDPT 条目就是叶条目），代码在"条目已存在"分支里做的是 `(e3 & ADDR_MASK) as *mut u64`——也就是把那个 1GB 物理块的基址当成下级页表指针。接下来 `write_entry(pd, i2, ...)` 写的是 `(e3 & ADDR_MASK) + i2*8`（写入地址来自被误当页表指针的那个块基址，与 `map_huge` 的形参 `paddr` 同名不同物；`paddr` 只作为写入值参与）：这段内存正被 1GB 映射覆盖，可能就是内核自己的数据页。写完之后 1GB 映射还在（条目没变），但它的前 4KB 已经被当成页表改写。守卫的代价是"这次 2MB 映射失败"，去掉守卫的代价是"被映射的那段物理内存头部被写坏"。
+**去掉 `AlreadyMapped` 守卫会怎样**：直接按 2MB 路径往下走。`e3` 里原本存的是 `paddr | PRESENT | PS`（因为 1GB 大页的 PDPT 条目就是叶条目），代码会把 `e3 & ADDR_MASK` 当成下级 PD 页的物理地址。接下来 `read_pte_dm(pd + i2*8, ...)` 与 `write_pte_dm(pd + i2*8, ...)` 访问的是 `(e3 & ADDR_MASK) + i2*8`——也就是那个 1GB 物理块的基址加上偏移（这里的 `pd` 与 `map_huge` 的形参 `paddr` 同名不同物；`paddr` 只作为写入值参与）：这段内存正被 1GB 映射覆盖，可能就是内核自己的数据页。写完之后 1GB 映射还在（条目没变），但它的前 4KB 已经被当成页表改写。守卫的代价是"这次 2MB 映射失败"，去掉守卫的代价是"被映射的那段物理内存头部被写坏"。
 
 ### 3.7 控制权交接：两类生产形态（跨镜像跳转/直核自引导）与历史形态（同镜像内调用） `[ARCH: 内核从内联执行改为独立镜像 + 交接载荷]`
 
