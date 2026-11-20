@@ -2384,6 +2384,10 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **裁决前状态**：sysboot 深跑保持「可诊断已知缺陷」——根因、调用链、帧推导全在案，修复等裁决。
 
+**附：rt-birth 用户链深跑的当前现场（2026-11-21，`-m 256M` 修复推进后的下一层，未入裁决射程）**：`test-rt-birth-aarch64` 在 `-m` 修复后推进到 rt-birth 用户镜像已执行、main 已入口——fatal 于 `ec=0x24`（EL0 Data Abort）`DFSC=0x07`（L3 translation fault）`far=0x7ffffffff000`（= USER_STACK_TOP，栈映射循环 `[stack_high − VM_STACK_SIZE, stack_high)` 的**端点本身未映射**）。elr 在用户镜像 memset 内、lr=`main+0x48`（main 的两个 memset 均为 sp 相对、落在已映射区）——访问栈顶页的操作者尚待 rt-birth 用户镜像 × minix_rt crt0 的栈合同交叉取证（`ps_strings`/`progname` 读窗 vs 映射范围）。x86/riscv 兄弟腿预期同型。
+
+**裁决前状态**：sysboot 深跑保持「可诊断已知缺陷」——根因、调用链、帧推导全在案，修复等裁决。
+
 **深入调查（2026-11-21，第二批）：三条载体同根，且发现通道双轨制的结构问题。**
 
 **证据一：`phys_to_ptr` 与 `channel_to_ptr` 是两条不同的通道。**
