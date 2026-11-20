@@ -268,6 +268,45 @@ fn boot_module_candidates<'a>(
         })
 }
 
+/// Compute `range − subtracted` as a list of non-overlapping remainders
+/// (D-59 coverage-loss gate: the subtracted union may touch a range
+/// anywhere, so its non-overlapping tails must survive as their own
+/// segments instead of the whole range being dropped).
+///
+/// The inputs are boot-time candidate lists (bounded, tens of entries),
+/// so the quadratic scan is deliberate: it keeps the function heap-free
+/// apart from the scratch `Vec`s `alloc` provides before `arch_boot`
+/// finishes.
+fn subtract_range(range: DmRange, sub: &[DmRange]) -> alloc::vec::Vec<DmRange> {
+    use alloc::vec::Vec;
+    let mut pieces: Vec<DmRange> = alloc::vec![range];
+    for s in sub {
+        let mut next: Vec<DmRange> = Vec::new();
+        for p in &pieces {
+            let p_end = p.base + p.len;
+            let s_end = s.base + s.len;
+            // No overlap: piece survives unchanged.
+            if s_end <= p.base || s.base >= p_end {
+                next.push(*p);
+                continue;
+            }
+            // Head remainder [p.base, s.base) survives when the subtraction
+            // starts inside the piece.
+            if s.base > p.base {
+                next.push(DmRange::new(p.base, s.base - p.base));
+            }
+            // Tail remainder [s_end, p_end) survives when the subtraction
+            // ends before the piece does.
+            if s_end < p_end {
+                next.push(DmRange::new(s_end, p_end - s_end));
+            }
+        }
+        pieces = next;
+    }
+    pieces.retain(|p| p.len > 0);
+    pieces
+}
+
 /// Source 4: reserved (occupied) physical regions — the kernel's own
 /// runtime footprint plus firmware/bootloader allocations.
 ///
@@ -290,20 +329,18 @@ fn boot_module_candidates<'a>(
 /// `covered_by=NONE` CR2s observed from the crashing rounds
 /// (`0x5d96360`/`0x5d92360`).
 ///
-/// Union semantics: a range partially overlapping an earlier candidate
-/// (memmap ∪ root/bump ∪ surviving modules) is dropped whole — leaf
-/// slots are disjoint, so any overlap would make a later
-/// `install_boot_dm_range` hit `AlreadyMapped` and refuse boot.
+/// Priority-interval difference (D-59 coverage-loss gate): a reserved
+/// range is laid against the union of the earlier candidates (memmap ∪
+/// root/bump ∪ surviving modules) and only its non-overlapping
+/// remainders are installed as their own segments. Earlier candidates
+/// keep their crisp ranges; the reserved descriptor no longer vanishes
+/// whole the moment it touches one of them, so its unrelated tails stop
+/// losing their kernel-DM leaf. The remainders are pairwise disjoint by
+/// construction, which is what `install_boot_dm_range`'s `AlreadyMapped`
+/// refusal needs. Real-machine proof of the restored tails stays on the
+/// real-machine gate chain; the host-side invariant is
+/// `test_reserved_regions_candidates_union`.
 ///
-/// Known residual gap (an open item not closed by this
-/// change): the shim's own root page, bump region and module loads are
-/// `LOADER_DATA` allocations (`boot-shim/src/uefi_helpers.rs` pool +
-/// `allocate_pages`), and those are exactly the loader-data ranges
-/// `build_memmaps` lists in `reserved_regions` — so a reserved descriptor
-/// frequently spans both a source-2/3 candidate and unrelated pages. Dropping it whole
-/// keeps the union legal but leaves that tail without a kernel-DM leaf;
-/// closing it needs range subtraction against the installed candidates
-/// (bounded candidate count, still heap-free) plus real-machine proof.
 /// A reserved∩reserved overlap double-installs the same slot too; the
 /// shim emits one entry per descriptor from a single `GetMemoryMap`
 /// snapshot, whose descriptors are disjoint by construction, so that
@@ -319,17 +356,26 @@ fn reserved_regions_candidates<'a>(
     kernel_info: &'a KernelInfo,
     root: PhysBytes,
 ) -> impl Iterator<Item = DmRange> + 'a {
-    let source2 = bootstrap_tree_candidates(kernel_info, root);
+    use alloc::vec::Vec;
+
+    // D-59 coverage-loss gate: the earlier candidates (memmap ∪ bootstrap
+    // tree ∪ boot modules) are the higher-priority installation order — a
+    // reserved region partially overlapping one of them used to be dropped
+    // WHOLE, silently losing its non-overlapping tails (dm_coverage.rs's
+    // documented residual gap: a kernel_phys_to_virt access into the tail
+    // faults not-present). Priority-interval difference: keep the earlier
+    // candidates intact, retain only the reserved region's non-overlapping
+    // remainders as their own segments.
+    let mut subtracted: Vec<DmRange> = memmap_candidates(kernel_info).collect();
+    subtracted.extend(bootstrap_tree_candidates(kernel_info, root).into_iter().flatten());
+    subtracted.extend(boot_module_candidates(kernel_info, root));
     kernel_info
         .reserved_regions
         .iter()
         .map(|r| DmRange::new(r.base.0, r.len as u64))
-        .filter(move |c| {
-            let overlaps = |o: DmRange| c.base < o.base + o.len && o.base < c.base + c.len;
-            !memmap_candidates(kernel_info).any(overlaps)
-                && !source2.into_iter().flatten().any(overlaps)
-                && !boot_module_candidates(kernel_info, root).any(overlaps)
-        })
+        .flat_map(move |r| subtract_range(r, &subtracted[..]))
+        .collect::<Vec<DmRange>>()
+        .into_iter()
 }
 
 /// Source 1: conventional RAM ranges (the boot shim already type-filtered).
@@ -667,10 +713,18 @@ mod tests {
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → source 2 drops
         let cands: alloc::vec::Vec<DmRange> =
             reserved_regions_candidates(&info, PhysBytes(0x1000)).collect();
+        // D-59 coverage-loss gate semantics: the memmap-contained range
+        // vanishes entirely (union), the module-overlapping range survives
+        // as its NON-OVERLAPPING TAIL ([0x1de5_0000, 0x1de5_1000) — the
+        // part the module candidate does not already cover), and the gap
+        // range is kept verbatim.
         assert_eq!(
             cands,
-            alloc::vec![DmRange::new(0x1f00_0000, 0x4000)],
-            "gap reserved range kept, memmap/module-overlapping ranges dropped"
+            alloc::vec![
+                DmRange::new(0x1f00_0000, 0x4000),
+                DmRange::new(0x1de5_0000, 0x1000),
+            ],
+            "gap kept; memmap-contained vanishes; module-overlap keeps its tail"
         );
     }
 
