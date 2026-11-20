@@ -382,7 +382,6 @@ impl<'a> ActiveProc<'a> {
             //   (3) fails fast via `kernel_layout()`'s panic if `VmServer::init()`
             //       was not run, rather than silently mapping memory wrong.
             let layout = crate::global::kernel_layout();
-
             map_kernel(&mut pt, &layout)?;
 
             // Every new root maps the kernel-information page read-only

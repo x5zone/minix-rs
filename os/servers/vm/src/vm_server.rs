@@ -832,7 +832,11 @@ impl VmServer {
     fn init_vm_slot(&self) {
         let table = self.ctx.proc_table; // the ctx field is the global alias; one spelling
         if let Some(ip) = self.boot_procs.iter().find(|ip| ip.proc_nr == VM_PROC_NR) {
+            // E5(d) waypoint: the VM slot is the only init_proc call whose
+            // progress the U-Boot riscv chain currently stops inside.
+            crate::e5d_diag("e5d: init_vm_slot enter\n");
             Self::init_proc(table, *ip);
+            crate::e5d_diag("e5d: init_vm_slot done\n");
         }
     }
 
@@ -1354,14 +1358,19 @@ impl VmServer {
         let empty = table
             .get_empty(slot)
             .expect("init_proc: slot already in use");
+        // E5(d) waypoints: the three internal points the U-Boot riscv chain
+        // can stall between. Their absence tells which point stopped.
+        crate::e5d_diag("e5d: get_empty ok\n");
         // C: clear_proc() is compile-time in Rust (vacant slot); activate()
         // sets VMF_INUSE + vm_endpoint (main.c:277-280).
         let mut proc = empty.activate(ip.endpoint);
+        crate::e5d_diag("e5d: activate ok\n");
         // C: exec_bootproc's pt_new + pt_bind (main.c:344-347) give the
         // boot process a fresh page table, and map_region_init()
         // (main.c:468) its empty region map — exec_bootproc's segment and
         // stack inserts depend on both. Rust: explicit init on the handle
         // (SimPaging stands in for the arch table in test builds).
+        crate::e5d_diag("e5d: init_page_table start\n");
         proc.init_page_table().unwrap_or_else(|e| {
             // I-35(a)-style diagnostic-first: the panic handler's diagctl
             // write has proven silent on this chain (D-02 E5(d) forensics),
@@ -1381,8 +1390,11 @@ impl VmServer {
                 alloc.self_page_count(),
             );
         });
+        crate::e5d_diag("e5d: init_page_table ok\n");
         proc.init_regions();
+        crate::e5d_diag("e5d: init_regions ok\n");
         proc.set_boot(ip);
+        crate::e5d_diag("e5d: set_boot ok\n");
     }
 
     /// mem_add_total_pages() call points — main.c:485-495.

@@ -54,7 +54,7 @@
 
 > 复核方法（Step 0.7 staleness check，模式 70 CTOS）：每条 grep 现状 + 重读关键行。结论：**12 条全部真实开口、无一条失效**；V12 轮后代码增量（Fix #59–#62）使部分行号漂移，本节为重校后的锚点。条目正文与判定过程见 V12 存档 §17。
 
-### 🔄 V11-P1-1 真机半——E5(d) 端到端用例已落地，推进到 VM init 中段（2026-11-21）
+### ✅ V11-P1-1 真机半——E5(d) 收口：U-Boot riscv 链 `E5D-VM-SELF-PT PASS`（2026-11-21 晚）
 
 VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件已在 `403e47022` 落地（`ipc_call_rs_init`：`sys_safecopyfrom(RS, rproctab_gid, 0, …)` 取整表 + 逐行 `read_unaligned` 解码到 `RprocEntry`，`os/servers/vm/src/vm_server.rs:2403-2451`）。**宿主半闭环**：`init()` 调用 `mark_initialized`（`vm_server.rs:720`），传输的 `receive` 委托 `minix_sys::ipc::DirectTrapTransport`（`ipc/transport.rs:224-240`），后者在真 boot 镜像构建（`cfg(kernel_trap)`，由 `os/libs/minix-sys/build.rs:32` 依 freestanding 或 `real-trap` feature 置位）下走真实 trap 腿。**剩余只有真机端到端**：boot shim 拉起 VM → `init_vm_self_pt` → map/query/unmap 测试页 → 串口结果，即 edge E5 的 (d) 项。
 
@@ -66,7 +66,14 @@ VM 侧逻辑完备（T9 三步全落地），rproctab 字节解码余件已在 `
 
 **诊断链发现**：VM 的 diagctl 通道**已证通**（kernel 侧 probe-diagctl 捕获 caller=8 七次）；panic 后的 ecall 静默（panic handler 卡在 ecall 前段）——`init_page_table FAILED` 诊断前置行未触发 = init_page_table 本身未失败，卡点在其相邻段；int log 尾部 user_ecall 高频循环（epc 0x2d02a/0x2d16e）为服务进程 crt0 的 E-BOOTFRAME 现状（stack/ps_str=0）。`-d int` 全程**零 page fault**。
 
-**下一步**：① init_vm_slot 内部细分路标（get_empty/activate/init_page_table 三点）抓确切卡点；② diagctl 静默根因（panic handler 的 ecall 前段）；③ E5(d) 判据固化（`E5D-VM-SELF-PT PASS` 串口 grep）待卡点解后收口。
+**E5(d) 收口（2026-11-21 晚，U-Boot riscv 链 `E5D-VM-SELF-PT PASS`）**：三层卡点全部定位并修复——
+
+1. **init_page_table → map_kernel 的 DM 重放**：每个新进程根把 `kern_dm_pages = 0xA0000`（2.5 GiB，4 KiB 粒度 655,360 次）逐页重放；单根分钟级，11 个 boot proc 不可能在门窗口内完成。修复：`map_kernel` 的 DM 段在 vbase/长度 2 MiB 对齐时改用大页（1280 次），否则回退 4 KiB；三架构共享同一函数。
+2. **`map_huge` 的裸恒等写**：大页路径在 VM（CPL3、自有根）调用时按 identity VA 写 PTE → `stval=0x834a8808` page fault。修复：三架构 `map_huge` 改为走句柄钉住的 `PteChannel`（`read_pte_dm`/`write_pte_dm`，I-59 A' 同一原则）；SimPaging 补 `HugePages` 实现（4 KiB 展开，仅宿主测试）。
+3. **`sys_exec` 的 name==0 自挂起**：`dispatch_exec` 对 `name=0` 仍做用户拷贝；riscv 的 VM 根不映射 VA 0 → 页 fault → `VmSuspend`，而调用者正是 VM 自己 → 自锁（x86 因低恒等窗口反而拷贝成功、把垃圾写进进程名）。修复：`name==0` 直接走 C 的 `<unset>` 回落（C 语义：名字拷贝失败不致命），测试覆盖完成路径 + 非零名 fault 仍挂起。
+4. **U-Boot `mfs` staging 槽**：`mfs` 内嵌 8.45 MiB imgrd，1 MiB 步长的 staging 槽装不下（溢出覆盖后续槽 → 镜像畸形 → `boot image has a malformed PT_LOAD segment`）。修复：`mfs` 专用 16 MiB 槽（0x88000000）、`init` 移到 0x89000000，gate 的 `boot.cmd` 同步。
+
+**读数**：11 个 boot proc 全部 `exec done` → `vm-boot-procs-seeded` → `vm-init-done` → **`E5D-VM-SELF-PT PASS`**（VM 对自身页表 map/query/unmap 真实帧往返）。证据 `tmp/evidence/e5d-uboot-riscv64-pass.log`。回归：kernel mock 866/0/8、minix-vm 548/0、minix-arch（runtime-window）全绿；x86 bootmarks/sysboot/rt-birth、aarch64 timer-irq、riscv U-Boot 链全 PASS。
 
 
 
