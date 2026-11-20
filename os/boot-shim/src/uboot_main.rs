@@ -49,7 +49,9 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::alloc::{GlobalAlloc, Layout};
-use boot_shim::opensbi_helpers::prepare_boot;
+use boot_shim::opensbi_helpers::{
+    BOOT_FILE_PATH_MAX, BOOT_FILE_TABLE_MAX_ENTRIES, BootFileEntry, BootFileTable, prepare_boot,
+};
 
 /// The U-Boot sender's caller-owned semantic storage (R18 D-1 stage 2).
 /// Single-threaded boot; see `boot_shim::BootStorageCell`.
@@ -277,9 +279,28 @@ fn module_file_stage(idx: usize) -> u64 {
     uboot_layout::module_file_stage(idx)
 }
 
+/// One empty table entry; the table's `.bss` initializer.
+const EMPTY_ENTRY: BootFileEntry = BootFileEntry {
+    path: [0; BOOT_FILE_PATH_MAX],
+    phys_addr: 0,
+    len: 0,
+};
+
 /// The shim-built MNXBOOT1 table lives here (written at boot, before
-/// `prepare_boot` reads it). 16 slots × 80 B + 16 B header = 1296 B.
-static mut SHIM_TABLE: [u8; 16 + 16 * 80] = [0; 16 + 16 * 80];
+/// `prepare_boot` reads it). The type is `BootFileTable` itself, so the
+/// layout and the 8-byte alignment the receiver's `&BootFileTable` needs
+/// come from the compiler instead of a hand-maintained byte-offset mirror.
+static mut SHIM_TABLE: BootFileTable = BootFileTable {
+    magic: 0,
+    entry_count: 0,
+    _pad: 0,
+    entries: [EMPTY_ENTRY; BOOT_FILE_TABLE_MAX_ENTRIES],
+};
+
+const _: () = assert!(
+    core::mem::size_of::<BootFileTable>() == 16 + 16 * 80,
+    "the U-Boot script lays out a 13-entry table in a 16-slot MNXBOOT1 image"
+);
 
 /// Read a staged ELF file's used length from its program headers.
 ///
@@ -348,87 +369,67 @@ unsafe fn staged_elf_used_len(pa: u64, slot: u64) -> Option<u64> {
 
 /// Build the MNXBOOT1 table in .bss with the correct file addresses.
 ///
-/// The table's binary layout must match `opensbi_helpers::BootFileTable`:
-/// magic u64 + entry_count u32 + pad u32 + 16 × (path[64] + addr u64 + len u64).
-/// The shim writes it itself — the U-Boot script only `fatload`s the files
-/// to the fixed staging addresses, and the shim fills in the table with
-/// those same addresses. This avoids the staging-coherency issue observed
-/// when U-Boot fatloads a pre-built table binary.
+/// The table is the real `opensbi_helpers::BootFileTable`; the U-Boot script
+/// only `fatload`s the files to the fixed staging addresses, and the shim
+/// fills the typed fields with those same addresses (the compiler owns the
+/// layout and the 8-byte alignment). This avoids both the staging-coherency
+/// issue observed with a pre-built table binary and the byte-offset mirror
+/// the first version kept.
 unsafe fn build_shim_table() -> u64 {
-    let base = core::ptr::addr_of_mut!(SHIM_TABLE) as *mut u8;
     let magic = boot_shim::opensbi_helpers::boot_file_table_magic();
     // SAFETY: writes into the shim's own .bss; single-threaded boot.
-    unsafe {
-        // magic (u64 LE)
-        let magic_bytes = magic.to_le_bytes();
-        for i in 0..8 {
-            base.add(i).write_volatile(magic_bytes[i]);
-        }
-        // entry_count (u32 LE) = 1 kernel + 12 modules = 13
-        let count = (1 + MODULE_NAMES.len()) as u32;
-        let count_bytes = count.to_le_bytes();
-        for i in 0..4 {
-            base.add(8 + i).write_volatile(count_bytes[i]);
-        }
-        // pad (u32) = 0 (already zero from .bss clear)
-        // entry 0: kernel
-        let e0 = base.add(16);
-        let path = b"/EFI/minix/kernel.elf";
-        assert!(
-            path.len() < boot_shim::opensbi_helpers::BOOT_FILE_PATH_MAX,
-            "boot-shim: kernel path does not fit the BootFileEntry field"
-        );
-        for i in 0..path.len() {
-            e0.add(i).write_volatile(path[i]);
-        }
-        e0.add(path.len()).write_volatile(0);
-        let addr = uboot_layout::KERNEL_FILE_STAGE;
-        let addr_bytes = addr.to_le_bytes();
-        for i in 0..8 {
-            e0.add(64 + i).write_volatile(addr_bytes[i]);
-        }
-        let slot = 2u64 * 1024 * 1024; // 2 MB kernel slot
-        let used = staged_elf_used_len(addr, slot).unwrap_or(slot);
-        if used > slot {
-            raw_serial_line("boot-shim: kernel ELF exceeds the 2 MiB staging slot — truncating");
-        }
-        let len_bytes = used.min(slot).to_le_bytes();
-        for i in 0..8 {
-            e0.add(72 + i).write_volatile(len_bytes[i]);
-        }
-        // entries 1-12: modules
-        for (mi, name) in MODULE_NAMES.iter().enumerate() {
-            let e = base.add(16 + (mi + 1) * 80);
-            let module_path = alloc::format!("/EFI/minix/modules/{}", name);
-            assert!(
-                module_path.len() < boot_shim::opensbi_helpers::BOOT_FILE_PATH_MAX,
-                "boot-shim: module path does not fit the BootFileEntry field"
-            );
-            for i in 0..module_path.len() {
-                e.add(i).write_volatile(module_path.as_bytes()[i]);
-            }
-            e.add(module_path.len()).write_volatile(0);
-            let a = module_file_stage(mi);
-            let a_bytes = a.to_le_bytes();
-            for i in 0..8 {
-                e.add(64 + i).write_volatile(a_bytes[i]);
-            }
-            let slot = uboot_layout::module_slot_size(mi);
-            let used = staged_elf_used_len(a, slot).unwrap_or(slot);
-            if used > slot {
-                raw_serial_line(
-                    "boot-shim: module ELF exceeds its staging slot — truncating: ",
-                );
-                raw_serial_line(name);
-                raw_serial_line("\n");
-            }
-            let l_bytes = used.min(slot).to_le_bytes();
-            for i in 0..8 {
-                e.add(72 + i).write_volatile(l_bytes[i]);
-            }
-        }
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(SHIM_TABLE) };
+    table.magic = magic;
+    table.entry_count = (1 + MODULE_NAMES.len()) as u32;
+
+    // entry 0: kernel
+    let kernel_path = b"/EFI/minix/kernel.elf";
+    assert!(
+        kernel_path.len() < BOOT_FILE_PATH_MAX,
+        "boot-shim: kernel path does not fit the BootFileEntry field"
+    );
+    let addr = uboot_layout::KERNEL_FILE_STAGE;
+    let slot = 2u64 * 1024 * 1024; // 2 MB kernel slot
+    // SAFETY: the U-Boot script staged the kernel at `addr` with a 2 MiB slot.
+    let used = unsafe { staged_elf_used_len(addr, slot) }.unwrap_or(slot);
+    if used > slot {
+        raw_serial_line("boot-shim: kernel ELF exceeds the 2 MiB staging slot — truncating");
     }
-    base as u64
+    let mut entry = BootFileEntry {
+        path: [0; BOOT_FILE_PATH_MAX],
+        phys_addr: addr,
+        len: used.min(slot),
+    };
+    entry.path[..kernel_path.len()].copy_from_slice(kernel_path);
+    table.entries[0] = entry;
+
+    // entries 1-12: modules
+    for (mi, name) in MODULE_NAMES.iter().enumerate() {
+        let module_path = alloc::format!("/EFI/minix/modules/{}", name);
+        assert!(
+            module_path.len() < BOOT_FILE_PATH_MAX,
+            "boot-shim: module path does not fit the BootFileEntry field"
+        );
+        let phys_addr = module_file_stage(mi);
+        let slot = uboot_layout::module_slot_size(mi);
+        // SAFETY: the U-Boot script staged module `mi` at `phys_addr` with
+        // `slot` readable bytes (identity mapped during boot).
+        let used = unsafe { staged_elf_used_len(phys_addr, slot) }.unwrap_or(slot);
+        if used > slot {
+            raw_serial_line("boot-shim: module ELF exceeds its staging slot — truncating: ");
+            raw_serial_line(name);
+            raw_serial_line("\n");
+        }
+        let mut entry = BootFileEntry {
+            path: [0; BOOT_FILE_PATH_MAX],
+            phys_addr,
+            len: used.min(slot),
+        };
+        entry.path[..module_path.len()].copy_from_slice(module_path.as_bytes());
+        table.entries[mi + 1] = entry;
+    }
+
+    core::ptr::addr_of!(SHIM_TABLE) as u64
 }
 
 /// Rust-surface entry: consume the table, prepare, serialize, jump.
@@ -524,12 +525,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // happens to cover it today, but that is an accident, not a contract).
     let shim_end = core::ptr::addr_of!(UBOOT_SHIM_STACK_TOP) as u64;
     let shim_windows = [(SHIM_LINK_BASE, shim_end)];
-    minix_kernel::enter_kernel_image_v1(
-        arena_pa,
-        &result.report,
-        result.root_page,
-        &shim_windows,
-    )
+    minix_kernel::enter_kernel_image_v1(arena_pa, &result.report, result.root_page, &shim_windows)
 }
 
 #[panic_handler]

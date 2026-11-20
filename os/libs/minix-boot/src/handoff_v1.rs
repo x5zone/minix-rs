@@ -285,7 +285,15 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 /// source and startup partitions move down by 6144 B and the arena shrinks
 /// from nine pages to eight. This is a layout change, so a v8 receiver must
 /// reject a v9 arena and vice versa — the comparison stays exact.
-pub const BOOT_HANDOFF_V1_VERSION: u32 = 9;
+///
+/// 10 = the three derived scalars (`user_sp`, `kern_stack_top`,
+/// `syscall_entry`) and the startup-object partition left the envelope
+/// (D-062): every producer wrote `USER_STACK_TOP` / `kern_virt_base +
+/// kern_size` / `kern_virt_base`, and the only startup reader was a strict
+/// gate now answered by the memory-map tables. Envelope shrinks 160 → 128
+/// bytes and the startup arena partition (20 × 72 = 1440 B) is retired, so
+/// a v9 receiver must reject a v10 arena and vice versa.
+pub const BOOT_HANDOFF_V1_VERSION: u32 = 10;
 
 /// The handoff envelope. Lives at the start of the handoff arena; the
 /// runtime fields (`root_page`, bump triple) are patched in place after the
@@ -432,7 +440,6 @@ const _: () = {
     assert!(offset_of!(BootHandoffV1, memmap_byte_len) == 80);
     assert!(offset_of!(BootHandoffV1, param_buf_byte_len) == 112);
     assert!(offset_of!(BootHandoffV1, sources_byte_len) == 120);
-
 
     // Arena partitions: element-aligned, disjoint, exact, and fitting the cap.
     assert!(WIRE_MEMMAP_OFFSET.is_multiple_of(align_of::<WireMemoryRegion>()));

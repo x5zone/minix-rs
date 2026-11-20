@@ -50,9 +50,12 @@
 //! baked-pointer legs.
 
 use core::slice;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootface_common;
-use minix_boot::{BootModule, DTB, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource};
+use minix_boot::{
+    BootModule, BumpRegion, DTB, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource,
+};
 use minix_types::{PhysBytes, VirBytes};
 
 use boot_shim::build_kernel_info;
@@ -104,29 +107,31 @@ const PT_BUMP_PAGES: usize = 256;
 // faces and live in `bootface_common`.
 use crate::bootface_common::{fdt_table_pa, in_memmap_range, table_magic_ok};
 
-// ── bump pool (aarch64's own cursor; opensbi_helpers' pool base is riscv DRAM) ──
+// ── bump pool (aarch64's own cursor over its own fixed region) ──
 
-/// Monotonic cursor (.bss; same discipline as opensbi_helpers: pool base, pool
-/// end and cursor exist exactly once).
-static mut BUMP_PTR: u64 = BUMP_BASE;
+/// Monotonic cursor over `[BUMP_BASE, BUMP_BASE + BUMP_SIZE)`. The region
+/// base/end are aarch64 board constants; the arithmetic is the same
+/// `minix_boot::BumpRegion` the riscv half and the kernel-side allocator use
+/// (single source for the bounds check, `used_bytes` and the consistency
+/// predicate). The atomic carries the cursor without a `static mut`
+/// reference under edition 2024; boot is single-threaded.
+static BUMP_NEXT: AtomicU64 = AtomicU64::new(BUMP_BASE);
 
-/// Allocate `num_pages` pages; a zero-page request is refused (it would hand out
-/// duplicate addresses and break the non-overlap invariant).
+const _: () = assert!(BUMP_BASE % minix_boot::BUMP_PAGE_SIZE == 0);
+const _: () = assert!(BUMP_SIZE % minix_boot::BUMP_PAGE_SIZE == 0);
+
+/// Allocate `num_pages` pages; a zero-page request is refused by
+/// `BumpRegion::alloc_pages` (it would hand out duplicate addresses and break
+/// the non-overlap invariant).
 fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
-    assert!(num_pages > 0, "bump_alloc: num_pages must be > 0");
-    // SAFETY: single-threaded boot face (secondary cores stop at the kernel
-    // rendezvous after PSCI CPU_ON delivery and never enter this face; even a
-    // stray loser parks locally in wfi).
-    unsafe {
-        let need = (num_pages as u64) * 4096;
-        let ptr = core::ptr::addr_of_mut!(BUMP_PTR);
-        if *ptr + need > BUMP_BASE + BUMP_SIZE {
-            return None;
-        }
-        let addr = *ptr;
-        *ptr += need;
-        Some(addr)
-    }
+    let mut region = BumpRegion::resumed(
+        BUMP_BASE,
+        BUMP_NEXT.load(Ordering::Relaxed),
+        BUMP_BASE + BUMP_SIZE,
+    );
+    let addr = region.alloc_pages(num_pages)?;
+    BUMP_NEXT.store(region.next(), Ordering::Relaxed);
+    Some(addr)
 }
 
 // ── boot-time static slots (the boot face writes them exclusively, then read-only) ──
@@ -228,8 +233,10 @@ pub extern "C" fn bootface_a64() -> ! {
     // 2. BootFileTable: the DTB /chosen channel; pass the DRAM bound gate and
     //    then the magic gate before dereferencing (the same discipline as the
     //    riscv half).
-    let table_pa =
-        fdt_table_pa(&fdt).filter(|pa| in_memmap_range(memmap, *pa, core::mem::size_of::<BootFileTable>() as u64) && table_magic_ok(*pa));
+    let table_pa = fdt_table_pa(&fdt).filter(|pa| {
+        in_memmap_range(memmap, *pa, core::mem::size_of::<BootFileTable>() as u64)
+            && table_magic_ok(*pa)
+    });
     let Some(table_pa) = table_pa else {
         say("### minix-rs kernel image: no BootFileTable (chosen) — halting\n");
         crate::halt();
@@ -275,25 +282,25 @@ pub extern "C" fn bootface_a64() -> ! {
     // 4. The 12 modules: locate the table (name alignment check) → copy the
     //    source straight into bump pages.
     storage.fill_modules(|module_table| {
-    if bootface_common::place_modules(
-        table,
-        memmap,
-        bootface_common::PlacementPool {
-            names: names_pool,
-            bump_start: BUMP_BASE,
-            bump_end: BUMP_BASE + BUMP_SIZE,
-        },
-        module_table,
-        bump_alloc_pages,
-        say,
-        say_hex,
-    )
-    .is_none()
-    {
-        say("### minix-rs kernel image: module placement failed — halting\n");
-        crate::halt();
-    }
-    NR_BOOT_MODULES
+        if bootface_common::place_modules(
+            table,
+            memmap,
+            bootface_common::PlacementPool {
+                names: names_pool,
+                bump_start: BUMP_BASE,
+                bump_end: BUMP_BASE + BUMP_SIZE,
+            },
+            module_table,
+            bump_alloc_pages,
+            say,
+            say_hex,
+        )
+        .is_none()
+        {
+            say("### minix-rs kernel image: module placement failed — halting\n");
+            crate::halt();
+        }
+        NR_BOOT_MODULES
     });
     say("  boot modules placed 12\n");
 
@@ -389,8 +396,7 @@ pub extern "C" fn bootface_a64() -> ! {
         unsafe { core::slice::from_raw_parts(reserved_ptr, reserved_len) };
     let sources: &'static [minix_boot::SourceRecord] =
         unsafe { core::slice::from_raw_parts(sources_ptr, sources_len) };
-    let param_buf: &'static [u8] =
-        unsafe { core::slice::from_raw_parts(param_ptr, param_len) };
+    let param_buf: &'static [u8] = unsafe { core::slice::from_raw_parts(param_ptr, param_len) };
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,
         reserved,
