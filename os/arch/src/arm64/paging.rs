@@ -109,6 +109,10 @@ unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
     phys as *mut u64
 }
 
+/// I-29-16（三架构 WB 合同，aarch64 腿）：本函数是「叶子→缓存属性」的
+/// 唯一映射点——RAM 叶子（无 `PageFlags::DEVICE`）不得设置 ATTR_IDX_DEVICE
+/// 位（AttrIndx=0 选 MAIR Attr0 = Normal WBWA），只有 DEVICE 叶子翻到
+/// Attr1（Device-nGnRnE）。MAIR_EL1 由 `enable` 写 0xFF。
 fn flags_to_pte(flags: PageFlags) -> u64 {
     let mut pte = Arm64PteFlags::VALID | Arm64PteFlags::AF;
     // ARM64 AP[2] (bit 6): 0 = writable at EL1, 1 = read-only at EL1.
@@ -133,6 +137,8 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
     }
     pte.bits()
 }
+
+
 
 /// `flags_to_pte` for a 4 KiB **page** leaf (L3): adds the page bit.
 ///
@@ -1361,6 +1367,7 @@ impl crate::arch::boot_dm::BootDmInstaller for AArch64BootDmInstaller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     /// Descriptor-type encoding witness (live-found bug):
     /// 4 KiB page leaves must carry bits[1:0] = 0b11; block descriptors

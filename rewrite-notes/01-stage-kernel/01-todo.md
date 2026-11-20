@@ -1559,6 +1559,16 @@ storage.commit_map_tables(MapCounts { memmap: owned.free().len(), reserved: owne
 
 **未做（按 §5.1 边界）**：步⑤ E / R1 / R2 三个独立证据门。E 门四个调用点各答三问（锁/CPU 参与集/TLB 失效覆盖）需要启动顺序与 SMP 证据；R1 需核实 `harden_kernel_text` 与 heap-window eviction 是否会在继承者存活期替换/释放共享子树；R2 需 TX 专用保留区容量实测。三者都是证据责任，不是代码改造，**不得与步④混合验收**。
 
+**门②（I-29-16 三架构 WB 合同）落地（同日，本批）**：
+
+| 腿 | 落地形态 | 位置 |
+|---|---|---|
+| x86 | **PAT 前提运行期校验**：`enable()` 读 IA32_PAT (MSR 0x277)，断言 PA0 = 0x6 (Write-Back)。PAT 是每-CPU MSR，enable 也是每-CPU 路径，覆盖面一致。固件改写 PA0 会让全部 RAM 叶子的 WB 承诺静默失效——现在当场停机并给出坐标。MTRR 默认覆盖不在此校验（QEMU virt 无变异条目；真机属证据责任） | `x86_64/paging.rs` 的 `enable()` |
+| aarch64 | **AttrIndx 映射点合同声明**：`flags_to_pte` 是「叶子→缓存属性」的唯一映射点（RAM 叶子 AttrIndx=0 选 MAIR Attr0 Normal WBWA，仅 DEVICE 翻到 Attr1 Device-nGnRnE；MAIR 由 `enable` 写 0xFF）。曾尝试编译期 const 断言，被 bitflags 非 const 运算符挡住（E0015）——合同以函数文档声明，enforcement 即 DEVICE 分支本身 | `arm64/paging.rs` 的 `flags_to_pte` |
+| riscv64 | **PMA 前提声明**（模块级文档块）：Sv39 PTE 无缓存属性位，WB 是平台 PMA 前提而非编码事实；QEMU virt DDR 在 PMA 声明为可缓存，memmap 全部落在该区间；本项目**不使能** Svpbmt（mencfg.PBMTE 保持 0，PTE[62:61]=0=PMA 模式），**Sv39 不存在「强制 WB」的 PBMT 取值**——WB 只能来自 PMA；真机换板需按该板 PMA 核对 DDR 缓存性 | `riscv64/paging.rs` 模块级文档块 |
+
+读数：三架构生产 target 各 0 error。I-29-16 合同自此在三架构各自的最小可验收形态落地；政策表的「完全冻结」仍按设计文档等原型证据与真机验收（不因本批宣告）。
+
 ### I-42（已裁决·I-34 的实施副产物）`BootStorage` 的 `push_*` 死子系统：实际只剩 `BootStorageFull`
 
 **来源**：I-34 实施时的 mini review。

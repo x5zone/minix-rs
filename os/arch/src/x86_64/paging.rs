@@ -715,8 +715,32 @@ impl Paging for X86_64Paging {
     }
 
     unsafe fn enable(&self) -> PhysBytes {
-        unsafe {
-            // EFER.NXE (bit 11) must be ON before any NX-tagged paging entry
+        // I-29-16 (三架构 WB 合同, x86 腿)：本项目不编程 IA32_PAT，全部
+        // RAM 叶子依赖 PAT0 = Write-Back 的默认编码（PA0 = 0x6）。固件
+        // （或一个未来的分页用户）改写 PAT0 会让「普通 WB 映射」的承诺
+        // 静默失效，所以在每次 enable 时读取并断言——PAT 是每-CPU MSR，
+        // enable 也是每-CPU 路径，二者覆盖面一致。MTRR 的默认覆盖
+        // （ Uncached/Write-Protect 变异）在此不校验：QEMU virt 不含 MTRR
+        // 变异条目，真机校验属 I-29-16 的真机证据责任。
+        {
+            const MSR_IA32_PAT: u32 = 0x277;
+            const PAT0_WB: u64 = 0x6; // PA0 encoding: WB
+            let mut lo: u32;
+            let mut hi: u32;
+            unsafe {
+                asm!("rdmsr",
+                     in("ecx") MSR_IA32_PAT,
+                     out("rax") lo, out("rdx") hi,
+                     options(nomem, nostack));
+            }
+            let pat0: u64 = ((hi as u64) << 32 | lo as u64) & 0xFF; // PA0 = bits 7:0
+            assert!(
+                pat0 == PAT0_WB,
+                "I-29-16: IA32_PAT PA0 = 0x{pat0:x} is not Write-Back (0x6) — \
+                 every RAM leaf's 'WB' mapping would silently degrade; halting"
+            );
+        }
+        unsafe {            // EFER.NXE (bit 11) must be ON before any NX-tagged paging entry
             // is walked: with NXE=0, bit 63 of every paging-structure entry is
             // RESERVED (#PF err=8). W^X marks kernel DM leaves and user
             // data/stack leaves with NX, so paging enable requires it. The

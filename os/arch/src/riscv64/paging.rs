@@ -174,6 +174,26 @@ enum PagingState {
     Inherited,
 }
 
+// ── I-29-16（三架构 WB 合同，riscv64 腿）：PMA 前提声明 ──────────────
+//
+// Sv39 的 PTE **没有**缓存属性位：叶子的缓存性由平台的 PMA
+// (Physical Memory Attributes) 决定，软件不可逐页指定。本项目全部 RAM
+// 叶子的 Write-Back 承诺因此是**平台前提**而非编码事实：
+//
+// 1. QEMU virt 的 DDR 区间在 PMA 中声明为普通可缓存内存（含 RAM region
+//    0x8000_0000..）；本项目的全部 memmap 来源（DTB `/memory`）都落在
+//    该区间，故恒等窗口、内核高半与 VM 映射的 RAM 叶子由 PMA 天然 WB。
+// 2. Sv39 标准没有 PBMT 字段（那是 Svpbmt 扩展、通过 menvcfg.PBMTE
+//    每使能启用）。本项目**不使能** Svpbmt：即便固件/ hart 报告支持，
+//    menvcfg.PBMTE 保持 0，PTE[62:61] 保留为 0（= PMA 模式），不会出现
+//    「PBMT=2/3 强制 Non-cacheable / IO」覆盖 PMA 的形态。**Sv39 不存在
+//    「强制 WB」的 PBMT 取值**——WB 只能来自 PMA，这是本前提成立的根。
+// 3. 真机验收属 I-29-16 的证据责任：换板时需按该板的 PMA 声明核对
+//    DDR 区间的缓存性（`menvcfg` 的 `CBIE/FWIE/PMM` 与 PMA 由固件/开发者
+//    编程的形态在 QEMU virt 不出现）。
+//
+// ─────────────────────────────────────────────────────────────────────
+
 pub struct Riscv64Paging {
     root_paddr: u64,
     /// PTE access channel pinned at construction (see [`PteChannel`]).
