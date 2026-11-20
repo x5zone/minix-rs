@@ -41,6 +41,7 @@
 | I-35（本轮新登记） | `KERNEL_INFO` 的 write-once 承诺与实际二次写（`kmain:1738` 冗余 store）+ `Frozen::freeze` 的 `debug_assert` + `IPC_FILTER_POOL` 注释失真 | 设计裁决 + 注释修正 | 已裁决（D-071，用户 2026-11-20）；**待实施（仅记账，用户要求不实施）**——全仓 11 处 write-once 承诺审计见 §3 的 I-35 | §3 |
 | I-36（本轮新登记） | `UbootFileLoader::read` 的 ELF 修剪上移（`FileLoader` 抽象里藏着 ELF 语义，腿间 `BootModule.len` 不同）+ 一次核查事故记录 | 设计裁决 | **未裁决**（三候选 A/B/C 待用户选）——含主 agent 误判「已实施」的事故记录，见 §3 的 I-36 | §3 |
 | I-37（本轮新登记） | `prepare_kernel_image_v1`/`jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump` 值对象（接反后仍能编译，交换后果=取指故障） | 设计裁决 + 代码改造 | 已裁决（D-073，用户 2026-11-20）：采 A（`PreparedJump { entry: VirBytes, arena_pa: PhysBytes }`）；保持两函数分开；`shim_windows` 固件边界不动。待实施 | §3 |
+| I-39（本轮新登记） | `KernelInfo` 的空 getter 段（注释承诺 getter、下面 12 行空白）与 `assert_eq!(x,x)` 恒真测试（17 条）+ 文档把它计入 32 条覆盖 | 测试清理 | 已裁决（D-077，用户 2026-11-20）：采 A 删两处残骸；文档计数 32→31；**先于 I-31**（否则 I-31 会撞字段不存在）。待实施 | §3 |
 | I-38（本轮新登记） | `boot_validate_and_prepare` 的四个位置实参改 `BootScalars` 值对象（两个 `VirBytes` 可互换；三个调用点各抄四字段） | 设计裁决 + 代码改造 | 已裁决（D-074，用户 2026-11-20）：采 A + 命名构造函数 + 等式 `debug_assert`；**前置依赖 I-31**（否则 `BootScalars` 定型两次）。待实施 | §3 |
 | I-30（已裁决·待实施） | aarch64 形态判别改链接期分叉（删 `arena_pa == 0` 运行期哨兵） | 设计裁决 + 代码改造 | 已裁决（D-061，用户 2026-11-19）：照 riscv64 加 feature 门，两条 `rust_image_main` 各归一个 cfg。待实施——详见 §3 的 I-30 | §3 |
 | I-31（已裁决·可开工） | wire v10：删 `syscall_entry` / `user_sp`+`kern_stack_top` / `startup_objects` 分区（`BOOT_HANDOFF_V1_VERSION` 9→10） | 协议契约变更 + 代码改造 | 已裁决（D-062，用户 2026-11-20）：三条一次升版。待实施——验收 grep 六项、文档同步含 §4.1 五族句（D-072 补强），详见 §3 的 I-31 | §3 |
@@ -588,6 +589,46 @@ assert!(
 
 
 
+
+
+### I-39（已裁决·待实施，先于 I-31）`KernelInfo` 的空 getter 段与恒真测试
+
+**裁决**：用户 2026-11-20，判决行 `D-077`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**。**实施顺序：先于 I-31**。来源：`R35/DESIGN-D2-06`（P2，[DEL]）。
+
+**现状（三处残骸，均已核实）**：
+
+| # | 位置 | 内容 |
+|---|---|---|
+| ① | `os/libs/minix-boot/src/kernel_info.rs:631-635` | 注释「Getter methods (preferred API over direct field access)」+「These getters are the recommended API」 |
+| ② | 同文件 `:636-647` | **12 行空白**，`:648` 直接 `}` 闭合 `impl`——全文件无任何 `pub fn <字段名>` 形态的 getter |
+| ③ | 同文件 `:1092-1121` | `test_getters_return_field_values` 的 **17 条断言全部是 `assert_eq!(x, x)`**（左右操作数为同一表达式，永真） |
+| ④ | `01-boot-shim-bootstrap.md:3249` | 把它计入「该文件 32 条」，覆盖列声称验证「getter 与字段一致」——**声称的接口不存在** |
+
+**性质**：`test-audit` 定义的「虚构测试」（对账双方不在场）。一条永不可能失败的测试被当作覆盖证据，稀释真正的不变量覆盖。
+
+**做法（A：删两处残骸）**：
+
+1. 删 `kernel_info.rs:631-648`（注释段 + 12 行空白，保留 `}` 闭合）。
+2. 删整个 `test_getters_return_field_values`（`:1092-1121`，含其后的空行）。
+3. 文档 `01-boot-shim-bootstrap.md:3249`：`kernel_info.rs` 测试计数 **32 → 31**，覆盖列删掉「getter 与字段一致」（该行现文为 `test_getters_return_field_values`（1 条）= 该文件 32 条 | ... getter 与字段一致`）。
+
+**不做的事（裁决明确）**：
+- **否决 B（真造 getter）**：`KernelInfo` 字段已全 `pub`，注释自述「Direct field access remains `pub` for backward compatibility」。造 getter 会制造两套等价 API——与 D-067/I-34 刚消灭「两个可不一致的事实」的方向相反。
+- **否决 C（改名保留）**：`assert_eq!(x,x)` 改名成「可读可复制」仍是恒真；`Copy` 已由 `#[derive(Clone, Copy)]` 编译器保证，测试无增量价值。
+- **不新增机械防护**：`assert_eq!(a, a)` 扫描作为 test-audit 的工具候选另行登记（本批不做）。
+
+**与 I-31 的关系（为什么先做）**：I-31 删 `user_sp`/`kern_stack_top`/`syscall_entry` 三字段后，该测试里三条 `info.user_sp == info.user_sp` 之类会**因字段不存在而编译失败**。A 是纯删除，先做则 I-31 少改一处；反序则 I-31 必须顺手处理这个测试，等于同一段改两遍。
+
+**验收**：
+- `grep -c "Getter methods" os/libs/minix-boot/src/kernel_info.rs` → 0；
+- `grep -c "test_getters_return_field_values" os/libs/minix-boot/src/kernel_info.rs` → 0；
+- `grep -n "assert_eq!(info." os/libs/minix-boot/src/kernel_info.rs` 无 `x, x` 恒真形（可人工核）；
+- `cargo test -p minix-boot` 全绿；`grep -c '#\[test\]' os/libs/minix-boot/src/kernel_info.rs` → 31，与文档 §5.2.1 的 31 一致；
+- 文档六门（anchor/citation/structure/ref/style/density）在受影响的 01 篇上复跑全绿。
+
+**风险与回退**：纯删除，零行为变化。唯一风险是文档计数改错（用 `grep -c '#\[test\]'` 实跑核对，不靠手算）。若某处代码真的在调用 getter（当前全仓零命中）→ 回退并重开 D-077 评估 B。
+
+**为什么现在不做**：用户 2026-11-20 批准方案但只做记账。
 
 ### I-38（已裁决·待实施，前置 I-31）`boot_validate_and_prepare` 的四个位置实参改 `BootScalars`
 
