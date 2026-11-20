@@ -247,14 +247,22 @@ description: "Minix-RS Review 卓越性检查。包含文档卓越性（§4.1-4.
 > 每个核心状态机 / 句柄 / 地址类型一行：状态集 → 类型如何表达 → 封堵了哪些非法态 → 封不住哪些 → 结论（合格 / 设计类 P1）。
 > 判级：封不住关键非法态 → 设计类 P1（新增/触碰代码必须修复或写明延期理由，存量登记）；普通表达力问题 → 卓越性 P2。
 > 不要求"所有类型都 newtype"（过度抽象，模式 24）；只要求核心状态机的合法状态集能被类型枚举。
+> **新增类型的准入判据在 `review-code-checklist.md` §3.5（V3.6，C-31 三问 + C-33 可混淆面）；本节判「封不住哪些非法态」，§3.5 判「该不该用类型封」。冲突时以 §3.5 为准。**
 > 产物：设计对比表旁列一份封堵清单；code-excellence cmd 产物必带。
 ### §17 表达力卓越性
+
+> **V3.6 前提（C-36b 的镜像同步）**：本节任何"可用新类型 / typestate 替代"的判级，必须先过
+> `review-code-checklist.md` §3.5 的三问与可混淆面判据。特别是**可信链（本仓其他模块 → 内核）
+> 上的 `assert!` / `debug_assert!` / `panic!` 是刻意选择的正确形态，不是"可用 typestate 替代"的
+> 证据源**——把 `rg "if.*== 0|if.*is_none|panic!"` 的命中一律判卓越性 P1 会与 C-31 直接矛盾。
 
 **检查项**：类型系统利用 / 编译时保证 / 命名表达意图 / 迭代器组合子 / 模式匹配
 
 **Execute**:
-1. 检查 newtype：`rg "struct \w+\(\w+\);" FILE.rs -n` → 裸整数应有 newtype
-2. 检查运行时检查可否改为编译时：`rg "if.*== 0|if.*is_none|panic!" FILE.rs -n`
+1. 检查 newtype：`rg "struct \w+\(\w+\);" FILE.rs -n` → 裸整数应有 newtype —— **仅当静默性 +
+   可混淆面成立**（§3.5）；否则 P2 建议
+2. 检查运行时检查可否改为编译时：`rg "if.*== 0|if.*is_none|panic!" FILE.rs -n` —— 命中只是
+   **候选清单**；可信链 fail-fast 不报；对不可信输入用 `panic!` 才判 P1（应改 `Result`）
 3. 检查显式循环：`rg "for .* in |while " FILE.rs -n` → 可用迭代器替代 = 卓越性 P2
 4. 检查 if-else 链：`rg "else if" FILE.rs -n` → 可用 match 替代 = 卓越性 P2
 

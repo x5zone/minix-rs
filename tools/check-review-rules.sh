@@ -191,6 +191,37 @@ done < <(
     | sed 's/^## V//' | sort -u
 )
 
+# §7.7 强制减法（V3.6-r2 补实现）：规则原文宣称「减法账本行数必须 ≥ 版本表行数，
+# 由 tools/check-review-rules.sh 机械校验」，但此前只查了「每个版本头 ≥1 行」——
+# 宣称与实现不符。现在按原文计数：所有含「减法账本」的章节（## 三 与各
+# ### V3.x 减法账本）里的 `| V… |` 数据行合计，必须 ≥ 版本表的数据行数。
+_sub_counts=$(python3 - "$ROOT/rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md" <<'PY'
+import re, sys, pathlib
+t = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+m = re.search(r"^## 一、版本表\n(.*?)(?=^## )", t, re.M | re.S)
+vrows = len([
+    l for l in (m.group(1).splitlines() if m else [])
+    if re.match(r"^\|\s*\*{0,2}V[\d.]+\*{0,2}\s*\|", l)
+])
+parts = re.split(r"^(#{2,3}\s+.*)$", t, flags=re.M)
+lrows = 0
+for i in range(1, len(parts), 2):
+    if "减法账本" in parts[i]:
+        lrows += len([
+            l for l in parts[i + 1].splitlines()
+            if re.match(r"^\|\s*V[\d.]+\s*\|", l)
+        ])
+print(f"{lrows} {vrows}")
+PY
+)
+_ledger_rows="${_sub_counts% *}"
+_version_rows="${_sub_counts#* }"
+if ! [[ "$_ledger_rows" =~ ^[0-9]+$ && "$_version_rows" =~ ^[0-9]+$ ]]; then
+  fail "无法解析减法账本/版本表行数（§7.7）：$_sub_counts"
+elif (( _ledger_rows < _version_rows )); then
+  fail "减法账本行数 ${_ledger_rows} < 版本表行数 ${_version_rows}（§7.7 强制减法）"
+fi
+
 # V3.4-r7（N7 判例复发）：.claude/rules/fix-guard.md 是规范源声明的「内容同源」运行时
 # 副本，曾两度漂移缺节且无门覆盖。副本与源 diff 必须为空。
 if ! diff -q prompt/review-rules/fix-guard.md .claude/rules/fix-guard.md >/dev/null 2>&1; then

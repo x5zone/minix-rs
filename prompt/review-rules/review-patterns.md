@@ -32,7 +32,7 @@
 
 > **2026-08-15 修复 C-P1-3（0 impl 优先于测试覆盖）**：当 trait 0 impl 时，即便有测试覆盖，仍判 P0（trait 无任何实现 = 死代码 / 虚构）。判定优先级：**0 impl → P0 > 测试覆盖度判定**。判定流程：(a) 先检查 trait 是否有 ≥1 impl？否 → P0 死代码；(b) 有 impl → 检查测试覆盖度，0 测试覆盖 → P0-test-missing，< 3 测试 → P1。
 | **3** | 文档声明的函数是否在声明的文件中？ | `rg "fn {name}" {file}` | 文档说"在 file.rs 中定义 fn foo"，但 grep 无结果→P0（虚构位置）；找到但 signature 完全不符也按未通过处理 | P0 |
-| **4** | 核心算法是否是 stub？ | `rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `todo!`/`unimplemented!`/`unreachable!`/`spin_loop!` → P0（实现缺失）；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性 | P0/P1 |
+| **4** | 核心算法是否是 stub？ | `rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `todo!`/`unimplemented!`/`unreachable!`/`spin_loop!` → P0（实现缺失）；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性。**V3.6-r2 边界（与 C-31 / `review-code-excellence.md` §17.2 对齐）**：可信链（本仓其他模块 → 内核）上的 fail-fast `assert!`/`panic!` 是**刻意选择的正确形态**——只要不变式在**现场**写明（断言消息或紧邻注释写出「拒绝什么、为什么拒绝」），即视为已满足本项的可接受性论证；**不要求改成 `Result` 或新增类型，也不得与 §17.2 给出相反判级** | P0/P1 |
 | **5** | 文档 §4 签名是否与实际一致？ | 逐函数对比 `rg "fn {name}" {file}` 输出 vs 文档 §4 | 参数/返回值/可见性/泛型约束不一致→P0（签名偏移）；有一项不符即整项 ❌ | P0 |
 
 **严格通过标准**：

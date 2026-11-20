@@ -573,7 +573,10 @@ def _count_subtraction_rows(text: str) -> int:
             continue
         if cells[0] in {"加法提案", "提案", "proposal", "Proposal", "加法"}:
             continue
-        if cells[0] in _SUBTRACTION_PLACEHOLDERS:
+        # r2（F1 变体）：`无提案（本轮无新增类型）` 这类**带括注的占位**也要认。
+        if cells[0] in _SUBTRACTION_PLACEHOLDERS or re.match(
+            r"^(?:无|—|–|N/A|none)(?:[（(]|$)", cells[0], re.IGNORECASE
+        ):
             continue
         rows += 1
     return rows
@@ -615,11 +618,37 @@ def check_subtraction(
             f"SUBTRACTION-TABLE 数据行 {rows} 不一致（C-34：提案数必须来自 D2 实物）",
         )
     elif rows == 0:
-        report.fail(
-            "subtraction",
-            "design-d2.md 的 SUBTRACTION-TABLE 为 0 行：报告只列加法"
-            "（review-panel.md §4.3 纪律，报告不完整）",
+        # V3.6-r2（双路对抗共同判例）：0 行**不必然是缺陷**。C-34 要防的是
+        # 「报告只列加法」，不是「本轮没有加法可列」。区分靠 D2 自己的声明：
+        #   - 显式声明本轮无新增抽象提案 → 合法零（PASS）；
+        #   - 有加法类 FINDING/提案却 0 行减法 → 只列加法（FAIL）。
+        # 原实现无条件 FAIL，逼出「编造一行提案」——正是 F1 消灭的那个反向激励。
+        _no_prop = re.search(
+            r"本轮无(?:新增)?(?:类型|抽象|加法)?提案|无新增抽象|本轮无减法提案"
+            r"|无需减法|无减法必要",
+            d2_text,
         )
+        _has_add = re.search(
+            r"^(?:##+\s+FINDING|##\s+ARCH-PROPOSAL)", d2_text, re.MULTILINE
+        ) is not None and re.search(
+            r"新增(?:类型|字段|trait|抽象|守卫|token)|newtype|值对象|typestate",
+            d2_text,
+        ) is not None
+        if _no_prop and not _has_add:
+            report.ok(
+                "subtraction", "D2 显式声明本轮无新增抽象提案（合法零）"
+            )
+        elif _has_add:
+            report.fail(
+                "subtraction",
+                "design-d2.md 有新增抽象提案但 SUBTRACTION-TABLE 为 0 行："
+                "报告只列加法（review-panel.md §4.3 纪律，报告不完整）",
+            )
+        else:
+            report.ok(
+                "subtraction",
+                "D2 未提出新增抽象且无减法表（无对象可减，合法零）",
+            )
     if adopted > said:
         report.fail(
             "subtraction",
@@ -669,6 +698,14 @@ def _debt_row_closed(cells: list[str]) -> bool:
         # 该格声称完成，但格内若出现否定/未完成语，按未销账处理。
         if _UNDONE_RE.search(cell):
             return False
+        # V3.6-r2-F3（对抗判例）：**裸**状态词不算销账。§4.0f 的出口是
+        # 「实施（附代码证据或 dup-of）」——一个只写「已实施」「已拒绝」的格
+        # 没有任何证据，是状态声称而不是实施事实。阈值取 6 字符：去掉
+        # `✅` / 标点后仅剩状态词本体才算「裸」；带任何补充说明的都放行
+        # （D01 的 9 条长处置格各有测试计数/路径证据，不得误杀）。
+        _bare = re.sub(r"[✅✔\s。．.；;，,]", "", cell)
+        if len(_bare) <= 6:
+            return False
         return True
     # 无 ID 的整行状态叙述（历史合法形态）：末格短、且**不含**否定语。
     if cells and cells[0] in {"—", "–", "-"}:
@@ -687,7 +724,8 @@ def _debt_row_closed(cells: list[str]) -> bool:
 
 
 _DONE_PREFIX_RE = re.compile(
-    r"^\s*(?:✅|✔|完成|已修|已实施|已闭合|已完成|已覆盖|已拒绝|superseded)"
+    # V3.6-r2：`完成(?!度)`——「完成度 40%」是百分比读数，不是完成声明。
+    r"^\s*(?:✅|✔|完成(?!度)|已修|已实施|已闭合|已完成|已覆盖|已拒绝|superseded)"
     r"|^\s*（[^）]{0,24}）\s*已修"
 )
 # 否定/未完成语——出现在同一个格里就否决该格的完成声明。
@@ -696,6 +734,23 @@ _UNDONE_RE = re.compile(
     r"|FAIL|REOPEN|延期|搁置|作废|回退|不适用"
     r"|完成度\s*\d*%?\s*(?:40|50|60|70|80|90)?\s*[,，]?\s*未"
 )
+
+
+def _panel_empty_ok(name: str, text: str, loop_text: str | None) -> bool:
+    """V3.6-r2-F4：面板是否可判为「有内容」或「已声明无发现」。
+
+    合法形态（`review-evals.md` 第 9 条）：
+      - 面板文件本体含 `无发现`；
+      - **或** `loop.md §1` 有具名声明 `无发现面板：<file>（理由）`——必须点名该文件。
+    其余（0 条 FINDING/SUGG/CLAIM 且无声明）→ 空壳面板。
+    """
+    if "无发现" in text:
+        return True
+    if not loop_text:
+        return False
+    return bool(
+        re.search(rf"无发现面板[^\n]{{0,200}}{re.escape(name)}", loop_text)
+    )
 
 
 def _has_lingering_severity(text: str, require_decl: bool = False) -> bool:
@@ -715,16 +770,28 @@ def _has_lingering_severity(text: str, require_decl: bool = False) -> bool:
     已封存，不追溯，只需不误伤。
     """
     if require_decl:
+        # V3.6-r2（双路对抗共同判例）：声明行有两种合法写法，且 P1 必须被解析：
+        #   `- 遗留 P0: <n> / P1: <m>`
+        #   `- 遗留 P0/P1: <n> / <m>`
+        # 原实现只用一条组合正则，`P0: 0 / P1: 2` 的 P1 落在第一段捕获之外
+        # → 返回 False。**一个诚实的 P1=2 回执因此能通过关轮**，与本门目的相反。
         decl = re.search(
-            r"^-\s*遗留\s*(?:P0|P0/P1|\s*P0\s*/\s*P1)\s*(?:\s*/\s*P1)?\s*[:：]\s*"
-            r"(\d+)\s*(?:/\s*(\d+))?",
+            r"^-\s*遗留\s*(P0\s*/\s*P1|P0/P1|P0)\s*[:：]\s*([^\n]*)",
             text,
             re.MULTILINE,
         )
         if decl is None:
             return True   # 无可判定读数 = 不合规（fail-closed）
-        p0 = int(decl.group(1))
-        p1 = int(decl.group(2)) if decl.group(2) is not None else 0
+        head = decl.group(1).replace(" ", "")
+        rest = decl.group(2)
+        nums = [int(x) for x in re.findall(r"\d+", rest)]
+        if head == "P0/P1":
+            p0 = nums[0] if nums else 0
+            p1 = nums[1] if len(nums) > 1 else 0
+        else:
+            p0 = nums[0] if nums else 0
+            _p1 = re.search(r"P1\s*[:：]?\s*(\d+)", rest)
+            p1 = int(_p1.group(1)) if _p1 else 0
         return p0 > 0 or p1 > 0
     # ---- 旧回执的启发式（不追溯）----
     for line in text.splitlines():
@@ -2277,11 +2344,19 @@ def check_run_dir(
                             re.MULTILINE,
                         )
                     )
-                    if _nf + _nc + _ns == 0 and "无发现" not in _text:
+                    # V3.6-r2-F4（axis-a 判例：契约与门不一致）：`review-evals.md`
+                    # 第 9 条允许在 `loop.md §1` 写「无发现面板：<file>（理由）」来声明
+                    # 一个没有 FINDING 的面板（如 design-d1 只有 DECISION、refute 只有
+                    # CLAIM 走附加表）。原门只认面板文件本体里的「无发现」——照规则写的
+                    # reviewer 会被判「空壳面板」。现在两处都认：本体声明 **或** loop §1
+                    # 的具名声明（必须点名该文件，防止一句空话豁免所有面板）。
+                    if _nf + _nc + _ns == 0 and not _panel_empty_ok(
+                        _name, _text, loop_text
+                    ):
                         report.fail(
                             "panel-artifact",
                             f"panel/round{_rk}/{_name} 既无 FINDING/SUGGESTION/CLAIM "
-                            "也无「无发现」声明（空壳面板）",
+                            "也无「无发现」声明（空壳面板；loop §1 具名声明亦可）",
                         )
                     if (
                         _nf != _rec["findings"]
@@ -3625,7 +3700,10 @@ def self_test() -> int:
             print_report(todo_report, False)
             return 1
 
-    # V3.3：OPEN-DEBT 未销账行 → FAIL 并计入未闭环；用户批准延期 → WARN 放行
+    # V3.3：OPEN-DEBT 未销账行 → FAIL 并计入未闭环；用户批准延期 → WARN 放行。
+    # V3.6-r2 修约：`✅ 已修：已完成` 这种**裸状态声称**（无代码证据/测试读数/
+    # commit/path:line）不再算销账——§4.0f 的出口是「实施（附代码证据或 dup-of）」。
+    # 因此本夹具现在期望 open_count == 2（R26-design-batch + F-R17-02）。
     with tempfile.TemporaryDirectory() as tmp:
         debt = Path(tmp) / "OPEN-DEBT.md"
         debt.write_text(
@@ -3634,18 +3712,27 @@ def self_test() -> int:
             "|---|---|---|\n"
             "| R26-design-batch | P1 | 待实施（R27）；截止 R27 边界 |\n"
             "| F-X-99 | P2 | ② 用户批准 2026-11-15 延期至 02 篇（D-047） |\n"
-            "| F-R17-02 | P2 | ✅ 已修：已完成 |\n",
+            "| F-R17-02 | P2 | ✅ 已修：已完成 |\n"
+            "| F-R17-03 | P2 | ✅ 已修：`os/kernel/src/lib.rs:88` 的 `PhaseCell` 已落地；测试 `cel"
+            "l::phase` 通过 |\n",
             encoding="utf-8",
         )
         debt_report = Report()
         open_count = check_open_debt(debt, debt_report, "R31")
         debt_messages = " ".join(item["message"] for item in debt_report.items)
-        if open_count != 1 or "未销账" not in debt_messages or "已逾期" not in debt_messages:
-            print("self-test FAIL: OPEN-DEBT 未销账行未被拦截或逾期未点名")
+        if open_count != 2 or "未销账" not in debt_messages or "已逾期" not in debt_messages:
+            print(
+                "self-test FAIL: OPEN-DEBT 未销账行未被拦截或逾期未点名"
+                f"（open={open_count}，期望 2：裸状态词不计销账）"
+            )
             print_report(debt_report, False)
             return 1
         if "已批准延期" not in debt_messages:
             print("self-test FAIL: 用户批准的延期出口未被识别")
+            print_report(debt_report, False)
+            return 1
+        if "F-R17-03" in debt_messages:
+            print("self-test FAIL: 带证据的完成行被误判未销账（F-R17-03 应销账）")
             print_report(debt_report, False)
             return 1
 
@@ -4800,8 +4887,16 @@ def self_test() -> int:
         "## VERDICT\nok\n"
     )
     _m = "## R1 面板轮\n\n- 减法: 提案 {s} / 采纳 {a}\n"
+    # V3.6-r2 修约：0 行不再无条件 FAIL——区分「诚实零」与「只列加法」。
+    _d2_honest_zero = "## SUBTRACTION-TABLE\n\n本轮无新增抽象提案。\n\n## VERDICT\nok\n"
+    _d2_add_only = (
+        "## FINDING DESIGN-D2-01（P1）\n- 问题：应新增 newtype 承载这个标量\n\n"
+        "## VERDICT\nok\n"
+    )
     for label, d2, said, adopted, want_fail, want_sub in (
-        ("0 行声明 0", _d2_none, 0, 0, "SUBTRACTION-TABLE 为 0 行", None),
+        ("0 行 + 有加法无表", _d2_add_only, 0, 0, "只列加法", None),
+        ("0 行 + 显式无提案", _d2_honest_zero, 0, 0, None, "显式声明本轮无新增抽象提案"),
+        ("0 行 + 无加法无表", _d2_none, 0, 0, None, "无对象可减"),
         ("0 行声明 1", _d2_none, 1, 0, "不一致", None),
         ("2 行声明 2/1", _d2_two, 2, 1, None, "减法提案 2 / 采纳 1"),
         ("2 行声明 2/3", _d2_two, 2, 3, "采纳数 3 > 提案数 2", None),
@@ -4984,6 +5079,28 @@ def self_test() -> int:
     )
     if _count_subtraction_rows(_d2_sub) != 1:
         print("self-test FAIL: `###` 子节未终止减法段（V3.6-F6）")
+        return 1
+
+    # (v) 无发现面板的两种合法声明（V3.6-r2-F4：规则第 9 条 vs 门的一致性）。
+    if not _panel_empty_ok("fact.md", "# FACT\n\n无发现。\n", None):
+        print("self-test FAIL: 面板本体「无发现」声明未被认（V3.6-r2-F4）")
+        return 1
+    if not _panel_empty_ok(
+        "design-d1.md",
+        "# D1\n\n## DECISION 01\n说明\n",
+        "- 无发现面板：`design-d1.md`（独立设计提案，只作参考）\n",
+    ):
+        print("self-test FAIL: loop §1 具名「无发现面板」声明未被认（V3.6-r2-F4）")
+        return 1
+    if _panel_empty_ok(
+        "design-d1.md",
+        "# D1\n\n## DECISION 01\n说明\n",
+        "- 无发现面板：`refute.md`（点名的是另一个文件）\n",
+    ):
+        print("self-test FAIL: loop §1 声明点名了别的文件却也豁免（V3.6-r2-F4）")
+        return 1
+    if _panel_empty_ok("fact.md", "# FACT\n\n## DECISION 01\n", None):
+        print("self-test FAIL: 真空壳面板（无声明无发现）被放行（V3.6-r2-F4）")
         return 1
 
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
