@@ -45,7 +45,7 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 ```
 minix3/              — 原始 Minix3 C 源码（ground truth，禁止修改）
 os/                  — Rust 实现：内核、用户态服务器、驱动、库
-rewrite-notes/       — 活跃重写文档：rewrite-notes/{stage}/{doc}.md
+rewrite-notes/       — 活跃重写文档：rewrite-notes/{stage}/{doc}.md；过程元数据在 rewrite-notes/meta/
 redesign-notes/      — 方向探索文档（重写稳定后启用；现存内容是未收敛的存量思考）
 study-notes/         — 早期 Minix3 学习笔记（AI 生成，不作事实基线）
 book/                — mdBook 成品区（后续从笔记树抽取）
@@ -55,9 +55,9 @@ tools/               — 门禁与构建脚本（路径真源：tools/notes-layo
 tmp/                 — 会话产物与取证，整域不入库（evidence/ log/ bin/ nk4a/ 等）
 ```
 
-三棵笔记树于 2026-10-07 取代旧的 notes 伞目录，并剥掉 rewrite 分区下那层已废弃的模块目录：规范路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。旧→新逐文件对照见 `rewrite-notes/MIGRATION.md`。
+三棵笔记树于 2026-10-07 取代旧的 notes 伞目录，并剥掉 rewrite 分区下那层已废弃的模块目录：正式稿路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。2026-11-22 起过程元数据（todo 账本、review 轨迹、设计快照）统一在 `rewrite-notes/meta/`；`draft/` 与 `archive/` 暂留 stage 目录，待稿件稳定后删除。旧→新逐文件对照见 `rewrite-notes/MIGRATION.md`。
 
-**中间产物目录约定**：`.design/`（每篇文档的可复用设计快照）与已废弃的 `tmp_design_and_todo/` 视为中间产物，**正式文档绝不引用**（引用即 P0-process-violation）；正式文档必须自包含，引用指向文档、代码、C 源的绝对路径。会话产物（日志、镜像、评审证据）一律进 `tmp/` 的功能子目录，仓库根不允许散落文件——细则见 `prompt/WORKFLOW-OPEN-ITEMS.md` F-C。
+**中间产物目录约定**：`rewrite-notes/meta/`（todo 账本、review 轨迹、设计快照；原各 stage 的 `.design/` 已迁入 `meta/design/<stage>/`）与已废弃的 `tmp_design_and_todo/` 视为中间产物，**正式文档绝不引用**（引用即 P0-process-violation）；正式文档必须自包含，引用指向文档、代码、C 源的绝对路径。会话产物（日志、镜像、评审证据）一律进 `tmp/` 的功能子目录，仓库根不允许散落文件——细则见 `prompt/WORKFLOW-OPEN-ITEMS.md` F-C。
 
 ## Key Constraints
 
@@ -71,7 +71,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史/待办（`tools/doc-publication-check.py` DP-1..DP-6；用户本人笔记只允许放 `<!-- user-note: … -->` 注释块），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
 - **⛔ 教程就绪（V3.8）**：每章必须有学习目标、前置概念、最小可运行示例、失败对照、小结、术语定义（`tools/tutorial-rubric-check.py`）；缺任一项 = P1，不得 CONVERGED
 - **⛔ 轮次硬上限（V3.8）**：同一篇最多 3 个修改轮（跨 edition 累计）；未收敛即强制整节重写，不开第 4 轮；重写后只允许 1 次确认轮
-- **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`）；01/02 旧 todo markdown 已迁移删除，其余 stage 迁移后同样删除
+- **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`）；01/02 旧 todo markdown 已迁移删除，其余 stage 迁移后同样删除
 - **P0 六类**：P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing
 - **⛔ 显式调用技能**：必须通过 Skill 工具真正调用技能，scan.md 的 Skill Invocation Log 只记实际调用；"规则已加载"不算调用
 - **⛔ Gate 证据强度分级**：L1 工具输出（A/D/E 门必需）、L2 手工 grep（B/C 可接受）、L3 推断（视为 FAIL，除非写明 `MANUAL_FALLBACK` 理由）。**没有附命令与输出的「✅ 通过」一律作废**
@@ -81,7 +81,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 ## Review Workflow
 
 1. **声明 scope**：目标文件、模式（doc / code / full）、STATE.md 状态。状态目录按 `{stage}` 分组且三工具隔离：`.review/{tool}/{stage}/`（Trae 用 `scans/` 扁平结构，Claude 与 Codex 用 `{doc-stem}/` 子目录）
-2. **Step 0 硬阻断预检**（所有模式强制）：4 条 `ls {tree}/{stage}/.design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；快照缺失 → 对应 Gate FAIL → Step 0.3 嵌入生成（不中断 review、不标 N/A、不许复用他篇快照）。缺失却标 CONVERGED → P0-process-violation（模式 69）
+2. **Step 0 硬阻断预检**（所有模式强制）：4 条 `ls {tree}/meta/design/{stage}/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；快照缺失 → 对应 Gate FAIL → Step 0.3 嵌入生成（不中断 review、不标 N/A、不许复用他篇快照）。缺失却标 CONVERGED → P0-process-violation（模式 69）
 3. **Blocker Gates**（0 / A / B / C / D / D-6 / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
 4. **产出**：scan.md（单文件汇总：Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List / structure 摘要）+ structure.md（文档 review 的 12 节骨架分析）+ SYMBOLS.md（覆盖率穷举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED）
 5. **修复原则**：P0 全修完才可 CONVERGED；文档与代码保持同步；严格遵守 `prompt/review-rules/fix-guard.md`
@@ -94,6 +94,6 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 技能清单与调用时机见 `.codex/skills/`、`.claude/skills/`、`.trae/skills/`；源在 `prompt/skill/`（9 个领域技能、`review-scan` 与 `review-loop` 两个编排器）。
 
-**Review workflow 试点循环（2026-11-07 新增）**：`review-loop` 是文档加关联代码的固定循环与流程评测入口，源在 `prompt/skill/review-loop.md`，规范源为 `prompt/review-rules/review-panel.md` 与 `prompt/review-rules/review-evals.md`，数据在 `rewrite-notes/coordination/review-eval/`。它不是第七个任务命令，复用上面六个命令；普通 review 不走它。试点批次：`01-stage-kernel` 的 01–10 篇，之后 `02-stage-vm` 与 `03-stage-rs` 的 01–10 篇。
+**Review workflow 试点循环（2026-11-07 新增）**：`review-loop` 是文档加关联代码的固定循环与流程评测入口，源在 `prompt/skill/review-loop.md`，规范源为 `prompt/review-rules/review-panel.md` 与 `prompt/review-rules/review-evals.md`，数据在 `rewrite-notes/meta/coordination/review-eval/`。它不是第七个任务命令，复用上面六个命令；普通 review 不走它。试点批次：`01-stage-kernel` 的 01–10 篇，之后 `02-stage-vm` 与 `03-stage-rs` 的 01–10 篇。
 
 > **一致性约定**：`.trae/skills/`、`.codex/skills/` 与 `.claude/skills/review-scan/` 全部由 `prompt/skill/` 经 `tools/generate-derived-skills.sh` 生成（编排器源在 `prompt/skill/review-scan/`，运行时差异用 `<!-- @if:claude -->` / `<!-- @if:codex -->` 条件块表达，Claude 专有的 `allowed-tools` 字段只进 Claude 份）；只有 `.claude/rules/*` 三份运行时副本属手工同步。改完源必须跑：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh` → `tools/diff-trae-skills.sh --only-diff`，四条全绿才算改完。这四道门已由 `.github/workflows/rules-consistency.yml` 在 CI 常驻执行（连同门自身的 `--self-test` 与各工具自测：文风/锚点/承载门/引用对账/迁移/unsafe/模式/断链），不依赖任何人记得跑。

@@ -275,7 +275,7 @@ echo ""
 echo "=== Design 预检（NEW Step 0 requirement）==="
 # 提取 doc 编号前两位（如 03-kmain-cstart → 03），用于匹配 {NN}-design.v{N}.md 模式
 DOC_NN="$(echo "$DOC_STEM" | cut -d- -f1)"
-DESIGN_DIR="$(dirname "$DOC_PATH_NORMALIZED")/.design"
+DESIGN_DIR="$TREE/meta/design/$STAGE"
 if [[ -d "$DESIGN_DIR" ]]; then
     DESIGN_FILES=$(ls "$DESIGN_DIR"/"${DOC_NN}"-design*.md 2>/dev/null || true)
     if [[ -n "$DESIGN_FILES" ]]; then

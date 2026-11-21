@@ -28,9 +28,12 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DECISIONS = ROOT / "rewrite-notes/coordination/review-eval/DECISIONS.md"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notes_layout import REVIEW_EVAL_DIR  # noqa: E402
+
+DEFAULT_DECISIONS = REVIEW_EVAL_DIR / "DECISIONS.md"
 DEFAULT_SCAN = (
-    ROOT / "rewrite-notes/coordination/review-eval/runs",
+    REVIEW_EVAL_DIR / "runs",
     ROOT / "prompt",
 )
 ROW_RE = re.compile(r"^\|\s*D-(\d{3})")

@@ -24,9 +24,9 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 
 1. `prompt/review-rules/review-panel.md`：角色、材料隔离、7 字段、只读纪律。
 2. `prompt/review-rules/review-evals.md`：语料、轨迹格式、指标、meta 问卷、收敛标准。
-3. `rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md`：当前版本。
-4. `rewrite-notes/coordination/review-eval/CORPUS.md`：本篇条目与期望。
-5. `rewrite-notes/coordination/review-eval/DECISIONS.md`：与本篇相关的冻结决策。
+3. `rewrite-notes/meta/coordination/review-eval/WORKFLOW-VERSIONS.md`：当前版本。
+4. `rewrite-notes/meta/coordination/review-eval/CORPUS.md`：本篇条目与期望。
+5. `rewrite-notes/meta/coordination/review-eval/DECISIONS.md`：与本篇相关的冻结决策。
 6. `prompt/review-rules/review-process.md`、`review-doc-checklist.md` 或 `review-code-checklist.md`：按本轮范围加载。
 
 主 agent 必须通过 Skill 工具显式调用 `review-process-skill`，并按范围调用 `review-doc-skill` 或 `review-code-skill`；面板子 agent 使用 `review-panel.md` 第四节的 brief，不加载完整技能，以保持材料隔离。这个例外必须写进 `loop.md §1`。
@@ -37,10 +37,10 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 2. 记录文档 sha256 与行数：`sha256sum <doc>`、`wc -l <doc>`。
 3. 跑 Step 0 硬预检：
    ```bash
-   ls rewrite-notes/<stage>/.design/<NN>-outline.v*.md
-   ls rewrite-notes/<stage>/.design/<NN>-outline-review.v*.md
-   ls rewrite-notes/<stage>/.design/<NN>-design.v*.md
-   ls rewrite-notes/<stage>/.design/<NN>-design-final.v*.md
+   ls rewrite-notes/meta/design/<stage>/<NN>-outline.v*.md
+   ls rewrite-notes/meta/design/<stage>/<NN>-outline-review.v*.md
+   ls rewrite-notes/meta/design/<stage>/<NN>-design.v*.md
+   ls rewrite-notes/meta/design/<stage>/<NN>-design-final.v*.md
    tools/design-coverage-check.sh <stage>
    ```
    缺失时按 `review-process.md` Step 0.3 嵌入生成，不中断循环。
@@ -85,7 +85,7 @@ python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open
 python3 tools/tutorial-rubric-check.py <当前篇>
 ```
 
-第三条读的是 `rewrite-notes/coordination/todo-ledger/<stage>.yaml`——**TODO 的单一源**。
+第三条读的是 `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`——**TODO 的单一源**。
 旧 todo 文件已迁移删除；账本是唯一判据，closed 历史靠 git + `origin_commit` 追溯。
 `--fail-on-open` 同时检查 `blocked: true`：**存在待裁项时本轮不得 CONVERGED**，必须停下来问用户。
 SUGG（P3）也记在这本账里，轮内必须清零。
@@ -138,7 +138,7 @@ V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派
 7. 写 `loop.md §2` 与 `§3`。
 8. 跑轨迹检查（轮次关账只检查本轮）：
    ```bash
-   python3 tools/eval-trace-check.py rewrite-notes/coordination/review-eval/runs/<stage>/<doc-stem> --round R<N>
+   python3 tools/eval-trace-check.py rewrite-notes/meta/coordination/review-eval/runs/<stage>/<doc-stem> --round R<N>
    ```
    退出码非 0 时，回到第 1 步补处置；不允许进入 L3。**L2 时点的豁免（V3.4-r7，
    R6-e 判例）**：`--round` 在 L2 只裁决「面板发现 ↔ 台账处置」的覆盖与处置类合法
@@ -291,7 +291,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 2. **100% 复验**：每个根因都有复验，不是抽样；`复验` 列不能是模板句。
 3. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）。
 4. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）。
-5. `eval-trace-check.py --round R<N>` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、本轮 L6/L6.5 收口小节；`未闭环` 与台账实际数一致）。**文档级 todo 台账另跑** `--todo-file rewrite-notes/<stage>/<NN>-todo.md`（该文档没有 todo 文件时跳过并在 §7 注明"无 todo 台账"）；`允许开放` 不是合法处置类，必须映射为 ②（用户批准 + 日期）或 ⑤（取证路径 / 阻塞），未映射的按未闭环计。
+5. `eval-trace-check.py --round R<N>` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、本轮 L6/L6.5 收口小节；`未闭环` 与台账实际数一致）。**文档级 todo 账本另跑** `python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open`（旧 `<NN>-todo.md` 已迁移删除，不再走 `--todo-file`）；`允许开放` 不是合法处置类，必须映射为 ②（用户批准 + 日期）或 ⑤（取证路径 / 阻塞），未映射的按未闭环计。
 6. **轮关闭条件**：`未闭环=0` 且 `certify 新准入=0`。修改轮（full/structural）关闭
    写 `ROUND-CLOSED` / 进入 `CONVERGENCE-CANDIDATE`——**不得宣告 CONVERGED**
    （收敛声明权只在确认轮，§6A 四态模型；R26/R30 两次假阳性判例）。
@@ -357,7 +357,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 7. 连续两篇证明某条新规无效果或制造误报，回退并记录。
 8. **3 轮试验**：同一 edition 在同一篇上第 3 轮仍 `open>0`，判 `NOT CONVERGING`，写 `EDITION-RETRO.md`；下一个边界处理最大阻塞项或回退，不得开第 4 轮。
 9. **第 3 轮必须是结构轮**：按 `EDITION-RETRO.md` 重写被反复报的段/小节，并在最终 HEAD 跑 citation/anchor/symbol-drift 机械再对账；若第 3 轮仍是线级补丁或仍 `open>0`，同样判 `NOT CONVERGING`。
-10. **设计快照是历史输入**：审查合同 = 文档 + 源码 + `DECISIONS.md`；`.design/*.md` 与文档/源码冲突时以文档/源码为准，不得把旧快照条款当作“文档偏离合同”。
+10. **设计快照是历史输入**：审查合同 = 文档 + 源码 + `DECISIONS.md`；`meta/design/<stage>/*.md` 与文档/源码冲突时以文档/源码为准，不得把旧快照条款当作“文档偏离合同”。
 
 ## 每篇的提交
 

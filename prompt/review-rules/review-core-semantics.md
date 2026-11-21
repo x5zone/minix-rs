@@ -144,7 +144,7 @@ CSR 与汇编原语，以及 `x86_64` / `aarch64` / `riscv64` 三个实现符号
 （`os/servers/vm/src/vmdm_bridge.rs` 三处与 `os/servers/vm/src/alloc_page.rs` 一处，均指向
 `minix_arch::riscv64::paging::vmdm::*`），内核通用层另有约 65 处子模块导入。豁免形态三选一
 （把 VM 定性为边界层成员 / 收进 `*Arch` 接口 / 建立白名单并定期回看）尚未裁决，登记在
-`rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md` 的 PD-33「冻结前合规实测」段。
+`rewrite-notes/meta/coordination/PENDING-DECISIONS-3ARCH-PARITY.md` 的 PD-33「冻结前合规实测」段。
 
 ## 二、全量行为契约表模板
 

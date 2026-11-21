@@ -1,26 +1,26 @@
-# coordination/ 目录说明
+# meta/coordination/ 目录说明
 
 > **并发任务板三块（`2026-10-18` 切分，领地互斥）**：`PARALLEL-20261018-A-CMD.md`（三线 命令面 `os/commands/`，owner `qoder`）、`PARALLEL-20261018-B-LIBDRV.md`（二线 `os/libs/` 逐 crate 与 `os/drivers/`，owner `zcode-ds`）、`PARALLEL-20261018-C-KERN-QEMU.md`（一线 `os/kernel`/`arch`/`plat`/`boot-shim`/`qemu-tests`/`os/libs/minix-boot`，owner `zcode-glm`，**并持有真机窗**）。三块板各自自带任务表、禁碰清单、门配方与收尾顺序；跨板要动别人领地时先登记进 C 板 §6 的跨界登记行。切分依据是 `CONCURRENT-WORK-PROTOCOL.md` §2 的四线所有权清单。
 
 
-本目录管三件事：**待办在哪里记、结论在哪里裁、过程在哪里查**。共 29 个文件（清理后 28，追加待裁新清单 1；明细见 `TODO-LEDGER-INDEX.md` §1；另有 3 篇知识类已移入 `../concepts/`，54 个被删文件全文可在 git 历史回捞）。
+本目录管三件事：**待办在哪里记、结论在哪里裁、过程在哪里查**。`2026-11-22` 起随 `rewrite-notes/meta/` 布局迁入，含 `todo-ledger/` 与 `review-eval/` 两个子目录。下面是操作规则；历史台账（`TODO-LEDGER-*`）只读保留。
 
 ## 先回答两个操作问题
 
 **新增一条 todo，写哪个文件？**
 
-- 跨阶段 / 内核 / 多核 / 三架构齐平 / 测试门 / 卫生类：直接追加到 `TODO-LEDGER-OPEN.md` 的对应小节。沿用原始编号（`SD-*` / `P-*` / `E-*` / `C-*` 等并列，不重编号），附核实命令与读数、日期、快照号。
-- 单个阶段内部的事：写对应 `rewrite-notes/{stage}/todo.md`，`TODO-LEDGER-OPEN.md` §6 只更新索引计数，不复制条目正文。
+- 写 `meta/coordination/todo-ledger/<stage>.yaml`（每 stage 一本，`tools/todo-ledger.py` 校验）。字段、状态词与 `blocked` 语义见该工具头注；`blocked` 是待用户裁决的标志，不是延期出口。
+- `TODO-LEDGER-OPEN.md` / `TODO-LEDGER-DONE.md` / `TODO-LEDGER-INDEX.md` 自 `2026-11-21` 起是历史归档，只读；01/02 的 open 项已迁入 YAML，其余阶段迁移后同样删除旧 todo 文件。
 - 需要人拍板的新问题：另起新清单，不回填已冻结的 `PENDING-DECISIONS-3ARCH-PARITY.md`。
 - 禁止新建 `new_todo_*.md`（除非按 `CONCURRENT-WORK-PROTOCOL.md` 正式分线并发）。
 
 **完成一条 todo，更新哪个文件？**
 
-- 只动两本台账：`TODO-LEDGER-OPEN.md` 里翻状态，或搬到 `TODO-LEDGER-DONE.md` §1（已完成）/ §2（裁决执行）。每条状态变更必须附三件套：可重跑的核实命令与读数、核实日期、当时快照提交号，缺一件视同未核实。
-- 不改原账本的描述文字（`edge_todo.md` / 各阶段 `todo.md` / 结构债登记册里的论证），不改裁决文件。判据：**状态以本台账为准，描述与修法以原账本为准，裁决以 `PD-*` 为准**。
-- 动手前双查避让（`bash tools/check-staged-inflight.sh --list` 与 `git status --porcelain`），收尾跑 `TODO-LEDGER-INDEX.md` §6 列的校验（`todo-reconcile-scan.sh`、`notes-link-check.py`、`todo-staleness-check.sh`、`doc-style-lint.sh --diff`、`check-staged-inflight.sh`）。
+- 只改 YAML 行的 `status` / `evidence` / `verified_by` / `verified_at`；closed 行必须有可重放证据。状态变更不靠聊天，靠 `tools/todo-ledger.py check` 通过。
+- 不改历史台账的描述文字，不改裁决文件。判据：**状态以 YAML 为准，描述与修法以原账本为准，裁决以 `PD-*` 为准**。
+- 动手前双查避让（`bash tools/check-staged-inflight.sh --list` 与 `git status --porcelain`），收尾跑 `tools/todo-ledger.py check`、`tools/notes-link-check.py rewrite-notes/`。
 
-## 台账三件套（当前唯一可写入口）
+## 历史台账（只读）
 
 | 文件 | 作用 |
 |---|---|
@@ -79,4 +79,4 @@
 
 ## 被删文件的回捞
 
-清理前 76 个文件，删除 54 个（评审类 19、会话类 28、案卷类 4、其余 3），删除前已在快照入库。按文件名取回：`git log --diff-filter=D --summary -- rewrite-notes/coordination/<文件名>` 找到删除提交，再 `git show <删除提交>^:rewrite-notes/coordination/<文件名>`。处置明细见 `TODO-LEDGER-INDEX.md` §1。
+清理前 76 个文件，删除 54 个（评审类 19、会话类 28、案卷类 4、其余 3），删除前已在快照入库。按文件名取回：`git log --diff-filter=D --summary -- rewrite-notes/meta/coordination/<文件名>` 找到删除提交，再 `git show <删除提交>^:rewrite-notes/meta/coordination/<文件名>`。处置明细见 `TODO-LEDGER-INDEX.md` §1。

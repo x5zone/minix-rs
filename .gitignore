@@ -32,6 +32,7 @@ Cargo.lock
 # Formal docs (00-25) MUST NOT reference these paths; they are intermediate process content.
 # Both folders are chmod 700 to hide from casual browsing (formal docs are self-contained)
 **/.design/
+rewrite-notes/meta/design/
 **/tmp_design_and_todo/
 
 .idea/

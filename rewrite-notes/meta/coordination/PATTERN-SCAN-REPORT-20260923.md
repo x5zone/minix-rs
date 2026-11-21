@@ -1,8 +1,8 @@
 # PATTERN-SCAN-REPORT-20260923 — 历史日志模式挖掘与回归检查（C-61）
 
 > **任务**：用户指令「从 FIXLOG、WORKLOG 等历史 LOG 中扫描并发掘模式，扫描得到测试，避免以后再出现类似的问题」。
-> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../tools/pattern-gate.sh)（13 项机械检查）+
-> [`tools/pattern-gate-baseline.txt`](../../tools/pattern-gate-baseline.txt)（存量豁免）。
+> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../../tools/pattern-gate.sh)（13 项机械检查）+
+> [`tools/pattern-gate-baseline.txt`](../../../tools/pattern-gate-baseline.txt)（存量豁免）。
 > 判别证据：`tmp/evidence/20260923-c61-pattern-gate/`（selftest 18 例正反矩阵 + 真树变异负例 6 组 + 全量运行实录）。
 > **更正纪律**：本档断言全部可用所引条目标题 grep 复位；引用 FIXLOG 用「线 + 条目标题」定位（裸行号会漂移，
 > 即 review-patterns 所称「代码注释行号漂移」一类），引用代码用符号名。发现写错就地追加更正节，不改写原条目。
@@ -296,8 +296,8 @@ selftest 18/18 全绿；真树变异 6 组（P3/P4/P5/P6/P7 注入真实违规�
 selftest 24 例（+P14×2/P15×2）正反矩阵全绿；真树变异：P14 新增裸 set 即 FAIL、P15 gitignore 删条目即 FAIL、还原复绿；full 模式 PASS=11 FAIL=0 SKIP=1（worktree）/ 主树合并后终验。**过程事故如实记**：变异还原用 `git checkout -- .gitignore` 把自己未提交的 gitignore 条目一并冲掉（P15 假 FAIL 一次）——变异脚本的还原必须用「改前备份/改后还原」，对未提交在制禁 checkout（D2 模式第 N 次现世，本次受害者是检查者自己）。# PATTERN-SCAN-REPORT-20260923 — 历史日志模式挖掘与回归检查（C-61）
 
 > **任务**：用户指令「从 FIXLOG、WORKLOG 等历史 LOG 中扫描并发掘模式，扫描得到测试，避免以后再出现类似的问题」。
-> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../tools/pattern-gate.sh)（13 项机械检查）+
-> [`tools/pattern-gate-baseline.txt`](../../tools/pattern-gate-baseline.txt)（存量豁免）。
+> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../../tools/pattern-gate.sh)（13 项机械检查）+
+> [`tools/pattern-gate-baseline.txt`](../../../tools/pattern-gate-baseline.txt)（存量豁免）。
 > 判别证据：`tmp/evidence/20260923-c61-pattern-gate/`（selftest 18 例正反矩阵 + 真树变异负例 6 组 + 全量运行实录）。
 > **更正纪律**：本档断言全部可用所引条目标题 grep 复位；引用 FIXLOG 用「线 + 条目标题」定位（裸行号会漂移，
 > 即 review-patterns 所称「代码注释行号漂移」一类），引用代码用符号名。发现写错就地追加更正节，不改写原条目。

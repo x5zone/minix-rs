@@ -1453,12 +1453,12 @@ grep -c "unsafe" {CODE_FILE}
            - outline.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.2 嵌入生成
            - outline-review.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.3 嵌入生成（AI 自审）
            - design.v*.md 缺失 → Gate H.1 FAIL → Step 0.3.4 嵌入生成
-         3. 工具 `tools/design-coverage-check.sh {stage}` 自动扫描所有 stage 的 .design/，输出缺失报告
-         4. STATE.md Resume Point 必含 `ls .design/` 命令（避免续 session 跳过）
+         3. 工具 `tools/design-coverage-check.sh {stage}` 自动扫描所有 stage 的 meta/design/<stage>/，输出缺失报告
+         4. STATE.md Resume Point 必含 `ls meta/design/<stage>/` 命令（避免续 session 跳过）
 ```
 
 **判定**：
-- AI 跳过 `ls .design/{NN}-*.md` 命令 → 模式 69 触发
+- AI 跳过 `ls meta/design/{stage}/{NN}-*.md` 命令 → 模式 69 触发
 - scan.md Block Gates 把 Gate H 标 "N/A" / "[SIMPLIFIED]" 而非 PASS/FAIL → 模式 69 触发
 - 用"已有 CONVERGED 状态"/"incremental review"为由跳过预检 → 模式 69 触发（P0-process-violation）
 - 用"复用 03/04 design"为由跳过预检 → 模式 69 触发（P0-process-violation，禁止跨文档复用）

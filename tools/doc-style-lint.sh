@@ -10,7 +10,7 @@
 # 用法：
 #   tools/doc-style-lint.sh FILE...            # 全量检查给定文件
 #   tools/doc-style-lint.sh --diff [RANGE]     # 只检查新增/修改行；RANGE 传给 git diff（默认 HEAD）
-#   tools/doc-style-lint.sh --dir DIR          # 检查目录下所有 .md（跳过 archive/draft/.design）
+#   tools/doc-style-lint.sh --dir DIR          # 检查目录下所有 .md（跳过 archive/draft/.design 与 meta/design）
 #   tools/doc-style-lint.sh --strict           # 额外启用 warning 级规则（默认只报 error 级）
 #   tools/doc-style-lint.sh --self-test        # 内置正/反例自测，exit 0 = 自测通过
 #
@@ -255,7 +255,7 @@ if [ "$MODE" = "self-test" ]; then do_self_test; exit 0; fi
 if [ "$MODE" = "dir" ]; then
   [ ${#TARGETS[@]} -eq 1 ] || usage
   mapfile -t DIRFILES < <(find "${TARGETS[0]}" -name '*.md' -type f \
-    | grep -v '/\.design/' | grep -v '/archive' | grep -v '/draft' | sort)
+    | grep -v '/\.design/' | grep -v '/meta/design/' | grep -v '/archive' | grep -v '/draft' | sort)
   TARGETS=("${DIRFILES[@]}")
 elif [ "$MODE" = "diff" ]; then
   while IFS=$'\t' read -r file lines; do

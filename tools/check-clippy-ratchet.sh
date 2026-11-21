@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-clippy-ratchet.sh — clippy 警告【计数】棘轮（PD-31 采乙「报告制 + 新增必须为零」的机械化件）
 #
-# 出处：rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md PD-31（第十轮定稿：采乙）。
+# 出处：rewrite-notes/meta/coordination/PENDING-DECISIONS-3ARCH-PARITY.md PD-31（第十轮定稿：采乙）。
 # 决策：把「人工对账 clippy_base.txt、新增必须为零」的棘轮纪律机械化进持续集成。存量按
 #   「谁改哪块清哪块」的童子军纪律消化，清完的模块从报告名单摘除；全仓归零后再议翻回
 #   `cargo clippy -D warnings`（PD-31 被否的甲案：一次性清存量在小团队长仓库从未成功且堵死改动）。

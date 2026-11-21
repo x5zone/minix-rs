@@ -19,7 +19,7 @@ cd "$(git rev-parse --show-toplevel)"
 # `2026-10-08` 待办合并与清理轮：旧结构债台账存根已删（全文已由 `STRUCTURAL-DEBT-REGISTER-20261008.md` 承担），
 # 本清单同步摘除那一条；齐平待办清单仍在制，保留登记。
 INFLIGHT=(
-  "rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md"
+  "rewrite-notes/meta/coordination/TODO-3ARCH-PARITY-20261006.md"
 )
 
 if [[ "${1:-}" == "--list" ]]; then

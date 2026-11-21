@@ -253,12 +253,12 @@ Output: SYMBOLS.md path + P0 gaps + ARCH marks.
 **Step 0 design + outline 预检**（**所有 review 模式强制，2026-07-16 扩；原"Profile R/C/I/H-K only"已废除**）：前移自 Step 1.6，**v2 可复用快照语义**：
 ```bash
 # 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
-ls {tree}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
-ls {tree}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
-ls {tree}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
-ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
+ls {tree}/meta/design/{stage}/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
+ls {tree}/meta/design/{stage}/{NN}-outline-review.v*.md # outline 评审快照
+ls {tree}/meta/design/{stage}/{NN}-design.v*.md         # 非 bagging code 设计快照
+ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md   # bagging
 # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-cat {tree}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+cat {tree}/meta/design/{stage}/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
 # 工具支持（NEW，Session #12 落地）
 tools/design-coverage-check.sh {stage} [--stage {stage}]           # 自动扫描所有 stage 缺失报告
 ```
@@ -288,9 +288,9 @@ tools/design-coverage-check.sh {stage} [--stage {stage}]           # 自动扫�
    ## Step 0: 预检结果（design + outline 完整性，NEW 2026-07-16）
    | 检查项 | ls 命令 | 结果 | 判定 |
    |--------|---------|------|------|
-   | outline 快照 | `ls .design/{NN}-outline.v*.md` | `06-outline.v1.md` ✅ | ✅ 存在（旧版作参考，Step 0.3.2 重新评估） |
-   | outline-review 快照 | `ls .design/{NN}-outline-review.v*.md` | （无）| ❌ **缺失 → Gate H.6 FAIL → Step 0.3.3 生成** |
-   | design 快照 | `ls .design/{NN}-design.v*.md` | （无）| ❌ **缺失 → Gate H.1 FAIL → Step 0.3.4 生成** |
+   | outline 快照 | `ls meta/design/{stage}/{NN}-outline.v*.md` | `06-outline.v1.md` ✅ | ✅ 存在（旧版作参考，Step 0.3.2 重新评估） |
+   | outline-review 快照 | `ls meta/design/{stage}/{NN}-outline-review.v*.md` | （无）| ❌ **缺失 → Gate H.6 FAIL → Step 0.3.3 生成** |
+   | design 快照 | `ls meta/design/{stage}/{NN}-design.v*.md` | （无）| ❌ **缺失 → Gate H.1 FAIL → Step 0.3.4 生成** |
    ```
 5. **决策记录豁免**（仅限一次性用户明确豁免）：Session #11 用户决策"04/05 不回填"**仅适用于当时已 CONVERGED 的 04/05**，**不可泛化**到 06/07/08/...（**模式 71 DOG 触发**）。豁免必须登记在 STATE.md `§豁免列表` 段。
 
@@ -367,10 +367,10 @@ tools/design-coverage-check.sh {stage} [--stage {stage}]           # 自动扫�
 
 Step 1.6.1 design 存在性确认（Step 0 预检的复核）：
 ```bash
-ls {tree}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（持久化可复用快照，任意版本命中）
-ls {tree}/{stage}/.design/{NN}-design-final.v*.md # bagging
+ls {tree}/meta/design/{stage}/{NN}-design.v*.md       # 非 bagging（持久化可复用快照，任意版本命中）
+ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 ```
-> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `{tree}/{stage}/.design/`。
+> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `{tree}/meta/design/{stage}/`。
 
 Step 1.6.2 design 对齐检查（6 项）：
 1. doc/code 中的命名是否与 design 一致？（无 "我用了更合理的命名"）

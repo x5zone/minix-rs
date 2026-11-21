@@ -4178,13 +4178,13 @@ rc marker 仍未达；本单元代码已提交。
 ## §1.76（B42 侦察·只读）活锁双方定位 = RS(slot2)↔VM(slot8)，但 `0x227980` 真实 flags 静态不可判——须真机探针
 
 **先处理一条外部只读诊断报告（side-thread 转发）**：三条经核全部对**当前码**闭环，不复处理——
-- 诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）：报告推荐的修法**正是已落地实现**。[smp.rs:1219-1252](../../os/kernel/src/smp.rs) 现为 `static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE)`（`-1`=空闲 / `>=0`=持有 CPU id），acquire 单条 `compare_exchange`、release 单条 `store`，注释原文即在描述报告所指的“两步 store 中间态致中断 handler 误判非继承→同 CPU 自旋死锁”窗口。§1.52 commit 917de5e83 已合入。
+- 诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）：报告推荐的修法**正是已落地实现**。[smp.rs:1219-1252](../../../os/kernel/src/smp.rs) 现为 `static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE)`（`-1`=空闲 / `>=0`=持有 CPU id），acquire 单条 `compare_exchange`、release 单条 `store`，注释原文即在描述报告所指的“两步 store 中间态致中断 handler 误判非继承→同 CPU 自旋死锁”窗口。§1.52 commit 917de5e83 已合入。
 - 诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）：报告自陈“非新的独立 bug 定案，是把‘VM 并发改页表’假设收紧”。该假设家族已 §1.51 泛化证伪、真根因链改判至 §1.70（`cross_space` 逐连续段 walk 目标页表，commit 6b667e430）+ §1.74/§1.75（present-but-NX 修复）。配方针对的病灶已被处理。
 - 诊断三（`syscall_process.rs` 未提交）：当前工作树跟踪文件净，无该改动。
 
-**B42 活锁双方**：`grep BOOT_MODULE_PROC_NRS` 于 [proc.rs:111-124](../../os/kernel/src/proc.rs) 实锤——boot server 保留 C `com.h` 固定号（PM=0/VFS=1/**RS=2**/MEM=3/SCHED=4/TTY=5/DS=6/MIB=7/**VM=8**/PFS=9/MFS=10/INIT=11）。故 `fa=0x227980` 的 pick slot `0x2↔0x8` 乒乓 = **RS↔VM**。`0x227980` 落在 base `0x200000` 镜像内偏移 ~0x27980（各 boot 模块同基址，`readelf` 已核）。
+**B42 活锁双方**：`grep BOOT_MODULE_PROC_NRS` 于 [proc.rs:111-124](../../../os/kernel/src/proc.rs) 实锤——boot server 保留 C `com.h` 固定号（PM=0/VFS=1/**RS=2**/MEM=3/SCHED=4/TTY=5/DS=6/MIB=7/**VM=8**/PFS=9/MFS=10/INIT=11）。故 `fa=0x227980` 的 pick slot `0x2↔0x8` 乒乓 = **RS↔VM**。`0x227980` 落在 base `0x200000` 镜像内偏移 ~0x27980（各 boot 模块同基址，`readelf` 已核）。
 
-**关键嫌疑（静态未证，须探针区分）**：B41 修复命中 `exec_worker.rs:928 PROT_RWX → mmap.rs:102 to_vr_flags 消费 PROT_EXEC` 这条**动态 exec 腿**。但 **RS 等 boot server 的初始地址空间并非由 `exec_worker→to_vr_flags` 装配**——boot 镜像腿在 [misc.rs](../../os/kernel/src/misc.rs) 的 `p_seg.phys_root` 装配带 + [vm_handoff.rs](../../os/kernel/src/vm_handoff.rs)（首次 boot-image load 前后帧池发布），是否经 `to_vr_flags` 组 EXECUTABLE 静态未定位到确证点（`rs.rs:545` 命中的是 heap/prealloc 匿名数据腿，`READ|WRITE` 无 EXEC 属正确，非文本腿）。
+**关键嫌疑（静态未证，须探针区分）**：B41 修复命中 `exec_worker.rs:928 PROT_RWX → mmap.rs:102 to_vr_flags 消费 PROT_EXEC` 这条**动态 exec 腿**。但 **RS 等 boot server 的初始地址空间并非由 `exec_worker→to_vr_flags` 装配**——boot 镜像腿在 [misc.rs](../../../os/kernel/src/misc.rs) 的 `p_seg.phys_root` 装配带 + [vm_handoff.rs](../../../os/kernel/src/vm_handoff.rs)（首次 boot-image load 前后帧池发布），是否经 `to_vr_flags` 组 EXECUTABLE 静态未定位到确证点（`rs.rs:545` 命中的是 heap/prealloc 匿名数据腿，`READ|WRITE` 无 EXEC 属正确，非文本腿）。
 
 **为何不能只靠静态收口**：现有诊断探针 `fl=0x41b` 读的是**固定 probe 地址**（非 `0x227980`），`0x227980` 在 RS live 页表里的真实 flags **未知**。故 B42 与 B41 是否同因（boot 腿同缺 EXECUTABLE）无法静态判定。
 
@@ -4201,7 +4201,7 @@ rc marker 仍未达；本单元代码已提交。
 
 **探针**（复用 committed 基线里的 `vmpt2bf` 遗留探针，把地址从失效的 `0x203bf0` 改到当前 `0x227980`，并加打 `is_page_writable`/`is_executable`；`-smp 1` 单核确定性台 bn60b=712332 行，探针跑完 `git checkout` 回滚、工作树净）：
 
-**决定性读数**：`nk4a: vmpt2bf off=0x980 ptroot=0x319e000 wr=false exec=false`——VM 侧处理 RS（ep=2）在 `0x227980`（region.vaddr=`0x227000` + offset `0x980`）缺页时，该 region **`exec=false` 且 `wr=false`**（read_only、无 EXECUTABLE）。`sync_slot_pte`（[cow_exec_pf.rs:129-135](../../os/servers/vm/src/cow_exec_pf.rs)）遂组 `PageFlags::read_only()`（非可写→read_only）且不加 EXECUTABLE（exec=false）→ PTE **present 但 NX** → 取指恒 #PF 活锁（`227980` 命中 71287 次）。签名全净（`kernel panic=0 / pf-exit noaddr=0 / vm-pf err=0 / OOM=0`）——**非回归，纯 B41 同型病灶换到更深阶段**。
+**决定性读数**：`nk4a: vmpt2bf off=0x980 ptroot=0x319e000 wr=false exec=false`——VM 侧处理 RS（ep=2）在 `0x227980`（region.vaddr=`0x227000` + offset `0x980`）缺页时，该 region **`exec=false` 且 `wr=false`**（read_only、无 EXECUTABLE）。`sync_slot_pte`（[cow_exec_pf.rs:129-135](../../../os/servers/vm/src/cow_exec_pf.rs)）遂组 `PageFlags::read_only()`（非可写→read_only）且不加 EXECUTABLE（exec=false）→ PTE **present 但 NX** → 取指恒 #PF 活锁（`227980` 命中 71287 次）。签名全净（`kernel panic=0 / pf-exit noaddr=0 / vm-pf err=0 / OOM=0`）——**非回归，纯 B41 同型病灶换到更深阶段**。
 
 **定性（坐实 §1.76 假设 (a)）**：B42 ＝ **B41 的 present-but-NX 同型缺陷，发生在 boot-server 文本腿**。B41 只修了动态 `exec_worker.rs:928 PROT_RWX → mmap.rs to_vr_flags 消费 PROT_EXEC` 这条腿；但承载 RS 文本 `0x227000` 的 region **从未承接 PROT_EXEC**（`is_executable()==false`），故 sync_slot_pte 依旧产 NX。`ptroot=0x319e000`（VM 侧 RS 页表根）；内核 `sa0-2 root=` 探针本轮未打出（`picked` 为 slot 索引非 ProcNr，格式待查），(b) 页表实例≠CR3 尚未完全排除，但 `exec=false` 已足以单独致活锁，先修 (a)。
 
@@ -4237,7 +4237,7 @@ rc marker 仍未达；本单元代码已提交。
 
 ## §1.79（B43 侦察·只读+真机 bn61 定量·未改码）实锤＝动态 exec 腿 `ps_str` 走 `i32`（LP64 截断）+ PM `as u64` 符号扩展 → 子 RBX 悬空指针 noaddr SIGSEGV
 
-**先处置本轮再次转发的 side-thread 只读诊断报告**（与 §1.76 同一份）：三条经核对**全部对当前码闭环，不复处理**——诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）＝报告推荐修法正是 §1.52 commit 917de5e83 已落地实现（[smp.rs:1219-1252](../../os/kernel/src/smp.rs) 现 `static BKL: AtomicIsize`，`-1`=空闲/`>=0`=持有 CPU）；诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）＝报告自陈“非新 bug 定案”，该假设家族已 §1.51 泛化证伪、真根因改判 §1.70（`cross_space` 逐段 walk，commit 6b667e430）+ §1.74/§1.75（present-but-NX）；诊断三（`syscall_process.rs` 未提交）＝本轮 `git status` 复核工作树跟踪净、无该改动。
+**先处置本轮再次转发的 side-thread 只读诊断报告**（与 §1.76 同一份）：三条经核对**全部对当前码闭环，不复处理**——诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）＝报告推荐修法正是 §1.52 commit 917de5e83 已落地实现（[smp.rs:1219-1252](../../../os/kernel/src/smp.rs) 现 `static BKL: AtomicIsize`，`-1`=空闲/`>=0`=持有 CPU）；诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）＝报告自陈“非新 bug 定案”，该假设家族已 §1.51 泛化证伪、真根因改判 §1.70（`cross_space` 逐段 walk，commit 6b667e430）+ §1.74/§1.75（present-but-NX）；诊断三（`syscall_process.rs` 未提交）＝本轮 `git status` 复核工作树跟踪净、无该改动。
 
 **修正旧登记**：§1.78 顶部把 B43 猜为“PM↔VFS 乒乓收尸活锁（B31/B36 家族重现）”。真机 bn61 定量证伪该“活锁”框架——`pf-exit noaddr` 仅 **2 次**、`csig sig=0xb`(SIGSEGV) 仅 **2 次**、`init-state Runcom` 仅 **1 轮**（非 15 轮循环）、`kernel panic=0`。是**一次干净的两击 SIGSEGV 杀死 init 的 fork 子（ProcNr 0xc）**，尾部 `rip=0x204b32` 只是 PM 复位后 idle，非乒乓活锁。
 
@@ -4250,15 +4250,15 @@ nk4a: csig tgt=0xc sig=0xb (SIGSEGV)  ×2 → 子死
 ```
 对照** boot 服务器（同一探针，struct_c20/c21 历史）**：`stack=0x00007fffffffea78 ps_str=0x00007fffffffefe0`（**高 16 位=0x0000_7fff**，合法 47 位用户地址）。二者低位 `...efe0` **完全相同**，唯动态腿高 32 位从 `0x00007fff` 变 `0xffffffff`。
 
-**机制（读码坐实·算术自洽）**：`0xffffffffffffefe0` = `sign_extend_i32_to_u64(0xffffefe0)` = `(-0x1020) as u64`。合法 ps_strings `0x0000_7fff_ffff_efe0`（47 位）→ 截断入 `i32`（丢高 17 位）= `0xffff_efe0`（i32 视作 **-0x1020**）→ PM [ipc/vfs.rs:544](../../os/servers/pm/src/ipc/vfs.rs) `VirBytes(args.newps_str as u64)` 对负 i32 **符号扩展** = `0xffff_ffff_ffff_efe0`。内核 `dispatch_exec` 把该 `ps_str` 种进子进程 **saved RBX**（ps_strings ABI，[arch/x86_64/boot.rs:143](../../os/arch/src/x86_64/boot.rs) `rbx: entry.ps_strings`）→ 子从入口 `0x20ef60`（crt0/`_start`）首条读 `[RBX+8]=0xffffffffffffefe8` → 无映射 → `pf-exit noaddr` → SIGSEGV。与 §749「exec 时 ps_str 非零但进程读 ps_strings 崩」旧线索同脉，本单元首次钉死为 **i32 截断+符号扩展**。
+**机制（读码坐实·算术自洽）**：`0xffffffffffffefe0` = `sign_extend_i32_to_u64(0xffffefe0)` = `(-0x1020) as u64`。合法 ps_strings `0x0000_7fff_ffff_efe0`（47 位）→ 截断入 `i32`（丢高 17 位）= `0xffff_efe0`（i32 视作 **-0x1020**）→ PM [ipc/vfs.rs:544](../../../os/servers/pm/src/ipc/vfs.rs) `VirBytes(args.newps_str as u64)` 对负 i32 **符号扩展** = `0xffff_ffff_ffff_efe0`。内核 `dispatch_exec` 把该 `ps_str` 种进子进程 **saved RBX**（ps_strings ABI，[arch/x86_64/boot.rs:143](../../../os/arch/src/x86_64/boot.rs) `rbx: entry.ps_strings`）→ 子从入口 `0x20ef60`（crt0/`_start`）首条读 `[RBX+8]=0xffffffffffffefe8` → 无映射 → `pf-exit noaddr` → SIGSEGV。与 §749「exec 时 ps_str 非零但进程读 ps_strings 崩」旧线索同脉，本单元首次钉死为 **i32 截断+符号扩展**。
 
 **病灶=仅动态 VFS `do_exec` 腿用 `i32` 承载 `ps_str`**（LP64 未加宽的 32 位遗留，B37b「phdr 界留 SECTOR_SIZE」同族）。全链 `i32` 站点：
-- [minix-types/src/ipc/vfs.rs:363](../../os/libs/minix-types/src/ipc/vfs.rs) `VfsCall::Exec { ps_str: i32 }` → encode `m7i5`（offset16·4字节·装不下 64 位指针）/ decode 同；
+- [minix-types/src/ipc/vfs.rs:363](../../../os/libs/minix-types/src/ipc/vfs.rs) `VfsCall::Exec { ps_str: i32 }` → encode `m7i5`（offset16·4字节·装不下 64 位指针）/ decode 同；
 - 同文件 `VfsReply::Exec { newps_str: i32 }` → `m7i5`；
-- [vfs/src/exec_worker.rs:140/157](../../os/servers/vfs/src/exec_worker.rs) `ExecRequest.ps_str: i32` / `ExecLoaded.newps_str: i32`，L515 `newps_str: req.ps_str` 原样带过；
-- PM [exec.rs / ipc/vfs.rs:72](../../os/servers/pm/src/ipc/vfs.rs) `ExecRestartArgs.newps_str: i32` + `as u64` 符号扩展。
+- [vfs/src/exec_worker.rs:140/157](../../../os/servers/vfs/src/exec_worker.rs) `ExecRequest.ps_str: i32` / `ExecLoaded.newps_str: i32`，L515 `newps_str: req.ps_str` 原样带过；
+- PM [exec.rs / ipc/vfs.rs:72](../../../os/servers/pm/src/ipc/vfs.rs) `ExecRestartArgs.newps_str: i32` + `as u64` 符号扩展。
 
-**对照正确腿（证明修法方向成立）**：① boot 腿 [vm_server.rs:1044](../../os/servers/vm/src/vm_server.rs) `sys_exec(endpoint, entry, vsp, 0, filled.ps_str)` 全程原生 `u64`（无 i32 往返）→ boot 全对；② RS→PM 腿 [minix-sys/src/pm.rs:800](../../os/libs/minix-sys/src/pm.rs) `exec_restart_via(ps_str: u64)` → `MessRsPmExecRestart { ps_str: u64 }` 亦 u64 无损。**唯 VFS `do_exec` 消息腿是 i32**——路径不对称。
+**对照正确腿（证明修法方向成立）**：① boot 腿 [vm_server.rs:1044](../../../os/servers/vm/src/vm_server.rs) `sys_exec(endpoint, entry, vsp, 0, filled.ps_str)` 全程原生 `u64`（无 i32 往返）→ boot 全对；② RS→PM 腿 [minix-sys/src/pm.rs:800](../../../os/libs/minix-sys/src/pm.rs) `exec_restart_via(ps_str: u64)` → `MessRsPmExecRestart { ps_str: u64 }` 亦 u64 无损。**唯 VFS `do_exec` 消息腿是 i32**——路径不对称。
 
 **C ground truth**：i386 时代 `VFS_PM_PS_STR`/`VFS_PM_NEWPS_STR` 存 `m7_i5`（32 位指针装得下），`do_execrestart` 直接 `(char *)msg->VFS_PM_NEWPS_STR` 无损；x86-64 LP64 下用户栈/ps_strings 在 `0x0000_7fff_ffff_xxxx`（47 位），`m7_i5` 4 字节必截断——移植未随之加宽。内核 `sys_exec` 形参本已是 `u64`（`ps_str` payload 对内核透明），故此修复**非内核 ABI/[ARCH] 三处一致契约变更**（无需停点问用户），仅内部 Rust IPC 消息枚举字段加宽。
 

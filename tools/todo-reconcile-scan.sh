@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # todo-reconcile-scan.sh — 待办台账判据执行器（只读，可重跑）
 #
-# 作用：把 `rewrite-notes/coordination/TODO-LEDGER-INDEX.md` §4 判据表里那些
+# 作用：把 `rewrite-notes/meta/coordination/TODO-LEDGER-INDEX.md` §4 判据表里那些
 #       「一条命令可定案」的条目重算一遍，输出 TSV（类别 / 读数 / 期望基线 / 是否漂移）。
 #       台账里每条状态变更都要求附可重跑命令，本脚本就是这些命令的集中执行处——
 #       下一轮不必再逐条手敲，也不必相信上一轮抄下的数字。
@@ -26,7 +26,7 @@ usage() {
 
 重算待办台账的可机器判据，输出四列 TSV：
   判据名 / 本次读数 / 台账基线 / 判定（OK|DRIFT|NA）
-基线取自 rewrite-notes/coordination/TODO-LEDGER-INDEX.md §4，数字变化即 DRIFT——
+基线取自 rewrite-notes/meta/coordination/TODO-LEDGER-INDEX.md §4，数字变化即 DRIFT——
 这不代表台账错了，只代表写台账时该重跑并复核相应条目。
 HELP
 }

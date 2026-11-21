@@ -68,10 +68,10 @@ Missing this section → scan.md marked DRAFT.
 4. **⛔ Step 0 硬阻断预检（NEW 2026-07-16，所有 review 模式强制，模式 69 PSMD + 71 DOG 配套）**：
    - **必须跑 4 条 `ls`**（无论何种 review 模式）：
      ```bash
-     ls rewrite-notes/$STAGE/.design/$NN-outline.v*.md
-     ls rewrite-notes/$STAGE/.design/$NN-outline-review.v*.md
-     ls rewrite-notes/$STAGE/.design/$NN-design.v*.md
-     ls rewrite-notes/$STAGE/.design/$NN-design-final.v*.md  # bagging only
+     ls rewrite-notes/meta/design/$STAGE/$NN-outline.v*.md
+     ls rewrite-notes/meta/design/$STAGE/$NN-outline-review.v*.md
+     ls rewrite-notes/meta/design/$STAGE/$NN-design.v*.md
+     ls rewrite-notes/meta/design/$STAGE/$NN-design-final.v*.md  # bagging only
      ```
    - **必须跑工具扫描**：
      ```bash
@@ -178,7 +178,7 @@ Phase 2.6.3 IN_DESIGN 状态（替代 DEFERRED 逃避）：
 - 月度审计：清理过期 IN_DESIGN 项
 
 Phase 2.6.4 outline 对齐检查（H.6，方案 D 新增）：
-- 检查 `{tree}/{stage}/.design/{NN}-outline.v*.md` 是否存在（持久化可复用快照，任一版本命中）
+- 检查 `{tree}/meta/design/{stage}/{NN}-outline.v*.md` 是否存在（持久化可复用快照，任一版本命中）
 - 对照 Step 0.5.3 的 outline 偏离矩阵，确认无 P0 偏离（核心概念遗漏）
 - outline 快照缺失 → Gate H.6 FAIL，建议补生成 outline（走 Step 0.3.2-0.3.3）
 

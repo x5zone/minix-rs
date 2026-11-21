@@ -6,7 +6,7 @@ suggestions、follow-ups），彼此不引用、无门读取。收敛判据只�
 「CONVERGED 但旧 todo 文档还有 24 条待实施」的假收敛。
 
 用户裁决：
-  - 规范源 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。
+  - 规范源 = `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。
   - 旧 todo 文件在迁移后删除；closed 历史靠 git 历史 + origin_commit 追溯。
   - 零欠账：CONVERGED 时当前篇 `status: open` 必须为 0。
   - 待裁项必须 `blocked: true` + `blocked_reason`，阻断收敛。
@@ -32,7 +32,10 @@ except Exception:  # pragma: no cover
     raise SystemExit(2)
 
 ROOT = Path(__file__).resolve().parents[1]
-LEDGER_DIR = ROOT / "rewrite-notes/coordination/todo-ledger"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notes_layout import TODO_LEDGER_DIR  # noqa: E402
+
+LEDGER_DIR = TODO_LEDGER_DIR
 STATUSES = {"open", "closed", "rejected", "defer-approved", "historical"}
 SEVERITIES = {"P0", "P1", "P2", "P3"}
 KINDS = {"code", "doc", "design", "arch"}

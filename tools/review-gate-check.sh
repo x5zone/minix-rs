@@ -112,7 +112,7 @@ if [[ -n "${DOC_DIR:-}" && -f "${DOC_DIR}/VERIFY-CHECK.md" ]]; then
   VERIFY_FILE="${DOC_DIR}/VERIFY-CHECK.md"
 fi
 
-# design 目录路径：在三棵树里定位 <stage>/<doc-stem>.md，命中即取该 stage 的 .design/ 快照
+# design 目录路径：在三棵树里定位 <stage>/<doc-stem>.md，命中即取该 stage 的 meta/design/<stage>/ 快照
 DESIGN_FILE=""
 OUTLINE_FILE=""
 OUTLINE_REVIEW_FILE=""
@@ -142,7 +142,7 @@ for tree in "${NOTES_TREES[@]}"; do
   doc_file="${stage_dir}/${DOC_STEM}.md"
   if [[ -f "${doc_file}" ]]; then
     DOC_ROOT="${tree}"
-    DESIGN_DIR="${stage_dir}.design"
+    DESIGN_DIR="${tree}/meta/design/${STAGE}"
     DESIGN_FILE="$(latest_snapshot "${DESIGN_DIR}/${NN}-design.v*.md")"
     OUTLINE_FILE="$(latest_snapshot "${DESIGN_DIR}/${NN}-outline.v*.md")"
     OUTLINE_REVIEW_FILE="$(latest_snapshot "${DESIGN_DIR}/${NN}-outline-review.v*.md")"
@@ -318,7 +318,7 @@ for fail in "${FAIL_LIST[@]}"; do
 done
 echo ""
 echo "⛔ Review gate-check FAIL（exit $(${STRICT_MODE} && echo 2 || echo 1)）— 2026-07-16 Session #15 (C 路径 Phase 1 C.1.3)"
-echo "   触发条件：.design/outline/outline-review 缺失 → Step 0.3 嵌入生成（不中断 review）"
+echo "   触发条件：meta/design/outline/outline-review 缺失 → Step 0.3 嵌入生成（不中断 review）"
 echo "   触发条件：scan/structure/SYMBOLS 缺失 → 重跑 review Step 1.5/2/0.5"
 echo "   触发条件：STATE/VERIFY 缺失 → 补充 state 文件"
 

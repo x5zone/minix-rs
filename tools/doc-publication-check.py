@@ -3,7 +3,7 @@
 
 用户的出版标准（2026-11-21 裁决，原话要点）：
   1. 正式文档必须自包含自解释；只允许引用正式文档、代码路径、C 源；
-     **不允许引用中间文档**（DECISIONS.md / OPEN-DEBT / runs/ / .design/ / prompt/ / tmp/）。
+     **不允许引用中间文档**（DECISIONS.md / OPEN-DEBT / runs/ / .design/ / meta/ / prompt/ / tmp/）。
   2. **不允许出现标号**——D-061 / I-29 / F-R34-01 / R36 / Phase A 对读者没有意义。
   3. **不允许出现迭代历史**——读者只关心现状。若一段历史有教学价值，必须改写成
      反事实设计讨论（"如果设计 X 会怎么样，所以直接设计 Z"），而不是"最初…后来删了"。
@@ -11,7 +11,7 @@
 判据（全部可机械判定）：
   DP-1 过程编号：D-nnn / I-n / F-Rnn-nn / DESIGN-* / Rnn / Tn / Phase X
   DP-2 提交指纹：散文里的 7–40 位十六进制串（代码块内豁免；0x 字面量天然不匹配）
-  DP-3 中间产物引用：.design/ runs/ DECISIONS.md OPEN-DEBT prompt/ tmp/ coordination/
+  DP-3 中间产物引用：.design/ meta/ runs/ DECISIONS.md OPEN-DEBT prompt/ tmp/ coordination/
   DP-4 编号图例：出现「编号图例」本身即违规（它是 DP-1 的产物）
   DP-5 迭代叙事：旧版/旧形态/原实现/最初/曾经/后来/删除前/已删除/不再使用/改成/替代/
        升级为/废弃/放弃/回退到/修复前/已修复…
@@ -64,7 +64,7 @@ PROCESS_PATTERNS = (
     ("DP-2", re.compile(r"\b[0-9a-f]{7,40}\b")),
 )
 INTERMEDIATE_RE = re.compile(
-    r"\.design/|(?<![\w/])runs/|DECISIONS\.md|OPEN-DEBT|(?<![\w/])prompt/|(?<![\w/])tmp/|coordination/"
+    r"\.design/|meta/|(?<![\w/])runs/|DECISIONS\.md|OPEN-DEBT|(?<![\w/])prompt/|(?<![\w/])tmp/|coordination/"
 )
 LEGEND_RE = re.compile(r"编号图例")
 TODO_RE = re.compile(r"\b(?:TODO|FIXME|XXX)\b|待办|待定|待确认|待核实|待补充|疑问|存疑")

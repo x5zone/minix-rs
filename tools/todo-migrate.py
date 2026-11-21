@@ -51,9 +51,9 @@ PROFILES: list[tuple[str, str, str | None, str, str]] = [
     ("rewrite-notes/02-stage-vm/draft/TODO.md", "02-stage-vm", "02-stage-vm", "prose", "stage"),
     ("rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md", "02-stage-vm", "02-stage-vm", "archive", "stage"),
     ("rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md", "02-stage-vm", "02-stage-vm", "archive", "stage"),
-    ("rewrite-notes/coordination/TODO-LEDGER-OPEN.md", "coordination", "coordination", "ledger", "stage"),
-    ("rewrite-notes/coordination/TODO-LEDGER-DONE.md", "coordination", "coordination", "done", "stage"),
-    ("rewrite-notes/coordination/TODO-LEDGER-INDEX.md", "coordination", "coordination", "index", "stage"),
+    ("rewrite-notes/meta/coordination/TODO-LEDGER-OPEN.md", "coordination", "coordination", "ledger", "stage"),
+    ("rewrite-notes/meta/coordination/TODO-LEDGER-DONE.md", "coordination", "coordination", "done", "stage"),
+    ("rewrite-notes/meta/coordination/TODO-LEDGER-INDEX.md", "coordination", "coordination", "index", "stage"),
 ]
 RUN_FILES = [
     ("01-boot-shim-bootstrap", "OPEN-DEBT.md", "debt"),
@@ -404,7 +404,7 @@ def run_all(out_path: Path) -> int:
         else:
             items += scan_mixed(p, stage, default_doc, scope)
     for doc, name, mode in RUN_FILES:
-        p = ROOT / "rewrite-notes/coordination/review-eval/runs/01-stage-kernel" / doc / name
+        p = ROOT / "rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel" / doc / name
         if not p.is_file():
             print(f"[SKIP] 不存在: {p}", file=sys.stderr)
             continue

@@ -958,7 +958,7 @@ rg "^#+\s*(实现清单|代码状态|现有代码|进度|开发记录|完成情�
 |---------|------|---------|---------|
 ```
 
-**禁止**（**TODO 也不允许**：待做事项进 `coordination/todo-ledger/<stage>.yaml`；正式文档只留成品）：
+**禁止**（**TODO 也不允许**：待做事项进 `meta/coordination/todo-ledger/<stage>.yaml`；正式文档只留成品）：
 
 | 禁止 | 推荐 |
 |------|------|
@@ -1167,8 +1167,8 @@ tools/doc-style-lint.sh --diff            # 增量：本次新增/修改行，er
 
 ### 3.94 正文禁引中间产物目录（强制，2026-10-08 三轮取证）
 
-- **正文（含「参见」章）禁止引用 `.design/`**——AGENTS.md 的中间产物目录约定：正式文档必须自包含，
-  引用指向文档/代码/C 源。`rg "\.design/" {doc}` 命中即 **P0-process-violation**（修法：删除引用并自包含化）。
+- **正文（含「参见」章）禁止引用 `.design/` 与 `meta/`**——AGENTS.md 的中间产物目录约定：正式文档必须自包含，
+  引用指向文档/代码/C 源。`rg "(\.design/|meta/)" {doc}` 命中即 **P0-process-violation**（修法：删除引用并自包含化）。
 - 同族禁令（历史案例，此处并置）：`tmp_design_and_todo/`（该目录已删除）、`/tmp/`、`*.bak` 一律不得作依据或引用。
 - **锚点底账**：`（Lnnn，工具生成）` 属工具噪声，须移入 `.review/{tool}/{stage}/{doc-stem}.anchors.md`
   （`tools/anchor-resolve.sh --extract {doc}` 生成）；**底账缺失的移出 = P0**。

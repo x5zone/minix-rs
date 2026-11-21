@@ -1,7 +1,7 @@
 # Review Evals —— 语料、轨迹、指标与收敛
 
 > 状态：V1（2026-11-07）；V3 修订（2026-11-10，§4.0b–§4.0e 轮次交易/缺陷身份/批次复验/读者清单，§6A 收敛判据，§7 edition 纪律）。
-> 本文件是 `prompt/skill/review-loop.md` 的评测规范，也是 `rewrite-notes/coordination/review-eval/` 的数据契约。
+> 本文件是 `prompt/skill/review-loop.md` 的评测规范，也是 `rewrite-notes/meta/coordination/review-eval/` 的数据契约。
 > 它不改变六个任务命令的现有规则；它规定“怎么判断工作流本身有没有进步”。
 
 ## 一、目的
@@ -54,7 +54,7 @@
 每篇一份：
 
 ```
-rewrite-notes/coordination/review-eval/runs/<stage>/<doc-stem>/
+rewrite-notes/meta/coordination/review-eval/runs/<stage>/<doc-stem>/
   loop.md
   metrics.md
   defect-ledger.md
@@ -183,7 +183,7 @@ R25 收口时必须额外写 `- certify 新准入: 0`。
 
 用户裁决与审查者的独立结论必须分列，不能压成“某几条已修”。凡是用户裁决过的
 事项（采纳、否决、接受风险、要求继续修），都要在
-`rewrite-notes/coordination/review-eval/DECISIONS.md` 的判决账表里落一行，
+`rewrite-notes/meta/coordination/review-eval/DECISIONS.md` 的判决账表里落一行，
 表头固定八列：
 
 ```markdown
@@ -542,7 +542,7 @@ L0 已经声明范围。每条发现再标一次：
 **代码 commit**（只改了 `.rs` 或构建文件）：
 
 - 规范轴：错误处理（是否有 `unwrap`/`expect` 在不该出现的位置）、锁（跨 await / 持锁调用）、资源（泄漏/双重释放）、风格（clippy 新警告）；
-- 设计意图轴：diff 是否偏离设计合同（`.design/*.md` 中的对应决策）；不改外部行为；
+- 设计意图轴：diff 是否偏离设计合同（`meta/design/<stage>/*.md` 中的对应决策）；不改外部行为；
 - 契约（函数签名/前置条件/后置条件是否与文档/注释一致）、并发（数据竞争/死锁风险）、失败路径（每个 `Err` 分支是否被处理）。
 
 **混合 commit**（同时改了 `.md` 和 `.rs`）：两个子集都跑。
@@ -863,7 +863,7 @@ citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 
 
 ### 7.8 设计快照的历史定位
 
-审查合同 = 文档 + 源码 + `DECISIONS.md`；`.design/*.md` 是**历史设计输入**，不是现行合同。
+审查合同 = 文档 + 源码 + `DECISIONS.md`；`meta/design/<stage>/*.md` 是**历史设计输入**，不是现行合同。
 快照与文档/源码冲突时以文档/源码为准；快照头部必须标“历史定位”或 `superseded`，
 审查角色不得把旧条款当作“文档偏离合同”的依据。R27 REFUTE 的“合同与文档相反”判例
 即此条的来源。

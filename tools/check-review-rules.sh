@@ -145,8 +145,9 @@ rg -q '所有 review 模式必检' prompt/skill/review-process-skill.md \
   || fail "source process skill does not require Gate H for all modes"
 rg -q '9 个 grep 可验锚段' prompt/skill/review-process-skill.md \
   || fail "source process skill has stale Gate 0 anchor count"
-rg -q '\{tree\}/\{stage\}/\.design/' prompt/review-rules/review-process.md \
-  || fail "source process rules do not use .design"
+rg -q '\{tree\}/meta/design/\{stage\}/' prompt/review-rules/review-process.md \
+  || fail "source process rules do not use meta/design"
+python3 tools/notes_layout.py >/dev/null || fail "notes_layout.py 与 notes-layout.conf 路径不一致"
 
 # .claude layer validation (NEW 2026-08-15, meta-review F-B5-F14; 2026-10-07 收编改造).
 # review-scan 不再是「手工维护的例外」：规范源在 prompt/skill/review-scan/，
@@ -183,11 +184,11 @@ while IFS= read -r ver; do
   major="${ver%%.*}"
   minor="${ver#*.}"
   if (( major > 3 || (major == 3 && minor >= 0) )); then
-    rg -q "^\| V${ver} \|" rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md \
+    rg -q "^\| V${ver} \|" rewrite-notes/meta/coordination/review-eval/WORKFLOW-VERSIONS.md \
       || fail "missing subtraction-ledger row for V${ver}"
   fi
 done < <(
-  grep -oE '^## V[0-9]+\.[0-9]+' rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md \
+  grep -oE '^## V[0-9]+\.[0-9]+' rewrite-notes/meta/coordination/review-eval/WORKFLOW-VERSIONS.md \
     | sed 's/^## V//' | sort -u
 )
 
@@ -195,7 +196,7 @@ done < <(
 # 由 tools/check-review-rules.sh 机械校验」，但此前只查了「每个版本头 ≥1 行」——
 # 宣称与实现不符。现在按原文计数：所有含「减法账本」的章节（## 三 与各
 # ### V3.x 减法账本）里的 `| V… |` 数据行合计，必须 ≥ 版本表的数据行数。
-_sub_counts=$(python3 - "$ROOT/rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md" <<'PY'
+_sub_counts=$(python3 - "$ROOT/rewrite-notes/meta/coordination/review-eval/WORKFLOW-VERSIONS.md" <<'PY'
 import re, sys, pathlib
 t = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 m = re.search(r"^## 一、版本表\n(.*?)(?=^## )", t, re.M | re.S)

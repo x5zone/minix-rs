@@ -176,12 +176,12 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   - **检查命令**（v2：快照是版本化的）：
     ```bash
     # 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
-    ls {tree}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
-    ls {tree}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
-    ls {tree}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
-    ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
+    ls {tree}/meta/design/{stage}/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
+    ls {tree}/meta/design/{stage}/{NN}-outline-review.v*.md # outline 评审快照
+    ls {tree}/meta/design/{stage}/{NN}-design.v*.md         # 非 bagging code 设计快照
+    ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md   # bagging
     # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-    cat {tree}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+    cat {tree}/meta/design/{stage}/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
@@ -207,10 +207,10 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > **判定（新增）**：
   > 1. **必须跑 4 条 `ls`**：每次 Step 0 启动时，无论何种 review 模式，都**必须**执行：
   >    ```bash
-  >    ls {tree}/{stage}/.design/{NN}-outline.v*.md
-  >    ls {tree}/{stage}/.design/{NN}-outline-review.v*.md
-  >    ls {tree}/{stage}/.design/{NN}-design.v*.md
-  >    ls {tree}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
+  >    ls {tree}/meta/design/{stage}/{NN}-outline.v*.md
+  >    ls {tree}/meta/design/{stage}/{NN}-outline-review.v*.md
+  >    ls {tree}/meta/design/{stage}/{NN}-design.v*.md
+  >    ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md  # bagging only
   >    ```
   >    输出必须写入 scan.md `§Step 0: 预检结果` 段。
   > 2. **缺失判定 + 嵌入生成（NEW 2026-07-17）**：
@@ -232,7 +232,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > ### 必读文件清单（顺序）
   > 1. `.review/trae/{stage}/STATE.md`（本文件）
   > 2. `.review/trae/{stage}/scans/workflow-improvement-suggestions.md`
-  > 3. TODO 账本（`rewrite-notes/coordination/todo-ledger/<stage>.yaml`；旧 stage `todo.md` 已迁移删除；历史案例如 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）
+  > 3. TODO 账本（`rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`；旧 stage `todo.md` 已迁移删除；历史案例如 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）
   > 4. `{tree}/{stage}/{target-doc}.md`
   > 5. 上一个 CONVERGED 文档的 scan
   >
@@ -242,10 +242,10 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > tools/review-state-validate.py --state .review/trae/{stage}/STATE.md
   >
   > # 2. design 预检（模式 69 PSMD 配套）
-  > ls {tree}/{stage}/.design/{NN}-outline.v*.md
-  > ls {tree}/{stage}/.design/{NN}-outline-review.v*.md
-  > ls {tree}/{stage}/.design/{NN}-design.v*.md
-  > ls {tree}/{stage}/.design/{NN}-design-final.v*.md
+  > ls {tree}/meta/design/{stage}/{NN}-outline.v*.md
+  > ls {tree}/meta/design/{stage}/{NN}-outline-review.v*.md
+  > ls {tree}/meta/design/{stage}/{NN}-design.v*.md
+  > ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md
   >
   > # 3. design 全局扫描（可选，工具支持）
   > tools/design-coverage-check.sh {stage}
@@ -716,11 +716,11 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 
 **Step 1.6.1**：design 存在性确认（Step 0 预检的复核）
 ```bash
-# 持久化可复用快照（位置：{tree}/{stage}/.design/，保留所有历史版本）
-ls {tree}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（任意版本命中）
-ls {tree}/{stage}/.design/{NN}-design-final.v*.md # bagging
+# 持久化可复用快照（位置：{tree}/meta/design/{stage}/，保留所有历史版本）
+ls {tree}/meta/design/{stage}/{NN}-design.v*.md       # 非 bagging（任意版本命中）
+ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 ```
-> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `{tree}/{stage}/.design/`。
+> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `{tree}/meta/design/{stage}/`。
 
 **Step 1.6.2**：design ↔ code 一致性矩阵
 
@@ -748,12 +748,12 @@ ls {tree}/{stage}/.design/{NN}-design-final.v*.md # bagging
 | **DESIGN_DIVERGED_WRONG** | design ↔ code 严重偏离（≥30%）且 design 错 | design Refactor 必须 + code Refactor |
 
 > **Gate H 最小证据要求**（6 项，方案 D 新增 H.6）：
-> - **H.1**: `ls {tree}/{stage}/.design/{NN}-design.v*.md`（非 bagging）或 `ls {tree}/{stage}/.design/{NN}-design-final.v*.md`（bagging）命中（本目录版本通配 `.v*.md`，必须含 `{NN}-` 前缀）
+> - **H.1**: `ls {tree}/meta/design/{stage}/{NN}-design.v*.md`（非 bagging）或 `ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md`（bagging）命中（本目录版本通配 `.v*.md`，必须含 `{NN}-` 前缀）
 > - **H.2**: 一致性矩阵 ≥ 5 行 + 一致性 ≥ 80%
 > - **H.3**: Minix3 对齐矩阵 ≥ 3 行 + 无 P0 缺失
 > - **H.4**: `rg "design-wrong" scan.md` 无命中
 > - **H.5**: `rg "code Refactor|design Refactor" scan.md` 明确区分两类
-> - **H.6**（方案 D 新增）：`ls {tree}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离
+> - **H.6**（方案 D 新增）：`ls {tree}/meta/design/{stage}/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离
 
 详见 [review-rules/review-process.md §Step 1.6](../../../prompt/review-rules/review-process.md)。
 

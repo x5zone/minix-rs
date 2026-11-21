@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# design-coverage-check.sh — 扫描 stage 的 .design/ 目录，对比 doc 编号，输出 per-doc snapshot 缺失报告
+# design-coverage-check.sh — 扫描 stage 的 meta/design/<stage>/ 目录，对比 doc 编号，输出 per-doc snapshot 缺失报告
 # Session #12 (2026-07-16) 模式 69 (PSMD) + 模式 71 (DOG) 配套工具
 # 2026-10-07 notes 迁移：module 层（旧 fork-syscall-rewrite）退役，第一参改为 stage 或树别名，
 # 树目录名读自 tools/notes-layout.conf。
@@ -115,7 +115,7 @@ for stage in "${STAGES[@]}"; do
   # 收集 doc 文件（排除 *-trae-review.md, *-claude-report.md 等 review 输出文档）
   while IFS= read -r doc_file; do
     doc_name=$(basename "${doc_file}" .md)
-    # 跳过 review 输出文档和 .design/ 目录下的快照
+    # 跳过 review 输出文档和 meta/design/ 目录下的快照
     if [[ "${doc_name}" =~ -trae-review$ ]] || [[ "${doc_name}" =~ -claude-report$ ]]; then
       continue
     fi
@@ -139,7 +139,7 @@ for stage in "${STAGES[@]}"; do
   if [[ -z "${DOCS_BY_STAGE[${stage}]:-}" ]]; then
     continue
   fi
-  design_dir="${MODULE_DIR}/${stage}/.design"
+  design_dir="${MODULE_DIR}/meta/design/${stage}"
   if [[ ! -d "${design_dir}" ]]; then
     design_dir_status="❌ MISSING"
   else
@@ -147,7 +147,7 @@ for stage in "${STAGES[@]}"; do
   fi
 
   if [[ "${JSON_MODE}" == "false" ]]; then
-    echo "## Stage: ${stage} (.design/: ${design_dir_status})"
+    echo "## Stage: ${stage} (meta/design: ${design_dir_status})"
     echo ""
     echo "| Doc | outline | outline-review | design | design-final | Status |"
     echo "|-----|---------|----------------|--------|--------------|--------|"
@@ -255,12 +255,12 @@ if [[ "${JSON_MODE}" == "false" ]]; then
     echo ""
     echo "**缺失文件清单（review 启动后 Step 0.3 将自动生成，无需手动补齐）**："
     for stage in "${STAGES[@]}"; do
-      if [[ ! -d "${MODULE_DIR}/${stage}/.design" ]]; then continue; fi
+      if [[ ! -d "${MODULE_DIR}/meta/design/${stage}" ]]; then continue; fi
       for missing_doc in $(ls "${MODULE_DIR}/${stage}"/*.md 2>/dev/null); do
         doc_name=$(basename "${missing_doc}" .md)
         if [[ "${doc_name}" =~ ^([0-9]{2})- ]]; then
           NN="${BASH_REMATCH[1]}"
-          design_dir="${MODULE_DIR}/${stage}/.design"
+          design_dir="${MODULE_DIR}/meta/design/${stage}"
           if [[ ! -f "${design_dir}/${NN}-outline.v1.md" ]]; then
             echo "  - 缺 ${design_dir}/${NN}-outline.v1.md（Step 0.3.2 生成）"
           fi

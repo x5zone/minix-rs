@@ -394,5 +394,5 @@ Redox 对照（联网检索，2026-09-16）：
 ## 9. 存档指引
 
 - 本轮无历史轮次（V1 为首轮）。后续轮次按 V{N} 编号，满轮归档至 `archive/todo-V{N}-archive-日期.md`（对齐 `../02-stage-vm/todo.md` 先例）。
-- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../coordination/edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
+- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../meta/coordination/edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
 - Review 中间产物（STATE.md 等）在 `.review/zcode/runtime/`（ZCode 工作区，与 codex/trae/claude 隔离）。

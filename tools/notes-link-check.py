@@ -85,7 +85,10 @@ def iter_target_files(paths: list) -> list:
             if p.suffix == ".md":
                 files.append(p)
         elif p.is_dir():
-            files.extend(sorted(p.rglob("*.md")))
+            files.extend(sorted(
+                q for q in p.rglob("*.md")
+                if "/meta/design/" not in q.as_posix()
+            ))
         else:
             print(f"⚠️  路径不存在：{raw}", file=sys.stderr)
     return files

@@ -258,3 +258,20 @@ module 层退役后，评审状态目录的分组键由 `{module}` 换成 `{stag
 
 - 01 §3.3（来源记录/RamAuthority）、§3.7（I3/I4 校验与所有权）、§5.5（TODO 交接）。
 - 02 §3.6（自举根与映射设计）、§3.8（接收侧两条路径）、§2.4.1（位表，由 01 §2.6.5 迁入）。
+
+---
+
+## 2026-11-22 meta 迁移（过程元数据集中）
+
+过程产物从协作区与各 stage 的隐藏目录迁入 `rewrite-notes/meta/`。正式稿路径不变；`draft/` 与 `archive/` 不迁，待稿件稳定后另行删除。
+
+| 旧位置 | 新位置 | 说明 |
+|---|---|---|
+| `rewrite-notes/coordination/` | `rewrite-notes/meta/coordination/` | 整体下沉一层；协同记录、决策、案卷、历史台账 |
+| `rewrite-notes/coordination/todo-ledger/` | `rewrite-notes/meta/coordination/todo-ledger/` | TODO 单一账本，随父目录移动 |
+| `rewrite-notes/coordination/review-eval/` | `rewrite-notes/meta/coordination/review-eval/` | review 轨迹与评测数据，随父目录移动 |
+| `rewrite-notes/<stage>/.design/` | `rewrite-notes/meta/design/<stage>/` | 设计快照；本地态，`.gitignore` 排除 |
+| — | `rewrite-notes/meta/review/state/<stage>/<doc>.yaml` | 新增：单元级 review 状态 |
+| `rewrite-notes/<stage>/draft/`、`archive/` | 不变 | 过渡稿与旧稿，待删除 |
+
+路径深度：`coordination/` 顶层文件整体加深一层，Markdown 中以 `../` 开头的相对链接统一加一级 `../`；`review-eval/` 与 `todo-ledger/` 随父目录同批移动，内部同目录链接不变。工具侧路径真源改为 `tools/notes-layout.conf` 的 `NOTES_META` / `NOTES_COORD` / `NOTES_TODO_LEDGER` / `NOTES_REVIEW_EVAL` / `NOTES_REVIEW_STATE` / `NOTES_DESIGN_ROOT`。

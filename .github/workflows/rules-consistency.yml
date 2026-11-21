@@ -26,7 +26,7 @@ on:
       - '.agents/**'
       - 'tools/**'
       - 'rewrite-notes/01-stage-kernel/**'
-      - 'rewrite-notes/coordination/review-eval/**'
+      - 'rewrite-notes/meta/coordination/review-eval/**'
       - 'AGENTS.md'
       - 'opencode.json'
       - '.github/workflows/rules-consistency.yml'
@@ -40,7 +40,7 @@ on:
       - '.agents/**'
       - 'tools/**'
       - 'rewrite-notes/01-stage-kernel/**'
-      - 'rewrite-notes/coordination/review-eval/**'
+      - 'rewrite-notes/meta/coordination/review-eval/**'
       - 'AGENTS.md'
       - 'opencode.json'
       - '.github/workflows/rules-consistency.yml'
@@ -77,7 +77,7 @@ jobs:
       - name: 仓库级门禁（模式门全量 + 命令层边界守卫）
         # 这两个门早已存在但不在任何闸上，所以长期「红着入库」无人拦：
         # pattern-gate 的全量扫描只跑了 `--self-test`（上一项），边界守卫只靠人记得跑。
-        # 台账 `rewrite-notes/coordination/TODO-LEDGER-OPEN.md` §7「门不在闸上」一行登的丙子面。
+        # 台账 `rewrite-notes/meta/coordination/TODO-LEDGER-OPEN.md` §7「门不在闸上」一行登的丙子面。
         # 能接进来是因为它俩已被归零：边界守卫 2026-10-12 翻绿（C-84），
         # P8 的 57 个 CRLF 文件也已全部归一（C-85、C-86）。
         run: |
@@ -109,7 +109,7 @@ jobs:
         # 只扫受版本管理的评审产物与试点篇目：历史笔记树的存量表格形态不在本轮范围。
         run: |
           python3 tools/doc-structure-check.py \
-            rewrite-notes/coordination/review-eval \
+            rewrite-notes/meta/coordination/review-eval \
             rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 
       - name: 文档引文逐行对账门（V3.2）

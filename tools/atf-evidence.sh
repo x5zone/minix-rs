@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # atf-evidence.sh — 把 ATF 套件的**建立证据**钉成一份可比对的文件。
 #
-# 台账 `rewrite-notes/coordination/TODO-LEDGER-OPEN.md` §7 那行「上游测试套件的建立证据没有钉
+# 台账 `rewrite-notes/meta/coordination/TODO-LEDGER-OPEN.md` §7 那行「上游测试套件的建立证据没有钉
 # 校验和与构建提交，干净重建后引导腿会崩」的正主：`test-atf-riscv64.sh` 只校 `atf-plan.txt`
 # 存在、非空、覆盖 18 个 prog，却不知道这些 ELF 是哪棵提交、哪套工具链建出来的。于是「一次
 # 绿」这个读数不可判读——换工具链、`RS_ATF_SKIP_BUILD=1` 复用旧 ELF、或干净重建后少链一例，

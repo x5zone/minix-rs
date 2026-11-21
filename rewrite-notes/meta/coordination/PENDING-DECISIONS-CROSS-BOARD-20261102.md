@@ -58,8 +58,8 @@
 - **排除口径**：已有正式决议且已执行或已冻结的条目不再计入（详见第三节「不需要裁决的条目」）；等待外部条件（真机窗口、他人领地让路、并发会话收手）的条目属于排期问题，不计入语义裁决。
 - **复核命令**（项目侧执行，读者可跳过）：
   - `grep -n "待裁决\|需裁决\|需人裁决\|需平台裁决" rewrite-notes/18-stage-commands/todo.md`
-  - `awk '/^## 6\./,/^## 7\./' rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md`
-  - `grep -n "裁决" rewrite-notes/coordination/PARALLEL-20261018-{B-LIBDRV,C-KERN-QEMU}.md`
+  - `awk '/^## 6\./,/^## 7\./' rewrite-notes/meta/coordination/PARALLEL-20261018-A-CMD.md`
+  - `grep -n "裁决" rewrite-notes/meta/coordination/PARALLEL-20261018-{B-LIBDRV,C-KERN-QEMU}.md`
 
 ---
 
@@ -556,9 +556,9 @@ sed -n '905,935p'    minix3/minix/drivers/storage/filter/driver.c  # filter 聚�
 
 ```bash
 # 空库、空列表、NUL 截断等行为读数（项目台账里的批次记录）
-grep -n "Floating point exception" rewrite-notes/coordination/new_edge4.md | head -2
-grep -n "CUT-EMPTY-BYTE-LIST-RUNAWAY" rewrite-notes/coordination/new_edge4.md | head -2
-grep -n "PASTE-COMM-NUL" rewrite-notes/coordination/new_edge4.md | head -2
+grep -n "Floating point exception" rewrite-notes/meta/coordination/new_edge4.md | head -2
+grep -n "CUT-EMPTY-BYTE-LIST-RUNAWAY" rewrite-notes/meta/coordination/new_edge4.md | head -2
+grep -n "PASTE-COMM-NUL" rewrite-notes/meta/coordination/new_edge4.md | head -2
 ```
 
 ### 2.15 关键机制原文摘录

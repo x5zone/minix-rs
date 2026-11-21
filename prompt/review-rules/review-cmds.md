@@ -71,7 +71,7 @@
 **硬约束**：命令确定后，该命令要求的技能必须**真的通过工具调用**（Skill Invocation Log 记实际调用），
 "读过规则/我记得内容"不算调用。
 
-**生成新文档的 outline-first 硬约束**（doc-optim bagging 2026-10）：为某 stage **新写**一篇正式文档时，写正文前必须产出**该文档自己的结构大纲**，其中每节登记一栏“代码放置计划”（预定贴哪个 C 函数 / 哪段 Rust、节选行数、目的）+ 勾选调用图/辨析/三架构对照/诊断；大纲经自审再写正文。**旧 `draft/*` 与旧 `.design/{num}` 快照一律仅作思路参考、不作本篇结构契约**：不得以“已存在历史快照”为由跳过本步（历史快照可能属上一代文档、且可能落后于代码——Gate H 对“新文档”的判据是“本篇自带新 outline 且经自审”，不是“快照齐全”）。**新大纲的持久化落点唯一**：写进 `.design/{NN}-outline.v{N+1}.md`（+ 同名 outline-review），使 Gate H.6 的 `ls .design/{NN}-outline.v*.md` 直接命中该新大纲；`.review/{tool}/{stage}/…` 下只放生成期工作稿，不作 H.6 的比较对象（否则两址并存、H.6 永远只能glob到旧快照）。
+**生成新文档的 outline-first 硬约束**（doc-optim bagging 2026-10）：为某 stage **新写**一篇正式文档时，写正文前必须产出**该文档自己的结构大纲**，其中每节登记一栏“代码放置计划”（预定贴哪个 C 函数 / 哪段 Rust、节选行数、目的）+ 勾选调用图/辨析/三架构对照/诊断；大纲经自审再写正文。**旧 `draft/*` 与旧 `meta/design/<stage>/{num}` 快照一律仅作思路参考、不作本篇结构契约**：不得以“已存在历史快照”为由跳过本步（历史快照可能属上一代文档、且可能落后于代码——Gate H 对“新文档”的判据是“本篇自带新 outline 且经自审”，不是“快照齐全”）。**新大纲的持久化落点唯一**：写进 `meta/design/{stage}/{NN}-outline.v{N+1}.md`（+ 同名 outline-review），使 Gate H.6 的 `ls meta/design/{stage}/{NN}-outline.v*.md` 直接命中该新大纲；`.review/{tool}/{stage}/…` 下只放生成期工作稿，不作 H.6 的比较对象（否则两址并存、H.6 永远只能glob到旧快照）。
 
 
 ## 二、cmd `full-review`（文档+代码 全面 review + 修复 + 覆盖度）
@@ -272,7 +272,7 @@
 - 技能：`prompt/skill/review-loop.md`
 - 面板协议：`prompt/review-rules/review-panel.md`
 - 评测规范：`prompt/review-rules/review-evals.md`
-- 数据目录：`rewrite-notes/coordination/review-eval/`
+- 数据目录：`rewrite-notes/meta/coordination/review-eval/`
 
 **何时使用**：
 

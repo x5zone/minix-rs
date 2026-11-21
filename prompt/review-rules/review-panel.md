@@ -21,7 +21,7 @@
 | 审查者不改代码 | 面板角色只读仓库，只能写自己的报告到 `tmp/review-eval/`；修改权归主 agent。 |
 | 材料隔离 | 每个角色有明确的“给”与“不给”清单；给判断所需的事实，不给作者的推理、结论、历史评审。 |
 | 不以票数裁决 | 多个角色意见冲突时，按证据强度裁决：源码直接证据高于实验观察，实验观察高于推理，推理高于直觉。 |
-| 冻结决策先查 | 命中 `rewrite-notes/coordination/review-eval/DECISIONS.md` 且无新证据的发现，记为 `re-litigation`，不计文档缺陷。 |
+| 冻结决策先查 | 命中 `rewrite-notes/meta/coordination/review-eval/DECISIONS.md` 且无新证据的发现，记为 `re-litigation`，不计文档缺陷。 |
 | 范围先声明 | L0 声明本篇范围（文档主题加关联代码清单）；相邻问题只登记 follow-up，不作为本轮阻塞。 |
 | 每条发现可处置 | 每条发现必须有位置、证据、最小修复、置信度、是否需要源码核实，以及“若我错了”的自述。 |
 
@@ -30,7 +30,7 @@
 | 角色 | 拿到 | 明确不给 | 产出 |
 |---|---|---|---|
 | P-FACT 事实与合同 | 文档全文、相关 C 源、相关 Rust 代码、工具读数、`DECISIONS.md` 的相关条目（只给编号与一行裁决） | 历史 `scan.md`、其他 agent 的结论、作者自评、`expected/` | `panel/fact.md` |
-| P-DESIGN D1 独立设计 | C 语义合同、文档 Ch1 与 Ch2、`AGENTS.md` 的关键约束、操作系统理论 | 现有 Rust 实现、文档 Ch3 与 Ch4、`.design/` 快照、历史评审、作者解释 | `panel/design-d1.md` |
+| P-DESIGN D1 独立设计 | C 语义合同、文档 Ch1 与 Ch2、`AGENTS.md` 的关键约束、操作系统理论 | 现有 Rust 实现、文档 Ch3 与 Ch4、`meta/design/<stage>/` 快照、历史评审、作者解释 | `panel/design-d1.md` |
 | P-DESIGN D2 差异审查 | D1 方案、现有 Rust 代码、文档 Ch3 与 Ch4、`tools/trait-audit.py` 读数 | 作者对“为什么这样设计”的解释、历史评审结论 | `panel/design-d2.md` |
 | P-READER A 初学者路径 | 文档正文全文、一页读者画像（前置知识、教学目标） | 源码、其他文档、diff、工作流规则、作者解释、其他 agent 输出、`expected/` | `panel/reader-a.md` |
 | P-READER B 结构编辑 | 同 A | 同 A | `panel/reader-b.md` |
@@ -144,7 +144,7 @@ certify 发现的新准入项进**本轮**台账，在本轮内修完再复跑 c
 禁止读取：
 - 现有 Rust 实现（os/ 下与本篇相关的任何文件）
 - 目标文档的 Ch3 与 Ch4
-- .design/ 下的设计快照
+- meta/design/<stage>/ 下的设计快照
 - 任何历史评审、作者解释、其他面板角色输出
 
 任务：

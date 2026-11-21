@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# design-index-update.sh — 自动维护 {tree}/{stage}/.design/DESIGN-INDEX.md
+# design-index-update.sh — 自动维护 {tree}/meta/design/{stage}/DESIGN-INDEX.md
 #
 # 用法: design-index-update.sh {stage-dir}
 # 例:   design-index-update.sh rewrite-notes/01-stage-kernel
 #
 # 功能:
-#   1. 扫描 {stage-dir}/.design/ 下所有 *-design*.md / *-outline*.md
+#   1. 扫描 {tree}/meta/design/{stage}/ 下所有 *-design*.md / *-outline*.md
 #   2. 自动生成/更新 DESIGN-INDEX.md（每 NN 一行 + 路径 + 最新版本 + 状态）
 #   3. 提供 review 跨文档"找 design"统一入口
 
@@ -30,7 +30,9 @@ case "$STAGE_DIR" in
     echo "   旧→新对照见 rewrite-notes/MIGRATION.md 与 tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
     exit 1 ;;
 esac
-DESIGN_DIR="$STAGE_DIR/.design"
+TREE="${STAGE_DIR%%/*}"
+STAGE_ONLY="${STAGE_DIR#*/}"
+DESIGN_DIR="$TREE/meta/design/$STAGE_ONLY"
 INDEX_FILE="$DESIGN_DIR/DESIGN-INDEX.md"
 
 if [[ ! -d "$DESIGN_DIR" ]]; then

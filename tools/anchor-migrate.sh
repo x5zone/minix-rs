@@ -146,7 +146,7 @@ for t in "${TARGETS[@]}"; do
     DOCS+=("$t")
   elif [ -d "$t" ]; then
     while IFS= read -r f; do DOCS+=("$f"); done < <(find "$t" -name '[0-9][0-9]-*.md' -type f \
-      | grep -v '/\.design/' | grep -v '/archive' | sort)
+      | grep -v '/\.design/' | grep -v '/meta/design/' | grep -v '/archive' | sort)
   else
     echo "Not a file or dir: $t" >&2
     exit 2

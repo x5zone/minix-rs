@@ -83,7 +83,7 @@ def main():
     docs = []
     if os.path.isdir(args.target):
         for root, dirs, files in os.walk(args.target):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            dirs[:] = [d for d in dirs if not d.startswith('.') and os.path.join(root, d).replace(os.sep, '/').split('/')[-2:] != ['meta', 'design']]
             docs += [os.path.join(root, f) for f in sorted(files) if f.endswith('.md')]
     elif os.path.isfile(args.target):
         docs = [args.target]

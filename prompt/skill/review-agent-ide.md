@@ -105,7 +105,7 @@ Begin every review with:
 - **Target**: `path/to/doc.md` + `path/to/code.rs`
 - **Same-dir docs**: `path/to/same-dir/*.md`
 - **Loaded Skills**: [list each invoked Skill]
-- **Step 0 预检**: design + outline（**全模式强制**）— 必跑 4 条 `ls .design/{NN}-*.md`，结果写入 scan.md `§Step 0: 预检结果`。缺失执行 Step 0.3：outline→0.3.2，outline-review→0.3.3（AI 自审），design→0.3.4（不中断）。详见 [process-skill](review-process-skill.md)。
+- **Step 0 预检**: design + outline（**全模式强制**）— 必跑 4 条 `ls meta/design/{stage}/{NN}-*.md`，结果写入 scan.md `§Step 0: 预检结果`。缺失执行 Step 0.3：outline→0.3.2，outline-review→0.3.3（AI 自审），design→0.3.4（不中断）。详见 [process-skill](review-process-skill.md)。
 ```
 
 ## Output Template

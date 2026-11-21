@@ -25,10 +25,10 @@ evidence / backlog / history / learn / brief / note 等辅助件）。
 |---|---|---|
 | **DP-1** | **不出现过程编号**：`D-nnn`、`I-n`、`F-Rnn-nn`、`DESIGN-*`、`Rnn`、`Tn`、`Phase X` | 命中即 FAIL。编号对读者没有意义；需要指代设计时用设计名称本身 |
 | **DP-2** | **不出现提交指纹**：散文里的 7–40 位十六进制串（代码块与 `0x…` 字面量豁免） | 命中即 FAIL |
-| **DP-3** | **不引用中间产物**：`.design/`、`runs/`、`DECISIONS.md`、`OPEN-DEBT`、`prompt/`、`tmp/`、`coordination/` | 命中即 FAIL。允许：正式文档互链、`os/…` 代码路径、`minix3/…` C 源路径 |
+| **DP-3** | **不引用中间产物**：`.design/`、`meta/`、`runs/`、`DECISIONS.md`、`OPEN-DEBT`、`prompt/`、`tmp/`、`coordination/` | 命中即 FAIL。允许：正式文档互链、`os/…` 代码路径、`minix3/…` C 源路径 |
 | **DP-4** | **不出现「编号图例」** | 命中即 FAIL——图例本身是 DP-1 违规的产物，不是解法 |
 | **DP-5** | **不出现迭代历史**：旧版/旧形态/旧实现/原实现/前版/原先/最初/曾经/后来/过去/当年/当初/删除前/已删除/已被删除/不再使用/改成/替代/替换为/升级为/废弃/放弃/回退到/修复前/已修复 | 命中即 FAIL |
-| **DP-6** | **不出现待办与临时疑问**：`TODO` / `FIXME` / `XXX` / 待办 / 待定 / 待确认 / 待核实 / 待补充 / 疑问 / 存疑 | 命中即 FAIL。**agent 不得在正式文档里记录 TODO**：待做事项进 `coordination/todo-ledger/<stage>.yaml`；有教学价值的替代方案写成设计决策对比段（「如果采用它会怎样，所以不采用」），不是 TODO |
+| **DP-6** | **不出现待办与临时疑问**：`TODO` / `FIXME` / `XXX` / 待办 / 待定 / 待确认 / 待核实 / 待补充 / 疑问 / 存疑 | 命中即 FAIL。**agent 不得在正式文档里记录 TODO**：待做事项进 `meta/coordination/todo-ledger/<stage>.yaml`；有教学价值的替代方案写成设计决策对比段（「如果采用它会怎样，所以不采用」），不是 TODO |
 
 **DP-5 的唯一豁免形态：反事实设计讨论。** 历史若真有教学价值，必须改写成：
 
@@ -129,7 +129,7 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 
 ## 四点五、TODO 单一账本（V3.7）
 
-1. **规范源** = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。
+1. **规范源** = `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。
    每条字段：`id/stage/doc/title/status/severity/kind/origin/evidence/defer`。
 2. **旧 todo markdown 已迁移删除（2026-11-21）**：`01-todo.md`、stage `todo.md`、
    `smp_todo.md`、`endpoint_todo.md`、`draft/*`、`archive/*` 的 open 项已迁入 YAML，
