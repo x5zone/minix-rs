@@ -5774,7 +5774,7 @@ def derive_units_state(run_dir: Path) -> Path | None:
 
 
 def check_units_state(path: Path, run_dir: Path, report: Report) -> None:
-    """G14：单元状态必须通过 review-units.py check；T3 通过时不得有未冻结单元。"""
+    """G14：单元状态必须通过 review-units.py check；T3 通过时不得有未冻结单元，且 reopened/stale 必须为 0。"""
     if not path.is_file():
         report.fail("G14", f"单元状态不存在：{path}")
         return
@@ -5805,6 +5805,10 @@ def check_units_state(path: Path, run_dir: Path, report: Report) -> None:
     )
     out = stats.stdout.strip()
     report.ok("G14", out.splitlines()[0] if out else "unit state OK")
+    for key in ("reopened", "stale"):
+        mm = re.search(rf"{key}=(\d+)", out)
+        if mm and int(mm.group(1)) > 0:
+            report.fail("G14", f"{key}={mm.group(1)}；G14 要求 reopened=0 / stale=0")
     if "t3=PASS" in out:
         mm = re.search(r"frozen=(\d+)/(\d+)", out)
         if mm and mm.group(1) != mm.group(2):

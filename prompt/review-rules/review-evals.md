@@ -292,7 +292,7 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
 1. **下一轮只能在上一轮关闭后开**。上一轮 `open>0` 时禁止出现下一轮小节；这条由
    `eval-trace-check.py` 机械检查。
 2. **每轮覆盖 = 未冻结单元 + 依赖闭包**（`review-units.md` §五）。首个 edition 的 full survey
-   仍读整篇；后续轮只读未冻结单元；确认轮读未冻结单元 + ≥20% 冻结样本 + 骨架。脏单元 >30%
+   仍读整篇；后续轮只读未冻结单元；确认轮读未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%）+ 骨架。脏单元 >30%
    或 T1 发现跨章结构问题时回退整篇。不存在“只查修复 hunk”的缩减轮；认证是同一轮的 certify
    阶段，不是新轮。R26 如果存在，就是新一轮完整 review。
 3. **轮内可以多次 fix→certify**，但不得重开全量面板；certify 只读本轮改动段、
@@ -734,7 +734,7 @@ V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性�
   ROUND-CLOSED / CONVERGENCE-CANDIDATE（`eval-trace-check.py` 机械检查）。
 - **确认轮**：`review-units.py begin-confirmation` 开始；修复用 `--confirm-fix`（不占修改轮），
   修复后重新 `--pass --freeze`，`end-confirmation` 通过后才允许 `gate --pass`。
-  覆盖未冻结单元 + ≥20% 冻结单元（seed = 最终 commit）+ 骨架；首个 edition 或
+  覆盖未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%；seed = 最终 commit）+ 骨架；首个 edition 或
   未冻结单元 >30% 时按整篇 survey。修复权限 = 本轮新准入的 P0/P1/P2 事实与
   同步项；不实施 ⑥、不扩大重构范围；P3 走 §4.0c 严重度门槛。每个 CONVERGENCE-CANDIDATE 最多 2 次（跨 edition 重开不累计）：
   第 1 次新准入 > 0 时在确认轮内修完再确认一次；仍 > 0 或出现结构性新根因 →

@@ -152,17 +152,115 @@ def parse_units(doc: Path) -> list[dict]:
             "parent": parent,
             "order": order,
             "text_sha": sha(body),
+            "_text": body,
         })
     return units
 
 
+ANCHOR_RE = re.compile(
+    r"`?((?:os|minix3)/[\w./-]+\.(?:rs|c|h)):"
+    r"(?:(fn|struct|enum|trait|const|static|type|impl)\s+)?"
+    r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)`?"
+)
+
+
+def _brace_hash(text: str, start: int) -> str:
+    i = text.find("{", start)
+    if i < 0:
+        return sha(text[start:].splitlines()[0] if text[start:] else "")
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return sha(text[start:j + 1])
+    return sha(text[start:])
+
+
+def _symbol_body(text: str, kind: str, name: str) -> tuple[str | None, bool]:
+    """Return (body_sha, fallback). fallback=True for C/heuristic anchors."""
+    if kind == "impl" and "::" in name:
+        typ, method = name.split("::", 1)
+        imp = re.search(r"(?m)^\s*impl\b[^\n{]*\b" + re.escape(typ) + r"\b", text)
+        if not imp:
+            return None, False
+        seg = text[imp.start():]
+        m = re.search(r"\bfn\s+" + re.escape(method) + r"\b", seg)
+        return (_brace_hash(seg, m.start()), False) if m else (None, False)
+    pats = {
+        "fn": r"\bfn\s+" + re.escape(name) + r"\b",
+        "struct": r"\bstruct\s+" + re.escape(name) + r"\b",
+        "enum": r"\benum\s+" + re.escape(name) + r"\b",
+        "trait": r"\btrait\s+" + re.escape(name) + r"\b",
+        "type": r"\btype\s+" + re.escape(name) + r"\b",
+        "const": r"\bconst\s+" + re.escape(name) + r"\b",
+        "static": r"\bstatic\s+" + re.escape(name) + r"\b",
+        "impl": r"\bimpl\b[^\n{]*\b" + re.escape(name) + r"\b",
+    }
+    pat = pats.get(kind)
+    if pat is None:
+        # C anchor: function name only
+        m = re.search(r"\b" + re.escape(name) + r"\s*\(", text)
+        return (_brace_hash(text, m.start()), True) if m else (None, True)
+    m = re.search(pat, text)
+    if not m:
+        return None, kind in (None, "c")
+    if kind in ("const", "static", "type"):
+        return sha(text[m.start():].splitlines()[0]), False
+    return _brace_hash(text, m.start()), False
+
+
+def analyze_anchors(text: str) -> tuple[list[str], dict[str, str], str, list[str]]:
+    """Extract direct code anchors, hash their bodies, classify anchor quality.
+
+    Returns (refs, hashes, status, errors). status: direct / fallback / none /
+    missing / impl. Freeze refuses missing and impl; sample uses 10% only when
+    every unit is direct.
+    """
+    refs: list[str] = []
+    hashes: dict[str, str] = {}
+    errors: list[str] = []
+    fallback = False
+    impl = False
+    for m in ANCHOR_RE.finditer(text):
+        path, kind, name = m.group(1), m.group(2), m.group(3)
+        ref = f"{path}:{kind + ' ' if kind else ''}{name}"
+        if ref in refs:
+            continue
+        refs.append(ref)
+        if kind == "impl":
+            impl = True
+        fp = ROOT / path
+        if not fp.is_file():
+            errors.append(f"锚点文件不存在：{path}")
+            continue
+        body, fb = _symbol_body(fp.read_text(encoding="utf-8", errors="replace"), kind, name)
+        if body is None:
+            errors.append(f"锚点符号不存在：{ref}")
+            continue
+        hashes[ref] = body
+        fallback = fallback or fb
+    if not refs:
+        return refs, hashes, "none", errors
+    if impl:
+        return refs, hashes, "impl", errors
+    if errors:
+        return refs, hashes, "missing", errors
+    return refs, hashes, "fallback" if fallback else "direct", errors
+
+
 def new_unit(u: dict) -> dict:
     rec = dict(u)
+    rec.pop("_text", None)
     if u["level"] == 2:
         rec.update(t1_state="pending", t1_rounds=0, t2_state="n/a", t2_rounds=0)
     else:
         rec.update(t1_state="n/a", t1_rounds=0, t2_state="pending", t2_rounds=0)
-    rec.update(frozen=False, frozen_at=None, rewritten=False, user_approved=False, deps=[], reopened=False, note="")
+    rec.update(frozen=False, frozen_at=None, rewritten=False, user_approved=False,
+               deps=[], reopened=False, stale=False, anchor_refs=[], anchor_hashes={},
+               anchor_status="none", note="")
     return rec
 
 
@@ -558,6 +656,16 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
                 errors.append(f"{uid}: 冻结单元的依赖已变化（reopened），必须先复核")
             else:
                 warnings.append(f"{uid}: 依赖变化后尚未复核（reopened）")
+        if s.get("stale"):
+            if s.get("frozen"):
+                errors.append(f"{uid}: 冻结单元的锚点正文已变（stale），必须先复核")
+            else:
+                warnings.append(f"{uid}: 锚点正文已变，尚未复核（stale）")
+        if s.get("frozen"):
+            if "anchor_hashes" not in s:
+                errors.append(f"{uid}: 冻结单元缺锚点凭据（旧状态），先跑 check/sync 重开")
+            if s.get("anchor_status") in ("missing", "impl"):
+                errors.append(f"{uid}: 冻结单元的锚点不可解析（{s.get('anchor_status')}）")
         for track in ("t1", "t2"):
             n = int(s.get(f"{track}_rounds", 0))
             if n > MAX_ROUNDS and not (s.get("rewritten") or s.get("user_approved")):
@@ -591,6 +699,21 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
 def cmd_check(doc: Path, state_path: Path) -> int:
     data = load_state(state_path)
     current = parse_units(doc)
+    reopened = 0
+    for u in data.get("units", []):
+        if u.get("frozen") and "anchor_hashes" not in u:
+            u["frozen"] = False
+            u["frozen_at"] = None
+            u["reopened"] = True
+            u["stale"] = True
+            if u["level"] == 3:
+                u["t2_state"] = "pending"
+            else:
+                u["t1_state"] = "pending"
+            reopened += 1
+    if reopened:
+        save_state(state_path, data)
+        print(f"[WARN] {reopened} 个旧冻结单元无锚点凭据，已强制重开")
     errors, warnings = validate(data, current)
     for w in warnings:
         print(f"[WARN] {w}")
@@ -616,6 +739,31 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
         c = cu.get(u["id"])
         if not c:
             continue
+        if u.get("frozen"):
+            if "anchor_hashes" not in u:
+                u["frozen"] = False
+                u["frozen_at"] = None
+                u["reopened"] = True
+                u["stale"] = True
+                if u["level"] == 3:
+                    u["t2_state"] = "pending"
+                else:
+                    u["t1_state"] = "pending"
+                print(f"[WARN] {u['id']}: 旧冻结状态无锚点凭据，强制重开")
+                changed += 1
+            else:
+                _, hashes, status, aerrs = analyze_anchors(c.get("_text", ""))
+                if status in ("missing", "impl") or hashes != (u.get("anchor_hashes") or {}):
+                    u["frozen"] = False
+                    u["frozen_at"] = None
+                    u["reopened"] = True
+                    u["stale"] = True
+                    if u["level"] == 3:
+                        u["t2_state"] = "pending"
+                    else:
+                        u["t1_state"] = "pending"
+                    print(f"[WARN] {u['id']}: 锚点正文变化（{status}），强制重开")
+                    changed += 1
         if c["heading"] != u.get("heading"):
             u["heading"] = c["heading"]
             u["level"] = c["level"]
@@ -823,6 +971,20 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
         if not passed:
             print("--freeze 需要与 --pass 同用", file=sys.stderr)
             return 2
+        cur = next((u for u in parse_units(doc) if u["id"] == uid), None)
+        if cur is None:
+            print(f"[FAIL] {uid}: 正文中找不到单元，不能冻结", file=sys.stderr)
+            return 1
+        refs, hashes, status, aerrs = analyze_anchors(cur.get("_text", ""))
+        if status in ("missing", "impl"):
+            for e in aerrs:
+                print(f"[FAIL] {e}", file=sys.stderr)
+            print(f"[FAIL] {uid}: 锚点状态 {status}，不得冻结；改成可解析的 fn/struct 直锚或删掉失效锚", file=sys.stderr)
+            return 1
+        unit["anchor_refs"] = refs
+        unit["anchor_hashes"] = hashes
+        unit["anchor_status"] = status
+        unit["stale"] = False
         if unit["level"] == 3:
             parent = next((u for u in data["units"] if u["id"] == unit.get("parent")), None)
             if parent and parent.get("t1_state") != "passed":
@@ -854,17 +1016,21 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
     return 0
 
 
-def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
+def cmd_sample(doc: Path, state_path: Path, ratio: float | None, seed: str) -> int:
     data = load_state(state_path)
     units = data["units"]
-    if ratio < 0.2:
-        print("抽样比例不得低于 0.2（review-units.md §五）", file=sys.stderr)
+    dirty = [u for u in units if not u.get("frozen")]
+    frozen = [u for u in units if u.get("frozen")]
+    all_direct = bool(frozen) and all(u.get("anchor_status") == "direct" for u in frozen)
+    minimum = 0.1 if all_direct else 0.2
+    if ratio is None:
+        ratio = minimum
+    if ratio < minimum:
+        print(f"抽样比例不得低于 {minimum:.0%}（{'全部直锚' if all_direct else '含 fallback/无锚'}；review-units.md §五）", file=sys.stderr)
         return 2
     if not data.get("baseline_full_survey"):
         print("首个 edition 尚未完成整篇 survey（先跑 `review-units.py baseline`）", file=sys.stderr)
         return 1
-    dirty = [u for u in units if not u.get("frozen")]
-    frozen = [u for u in units if u.get("frozen")]
     if not seed:
         seed = "HEAD"
     ranked = sorted(frozen, key=lambda u: hashlib.sha256(f"{seed}:{u['id']}".encode()).hexdigest())
@@ -879,6 +1045,44 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
     print("## frozen-sample")
     for u in picked:
         print(f"{u['id']} {u['heading']}")
+    return 0
+
+
+def cmd_invalidate(doc: Path, state_path: Path, rev: str) -> int:
+    """Reopen frozen units whose direct anchor target changed since REV."""
+    data = load_state(state_path)
+    check = subprocess.run(
+        ["git", "-C", str(ROOT), "cat-file", "-e", rev + "^{commit}"],
+        capture_output=True,
+    )
+    if check.returncode != 0:
+        print(f"不是有效 commit：{rev}", file=sys.stderr)
+        return 2
+    diff = subprocess.run(
+        ["git", "-C", str(ROOT), "diff", "--name-only", f"{rev}..HEAD"],
+        capture_output=True, text=True,
+    )
+    if diff.returncode != 0:
+        print(diff.stderr.strip(), file=sys.stderr)
+        return 1
+    changed = {line.strip() for line in diff.stdout.splitlines() if line.strip()}
+    hit = 0
+    for u in data["units"]:
+        if not u.get("frozen"):
+            continue
+        files = {r.split(":", 1)[0] for r in (u.get("anchor_refs") or [])}
+        if files & changed:
+            u["frozen"] = False
+            u["frozen_at"] = None
+            u["reopened"] = True
+            u["stale"] = True
+            if u["level"] == 3:
+                u["t2_state"] = "pending"
+            else:
+                u["t1_state"] = "pending"
+            hit += 1
+    save_state(state_path, data)
+    print(f"invalidate --from {rev}: {hit} 个冻结单元因锚点文件变化而重开")
     return 0
 
 
@@ -923,6 +1127,10 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str |
     if ok and not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结的章，T3 不得通过", file=sys.stderr)
         return 1
+    if ok and any(u.get("reopened") or u.get("stale") for u in data["units"]):
+        bad = [u["id"] for u in data["units"] if u.get("reopened") or u.get("stale")]
+        print(f"[FAIL] 存在 reopened/stale 单元，T3 不得通过：{bad}", file=sys.stderr)
+        return 1
     if ok:
         lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
         counts, errs = ledger_open_by_unit(lpath)
@@ -948,11 +1156,118 @@ def cmd_stats(doc: Path, state_path: Path) -> int:
     print(f"chapters={len(chapters)} sections={len(sections)} frozen={frozen}/{len(units)}")
     print(f"t1_pending={sum(1 for u in chapters if u.get('t1_state')=='pending')} "
           f"t2_pending={sum(1 for u in sections if u.get('t2_state')=='pending')} "
+          f"reopened={sum(1 for u in units if u.get('reopened'))} "
+          f"stale={sum(1 for u in units if u.get('stale'))} "
           f"t3={'PASS' if data.get('t3',{}).get('passed') else 'pending'}")
     return 0
 
 
+def _anchor_self_test(root: Path) -> None:
+    """Nine anchor-invalidation cases (run inside a temp ROOT)."""
+    global ROOT
+    saved = ROOT
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        ROOT = root
+        (root / "os/kernel/src").mkdir(parents=True)
+        (root / "minix3/minix/kernel").mkdir(parents=True)
+        af = root / "os/kernel/src/anchors.rs"
+        af.write_text(
+            "pub fn alpha() -> u32 { 1 }\n\n"
+            "pub struct Beta { pub x: u32 }\n\n"
+            "impl Beta {\n    pub fn gamma(&self) -> u32 { self.x }\n}\n",
+            encoding="utf-8",
+        )
+        (root / "minix3/minix/kernel/proc.c").write_text(
+            "int proc_init(void) { return 0; }\n", encoding="utf-8"
+        )
+        doc = root / "01-stage-kernel/02-anchor.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            "# anchor\n\n## 3. 锚点章\n\n"
+            "### 3.1 直锚\n\n见 `os/kernel/src/anchors.rs:fn alpha`。\n\n"
+            "### 3.2 缺失\n\n见 `os/kernel/src/anchors.rs:fn nope`。\n\n"
+            "### 3.3 impl\n\n见 `os/kernel/src/anchors.rs:impl Beta::gamma`。\n\n"
+            "### 3.4 C 锚\n\n见 `minix3/minix/kernel/proc.c:proc_init`。\n",
+            encoding="utf-8",
+        )
+        sp = root / "anchor-state.yaml"
+        ev = root / "ev.md"
+        ev.write_text("rg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
+        ledger = root / "ledger.md"
+        ledger.write_text("| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n|---|---|---|---|---|\n", encoding="utf-8")
+        assert cmd_init(doc, sp, "01-stage-kernel", "V3.9", False) == 0
+        assert cmd_baseline(doc, sp, str(ev)) == 0
+        assert cmd_mark(doc, sp, "3", "t1", False, True, False, "", evidence=str(ev), ledger=str(ledger)) == 0
+        # 1 direct freeze stores body hashes
+        assert cmd_mark(doc, sp, "3.1", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 0
+        d = load_state(sp)
+        u = next(x for x in d["units"] if x["id"] == "3.1")
+        assert u["anchor_status"] == "direct" and u["anchor_hashes"], u
+        # 2 missing anchor refuses freeze
+        assert cmd_mark(doc, sp, "3.2", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 1
+        # 3 impl anchor refuses freeze
+        assert cmd_mark(doc, sp, "3.3", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 1
+        # 4 C anchor freezes as fallback
+        assert cmd_mark(doc, sp, "3.4", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 0
+        d = load_state(sp)
+        assert next(x for x in d["units"] if x["id"] == "3.4")["anchor_status"] == "fallback"
+        # 5 all-direct 10% vs fallback 20%
+        d["units"] = [x for x in d["units"] if x["id"] == "3.1"]
+        save_state(sp, d)
+        assert cmd_sample(doc, sp, 0.1, "x") == 0
+        d = load_state(sp)
+        d["units"].append(new_unit({
+            "id": "3.4", "heading": "3.4 C 锚", "level": 3, "parent": "3", "order": 9,
+            "text_sha": "x", "_text": "",
+        }))
+        next(x for x in d["units"] if x["id"] == "3.4").update(
+            anchor_status="fallback", frozen=True, t2_state="frozen",
+        )
+        save_state(sp, d)
+        assert cmd_sample(doc, sp, 0.1, "x") == 2
+        # 6 anchor body change reopens on sync
+        af.write_text(af.read_text().replace("1 }", "2 }"), encoding="utf-8")
+        assert cmd_sync(doc, sp, False, None) == 0
+        d = load_state(sp)
+        u = next(x for x in d["units"] if x["id"] == "3.1")
+        assert u["reopened"] and u["stale"] and not u["frozen"], u
+        # 7 old frozen without credential is force-reopened by check
+        u["frozen"] = True
+        u["t2_state"] = "frozen"
+        u.pop("anchor_hashes", None)
+        save_state(sp, d)
+        assert cmd_check(doc, sp) == 0
+        d = load_state(sp)
+        assert next(x for x in d["units"] if x["id"] == "3.1")["reopened"]
+        # 8 invalidate --from reopens anchors changed in git
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        d = load_state(sp)
+        u = next(x for x in d["units"] if x["id"] == "3.1")
+        u.update(frozen=True, t2_state="frozen", reopened=False, stale=False,
+                 anchor_hashes=analyze_anchors("`os/kernel/src/anchors.rs:fn alpha`")[1],
+                 anchor_refs=["os/kernel/src/anchors.rs:fn alpha"], anchor_status="direct")
+        save_state(sp, d)
+        af.write_text(af.read_text().replace("2 }", "3 }"), encoding="utf-8")
+        subprocess.run(["git", "add", "os/kernel/src/anchors.rs"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-qm", "change"], cwd=root, check=True)
+        assert cmd_invalidate(doc, sp, base) == 0
+        d = load_state(sp)
+        assert next(x for x in d["units"] if x["id"] == "3.1")["stale"]
+        # 9 T3 gate rejects stale/reopened
+        assert cmd_gate(doc, sp, True, str(ev), str(ledger)) == 1
+    finally:
+        ROOT = saved
+
+
 def self_test() -> int:
+    with tempfile.TemporaryDirectory() as td:
+        _anchor_self_test(Path(td) / "anchor-root")
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         doc = root / "01-stage-kernel/01-demo.md"
@@ -1099,7 +1414,7 @@ def self_test() -> int:
         assert not evidence_replay_ok(neg) == 1
         src = Path(__file__).resolve().read_text(encoding="utf-8")
         assert "return cmd_mark(doc, sp, args.unit" in src
-    print("self-test PASS: init/check/sync/unfreeze/budget/sample/audit/evidence/cli")
+    print("self-test PASS: init/check/sync/unfreeze/budget/sample/audit/evidence/cli + 9 anchor-invalidation cases")
     return 0
 
 
@@ -1108,7 +1423,7 @@ def main() -> int:
     ap.add_argument("--self-test", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats",
-                 "baseline", "new-edition", "begin-confirmation", "end-confirmation", "audit", "fingerprint"):
+                 "baseline", "new-edition", "begin-confirmation", "end-confirmation", "audit", "fingerprint", "invalidate"):
         p = sub.add_parser(name)
         p.add_argument("doc", nargs="?")
         p.add_argument("--doc", dest="doc_opt", help="文档路径（与位置参数二选一）")
@@ -1116,6 +1431,7 @@ def main() -> int:
     sub.choices["init"].add_argument("--edition", default="V3.9")
     sub.choices["init"].add_argument("--force", action="store_true")
     sub.choices["baseline"].add_argument("--evidence", default=None)
+    sub.choices["invalidate"].add_argument("--from", dest="from_rev", required=True)
     sub.choices["new-edition"].add_argument("--edition", required=True)
     sub.choices["new-edition"].add_argument("--unfreeze-all", action="store_true")
     sub.choices["audit"].add_argument("--ledger", default=None)
@@ -1140,7 +1456,7 @@ def main() -> int:
     m.add_argument("--ledger", default=None, help="defect-ledger 路径（默认按 run 目录推导）")
     m.add_argument("--note", default="")
     s = sub.choices["sample"]
-    s.add_argument("--ratio", type=float, default=0.2)
+    s.add_argument("--ratio", type=float, default=None)
     s.add_argument("--seed", default="")
     ga = sub.choices["gate"]
     gg = ga.add_mutually_exclusive_group(required=True)
@@ -1176,6 +1492,8 @@ def main() -> int:
         return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve, args.deps, args.confirm_fix, args.evidence, args.ledger)
     if args.cmd == "sample":
         return cmd_sample(doc, sp, args.ratio, args.seed)
+    if args.cmd == "invalidate":
+        return cmd_invalidate(doc, sp, args.from_rev)
     if args.cmd == "gate":
         return cmd_gate(doc, sp, args.ok, args.evidence, args.ledger)
     if args.cmd == "baseline":

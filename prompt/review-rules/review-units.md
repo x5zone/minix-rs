@@ -56,8 +56,11 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 - 冻结条件：`review-units.py audit` 显示该单元 `open = 0`、`certify 新准入 = 0`、
   `defect-ledger.md` 中**存在 open 行的表**必须带 `单元` 列（全部 closed 的历史段不追溯；audit 只对无法归属的 open 行报错）、
   `mark --pass/--freeze` 带非空 `--evidence` 文件（至少一个可重放 token：`path:line` / `test::name` / `rg|grep` / 真实 commit / `D-xxx`）、正文 hash 与冻结时一致。
+- **锚点凭据（V3.10）**：冻结时从单元正文抽取直锚（`path:fn NAME` / `struct` / `enum` / `trait` / `const` / `static` / `type`），对每个符号的**符号体**算 sha256 并写入 `anchor_hashes`；`anchor_status` 记 `direct` / `fallback` / `none`。缺失符号或 `impl Type::method` 锚点**拒绝冻结**（先改成可解析的 `fn`/`struct` 直锚）；C 锚点算 `fallback`，允许冻结。
 - 正文变化：`tools/review-units.py sync` 比较 hash。节正文变化只解冻该节（T2）；
   标题、顺序、层级变化解冻该章（T1）与受影响子节；`deps` 变化把下游单元标为 `reopened`。
+- **锚点正文变化（V3.10）**：`sync` 重算冻结单元的 `anchor_hashes`；任一符号体变化、缺失或变成 `impl` → 解冻并置 `reopened: true` + `stale: true`。旧状态里没有 `anchor_hashes` 的冻结单元在 `check`/`sync` 时强制重开。
+- **批量失效（V3.10）**：`review-units.py invalidate <doc> --from <commit>` 对比 `git diff --name-only <commit>..HEAD`，任何冻结单元的锚点文件在 diff 中 → 解冻并置 `reopened`/`stale`。
 - 冻结单元不再进入 L1 面板；只进入确认轮的抽样。冻结不是「永远不读」——确认轮仍会抽 20%。
 - 任何对冻结节的修改都必须先 `sync --unfreeze` 留痕，禁止手改状态文件绕过。
 
@@ -67,7 +70,7 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 |---|---|
 | 首个 edition 的 full survey | 整篇（沿用现有面板档位），建立基线 |
 | 后续 full / structural | 全部未冻结单元 + 依赖闭包；冻结单元不重读 |
-| confirmation | 全部未冻结单元 + **≥20% 冻结单元**（seed = 最终 commit）+ 骨架（标题树与跨节承诺）；不做全文逐句通读 |
+| confirmation | 全部未冻结单元 + 冻结单元抽样（seed = 最终 commit）+ 骨架（标题树与跨节承诺）；不做全文逐句通读。抽样比例：全部冻结单元 `anchor_status=direct` 时 **≥10%**；含 `fallback`/`none` 时 **≥20%** |
 | 回退条件 | 未冻结单元 > 30%，或 T1 发现跨章结构问题，或用户要求 → 回到整篇 survey |
 
 确认轮仍由未参与本轮修复的冷启动 agent 执行；抽样只减少阅读量，不降低独立性。
@@ -75,7 +78,7 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 ## 六、与既有规则的关系
 
 - **G1–G13 不变**；新增 **G14**：`tools/review-units.py check --doc <当前篇>` 与
-  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、T3 通过（evidence 含可重放 token）。
+  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、`reopened=0`、`stale=0`、T3 通过（evidence 含可重放 token）。
 - **四态模型不变**：修改轮仍无收敛声明权；`CONVERGED` 只由确认轮宣告。
 - **新 edition 与历史 run**：edition 变化会重置 `eval-trace` 的 `sealed_at`/确认轮计数；
   历史轮仍留在 run 目录，`--round` 只查当前轮。若要让全历史审计也绿，需在 `DECISIONS.md`
@@ -118,6 +121,8 @@ python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --deps 2.1,2.2
 
 # 删除/合并小节后：先解冻再 prune（不静默丢单元）
 python3 tools/review-units.py sync <doc> --unfreeze --prune
+# 锚点批量失效：从某个 commit 起改过的锚点文件
+python3 tools/review-units.py invalidate <doc> --from <commit>
 
 # T3 通过（全部单元冻结后）
 python3 tools/review-units.py gate <doc> --pass --evidence runs/<stage>/<doc>/certify/round<N>-gates.md
@@ -128,7 +133,7 @@ python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --confirm-fix
 python3 tools/review-units.py end-confirmation <doc>
 
 # 确认轮抽样（首 edition 拒绝；ratio ≥0.2；同 seed 同集合）
-python3 tools/review-units.py sample <doc> --ratio 0.2 --seed $(git rev-parse HEAD)
+python3 tools/review-units.py sample <doc> --seed $(git rev-parse HEAD)
 ```
 
 状态文件：`rewrite-notes/meta/review/state/<stage>/<doc-stem>.yaml`。

@@ -166,7 +166,7 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 - G1–G9（`review-evals.md` §6A，其中 G3/G9 按本文件收窄）；
 - **G13 教程 rubric**：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）；
 - **G14 单元账本**：`tools/review-units.py check --doc <当前篇>` 与 `audit --doc <当前篇>` 退出 0，
-  全部单元 frozen，T3 通过（evidence 含可重放 token）；旧 FREEZE 篇目（`runs/*/FREEZE.md`）不追溯；
+  全部单元 frozen、`reopened=0`、`stale=0`、T3 通过（evidence 含可重放 token）；旧 FREEZE 篇目（`runs/*/FREEZE.md`）不追溯；
 - **G10 文档出版**：当前篇 `doc-publication-check.py` 零命中；
 - **G11 代码出版**：当前篇关联代码 `code-publication-check.py` 零命中；
 - **G12 TODO 账本**：`todo-ledger.py check --doc <当前篇> --fail-on-open` 通过

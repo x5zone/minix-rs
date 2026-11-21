@@ -44,15 +44,16 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
    design/outline 是可选输入，缺失不补、不影响 L0 启动。
 4. 关联代码清单：`tools/doc-code-map.sh <doc> --check`；有缺失先登记，不进入 L1。
 5. 初始化 review 状态：`tools/review-init.sh zcode <doc>`。
-5b. 单元状态：`python3 tools/review-units.py check <doc>`；首次先 `init`。`next` 的输出是本轮
-    L1 的派发范围（`review-units.md` §五）。首 edition 的 full survey 仍读整篇。
+5b. 单元状态：`python3 tools/review-units.py check <doc>`；首次先 `init`。上轮有冻结时先跑
+   `review-units.py invalidate <doc> --from <上次冻结 commit>`，锚点文件变过的冻结单元会重开。
+   `next` 的输出是本轮 L1 的派发范围（`review-units.md` §五）。首 edition 的 full survey 仍读整篇。
 6. 写 `runs/<stage>/<doc-stem>/loop.md §0`：commit、sha256、行数、范围、关联代码、语料条目 ID。
 7. 02/03 阶段先读 `review-eval/doc-set/` 的对账简报；没有简报就先做对账，不进入 L1。
 8. **读 follow-ups（V3 只核对已批准项）**：V3 的上一轮必须已关闭，理论上没有“未修”项。读 `runs/<stage>/<doc-stem>/follow-ups.md` 中用户批准的 ②（带日期）与上一轮 `suggestions.md`，确认目的地是否已落地；不得把未批准 ② 或 ⑤ 带入新轮。V2.5 过渡轮仍按旧口径分“顺手修/核销清单”，但同样不得把未批准项带进下一轮。首轮没有前轮 follow-ups 时跳过此步。**上一 V1/V2 轮未关闭、遗留大量未批准旧 ② 时**（05 篇的 72 条旧 ② 在 R1 台账与 follow-ups 两处）：在 §0 列出存量清单并请用户裁决去留（补批准日期 / 转 ⑤ 取证 / 明确丢弃）；不得静默带入新轮，也不得静默丢弃。补日期仅限确有当时批准记录的项，不得事后追认。
 9. **定轮型与 edition**：`loop.md §0` 必须写 `轮型: full|structural|confirmation` 与
    `edition: V3.x`。`full` = 完整 survey 交易；`structural` = survey 输入取上一轮
    已落盘报告的结构收口轮（不重开面板）；`confirmation` = 确认轮（§6A 四态模型，
-   按 §七 表 B 覆盖未冻结单元 + ≥20% 冻结样本；首 edition 或 >30% 脏单元时用表 A 整篇；
+   按 §七 表 B 覆盖未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%）；首 edition 或 >30% 脏单元时用表 A 整篇；
    修复权限仅限本轮新准入项、不实施 ⑥、每个 CANDIDATE 最多 2 次、不占 §7.5 修改预算）。修改轮（full/structural）没有收敛声明权——最多 `ROUND-CLOSED` /
    `CONVERGENCE-CANDIDATE`；R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，其收口按
    certify 阶段执行。
@@ -319,7 +320,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 
 按 `review-evals.md` §6A 的四态模型执行（V3.3）：修改轮（full/structural）只能产出
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`；**`CONVERGED` 只能由确认轮宣告**——
-确认轮覆盖未冻结单元 + ≥20% 冻结单元（首 edition 或 >30% 脏单元时整篇）、
+确认轮覆盖未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%；首 edition 或 >30% 脏单元时整篇）、
 修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项、不实施 ⑥（发现 ⑥ = NOT CONVERGED 回修改轮），
 G14：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 通过、evidence 含可重放 token）、`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
 `未闭环=0`、`certify 新准入=0`、100% 复验证据、确认轮轮次号），进下一篇。
