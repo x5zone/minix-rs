@@ -1544,7 +1544,8 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
 /// Land a boot-shim slice into a kernel `.bss` store (DESIGN-12).
 ///
 /// The capacity check is fail-closed; the same-address case is skipped so
-/// `kmain` can re-store its own global copy without `ptr::copy` aliasing UB.
+/// `resume_additive` can re-store the slices it decoded into the store
+/// without `ptr::copy` aliasing UB.
 fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
     assert!(
         src.len() <= dst.len(),
@@ -1563,14 +1564,14 @@ fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
 /// Stores the boot `KernelInfo` into the process-global slot and returns a
 /// reference into that slot.
 ///
-/// kmain Phase A calls this; bootstrap test kernels that bypass kmain call
-/// it explicitly before any consumer of [`KERNEL_INFO`] (e.g.
-/// `dispatch_diagctl`'s kernel-span translation).
+/// Production has two call sites: `arch_boot_finish` (a real copy) and
+/// `resume_additive` (same-address skip). `kmain` reads the slot through
+/// `kernel_info()` and does not re-store; bootstrap test kernels that bypass
+/// kmain call this explicitly before any consumer of [`KERNEL_INFO`].
 ///
 /// The returned reference points at the `.bss` global, not at the caller's
-/// input. A later call updates the slot in place, so callers must not hold
-/// the reference across a second store (boot is single-threaded; after boot
-/// the slot is read-only).
+/// input. The slot is written exactly once per leg (I-35(a)/D-071): a second
+/// store panics instead of updating the slot in place.
 pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
     // I-35(a) (D-071): the slot is written exactly once per leg, before
     // kmain. A second store would overwrite a live `&'static KernelInfo`

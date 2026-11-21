@@ -35,7 +35,6 @@
 //! point back into this library.
 
 use crate::kernel_info::MemoryRegion;
-use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(test))]
 use core::sync::atomic::AtomicBool;
 use minix_types::PhysBytes;

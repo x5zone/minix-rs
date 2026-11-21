@@ -414,7 +414,7 @@ mod tests {
     };
     use crate::kernel_info::MemoryRegion;
     use crate::platform::{DTB, PlatformDescSource, RSDP};
-    use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
+    use minix_types::{PhysBytes, VirBytes};
 
     fn get_u32(arena: &[u8], off: usize) -> u32 {
         u32::from_le_bytes(arena[off..off + 4].try_into().unwrap())

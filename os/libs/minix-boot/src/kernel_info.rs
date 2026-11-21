@@ -618,7 +618,6 @@ pub struct BootModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::USER_STACK_TOP;
 
     /// Helper to build a valid KernelInfo for testing.
     fn make_valid_info() -> KernelInfo {
@@ -718,13 +717,10 @@ mod tests {
         info.validate_requiring_sources();
     }
 
-    /// D01-R1 D2-04: a stack top past the image end is representable in
-    /// the type but semantically impossible — the postcondition gate must
-    /// catch it (first push after `mov sp` would hit unmapped memory).
-
-    /// R17 DESIGN-09: each postcondition needs a negative test that feeds
-    /// hand-crafted invalid input, proving the assertion can fire on
-    /// independent data (not just builder-consistent values).
+    // v10 (D-062) deleted the derived `kern_stack_top` field and its
+    // "stack top past the image end" relation; the remaining postcondition
+    // negative control is `test_boot_postconditions_reject_low_virtual_base`
+    // below.
 
 
 

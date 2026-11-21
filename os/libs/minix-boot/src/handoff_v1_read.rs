@@ -398,13 +398,13 @@ pub fn wire_module_to_boot_module(
 mod tests {
     use super::*;
     use crate::handoff_v1::ARENA_CAP;
-    use crate::handoff_v1_write::{HandoffV1WriteError, RuntimeFields, Serializer};
+    use crate::handoff_v1_write::{RuntimeFields, Serializer};
     use crate::kernel_info::KernelInfo;
     use crate::memmap_source::{
-        SourceKind, SourceOrigin, SourceRange, SourceRecord, startup_record,
+        SourceKind, SourceOrigin, SourceRange, SourceRecord,
     };
     use crate::platform::{DTB, RSDP};
-    use minix_types::{USER_STACK_TOP, VirBytes};
+    use minix_types::VirBytes;
 
     static MEMMAP: [MemoryRegion; 2] = [
         MemoryRegion {
