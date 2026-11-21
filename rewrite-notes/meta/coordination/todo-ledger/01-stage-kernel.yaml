@@ -257,20 +257,24 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
-  status: open
+  status: closed
   severity: P1
   kind: code
   origin: rewrite-notes/01-stage-kernel/01-todo.md:1366
   origin_file: rewrite-notes/01-stage-kernel/01-todo.md
   origin_line: 1366
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
+  evidence: 2026-11-22 A2 判别实验通过（`bash os/qemu-tests/test-rt-birth-riscv64.sh` → PASS，五个用户态标记全命中）：所谓 rust_main 二次进入实为 OpenSBI
+    在 load page fault 后重启 payload；根因是测试 `KernelInfo.platform_sources` 为空，DTB（0x8fe00000）不在任何 identity window，`parse_by_kind`
+    一读就 fault。`.data` 里的 `BUMP_PTR` 跨重启不被 BSS 清零，每次重启累加 0x101000，最终 bump(256) 在 0x84120000/end=0x84200000 失败。修正：把 DTB 声明为
+    platform source；A2 读取前设 sstatus.SUM；按生产顺序先 `store_kernel_info`。A2 读数：free=[0x80000000,0x80200000)、[0x80400000,0x81000000)、[0x81001000,0x82200000)、[0x82301000,0x8fe00000)；BSP
+    stack=0x803a2108..0x803b2108；U-ecall stack=0x803ff000..0x80400000；两个栈区间与自由集交集为空。
   verified_by: subagent:b1
   verified_at: '2026-11-21'
   aliases:
   - I-43
   scope: doc
-  note: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
+  note: 2026-11-22 关闭：A2 自由集与 BSP/U-ecall 栈区间无交集；bump 失败源于 DTB 未声明导致的 OpenSBI 重启，非栈污染。
   refs:
     code:
     - os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:fn bump
@@ -279,9 +283,9 @@
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.4
     tests: []
     decisions: []
-  blocked: true
-  blocked_reason: 2026-11-22 A2 判别实验：测试基址已修正（kern_virt_base=KERNEL_LOAD_PA），但 rust_main 二次进入时 bump(256) 在 current=0x84120000/end=0x84200000
-    失败，未到达 A2 自由集打印；需先解释重入/重启来源，不能判定栈区间是否与自由集相交。
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D01-I-53
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -466,20 +470,24 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
-  status: open
+  status: closed
   severity: P1
   kind: code
   origin: rewrite-notes/01-stage-kernel/01-todo.md:5
   origin_file: rewrite-notes/01-stage-kernel/01-todo.md
   origin_line: 5
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
+  evidence: 2026-11-22 A2 判别实验通过（`bash os/qemu-tests/test-rt-birth-riscv64.sh` → PASS，五个用户态标记全命中）：所谓 rust_main 二次进入实为 OpenSBI
+    在 load page fault 后重启 payload；根因是测试 `KernelInfo.platform_sources` 为空，DTB（0x8fe00000）不在任何 identity window，`parse_by_kind`
+    一读就 fault。`.data` 里的 `BUMP_PTR` 跨重启不被 BSS 清零，每次重启累加 0x101000，最终 bump(256) 在 0x84120000/end=0x84200000 失败。修正：把 DTB 声明为
+    platform source；A2 读取前设 sstatus.SUM；按生产顺序先 `store_kernel_info`。A2 读数：free=[0x80000000,0x80200000)、[0x80400000,0x81000000)、[0x81001000,0x82200000)、[0x82301000,0x8fe00000)；BSP
+    stack=0x803a2108..0x803b2108；U-ecall stack=0x803ff000..0x80400000；两个栈区间与自由集交集为空。
   verified_by: subagent:b1
   verified_at: '2026-11-21'
   aliases:
   - rt-birth-sp
   scope: doc
-  note: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
+  note: 2026-11-22 关闭：A2 自由集与 BSP/U-ecall 栈区间无交集；bump 失败源于 DTB 未声明导致的 OpenSBI 重启，非栈污染。
   refs:
     code:
     - os/libs/minix-rt/src/crt0.rs:fn rt_birth
@@ -487,9 +495,9 @@
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
     tests: []
     decisions: []
-  blocked: true
-  blocked_reason: 2026-11-22 A2 判别实验：测试基址已修正（kern_virt_base=KERNEL_LOAD_PA），但 rust_main 二次进入时 bump(256) 在 current=0x84120000/end=0x84200000
-    失败，未到达 A2 自由集打印；需先解释重入/重启来源，不能判定栈区间是否与自由集相交。
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D01-PROSE-PROSE-06-todo
   stage: 01-stage-kernel
   doc: 01-stage-kernel

@@ -334,7 +334,7 @@
 - 重复合并: 2
 - 自引入: 0
 - 处置: ① 20 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 6 / FP 2 / SUGG 2
-- 未闭环: 2（I-43 / rt-birth-sp，见 `todo-ledger/01-stage-kernel.yaml`）
+- 未闭环: 0
 - 跨模型复核: 1 条（XMODEL-C4，P2，已修；见 `crosscheck/round38.md`，不计入面板指标）
 - 轮型: full
 - 轮结果: BLOCKED

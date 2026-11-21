@@ -56,7 +56,7 @@ use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
 use minix_plat::riscv64::early_console;
 use minix_kernel::boot_alloc;
-use minix_boot::{KernelInfo, BootModule, MemoryRegion};
+use minix_boot::{KernelInfo, BootModule, MemoryRegion, PlatformDescSource, DTB};
 
 // ── Bump allocator on a static heap (hello-boot-riscv64 shape) ──
 #[unsafe(link_section = ".bss")]
@@ -173,6 +173,14 @@ static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
     base: PhysBytes(DRAM_BASE),
     len: 0x1000_0000, // 256 MB — keep QEMU `-m` in sync
 }];
+
+/// The OpenSBI DTB source, filled at entry. `KernelInfo.platform_sources`
+/// must name every firmware blob the boot path reads: the window builder
+/// maps this range before `parse_by_kind` touches it. An empty list leaves
+/// the DTB outside every identity window, so the parse faults and OpenSBI
+/// restarts the payload (the restart also re-runs the bump allocations).
+static mut PLATFORM_SOURCES: [PlatformDescSource; 1] =
+    [PlatformDescSource::new(DTB, PhysBytes(0)); 1];
 
 /// The rt-birth user image, embedded at kernel build time (the run script
 /// builds `rt-birth` for riscv64gc-unknown-none-elf first and passes the
@@ -492,6 +500,9 @@ unsafe extern "C" {
 #[unsafe(no_mangle)]
 extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     early_console::write_str("### test_rt_birth (riscv64): first minix-rt user binary on OpenSBI\n");
+    early_console::write_str("  dtb_phys=");
+    early_console::write_hex(dtb_phys);
+    early_console::write_str("\n");
 
     // 1. Hand-built KernelInfo (hello-boot-riscv64 shape — no
     //    U-Boot/BootFileTable in the QEMU -kernel scenario).
@@ -520,6 +531,16 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         &mods[..]
     };
 
+    let platform_sources: &'static [PlatformDescSource] = unsafe {
+        let sources = &mut *core::ptr::addr_of_mut!(PLATFORM_SOURCES);
+        sources[0] = PlatformDescSource::with_optional_len(
+            DTB,
+            PhysBytes(dtb_phys),
+            minix_boot::dtb_total_size(PhysBytes(dtb_phys)),
+        );
+        &sources[..]
+    };
+
     let kernel_info = KernelInfo {
         memmap: &MEMMAP,
         kern_virt_base: VirBytes(KERNEL_LOAD_PA),
@@ -530,18 +551,22 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         // handler's frame stores right on top of .text at 0x80200000
         // (live: store faults walking the handler's own instructions).
         boot_modules,
-        platform_sources: &[],
+        platform_sources,
         param_buf: &[],
         reserved_regions: &[],
         source_records: &[],
         authority: minix_boot::RamAuthority::DTB,
     };
 
+    // The production `arch_boot` stores the boot snapshot before
+    // `arch_boot_impl`; `dispatch_diagctl` reads that same global. The
+    // carrier bypasses `arch_boot`, so it performs the store itself.
+    let kernel_info = minix_kernel::store_kernel_info(&kernel_info);
 
     // 2. Paging (Phase A): identity + Sv39 enable (production path).
     boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&kernel_info, root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(kernel_info, root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — the DTB pointer OpenSBI passed in
@@ -564,7 +589,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // 3. Protection + trap entry (production Phase B — stvec = the
     //    diagnostic vector). The carrier's U-ecall handler takes over
     //    stvec right after; the diagnostic vector keeps no state.
-    minix_kernel::init_protection(&kernel_info);
+    minix_kernel::init_protection(kernel_info);
     // SAFETY: the stvec write points at the asm handler defined in this
     // module's `global_asm!`; the frame protocol is that handler's.
     unsafe {
@@ -607,17 +632,22 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 
     // 5. Kernel information page (production Phase B.5) — publishes the
     //    page the birth chain will trap-query.
-    minix_kernel::init_kerninfo(&kernel_info);
+    minix_kernel::init_kerninfo(kernel_info);
     early_console::write_str("  kerninfo page published\n");
 
     // 6. Process table (Phase C) — the VM branch loads the embedded
     //    rt-birth ELF (segments, 64 KiB stack, ps_strings, boot context).
-    minix_kernel::init_proc_and_boot(&kernel_info);
-    // A2 diagnostic probe (I-43 / rt-birth-sp): print the free set and the
-    // two live stacks so the log itself records whether any free region
-    // overlaps a stack range. Read-only: the handoff page is mapped RO.
+    minix_kernel::init_proc_and_boot(kernel_info);
+    // A2 diagnostic probe: print the free set and the two live stacks so
+    // the log records whether any free region overlaps a stack range.
+    // Read-only: the handoff page is mapped read-only and user-accessible.
     {
         use minix_types::{VmBootHandoff, VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VA};
+        // The handoff page is a user-accessible mapping; S-mode reads need
+        // sstatus.SUM for this diagnostic window.
+        unsafe {
+            asm!("csrs sstatus, {}", in(reg) SSTATUS_SUM, options(nomem, nostack));
+        }
         let h = unsafe { &*(VM_BOOT_HANDOFF_VA as *const VmBootHandoff) };
         early_console::write_str("  A2 free=");
         early_console::write_hex(h.free_region_count as u64);
@@ -630,6 +660,9 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
             early_console::write_str(" + ");
             early_console::write_hex(h.free_regions[i].size);
             early_console::write_str("\n");
+        }
+        unsafe {
+            asm!("csrc sstatus, {}", in(reg) SSTATUS_SUM, options(nomem, nostack));
         }
         let bsp_lo = core::ptr::addr_of!(STACK) as u64;
         let bsp_hi = bsp_lo + 0x10000;

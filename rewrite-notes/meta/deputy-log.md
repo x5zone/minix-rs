@@ -371,8 +371,8 @@
 ## SUMMARY
 
 - 已判 8 条：DESIGN-01（驳回）、DESIGN-03（驳回）、DESIGN-02（批准删公开壳）、DESIGN-04（批准栈上 `ClaimSet`）、DESIGN-05（批准删 `BootScalars`）、DESIGN-06（批准改名并删转发层）、DESIGN-09（批准每槽一个原子量）、DESIGN-10（批准 `&[PhysRange]` 边界）。
-- 阻断 1 条：I-43。R37-05 已由免费模型复核关闭（见 CASE D01-R37-05）；I-25 已由作者裁决为“只修 D01 关联代码”，执行项待做。
-- I-43 已授权执行 A2 自由集与栈区间判别实验；实验后若需裁决，先由 me-agent 依章程裁。I-25 已裁决；R37-05 已按作者授权用免费模型完成；DESIGN-11 已由文档侧取证关闭。
+- 阻断 0 条：I-43 已由 A2 判别实验关闭（根因是 DTB 未声明导致 OpenSBI 重启，不是栈污染）。R37-05 已由免费模型复核关闭；I-25 已执行完成。
+- I-43 的 A2 判别实验已完成：BSP/U-ecall 栈区间与自由集交集为空，测试 PASS；重入来源为 OpenSBI 重启，BUMP_PTR 跨重启累加。I-25 已执行；R37-05 已完成；DESIGN-11 已关闭。
 - 本批没有 P0-code-bug / P0-test-missing 判决，因此不附「改前 exit≠0、改后 exit=0」的判别命令；批准项均属局部、可逆的实现取舍，实施时仍须过对应的三架构启动门与 `pt_alloc_write_once` / `pt_alloc_concurrent`。
 
 ---
@@ -399,4 +399,6 @@
 - 已授权实验：在 `test-rt-birth-riscv64` 中加 A2 自由集与 BSP/U-ecall 栈区间打印。
 - 先修了测试的基址错误：`kern_virt_base` 从 `DRAM_BASE` 改为 `KERNEL_LOAD_PA`，消除了 `kernel map: map_huge failed — kernel image mismatch: AlreadyMapped`。
 - 实验未到达 A2 打印：`bump(256)` 在第二次进入 `rust_main` 时失败，`current=0x84120000`、`need=0x100000`、`end=0x84200000`；说明 `BUMP_PTR` 被推进/复用，或 `rust_main` 发生重入/重启。具体是哪一个，现有日志不足以判定。
-- 因此 I-43/rt-birth-sp 仍**阻断**：不能从“bump 预算”直接推出 A2 自由集与栈区间是否相交；需要先解释 `rust_main` 二次进入与 `BUMP_PTR` 推进来源，再跑 A2 打印。回退动作：保留测试基址修正与诊断打印，待作者/后续代码会话定位重入源。
+- 根因已定位：测试的 `KernelInfo.platform_sources` 为空，DTB（0x8fe00000）不在任何 identity window；Phase A.5 的 `parse_by_kind` 触发 load page fault，OpenSBI 重启 payload。`.data` 中的 `BUMP_PTR` 不被 `_start` 的 BSS 清零，跨重启累加，最终 bump(256) 失败。
+- 修正：把 DTB 声明为 platform source；A2 读取 user-accessible 的 handoff 页前设 `sstatus.SUM`；按生产顺序先 `store_kernel_info`。
+- 结果：`bash os/qemu-tests/test-rt-birth-riscv64.sh` → PASS，五个用户态标记全命中。A2 自由集为 [0x80000000,0x80200000)、[0x80400000,0x81000000)、[0x81001000,0x82200000)、[0x82301000,0x8fe00000)；BSP 栈 0x803a2108..0x803b2108、U-ecall 栈 0x803ff000..0x80400000，交集为空。I-43/rt-birth-sp 关闭。
