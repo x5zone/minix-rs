@@ -716,3 +716,23 @@
   - W-7
   scope: stage
   note: Design-exclusion record (ARCH evolution), not a task.
+- id: D01-DOCSYNC-VM-WARM
+  stage: 01-stage-kernel
+  doc: 09-vm-boot-protocol
+  title: §4.1 温启动段引用已废弃实现（显式拒绝），与当前 boot_route 四形路由不符
+  status: open
+  severity: P1
+  kind: doc
+  origin: rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1361
+  origin_file: rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md
+  origin_line: 1361
+  origin_commit: cc291ccda4e5a1e875960c44c839b61b913a2404
+  legacy_status: regression-found
+  evidence: 文档引用 main.rs 旧拒绝分支（`VM warm restart ... not supported`）并称温启动被显式拒绝；当前 main.rs:81-130 已实现 boot_route（ColdInit/WarmRun/WarmNoState/DoubleInit），WarmRun
+    复用映像驻留槽（A14，2026-11-04）。
+  verified_by: agent:regression
+  verified_at: '2026-11-21'
+  aliases:
+  - DOCSYNC-VM-WARM
+  scope: doc
+  note: 迁移回归发现；属文档-代码同步缺陷，按当前篇 review 流程修

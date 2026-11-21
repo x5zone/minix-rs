@@ -943,14 +943,14 @@ trait 的文档注释把边界写死在一句话里：`ArchInit` 是**阶段 tra
         //   - STIE (timer): opened by `TimerIrqGate::enable_timer_irq` at
         //     bsp_finish_booting Step 6, after the handler registration
         //     (C `boot_cpu_init_timer` position, clock.c:294).
-        //   - SSIE (software/IPI): belongs to the SMP IPI bring-up
-        //     (see smp_todo.md) — enabling it before an IPI producer
+        //   - SSIE (software/IPI): belongs to the SMP IPI bring-up —
+        //     enabling it before an IPI producer
         //     and handler exist would arm a second unhandled source.
         // SEIE (external) stays per-source via `InterruptController::unmask`.
     }
 ```
 
-块内有一处工作记录编号（`smp_todo.md` 的条目），按原文引用；本段要读的是它陈述的机制：这条写入曾经在 `ArchMiscDesc` 的初始化阶段就把 S 模式定时器门打开，而那个时刻定时器源还没编程、处理函数还没注册；现在两个位各有归属——定时器位归 `TimerIrqGate`，软件中断位归 SMP 的 IPI 拉起。
+本段要读的是这段注释陈述的机制：这条写入曾经在 `ArchMiscDesc` 的初始化阶段就把 S 模式定时器门打开，而那个时刻定时器源还没编程、处理函数还没注册；现在两个位各有归属——定时器位归 `TimerIrqGate`，软件中断位归 SMP 的 IPI 拉起。
 
 **把 `sie.STIE` 的写入放回 `ArchInit::init()` 会怎样**：这个函数的执行点在 `init_clock_and_interrupts` 里，而 `boot_init_timer`（编程定时器、注册处理函数、开门）在它之后——门在源与处理者都不存在时就被打开。RISCV 的定时器条件比较是 `mtime >= mtimecmp`，而 `mtimecmp` 的复位值是 0，`mtime` 从复位起就在递增，于是条件恒真：一旦 `sie.STIE` 置位，`sip.STIP` 立刻挂起，中断在启动中途反复到达。落到对象：`sie` 的 STIE 位（bit 5）、`sip` 的 STIP 位、`mtimecmp` 的复位值、`irq_handlers[TIMER_IRQ]` 的空链。依据：`arch_init.rs` 的 [`fn init`](os/arch/src/riscv64/arch_init.rs:fn init) 的注释、`timer_irq_gate.rs` 的 [`fn enable_timer_irq`](os/arch/src/riscv64/timer_irq_gate.rs:fn enable_timer_irq) 的写值。
 
