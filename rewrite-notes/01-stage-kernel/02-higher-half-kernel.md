@@ -1011,7 +1011,7 @@ RISC-V 自引导面把跨距写成了常量 `0x40_0000`（4 MiB，`bootface.rs` 
 | 方案 | 选/否 | 代价 |
 |---|---|---|
 | 链接脚本收口到 2MiB，运行时按阶梯选粒度 | 选 | 镜像尾部有最多 2MiB 的填充；换来粒度选择永不落进 panic 分支 |
-| 不收口，运行时按实际 `kern_size` 用 4KiB 细粒度建表 | 否 | 内核镜像映射约 1024 个页表项（4 MiB ÷ 4 KiB = 1024），按 512 项一张表算约 5 张页表页（2 张末级页表页加各级目录页），这些页要从引导期 bump 区里出（`01-boot-shim-bootstrap.md` §3.8 的换手路径）；建表时间与池容量都要重算 |
+| 不收口，运行时按实际 `kern_size` 用 4KiB 细粒度建表 | 否 | 内核镜像映射约 1024 个页表项（4 MiB ÷ 4 KiB = 1024），按 512 项一张表算约 5 张页表页（2 张末级页表页加各级目录页），这些页要从引导期 bump 区里出（`01-boot-shim-bootstrap.md` §3.4 的换手路径）；建表时间与池容量都要重算 |
 | 收口到更大粒度（1GiB） | 否 | 镜像远小于 1GiB，填充浪费以百 MB 计；且 RISC-V 的当前档位是 2MiB |
 
 **把收口改为 4KiB 对齐会怎样**：`kern_size` 不再是 2MiB 的整数倍，粒度选择落进 `else` 分支，panic 发生在任何页表写入之前——现场是"分页还没开就停"，消息只报 `no kernel page size satisfies the layout`，不点名三个量；三个量要用 `readelf -lW` 自己算。根因在链接脚本的段间距上，不在调用方传参上。把 [`riscv64.ld`](os/kernel-image/riscv64.ld) 的 `. = ALIGN(0x200000)` 删掉、其余不动，第一道门是链接期：`SECTIONS` 之外那条 `ASSERT((__image_end - KERNEL_VIRT_BASE) % 0x200000 == 0, …)` 直接失败，根本产不出镜像。要到达运行期 `plan_kernel_mapping` 的 panic，必须连这条 `ASSERT` 一起删；两者都删之后才轮到宿主上的 `check-layout.sh riscv64` 报 L5"跨距非 2MiB 对齐"、L9 跟着红。
@@ -1067,7 +1067,7 @@ pub trait HigherHalf {
 
 栈顶的 16 字节对齐不再是调用者要传对的值：`boot_validate_and_prepare` 的断言覆盖现算的 `kern_stack_top`，三份实现拿到的就是同一个值（`kinfo.kern_stack_top()`），形参与断言可能各说各话的那条缝已经消掉。删除形参的动机是“第二来源”：只要它还以参数形式存在，一个与 `kinfo` 不一致的值在类型上完全合法，编译器和测试都不会拦住。
 
-三架构的实现各自放在自己的模块里（`higher_half.rs` 的 [`struct X86_64HigherHalf`](os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf)、`higher_half.rs` 的 [`struct AArch64HigherHalf`](os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf)、`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf)）：两个生产调用点（`arch_boot_finish`、`resume_additive`）各自经 `arch_boot` 的三份 `#[cfg]` 分支选中本架构实现，所以“两个调用点”与“三份实现分支”不是同一个计数；§4.4 逐条对照。
+三架构的实现各自放在自己的模块里（`higher_half.rs` 的 [`struct X86_64HigherHalf`](os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf)、`higher_half.rs` 的 [`struct AArch64HigherHalf`](os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf)、`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf)）：两个生产调用点（`arch_boot_finish`、`resume_additive`）各自按所在腿选中本架构实现：直核家族经 `arch_boot` 的三份 `#[cfg]` 分支，v1 接收家族经 `arch_boot_resume_high_half` 或 `resume_after_v1_decode` 的泛型体；所以“两个调用点”与“三份实现分支”不是同一个计数；§4.4 逐条对照。
 
 取舍表：
 
@@ -1765,7 +1765,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 
 （表的行按架构 × 链列；每条腿的计数与协议段换算以 01 篇的 3.7 节为唯一权威，本节不另立计数。）
 
-"四种协议段/交接面"是 01 篇的 3.7 节 对账按**协议两段 + 直核两类**的切分（v1 send / v1 receive / riscv64 自引导 / aarch64 direct-core），不是腿数——落到腿上有五条（三条 v1 发送腿同时属于 send 与 receive 两段）。这些腿有两个收敛点，按腿各归其一：直核家族（`arch_boot` 三个 cfg 分支）收敛在 [`arch_boot_finish`](<os/kernel/src/lib.rs:fn arch_boot_finish>)——`arch_boot_impl` 建表后经它跳 `kmain`；跨镜像三腿收敛在 `arch_boot_resume_v1`——三架构都先经 `resume_after_v1_decode`（aarch64 的壳再转 `arch_boot_resume_high_half`，带两行路标），三者在 调用序合并后都委托到泛型体 `resume_additive`（validate/落 KernelInfo/记录根/establish DM 的同一组加性阶段在其体内），最后落到同一个 `jump_to_kmain`。发送侧没有"收敛到 arch_boot"——它的终点是跳独立镜像的入口指令：aarch64 用 `br {entry}`、riscv64 用 `jr {entry}`、x86_64 用一段 global-asm stub：它的两个 SysV 实参是 `(entry, arena_pa)`——`rdi` 收 entry、`rsi` 收 arena——stub 内 `mov rbx, rsi; mov rax, rdi; cli; cld; jmp rax`，所以接收侧看到的仍是 `rbx` = arena。01 篇的 3.7 节 只引了 aarch64 的 asm；x86 的完整 stub 就是上面这一段。`arch_boot_resume_v1` 里的 `resume_boot_pt_alloc` 只是 `BootAlloc::resume` 的转发（01 篇的 4.7 节 的两种进入方式之一；第三种“从 memmap 切兜底区间”的 `init` 已不存在），注册不发生在它里面。
+"四种协议段/交接面"是 01 篇的 3.7 节 对账按**协议两段 + 直核两类**的切分（v1 send / v1 receive / riscv64 自引导 / aarch64 direct-core），不是腿数——落到腿上有五条（三条 v1 发送腿同时属于 send 与 receive 两段）。这些腿有两个收敛点，按腿各归其一：直核家族（`arch_boot` 三个 cfg 分支）收敛在 [`arch_boot_finish`](<os/kernel/src/lib.rs:fn arch_boot_finish>)——`arch_boot_impl` 建表后经它跳 `kmain`；跨镜像三腿收敛在 `arch_boot_resume_v1`——三架构都先经 `resume_after_v1_decode`（aarch64 的壳再转 `arch_boot_resume_high_half`，带两行路标），三者在 调用序合并后都委托到泛型体 `resume_additive`（validate/落 KernelInfo/记录根/establish DM 的同一组加性阶段在其体内），最后落到同一个 `jump_to_kmain`。发送侧没有"收敛到 arch_boot"——它的终点是跳独立镜像的入口指令：aarch64 用 `br {entry}`、riscv64 用 `jr {entry}`、x86_64 用一段 global-asm stub：它的两个 SysV 实参是 `(entry, arena_pa)`——`rdi` 收 entry、`rsi` 收 arena——stub 内 `mov rbx, rsi; mov rax, rdi; cli; cld; jmp rax`，所以接收侧看到的仍是 `rbx` = arena。01 篇的 3.7 节 只引了 aarch64 的 asm；x86 的完整 stub 就是上面这一段。`arch_boot_resume_v1` 里的 `resume_boot_pt_alloc` 只是 `BootAlloc::resume` 的转发（01 篇的 4.6 节 的两种进入方式之一；第三种“从 memmap 切兜底区间”的 `init` 已不存在），注册不发生在它里面。
 
 `enter_kernel_image_v1` 里跳转前的准备（建根、读游标、补运行期字段）与跳转写法（aarch64 `br {entry}` / riscv64 `jr {entry}` / x86_64 的 stub：实参与跳转序列见本节上段，不再重复）——01 篇的 3.7 节 只给了 aarch64 的跳转（riscv64 的 `jr` 在源文件，未在该引文中展开）。这里补一条与"谁建根"有关的约束：跨镜像路径下，`build_bootstrap_root_and_enable` 被 boot-shim 调用一次、生成的表**已经激活**；接收侧必须避免二次建表（3.7 的反向推演已给后果），而 `bootface` 路径下建表发生在内核镜像自身，`arch_boot` 走的是常规 Step 1–4。
 
@@ -1876,7 +1876,7 @@ $ echo $?
 0     # 全部断言通过；1 = 任一断言失败；2 = 用法/环境错误
 ```
 
-断言清单（脚本头部注释逐条列出 L0–L9；L10 是 C 侧段归属检查，x86_64/all 时输出）：
+断言清单（脚本头部注释逐条列出 L0–L8；L9 在内联实现处，L10 是 C 侧段归属检查，x86_64/all 时输出）：
 
 | 断言 | 检查什么 | 防哪种漂移 |
 |---|---|---|
@@ -1890,7 +1890,7 @@ $ echo $?
 | L7 | 引导栈符号存在、跨度 64KiB、落在末段内（不检查自顶向下方向）——这是宿主侧的弱检查；sp 初值与数组顶的真实关系（含收口填充余量）由 ld 脚本的排布保证，见本篇 §3.3 的栈顶派生 | 栈符号与镜像范围脱节 |
 | L8 | `minix_kernel::arch_boot` 符号在镜像里 | `--gc-sections`/归档粒度把内核启动图裁出镜像 |
 | L9（全架构） | ELF 实测跨距 = 共享的 `KERN_SIZE` 常量副本（x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`；x86_64 无直核面） | 镜像布局常量与自引导面的期望值漂移 |
-| L10（C 侧，x86_64/all 时输出） | `Makefile.inc` 的 `.for unpaged_obj` 名单含 `head.o`/`pre_init.o`/`pg_utils.o`/`klib.o` 且不含 `mpx.o`；`kernel.lds` 有 `.unpaged_text`/`.unpaged_data` 三个收段；`mpx.S` 定义 `k_initial_stktop`、`head.S` 引用它 | 改名名单与收段规则脱节，`k_initial_stktop` 被误收进低地址 unpaged 段 |
+| L10（C 侧，x86_64/all 时输出） | `Makefile.inc` 的 `.for unpaged_obj` 名单含 `head.o`/`pre_init.o`/`pg_utils.o`/`klib.o` 且不含 `mpx.o`；`kernel.lds` 有 `.unpaged_text`/`.unpaged_data`/`.unpaged_bss` 三个收段；`mpx.S` 定义 `k_initial_stktop`、`head.S` 引用它 | 改名名单与收段规则脱节，`k_initial_stktop` 被误收进低地址 unpaged 段 |
 
 L4 与 L5 分别对应本篇 §2.1 的段平移结论与 §3.5 的大页阶梯：L4 保证"两套地址之间只有一个偏移量"这件事对每个段都成立，L5 保证"选出的页尺寸"有一个可用的档位。L8 是"链接保留"的可观测证据——`KERNEL_ENTRY_ANCHOR` 持有 `arch_boot` 的函数指针，链接脚本 `KEEP` 该节，两者一起挡住裁剪。
 
@@ -2039,19 +2039,24 @@ os/qemu-tests/run_qemu.sh x86_64 <test-efi>     # 脚本内部用 -d int,cpu_res
 #         串口日志里的 ### TEST_RESULT: PASS test-higher-half ###。
 
 # 第五组：GDB 远程调试（确认跳转后 PC 与 SP 各落在哪一侧；下面的 $rip/$rsp 是 x86_64 寄存器名，aarch64/riscv64 用 $pc/$sp）
-# 给上一组的 QEMU 调用加两个调试开关：-s 开 gdbstub，-S 在第一条指令前暂停；
-# 裸 QEMU 的起法（含各架构固件路径）见 `01-boot-shim-bootstrap.md` §6.4 的三层调试法，本节不重复。
-# 工件必须是带符号的 ELF（生产内核：os/target/<target>/release/kernel）；
-# UEFI 测试载体的 .efi 是 stripped PE，nm/gdb 都读不到 kmain，不要用这一组调载体。
-gdb <带符号的生产 ELF>
+# 调试对象是带符号的 ELF。riscv64 用 test-higher-half-riscv64 载体（直接调 arch_boot，能到 kmain）：
+$ qemu-system-riscv64 -machine virt -smp 1 -m 256M -nographic -bios default \
+    -kernel os/target/riscv64gc-unknown-none-elf/release/test-higher-half-riscv64 -s -S
+# x86_64/aarch64 的生产 ELF 用各自固件/盘面参数启动后追加 -s -S，见 `01-boot-shim-bootstrap.md` §6.4。
+# 工件必须是带符号的 ELF；UEFI 测试载体的 .efi 是 stripped PE，nm/gdb 都读不到 kmain，不要用它调载体。
+# 跨架构宿主用 gdb-multiarch；x86_64 工件用 gdb 即可。
+$ gdb-multiarch os/target/riscv64gc-unknown-none-elf/release/test-higher-half-riscv64
 (gdb) target remote :1234
-(gdb) break kmain
+# x86_64 生产 ELF：break minix_kernel::kmain
+# riscv64 载体：链接值 0x80200144 + delta（kern_virt_base - kern_phys_base）；
+# 下面按本轮的 test-higher-half-riscv64 实算为 0xffffffc000200144。
+(gdb) break *0xffffffc000200144
 (gdb) continue
-(gdb) print/x $rip
-(gdb) print/x $rsp
-# 预期输出：$rip 与 `nm <工件> | grep kmain` 读出的符号值一致（v1 send/receive 与自引导 direct leg
+(gdb) print/x $pc   # x86_64 用 $rip
+(gdb) print/x $sp   # x86_64 用 $rsp
+# 预期输出：$pc 与 `nm <工件> | grep kmain` 读出的符号值一致（v1 send/receive 与自引导 direct leg
 #           都应当是高半地址；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址，riscv64 测试载体是高半 VMA 但等于 `nm` 值加 `delta`，见下一条汇总与 §4.4 的第三种形态）；
-#           $rsp 落在该架构的 kern_virt_base 之上（x86_64 是 0xffff8000… 一段；aarch64 是 0xffff8000… 一段（`aarch64.ld` 的 `KERNEL_VIRT_BASE = 0xFFFF800000000000`；`0xffff7fffbfe00000` 是 L4 平移量，不是栈地址）；riscv64 是 0xffffffc0… 一段），即 §4.4 的"切栈已生效"。
+#           $sp（x86_64 用 $rsp）落在该架构的 kern_virt_base 之上（x86_64 是 0xffff8000… 一段；aarch64 是 0xffff8000… 一段（`aarch64.ld` 的 `KERNEL_VIRT_BASE = 0xFFFF800000000000`；`0xffff7fffbfe00000` 是 L4 平移量，不是栈地址）；riscv64 是 0xffffffc0… 一段），即 §4.4 的"切栈已生效"。
 ```
 
 五组命令的预期输出：
@@ -2060,7 +2065,7 @@ gdb <带符号的生产 ELF>
 - 第二组：`grep -c ': AT('` 对三份生产脚本各输出 4。这条读数必须带口径：把模式放宽成 `AT(` 会把注释里的字样算进来（x86_64 仍 4、另两份各 5）。两条 `printf` 分别输出 `961` 与 `0xf0000000`。
 - 第三组：全绿时最后一行是 `CHECK-LAYOUT=PASS（x86_64）`、退出码 0；任一断言失败时对应行是 `  [Ln] FAIL …` 且最后一行 `CHECK-LAYOUT=FAIL（…）`。
 - 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not at the architecture's entry alignment`、`FP not zero`，riscv64 另有 `PC not at high address (riscv64 delta path broken)`），而 x86_64/aarch64 的 `INFO: PC not at high address (expected in test kernel)` 是参考信息行、不参与成败判定，别把它读成失败原因（它只在失败分支里出现；riscv64 不打印这一行，PC 低半在 riscv64 是 `FAIL`）；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
-- 第五组：断在 `kmain` 后 `$rip` 应等于该腿的入口值——v1 send/receive 与自引导 direct leg 下等于 `nm <工件> | grep kmain` 的符号值（高半）；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址；**riscv64 测试载体不是 `nm` 值本身**：它链接在物理地址上，`$rip` = `nm` 值 + `delta`（`delta = kern_virt_base − kern_phys_base`），例如加载基址 `0x80200000` 时 `nm` 给出 `0x80200160`，而 `$rip` 是 `0xffffffc000000160`；`$rsp` 应落在该架构的 `kern_virt_base` 之上（x86_64 `0xffff8000…`、aarch64 `0xffff8000…`、riscv64 `0xffffffc0…`）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
+- 第五组：断在 `kmain` 后 `$pc`（x86_64 用 `$rip`）应等于该腿的入口值——v1 send/receive 与自引导 direct leg 下等于 `nm <工件> | grep kmain` 的符号值（高半）；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址；**riscv64 测试载体不是 `nm` 值本身**：它链接在物理地址上，`$pc` = `nm` 值 + `delta`（`delta = kern_virt_base − kern_phys_base`）。以本轮 `test-higher-half-riscv64` 为例：`nm` 给出 `0x80200144`，`kern_phys_base = 0x80000000`、`kern_virt_base = 0xffffffc000000000`，`delta = 0xffffffbf80000000`，所以断点/`$pc` 是 `0xffffffc000200144`；`$sp`（x86_64 用 `$rsp`）落在该架构的 `kern_virt_base` 之上（本轮 riscv64 实测 `0xffffffc000400000`；x86_64 `0xffff8000…`、aarch64 `0xffff8000…`）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
 
 ---
 ## 7. 参见

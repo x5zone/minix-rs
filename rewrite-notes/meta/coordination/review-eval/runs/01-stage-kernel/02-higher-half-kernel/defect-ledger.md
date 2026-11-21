@@ -393,3 +393,15 @@
 | RD-R5-042 | CLAIM-06 | R5 | refute | P2 | 事实/L9 覆盖 | ① | §3.1 注明 x86_64 走 bootface.rs 分支只为共享常量，不存在直核面 | §3.1、§4.5；panel/round5/refute.md | CLAIM-06 修复点回读：§3.1 注明 x86_64 走 bootface.rs 分支只为共享常量，不存在直核面；独立回执见 certify 同轮文件 |
 
 > 台账 ID 校正（2026-11-22，me-agent 核对）：RD-R5-030 的来源应为 `READER-C-04`（EBS 次序），RD-R5-032 的来源应为 `READER-C-06`（J2 范围）；`READER-C-02`（J3 首现场）由 §2.4/§3.6 的重写覆盖，旧行号不可逐字回溯。实质修复状态与 R5 回执不变。
+
+## R39 确认轮（2026-11-22）
+
+| ID | 来源 | 节 | 轮 | 角色 | 严重度 | 类别 | 处置 | 修复 | 证据 | 状态 | — | — | — | — |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| RD-R39-001 | CONFIRM-D1 | 3.5 | R39 | cold-confirm | P2 | 文档/跨篇指针 | ① | §3.5 的 01 篇 §3.8 → §3.4（分配器换手） | `grep -n '^### 3\.4' 01-boot-shim-bootstrap.md` → 1333 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-002 | CONFIRM-D2 | 4.5 | R39 | cold-confirm | P2 | 文档/跨篇指针 | ① | §4.5 的“01 篇 4.7 的两种进入方式” → §4.6 | `rg -n '两种进入方式' 01-boot-shim-bootstrap.md` → 2493 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-003 | CONFIRM-D3 | 6.2 | R39 | cold-confirm | P1 | 文档/可执行性 | ① | 第五组改用 test-higher-half-riscv64 载体，给出 `-s -S` 与高半断点地址；`break minix_kernel::kmain` 保留给生产 ELF | `gdb-multiarch … -ex 'break *0xffffffc000200144' -ex continue` → `Breakpoint 1, 0xffffffc000200144`；`$pc=0xffffffc000200144`、`$sp=0xffffffc000400000`；串口 PASS | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-004 | CONFIRM-D4 | 5.2 | R39 | cold-confirm | P2 | 文档/计数 | ① | §5.2 的 L0–L9 → L0–L8（L9 在内联实现处） | `sed -n '9,33p' os/kernel-image/check-layout.sh` 头部只列 L0–L8 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-005 | CONFIRM-D5 | 5.2 | R39 | cold-confirm | P2 | 文档/计数 | ① | L10 行补 `.unpaged_bss`，与脚本三个收段一致 | `sed -n '/check_c_unpaged()/,/^}/p' check-layout.sh` 三个 sec | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-006 | CONFIRM-D6 | 3 | R39 | cold-confirm | P3 | 文档/调用图 | ① | §3 章拆开直核家族（`arch_boot` cfg）与 v1 接收家族（`arch_boot_resume_high_half`/`resume_after_v1_decode`） | `rg -n 'fn arch_boot_resume_high_half|fn resume_after_v1_decode' os/kernel/src/lib.rs` 命中 352/758 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-007 | CONFIRM-D7 | 6.2 | R39 | cold-confirm | P3 | 文档/跨架构 | ① | 第五组补 `gdb-multiarch`，并注明 x86_64 用 `gdb` | 文档 §6.2 第五组 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |

@@ -557,3 +557,12 @@
 
 - 三问：① 本轮不变量 = 四个时刻与 J1–J4 在正文/证据/诊断三处一致；② 基线 = `cf79b63e5`，最终文档 sha/行数见 §0 与 `FREEZE.md`；③ 证据 = 42 条台账、四份 certify、九门读数与 `--round R5`。
 - 资源重读：本轮盲区属“源码注释与实现不一致”类，查 `prompt/resources/adversarial-rust`；已确认“实现 > 注释”这条判据有效，建议下一版把“源码注释也纳入真值核对”写进面板 brief。
+
+### R39 确认轮（V3.10，2026-11-22）
+
+- L0.9：tutorial 6/6 0 缺项；30 个 related-code CP-3/CP-4 归零、CJK 0；TODO open=0；D02 旧 blocked 4 条由冷启动 me-agent 裁决（C-04/F10/F10b historical、F10a 补 target remote 后关闭）。
+- 单元账本：41/41 冻结、T3 PASS；9 个冻结单元抽样（3.5、4.0、4.5、5.3、6.2、3、5、3.0、5.2）。
+- 确认轮发现 7 条（1 P1 + 5 P2 + 1 P3）：两处跨篇指针、§6.2 GDB 组不可执行、§5.2 L0–L8/L10 三收段、§3 调用图表述。D1–D7 修复后两轮增量复核 `DELTA: PASS`。
+- 确认轮修复 2/2 批次，未开新修改轮；`defect-ledger.md` 新增 `RD-R39-001..007` 全部 CLOSED。
+- 机械门：文档七门绿、anchor 65/65、code-publication 30/30=0、TODO 0；cargo 四包全绿；QEMU 三腿 + check-layout PASS。
+- 轮结果：`CONVERGED`。文档 sha256 `b34ae2fd…`，2108 行。

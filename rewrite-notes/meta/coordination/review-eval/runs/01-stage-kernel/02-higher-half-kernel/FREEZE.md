@@ -141,3 +141,14 @@
 - 本轮发现全部处置：未闭环 0；certify 新准入 0（四份独立回读）。
 - 未达 CONVERGED 的原因不在本轮发现：G11 code-publication 的存量注释、G13 tutorial-rubric 的 6/6 缺项、以及 `D01/D02-EXTERNAL-D107` 外部 todo 哨兵；三项均不由本轮文档重写引入，也不在本任务允许的修改面内。
 - 本轮 `os/`、`minix3/` 零改动；QEMU 未重跑。下一代码批次需重新固定基线。
+
+## R39 确认轮（V3.10，append-only；2026-11-22）
+
+- 轮结果：`CONVERGED`。
+- 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`，sha256 `b34ae2fd7d8b74145cb2e6b56e061cb0b10472862f1fa36fb7335cecb397d7b0`，2108 行。
+- 单元账本：41/41 frozen、reopened=0、stale=0、T3 PASS；`audit` 全部单元 open=0。
+- 确认轮：9 个冻结单元抽样；7 条发现（1 P1 + 5 P2 + 1 P3）全部修复，两轮 `DELTA: PASS`；修复 2/2 批次，未开新修改轮。
+- 文档七门：publication/tutorial 0 新增；structure/ref/style/density 通过；citation `27 checked/0 failed`；anchor 65/65；doc-code-map 30/30。
+- 代码门：30 个 related-code code-publication 0 命中、CJK 0；minix-arch 266/0、minix-elf 27/0、boot-shim 136/0、minix-kernel mock 866/0/8。
+- 真机/布局：`test-higher-half` x86_64/aarch64/riscv64 三腿 PASS；`check-layout.sh all` PASS；GDB transcript 在 `0xffffffc000200144` 命中 kmain。
+- 账本：D02 TODO `--fail-on-open` 为 0；跨模型复核见 `crosscheck/round39-free.md`。

@@ -38,4 +38,8 @@
 
 ## 单元账本
 
-（`review-units.py` 冻结后补记 check/audit 输出。）
+- `review-units.py sync <doc>` → 41 个单元（新增 6 个 `N.0 本章导读`）
+- `review-units.py check <doc>` → `units=41 frozen=41 chapters=6`，exit 0
+- `review-units.py audit --doc <doc>` → `audit: OK（全部单元 open=0）`
+- `review-units.py gate <doc> --pass --evidence <本文件>` → `gate T3: PASS`
+- `review-units.py sample <doc> --seed <HEAD>` → 抽样 9 个单元：3.5、4.0、4.5、5.3、6.2、3、5、3.0、5.2

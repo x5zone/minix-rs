@@ -162,3 +162,20 @@
 - 减法: 提案 0 / 采纳 0
 - 成本: agent 7（5 面板 + 2 certify）/ token 未采集 / 耗时 约 6 小时
 - 回读与回归: 文档七门绿（citation blocks=41 checked=27 failed=0；anchor 66/66；structure/ref/style error=0/density 通过；doc-code-map 30/30）；publication 无新增；todo-ledger `--doc 02-higher-half-kernel` OK；tutorial-rubric 6/6 章缺项与 v3 基线同型（存量）；code-publication 73 处存量过程注释（`os/` 冻结，不改）；QEMU 未重跑（文档-only）
+
+## R39 确认轮（V3.10）
+
+- 发现总数: 7
+- 唯一根因数: 7
+- 本轮新准入: 7
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 1（D3 的预期输出段在第一次修复后仍与算例矛盾，P2，已修）
+- 处置: ① 7 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0
+- 确认轮修复: 2/2 批次（第一批 5 单元、第二批 6.2；第二批含 D3 同缺陷补修）
+- 抽样: 9/41 冻结单元（20%；含 fallback/none 锚点）
+- 回读与回归: 文档七门绿（anchor 65/65、citation 27 checked/0 failed、structure/ref/style error=0/density、publication/tutorial 0 新增）；code-publication 30 文件 0 命中；cargo：minix-arch 266/0、minix-elf 27/0、boot-shim 136/0、minix-kernel mock 866/0/8，minix-rs/minix-vfs check 通过；QEMU：test-higher-half x86_64/aarch64/riscv64 三腿 PASS，check-layout all PASS；GDB transcript 命中 kmain 高半地址

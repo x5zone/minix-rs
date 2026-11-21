@@ -7,7 +7,7 @@ edition: V3.9
 baseline_full_survey: true
 confirmation:
   active: false
-  fixes: 0
+  fixes: 2
 units:
 - id: '1'
   heading: 1. 概述
@@ -286,7 +286,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -420,13 +420,13 @@ units:
   level: 3
   parent: '3'
   order: 17
-  text_sha: e146486b4938569fdd6e19c6ec20fd6eec429611e455ff4f68fa15f805a933bc
+  text_sha: ea7b5855bd04f33d1e3f6c17f7e3609544d09b24b96363f9d0d753db8ea8e901
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -470,13 +470,13 @@ units:
   level: 3
   parent: '3'
   order: 19
-  text_sha: 2b8770770e9968b0f25b47743441de0c0ae12e73ba2246ee16df12abded614e9
+  text_sha: 4a3a70b38ab06dc2bdb53a4497a54bf0482e22331478aa6cad6fd60f85433392
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -536,7 +536,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -666,13 +666,13 @@ units:
   level: 3
   parent: '4'
   order: 26
-  text_sha: d7bdad4acf5b76d345ee95ec92048b5ca30c3ee90d294d877723e3e5acc6791c
+  text_sha: e727d07132e16c835994aa710c2dce70fe95dc4f2c9dce2f13ca72b5b841f0df
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -740,7 +740,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -778,13 +778,13 @@ units:
   level: 3
   parent: '5'
   order: 30
-  text_sha: 3a1d26c25dc5dfca88c8b2ec1c8055ba4f846964ba7a2a17ea27529a008dd9b3
+  text_sha: 7659e5cd42ba389a1d3db532378019bc871a4ff455b73f620ed11cc18f738753
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -852,7 +852,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -890,13 +890,13 @@ units:
   level: 3
   parent: '6'
   order: 35
-  text_sha: ff75533b064ed394890a7de4372657f8ab92119fafed7152aa2cff790a6d1ce3
+  text_sha: 704b2b72b88ac065e2d5a9efdde526023eb3a8a1633ea205ca349f9af9587600
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
   rewritten: false
   user_approved: false
   deps: []
@@ -905,7 +905,7 @@ units:
   anchor_refs: []
   anchor_hashes: {}
   anchor_status: none
-  note: ''
+  note: D02 确认轮第二批：riscv64 GDB 示例改用 test-higher-half-riscv64 并给出高半断点地址
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
 - id: '1.0'
   heading: 1.0 本章导读
@@ -1042,5 +1042,5 @@ units:
 t3:
   passed: true
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-  at_commit: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  at_commit: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
 baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
