@@ -105,6 +105,13 @@ impl BootAlloc {
         Some((base, end))
     }
 
+    /// Raw `next` cursor (physical address of the next free page); zero
+    /// before initialization, matching the state the cross-image handoff
+    /// patches into the envelope.
+    pub fn next(&self) -> u64 {
+        self.next.load(Ordering::Relaxed)
+    }
+
     /// Bytes handed out so far (`next − base`).
     ///
     /// Reported as `kernel_allocated_bytes_dynamic` in the VM boot handoff
@@ -194,11 +201,9 @@ pub fn boot_alloc_used_bytes() -> u64 {
     BOOT_ALLOC.used_bytes()
 }
 
-/// Current `next` cursor (raw physical address of the next free page) of the
-/// global boot allocator. Zero before initialization.
+/// Raw `next` cursor of the global boot allocator (zero before init).
 pub fn boot_alloc_next() -> u64 {
-    let (base, _) = BOOT_ALLOC.region().unwrap_or((0, 0));
-    base + BOOT_ALLOC.used_bytes()
+    BOOT_ALLOC.next()
 }
 
 /// Resume the global boot allocator from a cross-image handoff.

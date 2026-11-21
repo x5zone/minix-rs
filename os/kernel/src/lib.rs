@@ -249,33 +249,6 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     // the "…jumping to kmain\n" string start plus its length); validate read
     // ASCII garbage and panicked. The global copy's address is a link-time
     // RIP-relative constant, handed over through no register at all.
-    // Boot-visibility evidence capture (temporary): print the raw argument
-    // pointer at the very first instruction — determine whether the first hop
-    // from shim main → arch_boot was already broken (before the .bss store).
-    {
-        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
-        Console::write_str("kernel: arch_boot arg=");
-        Console::write_hex(kernel_info as *const KernelInfo as u64);
-        Console::write_str("\n");
-        // Forensics: shim printed memmaps conv=12
-        // reserved=127 but the handoff saw zero identity candidates.
-        // Split "lost before arch_boot" (reslen=0 here) from "lost in
-        // store/copy" (reslen=127 here) — and print the first entry to
-        // distinguish a dangling slice (all-zero payload) from a lost
-        // length.
-        let rr = kernel_info.reserved_regions;
-        Console::write_str("kernel: arch_boot reslen=");
-        Console::write_hex(rr.len() as u64);
-        if let Some(r0) = rr.first() {
-            Console::write_str(" r0=");
-            Console::write_hex(r0.base.0);
-            Console::write_str("+");
-            Console::write_hex(r0.len as u64);
-        } else {
-            Console::write_str(" r0=NONE");
-        }
-        Console::write_str("\n");
-    }
     // Kernel-side first marker (EarlyConsole=COM1, the same port as
     // boot-shim's raw_serial; EBS has passed, no concurrent writers).
     {

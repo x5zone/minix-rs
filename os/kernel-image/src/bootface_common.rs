@@ -34,26 +34,36 @@ pub(crate) const NAME_SLOT: usize = 16;
 /// order of magnitude and take an explicit halt arm on exhaustion.
 pub(crate) const PT_BUMP_PAGES: usize = 256;
 
+/// One NUL-padded name slot. Const-evaluated so the final table is pure
+/// bytes: under the satp=0 physical view only literals materialised at the
+/// call site are safe to dereference, and a `&str` fat pointer stored in the
+/// table would be one more baked pointer.
+const fn name_slot(name: &str) -> [u8; NAME_SLOT] {
+    let mut slot = [0u8; NAME_SLOT];
+    let bytes = name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && i + 1 < NAME_SLOT {
+        slot[i] = bytes[i];
+        i += 1;
+    }
+    slot
+}
+
 /// 12 names × 16 B, ordering = C `table.c:44-64` = `MODULE_NAMES`.
 ///
-/// A pure data pool on purpose: under the satp=0 physical view only literals
-/// materialised at the call site are safe to dereference, so no `&str` fat
-/// pointers live in this table (see the string-discipline notes in both
-/// boot faces).
-pub(crate) const NAME_POOL: [[u8; NAME_SLOT]; NR_BOOT_MODULES] = [
-    *b"ds\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"rs\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"pm\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"sched\0\0\0\0\0\0\0\0\0\0\0",
-    *b"vfs\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"memory\0\0\0\0\0\0\0\0\0\0",
-    *b"tty\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"mib\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"vm\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"pfs\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"mfs\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"init\0\0\0\0\0\0\0\0\0\0\0\0",
-];
+/// Built from the contract list itself, so the pool has no hand-written
+/// second copy to drift. The byte pool remains pure data (no fat pointers).
+const fn build_name_pool() -> [[u8; NAME_SLOT]; NR_BOOT_MODULES] {
+    let mut pool = [[0u8; NAME_SLOT]; NR_BOOT_MODULES];
+    let mut i = 0;
+    while i < NR_BOOT_MODULES {
+        pool[i] = name_slot(boot_shim::loader::MODULE_NAMES[i]);
+        i += 1;
+    }
+    pool
+}
+
+pub(crate) const NAME_POOL: [[u8; NAME_SLOT]; NR_BOOT_MODULES] = build_name_pool();
 
 /// Compile-time byte-for-byte check of the pool against the contract list
 /// (`MODULE_NAMES`). Both boot faces are absent from the host build, so the

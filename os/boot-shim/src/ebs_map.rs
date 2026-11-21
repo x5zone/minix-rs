@@ -350,7 +350,6 @@ pub enum MapError {
     DescriptorBeyondMap,
     /// More descriptors than the caller's storage holds.
     TooManyDescriptors,
-    Policy(PolicyError),
     /// A descriptor failed admission; the record names the descriptor and the
     /// failed requirement, so the halt report is actionable.
     RejectedDescriptor(DescriptorRejection),
@@ -363,12 +362,6 @@ pub enum MapError {
 impl From<HandoffV1WriteError> for MapError {
     fn from(err: HandoffV1WriteError) -> Self {
         MapError::Capacity(err)
-    }
-}
-
-impl From<PolicyError> for MapError {
-    fn from(err: PolicyError) -> Self {
-        MapError::Policy(err)
     }
 }
 

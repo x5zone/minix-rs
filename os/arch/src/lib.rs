@@ -254,16 +254,15 @@ pub const fn boot_dm_admissible_end() -> u64 {
 /// default 0xFEE00000). A process page table missing them faults the
 /// first tick after a CR3 switch.
 ///
-/// x86-64: the IO-APIC (0xFEC0_0000) and local-APIC (0xFEE0_0000)
-/// pages at their QEMU/default bases. Other architectures and the mock
-/// window: empty — their interrupt controllers are not dereferenced at
-/// fixed low VAs on this boot path yet.
+/// x86-64: empty. The LAPIC/IO-APIC pages are installed by Step 2c at
+/// their high-half device-window slots, not folded into the Step-1
+/// identity map; a low-VA table here had no production reader. Other
+/// architectures and the mock window: empty for the same reason — their
+/// interrupt controllers are not dereferenced at fixed low VAs on this
+/// boot path.
 #[cfg(target_arch = "x86_64")]
 pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
-    &[
-        (0x0FEC0_0000, 4096), // IO-APIC
-        (0x0FEE0_0000, 4096), // local APIC (default base)
-    ]
+    &[]
 }
 
 /// riscv64: QEMU virt PLIC (2 MiB window) and the NS16550A UART page.
