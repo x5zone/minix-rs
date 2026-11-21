@@ -121,8 +121,8 @@ impl SmpArch for Riscv64SmpArch {
         //   a0 = hart mask   (one bit per hart; bit n = hart n)
         //   a1 = hart_mask_base (hart id of bit 0; 0 for hart 0)
         //
-        // This used to call the SBI v0.1 LEGACY send_ipi
-        // (EID 0, FID 3), which modern OpenSBI no longer implements —
+        // The SBI v0.2 IPI extension is the only path; the v0.1 LEGACY
+        // send_ipi (EID 0, FID 3) is not implemented by modern OpenSBI —
         // every ecall silently failed (a0 = SBI_ERR_NOT_SUPPORTED) and no
         // IPI was ever raised. The v0.2 IPI extension takes the same
         // (mask, base) arguments, so the fix is the EID/FID pair only.

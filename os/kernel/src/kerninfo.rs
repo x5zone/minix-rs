@@ -99,7 +99,7 @@ static KERNINFO_PAGE: SyncUnsafeCell<KerninfoPage> = SyncUnsafeCell::new(Kerninf
 /// `0` = not yet established (pre-`init_kerninfo`). The only reader is
 /// `vm_handoff`'s `VmBootHandoff` builder; VM maps the frame at
 /// `KERNINFO_USER_VA` in every new root (`init_page_table`). The kernel-side
-/// VMCTL SetAddrSpace path no longer consumes it.
+/// VMCTL SetAddrSpace path does not consume it.
 static KERNINFO_PAGE_PHYS: AtomicU64 = AtomicU64::new(0);
 
 /// Fill the page content from boot information.
@@ -117,7 +117,7 @@ fn fill_kerninfo_page(kernel_info: &KernelInfo) {
     let page = unsafe { &mut *KERNINFO_PAGE.get() };
     page.user = KuserInfo {
         kui_size: size_of::<KuserInfo>() as u64,
-        // v10 (D-062): derived (was `KernelInfo.user_sp`, always this constant).
+        // Derived: equals `USER_STACK_TOP`, not a wire scalar.
         kui_user_sp: minix_types::USER_STACK_TOP,
     };
 }
@@ -141,7 +141,7 @@ fn map_and_publish() {
     let page_virt = core::ptr::addr_of!(KERNINFO_PAGE) as usize as u64;
     let root = crate::current_root_phys()
         .expect("init_kerninfo: bootstrap root not set — arch_boot_impl must run first");
-    // D-081 / I-44 E-gate call site #1 (`init_kerninfo`): kernel-channel
+    // Kernel-channel handle at the `init_kerninfo` call site:
     // handle; the ownership model records this as External (write under the
     // boot-order synchronization contract, BKL held, single CPU active).
     let mut paging = CurrentPaging::from_active_root(root, PteChannel::KernelDm);

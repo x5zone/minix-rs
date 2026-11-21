@@ -228,7 +228,7 @@ impl<T> Frozen<T> {
     /// The guard is an unconditional `assert!`, not a `debug_assert!`: a
     /// second freeze would silently overwrite a value other CPUs may already
     /// be reading, while the check itself costs one acquire load on a
-    /// once-per-boot path (D-064 / I-32).
+    /// once-per-boot path.
     ///
     /// # Panics
     ///

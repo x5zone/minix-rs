@@ -51,6 +51,10 @@ AUX_PREFIX = (
     "adjudication", "design", "forensics", "review", "evidence", "todo",
     "backlog", "history", "learn", "brief", "note", "migration", "code-design",
 )
+GUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+
 PROCESS_PATTERNS = (
     ("DP-1", re.compile(r"\bD-\d{3}\b")),
     ("DP-1", re.compile(r"\bI-\d+\b")),
@@ -60,7 +64,11 @@ PROCESS_PATTERNS = (
     ("DP-1", re.compile(r"\bR(?:1[3-9]|[2-9]\d)\b")),
     ("DP-1", re.compile(r"\bT\d{1,2}\b")),
     ("DP-1", re.compile(r"\bPhase [A-Z](?:\.\d+)?\b")),
-    ("DP-2", re.compile(r"\b[0-9a-f]{7,40}\b")),
+    # 提交指纹：至少含一个 a–f 字母；纯十进制常量、0b/0o 字面量与
+    # 设备树 `node@address` 都不是提交号。
+    ("DP-2", re.compile(
+        r"(?<!@)\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])(?!0[bB])(?!0[oO])[0-9a-f]{7,40}\b"
+    )),
 )
 INTERMEDIATE_RE = re.compile(
     r"\.design/|meta/|(?<![\w/])runs/|DECISIONS\.md|OPEN-DEBT|(?<![\w/])prompt/|(?<![\w/])tmp/|coordination/"
@@ -110,8 +118,10 @@ def scan_doc(path: Path) -> list[dict]:
         if in_fence:
             continue
         stripped = line.strip()
+        # UEFI GUID 的十六进制段不是提交指纹。
+        scan_line = GUID_RE.sub("<guid>", line)
         for kind, pat in PROCESS_PATTERNS:
-            for m in pat.finditer(line):
+            for m in pat.finditer(scan_line):
                 hits.append({"kind": kind, "line": i, "text": line.strip(), "token": m.group(0)})
         for m in INTERMEDIATE_RE.finditer(line):
             hits.append({"kind": "DP-3", "line": i, "text": stripped, "token": m.group(0)})
@@ -187,6 +197,7 @@ def self_test() -> int:
         good.write_text(
             "# 好文档\n\n"
             "内核把启动信息按字段名交给下一阶段，后者只读这些字段。\n"
+            "`b1b621d5-f19c-41a5-830b-d9152c69aae0`、`1193182`、`0b010000` 都不是提交号。\n"
             "如果把四个位置实参直接传下去会怎样：交换两个同类型参数仍能编译，"
             "所以这里用一个命名结构体。\n"
             "参见 [`bootface`](<os/kernel-image/src/bootface.rs:fn bootface>)。\n"

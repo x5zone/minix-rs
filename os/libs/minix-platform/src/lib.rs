@@ -5,8 +5,8 @@
 //!
 //! Provides the `PlatformDesc` trait — a unified, architecture-agnostic
 //! interface for querying hardware parameters (interrupt controller base
-//! addresses, timer frequencies, CPU topology) that were previously
-//! hardcoded per-architecture.
+//! addresses, timer frequencies, CPU topology) otherwise hardcoded
+//! per-architecture.
 //!
 //! # Design (see 04-platform-discovery.md §3.4)
 //!

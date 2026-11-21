@@ -6,7 +6,7 @@
 > **Rust 实现**：`os/libs/minix-boot/src/{platform,kernel_info}.rs`、`os/libs/minix-platform/src/{lib,desc,kind,global,acpi,device_tree,qemu_virt}.rs`、`os/libs/minix-platform/src/arch/{mod,x86_64,aarch64,riscv64}.rs`、`os/libs/minix-types/src/types/{cell,address}.rs`、`os/boot-shim/src/{uefi_helpers,opensbi_helpers}.rs`、`os/kernel/src/{lib,misc,smp,trap_dispatch}.rs`、`os/arch/src/{riscv64,arm64}/smp.rs`、`os/arch/src/arch/{clock,arch_init}.rs`、`os/arch/src/{x86_64,arm64,riscv64}/clock.rs`、`os/arch/src/x86_64/arch_init.rs`、`os/plat/src/{lib,interrupt,early_console}.rs`、`os/plat/src/{x86_64,arm64,riscv64}/interrupt.rs`、`os/servers/sched/src/sef.rs`、`os/qemu-tests/run_all.sh`、`os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo{,-aarch64,-riscv64}/src/main.rs`
 > **本篇主题**：内核怎么知道自己跑在哪块板子上——把固件给的描述（设备树 / ACPI 表 / QEMU 假定值）变成可用的硬件描述。
 > **目标读者**：熟悉操作系统基本概念（固件引导、分页、MMIO、中断控制器大意）与 C 语言的开发者；Rust 一侧读到 trait、`no_std` 静态全局与 `unsafe` 契约大意即可。
-> **前置知识**：启动信息已由 boot-shim 交接给内核（含 `KernelInfo.platform_sources`）、高半地址空间已建立、**最小启动恒等窗口**已注册（不是低 4GB 全铺，见 §4.5）、保护结构已装好（01–03 篇的出口）；`kmain` 的 Phase A.5 是本篇的第一条主线。
+> **前置知识**：启动信息已由 boot-shim 交接给内核（含 `KernelInfo.platform_sources`）、高半地址空间已建立、**最小启动恒等窗口**已注册（不是低 4GB 全铺，见 §4.5）、保护结构已装好（01–03 篇的出口）；`kmain` 的 阶段 A.5 是本篇的第一条主线。
 > **教学目标**：①内核开机要问硬件的四组问题与各自的消费者（§1.1）；②三种固件的答法与 C 侧两套做法（§1.2、§2.9）；③启动窗口的两条硬边界与"只搬地址与长度"的职责切分（§1.3、§1.5）；④Rust 八项核心设计决策与七项实现层决策索引（§3）；⑤实现链：引导方定位 → 分派 → 解析 → 冻结 → 消费（§4）；⑥测试与诊断（§5、§6）；C 侧覆盖边界见 §1.6。
 > **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) 交出启动信息与内存记账（含 `KernelInfo.platform_sources` 字段的存放）、[02-higher-half-kernel.md](02-higher-half-kernel.md) 建立高半地址空间与恒等映射（DTB 物理地址能被直接解引用就靠它）、[03-kmain-cstart.md](03-kmain-cstart.md) 装上保护结构（`init_protection` 与 `init_clock_and_interrupts` 的先后由 kmain 的 Phase 决定）。
 > **后续**：时钟与中断控制器的初始化从本篇产出的描述符里取地址与频率（[05-clock-interrupt-init.md](05-clock-interrupt-init.md) §4.1 是描述符消费的逐步走查）；CPU 拓扑的完整使用在 SMP 篇（`16-smp.md`，尚未重生成）。
@@ -16,6 +16,49 @@
 
 ## 1. 概述
 
+### 1.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 说出内核开机要问硬件的四组问题，以及每组在 C 侧的消费者。
+- 分清三种平台描述来源（ACPI、DTB、QEMU virt 兜底）与它们的优先级。
+- 解释“及时发现”为什么必须排在保护结构与时钟中断之前。
+
+#### 前置概念
+
+- 03 篇的保护结构与 `kmain` 阶段顺序；知道 `KernelInfo.platform_sources` 从哪里来。
+- ACPI 表/设备树的基本直觉：固件用一张表描述中断控制器、定时器与 CPU 拓扑。
+
+#### 最小示例
+
+```bash
+# Rust 侧的发现入口；平台上下文在这里建立（§1.2）
+$ grep -n 'fn init_from_kinfo' os/libs/minix-platform/src/global.rs
+# C 侧的发现调用点；四组问题的 C 消费者从 cstart 开始（§2.1）
+$ grep -n 'void cstart' minix3/minix/kernel/main.c
+```
+
+第一条给出发现的发生位置，第二条给出 C 侧调用序；四组问题与三种来源都围绕这两处读。
+
+#### 失败对照
+
+如果发现排在 `init_protection` 之后，保护结构读取平台参数时会命中 `Frozen::get before freeze`：表已经要装，参数却还没发布。发现必须早于所有消费者，不是“越早越好”的风格问题，而是 `Frozen` 的发布顺序约束。
+
+#### 小结
+
+- 内核要问四组问题：中断控制器地址、计数器与频率、CPU 拓扑、平台描述来源。
+- ACPI、DTB、QEMU virt 兜底是三种来源；内核自己解析，boot-shim 只负责定位。
+- 发现发生在 `kmain` 阶段 A.5，早于保护结构、时钟与中断控制器。
+
+#### 术语
+
+- **平台发现**：从固件表或设备树读出硬件参数并发布全局平台上下文的过程。
+- **`platform_sources`**：`KernelInfo` 里的平台描述来源列表，按 boot-shim 偏好排序。
+- **QEMU virt 兜底**：没有可解析来源时使用的固定平台参数；只在开发构建可用。
+- **`Frozen<T>`**：一次性发布的全局值；`get` 早于 `freeze` 会 panic。
+
 ### 1.1 内核开机要问硬件的四组问题
 
 内核在能处理中断、能计时、能输出日志之前，必须先知道四组硬件参数。这四组不是凭经验归纳出来的清单，每一组在 C 侧都有确定的消费者。
@@ -23,7 +66,7 @@
 | 要问的问题 | 为什么需要 | C 侧消费者（或该值的来源） |
 |---|---|---|
 | 中断控制器在哪个 MMIO 地址 | 初始化控制器、mask/unmask IRQ 线 | `minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics` |
-| 计数器在哪、频率是多少 | 配置时钟中断频率、读取当前计数 | `minix3/minix/kernel/arch/i386/arch_clock.c:TIMER_FREQ`（8254 的输入时钟，常量）；「计数器在哪」见 §3.8 的 PIT 端口 `0x40`/`0x43`；CPU 主频（`minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify` 写进 `cpu_info[cpu].freq`）另见 §2.9，不属定时器问题 |
+| 计数器在哪、频率是多少 | 配置时钟中断频率、读取当前计数 | `minix3/minix/kernel/arch/i386/arch_clock.c 的 `TIMER_FREQ``（8254 的输入时钟，常量）；「计数器在哪」见 §3.8 的 PIT 端口 `0x40`/`0x43`；CPU 主频（`minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify` 写进 `cpu_info[cpu].freq`）另见 §2.9，不属定时器问题 |
 | 有几颗 CPU、每颗的私有地址在哪 | SMP 启动、per-CPU 地址计算 | `minix3/minix/kernel/arch/i386/arch_smp.c:discover_cpus` |
 | 早期日志写到哪 | 启动期输出诊断信息 | `minix3/minix/kernel/arch/i386/arch_system.c:ser_init` |
 
@@ -55,7 +98,7 @@ LAPIC 那一格是空的：MADT 的表头里明明有一个 `local_apic_address`
 
 "ARM 用设备树、x86 用 ACPI"是一句常见但不成立的口诀：本仓的 aarch64 路径同时准备了两条发现链，先试设备树、再试 ACPI（§4.2 给出实际扫描顺序）；而实测的 QEMU virt + AAVMF 配置表里没有设备树项，aarch64 的发现链因此实际走 ACPI（§4.2 的扫描顺序与 §4.3 的分派、§5.2 的真机门都按这条事实写）。
 
-把三种格式当成"可以互相替代的命名差异"会坏在哪：C 的 ACPI 解析器只认 4 字节签名——根表签名 `"RSDT"` 由 `minix3/minix/kernel/arch/i386/acpi.c:acpi_check_signature` 比对（`acpi_read_sdt_at` 内），`"APIC"` 则由同文件 `acpi_get_table_base` 里的 `strncmp` 匹配；把它对准一棵设备树时读到的第一个 4 字节不是签名，`acpi_read_sdt_at` 直接返回 -1；反过来，设备树解析要匹配 `compatible` 字符串（如 `riscv,plic0`），而 ACPI 表里根本没有这个属性。两种格式的差别不在名字，在读法。
+把三种格式当成"可以互换的命名差异"会坏在哪：C 的 ACPI 解析器只认 4 字节签名——根表签名 `"RSDT"` 由 `minix3/minix/kernel/arch/i386/acpi.c:acpi_check_signature` 比对（`acpi_read_sdt_at` 内），`"APIC"` 则由同文件 `acpi_get_table_base` 里的 `strncmp` 匹配；把它对准一棵设备树时读到的第一个 4 字节不是签名，`acpi_read_sdt_at` 直接返回 -1；反过来，设备树解析要匹配 `compatible` 字符串（如 `riscv,plic0`），而 ACPI 表里根本没有这个属性。两种格式的差别不在名字，在读法。
 
 ### 1.3 描述只在启动窗口里存在
 
@@ -130,7 +173,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 
 这张图在 §4.1 会用 Rust 侧的实际类型再走一遍，两处对照着看能看出哪些段换了承载物、哪些段的位置变了。
 
-把第 ④ 段（保存为只读全局）省掉、让每个消费者各自去读一遍会坏在哪：C 侧约束会放大：`acpi_phys2vir` 的 `vm_running` 检查让「每个消费者自己读」的写法必须整体赶在 VM 起来之前完成（§1.3），而消费者（`apic_single_cpu_init`、`discover_cpus`）分散在启动序列的不同位置（SMP 构建下第二处跟在更晚的 `smp_init` 里）——至于是否真有消费者运行在 `vm_running` 置位之后，本篇未取证，成立的只是约束放大本身；Rust 侧同一错排的失败点不是时钟初始化自己——Phase A.5 的 `init_from_kinfo` 在 `init_clock_and_interrupts` **之前**就无条件调 `init_protection` 读 `platform_desc()`，断言在那里就触发（§4.1/§6.1 的排错记录）；时钟/中断的消费者反而永远到不了。
+把第 ④ 段（保存为只读全局）省掉、让每个消费者各自去读一遍会坏在哪：C 侧约束会放大：`acpi_phys2vir` 的 `vm_running` 检查让「每个消费者自己读」的写法必须整体赶在 VM 起来之前完成（§1.3），而消费者（`apic_single_cpu_init`、`discover_cpus`）分散在启动序列的不同位置（SMP 构建下第二处跟在更晚的 `smp_init` 里）——至于是否真有消费者运行在 `vm_running` 置位之后，本篇未取证，成立的只是约束放大本身；Rust 侧同一错排的失败点不是时钟初始化自己——阶段 A.5 的 `init_from_kinfo` 在 `init_clock_and_interrupts` **之前**就无条件调 `init_protection` 读 `platform_desc()`，断言在那里就触发（§4.1/§6.1 的排错记录）；时钟/中断的消费者反而永远到不了。
 
 ### 1.5 本篇范围与可以安全跳过的内容
 
@@ -152,7 +195,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 
 三条查表入口：QEMU virt 三架构常量表在 §4.6；C 侧四组问题的消费者在 §1.1；术语全称在 §7。
 
-还有一条边界事实：Rust 侧的描述符里有一个"早期控制台"方法、三种来源的实现都写了它，但本篇检索范围内没有活消费者——早期控制台实际走各架构自己的模块。C 侧同一件事更直白：`ser_init` 用的是 COM1 的三个端口宏，与发现结果无关（§3.8 的表给出这条判别规则）。
+还有一条边界事实：Rust 侧的描述符没有“早期控制台”项；`ConsoleDesc` 描述符链没有活消费者，已整条移除，早期控制台由各架构自己的模块自持常量（§3.8 的表给出这条判别规则）。C 侧同一件事更直白：`ser_init` 用的是 COM1 的三个端口宏，与发现结果无关（§3.8 的表给出这条判别规则）。
 
 把控制器初始化这类动作也算进"平台发现"会坏在诊断上：发现阶段的输入是固件给的只读表，编程阶段的输出是对 MMIO 的写。"描述符里缺一个地址"与"地址写不进去"在诊断上是两件事——前者的确认手段是查发现走了哪条路径，后者要查 MMIO 窗口与控制器型号。
 
@@ -177,6 +220,49 @@ earm 与 Rust 的 aarch64 是两回事：前者出现在本篇 C 章，作用是
 ---
 
 ## 2. C 源码分析
+
+### 2.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 复述 C `cstart` 第四步 `arch_init()` 里的 `acpi_init` 调用链；C 树只有 i386/earm 两个实现，没有 DTB 解析器。
+- 说出 i386 的 RSDP→RSDT→MADT 路径与 earm 的板级常量/参数路径；分清 C 侧事实与 Rust 侧新增的 DTB 解析。
+- 对照 i386 与 earm 的差异，理解 Rust 三架构为什么新增 DTB/riscv64 路径。
+
+#### 前置概念
+
+- 第 1 章的四组问题与三种来源。
+- 能读 C 的结构体指针与表遍历；不要求记住每个 ACPI 字段。
+
+#### 最小示例
+
+```bash
+# C 的发现调用点；cstart 第四步 arch_init() 内的一步（§2.1）
+$ grep -n 'acpi_init' minix3/minix/kernel/arch/i386/acpi.c
+# Rust 侧 ACPI 解析入口（C 侧只有 i386 ACPI；DTB 解析是 Rust 新增）
+$ grep -n 'fn parse' os/libs/minix-platform/src/acpi.rs
+```
+
+第一条给出 C 侧发现的位置，第二条给出 Rust 侧解析器的对应入口；四组问题的 C 消费者都在本章逐段展开。
+
+#### 失败对照
+
+如果 C 把发现排到 `apic_single_cpu_init`/`discover_cpus` 之后，这两个真实消费者会读到 `machine.acpi_rsdp == 0`：APIC 存在性检查失败或 CPU 拓扑为空。`arch_clock` 不读 ACPI（i386 用 `TIMER_FREQ` 与端口常量；earm 用 `machine.board_id` 分支），不要把它算进消费者。Rust 侧的顺序错误表现为 `Frozen::get` panic。
+
+#### 小结
+
+- C 在 `cstart` 第四步 `arch_init()` 内调用 `acpi_init`；i386 是 RSDP→RSDT→MADT，earm 用板级常量/`machine.board_id`，C 树没有 DTB 解析器。
+- Rust 保留 i386 的 ACPI 语义并新增 DTB/riscv64 路径；三条链输出同一组平台参数。
+- “内核自己理解硬件”是微内核职责边界；boot-shim 只定位来源。
+
+#### 术语
+
+- **RSDP / RSDT / MADT**：ACPI 的根指针、根系统描述表与多处理器描述表；Rust 解析器另支持 XSDT。
+- **DTB / 节点 / 属性**：设备树的二进制 blob、节点与键值属性。
+- **`acpi_init`**：C 的 ACPI 发现入口；填中断控制器与 CPU 拓扑。
+- **来源优先级**：`platform_sources` 的顺序决定先尝试哪种固件表。
 
 ### 2.1 cstart 的调用序里，发现被放在哪一格
 
@@ -411,7 +497,7 @@ static int acpi_rsdp_test(void * buff)
 
 ### 2.3 acpi_read_sdt_at 与 sdt_count：一张 32 位表索引
 
-C 只解析 RSDT。`minix3/minix/kernel/arch/i386/acpi.h:acpi_rsdp` 的字段止于 `rsdt_addr` 与 `length`：
+C 只解析 RSDT。`minix3/minix/kernel/arch/i386/acpi.h 的 `acpi_rsdp`` 的字段止于 `rsdt_addr` 与 `length`：
 
 ```c
 /* minix3/minix/kernel/arch/i386/acpi.h:struct acpi_rsdp —— 逐字引用 */
@@ -656,7 +742,7 @@ static int discover_cpus(void)
 
 ### 2.5 LAPIC 基址：C 只发现了半格
 
-`acpi_get_ioapic_next` 与 `acpi_get_lapic_next` 名字对称，实现不同：前者取一条记录即返回，后者在循环里跳过未启用的记录。它们读出来的东西并不都进了使用。MADT 表头的结构（`minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_hdr`）是：
+`acpi_get_ioapic_next` 与 `acpi_get_lapic_next` 名字对称，实现不同：前者取一条记录即返回，后者在循环里跳过未启用的记录。它们读出来的东西并不都进了使用。MADT 表头的结构（`minix3/minix/kernel/arch/i386/acpi.h 的 `acpi_madt_hdr``）是：
 
 ```c
 /* minix3/minix/kernel/arch/i386/acpi.h:struct acpi_madt_hdr —— 逐字引用 */
@@ -733,13 +819,13 @@ void smp_init (void)
 	ia32_msr_write(IA32_APIC_BASE, msr_hi, msr_lo);
 ```
 
-块内注释写着 "FIXME this is a problem on AP"，块外的 `msr_lo |= ...` 只做"置使能位"这一件事——读地址那一段是死代码。C 的活路径里，`lapic_addr` 的**物理基址**唯一来源是 `LOCAL_APIC_DEF_ADDR`；进入分页之后该变量改存 VM 映射返回的虚拟地址（`memory.c:954` 的 `lapic_addr = lapic_addr_vaddr`，由 `arch_phys_map_reply` 在 `memory.c:852` 写入）——排障要看的是映射请求 `*addr = lapic_addr`（`memory.c:819`）而不是变量现值。
+块内注释写着 "“AP 上的问题”"，块外的 `msr_lo |= ...` 只做"置使能位"这一件事——读地址那一段是死代码。C 的活路径里，`lapic_addr` 的**物理基址**唯一来源是 `LOCAL_APIC_DEF_ADDR`；进入分页之后该变量改存 VM 映射返回的虚拟地址（`memory.c:954` 的 `lapic_addr = lapic_addr_vaddr`，由 `arch_phys_map_reply` 在 `memory.c:852` 写入）——排障要看的是映射请求 `*addr = lapic_addr`（`memory.c:819`）而不是变量现值。
 
 同一张表里，一个字段被读出来用了（IOAPIC 地址），另一个字段只有声明。要确认这一点，自己跑一遍上面那条 `rg` 就够了。
 
 反过来只信任表头字段、不做任何校验也会坏：MADT 表头里的 `local_apic_address` 由固件填写，一张没填该字段的表会让 `lapic_base` 变成 0，后续所有 LAPIC 寄存器访问落到物理地址 0 附近——而 `detect_ioapics` 仍然成功（IOAPIC 地址是另一条记录）。Rust 侧对同一种"描述符给了 0"的形态有专门防护：aarch64 的中断控制器在 `new()` 里先判零再翻译；x86-64 在 `init_lapic` 里把描述符基址与 `IA32_APIC_BASE` 比对，并在 `init_clock_and_interrupts` 里把描述符基址与设备窗口比对，0 会以带类型名的断言停在启动期，不会落到地址 0（`os/plat/src/x86_64/interrupt.rs:fn init_lapic`、`os/kernel/src/lib.rs:fn init_clock_and_interrupts`）。
 
-把这条不对称放到一台具体机器上看：固件把 LAPIC 窗口重定位到别处时，C 的 `lapic_addr` 的物理基址仍是 `0xFEE0_0000`，而 `detect_ioapics` 依然成功——IOAPIC 地址是从表里读出来的正确值。两个控制器于是落在不同的物理窗口上：IOAPIC 的寄存器编程全部生效，LAPIC 的读写则指向一片不再被解码的地址。Rust 侧把 MADT 表头的 `Local APIC Address` 读进描述符，并在消费端与设备窗口比对；重定位的 LAPIC 会被 check-and-reject 断言拒绝，而不是静默使用错误窗口。**支持重定位需要动态建设备窗口，当前未实现（登记为 R04-T09）**。
+把这条不对称放到一台具体机器上看：固件把 LAPIC 窗口重定位到别处时，C 的 `lapic_addr` 的物理基址仍是 `0xFEE0_0000`，而 `detect_ioapics` 依然成功——IOAPIC 地址是从表里读出来的正确值。两个控制器于是落在不同的物理窗口上：IOAPIC 的寄存器编程全部生效，LAPIC 的读写则指向一片不再被解码的地址。Rust 侧把 MADT 表头的 `Local APIC Address` 读进描述符，并在消费端与设备窗口比对；重定位的 LAPIC 会被 check-and-reject 断言拒绝，而不是静默使用错误窗口。**支持重定位需要动态建设备窗口，当前未实现（登记为 缺口09）**。
 
 ### 2.6 IOAPIC 引脚数：表给基址、硬件给规模
 
@@ -789,7 +875,7 @@ static int acpi_get_ioapics(struct io_apic * ioa, unsigned * nioa, unsigned max)
 
 把引脚数也当成表里的数据（例如取 `global_int_base` 当作线数）会坏在哪：`ioa[n].pins` 被 `ioapic_set_irq()`（`minix3/minix/kernel/arch/i386/apic.c:1203-1225`）用来判断某个 GSI 属于哪颗 IOAPIC、对应哪个引脚；用错量级会让若干根真实存在的 IRQ 线永远保持 masked（设备中断收不到），而系统不报任何错。表给的是"从第几号 GSI 开始"，与"有几根线"是两个不同的量。
 
-Rust 侧目前没有复刻这段两级发现：`ApicDesc` 只表示**首个** IOAPIC（`os/libs/minix-platform/src/arch/x86_64.rs:struct ApicDesc`），`nr_irqs` 是 IDT/IRQ 向量容量（常量 64），IOAPIC 引脚数由 `IOAPIC_NUM_PINS = 24` 常量给出（`os/plat/src/x86_64/interrupt.rs:const IOAPIC_NUM_PINS`）。多 IOAPIC 服务器不在当前射程（登记为 R04-T10）；单控制器机器上，"表给基址、硬件给规模"这条结论仍然成立。
+Rust 侧目前没有复刻这段两级发现：`ApicDesc` 只表示**首个** IOAPIC（`os/libs/minix-platform/src/arch/x86_64.rs:struct ApicDesc`），`nr_irqs` 是 IDT/IRQ 向量容量（常量 64），IOAPIC 引脚数由 `IOAPIC_NUM_PINS = 24` 常量给出（`os/plat/src/x86_64/interrupt.rs:const IOAPIC_NUM_PINS`）。多 IOAPIC 服务器不在当前射程（登记为 缺口10）；单控制器机器上，"表给基址、硬件给规模"这条结论仍然成立。
 
 ### 2.7 acpi_init 的调用点在配置之间怎么选
 
@@ -833,11 +919,11 @@ minix3/minix/kernel/arch/i386/apic.c:1141:	acpi_init();
 
 第二次调用若 `get_acpi_rsdp()` 失败，函数只打印警告然后 `return`——上一次调用填好的 `sdt_count` 与 `sdt_trans[]` 原样留着，而 `machine.acpi_rsdp` 已被 `get_acpi_rsdp` 的结尾置 0。内核此时的状态是"表清单是旧的、开关关了"。
 
-若把失败路径改成"把 `sdt_count` 清零"：`acpi_get_table_base("APIC")` 的循环 `for(i = 0; i < sdt_count; i++)` 一次都不执行，返回 NULL，`acpi_get_ioapic_next` 首次调用即返回 NULL（它的 `if (idx == 0)` 分支里 `madt_hdr == NULL` 直接 return），`detect_ioapics` 得 0——与当前代码的"清单还在但开关关了"相比，那是显式失败。当前代码选择了前者，后果是两条路径的判断依据（`sdt_count` 与 `machine.acpi_rsdp`）会互相矛盾。
+若把失败路径改写为"把 `sdt_count` 清零"：`acpi_get_table_base("APIC")` 的循环 `for(i = 0; i < sdt_count; i++)` 一次都不执行，返回 NULL，`acpi_get_ioapic_next` 首次调用即返回 NULL（它的 `if (idx == 0)` 分支里 `madt_hdr == NULL` 直接 return），`detect_ioapics` 得 0——与当前代码的"清单还在但开关关了"相比，那是显式失败。当前代码选择了前者，后果是两条路径的判断依据（`sdt_count` 与 `machine.acpi_rsdp`）会互相矛盾。
 
 ### 2.8 发现结果往哪放：machine 结构
 
-C 的发现结果不放进某个专用结构，而是分散进两个全局：ACPI 模块的私有静态（`rsdt` / `sdt_trans` / `sdt_count`，§2.3）与一个对外字段 `machine.acpi_rsdp`。`machine` 的声明在 `minix3/minix/kernel/glo.h:machine`，结构体定义（`struct machine`）在 `minix3/minix/include/minix/type.h`：
+C 的发现结果不放进某个专用结构，而是分散进两个全局：ACPI 模块的私有静态（`rsdt` / `sdt_trans` / `sdt_count`，§2.3）与一个对外字段 `machine.acpi_rsdp`。`machine` 的声明在 `minix3/minix/kernel/glo.h 的 `machine``，结构体定义（`struct machine`）在 `minix3/minix/include/minix/type.h`：
 
 ```c
 /* minix3/minix/include/minix/type.h:struct machine —— 逐字引用 */
@@ -1045,6 +1131,49 @@ C 侧的发现结果里没有"来源"这个概念。`machine` 的六个字段里
 
 C 章在末尾把 C 的做法收束成三个结构性问题（§2.10）：发现该放在哪一层、三种来源怎么统一、结果怎么保存。本章按这个次序给出八项核心设计决策（§3.1–§3.8）与七项实现层决策索引（§3.9），§4 再回到实现。
 
+### 3.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 说出八项核心设计决策：解析职责切分、三种来源统一、结果存储、`Frozen` 发布、错误策略等。
+- 解释为什么 boot-shim 只定位、kernel 自己解析，以及为什么用 `Frozen<T>` 而不是可变全局。
+- 把七项实现层决策索引对到 §4 的具体落点。
+
+#### 前置概念
+
+- 第 2 章的 C 发现链与三种来源。
+- Rust 的 trait 对象、`static` 与一次性发布的基本语义。
+
+#### 最小示例
+
+```bash
+# 发现入口的签名；解析职责切分的落点（§3.1）
+$ grep -n 'pub unsafe fn init_from_kinfo' os/libs/minix-platform/src/global.rs
+# Frozen 的类型与 freeze；结果发布契约（§3.7）
+$ grep -n 'pub struct Frozen' os/libs/minix-types/src/types/cell.rs
+```
+
+第一条给出“kernel 自己解析”的入口，第二条给出“一次性发布”的类型；八项决策都围绕这两处展开。
+
+#### 失败对照
+
+如果把平台上下文做成可变全局，AP 上线后多个 CPU 会并发读写同一份参数：一个 CPU 正在读 GIC 地址，另一个 CPU 可能在改写它，症状是随机地址或偶发 panic。`Frozen<T>` 用“发布后只读”把这类竞争从运行期移到类型/断言层。
+
+#### 小结
+
+- 解析职责切分：boot-shim 只定位来源，kernel 自己解析表体。
+- 三种来源统一到 `PlatformDesc` trait 对象，结果用 `Frozen<T>` 一次性发布。
+- 错误策略是 fail-closed：发布构建没有可解析来源就 panic，开发构建才允许 QEMU virt 兜底。
+
+#### 术语
+
+- **`PlatformDesc`**：ACPI/DTB/QEMU virt 三种来源共同的平台描述 trait。
+- **`Frozen<T>`**：一次性发布、之后只读的全局容器；二次 `freeze` 被断言拦下。
+- **fail-closed**：没有可用来源时停止启动，不用默认值继续。
+- **QEMU virt 兜底**：只在开发构建启用的固定平台参数。
+
 ### 3.1 解析职责的切分：boot-shim 只定位，kernel 自己解析（→§2.1、§2.8）
 
 > 例外：aarch64 UEFI 腿的 `dtb_copy` 分两段——EBS **前** `authorize_and_copy` 整块复制并由 `resv_claims::capture` 解析 `/memory`/`/reserved-memory`/MRB 生成保留声明；EBS **后** `cross_validate_config_dtb` 解析整棵树做交叉校验。两段都不装配 `KernelInfo.memmap`；但 claims 阶段产生的 `SourceRecord` **会**经 `push_dtb_sources` 写进 wire（`KernelInfo.memmap_sources`），内核仍从 `platform_sources` 的原始地址自行解析表体。
@@ -1094,7 +1223,7 @@ pub struct KernelInfo {
 
 三种来源的全部差异都在内核侧消化，`KernelInfo` 上只有一个 `platform_sources` 字段。
 
-改成方案 A 会坏在哪，可以落到具体一处新增上：`os/libs/minix-platform/src/arch/mod.rs` 的模块注释写着"新增一种中断控制器（例如 x2APIC）只需要三步——在 arch 子模块定义 struct、为它实现 `InterruptControllerDesc`、在解析器里改用它"。方案 A 下同样的新增要多改一步：`KernelInfo` 的字段布局（boot-shim 与内核两侧必须一致），而这是一个**跨二进制**的结构。
+改写为方案 A 会坏在哪，可以落到具体一处新增上：`os/libs/minix-platform/src/arch/mod.rs` 的模块注释写着"新增一种中断控制器（例如 x2APIC）只需要三步——在 arch 子模块定义 struct、为它实现 `InterruptControllerDesc`、在解析器里改用它"。方案 A 下同样的新增要多改一步：`KernelInfo` 的字段布局（boot-shim 与内核两侧必须一致），而这是一个**跨二进制**的结构。
 
 ### 3.2 三个来源一个接口：trait 做接口、enum 做存储（→§2.9）
 
@@ -1150,15 +1279,15 @@ $ rg -o 'Self::(DeviceTree|Acpi|QemuVirt)' os/libs/minix-platform/src/global.rs 
 
 口径 = **条**（`Self::…` 变体匹配算一条；不含构造点，也不含 `psci_conduit()` 的 `_ => None` 兜底臂）。这 22 条分布在 `Debug` 实现与七个转发方法里。这里要分清两件事：**消费方只认接口**成立；**维护方只有一处分支**不成立——`PlatformDescEnum` 自己就是那张 25 条的分派表。
 
-改成 `Box<dyn PlatformDesc>` 会坏在哪：`os/libs/minix-platform/src/lib.rs` 是 `#![no_std]`，全局是 `static PLATFORM: Frozen<PlatformContext>`，引导早期还没有分配器（堆尚未建立），`Box::new` 无处可取内存。`os/libs/minix-platform/src/global.rs` 的 enum 文档把这条理由写在"为什么不用 `Box<dyn PlatformDesc>`"一段里（`no_std`——避免引导期依赖分配器；enum 分派零开销、不经 vtable——这两条是源注释的原话，「省掉每描述符一次堆分配」是本文的推论，不是源注释原文）。这不是"多花一点开销"的取舍，而是当前阶段不可用。
+改写为 `Box<dyn PlatformDesc>` 会坏在哪：`os/libs/minix-platform/src/lib.rs` 是 `#![no_std]`，全局是 `static PLATFORM: Frozen<PlatformContext>`，引导早期还没有分配器（堆尚未建立），`Box::new` 无处可取内存。`os/libs/minix-platform/src/global.rs` 的 enum 文档把这条理由写在"为什么不用 `Box<dyn PlatformDesc>`"一段里（`no_std`——避免引导期依赖分配器；enum 分派零开销、不经 vtable——这两条是源注释的原话，「省掉每描述符一次堆分配」是本文的推论，不是源注释原文）。这不是"多花一点开销"的取舍，而是当前阶段不可用。
 
 `vtable` 是一张按 trait 方法声明次序排列的函数指针表：`&dyn PlatformDesc` 这类 trait object 由数据指针与 vtable 指针两个机器字组成，调用 `pd.timer()` 时先取表里第 n 项、再间接跳转。`platform_desc()` 的返回类型是 `&'static dyn PlatformDesc`，所以外层仍有一次 vtable；enum 省掉的是"为每个描述符分配一个 `Box`"，以及 enum 内部转发时不再经过第二层 trait object。子描述符方法（如 `nr_irqs()`）仍经一次 vtable，§3.3 的"经 vtable"与这里不矛盾。
 
 ### 3.3 子描述符：品牌枚举退到 arch 模块，接口只谈能力（→§2.5、§2.6）
 
-C 的结构体字段名就是硬件名。`minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_ioapic` 的字段是 `id`/`__reserved`/`address`/`global_int_base`——名字绑定在一种具体控制器上。Rust 的上一版把这种绑定写进了公共 API：子描述符是 enum，变体名直接是 `Apic`/`Gicv3`/`Plic`（中断控制器）、`Pit`/`ArmGenericTimer`/`Clint`（定时器）、`IsaSerial`/`MmioSerial`/`SbiConsole`（控制台；该组随后整体删除），字段名也直接暴露寄存器布局（`gicr_stride`、`mtimecmp_stride`）。这些名字出现在 `KernelInfo` 的公共 API 表面上。
+C 的结构体字段名就是硬件名。`minix3/minix/kernel/arch/i386/acpi.h 的 `acpi_madt_ioapic`` 的字段是 `id`/`__reserved`/`address`/`global_int_base`——名字绑定在一种具体控制器上。Rust 的上一版把这种绑定写进了公共 API：子描述符是 enum，变体名直接是 `Apic`/`Gicv3`/`Plic`（中断控制器）、`Pit`/`ArmGenericTimer`/`Clint`（定时器）、`IsaSerial`/`MmioSerial`/`SbiConsole`（控制台；该组随后整体删除），字段名也直接暴露寄存器布局（`gicr_stride`、`mtimecmp_stride`）。这些名字出现在 `KernelInfo` 的公共 API 表面上。
 
-改造后它们变成带 `Any` 的 trait（`ConsoleDesc` 后来因零消费者整体删除，只剩两个 trait）：
+改造后它们变成带 `Any` 的 trait（`ConsoleDesc` 因零消费者整体移除，只剩两个 trait）：
 
 ```rust
 // os/libs/minix-boot/src/platform.rs —— 节选（两个 trait 的签名与关键注释）
@@ -1199,7 +1328,7 @@ pub trait TimerDesc: Send + Sync + fmt::Debug + Any {
 | "IRQ 向量空间有多大" | trait 方法 `nr_irqs()`，经 vtable | 每次调用 |
 | "`lapic_base` 是多少" | arch 层 `as_any().downcast_ref::<ApicDesc>()` | 构造实例时一次 |
 
-`nr_irqs` 的口径按架构区分：x86-64/aarch64 报内核向量表容量（64），不是硬件的源数；riscv64 报 PLIC 的 `riscv,ndev` 源数；消费方统一钳制到 `min(NR_IRQ_VECTORS)`（§4.8）。x86 的 IOAPIC 引脚数是 `IOAPIC_NUM_PINS = 24`，不由 `nr_irqs` 表达（§2.6、R04-T10）。
+`nr_irqs` 的口径按架构区分：x86-64/aarch64 报内核向量表容量（64），不是硬件的源数；riscv64 报 PLIC 的 `riscv,ndev` 源数；消费方统一钳制到 `min(NR_IRQ_VECTORS)`（§4.8）。x86 的 IOAPIC 引脚数是 `IOAPIC_NUM_PINS = 24`，不由 `nr_irqs` 表达（§2.6、缺口10）。
 
 `os/plat/src/riscv64/interrupt.rs:fn new` 的 downcast 是这条分工的样本：
 
@@ -1289,7 +1418,7 @@ pub trait ClockArch {
 
 ### 3.5 找不到描述时的兜底与它的代价（→§2.2、§2.7）
 
-C 的 `get_acpi_rsdp()` 失败时只打印警告然后返回，`machine.acpi_rsdp` 置 0，整条 APIC 路径静默关闭（§2.1 的 `detect_ioapics` 就是这条开关的读点）。Rust 把这种"静默降级"改成显式的两条分支：
+C 的 `get_acpi_rsdp()` 失败时只打印警告然后返回，`machine.acpi_rsdp` 置 0，整条 APIC 路径静默关闭（§2.1 的 `detect_ioapics` 就是这条开关的读点）。Rust 把这种"静默降级"改写为显式的两条分支：
 
 ```rust
 // os/libs/minix-platform/src/global.rs:fn qemu_fallback_or_panic —— 逐字引用（文档注释省略）
@@ -1423,7 +1552,7 @@ pub struct Frozen<T> {
 同一文件里 `get` 的 Panics **注释**写的是另一句措辞（注意区分：下面引的是注释文本，不是运行时断言文本；真正的 `assert!` 消息是 "Frozen::get before freeze"，见 §4.1/§6.1 引的运行时症状）：
 
 ```text
-// os/libs/minix-types/src/types/cell.rs:impl Frozen —— 节选（`get` 的 Panics 注释）
+// os/libs/minix-types/src/types/cell.rs（`impl Frozen`） —— 节选（`get` 的 Panics 注释）
 /// # Panics
 ///
 /// Panics if `freeze` has not run yet (`"frozen before freeze"`).
@@ -1462,9 +1591,9 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
 
 `AssumeSyncCell` 是这次替换的前身，它仍在仓库里（`os/libs/minix-types/src/types/cell.rs`，与 `Frozen` 同一个文件），只是不再用于 `PLATFORM`。替换的理由写在 `static PLATFORM` 的文档注释里：AP 上线之后会与 BSP 并发读 `platform_desc()`，"永远无并发访问"的证明形状在 AP 上线那一刻失效。
 
-`Frozen` 的检查是无条件的：`freeze` 开头是 `assert!(!self.frozen.load(Acquire), "Frozen::freeze called twice")`——两种构建形态下重复 `freeze` 都会当场 panic，不会覆盖已冻结的值（这条检查是 D-064 / I-32 对齐之后的形态：此前它是 `debug_assert!`，发布构建里重复 `freeze` 会静默覆盖；同族的 `BootStorageCell::take`、`pt_alloc::register` 一直用两档 `assert!`，`Frozen` 现在是第三个对齐点）。保证"只冻结一次"的第一依据仍是启动顺序（`init_from_kinfo` 只在 Phase A.5 调一次，§4.1），`assert!` 是它的运行期兜底。
+`Frozen` 的检查是无条件的：`freeze` 开头是 `assert!(!self.frozen.load(Acquire), "Frozen::freeze called twice")`——两种构建形态下重复 `freeze` 都会当场 panic，不会覆盖已冻结的值（这条检查是  对齐之后的形态：此前它是 `debug_assert!`，发布构建里重复 `freeze` 会静默覆盖；同族的 `BootStorageCell::take`、`pt_alloc::register` 一直用两档 `assert!`，`Frozen` 现在是第三个对齐点）。保证"只冻结一次"的第一依据仍是启动顺序（`init_from_kinfo` 只在 阶段 A.5 调一次，§4.1），`assert!` 是它的运行期兜底。
 
-继续用 `AssumeSyncCell` 会坏在哪：它的契约要求调用方保证单线程独占，而 AP 上线后 `platform_desc()` 会被多个 CPU 并发调用（`os/libs/minix-platform/src/global.rs:static PLATFORM` 的注释记着这个事实）。此时契约不再成立，而类型本身没有任何机制能发现这件事——读者拿到的 `&T` 与写者的关系只能靠人工时序论证。`Frozen` 把读者侧从"独占"改成"只读共享"，契约形状与真实访问模式一致。换成 `Mutex` 也不坏，但读路径会为一份不可变数据付出加锁代价。
+继续用 `AssumeSyncCell` 会坏在哪：它的契约要求调用方保证单线程独占，而 AP 上线后 `platform_desc()` 会被多个 CPU 并发调用（`os/libs/minix-platform/src/global.rs:static PLATFORM` 的注释记着这个事实）。此时契约不再成立，而类型本身没有任何机制能发现这件事——读者拿到的 `&T` 与写者的关系只能靠人工时序论证。`Frozen` 把读者侧从"独占"改写为"只读共享"，契约形状与真实访问模式一致。换成 `Mutex` 也不坏，但读路径会为一份不可变数据付出加锁代价。
 
 ### 3.8 常量迁移的判别规则（→§2.5、§2.9）
 
@@ -1480,7 +1609,7 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
 | IOAPIC 基址 | 有（MADT 的 IOAPIC 记录） | 描述符（`ApicDesc.ioapic_base`） |
 | GICD / GICR 基址 | 有（设备树 `reg` 属性；aarch64 的 ACPI 路径读 GICD/GICR 记录） | 描述符（`Gicv3Desc`） |
 | PLIC / CLINT 基址 | 有（设备树 `reg` 属性） | 描述符（`PlicDesc` / `ClintDesc`） |
-| 早期控制台基址 | 有（ACPI 的 SPCR 表；设备树里的串口节点） | **已删除**：`ConsoleDesc`/`early_console()` 无活消费者，整条描述链已移除；早期控制台在 `minix-plat` 层用自己的常量（x86 COM1、aarch64 PL011、riscv64 SBI/MMIO），不读平台描述符（§1.5 的边界事实） |
+| 早期控制台基址 | 有（ACPI 的 SPCR 表；设备树里的串口节点） | **当前不存在**：`ConsoleDesc`/`early_console()` 无活消费者，整条描述链已移除；早期控制台在 `minix-plat` 层用自己的常量（x86 COM1、aarch64 PL011、riscv64 SBI/MMIO），不读平台描述符（§1.5 的边界事实） |
 
 判据是"有没有协议报告机制"，不是"值会不会变"。LAPIC 基址进描述符不是因为它会变（绝大多数机器上它不变），而是因为存在报告它的协议；PIT 端口不进描述符不是因为它不变，而是因为不存在任何报告它的协议。
 
@@ -1508,9 +1637,52 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
 
 ## 4. 实现详解
 
-### 4.1 kmain Phase A.5：发现被提到所有消费者之前（→3.1、3.7）
+### 4.0 本章导读
 
-`init_from_kinfo` 位于 `kmain` 的 Phase A.5，在 `init_protection` 之前、在 `init_clock_and_interrupts` 之前：
+#### 学习目标
+
+读完本章能：
+
+- 从 `kmain` 阶段 A.5 跟到 `init_from_kinfo`，再到 ACPI/DTB 解析与平台上下文发布。
+- 说出 x86 的 MADT、aarch64 的 ACPI/DTB 双路径、riscv64 的 DTB 路径各自落在哪。
+- 对照 C 的函数落点，指出 Rust 侧哪些职责被合并、哪些被保留。
+
+#### 前置概念
+
+- 第 3 章的八项设计决策与 `Frozen<T>` 发布契约。
+- 能读 Rust 的 trait 对象与 `static`；不要求记住每个 ACPI/DTB 字段。
+
+#### 最小示例
+
+```bash
+# 发现的实现入口；阶段 A.5 的落点（§4.1）
+$ grep -n 'fn init_from_kinfo' os/libs/minix-platform/src/global.rs
+# ACPI 解析器的合成表测试；解析链的宿主证据（§5.1）
+$ grep -n 'fn test_parse_synthetic_acpi' os/libs/minix-platform/src/acpi.rs
+```
+
+第一条给出实现入口，第二条给出解析链的最小证据；本章的每一步都可以在这两处之间定位。
+
+#### 失败对照
+
+如果 `table_chain_windows` 自己不做根表/MADT 长度上限检查，才会建越界窗口；如果 `find_madt` 不做检查，才会读越界指针。当前实现里 `table_chain_windows` 根表越界返回 0、MADT 越界取 8，`find_madt`/`parse_madt` 则返回错误；缺的是把这条前提写成可重放断言，而不是依赖实现里的静默截断。
+
+#### 小结
+
+- `init_from_kinfo` 在阶段 A.5 发布平台上下文，早于保护结构、时钟与中断。
+- x86 走 ACPI MADT，aarch64 先 DTB 后 ACPI（AAVMF 无 DTB 时实际命中 ACPI），riscv64 走 DTB；三条路径输出同一组平台语义。
+- 解析失败是 fail-closed；开发构建的 QEMU virt 兜底是显式分支，不是静默默认值。
+
+#### 术语
+
+- **阶段 A.5**：`kmain` 中平台发现的位置，位于保护结构之前。
+- **MADT**：ACPI 的多处理器描述表；给出 IOAPIC/CPU 拓扑。
+- **`init_from_kinfo`**：Rust 的平台发现入口；解析来源并发布 `PlatformDesc`。
+- **合成表**：测试里手工构造的 ACPI/DTB 字节链，不依赖固件。
+
+### 4.1 kmain 阶段 A.5：发现被提到所有消费者之前（→3.1、3.7）
+
+`init_from_kinfo` 位于 `kmain` 的 阶段 A.5，在 `init_protection` 之前、在 `init_clock_and_interrupts` 之前：
 
 ```rust
 // os/kernel/src/lib.rs:fn kmain —— 节选（Phase A.5 与 Phase B 的分界，注释保留）
@@ -1534,10 +1706,10 @@ C 侧与 Rust 侧的并排时序：
 
 | 动作 | C 的位置 | Rust 的位置 |
 |---|---|---|
-| 保护结构 | `prot_init()`，`cstart` 的第一步 | `init_protection(kernel_info)`，Phase B 的第一个动作 |
+| 保护结构 | `prot_init()`，`cstart` 的第一步 | `init_protection(kernel_info)`，阶段 B 的第一个动作 |
 | 软件时钟状态 | `init_clock()`，`cstart` 的第二步 | `ClockState::new()`，在 `init_clock_and_interrupts` 内部 |
 | 8259 | `intr_init(0)`，`cstart` 的第三步 | 有：`os/plat/src/x86_64/interrupt.rs:fn pic_init`（重映射 master→0x50 / slave→0x70 并放行 IRQ0 与级联线），在 `boot_init_timer` 末尾被调用；每 tick 的应答走 `os/kernel/src/trap_dispatch.rs` 的 IRQ 分发路径里的 `minix_plat::pic_eoi(irq)`（该调用点注释说明"每条被服务的 IRQ 必须回执，否则 PIC 停止投递"）。aarch64/riscv64 无此路径。8259 与 IOAPIC 同时被初始化；中断投递走 APIC，PIC 的 EOI 是 C 对位的历史路径 |
-| 发现 | `acpi_init()`，在 `cstart` 第四步 `arch_init()` 内 | `init_from_kinfo`，Phase A.5，**在保护结构之前** |
+| 发现 | `acpi_init()`，在 `cstart` 第四步 `arch_init()` 内 | `init_from_kinfo`，阶段 A.5，**在保护结构之前** |
 | 消费发现的控制器初始化 | `apic_single_cpu_init()`，紧随 `acpi_init()` 之后 | `CurrentInterruptController::new(...)` + `intr.init()`，在 `init_clock_and_interrupts` 内 |
 
 Rust 侧的五段链（与 §1.4 的概念图对照，看哪些段换了承载物）：
@@ -1555,8 +1727,8 @@ Rust 把发现前移的理由不是"把 C 的顺序反过来"，而是消费者�
 |---|---|---|
 | 中断控制器在哪 | `os/plat/src/interrupt.rs:trait InterruptRouter` 的 `new(desc)` | `init_clock_and_interrupts` |
 | 计数器在哪、频率是多少 | `os/arch/src/arch/clock.rs:trait ClockArch` 的 `new(desc)` | `boot_init_timer` |
-| 有几颗 CPU、每颗的私有地址 | `os/kernel/src/lib.rs:fn init_smp_state` | Phase D |
-| 早期日志写到哪 | 描述符里有这一项但活路径不读它（§1.5、§3.8 的判据表） | — |
+| 有几颗 CPU、每颗的私有地址 | `os/kernel/src/lib.rs:fn init_smp_state` | 阶段 D |
+| 早期日志写到哪 | 描述符无此项；早期控制台由 `minix-plat` 自持常量（§1.5、§3.8） | — |
 
 ```rust
 // os/kernel/src/lib.rs:fn init_clock_and_interrupts —— 节选（前三步）
@@ -1577,7 +1749,7 @@ Rust 把发现前移的理由不是"把 C 的顺序反过来"，而是消费者�
 
 "必须早于谁"的构造点名单是这三个：`CurrentInterruptController::new` 与 `CurrentArchInit::new`（`init_clock_and_interrupts` 内）、`CurrentClockArch::new`（后续 `boot_init_timer` 内）；不以 `new(desc)` 形式读取、但同样必须晚于发现的还有 `init_protection` 的 `platform_desc().cpu_topology()`（下一段）。
 
-把 `init_from_kinfo` 挪到 `init_clock_and_interrupts` 之后会坏在哪：Phase B 的第一个动作 `init_protection` 已经无条件读 `platform_desc()`（用于 BSP logical id），所以无论把调用点挪到 `init_clock_and_interrupts` 之后还是 `boot_init_timer` 之后，都会先在 `init_protection` 触发同一句断言。两次排错的症状是同一句 panic——运行时断言文本是 `"Frozen::get before freeze"`（`Frozen::get` 的断言；`get` 的文档注释原文见 §3.7）——且调用栈相同；原本要验证的时钟/中断消费者永远到不了，所以症状只会停在 `init_protection`。`init_protection` 是 x86-64 与 aarch64/riscv64 共有的读取点，`os/kernel/src/lib.rs:fn init_protection`。
+把 `init_from_kinfo` 挪到 `init_clock_and_interrupts` 之后会坏在哪：阶段 B 的第一个动作 `init_protection` 已经无条件读 `platform_desc()`（用于 BSP logical id），所以无论把调用点挪到 `init_clock_and_interrupts` 之后还是 `boot_init_timer` 之后，都会先在 `init_protection` 触发同一句断言。两次排错的症状是同一句 panic——运行时断言文本是 `"Frozen::get before freeze"`（`Frozen::get` 的断言；`get` 的文档注释原文见 §3.7）——且调用栈相同；原本要验证的时钟/中断消费者永远到不了，所以症状只会停在 `init_protection`。`init_protection` 是 x86-64 与 aarch64/riscv64 共有的读取点，`os/kernel/src/lib.rs:fn init_protection`。
 
 ### 4.2 boot-shim 侧：find_platform_sources_into 的三架构扫描（→3.6）
 
@@ -1811,7 +1983,7 @@ const MADT_TYPE_GICC: u8 = 11;
 const MADT_TYPE_GICR: u8 = 14;
 ```
 
-ACPI 路径的 per-CPU GICR 基址由控制器实例推导：`gicr_base + hw_id × 0x2_0000`（`os/plat/src/arm64/interrupt.rs` 的 `gicr_base_for`），其中 `hw_id` 取 GICC 的 Processor UID。`CpuInfo` 不再保存这份派生态。QEMU virt 的 UID 等于 redistributor 帧索引，所以这条公式在 QEMU 上成立；非 QEMU 固件没有承诺 UID 与帧索引一一对应。这条假设登记为 R04-T11。
+ACPI 路径的 per-CPU GICR 基址由控制器实例推导：`gicr_base + hw_id × 0x2_0000`（`os/plat/src/arm64/interrupt.rs` 的 `gicr_base_for`），其中 `hw_id` 取 GICC 的 Processor UID。`CpuInfo` 不再保存这份派生态。QEMU virt 的 UID 等于 redistributor 帧索引，所以这条公式在 QEMU 上成立；非 QEMU 固件没有承诺 UID 与帧索引一一对应。这条假设登记为 缺口11。
 
 遍历结束后 aarch64 过一道决策函数：
 
@@ -1904,13 +2076,14 @@ fn check_gic_madt(
 模块注释的 Safety 段把这条前提列成解析前置条件：
 
 ```text
-// os/libs/minix-platform/src/device_tree.rs —— 节选（模块文档 Safety 段；原文写 low 4 GB，是旧前提，现行实现见正文）
-//! - Boot identity windows cover the physical address: the kernel enables
-//!   paging with the minimal windows registered from
-//!   `KernelInfo.platform_sources` (not a fixed low-4-GiB identity map), and
-//!   the DTB must fall inside one of them so the raw physical address can be
-//!   dereferenced as a virtual address (VA == PA). A path that hands a DTB
-//!   outside those windows must map it temporarily first.
+// os/libs/minix-platform/src/device_tree.rs —— 逐字引用（该注释写 low 4 GB，是旧前提；现行最小窗口见正文）
+//! - Early boot identity mapping covers the physical address: during boot
+//!   the kernel enables paging with an identity mapping over the low 4 GB
+//!   (C `pg_identity()` semantics, `os/kernel/src/lib.rs:fn arch_boot_impl`), and the
+//!   DTB lives in static firmware memory far below that bound — so the raw
+//!   physical address can be dereferenced as a virtual address (VA == PA).
+//!   If a future path hands a DTB above the identity-mapped range, `parse`
+//!   must be preceded by a temporary mapping.
 ```
 
 同一份约束在 C 侧的表现就是 §2.4 的 `acpi_phys2vir`：`vm_running` 为假时把物理地址原样返回，为真时直接 panic；两侧说的是同一件事——"把任意物理地址当虚拟地址用"只在启动窗口内成立。
@@ -1922,7 +2095,7 @@ fn check_gic_madt(
 | 字段 | 来源 | 缺省/失败 |
 |---|---|---|
 | `ic`（riscv64：`PlicDesc`） | `compatible` 匹配 `riscv,plic0` / `sifive,plic-1.0.0`；基址取 `reg` 首格；线数取 `riscv,ndev` 属性 | 节点找不到或 `reg` 缺失 → `Err`；`riscv,ndev` 缺失 → 64 |
-| `PlicDesc.context` | 当前硬编码为 1（QEMU virt 的 S-mode context 假设；DTB 未报告它） | 非 QEMU 固件可能不同，登记为与 R04-T11 同级的假设 |
+| `PlicDesc.context` | 当前硬编码为 1（QEMU virt 的 S-mode context 假设；DTB 未报告它） | 非 QEMU 固件可能不同，登记为与 缺口11 同级的假设 |
 | `ic`（aarch64：`Gicv3Desc`） | `compatible` 匹配 `arm,gic-v3`；`reg` 两格分别是 GICD 与 GICR | 节点或 `reg` 缺失 → `Err`；`gicr_stride` 与 `nr_irqs` 是常量 |
 | `timer`（riscv64：`ClintDesc`） | CLINT 节点 `reg` 首格作基址，`mtime` = 基址 + `0xBFF8`，`mtimecmp` = 基址 + `0x4000`；频率取 `/cpus/timebase-frequency` | 节点缺失时改用 ACLINT MTIMER 节点（两个 `reg` 格）；频率缺失 → `Err` |
 | `timer`（aarch64） | 只确认存在（`ArmGenericTimerDesc` 无字段） | 频率运行时从 `CNTFRQ_EL0` 读 |
@@ -1970,7 +2143,7 @@ pub use crate::arch::riscv64::QemuVirtDesc;
 每个架构的实例只含本架构的字段：
 
 ```rust
-// os/libs/minix-platform/src/arch/riscv64.rs:impl QemuVirtDesc —— 逐字引用（注释保留）
+// os/libs/minix-platform/src/arch/riscv64.rs（`impl QemuVirtDesc`） —— 逐字引用（注释保留）
 #[derive(Debug)]
 pub struct QemuVirtDesc {
     ic: PlicDesc,
@@ -2019,7 +2192,7 @@ impl QemuVirtDesc {
 `new()` 与 `default()` 的分工由 `const fn` 的语言限制逼出来：
 
 ```rust
-// os/libs/minix-platform/src/arch/riscv64.rs:impl Default for QemuVirtDesc —— 逐字引用
+// os/libs/minix-platform/src/arch/riscv64.rs（`impl Default for QemuVirtDesc`） —— 逐字引用
 impl Default for QemuVirtDesc {
     fn default() -> Self {
         let mut d = Self::new();
@@ -2085,7 +2258,7 @@ pub unsafe fn init_from_kinfo(kinfo: &KernelInfo) {
 读取侧是 `PlatformContext` 的八次转发：
 
 ```rust
-// os/libs/minix-platform/src/global.rs:impl PlatformDesc for PlatformContext —— 节选（前两个方法与 source）
+// os/libs/minix-platform/src/global.rs（`impl PlatformDesc for PlatformContext`） —— 节选（前两个方法与 source）
 impl PlatformDesc for PlatformContext {
     fn interrupt_controller(&self) -> &dyn crate::desc::InterruptControllerDesc {
         self.desc.interrupt_controller()
@@ -2173,7 +2346,7 @@ aarch64 的中断控制器多一步地址翻译：
 | aarch64 | 物理地址（GICD/GICR） | `new()` 内 `mmio_translate` 成内核高半（TTBR1）别名 | 高半 VA |
 | riscv64 | 物理地址（PLIC/CLINT） | PLIC 实例存 `plic_base` 与 `plic_va_base`；内核 check-and-reject 后注入高半 VA | PLIC 走高半 VA；CLINT 定时器不直接 MMIO：读计数走 `time` CSR（`rdtime`），设置/停止比较值走 SBI `TIME` ecall；`ClockArch` 实例里的 `mtime_addr`/`mtimecmp_base`/`mtimecmp_stride` 当前只被搬入、无 MMIO 消费者（§3.4） |
 
-x86-64 的描述符地址不是 MMIO 操作数本身：`lapic_read`/`lapic_write` 与 `ioapic_read_indirect`/`ioapic_write_indirect` 都经 `LAPIC_VA`/`IOAPIC_VA`（`os/plat/src/x86_64/interrupt.rs` 的 `let _ = base;` 注释）。描述符地址的作用是**契约校验**：`init_lapic` 要求 `IA32_APIC_BASE` 与描述符一致，`init_clock_and_interrupts` 要求 LAPIC/IOAPIC 基址与设备窗口页一致；不一致就 panic（check-and-reject），不会静默写到旧窗口。支持重定位的 LAPIC/IOAPIC 需要动态设备窗口，当前未实现（R04-T09）。
+x86-64 的描述符地址不是 MMIO 操作数本身：`lapic_read`/`lapic_write` 与 `ioapic_read_indirect`/`ioapic_write_indirect` 都经 `LAPIC_VA`/`IOAPIC_VA`（`os/plat/src/x86_64/interrupt.rs` 的 `let _ = base;` 注释）。描述符地址的作用是**契约校验**：`init_lapic` 要求 `IA32_APIC_BASE` 与描述符一致，`init_clock_and_interrupts` 要求 LAPIC/IOAPIC 基址与设备窗口页一致；不一致就 panic（check-and-reject），不会静默写到旧窗口。支持重定位的 LAPIC/IOAPIC 需要动态设备窗口，当前未实现（缺口09）。
 
 三个零基址/零 stride 断言排在 `mmio_translate` 之前，理由是"描述符缺基址或 stride"（物理 0，解析失败后结构体零初始化的常见形态）要给精准诊断，否则会被 `mmio_translate` 的越界 const 断言抢先 panic 成一条泛化的"地址在映射窗口之外"（`os/libs/minix-platform/src/arch/aarch64.rs:fn mmio_translate` 的断言信息是 `"mmio_translate: address outside the mapped MMIO window"`）。三个断言分别对应 GICD 基址、GICR 基址、GICR stride；`Self` 里的 `gicr_stride` 字段是节选必须保留的一项。
 
@@ -2244,9 +2417,9 @@ pub fn init_smp_state() {
     with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top()));
 ```
 
-两处对同一次选举现在用同一个有界回退：`init_smp_state` 与 `init_protection` 在拓扑里找不到匹配的 `hw_id` 时都回到逻辑 0。后者运行在 Phase B（`SmpState` 尚未建立），只能先给一个保守值；`elected_bsp_hw_id` 本身的回退是 `topo.bsp_id`，不保证返回值在 `topo.cpus[0..nr_cpus]` 内，因此两处都在 `find` 失败后取 0，而不是把 `bsp_id` 当槽位下标。
+两处对同一次选举现在用同一个有界回退：`init_smp_state` 与 `init_protection` 在拓扑里找不到匹配的 `hw_id` 时都回到逻辑 0。后者运行在 阶段 B（`SmpState` 尚未建立），只能先给一个保守值；`elected_bsp_hw_id` 本身的回退是 `topo.bsp_id`，不保证返回值在 `topo.cpus[0..nr_cpus]` 内，因此两处都在 `find` 失败后取 0，而不是把 `bsp_id` 当槽位下标。
 
-先把 `CpuTopology.bsp_id` 的单位说清：它的定义是"第一条 enabled CPU 记录的硬件 ID"（`os/libs/minix-boot/src/platform.rs:struct CpuTopology` 的字段注释），与 `cpus[i].hw_id` 同域，**不是逻辑槽位下标**。此前的 `unwrap_or(topo.bsp_id as usize)` 只在"hw_id 恰好等于槽位下标"时成立；解析器不保证这条不变量（MADT 的 APIC ID 与 DTB 的 `reg` 都可以非连续），回退值可能落到错误槽位，甚至超出 `nr_cpus`。现在回退固定为 0，并由紧邻的 `MAX_CPUS` 断言兜底；这条越界风险已按 R04-T12 关闭。
+先把 `CpuTopology.bsp_id` 的单位说清：它的定义是"第一条 enabled CPU 记录的硬件 ID"（`os/libs/minix-boot/src/platform.rs:struct CpuTopology` 的字段注释），与 `cpus[i].hw_id` 同域，**不是逻辑槽位下标**。此前的 `unwrap_or(topo.bsp_id as usize)` 只在"hw_id 恰好等于槽位下标"时成立；解析器不保证这条不变量（MADT 的 APIC ID 与 DTB 的 `reg` 都可以非连续），回退值可能落到错误槽位，甚至超出 `nr_cpus`。现在回退固定为 0，并由紧邻的 `MAX_CPUS` 断言兜底；这条越界风险已按 缺口12 关闭。
 
 `program_entry_base` 在 x86-64 的 `X86_64Protection` 里最终调用 `program_gs`；aarch64/riscv64 的默认实现是 no-op。第三处是发给用户态的 `GET_MACHINE`：
 
@@ -2358,14 +2531,57 @@ C 行为到 Rust 重表达的四类汇总：
 | ③ 内核分派 | `parse_by_kind(RSDP)` | `parse_by_kind(DTB/RSDP)` | `parse_by_kind(DTB)` | kind 标签 → 解析器 |
 | ④ 解析产物 | `AcpiDesc`（MADT LAPIC/IOAPIC/拓扑） | `DeviceTreeDesc` 或 `AcpiDesc`（GICv3/GICC/GICD/GICR） | `DeviceTreeDesc`（PLIC/CLINT/ACLINT/拓扑） | 描述符自包含 |
 | ⑤ 冻结 | `Frozen<PlatformContext>` | 同左 | 同左 | 一次 Release 冻结 |
-| ⑥ 消费 | `X86_64InterruptController` + `X86_64ClockArch` + `init_smp_state` | `AArch64InterruptController` + `AArch64ClockArch` + `ArchInit` + `init_smp_state` | `Riscv64InterruptController` + `Riscv64ClockArch` + `init_smp_state` | 地址/频率/拓扑进入实例 |
+| ⑥ 消费 | `X86_64InterruptController` + `X86_64ClockArch` + `ArchInit` + `init_smp_state` | `AArch64InterruptController` + `AArch64ClockArch` + `ArchInit` + `init_smp_state` | `Riscv64InterruptController` + `Riscv64ClockArch` + `ArchInit` + `init_smp_state` | 地址/频率/拓扑进入实例 |
 | 真机证据 | `test-smp-topo`、`test-timer-irq` | `test-smp-topo-aarch64`、`test-smp-aps-aarch64` | `test-smp-topo-riscv64`、`test-smp-ipi-riscv64` | 各自有交接路径的载体 |
 
 riscv64 这一列整列属 `[ARCH: K-2]`：Minix3 没有 RISC-V 版本，这一列没有 C 对照物（§1.6）。
 
-x86-64 的"消费"有一处限制：描述符的 LAPIC/IOAPIC 物理地址在 `init_lapic` / `init_clock_and_interrupts` 里与 MSR、设备窗口做 check-and-reject，实际 MMIO 走固定设备窗口 VA；重定位控制器需要动态窗口（R04-T09）。这张表证明的是"解析链被消费端接住"，不是"任意重定位都被支持"。
+x86-64 的"消费"有一处限制：描述符的 LAPIC/IOAPIC 物理地址在 `init_lapic` / `init_clock_and_interrupts` 里与 MSR、设备窗口做 check-and-reject，实际 MMIO 走固定设备窗口 VA；重定位控制器需要动态窗口（缺口09）。这张表证明的是"解析链被消费端接住"，不是"任意重定位都被支持"。
 
 ## 5. 测试要点
+
+### 5.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 说出宿主测试能证明什么：合成 ACPI/DTB 的解析链、QEMU virt 常量与平台 trait 的边界。
+- 把三架构真机载体与 `minix-platform` 的宿主测试分开读，不把一种来源的证据套到另一种。
+- 复算测试计数，指出哪些缺口只能由真机覆盖。
+
+#### 前置概念
+
+- 第 4 章的解析与发布路径。
+- 会读 `cargo test` 的通过计数与 QEMU 载体的 `TEST_RESULT` 判定。
+
+#### 最小示例
+
+```bash
+# 平台库的宿主测试；合成 ACPI/DTB 链（§5.1）
+$ cd os && cargo test -p minix-platform
+# 三架构测试载体的构建/运行入口（§5.2）
+$ grep -n 'test-smp-topo\|test-timer-irq' os/qemu-tests/run_all.sh
+```
+
+第一条验证解析器与常量，第二条给出真机载体的注册位置；两类证据回答不同层面的问题。
+
+#### 失败对照
+
+如果合成 ACPI 测试通过就宣称“真实固件的 MADT 已被证明”，会把字节链测试当成固件兼容性证据：真实固件可能给出不同的表序、缺失字段或额外表，这些只有真机/QEMU 固件路径能覆盖。缺口表里的“部分覆盖”必须保留。
+
+#### 小结
+
+- 宿主测试证明合成表解析、QEMU virt 常量与 trait 边界；真机载体证明三架构在真实固件表下能继续启动。
+- ACPI 与 DTB 是两条独立的解析链，不能用一条的绿测试顶替另一条。
+- 测试计数按当前源码复算；缺口表逐项给补法与去向。
+
+#### 术语
+
+- **合成表**：测试中手工构造的 ACPI/DTB 字节链。
+- **QEMU virt 常量**：开发构建的固定平台参数；不是固件表。
+- **真机载体**：`test-smp-topo`/`test-timer-irq` 等在 QEMU 固件下运行的测试内核。
+- **部分覆盖**：只证明了某一种来源或某一段链路，不能读成完整证明。
 
 ### 5.1 宿主：两个解析器与 QemuVirt 常量的输入从哪来
 
@@ -2424,23 +2640,23 @@ x86-64 的"消费"有一处限制：描述符的 LAPIC/IOAPIC 物理地址在 `i
 
 ```bash
 $ grep -rc '#\[test\]' os/libs/minix-platform --include=*.rs | awk -F: '{s+=$2} END {print s}'
-26
+27
 ```
 
 逐文件分解（口径 = 条，即 `#[test]` 属性的出现次数）：
 
 | 文件 | 条数 |
 |---|---|
-| `os/libs/minix-platform/src/acpi.rs` | 9 |
+| `os/libs/minix-platform/src/acpi.rs` | 10 |
 | `os/libs/minix-platform/src/device_tree.rs` | 4 |
 | `os/libs/minix-platform/src/arch/x86_64.rs` | 4 |
 | `os/libs/minix-platform/src/arch/riscv64.rs` | 4 |
 | `os/libs/minix-platform/src/arch/aarch64.rs` | 3 |
 | `os/libs/minix-platform/src/kind.rs` | 1 |
 | `os/libs/minix-platform/src/global.rs` | 1 |
-| 合计 | 26 |
+| 合计 | 27 |
 
-这 26 条里覆盖解析逻辑的几条：`acpi.rs` 的 `test_parse_synthetic_acpi`（端到端）、`test_check_gic_madt_decision_table`（aarch64 决策表，八条断言，§4.4 的表就是它的输入输出）、`test_acpi_desc_from_parsed`（描述符构造）、`test_acpi_parse_error_variants`（错误变体互异）、`test_u32_le_from_slice`（字节读取助手）、`test_parse_rejects_bad_rsdp_checksum` / `test_parse_rejects_bad_root_signature` / `test_parse_rejects_oversized_root_table` / `test_parse_madt_rejects_bad_checksum`（四道负向闸）；`device_tree.rs` 的 `test_parse_riscv64_qemu_virt_dtb`（端到端）、`test_from_bytes_bad_magic`、`test_dt_parse_error_variants`、`test_parse_unsupported_arch_returns_error`；`kind.rs` 的 `test_parse_by_kind_unknown_returns_error`。26 是属性计数；x86_64 宿主实际运行 18 条（aarch64/riscv64 专用测试被 `#[cfg]` 排除，`test_acpi_desc_from_parsed` 与 `test_parse_synthetic_acpi` 也只在 x86_64 编译）。
+这 27 条里覆盖解析逻辑的几条：`acpi.rs` 的 `test_parse_synthetic_acpi`（端到端）、`test_check_gic_madt_decision_table`（aarch64 决策表，八条断言，§4.4 的表就是它的输入输出）、`test_acpi_desc_from_parsed`（描述符构造）、`test_acpi_parse_error_variants`（错误变体互异）、`test_u32_le_from_slice`（字节读取助手）、`test_parse_rejects_bad_rsdp_checksum` / `test_parse_rejects_bad_root_signature` / `test_parse_rejects_oversized_root_table` / `test_parse_madt_rejects_bad_checksum`（四道负向闸）、`table_chain_windows_reports_root_and_madt`（表链窗口）；`device_tree.rs` 的 `test_parse_riscv64_qemu_virt_dtb`（端到端）、`test_from_bytes_bad_magic`、`test_dt_parse_error_variants`、`test_parse_unsupported_arch_returns_error`；`kind.rs` 的 `test_parse_by_kind_unknown_returns_error`。27 是属性计数；x86_64 宿主实际运行 19 条（aarch64/riscv64 专用测试被 `#[cfg]` 排除，`test_acpi_desc_from_parsed` 与 `test_parse_synthetic_acpi` 也只在 x86_64 编译）。
 
 ### 5.2 真机：test-smp-topo 三架构的同一份契约
 
@@ -2452,7 +2668,7 @@ $ grep -rc '#\[test\]' os/libs/minix-platform --include=*.rs | awk -F: '{s+=$2} 
 | `test-smp-topo-aarch64` | 同上（注释写明 AAVMF 不给 FDT，配置表只有 ACPI2） | `RSDP` → `parse_by_kind` → MADT GICC | 同上；执行 CPU 的 MPIDR_EL1.Aff0 在集合内 |
 | `test-smp-topo-riscv64` | OpenSBI 的 `a1`（非 UEFI 二进制，QEMU 直接 `-kernel` 装载 ELF） | `PlatformDescSource::new(DTB, PhysBytes(dtb_phys))`（len=0，不带长度；与 boot-shim 生产腿的 `with_optional_len` 不同）→ `parse_by_kind` → 设备树 `cpus` 节点 | 同上；OpenSBI `a0` 引导 hart 在集合内 |
 
-三个变体构造器的差异（随 RD04-FACT-01 补记）：x86_64 与 aarch64 的 UEFI 腿用 `new(RSDP, …)`（表基址已知、无长度语义）；boot-shim 的 DTB 生产腿用 `with_optional_len(DTB, …)`（`len` 复用旧 `reserved` 槽位、0 表示未知，消费者按 2 MiB 片覆盖）；riscv64 测试内核用 `new(DTB, …)`（len=0，同样按 2 MiB 片覆盖）。三者落到 wire 的都是同一条 16 B 记录，`len` 位是否有效由写者决定。
+三个变体构造器的差异（随 RD04-FACT-01 补记）：x86_64 测试内核手工用 `new(RSDP, …)`；aarch64 测试内核走 boot-shim 的真实扫描，扫描写入的是 `with_optional_len(RSDP, …)`；boot-shim 的 DTB 生产腿用 `with_optional_len(DTB, …)`（`len` 复用旧 `reserved` 槽位、0 表示未知，消费者按 2 MiB 片覆盖）；riscv64 测试内核用 `new(DTB, …)`（len=0，同样按 2 MiB 片覆盖）。三者落到 wire 的都是同一条 16 B 记录，`len` 位是否有效由写者决定。
 
 x86_64 变体的关键段落：
 
@@ -2506,36 +2722,38 @@ $ rg -n 'test-smp-topo' os/qemu-tests/run_all.sh
 
 ### 5.3 测试缺口与 `&[]` 的口径
 
-三处缺口与现有替代覆盖：
+三处缺口与现有覆盖：
 
-| 缺口 | 影响 | 现有替代覆盖 | TODO |
+| 缺口 | 影响 | 现有覆盖 | 后续动作 |
 |---|---|---|---|
-| `os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into` 没有单测（该文件有 12 条 `#[test]`：1 条测 `KernelInfo` 字段、5 条测 bootstrap memmap 边界、6 条测 kernel-image 保留区的对齐与模块/区间重叠断言；均不覆盖 `find_platform_sources_into`） | GUID 扫描的匹配逻辑只靠真机验证 | 10 个测试内核直接调用它（`test-smp-aps`、`test-smp-ipi`、`test-timer-irq`、`test-timer-irq-aarch64`、`test-smp-topo-aarch64`、`test-rt-birth`、`test-rt-birth-aarch64`、`test-user-trap`、`test-paging-faultloop`、`test-sysboot`——最后一个经独立脚本 `os/qemu-tests/test-sysboot.sh` 运行），`os/qemu-tests/run_all.sh` 覆盖三架构；`test-smp-topo`（x86_64）自己内联扫描配置表、不经这个函数 | **R04-T05** |
-| `os/libs/minix-platform/src/kind.rs:fn parse_by_kind` 只测了未知 kind 一条 | 两个真实分支的返回类型靠各自解析器的单测间接覆盖 | `test_parse_synthetic_acpi`、`test_parse_riscv64_qemu_virt_dtb` 分别覆盖 `Acpi` 与 `DeviceTree` 变体 | **R04-T08** |
-| `aarch64` 的 `device_tree.rs` 分支（`parse_gic` 等）宿主无夹具 | 常规 aarch64 真机门走 ACPI（§5.2） | 真机覆盖在 `test-smp-aps-aarch64`（`-kernel`＋`-dtb` 直核，DTB 单源 → `parse_gic`）；riscv64 变体走的是 `parse_plic` / `parse_clint`，共享的只有 `parse_cpu_topology` 的遍历骨架；`test_check_gic_madt_decision_table` 覆盖 aarch64 的 ACPI 侧决策 | **R04-T04** |
+| `os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into` 没有单测（该文件有 12 条 `#[test]`：1 条测 `KernelInfo` 字段、5 条测 bootstrap memmap 边界、6 条测 kernel-image 保留区的对齐与模块/区间重叠断言；均不覆盖 `find_platform_sources_into`） | GUID 扫描的匹配逻辑只靠真机验证 | 10 个测试内核直接调用它（`test-smp-aps`、`test-smp-ipi`、`test-timer-irq`、`test-timer-irq-aarch64`、`test-smp-topo-aarch64`、`test-rt-birth`、`test-rt-birth-aarch64`、`test-user-trap`、`test-paging-faultloop`、`test-sysboot`——最后一个经独立脚本 `os/qemu-tests/test-sysboot.sh` 运行），`os/qemu-tests/run_all.sh` 覆盖三架构；`test-smp-topo`（x86_64）自己内联扫描配置表、不经这个函数 | **缺口05** |
+| `os/libs/minix-platform/src/kind.rs:fn parse_by_kind` 只测了未知 kind 一条 | 两个真实分支的返回类型靠各自解析器的单测间接覆盖 | `test_parse_synthetic_acpi`、`test_parse_riscv64_qemu_virt_dtb` 分别覆盖 `Acpi` 与 `DeviceTree` 变体 | **缺口08** |
+| `aarch64` 的 `device_tree.rs` 分支（`parse_gic` 等）宿主无夹具 | 常规 aarch64 真机门走 ACPI（§5.2） | 真机覆盖在 `test-smp-aps-aarch64`（`-kernel`＋`-dtb` 直核，DTB 单源 → `parse_gic`）；riscv64 变体走的是 `parse_plic` / `parse_clint`，共享的只有 `parse_cpu_topology` 的遍历骨架；`test_check_gic_madt_decision_table` 覆盖 aarch64 的 ACPI 侧决策 | **缺口04** |
 
 `platform_sources: &[]` 的分布与口径：
 
 ```bash
 $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
-54
+55
 ```
 
 口径 = **条**（每一处 `&[]` 表达式算一条）。分布：
 
 | 位置 | 条数 | 性质 |
 |---|---|---|
-| `os/kernel/src/dm_coverage.rs` | 10 | `#[cfg(test)]` 夹具 |
+| `os/kernel/src/dm_coverage.rs` | 11 | `#[cfg(test)]` 夹具 |
 | `os/arch/src/arch/boot.rs` | 9 | `#[cfg(test)]` 夹具 |
-| `os/kernel/src/lib.rs` | 6 | `#[cfg(test)]` 夹具 |
+| `os/kernel/src/lib.rs` | 5 | `#[cfg(test)]` 夹具 |
 | `os/kernel/src/kerninfo.rs` / `os/libs/minix-boot/src/handoff_v1_write.rs` | 各 1 | 夹具 |
 | `os/libs/minix-boot/src/kernel_info.rs` | 1 | `KernelInfo` 构造夹具 |
 | `os/kernel/tests/boot_integration.rs` | 1 | 集成测试夹具 |
 | `os/kernel/src/vm_handoff.rs` | 3 | 夹具 |
+| `os/boot-shim/src/opensbi_helpers.rs` | 2 | 夹具 |
+| `os/boot-shim/src/uefi_helpers.rs` | 1 | 夹具 |
 | `os/boot-shim/src/ebs_pair.rs` | 1 | 夹具 |
-| 21 个极简测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/` 下直接构造 `KernelInfo` 的 21 个 `src/main.rs`，如 `hello-boot` / `test-paging-enable` / `test-protection` 各架构变体；清单：`rg -l 'platform_sources:\s*&\[\]' os/qemu-tests/test-kernels`，实测 21 个文件） | 各 1 | 这些测试内核在 `main.rs` 里直接构造 `KernelInfo`，不经过 boot-shim 的固件发现阶段 |
+| 19 个极简测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/` 下直接构造 `KernelInfo` 的 19 个 `src/main.rs`，如 `hello-boot` / `test-paging-enable` / `test-protection` 各架构变体；清单：`rg -l 'platform_sources:\s*&\[\]' os/qemu-tests/test-kernels`，实测 19 个文件） | 各 1 | 这些测试内核在 `main.rs` 里直接构造 `KernelInfo`，不经过 boot-shim 的固件发现阶段 |
 
-判断一处 `&[]` 是正常夹具还是覆盖漏洞的判据：**被测单元是否依赖平台发现**。上述 54 处的被测单元（页表映射、ELF 装载、进程初始化、内核映像布局）都不读平台描述符，也不调用 `init_from_kinfo`（发现阶段不运行，兜底不会被构造），所以不需要喂真实 DTB/ACPI；而三个 `test-smp-topo` 变体不在这份名单里——它们自己扫配置表 / 读 `a1` 并构造真实来源，发现链的真机覆盖由它们承担。
+判断一处 `&[]` 是正常夹具还是覆盖漏洞的判据：**被测单元是否依赖平台发现**。上述 55 处的被测单元（页表映射、ELF 装载、进程初始化、内核映像布局）都不读平台描述符，也不调用 `init_from_kinfo`（发现阶段不运行，兜底不会被构造），所以不需要喂真实 DTB/ACPI；而三个 `test-smp-topo` 变体不在这份名单里——它们自己扫配置表 / 读 `a1` 并构造真实来源，发现链的真机覆盖由它们承担。
 
 给每个用 `&[]` 的夹具都塞一份真实 DTB 会坏在哪：被测单元不读平台描述符，塞进去的字节没有任何断言会碰它，测试数上升而覆盖面不变；更糟的是这些测试会开始依赖"夹具里的 DTB 与解析器实现同步"，解析器一改就集体失败，失败原因与被测单元无关。
 
@@ -2545,43 +2763,86 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 
 本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1–§5.3；本节是它的反转面）。表中的机制全部是 Rust 侧机制；无 C 源分支的覆盖依据说明见 §1.6。**列名消歧**：本表的"覆盖"一律指**测试覆盖**（某机制有没有载体去证）；"C 侧有没有对照物"是另一维度，见 §1.6——两表同用"覆盖"二字，读时按列名区分。
 
-| # | 机制（正文位置） | 需要证明什么（可观测断言） | 测试覆盖状态 | 现有证据 / TODO |
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 测试覆盖状态 | 现有证据 / 后续动作 |
 |---|---|---|---|---|
-| M1 | boot-shim 来源定位（§4.2） | 两段 GUID 扫描的顺序（设备树优先）；命中即停；切片内容与顺序正确 | 部分覆盖 | 真机 10 个测试内核直接调用它（名单见 §5.3，与本行同一个计数）且全部走 ACPI 命中路径；**DTB GUID 命中路径从未在真机上命中**（AAVMF 的配置表里 spec/legacy 两个 GUID 都不在；`test-smp-aps-aarch64` 走 `-kernel`+`-dtb` 直核 DTB 单源、不经此函数，见 M7）→ **R04-T05** |
-| M2 | 分派 `parse_by_kind`（§4.3） | 两个真实分支各返回对应变体；未知 kind 报 `UnknownKind` | 部分覆盖 | 宿主只测未知 kind（`test_parse_by_kind_unknown_returns_error`）；两真实分支为间接覆盖 → **R04-T08** |
-| M3 | ACPI 链解析（RSDP → 根表 → MADT）（§4.4） | 合成链端到端可解析；rev 2 走 XSDT、rev < 2 回落 RSDT；四道负向闸拒绝坏表 | 部分覆盖 | 宿主 `test_parse_synthetic_acpi`（rev 2 形态）＋四个负向测试＋真机 x86_64/aarch64 变体；**RSDT 回落路径无载体** → **R04-T01** |
-| M4 | MADT 遍历两道闸（§4.4） | 零长记录被拒（解析器不挂死）；越界记录被拒 | 部分覆盖 | 负向测试覆盖 MADT 校验和；**零长/越界记录、签名与超长仍无载体** → **R04-T02** |
+| M1 | boot-shim 来源定位（§4.2） | 两段 GUID 扫描的顺序（设备树优先）；命中即停；切片内容与顺序正确 | 部分覆盖 | 真机 10 个测试内核直接调用它（名单见 §5.3，与本行同一个计数）且全部走 ACPI 命中路径；**DTB GUID 命中路径从未在真机上命中**（AAVMF 的配置表里 spec/legacy 两个 GUID 都不在；`test-smp-aps-aarch64` 走 `-kernel`+`-dtb` 直核 DTB 单源、不经此函数，见 M7）→ **缺口05** |
+| M2 | 分派 `parse_by_kind`（§4.3） | 两个真实分支各返回对应变体；未知 kind 报 `UnknownKind` | 部分覆盖 | 宿主只测未知 kind（`test_parse_by_kind_unknown_returns_error`）；两真实分支为间接覆盖 → **缺口08** |
+| M3 | ACPI 链解析（RSDP → 根表 → MADT）（§4.4） | 合成链端到端可解析；rev 2 走 XSDT、rev < 2 回落 RSDT；四道负向闸拒绝坏表 | 部分覆盖 | 宿主 `test_parse_synthetic_acpi`（rev 2 形态）＋四个负向测试＋真机 x86_64/aarch64 变体；**RSDT 回落路径无载体** → **缺口01** |
+| M4 | MADT 遍历两道闸（§4.4） | 零长记录被拒（解析器不挂死）；越界记录被拒 | 部分覆盖 | 负向测试覆盖 MADT 校验和；**零长/越界记录、签名与超长仍无载体** → **缺口02** |
 | M5 | GICC/GICD/GICR 完备性决策（§4.4） | 八条判定全对（含 GICv2 形状被拒、GICD 缺失优先） | 已覆盖 | 宿主 `test_check_gic_madt_decision_table`（八断言）＋真机 aarch64 变体 |
-| M6 | 设备树解析（riscv64：PLIC/CLINT/拓扑/SSWI/PSCI）（§4.5） | 真实 DTB 的关键字段提取；`a1` 交接链 | 部分覆盖 | 宿主真实 DTB 端到端＋真机 riscv64 变体；ACLINT MTIMER 备用路径（`aclint=on` 形态）已由真机覆盖——`test-smp-ipi-riscv64` 以 `-machine virt,aclint=on` 点火并走 `a1` DTB 解析（复核：`rg -n "aclint=on" os/qemu-tests/test-smp-ipi-riscv64.sh` 命中点火行与头注；载体 `os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi-riscv64/src/main.rs` 经 `parse_by_kind(DTB)`）；**宿主夹具仍缺** → **R04-T03** |
-| M7 | 设备树解析（aarch64：`parse_gic` 等）（§4.5） | `reg` 两格提取 GICD/GICR；与 ACPI 路径同构的拓扑提取 | 部分覆盖 | 真机经 `test-smp-aps-aarch64` 的 `-kernel`＋`-dtb` 直核，DTB 单源装在 `os/kernel-image/src/bootface_a64.rs:fn bootface_a64`（`PlatformDescSource::with_optional_len(DTB, DTB_PA, dtb_len)` → `parse_gic`）（复核：`rg -n "\-dtb" os/qemu-tests/test-smp-aps-aarch64.sh` → 直核点火行含 `-dtb "$QEMU_DTB"`）；**宿主 DTB 夹具缺** → **R04-T04** |
-| M8 | 多来源顺序与兜底（§3.5、§4.7） | 解析失败继续下一来源；全失败时 debug 兜底 / release panic | 未覆盖（本篇） | 真机上首个来源即成功；失败路径与多来源切换无载体 → **R04-T06** |
-| M9 | `Frozen` 一次性冻结（§3.7、§4.7） | 二次 `freeze` 在两种构建形态下都被断言拦下；AP 上线后并发只读 | 已覆盖 | 断言在类型内（`assert!`，D-064 / I-32 对齐后两档均生效）；宿主负控 `types::cell::frozen_tests::test_freeze_twice_panics_and_keeps_first_value`，`--release` 下同样红/绿可辨；并发只读由 SMP 真机间接覆盖 |
+| M6 | 设备树解析（riscv64：PLIC/CLINT/拓扑/SSWI/PSCI）（§4.5） | 真实 DTB 的关键字段提取；`a1` 交接链 | 部分覆盖 | 宿主真实 DTB 端到端＋真机 riscv64 变体；ACLINT MTIMER 备用路径（`aclint=on` 形态）已由真机覆盖——`test-smp-ipi-riscv64` 以 `-machine virt,aclint=on` 点火并走 `a1` DTB 解析（复核：`rg -n "aclint=on" os/qemu-tests/test-smp-ipi-riscv64.sh` 命中点火行与头注；载体 `os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi-riscv64/src/main.rs` 经 `parse_by_kind(DTB)`）；**宿主夹具仍缺** → **缺口03** |
+| M7 | 设备树解析（aarch64：`parse_gic` 等）（§4.5） | `reg` 两格提取 GICD/GICR；与 ACPI 路径同构的拓扑提取 | 部分覆盖 | 真机经 `test-smp-aps-aarch64` 的 `-kernel`＋`-dtb` 直核，DTB 单源由 `bootface_a64 → run_self_boot → bootface_common` 的构造点建立（`PlatformDescSource::with_optional_len(DTB, DTB_PA, dtb_len)` → `parse_gic`）（复核：`rg -n "\-dtb" os/qemu-tests/test-smp-aps-aarch64.sh` → 直核点火行含 `-dtb "$QEMU_DTB"`）；**宿主 DTB 夹具缺** → **缺口04** |
+| M8 | 多来源顺序与兜底（§3.5、§4.7） | 解析失败继续下一来源；全失败时 debug 兜底 / release panic | 未覆盖（本篇） | 真机上首个来源即成功；失败路径与多来源切换无载体 → **缺口06** |
+| M9 | `Frozen` 一次性冻结（§3.7、§4.7） | 二次 `freeze` 在两种构建形态下都被断言拦下；AP 上线后并发只读 | 已覆盖 | 断言在类型内（两种构建形态下均生效）；宿主负控 `types::cell::frozen_tests::test_freeze_twice_panics_and_keeps_first_value`，`--release` 下同样红/绿可辨；并发只读由 SMP 真机间接覆盖 |
 | M10 | aarch64 高半别名（§4.8） | 第一次切根之后 MMIO 访问仍可达（`mmio_translate` 生效） | 已覆盖 | 真机 aarch64（启动越过第一次切根；注释记录未翻译时的实测故障） |
 | M11 | 平台发现的出口契约（§5.2） | `nr_cpus == 4`；`hw_id` 两两互异；固件 `bsp_id` hint 与执行 CPU 身份都属于发现集合 | 已覆盖 | 真机三变体（三架构同断言；执行 CPU 身份分别用 CPUID/MPIDR/a0） |
 
 （§5.3 的三条缺口分别对到本表 M1、M2 与 M7 的断言化；两类表互为反转面，任一表更新须同步另一表。）
 
-**新 TODO（对源码/测试 workflow 的需求输入）**：
+**新需求（对源码/测试 workflow 的输入）**：
 
 | ID | 内容 | 分流 |
 |---|---|---|
-| R04-T01 | RSDP rev < 2 时 RSDT 回落路径的载体（合成表 rev 1 变体） | **测试侧** |
-| R04-T02 | MADT 遍历对畸形记录（零长 / 越界）的负向载体 | **测试侧** |
-| R04-T03 | ACLINT MTIMER 备用路径（`aclint=on` 形态）的**宿主夹具**（真机已由 `test-smp-ipi-riscv64` 覆盖） | **测试侧** |
-| R04-T04 | aarch64 设备树分支（`parse_gic` 等）的**宿主 DTB 夹具**（真机已由 `test-smp-aps-aarch64` 的 `-dtb` 直核覆盖） | **测试侧** |
-| R04-T05 | `find_platform_sources_into` 的宿主单测（两段顺序与 DTB 命中路径） | **测试侧** |
-| R04-T06 | 多来源顺序与全失败兜底的载体（失败续源、debug 兜底 / release panic） | **测试侧** |
-| R04-T07 | `Frozen` 二次 `freeze` 的断言测试（**已由 `types::cell::frozen_tests::test_freeze_twice_panics_and_keeps_first_value` 补上**，D-064 / I-32） | **测试侧**（已销） |
-| R04-T08 | `parse_by_kind` 两个真实分支返回类型的直接断言 | **测试侧** |
-| R04-T09 | 支持重定位 LAPIC/IOAPIC 的动态设备窗口（当前是 check-and-reject） | **设计/代码侧** |
-| R04-T10 | 多 IOAPIC 的 `ApicDesc`/GSI-range 模型（当前只表示首个 IOAPIC） | **设计/代码侧** |
-| R04-T11 | aarch64 ACPI 的 GICC UID → GICR 帧索引假设（非 QEMU 固件不保证） | **设计/测试侧** |
-| R04-T12 | `init_smp_state` 的 `unwrap_or(topo.bsp_id as usize)` 把 hw_id 当逻辑槽位：非连续 hw_id 时会选错槽位或越界（`CpuId::new_unchecked` 不检查上界）；需改成有界的保守回退 | **已实施**：`unwrap_or(0)` + `MAX_CPUS` 断言；与 `init_protection` 的回退一致（§4.4） |
-| R04-T13 | ACPI 表链（RSDT/XSDT/MADT）不在任何已注册恒等窗口内；2 MiB 片取整让 QEMU 侥幸通过，非契约（§4.5） | **已实施**：`table_chain_windows` 在分页前注册根表、前置表签名与 MADT 表体（§4.5） |
+| 缺口01 | RSDP rev < 2 时 RSDT 回落路径的载体（合成表 rev 1 变体） | **测试侧** |
+| 缺口02 | MADT 遍历对畸形记录（零长 / 越界）的负向载体 | **测试侧** |
+| 缺口03 | ACLINT MTIMER 备用路径（`aclint=on` 形态）的**宿主夹具**（真机已由 `test-smp-ipi-riscv64` 覆盖） | **测试侧** |
+| 缺口04 | aarch64 设备树分支（`parse_gic` 等）的**宿主 DTB 夹具**（真机已由 `test-smp-aps-aarch64` 的 `-dtb` 直核覆盖） | **测试侧** |
+| 缺口05 | `find_platform_sources_into` 的宿主单测（两段顺序与 DTB 命中路径） | **测试侧** |
+| 缺口06 | 多来源顺序与全失败兜底的载体（失败续源、debug 兜底 / release panic） | **测试侧** |
+| 缺口07 | `Frozen` 二次 `freeze` 的断言测试（**已由 `types::cell::frozen_tests::test_freeze_twice_panics_and_keeps_first_value` 补上**） | **测试侧**（已销） |
+| 缺口08 | `parse_by_kind` 两个真实分支返回类型的直接断言 | **测试侧** |
+| 缺口09 | 支持重定位 LAPIC/IOAPIC 的动态设备窗口（当前是 check-and-reject） | **设计/代码侧** |
+| 缺口10 | 多 IOAPIC 的 `ApicDesc`/GSI-range 模型（当前只表示首个 IOAPIC） | **设计/代码侧** |
+| 缺口11 | aarch64 ACPI 的 GICC UID → GICR 帧索引假设（非 QEMU 固件不保证） | **设计/测试侧** |
+| 缺口12 | `init_smp_state` 的 `unwrap_or(topo.bsp_id as usize)` 把 hw_id 当逻辑槽位：非连续 hw_id 时会选错槽位或越界（`CpuId::new_unchecked` 不检查上界）；需改写为有界的保守回退 | **已实施**：`unwrap_or(0)` + `MAX_CPUS` 断言；与 `init_protection` 的回退一致（§4.4） |
+| 缺口13 | ACPI 表链（RSDT/XSDT/MADT）不在任何已注册恒等窗口内；2 MiB 片取整让 QEMU 侥幸通过，非契约（§4.5） | **已实施**：`table_chain_windows` 在分页前注册根表、前置表签名与 MADT 表体（§4.5） |
 
 ---
 
 ## 6. 诊断
+
+### 6.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 按“症状 → 怀疑对象 → 确认命令”区分三类平台发现故障：走了兜底、发现没跑、没有来源。
+- 用 `source()`、调用栈与 panic 文本判断故障落在哪一层。
+- 复现 §6.2 的可复制命令，不把 QEMU virt 的值当成真实固件读数。
+
+#### 前置概念
+
+- 第 1–5 章的四组问题、三种来源与测试证据边界。
+- 会读 `Frozen::get` 的 panic 栈与 `PlatformSource` 的取值。
+
+#### 最小示例
+
+```bash
+# 平台上下文的读取入口；source() 能区分兜底与真实来源（§6.1）
+$ grep -n 'fn platform_desc' os/libs/minix-platform/src/global.rs
+# Frozen 的 get/freeze 断言；发现顺序错误的 panic 点（§6.1）
+$ grep -n 'Frozen::get before freeze' os/libs/minix-types/src/types/cell.rs
+```
+
+第一条给出运行时来源判定，第二条给出顺序错误的现场；三类症状都围绕这两处读。
+
+#### 失败对照
+
+如果看到 `PlatformSource::QemuVirt` 就去改解析器，会改错层：兜底只在开发构建、且 `platform_sources` 为空或全部解析失败时出现；先检查 `KernelInfo.platform_sources` 是否为空、来源地址是否可读，再怀疑 ACPI/DTB 解析。症状相同，层级不同。
+
+#### 小结
+
+- 三类故障：走了 QEMU virt 兜底、发现没跑/跑晚、没有任何来源可解析。
+- 先看 `source()` 与 `platform_sources`，再看 `Frozen` 调用栈，最后才怀疑解析器。
+- 复现命令按 §6.2 的次序跑；开发构建的兜底值不能当成固件读数。
+
+#### 术语
+
+- **`source()`**：平台上下文上的来源查询；返回 ACPI/DTB/QemuVirt。
+- **`Frozen::get before freeze`**：发现未发布就读取的 panic 文本。
+- **无来源可解析**：`platform_sources` 非空但全部失败；发布构建 fail-closed。
+- **兜底**：开发构建的 QEMU virt 固定参数；不是真实固件表。
 
 ### 6.1 症状 → 怀疑对象 → 确认命令
 
@@ -2594,13 +2855,13 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | 启动期 panic 带 `"no platform source parsed successfully"` | 发布构建下的兜底分支 | 看 panic 文本与构建档位（`cfg!(debug_assertions)` 为假才可能命中这一支） | `platform::init_from_kinfo: … and not a dev build (no QemuVirt fallback in release)` |
 | 启动期 panic 带 `"expected ApicDesc"` / `"expected Gicv3Desc"` / `"expected ClintDesc"` 一类 | 描述符与消费者不匹配（描述符来自另一种架构的解析器，或走了兜底但类型不符） | 看 panic 文本里的类型名与 `source()` | `…::new: expected <具体类型>` |
 | aarch64 在第一次切地址空间后同步异常 | 设备 MMIO 地址是物理地址而非高半别名 | 看异常发生点与 `mmio_translate` 的窗口常量 | 故障点在 `switch_address_space` 之后的第一处 MMIO 访问（§4.8） |
-| IOAPIC 编程看起来成功但 IPI 发不出去 | LAPIC 基址与设备窗口不一致 | 比对 `ApicDesc.lapic_base`、`IA32_APIC_BASE` MSR 与设备窗口页；当前实现不一致会以 `X86_64InterruptController::init_lapic` / `init_clock_and_interrupts` 的断言停机 | 断言文本含 `IA32_APIC_BASE ... != descriptor LAPIC base` 或 `descriptor LAPIC base ... != device-window page` ⇒ 该机器把 LAPIC 重定位（§2.5、R04-T09） |
+| IOAPIC 编程看起来成功但 IPI 发不出去 | LAPIC 基址与设备窗口不一致 | 比对 `ApicDesc.lapic_base`、`IA32_APIC_BASE` MSR 与设备窗口页；当前实现不一致会以 `X86_64InterruptController::init_lapic` / `init_clock_and_interrupts` 的断言停机 | 断言文本含 `IA32_APIC_BASE ... != descriptor LAPIC base` 或 `descriptor LAPIC base ... != device-window page` ⇒ 该机器把 LAPIC 重定位（§2.5、缺口09） |
 
 表中六行按判据归四类：行 1 与行 6（参数可疑）靠 `source()` 与地址比对；行 2（发现没跑、或跑在消费者之后）靠调用栈；行 3（所有来源解析失败/发布构建兜底 panic）靠 panic 文本与构建档位；行 4 与行 5（描述符类型不符、地址未翻译）靠 panic 文本与异常发生点。四类故障的判据来源不同，其中第一条只能靠 `source()`——这一点在 §3.5 已说明（兜底路径的函数体是 `let _ = reason;`，没有任何输出）。
 
 riscv64 有一条专属边界：定时器不在 PLIC 的线里。若诊断"定时器中断收不到"时去查 PLIC 的线号与描述符的 `nr_irqs`，方向是错的——S 模式定时器是核本地中断，它的分发身份是保留伪向量 0（§4.8 的 `const TIMER_IRQ`），门控在 `sie.STIE`。
 
-把兜底路径改成打印日志会坏在哪：它会调用内核的日志设施，而 `init_from_kinfo` 位于 Phase A.5、早于 `kerninfo` 页建立（`kmain` 的 Phase B.5 才是 `kerninfo::init_kerninfo`；`arch_boot_impl` 只负责 Step 0–4）。在控制台尚未就绪时打印要么落到早期控制台的硬编码通道（与"发现失败"这件事无关的模块），要么静默丢失。当前选择是把这条信息留给 `source()`，让"要不要报告"由已经就绪的调用方决定。
+把兜底路径改写为打印日志会坏在哪：它会调用内核的日志设施，而 `init_from_kinfo` 位于 阶段 A.5、早于 `kerninfo` 页建立（`kmain` 的 阶段 B.5 才是 `kerninfo::init_kerninfo`；`arch_boot_impl` 只负责 Step 0–4）。在控制台尚未就绪时打印要么落到早期控制台的硬编码通道（与"发现失败"这件事无关的模块），要么静默丢失。当前选择是把这条信息留给 `source()`，让"要不要报告"由已经就绪的调用方决定。
 
 ### 6.2 可复制命令与预期输出
 
@@ -2616,17 +2877,17 @@ os/libs/minix-platform/src/kind.rs:4
 
 # 3) minix-platform 的单测总数与逐文件分布
 $ grep -rc '#\[test\]' os/libs/minix-platform --include=*.rs | awk -F: '{s+=$2} END {print s}'
-26
+27
 
 # 4) platform_sources 空切片的总条数与分布
 $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
-54
+55
 $ rg -c 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | sort -t: -k2 -rn | head -5
-os/kernel/src/dm_coverage.rs:10
+os/kernel/src/dm_coverage.rs:11
 os/arch/src/arch/boot.rs:9
-os/kernel/src/lib.rs:6
+os/kernel/src/lib.rs:5
 os/kernel/src/vm_handoff.rs:3
-os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq-riscv64/src/main.rs:1
+os/boot-shim/src/opensbi_helpers.rs:2
 ...（其余见 §5.3 分布表）
 
 # 5) C 侧 acpi_init 的调用点（三个点；默认配置下只有 arch_init 里那一次会执行，见 §2.7）
@@ -2684,7 +2945,7 @@ Rust 落点：
 - `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` — 品牌 struct 与三份 `QemuVirtDesc`
 - `os/libs/minix-platform/src/global.rs` — `PLATFORM` / `PlatformContext` / `PlatformDescEnum` / `init_from_kinfo` / `platform_desc`
 - `os/libs/minix-types/src/types/cell.rs` — `Frozen`
-- `os/kernel/src/lib.rs` — `kmain` 的 Phase A.5（`arch_boot_impl` 只负责 Step 0–4）、`init_clock_and_interrupts`、`init_smp_state`
+- `os/kernel/src/lib.rs` — `kmain` 的 阶段 A.5（`arch_boot_impl` 只负责 Step 0–4）、`init_clock_and_interrupts`、`init_smp_state`
 - `os/kernel/src/misc.rs` — `MachineStruct` / `getinfo_machine`
 - `os/plat/src/{x86_64,arm64,riscv64}/interrupt.rs` / `os/arch/src/{x86_64,arm64,riscv64}/clock.rs` — 消费侧的 `new(desc)`
 - `os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo*/` — 三架构的真机门

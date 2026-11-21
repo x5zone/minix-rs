@@ -122,10 +122,6 @@ impl PlatformDesc for QemuVirtDesc {
     }
 }
 
-// Suppress unused warning for `fmt` import when no fmt impl is needed.
-#[allow(unused_imports)]
-use fmt as _;
-
 #[cfg(test)]
 mod tests {
     use super::*;

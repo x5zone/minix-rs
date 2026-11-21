@@ -48,7 +48,7 @@ PROCESS_RES = (
     # 正常的内存偏移/容量全判成过程编号。`0b…`/`0o…` 是二进制/八进制
     # 字面量，也不是提交号。
     re.compile(
-        r"\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])(?!0[bB])(?!0[oO])[0-9a-f]{7,40}\b"
+        r"(?<!@)\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])(?!0[bB])(?!0[oO])[0-9a-f]{7,40}\b"
     ),
 )
 ITER_RE = re.compile(
@@ -61,6 +61,9 @@ IGNORE_RE = re.compile(r"#\[ignore\b")
 JUSTIFY_RE = re.compile(r"//\s*(?:SAFETY|justified|unreachable because)", re.IGNORECASE)
 CFG_TEST_RE = re.compile(r"#\[cfg\(test\)\]")
 COMMENT_RE = re.compile(r"//")
+GUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
 
 
 def tracked_rs() -> list[Path]:
@@ -150,10 +153,16 @@ def scan_file(path: Path) -> list[dict]:
             hits.append({"kind": "CP-1", "line": i, "text": stripped, "token": "unreachable!"})
         if ALLOW_RE.search(line):
             hits.append({"kind": "CP-2", "line": i, "text": stripped, "token": "allow"})
-        if IGNORE_RE.search(line) and not re.search(r"//", line):
+        if (
+            IGNORE_RE.search(line)
+            and not re.search(r"//", line)
+            and not re.search(r'#\[ignore\s*=\s*"[^"]+"', line)
+        ):
             hits.append({"kind": "CP-6", "line": i, "text": stripped, "token": "#[ignore]"})
         if comment:
-            tail = line[comment.start():]
+            # UEFI GUIDs contain hex segments that look like commit hashes;
+            # they are external identifiers, not process numbers.
+            tail = GUID_RE.sub("<guid>", line[comment.start():])
             for pat in PROCESS_RES:
                 m = pat.search(tail)
                 if m:
@@ -280,6 +289,7 @@ def self_test() -> int:
         hexfile.write_text(
             "// 0170000 是十进制偏移，不是提交号\n"
             "// 0b010000 是二进制字面量，不是提交号\n"
+            "// b1b621d5-f19c-41a5-830b-d9152c69aae0 是 UEFI GUID，不是提交号\n"
             "// c9f4e544c 是提交号\n"
             "fn f() {}\n",
             encoding="utf-8",
@@ -290,6 +300,9 @@ def self_test() -> int:
             return 1
         if "0b010000" in hex_tokens:
             print("self-test FAIL: 二进制字面量被当成十六进制提交号")
+            return 1
+        if any("b1b621d5" in tok for tok in hex_tokens):
+            print("self-test FAIL: UEFI GUID 被当成十六进制提交号")
             return 1
         if "c9f4e544c" not in hex_tokens:
             print("self-test FAIL: 真实十六进制提交号未被检出")

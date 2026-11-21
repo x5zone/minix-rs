@@ -8,9 +8,9 @@
 //!
 //! # Design
 //!
-//! Previously `QemuVirtDesc` was a unit struct with `#[cfg(target_arch)]`
-//! scattered across 4 method bodies. The fix moves each arch's implementation
-//! into a dedicated file with file-level `#[cfg]`, satisfying the
+//! `QemuVirtDesc` keeps each arch's implementation in a dedicated file with
+//! file-level `#[cfg]`, rather than a unit struct with scattered method bodies;
+//! this satisfies the
 //! "no `#[cfg(target_arch)]` for behavior selection in upper layers" rule
 //! (see 04-platform-discovery.md §4.6).
 

@@ -311,7 +311,7 @@ impl X86_64InterruptController {
         let apic_phys = apic_base & IA32_APIC_BASE_ADDR_MASK;
         // The descriptor's LAPIC base is the contract; the device window
         // only maps that one page. Refuse a relocated LAPIC instead of
-        // programming a window that no longer decodes to it.
+        // programming a window that does not decode to it.
         assert_eq!(
             apic_phys as usize, self.lapic_base,
             "X86_64InterruptController::init_lapic: IA32_APIC_BASE {:#x} \

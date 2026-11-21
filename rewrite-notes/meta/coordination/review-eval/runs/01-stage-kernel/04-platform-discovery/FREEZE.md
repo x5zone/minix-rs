@@ -90,3 +90,14 @@ citation 门新增第四标注形态（`// path —— kind`）与 `.S/.lds/.inc
 - 行数：2737（与 R3 时点一致，改动全为等行数替换）
 - 文档 sha256：`c66408797925f85d299700b883dd39db84a1d645c5088e4d92606daa643e1ae8`（本段追加前的 R3 值 `90179b7b…` 已被这次同步替换）
 - 门：`--round R3` 仍 PASS（11 PASS / 2 WARN / 0 FAIL）；anchor 77/77；structure/ref/style(error=0) 通过；doc-code-map 54/54
+
+## R39 确认轮（V3.10，append-only；2026-11-22）
+
+- 轮结果：`CONVERGED`。
+- 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`，sha256 `4d7f41b51cf7dad9ce3689895a5defc114ce8d71258c8fb2b74f29457f2b8f39`，2979 行。
+- 单元账本：54/54 frozen、reopened=0、stale=0、T3 PASS；`audit` 全部单元 open=0。
+- 确认轮：11 个冻结单元抽样；15 条发现（6 P1 + 6 P2 + 3 P3）全部修复，`DELTA: PASS`；修复 2/2 批次，未开新修改轮。
+- 文档七门：publication/tutorial 0 新增；structure/ref/style/density 通过；citation `68 checked/0 failed`；anchor 70/70；doc-code-map 53/53。
+- 代码门：53 个 related-code code-publication 0 命中、CJK 0；minix-arch 266/0、minix-platform 19/0、minix-kernel mock 866/0/8。
+- 真机：test-smp-topo x86_64/aarch64/riscv64 三腿 PASS。
+- 账本：D04 TODO 匹配 0 行，无未闭环项。

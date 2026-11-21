@@ -207,9 +207,8 @@ pub trait PerCpuInterruptUnit: Send {
     /// identity (the gate delivered the vector; the LAPIC EOI is the whole
     /// handshake), so `None` — but here `None` means "nothing to write
     /// back", not "nothing to complete": [`PerCpuInterruptUnit::complete`]
-    /// still EOIs. The x86 implementation previously
-    /// wrote the LAPIC EOI in `claim` — that is the *completion*, not a
-    /// claim, and dispatching it early would have re-opened the interrupt
+    /// still EOIs. Writing the LAPIC EOI in `claim` would be the *completion*,
+    /// not a claim, and dispatching it early would re-open the interrupt
     /// before handling.
     ///
     /// The identity is deliberately `u32` rather than `IrqVector`: it is

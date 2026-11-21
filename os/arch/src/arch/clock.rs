@@ -12,8 +12,8 @@
 //!
 //! # Quantum decrement (D9)
 //!
-//! The design (15-clock-timer.md §4.5) originally specified a `ClockArch::arch_tick()`
-//! method for quantum decrement. However, `KProcess` lives in `minix-kernel`,
+//! A `ClockArch::arch_tick()` method for quantum decrement is not viable:
+//! `KProcess` lives in `minix-kernel`,
 //! and `ClockArch` lives in `minix-arch` — adding `arch_tick(&mut KProcess)` would
 //! create a circular dependency. Instead, quantum decrement is implemented as a
 //! **kernel function** (`clock::decrement_quantum`) that calls `ClockArch::read_tsc()`
@@ -40,9 +40,8 @@
 /// **Authoritative definition**: this arch-level constant is the single
 /// source of truth; the kernel crate re-exports it (`os/kernel/src/clock.rs`
 /// `pub use minix_arch::arch::clock::DEFAULT_HZ`) instead of keeping its own
-/// copy — the former "independent copy" rationale (avoid a cross-crate
-/// dependency) no longer holds since the kernel unconditionally depends on
-/// minix-arch.
+/// copy — an "independent copy" rationale (avoid a cross-crate dependency)
+/// does not hold: the kernel unconditionally depends on minix-arch.
 pub const DEFAULT_HZ: u32 = 100;
 
 /// Number of load history slots for load average calculation.

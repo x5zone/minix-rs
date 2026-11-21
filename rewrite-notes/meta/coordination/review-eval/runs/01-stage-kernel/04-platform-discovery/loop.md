@@ -315,3 +315,12 @@
 
 - 三问：① 不变量是「确认轮在最终工作树上 certify 新准入 = 0」；② 前提是 R1 已 ROUND-CLOSED；③ 证据是 certify 回执 12/0 与六门读数。
 - 资源重读：盲区属「流程类」，查 `fresh-eyes-review`；无新检测模式，记 BLIND-SPOTS 候选。
+
+### R39 确认轮（V3.10，2026-11-22）
+
+- L0.9：tutorial 6/6；doc-publication 79 处归零；54/53 个 related-code CP-2/CP-3/CP-4 归零、CJK 0；TODO 账本无 D04 行。
+- 单元账本：54/54 冻结、T3 PASS；11 个冻结单元抽样（4.0、4.1、4.11、3.8、5.1、3.9、1.5、5、5.2、4.5、2.0）。
+- 确认轮发现 15 条（6 P1 + 6 P2 + 3 P3）：aarch64 DTB/ACPI 顺序、C 链事实（RSDT/无 DTB/无 riscv64）、测试计数、平台 `&[]` 分布、伪引文、早期控制台描述等。修复后两轮 `DELTA: PASS`。
+- 确认轮修复 2/2 批次，未开新修改轮；`defect-ledger.md` 新增 `RD-R39-001..015` 全部 CLOSED。
+- 机械门：文档七门绿、anchor 70/70、code-publication 53/53=0；cargo 三包全绿；QEMU test-smp-topo 三腿 PASS。
+- 轮结果：`CONVERGED`。文档 sha256 `4d7f41b5…`，2979 行。

@@ -32,7 +32,6 @@ use crate::arch_init::ArchInit;
 pub struct X86_64ArchInit {
     /// ACPI tables physical address, if provided by the platform descriptor.
     /// `None` means no ACPI tables were discovered (QEMU virt fallback).
-    #[allow(dead_code)]
     acpi_tables: Option<usize>,
 }
 

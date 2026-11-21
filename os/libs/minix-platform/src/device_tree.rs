@@ -57,7 +57,7 @@ use crate::arch::riscv64::{ClintDesc, PlicDesc};
 ///
 /// Constructed via [`DeviceTreeDesc::parse`] (production) or
 /// [`DeviceTreeDesc::from_parsed`] (tests). After construction, the DTB
-/// bytes are no longer needed — all values are stored as concrete arch
+/// bytes are not retained — all values are stored as concrete arch
 /// structs implementing the sub-descriptor traits.
 #[derive(Clone, Copy)]
 pub struct DeviceTreeDesc {

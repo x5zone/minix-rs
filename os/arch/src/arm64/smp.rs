@@ -203,8 +203,7 @@ static GICD_BASE: core::sync::atomic::AtomicUsize =
 /// Called from `arch_init` once firmware (TF-A/U-Boot) has provided the GIC
 /// descriptor. After this call, `send_sched_ipi` is safe to use.
 ///
-/// Currently wired up by `arch_init` on real hardware; `#[allow(dead_code)]`
-/// keeps the linker quiet for host/mock builds that never call it.
+/// Wired up by `arch_init` on real hardware; host/mock builds may not call it.
 ///
 /// # Safety
 ///
@@ -212,7 +211,6 @@ static GICD_BASE: core::sync::atomic::AtomicUsize =
 /// are released; the atomic store publishes the translated base to later
 /// readers.
 #[inline]
-#[allow(dead_code)]
 pub(crate) unsafe fn set_gicd_base(base: usize) {
     // `base` is the physical GICD base; store the high-half (TTBR1) MMIO alias
     // so `send_sched_ipi`'s GICD_SGIR write stays valid across a root switch

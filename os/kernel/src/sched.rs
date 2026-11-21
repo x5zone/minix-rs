@@ -227,20 +227,6 @@ fn nr_to_idx(nr: ProcNr) -> Option<usize> {
     Some(offset as usize)
 }
 
-/// Check if a process is scheduled by the kernel (no user-space scheduler).
-///
-/// C: `proc_kernel_scheduler(p)` macro in proc.h:178.
-#[allow(dead_code)] // scheduler helper; not yet wired to all call sites
-fn is_kernel_scheduled(p: &KProcess) -> bool {
-    p.p_sched.scheduler.is_none() || p.p_sched.scheduler == Some(p.p_nr)
-}
-
-/// Check if a process has remaining CPU time.
-#[allow(dead_code)] // scheduler helper; not yet wired to all call sites
-fn has_cpu_time_left(p: &KProcess) -> bool {
-    p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0
-}
-
 /// Aggregated scheduling parameters for [`sched_proc`].
 ///
 /// Groups the four scheduling parameters (priority, quantum, cpu, niced)
@@ -371,10 +357,14 @@ fn validate_cpu_param(
 pub fn sched_proc(
     table: &mut crate::proc_table::ProcessTable,
     nr: ProcNr,
-    // Mutated only by the riscv64 narrow clamp below.
-    #[allow(unused_mut)] mut params: SchedParams,
+    params: SchedParams,
 ) -> Result<(), SchedProcError> {
     use crate::proc::{MiscFlagsBits, RtsFlagsBits};
+    // Mutated only by the riscv64 narrow clamp below.
+    #[cfg(target_arch = "riscv64")]
+    let mut params = params;
+    #[cfg(not(target_arch = "riscv64"))]
+    let params = params;
 
     // Per the decision to align fully with C: the scheduler-aware
     // rts_set/rts_unset wrappers (dequeue/enqueue side effects) replace
@@ -574,9 +564,8 @@ impl minix_types::ToErrno for SchedProcError {
     }
 }
 
-// Note: `read_tsc()`, `get_monotonic()`, and `ms_to_cpu_time()` are now
-// provided by `crate::clock` module. They were previously stubs here and in
-// `proc_table.rs`; the canonical implementations live in `clock.rs` with
+// `read_tsc()`, `get_monotonic()`, and `ms_to_cpu_time()` are provided by
+// `crate::clock`; the canonical implementations live in `clock.rs` with
 // global atomics (`CLOCK_UPTIME`, `TSC_PER_MS`) so that scheduler code
 // can read them without needing a `&ClockState` reference.
 // See `clock::get_monotonic()`, `clock::ms_to_cpu_time()`, `clock::read_tsc()`.

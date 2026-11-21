@@ -141,7 +141,7 @@ struct MadtEntryHeader {
 /// Parsed ACPI descriptor — owns all extracted hardware parameters.
 ///
 /// Constructed via [`AcpiDesc::parse`] (production). After construction, the
-/// ACPI tables are no longer needed — all values are stored as concrete x86-64
+/// ACPI tables are not retained — all values are stored as concrete x86-64
 /// structs (`ApicDesc`, `PitDesc`) implementing the
 /// sub-descriptor traits.
 #[derive(Clone, Copy)]

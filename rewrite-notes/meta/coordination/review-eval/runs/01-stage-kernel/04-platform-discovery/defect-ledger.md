@@ -257,3 +257,23 @@
 | RD-R3-27 | CLAIM-11、CLAIM-12、CLAIM-13 | R3 | refute | P3 | claim | FP | 反证失败（主张成立） | 源码原文核对（panel/round3/refute.md 的 RD04-CLAIM-11/12/13）：uefi_helpers.rs:234-253 两段独立循环 DTB 在前；acpi.h:99 唯一声明；apic.c:1141-1143 次序；global.rs:275-290 兜底静默；acpi.rs:498 两道闸 | CLAIM-11 反证失败即主张成立；其非阻断的精度瑕疵（cross_validate 4 条停机、push_dtb_sources 归属）已按源码改正 |
 | RD-R3-28 | CLAIM-14、CLAIM-15 | R3 | refute | P3 | claim | FP | 反证失败（主张成立） | 源码原文核对（panel/round3/refute.md 的 RD04-CLAIM-14/15）：flags&1 三处实存；lib.rs:1974 与 2251-2254 两种回退并存；CpuId::new_unchecked 如实登记；26/54/25/21/410/11 计数复跑命中 | CLAIM-14 反证失败即主张成立；其非阻断的精度瑕疵（cross_validate 4 条停机、push_dtb_sources 归属）已按源码改正 |
 | RD-R3-29 | CLAIM-16 | R3 | refute | P2 | claim | ① | 已修：非阻断（两处计数/归属精度瑕疵已按源码改正） | panel/round3/ 的 claim | CLAIM-16 等 1 条的改动由 certify/round3-certify.md 对应条目回读确认 |
+
+## R39 确认轮（2026-11-22）
+
+| ID | 来源 | 节 | 轮 | 角色 | 严重度 | 类别 | 处置 | 修复 | 证据 | 状态 | — | — | — | — |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| RD-R39-001 | CONFIRM-D1 | 4.0 | R39 | cold-confirm | P1 | 文档/顺序 | ① | aarch64 小结改“先 DTB 后 ACPI” | uefi_helpers.rs DTB 循环在 ACPI 前 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-002 | CONFIRM-D2 | 4.0 | R39 | cold-confirm | P2 | 文档/语义 | ① | 失败对照改 table_chain_windows/find_madt 限幅前提 | acpi.rs:454-506 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-003 | CONFIRM-D3 | 4.1 | R39 | cold-confirm | P2 | 文档/事实 | ① | 早期日志改“描述符无此项，minix-plat 自持常量” | platform.rs 无 early_console | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-004 | CONFIRM-D4 | 4.11 | R39 | cold-confirm | P3 | 文档/表格 | ① | ⑥ 消费列三列补 ArchInit | CurrentArchInit 三架构别名 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-005 | CONFIRM-D5 | 5.1 | R39 | cold-confirm | P1 | 文档/计数 | ① | 27/acpi 10/宿主 19，补表链窗口测试 | grep 计数 27 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-006 | CONFIRM-D6 | 1.5 | R39 | cold-confirm | P1 | 文档/事实 | ① | 早期控制台改为“无此项，已移除” | desc.rs 无 ConsoleDesc | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-007 | CONFIRM-D7 | 5 | R39 | cold-confirm | P1 | 文档/计数 | ① | platform_sources 55 与分布 11/9/5/3/2/19 | rg 计数 55 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-008 | CONFIRM-D8 | 5 | R39 | cold-confirm | P2 | 文档/锚点 | ① | M7 改 bootface_a64→run_self_boot→bootface_common | bootface_common.rs:502 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-009 | CONFIRM-D9 | 5 | R39 | cold-confirm | P3 | 文档/标点 | ① | 清理去编号后的标点残迹 | rg '， ' 无命中 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-010 | CONFIRM-D10 | 5.2 | R39 | cold-confirm | P2 | 文档/事实 | ① | aarch64 改 boot-shim with_optional_len | test-smp-topo-aarch64 main.rs:103-104 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-011 | CONFIRM-D11 | 4.5 | R39 | cold-confirm | P1 | 文档/引文 | ① | Safety 段改逐字引 low 4 GB + 过时批注 | device_tree.rs:33-39 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-012 | CONFIRM-D12 | 2.0 | R39 | cold-confirm | P1 | 文档/事实 | ① | C 链限定 i386/earm：RSDT、无 DTB、无 riscv64 | acpi.c RSDT；C 树无 DTB | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-013 | CONFIRM-D13 | 2.0 | R39 | cold-confirm | P2 | 文档/事实 | ① | 学习目标/示例/失败对照同步限定 | 同上 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-014 | CONFIRM-D14 | 2.0 | R39 | cold-confirm | P2 | 文档/消费者 | ① | 消费者限定 apic/discover_cpus；i386/earm 时钟差异注明 | arch_clock.c/ports.h | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-015 | CONFIRM-D15 | 2.0 | R39 | cold-confirm | P3 | 文档/调用点 | ① | acpi_init 改“arch_init() 内一步” | main.c:411/418/472/474 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
