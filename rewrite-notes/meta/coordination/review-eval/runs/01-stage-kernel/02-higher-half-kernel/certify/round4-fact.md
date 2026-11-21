@@ -2,7 +2,7 @@
 
 - 结论：**PASS（18/18 CLOSED）**，一致性 100%，高于 CONVERGED 要求的 90%。
 - 核验条数：18（不抽样，逐条回读）。
-- 基线：HEAD `d9ceba0cba341290218028c7d85e0b1fc65cebfa`；文档 `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` sha256 `9f9ec2e7ccdfccb22b402d477c784a495df87c3aab2551134f920eb02f14c56e`；`git ls-files -m` 为 0，回读对象就是最终 HEAD。
+- 基线：HEAD `0f5a5bd9d9f63e3bbf8f3de1ffbc01f6ddc6df53`；文档 `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` sha256 `9f9ec2e7ccdfccb22b402d477c784a495df87c3aab2551134f920eb02f14c56e`；`git ls-files -m` 为 0，回读对象就是最终 HEAD。
 - 角色：冷启动第二次独立回读者，未参与 R4 面板、修复与 pass1；只读，唯一写入是本文件。未跑 QEMU。测试计数用 `cargo test --list` 实测，构建目标目录重定向到 `/tmp/r4-cert-target`，未写入仓库 `target/`；27 条 minix-elf 测试与 31 条 loader 测试实际执行通过。
 - 判定依据：最终 HEAD 的文档原文与源码；`/tmp/r4-cert-fact.md` 只用来框定 18 条 ID，pass1 回执只作对照，不作为判定证据。
 
@@ -15,7 +15,7 @@
 - 与 §4.2 同口径：doc:823 的 `let seg = seg_result?;`、doc:861 的 `collect::<Result<Vec<_>, _>>()?`，doc:851 写明「畸形程序头由迭代器以 `Err` 项浮出，`filesz > memsz` 的守卫也已收进迭代器」。
 - 与 §5.1 同口径：doc:1120 的「迭代器行为」族列 `test_segment_iter_reports_segment_data_out_of_bounds`、`test_segment_iter_non_load_filter_stays_silent` 等 12 条，证明列写「表范围检查、非 `PT_LOAD` 过滤、三类畸形以 `Err` 返回（I-48/D-084）」。
 - 源码：`os/libs/minix-elf/src/lib.rs:393-450` 的 `next()`；唯一的 `continue` 在 `:413-415`（`if phdr.p_type != PT_LOAD`）；四个 Err 出口在 `:395-404`、`:408-411`、`:419-425`、`:431-433`。
-- 修复动作有据：`git diff 7ce60e31f..d9ceba0cb -- <doc>` 只有两行替换，本行是其中之一；旧行（`d9ceba0cb^` 的 doc:458）仍是「命中这些条件时 `continue`」，新行已消除。
+- 修复动作有据：`git diff d99dc16a7..0f5a5bd9d -- <doc>` 只有两行替换，本行是其中之一；旧行（`0f5a5bd9d^` 的 doc:458）仍是「命中这些条件时 `continue`」，新行已消除。
 - 测试：`cargo test -p minix-elf --lib -- --list` → 27；实跑 27 passed / 0 条失败。
 
 ### 2. FACT-02：CLOSED
@@ -109,7 +109,7 @@
 ### 17. CLAIM-05：CLOSED
 
 - CLAIM-05 的三个验收面全部通过：`grep -c '12 个变体'` → 3；`grep -c '六块载荷'` → 1（doc:366）；计数 27/31/135 实测吻合，`test_segment_iter_reports_segment_data_out_of_bounds` 存在。
-- pass1 判它 STILL-BROKEN 的唯一残留是 doc:458 的 旧的开放语义 散文；该行已被 `d9ceba0cb` 替换，CLAIM-05 的阻断面消失。
+- pass1 判它 STILL-BROKEN 的唯一残留是 doc:458 的 旧的开放语义 散文；该行已被 `0f5a5bd9d` 替换，CLAIM-05 的阻断面消失。
 
 ### 18. CLAIM-06：CLOSED
 
@@ -117,7 +117,7 @@
 
 ## 二、pass1 五条同源残项的重点复核
 
-pass1 的 5 条 STILL-BROKEN 指 FACT-01、DESIGN-D2-01、CLAIM-05（事实面）与 READER-A-01、READER-B-03（读者面，不在本回执 18 条内），根因都是 doc:458 一句。最终提交 `d9ceba0cb` 的文档 diff 只有两行：
+pass1 的 5 条 STILL-BROKEN 指 FACT-01、DESIGN-D2-01、CLAIM-05（事实面）与 READER-A-01、READER-B-03（读者面，不在本回执 18 条内），根因都是 doc:458 一句。最终提交 `0f5a5bd9d` 的文档 diff 只有两行：
 
 1. doc:458：旧句「迭代器在 `next()` 里做类型过滤与范围检查，命中这些条件时 `continue`（不产出该段）」→ 新句「只有非 `PT_LOAD` 类型过滤走 `continue`（正常过滤），其余表项范围与段形失败都以 `Some(Err(..))` 浮出（I-48/D-084）」。
 2. doc:580：为 reader 面补充「`resume_after_v1_decode`（三架构同名壳，公共体 `resume_additive`）」；源码 `os/kernel/src/lib.rs:773/781/800` 三个同名 `#[cfg]` 壳、`:326` 的 `resume_additive` 公共体核对成立，与本 18 条无冲突。

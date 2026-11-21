@@ -97,10 +97,10 @@ doc-citation-check 的 `checked=0 / skipped=42` 原因是该工具只解析以 `
 - 影响：§3.5 用这条引文支撑“恒等窗口仍由 01/02 篇承担”的对照；读者按引文去源码核会找不到，并且会误以为当前实现仍是 1024×4MB 全量恒等映射——正好与现行设计相反（现行是 minimal windows，越界空洞会变成缺页）。
 - 证据或推理（E1/E2/E3）：
   - E1：当前 `os/kernel/src/lib.rs:1212` 起的 `build_bootstrap_root_and_enable`，Step 1 注释原文为 `C maps 4 GiB with pg_identity because the 32-bit kernel runs inside that window; the Rust cross-image leg only needs its shim image/stack, ... the minimal windows turn those into page faults.`；全文件 grep `Maps 1024`/`4 × 1GB`/`1024 × 4MB` 零命中。
-  - E1：`git show 3016acbfc:os/kernel/src/lib.rs | sed -n '930,932p'` 显示该引文在文档最后一次编辑时确实存在（`:932 // Maps 1024 × 4MB = 4GB (C) or 4 × 1GB (x86-64) or equivalent on other archs.`）；`git show 4f2e9e786` 显示该行被删除（`-    // Maps 1024 × 4MB = 4GB ...`）。
+  - E1：`git show 3016acbfc:os/kernel/src/lib.rs | sed -n '930,932p'` 显示该引文在文档最后一次编辑时确实存在（`:932 // Maps 1024 × 4MB = 4GB (C) or 4 × 1GB (x86-64) or equivalent on other archs.`）；`git show 47dc589d2` 显示该行被删除（`-    // Maps 1024 × 4MB = 4GB ...`）。
 - 最小修复：把引文替换为现行 Step 1 注释的原文（或改述为“现行 Step 1 只铺最小恒等窗口；C 的 `pg_identity` 对应关系写在注释里，但已不是 1024×4MB 全量映射”），并保留“常量定义在 `os/arch/src/lib.rs`”的事实（`BOOT_IDENTITY_MAP_END`，`os/arch/src/lib.rs:217`）。
 - 置信度：高
-- 是否需源码核实：是，已核（当前源码 + git 3016acbfc/4f2e9e786）
+- 是否需源码核实：是，已核（当前源码 + git 3016acbfc/47dc589d2）
 - 若我错了：若仓库另有未提交/未跟踪的 lib.rs 变体包含该注释，则本条撤回；当前工作树 `git status` 未显示 `os/kernel/src/lib.rs` 被修改。
 - 对应判据：review-doc-checklist §2.2（代码引用验证）、§2.4（文档与代码一致性，P1）、Sync-2
 

@@ -1,7 +1,7 @@
 # P-REFUTE · 01-boot-shim-bootstrap · round36
 
 > 立场：只尝试推翻文档的核心主张，不补新问题。以下每条都给出可落到源码/文档原句的证据。
-> 真值优先序按 `AGENTS.md`：Minix3 C 源码行为 > 设计契约 > Rust 实现 > 文档。本次以当前工作树（HEAD `e04e61cb5`）为准。
+> 真值优先序按 `AGENTS.md`：Minix3 C 源码行为 > 设计契约 > Rust 实现 > 文档。本次以当前工作树（HEAD `b5f8ff65b`）为准。
 
 ## CLAIM 01
 
@@ -46,13 +46,13 @@
   - 读结构体：`BootHandoffV1`（`:299-330`）确实已经没有 `user_sp`/`kern_stack_top`/`syscall_entry`/`startup_byte_len`；`size_of::<BootHandoffV1>() == 128` 的编译期断言在 `:435`。也就是说“v10 的布局”已在树上，但“v10 的版本号”没有。
   - 读接收侧：`handoff_v1_read.rs:107` 用 `!= BOOT_HANDOFF_V1_VERSION` 精确比较；由于双方都读到 9，版本门本身不会把旧 v9（160 B 信封）与当前 128 B 信封按版本区分——旧包会先在 `check_header` 的 `SIZE != size_of::<BootHandoffV1>()`（`:110-112`）处被拒，报的是 `BadEnvelopeSize`，不是 `UnsupportedVersion`。
   - 读文档自身：同一篇 §3.4.3 `:1713` 写“信封版本号（`BOOT_HANDOFF_V1_VERSION`，当前 9）”；§4.6 `:2892` 写“信封版本仍为 9”；而 §3.4.1 `:1625` 写“`BOOT_HANDOFF_V1_VERSION` 9 → 10”。三处互相冲突。
-  - 查提交历史：`git show 2a345f566` 的提交信息声称“版本 9→10”，但该提交的 diff 没有改 `BOOT_HANDOFF_V1_VERSION` 行；当前树的 blame 仍把它记在 `10ecd8ef4`（v9 引入）名下。没有构建脚本或 cfg 在编译期重写这个常量。
+  - 查提交历史：`git show 52110580f` 的提交信息声称“版本 9→10”，但该提交的 diff 没有改 `BOOT_HANDOFF_V1_VERSION` 行；当前树的 blame 仍把它记在 `10ecd8ef4`（v9 引入）名下。没有构建脚本或 cfg 在编译期重写这个常量。
 - 结果：阻断（P0-fact）。文档的“当前版本号是 10 / v9 与 v10 按版本互拒”不成立；而且文档内部对“当前是 9 还是 10”自相矛盾。布局是 v10、版本标签是 v9，这本身是代码与文档需要对齐的契约缺口。
 - 证据：
   - `os/libs/minix-boot/src/handoff_v1.rs:288,299-330,398-402,435,446-448`。
   - `os/libs/minix-boot/src/handoff_v1_read.rs:100-114`。
   - 文档原句：`01-boot-shim-bootstrap.md:1625`（9→10）、`:1713`（当前 9）、`:1744`（v10 删 startup）、`:2892`（信封版本仍为 9）。
-  - `git show 2a345f566 -- os/libs/minix-boot/src/handoff_v1.rs`：删字段/删分区，但 `BOOT_HANDOFF_V1_VERSION` 行未变。
+  - `git show 52110580f -- os/libs/minix-boot/src/handoff_v1.rs`：删字段/删分区，但 `BOOT_HANDOFF_V1_VERSION` 行未变。
 - 若我错了：若评审基准是提交信息里的“设计意图”而不是当前源码常量，则文档可被解释成“应然 v10”；但 `AGENTS.md` 的真值优先序把 Rust 实现排在文档之前，且本次任务明确按当前树核。若存在一个我未发现的构建期生成步骤把常量替换成 10（`grep -rn BOOT_HANDOFF_V1_VERSION os` 只看到普通 const 的读写），本条才可撤销。
 
 ## CLAIM 04
@@ -89,7 +89,7 @@
   - `os/kernel/src/lib.rs:1376-1393`（`Ok(()) | Err(PageTableError::AlreadyMapped) => {}`）。
   - `os/boot-shim/src/uefi_helpers.rs:990-1004`（保守栈窗口）。
   - 文档原句：`01-boot-shim-bootstrap.md:1919`（“只处理 1GB 大页”）、`:2927-2928`（“AlreadyMapped 只在槽位已是 1 GiB 叶”“三个架构的 2 MiB 路径都直接重写同一个叶并返回 Ok”）。
-- 若我错了：若文档说的“2 MiB 路径”指 `MockPaging::map_range` 或其他测试替身，而不是三个生产 `HugePages::map_huge` 实现，那它需要改写主语；但原句明写“三个架构”。若当前 HEAD 的 `map_huge` 是评审后才改的实现（HEAD 提交 `e04e61cb5` 恰好是 map_huge 引文同步提交），文档至少应在 §4.6 同步这次改动；我按当前树判定。
+- 若我错了：若文档说的“2 MiB 路径”指 `MockPaging::map_range` 或其他测试替身，而不是三个生产 `HugePages::map_huge` 实现，那它需要改写主语；但原句明写“三个架构”。若当前 HEAD 的 `map_huge` 是评审后才改的实现（HEAD 提交 `b5f8ff65b` 恰好是 map_huge 引文同步提交），文档至少应在 §4.6 同步这次改动；我按当前树判定。
 
 ## CLAIM 06
 

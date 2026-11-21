@@ -21,7 +21,7 @@
 - 严重度：P0
 - 问题：文档一处声称 wire 信封版本已升到 10、另一处写当前 9，而源码常量仍是 9；同一文件内自相矛盾，且与源码不符。
 - 影响：读者会按"v10 与 v9 精确比较、互相拒收"去设计或核对收发两侧；实际两侧都写 9，版本比较无法把"v10 布局（128 B、无 startup 分区）"与"旧 v9 布局（160 B、含 startup 分区）"分开——旧镜像与新镜像都会通过 `version == 9`，然后按错位偏移解码。这是跨镜像 ABI 的静默错读风险，不是单纯数字笔误。
-- 证据或推理：E1。`grep -n "BOOT_HANDOFF_V1_VERSION" os/libs/minix-boot/src/handoff_v1.rs` → `288:pub const BOOT_HANDOFF_V1_VERSION: u32 = 9;`；`git show 2a345f566:os/libs/minix-boot/src/handoff_v1.rs | grep -n "BOOT_HANDOFF_V1_VERSION: u32"` 同样输出 `= 9`（该提交标题写 "版本 9→10"，但常量未改）。`BootHandoffV1` 当前 18 个字段、`size_of` 断言 `<= ENVELOPE_CAP`，结构已是删掉 `user_sp`/`kern_stack_top`/`syscall_entry`/`startup_byte_len` 后的形状；`grep -rn "WIRE_STARTUP_CAP" os/` 只剩 `handoff_v1_read.rs:763` 一条悬空注释。也就是说布局已按 v10 改、版本常量仍停在 9。
+- 证据或推理：E1。`grep -n "BOOT_HANDOFF_V1_VERSION" os/libs/minix-boot/src/handoff_v1.rs` → `288:pub const BOOT_HANDOFF_V1_VERSION: u32 = 9;`；`git show 52110580f:os/libs/minix-boot/src/handoff_v1.rs | grep -n "BOOT_HANDOFF_V1_VERSION: u32"` 同样输出 `= 9`（该提交标题写 "版本 9→10"，但常量未改）。`BootHandoffV1` 当前 18 个字段、`size_of` 断言 `<= ENVELOPE_CAP`，结构已是删掉 `user_sp`/`kern_stack_top`/`syscall_entry`/`startup_byte_len` 后的形状；`grep -rn "WIRE_STARTUP_CAP" os/` 只剩 `handoff_v1_read.rs:763` 一条悬空注释。也就是说布局已按 v10 改、版本常量仍停在 9。
 - 最小修复：二者只能留一个真相。若 D-062 的升版是本轮应落地项：改 `os/libs/minix-boot/src/handoff_v1.rs` 的常量 9→10（并补一条"旧版本被拒"的负控重跑）；若只允许改文档：把第 1625 行改为"版本常量当前仍为 9（D-062 的 9→10 未落地）"，同步删除"v9 与 v10 互相拒收"，并把 §1.4/§3.4.1/§3.4.3 的 "v10" 标注改为"v10 设计（常量待升）"。随后重跑 `anchor-resolve.sh`、`doc-citation-check.py`。
 - 置信度：高
 - 是否需源码核实：是（已核实）
@@ -97,7 +97,7 @@
 - 严重度：P2
 - 问题：`user_sp` 在 v10（D-062）已从 `KernelInfo` 删除，因此"C 有、Rust 不再保留"的字段是 22 个；21 行台账没有 `user_sp`，"全部字段"的表述不成立。
 - 影响：这张表被定位为字段退场的完整台账；漏掉 `user_sp` 后，按表审计"每个 C 字段去哪了"会得到错误结论。`user_sp` 的去向只在 §3.4.1 的 v10 段与 §1.4 的栈顶表里出现，读者若以 §3.4.2 为台账会漏读。
-- 证据或推理：E1。`minix3/minix/include/minix/param.h:15-54` 的 `struct kinfo` 共 26 个字段；§3.4.2 列的 21 个不含 `user_sp`，而 `os/libs/minix-boot/src/kernel_info.rs:22-155` 的 `KernelInfo` 没有 `user_sp`；`git log` 的 D-062 提交（2a345f566）标题与 `handoff_v1_read.rs:69` 注释都写明 v10 删除 `user_sp`。
+- 证据或推理：E1。`minix3/minix/include/minix/param.h:15-54` 的 `struct kinfo` 共 26 个字段；§3.4.2 列的 21 个不含 `user_sp`，而 `os/libs/minix-boot/src/kernel_info.rs:22-155` 的 `KernelInfo` 没有 `user_sp`；`git log` 的 D-062 提交（52110580f）标题与 `handoff_v1_read.rs:69` 注释都写明 v10 删除 `user_sp`。
 - 最小修复：把"全部字段"改为"21 个（`user_sp` 另见 §3.4.1 的 v10 删除段）"，或在表中补一行 `user_sp | 删除（v10 / D-062）：每腿都填 `USER_STACK_TOP`，接收侧改读常量 | minix_types::USER_STACK_TOP`。
 - 置信度：高
 - 是否需源码核实：是（已核实）

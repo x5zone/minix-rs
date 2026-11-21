@@ -67,9 +67,9 @@
 | FACT-S4 | [CLOSED] implemented | §5.1 改为“解析/布局/缓冲区语义每个环节”，物理写入仍只由真机链证明 |
 | FACT-S5 | [CLOSED] implemented | §3.2 畸形输入限定为“非 `PT_LOAD` 走 continue，其余以 `Some(Err)` 浮出” |
 | FACT-OBS-01 | [CLOSED] implemented | §5.1 “三类畸形”改为“四类畸形”并列出四个 `ElfError` 变体 |
-| DESIGN-D2-07 | [CLOSED] implemented | 提交 `83e8cbb2b`：`jump_to_kmain` 删 `stack_top` 形参，三实现从 `kinfo.kern_stack_top()` 现算 |
-| DESIGN-D2-08 | [CLOSED] implemented | 提交 `ecfef0ae9`：删 `p_align`/`LoadSegment.align`/`HIGHER_HALF_CALLED`/`virtual_end` |
-| DESIGN-D2-09 | [CLOSED] implemented | 提交 `74ea87c44`：删 `KernelInfo`/`MemoryRegion`/`BootModule` 的 `repr(C)` |
+| DESIGN-D2-07 | [CLOSED] implemented | 提交 `8a519ca25`：`jump_to_kmain` 删 `stack_top` 形参，三实现从 `kinfo.kern_stack_top()` 现算 |
+| DESIGN-D2-08 | [CLOSED] implemented | 提交 `a57e998a8`：删 `p_align`/`LoadSegment.align`/`HIGHER_HALF_CALLED`/`virtual_end` |
+| DESIGN-D2-09 | [CLOSED] implemented | 提交 `dad5701c8`：删 `KernelInfo`/`MemoryRegion`/`BootModule` 的 `repr(C)` |
 
 ## R5 重写基线
 

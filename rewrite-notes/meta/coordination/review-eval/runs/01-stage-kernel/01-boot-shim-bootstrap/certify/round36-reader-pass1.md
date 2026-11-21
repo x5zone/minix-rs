@@ -1,6 +1,6 @@
 # R36 certify（读者面）
 
-- 基线：HEAD `1e3ebbf74`；文档 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 基线：HEAD `5ccd49968`；文档 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 修改点总数：16
 - 逐条：
   - READER-A-01：CLOSED — §3.4.3 现在写“**信封版本号**（`BOOT_HANDOFF_V1_VERSION`，当前 10）……本文出现的‘版本 8→9’与‘9→10’都是后者（‘wire 版本’是同一计数器的另一个叫法；7→8、8→9 与 9→10 都指它）”，§2.4.1 又把另一个计数器单独限定为“v9（`VmBootHandoff` 的 `VM_BOOT_HANDOFF_VERSION = 9`；它与 §3.4.3 的 arena 信封版本 `BOOT_HANDOFF_V1_VERSION` 是两个独立计数器）”。读者现在能判断当前信封版本是 10，且 §3.4.3 的版本枚举覆盖了正文出现的 7→8、8→9、9→10 三处，不再有“当前 9”的残句。

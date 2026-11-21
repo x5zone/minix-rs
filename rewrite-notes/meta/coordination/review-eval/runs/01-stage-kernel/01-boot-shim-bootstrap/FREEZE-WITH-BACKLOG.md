@@ -13,7 +13,7 @@
 - 关联代码：`os/` 下本篇引用的 kernel / kernel-image / boot-shim / minix-boot / minix-arch
 - 工作流版本：V3.1（`prompt/review-rules/review-evals.md`、`prompt/skill/review-loop.md`）
 - 轨迹：`rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/`
-- 基线：工作树（HEAD `3f0a466ed`；本轮改动未提交）
+- 基线：工作树（HEAD `66b6eff7e`；本轮改动未提交）
 
 ## 二、关闭证据
 

@@ -3,9 +3,9 @@
 - 冻结日期：2026-11-12
 - 工作流 edition：V3.3
 - 确认轮：R2（`轮型: confirmation`）
-- 冻结提交：`b00c44292`（R2 修复与轨迹提交）
+- 冻结提交：`88ac92c60`（R2 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
-- 文档行数：R2 冻结提交（b00c44292）时点 1393；R3 面板基线（c65a5f90e）时点 1396；R3 修复后 1396
+- 文档行数：R2 冻结提交（88ac92c60）时点 1393；R3 面板基线（c2ba58596）时点 1396；R3 修复后 1396
 - 文档 sha256：R2 冻结时点 `da85d6cf…`；R3 面板基线 `e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`；R3 修复后 `64659b6c…`（最终工作树实测）
 - 关联代码：`tools/doc-code-map.sh --check` 21/21 通过
 
@@ -20,7 +20,7 @@
 ## 轮次链
 
 - V1 旧 run 保留为历史段，不追溯改账。
-- R1（V3.3 full）：49 条收口，6 P0（memcpy 语义、kernel_may_alloc 承重、KERNEL_MAY_ALLOC 已删、Step 1 旧引文、pg_utils 双副本）；ROUND-CLOSED，提交 `1b1ea902f`。
+- R1（V3.3 full）：49 条收口，6 P0（memcpy 语义、kernel_may_alloc 承重、KERNEL_MAY_ALLOC 已删、Step 1 旧引文、pg_utils 双副本）；ROUND-CLOSED，提交 `7a506169b`。
 - R2（V3.3 confirmation）：43 条 survey + 5 条 certify；3 条 P0（bootstrap 字段已删、GsArea.user_rsp、Rust 无 IOAPIC 64 门）与 12 条读者 P1 全修；CONVERGED。
 
 ## 未解决事项（不阻断，已登记）
@@ -62,7 +62,7 @@
 用户要求对 D03 做完整 review。五角色（FACT、DESIGN-D2、READER A/B/C 独立）全量 survey：
 
 - 面板编号发现 22 条（含 FACT-04 面板自注撤回）：FACT 3(+1 撤回)、READER-A 1、READER-B 4、CERT 4、DESIGN-D2 9（其中 5 条自标 SUGGESTION 级）；「33 条」为含未编号 SUGG 段的聚合口径（reader-c 0 条 FINDING）。r6 补账按面板 ID 列明（见 defect-ledger FULL-2026-11-18 节）。
-- 6 条 P2 文档修复已提交（`26f42e25d`）；certify 抓到 4 条更细粒度 P2 也已修（`c65a5f90e`）。
+- 6 条 P2 文档修复已提交（`ebcf673dc`）；certify 抓到 4 条更细粒度 P2 也已修（`c2ba58596`）。
 - 1 条 arm64 代码注释残留（UNDEFINED 口径）登记 D03-design-batch。
 - 独立冷读 certify 最终 6/6 CLOSED（第 4 条 P2 残项修正后）。
 - 机械门：anchor 75/75、doc-code-map 21/21、structure/ref/style 全绿。
@@ -85,7 +85,7 @@
 ## citation 漂移修复（2026-11-21，用户指示的一行修复，append-only 追加）
 
 - **漂移**：`doc-citation-check.py` 报 `blocks=42 checked=31 failed=1`——块 §4.2 节选（文档 985-1002）行 `let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);` 缺调用括号，源码实为 `kernel_info.kern_stack_top()`（`os/kernel/src/lib.rs:2368`）。
-- **根因**：**I-31（`2a345f566`，2026-11-20 16:06）** 把 `KernelInfo` 的 `kern_stack_top` 从字段改为方法调用，落地在 **R3 确认轮的引文门之后**（R3 时点读数为 `checked=32 failed=0`，该读数当时为真）；文档引文未随 I-31 同步。另：原 `D03-citation-tool-batch`（工具只认 `//` 标注、42 个 `/* */` 块全跳过）已由 V3.5 的 `ce95ba0b3` 修复，本条正是工具修好后才暴露的**文档侧漂移**。
+- **根因**：**I-31（`52110580f`，2026-11-20 16:06）** 把 `KernelInfo` 的 `kern_stack_top` 从字段改为方法调用，落地在 **R3 确认轮的引文门之后**（R3 时点读数为 `checked=32 failed=0`，该读数当时为真）；文档引文未随 I-31 同步。另：原 `D03-citation-tool-batch`（工具只认 `//` 标注、42 个 `/* */` 块全跳过）已由 V3.5 的 `154e90392` 修复，本条正是工具修好后才暴露的**文档侧漂移**。
 - **修复**：文档 `:989` 一行补 `()`。修后 `doc-citation-check.py`：**`blocks=42 checked=32 failed=0 skipped=10`**。
 - **门复跑（修复后工作树）**：`anchor-resolve --check` 75/75（zero-def=0 / multi-def=0）；`doc-code-map --check` 21/21；`doc-ref-check --check` 通过；`doc-code-density-check --check` 承载门阻断项通过；`doc-style-lint --diff` error=0。
 - **新文档 sha256**：`1e6037125cf95a79ef940a94be6356243392ae1d8135c697595d0b1cfcb1a22f`（1396 行）。R3 修复后记录值 `64659b6c…` 自此被本行取代。

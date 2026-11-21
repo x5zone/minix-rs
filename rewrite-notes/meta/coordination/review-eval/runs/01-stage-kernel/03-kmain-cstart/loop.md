@@ -113,7 +113,7 @@
 - 轮型: full
 - edition: V3.3
 - schema: V3.3 from R1
-- 基线提交：`e5ca3bb55`（D02 FREEZE 之后）
+- 基线提交：`5eb951313`（D02 FREEZE 之后）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
 - 文档 sha256：`469727d74e1ec63c90720ffc81a0fb4804a50b108b22566791ff2b19bd8e11a2`
 - 行数：1382
@@ -184,7 +184,7 @@
 - 轮型: confirmation
 - edition: V3.3
 - schema: V3.3 from R1
-- 基线提交：`1b1ea902f`（R1 修复与轨迹提交之后）
+- 基线提交：`7a506169b`（R1 修复与轨迹提交之后）
 - 文档 sha256：`093de2311fb54746c3841dfbe7f17dbb97719a60cf86f1f304ca88b6c861faa7`
 - 行数：1384
 - 设计快照与关联代码同 R1；`doc-code-map` 21/21
@@ -257,7 +257,7 @@
 - 轮型: confirmation
 - edition: V3.4
 - schema: V3.4 from R3
-- 基线提交：`32d4fa164`（D02 收尾提交；本轮修复未提交时的工作树）
+- 基线提交：`4e7484323`（D02 收尾提交；本轮修复未提交时的工作树）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
 - 文档基线 sha256：`e54cad6907da01f4bd455e4b63712bda4896a1c92fe89ce8d4d04e227362344d`（R2 FREEZE 值，与面板启动时一致）
 - 行数：1396（修复后仍 1396）

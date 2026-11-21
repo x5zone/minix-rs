@@ -111,10 +111,10 @@
 | `rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md` | 1489 |
 | `rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md` | 411 |
 
-删除提交为 `b6c3654b8`。恢复任一文件：
+删除提交为 `64a71ec6a`。恢复任一文件：
 
 ```bash
-git show b6c3654b8^:<原路径> > <原路径>
+git show 64a71ec6a^:<原路径> > <原路径>
 ```
 
 临时备份 `tmp/todo-migration/` 在回归全绿后已删除；账本每条保留

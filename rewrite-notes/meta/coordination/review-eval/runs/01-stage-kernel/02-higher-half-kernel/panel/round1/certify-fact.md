@@ -8,7 +8,7 @@
 
 | 项 | 读数 | 复算命令 |
 |---|---|---|
-| 基线提交 | `5ac8bfa8f`（HEAD） | `git rev-parse HEAD` |
+| 基线提交 | `73a1b4a15`（HEAD） | `git rev-parse HEAD` |
 | 基线文档 sha256 | `2bb4a585597ffbd27cf4495292e2e85f026e1782b08fe5268426f374357e5485` | `git show HEAD:rewrite-notes/01-stage-kernel/02-higher-half-kernel.md \| sha256sum` |
 | 基线行数 | 1275 | `git show HEAD:... \| wc -l` |
 | 当前文档 sha256 | `5bb66c3e5e0e4d4be898551de4cca72814e72838c27a851960d0b593aac65600` | `sha256sum rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` |

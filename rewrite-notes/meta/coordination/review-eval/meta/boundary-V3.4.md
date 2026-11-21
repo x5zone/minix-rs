@@ -3,7 +3,7 @@
 - 日期：2026-11-18
 - 工作流版本：V3.4（MAJOR：D-055 两墙补账 + 防虚耗变更集）
 - 样本：`rewrite-notes/coordination/review-eval/traps/` 的 T01–T08
-- 执行方式：一个冷启动子 agent 只读样本、不读 `expected/`、不读 `boundary-V1.md`（防锚定）；独立判定在 `meta/boundary-V3.4-judging.md`，本文是它与 `expected/` 的对账（judging 在 `2d82d2b11` 时点执行；对账归档在 `13fe44d6e`，两处之间仅并发会话的 03/04 回归提交，与 traps 无交集）
+- 执行方式：一个冷启动子 agent 只读样本、不读 `expected/`、不读 `boundary-V1.md`（防锚定）；独立判定在 `meta/boundary-V3.4-judging.md`，本文是它与 `expected/` 的对账（judging 在 `44145d3dc` 时点执行；对账归档在 `ff3ea1844`，两处之间仅并发会话的 03/04 回归提交，与 traps 无交集）
 - 上次读数：`meta/boundary-V1.md`（2026-11-07）
 
 ## 一、逐项对账

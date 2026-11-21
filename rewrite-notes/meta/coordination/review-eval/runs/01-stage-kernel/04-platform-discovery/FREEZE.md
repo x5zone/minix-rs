@@ -3,7 +3,7 @@
 - 冻结日期：2026-11-12
 - 工作流 edition：V3.3
 - 确认轮：R2（`轮型: confirmation`）
-- 冻结提交：`bc232e627`
+- 冻结提交：`f9582d655`
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
 - 行数：2735（R2 时点）；R3 时点 2737
 - 文档 sha256：`90179b7b4d7a4428fe2a1591502aaf64b3ec4cd98947617d97f126529ea3545d`（R3 复核后；R2 原值 `ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`）

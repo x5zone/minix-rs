@@ -236,10 +236,10 @@
 
 | 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|---|---|
-| REG-D03-READER-A | REG-D03-READER-A-01..08 | REG2 | P-READER-A | P1×1/P2/P3 | 读者 | ① | 已修（含 §4.7 出口矛盾、§3.6 未定义 Phase 名、§2.5 中间态论证——均为合并角色漏报） | `13fe44d6e`（03 部分） | FREEZE 11-17 回归节 |
-| REG-D03-READER-B | REG-D03-READER-B-01..05 | REG2 | P-READER-B | P2/P3 | 读者 | ① | 已修 | `13fe44d6e` | 同上 |
-| REG-D03-READER-C | REG-D03-READER-C-01、02、03、05、06（无 C-04） | REG2 | P-READER-C | P2×4/P3×1 | 读者 | ① | 已修 | `13fe44d6e` | 同上 |
-| REG-D03-CERT | REG-D03-CERT-01..07（第 1 轮） | REG2 | certify | P2 | 同步 | ① | 独立冷读三轮 7/3/1 → 按 §4.0b 记 BLOCKED + STUCK-REPORT → 两个复发根因结构性重写（§2.5 拆两段、§3.6 Phase 表七行）→ rewrite-verify PASS | `13fe44d6e`；`STUCK-REPORT.md`；`panel/regress/rewrite-verify.md` | 重写验证 = PASS |
+| REG-D03-READER-A | REG-D03-READER-A-01..08 | REG2 | P-READER-A | P1×1/P2/P3 | 读者 | ① | 已修（含 §4.7 出口矛盾、§3.6 未定义 Phase 名、§2.5 中间态论证——均为合并角色漏报） | `ff3ea1844`（03 部分） | FREEZE 11-17 回归节 |
+| REG-D03-READER-B | REG-D03-READER-B-01..05 | REG2 | P-READER-B | P2/P3 | 读者 | ① | 已修 | `ff3ea1844` | 同上 |
+| REG-D03-READER-C | REG-D03-READER-C-01、02、03、05、06（无 C-04） | REG2 | P-READER-C | P2×4/P3×1 | 读者 | ① | 已修 | `ff3ea1844` | 同上 |
+| REG-D03-CERT | REG-D03-CERT-01..07（第 1 轮） | REG2 | certify | P2 | 同步 | ① | 独立冷读三轮 7/3/1 → 按 §4.0b 记 BLOCKED + STUCK-REPORT → 两个复发根因结构性重写（§2.5 拆两段、§3.6 Phase 表七行）→ rewrite-verify PASS | `ff3ea1844`；`STUCK-REPORT.md`；`panel/regress/rewrite-verify.md` | 重写验证 = PASS |
 | REG-D03-CERT2 | REG-D03-CERT2-01..03（第 2 轮） | REG2 | certify | P2 | 同步 | ① | 同上（同批结构重写覆盖） | 同上 | 同上 |
 | REG-D03-CERT3 | REG-D03-CERT3-01（第 3 轮） | REG2 | certify | P2 | 同步 | ① | 同上 | 同上 | 同上 |
 | REG2-SUGG | READER-A S01..S05、B/C 聚合 SUGG 段（31 条口径含聚合） | REG2 | 各角色 | — | 建议 | SUGG | 入 suggestions，不阻断 | `panel/regress/*.md` | — |
@@ -248,13 +248,13 @@
 
 | 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 |---|---|---|---|---|---|---|---|---|---|
-| RD5F-FACT | RD5F-FACT-01、02、03；FACT-04 为面板自注撤回 | FULL | P-FACT | P2 | 事实 | ① | 已修 | `26f42e25d`（锚点偏移/测试覆盖口径/C 术语等 6 主题） | FREEZE 完整 review 节：anchor 75/75 |
-| RD5F-READER-A | RD5F-READER-A-01 | FULL | P-READER-A | P3 | 读者 | ① | 已修 | `26f42e25d` | 同上 |
-| RD5F-READER-B | RD5F-READER-B-01..04 | FULL | P-READER-B | P2/P3 | 读者 | ① | 已修 | `26f42e25d` | 同上 |
-| RD5F-CERT | RD5F-CERT-01..04（certify 更细粒度残项） | FULL | certify | P2 | 同步 | ① | 已修；独立冷读 certify 最终 6/6 CLOSED | `c65a5f90e` | FREEZE：certify 6/6 CLOSED |
-| RD5F-DESIGN-D2-01 | [MODERN] §3.7 括注 is_trap 与重写路径不符 | FULL | P-DESIGN-D2 | P2/P3 | 设计 | ① | 已修（文档侧） | `26f42e25d`（括注歧义主题） | FREEZE |
+| RD5F-FACT | RD5F-FACT-01、02、03；FACT-04 为面板自注撤回 | FULL | P-FACT | P2 | 事实 | ① | 已修 | `ebcf673dc`（锚点偏移/测试覆盖口径/C 术语等 6 主题） | FREEZE 完整 review 节：anchor 75/75 |
+| RD5F-READER-A | RD5F-READER-A-01 | FULL | P-READER-A | P3 | 读者 | ① | 已修 | `ebcf673dc` | 同上 |
+| RD5F-READER-B | RD5F-READER-B-01..04 | FULL | P-READER-B | P2/P3 | 读者 | ① | 已修 | `ebcf673dc` | 同上 |
+| RD5F-CERT | RD5F-CERT-01..04（certify 更细粒度残项） | FULL | certify | P2 | 同步 | ① | 已修；独立冷读 certify 最终 6/6 CLOSED | `c2ba58596` | FREEZE：certify 6/6 CLOSED |
+| RD5F-DESIGN-D2-01 | [MODERN] §3.7 括注 is_trap 与重写路径不符 | FULL | P-DESIGN-D2 | P2/P3 | 设计 | ① | 已修（文档侧） | `ebcf673dc`（括注歧义主题） | FREEZE |
 | RD5F-DESIGN-D2-02 | [DEL] arm64 模块注释 UNDEFINED 残留 | FULL | P-DESIGN-D2 | P2 | 设计 | ② | 登记 D03-design-batch（FREEZE 明载；D-053 顺延）——V3.2 下 ② 须相邻/批准，此处为登记既有批次的存量路径，r6 注记：严格口径应在 D-053 行追加该项 | `OPEN-DEBT.md`（D03-design-batch 行）；FREEZE 完整 review 节 | — |
-| RD5F-DESIGN-D2-03/04 | [DEL] x86 LDT 尾注失实；trap_entry 15 个零消费者向量名 | FULL | P-DESIGN-D2 | P2 | 设计 | ①/SUGG | 03 已修（26f42e25d「LDT 残留」主题）；04（死导出）批次级处理 | `26f42e25d` | FREEZE |
+| RD5F-DESIGN-D2-03/04 | [DEL] x86 LDT 尾注失实；trap_entry 15 个零消费者向量名 | FULL | P-DESIGN-D2 | P2 | 设计 | ①/SUGG | 03 已修（ebcf673dc「LDT 残留」主题）；04（死导出）批次级处理 | `ebcf673dc` | FREEZE |
 | RD5F-DESIGN-D2-05、07、08、09 | [DEL] cpu_count 只写；kmain 临时诊断块含无消费者 MSR 读；errcode 布尔列；§3.2 锚点格式 | FULL | P-DESIGN-D2 | P3 | 设计 | SUGG | 入 suggestions，不阻断 | `panel/full/design-d2.md` | — |
 | RD5F-DESIGN-D2-06 | [DEL] Privilege/PrivilegeLevel 接口族无运行期消费者，去留属契约裁决 | FULL | P-DESIGN-D2 | P3 | 设计 | SUGG | 待用户亲裁（挂账，与 D-050/051/052 同类）；不阻断 | `panel/full/design-d2.md`；DECISIONS.md | — |
 | RD5F-SUGG | 各文件聚合 SUGG 段（3 条口径） | FULL | 各角色 | — | 建议 | SUGG | 入 suggestions | `panel/full/*.md` | — |

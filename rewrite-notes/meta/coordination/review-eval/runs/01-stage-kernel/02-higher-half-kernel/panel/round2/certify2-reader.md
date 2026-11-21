@@ -3,7 +3,7 @@
 ## 取证、范围与写入说明
 
 - 文档：`/home/xzhao/github/minix-rs/rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`，1280 行；`sha256sum` 输出 `06e4987f53a3d51f1e92bb2bff6af247cc30eeffbf3077307bfb2698999b1bfe`，与任务给的前缀 `06e4987f` 一致。
-- 工作区相对 HEAD `73e805b01` 为已修改：`git diff -U6 --stat` 为 21 插入 / 21 删除。逐段核对用的是工作区当前文本，不是 HEAD 版本。
+- 工作区相对 HEAD `cdbfb3cf6` 为已修改：`git diff -U6 --stat` 为 21 插入 / 21 删除。逐段核对用的是工作区当前文本，不是 HEAD 版本。
 - 只读范围：任务指定的六个核对点及其邻句（第 8、126、207、261–269、303–322、531 行）。为解析同篇交叉引用，另查看了 §1.1 的三列图与第 22 行（36–44 行）、§3.1 的形态登记表与生产交接段（356–373 行）、§4.2 的逐段规则（868 行）、§4.3 的第三种形态（990 行）、§5.2 的 PC 段（1139 行）。未读全文；未读 Rust/C 源码、`expected/` 与本轮其他角色的独立评审。
 - 范围说明：为确认“第 2 次确认”的基线，我读了同目录上一份 `certify-reader.md`（其取证 sha 为 `f2be56a4`）。它不是其他角色的独立面板，但若把“其他面板”从严解释为包括同角色上一稿，这一条超出严格只读范围，特此标注。本轮六项判定均以当前文本与同篇交叉引用复核，未沿用上一稿结论。
 - 读者画像：`/home/xzhao/github/minix-rs/tmp/review-eval/01-stage-kernel/02-higher-half-kernel/reader-profile.md`。目标读者懂分页、链接与装载，Rust 读到 `enum`/`match`/`trait`/内联汇编大意即可；不提供源码与其他文档。

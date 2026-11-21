@@ -1,8 +1,8 @@
 # D03 回归审查 —— 03-kmain-cstart（FREEZE 后）
 
 - 审查日期：2026-11-13
-- 当前 HEAD：`a4afb4927`
-- 冻结提交：`b00c44292`（R2 确认轮收口）
+- 当前 HEAD：`d6c37bce0`
+- 冻结提交：`88ac92c60`（R2 确认轮收口）
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`
 - 台账：`rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/defect-ledger.md`
 - 范围：文档全文、FREEZE、R2 台账、`tools/doc-code-map.sh` 列出的 21 个文件与 `minix3/` 下的 C 源
@@ -20,7 +20,7 @@ FAIL 的依据不是文档被改过（哈希与 FREEZE 一致），而是抽样�
 | anchor | 75/75 | `bash tools/anchor-resolve.sh --check <doc>` → `anchors=75 resolved=75 zero-def=0 multi-def=0` | 一致 |
 | 内部引用 | structure/ref 通过 | `bash tools/doc-ref-check.sh --check <doc>` → 内部章节引用均可解析 | 一致 |
 | R2 `--round` 门 | PASS（11 PASS / 1 WARN / 0 FAIL） | `python3 -I tools/eval-trace-check.py <run-dir> --round R2` → 同一分布，`结论: PASS`，exit 0 | 一致 |
-| 冻结后代码改动 | 无 | `git diff --stat b00c44292..HEAD` 只含 `rewrite-notes/` 的文档、FREEZE、台账、metrics；无 `os/` 改动 | 一致 |
+| 冻结后代码改动 | 无 | `git diff --stat 88ac92c60..HEAD` 只含 `rewrite-notes/` 的文档、FREEZE、台账、metrics；无 `os/` 改动 | 一致 |
 
 R2 的唯一 WARN 是 `D03-design-batch` 的已批准延期（D-053）；`DECISIONS.md` 第 135 行有判决账行，`OPEN-DEBT.md` 有对应条目。WARN 不是回归。
 
@@ -96,7 +96,7 @@ R2 的唯一 WARN 是 `D03-design-batch` 的已批准延期（D-053）；`DECISI
 
 - 位置：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md:1346`（§6.2 第四组，GDB 命令块）。
 - 证据：该行写 `(gdb) finish  # 停在调用者（bsp_finish_booting 返回后）——IDT 的装载在函数体后半段`。生产内核里 `init_protection` 的唯一调用点是 `os/kernel/src/lib.rs:1784`，位于 `kmain`（`:1673`）的 Phase B 内；`bsp_finish_booting` 定义在 `:3806`，不调用 `init_protection`。`finish` 停下的调用者是 `kmain`，不是 `bsp_finish_booting`。
-- 来历：该括号是 RD3-R2-30（P1，“`finish` 写成‘到函数返回前’，实际停在调用者”）的修复产物，提交 `70e6f6127` 把旧句改为“停在调用者（bsp_finish_booting 返回后）”；“停在调用者”改对了，调用者名字写错了。
+- 来历：该括号是 RD3-R2-30（P1，“`finish` 写成‘到函数返回前’，实际停在调用者”）的修复产物，提交 `193707da8` 把旧句改为“停在调用者（bsp_finish_booting 返回后）”；“停在调用者”改对了，调用者名字写错了。
 - 影响：§6.2 的定位是“可复制命令与预期输出”。读者按注释预期自己回到 `bsp_finish_booting`，实际在 `kmain` 的 Phase B；后续读表寄存器时对“当前处在启动序列哪一段”的判断会偏移。命令本身仍可执行。
 - 最小修复：把括号改成“停在调用者（`kmain` 的 Phase B）”，或改成“停在调用者（`kmain`，`init_protection` 的调用点）”；后半句“IDT 的装载在函数体后半段”保留。
 
@@ -114,12 +114,12 @@ R2 的唯一 WARN 是 `D03-design-batch` 的已批准延期（D-053）；`DECISI
 # D03 回归审查（R3 确认轮后）
 
 - 审查日期：2026-11-20
-- 基线提交：`90acfab01`（`git rev-parse --short HEAD`；`git status --porcelain` 对本文档与 run 目录无未提交改动，另有 3 个无关未跟踪文件）
-- 冻结提交：`90acfab01`（与 HEAD 同一提交，即 R3 V3.4 确认轮收口提交）
+- 基线提交：`7e5f8ba5d`（`git rev-parse --short HEAD`；`git status --porcelain` 对本文档与 run 目录无未提交改动，另有 3 个无关未跟踪文件）
+- 冻结提交：`7e5f8ba5d`（与 HEAD 同一提交，即 R3 V3.4 确认轮收口提交）
 - 冻结记录：`FREEZE.md` 的 `## R3 确认轮（V3.4；D-066 授权的重开确认）` 节
 - **结论：FAIL**
 
-FAIL 定性：R3 的实质核验全部通过——8 处修改点在最终树上逐 hunk 在位（`git diff c65a5f90e 90acfab01` 恰 10 hunk，+10/-10）、六门读数与 FREEZE 逐字一致、台账逐 ID 聚合与 metrics 完全吻合、certify 回执的 8 个行号锚在最终文档逐字在位、判决链（D-066）与制品链完整。不一致集中在冻结记录的指纹与历史标注层，共 3 条，逐条列于 §1。
+FAIL 定性：R3 的实质核验全部通过——8 处修改点在最终树上逐 hunk 在位（`git diff c2ba58596 7e5f8ba5d` 恰 10 hunk，+10/-10）、六门读数与 FREEZE 逐字一致、台账逐 ID 聚合与 metrics 完全吻合、certify 回执的 8 个行号锚在最终文档逐字在位、判决链（D-066）与制品链完整。不一致集中在冻结记录的指纹与历史标注层，共 3 条，逐条列于 §1。
 
 ## 1. FREEZE 记录复核（表）
 
@@ -143,8 +143,8 @@ FAIL 定性：R3 的实质核验全部通过——8 处修改点在最终树上�
 
 **不一致项逐条列出（FAIL 依据）：**
 
-1. **文档 sha256 指纹失实（§1 表第 2 行）。** `FREEZE.md` 头部记「文档 sha256：`42646faa93f43007…`（R3 复核后；R2 原值 `e54cad69…`）」。实测最终树与冻结提交 `90acfab01` 的值为 `64659b6c1a9bb4579979cf04e21e2bf63fc1751359bc79f2e2ae6c5d92a3160f`。对该文档全部 32 个提交版本逐一算 sha（`git log --format=%h -- <doc>` 循环 `git show <c>:<doc> | sha256sum`），无任何提交等于 `42646faa`；它也不是 run 目录 7 个制品中任何一个的 sha256。即该记录值在仓库内不可追溯：要么指纹误录，要么「R3 复核后」与提交 `90acfab01` 之间文档又被一次未记账的改动。内容未丢失的旁证：行数同为 1396；certify 回执引用的 8 个行号锚（L188/535/714/832/942/988/1235/1279）在最终文档逐字在位；diff 恰为 10 hunk 与 8 处修改点对应。
-2. **历史标注口径错位。** FREEZE 头部「文档行数：1396（R2 时点）」与「R2 原值 `e54cad69…`」：实测 R2 冻结提交 `b00c44292` 的文档是 1393 行 / `da85d6cf…`（`git show b00c44292:<doc> | wc -l` = 1393，`… | sha256sum | cut -c1-16` = da85d6cfedbce7f7）；`e54cad69`/1396 行是 `c65a5f90e`（2026-11-18 完整 review 收口、R3 基线）的值，而 FREEZE 自身的「完整 review（2026-11-18）」节也称「最终文档 sha256 `e54cad69…`」。同一指纹在 FREEZE 内被标成两个时代，R2 时点的行数/指纹标注不实。
+1. **文档 sha256 指纹失实（§1 表第 2 行）。** `FREEZE.md` 头部记「文档 sha256：`42646faa93f43007…`（R3 复核后；R2 原值 `e54cad69…`）」。实测最终树与冻结提交 `7e5f8ba5d` 的值为 `64659b6c1a9bb4579979cf04e21e2bf63fc1751359bc79f2e2ae6c5d92a3160f`。对该文档全部 32 个提交版本逐一算 sha（`git log --format=%h -- <doc>` 循环 `git show <c>:<doc> | sha256sum`），无任何提交等于 `42646faa`；它也不是 run 目录 7 个制品中任何一个的 sha256。即该记录值在仓库内不可追溯：要么指纹误录，要么「R3 复核后」与提交 `7e5f8ba5d` 之间文档又被一次未记账的改动。内容未丢失的旁证：行数同为 1396；certify 回执引用的 8 个行号锚（L188/535/714/832/942/988/1235/1279）在最终文档逐字在位；diff 恰为 10 hunk 与 8 处修改点对应。
+2. **历史标注口径错位。** FREEZE 头部「文档行数：1396（R2 时点）」与「R2 原值 `e54cad69…`」：实测 R2 冻结提交 `88ac92c60` 的文档是 1393 行 / `da85d6cf…`（`git show 88ac92c60:<doc> | wc -l` = 1393，`… | sha256sum | cut -c1-16` = da85d6cfedbce7f7）；`e54cad69`/1396 行是 `c2ba58596`（2026-11-18 完整 review 收口、R3 基线）的值，而 FREEZE 自身的「完整 review（2026-11-18）」节也称「最终文档 sha256 `e54cad69…`」。同一指纹在 FREEZE 内被标成两个时代，R2 时点的行数/指纹标注不实。
 3. **台账 RD-R3-03 处置格「共 9 个门」与实况不符，且多处处置格截断。** 代码实况是 8 个 trap-gate 死写点：`sed -n '198,260p' os/arch/src/x86_64/trap_entry.rs | grep -cE 'is_trap=true|is_trap: true|\btrue\b'` = 8，向量 0、1、3、4、32、33、34、35；`OPEN-DEBT.md` 写「[DEL] init() 的 8 个 trap gate 死写点」，doc §3.7（L942）写「先把 8 个异常/软中断门写成 trap gate」——仅台账该格写 9，且该格句中断在「整条重写；C 」，RD-R3-04（断在「VirBytes::n 」）、RD-R3-05/06/07/10/11/24/25 等处置格同样中途截断。延期处置本身（② → R3-design-batch → D-066）成立，但处置正文不可完整复读。
 
 ## 2. 轨迹门与制品链
@@ -203,7 +203,7 @@ FAIL 定性：R3 的实质核验全部通过——8 处修改点在最终树上�
 | # | 审计发现 | 处置 | 复验 |
 |---|---|---|---|
 | 1 | FREEZE 记 R3 修复后 sha `42646faa…`，最终树实为 `64659b6c…`；`42646faa` 在任何提交里都不存在 | 根因：主 agent 在算 sha 之后又改了 §4.2 引文标注（嵌套括号导致 citation 门 SKIP+1），FREEZE 沿用旧值。改为 `64659b6c…`（最终工作树实测） | `sha256sum` → `64659b6c…`，与 FREEZE 一致 |
-| 2 | 「1396（R2 时点）」「R2 原值 e54cad69」错位：R2 冻结提交实为 1393/`da85d6cf`，`e54cad69`/1396 是 R3 面板基线 | 三个时点分行如实标注（R2 冻结 da85d6cf/1393 → R3 基线 e54cad69/1396 → R3 修复后 64659b6c/1396） | `git show b00c44292:...` 行数与 sha 由审计者实测；FREEZE 文本已改 |
+| 2 | 「1396（R2 时点）」「R2 原值 e54cad69」错位：R2 冻结提交实为 1393/`da85d6cf`，`e54cad69`/1396 是 R3 面板基线 | 三个时点分行如实标注（R2 冻结 da85d6cf/1393 → R3 基线 e54cad69/1396 → R3 修复后 64659b6c/1396） | `git show 88ac92c60:...` 行数与 sha 由审计者实测；FREEZE 文本已改 |
 | 3 | 台账 RD-R3-03 写「共 9 个门」，代码实况 8 个 | 改「8 个门」（与 doc L942、OPEN-DEBT 一致） | `grep -c "8 个门" defect-ledger.md` → 1；代码 `trap_entry.rs` 的 init 内 `set_gate(...,true)` 8 处 |
 
 补修后实测：`--round R1/R2/R3` 三轮 PASS；anchor 75/75、citation `checked=32 failed=0`、panel-index 6 文件哈希一致。

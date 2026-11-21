@@ -2,8 +2,8 @@
 
 - **结论：PASS**
 - 审查日期：2026-11-13
-- 当前 HEAD：`a4afb4927`
-- 冻结记录：同目录 `FREEZE.md`（冻结提交 `5c7134fbd`，确认轮 R34，工作流 edition V3.3）
+- 当前 HEAD：`d6c37bce0`
+- 冻结记录：同目录 `FREEZE.md`（冻结提交 `7dfa2c21e`，确认轮 R34，工作流 edition V3.3）
 - 审查方式：只读复核；除本文件外未修改仓库任何文件
 
 ## 1. FREEZE 记录复核
@@ -39,7 +39,7 @@ $ bash tools/anchor-resolve.sh --check rewrite-notes/01-stage-kernel/01-boot-shi
 anchors=105 resolved=105 zero-def=0 multi-def=0
 ```
 
-代码基线核对：`git diff --stat 5c7134fbd..HEAD -- os/` 输出为空，冻结后到当前 HEAD 之间 Rust 代码没有任何改动；同一区间的文档改动只涉及后续篇目（`02-higher-half-kernel.md`、`03-kmain-cstart.md`、`04-platform-discovery.md`）与评审台账，不触碰本篇。
+代码基线核对：`git diff --stat 7dfa2c21e..HEAD -- os/` 输出为空，冻结后到当前 HEAD 之间 Rust 代码没有任何改动；同一区间的文档改动只涉及后续篇目（`02-higher-half-kernel.md`、`03-kmain-cstart.md`、`04-platform-discovery.md`）与评审台账，不触碰本篇。
 
 ## 2. 抽样复验（10 条已修项）
 
@@ -111,13 +111,13 @@ test result: ok. 866 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out
 - **同 agent 复核**：本次审查与冻结轮的面板、certify 使用同一模型。抽样命令与七道门全部重放，但没有做跨模型独立复核；同一模型对同一段文字的系统性误读无法由本方法发现。
 - **未运行真机链**：QEMU 三架构引导链没有重跑，`FREEZE.md` 也明确本轮未跑（不触 arch/boot 行为门）。C 侧行为核对是源码直读（`minix3/`），没有编译或运行 Minix3。
 - **宿主测试范围**：只跑了默认 `mock` 形态的 `cargo test -p minix-kernel --features mock`、`cargo test -p minix-boot` 与一个 `boot-shim --lib` 计数；跨架构镜像构建没有重跑。
-- **行号漂移**：本文件引用的文档行号与源码行号都是 2026-11-13、HEAD `a4afb4927` 的实测值。冻结文档在同轮后续编辑中发生过行号移动，不能拿本文件的数字去反推历史台账的记录时刻。
+- **行号漂移**：本文件引用的文档行号与源码行号都是 2026-11-13、HEAD `d6c37bce0` 的实测值。冻结文档在同轮后续编辑中发生过行号移动，不能拿本文件的数字去反推历史台账的记录时刻。
 - **结论含义**：`PASS` 表示“确认轮口径下没有 open 项、抽样复验与关键事实均未回退”，不是“零未知缺陷保证”。出现新的 P0/P1 事实或行为缺陷证据时仍应重开。
 
 # D01 回归审查（R35 确认轮后）
 
 - 结论：FAIL
-- 审查日期基线：2026-11-19，HEAD `2e82208e2`
+- 审查日期基线：2026-11-19，HEAD `a0261fdd1`
 - 审查方式：只读复核；除本文件外未修改仓库任何文件
 - 摘要：文档基线、六门、R35/R31/R34 轨迹门与制品存在性全部一致；FAIL 由 5 项轨迹内部不一致触发（`loop.md` 28 根因数与 `metrics.md`/台账 78 的矛盾、`自引入: 2` 的 origin 全为 R35、7 条设计 P3 不在 `OPEN-DEBT` 行、RD-R35-06 复验差一行、`certify 新准入 = 0` 无法独立复算）。
 
@@ -125,11 +125,11 @@ test result: ok. 866 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out
 
 | 复核项 | FREEZE 记录 | 本次实测 | 结论 |
 |---|---|---|---|
-| 审查基线 HEAD | — | `git rev-parse --short HEAD` → `2e82208e2` | 一致 |
+| 审查基线 HEAD | — | `git rev-parse --short HEAD` → `a0261fdd1` | 一致 |
 | 文档 sha256（R35） | `1a71cb515d29db66735255a362f1804369c3d5854ce29185a615f57f3b4d68d7` | `sha256sum rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 同值 | 一致 |
 | 文档行数（R35） | 3582 | `wc -l` → `3582` | 一致 |
-| R34 历史 sha256 / 行数 | `3284d47a7f21529626e7a7b8933aa91a37c0501d4abd56244e45b3d503145b97` / 3579 | `git show 5c7134fbd:rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 接 `sha256sum` → 同值；接 `wc -l` → `3579` | 一致 |
-| 冻结提交 | `5c7134fbd` | `git cat-file -t 5c7134fbd` → `commit` | 一致 |
+| R34 历史 sha256 / 行数 | `3284d47a7f21529626e7a7b8933aa91a37c0501d4abd56244e45b3d503145b97` / 3579 | `git show 7dfa2c21e:rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 接 `sha256sum` → 同值；接 `wc -l` → `3579` | 一致 |
+| 冻结提交 | `7dfa2c21e` | `git cat-file -t 7dfa2c21e` → `commit` | 一致 |
 | 关联代码 | `doc-code-map.sh --check` 54/54 | `（共 54 个文件；存在性 54/54 通过）` | 一致 |
 | 面板计数 | FINDING 35 / SUGGESTION 37 / CLAIM 6 | `panel/round35/INDEX.md`：4+9+13+4+2+3 = 35；2+1+14+9+11 = 37；6 | 一致 |
 | 严重度 | 无 P0，2 条 P1 | 台账 78 行：P1=2、P2=16、P3=60，P0=0 | 一致 |
@@ -203,7 +203,7 @@ $ ls "$RUN/certify"
 round31-backfill-coldread.md  round35-fact.md  round35-reader.md
 $ ls prompt/EXECUTE-D01-D06-CONVERGENCE.md
 prompt/EXECUTE-D01-D06-CONVERGENCE.md
-$ git cat-file -t 562b9fe6e
+$ git cat-file -t 7b3c82e0b
 commit
 ```
 
@@ -367,7 +367,7 @@ $ awk 'NR>=63 && NR<=85 {print NR": "$0}' minix3/minix/kernel/arch/i386/pg_utils
 - **同 agent 复核**：本次审查与冻结轮的面板、certify 使用同一模型，没有跨模型独立复核；同一模型对同一段记录的系统性误读无法由本方法发现。
 - **未跑行为门**：没有重跑 QEMU、`cargo test` 或三架构构建；本轮审查对象是冻结记录/轨迹/worktree 的一致性，不是文档正文的再评审，也不是行为回归。
 - **未重新发现文档缺陷**：本次没有对文档正文作新的 P0/P1 判定；所有 FAIL 项都是记录一致性（计数、origin、指针、回执）问题。文档层基线、六门与制品存在性均与 FREEZE 一致。
-- **行号时效**：本文件引用的行号是 2026-11-19、HEAD `2e82208e2` 的实测值；后续编辑会使台账里的 path:line 漂移，RD-R35-06 的 2584/2583 之差就是这类漂移的一个实例。
+- **行号时效**：本文件引用的行号是 2026-11-19、HEAD `a0261fdd1` 的实测值；后续编辑会使台账里的 path:line 漂移，RD-R35-06 的 2584/2583 之差就是这类漂移的一个实例。
 - **无法独立复算的两项**：`certify 新准入 = 0` 没有回执字段或台账列可核；`自引入 = 2` 与 origin 列不一致，按 §4.0c 无法从台账复算出 78 个新准入。`未闭环 = 0` 可在处置类计数与工具口径复算，但不能把 7 条设计 P3 逐行复算到 `OPEN-DEBT` 行。
 - **冷启动派发不可验证**：两份 certify 回执的文件时间（21:32、21:39）晚于面板文件，但“本轮新派发的冷启动子 agent”是过程声明，文件内容本身不能证明；本次只核回执内容与计数。
 - **结论边界**：若只审 `FREEZE.md` 的文档层断言（sha、行数、六门、制品存在性），全部一致；本次 FAIL 的对象是包含 `loop.md`、`metrics.md`、`defect-ledger.md` 的冻结轨迹包。轨迹包内的 28/78 矛盾与 origin 矛盾必须先消解，才能把 R35 的 `CONVERGED` 作为可复核结论接受。
@@ -375,7 +375,7 @@ $ awk 'NR>=63 && NR<=85 {print NR": "$0}' minix3/minix/kernel/arch/i386/pg_utils
 
 ## R35 回归审计的补修记录（主 agent，append-only）
 
-上面这一节是独立审计者的原始结论（FAIL，5 项轨迹不一致）。按 §4h「P2 及以下当场修复 + 回归节记录」，5 项已全部处置，提交 `94a254231`：
+上面这一节是独立审计者的原始结论（FAIL，5 项轨迹不一致）。按 §4h「P2 及以下当场修复 + 回归节记录」，5 项已全部处置，提交 `35113c4cf`：
 
 | # | 审计发现 | 处置 | 复验 |
 |---|---|---|---|
@@ -394,7 +394,7 @@ $ awk 'NR>=63 && NR<=85 {print NR": "$0}' minix3/minix/kernel/arch/i386/pg_utils
 - 首轮 PASS 7 项 / FAIL 2 项（记录一致性）：
   - FAIL-4：ledger 的 store 调用点与 higher-half 证据串不可按原文重放（文档实际写「生产路径有两个」「kern_virt_base > u32::MAX」）；已改证据串并复跑。
   - FAIL-9：loop 的 re-litigation/B-05/06/08 分流、certify 基线、SUGGESTION 33 vs INDEX 25 三处口径不一致；已改 loop §3/L6.5/§1 与 suggestions。
-- 整改后复读：四类 8 项全部 PASS；`--round R36` 仍 PASS（12/24/0）；冻结记录与 HEAD `f485a58b7` 一致。
+- 整改后复读：四类 8 项全部 PASS；`--round R36` 仍 PASS（12/24/0）；冻结记录与 HEAD `b90c9ec0c` 一致。
 - 非阻断残余（记录，不修）：R-02 certify pass2 的 `bootface.rs:145-146` 行号随注释改动漂移 1 行；R-03 FACT-B-05 在 pass3 正文仍标 STILL-BROKEN，但同文件末节「残项复读」与最终汇总 44/44 CLOSED 已覆盖；R-04 FREEZE 的修复链概括与 meta 的概述粒度不同，不是事实冲突。R-01 已补 suggestions 的 B-09/C-06 记录。
 - 局限：同 agent 审计，无跨模型复核；未跑 QEMU；审计包内没有带 R36/D01 标记的 QEMU 串口日志（sysboot/riscv 门的 PASS 以脚本输出为据，aarch64 为已知 A2 遗留）。
-- 结论：**回归通过，D01 维持 CONVERGED**（新基线 sha `1c0d9de4…`、HEAD 轨迹 `f485a58b7` 之后）。
+- 结论：**回归通过，D01 维持 CONVERGED**（新基线 sha `1c0d9de4…`、HEAD 轨迹 `b90c9ec0c` 之后）。

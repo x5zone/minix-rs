@@ -1,6 +1,6 @@
 # R36 fact 面第三次独立 certify 回读（冷启动）
 
-- 基线：HEAD `eb8768b23`（`git rev-parse HEAD` 实测）。
+- 基线：HEAD `49ed0c54a`（`git rev-parse HEAD` 实测）。
 - 范围：`/tmp/r36-cert-fact.md` 全部 44 点，100% 逐条回读，不抽样。
 - 纪律：只读源码/文档；未读 `panel/round36` 与任何前两轮回执；每条以 HEAD 的直接读数或实跑为准。
 - 实跑：`cargo test --list`（boot-shim 146 / minix-boot 185 / minix-elf 27）、`cargo test -p minix-boot`（185 passed / 0 failed）、`cargo test -p boot-shim --features test-all --lib`（146 passed / 0 failed）、`cargo test -p minix-boot test_boot_postconditions_reject_low_virtual_base`（1 passed）、`cargo check -p kernel-image --target aarch64-unknown-none --features fw-aarch64-none`（Finished）、`tools/anchor-resolve.sh --check`（110/110，multi-def=0）、`tools/doc-citation-check.py`（checked=29 failed=0）。
@@ -52,7 +52,7 @@ DESIGN-D2-07：CLOSED — `os/boot-shim/src/uboot_main.rs:293` `static mut SHIM_
 DESIGN-D2-08：CLOSED — 同 FACT-B-12：doc:2572 `elf_file_end`、`UbootFileLoader::read` 无 `segment_iter`、citation 29/29 failed=0。
 CLAIM-03：CLOSED — 同 FACT-A-01：`handoff_v1.rs:296` = 10，doc:1714/1625/2932，minix-boot 185/0（`test-sysboot` 未跑）。
 CLAIM-04：CLOSED — 同 FACT-A-03：doc:2763「六个落地区加一个名字池」、doc:2867 两个生产调用点、strict 门 `kernel_info.rs:506-509`、citation 29/29。
-CLAIM-05：CLOSED — doc:1925 与 doc:2939-2940 的现行文字是「2 MiB 分支拒绝已存在的 1 GiB 叶或 2 MiB 叶，调用方把 `AlreadyMapped` 当成功吸收，不重写已有叶」，与源码一致：x86 `os/arch/src/x86_64/paging.rs:1309-1311/1325-1327`、arm64 `os/arch/src/arm64/paging.rs:1235/1248`、riscv64 `os/arch/src/riscv64/paging.rs:1234/1250`；`grep '重复安装同一个叶' doc` → doc:1925；commit `882ae3fb8` 存在且是 HEAD 祖先。注：清单原文「2 MiB 路径直接重写同一个叶并返回 Ok」与 HEAD 源码不符，当前文档没有采用该错误结论。
+CLAIM-05：CLOSED — doc:1925 与 doc:2939-2940 的现行文字是「2 MiB 分支拒绝已存在的 1 GiB 叶或 2 MiB 叶，调用方把 `AlreadyMapped` 当成功吸收，不重写已有叶」，与源码一致：x86 `os/arch/src/x86_64/paging.rs:1309-1311/1325-1327`、arm64 `os/arch/src/arm64/paging.rs:1235/1248`、riscv64 `os/arch/src/riscv64/paging.rs:1234/1250`；`grep '重复安装同一个叶' doc` → doc:1925；commit `e4374af7e` 存在且是 HEAD 祖先。注：清单原文「2 MiB 路径直接重写同一个叶并返回 Ok」与 HEAD 源码不符，当前文档没有采用该错误结论。
 CLAIM-06：CLOSED — 同 FACT-A-04：146/185/27，逐文件表实跑一致，doc:3171/3331「六枚」，minix-boot 185/0。
 
 ## 汇总
@@ -72,9 +72,9 @@ CLAIM-06：CLOSED — 同 FACT-A-04：146/185/27，逐文件表实跑一致，do
 3. 未读 `panel/round36` 与任何前两轮回执，因此本回执不引用它们的结论，也不对它们的发现质量做评价。
 4. 测试内核计数按 `#[test]` 出现次数口径；doc-tests 不计入（与文档口径一致）。
 
-## 残项复读（certify #3，HEAD `080e6bb0d`）
+## 残项复读（certify #3，HEAD `624fcccf1`）
 
-复核范围：仅 FACT-B-05 的三处残留；基线 `080e6bb0db614d5b0e1f45c4c98390e60bf7467c`（`git rev-parse HEAD` 实测）。未跑 QEMU。
+复核范围：仅 FACT-B-05 的三处残留；基线 `624fcccf158c4c24fc9043e89aaa287856234f1f`（`git rev-parse HEAD` 实测）。未跑 QEMU。
 
 1. `os/libs/minix-boot/src/kernel_info.rs` 测试模块：CLOSED — `use minix_types::USER_STACK_TOP;` 已删（测试模块现在只有 `use super::*;`；全文 `USER_STACK_TOP` 仅剩 :434 与 :553 两处注释里的历史/语义说明，不是 import）；原 :721-726 的两段孤儿 doc 注释已替换为普通注释 :719-722：「v10 (D-062) deleted the derived `kern_stack_top` field and its "stack top past the image end" relation; the remaining postcondition negative control is `test_boot_postconditions_reject_low_virtual_base` below.」；`cargo test -p minix-boot --no-run` 对 kernel_info.rs 无 unused import 告警。
 2. `os/kernel/src/lib.rs` 的 `land_slice`/`store_kernel_info` docstring：CLOSED — `land_slice` 现写「the same-address case is skipped so `resume_additive` can re-store the slices it decoded into the store」（:1546-1548）；`store_kernel_info` 现写「Production has two call sites: `arch_boot_finish` (a real copy) and `resume_additive` (same-address skip). `kmain` reads the slot through `kernel_info()` and does not re-store」与「The slot is written exactly once per leg (I-35(a)/D-071): a second store panics instead of updating the slot in place」（:1567-1573）；生产调用点实测仍为 :225（`arch_boot_finish`）与 :347（`resume_additive`）。

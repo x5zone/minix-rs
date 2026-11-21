@@ -2,7 +2,7 @@
 
 - 仓库根：`/home/xzhao/github/minix-rs`
 - 目标文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
-- 最终 HEAD：`1e68bfc1e`（目标文档在工作区无改动；`git status` 只有三个未跟踪文件，未触及该文档）
+- 最终 HEAD：`37238e568`（目标文档在工作区无改动；`git status` 只有三个未跟踪文件，未触及该文档）
 - 范围：`/tmp/r36-cert-reader.md` 的 16 个读者面修改点，100% 回读，不抽样。
 - 纪律：只读目标文档；未读 `panel/round36`、pass1 回执、`minix3/`、`os/`、历史评审。因此源码侧复核点（如 `BOOT_HANDOFF_V1_VERSION` 的实际常量、`land_slice(` 的实际调用数、citation 29/29）未由本读者重跑；本文判定只基于文档原文及其内部一致性。
 
@@ -48,7 +48,7 @@ READER-C-05：CLOSED — 引文头改为“四个切片落地区收敛到 `land_
 ## 局限
 
 1. 本轮是只读文档认证：按纪律未读 `panel/round36`、pass1 回执、`minix3/`、`os/` 与历史评审。`/tmp/r36-cert-reader.md` 中列出的源码侧复核点（`BOOT_HANDOFF_V1_VERSION` 的实际常量、`os/kernel/src/lib.rs` 的 `land_slice(` 实际计数、citation 29/29）未由本读者重跑；这些点的结论只能由代码侧独立验证，本文的 CLOSED 只覆盖文档面的一致性与可读性。
-2. 目标文档在 HEAD `1e68bfc1e` 的工作区中无改动（`git status` 仅有三个未跟踪文件，均未触及该文档），因此本文引文与最终 HEAD 一致。
+2. 目标文档在 HEAD `37238e568` 的工作区中无改动（`git status` 仅有三个未跟踪文件，均未触及该文档），因此本文引文与最终 HEAD 一致。
 3. 范围外观察（不计入上述 16 项判定）：§5.1 M14 的覆盖列用“aarch64 UEFI 链只到 EBS 后的 `memmap source` 行”概括该链，而 §5.2.3 对 `DTB_CFGTABLE=1` 变体写“以 EBS 前的 `DTB preflight failed…` 为终点”；M14 已把成员/分工权威指向 §5.2.3，且 M12 与 §6.4 都带“第三变体之一”，故不构成本轮 B-03 的单元格矛盾，但若后续追求逐字精确，可在 M14 该句加“通常”二字。
 
 - 历史回执：本 pass 的结论以正文汇总为准（pass1 12 CLOSED/4 STILL-BROKEN、pass2/pass3 16/16）；本轮最终结论 CLOSED/PASS（16/16，见 `round36-reader.md`）。

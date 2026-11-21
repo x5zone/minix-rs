@@ -46,7 +46,7 @@
 - 最小修复：§3.1 引文改为现行 `(u32 kind, u32 len, u64 phys_addr)`（并保留 `len = 0` 的兼容语义）；§3.6 补第三个字段与"窗口按 blob 长度定界、0 回退 2 MiB"的语义；§4.2 两段节选取现行 `find_platform_sources_into` / `push_platform_source` 代码并按新流程改写说明；§4.11 ② 与 §5.4 M7 的 `PlatformDescSource::new` 改为 `with_optional_len`（或注明 `new` 是 len=0 的兼容构造）。
 - 置信度：高
 - 是否需源码核实：否（已核实）
-- 若我错了：若 `BootStorage` 的 `platform_slots_mut` 只是把旧 `Box::leak` 包了一层，且 `len` 字段是文档交付后才加的而未进入基线——但基线工作树源码就是当前三字段结构，`git log -S'with_optional_len'` 显示该重构已在 `1c279cbd5`（R25）落地；文档的"逐字引用"标签要求跟随现行源码。
+- 若我错了：若 `BootStorage` 的 `platform_slots_mut` 只是把旧 `Box::leak` 包了一层，且 `len` 字段是文档交付后才加的而未进入基线——但基线工作树源码就是当前三字段结构，`git log -S'with_optional_len'` 显示该重构已在 `30ae59cc7`（R25）落地；文档的"逐字引用"标签要求跟随现行源码。
 - 判据：Doc Code Sync 七项（静态可变/常量/符号/字段）；P0-fact 定义"文档写 `fn foo()` 但实际是 `fn baz()`"（`review.md` L644-648）；锚点纪律门（引文逐字）。
 
 ---

@@ -97,7 +97,7 @@
 - 轮型: full
 - edition: V3.3
 - schema: V3.3 from R1
-- 基线提交：`da04c7486`
+- 基线提交：`7073926cb`
 - 文档：`rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md`
 - 文档 sha256：`f149e932cf7defe1e052794c2673409abba13dfdbd67c819b9341f067b9c533b`
 - 行数：2198
@@ -113,7 +113,7 @@
 - 轮型: full
 - edition: V3.4
 - schema: V3.4 from R1（V3.5 制品链起约束；旧 V1 轮的历史段保留在文件前部，不继承）
-- 基线提交：`cd76b73d1`（D04 收尾提交；面板启动时工作树除本篇待提交项外干净）
+- 基线提交：`bfcaf8062`（D04 收尾提交；面板启动时工作树除本篇待提交项外干净）
 - 文档：`rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md`
 - 文档基线 sha256：`f149e932cf7defe1e052794c2673409abba13dfdbd67c819b9341f067b9c533b`（面板启动时点）
 - 行数：2198（修复后 2207）

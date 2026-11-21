@@ -57,14 +57,14 @@
 - 严重度：P1
 - 问题：wire 信封的结构已经按 v10 改完（160→128 B、删除 `user_sp`/`kern_stack_top`/`syscall_entry`/startup 分区），但 `BOOT_HANDOFF_V1_VERSION` 仍是 9。文档 §3.4.1 明写“版本 9 → 10，收发两侧精确比较，v9 与 v10 互相拒收”；源码的版本历史注释（`handoff_v1.rs:268-288`）也停在 9。§3.4.3 在同一篇文档里又写“当前 9”，文档自身也没有统一。
 - 影响：`handoff_v1_read.rs:107` 与 `handoff_v1_write.rs:163` 都按 9 收发。旧 v9 发送方（160 B 信封）仍会被 `SIZE != size_of::<BootHandoffV1>()`（`handoff_v1_read.rs:110`）拒绝，所以不会静默错读；但“按版本号拒收”的契约没有兑现，任何只看 `version` 的外部工具/测试会把 v10 布局误认成 v9。设计文档的 v10 身份在 wire 上不存在。
-- 证据或推理：`git show 2a345f566:os/libs/minix-boot/src/handoff_v1.rs | grep BOOT_HANDOFF_V1_VERSION` 输出仍是 `= 9`；该提交的说明却写“版本 9→10”。`handoff_v1.rs:420` 的 `size_of::<BootHandoffV1>() == 128` 与 v10 注释一致。`handoff_v1_read.rs:627/633` 的负控用 `VERSION ± 1`，所以当前负控实际测的是 8/10 而不是 9/11。
+- 证据或推理：`git show 52110580f:os/libs/minix-boot/src/handoff_v1.rs | grep BOOT_HANDOFF_V1_VERSION` 输出仍是 `= 9`；该提交的说明却写“版本 9→10”。`handoff_v1.rs:420` 的 `size_of::<BootHandoffV1>() == 128` 与 v10 注释一致。`handoff_v1_read.rs:627/633` 的负控用 `VERSION ± 1`，所以当前负控实际测的是 8/10 而不是 9/11。
 - 最小修复：`BOOT_HANDOFF_V1_VERSION: u32 = 10`，在版本历史注释里补 10 的条目；同步文档 §3.4.3 的“当前 9”为 10。核对 `handoff_v1_read.rs` 的负控仍成立（`±1` 变成 9/11），并在 §4.3 的 arena 说明处不要再写“版本 9”。
 - 减法替代（V3.6，C-32；无替代写「无，因…」）：无新增概念；这是把已有协议身份改到设计值。减法方案“不做，保留 9”拦不住的原因是：文档与提交说明都已经把 v10 当现行契约，保留 9 会让契约与实现长期分叉；尺寸检查只是第二道防线，不替代版本号。
 - 三问（V3.6，C-31；仅类型级提案必填）：不适用（无新类型）。
 - 教学概念账（V3.6，C-35；仅加法提案必填）：不适用（仅改常量与文档）。
 - 分类（D-047）：[DEL]（删掉过时的 v9 身份；不是新增抽象）
 - 置信度：高（源码常量与提交记录直接矛盾）
-- 是否需源码核实：已核实（`handoff_v1.rs:288`、`handoff_v1_read.rs:107/110`、`handoff_v1_write.rs:163`、`git show 2a345f566`）。
+- 是否需源码核实：已核实（`handoff_v1.rs:288`、`handoff_v1_read.rs:107/110`、`handoff_v1_write.rs:163`、`git show 52110580f`）。
 - 若我错了：如果团队有意让版本停在 9、靠 `size` 字段做判别，那么文档 §3.4.1 的“9 → 10”与提交说明都必须改写；但当前两处都写 10，不能同时为真。
 
 ## FINDING DESIGN-D2-02（P1）

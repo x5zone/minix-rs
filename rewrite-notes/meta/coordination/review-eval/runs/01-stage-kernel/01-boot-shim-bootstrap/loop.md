@@ -1264,7 +1264,7 @@
 
 ### R24 §0 基线
 
-- 冻结提交：`bd7c53cdb4b767f524f4ad9fe569d52a8a07297b`（文档 3427 行 / `2507c19a…`）。
+- 冻结提交：`76e646d97b900c01ba4961deb33a2f83cbca235d`（文档 3427 行 / `2507c19a…`）。
 - 工作树：`.codex/.trae` 的 V2.2 派生文件为未提交改动（用户侧）；`01-design-learn.md` 未跟踪；无已跟踪代码/文档改动。
 - Step 0 预检：outline v4、outline-review v4、design v3 存在；`01-design-final.v*` 按本篇命名约定不存在（v3 即最新）；`design-coverage-check` 60 篇全齐。
 - 关联代码：`doc-code-map --check` 50/50 通过。
@@ -1304,8 +1304,8 @@
 - 宿主：boot-shim 136 + `ebs_boundary_audit` 6；minix-kernel 865 + 8 ignored；minix-types 339；minix-boot 196；minix-vm 548；minix-arch 288。
 - QEMU：x86/aarch64/riscv64 U-Boot shim、riscv64 bootface、riscv64 kernel-image、aarch64 SMP AP 六门 PASS；日志归档在 `logs/round24-{x86-shim,aarch64-shim,riscv-uboot-shim,riscv-bootface,riscv-kernel-image,aarch64-smp-aps}.log`（各含 `TEST_RESULT: PASS` 或 `RESULT: PASS`）。
 - 修复后文档：3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
-- 修复提交：`91e652a73`（40 files, +1139/−440）；`BASELINE.txt` 已登记 `r24_fix_head`。
-- 提交链：`91e652a73`（面板修复）→ `d20cd3362`（基线）→ `6a40c61fc`（RB-post 收口：跨度测试/措辞）→ `209e5c074`（基线指向收口）→ `91da40986`（裁决证据/计数）。HEAD 工作树只剩用户侧 `.codex/.trae` 与未跟踪 `01-design-learn.md`。
+- 修复提交：`90428654f`（40 files, +1139/−440）；`BASELINE.txt` 已登记 `r24_fix_head`。
+- 提交链：`90428654f`（面板修复）→ `d4be59d7b`（基线）→ `99dac96b4`（RB-post 收口：跨度测试/措辞）→ `d41261cb6`（基线指向收口）→ `162a86478`（裁决证据/计数）。HEAD 工作树只剩用户侧 `.codex/.trae` 与未跟踪 `01-design-learn.md`。
 - RB-post（提交后随机 29 条）：首轮 26/29=89.7% NOT PASS（DESIGN-07 半修）→ 补 `platform_window_uses_the_recorded_blob_length` 后二次 13/14=92.9% PASS；118 条整体一致率不由此宣称。
 - RB24 首轮：71/80 = 88.8%，NOT PASS；B1/B2 与 N1–N11 已按最小补修逐项处理。第二次定向回读 23/23 = 100%，PASS（13 项定向 + 10 条上轮真修重放；未发现新 P0/P1/P2）。
 
@@ -1351,7 +1351,7 @@ RB24 首轮 13 项逐项处置：
 
 - 轮型：discovery（全文发现轮）。
 - schema: V2.5 from R25（本文件 R17–R24 为历史 schema；R25 起受 V2.5 状态机约束）。
-- 冻结提交：`4ed921800`（R24 收口提交）；文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
+- 冻结提交：`6581d483b`（R24 收口提交）；文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`。
 - 工作树：仅 `.codex/.trae` 的 V2.2 派生文件与未跟踪 `01-design-learn.md`（用户侧）；R24 修复/轨迹已提交。
 - Step 0 预检：`01-design.v3` 为最新、`01-outline.v4`/`01-outline-review.v4` 存在；`design-coverage-check 01-stage-kernel` = ALL DOCS COMPLETE（Missing 0）。
 - 关联代码：`doc-code-map --check` 52/52；`trait-audit` 已生成。
@@ -1432,7 +1432,7 @@ RB24 首轮 13 项逐项处置：
 - 轮型：full（V3 交易：survey→inventory→fix→certify）
 - edition: V3.0
 - schema: V3.0 from R26
-- 基线：工作树（HEAD `3f0a466ed`；R25 收口批 + V3 规则/工具改动未提交）
+- 基线：工作树（HEAD `66b6eff7e`；R25 收口批 + V3 规则/工具改动未提交）
 - 文档：3523 行 / `244b36a939badb65944f552da5f2ab58426d4ebb3f45c11aceedc770e9ae17cd`
 - 工作树：见 `git status --porcelain`；含 R25 收口批、V3 规则/工具、用户侧 `01-design-learn.md`
 - Step 0 预检：`01-design.v3` 为最新；`01-outline.v4`/`01-outline-review.v4` 存在；`design-coverage-check 01-stage-kernel` = ALL DOCS COMPLETE（Missing 0）
@@ -1511,7 +1511,7 @@ RB24 首轮 13 项逐项处置：
 
 - 轮型：full（V3 交易：survey→inventory→fix→certify）
 - edition: V3.0
-- 基线：工作树（HEAD `3f0a466ed`；R25/R26 改动未提交）
+- 基线：工作树（HEAD `66b6eff7e`；R25/R26 改动未提交）
 - 文档：3518 行 / `04c07aee1e6f9a7225ac33f2bd45fc9faa8b2aa4572091ff4c971f1e477b8187`
 - 前轮状态：R26 `CONVERGED`，`未闭环=0`，`certify 新准入=0`
 - 面板：P-FACT-A/B、READER A/B/C、REFUTE、DESIGN-D2；D1 按 D-024 停跑
@@ -1563,7 +1563,7 @@ RB24 首轮 13 项逐项处置：
 
 - 轮型: full（V3.1 结构轮：survey 输入 = R27 已落盘的七角色完整报告；本轮主体是 inventory→fix→certify）
 - edition: V3.1
-- 基线：工作树（HEAD `3f0a466ed`；R25–R27 改动未提交）
+- 基线：工作树（HEAD `66b6eff7e`；R25–R27 改动未提交）
 - 文档：约 3540 行，改动前 sha256 以 `git diff` 为准（R27 后未提交）
 - 前轮状态：R27 `NOT CONVERGED`，34 条 P2/P3 读者/结构 backlog
 - 面板：复用 `panel/round27/*.md`；R28 的收口映射见 `panel/round28/closure-manifest.md`（不是新面板）
@@ -1630,7 +1630,7 @@ RB24 首轮 13 项逐项处置：
 
 - 轮型: full
 - edition: V3.1
-- 基线：R28 修复后的工作树（HEAD `3f0a466ed`，未提交）
+- 基线：R28 修复后的工作树（HEAD `66b6eff7e`，未提交）
 - 前轮状态：R28 `BACKLOG CLOSED / CERTIFY PASS`（不判 CONVERGED）
 - 面板：P-FACT-A、P-FACT-B、READER A/B/C、P-DESIGN-D2（6 个角色；P-REFUTE 本轮不单独跑，反证路径并入各角色报告）
 
@@ -1954,7 +1954,7 @@ RB24 首轮 13 项逐项处置：
 - 轮型: confirmation
 - edition: V3.3
 - schema: V3.3 from R31
-- 基线提交：`79b1c242f`（R33 收口补正之后；R33 已于本基线 `--round R33` PASS）
+- 基线提交：`1c81d8415`（R33 收口补正之后；R33 已于本基线 `--round R33` PASS）
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 文档 sha256：`d909c236a373636678e66b13c0ad5ebde769ead738f09d81a846803647fcb98c`
 - 行数：3565
@@ -2045,7 +2045,7 @@ RB24 首轮 13 项逐项处置：
 - 轮型: confirmation
 - edition: V3.4
 - schema: V3.4 from R35
-- 基线提交：`562b9fe6e`（用户指令文件提交；本轮修复未提交）
+- 基线提交：`7b3c82e0b`（用户指令文件提交；本轮修复未提交）
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 文档基线 sha256：`7d14cdd17d68117559c95730ba57b43c8239026a76a5435db10e29ab1967455e`（R31 补清点批之后、R35 面板启动前）
 - 行数：3580
@@ -2133,16 +2133,16 @@ RB24 首轮 13 项逐项处置：
 
 - 轮型：`confirmation`；edition：`V3.4`；schema：`V3.4 from R35`（R36 延续，不改写 R35 及以前的历史标记）。
 - 重开依据：`FREEZE.md` 重开条件第 2 条（R35-design-batch 实施后基线改变，需重新固定基线并重跑受影响门）+ 用户 2026-11-21 指令（review loop D01 直至收敛，授予代裁权）。
-- 基线提交：`e04e61cb5`（R36 预门修正之后）；工作树 `git status --porcelain` 只有三个审查前已存在的未跟踪文件（`prompt/review-loop-r26-r29-report.md`、`rewrite-notes/01-stage-kernel/01-design-learn.md`、`rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r26.md`），无源码/正文改动。
+- 基线提交：`b5f8ff65b`（R36 预门修正之后）；工作树 `git status --porcelain` 只有三个审查前已存在的未跟踪文件（`prompt/review-loop-r26-r29-report.md`、`rewrite-notes/01-stage-kernel/01-design-learn.md`、`rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r26.md`），无源码/正文改动。
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 文档基线 sha256：`c68d92ebd4bf8d9d5eb22fd3e18e6b52b540de11a977023fcffc78c96db308b0`
 - 行数：3586
-- 基线变更：R35 之后落地 6 个设计批提交——`a3214de10`（I-39/D-077 删空 getter 与恒真测试）、`2e82208e2` 之前的 R31 补清点不重列；本轮范围链为 `abb8bf135`（I-37/D-073 PreparedJump）、`72d62d35e`（I-30/D-061 aarch64 链接期分叉）、`2a345f566`（I-31/D-062 wire v10）、`19cf646d9`（I-38/D-074 BootScalars）、`b1a114400`（I-34/D-067 BootStorage fill API）。R36 预门另修 `e04e61cb5`（§3.6 的 map_huge 引文同步会话内 2 MiB 通道化实现）。
+- 基线变更：R35 之后落地 6 个设计批提交——`e3da61625`（I-39/D-077 删空 getter 与恒真测试）、`a0261fdd1` 之前的 R31 补清点不重列；本轮范围链为 `867ca3c09`（I-37/D-073 PreparedJump）、`7021f7e4f`（I-30/D-061 aarch64 链接期分叉）、`52110580f`（I-31/D-062 wire v10）、`f8aad41da`（I-38/D-074 BootScalars）、`3464a9aee`（I-34/D-067 BootStorage fill API）。R36 预门另修 `b5f8ff65b`（§3.6 的 map_huge 引文同步会话内 2 MiB 通道化实现）。
 - 设计快照：`01-outline.v4.md`、`01-outline-review.v4.md`、`01-design.v3.md` 齐备；`design-coverage-check.sh 01-stage-kernel` → ALL DOCS COMPLETE。
 - 关联代码：`doc-code-map.sh --check` 54/54；清单见 `related-code.txt`。
 - 语料条目：D01（`CORPUS.md` 第二节，启动链/三架构）；盲区重点 B-01..B-13。
 - 范围声明：本篇范围 = boot-shim 引导准备与控制权交接 + 54 个关联文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
-- 预门读数（最终 HEAD）：anchor 108/108 zero-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；`--stale-lines 2e82208e2 --strict` PASS（候选 728 行）；`--from-diff 2e82208e2` 只报 `window`/`write`/`with` 等通用词 WARN（工具按删除行抽标识符，通用词非旧符号，记已知假阳性，不阻断）。
+- 预门读数（最终 HEAD）：anchor 108/108 zero-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；`--stale-lines a0261fdd1 --strict` PASS（候选 728 行）；`--from-diff a0261fdd1` 只报 `window`/`write`/`with` 等通用词 WARN（工具按删除行抽标识符，通用词非旧符号，记已知假阳性，不阻断）。
 - follow-ups（L0 步骤 8）：已读 `follow-ups.md` 与 `OPEN-DEBT.md`；R35-design-batch 的 13 项均有 D-060 判决行与 2026-11-19 日期，实施状态按 OPEN-DEBT 的逐项注记（I-30/I-31/I-34/I-37/I-38/I-39 已落码；D2-05/I-36 经二次核实未实施，仍归设计批，不在确认轮实施 ⑥）；无未批准 ② 被带入本轮。
 
 ### R36 §1 面板
@@ -2178,10 +2178,10 @@ RB24 首轮 13 项逐项处置：
 
 ### R36 §4 修复
 
-- 代码批：commit `da9581437`——wire 版本 9→10 + 版本历史；U-Boot `SHIM_TABLE` 改 `BootFileTable` 类型静态 + `size_of` 断言；aarch64 bump 改 `BumpRegion` + `AtomicU64`。验证：minix-boot 184→185/0、boot-shim 146/0、kernel-image 8/0；`test-sysboot.sh` PASS、`test-riscv64-uboot-shim.sh` 6/6 PASS；aarch64 `test-rt-birth-aarch64.sh` 到达 `entering scheduler`，其 user-chain Data Abort 在 stash 对照下与改动前同一处（已知 A2 遗留，非本批因果）。
-- 文档批一：commit `882ae3fb8`——v10/startup/6b/七→六/arena 两口径/幽灵 API/strict 门/postconditions/调用点/测试账/loader 引文/aarch64 x0/Paging 成员/PteChannel/map_huge 语义/探针来源/行号锚点/gate 计数/land_slice/字段台账/user_sp/ceil/step1+2；新增 `test_boot_postconditions_reject_low_virtual_base`。
-- 文档批二：commit `cd2b31f97`——系统任务/AP/DM 定义；aarch64 门链变体；五腿五门链差集；§3.7 计数权威改为换算基准；生产者 `staged_elf_used_len` 注释改事实。
-- 机械门（最终 HEAD）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines 2e82208e2 --strict` PASS。
+- 代码批：commit `d8ce8b29c`——wire 版本 9→10 + 版本历史；U-Boot `SHIM_TABLE` 改 `BootFileTable` 类型静态 + `size_of` 断言；aarch64 bump 改 `BumpRegion` + `AtomicU64`。验证：minix-boot 184→185/0、boot-shim 146/0、kernel-image 8/0；`test-sysboot.sh` PASS、`test-riscv64-uboot-shim.sh` 6/6 PASS；aarch64 `test-rt-birth-aarch64.sh` 到达 `entering scheduler`，其 user-chain Data Abort 在 stash 对照下与改动前同一处（已知 A2 遗留，非本批因果）。
+- 文档批一：commit `e4374af7e`——v10/startup/6b/七→六/arena 两口径/幽灵 API/strict 门/postconditions/调用点/测试账/loader 引文/aarch64 x0/Paging 成员/PteChannel/map_huge 语义/探针来源/行号锚点/gate 计数/land_slice/字段台账/user_sp/ceil/step1+2；新增 `test_boot_postconditions_reject_low_virtual_base`。
+- 文档批二：commit `773e4bbc5`——系统任务/AP/DM 定义；aarch64 门链变体；五腿五门链差集；§3.7 计数权威改为换算基准；生产者 `staged_elf_used_len` 注释改事实。
+- 机械门（最终 HEAD）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines a0261fdd1 --strict` PASS。
 - 未实施（re-litigation FP）：D2-05 → 按 D-064 维持现状；D-104 已改写为“撤回延期”记录。
 - 未实施（P3 SUGG）：D2-03、D2-09 与全部面板 P3 建议 → `suggestions.md` R36 段。
 
@@ -2191,7 +2191,7 @@ RB24 首轮 13 项逐项处置：
 - 独立冷读一（事实/设计/代码面，certify #3）：44 个修改点全部回读；`certify/round36-fact.md` 的最终汇总为 44 CLOSED / 0 STILL-BROKEN（certify #1 的 6 条、#2 的 1 条、#3 的 1 条残项均在同一轮内修完并复读；#1/#2 回执保留为 `round36-fact-pass1.md`/`-pass2.md`）。
 - 独立冷读二（读者面，certify #3）：16 个修改点全部 CLOSED；`certify/round36-reader.md`。
 - 台账重放：每行 ①/④ 的复验列给 grep/test/commit 或冷读回执；`python3 tools/eval-trace-check.py <run> --round R36` 的 coverage/round-close/metrics/open-debt/severity 全 PASS。
-- 机械门（最终 HEAD `080e6bb0d`）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines 2e82208e2 --strict` PASS（候选 765 行）；`--from-diff` 仅通用词 WARN（已知假阳性）。
+- 机械门（最终 HEAD `624fcccf1`）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines a0261fdd1 --strict` PASS（候选 765 行）；`--from-diff` 仅通用词 WARN（已知假阳性）。
 - 代码与行为：minix-boot 185/0、boot-shim 146/0、minix-elf 27/0、minix-kernel --features mock 866/0/8；`test-sysboot.sh` PASS（x86 wire v10）、`test-riscv64-uboot-shim.sh` 6/6 PASS（类型化表）；aarch64 `test-rt-birth-aarch64.sh` 在同一处 user-chain Data Abort 失败——用 `git stash` 对照改动前状态复现同一地址/同一 ESR，确认是本轮前已存在的 A2 遗留（`01-todo.md` 的 rt-birth 深跑附注），不是本轮代码因果；本轮 aarch64 bump 改动由“到达 entering scheduler”覆盖。
 - 所有权/写后读顺序：wire 版本常量只被读写同一常量；`SHIM_TABLE` 由 `static mut BootFileTable` 在单线程 boot 内一次性写入、之后只读，类型保证 8 字节对齐；aarch64 `BUMP_NEXT` 为 `AtomicU64`，单线程顺序一致；复核记录见本条。
 - 改写段 vs C 再推演（G7）：本轮改写的 §3.4.1/§4.2/§4.2.1/§4.5/§4.6 的机制断言逐条对 C/源码再推演——startup 分区在 C 的 `kinfo_t` 中无对应物（C 字段表 `param.h:14-47`），v10 删除是 Rust wire 的 `[DEL]`；`fill_map_tables` 的写与提交同一步与 `boot_storage.rs:140-260` 的闭包返回 `MapCounts` 一致；`map_huge` 的 2 MiB 已存在叶守卫在三架构 `paging.rs` 逐分支核对；`check_boot_postconditions` 只剩 `kern_virt_base > u32::MAX` 与 `kernel_info.rs:570` 一致；`store_kernel_info` 两个调用点与 `lib.rs:225/347` 的 one-shot 守卫一致。
@@ -2224,7 +2224,7 @@ RB24 首轮 13 项逐项处置：
 
 ### L6.5
 
-- 三问：① 本轮不变量是「确认轮在最终工作树上 certify 新准入=0 且所有 ①/④ 有逐点回读」；② 面板基线 `e04e61cb5`，certify #1/#2 在各自当时的 HEAD 回读，最终两轮在 `eb8768b23`/`080e6bb0d` 上收口（最终回执覆盖最终工作树）；③ 证据是 `certify/round36-fact.md` 44/44、`round36-reader.md` 16/16、六门与 `--round R36` 门。
+- 三问：① 本轮不变量是「确认轮在最终工作树上 certify 新准入=0 且所有 ①/④ 有逐点回读」；② 面板基线 `b5f8ff65b`，certify #1/#2 在各自当时的 HEAD 回读，最终两轮在 `49ed0c54a`/`624fcccf1` 上收口（最终回执覆盖最终工作树）；③ 证据是 `certify/round36-fact.md` 44/44、`round36-reader.md` 16/16、六门与 `--round R36` 门。
 - 资源重读：本轮盲区属“流程/轨迹类”（同根残项、裸 ID 冲突），按 L6.5 查 `prompt/resources/fresh-eyes-review` 与 `eai-agent-toolkit`；未发现可直接移植的新检测模式，已记 BLIND-SPOTS 候选（确认轮同根残项需按“修复点集合=文档句+注释+引文”定义）。
 
 - V3.6 遗留声明：本轮 edition V3.4；V3.6 的减法门与“修复点=制品类别射程”门未作为轮门执行，按 §6A 的 V3.4 口径关闭；meta 已把同根残项列为流程缺陷（见 `meta/01-boot-shim-bootstrap-r36.md`）。
@@ -2237,7 +2237,7 @@ RB24 首轮 13 项逐项处置：
 - schema: V3.4 from R37
 - 轮型: full
 - edition: V3.4
-- 基线：`526f2f76af35c1c15e0025c04e105a70da4b4009`（重写后、面板前）。
+- 基线：`cf79b63e5e74f7188e181cea5aa71a947bee0289`（重写后、面板前）。
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`，sha256 `665230eb…`，2673 行。
 - 范围：01 篇全文 + `related-code.txt` 的 48 个关联文件；不含相邻模块与下一批结构重构。
 - 语料：本篇按“01=交接载荷”新轴重写；旧 v3 归档 `draft/v3-01-boot-shim-bootstrap.md`，旧节号映射见 `rewrite-notes/MIGRATION.md` 第九节。
@@ -2312,5 +2312,5 @@ RB24 首轮 13 项逐项处置：
 
 ### L6.5
 
-- 三问：① 本轮不变量 = 新轴文档的每条主张有来源/去向，且四条不变量在正文可核；② 基线 = `526f2f76a`，最终文档 sha/行数见 §0 与 `FREEZE.md`；③ 证据 = 46 条台账、四份 certify、九门读数与 `--round R37`。
+- 三问：① 本轮不变量 = 新轴文档的每条主张有来源/去向，且四条不变量在正文可核；② 基线 = `cf79b63e5`，最终文档 sha/行数见 §0 与 `FREEZE.md`；③ 证据 = 46 条台账、四份 certify、九门读数与 `--round R37`。
 - 资源重读：本轮盲区属“重写后的事实/结构”类，查 `prompt/resources/fresh-eyes-review`；已确认“独立回读必须换实例、不能只 grep 旧串”这条检测模式有效，无新增可移植模式。

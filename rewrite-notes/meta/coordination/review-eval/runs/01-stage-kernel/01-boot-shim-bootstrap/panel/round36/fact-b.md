@@ -14,7 +14,7 @@
 - 严重度：P0
 - 问题：文档声称 wire 版本已 `9 → 10` 且「v9 与 v10 互相拒收」，但仓库实际常量仍是 **9**；同一篇文档 §4.6 又说「信封版本仍为 9」，两处互相矛盾，源码只支持 9。
 - 影响：读者会相信布局变更（信封 160→128、删 startup 分区）已有版本隔离。实际上新旧两种 9 版信封会被收发双方**当作同一版本接受**，解析错位而非拒收——这正是版本号要防的故障。D-062 的「原子升版」验收不成立。
-- 证据或推理：E1。`grep -n 'BOOT_HANDOFF_V1_VERSION' os/libs/minix-boot/src/handoff_v1.rs` → `288:pub const BOOT_HANDOFF_V1_VERSION: u32 = 9;`；`git show 2a345f566 -- os/libs/minix-boot/src/handoff_v1.rs` 的 diff 没有任何版本号 hunk（只有 commit message 写 `9 → 10`）；`git log --all -G 'BOOT_HANDOFF_V1_VERSION.*10'` 零命中。文档第 1625 行写「`BOOT_HANDOFF_V1_VERSION` 9 → 10，收发两侧精确比较，v9 与 v10 互相拒收」；第 2920 行写「信封版本仍为 9（见 §3.4.3）」；§3.4.3 也写「当前 9」。
+- 证据或推理：E1。`grep -n 'BOOT_HANDOFF_V1_VERSION' os/libs/minix-boot/src/handoff_v1.rs` → `288:pub const BOOT_HANDOFF_V1_VERSION: u32 = 9;`；`git show 52110580f -- os/libs/minix-boot/src/handoff_v1.rs` 的 diff 没有任何版本号 hunk（只有 commit message 写 `9 → 10`）；`git log --all -G 'BOOT_HANDOFF_V1_VERSION.*10'` 零命中。文档第 1625 行写「`BOOT_HANDOFF_V1_VERSION` 9 → 10，收发两侧精确比较，v9 与 v10 互相拒收」；第 2920 行写「信封版本仍为 9（见 §3.4.3）」；§3.4.3 也写「当前 9」。
 - 最小修复：按冻结裁决 D-062 把 `BOOT_HANDOFF_V1_VERSION` 改为 10（连同接收侧精确比较的负控），并统一 §3.4.3/§4.6 的「9」表述；若裁决改判不升版，则删除全文所有 v10 声明与「互相拒收」句。二选一，不能两套并存。落到代码侧这同时是一条 **P0-code-bug**（D-062 的升版未落地，版本隔离失效）；落到文档侧是 P0-fact。
 - 置信度：高
 - 是否需源码核实：是（已核实）

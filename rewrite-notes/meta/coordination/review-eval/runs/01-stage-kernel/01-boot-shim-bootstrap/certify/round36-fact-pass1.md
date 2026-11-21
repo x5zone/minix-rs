@@ -1,6 +1,6 @@
 # R36 certify（事实/设计/代码面）
 
-- 基线：HEAD `1e3ebbf74`；文档 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`（3600 行）
+- 基线：HEAD `5ccd49968`；文档 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`（3600 行）
 - 修改点总数：44
 - 全局门读数（本轮实跑）：`tools/anchor-resolve.sh --check` → `anchors=110 resolved=110 zero-def=0 multi-def=0`；`python3 -I tools/doc-citation-check.py` → `blocks=69 checked=29 failed=0 skipped=35 warned=5`；`cargo test -p boot-shim --features test-all --lib -- --list` → 146；`cargo test -p minix-boot --lib -- --list` → 185；`cargo test -p minix-elf --lib -- --list` → 27；`cargo test -p minix-kernel --features mock --lib -- --list` → 874。
 - 逐条：

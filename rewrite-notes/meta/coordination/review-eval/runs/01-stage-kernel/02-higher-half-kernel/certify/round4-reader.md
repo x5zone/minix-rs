@@ -2,7 +2,7 @@
 
 - 角色：冷启动读者面 certify，未参与面板、修复与前两轮。
 - 目标文档：`/home/xzhao/github/minix-rs/rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`。
-- 最终 HEAD：`2ca9a9cd7c0b3cea80da601e498ccf8087a478fc`；该文件在 `git status --porcelain` 下无改动，回读对象是 HEAD 内容。
+- 最终 HEAD：`3c0806f183116e30c7325b4ca3624a920ed43cbc`；该文件在 `git status --porcelain` 下无改动，回读对象是 HEAD 内容。
 - 输入：`/tmp/r4-cert-reader.md` 的 12 个读者面修改点；未读 panel/round4、`minix3/`、`os/` 或历史评审。
 - 方法：逐条按修改点描述回读原文并做文档内一致性核对；READER-C-05 另在 `/tmp` 临时目录做一次最小 GNU ld 行为复现（临时产物已删除，仓库无写入）。
 

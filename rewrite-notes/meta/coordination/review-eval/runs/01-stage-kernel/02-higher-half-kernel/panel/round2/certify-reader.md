@@ -2,7 +2,7 @@
 
 ## 取证、范围与写入说明
 
-- 文档：`/home/xzhao/github/minix-rs/rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`，1280 行；sha256 `f2be56a4692991575fde71742a6e106e636aeaa1728a82f55e905152048c3185`（前缀 `f2be56a4`，与任务给的一致）。工作区相对 HEAD `73e805b01` 为已修改，`git diff --stat` 为 17 插入 / 17 删除。
+- 文档：`/home/xzhao/github/minix-rs/rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`，1280 行；sha256 `f2be56a4692991575fde71742a6e106e636aeaa1728a82f55e905152048c3185`（前缀 `f2be56a4`，与任务给的一致）。工作区相对 HEAD `cdbfb3cf6` 为已修改，`git diff --stat` 为 17 插入 / 17 删除。
 - 用到的命令：`sha256sum`、`git hash-object`、`git diff -U3`、`grep -n`（定位标题、`腿`、`设计批`、`pre_init.o`、`plan_kernel_mapping` 等）。diff 与工作区文件一致。
 - 只读范围：改动行及其邻句。为解析改动句内部的同篇交叉引用，另查看了 §1.1 的三列图（36–44 行）、§3.1 的形态登记表（366–373 行）、§4.3 的第三种形态段（990 行）与形态表（969–973 行）、§5.2 的 PC 段（1139 行）、§5.4 的 M10（1164 行）、§3.5 的粒度阶梯与收口后果（595–647 行）。未读全文；未读 01 篇正文、Rust/C 源码、`expected/` 与本轮其他角色文件。
 - 读者画像：`/home/xzhao/github/minix-rs/tmp/review-eval/01-stage-kernel/02-higher-half-kernel/reader-profile.md`。目标读者懂分页、链接与装载，Rust 读到 `enum`/`match`/`trait`/内联汇编大意即可；不提供源码与其他文档。

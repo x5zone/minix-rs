@@ -2,7 +2,7 @@
 
 - 结论：NOT PASS（15 条 CLOSED，3 条 STILL-BROKEN）
 - 核验条数：18（不抽样，逐条回读）
-- 基线：HEAD `7ce60e31f`；文档 `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` sha256 `8d140dcd8b4d58dbb3a6048de7de8455d3c477c8f5f3e89a0f7b226636f2f7eb`；`git diff HEAD` 对文档与三个关键源码为空，回读对象就是最终 HEAD。
+- 基线：HEAD `d99dc16a7`；文档 `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` sha256 `8d140dcd8b4d58dbb3a6048de7de8455d3c477c8f5f3e89a0f7b226636f2f7eb`；`git diff HEAD` 对文档与三个关键源码为空，回读对象就是最终 HEAD。
 - 角色：冷启动独立回读，未参与 R4 面板与修复；只读，唯一写入是本文件。未运行 QEMU 与完整测试套件；测试计数用源码静态计数，布局断言用既有工件。
 
 ## 一、18 个修改点逐条回读
@@ -10,7 +10,7 @@
 ### 1. FACT-01
 - 判定：STILL-BROKEN
 - 原文残留（doc:458，逐字）：「迭代器在 `next()` 里做类型过滤与范围检查，命中这些条件时 `continue`（不产出该段）；但 `SegmentIter::new` 与 `parse_phdr` 的表范围算式是未检查加法，畸形输入会 panic 而不是 `Err`（代码修复登记设计批 D2-01）」
-- 证据：这一行与修复前 HEAD `9ebf3f054` 的 doc:457 **逐字相同**（`git show 9ebf3f054:... | awk 'NR==457'` 与最终 HEAD `awk 'NR==458'` 对比）。批一（`ca5830fd5`）替换了其后的代码块、并在 doc:503 补了正确的行为段（「迭代器只把非 `PT_LOAD` 类型当作正常过滤（`continue`）；其余畸形一律以 `Some(Err(..))` 浮出」），但 458 这一句没改。源码 `os/libs/minix-elf/src/lib.rs:398-433` 只有 `if phdr.p_type != PT_LOAD { continue; }`（`:413-415`）；`checked_mul`/`checked_add` 溢出返回 `Some(Err(PhdrOutOfBounds))`（`:395-404`）、`parse_phdr` 失败返回 `Some(Err(e))`（`:408-411`）、`p_offset + p_filesz` 越界返回 `Some(Err(SegmentOutOfBounds))`（`:419-425`）、`filesz > memsz` 返回 `Some(Err(FileszExceedsMemsz))`（`:431-433`）。因此 458 的前半句仍与实现相反，且与同节 503 自相矛盾。
+- 证据：这一行与修复前 HEAD `948c59421` 的 doc:457 **逐字相同**（`git show 948c59421:... | awk 'NR==457'` 与最终 HEAD `awk 'NR==458'` 对比）。批一（`cf2dc2b62`）替换了其后的代码块、并在 doc:503 补了正确的行为段（「迭代器只把非 `PT_LOAD` 类型当作正常过滤（`continue`）；其余畸形一律以 `Some(Err(..))` 浮出」），但 458 这一句没改。源码 `os/libs/minix-elf/src/lib.rs:398-433` 只有 `if phdr.p_type != PT_LOAD { continue; }`（`:413-415`）；`checked_mul`/`checked_add` 溢出返回 `Some(Err(PhdrOutOfBounds))`（`:395-404`）、`parse_phdr` 失败返回 `Some(Err(e))`（`:408-411`）、`p_offset + p_filesz` 越界返回 `Some(Err(SegmentOutOfBounds))`（`:419-425`）、`filesz > memsz` 返回 `Some(Err(FileszExceedsMemsz))`（`:431-433`）。因此 458 的前半句仍与实现相反，且与同节 503 自相矛盾。
 - 最小修复：把 doc:458 的前半句改为「迭代器在 `next()` 里做类型过滤与范围检查：只有非 `PT_LOAD` 类型过滤走 `continue`（正常过滤），其余范围与形状检查失败都以 `Some(Err(..))` 浮出（I-48/D-084）」；后半句（`SegmentIter::new`/`parse_phdr` 的未检查加法与 D2-01 登记）保留不动。
 
 ### 2. FACT-02
@@ -127,7 +127,7 @@
 | CLOSED | 15 | FACT-02、FACT-03、FACT-04、FACT-05、FACT-06、FACT-07、FACT-08、FACT-09、FACT-10、FACT-11、FACT-12、DESIGN-D2-02、DESIGN-D2-03、DESIGN-D2-10、CLAIM-06 |
 | STILL-BROKEN | 3 | FACT-01、DESIGN-D2-01、CLAIM-05 |
 
-三条 STILL-BROKEN 是同一个残留：doc:458 那句题句与修复前 `9ebf3f054` 的 doc:457 逐字相同，批一只替换了它下面的代码块并在 doc:503 补了更正段，没有改题句。因此文档在 §3.2 内部仍存在「检查命中即 `continue`」与「只有非 `PT_LOAD` 过滤 `continue`」的正面冲突。修掉这一句后，这三条可以一并复审。
+三条 STILL-BROKEN 是同一个残留：doc:458 那句题句与修复前 `948c59421` 的 doc:457 逐字相同，批一只替换了它下面的代码块并在 doc:503 补了更正段，没有改题句。因此文档在 §3.2 内部仍存在「检查命中即 `continue`」与「只有非 `PT_LOAD` 过滤 `continue`」的正面冲突。修掉这一句后，这三条可以一并复审。
 
 一致性：15/18 = 83.3%，低于 CONVERGED 要求的 90%，故 NOT PASS。
 

@@ -1,4 +1,4 @@
-# R36 fact 第二轮独立回读（HEAD `1e68bfc1e`）
+# R36 fact 第二轮独立回读（HEAD `37238e568`）
 
 约定：`DOC` = `/home/xzhao/github/minix-rs/rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`。本轮只读；未改源码、文档、轨迹。直接读数包括 `anchor-resolve.sh`、`doc-citation-check.py`、`cargo test --list`、实际宿主测试与 `cargo check`；未跑 QEMU。
 

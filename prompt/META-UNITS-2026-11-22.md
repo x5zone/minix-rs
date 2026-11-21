@@ -49,8 +49,8 @@ rewrite-notes/
 
 | 提交 | 内容 |
 |---|---|
-| `83124a7f4` | coordination → `meta/coordination/`；`.design` → `meta/design/<stage>/`；链接/路径真源/工具/CI/文档同步 |
-| `2c39cb905` | `review-units.md`、`tools/review-units.py`、G14、三轨接入、01 篇状态初始化 |
+| `fa415fb5a` | coordination → `meta/coordination/`；`.design` → `meta/design/<stage>/`；链接/路径真源/工具/CI/文档同步 |
+| `c8d2ffb1d` | `review-units.md`、`tools/review-units.py`、G14、三轨接入、01 篇状态初始化 |
 
 路径真源：`tools/notes-layout.conf` 增加 `NOTES_META` / `NOTES_COORD` / `NOTES_TODO_LEDGER` /
 `NOTES_REVIEW_EVAL` / `NOTES_REVIEW_STATE` / `NOTES_DESIGN_ROOT`；`tools/notes_layout.py` 供
@@ -70,7 +70,7 @@ Python 工具使用，并由 `notes_layout.py` 自测与 `check-review-rules.sh`
 
 ## 五b、独立审计修正
 
-独立只读审计（对照 `2c39cb905` 与工作树）发现并已修复：
+独立只读审计（对照 `c8d2ffb1d` 与工作树）发现并已修复：
 
 - 规则里的 `check --doc` 与工具位置参数不一致 → 工具增加 `--doc` 别名。
 - G14 未在 `review-loop.md` 的 L6.9/L7 编号出现 → 两处补 G14；`review-publication.md` 补回 G13。

@@ -1,7 +1,7 @@
 # R25 meta-review（01-boot-shim-bootstrap）
 
 > 角色：冷启动 P-META。只读审计，唯一写入本文件。
-> 审计时点：`2026-11-10`；HEAD `4d3a0adb1`（R25 RB 收口）；R25 面板基线 `4ed921800`（R24 收口提交，文档 3477 行 / `8aaac0d3…`）；当前文档 3491 行 / `a9588aa0f636a7ee8a2f405a647cb3605a08ecd7ced874f3254ea64f593f2ef3`。
+> 审计时点：`2026-11-10`；HEAD `359645d8b`（R25 RB 收口）；R25 面板基线 `6581d483b`（R24 收口提交，文档 3477 行 / `8aaac0d3…`）；当前文档 3491 行 / `a9588aa0f636a7ee8a2f405a647cb3605a08ecd7ced874f3254ea64f593f2ef3`。
 > 审计对象：`runs/01-stage-kernel/01-boot-shim-bootstrap/` 的 R25 轨迹与 `tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round25/` 的 7 份面板原始输出、`panel/round25-rb.md`。
 > 方法：读工作流规范、版本链、语料、盲区账本、决策账本、R25 轨迹、面板原文、RB25 与 R24 meta；重放 `git status`、`git log`、`sha256sum`、`grep`、`sed`、`python3 tools/eval-trace-check.py`（全历史与 R25 作用域两种）、`tools/anchor-resolve.sh`、`tools/doc-code-map.sh`、`python3 tools/doc-structure-check.py`、`tools/doc-ref-check.sh`、`cargo test --manifest-path os/Cargo.toml … --list`（minix-boot、boot-shim），并逐条读 `logs/round25-*.log` 的 PASS 行。未重跑 QEMU，未重跑全量宿主测试，未做跨工具第二人复核。
 > 局限：**同 agent 验证 + 已重放命令**。面板读者与 RB 都是同一模型；抽样一致性 <90%，按 `review-evals.md` §5.4 记 NOT PASS。本报告不等于“工作流已被独立证明”。
@@ -58,7 +58,7 @@
 
 **发现了结构性设计问题，不是只有命名/注释级意见。** 但“处置成立”要分条看。
 
-- `map_kernel(&KernelLayout)`：**成立**。把六个同型位置参数（text vbase/pbase/pages、data pages、dm vbase/pages）收进已存在的命名结构，消除相邻参数互换后仍编译的风险；`design-d2.md:158-164` 的论证与源码一致。已落码为两参（`os/arch/src/arch/paging.rs:633-635`），VM 调用点同步（`os/servers/vm/src/vmproc/vmproc_handle.rs:386`）。问题在过程：同一提交改了签名，文档句却写成“不再收 identity 参数（7 参）”，RB 抓出后由 `4d3a0adb1` 修成“两参”。设计对，文档同步晚了一手。
+- `map_kernel(&KernelLayout)`：**成立**。把六个同型位置参数（text vbase/pbase/pages、data pages、dm vbase/pages）收进已存在的命名结构，消除相邻参数互换后仍编译的风险；`design-d2.md:158-164` 的论证与源码一致。已落码为两参（`os/arch/src/arch/paging.rs:633-635`），VM 调用点同步（`os/servers/vm/src/vmproc/vmproc_handle.rs:386`）。问题在过程：同一提交改了签名，文档句却写成“不再收 identity 参数（7 参）”，RB 抓出后由 `359645d8b` 修成“两参”。设计对，文档同步晚了一手。
 - `with_optional_len`：**成立**。把“旧生产者/测试/读头失败”三种来源从 `0` 哨兵中显式化（`os/libs/minix-boot/src/platform.rs:153-162`），保留了 D-031 的 `{with_len,len,has_len}` 冻结 API 与 wire 兼容。五个生产点全部改用它。残余：`with_optional_len(…, None)` 没有专项测试；`review-evals.md` §4d 要求代码修复带回归测试，这一条只靠既有 `with_len/new` 测试与 QEMU 门间接覆盖。
 - `records_in_wire` 咨询标记：**成立但记账错**。设计上 D-034 的 bool 被冻结，面板也建议“拒绝改型”；文档把“消费者必须读 wire”改成“当前无消费者、不是运行期强制”（`:1734`）是正确的最小修复。错在 CLAIM-03 记 ③ 而不是 ①，以及 `DECISIONS-PENDING-R24.md:35` 的详细理由还留着“类型标记，防未来消费者误判”的旧措辞，与 `DECISIONS.md:112` 的“咨询标记”不一致。
 - `DESIGN-10`：**面板接受、未实施、记 ③**。`BootWindows.ranges` 仍是 `[(u64,u64); 32]`（`os/kernel/src/lib.rs:1064-1067`），没有改用 `PhysRange`；面板的“接受”理由（`design-d2.md:147-153`）成立，替代方案与代价都给了。这是 G9 的未清项，不是“非缺陷”。
@@ -69,12 +69,12 @@
 ### 4. Independence：PASS（面板）/ CONCERN（RB25 的 95.7%）
 
 - **面板独立性成立**。三份读者报告只引文档原句，没有引用 `os/`/`minix3/`；FACT-A/B 与 DESIGN-D2 各自独立取证；REFUTE 的 6 条主张有 2 条阻断（CLAIM-03/06），不是复述主 agent。读者 B 的 31 条里包含 D4 指针、x86 直核矛盾这些 FACT 没报的 P0，是真正的独立发现。
-- **RB25 抓出的两条说明 RB 有用**：`FACT-B-11` 是同一提交把 `map_kernel` 改成两参、文档却写“7 参”的新错；`READER-A-03` 是台账记 ① 但 `1c279cbd5` 对该句零改动。两条都不是台账能自证的，RB 逐条读源码/文档后才抓到。RB 不是橡皮图章。
+- **RB25 抓出的两条说明 RB 有用**：`FACT-B-11` 是同一提交把 `map_kernel` 改成两参、文档却写“7 参”的新错；`READER-A-03` 是台账记 ① 但 `30ae59cc7` 对该句零改动。两条都不是台账能自证的，RB 逐条读源码/文档后才抓到。RB 不是橡皮图章。
 - **95.7% 的可信范围有限**：
   - 31 条“随机”没有给抽样方法/种子/候选池，且恰好 31/31 全过；15 条“强制 P0”是主 agent 指定的，不是盲抽。随机样本里只有 25 条真 ①，6 条是“主张成立/合理取舍”，所以 31/31 不等于“31 条修复全对”。
-  - RB25 审的是 `c4bb307e`（3491 行，`1c279cbd5` 的文档），不是当前 `a9588aa0`（3491 行，含 `4d3a0adb1` 的两条修复）。RB 报告自称“与任务书一致”，但 loop §5 报的是修复后的 sha；两者不是同一制品。两条必修修完后**没有第二次 RB 回读**，只在 `loop.md:1385` 写“已改”。
+  - RB25 审的是 `c4bb307e`（3491 行，`30ae59cc7` 的文档），不是当前 `a9588aa0`（3491 行，含 `359645d8b` 的两条修复）。RB 报告自称“与任务书一致”，但 loop §5 报的是修复后的 sha；两者不是同一制品。两条必修修完后**没有第二次 RB 回读**，只在 `loop.md:1385` 写“已改”。
   - RB25 也接受了 ③ 的“合理取舍”（DESIGN-02/14）与 CLAIM-03 的“③正确”，没有质疑处置类；它与主 agent 共享“③=不用修”的盲区。
-- **结论**：RB 的独立发现价值成立；95.7% 只能读作“1c279cbd5 首轮修复保真度”，不能读作“R25 最终态整体一致率”。按 `review-evals.md` §5.4，首轮随机抽样率 31/124 = 25%，命中 2 条必修，属于有效回读；但没有最终态二读，不能给 PASS。
+- **结论**：RB 的独立发现价值成立；95.7% 只能读作“30ae59cc7 首轮修复保真度”，不能读作“R25 最终态整体一致率”。按 `review-evals.md` §5.4，首轮随机抽样率 31/124 = 25%，命中 2 条必修，属于有效回读；但没有最终态二读，不能给 PASS。
 
 **“修一条带出另一条”是否仍有**：有，规模比 R24 小。
 - `FACT-B-11`：改签名带出文档参数计数错误（新错，RB 抓回）。
@@ -122,7 +122,7 @@ python3 -I tools/eval-trace-check.py rewrite-notes/coordination/review-eval/runs
 2. **逐 ID 证据仍是模板**。124 行的 `处置` 几乎全是“按面板最小修复落地（文档/代码/测试）”，`证据` 是 `panel/round25/*.md:行；问题：…`，`复验` 是“doc 五门 PASS；宿主/QEMU 见 loop §5”。没有一条带“旧串 → 新串”的 grep、测试名、commit hunk。R-2 的“轮转闸：旧串全篇 grep 归零”没有落地；`eval-trace-check` 只检查复验列非空，所以机械 PASS。R24 meta 的 B-54/B-56 原样复发。
 3. **DESIGN 行的“问题”列抓错字段**。例如 `:1872` 的 DESIGN-02 行“问题”是 `- 位置：os/kernel/src/lib.rs:1064-1103…`，不是发现本身；DESIGN-09/10/14/15/16 同样。这是台账生成脚本按第一个八字段抓取造成的，读者无法从台账判断“这条到底在说什么”。
 4. **全历史 trace 仍 FAIL，且 R25 新增一条**。全历史运行 `PASS 7 / WARN 19 / FAIL 11`：10 条 `panel-exemption`（round17-rb … round25-rb 没有 `## FINDING`，loop §1 无豁免行）+ 1 条历史 `coverage`（FACT-P3-08、RB13-04..07、RB14-01、READER-R14-F01..05）。RB25 `:105-108` 报的是 `FAIL 10`，因为它没把 `round25-rb.md` 算进去（该文件是 RB 自己写的）；当前 HEAD 是 11。**10/11 是存量，1/11 是 R25 自己的 RB 报告**；模式是存量的（RB 报告一直没有豁免行），实例是新的。R25 作用域 PASS，不等于全历史门 PASS。
-5. **提交覆盖修复，但 BASELINE 没有 R25 条目**。`1c279cbd5` 含 12 个代码文件 + 文档 + 4 个轨迹文件 + `DECISIONS.md` 一行；`4d3a0adb1` 含两条 RB 必修的文档与 loop。`git status --porcelain` 只剩用户侧 `.codex/.trae` 两个派生文件与未跟踪 `01-design-learn.md`，没有代码/文档残留。但 `BASELINE.txt:71-80` 只到 R24，没有 `r25_fix_head`/`r25_fixed_doc_sha256`/`r25_fixed_doc_lines`；loop §0/§5 有读数，基线文件没有。RB25 审的 `c4bb307e` 与当前 `a9588aa0` 也不同，没有二读记录。
+5. **提交覆盖修复，但 BASELINE 没有 R25 条目**。`30ae59cc7` 含 12 个代码文件 + 文档 + 4 个轨迹文件 + `DECISIONS.md` 一行；`359645d8b` 含两条 RB 必修的文档与 loop。`git status --porcelain` 只剩用户侧 `.codex/.trae` 两个派生文件与未跟踪 `01-design-learn.md`，没有代码/文档残留。但 `BASELINE.txt:71-80` 只到 R24，没有 `r25_fix_head`/`r25_fixed_doc_sha256`/`r25_fixed_doc_lines`；loop §0/§5 有读数，基线文件没有。RB25 审的 `c4bb307e` 与当前 `a9588aa0` 也不同，没有二读记录。
 6. **裁决账没有 R25 行**。`DECISIONS.md` 最后一条是 D-034；DESIGN-02/09/10 没有八字段行，没有 `DECISIONS-PENDING-R25.md`。`DECISIONS-PENDING-R24.md:35` 的详细理由还写“类型标记，防未来消费者误判”，与 `DECISIONS.md:112` 的“咨询标记”不一致；这是 B-65 的实例复发。
 
 **结论**：Trace integrity 判 FAIL。形状与算术是绿的，但 severity、逐 ID 证据、全历史门、基线、裁决承接五项不成立。
@@ -242,7 +242,7 @@ R25 的 ③ 从 R24 的 4 条涨到 26 条；其中 19 条（73%）没有 `revie
 
 - 相对 R24（meta 最终判 IMPROVED / 运行质量 PASS）：
   - **检测更强**：10 个 P0 全部结构性，4 个只由读者接住；RB25 抓出 2 条主 agent 自评“已修”之后的错误，证明 RB 不是复述。
-  - **修复保真度更高**：抽查的 33 条 ①/P0 在最终 HEAD 全部真修；两条 RB 必修由 `4d3a0adb1` 修好。
+  - **修复保真度更高**：抽查的 33 条 ①/P0 在最终 HEAD 全部真修；两条 RB 必修由 `359645d8b` 修好。
   - **但轨迹/处置更差**：③ 从 4 涨到 26，19 条没有反证；severity 列与面板大面积不一致；逐 ID 证据仍是模板；BASELINE 没有 R25；全历史 trace 新增一条 R25 自己的 FAIL；裁决项没有八字段行。
   - 因此不能判 IMPROVED；也不是全面 REGRESSED（检测与设计确实有新增、P0 全修、QEMU 六门与宿主门绿），判 **FLAT** 最准确。
 - **抽样一致性 40/59 = 67.8%**，低于 90%，按规则 **NOT PASS**。
@@ -252,7 +252,7 @@ R25 的 ③ 从 R24 的 4 条涨到 26 条；其中 19 条（73%）没有 `revie
   2. 用面板原值回填台账 severity；reader-b 的 20 vs 31 与 2/8/10 vs 2/8/21 必须统一；`metrics.md` 的 P0/P1/P2 从台账/面板生成。
   3. 每条 ① 给“旧串 → 新串”的 grep 或测试名/commit hunk；至少让 READER-A-03、FACT-B-11 这类“记 ① 但无 diff”的事不可能再靠模板通过。
   4. 在 `DECISIONS.md` 为 DESIGN-02/09/10 建八字段行（或 `DECISIONS-PENDING-R25.md`），更新 `DECISIONS-PENDING-R24.md:35` 的旧“类型标记”措辞；`follow-ups.md` 给 B-17 一个 02 指针或 ④ 行。
-  5. 在 `BASELINE.txt` 补 `r25_fix_head=4d3a0adb1`、`r25_fixed_doc_sha256=a9588aa0…`、`r25_fixed_doc_lines=3491`；在 `loop.md §1` 给 `round25-rb.md` 加“无发现面板”豁免，消除全历史 trace 的新增 FAIL。
+  5. 在 `BASELINE.txt` 补 `r25_fix_head=359645d8b`、`r25_fixed_doc_sha256=a9588aa0…`、`r25_fixed_doc_lines=3491`；在 `loop.md §1` 给 `round25-rb.md` 加“无发现面板”豁免，消除全历史 trace 的新增 FAIL。
   6. 在最终 HEAD 重跑一次 RB（至少覆盖两条必修 + 15 条 ③ 改类后的读者项），把二读结果写成“二次定向复核”，不要写成整体一致率。
 
 ---
@@ -304,7 +304,7 @@ R25 的 ③ 从 R24 的 4 条涨到 26 条；其中 19 条（73%）没有 `revie
 **B-69 基线/回读的“最终态”缺失（B-43/B-61/B-66 的合流）**
 
 - 类别：轨迹 / 回读
-- 证据：`BASELINE.txt` 没有 R25 条目（`:71-80` 只到 R24）；RB25 审 `c4bb307e`（`round25-rb.md:6`），loop §5 报 `a9588aa0`（`:1386`）；两条必修由 `4d3a0adb1` 修完后没有二读；`metrics.md` 没有“首轮随机/二次定向”两列。
+- 证据：`BASELINE.txt` 没有 R25 条目（`:71-80` 只到 R24）；RB25 审 `c4bb307e`（`round25-rb.md:6`），loop §5 报 `a9588aa0`（`:1386`）；两条必修由 `359645d8b` 修完后没有二读；`metrics.md` 没有“首轮随机/二次定向”两列。
 - 为什么没看见：BASELINE 的更新是手工的；RB 的任务书没写“必须审 post-fix HEAD”；metrics schema 没有二读字段。
 - 期望探测器：L6 入口强制 `BASELINE.txt` 有本轮 `fix_head/doc_sha/lines`；RB 报告必须写被审 sha 与 HEAD 的关系；任何 RB 后修复必须触发定向二读并写进 metrics。
 
@@ -314,11 +314,11 @@ R25 的 ③ 从 R24 的 4 条涨到 26 条；其中 19 条（73%）没有 `revie
 - **B-54 范围行压成 token：OPEN（形式改善、语义未改善）**。R25 有 124 条逐 ID 行，不再是范围行；但 `处置`/`证据`/`复验` 三列仍是模板，逐 ID 只有“面板行号 + 问题摘要”，没有“旧串/测试名/hunk”。
 - **B-55 分档指标不可复算：OPEN/REGRESSED**。台账 severity 与面板大面积不一致（reader-a 全 P2、reader-c 全 P2、fact-a 全 P1、fact-b `P0/P1` 合并标签）；metrics 仍按 124/98/26。
 - **B-56 声称修复无 diff 回指：OPEN**。124 条 ① 没有一条 `git show` hunk 或旧串 grep；`eval-trace-check` 的“复验非空”被模板句满足。
-- **B-61 未提交修复：CLOSED（本轮）**。`1c279cbd5` + `4d3a0adb1` 覆盖代码/文档/轨迹；`git status` 只剩用户侧 `.codex/.trae` 与未跟踪笔记。但 BASELINE 未同步（B-69）。
+- **B-61 未提交修复：CLOSED（本轮）**。`30ae59cc7` + `359645d8b` 覆盖代码/文档/轨迹；`git status` 只剩用户侧 `.codex/.trae` 与未跟踪笔记。但 BASELINE 未同步（B-69）。
 - **B-63 G8 计数不区分同根/文风/已判：OPEN/REGRESSED**。R25 124 原始、约 100 唯一、26 ③ 中 19 条不是真误报；G8 仍无法机械计算。
 - **B-64 ④ 修复后无冷读者复读：OPEN**。71 条读者项只有约 11 条经 RB 复读（15%），没有第二个冷读者。
 - **B-65 用户裁决到代码的落地状态无核对门：OPEN**。DESIGN-02/09 无 `DECISIONS-PENDING-R25`；DESIGN-10 接受未实施；`DECISIONS-PENDING-R24.md:35` 还留着“类型标记”的旧措辞。
-- **B-66 定向复核冒充整体一致率：OPEN（变体）**。R25 没有写“100%”，但 44/46 的 95.7% 是 `1c279cbd5` 首轮、不是最终 HEAD；两条必修后的二读缺失。R24 的“二次 23/23”口径问题换成了“首轮 95.7% + 两条已改”，本质相同。
+- **B-66 定向复核冒充整体一致率：OPEN（变体）**。R25 没有写“100%”，但 44/46 的 95.7% 是 `30ae59cc7` 首轮、不是最终 HEAD；两条必修后的二读缺失。R24 的“二次 23/23”口径问题换成了“首轮 95.7% + 两条已改”，本质相同。
 - **B-33 冻结基线无机械门：OPEN**。loop §0 只写工作树内容，没有面板前后 `git status` 输出/sha 对比；RB25 的 `git status` 是修复后的。
 - **B-34 代码改动后文档引文无人回读：OPEN/REGRESSED**。R25 的 §3.7/§4.2 两个 P0、FACT-B-11 都是这一类；仍靠机会性发现。
 - **B-36 成本无仪表：OPEN**。token 未采集；`agent 7` 不含 RB/meta。

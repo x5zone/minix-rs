@@ -3,20 +3,20 @@
 - 审计日期：2026-11-21
 - 审计者：P-META（独立冷启动；未参与 R36 面板、修复或 certify；只读，唯一写入是本文件）
 - 审计对象：`rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/` 的 `loop.md` R36 小节、`metrics.md` R36 块、`defect-ledger.md` R36 表、`OPEN-DEBT.md`、`suggestions.md`、`certify/round36-*.md`、`panel/round36/`
-- 基线状态：HEAD `080e6bb0db614d5b0e1f45c4c98390e60bf7467c`（`git rev-parse HEAD` 实测）；文档 sha256 `1c0d9de478c09760a77e4068ac8190c82c0d88c0c36fe372e791d9e524c11660`，与 `eb8768b23`、`080e6bb0d` 两个提交的文档对象逐字节相同
+- 基线状态：HEAD `624fcccf158c4c24fc9043e89aaa287856234f1f`（`git rev-parse HEAD` 实测）；文档 sha256 `1c0d9de478c09760a77e4068ac8190c82c0d88c0c36fe372e791d9e524c11660`，与 `49ed0c54a`、`624fcccf1` 两个提交的文档对象逐字节相同
 - 规范依据：`prompt/review-rules/review-panel.md` §3/§4.3/§5、`prompt/review-rules/review-evals.md` §4.0b–§4.0f/§5/§6A/§9、`prompt/skill/review-loop.md` L5/L6/L6.5、`WORKFLOW-VERSIONS.md` 的 V3.4–V3.6
 
 **结论摘要：总体 `IMPROVED`；运行质量 `NOT PASS`；抽样全记录一致 40/43 = 93.0%，处置合规 42/43 = 97.7%，抽样项本身高于 90% 阈值。`NOT PASS` 来自 Scope discipline 与 Trace integrity 的硬问题，不是抽样精度不足。**
 
 ## 一、执行摘要
 
-R36 的内容质量是这条循环里目前最高的一轮。证据有三组。第一，确认轮抓到了 R35 之后设计批落地的真实 P0 代码缺陷：`BOOT_HANDOFF_V1_VERSION` 在 `2a345f566` 的提交说明里写「9 → 10」，常量却仍是 9；FACT-A-01、FACT-B-01、DESIGN-D2-01、READER-A-01、CLAIM-03 五路独立撞到同一根，主 agent 把常量改成 10 并补了版本历史（`da9581437`），不是只改文档。第二，设计角色不再停在命名与注释：`SHIM_TABLE` 的字节偏移构造与未对齐 `&BootFileTable` 强转（D2-07）、aarch64 直核腿的第二份手写 bump 边界检查（D2-04）、`prepare_boot` 的两个安装型全局（D2-05）、startup 死代码（D2-03）都是结构性发现；V3.6 减法表给出 8 行提案、4 行采纳，全部复用现有类型或纯删除。第三，读者三角色是独立冷读，产出了事实角色没有覆盖的理解障碍（READER-B-03 的「第三条标记」变体、READER-B-04 的五腿五门链对称差、READER-C-03 的 boot2 边界外推、READER-B-07 的过程词算术），并且 reader certify 的 16 个修改点由另一名冷读者逐条复读。
+R36 的内容质量是这条循环里目前最高的一轮。证据有三组。第一，确认轮抓到了 R35 之后设计批落地的真实 P0 代码缺陷：`BOOT_HANDOFF_V1_VERSION` 在 `52110580f` 的提交说明里写「9 → 10」，常量却仍是 9；FACT-A-01、FACT-B-01、DESIGN-D2-01、READER-A-01、CLAIM-03 五路独立撞到同一根，主 agent 把常量改成 10 并补了版本历史（`d8ce8b29c`），不是只改文档。第二，设计角色不再停在命名与注释：`SHIM_TABLE` 的字节偏移构造与未对齐 `&BootFileTable` 强转（D2-07）、aarch64 直核腿的第二份手写 bump 边界检查（D2-04）、`prepare_boot` 的两个安装型全局（D2-05）、startup 死代码（D2-03）都是结构性发现；V3.6 减法表给出 8 行提案、4 行采纳，全部复用现有类型或纯删除。第三，读者三角色是独立冷读，产出了事实角色没有覆盖的理解障碍（READER-B-03 的「第三条标记」变体、READER-B-04 的五腿五门链对称差、READER-C-03 的 boot2 边界外推、READER-B-07 的过程词算术），并且 reader certify 的 16 个修改点由另一名冷读者逐条复读。
 
 这一轮不能判 `PASS`，有四类硬问题。
 
 第一，**冻结决策被重新提起，而台账记 `re-litigation: 0`**。`DECISIONS.md:147` 的 D-064（2026-11-20 用户裁决）明确否决路线 A（参数化 `prepare_boot` 签名），选择路线 B（`debug_assert!`→`assert!`，两个 `static mut` 与两个 `install_*` 结构保留）。R36 的 DESIGN-D2-05（`panel/round36/design-d2.md:125-139`）再次提出参数化，`D-104`（`DECISIONS.md:187`）把它延期到 `R36-design-batch`，`OPEN-DEBT.md:49` 的 R36 行把「两个安装型全局参数化」写成待办第一项。D-104 与 R36 台账都没有提到 D-064；loop 的冻结决策检查（`loop.md:2173`）只列 D-061/D-062/D-067/D-071/D-086，漏了 D-064。这是对用户裁决的静默重开，不是新发现。D2-05 中唯一的新内容是 `install_dtb_ptr(0)` 时 `DTB_PTR == 0` 使第二次安装仍可通过断言（0 值写一次漏洞），这一子项成立，但它应与「参数化」拆开：前者可以新立 P2，后者应判 `dup-of: D-064` 或由一条明确取代 D-064 的新裁决承接。
 
-第二，**同根修复的射程仍然按「面板句子」而不是「根因触及的制品集合」定义，导致三轮 certify**。`certify/round36-fact-pass1.md` 在 `1e3ebbf74` 上判 38 CLOSED / 6 STILL-BROKEN；`-pass2.md` 在 `1e68bfc1e` 上判 43/1；最终 `round36-fact.md` 在 `eb8768b23` 上判 44/0，随后又在 `080e6bb0d` 上补读 FACT-B-05 的三处源码注释残项。三轮不是重复劳动，而是第一轮只修了「文档句」，没有把同一根的源码 docstring、测试注释、未用 import 一起收掉。最后两批修复提交 `eb8768b23` 与 `080e6bb0d` 不在 R36 台账的任何一行里，`metrics.md` 也没有引用它们；`certify 新准入 = 0` 的口径（`loop.md:2202`）把这类「同根修复不完整」排除在新根因之外，账面自洽，但账本无法回指最终修复。
+第二，**同根修复的射程仍然按「面板句子」而不是「根因触及的制品集合」定义，导致三轮 certify**。`certify/round36-fact-pass1.md` 在 `5ccd49968` 上判 38 CLOSED / 6 STILL-BROKEN；`-pass2.md` 在 `37238e568` 上判 43/1；最终 `round36-fact.md` 在 `49ed0c54a` 上判 44/0，随后又在 `624fcccf1` 上补读 FACT-B-05 的三处源码注释残项。三轮不是重复劳动，而是第一轮只修了「文档句」，没有把同一根的源码 docstring、测试注释、未用 import 一起收掉。最后两批修复提交 `49ed0c54a` 与 `624fcccf1` 不在 R36 台账的任何一行里，`metrics.md` 也没有引用它们；`certify 新准入 = 0` 的口径（`loop.md:2202`）把这类「同根修复不完整」排除在新根因之外，账面自洽，但账本无法回指最终修复。
 
 第三，**认证历史被事后改写，且轨迹产物在审计时未提交**。`round36-fact-pass1.md` 的正文汇总写 `CLOSED 38 / STILL-BROKEN 6`（第 65 行），文件末尾却被追加了「本轮最终结论：CLOSED/PASS（44/44 修改点）」（第 73 行）；`round36-reader-pass1.md` 的正文写 `CLOSED 12 / STILL-BROKEN 4`（第 26 行），末尾同样追加「16/16」（第 29 行）。这两处追加在 `git diff` 里是未提交修改；它们与正文直接矛盾。一个按文件名与末尾结论读取的门会得到 PASS，一个按正文读取的读者会得到 NOT PASS。这是 B-61（收口后的未提交修复）与 B-43（迟交回读读旧快照）的合体，不是措辞问题。
 
@@ -29,7 +29,7 @@ R36 的内容质量是这条循环里目前最高的一轮。证据有三组。�
 | 流程数 | 记录值 | 独立复判 | 判定 |
 |---|---|---|---|
 | 唯一根因数 | 93（`metrics.md:285`、`loop.md:2172` 写作 `RD-R36-001..093`） | 台账实际是 93 行，但 ID 最大到 `RD-R36-095`，中间缺 `016` 与 `036`；按根因文本聚类，实质缺陷簇约 35 个（wire 版本、v10 删除、strict/postconditions、调用点、ghost API、所有权、Paging、测试账、build_memmap、aarch64 x0、行号锚点、cfg 计数、land_slice、探针描述、user_sp、step1+2、loader 引文、ceil 不等式、静默跳过、SHIM_TABLE、aarch64 bump、prepare_boot、startup 死代码、静态 scratch、arena 算术、boot2 边界、第三条标记、五腿差集、§3.7 重复、Ch5 重复、§1.4 结构、过程词、TLB 时点、map_huge、术语缺口），另有 30 条建议与 2 条 FP。 | 账面值不是唯一根因数，是 ID 数；指标名与事实不符。CONCERN |
-| 自引入数 | 0（`metrics.md:289`） | `land_slice`/`store_kernel_info` 的 docstring 在本轮文档修正后与正文冲突，属「修复暴露既有注释过期」；它由 certify #3 在 `080e6bb0d` 修掉，未计入自引入。按「只算新代码缺陷」的口径 0 成立，按「修复必须同步同根注释」的口径应记 1。 | 口径依赖；无新运行期缺陷。CONCERN |
+| 自引入数 | 0（`metrics.md:289`） | `land_slice`/`store_kernel_info` 的 docstring 在本轮文档修正后与正文冲突，属「修复暴露既有注释过期」；它由 certify #3 在 `624fcccf1` 修掉，未计入自引入。按「只算新代码缺陷」的口径 0 成立，按「修复必须同步同根注释」的口径应记 1。 | 口径依赖；无新运行期缺陷。CONCERN |
 | 重复合并数 | 0（逐 ID 立根因，`loop.md:2172`） | 至少 7 个跨角色同根簇可合并：wire 版本 7 ID（A-01/B-01/D2-01/RA-01/RB-01 部分/RC-01 部分/CLAIM-03）、v10 删除 14 ID、测试账 6 ID、aarch64 x0 5 ID、build_memmap 2 ID、loader 引文 2 ID、ceil 不等式 2 ID。按当前「ID 即根」的约定，0 是账面值；按「同一缺陷不重复计数」的收敛判据，重复率约 25–30/93。 | 指标失去唯一性语义。FAIL（作为度量） |
 | edition 稳定 | V3.4（R35→R36 未变；`loop.md:2134` 写 `schema: V3.4 from R35`） | 版次标签稳定，但工作流版本已到 V3.6（`WORKFLOW-VERSIONS.md:15` 与 V3.6 节），R36 的 D2 报告带 V3.6 减法表、`metrics.md:301` 带 `减法: 提案 8 / 采纳 4`，而 `eval-trace-check.py` 的 `_combined_ver` 由 schema 决定（`tools/eval-trace-check.py:2352-2361`），V3.4 下不跑 V3.6 减法门，也不要求 certify 的 `- 遗留 P0: <n> / P1: <n>` 声明。规则被部分执行，门没有跟着执行。 | 标签稳定，规则边界不稳定。CONCERN |
 
@@ -37,7 +37,7 @@ R36 的内容质量是这条循环里目前最高的一轮。证据有三组。�
 
 | 问 | 结论 | 证据与理由 |
 |---|---|---|
-| 1 Detection | PASS（有保留） | 最强证据是 wire 版本 P0：基线 `2a345f566` 的提交说明写 9→10，`handoff_v1.rs:288` 仍是 `= 9`，FACT-A-01、FACT-B-01、DESIGN-D2-01、READER-A-01、CLAIM-03 五路 ID（fact 两路、design、reader、refute）独立撞到。设计侧还抓到 `SHIM_TABLE` 的字节构造（D2-07）、aarch64 bump 第二份边界检查（D2-04）、探针来源写错（A-14/B-17）、`map_huge` 2 MiB 语义写反（CLAIM-05）。仍漏的四类：① 同根的源码注释/测试注释/import（三轮 certify 才清完）；② 冻结决策 D-064（D2 的材料清单没有决策摘要，主 agent 检查也未列 D-064）；③ 8 条未编号 fact 建议与 25 条只按组登记的建议；④ 盲区账本没有本轮增量。 |
+| 1 Detection | PASS（有保留） | 最强证据是 wire 版本 P0：基线 `52110580f` 的提交说明写 9→10，`handoff_v1.rs:288` 仍是 `= 9`，FACT-A-01、FACT-B-01、DESIGN-D2-01、READER-A-01、CLAIM-03 五路 ID（fact 两路、design、reader、refute）独立撞到。设计侧还抓到 `SHIM_TABLE` 的字节构造（D2-07）、aarch64 bump 第二份边界检查（D2-04）、探针来源写错（A-14/B-17）、`map_huge` 2 MiB 语义写反（CLAIM-05）。仍漏的四类：① 同根的源码注释/测试注释/import（三轮 certify 才清完）；② 冻结决策 D-064（D2 的材料清单没有决策摘要，主 agent 检查也未列 D-064）；③ 8 条未编号 fact 建议与 25 条只按组登记的建议；④ 盲区账本没有本轮增量。 |
 | 2 Precision | CONCERN | 台账 `FP 2`（CLAIM-01/02）是正确分类：两条主张在文档自设口径内成立，反证失败不等于文档有缺陷。但抽样发现 3 条记录级问题：FACT-B-19 的「内核侧没有数量断言」与源码相反（`os/kernel/src/lib.rs:2770-2778` 有 `assert_eq!(len, NR_BOOT_MODULES)`；只是静默跳过时 len 仍为 12，断言不会触发）；DESIGN-D2-06 的「25 成员 / 2 常量 / `DM_HUGE`」与源码相反（`Paging` 是 24 成员 = 1 常量 + 23 方法；`DM_HUGE` 是 `paging.rs:770` 的局部常量，不在 trait 里）；DESIGN-D2-05 把 D-064 已否决的参数化当新提案。误报没有明显的角色模式，但设计角色的这两条说明「设计角色对 Rust 类型面的计数需要事实角色复核」。 |
 | 3 Design quality | PASS | 9 条设计发现中 7 条是结构性且落到代码：D2-07 类型化 `SHIM_TABLE`、D2-04 复用 `BumpRegion`、D2-05 安装型全局、D2-03 startup 死代码、D2-09 静态 scratch、D2-06 `PteChannel` 文档缺席、D2-02 v10 台账。减法表 8 行、采纳 4 行，全部是「复用现有类型 / 纯删除 / 纯文档」，没有新增类型。局限：D2-06 的成员数写错；D2-05 的一半是重提 D-064。 |
 | 4 Independence | PASS（有保留） | 读者三份报告均声明未读源码与其他角色输出；reader certify 是另一名冷读者，逐条复读 16 点。独有发现包括 READER-B-03/04、READER-C-03/06、READER-B-07、CLAIM-05。19 条读者 FINDING 中约 8 条不是事实角色的复述（B-03、B-04、B-05、B-06、B-08、C-03、C-06、B-07）。保留：最大的五个 P0 簇仍是 fact/design/refute 三路重复撞到，读者独有发现集中在结构与教学面，不在 wire 契约面。D2-05 的独立发现被不完整的决策摘要污染（见第五、六节）。 |
@@ -67,7 +67,7 @@ R36 的内容质量是这条循环里目前最高的一轮。证据有三组。�
 | 1 | FACT-A-01 | P0 | RD-R36-001 | 一致 | `grep -n 'BOOT_HANDOFF_V1_VERSION: u32' os/libs/minix-boot/src/handoff_v1.rs` → `296: ... = 10`；基线 9、修复后 10；文档 `:1625/:1714` 为「9 → 10」「当前 10」。 |
 | 2 | FACT-A-03 | P0 | RD-R36-003 | 一致 | `grep -c STARTUP_RECORD_STORE_LEN` 文档 0；`六个落地区` 3 命中；`七个落地区` 0；代码 `globals.rs` 无 startup store。 |
 | 3 | FACT-A-05 | P0 | RD-R36-005 | 一致 | `grep -c '#\[test\]' kernel_info.rs` → 24；15/3/5/1；`test_postconditions_reject` 全仓 0。基线文档声称 31 与 4 条 postcondition 负控，属于虚构测试。 |
-| 4 | FACT-B-01 | P0 | RD-R36-017 | 一致 | 与 #1 同根；`handoff_v1_read.rs:107` 精确比较；`git show 2a345f566` 的 diff 未改常量。 |
+| 4 | FACT-B-01 | P0 | RD-R36-017 | 一致 | 与 #1 同根；`handoff_v1_read.rs:107` 精确比较；`git show 52110580f` 的 diff 未改常量。 |
 | 5 | FACT-B-02 | P0 | RD-R36-018 | 一致 | 与 A-07 同根；`grep -rn 'commit_map_tables\|map_tables_mut' os/` 零命中；`fill_map_tables` 在 `uefi_helpers.rs:1156`。 |
 | 6 | FACT-B-03 | P0 | RD-R36-019 | 一致 | 与 A-03 同根；`STARTUP_RECORD_STORE` 只剩 `handoff_v1_read.rs:763` 一条悬空注释；六类落地区。 |
 | 7 | FACT-B-04 | P0 | RD-R36-020 | 一致 | 与 A-15 同根；生产 `store_kernel_info` 仅 `lib.rs:225/347`；`kmain` 形参 `_kernel_info`（`:1806`）且不重存。 |
@@ -119,14 +119,14 @@ R36 的内容质量是这条循环里目前最高的一轮。证据有三组。�
 
 ```
 git rev-parse HEAD
-  → 080e6bb0db614d5b0e1f45c4c98390e60bf7467c
+  → 624fcccf158c4c24fc9043e89aaa287856234f1f
 git log -6 --format='%h %ci %s'
-  → 1e3ebbf74 2026-11-21 07:58 docs(01): R36 轨迹
-    1e68bfc1e 2026-11-21 08:22 fix(01): R36 certify #1 残项
-    eb8768b23 2026-11-21 08:43 fix(01): R36 certify #2 残项
-    080e6bb0d 2026-11-21 09:02 fix(01): R36 certify #3 残项
-    882ae3fb8 2026-11-21 07:48 fix(01): R36 面板归因批一
-    cd2b31f97 2026-11-21 07:51 fix(01): R36 面板归因批二
+  → 5ccd49968 2026-11-21 07:58 docs(01): R36 轨迹
+    37238e568 2026-11-21 08:22 fix(01): R36 certify #1 残项
+    49ed0c54a 2026-11-21 08:43 fix(01): R36 certify #2 残项
+    624fcccf1 2026-11-21 09:02 fix(01): R36 certify #3 残项
+    e4374af7e 2026-11-21 07:48 fix(01): R36 面板归因批一
+    773e4bbc5 2026-11-21 07:51 fix(01): R36 面板归因批二
 python3 tools/eval-trace-check.py <run-dir> --round R36
   → PASS 12 / WARN 25 / FAIL 0，exit 0
 python3 tools/panel-index.py <run-dir>/panel/round36 --check
@@ -168,7 +168,7 @@ grep -n 'R36' rewrite-notes/coordination/review-eval/BLIND-SPOTS.md
 grep -n 'D-064' <run-dir>/loop.md <run-dir>/defect-ledger.md
   → 0（D-064 未进 R36 的冻结决策检查）
 git blame -L 509,515 --date=short os/boot-shim/src/opensbi_helpers.rs
-  → 138b26e422 2026-11-20 已把 assert! 与 D-064 注释落码
+  → 289512053d 2026-11-20 已把 assert! 与 D-064 注释落码
 git diff -- <run-dir>/certify/round36-fact-pass1.md <run-dir>/certify/round36-reader-pass1.md
   → 两处仅追加「本轮最终结论：CLOSED/PASS」，与正文 38/6、12/4 矛盾；未提交
 ```
@@ -199,9 +199,9 @@ git diff -- <run-dir>/certify/round36-fact-pass1.md <run-dir>/certify/round36-re
 
 | 轮次 | 事实面基线 | 结果 | 读者面基线 | 结果 |
 |---|---|---|---|---|
-| #1 | `1e3ebbf74` | 38 CLOSED / 6 STILL-BROKEN | `1e3ebbf74` | 12 CLOSED / 4 STILL-BROKEN |
-| #2 | `1e68bfc1e` | 43 CLOSED / 1 STILL-BROKEN | `1e68bfc1e` | 16 CLOSED / 0 |
-| #3 | `eb8768b23` + `080e6bb0d` 残项复读 | 44 CLOSED / 0 | `eb8768b23` | 16 CLOSED / 0 |
+| #1 | `5ccd49968` | 38 CLOSED / 6 STILL-BROKEN | `5ccd49968` | 12 CLOSED / 4 STILL-BROKEN |
+| #2 | `37238e568` | 43 CLOSED / 1 STILL-BROKEN | `37238e568` | 16 CLOSED / 0 |
+| #3 | `49ed0c54a` + `624fcccf1` 残项复读 | 44 CLOSED / 0 | `49ed0c54a` | 16 CLOSED / 0 |
 
 问题不在三轮，而在回执的保存方式：
 
@@ -216,12 +216,12 @@ git diff -- <run-dir>/certify/round36-fact-pass1.md <run-dir>/certify/round36-re
 
 `loop.md:2202` 定义 `certify 新准入 = 0` 的口径是「三轮 certify 的 STILL-BROKEN 均为同根修复不完整，不是新根因」。这个口径可以自洽，但账本没有回指最终两批修复：
 
-- `eb8768b23` 修了 5 处源码注释（4 GiB 门措辞等）；
-- `080e6bb0d` 修了 `kernel_info.rs` 的孤儿测试注释、未用 `USER_STACK_TOP` import、`land_slice`/`store_kernel_info` docstring，以及 `handoff_v1_read.rs`/`handoff_v1_write.rs`/`memmap_source.rs` 的 v10 后未用 import；
-- 台账 93 行的「证据」列只引 `da9581437`、`882ae3fb8`、`cd2b31f97`，没有一行引 `eb8768b23` 或 `080e6bb0d`；
+- `49ed0c54a` 修了 5 处源码注释（4 GiB 门措辞等）；
+- `624fcccf1` 修了 `kernel_info.rs` 的孤儿测试注释、未用 `USER_STACK_TOP` import、`land_slice`/`store_kernel_info` docstring，以及 `handoff_v1_read.rs`/`handoff_v1_write.rs`/`memmap_source.rs` 的 v10 后未用 import；
+- 台账 93 行的「证据」列只引 `d8ce8b29c`、`e4374af7e`、`773e4bbc5`，没有一行引 `49ed0c54a` 或 `624fcccf1`；
 - `metrics.md` 也没有引用这两个提交。
 
-这不是说 `certify 新准入` 的计数错了（残项确实是同根），而是说「certify 期间发生的代码修改」在台账里没有行级落点。一个后续读者按台账重放「所有 ① 的修复证据」时，不会知道最终 HEAD 上还有两批 certify 驱动的修改。修法：给 `FACT-B-05` 或新增一行 `CERT-R36-01` 加「同根残项：源码注释/测试注释/import；commit `eb8768b23` + `080e6bb0d`；复验见最终回执残项节」。这与「certify 新准入」的根因数口径不冲突，只是把修改点落账。
+这不是说 `certify 新准入` 的计数错了（残项确实是同根），而是说「certify 期间发生的代码修改」在台账里没有行级落点。一个后续读者按台账重放「所有 ① 的修复证据」时，不会知道最终 HEAD 上还有两批 certify 驱动的修改。修法：给 `FACT-B-05` 或新增一行 `CERT-R36-01` 加「同根残项：源码注释/测试注释/import；commit `49ed0c54a` + `624fcccf1`；复验见最终回执残项节」。这与「certify 新准入」的根因数口径不冲突，只是把修改点落账。
 
 ### 5.5 V3.6 规则边界与遗留声明（CONCERN）
 
@@ -252,9 +252,9 @@ git diff -- <run-dir>/certify/round36-fact-pass1.md <run-dir>/certify/round36-re
 
 ### 5.8 D-064 的状态与重提（FAIL，跨 Scope）
 
-`DECISIONS.md:147` 的 D-064 状态是「已批准待实施（裁决生效，实施未开始）」，但 `git blame` 显示 `138b26e422`（2026-11-20）已把两个 `debug_assert!` 改成 `assert!` 并写了「D-064」注释（`opensbi_helpers.rs:459-468`、`:511-517`）。D-064 的实施状态过期；`OPEN-DEBT.md:20` 也仍写「已批准待实施」。这本身是判决账的维护问题，但它与 D2-05 的重提叠加：一个本应显示「路线 B 已实施」的判决，被读成「还可以讨论参数化」。R36 的冻结决策检查没有列 D-064，D-104 也没有引用它。更直接的派发缺项是：`loop.md:2151-2152` 给 FACT-A/FACT-B 的材料含「决策摘要」，而 `loop.md:2153` 给 P-DESIGN-D2 的材料只有「§3/§4 + 关联代码 + `trait-audit.json` + AGENTS.md」，没有决策摘要。设计角色不是疏忽，是没拿到 D-064。
+`DECISIONS.md:147` 的 D-064 状态是「已批准待实施（裁决生效，实施未开始）」，但 `git blame` 显示 `289512053d`（2026-11-20）已把两个 `debug_assert!` 改成 `assert!` 并写了「D-064」注释（`opensbi_helpers.rs:459-468`、`:511-517`）。D-064 的实施状态过期；`OPEN-DEBT.md:20` 也仍写「已批准待实施」。这本身是判决账的维护问题，但它与 D2-05 的重提叠加：一个本应显示「路线 B 已实施」的判决，被读成「还可以讨论参数化」。R36 的冻结决策检查没有列 D-064，D-104 也没有引用它。更直接的派发缺项是：`loop.md:2151-2152` 给 FACT-A/FACT-B 的材料含「决策摘要」，而 `loop.md:2153` 给 P-DESIGN-D2 的材料只有「§3/§4 + 关联代码 + `trait-audit.json` + AGENTS.md」，没有决策摘要。设计角色不是疏忽，是没拿到 D-064。
 
-正确的处置：把 D-064 状态改成「路线 B 已实施（`138b26e422`）；路线 A 仍被否决」；D2-05 拆成「0 值写一次漏洞（新，P2）」与「参数化（`dup-of: D-064`，关闭）」。这样既保留 D2-05 的新发现，也不重开用户裁决。
+正确的处置：把 D-064 状态改成「路线 B 已实施（`289512053d`）；路线 A 仍被否决」；D2-05 拆成「0 值写一次漏洞（新，P2）」与「参数化（`dup-of: D-064`，关闭）」。这样既保留 D2-05 的新发现，也不重开用户裁决。
 
 ### 5.9 裸 ID 冲突 workaround（CONCERN）
 
@@ -263,12 +263,12 @@ git diff -- <run-dir>/certify/round36-fact-pass1.md <run-dir>/certify/round36-re
 ### 5.10 成本与 L6.5 前提（CONCERN）
 
 - `metrics.md:302` 记 9 个 agent；实际是 7 个面板角色 + 6 次 certify 回执 = 13 次派发。如果 certify 的同一角色在同一 session 里连续跑三轮，可以争辩「2 个 certify agent」，但文件明确是三次冷启动回读，按派发次数应记 13。
-- `loop.md:2227` 的三问②写「R36 面板与三轮 certify 都在同一最终基线（080e6bb0d）上」。面板基线是 `e04e61cb5`（`loop.md:2136`），certify #1/#2 分别是 `1e3ebbf74`/`1e68bfc1e`，最终回执正文是 `eb8768b23` + `080e6bb0d` 残项复读。面板与 certify 不可能在同一基线；正确的表述是「certify 收敛到最终 HEAD，面板在修复前基线」。这个前提错误会让 L6.5 的三问自检失去意义。
+- `loop.md:2227` 的三问②写「R36 面板与三轮 certify 都在同一最终基线（624fcccf1）上」。面板基线是 `b5f8ff65b`（`loop.md:2136`），certify #1/#2 分别是 `5ccd49968`/`37238e568`，最终回执正文是 `49ed0c54a` + `624fcccf1` 残项复读。面板与 certify 不可能在同一基线；正确的表述是「certify 收敛到最终 HEAD，面板在修复前基线」。这个前提错误会让 L6.5 的三问自检失去意义。
 - `metrics.md` 的「token 未采集」仍是 B-36 的 OPEN 状态；6 小时的 wall time 是唯一成本读数。
 
 ### 5.11 FREEZE 未追加（CONCERN，收口待办）
 
-`FREEZE.md` 最后一条是「R35 确认轮」，没有 R36 的 append-only 节。R36 在 `loop.md` 与 `metrics.md` 已写 `CONVERGED`，按 V3.4-m7 的 append 语义，收口应追加 R36 的冻结提交、文档 sha、未解决事项与重开条件。审计时 HEAD 是 `080e6bb0d`，工作树里 loop/pass1 仍未提交；如果这是 meta 收口前的中间态，那么应在主 agent 收口时补；如果直接以当前状态结案，FREEZE 的记录就缺一轮。
+`FREEZE.md` 最后一条是「R35 确认轮」，没有 R36 的 append-only 节。R36 在 `loop.md` 与 `metrics.md` 已写 `CONVERGED`，按 V3.4-m7 的 append 语义，收口应追加 R36 的冻结提交、文档 sha、未解决事项与重开条件。审计时 HEAD 是 `624fcccf1`，工作树里 loop/pass1 仍未提交；如果这是 meta 收口前的中间态，那么应在主 agent 收口时补；如果直接以当前状态结案，FREEZE 的记录就缺一轮。
 
 ## 六、BLIND-SPOT-DELTA
 
@@ -276,7 +276,7 @@ git diff -- <run-dir>/certify/round36-fact-pass1.md <run-dir>/certify/round36-re
 
 ### 新增
 
-- **B-R36-01 根因射程按「面板句子」定义，不按制品类别定义。** 证据：FACT-B-05 需要三轮 certify 才清完文档 + 源码 docstring + 测试注释 + 未用 import；最终两批修复 `eb8768b23`/`080e6bb0d` 不进台账。期望探测器：每个 ① 行带 `closure:` 五类（doc / code-comment / test / citation / anchor），删除或改名的标识符在 `os/` 与文档里同时扫旧串。
+- **B-R36-01 根因射程按「面板句子」定义，不按制品类别定义。** 证据：FACT-B-05 需要三轮 certify 才清完文档 + 源码 docstring + 测试注释 + 未用 import；最终两批修复 `49ed0c54a`/`624fcccf1` 不进台账。期望探测器：每个 ① 行带 `closure:` 五类（doc / code-comment / test / citation / anchor），删除或改名的标识符在 `os/` 与文档里同时扫旧串。
 - **B-R36-02 决策摘要不完整，冻结决策检查漏项。** 证据：`tmp/.../panel/round36/decisions-snippet.md` 30 行不含 D-064；`loop.md:2173` 的冻结决策检查也不含 D-064；D2-05 重提 D-064 否决的参数化，`re-litigation: 0`。期望探测器：snippet 由 `DECISIONS.md` 按 related-code 路径生成；设计 FINDING 的提案与判决账做关键词/语义对账，冲突即要求 `dup-of` 或显式 supersede。
 - **B-R36-03 认证回执可事后改写，门只读末尾结论。** 证据：pass1 正文 38/6 与 12/4，末尾追加 44/44 与 16/16；`git diff` 显示是未提交追加；轨迹门 PASS。期望探测器：certify 文件 append-only；末尾结论必须与正文汇总一致；不一致即 FAIL。
 - **B-R36-04 未编号/按组登记的建议逃出索引与逐条追溯。** 证据：8 条 fact 建议无 ID；25 条编号建议只按组登记；`INDEX.md` 的 SUGGESTION 25 与 loop 的 33 不一致。期望探测器：`panel-index.py` 统计所有 SUGGESTION（含未编号），`suggestions.md` 逐 ID 落位置/建议/不修理由。
@@ -319,4 +319,4 @@ git diff -- <run-dir>/certify/round36-fact-pass1.md <run-dir>/certify/round36-re
 - `tools/anchor-resolve.sh --check`、`tools/doc-citation-check.py`、`tools/doc-code-map.sh --check` 我重放了，读数分别是 anchor 110/110、citation `checked=29 failed=0`、code-map 54/54；`doc-structure-check`、`doc-ref-check`、`doc-style-lint`、`doc-code-density-check` 未逐条重放，按 loop 的记录接受。
 - 我没有读 `minix3/` 的 C 源做全量复算（只对 CLAIM-01/02 与字段台账做了点读）；C 侧结论的独立强度低于 Rust 侧。
 - 抽样 43/93 = 46%，高于 20% 要求；全记录一致 40/43 = 93.0%，高于 90%，抽样项不写 `NOT PASS`。运行质量的 `NOT PASS` 来自 Scope discipline（D-064）与 Trace integrity（5.2–5.10），不是抽样精度。
-- 本次审计在 HEAD `080e6bb0d`、工作树含未提交的 `loop.md` 与两份 pass1 回执的状态下完成；如果主 agent 在收口时提交或修正这些文件，本报告的 5.3、5.10、5.11 三节需要按新状态重读。本报告不把「门 PASS」写成「工作流已被独立证明」。
+- 本次审计在 HEAD `624fcccf1`、工作树含未提交的 `loop.md` 与两份 pass1 回执的状态下完成；如果主 agent 在收口时提交或修正这些文件，本报告的 5.3、5.10、5.11 三节需要按新状态重读。本报告不把「门 PASS」写成「工作流已被独立证明」。

@@ -1,6 +1,6 @@
 # round36 读者面第三次独立 certify 回读（冷启动，只读）
 
-- 最终 HEAD：`eb8768b23`（`git rev-parse HEAD` = `eb8768b234f36c6829c2aab612def599f8ebf604`）
+- 最终 HEAD：`49ed0c54a`（`git rev-parse HEAD` = `49ed0c54a9d8a8a7bb04aa734d5ee01446cc7ad1`）
 - 被读文档：`/home/xzhao/github/minix-rs/rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`（3600 行）
 - 读法：不读 `panel/round36`、不读前两轮回执、不读 `minix3/`、`os/` 与历史评审；只以最终 HEAD 的文档文本为准，逐条回读 `/tmp/r36-cert-reader.md` 的 16 点，不抽样。
 - 结论口径：`CLOSED` 指读者面冲突已消失且本轮回读未发现新冲突；`STILL-BROKEN` 需附残留冲突与最小修复。
@@ -68,7 +68,7 @@ READER-C-05：CLOSED — 引文头改为“// 节选（四个切片落地区收�
 
 1. 本轮严格只读文档：未读 `panel/round36`、前两轮回执、`minix3/`、`os/` 与历史评审。因此清单中依赖代码侧的复验点——`os/libs/minix-boot/src/handoff_v1.rs` 的 `BOOT_HANDOFF_V1_VERSION = 10`、minix-boot 185/0、`test-sysboot` PASS、`land_slice(` 在 `lib.rs` 的四处调用、citation 29/29——本轮没有独立重跑；上述 CLOSED 判定均基于最终 HEAD 文档的读者面文本与文档内跨节一致性。
 2. §4.4 的断言实现未读代码，只核对了文档内三处同口径（L2738、L2754、L3267）以及 §3.4.2/§5.1/§5.2.1 无相反表述；若代码实现与 `kern_virt_base > u32::MAX` 不一致，属代码侧事实问题，不在本轮读者面回读的取证范围。
-3. 行号按 HEAD `eb8768b23` 的 3600 行工作树文档标注，引用以文字为准；工作树中该文档无未提交修改（`git status --porcelain` 未列出该文件）。
+3. 行号按 HEAD `49ed0c54a` 的 3600 行工作树文档标注，引用以文字为准；工作树中该文档无未提交修改（`git status --porcelain` 未列出该文件）。
 
 - 历史回执：本 pass 的结论以正文汇总为准（pass1 12 CLOSED/4 STILL-BROKEN、pass2/pass3 16/16）；本轮最终结论 CLOSED/PASS（16/16，见 `round36-reader.md`）。
 

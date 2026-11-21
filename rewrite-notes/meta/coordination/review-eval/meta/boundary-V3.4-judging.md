@@ -1,7 +1,7 @@
 # boundary-V3.4 — 对抗样本独立判定（traps T01–T08）
 
 - 审查者：对抗样本回归执行者（V3.4 冷启动审查 agent）
-- 仓库 HEAD 2d82d2b11，2026-11-18
+- 仓库 HEAD 44145d3dc，2026-11-18
 - 冷启动声明：本判定未读 `expected/` 目录（含 `expected/T01.md`–`T08.md`），未读 `meta/boundary-V1.md`，无历史锚定。判据为 AGENTS.md 关键约束（硬件 trait 抽象、抽象语义不描述机制、真值优先序、Kernel=SMP+BKL）加审查者专业判断。
 - 真值查证：T01/T04 涉及进程状态处已对照 `minix3/minix/kernel/proc.h` L142–166 的 `RTS_*` 位标志定义（`p_rts_flags`，16+ 个可组合位，`RTS_SLOT_FREE=0x01` 即"槽空闲"在真值中是状态位字段的一部分）。
 - 口径：阳性样本（T01–T06）须找出埋设缺陷并给最小修复；阴性样本（T07–T08）正确结果为无发现/仅登记 follow-up；单实现 trait 一律先问「测试接缝或语义职责」，不机械断删。

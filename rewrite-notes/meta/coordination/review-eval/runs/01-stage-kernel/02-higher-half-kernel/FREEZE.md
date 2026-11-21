@@ -3,7 +3,7 @@
 - 冻结日期：2026-11-12
 - 工作流 edition：V3.3
 - 确认轮：R2（`轮型: confirmation`）
-- 冻结提交：`809ac212b`（R2 修复与轨迹提交）
+- 冻结提交：`3830bbe7e`（R2 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
 - 文档行数：1280（R2 时点）；R3 时点 1283
 - 文档 sha256：`4f096ea9997eae5aae99ad648967d2b8001256d22e7a63c017d6ea9de16804ce`（R3 复核后；R2 原值 `829b3a71d141d99110588e30d33c446939ed97c7b07de57b66bdef45054ae21b`）
@@ -49,7 +49,7 @@
 - DESIGN 9 条：零 P0/P1；1 条 P2（machine_type 全仓零读者）、8 条 P3；设计骨架与代码逐项一致。
 - READER 独立 A/B/C 共 9 条 FINDING（A 2、B 6、C 1）+ 6 条编号 SUGG（C-S1..S6）+ 3 条聚合 SUGG 段；其中 P1 两条（前置块塞五腿细节、OpenSBI/shim 混淆）已修。原文「18 条（24 中的 7 + 17 中的 7）」计数笔误（7+7=14≠18），r6 补账时按面板实数更正（见 defect-ledger REG-2026-11-18 节）。
 
-修复 7 条 P1/P2 后（批次证据：`fe49cd804` 4 hunk + `afdd867b7` 2 hunk——提交信息称 6 条、diff 实为 4 主题 §1.2①/PC 行/例外清单/U-Boot 消歧，按 diff 记 4），独立冷读 certify 抓到 3 条 REOPEN（部分修复未落地）+ 2 条新 P2。补修后最终独立确认 3 PASS / 1 FAIL（FAIL 项为跨文档混淆——该文档不用 ①②③ 表标记，certify 误用了 D03 的格式），实际无缺陷。
+修复 7 条 P1/P2 后（批次证据：`5e7645e74` 4 hunk + `5c3e70e23` 2 hunk——提交信息称 6 条、diff 实为 4 主题 §1.2①/PC 行/例外清单/U-Boot 消歧，按 diff 记 4），独立冷读 certify 抓到 3 条 REOPEN（部分修复未落地）+ 2 条新 P2。补修后最终独立确认 3 PASS / 1 FAIL（FAIL 项为跨文档混淆——该文档不用 ①②③ 表标记，certify 误用了 D03 的格式），实际无缺陷。
 
 最终文档 sha256 `829b3a71…`；anchor 55/55、doc-code-map 28/28、structure/ref/style 全绿。
 
@@ -72,11 +72,11 @@
 - 冻结日期：2026-11-21
 - 工作流 edition：V3.4（schema `V3.4 from R3`）
 - 确认轮：R4（`轮型: confirmation`）；轮结果 `CONVERGED`
-- 轨迹提交：`7ff9de6c1`（四份 certify 回执、loop §5–§8、metrics/ledger/suggestions/OPEN-DEBT、meta 报告与 BLIND-SPOTS B-69..B-75）；本 FREEZE 节提交 `06ffa1c60`；回归审计与台账表格修复见 `REGRESSION.md` 的 R4 节（后续提交）
+- 轨迹提交：`f306f640b`（四份 certify 回执、loop §5–§8、metrics/ledger/suggestions/OPEN-DEBT、meta 报告与 BLIND-SPOTS B-69..B-75）；本 FREEZE 节提交 `38a277bd7`；回归审计与台账表格修复见 `REGRESSION.md` 的 R4 节（后续提交）
 - 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
 - 文档行数：1294
 - 文档 sha256：`48630c90b2a9e1eb2b2814f93ad61d44de0c8a6c634d4835ca25692c602eb781`
-- 基线提交：`79f910acd`（R4 预门同步后）；面板 6 个独立子 agent，最终修复提交 `ca5830fd5`、`d9ceba0cb`、`2ca9a9cd7`
+- 基线提交：`2b1213b5e`（R4 预门同步后）；面板 6 个独立子 agent，最终修复提交 `cf2dc2b62`、`0f5a5bd9d`、`3c0806f18`
 
 ## 收敛证据（R4）
 
@@ -121,8 +121,8 @@
 
 ## D-107 清零批终态（2026-11-21）
 
-- 代码批全部落码：D2-04 `309cd6e2c`、D2-06 `503ae169e`、F01 `83e8cbb2b`、F04 `f50159798`、F05 `1460d4147`、F06 `c376f5371`、F08 `6d0334dc6`、R02-T01 `fd456926a`、R02-T03 `94d5f2379`、R02-T04 `550d8c0b8`、D2-03 `7de857246`、D2-08 `ecfef0ae9`、D2-09 `74ea87c44`。
-- 设计 P3 全部实现：`p_align`/`LoadSegment.align`/`HIGHER_HALF_CALLED`/`virtual_end` 删除；三处 `repr(C)` 删除；`source_records` 更名（`e27dc513b`）；`RamAuthority` 值类型（`aa0d5393c`）；`free_pt_page` 未注册 fail-closed（`88f3cb96a`）；`write_envelope` 收为测试/载体专用；`startup_record` 死分支删除（`7de857246`）。
+- 代码批全部落码：D2-04 `d2ad56aef`、D2-06 `0de0d03de`、F01 `8a519ca25`、F04 `504500747`、F05 `b51fa46bd`、F06 `fd3258ec3`、F08 `b70495eac`、R02-T01 `ecbf313f5`、R02-T03 `77cfe1b78`、R02-T04 `5cecd98b8`、D2-03 `9d51f9fbd`、D2-08 `a57e998a8`、D2-09 `dad5701c8`。
+- 设计 P3 全部实现：`p_align`/`LoadSegment.align`/`HIGHER_HALF_CALLED`/`virtual_end` 删除；三处 `repr(C)` 删除；`source_records` 更名（`ea53ef286`）；`RamAuthority` 值类型（`c8ac544bd`）；`free_pt_page` 未注册 fail-closed（`5981f1d5a`）；`write_envelope` 收为测试/载体专用；`startup_record` 死分支删除（`9d51f9fbd`）。
 - 台账：`OPEN-DEBT.md` 两行 `[CLOSED]`；`follow-ups.md` F01–F12 与 R02-T01..T04 全部 `[CLOSED]`/dup-of；`suggestions.md` 全部 implemented/already-fixed/dup-of。
 - 验证：`cargo test -p minix-boot --lib` 187/0、`cargo test -p boot-shim --lib` 136/0、`cargo test -p minix-kernel --features mock --lib` 866/0/8、`cargo test -p minix-arch` 266/0、三架构 kernel/kernel-image check 0 error、`check-layout.sh all` PASS（含 L10）、riscv64 higher-half 载体 PASS、riscv64 bootface 门 PASS；`eval-trace-check --round R4` PASS 12/0/0。
 - 已知非本批因果：aarch64 `test-smp-aps-aarch64` 在 boot/SMP 标记全绿后仍于 user-chain Data Abort 失败（`elr=0x23e9d4`，stash 对照在 F08 前同点复现）；`test-rt-birth-aarch64` 同属 D01 轨道已登记的 A2 遗留。

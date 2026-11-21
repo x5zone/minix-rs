@@ -1,7 +1,7 @@
 # D02 R4 读者面 certify 回读（round4-reader）
 
 - 角色：独立 certify 回读者（读者面），冷启动；未参与 D02 R4 面板与修复。
-- 仓库：`/home/xzhao/github/minix-rs`；最终 HEAD：`7ce60e31f`。
+- 仓库：`/home/xzhao/github/minix-rs`；最终 HEAD：`d99dc16a7`。
 - 目标文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`（1294 行）。
 - 范围：`/tmp/r4-cert-reader.md` 列出的 12 条读者面修改点，100% 回读，不抽样。
 - 方法：以当前 HEAD 的文档原文为判定依据；逐条定位修改段及邻句；用文档内算式、表格行序、前后文交叉核对。§6.2 的加法用 shell 复算。仅用 git diff 确认 R4 修改批次与旧句，不把旧版本当事实基线。未读 `panel/round4`、`minix3/`、`os/` 或历史评审。
@@ -172,7 +172,7 @@
 
 ## 复算与检索记录
 
-以下命令均可在仓库根重放；行号对应当前 HEAD `7ce60e31f`。
+以下命令均可在仓库根重放；行号对应当前 HEAD `d99dc16a7`。
 
 ```bash
 printf '0x%x\n' $(( (0x80200160 + 0xffffffbf7fe00000) & 0xffffffffffffffff ))

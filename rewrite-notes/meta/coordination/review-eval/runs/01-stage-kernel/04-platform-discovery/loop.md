@@ -110,7 +110,7 @@
 - 轮型: full
 - edition: V3.3
 - schema: V3.3 from R1
-- 基线提交：`ce6288154`（D03 FREEZE 之后）
+- 基线提交：`c498c9ed0`（D03 FREEZE 之后）
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
 - 文档 sha256：`a8cb91b11e94a2c42daffe1b6cad558850025fcba9c0286e3ee51ab1f8e5e5b5`
 - 行数：2688
@@ -181,7 +181,7 @@
 - 轮型: confirmation
 - edition: V3.3
 - schema: V3.3 from R1
-- 基线提交：`58c8bdcdc`
+- 基线提交：`f12307a08`
 - 文档 sha256：`773c10f1bf69de6f3604a690bc97850282b7077705ac760d8b493087d56675e3`
 - 行数：2708
 - 轮次语义：确认轮；只修新准入 P0/P1/P2 事实/同步；不实施 ⑥；certify 0 才 CONVERGED。
@@ -246,7 +246,7 @@
 - 轮型: confirmation
 - edition: V3.4
 - schema: V3.4 from R3
-- 基线提交：`a16191022`（D03 收尾提交；本轮修复未提交时的工作树）
+- 基线提交：`a786046db`（D03 收尾提交；本轮修复未提交时的工作树）
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
 - 文档基线 sha256：`ff8aad7ea337acd52faedbfe9fda268814d2e632e794b11b4faea44f040b22f5`（R2 FREEZE 值，与面板启动时一致）
 - 行数：2735（修复后 2737）

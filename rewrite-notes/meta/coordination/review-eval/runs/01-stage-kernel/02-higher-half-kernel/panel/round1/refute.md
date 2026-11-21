@@ -147,7 +147,7 @@
   - 文档 §6.1 第 1179 行把"栈回溯出现与调用关系无关的地址"归因到"清帧指针动作缺失"；按上面第 3、4 步，当前构建里更可能的成因是"帧指针根本没有被强制打开"，而不是 `higher_half.rs` 少了一条 `xor rbp`。
 
 - 若我错了：如果生产构建实际带了 `-C force-frame-pointers`（例如由未入库的打包脚本或 CI 环境变量注入），Rust 侧的"保存槽"就存在；但即便如此，C 侧 `pre_init` 恢复 EBP 为 0 这一步仍然成立，文档"C 保存的是 `pre_init` 帧指针"的说法仍然错。要让整条主张成立，需要同时否证这两步，而它们各自都有直接的源码/工件证据。
-- 关于证据时效：我反汇编的 `os/target/x86_64-unknown-none/release/kernel` 构建于 2026-11-11 03:45，之后只有一个提交（30b66fd3a，19:07）动过 `os/kernel/src/lib.rs`（`kmain` 改用 `store_kernel_info` 返回值）；`higher_half.rs`、`os/.cargo/config.toml`、`os/kernel-image/build.rs` 与 profile 设置在这段时间里没有改动。帧指针是否发射由目标规范与优化档决定，不随这次 `kmain` 体内改动翻转，所以结论不受影响；要彻底排除这层疑虑，用 `check-layout.sh` 同款命令重建一次再 `objdump -d` 即可（本报告按只读纪律没有重建）。
+- 关于证据时效：我反汇编的 `os/target/x86_64-unknown-none/release/kernel` 构建于 2026-11-11 03:45，之后只有一个提交（67db5ef37，19:07）动过 `os/kernel/src/lib.rs`（`kmain` 改用 `store_kernel_info` 返回值）；`higher_half.rs`、`os/.cargo/config.toml`、`os/kernel-image/build.rs` 与 profile 设置在这段时间里没有改动。帧指针是否发射由目标规范与优化档决定，不随这次 `kmain` 体内改动翻转，所以结论不受影响；要彻底排除这层疑虑，用 `check-layout.sh` 同款命令重建一次再 `objdump -d` 即可（本报告按只读纪律没有重建）。
 
 ---
 

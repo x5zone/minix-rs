@@ -2,8 +2,8 @@
 
 - **结论：PASS**
 - 审查日期：2026-11-13
-- 当前 HEAD：`a4afb4927`
-- 冻结记录：同目录 `FREEZE.md`（冻结提交 `809ac212b`，确认轮 R2，工作流 edition V3.3）
+- 当前 HEAD：`d6c37bce0`
+- 冻结记录：同目录 `FREEZE.md`（冻结提交 `3830bbe7e`，确认轮 R2，工作流 edition V3.3）
 - 审查方式：只读复核；除本文件外未修改仓库任何文件
 
 ## 1. FREEZE 记录复核
@@ -47,7 +47,7 @@ $ grep -c "#\[test\]" os/boot-shim/src/loader.rs
 22
 ```
 
-代码基线核对：`git diff --stat 809ac212b..HEAD -- os/` 输出为空，冻结后到当前 HEAD 之间 Rust 代码没有任何改动；同一区间内本篇文档也没有变化（sha256 一致）。
+代码基线核对：`git diff --stat 3830bbe7e..HEAD -- os/` 输出为空，冻结后到当前 HEAD 之间 Rust 代码没有任何改动；同一区间内本篇文档也没有变化（sha256 一致）。
 
 ## 2. 抽样复验（10 条已修项）
 
@@ -120,13 +120,13 @@ exit=1
 - **未运行真机链**：QEMU 三架构引导链没有重跑。§4.4 的“aarch64 direct-core 低地址进入来自固件按装载地址平移入口”属于固件行为，本次只核对了文档给出的可复现路径（QEMU `-d in_asm` 第一条记录）与代码侧的低地址假设，没有实际执行这条观测。
 - **C 装载者模型的证据边界**：树内 boot monitor 的装载行为是源码直读（`loadfile_machdep.h`、`loadfile_elf32.c`），没有编译运行 Minix3 的 boot monitor；`RD2-02` 的重复实验用的是等价的最小链接脚本，不是 Minix3 的真实 `kernel.lds` 全量构建。
 - **宿主测试范围**：只跑了 `cargo test -p boot-shim --lib`（125）、`cargo test -p minix-elf`（23）与 `loader.rs` 的测试计数（22）；跨架构镜像构建与 `check-layout.sh` 的三架构实跑没有重跑。
-- **行号漂移**：本文件引用的文档行号与源码行号都是 2026-11-13、HEAD `a4afb4927` 的实测值。
+- **行号漂移**：本文件引用的文档行号与源码行号都是 2026-11-13、HEAD `d6c37bce0` 的实测值。
 - **结论含义**：`PASS` 表示“确认轮口径下没有 open 项、抽样复验与关键事实均未回退”，不是“零未知缺陷保证”。出现新的 P0/P1 事实或行为缺陷证据时仍应重开。
 
 # D02 回归审查（R3 确认轮后）
 
 - **结论：FAIL**
-- **基线提交**：`efb179a9f`（`git rev-parse --short HEAD`）
+- **基线提交**：`31777fa55`（`git rev-parse --short HEAD`）
 - **审查日期**：2026-11-20
 - **审查对象**：D02 `02-higher-half-kernel` 的 R3 冻结记录与最终工作树
 - **审查方式**：只读复核；除向本文件追加本节外，未修改任何文件
@@ -192,7 +192,7 @@ $ grep -n '^## CLAIM' rewrite-notes/coordination/review-eval/runs/01-stage-kerne
 ## R4 独立回归审计（2026-11-21，D-055 两墙口径）
 
 - 审计者：冷启动只读子 agent（未参与 R4 面板、修复、三轮 certify 与 meta）；只读，唯一写入是主 agent 事后追加本节。
-- 对象：最终工作树 `06ffa1c60` 之后的 D02 R4 轨迹与制品，不重审文档技术内容。
+- 对象：最终工作树 `38a277bd7` 之后的 D02 R4 轨迹与制品，不重审文档技术内容。
 - 方法：13 项逐项实跑；镜像用 `mtype` 流式读取并以 sha256/ELF 解析做等价验证（未写 `/tmp` 文件）；台账按实际表头（第 5 列严重度、第 6 列类别、第 7 列处置类）复算。
 
 | # | 审计项 | 判定 | 关键读数 |
@@ -209,7 +209,7 @@ $ grep -n '^## CLAIM' rewrite-notes/coordination/review-eval/runs/01-stage-kerne
 | 10 | DECISIONS/OPEN-DEBT | PASS | D-105/D-106 授权来源为 review-loop D02；D-106 标同源；无字面 `\n` |
 | 11 | FREEZE R4 | PASS | sha/1294、certify 18/18 + 12/12、镜像哈希、4 LOAD/0 `.lrodata`、债务、重开条件 |
 | 12 | 镜像一致性 | PASS | staging 与镜像内 kernel 同为 `fca5b85f…`；LOAD=4；`lrodata`=0 |
-| 13 | 提交与跟踪 | PASS | `06ffa1c60`、`7ff9de6c1`；四份 certify、meta r4、FREEZE 均已 `git ls-files` |
+| 13 | 提交与跟踪 | PASS | `38a277bd7`、`f306f640b`；四份 certify、meta r4、FREEZE 均已 `git ls-files` |
 
 - 审计抓到的唯一格式问题：`defect-ledger.md` 的 RD-R4-017 行「复验」格内有一个未转义的 `|`，把该行切成 11 个内容格（表头 10 列）。已改为 `）。grep -c`，改后该行与表头同为 12 个 `|` 分隔段（含首尾空段）。它不影响 79 行计数、处置聚合或任何门读数。
 - 非阻断方法偏差：审计提示里的列号偏移一列（实际严重度第 5 列、类别第 6 列、处置类第 7 列）；审计者已按实际表头复算并在报告中说明。
@@ -224,7 +224,7 @@ $ grep -h '^## SUGGESTION' -A5 panel/round3/reader-a.md panel/round3/reader-b.md
 
 `doc-code-map` 的 30/30 不是新增文件缺失：30 个路径全部存在并通过。差异来自 R3 文档同时新增了 `os/arch/src/riscv64/paging.rs` 与 `os/arch/src/x86_64/paging.rs` 两个引用，而 `loop.md` 的轮中读数只记了前者（28 → 29），`FREEZE.md` 抄了轮中值，没有按最终文档重算。
 
-CLAIM 编号差异来自最终提交 `efb179a9f`：该提交把 refute 末尾的 `## CLAIM 1..6` 改成 `## CLAIM 11..16`，同步改了台账的 CLAIM 发现 ID 与 `INDEX.md` 的 refute 哈希，但没有回写 `FREEZE.md` 与 `metrics.md`。
+CLAIM 编号差异来自最终提交 `31777fa55`：该提交把 refute 末尾的 `## CLAIM 1..6` 改成 `## CLAIM 11..16`，同步改了台账的 CLAIM 发现 ID 与 `INDEX.md` 的 refute 哈希，但没有回写 `FREEZE.md` 与 `metrics.md`。
 
 ## 2. 轨迹门与制品链
 
@@ -383,7 +383,7 @@ $ sed -n '1072p' rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
 - **未重审技术内容**：本轮只核 FREEZE 记录、制品链、机械门与 5 条抽样。文档的技术正确性以 R3 的六角色面板与 certify 回执为输入，本次没有重新逐条验证 95 条发现。
 - **未跑真机链与宿主测试**：R3 声称无代码行为改动；本次没有重跑 QEMU、`check-layout.sh` 或 `cargo test`。宿主测试与引导链的读数不在本轮判定范围内。
 - **只读边界**：除本文件追加本节外，未修改任何文件；缺失的 `suggestions.md` 没有补建，也没有改台账。
-- **行号时点**：本节的文档与源码行号都是 2026-11-20、HEAD `efb179a9f` 的实测值。R3 台账与 FREEZE 里的行号是更早时点，二者已经漂移。
+- **行号时点**：本节的文档与源码行号都是 2026-11-20、HEAD `31777fa55` 的实测值。R3 台账与 FREEZE 里的行号是更早时点，二者已经漂移。
 - **FAIL 的性质**：8 条失败项都是记录或制品链不一致，不是文档 sha 回退，也不是六门机械失败。文档 sha 与行数仍与 FREEZE 相同，七道门全部通过（code-map 是 30/30 通过，只是 FREEZE 记成 29/29）。
 - **结论含义**：本轮 `FAIL` 表示「R3 冻结记录不能逐字对上最终工作树」，不表示文档技术结论被推翻。修正记录后可以重跑同一套命令复查。
 
@@ -404,4 +404,4 @@ $ sed -n '1072p' rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
 
 补修后实测：`--round R1/R2/R3` 三轮均 PASS；anchor 55/55、citation `checked=25 failed=0`、doc-code-map 30/30、panel-index 6 文件哈希一致。
 
-> 并发提示：本轮期间有另一会话在同一仓库提交 `5b15e5e26`（D-061）与 `0ac7477af`（D-062），两份判决都针对 D01 的 R35 发现；本目录的判决行因此顺延为 D-063，避免编号冲突。
+> 并发提示：本轮期间有另一会话在同一仓库提交 `aae797ca5`（D-061）与 `5fda0c979`（D-062），两份判决都针对 D01 的 R35 发现；本目录的判决行因此顺延为 D-063，避免编号冲突。

@@ -1,8 +1,8 @@
 # D04 回归审查 —— 04-platform-discovery（FREEZE 后）
 
 - 审查日期：2026-11-13
-- 当前 HEAD：`a4afb4927`
-- 冻结提交：`bc232e627`（R2 确认轮收口；`da04c7486` 为 FREEZE 提交）
+- 当前 HEAD：`d6c37bce0`
+- 冻结提交：`f9582d655`（R2 确认轮收口；`7073926cb` 为 FREEZE 提交）
 - 文档：`rewrite-notes/01-stage-kernel/04-platform-discovery.md`
 - 台账：`rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/defect-ledger.md`
 - 范围：文档全文、FREEZE、R2 台账、`tools/doc-code-map.sh` 列出的 52 个文件与 `minix3/` 下的 C 源
@@ -18,7 +18,7 @@
 | anchor | 77/77 | `bash tools/anchor-resolve.sh --check <doc>` → `anchors=77 resolved=77 zero-def=0 multi-def=0` | 一致 |
 | 内部引用 | structure/ref 通过 | `bash tools/doc-ref-check.sh --check <doc>` → 内部章节引用均可解析 | 一致 |
 | R2 `--round` 门 | PASS（12 PASS / 2 WARN / 0 FAIL） | `python3 -I tools/eval-trace-check.py <run-dir> --round R2` → 同一分布，`结论: PASS`，exit 0 | 一致 |
-| 冻结后代码改动 | 无 | `git diff --stat bc232e627..HEAD` 只含 `rewrite-notes/` 的文档、FREEZE、台账、metrics；无 `os/` 改动 | 一致 |
+| 冻结后代码改动 | 无 | `git diff --stat f9582d655..HEAD` 只含 `rewrite-notes/` 的文档、FREEZE、台账、metrics；无 `os/` 改动 | 一致 |
 | 测试门 | `cargo test -p minix-platform` 18 passed | 本次重跑：`18 passed; 0 failed`（含 `test_parse_synthetic_acpi`、`test_check_gic_madt_decision_table` 等） | 一致 |
 
 两个 WARN 分别是 `reader-fix-log.md` 无 `## FINDING` 行（loop 已豁免）与 `D04-design-batch` 的已批准延期（D-054）。`DECISIONS.md` 第 136 行有判决账行，`OPEN-DEBT.md` 有对应条目。WARN 不是回归。
@@ -111,7 +111,7 @@
 # D04 回归审查（R3 确认轮后）
 
 - 审查日期：2026-11-20
-- 基线提交：`5c95ec2063ad7b1de9988bb4be397862f2f3e207`（2026-11-20 04:13:55 +0800，`fix(04): R3 V3.4 确认轮——D04 在 V3.5 制品链下重新收敛`；工作树除 3 个与本篇无关的未跟踪文件外干净）
+- 基线提交：`f1cbe6a67db4d3e3f38e253bb1fd3237bcc68cda`（2026-11-20 04:13:55 +0800，`fix(04): R3 V3.4 确认轮——D04 在 V3.5 制品链下重新收敛`；工作树除 3 个与本篇无关的未跟踪文件外干净）
 - 审查对象：`FREEZE.md` R3 节及其引用的全部制品（`loop.md`、`metrics.md`、`defect-ledger.md`、`OPEN-DEBT.md`、`certify/round3-certify.md`、`panel/round3/`、`suggestions.md`、`DECISIONS.md` D-070）与最终工作树
 - **结论：FAIL**（两处记录层不一致：FAIL-1 严重度分布、FAIL-2 台账复验列与 suggestions.md 脱节。其余全部核对项——文档哈希/行数、三轮轨迹门、panel-index、六门、metrics 全部数值、D-070 判决链、抽查 5 行——均与 FREEZE 记录一致。两处 FAIL 均不动摇六门与制品链读数，属冻结记录文字/登记缺陷）
 
@@ -133,7 +133,7 @@
 | `panel-index --check` | 6 文件哈希一致 | `python3 -I tools/panel-index.py <run-dir>/panel/round3 --check` → `panel-index: 6 个文件哈希与计数一致` | 一致 |
 | panel INDEX 计数 | FINDING 27 / SUGGESTION 37 / CLAIM 6 | INDEX.md 实表逐列求和：FINDING 9+6+1+7+4+0=27、SUGGESTION 0+3+10+12+12=37、CLAIM 6 | 一致 |
 | certify 回执 | 12/12 CLOSED，首轮即 PASS | `certify/round3-certify.md`：`结论：PASS`、`核验条数：12`、`CLOSED：12；STILL-BROKEN：0` | 一致 |
-| 制品存在性 | FREEZE R3 全部引用 | `panel/round3/{fact,design-d2,reader-a,reader-b,reader-c,refute}.md`+`INDEX.md`、`certify/round3-certify.md`、`loop.md` R3 §0–§8+L6/L6.5、`metrics.md` R3 块、`defect-ledger.md` R3 节（29 行）、`OPEN-DEBT.md` R3-design-batch 行、`suggestions.md` R3 段、`DECISIONS.md:151` D-070、`prompt/EXECUTE-D01-D06-CONVERGENCE.md`（`git log --oneline -1 562b9fe6e` → 确为该文件新增提交）、`design-d2.md:165` ARCH-PROPOSAL RD04-A1 —— 全部存在 | 一致 |
+| 制品存在性 | FREEZE R3 全部引用 | `panel/round3/{fact,design-d2,reader-a,reader-b,reader-c,refute}.md`+`INDEX.md`、`certify/round3-certify.md`、`loop.md` R3 §0–§8+L6/L6.5、`metrics.md` R3 块、`defect-ledger.md` R3 节（29 行）、`OPEN-DEBT.md` R3-design-batch 行、`suggestions.md` R3 段、`DECISIONS.md:151` D-070、`prompt/EXECUTE-D01-D06-CONVERGENCE.md`（`git log --oneline -1 7b3c82e0b` → 确为该文件新增提交）、`design-d2.md:165` ARCH-PROPOSAL RD04-A1 —— 全部存在 | 一致 |
 
 ## R3-3. 六门读数（任务列 7 条命令，全部实测）
 

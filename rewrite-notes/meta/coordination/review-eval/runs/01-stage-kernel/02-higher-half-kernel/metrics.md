@@ -102,7 +102,7 @@
 - 本轮新准入: 79
 - certify 新准入: 0（round4-fact/round4-reader 回执全 CLOSED 后复读；同根残项不计新根）
 - 重复合并: 28（语义口径；ID 未合并，旧口径的 `0` 仅指台账没有合并 ID）
-- 自引入: 2（均轮内修复：§3.2 题句由 `d9ceba0cb` 修；§5.1「三类→四类」为 post-certify P3）
+- 自引入: 2（均轮内修复：§3.2 题句由 `0f5a5bd9d` 修；§5.1「三类→四类」为 post-certify P3）
 - 严重度: P0 4 / P1 5 / P2 20 / P3 7（FINDING 36；5 条 P3 FINDING 按 G3 分流 SUGG：DESIGN-D2-07/08/09、READER-B-05/B-06）
 - 处置: ① 19 / ② 2 / ④ 12 / ⑤ 0 / ⑥ 0 / FP 4 / SUGG 42
 - 未闭环: 0

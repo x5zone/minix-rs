@@ -1,7 +1,7 @@
 # R24 meta-review（01-boot-shim-bootstrap）
 
 > 角色：冷启动 P-META。只读审计，唯一写入本文件。
-> 审计时点：`2026-11-09`；HEAD `bd0ca319c`（R24 五项裁决落账），R24 基线 `bd7c53cdb`。
+> 审计时点：`2026-11-09`；HEAD `7e71c601a`（R24 五项裁决落账），R24 基线 `76e646d97`。
 > 审计对象：`rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/` 的 R24 轨迹、`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round24/` 的 7 份面板原始输出与 `round24-rb.md`。
 > 方法：读工作流规范、版本链、语料、盲区账本、决策账本、R24 轨迹、面板原文、RB24、前三次 meta；用 `git status`、`git log`、`sha256sum`、`grep`、`awk`、`sed`、`python3 tools/eval-trace-check.py` 重放关键读数；另跑一次 `cargo check -p test-paging-faultloop --features fw-x86-uefi` 与一次 `cargo test -p boot-shim --features test-all --lib -- --list`。未重跑 QEMU，未重跑全量宿主测试。
 > 局限：同 agent 验证 + 已重放命令；未做跨工具第二人复核；面板读者与 RB 都是同一模型。按 `review-evals.md` §9，这不等于“工作流已被独立证明”。
@@ -63,7 +63,7 @@
 ### 8. Trace integrity：FAIL
 
 - 形状层是绿的：`python3 tools/eval-trace-check.py <run> --panel-dir tmp/review-eval/.../panel/round24` 输出 `PASS 8 / WARN 0 / FAIL 0`，解析到 118 条面板发现，台账无孤儿、无缺行；`metrics.md` 的 118 = ① 116 + ③ 2 自洽；`--self-test` PASS。
-- 提交层是红的：审计时 `git status --porcelain` 有 33 个已跟踪修改，其中 31 个是 R24 的修复文件（26 个 `os/` 文件、文档、台账、loop、metrics、related-code），全部未提交；另 2 个是 `.codex/.trae` 的 V2.2 派生文件，另有 `01-design-learn.md` 未跟踪；HEAD `bd0ca319c` 只是“R24 五项裁决落账”，不是修复提交；`BASELINE.txt` 最后一条是 BOOT-SCOPE，没有 R24 的 `r24_fix_head`/`r24_fixed_doc_sha256`。这意味着：R24 的 116 条 ① 没有一条能从提交复现，R-1 的“commit 级回归 review”没有对象，R-2 的“轮转闸”证据只指向工作树。B-61 从“收口后的未提交修复”升级为“整轮修复未提交”。
+- 提交层是红的：审计时 `git status --porcelain` 有 33 个已跟踪修改，其中 31 个是 R24 的修复文件（26 个 `os/` 文件、文档、台账、loop、metrics、related-code），全部未提交；另 2 个是 `.codex/.trae` 的 V2.2 派生文件，另有 `01-design-learn.md` 未跟踪；HEAD `7e71c601a` 只是“R24 五项裁决落账”，不是修复提交；`BASELINE.txt` 最后一条是 BOOT-SCOPE，没有 R24 的 `r24_fix_head`/`r24_fixed_doc_sha256`。这意味着：R24 的 116 条 ① 没有一条能从提交复现，R-1 的“commit 级回归 review”没有对象，R-2 的“轮转闸”证据只指向工作树。B-61 从“收口后的未提交修复”升级为“整轮修复未提交”。
 - 台账层：`defect-ledger.md:1655` 的表头是 `| 发现 ID | 角色 | 严重度 | 类别 | 处置类 | 处置 | 复验 |`，缺 `review-evals.md` §3.3 要求的 `证据` 列，且 `角色` 不是 `来源角色`；R24 只有 13 个范围行承载 118 个 ID，`①` 的复验列是“doc 五门 PASS”“cargo 测试通过”“QEMU 六门 PASS”这类聚合句，没有逐 ID 的“旧串 → 新串”grep 或测试名。B-54/B-56 原样复发。
 - 处置层：`CLAIM-01..06` 一行全记 `①`，但 `refute.md` 的 6 条主张里只有 4 条阻断（`loop.md:1281` 自己也写“4 条阻断”），`CLAIM-02/03` 是“反证失败（主张成立）”；`FACT-B-11..21` 一行全记 `①`，其中第 1 小项是面板误报并被 RB N2 反转。`metrics.md` 的 `① 116` 因此至少含 2 条非缺陷与 1 条误报子项。
 - RB 层：`round24-rb.md` 有 B1、B2 与 N1–N11 共 13 项，`loop.md:1304` 只写“B1/B2 与 N1–N11 已按最小补修逐项处理”，没有逐项处置行；`metrics.md:80` 写“11 项补修后二次 23/23”，13 与 11 不一致。二次 23/23 是 13 定向 + 10 重放，不是对 118 条的独立抽样；首轮 71/80 = 88.8% 才是本轮的独立抽样读数。
@@ -81,7 +81,7 @@
 
 | 规则 | 声称的落地物 | R24 实际证据 | 判定 |
 |---|---|---|---|
-| R-1 commit 级回归 review 分级 + 当场修 + 复验终止（递归上限 2 层） | `review-evals.md` §4e、`review-loop.md` L4.6 | R24 没有任何修复提交；HEAD `bd0ca319c` 只是裁决落账；31 个 R24 修复文件全在工作树；`loop.md:1292-1306` 没有逐 commit 的 diff/复验记录；自然也没有“当场修完才下一个 commit”的对象 | **FAIL（未落地）** |
+| R-1 commit 级回归 review 分级 + 当场修 + 复验终止（递归上限 2 层） | `review-evals.md` §4e、`review-loop.md` L4.6 | R24 没有任何修复提交；HEAD `7e71c601a` 只是裁决落账；31 个 R24 修复文件全在工作树；`loop.md:1292-1306` 没有逐 commit 的 diff/复验记录；自然也没有“当场修完才下一个 commit”的对象 | **FAIL（未落地）** |
 | R-2 轮转闸：无证据不进下一轮；①③④ 全部已修且附证据 | `review-evals.md` §4f、`eval-trace-check.py` 的 ①/④ 复验非空检查 | 工具形状 PASS（`PASS 8 / WARN 0 / FAIL 0`），但 ① 的复验是“doc 五门 PASS”“cargo 测试通过”这类聚合句；RB 首轮仍找到 8 半修 + 1 未修；没有“旧串全篇 grep 归零”的命令与输出 | **CONCERN（门在，证据不成立）** |
 | R-3 拖欠须人工批准；未经批准的 ② 按未修计 | `review-evals.md` §4g | R24 没有 ②；`OPEN-DEBT.md` 为空；`follow-ups.md:49` 的 F-R14-04 有 2026-11-09 用户批准、目标 D02、写明“唯一获准跨篇延期项” | **PASS（窄口径）** |
 | R-4 判决字段 8 项，`reviewer_verdict` 与 `user_decision` 分列 | `review-evals.md` §3.5、`DECISIONS.md` 八列表 | R24 五项用户裁决没有进 `DECISIONS.md`（最后一行是 D-029）；`DECISIONS-PENDING-R24.md` 只有四列（编号/裁决/状态/实施要点），没有 `reviewer_verdict`、`scope`、`implementation_status`、`evidence`、`reopen_condition`；五项全部“待实施”且未回写 | **FAIL（未落地）** |
@@ -204,7 +204,7 @@
 
 ## 第二次审计（2026-11-10）
 
-> 审计对象：HEAD `91da40986`；修复链 `91e652a73`（40 files）→ `d20cd3362`（基线）→ `6a40c61fc`（RB-post 收口）→ `209e5c074`（基线指向收口）→ `91da40986`（裁决证据/计数）。文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`，与 `BASELINE.txt` 的 `r24_fixed_doc_sha256` 一致。
+> 审计对象：HEAD `162a86478`；修复链 `90428654f`（40 files）→ `d4be59d7b`（基线）→ `99dac96b4`（RB-post 收口）→ `d41261cb6`（基线指向收口）→ `162a86478`（裁决证据/计数）。文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`，与 `BASELINE.txt` 的 `r24_fixed_doc_sha256` 一致。
 > 本次重点：上次的 B-65、B-61、B-54、B-56、CLAIM 处置类、二次 100% 口径、工作树干净；D-030..D-034 是否真落码；118 行台账与 metrics 是否自洽。
 > 只读；未改代码/文档；同 agent 验证 + 已重放命令。
 
@@ -213,12 +213,12 @@
 | 上次项 | 本次判定 | 证据 |
 |---|---|---|
 | B-65 裁决落地无门 | **实例关闭；机制仍开** | `DECISIONS.md:108-112` 的 D-030..D-034 均为八字段行；`DECISIONS-PENDING-R24.md:9-13` 五项均“已实施”；D-031 的 `PlatformDescSource.len`、wire `off+4`、`push_platform_windows` 跨度与 `platform_window_uses_the_recorded_blob_length` 均存在；D-033 的 `assert_boot_windows_addressable` 与两枚测试均存在。我实跑 `cargo test -p minix-kernel --features mock --lib platform_window_uses_the_recorded_blob_length`、`...boot_windows_accept_ranges_below_the_phys_limit`、`...boot_windows_reject_ranges_above_the_phys_limit`，各 1 passed。仍开的是“机制”：没有工具/角色自动把 `implementation_status` 与代码现状对照，C-29 仍需要。 |
-| B-61 未提交 | **主修复关闭；轨迹两文件仍开** | `git show --stat 91e652a73` 为 40 files、+1139/−440；`git show 6a40c61fc` 补跨度测试；`BASELINE.txt` 的 `r24_fix_head=6a40c61fc`、`r24_fixed_doc_sha256=8aaac0d3…` 与当前文档一致。审计开始时 `git status --porcelain` 仍有 `M loop.md`、`M metrics.md`（内容是新增 RB-post 与提交链两行），另有用户侧 `.codex/.trae` 两项与未跟踪 `01-design-learn.md`；所以“工作树只剩用户侧两项”不成立，但未提交的已不是代码/文档修复，而是两行轨迹记录。 |
+| B-61 未提交 | **主修复关闭；轨迹两文件仍开** | `git show --stat 90428654f` 为 40 files、+1139/−440；`git show 99dac96b4` 补跨度测试；`BASELINE.txt` 的 `r24_fix_head=99dac96b4`、`r24_fixed_doc_sha256=8aaac0d3…` 与当前文档一致。审计开始时 `git status --porcelain` 仍有 `M loop.md`、`M metrics.md`（内容是新增 RB-post 与提交链两行），另有用户侧 `.codex/.trae` 两项与未跟踪 `01-design-learn.md`；所以“工作树只剩用户侧两项”不成立，但未提交的已不是代码/文档修复，而是两行轨迹记录。 |
 | B-54 范围行 | **关闭** | `defect-ledger.md:1655` 表头含 `发现 ID | 角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验`；R24 段解析到 118 条逐 ID 行，没有范围行；`eval-trace-check.py` 覆盖 PASS。 |
 | B-56 逐 ID 证据 | **仍开（收窄）** | 118 行虽逐 ID，但 `处置` 列几乎全是“按面板最小修复落地：文档改写/代码接线/测试补齐”，`证据` 列只给“panel/round24/*.md:行；修复见 loop.md §4”，`复验` 列只给“doc 五门 PASS；宿主/QEMU 读数见 loop.md §5”。没有逐 ID 的“旧串→新串”、commit hunk 或点名测试；B-32 的“处置列被大桶压缩”原样存在。 |
 | CLAIM 处置类 | **关闭** | `CLAIM-02`、`CLAIM-03` 在台账为 ③（`defect-ledger.md:1754-1755`），理由“反证/复核判定不成立，不计缺陷”；`metrics.md:75` 为 ① 114 / ③ 4，与台账逐 ID 聚合一致。 |
 | 二次 100% 口径 | **关闭（口径已澄清）；新开半分制 concern** | `metrics.md:80` 明写“二次定向回读 23/23=100% PASS（13 定向 + 10 重放；不是 118 条整体抽样）”，并补了 RB-post 29 条 26/29=89.7%。但 RB-post 第二次 13/14=92.9% PASS 是把两项部分通过按 0.5 计；只按完全通过是 12/14=85.7%，低于 90%。这不是代码缺陷，是评分口径变化，见 B-67。 |
-| 工作树干净 | **未干净** | 审计开始时 `git status --porcelain`：`M .codex/skills/review-loop/SKILL.md`、`M .trae/skills/review-loop/SKILL.md`、`M loop.md`、`M metrics.md`、`?? rewrite-notes/01-stage-kernel/01-design-learn.md`。meta 文件审计开始时已跟踪且干净（`91e652a73` 已含第一版），本次写入后为 `M`，属于本次审计输出，不计入 R24 残项。 |
+| 工作树干净 | **未干净** | 审计开始时 `git status --porcelain`：`M .codex/skills/review-loop/SKILL.md`、`M .trae/skills/review-loop/SKILL.md`、`M loop.md`、`M metrics.md`、`?? rewrite-notes/01-stage-kernel/01-design-learn.md`。meta 文件审计开始时已跟踪且干净（`90428654f` 已含第一版），本次写入后为 `M`，属于本次审计输出，不计入 R24 残项。 |
 
 ### 2. 九项问卷（第二次）
 
@@ -236,7 +236,7 @@
 
 | 规则 | 上次 | 本次 | 依据 |
 |---|---|---|---|
-| R-1 commit 级回归 review + 当场修 + 递归上限 2 层 | FAIL | **CONCERN** | 已有修复链 `91e652a73`→`6a40c61fc`，RB-post 在提交后回读；但 `91e652a73` 是一个 40 files 的大提交，没有按“每个逻辑 commit 后派小型 review”逐段记录；`loop.md` §4 也没有逐 commit 的 diff/回归。R-1 的“有提交可审”成立，“逐逻辑 commit”仍未完全落地。 |
+| R-1 commit 级回归 review + 当场修 + 递归上限 2 层 | FAIL | **CONCERN** | 已有修复链 `90428654f`→`99dac96b4`，RB-post 在提交后回读；但 `90428654f` 是一个 40 files 的大提交，没有按“每个逻辑 commit 后派小型 review”逐段记录；`loop.md` §4 也没有逐 commit 的 diff/回归。R-1 的“有提交可审”成立，“逐逻辑 commit”仍未完全落地。 |
 | R-2 轮转闸：①③④ 全部已修且附证据 | CONCERN | **CONCERN** | 118 行逐 ID 与 `证据` 列已落；RB-post 首轮仍抓到 DESIGN-07 半修，说明“无证据不进下一轮”在代码层有效；但证据列仍是聚合句，没有“旧串 grep 归零”/测试名，门的形状大于内容。 |
 | R-3 拖欠须人工批准 | PASS | **PASS** | R24 无 ②；F-R14-04 有用户批准、目标 D02；`OPEN-DEBT.md` 为空。 |
 | R-4 判决字段 8 项 | FAIL | **PASS** | D-030..D-034 八字段行（`awk -F'|'` 每行 8 列）；`DECISIONS-PENDING-R24.md` 五项均“已实施”并附证据；`reviewer_verdict` 与 `user_decision` 分列。唯一小缺口：PENDING 的 DESIGN-02 证据仍只列 `with_len`/wire/`dtb_total_size`，没有点名 `platform_window_uses_the_recorded_blob_length`；`DECISIONS.md` D-031 已点名。 |
@@ -302,7 +302,7 @@
 
 **仍开/部分开：**
 
-- **B-61 未提交：收窄为“轨迹两文件”**。代码/文档修复已提交（`91e652a73`、`6a40c61fc`），但 `loop.md`、`metrics.md` 两行审计记录未提交；审计开始时 `git status` 并非只剩用户侧两项。B-61 不能记 CLOSED，记 **DETECTED（残项）**。
+- **B-61 未提交：收窄为“轨迹两文件”**。代码/文档修复已提交（`90428654f`、`99dac96b4`），但 `loop.md`、`metrics.md` 两行审计记录未提交；审计开始时 `git status` 并非只剩用户侧两项。B-61 不能记 CLOSED，记 **DETECTED（残项）**。
 - **B-56 声称修复无 diff 回指：OPEN**。118 行的 `证据` 列是“panel 行号；修复见 loop §4”，`复验` 是“doc 五门/QEMU”，没有逐 ID 的 commit hunk 或旧串 grep。
 - **B-32 处置列被大桶压缩：OPEN**。118 行有 118 个 ID，但处置文本几乎相同；B-56 的合并形态。
 - **B-55 分档指标不可复算：REGRESSED（复发）**。HEAD 的 `loop.md:1288-1289` 为 ① 116 / ③ 2，`:1333` 与 `metrics.md:75` 为 ① 114 / ③ 4；工具只校验 metrics 与台账，未拦住 loop §3。
@@ -336,7 +336,7 @@ C-33（REFUTE 非阻断处置类）本轮已由 `CLAIM-02/03` ③ 部分满足�
 
 ## 第三次审计（2026-11-10，收口复核）
 
-> 审计对象：HEAD `e5ead951d`；文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`；工作树只剩用户侧 `.codex/.trae` 两项与未跟踪 `01-design-learn.md`。
+> 审计对象：HEAD `1b35706e2`；文档 3477 行 / `8aaac0d3f3064d20e6a23240ef085478db8b5edfc99d66cd7d59cae6794edbe4`；工作树只剩用户侧 `.codex/.trae` 两项与未跟踪 `01-design-learn.md`。
 > 本次只核对第二次审计的收口条件，不重做文档评审。只读；同 agent 验证 + 已重放命令。
 
 ### 1. 收口条件逐项复核
@@ -344,19 +344,19 @@ C-33（REFUTE 非阻断处置类）本轮已由 `CLAIM-02/03` ③ 部分满足�
 | 条件 | 结果 | 证据 |
 |---|---|---|
 | `loop.md` §3 与 §6/metrics 同数 | **PASS** | `loop.md:1288-1289` 为 ① 114 / ③ 4，并列出 `CLAIM-02/03`“反证失败、主张成立”；`loop.md:1333` 与 `metrics.md:75` 同为 ① 114 / ② 0 / ③ 4 / ④ 0 / ⑤ 0。三处同数。 |
-| 工作树干净 | **PASS** | `git status --porcelain` 只剩 `M .codex/skills/review-loop/SKILL.md`、`M .trae/skills/review-loop/SKILL.md`、`?? rewrite-notes/01-stage-kernel/01-design-learn.md`；`loop.md`/`metrics.md` 已随 `e5ead951d` 提交，meta 文件本身也已在该提交内且工作树干净。 |
+| 工作树干净 | **PASS** | `git status --porcelain` 只剩 `M .codex/skills/review-loop/SKILL.md`、`M .trae/skills/review-loop/SKILL.md`、`?? rewrite-notes/01-stage-kernel/01-design-learn.md`；`loop.md`/`metrics.md` 已随 `1b35706e2` 提交，meta 文件本身也已在该提交内且工作树干净。 |
 | `DECISIONS-PENDING-R24.md` DESIGN-02 证据 | **PASS** | `DECISIONS-PENDING-R24.md:10` 已列 `platform_window_uses_the_recorded_blob_length`；D-031 的八字段行也列同一测试；我重放该测试为 `1 passed; 0 failed`。 |
 | 118 行逐 ID 的 `证据` 列 | **PASS（结构性）** | 表头 8 列含 `发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验`；R24 段解析到 118 行；118 行都有 `panel/round24/*.md:<行>；问题：<具体标题>`，118 个 `问题：` 串中 85 个不同（33 个是跨角色同根重复），不再是纯模板。 |
 | `CLAIM-02/03`/`READER-B-20`/`DESIGN-13` 为 ③ | **PASS** | 台账 `:1754-1755`、`:1732`、`:1771` 均为 ③；`metrics.md:75` 的 ③ 4 与逐 ID 聚合一致。 |
 | trace check | **PASS** | `python3 tools/eval-trace-check.py ...` 输出 `PASS 8 / WARN 0 / FAIL 0`；覆盖、无孤儿、metrics 同数均绿。 |
-| 文档与基线 | **PASS** | 3477 行 / `8aaac0d3…`，与 `BASELINE.txt` 的 `r24_fixed_doc_sha256` 一致；`r24_fix_head=6a40c61fc`，HEAD 是后续的 `91da40986`→`e5ead951d` 文档/轨迹提交。 |
+| 文档与基线 | **PASS** | 3477 行 / `8aaac0d3…`，与 `BASELINE.txt` 的 `r24_fixed_doc_sha256` 一致；`r24_fix_head=99dac96b4`，HEAD 是后续的 `162a86478`→`1b35706e2` 文档/轨迹提交。 |
 
 ### 2. B-56 是否阻断轮次收口
 
 **不阻断。**
 
 - B-56 的严格诉求是“每条 ① 有逐 ID 的旧串→新串或 commit hunk”。当前 `证据` 列给的是“panel 行号 + 该 ID 的具体问题标题”，`处置`/`复验` 仍是“按面板最小修复落地（文档/代码/测试）/ doc 五门 PASS；测试/QEMU 见 loop §5”。它已经能回答“这条是什么问题、在哪一段面板里”，但不能回答“这条具体改了哪一句、哪个 commit hunk”。
-- 这不改变任何处置的真伪：修复提交 `91e652a73`/`6a40c61fc` 存在，D-031/D-033 测试我实跑通过，RB-post 随机 29 条 26/29=89.7%、补测试后 13/14 定向 92.9%，本次 meta 抽样 28/30=93.3%。B-56 是**证据粒度**问题，不是修复内容问题。
+- 这不改变任何处置的真伪：修复提交 `90428654f`/`99dac96b4` 存在，D-031/D-033 测试我实跑通过，RB-post 随机 29 条 26/29=89.7%、补测试后 13/14 定向 92.9%，本次 meta 抽样 28/30=93.3%。B-56 是**证据粒度**问题，不是修复内容问题。
 - 因此 B-56 保留为 OPEN（L7 的 C-32），不阻断 R24 轮次收口；若下一轮要求“台账可直接当审计证据”，再按 C-32 升级。
 - B-67（RB-post 二审半分制）同样是报告口径问题：首轮随机 89.7% 与本 meta 的 93.3% 是主读数，92.9% 只能标“定向复核（部分通过按 0.5 计）”。它不影响代码/文档收口，保留为 L7 的 C-31。
 - B-61、B-55、B-54、B-66（100% 口径）、B-44 已关闭；B-65 的 R24 实例关闭、机制仍开；B-31/B-64/B-33/B-09/B-34/B-36/B-50/B-60/B-62/B-63 仍是开放项，均不阻断本次轮次收口。
@@ -373,7 +373,7 @@ C-33（REFUTE 非阻断处置类）本轮已由 `CLAIM-02/03` ③ 部分满足�
 
 ### 4. BLIND-SPOT-DELTA（第三次）
 
-- **B-61 收口后的未提交修复：CLOSED**。`loop.md`/`metrics.md` 已随 `e5ead951d` 提交；工作树只剩用户侧 `.codex/.trae` 与未跟踪 `01-design-learn.md`。
+- **B-61 收口后的未提交修复：CLOSED**。`loop.md`/`metrics.md` 已随 `1b35706e2` 提交；工作树只剩用户侧 `.codex/.trae` 与未跟踪 `01-design-learn.md`。
 - **B-55 分档指标不可复算：CLOSED**。`loop.md:1288-1289`、`loop.md:1333`、`metrics.md:75` 三处同为 ① 114 / ③ 4；trace check PASS。
 - **B-54 范围行：CLOSED**（118 行逐 ID，8 列表头）。
 - **B-66 定向复核冒充整体一致率：CLOSED**（100% 已标注为定向复核）。

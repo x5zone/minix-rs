@@ -24,26 +24,26 @@
 
 | ID | 摘要 | 处置 |
 |---|---|---|
-| RD1-DESIGN-D2-07 | `jump_to_kmain` 第二形参 | [CLOSED] implemented：F01 / 提交 `83e8cbb2b` |
-| RD1-DESIGN-D2-08 | `HIGHER_HALF_CALLED` 等测试静态 | [CLOSED] implemented：D2-08 / 提交 `ecfef0ae9` |
-| RD1-DESIGN-D2-09 | `virtual_end` 死变量 | [CLOSED] implemented：D2-08 / 提交 `ecfef0ae9` |
-| RD1-DESIGN-D2-10 | x86 `arch_boot` 临时取证打印 | [CLOSED] implemented：R34 / 提交 `925c19fc0` |
-| RD1-DESIGN-D2-11 | 三份无读者 arch `link.ld` | [CLOSED] implemented：D2-06 / 提交 `503ae169e` |
+| RD1-DESIGN-D2-07 | `jump_to_kmain` 第二形参 | [CLOSED] implemented：F01 / 提交 `8a519ca25` |
+| RD1-DESIGN-D2-08 | `HIGHER_HALF_CALLED` 等测试静态 | [CLOSED] implemented：D2-08 / 提交 `a57e998a8` |
+| RD1-DESIGN-D2-09 | `virtual_end` 死变量 | [CLOSED] implemented：D2-08 / 提交 `a57e998a8` |
+| RD1-DESIGN-D2-10 | x86 `arch_boot` 临时取证打印 | [CLOSED] implemented：R34 / 提交 `68c8b7703` |
+| RD1-DESIGN-D2-11 | 三份无读者 arch `link.ld` | [CLOSED] implemented：D2-06 / 提交 `0de0d03de` |
 | RD1-DESIGN-D2-12 | `KernelInfo` 字段重复/派生 | [CLOSED] already-fixed：v10 删除派生字段（D-062） |
-| RD1-DESIGN-D2-15 | 直核面静态与载荷 | [CLOSED] implemented：D-086 owned 路径 + F08 共享流程 / 提交 `6d0334dc6` |
+| RD1-DESIGN-D2-15 | 直核面静态与载荷 | [CLOSED] implemented：D-086 owned 路径 + F08 共享流程 / 提交 `b70495eac` |
 
 ## 本次状态核实（D-107 清零口径）
 
 | ID | 当前状态 | 说明 |
 |---|---|---|
-| D02-F01 | [CLOSED] | `jump_to_kmain(kinfo)` 三实现从 `kinfo.kern_stack_top()` 现算；提交 `83e8cbb2b`；`cargo test -p minix-kernel --features mock --lib` 866/0/8 |
+| D02-F01 | [CLOSED] | `jump_to_kmain(kinfo)` 三实现从 `kinfo.kern_stack_top()` 现算；提交 `8a519ca25`；`cargo test -p minix-kernel --features mock --lib` 866/0/8 |
 | D02-F02 | [CLOSED] dup-of | wire v10 / D-062 删除 `kern_stack_top` 字段，等式校验不再有 wire 对象 |
-| D02-F03 | [CLOSED] dup-of | 三份 arch `link.ld` 按 D-107 删除（D2-06 / `503ae169e`） |
-| D02-F04 | [CLOSED] | `segment_spans` 两版共用；`test_buffer_and_phys_loaders_share_segment_spans`；提交 `f50159798` |
-| D02-F05 | [CLOSED] | `KernelImage`/`ValidatedKernelImage`；提交 `1460d4147` |
-| D02-F06 | [CLOSED] | 三份 `.ld` 收口/上界 `ASSERT`；`check-layout.sh all` PASS；提交 `c376f5371` |
+| D02-F03 | [CLOSED] dup-of | 三份 arch `link.ld` 按 D-107 删除（D2-06 / `0de0d03de`） |
+| D02-F04 | [CLOSED] | `segment_spans` 两版共用；`test_buffer_and_phys_loaders_share_segment_spans`；提交 `504500747` |
+| D02-F05 | [CLOSED] | `KernelImage`/`ValidatedKernelImage`；提交 `b51fa46bd` |
+| D02-F06 | [CLOSED] | 三份 `.ld` 收口/上界 `ASSERT`；`check-layout.sh all` PASS；提交 `fd3258ec3` |
 | D02-F07 | [CLOSED] already-fixed | `resume_additive` 已把三条 additive-resume 收成泛型 |
-| D02-F08 | [CLOSED] | `run_self_boot` 共享流程，两壳只剩常量/横幅/console；提交 `6d0334dc6`；`check-layout.sh all` PASS |
+| D02-F08 | [CLOSED] | `run_self_boot` 共享流程，两壳只剩常量/横幅/console；提交 `b70495eac`；`check-layout.sh all` PASS |
 | D02-F09 | [CLOSED] already-fixed | 保留 `Paging`/`HugePages`/`BootArch`（保留项不是缺陷，类型边界已有测试）；翻译残留清单作为 code-excellence 输入 |
 | D02-F10 | [CLOSED] | 读者 36 条全部在 R4 表逐条 implemented/already-fixed/dup-of；见 `suggestions.md` |
 | D02-F11 | [CLOSED] | L9 三架构等值对账；`check-layout.sh all` → 三条 L9 PASS |
@@ -53,10 +53,10 @@
 
 | ID | 当前状态 | 验收 |
 |---|---|---|
-| R02-T01 | [CLOSED] | `check-layout.sh` L10 机械对账 unpaged 名单与 `kernel.lds` 收段，断言 `mpx.o` 不在名单；提交 `fd456926a` |
+| R02-T01 | [CLOSED] | `check-layout.sh` L10 机械对账 unpaged 名单与 `kernel.lds` 收段，断言 `mpx.o` 不在名单；提交 `ecbf313f5` |
 | R02-T02 | [CLOSED] dup-of | `link_ld_lockstep.rs` 随 D2-06 删除，生产脚本门替代 |
-| R02-T03 | [CLOSED] | riscv64 载体 `pc_at_high` 并入 PASS 条件；`run_qemu.sh` PASS（PC=0xffffffc000200146）；提交 `94d5f2379` |
-| R02-T04 | [CLOSED] | 三份 `jump_to_kmain` 生产路径断言 `stack_top` 对齐，x86 另断言入口 RSP；提交 `550d8c0b8` |
+| R02-T03 | [CLOSED] | riscv64 载体 `pc_at_high` 并入 PASS 条件；`run_qemu.sh` PASS（PC=0xffffffc000200146）；提交 `77cfe1b78` |
+| R02-T04 | [CLOSED] | 三份 `jump_to_kmain` 生产路径断言 `stack_top` 对齐，x86 另断言入口 RSP；提交 `5cecd98b8` |
 
 ## R5 重写基线（2026-11-21）
 

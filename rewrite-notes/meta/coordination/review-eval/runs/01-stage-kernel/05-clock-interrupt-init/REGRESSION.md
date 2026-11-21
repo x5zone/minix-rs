@@ -6,8 +6,8 @@
 
 ## 基线提交号
 
-- 审计时点 HEAD：`efc765b9074a92e2bf9d13a9bb1b0abc2c7ed400`（即冻结提交 `fix(05): R1 完整修改轮 + R2 确认轮——D05 从零收敛（CONVERGED）`，2026-11-20 06:27:15 +0800）
-- loop.md R1 §0 记录的面板启动基线：`cd76b73d1`（实测存在：`fix(04): R3 回归审计的 2 项记录层不一致`，2026-11-20）
+- 审计时点 HEAD：`42a790f18feab576ed9201d5205f8018e40024b1`（即冻结提交 `fix(05): R1 完整修改轮 + R2 确认轮——D05 从零收敛（CONVERGED）`，2026-11-20 06:27:15 +0800）
+- loop.md R1 §0 记录的面板启动基线：`bfcaf8062`（实测存在：`fix(04): R3 回归审计的 2 项记录层不一致`，2026-11-20）
 - 工作树状态：`git status --short` 仅 3 个与 D05 无关的未跟踪文件（`prompt/review-loop-r26-r29-report.md`、`rewrite-notes/01-stage-kernel/01-design-learn.md`、`rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r26.md`）；文档与整个 run 目录无未提交改动
 
 ## FREEZE 记录复核表
@@ -29,7 +29,7 @@
 1. **anchor 计数：记录 106/106，最终工作树实测 105/105。**
    - 记录处：FREEZE.md L27「anchor 106/106」；loop.md L156（R1 §4）、L233（R2 §4）、metrics.md L50（R1 块）、L72（R2 块）均写 106/106。
    - 实测命令与输出：`tools/anchor-resolve.sh --check rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md` → `anchors=105 resolved=105 zero-def=0 multi-def=0`，exit 0；`--extract` 逐行清点同为 105。
-   - 排除工作树漂移：文档 sha256 与 FREEZE 逐字节一致、文档自冻结提交后无改动（`git log -1 -- <doc>` = efc765b90，`git status` 干净）；门工具无版本差（`tools/anchor-resolve.sh` 最后一次改动 0c1d1e1ce（2026-10-11）早于冻结提交，`git merge-base --is-ancestor` 验证为祖先）。
+   - 排除工作树漂移：文档 sha256 与 FREEZE 逐字节一致、文档自冻结提交后无改动（`git log -1 -- <doc>` = 42a790f18，`git status` 干净）；门工具无版本差（`tools/anchor-resolve.sh` 最后一次改动 0c1d1e1ce（2026-10-11）早于冻结提交，`git merge-base --is-ancestor` 验证为祖先）。
    - 判定：106 在最终工作树上不可复现，属冻结记录的转写滑误（推测：R2 尾段编辑退役了含锚点的句后未重读门计数，六门行沿用 R1 数值）。门的实质判定不受影响（全部锚点解析、zero-def=0 multi-def=0、exit 0），但记录值与可复现值不一致即记 FAIL。
 2. **loop.md R1 §6（L168）处置分布与它声称「一致」的 metrics.md 不一致。**
    - 实测：loop.md L168 写「处置 ① 15 / ⑥ 6 / ④ 7 / FP 5 / SUGG 37」并称「与 `metrics.md` 的 `## R1 完整修改轮` 块一致」；metrics.md L38 实为「① 15 / ② 0 / ④ 7 / ⑤ 0 / ⑥ 4 / FP 5 / SUGG 39」。
@@ -92,7 +92,7 @@
 
 - 同 agent 验证：本审计与被审的冻结记录产自同一模型体系，未经跨工具只读复核；全部关键读数附了可重放命令与输出以降低该局限。
 - QEMU 真机回归未跑（沿用冻结口径：本轮 ⑥ 改动不含三架构真机门面，debug_assert 在 release 下不生成代码）。
-- anchor 106 的历史真值不可重建：R1 修复后（2207 行）与 R2 修复后（2209 行）两个中间文档态未单独入库（两轮修复同入 efc765b90），故无法判定「R1 时点确为 106、R2 编辑后变 105」还是「记录即错」；仅能确证「最终工作树 = 105，记录 = 106」。
+- anchor 106 的历史真值不可重建：R1 修复后（2207 行）与 R2 修复后（2209 行）两个中间文档态未单独入库（两轮修复同入 42a790f18），故无法判定「R1 时点确为 106、R2 编辑后变 105」还是「记录即错」；仅能确证「最终工作树 = 105，记录 = 106」。
 - `suggestions.md`、`follow-ups.md`、`related-code.txt` 不在本审计的允许读取清单内，仅以 `grep -c` / `grep -n` 计数与单行摘录核验登记存在性，未整读内容。
 - token 成本未采集（与 FREEZE 记录一致）；本报告为唯一产出文件，未修改任何被审文件。
 

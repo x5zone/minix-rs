@@ -77,7 +77,7 @@
 - adjacent 阻塞: 0
 - 重构: 提出 4 / 接受 3 / 实施 3 / 登记 0（`ident_regions` 死接口删除、公共窗口 helper、`PlacementPool`；bootface 整段合并不做）
 - 成本: agent 7 / token 未采集 / 耗时 约 2 小时（面板 + 修复 + 宿主/QEMU）
-- 回读: 宿主 boot-shim 136+6、kernel 865+8、types 339、boot 196、vm 548、arch 288；QEMU x86/aarch64/riscv U-Boot shim、riscv bootface、riscv kernel-image、aarch64 SMP AP 六门 PASS；doc 五门 PASS；RB24 首轮 71/80=88.8% NOT PASS；B1/B2+N1–N11 共 13 项补修后，二次定向回读 23/23=100% PASS（13 定向 + 10 重放；不是 118 条整体抽样）；提交后 RB-post 随机 29 条 26/29=89.7% NOT PASS → 补跨度测试后二次 13/14=92.9% PASS；修复提交链 `91e652a73`→`6a40c61fc`→`91da40986`
+- 回读: 宿主 boot-shim 136+6、kernel 865+8、types 339、boot 196、vm 548、arch 288；QEMU x86/aarch64/riscv U-Boot shim、riscv bootface、riscv kernel-image、aarch64 SMP AP 六门 PASS；doc 五门 PASS；RB24 首轮 71/80=88.8% NOT PASS；B1/B2+N1–N11 共 13 项补修后，二次定向回读 23/23=100% PASS（13 定向 + 10 重放；不是 118 条整体抽样）；提交后 RB-post 随机 29 条 26/29=89.7% NOT PASS → 补跨度测试后二次 13/14=92.9% PASS；修复提交链 `90428654f`→`99dac96b4`→`162a86478`
 
 ## R25
 
@@ -300,7 +300,7 @@
 - 重构: 提出 1 / 接受 1 / 实施 0 / 登记 1
 - 减法: 提案 8 / 采纳 4（D2 SUBTRACTION-TABLE）
 - 成本: agent 13（7 面板 + 6 次 certify 回执）/ token 未采集 / 耗时 约 7 小时
-- 回读与回归: 文档六门绿（anchor 110/110、citation checked=29 failed=0、structure/ref/style error=0/density、doc-code-map 54/54）；`--stale-lines 2e82208e2 --strict` PASS；minix-boot 185/0、boot-shim 146/0、minix-elf 27/0、kernel mock 866/0/8；test-sysboot PASS、test-riscv64-uboot-shim 6/6 PASS；aarch64 rt-birth 门在同一处 user-chain Data Abort（stash 对照，已知 A2 遗留，非本轮因果）
+- 回读与回归: 文档六门绿（anchor 110/110、citation checked=29 failed=0、structure/ref/style error=0/density、doc-code-map 54/54）；`--stale-lines a0261fdd1 --strict` PASS；minix-boot 185/0、boot-shim 146/0、minix-elf 27/0、kernel mock 866/0/8；test-sysboot PASS、test-riscv64-uboot-shim 6/6 PASS；aarch64 rt-birth 门在同一处 user-chain Data Abort（stash 对照，已知 A2 遗留，非本轮因果）
 
 ## R37 重写基线（V3.4；full）
 

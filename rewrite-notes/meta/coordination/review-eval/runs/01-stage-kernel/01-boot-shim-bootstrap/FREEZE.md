@@ -3,7 +3,7 @@
 - 冻结日期：2026-11-11
 - 工作流 edition：V3.3
 - 确认轮：R34（`轮型: confirmation`）
-- 冻结提交：`5c7134fbd`（R34 修复与轨迹提交）
+- 冻结提交：`7dfa2c21e`（R34 修复与轨迹提交）
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 文档行数：3579（R34 时点）；R35 时点 3582
 - 文档 sha256：`1a71cb515d29db66735255a362f1804369c3d5854ce29185a615f57f3b4d68d7`（R35 复核后；R34 原值 `3284d47a7f21529626e7a7b8933aa91a37c0501d4abd56244e45b3d503145b97`）
@@ -57,7 +57,7 @@
 ## R36 确认轮（V3.4；基线变更重开，append-only 追加）
 
 - 确认轮：R36（`轮型: confirmation`），edition V3.4，schema `V3.4 from R35`；重开依据 = 本节上一条「R35-design-batch 实施后基线改变」+ 用户 2026-11-21 指令（review loop D01 直至收敛，代裁授权）。
-- 冻结提交：`edc4525f0`（R36 轨迹与收敛提交；代码修复链 `da9581437`、`eb8768b23`、`080e6bb0d`，文档修复链 `882ae3fb8`、`cd2b31f97`）。
+- 冻结提交：`961615359`（R36 轨迹与收敛提交；代码修复链 `d8ce8b29c`、`49ed0c54a`、`624fcccf1`，文档修复链 `e4374af7e`、`773e4bbc5`）。
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`；行数 3600；sha256 `1c0d9de478c09760a77e4068ac8190c82c0d88c0c36fe372e791d9e524c11660`。
 - 关联代码：`tools/doc-code-map.sh --check` 54/54。
 
@@ -66,7 +66,7 @@
 - `python3 tools/eval-trace-check.py <run> --round R36`：PASS（12 PASS / 24 WARN / 0 FAIL）。WARN 为历史 OPEN-DEBT 的已批准延期与 V3.1 edition 试验窗口提示。
 - R36 台账：93 个 ID 承载根因（FINDING 62 + 编号 SUGGESTION 25 + CLAIM 6），处置 ① 44 / ② 0 / ④ 16 / ⑤ 0 / ⑥ 0 / FP 3 / SUGG 30；`未闭环 = 0`；`certify 新准入 = 0`（三轮 certify 的 STILL-BROKEN 均为同根修复不完整，不是新根因；最终 44/44 + 16/16 CLOSED）。
 - 100% 复验：`certify/round36-fact.md` 44/44 CLOSED、`certify/round36-reader.md` 16/16 CLOSED；pass1/pass2 回执保留为历史证据。
-- 文档六门：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines 2e82208e2 --strict` PASS。
+- 文档六门：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines a0261fdd1 --strict` PASS。
 - 宿主：minix-kernel --features mock 866/0/8；minix-boot 185/0；boot-shim 146/0；minix-elf 27/0；aarch64 kernel-image `cargo check` 完成。
 - QEMU：`test-sysboot.sh` PASS（x86 wire v10）；`test-riscv64-uboot-shim.sh` 6/6 PASS（`BootFileTable` 类型化）；`test-rt-birth-aarch64.sh` 在同一处 user-chain Data Abort 失败，`git stash` 对照改动前状态复现同一地址/ESR，确认是既有 A2 遗留（`01-todo.md` 的 rt-birth 深跑附注），不是本轮因果；本轮 aarch64 bump 由“到达 entering scheduler”覆盖。
 - 独立 meta：`meta/01-boot-shim-bootstrap-r36.md`，总体 IMPROVED / 运行质量 NOT PASS（抽样一致性 93%）；meta FAIL 记为流程缺陷（同根残项射程、裸 ID 冲突、D2-05 re-litigation 的初判错误），不阻断文档关闭（§5.4 / §6A）。
