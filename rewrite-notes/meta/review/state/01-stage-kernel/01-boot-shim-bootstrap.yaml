@@ -91,7 +91,7 @@ units:
   level: 2
   parent: null
   order: 6
-  text_sha: 852f5ca708f4bbc453262d96e779a93642cb42a6c620fc32b28c8df4f9cbed52
+  text_sha: e6e4794135e8dd9184440cc231d6d48160c72b7d5c564664e33f914cda721817
   t1_state: pending
   t1_rounds: 0
   t2_state: n/a
@@ -155,7 +155,7 @@ units:
   level: 3
   parent: '2'
   order: 10
-  text_sha: 366edcd7d2f967da43daaf98707383a9747fdf18209743e333f9f4e8fc1a7848
+  text_sha: a1d90864597e21a8bacbae1ac745d349d5206e41a53c0f82db82b6f1d474c5fd
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -267,7 +267,7 @@ units:
   level: 3
   parent: '3'
   order: 17
-  text_sha: 19733b9b993bbc82437fefb16fa2da60430341abde472dce8d403ddf7b2f46cb
+  text_sha: 3f5ecc4177c6f335d459e544b59126919283c93741e612f3374d09f4e4d3c1c5
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -299,7 +299,7 @@ units:
   level: 3
   parent: '3'
   order: 19
-  text_sha: df66c8ce604dd094c8b3fe67a452da2eea12f12af1bab80210f31c2f226ebdda
+  text_sha: 263968b8b315df763f684e79a7f7f6d0e61ded4c03aef57b0fbe4d3a8ee3fc6d
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -443,7 +443,7 @@ units:
   level: 3
   parent: '4'
   order: 28
-  text_sha: 9b29ae0498278b8fae47d73ea9ac7fefd7df3ead0572c3a210e77848971d2cde
+  text_sha: 73aa05fe34deb70381ea7dbc6a29ec5e1333e1f8dafbd8a957c842958b9be73e
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -475,7 +475,7 @@ units:
   level: 3
   parent: '4'
   order: 30
-  text_sha: 90bebb8e24de4c781065dba9e589fa4144003ea68177af80a183fe0e6290b7f3
+  text_sha: 7e309bbf76f3a4f74379fd6e2cdbd148bd53f4ed08b959336a340cf75534a9d2
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -773,6 +773,27 @@ units:
   parent: '6'
   order: 43
   text_sha: 12753aeb1a1032cfff8d4fe6514c0d2620df319148b1e9210ba17af77b50944b
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+- id: 2.4.2
+  heading: 2.4.2 从记录里取址：两个消费者、两条取整规则与移交截断
+  level: 3
+  parent: '2'
+  order: 13
+  text_sha: f0f49577f42837eb31810708c2bb2e45bb480588803d95d2ed432e1a22a2bc3f
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending

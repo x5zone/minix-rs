@@ -2381,8 +2381,8 @@ RB24 首轮 13 项逐项处置：
 
 ### R38 §7 状态
 
-- `BLOCKED`：设计项（DESIGN-01/03/07/08、低风险删减）与 D01-R14-04（DM 深讲归属）、D01-R37-05（跨模型凭据）、D01-I-25（全仓注释范围）、D01-I-43/rt-birth-sp 未闭环。
-- 不宣告 `CONVERGED`；L0.9 的 doc/code/tutorial 出版门已清零，TODO 仍 6 条 doc scope open（含 1 blocked）。
+- `BLOCKED`：设计项（DESIGN-01/03/07/08、低风险删减）、D01-R14-04（DM 深讲归属）、D01-R37-05（跨模型凭据）、D01-I-25（全仓注释范围）、D01-I-43/rt-birth-sp 未闭环。D01-I-18 已关闭（最大节 216 行）。
+- 不宣告 `CONVERGED`；L0.9 的 doc/code/tutorial 出版门已清零，TODO 仍 5 条 doc scope open（含 1 blocked）。
 
 ### R38 §8 给 meta-review 的不确定点
 
