@@ -126,3 +126,11 @@
 - 台账：`OPEN-DEBT.md` 两行 `[CLOSED]`；`follow-ups.md` F01–F12 与 R02-T01..T04 全部 `[CLOSED]`/dup-of；`suggestions.md` 全部 implemented/already-fixed/dup-of。
 - 验证：`cargo test -p minix-boot --lib` 187/0、`cargo test -p boot-shim --lib` 136/0、`cargo test -p minix-kernel --features mock --lib` 866/0/8、`cargo test -p minix-arch` 266/0、三架构 kernel/kernel-image check 0 error、`check-layout.sh all` PASS（含 L10）、riscv64 higher-half 载体 PASS、riscv64 bootface 门 PASS；`eval-trace-check --round R4` PASS 12/0/0。
 - 已知非本批因果：aarch64 `test-smp-aps-aarch64` 在 boot/SMP 标记全绿后仍于 user-chain Data Abort 失败（`elr=0x23e9d4`，stash 对照在 F08 前同点复现）；`test-rt-birth-aarch64` 同属 D01 轨道已登记的 A2 遗留。
+
+
+## 重写基线（2026-11-21）
+
+- 旧 v3 原文归档到 `rewrite-notes/01-stage-kernel/draft/`；现行文件按“01=交接载荷、02=内核镜像”重写。
+- 旧 R4 的 CONVERGED 作废；不跨重写比较轮次。新基线为下一轮（D01 R37 / D02 R5）的 L0。
+- 行数：01 = 2651，02 = 1845；比例 1.44。
+- 旧 OPEN-DEBT/follow-ups/suggestions 仍全 `[CLOSED]`；重写不改变旧债证据。

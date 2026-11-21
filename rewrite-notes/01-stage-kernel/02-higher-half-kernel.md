@@ -318,7 +318,7 @@ void pg_identity(kinfo_t *cbi)
 
 逐条解码：
 
-- 函数开头的 `assert(cbi->mem_high_phys)` 只能证明“至少一次 `add_memmap` 已产生非零上界”，不能证明“清单已切完”；完整的 D1（清单先于建表，含切除）由 `get_parameters` 内的调用序保证，不由这条断言保证。它挡住的是“反排到 `add_memmap` 之前”这种更粗的错序——那时该值还是 `.bss` 的零初值。
+- 函数开头的 `assert(cbi->mem_high_phys)` 只能证明“至少一次 `add_memmap` 已产生非零上界”，不能证明“清单已切完”；完整的“清单先于建表（含切除）”由 `get_parameters` 内的调用序保证，不由这条断言保证。它挡住的是“反排到 `add_memmap` 之前”这种更粗的错序——那时该值还是 `.bss` 的零初值。
 - `I386_VM_DIR_ENTRIES = 1024`、`I386_BIG_PAGE_SIZE = I386_PAGE_SIZE * I386_VM_PT_ENTRIES = 4096 * 1024`（4MB，定义在 [`include/vm.h`](minix3/minix/include/arch/i386/include/vm.h)）。两个数一乘正好是 4 GiB——对 32 位来说就是**整个地址空间**。所以这个循环不是在算"该映射哪些"，而是**一次把 1024 项全部填完**：在 4MB 大页下这是最省事的做法，代价固定（只要一个页目录，不需要任何页表页）。
 
   不要把“省事”当成“必须”。真正必需的覆盖只有两块——当前正在执行的地址与内核要去的地址，它们由 1.2 那两条讲过；全铺是达成它的廉价手段，不是它本身的要求。本篇的 64 位实现正是反例：恒等映射不再取固定上界铺满低 4 GiB，而是只覆盖 boot footprint。具体窗口来源、`BOOT_IDENTITY_MAP_END` 的 VA 上限语义与 `[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4 GiB]` 标注统一放在 §4.3，本节不复制设计清单。
@@ -514,7 +514,7 @@ Rust 侧不再用链接符号给出 `kmain` 用的栈顶（入口 `_start` 仍�
 | 链接布局 | `kernel.lds` 的三行常量与 `AT()` 表达式 | 带 `AT()` 的普通段：符号值高一侧、装载地址低一侧，差是 `_kern_offset`；`unpaged_*` 三段的符号值与装载地址都在低侧 |
 | 装载摆放 | `Makefile.inc` 的改名规则 + 外部装载器（GRUB 等）按 `p_paddr` 写段体（树内 boot monitor 走 `LOADADDR(p_vaddr)` 的低 27 位，见 01 篇的 2.2 节） | 段体落在低一侧；哪些对象进低一侧由改名名单决定 |
 | 运行期映射 | `pg_clear`→`pg_identity`→`pg_mapkernel`→`pg_load`→`vm_enable_paging` 五步（§2.4） | 先恒等后内核高半，最后才开分页；任何一步提前，取指或压栈落在无映射地址 |
-| 成对进入 | x86-32：`head.S` 的四行（设栈、压终止槽、压参数、相对 `call`）；ARM32：`head.S` 的设栈 + `ldr`/`bx` | x86-32 的设栈携带绝对值、跳转携带相对位移；ARM32 两者都是绝对值；i386 侧已按 §2.5 证据落地，ARM 侧同一判据也已静态核实：`earm/Makefile.inc` 的改名名单不含 `mpx.o`、`earm/mpx.S:265-272` 在 `.bss` 后切回 `.data`、`earm/kernel.lds` 的 `.unpaged_data` 只收 `unpaged_*.o`，故 `k_initial_stack` 落在高半 `.data` |
+| 成对进入 | x86-32：`head.S` 的四行（设栈、压终止槽、压参数、相对 `call`）；ARM32：`head.S` 的设栈 + `ldr`/`bx` | x86-32 的设栈携带绝对值、跳转携带相对位移；ARM32 两者都是绝对值；i386 侧已按 §2.5 证据落地，ARM 侧同一判据也已静态核实：`earm/Makefile.inc` 的改名名单不含 `mpx.o`、[`earm/mpx.S`](minix3/minix/kernel/arch/earm/mpx.S:k_initial_stack) 在 `.bss` 后切回 `.data`、`earm/kernel.lds` 的 `.unpaged_data` 只收 `unpaged_*.o`，故 `k_initial_stack` 落在高半 `.data` |
 
 影响“进入”这一时刻的架构差异有三处：入口段的段名（ARM 多一个 `.startup`）、跳转指令的写法（x86 用相对 `call`，ARM 用字面量池取值的 `bx`）、`k_initial_stack` 的段归属（i386 在 `.bss`，`earm/mpx.S` 在 `.data`）；另有两处差异不影响结论——物理基址取值与改名名单（§2.2），它们不改变四个时刻的判据。两边的语义相同：先设栈、再跳转；i386 侧两个动作指向同一侧，ARM 侧同一判据已由上述三处源码核实。
 
@@ -1453,7 +1453,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 **三条推演（riscv64 direct leg 去掉条件 `add t1, t1, t2`；aarch64 去掉 `isb`；x86_64 去掉 `xor rbp, rbp`）**：
 
-其一，riscv64 去掉 `add t1, t1, t2`。`jalr` 的目标落在符号的物理地址上，PC 留在低半（`0x8020…`）；启动能走完（低半此时仍有恒等映射），坏点在首次地址空间切换之后——内核按高半 VMA 建了进程根表，切换后取指落在没有映射的低半地址，`scause` 记下取指错误。源码注释（`os/kernel/src/arch/riscv64/higher_half.rs:42-51`）对这一形态的表述是：direct leg 的代码仍在 `kern_virt_base` 之下执行，只有跳转目标被抬到高半——即"PC 仍留在低地址"，而不是"内核从未迁到高半 VMA"。
+其一，riscv64 去掉 `add t1, t1, t2`。`jalr` 的目标落在符号的物理地址上，PC 留在低半（`0x8020…`）；启动能走完（低半此时仍有恒等映射），坏点在首次地址空间切换之后——内核按高半 VMA 建了进程根表，切换后取指落在没有映射的低半地址，`scause` 记下取指错误。源码注释（[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs:fn jump_to_kmain)）对这一形态的表述是：direct leg 的代码仍在 `kern_virt_base` 之下执行，只有跳转目标被抬到高半——即"PC 仍留在低地址"，而不是"内核从未迁到高半 VMA"。
 
 其二，aarch64 去掉 `isb`。`enable()` 在写完 `ttbr0_el1`/`ttbr1_el1` 之后已经执行 `dsb sy; isb`，写完 `sctlr_el1`（置 M=1）之后又执行一次 `isb`；三条 aarch64 路径都经过 `enable()`，`establish_boot_dm` 之后到跳转之间不再写 TTBR/SCTLR。所以删掉 `jump_to_kmain` 里的 `isb` 不会产生“按旧映射取指”的失败；这条屏障是防御性保留，不是正确性前提。
 
@@ -1810,7 +1810,7 @@ gdb <被调试的工件>
 
 ### 7.1 前置与后续篇
 
-- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) — 引导器契约、内存记账、页表建立与开启、布局断言 L0–L9、`KernelInfo` 的字段来源
+- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) — 引导器契约、内存记账、`KernelInfo` 字段与来源记录、五条生产腿的发送侧
 - [03-kmain-cstart.md](03-kmain-cstart.md) — `kmain` 入口与保护结构初始化
 - [04-platform-discovery.md](04-platform-discovery.md) — 平台描述符的解析
 - [05-clock-interrupt-init.md](05-clock-interrupt-init.md) — 时钟与中断控制器初始化

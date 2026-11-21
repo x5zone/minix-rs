@@ -53,3 +53,8 @@
 - F-R34-01 已按 D-107 实施：`check-layout.sh` 的 L9 按架构选 `bootface.rs`/`bootface_a64.rs`，三架构等值对账 PASS。
 - I-29-16、I-29-9、D-59 的物理机证据按 D-107 以现有 QEMU/OVMF 读数收口，标 `external-evidence-waived`：`evidence/I-5-acpi-ovmf.txt`（RSDP @ 0x777e000、nr_cpus=4、PASS）、`evidence/T-10-uboot-shim-6of6.txt`（shim 6/6 markers）。
 - C1 / I-29-8 十项按 D-107 全部批准，已由 `01-todo.md` 的对应代码项落码。
+
+## 重写基线（2026-11-21）
+
+- 本节只登记“重写未替旧债销账”：上方 39 行仍全部 `[CLOSED]`，本表不新增欠账。
+- 01/02 两篇重写后的新 review 基线见 `FREEZE.md` 的“重写基线”节；旧 R36 的 CONVERGED 已作废。

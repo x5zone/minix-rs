@@ -2584,7 +2584,7 @@ $ gdb-multiarch image.elf
 
 ### 7.1 前置与后续篇
 
-- [`02-higher-half-kernel.md`](02-higher-half-kernel.md)（链接布局、ELF 段拷贝、成对跳转、`k_initial_stktop` 两条线索）
+- [`02-higher-half-kernel.md`](02-higher-half-kernel.md)（链接布局、ELF 摆放、运行期映射、成对跳转、`k_initial_stktop`）
 - [`03-kmain-cstart.md`](03-kmain-cstart.md)（保护结构）
 - [`04-platform-discovery.md`](04-platform-discovery.md)（DTB/RSDT 解析与描述符）
 - [`05-clock-interrupt-init.md`](05-clock-interrupt-init.md)（时钟与中断控制器）

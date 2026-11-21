@@ -5,3 +5,8 @@
 
 - 本表两行均为 `[CLOSED]`；D-107 覆盖了 D-105/D-106 的“延期至下一 design batch”，对应代码已在本轮落码并提交（见 R4-design-batch 行）。
 - 后续设计改进（`source_records` 命名、`RamAuthority` 值类型、`free_pt_page` fail-closed）已在 R35/R36 批实施，不构成本表欠账。
+
+## 重写基线（2026-11-21）
+
+- 上方两行仍全部 `[CLOSED]`；重写不改变旧债证据，也不新增欠账。
+- 02 篇重写后的新 review 基线见 `FREEZE.md` 的“重写基线”节；旧 R4 的 CONVERGED 已作废。
