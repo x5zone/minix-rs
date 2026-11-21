@@ -88,7 +88,7 @@
 删除或关闭的装置（12 项）：
 
 1. `.github/workflows/mdbook.yml`：根目录无 `book.toml`，每次 push 到 main 必失败；`deploy.yml` 已覆盖 Pages。
-2. `tools/todo-staleness-check.sh`：名义门，对 YAML 账本恒绿；由 `todo-ledger.py check` 取代。
+2. `tools/todo-staleness-check.sh`（已删除，现不存在）：名义门，对 YAML 账本恒绿；由 `todo-ledger.py check` 取代。
 3. `tools/review-line-check.sh`：规则三处只写“已作废”，CI 零引用；行坐标卫生由 `anchor-suspect-scan.py` 承担。
 4. 两个出版门的 `--update-baseline`：规则早已写“零容忍”，这个开关能一键消音。
 5. `pattern-gate` 的过期 P2 条目：`test_clamp_cpu_to_bsp_transitional_guard` 随 BSP 钳制功能撤除，不是回归网丢失。
@@ -172,7 +172,13 @@ python3 tools/review-units.py audit --doc rewrite-notes/01-stage-kernel/01-boot-
 预存红（HEAD 同样红，非本轮引入）：
 
 - `python3 tools/notes-link-check.py rewrite-notes/` → 151 条断链（64 在 `01-stage-kernel/draft/`、21 在 `00-master-plan/`、22 在 `meta/`；扫描域含历史 draft 与 review-eval 制品）。
-- 本地 `rewrite` 领先 `origin/rewrite` 574 个提交；CI 从未跑过这些提交。
+- `python3 tools/doc-structure-check.py rewrite-notes/meta/coordination/review-eval rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` → 117 处问题（历史 review-eval 台账表体列数与表头不一致；本次未改这些历史制品）。
+
+首轮 CI 实测（commit `91c8144fc`）：
+
+- `rules-consistency` #8：failed。本地重放定位到两处：最终报告的已删工具未带 L10 状态标记（本次已修）；`doc-structure-check` 的 117 处历史台账问题（存量，非本次引入）。
+- `kernel-tests` #7、`qemu-tests` #10、`vm-tests` #10、`clippy-ratchet` #7：failed；本分支此前同类作业也红（`11feb85` 上 kernel-tests 通过、其余四项红），本次只改注释与一行 import，需看日志区分存量与环境因素。
+- `cmd-smoke` #7：首轮读取时仍在运行。
 
 ## 附录 B：未闭环与用户裁决
 
