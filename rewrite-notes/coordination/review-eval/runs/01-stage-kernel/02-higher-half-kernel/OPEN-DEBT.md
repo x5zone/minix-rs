@@ -10,3 +10,9 @@
 
 - 上方两行仍全部 `[CLOSED]`；重写不改变旧债证据，也不新增欠账。
 - 02 篇重写后的新 review 基线见 `FREEZE.md` 的“重写基线”节；旧 R4 的 CONVERGED 已作废。
+
+## R5 重写后状态（2026-11-21）
+
+- 本表上方数据行仍全部 `[CLOSED]`；重写未替旧债销账。
+- 本轮未闭环 0、certify 新准入 0；不新增代码欠账。
+- 未达 CONVERGED 的三项是门级/外部项，已登记 `follow-ups.md` 的 F-R5-01..03：G11 code-publication 73 处存量注释、G13 tutorial-rubric 6/6 缺项、`D02-EXTERNAL-D107` 外部哨兵。

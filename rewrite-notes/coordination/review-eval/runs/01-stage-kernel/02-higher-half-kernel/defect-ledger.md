@@ -344,3 +344,50 @@
 | RD-R4-077 | CLAIM-04 | R4 | refute | P3 | claim | FP | CLAIM-04：04；处置：反证失败/主张成立，不是文档缺陷。 | panel/round4/refute.md 的 CLAIM-04；panel/round4/refute.md 的 CLAIM 结果；源码直读。 | CLAIM-04 的复验：refute.md 记录「反证失败」；不在修复队列。 |
 | RD-R4-078 | CLAIM-05 | R4 | refute | P1 | claim | ① | CLAIM-05：05；处置：REFUTE 阻断项：迭代器 fail-open 与 v1 七载荷均随批一修复。 | panel/round4/refute.md 的 CLAIM-05；commit `ca5830fd5`；refute.md CLAIM-05/06。 | CLAIM-05 的复验：grep -n '12 个变体' doc 命中；grep -n '六块载荷' doc 命中。 |
 | RD-R4-079 | CLAIM-06 | R4 | refute | P1 | claim | ① | CLAIM-06：06；处置：REFUTE 阻断项：迭代器 fail-open 与 v1 七载荷均随批一修复。 | panel/round4/refute.md 的 CLAIM-06；commit `ca5830fd5`；refute.md CLAIM-05/06。 | CLAIM-06 的复验：grep -n '12 个变体' doc 命中；grep -n '六块载荷' doc 命中。 |
+
+## R5 重写基线（V3.4；full）
+
+| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|
+| RD-R5-001 | FACT-01 | R5 | fact | P1 | 文档/占位词 | ① | §4.5 状态表与 §5.4 的阶段名/R02 编号恢复为具体判据 | §4.5、§5.4；panel/round5/fact.md | FACT-01 修复点回读：§4.5 状态表与 §5.4 的阶段名/R02 编号恢复为具体判据；独立回执见 certify 同轮文件 |
+| RD-R5-002 | FACT-02 | R5 | fact | P2 | 文档/过程词 | ① | 删 15 处“设计裁决”、9 处“评审发现”占位，改为事实句 | 全文；panel/round5/fact.md | FACT-02 修复点回读：删 15 处“设计裁决”、9 处“评审发现”占位，改为事实句；独立回执见 certify 同轮文件 |
+| RD-R5-003 | FACT-03 | R5 | fact | P1 | 事实/x86 MMIO | ① | §4.3 改 x86_64 `kernel_identity_mmio_regions()` 返回空表，LAPIC/IO-APIC 归 Step 2c | §4.3；panel/round5/fact.md | FACT-03 修复点回读：§4.3 改 x86_64 `kernel_identity_mmio_regions()` 返回空表，LAPIC/IO-APIC 归 Step 2c；独立回执见 certify 同轮文件 |
+| RD-R5-004 | FACT-04 | R5 | fact | P1 | 事实/失败路径 | ① | §4.3 改 Step 2 反事实为 `AlreadyMapped` → `.expect` panic，不是静默覆盖 | §4.3；panel/round5/fact.md | FACT-04 修复点回读：§4.3 改 Step 2 反事实为 `AlreadyMapped` → `.expect` panic，不是静默覆盖；独立回执见 certify 同轮文件 |
+| RD-R5-005 | FACT-05 | R5 | fact | P2 | 事实/日志 | ① | §6.1 只留 `arch_boot entered`，temporary 限定到 `preA rdi` | §6.1；panel/round5/fact.md | FACT-05 修复点回读：§6.1 只留 `arch_boot entered`，temporary 限定到 `preA rdi`；独立回执见 certify 同轮文件 |
+| RD-R5-006 | FACT-06 | R5 | fact | P2 | 文档结构 | ① | 删 §3.6/§3.8 重复标题 | §3.6、§3.8；panel/round5/fact.md | FACT-06 修复点回读：删 §3.6/§3.8 重复标题；独立回执见 certify 同轮文件 |
+| RD-R5-007 | FACT-07 | R5 | fact | P3 | 事实/判据 | ① | §5.3 首句改“PC 不进入 x86_64/aarch64 判定（riscv64 相反）” | §5.3；panel/round5/fact.md | FACT-07 修复点回读：§5.3 首句改“PC 不进入 x86_64/aarch64 判定（riscv64 相反）”；独立回执见 certify 同轮文件 |
+| RD-R5-008 | FACT-08 | R5 | fact | P3 | 事实/段归属 | ① | §2.2 head.o 行删 `.unpaged_bss` | §2.2；panel/round5/fact.md | FACT-08 修复点回读：§2.2 head.o 行删 `.unpaged_bss`；独立回执见 certify 同轮文件 |
+| RD-R5-009 | FACT-09 | R5 | fact | P3 | 文档结构 | ① | §4.3 悬空“窗口建表失败”指针改为“下条 map_huge 两类结果” | §4.3；panel/round5/fact.md | FACT-09 修复点回读：§4.3 悬空“窗口建表失败”指针改为“下条 map_huge 两类结果”；独立回执见 certify 同轮文件 |
+| RD-R5-010 | FACT-10 | R5 | fact | P3 | 事实/策略归属 | ① | §4.5 路径 B 改“arch_boot_finish（校验）→ arch_boot_impl（策略/Step1…）” | §4.5；panel/round5/fact.md | FACT-10 修复点回读：§4.5 路径 B 改“arch_boot_finish（校验）→ arch_boot_impl（策略/Step1…）”；独立回执见 certify 同轮文件 |
+| RD-R5-011 | READER-A-01 | R5 | reader | P1 | 事实/J1 范围 | ① | §1.1/§1.2/§2.1 统一 J1 只在组内成立，C 低侧组 0、高侧组 `_kern_offset` | §1.1、§1.2、§2.1；panel/round5/reader-a.md | READER-A-01 修复点回读：§1.1/§1.2/§2.1 统一 J1 只在组内成立，C 低侧组 0、高侧组 `_kern_offset`；独立回执见 certify 同轮文件 |
+| RD-R5-012 | READER-A-02 | R5 | reader | P2 | 事实/对齐 | ① | §3.7 ①限定“非 16 对齐的 stack_top”；对齐时去三条仍合法 | §3.7；panel/round5/reader-a.md | READER-A-02 修复点回读：§3.7 ①限定“非 16 对齐的 stack_top”；对齐时去三条仍合法；独立回执见 certify 同轮文件 |
+| RD-R5-013 | READER-B-01 | R5 | reader | P1 | 事实/J1 范围 | ① | 同 READER-A-01；J2 限定 Rust 生产镜像 | §1.1、§1.2、§2.1；panel/round5/reader-b.md | READER-B-01 修复点回读：同 READER-A-01；J2 限定 Rust 生产镜像；独立回执见 certify 同轮文件 |
+| RD-R5-014 | READER-B-02 | R5 | reader | P1 | 文档结构 | ① | §5 开头补 J1–J4 → §5.1–§5.4 的证据映射 | §5；panel/round5/reader-b.md | READER-B-02 修复点回读：§5 开头补 J1–J4 → §5.1–§5.4 的证据映射；独立回执见 certify 同轮文件 |
+| RD-R5-015 | READER-B-03 | R5 | reader | P1 | 文档结构 | ① | L0–L10 权威清单只在 §5.2，§3.1 的重复指路改为“本篇 5.2” | §1.3、§3.1、§5.2；panel/round5/reader-b.md | READER-B-03 修复点回读：L0–L10 权威清单只在 §5.2，§3.1 的重复指路改为“本篇 5.2”；独立回执见 certify 同轮文件 |
+| RD-R5-016 | READER-B-04 | R5 | reader | P1 | 文档结构 | ① | 接缝声明与正文分工统一（01 计数、02 布局断言） | §1.3、§5.2；panel/round5/reader-b.md | READER-B-04 修复点回读：接缝声明与正文分工统一（01 计数、02 布局断言）；独立回执见 certify 同轮文件 |
+| RD-R5-017 | READER-B-05 | R5 | reader | P1 | 文档结构 | ① | 同 FACT-06：重复 §3.6/§3.8 标题已删 | §3.6、§3.8；panel/round5/reader-b.md | READER-B-05 修复点回读：同 FACT-06：重复 §3.6/§3.8 标题已删；独立回执见 certify 同轮文件 |
+| RD-R5-018 | READER-B-06 | R5 | reader | P1 | 文档结构 | ① | §4.5 删与 §3.1 重复的形态表，只留路径图 | §4.5；panel/round5/reader-b.md | READER-B-06 修复点回读：§4.5 删与 §3.1 重复的形态表，只留路径图；独立回执见 certify 同轮文件 |
+| RD-R5-019 | READER-B-07 | R5 | reader | P2 | 文档结构 | ① | §3.1 开头补三行形态枚举：生产 AT / 载体单地址 / 载体默认布局 | §3.1；panel/round5/reader-b.md | READER-B-07 修复点回读：§3.1 开头补三行形态枚举：生产 AT / 载体单地址 / 载体默认布局；独立回执见 certify 同轮文件 |
+| RD-R5-020 | READER-B-08 | R5 | reader | P2 | 文档结构 | ① | §3.4 重复的选页阶梯块已删，只留 §3.5 权威段 | §3.4、§3.5；panel/round5/reader-b.md | READER-B-08 修复点回读：§3.4 重复的选页阶梯块已删，只留 §3.5 权威段；独立回执见 certify 同轮文件 |
+| RD-R5-021 | READER-B-09 | R5 | reader | P2 | 事实/因果 | ① | §3.6 删“C 侧推演过”错指，改为指向 §4.3 的实际反序推演 | §3.6；panel/round5/reader-b.md | READER-B-09 修复点回读：§3.6 删“C 侧推演过”错指，改为指向 §4.3 的实际反序推演；独立回执见 certify 同轮文件 |
+| RD-R5-022 | READER-B-10 | R5 | reader | P2 | 事实/孤儿段 | ① | §2.1 表后补孤儿段 LMA 继承例外（反例 .lrodata.*） | §2.1、§3.5；panel/round5/reader-b.md | READER-B-10 修复点回读：§2.1 表后补孤儿段 LMA 继承例外（反例 .lrodata.*）；独立回执见 certify 同轮文件 |
+| RD-R5-023 | READER-B-11 | R5 | reader | P2 | 文档结构 | ① | §2.4 位表 USER 理由改指本篇 §2.4 的 pg_identity 解码 | §2.4；panel/round5/reader-b.md | READER-B-11 修复点回读：§2.4 位表 USER 理由改指本篇 §2.4 的 pg_identity 解码；独立回执见 certify 同轮文件 |
+| RD-R5-024 | READER-B-12 | R5 | reader | P2 | 文档结构 | ① | §4.4 引文头注明两条 16 字节对齐断言省略、论证见 §3.7 | §4.4；panel/round5/reader-b.md | READER-B-12 修复点回读：§4.4 引文头注明两条 16 字节对齐断言省略、论证见 §3.7；独立回执见 certify 同轮文件 |
+| RD-R5-025 | READER-B-13 | R5 | reader | P2 | 事实/覆盖 | ① | §5.4 M3 自认 C 侧无断言，M9 改“路径与代码落点已给出，到达 kmain 无独立断言” | §5.4；panel/round5/reader-b.md | READER-B-13 修复点回读：§5.4 M3 自认 C 侧无断言，M9 改“路径与代码落点已给出，到达 kmain 无独立断言”；独立回执见 certify 同轮文件 |
+| RD-R5-026 | READER-B-14 | R5 | reader | P2 | 事实/诊断 | ① | §6.1 LMA 重叠行限定“旧工具链”，并注明现行 ld 链接期报错 | §6.1；panel/round5/reader-b.md | READER-B-14 修复点回读：§6.1 LMA 重叠行限定“旧工具链”，并注明现行 ld 链接期报错；独立回执见 certify 同轮文件 |
+| RD-R5-027 | READER-B-15 | R5 | reader | P2 | 文档结构 | ① | §4.5/§5.4 的阶段占位词改具体阶段与三条缺口判据 | §4.5、§5.4；panel/round5/reader-b.md | READER-B-15 修复点回读：§4.5/§5.4 的阶段占位词改具体阶段与三条缺口判据；独立回执见 certify 同轮文件 |
+| RD-R5-028 | READER-B-16 | R5 | reader | P2 | 事实/失败路径 | ① | §2.3/§2.5 改“物理页回收后静默损坏”，不再说恒等映射被移除导致页错误 | §2.3、§2.5；panel/round5/reader-b.md | READER-B-16 修复点回读：§2.3/§2.5 改“物理页回收后静默损坏”，不再说恒等映射被移除导致页错误；独立回执见 certify 同轮文件 |
+| RD-R5-029 | READER-C-01 | R5 | reader | P1 | 事实/J1 范围 | ① | 同 READER-A-01 | §1.1、§1.2、§2.1；panel/round5/reader-c.md | READER-C-01 修复点回读：同 READER-A-01；独立回执见 certify 同轮文件 |
+| RD-R5-030 | READER-C-02 | R5 | reader | P1 | 事实/EBS 次序 | ① | §3.6 改“EBS 之后、跳转之前建根”，与 §4.5 一致 | §3.6、§4.5；panel/round5/reader-c.md | READER-C-02 修复点回读：§3.6 改“EBS 之后、跳转之前建根”，与 §4.5 一致；独立回执见 certify 同轮文件 |
+| RD-R5-031 | READER-C-03 | R5 | reader | P1 | 事实/AlreadyMapped | ① | §4.3 改为同尺寸叶已存在返回 `AlreadyMapped`、Step 1 的 `Ok|AlreadyMapped` 合并臂吸收，与 §3.6/§4.1 及三份实现一致 | 文档 §4.3:1275；os/arch/src/x86_64/paging.rs:1325；panel/round5/reader-c.md | READER-C-03 修复点回读：文档 §4.3:1275 与 os/arch/src/x86_64/paging.rs:1325 对照；冷读回执 certify/round5-fact.md 的 CLAIM-03 复读 CLOSED |
+| RD-R5-032 | READER-C-04 | R5 | reader | P1 | 事实/J2 范围 | ① | §1.2 J2 限定 Rust 生产镜像，C 侧只保留 4 MiB/4 KiB 对照 | §1.2、§2.5；panel/round5/reader-c.md | READER-C-04 修复点回读：§1.2 J2 限定 Rust 生产镜像，C 侧只保留 4 MiB/4 KiB 对照；独立回执见 certify 同轮文件 |
+| RD-R5-033 | READER-C-05 | R5 | reader | P2 | 事实/载体 | ① | §4.5.1 限定“部分 QEMU 直核测试内核”VMA=LMA，riscv64 test-higher-half 低装高进 | §4.5.1、§5.3；panel/round5/reader-c.md | READER-C-05 修复点回读：§4.5.1 限定“部分 QEMU 直核测试内核”VMA=LMA，riscv64 test-higher-half 低装高进；独立回执见 certify 同轮文件 |
+| RD-R5-034 | READER-C-06 | R5 | reader | P2 | 事实/J2 范围 | ① | 同 READER-C-04 | §1.2；panel/round5/reader-c.md | READER-C-06 修复点回读：同 READER-C-04；独立回执见 certify 同轮文件 |
+| RD-R5-035 | READER-C-07 | R5 | reader | P2 | 事实/判据 | ① | §1.1/J4 改 SP 为主判据，PC 按架构判定 | §1.1、§1.2、§4.4；panel/round5/reader-c.md | READER-C-07 修复点回读：§1.1/J4 改 SP 为主判据，PC 按架构判定；独立回执见 certify 同轮文件 |
+| RD-R5-036 | READER-C-08 | R5 | reader | P2 | 事实/失败路径 | ① | §4.5 载荷存活段改“无映射则页错误；历史读数另见 01 篇 §3.2.4” | §4.5；panel/round5/reader-c.md | READER-C-08 修复点回读：§4.5 载荷存活段改“无映射则页错误；历史读数另见 01 篇 §3.2.4”；独立回执见 certify 同轮文件 |
+| RD-R5-037 | CLAIM-01 | R5 | refute | P1 | 事实/J1 范围 | ① | 同 READER-A-01 | §1.1、§1.2；panel/round5/refute.md | CLAIM-01 修复点回读：同 READER-A-01；独立回执见 certify 同轮文件 |
+| RD-R5-038 | CLAIM-02 | R5 | refute | P2 | 事实/边界 | ① | §5.3 注明测试载体 `kern_size` 是 2 MiB 取整窗口，不是生产 ELF 跨度 | §5.3；panel/round5/refute.md | CLAIM-02 修复点回读：§5.3 注明测试载体 `kern_size` 是 2 MiB 取整窗口，不是生产 ELF 跨度；独立回执见 certify 同轮文件 |
+| RD-R5-039 | CLAIM-03 | R5 | refute | P1 | 事实/AlreadyMapped | ① | §4.3 改 2 MiB 重叠返回 `Ok`，`AlreadyMapped` 只在 1 GiB 叶时为防御分支 | §4.3；panel/round5/refute.md | CLAIM-03 修复点回读：§4.3 改 2 MiB 重叠返回 `Ok`，`AlreadyMapped` 只在 1 GiB 叶时为防御分支；独立回执见 certify 同轮文件 |
+| RD-R5-040 | CLAIM-04 | R5 | refute | P1 | 事实/Step2 | ① | 同 FACT-04 | §4.3；panel/round5/refute.md | CLAIM-04 修复点回读：同 FACT-04；独立回执见 certify 同轮文件 |
+| RD-R5-041 | CLAIM-05 | R5 | refute | P1 | 事实/Step1 窗口 | ① | §4.3 Step 1 窗口清单补调用者栈窗口（SP 向上、4 MiB 下、2 MiB 对齐） | §4.3；panel/round5/refute.md | CLAIM-05 修复点回读：§4.3 Step 1 窗口清单补调用者栈窗口（SP 向上、4 MiB 下、2 MiB 对齐）；独立回执见 certify 同轮文件 |
+| RD-R5-042 | CLAIM-06 | R5 | refute | P2 | 事实/L9 覆盖 | ① | §3.1 注明 x86_64 走 bootface.rs 分支只为共享常量，不存在直核面 | §3.1、§4.5；panel/round5/refute.md | CLAIM-06 修复点回读：§3.1 注明 x86_64 走 bootface.rs 分支只为共享常量，不存在直核面；独立回执见 certify 同轮文件 |

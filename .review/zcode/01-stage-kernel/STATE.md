@@ -2,7 +2,9 @@
 
 > **重写基线（2026-11-21）**：01/02 两篇已按“01=交接载荷、02=内核镜像”重写。
 > 旧 v3 CONVERGED 作废；旧轮次（D01 R36、D02 R4）只作历史记录，不跨重写比较。
-> 新基线：01 = 2651 行，02 = 1845 行；Phase 7 待跑新 L0 基线（D01 R37 / D02 R5）。
+> 新基线：01 = 2673 行（sha256 `665230ebb46af3d1…`），02 = 1840 行（sha256 `b2ab482fe7b4961b…`）。
+> Phase 7 已跑 D01 R37 / D02 R5（full）：两篇均 `ROUND-CLOSED`，未闭环 0、certify 新准入 0。
+> 未宣告 CONVERGED：full 轮无声明权；且 G11 code-publication、G13 tutorial-rubric、`D01/D02-EXTERNAL-D107` 外部哨兵仍未清零。
 > 旧 OPEN-DEBT 仍全 CLOSED；重写不替旧债销账，也不新增代码项。
 
 - **Tool**: zcode

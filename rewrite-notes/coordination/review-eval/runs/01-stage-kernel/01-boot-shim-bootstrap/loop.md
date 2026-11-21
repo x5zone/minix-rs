@@ -2229,3 +2229,88 @@ RB24 首轮 13 项逐项处置：
 
 - V3.6 遗留声明：本轮 edition V3.4；V3.6 的减法门与“修复点=制品类别射程”门未作为轮门执行，按 §6A 的 V3.4 口径关闭；meta 已把同根残项列为流程缺陷（见 `meta/01-boot-shim-bootstrap-r36.md`）。
 - 记录更正：面板 DESIGN-D2-06 自报“25 成员/2 常量”有误，主 agent 按源码 24 成员（1 常量+23 方法）修复；FACT-B-19 面板原判“内核无数量断言”与 HEAD 不符，本轮文档按“len 断言存在但不触发、strict 门位置核名”改述。
+
+## R37 重写基线（V3.4；full）
+
+### R37 §0 基线
+
+- schema: V3.4 from R37
+- 轮型: full
+- edition: V3.4
+- 基线：`526f2f76af35c1c15e0025c04e105a70da4b4009`（重写后、面板前）。
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`，sha256 `665230eb…`，2673 行。
+- 范围：01 篇全文 + `related-code.txt` 的 48 个关联文件；不含相邻模块与下一批结构重构。
+- 语料：本篇按“01=交接载荷”新轴重写；旧 v3 归档 `draft/v3-01-boot-shim-bootstrap.md`，旧节号映射见 `rewrite-notes/MIGRATION.md` 第九节。
+- L0 预检：`.design/01-outline.v5.md`、`01-design.v4.md` 存在；`design-coverage-check.sh 01-stage-kernel` PASS。
+- L0.9：citation/anchor/structure/ref/style/density/doc-code-map 全绿；`doc-publication-check` 无新增违规；`todo-ledger check --fail-on-open` OK。
+- L0.9 偏差：`tutorial-rubric-check` 6/6 章节缺 TR 项，与旧 v3 基线同型（存量基线，不是本轮新增）；`code-publication-check` 对 48 个关联文件报 73 处存量过程注释，按本任务“不改 os/”硬约束登记为 stage 风险，不修。
+- 面板：P-FACT、P-READER-A/B/C、P-REFUTE 五个独立冷启动实例；无 DESIGN 角色，记 VARIANCE（本轴重写后的第一轮先验事实/读者/反证，设计角色下一轮按需）。
+
+### R37 §1 面板
+
+- 轮型 `full`；五个独立冷启动角色：P-FACT、P-READER-A、P-READER-B、P-READER-C、P-REFUTE。模型同为 deepseek-v4.1-flash；无 P-DESIGN，记 VARIANCE：本轴重写后的首轮先验事实/读者/反证，设计角色留到下一轮按需派。
+- 材料隔离：每个角色只拿当前文档、`related-code.txt`、`.design/01-outline.v5.md` 与 `01-design.v4.md`；不拿历史版本、旧 panel、loop/台账、作者结论。P-REFUTE 另拿允许的源码清单做反证。
+- 时间：2026-11-21 17:20–18:10；原始输出 `panel/round37/{fact,reader-a,reader-b,reader-c,refute}.md`，`INDEX.md` 由 `tools/panel-index.py` 生成（5 文件，哈希自洽）。
+- 降档/升档：无；5 个角色全部一次派出成功。D02 的 READER-C 曾延迟到 18:10 才交稿，但产出完整（8 个编号 FINDING + 18 条 P3 建议），不记 MISSING。
+
+### R37 §2 发现
+
+- 面板共 40 个 FINDING + 6 个 CLAIM。FINDING：P1 11（FACT-01/02、READER-A-01/02、READER-B-01/02/03/04/06、READER-C-01/02）、P2 21（FACT-03..07、READER-A-03..07、READER-B-05/07/08/09/10、READER-C-03..08）、P3 8（FACT-08..12、READER-C-09..11）。
+- CLAIM：CLAIM-01/03/06 反证失败（主张本身成立，无缺陷）；CLAIM-02 反证出 P2 空键副作用；CLAIM-04 反证出 P1 postconditions/I4 时序；CLAIM-05 反证出 P2 所有权措辞过宽。
+- 逐条位置、证据与建议见 `panel/round37/` 原文与本轮 `defect-ledger.md` 的 R37 段；本节不复制长引文。
+
+### R37 §3 归因
+
+- 全部 in-scope：40 个 FINDING 与 6 个 CLAIM 都落在 01 篇正文、其关联代码或两篇接缝声明内；无 adjacent 阻塞。
+- 处置：① 40（含三条 FACT P3 的实修）、SUGG 3（READER-C-09/10/11，均为 P3 建议）、FP 3（CLAIM-01/03/06 反证失败，非缺陷）。
+- 根因按 ID 逐条立（RD-R37-001..046），跨角色同根关系写在处置文本里：FACT-01/READER-A-07/READER-B-02/READER-C-02 同根（§5.4 表缺失）；FACT-02/READER-A-01/02/READER-B-01/READER-C-01/CLAIM-04 同根（I4 门序）；FACT-04/READER-A-06/READER-B-05/READER-C-10 同根（21/22 字段账）。
+- 冻结决策检查：D-099..D-107 的已实施状态作为输入，未重开；D02 的 D2-06/D02-F08、D01 的 I-5/T-10 不在本轮射程；无 re-litigation。
+- 设计项：0（无 P-DESIGN 角色，未新增 [ARCH] 提案）。
+
+### R37 §4 修复
+
+- 全部为文档修复；`os/`、`minix3/` 零改动（`git diff --stat -- os/ minix3/` 为空）。修复批次：
+  1. 结构/接缝：§1.1 框 1/框 2 定义、§1.2 I3/I4 指向、§1.4 越界行、§2.8 D1–D5 指针、§3.4/§3.7 标题、§4.7/§7.5 优先序。
+  2. 事实/引文：§3.7 postconditions、§4.2 UEFI 三处 token、§3.4.2 Acquire、§4.1 预算来源、§4.3 槽容量、§6.1 日志行、§6.4 访问器。
+  3. 证据/测试：§5.4 五条真机门链表、§5.5 三项关闭判据、§3.2.1 22 字段账、§2.3 空键副作用。
+  4. 去过程词：删“评审发现/设计裁决/阶段/R02-阶段”残片，补具体判据。
+- fix-guard：每条先 grep 现状、改后回读邻句；同一段多次出现的（§5.4 表、21/22 字段账）按整段重写，不逐句打补丁。提交见 `docs(review): 01/02 重写后基线`。
+
+### R37 §5 复验
+
+- 独立回读：`certify/round37-fact.md`（FACT-01..12 + X1..X6）与 `certify/round37-reader.md`（READER-A/B/C 28 条）。初读 fact 12 CLOSED / 6 STILL-BROKEN、reader 25 CLOSED / 3 STILL-BROKEN（B-03、B-10、C-07）；逐条修复后复读全部 CLOSED。
+- `certify 新准入: 0`：复读只确认修复点，没有发现新的本轮准入根因。
+- 机械门（最终工作树）：citation `blocks=48 checked=21 failed=0 skipped=23 warned=4`；anchor `89/89 zero-def=0 multi-def=0`；structure/ref 通过；style `error=0`；density 4 个可判章通过；doc-code-map 48/48；publication 无新增；todo `--doc <路径>` OK。
+- 改写段 vs C/源码再推演：`check_boot_postconditions` 只剩 `kern_virt_base > u32::MAX`（`kernel_info.rs`）；v1 接收序 `validate_requiring_sources → check_boot_postconditions → resume_boot_pt_alloc → boot_validate_and_prepare → … → store_kernel_info`（`lib.rs`）；直核面 store 先于 `boot_validate_and_prepare`（`arch_boot_finish`）；BootAlloc 三处 load 为 `Acquire`。记录见 §3.7/§4.4 与 certify。
+- 未跑 cargo/QEMU：本轮零代码改动（`git diff --stat -- os/ minix3/` 空），不拿旧读数冒充本轮。
+- 回归扫描：旧串 `arch_boot arg=`、`reslen=`、`FREE_MEMMAP`、`21 个字段`、`§3.4 与 §3.4`、`R02-阶段`、`评审发现/设计裁决` 全部 0 命中。
+
+### R37 §6 指标
+
+- 与 `metrics.md` 的 `## R37 重写基线` 块一致：发现总数 46（40 FINDING + 6 CLAIM）、唯一根因数 46、本轮新准入 46、certify 新准入 0、重复合并 0、自引入 0、处置 ① 40 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 3 / SUGG 3、未闭环 0。
+- 轮型 `full`；轮结果 `ROUND-CLOSED`。代裁决 0 / ARCH 提案 0 / 用户否决 0；re-litigation 0；adjacent 阻塞 0；重构 0；减法 0。
+
+### R37 §7 状态
+
+- `ROUND-CLOSED`。全轮 in-scope 发现清零，100% 回读与机械门通过。
+- **不宣告 `CONVERGED`**：① full 轮按 §6A 四态模型没有收敛声明权；② G11 code-publication 的 126 处存量过程注释、G13 tutorial-rubric 的 6/6 章缺项、`D01-EXTERNAL-D107` 外部 todo 哨兵均未清零。三项都不是本轮文档重写引入，也都不在本任务允许的修改面内（`os/` 冻结、用户未确认外部哨兵）。
+- 无 design-debt / carry-over；stage 风险见 `follow-ups.md` F-R37-01..05。
+- `eval-trace-check --round R37`：PASS 13 / WARN 1 / FAIL 1；唯一 FAIL 是 `lifecycle-v33`（R36 旧 CONVERGED 与重写基线冲突，工具只认 edition 变更/重开判决行）。本轮没有伪造 edition 升级，按已知限制登记。
+
+### R37 §8 给 meta-review 的不确定点
+
+1. 面板与四份 certify 都是同一模型（deepseek-v4.1-flash）的冷启动实例，无跨模型复核。
+2. `eval-trace-check --round R37` 的 `lifecycle-v33` 可能仍报“R36 CONVERGED 后出现 R37”：重写使旧 CONVERGED 作废，但工具只认 edition 变更/重开判决行，本轮没有伪造 edition 升级；该 FAIL 应在 meta 里按“重写基线”解释。
+3. G11/G13/外部哨兵是门级存量，不是本轮发现；若 meta 要求零欠账，需用户先决定 `os/` 是否解冻、教程 rubric 是否适用于 rewrite-notes、外部线程是否完成。
+4. 面板的 P3 未编号建议没有逐条入台账；只把与 FINDING 重叠的修复写进正文，可能仍有措辞级遗漏。
+5. FACT-08 的 `.unpaged_bss` 判定依赖 `head.S` 段指示，未看 `objdump -h` 工件。
+
+### L6
+
+- 同 agent 收口（本轮的独立回读已完成，meta 全量另见下一 edition 边界）。流程质量：重写后的首轮把“文档内结构矛盾”和“源码事实错误”分开抓，面板一次撞出 I4 门序、§5.4 空表、Step 1 `AlreadyMapped` 三个主根；certify 又抓出 v1 接收序与 Step 1 修复方向两处二次错误，说明“修复后回读”不是形式。
+- 结论：`IMPROVED`（相对 v3 的 R36：同样的角色数下，事实/读者/反证三路独立命中同一主根，且 certify 能在修复后推翻主 agent 的错误方向）。
+
+### L6.5
+
+- 三问：① 本轮不变量 = 新轴文档的每条主张有来源/去向，且四条不变量在正文可核；② 基线 = `526f2f76a`，最终文档 sha/行数见 §0 与 `FREEZE.md`；③ 证据 = 46 条台账、四份 certify、九门读数与 `--round R37`。
+- 资源重读：本轮盲区属“重写后的事实/结构”类，查 `prompt/resources/fresh-eyes-review`；已确认“独立回读必须换实例、不能只 grep 旧串”这条检测模式有效，无新增可移植模式。

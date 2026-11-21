@@ -472,3 +472,88 @@
 
 - 三问：① 不变量是「确认轮在最终工作树上 certify 新准入=0，且每个 ①/④ 有独立回读」；② 前提是 R4 面板与三轮 certify 以最终 HEAD 为闭集（面板 79f910acd，最终 2ca9a9cd7；最终回执覆盖最终工作树）；③ 证据是 `round4-fact.md` 18/18、`round4-reader.md` 12/12、六门与行为门。
 - 资源重读：盲区属“流程/基线类”（设计批后文档未动但代码移动），按 L6.5 查 `prompt/resources/fresh-eyes-review` 的“changed contract counterparts by content”检测模式；已实际回写 `BLIND-SPOTS.md` 的 B-69..B-75（语义去重、制品入库、镜像门、未编号建议、回执命名、检索材料面、严重度对账），并修正此前只有宣称、没有工件的 B-68 扩展句。
+
+## R5 重写基线（V3.4；full）
+
+### R5 §0 基线
+
+- schema: V3.4 from R5
+- 轮型: full
+- edition: V3.4
+- 基线：`526f2f76af35c1c15e0025c04e105a70da4b4009`（重写后、面板前）。
+- 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`，sha256 `b2ab482f…`，1840 行。
+- 范围：02 篇全文 + `related-code.txt` 的 30 个关联文件；不含相邻模块与下一批结构重构。
+- 语料：本篇按“02=内核镜像”新轴重写；旧 v3 归档 `draft/v3-02-higher-half-kernel.md`，旧节号映射见 `rewrite-notes/MIGRATION.md` 第九节。
+- L0 预检：`.design/02-outline.v5.md`、`02-design.v4.md` 存在；`design-coverage-check.sh 01-stage-kernel` PASS。
+- L0.9：citation/anchor/structure/ref/style/density/doc-code-map 全绿；`doc-publication-check` 无新增违规；`todo-ledger check --fail-on-open` OK。
+- L0.9 偏差：`tutorial-rubric-check` 6/6 章节缺 TR 项，与旧 v3 基线同型；`code-publication-check` 对 30 个关联文件报存量过程注释，按“不改 os/”登记为 stage 风险。
+- 面板：P-FACT、P-READER-A/B/C、P-REFUTE 五个独立冷启动实例；无 DESIGN 角色，记 VARIANCE（同 D01 R37）。
+
+### R5 §1 面板
+
+- 轮型 `full`；五个独立冷启动角色：P-FACT、P-READER-A、P-READER-B、P-READER-C、P-REFUTE。模型同为 deepseek-v4.1-flash；无 P-DESIGN，记 VARIANCE：本轴重写后的首轮先验事实/读者/反证。
+- 材料隔离：每个角色只拿当前文档、`related-code.txt`、`.design/02-outline.v5.md` 与 `02-design.v4.md`；不拿历史版本、旧 panel、loop/台账、作者结论。P-REFUTE 另拿允许的源码清单做反证。
+- 时间：2026-11-21 17:20–18:10；原始输出 `panel/round5/{fact,reader-a,reader-b,reader-c,refute}.md`，`INDEX.md` 由 `tools/panel-index.py` 生成（5 文件，哈希自洽）。
+- 降档/升档：无；5 个角色全部一次派出成功。READER-C 延迟到 18:10 交稿，产出完整（8 个编号 FINDING + 10 条 P3 建议），不记 MISSING。
+
+### R5 §2 发现
+
+- 面板共 36 个 FINDING + 6 个 CLAIM。FINDING：P1 14（FACT-01/03/04、READER-A-01、READER-B-01..06、READER-C-01..04）、P2 18（FACT-02/05/06、READER-A-02、READER-B-07..16、READER-C-05..08）、P3 4（FACT-07..10）。
+- CLAIM：CLAIM-01 J1 跨节冲突（P1）、CLAIM-02 栈顶公式（主张成立，附测试载体 P2 边界）、CLAIM-03 AlreadyMapped 可达性（P1）、CLAIM-04 Step 2 失败路径（P1）、CLAIM-05 Step 1 窗口清单（P1）、CLAIM-06 L9 x86_64 覆盖（P2）。
+- 逐条位置、证据与建议见 `panel/round5/` 原文与本轮 `defect-ledger.md` 的 R5 段。
+
+### R5 §3 归因
+
+- 全部 in-scope：36 个 FINDING 与 6 个 CLAIM 都落在 02 篇正文、其关联代码或两篇接缝声明内；无 adjacent 阻塞。
+- 处置：① 41、FP 1（READER-C-03：基线 §3.6 的“守卫拒绝”与 §4.3 的“假如没有这道检查”是兼容表述，读者按现行行为误读；反证见 `panel/round5/reader-c.md` 与 §3.6/§4.3 原文）；无 ②/⑤/⑥/SUGG。
+- 根因按 ID 逐条立（RD-R5-001..042），跨角色同根：J1 范围（FACT/READER-A-01/READER-B-01/READER-C-01/CLAIM-01）、J2 范围（READER-C-04/06）、Step 2 反事实（FACT-04/CLAIM-04）、Step 1 窗口（CLAIM-05/READER-C-05）、EBS/建根（READER-C-02）。
+- 冻结决策检查：D-099..D-107 已实施状态作为输入；D2-06/D02-F08 未重开；无 re-litigation。
+- 设计项：0（无 P-DESIGN 角色，未新增 [ARCH] 提案）。
+
+### R5 §4 修复
+
+- 全部为文档修复；`os/`、`minix3/` 零改动。修复批次：
+  1. 主轴：J1 组内成立（C 低侧组 0、高侧组 `_kern_offset`）、J2 限定 Rust 生产镜像、J4 的 SP/PC 判据按架构拆开。
+  2. 失败路径：Step 2 的 `AlreadyMapped` → `.expect` panic、Step 1 补调用者栈窗口、EBS 后建根、载荷无映射 vs 零读、C 侧反序不产生可定位页错误。
+  3. 结构/引文：§3.1 三形态枚举、§4.5 去重复表、M3/M9 覆盖措辞、§6.1 LMA 重叠限定旧工具链、§4.4 引文头注明断言省略。
+  4. 去过程词：删“设计裁决/评审发现”占位，恢复具体阶段名与判据。
+- fix-guard：每段先 grep 现状、改后回读邻句；重复标题与重复表按整段删除，不逐句补丁。提交见 `docs(review): 01/02 重写后基线`。
+
+### R5 §5 复验
+
+- 独立回读：`certify/round5-fact.md`（FACT-01..10 + CLAIM-01..06 + 附注 1..4）与 `certify/round5-reader.md`（READER-A/B/C 26 条）。初读 fact 17 CLOSED / 3 STILL-BROKEN（CLAIM-03、附注 2、附注 4）、reader 23 CLOSED / 3 STILL-BROKEN（B-02、B-08、B-15）；逐条修复后复读全部 CLOSED。
+- `certify 新准入: 0`：复读只确认修复点；CLAIM-03 推翻了主 agent 第一次修复方向（把 Step 1 同尺寸重叠写成 `Ok`），按三份 `map_huge` 实现改回 `AlreadyMapped` 后复读 CLOSED。
+- 机械门（最终工作树）：citation `blocks=41 checked=27 failed=0 skipped=9 warned=5`；anchor `66/66 zero-def=0 multi-def=0`；structure/ref 通过；style `error=0`；density 4 个可判章通过；doc-code-map 30/30；publication 无新增；todo `--doc <路径>` OK。
+- 改写段 vs C/源码再推演：J1 组内一致（C 低侧 0 / 高侧 `_kern_offset`，Rust 生产一组）；Step 1 同尺寸叶 `AlreadyMapped`（三架构 paging.rs）；Step 2 删守卫 `.expect` panic；EBS 后建根（`prepare_kernel_image_v1`）；v1 接收 additive 不重建根。记录见 §4.3/§4.5 与 certify。
+- 未跑 cargo/QEMU：本轮零代码改动（`git diff --stat -- os/ minix3/` 空）。
+- 回归扫描：旧串 `arch_boot arg=`、`reslen=`、`设计裁决`、`评审发现`、`R02-阶段`、`§3.6` 重复标题、`§3.4/§3.8` 断链全部 0 命中。
+
+### R5 §6 指标
+
+- 与 `metrics.md` 的 `## R5 重写基线` 块一致：发现总数 42（36 FINDING + 6 CLAIM）、唯一根因数 42、本轮新准入 42、certify 新准入 0、重复合并 0、自引入 0、处置 ① 42 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0、未闭环 0。
+- 轮型 `full`；轮结果 `ROUND-CLOSED`。代裁决 0 / ARCH 提案 0 / 用户否决 0；re-litigation 0；adjacent 阻塞 0；重构 0；减法 0。
+
+### R5 §7 状态
+
+- `ROUND-CLOSED`。全轮 in-scope 发现清零，100% 回读与机械门通过。
+- **不宣告 `CONVERGED`**：full 轮无收敛声明权；G11 code-publication 的 73 处存量过程注释、G13 tutorial-rubric 的 6/6 章缺项、`D02-EXTERNAL-D107` 外部 todo 哨兵未清零。三项都不是本轮文档重写引入，也不在本任务允许的修改面内。
+- 无 design-debt / carry-over；stage 风险见 `follow-ups.md` F-R5-01..06。
+- `eval-trace-check --round R5`：PASS 12 / WARN 0 / FAIL 1；唯一 FAIL 是 `lifecycle-v33`（R4 旧 CONVERGED 与重写基线冲突）。本轮没有伪造 edition 升级，按已知限制登记。
+
+### R5 §8 给 meta-review 的不确定点
+
+1. 面板与四份 certify 都是同一模型的冷启动实例，无跨模型复核。
+2. `eval-trace-check --round R5` 的 `lifecycle-v33` 可能仍报“R4 CONVERGED 后出现 R5”：重写使旧 CONVERGED 作废，但工具只认 edition 变更/重开判决行；本轮没有伪造 edition 升级。
+3. G11/G13/外部哨兵是门级存量，不是本轮发现；是否解冻 `os/`、教程 rubric 是否适用于 rewrite-notes，需用户决定。
+4. `os/kernel/src/lib.rs` 的 Step 1 注释与三份 `map_huge` 实现不符；本轮文档按实现写，注释留 F-R5-06。
+5. 未跑 QEMU；`test-higher-half` 的行为证据来自历史轮，本轮未重跑。
+
+### L6
+
+- 同 agent 收口。流程质量：面板把 J1/J2 的适用范围、EBS/建根、Step 2 反事实、Step 1 窗口四类错误分开抓；certify 进一步推翻主 agent“同尺寸重写返回 Ok”的错误修复，说明源码优先序必须由独立回读执行，不能靠主 agent 自证。
+- 结论：`IMPROVED`（相对 D02 v3 的 R4：同样的角色数下，certify 抓到了一处修复方向错误，避免了把错误写进最终文档）。
+
+### L6.5
+
+- 三问：① 本轮不变量 = 四个时刻与 J1–J4 在正文/证据/诊断三处一致；② 基线 = `526f2f76a`，最终文档 sha/行数见 §0 与 `FREEZE.md`；③ 证据 = 42 条台账、四份 certify、九门读数与 `--round R5`。
+- 资源重读：本轮盲区属“源码注释与实现不一致”类，查 `prompt/resources/adversarial-rust`；已确认“实现 > 注释”这条判据有效，建议下一版把“源码注释也纳入真值核对”写进面板 brief。

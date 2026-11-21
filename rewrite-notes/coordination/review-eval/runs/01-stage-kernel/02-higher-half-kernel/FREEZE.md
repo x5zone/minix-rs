@@ -132,5 +132,12 @@
 
 - 旧 v3 原文归档到 `rewrite-notes/01-stage-kernel/draft/`；现行文件按“01=交接载荷、02=内核镜像”重写。
 - 旧 R4 的 CONVERGED 作废；不跨重写比较轮次。新基线为下一轮（D01 R37 / D02 R5）的 L0。
-- 行数：01 = 2651，02 = 1845；比例 1.44。
+- 行数：01 = 2673，02 = 1840；比例 1.45。
 - 旧 OPEN-DEBT/follow-ups/suggestions 仍全 `[CLOSED]`；重写不改变旧债证据。
+
+## 重写后 review 状态（2026-11-21）
+
+- 轮次：D01 R37 / D02 R5，轮型 `full`，轮结果 `ROUND-CLOSED`。full 轮无 CONVERGED 声明权，故不写 CONVERGED。
+- 本轮发现全部处置：未闭环 0；certify 新准入 0（四份独立回读）。
+- 未达 CONVERGED 的原因不在本轮发现：G11 code-publication 的存量注释、G13 tutorial-rubric 的 6/6 缺项、以及 `D01/D02-EXTERNAL-D107` 外部 todo 哨兵；三项均不由本轮文档重写引入，也不在本任务允许的修改面内。
+- 本轮 `os/`、`minix3/` 零改动；QEMU 未重跑。下一代码批次需重新固定基线。

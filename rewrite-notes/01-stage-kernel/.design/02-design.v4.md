@@ -18,7 +18,7 @@
 
 | ID | 不变量 | 判据 | 失败落点 |
 |---|---|---|---|
-| J1 | 所有 `PT_LOAD` 的 `vaddr−paddr` 相等 | L4；`kernel.lds`/`*.ld` 的 `AT()` 一致 | 段拷贝到错误物理地址 |
+| J1 | 同一组 `PT_LOAD` 的 `vaddr−paddr` 相等（C 两组；Rust 生产镜像一组） | L4；`kernel.lds`/`*.ld` 的 `AT()` 一致 | 段拷贝到错误物理地址 |
 | J2 | 跨距 2 MiB 对齐，栈在末段 | L5/L9；`*_stack_*` 符号 | `NoKernelPageSize`；栈落 `.bss` 中间 |
 | J3 | 映射先于进入 | Step1 恒等/Step2 内核/Step2b/2c/Step3 enable | 开分页后取指 fault |
 | J4 | 换栈与跳转成对且不返回 | 三份 asm；`-> !`；SP/PC/FP 断言 | 返回地址在新栈；SP 低半 |

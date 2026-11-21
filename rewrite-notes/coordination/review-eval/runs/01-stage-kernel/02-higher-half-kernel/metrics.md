@@ -139,3 +139,26 @@
 | 其余两两同根 | A-02/C-04、D2-05/C-05、FACT-03/D2-02、FACT-09/B-S14、A-S10/C-S05、A-S07/C-S08、B-06/A-S01、C-06/A-S02、B-S05/C-S06、B-S09/C-S10(e)、B-S03/B-S04 | 11 对 |
 
 > 聚簇只用于指标说明，不改台账的逐 ID 行；工具仍按 79 个根因 ID 对账。
+
+## R5 重写基线（V3.4；full）
+
+- 发现总数: 42（FINDING 36 + CLAIM 6）
+- 唯一根因数: 42（RD-R5-001..042；逐 ID 立根因）
+- 本轮新准入: 42
+- certify 新准入: 0（四份独立 certify 回执全 CLOSED；见 loop §5）
+- 重复合并: 0（逐 ID 立根因；跨角色同根关系在处置文本中说明）
+- 自引入: 0（certify 未发现本轮修复引入的新根因）
+- 处置: ① 42 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
+- 未闭环: 0
+- 轮型: full
+- 轮结果: ROUND-CLOSED
+- 代裁决: 0
+- ARCH 提案: 0
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 减法: 提案 0 / 采纳 0
+- 成本: agent 7（5 面板 + 2 certify）/ token 未采集 / 耗时 约 6 小时
+- 回读与回归: 文档七门绿（citation blocks=41 checked=27 failed=0；anchor 66/66；structure/ref/style error=0/density 通过；doc-code-map 30/30）；publication 无新增；todo-ledger `--doc 02-higher-half-kernel` OK；tutorial-rubric 6/6 章缺项与 v3 基线同型（存量）；code-publication 73 处存量过程注释（`os/` 冻结，不改）；QEMU 未重跑（文档-only）

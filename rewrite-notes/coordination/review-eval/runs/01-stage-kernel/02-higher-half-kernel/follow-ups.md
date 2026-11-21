@@ -57,3 +57,15 @@
 | R02-T02 | [CLOSED] dup-of | `link_ld_lockstep.rs` 随 D2-06 删除，生产脚本门替代 |
 | R02-T03 | [CLOSED] | riscv64 载体 `pc_at_high` 并入 PASS 条件；`run_qemu.sh` PASS（PC=0xffffffc000200146）；提交 `94d5f2379` |
 | R02-T04 | [CLOSED] | 三份 `jump_to_kmain` 生产路径断言 `stack_top` 对齐，x86 另断言入口 RSP；提交 `550d8c0b8` |
+
+## R5 重写基线（2026-11-21）
+
+| ID | 来源 | 内容 | 去向 |
+|---|---|---|---|
+| F-R5-01 | G11 code-publication | 30 个关联文件有 73 处存量过程注释；本任务 `os/` 冻结，不改 | 下一代码批次 |
+| F-R5-02 | G13 tutorial-rubric | 6/6 章缺 TR-1..TR-6（与旧 v3 基线同型，存量） | 教程化批次 |
+| F-R5-03 | todo 哨兵 | `D02-EXTERNAL-D107` 仍 `blocked: true` | 外部线程完成并经用户确认后关闭 |
+| F-R5-04 | QEMU | 本轮文档-only，未重跑 `test-higher-half` 与三架构门 | 下一代码批次 |
+| F-R5-05 | 同模型 | 面板与 certify 均为 deepseek-v4.1-flash 冷启动实例 | 有条件时跨工具只读复核 |
+
+| F-R5-06 | certify 观察 | `os/kernel/src/lib.rs` 的 Step 1 注释仍写“同尺寸重写返回 Ok；AlreadyMapped 只在 1 GiB 叶时出现”，与三份 `map_huge` 实现不符 | 下一代码批次清注释；本轮文档已按实现写 |

@@ -301,3 +301,26 @@
 - 减法: 提案 8 / 采纳 4（D2 SUBTRACTION-TABLE）
 - 成本: agent 13（7 面板 + 6 次 certify 回执）/ token 未采集 / 耗时 约 7 小时
 - 回读与回归: 文档六门绿（anchor 110/110、citation checked=29 failed=0、structure/ref/style error=0/density、doc-code-map 54/54）；`--stale-lines 2e82208e2 --strict` PASS；minix-boot 185/0、boot-shim 146/0、minix-elf 27/0、kernel mock 866/0/8；test-sysboot PASS、test-riscv64-uboot-shim 6/6 PASS；aarch64 rt-birth 门在同一处 user-chain Data Abort（stash 对照，已知 A2 遗留，非本轮因果）
+
+## R37 重写基线（V3.4；full）
+
+- 发现总数: 46（FINDING 40 + CLAIM 6）
+- 唯一根因数: 46（RD-R37-001..046；逐 ID 立根因）
+- 本轮新准入: 46
+- certify 新准入: 0（四份独立 certify 回执全 CLOSED；见 loop §5）
+- 重复合并: 0（逐 ID 立根因；跨角色同根关系在处置文本中说明）
+- 自引入: 0（certify 未发现本轮修复引入的新根因）
+- 处置: ① 40 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 3 / SUGG 3
+- 未闭环: 0
+- 轮型: full
+- 轮结果: ROUND-CLOSED
+- 代裁决: 0
+- ARCH 提案: 0
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
+- 减法: 提案 0 / 采纳 0
+- 成本: agent 7（5 面板 + 2 certify）/ token 未采集 / 耗时 约 6 小时
+- 回读与回归: 文档七门绿（citation blocks=48 checked=21 failed=0；anchor 89/89；structure/ref/style error=0/density 通过；doc-code-map 48/48）；publication 无新增；todo-ledger `--doc 01-boot-shim-bootstrap` OK；tutorial-rubric 6/6 章缺项与 v3 基线同型（存量）；code-publication 126 处存量过程注释（`os/` 冻结，不改）；QEMU 未重跑（文档-only）

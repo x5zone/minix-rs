@@ -70,3 +70,8 @@
 | DESIGN-D2-07 | [CLOSED] implemented | 提交 `83e8cbb2b`：`jump_to_kmain` 删 `stack_top` 形参，三实现从 `kinfo.kern_stack_top()` 现算 |
 | DESIGN-D2-08 | [CLOSED] implemented | 提交 `ecfef0ae9`：删 `p_align`/`LoadSegment.align`/`HIGHER_HALF_CALLED`/`virtual_end` |
 | DESIGN-D2-09 | [CLOSED] implemented | 提交 `74ea87c44`：删 `KernelInfo`/`MemoryRegion`/`BootModule` 的 `repr(C)` |
+
+## R5 重写基线
+
+- READER-C 的 10 条未编号 P3 建议已按面板原文逐条分诊：其中“§3.7 三者都去掉”“§2.5 栈顶交接”“§2.1 无 AT() 默认”“L0–L9 vs L10”“§4.3 pgeok 节号”“下表第 3 行”“§2.4 残句”“L9 x86 措辞”“§4.4 引文头”九条已在本轮正文修正；其余一条（§1.3 L0–L9 权威清单）已在 §1.3 统一为 L0–L10。
+- 读者 A/B/C 的未编号建议不再另立 SUGG 行；有编号的 FINDING 已全量进台账。

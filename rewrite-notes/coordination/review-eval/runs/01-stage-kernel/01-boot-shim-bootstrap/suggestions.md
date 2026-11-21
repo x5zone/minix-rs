@@ -84,3 +84,11 @@
 | R36-READER-C-S01..S05 | [CLOSED] implemented | “第一次”点名、过程工件移出、设计稿路径、`smp_gpt_v3.md` 指针、交接寄存器回指等全部落文 |
 | R36-DESIGN-D2-03 startup_record 死分支 | [CLOSED] implemented | 删除 `startup_record()`/Startup 枚举/无生产者分支，`ZERO_RECORD` 改 `EMPTY_SOURCE_RECORD`；提交 `7de857246` |
 | R36-DESIGN-D2-09 五个 `static mut` | [CLOSED] implemented | `PAIR_STORAGE` 与 `resv_claims` 五个静态改 `BootCell`（单线程契约集中）；提交 `2ec026da8` |
+
+## R37 重写基线
+
+| ID | 状态 | 证据 |
+|---|---|---|
+| READER-C-09 | implemented | §5.4 明确 `test-sysboot` 不是启动门，x86 门是 `test-shim-bootmarks-x86.sh` |
+| READER-C-10 | implemented | §3.2.1 删除行统一为 22 个字段并补 `user_sp` |
+| READER-C-11 | implemented | §2.6 的 `overlaps` 半开判据与 C 的 `-1` 差异按源码重述 |
