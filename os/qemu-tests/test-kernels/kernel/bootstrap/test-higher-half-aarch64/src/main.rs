@@ -56,7 +56,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
-        authority: minix_boot::InputObjectId::UefiMemoryMap,
+        authority: minix_boot::RamAuthority::UEFI,
     };
 
     boot_alloc::init_boot_pt_alloc(bump_base, bump_end);

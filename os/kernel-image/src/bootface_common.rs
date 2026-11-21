@@ -555,7 +555,7 @@ where
         params.kern_size,
     );
     let kernel_info: KernelInfo =
-        build_kernel_info(&report, minix_boot::InputObjectId::DtbBootInput);
+        build_kernel_info(&report, minix_boot::RamAuthority::DTB);
     kernel_info.validate_requiring_sources();
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)

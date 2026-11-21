@@ -221,7 +221,7 @@ mod kerninfo_tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
+            authority: minix_boot::RamAuthority::DTB,
         }
     }
 

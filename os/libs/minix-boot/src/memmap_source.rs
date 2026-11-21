@@ -596,6 +596,26 @@ pub enum InputObjectId {
     // reserved so a future input class does not reuse it silently.
 }
 
+/// The subset of input objects allowed to declare this boot's RAM authority.
+///
+/// It is not a general input-object id: only the two memmap producers can
+/// back a projection audit. A distinct type keeps a `SourceRecord`'s
+/// provenance field from being passed where an authority is expected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RamAuthority(InputObjectId);
+
+impl RamAuthority {
+    /// A device-tree boot input.
+    pub const DTB: Self = Self(InputObjectId::DtbBootInput);
+    /// A UEFI `GetMemoryMap` snapshot.
+    pub const UEFI: Self = Self(InputObjectId::UefiMemoryMap);
+
+    /// The underlying input-object id (for `SourceRecord` comparisons).
+    pub const fn input_object(self) -> InputObjectId {
+        self.0
+    }
+}
+
 impl InputObjectId {
     pub const fn tag(self) -> u8 {
         match self {

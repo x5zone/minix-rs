@@ -5800,7 +5800,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
+            authority: minix_boot::RamAuthority::DTB,
         };
 
         let root_page = PhysBytes(0x1000);
@@ -6007,7 +6007,7 @@ mod tests {
             param_buf: PARAM,
             reserved_regions: &[],
             memmap_sources: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
+            authority: minix_boot::RamAuthority::DTB,
         };
         store_kernel_info(&info);
         let stored = crate::kernel_info().expect("store_kernel_info published the global copy");
@@ -6078,7 +6078,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
+            authority: minix_boot::RamAuthority::DTB,
         }
     }
 
@@ -6187,7 +6187,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
+            authority: minix_boot::RamAuthority::DTB,
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000), minix_arch::paging::PteChannel::Identity);
 
@@ -6458,7 +6458,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
+            authority: minix_boot::RamAuthority::DTB,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
@@ -6479,7 +6479,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
             memmap_sources: &[],
-            authority: minix_boot::InputObjectId::DtbBootInput,
+            authority: minix_boot::RamAuthority::DTB,
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);

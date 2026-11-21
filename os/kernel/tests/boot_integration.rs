@@ -29,7 +29,7 @@ fn boot_simulation_full_flow() {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
-        authority: minix_boot::InputObjectId::DtbBootInput,
+        authority: minix_boot::RamAuthority::DTB,
     };
 
     let root_page = PhysBytes(0x1000); // physical page for PML4

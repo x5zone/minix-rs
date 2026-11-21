@@ -418,7 +418,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
-            authority: minix_boot::InputObjectId::UefiMemoryMap,
+            authority: minix_boot::RamAuthority::UEFI,
         };
         s.write_envelope(&carrier).unwrap();
     }
@@ -839,7 +839,7 @@ mod tests {
             boot_modules: &MODULES,
             platform_sources: &SOURCES,
             param_buf: b"ARCH=test\0",
-            authority: minix_boot::InputObjectId::UefiMemoryMap,
+            authority: minix_boot::RamAuthority::UEFI,
         };
         let mut arena = [0u8; ARENA_CAP];
         let mut s = Serializer::new(

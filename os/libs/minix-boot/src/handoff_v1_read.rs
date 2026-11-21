@@ -85,7 +85,7 @@ pub struct HandoffScalars {
     pub platform_byte_len: u64,
     pub param_byte_len: u64,
     pub sources_byte_len: u64,
-    pub ram_authority: crate::memmap_source::InputObjectId,
+    pub ram_authority: crate::memmap_source::RamAuthority,
 }
 
 fn read_u32(arena: &[u8], off: usize) -> u32 {
@@ -158,8 +158,8 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
     // an inverted or out-of-range cursor would let `BootAlloc::alloc` hand out
     // pages outside the declared region).
     let ram_authority = match read_u32(arena, offsets::RAM_AUTHORITY) {
-        0 => crate::memmap_source::InputObjectId::DtbBootInput,
-        1 => crate::memmap_source::InputObjectId::UefiMemoryMap,
+        0 => crate::memmap_source::RamAuthority::DTB,
+        1 => crate::memmap_source::RamAuthority::UEFI,
         _ => return Err(HandoffV1ReadError::BadRamAuthority),
     };
     let root_page = read_u64(arena, offsets::ROOT_PAGE);
@@ -497,7 +497,7 @@ mod tests {
             boot_modules: &MODULES,
             platform_sources: &SOURCES,
             param_buf: PARAM,
-            authority: crate::memmap_source::InputObjectId::DtbBootInput,
+            authority: crate::memmap_source::RamAuthority::DTB,
         }
     }
 

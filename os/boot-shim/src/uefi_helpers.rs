@@ -1421,7 +1421,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x100_000,
         };
-        let info = build_kernel_info(&report, minix_boot::InputObjectId::UefiMemoryMap);
+        let info = build_kernel_info(&report, minix_boot::RamAuthority::UEFI);
 
         assert_eq!(info.reserved_regions.len(), 1);
         assert_eq!(info.reserved_regions[0].base, PhysBytes(0x1da0_0000));

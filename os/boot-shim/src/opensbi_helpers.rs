@@ -759,7 +759,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,
         };
-        let info = build_kernel_info(&report, minix_boot::InputObjectId::DtbBootInput);
+        let info = build_kernel_info(&report, minix_boot::RamAuthority::DTB);
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit
         // value; the Sv39 value range is pinned on riscv64 targets by
@@ -818,7 +818,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,
         };
-        let info = build_kernel_info(&report, minix_boot::InputObjectId::DtbBootInput);
+        let info = build_kernel_info(&report, minix_boot::RamAuthority::DTB);
         // memmap
         assert_eq!(info.memmap.len(), 1);
         assert_eq!(info.memmap[0].base, PhysBytes(0x8000_0000));

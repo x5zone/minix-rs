@@ -111,7 +111,7 @@ pub use minix_elf;
 /// `from_raw_parts` laundering is needed at the call sites (D2-04).
 pub fn build_kernel_info(
     report: &minix_boot::BootReport<'static>,
-    authority: minix_boot::InputObjectId,
+    authority: minix_boot::RamAuthority,
 ) -> minix_boot::KernelInfo {
     minix_boot::KernelInfo {
         memmap: report.memmap,

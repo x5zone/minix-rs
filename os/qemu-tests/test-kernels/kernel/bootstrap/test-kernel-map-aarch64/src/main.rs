@@ -60,7 +60,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
-        authority: minix_boot::InputObjectId::UefiMemoryMap,
+        authority: minix_boot::RamAuthority::UEFI,
     };
 
     // 2. Register boot-stage page table allocator

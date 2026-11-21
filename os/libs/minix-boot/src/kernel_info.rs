@@ -5,7 +5,7 @@
 
 use minix_types::{PhysBytes, VirBytes};
 
-use crate::memmap_source::{InputObjectId, SourceAuditError, SourceRecord};
+use crate::memmap_source::{InputObjectId, RamAuthority, SourceAuditError, SourceRecord};
 use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
@@ -144,12 +144,11 @@ pub struct KernelInfo {
     ///
     /// Bound at construction, not at validation: the wire decoder copies
     /// `BootHandoffV1::ram_authority`, the direct-core legs pass
-    /// [`InputObjectId::DtbBootInput`], and the UEFI legs pass
-    /// [`InputObjectId::UefiMemoryMap`]. [`Self::validate_requiring_sources`]
+    /// [`RamAuthority::DTB`], and the UEFI legs pass [`RamAuthority::UEFI`]. [`Self::validate_requiring_sources`]
     /// reads this field instead of taking a caller-supplied parameter
     /// (F-R17-04), so the projection and its authority cannot be paired by a
     /// separate argument at the consumer boundary.
-    pub authority: InputObjectId,
+    pub authority: RamAuthority,
 }
 
 /// Validation strictness for [`KernelInfo::validate_at`].
@@ -474,14 +473,14 @@ impl KernelInfo {
             assert!(
                 self.memmap_sources
                     .iter()
-                    .any(|r| r.input_object == authority),
+                    .any(|r| r.input_object == authority.input_object()),
                 "KernelInfo: declared RAM authority {authority:?} has no source records — refusing to fall back to another input"
             );
             match crate::memmap_source::audit_source_coverage_for(
                 self.memmap,
                 self.reserved_regions,
                 self.memmap_sources,
-                Some(self.authority),
+                Some(self.authority.input_object()),
             ) {
                 Ok(()) => {}
                 Err(error) => panic!(
@@ -659,7 +658,7 @@ mod tests {
             }],
             platform_sources: &[],
             param_buf: &[],
-            authority: InputObjectId::DtbBootInput,
+            authority: RamAuthority::DTB,
         }
     }
 
@@ -922,7 +921,7 @@ mod tests {
     fn test_validate_requiring_sources_refuses_missing_authority() {
         let mut info = make_valid_info();
         info.memmap_sources = &COVERING_RECORDS; // all DtbBootInput
-        info.authority = InputObjectId::UefiMemoryMap;
+        info.authority = RamAuthority::UEFI;
         info.validate_requiring_sources();
     }
 

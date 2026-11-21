@@ -60,7 +60,7 @@ fn main() -> Status {
         param_buf: &[],
         reserved_regions: &[],
         memmap_sources: &[],
-        authority: minix_boot::InputObjectId::UefiMemoryMap,
+        authority: minix_boot::RamAuthority::UEFI,
     };
 
     // 2. Enable paging (arch_boot_impl)
