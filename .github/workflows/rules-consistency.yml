@@ -65,13 +65,14 @@ jobs:
       - name: 安装 ripgrep
         run: |
           sudo apt-get update
-          sudo apt-get install -y ripgrep
+          sudo apt-get install -y ripgrep python3-yaml
 
       - name: 确认工具齐备（缺哪个就直接报错，不要让门静默跳过）
         run: |
           for t in git rg python3 awk gawk sed grep; do
             command -v "$t" >/dev/null 2>&1 || { echo "::error::缺少必需工具：$t"; exit 1; }
           done
+          python3 -c 'import yaml' || { echo "::error::缺少 PyYAML（python3-yaml）"; exit 1; }
           echo "工具 OK：$(git --version | head -1) / $(gawk --version | head -1) / $(python3 --version)"
 
       - name: 四道一致性门（源 → 三端派生）
