@@ -479,7 +479,7 @@
   origin: rewrite-notes/02-stage-vm/draft/TODO.md:197
   origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
   origin_line: 197
-  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  origin_commit: 308b878496a6f40a4f99b1d7032216c0420a1c38
   legacy_status: open
   evidence: '`rg InPlaceOption os/` → 0 命中；初始化仍用 MaybeUninit+bool'
   verified_by: agent:regression
@@ -498,7 +498,7 @@
   origin: rewrite-notes/02-stage-vm/draft/TODO.md:198
   origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
   origin_line: 198
-  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  origin_commit: 308b878496a6f40a4f99b1d7032216c0420a1c38
   legacy_status: open
   evidence: '`os/servers/vm/src` 无 panic_handler / 展开支持；panic 走 minix-rt 公共处理器'
   verified_by: agent:regression
@@ -517,7 +517,7 @@
   origin: rewrite-notes/02-stage-vm/draft/TODO.md:201
   origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
   origin_line: 201
-  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  origin_commit: 308b878496a6f40a4f99b1d7032216c0420a1c38
   legacy_status: open
   evidence: '`dyn MemType` 仍在用：vir_region.rs:102/145、mmap.rs:383、cache_handlers.rs:242'
   verified_by: agent:regression
@@ -536,7 +536,7 @@
   origin: rewrite-notes/02-stage-vm/draft/TODO.md:199
   origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
   origin_line: 199
-  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  origin_commit: 308b878496a6f40a4f99b1d7032216c0420a1c38
   legacy_status: open
   evidence: 现状已降级：vmproc/mod.rs:63-69 子模块全为私有，VmFlags 与 VmProcTable 仅 pub(crate) 再导出；无更宽暴露
   verified_by: agent:regression
