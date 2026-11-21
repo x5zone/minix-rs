@@ -823,8 +823,8 @@ pub mod mock {
     use alloc::collections::BTreeMap;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Ownership state, same semantics as the production arches (D-081 /
-    /// I-44): `new`/`new_mock` own their (simulated) tree; the wrapping
+    /// Ownership state, same semantics as the production arches:
+    /// `new`/`new_mock` own their (simulated) tree; the wrapping
     /// constructors do not.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum PagingState {
@@ -902,8 +902,8 @@ pub mod mock {
 
         fn new_from_page(_root_page: PhysBytes, _channel: PteChannel) -> Self {
             // External: the caller owns the root page; this handle must not
-            // destroy it (D-081 / I-44). The channel is recorded by the
-            // real arches; the mock has no MMU to route through.
+            // destroy it. The channel is recorded by the real arches; the
+            // mock has no MMU to route through.
             let mut pt = Self::new_mock().expect("MockPaging::new_from_page should not fail");
             pt.state = PagingState::External;
             pt
@@ -919,7 +919,7 @@ pub mod mock {
             // External: wrapping a live root never grants destroy rights.
             // The mock has no DM windows to choose between, so the channel
             // is recorded nowhere; the `root_phys` parity guarantee is what
-            // matters (D-081 / I-44 merged the former `adopt_active_root`).
+            // matters. This is the only constructor for a live root.
             let id = MOCK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
             Self {
                 id,
@@ -942,8 +942,8 @@ pub mod mock {
         }
 
         unsafe fn destroy(self) {
-            // D-081 / I-44: the ownership assertion runs before any state
-            // mutation — an externally managed root must never be cleared.
+            // The ownership assertion runs before any state mutation — an
+            // externally managed root must never be cleared.
             assert_eq!(
                 self.state,
                 PagingState::Owned,

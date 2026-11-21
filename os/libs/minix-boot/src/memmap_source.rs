@@ -1720,8 +1720,8 @@ mod tests {
         );
         // The static slice still reads the first collection's values.
         assert_eq!((first_free[0].base.0, first_free[0].len), (0x8000_0000, 0x4000));
-        // I-33-丙 / D-086: the owned form now carries the unclipped panorama
-        // too, so the EBS-side cross-check needs no `'static` collection.
+        // The owned form also carries the unclipped panorama, so the
+        // EBS-side cross-check needs no `'static` collection.
         assert_eq!(owned.panorama().len(), 1);
         assert_eq!(
             (owned.panorama()[0].base.0, owned.panorama()[0].len),
@@ -1729,7 +1729,7 @@ mod tests {
         );
     }
 
-    /// I-33-丙 / D-086: a SECOND owned collection on the same boot face must
+    /// A SECOND owned collection on the same boot face must
     /// succeed. This is the shape UEFI's standard EBS retry forces on the
     /// EBS-side cross-check (`resv_claims::capture` runs once per attempt):
     /// the `'static` entry points would trip `DTB_COLLECT_TAKEN` on attempt 2

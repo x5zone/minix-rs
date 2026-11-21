@@ -290,9 +290,9 @@ pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCe
 ///
 /// 256 = the 127 reserved windows observed on the real machine
 /// (2026-09-21: `ident-windows res=127`), doubled and rounded up to the next
-/// power of two. It is an independent capacity: the VM handoff no longer
-/// carries identity windows (v9 removed the always-empty `kern_ident` field),
-/// so this store is not tied to a wire constant. Overflow fails fast in
+/// power of two. It is an independent capacity: the VM handoff has no
+/// identity-window field (`kern_ident` is absent from the wire), so this
+/// store is not tied to a wire constant. Overflow fails fast in
 /// `store_kernel_info`, never truncates.
 pub(crate) const RESERVED_REGION_STORE_LEN: usize = 256;
 
@@ -529,7 +529,7 @@ pub(crate) static SMP_STATE: SyncUnsafeCell<Option<crate::smp::SmpState>> =
 /// through `ipc_filter_pool_with(&BklSection)` — three mutating callers
 /// (`proc_table.rs`, `syscall.rs` ×2) each pass a BKL witness. So this is
 /// not a write-once global like `KERNEL_INFO`: the *initialization* is
-/// one-shot, the *contents* are not (D-071).
+/// one-shot, the *contents* are not.
 pub(crate) static IPC_FILTER_POOL: SyncUnsafeCell<crate::ipc_filter::IpcFilterPool> =
     SyncUnsafeCell::new(crate::ipc_filter::IpcFilterPool::new());
 
@@ -608,12 +608,12 @@ pub(crate) const KERNINFO_USER_UNSET: u64 = 0;
 /// `SyncUnsafeCell` wrapper.
 pub(crate) static MINIX_KERNINFO_USER: AtomicU64 = AtomicU64::new(KERNINFO_USER_UNSET);
 
-// ── Statics that had escaped the single audit point ──
-// The "single audit point" was previously broken by four groups of statics
-// (their bodies scattered across krandom/smp/clock/misc). All bodies moved into
-// this file; declaring a static here registers it, and its wrapper type must
-// already be on the `bkl_protected_impls!` approval list or covered by a generic
-// composite impl.
+// ── Statics that belong to the single audit point ──
+// The krandom, smp, clock and misc groups all declare their statics here so
+// every global passes the same audit point. Declaring a static in this file
+// registers it, and its wrapper type must already be on the
+// `bkl_protected_impls!` approval list or covered by a generic composite
+// impl.
 
 /// Randomness state. C: `krandom` — random.h/krandom.c.
 /// Access is BKL-protected: the IRQ path (single-writer via

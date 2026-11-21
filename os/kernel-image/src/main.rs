@@ -145,12 +145,15 @@ core::arch::global_asm!(
         // (and the Rust code below) assumes DF=0.
         cli
         cld
-        // SD-7 / P-X86-03（2026-10-06）：防御性 .bss 清零，镜像 riscv64
-        // 甲案（UEFI boot-shim 的 loader 已按 memsz-filesz 清零；本循环
-        // 是 SD-1 多入口形态下的入口自持——未来直载入口不依赖装载者）。
-        // RIP 相对取运行位址：分页开启（高半映射）与恒等映射两种交接
-        // 视图下都落在正确的物理页。rdi 游标/rcx 界限在入口处无活值；
-        // 清零只碰 rdi/rcx，`rbx`（arena 物理地址）全程不动。
+        // Defensive .bss clear: the UEFI boot-shim loader already clears
+        // memsz-filesz, but this loop is the entry's own safeguard for the
+        // multi-entry form — a future direct-load entry must not depend on
+        // the loader.
+        // RIP-relative addressing yields the runtime address: under both
+        // paging views (high-half and identity) it lands on the correct
+        // physical page. rdi (cursor) and rcx (limit) hold no live value at
+        // entry; the clear touches only rdi/rcx, and `rbx` (arena physical
+        // address) stays intact throughout.
         lea rdi, [rip + __bss_start]
         lea rcx, [rip + __bss_end]
     1:  cmp rdi, rcx
@@ -177,33 +180,38 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
-        // ── 早期 hart 选举（§续-406 起的保留格）：MPIDR+1 存选举格
-        //（LD/EXCL 独占语义），落选者本地停车。UEFI/boot-shim 链只派
-        // 一个 CPU 进本入口，选举恒由它赢；直核链的门读数（test-smp-aps-
-        // aarch64，ap-arrived=1）坐实 PSCI CPU_ON 是唯一次级核交付通道、
-        // 链上无落选者——选举格退为身份记录，落选臂只作防御性兜底。
+        // ── Early hart election (reserved slot): store MPIDR+1 in the
+        // election slot (LD/EXCL exclusive semantics); losers park
+        // locally. The UEFI/boot-shim chain admits only one CPU here, so
+        // the election always picks it; direct-core gate readings
+        // (test-smp-aps-aarch64, ap-arrived=1) confirm PSCI CPU_ON is the
+        // only secondary-core delivery channel and that no loser exists
+        // on that chain — the slot degrades to an identity record and the
+        // loser arm is defensive only.
         mrs x8, mpidr_el1
         and x8, x8, #0xffffff        // Aff2:1:0
-        add x10, x8, #1              // 存 hartid+1：与「未选 0」恒可区分
+        add x10, x8, #1              // store hartid+1: distinguishable from "not elected" 0
         adrp x9, BOOT_HART_ELECTED
         add x9, x9, :lo12:BOOT_HART_ELECTED
     1:  ldaxr w11, [x9]
-        cbnz w11, park               // 旧值非 0 ⇒ 已有 BSP ⇒ 落选停车
+        cbnz w11, park               // old value nonzero ⇒ a BSP exists ⇒ park as loser
         stlxr w12, w10, [x9]
         cbnz w12, 1b
         b 4f
     park:
-        // 落选核本地停车（SD-37 乙案）：次级核交付＝内核 PSCI CPU_ON，
-        // 它只作用于仍持在固件手的核；进过 payload 的落选者没有任何
-        // 可投递通道——wfi 常驻与旧「无人发布的 AP_GO 邮箱」可观测
-        // 行为逐位一致，仅去掉永不兑现的 GO 契约（SD-37 台账乙案原文）。
+        // Loser core parks locally: secondary-core delivery is the kernel's
+        // PSCI CPU_ON, which only affects cores still held by firmware.
+        // A loser that has entered the payload has no delivery channel:
+        // permanent wfi is observably identical to the old "AP_GO mailbox
+        // that nobody publishes", minus the never-fulfilled GO contract.
     2:  wfi
         b 2b
     4:
-        // SD-7 / P-X86-03（2026-10-06）：防御性 .bss 清零，镜像 riscv64
-        // 甲案（同 x86_64 注释：loader 已清是现行 UEFI 路径事实，入口
-        // 自持为 SD-1 多入口形态）。adrp 取运行页位址（MMU 交接态下
-        // 无论恒等或高半映射都落正确物理页）。x9 游标/x10 界限无活值。
+        // Defensive .bss clear (same rationale as x86_64): the loader's
+        // clear is a UEFI-path fact, while this entry covers the
+        // multi-entry form. adrp yields the runtime page address (under
+        // either identity or high-half mapping it lands on the correct
+        // physical page). x9 (cursor) / x10 (limit) hold no live value.
         adrp x9, __bss_start
         add x9, x9, :lo12:__bss_start
         adrp x10, __bss_end

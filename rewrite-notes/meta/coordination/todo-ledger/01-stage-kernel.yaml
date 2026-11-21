@@ -139,24 +139,24 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: D01 关联代码注释语言与锚点整改（作者 2026-11-22 裁决：只修 48 个 related-code；全仓另立条目）
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/01-stage-kernel/01-todo.md:3013
   origin_file: rewrite-notes/01-stage-kernel/01-todo.md
   origin_line: 3013
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: '`rg -n ''^\s*//.*[一-鿿]'' os --glob ''*.rs'' | wc -l` -> 233; `rg -n ''^\s*//.*(I-[0-9]+|D-[0-9]+)'' os --glob
-    ''*.rs'' | wc -l` -> 301; examples os/arch/src/arm64/paging.rs:112-115 (I-29-16), os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable/src/main.rs:31-32
-    (I-43)；2026-11-22 复核：`python3 tools/code-publication-check.py <48 个 related-code>` -> 16 处新增（CP-3=15/CP-4=1），`os/kernel/src/lib.rs`
-    另有 13 处被无花括号 `#[cfg(test)]` 假阴性藏掉；全仓近似 88 文件 / 163 行过程编号 / 208 行 CJK（排除测试区）。'
+  evidence: 2026-11-22 执行：`python3 tools/code-publication-check.py --self-test` PASS；门修复两处（无花括号 `#[cfg(test)]` 状态机、纯十进制常量不再判提交号）；48
+    个 related-code `python3 tools/code-publication-check.py <48 文件>` → 命中 0、无新增违规；48 文件 `grep -nP '//.*[\x{4e00}-\x{9fff}]'`
+    → 0 行；`cargo test --lib`：minix-arch 266/0、minix-boot 188/0、minix-types 342/0、boot-shim 136/0、minix-vm 548/0、minix-kernel
+    mock 866/0/8
   verified_by: subagent:b1
   verified_at: '2026-11-21'
   aliases:
   - I-25
   scope: doc
-  note: 2026-11-22 作者裁决：门先修；只修 D01 的 48 个 related-code，按文件级——D01 关联到文件内任一符号即整文件整改；未涉及的其他 stage 代码（如 PM server）不在 D01 范围，不构成
-    defer 或阻断；全仓另立 repo-wide 条目。旧 todo 的“全仓完成”改为“D01 关联代码完成”。
+  note: 2026-11-22 作者裁决（D-114）：门先修；只修 D01 的 48 个 related-code，按文件级；未涉及的其他 stage 代码不在 D01 范围。执行完成：门 bug 修复 + 48 文件 CP-3/CP-4/CP-5/CP-6
+    清零 + 注释语言英文化 + 测试全绿。全仓债见 COORD-CODE-PUBCLEAN。
   refs:
     code:
     - path: os/arch/src/arm64/paging.rs
@@ -167,6 +167,10 @@
     tests: []
     decisions:
     - D-114
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
+    closed_by: D-114
 - id: D01-I-29-11
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap

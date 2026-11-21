@@ -162,8 +162,8 @@ fn pte_to_flags(pte: u64) -> PageFlags {
     flags
 }
 
-/// Ownership state of the handle's root page and page-table tree
-/// (D-081 / I-44); identical semantics to the other architectures.
+/// Ownership state of the handle's root page and page-table tree;
+/// identical semantics to the other architectures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PagingState {
     /// Root page and tree allocated by `Paging::new()` — destroyable.
@@ -174,23 +174,30 @@ enum PagingState {
     Inherited,
 }
 
-// ── I-29-16（三架构 WB 合同，riscv64 腿）：PMA 前提声明 ──────────────
+// ── Three-architecture WB contract (riscv64 leg): PMA premise ──────────
 //
-// Sv39 的 PTE **没有**缓存属性位：叶子的缓存性由平台的 PMA
-// (Physical Memory Attributes) 决定，软件不可逐页指定。本项目全部 RAM
-// 叶子的 Write-Back 承诺因此是**平台前提**而非编码事实：
+// Sv39 PTEs have **no** cache-attribute bits: leaf cacheability is
+// decided by the platform's PMA (Physical Memory Attributes), and
+// software cannot set it per page. The Write-Back promise for every RAM
+// leaf in this project is therefore a **platform premise**, not an
+// encoding fact:
 //
-// 1. QEMU virt 的 DDR 区间在 PMA 中声明为普通可缓存内存（含 RAM region
-//    0x8000_0000..）；本项目的全部 memmap 来源（DTB `/memory`）都落在
-//    该区间，故恒等窗口、内核高半与 VM 映射的 RAM 叶子由 PMA 天然 WB。
-// 2. Sv39 标准没有 PBMT 字段（那是 Svpbmt 扩展、通过 menvcfg.PBMTE
-//    每使能启用）。本项目**不使能** Svpbmt：即便固件/ hart 报告支持，
-//    menvcfg.PBMTE 保持 0，PTE[62:61] 保留为 0（= PMA 模式），不会出现
-//    「PBMT=2/3 强制 Non-cacheable / IO」覆盖 PMA 的形态。**Sv39 不存在
-//    「强制 WB」的 PBMT 取值**——WB 只能来自 PMA，这是本前提成立的根。
-// 3. 真机验收属 I-29-16 的证据责任：换板时需按该板的 PMA 声明核对
-//    DDR 区间的缓存性（`menvcfg` 的 `CBIE/FWIE/PMM` 与 PMA 由固件/开发者
-//    编程的形态在 QEMU virt 不出现）。
+// 1. QEMU virt declares the DDR region as normal cacheable memory in the
+//    PMA (including the RAM region at 0x8000_0000..); every memmap source
+//    in this project (DTB `/memory`) falls inside that region, so the
+//    identity window, kernel high half and VM mappings get WB RAM leaves
+//    from the PMA by construction.
+// 2. The Sv39 standard has no PBMT field (that is the Svpbmt extension,
+//    enabled per-hart via menvcfg.PBMTE). This project does **not** enable
+//    Svpbmt: even if firmware/hart reports support, menvcfg.PBMTE stays 0
+//    and PTE[62:61] stays 0 (= PMA mode), so "PBMT=2/3 forces
+//    Non-cacheable / IO" cannot override the PMA. **Sv39 has no
+//    "forced WB" PBMT value** — WB can only come from the PMA, which is
+//    the root of this premise.
+// 3. Real-hardware acceptance is the evidence duty of this contract: when
+//    changing boards, check the board's PMA declaration for the DDR
+//    region's cacheability (`menvcfg`'s `CBIE/FWIE/PMM` and PMA are
+//    programmed by firmware/developers and do not appear on QEMU virt).
 //
 // ─────────────────────────────────────────────────────────────────────
 
@@ -198,7 +205,7 @@ pub struct Riscv64Paging {
     root_paddr: u64,
     /// PTE access channel pinned at construction (see [`PteChannel`]).
     channel: PteChannel,
-    /// Ownership state (D-081 / I-44); see the per-arch `PagingState` docs.
+    /// Ownership state; see the per-arch `PagingState` docs.
     state: PagingState,
 }
 
@@ -699,10 +706,10 @@ impl Paging for Riscv64Paging {
     /// so `new()` (which would allocate internally) cannot be used.
     /// See `Paging::new()` for the runtime variant.
     fn new_from_page(root_page: PhysBytes, channel: PteChannel) -> Self {
-        // I-59 A' (D-094): the caller declares the access channel — the
-        // bootstrap root construction (pre-DM) passes `Identity`,
-        // per-process roots after step 4 pass `KernelDm`; the zeroing uses
-        // the same channel the handle's later operations will use.
+        // The caller declares the access channel — the bootstrap root
+        // construction (pre-DM) passes `Identity`, per-process roots after
+        // step 4 pass `KernelDm`; the zeroing uses the same channel the
+        // handle's later operations will use.
         let ptr = unsafe { channel_to_ptr(root_page.0, channel) };
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
         Self {
@@ -714,8 +721,8 @@ impl Paging for Riscv64Paging {
 
     /// Wrap an already-active Sv39 root page table without zeroing it.
     ///
-    /// Absorbs the former `adopt_active_root` (D-081 / I-44): pass
-    /// `PteChannel::VmDm` for the VM-context handle.
+    /// Pass `PteChannel::VmDm` for the VM-context handle. This is the only
+    /// constructor for wrapping a live root.
     fn from_active_root(root_phys: PhysBytes, channel: PteChannel) -> Self {
         Self {
             root_paddr: root_phys.0,
@@ -725,10 +732,10 @@ impl Paging for Riscv64Paging {
     }
 
     fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
-        // D-081 / I-44 entry assertions: only a freshly wrapped External
-        // root may inherit, and every supervisor slot of the target must be
-        // blank (full 64-bit slot value, not just the Present bit) before
-        // any entry is copied.
+        // Entry assertions: only a freshly wrapped External root may
+        // inherit, and every supervisor slot of the target must be blank
+        // (full 64-bit slot value, not just the Present bit) before any
+        // entry is copied.
         assert_eq!(
             self.state,
             PagingState::External,
@@ -820,12 +827,12 @@ impl Paging for Riscv64Paging {
     }
 
     unsafe fn destroy(self) {
-        // Full three-level reclaim when a pt_free function is
-        // registered (C pagetable.c:1427-1437 `pt_free` parity — previously
-        // "accept the intermediate-table leak"). Without pt_free (boot-stage
-        // tables with no allocator domain), keep the zero-root-only legacy
-        // shape: zero the root L2 to prevent use-after-free if the physical
-        // page is reused.
+        // Full three-level reclaim when a pt_free function is registered
+        // (C pagetable.c:1427-1437 `pt_free` parity: intermediate tables
+        // are reclaimed, not leaked). Without pt_free (boot-stage tables
+        // with no allocator domain), keep the zero-root-only shape: zero
+        // the root L2 to prevent use-after-free if the physical page is
+        // reused.
         //
         // SAFETY: the handle's Direct Map channel must be active;
         // root_paddr is the physical address of our L2 (root) page. The
@@ -1209,9 +1216,9 @@ impl HugePages for Riscv64Paging {
         let size_bytes = size.bytes();
         let pte_flags = flags_to_pte(flags);
 
-        // All table access goes through the handle's pinned channel
-        // (I-59 A' / E5(d)): a VM handle writes its own tables through the
-        // VM Direct Map at CPL3, where the bare identity VA is unmapped.
+        // All table access goes through the handle's pinned channel: a VM
+        // handle writes its own tables through the VM Direct Map at CPL3,
+        // where the bare identity VA is unmapped.
         let i2 = l2_index(vaddr.0) as u64;
         let l2e = unsafe { read_pte_dm(self.root_paddr + i2 * 8, self.channel) };
         let present2 = l2e & Sv39PteFlags::V.bits() != 0;

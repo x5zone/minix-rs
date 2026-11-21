@@ -203,11 +203,14 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // and not concurrently modified.
         let slice =
             unsafe { slice::from_raw_parts(entry.phys_addr as *const u8, entry.len as usize) };
-        // `read` 只处理字节来源，不做任何 ELF 语义。表里的
-        // `entry.len` 已是 `build_shim_table` 用 `staged_elf_used_len` 算出的
-        // 修剪值——这里再跑 `segment_iter` 是对已修剪数据的幂等无效功。模块
-        // 首次修剪在 `build_shim_table`；`load_boot_modules_into` 的
-        // `elf_file_end` 是统一入口的幂等兜底，不是第二个有效修剪点。
+        // `read` only handles byte sources and does no ELF semantics. The
+        // table's `entry.len` is already the trimmed value computed by
+        // `build_shim_table` via `staged_elf_used_len`; running
+        // `segment_iter` again here is idempotent no-op work on already
+        // trimmed data. The first trim happens in `build_shim_table`;
+        // `load_boot_modules_into`'s `elf_file_end` is the idempotent
+        // safety net at the unified entry, not a second effective trim
+        // point.
         // U-Boot staged the file in RAM; hand out a borrow instead of a copy.
         // The table is written once before the shim runs and is
         // not modified while the bytes are in use.
@@ -714,14 +717,18 @@ mod tests {
         assert!(loader.read("/missing").is_none());
     }
 
-    // D-064 / I-32 的两条安装型全局负控**不在本模块**：`DTB_PTR` /
-    // `BOOT_FILE_TABLE_PTR` 是进程级静态，装过一次就无法在本进程内复位，
-    // 而本模块的其它测试（以及 `prepare_boot` 的未来测试）会读它们。
-    // 反例就在下面 —— `test_boot_file_table_validates_magic` 明写「测试不能
-    // 安全地装全局」。所以负控放在 `tests/install_write_once.rs`：集成测试
-    // 有独立进程，从「未安装」的干净状态起步，并用 `catch_unwind` 断言
-    // 第二次安装被拒且没有覆盖已装值（与 `arch/tests/pt_alloc_write_once.rs`
-    // 同一范式）。
+    // The two install-once global negative controls are **not in this
+    // module**: `DTB_PTR` / `BOOT_FILE_TABLE_PTR` are process-level
+    // statics, and once installed they cannot be reset in this process;
+    // other tests in this module (and future `prepare_boot` tests) read
+    // them. The counterexample is right below —
+    // `test_boot_file_table_validates_magic` states that a test cannot
+    // safely install the global. The negative controls therefore live in
+    // `tests/install_write_once.rs`: integration tests have their own
+    // process, start from a clean "not installed" state, and use
+    // `catch_unwind` to assert the second install is rejected without
+    // overwriting the installed value (same pattern as
+    // `arch/tests/pt_alloc_write_once.rs`).
 
     #[test]
     fn test_boot_file_table_validates_magic() {

@@ -985,3 +985,28 @@
   - STAGE-16-L140
   scope: stage
   note: 阶段索引行（指向其他阶段自有 todo 或总账摘要），不是独立待办；不单独跟踪。
+- id: COORD-CODE-PUBCLEAN
+  stage: coordination
+  doc: coordination
+  title: 全仓生产代码出版标准清理（CP-1..CP-6 与英文注释）
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/meta/coordination/review-eval/DECISIONS.md D-114
+  evidence: 2026-11-22 基线：`python3 tools/code-publication-check.py`（全仓，无 baseline 文件）→ 636 处新增；`grep -nP '//.*[\x{4e00}-\x{9fff}]'`
+    全仓 → 119 行。D01 的 48 个 related-code 已于同日清零，不构成本条。
+  verified_by: session:d01-loop
+  verified_at: '2026-11-22'
+  aliases:
+  - REPO-CODE-PUBCLEAN
+  scope: stage
+  note: owner = 后续逐 stage 迭代；按序推进，不反向阻断 01-stage 的 D01。验收：该 stage 关联代码 CP-3/4/5/6 为 0、注释为英文，且不新增 CP-1/2 抑制。
+  refs:
+    code: []
+    docs: []
+    tests: []
+    decisions:
+    - D-114
+  lifecycle:
+    created: '2026-11-22'
+    updated: '2026-11-22'

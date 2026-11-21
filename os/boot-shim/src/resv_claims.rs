@@ -304,11 +304,13 @@ pub fn capture(bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
     let Ok(fdt) = fdt::Fdt::new(bytes) else {
         return Ok(());
     };
-    // owned 形态——数组在调用者栈上，不写 `DTB_*` 静态
-    // 表、不撞 `DTB_COLLECT_TAKEN` 守卫。capture 在 EBS 配对循环的每个
-    // attempt 都会跑（UEFI 规范允许 `ExitBootServices` 首次返回
-    // `EFI_INVALID_PARAMETER` 要求重试），`'static` 形态的第二次 collect
-    // 在真机 attempt 2 必然 panic——owned 形态从结构上排除了这个隐患。
+    // owned form — the array lives on the caller's stack and does not
+    // write the `DTB_*` static tables or trip the `DTB_COLLECT_TAKEN`
+    // guard. `capture` runs on every attempt of the EBS pairing loop (the
+    // UEFI spec allows `ExitBootServices` to return
+    // `EFI_INVALID_PARAMETER` once and require a retry); a second collect
+    // on the `'static` form would necessarily panic on attempt 2 on real
+    // hardware — the owned form structurally removes that hazard.
     let Ok(owned) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect_owned() else {
         return Ok(());
     };
@@ -642,7 +644,7 @@ mod tests {
         assert_eq!(check_current(&[]), Ok(()));
     }
 
-    /// I-33-丙 / D-086: `capture` runs once per EBS attempt, and UEFI's
+    /// `capture` runs once per EBS attempt, and UEFI's
     /// spec allows `ExitBootServices` to return `EFI_INVALID_PARAMETER`
     /// once ("memory map changed — retry"). The old `'static`
     /// `collect_with_panorama` path would trip the `DTB_COLLECT_TAKEN`

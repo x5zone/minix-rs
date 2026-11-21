@@ -8,7 +8,8 @@
   CP-1 占位实现：`todo!` / `unimplemented!`；`unreachable!` 无现场理由注释
        （同行或上一行含 `// SAFETY:` / `// justified:` / `// unreachable because`）
   CP-2 静默抑制：`#[allow(dead_code)]` / `#[allow(unused…)]`
-  CP-3 过程编号：注释里的 `D-nnn` / `I-n` / `F-Rnn-nn` / `Rnn` / 7–40 位十六进制串
+  CP-3 过程编号：注释里的 `D-nnn` / `I-n` / `F-Rnn-nn` / `Rnn` / 含字母的 7–40 位
+       十六进制串（纯十进制常量如 `0170000` 不算提交号，不误报）
   CP-4 迭代叙事：注释里的 formerly / previously / originally / used to / was removed /
        no longer / legacy / 旧版 / 最初 / 曾经 / 后来 / 删除前 / 已删除 / 不再 / 改成 / 替代
   CP-5 未完成标记：注释里的 TODO / FIXME / XXX / HACK
@@ -42,7 +43,10 @@ PROCESS_RES = (
     re.compile(r"\bI-\d+\b"),
     re.compile(r"\bF-R\d{1,2}-\d+\b"),
     re.compile(r"\bR(?:1[3-9]|[2-9]\d)\b"),
-    re.compile(r"\b[0-9a-f]{7,40}\b"),
+    # 提交号候选：7–40 位十六进制，且至少含一个 a–f 字母。纯数字的
+    # `0170000` 这类常量是十进制值，不是提交号；若允许纯数字，门会把
+    # 正常的内存偏移/容量全判成过程编号。
+    re.compile(r"\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b"),
 )
 ITER_RE = re.compile(
     r"\b(?:formerly|previously|originally|was removed|were removed|removed in|"
@@ -68,53 +72,98 @@ def tracked_rs() -> list[Path]:
 
 
 def scan_file(path: Path) -> list[dict]:
-    """扫一个 .rs 文件，跳过 `#[cfg(test)]` 模块区段（用花括号深度跟踪）。"""
+    """扫一个 .rs 文件，跳过 `#[cfg(test)]` 修饰的项（用花括号深度跟踪）。
+
+    `#[cfg(test)]` 既可能挂在 `mod tests { ... }` 上，也可能挂在单行
+    `const` / `fn` 上。旧实现只在“深度回落到属性行之前”时退出测试区，
+    单行项永远不会回落，于是文件剩余部分全被当成测试区（I-25 判例：
+    `os/kernel/src/lib.rs` 有 13 处违规因此被假阴性藏掉）。这里显式区分
+    三个状态：正常扫描、等待属性修饰的项、跳过测试项。
+    """
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except Exception:
         return []
     hits: list[dict] = []
     depth = 0
-    test_depth: int | None = None
-    pending_test = False
+    # normal：正常扫描；test_attr：已见 #[cfg(test)]，等待它修饰的项；
+    # test_item：正在跳过该项。test_depth 是项开始前的花括号深度。
+    state = "normal"
+    test_depth = 0
+    item_opened = False
     for i, line in enumerate(lines, 1):
         stripped = line.strip()
-        if CFG_TEST_RE.search(line):
-            pending_test = True
-        in_test = test_depth is not None
-        if not in_test:
-            prev = lines[i - 2] if i >= 2 else ""
-            comment = COMMENT_RE.search(line)
-            if STUB_RE.search(line):
-                hits.append({"kind": "CP-1", "line": i, "text": stripped,
-                             "token": STUB_RE.search(line).group(0)})
-            elif UNREACH_RE.search(line) and not (JUSTIFY_RE.search(line) or JUSTIFY_RE.search(prev)):
-                hits.append({"kind": "CP-1", "line": i, "text": stripped, "token": "unreachable!"})
-            if ALLOW_RE.search(line):
-                hits.append({"kind": "CP-2", "line": i, "text": stripped, "token": "allow"})
-            if IGNORE_RE.search(line) and not re.search(r"//", line):
-                hits.append({"kind": "CP-6", "line": i, "text": stripped, "token": "#[ignore]"})
-            if comment:
-                tail = line[comment.start():]
-                for pat in PROCESS_RES:
-                    m = pat.search(tail)
-                    if m:
-                        hits.append({"kind": "CP-3", "line": i, "text": stripped,
-                                     "token": m.group(0)})
-                        break
-                m = ITER_RE.search(tail)
-                if m:
-                    hits.append({"kind": "CP-4", "line": i, "text": stripped, "token": m.group(0)})
-                m = TODO_RE.search(tail)
-                if m:
-                    hits.append({"kind": "CP-5", "line": i, "text": stripped, "token": m.group(0)})
-        # 花括号深度：进入/离开 cfg(test) 模块
-        depth += line.count("{") - line.count("}")
-        if pending_test:
+        delta = line.count("{") - line.count("}")
+
+        if state == "test_attr":
+            # 空行、注释与其它属性仍属于同一个项的前导。
+            if not stripped or stripped.startswith("#[") or stripped.startswith("//"):
+                depth += delta
+                continue
+            state = "test_item"
             test_depth = depth
-            pending_test = False
-        elif test_depth is not None and depth < test_depth:
-            test_depth = None
+            item_opened = "{" in line
+            depth += delta
+            if item_opened:
+                if depth <= test_depth:
+                    state = "normal"
+            elif stripped.endswith(";"):
+                state = "normal"
+            continue
+
+        if state == "test_item":
+            if "{" in line:
+                item_opened = True
+            depth += delta
+            if item_opened and depth <= test_depth:
+                state = "normal"
+            elif not item_opened and stripped.endswith(";"):
+                state = "normal"
+            continue
+
+        # state == "normal"
+        cfg = CFG_TEST_RE.match(stripped)
+        if cfg:
+            rest = stripped[cfg.end():].strip()
+            depth += delta
+            if not rest or rest.startswith("#["):
+                state = "test_attr"
+            elif "{" in rest:
+                # 属性与项同行且带块：块在关闭行结束时退出测试区。
+                test_depth = depth - delta
+                item_opened = True
+                state = "normal" if depth <= test_depth else "test_item"
+            else:
+                # 属性与无花括号项同行（`const` / `use` / `mod x;`）。
+                state = "normal"
+            continue
+
+        prev = lines[i - 2] if i >= 2 else ""
+        comment = COMMENT_RE.search(line)
+        if STUB_RE.search(line):
+            hits.append({"kind": "CP-1", "line": i, "text": stripped,
+                         "token": STUB_RE.search(line).group(0)})
+        elif UNREACH_RE.search(line) and not (JUSTIFY_RE.search(line) or JUSTIFY_RE.search(prev)):
+            hits.append({"kind": "CP-1", "line": i, "text": stripped, "token": "unreachable!"})
+        if ALLOW_RE.search(line):
+            hits.append({"kind": "CP-2", "line": i, "text": stripped, "token": "allow"})
+        if IGNORE_RE.search(line) and not re.search(r"//", line):
+            hits.append({"kind": "CP-6", "line": i, "text": stripped, "token": "#[ignore]"})
+        if comment:
+            tail = line[comment.start():]
+            for pat in PROCESS_RES:
+                m = pat.search(tail)
+                if m:
+                    hits.append({"kind": "CP-3", "line": i, "text": stripped,
+                                 "token": m.group(0)})
+                    break
+            m = ITER_RE.search(tail)
+            if m:
+                hits.append({"kind": "CP-4", "line": i, "text": stripped, "token": m.group(0)})
+            m = TODO_RE.search(tail)
+            if m:
+                hits.append({"kind": "CP-5", "line": i, "text": stripped, "token": m.group(0)})
+        depth += delta
     return hits
 
 
@@ -197,6 +246,46 @@ def self_test() -> int:
         )
         if scan_file(justified):
             print("self-test FAIL: 有现场理由的 unreachable! 被误判")
+            return 1
+        inline = root / "inline.rs"
+        inline.write_text(
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    #[test]\n"
+            "    fn t() { todo!() }\n"
+            "}\n"
+            "#[cfg(test)]\n"
+            "const TEST_LIMIT: u32 = 0x1000;\n"
+            "#[cfg(test)]\n"
+            "fn helper(\n"
+            "    x: u32,\n"
+            ") -> u32 {\n"
+            "    todo!()\n"
+            "}\n"
+            "// D-061 生产区过程编号\n"
+            "fn f() {}\n",
+            encoding="utf-8",
+        )
+        inline_hits = scan_file(inline)
+        if not any(h["kind"] == "CP-3" and "D-061" in h["text"] for h in inline_hits):
+            print("self-test FAIL: 无花括号 cfg(test) 之后的生产违规未被检出（I-25 判例）")
+            return 1
+        if any("todo!" in h["text"] for h in inline_hits):
+            print("self-test FAIL: cfg(test) 项内的 todo! 被当成生产违规")
+            return 1
+        hexfile = root / "hex.rs"
+        hexfile.write_text(
+            "// 0170000 是十进制偏移，不是提交号\n"
+            "// c9f4e544c 是提交号\n"
+            "fn f() {}\n",
+            encoding="utf-8",
+        )
+        hex_tokens = {h["token"] for h in scan_file(hexfile) if h["kind"] == "CP-3"}
+        if "0170000" in hex_tokens:
+            print("self-test FAIL: 纯十进制常量被当成十六进制提交号")
+            return 1
+        if "c9f4e544c" not in hex_tokens:
+            print("self-test FAIL: 真实十六进制提交号未被检出")
             return 1
     print("self-test PASS: 占位/抑制/过程编号/迭代叙事/TODO 全检；测试区与理由注释豁免")
     return 0

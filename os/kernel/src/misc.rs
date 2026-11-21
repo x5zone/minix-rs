@@ -40,8 +40,8 @@ use minix_arch::cpu_identity::{CpuIdentity, X86Vendor};
 use minix_plat::IrqAction;
 
 // ── Minix3 error codes ──
-// Centralized in `crate::errno` to prevent value drift.
-// Previously EBUSY=27 (should be 16) and ENOSYS=38 (should be 78) here.
+// Centralized in `crate::errno` to prevent value drift; the values must
+// match Minix3's errno table (EBUSY=16, ENOSYS=78).
 use crate::errno::*;
 
 // ── GETINFO request types ──
@@ -714,12 +714,12 @@ fn getinfo_kinfo(
     val_ptr: u64,
     val_len: i32,
 ) -> KcallResult {
-    // freepde_start: the handoff no longer carries `free_upper_idx`
-    // (D01-F03 — every producer wrote the "none" form), so the report fills
-    // the C layout position with 0. C's `freepde_start` consumer was the
-    // C VM's borrowed-slot window; the Rust VM does not borrow slots.
-    // v10 (D-062): `user_sp` is the compile-time USER_STACK_TOP constant
-    // (every producer wrote exactly that); the other two stay map-derived.
+    // `free_upper_idx` has no handoff producer: every producer uses the
+    // "none" form, so the report fills the C layout position with 0. The C
+    // `freepde_start` consumer served the C VM's borrowed-slot window; the
+    // Rust VM does not borrow slots.
+    // `user_sp` is the compile-time USER_STACK_TOP constant; `freepde_start`
+    // is the zero slot and `vir_kern_start` is the kernel virtual base.
     let (user_sp, freepde_start, vir_kern_start) = crate::kernel_info()
         .map(|ki| {
             (

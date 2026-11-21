@@ -473,9 +473,10 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     // oversight.
     core::mem::forget(mmap);
 
-    // 分类逻辑整体抽到 `classify_map_bytes_into_test_tables`，本函数只保留
-    // 退出前的读图半——退出后的分类由 `exit_boot_services_and_classify`
-    // 走同一分类器。
+    // The classification logic is extracted into
+    // `classify_map_bytes_into_test_tables`; this function keeps only the
+    // read-map half before exit — post-exit classification goes through
+    // `exit_boot_services_and_classify` and the same classifier.
     self::classify_map_bytes_into_test_tables(
         buffer,
         buffer.len(),
@@ -487,7 +488,8 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
 /// Classify raw descriptor bytes into the one-shot test tables: the ONLY
 /// classifier in the tree runs on whatever
 /// bytes it is handed — pre-exit (`build_memmaps`) or post-exit
-/// (`exit_boot_services_and_classify`) — so "分类所依据的图 = 退出所用的图"
+/// (`exit_boot_services_and_classify`) — so the map used for
+/// classification is the map used for exit, and that identity
 /// holds by construction on the post-exit path.
 ///
 /// Fail contract: on the post-exit path every
@@ -968,11 +970,13 @@ fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<Vec<u8>> {
 /// minimal boot identity map must cover it because the shim keeps executing
 /// here until the high-half jump.
 ///
-/// `pub`：直核引导载体（UEFI 测试内核）与生产 shim 走同一
-/// 最小窗口机制，也必须声明同一精确足迹——载体的 `kern_phys_base`/
-/// `kern_size` 由它派生，不靠猜测：`main` 锚点 + 固定 2 MiB 的写法罩不住
-/// 带 2 MiB `.bss` 堆的大载体，test-proc-init 会在过 enable() 后、
-/// step4 前静默三重故障。
+/// `pub`: the direct-core boot carrier (UEFI test kernel) and the
+/// production shim use the same minimal-window mechanism and must declare
+/// the same exact footprint — the carrier's `kern_phys_base`/`kern_size`
+/// are derived from it rather than guessed: a `main` anchor plus a fixed
+/// 2 MiB cannot cover a large carrier with a 2 MiB `.bss` heap, and
+/// test-proc-init would silently triple-fault after enable() and before
+/// step 4.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub fn shim_image_window() -> (u64, u64) {
     let (base, size) = boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
@@ -1307,7 +1311,8 @@ pub fn exit_boot_services() {
 /// with `let _mmap`), hands its raw bytes to the one production classifier,
 /// and writes the result into the one-shot test tables. The classification
 /// therefore runs on exactly the map the firmware validated at exit —
-/// "分类所依据的图 = 退出所用的图" holds by construction, and post-exit
+/// the map used for classification is the map used for exit by
+/// construction, and post-exit
 /// allocations (there are none — the carrier has already allocated) cannot
 /// diverge from it.
 ///

@@ -723,13 +723,15 @@ impl Paging for X86_64Paging {
     }
 
     unsafe fn enable(&self) -> PhysBytes {
-        // 三架构 WB 合同（x86 腿）：本项目不编程 IA32_PAT，全部
-        // RAM 叶子依赖 PAT0 = Write-Back 的默认编码（PA0 = 0x6）。固件
-        // （或一个未来的分页用户）改写 PAT0 会让「普通 WB 映射」的承诺
-        // 静默失效，所以在每次 enable 时读取并断言——PAT 是每-CPU MSR，
-        // enable 也是每-CPU 路径，二者覆盖面一致。MTRR 的默认覆盖
-        // （ Uncached/Write-Protect 变异）在此不校验：QEMU virt 不含 MTRR
-        // 变异条目，真机校验由三架构 WB 合同承担。
+        // Three-architecture WB contract (x86 leg): this project does not
+        // program IA32_PAT, so every RAM leaf relies on PAT0 = Write-Back
+        // default encoding (PA0 = 0x6). Firmware (or a future paging user)
+        // changing PAT0 would silently break the "normal WB mapping"
+        // promise, so read and assert it on every enable — PAT is a per-CPU
+        // MSR and enable is a per-CPU path, so the coverage matches. MTRR
+        // default overrides (Uncached/Write-Protect variants) are not
+        // checked here: QEMU virt has no MTRR variant entries, and real
+        // hardware checks fall under the three-architecture WB contract.
         {
             const MSR_IA32_PAT: u32 = 0x277;
             const PAT0_WB: u64 = 0x6; // PA0 encoding: WB

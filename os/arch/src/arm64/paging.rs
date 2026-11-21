@@ -109,10 +109,11 @@ unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
     phys as *mut u64
 }
 
-/// I-29-16（三架构 WB 合同，aarch64 腿）：本函数是「叶子→缓存属性」的
-/// 唯一映射点——RAM 叶子（无 `PageFlags::DEVICE`）不得设置 ATTR_IDX_DEVICE
-/// 位（AttrIndx=0 选 MAIR Attr0 = Normal WBWA），只有 DEVICE 叶子翻到
-/// Attr1（Device-nGnRnE）。MAIR_EL1 由 `enable` 写 0xFF。
+/// Three-architecture WB contract (aarch64 leg): this function is the
+/// single "leaf → cache attribute" mapping point. A RAM leaf (without
+/// `PageFlags::DEVICE`) must not set ATTR_IDX_DEVICE (AttrIndx=0 selects
+/// MAIR Attr0 = Normal WBWA); only a DEVICE leaf uses Attr1
+/// (Device-nGnRnE). `enable` writes 0xFF to MAIR_EL1.
 fn flags_to_pte(flags: PageFlags) -> u64 {
     let mut pte = Arm64PteFlags::VALID | Arm64PteFlags::AF;
     // ARM64 AP[2] (bit 6): 0 = writable at EL1, 1 = read-only at EL1.
@@ -192,8 +193,8 @@ fn pte_to_flags(pte: u64) -> PageFlags {
     flags
 }
 
-/// Ownership state of the handle's root page and page-table tree
-/// (D-081 / I-44); identical semantics to the other architectures.
+/// Ownership state of the handle's root page and page-table tree;
+/// identical semantics to the other architectures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PagingState {
     /// Root page and tree allocated by `Paging::new()` — destroyable.
@@ -208,7 +209,7 @@ pub struct AArch64Paging {
     root_paddr: u64,
     /// PTE access channel pinned at construction (see [`PteChannel`]).
     channel: PteChannel,
-    /// Ownership state (D-081 / I-44); see the per-arch `PagingState` docs.
+    /// Ownership state; see the per-arch `PagingState` docs.
     state: PagingState,
 }
 
@@ -585,10 +586,10 @@ impl Paging for AArch64Paging {
     /// at this point, so `new()` (which would allocate internally) cannot be
     /// used. See `Paging::new()` for the runtime variant.
     fn new_from_page(root_page: PhysBytes, channel: PteChannel) -> Self {
-        // I-59 A' (D-094): the caller declares the access channel — the
-        // bootstrap root construction (pre-DM) passes `Identity`,
-        // per-process roots after step 4 pass `KernelDm`; the zeroing uses
-        // the same channel the handle's later operations will use.
+        // The caller declares the access channel — the bootstrap root
+        // construction (pre-DM) passes `Identity`, per-process roots after
+        // step 4 pass `KernelDm`; the zeroing uses the same channel the
+        // handle's later operations will use.
         let ptr = unsafe { channel_to_ptr(root_page.0, channel) };
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
         Self {
@@ -600,8 +601,8 @@ impl Paging for AArch64Paging {
 
     /// Wrap an already-active L0 translation table root without zeroing it.
     ///
-    /// Absorbs the former `adopt_active_root` (D-081 / I-44): pass
-    /// `PteChannel::VmDm` for the VM-context handle.
+    /// Pass `PteChannel::VmDm` for the VM-context handle. This is the only
+    /// constructor for wrapping a live root.
     fn from_active_root(root_phys: PhysBytes, channel: PteChannel) -> Self {
         Self {
             root_paddr: root_phys.0,
@@ -611,10 +612,10 @@ impl Paging for AArch64Paging {
     }
 
     fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
-        // D-081 / I-44 entry assertions: only a freshly wrapped External
-        // root may inherit, and every supervisor slot of the target must be
-        // blank (full 64-bit slot value, not just the Present bit) before
-        // any entry is copied.
+        // Entry assertions: only a freshly wrapped External root may
+        // inherit, and every supervisor slot of the target must be blank
+        // (full 64-bit slot value, not just the Present bit) before any
+        // entry is copied.
         assert_eq!(
             self.state,
             PagingState::External,
@@ -1198,10 +1199,9 @@ impl HugePages for AArch64Paging {
         const TABLE_FLAGS: u64 =
             Arm64PteFlags::VALID.bits() | Arm64PteFlags::AF.bits() | Arm64PteFlags::TABLE.bits();
 
-        // All table access goes through the handle's pinned channel
-        // (I-59 A' / E5(d)): a VM handle writes its own tables through the
-        // VM Direct Map at CPL0/EL0, where the bare identity VA is
-        // unmapped.
+        // All table access goes through the handle's pinned channel: a VM
+        // handle writes its own tables through the VM Direct Map at
+        // CPL0/EL0, where the bare identity VA is unmapped.
         let i0 = l0_index(vaddr.0) as u64;
         let e0 = unsafe { read_pte_dm(self.root_paddr + i0 * 8, self.channel) };
         let l1 = if e0 & Arm64PteFlags::VALID.bits() != 0 {

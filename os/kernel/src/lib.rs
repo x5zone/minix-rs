@@ -228,7 +228,7 @@ where
     // SAFETY: arch_boot_impl just enabled paging with both identity and
     // kernel high mappings. kinfo is the kernel-.bss copy — valid at the
     // high address. kern_stack_top() derives the image-tail stack top from
-    // the two image-span fields (v10 / D-062).
+    // the two image-span fields.
     unsafe { H::jump_to_kmain(kinfo) }
 }
 
@@ -325,8 +325,9 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
     register_panic_diagnostic();
     // Step 4: add direct-map coverage to the *active* bootstrap root (additive;
     // `establish_boot_dm` wraps `root_page` and only writes new PTEs).
-    // （boot_stage! 宏定义在本文件更靠后，此处直接用同款 Console 打印；
-    //   空标签 = 该腿原本就没有 establish 前路标，保持无输出。）
+    // (`boot_stage!` is defined later in this file; use the same Console
+    //   print path here. An empty label means the leg has no pre-establish
+    //   landmark, so emit nothing.)
     if !stage_label.is_empty() {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str(stage_label);
@@ -351,12 +352,15 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
 pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use crate::aarch64::higher_half::AArch64HigherHalf;
     use crate::boot::HigherHalf;
-    // aarch64 的 establish 前路标（U-Boot 腿的门脚本按它 grep）经由
-    // stage_label 保留；"DM ok, jumping" 那一行并入通用体之后只剩通用
-    // 打印点，该路标原先在 establish 之后——为不丢门脚本的锚点，此壳
-    // 保留原有两行的前一行，后一行由 resume_additive 的 stage 打印承担
-    // （对 aarch64 腿，label 即 establish 前那条；后一条的丢失需要门
-    // 脚本同步——见本轮 L4 对 test-riscv64-uboot.sh 路标清单的核对）。
+    // The aarch64 pre-establish landmark (grep'd by the U-Boot leg's gate
+    // script) is preserved via stage_label. After "DM ok, jumping" was
+    // merged into the common body, only the common print point remains.
+    // The landmark sits after establish; to keep the gate script's anchor,
+    // this shell keeps the first of the two lines, and the second is
+    // carried by resume_additive's stage print (for the aarch64 leg the
+    // label is the one before establish; removing the second line requires
+    // updating the gate script — see this round's L4 check of
+    // test-riscv64-uboot.sh's landmark list).
     resume_additive::<CurrentBootArch, AArch64HigherHalf>(
         kernel_info,
         root_page,
@@ -378,17 +382,18 @@ macro_rules! boot_stage {
 /// The two values that cross the shim→image jump, each in its own coordinate
 /// space.
 ///
-/// They used to be two adjacent bare `u64`s (`-> (u64, u64)` and
-/// `jump_kernel_image_v1(entry: u64, arena_pa: u64)`), so swapping them still
-/// compiled. The swap is close to the worst possible boot failure: the branch
+/// The two values travel as one struct so a positional swap cannot compile.
+/// Two adjacent bare `u64`s (`-> (u64, u64)` and
+/// `jump_kernel_image_v1(entry: u64, arena_pa: u64)`) would allow the swap,
+/// and that swap is close to the worst possible boot failure: the branch
 /// target becomes the arena's *physical* address, so the first instruction
 /// fetch after paging comes up faults, and `scause`/`CR2` report an address
 /// unrelated to the real cause. Same pattern as `PlacementPool`
-/// (`kernel-image/src/bootface_common.rs`) and `MapCounts` (D-067).
+/// (`kernel-image/src/bootface_common.rs`) and `MapCounts`.
 ///
 /// Visibility follows the two functions that name it: both stay `pub` because
 /// the shim may call them separately (the documented post-root/pre-jump
-/// milestone split, TODO-09), so a `pub(crate)` type would trip
+/// milestone split), so a `pub(crate)` type would trip
 /// `private_interfaces`. This is not a wire type — it never crosses an image
 /// boundary, it only carries the two locals between two adjacent calls.
 #[cfg(all(
@@ -542,9 +547,8 @@ pub fn enter_kernel_image_v1(
 
 /// Absolute jump into the standalone image's high-half entry.
 ///
-/// Split from [`prepare_kernel_image_v1`] so the shim can (once TODO-09 is
-/// resolved) print the post-root/pre-jump milestone on its own raw-serial
-/// path.
+/// Split from [`prepare_kernel_image_v1`] so the shim can print the
+/// post-root/pre-jump milestone on its own raw-serial path.
 #[cfg(all(
     not(feature = "mock"),
     any(
@@ -634,7 +638,7 @@ unsafe extern "sysv64" {
 /// never rebuild it — `new_from_page` would zero the active root that maps
 /// this very function.
 ///
-/// # Arena lifecycle contract (R18 D-5)
+/// # Arena lifecycle contract
 ///
 /// The decode below is the **last read of the arena**. Every payload is
 /// copied into a `.bss` store, and `KernelInfo`'s slices point at those
@@ -765,7 +769,8 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
     resume_additive::<CurrentBootArch, X86_64HigherHalf>(
         kernel_info,
         PhysBytes(root_page),
-        // x86 腿无既有的 establish 前后路标——保持原状（无打印），传空串即跳过。
+        // The x86 leg has no establish pre/post landmark — keep no output;
+        // an empty string skips the print.
         "",
         "",
     )
@@ -877,7 +882,7 @@ fn boot_validate_and_prepare<A: BootArch>(
     let kv = kern_virt_base.0;
     let kp = kern_phys_base.0;
     let ks = kern_size;
-    // Derived, not received (wire v10 / D-062). `checked_add` because a
+    // Derived, not received. `checked_add` because a
     // wrapping `kern_virt_base + kern_size` means the image span itself is
     // corrupt, and the alignment check below would then be applied to a
     // bogus stack pointer.
@@ -996,8 +1001,8 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     // category ("shim image/stack", cf. the list documented above). Without
     // it the first stack access after enable() — the `ret` that follows the
     // CR3/TTBR/satp load — faults into an unmapped page with no IDT/VBAR/
-    // stvec installed: the I-43 layer-2 silent stop (hello-boot fresh binary:
-    // rsp=0x7E6_6470 while the image window was [0x5E0_0000,0x600_0000)).
+    // stvec installed: a silent stop with no diagnostic channel (hello-boot
+    // fresh binary: rsp=0x7E6_6470 while the image window was [0x5E0_0000,0x600_0000)).
     // Window shape matches `shim_stack_window`: 4 MiB below the page-aligned
     // SP, rounded down to a 2 MiB boundary. Overlapping windows are harmless
     // (fixed 2 MiB leaves with identical flags).
@@ -1314,10 +1319,9 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
 ) {
     let kern_huge = policy.page_size();
     let layout = policy.layout();
-    // I-59 A' (D-094): the bootstrap root is constructed BEFORE the Direct
-        // Map exists (Step 4 comes after Steps 1–3), so its zeroing must go
-        // through the identity view — the root frame sits inside the
-        // declared UEFI windows.
+    // The bootstrap root is constructed BEFORE the Direct Map exists
+    // (Step 4 comes after Steps 1–3), so its zeroing must go through the
+    // identity view — the root frame sits inside the declared UEFI windows.
         let mut paging = A::Paging::new_from_page(root_page, minix_arch::paging::PteChannel::Identity);
 
     // Step 1: Minimal boot identity windows — VA = PA only for the pieces
@@ -1551,13 +1555,12 @@ fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
 /// kmain call this explicitly before any consumer of [`KERNEL_INFO`].
 ///
 /// The returned reference points at the `.bss` global, not at the caller's
-/// input. The slot is written exactly once per leg (I-35(a)/D-071): a second
+/// input. The slot is written exactly once per leg: a second
 /// store panics instead of updating the slot in place.
 pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
-    // I-35(a) (D-071): the slot is written exactly once per leg, before
-    // kmain. A second store would overwrite a live `&'static KernelInfo`
-    // handed out to earlier readers — fail closed instead of silently
-    // aliasing.
+    // The slot is written exactly once per leg, before kmain. A second
+    // store would overwrite a live `&'static KernelInfo` handed out to
+    // earlier readers — fail closed instead of silently aliasing.
     // SAFETY: the one-shot slot; read before the single write below.
     assert!(
         unsafe { (*crate::globals::KERNEL_INFO.get()).is_none() },
@@ -1656,8 +1659,8 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         // the v1 decoder already lands them in `.bss`, but the direct and
         // auxiliary faces can hand over a firmware-pool pointer. Land it
         // here so `store_kernel_info` really makes the snapshot self-contained.
-        // (v10 / D-062 removed the startup-object class: its only reader was
-        // a strict-gate check, now served by the map tables.)
+        // There is no startup-object class: its only reader was a strict-gate
+        // check, which the map tables now serve.
         let sstore = &mut *crate::globals::SOURCE_RECORD_STORE.get();
         let ssrc = kernel_info.source_records;
         land_slice(ssrc, sstore, "source_records");
@@ -1805,9 +1808,8 @@ pub fn kmain(_kernel_info: &KernelInfo) -> ! {
     // handoff value) plus the global slot pointer, the current RSP and the
     // bootstrap_len read through the slot.
     // x86_64 gate: rdi/rdx are the x86 SysV handoff registers (aarch64 uses
-    // x0, riscv64 uses a0); bare asm without an arch gate once broke the
-    // aarch64/riscv64 carrier builds (review finding F1; regression confirmed
-    // against baseline 940ad8363).
+    // x0, riscv64 uses a0); bare asm without an arch gate breaks the
+    // aarch64/riscv64 carrier builds.
     #[cfg(target_arch = "x86_64")]
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
@@ -1832,11 +1834,11 @@ pub fn kmain(_kernel_info: &KernelInfo) -> ! {
     // Validate KernelInfo invariants before any use.
     kernel_info.validate();
     // Cross-boot-form postcondition check. `validate()` only checks
-    // non-address invariants; this layer additionally checks the one relation
-    // v10 (D-062) left behind: `kern_virt_base > u32::MAX` (the image must not
-    // sit below 4 GiB). The three derived-scalar relations (entry inside the
+    // non-address invariants; this layer additionally checks the one
+    // remaining relation: `kern_virt_base > u32::MAX` (the image must not
+    // sit below 4 GiB). The derived-scalar relations (entry inside the
     // image / user stack below the kernel base / kernel stack not landing in
-    // the user half) were deleted with their fields. kmain is the single
+    // the user half) have no separate fields to read. kmain is the single
     // common end point of all five boot forms, so calling it here applies to
     // every form.
     kernel_info.check_boot_postconditions();
@@ -1844,18 +1846,18 @@ pub fn kmain(_kernel_info: &KernelInfo) -> ! {
 
     // Initialize the early console first so any boot diagnostic output
     // uses the correct baud rate / UART configuration.
-    // C: ser_init() — originally inside arch_init(); moved to EarlyConsole trait.
+    // C: ser_init(); the EarlyConsole trait owns the initialization.
     {
         use crate::kmess::{EarlyConsole, KernelConsole as Console};
         Console::init();
     }
 
-    // I-35(a) (D-071): no re-store here. The global slot was written once
-    // per leg before kmain (prepare_kernel_image_v1 / rust_image_main), and
-    // `kernel_info` above already reads that .bss copy — re-storing it wrote
-    // the identical value back with no effect, and a second store would
-    // rewrite a live &'static slot (now a guard failure, see
-    // store_kernel_info). C parity: main.c reads kerninfo, never re-stores.
+    // No re-store here. The global slot is written once per leg before
+    // kmain (prepare_kernel_image_v1 / rust_image_main), and
+    // `kernel_info` above already reads that .bss copy. Re-storing the
+    // identical value has no effect, and a second store would rewrite a
+    // live &'static slot (a guard failure, see store_kernel_info). C parity:
+    // main.c reads kerninfo and never re-stores.
     boot_stage!("kernel: kmain A.1b console+kinfo ok\n");
 
     // Phase A.2 is intentionally empty: the kernel keeps no mutable copy of
@@ -1908,13 +1910,9 @@ pub fn kmain(_kernel_info: &KernelInfo) -> ! {
     // register the local-timer hook, open the delivery gate — runs EXACTLY
     // ONCE, at the C `boot_cpu_init_timer` position, inside
     // `bsp_finish_booting` Step 6 (the terminal Phase-F call below).
-    // An interim `boot_init_timer()` here was the root-cause fix from when
-    // `bsp_finish_booting` was still a `#[allow(dead_code)]` divergent path
-    // the live boot never took (timer hook unregistered, pin2 mask never
-    // opened, ticks never arrived). Now that Phase F wires
-    // `bsp_finish_booting`, that interim call is a redundant double-init and
-    // is removed so `boot_init_timer` stays the single touch point, matching
-    // C (§26 #7: the "dead-code" comment contradicted the live Phase-F call).
+    // `boot_init_timer` must stay the single touch point: a second init
+    // here would leave the hook unregistered, the pin2 mask unopened, and
+    // ticks never arriving; Phase F already wires `bsp_finish_booting`.
     // See 08-system-init-boot-finish.md §4.5.
 
     boot_stage!("kernel: kmain B clock+intr ok\n");
@@ -1978,9 +1976,8 @@ pub fn kmain(_kernel_info: &KernelInfo) -> ! {
     // Phase F: bsp_finish_booting.
     // C reclaims the unpaged-kernel section here (`add_memmap(&kinfo,
     // bootstrap_start, bootstrap_len)`); the Rust port runs higher-half from
-    // the first instruction and the two fields were removed from
-    // `KernelInfo` (D01-F03), so there is nothing to reclaim and no field to
-    // validate.
+    // the first instruction and `KernelInfo` has no bootstrap-span fields,
+    // so there is nothing to reclaim and no field to validate.
 
     // D7: bsp_finish_booting() -> ! — never returns.
     // bsp_finish_booting takes &mut ProcessTable + &mut SmpState to
@@ -2967,12 +2964,10 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             {
                 // Real VM ELF loading at boot.
                 //
-                // Previously this branch was DEFERRED — VM started with
-                // PC=0 and RS was expected to load the VM ELF later.
-                // That approach is incorrect because VM is the page-table
-                // process: it must be runnable *immediately* after boot so
-                // it can handle VMCTL/PRIVCTL syscalls from other boot
-                // processes. A VM with PC=0 cannot serve any syscall.
+                // This branch loads the VM ELF at boot. VM must be runnable
+                // immediately after boot so it can handle VMCTL/PRIVCTL
+                // syscalls from other boot processes; a VM with PC=0 cannot
+                // serve any syscall.
                 //
                 // The bootstrap page table (created by `arch_boot_impl`)
                 // is still active — we wrap it via `from_active_root` and
@@ -3902,8 +3897,8 @@ pub fn boot_init_timer() {
     //       CNTP_CTL_EL0 = Enable=1/IMASK=0, on riscv64 it sets
     //       `sie.STIE`, and on x86_64 it is a documented no-op (the PIT
     //       has no module-local gate; `[ARCH: gate-semantics]`).
-    // Previously (a) ran early in Phase B with (c) folded into it — a
-    // live, unhandled timer across the whole boot.
+    // The three steps run as one sequence at the terminal Phase-F position;
+    // separating them would leave a live, unhandled timer across the boot.
     //
     // Instance-based design (04-platform-discovery.md §3.4): construct a
     // transient clock arch instance from the global platform descriptor
@@ -4074,18 +4069,18 @@ fn bsp_finish_booting(
         bsp_local.fpu_presence = true;
     }
 
-    // Step 8: (D01-F08) C 的 kernel_may_alloc = 0（main.c:105）在 Rust 侧
-    // 没有对应物——该开关唯一的读者是已删除的 add_memmap 断言；账本换成
-    // FreeRangeSet 后，"引导期 vs 运行期"的写权限由调用图保证，不需要
-    // 运行期布尔。
+    // Step 8: C's kernel_may_alloc = 0 (main.c:105) has no Rust
+    // counterpart: the switch's only reader is the add_memmap assertion;
+    // with the ledger replaced by FreeRangeSet, the boot-vs-runtime write
+    // permission is guaranteed by the call graph and needs no runtime
+    // boolean.
 
     // Step 8.5: BKL held.
     // C: BKL_LOCK() — main.c:149, early in main(). The acquisition moved to
     // kmain before smp_init (this function's only caller): wait_for_aps's
     // UNLOCK→wait→LOCK dance ends with the BKL held, so re-acquiring here
-    // (the former single-CPU arrangement) would deadlock the non-reentrant
-    // CAS lock. Debug-pinned so a future second caller cannot skip the
-    // acquisition silently.
+    // would deadlock the non-reentrant CAS lock. Debug-pinned so a future
+    // second caller cannot skip the acquisition silently.
     debug_assert!(
         smp::bkl_is_locked(),
         "bsp_finish_booting requires the BKL (kmain acquires it before smp_init)"
@@ -4216,7 +4211,7 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
 // inherently per-CPU. Runtime switches (`set_active_root_tracked`, the
 // `switch_address_space` same-root sync, `dispatch_vmctl(VMCTL_SETADDRSPACE)`)
 // update the owning CPU's slot and compare against the live register; they
-// never touch this global, so a switch on one CPU can no longer clobber what
+// never touch this global, so a switch on one CPU cannot clobber what
 // another CPU's IPC/VM cross-address-space copy reads.
 //
 // # Concurrency
@@ -4299,7 +4294,7 @@ pub fn set_current_root_phys(phys: minix_types::PhysBytes) {
 /// Runtime address-space switches (`set_active_root_tracked`,
 /// the `switch_address_space` same-root sync) update the owning CPU's slot
 /// without touching the shared bootstrap seed — so a switch on one CPU can
-/// no longer clobber what another CPU's IPC/VM cross-address-space copy
+/// cannot clobber what another CPU's IPC/VM cross-address-space copy
 /// reads via `current_root_phys()`. Safe to call before `SmpState` is live
 /// (no-op on the slot; the bootstrap seed covers that phase).
 pub(crate) fn set_this_cpu_root_phys(root: minix_types::PhysBytes) {
@@ -4530,9 +4525,9 @@ fn idle(
     //    at interrupt entry then restarts it). The one-shot local timer is
     //    re-armed unconditionally by `local_tick` on every CPU, so without this
     //    mask a halted AP keeps taking timer ticks forever and never truly
-    //    idles. The mask was originally omitted while the adjacent
-    //    `switch_address_space_idle` (proc.c:190) was restored — parity with
-    //    proc.c:176-206 is only completed now. The BSP branch keeps
+    //    idles. The mask pairs with the adjacent
+    //    `switch_address_space_idle` (proc.c:190), completing parity with
+    //    proc.c:176-206. The BSP branch keeps
     //    `restart_local_timer`
     //    (a no-op on the auto-reloading clock sources — see the helper).
     if let Some(local) = smp.cpu_local_mut(cpu) {
@@ -5218,7 +5213,6 @@ fn finish_and_restore(
 /// process to user mode. Public for QEMU test kernels, which boot the
 /// production phases and then hand the CPU to user mode exactly like the
 /// production `kmain` tail does (C main.c:73 `bsp_finish_booting`).
-#[allow(dead_code)] // reachable only from the divergent boot path / asm entry
 pub fn switch_to_user() -> ! {
     // T1 contract marker (test-cmd-smoke.sh stage-3 gate): the point where
     // the kernel enters the scheduling loop and hands the CPU over to
@@ -5892,7 +5886,7 @@ mod tests {
         );
     }
 
-    /// D-031: a platform source with an explicit length gets a window over
+    /// A platform source with an explicit length gets a window over
     /// the full blob, not just the address's 2 MiB piece.
     #[test]
     fn platform_window_uses_the_recorded_blob_length() {
@@ -6027,9 +6021,9 @@ mod tests {
             "param_buf must be repointed to the .bss landing pad"
         );
         assert_eq!(stored.param_buf, PARAM);
-        // I-35(a) (D-071): the re-store is now a guard failure, not an
-        // idempotent no-op — this negative control gives the one-shot
-        // contract its bite (deleting the guard turns this test red).
+        // The re-store is a guard failure, not an idempotent no-op — this
+        // negative control gives the one-shot contract its bite (deleting
+        // the guard turns this test red).
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             store_kernel_info(stored);
         }));
@@ -6620,10 +6614,9 @@ mod tests {
             );
             crate::smp::bkl_unlock();
         }
-        // Stage 4: `check_quantum` now really sees "exhausted" (previously
-        // cpu_time_left never decreased and this arm was unreachable on the
-        // production path), and applies C `proc_no_time`'s **policy**: this
-        // process has `p_sched.scheduler == None` (kernel scheduling) → the
+        // Stage 4: `check_quantum` sees "exhausted" (cpu_time_left decreases
+        // on the production path), and applies C `proc_no_time`'s **policy**:
+        // this process has `p_sched.scheduler == None` (kernel scheduling) →
         // else arm tops the quantum back up and does not set NO_QUANTUM (C
         // proc.c:1893-1910).
         // The user-scheduled + preemptible arm (set NO_QUANTUM + notify the

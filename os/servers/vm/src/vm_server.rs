@@ -159,13 +159,12 @@ pub struct VmServer {
     initialized: bool,
     /// Count of kernel pagefault messages whose handling failed.
     ///
-    /// The main loop previously dropped the
-    /// `dispatch_pagefault` result (`let _ =`), so CoW / allocation /
-    /// region-lookup failures were unobservable in release builds. Each
-    /// `VmReply::Error` from a pagefault is now counted here and surfaced
-    /// through the feature-gated audit channel (same `vm_acl_audit` feature
-    /// as ACL denials). Saturating so a pathological fault storm cannot
-    /// wrap the counter.
+    /// The main loop must not drop the `dispatch_pagefault` result: CoW /
+    /// allocation / region-lookup failures would then be unobservable in
+    /// release builds. Each `VmReply::Error` from a pagefault is counted
+    /// here and surfaced through the feature-gated audit channel (same
+    /// `vm_acl_audit` feature as ACL denials). Saturating so a
+    /// pathological fault storm cannot wrap the counter.
     ///
     /// C has no direct equivalent: Minix3's pagefault path (pagefaults.c)
     /// does not audit failures either; this is a minix-rs observability
@@ -496,12 +495,11 @@ impl VmServer {
 
     /// Select the boot-time allocator backend ([ARCH: A-5]).
     ///
-    /// This function is the **single precedence authority** (the contradictory
-    /// `DefaultAllocator` alias in `phys_mem/mod.rs` was removed):
+    /// This function is the **single precedence authority** — no alias or
+    /// second selector exists elsewhere:
     ///
     /// - `segment_tree_alloc` selects the segment-tree backend outright,
-    ///   including when the `buddy_alloc` feature is also enabled (that wiring
-    ///   selected the previously-never-selected backend, and the
+    ///   including when the `buddy_alloc` feature is also enabled (the
     ///   combined-feature semantics are pinned by tests).
     /// - `buddy_alloc` (without segment-tree) keeps the documented adaptive
     ///   threshold — at or below `BUDDY_THRESHOLD_PAGES` (1M pages ≈ 4GB) the
@@ -732,7 +730,7 @@ impl VmServer {
         self.initialized = true;
     }
 
-    /// E5(d) (V11-P1-1 / D-094 lineage) end-to-end self-test: map a freshly
+    /// End-to-end self-test for the boot-shim chain: map a freshly
     /// allocated frame into VM's own page table, query it back, unmap, and
     /// verify the slot is gone — the whole map/query/unmap edge the
     /// boot-shim chain must demonstrate before the transport hand-off. Runs
@@ -783,29 +781,24 @@ impl VmServer {
 
         // Initialize the kernel memory layout used by `init_page_table()`.
         //
-        // Previously (hardcoded kernel layout fix), these constants were hardcoded in
-        // `vmproc_handle.rs::init_page_table()` and guarded by a
-        // `hardcoded_kernel_layout` feature flag with a `compile_error!`.
-        // That approach acknowledged the values were wrong for real hardware
-        // but provided no way to supply correct values. Now the layout is
-        // set here, once, during `VmServer::init()`.
+        // The layout is set here, once, during `VmServer::init()`, so the
+        // boot path supplies the physical base, text/data sizes, and
+        // direct-map size. `vmproc_handle.rs::init_page_table()` reads these
+        // values instead of carrying its own copy.
         //
         // The kernel text physical base, text/data sizes, and direct-map size
         // come from the handoff's kernel layout (or the mock constants in the
         // test carrier). A version ≥ 3 handoff carries the real layout — consume
         // it; a missing layout is rejected rather than guessed.
         //
-        // A6 (C17 remainder, external-review ruling): a missing
-        // kernel_layout means an incomplete input (a real handoff is v5
-        // and always carries it) — production rejects it uniformly on all
-        // three architectures. There is no silent fallback-to-mock
-        // production path anymore (the old shape: riscv panicked while
-        // x86/aarch64 silently adopted the x86 mock constants). The mock
-        // layout is injected explicitly by the test fixture:
-        // `BootParams::simple` carries a mock `KernelLayout` (fixture
-        // semantics — using the simple constructor means "I want the mock
-        // layout"), so host tests are unaffected; the reject-on-None
-        // behavior is pinned by
+        // A missing kernel_layout means an incomplete input (a real handoff is
+        // v5 and always carries it) — production rejects it uniformly on all
+        // three architectures. There is no silent fallback-to-mock production
+        // path: riscv and x86/aarch64 all reject. The mock layout is injected
+        // explicitly by the test fixture: `BootParams::simple` carries a mock
+        // `KernelLayout` (fixture semantics — using the simple constructor
+        // means "I want the mock layout"), so host tests are unaffected; the
+        // reject-on-None behavior is pinned by
         // `test_init_rejects_missing_kernel_layout`.
         let layout = self.kernel_layout.expect(
             "handoff lacks kernel layout (version < 5) — input rejected (A6): \
@@ -941,7 +934,7 @@ impl VmServer {
         let entry = minix_elf::entry_point(image).map_err(|_| "boot image is not a valid ELF")?;
         // SegmentIter yields PT_LOAD segments only (p_type filter inside);
         // a malformed program header rejects the boot image rather than
-        // silently building a truncated address space (I-48 / D-084).
+        // silently building a truncated address space.
         let segments: alloc::vec::Vec<minix_elf::LoadSegment> = minix_elf::segment_iter(image)
             .map_err(|_| "boot image phdrs unreadable")?
             .collect::<Result<alloc::vec::Vec<_>, minix_elf::ElfError>>()
@@ -1030,12 +1023,12 @@ impl VmServer {
             // Region per segment (C: libexec_alloc_vm_prealloc → map_page_region).
             // The writable flag comes from the ELF segment flags (PF_W=2): C's
             // map_page_region builds a writable region for a PT_LOAD RW segment.
-            // Previously every segment got only ANON — the data segment's region
-            // was not writable → is_page_writable was always false →
-            // sync_slot_pte mapped .data pages read-only, and the first user
-            // write faulted (err=7) → VM judged a violation → SIGSEGV (on the
-            // real machine: RS's ensure_global_allocator allocator-flag xchg at
-            // 0x229708 failed twice in a row).
+            // With ANON-only regions the data segment is not writable:
+            // `is_page_writable` is false, `sync_slot_pte` maps .data pages
+            // read-only, and the first user write faults (err=7), which VM
+            // judges a violation and turns into SIGSEGV (on the real machine:
+            // RS's ensure_global_allocator allocator-flag xchg at 0x229708
+            // failed twice in a row).
             //
             // Executability must likewise be inherited from the ELF segment
             // flags (PF_X=1) — C on i386 has no NX, so boot text is executable by
@@ -1044,11 +1037,11 @@ impl VmServer {
             // text pages read_only without EXECUTABLE → the PTE is present but
             // NX → the boot server's instruction fetch faults forever and
             // livelocks (on the real machine: RS entry text at 0x227980 was hit
-            // 71287 times). That is the same present-but-NX defect as in the
-            // dynamic path, moved to the boot leg; only the
-            // exec_worker→to_vr_flags leg had been fixed. A data segment without
-            // PF_X stays NX (correct W^X), and a text segment with PF_X becomes
-            // EXECUTABLE, equivalent to C.
+            // 71287 times). This is the same present-but-NX defect as in the
+            // dynamic path; both the exec_worker→to_vr_flags leg and this boot
+            // leg must inherit PF_X. A data segment without PF_X stays NX
+            // (correct W^X), and a text segment with PF_X becomes EXECUTABLE,
+            // equivalent to C.
             let mut seg_flags = crate::region::VrFlags::ANON;
             if seg.flags & minix_elf::PF_W != 0 {
                 seg_flags |= crate::region::VrFlags::WRITABLE;
@@ -1371,8 +1364,8 @@ impl VmServer {
         // (SimPaging stands in for the arch table in test builds).
         crate::e5d_diag("e5d: init_page_table start\n");
         proc.init_page_table().unwrap_or_else(|e| {
-            // I-35(a)-style diagnostic-first: the panic handler's diagctl
-            // write has proven silent on this chain (D-02 E5(d) forensics),
+            // Diagnostic-first: the panic handler's diagctl write can be
+            // silent on this chain,
             // so print the failure BEFORE panicking — if this line reaches
             // the serial, the failure is in init_page_table; if it never
             // appears, the kernel-side diagctl path itself is broken.
@@ -1829,16 +1822,16 @@ impl VmServer {
 
         // C: if(result != SUSPEND) { ipc_send(who_e, &msg); }
         //
-        // `VmReplyForIpc` *statically* excludes `VmReply::Suspend`
-        // (replacing the earlier `unreachable!("Suspend filtered before
-        // reply_to_errno")` panic). `DispatchAction` encodes the three C
-        // outcomes (SUSPEND / no-reply / reply-with-payload); at this call
-        // site `DispatchAction::Reply(reply)` — where `reply` is *any*
-        // `VmReply` — is funneled through `VmReplyForIpc::new(reply)`,
-        // which returns `None` for `VmReply::Suspend`. Hitting that case
-        // would be a logic bug (a Suspend escaping the dispatch boundary),
-        // so we panic with a remediation hint instead of sending a
-        // corrupt reply.
+        // `VmReplyForIpc` *statically* excludes `VmReply::Suspend`; no
+        // panic fallback is needed because the type system rejects the
+        // value at construction.
+        // `DispatchAction` encodes the three C outcomes (SUSPEND / no-reply /
+        // reply-with-payload). At this call site `DispatchAction::Reply(reply)`
+        // — where `reply` is *any* `VmReply` — is funneled through
+        // `VmReplyForIpc::new(reply)`, which returns `None` for
+        // `VmReply::Suspend`. Hitting that case would be a logic bug (a
+        // Suspend escaping the dispatch boundary), so we panic with a
+        // remediation hint instead of sending a corrupt reply.
         match action {
             DispatchAction::Reply(reply) => {
                 let reply_for_ipc = VmReplyForIpc::new(reply).expect(

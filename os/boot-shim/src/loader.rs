@@ -611,14 +611,17 @@ pub fn load_boot_modules_into<L: FileLoader>(
         });
         let data = data.as_slice();
 
-        // 修剪到 ELF 的运行期文件长度（最后一个 PT_LOAD 的
-        // 文件尾）——这是模块装载里唯一需要 ELF 语义的层，两条腿的输入在
-        // 此统一：U-Boot 腿的 `entry.len` 已是 `staged_elf_used_len` 的修剪
-        // 值（此处幂等），UEFI 腿是固件给出的确切文件长度（在此修剪），
-        // `BootModule.len` 因此跨腿一致。非 ELF 或畸形镜像保持全长
-        // （fail-safe：运行期解析者会拒绝它）。对 36 个模块 ELF（12 × 3
-        // 架构）的核对结果是：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC
-        // 内容，裁掉的只有 .comment/.symtab/.debug_*。
+        // Trim to the ELF's runtime file length (the end of the last
+        // PT_LOAD's file range) — this is the only layer in module loading
+        // that needs ELF semantics, and both legs' inputs converge here:
+        // the U-Boot leg's `entry.len` is already the trimmed
+        // `staged_elf_used_len` (idempotent here), while the UEFI leg gets
+        // the exact file length from firmware (trimmed here), so
+        // `BootModule.len` is consistent across legs. A non-ELF or
+        // malformed image keeps its full length (fail-safe: the runtime
+        // parser will reject it). A check of 36 module ELFs (12 × 3
+        // architectures) found no non-NOBITS ALLOC content after the last
+        // PT_LOAD file end; only .comment/.symtab/.debug_* are trimmed.
         let used = elf_file_end(data).unwrap_or(data.len());
         let data = &data[..used];
 
@@ -639,8 +642,8 @@ pub fn load_boot_modules_into<L: FileLoader>(
             core::ptr::write_bytes(dest.add(data.len()), 0, remaining);
         }
 
-        // `name` 已是 `MODULE_NAMES` 常量表里的 `&'static str`——无需堆分配再泄漏
-        // （D01 Round1 D2-08：删掉 clone-to-compile 形）。
+        // `name` is already a `&'static str` from the `MODULE_NAMES`
+        // constant table — no heap allocation and leak needed.
         *slot = BootModule {
             name,
             start: PhysBytes(phys_base),
@@ -910,11 +913,11 @@ mod tests {
         );
     }
 
-    // ── I-47 / D-089: the sanity-check loop must not write any byte ──
+    // ── Sanity check: the load loop must not write any byte ──
 
     /// Two-segment ELF where the FIRST segment fits but the SECOND's BSS
-    /// extent runs past the buffer. The pre-I-47 load loop wrote segment 1
-    /// and silently skipped segment 2 (a half-loaded image); D-089 乙
+    /// extent runs past the buffer. A load loop that writes segment 1 and
+    /// silently skips segment 2 leaves a half-loaded image; the ruling
     /// requires the C shape: the whole load fails BEFORE any byte is
     /// written. Proven byte-for-byte: the buffer must be untouched.
     #[test]

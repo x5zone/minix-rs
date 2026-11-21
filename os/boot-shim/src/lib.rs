@@ -85,9 +85,9 @@ pub use minix_boot::BootPrepareResult;
 // Both boot-shim and kernel need ELF parsing, so it lives in os/libs/minix-elf.
 pub use minix_elf;
 
-/// Single construction surface for the `KernelInfo` a boot surface hands over
-/// (the UEFI and OpenSBI helpers previously carried two drifting
-/// 8/9-parameter copies of this function).
+/// Single construction surface for the `KernelInfo` a boot surface hands
+/// over. Every boot leg calls this function; no leg carries its own
+/// parameter list.
 ///
 /// `reserved_regions` is the surface's non-conventional list (UEFI-classified
 /// firmware memory, DTB-clipped firmware ranges); pass `&[]` when the surface
@@ -95,19 +95,19 @@ pub use minix_elf;
 /// ([`minix_boot::normalize_param_buf`]); pass `&[]` when the leg has no
 /// source.
 ///
-/// v10 (D-062) removed three parameters that were pure restatements of the
-/// two image-span arguments (`user_sp = USER_STACK_TOP`, `kern_stack_top =
-/// kern_virt_base + kern_size`, `syscall_entry = kern_virt_base`) plus the
-/// startup-object slice. Consumers derive them from `KernelInfo` instead
+/// Three values are derived from the two image spans rather than received
+/// as parameters: `user_sp = USER_STACK_TOP`, `kern_stack_top =
+/// kern_virt_base + kern_size`, and `syscall_entry = kern_virt_base`
 /// (`KernelInfo::kern_stack_top()`, `minix_types::USER_STACK_TOP`,
-/// `syscall_entry_va()`).
+/// `syscall_entry_va()`). No startup-object slice is part of this
+/// structure.
 /// Build the receiver-side `KernelInfo` from the sender's named view.
 ///
 /// Taking `&BootReport<'static>` instead of ten positional slices removes
 /// the two same-typed `&[MemoryRegion]` arguments that could be swapped
 /// silently, and makes the lifetime source explicit: the report's slices
 /// are already `'static` (the one-shot boot storage), so no
-/// `from_raw_parts` laundering is needed at the call sites (D2-04).
+/// `from_raw_parts` laundering is needed at the call sites.
 pub fn build_kernel_info(
     report: &minix_boot::BootReport<'static>,
     authority: minix_boot::RamAuthority,
@@ -130,8 +130,7 @@ pub fn build_kernel_info(
 /// [`minix_boot::BootStorage`].
 ///
 /// The UEFI and U-Boot senders keep their semantic tables in their own
-/// `.bss` (R18 D-1) instead of pointing `'static` slices into the handoff
-/// arena. `UnsafeCell` + `Sync` is sound under the boot contract: exactly one
+/// `.bss` instead of pointing `'static` slices into the handoff arena. `UnsafeCell` + `Sync` is sound under the boot contract: exactly one
 /// CPU runs, the storage is filled before the wire image is finalized, and it
 /// is read by the same thread before the jump. It is not a general-purpose
 /// shared cell.
@@ -276,9 +275,9 @@ pub const BOOT_PT_BUMP_PAGES: usize = 1024;
 /// Raw-write the QEMU serial port (COM1 data port 0x3F8; OVMF has already
 /// initialized the 16550).
 ///
-/// Purpose: after EBS the logging path of `uefi::println!` is no longer
-/// reliable (see the comment in `uefi_helpers::exit_boot_services`); a raw
-/// port write does not depend on any UEFI state — the dedicated post-EBS
+/// Purpose: after EBS the logging path of `uefi::println!` cannot be used
+/// (see the comment in `uefi_helpers::exit_boot_services`); a raw port
+/// write does not depend on any UEFI state — the dedicated post-EBS
 /// channel for first-light diagnostics.
 ///
 /// x86 semantics stay as they are: byte-by-byte direct writes, without
@@ -330,9 +329,8 @@ pub fn raw_serial(_text: &str) {}
 
 /// Print an unsigned decimal integer through [`raw_serial`].
 ///
-/// This exists for post-EBS diagnostics: the UEFI formatter is no longer a
-/// valid output path after `ExitBootServices`, but counts still need to be
-/// reported. The conversion uses a fixed 20-byte stack buffer, so it neither
+/// This exists for post-EBS diagnostics: the UEFI formatter cannot be used
+/// after `ExitBootServices`, but counts still need to be reported. The conversion uses a fixed 20-byte stack buffer, so it neither
 /// allocates nor calls back into firmware.
 pub fn raw_serial_u64(mut value: u64) {
     let mut buf = [0u8; 20];

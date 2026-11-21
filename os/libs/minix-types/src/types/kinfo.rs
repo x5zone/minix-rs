@@ -12,10 +12,12 @@
 //! the used-fields subset — the multiboot blobs, `param_buf` and the
 //! `kmessages` pointer stay kernel-private.
 //!
-//! `[ARCH: GET_KINFO 载荷收窄为 used-fields subset；其余字段由
-//! GET_IMAGE/GET_MONPARAMS/GET_KMESSAGES 等分开提供]` — C 侧按全布局读
-//! `memmap[]`/`module_list[]`/`param_buf`/`bootstrap_*` 的程序在本仓无
-//! 消费者；受影响字段清单见 doc 01 §3.4 的同名标注。 Field order preserves C's
+//! `[ARCH: GET_KINFO payload narrowed to the used-fields subset; the
+//! remaining fields are provided separately by
+//! GET_IMAGE/GET_MONPARAMS/GET_KMESSAGES]` — no program in this repository
+//! consumes C's full-layout `memmap[]`/`module_list[]`/`param_buf`/
+//! `bootstrap_*`; the affected-field list is in doc 01 §3.4's annotation.
+//! Field order preserves C's
 //! relative order (freepde_start < user_sp < vir_kern_start < nr_procs <
 //! nr_tasks < release < version). `vir_bytes` fields widen to `u64`
 //! (LP64 rewrite precedent, proc_info.rs).
