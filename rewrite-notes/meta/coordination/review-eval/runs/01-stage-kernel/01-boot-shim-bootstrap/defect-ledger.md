@@ -2628,3 +2628,17 @@
 | RD-R38-029 | FACT-04 | 2.6、3.5 | R38 | fact | P2 | 文档/计数 | ① | 统一 `place_modules` 为四道输入门 + 三条断言（含条目数与目标页） | fact.md FACT-04；源码 7 处检查 | CLOSED；panel/round38/fact.md:79；`rg '四道门' doc` 归零 | — | — | — | — |
 | RD-R38-030 | FACT-05 | 3.5、4.2、4.7 | R38 | fact | P2 | 文档/防线归属 | ① | 防线 C 限定 UEFI 腿；U-Boot 腿改编译期上界 + root/bump 复查 | fact.md FACT-05；`assert_modules_clear_of_kernel` 仅 uefi_helpers | CLOSED；panel/round38/fact.md:92；`rg 'assert_modules_clear_of_kernel' doc` 限定 UEFI | — | — | — | — |
 | RD-R38-031 | FACT-06 | 4.2.2 | R38 | fact | P2 | 文档/覆盖缺口 | ① | §4.2.2 补整图级拒绝：OverlapsDescriptor + 四类容量上限 | fact.md FACT-06；`classify` 源码有整图拒绝 | CLOSED；panel/round38/fact.md:105；`rg 'OverlapsDescriptor' doc` 命中 | — | — | — | — |
+
+## R39 确认轮（2026-11-22）
+
+| ID | 来源 | 节 | 轮 | 角色 | 严重度 | 类别 | 处置 | 修复 | 证据 | 状态 | — | — | — | — |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| RD-R39-001 | CONFIRM-D1 | 3.5 | R39 | cold-confirm | P2 | 文档/归属 | ① | §3.5 区分 `run_all.sh` 注册的 U-Boot shim 门与手工 bootface 门 | `rg -n 'test-kernel-image-riscv64-bootface' os/qemu-tests/run_all.sh` 无输出；`rg -n 'test-riscv64-uboot-shim' os/qemu-tests/run_all.sh` 命中 300/302/304 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-002 | CONFIRM-D2 | 3.5 | R39 | cold-confirm | P3 | 文档/计数 | ① | §3.5 改为“一条断言；有效条目不足时 fail-closed 返回 None” | `sed -n '214,228p' os/kernel-image/src/bootface_common.rs` 一条 assert + 一条 return None | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-003 | CONFIRM-D3 | 3.5 | R39 | cold-confirm | P3 | 文档/计数 | ① | §3.5 改为 `PlacementPool` 的五个 `u64` 字段 | `sed -n '178,190p' os/kernel-image/src/bootface_common.rs` 五个字段 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-004 | CONFIRM-D4 | 3.5 | R39 | cold-confirm | P3 | 文档/语义 | ① | §3.5 改为非 ELF 输入保留整槽、不做二次修剪 | `sed -n '620,622p;307,320p' os/boot-shim/src/loader.rs` | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-005 | CONFIRM-D5 | 3.6 | R39 | cold-confirm | P2 | 文档+代码/可见性 | ① | §3.6 与 `lib.rs` 注释改为“仅 `enter_kernel_image_v1` 公开；`PreparedJump`/prepare/jump 私有” | `sed -n '408p;436p;538p;560p' os/kernel/src/lib.rs`；`rg 'both stay `pub`' os/kernel/src/lib.rs` 归零 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-006 | CONFIRM-D6 | 5.3 | R39 | cold-confirm | P2 | 文档/死指针 | ① | §5.3 改名“结论”，§3.2.4/§4.5 交叉引用改为“读数与结论/证据判别结论” | `rg -n '三层结论|三层判别|三层证据' doc` 对零化段零命中 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-007 | CONFIRM-D7 | 5.3 | R39 | cold-confirm | P2 | 文档/证据 | ① | §3.2.4/§5.3 改为“探针结果未归档、不参与 PASS 判据”，点名 `test-kernel-map` N-5 探针 | `rg -n 'N-5 probe|verdict=|in_snapshot_free' os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map/src/main.rs` 命中 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-008 | CONFIRM-N1 | 3.6 | R39 | cold-confirm | P3 | 代码/注释 | ① | `lib.rs:550-551` 改为 prepare/jump 是公开入口内部两步，不再声称 shim 分两次调用 | `rg -n 'so the shim can print|post-root/pre-jump' os/kernel/src/lib.rs` 归零 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-009 | CONFIRM-N2 | 3.1 | R39 | cold-confirm | P3 | 文档/标签 | ① | §3.1.1 的“（手工门）”改为“（`run_all.sh` / CI 覆盖门）” | `rg -n '六路标门（手工门）' doc` 归零；`.github/workflows/qemu-tests.yml:61` 运行 run_all.sh | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |

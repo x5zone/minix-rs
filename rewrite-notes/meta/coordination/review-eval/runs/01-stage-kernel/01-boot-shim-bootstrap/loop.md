@@ -2418,3 +2418,12 @@ RB24 首轮 13 项逐项处置：
 ### R38 I-43 判别实验
 
 - 测试基址已修正（`kern_virt_base=KERNEL_LOAD_PA`），`AlreadyMapped` 消除；但 `rust_main` 二次进入时 `bump(256)` 失败（current=0x84120000 / end=0x84200000），A2 自由集打印未到达。I-43/rt-birth-sp 维持阻断，需先解释重入与 `BUMP_PTR` 推进来源。
+
+### R39 确认轮（2026-11-22）
+
+- 范围：D01 全篇 + 48 个 related-code；单元账本 49/49 冻结，T3 PASS。
+- 关闭项：I-25（门 bug + 48 文件 CP 清零 + 注释英文化）、DESIGN-04（栈上 `ClaimSet`）、DESIGN-09（每槽 `AtomicUsize`）、I-43/rt-birth-sp（DTB 未声明导致 OpenSBI 重启；A2 自由集与两栈交集为空）。
+- 冷启动确认轮抽样 10 个单元：第一轮 7 PASS / 3 FAIL（3.5/3.6/5.3）；D1–D7 修复后全部 FIXED；增量复核发现 N1/N2 两处 P3 同源矛盾，修复后 `DELTA: PASS`。
+- 确认轮修复 2/2 批次，未开新修改轮；`defect-ledger.md` 新增 `RD-R39-001..009` 全部 CLOSED。
+- 机械门：文档七门绿、anchor 96/96、code-publication 48/48=0、TODO `--fail-on-open` 0；cargo 六包全绿；QEMU 4 PASS + 2 既有用户链失败（`D01-RT-BIRTH-USERCHAIN`，stage 级）。
+- 轮结果：`CONVERGED`。

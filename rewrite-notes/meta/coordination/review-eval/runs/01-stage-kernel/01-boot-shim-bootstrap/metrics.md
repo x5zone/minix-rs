@@ -348,3 +348,20 @@
 - 减法: 提案 9 / 采纳 8
 - 成本: agent 8 / token 约 3.8e6 / 耗时 约 70min
 - 重写例外: D-108（用户批准 V3.10 新 edition 重开；非规避 3 轮上限）
+
+## R39 确认轮（V3.10）
+
+- 发现总数: 9
+- 唯一根因数: 9
+- 本轮新准入: 9
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 1（N1，P3，D5 修复后同源矛盾，已修）
+- 处置: ① 9 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0
+- 确认轮修复: 2/2 批次（第一批 5 单元、第二批 1 单元；未开新修改轮）
+- 抽样: 10/49 冻结单元（20%；含 fallback/none 锚点）
+- 回读与回归: 文档七门绿（anchor 96/96、citation 21 checked/0 failed、structure/ref/style error=0/density、publication/tutorial 0 新增）；code-publication 48 文件 0 命中；cargo：minix-arch 266/0、minix-boot 188/0、minix-types 342/0、boot-shim 136/0、minix-vm 548/0、minix-kernel mock 866/0/8；QEMU：x86/aarch64 bootmarks PASS、riscv64 U-Boot shim PASS、rt-birth-riscv64 PASS；x86/aarch64 rt-birth 用户链为既有失败，登记 `D01-RT-BIRTH-USERCHAIN`（stage 级，不挡 D01）

@@ -1065,3 +1065,34 @@
     - rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md#1.4
     tests: []
     decisions: []
+- id: D01-RT-BIRTH-USERCHAIN
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: x86/aarch64 rt-birth 用户链残余（D01 射程外，stage 级跟踪）
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/FREEZE.md:71
+  origin_file: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/FREEZE.md
+  origin_line: 71
+  evidence: '2026-11-22 复核：`bash os/qemu-tests/test-rt-birth.sh` → FAIL，用户进程 8 在 0x140003254 取指后 SIGSEGV（`cause_sig: sig manager
+    8 gets lethal signal 11`）；在 c9f4e544c 的 独立 worktree 复跑得到同一日志，确认非本轮因果。`bash os/qemu-tests/test-rt-birth-aarch64.sh` → FAIL，EL0
+    Data Abort elr=0x140003628 far=0x7ffffffff000；FREEZE.md:71 已记录为既有 A2 遗留。D01 §5.4 的五条启动门不含这两个用户链脚本，故不阻断 D01。'
+  verified_by: session:d01-loop
+  verified_at: '2026-11-22'
+  aliases:
+  - RT-BIRTH-USERCHAIN
+  scope: stage
+  note: owner = 01-stage 的 rt-birth 用户链专项；D01 只负责 riscv64 的 I-43/A2 实验，两者已 PASS。
+  refs:
+    code:
+    - path: os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs
+    - path: os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs
+    - path: os/qemu-tests/test-rt-birth.sh
+    - path: os/qemu-tests/test-rt-birth-aarch64.sh
+    docs: []
+    tests: []
+    decisions: []
+  lifecycle:
+    created: '2026-11-22'
+    updated: '2026-11-22'

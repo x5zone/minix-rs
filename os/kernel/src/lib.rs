@@ -391,11 +391,11 @@ macro_rules! boot_stage {
 /// unrelated to the real cause. Same pattern as `PlacementPool`
 /// (`kernel-image/src/bootface_common.rs`) and `MapCounts`.
 ///
-/// Visibility follows the two functions that name it: both stay `pub` because
-/// the shim may call them separately (the documented post-root/pre-jump
-/// milestone split), so a `pub(crate)` type would trip
-/// `private_interfaces`. This is not a wire type — it never crosses an image
-/// boundary, it only carries the two locals between two adjacent calls.
+/// Visibility follows the single public entry: only `enter_kernel_image_v1`
+/// is `pub`; `PreparedJump`, `prepare_kernel_image_v1` and
+/// `jump_kernel_image_v1` stay private to this crate. This is not a wire type
+/// — it never crosses an image boundary, it only carries the two locals
+/// between two adjacent calls.
 #[cfg(all(
     not(feature = "mock"),
     any(
@@ -547,8 +547,8 @@ pub fn enter_kernel_image_v1(
 
 /// Absolute jump into the standalone image's high-half entry.
 ///
-/// Split from [`prepare_kernel_image_v1`] so the shim can print the
-/// post-root/pre-jump milestone on its own raw-serial path.
+/// Split from [`prepare_kernel_image_v1`] so `enter_kernel_image_v1` can
+/// keep preparation and the absolute jump as two internal steps.
 #[cfg(all(
     not(feature = "mock"),
     any(

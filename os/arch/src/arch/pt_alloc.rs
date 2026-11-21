@@ -32,9 +32,9 @@
 //! argument, not single-threaded access: the write happens during boot
 //! (single-threaded) or user-space VM init, before any concurrent read.
 
+use crate::paging::PageTableError;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use minix_types::{PhysBytes, VirBytes};
-use crate::paging::PageTableError;
 
 type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
 
@@ -83,10 +83,7 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
     // failure distinct from a genuine allocation failure so diagnostics point
     // at the boot wiring, not at memory exhaustion.
     let raw = PT_ALLOC.load(Ordering::Acquire);
-    assert!(
-        raw != 0,
-        "pt_alloc::alloc_pt_page called before register"
-    );
+    assert!(raw != 0, "pt_alloc::alloc_pt_page called before register");
     // SAFETY: `register()` stored a `PtAllocFn` value in this slot and the
     // slot is never replaced; `usize` and the function pointer have the same
     // width on every supported 64-bit target.
