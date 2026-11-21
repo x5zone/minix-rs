@@ -737,7 +737,7 @@ RISC-V 自引导面把跨距写成了常量 `0x40_0000`（4 MiB，`bootface.rs` 
     }
 ```
 
-- 三处通配各多收了一个族：`.rodata` 收 `.lrodata`、`.data` 收 `.ldata`、`.bss` 收 `.lbss`（rustc 对大块数据的只读/可写/BSS 拆分节）。三者都容易被漏掉；脚本注释记录过漏匹配的后果，但落点由链接器版本决定：孤儿节可能落在收口之前（不破坏 L5），也可能落在收口之后（把跨距推成非 2MiB 整数倍，L5 才红）。R4 之前 x86_64 工件的 `.lrodata.*` 就是未被 `.rodata` 通配收走的孤儿（986 个节、独立成一个 `PT_LOAD`，因落在收口之前而让 L5 通过）；本轮把三份脚本的归并补齐后，x86_64 的 `PT_LOAD` 从 5 个回到 4 个。
+- 三处通配各多收了一个族：`.rodata` 收 `.lrodata`、`.data` 收 `.ldata`、`.bss` 收 `.lbss`（rustc 对大块数据的只读/可写/BSS 拆分节）。三者都容易被漏掉；脚本注释记录过漏匹配的后果，但落点由链接器版本决定：孤儿节可能落在收口之前（不破坏 L5），也可能落在收口之后（把跨距推成非 2MiB 整数倍，L5 才红）。R4 之前 x86_64 工件的 `.lrodata.*` 就是未被 `.rodata` 通配收走的孤儿（986 个节、独立成一个 `PT_LOAD`）。旧工件的 `readelf -lW` 显示该孤儿段的 VMA=`0xffff800000290000`、LMA=`0x290000`，平移量与其它段一致，所以 L4 仍通过——GNU ld 对无 `AT()` 的孤儿段按相邻段继承 LMA 平移，不套用 §2.1 的“无 `AT()` 即 VMA=LMA”默认规则；该段又落在 2 MiB 收口之前，所以 L5 也通过。本轮把三份脚本的归并补齐后，x86_64 的 `PT_LOAD` 从 5 个回到 4 个。
 - `.bss` 里的三个符号各有用处：`__bss_start`/`__bss_end` 是入口汇编清零循环的边界（[`main.rs`](os/kernel-image/src/main.rs) 的 x86_64 序列用 `lea rdi, [rip + __bss_start]` 到 `lea rcx, [rip + __bss_end]`）；`kernel_boot_stack_bottom`/`kernel_boot_stack_top` 是 §3.3 说的 64 KiB 入口栈。
 - 末尾 `. = ALIGN(0x200000)` 落在 `.bss` 的括号里，加的是末段 `memsz`（§3.5）。
 - 上面这四个符号（`__bss_start`、`__bss_end`、`kernel_boot_stack_bottom`、`kernel_boot_stack_top`）都是普通符号，不是 `PROVIDE`：引用它们的程序如果编译了、而符号不存在，链接期就失败（[`main.rs`](os/kernel-image/src/main.rs) 的注释把这条写作 fail-fast）。
