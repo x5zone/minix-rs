@@ -137,10 +137,11 @@ impl X86_64TrapEntry {
 
     /// Set only the IST field of an existing gate (0-7).
     ///
-    /// `set_handler` writes IST=0; the two C-parity exceptions that run
-    /// on dedicated stacks — NMI (vector 2, IST1) and #DF (vector 8, IST2) —
-    /// get their IST re-applied after stub installation, now that the
-    /// per-CPU TSS programs the IST arrays.
+    /// `set_handler` writes IST=0; NMI (vector 2, IST1) and #DF (vector 8,
+    /// IST2) get their IST re-applied after stub installation, now that the
+    /// per-CPU TSS programs the IST arrays. The dedicated stack is a
+    /// long-mode mechanism difference, not a C parity claim:
+    /// [ARCH: IST replaces i386 same-stack nesting].
     pub(crate) fn set_gate_ist(&mut self, vector: u8, ist: u8) {
         self.idt[vector as usize].ist = ist & 0x7;
     }
@@ -203,7 +204,9 @@ impl TrapEntryArch for X86_64TrapEntry {
         // Handler addresses are placeholder 0 — must be set to actual trap
         // handler entry points before `load()` is called. The DPL and IST
         // values here match the C gate_table_exceptions[] / gate_table_pic[]
-        // configuration (protect.c:107-152; interrupt.h:31-35).
+        // configuration (protect.c:107-152; interrupt.h:31-35). The IST
+        // fields are the long-mode mechanism difference
+        // [ARCH: IST replaces i386 same-stack nesting].
         //
         // x86-64 exception vectors (0-14, 16-19):
         //   vectors 9 and 15 are reserved in 64-bit mode and intentionally omitted.

@@ -620,9 +620,10 @@ pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
             handler,
             user_accessible(vector),
         );
-        // C gate_table_exceptions parity: NMI and #DF run on dedicated IST
-        // stacks (IST1/IST2, programmed into the per-CPU TSS) — a
-        // gate with IST≠0 must not have it flattened by set_handler.
+        // Gate metadata (vector/DPL/kind) follows C's gate_table_exceptions;
+        // the dedicated stacks are the long-mode mechanism difference
+        // [ARCH: IST replaces i386 same-stack nesting]: NMI and #DF must not
+        // have their IST flattened by set_handler.
         match vector {
             2 => entry.set_gate_ist(2, 1),
             8 => entry.set_gate_ist(8, 2),

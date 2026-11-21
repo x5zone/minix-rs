@@ -267,11 +267,13 @@ impl X86_64Protection {
         // C (i386): iobase = sizeof(struct tss_s) = 104 (no I/O bitmap in 32-bit).
         // 64-bit TSS uses 0x8000 for consistency — any value >= TSS limit works.
 
-        // IST1 (NMI) / IST2 (#DF): per-CPU dedicated stacks — the shared IDT's
-        // gates for vectors 2/8 carry ist=1/2 (C gate_table_exceptions
-        // parity), and a gate with IST≠0 reads TSS.ist[ist-1] at delivery.
-        // Without these, the first NMI/#DF would switch to a null stack and
-        // triple-fault.
+        // IST1 (NMI) / IST2 (#DF): the gate metadata (vector, DPL, trap/
+        // interrupt kind) matches C's gate_table_exceptions; the dedicated
+        // stack is a long-mode mechanism difference, not a C parity claim:
+        // C's 32-bit TSS has no IST field and NMI/#DF nest on the
+        // interrupted stack. Consumers locate the interrupted RSP from the
+        // frame; a C watchdog-style `push %esp` shape must be rewritten if
+        // ported.
         self.tss[idx].ist[0] = ist_stack_top(0, idx);
         self.tss[idx].ist[1] = ist_stack_top(1, idx);
 
@@ -332,13 +334,20 @@ fn stamp_cpu_id(usable_top: u64, cpu_id: u32) {
 /// Per-CPU IST stacks: static, fixed-address, zero-heap —
 /// `IST_STACKS[slot][cpu]`, top = base + size. Slot 0 serves IST1 (NMI),
 /// slot 1 serves IST2 (#DF), matching the shared IDT's gate ist fields.
+///
+/// The array is wrapped in a 16-byte aligned type: the x86-64 psABI expects
+/// RSP ≡ 0 mod 16 at a call boundary, and `[u8; N]` alone only guarantees
+/// alignment 1. The top is `base + size` (8 KiB is 16-aligned), so aligning
+/// the base is sufficient.
 const IST_STACK_SIZE: usize = 0x2000; // 8 KiB per stack
-static IST_STACKS: [[[u8; IST_STACK_SIZE]; MAX_CPUS]; 2] =
-    [[[0; IST_STACK_SIZE]; MAX_CPUS]; 2];
+#[repr(align(16))]
+struct AlignedIstStacks([[[u8; IST_STACK_SIZE]; MAX_CPUS]; 2]);
+static IST_STACKS: AlignedIstStacks =
+    AlignedIstStacks([[[0; IST_STACK_SIZE]; MAX_CPUS]; 2]);
 
 fn ist_stack_top(slot: usize, cpu_id: usize) -> u64 {
     // Address-only computation on a static array; no dereference, no write.
-    let base = core::ptr::addr_of!(IST_STACKS[slot][cpu_id]) as *const u8 as usize;
+    let base = core::ptr::addr_of!(IST_STACKS.0[slot][cpu_id]) as *const u8 as usize;
     (base + IST_STACK_SIZE) as u64
 }
 
@@ -712,6 +721,20 @@ mod tests {
             | (((TSS64_ACCESS & 0xF0) | TSS64_BUSY_TYPE) as u64) << 40;
         // The guard fires before lgdt/ltr, so this is host-safe.
         prot.load_with_tss(0);
+    }
+
+    #[test]
+    fn ist_stacks_are_16_byte_aligned() {
+        assert_eq!(core::mem::align_of::<AlignedIstStacks>(), 16);
+        for slot in 0..2 {
+            for cpu in 0..MAX_CPUS {
+                assert_eq!(
+                    ist_stack_top(slot, cpu) % 16,
+                    0,
+                    "IST stack top must keep the psABI 16-byte alignment"
+                );
+            }
+        }
     }
 
     #[test]
