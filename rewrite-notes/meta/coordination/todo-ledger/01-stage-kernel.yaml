@@ -166,14 +166,16 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: DTB reserved-memory/no-map 源策略仍待与后续 I-29 轮次对账
-  status: open
+  status: closed
   severity: P2
   kind: design
   origin: rewrite-notes/01-stage-kernel/01-todo.md:339
   origin_file: rewrite-notes/01-stage-kernel/01-todo.md
   origin_line: 339
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: DTB reserved-memory/no-map 源策略仍待与后续 I-29 轮次对账
+  evidence: 当前文档 §3.3 与 resv_claims.rs 已给出 DTB /reserved-memory 与 no-map 策略：doc:1188 直核面 fw_end=0 仍保留 DTB reserved-memory；doc:1315
+    SourceRecord kind 覆盖 /reserved-memory；os/boot-shim/src/resv_claims.rs:3-6 写静态 /reserved-memory 与 MRB claims。无需另开 I-29
+    对账。
   verified_by: subagent:b1
   verified_at: '2026-11-21'
   aliases:
@@ -187,6 +189,9 @@
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#3.3
     tests: []
     decisions: []
+  lifecycle:
+    updated: '2026-11-22'
+    closed_by: D-108
 - id: D01-I-29-12
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -332,15 +337,15 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: G11 code-publication
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:137
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
   origin_line: 137
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: 'python3 -I tools/code-publication-check.py $(grep -vE ''^#|^$'' rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/related-code.txt)
-    => ''code-publication-check: 126 处新增违规（基线内 0 处）''，exit 1；tools/publication-baseline/code.txt 不存在'
+  evidence: code-publication-check 对 related-code 50 个 .rs 报“无新增违规”；28 文件注释清理 commit 045d5dbe5；cargo test -p minix-boot --lib
+    187/0、minix-kernel --features mock --lib 866/0/8、minix-types 342/0、boot-shim 136/0、minix-vm 通过。
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -354,19 +359,21 @@
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.5
     tests: []
     decisions: []
+  lifecycle:
+    updated: '2026-11-22'
+    closed_by: D-108
 - id: D01-RUN-R37-02
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: G13 tutorial-rubric
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:138
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
   origin_line: 138
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: python3 -I tools/tutorial-rubric-check.py rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md => '检查 6 章，6
-    章缺项'；逐章报缺项，合并集合为 TR-1/TR-2/TR-3/TR-4/TR-5（第 2、6 章的 TR-4 已满足），TR-6 全部未报
+  evidence: tutorial-rubric-check 6 章 0 缺项；六章各补 1.0 本章导读（TR-1..TR-6）；commit a0264a309；doc-publication 无新增违规。
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -380,19 +387,22 @@
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#1
     tests: []
     decisions: []
+  lifecycle:
+    updated: '2026-11-22'
+    closed_by: D-108
 - id: D01-RUN-R37-04
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: 本轮文档-only，未重跑五条真机门链
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:140
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
   origin_line: 140
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: git log --since=2026-11-21 --oneline 无 QEMU 相关提交；find tmp -newermt 2026-11-21 只有 e5-ds 串口日志与 e5d-uboot-riscv64-pass（05:27-06:24，早于重写提交
-    a69f389cb）；无 test-shim-bootmarks-x86/aarch64、test-riscv64-uboot、test-kernel-image-riscv64-bootface 的新日志
+  evidence: 五条真机门链 2026-11-22 重放：test-shim-bootmarks-x86 PASS、test-shim-bootmarks-aarch64 PASS、test-riscv64-uboot-shim PASS（6/6
+    markers）、test-kernel-image-riscv64-bootface PASS；test-riscv64-uboot 按 §5.4 允许 SKIP（exit 2，宿主 U-Boot 不兼容）。日志 tmp/d01-r38/qemu-gates.log。
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -407,6 +417,9 @@
       unit: '5.4'
     tests: []
     decisions: []
+  lifecycle:
+    updated: '2026-11-22'
+    closed_by: D-108
 - id: D01-RUN-R37-05
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap

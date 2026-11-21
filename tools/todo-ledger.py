@@ -104,17 +104,15 @@ def _row_in_scope(r: dict, doc: str | None, scope: str = "doc") -> bool:
         return True
     if scope == "coordination":
         return r.get("stage") == "coordination"
+    if scope == "stage":
+        return r.get("scope") == "stage"
     return _row_matches_doc(r, doc)
 
 
 def _row_matches_doc(r: dict, doc: str | None) -> bool:
     if doc is None:
         return True
-    if canon_doc(r.get("doc")) == canon_doc(doc):
-        return True
-    if r.get("scope") == "stage" and doc_stage(doc) is not None:
-        return r.get("stage") == doc_stage(doc)
-    return False
+    return canon_doc(r.get("doc")) == canon_doc(doc)
 
 
 def check_rows(
@@ -1033,7 +1031,7 @@ def main() -> int:
     c.add_argument("--fail-on-open", action="store_true")
     c.add_argument("--strict-refs", action="store_true",
                    help="open 项必须至少有一个强 ref（symbol/unit/test/decision）；缺失即 FAIL")
-    c.add_argument("--scope", choices=("doc", "coordination", "all"), default="doc",
+    c.add_argument("--scope", choices=("doc", "stage", "coordination", "all"), default="doc",
                    help="统计范围：doc=当前篇（默认）/coordination=跨阶段账本/all=全部")
     l = sub.add_parser("list")
     l.add_argument("--doc")

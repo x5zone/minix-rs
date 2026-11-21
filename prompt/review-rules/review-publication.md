@@ -150,6 +150,8 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 3. **新发现的 TODO 一律写入账本**，不得再往旧 markdown 追加。
 4. **门**：`python3 tools/todo-ledger.py check --doc <doc> --fail-on-open`——当前篇
    `status: open` 必须为 0；`closed` 必须有证据；`defer-approved` 必须有四要素。
+   `--doc` 只计 `scope: doc` 行；`scope: stage` 行用 `check --scope stage --fail-on-open`
+   单独检查，不因同 stage 其它篇的 stage 级债务阻断当前篇。
    引用漂移检查：`check --strict-refs` 会解析 `refs` 的文件/符号/文档单元/测试/判决行，
    并检查 `relations` 的悬空 ID 与环路；查询用
    `todo-ledger.py query --file/--symbol/--doc-unit/--status`。
