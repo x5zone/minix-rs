@@ -243,7 +243,6 @@ impl AcpiDesc {
         // Arch misc: store the ACPI tables physical address for debugging.
         let arch_misc = ArchMiscDesc {
             acpi_tables: Some(rsdp_phys),
-            pmu_cycle_counter: false,
         };
 
         // ── Per-architecture descriptor assembly ──

@@ -1252,7 +1252,7 @@ pub trait ClockArch: Sized + Send + Sync {
 |---|---|---|---|
 | `ClockArch`（`os/arch/src/arch/clock.rs`） | `&dyn TimerDesc` | 各架构的时钟地址与频率 | 瞬态（每个调用点构造一次、用完即弃） |
 | `InterruptRouter`（`os/plat/src/interrupt.rs`） | `&dyn InterruptControllerDesc` | 各架构的控制器基址与线数 | 长期（存进全局 `IRQ_MANAGER`） |
-| `ArchInit`（`os/arch/src/arch/arch_init.rs`） | `&ArchMiscDesc` | 架构杂项（`acpi_tables: Option<usize>` + `pmu_cycle_counter: bool`） | 瞬态 |
+| `ArchInit`（`os/arch/src/arch/arch_init.rs`） | `&ArchMiscDesc` | 架构杂项（`acpi_tables: Option<usize>`） | 瞬态 |
 
 RISC-V 的时钟实例是搬运的样本：
 
@@ -1996,10 +1996,7 @@ impl QemuVirtDesc {
                 bsp_id: 0,
                 cpus: [CpuInfo::zero(); MAX_CPUS],
             },
-            arch_misc: ArchMiscDesc {
-                acpi_tables: None,
-                pmu_cycle_counter: false,
-            },
+            arch_misc: ArchMiscDesc { acpi_tables: None },
         }
     }
 }

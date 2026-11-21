@@ -89,10 +89,7 @@ impl QemuVirtDesc {
                 bsp_id: 0,
                 cpus: [CpuInfo::zero(); MAX_CPUS],
             },
-            arch_misc: ArchMiscDesc {
-                acpi_tables: None,
-                pmu_cycle_counter: false,
-            },
+            arch_misc: ArchMiscDesc { acpi_tables: None },
         }
     }
 }

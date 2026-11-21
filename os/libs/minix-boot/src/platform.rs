@@ -321,8 +321,6 @@ impl CpuInfo {
 pub struct ArchMiscDesc {
     /// x86-64: ACPI tables physical address (if not via RSDP path).
     pub acpi_tables: Option<usize>,
-    /// ARM64: enable PMU cycle counter.
-    pub pmu_cycle_counter: bool,
 }
 
 /// Root platform descriptor trait — the unified abstraction.
