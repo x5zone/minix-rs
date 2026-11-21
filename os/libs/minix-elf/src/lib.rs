@@ -172,20 +172,19 @@ pub enum ElfError {
     InvalidSegment,
     /// A PT_LOAD segment's file bytes extend past the end of the image
     /// (`p_offset + p_filesz` overflows, or the end exceeds the image
-    /// length) — the image is truncated or corrupt (I-48 / D-084).
+    /// length) — the image is truncated or corrupt.
     SegmentOutOfBounds,
     /// A PT_LOAD segment declares more file bytes than memory bytes
     /// (`p_filesz > p_memsz`); copying it would write past the declared
-    /// memory image. Checked inside the iterator since I-48 / D-084 so
-    /// every consumer gets the overwrite guard (previously only the boot
-    /// path checked it).
+    /// memory image. Checked inside the iterator so every consumer gets
+    /// the overwrite guard, not just the boot path.
     FileszExceedsMemsz,
     /// A loader's destination buffer cannot hold a segment the image
     /// declares. `needed_end` is the byte offset one past the segment's
     /// destination extent (file or BSS end, whichever reached further)
     /// relative to the buffer base; `buf_len` is what the caller offered
-    /// (I-47 / D-089: the buffer loader must refuse the whole image before
-    /// writing any byte, mirroring C's sanity-check loop
+    /// (the buffer loader must refuse the whole image before writing any
+    /// byte, mirroring C's sanity-check loop
     /// `minix3/minix/lib/libexec/exec_elf.c:160-165`).
     TargetBufferTooSmall {
         needed_end: usize,
@@ -314,7 +313,7 @@ fn parse_phdr(image: &[u8], offset: usize, entsize: u16) -> Result<Elf64Phdr, El
 /// Created by [`segment_iter`]. Yields `Result<LoadSegment, ElfError>` in
 /// program header order (not sorted by paddr — the caller can sort if
 /// needed). A malformed program header surfaces as `Err`, never as a
-/// silent skip (I-48 / D-084); short-circuit on the first `Err`.
+/// silent skip; short-circuit on the first `Err`.
 ///
 /// # Example
 ///
@@ -371,16 +370,16 @@ impl<'a> Iterator for SegmentIter<'a> {
     /// program header as `Some(Err(..))`.
     ///
     /// Non-LOAD program header types are silently skipped — that is normal
-    /// filtering, not an error. Everything else that the old implementation
-    /// swallowed with a `continue` is a malformation (phdr-table arithmetic
-    /// overflow, unreadable phdr, segment file bytes past the image end,
-    /// `p_filesz > p_memsz`) and now comes out as `Some(Err(..))` (I-48 /
-    /// D-084: the old form made a corrupt image indistinguishable from
-    /// "fewer segments", so a mid-image failure produced a silently smaller
-    /// kernel/exec/VM image). After an error the scan continues from the
-    /// next program header; every `Ok` item is individually fully
-    /// validated, but a consumer that ignores `Err` items is still walking
-    /// a corrupt image — short-circuit on the first `Err`.
+    /// filtering, not an error. Everything else is a malformation
+    /// (phdr-table arithmetic overflow, unreadable phdr, segment file bytes
+    /// past the image end, `p_filesz > p_memsz`) and surfaces as
+    /// `Some(Err(..))`: a corrupt image must never look like "fewer
+    /// segments", because a mid-image failure would otherwise produce a
+    /// silently smaller kernel/exec/VM image. After an error the scan
+    /// continues from the next program header; every `Ok` item is
+    /// individually fully validated, but a consumer that ignores `Err`
+    /// items is still walking a corrupt image — short-circuit on the first
+    /// `Err`.
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < self.ehdr.e_phnum {
             let Some(entry_off) = (self.index as usize)
@@ -415,10 +414,9 @@ impl<'a> Iterator for SegmentIter<'a> {
                 return Some(Err(ElfError::SegmentOutOfBounds));
             }
             // A file image larger than the memory image would copy bytes
-            // past the declared range. Checked here — not per-consumer —
-            // since I-48 (D-084): every consumer gets the overwrite guard
-            // (previously only the boot path checked it, six other call
-            // sites did not).
+            // past the declared range. Checked here, not per-consumer:
+            // every consumer gets the overwrite guard; a per-caller check
+            // left six call sites unguarded.
             if phdr.p_filesz > phdr.p_memsz {
                 return Some(Err(ElfError::FileszExceedsMemsz));
             }
@@ -440,7 +438,7 @@ impl<'a> Iterator for SegmentIter<'a> {
 ///
 /// Convenience wrapper around `SegmentIter::new`. Each yielded item is
 /// `Ok(segment)` or `Err(..)` for a malformed program header — a malformed
-/// image must never silently look like "fewer segments" (I-48 / D-084).
+/// image must never silently look like "fewer segments".
 /// Non-LOAD phdr types are filtered silently (normal case).
 /// The caller should:
 /// 1. Copy `image[seg.offset..seg.offset+seg.filesz]` to `seg.paddr`

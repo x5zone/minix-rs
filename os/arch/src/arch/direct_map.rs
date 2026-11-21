@@ -57,9 +57,8 @@ pub trait DirectMapArch {
     /// Size in bytes of the VM-accessible Direct Map window.
     ///
     /// Invariant (asserted per architecture below): `VM_HEAP_BASE ==
-    /// VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE`. Previously hardcoded in
-    /// the VM server (`direct_map.rs`), which silently drifted on
-    /// architectures with a larger window.
+    /// VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE`. The size lives here, not in
+    /// the VM server, so a larger architecture window cannot drift silently.
     const VM_DIRECT_MAP_SIZE: u64;
 
     /// Size of the VM HeapArena region in bytes.

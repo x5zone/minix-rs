@@ -33,26 +33,21 @@
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: READER-C 11 条
-  status: open
+  status: historical
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:17
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
   origin_line: 17
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: follow-ups.md:17 D02-F10c 列 C-04/06/07/08/09/11/12/13/14/16（文字写 11 条）；:48 D02-F10 标 [CLOSED]「读者 36 条全部在 R4 表逐条
-    implemented/already-fixed/dup-of」；实际 R4 表（suggestions.md:20-72）是 READER-A/B/C-S* 另一族；grep 'FINDING READER-C-1[1-6]' panel/round1..round5
-    => 0 命中；defect-ledger.md:61 指向 panel/reader-c.md（v1 run，loop.md:33 记 READER-C 16 条），该文件不在树内
-  verified_by: subagent:b6
-  verified_at: '2026-11-21'
+  evidence: '`deputy-log.md` D02 裁决（2026-11-22）；`panel/round5/reader-c.md` 只有 C-01..C-08；`git grep ''READER-C-1[1-6]''` 在
+    D02 run 零命中；R5 42 根因全 ①（`loop.md` R5 §6）。'
+  verified_by: deputy:me
+  verified_at: '2026-11-22'
   aliases:
   - C-04
   scope: doc
-  note: 闭环声明不可核：ID 属 v1 run 且每轮 READER-C 编号复用，C-11..C-16 在任何现存 panel 文件都不存在；若指 v1 READER-C-04（§3.5「三个物理基址」未给数值），该句在 02-higher-half-kernel.md:857
-    原样保留（aarch64 物理基址 0x40200000 全篇未列）=> 候选仍未修；若指 round5 C-04（J2 范围限定）则已 CLOSED；需按重写后文本重核一次
-  blocked: true
-  blocked_reason: 核实未决：闭环声明不可核：ID 属 v1 run 且每轮 READER-C 编号复用，C-11..C-16 在任何现存 panel 文件都不存在；若指 v1 READER-C-04（§3.5「三个物理基址」未给数值），该句在
-    02-higher-half-kernel.md:857 原样保留（aarch64 物理基址 0x40200000 全篇未列）=> 候选仍未修；若指 round5 C-04（J2 范围限定）则已 CLOSED；需按重写后文本重核一次
+  note: v1 C 批次属已归档 v3 edition；C-11..16 无现存原文；v1 C-04 的“延迟页错误不可达”已由 R5 文本实质覆盖；§3.5 的 aarch64 值经核实为真且非承重。
   refs:
     code: []
     docs:
@@ -61,11 +56,14 @@
       unit: '3.5'
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-D02-F10
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: 父行被批处理漏掉，与 C-04 同一矛盾：36 条无逐条回执，计数 10(A)+13(B)+11(C)=34 与「36 条」也不符
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:14
@@ -73,16 +71,13 @@
   origin_line: 14
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: review
-  evidence: follow-ups.md:14 状态「下一篇闭环轮逐条复核」；:48 标 [CLOSED]「读者 36 条全部在 R4 表逐条 implemented/already-fixed/dup-of」；R4 表是 READER-*-S*
-    另一族；F10c 的 C-11..C-16 在 panel/round1..round5 零命中
-  verified_by: subagent:b6
-  verified_at: '2026-11-21'
+  evidence: '`deputy-log.md` D02 裁决；`WORKFLOW-VERSIONS.md:142` 四次改类；`suggestions.md:16-72` 为 S* 族；R5 42 根因全 ①。'
+  verified_by: deputy:me
+  verified_at: '2026-11-22'
   aliases:
   - D02-F10
   scope: doc
-  note: 父行被批处理漏掉，与 C-04 同一矛盾：36 条无逐条回执，计数 10(A)+13(B)+11(C)=34 与「36 条」也不符
-  blocked: true
-  blocked_reason: 核实未决：父行被批处理漏掉，与 C-04 同一矛盾：36 条无逐条回执，计数 10(A)+13(B)+11(C)=34 与「36 条」也不符
+  note: 36 是改类前旧数，现行 34 = A 11 + B 13 + C 10；R4 表是 S* 另一族；v3 edition 已归档，R5 重写重新覆盖。
   refs:
     code: []
     docs:
@@ -90,11 +85,14 @@
     - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#1
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-D02-F10a
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: D02-F10 的子行，随父行判定
-  status: open
+  status: closed
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:15
@@ -102,15 +100,14 @@
   origin_line: 15
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: review
-  evidence: follow-ups.md:15 A-01/02/03/04/05/06/07/09/11/12（10 条）标「闭环轮；优先 A-01/A-02/A-05」；无逐条 implemented 回执
-  verified_by: subagent:b6
-  verified_at: '2026-11-21'
+  evidence: D02 §6.2 第五组补 `(gdb) target remote :1234`，并限定工件为带符号的生产 ELF（`os/target/<target>/release/kernel`）；`gdb -batch -ex
+    'file …/kernel' -ex 'info functions kmain'` → `minix_kernel::kmain` @ `0xffff80000020bc10`；UEFI 载体的 stripped PE 限制已写明。
+  verified_by: deputy:me
+  verified_at: '2026-11-22'
   aliases:
   - D02-F10a
   scope: doc
-  note: D02-F10 的子行，随父行判定
-  blocked: true
-  blocked_reason: 核实未决：D02-F10 的子行，随父行判定
+  note: A-11 已按可运行命令修正；其余 9 条按 `deputy-log.md` D02 裁决关闭。
   refs:
     code: []
     docs:
@@ -118,11 +115,14 @@
     - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#1
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-D02-F10b
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: D02-F10 的子行，随父行判定
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:16
@@ -130,15 +130,13 @@
   origin_line: 16
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: review
-  evidence: follow-ups.md:16 B-01/02/03/05/06/07/08/09/10/11/12/13/14（13 条）标「教学债批次」；无逐条回执
-  verified_by: subagent:b6
-  verified_at: '2026-11-21'
+  evidence: '`deputy-log.md` D02 裁决；`follow-ups.md:16` 共 13 条；R5 的 B-01..B-16 全部 ①（`loop.md` R5 §6）。'
+  verified_by: deputy:me
+  verified_at: '2026-11-22'
   aliases:
   - D02-F10b
   scope: doc
-  note: D02-F10 的子行，随父行判定
-  blocked: true
-  blocked_reason: 核实未决：D02-F10 的子行，随父行判定
+  note: v1 B 13 条原文不可恢复；优先类 B-01/B-03/B-07 已由 R5 的 §3.1/§4.5/§5 结构改动覆盖；无现行可复现目标。
   refs:
     code: []
     docs:
@@ -146,19 +144,22 @@
     - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#1
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-R5-01
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: G11 code-publication
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:65
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
   origin_line: 65
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: 'python3 -I tools/code-publication-check.py $(grep -vE ''^#|^$'' rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/related-code.txt)
-    => ''code-publication-check: 73 处新增违规（基线内 0 处）''，exit 1；基线文件不存在'
+  evidence: '`python3 tools/code-publication-check.py <30 个 related-code>` → 命中 0、无新增违规；30 文件 `grep -nP ''//.*[\x{4e00}-\x{9fff}]''`
+    → 0 行。'
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -172,19 +173,21 @@
     - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.1
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-R5-02
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: G13 tutorial-rubric
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:66
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
   origin_line: 66
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: python3 -I tools/tutorial-rubric-check.py rewrite-notes/01-stage-kernel/02-higher-half-kernel.md => '检查 6 章，6
-    章缺项'；每章 TR-1..TR-6 全缺（TR-6 报「无篇末术语表，也无章内术语小节」）
+  evidence: '`python3 tools/tutorial-rubric-check.py rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` → `检查 6 章，0 章缺项`。'
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -198,18 +201,21 @@
     - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.1
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-R5-04
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: 本轮文档-only，未重跑 `test-higher-half` 与三架构门
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:68
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
   origin_line: 68
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: 无 test-higher-half 或三架构门的新日志：find tmp -newermt 2026-11-21 仅 e5-ds 与 e5d-uboot-riscv64-pass；follow-ups.md:68 自述「本轮文档-only」
+  evidence: '`test-higher-half` x86_64/aarch64/riscv64 三腿均 PASS；`bash os/kernel-image/check-layout.sh all` → `CHECK-LAYOUT=PASS（all）`。'
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -223,18 +229,22 @@
     - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.2
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-R5-05
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: 面板与 certify 均为 deepseek-v4.1-flash 冷启动实例
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:69
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
   origin_line: 69
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: follow-ups.md:69 原文「面板与 certify 均为 deepseek-v4.1-flash 冷启动实例」
+  evidence: '`opencode/hy4-flash-free` 免费模型完成 5 条断言复核：C1/C3/C4 CONFIRM；C2/C5 REFUTE 仅针对断言包措辞（C2 的 AT() 写法数学等价；C5 的 PC 判据按架构分裂），文档与源码自洽；模型结论“必须改代码/文档：无”。见
+    `runs/01-stage-kernel/02-higher-half-kernel/crosscheck/round39-free.md`。'
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -248,19 +258,22 @@
     - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.2
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-RUN-R5-06
   stage: 01-stage-kernel
   doc: 02-higher-half-kernel
   title: certify 观察
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:71
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
   origin_line: 71
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: os/kernel/src/lib.rs:1359-1363 与 :1386-1388 仍写「第二次 map_huge 重写同叶返回 Ok；AlreadyMapped 只在 1 GiB 叶」；os/arch/src/x86_64/paging.rs:1325、os/arch/src/arm64/paging.rs:1247、os/arch/src/riscv64/paging.rs:1249
-    均在 2 MiB 槽已 present 时返回 AlreadyMapped
+  evidence: '`os/kernel/src/lib.rs` 的 Step 1 注释改为“已 present 的 2 MiB 叶返回 AlreadyMapped”；`rg ''AlreadyMapped only appears when''
+    os/kernel/src/lib.rs` 归零。'
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -278,6 +291,9 @@
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
     tests: []
     decisions: []
+  lifecycle:
+    created: '2026-11-21'
+    updated: '2026-11-22'
 - id: D02-ARCH-todo-V11-archive-2026-09-08
   stage: 02-stage-vm
   doc: 02-stage-vm

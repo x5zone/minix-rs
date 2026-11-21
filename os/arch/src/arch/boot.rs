@@ -2,10 +2,9 @@
 //!
 //! Defines the single arch-level abstraction for "build a process's initial
 //! CPU context" and "apply that context to a trap frame". Also defines the
-//! shared `load_vm_elf` free function (the three architectures'
-//! implementations were previously byte-for-byte identical — see
-//! `06-proc-init-boot-proc.md` §3.5 for the rationale for collapsing the
-//! older 3-trait hierarchy into a single trait + one free function).
+//! shared `load_vm_elf` free function (the three architectures share one
+//! implementation — see `06-proc-init-boot-proc.md` §3.5 for the rationale
+//! for a single trait + one free function).
 //!
 //! # Why `CpuContextArch` (and not `BootArch`)
 //!
@@ -482,7 +481,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // it enters the VM address space.
     for seg_result in iter {
         // A malformed program header must fail the load, not silently map a
-        // truncated image (I-48 / D-084).
+        // truncated image.
         let seg = seg_result.map_err(|_| VmLoadError::InvalidElf)?;
         let flags = elf_flags_to_page_flags(seg.flags);
         let page_mask = page_size - 1;
@@ -659,9 +658,8 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // C kernel seeds 64 KiB and lets VM self-grow (reservedqueue.mappedin);
     // we lack the self-grow, so the eager runway IS the whole allowance
     // (see VM_STACK_SIZE doc above for the rationale).
-    // v10 (D-062): the value is derived, not received. It was a wire
-    // scalar (`KernelInfo.user_sp`) that every producer filled with this
-    // same compile-time constant.
+    // The value is derived, not received: it is a compile-time constant,
+    // not a wire scalar (`KernelInfo.user_sp`) filled by every producer.
     let stack_high = minix_types::USER_STACK_TOP;
     // Defensive: a lower stack top would clamp the window to [0, stack_high)
     // rather than underflowing the subtraction (the constant is
@@ -821,8 +819,8 @@ pub fn load_process_elf<P: Paging, A: PhysAccess>(
     //    boot-phase contract (no global allocator; UEFI identity or DM
     //    coverage of the root page) is the same phase this function runs
     //    in — alongside `load_vm_elf` at boot.
-    // I-59 A' (D-094): this call site runs AFTER step 4 established the
-    // Direct Map (covering the whole memmap), so the root frame — allocated
+    // This call site runs AFTER step 4 established the Direct Map
+    // (covering the whole memmap), so the root frame — allocated
     // here from the VM free list, outside the minimal identity windows —
     // is reachable through the kernel Direct Map.
     let mut paging = P::new_from_page(root, PteChannel::KernelDm);

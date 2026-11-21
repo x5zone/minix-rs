@@ -483,9 +483,8 @@ pub fn ipc_status_register(_ctx: &CurrentCpuContext) -> u64 {
     0
 }
 // (syscall_entry_va for aarch64/riscv64 lives in the per-arch cfg blocks
-// above — the merged `any(aarch64, riscv64)` stub returning 0 was removed
-// with E-3ARCHTRAP: returning a fake entry address masked the fact that no
-// production trap legs existed.)
+// above; a merged stub returning 0 would mask the absence of a production
+// trap leg.)
 
 /// Register the kernel-side trap/syscall dispatch bodies with the x86-64
 /// entry stubs (see `x86_64::trap_stub` for the gate rationale). Must run

@@ -402,3 +402,44 @@
 - 根因已定位：测试的 `KernelInfo.platform_sources` 为空，DTB（0x8fe00000）不在任何 identity window；Phase A.5 的 `parse_by_kind` 触发 load page fault，OpenSBI 重启 payload。`.data` 中的 `BUMP_PTR` 不被 `_start` 的 BSS 清零，跨重启累加，最终 bump(256) 失败。
 - 修正：把 DTB 声明为 platform source；A2 读取 user-accessible 的 handoff 页前设 `sstatus.SUM`；按生产顺序先 `store_kernel_info`。
 - 结果：`bash os/qemu-tests/test-rt-birth-riscv64.sh` → PASS，五个用户态标记全命中。A2 自由集为 [0x80000000,0x80200000)、[0x80400000,0x81000000)、[0x81001000,0x82200000)、[0x82301000,0x8fe00000)；BSP 栈 0x803a2108..0x803b2108、U-ecall 栈 0x803ff000..0x80400000，交集为空。I-43/rt-birth-sp 关闭。
+
+---
+
+## D02 旧账阻断项裁决（2026-11-22，me-agent 冷启动，仅加载 prompt/me.md）
+
+### CASE D02-RUN-C-04 — 关闭（historical）
+
+- **decision**：`historical`，不要求补做复核。
+- **basis**：v1 C 批次属已归档 v3 edition；C-11..16 无现存原文；v1 C-04 的“延迟页错误不可达”已被 R5 文本实质覆盖；§3.5 的 aarch64 值经核实为真且非承重。
+- **evidence**：`panel/round5/reader-c.md` 只有 C-01..C-08；`git grep 'READER-C-1[1-6]'` 在 D02 run 零命中；`meta/02-higher-half-kernel-review.md:69` 记 v1 C-04 为延迟页错误；R5 42 根因全 ①。
+- **最强反方**：关闭“闭环声明不可核”的行会让假回执留在账上。裁决：`historical` 是拒绝背书旧声明，不是认证它；现行权威是 R5 回执与 TODO 账本。
+- **回退动作**：若找回 v1 C 原文并在现文复现活缺陷，或作者要求内联 aarch64 值，补 §3.5 三基址后按 closed 结案，不重开旧批次。
+
+### CASE D02-RUN-D02-F10 — 关闭（historical）
+
+- **decision**：`historical`。
+- **basis**：36 是改类前旧数；现行 34 = A 11 + B 13 + C 10；R4 表是 `READER-*-S*` 另一族；“全部在 R4 表逐条”按字面为假；v3 edition 已归档，R5 重写重新覆盖。
+- **evidence**：`follow-ups.md:14/:48`；`suggestions.md:16-72` 为 S* 族；`WORKFLOW-VERSIONS.md:142` 四次改类；R5 42 根因全 ①。
+- **最强反方**：父行记录的是审计失败，关闭等于合法化假回执。裁决：`historical` 只是降为旧 edition 记录；若作者要清 `follow-ups.md:48` 的措辞，按“34 条转出（A 11 + B 13 + C 10）”改，不重开 review。
+- **回退动作**：找回 v1 A/B/C 原件并在现文复现时，开现行 edition 的新行，不复活父行。
+
+### CASE D02-RUN-D02-F10a — 补做具体复核（仅 A-11）
+
+- **decision**：保留 open；只留 A-11（§6.2 第五组缺 `target remote :1234` 或未明示指向 01 §6.4 的连接行），其余 9 条按重写/已修关闭。
+- **basis**：A-11 是唯一能在现文复现的活项；其余 9 条目标已改或不存在。一次 QEMU/GDB 重放即可判，不属于新增 defer。
+- **evidence**：`follow-ups.md:15`；`meta/02-higher-half-kernel-review.md:69`；HEAD §6.2 第五组无 `target remote`；01 篇 §6.4 有连接行。
+- **执行**：主 session 已补 `(gdb) target remote :1234` 并限定工件为带符号生产 ELF；`gdb -batch -ex 'file …/kernel' -ex 'info functions kmain'` 命中 `0xffff80000020bc10`。UEFI 载体 stripped PE 的限制已写明。
+- **回退动作**：若重放仍不能连上或 `kmain` 断点不命中，按 §6.2 的地址法（`nm` 取地址下硬件断点）修正。
+
+### CASE D02-RUN-D02-F10b — 关闭（historical）
+
+- **decision**：`historical`。
+- **basis**：v1 B 13 条原文不可恢复；优先类 B-01/B-03/B-07 已由 R5 的 §3.1/§4.5/§5 结构改动覆盖；无现行可复现目标。
+- **evidence**：`follow-ups.md:16` 共 13 条；`meta/02-higher-half-kernel-review.md:41`；R5 的 B-01..B-16 全部 ①。
+- **最强反方**：重写不等于新文本没有同类问题。裁决：优先类已逐处覆盖；剩余 P3 文风噪声无原文可核，不能把“不可核”当“有缺陷”。
+- **回退动作**：找回具体 B 项并在现文复现时，开现行 edition 的 P3 行，写锚点与最小修复。
+
+### 附带记录
+
+- R5 defect-ledger 的 C 组 ID 错位：`RD-R5-030/032/034` 的来源 ID 与 panel/round5 对不上（实质已修）；按现行 edition 做一次台账 ID 校正，不重开 review。
+- §3.5 的 aarch64 物理基址已内联为 `0x40200000`（另列 riscv64 `0x80200000`、x86_64 `0x200000`），满足教学自包含。

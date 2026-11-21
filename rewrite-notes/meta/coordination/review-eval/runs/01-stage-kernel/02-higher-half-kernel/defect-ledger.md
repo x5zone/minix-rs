@@ -391,3 +391,5 @@
 | RD-R5-040 | CLAIM-04 | R5 | refute | P1 | 事实/Step2 | ① | 同 FACT-04 | §4.3；panel/round5/refute.md | CLAIM-04 修复点回读：同 FACT-04；独立回执见 certify 同轮文件 |
 | RD-R5-041 | CLAIM-05 | R5 | refute | P1 | 事实/Step1 窗口 | ① | §4.3 Step 1 窗口清单补调用者栈窗口（SP 向上、4 MiB 下、2 MiB 对齐） | §4.3；panel/round5/refute.md | CLAIM-05 修复点回读：§4.3 Step 1 窗口清单补调用者栈窗口（SP 向上、4 MiB 下、2 MiB 对齐）；独立回执见 certify 同轮文件 |
 | RD-R5-042 | CLAIM-06 | R5 | refute | P2 | 事实/L9 覆盖 | ① | §3.1 注明 x86_64 走 bootface.rs 分支只为共享常量，不存在直核面 | §3.1、§4.5；panel/round5/refute.md | CLAIM-06 修复点回读：§3.1 注明 x86_64 走 bootface.rs 分支只为共享常量，不存在直核面；独立回执见 certify 同轮文件 |
+
+> 台账 ID 校正（2026-11-22，me-agent 核对）：RD-R5-030 的来源应为 `READER-C-04`（EBS 次序），RD-R5-032 的来源应为 `READER-C-06`（J2 范围）；`READER-C-02`（J3 首现场）由 §2.4/§3.6 的重写覆盖，旧行号不可逐字回溯。实质修复状态与 R5 回执不变。

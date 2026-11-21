@@ -1364,12 +1364,14 @@ fn build_bootstrap_root_and_enable<A: BootArch>(
                 id_flags
             };
             // `map_huge` never probes physical memory, so an unbacked hole
-            // cannot produce an error. Overlapping 2 MiB windows rewrite the
-            // same leaf and return Ok; `AlreadyMapped` only appears when the
-            // slot already holds a 1 GiB leaf. Step 1's fresh root never
-            // creates one, so the arm is defensive; every other error,
-            // including `AllocationFailed`, fails closed here instead of
-            // surfacing at the first instruction fetch after enable().
+            // cannot produce an error. An overlapping 2 MiB window that lands
+            // on an already-present 2 MiB leaf returns `AlreadyMapped`; the
+            // arm below accepts it because rewriting the same window is
+            // harmless. A present 1 GiB leaf is the other possible conflict.
+            // Step 1's fresh root never creates one, so the arm is defensive;
+            // every other error, including `AllocationFailed`, fails closed
+            // here instead of surfacing at the first instruction fetch after
+            // enable().
             match paging.map_huge(
                 VirBytes(addr),
                 PhysBytes(addr),

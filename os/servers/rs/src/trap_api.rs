@@ -442,7 +442,7 @@ impl PmApi for TrapKernelApi {
         let mut copied_any = false;
         for seg_result in minix_elf::segment_iter(exec).map_err(|_| Errno::ENOEXEC)? {
             // A malformed program header must reject the exec, not silently
-            // load a truncated image and run it (I-48 / D-084).
+            // load a truncated image and run it.
             let seg = seg_result.map_err(|_| Errno::ENOEXEC)?;
             let src = &exec[seg.offset as usize..(seg.offset + seg.filesz) as usize];
             syscall::sys_datacopy(
@@ -619,8 +619,8 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint> {
-        // DS lookup reuses the process's main grant table (DsClient no longer
-        // keeps a private table; otherwise its registration would overwrite the
+        // DS lookup reuses the process's main grant table (DsClient keeps no
+        // private table; otherwise its registration would overwrite the
         // kernel's `s_grant_table` and diverge from `self.grants`, which this
         // struct's `grant_read` uses — same root cause as VFS).
         self.ds

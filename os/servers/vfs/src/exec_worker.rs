@@ -1148,11 +1148,11 @@ fn vm_mmap<T: IpcTransport>(
         //     semantics as C `do_mmap`), so a region produced with PRIVATE
         //     carried matches C bit for bit (C does not pass the bit but does
         //     not validate it either).
-        // Measured on a real machine: the old code had no THIRDPARTY and, after
-        // PRIVATE was carried, mmap no longer returned EINVAL (it passed
-        // is_valid) but still landed in the wrong object → child empty →
-        // `exec_via` instruction fetch noaddr → PM↔VFS ping-pong livelock; only
-        // after THIRDPARTY was added was the image really loaded into the child.
+        // Measured on a real machine: without THIRDPARTY, mmap passed
+        // is_valid (PRIVATE was carried) but landed in the wrong object →
+        // child empty → `exec_via` instruction fetch noaddr → PM↔VFS
+        // ping-pong livelock; only with THIRDPARTY was the image really
+        // loaded into the child.
         m.flags = (map_flags::ANON
             | map_flags::FIXED
             | map_flags::PRIVATE

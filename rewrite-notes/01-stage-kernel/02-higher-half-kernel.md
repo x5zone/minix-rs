@@ -5,6 +5,50 @@
 
 ## 1. 概述
 
+### 1.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 说出内核镜像的四个时刻（链接、摆放、映射、进入），以及每个时刻的输入与产物。
+- 用 J1–J4 四条不变量判断一次高半启动是否成立。
+- 区分“符号值”与“可访问地址”：前者在链接期确定，后者要等页表建立。
+
+#### 前置概念
+
+- ELF 的 `PT_LOAD`、`p_vaddr`、`p_paddr`、`p_filesz`、`p_memsz` 的基本含义。
+- 分页的最小直觉：虚拟地址要经过页表才能访问物理页；本章不要求会写页表项。
+
+#### 最小示例
+
+```bash
+# 链接脚本给出一对基址；两者之差就是平移量（§1.1）
+$ grep -n 'KERNEL_HIGH_BASE\|KERNEL_PHYS_BASE' os/kernel-image/x86_64.ld
+# 内核侧的建根入口；四个时刻在这里汇合（§1.2）
+$ grep -n 'fn arch_boot_impl' os/kernel/src/lib.rs
+```
+
+第一条给出高半 VMA 与物理基址，第二条给出“建表并进入”的代码位置；J1/J3 的判据都围绕这两处读。
+
+#### 失败对照
+
+如果把“符号值已经是高半 VMA”误当成“现在就能从高半取指”，就会在页表尚未建立时跳到 `kmain`：取指地址正确，但没有页表把它接到物理页，CPU 在第一个高半指令上取指失败。J3 要求映射先于进入，正是为了避免这种“地址对、时刻错”的故障。
+
+#### 小结
+
+- 同一份镜像经过链接、摆放、映射、进入四个时刻，前一时刻的产物是后一时刻的输入。
+- J1 管平移一致，J2 管跨距与粒度，J3 管映射先于进入，J4 管换栈与跳转成对。
+- 符号值在链接期确定，可访问性在页表建立后才成立。
+
+#### 术语
+
+- **VMA / LMA**：段的执行地址与装载地址；`p_vaddr` 与 `p_paddr` 分别描述它们。
+- **平移量**：同一组段里 `vaddr − paddr` 的公共差值；C 侧用 `_kern_offset` 表示。
+- **高半 / 低半**：内核执行地址所在的高地址区间，与物理内存所在的低地址区间相对。
+- **恒等映射**：虚拟地址等于物理地址的一段映射，用于分页开启前的取指与数据访问。
+- **换栈**：进入高半前把 SP 从低半栈切到高半栈的动作。
+
 ### 1.1 镜像的四个时刻
 
 同一份内核镜像要经过四个时刻，才会从“磁盘上的 ELF 文件”变成“高半地址上运行的 `kmain`”：
@@ -54,6 +98,49 @@ J1 与 J2 是静态布局的性质，镜像还没运行就能检查；其中 J1 
 ---
 
 ## 2. C 源码分析
+
+### 2.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 读懂 `kernel.lds` 的双地址布局：哪些段在低半执行，哪些段只按低半 LMA 摆放。
+- 说明 `head.S` 的一次跳转里，取指地址、栈指针与页表各自处在什么状态。
+- 复述建表五步与位表，指出每一步失败时会在哪个时刻暴露。
+
+#### 前置概念
+
+- 第 1 章的四个时刻与 J1–J4。
+- x86-32 的段式寻址与分页开关的基本区别；本章只要求能读懂链接脚本与汇编的地址表达式。
+
+#### 最小示例
+
+```bash
+# 低半执行段与高半段的交界；`_kern_offset` 是两组的平移量（§2.1）
+$ grep -n '_kern_offset\|\.unpaged_' minix3/minix/kernel/arch/i386/kernel.lds
+# 引导汇编里唯一一次从低半跳到高半的入口（§2.3）
+$ sed -n '/multiboot_init:/,+20p' minix3/minix/kernel/arch/i386/head.S
+```
+
+第一条给出 `unpaged` 段与高半段的地址安排，第二条给出跳转前后 SP/PC 的写法；两者合起来才是“布局 → 摆放 → 映射 → 进入”的 C 侧证据。
+
+#### 失败对照
+
+如果高半段没有 `AT()` 把装载地址压回低半，链接器会把段体按 VMA 摆到高地址；外部装载器按 `p_paddr` 写到同样高的物理地址，而分页开启前的低半执行面没有这些字节。症状是分页刚开启就取指失败，但故障地址看起来“完全正确”——错的是装载地址，不是虚拟地址。
+
+#### 小结
+
+- C 用 `unpaged` 段保证分页开启前的执行面，用 `AT()` 把高半段的段体压回低半 LMA。
+- `head.S` 的跳转同时完成取指地址切换与栈指针切换；两者缺一，症状不同。
+- 建表五步的次序是 J3 的 C 侧原型：映射先于进入。
+
+#### 术语
+
+- **unpaged 段**：分页开启前必须能执行的代码与数据；链接在低半，VMA 等于 LMA。
+- **`AT()`**：链接脚本里给输出段指定 LMA 的表达式；只改 `p_paddr`，不改 `p_vaddr`。
+- **`k_initial_stktop`**：C 侧高半初始栈顶符号；换栈后 SP 落在它上面。
+- **位表**：建表五步里描述页表项权限与粒度的位组合。
 
 ### 2.1 kernel.lds：双地址与 `AT()`
 
@@ -523,6 +610,50 @@ Rust 侧不再用链接符号给出 `kmain` 用的栈顶（入口 `_start` 仍�
 ---
 ## 3. Rust 设计决策
 
+### 3.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 说出 Rust 侧三种链接形态，以及每种形态由谁按装载地址摆放段体。
+- 解释为什么 ELF 解析器要自建，而不是复用 C 的 `exec_elf.c`。
+- 把栈顶、镜像跨距、大页能力、自举根与成对跳转分别落到 J1–J4 的哪一条。
+
+#### 前置概念
+
+- 第 2 章的 C 侧布局与建表五步。
+- Rust 的 trait、泛型与 `const` 基本用法；本章不要求读懂所有实现细节。
+
+#### 最小示例
+
+```bash
+# 生产镜像脚本的基址常量；三种形态的第一种（§3.1）
+$ grep -n 'KERNEL_HIGH_BASE\|KERNEL_PHYS_BASE' os/kernel-image/x86_64.ld
+# 自建解析器的入口；宿主测试与三个消费者共用（§3.2）
+$ grep -n 'pub fn segment_iter' os/libs/minix-elf/src/lib.rs
+```
+
+第一条确认生产镜像带 `AT()` 与低半 LMA，第二条确认解析器是仓内单一实现；后续的栈顶、跨距与跳转都建立在这两处之上。
+
+#### 失败对照
+
+如果把生产镜像的 `AT()` 脚本直接套到测试载体上，载体的链接地址与装载地址会同时被改写，而载体没有外部装载器去读 `p_paddr`；结果是“脚本看起来更统一，运行时却按错误地址取指”。三种形态必须按“谁摆放”选择，不能按“看起来是否整齐”选择。
+
+#### 小结
+
+- 三种链接形态分别对应外部装载、载体自执行与工具链默认布局；选择依据是“谁读 `p_paddr`”。
+- 自建 ELF 解析器把装载语义收进一个 crate，宿主测试与三个消费者共用同一套错误集。
+- 栈顶是派生值，镜像跨距要满足映射粒度，自举根在活动根上追加，跳转与换栈成对收进 trait。
+
+#### 术语
+
+- **三种形态**：生产镜像带 `AT()`、载体单地址脚本、载体工具链默认布局。
+- **`SegmentIter`**：自建 ELF 解析器对 `PT_LOAD` 的迭代器；错误以 `Err` 出现，不静默跳过。
+- **`kern_stack_top`**：由 `kern_virt_base + kern_size` 派生的栈顶，不再作为 wire 标量传递。
+- **自举根**：分页开启时使用的第一张根页表；后续 Direct Map 在它上面追加映射。
+- **成对跳转**：换栈与跳 PC 必须一起完成，且不返回。
+
 ### 3.1 链接脚本按“谁按装载地址摆放”分三种形态
 
 C 侧的负担：内核镜像有两个地址，而"按装载地址摆放"这件事由内核之外的代码执行——`AT()` 表达式把期望的装载地址写进 ELF 的 `p_paddr` 字段，装载器读它。Rust 侧这个外部角色有两个候选：一个外部装载器（UEFI 路径的 boot-shim 从文件系统读 `kernel.elf`，或 U-Boot 预载后交给 boot-shim），以及**自引导形态的引导器**（RISC-V：U-Boot 的 `bootelf` 或 `-kernel` 直载按 `p_paddr` 摆放镜像——摆放者是引导器；镜像本身是引导体，但不重拷自己的段，§4.5）。谁读 `p_paddr`，谁就需要脚本里有一个低地址的 LMA；没有读者的时候，脚本多写一套地址只会多一处需要维护的不变量。
@@ -650,10 +781,10 @@ pub struct LoadSegment {
 | `e_phoff` / `e_phentsize` / `e_phnum` | 32 / 54 / 56 | `SegmentIter::new` 的表范围检查与步进 |
 | `p_type` / `p_flags` / `p_offset` / `p_vaddr` / `p_paddr` / `p_filesz` / `p_memsz` | 0 / 4 / 8 / 16 / 24 / 32 / 40 | `parse_phdr` 逐字段读取（`p_align` 在偏移 48，无读者，不读） |
 
-迭代器在 `next()` 里做类型过滤与范围检查：只有非 `PT_LOAD` 类型过滤走 `continue`（正常过滤），其余表项范围与段形失败都以 `Some(Err(..))` 浮出。`SegmentIter::new` 与 `parse_phdr` 的表范围算式仍是未检查加法（D2-01：debug 下 panic，release 下可能回绕后再由 `next()` 报 `Err`）（`lib.rs` 的 [`impl Iterator for SegmentIter`](os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter)）：
+迭代器在 `next()` 里做类型过滤与范围检查：只有非 `PT_LOAD` 类型过滤走 `continue`（正常过滤），其余表项范围与段形失败都以 `Some(Err(..))` 浮出。`SegmentIter::new` 与 `parse_phdr` 的表范围算式仍是未检查加法（D2-01：debug 下 panic，release 下可能回绕后再由 `next()` 报 `Err`）（`lib.rs` 的 [`fn next`](os/libs/minix-elf/src/lib.rs:fn next)）：
 
 ```rust
-/* 节选（保留 next() 的类型过滤与四类 Err 返回；注释有改写；省略号处为返回值构造），os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter。 */
+/* 节选（保留 next() 的类型过滤与四类 Err 返回；注释有改写；省略号处为返回值构造），os/libs/minix-elf/src/lib.rs:fn next。 */
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < self.ehdr.e_phnum {
             let Some(entry_off) = (self.index as usize)
@@ -716,10 +847,10 @@ pub struct LoadSegment {
 
 C 侧的负担：`k_initial_stktop` 是一个链接符号，`head.S` 用一条绝对立即数指令把它的值写进 `%esp`（§2.3）。这个做法把"栈顶是多少"与"链接脚本怎么摆段"绑在一起：换一个布局，符号值跟着变。Rust 侧如果照搬，内核就要在源码里声明一个外部链接符号，而"内核被链接进谁"有三种形态（§3.1）——符号的值在每种形态下由不同的脚本决定，且测试载体根本没有这个符号。
 
-改为按值派生：栈顶派生只需要两个值——`KernelInfo.kern_virt_base` 与 `KernelInfo.kern_size`（wire 另带 `kern_phys_base` 作为第三个布局标量；它不是栈顶算式的一部分）；栈顶由消费点在需要时现算（`kernel_info.rs` 的 [`impl KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo) 的 [`fn kern_stack_top`](<os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top>)）。wire v10 之前这里曾是一个独立字段 `kern_stack_top`，每腿都要填 `kern_virt_base + kern_size`；该字段与另外两个派生标量（`user_sp`/`syscall_entry`）一起删除，公式只留下访问器这一份，不再需要发送侧/接收侧锁步：
+改为按值派生：栈顶派生只需要两个值——`KernelInfo.kern_virt_base` 与 `KernelInfo.kern_size`（wire 另带 `kern_phys_base` 作为第三个布局标量；它不是栈顶算式的一部分）；栈顶由消费点在需要时现算（`kernel_info.rs` 的 `impl KernelInfo` 的 [`fn kern_stack_top`](<os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top>)）。wire v10 之前这里曾是一个独立字段 `kern_stack_top`，每腿都要填 `kern_virt_base + kern_size`；该字段与另外两个派生标量（`user_sp`/`syscall_entry`）一起删除，公式只留下访问器这一份，不再需要发送侧/接收侧锁步：
 
 ```rust
-/* 节选（保留访问器体），os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo。 */
+/* 节选（保留访问器体），os/libs/minix-boot/src/kernel_info.rs（`impl KernelInfo`）。 */
     pub fn kern_stack_top(&self) -> VirBytes {
         VirBytes(
             self.kern_virt_base
@@ -801,10 +932,10 @@ pub trait HugePages: Paging {
 | 另立一个只服务 boot 的 `PageTableBoot` trait | 与 `Paging::map/query` 重复——同一套硬件操作出现两个 trait，调用方要同时满足两个 bound |
 | 不定义 trait，直接把 `map_huge` 写成具体类型的方法 | boot 路径无法用泛型统一三种架构；`arch_boot_impl<A>` 的 `A::Paging` 会退化成三个 `#[cfg]` 分支 |
 
-x86-64 的实现给出这套设计的两个可核对点（`paging.rs` 的 [`impl HugePages for X86_64Paging`](<os/arch/src/x86_64/paging.rs:impl HugePages for X86_64Paging>) 的常量与 `fn map_huge`）；标识位不出现在常量里，而是在 `map_huge` 内取局部：
+x86-64 的实现给出这套设计的两个可核对点（`paging.rs` 的 [`fn map_huge`](<os/arch/src/x86_64/paging.rs:fn map_huge>) 的常量与 `fn map_huge`）；标识位不出现在常量里，而是在 `map_huge` 内取局部：
 
 ```rust
-// 代码引用，os/arch/src/x86_64/paging.rs:impl HugePages for X86_64Paging 的常量与 map_huge 守卫段。
+// 代码引用，os/arch/src/x86_64/paging.rs:fn map_huge 的常量与守卫段。
     const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
     const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
     const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
@@ -854,7 +985,7 @@ let page_size = if preferred.supported() && layout_satisfies(preferred.size(), l
 
 | 情况 | 选中的粒度 | 后果 |
 |---|---|---|
-| 三个量（`kern_virt_base`、`kern_phys_base`、`kern_size`）都被 1GiB 整除 | 架构的大页（三架构的 `HUGE_PAGE_SIZE` 都是 1GiB） | 内核映射用 1GiB 块；当前没有任何架构满足这条——三个物理基址都不是 1GiB 对齐（aarch64/riscv64 的虚拟基址虽然对齐，但 `kern_size` 约 4MiB 本身不是 1GiB 的整数倍） |
+| 三个量（`kern_virt_base`、`kern_phys_base`、`kern_size`）都被 1GiB 整除 | 架构的大页（三架构的 `HUGE_PAGE_SIZE` 都是 1GiB） | 内核映射用 1GiB 块；当前没有任何架构满足这条——三个物理基址（x86_64 `0x200000`、aarch64 `0x40200000`、riscv64 `0x80200000`）都不是 1GiB 对齐（aarch64/riscv64 的虚拟基址虽然对齐，但 `kern_size` 约 4MiB 本身不是 1GiB 的整数倍） |
 | 只能被 2MiB 整除（三个架构的当前值都落这一档） | 回退档（`FALLBACK_HUGE_PAGE_SIZE` = 2MiB） | 用 2MiB 叶子，步进次数等于镜像跨距除以 2MiB（当前工件跨距 4MiB，即两次） |
 | 两者都不整除且回退档受支持 | 无 | panic（消息只报 `no kernel page size satisfies the layout`，不点名三个量），发生在任何页表写入之前 |
 | 两者都不整除且回退档不受支持 | 无 | `FallbackUnsupported`（消息 `fallback page size … is not supported`），不是 `NoKernelPageSize` |
@@ -976,6 +1107,49 @@ pub trait HigherHalf {
 ---
 
 ## 4. 实现详解
+
+### 4.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 从 `build.rs` 选链接脚本开始，跟到 `kmain` 的第一条指令。
+- 说出自举根建立、`enable` 与三架构跳转的差异，以及每条差异对应的架构事实。
+- 用“装载 → 建根 → 开分页 → 换栈跳转”的路径解释一次启动日志。
+
+#### 前置概念
+
+- 第 3 章的三种链接形态、自建解析器与成对跳转契约。
+- 能读 Rust 的 `unsafe` 块与内联汇编的地址操作数；不要求会写汇编。
+
+#### 最小示例
+
+```bash
+# build.rs 按 target 选择链接脚本（§4.1）
+$ grep -n 'x86_64.unknown.none\|aarch64.unknown.none\|riscv64gc' os/kernel-image/build.rs
+# 成对跳转的 trait 方法；三架构各一份实现（§4.4）
+$ grep -n 'fn jump_to_kmain' os/kernel/src/boot/higher_half.rs
+```
+
+第一条确认脚本选择发生在构建期，第二条确认跳转契约只有一处声明；三架构的差异留在各自实现里，不扩散到调用方。
+
+#### 失败对照
+
+如果 target 与链接脚本错配（例如给 aarch64 产物套 x86_64 脚本），`p_paddr` 与 ELF 机器类型会同时出错；症状通常不是链接失败，而是装载后首次取指失败或页表建立时读到错误的镜像跨度。先核对 `readelf -h` 的机器类型与 `readelf -lW` 的首段 VMA/LMA，再怀疑建表代码。
+
+#### 小结
+
+- 构建期选脚本，装载期按 `p_paddr` 摆放，运行期按 VMA 取指；三者必须使用同一套基址。
+- 自举根在活动根上建立并开启分页，Direct Map 随后追加，不替换根。
+- 三架构的换栈与跳转差异被收进 `HigherHalf` 实现，调用方只看见一个不返回的入口。
+
+#### 术语
+
+- **建根**：为当前地址空间建立第一张根页表，并把恒等窗口与高半映射写进去。
+- **`enable`**：把根页表地址写入架构寄存器并打开分页的动作。
+- **additive 阶段**：在已经活动的根上追加映射，不重新创建根。
+- **`kmain`**：内核的 C 入口对应物；进入它之前的最后一步是换栈与跳转。
 
 ### 4.1 链接脚本的落地
 
@@ -1285,7 +1459,7 @@ aarch64 上还有一段 Step 2b：把设备 MMIO 窗口按 2 MiB 映射到内核
 Step 3 的 `enable()` 在 x86-64 上做四件事：
 
 ```rust
-// 节选（保留与硬件状态顺序相关的行；注释有删节，`asm!` 块按等价的单行写法重排；source-symbol: X86_64Paging::enable），os/arch/src/x86_64/paging.rs:X86_64Paging::enable。
+// 节选（保留与硬件状态顺序相关的行；注释有删节，`asm!` 块按等价的单行写法重排；source-symbol: X86_64Paging::enable），os/arch/src/x86_64/paging.rs:fn enable。
             const MSR_EFER: u32 = 0xC000_0080;
             const EFER_NXE: u64 = 1 << 11;
             let mut efer: u64;
@@ -1628,6 +1802,49 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | J3 映射先于进入 | §4.3 的 Step 1→2→3 次序（代码审查）；§5.3 的启动链到达 `kmain`（隐含映射已完成）；**没有“映射先于进入”的独立断言** |
 | J4 换栈与跳转 | §5.3 的 SP/PC/FP；§5.4 的 M8/M13 |
 
+### 5.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 把 J1–J4 分别映射到宿主测试、布局断言与真机门，指出哪一条没有独立断言。
+- 运行解析器、装载器与 `check-layout.sh` 的最小测试集。
+- 读懂 `test-higher-half` 的判据，不把“到达 `kmain`”误当成 J3 的独立证明。
+
+#### 前置概念
+
+- 第 4 章的完整启动路径。
+- 会读 `cargo test` 的通过计数与 shell 脚本的退出码；不要求会写 QEMU 测试。
+
+#### 最小示例
+
+```bash
+# 解析器与装载器的宿主测试（§5.1）
+$ cd os && cargo test -p minix-elf
+# 生产镜像的静态布局断言 L0–L10（§5.2）
+$ bash os/kernel-image/check-layout.sh all
+```
+
+第一条验证 ELF 语义与缓冲区契约，第二条验证链接布局；两者都不依赖 QEMU，适合在改代码后先跑。
+
+#### 失败对照
+
+如果只看 `test-higher-half` 打印了“到达 `kmain`”，就宣称 J3“映射先于进入”已被证明，会把链尾证据当成整条链的证据：该测试证明的是“这条载体能走到 `kmain`”，不是“任何映射次序都正确”。J3 目前只有代码审查与链尾证据，缺口要在结论里写明，不能用一条绿门掩盖。
+
+#### 小结
+
+- J1/J2/J4 有宿主测试或布局断言，J3 只有代码审查与链尾证据；这是已知的证据边界。
+- `check-layout.sh` 是生产镜像的静态契约，`test-higher-half` 是载体行为门，两者回答不同的问题，不能互相顶替。
+- 测试计数要按当前源码复算，不沿用历史读数。
+
+#### 术语
+
+- **L0–L10**：`check-layout.sh` 的布局断言编号；L10 只对 x86_64/all 输出。
+- **宿主测试**：在开发机上运行的 `cargo test`，不启动 QEMU。
+- **`test-higher-half`**：x86_64 载体，验证换栈、PC 与帧指针在进入 `kmain` 后的状态。
+- **链尾证据**：只证明启动链最终到达某一点，不证明中间每一步的次序。
+
 ### 5.1 宿主：解析器、装载器与建表
 
 §4.2 那条链里，解析、布局与缓冲区语义的每个环节都有宿主测试，分属两个 crate；按 `p_paddr` 写物理地址那一步不在这批测试的射程内，只由真机链证明（见本节末段）。
@@ -1731,6 +1948,49 @@ L4 与 L5 分别对应本篇 §2.1 的段平移结论与 §3.5 的大页阶梯�
 ## 6. 诊断
 
 
+### 6.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 按“症状 → 怀疑对象 → 确认命令”定位三个故障时刻：分页开启后立刻、恒等映射移除时、首次切地址空间后。
+- 用 `readelf -lW` 与 `check-layout.sh` 区分 LMA 错、VMA 错与映射缺失。
+- 识别并过滤临时打印，不把诊断噪声当成正式路标。
+
+#### 前置概念
+
+- 第 1–5 章的四个时刻、J1–J4 与测试证据边界。
+- 会读 QEMU 异常日志里的故障地址与出错类型。
+
+#### 最小示例
+
+```bash
+# 静态布局：先排除 LMA/VMA 与跨距问题（§6.2）
+$ bash os/kernel-image/check-layout.sh all
+# 单个工件的段头：对照 p_vaddr / p_paddr / memsz（§6.2）
+$ readelf -lW os/target/x86_64-unknown-none/release/kernel-image
+```
+
+第一条给出布局级结论，第二条给出单段读数；先静态、后动态，能避免把映射问题误判成链接问题。
+
+#### 失败对照
+
+如果把“分页开启后立刻取指失败、故障地址是高地址”直接归因于 `AT()`，会改错层：`AT()` 只改 `p_paddr`，不影响高半映射是否建立。正确顺序是先看 `readelf -lW` 的 VMA/LMA 是否一致，再看 `arch_boot_impl` 的 Step 2 是否覆盖了故障地址；两层都排除后，才怀疑换栈或跳转。
+
+#### 小结
+
+- 先静态布局、再动态异常、最后 GDB 读值；三层各自回答不同的问题。
+- 三个故障时刻要靠故障地址与日志位置区分，不能只看“取指失败”四个字。
+- 临时打印不是正式路标；复现串口日志时先过滤，再做判据。
+
+#### 术语
+
+- **故障地址**：QEMU 异常日志里的 `CR2`/`stval`/`FAR`；它回答“哪个地址不可访问”。
+- **恒等映射移除**：切地址空间后低半映射消失，仍在低半取指的代码会立刻失败。
+- **LMA 重叠**：多个 `PT_LOAD` 的 `p_paddr` 相同；现行 GNU ld 会在链接期拒绝。
+- **临时打印**：源码自标 `temporary` 的诊断输出，不属于正式路标。
+
 ### 6.1 症状 → 怀疑对象 → 确认命令
 
 | 症状（可观察到的现象） | 怀疑对象 | 确认动作 |
@@ -1781,7 +2041,10 @@ os/qemu-tests/run_qemu.sh x86_64 <test-efi>     # 脚本内部用 -d int,cpu_res
 # 第五组：GDB 远程调试（确认跳转后 PC 与 SP 各落在哪一侧；下面的 $rip/$rsp 是 x86_64 寄存器名，aarch64/riscv64 用 $pc/$sp）
 # 给上一组的 QEMU 调用加两个调试开关：-s 开 gdbstub，-S 在第一条指令前暂停；
 # 裸 QEMU 的起法（含各架构固件路径）见 `01-boot-shim-bootstrap.md` §6.4 的三层调试法，本节不重复。
-gdb <被调试的工件>
+# 工件必须是带符号的 ELF（生产内核：os/target/<target>/release/kernel）；
+# UEFI 测试载体的 .efi 是 stripped PE，nm/gdb 都读不到 kmain，不要用这一组调载体。
+gdb <带符号的生产 ELF>
+(gdb) target remote :1234
 (gdb) break kmain
 (gdb) continue
 (gdb) print/x $rip
