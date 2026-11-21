@@ -1255,15 +1255,17 @@ os/arch/src/riscv64/trap_stub.rs: 7
 
 x86_64 的 16 个保护测试里与本篇直接相关的几类：TSS 布局（`tss64_size_is_104_bytes`、`tss64_offsets_correct`）、描述符位组合（`gdt_descriptors_have_correct_dpl`、`gdt_descriptors_are_flat_mode`、`tss_descriptor_is_64bit`）、描述符与结构体地址的一致性（`tss_descriptor_high_half_carries_base_above_4gib`、`init_creates_tss_descriptor_in_gdt`）、`sp0` 算术（`set_kernel_stack_updates_sp0`、`init_sets_tss_sp0_below_reserved_area`）。13 个 trap 测试 = 9 条门表测试（1 条 `init` 全占位 + 1 条保留向量 + 7 条 `install_idt_handlers` 后的 DPL/IST/类型）+ 2 条 `set_handler` + 2 条结构布局；`install_idt_handlers` 在生产路径上对 41 条门逐门断言 DPL/IST/类型，并核对 gate presence 与 stub 覆盖相等；`user_accessible` 的谓词与 DPL 另有 `test_user_accessible_gate_set` 与 `set_handler_sets_dpl_correctly` 两条直接断言。IPC 门（向量 33）由 `install_trap_stubs` 装 stub，不再单列门测试。11 个 trap_stub 测试里的覆盖检查改为先调 `install_idt_handlers` 再对 `STUB_VECTORS` 与 gate presence 核验。
 
-aarch64 与 riscv64 侧的数字对应的是浅测试：两份 `protection.rs` 各 2 条（`privilege_level_roundtrip`、`protection_has_cpu_count`）、两份 `trap_entry.rs` 各 1 条 trait 边界断言（`aarch64_trap_entry_arch_impl_satisfies_trait_bound` 与 `riscv64_trap_entry_arch_impl_satisfies_trait_bound`）。两份 `trap_stub.rs` 各 3 与 6 条（`grep` 的 7 含一条注释命中），覆盖向量表布局与入口腿的静态断言。它们证明的是枚举往返、结构体字段与表布局，不覆盖 §4.6 的寄存器语义——那部分只能在真机上读（§5.2）。
+三条启动顺序源码钉在 `os/kernel/tests/init_protection_order_pin.rs`：`store_protection → refresh_descriptors → load → program_entry_base`、`install_trap_stubs → trap.load`、`smp_init` 的 `set_kernel_stack → boot_ap`。宿主不能执行 `lgdt`/`ltr`/`lidt`，源码序是这里诚实的仪器；顺序反排即红。
+
+aarch64 与 riscv64 侧的数字对应的是浅测试：两份 `protection.rs` 各 1 条（`protection_has_cpu_count`）、两份 `trap_entry.rs` 各 1 条 trait 边界断言（`aarch64_trap_entry_arch_impl_satisfies_trait_bound` 与 `riscv64_trap_entry_arch_impl_satisfies_trait_bound`）。两份 `trap_stub.rs` 各 3 与 6 条（`grep` 的 7 含一条注释命中），覆盖向量表布局与入口腿的静态断言。它们证明的是枚举往返、结构体字段与表布局，不覆盖 §4.6 的寄存器语义——那部分只能在真机上读（§5.2）。
 
 宿主覆盖不到的部分需要说清：`lgdt`/`lidt`/`ltr` 真正执行后的 CPU 状态、CPL3→CPL0 转场的实际栈切换、AP 上 MSR 的实际写入、`isb`/`csrw` 之后的可见性——这些只能在真机上读寄存器。
 
 ### 5.2 真机：test-protection 三架构（→4.2、4.6）
 
-三份测试载体各自把"`init_protection` 之后 CPU 的寄存器读数"作为判据，对生产代码的复用程度不同：x86_64 与 riscv64 版复用生产 trait 方法（`CurrentProtection::init`/`load` 与 `CurrentTrapEntry::init`/`configure_syscall`/`load`；x86_64 版不调 `install_trap_stubs`，门里的入口保持占位 0），aarch64 版是独立探针——不调 `init_protection`/`CurrentProtection::init`/`CurrentTrapEntry`，自己装 `VBAR_EL1` 与探针汇编。
+三份测试载体各自把"`init_protection` 之后 CPU 的寄存器读数"作为判据，对生产代码的复用程度不同：x86_64 与 riscv64 版复用生产 trait 方法（`CurrentProtection::init`/`load` 与 `CurrentTrapEntry::init`/`configure_syscall`/`load`；x86_64 版还调 `install_trap_stubs` 与 `program_entry_base`，门里是真入口、GS 基址已编程），aarch64 版是独立探针——不调 `init_protection`/`CurrentProtection::init`/`CurrentTrapEntry`，自己装 `VBAR_EL1` 与探针汇编。
 
-x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs)）在 `arch_boot_impl` 之后按 `kmain` Phase B 的方针调用 `CurrentProtection::init`/`load` 与 `CurrentTrapEntry::init`/`configure_syscall(syscall_entry_va())`/`load`（生产入口，不是 `KernelInfo.syscall_entry` 元数据），然后读五处寄存器读数（GDTR/IDTR 的基址、TR 的选择子、CS/DS 的选择子）与四个 SYSCALL MSR（STAR/LSTAR/SFMASK/EFER.SCE）。实例留在栈上（main 不返回），所以载体不覆盖 `store_protection` + `refresh_descriptors` 的搬迁收尾；那一步由 `test-user-trap` 的生产 `init_protection` 覆盖。
+x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs)）在 `arch_boot_impl` 之后按 `kmain` Phase B 的方针调用 `CurrentProtection::init`/`load`/`program_entry_base` 与 `CurrentTrapEntry::init`/`install_trap_stubs`/`configure_syscall(syscall_entry_va())`/`load`（生产入口，不是 `KernelInfo.syscall_entry` 元数据），然后读六处寄存器读数（GDTR/IDTR 的基址、TR 的选择子、GS_BASE、CS/DS 的选择子）与四个 SYSCALL MSR（STAR/LSTAR/SFMASK/EFER.SCE）。实例留在栈上（main 不返回），所以载体不覆盖 `store_protection` + `refresh_descriptors` 的搬迁收尾；那一步由 `test-user-trap` 的生产 `init_protection` 覆盖。
 
 ```rust
 /* 代码引用（保留判定与输出两行），os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs（x86_64 版）。 */
@@ -1275,7 +1277,7 @@ x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protec
 
 运行方式与判定标记：`os/qemu-tests/run_all.sh` 把三个载体分别列入三架构的测试清单，判定由 `os/qemu-tests/run_qemu.sh` 按串口日志里的 `### TEST_RESULT: PASS` 前缀匹配完成（载体实际打印 `### TEST_RESULT: PASS test-protection[-aarch64|-riscv64] ###`）。
 
-把三个载体合起来看：它们验证的是三张表与 MSR 的装载面（位与字段层在 §5.1 的宿主测试里）；`test-protection` 的 x86_64 载体不调 `install_trap_stubs`、门里入口保持占位 0，因此**门有效性**不在**这三个 test-protection 载体**的覆盖里——它由 §5.1 的覆盖检查、`test-user-trap`（生产 `init_protection` 装真 stub 后以 CPL3 `int $0x21`（十进制 33）进门）与 §5.3 的负向缺口分别承担。
+把三个载体合起来看：它们验证的是三张表与 MSR 的装载面（位与字段层在 §5.1 的宿主测试里）；`test-protection` 的 x86_64 载体现在调 `install_trap_stubs` 装真入口，并在 `program_entry_base` 后读 GS_BASE 非零，因此**门有效性**与「GS 基址在 `load` 之后编程」也进入真机覆盖——此外还有 §5.1 的覆盖检查与 `test-user-trap`（生产 `init_protection` 装真 stub 后以 CPL3 `int $0x21`（十进制 33）进门）分别承担。
 
 **把 aarch64 的 `SP_EL1` 探针放回 `SPSel=1` 窗口内执行写入会怎样**：写的就是当前 SP，执行写入的那段代码会在读写之间把自己的栈换掉，崩溃会被误读成"EL2 陷获了 SP_EL1 访问"——测试文件里保留了这段定位记录。依据：`.../test-protection-aarch64/src/main.rs` 里 `Spsel` 窗口的注释段。
 

@@ -15,7 +15,7 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use minix_arch::x86_64::paging::X86_64Paging;
 use minix_plat::x86_64::early_console;
-use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
+use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry, install_trap_stubs};
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
@@ -76,8 +76,12 @@ fn main() -> Status {
     //    test-user-trap's production init_protection call instead.
     let prot = CurrentProtection::init(0, info.kern_stack_top());
     prot.load();
+    // The production order: protection is live, then the GS entry base is
+    // programmed, then the trap table's gates are written and loaded.
+    prot.program_entry_base(0, info.kern_stack_top());
 
     let mut trap = CurrentTrapEntry::init();
+    install_trap_stubs(&mut trap);
     trap.configure_syscall(minix_arch::syscall_entry_va());
     trap.load();
 
@@ -157,6 +161,15 @@ fn main() -> Status {
         fail();
     }
     early_console::write_str("  TSS loaded (TR != 0)\n");
+
+    // 6b. Verify: the GS entry base is programmed (MSR IA32_GS_BASE != 0) —
+    // program_entry_base must run after load and before any SYSCALL entry.
+    let gs_base = unsafe { rdmsr(0xC000_0101) };
+    if gs_base == 0 {
+        early_console::write_str("  FAIL: GS base is 0\n");
+        fail();
+    }
+    early_console::write_str("  GS base programmed (GS_BASE != 0)\n");
 
     // 7. Verify: CS segment selector indicates Ring 0 (RPL = 0)
     let cs: u16;
