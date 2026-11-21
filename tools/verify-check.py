@@ -373,6 +373,38 @@ def _latest_snapshot(hits: list[Path]) -> Path | None:
     return sorted(hits, key=key)[-1]
 
 
+def _outside_fences(text: str) -> str:
+    out: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.strip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _section_body(text: str, heading: str) -> str:
+    m = re.search(rf"(?ms)^{re.escape(heading)}\s*$(.*?)(?=^### |^## |\Z)", text)
+    return m.group(1).strip() if m else ""
+
+
+def resume_point_missing(text: str) -> list[str]:
+    clean = _outside_fences(text)
+    if not re.search(r"(?m)^## Resume Point\b", clean):
+        return []
+    required = ("### 当前断点", "### 下一 session 启动协议", "### 指针", "### 必跑命令")
+    missing: list[str] = []
+    for sec in required:
+        if sec not in clean or len(_section_body(clean, sec)) < 20:
+            missing.append(sec)
+    for cmd in ("--preflight", "eval-trace-check.py", "todo-ledger.py"):
+        if cmd not in clean:
+            missing.append(cmd)
+    return missing
+
+
 def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
     """review 启动前的 7 组产物存在性检查（原 review-gate-check.sh 的合并入口）。"""
     nn_match = re.match(r"(\d+)", doc_stem)
@@ -448,17 +480,12 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
             print(f"[FAIL] D4: gate-evidence artifact 不存在：{', '.join(missing_artifacts)}")
         else:
             print("[PASS] D4: gate-evidence artifact 路径全部存在（或 none）")
-        if re.search(r"(?m)^## Resume Point\b", text):
-            required_resume = ("### 当前断点", "### 下一 session 启动协议", "### 指针", "### 必跑命令")
-            missing_resume = [sec for sec in required_resume if sec not in text]
-            for cmd in ("verify-check.py", "eval-trace-check.py", "todo-ledger.py"):
-                if cmd not in text:
-                    missing_resume.append(cmd)
-            if missing_resume:
-                failures += 1
-                print(f"[FAIL] Resume Point 缺：{', '.join(missing_resume)}")
-            else:
-                print("[PASS] Resume Point 指针段 + 必跑命令段齐全")
+        missing_resume = resume_point_missing(text)
+        if missing_resume:
+            failures += 1
+            print(f"[FAIL] Resume Point 缺/空：{', '.join(missing_resume)}")
+        elif re.search(r"(?m)^## Resume Point\b", _outside_fences(text)):
+            print("[PASS] Resume Point 四段 + 必跑命令齐全")
     if failures:
         print(f"preflight: FAIL（{failures} 项）")
         return 1

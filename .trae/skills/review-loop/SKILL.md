@@ -135,7 +135,7 @@ fix 之后的 certify 阶段只派定点回读：P-FACT 只查本轮修复 hunk 
 ## L2 归因与决策
 
 1. 收齐面板输出，按 `review-panel.md` 第五节的编号规则统一编号。
-2. **去重与准入（V3）**：按 `review-evals.md` §4.0c 为每条发现分配 `根因 ID`（`RD-NNN`）与 `origin`；同根发现合并到同一行，在 `发现 ID` 列列出。四条准入判据（位置/判据/证据/反证）不全的，写 `suggestions.md`；以 SUGG 行入台账登记并计入 metrics 的 `SUGG` 键（V3.3 起为合法处置类；不阻断过程，但阻断 CONVERGED（`review-publication.md` §三.6））。
+2. **去重与准入（V3）**：按 `review-evals.md` §4.0c 为每条发现分配 `根因 ID`（`RD-NNN`）与 `origin`；同根发现合并到同一行，在 `发现 ID` 列列出。五条准入判据（位置/判据/证据/反证/先红后绿）不全的；P0-code-bug/P0-test-missing 的红命令在准入时附，绿在 L3 回填，写 `suggestions.md`；以 SUGG 行入台账登记并计入 metrics 的 `SUGG` 键（V3.3 起为合法处置类；不阻断过程，但阻断 CONVERGED（`review-publication.md` §三.6））。
 3. 每条准入发现按 `review-evals.md` §4.1 处置：① 修（P0/P1/P2 一律）、② 用户批准的转出（带批准日期）、④ 读者验收清单内项（本轮修）、⑤ 证据不足（本轮不得关闭）、⑥ 设计重构（本轮实施）、FP 有反证的误报。**③ 已删除。** 范围内确认为真缺陷的一律本轮修，不允许无档期转出。**读者/设计的 P3 不按 ①/④ 准入**——标 `SUGG` 行登记 suggestions.md（§4.0c 严重度门槛）。
 3b. **设计类决策（DESIGN 角色的 ⑥）必须标分类**（§4.1b，D-047）：`[MODERN]`（C 有此语义，换现代表达）与 `[DEL]`（C 没有此物，删翻译残留）= 代裁，当轮实施；`[ARCH]`（改变 boot 是什么）**不得实施**——P0/P1/P2 入台账 ⑤ + `轮结果: BLOCKED`（解除只认判决账行），P3 进 suggestions。未分类 = 按 ARCH 阻断。
 3c. **减法倡导者触发（V3.6，C-37；r2 补触发点——原规则只在 panel §4.3b 定义，主流程从未启动它）**：归因完成后，若本轮存在 `[ARCH]` 提案、拟入判决账的 D-0xx 行、或任何「新增类型 / 新装置」级提案，**在交用户裁决之前**派一次 P-SUBTRACT（brief 见 `review-panel.md` §4.3b），产出 `panel/subtract.md` 并在 `loop.md §1` 记「P-SUBTRACT 已启动：<提案 ID 列表>」。无提案则记「未启动：无提案」。**主 agent 收到后按 `review-code-checklist.md` §3.5 与 §2.5 的机械判据裁决；判不了的进判决账；禁止按品味判。**
@@ -280,7 +280,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 4. 输出到 `meta/<doc-stem>-review.md`（仅上一步限定的两个时点），必须给 `唯一根因数`、`自引入数`、`重复合并数`、`edition 是否稳定` 四个数。
 5. 结论为 `REGRESSED` 时，记录为**流程缺陷**（进 `BLIND-SPOTS.md` 与 edition 边界），不阻止文档关闭；文档是否收敛只看 §6A 的 G1–G14。
 6. 新增盲区写入 `BLIND-SPOTS.md`，下一轮回归必须复现。
-7. **抽查 `suggestions.md`**：若发现满足四条准入判据却被降级为 suggestion 的，记流程缺陷；建议桶不得成为新的 `③` 延期桶。
+7. **抽查 `suggestions.md`**：若发现满足五条准入判据却被降级为 suggestion 的，记流程缺陷；建议桶不得成为新的 `③` 延期桶。
 
 ## L6.5 Pattern re-consultation
 

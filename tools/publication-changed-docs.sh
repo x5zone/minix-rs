@@ -7,15 +7,16 @@ set -euo pipefail
 filter_docs() {
   grep -E '^rewrite-notes/[0-9]+-stage-[^/]+/[0-9]{2}-[^/]+\.md$' \
     | grep -vE '/(draft|archive)/' \
-    | grep -vE '/([^/]*(design|evidence|review|forensics|brief|note|learn|todo|archive)[^/]*\.md)$'
+    | grep -vE '^rewrite-notes/[^/]+/[0-9]{2}-(design|evidence|review|forensics|brief|note|learn|todo|archive)(-|\.md$)'
 }
 
 if [ "${1:-}" = "--self-test" ]; then
   good='rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md'
   draft='rewrite-notes/01-stage-kernel/draft/16-smp.md'
   design='rewrite-notes/01-stage-kernel/04-design-backlog-round28.md'
-  out=$(printf '%s\n%s\n%s\n' "$good" "$draft" "$design" | filter_docs || true)
-  if [ "$out" != "$good" ]; then
+  formal2='rewrite-notes/18-stage-commands/11-compress-archive.md'
+  out=$(printf '%s\n%s\n%s\n%s\n' "$good" "$formal2" "$draft" "$design" | filter_docs || true)
+  if [ "$out" != "$good"$'\n'"$formal2" ]; then
     echo "publication-changed-docs --self-test FAIL：$out" >&2
     exit 1
   fi

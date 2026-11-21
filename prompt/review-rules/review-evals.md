@@ -346,11 +346,11 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
    （`review-doc-checklist.md`、`review-code-checklist.md`、§4.0e 或 `DECISIONS.md`）；
 3. **证据**：E1/E2 级证据，或 E3 级完整推理链；纯“我觉得可以更好”不满足；
 4. **反证**：写了“若我错了”的具体反例或检索路径。
-5. **先红后绿**（仅 `P0-code-bug` / `P0-test-missing`）：附当前 HEAD 上 `exit != 0` 的判别命令
-   （测试名 / `rg` 归零 / 复现脚本），修复后用**同一命令**复跑 `exit == 0`；两条输出都进台账。
-   纯文档事实错误不适用本条。
+5. **先红后绿**（仅 `P0-code-bug` / `P0-test-missing`）：**准入时只要求红命令**——附当前 HEAD 上
+   `exit != 0` 的判别命令（测试名 / `rg` 归零 / 复现脚本）；绿命令在 L3/L3.5 修复后回填，
+   不作为准入前置。两条输出都进台账。纯文档事实错误不适用本条。
 
-不满足四条的，面板可以照报，但主 agent 记入
+不满足五条的，面板可以照报，但主 agent 记入
 `runs/<stage>/<doc-stem>/suggestions.md`。**SUGG 行的适用范围（V3.4-r8，与工具
 `check_v33_admission` 一致）**：读者/设计角色的 P3 建议，或读者/设计项准入判据
 不全者——以 SUGG 行入台账登记、计入 metrics 的 `SUGG` 键与发现总数；不阻断过程，但**阻断 CONVERGED**（`review-publication.md` §三.6）。FACT/DESIGN 的事实类证据不足写 `⑤`（不得用 SUGG 逃避未闭环）。

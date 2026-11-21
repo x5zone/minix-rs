@@ -1215,7 +1215,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 
 | TODO | 引用前提 | rg 验证当前状态 | 判定 | 处理 |
 |------|---------|--------------|------|------|
-| TODO-06-2 | "1 个 trait 而非 3 个" | `rg "pub trait " os/kernel/src/proc.rs` 命中 3 个 trait | ❌ 前提错误（误报）| 不修复，标"前提错误" |
+| TODO-06-2 | "1 个 trait 而非 3 个" | `rg "pub trait " os/kernel/src/proc.rs` 0 命中（当前无 pub trait） | ❌ 前提错误（误报）| 不修复，标"前提错误" |
 | TODO-06-4 | "TODO-01-3 阻塞" | `rg "TODO-01-3" 01-kmain-cstart.md` 0 命中（已接通）| ❌ 前提失效 | 不修复，标"前提失效" |
 | TODO-06-7 | "需 3 trait" | `rg "pub trait " os/kernel/src/proc.rs` 已正确实现 | ✅ 前提成立 + 已修复 | 标 ✅ 已修复（无需修改）|
 

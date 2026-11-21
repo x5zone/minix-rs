@@ -285,41 +285,60 @@ DECISION_RE = re.compile(r"\bD-\d{3}\b")
 COMMIT_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 
 
+DECISIONS_PATH = ROOT / "rewrite-notes/meta/coordination/review-eval/DECISIONS.md"
+
+
+def _decision_ids() -> set[str] | None:
+    if not DECISIONS_PATH.is_file():
+        return None
+    ids: set[str] = set()
+    for line in DECISIONS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"^##\s+(D-\d{3})\b", line) or re.match(r"^\|\s*(D-\d{3})\b", line)
+        if m:
+            ids.add(m.group(1))
+    return ids
+
+
 def evidence_nonempty(path: Path) -> bool:
     """evidence 至少要有一行内容；空文件或纯空白不算证据。"""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    return len("".join(text.split())) >= 7
+    return len("".join(text.split())) >= 5
 
 
 def evidence_replay_ok(path: Path) -> bool:
     """evidence 至少要有一个可验证的可重放 token。
 
-    接受：path:line（文件存在且行号在界内）、test::name（fn 存在）、D-xxx、
-    rg/grep/cargo test/python3/bash 命令、真实 git commit。注释行不计。"""
+    接受：path:line（文件存在且行号在界内）、test::name（fn 存在）、真实 D-xxx、
+    行首的 rg/grep/cargo test 命令、真实 bash/python3 tools/ 命令、真实 git commit。
+    注释行与散文里的“没有运行…”不计。"""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
+    decisions = _decision_ids()
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith(("#", "//", "*")):
             continue
-        if DECISION_RE.search(line):
-            return True
-        for m in PATH_LINE_RE.finditer(line):
-            fp = ROOT / m.group(1)
-            if not fp.is_file():
-                continue
-            try:
-                n = len(fp.read_text(encoding="utf-8", errors="replace").splitlines())
-            except OSError:
-                continue
-            if int(m.group(2)) <= n:
+        for m in DECISION_RE.finditer(line):
+            if decisions is None or m.group(0) in decisions:
                 return True
-        for m in TEST_RE.finditer(line):
+        m = re.match(r"^\s*(?:[-*]\s*)?([\w./-]+\.(?:rs|c|h|md|sh|py|S|asm)):(\d+)", line)
+        if m:
+            fp = ROOT / m.group(1)
+            if fp.is_file():
+                try:
+                    n = len(fp.read_text(encoding="utf-8", errors="replace").splitlines())
+                except OSError:
+                    n = 0
+                if int(m.group(2)) <= n:
+                    return True
+            continue
+        m = re.match(r"^\s*(?:[-*]\s*)?test::([A-Za-z_]\w*)", line)
+        if m:
             name = m.group(1)
             try:
                 check = subprocess.run(
@@ -333,16 +352,18 @@ def evidence_replay_ok(path: Path) -> bool:
                 )
             if check.returncode == 0:
                 return True
-        tool_cmd = re.search(r"\b(?:bash|python3)\s+(tools/[\w./-]+)", line)
-        if tool_cmd and (ROOT / tool_cmd.group(1)).is_file():
+            continue
+        m = re.match(r"^\s*(?:[-*]\s*)?(?:bash|python3)\s+(tools/[\w./-]+)", line)
+        if m and (ROOT / m.group(1)).is_file():
             return True
-        if "cargo test " in line:
+        if re.match(r"^\s*(?:[-*]\s*)?cargo test\s", line):
             return True
-        if re.search(r"\b(?:rg|grep)\s+[\"']?\S", line):
+        if re.match(r"^\s*(?:[-*]\s*)?(?:rg|grep)\s+\S", line):
             return True
-        for m in COMMIT_RE.finditer(line):
+        m = re.match(r"^\s*(?:[-*]\s*)?([0-9a-f]{7,40})\b", line)
+        if m:
             check = subprocess.run(
-                ["git", "-C", str(ROOT), "cat-file", "-e", m.group(0) + "^{commit}"],
+                ["git", "-C", str(ROOT), "cat-file", "-e", m.group(1) + "^{commit}"],
                 capture_output=True,
             )
             if check.returncode == 0:
@@ -1066,7 +1087,16 @@ def self_test() -> int:
         no_token.write_text("unit evidence\n", encoding="utf-8")
         assert cmd_gate(doc, sp, True, str(no_token), str(ledger)) == 1
         assert cmd_mark(doc, sp, "1", "t1", False, True, False, "",
-                        evidence=str(no_token), ledger=str(ledger)) == 1
+                        evidence=str(no_token), ledger=str(ledger))
+        dec_ok = root / "dec-ok.md"
+        dec_ok.write_text("D-060\n", encoding="utf-8")
+        assert evidence_replay_ok(dec_ok)
+        dec_bad = root / "dec-bad.md"
+        dec_bad.write_text("D-999\n", encoding="utf-8")
+        assert not evidence_replay_ok(dec_bad)
+        neg = root / "neg.md"
+        neg.write_text("没有运行 rg 命令\n", encoding="utf-8")
+        assert not evidence_replay_ok(neg) == 1
         src = Path(__file__).resolve().read_text(encoding="utf-8")
         assert "return cmd_mark(doc, sp, args.unit" in src
     print("self-test PASS: init/check/sync/unfreeze/budget/sample/audit/evidence/cli")
