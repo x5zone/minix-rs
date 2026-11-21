@@ -176,7 +176,8 @@ python3 tools/review-units.py audit --doc rewrite-notes/01-stage-kernel/01-boot-
 
 首轮 CI 实测（commit `91c8144fc`）：
 
-- `rules-consistency` #8–#12：failed。根因是 CI runner 没有 `rg`，`确认工具齐备` 步骤直接 exit 1（#12 的 `::error::缺少必需工具：rg` 注解证实）。已在 workflow 增加 `apt-get install ripgrep`。此外本地重放还发现并修复了两处会挡门的存量：最终报告 L10 缺状态标记；历史 `runs/**` 旧表 schema（P-2 已缩到活制品，`DECISIONS.md` 表结构已修）。本地按 workflow 顺序重放：四道一致性门、pattern-gate、boundary、全部工具自测、doc-citation、arch-gated-test-count 均 exit 0；P-2 只扫活制品后 exit 0。
+- `rules-consistency` #8–#17：failed。已定位并修掉两个 CI 基础设施缺口：runner 没有 `rg`（#12 的 `::error::缺少必需工具：rg` 证实，已 `apt-get install ripgrep`）；runner 没有 PyYAML（`review-units.py --self-test` 依赖，已装 `python3-yaml` 并加导入检查）。剩下 `eval-trace-check.py --self-test` 在 CI 红，但本地 60 次循环、`env -i`、`LC_ALL=C`、无 HOME、shallow clone 全部通过，未复现；CI 日志需登录查看。
+- 本地按 workflow 顺序重放：四道一致性门、pattern-gate、boundary、其余自测、doc-citation、arch-gated-test-count 均 exit 0；P-2 只扫活制品后 exit 0。最终报告 L10 缺状态标记与历史 `runs/**` 旧表 schema 也已修/缩域。
 - `kernel-tests` #7、`qemu-tests` #10、`vm-tests` #10、`clippy-ratchet` #7：failed；本分支此前同类作业也红（`11feb85` 上 kernel-tests 通过、其余四项红），本次只改注释与一行 import，需看日志区分存量与环境因素。
 - `cmd-smoke` #7：首轮读取时仍在运行。
 
