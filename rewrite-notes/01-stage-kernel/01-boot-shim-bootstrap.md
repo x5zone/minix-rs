@@ -5,6 +5,48 @@
 
 ## 1. 概述
 
+### 1.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 说出引导器交给内核的三份数据，以及每份数据的消费者。
+- 用 I1–I4 四条不变量判断一次交接是否成立。
+
+#### 前置概念
+
+- 无（开篇）：只需要知道“引导器把控制权交给内核”这件事；本章会给出 `KernelInfo`、`memmap`、`reserved_regions` 与五条生产腿的定义。
+
+#### 最小示例
+
+```bash
+# 交接结构的字段清单（§1.1 的第三份数据）
+$ grep -n 'pub struct KernelInfo' os/libs/minix-boot/src/kernel_info.rs
+# 内核侧深拷入口（I1/I3 在接收侧的落点，§1.2）
+$ grep -n 'pub fn store_kernel_info' os/kernel/src/lib.rs
+```
+
+两条命令各命中一行：前者给出载荷结构的位置，后者给出“只使用私有副本”的入口；§1.2 的四条判据就是围绕这两处读的。
+
+#### 失败对照
+
+如果只把 `KernelInfo` 的切片指针跨镜像交给内核，接收侧会在自己的地址空间里读到发送侧的内存；高半切换后读到零，正是 I1 判据里的第一现场。所以三条 v1 腿的 wire 只写固定宽度标量与字节分区，接收侧从私有存储重建切片。
+
+#### 小结
+
+- 内核接手时要带走三份数据：可用内存清单、内核位置记录、交接结构。
+- 框 2 的区间裁剪框 1；框 1 不进入框 2。
+- I1–I4 是四个失败面，不是并列的美德。
+- `pre_init` 是数据与镜像的接缝：`get_parameters` 属本篇，`pg_*` 五步属 02 篇。
+
+#### 术语
+
+- **`KernelInfo`**：按值交接的载荷结构；三条 v1 腿跨镜像时序列化进 wire，两个直核腿同镜像也深拷进接收方 `.bss`。
+- **wire**：跨镜像交接协议里按固定字节宽度写进 arena 的那份表示，与进程内结构相对。
+- **五条生产腿**：两条 UEFI 链、riscv64 U-Boot shim、两个直核面。
+- **框 1 / 框 2**：C 侧旧称，分别指可用内存清单与内核位置记录。
+
 ### 1.1 内核接手时拿到什么
 
 引导器把控制权交给内核时，内核真正需要“带走”的东西只有三份数据：
@@ -65,6 +107,51 @@ D1–D5 只在本篇定义（02 不使用 D 编号）：D1 = 内存清单先于�
 ---
 
 ## 2. C 源码分析
+
+### 2.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 按 `boot.cfg` 的指令次序、`head.S` 的入口与 `pre_init` 的调用树，复述 C 侧从引导器到 `kinfo` 的完整交接路径。
+- 说出 `add_memmap`/`cut_memmap` 与 `overlaps` 检查把“别人的数据”变成“自己的记录”的步骤。
+- 指出 D1–D5 五条次序约束各自的证据锚点。
+
+#### 前置概念
+
+- 第 1 章的三份数据与 I1–I4；本章逐段给出它们在 C 侧的形状。
+- 第 1 章 §1.3 的 `struct kinfo`、`get_parameters`、`add_memmap`/`cut_memmap` 三个名字；本章展开它们的实现。
+
+#### 最小示例
+
+```bash
+# 内核不解释 rootdevname：消费者在用户态（§2.1）
+$ grep -rn rootdevname minix3/minix/kernel/
+# 魔术值断言：pre_init 的第一道门（§2.2）
+$ grep -n 'assert(magic == MULTIBOOT_INFO_MAGIC)' minix3/minix/kernel/arch/i386/pre_init.c
+```
+
+第一条无输出——这正是“内核只当搬运工”的判据；第二条命中一行，给出 `pre_init` 校验寄存器的位置。
+
+#### 失败对照
+
+如果把 `load_mods` 写在 `multiboot` 之后，`exec_multiboot` 建表时模块链表为空，表仍会建、`HAS_MODS` 仍会置上，内核会停在 `get_parameters` 的 `assert(mbi->mi_mods_count > 0)`——不是查标志的那条断言；现场是 panic 刷屏并等按键。所以 `boot.cfg` 里 `load_mods` 必须排在 `multiboot` 前面。
+
+#### 小结
+
+- 引导器契约由识别头、寄存器约定与 `mbi` 三样东西对接。
+- `get_parameters` 整份拷贝 `mbi`，再把命令行、模块表、内存图变成 `kinfo` 的记录。
+- `add_memmap` 建清单，`overlaps`/`cut_memmap` 逐条切除内核与模块占用区。
+- D1–D5 是约束名，不是执行序；证据都在本章与 02 篇的建表节。
+- ARM32 复用了同名入口与同一串函数名，差异在参数来源与 MMU 寄存器。
+
+#### 术语
+
+- **`mbi`**：引导器填好的 `multiboot_info` 结构体；`get_parameters` 把它整份拷进 `kinfo.mbi`。
+- **`kinfo`**：C 侧的全局 `kinfo_t`，`pre_init` 填好、`kmain` 读取的同一地址空间记录。
+- **粗档 / 细档**：内存图的两种来源——`mem_lower`/`mem_upper` 两段连续区间，或 `mmap` 条目表。
+- **`overlaps`**：检查内核与模块、模块与模块区间是否相交的函数；相切必须放行。
 
 ### 2.1 引导器契约与启动信息
 
@@ -926,6 +1013,51 @@ ARM32 的主要差异是第 1 步（`setup_mbi`）与 MMU 寄存器；`overlaps`
 
 ## 3. Rust 设计决策
 
+### 3.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 说明为什么三个架构共用一套交接协议，而不是各写一份引导协议。
+- 按 I1–I4 复述 `KernelInfo` 字段的取舍、两张内存表与来源记录、bootstrap 区间与分配器换手。
+- 说出五条生产腿各自的通道形态与校验门顺序。
+
+#### 前置概念
+
+- 第 1 章的 I1–I4 与三份数据。
+- 第 2 章的 C 侧交接：`kinfo` 全局、`get_parameters` 的拷贝、`add_memmap`/`cut_memmap` 的记账、`overlaps` 的区间检查。
+- 第 2 章 §2.7 的 ARM32 对照：同语义、不同参数来源。
+
+#### 最小示例
+
+```bash
+# 在 os/ 下跑交接库的宿主测试；wire 与字段台账的形状由这一包守住（§5.1）
+$ cd os && cargo test -p minix-boot --lib
+```
+
+预期全部通过；§5.1 把 wire 的 encode/decode round-trip 与 `KernelInfo` 字段台账列为 I1 的宿主证据。
+
+#### 失败对照
+
+如果把 boot-shim 与内核并成一个 UEFI 二进制，内核就得认识固件类型、把 `uefi` 拉进自己的依赖表，与“内核不依赖引导层”的单向边界冲突。所以 UEFI 形态被否决，直核形态只允许 `kernel-image` 反向依赖 boot-shim 的库函数，而不是依赖引导器产物。
+
+#### 小结
+
+- 协议换代把“谁读文件、谁填内存图、谁退出固件服务”重新分工；UEFI 腿自己读，U-Boot 腿由 U-Boot 代劳。
+- `KernelInfo` 从全局地址改为按值交接；三条 v1 腿走 wire，两个直核腿同镜像也深拷。
+- 内存账从 `kinfo` 数组改为两张切片表加 `SourceRecord`，每个投影字节可追溯。
+- bootstrap 区间与页表分配器在进入内核前换手；没有“分页后可回收的内核段”这个对象。
+- 五条生产腿收敛数据形状，不合并引导形态层。
+
+#### 术语
+
+- **wire**：跨镜像交接协议里按固定字节宽度写进 arena 的表示；v1 信封带版本号，收发两侧精确比较。
+- **arena**：三形态 v1 交接用的八页物理区，承载信封、分区载荷与运行期字段。
+- **v1 腿 / 直核面**：前者跨镜像（两条 UEFI 链、riscv64 U-Boot shim），后者在同一镜像内直接调 `arch_boot`。
+- **`BootStorage`**：发送侧自有的定长载荷存储，六类 `fill_*` 的唯一所有者。
+- **`SourceRecord`**：记录“这段内存是谁给的”的来源条目，供 `audit_source_coverage` 审计。
+
 ### 3.1 协议换代：固件接口替换 Multiboot
 
 > `[ARCH: ...]` 是本项目的架构演进标注，表示该处不是逐字重写，而是有意的架构变化；三档术语（Rewrite / Refactor / Architectural Evolution）见 `AGENTS.md`。
@@ -1712,6 +1844,50 @@ I3 与 I4 在实现上是两条相邻的检查：**载荷先落到自己的存�
 
 ## 4. 实现详解
 
+### 4.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 沿 `main` → `prepare_and_enter_kernel_image` → `enter_kernel_image_v1` → `arch_boot_resume_v1` 走完两条 UEFI 链的入口。
+- 说出九动作表里读文件、EBS、提交分类计数与跳转各在哪一步。
+- 指出 `KernelInfo` 两条产出入径、六个落地区与门链的实际执行序。
+
+#### 前置概念
+
+- 第 1 章的三份数据与 I1–I4。
+- 第 2 章的 C 侧调用树：`pre_init` 的 `get_parameters` 与 `pg_*` 五步的接缝。
+- 第 3 章的 wire v1、arena、五条生产腿与 `BootStorage` 的所有权规则。
+
+#### 最小示例
+
+```bash
+# 在源码里定位本章的 Step 路标与接收端首行（§6.1 的复算命令）
+$ grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kernel-image/src/main.rs os/kernel-image/src/bootface*.rs
+```
+
+命中的 `boot_stage!` 是 Step 1/2 与 Step 4 的打印点；`### minix-rs kernel-image` 是接收端进入 Rust 面的第一行（§6.1 的路标表）。
+
+#### 失败对照
+
+如果把 `init_boot_pt_alloc` 的 `register` 挪到进入内核之后，Step 1/2 第一次 `map_huge` → `alloc_pt_page` 会断言 `pt_alloc::alloc_pt_page called before register`；`boot_alloc_region()` 为 `None` 时 `boot_validate_and_prepare` 直接停机。所以注册是进入内核的前置条件，不能从内存图推断。
+
+#### 小结
+
+- 入口骨架只有一句：`main` 把页表页预算交给 `prepare_and_enter_kernel_image`，后者不返回。
+- 九个动作按“准备 → 退出固件服务 → 交接”三段排列；读文件在 EBS 之前，跳转在 EBS 之后。
+- 两条 UEFI 链共用发送侧；接收端按架构从 `rbx`/`x0`/`a0` 取 arena 基址后汇入 `resume_additive`。
+- `build_kernel_info` 只服务两个直核面；三条 v1 腿的接收侧从 wire 解码得到同一结构。
+- 六个落地区把切片深拷进内核 `.bss`，此后只使用这份副本。
+
+#### 术语
+
+- **九个动作**：`prepare_and_enter_kernel_image` 内部按序执行的九步，产出归属见 §4.2 的表。
+- **落地区**：内核 `.bss` 里的六个定长存储区，`store_kernel_info` 把 wire 解码后的切片拷进去。
+- **门链**：`validate_requiring_sources`、`validate_before_tables`、`check_boot_postconditions`、`boot_validate_and_prepare`、`KernelInfo::validate` 组成的校验次序。
+- **A+D**：先读 ELF 预订 LMA 跨度、再分配 root/bump、最后拷贝段的动作组合。
+
 ### 4.1 入口与调用链
 
 UEFI 入口是固件加载 `.efi` 后调用的那个函数。它只做一件事：调用 `prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)`，把后续工作交给这个函数。后者内部再分三段：准备（读内核 ELF 并预订其 LMA 跨度 → 分配根页表页与 bump 区 → 拷贝段与装载模块 → 平台源与参数 → 分配 arena 并序列化非内存图载荷）、退出固件服务（配对循环里分类最终内存图并调 `ExitBootServices`）、交接（提交分类计数、构造报告并复核、激活自举根、补运行期字段、跳独立镜像）。入口本身不返回。
@@ -2374,6 +2550,53 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
 
 ## 5. 测试：四条不变量各自的证据
 
+### 5.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 按 I1–I4 说出每条不变量各自的宿主证据与真机证据。
+- 说出每条证据“不证明什么”，以及宿主测试的边界。
+- 用真机门脚本的关键路标判断一条链走到了哪一步。
+
+#### 前置概念
+
+- 第 1 章的 I1–I4 与五条生产腿。
+- 第 2 章 §2.6 的模块装载三层检查。
+- 第 3 章的 wire、`BootStorage` 所有权与 `SourceRecord`。
+- 第 4 章的 `store_kernel_info` 六个落地区与门链。
+
+#### 最小示例
+
+```bash
+$ cd os
+# 宿主证据：交接库与内核 mock 形态（§5.2 的读数）
+$ cargo test -p minix-boot --lib
+$ cargo test -p minix-kernel --features mock --lib
+```
+
+预期分别全绿；§5.2 记录的读数是 187/0 与 866/0/8。
+
+#### 失败对照
+
+如果把 `KernelInfo::validate` 的负控当成“所有畸形布局都会被拒绝”的证据，就会高估覆盖：§5.1 的“不证明什么”列写明它只覆盖已构造的负例，任意畸形 wire 仍需负控扩展。所以证据矩阵按不变量分行，每行同时列出证明范围与不证明范围。
+
+#### 小结
+
+- 四条不变量各有证据层，不能互相借用。
+- 宿主测试证明形状与负控；真机门证明五条链能走到各自终点。
+- `store_kernel_info` 的落地区测试与 wire round-trip 是 I1/I3 的深拷证据。
+- `audit_source_coverage` 的正负控与 DTB 收集器上限是 I2 的来源证据。
+- 每条证据都要读它的“不证明什么”列。
+
+#### 术语
+
+- **宿主证据**：在宿主上跑 `cargo test` 得到的证据，覆盖形状、负控与纯逻辑。
+- **真机门**：在 QEMU 或真板上跑脚本、按串口路标判定的门。
+- **负控**：故意构造非法输入、要求代码拒绝或 panic 的测试。
+- **证据矩阵**：按不变量分行、同时列出宿主/真机证据与“不证明什么”的表（§5.1）。
+
 ### 5.1 四条不变量的证据矩阵
 
 四条不变量各有自己的证据层，不能互相借用。
@@ -2421,6 +2644,51 @@ aarch64 直核面不在上表：它由 `test-smp-aps-aarch64.sh` 用 `-kernel` �
 
 
 本章回答"引导失败了怎么查"：6.1 讲 EBS 前后两条输出通道与里程碑路标的读法，6.2 是从静默到可读的 panic 路径，6.3 列典型失败模式与对应信号，6.4 给可复制命令。这一章按用途查，不按执行顺序读。
+
+### 6.0 本章导读
+
+#### 学习目标
+
+读完本章能：
+
+- 按 EBS 分界判断一条输出该走固件控制台还是裸串口。
+- 用里程碑清单把 boot-shim 的动作切成十几段，定位串口停在哪一段。
+- 按“看输出 → 看异常 → 看页表走查”三层抓现场。
+
+#### 前置概念
+
+- 第 1 章的 I1–I4 与五条生产腿。
+- 第 3 章的 v1 腿与直核面之分。
+- 第 4 章的入口链与 Step 0–4 编号。
+- 第 5 章 §5.4 的五个真机门脚本与 §5.5 的已知诊断边界。
+
+#### 最小示例
+
+```bash
+# 第一层：跑 x86_64 UEFI 交接门，脚本把串口写入日志并 grep 标记（§6.4）
+$ bash os/qemu-tests/test-shim-bootmarks-x86.sh
+```
+
+预期关键行依次出现：`kernel loaded (entry staged)`、`12 boot modules loaded`、`[raw] entering kernel image v1`、`resuming high-half boot`、`entering scheduler`（§5.4 的判据列）。
+
+#### 失败对照
+
+如果在 panic handler 里调用 `format!` 或固件服务，第二次故障（分配失败、协议空指针）会在处理第一次故障的过程中发生——串口上得到的是 panic 处理自身的崩溃或什么都没有，原始 panic 的消息与位置被覆盖。所以 panic 路径只用固定栈缓冲与 `raw_serial_line`，不分配、不调固件服务。
+
+#### 小结
+
+- 两条输出通道按 `ExitBootServices` 分界；U-Boot shim 与直核面只有裸串口。
+- `raw_serial` 用于尽快留痕，`raw_serial_line` 等发送侧腾空并补 `\r`，用于 panic。
+- 里程碑清单按腿标注适用性；`step1+2` 不是“已经在独立镜像里”的信号。
+- 排查按三层：串口捕获、QEMU `-d int`、GDB 断点。
+- `assert_bootstrap_outside_memmap` 只在两条 UEFI 腿的发送侧运行。
+
+#### 术语
+
+- **EBS**：`ExitBootServices`；调用后 UEFI 的 Boot Services（文件、分配、控制台）全部失效。
+- **裸串口**：EBS 之后直接用 `out`（x86_64）或等价路径写 COM1 的通道，本篇由 `raw_serial`/`raw_serial_line` 承载。
+- **里程碑路标**：带固定文案的串口打印，用于判断执行到了哪一段（§6.1 的表）。
+- **`-d int`**：QEMU 的异常追踪开关；日志给出异常类型与 `epc`/`CR2` 故障地址。
 
 ### 6.1 EBS 分界与裸串口通道内的两种写法
 
