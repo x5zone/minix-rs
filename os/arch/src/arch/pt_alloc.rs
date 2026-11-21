@@ -68,10 +68,17 @@ static PT_FREE: PtAllocSlotUnary = PtAllocSlotUnary(UnsafeCell::new(uninit_free)
 static PT_FREE_REGISTERED: AtomicBool = AtomicBool::new(false);
 static PT_FREE_CLAIMED: AtomicBool = AtomicBool::new(false);
 
-/// No-op free used before `register_free()` — keeps `free_pt_page` callable
-/// unconditionally (destroy paths check `is_free_registered()` and fall back
-/// to zero-root-only when absent).
-fn uninit_free(_phys: PhysBytes) {}
+/// Fail-closed placeholder used before `register_free()`.
+///
+/// Destroy paths already gate on `is_free_registered()` and take the
+/// zero-root-only fallback; reaching this function means a caller skipped
+/// that gate. A silent no-op would leak the page and make the mistake
+/// invisible, so the placeholder halts instead.
+fn uninit_free(_phys: PhysBytes) {
+    panic!(
+        "pt_alloc::free_pt_page called before register_free (destroy path must gate on is_free_registered)"
+    )
+}
 
 /// Wrapper for a single-argument function pointer stored in a static.
 /// SAFETY: same write-once-then-read-only contract as [`PtAllocSlot`].
@@ -164,7 +171,7 @@ pub fn is_free_registered() -> bool {
 
 /// Return a page-table page to its source allocator.
 ///
-/// No-op before `register_free()` — destroy paths gate the full-reclaim
+/// Panics before `register_free()` — destroy paths gate the full-reclaim
 /// walk on [`is_free_registered()`] and fall back to zero-root-only when
 /// absent (boot-stage tables with no allocator domain).
 #[inline]
