@@ -83,6 +83,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 ## Review Workflow
 
 1. **声明 scope**：目标文件、模式（doc / code / full）、STATE.md 状态；doc 模式同时用 `tools/review-units.py next <doc>` 声明本轮 T1/T2 单元。状态目录按 `{stage}` 分组且三工具隔离：`.review/{tool}/{stage}/`（Trae 用 `scans/` 扁平结构，Claude 与 Codex 用 `{doc-stem}/` 子目录）
+1b. **裁决默认走 `prompt/me.md` me agent**：遇到需要裁决的事项，读 `prompt/me.md` 起 subagent 扮演作者判决并写 `deputy-log.md`；作者在场时可直接说"我来裁"覆盖。不需要在 kickoff prompt 里重复声明。
 2. **Step 0 硬阻断预检**（所有模式强制）：STATE 预检（`review-state-validate.py`）+ 制品存在性（scan/structure/SYMBOLS/VERIFY-CHECK，由 `verify-check.py --preflight` 检查）+ 关联代码清单。design/outline 快照是**可选写作输入**，不再要求 `ls` 四条快照、不再做快照覆盖检查，缺失也不补生成；Gate H 只查 H.2–H.5 的语义一致性。
 3. **Blocker Gates**（0 / A / B / C / D / D-6 / D-Impl / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
 4. **产出**：scan.md（单文件汇总：Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List / structure 摘要）+ structure.md（文档 review 的 12 节骨架分析）+ SYMBOLS.md（覆盖率穷举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED）
