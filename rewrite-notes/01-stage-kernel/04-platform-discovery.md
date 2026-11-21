@@ -80,7 +80,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 | 动作 | 必须发生在 | 理由 |
 |---|---|---|
 | 取到描述的物理地址 | 启动早期（固件服务退出前） | 配置表/系统表只在窗口内有效 |
-| 解析描述 | 可以在内核里慢慢做 | 解析只依赖那份物理地址指向的字节，只要字节还在（这是 DTB 单块形态；ACPI 的表链不在这条保证内，见 §4.5 的 R04-T13） |
+| 解析描述 | 可以在内核里慢慢做 | 解析只依赖那份物理地址指向的字节，只要字节还在（DTB 是单块 blob；ACPI 链的根表与到 MADT 为止的表由 §4.5 的恒等窗口覆盖） |
 
 这条切分要成立，交接物必须能跨二进制存活。Rust 侧为此把交接物做成纯数据对，并把理由写在模块注释里（§3.6）。
 
@@ -1902,7 +1902,7 @@ fn check_gic_madt(
 
 `parse` 拿到手的只是一个物理地址，能被直接解引用，前提是此时内核已启用分页，且该物理地址落在 `arch_boot_impl` Step 1 的最小启动恒等窗口内——`os/libs/minix-platform/src/device_tree.rs:fn parse` 里 `fdt::Fdt::from_ptr(dtb_phys as *const u8)` 把物理地址当指针传给 `fdt` crate（不是低 4GB 全铺；窗口由 `push_platform_windows` 按每个 source 的长度建，`len=0` 才退回 2 MiB 片）。DTB 在直核腿是 boot-shim 留在低地址的静态固件内存；UEFI 腿的 `dtb_copy` owned copy 只用于交叉校验与 claims，内核 `platform_sources` 里仍是配置表 DTB 地址。两者都必须落在已注册窗口内。
 
-**窗口覆盖的已知缺口（ACPI 链）**：`push_platform_windows` 按 `platform_sources` 里每个 source 的 `phys_addr + len` 建窗口，因此 RSDP/DTB **本体**被覆盖；但 ACPI 的表链是 RSDP 内部指针给出的——`rsdt_addr`/`xsdt_addr` 指向 RSDT/XSDT，后者再指向 MADT 等表，这些地址既不在 `platform_sources` 里、也不在任何注册窗口内，窗口还按 2 MiB 片向外取整（`lib.rs:1244-1248`）。QEMU 能跑通的**推断**原因是固件把整条表链放在 RSDP 同一 2 MiB 片内（推断依据是 `push_platform_windows` 的 2 MiB 取整 + `readelf`/QEMU 表地址；串口日志不含 ACPI 地址，故未直接读出），属布局偶然，不是契约。DTB 链没有这个问题（DTB 是单块 blob，长度已在 `len` 里）。这个缺口登记为 `R04-T13`；文档不把它写成已解决。
+**ACPI 链的窗口覆盖**：`push_platform_windows` 先按 `platform_sources` 里每个 source 的 `phys_addr + len` 覆盖 RSDP/DTB **本体**；对 RSDP source 再调用 `minix-platform` 的 `table_chain_windows`，在分页前沿 RSDP → 根表 → 表项读指针：根表按全长入窗口，MADT 之前的表项各覆盖 4 字节签名（`find_madt` 只读到这里），MADT 按声明长度覆盖表体。因此 `AcpiDesc::parse` 解引用根表、前置签名与 MADT 时不再依赖 2 MiB 片取整的布局偶然。DTB 链没有额外指针（单块 blob，长度已在 `len` 里）。
 
 模块注释的 Safety 段把这条前提列成解析前置条件：
 
@@ -2260,7 +2260,7 @@ pub fn init_smp_state() {
     let bsp_logical = (0..topo.nr_cpus as usize)
         .find(|&i| topo.cpus[i].hw_id == bsp_hw)
         .unwrap_or(0) as u32;
-    with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top));
+    with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top()));
 ```
 
 两处对同一次选举用了不同的回退：`init_smp_state` 回到固件的 `bsp_id`，`init_protection` 回到逻辑 0。后者运行在 Phase B（`SmpState` 尚未建立），只能先给一个保守值；`elected_bsp_hw_id` 本身的回退是 `topo.bsp_id`，同样不保证返回值在 `topo.cpus[0..nr_cpus]` 内。若选举失败，两条路径会把 BSP 逻辑号定成不同的 CPU——这是当前实现的一处已知差异，也是本节末段 `gs:0x10` 错槽位故障形态的一个入口。
@@ -2596,7 +2596,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | R04-T10 | 多 IOAPIC 的 `ApicDesc`/GSI-range 模型（当前只表示首个 IOAPIC） | **设计/代码侧** |
 | R04-T11 | aarch64 ACPI 的 GICC UID → GICR 帧索引假设（非 QEMU 固件不保证） | **设计/测试侧** |
 | R04-T12 | `init_smp_state` 的 `unwrap_or(topo.bsp_id as usize)` 把 hw_id 当逻辑槽位：非连续 hw_id 时会选错槽位或越界（`CpuId::new_unchecked` 不检查上界）；需改成有界的保守回退 | **设计/代码侧** |
-| R04-T13 | ACPI 表链（RSDT/XSDT/MADT）不在任何已注册恒等窗口内；2 MiB 片取整让 QEMU 侥幸通过，非契约（§4.5） | **设计/代码侧** |
+| R04-T13 | ACPI 表链（RSDT/XSDT/MADT）不在任何已注册恒等窗口内；2 MiB 片取整让 QEMU 侥幸通过，非契约（§4.5） | **已实施**：`table_chain_windows` 在分页前注册根表、前置表签名与 MADT 表体（§4.5） |
 
 ---
 

@@ -1156,16 +1156,31 @@ fn identity_piece_is_device(piece: u64, piece_len: u64, windows: &[(u64, u64)]) 
 /// Capacity of the boot identity-window list. The windows are the pieces of
 /// physical memory the pre-DM boot path actually touches: shim image/stack,
 /// kernel LMA, root/bump/arena, modules, platform tables and device windows.
-const MAX_BOOT_WINDOWS: usize = 32;
+const MAX_BOOT_WINDOWS: usize = 180;
 
 /// Lower bound derivable from the fixed producers: at most 3 shim windows,
 /// kernel + root + bump + arena (4), 12 modules, 4 platform sources,
-/// 2 identity device windows, the direct-core caller's stack window, and the
-/// x86 low-2 MiB trampoline window. The extra headroom covers future one-off
+/// 2 identity device windows, the direct-core caller's stack window, the
+/// x86 low-2 MiB trampoline window, and a full ACPI chain (root + up to 35
+/// tables) per platform source. The extra headroom covers future one-off
 /// windows; the const assertion turns a capacity regression into a compile
 /// error instead of a boot panic.
-const BOOT_WINDOW_FLOOR: usize =
-    3 + 4 + minix_boot::NR_BOOT_MODULES + minix_boot::WIRE_PLATFORM_CAP + 2 + 1 + 1;
+const BOOT_WINDOW_FLOOR: usize = 3
+    + 4
+    + minix_boot::NR_BOOT_MODULES
+    + minix_boot::WIRE_PLATFORM_CAP
+    + 2
+    + 1
+    + 1
+    + ACPI_CHAIN_WINDOWS;
+
+/// ACPI table-chain windows reserved per platform source. riscv64 has no
+/// ACPI discovery path, so the module is not compiled there.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const ACPI_CHAIN_WINDOWS: usize =
+    minix_platform::acpi::TABLE_CHAIN_MAX * minix_boot::WIRE_PLATFORM_CAP;
+#[cfg(target_arch = "riscv64")]
+const ACPI_CHAIN_WINDOWS: usize = 0;
 const _: () = assert!(MAX_BOOT_WINDOWS >= BOOT_WINDOW_FLOOR);
 
 const EMPTY_PHYS_RANGE: PhysRange = match PhysRange::new(PhysBytes(0), PhysBytes(0)) {
@@ -1242,8 +1257,8 @@ fn push_platform_windows(
     sources: &[minix_boot::PlatformDescSource],
 ) {
     for source in sources {
+        let start = source.phys_addr().0;
         if source.has_len() {
-            let start = source.phys_addr().0;
             windows.push(
                 start,
                 start
@@ -1252,7 +1267,23 @@ fn push_platform_windows(
             );
         } else {
             // Legacy producer: no length recorded, cover the address's piece.
-            windows.push_2m(source.phys_addr().0);
+            windows.push_2m(start);
+        }
+        // The RSDP blob is only the entry point: XSDT/RSDT and the tables it
+        // points at are separate physical allocations. Consume those here,
+        // while firmware memory is still identity-accessible, instead of
+        // relying on the address's 2 MiB piece to happen to cover them.
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        if source.kind() == minix_boot::RSDP {
+            let mut chain = [(0u64, 0u64); minix_platform::acpi::TABLE_CHAIN_MAX];
+            // SAFETY: the producer recorded this as an ACPI RSDP; boot is
+            // pre-paging, so firmware memory is identity-accessible.
+            let n = unsafe {
+                minix_platform::acpi::table_chain_windows(start as usize, &mut chain)
+            };
+            for &(span_start, span_end) in &chain[..n] {
+                windows.push(span_start, span_end);
+            }
         }
     }
 }

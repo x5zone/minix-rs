@@ -60,6 +60,10 @@ const RSDP_REV_2: u8 = 2;
 /// table from turning into an unbounded physical-memory scan.
 const MAX_ROOT_ENTRIES: usize = 35;
 
+/// Upper bound of the `(root table, pointed-at tables...)` span list returned
+/// by [`table_chain_windows`]: one root plus every entry the root may carry.
+pub const TABLE_CHAIN_MAX: usize = 1 + MAX_ROOT_ENTRIES;
+
 /// Upper bound for a single ACPI table (MADT). 64 KiB is a generous
 /// bound for the tables this parser consumes; a larger declared length is
 /// treated as corrupt.
@@ -398,6 +402,142 @@ unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Result<usize, AcpiParseEr
     }
 
     Err(AcpiParseError::MadtNotFound)
+}
+
+/// Enumerate the ACPI chain reachable from the RSDP as physical
+/// `[start, end)` spans: the root table (XSDT/RSDT) plus every table it
+/// points at.
+///
+/// The RSDP blob itself is not included: the producer already records its
+/// length in `PlatformDescSource`. Returns the number of spans written
+/// (`0..=TABLE_CHAIN_MAX`). Malformed firmware input yields `0` rather than
+/// a panic; the caller has already mapped the RSDP blob and must keep booting.
+///
+/// Mapping every pointed-at table, not just the MADT, is required because the
+/// MADT search reads each preceding table's signature before it finds
+/// `"APIC"`.
+///
+/// # Safety
+///
+/// `rsdp_phys` must point at readable firmware memory in the current address
+/// space. All pointers read from it are treated as ACPI physical addresses;
+/// the caller must run this before paging (while firmware memory is still
+/// identity-accessible).
+pub unsafe fn table_chain_windows(rsdp_phys: usize, out: &mut [(u64, u64)]) -> usize {
+    if out.is_empty() {
+        return 0;
+    }
+    let sig = unsafe { core::slice::from_raw_parts(rsdp_phys as *const u8, 8) };
+    if sig != &RSDP_SIGNATURE[..] {
+        return 0;
+    }
+    if !unsafe { checksum_ok(rsdp_phys, 20) } {
+        return 0;
+    }
+    let revision = {
+        let Some(rev_addr) = rsdp_phys.checked_add(15) else {
+            return 0;
+        };
+        unsafe { *(rev_addr as *const u8) }
+    };
+    let is_xsdt = revision >= RSDP_REV_2;
+    let root = if is_xsdt {
+        let Some(ptr_addr) = rsdp_phys.checked_add(24) else {
+            return 0;
+        };
+        let bytes = unsafe { core::slice::from_raw_parts(ptr_addr as *const u8, 8) };
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(bytes);
+        u64::from_le_bytes(arr) as usize
+    } else {
+        let Some(ptr_addr) = rsdp_phys.checked_add(16) else {
+            return 0;
+        };
+        let bytes = unsafe { core::slice::from_raw_parts(ptr_addr as *const u8, 4) };
+        u32_le_from_slice(bytes) as usize
+    };
+    if root == 0 {
+        return 0;
+    }
+
+    let header = core::mem::size_of::<SdtHeader>();
+    let ptr_size = if is_xsdt { 8 } else { 4 };
+    let expected: &[u8; 4] = if is_xsdt { b"XSDT" } else { b"RSDT" };
+    let root_sig = unsafe { core::slice::from_raw_parts(root as *const u8, 4) };
+    if root_sig != expected {
+        return 0;
+    }
+    let root_len_bytes = {
+        let Some(len_addr) = root.checked_add(4) else {
+            return 0;
+        };
+        unsafe { core::slice::from_raw_parts(len_addr as *const u8, 4) }
+    };
+    let root_len = u32_le_from_slice(root_len_bytes) as usize;
+    if root_len < header || root_len > header + MAX_ROOT_ENTRIES * ptr_size {
+        return 0;
+    }
+    if !unsafe { checksum_ok(root, root_len) } {
+        return 0;
+    }
+
+    let mut written = 0;
+    let Some(root_end) = root.checked_add(root_len) else {
+        return 0;
+    };
+    out[written] = (root as u64, root_end as u64);
+    written += 1;
+
+    let entry_count = (root_len - header) / ptr_size;
+    let entries_start = root + header;
+    for i in 0..entry_count {
+        if written == out.len() {
+            break;
+        }
+        let entry_addr = entries_start + i * ptr_size;
+        let table = if is_xsdt {
+            let bytes = unsafe { core::slice::from_raw_parts(entry_addr as *const u8, 8) };
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(bytes);
+            u64::from_le_bytes(arr) as usize
+        } else {
+            let bytes = unsafe { core::slice::from_raw_parts(entry_addr as *const u8, 4) };
+            u32_le_from_slice(bytes) as usize
+        };
+        if table == 0 {
+            continue;
+        }
+        let sig = unsafe { core::slice::from_raw_parts(table as *const u8, 4) };
+        let is_madt = sig == &MADT_SIGNATURE[..];
+        // The MADT search reads each preceding entry's 4-byte signature. Only
+        // the MADT itself is parsed further, so map its full declared length
+        // (or, for a malformed length, its length field) and stop there —
+        // later tables are never read.
+        let span_len = if is_madt {
+            let Some(len_addr) = table.checked_add(4) else {
+                continue;
+            };
+            let len_bytes = unsafe {
+                core::slice::from_raw_parts(len_addr as *const u8, 4)
+            };
+            let len = u32_le_from_slice(len_bytes) as usize;
+            if (header..=MAX_TABLE_LEN).contains(&len) {
+                len
+            } else {
+                8
+            }
+        } else {
+            4
+        };
+        if let Some(end) = table.checked_add(span_len) {
+            out[written] = (table as u64, end as u64);
+            written += 1;
+        }
+        if is_madt {
+            break;
+        }
+    }
+    written
 }
 
 /// MADT parse result: `(lapic_base, ioapic_base, nr_irqs, cpus, nr_cpus, bsp_id)`.
@@ -1102,6 +1242,34 @@ mod tests {
         // Checksum byte left zero: the signature bytes make the sum nonzero.
         let r = unsafe { AcpiDesc::parse(buf.as_ptr() as usize) };
         assert!(matches!(r, Err(AcpiParseError::BadRsdpChecksum)));
+    }
+
+    #[test]
+    fn table_chain_windows_reports_root_and_madt() {
+        let mut buf = [0u8; 0x400];
+        let base = buf.as_ptr() as usize;
+        buf[0..8].copy_from_slice(b"RSD PTR ");
+        buf[15] = RSDP_REV_2;
+        buf[24..32].copy_from_slice(&((base + 0x100) as u64).to_le_bytes());
+        put_checksum(&mut buf, 0, 20, 8);
+
+        let root = 0x100usize;
+        let root_len = 36 + 8;
+        buf[root..root + 4].copy_from_slice(b"XSDT");
+        buf[root + 4..root + 8].copy_from_slice(&(root_len as u32).to_le_bytes());
+        buf[root + 36..root + 44].copy_from_slice(&((base + 0x200) as u64).to_le_bytes());
+        put_checksum(&mut buf, root, root_len, 9);
+
+        let madt = 0x200usize;
+        let madt_len = 44usize;
+        buf[madt..madt + 4].copy_from_slice(b"APIC");
+        buf[madt + 4..madt + 8].copy_from_slice(&(madt_len as u32).to_le_bytes());
+
+        let mut out = [(0u64, 0u64); 2];
+        let n = unsafe { table_chain_windows(base, &mut out) };
+        assert_eq!(n, 2, "root + MADT should be reported");
+        assert_eq!(out[0], ((base + root) as u64, (base + root + root_len) as u64));
+        assert_eq!(out[1], ((base + madt) as u64, (base + madt + madt_len) as u64));
     }
 
     #[test]
