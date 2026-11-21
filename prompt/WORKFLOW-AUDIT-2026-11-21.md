@@ -198,3 +198,37 @@ python3 tools/review-units.py audit --doc rewrite-notes/01-stage-kernel/01-boot-
 2. Gate G：已实现 `verify-check.py --finalize`；行判断仍人工。
 3. 574 个提交：已选择提交并 push，让 CI 跑一次；红当独立代码债处理。
 4. TODO v2 Phase 2：按 kind 分档（code/doc 强 ref 80%，design/process 用 unit/decision/blocked_reason），coordination 用独立项目级门。
+
+---
+
+## Cycle 2（2026-11-22）：六项落地后的再审计
+
+范围：验证 A1（V3.9 入口指针）、A2（轮次预算单一状态机）、A5（残留 sweep）、B2（证据 replay token）、C1（先红后绿准入）、C4（Resume Point 指针化）、B1（CI 出版门矩阵）落地后的 workflow。三轮均为新 agent，不复用 Cycle 1。
+
+### 结果
+
+| 轮次 | 子 agent | 结论 | 处置 |
+|---|---|---|---|
+| Round 1 | inventory / mechanical / consistency | inventory P1 1（AGENTS `16-smp.md` 路径）+ P2 5；mechanical P0 2（review-scan 旧收口、`.claude` backlog 矩阵）+ P1 6；consistency P0 2（CI 过滤误伤全树、Resume 载体分叉）+ P1 2 | 全部修复；提交 `ddd766a09`、`f12edf0fa` |
+| Round 2 | subtraction / regression | subtraction P0 1（跨 edition 3 轮无工具 FAIL）+ P1 6；regression P1 6（selector 误伤 compress-archive、D-999 幻影、散文 token、C1 未传播、C1 时序、Resume 否定/围栏） | 全部修复；提交 `f7adb2578`、`d0143876c`；仅 R2-11 重复告警留 P2 |
+| Round 3 | 主 agent 确认 | 新增 P0 = 0，新增 P1 = 0，新增 P2 = 1 | **cycle 2 收敛（带已知残余）** |
+
+关键修复：
+
+- `publication-changed-docs.sh`：变更篇目选择器抽成带 `--self-test` 的脚本；排除只按 `NN-` 前缀，保留 `11-compress-archive.md`，不再被 `rewrite-notes` 的 `note` 误伤。
+- `eval-trace-check.py`：跨 edition 修改轮总数 >3 且无 `rewrite-exception` → FAIL；`review-units.md` 明确 `new-edition` 只清单元计数、不清篇级 3 轮。
+- `review-units.py`：evidence 必须含可验证 token（`path:line` 文件与行号、`test::` 真实 fn、存在的 `D-xxx`、真实 commit、行首 `rg/grep/cargo test`、存在的 `tools/` 命令）；注释、幻影路径、散文否定句不算。
+- `verify-check.py --preflight`：Resume Point 去代码围栏后校验四段标题、正文非空、`--preflight`/`eval-trace-check.py`/`todo-ledger.py` 三条命令；C4 的模板统一写 `scan.md`。
+- C1 传播为“五条准入判据”；准入只要求红命令，绿在 L3/L3.5 回填，避免与冻结条款时序冲突。
+
+### 残余
+
+1. C1 仍无机械门：`defect-ledger` 没有 `red_cmd`/`green_cmd` 字段，工具不读取。
+2. Skill Invocation Log、Gate 证据 L1/L2/L3 仍靠人工。
+3. SUB3-1..4（review-profiles 精简、DOC-ITER 降历史、state-validate 并入 preflight、diff-trae 并入 generate）按用户规则搁置待裁决。
+4. `rules-consistency` 仍卡在 `eval-trace-check.py --self-test`；已装 `rg`/PyYAML、加失败注解；本地 60 次循环、`env -i`、`LC_ALL=C`、无 HOME、shallow clone 均通过，CI 独有失败需认证日志。
+5. B1 仍是 report-only；TODO Phase 2 的 ref 补齐是独立人工批次（code 5/16、coordination 5/51、design 0/4、doc 1/2）。
+
+### 提交
+
+`c002805cb`（六项落地）、`ddd766a09`（R1 inventory/mechanical）、`f12edf0fa`（R1 consistency）、`f7adb2578`（R2 跨 edition/selector）、`d0143876c`（R2 regression）。
