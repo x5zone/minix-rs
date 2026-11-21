@@ -328,7 +328,7 @@ R20  ∀树∀p: StartupNoAccessRequirements(树,p).访问范围 ∩ (启动对�
 **最终根在审计通过后到 T2 启用前必须冻结**（第二十五轮定，取评审人的冻结方案）：S3 审计通过后禁止任何 PTE 修改；S4 的验收确认**启用的仍是同一份已审计的根**。不允许「先切进未经证明的页表、再靠 S4 事后遍历背书」。
 
 R21  ∀p ∈ FinalRootAuditPhases: MappingSatisfies(FinalRootRequiredMappings, ActualMappings(最终根,p))
-      ← `FinalRootRequiredMappings = Ordinary(S3) ∪ Ordinary(S4) ∪ StartupMappingRequirements(最终根,S3) ∪ StartupMappingRequirements(最终根,S4) ∪ DeviceMappingRequirements(最终根,S3) ∪ DeviceMappingRequirements(最终根,S4)`（ADR 0002；第二十八轮补齐三类义务——只并普通映射会漏掉 S4 才需要的启动对象与设备窗口）
+      ← `FinalRootRequiredMappings = Ordinary(S3) ∪ Ordinary(S4) ∪ StartupMappingRequirements(最终根,S3) ∪ StartupMappingRequirements(最终根,S4) ∪ DeviceMappingRequirements(最终根,S3) ∪ DeviceMappingRequirements(最终根,S4)`（ADR 0002，`rewrite-notes/01-stage-kernel/adr-0002-final-root-audit-freeze.md`；第二十八轮补齐三类义务——只并普通映射会漏掉 S4 才需要的启动对象与设备窗口）
       ← **审计时点**：S3 构造完成、T2 之前对整份目标审计一次，通过后冻结 PTE；S4 只确认启用的仍是同一份根并满足同一份目标。同一页在 S3 与 S4 的精确权限/语义不能由同一份根同时满足时，**构造期拒绝**
       ← 第二十四轮把量词域写实：`FinalRootAuditPhases = { S3 的最终根构造完成点, S4 }`（S1/S2 没有可遍历的最终根，不适用）。
         若 S3 构造最终根时就包含了 S4 才释放的对象页，**必须以 S4 的规划结果为依据预先建立映射**，而不是等到 S4 才发现缺页

@@ -1,4 +1,4 @@
-# CONTEXT.md — 内存图政策术语表
+# 内存图政策术语表
 
 本文件只放**已敲定的术语**，不放规格、不放实现细节。术语在 `rewrite-notes/01-stage-kernel/01-adjudication-brief-memmap-open-items.md` 里首次定义，这里登记规范名与一句话含义。
 
