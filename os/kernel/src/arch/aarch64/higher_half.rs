@@ -22,11 +22,16 @@ use minix_types::VirBytes;
 pub struct AArch64HigherHalf;
 
 impl HigherHalf for AArch64HigherHalf {
-    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> ! {
+    unsafe fn jump_to_kmain(kinfo: &KernelInfo) -> ! {
+        // The stack top is derived from the same `kinfo` the jump hands to
+        // `kmain`; keeping it out of the signature removes the second source
+        // that could disagree with the image span.
+        let stack_top = kinfo.kern_stack_top();
         // SAFETY: Caller guarantees paging is enabled with both identity
-        // and kernel high mappings. kinfo is valid and accessible at high
-        // address. stack_top is a valid, 16-byte-aligned high virtual
-        // address. This is called exactly once from the boot CPU.
+        // and kernel high mappings, and that `kinfo` is valid and accessible
+        // at a high address. The stack top derived from `kinfo` is asserted
+        // 16-byte-aligned by boot validation. This is called exactly once
+        // from the boot CPU.
         //
         // The inline asm performs the same sequence as Minix3 head.S:
         //   mov sp, stack_top       // switch stack to high address

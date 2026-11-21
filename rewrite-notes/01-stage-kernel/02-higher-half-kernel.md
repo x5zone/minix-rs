@@ -9,7 +9,7 @@
 
 > **后续**：[03-kmain-cstart.md](03-kmain-cstart.md)（保护结构与 `cstart` 三行调用）、[07 篇页表结构与接口](../02-stage-vm/07-pagetable-struct.md)（页表多级结构与接口的完整定义——本篇 §4.1 只用到基址选择这一面）。
 
-> **教学目标**：①同一个镜像的两套地址与"三件事必须对齐"（§1.1、§1.2）；②`kernel.lds` 的双地址常量、`AT()` 与两段式布局（§2.1、§2.2）；③`head.S` 一次跳转里的两种寻址与 `k_initial_stktop` 的落段（§2.3、§2.4）；④Rust 三种链接脚本形态的判据（§3.1、§4.1）；⑤ELF 解析器自建与"按装载地址摆放"（§3.2、§4.2）；⑥成对换栈跳转的 trait 契约与四条前置条件（§3.4、§4.3）；⑦镜像跨距与映射粒度的收口（§3.5、§4.1）；⑧从装载到 `kmain` 的完整路径（§4.4；C↔Rust 对照见 §4.5）；⑨测试与诊断（§5、§6）。
+> **教学目标**：①同一个镜像的两套地址与"三件事必须对齐"（§1.1、§1.2）；②`kernel.lds` 的双地址常量、`AT()` 与两段式布局（§2.1、§2.2）；③`head.S` 一次跳转里的两种寻址与 `k_initial_stktop` 的落段（§2.3、§2.4）；④Rust 三种链接脚本形态的判据（§3.1、§4.1）；⑤ELF 解析器自建与"按装载地址摆放"（§3.2、§4.2）；⑥成对换栈跳转的 trait 契约与三条前置条件（§3.4、§4.3）；⑦镜像跨距与映射粒度的收口（§3.5、§4.1）；⑧从装载到 `kmain` 的完整路径（§4.4；C↔Rust 对照见 §4.5）；⑨测试与诊断（§5、§6）。
 
 上一篇结束时，引导器已经把启动信息交给内核、页表也建好并开启了分页。剩下的动作是让 CPU 真正站到高地址上去执行内核主流程。这一篇把这段路拆成三件事：镜像的两个地址是链接期定下的、段体字节由装载者按其中的一个地址摆放、交接代码成对地换栈并跳到另一个地址。
 
@@ -568,21 +568,20 @@ Rust 侧把它写成一个 trait，前置条件写进文档与 `unsafe` 契约�
 ```rust
 /* 节选（仅保留 trait 与方法签名；模块与条目说明段未摘录），os/kernel/src/boot/higher_half.rs:trait HigherHalf。 */
 pub trait HigherHalf {
-    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> !;
+    unsafe fn jump_to_kmain(kinfo: &KernelInfo) -> !;
 }
 ```
 
-方法上方的 Safety 段列了四条前置条件：①分页已启用且恒等映射与内核高映射都已建立；②`kinfo` 在高地址有效可访问；③`stack_top` 是一个有效的、16 字节对齐的高半虚拟地址；④只从引导 CPU 调用一次。下表按顺序对上这四条（第 1、2、3、5 行），第 4 行记的是**返回类型**（`-> !`）——它与四条并列，但**不是前置条件**：
+方法上方的 Safety 段列了三条前置条件：①分页已启用且恒等映射与内核高映射都已建立；②`kinfo` 在高地址有效可访问；③只从引导 CPU 调用一次。栈顶不再是形参：三份实现都在函数体里用 `kinfo.kern_stack_top()` 现算，与 `kmain` 收到的启动信息同源。下表按顺序对上这三条（第 1、2、4 行），第 3 行记的是**返回类型**（`-> !`）——它与三条并列，但**不是前置条件**：
 
 | 前置条件 | 谁保证 | 违反时的落点 |
 |---|---|---|
 | 分页已启用、两套映射已建立 | 调用者（direct 面是 `arch_boot_finish` 里 `arch_boot_impl` 的返回点；v1 面是 `resume_after_v1_decode`（三架构同名壳，公共体 `resume_additive`）） | 取指或压栈落在无映射地址 |
 | 跳转传入的指针与 `kmain` 消费的副本 | 调用者保证传入地址可读；生产 `kmain` 第一条语句即遮蔽为 `.bss` 副本，形参只做交接、不解引用；测试载体若直接解引用则需自行保证 | 生产路径解引用副本时页错误；载体解引用形参时页错误 |
-| `stack_top` 16 字节对齐 | 断言覆盖 `boot_validate_and_prepare` 现算的 `kern_stack_top`（与 `kinfo.kern_stack_top()` 同值）；形参由两个调用点的写法保证（都传 `kinfo.kern_stack_top()`），不是断言保证 | 入口处需要对齐的指令 |
 | 不返回 | 类型：`-> !` 让"返回"在编译期不成立 | 无法表达（不返回是签名的一部分） |
-| 只调用一次 | 调用者（Safety 段的第四条写明；类型系统不区分调用次数） | 第二次调用会在已经切过去的栈上再切一次，落点不可预期 |
+| 只调用一次 | 调用者（Safety 段的第三条写明；类型系统不区分调用次数） | 第二次调用会在已经切过去的栈上再切一次，落点不可预期 |
 
-`stack_top` 参数当前是可表示的冗余值：两个生产调用点都从 `kinfo.kern_stack_top()` 取值，单独传一个不同的值不会被类型或代码检查拦住；把它改为从 `kinfo` 现算、删除形参属于设计批（D2-04），不影响当前契约。
+栈顶的 16 字节对齐不再是调用者要传对的值：`boot_validate_and_prepare` 的断言覆盖现算的 `kern_stack_top`，三份实现拿到的就是同一个值（`kinfo.kern_stack_top()`），形参与断言可能各说各话的那条缝已经消掉。删除形参的动机是“第二来源”：只要它还以参数形式存在，一个与 `kinfo` 不一致的值在类型上完全合法，编译器和测试都不会拦住。
 
 三架构的实现各自放在自己的模块里（`higher_half.rs` 的 [`struct X86_64HigherHalf`](os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf)、`higher_half.rs` 的 [`struct AArch64HigherHalf`](os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf)、`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf)）：两个生产调用点（`arch_boot_finish`、`resume_additive`）各自经 `arch_boot` 的三份 `#[cfg]` 分支选中本架构实现，所以“两个调用点”与“三份实现分支”不是同一个计数；§4.3 逐条对照。
 
@@ -597,7 +596,7 @@ pub trait HigherHalf {
 
 **把跳转函数写成返回 `()` 会怎样**：编译器要为它保留返回路径；但换栈之后，返回地址已经不在新栈上，`ret` 从新栈顶取到的是一条未定义的"返回地址"，控制流会跳到不可预期的地方。`-> !` 把这条约束写进类型，编译器也不再生成返回路径。
 
-表里四条是调用者要保证的；还有一条是链接布局的前提：“调用点的执行地址 = 链接地址”。x86_64 的 `call` 要求它，代码不做运行时检查，靠链接布局保证；aarch64 的 `ldr` 取链接期绝对值，但 literal 读取是 PC 相对的，同一镜像内 literal 与代码一起被摆放，所以不需要调用点 = 链接地址；riscv64 的 `la` 是 PC 相对，direct leg 不满足它，所以实现用 `auipc/bltu` 读当前 PC，在低于 `kern_virt_base` 时补 `delta`。这不是“实现内部处理”的三合一：x86_64 侧没有检查，riscv64 侧才有显式补偿；把它写成调用者前置条件会把 riscv64 的实现细节推给调用者，所以留在实现里，但 x86_64 的链接期前提必须单独说清。
+表里三条是调用者要保证的；还有一条是链接布局的前提：“调用点的执行地址 = 链接地址”。x86_64 的 `call` 要求它，代码不做运行时检查，靠链接布局保证；aarch64 的 `ldr` 取链接期绝对值，但 literal 读取是 PC 相对的，同一镜像内 literal 与代码一起被摆放，所以不需要调用点 = 链接地址；riscv64 的 `la` 是 PC 相对，direct leg 不满足它，所以实现用 `auipc/bltu` 读当前 PC，在低于 `kern_virt_base` 时补 `delta`。这不是“实现内部处理”的三合一：x86_64 侧没有检查，riscv64 侧才有显式补偿；把它写成调用者前置条件会把 riscv64 的实现细节推给调用者，所以留在实现里，但 x86_64 的链接期前提必须单独说清。
 
 再算一次对齐这笔账（x86_64）：`mov rsp, stack_top` 之后 RSP = stack_top；`and rsp, -16` 对已经 16 字节对齐的值是空操作；`push 0` 减 8，`sub rsp, 8` 再减 8，使 `call` 前的 RSP 回到 16 字节边界；`call` 压返回地址再减 8，进入 `kmain` 时 RSP = stack_top − 24，即 8 mod 16——这正是 System V 在函数入口要求的 `(RSP + 8)` 为 16 的倍数。生产 `kmain` 是普通 Rust 函数（`naked_asm!` 只用于 `qemu_test` 载体），所以这条 psABI 对齐是必须的；`sp_aligned` 断言相应检查 `sp & 0xF == 8`。`and rsp, -16` 与 `sub rsp, 8` 一起把这条不变量钉在本地，而不是修补上游。真正会坏的有三种情形：①三者都去掉时，一个非 16 对齐的 `stack_top` 会一路传到 `kmain`；②**只去掉 `sub rsp, 8` 也会坏**——按上面的算式，`push 0` 之后 `and` 不再有作用，`call` 前 RSP 是 8 mod 16；`call` 压返回地址后入口 RSP 变成 0 mod 16，而 System V 要求入口 `(RSP+8) % 16 == 0` 即 RSP ≡ 8 mod 16，正好违反。`and` 只修正上游的 `stack_top`，`sub` 才是补 `call` 那 8 字节的那一步；③**只去掉 `push 0`** 时终止槽缺失，且 `call` 前 RSP 由 `and` 后的 16 边界直接减 8（`call` 压返回地址），入口 RSP 变成 0 mod 16，同样违反 System V 的 `(RSP+8) % 16 == 0`，`sp_aligned` 会在真机上当场红。
 
@@ -893,7 +892,8 @@ trait 的三份实现做同一件事，指令不同。x86_64 全文（`higher_ha
 ```rust
 /* 节选（保留 impl 与 asm 块，注释有删节），os/kernel/src/arch/x86_64/higher_half.rs。 */
 impl HigherHalf for X86_64HigherHalf {
-    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> ! {
+    unsafe fn jump_to_kmain(kinfo: &KernelInfo) -> ! {
+        let stack_top = kinfo.kern_stack_top();
         unsafe {
             core::arch::asm!(
                 "mov rsp, {stktop}",

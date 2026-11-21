@@ -35,15 +35,13 @@ pub trait HigherHalf {
     /// # Arguments
     ///
     /// - `kinfo`: Pointer to KernelInfo, passed as the first argument to kmain
-    /// - `stack_top`: Virtual address of the kernel stack top (high address)
     ///
     /// # Safety
     ///
     /// Caller must ensure:
     /// - Paging is enabled with both identity and kernel high mappings
     /// - `kinfo` pointer is valid and accessible at high address
-    /// - `stack_top` is a valid, 16-byte-aligned virtual address in the
-    ///   kernel's high-half mapping
-    /// - This is called exactly once, from the boot CPU
-    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> !;
+    /// - This is called exactly once, from the boot CPU; the stack top is
+    ///   derived from `kinfo.kern_stack_top()` inside the implementation
+    unsafe fn jump_to_kmain(kinfo: &KernelInfo) -> !;
 }

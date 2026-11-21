@@ -229,7 +229,7 @@ where
     // kernel high mappings. kinfo is the kernel-.bss copy — valid at the
     // high address. kern_stack_top() derives the image-tail stack top from
     // the two image-span fields (v10 / D-062).
-    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top()) }
+    unsafe { H::jump_to_kmain(kinfo) }
 }
 
 /// Architecture-specific boot entry (called by boot-shim after ExitBootServices).
@@ -367,7 +367,7 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
     // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
     // image's high-half-resident `.bss` copy; `kern_stack_top` is the high
     // virtual stack the inline boot used successfully.
-    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top()) }
+    unsafe { H::jump_to_kmain(kinfo) }
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
@@ -6248,7 +6248,7 @@ mod tests {
         /// Test mock — does not actually perform a stack jump.
         /// Safe to call in any test context because it only stores to an
         /// AtomicBool and enters an infinite loop.
-        unsafe fn jump_to_kmain(_kinfo: &KernelInfo, _stack_top: VirBytes) -> ! {
+        unsafe fn jump_to_kmain(_kinfo: &KernelInfo) -> ! {
             HIGHER_HALF_CALLED.store(true, Ordering::SeqCst);
             // Don't actually jump — spin for test purposes.
             loop {
