@@ -27,6 +27,14 @@ impl HigherHalf for AArch64HigherHalf {
         // `kmain`; keeping it out of the signature removes the second source
         // that could disagree with the image span.
         let stack_top = kinfo.kern_stack_top();
+        // Production-path ABI check (R02-T04): AAPCS64 requires SP to be
+        // 16-byte aligned at kmain entry; the asm's `and` keeps it aligned,
+        // and this asserts the value handed in.
+        assert_eq!(
+            stack_top.0 & 0xF,
+            0,
+            "jump_to_kmain: aarch64 kern_stack_top must be 16-byte aligned"
+        );
         // SAFETY: Caller guarantees paging is enabled with both identity
         // and kernel high mappings, and that `kinfo` is valid and accessible
         // at a high address. The stack top derived from `kinfo` is asserted

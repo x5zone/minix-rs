@@ -1175,9 +1175,9 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 | M10 | 镜像跨距的 2MiB 收口（§3.5） | 跨距 2MiB 对齐、与 `bootface` 常量一致 | 已覆盖 | L5/L9（L9 三架构，按架构选 `bootface.rs`/`bootface_a64.rs`） |
 | M11 | 交接的寄存器约定（§4.3、§4.4） | `kinfo` 经 `.bss` 副本交接（形参按 ABI 传入 RDI/X0/A0，生产 `kmain` 第一条语句即遮蔽为全局副本） | 部分覆盖 | NK4-A 的寄存器覆写修复与注释；**行为性，无自动断言** |
 | M12 | 布局断言的持续成立（§5.3） | L0–L10 全过 | 已覆盖（手工复跑） | `check-layout.sh` 三架构实跑（本轮复跑全 PASS）；这是一次性复跑，不是常驻 CI 断言 |
-| M13 | 生产 `kmain` 入口的 ABI 栈形（§3.4、§4.3） | x86_64 `call` 前 RSP 16 对齐、入口 `RSP ≡ 8 (mod 16)`；aarch64/riscv64 入口 SP 16 字节对齐 | 部分覆盖 | x86_64 asm 加 `sub rsp, 8`；`kmain_verify` 的 `sp_aligned` 按架构检查（x86 8、aarch64/riscv 0）；**该断言只在 qemu_test 载体执行** → **R02-T04** |
+| M13 | 生产 `kmain` 入口的 ABI 栈形（§3.4、§4.3） | x86_64 `call` 前 RSP 16 对齐、入口 `RSP ≡ 8 (mod 16)`；aarch64/riscv64 入口 SP 16 字节对齐 | 已覆盖 | 三份 `jump_to_kmain` 在生产路径上断言 `kern_stack_top` 16 字节对齐，x86_64 另断言 `(stack_top − 24) ≡ 8 (mod 16)`（R02-T04）；`kmain_verify` 的 `sp_aligned` 仍在载体侧复核入口值 |
 
-**新 TODO（对源码/测试 workflow 的需求输入）**：`R02-T04`（生产 `kmain` 入口的 ABI 栈形：把 `sp_aligned` 的架构相关检查从 qemu_test 载体扩到生产入口，或在 `kmain` 序言前加断言）。
+本节已无未闭合的机制缺口；下一次新增机制时继续按同一格式补行。
 
 ---
 

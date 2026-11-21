@@ -27,6 +27,20 @@ impl HigherHalf for X86_64HigherHalf {
         // `kmain`; keeping it out of the signature removes the second source
         // that could disagree with the image span.
         let stack_top = kinfo.kern_stack_top();
+        // Production-path ABI check (R02-T04): the qemu_test carrier checks
+        // the entry SP after the jump; this is the same invariant on the
+        // production path, before the asm runs. stack_top is 16-aligned and
+        // the asm's `and`/`push`/`sub` sequence makes entry RSP 8 mod 16.
+        assert_eq!(
+            stack_top.0 & 0xF,
+            0,
+            "jump_to_kmain: kern_stack_top must be 16-byte aligned"
+        );
+        assert_eq!(
+            stack_top.0.wrapping_sub(24) & 0xF,
+            8,
+            "jump_to_kmain: x86-64 kmain entry RSP must be 8 mod 16"
+        );
         // SAFETY: Caller guarantees paging is enabled with both identity
         // and kernel high mappings, and that `kinfo` is valid and accessible
         // at a high address. The stack top derived from `kinfo` is asserted
