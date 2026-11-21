@@ -208,9 +208,10 @@ pub struct Frozen<T> {
 // SAFETY: the freeze protocol makes concurrent access race-free —
 // exactly one write (Release-published), readers acquire before every
 // access, and a frozen `T` is only ever shared as `&T` (immutable).
-// `Send` is required on `T` so the value may be written on the BSP and
-// read on an AP (the value crosses a thread boundary at freeze time).
-unsafe impl<T: Send> Sync for Frozen<T> {}
+// `Send` lets the value cross from the BSP to APs at freeze time; `Sync`
+// is required because `get()` hands out `&T` to multiple CPUs after the
+// freeze, so `T: !Sync` would make the shared reference unsound.
+unsafe impl<T: Send + Sync> Sync for Frozen<T> {}
 
 impl<T> Frozen<T> {
     /// Creates an empty (not yet frozen) cell — `const`, usable in statics.
