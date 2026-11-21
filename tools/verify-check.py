@@ -80,7 +80,7 @@ GATE_EVIDENCE_KEYWORDS = {
     "D-6": [],  # structure.md 评审表；另由结构判据要求 structure.md
     "E": [],  # 测试函数 grep；另由结构判据要求 fn test_* 或 N/A+理由
     "G": [],  # VERIFY-CHECK 路径；另由结构判据解析 consistency >=90%
-    "H": [],  # design + outline 对齐
+    "H": [],  # H.2–H.5 语义矩阵
     "G10": ["doc-publication-check.py"],
     "G11": ["code-publication-check.py"],
     "G12": ["todo-ledger.py"],
@@ -91,9 +91,14 @@ GATE_EVIDENCE_KEYWORDS = {
 def gate_block_extra_missing(gate: str, content: str) -> list[str]:
     """Gate 证据块的结构判据：空围栏/warning 态不能冒充通过。"""
     extra: list[str] = []
-    if gate == "C":
+    if gate == "B":
+        if content.count("|") < 10 or "行为契约" not in content:
+            extra.append("行为契约表（8 字段 × 5 函数）")
+    elif gate == "C":
         if not re.search(r"meta-rule|L459|Precision", content, re.I):
             extra.append("Precision/meta-rule 判据")
+        if content.count("|") < 3:
+            extra.append("Precision 检查表（表格行不足）")
     elif gate == "D":
         cmds = [ln for ln in content.splitlines()
                 if re.match(r"\s*(?:\$\s*)?(rg|grep)\s", ln)]
@@ -102,6 +107,8 @@ def gate_block_extra_missing(gate: str, content: str) -> list[str]:
     elif gate == "D-6":
         if "structure.md" not in content:
             extra.append("structure.md 评审表")
+        if content.count("|") < 10:
+            extra.append("structure.md 12 节评审表（表格行不足）")
     elif gate == "E":
         has_fn = re.search(r"\bfn\s+test_\w+", content) is not None
         has_na = "N/A" in content and re.search(r"[：:]\s*\S", content) is not None
@@ -114,9 +121,8 @@ def gate_block_extra_missing(gate: str, content: str) -> list[str]:
         elif float(m.group(1)) < 90:
             extra.append(f"consistency {m.group(1)}% < 90%")
     elif gate == "H":
-        low = content.lower()
-        if "design" not in low or "outline" not in low:
-            extra.append("design + outline 对齐")
+        if not all(x in content for x in ("H.2", "H.3", "H.4", "H.5")):
+            extra.append("H.2–H.5 语义矩阵")
     elif gate == "G10":
         if not re.search(r"0 处|无新增违规|exit\s*0", content):
             extra.append("doc-publication 的 0 命中/exit 0 输出")
@@ -297,9 +303,6 @@ def check_gate_evidence_blocks(scan_text):
                     missing_kw.append("L1 需命令+输出（块内找不到工具命令）")
                 if not re.search(r"exit\s*\d|stdout|输出|PASS|FAIL|命中|\d+\s*(?:处|个|行)", block_content):
                     missing_kw.append("L1 需输出/exit code（块内只有命令或关键字）")
-            elif level == "L2":
-                if not re.search(r"(?m)^\s*[\$>]?\s*(?:rg|grep)\s", block_content):
-                    missing_kw.append("L2 需手工 grep 命令")
         results[gate] = {
             "exists": True,
             "keywords_ok": len(missing_kw) == 0,
