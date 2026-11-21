@@ -4,7 +4,7 @@ schema: review-units/v1
 doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 stage: 01-stage-kernel
 edition: V3.9
-updated_commit: ''
+updated_commit: 6bc3944cf4dc3afc46d98ab49e6871eea372ec91
 units:
 - id: '1'
   heading: 1. 概述

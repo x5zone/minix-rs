@@ -90,6 +90,13 @@ python3 tools/review-units.py next <doc>
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --fix
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze
 
+# 第 3 轮的两种合法出口
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --approve   # 用户批准
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --rewrite   # 整节重写
+
+# 删除/合并小节后：先解冻再 prune（不静默丢单元）
+python3 tools/review-units.py sync <doc> --unfreeze --prune
+
 # T3 通过（全部单元冻结后）
 python3 tools/review-units.py gate <doc> --pass --evidence runs/<stage>/<doc>/certify/round<N>-gates.md
 

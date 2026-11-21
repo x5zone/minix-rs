@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import math
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -42,6 +43,15 @@ EXEMPT = re.compile(r"参见|附录|索引|参考文献")
 HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$")
 NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)[.、]?\s")
 MAX_ROUNDS = 2
+
+
+def head_commit() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except Exception:
+        return ""
 
 
 def sha(text: str) -> str:
@@ -136,7 +146,7 @@ def new_unit(u: dict) -> dict:
         rec.update(t1_state="pending", t1_rounds=0, t2_state="n/a", t2_rounds=0)
     else:
         rec.update(t1_state="n/a", t1_rounds=0, t2_state="pending", t2_rounds=0)
-    rec.update(frozen=False, frozen_at=None, rewritten=False, note="")
+    rec.update(frozen=False, frozen_at=None, rewritten=False, user_approved=False, note="")
     return rec
 
 
@@ -173,7 +183,7 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
         "doc": str(doc.relative_to(Path.cwd())) if doc.is_relative_to(Path.cwd()) else str(doc),
         "stage": stage,
         "edition": edition,
-        "updated_commit": "",
+        "updated_commit": head_commit(),
         "units": [new_unit(u) for u in units],
         "t3": {"passed": False, "evidence": "", "at_commit": ""},
     }
@@ -211,7 +221,7 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
             errors.append(f"{uid}: 非法 t2_state={s.get('t2_state')}")
         for track in ("t1", "t2"):
             n = int(s.get(f"{track}_rounds", 0))
-            if n > MAX_ROUNDS and not s.get("rewritten"):
+            if n > MAX_ROUNDS and not (s.get("rewritten") or s.get("user_approved")):
                 errors.append(f"{uid}: {track}_rounds={n} 超过 {MAX_ROUNDS}（需用户批准或整节重写）")
         if s.get("frozen"):
             if s["level"] == 3:
@@ -253,7 +263,7 @@ def cmd_check(doc: Path, state_path: Path) -> int:
     return 0
 
 
-def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None) -> int:
+def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prune: bool = False) -> int:
     data = load_state(state_path)
     current = parse_units(doc)
     cu = {u["id"]: u for u in current}
@@ -307,7 +317,16 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None) -> i
     missing = [u["id"] for u in data["units"] if u["id"] not in cu]
     for uid in missing:
         print(f"[WARN] 状态中的单元在正文中不存在：{uid}")
-    data["updated_commit"] = ""
+    if missing and prune:
+        drop = set(missing)
+        frozen_missing = [u["id"] for u in data["units"] if u["id"] in drop and u.get("frozen")]
+        if frozen_missing and not unfreeze:
+            print(f"[FAIL] 待删除单元仍标记冻结：{frozen_missing}；加 --unfreeze 才可 prune", file=sys.stderr)
+            return 1
+        data["units"] = [u for u in data["units"] if u["id"] not in drop]
+        print(f"[WARN] 已删除 {len(drop)} 个正文中不存在的单元")
+        changed += len(drop)
+    data["updated_commit"] = head_commit()
     save_state(state_path, data)
     print(f"sync: {changed} 处更新")
     return 0
@@ -343,7 +362,8 @@ def cmd_next(doc: Path, state_path: Path, track: str | None) -> int:
 
 
 def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
-             passed: bool, freeze: bool, note: str) -> int:
+             passed: bool, freeze: bool, note: str,
+             rewrite: bool = False, approve: bool = False) -> int:
     data = load_state(state_path)
     unit = next((u for u in data["units"] if u["id"] == uid), None)
     if not unit:
@@ -351,15 +371,32 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
         return 2
     key = f"{track}_state"
     rounds = f"{track}_rounds"
+    if rewrite:
+        if unit.get("rewritten"):
+            print(f"[FAIL] {uid}: 本 edition 已整节重写过一次", file=sys.stderr)
+            return 1
+        unit["rewritten"] = True
+        unit[rounds] = 0
+        unit[key] = "pending"
+        if unit.get("frozen"):
+            unit["frozen"] = False
+            unit["frozen_at"] = None
+    if approve:
+        unit["user_approved"] = True
     if fix:
         unit[rounds] = int(unit.get(rounds, 0)) + 1
-        if unit[rounds] > MAX_ROUNDS and not unit.get("rewritten"):
+        if unit[rounds] > MAX_ROUNDS and not (unit.get("rewritten") or unit.get("user_approved")):
             print(f"[FAIL] {uid}: {rounds}={unit[rounds]} 超过 {MAX_ROUNDS}；需用户批准或 --rewrite", file=sys.stderr)
             return 1
         unit[key] = "pending"
         if unit.get("frozen"):
             unit["frozen"] = False
             unit["frozen_at"] = None
+            if unit["level"] == 3:
+                parent = next((x for x in data["units"] if x["id"] == unit.get("parent")), None)
+                if parent and parent.get("frozen"):
+                    parent["frozen"] = False
+                    parent["frozen_at"] = None
     if passed:
         if track == "t1" and unit["level"] != 2:
             print("t1 只适用于 ## 章单元", file=sys.stderr)
@@ -384,7 +421,7 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
                 unit["t2_state"] = "frozen"
             unit["t1_state"] = "passed"
         unit["frozen"] = True
-        unit["frozen_at"] = "HEAD"
+        unit["frozen_at"] = head_commit()
     if note:
         unit["note"] = note
     save_state(state_path, data)
@@ -418,7 +455,7 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str) -> int:
     if ok and not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结的章，T3 不得通过", file=sys.stderr)
         return 1
-    data["t3"] = {"passed": ok, "evidence": evidence, "at_commit": "HEAD"}
+    data["t3"] = {"passed": ok, "evidence": evidence, "at_commit": head_commit()}
     save_state(state_path, data)
     print(f"gate T3: {'PASS' if ok else 'FAIL'}")
     return 0
@@ -470,6 +507,12 @@ def self_test() -> int:
         assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 0
         assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 0
         assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 1
+        # 删除一节：sync --prune 收口
+        txt = doc.read_text(encoding="utf-8")
+        txt = txt.split("### 1.2 第二节")[0].rstrip() + "\n"
+        doc.write_text(txt, encoding="utf-8")
+        assert cmd_sync(doc, sp, True, None, True) == 0
+        assert cmd_check(doc, sp) == 0
         # 抽样确定性
         out1 = cmd_sample(doc, sp, 0.2, "abc")
         out2 = cmd_sample(doc, sp, 0.2, "abc")
@@ -490,14 +533,17 @@ def main() -> int:
     sub.choices["init"].add_argument("--force", action="store_true")
     sub.choices["sync"].add_argument("--unfreeze", action="store_true")
     sub.choices["sync"].add_argument("--unit")
+    sub.choices["sync"].add_argument("--prune", action="store_true")
     sub.choices["next"].add_argument("--track", choices=("t1", "t2", "t3"))
     m = sub.choices["mark"]
     m.add_argument("--unit", required=True)
     m.add_argument("--track", required=True, choices=("t1", "t2"))
-    g = m.add_mutually_exclusive_group(required=True)
+    g = m.add_mutually_exclusive_group(required=False)
     g.add_argument("--fix", action="store_true")
     g.add_argument("--pass", dest="passed", action="store_true")
     m.add_argument("--freeze", action="store_true")
+    m.add_argument("--rewrite", action="store_true")
+    m.add_argument("--approve", action="store_true")
     m.add_argument("--note", default="")
     s = sub.choices["sample"]
     s.add_argument("--ratio", type=float, default=0.2)
@@ -524,11 +570,11 @@ def main() -> int:
     if args.cmd == "check":
         return cmd_check(doc, sp)
     if args.cmd == "sync":
-        return cmd_sync(doc, sp, args.unfreeze, args.unit)
+        return cmd_sync(doc, sp, args.unfreeze, args.unit, args.prune)
     if args.cmd == "next":
         return cmd_next(doc, sp, args.track)
     if args.cmd == "mark":
-        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note)
+        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve)
     if args.cmd == "sample":
         return cmd_sample(doc, sp, args.ratio, args.seed)
     if args.cmd == "gate":

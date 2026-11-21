@@ -81,7 +81,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 ## Review Workflow
 
-1. **声明 scope**：目标文件、模式（doc / code / full）、STATE.md 状态。状态目录按 `{stage}` 分组且三工具隔离：`.review/{tool}/{stage}/`（Trae 用 `scans/` 扁平结构，Claude 与 Codex 用 `{doc-stem}/` 子目录）
+1. **声明 scope**：目标文件、模式（doc / code / full）、STATE.md 状态；doc 模式同时用 `tools/review-units.py next <doc>` 声明本轮 T1/T2 单元。状态目录按 `{stage}` 分组且三工具隔离：`.review/{tool}/{stage}/`（Trae 用 `scans/` 扁平结构，Claude 与 Codex 用 `{doc-stem}/` 子目录）
 2. **Step 0 硬阻断预检**（所有模式强制）：4 条 `ls {tree}/meta/design/{stage}/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；快照缺失 → 对应 Gate FAIL → Step 0.3 嵌入生成（不中断 review、不标 N/A、不许复用他篇快照）。缺失却标 CONVERGED → P0-process-violation（模式 69）
 3. **Blocker Gates**（0 / A / B / C / D / D-6 / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
 4. **产出**：scan.md（单文件汇总：Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List / structure 摘要）+ structure.md（文档 review 的 12 节骨架分析）+ SYMBOLS.md（覆盖率穷举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED）
