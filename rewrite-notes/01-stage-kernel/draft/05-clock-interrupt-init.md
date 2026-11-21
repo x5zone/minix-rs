@@ -466,7 +466,7 @@ pub type CurrentInterruptController = crate::riscv64::interrupt::Riscv64Interrup
 > - `init` / `mask_all` / `mask` / `unmask` —— **全局动作**（一次性 BSP 初始化；或修改 IOAPIC redirection / GICD_ICENABLER / PLIC ENABLE 位等"路由表"——一改全部 CPU 看见）
 > - `ack` / `eoi` —— **per-CPU 动作**（写当前核私有寄存器：LAPIC EOI / ICC_EOIR1_EL1 / PLIC per-context complete——印证：`x86_64::ack(_irq)` 与 `arm64::eoi(_irq)` 中 `_irq` 参数完全被忽略）
 >
-> 现有 trait 把这两类语义不同的动作放进同一接口、同一 trait bound（`Send + Sync`），是**简化抽象**而非**对称抽象**——读者若按"对称接口"理解会错过硬件真相。trait 实际工作由外面 `BKL`（`os/kernel/src/irq_manager.rs`）保证并发安全，`Send + Sync` 是引用层面的类型证明不蕴含实例字段可多 CPU 同时变更。当前阶段可做的改进是文档层强化（本节已延展）；未来重构候选是把 trait 拆为 `InterruptRouter` + per-CPU `InterruptAck` 两个 trait——依赖 16-smp 的 SMP 完整实现。**详细背景与未来重构方案见** [todo.md §7.4.1](todo.md#741-i-13-interruptcontroller-traitc-rust-不对称--send--sync-真实动机)（I-13 项，P2 文档改进 + P2 重构候选，非本阶段落地范围）。
+> 现有 trait 把这两类语义不同的动作放进同一接口、同一 trait bound（`Send + Sync`），是**简化抽象**而非**对称抽象**——读者若按"对称接口"理解会错过硬件真相。trait 实际工作由外面 `BKL`（`os/kernel/src/irq_manager.rs`）保证并发安全，`Send + Sync` 是引用层面的类型证明不蕴含实例字段可多 CPU 同时变更。当前阶段可做的改进是文档层强化（本节已延展）；未来重构候选是把 trait 拆为 `InterruptRouter` + per-CPU `InterruptAck` 两个 trait——依赖 16-smp 的 SMP 完整实现。**未来重构方向**：把 trait 拆为 `InterruptRouter`（全局路由）+ per-CPU `InterruptAck`（确认/结束），作为后续重构候选，不属于本阶段落地范围。
 
 ### 3.4 决策：把早期控制台抽象为 `EarlyConsole` trait
 

@@ -301,7 +301,7 @@
   stage: coordination
   doc: coordination
   title: 次级核本地定时器真机载体只打印不断言；未入 b5。注：DONE §4 已有 test-smp-aps 断言门 closed 行，本行可能账面滞后。
-  status: open
+  status: closed
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:22
@@ -309,13 +309,13 @@
   origin_line: 22
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: partially fixed / 待验证
-  evidence: 次级核本地定时器真机载体只打印不断言；未入 b5。注：DONE §4 已有 test-smp-aps 断言门 closed 行，本行可能账面滞后。
-  verified_by: subagent:b5
+  evidence: test-smp-aps/src/main.rs:391-408 断言次级核 LAPIC one-shot（vector 0xF1）至少一核 tick>0，并注册于 run_all.sh:96/133（x86_64）。原『只打印不断言』已不成立。
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - K6-L22
   scope: stage
-  note: 次级核本地定时器真机载体只打印不断言；未入 b5。注：DONE §4 已有 test-smp-aps 断言门 closed 行，本行可能账面滞后。
+  note: 账面滞后、已补断言门；关闭。
 - id: COORD-OPEN-160-L160
   stage: coordination
   doc: coordination
@@ -464,16 +464,12 @@
   legacy_status: adjudicated (PD-19)
   evidence: delivery-leg 内存序屏障：行写『今天无事可做，绑 PD-02 unclamp』；未入 b5。注：C2E 已于 2026-10-31 撤 x86/aarch64 钳制，该行的触发条件可能已成立，需重新评估——这是最值得补审的
     missed 项。
-  verified_by: subagent:b5
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - P-ALL-13-L40
   scope: stage
-  note: delivery-leg 内存序屏障：行写『今天无事可做，绑 PD-02 unclamp』；未入 b5。注：C2E 已于 2026-10-31 撤 x86/aarch64 钳制，该行的触发条件可能已成立，需重新评估——这是最值得补审的
-    missed 项。
-  blocked: true
-  blocked_reason: delivery-leg 内存序屏障：行写『今天无事可做，绑 PD-02 unclamp』；未入 b5。注：C2E 已于 2026-10-31 撤 x86/aarch64 钳制，该行的触发条件可能已成立，需重新评估——这是最值得补审的
-    missed 项。
+  note: PD-02 unclamp 已于 2026-10-31（C2E）撤 x86/aarch64 钳制，硬前置已满足；需实施/验证 enqueue-wakeup 锁序（DSB/release），不再等待裁决。
 - id: COORD-PD-07
   stage: coordination
   doc: coordination
@@ -683,7 +679,7 @@
   stage: coordination
   doc: coordination
   title: 与 b5:17 同 ID 的独立子行（中断入口唤醒空闲核清零臂）；b5 只取了 :17，本臂未入任何 batch。注：C2D/C2E 后行文已旧。
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:18
@@ -692,17 +688,18 @@
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: partially fixed
   evidence: 与 b5:17 同 ID 的独立子行（中断入口唤醒空闲核清零臂）；b5 只取了 :17，本臂未入任何 batch。注：C2D/C2E 后行文已旧。
-  verified_by: subagent:b5
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - SD-24--arm1--idle-clear-L18
   scope: stage
-  note: 与 b5:17 同 ID 的独立子行（中断入口唤醒空闲核清零臂）；b5 只取了 :17，本臂未入任何 batch。注：C2D/C2E 后行文已旧。
+  note: SD-24 的机制细节子行，并入 COORD-SD-24 跟踪，不单列。
+  merged_into: COORD-SD-24
 - id: COORD-SD-24--idle-flag-clear-L19
   stage: coordination
   doc: coordination
   title: 与 b5:17 同 ID 的机制细节子行；b5 未覆盖，manifest 亦无其他行取自本文件。
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:19
@@ -711,12 +708,13 @@
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: partially fixed
   evidence: 与 b5:17 同 ID 的机制细节子行；b5 未覆盖，manifest 亦无其他行取自本文件。
-  verified_by: subagent:b5
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - SD-24--idle-flag-clear-L19
   scope: stage
-  note: 与 b5:17 同 ID 的机制细节子行；b5 未覆盖，manifest 亦无其他行取自本文件。
+  note: SD-24 的机制细节子行，并入 COORD-SD-24 跟踪，不单列。
+  merged_into: COORD-SD-24
 - id: COORD-SD-25
   stage: coordination
   doc: coordination
@@ -866,7 +864,7 @@
   stage: coordination
   doc: coordination
   title: 阶段索引行：01 内核『仍未闭合』指向 §1（含 b5 未覆盖的 SD-24 子行）；未入 b5。
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:125
@@ -875,17 +873,17 @@
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: 见 §1
   evidence: 阶段索引行：01 内核『仍未闭合』指向 §1（含 b5 未覆盖的 SD-24 子行）；未入 b5。
-  verified_by: subagent:b5
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - STAGE-01-L125
   scope: stage
-  note: 阶段索引行：01 内核『仍未闭合』指向 §1（含 b5 未覆盖的 SD-24 子行）；未入 b5。
+  note: 阶段索引行（指向其他阶段自有 todo 或总账摘要），不是独立待办；不单独跟踪。
 - id: COORD-STAGE-15-L139
   stage: coordination
   doc: coordination
   title: 阶段索引行：ext2/isofs E-FSBDEV 真镜像、vbfs/hgfs 后端先行；未入 b5。
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:139
@@ -894,17 +892,17 @@
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: partially fixed 2
   evidence: 阶段索引行：ext2/isofs E-FSBDEV 真镜像、vbfs/hgfs 后端先行；未入 b5。
-  verified_by: subagent:b5
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - STAGE-15-L139
   scope: stage
-  note: 阶段索引行：ext2/isofs E-FSBDEV 真镜像、vbfs/hgfs 后端先行；未入 b5。
+  note: 阶段索引行（指向其他阶段自有 todo 或总账摘要），不是独立待办；不单独跟踪。
 - id: COORD-STAGE-16-L140
   stage: coordination
   doc: coordination
   title: 阶段索引行：九台 net 变体按 §2.10 保留不可用标记 + 3 项 stopgap；未入 b5。
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:140
@@ -913,9 +911,9 @@
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: open 0 + stopgap landed 3
   evidence: 阶段索引行：九台 net 变体按 §2.10 保留不可用标记 + 3 项 stopgap；未入 b5。
-  verified_by: subagent:b5
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - STAGE-16-L140
   scope: stage
-  note: 阶段索引行：九台 net 变体按 §2.10 保留不可用标记 + 3 项 stopgap；未入 b5。
+  note: 阶段索引行（指向其他阶段自有 todo 或总账摘要），不是独立待办；不单独跟踪。

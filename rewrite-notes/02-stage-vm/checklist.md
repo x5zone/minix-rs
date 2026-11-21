@@ -828,7 +828,7 @@
 
 ## 10. 关联产出
 
-- `02-stage-vm/draft/TODO.md` — 既有 TODO 汇总（draft/，2026-08-15 随目录重组移入）
+- `02-stage-vm/draft/TODO.md` — 既有 TODO 汇总（2026-08-15 移入 draft/；2026-11-21 迁入账本后删除）
 - `02-stage-vm/draft/21-review-ds.md, draft/23-review-ds.md, draft/26-review-dsf.md` — 21/23/26 历史 review（draft/，2026-08-15 移入；不进入新编号）
 - (历史) 深度 review 报告已合并到本 checklist (含未修复项理由)
 - `minix3/minix/servers/vm/` — C 源码 (ground truth)

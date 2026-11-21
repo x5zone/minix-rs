@@ -704,7 +704,7 @@ $ cargo test -p minix-vm --lib ipc::dispatcher → 29 passed
 $ cargo test -p minix-vm --lib ipc::transport → 7 passed
 $ cargo test -p minix-vm --lib vm_server → 34 passed（含 transid/生命周期 + 主循环端到端）
 $ cargo clippy -p minix-vm --lib → 1 warning（默认）/ 7（--all-features）
-  （2026-09-06 实测：08-17 后增量代码引入回归，收敛条目 = 02-stage-vm/todo.md §14 V11-P2-3）
+  （2026-09-06 实测：08-17 后增量代码引入回归，读数已过时）
 $ cargo check -p minix-vm → Finished（无 error）
 ```
 

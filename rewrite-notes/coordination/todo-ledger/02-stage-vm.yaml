@@ -361,7 +361,7 @@
   doc: 02-stage-vm
   title: 'Stale status line: boot exec load chain landed 2026-10-31 (same header''s next paragraph); LU/restart is V20-P1-1.
     Counts not updated at the 2026-11-21 ledger refresh.'
-  status: open
+  status: historical
   severity: P2
   kind: design
   origin: rewrite-notes/02-stage-vm/todo.md:3
@@ -369,17 +369,13 @@
   origin_line: 3
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: review
-  evidence: 'Header L3: "未闭合 open 2 ｜ stopgap landed 3。两条真未做：实时更新（热更）的活与重启状态机、启动进程的可执行文件装载链"'
-  verified_by: subagent:b4
+  evidence: 源状态行称『两条真未做』已过时：装载链 2026-09-07 落地，暖启动状态机 2026-11-04 落地（A14）。文件已删除，此行仅存档。
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - SUMMARY-open-2
   scope: stage
-  note: 'Stale status line: boot exec load chain landed 2026-10-31 (same header''s next paragraph); LU/restart is V20-P1-1.
-    Counts not updated at the 2026-11-21 ledger refresh.'
-  blocked: true
-  blocked_reason: '核实未决：Stale status line: boot exec load chain landed 2026-10-31 (same header''s next paragraph); LU/restart
-    is V20-P1-1. Counts not updated at the 2026-11-21 ledger refresh.'
+  note: 状态摘要行随 todo.md 删除而失去载体；内容由 D02-VM-OPEN-1/2 的收口证据覆盖。
 - id: D02-V20-P1-1
   stage: 02-stage-vm
   doc: 02-stage-vm
@@ -406,35 +402,74 @@
   stage: 02-stage-vm
   doc: 02-stage-vm
   title: todo.md:3 状态摘要点名的两条真未做之一：实时更新（热更）的活与重启状态机
-  status: open
+  status: closed
   severity: P2
   kind: design
   origin: rewrite-notes/02-stage-vm/todo.md:3
   origin_file: rewrite-notes/02-stage-vm/todo.md
   origin_line: 3
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: todo.md:3 状态摘要点名的两条真未做之一：实时更新（热更）的活与重启状态机
-  verified_by: subagent:b4
+  evidence: 暖启动/热更状态机 2026-11-04 落地（A14：映像驻留槽 + boot_route 四形路由 + main 两路消费；宿主 547/0；真机 e5-ds 启动 PASS）。代码：vm_server.rs:215
+    映像驻留槽、boot_route:246、main.rs:81 路由。端到端暖重启残项属 edge_todo.md E-FSRUNTIME（本账本范围外）。
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - VM-OPEN-1
   scope: stage
-  note: todo.md:3 状态摘要点名的两条真未做之一：实时更新（热更）的活与重启状态机
+  note: 原 todo.md 状态摘要过时；文件已删除，按 A14 收口记录关闭。
 - id: D02-VM-OPEN-2
   stage: 02-stage-vm
   doc: 02-stage-vm
   title: todo.md:3 状态摘要点名的两条真未做之一：启动进程的可执行文件装载链
-  status: open
+  status: closed
   severity: P2
   kind: design
   origin: rewrite-notes/02-stage-vm/todo.md:3
   origin_file: rewrite-notes/02-stage-vm/todo.md
   origin_line: 3
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: todo.md:3 状态摘要点名的两条真未做之一：启动进程的可执行文件装载链
-  verified_by: subagent:b4
+  evidence: '启动进程装载链已落地：exec_bootproc（ELF 段映射 + sys_exec wire）2026-09-07（V11/T14，Fix #41）。栈帧 ABI 残项属 edge_todo.md E-BOOTFRAME（本账本范围外）。'
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - VM-OPEN-2
   scope: stage
-  note: todo.md:3 状态摘要点名的两条真未做之一：启动进程的可执行文件装载链
+  note: 原 todo.md 状态摘要过时；文件已删除，按加载链落地记录关闭。
+- id: D02-PROSE-VMO-CLIPPY
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: minix-vm clippy 警告清理（116 → 31）
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/02-stage-vm/draft/00-vm-overview.md:370
+  origin_file: rewrite-notes/02-stage-vm/draft/00-vm-overview.md
+  origin_line: 370
+  origin_commit: 5a48342dcb562f1ccc484923f2a2df0ca3d4ab4c
+  legacy_status: 未清理
+  evidence: 2026-11-21 `cargo clippy -p minix-vm --lib` → 31 warnings（原 116）
+  verified_by: agent:regression
+  verified_at: '2026-11-21'
+  aliases:
+  - VMO-CLIPPY
+  scope: stage
+  note: 原 §8.4 backlog 行；非发布阻断但属未清代码债
+- id: D02-PROSE-VMO-ACPI-EXT
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: ACPI MADT 扩展：HPET / Interrupt Source Override / 多 IOAPIC（真实硬件移植时）
+  status: open
+  severity: P3
+  kind: design
+  origin: rewrite-notes/02-stage-vm/draft/00-vm-overview.md:372
+  origin_file: rewrite-notes/02-stage-vm/draft/00-vm-overview.md
+  origin_line: 372
+  origin_commit: 5a48342dcb562f1ccc484923f2a2df0ca3d4ab4c
+  legacy_status: 未实现（真实硬件移植时）
+  evidence: minix-platform/src/acpi.rs 只取首个 IOAPIC、解析 x2APIC 条目；HPET 表跳过（模块注释 `HPET → (skipped)`）；无 ISO / 多 IOAPIC 处理
+  verified_by: agent:regression
+  verified_at: '2026-11-21'
+  aliases:
+  - VMO-ACPI-EXT
+  scope: stage
+  note: 原 §8.4 backlog 行；QEMU virt x86_64 够用，真实硬件移植前不实施
