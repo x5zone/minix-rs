@@ -229,7 +229,10 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
             elif d not in st:
                 errors.append(f"{uid}: deps 指向不存在的单元 {d}")
         if s.get("reopened"):
-            warnings.append(f"{uid}: 依赖变化后尚未复核（reopened）")
+            if s.get("frozen"):
+                errors.append(f"{uid}: 冻结单元的依赖已变化（reopened），必须先复核")
+            else:
+                warnings.append(f"{uid}: 依赖变化后尚未复核（reopened）")
         for track in ("t1", "t2"):
             n = int(s.get(f"{track}_rounds", 0))
             if n > MAX_ROUNDS and not (s.get("rewritten") or s.get("user_approved")):
