@@ -2398,3 +2398,11 @@ RB24 首轮 13 项逐项处置：
 ### L6.5
 
 - 三问：① 不变量 = 文档每条主张有来源/去向；② 基线 = `de01cedcc`；③ 证据 = 26 条台账、8 份面板/设计/减法报告、七道机械门。设计批的机制级再推演留到实施轮。
+
+### R38 me-agent 第二轮裁决（2026-11-22）
+
+- 冷启动 me-agent 依 `prompt/me.md` 判 8 条：DESIGN-01/03 驳回（非问题），DESIGN-02/04/05/06/09/10 批准，DESIGN-11 需文档侧取证（已由主 session 确认并关闭）。
+- 主 session 已实施 DESIGN-02/05/06/10：公开壳删减、`BootScalars` 删除、校验入口改名/去转发、`shim_windows` 改 `&[PhysRange]`；`minix-kernel mock 866/0/8`、`minix-boot 188/0`、`boot-shim 136/0`。
+- DESIGN-04/09 已批准但未实施，保留为设计批剩余。
+- QEMU 复核：x86 bootmarks PASS、aarch64 bootmarks PASS、riscv64 U-Boot shim PASS（6/6）。
+- 阻断未变：DESIGN-07/08、R14-04、R37-05、I-25、I-43；其中 DESIGN-07/08/R14-04/R37-05/I-25 需作者亲裁，I-43 需 A2 自由集判别实验。
