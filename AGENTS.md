@@ -18,7 +18,7 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 | 顺序 | 文件 | 它管什么 |
 |---|---|---|
 | 1 | `prompt/review-rules/review.md` | 核心不变量：执行模型、真值优先序、P0 六分类、三档术语 |
-| 2 | `prompt/review-rules/review-process.md` | Step 0–7 全流程、Blocker Gates、Gate 证据规则、设计快照语义 |
+| 2 | `prompt/review-rules/review-process.md` | Step 0–7 全流程、Blocker Gates、Gate 证据规则、H.2–H.5 设计语义 |
 | 3 | `prompt/review-rules/fix-guard.md` | 修复守则（动手前 5 件事、一次一条、修后留痕） |
 | 4 | `prompt/review-rules/review-cmds.md` | 6 个任务命令入口与不可裁剪的通用强制门 |
 | 5 | `prompt/review-rules/review-patterns.md` | 模式库（含 P0 必检清单与验证命令） |

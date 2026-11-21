@@ -296,13 +296,19 @@ def check_gate_evidence_blocks(scan_text):
             elif LEVEL_RANK[level] < LEVEL_RANK[minimum]:
                 missing_kw.append(f"证据级别 {level} 低于 Gate {gate} 的最低级别 {minimum}")
             if level == "L1":
-                if not re.search(
-                    r"(?m)^\s*[\$>]?\s*(?:rg|grep|cargo|python3\s+tools/|bash\s+tools/|\./tools/|[\w./-]+\.(?:py|sh))",
-                    block_content,
-                ):
+                lines = block_content.splitlines()
+                cmd_re = re.compile(
+                    r"^\s*[\$>]?\s*(?:rg|grep|cargo|python3\s+tools/|bash\s+tools/|"
+                    r"\./tools/|[\w./-]+\.(?:py|sh))"
+                )
+                out_re = re.compile(r"exit\s*\d|stdout|输出|PASS|FAIL|命中|\d+\s*(?:处|个|行)")
+                cmd_lines = [i for i, ln in enumerate(lines) if cmd_re.search(ln)]
+                out_lines = [i for i, ln in enumerate(lines) if out_re.search(ln)]
+                if not cmd_lines:
                     missing_kw.append("L1 需命令+输出（块内找不到工具命令）")
-                if not re.search(r"exit\s*\d|stdout|输出|PASS|FAIL|命中|\d+\s*(?:处|个|行)", block_content):
-                    missing_kw.append("L1 需输出/exit code（块内只有命令或关键字）")
+                elif not out_lines or set(out_lines) <= set(cmd_lines):
+                    if not re.search(r"exit\s*\d|stdout\s*[:：]|->", block_content):
+                        missing_kw.append("L1 需输出/exit code（命令与输出未分离）")
         results[gate] = {
             "exists": True,
             "keywords_ok": len(missing_kw) == 0,

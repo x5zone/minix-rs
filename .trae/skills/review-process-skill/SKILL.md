@@ -62,28 +62,13 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
 
 ---
 
-## ⛔ Blocker Gates（阻断门，必须通过才能输出 Final Review）
+## ⛔ Blocker Gates（阻断门）
 
-| Gate | 检查项 | 通过标准 | 未通过后果 |
-|------|--------|---------|-----------|
-| **0** | 制品完整性（输出前必检，在所有 Gate 之前） | 对每个目标文档，标准路径下文件齐全（STATE/scan/structure/SYMBOLS）；scan.md 含 9 个 grep 可验锚段（见下） | 禁止输出 Final Review |
-| **A** | Step 1.5 Coverage Enumeration | 已运行 coverage-extract.py（**强制，不允许"手动验证"代替**）+ scan.md 附 gate-evidence-A 块 + SYMBOLS.md 落盘 | 禁止输出 Final Review |
-| **B** | Step 2 Diff Extraction | 已产出 Top 5 行为契约表（3 语义偏移 + 2 覆盖缺口，**8 字段 × 5 函数**） | 禁止输出 Final Review |
-| **C** | Step 3.5 Precision Check | 已产出 5 元规则检查表 | 禁止输出 Final Review |
-| **D** | P0 必检清单（见 patterns-skill §0） | 5 项已回答（✅/❌ + grep 证据）；**PARTIAL/⚠️/部分通过 均视为 FAIL** | 禁止输出 Final Review |
-| **D-6** | Step 0.5 structure.md 骨架评审（文档 Review） | structure.md 已生成 + 12 节评审表 + 失败项写入 Issue List | 禁止输出 Final Review（文档 Review） |
-| **E** | Step 4.5 Test Verification | 文档 §5 每个测试函数已 grep 验证（若文档有 §5） | 禁止输出 Final Review |
-| **G** | Step 5.6 VERIFY-CHECK 独立验证 | VERIFY-CHECK.md 已产出 + 判定 PASS（一致性 ≥90%）；CONCERN/FAIL 不得标 CONVERGED | 禁止标记 CONVERGED |
-| **H**| Step 1.6 设计语义门控（**所有 review 模式必检**） | H.2 一致性 ≥80% + H.3 Minix3 对齐无 P0 缺失 + H.4 无 design-wrong + H.5 code/design Refactor 区分清楚；无 design 文档时用 C 源码矩阵或 N/A + 理由。快照存在性不是 Gate | design-wrong→触发 Profile R；语义偏离→Refactor |
+门清单、通过标准与最低证据级别只在 `prompt/review-rules/review-process.md` 的 Gate 权威注册表维护；**所有 review 模式必检**（含 Gate H）。本 skill 不复制门表；执行时逐门读注册表并在 scan.md 写 `gate-evidence-{X}`。
 
 **任一 Gate 未通过 → scan.md 标记 DRAFT，禁止写入 STATE.md。**
 
 **Gate H 的 N/A 规则**：无 design 文档不是造假理由，也不是 FAIL；H.2/H.3 改用 C 源码矩阵，纯概念文档可 N/A + 具体理由。
-
-> **2026-08-15 修复 E-P2-4（允许"不适用 + 理由"例外）**：以下场景允许在 Gate H 中标"不适用 + 详细理由"，**而非默认 N/A**：
-> - **纯算法设计文档**（如 `rewrite-notes/.../04-algorithm-X.md`）：无 Rust 实现对应，仅讨论算法 → H.2–H.5 标"不适用（纯算法）"
-> - **历史/概念文档**（如 Minix3 C 源码导论）：纯知识介绍，无代码 → H.2–H.5 可标"不适用"
-> - **判定**：review 文档分类时显式标注 `doc_category: pure_algorithm | historical | conceptual` → 允许部分 Gate H 项标"不适用 + 理由"。**不适用 ≠ 跳过**——必须在 STATE.md 中记录理由（详见 IN_DESIGN 健康度审计）
 
 **Gate 0 锚段校验**（scan.md 必须含以下 9 个 grep 可验锚段，缺任一 → Gate 0 FAIL）：
 ```

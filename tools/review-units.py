@@ -306,7 +306,6 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
         "doc": str(doc.relative_to(Path.cwd())) if doc.is_relative_to(Path.cwd()) else str(doc),
         "stage": stage,
         "edition": edition,
-        "updated_commit": head_commit(),
         "baseline_full_survey": False,
         "confirmation": {"active": False, "fixes": 0},
         "units": [new_unit(u) for u in units],
@@ -863,7 +862,6 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
         save_state(state_path, data)
         # prune 改变了子节标题树，父章 hash 必须同批更新
         return cmd_sync(doc, state_path, unfreeze, None, False)
-    data["updated_commit"] = head_commit()
     save_state(state_path, data)
     print(f"sync: {changed} 处更新")
     return 0

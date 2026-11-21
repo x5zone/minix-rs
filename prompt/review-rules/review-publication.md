@@ -174,6 +174,6 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 - **零欠账**：`OPEN-DEBT` 无 `[OPEN]`，且无任何未获 `defer-approved` 的 ②/⑥/SUGG。
 - **卓越性缺口**按 G2 的 P1/P2 入 Issue List 并当轮处置；不另设卓越性门槛。
 
-四门证据写入 scan.md 的 `gate-evidence-G10`..`gate-evidence-G13` 围栏块（工具名 + 0 命中/exit 0 + 计数），由 `tools/verify-check.py --self-check` 强制；缺块即 Gate 0 FAIL。
+G10–G14 证据写入 scan.md 的 `gate-evidence-G10`..`gate-evidence-G13` 围栏块（工具名 + 0 命中/exit 0 + 计数），由 `tools/verify-check.py --self-check` 强制；缺块即 Gate 0 FAIL。
 
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE` 不再等于出版就绪；它们只是过程状态。
