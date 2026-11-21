@@ -56,9 +56,9 @@ impl BootAlloc {
             BumpRegion::resumed(base, base, end).is_consistent(),
             "BootAlloc::init: inconsistent region base={base:#x} end={end:#x}"
         );
-        self.base.store(base, Ordering::Relaxed);
-        self.next.store(base, Ordering::Relaxed);
-        self.end.store(end, Ordering::Relaxed);
+        self.base.store(base, Ordering::Release);
+        self.next.store(base, Ordering::Release);
+        self.end.store(end, Ordering::Release);
     }
 
     /// Resume a bump allocator whose region was already partly consumed by a
@@ -80,9 +80,9 @@ impl BootAlloc {
             BumpRegion::resumed(base, next, end).is_consistent(),
             "BootAlloc::resume: inconsistent region base={base:#x} next={next:#x} end={end:#x}"
         );
-        self.base.store(base, Ordering::Relaxed);
-        self.next.store(next, Ordering::Relaxed);
-        self.end.store(end, Ordering::Relaxed);
+        self.base.store(base, Ordering::Release);
+        self.next.store(next, Ordering::Release);
+        self.end.store(end, Ordering::Release);
     }
 
     /// The configured bump region `[base, end)`, or `None` if uninitialized.
@@ -92,12 +92,12 @@ impl BootAlloc {
     /// in a conventional memmap), so the DM establishment path needs its
     /// bounds (`07-paging_init_design` §6.1 two-source union).
     pub fn region(&self) -> Option<(u64, u64)> {
-        let end = self.end.load(Ordering::Relaxed);
+        let end = self.end.load(Ordering::Acquire);
         if end == 0 {
             return None;
         }
-        let base = self.base.load(Ordering::Relaxed);
-        let next = self.next.load(Ordering::Relaxed);
+        let base = self.base.load(Ordering::Acquire);
+        let next = self.next.load(Ordering::Acquire);
         assert!(
             BumpRegion::resumed(base, next, end).is_consistent(),
             "BootAlloc::region: inconsistent region base={base:#x} next={next:#x} end={end:#x}"
@@ -109,7 +109,7 @@ impl BootAlloc {
     /// before initialization, matching the state the cross-image handoff
     /// patches into the envelope.
     pub fn next(&self) -> u64 {
-        self.next.load(Ordering::Relaxed)
+        self.next.load(Ordering::Acquire)
     }
 
     /// Bytes handed out so far (`next − base`).
@@ -119,9 +119,9 @@ impl BootAlloc {
     /// the kernel allocated while mapping itself).
     pub fn used_bytes(&self) -> u64 {
         BumpRegion::resumed(
-            self.base.load(Ordering::Relaxed),
-            self.next.load(Ordering::Relaxed),
-            self.end.load(Ordering::Relaxed),
+            self.base.load(Ordering::Acquire),
+            self.next.load(Ordering::Acquire),
+            self.end.load(Ordering::Acquire),
         )
         .used_bytes()
     }
@@ -135,14 +135,14 @@ impl BootAlloc {
         // is single-threaded, so the load/check/store sequence is equivalent
         // to the former fetch_add/rollback pair.
         let mut region = BumpRegion::resumed(
-            self.base.load(Ordering::Relaxed),
-            self.next.load(Ordering::Relaxed),
-            self.end.load(Ordering::Relaxed),
+            self.base.load(Ordering::Acquire),
+            self.next.load(Ordering::Acquire),
+            self.end.load(Ordering::Acquire),
         );
         let Some(pa) = region.alloc_pages(1) else {
             return Err(PageTableError::AllocationFailed);
         };
-        self.next.store(region.next(), Ordering::Relaxed);
+        self.next.store(region.next(), Ordering::Release);
         // Zero-fill the page. In test mode, skip the write (no real memory).
         #[cfg(not(test))]
         // SAFETY: pa is a valid, 4KB-aligned physical address returned by the
