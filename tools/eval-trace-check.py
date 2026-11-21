@@ -653,6 +653,8 @@ def _count_adopted_rows(text: str) -> int:
     rows = 0
     in_fence = False
     adopt_idx: int | None = None
+    need_idx: int | None = None
+    invert_adopt = False
     for line in text[m.end():].splitlines():
         stripped = line.strip()
         if stripped.startswith("```") or stripped.startswith("~~~"):
@@ -669,13 +671,18 @@ def _count_adopted_rows(text: str) -> int:
             continue
         # r6-F05：先认表头里的「采纳」列；有则**只认该列**，避免别的列恰好写
         # `是` 被误计（原实现扫任意格）。
+        if need_idx is None and any("仍需加法" in c for c in cells):
+            need_idx = next(i for i, c in enumerate(cells) if "仍需加法" in c)
+            adopt_idx = need_idx
+            invert_adopt = True
+            continue
         if adopt_idx is None and any("采纳" in c or c.lower() in {"adopted", "adopt"} for c in cells):
             for _i, _c in enumerate(cells):
                 if "采纳" in _c or _c.lower() in {"adopted", "adopt"}:
                     adopt_idx = _i
                     break
             continue
-        if cells[0] in {"加法提案", "提案", "proposal", "Proposal", "加法"}:
+        if cells[0] in {"加法提案", "提案", "提议新增项", "proposal", "Proposal", "加法"}:
             continue
         if cells[0] in _SUBTRACTION_PLACEHOLDERS or re.match(
             r"^(?:无提案|无|未提出|—|–|N/A|none)(?:[（(]|$|\s)", cells[0], re.IGNORECASE
@@ -690,8 +697,14 @@ def _count_adopted_rows(text: str) -> int:
             return v.startswith(("是", "采", "adopted", "yes"))
 
         if adopt_idx is not None:
-            if adopt_idx < len(cells) and _is_adopted(cells[adopt_idx]):
-                rows += 1
+            if adopt_idx < len(cells):
+                if invert_adopt:
+                    # `仍需加法` 列：`否` 表示减法替代够用（采纳减法），`是` 表示仍需加法（不采纳减法）。
+                    v = cells[adopt_idx].strip().lower()
+                    if v.startswith(("否", "no", "n/")):
+                        rows += 1
+                elif _is_adopted(cells[adopt_idx]):
+                    rows += 1
         elif any(_is_adopted(c) for c in cells):
             rows += 1
     return rows
@@ -729,7 +742,7 @@ def _count_subtraction_rows(text: str) -> int:
         cells = [c.strip() for c in stripped.strip("|").split("|")]
         if not cells or all(set(c) <= set("-: ") for c in cells):
             continue
-        if cells[0] in {"加法提案", "提案", "proposal", "Proposal", "加法"}:
+        if cells[0] in {"加法提案", "提案", "提议新增项", "proposal", "Proposal", "加法"}:
             continue
         # r2（F1 变体）：`无提案（本轮无新增类型）` 这类**带括注的占位**也要认。
         if cells[0] in _SUBTRACTION_PLACEHOLDERS or re.match(

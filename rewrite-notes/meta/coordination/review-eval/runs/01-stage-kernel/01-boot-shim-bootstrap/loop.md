@@ -2331,3 +2331,70 @@ RB24 首轮 13 项逐项处置：
 - 关联代码清单：`tools/doc-code-map.sh` 48/48 存在
 - 本轮单元：T1/T2 全 41 单元（首 edition full survey）；T3 否
 - L0.9 出版门：doc-publication PASS；code-publication 126 处新增；tutorial-rubric 6/6 章缺 TR-1..TR-5；todo-ledger `--fail-on-open` 待清
+
+### R38 §1 面板
+
+- 档位：文档 2941 行、关联代码 50 个 .rs，按 `review-panel.md` §七 表 A + 高风险启动链：P-FACT、READER A/B/C 各自独立全文、P-REFUTE 强制、DESIGN D1+D2。
+- 材料隔离：读者 A/B/C 只读正文 + `panel/round38/reader-profile.md`；P-DESIGN D1 只读 Ch1–Ch2 + C 语义；P-FACT/P-REFUTE 读正文 + related-code + 相关 C/DECISIONS 行。
+- 输出：`panel/round38/{fact,reader-a,reader-b,reader-c,refute,design-d1,design-d2,subtract}.md`；子 agent 不修改仓库。
+- `design-d1.md` 无发现（无 FINDING；产出 DECISION 01–10）；`refute.md` 无发现（无 FINDING；产出 REFUTE-01–06，其中 REFUTE-04 的 I3 为阻断 P1）；`reader-profile.md` 是输入画像，不是面板报告。
+- 降档：无；未合并读者角色。
+- P-SUBTRACT：待 L2 归因后按 `[ARCH]`/新装置提案触发，未触发前记“未启动：尚无提案”。
+
+### R38 §2 归因
+
+- 面板发现 28 条原始 ID，按根因合并为 25 条：P1 5（FACT-01、READER-C-01..03、REFUTE-04 I3）、P2 19（读者 ELF 术语/导航/指针、I3 单所有者、名字池截断、Side 诊断、设计 11 条）、其余 P3/SUGG 合并到 suggestions。
+- 根因分组：引用逐字 1；文档计数/证据范围 2；证据矩阵过度概括 1；错误锚点/死指针 1；导航标题缺失 2；I3 单所有者实现缺口 1；`fill_*` 计数/所有者限定 1；名字池截断 1；诊断清单缺行 1；设计残留 11；ARCH 1。
+- 重复合并：READER-A-03、READER-B-03、READER-C-04 同一根因；READER-A-02、READER-C-06、REFUTE-06 的“六类 fill_*”同一根因。
+
+### R38 §3 决策
+
+- P1/P2 文档项：① 本轮修复。
+- I3 `fill_map_tables` 缺口：① 本轮修复（加 once 断言 + `fill_map_tables_twice_is_refused`）。
+- DESIGN-02/04/05/06/09/10/11：D2 判低风险删减，但触及 `Paging`/接收主链/协议边界，归入设计批，不在文档轮内实施。
+- DESIGN-01/03/07/08 与 ARCH-PROPOSAL：需用户裁决；D01 轮结果 `BLOCKED`，不宣告 CONVERGED。
+- D01-R14-04（DM 覆盖深讲归属）与 D01-R37-05（跨模型复核凭据）：仍 open/blocked，另列人工处置。
+
+### R38 §2 发现
+
+- 28 条原始面板 ID；P1 5、P2 19、P3/SUGG 4；合并后 26 个根因。详见 `defect-ledger.md` R38 与 `panel/round38/`。
+
+### R38 §3 归因
+
+- 文档引用/计数/证据范围/死指针/导航/I3 单所有者/名字池/Side 诊断：① 本轮修复。
+- 设计 11 条：低风险删减待设计批；ARCH 提案经 P-SUBTRACT 判定“减法足够”，不进入用户裁决；DESIGN-01/03 仍需裁决（见 §8）。
+- 重复合并 2 组：A-03/B-03/C-04；A-02/C-06/REFUTE-06 六类计数。
+
+### R38 §4 修复
+
+- 文档：P1/P2 全部修复，提交 `de01cedcc`；doc-citation/anchor/doc-ref/doc-structure/doc-publication/tutorial-rubric 全绿。
+- 代码：`fill_map_tables` 加 once 断言与负控测试；`minix-boot` 188/0、`minix-kernel mock` 866/0/8、`boot-shim` 136/0。
+
+### R38 §5 复验
+
+- 每条 P1/P2 的复验命令写入 R38 台账；旧串 grep 归零、测试名可重放。
+- 设计项未实施，复验列写“未实施/待用户裁决”，不计为已闭环。
+
+### R38 §6 指标
+
+- 见 `metrics.md` 的 `## R38 V3.10 新 edition`：发现 28 / 根因 26 / 未闭环 12 / 轮结果 BLOCKED。
+
+### R38 §7 状态
+
+- `BLOCKED`：设计项（DESIGN-01/03/07/08、低风险删减）与 D01-R14-04（DM 深讲归属）、D01-R37-05（跨模型凭据）、D01-I-25（全仓注释范围）、D01-I-43/rt-birth-sp 未闭环。
+- 不宣告 `CONVERGED`；L0.9 的 doc/code/tutorial 出版门已清零，TODO 仍 6 条 doc scope open（含 1 blocked）。
+
+### R38 §8 给 meta-review 的不确定点
+
+1. P-SUBTRACT 判 ARCH 不成立，但 D2 认为 `&mut EarlyMemory` 穿 `Paging` 是唯一能消除全局注册槽的路径；两者证据强度需跨工具复核。
+2. DESIGN-01 的单写方向与 D2 的 `fill_map_tables` 缺 once 子句已被本轮代码修复，但 UEFI 双写对账仍未动。
+3. `SourceRecord` 72B 的 5 个无读者字段是否可删，取决于 wire v11 是否允许改协议。
+4. 跨模型复核因 OpenCode key 过期未完成。
+
+### L6
+
+- 同 agent 收口；面板 P1/P2 全部修复，设计批未实施，轮次按 `review-publication.md` §四.6 停在设计边界。
+
+### L6.5
+
+- 三问：① 不变量 = 文档每条主张有来源/去向；② 基线 = `de01cedcc`；③ 证据 = 26 条台账、8 份面板/设计/减法报告、七道机械门。设计批的机制级再推演留到实施轮。

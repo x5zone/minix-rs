@@ -445,6 +445,8 @@
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.5
     tests: []
     decisions: []
+  blocked: true
+  blocked_reason: 跨模型复核需要可用的非本机模型凭据；2026-11-22 codex exec 使用 OpenCode API key 返回 401（key expired），无法完成独立复核。需用户提供有效 key 或指定其他可用模型。
 - id: D01-rt-birth-sp
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap

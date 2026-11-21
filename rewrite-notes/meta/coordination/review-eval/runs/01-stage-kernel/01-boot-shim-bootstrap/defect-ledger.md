@@ -2592,3 +2592,34 @@
 | RD-R37-044 | CLAIM-04 | R37 | refute | P1 | 事实/校验门 | ① | 同 FACT-02/READER-A-01：postconditions 与 I4 时序修正 | §3.7、§1.2；panel/round37/refute.md CLAIM-04 | CLAIM-04 修复点回读：同 FACT-02/READER-A-01：postconditions 与 I4 时序修正；独立回执见 certify 同轮文件 |
 | RD-R37-045 | CLAIM-05 | R37 | refute | P2 | 事实/所有权 | ① | §3.7 限定 UEFI source 记录不走 fill_*，第二次 fill panic 只对实际 fill 腿成立 | §3.7；panel/round37/refute.md CLAIM-05 | CLAIM-05 修复点回读：§3.7 限定 UEFI source 记录不走 fill_*，第二次 fill panic 只对实际 fill 腿成立；独立回执见 certify 同轮文件 |
 | RD-R37-046 | CLAIM-06 | R37 | refute | P3 | 反证/否证 | FP | 反证失败：manifest/调用面结论成立，无缺陷 | panel/round37/refute.md CLAIM-06 | CLAIM-06 修复点回读：反证失败：manifest/调用面结论成立，无缺陷；独立回执见 certify 同轮文件 |
+## R38 V3.10 新 edition（full；L0.9 清理 + 面板）
+
+| 根因 ID | 发现 ID | 单元 | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 | red_cmd | red_evidence | green_cmd | green_evidence |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| RD-R38-001 | FACT-01 | 2.4 | R38 | fact | P1 | 文档/引文 | ① | 把引文块 `4 GiB` 改回源码的 `4GB` | `grep -n 'Truncate available memory' minix3/minix/kernel/arch/i386/pg_utils.c` 命中 4GB；doc-citation 0 failed | CLOSED；doc-citation 0 failed；`rg 'Truncate available memory at 4 GiB' doc` 归零 | — | — | — | — |
+| RD-R38-002 | READER-C-01 | 2.8 | R38 | reader-c | P1 | 文档/计数 | ① | §2.8 “四份交接对象”改为“三份” | reader-c §2.8 vs §1.0/§1.1 对读 | CLOSED；panel/round38/reader-c.md:6；`rg '四份交接' doc` 归零 | — | — | — | — |
+| RD-R38-003 | READER-C-02 | 2.8 | R38 | reader-c | P1 | 文档/证据范围 | ① | §2.8 改为 D1/D2/D4 本章、D3/D5 在 02 篇 J3 | reader-c 对读 §2.0/§2.8 | CLOSED；panel/round38/reader-c.md:19；`rg '五条的证据都在本章' doc` 归零 | — | — | — | — |
+| RD-R38-004 | READER-C-03 | 5.1 | R38 | reader-c | P1 | 文档/过度概括 | ① | §5.1 I3 真机证据限定为“五条腿都有门”，fail-closed 形态不算到 kmain | reader-c 对读 §5.1/§5.4/§3.1.1 | CLOSED；panel/round38/reader-c.md:32；`rg '五条腿都走到' doc` 归零 | — | — | — | — |
+| RD-R38-005 | REFUTE-04 | 3.7 | R38 | refute | P1 | 代码/所有权 | ① | `fill_map_tables` 加 once 断言；新增负控测试 | `boot_storage.rs:139-157` 无 one-shot；只有 `fill_modules_twice_is_refused` | CLOSED；panel/round38/refute.md:29；`cargo test -p minix-boot --lib fill_map_tables_twice_is_refused` PASS | `cargo test -p minix-boot --lib fill_map_tables_twice_is_refused` | 测试在无断言时失败（未 panic） | `cargo test -p minix-boot --lib fill_map_tables_twice_is_refused` | 1 passed; 0 failed |
+| RD-R38-006 | READER-A-01 | 3.2.1 | R38 | reader-a | P2 | 文档/术语 | ① | §1.0 术语补 PT_LOAD/LMA/VMA/p_filesz/p_memsz/e_entry | reader-a 指出首次使用无定义 | CLOSED；panel/round38/reader-a.md:5；doc-ref-check 0 | — | — | — | — |
+| RD-R38-007 | READER-B-01 | 3.2.2 | R38 | reader-b | P2 | 文档/导航 | ① | §3.2.2 拆 3.2.2.1–3.2.2.4 四个子节 | reader-b 指出职责混装、指针不可落地 | CLOSED；panel/round38/reader-b.md:28；`rg '^##### 3.2.2' doc` 4 行 | — | — | — | — |
+| RD-R38-008 | READER-B-02 | 4.4 | R38 | reader-b | P2 | 文档/导航 | ① | §4.4 增 `4.4.1 门链与逐腿执行序`，指针改指该节 | reader-b 指出权威表无标题 | CLOSED；panel/round38/reader-b.md:41；`rg '^#### 4.4.1' doc` 命中 | — | — | — | — |
+| RD-R38-009 | READER-B-03、READER-C-04 | 3.4.1 | R38 | reader-b/c | P2 | 文档/死指针 | ① | §3.4.1 的 `2.6` 改 `§2.5`，`kern_phys_start/kern_vir_start` 改 `kernbase/kernsize` | 三份面板同指一处；§2.6 无这些名字 | CLOSED；panel/round38/reader-b.md:54；panel/round38/reader-c.md:45；`rg 'kern_phys_start|2.6 里' doc` 归零 | — | — | — | — |
+| RD-R38-009a | READER-A-03 | 3.4.1 | R38 | reader-a | P3 | 文档/死指针 | SUGG | 同 RD-R38-009：§3.4.1 的 §2.6 死指针已修；按读者 P3 记 SUGG 并清零 | panel/round38/reader-a.md:18 | SUGG 已清零；`rg 'kern_phys_start|2.6 里' doc` 归零 | — | — | — | — |
+| RD-R38-010 | READER-C-05 | 3.5.1、4.3 | R38 | reader-c | P2 | 文档/因果链 | ① | §4.3 与 `opensbi_helpers.rs` 注释改为“首次修剪 + 幂等兜底” | reader-c 对读 §3.5.1/§4.3 | CLOSED；panel/round38/reader-c.md:58；`rg '唯一修剪点' doc os/boot-shim/src/opensbi_helpers.rs` 归零 | — | — | — | — |
+| RD-R38-011 | READER-C-06 | 3.2.3、3.7 | R38 | reader-c | P2 | 文档/所有权 | ① | 限定 BootStorage 为“走 fill_* 的腿”的六类载荷所有者，UEFI source 直写 wire | reader-c 对读 §3.2.3/§3.7/§4.2 | CLOSED；panel/round38/reader-c.md:71；`rg '六类载荷的唯一所有者' doc` 归零 | — | — | — | — |
+| RD-R38-012 | REFUTE-06 | 4.5、6.1 | R38 | refute | P2 | 文档/容量+诊断 | ① | 名字池区分 store_kernel_info 15B 与 v1 接收 16B；§6.1 补 Side 诊断行 | refute 核对 `BOOT_MODULE_NAME_LEN`、`lib.rs:684-690`、`ebs_pair.rs:216-219` | CLOSED；panel/round38/refute.md:47；`rg 'memory map left|每槽.*15 字节' doc` 命中 | — | — | — | — |
+| RD-R38-013 | READER-A-02 | 3.0、3.7 | R38 | reader-a | P3 | 文档/计数 | SUGG | 统一为“六类载荷（五个 fill_* 入口；fill_map_tables 一次提交两表）” | reader-a 指出六类只列五个函数 | SUGG 已清零；`rg '六类 `fill_\*` 的唯一' doc` 归零 | — | — | — | — |
+| RD-R38-015 | DESIGN-01 | 3.2.3、4.2 | R38 | design-d2 | P2 | 设计/双写 | ⑥ | [DEL] 分类器只落 storage，wire 由 report 一次编码；待设计批 | `design-d2.md` DESIGN-01 | 未修；STILL-BROKEN；panel/round38/design-d2.md:36 | — | — | — | — |
+| RD-R38-016 | DESIGN-02 | 4.1 | R38 | design-d2 | P2 | 设计/删接口 | ⑥ | [DEL] 删 `PreparedJump` 与 `prepare/jump` 两个公开壳；待设计批 | `design-d2.md` DESIGN-02 | 未修；STILL-BROKEN；panel/round38/design-d2.md:44 | — | — | — | — |
+| RD-R38-017 | DESIGN-03 | 4.4 | R38 | design-d2 | P2 | 设计/双落库 | ⑥ | [MODERN] v1 接收与直核共用单一 `publish_landed`；待设计批 | `design-d2.md` DESIGN-03 | 未修；STILL-BROKEN；panel/round38/design-d2.md:52 | — | — | — | — |
+| RD-R38-018 | DESIGN-04 | 4.2 | R38 | design-d2 | P2 | 设计/全局态 | ⑥ | [DEL] `resv_claims` 栈上 `ClaimSet` 替代 5 个静态；待设计批 | `design-d2.md` DESIGN-04 | 未修；STILL-BROKEN；panel/round38/design-d2.md:60 | — | — | — | — |
+| RD-R38-019 | DESIGN-05 | 4.4 | R38 | design-d2 | P2 | 设计/值对象 | ⑥ | [DEL] 删 `BootScalars` 与两个构造器；待设计批 | `design-d2.md` DESIGN-05 | 未修；STILL-BROKEN；panel/round38/design-d2.md:68 | — | — | — | — |
+| RD-R38-020 | DESIGN-06 | 3.2 | R38 | design-d2 | P2 | 设计/旧名 | ⑥ | [DEL] `requires_startup_kernel_record` 改名并删 `validate_at` 转发；待设计批 | `design-d2.md` DESIGN-06 | 未修；STILL-BROKEN；panel/round38/design-d2.md:76 | — | — | — | — |
+| RD-R38-021 | DESIGN-07 | 3.2 | R38 | design-d2 | P2 | 设计/区间类型 | ⑤ | [MODERN] `PhysRange` 统一三区间表示，动 wire 边界；需用户裁决 | `design-d2.md` DESIGN-07 | STILL-BROKEN；panel/round38/design-d2.md:84 | — | — | — | — |
+| RD-R38-022 | DESIGN-08 | 3.2.1 | R38 | design-d2 | P2 | 设计/协议收窄 | ⑤ | [MODERN] `SourceRecord` 72B→审计 4 字段，动 wire v11；需用户裁决 | `design-d2.md` DESIGN-08 | STILL-BROKEN；panel/round38/design-d2.md:92 | — | — | — | — |
+| RD-R38-023 | DESIGN-09 | 3.4.2 | R38 | design-d2 | P2 | 设计/静态态 | ⑥ | [MODERN] `pt_alloc` 六静态收为每槽一个 AtomicUsize；待设计批 | `design-d2.md` DESIGN-09 | 未修；STILL-BROKEN；panel/round38/design-d2.md:100 | — | — | — | — |
+| RD-R38-024 | DESIGN-10 | 4.4 | R38 | design-d2 | P2 | 设计/公开签名 | ⑥ | [MODERN] `shim_windows` 改 `&[PhysRange]`；待设计批 | `design-d2.md` DESIGN-10 | 未修；STILL-BROKEN；panel/round38/design-d2.md:108 | — | — | — | — |
+| RD-R38-025 | DESIGN-11 | 3.7 | R38 | design-d2 | P2 | 文档/锚点 | ① | `globals.rs` 写者改 `resume_additive`，§3.7 改 `report_static` | design-d2 对读 `globals.rs:275` 与 §3.7 | CLOSED；panel/round38/design-d2.md:116；`rg 'prepare_kernel_image_v1.*v1 leg|BootStorageCell::take' os/kernel/src/globals.rs doc` 归零 | — | — | — | — |
+
+**R38 未闭环**：10 条（RD-R38-015..024）。

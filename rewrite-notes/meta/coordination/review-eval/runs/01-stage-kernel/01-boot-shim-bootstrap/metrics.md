@@ -324,3 +324,26 @@
 - 减法: 提案 0 / 采纳 0
 - 成本: agent 7（5 面板 + 2 certify）/ token 未采集 / 耗时 约 6 小时
 - 回读与回归: 文档七门绿（citation blocks=48 checked=21 failed=0；anchor 89/89；structure/ref/style error=0/density 通过；doc-code-map 48/48）；publication 无新增；todo-ledger `--doc 01-boot-shim-bootstrap` OK；tutorial-rubric 6/6 章缺项与 v3 基线同型（存量）；code-publication 126 处存量过程注释（`os/` 冻结，不改）；QEMU 未重跑（文档-only）
+
+## R38 V3.10 新 edition
+
+- 发现总数: 25
+- 唯一根因数: 25
+- 本轮新准入: 25
+- certify 新准入: 0
+- 重复合并: 2
+- 自引入: 0
+- 处置: ① 12 / ② 0 / ④ 0 / ⑤ 2 / ⑥ 8 / FP 0 / SUGG 2
+- 未闭环: 10
+- 轮型: full
+- 轮结果: BLOCKED
+- 代裁决: 0 / ARCH 提案: 1 / 用户否决: 0
+- ARCH 提案: 1
+- 用户否决: 0
+- edition: V3.10
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 11 / 接受 7 / 实施 0 / 登记 4
+- 减法: 提案 9 / 采纳 8
+- 成本: agent 8 / token 约 3.8e6 / 耗时 约 70min
+- 重写例外: D-108（用户批准 V3.10 新 edition 重开；非规避 3 轮上限）
