@@ -2157,7 +2157,7 @@ RB24 首轮 13 项逐项处置：
 - 技能调用 VARIANCE：本运行时可用技能清单里没有 `review-process-skill` 与 `review-doc-skill`（只有 `full-review`/`review-loop` 等派生技能）；主 agent 直接加载规范源 `prompt/review-rules/review-process.md`、`review-doc-checklist.md` 与 `prompt/skill/review-loop.md`，以等价材料执行。Skill Invocation Log 只记实际调用的 `review-loop`，不伪记未发生的调用。
 - 模型：面板全部为同一模型（opencode-go-chat/deepseek-v4.1-flash）的独立冷启动实例；无跨模型复核，限制写进 §8 与 certify。
 - 起止：2026-11-21 约 07:00–07:55（并行；各角色 wall 17–48 分钟）；无 10 分钟无输出重试，无降档/升档事件。
-- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/`；制品入库 `panel/round36/` + `INDEX.md`（`tools/panel-index.py` 生成；7 文件，FINDING 62 / SUGGESTION 33 / CLAIM 6）；`panel-index.py --check` 通过。
+- 原始输出：`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/`；制品入库 `panel/round36/` + `INDEX.md`（`tools/panel-index.py` 生成；7 文件，FINDING 62 / SUGGESTION 33（25 条编号 + 8 条 fact 未编号；INDEX 只数 `## SUGGESTION` 标题=25）/ CLAIM 6）；`panel-index.py --check` 通过。
 - 工作树：面板运行前后 `git status --porcelain` 只显示面板前已有的未跟踪文件；面板只写 `tmp/review-eval/...`，无源码/文档写入。
 
 ### R36 §2 发现
@@ -2170,10 +2170,10 @@ RB24 首轮 13 项逐项处置：
 ### R36 §3 归因
 
 - 根因：93 个（RD-R36-001..093；逐 ID 立根因，R35 同形）。跨角色同根关系（wire 版本、v10 删除、测试账等）由每行 action/evidence 的组文本表达，不另并根。另有 8 条 fact 角色未编号建议单列，不参与根因分档。
-- 冻结决策检查：D-061（aarch64 编译期分叉）、D-062（wire v10）、D-067（fill API）、D-071（kmain 不重存）、D-086（单所有权）均为本轮修复的依据；无 re-litigation。D2-05 是新设计项，未在旧账本中裁决过。
+- 冻结决策检查：D-061（aarch64 编译期分叉）、D-062（wire v10）、D-067（fill API）、D-071（kmain 不重存）、D-086（单所有权）均为本轮修复的依据；D2-05 命中 D-064（已否决参数化），判 re-litigation（FP，1 条），不实施。
 - 范围：全部 in-scope；无 adjacent 阻塞。
 - 设计项：D2-05（安装型全局参数化）命中 D-064（2026-11-20 已采路线 B、否决参数化），判 re-litigation，记 FP；不实施、不立延期债。D2-03/D2-09 为 P3 建议，进 suggestions。
-- 读者项：P1/P2 且造成理解断裂或错误判据的按 ④ 本轮修；B-05/B-06/B-08 是「换一种讲法更好」的结构建议，按 §4.0e 门槛降为 P3 SUGG，登记 suggestions。
+- 读者项：P1/P2 且造成理解断裂或错误判据的按 ④ 本轮修；B-05/B-06/B-08（P2）按结构项本轮修（§3.7 换算基准、§5.1 索引/详情分工、§1.4 标题）；B-09/C-04/C-06（P3）按 §4.0e 进 SUGG。
 - 自引入：0（本轮修复未在 certify 前引入新根因；certify 后按回执更新）。
 
 ### R36 §4 修复
@@ -2183,7 +2183,7 @@ RB24 首轮 13 项逐项处置：
 - 文档批二：commit `cd2b31f97`——系统任务/AP/DM 定义；aarch64 门链变体；五腿五门链差集；§3.7 计数权威改为换算基准；生产者 `staged_elf_used_len` 注释改事实。
 - 机械门（最终 HEAD）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines 2e82208e2 --strict` PASS。
 - 未实施（re-litigation FP）：D2-05 → 按 D-064 维持现状；D-104 已改写为“撤回延期”记录。
-- 未实施（P3 SUGG）：D2-03、D2-09、B-05/B-06/B-08 与全部面板建议 → `suggestions.md` R36 段。
+- 未实施（P3 SUGG）：D2-03、D2-09 与全部面板 P3 建议 → `suggestions.md` R36 段。
 
 
 ### R36 §5 复验
@@ -2224,7 +2224,7 @@ RB24 首轮 13 项逐项处置：
 
 ### L6.5
 
-- 三问：① 本轮不变量是「确认轮在最终工作树上 certify 新准入=0 且所有 ①/④ 有逐点回读」；② 前提是 R36 面板与三轮 certify 都在同一最终基线（080e6bb0d）上；③ 证据是 `certify/round36-fact.md` 44/44、`round36-reader.md` 16/16、六门与 `--round R36` 门。
+- 三问：① 本轮不变量是「确认轮在最终工作树上 certify 新准入=0 且所有 ①/④ 有逐点回读」；② 面板基线 `e04e61cb5`，certify #1/#2 在各自当时的 HEAD 回读，最终两轮在 `eb8768b23`/`080e6bb0d` 上收口（最终回执覆盖最终工作树）；③ 证据是 `certify/round36-fact.md` 44/44、`round36-reader.md` 16/16、六门与 `--round R36` 门。
 - 资源重读：本轮盲区属“流程/轨迹类”（同根残项、裸 ID 冲突），按 L6.5 查 `prompt/resources/fresh-eyes-review` 与 `eai-agent-toolkit`；未发现可直接移植的新检测模式，已记 BLIND-SPOTS 候选（确认轮同根残项需按“修复点集合=文档句+注释+引文”定义）。
 
 - V3.6 遗留声明：本轮 edition V3.4；V3.6 的减法门与“修复点=制品类别射程”门未作为轮门执行，按 §6A 的 V3.4 口径关闭；meta 已把同根残项列为流程缺陷（见 `meta/01-boot-shim-bootstrap-r36.md`）。
