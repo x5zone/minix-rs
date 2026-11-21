@@ -244,9 +244,23 @@ pub fn check(
 
 // ── capture / read-back (single-threaded boot state) ─────────────────────
 
-static mut DTB_RECORDS: [SourceRecord; minix_boot::DTB_SOURCE_CAP] =
-    [minix_boot::EMPTY_SOURCE_RECORD; minix_boot::DTB_SOURCE_CAP];
-static mut DTB_RECORDS_N: usize = 0;
+/// A `static mut` replacement with one documented single-threaded contract.
+struct BootCell<T>(core::cell::UnsafeCell<T>);
+// SAFETY: the boot shim is single-threaded; every access is exclusive by the
+// call-order contract documented on each static.
+unsafe impl<T> Sync for BootCell<T> {}
+impl<T> BootCell<T> {
+    const fn new(value: T) -> Self {
+        Self(core::cell::UnsafeCell::new(value))
+    }
+    fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
+
+static DTB_RECORDS: BootCell<[SourceRecord; minix_boot::DTB_SOURCE_CAP]> =
+    BootCell::new([minix_boot::EMPTY_SOURCE_RECORD; minix_boot::DTB_SOURCE_CAP]);
+static DTB_RECORDS_N: BootCell<usize> = BootCell::new(0);
 
 /// The configuration-table DTB's own source records (at most
 /// [`minix_boot::DTB_SOURCE_CAP`]). Empty when the DTB is absent or
@@ -255,18 +269,18 @@ pub fn records() -> &'static [SourceRecord] {
     // SAFETY: write-once inside `capture`, read-only afterwards; same
     // single-threaded boot contract as the claim list.
     unsafe {
-        let n = core::ptr::addr_of!(DTB_RECORDS_N).read();
-        core::slice::from_raw_parts(core::ptr::addr_of!(DTB_RECORDS) as *const SourceRecord, n)
+        let n = *DTB_RECORDS_N.get();
+        core::slice::from_raw_parts(DTB_RECORDS.get() as *const SourceRecord, n)
     }
 }
 
-static mut CLAIMS: [Claim; MAX_CLAIMS] = [Claim {
+static CLAIMS: BootCell<[Claim; MAX_CLAIMS]> = BootCell::new([Claim {
     start: 0,
     end: 0,
     expected: ExpectedEfiType::Reserved,
-}; MAX_CLAIMS];
-static mut CLAIMS_N: usize = 0;
-static mut DTB_RAW: Option<(u64, u64)> = None;
+}; MAX_CLAIMS]);
+static CLAIMS_N: BootCell<usize> = BootCell::new(0);
+static DTB_RAW: BootCell<Option<(u64, u64)>> = BootCell::new(None);
 
 /// Parse the configuration-table DTB and record its reservation claims.
 ///
@@ -280,9 +294,9 @@ pub fn capture(bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
     // after the owned copy was authorized, and the reader runs on the same
     // thread immediately afterwards.
     unsafe {
-        CLAIMS_N = 0;
-        DTB_RECORDS_N = 0;
-        DTB_RAW = Some(source);
+        *CLAIMS_N.get() = 0;
+        *DTB_RECORDS_N.get() = 0;
+        *DTB_RAW.get() = Some(source);
     }
     if minix_boot::fdt_layout::validate(0, bytes).is_err() {
         return Ok(());
@@ -312,17 +326,15 @@ fn capture_claims(
 ) -> Result<(), ClaimError> {
     // SAFETY: single-threaded boot; same contract as `capture`.
     unsafe {
-        CLAIMS_N = 0;
-        DTB_RECORDS_N = 0;
-        DTB_RAW = Some(source);
+        *CLAIMS_N.get() = 0;
+        *DTB_RECORDS_N.get() = 0;
+        *DTB_RAW.get() = Some(source);
         for (i, record) in records.iter().enumerate() {
             if i >= minix_boot::DTB_SOURCE_CAP {
                 break;
             }
-            (core::ptr::addr_of_mut!(DTB_RECORDS) as *mut SourceRecord)
-                .add(i)
-                .write(*record);
-            DTB_RECORDS_N = i + 1;
+            (DTB_RECORDS.get() as *mut SourceRecord).add(i).write(*record);
+            *DTB_RECORDS_N.get() = i + 1;
         }
         let mut claims = [Claim {
             start: 0,
@@ -330,12 +342,12 @@ fn capture_claims(
             expected: ExpectedEfiType::Reserved,
         }; MAX_CLAIMS];
         let count = claims_from_records(records, panorama, &mut claims)?;
-        let base = core::ptr::addr_of_mut!(CLAIMS) as *mut Claim;
+        let base = CLAIMS.get() as *mut Claim;
         for (i, claim) in claims.iter().enumerate().take(count) {
             // SAFETY: `base` points at the static array, `i < count <= MAX_CLAIMS`.
             base.add(i).write(*claim);
         }
-        CLAIMS_N = count;
+        *CLAIMS_N.get() = count;
         Ok(())
     }
 }
@@ -348,9 +360,9 @@ pub fn check_current(descs: &[DescriptorRef]) -> Result<(), ClaimError> {
     // reads what capture wrote on the same thread.
     let (claims, count, dtb) = unsafe {
         (
-            core::ptr::addr_of!(CLAIMS) as *const Claim,
-            core::ptr::addr_of!(CLAIMS_N).read(),
-            core::ptr::addr_of!(DTB_RAW).read(),
+            CLAIMS.get() as *const Claim,
+            *CLAIMS_N.get(),
+            *DTB_RAW.get(),
         )
     };
     if count == 0 {

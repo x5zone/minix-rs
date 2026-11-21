@@ -34,7 +34,11 @@ use crate::ebs_map::{Classification, MapError, MapStorage};
 /// Reserved at compile time on purpose: allocating between reading a memory map
 /// and exiting boot services is what can change the map being classified, so the
 /// loop has to be able to work without the allocator at all.
-static mut PAIR_STORAGE: MapStorage = MapStorage::new();
+struct PairStorageCell(core::cell::UnsafeCell<MapStorage>);
+// SAFETY: boot is single-threaded and every access below is exclusive; the
+// cell exists to replace `static mut`, not to add sharing.
+unsafe impl Sync for PairStorageCell {}
+static PAIR_STORAGE: PairStorageCell = PairStorageCell(core::cell::UnsafeCell::new(MapStorage::new()));
 use core::ffi::c_void;
 use minix_boot::{MemoryRegion, Serializer};
 
@@ -168,7 +172,7 @@ pub unsafe fn pair_and_classify(
         serializer.reset_map_partitions();
         // SAFETY: boot is single-threaded and this loop is the storage's only
         // holder.
-        let storage = unsafe { &mut *core::ptr::addr_of_mut!(PAIR_STORAGE) };
+        let storage = unsafe { &mut *PAIR_STORAGE.0.get() };
         storage
             .parse_raw_map(map_buf, map_size, descriptor_size, descriptor_version, {
                 snapshot_seq += 1;
@@ -289,7 +293,7 @@ pub unsafe fn preflight_dtb(
     }
     // SAFETY: single-threaded boot and this function is the storage's only
     // holder until `pair_and_classify` re-parses it.
-    let storage = unsafe { &mut *core::ptr::addr_of_mut!(PAIR_STORAGE) };
+    let storage = unsafe { &mut *PAIR_STORAGE.0.get() };
     // Snapshot id 0: the preflight read emits no source records; the final
     // snapshot counts the observations that reach the kernel.
     storage
