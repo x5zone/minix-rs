@@ -80,7 +80,16 @@ def parse_units(doc: Path) -> list[dict]:
             heads.append((i, len(m.group(1)), m.group(2).strip()))
     units: list[dict] = []
     chapter_ids: list[str] = []
+    used: set[str] = set()
     order = 0
+
+    def unique(base: str) -> str:
+        uid, n = base, 2
+        while uid in used:
+            uid = f"{base}-{n}"
+            n += 1
+        used.add(uid)
+        return uid
     for idx, (start, level, title) in enumerate(heads):
         if level == 2 and EXEMPT.search(title):
             chapter_ids.append("__exempt__")
@@ -114,7 +123,7 @@ def parse_units(doc: Path) -> list[dict]:
                 continue
         order += 1
         m = NUM_RE.match(title)
-        uid = m.group(1) if m else f"u-{order}"
+        uid = unique(m.group(1) if m else f"u-{order}")
         if level == 2:
             chapter_ids.append(uid)
             parent = None
@@ -128,15 +137,6 @@ def parse_units(doc: Path) -> list[dict]:
             "order": order,
             "text_sha": sha(body),
         })
-    # 去重：重复编号追加 order 后缀
-    seen: set[str] = set()
-    for u in units:
-        base = u["id"]
-        n = 2
-        while u["id"] in seen:
-            u["id"] = f"{base}-{n}"
-            n += 1
-        seen.add(u["id"])
     return units
 
 
@@ -146,18 +146,20 @@ def new_unit(u: dict) -> dict:
         rec.update(t1_state="pending", t1_rounds=0, t2_state="n/a", t2_rounds=0)
     else:
         rec.update(t1_state="n/a", t1_rounds=0, t2_state="pending", t2_rounds=0)
-    rec.update(frozen=False, frozen_at=None, rewritten=False, user_approved=False, note="")
+    rec.update(frozen=False, frozen_at=None, rewritten=False, user_approved=False, deps=[], reopened=False, note="")
     return rec
 
 
 def load_state(path: Path) -> dict:
     if not path.is_file():
-        raise SystemExit(f"状态文件不存在：{path}（先跑 init）")
+        print(f"状态文件不存在：{path}（先跑 init）", file=sys.stderr)
+        raise SystemExit(2)
     text = path.read_text(encoding="utf-8")
     body = "".join(l for l in text.splitlines(True) if not l.startswith("#"))
     data = yaml.safe_load(body)
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
-        raise SystemExit(f"状态文件 schema 不是 {SCHEMA}：{path}")
+        print(f"状态文件 schema 不是 {SCHEMA}：{path}", file=sys.stderr)
+        raise SystemExit(2)
     return data
 
 
@@ -219,6 +221,14 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
             errors.append(f"{uid}: 非法 t1_state={s.get('t1_state')}")
         if s.get("t2_state") not in ("pending", "passed", "frozen", "n/a"):
             errors.append(f"{uid}: 非法 t2_state={s.get('t2_state')}")
+        deps = s.get("deps") or []
+        for d in deps:
+            if d == uid:
+                errors.append(f"{uid}: deps 不能指向自己")
+            elif d not in st:
+                errors.append(f"{uid}: deps 指向不存在的单元 {d}")
+        if s.get("reopened"):
+            warnings.append(f"{uid}: 依赖变化后尚未复核（reopened）")
         for track in ("t1", "t2"):
             n = int(s.get(f"{track}_rounds", 0))
             if n > MAX_ROUNDS and not (s.get("rewritten") or s.get("user_approved")):
@@ -283,6 +293,14 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
                 return 1
             if u["level"] == 2:
                 u["t1_state"] = "pending"
+                u["frozen"] = False
+                u["frozen_at"] = None
+                for child in data["units"]:
+                    if child.get("parent") == u["id"]:
+                        child["frozen"] = False
+                        child["frozen_at"] = None
+                        if child.get("t2_state") == "frozen":
+                            child["t2_state"] = "passed"
             else:
                 u["t2_state"] = "pending"
             changed += 1
@@ -306,6 +324,10 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
                 print(f"[WARN] {u['id']}: 已解冻（正文变化）")
             elif u["level"] == 3 and u.get("t2_state") == "passed":
                 u["t2_state"] = "pending"
+            for other in data["units"]:
+                if u["id"] in (other.get("deps") or []) and not other.get("reopened"):
+                    other["reopened"] = True
+                    print(f"[WARN] {other['id']}: 依赖 {u['id']} 变化，标 reopened")
             changed += 1
     # 新单元：追加；缺失单元保留并报警
     known = {u["id"] for u in data["units"]}
@@ -363,11 +385,22 @@ def cmd_next(doc: Path, state_path: Path, track: str | None) -> int:
 
 def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
              passed: bool, freeze: bool, note: str,
-             rewrite: bool = False, approve: bool = False) -> int:
+             rewrite: bool = False, approve: bool = False,
+             deps: str | None = None) -> int:
     data = load_state(state_path)
     unit = next((u for u in data["units"] if u["id"] == uid), None)
     if not unit:
         print(f"找不到单元：{uid}", file=sys.stderr)
+        return 2
+    has_children = any(x.get("parent") == uid for x in data["units"])
+    if track == "t1" and unit["level"] != 2:
+        print("t1 只适用于 ## 章单元", file=sys.stderr)
+        return 2
+    if track == "t2" and unit["level"] == 2 and has_children:
+        print("有子节的章不走 t2；请按其子节审", file=sys.stderr)
+        return 2
+    if freeze and unit["level"] == 2 and track != "t1":
+        print("章冻结只允许 --track t1（T1 章级审）", file=sys.stderr)
         return 2
     key = f"{track}_state"
     rounds = f"{track}_rounds"
@@ -398,10 +431,8 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
                     parent["frozen"] = False
                     parent["frozen_at"] = None
     if passed:
-        if track == "t1" and unit["level"] != 2:
-            print("t1 只适用于 ## 章单元", file=sys.stderr)
-            return 2
         unit[key] = "passed"
+        unit["reopened"] = False
     if freeze:
         if not passed:
             print("--freeze 需要与 --pass 同用", file=sys.stderr)
@@ -422,6 +453,14 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
             unit["t1_state"] = "passed"
         unit["frozen"] = True
         unit["frozen_at"] = head_commit()
+    if deps is not None:
+        want = [x.strip() for x in deps.split(",") if x.strip()]
+        known = {x["id"] for x in data["units"]}
+        bad = [x for x in want if x not in known or x == uid]
+        if bad:
+            print(f"[FAIL] deps 含不存在或自指单元：{bad}", file=sys.stderr)
+            return 1
+        unit["deps"] = want
     if note:
         unit["note"] = note
     save_state(state_path, data)
@@ -432,6 +471,13 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
 def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
     data = load_state(state_path)
     units = data["units"]
+    if ratio < 0.2:
+        print("抽样比例不得低于 0.2（review-units.md §五）", file=sys.stderr)
+        return 2
+    if all(not u.get("frozen") and int(u.get("t1_rounds", 0)) == 0
+           and int(u.get("t2_rounds", 0)) == 0 for u in units):
+        print("首个 edition 的全单元仍为 pending：应整篇 survey，不抽样", file=sys.stderr)
+        return 1
     dirty = [u for u in units if not u.get("frozen")]
     frozen = [u for u in units if u.get("frozen")]
     if not seed:
@@ -452,6 +498,12 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
 
 def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str) -> int:
     data = load_state(state_path)
+    errors, _ = validate(data, parse_units(doc))
+    if ok and errors:
+        for e in errors:
+            print(f"[FAIL] {e}")
+        print("[FAIL] 状态未通过 check，T3 不得通过", file=sys.stderr)
+        return 1
     if ok and not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结的章，T3 不得通过", file=sys.stderr)
         return 1
@@ -492,16 +544,29 @@ def self_test() -> int:
         data = load_state(sp)
         assert len(data["units"]) == 5, len(data["units"])
         assert cmd_check(doc, sp) == 0
+        assert cmd_sample(doc, sp, 0.2, "x") == 1   # 首 edition 不抽样
+        assert cmd_sample(doc, sp, 0.1, "x") == 2   # 比例下限
         # 章 1 T1 通过；两节通过并冻结；章冻结
         assert cmd_mark(doc, sp, "1", "t1", False, True, False, "") == 0
         assert cmd_mark(doc, sp, "1.1", "t2", False, True, True, "") == 0
         assert cmd_mark(doc, sp, "1.2", "t2", False, True, True, "") == 0
         assert cmd_mark(doc, sp, "1", "t1", False, True, True, "") == 0
+        assert cmd_mark(doc, sp, "1.1", "t1", True, False, False, "") == 2  # t1 只用于章
+        assert cmd_mark(doc, sp, "2", "t2", False, True, True, "") == 2     # 章冻结只走 t1
         # 修改冻结节：check 失败，sync 无 --unfreeze 失败，带 --unfreeze 成功
         doc.write_text(doc.read_text(encoding="utf-8").replace("内容一。", "内容一改。"), encoding="utf-8")
         assert cmd_check(doc, sp) == 1
+        assert cmd_gate(doc, sp, True, "") == 1
         assert cmd_sync(doc, sp, False, None) == 1
         assert cmd_sync(doc, sp, True, None) == 0
+        assert cmd_check(doc, sp) == 0
+        # 章标题改动：t1 回 pending，子节解冻
+        txt = doc.read_text(encoding="utf-8").replace("## 1. 第一章", "## 1. 第一章改名")
+        doc.write_text(txt, encoding="utf-8")
+        assert cmd_sync(doc, sp, True, None) == 0
+        d = load_state(sp)
+        assert next(u for u in d["units"] if u["id"] == "1")["t1_state"] == "pending"
+        assert all(not u.get("frozen") for u in d["units"])
         assert cmd_check(doc, sp) == 0
         # 预算：连续 fix 第 3 次被拦
         assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 0
@@ -527,7 +592,8 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd")
     for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats"):
         p = sub.add_parser(name)
-        p.add_argument("doc")
+        p.add_argument("doc", nargs="?")
+        p.add_argument("--doc", dest="doc_opt", help="文档路径（与位置参数二选一）")
     sub.choices["init"].add_argument("--stage")
     sub.choices["init"].add_argument("--edition", default="V3.9")
     sub.choices["init"].add_argument("--force", action="store_true")
@@ -544,6 +610,7 @@ def main() -> int:
     m.add_argument("--freeze", action="store_true")
     m.add_argument("--rewrite", action="store_true")
     m.add_argument("--approve", action="store_true")
+    m.add_argument("--deps", default=None, help="逗号分隔的上游单元 ID")
     m.add_argument("--note", default="")
     s = sub.choices["sample"]
     s.add_argument("--ratio", type=float, default=0.2)
@@ -560,7 +627,11 @@ def main() -> int:
     if not args.cmd:
         ap.print_help()
         return 2
-    doc = Path(args.doc)
+    raw_doc = args.doc or getattr(args, "doc_opt", None)
+    if not raw_doc:
+        print("缺少文档路径（位置参数或 --doc）", file=sys.stderr)
+        return 2
+    doc = Path(raw_doc)
     if not doc.is_absolute():
         doc = (Path.cwd() / doc).resolve()
     stage = getattr(args, "stage", None) or stage_of(doc)
@@ -574,7 +645,7 @@ def main() -> int:
     if args.cmd == "next":
         return cmd_next(doc, sp, args.track)
     if args.cmd == "mark":
-        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve)
+        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve, args.deps)
     if args.cmd == "sample":
         return cmd_sample(doc, sp, args.ratio, args.seed)
     if args.cmd == "gate":

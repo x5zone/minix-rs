@@ -684,7 +684,7 @@ G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 
     （open = 0 且 blocked = 0；blocked 待裁项存在时禁止收敛）
 G13 教程 rubric：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）
 G14 单元账本：`tools/review-units.py check --doc <当前篇>` 退出 0，全部 `##` 章与 `###` 节
-    frozen，且 T3 通过（`review-units.md`；旧 FREEZE 篇目 grandfather，不追溯）
+    frozen，且 T3 通过（`review-units.md`；旧 FREEZE 篇目指 `runs/*/FREEZE.md`，不追溯）
 ```
 
 **V3.7 出版标准（2026-11-21 用户裁决）**：G10/G11 与 `prompt/review-rules/review-publication.md`

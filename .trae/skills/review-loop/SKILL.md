@@ -299,7 +299,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 2. **100% 复验**：每个根因都有复验，不是抽样；`复验` 列不能是模板句。
 3. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）。
 4. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）。
-5. `review-units.py check <doc>` 退出 0，且本轮被审单元都已 `mark`、预算未超。
+5. **G14（单元账本）**：`review-units.py check <doc>` 退出 0，全部单元 frozen、T3 通过，且本轮被审单元都已 `mark`、预算未超。
 6. `eval-trace-check.py --round R<N>` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、本轮 L6/L6.5 收口小节；`未闭环` 与台账实际数一致）。**文档级 todo 账本另跑** `python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open`（旧 `<NN>-todo.md` 已迁移删除，不再走 `--todo-file`）；`允许开放` 不是合法处置类，必须映射为 ②（用户批准 + 日期）或 ⑤（取证路径 / 阻塞），未映射的按未闭环计。
 7. **轮关闭条件**：`未闭环=0` 且 `certify 新准入=0`。修改轮（full/structural）关闭
    写 `ROUND-CLOSED` / 进入 `CONVERGENCE-CANDIDATE`——**不得宣告 CONVERGED**
@@ -322,7 +322,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`；**`CONVERGED` 只能由确认轮宣告**——
 确认轮覆盖未冻结单元 + ≥20% 冻结单元（首 edition 或 >30% 脏单元时整篇）、
 修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项、不实施 ⑥，
-`review-units.py check` 退出 0（全部单元 frozen、T3 通过）、`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
+G14：`review-units.py check` 退出 0（全部单元 frozen、T3 通过）、`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
 `未闭环=0`、`certify 新准入=0`、100% 复验证据、确认轮轮次号），进下一篇。
 确认轮发现结构性新根因、或第 2 次确认仍 `新准入>0` → 该 edition `NOT CONVERGING`
 回边界裁决；不得开第 3 次确认，也不得重开全量修改轮。

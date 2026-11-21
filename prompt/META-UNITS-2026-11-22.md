@@ -68,6 +68,21 @@ Python 工具使用，并由 `notes_layout.py` 自测与 `check-review-rules.sh`
 - `python3 tools/eval-trace-check.py ... --round R37` / `R5` → 仍为迁移前的 lifecycle FAIL
   （CONVERGED 后再开轮），run 制品未被本次改动触碰。
 
+## 五b、独立审计修正
+
+独立只读审计（对照 `2c39cb905` 与工作树）发现并已修复：
+
+- 规则里的 `check --doc` 与工具位置参数不一致 → 工具增加 `--doc` 别名。
+- G14 未在 `review-loop.md` 的 L6.9/L7 编号出现 → 两处补 G14；`review-publication.md` 补回 G13。
+- 章标题改动后 `sync --unfreeze` 未级联解冻子节 → 章结构变化时清章冻结并递归解冻子节。
+- `t1 --fix` 可用于 `###`、无子节的章可用 `t2 --pass --freeze` 绕过 T1 → 在 mark 入口统一校验轨道与层级。
+- `gate --pass` 不跑 `validate` → 通过前强制零 error。
+- 第 3 轮的 `--rewrite/--approve` 与 `sync --prune` 在提交版不可达 → 已入库并有自测负例。
+- 重复编号章的 `parent` 挂错 → ID 去重提前到父链建立之前。
+- `sample` 允许低于 20% 且首 edition 可抽样 → 增加比例下限与首 edition 拒绝。
+- 状态文件缺失的退出码从 1 改为 2（用法错误）；`deps` 变化把下游标 `reopened`。
+- G14 明确旧 FREEZE 篇目（`runs/*/FREEZE.md`）不追溯。
+
 ## 六、边界与残留
 
 - `draft/` 与 `archive/` 不迁不删；等稿件稳定后另行清理。

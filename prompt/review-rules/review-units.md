@@ -94,13 +94,16 @@ python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --approve   # 用户批准
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --rewrite   # 整节重写
 
+# 跨节依赖：上游改动时下游标 reopened
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --deps 2.1,2.2
+
 # 删除/合并小节后：先解冻再 prune（不静默丢单元）
 python3 tools/review-units.py sync <doc> --unfreeze --prune
 
 # T3 通过（全部单元冻结后）
 python3 tools/review-units.py gate <doc> --pass --evidence runs/<stage>/<doc>/certify/round<N>-gates.md
 
-# 确认轮抽样（同 seed 同集合）
+# 确认轮抽样（首 edition 拒绝；ratio ≥0.2；同 seed 同集合）
 python3 tools/review-units.py sample <doc> --ratio 0.2 --seed $(git rev-parse HEAD)
 ```
 
