@@ -88,7 +88,7 @@ x86-32 内核的链接脚本开头给出两个基址（物理 0x00400000、虚�
 链接脚本的 `SECTIONS` 块从位置计数器（`.`）开始设置地址。x86-32 的做法是：先把位置计数器放到物理基址上，收完一批"分页开启前必须能执行"的段，加上偏移，再开始收普通段（`minix3/minix/kernel/arch/i386/kernel.lds`）：
 
 ```ld
-/* 节选（先给三个基址常量定义行，再保留位置计数器起点与各段头部；省略号处为段体与别名），minix3/minix/kernel/arch/i386/kernel.lds。
+/* 节选（先给三个基址常量定义行，再保留位置计数器起点与各段头部；省略号处为段体、别名与 .text 之后的 .data/.bss/_end），minix3/minix/kernel/arch/i386/kernel.lds。
 _kern_phys_base = 0x00400000;	/* phys 4MB aligned for convenient remapping */
 _kern_vir_base =  0xF0400000;	/* map kernel high for max. user vir space */
 _kern_offset = (_kern_vir_base - _kern_phys_base);
@@ -276,7 +276,7 @@ ARM 这里用 `ldr r2, =sym` 加 `bx r2`，不用 `bl kmain`。两个原因叠�
 `head.S` 引用的 `k_initial_stktop` 定义在 `mpx.S` 里（[`i386/mpx.S`](minix3/minix/kernel/arch/i386/mpx.S) 末尾）：
 
 ```asm
-/* 节选（保留段指示与栈定义，注释有删节；省略号处为同文件此前的代码），minix3/minix/kernel/arch/i386/mpx.S（文件末尾的段指示与栈定义）。 */
+/* 节选（保留段指示与栈定义，注释有删节；省略号处为同文件此前的代码与 k_boot_stktop 之后的 10 行），minix3/minix/kernel/arch/i386/mpx.S（文件尾部附近的段指示与栈定义）。 */
 .data
 .short	0x526F	/* this must be the first data entry (magic #) */
 
@@ -291,6 +291,7 @@ LABEL(__k_unpaged_k_initial_stktop)
 k_boot_stack:
 .space	K_STACK_SIZE	/* kernel stack */ /* FIXME use macro here */
 LABEL(k_boot_stktop)
+...
 ```
 
 逐段解码：
@@ -806,7 +807,7 @@ VPN[2] = (vaddr >> 30) & 0x1FF
 接着是算布局（`loader.rs` 的 [`fn compute_kernel_layout`](os/boot-shim/src/loader.rs:fn compute_kernel_layout)）：
 
 ```rust
-/* 节选（保留函数体；注释有删节（循环体内 3 行源注释删除），os/boot-shim/src/loader.rs:fn compute_kernel_layout。 */
+/* 节选（保留函数体；循环体内注释压缩/改写），os/boot-shim/src/loader.rs:fn compute_kernel_layout。 */
 pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_elf::ElfError> {
     let mut iter = minix_elf::segment_iter(elf_data)?;
     let entry_point = iter.ehdr().e_entry;
@@ -884,7 +885,7 @@ pub unsafe fn load_segments_into_phys_memory(
 
 **把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面的 `BootStorageCell`（`STORAGE`）初值非零、落在 `.data`；`bootface_a64.rs` 的 bump 游标 `static BUMP_NEXT: AtomicU64` 初值为 `BUMP_BASE`（非零），也落在 `.data`，所以它们不是这个例子的成员。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
 
-**去掉重叠检测会怎样（第二处）**：一个 `p_paddr` 区间交叠的 ELF（链接脚本写错、或工具链改布局）会让后一个段覆盖前一个段的字节，没有任何报错；后一个段覆盖前一个段的字节是数据损坏，不是 `copy_from_nonoverlapping` 的 UB——该函数的契约是单次调用的 `src`/`dest` 不相交；源/目标重叠另由 `first_source_destination_overlap` panic 拦住。段间重叠检测把前者变成 `ElfError::InvalidSegment`，与 §3.2 的错误枚举里那第九个变体对上。
+**去掉重叠检测会怎样（第二处）**：一个 `p_paddr` 区间交叠的 ELF（链接脚本写错、或工具链改布局）会让后一个段覆盖前一个段的字节，没有任何报错；后一个段覆盖前一个段的字节是数据损坏，不是 `copy_from_nonoverlapping` 的 UB——该函数的契约是单次调用的 `src`/`dest` 不相交；源/目标重叠另由 `first_source_destination_overlap` panic 拦住。段间重叠检测把前者变成 `ElfError::InvalidSegment`，与 §3.2 的 12 个变体里 loader 侧那三道之一对上。
 
 ### 4.3 三架构的成对跳转（→3.4、3.3）
 
@@ -1004,7 +1005,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 **三条推演（riscv64 direct leg 去掉条件 `add t1, t1, t2`；aarch64 去掉 `isb`；x86_64 去掉 `xor rbp, rbp`）**：
 
-其一，riscv64 去掉 `add t1, t1, t2`。`jalr` 的目标落在符号的物理地址上，PC 留在低半（`0x8020…`）；启动能走完（低半此时仍有恒等映射），坏点在首次地址空间切换之后——内核按高半 VMA 建了进程根表，切换后取指落在没有映射的低半地址，`scause` 记下取指错误。源码注释（`os/kernel/src/arch/riscv64/higher_half.rs:41-52`）对这一形态的表述是：direct leg 的代码仍在 `kern_virt_base` 之下执行，只有跳转目标被抬到高半——即"PC 仍留在低地址"，而不是"内核从未迁到高半 VMA"。
+其一，riscv64 去掉 `add t1, t1, t2`。`jalr` 的目标落在符号的物理地址上，PC 留在低半（`0x8020…`）；启动能走完（低半此时仍有恒等映射），坏点在首次地址空间切换之后——内核按高半 VMA 建了进程根表，切换后取指落在没有映射的低半地址，`scause` 记下取指错误。源码注释（`os/kernel/src/arch/riscv64/higher_half.rs:42-51`）对这一形态的表述是：direct leg 的代码仍在 `kern_virt_base` 之下执行，只有跳转目标被抬到高半——即"PC 仍留在低地址"，而不是"内核从未迁到高半 VMA"。
 
 其二，aarch64 去掉 `isb`。`enable()` 在写完 `ttbr0_el1`/`ttbr1_el1` 之后已经执行 `dsb sy; isb`，写完 `sctlr_el1`（置 M=1）之后又执行一次 `isb`；三条 aarch64 路径都经过 `enable()`，`establish_boot_dm` 之后到跳转之间不再写 TTBR/SCTLR。所以删掉 `jump_to_kmain` 里的 `isb` 不会产生“按旧映射取指”的失败；这条屏障是防御性保留，不是正确性前提。
 
@@ -1073,7 +1074,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 自引导路径与 v1 路径的分界写在 `bootface.rs` 的模块文档里：自引导镜像**不重拷自己的段**。v1 的 boot-shim 会把 `kernel.elf` 的段拷进物理内存并清 NOBITS；自引导镜像已经在运行，同样的动作会覆盖正在执行的代码与栈。它只搬**模块**，自己的段不动，`.bss` 清理由入口汇编完成（§4.2 的第一处反向推演——BSS 清零那一条——讲过为什么这一步不能省）。
 
-两条生产路径在 `kmain` 处合流，但不在 `arch_boot_impl`：v1 接收走 `arch_boot_resume_v1` → `resume_after_v1_decode`（记录活动根、落 `.bss`、建 DM），direct 走 `arch_boot_impl`（Step1 恒等 → Step2 高半 → Step2b/2c 设备窗口 → Step3 开分页 → Step4 DM）。两条路径在跳转前都把 `KernelInfo` 落进 `.bss` 副本，跳转时消费的是副本地址。这一步的原因在源码注释里有两条现场：**载荷存活**——`reserved_regions`/`memmap`/`boot_modules` 原本指向 boot-shim 堆上的字节，高半切换后那块内存不再被映射（真机读数：同一 VA 读回全零，E2 现象；机制是页表不再包含那块 shim 堆的映射），落进内核 `.bss` 才能整段运行期可达（`lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info) 文档注释：`The reserved_regions payload lives in the boot-shim's UEFI-pool heap…`）；**交接路径**——早先版本把 shim 栈上的 `&KernelInfo` 经 `noreturn` asm 的 `in("rdi")` 直传给 `kmain`，RDI 是 caller-saved、被调用方覆写后 `kmain` 拿到的是 .rdata 字符串地址（早期版本的读数：`kmain` 收到的指针 `0x1ddda2ee` 与 `.rdata` 里一个字符串常量的地址相合），现在全局副本的地址是链接期 RIP 相对常量，不再依赖 shim 栈上的引用；指针仍按 ABI 传入 RDI/X0/A0，但生产 `kmain` 的第一条语句就把形参遮蔽为 `KERNEL_INFO` 全局副本，形参此后无读者（`kmain` 实现注释里的第二次根因：形参曾被编译器溢出到内核栈、从被覆写的栈槽读回），所以真正被消费的是副本地址（§4.4）。x86_64 生产路径还保留两块临时取证打印（`kernel: arch_boot arg=…` 与 `kernel: preA rdi=…`，源码注释自标 `temporary`），它们不属于 §6.1 的正式路标；按文档复现串口日志时按噪声过滤，删除或加 feature 门属于设计批（D2-13）。
+两条生产路径在 `kmain` 处合流，但不在 `arch_boot_impl`：v1 接收走 `arch_boot_resume_v1` → `resume_after_v1_decode`（记录活动根、落 `.bss`、建 DM），direct 走 `arch_boot_impl`（Step1 恒等 → Step2 高半 → Step2b/2c 设备窗口 → Step3 开分页 → Step4 DM）。两条路径在跳转前都把 `KernelInfo` 落进 `.bss` 副本，跳转时消费的是副本地址。这一步的原因在源码注释里有两条现场：**载荷存活**——`reserved_regions`/`memmap`/`boot_modules` 原本指向 boot-shim 堆上的字节，高半切换后那块内存不再被映射（真机读数：同一 VA 读回全零，E2 现象；机制是页表不再包含那块 shim 堆的映射），落进内核 `.bss` 才能整段运行期可达（`lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info) 函数体注释：`The reserved_regions payload lives in the boot-shim's UEFI-pool heap…`）；**交接路径**——早先版本把 shim 栈上的 `&KernelInfo` 经 `noreturn` asm 的 `in("rdi")` 直传给 `kmain`，RDI 是 caller-saved、被调用方覆写后 `kmain` 拿到的是 .rdata 字符串地址（早期版本的读数：`kmain` 收到的指针 `0x1ddda2ee` 与 `.rdata` 里一个字符串常量的地址相合），现在全局副本的地址是链接期 RIP 相对常量，不再依赖 shim 栈上的引用；指针仍按 ABI 传入 RDI/X0/A0，但生产 `kmain` 的第一条语句就把形参遮蔽为 `KERNEL_INFO` 全局副本，形参此后无读者（`kmain` 实现注释里的第二次根因：形参曾被编译器溢出到内核栈、从被覆写的栈槽读回），所以真正被消费的是副本地址（§4.4）。x86_64 生产路径还保留两块临时取证打印（`kernel: arch_boot arg=…` 与 `kernel: preA rdi=…`，源码注释自标 `temporary`），它们不属于 §6.1 的正式路标；按文档复现串口日志时按噪声过滤，删除或加 feature 门属于设计批（D2-13）。
 
 **让自引导镜像照搬 v1 的做法、先把自己的段重新拷一遍会怎样**：目标区间就是它正在执行的代码与栈所在的物理内存：拷贝完成之前，正在执行的这段代码的字节已被改掉，下一条取指拿到的是新内容（或者被清零的 BSS）。这条分界在 [`bootface.rs`](os/kernel-image/src/bootface.rs) 的模块文档里点明。
 
