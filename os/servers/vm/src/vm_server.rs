@@ -218,9 +218,8 @@ pub struct VmServer {
 /// fills exactly once. VM is a single-threaded event loop (crate root),
 /// which is the single-access guard this unsync cell needs. A warm start
 /// in the same process finds the slot full and skips `init()`; a re-exec'd
-/// process finds it empty — that shape has no C counterpart (the evidence
-/// entry in 02-stage-vm/todo.md, case ③), and the boot router answers it
-/// with the loud rejection.
+/// process finds it empty — that shape has no C counterpart, and the boot
+/// router answers it with the loud rejection.
 static VM_SERVER: AssumeSyncCell<Option<VmServer>> = AssumeSyncCell::new(None);
 
 /// Which boot path `main` takes, from the kernel flag and the image slot

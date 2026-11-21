@@ -333,7 +333,7 @@ pub type CurrentTrapEntry = crate::arm64::trap_entry::AArch64TrapEntry;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 
-// ── trap-stub facade (smp_todo.md §3.7) ──
+// ── trap-stub facade ──
 //
 // `install_trap_stubs` writes the arch's real asm entry addresses into every
 // gate of the table; `syscall_entry_va` reports the SYSCALL entry address for

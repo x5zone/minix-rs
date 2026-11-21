@@ -120,8 +120,7 @@ pub trait ClockArch: Sized + Send + Sync {
     /// C: init_clock() hardware portion + arch_init() APIC timer
     fn init_timer(&mut self, hz: u32, cpu_id: u32);
 
-    /// Arm the per-CPU local timer as a one-shot for the next tick
-    /// (see smp_todo.md §28).
+    /// Arm the per-CPU local timer as a one-shot for the next tick.
     ///
     /// C: `lapic_set_timer_one_shot(1000000 / system_hz)` —
     /// arch_clock.c:139, programmed at AP bring-up

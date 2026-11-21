@@ -2,7 +2,7 @@
 //!
 //! # Design (one paragraph)
 //!
-//! Two hardware entry paths are modeled separately (smp_todo.md §3.7), C
+//! Two hardware entry paths are modeled separately, C
 //! ground truth mpx.S: **A. IDT/trap-gate path** — exceptions (#DE/#PF/#GP…),
 //! external IRQs (PIT → IOAPIC → LAPIC), IPIs and the user-visible soft-int
 //! gates (vectors 32-35) all arrive through an IDT gate; a per-vector stub

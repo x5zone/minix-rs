@@ -80,7 +80,7 @@ done
 |---|---|---|
 | [concepts/](concepts/) | 跨阶段的概念词条与知识：capability、endpoint、fail-stop、typestate、内核内替换的风险、陷入边界上的消息物化，另有取证方法论与开发机环境两篇知识条目（子类划分与入库判据见其 README） | 9 |
 | [misc/](misc/) | 不属于单一阶段的重写工程文档：项目规划、结构设计、纵向切片策略、语义冻结策略、内核不变量、异步消息表、SENDREC 原子性、ELF 加载、架构机制映射、现代硬件与 Rust，以及伞目录退役时归档进来的两份说明 | 16 |
-| [coordination/](coordination/) | 多会话协作区。`2026-10-08` 做过一次清理归并：七十六个过程产物降为二十八个——评审报告归并进 `REVIEW-HISTORY.md`、开场与接续提示词及交接件归并进 `SESSION-HISTORY.md`、aarch64 案卷归并进 `CASE-AARCH64.md`、riscv 静态扫描线归并进 `CASE-RISCV64.md`（未结案的案卷单独保留）；并发开发的规则范例抽成 `CONCURRENT-WORK-PROTOCOL.md`。**待办的唯一入查点是 `TODO-LEDGER-OPEN.md`（未完成）与 `TODO-LEDGER-DONE.md`（已完成与已定案），两者的入口与权威归属声明在 `TODO-LEDGER-INDEX.md`**；`01-stage-kernel` 能不能定稿看 `STAGE-KERNEL-FREEZE-READY-20261008.md`。工单、台账、案卷、工作记录仍只读为主，新批次产物请写进对应的活台账而不是新建文件 | 28 |
+| [coordination/](coordination/) | 多会话协作区。`2026-10-08` 做过一次清理归并：七十六个过程产物降为二十八个——评审报告归并进 `REVIEW-HISTORY.md`、开场与接续提示词及交接件归并进 `SESSION-HISTORY.md`、aarch64 案卷归并进 `CASE-AARCH64.md`、riscv 静态扫描线归并进 `CASE-RISCV64.md`（未结案的案卷单独保留）；并发开发的规则范例抽成 `CONCURRENT-WORK-PROTOCOL.md`。**待办的唯一入查点是 `coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`）；`TODO-LEDGER-OPEN/DONE/INDEX` 三本账已作为历史归档保留（2026-11-21 起 01/02 的 open 项迁入 YAML）**；`01-stage-kernel` 能不能定稿看 `STAGE-KERNEL-FREEZE-READY-20261008.md`。工单、台账、案卷、工作记录仍只读为主，新批次产物请写进对应的活台账而不是新建文件 | 28 |
 | [tmp/evidence/](tmp/evidence/) | 按日期与任务命名的实验取证（串口日志、设备树、脚本输出）。审计证据，不做改写 | 276 |
 | [archive/legacy-fork-bak/](archive/legacy-fork-bak/) | 以 fork 系统调用为主线时期的备份稿 | 40 |
 

@@ -3444,10 +3444,9 @@ fn dispatch_diagctl(
                     KcallResult::Ok(0)
                 }
                 CrossSpaceResult::Completed(Err(_)) => {
-                    // A1: the diagctl copy failure probe (four-level dump)
-                    // lived here and was removed with the fix — the root
-                    // cause is recorded in 01-todo.md A1 (dst endpoint
-                    // walked the caller's root over a kernel-stack VA).
+                    // The diagctl copy-failure probe (four-level dump) was
+                    // removed with the fix. Root cause: the destination
+                    // endpoint walked the caller's root over a kernel-stack VA.
                     KcallResult::Ok(EFAULT)
                 }
                 CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,

@@ -232,7 +232,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > ### 必读文件清单（顺序）
   > 1. `.review/trae/{stage}/STATE.md`（本文件）
   > 2. `.review/trae/{stage}/scans/workflow-improvement-suggestions.md`
-  > 3. 外部 TODO 清单（当前形态：各 stage 的 `todo.md` / `{NN}-todo.md`；历史案例如 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）
+  > 3. TODO 账本（`rewrite-notes/coordination/todo-ledger/<stage>.yaml`；旧 stage `todo.md` 已迁移删除；历史案例如 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）
   > 4. `{tree}/{stage}/{target-doc}.md`
   > 5. 上一个 CONVERGED 文档的 scan
   >

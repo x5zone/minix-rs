@@ -351,7 +351,7 @@ mod tests {
     fn test_placement_constants_within_low_identity() {
         // 2026-09-09: vector page moved to 0x05 — PA 0x8000 is
         // OVMF's own AP park/jump-table area under QEMU (monitor `xp`
-        // evidence; see smp_todo.md).
+        // evidence).
         assert_eq!(AP_STARTUP_PA, 0x5000);
         assert_eq!(AP_STARTUP_VECTOR, 0x05);
         assert!(AP_STARTUP_PA < 0x10_0000);

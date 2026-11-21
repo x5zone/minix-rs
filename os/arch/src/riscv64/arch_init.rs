@@ -50,8 +50,8 @@ impl ArchInit for Riscv64ArchInit {
         //   - STIE (timer): opened by `TimerIrqGate::enable_timer_irq` at
         //     bsp_finish_booting Step 6, after the handler registration
         //     (C `boot_cpu_init_timer` position, clock.c:294).
-        //   - SSIE (software/IPI): belongs to the SMP IPI bring-up
-        //     (see smp_todo.md) — enabling it before an IPI producer
+        //   - SSIE (software/IPI): belongs to the SMP IPI bring-up —
+        //     enabling it before an IPI producer
         //     and handler exist would arm a second unhandled source.
         // SEIE (external) stays per-source via `InterruptController::unmask`.
     }

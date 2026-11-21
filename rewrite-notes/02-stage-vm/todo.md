@@ -10,7 +10,7 @@
 > 范围：`os/servers/vm/src/` 全部 Rust 代码（与 02-stage-vm 文档对应的实现）。
 > 方法：整体分层分析（全局状态 → 主循环/分发 → 各子系统 → 模块），结合 Redox 实现与 Rust/OS 社区最佳实践。
 > 定位：本文档是架构改进建议清单，**不同于** `draft/TODO.md`（旧 fork 主线 TODO 存档）。
-> **历史归档**：第一轮至第六轮（T24+ 收尾 campaign）→ [`archive/todo-V11-archive-2026-09-08.md`](archive/todo-V11-archive-2026-09-08.md)（1487 行）；第七轮 V12 全卷（§0–§17，含 Fix #59–#62 修复记录）→ [`archive/todo-V12-archive-2026-09-09.md`](archive/todo-V12-archive-2026-09-09.md)。Fix #N 编号以对应存档文件为检索权威。
+> **历史归档**：第一轮至第六轮（T24+ 收尾 campaign）→ `archive/todo-V11-archive-2026-09-08.md`（已迁移至 todo-ledger）（1487 行）；第七轮 V12 全卷（§0–§17，含 Fix #59–#62 修复记录）→ `archive/todo-V12-archive-2026-09-09.md`（已迁移至 todo-ledger）。Fix #N 编号以对应存档文件为检索权威。
 > 状态（2026-09-09，V13 轮 = 第八轮，见 §18）：**V12 后复扫**。四条工作线——① V12 全部开口条目 staleness 复核（12 条全部维持开口，无一失效；漂移锚点逐一重校，见 §1）；② Gate A 覆盖穷举重跑 + 调用号级全量对账（26/26 注册 parity，真实缺口在子路径）；③ Fix #60（缺页链写 PTE）落地后的新风险面深查——PTE/TLB 生命周期、CoW 快路语义、munmap/brk/exit 资源闭环；④ VM 消息 wire 字段宽与 ACL 权限面两个系统对账。新发现：**1 项 P1（CoW 快路 memtype 不换型的活循环）+ 6 项 P2 + 1 项 P3**，跨 stage 两条挂 edge（E-VMTLB 新登记 + E-RSWIRE 增补）。本轮未修改任何生产代码。
 
 ---
@@ -577,8 +577,8 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 
 ## 存档指引
 
-- 第一轮至第六轮全部条目与修复记录：[`archive/todo-V11-archive-2026-09-08.md`](archive/todo-V11-archive-2026-09-08.md)
-- 第七轮 V12 全卷（含 Fix #59–#62 修复记录原文）：[`archive/todo-V12-archive-2026-09-09.md`](archive/todo-V12-archive-2026-09-09.md)
+- 第一轮至第六轮全部条目与修复记录：`archive/todo-V11-archive-2026-09-08.md`（已迁移至 todo-ledger）
+- 第七轮 V12 全卷（含 Fix #59–#62 修复记录原文）：`archive/todo-V12-archive-2026-09-09.md`（已迁移至 todo-ledger）
 - 本轮 SYMBOLS 全量清单：`.review/claude/vm/v13/SYMBOLS.md`（中间产物，正式引用以本文件 §18.1/§1 汇总为准）
 - 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
 

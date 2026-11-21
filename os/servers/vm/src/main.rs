@@ -121,12 +121,11 @@ fn real_main() -> ! {
             BootRoute::WarmNoState => panic!(
                 "VM warm restart (is_first_time = false) with an empty image slot: \
                  the re-exec'd process carries no VM state and C main.c:101-108 \
-                 has no usable semantics for this shape either (02-stage-vm/todo.md \
-                 V20-P1-1, evidence case ③)"
+                 has no usable semantics for this shape either"
             ),
             BootRoute::DoubleInit => panic!(
                 "VM cold boot with the image slot already holding a server: \
-                 init must run exactly once (02-stage-vm/todo.md V20-P1-1)"
+                 init must run exactly once"
             ),
         }
 

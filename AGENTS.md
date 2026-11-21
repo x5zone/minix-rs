@@ -71,7 +71,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史/待办（`tools/doc-publication-check.py` DP-1..DP-6；用户本人笔记只允许放 `<!-- user-note: … -->` 注释块），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
 - **⛔ 教程就绪（V3.8）**：每章必须有学习目标、前置概念、最小可运行示例、失败对照、小结、术语定义（`tools/tutorial-rubric-check.py`）；缺任一项 = P1，不得 CONVERGED
 - **⛔ 轮次硬上限（V3.8）**：同一篇最多 3 个修改轮（跨 edition 累计）；未收敛即强制整节重写，不开第 4 轮；重写后只允许 1 次确认轮
-- **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`），旧 todo markdown 冻结为归档
+- **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`）；01/02 旧 todo markdown 已迁移删除，其余 stage 迁移后同样删除
 - **P0 六类**：P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing
 - **⛔ 显式调用技能**：必须通过 Skill 工具真正调用技能，scan.md 的 Skill Invocation Log 只记实际调用；"规则已加载"不算调用
 - **⛔ Gate 证据强度分级**：L1 工具输出（A/D/E 门必需）、L2 手工 grep（B/C 可接受）、L3 推断（视为 FAIL，除非写明 `MANUAL_FALLBACK` 理由）。**没有附命令与输出的「✅ 通过」一律作废**

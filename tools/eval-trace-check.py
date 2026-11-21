@@ -1435,7 +1435,7 @@ def audit_template_sections(ledger_text: str, report: Report) -> None:
 def check_todo_ledger(path: Path, report: Report) -> None:
     """Reconcile a document-level todo ledger with the review disposition set.
 
-    `01-todo.md` is outside the run directory and was invisible to the gate.
+    the old todo ledger lived outside the run directory and was invisible to the gate.
     It may legitimately carry user-owned or deferred items, but every open
     item needs a legal disposition: `②` (user approval + date) or `⑤`
     (evidence path / blocked). `允许开放` is not in the disposition schema and
@@ -5557,7 +5557,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--todo-file",
-        help="同时核对该文档的 todo 台账（如 rewrite-notes/01-stage-kernel/01-todo.md）",
+        help="同时核对该文档的旧 todo 台账（如 <stage>/todo.md；01/02 已迁 YAML）",
     )
     parser.add_argument("--self-test", action="store_true", help="运行内置自测")
     args = parser.parse_args()

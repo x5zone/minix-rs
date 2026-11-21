@@ -11,7 +11,7 @@
 > 范围：`os/servers/vm/src/` 全部 Rust 代码（与 02-stage-vm 文档对应的实现）。
 > 方法：整体分层分析（全局状态 → 主循环/分发 → 各子系统 → 模块），结合 Redox 实现与 Rust/OS 社区最佳实践。
 > 定位：本文档是新增的架构改进建议清单，**不同于** `draft/TODO.md`（旧 fork 主线 TODO 存档）。
-> **历史轮次归档（2026-09-08）**：第一轮至第六轮（T24+ 收尾 campaign）的全部条目正文与 Fix #1–#58 修复记录原文，已整体移至 [`archive/todo-V11-archive-2026-09-08.md`](archive/todo-V11-archive-2026-09-08.md)（1487 行，除顶部存档横幅外未改动）。Fix #N 编号以存档文件为检索权威；活指针（§0 速览、存量 open 条目、§16.1 缺口表）保留在本文。
+> **历史轮次归档（2026-09-08）**：第一轮至第六轮（T24+ 收尾 campaign）的全部条目正文与 Fix #1–#58 修复记录原文，已整体移至 `archive/todo-V11-archive-2026-09-08.md`（已迁移至 todo-ledger）（1487 行，除顶部存档横幅外未改动）。Fix #N 编号以存档文件为检索权威；活指针（§0 速览、存量 open 条目、§16.1 缺口表）保留在本文。
 > 状态（2026-09-08 更新，V12 轮，见 §17）：第七轮 = 全量查漏（Gate A 重跑 + 175 项 C 符号逐一语义判定）+ 分层架构深审（L0 整体 → L1 模块边界 → L2 子系统 → L3 trait/类型 → L4 实现层）+ Redox/OS 理论/Rust 社区三方联网对照。本轮**先审查 + 登记，后修复通电前卡点**。新发现：**1 项 P0（缺页主链 PTE 写入职责缺失）+ 1 项 wire 字宽 bug（挂 edge E-VMMCPWIRE）+ 3 项 P1 + 9 项 P2 + 2 项 P3**，缺口登记 G-V12-7..13（G-V12-1..6 为上一批次登记，见 §16.1 保留表）。**修复批次（同日，§17.9 Fix #59–#62）：两个 P0（E-VMMCPWIRE、G-V12-8）+ G-V12-10 + E-VMMOCK 依赖收口 + V12-P1-2 全部闭环**，基线升至三矩阵 **490/507/490 passed**、clippy（servers/vm）0 警告。
 
 ---
@@ -406,6 +406,6 @@ gate-evidence-关键论断复核（防转述失真，主 agent 亲自 grep/读�
 
 ## 存档指引
 
-- 第一轮至第六轮全部条目与修复记录：[`archive/todo-V11-archive-2026-09-08.md`](archive/todo-V11-archive-2026-09-08.md)
+- 第一轮至第六轮全部条目与修复记录：`archive/todo-V11-archive-2026-09-08.md`（已迁移至 todo-ledger）
 - 本轮 SYMBOLS 全量清单：`.review/claude/vm/v12/SYMBOLS.md`（中间产物，正式引用以本文件 §17.1 汇总为准）
 - 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§17.4 三条增补）

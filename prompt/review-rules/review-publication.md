@@ -131,16 +131,16 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 
 1. **规范源** = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。
    每条字段：`id/stage/doc/title/status/severity/kind/origin/evidence/defer`。
-2. **旧 todo markdown 冻结为 archive**：`01-todo.md`、各 stage `todo.md`、`OPEN-DEBT.md`、
-   `suggestions.md`、`follow-ups.md` 不再作为「当前欠账」的判据；只迁**open** 项，closed 历史
-   留在旧文件。当前并发清理结束、D01 CONVERGED 时执行冻结（加归档头）。
-   **外部线程正在执行的清单（D-107 的 D01 13 项 / D02 14 项）按历史 todo 处理，不逐条收集**；
-   只需为每篇留一个 `blocked: true` 哨兵（`D01/D02-EXTERNAL-D107`），线程完成并经用户确认后
-   关闭哨兵。这样既不重复收集，又不会在外部工作未完成时误判收敛。
+2. **旧 todo markdown 已迁移删除（2026-11-21）**：`01-todo.md`、stage `todo.md`、
+   `smp_todo.md`、`endpoint_todo.md`、`draft/*`、`archive/*` 的 open 项已迁入 YAML，
+   文件已删除；closed 历史靠 git 历史 + 每条 `origin_commit` 追溯。
+   **轨迹制品（`OPEN-DEBT.md` / `suggestions.md` / `follow-ups.md`）原位保留**，只迁其中的
+   open 项，不删除——它们是 `eval-trace-check.py` 的证据链。
+   **外部线程执行过的清单（D-107）已按用户确认收口**；两条哨兵已转 `closed`。
 3. **新发现的 TODO 一律写入账本**，不得再往旧 markdown 追加。
 4. **门**：`python3 tools/todo-ledger.py check --doc <doc> --fail-on-open`——当前篇
    `status: open` 必须为 0；`closed` 必须有证据；`defer-approved` 必须有四要素。
-5. **反假收敛**：`01-todo.md` 里的「已批准待实施」不再算闭环——它必须在账本里是
+5. **反假收敛**：旧 todo 文件（已删除）里的「已批准待实施」不再算闭环——它必须在账本里是
    `open`（继续做）或 `defer-approved`（有你的亲笔四项）。这是「CONVERGED 但 todo 还有」
    的制度性修复。
 

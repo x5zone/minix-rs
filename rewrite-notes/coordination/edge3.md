@@ -48,8 +48,8 @@
 
 | 编号 | 条目 | 来源 | 要点 | 前置 | 状态 |
 |---|---|---|---|---|---|
-| S20 | V11-P1-1 通电宿主半 + V13-P3-1之2 + V14-P2-1 | [02-stage-vm/todo.md](../02-stage-vm/todo.md) | VM 传输逻辑完备，宿主侧激活；VfsRequestQueue 补按 owner 取消（死进程兜底，wire 已通现在可做）；V14-P2-1 VM SEF 面收编 minix-sef 第四消费方裁决 + E1 信号投递通道裁决 | 无 | ✅ 2026-09-19（058fdbe22 V13 purge+墓碑；0b0f050bc V14 方案 A 收编 minix-sef + 信号抵达裁决按 kernel 唤醒半契约；V11-P1-1 宿主半核验闭环，真机半挂 E5(d)） |
-| S21 维持 | V12-P3-1/P3-2 优化登记 | [02-stage-vm/todo.md](../02-stage-vm/todo.md) | 零帧批量预映射/find_free 双索引/bitmap lastscan——维持登记，独立设计决策 | 🚫 | 🚫 |
+| S20 | V11-P1-1 通电宿主半 + V13-P3-1之2 + V14-P2-1 | 02-stage-vm/todo.md（已迁移至 todo-ledger） | VM 传输逻辑完备，宿主侧激活；VfsRequestQueue 补按 owner 取消（死进程兜底，wire 已通现在可做）；V14-P2-1 VM SEF 面收编 minix-sef 第四消费方裁决 + E1 信号投递通道裁决 | 无 | ✅ 2026-09-19（058fdbe22 V13 purge+墓碑；0b0f050bc V14 方案 A 收编 minix-sef + 信号抵达裁决按 kernel 唤醒半契约；V11-P1-1 宿主半核验闭环，真机半挂 E5(d)） |
+| S21 维持 | V12-P3-1/P3-2 优化登记 | 02-stage-vm/todo.md（已迁移至 todo-ledger） | 零帧批量预映射/find_free 双索引/bitmap lastscan——维持登记，独立设计决策 | 🚫 | 🚫 |
 
 ## 小服务器簇（ds / is / mib / devman / input / ipc-server / sched）
 

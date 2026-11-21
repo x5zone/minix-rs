@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """todo-ledger.py — TODO 单一账本（V3.7 / V3.8-r2 迁移扩展）
 
-背景：此前 TODO 散在 50+ 个 markdown（`01-todo.md`、各 stage `todo.md`、OPEN-DEBT、
+背景：此前 TODO 散在 50+ 个 markdown（旧 stage `todo.md`（已迁移删除）、OPEN-DEBT、
 suggestions、follow-ups），彼此不引用、无门读取。收敛判据只读 OPEN-DEBT，于是出现
-「CONVERGED 但 01-todo.md 还有 24 条待实施」的假收敛。
+「CONVERGED 但旧 todo 文档还有 24 条待实施」的假收敛。
 
 用户裁决：
   - 规范源 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。

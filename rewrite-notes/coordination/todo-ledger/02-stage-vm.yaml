@@ -343,9 +343,9 @@
   status: historical
   severity: P2
   kind: code
-  origin: rewrite-notes/02-stage-vm/draft/TODO.md:230
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:205
   origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
-  origin_line: 230
+  origin_line: 205
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: prose-open
   evidence: 'Appendix L205-222: every row marked closed; rg minix3_missed.md/cc-review-scan.md -> absent; vm_server.rs pub(crate)

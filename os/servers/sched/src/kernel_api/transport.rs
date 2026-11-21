@@ -19,8 +19,7 @@
 //! The real ends are final-shape but honest: every call is packed exactly as
 //! production will send it and delegated to minix-sys's direct transports.
 //! Until the user-space trap layer lands, those report `EIO` — the shape is
-//! committed, the power comes later (following the VM transport precedent in
-//! 02-stage-vm/todo.md).
+//! committed, the power comes later (following the VM transport precedent).
 
 use crate::kernel_api::schedctl::SchedctlCall;
 use crate::kernel_api::schedule::Fanout;
