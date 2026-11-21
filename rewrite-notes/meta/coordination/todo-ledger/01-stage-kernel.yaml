@@ -138,7 +138,7 @@
 - id: D01-I-25
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
-  title: '`os/` 全仓注释语言与锚点整改（低优；01 篇射程内样例：uefi_helpers D-64②/F8 段、bootface 头注等，随各条顺手按 a/b 口径处理）'
+  title: D01 关联代码注释语言与锚点整改（作者 2026-11-22 裁决：只修 48 个 related-code；全仓另立条目）
   status: open
   severity: P2
   kind: code
@@ -148,14 +148,15 @@
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   evidence: '`rg -n ''^\s*//.*[一-鿿]'' os --glob ''*.rs'' | wc -l` -> 233; `rg -n ''^\s*//.*(I-[0-9]+|D-[0-9]+)'' os --glob
     ''*.rs'' | wc -l` -> 301; examples os/arch/src/arm64/paging.rs:112-115 (I-29-16), os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable/src/main.rs:31-32
-    (I-43).'
+    (I-43)；2026-11-22 复核：`python3 tools/code-publication-check.py <48 个 related-code>` -> 16 处新增（CP-3=15/CP-4=1），`os/kernel/src/lib.rs`
+    另有 13 处被无花括号 `#[cfg(test)]` 假阴性藏掉；全仓近似 88 文件 / 163 行过程编号 / 208 行 CJK（排除测试区）。'
   verified_by: subagent:b1
   verified_at: '2026-11-21'
   aliases:
   - I-25
   scope: doc
-  note: Source line 97 claims ✅ 全仓完成（CJK=0、广义锚点=0）but HEAD has 233 CJK comment lines and 301 process-anchor comment lines,
-    many added after the 2026-10-30 closure. Strong label-vs-reality contradiction.
+  note: 2026-11-22 作者裁决：门先修；只修 D01 的 48 个 related-code，按文件级——D01 关联到文件内任一符号即整文件整改；未涉及的其他 stage 代码（如 PM server）不在 D01 范围，不构成
+    defer 或阻断；全仓另立 repo-wide 条目。旧 todo 的“全仓完成”改为“D01 关联代码完成”。
   refs:
     code:
     - path: os/arch/src/arm64/paging.rs
@@ -164,7 +165,8 @@
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#1
     tests: []
-    decisions: []
+    decisions:
+    - D-114
 - id: D01-I-29-11
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -273,6 +275,9 @@
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.4
     tests: []
     decisions: []
+  blocked: true
+  blocked_reason: 2026-11-22 A2 判别实验：测试基址已修正（kern_virt_base=KERNEL_LOAD_PA），但 rust_main 二次进入时 bump(256) 在 current=0x84120000/end=0x84200000
+    失败，未到达 A2 自由集打印；需先解释重入/重启来源，不能判定栈区间是否与自由集相交。
 - id: D01-I-53
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -310,16 +315,15 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: Direct Map 覆盖建立的深讲缺失（01 篇只有边界声明，§4.6 明确不展开）
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:49
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
   origin_line: 49
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: follow-ups.md:49 状态「用户批准延期至 D02（2026-11-09）」，:73 「仍开放」；02-higher-half-kernel.md:1211 「Step 4 的 DM 覆盖本篇不展开，边界见
-    01 篇的 1.4 节」；01-boot-shim-bootstrap.md §1.4 表把「运行期映射」划给 02；grep F-R14-04 rewrite-notes/coordination/review-eval/DECISIONS.md
-    => 0 命中（无 defer-approved 行）
+  evidence: 作者裁决 A′（D-112）：D01 §4.8 已补 Direct Map 启动期概念入口（DM 定义、store_kernel_info→establish_boot_dm→jump_to_kmain、活动 bootstrap
+    root 上追加不重建、覆盖≠可分配）；不展开 DirectMapLayout/plan_dm_policy/三架构窗口，不解冻 D02。doc-ref-check/anchor/doc-publication 0。
   verified_by: subagent:b6
   verified_at: '2026-11-21'
   aliases:
@@ -336,6 +340,9 @@
       unit: '4.6'
     tests: []
     decisions: []
+  lifecycle:
+    updated: '2026-11-22'
+    closed_by: D-112
 - id: D01-RUN-R37-01
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -427,29 +434,30 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: 面板与 certify 均为 deepseek-v4.1-flash 冷启动实例，无跨模型复核
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:141
   origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
   origin_line: 141
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: follow-ups.md:141 原文「面板与 certify 均为 deepseek-v4.1-flash 冷启动实例，无跨模型复核」；grep -rn 跨模型 该 run 目录 => 11 处命中，全部是同一局限的自述（VERIFY-CHECK.md:3/:40、REGRESSION.md:111/:367/:399、FREEZE.md:84、loop.md:2158/2213/2302、certify/round36-fact-pass1.md:71），无实际跨模型复核回执
-  verified_by: subagent:b6
-  verified_at: '2026-11-21'
+  evidence: follow-ups.md:141 原文「面板与 certify 均为 deepseek-v4.1-flash 冷启动实例，无跨模型复核」；grep -rn 跨模型 该 run 目录 => 11 处命中，全部是同一局限的自述（VERIFY-CHECK.md:3/:40、REGRESSION.md:111/:367/:399、FREEZE.md:84、loop.md:2158/2213/2302、certify/round36-fact-pass1.md:71），无实际跨模型复核回执；2026-11-22
+    跨模型复核：opencode/hy4-flash-free（独立于 deepseek-v4.1-flash）按 6 条断言只读复核，6/6 CONFIRM，均带 file:line；C4 指出 §4.8 箭头链漏 build_bootstrap_root_and_enable，已修并记
+    crosscheck/round38.md；anchor 89/89、citation 21/0、structure/ref/publication/tutorial 全绿；原始回执 tmp/d01-r38/crosscheck/out-hy4.log
+  verified_by: cross-model:opencode/hy4-flash-free
+  verified_at: '2026-11-22'
   aliases:
   - R37-05
   scope: doc
-  note: 方法论缺口，只能由一次跨工具只读复核销账，非代码/文档缺陷
+  note: 方法论缺口，只能由一次跨工具只读复核销账，非代码/文档缺陷；2026-11-22 已由免费模型复核关闭，后续复核仍只用免费模型（D-113）
   refs:
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
     - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.5
     tests: []
-    decisions: []
-  blocked: true
-  blocked_reason: 跨模型复核需要可用的非本机模型凭据；2026-11-22 codex exec 使用 OpenCode API key 返回 401（key expired），无法完成独立复核。需用户提供有效 key 或指定其他可用模型。
+    decisions:
+    - D-113
 - id: D01-rt-birth-sp
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -475,6 +483,9 @@
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
     tests: []
     decisions: []
+  blocked: true
+  blocked_reason: 2026-11-22 A2 判别实验：测试基址已修正（kern_virt_base=KERNEL_LOAD_PA），但 rust_main 二次进入时 bump(256) 在 current=0x84120000/end=0x84200000
+    失败，未到达 A2 自由集打印；需先解释重入/重启来源，不能判定栈区间是否与自由集相交。
 - id: D01-PROSE-PROSE-06-todo
   stage: 01-stage-kernel
   doc: 01-stage-kernel

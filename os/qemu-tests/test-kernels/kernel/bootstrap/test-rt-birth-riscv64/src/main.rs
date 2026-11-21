@@ -522,7 +522,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 
     let kernel_info = KernelInfo {
         memmap: &MEMMAP,
-        kern_virt_base: VirBytes(DRAM_BASE),
+        kern_virt_base: VirBytes(KERNEL_LOAD_PA),
         kern_phys_base: PhysBytes(KERNEL_LOAD_PA),
         kern_size: 0x200_000,
         // Kernel-stack TOP for the sscratch swap on U→S entry: the image
@@ -613,6 +613,39 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     // 6. Process table (Phase C) — the VM branch loads the embedded
     //    rt-birth ELF (segments, 64 KiB stack, ps_strings, boot context).
     minix_kernel::init_proc_and_boot(&kernel_info);
+    // A2 diagnostic probe (I-43 / rt-birth-sp): print the free set and the
+    // two live stacks so the log itself records whether any free region
+    // overlaps a stack range. Read-only: the handoff page is mapped RO.
+    {
+        use minix_types::{VmBootHandoff, VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VA};
+        let h = unsafe { &*(VM_BOOT_HANDOFF_VA as *const VmBootHandoff) };
+        early_console::write_str("  A2 free=");
+        early_console::write_hex(h.free_region_count as u64);
+        early_console::write_str(" deducted=");
+        early_console::write_hex(h.deducted_count as u64);
+        early_console::write_str("\n");
+        for i in 0..h.free_region_count.min(VM_BOOT_HANDOFF_MAX_REGIONS as u32) as usize {
+            early_console::write_str("    free ");
+            early_console::write_hex(h.free_regions[i].base);
+            early_console::write_str(" + ");
+            early_console::write_hex(h.free_regions[i].size);
+            early_console::write_str("\n");
+        }
+        let bsp_lo = core::ptr::addr_of!(STACK) as u64;
+        let bsp_hi = bsp_lo + 0x10000;
+        early_console::write_str("    bsp_stack ");
+        early_console::write_hex(bsp_lo);
+        early_console::write_str(" .. ");
+        early_console::write_hex(bsp_hi);
+        early_console::write_str("\n");
+        let uecall_top: u64 = KERNEL_LOAD_PA + 0x200_000;
+        let uecall_lo = uecall_top - 0x1000;
+        early_console::write_str("    uecall_stack ");
+        early_console::write_hex(uecall_lo);
+        early_console::write_str(" .. ");
+        early_console::write_hex(uecall_top);
+        early_console::write_str("\n");
+    }
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 
@@ -645,12 +678,19 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 fn bump(num_pages: usize) -> Option<u64> {
     // Boot bump allocations sit at DRAM + 32 MB (past the kernel image and
     // the embedded ELF), ending before 64 MB — hello-boot-riscv64's layout.
-    static mut BUMP_PTR: u64 = DRAM_BASE + 0x0200_0000;
-    const BUMP_END: u64 = DRAM_BASE + 0x0400_0000;
+    static mut BUMP_PTR: u64 = KERNEL_LOAD_PA + 0x0200_0000;
+    const BUMP_END: u64 = KERNEL_LOAD_PA + 0x0400_0000;
     unsafe {
         let need = (num_pages as u64) * 4096;
         let current = core::ptr::read_volatile(&raw const BUMP_PTR);
         if current + need > BUMP_END {
+            early_console::write_str("  bump fail current=");
+            early_console::write_hex(current);
+            early_console::write_str(" need=");
+            early_console::write_hex(need);
+            early_console::write_str(" end=");
+            early_console::write_hex(BUMP_END);
+            early_console::write_str("\n");
             return None;
         }
         core::ptr::write_volatile(&raw mut BUMP_PTR, current + need);

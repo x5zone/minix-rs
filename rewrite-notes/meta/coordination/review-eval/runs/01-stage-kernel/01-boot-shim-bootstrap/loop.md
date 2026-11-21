@@ -2381,15 +2381,15 @@ RB24 首轮 13 项逐项处置：
 
 ### R38 §7 状态
 
-- `BLOCKED`：设计项（DESIGN-01/03/07/08、低风险删减）、D01-R14-04（DM 深讲归属）、D01-R37-05（跨模型凭据）、D01-I-25（全仓注释范围）、D01-I-43/rt-birth-sp 未闭环。D01-I-18 已关闭（最大节 216 行）。
-- 不宣告 `CONVERGED`；L0.9 的 doc/code/tutorial 出版门已清零，TODO 仍 5 条 doc scope open（含 1 blocked）。
+- `BLOCKED`：设计项（DESIGN-01/03、低风险删减）、D01-I-25（全仓注释范围）、D01-I-43/rt-birth-sp 未闭环。D01-R37-05 已由免费模型跨模型复核关闭（见文末）；D01-I-18 已关闭（最大节 216 行）。
+- 不宣告 `CONVERGED`；L0.9 的 doc/code/tutorial 出版门已清零，TODO 仍 4 条 doc scope open（含 1 blocked）。
 
 ### R38 §8 给 meta-review 的不确定点
 
 1. P-SUBTRACT 判 ARCH 不成立，但 D2 认为 `&mut EarlyMemory` 穿 `Paging` 是唯一能消除全局注册槽的路径；两者证据强度需跨工具复核。
 2. DESIGN-01 的单写方向与 D2 的 `fill_map_tables` 缺 once 子句已被本轮代码修复，但 UEFI 双写对账仍未动。
 3. `SourceRecord` 72B 的 5 个无读者字段是否可删，取决于 wire v11 是否允许改协议。
-4. 跨模型复核因 OpenCode key 过期未完成。
+4. 跨模型复核已由 `opencode/hy4-flash-free` 完成；C4 修复见 `crosscheck/round38.md`，不再是不确定点。
 
 ### L6
 
@@ -2406,3 +2406,15 @@ RB24 首轮 13 项逐项处置：
 - DESIGN-04/09 已批准但未实施，保留为设计批剩余。
 - QEMU 复核：x86 bootmarks PASS、aarch64 bootmarks PASS、riscv64 U-Boot shim PASS（6/6）。
 - 阻断未变：DESIGN-07/08、R14-04、R37-05、I-25、I-43；其中 DESIGN-07/08/R14-04/R37-05/I-25 需作者亲裁，I-43 需 A2 自由集判别实验。
+
+### R38 跨模型复核完成（2026-11-22，作者授权免费模型）
+
+- 作者裁决：跨模型复核只使用免费模型，避免烧光付费限额；免费模型跑不通则书面豁免一次；严肃复杂场景不硬判，转作者与网页端 GPT 讨论。见 `deputy-log.md` CASE D01-R37-05 与 `DECISIONS.md` D-113。
+- 执行：`opencode/hy4-flash-free`（独立于 deepseek-v4.1-flash），`--agent plan` 只读；断言包、命令与原始输出见 `tmp/d01-r38/crosscheck/`。
+- 结果：6/6 CONFIRM，均带 `file:line`；C4 指出 §4.8 漏 `build_bootstrap_root_and_enable`，已修，见 `crosscheck/round38.md`。
+- 复验：anchor 89/89、structure/ref 通过、citation 21 checked/0 failed、code-map 48/48、publication 0 新增、tutorial 6 章 0 缺项。
+- R37-05 关闭；D01 剩余阻断为 D01-I-25、D01-I-43/rt-birth-sp。
+
+### R38 I-43 判别实验
+
+- 测试基址已修正（`kern_virt_base=KERNEL_LOAD_PA`），`AlreadyMapped` 消除；但 `rust_main` 二次进入时 `bump(256)` 失败（current=0x84120000 / end=0x84200000），A2 自由集打印未到达。I-43/rt-birth-sp 维持阻断，需先解释重入与 `BUMP_PTR` 推进来源。
