@@ -66,3 +66,54 @@
 - **未闭环 = 0**。`OPEN-DEBT` 的 `R3-design-batch`（11 条设计 P1/P2 + 5 条设计 P3）有 D-063 判决行与 2026-11-20 日期。
 - **ARCH 提案 2 条**（RD3-A01/02）待用户亲裁，不阻断。
 - 限制同前：`CONVERGED` = 确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
+
+## R4 确认轮（V3.4；R3-design-batch 实施后的基线重开，append-only 追加）
+
+- 冻结日期：2026-11-21
+- 工作流 edition：V3.4（schema `V3.4 from R3`）
+- 确认轮：R4（`轮型: confirmation`）；轮结果 `CONVERGED`
+- 轨迹提交：`7ff9de6c1`（四份 certify 回执、loop §5–§8、metrics/ledger/suggestions/OPEN-DEBT、meta 报告与 BLIND-SPOTS B-69..B-75）；本 FREEZE 节随后单独提交
+- 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
+- 文档行数：1294
+- 文档 sha256：`48630c90b2a9e1eb2b2814f93ad61d44de0c8a6c634d4835ca25692c602eb781`
+- 基线提交：`79f910acd`（R4 预门同步后）；面板 6 个独立子 agent，最终修复提交 `ca5830fd5`、`d9ceba0cb`、`2ca9a9cd7`
+
+## 收敛证据（R4）
+
+- `eval-trace-check.py --round R4`：PASS（11 PASS / 2 WARN / 0 FAIL）。两个 WARN 是 R3/R4 `OPEN-DEBT` 的「已批准延期，确认 DECISIONS 判决账行」提示，D-063/D-105/D-106 均存在。
+- 台账：79 个 ID（RD-R4-001..079），处置 ① 19 / ② 2 / ④ 12 / FP 4 / SUGG 42；`未闭环 = 0`；`certify 新准入 = 0`。语义聚簇约 47 个缺陷根（含 4 条主张维持为 51 个主题），至少 28 个 ID 是跨角色或同根重复。
+- 严重度（FINDING 36）：P0 4 / P1 5 / P2 20 / P3 7；5 条 P3 FINDING（DESIGN-D2-07/08/09、READER-B-05/B-06）按 G3 分流 SUGG。
+- 独立 certify：事实/设计/代码面 `certify/round4-fact.md` 18/18 CLOSED（第一轮 `certify-r4-pass1-fact.md` 15/18）；读者面 `certify/round4-reader.md` 12/12 CLOSED（第一轮 `certify-r4-pass1-reader.md` 10/12，第二轮 11/12 未单独留档，属 B-73）。三轮残项同源于 §3.2 的一行旧题句与 §4.1 的 `.lrodata` LMA 说明。
+- post-certify P3：§5.1 的「三类畸形」改为「四类畸形」并列出 `PhdrOutOfBounds`/`PhdrEntryTooSmall`/`SegmentOutOfBounds`/`FileszExceedsMemsz`；该行不在 18/12 个判定点内，改后文档 sha 为 `48630c90…`，已按源码四个 Err 出口复核。它使 `自引入 = 2`（两条均轮内修复）。
+- 文档六门：anchor `54/54 zero-def=0 multi-def=0`；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30；`--stale-lines HEAD --strict` PASS。
+- 行为门：`check-layout.sh all` PASS（L0–L9；x86 L3a=4 个 PT_LOAD）；`test-sysboot.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS；`minix-elf` 27/0、`boot-shim` 146/0、`minix-kernel --features mock` 866/0/8。
+- 可引导镜像门：`cd os && cargo run -q -p xtask -- image --arch x86_64 -r` 重建后，从 `os/target/image/x86_64/minix.img` 解出 `::/EFI/minix/kernel.elf`，与 staging 同哈希 `fca5b85f202eb7ca03d38d2f8d26636400a768a02c41cd323cb9e507bca8efe2`；4 个 `LOAD`、0 个 `.lrodata`。meta 读到的旧镜像（5 LOAD / 986 `.lrodata`）已被替换。
+
+## R4 未解决事项（不阻断，已登记）
+
+- `R4-design-batch`（P2）：DESIGN-D2-04（`build_kernel_info` 改收 `BootReport`，删 12 处 `from_raw_parts`）与 DESIGN-D2-06（三份无生产读者的 arch `link.ld` 删除或补齐）。D-105/D-106 代理裁决，授权来源为用户 2026-11-21 review-loop D02 会话代裁指令；D2-06 与 `R3-design-batch` 的「arch link.ld 无读者」及 V1 `D02-F03` 同源，按迁移登记，不重复计根。
+- 读者/设计 P3：37 条编号建议 + 5 条 fact 未编号建议（事后编号 `FACT-S1..S5`）登记在 `suggestions.md`；其中 5 条已由 FINDING 修复覆盖（`READER-A-S03`、`READER-A-S06`、`READER-B-S11`、`READER-B-S14`、`READER-C-S10(a)`），其余只登记或留下一设计批。
+- meta 盲区 B-69..B-75 已回写 `BLIND-SPOTS.md`：语义去重、制品入库、镜像门、未编号建议、回执命名、检索材料面、严重度对账；除镜像门已手工补证外，其余仍是 OPEN 的流程缺口。
+
+## 限制
+
+- `CONVERGED` 的含义是「确认轮口径下没有 open 项 + 无未销账债务」，不是「零未知缺陷保证」。
+- 同 agent 复核：6 个面板与三轮 certify 都是同一模型（opencode-go-chat/deepseek-v4.1-flash）的冷启动实例；无跨模型复核。
+- `.lrodata` 归并改了三份生产链接脚本并重建工件；aarch64 的 `test-rt-birth-aarch64` 仍有已知 A2 user-chain 遗留（D01 轨道），不能作为本轮绿门。
+- 可引导镜像一致性是本轮手工重建 + 哈希比对，不是 CI 常驻断言（B-71 OPEN）。
+- `FP 4` 是工具桶名，语义为 `CLAIM-01..04` 的「反证失败、主张维持」，不是误报；本轮真正的误报 FINDING = 0。
+- 测试计数 27/31/135 是默认特性下的 `--list` 读数；`--features test-all` 为 146。
+- C-05 的「GNU ld 对孤儿段继承 LMA 平移」由 reader certify 在 `/tmp` 用 ld 2.42 最小复现，仓库只保留一个旧 staging ELF 样例，不是全量链接器矩阵。
+
+## 重开条件
+
+- 出现新的 P0/P1 事实或行为缺陷证据；
+- `R4-design-batch`（D2-04/D2-06）或 ARCH 提案实施后基线改变（需重新固定基线并重跑受影响门）；
+- 文档再次修改（含 P3 精度修复）后，受影响判定点需重新回读；
+- 用户明确要求重开。
+
+## 独立 meta 复核（2026-11-21，R4 轨迹轴）
+
+- 报告：`meta/02-higher-half-kernel-r4.md`；总体 `FLAT`（检测/设计轴 IMPROVED，轨迹/去重轴 REGRESSED），运行质量 `NOT PASS`（抽样 41/79，含 SUGG/FP 桶一致性 32/41 = 78.0%）。
+- 已收口项：四份 certify 回执与 loop §5–§8 入库、FREEZE 追加 R4、metrics 增语义根因数/重复合并/严重度、5 条过期 SUGG 标 `dup-of`、BLIND-SPOTS B-69..B-75 回写、生产镜像重建并验证 4 LOAD/0 `.lrodata`。
+- 未收口项：`FP` 桶名未拆（工具契约限制，语义已在 metrics/loop 写清）、`minix.img` 一致性未做成 CI 门、第二轮 reader certify 回执未单独留档、5 条 fact 未编号建议仍不在 INDEX/台账。上述均记 OPEN 盲区，不阻断本轮文档收敛。
