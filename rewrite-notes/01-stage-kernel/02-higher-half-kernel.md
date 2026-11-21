@@ -515,15 +515,22 @@ pub struct LoadSegment {
 
 **把迭代器的步进从 `e_phentsize` 改成结构体大小会怎样**：ELF 规范里 `e_phentsize` 是文件自己声明的表项大小，允许大于结构体的最小尺寸（56 字节）。用 `size_of::<Elf64Phdr>()` 步进，在表项恰好 56 字节的产物上结果相同；一旦某个链接器写出更宽的表项，第 2 项起的读位置全部落在错误偏移上，`p_type` 读到的是上一个表项尾巴的内容，症状是"段数对得上、地址全错"或"某些段被当成非 `PT_LOAD` 跳掉"。依据：`SegmentIter::next` 的 `offset` 计算式是 `e_phoff + index * e_phentsize`，而 `parse_phdr` 的越界检查用的也是 `entsize`。
 
-### 3.3 栈顶从链接符号变成交接字段（→§2.4）
+### 3.3 栈顶从链接符号变成派生值（→§2.4）
 
 C 侧的负担：`k_initial_stktop` 是一个链接符号，`head.S` 用一条绝对立即数指令把它的值写进 `%esp`（§2.3）。这个做法把"栈顶是多少"与"链接脚本怎么摆段"绑在一起：换一个布局，符号值跟着变。Rust 侧如果照搬，内核就要在源码里声明一个外部链接符号，而"内核被链接进谁"有三种形态（§3.1）——符号的值在每种形态下由不同的脚本决定，且测试载体根本没有这个符号。
 
-改成按值交接：装载方算好一个地址，放进 `KernelInfo`，跳转处只消费它（`kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo) 的 `kern_stack_top` 字段）。算它的公式在 boot-shim 的共享 builder 里（[`os/boot-shim/src/lib.rs`](os/boot-shim/src/lib.rs) 的 [`fn build_kernel_info`](os/boot-shim/src/lib.rs:fn build_kernel_info)；`uefi_helpers.rs` 与 `opensbi_helpers.rs` 的测试模块都从 crate 根导入 `build_kernel_info`（各自另有 `use super::*` 与其他依赖导入），两个自引导面都 `use boot_shim::build_kernel_info`，在两族 boot-shim 之间只有这一份实现；v1 发送侧的 `BootStorage::report()` 里另有同一公式的第二处（`kern_stack_top = kern_virt_base + kern_size`），二者必须锁步）：
+改成按值派生：交接仍然只带两个基元值——`KernelInfo.kern_virt_base` 与 `KernelInfo.kern_size`；栈顶由消费点在需要时现算（`kernel_info.rs` 的 [`impl KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo) 的 [`fn kern_stack_top`](<os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top>)）。v10（D-062）之前这里曾是一个独立字段 `kern_stack_top`，每腿都要填 `kern_virt_base + kern_size`；字段与三个派生标量一起删除，公式只留下访问器这一份，不再需要发送侧/接收侧锁步：
 
 ```rust
-/* 节选（保留赋值行），os/boot-shim/src/lib.rs:fn build_kernel_info。 */
-        kern_stack_top: minix_types::VirBytes(kern_virt_base.0 + kern_size),
+/* 节选（保留访问器体），os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo。 */
+    pub fn kern_stack_top(&self) -> VirBytes {
+        VirBytes(
+            self.kern_virt_base
+                .0
+                .checked_add(self.kern_size)
+                .expect("KernelInfo: kern_virt_base + kern_size overflows u64"),
+        )
+    }
 ```
 
 式中 `kern_size` 来自 `loader.rs` 的 [`fn compute_kernel_layout`](os/boot-shim/src/loader.rs:fn compute_kernel_layout) 的 `kern_end_phys - kern_phys_base`，`kern_end_phys` 是所有段 `paddr + memsz` 的最大值（取物理侧极值而不是虚拟侧：映射的目标侧就是物理地址——高半映射把 `[kern_virt_base, +kern_size)` 指向 `[kern_phys_base, +kern_size)`；平移一致（§2.1 的逐段关系，L4 是它的可执行检查）时两者数值相等，这里选与映射循环同一口径）。于是栈顶 = 镜像虚拟基址 + 镜像跨距 = 镜像尾的虚拟地址。这个值成立要两个前提：
@@ -531,7 +538,7 @@ C 侧的负担：`k_initial_stktop` 是一个链接符号，`head.S` 用一条�
 - 前提一：镜像的最后一个可加载段覆盖到镜像尾（`.bss` 是最后一段，它的 `memsz` 含链接脚本末尾那段对齐填充）。
 - 前提二：镜像尾按 16 字节对齐——`lib.rs` 的 [`fn boot_validate_and_prepare`](os/kernel/src/lib.rs:fn boot_validate_and_prepare) 里有一条断言 `kern_stack_top must be 16-byte aligned`，而它由链接脚本的 2MiB 收口顺带满足（§3.5）。
 
-同族的 `syscall_entry` 字段则不同：生产路径没有把它当 SYSCALL 入口的消费者——内核装入口用的是 `minix_arch::syscall_entry_va()`；但验证/序列化路径仍读取它：`validate_requiring_sources` 断言它等于 `kern_virt_base`、`check_boot_postconditions` 断言它落在镜像内、`handoff_v1_write` 的 `debug_assert` 断言两者相等。全仓唯一把它当入口传入 `configure_syscall` 的读者是 `test-protection-riscv64` 载体；线协议 v2 计划删除该槽位（设计批 D2-03）。
+同族的 `syscall_entry` 也已在 v10（D-062）删除：生产路径从来只把 `minix_arch::syscall_entry_va()` 当入口，字段是恒等式的第二份抄写；删除后验证/序列化路径不再读它，`configure_syscall` 的唯一读者是各架构入口，而不是交接字段。
 
 Rust 侧还有第二个栈：链接脚本在 `.bss` 里预留的 64 KiB 引导栈，符号写作 `kernel_boot_stack_bottom` 与 `kernel_boot_stack_top`（三个架构的 `os/kernel-image/*.ld` 同形），入口汇编用它立栈（[`main.rs`](os/kernel-image/src/main.rs) 的 `global_asm!` 里 `lea rsp, [rip + kernel_boot_stack_top]` 等四条序列：x86_64、aarch64、riscv64 direct、riscv64 U-Boot）。两个值不一样：`kernel_boot_stack_top` 是预留区的顶（它与 `__bss_end` 在脚本里相邻赋值，取同一个值），`kern_stack_top` 是收口后的镜像尾，等于前者加上收口填充量（填充为零时两者相等）。分工是"入口汇编用前者、进入 `kmain` 前切到后者"。
 
@@ -539,11 +546,11 @@ Rust 侧还有第二个栈：链接脚本在 `.bss` 里预留的 64 KiB 引导�
 
 | 方案 | 选/否 | 代价 |
 |---|---|---|
-| 栈顶由装载方算、按值交接（`KernelInfo.kern_stack_top`） | 选 | 装载方要算对镜像尾（RISC-V 自引导面把跨距写成了常量，靠 L9 与 ELF 实测对账）；内核只消费值，三形态通用 |
+| 栈顶由接收方从 `kern_virt_base + kern_size` 派生（`KernelInfo::kern_stack_top()`） | 选 | 装载方只需把跨距算对（RISC-V 自引导面把跨距写成了常量，靠 L9 与 ELF 实测对账）；公式只留在访问器一处，三形态通用 |
 | 内核自己声明链接符号（照搬 C） | 否 | 符号值随链接形态变化；测试载体没有这个符号，合成 `KernelInfo` 的路径无法替换它 |
 | 由内核在运行时从自己的段边界符号算 | 否 | 内核早期没有段边界信息（那是装载方读 ELF 才知道的），且这些符号的可见性依赖链接形态 |
 
-换栈这件事与栈的大小无关，与栈**运行期落在哪一侧**有关。C 侧可以直接比：`head.S` 的临时栈 `load_stack` 是 `.space 4096`，`mpx.S` 里给 `kmain` 用的 `k_initial_stack` 也是 `.space K_STACK_SIZE`（4KiB，§2.4）——两次设栈的容量相同，差别只在地址从低一侧换到高一侧。Rust 侧：入口 `_start` 的 64KiB 引导栈的链接符号 `kernel_boot_stack_bottom/top` 在 `.bss`、高半；`kmain` 用的 `kern_stack_top` 不是链接符号，而是装载方按 `kern_virt_base + kern_size` 算出的高半虚拟地址。运行期 `_start` 用 `lea rsp,[rip+...]`（x86_64）/`la sp,...`（riscv64），在物理视图下取到的是低物理地址，在高半视图下才是高 VMA；换栈的目的，是把 SP 从入口栈（可能仍在物理视图）移到镜像尾的高半栈，而不是笼统的“从低侧换到高侧”。
+换栈这件事与栈的大小无关，与栈**运行期落在哪一侧**有关。C 侧可以直接比：`head.S` 的临时栈 `load_stack` 是 `.space 4096`，`mpx.S` 里给 `kmain` 用的 `k_initial_stack` 也是 `.space K_STACK_SIZE`（4KiB，§2.4）——两次设栈的容量相同，差别只在地址从低一侧换到高一侧。Rust 侧：入口 `_start` 的 64KiB 引导栈的链接符号 `kernel_boot_stack_bottom/top` 在 `.bss`、高半；`kmain` 用的 `kern_stack_top` 不是链接符号，而是消费点按 `kern_virt_base + kern_size` 现算的高半虚拟地址。运行期 `_start` 用 `lea rsp,[rip+...]`（x86_64）/`la sp,...`（riscv64），在物理视图下取到的是低物理地址，在高半视图下才是高 VMA；换栈的目的，是把 SP 从入口栈（可能仍在物理视图）移到镜像尾的高半栈，而不是笼统的“从低侧换到高侧”。
 
 切过去之后栈的容身空间也是可以算的：栈向低地址增长，起点是 `kern_stack_top`（收口后的镜像尾）；从它往下到 `kernel_boot_stack_top` 之间是收口填充（0 到 2MiB 减 1 字节不等），再往下是脚本预留的 64KiB 引导栈区（`kernel_boot_stack_bottom` 到 `kernel_boot_stack_top`）。这两段都在 `.bss` 的 `memsz` 内；装载方按 `[filesz,memsz)` 清零，入口汇编清到 `__bss_end`。收口填充位于 `__bss_end` 之后，自引导面不保证清零；它只作为栈空间使用，不需要预清零。再往下是内核全局数据（`.bss` 的其余内容），不属于栈。
 
@@ -806,11 +813,11 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
     let mut kern_end_phys = 0u64;
     let mut found_load = false;
 
-    while let Some(seg) = iter.next() {
+    while let Some(seg_result) = iter.next() {
+        // I-48 / D-084: a malformed program header is an `Err` item, not a
+        // silent skip; `filesz > memsz` is rejected inside the iterator.
+        let seg = seg_result?;
         found_load = true;
-        if seg.filesz > seg.memsz {
-            return Err(minix_elf::ElfError::InvalidSegment);
-        }
         let seg_end = seg
             .paddr
             .checked_add(seg.memsz)
@@ -837,7 +844,7 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
 }
 ```
 
-逐段解码：两个初值是遍历取极值的写法（`u64::MAX` 与 0）；循环体内先拒绝 `filesz > memsz`，再用 `checked_add`/`checked_sub` 把地址溢出与长度下溢变成 `InvalidSegment`，而不是在 release 下静默回绕；`vaddr` 与 `paddr` 各取一次最小值——它们不是同一个数算两遍，而是两份独立的数据（§3.1 的字段对应表）；`kern_size` 用物理侧的最大端点减物理侧的最小起点，虚拟侧只用最小值。跨距与基址都在这个函数里定下，之后不再重算。`found_load` 的用途是把"一个可加载段都没有"变成 `NoLoadSegments`，而不是返回一组极值初值（`u64::MAX` 做基址的后果会推迟到建表时）。
+逐段解码：两个初值是遍历取极值的写法（`u64::MAX` 与 0）；循环体内先取 `seg_result?`（I-48 / D-084：畸形程序头由迭代器以 `Err` 项浮出，`filesz > memsz` 的守卫也已收进迭代器），再用 `checked_add`/`checked_sub` 把地址溢出与长度下溢变成 `InvalidSegment`，而不是在 release 下静默回绕；`vaddr` 与 `paddr` 各取一次最小值——它们不是同一个数算两遍，而是两份独立的数据（§3.1 的字段对应表）；`kern_size` 用物理侧的最大端点减物理侧的最小起点，虚拟侧只用最小值。跨距与基址都在这个函数里定下，之后不再重算。`found_load` 的用途是把"一个可加载段都没有"变成 `NoLoadSegments`，而不是返回一组极值初值（`u64::MAX` 做基址的后果会推迟到建表时）。
 
 最后是摆放（`loader.rs` 的 [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory)）：
 
@@ -847,7 +854,7 @@ pub unsafe fn load_segments_into_phys_memory(
     elf_data: &[u8],
 ) -> Result<(), minix_elf::ElfError> {
     let iter = minix_elf::segment_iter(elf_data)?;
-    let segments: Vec<_> = iter.collect();
+    let segments: Vec<_> = iter.collect::<Result<Vec<_>, minix_elf::ElfError>>()?;
     if let Some(_) = first_overlapping_pair(&segments) {
         return Err(minix_elf::ElfError::InvalidSegment);
     }
@@ -868,9 +875,9 @@ pub unsafe fn load_segments_into_phys_memory(
 }
 ```
 
-四件事按顺序：先把迭代器收进 `Vec`（后面要两两比较，不能边迭代边比较）；再做段间重叠检测（`loader.rs` 的 [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) 用半开区间判交叠：`a.paddr < b_end && b.paddr < a_end`，相邻不算重叠）；再做源/目标重叠检测（[`fn first_source_destination_overlap`](os/boot-shim/src/loader.rs:fn first_source_destination_overlap)，命中即 panic——段目标跨度覆盖任何段的 ELF 文件字节都会在装载中破坏源；这是 panic 而不是返回值，与段间重叠的 `InvalidSegment` 不对称）；最后逐段按 `paddr` 拷贝 `filesz` 字节并清零 `[filesz, memsz)`。注意"清零"的条件是 `memsz > filesz`——`filesz == memsz` 的段（例如 `.text`）不会被额外写零，`filesz == 0` 的段（`.bss`）只清零。
+四件事按顺序：先把迭代器收进 `Result<Vec<_>, _>`（I-48 / D-084：裸 `collect()` 会把 `Err` 项当成元素留在 `Vec<Result<..>>` 里，同一“畸形看起来像少段”的病下移一层；后面还要两两比较，不能边迭代边比较）；再做段间重叠检测（`loader.rs` 的 [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) 用半开区间判交叠：`a.paddr < b_end && b.paddr < a_end`，相邻不算重叠）；再做源/目标重叠检测（[`fn first_source_destination_overlap`](os/boot-shim/src/loader.rs:fn first_source_destination_overlap)，命中即 panic——段目标跨度覆盖任何段的 ELF 文件字节都会在装载中破坏源；这是 panic 而不是返回值，与段间重叠的 `InvalidSegment` 不对称）；最后逐段按 `paddr` 拷贝 `filesz` 字节并清零 `[filesz, memsz)`。注意"清零"的条件是 `memsz > filesz`——`filesz == memsz` 的段（例如 `.text`）不会被额外写零，`filesz == 0` 的段（`.bss`）只清零。
 
-可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.4 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`file_end <= buf.len()` 与 `mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 与 follow-ups 的 D02-F04。另外，物理地址版自身不拒绝 `filesz > memsz` 或 `paddr + memsz` 溢出，调用者必须先跑 `compute_kernel_layout`；生产路径由 `load_kernel_with_loader` 保证这个顺序，直接调用这个 `pub unsafe fn` 的读者必须自己先校验（D02-F05）。
+可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.4 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`file_end <= buf.len()` 与 `mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 与 follow-ups 的 D02-F04。`filesz > memsz` 已由迭代器拒绝；`paddr + memsz` 溢出仍由调用者先跑 `compute_kernel_layout` 保证。缓冲区版在 I-47 后是两循环（先验后写，超界返回 `TargetBufferTooSmall`），物理地址版仍是“先收集再写 + 段间/源目标重叠检查”；两者共享段形校验与 BSS 清零，不共享目标边界策略。直接调用这个 `pub unsafe fn` 的读者仍必须先校验布局（D02-F05）。
 
 **把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面的 `BootStorageCell`（`STORAGE`）初值非零、落在 `.data`；`bootface_a64.rs` 的 bump 游标 `BUMP_PTR` 初值为 `BUMP_BASE`（非零），也落在 `.data`，所以它们不是这个例子的成员。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
 
@@ -1052,7 +1059,6 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
         platform_sources,
         param_buf,
         sources,
-        startup_objects,
         minix_boot::InputObjectId::DtbBootInput,
     );
     ...
@@ -1086,7 +1092,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 |---|---|---|---|
 | `AT()` 表达式给出 LMA，装载器按 `p_paddr` 写段体（§2.1） | `os/kernel-image/*.ld` 的 `AT()` + [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory) | 保留（形态） | 装载者从 GRUB 换成 boot-shim 或引导器（U-Boot/OpenSBI），表达式与读法不变 |
 | `objcopy --prefix-symbols` + `unpaged_*.o` 两段式布局（§2.2） | 无对应物：内核镜像只有高半一段，引导侧代码在 boot-shim 或入口汇编里 | 淘汰 | 分页开启前的主体在 boot-shim（v1 建根）或入口汇编（direct 面）；内核镜像没有 C 那种由同一装载器放到低物理地址再执行的 unpaged 段（`01-boot-shim-bootstrap.md` §3.7 的交接形态） |
-| `k_initial_stktop` 链接符号（§2.4） | `KernelInfo.kern_stack_top`（`kern_virt_base + kern_size`） | 改型 | 值由装载方算、按值交接，内核不声明外部符号 |
+| `k_initial_stktop` 链接符号（§2.4） | `KernelInfo::kern_stack_top()`（`kern_virt_base + kern_size` 的派生访问器） | 改型 | 值由接收方现算，内核不声明外部符号，也不在交接载荷里多传一份 |
 | `head.S` 的成对动作：设栈 + 跳转（C 侧四行，§2.3） | [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 与三份内联汇编实现 | 改型 | 收进 trait 契约；栈对齐、屏障、执行视图差值三件事各自显式 |
 | —— | `check-layout.sh` 的 L0–L9 宿主断言 | 新增 | C 侧由 Makefile 与链接脚本的常量约束，没有独立断言脚本 |
 
@@ -1139,7 +1145,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 三条断言各对应 §4.3 的一条指令：`sp_ok` 对应"切栈"（栈指针落在高半地址空间）、`sp_aligned` 对应"对齐"（x86_64 检查 `RSP ≡ 8 (mod 16)`，即 `(RSP+8)` 为 16 的倍数；aarch64/riscv64 检查 `SP ≡ 0 (mod 16)`，AAPCS64/RISC-V ABI 要求 SP 16 字节对齐）、`fp_zero` 对应"清帧指针"。捕获方式按架构写在裸函数 `kmain` 的 `naked_asm!` 里（x86_64 用 `mov rdx, rsp` 与 `lea r8, [rip]`，aarch64 用 `mov x1, sp` 与 `adr x2, .`，riscv64 用 `mv a1, sp` 与 `auipc a2, 0`）。
 
-**PC 不在成败判定里**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构可高可低，只打印、不判定；`PC 不在高半` 时该行打印成 `INFO`，它只在失败分支里出现、不会出现在 PASS 输出中。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_size: 0x200_000`、`kern_stack_top: VirBytes(0xFFFF_8000_0020_0000)`），第三个值正是前两者之和，也就是 §3.3 的算式在测试形态下的取值。
+**PC 不在成败判定里**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构可高可低，只打印、不判定；`PC 不在高半` 时该行打印成 `INFO`，它只在失败分支里出现、不会出现在 PASS 输出中。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_size: 0x200_000`、`kern_size: 0x200_000`），栈顶由 `kern_stack_top()` 现算为两者之和，也就是 §3.3 的算式在测试形态下的取值。
 
 运行方式与判定标记：`os/qemu-tests/run_qemu.sh` 用 `-serial file:` 收串口、用 `strings | grep '### TEST_RESULT: PASS'` 判定（`os/qemu-tests/run_qemu.sh` 的判定段），退出码里 `SKIP` 与 `FAIL` 分开（0 表示 PASS 或 SKIP，1 表示失败）。测试本身的输出形如 `### TEST_RESULT: PASS test-higher-half ###`。
 
