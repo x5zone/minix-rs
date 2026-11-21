@@ -758,12 +758,6 @@ mod tests {
         assert_eq!(&out[..n], &RECORDS[..]);
     }
 
-    /// The startup-object partition is decoded on its own and never eats into
-
-    /// Exactly `WIRE_STARTUP_CAP` startup records are accepted while the
-
-    /// The EBS retry clears the classification snapshot only; startup-object
-
     #[test]
     fn rejects_sources_over_capacity() {
         let mut arena = build_arena();

@@ -1849,14 +1849,14 @@ pub fn kmain(_kernel_info: &KernelInfo) -> ! {
     // Phase A: Entry
     // Validate KernelInfo invariants before any use.
     kernel_info.validate();
-    // Cross-boot-form postcondition equivalence assertions. `validate()` only
-    // checks non-address invariants; this layer additionally checks the
-    // higher-half address-space separation (entry inside the image / user
-    // stack below the kernel base / kernel stack not landing in the user
-    // half), specifically catching `entry_start_pa`-style paper-constant typos
-    // and out-of-range values of the high-half boot-resume kind. kmain is the
-    // single common end point of all five boot forms, so calling it here
-    // applies to every form.
+    // Cross-boot-form postcondition check. `validate()` only checks
+    // non-address invariants; this layer additionally checks the one relation
+    // v10 (D-062) left behind: `kern_virt_base > u32::MAX` (the image must not
+    // sit below 4 GiB). The three derived-scalar relations (entry inside the
+    // image / user stack below the kernel base / kernel stack not landing in
+    // the user half) were deleted with their fields. kmain is the single
+    // common end point of all five boot forms, so calling it here applies to
+    // every form.
     kernel_info.check_boot_postconditions();
     boot_stage!("kernel: kmain A.1 validate ok\n");
 

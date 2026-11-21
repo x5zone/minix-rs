@@ -28,10 +28,11 @@
 //! - QEMU `arm_load_dtb` places the DTB at the RAM base (`info->dtb_start =
 //!   loader_start`, anchored in hw/arm/boot.c's ELF arm) = the fixed value
 //!   [`DTB_PA`].
-//! - `x0` is 0 at the direct-kernel entry (QEMU passes no arguments); the
-//!   boot-shim UEFI chain instead passes the physical address of the
-//!   `BootHandoffV1` arena in `x0` — `rust_image_main` splits the two forms on
-//!   `x0==0`.
+//! - The direct-kernel and UEFI-receive forms are separate build products
+//!   (D-061): the direct product's entry ignores `x0` and calls this face;
+//!   the UEFI-receive product passes the physical address of the
+//!   `BootHandoffV1` arena in `x0` and treats `x0 == 0` as an honest halt,
+//!   not as a form switch.
 //!
 //! # Mirror relationship with the riscv bootface
 //!
@@ -145,7 +146,8 @@ fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
 // ── Entry ──────────────────────────────────────────────────────
 
 /// aarch64 self-boot face entry (the aarch64 `_start` in `main.rs` zeroes
-/// .bss, establishes the stack, branches on `x0==0`, then `bl`s into here).
+/// .bss, establishes the stack, selects the form at build time (D-061),
+/// then `bl`s into here).
 pub extern "C" fn bootface_a64() -> ! {
     // One-shot landing storage (same contract as the riscv half): every
     // `'static` slice handed to `KernelInfo` points into this storage, and a

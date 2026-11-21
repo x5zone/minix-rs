@@ -524,28 +524,22 @@ impl KernelInfo {
         .err()
     }
 
-    /// **Boot-postcondition assertions equivalent across boot forms** (the
-    /// chosen resolution for this debt).
+    /// **Boot-postcondition check shared by every boot form.**
     ///
-    /// The decision is "equivalent postcondition assertions", not "equal
-    /// entry structure" — the five historical boot forms each produce
-    /// `KernelInfo` from a different firmware surface
-    /// (inlined UEFI / cross-image UEFI / OpenSBI bring-up / direct QEMU
-    /// kernel load / hart mailbox), and their absolute addresses depend on
-    /// the firmware, so they can never be equal one by one; what can be
-    /// equivalent is **the same set of higher-half address-space
-    /// relations**. This method gathers those relations in one place and
-    /// checks them per form, specifically catching the "paper constant"
-    /// class of defect that recurred three times (`entry_start_pa` typos)
-    /// and the overreach where a shared helper assumed a single `.bss`
-    /// world and zeroed a root page still in use.
+    /// The five historical boot forms each produce `KernelInfo` from a
+    /// different firmware surface, so their absolute addresses differ; what
+    /// can be checked in one place is the relation every form must satisfy.
+    /// v10 (D-062) removed the three derived-scalar relations (`user_sp` /
+    /// `syscall_entry` / `kern_stack_top`) together with their fields; the
+    /// one remaining relation is the coarse lower bound `kern_virt_base >
+    /// u32::MAX` (the kernel must not sit below 4 GiB). The per-architecture
+    /// user/kernel split is carried by the layout constants, not by this
+    /// gate.
     ///
     /// Complementary to [`Self::validate`]: `validate` checks non-address
-    /// invariants (kern_size/alignment/non-empty/param_buf
-    /// bound), while this method checks the **address-space separation
-    /// relations**, so every form's construction site should call both in
-    /// order. All assertions depend only on relative relations between
-    /// fields, so host tests and hardware share the same criterion.
+    /// invariants (kern_size/alignment/non-empty/param_buf bound), while
+    /// this method checks the image's address lower bound, so every form's
+    /// construction site calls both in order.
     ///
     /// # Panics
     ///
@@ -965,9 +959,9 @@ mod tests {
     #[should_panic(expected = "不大于 u32::MAX")]
     fn test_boot_postconditions_reject_low_virtual_base() {
         // v10 (D-062) removed the three derived-scalar relations this gate used
-        // to read; the remaining assertion is the higher-half property. This is
-        // its negative control (the positive side is exercised by every boot
-        // path and by `make_valid_info`).
+        // to read; the remaining assertion is `kern_virt_base > u32::MAX`.
+        // This is its negative control (the positive side is exercised by
+        // every boot path and by `make_valid_info`).
         let mut info = make_valid_info();
         info.kern_virt_base = VirBytes(0x1000_0000);
         info.check_boot_postconditions();

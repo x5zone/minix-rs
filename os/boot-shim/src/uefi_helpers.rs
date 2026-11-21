@@ -1226,8 +1226,9 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // our own wire here added a needless post-EBS failure path (DESIGN-07).
 
     let mut report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
-    // The classifier wrote the source/startup records directly into the wire;
-    // the storage slices are intentionally empty on this leg.
+    // The classifier wrote the source records directly into the wire; the
+    // storage slice is intentionally empty on this leg. (The startup-object
+    // partition was removed in v10 / D-062.)
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     // The classification must have marked every bootstrap allocation as
     // non-conventional; a containment here would hand live pages to the VM PMM.

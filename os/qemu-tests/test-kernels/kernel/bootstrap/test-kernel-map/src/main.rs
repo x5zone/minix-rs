@@ -7,7 +7,7 @@
 //! compare.
 //!
 //! N-5 probe (print-only, does not affect PASS): a LOADER_DATA page allocated
-//! *after* the memmap snapshot below 4 GiB is filled with a tagged pattern and
+//! *before* the final ExitBootServices memory map below 4 GiB is filled with a tagged pattern and
 //! checksummed before EBS, after EBS and after paging is enabled. `replayed`
 //! means the bootstrap root replays the 1:1 mapping and the bytes survive the
 //! switch; `in_snapshot_free` reports whether the snapshot's conventional list
@@ -70,7 +70,7 @@ fn main() -> Status {
 
 
 
-    // N-5 probe: a LOADER_DATA page allocated *after* the memmap snapshot,
+    // N-5 probe: a LOADER_DATA page allocated *before* the final EBS memory map,
     // below 4 GiB — the historical shape of the shim's pool payload pages
     // (allocated after GetMemoryMap, holding KernelInfo slice bytes). The
     // three checksums below discriminate "the new root does not replay the
