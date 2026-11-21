@@ -137,10 +137,9 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
    `review-units` 的单元 ID（`ch 3.4.2`），行号由 `todo-ledger.py check` 运行时解析。
    `origin_file/origin_line` 是来源快照，不是活引用。open/blocked 项至少有一个**强 ref**（code `path:symbol`、docs `path#unit`、test 或
    decision）；仅路径的 ref 只算弱引用。`--strict-refs` 会对缺口 exit 1，但在迁移覆盖率未达 80% 前**不把它作为
-   CONVERGED 的阻断门**（只出覆盖率报告）。Phase 2 门槛按 kind 分档：`code`/`doc`
-   强 ref ≥80%；`design`/`arch` 允许 `docs#unit` 或 `decision`；`stage: coordination`
-   或 `scope: stage` 允许 `decision` 或 `blocked_reason`。coordination 另跑
-   `check --scope coordination --fail-on-open` 项目级门。
+   CONVERGED 的阻断门**（只出覆盖率报告）。Phase 2 门槛按 ref class 分档：`coordination`/`scope: stage` 单列（允许 `decision` 或
+   `blocked_reason`）；其余 `code`/`doc` 强 ref ≥80%；`design`/`arch` 允许 `docs#unit` 或
+   `decision`。coordination 另跑 `check --scope coordination --fail-on-open` 项目级门。
 2. **TODO 载体（2026-11-21）**：01/02 的 `01-todo.md`、stage `todo.md`、`smp_todo.md`、
    `endpoint_todo.md`、`draft/*`、`archive/*` 的 open 项已迁入 YAML 并删除旧文件；其余
    stage 的 `todo.md` 尚未迁移，迁移前仍是输入，新发现一律写 YAML 账本。closed 历史靠

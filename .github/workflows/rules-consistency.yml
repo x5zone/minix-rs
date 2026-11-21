@@ -62,6 +62,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 安装 ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
       - name: 确认工具齐备（缺哪个就直接报错，不要让门静默跳过）
         run: |
           for t in git rg python3 awk gawk sed grep; do

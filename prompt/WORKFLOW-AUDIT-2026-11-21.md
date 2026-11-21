@@ -188,7 +188,7 @@ python3 tools/review-units.py audit --doc rewrite-notes/01-stage-kernel/01-boot-
 2. `check-review-rules.sh` 对 `.claude/rules` 手工副本只查存在、不查内容。
 3. TODO v2 的 `save()` 会重写手写注释；并发写无锁。
 4. TODO v2 的 `relations`/`lifecycle` 在 113 行中零使用；校验器只靠自测覆盖。
-5. TODO v2 覆盖率 49.3%（强口径 11/73）；Phase 2 按 kind 分档后仍需一次 ref 补齐，再开 `--strict-refs` 阻断。
+5. TODO v2 覆盖率 49.3%；强 ref 按 ref class：code 5/16、coordination 5/51、design 0/4、doc 1/2。Phase 2 需一次 ref 补齐（coordination 单列，不按 code 80% 计），再开 `--strict-refs` 阻断。
 6. `WORKFLOW-OPEN-ITEMS.md` 的 W-7/W-10/W-12 历史读数与样本路径未更新；`review-eval/README.md` 仍写“当前 V3.5”。
 
 已裁决（2026-11-21）：

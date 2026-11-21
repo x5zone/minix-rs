@@ -233,7 +233,7 @@ def check_rows(
                 stats["v2_rows"] = stats.get("v2_rows", 0) + 1
             if r.get("status") == "open" and _row_in_scope(r, doc, scope):
                 stats["open_total"] = stats.get("open_total", 0) + 1
-                kind = str(r.get("kind", "?"))
+                kind = _ref_class(r)
                 kd = stats.setdefault("by_kind", {}).setdefault(kind, [0, 0])
                 kd[0] += 1
                 if has_ref:
@@ -371,6 +371,12 @@ def _check_provenance(r: dict, where: str, decisions: set[str] | None) -> list[s
         elif decisions is not None and not any(d in decisions for d in ids):
             errors.append(f"{where}: rejected 引用的判决行不存在：{', '.join(ids)}")
     return errors
+
+
+def _ref_class(r: dict) -> str:
+    if r.get("stage") == "coordination" or r.get("scope") == "stage":
+        return "coordination"
+    return str(r.get("kind", "?"))
 
 
 def _strict_requirement(r: dict) -> str:
@@ -597,7 +603,7 @@ def cmd_check(args) -> int:
     bk = stats.get("by_kind", {})
     if bk:
         tag = "strong" if getattr(args, "strict_refs", False) else "weak"
-        print(f"[覆盖:kind:{tag}] " + "，".join(
+        print(f"[覆盖:class:{tag}] " + "，".join(
             f"{k} {v[1]}/{v[0]}" for k, v in sorted(bk.items())))
     if getattr(args, "strict_refs", False) and ow < ot:
         missing = stats.get("no_ref_ids", [])
