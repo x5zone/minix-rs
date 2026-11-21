@@ -172,11 +172,11 @@ python3 tools/review-units.py audit --doc rewrite-notes/01-stage-kernel/01-boot-
 预存红（HEAD 同样红，非本轮引入）：
 
 - `python3 tools/notes-link-check.py rewrite-notes/` → 151 条断链（64 在 `01-stage-kernel/draft/`、21 在 `00-master-plan/`、22 在 `meta/`；扫描域含历史 draft 与 review-eval 制品）。
-- `python3 tools/doc-structure-check.py rewrite-notes/meta/coordination/review-eval rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` → 117 处问题（历史 review-eval 台账表体列数与表头不一致；本次未改这些历史制品）。
+- 历史 `review-eval/runs/**` 仍有 98 处旧表列 schema 与 4 处历史 panel 断链；这些是历史轮轨迹，不追溯。活制品（`review-eval/*.md` + 01 篇）已修到 0 处。
 
 首轮 CI 实测（commit `91c8144fc`）：
 
-- `rules-consistency` #8：failed。本地重放定位到两处：最终报告的已删工具未带 L10 状态标记（本次已修）；`doc-structure-check` 的 117 处历史台账问题（存量，非本次引入）。
+- `rules-consistency` #8/#9：failed。首轮原因是最终报告 L10 缺状态标记（已修）+ 历史 `runs/**` 旧表 schema（已把 CI 的 P-2 步缩到活制品；活制品现 0 处）。`DECISIONS.md` 的 8 处劈表空行与 6 处行内列/嵌套代码 span 已做结构修复，不改叙事。本地按 workflow 顺序重放：四道一致性门、pattern-gate、boundary、全部工具自测、doc-citation、arch-gated-test-count 均 exit 0；P-2 只扫活制品后 exit 0。
 - `kernel-tests` #7、`qemu-tests` #10、`vm-tests` #10、`clippy-ratchet` #7：failed；本分支此前同类作业也红（`11feb85` 上 kernel-tests 通过、其余四项红），本次只改注释与一行 import，需看日志区分存量与环境因素。
 - `cmd-smoke` #7：首轮读取时仍在运行。
 
