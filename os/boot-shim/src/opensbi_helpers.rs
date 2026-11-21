@@ -313,7 +313,7 @@ pub fn prepare_boot<'a>(
                 reserved: owned.reserved().len(),
             }
         });
-        storage.fill_memmap_sources(|source_slots| {
+        storage.fill_source_records(|source_slots| {
             source_slots[..owned.sources().len()].copy_from_slice(owned.sources());
             owned.sources().len()
         });
@@ -754,7 +754,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[], // empty = no source
             param_buf: &[],        // no source in this unit test
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFF_FFFF_8000_0000),
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,
@@ -813,7 +813,7 @@ mod tests {
             boot_modules: &[],
             platform_sources: &[],
             param_buf: &[],
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFF_FFFF_8000_0000),
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,

@@ -1416,7 +1416,7 @@ mod tests {
             boot_modules: &MODULES,
             platform_sources: &[], // empty = no source
             param_buf: &[],        // no source in this unit test
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFFFFFF80000000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x100_000,

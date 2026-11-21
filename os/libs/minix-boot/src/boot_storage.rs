@@ -96,8 +96,8 @@ pub struct BootStorage {
     param_len: usize,
     /// Provenance records for the memmap/reserved tables (the DTB collector's
     /// own capacity, 40).
-    memmap_sources: [SourceRecord; DTB_SOURCE_CAP],
-    memmap_sources_len: usize,
+    source_records: [SourceRecord; DTB_SOURCE_CAP],
+    source_records_len: usize,
     modules_committed: bool,
     platform_committed: bool,
     param_committed: bool,
@@ -119,8 +119,8 @@ impl BootStorage {
             platform_len: 0,
             param_buf: [0u8; PARAM_BUF_CAP],
             param_len: 0,
-            memmap_sources: [ZERO_RECORD; DTB_SOURCE_CAP],
-            memmap_sources_len: 0,
+            source_records: [ZERO_RECORD; DTB_SOURCE_CAP],
+            source_records_len: 0,
             modules_committed: false,
             platform_committed: false,
             param_committed: false,
@@ -205,23 +205,23 @@ impl BootStorage {
     }
 
     /// Fill the provenance-record slots, then commit the count.
-    pub fn fill_memmap_sources<F>(&mut self, write: F)
+    pub fn fill_source_records<F>(&mut self, write: F)
     where
         F: FnOnce(&mut [SourceRecord]) -> usize,
     {
         assert!(!self.sources_committed, "BootStorage: source length already committed");
-        let written = write(&mut self.memmap_sources);
+        let written = write(&mut self.source_records);
         assert!(
             written <= DTB_SOURCE_CAP,
             "BootStorage: memmap-source length {written} exceeds capacity {DTB_SOURCE_CAP}"
         );
-        self.memmap_sources_len = written;
+        self.source_records_len = written;
         self.sources_committed = true;
     }
 
     /// Live provenance records.
-    pub fn memmap_sources(&self) -> &[SourceRecord] {
-        &self.memmap_sources[..self.memmap_sources_len]
+    pub fn source_records(&self) -> &[SourceRecord] {
+        &self.source_records[..self.source_records_len]
     }
 
     /// Live memmap entries.
@@ -265,7 +265,7 @@ impl BootStorage {
             boot_modules: self.boot_modules(),
             platform_sources: self.platform_sources(),
             param_buf: self.param_buf(),
-            memmap_sources: self.memmap_sources(),
+            source_records: self.source_records(),
 
             kern_virt_base,
             kern_phys_base,
@@ -296,7 +296,7 @@ pub struct BootReport<'a> {
     /// legs these are the complete slice owned by `BootStorage`; on the UEFI
     /// leg the classifier writes the records straight into the wire, so this
     /// slice is empty and the wire is the only authority.
-    pub memmap_sources: &'a [SourceRecord],
+    pub source_records: &'a [SourceRecord],
     // v10 (D-062) removed the startup-object slice; no field remains here.
 
     pub kern_virt_base: VirBytes,

@@ -542,7 +542,7 @@ where
             reserved: reserved.len(),
         }
     });
-    storage.fill_memmap_sources(|source_slots| {
+    storage.fill_source_records(|source_slots| {
         source_slots[..sources.len()].copy_from_slice(sources);
         sources.len()
     });

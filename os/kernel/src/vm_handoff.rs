@@ -986,7 +986,7 @@ mod tests {
         let info = KernelInfo {
             memmap: MEMMAP,
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x10_0000,
@@ -1097,7 +1097,7 @@ mod tests {
         let carrier = KernelInfo {
             memmap: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(KERNEL_PA),
             kern_size: KERNEL_LEN,
@@ -1134,7 +1134,7 @@ mod tests {
         let info = KernelInfo {
             memmap,
             reserved_regions,
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(KERNEL_PA),
             kern_size: KERNEL_LEN,

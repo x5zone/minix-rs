@@ -220,7 +220,7 @@ mod kerninfo_tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::DTB,
         }
     }

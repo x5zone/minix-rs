@@ -69,7 +69,7 @@ pub struct KernelInfo {
     /// contract was in force call [`Self::validate_requiring_sources`], which
     /// also refuses an empty partition. Hand-built test kernels construct
     /// this field as `&[]` and use the lenient gate.
-    pub memmap_sources: &'static [SourceRecord],
+    pub source_records: &'static [SourceRecord],
 
     /// Kernel virtual base address.
     /// C: kinfo.vir_kern_start = &_kern_vir_base — pre_init.c:113
@@ -467,11 +467,11 @@ impl KernelInfo {
                 );
             }
             assert!(
-                !self.memmap_sources.is_empty(),
+                !self.source_records.is_empty(),
                 "KernelInfo: production handoff carries no memory-map source records"
             );
             assert!(
-                self.memmap_sources
+                self.source_records
                     .iter()
                     .any(|r| r.input_object == authority.input_object()),
                 "KernelInfo: declared RAM authority {authority:?} has no source records — refusing to fall back to another input"
@@ -479,7 +479,7 @@ impl KernelInfo {
             match crate::memmap_source::audit_source_coverage_for(
                 self.memmap,
                 self.reserved_regions,
-                self.memmap_sources,
+                self.source_records,
                 Some(self.authority.input_object()),
             ) {
                 Ok(()) => {}
@@ -487,11 +487,11 @@ impl KernelInfo {
                     "KernelInfo: declared RAM authority {authority:?} does not cover the projected map: {error:?}"
                 ),
             }
-        } else if !self.memmap_sources.is_empty() {
+        } else if !self.source_records.is_empty() {
             match crate::memmap_source::audit_source_coverage(
                 self.memmap,
                 self.reserved_regions,
-                self.memmap_sources,
+                self.source_records,
             ) {
                 Ok(()) => {}
                 Err(error) => {
@@ -532,13 +532,13 @@ impl KernelInfo {
     /// One-line description of the audit failure for diagnostics, or `None`
     /// when the records cover both projections.
     pub fn source_audit(&self) -> Option<SourceAuditError> {
-        if self.memmap_sources.is_empty() {
+        if self.source_records.is_empty() {
             return None;
         }
         crate::memmap_source::audit_source_coverage(
             self.memmap,
             self.reserved_regions,
-            self.memmap_sources,
+            self.source_records,
         )
         .err()
     }
@@ -647,7 +647,7 @@ mod tests {
                 base: PhysBytes(0x1da00000),
                 len: 0x1000,
             }],
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn test_validate_accepts_covering_source_records() {
         let mut info = make_valid_info();
-        info.memmap_sources = &COVERING_RECORDS;
+        info.source_records = &COVERING_RECORDS;
         info.validate();
         assert!(info.source_audit().is_none());
     }
@@ -734,7 +734,7 @@ mod tests {
     #[should_panic(expected = "source records do not cover the projected map")]
     fn test_validate_rejects_span_without_source_record() {
         let mut info = make_valid_info();
-        info.memmap_sources = &COVERING_RECORDS[..1];
+        info.source_records = &COVERING_RECORDS[..1];
         info.validate();
     }
 
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn test_validate_requiring_sources_accepts_covering_records() {
         let mut info = make_valid_info();
-        info.memmap_sources = &COVERING_RECORDS;
+        info.source_records = &COVERING_RECORDS;
         // v10 (D-062): the strict gate no longer needs a startup record; it
         // now requires the kernel span to lie in a memmap or reserved span.
         // `make_valid_info`'s map already covers [0x100000, 0x1100000) +
@@ -908,7 +908,7 @@ mod tests {
     #[should_panic(expected = "must lie in a memmap or reserved_regions span")]
     fn test_validate_requiring_sources_rejects_kernel_span_outside_map() {
         let mut info = make_valid_info();
-        info.memmap_sources = &COVERING_RECORDS;
+        info.source_records = &COVERING_RECORDS;
         // Point the kernel outside both tables (base 0x40000000, size 0x200000).
         info.kern_phys_base = PhysBytes(0x4000_0000);
         info.validate_requiring_sources();
@@ -920,7 +920,7 @@ mod tests {
     #[should_panic(expected = "declared RAM authority")]
     fn test_validate_requiring_sources_refuses_missing_authority() {
         let mut info = make_valid_info();
-        info.memmap_sources = &COVERING_RECORDS; // all DtbBootInput
+        info.source_records = &COVERING_RECORDS; // all DtbBootInput
         info.authority = RamAuthority::UEFI;
         info.validate_requiring_sources();
     }

@@ -511,7 +511,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
         .write_param_buf(result.report.param_buf)
         .expect("param_buf over capacity");
     serializer
-        .write_sources(result.report.memmap_sources)
+        .write_sources(result.report.source_records)
         .expect("too many memory-map source records for the handoff arena");
     // v10 (D-062) removed the startup-object partition; the kernel span
     // coverage check it fed is now answered by the map tables.

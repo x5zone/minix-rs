@@ -725,7 +725,7 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
         // their lengths are the decoder's validated element counts.
         memmap: unsafe { core::slice::from_raw_parts(memmap_ptr, memmap_len) },
         reserved_regions: unsafe { core::slice::from_raw_parts(reserved_ptr, reserved_len) },
-        memmap_sources: unsafe { core::slice::from_raw_parts(source_ptr, source_len) },
+        source_records: unsafe { core::slice::from_raw_parts(source_ptr, source_len) },
         kern_virt_base: VirBytes(scalars.kern_virt_base),
         kern_phys_base: PhysBytes(scalars.kern_phys_base),
         kern_size: scalars.kern_size,
@@ -1682,15 +1682,15 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         // (v10 / D-062 removed the startup-object class: its only reader was
         // a strict-gate check, now served by the map tables.)
         let sstore = &mut *crate::globals::SOURCE_RECORD_STORE.get();
-        let ssrc = kernel_info.memmap_sources;
-        land_slice(ssrc, sstore, "memmap_sources");
+        let ssrc = kernel_info.source_records;
+        land_slice(ssrc, sstore, "source_records");
         let mut k = *kernel_info;
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
         k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());
         k.boot_modules = core::slice::from_raw_parts(bstore.as_ptr(), bsrc.len());
         k.platform_sources = core::slice::from_raw_parts(pstore.as_ptr(), psrc.len());
         k.param_buf = core::slice::from_raw_parts(param.as_ptr(), csrc.len());
-        k.memmap_sources = core::slice::from_raw_parts(sstore.as_ptr(), ssrc.len());
+        k.source_records = core::slice::from_raw_parts(sstore.as_ptr(), ssrc.len());
         *KERNEL_INFO.get() = Some(k);
     }
     crate::kernel_info().expect("store_kernel_info: KERNEL_INFO just written")
@@ -5799,7 +5799,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::DTB,
         };
 
@@ -6006,7 +6006,7 @@ mod tests {
             platform_sources: PLATFORM,
             param_buf: PARAM,
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::DTB,
         };
         store_kernel_info(&info);
@@ -6071,7 +6071,7 @@ mod tests {
         KernelInfo {
             memmap: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x20_0000),
             kern_size: 0x20_0000,
@@ -6164,13 +6164,13 @@ mod tests {
     /// Fail-fast: more provenance records than the source landing pad aborts
     /// before any copy.
     #[test]
-    #[should_panic(expected = "memmap_sources exceeds the .bss landing pad")]
+    #[should_panic(expected = "source_records exceeds the .bss landing pad")]
     fn test_store_kernel_info_rejects_source_overflow() {
         let _boot = crate::test_sync::lock_boot_globals();
         static OVERFLOW: [minix_boot::SourceRecord; crate::globals::SOURCE_RECORD_STORE_LEN + 1] =
             [minix_boot::EMPTY_SOURCE_RECORD; crate::globals::SOURCE_RECORD_STORE_LEN + 1];
         let mut info = minimal_store_info();
-        info.memmap_sources = &OVERFLOW;
+        info.source_records = &OVERFLOW;
         store_kernel_info(&info);
     }
 
@@ -6186,7 +6186,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::DTB,
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000), minix_arch::paging::PteChannel::Identity);
@@ -6457,7 +6457,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::DTB,
         };
         let root_page = PhysBytes(0x1000);
@@ -6478,7 +6478,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::DTB,
         };
         let root_page = PhysBytes(0x1000);

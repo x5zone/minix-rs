@@ -103,7 +103,7 @@ fn main() -> Status {
         platform_sources: &[],
         param_buf: &[],
         reserved_regions: &[],
-        memmap_sources: &[],
+        source_records: &[],
         authority: minix_boot::RamAuthority::UEFI,
     };
     let probe_post_ebs = probe_checksum(probe_pa);

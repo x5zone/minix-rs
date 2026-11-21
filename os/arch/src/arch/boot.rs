@@ -932,7 +932,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1043,7 +1043,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1159,7 +1159,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         // The "live" bootstrap root — mock inherit is a no-op, only the
@@ -1236,7 +1236,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let result = load_process_elf::<crate::paging::mock::MockPaging, _>(
@@ -1348,7 +1348,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1468,7 +1468,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1547,7 +1547,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1605,7 +1605,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
@@ -1679,7 +1679,7 @@ mod tests {
             platform_sources: &[],
             param_buf: &[],
             reserved_regions: &[],
-            memmap_sources: &[],
+            source_records: &[],
             authority: minix_boot::RamAuthority::UEFI,
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();

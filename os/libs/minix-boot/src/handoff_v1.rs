@@ -262,7 +262,7 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 
 /// Protocol version of the envelope defined in this module.
 ///
-/// 2 = the source-record partition (`memmap_sources`) joined the wire image:
+/// 2 = the source-record partition (`source_records`) joined the wire image:
 /// the per-descriptor provenance of the memory map now crosses the first hop
 /// instead of being dropped on the sending side. A v1 receiver would ignore
 /// the new partition and a v1 sender would leave it empty, so the version is
