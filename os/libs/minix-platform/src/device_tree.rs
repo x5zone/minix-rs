@@ -127,11 +127,6 @@ impl DeviceTreeDesc {
         }
     }
 
-    /// PSCI call conduit (`None` means the DTB does not declare it).
-    pub fn psci_conduit(&self) -> Option<PsciConduit> {
-        self.psci_conduit
-    }
-
     /// Parse a DTB from a byte slice (for tests and in-memory DTB).
     pub fn from_bytes(dtb: &[u8]) -> Result<Self, DtParseError> {
         #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
@@ -479,6 +474,9 @@ impl PlatformDesc for DeviceTreeDesc {
     }
     fn sswi_setip_base(&self) -> Option<usize> {
         self.sswi_setip_base
+    }
+    fn psci_conduit(&self) -> Option<PsciConduit> {
+        self.psci_conduit
     }
 }
 
