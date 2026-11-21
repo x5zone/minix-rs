@@ -23,19 +23,16 @@
 //!
 //! # Concurrency safety
 //!
-//! The allocator is a process-wide singleton set via `register()`.
-//! The arch crate serves the kernel (SMP + BKL), so the safety argument
-//! is **write-once then read-only**, not single-threaded: the write
-//! happens only during boot (single-threaded) or user-space VM init,
-//! before any concurrent access; after registration the function pointer
-//! is only read. `AtomicBool` is used for `PT_REGISTERED` to avoid
-//! `static mut` (UB in Rust 2024 edition); the `Sync` impl is sound
-//! because the `UnsafeCell` content is immutable during the concurrent
-//! phase. The Release store in `register()` pairs with the Acquire load
-//! in `alloc_pt_page()` to publish the fn pointer write.
+//! Each slot is one `AtomicUsize` holding the function pointer; 0 means
+//! unregistered. `register()` admits exactly one writer with a
+//! compare-exchange and publishes the pointer with Release ordering;
+//! readers Acquire-load the slot. The pointer is never replaced after the
+//! exchange, so the concurrent phase is read-only. The arch crate serves
+//! the kernel (SMP + BKL), so this is the write-once-then-read-only
+//! argument, not single-threaded access: the write happens during boot
+//! (single-threaded) or user-space VM init, before any concurrent read.
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use minix_types::{PhysBytes, VirBytes};
 use crate::paging::PageTableError;
 
@@ -45,50 +42,10 @@ type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
 /// of the page and returns it to the source allocator.
 type PtFreeFn = fn(PhysBytes);
 
-/// Wrapper for a function pointer stored in a static.
-/// SAFETY: write-once-then-read-only. The slot is written exactly once
-/// (`register()`), during boot (single-threaded) or user-space VM init
-/// before any concurrent access; afterwards it is only read. The
-/// `PT_REGISTERED` flag's Release/Acquire pairing publishes the write to
-/// any thread that observes `is_registered() == true`. `Sync` is sound
-/// because the `UnsafeCell` content is immutable during the concurrent
-/// phase — this is the kernel (SMP + BKL) execution model, not the
-/// single-threaded server model.
-struct PtAllocSlot(UnsafeCell<PtAllocFn>);
-
-unsafe impl Sync for PtAllocSlot {}
-
-static PT_ALLOC: PtAllocSlot = PtAllocSlot(UnsafeCell::new(uninit_alloc));
-static PT_REGISTERED: AtomicBool = AtomicBool::new(false);
-/// Writer-side claim: serializes the pointer write itself. `PT_REGISTERED`
-/// stays the reader-facing publication flag (set only after the write).
-static PT_CLAIMED: AtomicBool = AtomicBool::new(false);
-
-static PT_FREE: PtAllocSlotUnary = PtAllocSlotUnary(UnsafeCell::new(uninit_free));
-static PT_FREE_REGISTERED: AtomicBool = AtomicBool::new(false);
-static PT_FREE_CLAIMED: AtomicBool = AtomicBool::new(false);
-
-/// Fail-closed placeholder used before `register_free()`.
-///
-/// Destroy paths already gate on `is_free_registered()` and take the
-/// zero-root-only fallback; reaching this function means a caller skipped
-/// that gate. A silent no-op would leak the page and make the mistake
-/// invisible, so the placeholder halts instead.
-fn uninit_free(_phys: PhysBytes) {
-    panic!(
-        "pt_alloc::free_pt_page called before register_free (destroy path must gate on is_free_registered)"
-    )
-}
-
-/// Wrapper for a single-argument function pointer stored in a static.
-/// SAFETY: same write-once-then-read-only contract as [`PtAllocSlot`].
-struct PtAllocSlotUnary(UnsafeCell<PtFreeFn>);
-
-unsafe impl Sync for PtAllocSlotUnary {}
-
-fn uninit_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
-    panic!("pt_alloc::alloc_pt_page called before register");
-}
+/// Registered allocator, or 0 when unregistered.
+static PT_ALLOC: AtomicUsize = AtomicUsize::new(0);
+/// Registered free hook, or 0 when unregistered.
+static PT_FREE: AtomicUsize = AtomicUsize::new(0);
 
 /// Register a page table page allocator.
 ///
@@ -104,22 +61,14 @@ pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>)
     // Write-once is enforced in both profiles. A second registration is a
     // boot bug: silently keeping the first allocator hides a wiring error,
     // so fail closed in release too.
-    let claimed = PT_CLAIMED.swap(true, Ordering::AcqRel);
-    assert!(!claimed, "pt_alloc::register called twice");
-    // SAFETY: the `PT_CLAIMED` swap above admits exactly one writer; the
-    // pointer write happens before `PT_REGISTERED` is published, so a reader
-    // that observes `true` also observes the written pointer.
-    unsafe {
-        core::ptr::write(PT_ALLOC.0.get(), alloc_fn);
-    }
-    // Release: publish the fn pointer write to any thread that Acquire-loads
-    // `is_registered() == true` before calling `alloc_pt_page()`.
-    PT_REGISTERED.store(true, Ordering::Release);
+    PT_ALLOC
+        .compare_exchange(0, alloc_fn as usize, Ordering::AcqRel, Ordering::Acquire)
+        .unwrap_or_else(|_| panic!("pt_alloc::register called twice"));
 }
 
 /// Returns true if a page table page allocator has been registered.
 pub fn is_registered() -> bool {
-    PT_REGISTERED.load(Ordering::Relaxed)
+    PT_ALLOC.load(Ordering::Acquire) != 0
 }
 
 /// Allocate a zero-filled physical page for an intermediate page table.
@@ -133,17 +82,15 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
     // Program invariant: `register()` must precede any map operation. Keep the
     // failure distinct from a genuine allocation failure so diagnostics point
     // at the boot wiring, not at memory exhaustion.
+    let raw = PT_ALLOC.load(Ordering::Acquire);
     assert!(
-        is_registered(),
+        raw != 0,
         "pt_alloc::alloc_pt_page called before register"
     );
-    // Acquire: pairs with `register()`'s Release store — guarantees the
-    // fn pointer write is visible to this thread once registration is
-    // observed (write-once-then-read-only; see module docs).
-    let _ = PT_REGISTERED.load(Ordering::Acquire);
-    // SAFETY: write-once-then-read-only — set via `register()` before any
-    // concurrent access, then only read.
-    let alloc_fn = unsafe { core::ptr::read(PT_ALLOC.0.get()) };
+    // SAFETY: `register()` stored a `PtAllocFn` value in this slot and the
+    // slot is never replaced; `usize` and the function pointer have the same
+    // width on every supported 64-bit target.
+    let alloc_fn: PtAllocFn = unsafe { core::mem::transmute(raw) };
     alloc_fn()
 }
 
@@ -155,18 +102,14 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
 pub fn register_free(free_fn: PtFreeFn) {
     // Same write-once contract as `register()`: a second hook is a wiring
     // bug and fails closed in both profiles.
-    let claimed = PT_FREE_CLAIMED.swap(true, Ordering::AcqRel);
-    assert!(!claimed, "pt_alloc::register_free called twice");
-    // SAFETY: the `PT_FREE_CLAIMED` swap above admits exactly one writer.
-    unsafe {
-        core::ptr::write(PT_FREE.0.get(), free_fn);
-    }
-    PT_FREE_REGISTERED.store(true, Ordering::Release);
+    PT_FREE
+        .compare_exchange(0, free_fn as usize, Ordering::AcqRel, Ordering::Acquire)
+        .unwrap_or_else(|_| panic!("pt_alloc::register_free called twice"));
 }
 
 /// Returns true if a page-table page free function has been registered.
 pub fn is_free_registered() -> bool {
-    PT_FREE_REGISTERED.load(Ordering::Relaxed)
+    PT_FREE.load(Ordering::Acquire) != 0
 }
 
 /// Return a page-table page to its source allocator.
@@ -176,8 +119,14 @@ pub fn is_free_registered() -> bool {
 /// absent (boot-stage tables with no allocator domain).
 #[inline]
 pub fn free_pt_page(phys: PhysBytes) {
-    let _ = PT_FREE_REGISTERED.load(Ordering::Acquire);
-    // SAFETY: write-once-then-read-only — set via `register_free()`.
-    let free_fn = unsafe { core::ptr::read(PT_FREE.0.get()) };
+    let raw = PT_FREE.load(Ordering::Acquire);
+    assert!(
+        raw != 0,
+        "pt_alloc::free_pt_page called before register_free \
+         (destroy path must gate on is_free_registered)"
+    );
+    // SAFETY: `register_free()` stored a `PtFreeFn` value in this slot and
+    // the slot is never replaced; pointer width matches `usize`.
+    let free_fn: PtFreeFn = unsafe { core::mem::transmute(raw) };
     free_fn(phys)
 }

@@ -383,7 +383,8 @@
 - DESIGN-05：已实施——删 `BootScalars`，`boot_validate_and_prepare` 直接收 `VirBytes`/`PhysBytes`/`u64`；同上测试绿。
 - DESIGN-06：已实施——`requires_kernel_span_coverage` + 删 `validate_at`；`minix-boot --lib` 188/0。
 - DESIGN-10：已实施——`shim_windows` 改 `&[PhysRange]`；`minix-kernel` 866/0/8、`boot-shim --lib` 136/0。
-- DESIGN-04、DESIGN-09：批准但本轮未实施；保留为设计批剩余项。
+- DESIGN-04：已实施——`resv_claims::capture` 填调用方栈上 `ClaimSet`，删 5 个静态、`BootCell` 与自由函数 `records()`；`boot-shim` 136/0、`ebs_boundary_audit` 6/0。
+- DESIGN-09：已实施——每槽一个 `AtomicUsize`（0=未注册），CAS 注册；删 `PT_CLAIMED`/`PT_REGISTERED`/占位函数/`UnsafeCell`；`minix-arch` 266/0、`pt_alloc_write_once` 2/0、`pt_alloc_concurrent` 1/0、`kernel mock` 866/0/8。
 - DESIGN-01、DESIGN-03：按驳回关闭（非问题）。
 - DESIGN-11：文档侧已确认 `globals.rs` 写者与 §3.7 `report_static` 修正，关闭。
 - 批次 QEMU 复核：`test-shim-bootmarks-x86.sh` / `test-shim-bootmarks-aarch64.sh` / `test-riscv64-uboot-shim.sh` 见 `tmp/d01-r38/qemu-after-design.log`。

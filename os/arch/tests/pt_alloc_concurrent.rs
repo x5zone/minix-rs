@@ -1,9 +1,9 @@
 //! Concurrent double-registration pressure.
 //!
-//! `PT_CLAIMED.swap` is the only writer admission; this test starts two
-//! threads at a barrier and proves exactly one registration survives, even
-//! though the loser panics. A separate integration-test binary gives the
-//! singleton a pristine process.
+//! The slot's compare-exchange is the only writer admission; this test
+//! starts two threads at a barrier and proves exactly one registration
+//! survives, even though the loser panics. A separate integration-test
+//! binary gives the singleton a pristine process.
 
 use std::sync::{Arc, Barrier};
 use std::thread;

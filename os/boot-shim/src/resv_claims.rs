@@ -242,62 +242,74 @@ pub fn check(
     Ok(())
 }
 
-// ── capture / read-back (single-threaded boot state) ─────────────────────
+// ── capture / read-back (caller-owned state) ─────────────────────────────
 
-/// A `static mut` replacement with one documented single-threaded contract.
-struct BootCell<T>(core::cell::UnsafeCell<T>);
-// SAFETY: the boot shim is single-threaded; every access is exclusive by the
-// call-order contract documented on each static.
-unsafe impl<T> Sync for BootCell<T> {}
-impl<T> BootCell<T> {
-    const fn new(value: T) -> Self {
-        Self(core::cell::UnsafeCell::new(value))
+/// Claims captured from one configuration-table DTB, plus the source
+/// records and raw DTB range the pairing loop needs before exit.
+///
+/// The caller owns this value on its stack for the duration of one EBS
+/// attempt. `capture` resets and fills it; `check_current` reads it on the
+/// same thread immediately afterwards. No module-level state is involved,
+/// so a retry starts from a fresh value and cannot observe a half-filled
+/// previous attempt.
+pub struct ClaimSet {
+    claims: [Claim; MAX_CLAIMS],
+    claims_n: usize,
+    records: [SourceRecord; minix_boot::DTB_SOURCE_CAP],
+    records_n: usize,
+    dtb: Option<(u64, u64)>,
+}
+
+impl ClaimSet {
+    /// An empty set: no claims, no records, no DTB range.
+    pub const fn new() -> Self {
+        Self {
+            claims: [Claim {
+                start: 0,
+                end: 0,
+                expected: ExpectedEfiType::Reserved,
+            }; MAX_CLAIMS],
+            claims_n: 0,
+            records: [minix_boot::EMPTY_SOURCE_RECORD; minix_boot::DTB_SOURCE_CAP],
+            records_n: 0,
+            dtb: None,
+        }
     }
-    fn get(&self) -> *mut T {
-        self.0.get()
+
+    fn reset(&mut self, dtb: Option<(u64, u64)>) {
+        self.claims_n = 0;
+        self.records_n = 0;
+        self.dtb = dtb;
+    }
+
+    /// The configuration-table DTB's own source records (at most
+    /// [`minix_boot::DTB_SOURCE_CAP`]). Empty when the DTB is absent or
+    /// unparsable; the halt for that case is `cross_validate_config_dtb`'s.
+    pub fn records(&self) -> &[SourceRecord] {
+        &self.records[..self.records_n]
+    }
+
+    /// The claims emitted by the last successful capture.
+    pub fn claims(&self) -> &[Claim] {
+        &self.claims[..self.claims_n]
     }
 }
 
-static DTB_RECORDS: BootCell<[SourceRecord; minix_boot::DTB_SOURCE_CAP]> =
-    BootCell::new([minix_boot::EMPTY_SOURCE_RECORD; minix_boot::DTB_SOURCE_CAP]);
-static DTB_RECORDS_N: BootCell<usize> = BootCell::new(0);
-
-/// The configuration-table DTB's own source records (at most
-/// [`minix_boot::DTB_SOURCE_CAP`]). Empty when the DTB is absent or
-/// unparsable; the halt for that case is `cross_validate_config_dtb`'s.
-pub fn records() -> &'static [SourceRecord] {
-    // SAFETY: write-once inside `capture`, read-only afterwards; same
-    // single-threaded boot contract as the claim list.
-    unsafe {
-        let n = *DTB_RECORDS_N.get();
-        core::slice::from_raw_parts(DTB_RECORDS.get() as *const SourceRecord, n)
+impl Default for ClaimSet {
+    fn default() -> Self {
+        Self::new()
     }
 }
-
-static CLAIMS: BootCell<[Claim; MAX_CLAIMS]> = BootCell::new([Claim {
-    start: 0,
-    end: 0,
-    expected: ExpectedEfiType::Reserved,
-}; MAX_CLAIMS]);
-static CLAIMS_N: BootCell<usize> = BootCell::new(0);
-static DTB_RAW: BootCell<Option<(u64, u64)>> = BootCell::new(None);
 
 /// Parse the configuration-table DTB and record its reservation claims.
 ///
-/// Any parse failure leaves the claim list empty: the boot is halted later by
+/// Any parse failure leaves the set empty: the boot is halted later by
 /// `cross_validate_config_dtb` on the same bytes, so this function must not
 /// invent a second failure path for the same input. Claim *capacity* is the
 /// exception: no later gate re-counts claims, so an overflow must surface
 /// here instead of leaving `check_current` with an empty list.
-pub fn capture(bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
-    // SAFETY: single-threaded boot; capture runs once inside the pairing loop
-    // after the owned copy was authorized, and the reader runs on the same
-    // thread immediately afterwards.
-    unsafe {
-        *CLAIMS_N.get() = 0;
-        *DTB_RECORDS_N.get() = 0;
-        *DTB_RAW.get() = Some(source);
-    }
+pub fn capture(set: &mut ClaimSet, bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
+    set.reset(Some(source));
     if minix_boot::fdt_layout::validate(0, bytes).is_err() {
         return Ok(());
     }
@@ -314,64 +326,40 @@ pub fn capture(bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
     let Ok(owned) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect_owned() else {
         return Ok(());
     };
-    capture_claims(owned.sources(), owned.panorama(), source)
+    capture_claims(set, owned.sources(), owned.panorama(), source)
 }
 
-/// Fill the static claim and record stores from already-parsed DTB facts.
+/// Fill a caller-owned set from already-parsed DTB facts.
 ///
 /// Capacity is the one failure this layer cannot defer: no later gate
 /// re-counts claims, so `TooManyClaims` must reach the pairing loop.
 fn capture_claims(
+    set: &mut ClaimSet,
     records: &[SourceRecord],
     panorama: &[minix_boot::MemoryRegion],
     source: (u64, u64),
 ) -> Result<(), ClaimError> {
-    // SAFETY: single-threaded boot; same contract as `capture`.
-    unsafe {
-        *CLAIMS_N.get() = 0;
-        *DTB_RECORDS_N.get() = 0;
-        *DTB_RAW.get() = Some(source);
-        for (i, record) in records.iter().enumerate() {
-            if i >= minix_boot::DTB_SOURCE_CAP {
-                break;
-            }
-            (DTB_RECORDS.get() as *mut SourceRecord).add(i).write(*record);
-            *DTB_RECORDS_N.get() = i + 1;
+    set.reset(Some(source));
+    for (i, record) in records.iter().enumerate() {
+        if i >= minix_boot::DTB_SOURCE_CAP {
+            break;
         }
-        let mut claims = [Claim {
-            start: 0,
-            end: 0,
-            expected: ExpectedEfiType::Reserved,
-        }; MAX_CLAIMS];
-        let count = claims_from_records(records, panorama, &mut claims)?;
-        let base = CLAIMS.get() as *mut Claim;
-        for (i, claim) in claims.iter().enumerate().take(count) {
-            // SAFETY: `base` points at the static array, `i < count <= MAX_CLAIMS`.
-            base.add(i).write(*claim);
-        }
-        *CLAIMS_N.get() = count;
-        Ok(())
+        set.records[i] = *record;
+        set.records_n = i + 1;
     }
+    let count = claims_from_records(records, panorama, &mut set.claims)?;
+    set.claims_n = count;
+    Ok(())
 }
 
 /// Check the captured claims against the snapshot the pairing loop read.
-/// An empty list (no configuration-table DTB, or an unparsable one) passes:
+/// An empty set (no configuration-table DTB, or an unparsable one) passes:
 /// that leg has no DTB-side claims to reconcile.
-pub fn check_current(descs: &[DescriptorRef]) -> Result<(), ClaimError> {
-    // SAFETY: same single-threaded contract as `capture`; the pairing loop
-    // reads what capture wrote on the same thread.
-    let (claims, count, dtb) = unsafe {
-        (
-            CLAIMS.get() as *const Claim,
-            *CLAIMS_N.get(),
-            *DTB_RAW.get(),
-        )
-    };
-    if count == 0 {
+pub fn check_current(set: &ClaimSet, descs: &[DescriptorRef]) -> Result<(), ClaimError> {
+    if set.claims_n == 0 {
         return Ok(());
     }
-    let claims = unsafe { core::slice::from_raw_parts(claims, count) };
-    check(claims, descs, dtb)
+    check(set.claims(), descs, set.dtb)
 }
 
 #[cfg(test)]
@@ -625,11 +613,16 @@ mod tests {
             base: PhysBytes(0x1000),
             len: 0x5000,
         }];
+        let mut set = ClaimSet::new();
         assert_eq!(
-            capture_claims(&records, &panorama, (0x2000, 0x3000)),
+            capture_claims(&mut set, &records, &panorama, (0x2000, 0x3000)),
             Err(ClaimError::TooManyClaims)
         );
-        assert_eq!(check_current(&[]), Ok(()), "no claim survived the refusal");
+        assert_eq!(
+            check_current(&set, &[]),
+            Ok(()),
+            "no claim survived the refusal"
+        );
     }
 
     /// A container the later gate owns leaves the claim list empty and the
@@ -639,29 +632,31 @@ mod tests {
     fn capture_leaves_container_failures_to_the_later_gate() {
         let _serial = crate::test_serial::lock();
         static BAD: [u8; 64] = [0u8; 64];
-        assert_eq!(capture(&BAD, (0, 64)), Ok(()));
-        assert_eq!(records().len(), 0);
-        assert_eq!(check_current(&[]), Ok(()));
+        let mut set = ClaimSet::new();
+        assert_eq!(capture(&mut set, &BAD, (0, 64)), Ok(()));
+        assert_eq!(set.records().len(), 0);
+        assert_eq!(check_current(&set, &[]), Ok(()));
     }
 
     /// `capture` runs once per EBS attempt, and UEFI's
     /// spec allows `ExitBootServices` to return `EFI_INVALID_PARAMETER`
-    /// once ("memory map changed — retry"). The old `'static`
-    /// `collect_with_panorama` path would trip the `DTB_COLLECT_TAKEN`
-    /// guard on attempt 2 — a panic hidden from every test because the
-    /// guard is `cfg(not(test))`. The owned form never writes the statics,
-    /// so two captures on the same face must both succeed and agree.
+    /// once ("memory map changed — retry"). A `'static` collection path
+    /// would trip the `DTB_COLLECT_TAKEN` guard on attempt 2 — a panic
+    /// hidden from every test because the guard is `cfg(not(test))`.
+    /// The owned form writes no module-level state, so two captures on the
+    /// same face must both succeed and agree.
     /// The blob is a minimal valid FDT (header + empty root node): capture
     /// walks the whole owned-collection path on both attempts.
     #[test]
     fn capture_twice_on_the_same_face_is_safe_uefi_retry_shape() {
         let _serial = crate::test_serial::lock();
         let blob = minimal_fdt_blob();
-        assert_eq!(capture(&blob, (0, blob.len() as u64)), Ok(()));
-        let first_records = records().len();
-        assert_eq!(capture(&blob, (0, blob.len() as u64)), Ok(()));
+        let mut set = ClaimSet::new();
+        assert_eq!(capture(&mut set, &blob, (0, blob.len() as u64)), Ok(()));
+        let first_records = set.records().len();
+        assert_eq!(capture(&mut set, &blob, (0, blob.len() as u64)), Ok(()));
         assert_eq!(
-            records().len(),
+            set.records().len(),
             first_records,
             "attempt 2 must agree with attempt 1 (no claim drift)"
         );

@@ -191,13 +191,15 @@ pub unsafe fn pair_and_classify(
         // final snapshot. Re-authorize the whole range here, copy the body
         // once, then build the reservation claims from the copy. Nothing
         // between this point and `ExitBootServices` may allocate.
+        let mut claims = crate::resv_claims::ClaimSet::new();
         if let Some(owned) = crate::dtb_copy::authorize_and_copy(storage.descriptors())
             .map_err(PairError::DtbPages)?
         {
-            crate::resv_claims::capture(owned.bytes(), owned.source).map_err(PairError::DtbClaims)?;
-            push_dtb_sources(serializer, crate::resv_claims::records());
+            crate::resv_claims::capture(&mut claims, owned.bytes(), owned.source)
+                .map_err(PairError::DtbClaims)?;
+            push_dtb_sources(serializer, claims.records());
         }
-        crate::resv_claims::check_current(storage.descriptors())
+        crate::resv_claims::check_current(&claims, storage.descriptors())
             .map_err(PairError::ReservationCoverage)?;
 
         // SAFETY: same contract as above; `map_key` comes from the map that
