@@ -26,26 +26,47 @@ rewrite-notes/18-stage-commands/03-login-passwd.md:201: minix3/usr.bin/login/log
 rewrite-notes/18-stage-commands/03-login-passwd.md:202: minix3/usr.bin/login/login.c:main → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/03-login-passwd.md:203: minix3/libexec/getty/main.c:main → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/04-device-database.md:169: minix3/usr.sbin/dev_mkdb/dev_mkdb.c:FILE_PERMISSION → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/05-shell-family.md:229: minix3/bin/sh/main.c:main → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/05-shell-family.md:231: minix3/bin/sh/expand.c:expandarg → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/05-shell-family.md:232: minix3/bin/sh/redir.c:redirtab → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/06-file-ops.md:274: minix3/bin/test/test.c:t_op → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/06-file-ops.md:275: minix3/bin/chmod/chmod.c:main → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/07-text-filter.md:154: minix3/usr.bin/pr/pr.c:setup → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/07-text-filter.md:183: minix3/usr.bin/yes/yes.c:main → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/07-text-filter.md:221: minix3/usr.bin/uniq/uniq.c:__COPYRIGHT → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/07-text-filter.md:222: minix3/usr.bin/cut/cut.c:main → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/07-text-filter.md:223: minix3/usr.bin/tr/tr.c:__COPYRIGHT → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/08-grep-sed.md:185: minix3/minix/usr.bin/grep/grep.c:main → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/08-grep-sed.md:186: minix3/usr.bin/sed/compile.c:compile_subst → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/08-grep-sed.md:187: minix3/usr.bin/sed/process.c:substitute → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/08-grep-sed.md:188: minix3/usr.bin/sed/compile.c:addrchar → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/05-shell-family.md:231: minix3/bin/sh/main.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/05-shell-family.md:233: minix3/bin/sh/expand.c:expandarg → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/05-shell-family.md:234: minix3/bin/sh/redir.c:redirtab → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/06-file-ops.md:283: minix3/bin/test/test.c:t_op → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/06-file-ops.md:284: minix3/bin/chmod/chmod.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:28: cut.rs:fn select_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:28: cut.rs:fn select_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:28: uniq.rs:fn comparison_key → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:74: minix3/usr.bin/cut/cut.c:get_list → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:164: minix3/usr.bin/pr/pr.c:inln → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:165: minix3/usr.bin/pr/pr.c:setup → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:185: bin_support.rs:read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:186: bin_support.rs:create_sink → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:191: bin/uniq.rs:obsolete_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:193: window.rs:TailWindow → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:195: bin_support.rs:writable → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:196: bin/cmp.rs:parse_skip → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:199: minix3/usr.bin/yes/yes.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:199: bin_support.rs:args_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:205: tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:207: src/bin/cksum.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:208: src/digest.rs:fn from_hashname_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:216: bin_support.rs:read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:217: minix3/usr.bin/split/split.c:split2 → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:224: tests/column_face.rs:each_source_with_a_long_tail_line_warns_once → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:225: tests/column_face.rs:an_option_value_of_column_splits_on_the_raw_byte_it_carries → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:249: minix3/usr.bin/uniq/uniq.c:__COPYRIGHT → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:250: minix3/usr.bin/cut/cut.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:251: minix3/usr.bin/cut/cut.c:get_list → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:252: minix3/usr.bin/tr/tr.c:__COPYRIGHT → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/08-grep-sed.md:170: bin_support.rs:read_operand → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/08-grep-sed.md:187: minix3/minix/usr.bin/grep/grep.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/08-grep-sed.md:188: minix3/usr.bin/sed/compile.c:compile_subst → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/08-grep-sed.md:189: minix3/usr.bin/sed/process.c:substitute → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/08-grep-sed.md:190: minix3/usr.bin/sed/compile.c:addrchar → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/09-editors.md:185: minix3/bin/ed/main.c:extract_addr_range → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/09-editors.md:186: minix3/bin/ed/main.c:exec_command → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/09-editors.md:187: minix3/bin/ed/main.c:append_lines → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/09-editors.md:188: minix3/bin/ed/ed.h:ERR → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/10-doc-man-tools.md:156: minix3/usr.bin/cal/cal.c:FIRST_MISSING_DAY → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/10-doc-man-tools.md:216: minix3/usr.bin/cal/cal.c:FIRST_MISSING_DAY → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/10-doc-man-tools.md:217: minix3/usr.bin/cal/cal.c:FIRST_MISSING_DAY → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/11-compress-archive.md:166: minix3/usr.bin/uuencode/uuencode.c:__COPYRIGHT → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/12-process-tools.md:198: minix3/bin/kill/kill.c:main → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/12-process-tools.md:199: minix3/sys/sys/signal.h:SIGHUP → 符号名未出现在本句，需句意复核
@@ -75,17 +96,132 @@ rewrite-notes/18-stage-commands/19-network-services.md:167: minix3/minix/command
 rewrite-notes/18-stage-commands/20-minix-system.md:176: minix3/minix/commands/readclock/readclock.c:main → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/20-minix-system.md:177: minix3/minix/commands/intr/intr.c:_POSIX_SOURCE → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/20-minix-system.md:181: minix3/usr.bin/ldd/ldd.c:dlopen → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/22-stdio-games.md:210: minix3/games/factor/factor.c:main → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/22-stdio-games.md:211: minix3/games/caesar/caesar.c:init_rottbl → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/22-stdio-games.md:212: minix3/games/morse/morse.c:__COPYRIGHT → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/22-stdio-games.md:213: minix3/games/pig/pig.c:pigout → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/22-stdio-games.md:254: minix3/games/factor/factor.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/22-stdio-games.md:255: minix3/games/caesar/caesar.c:init_rottbl → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/22-stdio-games.md:256: minix3/games/morse/morse.c:__COPYRIGHT → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/22-stdio-games.md:257: minix3/games/pig/pig.c:pigout → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/23-terminal-games.md:168: minix3/games/tetris/shapes.c:TL → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/23-terminal-games.md:169: minix3/games/rogue/rogue.h:HORWALL → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/24-text-games.md:168: minix3/games/adventure/hdr.h:HTSIZE → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/24-text-games.md:169: minix3/games/fish/fish.c:RANKS → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/24-text-games.md:170: minix3/games/random/random.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/24-text-games.md:169: minix3/games/adventure/hdr.h:HTSIZE → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/24-text-games.md:170: minix3/games/fish/fish.c:RANKS → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/24-text-games.md:171: minix3/games/random/random.c:main → 符号名未出现在本句，需句意复核
 rewrite-notes/18-stage-commands/doc_rerank_muse.md:103: init.c:runetcrc → 符号名未出现在本句，需句意复核
-rewrite-notes/18-stage-commands/todo.md:350: bin/cp.rs:overwrite_ok → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:794: bin_support.rs:read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:799: bin_support.rs:Operand → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:1473: src/nl.rs:fn write_number → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:1834: src/unifdef.rs:fn find_sym → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:1844: src/unifdef.rs:fn run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:1953: src/bin/unexpand.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:1955: src/unexpand.rs:fn unexpand_line → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:2210: src/bin/split.rs:fn err3 → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:2886: bin_support.rs:read_stdin → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3447: src/bin/cksum.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3448: src/cksum.rs:fn parse_cksum_args_into → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3451: src/digest.rs:fn from_hashname_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3538: src/bin/units.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3653: src/units.rs:fn add_into → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3679: src/bin/units.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3692: /usr-bin/textfilter/tests/head_face.rs:an_operand_ends_option_scanning_like_c → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3842: tests/head_face.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3843: tests/tail_face.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3846: tests/uniq_face.rs:fn uniq_does_not_supply_a_newline_the_input_lacked → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3847: tests/nl_face.rs:fn an_unterminated_final_line_is_numbered_without_a_newline → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3892: tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3929: tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3945: src/col.rs:fn filter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3945: src/col.rs:fn flush_line → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4034: tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4147: src/seq.rs:fn parse_seq_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4150: src/seq.rs:fn unescape → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4155: src/seq.rs:fn render_output → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4157: src/bin/seq.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4172: seq.rs:fn a_raw_ff_separator_and_terminator_are_one_byte_each → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4174: seq.rs:fn parse_seq_names_a_raw_ff_option_letter_by_that_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4175: seq_face.rs:fn a_raw_nonutf8_separator_byte_is_written_as_one_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4177: seq_face.rs:fn a_raw_nonutf8_operand_is_echoed_as_its_own_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4178: bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4247: src/bin/tee.rs:parse_tee_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4252: src/bin/yes.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4293: src/paste.rs:fn parse_paste_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4308: src/paste.rs:fn parse_paste_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4310: src/bin/paste.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4335: paste.rs:fn parse_paste_names_a_raw_ff_option_letter_by_that_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4337: paste.rs:fn parse_paste_keeps_a_nonutf8_delimiter_byte_as_one_slot → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4339: paste_face.rs:fn a_raw_ff_option_letter_is_reported_as_that_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4340: paste_face.rs:fn a_raw_nonutf8_delimiter_byte_is_one_slot → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4341: bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4392: src/bin_support.rs:fn args_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4396: src/lib.rs:fn empty_optstring_operands_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4399: src/rev.rs:fn parse_rev_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4401: src/bin/rev.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4418: lib.rs:fn empty_optstring_bytes_name_an_invalid_utf8_option_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4419: rev.rs:fn a_raw_ff_option_letter_is_named_by_that_byte_not_the_replacement_char → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4420: rev_face.rs:fn a_raw_nonutf8_option_letter_is_reported_as_that_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4421: bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4468: minix3/usr.bin/head/head.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4469: minix3/usr.bin/wc/wc.c:cnt → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4470: minix3/usr.bin/column/column.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4618: minix3/usr.bin/column/column.c:input → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4656: minix3/usr.bin/pr/pr.c:inln → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4668: minix3/usr.bin/pr/pr.c:prhead → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4676: src/bin/pr.rs:fn split_lines → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4691: tests/pr_face.rs:fn a_nonutf8_line_keeps_its_bytes_through_the_line_legs → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4702: minix3/usr.bin/pr/pr.c:prhead → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4704: src/pr.rs:fn default → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4831: tests/column_face.rs:an_entry_that_is_not_utf8_keeps_its_bytes_through_every_layout → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4849: bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4849: src/column.rs:fn split_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5001: bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5018: src/bin/pr.rs:fn split_lines → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5019: src/bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5020: src/bin/comm.rs:fn split_lines → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5021: src/bin/paste.rs:fn split_lines → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5042: src/unexpand.rs:fn unexpand → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5054: unexpand.rs:fn unexpand → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5164: cut.rs:fn select_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5164: cut.rs:fn select_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5165: uniq.rs:fn comparison_key → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5273: tests/split_face.rs:an_unopenable_input_outranks_the_third_operand → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5273: src/split.rs:mod → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5793: src/lib.rs:empty_optstring_operands → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5793: src/col.rs:parse_col_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:6026: acronym.rs:parse_acronym_line → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:6077: minix3/usr.bin/split/split.c:split2 → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:6084: src/split.rs:suffix → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:6084: split.c:newfile → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:6084: bin/split.rs:too_many_files → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7428: src/lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7506: tests/column_face.rs:each_source_with_a_long_tail_line_warns_once → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7528: src/jot.rs:seed_from_step → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7538: src/lib.rs:GetoptReport::line → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7555: src/col.rs:parse_col_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7556: src/column.rs:parse_column_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7563: src/lib.rs:GetoptReport::line → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7607: src/jot.rs:derive → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7665: bin/tr.rs:expand → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7668: bin/tr.rs:run_filter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7692: src/tr.rs:parse_tr_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7693: src/lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7693: src/tr.rs:usage_block → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7721: src/tr.rs:parse_set → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7767: lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7841: lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:8455: lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9026: join.c:obsolete → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9180: sort.rs:span_length → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9251: init.c:NNN → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9282: minix3/usr.bin/cut/cut.c:get_list → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9342: lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9372: bin_support.rs:writable → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9457: bin_support.rs:errno_of → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9488: lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:9502: bin_support.rs:read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:11924: bin_support.rs:create_sink → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:11940: bin_support.rs:read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:12039: bin_support.rs:read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:12176: bin_support.rs:read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:12271: cal.c:monthrange → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:12453: bin/cp.rs:overwrite_ok → 符号名未出现在本句，需句意复核
 rewrite-notes/12-stage-input/00-input-overview.md:58: minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_announce → 符号名未出现在本句，需句意复核
 rewrite-notes/12-stage-input/01-input-init-main.md:5: minix3/minix/servers/input/input.c:input_other → 符号名未出现在本句，需句意复核
 rewrite-notes/12-stage-input/01-input-init-main.md:119: minix3/minix/include/minix/sef.h:_SEF_H → 符号名未出现在本句，需句意复核
@@ -1502,405 +1638,322 @@ rewrite-notes/09-stage-init/plan.md:14: minix3/minix/kernel/table.c:image → �
 rewrite-notes/09-stage-init/plan.md:14: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
 rewrite-notes/09-stage-init/plan.md:14: minix3/minix/servers/rs/table.c:boot_image_priv_table → 符号名未出现在本句，需句意复核
 rewrite-notes/09-stage-init/plan.md:139: minix3/sbin/init/init.c:NNN → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:30: minix3/minix/kernel/arch/i386/head.S:multiboot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:133: minix3/minix/kernel/arch/i386/head.S:multiboot_magic → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:193: minix3/minix/kernel/arch/i386/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:198: minix3/minix/servers/mib/kern.c:mib_kern_root_device → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:200: minix3/minix/include/minix/param.h:struct kinfo → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:202: minix3/sys/arch/i386/stand/boot/boot2.c:command_load_mods → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:202: minix3/sys/arch/i386/stand/lib/exec.c:exec_multiboot → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:206: minix3/minix/kernel/arch/i386/arch_reset.c:arch_shutdown → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:210: minix3/minix/kernel/arch/i386/head.S:multiboot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:245: minix3/minix/kernel/arch/i386/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:312: minix3/minix/kernel/arch/i386/pre_init.c:mb_set_param → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:392: minix3/minix/kernel/main.c:get_value → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:396: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:400: minix3/minix/kernel/arch/i386/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:432: minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:487: minix3/minix/kernel/arch/i386/pg_utils.c:cut_memmap → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:487: minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:552: minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:604: minix3/minix/kernel/arch/i386/arch_smp.c:copy_trampoline → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:625: minix3/minix/kernel/arch/i386/arch_smp.c:copy_trampoline → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:638: minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:667: minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:703: minix3/minix/kernel/arch/i386/pre_init.c:overlaps → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:703: minix3/minix/kernel/arch/i386/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:786: minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:787: minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:788: minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:789: minix3/minix/kernel/arch/i386/pg_utils.c:pg_load → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:790: minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:916: minix3/minix/kernel/arch/i386/pg_utils.c:alloc_pagetable → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:916: minix3/minix/kernel/arch/i386/pg_utils.c:pg_map → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:941: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:992: minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:992: minix3/minix/kernel/arch/i386/memory.c:virtual_copy_f → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1046: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1087: minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1123: minix3/minix/kernel/arch/earm/pre_init.c:setup_mbi → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1171: minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1175: minix3/minix/kernel/arch/earm/pre_init.c:pre_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1214: minix3/minix/kernel/arch/i386/head.S:multiboot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1353: loader.rs:compute_kernel_layout → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2532: minix3/minix/kernel/arch/i386/head.S:multiboot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2594: loader.rs:test_load_boot_modules_loads_all_in_contract_order → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2595: loader.rs:test_load_boot_modules_panics_on_missing → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2596: loader.rs:test_first_overlapping_pair_ → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2597: loader.rs:test_bss_region_is_zeroed_after_load → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2598: loader.rs:test_load_kernel_with_loader_computes_layout → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2599: opensbi_helpers.rs:test_bump_alloc_rejects_zero_pages → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2600: opensbi_helpers.rs:test_bump_alloc_advances_pointer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2601: opensbi_helpers.rs:test_boot_file_table_validates_magic → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2602: opensbi_helpers.rs:test_build_kernel_info_bootstrap_zero_means_no_reclaim → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2603: opensbi_helpers.rs:test_build_kernel_info_riscv64_fields_match_input → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2604: uefi_helpers.rs:test_build_kernel_info_fields → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2605: kernel_info.rs:test_validate_rejects_ → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2692: main.rs:main → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2693: main.rs:main → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2752: minix3/minix/kernel/arch/i386/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2753: minix3/minix/kernel/arch/i386/pre_init.c:pre_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2754: loader.rs:load_boot_modules_with_loader → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:26: minix3/minix/kernel/arch/i386/head.S:multiboot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:50: minix3/minix/kernel/arch/i386/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:192: minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:207: minix3/minix/kernel/arch/i386/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:211: minix3/minix/kernel/arch/i386/head.S:multiboot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:242: minix3/minix/kernel/arch/earm/head.S:multiboot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:265: minix3/minix/servers/vm/pagetable.c:pt_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:305: minix3/minix/kernel/arch/i386/mpx.S:k_initial_stack → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:506: minix3/minix/servers/vm/pagetable.c:pt_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:49: minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:57: minix3/minix/kernel/arch/i386/protect.c:prot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:148: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:161: minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:165: minix3/minix/kernel/arch/i386/pre_init.c:pre_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:261: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:351: minix3/minix/kernel/arch/i386/protect.c:init_param_dataseg → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:357: minix3/minix/kernel/arch/i386/protect.c:idt_copy_vectors → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:477: minix3/minix/kernel/arch/i386/arch_smp.c:tss_init_all → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:481: minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:528: minix3/minix/kernel/arch/i386/protect.c:idt_copy_vectors → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:582: minix3/minix/kernel/arch/i386/protect.c:prot_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:650: minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:653: minix3/minix/kernel/main.c:prepare_shutdown → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:686: minix3/minix/kernel/arch/earm/arch_system.c:arch_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:725: minix3/minix/kernel/arch/i386/include/arch_proto.h:tss_s → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:756: minix3/minix/kernel/arch/i386/protect.c:int_gate → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:21: minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:22: minix3/minix/kernel/arch/i386/arch_clock.c:TIMER_FREQ → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:22: minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:23: minix3/minix/kernel/arch/i386/arch_smp.c:discover_cpus → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:24: minix3/minix/kernel/arch/i386/arch_system.c:ser_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:38: minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:54: minix3/minix/kernel/arch/i386/acpi.c:acpi_check_signature → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:116: minix3/minix/kernel/arch/i386/acpi.c:acpi_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:118: minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:154: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:376: minix3/minix/kernel/arch/i386/acpi.h:acpi_rsdp → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:617: minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_hdr → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:811: main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:816: main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:953: minix3/minix/kernel/arch/earm/arch_clock.c:init_local_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:994: minix3/minix/kernel/arch/i386/arch_system.c:arch_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:1084: minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_ioapic → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:1428: minix3/minix/kernel/arch/i386/i8259.c:irq_8259_eoi → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:60: minix3/minix/kernel/clock.c:init_clock → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:135: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:259: minix3/minix/include/arch/i386/include/archconst.h:DEFAULT_HZ → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:260: minix3/minix/include/arch/earm/include/archconst.h:DEFAULT_HZ → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:356: minix3/minix/kernel/arch/i386/i8259.c:intr_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:529: minix3/minix/kernel/interrupt.c:irq_handle → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:708: minix3/minix/kernel/clock.c:init_clock → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:1026: minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:1026: minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:1144: minix3/minix/kernel/clock.c:timer_int_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:1204: minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:1732: minix3/minix/kernel/interrupt.c:put_irq_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:46: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:58: minix3/minix/kernel/proc.h:END_PROC_ADDR → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:83: minix3/minix/kernel/proc.h:proc_is_runnable → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:85: minix3/minix/kernel/type.h:sys_map_t → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:142: main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:152: minix3/minix/kernel/system/do_privctl.c:do_privctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:153: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:153: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:168: minix3/minix/kernel/clock.c:timer_int_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:232: minix3/minix/include/minix/sys_config.h:_NR_PROCS → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:248: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:248: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:289: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:289: minix3/minix/kernel/system/do_exec.c:do_exec → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:573: minix3/minix/kernel/proc.c:proc_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:573: minix3/minix/kernel/system/do_clear.c:do_clear → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:573: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:574: minix3/minix/kernel/proc.c:proc_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:574: minix3/minix/kernel/smp.c:smp_sched_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:575: minix3/minix/kernel/system.c:clear_ipc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:575: ipc.h:WILLRECEIVE → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:576: minix3/minix/kernel/system.c:clear_ipc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:577: system.c:cause_sig → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:578: system.c:cause_sig → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:580: main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:580: system.c:cause_sig → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:581: minix3/minix/kernel/system.c:clear_endpoint → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:582: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:582: proc.c:has_pending → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:584: proc.c:vm_suspend → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:584: system.c:clear_memreq → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:586: minix3/minix/kernel/smp.c:smp_ipi_sched_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:586: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:587: main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:587: proc.c:notify_scheduler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:588: main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:610: proc.h:P_BLOCKEDON → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:782: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1100: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1100: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1253: minix3/minix/kernel/system/do_fork.c:do_fork → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:2174: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1069: loader.rs:compute_kernel_layout → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2449: uefi_helpers.rs:prepare_and_enter_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2450: uefi_helpers.rs:prepare_and_enter_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2451: uefi_helpers.rs:prepare_and_enter_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2459: kernel-image/src/main.rs:rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2536: loader.rs:load_boot_modules_into → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:246: uefi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:577: misc.rs:fn monparams_snapshot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:17: uefi_helpers.rs:fn find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:20: uefi_helpers.rs:fn alloc_root_page → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:105: main.rs:fn rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round4.md:155: boot.rs:fn exit_boot_services → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:39: uefi_helpers.rs:fn alloc_root_page → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:40: uefi_helpers.rs:fn alloc_bump_region → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:42: uefi_helpers.rs:fn alloc_module_pages → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:43: loader.rs:fn load_boot_modules_with_loader → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:44: uefi_helpers.rs:fn find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:46: uefi_helpers.rs:fn build_memmaps → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:47: boot.rs:fn exit_boot_services → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:69: uefi_helpers.rs:fn exit_boot_services → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round9.md:16: loader.rs:fn load_boot_modules_with_loader → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round9.md:70: boot.rs:fn exit_boot_services → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:97: uefi-raw-0.9.0/src/table/boot.rs:MemoryAttribute → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:97: ebs_map.rs:attr → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:98: uefi-raw-0.9.0/src/table/revision.rs:EFI_2_100 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:99: uefi-raw-0.9.0/src/table/boot.rs:MemoryAttribute → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:25: minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:26: minix3/minix/kernel/arch/i386/arch_clock.c:TIMER_FREQ → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:26: minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:27: minix3/minix/kernel/arch/i386/arch_smp.c:discover_cpus → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:28: minix3/minix/kernel/arch/i386/arch_system.c:ser_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:42: minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:58: minix3/minix/kernel/arch/i386/acpi.c:acpi_check_signature → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:127: minix3/minix/kernel/arch/i386/acpi.c:acpi_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:129: minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:183: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:414: minix3/minix/kernel/arch/i386/acpi.h:acpi_rsdp → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:659: minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_hdr → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:865: main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:870: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1007: minix3/minix/kernel/arch/earm/arch_clock.c:init_local_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1052: minix3/minix/kernel/arch/i386/arch_system.c:arch_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1159: minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_ioapic → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-review-trajectory.md:89: omap_intr.c:intr_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-review-trajectory.md:92: main.c:cstart → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-review.md:428: omap_intr.c:intr_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/05-review.md:177: clock.c:init_clock → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:147: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:580: smp.c:smp_schedule_stop_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:581: ipc.h:WILLRECEIVE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:583: system.c:cause_sig → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:584: system.c:cause_sig → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:586: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:586: system.c:cause_sig → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:588: proc.c:has_pending → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:590: proc.c:vm_suspend → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:590: system.c:clear_memreq → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:593: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:593: proc.c:notify_scheduler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:594: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:616: proc.h:P_BLOCKEDON → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/07-cross-space-init.md:3: minix3/minix/kernel/arch/i386/pg_utils.c:pg_info → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/07-cross-space-init.md:3: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:14: minix3/minix/kernel/arch/i386/klib.S:__switch_address_space → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:14: minix3/minix/kernel/cpulocals.h:ptproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:91: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:110: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:118: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:119: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:121: minix3/minix/kernel/arch/i386/klib.S:__switch_address_space → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:147: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:148: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:149: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:150: minix3/minix/kernel/arch/i386/memory.c:mem_clear_mapcache → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:164: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:172: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:194: minix3/minix/kernel/arch/i386/pg_utils.c:pg_info → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:226: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:259: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:366: minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:407: minix3/minix/kernel/arch/i386/klib.S:__switch_address_space → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:411: minix3/minix/kernel/arch/i386/memory.c:vm_memset → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:449: minix3/minix/kernel/arch/i386/memory.c:mem_clear_mapcache → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:474: minix3/minix/servers/vm/pagetable.c:pt_clearmapcache → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:503: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:504: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:505: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:506: minix3/minix/kernel/arch/i386/memory.c:mem_clear_mapcache → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:612: minix3/minix/servers/vm/pagetable.c:freepde → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:739: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:740: vm.h:I386_BIG_PAGE_SIZE → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:3: minix3/minix/kernel/clock.c:boot_cpu_init_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:3: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:3: minix3/minix/kernel/arch/i386/arch_system.c:fpu_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:10: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:68: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:72: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:72: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:76: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:136: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:176: minix3/minix/kernel/proc.h:RTS_UNSET → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:176: minix3/minix/kernel/proc.h:proc_is_runnable → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:220: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:320: minix3/minix/kernel/system.c:system_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:388: minix3/minix/kernel/arch/i386/pg_utils.c:cut_memmap → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:389: minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:390: minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:391: minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:392: minix3/minix/kernel/arch/i386/pg_utils.c:pg_map → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:406: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:427: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:456: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:483: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:500: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:538: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:582: minix3/minix/kernel/arch/i386/arch_system.c:fpu_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:614: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:614: minix3/minix/kernel/arch/i386/arch_system.c:save_local_fpu → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:642: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1142: minix3/minix/kernel/system.c:system_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1146: minix3/minix/kernel/system.c:kernel_call_dispatch → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1148: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1149: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1162: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1456: minix3/minix/kernel/main.c:announce → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1456: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1575: minix3/minix/kernel/system.c:kernel_call_dispatch → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1760: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1765: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1766: minix3/minix/kernel/clock.c:boot_cpu_init_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1820: minix3/minix/kernel/arch/i386/arch_system.c:cpu_identify → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2180: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2180: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2180: minix3/minix/kernel/main.c:announce → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2180: minix3/minix/kernel/system.c:system_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2180: minix3/minix/kernel/arch/i386/arch_system.c:fpu_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2180: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2180: minix3/minix/kernel/clock.c:boot_cpu_init_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-todo.md:24: protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-todo.md:79: minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/08-todo.md:125: dm_coverage.rs:establish_boot_dm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:3: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:3: minix3/minix/lib/libsys/sys_vmctl.c:sys_vmctl_set_addrspace → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:3: minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:20: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:56: minix3/minix/kernel/system/do_getinfo.c:do_getinfo → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:56: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:91: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:91: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:101: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:104: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:131: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:131: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:18: minix3/minix/kernel/arch/i386/klib.S:__switch_address_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:18: minix3/minix/kernel/cpulocals.h:ptproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:95: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:114: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:122: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:123: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:125: minix3/minix/kernel/arch/i386/klib.S:__switch_address_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:165: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:166: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:167: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:168: minix3/minix/kernel/arch/i386/memory.c:mem_clear_mapcache → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:182: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:190: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:212: minix3/minix/kernel/arch/i386/pg_utils.c:pg_info → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:244: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:277: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:384: minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:425: minix3/minix/kernel/arch/i386/klib.S:__switch_address_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:429: minix3/minix/kernel/arch/i386/memory.c:vm_memset → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:467: minix3/minix/kernel/arch/i386/memory.c:mem_clear_mapcache → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:492: minix3/minix/servers/vm/pagetable.c:pt_clearmapcache → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:521: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:522: minix3/minix/kernel/arch/i386/memory.c:memory_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:523: minix3/minix/kernel/arch/i386/memory.c:createpde → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:524: minix3/minix/kernel/arch/i386/memory.c:mem_clear_mapcache → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:631: minix3/minix/servers/vm/pagetable.c:freepde → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:761: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:762: vm.h:I386_BIG_PAGE_SIZE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:5: minix3/minix/kernel/clock.c:boot_cpu_init_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:5: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:5: minix3/minix/kernel/arch/i386/arch_system.c:fpu_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:15: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:73: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:77: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:77: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:81: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:141: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:181: minix3/minix/kernel/proc.h:RTS_UNSET → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:181: minix3/minix/kernel/proc.h:proc_is_runnable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:225: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:340: minix3/minix/kernel/system.c:system_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:408: minix3/minix/kernel/arch/i386/pg_utils.c:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:409: minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:410: minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:411: minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:412: minix3/minix/kernel/arch/i386/pg_utils.c:pg_map → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:426: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:447: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:476: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:503: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:520: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:558: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:602: minix3/minix/kernel/arch/i386/arch_system.c:fpu_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:634: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:634: minix3/minix/kernel/arch/i386/arch_system.c:save_local_fpu → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:662: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1164: minix3/minix/kernel/system.c:system_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1168: minix3/minix/kernel/system.c:kernel_call_dispatch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1170: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1171: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1184: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1478: minix3/minix/kernel/main.c:announce → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1478: minix3/minix/kernel/main.c:cstart → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1597: minix3/minix/kernel/system.c:kernel_call_dispatch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1782: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1787: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1788: minix3/minix/kernel/clock.c:boot_cpu_init_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1842: minix3/minix/kernel/arch/i386/arch_system.c:cpu_identify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2229: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2229: minix3/minix/kernel/main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2229: minix3/minix/kernel/main.c:announce → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2229: minix3/minix/kernel/system.c:system_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2229: minix3/minix/kernel/arch/i386/arch_system.c:fpu_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2229: minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2229: minix3/minix/kernel/clock.c:boot_cpu_init_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:5: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:5: minix3/minix/lib/libsys/sys_vmctl.c:sys_vmctl_set_addrspace → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:5: minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:27: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:63: minix3/minix/kernel/system/do_getinfo.c:do_getinfo → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:63: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:98: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:98: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:108: minix3/minix/kernel/arch/i386/protect.c:arch_post_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:111: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:152: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:160: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:190: minix3/minix/servers/vm/pagetable.c:pt_allocate_kernel_mapped_pagetables → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:192: minix3/minix/servers/vm/pagetable.c:pt_mapkernel → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:264: minix3/minix/servers/vm/pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:268: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:288: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:306: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:366: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:404: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:438: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:488: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:525: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:571: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:595: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:609: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:613: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:630: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:676: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:682: minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:692: main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:693: pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:695: main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:696: main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:697: main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:966: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1062: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1112: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1113: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1114: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1115: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1118: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1120: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1122: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1123: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1128: minix3/minix/kernel/arch/i386/memory.c:arch_phys_map → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1129: pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1130: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1132: main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2095: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2095: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2095: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2095: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2095: minix3/minix/servers/vm/pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:3: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:3: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:3: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:10: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:20: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:43: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:79: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:81: minix3/minix/kernel/proc.c:copr_not_available_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:101: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:108: minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_reset → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:117: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:157: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:212: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:289: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:370: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:378: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:379: minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_setcontext → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:447: minix3/minix/kernel/proc.c:idle → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:468: minix3/minix/kernel/proc.c:switch_address_space_idle → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:509: minix3/minix/kernel/proc.c:pick_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:513: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:554: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:617: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:622: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:622: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:659: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:725: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:739: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:739: minix3/minix/kernel/proc.c:proc_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:765: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:821: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:874: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:956: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:994: minix3/minix/kernel/proc.c:copr_not_available_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1107: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1147: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1148: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1150: minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_setcontext → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1153: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1361: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop_idle → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1404: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/proc.c:idle → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/proc.c:switch_address_space_idle → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/proc.c:pick_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/proc.c:delivermsg → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/proc.c:copr_not_available_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:1655: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:3: minix3/minix/kernel/system.c:sched_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:3: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:3: minix3/minix/kernel/system/do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:20: minix3/minix/kernel/proc.h:proc_is_runnable → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:31: minix3/minix/kernel/proc.h:RTS_SET → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:31: minix3/minix/kernel/proc.h:RTS_UNSET → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:117: minix3/minix/kernel/proc.c:enqueue → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:124: minix3/minix/kernel/system.c:sched_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:131: minix3/minix/kernel/proc.c:proc_no_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:205: minix3/minix/kernel/proc.c:pick_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:530: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:530: minix3/minix/kernel/system/do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:617: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:645: minix3/minix/kernel/system/do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:701: minix3/minix/kernel/cpulocals.h:run_q_head → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:811: minix3/minix/kernel/proc.h:proc_kernel_scheduler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:890: minix3/minix/include/minix/priv.h:USR_F → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:912: minix3/minix/include/minix/priv.h:DSRV_SCH → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:914: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:922: minix3/minix/kernel/proc.h:RTS_SET → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:923: minix3/minix/kernel/proc.h:RTS_SETFLAGS → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:924: minix3/minix/kernel/proc.c:enqueue → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:925: minix3/minix/kernel/proc.c:enqueue_head → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:926: minix3/minix/kernel/proc.c:dequeue → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:928: minix3/minix/kernel/proc.c:proc_no_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:931: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:931: do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1573: minix3/minix/kernel/proc.c:enqueue → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1573: minix3/minix/kernel/system.c:sched_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1573: minix3/minix/kernel/proc.h:RTS_SET → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1573: minix3/minix/kernel/debug.c:runqueues_ok_cpu → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:3: minix3/minix/kernel/arch/i386/arch_system.c:arch_set_secondary_ipc_return → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:35: minix3/minix/kernel/proc.c:do_ipc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:71: minix3/minix/include/minix/endpoint.h:ANY → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:133: minix3/minix/kernel/proc.c:do_ipc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:242: minix3/minix/kernel/proc.c:do_ipc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:246: minix3/minix/kernel/proc.h:ipc_sync → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:266: minix3/minix/include/minix/sys_config.h:_NR_PROCS → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:340: minix3/minix/kernel/proc.h:P_BLOCKEDON → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:433: minix3/minix/include/minix/ipcconst.h:SEND → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:574: minix3/minix/kernel/ipc.h:WILLRECEIVE → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:835: minix3/minix/kernel/proc.c:mini_notify → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:895: minix3/minix/kernel/proc.c:A_RETR → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:895: minix3/minix/kernel/proc.c:A_INSRT → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1031: minix3/minix/kernel/proc.c:try_deliver_senda → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1100: minix3/minix/kernel/proc.c:try_async → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1243: minix3/minix/kernel/proc.c:delivermsg → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1275: minix3/minix/kernel/proc.c:BuildNotifyMessage → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1285: minix3/minix/include/minix/com.h:NOTIFY_MESSAGE → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1308: minix3/minix/kernel/main.c:IPCNAME → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:2441: minix3/minix/kernel/proc.c:do_ipc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:2441: minix3/minix/kernel/proc.h:P_BLOCKEDON → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:2441: minix3/minix/kernel/ipc.h:WILLRECEIVE → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:2441: minix3/minix/include/minix/ipcconst.h:SEND → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:2441: minix3/minix/include/minix/com.h:NOTIFY_MESSAGE → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:2441: minix3/minix/kernel/main.c:IPCNAME → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:152: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:173: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:181: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:211: minix3/minix/servers/vm/pagetable.c:pt_allocate_kernel_mapped_pagetables → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:213: minix3/minix/servers/vm/pagetable.c:pt_mapkernel → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:285: minix3/minix/servers/vm/pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:289: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:309: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:327: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:387: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:425: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:459: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:509: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:546: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:592: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:616: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:630: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:634: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:651: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:697: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:703: minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:713: main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:714: pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:716: main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:717: main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:718: main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:987: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1085: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1135: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1136: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1137: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1138: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1141: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1143: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1145: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1146: do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1151: minix3/minix/kernel/arch/i386/memory.c:arch_phys_map → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1152: pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1153: arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1155: main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2150: minix3/minix/kernel/system/do_vmctl.c:do_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2150: minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2150: minix3/minix/servers/vm/main.c:exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2150: minix3/minix/servers/vm/main.c:init_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2150: minix3/minix/servers/vm/pagetable.c:pt_bind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:5: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:5: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:5: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:16: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:26: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:49: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:107: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:115: minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_reset → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:124: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:184: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:239: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:316: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:397: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:405: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:406: minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_setcontext → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:474: minix3/minix/kernel/proc.c:idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:495: minix3/minix/kernel/proc.c:switch_address_space_idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:536: minix3/minix/kernel/proc.c:pick_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:540: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:581: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:644: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:649: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:649: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:686: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:752: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:766: minix3/minix/kernel/main.c:bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:766: minix3/minix/kernel/proc.c:proc_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:792: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:848: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:983: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1021: minix3/minix/kernel/proc.c:copr_not_available_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1136: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1176: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1177: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1179: minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_setcontext → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1182: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1392: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop_idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/proc.c:switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/proc.c:idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/proc.c:switch_address_space_idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/proc.c:pick_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/proc.c:delivermsg → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/proc.c:copr_not_available_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/system.c:kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1703: minix3/minix/kernel/arch/i386/arch_clock.c:context_stop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:5: minix3/minix/kernel/system.c:sched_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:5: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:5: minix3/minix/kernel/system/do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:26: minix3/minix/kernel/proc.h:proc_is_runnable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:37: minix3/minix/kernel/proc.h:RTS_SET → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:37: minix3/minix/kernel/proc.h:RTS_UNSET → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:123: minix3/minix/kernel/proc.c:enqueue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:130: minix3/minix/kernel/system.c:sched_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:137: minix3/minix/kernel/proc.c:proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:230: minix3/minix/kernel/proc.c:pick_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:556: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:556: minix3/minix/kernel/system/do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:644: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:672: minix3/minix/kernel/system/do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:729: minix3/minix/kernel/cpulocals.h:run_q_head → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:839: minix3/minix/kernel/proc.h:proc_kernel_scheduler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:918: minix3/minix/include/minix/priv.h:USR_F → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:942: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:950: minix3/minix/kernel/proc.h:RTS_SET → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:951: minix3/minix/kernel/proc.h:RTS_SETFLAGS → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:952: minix3/minix/kernel/proc.c:enqueue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:953: minix3/minix/kernel/proc.c:enqueue_head → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:954: minix3/minix/kernel/proc.c:dequeue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:956: minix3/minix/kernel/proc.c:proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:959: minix3/minix/kernel/system/do_schedule.c:do_schedule → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:959: do_schedctl.c:do_schedctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1608: minix3/minix/kernel/proc.c:enqueue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1608: minix3/minix/kernel/system.c:sched_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1608: minix3/minix/kernel/proc.h:RTS_SET → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1608: minix3/minix/kernel/debug.c:runqueues_ok_cpu → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2545: minix3/minix/kernel/arch/i386/arch_system.c:arch_set_secondary_ipc_return → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2546: minix3/minix/kernel/proc.c:do_ipc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2546: minix3/minix/kernel/proc.h:P_BLOCKEDON → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2546: minix3/minix/kernel/ipc.h:WILLRECEIVE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2546: minix3/minix/include/minix/ipcconst.h:SEND → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2546: minix3/minix/include/minix/com.h:NOTIFY_MESSAGE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2546: minix3/minix/kernel/main.c:IPCNAME → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1264: syscall.rs:test_kernel_call_dispatch_bad_call → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1265: syscall.rs:test_kernel_call_dispatch_call_denied_no_priv → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1266: syscall.rs:test_kernel_call_dispatch_sets_kbill_marker → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1267: syscall.rs:test_kernel_call_wrapper → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1268: syscall.rs:test_kcall_result_variants → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1269: syscall.rs:test_syscall_enum_tracks_minix_types_kernel_call_family → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1270: syscall.rs:test_padconf_unused_kernel_call_replies_ebadrequest → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1271: syscall.rs:test_syscall_leg_wire_negates_nonzero_errno → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1272: syscall.rs:test_dispatch_ipc_entry_ → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1273: vm.rs:kernel_call_resume_returns_ok_on_success → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1274: vm.rs:kernel_call_resume_returns_fault_on_failure → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1275: proc_table.rs:test_process_misc_flags_clears_kcall_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1276: trap_dispatch.rs:reply_code_none_is_a_wiring_bug_marker → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1426: syscall_copy.rs:test_dispatch_memset_valid_process_returns_vm_suspend → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1426: syscall.rs:test_dispatch_getmcontext_user_target_suspends → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1500: minix3/minix/include/minix/com.h:KERNEL_CALL → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1500: minix3/minix/kernel/proc.h:MF_KCALL_RESUME → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1500: minix3/minix/kernel/vm.h:VMSUSPEND → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1500: minix3/minix/include/minix/bitmap.h:GET_BIT → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/13-syscall-dispatch.md:1500: minix3/minix/lib/libsys/kernel_call.c:_kernel_call → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:161: minix3/minix/kernel/arch/i386/exception.c:exception_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:161: minix3/minix/kernel/interrupt.c:put_irq_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:161: minix3/minix/kernel/system.c:cause_sig → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:348: minix3/minix/kernel/arch/i386/exception.c:exception_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:376: minix3/minix/kernel/system.c:kernel_call → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:389: minix3/minix/kernel/arch/i386/klib.S:copy_msg_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:399: minix3/minix/kernel/arch/i386/klib.S:__user_copy_msg_pointer_failure → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:411: minix3/minix/kernel/arch/i386/klib.S:__frstor_failure → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:445: minix3/minix/kernel/system.c:cause_sig → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:550: minix3/minix/kernel/arch/i386/mpx.S:exception_entry → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:560: minix3/minix/kernel/arch/i386/sconst.h:TEST_INT_IN_KERNEL → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:655: minix3/minix/kernel/arch/i386/exception.c:pagefault → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:671: minix3/minix/kernel/vm.h:PHYS_COPY_CATCH → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:708: minix3/minix/kernel/type.h:irq_hook_t → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:756: minix3/minix/kernel/interrupt.c:put_irq_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:798: minix3/minix/kernel/interrupt.c:rm_irq_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:880: minix3/minix/kernel/interrupt.c:irq_handle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:923: minix3/minix/kernel/system/do_irqctl.c:generic_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:948: minix3/minix/kernel/interrupt.c:enable_irq → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_HY4.md:290: arch/i386/acpi.c:acpi_init → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_HY4.md:356: proc_table.rs:caller_slot_mut → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_HY4.md:841: acpi.c:acpi_init → 符号名未出现在本句，需句意复核
@@ -2181,6 +2234,7 @@ rewrite-notes/01-stage-kernel/doc_rerank_qwen.md:1047: arch/i386/exception.c:pro
 rewrite-notes/01-stage-kernel/doc_rerank_qwen.md:1048: utility.c:util_stacktrace → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_qwen.md:1060: utility.c:panic → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_qwen.md:1200: utility.c:_exit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:200: interrupt.rs:fn init_lapic → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/00-kernel-overview.md:115: minix3/minix/kernel/smp.h:SPINLOCK_DECLARE → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/00-kernel-overview.md:120: minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/00-kernel-overview.md:121: minix3/minix/kernel/smp.c:smp_schedule_sync → 符号名未出现在本句，需句意复核
@@ -2218,9 +2272,6 @@ rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:854: minix3/minix/
 rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:855: minix3/minix/kernel/proc.h:proc → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:885: minix3/minix/kernel/proc.h:proc → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:885: minix3/minix/kernel/arch/i386/klib.S:ENTRY → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/draft/06-todo.md:548: com.h:DS → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/draft/06-todo.md:561: X.rs:NN → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/draft/06-todo.md:583: X.rs:NN → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:214: minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:286: minix3/minix/servers/vm/pagetable.c:pt_allocate_kernel_mapped_pagetables → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:287: minix3/minix/servers/vm/pagetable.c:pt_init → 符号名未出现在本句，需句意复核
@@ -2700,6 +2751,26 @@ rewrite-notes/01-stage-kernel/draft/31-fpu-context-switching.md:273: minix3/mini
 rewrite-notes/01-stage-kernel/draft/31-fpu-context-switching.md:564: minix3/minix/kernel/system/do_sigsend.c:do_sigsend → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:213: minix3/minix/kernel/system/do_diagctl.c:do_diagctl → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/draft/99-global-concepts.md:54: minix3/minix/kernel/system/do_fork.c:do_fork → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:1675: loader.rs:compute_kernel_layout → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3273: loader.rs:test_load_boot_modules_loads_all_in_contract_order → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3274: loader.rs:test_load_boot_modules_panics_on_missing → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3275: loader.rs:test_first_overlapping_pair_ → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3276: loader.rs:test_first_source_destination_overlap_ → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3277: loader.rs:test_bss_region_is_zeroed_after_load → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3278: loader.rs:test_compute_kernel_layout_from_mock_elf → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3279: opensbi_helpers.rs:test_bump_alloc_rejects_zero_pages → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3280: opensbi_helpers.rs:test_bump_alloc_advances_pointer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3281: opensbi_helpers.rs:test_boot_file_table_validates_magic → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3282: opensbi_helpers.rs:test_build_kernel_info_bootstrap_zero_means_no_reclaim → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3283: opensbi_helpers.rs:test_build_kernel_info_riscv64_fields_match_input → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3284: uefi_helpers.rs:test_build_kernel_info_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3285: boot_params.rs:generates_arch_and_board_first → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3286: kernel_info.rs:test_validate_rejects_ → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3396: uefi_helpers.rs:prepare_and_enter_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3397: uefi_helpers.rs:prepare_and_enter_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3398: uefi_helpers.rs:prepare_and_enter_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3407: kernel-image/src/main.rs:rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3484: loader.rs:load_boot_modules_into → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/14-verification-checklist.md:15: minix3/minix/servers/pm/forkexit.c:do_fork → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/14-verification-checklist.md:16: minix3/minix/servers/pm/forkexit.c:do_fork → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/14-verification-checklist.md:17: minix3/minix/servers/pm/forkexit.c:do_fork → 符号名未出现在本句，需句意复核
@@ -2787,26 +2858,27 @@ rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:24: minix3/minix/kernel/pr
 rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:25: /boot.rs:fn apply_to_trap_frame → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:26: /crt0.S:__start → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:55: crt0.rs:fn string_at → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/DOC-ITER-LEDGER.md:94: loader.rs:first_overlapping_pair → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:57: minix3/minix/servers/pm/signal.c:sig_proc_exit → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:59: minix3/minix/servers/vm/pagefaults.c:handle_pagefault → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:121: minix3/sys/sys/md5.h:MD5_CTX → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:350: tools/atf-c-compat/kmsg.h:struct kmsg → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:690: minix3/tests/lib/libc/string/t_memcpy.c:memcpy_basic → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:690: t_memcpy.c:runTest → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:692: boot.rs:USER_STACK_TOP → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:693: riscv64_walk.rs:huge_leaf_misaligned → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:693: riscv64_walk.rs:aligned_huge_leaf_with_high_ppn_bits_is_accepted → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:694: minix3/minix/servers/vm/region.c:map_region_extend_upto_v → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:694: break.c:real_brk → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:695: minix3/minix/servers/vm/mem_anon_contig.c:anon_contig_resize → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:695: mem_cache.c:cache_resize → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:699: minix3/minix/servers/pm/signal.c:sig_proc_exit → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:702: minix3/minix/servers/vm/pagefaults.c:handle_pagefault → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:703: tools/atf-c-compat/kmsg.h:struct kmsg → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:705: tlb.rs:flush_all → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:707: vm.rs:nk4a_walk_reconcile → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:743: minix3/minix/servers/vm/mem_anon_contig.c:anon_contig_resize → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:743: mem_cache.c:cache_resize → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:131: minix3/sys/sys/md5.h:MD5_CTX → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:360: tools/atf-c-compat/kmsg.h:struct kmsg → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:729: minix3/tests/lib/libc/string/t_memcpy.c:memcpy_basic → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:729: t_memcpy.c:runTest → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:731: boot.rs:USER_STACK_TOP → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:732: riscv64_walk.rs:huge_leaf_misaligned → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:732: riscv64_walk.rs:aligned_huge_leaf_with_high_ppn_bits_is_accepted → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:733: minix3/minix/servers/vm/region.c:map_region_extend_upto_v → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:733: break.c:real_brk → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:734: minix3/minix/servers/vm/mem_anon_contig.c:anon_contig_resize → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:734: mem_cache.c:cache_resize → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:738: minix3/minix/servers/pm/signal.c:sig_proc_exit → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:741: minix3/minix/servers/vm/pagefaults.c:handle_pagefault → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:742: tools/atf-c-compat/kmsg.h:struct kmsg → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:744: tlb.rs:flush_all → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:746: vm.rs:nk4a_walk_reconcile → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:782: minix3/minix/servers/vm/mem_anon_contig.c:anon_contig_resize → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:782: mem_cache.c:cache_resize → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md:543: paging.rs:channel_to_ptr → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md:570: plugins/loader.c:plugin_add → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md:764: plugins/api.c:qemu_plugin_outs → 符号名未出现在本句，需句意复核
@@ -2820,18 +2892,115 @@ rewrite-notes/coordination/NK4C-WORKLOG.md:13343: paging.rs:switch → 符号名
 rewrite-notes/coordination/NK4C-WORKLOG.md:13404: paging.rs:switch → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-WORKLOG.md:13998: lib.rs:signal_decision → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-WORKLOG.md:14068: startup.rs:decide_on_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: minix3/usr.bin/wc/wc.c:cnt → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: lib.rs:fn empty_optstring_operands_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: rev.rs:fn parse_rev_args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: src/col.rs:fn parse_col_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: src/window.rs:fn lines_of → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: tests/head_face.rs:an_operand_ends_option_scanning_like_c → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: src/digest.rs:fn from_hashname_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: src/cmp.rs:parse_cmp_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:28: minix3/usr.bin/cmp/misc.c:diffmsg → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:31: cut.rs:fn select_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:31: uniq.rs:fn comparison_key → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:31: bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:31: comm.rs:fn line_cmp → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md:47: src/lib.rs:empty_optstring_operands → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md:650: boot.rs:or_ipc_status_reg → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md:650: arch_trap.rs:ipc_trap → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md:706: paging.rs:switch → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md:770: paging.rs:switch → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:131: file.c:NNN → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:159: minix-rt/src/init.rs:query_kerninfo → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/TODO-LEDGER-OPEN.md:19: smp.rs:fn clear_idle_flag → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:22: proc.c:copr_not_available_handler → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:59: file.c:NNN → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:82: servers/rs/src/lib.rs:reply_unless_suppressed → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:82: main_loop.rs:queue_reply → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:142: minix-rt/src/init.rs:query_kerninfo → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:21: proc.c:copr_not_available_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:108: servers/rs/src/lib.rs:reply_unless_suppressed → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:108: main_loop.rs:queue_reply → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/TODO-LEDGER-OPEN.md:165: xtask/src/image.rs:E5_DS_READY → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/edge_todo.md:303: servers/rs/src/lib.rs:reply_unless_suppressed → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/new_edge4.md:91: file.c:NNN → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:92: file.c:NNN → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:216: join.c:obsolete → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:250: lib.rs:GetoptReport → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:256: src/column.rs:parse_column_args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:256: src/lib.rs:GetoptReport::line → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:257: src/jot.rs:seed_from_step → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:258: tests/column_face.rs:each_source_with_a_long_tail_line_warns_once → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:358: src/bin/tr.rs:fail → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:360: src/bin/paste.rs:fail → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:429: split.rs:fn parse_split_args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:429: src/bin/split.rs:fn run → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:436: cut.rs:select_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:436: bin/cut.rs:fn run → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:450: cut.rs:fn select_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:450: cut.rs:fn select_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:450: uniq.rs:fn comparison_key → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:478: bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:493: bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:501: src/bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:502: tests/column_face.rs:an_entry_that_is_not_utf8_keeps_its_bytes_through_every_layout → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:512: minix3/usr.bin/pr/pr.c:inln → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:532: minix3/usr.bin/column/column.c:input → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:563: minix3/usr.bin/head/head.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:564: minix3/usr.bin/wc/wc.c:cnt → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:564: minix3/usr.bin/column/column.c:main → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:572: tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:588: src/lib.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:589: src/rev.rs:fn parse_rev_args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:590: bin_support.rs:fn drive_reads → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:591: tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:602: tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:643: src/bin/tee.rs:parse_tee_args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:907: src/lib.rs:fn atoi → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:914: tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:968: src/units.rs:fn read_units → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1004: tests/head_face.rs:fn an_unterminated_final_line_reaches_stdout_without_a_newline → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1005: tests/tail_face.rs:fn tail_leaves_an_unterminated_final_line_unterminated → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1007: tests/uniq_face.rs:fn uniq_does_not_supply_a_newline_the_input_lacked → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1008: tests/nl_face.rs:fn an_unterminated_final_line_is_numbered_without_a_newline → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1274: src/digest.rs:fn from_hashname_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1355: src/bin/cmp.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1896: src/bin/join.rs:read_stdin → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1898: bin_support.rs:read_stdin → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:2477: bin/sort.rs:fn split_records → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:2588: src/bin/split.rs:fn err3 → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:2958: src/bin/unexpand.rs:fn emit_tabified → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:2959: src/unexpand.rs:fn unexpand_line → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:3073: src/unifdef.rs:fn find_sym → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:4551: src/nl.rs:fn write_number → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:4707: pattern.rs:fn compile → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:4879: bin_support.rs:fn args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/FREEZE.md:82: cell.rs:struct Frozen → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/reader-fix-log.md:30: global.rs:fn qemu_fallback_or_panic → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/certify.md:76: minix3/minix/kernel/arch/i386/acpi.c:acpi_get_lapic_next → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/reader-abc.md:30: minix3/minix/kernel/arch/i386/arch_clock.c:TIMER_FREQ → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/reader-abc.md:30: minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/reader-abc.md:249: minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round3/reader-a.md:164: minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/SYMBOLS.md:44: minix3/minix/include/minix/param.h:struct kinfo → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/certify/round36-fact-pass2.md:29: vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round34/fact-a.md:120: pci.c:complete_bars → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round32/reader-c.md:106: earm/pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round31/reader-c.md:14: head.S:multiboot_init → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round35/fact-a.md:59: proc_table.rs:const NR_PROCS → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round35/fact-a.md:59: pt_alloc.rs:fn register → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round35/fact-a.md:59: vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/fact-a.md:84: kernel_info.rs:test_validate_rejects_ → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/fact-a.md:161: vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/fact-a.md:161: lib.rs:fn resume_after_v1_decode → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/panel/round1/reader-c.md:254: minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/06-proc-init-boot-proc/panel/round1/reader-a.md:29: vm/main.c:init_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round2/fact-a.md:22: pre_init.c:get_parameters → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round2/fact-a.md:22: pg_utils.c:pg_mapkernel → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round2/fact-a.md:22: stacktrace.c:util_stacktrace → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round2/fact-a.md:22: exception.c:proc_stacktrace_execute → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round2/fact-a.md:22: pagetable.c:pt_init → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round2/fact-a.md:22: mpx.S:k_initial_stack → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round2/fact-a.md:22: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round1/fact.md:10: loader.rs:fn load_boot_modules_with_loader → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round1/fact.md:10: bootface.rs:fn place_modules → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r22.md:230: vm_handoff.rs:FreeRangeSet::cut → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r23.md:54: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/meta/01-boot-shim-bootstrap-r23.md:128: main.c:kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/meta/03-kmain-cstart-review.md:114: minix3/minix/servers/vm/pagetable.c:pt_init → 符号名未出现在本句，需句意复核
 rewrite-notes/08-stage-is/01-is-init-main.md:5: minix3/minix/lib/libsys/sef.c:sef_receive_status → 符号名未出现在本句，需句意复核
 rewrite-notes/08-stage-is/01-is-init-main.md:7: minix3/minix/include/minix/sef.h:INTERCEPT_SEF_PING_REQUESTS → 符号名未出现在本句，需句意复核
 rewrite-notes/08-stage-is/01-is-init-main.md:339: minix3/sys/sys/signal.h:SIGTERM → 符号名未出现在本句，需句意复核
@@ -2911,10 +3080,10 @@ rewrite-notes/08-stage-is/doc_rerank_qwen.md:349: dmp.c:key_name → 符号名�
 rewrite-notes/08-stage-is/doc_rerank_qwen.md:349: dmp.c:mapping_dmp → 符号名未出现在本句，需句意复核
 rewrite-notes/08-stage-is/doc_rerank_qwen.md:351: fproc.h:FP_PENDING → 符号名未出现在本句，需句意复核
 rewrite-notes/16-stage-drivers/09-random-driver.md:197: minix3/minix/drivers/system/random/random.c:reseed → 符号名未出现在本句，需句意复核
-rewrite-notes/16-stage-drivers/13-pckbd-driver.md:185: minix3/minix/drivers/hid/pckbd/pckbd.c:kbd_process → 符号名未出现在本句，需句意复核
-rewrite-notes/16-stage-drivers/13-pckbd-driver.md:196: minix3/minix/drivers/hid/pckbd/pckbd.c:kbdaux_process → 符号名未出现在本句，需句意复核
-rewrite-notes/16-stage-drivers/13-pckbd-driver.md:203: minix3/minix/drivers/hid/pckbd/pckbd.h:LED_SCROLL_LOCK → 符号名未出现在本句，需句意复核
-rewrite-notes/16-stage-drivers/13-pckbd-driver.md:205: minix3/minix/drivers/hid/pckbd/pckbd.c:scan_keyboard → 符号名未出现在本句，需句意复核
+rewrite-notes/16-stage-drivers/13-pckbd-driver.md:186: minix3/minix/drivers/hid/pckbd/pckbd.c:kbd_process → 符号名未出现在本句，需句意复核
+rewrite-notes/16-stage-drivers/13-pckbd-driver.md:197: minix3/minix/drivers/hid/pckbd/pckbd.c:kbdaux_process → 符号名未出现在本句，需句意复核
+rewrite-notes/16-stage-drivers/13-pckbd-driver.md:204: minix3/minix/drivers/hid/pckbd/pckbd.h:LED_SCROLL_LOCK → 符号名未出现在本句，需句意复核
+rewrite-notes/16-stage-drivers/13-pckbd-driver.md:206: minix3/minix/drivers/hid/pckbd/pckbd.c:scan_keyboard → 符号名未出现在本句，需句意复核
 rewrite-notes/16-stage-drivers/14-virtio-framework.md:50: minix3/minix/lib/libvirtio/virtio.c:wants_kick → 符号名未出现在本句，需句意复核
 rewrite-notes/16-stage-drivers/15-virtio-blk-driver.md:28: minix3/minix/drivers/storage/virtio_blk/virtio_blk.c:virtio_blk_status2error → 符号名未出现在本句，需句意复核
 rewrite-notes/16-stage-drivers/15-virtio-blk-driver.md:67: minix3/minix/drivers/storage/virtio_blk/virtio_blk.c:virtio_blk_status2error → 符号名未出现在本句，需句意复核
@@ -2924,8 +3093,8 @@ rewrite-notes/16-stage-drivers/16-ahci-ata-driver.md:174: minix3/minix/drivers/s
 rewrite-notes/16-stage-drivers/19-usb-storage-hub.md:176: minix3/minix/drivers/usb/usb_hub/usb_hub.c:hub_task → 符号名未出现在本句，需句意复核
 rewrite-notes/16-stage-drivers/20-fb-driver.md:180: minix3/minix/drivers/video/fb/fb.c:fb_open → 符号名未出现在本句，需句意复核
 rewrite-notes/16-stage-drivers/24-misc-drivers.md:27: minix3/minix/drivers/printer/printer/printer.c:output_done → 符号名未出现在本句，需句意复核
-rewrite-notes/16-stage-drivers/24-misc-drivers.md:124: minix3/minix/drivers/printer/printer/printer.c:output_done → 符号名未出现在本句，需句意复核
-rewrite-notes/16-stage-drivers/24-misc-drivers.md:168: minix3/minix/drivers/printer/printer/printer.c:output_done → 符号名未出现在本句，需句意复核
+rewrite-notes/16-stage-drivers/24-misc-drivers.md:146: minix3/minix/drivers/printer/printer/printer.c:output_done → 符号名未出现在本句，需句意复核
+rewrite-notes/16-stage-drivers/24-misc-drivers.md:190: minix3/minix/drivers/printer/printer/printer.c:output_done → 符号名未出现在本句，需句意复核
 rewrite-notes/06-stage-sched/01-sched-init-main.md:95: minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL → 符号名未出现在本句，需句意复核
 rewrite-notes/06-stage-sched/01-sched-init-main.md:151: minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL → 符号名未出现在本句，需句意复核
 rewrite-notes/06-stage-sched/01-sched-init-main.md:174: minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL → 符号名未出现在本句，需句意复核

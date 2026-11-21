@@ -1,8 +1,52 @@
 # anchor-suspect-baseline（按侧对称，2026-10-08 起）
 # 判据：锚点符号名未出现在该行「锚点之外」的行文里 → 句子讨论的可能不是它。
 # 复核完成后本文件应清空；生成：tools/anchor-suspect-scan.py <tree> --side <c|rust>
+rewrite-notes/18-stage-commands/07-text-filter.md:185: os/commands/usr-bin/textfilter/src/cut.rs:select_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:185: os/commands/usr-bin/textfilter/src/bin/cut.rs:fn run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:196: os/commands/usr-bin/textfilter/src/bin/cmp.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:196: os/commands/usr-bin/textfilter/src/cmp.rs:parse_cmp_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/07-text-filter.md:217: os/commands/usr-bin/textfilter/src/bin/split.rs:fn run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/08-grep-sed.md:169: os/commands/usr-bin/regex/src/bin_support.rs:fn read_stdin → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:1157: os/commands/usr-bin/regex/src/pattern.rs:fn compile → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:1202: os/commands/usr-bin/regex/src/sed.rs:fn parse_script → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:2209: os/commands/usr-bin/textfilter/src/split.rs:fn parse_split_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:2345: os/commands/usr-bin/textfilter/src/sort.rs:fn parse_options → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3441: os/commands/usr-bin/textfilter/tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3819: os/commands/games/text-games/tests/argv_seam_face.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3833: os/commands/usr-bin/textfilter/src/window.rs:fn lines_of → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3875: os/commands/usr-bin/textfilter/src/units.rs:fn read_units → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3920: os/commands/usr-bin/textfilter/src/col.rs:fn parse_col_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3921: os/commands/usr-bin/textfilter/src/lib.rs:fn atoi → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:3924: os/commands/usr-bin/textfilter/src/bin/col.rs:fn bad_line_count → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4021: os/libs/minix-sys/src/lib.rs:fn open → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4022: os/libs/minix-types/src/types/errno.rs:fn err_line → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4042: os/commands/usr-bin/textfilter/src/fold.rs:fn fold_line → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4058: os/commands/usr-bin/textfilter/src/units.rs:fn parse_units_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4060: os/commands/usr-bin/textfilter/src/units.rs:fn reduce_unit → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4367: os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4483: os/commands/usr-bin/textfilter/src/bin_support.rs:fn args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4507: os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4517: os/commands/usr-bin/textfilter/src/bin_support.rs:fn read_file → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4628: os/commands/usr-bin/textfilter/src/column.rs:scan_entries → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4806: os/commands/usr-bin/textfilter/src/bin/column.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4845: os/commands/usr-bin/textfilter/src/pr.rs:fn expand_tabs → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4946: os/commands/usr-bin/textfilter/src/bin/comm.rs:fn split_lines → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4948: os/commands/usr-bin/textfilter/src/paste.rs:fn join_serial → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:4952: os/commands/usr-bin/textfilter/src/comm.rs:fn line_cmp → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5249: os/commands/usr-bin/textfilter/src/cut.rs:select_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5249: os/commands/usr-bin/textfilter/src/bin/cut.rs:fn run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5269: os/commands/usr-bin/textfilter/src/split.rs:fn parse_split_args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:5271: os/commands/usr-bin/textfilter/src/bin/split.rs:fn run → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:6078: os/commands/usr-bin/textfilter/src/split.rs:LineCutter → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:6091: os/commands/usr-bin/textfilter/src/split.rs:fn LineCutter::take → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7454: os/commands/usr-bin/textfilter/src/bin_support.rs:args → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:7637: os/commands/usr-bin/textfilter/src/tr.rs:translate → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:12009: os/commands/usr-bin/textfilter/src/uniq.rs:fn comparison_key → 符号名未出现在本句，需句意复核
+rewrite-notes/18-stage-commands/todo.md:12128: os/commands/usr-bin/textfilter/src/bin/tail.rs:fn last_bytes_of → 符号名未出现在本句，需句意复核
 rewrite-notes/04-stage-pm/03-mproc-table.md:704: os/servers/vm/src/vmproc/table.rs:fn used_count → 符号名未出现在本句，需句意复核
-rewrite-notes/04-stage-pm/04-ipc-dispatch.md:386: os/servers/pm/src/ipc/calls.rs:fn call_nr → 符号名未出现在本句，需句意复核
+rewrite-notes/04-stage-pm/04-ipc-dispatch.md:5: os/libs/minix-types/src/ipc/pm.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/04-stage-pm/04-ipc-dispatch.md:384: os/libs/minix-types/src/ipc/pm.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/04-stage-pm/04-ipc-dispatch.md:445: os/libs/minix-types/src/ipc/pm.rs:pub → 符号名未出现在本句，需句意复核
 rewrite-notes/04-stage-pm/09-pm-exit.md:101: os/servers/pm/src/ipc/dispatcher.rs:ReplyIntent → 符号名未出现在本句，需句意复核
 rewrite-notes/04-stage-pm/09-pm-exit.md:224: os/servers/pm/src/mproc/table.rs:fn release_slot → 符号名未出现在本句，需句意复核
 rewrite-notes/04-stage-pm/09-pm-exit.md:255: os/servers/pm/src/ipc/dispatcher.rs:ReplyIntent → 符号名未出现在本句，需句意复核
@@ -25,6 +69,8 @@ rewrite-notes/04-stage-pm/16-scheduling.md:239: os/servers/pm/src/init.rs:fn ini
 rewrite-notes/04-stage-pm/16-scheduling.md:274: os/servers/pm/src/sched.rs:fn test_constants_match_c → 符号名未出现在本句，需句意复核
 rewrite-notes/04-stage-pm/16-scheduling.md:317: os/servers/pm/src/init.rs:fn init_scheduling → 符号名未出现在本句，需句意复核
 rewrite-notes/04-stage-pm/16-scheduling.md:402: os/servers/pm/src/init.rs:fn test_nice_from_queue_default_queues → 符号名未出现在本句，需句意复核
+rewrite-notes/04-stage-pm/99-global-concepts.md:63: os/libs/minix-types/src/ipc/pm.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/04-stage-pm/todo.md:48: os/libs/minix-types/src/ipc/pm.rs:pub → 符号名未出现在本句，需句意复核
 rewrite-notes/02-stage-vm/01-vm-init-main.md:209: os/servers/vm/src/vm_server.rs:fn relocate → 符号名未出现在本句，需句意复核
 rewrite-notes/02-stage-vm/01-vm-init-main.md:584: os/servers/vm/src/vm_server.rs:fn relocate → 符号名未出现在本句，需句意复核
 rewrite-notes/02-stage-vm/01-vm-init-main.md:763: os/servers/vm/src/vm_server.rs:fn init_boot_procs → 符号名未出现在本句，需句意复核
@@ -470,296 +516,396 @@ rewrite-notes/03-stage-rs/20-rs-sef-framework.md:525: os/libs/minix-sef/src/lib.
 rewrite-notes/03-stage-rs/20-rs-sef-framework.md:551: os/servers/devman/src/hooks.rs:SefHooks → 符号名未出现在本句，需句意复核
 rewrite-notes/03-stage-rs/20-rs-sef-framework.md:554: os/libs/minix-sef/src/lib.rs:SefInitType → 符号名未出现在本句，需句意复核
 rewrite-notes/03-stage-rs/20-rs-sef-framework.md:625: os/servers/mib/src/server.rs:run_once → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:524: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:526: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:742: os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:742: os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:785: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:796: os/boot-shim/src/opensbi_helpers.rs:fn test_build_kernel_info_riscv64_fields_match_input → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1735: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:782: os/kernel/src/lib.rs:fn lock_boot_globals → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:836: os/kernel/src/lib.rs:fn lock_boot_globals → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:689: os/arch/src/arch/protection.rs:trait ProtectionArch → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:722: os/arch/src/arch/trap_entry.rs:trait TrapEntryArch → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:777: os/kernel/src/lib.rs:fn init_smp_state → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:799: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:861: os/arch/src/x86_64/protection.rs:fn tss_selector → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:861: os/arch/src/riscv64/protection.rs:fn init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:862: os/arch/src/x86_64/protection.rs:fn fill_flat_segments → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:864: os/arch/src/x86_64/trap_entry.rs:fn configure_ipc_entry → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:865: os/arch/src/x86_64/trap_entry.rs:fn init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:892: os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/03-kmain-cstart.md:892: os/boot-shim/src/loader.rs:fn test_load_kernel_with_loader_computes_layout → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:4: os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:4: os/boot-shim/src/uefi_helpers.rs:fn alloc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:4: os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:4: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:403: os/plat/src/interrupt.rs:enum IrqAction → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:431: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:434: os/kernel/tests/boot_integration.rs:fn boot_simulation_full_flow → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:434: os/kernel/src/lib.rs:fn set_current_ptproc_nr → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:434: os/libs/minix-boot/src/kernel_info.rs:fn make_valid_info → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:459: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:460: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:461: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:463: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:548: os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:678: os/libs/minix-platform/src/acpi.rs:fn parse → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:839: os/libs/minix-platform/src/device_tree.rs:struct DeviceTreeDesc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:891: os/libs/minix-platform/src/acpi.rs:struct MadtEntryHeader → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:1038: os/boot-shim/src/uefi_helpers.rs:fn alloc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:1042: os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:1136: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:1207: os/libs/minix-platform/src/kind.rs:test_kind_constants_are_distinct → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/04-platform-discovery.md:1208: os/libs/minix-platform/src/global.rs:test_platform_desc_panics_before_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:449: os/plat/src/mock.rs:impl InterruptRouter → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md:2121: os/kernel/src/clock.rs:fn classify_cpu_state → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:338: os/kernel/src/proc.rs:const P_STOP → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:475: os/boot-shim/src/main.rs:static ALLOCATOR → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:475: os/boot-shim/src/lib.rs:static TEST_ALLOCATOR → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:475: os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:static BOOT_SERVICES_EXITED → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:483: os/kernel/src/proc_table.rs:struct ProcessTable → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:484: os/kernel/src/kpriv.rs:struct PrivUpdateRequest → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:673: os/kernel/src/kpriv.rs:fn new → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:797: os/servers/vm/src/vm_server.rs:init_boot_procs → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:853: os/kernel/src/proc.rs:struct KProcess → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:887: os/kernel/src/proc_table.rs:fn new → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:928: os/kernel/src/kpriv.rs:fn fill_sendto_mask → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:994: os/kernel/src/proc.rs:fn is_runnable → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:995: os/kernel/src/proc_table.rs:fn new → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1189: os/kernel/src/proc.rs:fn suspend_for_vm_with_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1199: os/kernel/src/kpriv.rs:fn unset_sendto_bit → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1209: os/kernel/src/capability.rs:fn to_wire → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1281: os/kernel/src/proc_table.rs:fn vm_enqueue_and_notify_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-todo.md:576: os/kernel/src/proc.rs:const PROC_STOP → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/06-todo.md:665: os/kernel/src/kpriv.rs:fn fill_sendto_mask → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:174: os/kernel/src/lib.rs:fn init_proc_and_boot → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:176: os/kernel/src/lib.rs:fn current_cpu_id → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:349: os/arch/src/x86_64/paging.rs:fn walk_alloc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:349: os/arch/src/x86_64/paging.rs:fn channel_to_ptr → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:349: os/arch/src/x86_64/fpu.rs:fn init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:394: os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_page_table → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:426: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:426: os/kernel/src/lib.rs:fn current_cpu_id → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:509: os/kernel/src/lib.rs:fn init_proc_and_boot → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:556: os/boot-shim/src/uefi_helpers.rs:fn build_memmap → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:556: os/boot-shim/src/opensbi_helpers.rs:fn build_kernel_info → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:556: os/kernel/src/misc.rs:fn getinfo_priv_tab → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:558: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/07-cross-space-init.md:577: os/arch/src/x86_64/paging.rs:fn map_huge → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:109: os/kernel/src/lib.rs:fn smp_state_boot_unchecked → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:109: os/kernel/src/lib.rs:fn try_smp_state_with → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:224: os/kernel/src/syscall.rs:fn dispatch_setgrant → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:257: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:325: os/kernel/src/syscall.rs:fn dispatch_setgrant → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:376: os/kernel/src/lib.rs:fn smp_state_boot_unchecked → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:398: os/kernel/src/lib.rs:fn init_clock_and_interrupts → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:408: os/arch/src/x86_64/tlb.rs:fn set_active_root → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:409: os/arch/src/arm64/tlb.rs:fn set_active_root → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:410: os/arch/src/riscv64/tlb.rs:fn set_active_root → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:422: os/arch/src/arch/boot.rs:load_vm_elf → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:428: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:450: os/kernel/src/lib.rs:const FALLBACK_BUMP_LEN → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:462: os/arch/src/arch/paging.rs:fn from_active_root → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:469: os/arch/src/x86_64/paging.rs:fn walk_alloc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:469: os/arch/src/riscv64/paging.rs:fn free_child_tables → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:473: os/kernel/src/lib.rs:fn init_clock_and_interrupts → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:560: os/kernel/src/proc_table.rs:fn test_rts_set_unset → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:561: os/kernel/src/proc_table.rs:fn test_fork_integration_flow → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:562: os/kernel/src/proc_table.rs:fn test_fork_integration_flow → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:563: os/kernel/src/proc_table.rs:fn test_fork_child_rts_corrections → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:270: os/kernel/src/proc_table.rs:fn preemptible → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:273: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:286: os/kernel/src/proc_table.rs:fn preemptible → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:375: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:376: os/kernel/src/proc_table.rs:fn notify_scheduler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:376: os/kernel/src/proc_table.rs:fn sched_enqueue → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:435: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:436: os/kernel/src/proc_table.rs:fn process_misc_flags → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:436: os/kernel/src/proc_table.rs:fn notify_scheduler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/10-switch-to-user.md:487: os/kernel/src/proc_table.rs:fn test_is_empty_new_table → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:498: os/kernel/src/proc_table.rs:fn vm_swap_requestor → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:605: os/kernel/src/proc_table.rs:fn sched_enqueue → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:761: os/kernel/src/ipc.rs:fn caller_q_len → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:880: os/kernel/src/ipc.rs:struct IpcEngine → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:933: os/kernel/src/ipc.rs:fn copy_msg_from_user → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:935: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:996: os/kernel/src/ipc.rs:fn take_pending_async → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1046: os/kernel/src/ipc.rs:fn deliver_async → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/12-ipc-core.md:1097: os/kernel/src/ipc.rs:fn delivermsg → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/14-exception-interrupt.md:500: os/kernel/src/irq_manager.rs:fn notify_hardware → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:292: os/kernel/src/smp.rs:struct SmpState → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:306: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:316: os/kernel/src/smp.rs:struct BootLockGuard → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:316: os/kernel/src/smp.rs:static BOOT_LOCK → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:316: os/kernel/src/smp.rs:fn ap_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:331: os/kernel/src/smp.rs:const READY → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:340: os/kernel/src/smp.rs:fn has_pending → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:349: os/kernel/src/smp.rs:const SAVE_CTX → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:355: os/arch/src/lib.rs:fn save_frame_to_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:364: os/kernel/src/smp.rs:struct CpuLocal → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:373: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:431: os/kernel/src/smp.rs:const SAVE_CTX → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:472: os/arch/src/arm64/smp.rs:fn gicd_base → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:473: os/arch/src/riscv64/smp.rs:impl SmpArch → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:474: os/arch/src/arch/smp.rs:fn pause → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:476: os/arch/src/lib.rs:fn save_frame_to_context → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:525: os/kernel/src/lib.rs:fn smp_state_boot_unchecked → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:525: os/kernel/src/lib.rs:fn try_smp_state_with → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:529: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:625: os/kernel/src/smp.rs:struct SmpState → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:799: os/kernel/src/smp.rs:fn sched_handler_full → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:879: os/kernel/src/smp.rs:fn schedule_stop_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:913: os/kernel/src/smp.rs:fn schedule_vminhibit → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:1056: os/kernel/src/proc_table.rs:fn notify_scheduler → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/16-smp.md:1099: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:238: os/kernel/src/proc.rs:fn suspend_for_vm_with_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:240: os/kernel/src/proc.rs:fn suspend_for_vm_with_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:260: os/kernel/src/syscall_process.rs:fn dispatch_schedctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:268: os/kernel/src/syscall_process.rs:fn dispatch_schedctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:280: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:289: os/kernel/src/lib.rs:fn with_protection_mut → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:829: os/kernel/src/syscall_process.rs:fn add_ipc_filter_arm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:839: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:840: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:841: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:842: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:843: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:844: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:845: os/kernel/src/syscall_process.rs:fn dispatch_runctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:846: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:847: os/kernel/src/syscall_process.rs:fn dispatch_statectl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/17-syscall-process.md:848: os/kernel/src/syscall_process.rs:fn dispatch_statectl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/18-syscall-copy.md:113: os/arch/src/arch/direct_map.rs:const VM_DIRECT_MAP_SIZE → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/18-syscall-copy.md:278: os/kernel/src/cross_space.rs:fn write_to_process_vmcheck → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:153: os/kernel/src/syscall_signal.rs:const SIGSNDELAY → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:159: os/libs/minix-types/src/ipc/message.rs:struct MessLsysKernVsafecopy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:353: os/kernel/src/proc.rs:impl ProcName → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:361: os/arch/src/arch/signal_context.rs:struct SignalInfo → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:375: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:377: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:385: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:401: os/kernel/src/syscall_signal.rs:const NSIG → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:409: os/kernel/src/proc.rs:impl ProcName → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:590: os/kernel/src/syscall_signal.rs:const SIGSNDELAY → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:646: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:706: os/kernel/src/syscall_signal.rs:fn dispatch_sigsend → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:787: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:788: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:789: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:790: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:790: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:791: os/kernel/src/syscall_signal.rs:fn dispatch_endksig → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:792: os/kernel/src/syscall_signal.rs:fn dispatch_sigsend → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:801: os/kernel/src/syscall_signal.rs:fn dispatch_sigsend → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:852: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:853: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:854: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:855: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:856: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:857: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:858: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:859: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:860: os/kernel/src/syscall_signal.rs:fn test_sigreturn_invalid_endpoint → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:861: os/kernel/src/syscall_signal.rs:fn test_sigsend_unsaved_process_returns_einval → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:862: os/kernel/src/syscall_signal.rs:fn test_is_lethal → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:863: os/kernel/src/syscall_signal.rs:fn occupy_two_slots → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/19-syscall-signal.md:864: os/kernel/src/syscall_signal.rs:fn test_cause_signal_external_path_notifies_manager → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:232: os/kernel/src/syscall_device.rs:struct PvLongPair → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:245: os/kernel/src/syscall_device.rs:fn check_irq_permission → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:295: os/kernel/src/syscall_device.rs:fn check_irq_permission → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:363: os/kernel/src/syscall_device.rs:fn dispatch_irqctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:429: os/kernel/src/syscall_device.rs:fn dispatch_devio → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:467: os/kernel/src/syscall_device.rs:fn dispatch_iopenable → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:546: os/kernel/src/syscall_device.rs:fn dispatch_vdevio → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:581: os/kernel/src/syscall_device.rs:const SDEVIO_BUF_MAX → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:616: os/kernel/src/syscall_device.rs:fn deref_mut → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:683: os/kernel/src/syscall_device.rs:fn dispatch_irqctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:684: os/kernel/src/syscall_device.rs:fn dispatch_vdevio → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:685: os/kernel/src/syscall_device.rs:fn dispatch_vdevio → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:731: os/kernel/src/syscall_device.rs:fn test_sdevio_invalid_direction_returns_einval → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/20-syscall-device.md:733: os/kernel/src/syscall_device.rs:fn test_readbios_overflow_returns_einval → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:143: os/kernel/src/syscall_clock.rs:fn dispatch_settime → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:143: os/kernel/src/proc.rs:fn tick_prof_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:158: os/kernel/src/syscall_clock.rs:fn dispatch_setalarm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:167: os/kernel/src/syscall_clock.rs:fn dispatch_setalarm → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:185: os/kernel/src/syscall_clock.rs:fn dispatch_settime → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:205: os/kernel/src/proc.rs:fn tick_prof_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:207: os/kernel/src/proc.rs:fn add_sys_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:569: os/kernel/src/proc.rs:fn add_sys_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:695: os/kernel/src/proc.rs:fn add_user_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/21-syscall-clock.md:695: os/kernel/src/proc.rs:fn add_sys_time → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:191: os/kernel/src/capability.rs:struct ProcessCapability → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:236: os/kernel/src/kpriv.rs:fn new → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:353: os/kernel/src/kpriv.rs:fn apply_fields_from_request → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:457: os/kernel/src/kpriv.rs:fn new → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:478: os/kernel/src/kpriv.rs:struct PrivUpdateRequest → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:539: os/kernel/src/kpriv.rs:struct PrivUpdateRequest → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:548: os/kernel/src/kpriv.rs:fn swap_slots → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:548: os/kernel/src/capability.rs:fn from_bits → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/22-privilege.md:599: os/kernel/src/syscall.rs:fn kernel_call_resume → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:258: os/kernel/src/kpriv.rs:fn default → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:262: os/kernel/src/ipc_filter.rs:fn chain_allowed → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:277: os/kernel/src/ipc_filter.rs:fn set_sys_bit → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:286: os/kernel/src/ipc_filter.rs:fn ipc_filter_check → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:313: os/kernel/src/ipc_filter.rs:type ClassResolver → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:322: os/kernel/src/ipc_filter.rs:fn el_check → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:350: os/kernel/src/proc.rs:fn fork_from → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:465: os/kernel/src/proc.rs:fn fork_from → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:471: os/kernel/src/ipc_filter.rs:fn append_to_chain → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:492: os/kernel/src/proc.rs:fn fork_from → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/23-ipc-filter.md:492: os/kernel/src/ipc.rs:fn is_willing_to_receive → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/24-cross-space-runtime.md:350: os/kernel/src/proc.rs:fn blocked_on → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/24-cross-space-runtime.md:379: os/kernel/src/vm.rs:enum VmCheckResult → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/24-cross-space-runtime.md:402: os/kernel/src/proc.rs:fn blocked_on → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/24-cross-space-runtime.md:406: os/kernel/src/cross_space.rs:fn data_copy_vmcheck → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/25-misc-unported.md:713: os/kernel/src/misc.rs:fn profile_sample → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/25-misc-unported.md:800: os/arch/src/arch/boot.rs:fn inherit_fpu_state → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:238: os/libs/minix-rt/src/lib.rs:fn ensure_global_allocator → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:256: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:275: os/kernel/src/syscall.rs:fn privctl_set_sys → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:276: os/kernel/src/proc_table.rs:fn sched_enqueue_head → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:277: os/kernel/src/vm.rs:fn memreq_reply → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:278: os/kernel/src/irq_manager.rs:fn notify_hardware → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:311: os/plat/src/mock.rs:impl EarlyConsole → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/27-kernel-utility.md:364: os/libs/minix-rt/src/lib.rs:fn ensure_global_allocator → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/28-usermapped-data.md:237: os/kernel/src/clock.rs:fn set_alarm_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/28-usermapped-data.md:330: os/kernel/src/clock.rs:fn set_alarm_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/29-kernel-debug.md:239: os/kernel/src/debug.rs:fn runqueues_ok_cpu → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/29-kernel-debug.md:274: os/kernel/src/debug.rs:fn print_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/29-kernel-debug.md:331: os/kernel/src/debug.rs:fn test_write_rts_flags_empty → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:180: os/kernel/src/clock.rs:fn init_profile_clock: → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:181: os/kernel/src/clock.rs:fn stop_profile_clock: → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:182: os/kernel/src/clock.rs:fn register_profile_hook → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:183: os/plat/src/x86_64/interrupt.rs:const PROFILE_CLOCK_IRQ: → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:184: os/plat/src/riscv64/interrupt.rs:const PROFILE_CLOCK_IRQ: → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:185: os/arch/src/x86_64/clock.rs:fn init_profile_clock → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:186: os/arch/src/riscv64/clock.rs:fn init_profile_clock: → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:188: os/kernel/src/misc.rs:fn dispatch_profile → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:306: os/kernel/src/misc.rs:fn dispatch_profile → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:310: os/kernel/src/clock.rs:fn register_profile_hook → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:310: os/kernel/src/misc.rs:fn profile_clock_hook → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:310: os/kernel/src/clock.rs:fn unregister_profile_hook → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:314: os/kernel/src/misc.rs:fn profile_clock_tick → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/30-kernel-profile.md:355: os/plat/src/x86_64/interrupt.rs:fn test_profile_clock_irq_is_cmos_irq8 → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/31-fpu-context-switching.md:490: os/arch/src/arch/fpu_arch.rs:trait FpuArch → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/31-fpu-context-switching.md:551: os/arch/src/arch/exception_dispatcher.rs:fn handle_nested → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/32-stack-tracing.md:4: os/arch/src/x86_64/boot.rs:fn inherit_fpu_state_propagates_lazy_user_policy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/32-stack-tracing.md:85: os/arch/src/x86_64/signal.rs:const GP_RDI → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/32-stack-tracing.md:247: os/arch/src/x86_64/signal.rs:const GP_RDI → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/32-stack-tracing.md:316: os/arch/src/x86_64/boot.rs:fn inherit_fpu_state_propagates_lazy_user_policy → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/32-stack-tracing.md:333: os/arch/src/x86_64/signal.rs:const GP_RDI → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/32-stack-tracing.md:337: os/arch/src/arm64/boot.rs:impl StacktraceArch → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/32-stack-tracing.md:536: os/kernel/src/syscall_signal.rs:fn test_cause_signal_external_path_notifies_manager → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:19: os/kernel/src/proc_table.rs:fn get → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:43: os/kernel/src/syscall.rs:fn dispatch_ipc → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:43: os/kernel/src/syscall.rs:fn dispatch_ipc_entry → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:64: os/kernel/src/syscall.rs:fn kernel_call → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:84: os/kernel/src/syscall.rs:fn dispatch_schedule → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:85: os/kernel/src/syscall.rs:fn dispatch_privctl → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:88: os/kernel/src/syscall_clock.rs:fn dispatch_times → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:114: os/kernel/src/cross_space.rs:fn data_copy_vmcheck → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:150: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-adjudication-brief-memmap-open-items.md:378: os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-adjudication-brief-memmap-open-items.md:379: os/kernel/src/dm_coverage.rs:fn establish_boot_dm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:993: os/boot-shim/src/uboot_main.rs:fn uboot_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1034: os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1095: os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1175: os/kernel/src/globals.rs:static RESERVED_REGION_STORE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1745: os/kernel/src/vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2658: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2667: os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:228: os/libs/minix-boot/src/platform.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:282: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:323: os/kernel/src/lib.rs:fn bootstrap_to_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:343: os/kernel-image/src/main.rs:fn rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:355: os/kernel/src/lib.rs:fn arch_boot_resume_high_half → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:388: os/arch/src/lib.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:467: os/kernel/src/misc.rs:fn monparams_snapshot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:558: os/kernel/src/lib.rs:fn store_kernel_info → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-code-design.md:604: os/libs/minix-boot/src/platform.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-design-note-riscv-unify-d72.md:48: os/boot-shim/src/uefi_helpers.rs:struct UefiBootShim → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-design-note-riscv-unify-d72.md:48: os/boot-shim/src/opensbi_helpers.rs:struct OpenSbiBootShim → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-design-note-riscv-unify-d72.md:78: os/kernel-image/src/bootface.rs:fn bootface → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-design-note-riscv-unify-d72.md:84: os/libs/minix-boot/src/handoff.rs:struct BootHandoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-design-note-riscv-unify-d72.md:142: os/kernel/src/syscall.rs:fn vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:14: os/boot-shim/src/uefi_helpers.rs:fn build_memmaps → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:15: os/boot-shim/src/loader.rs:fn load_boot_modules_with_loader → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:16: os/boot-shim/src/uefi_helpers.rs:fn alloc_module_pages → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:19: os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:82: os/kernel/src/lib.rs:fn bootstrap_to_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:82: os/kernel-image/src/main.rs:fn rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:103: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round3.md:104: os/kernel-image/src/main.rs:fn rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round4.md:103: os/arch/src/arch/boot.rs:fn load_elf_into → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round4.md:142: os/kernel/src/memmap.rs:fn cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:41: os/boot-shim/src/loader.rs:fn load_kernel_with_loader → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:68: os/kernel/src/memmap.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round5.md:118: os/kernel/src/memmap.rs:fn cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round6.md:14: os/kernel/src/lib.rs:fn bootstrap_to_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round6.md:35: os/kernel/src/lib.rs:fn arch_boot_resume_high_half → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round6.md:41: os/kernel/src/lib.rs:fn arch_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round6.md:124: os/boot-shim/src/uefi_helpers.rs:fn exit_boot_services → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round6.md:126: os/kernel/src/memmap.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round6.md:160: os/kernel/src/lib.rs:fn init_proc_and_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round7.md:12: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round7.md:25: os/kernel/src/lib.rs:fn boot_validate_and_prepare → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round7.md:31: os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round7.md:33: os/kernel-image/src/main.rs:fn rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round7.md:55: os/kernel/src/lib.rs:fn bootstrap_to_kernel_image → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round7.md:68: os/kernel-image/src/main.rs:fn rust_image_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/01-forensics-round9.md:14: os/boot-shim/src/uefi_helpers.rs:fn read → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:965: os/kernel/src/lib.rs:fn resume_additive → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:966: os/kernel/src/lib.rs:fn arch_boot_finish → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-higher-half-kernel.md:1449: os/kernel/src/arch/riscv64/higher_half.rs:fn jump_to_kmain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-review-history-memmap-open-items.md:277: os/kernel/src/vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-review-history-memmap-open-items.md:337: os/arch/src/riscv64/paging.rs:fn split_huge → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-review-history-memmap-open-items.md:1263: os/kernel/src/memmap.rs:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-review-history-memmap-open-items.md:1386: os/kernel/src/memmap.rs:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-review-history-memmap-open-items.md:1603: os/kernel/src/memmap.rs:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/02-review-history-memmap-open-items.md:1965: os/arch/src/riscv64/paging.rs:fn split_huge → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:17: os/boot-shim/src/ebs_map.rs:MEMORY_DESCRIPTOR_SIZE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:18: os/boot-shim/src/ebs_map.rs:attr → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:19: os/boot-shim/src/ebs_map.rs:PolicyError → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:20: os/boot-shim/src/ebs_map.rs:adjudicate → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:21: os/boot-shim/src/ebs_map.rs:Disposition → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:22: os/boot-shim/src/ebs_map.rs:classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:23: os/boot-shim/src/ebs_map.rs:validate_header → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:24: os/boot-shim/src/ebs_map.rs:adjudicate → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:25: os/boot-shim/src/ebs_map.rs:SIDE_CAP → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:25: os/libs/minix-boot/src/handoff_v1.rs:WIRE_MEMMAP_CAP → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:26: os/boot-shim/src/uefi_helpers.rs:build_memmaps → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:27: os/boot-shim/src/uefi_helpers.rs:exit_boot_services → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:30: os/boot-shim/src/ebs_pair.rs:pair_and_classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:34: os/arch/src/arm64/paging.rs:MAIR_EL1_VALUE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:35: os/arch/src/x86_64/paging.rs:flags_to_pte → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:36: os/arch/src/riscv64/paging.rs:flags_to_pte → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:39: os/kernel/src/lib.rs:identity_device_windows → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:43: os/kernel/src/lib.rs:build_bootstrap_root_and_enable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:44: os/kernel/src/lib.rs:identity_block_touches_device → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:49: os/boot-shim/src/ebs_map.rs:checked_len → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:50: os/kernel/src/memmap.rs:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:52: os/boot-shim/src/uefi_helpers.rs:pa_limit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:55: os/kernel/src/boot_alloc.rs:boot_alloc_region → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:57: os/boot-shim/src/uefi_helpers.rs:pa_limit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:58: os/arch/src/x86_64/paging.rs:phys_addr_limit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:59: os/arch/src/arm64/paging.rs:phys_addr_limit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:60: os/arch/src/riscv64/paging.rs:phys_addr_limit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:63: os/boot-shim/src/ebs_map.rs:MapStorage → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:69: os/libs/minix-platform/src/kind.rs:parse_by_kind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:70: os/boot-shim/src/uefi_helpers.rs:find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:79: os/libs/minix-boot/src/memmap_source.rs:DtbMemoryMap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:81: os/kernel/src/memmap.rs:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:82: os/boot-shim/src/ebs_pair.rs:pair_and_classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:85: os/libs/minix-boot/src/memmap_source.rs:clip_reserved → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:86: os/boot-shim/src/uefi_helpers.rs:build_memmaps → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:93: os/boot-shim/src/ebs_pair.rs:pair_and_classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:378: os/libs/minix-platform/src/kind.rs:parse_by_kind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1501: os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1514: os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1670: os/libs/minix-boot/src/memmap_source.rs:fn collect → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1670: os/boot-shim/src/ebs_map.rs:fn adjudicate → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1670: os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1670: os/kernel/src/dm_coverage.rs:fn establish_boot_dm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1670: os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1670: os/libs/minix-boot/src/fdt_layout.rs:fn validate → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1851: os/arch/src/arch/boot.rs:fn load_elf_into → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1853: os/kernel/src/dm_coverage.rs:fn validate_bootstrap_tree → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1972: os/kernel/src/lib.rs:fn init_proc_and_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-evidence-and-materials-memmap-open-items.md:1972: os/kernel/src/vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/03-kmain-cstart.md:533: os/arch/src/arch/protection.rs:trait ProtectionArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-design-backlog-round28.md:545: os/boot-shim/src/ebs_map.rs:adjudicate → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-design-backlog-round28.md:853: os/kernel/src/memmap.rs:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-design-backlog-round28.md:922: os/boot-shim/src/uefi_helpers.rs:find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-design-backlog-round28.md:922: os/libs/minix-platform/src/kind.rs:parse_by_kind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-design-backlog-round28.md:1024: os/kernel/src/memmap.rs:cut_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-design-backlog-round28.md:1027: os/boot-shim/src/ebs_map.rs:checked_len → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1116: os/libs/minix-platform/src/device_tree.rs:fn parse_sswi → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1116: os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1204: os/plat/src/riscv64/interrupt.rs:fn new → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1274: os/kernel/src/lib.rs:fn init_clock_and_interrupts → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1274: os/arch/src/riscv64/clock.rs:fn read_time_csr → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1453: os/libs/minix-platform/src/global.rs:static PLATFORM → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1467: os/libs/minix-platform/src/global.rs:static PLATFORM → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1539: os/plat/src/x86_64/interrupt.rs:fn pic_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1556: os/plat/src/interrupt.rs:trait InterruptRouter → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1557: os/arch/src/arch/clock.rs:trait ClockArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1558: os/kernel/src/lib.rs:fn init_smp_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1679: os/libs/minix-boot/src/platform.rs:const DTB → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:1838: os/libs/minix-platform/src/acpi.rs:fn test_check_gic_madt_decision_table → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2042: os/libs/minix-platform/src/global.rs:enum PlatformDescEnum → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2112: os/libs/minix-platform/src/global.rs:enum PlatformDescEnum → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2112: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2112: os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2330: os/kernel/src/lib.rs:fn init_smp_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2330: os/kernel/src/misc.rs:fn getinfo_machine → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2331: os/kernel/src/lib.rs:fn init_protection → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2332: os/kernel/src/misc.rs:struct MachineStruct → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2333: os/kernel/src/misc.rs:fn getinfo_machine → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2333: os/drivers/power/acpi/src/service.rs:fn scan_devices → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2334: os/drivers/power/acpi/src/service.rs:fn init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2501: os/plat/src/x86_64/early_console.rs:fn write_hex → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2514: os/libs/minix-platform/src/kind.rs:fn parse_by_kind → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2556: os/kernel-image/src/bootface_a64.rs:fn bootface_a64 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/04-platform-discovery.md:2592: os/libs/minix-platform/src/global.rs:fn platform_desc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:536: os/kernel/src/lib.rs:init_post_and_memory → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:555: os/arch/src/arch/paging.rs:PageFlags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:577: os/arch/src/arch/paging.rs:PageFlags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:594: os/arch/src/arch/direct_map.rs:DirectMapArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:613: os/arch/src/arch/direct_map.rs:DirectMapArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:631: os/arch/src/arch/paging.rs:map_kernel → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:644: os/arch/src/arch/paging.rs:map_kernel → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:648: os/kernel/src/dm_coverage.rs:kernel_dm_pa_end → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:655: os/kernel/src/lib.rs:init_post_and_memory → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:657: os/kernel/src/lib.rs:switch_address_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:660: os/kernel/src/lib.rs:init_post_and_memory → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:725: os/kernel/src/lib.rs:switch_address_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:741: os/kernel/src/lib.rs:switch_address_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:773: os/arch/src/arch/direct_map.rs:X86_64DirectMap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:867: os/arch/src/arch/boot_dm.rs:DmRange → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:888: os/arch/src/arch/boot_dm.rs:plan_range_units → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:933: os/arch/src/arch/boot_dm.rs:install_boot_dm_range → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:950: os/arch/src/x86_64/paging.rs:X86_64BootDmInstaller::install_leaf → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:980: os/kernel/src/dm_coverage.rs:establish_boot_dm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:1026: os/kernel/src/dm_coverage.rs:validate_bootstrap_tree → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:1058: os/kernel/src/dm_coverage.rs:kernel_dm_pa_end → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:1129: os/kernel/src/dm_coverage.rs:boot_module_candidates → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:1164: os/kernel/src/dm_coverage.rs:test_union_keeps_full_bump_when_root_above_bump → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:1183: os/kernel/src/dm_coverage.rs:test_establish_boot_dm_reserved_is_kernel_window_only → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/07-cross-space-init.md:1206: os/kernel/src/dm_coverage.rs:test_kernel_dm_pa_end_covers_all_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:771: os/kernel/src/syscall.rs:enum Syscall → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:909: os/kernel/src/globals.rs:static KERNEL_MAY_ALLOC → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:911: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:926: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:948: os/kernel/src/lib.rs:fn set_vm_running → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:948: os/kernel/src/lib.rs:fn vm_running → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:950: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:956: os/kernel/src/memmap.rs:fn add_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1004: os/kernel/src/lib.rs:fn boot_init_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1019: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1019: os/kernel/src/lib.rs:fn register_panic_diagnostic → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1035: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1127: os/kernel/src/vm_handoff.rs:fn classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1146: os/kernel/src/vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1146: os/kernel/src/vm_handoff.rs:static VM_PMM_FREE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1164: os/kernel/src/irq_manager.rs:impl IrqManager::new → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1166: os/kernel/src/syscall.rs:enum Syscall → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1168: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1169: os/kernel/src/globals.rs:static KERNEL_MAY_ALLOC → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1171: os/kernel/src/vm_handoff.rs:fn classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1172: os/arch/src/x86_64/cpu_identity.rs:fn decode_signature → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1173: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1175: os/kernel/src/proc_table.rs:fn set_bill_to_idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1176: os/kernel/src/kerninfo.rs:fn init_kerninfo → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1179: os/kernel/src/lib.rs:fn boot_init_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1182: os/kernel/src/lib.rs:fn init_smp_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1185: os/kernel/src/lib.rs:fn switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1241: os/kernel/src/vm_handoff.rs:fn classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1297: os/kernel/src/vm_handoff.rs:struct Classification → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1355: os/kernel/src/vm_handoff.rs:fn classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1382: os/kernel/src/vm_handoff.rs:fn classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1425: os/kernel/src/vm_handoff.rs:fn classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1448: os/kernel/src/vm_handoff.rs:fn classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1491: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1529: os/kernel/src/kerninfo.rs:fn init_kerninfo → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1574: os/kernel/src/syscall.rs:fn kernel_call_dispatch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1597: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1635: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1727: os/kernel/src/smp.rs:fn bkl_is_locked → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1750: os/kernel/src/lib.rs:fn init_smp_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1752: os/kernel/src/memmap.rs:fn add_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1780: os/kernel/src/lib.rs:fn register_panic_diagnostic → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1784: os/kernel/src/proc_table.rs:fn set_bill_to_idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1788: os/kernel/src/lib.rs:fn boot_init_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1791: os/kernel/src/lib.rs:fn init_smp_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1794: os/kernel/src/lib.rs:fn switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1842: os/arch/src/x86_64/cpu_identity.rs:fn decode_signature → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1868: os/kernel/src/proc_table.rs:fn set_bill_to_idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1889: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1915: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1928: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1976: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1993: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:1993: os/kernel/src/lib.rs:fn switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2183: os/kernel/src/lib.rs:fn switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2230: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2230: os/kernel/src/lib.rs:fn boot_init_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md:2230: os/kernel/src/lib.rs:fn switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:6: os/kernel/src/vm.rs:enum VmCtlParam → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:6: os/servers/vm/src/pagetable/vm_self_map.rs:fn init_vm_self_pt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:731: os/libs/minix-types/src/types/boot.rs:VmBootHandoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:731: os/libs/minix-types/src/types/boot.rs:VM_BOOT_HANDOFF_VA → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:772: os/libs/minix-types/src/types/boot.rs:VmBootHandoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:805: os/libs/minix-types/src/types/boot.rs:VmBootHandoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:860: os/libs/minix-types/src/types/boot.rs:VM_BOOT_HANDOFF_VERSION → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:881: os/kernel/src/lib.rs:init_proc_and_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:883: os/kernel/src/vm_handoff.rs:classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:889: os/servers/vm/src/pagetable/vm_self_map.rs:init_vm_self_pt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:915: os/servers/vm/src/pagetable/vm_self_map.rs:fn init_vm_self_pt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:917: os/servers/vm/src/boot.rs:reconcile → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:970: os/servers/vm/src/boot.rs:reconcile → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:979: os/kernel/src/vm_handoff.rs:classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:985: os/kernel/src/vm.rs:enum VmCtlParam → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:985: os/kernel/src/syscall.rs:dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1031: os/kernel/src/syscall.rs:vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1064: os/kernel/src/syscall.rs:fn vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1093: os/kernel/src/vm_handoff.rs:build_identity_windows → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1121: os/kernel/src/vm_handoff.rs:fn build_identity_windows → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1157: os/servers/vm/src/boot.rs:fn extra_pages → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1159: os/servers/vm/src/boot.rs:reconcile → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1159: os/kernel/src/lib.rs:init_proc_and_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1159: os/kernel/src/syscall.rs:fn vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1167: os/servers/vm/src/boot.rs:read_boot_params → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1208: os/servers/vm/src/boot.rs:fn read_boot_params → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1259: os/servers/vm/src/boot.rs:fn read_boot_params → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1300: os/servers/vm/src/boot.rs:fn read_boot_params → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1324: os/servers/vm/src/boot.rs:fn validate → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1349: os/servers/vm/src/boot.rs:fn extra_pages → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1394: os/servers/vm/src/vm_server.rs:fn init_global_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1400: os/kernel/src/syscall.rs:dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1418: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1457: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1493: os/kernel/src/syscall.rs:fn vmctl_clear_page_fault → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1530: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1551: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1566: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1575: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1592: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1632: os/kernel/src/syscall.rs:fn vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1668: os/kernel/src/syscall.rs:fn vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1709: os/kernel/src/syscall.rs:fn vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1730: os/kernel/src/syscall.rs:fn vmctl_set_addr_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1753: os/servers/vm/src/vm_server.rs:fn init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1755: os/servers/vm/src/vm_server.rs:fn init_global_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1782: os/servers/vm/src/vm_server.rs:fn exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1824: os/servers/vm/src/vm_server.rs:fn exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1842: os/servers/vm/src/vm_server.rs:fn install_boot_stack → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1844: os/servers/vm/src/vm_server.rs:fn install_boot_stack → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1912: os/kernel/src/vm_handoff.rs:fn build_identity_windows → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:1956: os/kernel/src/vm_handoff.rs:fn build_identity_windows → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2101: os/kernel/src/vm_handoff.rs:classify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md:2103: os/servers/vm/src/vm_server.rs:fn exec_bootproc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/kernel/src/proc_table.rs:fn process_misc_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/kernel/src/proc_table.rs:fn check_quantum → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/kernel/src/sched.rs:fn pick_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/kernel/src/vm.rs:fn kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/arch/src/arch/trap_style.rs:enum TrapStyle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:6: os/arch/src/x86_64/trap_return.rs:fn restore_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:724: os/kernel/src/lib.rs:fn scheduler_loop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:724: os/kernel/src/lib.rs:fn finish_and_restore → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:762: os/kernel/src/smp.rs:fn bkl_lock → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:781: os/kernel/src/proc_table.rs:fn set_bill_to_idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:823: os/kernel/src/vm.rs:fn kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:825: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:850: os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:940: os/kernel/src/lib.rs:fn finish_and_restore → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1039: os/kernel/src/lib.rs:fn requeue_if_preempted → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1042: os/kernel/src/proc_table.rs:fn process_misc_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1045: os/kernel/src/proc_table.rs:fn check_quantum → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1046: os/kernel/src/lib.rs:fn finish_and_restore → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1047: os/arch/src/arch/trap_style.rs:enum TrapStyle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1058: os/kernel/src/lib.rs:fn scheduler_loop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1077: os/kernel/src/lib.rs:fn scheduler_loop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1136: os/kernel/src/lib.rs:fn pick_and_bill → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1168: os/kernel/src/proc_table.rs:fn process_misc_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1168: os/kernel/src/proc_table.rs:fn check_quantum → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1284: os/kernel/src/sched.rs:fn pick_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1441: os/arch/src/arch/trap_style.rs:enum TrapStyle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1509: os/kernel/src/trap_dispatch.rs:fn mirror_irq_frame_into_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1509: os/kernel/src/proc.rs:fn set_boot_cpu_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/lib.rs:fn switch_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/lib.rs:fn scheduler_loop → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/lib.rs:fn finish_and_restore → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/lib.rs:fn idle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/lib.rs:fn pick_and_bill → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/lib.rs:fn requeue_if_preempted → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/lib.rs:fn switch_address_space → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/proc_table.rs:fn process_misc_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/proc_table.rs:fn check_quantum → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/sched.rs:fn pick_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/vm.rs:fn kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/arch/src/arch/trap_style.rs:enum TrapStyle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/10-switch-to-user.md:1704: os/arch/src/x86_64/trap_return.rs:fn restore_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:831: os/kernel/src/proc_table.rs:fn sched_dequeue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:835: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:922: os/kernel/src/proc_table.rs:fn sched_for_cpu → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:922: os/kernel/src/proc_table.rs:fn sched_idx → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:924: os/kernel/src/proc_table.rs:fn sched_enqueue_with → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:940: os/kernel/src/proc_table.rs:fn sched_enqueue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:942: os/kernel/src/clock.rs:fn classify_cpu_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:950: os/kernel/src/proc_table.rs:fn rts_set → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:951: os/kernel/src/proc_table.rs:fn rts_setflags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:952: os/kernel/src/proc_table.rs:fn sched_enqueue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:953: os/kernel/src/proc_table.rs:fn sched_enqueue_head → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:954: os/kernel/src/proc_table.rs:fn sched_dequeue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:955: os/kernel/src/lib.rs:fn pick_and_bill → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:956: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:962: os/kernel/src/proc.rs:struct Accounting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1015: os/kernel/src/proc_table.rs:fn sched_enqueue_head → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1294: os/kernel/src/sched.rs:fn sched_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/11-scheduling-primitives.md:1487: os/kernel/src/proc_table.rs:fn sched_enqueue_with → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2549: os/kernel/src/syscall.rs:fn dispatch_ipc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2549: os/arch/src/x86_64/boot.rs:fn set_secondary_ipc_return → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2550: os/kernel/src/syscall.rs:fn dispatch_ipc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/12-ipc-core.md:2551: os/arch/src/x86_64/boot.rs:fn set_secondary_ipc_return → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:374: os/arch/src/arch/trap_style.rs:enum TrapStyle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1038: os/arch/src/arch/exception_dispatcher.rs:enum ExceptionClass → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1053: os/arch/src/arch/exception_dispatcher.rs:fn handle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1071: os/kernel/src/trap_dispatch.rs:fn forward_pagefault_to_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1103: os/arch/src/arch/exception.rs:enum FaultContext → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1105: os/arch/src/arch/exception.rs:struct FaultContextTracker → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1153: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1163: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1163: os/plat/src/interrupt.rs:enum IrqAction → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1218: os/arch/src/arch/exception_dispatcher.rs:fn handle → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1224: os/arch/src/arch/exception.rs:trait ExceptionArch::is_user_mode → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1266: os/arch/src/arch/exception_dispatcher.rs:fn handle_nested → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1315: os/arch/src/arch/exception_dispatcher.rs:fn handle_page_fault → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1349: os/arch/src/arch/exception_dispatcher.rs:fn classify_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1364: os/kernel/src/page_fault.rs:fn set_pagefault_pending → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1383: os/kernel/src/page_fault.rs:fn clear_pagefault_pending → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1417: os/kernel/src/page_fault.rs:fn build_vm_pagefault_msg → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1445: os/kernel/src/trap_dispatch.rs:fn x86_trap_dispatch_body → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1465: os/kernel/src/trap_dispatch.rs:fn exception_signal_to_nr → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1465: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1494: os/kernel/src/trap_dispatch.rs:fn forward_pagefault_to_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1512: os/kernel/src/trap_dispatch.rs:fn x86_trap_dispatch_body → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1554: os/kernel/src/irq_manager.rs:struct IrqHookSlot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1605: os/kernel/src/irq_manager.rs:impl IrqManager::register_hook_at_slot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1681: os/kernel/src/irq_manager.rs:impl IrqManager::dispatch_claimed → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1705: os/kernel/src/irq_manager.rs:impl IrqNotify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1725: os/kernel/src/irq_manager.rs:fn generic_notify_handler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1748: os/kernel/src/irq_manager.rs:fn dispatch_hardware_irq → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1834: os/arch/src/arch/exception_dispatcher.rs:fn classify_all_vectors → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1858: os/kernel/src/page_fault.rs:fn test_build_vm_pagefault_msg_populates_fields → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/14-exception-interrupt.md:1895: os/kernel/src/irq_manager.rs:fn generic_notify_handler_sends_notification → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1027: os/arch/src/lib.rs:pub → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1210: os/kernel/src/dm_coverage.rs:fn establish_boot_dm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1523: os/kernel/src/dm_coverage.rs:fn boot_module_candidates → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1893: os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1893: os/kernel/src/vm.rs:fn cross_space_read → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1975: os/kernel/src/ipc.rs:fn copy_via_root_pages → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1976: os/kernel/src/vm.rs:fn cross_space_read → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1977: os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1977: os/servers/vm/src/map_phys.rs:fn handle_map_phys → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1984: os/kernel/src/ipc.rs:fn copy_via_root_pages → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1984: os/kernel/src/vm.rs:fn nk4a_copy_verify → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:1985: os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/boot-dm-hugepage-design.md:2332: os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_mimo.md:139: os/boot-shim/src/uefi_helpers.rs:prepare_boot → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_mimo.md:577: os/kernel/src/lib.rs:kmain → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_mimo.md:852: os/kernel/src/proc_table.rs:caller_slot_mut → 符号名未出现在本句，需句意复核
@@ -770,51 +916,354 @@ rewrite-notes/01-stage-kernel/doc_rerank_muse.md:484: os/kernel/src/lib.rs:arch_
 rewrite-notes/01-stage-kernel/doc_rerank_muse.md:522: os/kernel/src/clock.rs:ClockState → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_qwen.md:664: os/kernel/src/lib.rs:arch_boot → 符号名未出现在本句，需句意复核
 rewrite-notes/01-stage-kernel/doc_rerank_qwen.md:722: os/kernel/src/lib.rs:init_clock_and_interrupts → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/todo.md:4: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/todo.md:4: os/kernel/src/lib.rs:fn scheduler_loop → 符号名未出现在本句，需句意复核
-rewrite-notes/01-stage-kernel/todo.md:4: os/arch/src/x86_64/protection.rs:fn init_ap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:146: os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_page_table → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:147: os/kernel/src/vm_handoff.rs:fn build_identity_windows → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:147: os/arch/src/lib.rs:fn kernel_identity_mmio_regions → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:149: os/plat/src/x86_64/interrupt.rs:fn lapic_eoi → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:198: os/arch/src/x86_64/smp.rs:fn send_sched_ipi → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:199: os/arch/src/x86_64/clock.rs:fn init_local_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/pd22-step2-brief.md:213: os/libs/minix-platform/src/device_tree.rs:fn parse_plic → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/01-boot-shim-bootstrap.md:524: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/01-boot-shim-bootstrap.md:526: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/01-boot-shim-bootstrap.md:742: os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/01-boot-shim-bootstrap.md:742: os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/01-boot-shim-bootstrap.md:785: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/01-boot-shim-bootstrap.md:796: os/boot-shim/src/opensbi_helpers.rs:fn test_build_kernel_info_riscv64_fields_match_input → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/01-boot-shim-bootstrap.md:1735: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/02-higher-half-kernel.md:782: os/kernel/src/lib.rs:fn lock_boot_globals → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/02-higher-half-kernel.md:836: os/kernel/src/lib.rs:fn lock_boot_globals → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:689: os/arch/src/arch/protection.rs:trait ProtectionArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:722: os/arch/src/arch/trap_entry.rs:trait TrapEntryArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:777: os/kernel/src/lib.rs:fn init_smp_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:799: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:861: os/arch/src/x86_64/protection.rs:fn tss_selector → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:861: os/arch/src/riscv64/protection.rs:fn init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:862: os/arch/src/x86_64/protection.rs:fn fill_flat_segments → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:864: os/arch/src/x86_64/trap_entry.rs:fn configure_ipc_entry → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:865: os/arch/src/x86_64/trap_entry.rs:fn init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:892: os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/03-kmain-cstart.md:892: os/boot-shim/src/loader.rs:fn test_compute_kernel_layout_from_mock_elf → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:4: os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:4: os/boot-shim/src/uefi_helpers.rs:fn alloc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:4: os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:4: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:403: os/plat/src/interrupt.rs:enum IrqAction → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:431: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:434: os/kernel/tests/boot_integration.rs:fn boot_simulation_full_flow → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:434: os/kernel/src/lib.rs:fn set_current_ptproc_nr → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:434: os/libs/minix-boot/src/kernel_info.rs:fn make_valid_info → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:459: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:460: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:461: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:463: os/libs/minix-platform/src/acpi.rs:fn parse_madt → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:548: os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:678: os/libs/minix-platform/src/acpi.rs:fn parse → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:839: os/libs/minix-platform/src/device_tree.rs:struct DeviceTreeDesc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:891: os/libs/minix-platform/src/acpi.rs:struct MadtEntryHeader → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:1038: os/boot-shim/src/uefi_helpers.rs:fn alloc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:1042: os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:1136: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:1207: os/libs/minix-platform/src/kind.rs:test_kind_constants_are_distinct → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/04-platform-discovery.md:1208: os/libs/minix-platform/src/global.rs:test_platform_desc_panics_before_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/05-clock-interrupt-init.md:449: os/plat/src/mock.rs:impl InterruptRouter → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/05-clock-interrupt-init.md:2121: os/kernel/src/clock.rs:fn classify_cpu_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:338: os/kernel/src/proc.rs:const P_STOP → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:475: os/boot-shim/src/main.rs:static ALLOCATOR → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:475: os/boot-shim/src/lib.rs:static TEST_ALLOCATOR → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:475: os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:static BOOT_SERVICES_EXITED → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:483: os/kernel/src/proc_table.rs:struct ProcessTable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:484: os/kernel/src/kpriv.rs:struct PrivUpdateRequest → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:673: os/kernel/src/kpriv.rs:fn new → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:797: os/servers/vm/src/vm_server.rs:init_boot_procs → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:853: os/kernel/src/proc.rs:struct KProcess → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:887: os/kernel/src/proc_table.rs:fn new → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:928: os/kernel/src/kpriv.rs:fn fill_sendto_mask → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:994: os/kernel/src/proc.rs:fn is_runnable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:995: os/kernel/src/proc_table.rs:fn new → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:1189: os/kernel/src/proc.rs:fn suspend_for_vm_with_copy → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:1199: os/kernel/src/kpriv.rs:fn unset_sendto_bit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:1209: os/kernel/src/capability.rs:fn to_wire → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md:1281: os/kernel/src/proc_table.rs:fn vm_enqueue_and_notify_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:174: os/kernel/src/lib.rs:fn init_proc_and_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:176: os/kernel/src/lib.rs:fn current_cpu_id → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:349: os/arch/src/x86_64/paging.rs:fn walk_alloc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:349: os/arch/src/x86_64/paging.rs:fn channel_to_ptr → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:349: os/arch/src/x86_64/fpu.rs:fn init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:394: os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_page_table → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:426: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:426: os/kernel/src/lib.rs:fn current_cpu_id → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:509: os/kernel/src/lib.rs:fn init_proc_and_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:556: os/boot-shim/src/uefi_helpers.rs:fn build_memmap → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:556: os/boot-shim/src/opensbi_helpers.rs:fn build_kernel_info → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:556: os/kernel/src/misc.rs:fn getinfo_priv_tab → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:558: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/07-cross-space-init.md:577: os/arch/src/x86_64/paging.rs:fn map_huge → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:109: os/kernel/src/lib.rs:fn smp_state_boot_unchecked → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:109: os/kernel/src/lib.rs:fn try_smp_state_with → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:224: os/kernel/src/syscall.rs:fn dispatch_setgrant → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:257: os/kernel/src/syscall.rs:fn dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:325: os/kernel/src/syscall.rs:fn dispatch_setgrant → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:376: os/kernel/src/lib.rs:fn smp_state_boot_unchecked → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:398: os/kernel/src/lib.rs:fn init_clock_and_interrupts → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:408: os/arch/src/x86_64/tlb.rs:fn set_active_root → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:409: os/arch/src/arm64/tlb.rs:fn set_active_root → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:410: os/arch/src/riscv64/tlb.rs:fn set_active_root → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:422: os/arch/src/arch/boot.rs:load_vm_elf → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:428: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:450: os/kernel/src/lib.rs:const FALLBACK_BUMP_LEN → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:462: os/arch/src/arch/paging.rs:fn from_active_root → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:469: os/arch/src/x86_64/paging.rs:fn walk_alloc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:469: os/arch/src/riscv64/paging.rs:fn free_child_tables → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:473: os/kernel/src/lib.rs:fn init_clock_and_interrupts → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:560: os/kernel/src/proc_table.rs:fn test_rts_set_unset → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:561: os/kernel/src/proc_table.rs:fn test_fork_integration_flow → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:562: os/kernel/src/proc_table.rs:fn test_fork_integration_flow → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/09-vm-boot-protocol.md:563: os/kernel/src/proc_table.rs:fn test_fork_child_rts_corrections → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:270: os/kernel/src/proc_table.rs:fn preemptible → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:273: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:286: os/kernel/src/proc_table.rs:fn preemptible → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:375: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:376: os/kernel/src/proc_table.rs:fn notify_scheduler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:376: os/kernel/src/proc_table.rs:fn sched_enqueue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:435: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:436: os/kernel/src/proc_table.rs:fn process_misc_flags → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:436: os/kernel/src/proc_table.rs:fn notify_scheduler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md:487: os/kernel/src/proc_table.rs:fn test_is_empty_new_table → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/11-scheduling-primitives.md:498: os/kernel/src/proc_table.rs:fn vm_swap_requestor → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/11-scheduling-primitives.md:605: os/kernel/src/proc_table.rs:fn sched_enqueue → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/12-ipc-core.md:761: os/kernel/src/ipc.rs:fn caller_q_len → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/12-ipc-core.md:880: os/kernel/src/ipc.rs:struct IpcEngine → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/12-ipc-core.md:933: os/kernel/src/ipc.rs:fn copy_msg_from_user → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/12-ipc-core.md:935: os/kernel/src/proc_table.rs:fn sched_proc_no_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/12-ipc-core.md:996: os/kernel/src/ipc.rs:fn take_pending_async → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/12-ipc-core.md:1046: os/kernel/src/ipc.rs:fn deliver_async → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/12-ipc-core.md:1097: os/kernel/src/ipc.rs:fn delivermsg → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/14-exception-interrupt.md:500: os/kernel/src/irq_manager.rs:fn notify_hardware → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:292: os/kernel/src/smp.rs:struct SmpState → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:306: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:316: os/kernel/src/smp.rs:struct BootLockGuard → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:316: os/kernel/src/smp.rs:static BOOT_LOCK → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:316: os/kernel/src/smp.rs:fn ap_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:331: os/kernel/src/smp.rs:const READY → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:340: os/kernel/src/smp.rs:fn has_pending → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:349: os/kernel/src/smp.rs:const SAVE_CTX → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:355: os/arch/src/lib.rs:fn save_frame_to_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:364: os/kernel/src/smp.rs:struct CpuLocal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:373: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:431: os/kernel/src/smp.rs:const SAVE_CTX → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:472: os/arch/src/arm64/smp.rs:fn gicd_base → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:473: os/arch/src/riscv64/smp.rs:impl SmpArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:474: os/arch/src/arch/smp.rs:fn pause → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:476: os/arch/src/lib.rs:fn save_frame_to_context → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:525: os/kernel/src/lib.rs:fn smp_state_boot_unchecked → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:525: os/kernel/src/lib.rs:fn try_smp_state_with → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:529: os/kernel/src/lib.rs:fn bsp_finish_booting → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:625: os/kernel/src/smp.rs:struct SmpState → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:799: os/kernel/src/smp.rs:fn sched_handler_full → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:879: os/kernel/src/smp.rs:fn schedule_stop_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:913: os/kernel/src/smp.rs:fn schedule_vminhibit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:1056: os/kernel/src/proc_table.rs:fn notify_scheduler → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/16-smp.md:1099: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:238: os/kernel/src/proc.rs:fn suspend_for_vm_with_copy → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:240: os/kernel/src/proc.rs:fn suspend_for_vm_with_copy → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:260: os/kernel/src/syscall_process.rs:fn dispatch_schedctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:268: os/kernel/src/syscall_process.rs:fn dispatch_schedctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:280: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:289: os/kernel/src/lib.rs:fn with_protection_mut → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:829: os/kernel/src/syscall_process.rs:fn add_ipc_filter_arm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:839: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:840: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:841: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:842: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:843: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:844: os/kernel/src/syscall_process.rs:fn dispatch_clear → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:845: os/kernel/src/syscall_process.rs:fn dispatch_runctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:846: os/kernel/src/syscall_process.rs:fn dispatch_exec → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:847: os/kernel/src/syscall_process.rs:fn dispatch_statectl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/17-syscall-process.md:848: os/kernel/src/syscall_process.rs:fn dispatch_statectl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/18-syscall-copy.md:113: os/arch/src/arch/direct_map.rs:const VM_DIRECT_MAP_SIZE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/18-syscall-copy.md:278: os/kernel/src/cross_space.rs:fn write_to_process_vmcheck → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:153: os/kernel/src/syscall_signal.rs:const SIGSNDELAY → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:159: os/libs/minix-types/src/ipc/message.rs:struct MessLsysKernVsafecopy → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:353: os/kernel/src/proc.rs:impl ProcName → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:361: os/arch/src/arch/signal_context.rs:struct SignalInfo → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:375: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:377: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:385: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:401: os/kernel/src/syscall_signal.rs:const NSIG → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:409: os/kernel/src/proc.rs:impl ProcName → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:590: os/kernel/src/syscall_signal.rs:const SIGSNDELAY → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:646: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:706: os/kernel/src/syscall_signal.rs:fn dispatch_sigsend → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:787: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:788: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:789: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:790: os/kernel/src/syscall_signal.rs:fn dispatch_kill → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:790: os/kernel/src/syscall_signal.rs:fn cause_signal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:791: os/kernel/src/syscall_signal.rs:fn dispatch_endksig → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:792: os/kernel/src/syscall_signal.rs:fn dispatch_sigsend → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:801: os/kernel/src/syscall_signal.rs:fn dispatch_sigsend → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:852: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:853: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:854: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:855: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:856: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:857: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:858: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:859: os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:860: os/kernel/src/syscall_signal.rs:fn test_sigreturn_invalid_endpoint → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:861: os/kernel/src/syscall_signal.rs:fn test_sigsend_unsaved_process_returns_einval → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:862: os/kernel/src/syscall_signal.rs:fn test_is_lethal → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:863: os/kernel/src/syscall_signal.rs:fn occupy_two_slots → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/19-syscall-signal.md:864: os/kernel/src/syscall_signal.rs:fn test_cause_signal_external_path_notifies_manager → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:232: os/kernel/src/syscall_device.rs:struct PvLongPair → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:245: os/kernel/src/syscall_device.rs:fn check_irq_permission → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:295: os/kernel/src/syscall_device.rs:fn check_irq_permission → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:363: os/kernel/src/syscall_device.rs:fn dispatch_irqctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:429: os/kernel/src/syscall_device.rs:fn dispatch_devio → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:467: os/kernel/src/syscall_device.rs:fn dispatch_iopenable → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:546: os/kernel/src/syscall_device.rs:fn dispatch_vdevio → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:581: os/kernel/src/syscall_device.rs:const SDEVIO_BUF_MAX → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:616: os/kernel/src/syscall_device.rs:fn deref_mut → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:683: os/kernel/src/syscall_device.rs:fn dispatch_irqctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:684: os/kernel/src/syscall_device.rs:fn dispatch_vdevio → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:685: os/kernel/src/syscall_device.rs:fn dispatch_vdevio → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:731: os/kernel/src/syscall_device.rs:fn test_sdevio_invalid_direction_returns_einval → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/20-syscall-device.md:733: os/kernel/src/syscall_device.rs:fn test_readbios_overflow_returns_einval → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:143: os/kernel/src/syscall_clock.rs:fn dispatch_settime → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:143: os/kernel/src/proc.rs:fn tick_prof_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:158: os/kernel/src/syscall_clock.rs:fn dispatch_setalarm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:167: os/kernel/src/syscall_clock.rs:fn dispatch_setalarm → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:185: os/kernel/src/syscall_clock.rs:fn dispatch_settime → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:205: os/kernel/src/proc.rs:fn tick_prof_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:207: os/kernel/src/proc.rs:fn add_sys_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:569: os/kernel/src/proc.rs:fn add_sys_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:695: os/kernel/src/proc.rs:fn add_user_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/21-syscall-clock.md:695: os/kernel/src/proc.rs:fn add_sys_time → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:191: os/kernel/src/capability.rs:struct ProcessCapability → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:236: os/kernel/src/kpriv.rs:fn new → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:353: os/kernel/src/kpriv.rs:fn apply_fields_from_request → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:457: os/kernel/src/kpriv.rs:fn new → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:478: os/kernel/src/kpriv.rs:struct PrivUpdateRequest → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:539: os/kernel/src/kpriv.rs:struct PrivUpdateRequest → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:548: os/kernel/src/kpriv.rs:fn swap_slots → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:548: os/kernel/src/capability.rs:fn from_bits → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/22-privilege.md:599: os/kernel/src/syscall.rs:fn kernel_call_resume → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:258: os/kernel/src/kpriv.rs:fn default → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:262: os/kernel/src/ipc_filter.rs:fn chain_allowed → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:277: os/kernel/src/ipc_filter.rs:fn set_sys_bit → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:286: os/kernel/src/ipc_filter.rs:fn ipc_filter_check → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:313: os/kernel/src/ipc_filter.rs:type ClassResolver → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:322: os/kernel/src/ipc_filter.rs:fn el_check → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:350: os/kernel/src/proc.rs:fn fork_from → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:465: os/kernel/src/proc.rs:fn fork_from → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:471: os/kernel/src/ipc_filter.rs:fn append_to_chain → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:492: os/kernel/src/proc.rs:fn fork_from → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/23-ipc-filter.md:492: os/kernel/src/ipc.rs:fn is_willing_to_receive → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/24-cross-space-runtime.md:350: os/kernel/src/proc.rs:fn blocked_on → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/24-cross-space-runtime.md:379: os/kernel/src/vm.rs:enum VmCheckResult → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/24-cross-space-runtime.md:402: os/kernel/src/proc.rs:fn blocked_on → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/24-cross-space-runtime.md:406: os/kernel/src/cross_space.rs:fn data_copy_vmcheck → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/25-misc-unported.md:713: os/kernel/src/misc.rs:fn profile_sample → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/25-misc-unported.md:800: os/arch/src/arch/boot.rs:fn inherit_fpu_state → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:238: os/libs/minix-rt/src/lib.rs:fn ensure_global_allocator → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:256: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:275: os/kernel/src/syscall.rs:fn privctl_set_sys → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:276: os/kernel/src/proc_table.rs:fn sched_enqueue_head → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:277: os/kernel/src/vm.rs:fn memreq_reply → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:278: os/kernel/src/irq_manager.rs:fn notify_hardware → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:311: os/plat/src/mock.rs:impl EarlyConsole → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/27-kernel-utility.md:364: os/libs/minix-rt/src/lib.rs:fn ensure_global_allocator → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/28-usermapped-data.md:237: os/kernel/src/clock.rs:fn set_alarm_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/28-usermapped-data.md:330: os/kernel/src/clock.rs:fn set_alarm_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/29-kernel-debug.md:239: os/kernel/src/debug.rs:fn runqueues_ok_cpu → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/29-kernel-debug.md:274: os/kernel/src/debug.rs:fn print_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/29-kernel-debug.md:331: os/kernel/src/debug.rs:fn test_write_rts_flags_empty → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:180: os/kernel/src/clock.rs:fn init_profile_clock: → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:181: os/kernel/src/clock.rs:fn stop_profile_clock: → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:182: os/kernel/src/clock.rs:fn register_profile_hook → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:183: os/plat/src/x86_64/interrupt.rs:const PROFILE_CLOCK_IRQ: → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:184: os/plat/src/riscv64/interrupt.rs:const PROFILE_CLOCK_IRQ: → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:185: os/arch/src/x86_64/clock.rs:fn init_profile_clock → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:186: os/arch/src/riscv64/clock.rs:fn init_profile_clock: → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:188: os/kernel/src/misc.rs:fn dispatch_profile → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:306: os/kernel/src/misc.rs:fn dispatch_profile → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:310: os/kernel/src/clock.rs:fn register_profile_hook → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:310: os/kernel/src/misc.rs:fn profile_clock_hook → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:310: os/kernel/src/clock.rs:fn unregister_profile_hook → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:314: os/kernel/src/misc.rs:fn profile_clock_tick → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/30-kernel-profile.md:355: os/plat/src/x86_64/interrupt.rs:fn test_profile_clock_irq_is_cmos_irq8 → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/31-fpu-context-switching.md:490: os/arch/src/arch/fpu_arch.rs:trait FpuArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/31-fpu-context-switching.md:551: os/arch/src/arch/exception_dispatcher.rs:fn handle_nested → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:4: os/arch/src/x86_64/boot.rs:fn inherit_fpu_state_propagates_lazy_user_policy → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:85: os/arch/src/x86_64/signal.rs:const GP_RDI → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:247: os/arch/src/x86_64/signal.rs:const GP_RDI → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:316: os/arch/src/x86_64/boot.rs:fn inherit_fpu_state_propagates_lazy_user_policy → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:333: os/arch/src/x86_64/signal.rs:const GP_RDI → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:337: os/arch/src/arm64/boot.rs:impl StacktraceArch → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/32-stack-tracing.md:536: os/kernel/src/syscall_signal.rs:fn test_cause_signal_external_path_notifies_manager → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:19: os/kernel/src/proc_table.rs:fn get → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:43: os/kernel/src/syscall.rs:fn dispatch_ipc → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:43: os/kernel/src/syscall.rs:fn dispatch_ipc_entry → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:64: os/kernel/src/syscall.rs:fn kernel_call → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:84: os/kernel/src/syscall.rs:fn dispatch_schedule → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:85: os/kernel/src/syscall.rs:fn dispatch_privctl → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:88: os/kernel/src/syscall_clock.rs:fn dispatch_times → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:114: os/kernel/src/cross_space.rs:fn data_copy_vmcheck → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/33-syscall-caller-api.md:150: os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:1478: os/boot-shim/src/uboot_main.rs:fn uboot_main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:1640: os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:1701: os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:1781: os/kernel/src/globals.rs:static RESERVED_REGION_STORE → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:2335: os/kernel/src/vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3603: os/boot-shim/src/main.rs:fn main → 符号名未出现在本句，需句意复核
+rewrite-notes/01-stage-kernel/draft/v3-01-boot-shim-bootstrap.md:3612: os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/README.md:113: os/arch/src/arch/boot.rs:load_vm_elf → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/README.md:113: os/servers/vm/src/vm_server.rs:init_boot_procs → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/README.md:113: os/servers/rs/src/table.rs:BOOT_IMAGE_PRIV_TABLE → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/README.md:128: os/servers/vm/src/vm_server.rs:init_boot_procs → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/README.md:129: os/servers/rs/src/table.rs:BOOT_IMAGE_PRIV_TABLE → 符号名未出现在本句，需句意复核
 rewrite-notes/00-master-plan/README.md:134: os/kernel/src/ipc.rs:pick_allowed_notify → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:26: os/libs/minix-rt/src/crt0.rs:fn _start → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:27: os/libs/minix-rt/src/crt0.rs:struct PsStringsRaw → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:82: os/arch/src/x86_64/trap_stub.rs:fn ipc_status_register → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/BIRTH-CHAIN-RECON-3ARCH.md:92: os/xtask/src/image.rs:const ATF_BOOT_LEG_READY → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:11: os/kernel/src/sched.rs:sched_proc → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:59: os/kernel/src/syscall.rs:dispatch_vmctl → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:59: os/servers/pm/src/exit.rs:exit_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:194: os/kernel/src/syscall.rs:nk4c_legs_report → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:265: os/kernel/src/trap_dispatch.rs:riscv64_user_body → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:330: os/kernel/src/sched.rs:clamp_cpu_to_bsp → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:338: os/arch/src/riscv64/tlb.rs:set_active_root → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:361: os/libs/minix-types/src/types/boot.rs:USER_VA_LIMIT → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:434: os/kernel/src/trap_dispatch.rs:riscv64_fpu_trap_body → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:440: os/arch/src/riscv64/trap_stub.rs:riscv64_kernel_trap_vector → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:442: os/arch/src/riscv64/trap_return.rs:restore_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:571: os/kernel/src/vm.rs:nk4a_walk_reconcile → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:573: os/kernel/src/vm.rs:lookup_range_in_table → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:574: os/kernel/src/syscall.rs:kernel_call_finish_ipc_door → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:580: os/kernel/src/pte_walk.rs:walk_x86_64 → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:583: os/kernel/src/vm.rs:cross_space_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:652: os/kernel/src/vm.rs:cross_space_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:654: os/arch/src/riscv64_walk.rs:walk_read_with → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:665: os/kernel/src/sched.rs:sched_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:692: os/libs/minix-types/src/types/boot.rs:USER_VA_LIMIT → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:204: os/kernel/src/syscall.rs:nk4c_legs_report → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:275: os/kernel/src/trap_dispatch.rs:riscv64_user_body → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:340: os/kernel/src/sched.rs:clamp_cpu_to_bsp → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:348: os/arch/src/riscv64/tlb.rs:set_active_root → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:371: os/libs/minix-types/src/types/boot.rs:USER_VA_LIMIT → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:444: os/kernel/src/trap_dispatch.rs:riscv64_fpu_trap_body → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:450: os/arch/src/riscv64/trap_stub.rs:riscv64_kernel_trap_vector → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:452: os/arch/src/riscv64/trap_return.rs:restore_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:581: os/kernel/src/vm.rs:nk4a_walk_reconcile → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:583: os/kernel/src/vm.rs:lookup_range_in_table → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:584: os/kernel/src/syscall.rs:kernel_call_finish_ipc_door → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:590: os/kernel/src/pte_walk.rs:walk_x86_64 → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:593: os/kernel/src/vm.rs:cross_space_copy → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:691: os/kernel/src/vm.rs:cross_space_copy → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:693: os/arch/src/riscv64_walk.rs:walk_read_with → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:694: os/servers/vm/src/brk.rs:extend_upto_v → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:695: os/servers/vm/src/memtype.rs:MemType::supports_resize → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:696: os/xtask/src/image.rs:ATF_BOOT_LEG_READY → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:699: os/servers/pm/src/exit.rs:exit_proc → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:701: os/arch/src/riscv64/trap_stub.rs:riscv64_kernel_trap_vector → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:701: os/arch/src/riscv64/trap_return.rs:restore_to_user → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:702: os/kernel/src/trap_dispatch.rs:forward_pagefault_to_vm → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:702: os/kernel/src/syscall.rs:dispatch_vmctl → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:705: os/kernel/src/sched.rs:clamp_cpu_to_bsp → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:705: os/arch/src/riscv64/tlb.rs:set_active_root → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:705: os/kernel/src/trap_dispatch.rs:riscv64_user_body → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:706: os/kernel/src/trap_dispatch.rs:riscv64_fpu_trap_body → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:707: os/kernel/src/vm.rs:cross_space_copy → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:707: os/kernel/src/syscall.rs:kernel_call_finish_ipc_door → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:707: os/kernel/src/pte_walk.rs:walk_x86_64 → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:704: os/kernel/src/sched.rs:sched_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:731: os/libs/minix-types/src/types/boot.rs:USER_VA_LIMIT → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:732: os/arch/src/riscv64_walk.rs:walk_read_with → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:733: os/servers/vm/src/brk.rs:extend_upto_v → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:734: os/servers/vm/src/memtype.rs:MemType::supports_resize → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:735: os/xtask/src/image.rs:ATF_BOOT_LEG_READY → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:738: os/servers/pm/src/exit.rs:exit_proc → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:740: os/arch/src/riscv64/trap_stub.rs:riscv64_kernel_trap_vector → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:740: os/arch/src/riscv64/trap_return.rs:restore_to_user → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:741: os/kernel/src/trap_dispatch.rs:forward_pagefault_to_vm → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:741: os/kernel/src/syscall.rs:dispatch_vmctl → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:744: os/kernel/src/sched.rs:clamp_cpu_to_bsp → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:744: os/arch/src/riscv64/tlb.rs:set_active_root → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:744: os/kernel/src/trap_dispatch.rs:riscv64_user_body → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:745: os/kernel/src/trap_dispatch.rs:riscv64_fpu_trap_body → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:746: os/kernel/src/vm.rs:cross_space_copy → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:746: os/kernel/src/syscall.rs:kernel_call_finish_ipc_door → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md:746: os/kernel/src/pte_walk.rs:walk_x86_64 → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md:37: os/kernel/src/trap_dispatch.rs:trap_dispatch → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md:99: os/arch/src/riscv64/paging.rs:l2_index → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md:112: os/arch/src/arch/direct_map.rs:vm_phys_to_virt → 符号名未出现在本句，需句意复核
@@ -864,6 +1313,7 @@ rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md:267: os/arch/src/x8
 rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md:267: os/libs/minix-sys/src/arch_trap.rs:ipc_trap → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md:297: os/libs/minix-sys/src/ipc.rs:commit_message_to_memory → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md:301: os/kernel/src/ipc.rs:KernelUserCopy → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/PENDING-DECISIONS-UNBLOCK-20261009.md:130: os/kernel/src/debug.rs:fn runqueues_ok → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/STAGE-KERNEL-FREEZE-READY-20261008.md:20: os/kernel/src/lib.rs:fn kmain → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/STAGE-KERNEL-FREEZE-READY-20261008.md:21: os/kernel/src/misc.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/STAGE-KERNEL-FREEZE-READY-20261008.md:24: os/libs/minix-platform/src/global.rs:static PLATFORM → 符号名未出现在本句，需句意复核
@@ -909,17 +1359,82 @@ rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md:317: os/arch/src/riscv6
 rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md:337: os/libs/minix-sef/src/lib.rs:sef_receive_status → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md:337: os/servers/devman/src/ipc/minix.rs:receive_message → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md:368: os/kernel/src/arch/direct_map.rs:KERNEL_DIRECT_MAP_BASE → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-DONE.md:19: os/boot-shim/src/lib.rs:fn emit_byte → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-DONE.md:21: os/libs/minix-types/src/ipc/message.rs:const → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-DONE.md:23: os/kernel/src/lib.rs:fn pick_and_bill → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-DONE.md:24: os/arch/src/x86_64/protection.rs:fn init_ap → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-DONE.md:26: os/arch/src/x86_64/clock.rs:fn init_local_timer → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-DONE.md:26: os/kernel/src/clock.rs:fn rearm_local_tick → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:14: os/boot-shim/src/uefi_helpers.rs:fn build_memmaps → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:20: os/boot-shim/src/lib.rs:fn emit_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:22: os/libs/minix-types/src/ipc/message.rs:const → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:24: os/kernel/src/lib.rs:fn pick_and_bill → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:25: os/arch/src/x86_64/protection.rs:fn init_ap → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:27: os/arch/src/x86_64/clock.rs:fn init_local_timer → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:27: os/kernel/src/clock.rs:fn rearm_local_tick → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:140: os/libs/minix-types/src/types/mproc.rs:MProcSnap → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-DONE.md:169: os/arch/src/x86_64/trap_stub.rs:fn ipc_status_register → 符号名未出现在本句，需句意复核
 rewrite-notes/coordination/TODO-LEDGER-OPEN.md:19: os/kernel/src/smp.rs:fn cpu_is_ready → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:22: os/kernel/src/lib.rs:fn finish_and_restore → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:23: os/kernel/src/clock.rs:fn rearm_local_tick → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:23: os/kernel/src/smp.rs:fn smp_ap_tail → 符号名未出现在本句，需句意复核
-rewrite-notes/coordination/TODO-LEDGER-OPEN.md:24: os/kernel/src/proc_table.rs:fn sched_for_cpu_mut → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:21: os/kernel/src/trap_dispatch.rs:x86_trap_dispatch_body → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:21: os/kernel/src/lib.rs:fn finish_and_restore → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:22: os/kernel/src/smp.rs:fn smp_ap_tail → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:23: os/kernel/src/proc_table.rs:fn sched_for_cpu_mut → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/TODO-LEDGER-OPEN.md:163: os/kernel/src/smp.rs:struct BootLockGuard → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/edge_todo.md:653: os/kernel/src/kmess.rs:KernelConsole → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:487: os/commands/usr-bin/textfilter/src/paste.rs:fn_delimiter_byte → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:487: os/commands/usr-bin/textfilter/src/comm.rs:fn_line_cmp → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:504: os/commands/usr-bin/textfilter/src/pr.rs:fn expand_tabs → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:566: os/commands/usr-bin/textfilter/src/bin_support.rs:fn args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:586: os/commands/usr-bin/textfilter/src/bin_support.rs:fn args_bytes → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:698: os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:803: os/libs/minix-sys/src/lib.rs:fn open → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:803: os/libs/minix-types/src/types/errno.rs:fn err_line → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:820: os/commands/usr-bin/textfilter/src/fold.rs:fn fold_line → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:855: os/commands/usr-bin/textfilter/src/fold.rs:fn fold_line → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:984: os/commands/games/text-games/tests/argv_seam_face.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:994: os/commands/usr-bin/textfilter/src/window.rs:fn lines_of → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1045: os/commands/games/text-games/tests/argv_seam_face.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1126: os/commands/usr-bin/textfilter/tests/head_face.rs:an_operand_ends_option_scanning_like_c → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1199: os/commands/usr-bin/textfilter/src/bin/units.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:1271: os/commands/usr-bin/textfilter/src/bin/cksum.rs:run → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:2442: os/commands/usr-bin/textfilter/src/sort.rs:fn parse_options → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:2587: os/commands/usr-bin/textfilter/src/split.rs:fn parse_split_args → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:3161: os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:3279: os/commands/games/text-games/tests/argv_seam_face.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:4016: os/kernel/src/kerninfo.rs:const KERNINFO_USER_VA → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/new_edge4.md:4018: os/libs/minix-types/src/types/boot.rs:const KERNINFO_USER_VA → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/design-d2.md:47: os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/fact.md:107: os/kernel-image/src/bootface_a64.rs:fn bootface_a64 → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/reader-abc.md:94: os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/reader-abc.md:108: os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/reader-abc.md:218: os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/reader-abc.md:472: os/libs/minix-types/src/types/cell.rs:fn get → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round2/reader-fix-log.md:17: os/kernel/src/smp.rs:fn smp_init → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/design-d2.md:84: os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/fact.md:15: os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/fact.md:34: os/boot-shim/src/uefi_helpers.rs:fn → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/fact.md:135: os/plat/src/riscv64/interrupt.rs:fn new → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/reader-abc.md:444: os/arch/src/x86_64/arch_init.rs:struct X86_64ArchInit → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round1/reader-abc.md:444: os/libs/minix-platform/src/acpi.rs:fn parse → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round3/reader-a.md:195: os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/panel/round3/reader-b.md:66: os/kernel-image/src/bootface_a64.rs:fn bootface_a64 → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/defect-ledger.md:2333: os/kernel/src/vm_handoff.rs:f → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/certify/round36-fact-pass1.md:24: os/kernel/src/vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round32/reader-c.md:170: os/kernel/src/globals.rs:MEMMAP_REGION_STORE_LEN → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round35/fact-a.md:38: os/libs/minix-boot/src/handoff_v1.rs:struct BootHandoffV1 → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/design-d2.md:195: os/boot-shim/src/opensbi_helpers.rs:fn entry_path_eq → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/fact-b.md:114: os/kernel/src/vm_handoff.rs:fn build_vm_handoff → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/panel/round36/fact-b.md:114: os/kernel/src/lib.rs:fn resume_after_v1_decode → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round1-certify.md:79: os/arch/src/arch/clock.rs:const DEFAULT_HZ → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/panel/round2/refute.md:79: os/arch/src/arch/clock.rs:const DEFAULT_HZ → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/defect-ledger.md:281: os/kernel/src/lib.rs:fn init_protection → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round3-certify.md:22: os/kernel/src/lib.rs:fn init_protection → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/panel/round1/reader-abc.md:107: os/kernel/src/lib.rs:fn init_protection → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/panel/round1/refute.md:60: os/kernel/src/lib.rs:fn kernel_may_alloc → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/panel/round3/reader-a.md:36: os/kernel/src/lib.rs:fn init_protection → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/panel/round3/reader-b.md:83: os/kernel/src/lib.rs:fn init_protection → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/panel/round3/reader-c.md:122: os/kernel/src/lib.rs:fn init_protection → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round5/reader-b.md:198: os/kernel/src/boot_policy.rs:fn plan_kernel_mapping → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round5/reader-b.md:209: os/kernel/src/boot_policy.rs:fn plan_kernel_mapping → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round1/refute.md:161: os/boot-shim/src/loader.rs:fn load_boot_modules_with_loader → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round1/refute.md:162: os/kernel-image/src/bootface.rs:fn place_modules → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round3/reader-b.md:342: os/kernel/src/lib.rs:fn kmain_verify → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/panel/round3/reader-b.md:342: os/boot-shim/src/loader.rs:fn compute_kernel_layout → 符号名未出现在本句，需句意复核
+rewrite-notes/coordination/review-eval/meta/04-platform-discovery-review.md:171: os/kernel/src/lib.rs:fn arch_boot_impl → 符号名未出现在本句，需句意复核
 rewrite-notes/08-stage-is/01-is-init-main.md:466: os/servers/rs/src/sef.rs:struct SefInitInfo → 符号名未出现在本句，需句意复核
 rewrite-notes/08-stage-is/01-is-init-main.md:515: os/servers/rs/src/dispatch.rs:enum DispatchKind → 符号名未出现在本句，需句意复核
 rewrite-notes/08-stage-is/01-is-init-main.md:583: os/servers/rs/src/main.rs:fn main → 符号名未出现在本句，需句意复核
