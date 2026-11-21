@@ -1,0 +1,921 @@
+# TODO 单一账本（V3.7 / V3.8-r2）——规范源；旧 todo markdown 已迁移后删除。
+# 字段：id/stage/doc/title/status/severity/kind/origin/evidence/defer/
+#       merged_into/legacy_status/origin_file/origin_line/origin_commit/
+#       verified_by/verified_at/aliases/scope/blocked/blocked_reason
+# status: open | closed | rejected | defer-approved | historical
+- id: COORD-ARCH-TODO-LEDGER-DONE
+  stage: coordination
+  doc: coordination
+  title: 'archive: TODO-LEDGER-DONE.md（178 行）'
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/coordination/TODO-LEDGER-DONE.md:1
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-DONE.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: 'archive: open=41 done=120'
+  evidence: '`wc -l rewrite-notes/coordination/TODO-LEDGER-DONE.md` → 178（与 b5 title 的 178 行一致）；`sed -n ''1p''` → `> **创建**:
+    2026-10-08`，line 1 是文件头而非表行'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - ARCH-TODO-LEDGER-DONE
+  scope: stage
+  note: ARCH-* 是文件级归档标记（合成行），无真实待办行；b5 行号指向文件头。按 DONE/INDEX 规则判 historical。
+- id: COORD-C-17
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed`（三条腿生产传输已实现并有宿主测；无生产驱动消费者，消费接法挂 `E-DMWIRE`）'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:114
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 114
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`grep -n "impl ClientTransport for SysClientTransport" os/libs/minix-sys/src/devman_client.rs` → :142；`grep -rnE
+    "todo!|unimplemented!" os/libs/minix-sys/src/devman_client.rs | wc -l` → 0；OPEN:114 载仅宿主测实例化、无生产驱动消费者（消费接法挂 E-DMWIRE）'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - C-17
+  scope: stage
+  note: 三条腿生产传输已实现并有宿主测，但无驱动入口调用；按行的自定判据『只在测试里存在不等于闭』，故 open。
+- id: COORD-C-46
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:115
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 115
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`grep -rn "pub fn mount\|mount_via\|umount_via" os/libs/minix-sys/src --include=*.rs` → 0 命中；`grep -n "C-46"
+    rewrite-notes/coordination/new_edge4.md` → :62 行末『C-46 全部余件仅剩 mount/umount（W1 transport 阻塞）』；VFS 仅有内部 mount_pfs/mount_fs_root'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - C-46
+  scope: stage
+  note: getcwd/times/pathconf/sigaction 等余件已逐件收口，mount/umount 仍无 minix-sys 顶层 wrappers 且 VFS 侧未接；故 open。
+- id: COORD-C-57
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed` / `L1`（读侧已闭并入门禁，写侧仍被可写根盘门控）'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:116
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 116
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`ls os/qemu-tests/test-cmd-smoke*.sh` → test-cmd-smoke.sh / -aarch64.sh / -riscv64.sh 三脚本在位；`.github/workflows/cmd-smoke.yml`
+    存在；OPEN:116 载读侧已闭并入门禁、写侧（cp/mv/rm/chmod/truncate/mkfifo）仍等可写根盘 E5；`bash -n` 三脚本均 OK'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - C-57
+  scope: stage
+  note: 命令冒烟门读侧（marker/ls/cat/du）三架构本地绿，写类命令逐条盘上断言与 imgrd getdents 腿未闭；故 open。 b5 note 的 dup at :151 是误报：:151 是 18-stage-commands
+    摘要行（C-57 的另一面，非重复行）。
+- id: COORD-C-57--rm-errno-L152
+  stage: coordination
+  doc: coordination
+  title: rm 对不存在路径的 unlink errno 不落 ENOENT；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:152
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 152
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: rm 对不存在路径的 unlink errno 不落 ENOENT；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - C-57--rm-errno-L152
+  scope: stage
+  note: rm 对不存在路径的 unlink errno 不落 ENOENT；未入 b5。
+- id: COORD-E-DSWIRE-E-ISWIRE-E-ISPROD-E-ISBOOT-E-RM-L108
+  stage: coordination
+  doc: coordination
+  title: 服务传输通电族与块层接缝；未入 b5（逐条缺件清单在原账本）。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:108
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 108
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open 或 partially fixed
+  evidence: 服务传输通电族与块层接缝；未入 b5（逐条缺件清单在原账本）。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E-DSWIRE-E-ISWIRE-E-ISPROD-E-ISBOOT-E-RM-L108
+  scope: stage
+  note: 服务传输通电族与块层接缝；未入 b5（逐条缺件清单在原账本）。
+- id: COORD-E-RSWIRE-E-KERNINFO-E-MINTYPES-RS-L106
+  stage: coordination
+  doc: coordination
+  title: 虚存侧/DS 冷启动 shadow 半已落，其余解码与运行时查询桩待翻转；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:106
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 106
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: 虚存侧/DS 冷启动 shadow 半已落，其余解码与运行时查询桩待翻转；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E-RSWIRE-E-KERNINFO-E-MINTYPES-RS-L106
+  scope: stage
+  note: 虚存侧/DS 冷启动 shadow 半已落，其余解码与运行时查询桩待翻转；未入 b5。
+- id: COORD-E-VMTLB-L107
+  stage: coordination
+  doc: coordination
+  title: 目标进程地址空间标识刷新：机制三件套已闭，多核验收挂 E5；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:107
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 107
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed / 待验证
+  evidence: 目标进程地址空间标识刷新：机制三件套已闭，多核验收挂 E5；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E-VMTLB-L107
+  scope: stage
+  note: 目标进程地址空间标识刷新：机制三件套已闭，多核验收挂 E5；未入 b5。
+- id: COORD-E1
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed` / `待验证`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:102
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 102
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: OPEN:102 状态 `partially fixed` / `待验证`；`grep -n "E1" rewrite-notes/coordination/edge_todo.md` 载切片 1-5 机制面+用户态半真机通过，完整
+    E5 联调（PM/FS 参战）仍挂各 stage 轨道
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E1
+  scope: stage
+  note: 直通陷入传输已真发中断与系统调用，收口与同场联调待真机；行仍 open。 b5 note 的 dup at :134 是误报：:134 是 10 MIB 阶段行，仅提及 E1。
+- id: COORD-E5-L101
+  stage: coordination
+  doc: coordination
+  title: 端到端联调测试包（a—h 子面）；未入 b5，但 b3.tsv 已收 E5（全局不漏，仅补 b5 行级缺口）。E5 是所有真机验收的父条目。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:101
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 101
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open / 待验证
+  evidence: 端到端联调测试包（a—h 子面）；未入 b5，但 b3.tsv 已收 E5（全局不漏，仅补 b5 行级缺口）。E5 是所有真机验收的父条目。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E5-L101
+  scope: stage
+  note: 端到端联调测试包（a—h 子面）；未入 b5，但 b3.tsv 已收 E5（全局不漏，仅补 b5 行级缺口）。E5 是所有真机验收的父条目。
+- id: COORD-E5-a---h--E5-SMP-E5-ARCH-L117
+  stage: coordination
+  doc: coordination
+  title: 八个子面真机半；未入 b5。与 :101 同族，但这是子面细分行。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:117
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 117
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: 待验证
+  evidence: 八个子面真机半；未入 b5。与 :101 同族，但这是子面细分行。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E5-a---h--E5-SMP-E5-ARCH-L117
+  scope: stage
+  note: 八个子面真机半；未入 b5。与 :101 同族，但这是子面细分行。
+- id: COORD-E5-f--test-e5-ds-L165
+  stage: coordination
+  doc: coordination
+  title: 新增 test-e5-ds.sh 真机门已入 run_all x86_64 专项段，但门本身仍 open；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:165
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 165
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: 新增 test-e5-ds.sh 真机门已入 run_all x86_64 专项段，但门本身仍 open；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E5-f--test-e5-ds-L165
+  scope: stage
+  note: 新增 test-e5-ds.sh 真机门已入 run_all x86_64 专项段，但门本身仍 open；未入 b5。
+- id: COORD-E8
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed` / `待验证`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:104
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 104
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: OPEN:104 状态 `partially fixed` / `待验证`；`grep -n "## E8" rewrite-notes/coordination/edge_todo.md` → :260；同文 :272
+    载 trap 层本体真机贯通，SCHEDCTL 通电余项仍挂
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E8
+  scope: stage
+  note: 同场测试取频结果为 0，需设备管理覆盖修复后复跑；行仍 open。
+- id: COORD-E9
+  stage: coordination
+  doc: coordination
+  title: '`open`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:105
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 105
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: OPEN:105 状态 `open`；`sed -n '305,307p' rewrite-notes/coordination/edge_todo.md` → 2026-11-21 D02 审计：VmApi 分域无残余，余
+    E5 通电族对端断言补齐；wrapper 五域已就绪（d0abe5143）
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - E9
+  scope: stage
+  note: 三域同型生产接线批未做，占位返回码仍是刻意的失败即止；故 open。
+- id: COORD-INDEX-TODO-LEDGER-INDEX
+  stage: coordination
+  doc: coordination
+  title: 'alias index: TODO-LEDGER-INDEX.md'
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/coordination/TODO-LEDGER-INDEX.md:1
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-INDEX.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: alias-index
+  evidence: '`wc -l rewrite-notes/coordination/TODO-LEDGER-INDEX.md` → 195；`sed -n ''1p''` → `> **创建**: 2026-10-08`；文件是别名索引，无
+    open 条目'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - INDEX-TODO-LEDGER-INDEX
+  scope: stage
+  note: INDEX-* 同为文件级归档标记（合成行）；line 1 是文件头。判 historical。
+- id: COORD-K6-L22
+  stage: coordination
+  doc: coordination
+  title: 次级核本地定时器真机载体只打印不断言；未入 b5。注：DONE §4 已有 test-smp-aps 断言门 closed 行，本行可能账面滞后。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:22
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 22
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed / 待验证
+  evidence: 次级核本地定时器真机载体只打印不断言；未入 b5。注：DONE §4 已有 test-smp-aps 断言门 closed 行，本行可能账面滞后。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - K6-L22
+  scope: stage
+  note: 次级核本地定时器真机载体只打印不断言；未入 b5。注：DONE §4 已有 test-smp-aps 断言门 closed 行，本行可能账面滞后。
+- id: COORD-OPEN-160-L160
+  stage: coordination
+  doc: coordination
+  title: 02 篇『后续』指向不存在的 07-pagetable-struct.md；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:160
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 160
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open (指针已撤/正文待补)
+  evidence: 02 篇『后续』指向不存在的 07-pagetable-struct.md；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - OPEN-160-L160
+  scope: stage
+  note: 02 篇『后续』指向不存在的 07-pagetable-struct.md；未入 b5。
+- id: COORD-OPEN-163-L163
+  stage: coordination
+  doc: coordination
+  title: 锚点底账行号大面积漂移；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:163
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 163
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: 锚点底账行号大面积漂移；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - OPEN-163-L163
+  scope: stage
+  note: 锚点底账行号大面积漂移；未入 b5。
+- id: COORD-OPEN-164-L164
+  stage: coordination
+  doc: coordination
+  title: 阶段正式文档数量口径不一致；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:164
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 164
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: 阶段正式文档数量口径不一致；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - OPEN-164-L164
+  scope: stage
+  note: 阶段正式文档数量口径不一致；未入 b5。
+- id: COORD-OPEN-166-L166
+  stage: coordination
+  doc: coordination
+  title: x86_64 启动链非确定性缺页风暴（原无编号）；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:166
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 166
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open / 待验证
+  evidence: x86_64 启动链非确定性缺页风暴（原无编号）；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - OPEN-166-L166
+  scope: stage
+  note: x86_64 启动链非确定性缺页风暴（原无编号）；未入 b5。
+- id: COORD-OPEN-26-L26
+  stage: coordination
+  doc: coordination
+  title: 原无编号：01 文档按文件名被内核/架构代码引用，改名即断链；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:26
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 26
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: 原无编号：01 文档按文件名被内核/架构代码引用，改名即断链；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - OPEN-26-L26
+  scope: stage
+  note: 原无编号：01 文档按文件名被内核/架构代码引用，改名即断链；未入 b5。
+- id: COORD-P-ALL-04-SD-25--probe-remnants-L162
+  stage: coordination
+  doc: coordination
+  title: 探针残骸块；余 os/kernel+os/arch 两站并入 CC-INSTRUMENT；未入 b5。与 b5:36 同族但为独立行。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:162
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 162
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: 探针残骸块；余 os/kernel+os/arch 两站并入 CC-INSTRUMENT；未入 b5。与 b5:36 同族但为独立行。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - P-ALL-04-SD-25--probe-remnants-L162
+  scope: stage
+  note: 探针残骸块；余 os/kernel+os/arch 两站并入 CC-INSTRUMENT；未入 b5。与 b5:36 同族但为独立行。
+- id: COORD-P-ALL-08-L38
+  stage: coordination
+  doc: coordination
+  title: 用户态服务框架语义补齐（信号代理循环、按号分派消费方盘点）；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:38
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 38
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: 用户态服务框架语义补齐（信号代理循环、按号分派消费方盘点）；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - P-ALL-08-L38
+  scope: stage
+  note: 用户态服务框架语义补齐（信号代理循环、按号分派消费方盘点）；未入 b5。
+- id: COORD-P-ALL-13-L40
+  stage: coordination
+  doc: coordination
+  title: delivery-leg 内存序屏障：行写『今天无事可做，绑 PD-02 unclamp』；未入 b5。注：C2E 已于 2026-10-31 撤 x86/aarch64 钳制，该行的触发条件可能已成立，需重新评估——这是最值得补审的
+    missed 项。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:40
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 40
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: adjudicated (PD-19)
+  evidence: delivery-leg 内存序屏障：行写『今天无事可做，绑 PD-02 unclamp』；未入 b5。注：C2E 已于 2026-10-31 撤 x86/aarch64 钳制，该行的触发条件可能已成立，需重新评估——这是最值得补审的
+    missed 项。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - P-ALL-13-L40
+  scope: stage
+  note: delivery-leg 内存序屏障：行写『今天无事可做，绑 PD-02 unclamp』；未入 b5。注：C2E 已于 2026-10-31 撤 x86/aarch64 钳制，该行的触发条件可能已成立，需重新评估——这是最值得补审的
+    missed 项。
+  blocked: true
+  blocked_reason: delivery-leg 内存序屏障：行写『今天无事可做，绑 PD-02 unclamp』；未入 b5。注：C2E 已于 2026-10-31 撤 x86/aarch64 钳制，该行的触发条件可能已成立，需重新评估——这是最值得补审的
+    missed 项。
+- id: COORD-PD-07
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed` / `L1`（SD-1 债①等价断言层已落地且真机门绿；余 SD-3/SD-4）'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:39
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 39
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`grep -rn "check_boot_postconditions" os/libs/minix-boot/src/boot_form.rs os/kernel/src/lib.rs` → 定义+kmain 活接线；OPEN:39
+    载 SD-1 债①等价断言层已落地且真机门绿，余 SD-3/SD-4；PENDING-DECISIONS-3ARCH-PARITY.md PD-07 状态=实现部分'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - PD-07
+  scope: stage
+  note: PD-07 采乙（不统一形态、补共同 boot postcondition）：SD-1 已落，SD-3 per-arch 最后一根线与 SD-4 linker/load 地址常量清扫仍在案，故 open。
+- id: COORD-PD-08--test-count-mismatch-L148
+  stage: coordination
+  doc: coordination
+  title: 文档测试数与实测不一致的三处；未入 b5。注：PD-08 裁决为『陈旧，按指定包口径重算』。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:148
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 148
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: 文档测试数与实测不一致的三处；未入 b5。注：PD-08 裁决为『陈旧，按指定包口径重算』。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - PD-08--test-count-mismatch-L148
+  scope: stage
+  note: 文档测试数与实测不一致的三处；未入 b5。注：PD-08 裁决为『陈旧，按指定包口径重算』。
+- id: COORD-S-6
+  stage: coordination
+  doc: coordination
+  title: '`adjudicated` / `L2`'
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:23
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 23
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: adjudicated
+  evidence: '`grep -n "K2" rewrite-notes/coordination/edge1.md` → K2 ✅ 2026-09-18（per-CPU Scheduler 入 CpuLocal、sched_proc
+    EBADCPU、跨 CPU 迁移）；`grep -n "sched_for_cpu" os/kernel/src/proc_table.rs` → 存在；`sed -n ''920,930p'' rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`
+    → ProcessTable 持每 CPU Scheduler 组，C2E 后 AP 可达'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - S-6
+  scope: stage
+  note: 行内裁决『BKL 下按核分队退化为单队列、记账取代实现』已被 K2 落地与 11 篇 §3.3 推翻；裁决形态已失效且无未竟工作，判 historical（而非 closed：原裁决并未被执行）。
+- id: COORD-SD-10
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed`（仪器轮一已执行，见下）/ `L1`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:20
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 20
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`ls -l os/arch/src/ptwb.rs` → 22323 B（记录-静点走查仪器在位）；`git log -1 --format=''%h %ad %s'' --date=short 91f59c5dc`
+    → 2026-10-19 改形仪器落码；OPEN:20 载 N=7+2 轮零 HIT、写者未落网；DONE:60 载 PD-16『继续追缴』'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-10
+  scope: stage
+  note: 仪器多轮零命中只证明该暴露面边际收益低，不证明写者不存在；PD-16 未结案，行仍 open。
+- id: COORD-SD-11
+  stage: coordination
+  doc: coordination
+  title: '`open`，T1/T2/T3/T3b 已落地、余 T4（root fix `PD-28`）'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:48
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 48
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: '`grep -rln "install_vm_supplier" os --include=*.rs | wc -l` → 11（lib/alloc + ds/sched/mib/vfs/pm + pfs/mfs/memory/tty
+    等安装点）；OPEN:48 载 T1/T2/T3/T3b 落地、T4 未启动；PD-28 采甲并给 T4 两门分立放行'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-11
+  scope: stage
+  note: 迁移面已扩到 9 台（六服务+memory/tty/mfs），但 T4『删除 x86 1024 / 非 x86 2048 池分档，统一单值』仍未做，故 open。 b5 note 的 dup at :167 是误报：:167 是
+    E5/T4 mfs 定案行，仅引用 SD-11。
+- id: COORD-SD-13
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:49
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 49
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`grep -n "P-ALL-13" rewrite-notes/coordination/TODO-LEDGER-OPEN.md` → :40（delivery-leg 屏障行，adjudicated/绑 PD-02
+    unclamp）；OPEN:49 载 by-value IPC ABI 随 SD-18/PD-18 端点编码协商；SDR:975 记 mostly closed'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-13
+  scope: stage
+  note: 两项余量均有明确归属但未落：delivery-leg 屏障绑撤钳里程碑，by-value IPC ABI 是登记在案的架构演进；故 open。
+- id: COORD-SD-19
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed`，执行未竟'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:54
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 54
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`grep -rn "SD19-gate" os --include=*.rs | wc -l` → 643；OPEN:54 载 workspace 级真触发=0（除 textfilter/vm 两条存量 deny），但末段仍列
+    commands/bin 零散站与 7 处 diagnostic-floor 真修法未动；SDR:982 记 `open — dropped`'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-19
+  scope: stage
+  note: 行内末段自称『门扩面与裸丢弃收编双收官』，但余量（commands/bin 逐 bin 扫、diagnostic-floor 7 处）与 SDR 的 dropped/open 读数使本行不能判 closed；按 partially-fixed
+    规则 open。
+- id: COORD-SD-22
+  stage: coordination
+  doc: coordination
+  title: '`adjudicated` / `L2`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:25
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 25
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: adjudicated
+  evidence: '`grep -n "phys_ram_covers" os/kernel/src/syscall.rs` → :2571/:2618/:2761/:2789；`grep -n "mod phys_ram_gate_tests"
+    os/kernel/src/syscall.rs` → :4183；OPEN:25 明载余两份余量：静态守卫书面化、vmddm 四个直连导入'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-22
+  scope: stage
+  note: H5 只闭 riscv PteRead/Write/Zero 三臂；PD-21 第二层硬件位（PAN/SUM/SMAP）与两项余量未落，故 open。
+- id: COORD-SD-23
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed`（x86_64 恢复腿已落并真机坐实） / `L1`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:21
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 21
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`grep -n "fpu_owner" os/kernel/src/trap_dispatch.rs` → 三架构臂各有归属写入；`sed -n ''1508,1510p'' rewrite-notes/01-stage-kernel/14-exception-interrupt.md`
+    → FpuTrap 执行臂（CLTS+保存旧属主+恢复+交接）已写进正式篇；`grep -n "不实现\|待接线" rewrite-notes/01-stage-kernel/draft/31-fpu-context-switching.md`
+    → D5 仍称 lazy-restore 主体未实现'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-23
+  scope: stage
+  note: 代码半已闭；31 篇 draft（尚未重生成）仍滞后称主体『不实现』，跨进程保存路真机验收挂 E5/C6，故 open。
+- id: COORD-SD-24
+  stage: coordination
+  doc: coordination
+  title: '`stopgap landed` / `L2`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:17
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 17
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: stopgap landed
+  evidence: '`grep -rn "clamp_cpu_to_bsp" os --include=*.rs` → 0 命中；`git log -1 --format=''%h %ad %s'' --date=short dcf99d197`
+    → 2026-10-31 C2E 撤 x86_64/aarch64 钳制；`git log -1 --format=''%h %ad %s'' --date=short 2d5435f1b` → 2026-11-01 C2ESSWI riscv
+    改运行时窄钳（os/kernel/src/sched.rs 内联 cfg(riscv64) + sswi_setip_base 判据）；OPEN:20/SD-10 与 PD-16 仍 open'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-24
+  scope: stage
+  note: 行文（2026-10-18）称『钳位本身仍在生效』已被 C2E/C2ESSWI 推翻；但行定义的最后前置 PD-16 跨核内存腐蚀仍未结案，故不是 closed。非 blocked：不需用户裁决。 b5 note 的 dup at
+    :150 是误报：:150 是 AP LAPIC 定时器行，仅引用 SD-24。
+- id: COORD-SD-24--arm1--idle-clear-L18
+  stage: coordination
+  doc: coordination
+  title: 与 b5:17 同 ID 的独立子行（中断入口唤醒空闲核清零臂）；b5 只取了 :17，本臂未入任何 batch。注：C2D/C2E 后行文已旧。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:18
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 18
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: 与 b5:17 同 ID 的独立子行（中断入口唤醒空闲核清零臂）；b5 只取了 :17，本臂未入任何 batch。注：C2D/C2E 后行文已旧。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-24--arm1--idle-clear-L18
+  scope: stage
+  note: 与 b5:17 同 ID 的独立子行（中断入口唤醒空闲核清零臂）；b5 只取了 :17，本臂未入任何 batch。注：C2D/C2E 后行文已旧。
+- id: COORD-SD-24--idle-flag-clear-L19
+  stage: coordination
+  doc: coordination
+  title: 与 b5:17 同 ID 的机制细节子行；b5 未覆盖，manifest 亦无其他行取自本文件。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:19
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 19
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: 与 b5:17 同 ID 的机制细节子行；b5 未覆盖，manifest 亦无其他行取自本文件。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-24--idle-flag-clear-L19
+  scope: stage
+  note: 与 b5:17 同 ID 的机制细节子行；b5 未覆盖，manifest 亦无其他行取自本文件。
+- id: COORD-SD-25
+  stage: coordination
+  doc: coordination
+  title: '`stopgap landed` / `L1`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:36
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 36
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: stopgap landed
+  evidence: '`grep -rn "用后即滚" os --include=*.rs | wc -l` → 0（行内记 13 行/7 文件，读数已漂）；`grep -rnE "nk4[ac]:" os --include=*.rs |
+    wc -l` → 86（行内记 15）；OPEN:36 载余站分布在 os/kernel/src 与 os/arch/src，受 PD-16/SD-24 门控'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-25
+  scope: stage
+  note: 计数变化说明探针/注释被后续批次改动，但行定义的『结案后滚除』未完成；PD-10 三档规则已定，逐站执行仍受 PD-16/SD-24 未结案门控，故 open。
+- id: COORD-SD-29
+  stage: coordination
+  doc: coordination
+  title: '`open` / `L1`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:37
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 37
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: '`grep -rln "loop {}" os --include=main.rs | wc -l` → 12（行内记 42）；`grep -rln "loop {}" os --include=main.rs | sort`
+    → 9 个 drivers/net + fs/hgfs + fs/vbfs + boot-shim；`grep -rln "loop {}" os/servers --include=main.rs | wc -l` → 0'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-29
+  scope: stage
+  note: 42→12 已大幅前进，但 9 台 net stub（跨板 2.10 落五项不可用标记后保留）、hgfs/vbfs 仍为占位，聚合条目仍 open。
+- id: COORD-SD-36
+  stage: coordination
+  doc: coordination
+  title: '`open`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:50
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 50
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: '`grep -n "SD-36" rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md` → :998 `open | H5 bound ✅ 2026-10-31;
+    disposition at case closure`；`ls os/servers/vm/src/vmdm_bridge.rs` → 存在（7 处 riscv64 引用）'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-36
+  scope: stage
+  note: H5 物理地址边界校验已落，但 vmddm 架构分叉的处置（去/留）定在问题乙（PD-16）结案时裁；故 open。
+- id: COORD-SD-38
+  stage: coordination
+  doc: coordination
+  title: '`partially fixed`（执行半已落，见 `TODO-LEDGER-DONE.md` §1 同日行）/ 余下是**按行定义挂起的裁决**：fork 上游还是升级，等下一个 DTB 消费者出现时再裁；版本已钉 `=0.1.5`
+    防静默换入'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:51
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 51
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed
+  evidence: '`grep -n ''^fdt'' os/Cargo.toml` → :288 `fdt = "=0.1.5"`；`grep -rn "find_node" os/kernel-image/src` → 仅 bootface_common.rs
+    注释（无活调用）；DONE:39 载执行半（钉版+all_nodes 绕行+注释勘误）已闭、fork/upgrade 裁决挂起'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-38
+  scope: stage
+  note: 执行半已落；余下是行定义内刻意挂起的裁决（fork 上游 vs 升级，等下一个 DTB 消费者出现再裁），不属当前用户待决；按 partially-fixed 规则判 open。
+- id: COORD-SD-39
+  stage: coordination
+  doc: coordination
+  title: '`open`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:103
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 103
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: 本行正文是 `E6`/`E7`（OPEN:103 `open`）；`grep -n "pub struct SigSet" os/kernel/src/proc.rs` → :1272 `SigSet(u128)`；`grep
+    -n "SigSetBits" os/libs/minix-types/src/ipc/message.rs` → :1903；DONE:132 记 SD-39 closed
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-39
+  scope: stage
+  note: b5 ID 抽取错位：行主体=E6/E7（调用包装与协议面扩充，open），SD-39 仅作『信号集位宽已落地』引用；SD-39 本体已闭（DONE:132），E6/E7 仍 open。
+- id: COORD-SD-40
+  stage: coordination
+  doc: coordination
+  title: '`adjudicated`（已命名到结案批，等结案批执行）'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:52
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 52
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: adjudicated
+  evidence: '`grep -c "CC-INSTRUMENT" rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md` → 2；`grep -n "SD-40"
+    rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md` → :795 详条/:916 状态表；SDR:1002 `open (gated)`'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-40
+  scope: stage
+  note: adjudicated 只完成『给结案批命名』；SD-40 本体（RegionMap 兜底『打三次后永久沉默』在删除/转 fail-fast 间二选一）等 CC-INSTRUMENT 执行，前置=写者落网或 PD-16 放行终局，故
+    open。
+- id: COORD-SD-41
+  stage: coordination
+  doc: coordination
+  title: '`open` / `L2`'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:24
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 24
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: '`grep -n "fn riscv64_external_arm" os/kernel/src/trap_dispatch.rs` → :1976；`grep -n "dispatch_claimed_hardware_irq"
+    os/kernel/src/trap_dispatch.rs` → :1983/:2037/:2595；`grep -n "RISCV64_CAUSE_MISALIGNED\|SIGBUS\|SIGTRAP" os/kernel/src/trap_dispatch.rs`
+    → 用户同步异常→信号映射；`git log -1 --format=''%h %ad %s'' --date=short 35404d370` → aarch64 IRQ 路由臂；行内 2026-10-19/20 注记 + mock
+    834/0/8'
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - SD-41
+  scope: stage
+  note: 行点名的 riscv SWI/EI 臂、aarch64 生成中断臂、两架构用户同步异常→信号执行腿均已落码；但余『首源触发读数』（首个 PLIC 设备源 unmask 后 EI 臂真机点火）未取，属本行未闭的验收面，故按 open
+    遗留（SDR:1003 亦记 open(pre-SMP)）。
+- id: COORD-STAGE-01-L125
+  stage: coordination
+  doc: coordination
+  title: 阶段索引行：01 内核『仍未闭合』指向 §1（含 b5 未覆盖的 SD-24 子行）；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:125
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 125
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: 见 §1
+  evidence: 阶段索引行：01 内核『仍未闭合』指向 §1（含 b5 未覆盖的 SD-24 子行）；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - STAGE-01-L125
+  scope: stage
+  note: 阶段索引行：01 内核『仍未闭合』指向 §1（含 b5 未覆盖的 SD-24 子行）；未入 b5。
+- id: COORD-STAGE-15-L139
+  stage: coordination
+  doc: coordination
+  title: 阶段索引行：ext2/isofs E-FSBDEV 真镜像、vbfs/hgfs 后端先行；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:139
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 139
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: partially fixed 2
+  evidence: 阶段索引行：ext2/isofs E-FSBDEV 真镜像、vbfs/hgfs 后端先行；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - STAGE-15-L139
+  scope: stage
+  note: 阶段索引行：ext2/isofs E-FSBDEV 真镜像、vbfs/hgfs 后端先行；未入 b5。
+- id: COORD-STAGE-16-L140
+  stage: coordination
+  doc: coordination
+  title: 阶段索引行：九台 net 变体按 §2.10 保留不可用标记 + 3 项 stopgap；未入 b5。
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/TODO-LEDGER-OPEN.md:140
+  origin_file: rewrite-notes/coordination/TODO-LEDGER-OPEN.md
+  origin_line: 140
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open 0 + stopgap landed 3
+  evidence: 阶段索引行：九台 net 变体按 §2.10 保留不可用标记 + 3 项 stopgap；未入 b5。
+  verified_by: subagent:b5
+  verified_at: '2026-11-21'
+  aliases:
+  - STAGE-16-L140
+  scope: stage
+  note: 阶段索引行：九台 net 变体按 §2.10 保留不可用标记 + 3 项 stopgap；未入 b5。

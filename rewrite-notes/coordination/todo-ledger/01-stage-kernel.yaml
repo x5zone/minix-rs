@@ -1,30 +1,718 @@
-# TODO 单一账本（V3.7）——规范源；旧 todo markdown 仅为历史归档。
-# 字段：id/stage/doc/title/status/severity/kind/origin/evidence/defer/blocked/blocked_reason
+# TODO 单一账本（V3.7 / V3.8-r2）——规范源；旧 todo markdown 已迁移后删除。
+# 字段：id/stage/doc/title/status/severity/kind/origin/evidence/defer/
+#       merged_into/legacy_status/origin_file/origin_line/origin_commit/
+#       verified_by/verified_at/aliases/scope/blocked/blocked_reason
 # status: open | closed | rejected | defer-approved | historical
-# blocked: true 表示该条在用户裁定前阻断收敛（即使代裁授权也不得自行决定）
-#
-# 历史处置（2026-11-21 用户裁决）：D-107 清单（D01 13 项 / D02 14 项）由外部线程
-# 正在清理，按**历史 todo** 处理，不逐条收集进本账本。只保留两个哨兵条目：
-# 外部线程完成前，它们以 blocked 阻断 D01/D02 的收敛。
+- id: D01-D-062
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: I-34本条与 D-062 / D-065 的关系
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:2984
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 2984
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: Section at 01-todo.md:2984-2986 contains only the heading and a `---`; no relation text and no actionable content.
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - D-062
+  scope: doc
+  note: Row id is decision D-062; the line is the retained I-34 historical note. It is a placeholder record, not a TODO. Content
+    promised by the title ('本条与 D-062 / D-065 的关系') is absent.
 - id: D01-EXTERNAL-D107
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
-  title: 外部线程清理 D-107 清单（历史 todo，不逐条收集；完成前阻断收敛）
-  status: open
+  title: 外部 D-107 线程收口哨兵
+  status: closed
   severity: P1
   kind: code
-  origin: D-107 / 用户 2026-11-21 指示
-  evidence: ''
-  blocked: true
-  blocked_reason: D-107 清单由外部线程执行中；完成并经用户确认后本哨兵才可关闭
-- id: D02-EXTERNAL-D107
+  origin: user-confirmed
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: sentinel
+  evidence: D-107 线程收口（db7f0278d / d512c82d0）；用户 2026-11-21 确认可迁
+  verified_by: user
+  verified_at: '2026-11-21'
+  scope: doc
+  note: 线程已收口；若后续发现残留，重开本行并转 open
+- id: D01-I-18
   stage: 01-stage-kernel
-  doc: 02-higher-half-kernel
-  title: 外部线程清理 D-107 清单（历史 todo，不逐条收集；完成前阻断收敛）
+  doc: 01-boot-shim-bootstrap
+  title: §1、§3–§6 章头导语与 ≥300 行巨节体检
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:3007
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 3007
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: Doc headings at :6/8 (§1), :927/929 (§3), :1713/1715 (§4), :2375/2377 (§5) have no chapter-intro paragraph; only
+    §6 has one at :2420-2422. Max §3-§6 section is 216 lines (§3.4), so the >=300-line part passes.
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-18
+  scope: doc
+  note: 'Source line 3022 claims ✅ 已改（§4/§6 补章头导语）but HEAD lacks intros for §1/§3/§4/§5. Label-vs-reality contradiction: the
+    rewrite dropped them.'
+- id: D01-I-19
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: §3–§6 讲解条续扫「只报事实不报道理」（§2 已扫 40 条修 4；§3–§6 约 90 条待过）
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:3008
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 3008
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 'No replayable per-item record: only the closure sentence at 01-todo.md:3022 (''~90 条，修 4 条纯事实条目''); the 3582-line
+    doc targeted by the item has been replaced by the current 2673-line doc (headings differ).'
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-19
+  scope: doc
+  note: 'Decision needed: accept the 2026 full rewrite as I-19''s closure (the old §3-§6 90-item sweep target no longer exists),
+    or reopen the sweep against the new 2673-line doc. No replayable per-item record exists beyond the closure sentence at
+    01-todo.md:3022.'
+  blocked: true
+  blocked_reason: 'Decision needed: accept the 2026 full rewrite as I-19''s closure (the old §3-§6 90-item sweep target no
+    longer exists), or reopen the sweep against the new 2673-line doc. No replayable per-item record exists beyond the closure
+    sentence at 01-todo.md:3022.'
+- id: D01-I-25
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: '`os/` 全仓注释语言与锚点整改（低优；01 篇射程内样例：uefi_helpers D-64②/F8 段、bootface 头注等，随各条顺手按 a/b 口径处理）'
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:3013
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 3013
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: '`rg -n ''^\s*//.*[一-鿿]'' os --glob ''*.rs'' | wc -l` -> 233; `rg -n ''^\s*//.*(I-[0-9]+|D-[0-9]+)'' os --glob
+    ''*.rs'' | wc -l` -> 301; examples os/arch/src/arm64/paging.rs:112-115 (I-29-16), os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable/src/main.rs:31-32
+    (I-43).'
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-25
+  scope: doc
+  note: Source line 97 claims ✅ 全仓完成（CJK=0、广义锚点=0）but HEAD has 233 CJK comment lines and 301 process-anchor comment lines,
+    many added after the 2026-10-30 closure. Strong label-vs-reality contradiction.
+- id: D01-I-29-11
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: DTB reserved-memory/no-map 源策略仍待与后续 I-29 轮次对账
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:339
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 339
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: DTB reserved-memory/no-map 源策略仍待与后续 I-29 轮次对账
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-29-11
+  scope: doc
+  note: DTB reserved-memory/no-map 源策略仍待与后续 I-29 轮次对账
+- id: D01-I-29-12
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: '**01 篇正文补「内存图生产的四层责任」概念讲解**。第十轮评审收尾语点名了这件事："你这份文档已经把一个很容易被混淆的问题拆得相当清楚了——UEFI 固件事务、描述符解析、OS 内存语义分类、内核映射与分配，是不同层次的责任。现在需要做的是让这些合同经受代码和实验检验，而不是继续给它们添加抽象层。"
+    设计笔记 v1'
+  status: historical
+  severity: P2
+  kind: design
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:3018
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 3018
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: Same work as I-30 at 01-todo.md:89 ('01 篇正文补「内存图生产的四层责任」', marked ✅ R32); four-layer responsibility text present
+    at doc:1060-1067.
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-29-12
+  scope: doc
+  note: Duplicate. I-30 exists in the source at line 89 and is the canonical item; I-29-12 is a second registration of the
+    same doc task.
+  merged_into: D01-I-30
+- id: D01-I-30
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 01-todo.md:89 已关闭；I-29-12 的合并目标（内存图四层责任）
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:89
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 89
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 01-todo.md:89 已关闭；I-29-12 的合并目标（内存图四层责任）
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-30
+  scope: doc
+  note: 01-todo.md:89 已关闭；I-29-12 的合并目标（内存图四层责任）
+- id: D01-I-43
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
   status: open
   severity: P1
   kind: code
-  origin: D-107 / 用户 2026-11-21 指示
-  evidence: ''
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:1366
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 1366
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-43
+  scope: doc
+  note: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
+- id: D01-I-53
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 故障臂路由：CPL3 载荷 fault 被当作 kernel exception
+  status: historical
+  severity: P2
+  kind: design
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:54
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 54
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: 已销账
+  evidence: 'os/arch/src/x86_64/exception.rs:55-57 `is_user_mode=(cs&3)==3`; os/kernel/src/trap_dispatch.rs:444,501 `is_user`/`is_nested`;
+    children: CARRIER_DATA_SPAN at os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-faultloop/src/main.rs:162 and test-user-trap/src/main.rs:128;
+    scripts assert PASS at os/qemu-tests/test-paging-faultloop.sh:125-140 and test-user-trap.sh:121-137.'
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - I-53
+  scope: doc
+  note: Original 'CPL3 fault routed as kernel exception' diagnosis was retracted (D-093), not fixed; parent record only. Header
+    ✅ agrees; body still has stale '待裁决的方向' at line 2652.
+- id: D01-RUN-R14-04
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: Direct Map 覆盖建立的深讲缺失（01 篇只有边界声明，§4.6 明确不展开）
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:49
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
+  origin_line: 49
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: follow-ups.md:49 状态「用户批准延期至 D02（2026-11-09）」，:73 「仍开放」；02-higher-half-kernel.md:1211 「Step 4 的 DM 覆盖本篇不展开，边界见
+    01 篇的 1.4 节」；01-boot-shim-bootstrap.md §1.4 表把「运行期映射」划给 02；grep F-R14-04 rewrite-notes/coordination/review-eval/DECISIONS.md
+    => 0 命中（无 defer-approved 行）
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R14-04
+  scope: doc
+  note: 延期目标 D02 已 CONVERGED（02 run FREEZE.md）但未交付「DM 覆盖建立」一节；01/02 现互相指向，文档无归属；违反零欠账（无 DECISIONS defer-approved 判决行），需用户重新定归属
+- id: D01-RUN-R37-01
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: G11 code-publication
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:137
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
+  origin_line: 137
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 'python3 -I tools/code-publication-check.py $(grep -vE ''^#|^$'' rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/related-code.txt)
+    => ''code-publication-check: 126 处新增违规（基线内 0 处）''，exit 1；tools/publication-baseline/code.txt 不存在'
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R37-01
+  scope: doc
+  note: 与 follow-up 记载的 48 文件/126 处一致（related-code.txt 实际 50 行）；全仓裸跑为 770 处新增；os/ 冻结未修
+- id: D01-RUN-R37-02
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: G13 tutorial-rubric
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:138
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
+  origin_line: 138
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: python3 -I tools/tutorial-rubric-check.py rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md => '检查 6 章，6
+    章缺项'；逐章报缺项，合并集合为 TR-1/TR-2/TR-3/TR-4/TR-5（第 2、6 章的 TR-4 已满足），TR-6 全部未报
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R37-02
+  scope: doc
+  note: follow-up 写「6/6 章缺 TR-1..TR-6」；实测 TR-6 未报（篇末术语表已存在），缺项实为 TR-1..TR-5
+- id: D01-RUN-R37-04
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 本轮文档-only，未重跑五条真机门链
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:140
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
+  origin_line: 140
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: git log --since=2026-11-21 --oneline 无 QEMU 相关提交；find tmp -newermt 2026-11-21 只有 e5-ds 串口日志与 e5d-uboot-riscv64-pass（05:27-06:24，早于重写提交
+    a69f389cb）；无 test-shim-bootmarks-x86/aarch64、test-riscv64-uboot、test-kernel-image-riscv64-bootface 的新日志
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R37-04
+  scope: doc
+  note: §5.4 五条链本轮无重放证据；follow-up 自述「不拿历史读数冒充本轮证据」；属证据义务不是代码缺陷
+- id: D01-RUN-R37-05
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板与 certify 均为 deepseek-v4.1-flash 冷启动实例，无跨模型复核
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:141
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
+  origin_line: 141
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: follow-ups.md:141 原文「面板与 certify 均为 deepseek-v4.1-flash 冷启动实例，无跨模型复核」；grep -rn 跨模型 该 run 目录 => 11 处命中，全部是同一局限的自述（VERIFY-CHECK.md:3/:40、REGRESSION.md:111/:367/:399、FREEZE.md:84、loop.md:2158/2213/2302、certify/round36-fact-pass1.md:71），无实际跨模型复核回执
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R37-05
+  scope: doc
+  note: 方法论缺口，只能由一次跨工具只读复核销账，非代码/文档缺陷
+- id: D01-rt-birth-sp
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
+  status: open
+  severity: P1
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/01-todo.md:5
+  origin_file: rewrite-notes/01-stage-kernel/01-todo.md
+  origin_line: 5
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
+  verified_by: subagent:b1
+  verified_at: '2026-11-21'
+  aliases:
+  - rt-birth-sp
+  scope: doc
+  note: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
+- id: D01-PROSE-PROSE-06-todo
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 'prose todo file: 06-todo.md（822 行）'
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/01-stage-kernel/draft/06-todo.md:1
+  origin_file: rewrite-notes/01-stage-kernel/draft/06-todo.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose
+  evidence: '文件在 draft/ 下；目标文档 rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md 已按该 spec 重写并经多轮 review：git log -1 --
+    rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md => 0cf675b9e fix(06): R1 完整修改轮——D06 从零立账并收口（ROUND-CLOSED）'
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-06-todo
+  scope: stage
+  note: 822 行整篇为 06 的设计/重构 spec 与三轮 oc-review 记录；无逐条可执行项；run 目录无 FREEZE.md 但有 ROUND-CLOSED 提交
+- id: D01-PROSE-PROSE-06-todo-06-todo-md-9-A1-A15
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 验收（对 06-todo.md §9 A1-A15）
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/draft/06-todo.md:636
+  origin_file: rewrite-notes/01-stage-kernel/draft/06-todo.md
+  origin_line: 636
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose-open
+  evidence: draft/06-todo.md:587-608 oc-review 验收表 A1-A15 全 ✅（含 809 passed 记录），属已完成重构的 review 存档
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-06-todo-06-todo-md-9-A1-A15
+  scope: stage
+  note: line=636 落在 634 行附近的第三轮体检表，验收表实际 587-608；表内两项 P2 可追踪：tools/review-line-check.sh 已存在（已落地）；.design/06-design.v2.md 从未生成（仅
+    06-design.v1.md，2026-07-16，内部路径仍写 notes/rewrite/...，design-coverage-check.sh 只查存在性 => PASS）
+- id: D01-PROSE-PROSE-06-todo-10
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 10. 约束与注意事项
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/draft/06-todo.md:519
+  origin_file: rewrite-notes/01-stage-kernel/draft/06-todo.md
+  origin_line: 519
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose-open
+  evidence: draft/06-todo.md:488-498 §10 九条（ground truth 优先/禁进度式表述/引用须真实存在/阶段 C 锚点/三层因果链/SMP-BKL/不新增文档/文风/主线与存储并重）均为写作约束，无独立验收条目
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-06-todo-10
+  scope: stage
+  note: manifest line=519 落在空白行（§11 与附录之间），§10 实际 488-498，行号漂移约 31 行；约束已由 06 重写消费
+- id: D01-PROSE-PROSE-endpoint_todo
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 'prose todo file: endpoint_todo.md（563 行）'
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/01-stage-kernel/endpoint_todo.md:1
+  origin_file: rewrite-notes/01-stage-kernel/endpoint_todo.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose
+  evidence: endpoint_todo.md:1-12 自述 v0.1 草稿/待讨论/三种候选方案都未实施；os/libs/minix-types/src/types/endpoint.rs:17 ENDPOINT_GENERATION_SHIFT=15（Minix3
+    原值）；grep endpoint rewrite-notes/coordination/review-eval/DECISIONS.md => 0 命中
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-endpoint_todo
+  scope: stage
+  note: 真实开放项：§12 Q1-Q10（SHIFT/64 位/解耦、上游兼容、成本、不可逆性、三档术语）从无裁决；文件头「已封账」只依据 grep '☐|DEFERRED|open' 零命中，是标记检查不是决策；代码保持 Minix3
+    语义，可视为范围冻结但未被显式裁决
+- id: D01-PROSE-PROSE-endpoint_todo-11-2
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 11.2 文档目录
+  status: historical
+  severity: P2
+  kind: design
+  origin: rewrite-notes/01-stage-kernel/endpoint_todo.md:506
+  origin_file: rewrite-notes/01-stage-kernel/endpoint_todo.md
+  origin_line: 506
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose-open
+  evidence: endpoint_todo.md:462-468 §11.2 列出 06-proc-init-boot-proc.md、06-todo.md、12-ipc-core.md、99-global-concepts.md；ls
+    rewrite-notes/01-stage-kernel/99-global-concepts.md => No such file；06-todo.md 只在 draft/ 下
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-endpoint_todo-11-2
+  scope: stage
+  note: line=506 实为 §12 Q2（generation 位宽），标题 §11.2 在 462 行，行号漂移 44 行；清单为历史盘点，唯一实义是 99-global-concepts.md 已不存在
+- id: D01-PROSE-endpoint_todo--11.2-文档清单
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 仅历史盘点，不是开放项
+  status: historical
+  severity: P2
+  kind: design
+  origin: rewrite-notes/01-stage-kernel/endpoint_todo.md:462-468
+  origin_file: rewrite-notes/01-stage-kernel/endpoint_todo.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: historical
+  evidence: 列出的 rewrite-notes/01-stage-kernel/99-global-concepts.md 不存在；06-todo.md 已移入 draft/
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - endpoint_todo--11.2-文档清单
+  scope: stage
+  note: 仅历史盘点，不是开放项
+- id: D01-PROSE-endpoint_todo-Q1-Q10
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 需用户设计裁决；代码当前保持 Minix3 语义，可视为范围冻结但未被显式裁决
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/01-stage-kernel/endpoint_todo.md:487-555
+  origin_file: rewrite-notes/01-stage-kernel/endpoint_todo.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: blocked
+  evidence: §12 十问（方案选择/SHIFT 位宽/IPC 影响/64 位重排/解耦形式/上游兼容/成本/不可逆性/术语/阶段策略）无裁决；os/libs/minix-types/src/types/endpoint.rs:17
+    SHIFT=15；DECISIONS.md 无 endpoint 条目
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - endpoint_todo-Q1-Q10
+  scope: stage
+  note: 需用户设计裁决；代码当前保持 Minix3 语义，可视为范围冻结但未被显式裁决
   blocked: true
-  blocked_reason: D-107 清单由外部线程执行中；完成并经用户确认后本哨兵才可关闭
+  blocked_reason: 需用户设计裁决；代码当前保持 Minix3 语义，可视为范围冻结但未被显式裁决
+- id: K01-E5
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 27. E5-SMP 冒烟用例设计：「fork 后父子并发写 CoW 页」
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/01-stage-kernel/smp_todo.md:1923
+  origin_file: rewrite-notes/01-stage-kernel/smp_todo.md
+  origin_line: 1923
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: '§27 design exists and its three mechanisms exist: needs_tlb_refresh os/kernel/src/proc.rs:1135, consume_flush_tlb_flag
+    lib.rs:4926, vmctl_vminhibit_set syscall.rs:3035. No E5-SMP carrier: find os/qemu-tests -iname ''*e5*smp*'' => none; rewrite-notes/coordination/edge4.md:121
+    and new_edge4.md:168 both still mark E5-SMP open'
+  verified_by: subagent:b3
+  verified_at: '2026-11-21'
+  aliases:
+  - E5
+  scope: stage
+  note: 'Design half delivered (edge1 K3), execution half missing. Status open, not closed: the smoke test itself does not
+    exist.'
+- id: K01-RULE-BUILT-NOT-WIRED
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 'Rule Discovery 候选 Built-but-not-wired 待用户确认落地；编号 #84 已被占用'
+  status: open
+  severity: P2
+  kind: doc
+  origin: rewrite-notes/01-stage-kernel/todo.md:702
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 702
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 'Rule Discovery 候选 Built-but-not-wired 待用户确认落地；编号 #84 已被占用'
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - RULE-BUILT-NOT-WIRED
+  scope: stage
+  note: 'Rule Discovery 候选 Built-but-not-wired 待用户确认落地；编号 #84 已被占用'
+  blocked: true
+  blocked_reason: 'Rule Discovery 候选 Built-but-not-wired 待用户确认落地；编号 #84 已被占用'
+- id: K01-S-3b
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: UEFI 可能回收传统低内存且 boot-shim memmap 未必保留——S-3b 首查 `KernelInfo.memmap`；无保留区则扩 boot-shim 或独立 low-memory 池（C 对应 `alloc_lowest`，arch_smp.c:76）
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/smp_todo.md:937
+  origin_file: rewrite-notes/01-stage-kernel/smp_todo.md
+  origin_line: 937
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 'Ladder exists: install_at os/arch/src/x86_64/ap_early_entry.rs:244 and fill_bootstrap :274, AP_STARTUP_PA=0x5000,
+    test-smp-aps four-core PASS. CONTRADICTION: install_at doc (:236-241) says the caller (smp_init) scans the free map mirroring
+    C alloc_lowest, but os/kernel/src/smp.rs:1161-1163 hardcodes AP_STARTUP_PA with comment "low-identity RAM reserved"; no
+    KernelInfo.memmap check found; rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:2357 records the scan as smp_init''s
+    job'
+  verified_by: subagent:b3
+  verified_at: '2026-11-21'
+  aliases:
+  - S-3b
+  scope: stage
+  note: 'Ladder half is closed per §5/§22. Residual is the §8 risk''s first-check: which code proves [0x5000, image_end) is
+    not in the free map / reserved by boot-shim? Needs a decision, not a new implementation.'
+  blocked: true
+  blocked_reason: '核实未决：Ladder half is closed per §5/§22. Residual is the §8 risk''s first-check: which code proves [0x5000,
+    image_end) is not in the free map / reserved by boot-shim? Needs a decision, not a new implementation.'
+- id: K01-S-8
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 23.2 新发现 P1
+  status: historical
+  severity: P1
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:417
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 417
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: Line is the §23.2 section heading ('two P1 items prerequisite to S-8'), not an item entry; S-8 itself completed
+    2026-09-14 per smp_todo.md:867 + §12.2:374 (asm trap stub + SYSCALL, test-timer-irq PASS); the two P1 items D-59/D-61
+    are also fixed (todo.md:419, :474)
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - S-8
+  scope: stage
+  note: False-positive ID extraction from a heading. No S-8 work remains; if a ledger entry is desired, point to smp_todo.md
+    §5.
+- id: K01-T-8
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: E2E grant 剩余 QEMU 半 5 个（间接链 ELOOP/magic 重定向/跨进程拷贝/vm_lookup/vm_memset——宿主 PTE walk 必然 Suspended 无法到达断言）
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:209
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 209
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: todo.md:209 + :729 (dependency T-5 QEMU CI); os/qemu-tests/test-kernels has no grant-indirect test kernel (only
+    e5-ds uses SYS_SETGRANT); hosted tests end at Suspended/EFAULT for the five paths (os/kernel/src/syscall_copy.rs:2093
+    test_dispatch_safememset_valid_setup_suspends_on_grant_read, :2509 vumap grant source)
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - T-8
+  scope: stage
+  note: Genuinely open QEMU half (5 E2E grant cases). Not blocked on user; needs new QEMU test kernel work in a T-5 CI batch.
+- id: K01-W-1
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: NMI watchdog 全族（watchdog.c/arch_watchdog.c）
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:186
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 186
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: WONTFIX exclusion record (todo.md §7.2); os/kernel/src/misc.rs:2579 PROF_NMI arm documents WONTFIX (no NMI subsystem);
+    no watchdog implementation in os/
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-1
+  scope: stage
+  note: Design-exclusion record with rationale, not an open task; must stay as a non-gap memo to prevent re-discovery.
+- id: K01-W-10
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: 1 项登记
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:47
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 47
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 'prompt/WORKFLOW-OPEN-ITEMS.md:83 W-10 status: S1-S4 tools/rules landed in round 0 (2026-10-15), seven documents
+    still pending serial rounds 1-7; todo.md:236 shows the row''s registered payload I-21 closed 2026-11-01 (I21HOIST, commit
+    56c4ac917)'
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-10
+  scope: stage
+  note: 'Row ID is the batch label W-10, not the registered item: the payload I-21 is closed, but W-10 itself is still an
+    open coordination-level doc refactor tracked in prompt/WORKFLOW-OPEN-ITEMS.md. Kept open so the migration does not drop
+    it.'
+- id: K01-W-2
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: usermapped_data 全部
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:187
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 187
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: WONTFIX record; os/kernel/src/kerninfo.rs:13 explicitly 'does not port the .usermapped section'; os/servers/is/src/acquire.rs:138
+    same statement
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-2
+  scope: stage
+  note: Design-exclusion record, not a task.
+- id: K01-W-3
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: IPC 消息跟踪/统计 hook 族（debug.c 12 函数 + 3 宏）
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:188
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 188
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: WONTFIX record (debug.c 12 fns + 3 macros); rationale 'panic-path risk; log crate + external tools' in todo.md
+    §7.2; no IPC trace hook family in os/kernel/src/debug.rs
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-3
+  scope: stage
+  note: Design-exclusion record; rationale-based, no code action.
+- id: K01-W-4
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: '`nmi_sprofile_handler`'
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:189
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 189
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: WONTFIX record; os/kernel/src/misc.rs:2579-2586 documents nmi watchdog/NMI handler absent; PROF_NMI returns ENOSYS
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-4
+  scope: stage
+  note: Design-exclusion record, not a task.
+- id: K01-W-5
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: SPROF `PROF_NMI` 路径
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:190
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 190
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: WONTFIX record; same misc.rs PROF_NMI/ENOSYS arm as W-4
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-5
+  scope: stage
+  note: Design-exclusion record; sub-case of W-4.
+- id: K01-W-6
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: '`ClearMapCache` no-op'
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:191
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 191
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: WONTFIX record; os/kernel/src/syscall.rs:2736 VmCtlParam::ClearMapCache => KcallResult::Ok(0) matches C no-op
+    on 64-bit
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-6
+  scope: stage
+  note: Design-exclusion record; behavior matches C, not a gap.
+- id: K01-W-7
+  stage: 01-stage-kernel
+  doc: 01-stage-kernel
+  title: kmess 缓冲体系（双缓冲/END_OF_KMESS/send_diag_sig/SIGKMESS）
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/01-stage-kernel/todo.md:192
+  origin_file: rewrite-notes/01-stage-kernel/todo.md
+  origin_line: 192
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: WONTFIX/ARCH-evolution record; os/kernel/src/kmess.rs:12 'direct EarlyConsole output (write-and-discard)'; no
+    double-buffer/END_OF_KMESS/send_diag_sig port
+  verified_by: subagent:b2
+  verified_at: '2026-11-21'
+  aliases:
+  - W-7
+  scope: stage
+  note: Design-exclusion record (ARCH evolution), not a task.

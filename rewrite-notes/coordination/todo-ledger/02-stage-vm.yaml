@@ -1,0 +1,440 @@
+# TODO 单一账本（V3.7 / V3.8-r2）——规范源；旧 todo markdown 已迁移后删除。
+# 字段：id/stage/doc/title/status/severity/kind/origin/evidence/defer/
+#       merged_into/legacy_status/origin_file/origin_line/origin_commit/
+#       verified_by/verified_at/aliases/scope/blocked/blocked_reason
+# status: open | closed | rejected | defer-approved | historical
+- id: D02-EXTERNAL-D107
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 外部 D-107 线程收口哨兵
+  status: closed
+  severity: P1
+  kind: code
+  origin: user-confirmed
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: sentinel
+  evidence: D-107 线程收口（db7f0278d / d512c82d0）；用户 2026-11-21 确认可迁
+  verified_by: user
+  verified_at: '2026-11-21'
+  scope: doc
+  note: 线程已收口；若后续发现残留，重开本行并转 open
+- id: D02-RUN-C-04
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: READER-C 11 条
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:17
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 17
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: follow-ups.md:17 D02-F10c 列 C-04/06/07/08/09/11/12/13/14/16（文字写 11 条）；:48 D02-F10 标 [CLOSED]「读者 36 条全部在 R4 表逐条
+    implemented/already-fixed/dup-of」；实际 R4 表（suggestions.md:20-72）是 READER-A/B/C-S* 另一族；grep 'FINDING READER-C-1[1-6]' panel/round1..round5
+    => 0 命中；defect-ledger.md:61 指向 panel/reader-c.md（v1 run，loop.md:33 记 READER-C 16 条），该文件不在树内
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - C-04
+  scope: doc
+  note: 闭环声明不可核：ID 属 v1 run 且每轮 READER-C 编号复用，C-11..C-16 在任何现存 panel 文件都不存在；若指 v1 READER-C-04（§3.5「三个物理基址」未给数值），该句在 02-higher-half-kernel.md:857
+    原样保留（aarch64 物理基址 0x40200000 全篇未列）=> 候选仍未修；若指 round5 C-04（J2 范围限定）则已 CLOSED；需按重写后文本重核一次
+  blocked: true
+  blocked_reason: 核实未决：闭环声明不可核：ID 属 v1 run 且每轮 READER-C 编号复用，C-11..C-16 在任何现存 panel 文件都不存在；若指 v1 READER-C-04（§3.5「三个物理基址」未给数值），该句在
+    02-higher-half-kernel.md:857 原样保留（aarch64 物理基址 0x40200000 全篇未列）=> 候选仍未修；若指 round5 C-04（J2 范围限定）则已 CLOSED；需按重写后文本重核一次
+- id: D02-RUN-D02-F10
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 父行被批处理漏掉，与 C-04 同一矛盾：36 条无逐条回执，计数 10(A)+13(B)+11(C)=34 与「36 条」也不符
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:14
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 14
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: review
+  evidence: follow-ups.md:14 状态「下一篇闭环轮逐条复核」；:48 标 [CLOSED]「读者 36 条全部在 R4 表逐条 implemented/already-fixed/dup-of」；R4 表是 READER-*-S*
+    另一族；F10c 的 C-11..C-16 在 panel/round1..round5 零命中
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - D02-F10
+  scope: doc
+  note: 父行被批处理漏掉，与 C-04 同一矛盾：36 条无逐条回执，计数 10(A)+13(B)+11(C)=34 与「36 条」也不符
+  blocked: true
+  blocked_reason: 核实未决：父行被批处理漏掉，与 C-04 同一矛盾：36 条无逐条回执，计数 10(A)+13(B)+11(C)=34 与「36 条」也不符
+- id: D02-RUN-D02-F10a
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: D02-F10 的子行，随父行判定
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:15
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 15
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: review
+  evidence: follow-ups.md:15 A-01/02/03/04/05/06/07/09/11/12（10 条）标「闭环轮；优先 A-01/A-02/A-05」；无逐条 implemented 回执
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - D02-F10a
+  scope: doc
+  note: D02-F10 的子行，随父行判定
+  blocked: true
+  blocked_reason: 核实未决：D02-F10 的子行，随父行判定
+- id: D02-RUN-D02-F10b
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: D02-F10 的子行，随父行判定
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:16
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 16
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: review
+  evidence: follow-ups.md:16 B-01/02/03/05/06/07/08/09/10/11/12/13/14（13 条）标「教学债批次」；无逐条回执
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - D02-F10b
+  scope: doc
+  note: D02-F10 的子行，随父行判定
+  blocked: true
+  blocked_reason: 核实未决：D02-F10 的子行，随父行判定
+- id: D02-RUN-R5-01
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: G11 code-publication
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:65
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 65
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 'python3 -I tools/code-publication-check.py $(grep -vE ''^#|^$'' rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/related-code.txt)
+    => ''code-publication-check: 73 处新增违规（基线内 0 处）''，exit 1；基线文件不存在'
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R5-01
+  scope: doc
+  note: follow-up 写 30 文件/73 处；related-code.txt 实际 27 行；全仓 770 处新增
+- id: D02-RUN-R5-02
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: G13 tutorial-rubric
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:66
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 66
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: python3 -I tools/tutorial-rubric-check.py rewrite-notes/01-stage-kernel/02-higher-half-kernel.md => '检查 6 章，6
+    章缺项'；每章 TR-1..TR-6 全缺（TR-6 报「无篇末术语表，也无章内术语小节」）
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R5-02
+  scope: doc
+  note: 建议已核实，重写未引入也未消除
+- id: D02-RUN-R5-04
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 本轮文档-only，未重跑 `test-higher-half` 与三架构门
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:68
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 68
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: 无 test-higher-half 或三架构门的新日志：find tmp -newermt 2026-11-21 仅 e5-ds 与 e5d-uboot-riscv64-pass；follow-ups.md:68 自述「本轮文档-only」
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R5-04
+  scope: doc
+  note: 属证据义务；下一代码批次或 release 门重跑
+- id: D02-RUN-R5-05
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 面板与 certify 均为 deepseek-v4.1-flash 冷启动实例
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:69
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 69
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: follow-ups.md:69 原文「面板与 certify 均为 deepseek-v4.1-flash 冷启动实例」
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R5-05
+  scope: doc
+  note: 方法论缺口，非代码/文档缺陷
+- id: D02-RUN-R5-06
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: certify 观察
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:71
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 71
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: os/kernel/src/lib.rs:1359-1363 与 :1386-1388 仍写「第二次 map_huge 重写同叶返回 Ok；AlreadyMapped 只在 1 GiB 叶」；os/arch/src/x86_64/paging.rs:1325、os/arch/src/arm64/paging.rs:1247、os/arch/src/riscv64/paging.rs:1249
+    均在 2 MiB 槽已 present 时返回 AlreadyMapped
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - R5-06
+  scope: doc
+  note: 行为侧被 lib.rs:1398 的 'Ok(()) | Err(PageTableError::AlreadyMapped) => {}' 吞掉，功能不受影响；纯注释失真（CP-3/CP-4），修三处注释即可
+- id: D02-ARCH-todo-V11-archive-2026-09-08
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 'archive: todo-V11-archive-2026-09-08.md（1489 行）'
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md:1
+  origin_file: rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: 'archive: open=110 done=139'
+  evidence: 'Banner L1-3: "全文存档...Fix #N 编号以本文件为检索权威；活指针（open 条目、G-V12 表、§0 速览）已保留在现行 todo.md"; V12 archive:93-96 marks V11-P2-1/2/5/7
+    closed; todo.md:25 confirms V11-P1-1/V11-P2-8/V10-P2-3 settled; replay: G-V11-3 -> os/tests/pm_vm_fork.rs:1-8 revived
+    (E5(a)); vm-tests.yml:45 runs segment_tree_alloc; dispatcher.rs:2502 -> page_cache.rs:526 test_addcache_rejects_no_device'
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - ARCH-todo-V11-archive-2026-09-08
+  scope: stage
+  note: archive counters open=110/done=139 are historical; sampled DEFERRED/gap rows (G-V11-1..6, V11-P2-3/4, E4 leftovers)
+    all closed, C-parity (G-V11-5), or registered in edge/formal docs; no actionable open item hidden.
+- id: D02-ARCH-todo-V12-archive-2026-09-09
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 'archive: todo-V12-archive-2026-09-09.md（411 行）'
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md:1
+  origin_file: rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: 'archive: open=18 done=74'
+  evidence: 'Banner L1-6: historical snapshot, status authority = coordination/TODO-LEDGER-OPEN/DONE; §0.1:20-35 all V-history
+    rows ✅; §2:102-111 G-V12-1/2/3/5/6 ✅ and G-V12-4 维持坍缩（开口）; fix batch §17.9 Fix #59-#62'
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - ARCH-todo-V12-archive-2026-09-09
+  scope: stage
+  note: 'HIDDEN OPEN: G-V12-4 (archive:109) still open (RsError::UpdateKernelFailed errno passthrough collapses to EIO at
+    dispatcher.rs:1217) - listed in b4-missed.tsv. G-V12-2 "通电挂 E1" is stale (E1 landed).'
+- id: D02-G-V11-1
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: Premise (SIGTERM/SIGSTOP callbacks) has no C anchor for VM; decide whether to close this gap-register row or fold
+    it into the LU/V20 batch 2-3 work.
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md:857
+  origin_file: rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md
+  origin_line: 857
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: review
+  evidence: 'Archive: "sef_cb_signal_handler（SIGTERM/SIGSTOP 等信号回调 ...）无对应物；DEFERRED ... 随 RS_UPDATE 步骤 4-7 一并规划"; C replay:
+    grep -n inhibit irrelevant; C VM main.c:731-739 switch only has SIGKMEM; LU/restart registered DEFERRED in 01-vm-init-main.md:603
+    and carried by V20 §20'
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - G-V11-1
+  scope: stage
+  note: Premise (SIGTERM/SIGSTOP callbacks) has no C anchor for VM; decide whether to close this gap-register row or fold
+    it into the LU/V20 batch 2-3 work.
+  blocked: true
+  blocked_reason: 核实未决：Premise (SIGTERM/SIGSTOP callbacks) has no C anchor for VM; decide whether to close this gap-register
+    row or fold it into the LU/V20 batch 2-3 work.
+- id: D02-G-V12-4
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 'Hidden open item in the archive row. E-RSWIRE has since landed (todo.md §18.4: u64 mask / real mask / five wire
+    structs) but this item was never revisited; absent from active todo.md.'
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md:109
+  origin_file: rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md
+  origin_line: 109
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: '维持坍缩（开口）：RsError::UpdateKernelFailed errno 直传的 wire 编码挂 E-RSWIRE / RS 工作流协同定案; code still collapses: dispatcher.rs:1217
+    RsError::UpdateKernelFailed(_) => VmError::InternalError; rs.rs:1174 pins EIO; 25-rs-services.md:433 records the fidelity
+    gap'
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - G-V12-4
+  scope: stage
+  note: 'Hidden open item in the archive row. E-RSWIRE has since landed (todo.md §18.4: u64 mask / real mask / five wire structs)
+    but this item was never revisited; absent from active todo.md.'
+- id: D02-PROSE-TODO
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 'prose todo file: TODO.md（222 行）'
+  status: historical
+  severity: P3
+  kind: doc
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:1
+  origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
+  origin_line: 1
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose
+  evidence: File L1-4 self-describes "收集 01~26 文档和 Rust 代码中的所有 TODO"; formal docs cite draft/*.md only as 素材 (01-vm-init-main.md:830,
+    02-vmproc-struct.md:548, 12-memtype.md:536); section verdicts verified in child rows 4-12 of this batch
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-TODO
+  scope: stage
+  note: 'file-level archive; of 9 section rows, 7 closed in code, 1 historical (appendix PROSE-TODO-TODO), 1 open (PROSE-TODO-P2);
+    2 unlisted sections (查询服务/物理内存) closed - see b4-missed.tsv. Batch line numbers drift: input 73/120/138/150/161/173/198/211/230
+    -> current 10/108/122/139/150/160/183/193/205.'
+- id: D02-PROSE-TODO-P2
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: P2：优化与重构
+  status: open
+  severity: P2
+  kind: code
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:211
+  origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
+  origin_line: 211
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose-open
+  evidence: rg InPlaceOption -> only draft/01-vmproc-struct.md:613/617 + checklist.md:757 (no code); vmproc.rs:40/45 still
+    MaybeUninit+bool (decision registered 02-vmproc-struct.md:367-372 D3); panic=abort os/Cargo.toml:303/306 kills the unwind
+    suggestion; lib.rs:78 vmproc is pub(crate) (visibility done); dyn MemType still used region/vir_region.rs:102, mmap.rs:383
+    (12-memtype.md:363 registers trait+dyn as ARCH, no perf decision)
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-TODO-P2
+  scope: stage
+  note: 4/5 sub-items closed/decided; enum-dispatch-vs-dyn remains unimplemented and only registered as an ARCH choice - needs
+    an explicit DECISIONS entry (implement or reject). Non-blocking P2.
+- id: D02-PROSE-TODO-TODO
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 附录：已关闭的 TODO
+  status: historical
+  severity: P2
+  kind: code
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:230
+  origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
+  origin_line: 230
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: prose-open
+  evidence: 'Appendix L205-222: every row marked closed; rg minix3_missed.md/cc-review-scan.md -> absent; vm_server.rs pub(crate)
+    fn count 8; appendix doc names (13-region-avl.md, 07-pagetable-ops.md) are pre-rewrite numbering'
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - PROSE-TODO-TODO
+  scope: stage
+  note: historical closed-list; no open marker. Only stale doc-name formatting, no action.
+- id: D02-SUMMARY-open-2
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 'Stale status line: boot exec load chain landed 2026-10-31 (same header''s next paragraph); LU/restart is V20-P1-1.
+    Counts not updated at the 2026-11-21 ledger refresh.'
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/02-stage-vm/todo.md:3
+  origin_file: rewrite-notes/02-stage-vm/todo.md
+  origin_line: 3
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: review
+  evidence: 'Header L3: "未闭合 open 2 ｜ stopgap landed 3。两条真未做：实时更新（热更）的活与重启状态机、启动进程的可执行文件装载链"'
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - SUMMARY-open-2
+  scope: stage
+  note: 'Stale status line: boot exec load chain landed 2026-10-31 (same header''s next paragraph); LU/restart is V20-P1-1.
+    Counts not updated at the 2026-11-21 ledger refresh.'
+  blocked: true
+  blocked_reason: '核实未决：Stale status line: boot exec load chain landed 2026-10-31 (same header''s next paragraph); LU/restart
+    is V20-P1-1. Counts not updated at the 2026-11-21 ledger refresh.'
+- id: D02-V20-P1-1
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 'Live open item not in b4. ID collision: §20 also uses V20-P1-1 for the warm-boot state carry, which is ✅ (2026-11-04,
+    todo.md:600+); the live one is the RS dynamic-spawn batch.'
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/02-stage-vm/todo.md:80
+  origin_file: rewrite-notes/02-stage-vm/todo.md
+  origin_line: 80
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  legacy_status: open
+  evidence: Heading "### 🔄 V20-P1-1 批一（RS 动态 spawn 垫脚石）——载体与镜像面已落地，RS 运行时阻塞已取证（2026-11-21）"; body line 93 "批一当前阻塞（已取证，未闭合，不假完成）"
+    with next steps ①-③; carriers exist (os/qemu-tests/test-kernels/user/e5-spawned, /etc/system.conf)
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - V20-P1-1
+  scope: stage
+  note: 'Live open item not in b4. ID collision: §20 also uses V20-P1-1 for the warm-boot state carry, which is ✅ (2026-11-04,
+    todo.md:600+); the live one is the RS dynamic-spawn batch.'
+- id: D02-VM-OPEN-1
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: todo.md:3 状态摘要点名的两条真未做之一：实时更新（热更）的活与重启状态机
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/02-stage-vm/todo.md:3
+  origin_file: rewrite-notes/02-stage-vm/todo.md
+  origin_line: 3
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: todo.md:3 状态摘要点名的两条真未做之一：实时更新（热更）的活与重启状态机
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - VM-OPEN-1
+  scope: stage
+  note: todo.md:3 状态摘要点名的两条真未做之一：实时更新（热更）的活与重启状态机
+- id: D02-VM-OPEN-2
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: todo.md:3 状态摘要点名的两条真未做之一：启动进程的可执行文件装载链
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/02-stage-vm/todo.md:3
+  origin_file: rewrite-notes/02-stage-vm/todo.md
+  origin_line: 3
+  origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
+  evidence: todo.md:3 状态摘要点名的两条真未做之一：启动进程的可执行文件装载链
+  verified_by: subagent:b4
+  verified_at: '2026-11-21'
+  aliases:
+  - VM-OPEN-2
+  scope: stage
+  note: todo.md:3 状态摘要点名的两条真未做之一：启动进程的可执行文件装载链
