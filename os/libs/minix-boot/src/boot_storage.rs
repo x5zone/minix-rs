@@ -98,6 +98,7 @@ pub struct BootStorage {
     /// own capacity, 40).
     source_records: [SourceRecord; DTB_SOURCE_CAP],
     source_records_len: usize,
+    map_committed: bool,
     modules_committed: bool,
     platform_committed: bool,
     param_committed: bool,
@@ -121,6 +122,7 @@ impl BootStorage {
             param_len: 0,
             source_records: [ZERO_RECORD; DTB_SOURCE_CAP],
             source_records_len: 0,
+            map_committed: false,
             modules_committed: false,
             platform_committed: false,
             param_committed: false,
@@ -140,6 +142,7 @@ impl BootStorage {
     where
         F: FnOnce(&mut [MemoryRegion], &mut [MemoryRegion]) -> MapCounts,
     {
+        assert!(!self.map_committed, "BootStorage: map tables already committed");
         let counts = write(&mut self.memmap, &mut self.reserved);
         assert!(
             counts.memmap <= WIRE_MEMMAP_CAP,
@@ -153,6 +156,7 @@ impl BootStorage {
         );
         self.memmap_len = counts.memmap;
         self.reserved_len = counts.reserved;
+        self.map_committed = true;
     }
 
     /// Fill the boot-module slots, then commit the count.
@@ -417,6 +421,14 @@ mod tests {
         );
         assert_eq!(report.memmap.len(), 1);
         assert_eq!(report.reserved_regions.len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "map tables already committed")]
+    fn fill_map_tables_twice_is_refused() {
+        let mut storage = BootStorage::new();
+        storage.fill_map_tables(|_, _| MapCounts { memmap: 0, reserved: 0 });
+        storage.fill_map_tables(|_, _| MapCounts { memmap: 0, reserved: 0 });
     }
 
     #[test]

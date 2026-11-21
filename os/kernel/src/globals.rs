@@ -271,11 +271,10 @@ mod bkl_protected_tests {
 ///
 /// C: `kinfo` global in glo.h — populated by memcpy from boot params in main.c.
 ///
-/// SAFETY: Written once per leg before `kmain` (by
-/// `prepare_kernel_image_v1` on the v1 leg or `rust_image_main` on the
-/// direct-core leg); `kmain` reads only — the re-store that used to shadow
-/// this contract was removed by I-35(a) (D-071), and `store_kernel_info`
-/// now asserts the slot is empty on entry.
+/// SAFETY: Written once per leg before `kmain` (by `resume_additive` /
+/// `arch_boot_resume_v1` on the v1 leg, or `rust_image_main` on the
+/// direct-core leg); `kmain` reads only. `store_kernel_info` asserts the
+/// slot is empty on entry, so a second writer fails closed.
 /// After boot, read-only under BKL protection.
 pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCell::new(None);
 

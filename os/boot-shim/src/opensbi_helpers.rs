@@ -206,7 +206,8 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // `read` 只处理字节来源，不做任何 ELF 语义。表里的
         // `entry.len` 已是 `build_shim_table` 用 `staged_elf_used_len` 算出的
         // 修剪值——这里再跑 `segment_iter` 是对已修剪数据的幂等无效功。模块
-        // 装载层的唯一修剪点在 `loader::load_boot_modules_into`（`elf_file_end`）。
+        // 首次修剪在 `build_shim_table`；`load_boot_modules_into` 的
+        // `elf_file_end` 是统一入口的幂等兜底，不是第二个有效修剪点。
         // U-Boot staged the file in RAM; hand out a borrow instead of a copy.
         // The table is written once before the shim runs and is
         // not modified while the bytes are in use.
