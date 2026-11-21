@@ -69,7 +69,7 @@ pub use crate::trap_entry::InterruptVector;
 /// |                     |                           |                    | up trap regs    |
 /// | `set_kernel_stack()`| Update TSS.sp0            | no-op (single SP,  | Update sscratch |
 /// |                     |                           | reloaded in eret)  |                 |
-/// | `load()`            | lgdt, lldt, ltr, reload   | isb (VBAR_EL1 set  | csrw sscratch,  |
+/// | `load()`            | lgdt, ltr, reload        | isb (VBAR_EL1 set  | csrw sscratch,  |
 /// |                     | segment registers         | by TrapEntryArch)  | ensure stvec    |
 /// | `init_ap()`         | Per-CPU TSS/GDT entry,    | Per-CPU TPIDR_EL1  | Per-CPU         |
 /// |                     | load selectors            | stack base         | sscratch        |

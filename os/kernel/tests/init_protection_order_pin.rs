@@ -35,6 +35,23 @@ fn position(body: &str, needle: &str, what: &str) -> usize {
 }
 
 #[test]
+fn bsp_identity_has_one_source() {
+    let body = fn_body(LIB_SRC, "pub fn init_protection(kernel_info: &KernelInfo) {");
+    assert!(
+        body.contains("CurrentProtection::init(bsp_logical"),
+        "init_protection: protection init must use the elected BSP logical id, not 0"
+    );
+    assert!(
+        !body.contains("CurrentProtection::init(0"),
+        "init_protection: init(0) hardcodes TSS slot 0 as the BSP"
+    );
+    assert!(
+        body.contains("program_entry_base(bsp_logical"),
+        "init_protection: program_entry_base must use the same bsp_logical"
+    );
+}
+
+#[test]
 fn protection_store_refresh_load_entry_base_order() {
     let body = fn_body(LIB_SRC, "pub fn init_protection(kernel_info: &KernelInfo) {");
     let store = position(body, "store_protection(prot)", "init_protection");

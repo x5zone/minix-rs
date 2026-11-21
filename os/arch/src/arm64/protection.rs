@@ -25,7 +25,7 @@
 //!
 //! | OS concern (trait method) | ARM64 mechanism (this file's impl) |
 //! |---------------------------|--------------------------------------|
-//! | `init` (establish protection) | program `TPIDR_EL1` with this CPU's kernel-stack base — the EL1h model has no hardware stack switch (x86 reloads `RSP` from `TSS.sp0` on every CPL3→0), so `restore_to_user` reloads `SP_EL1` from `TPIDR_EL1` before `eret`; `SPSel=1` makes `SP_EL1` the *active* stack pointer, so a banked `msr SP_EL1, ...` is architecturally UNDEFINED at `SPSel=1` and traps |
+//! | `init` (establish protection) | program `TPIDR_EL1` with this CPU's kernel-stack base — the EL1h model has no hardware stack switch (x86 reloads `RSP` from `TSS.sp0` on every CPL3→0), so `restore_to_user` reloads `SP_EL1` from `TPIDR_EL1` before `eret`; `SPSel=1` makes `SP_EL1` the *active* stack pointer, so replacing `SP_EL1` mid-function corrupts the returning frame (the epilogue pops x29/x30 from the new stack) |
 //! | `set_kernel_stack` (switch kernel stack) | no-op under EL1h — the active SP is the exception stack, so relocating it from a returning Rust fn would orphan the caller frame; the stack base rides `TPIDR_EL1` and is reloaded per trap return (see `init`) |
 //! | `load` (make protection effective) | `isb` (instruction synchronization barrier) — no separate load needed since SP_EL1 is active immediately |
 //! | `init_ap` (AP startup) | program this AP's `TPIDR_EL1` with its own kernel-stack base (per-CPU register; run on the AP so it writes its own bank) |
@@ -53,9 +53,15 @@ use core::arch::asm;
 ///
 /// Unlike x86-64, there is no GDT, IDT, or TSS. The CPU handles
 /// privilege transitions automatically based on exception level.
-pub struct AArch64Protection {
-    /// Number of CPUs initialized (for SMP tracking).
-    cpu_count: u32,
+pub struct AArch64Protection;
+
+impl AArch64Protection {
+    /// The post-`cpu_count` protection state is a ZST; this constructor lets
+    /// the non-x86 `with_protection` accessor return one `'static` instance
+    /// instead of fabricating a throwaway `init(0, 0)`.
+    pub const fn new() -> Self {
+        Self
+    }
 }
 
 /// Program this CPU's kernel-stack base into `TPIDR_EL1`.
@@ -114,16 +120,14 @@ impl ProtectionArch for AArch64Protection {
         // `TPIDR_EL1` here so `restore_to_user` can reload `SP_EL1` from it
         // before every `eret` — closing the scheduler stack ratchet.
         //
-        // `base == 0` is a sentinel, not a stack: the non-x86 `with_protection`
-        // helper fabricates a throwaway `init(0, VirBytes::new(0))` purely to
-        // reach `load()`/`init_ap`, and those calls would otherwise clobber the
-        // live `TPIDR_EL1` back to 0 (observed: first user `svc` stores its
-        // frame at `-16` → silent fault). A kernel stack never lives at VA 0,
-        // so skipping the write there keeps the throwaway path side-effect-free.
-        if kernel_stack_top.0 != 0 {
-            set_entry_sp(kernel_stack_top);
-        }
-        Self { cpu_count: cpu_id + 1 }
+        // Precondition: `kernel_stack_top` is a real stack top, never 0.
+        // Writing 0 would poison the live TPIDR_EL1 (observed: the first user
+        // `svc` stores its frame at -16 and faults silently). The former
+        // throwaway caller (`with_protection`'s `init(0, 0)`) is gone; every
+        // production and carrier call passes the real top.
+        assert_ne!(kernel_stack_top.0, 0, "init(0) would poison TPIDR_EL1");
+        set_entry_sp(kernel_stack_top);
+        Self
     }
 
     fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
@@ -171,22 +175,5 @@ impl ProtectionArch for AArch64Protection {
             set_entry_sp(kernel_stack_top);
         }
         let _ = cpu_id;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn protection_has_cpu_count() {
-        // AArch64Protection only tracks cpu_count; the exception stack is the
-        // active SP_EL1 (a hardware register, no per-instance table). `init()`
-        // now writes the per-CPU stack base into TPIDR_EL1 (guarded against
-        // the `base == 0` throwaway sentinel), but that is a real EL1 system
-        // register write invalid in a host test — so this test constructs the
-        // struct directly and just verifies the cpu_count field.
-        let prot = AArch64Protection { cpu_count: 1 };
-        assert_eq!(prot.cpu_count, 1);
     }
 }

@@ -181,24 +181,10 @@ fn make_tss_desc64(tss_addr: u64, limit: u16, dpl: u8) -> [u64; 2] {
 pub struct X86_64Protection {
     gdt: [u64; GDT_ENTRIES],
     tss: [Tss64; MAX_CPUS],
-    cpu_count: u32,
     /// CPU ID passed to `init()`. `load()` uses this to select the correct
     /// TSS descriptor for the boot CPU instead of hardcoding BSP (cpu 0).
     boot_cpu_id: u32,
 }
-
-// SAFETY: X86_64Protection is Send because:
-// - All fields are plain data (u64 arrays, u32) with no interior mutability.
-// - During boot, init() is called on BSP only (single-writer).
-// - During SMP bringup, the BSP writes each AP's sp0 under BOOT_LOCK before
-//   the SIPI; the AP then only reads the shared image in init_ap().
-// - After initialization, the struct is only read (load() reads GDT/TSS).
-// X86_64Protection is Sync because:
-// - All mutations (init, refresh_descriptors, set_kernel_stack) happen in
-//   the single-threaded boot window (pre-SMP / BOOT_LOCK).
-// - Reads (load) are safe to race with each other.
-unsafe impl Send for X86_64Protection {}
-unsafe impl Sync for X86_64Protection {}
 
 impl X86_64Protection {
     fn fill_flat_segments(&mut self) {
@@ -348,7 +334,6 @@ impl ProtectionArch for X86_64Protection {
         let mut prot = Self {
             gdt: [0u64; GDT_ENTRIES],
             tss: [Tss64::zeroed(); MAX_CPUS],
-            cpu_count: 0,
             boot_cpu_id: cpu_id,
         };
 
@@ -368,7 +353,6 @@ impl ProtectionArch for X86_64Protection {
         let bsp_usable = kernel_stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
         prot.tss[cpu_id as usize].sp0 = bsp_usable;
         stamp_cpu_id(bsp_usable, cpu_id);
-        prot.cpu_count = cpu_id + 1;
 
         prot
     }
@@ -544,8 +528,9 @@ impl X86_64Protection {
             );
 
             // Note: C loads LDTR via lldt(LDT_SELECTOR), but 64-bit mode
-            // does not use LDT. The LDT descriptor is filled in the GDT
-            // for 32-bit compatibility but never loaded on 64-bit.
+            // does not use LDT. The Rust GDT has no LDT descriptor at all
+            // (slots 3/5 are the user-CS anchor/copy), so there is no lldt
+            // to issue here.
             // C: x86_lldt(LDT_SELECTOR) — protect.c:313
         }
     }
@@ -729,12 +714,6 @@ mod tests {
             stack_top - X86_64_STACK_TOP_RESERVED as u64,
             "init() must set TSS.sp0 below the X86_64_STACK_TOP_RESERVED area"
         );
-    }
-
-    #[test]
-    fn init_sets_cpu_count() {
-        let prot = X86_64Protection::init(3, VirBytes::new(0x8000));
-        assert_eq!(prot.cpu_count, 4, "cpu_count = cpu_id + 1");
     }
 
     #[test]

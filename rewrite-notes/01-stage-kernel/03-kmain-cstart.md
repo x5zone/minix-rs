@@ -831,15 +831,18 @@ C 的 `prot_init` 内部有两个独立职责，切分轴是**入口机制 vs �
 // reads a dead TSS (sp0 = 0 → page fault at VA -8 on the frame push).
 ```
 
-四步完整代码见 §4.2；E1 的原文已在上一段引出，这里给的是三个候选的取舍。
+四步完整代码见 §4.2；E1 的原文已在上一段引出，这里给的是四个候选的取舍。
 
-三个候选被比较过：
+四个候选被比较过：
 
 | 候选 | 淘汰/选中 | 理由（落到具体后果） |
 |---|---|---|
 | 栈上构造，`load()` 后继续用局部变量 | 淘汰 | 函数返回即析构；GDTR/TR 仍指向已复用的栈内存，TSS 结构体的 `sp0` 变成栈上的旧字节 |
 | 堆分配 + 泄漏（`Box::leak`） | 淘汰 | 引导期还没有通用堆；泄漏的分配在裸机环境下没有释放者 |
+| 就地初始化：`init` 直接写全局槽（A-1） | 淘汰 | 要把 `init` 改成 `&mut` 并删 `refresh_descriptors`，三架构 boot 关键路径签名翻新 + 约 20 个调用点（10 个单测 + 5 个载体 + lib.rs）；收益约 30 行，且与现形状一样靠纪律维持不变量，不是类型强制 |
 | 全局 `SyncUnsafeCell<Option<...>>`，装载前搬入 | 选中 | 地址从搬入起稳定；accessor 在未初始化时 panic，给出确定的失败点 |
+
+选中"全局搬入 + 重建"不是硬件必然，而是 Rust 值语义的代价：C 的 `gdt`/`idt`/`tss` 是文件级静态数组，天生就地（`protect.c:27`）；Rust 把手写表收进结构体后，结构体按值传递，搬移后表项里内嵌的地址就过期。IDT/TSS 的对称也说明这条边界：IDT 门项只存 handler 地址、不含表自身的地址，所以 `TrapEntry` 搬进全局后不需要 `refresh`；TSS 描述符内嵌 TSS 结构体地址，才需要重建。就地初始化（A-1）能消掉重建，但要把 `init` 改成 `&mut` 并翻新三架构的 boot 关键路径，收益与成本不成比例；当前形状的搬移-重建窗口在 CLI 关闭、IDT 未装载的直线代码里，暴露面为零。
 
 结构体骨架视图（表就在实例内部，这是"搬移会改变表地址"的根源）：
 
@@ -848,7 +851,6 @@ C 的 `prot_init` 内部有两个独立职责，切分轴是**入口机制 vs �
 pub struct X86_64Protection {
     gdt: [u64; GDT_ENTRIES],
     tss: [Tss64; MAX_CPUS],
-    cpu_count: u32,
     boot_cpu_id: u32,
 }
 ```
@@ -987,9 +989,15 @@ C 的“把内核镜像自己也切一刀”在 Rust 侧由 `vm_handoff::classif
 `init_protection` 同时对三个决策负责：
 
 ```rust
-/* 节选（保留保护结构、门装配与装载的次序；两处省略号内容不同——第一处除 `program_entry_base` 的 BSP 调用外，还省了它之前的 BSP 拓扑计算实代码：cpu_topology 一行加四个派生量赋值，按物理行 5 行、扣去函数调用行 4 行；第二处省的是 `register_current_arch` 的说明注释，注册调用行本身保留在正文；段间说明注释按节选略去），os/kernel/src/lib.rs:fn init_protection。 */
-    let prot = CurrentProtection::init(0, kernel_info.kern_stack_top());
+/* 节选（保留 BSP 选举、保护结构、门装配与装载的次序；省略号处为 `register_current_arch` 的说明注释；段间说明注释按节选略去），os/kernel/src/lib.rs:fn init_protection。 */
+    let topo = minix_platform::platform_desc().cpu_topology();
+    let bsp_hw = elected_bsp_hw_id(&topo);
+    let bsp_logical = (0..topo.nr_cpus as usize)
+        .find(|&i| topo.cpus[i].hw_id == bsp_hw)
+        .unwrap_or(0) as u32;
+    let prot = CurrentProtection::init(bsp_logical, kernel_info.kern_stack_top());
     store_protection(prot);
+    #[cfg(target_arch = "x86_64")]
     with_protection_mut(|prot| prot.refresh_descriptors());
     with_protection(|prot| prot.load());
     ...
@@ -1168,13 +1176,12 @@ STAR 的 63:48 存 anchor 选择子，47:32 存按下的内核 CS；LSTAR 存入
 aarch64 侧的 `ProtectionArch::init` 写的是 `TPIDR_EL1`，不是 `SP_EL1`：
 
 ```rust
-/* 节选（保留初始化与哨兵判定；省略号处为逐行说明注释），os/arch/src/arm64/protection.rs:fn init。 */
+/* 节选（保留前置条件与写入两行；省略号处为 EL1h 模型的长注释），os/arch/src/arm64/protection.rs:fn init。 */
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
         ...
-        if kernel_stack_top.0 != 0 {
-            set_entry_sp(kernel_stack_top);
-        }
-        Self { cpu_count: cpu_id + 1 }
+        assert_ne!(kernel_stack_top.0, 0, "init(0) would poison TPIDR_EL1");
+        set_entry_sp(kernel_stack_top);
+        Self
     }
 ```
 
@@ -1251,13 +1258,13 @@ os/arch/src/riscv64/trap_entry.rs: 1
 os/arch/src/riscv64/trap_stub.rs: 7
 ```
 
-这 9 个文件是与本篇直接相关的子集（按 `#[test]` 属性统计，不是按锚点去重）；arch crate 全量 `src/**/*.rs` 按 `#[test]` 属性口径是 378 个/54 文件，`cargo test -p minix-arch --lib -- --list` 实际列出 266 个可运行测试（默认形态 266/0），`cargo test -p minix-arch -- --list` 含 `os/arch/tests` 共 355 个；`os/arch/tests/*.rs` 静态属性 87 个/21 文件。静态属性数高于 `--list` 是因为部分测试被 `#[cfg]` 门住或属于门内 inventory，实际可运行数以 `--list` 为准。
+这 9 个文件是与本篇直接相关的子集（按 `#[test]` 属性统计，不是按锚点去重）；arch crate 全量 `src/**/*.rs` 按 `#[test]` 属性口径是 375 个/52 文件，`cargo test -p minix-arch --lib -- --list` 实际列出 265 个可运行测试（默认形态 265/0），`cargo test -p minix-arch -- --list` 含 `os/arch/tests` 共 354 个；`os/arch/tests/*.rs` 静态属性 87 个/21 文件。静态属性数高于 `--list` 是因为部分测试被 `#[cfg]` 门住或属于门内 inventory，实际可运行数以 `--list` 为准。
 
 x86_64 的 16 个保护测试里与本篇直接相关的几类：TSS 布局（`tss64_size_is_104_bytes`、`tss64_offsets_correct`）、描述符位组合（`gdt_descriptors_have_correct_dpl`、`gdt_descriptors_are_flat_mode`、`tss_descriptor_is_64bit`）、描述符与结构体地址的一致性（`tss_descriptor_high_half_carries_base_above_4gib`、`init_creates_tss_descriptor_in_gdt`）、`sp0` 算术（`set_kernel_stack_updates_sp0`、`init_sets_tss_sp0_below_reserved_area`）。13 个 trap 测试 = 9 条门表测试（1 条 `init` 全占位 + 1 条保留向量 + 7 条 `install_idt_handlers` 后的 DPL/IST/类型）+ 2 条 `set_handler` + 2 条结构布局；`install_idt_handlers` 在生产路径上对 41 条门逐门断言 DPL/IST/类型，并核对 gate presence 与 stub 覆盖相等；`user_accessible` 的谓词与 DPL 另有 `test_user_accessible_gate_set` 与 `set_handler_sets_dpl_correctly` 两条直接断言。IPC 门（向量 33）由 `install_trap_stubs` 装 stub，不再单列门测试。11 个 trap_stub 测试里的覆盖检查改为先调 `install_idt_handlers` 再对 `STUB_VECTORS` 与 gate presence 核验。
 
 三条启动顺序源码钉在 `os/kernel/tests/init_protection_order_pin.rs`：`store_protection → refresh_descriptors → load → program_entry_base`、`install_trap_stubs → trap.load`、`smp_init` 的 `set_kernel_stack → boot_ap`。宿主不能执行 `lgdt`/`ltr`/`lidt`，源码序是这里诚实的仪器；顺序反排即红。
 
-aarch64 与 riscv64 侧的数字对应的是浅测试：两份 `protection.rs` 各 1 条（`protection_has_cpu_count`）、两份 `trap_entry.rs` 各 1 条 trait 边界断言（`aarch64_trap_entry_arch_impl_satisfies_trait_bound` 与 `riscv64_trap_entry_arch_impl_satisfies_trait_bound`）。两份 `trap_stub.rs` 各 3 与 6 条（`grep` 的 7 含一条注释命中），覆盖向量表布局与入口腿的静态断言。它们证明的是枚举往返、结构体字段与表布局，不覆盖 §4.6 的寄存器语义——那部分只能在真机上读（§5.2）。
+aarch64 与 riscv64 侧的数字对应的是浅测试：两份 `protection.rs` 在 `cpu_count` 自证测试删除后没有宿主测试（状态是 ZST，由静态 accessor 与真机载体覆盖）、两份 `trap_entry.rs` 各 1 条 trait 边界断言（`aarch64_trap_entry_arch_impl_satisfies_trait_bound` 与 `riscv64_trap_entry_arch_impl_satisfies_trait_bound`）。两份 `trap_stub.rs` 各 3 与 6 条（`grep` 的 7 含一条注释命中），覆盖向量表布局与入口腿的静态断言。它们证明的是枚举往返、结构体字段与表布局，不覆盖 §4.6 的寄存器语义——那部分只能在真机上读（§5.2）。
 
 宿主覆盖不到的部分需要说清：`lgdt`/`lidt`/`ltr` 真正执行后的 CPU 状态、CPL3→CPL0 转场的实际栈切换、AP 上 MSR 的实际写入、`isb`/`csrw` 之后的可见性——这些只能在真机上读寄存器。
 

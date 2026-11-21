@@ -2410,6 +2410,17 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 pub fn init_protection(kernel_info: &KernelInfo) {
     use minix_arch::{CurrentProtection, CurrentTrapEntry, ProtectionArch, TrapEntryArch};
 
+    // The BSP's logical id is the single source for `init`, `program_entry_base`
+    // and the AP-skip loop in `smp_init`. The firmware's `bsp_id` is only a
+    // hint; the entry election records the CPU actually running this code.
+    // Compute it before `init` so the TSS slot loaded via `ltr` and the GS
+    // area written below name the same CPU even when the BSP is not slot 0.
+    let topo = minix_platform::platform_desc().cpu_topology();
+    let bsp_hw = elected_bsp_hw_id(&topo);
+    let bsp_logical = (0..topo.nr_cpus as usize)
+        .find(|&i| topo.cpus[i].hw_id == bsp_hw)
+        .unwrap_or(0) as u32;
+
     // Step 1: Initialize protection structures.
     // x86-64: GDT + TSS; aarch64: SP_EL1; riscv64: sscratch
     // C: tss_init(0, &k_boot_stktop) — protect.c:338
@@ -2420,7 +2431,7 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // pointing at reused stack memory. The global also gives the AP tail
     // (smp_init's registered continuation) access to init_ap without a
     // second instance.
-    let prot = CurrentProtection::init(0, kernel_info.kern_stack_top());
+    let prot = CurrentProtection::init(bsp_logical, kernel_info.kern_stack_top());
     store_protection(prot);
     // E1: the instance's address changed when it moved into the global —
     // the TSS descriptors embedded in the GDT still encode the pre-move
@@ -2429,21 +2440,14 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // reads a dead TSS (sp0 = 0 → page fault at VA -8 on the frame push).
     // x86-only: the TSS descriptor rebuild + lgdt are GDT/TSS semantics
     // (aarch64/riscv64 keep register-state protection).
+    #[cfg(target_arch = "x86_64")]
     with_protection_mut(|prot| prot.refresh_descriptors());
     with_protection(|prot| prot.load());
 
     // Program the CPU's entry base. x86-64 writes the GS area; the
     // aarch64/riscv64 default is a no-op (init/set_kernel_stack already
-    // wrote TPIDR_EL1/sscratch). The BSP's logical id comes from the
-    // arch election, not from the firmware's first-record `bsp_id`.
-    // Ordering contract: kmain runs `init_from_kinfo` (Phase A.5) before
-    // this phase — the topology read below panics otherwise (Frozen::get
-    // before freeze).
-    let topo = minix_platform::platform_desc().cpu_topology();
-    let bsp_hw = elected_bsp_hw_id(&topo);
-    let bsp_logical = (0..topo.nr_cpus as usize)
-        .find(|&i| topo.cpus[i].hw_id == bsp_hw)
-        .unwrap_or(0) as u32;
+    // wrote TPIDR_EL1/sscratch). `bsp_logical` was resolved before `init`
+    // so this write names the same CPU the TSS/GDT path did.
     with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top()));
 
     // Step 2: Prepare the trap entry table metadata.
@@ -2549,17 +2553,10 @@ pub(crate) fn store_trap_entry(trap: CurrentTrapEntry) {
     let _ = trap;
 }
 #[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn with_protection<R>(f: impl FnOnce(&CurrentProtection) -> R) -> R {
-    use minix_arch::arch::protection::ProtectionArch as _;
-    f(&CurrentProtection::init(0, minix_types::VirBytes::new(0)))
-}
+static PROTECTION: CurrentProtection = CurrentProtection::new();
 #[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn with_protection_mut<R>(f: impl FnOnce(&mut CurrentProtection) -> R) -> R {
-    use minix_arch::arch::protection::ProtectionArch as _;
-    f(&mut CurrentProtection::init(
-        0,
-        minix_types::VirBytes::new(0),
-    ))
+pub(crate) fn with_protection<R>(f: impl FnOnce(&CurrentProtection) -> R) -> R {
+    f(&PROTECTION)
 }
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> R {
@@ -3892,12 +3889,13 @@ pub(crate) fn ipc_filter_pool_with(
 /// 2. Unset RTS_PROC_STOP on boot processes
 /// 3. Initialize clock timer
 /// 4. Initialize FPU
-/// 5. Set kernel_may_alloc = false
-/// 6. Call switch_to_user() — never returns
+/// 5. Call switch_to_user() — never returns
+///
+/// The C kernel_may_alloc gate (main.c:105) has no Rust counterpart; the
+/// body's Step 8 records why (D01-F08 removed the C-shaped memmap ledger).
 ///
 /// Design decision D7 (08 §3): returns `!` to express never-returning in the type system.
 /// Design decision D6 (08 §3): vm_running is CpuLocal for SMP correctness.
-/// Design decision D8 (08 §3): kernel_may_alloc uses AtomicBool.
 ///
 /// `proc_table` is the `ProcessTable` built by `init_proc_and_boot` and
 /// threaded through Phase D→F. Step 2 (bill_ptr/proc_ptr=IDLE) and

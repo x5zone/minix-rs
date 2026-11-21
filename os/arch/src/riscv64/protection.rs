@@ -86,9 +86,15 @@ pub(crate) fn set_entry_stack_base(base: VirBytes) {
 /// Unlike x86-64, there is no GDT, IDT, or TSS. The CPU handles
 /// privilege transitions based on the trap mechanism defined in the
 /// RISC-V Privileged Specification.
-pub struct Riscv64Protection {
-    /// Number of CPUs initialized (for SMP tracking).
-    cpu_count: u32,
+pub struct Riscv64Protection;
+
+impl Riscv64Protection {
+    /// The post-`cpu_count` protection state is a ZST; this constructor lets
+    /// the non-x86 `with_protection` accessor return one `'static` instance
+    /// instead of fabricating a throwaway `init(0, 0)`.
+    pub const fn new() -> Self {
+        Self
+    }
 }
 
 impl ProtectionArch for Riscv64Protection {
@@ -96,27 +102,22 @@ impl ProtectionArch for Riscv64Protection {
         // Per-hart `sscratch` only; there is no shared cell to keep in
         // sync. `cpu_id` is implicit in the CSR each hart writes.
         //
-        // `base == 0` is the throwaway sentinel, not a stack (the riscv form
-        // of the aarch64 guard): the non-x86
-        // `with_protection` helper fabricates `init(0, VirBytes::new(0))`
-        // purely to reach `load()`, and an unguarded write there clobbers
-        // the live sscratch back to 0 — the first user trap would then
-        // swap sp := 0, decrement to 0xFFFF_FFFF_FFFF_FEEF (the frame
-        // size), and take a load/store fault on a non-canonical VA
-        // inside the trap entry itself (a fault that is always hit at
-        // boot).
-        if kernel_stack_top.0 != 0 {
-            set_entry_stack_base(kernel_stack_top);
-        }
+        // Precondition: `kernel_stack_top` is a real stack top, never 0.
+        // Writing 0 would poison the live sscratch; the first user trap would
+        // swap sp := 0, decrement to 0xFFFF_FFFF_FFFF_FEEF (the frame size),
+        // and fault on a non-canonical VA inside the trap entry. The former
+        // throwaway caller (`with_protection`'s `init(0, 0)`) is gone.
+        assert_ne!(kernel_stack_top.0, 0, "init(0) would poison sscratch");
+        set_entry_stack_base(kernel_stack_top);
 
-        Self { cpu_count: cpu_id + 1 }
+        Self
     }
 
     fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
         // A 0 argument is never a stack — this entry has no throwaway
-        // caller today, so a 0 here is a wiring bug (loud stop instead of
-        // silently poisoning sscratch).
-        debug_assert_ne!(stack_top.0, 0, "set_kernel_stack(0) would poison sscratch");
+        // caller, so a 0 here is a wiring bug (loud stop instead of silently
+        // poisoning sscratch, in release too).
+        assert_ne!(stack_top.0, 0, "set_kernel_stack(0) would poison sscratch");
         // Contract: per-CPU entry state only. `_cpu_id` is implicit because
         // the write targets the calling hart's own `sscratch`; an
         // implementation must not introduce a shared scalar here.
@@ -133,22 +134,8 @@ impl ProtectionArch for Riscv64Protection {
     fn init_ap(&self, _cpu_id: u32, kernel_stack_top: VirBytes) {
         // Park this AP's own kernel-stack top in its `sscratch` (per-hart
         // CSR — `init_ap` runs on the AP). No shared cell: the calling hart
-        // is the index. Same `base == 0` throwaway-instance guard as `init`.
-        if kernel_stack_top.0 != 0 {
-            set_entry_stack_base(kernel_stack_top);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn protection_has_cpu_count() {
-        // Riscv64Protection only tracks cpu_count; sscratch is a hardware CSR.
-        // Verify the struct can be constructed manually.
-        let prot = Riscv64Protection { cpu_count: 1 };
-        assert_eq!(prot.cpu_count, 1);
+        // is the index.
+        assert_ne!(kernel_stack_top.0, 0, "init_ap(0) would poison sscratch");
+        set_entry_stack_base(kernel_stack_top);
     }
 }

@@ -123,9 +123,11 @@ impl X86_64TrapEntry {
 
     /// Whether `vector` carries a present gate in this table.
     ///
-    /// Load-safety half of the "no empty vector" stage invariant: the
-    /// stub installer cross-checks its coverage against this before the
-    /// table may go live via `load()`.
+    /// Read back whether a gate is present.
+    ///
+    /// `install_idt_handlers` uses this after writing the 41 gates to assert
+    /// that gate presence equals stub coverage; `load()` itself does not
+    /// call it (the installer is the single writer and runs first).
     pub fn gate_present(&self, vector: u8) -> bool {
         self.idt[vector as usize].p_dpl_type & GATE_PRESENT != 0
     }
