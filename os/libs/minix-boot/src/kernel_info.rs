@@ -269,6 +269,28 @@ impl KernelInfo {
             "KernelInfo: memmap must not be empty (no free memory?)"
         );
 
+        // Platform sources are physical pointers the kernel will dereference
+        // before the Direct Map exists: reject null addresses, a zero kind
+        // tag, and a blob span that overflows instead of letting the parser
+        // fault on forged boot input (RD4B-DESIGN-D2-05).
+        for (i, source) in self.platform_sources.iter().enumerate() {
+            assert!(
+                source.phys_addr().0 != 0,
+                "KernelInfo: platform_sources[{i}] has a null physical address"
+            );
+            assert!(
+                source.kind().raw() != 0,
+                "KernelInfo: platform_sources[{i}] has kind 0 (not a registered source)"
+            );
+            source
+                .phys_addr()
+                .0
+                .checked_add(source.len() as u64)
+                .unwrap_or_else(|| {
+                    panic!("KernelInfo: platform_sources[{i}] span overflows u64")
+                });
+        }
+
         // Ordered & pairwise disjoint (D01-R1 D2-05). The input assumption
         // is explicit (D01-R4 D2-03): UEFI GetMemoryMap publishes descriptors
         // in address order; DTB /memory's ordering is *not* spec-guaranteed,
@@ -643,6 +665,31 @@ mod tests {
             param_buf: &[],
             authority: InputObjectId::DtbBootInput,
         }
+    }
+
+    static NULL_PLATFORM_SOURCE: [PlatformDescSource; 1] = [PlatformDescSource::new(
+        crate::platform::RSDP,
+        PhysBytes(0),
+    )];
+    static ZERO_KIND_PLATFORM_SOURCE: [PlatformDescSource; 1] = [PlatformDescSource::new(
+        crate::platform::PlatformDescKind::new(0),
+        PhysBytes(0x1000),
+    )];
+
+    #[test]
+    #[should_panic(expected = "null physical address")]
+    fn platform_source_null_address_rejected() {
+        let mut info = make_valid_info();
+        info.platform_sources = &NULL_PLATFORM_SOURCE;
+        info.validate();
+    }
+
+    #[test]
+    #[should_panic(expected = "kind 0")]
+    fn platform_source_zero_kind_rejected() {
+        let mut info = make_valid_info();
+        info.platform_sources = &ZERO_KIND_PLATFORM_SOURCE;
+        info.validate();
     }
 
     /// Records that explain both projections: one `/memory` record for the
