@@ -22,7 +22,8 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 | 3 | `prompt/review-rules/fix-guard.md` | 修复守则（动手前 5 件事、一次一条、修后留痕） |
 | 4 | `prompt/review-rules/review-cmds.md` | 6 个任务命令入口与不可裁剪的通用强制门 |
 | 5 | `prompt/review-rules/review-patterns.md` | 模式库（含 P0 必检清单与验证命令） |
-| 5.5 | `prompt/review-rules/review-publication.md` | **出版标准（V3.7）**：DP-1..DP-5 文档、CP-1..CP-6 代码、零欠账（禁 defer）、顺序迭代 |
+| 5.5 | `prompt/review-rules/review-publication.md` | **出版标准（V3.7）**：DP-1..DP-5 文档、CP-1..CP-6 代码、零欠账（禁 defer）、顺序迭代、Review 期间代码冻结 |
+| 5.6 | `prompt/review-rules/review-tutorial-rubric.md` | **教程 rubric（V3.8）**：TR-1..TR-6（目标/前置/示例/失败对照/小结/术语），G13 |
 | 6 | `prompt/README.md` | 三端同步机制：改了源必须同步哪些文件、跑哪些校验 |
 
 运行时副本 `.claude/rules/review-core.md`、`.claude/rules/review-process.md`、`.claude/rules/fix-guard.md`
@@ -68,6 +69,8 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **真值优先序**：`Minix3 C 源码行为 > 设计契约 > Rust 实现 > 设计/技术文档 > AI 分析`。拿不准就去 `minix3/` 读原始 C 代码
 - **三档术语**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：文档 + 设计 + 代码）
 - **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史（`tools/doc-publication-check.py`），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
+- **⛔ 教程就绪（V3.8）**：每章必须有学习目标、前置概念、最小可运行示例、失败对照、小结、术语定义（`tools/tutorial-rubric-check.py`）；缺任一项 = P1，不得 CONVERGED
+- **⛔ 轮次硬上限（V3.8）**：同一篇最多 3 个修改轮（跨 edition 累计）；未收敛即强制整节重写，不开第 4 轮；重写后只允许 1 次确认轮
 - **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`），旧 todo markdown 冻结为归档
 - **P0 六类**：P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing
 - **⛔ 显式调用技能**：必须通过 Skill 工具真正调用技能，scan.md 的 Skill Invocation Log 只记实际调用；"规则已加载"不算调用

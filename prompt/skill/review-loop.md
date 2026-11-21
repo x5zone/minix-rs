@@ -82,12 +82,15 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 python3 tools/doc-publication-check.py <当前篇文档>
 python3 tools/code-publication-check.py $(cat runs/<stage>/<doc>/related-code.txt | tr '\n' ' ')
 python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open
+python3 tools/tutorial-rubric-check.py <当前篇>
 ```
 
 第三条读的是 `rewrite-notes/coordination/todo-ledger/<stage>.yaml`——**TODO 的单一源**。
 `01-todo.md` 等旧文件在冻结前只是工作副本，不作为欠账判据。
 `--fail-on-open` 同时检查 `blocked: true`：**存在待裁项时本轮不得 CONVERGED**，必须停下来问用户。
 SUGG（P3）也记在这本账里，轮内必须清零。
+**Review 期间关联代码冻结**（V3.8）：进入 L1 后任何 `os/` 改动 = 中止本轮；设计批必须在
+Manuscript 阶段前置完成。
 
 - 有命中 → **本轮的 L0 阶段先清出版门**，清到零再派面板；不得「带着历史叙事开轮」，
   否则面板会收敛在脏文档上（D01/D02 的历史教训）。

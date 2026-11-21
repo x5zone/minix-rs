@@ -681,6 +681,7 @@ G10 文档出版：当前篇 `tools/doc-publication-check.py` 零命中（DP-1..
 G11 代码出版：当前篇关联代码 `tools/code-publication-check.py` 零命中（CP-1..CP-6）
 G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
     （open = 0 且 blocked = 0；blocked 待裁项存在时禁止收敛）
+G13 教程 rubric：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）
 ```
 
 **V3.7 出版标准（2026-11-21 用户裁决）**：G10/G11 与 `prompt/review-rules/review-publication.md`
@@ -833,6 +834,18 @@ citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 
 
 这不是“放弃文档”：文档在下一个 edition 下继续，目标仍是收敛；被淘汰的是**不能
 收敛的规则版本**，不是文档。
+
+**V3.8 硬上限与强制重写（2026-11-21 用户裁决）**：
+
+- **同一篇最多 3 个修改轮，跨 edition 累计。** 不再按 edition 分开计；换 edition 不是绕过
+  上限的方式。第 4 个修改轮**禁止**；唯一例外是用户 `DECISIONS.md` 的 `rewrite-exception`
+  判决行，且必须写明「为什么重写不可行」。
+- **第 3 轮结束仍未收敛 → 强制重写**：不再开第 4 轮，转入 Manuscript 阶段，按
+  `review-tutorial-rubric.md` 与 `review-publication.md` **整节重写**失败章节（不是线级补丁）。
+- **重写后只允许 1 次确认轮**（不占修改轮预算）；确认轮仍不收敛 → 停止，交用户裁决，
+  不得自动开轮。
+- **代码冻结**：Review 期间关联代码冻结（见 `review-publication.md` §四.6）；重写期间落地的
+  设计批必须在重写开始前完成，重写开始后任何 `os/` 改动 = 中止并重设基线。
 
 ### 7.6 中途变更
 
