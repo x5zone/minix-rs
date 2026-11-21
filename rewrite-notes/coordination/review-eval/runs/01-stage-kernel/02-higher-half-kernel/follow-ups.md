@@ -44,7 +44,7 @@
 | D02-F06 | [CLOSED] | 三份 `.ld` 收口/上界 `ASSERT`；`check-layout.sh all` PASS；提交 `c376f5371` |
 | D02-F07 | [CLOSED] already-fixed | `resume_additive` 已把三条 additive-resume 收成泛型 |
 | D02-F08 | [CLOSED] | `run_self_boot` 共享流程，两壳只剩常量/横幅/console；提交 `6d0334dc6`；`check-layout.sh all` PASS |
-| D02-F09 | [CLOSED] decided | 保留 `Paging`/`HugePages`/`BootArch`（设计裁决，无代码动作）；翻译残留清单作为 code-excellence 输入 |
+| D02-F09 | [CLOSED] already-fixed | 保留 `Paging`/`HugePages`/`BootArch`（保留项不是缺陷，类型边界已有测试）；翻译残留清单作为 code-excellence 输入 |
 | D02-F10 | [CLOSED] | 读者 36 条全部在 R4 表逐条 implemented/already-fixed/dup-of；见 `suggestions.md` |
 | D02-F11 | [CLOSED] | L9 三架构等值对账；`check-layout.sh all` → 三条 L9 PASS |
 | D02-F12 | [CLOSED] | `cargo test -p minix-arch` 266/0 |
