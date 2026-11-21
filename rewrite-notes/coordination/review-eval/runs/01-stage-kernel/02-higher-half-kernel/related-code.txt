@@ -18,7 +18,6 @@ os/kernel/src/arch/x86_64/higher_half.rs
 os/kernel/src/boot/higher_half.rs
 os/kernel/src/boot_policy.rs
 os/kernel/src/lib.rs
-os/kernel/tests/link_ld_lockstep.rs
 os/libs/minix-boot/src/handoff_v1_read.rs
 os/libs/minix-boot/src/kernel_info.rs
 os/libs/minix-elf/src/lib.rs

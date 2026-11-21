@@ -6382,10 +6382,11 @@ mod tests {
     }
 
     // ── Linker script constraint validation tests ──
-    // These tests verify that the constants in the three architecture
-    // linker scripts (link.ld) satisfy arch_boot_impl's constraints.
+    // These tests verify that the constants in the three *production*
+    // linker scripts (`os/kernel-image/*.ld`) satisfy arch_boot_impl's
+    // constraints.
     //
-    // **Per-architecture KERN_PHYS_BASE values** (from os/kernel/src/arch/*/link.ld):
+    // **Per-architecture KERN_PHYS_BASE values** (from os/kernel-image/*.ld):
     // - x86_64:    0x0020_0000 (2 MB)
     // - aarch64:   0x4020_0000 (QEMU virt RAM base 0x4000_0000 + 2 MB)
     // - riscv64:   0x8020_0000 (QEMU virt DRAM base 0x8000_0000 + 2 MB)
@@ -6415,9 +6416,7 @@ mod tests {
 
     /// The three *production* kernel linker scripts (`os/kernel-image/*.ld`,
     /// selected by `kernel-image/build.rs`) must satisfy the boot policy's
-    /// alignment constraints. The previous version included the unused
-    /// `os/kernel/src/arch/*/link.ld` copies and asserted local literals, so
-    /// a production-script change could not fail it.
+    /// alignment constraints.
     #[test]
     fn linker_scripts_satisfy_boot_alignment_constraints() {
         let cases: [(&str, &str, &str, &str); 3] = [

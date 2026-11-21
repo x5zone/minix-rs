@@ -241,7 +241,7 @@ impl core::fmt::Display for DmLayoutError {
 /// VM direct map sits at 2GB in user space; kernel direct map occupies the
 /// PML4 slot immediately after the kernel image's slot: the kernel image is
 /// linked at the kernel-half base `0xFFFF_8000_0000_0000` (PML4[256], see
-/// `os/kernel/src/arch/x86_64/link.ld`), so the DM window must NOT share
+/// `os/kernel-image/x86_64.ld`), so the DM window must NOT share
 /// that slot — boot maps the image there with `VA = kern_virt_base + offset`
 /// translations that do not follow DM semantics (`VA = DM base + PA`).
 /// `0xFFFF_8080_0000_0000` is PML4[257], a slot the bootstrap root never
@@ -293,7 +293,7 @@ const _: () = {
 /// region at `0x0000_1000_0000_0000`; the kernel direct map takes the L0
 /// slot immediately after the kernel image's slot (`0xFFFF_8080_0000_0000`
 /// = L0[257], image linked at L0[256] = `0xFFFF_8000_0000_0000` per
-/// `os/kernel/src/arch/aarch64/link.ld`), for cross-arch uniformity with
+/// `os/kernel-image/aarch64.ld`), for cross-arch uniformity with
 /// x86-64: the DM window never shares a top-level slot with the image.
 ///
 /// The window spans 2 GiB of PA space: QEMU virt places RAM base at
@@ -347,7 +347,7 @@ const _: () = {
 ///
 /// Sv39 provides a 39-bit virtual address space: VA[38:0]. The kernel
 /// image is linked at the Sv39 canonical high base `0xFFFF_FFC0_0000_0000`
-/// (VPN[2] = 256, see `os/kernel/src/arch/riscv64/link.ld`); the kernel
+/// (VPN[2] = 256, see `os/kernel-image/riscv64.ld`); the kernel
 /// direct map takes the next top-level slot, VPN[2] = 257
 /// (`0xFFFF_FFC0_4000_0000`), so the window never shares a slot with the
 /// image. The previous base `0xFFFF_FC00_0000_0000` was a non-canonical

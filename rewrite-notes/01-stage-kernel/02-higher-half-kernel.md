@@ -357,7 +357,7 @@ SECTIONS
 
 三份脚本的地址写法有两种：x86_64 的位置计数器起点是 `KERNEL_HIGH_BASE + KERNEL_PHYS_BASE`（首段的虚拟地址里直接含有物理基址，`AT` 表达式减去 `KERNEL_HIGH_BASE` 就得到物理地址）；aarch64 与 riscv64 的起点是 `KERNEL_VIRT_BASE`，`AT` 表达式写成 `AT(ADDR(sec) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)`（[`aarch64.ld`](os/kernel-image/aarch64.ld)、[`riscv64.ld`](os/kernel-image/riscv64.ld)）。两种写法保证的是同一条不变量：所有段的"虚拟地址 − 装载地址"相等。这条不变量由 `check-layout.sh` 的 L4 断言检查（该脚本在 `01-boot-shim-bootstrap.md` §5.2 已逐条列出，本节只说它与 `AT()` 的因果关系）。
 
-另一套形态在 `os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld` 里：三份脚本都声明了 `KERN_VIRT_BASE` 与 `KERN_PHYS_BASE`，但**没有任何 `AT()`**，因此每个可加载段的装载地址默认等于虚拟地址。x86_64 那份的头注释把意图写明了（`No AT() directives — boot-shim handles LMA placement`），而脚本本身只给出虚拟地址一套布局。本仓的构建脚本里检索不到把它们作为链接输入的路径（复算：`grep -rn 'src/arch/.*link.ld' os/qemu-tests/*.sh os/xtask/src/*.rs` 在**构建输入**上无命中；把检索面扩到全仓的 `*.rs`/`*.toml`/`*.sh`/Makefile 后仍有 6 处命中，全部是注释引用（5 处脚本常量注释 + `os/kernel/tests/link_ld_lockstep.rs` 的一处测试头注释），无构建输入常量），它们记录的是预期布局而不是当前被链接的产物（三份脚本的常量当前与生产脚本一致，实读比对；并由 `os/kernel/tests/link_ld_lockstep.rs` 做常量锁步断言——测试只锁常量，不证明这些脚本被链接）；载体（QEMU 测试内核；其中一部分目录带自己的 `link.ld`，其余沿用工具链默认布局）在带脚本的形态下各自用单地址脚本，以合成的 `KernelInfo` 走进同一段引导代码。
+`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld` 那套无生产链接读者的副本已按 `D-107` 删除（连同只锁常量的 lockstep 测试）；生产布局只由 `os/kernel-image/*.ld` 承载。载体（QEMU 测试内核；其中一部分目录带自己的 `link.ld`，其余沿用工具链默认布局）在带脚本的形态下各自用单地址脚本，以合成的 `KernelInfo` 走进同一段引导代码。
 
 第三种形态在载体侧：[`link.ld`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/link.ld) 只有一套地址（`. = 0x80200000`），段没有 `AT()`，收尾一行 `__stack_top = . + 0x10000`。载体被固件放在低地址执行，不需要两套地址。
 
@@ -374,7 +374,6 @@ SECTIONS
 | 载体单地址脚本 | riscv64 测试载体（直接 `arch_boot`） | 物理视图 | 高半 VMA（direct leg 加 delta） |
 | 生产镜像（带 `AT()`） | aarch64 direct-core（`bootface_a64` → `arch_boot`） | 低地址进入、物理视图 | 高半 VMA（`ldr` 取绝对值） |
 | 载体单地址（工具链默认布局） | x86_64/aarch64 测试载体（inline `arch_boot`，UEFI helpers） | 低地址视图 | 低地址 |
-| `os/kernel/src/arch/*/link.ld` | 无生产链接读者 | — | — |
 
 “需要 `delta`”只落在 riscv64 的 direct leg；v1 receive、aarch64 UEFI 的 v1 跨镜像跳转、x86_64 `call` 都不需要。
 
@@ -1157,11 +1156,11 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 ### 5.3 布局契约与 01 篇断言体系的分工（回指 01 篇 §5.2）
 
-镜像还没运行就能检查的那批断言（`check-layout.sh` 的 L0–L9）在 `01-boot-shim-bootstrap.md` §5.2 已逐条列出完整措辞，本节不重复；写给未读 01 篇读者的编号速查：L0 脚本预期表与链接脚本声明的两个基址互相对账；L1 ELF 类型 = `EXEC`；L2 机器类型与预期相符；L3a 段数 ≥ 1、L3b 首段 VMA = 预期、L3c 首段 LMA = 物理基址；L4 所有 `PT_LOAD` 的 `vaddr − paddr` 一致；L5 镜像跨距 2MiB 对齐；L6a 入口 = 预期、L6b `_start` 符号 = 入口、L6c 入口落在首段内；L7 引导栈符号存在、64 KiB、落在末段；L8 `minix_kernel::arch_boot` 在镜像里；L9 跨距对账（ELF 实测 = 对应 direct face 的 `KERN_SIZE`；x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`）。与本章有因果关系的是四条：L3c（首段 LMA = 物理基址）与 L4（所有段平移一致）是 §3.1 那条"按 `p_paddr` 摆放到与符号地址不同处就需要低地址 LMA"判据的可执行形式；L5（跨距 2MiB 对齐）与 L9（跨距对账）是 §3.5 与 §3.3 的可执行形式（L9 三架构均执行，按架构选 direct face；01 篇 §5.2 的清单注明了这一条）。四条断言的作用是把"脚本里的常量、boot-shim 读出的布局、自引导面硬写的常量"这三处互相拽住；在 L9 覆盖的 riscv64 分支上，任一处单独改动都会让其中一条变红，aarch64 手写常量只有上界断言（§5.4 M10）。
+镜像还没运行就能检查的那批断言（`check-layout.sh` 的 L0–L9）在 `01-boot-shim-bootstrap.md` §5.2 已逐条列出完整措辞，本节不重复；写给未读 01 篇读者的编号速查：L0 脚本预期表与链接脚本声明的两个基址互相对账；L1 ELF 类型 = `EXEC`；L2 机器类型与预期相符；L3a 段数 ≥ 1、L3b 首段 VMA = 预期、L3c 首段 LMA = 物理基址；L4 所有 `PT_LOAD` 的 `vaddr − paddr` 一致；L5 镜像跨距 2MiB 对齐；L6a 入口 = 预期、L6b `_start` 符号 = 入口、L6c 入口落在首段内；L7 引导栈符号存在、64 KiB、落在末段；L8 `minix_kernel::arch_boot` 在镜像里；L9 跨距对账（ELF 实测 = 对应 direct face 的 `KERN_SIZE`；x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`）。与本章有因果关系的是四条：L3c（首段 LMA = 物理基址）与 L4（所有段平移一致）是 §3.1 那条"按 `p_paddr` 摆放到与符号地址不同处就需要低地址 LMA"判据的可执行形式；L5（跨距 2MiB 对齐）与 L9（跨距对账）是 §3.5 与 §3.3 的可执行形式（L9 三架构均执行，按架构选 direct face；01 篇 §5.2 的清单注明了这一条）。四条断言的作用是把"脚本里的常量、boot-shim 读出的布局、自引导面硬写的常量"这三处互相拽住；三架构 L9 都会把任一处单独改动打红。
 
 ### 5.4 机制 → 需要证明什么（反转核对表）
 
-本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1–§5.3；本节是它的反转面）。反转核对查出 3 条覆盖缺口（R02-T01/T03/T04），已按 TODO 登记；R02-T02 的 arch link.ld 常量锁步已由 `os/kernel/tests/link_ld_lockstep.rs` 接住。
+本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1–§5.3；本节是它的反转面）。反转核对查出 3 条覆盖缺口（R02-T01/T03/T04），已按 TODO 登记；R02-T02 的 arch link.ld 常量锁步随 `D-107` 删除该形态而销账（无生产读者，锁步对象不存在）。
 
 | # | 机制（正文位置） | 需要证明什么（可观测断言） | 覆盖状态 | 现有证据 |
 |---|---|---|---|---|
@@ -1169,7 +1168,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 | M2 | 两段式布局的段归属（§2.2） | `.unpaged_*` 段 VMA=LMA；改名名单决定归属 | 部分覆盖 | 清单与判据可静态核；**无断言检查段归属**（由链接脚本决定，L0–L9 不含此项）→ **R02-T01** |
 | M3 | `head.S` 的成对换栈跳转（§2.3） | 设栈+跳转的次序、位移与绝对值各自的前提 | 部分覆盖 | 真机链（§5.2 三断言覆盖结果）；**C 侧次序本身无自动断言** |
 | M4 | `k_initial_stktop` 落段（§2.4） | 栈符号落在高半段、栈区不与其他内容重叠 | 部分覆盖 | **无自动断言**；L7 检查的是 Rust `kernel_boot_stack_*`（64 KiB、末段内），不是 C `k_initial_stktop`；C 侧落段只有静态阅读 → **R02-T01** |
-| M5 | Rust 三种脚本形态的判据（§3.1） | 生产脚本有 `AT()` 且常量与预期表一致；arch link.ld 无链接读者 | **部分覆盖** | 「生产脚本有 `AT()` 且常量一致」由 L0/L3c/L4 与 `os/kernel/tests/link_ld_lockstep.rs` 覆盖；「arch link.ld 无链接读者」只有一次性的 `grep` 证据（§3.1 自述锁步测试「不证明这些脚本被链接」），没有测试钉住 |
+| M5 | Rust 生产脚本的判据（§3.1） | 生产脚本有 `AT()` 且常量与预期表一致 | 已覆盖 | L0/L3c/L4；无读者的 arch `link.ld` 形态已按 `D-107` 删除 |
 | M6 | ELF 解析器的五道校验与 12 个变体（§3.2） | 每种畸形输入返回对应变体 | 已覆盖 | minix-elf 27 测试（五道校验/迭代器/字段/仿真）；`NoLoadSegments`、`InvalidSegment`、`TargetBufferTooSmall` 由 boot-shim loader 的测试覆盖，不在 minix-elf 的 27 个里 |
 | M7 | 按 `p_paddr` 摆放与 BSS 清零（§4.2） | 段体写到 `paddr`；NOBITS 区清零；重叠拒绝 | 部分覆盖 | loader 的 31 个测试中 27 个直接相关（`bss_zeroed`、`rejects_overlapping`、三个新守卫等，名单见 §5.1）；**`p_paddr` 物理写入只有真机链**，宿主只跑 buffer 孪生 |
 | M8 | 三架构成对跳转的指令序列（§4.3） | 切栈+跳转按序、对齐、清帧指针、`delta` 处理 | 部分覆盖 | 真机载体三架构（`sp_ok`/`sp_aligned`/`fp_zero` 三断言）；**PC 判据缺——x86_64/aarch64 按低地址进入不可判，riscv64 载体 PC 已在高半、可判而未判；`delta` 路径无断言** → **R02-T03（射程：给 riscv64 载体加 PC 判据即可）** |
@@ -1211,11 +1210,10 @@ readelf -lW  os/target/x86_64-unknown-none/release/kernel     # LOAD 行的 VMA/
 #         首段 PhysAddr 应当是链接脚本里的 KERNEL_PHYS_BASE。
 
 # 第二组：脚本里的常量与表达式
-grep -c ': AT(' os/kernel-image/*.ld os/kernel/src/arch/*/link.ld
+grep -c ': AT(' os/kernel-image/*.ld
 # 口径：只匹配段头里的 ": AT(" 表达式，不匹配注释里出现的 "AT()" 字样。
-# 关键行：三份生产脚本各 4 条（.text/.rodata/.data/.bss）；os/kernel/src/arch/*/link.ld 各 0 条。
-# 对照：若把模式放宽成 'AT('，x86_64 那份仍 4 条、另两份各 5 条（多出的一条来自头注释里的说明），
-#       而 os/kernel/src/arch/x86_64/link.ld 会从 0 变 2（同样来自注释）。
+# 关键行：三份生产脚本各 4 条（.text/.rodata/.data/.bss）。
+# 对照：若把模式放宽成 'AT('，x86_64 那份仍 4 条、另两份各 5 条（多出的一条来自头注释里的说明）。
 
 printf '%d\n' $((0xF0400000 / 0x400000))        # 961：内核高半基址占第几个 4MB 页目录项
 printf '0x%x\n' $((0xF0400000 - 0x00400000))    # 0xf0000000：C 侧的 _kern_offset
@@ -1247,7 +1245,7 @@ gdb <被调试的工件>
 五组命令的预期输出：
 
 - 第一组：`readelf -hW` 的 `Type:` 行应为 `EXEC`（不是 `DYN`），`Entry point address:` 应等于首段虚拟地址；`readelf -lW` 的所有 `LOAD` 行两列地址之差一致（= 高半平移量），首段 `PhysAddr` 等于脚本里的物理基址。
-- 第二组：`grep -c ': AT('` 对三份生产脚本各输出 4、对 `os/kernel/src/arch/*/link.ld` 各输出 0。这条读数必须带口径：把模式放宽成 `AT(` 会把注释里的字样算进来，x86_64 的 arch 脚本会从 0 变 2。两条 `printf` 分别输出 `961` 与 `0xf0000000`。
+- 第二组：`grep -c ': AT('` 对三份生产脚本各输出 4。这条读数必须带口径：把模式放宽成 `AT(` 会把注释里的字样算进来（x86_64 仍 4、另两份各 5）。两条 `printf` 分别输出 `961` 与 `0xf0000000`。
 - 第三组：全绿时最后一行是 `CHECK-LAYOUT=PASS（x86_64）`、退出码 0；任一断言失败时对应行是 `  [Ln] FAIL …` 且最后一行 `CHECK-LAYOUT=FAIL（…）`。
 - 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not at the architecture's entry alignment`、`FP not zero` 三者之一），而 `INFO: PC not at high address (expected in test kernel)` 是参考信息行、不参与成败判定，别把它读成失败原因（它只在失败分支里出现；x86_64 与 aarch64 的低地址进入会带上它，riscv64 的载体 PC 在高半、不会出现这一行）；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
 - 第五组：断在 `kmain` 后 `$rip` 应等于该腿的入口值——v1 send/receive 与自引导 direct leg 下等于 `nm <工件> | grep kmain` 的符号值（高半）；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址；**riscv64 测试载体不是 `nm` 值本身**：它链接在物理地址上，`$rip` = `nm` 值 + `delta`（`delta = kern_virt_base − kern_phys_base`），例如加载基址 `0x80200000` 时 `nm` 给出 `0x80200160`，而 `$rip` 是 `0xffffffc000000160`；`$rsp` 应落在该架构的 `kern_virt_base` 之上（x86_64 `0xffff8000…`、aarch64 `0xffff8000…`、riscv64 `0xffffffc0…`）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
@@ -1280,8 +1278,7 @@ gdb <被调试的工件>
 - `os/kernel-image/{x86_64,aarch64,riscv64}.ld`、`os/kernel-image/{build.rs,check-layout.sh}`
 - `os/kernel-image/src/{main,bootface,bootface_a64,bootface_common}.rs`
 - `os/kernel/src/boot/higher_half.rs`、`os/kernel/src/arch/{x86_64,aarch64,riscv64}/higher_half.rs`
-- `os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`
-- `os/kernel/src/{lib,boot_policy}.rs`、`os/kernel/tests/link_ld_lockstep.rs`
+- `os/kernel/src/{lib,boot_policy}.rs`
 - `os/boot-shim/src/{loader,main,uefi_helpers,opensbi_helpers,uboot_main}.rs`
 - `os/libs/minix-elf/src/lib.rs`
 - `os/libs/minix-boot/src/{kernel_info,handoff_v1_read}.rs`
