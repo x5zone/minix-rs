@@ -20,40 +20,40 @@
 
 ## R1 设计 P3（suggestions，不阻断）
 
-> 设计角色 P3 按 §4.0c 分流；不实施，下一 edition 边界按频次评估。
+> D-107 终态：不再保留“不实施（建议级）”。
 
 | ID | 摘要 | 处置 |
 |---|---|---|
-| RD1-DESIGN-D2-07 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/boot/higher_half.rs:40-48`；文档 §3.4 `:562-568` | 不实施（建议级） |
-| RD1-DESIGN-D2-08 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/lib.rs:6065-6099`；`os/kernel/src/boot/higher_half.rs:21-30` | 不实施（建议级） |
-| RD1-DESIGN-D2-09 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/boot_policy.rs:107-120`；`os/arch/src/arch/boot.rs:461-464`、`734` | 不实施（建议级） |
-| RD1-DESIGN-D2-10 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/lib.rs:236-300`、`785-795` | 不实施（建议级） |
-| RD1-DESIGN-D2-11 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/arch/x86_64/link.ld`、`aarch64/link.ld`、`riscv64/link.ld`（三份均不在 27 文件内，仅按文档与测试引用判断）；`/home/xzhao/github/minix-rs/ | 不实施（建议级） |
-| RD1-DESIGN-D2-12 | - 位置：`/home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs:119-121`、`679-695`、`467-481`；`os/boot-shim/src/loader.rs:519-560` | 不实施（建议级） |
-| RD1-DESIGN-D2-15 | - 位置：`/home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs:187-266`；`os/kernel/src/lib.rs:217-233`；`os/kernel-image/src/bootface.rs:440`；测试载体 `os/q | 不实施（建议级） |
+| RD1-DESIGN-D2-07 | `jump_to_kmain` 第二形参 | [CLOSED] implemented：F01 / 提交 `83e8cbb2b` |
+| RD1-DESIGN-D2-08 | `HIGHER_HALF_CALLED` 等测试静态 | [CLOSED] implemented：D2-08 / 提交 `ecfef0ae9` |
+| RD1-DESIGN-D2-09 | `virtual_end` 死变量 | [CLOSED] implemented：D2-08 / 提交 `ecfef0ae9` |
+| RD1-DESIGN-D2-10 | x86 `arch_boot` 临时取证打印 | [CLOSED] implemented：R34 / 提交 `925c19fc0` |
+| RD1-DESIGN-D2-11 | 三份无读者 arch `link.ld` | [CLOSED] implemented：D2-06 / 提交 `503ae169e` |
+| RD1-DESIGN-D2-12 | `KernelInfo` 字段重复/派生 | [CLOSED] already-fixed：v10 删除派生字段（D-062） |
+| RD1-DESIGN-D2-15 | 直核面静态与载荷 | [CLOSED] implemented：D-086 owned 路径 + F08 共享流程 / 提交 `6d0334dc6` |
 
 ## 本次状态核实（D-107 清零口径）
 
 | ID | 当前状态 | 说明 |
 |---|---|---|
-| D02-F01 | OPEN | `jump_to_kmain(kinfo, stack_top)` 仍保留冗余形参；清零批删除第二个参数并改 3 impl/4 调用点 |
-| D02-F02 | CLOSED（对象消失） | wire v10 / D-062 删除 `kern_stack_top` 字段，等式校验不再有 wire 对象 |
-| D02-F03 | 并入 R4 D2-06 | 三份 arch `link.ld` 按 D-107 删除，连同 `link_ld_lockstep.rs` |
-| D02-F04 | OPEN | buffer/phys 两版循环仍各写一份；清零批抽共享区间纯函数 |
-| D02-F05 | OPEN | 物理装载仍无 `KernelImage`/已验证类型前置；清零批引入已验证值对象 |
-| D02-F06 | OPEN | x86 生产链接脚本仍无 2 MiB 收口 `ASSERT`；清零批补并跑 `check-layout all` |
-| D02-F07 | CLOSED | `resume_additive` 已把三条 additive-resume 收成泛型 |
-| D02-F08 | OPEN（用户裁决：抽共享） | 抽 bootface 共享流程，两薄壳只留常量/入口；D-107 |
-| D02-F09 | WONTFIX（拒绝项/分类项） | 保留 `Paging`/`HugePages`/`BootArch`，翻译残留清单作为 code-excellence 输入 |
-| D02-F10 | OPEN（用户裁决：全部实现） | 读者 36 条全部实现；D-107 取消“建议不实施”出口 |
-| D02-F11 | CLOSED | 与 D01 `F-R34-01` 同项已实施：L9 三架构等值对账；证据 `bash os/kernel-image/check-layout.sh all` → 三条 L9 PASS |
-| D02-F12 | CLOSED | `cargo test -p minix-arch` 已由 D03 的测试卫生批修好（266/0） |
+| D02-F01 | [CLOSED] | `jump_to_kmain(kinfo)` 三实现从 `kinfo.kern_stack_top()` 现算；提交 `83e8cbb2b`；`cargo test -p minix-kernel --features mock --lib` 866/0/8 |
+| D02-F02 | [CLOSED] dup-of | wire v10 / D-062 删除 `kern_stack_top` 字段，等式校验不再有 wire 对象 |
+| D02-F03 | [CLOSED] dup-of | 三份 arch `link.ld` 按 D-107 删除（D2-06 / `503ae169e`） |
+| D02-F04 | [CLOSED] | `segment_spans` 两版共用；`test_buffer_and_phys_loaders_share_segment_spans`；提交 `f50159798` |
+| D02-F05 | [CLOSED] | `KernelImage`/`ValidatedKernelImage`；提交 `1460d4147` |
+| D02-F06 | [CLOSED] | 三份 `.ld` 收口/上界 `ASSERT`；`check-layout.sh all` PASS；提交 `c376f5371` |
+| D02-F07 | [CLOSED] already-fixed | `resume_additive` 已把三条 additive-resume 收成泛型 |
+| D02-F08 | [CLOSED] | `run_self_boot` 共享流程，两壳只剩常量/横幅/console；提交 `6d0334dc6`；`check-layout.sh all` PASS |
+| D02-F09 | [CLOSED] decided | 保留 `Paging`/`HugePages`/`BootArch`（设计裁决，无代码动作）；翻译残留清单作为 code-excellence 输入 |
+| D02-F10 | [CLOSED] | 读者 36 条全部在 R4 表逐条 implemented/already-fixed/dup-of；见 `suggestions.md` |
+| D02-F11 | [CLOSED] | L9 三架构等值对账；`check-layout.sh all` → 三条 L9 PASS |
+| D02-F12 | [CLOSED] | `cargo test -p minix-arch` 266/0 |
 
 ### D02 §5.3 测试缺口（R02-T）
 
 | ID | 当前状态 | 验收 |
 |---|---|---|
-| R02-T01 | OPEN | 段归属 / `k_initial_stktop` 落段的机械断言或静态检查 |
-| R02-T02 | CLOSED | `link_ld_lockstep.rs` 已接住；按 D-107 将随 D2-06 删除，删除后由生产脚本门替代 |
-| R02-T03 | OPEN | riscv64 载体 PC 高半判据 + `delta` 路径断言 |
-| R02-T04 | OPEN | 生产 `kmain` 入口 ABI 栈形的架构相关断言 |
+| R02-T01 | [CLOSED] | `check-layout.sh` L10 机械对账 unpaged 名单与 `kernel.lds` 收段，断言 `mpx.o` 不在名单；提交 `fd456926a` |
+| R02-T02 | [CLOSED] dup-of | `link_ld_lockstep.rs` 随 D2-06 删除，生产脚本门替代 |
+| R02-T03 | [CLOSED] | riscv64 载体 `pc_at_high` 并入 PASS 条件；`run_qemu.sh` PASS（PC=0xffffffc000200146）；提交 `94d5f2379` |
+| R02-T04 | [CLOSED] | 三份 `jump_to_kmain` 生产路径断言 `stack_top` 对齐，x86 另断言入口 RSP；提交 `550d8c0b8` |

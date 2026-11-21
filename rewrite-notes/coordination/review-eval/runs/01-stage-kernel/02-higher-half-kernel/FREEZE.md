@@ -118,3 +118,11 @@
 - 报告：`meta/02-higher-half-kernel-r4.md`；总体 `FLAT`（检测/设计轴 IMPROVED，轨迹/去重轴 REGRESSED），运行质量 `NOT PASS`（抽样 41/79，含 SUGG/FP 桶一致性 32/41 = 78.0%）。
 - 已收口项：四份 certify 回执与 loop §5–§8 入库、FREEZE 追加 R4、metrics 增语义根因数/重复合并/严重度、5 条过期 SUGG 标 `dup-of`、BLIND-SPOTS B-69..B-75 回写、生产镜像重建并验证 4 LOAD/0 `.lrodata`。
 - 未收口项：`FP` 桶名未拆（工具契约限制，语义已在 metrics/loop 写清）、`minix.img` 一致性未做成 CI 门、第二轮 reader certify 回执未单独留档、5 条 fact 未编号建议仍不在 INDEX/台账。上述均记 OPEN 盲区，不阻断本轮文档收敛。
+
+## D-107 清零批终态（2026-11-21）
+
+- 代码批全部落码：D2-04 `309cd6e2c`、D2-06 `503ae169e`、F01 `83e8cbb2b`、F04 `f50159798`、F05 `1460d4147`、F06 `c376f5371`、F08 `6d0334dc6`、R02-T01 `fd456926a`、R02-T03 `94d5f2379`、R02-T04 `550d8c0b8`、D2-03 `7de857246`、D2-08 `ecfef0ae9`、D2-09 `74ea87c44`。
+- 设计 P3 全部实现：`p_align`/`LoadSegment.align`/`HIGHER_HALF_CALLED`/`virtual_end` 删除；三处 `repr(C)` 删除；`source_records` 更名（`e27dc513b`）；`RamAuthority` 值类型（`aa0d5393c`）；`free_pt_page` 未注册 fail-closed（`88f3cb96a`）；`write_envelope` 收为测试/载体专用；`startup_record` 死分支删除（`7de857246`）。
+- 台账：`OPEN-DEBT.md` 两行 `[CLOSED]`；`follow-ups.md` F01–F12 与 R02-T01..T04 全部 `[CLOSED]`/dup-of；`suggestions.md` 全部 implemented/already-fixed/dup-of。
+- 验证：`cargo test -p minix-boot --lib` 187/0、`cargo test -p boot-shim --lib` 136/0、`cargo test -p minix-kernel --features mock --lib` 866/0/8、`cargo test -p minix-arch` 266/0、三架构 kernel/kernel-image check 0 error、`check-layout.sh all` PASS（含 L10）、riscv64 higher-half 载体 PASS、riscv64 bootface 门 PASS；`eval-trace-check --round R4` PASS 12/0/0。
+- 已知非本批因果：aarch64 `test-smp-aps-aarch64` 在 boot/SMP 标记全绿后仍于 user-chain Data Abort 失败（`elr=0x23e9d4`，stash 对照在 F08 前同点复现）；`test-rt-birth-aarch64` 同属 D01 轨道已登记的 A2 遗留。
