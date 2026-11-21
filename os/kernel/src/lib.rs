@@ -2148,10 +2148,17 @@ pub fn init_smp_state() {
         // the entry election cell records the real one. Resolve it here,
         // before per-CPU state is seeded, so the BSP's READY flag, ptproc and
         // clock state all land on the CPU that is actually running.
+        //
+        // If no topology entry matches the elected/hinted hardware id,
+        // `bsp_id` must not be used as an index: it is a hardware id, not a
+        // logical slot, and can name the wrong CPU or run past `nr_cpus`.
+        // Fall back to logical slot 0 — the same bounded conservative choice
+        // as `init_protection` — and let the `MAX_CPUS` assert catch a
+        // configuration that cannot even hold slot 0.
         let bsp_hw = elected_bsp_hw_id(&topo);
         let bsp_logical = (0..topo.nr_cpus as usize)
             .find(|&i| topo.cpus[i].hw_id == bsp_hw)
-            .unwrap_or(topo.bsp_id as usize) as u32;
+            .unwrap_or(0) as u32;
         assert!(
             (bsp_logical as usize) < smp::MAX_CPUS,
             "init_smp_state: BSP logical id {} >= MAX_CPUS {}",

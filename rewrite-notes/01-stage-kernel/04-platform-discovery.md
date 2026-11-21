@@ -2235,7 +2235,7 @@ pub fn init_smp_state() {
         let bsp_hw = elected_bsp_hw_id(&topo);
         let bsp_logical = (0..topo.nr_cpus as usize)
             .find(|&i| topo.cpus[i].hw_id == bsp_hw)
-            .unwrap_or(topo.bsp_id as usize) as u32;
+            .unwrap_or(0) as u32;
         let mut state = smp::SmpState::with_ncpus(
             topo.nr_cpus.max(1),
             crate::proc::CpuId::new_unchecked(bsp_logical),
@@ -2263,9 +2263,9 @@ pub fn init_smp_state() {
     with_protection(|prot| prot.program_entry_base(bsp_logical, kernel_info.kern_stack_top()));
 ```
 
-两处对同一次选举用了不同的回退：`init_smp_state` 回到固件的 `bsp_id`，`init_protection` 回到逻辑 0。后者运行在 Phase B（`SmpState` 尚未建立），只能先给一个保守值；`elected_bsp_hw_id` 本身的回退是 `topo.bsp_id`，同样不保证返回值在 `topo.cpus[0..nr_cpus]` 内。若选举失败，两条路径会把 BSP 逻辑号定成不同的 CPU——这是当前实现的一处已知差异，也是本节末段 `gs:0x10` 错槽位故障形态的一个入口。
+两处对同一次选举现在用同一个有界回退：`init_smp_state` 与 `init_protection` 在拓扑里找不到匹配的 `hw_id` 时都回到逻辑 0。后者运行在 Phase B（`SmpState` 尚未建立），只能先给一个保守值；`elected_bsp_hw_id` 本身的回退是 `topo.bsp_id`，不保证返回值在 `topo.cpus[0..nr_cpus]` 内，因此两处都在 `find` 失败后取 0，而不是把 `bsp_id` 当槽位下标。
 
-先把 `CpuTopology.bsp_id` 的单位说清：它的定义是"第一条 enabled CPU 记录的硬件 ID"（`os/libs/minix-boot/src/platform.rs:struct CpuTopology` 的字段注释），与 `cpus[i].hw_id` 同域，**不是逻辑槽位下标**。因此 `unwrap_or(topo.bsp_id as usize)` 只在"hw_id 恰好等于槽位下标"时成立；解析器不保证这条不变量（MADT 的 APIC ID 与 DTB 的 `reg` 都可以非连续），回退值可能落到错误槽位，甚至超出 `nr_cpus`（`CpuId::new_unchecked` 不做边界检查）。这条越界风险登记为 R04-T12。
+先把 `CpuTopology.bsp_id` 的单位说清：它的定义是"第一条 enabled CPU 记录的硬件 ID"（`os/libs/minix-boot/src/platform.rs:struct CpuTopology` 的字段注释），与 `cpus[i].hw_id` 同域，**不是逻辑槽位下标**。此前的 `unwrap_or(topo.bsp_id as usize)` 只在"hw_id 恰好等于槽位下标"时成立；解析器不保证这条不变量（MADT 的 APIC ID 与 DTB 的 `reg` 都可以非连续），回退值可能落到错误槽位，甚至超出 `nr_cpus`。现在回退固定为 0，并由紧邻的 `MAX_CPUS` 断言兜底；这条越界风险已按 R04-T12 关闭。
 
 `program_entry_base` 在 x86-64 的 `X86_64Protection` 里最终调用 `program_gs`；aarch64/riscv64 的默认实现是 no-op。第三处是发给用户态的 `GET_MACHINE`：
 
@@ -2595,7 +2595,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | R04-T09 | 支持重定位 LAPIC/IOAPIC 的动态设备窗口（当前是 check-and-reject） | **设计/代码侧** |
 | R04-T10 | 多 IOAPIC 的 `ApicDesc`/GSI-range 模型（当前只表示首个 IOAPIC） | **设计/代码侧** |
 | R04-T11 | aarch64 ACPI 的 GICC UID → GICR 帧索引假设（非 QEMU 固件不保证） | **设计/测试侧** |
-| R04-T12 | `init_smp_state` 的 `unwrap_or(topo.bsp_id as usize)` 把 hw_id 当逻辑槽位：非连续 hw_id 时会选错槽位或越界（`CpuId::new_unchecked` 不检查上界）；需改成有界的保守回退 | **设计/代码侧** |
+| R04-T12 | `init_smp_state` 的 `unwrap_or(topo.bsp_id as usize)` 把 hw_id 当逻辑槽位：非连续 hw_id 时会选错槽位或越界（`CpuId::new_unchecked` 不检查上界）；需改成有界的保守回退 | **已实施**：`unwrap_or(0)` + `MAX_CPUS` 断言；与 `init_protection` 的回退一致（§4.4） |
 | R04-T13 | ACPI 表链（RSDT/XSDT/MADT）不在任何已注册恒等窗口内；2 MiB 片取整让 QEMU 侥幸通过，非契约（§4.5） | **已实施**：`table_chain_windows` 在分页前注册根表、前置表签名与 MADT 表体（§4.5） |
 
 ---
