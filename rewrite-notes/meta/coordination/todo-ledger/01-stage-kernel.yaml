@@ -159,6 +159,7 @@
     - path: os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable/src/main.rs
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#1
     tests: []
     decisions: []
 - id: D01-I-29-11
@@ -183,6 +184,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#3.3
     tests: []
     decisions: []
 - id: D01-I-29-12
@@ -256,9 +258,11 @@
   scope: doc
   note: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
   refs:
-    code: []
+    code:
+    - os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:fn bump
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.4
     tests: []
     decisions: []
 - id: D01-I-53
@@ -347,6 +351,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.5
     tests: []
     decisions: []
 - id: D01-RUN-R37-02
@@ -372,6 +377,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#1
     tests: []
     decisions: []
 - id: D01-RUN-R37-04
@@ -423,6 +429,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md#5.5
     tests: []
     decisions: []
 - id: D01-rt-birth-sp
@@ -444,7 +451,8 @@
   scope: doc
   note: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
   refs:
-    code: []
+    code:
+    - os/libs/minix-rt/src/crt0.rs:fn rt_birth
     docs:
     - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
     tests: []
@@ -1013,5 +1021,6 @@
     code: []
     docs:
     - path: rewrite-notes/meta/design/01-stage-kernel/06-design.v1.md
+    - rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md#1.4
     tests: []
     decisions: []

@@ -87,6 +87,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+    - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#1
     tests: []
     decisions: []
 - id: D02-RUN-D02-F10a
@@ -114,6 +115,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+    - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#1
     tests: []
     decisions: []
 - id: D02-RUN-D02-F10b
@@ -141,6 +143,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+    - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#1
     tests: []
     decisions: []
 - id: D02-RUN-R5-01
@@ -166,6 +169,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+    - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.1
     tests: []
     decisions: []
 - id: D02-RUN-R5-02
@@ -191,6 +195,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+    - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.1
     tests: []
     decisions: []
 - id: D02-RUN-R5-04
@@ -215,6 +220,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+    - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.2
     tests: []
     decisions: []
 - id: D02-RUN-R5-05
@@ -239,6 +245,7 @@
     code: []
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+    - rewrite-notes/01-stage-kernel/02-higher-half-kernel.md#5.2
     tests: []
     decisions: []
 - id: D02-RUN-R5-06
@@ -266,6 +273,7 @@
     - path: os/arch/src/x86_64/paging.rs
     - path: os/arch/src/arm64/paging.rs
     - path: os/arch/src/riscv64/paging.rs
+    - os/arch/src/x86_64/paging.rs:fn map_huge
     docs:
     - path: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
     tests: []

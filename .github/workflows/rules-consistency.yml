@@ -108,9 +108,20 @@ jobs:
           run_self() {
             echo "── $*"
             if ! "$@" > /tmp/selftest.log 2>&1; then
-              tail -8 /tmp/selftest.log | while IFS= read -r line; do
-                echo "::error::$line"
-              done
+              code=$?
+              echo "::error::exit=$code command=$*"
+              if [ -s /tmp/selftest.log ]; then
+                tail -80 /tmp/selftest.log | while IFS= read -r line; do
+                  echo "::error::$line"
+                done
+              else
+                echo "::error::self-test log is empty; environment digest follows"
+                pwd
+                ls -la | head -20
+                python3 -V || true
+                ulimit -a || true
+                dmesg | tail -20 || true
+              fi
               echo "::error::self-test failed: $*"
               exit 1
             fi
