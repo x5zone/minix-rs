@@ -105,7 +105,6 @@
 **设计讨论与台账**
 
 - `rewrite-notes/01-stage-kernel/01-design-note-memmap-consolidation.md` §2.5.6、§2.5.7、§2.6、§2.7、§5、§7
-- `rewrite-notes/01-stage-kernel/todo.md` §7.4、`01-stage-kernel/01-todo.md` §3
 
 ---
 
