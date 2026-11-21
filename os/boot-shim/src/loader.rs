@@ -258,11 +258,12 @@ fn elf_file_end(data: &[u8]) -> Option<usize> {
 ///    bytes, zero-fill `[filesz, memsz)`, count.
 ///
 /// Returns the number of segments loaded. Shared with the physical-memory
-/// loader: segment-shape validation (I-48 iterator), BSS zero-fill. Not
-/// shared: physical-address mapping/overlap gates (this loader writes a
-/// caller-owned buffer at a caller-chosen base; segments below
-/// `buf_base_paddr` are skipped as a fixture error, matching the
-/// pre-I-47 behavior).
+/// loader: segment-shape validation (I-48 iterator), destination/source span
+/// derivation (`segment_spans`, including checked arithmetic), BSS
+/// zero-fill. Not shared: the physical-address overlap gates and the
+/// pointer-width copy (this loader writes a caller-owned buffer at a
+/// caller-chosen base; segments below `buf_base_paddr` are skipped as a
+/// fixture error, matching the pre-I-47 behavior).
 pub fn load_segments_into_buffer(
     elf_data: &[u8],
     buf: &mut [u8],
@@ -272,47 +273,84 @@ pub fn load_segments_into_buffer(
     let mut segs = alloc::vec::Vec::new();
     for seg_result in minix_elf::segment_iter(elf_data)? {
         let seg = seg_result?;
-        // Same skip rule as the load loop below (a segment below the
-        // buffer base is a fixture error, silently skipped rather than
-        // relocated to offset 0) — applied consistently in both loops.
-        let Some(seg_offset_in_buf) = seg.paddr.checked_sub(buf_base_paddr) else {
+        let spans = segment_spans(&seg)?;
+        // A segment below the buffer base is a fixture error, silently
+        // skipped rather than relocated to offset 0.
+        let Some(dst_off) = spans.dst_start.checked_sub(buf_base_paddr) else {
             continue;
         };
-        let seg_offset_in_buf = seg_offset_in_buf as usize;
-        let Some(file_end) = seg_offset_in_buf.checked_add(seg.filesz as usize) else {
-            continue;
-        };
-        let Some(mem_end) = seg_offset_in_buf.checked_add(seg.memsz as usize) else {
-            continue;
-        };
-        let dest_end = file_end.max(mem_end);
-        if dest_end > buf.len() {
+        let dst_off = usize::try_from(dst_off)
+            .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
+        let file_end = usize::try_from(spans.file_end - buf_base_paddr)
+            .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
+        let mem_end = usize::try_from(spans.mem_end - buf_base_paddr)
+            .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
+        if mem_end > buf.len() {
             return Err(minix_elf::ElfError::TargetBufferTooSmall {
-                needed_end: dest_end,
+                needed_end: mem_end,
                 buf_len: buf.len(),
             });
         }
-        segs.push(seg);
+        segs.push((spans, dst_off, file_end, mem_end));
     }
 
     // ── Load loop: the buffer is proven to hold every segment. ──
     let mut count = 0;
-    for seg in segs {
-        let seg_offset_in_buf = (seg.paddr - buf_base_paddr) as usize;
-        let file_end = seg_offset_in_buf + seg.filesz as usize;
-        let mem_end = seg_offset_in_buf + seg.memsz as usize;
+    for (spans, dst_off, file_end, mem_end) in segs {
+        let src = &elf_data[spans.src_start..spans.src_end];
+        buf[dst_off..file_end].copy_from_slice(src);
 
-        let src_end = seg.offset as usize + seg.filesz as usize;
-        let src = &elf_data[seg.offset as usize..src_end];
-        buf[seg_offset_in_buf..file_end].copy_from_slice(src);
-
-        if seg.memsz > seg.filesz {
+        if mem_end > file_end {
             buf[file_end..mem_end].fill(0);
         }
 
         count += 1;
     }
     Ok(count)
+}
+
+/// Destination and source spans for one PT_LOAD segment.
+///
+/// Shared by both loaders so "where the file bytes go, where the BSS starts,
+/// how far the destination reaches" has a single checked derivation. The
+/// ELF iterator already rejects `filesz > memsz`; this helper additionally
+/// rejects arithmetic overflow instead of letting the copies wrap.
+struct SegmentSpans {
+    /// Absolute destination start (the segment's physical address).
+    dst_start: u64,
+    /// First byte after the copied file bytes.
+    file_end: u64,
+    /// First byte after the whole in-memory extent (copy + BSS).
+    mem_end: u64,
+    /// Source range inside the ELF image.
+    src_start: usize,
+    src_end: usize,
+}
+
+fn segment_spans(seg: &minix_elf::LoadSegment) -> Result<SegmentSpans, minix_elf::ElfError> {
+    let file_end = seg
+        .paddr
+        .checked_add(seg.filesz)
+        .ok_or(minix_elf::ElfError::InvalidSegment)?;
+    let mem_end = seg
+        .paddr
+        .checked_add(seg.memsz)
+        .ok_or(minix_elf::ElfError::InvalidSegment)?;
+    if mem_end < file_end {
+        return Err(minix_elf::ElfError::InvalidSegment);
+    }
+    let src_start = usize::try_from(seg.offset).map_err(|_| minix_elf::ElfError::InvalidSegment)?;
+    let src_len = usize::try_from(seg.filesz).map_err(|_| minix_elf::ElfError::InvalidSegment)?;
+    let src_end = src_start
+        .checked_add(src_len)
+        .ok_or(minix_elf::ElfError::InvalidSegment)?;
+    Ok(SegmentSpans {
+        dst_start: seg.paddr,
+        file_end,
+        mem_end,
+        src_start,
+        src_end,
+    })
 }
 
 /// Copy each PT_LOAD segment to its physical address and zero-fill BSS.
@@ -364,14 +402,18 @@ pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), mini
         );
     }
     for seg in &segments {
-        let dest = seg.paddr as *mut u8;
-        let src = &elf_data[seg.offset as usize..(seg.offset + seg.filesz) as usize];
+        let spans = segment_spans(seg)?;
+        let file_len = usize::try_from(spans.file_end - spans.dst_start)
+            .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
+        let bss_len = usize::try_from(spans.mem_end - spans.file_end)
+            .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
+        let dest = spans.dst_start as *mut u8;
+        let src = &elf_data[spans.src_start..spans.src_end];
         unsafe {
-            dest.copy_from_nonoverlapping(src.as_ptr(), seg.filesz as usize);
-            if seg.memsz > seg.filesz {
-                let bss_start = dest.add(seg.filesz as usize);
-                let bss_size = (seg.memsz - seg.filesz) as usize;
-                core::ptr::write_bytes(bss_start, 0, bss_size);
+            dest.copy_from_nonoverlapping(src.as_ptr(), file_len);
+            if bss_len > 0 {
+                let bss_start = dest.add(file_len);
+                core::ptr::write_bytes(bss_start, 0, bss_len);
             }
         }
     }
@@ -856,6 +898,41 @@ mod tests {
         assert_eq!(buf[0x800], 0, "BSS zero-filled");
         assert_eq!(buf[0xBFF], 0, "BSS zero-filled (last byte)");
         assert_eq!(buf[0xC00], 0xC3, "sentinel past memsz untouched");
+    }
+
+    /// F04: the buffer and physical-address loaders must agree byte-for-byte
+    /// on the copied file bytes and the zero-filled BSS tail. Both now derive
+    /// their spans from `segment_spans`; this test loads the same ELF twice,
+    /// once into a buffer at `buf_base_paddr` and once through the
+    /// physical-address path whose `p_paddr` is the target allocation's
+    /// address. Distinct allocations guarantee the source/destination overlap
+    /// gate sees no overlap.
+    #[test]
+    fn test_buffer_and_phys_loaders_share_segment_spans() {
+        let mut elf = build_minimal_elf();
+        let mut phys = vec![0xC3u8; 0xC00];
+        let phys_base = phys.as_mut_ptr() as u64;
+        elf[64 + 24..64 + 32].copy_from_slice(&phys_base.to_le_bytes()); // p_paddr
+        elf[64 + 40..64 + 48].copy_from_slice(&0xC00u64.to_le_bytes()); // p_memsz (BSS 0x400)
+        for (i, byte) in elf[0x1000..0x1800].iter_mut().enumerate() {
+            *byte = (i % 251) as u8;
+        }
+
+        let mut buffer = vec![0xC3u8; 0xC00];
+        let count = load_segments_into_buffer(&elf, &mut buffer, phys_base)
+            .expect("buffer covers the whole segment extent");
+        assert_eq!(count, 1);
+
+        // SAFETY: `phys_base` is the start of the live `phys` allocation above
+        // and its extent (`0xC00`) matches the segment's `memsz`; the ELF
+        // lives in a different allocation, so the source/destination overlap
+        // gate is satisfied.
+        unsafe { load_segments_into_phys_memory(&elf) }
+            .expect("physical loader accepts the same synthetic image");
+
+        assert_eq!(buffer, phys, "both loaders must produce identical bytes");
+        assert_eq!(buffer[0x800], 0, "BSS tail zero-filled by both paths");
+        assert_eq!(buffer[0xBFF], 0, "BSS tail zero-filled to the last byte");
     }
 
     /// A zero-length memory image at a non-zero paddr yields `kern_size == 0`
