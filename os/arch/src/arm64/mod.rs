@@ -19,7 +19,7 @@ pub mod tlb;
 pub mod cache_sync;
 
 pub use paging::AArch64Paging;
-pub use protection::{AArch64Protection, AArch64PrivilegeLevel};
+pub use protection::AArch64Protection;
 pub use trap_entry::AArch64TrapEntry;
 pub use exception::AArch64ExceptionFrame;
 pub use clock::AArch64ClockArch;

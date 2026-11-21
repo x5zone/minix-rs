@@ -20,7 +20,7 @@ pub mod ap_early_entry;
 pub mod tlb;
 pub mod cache_sync;
 
-pub use protection::{X86_64Protection, X86PrivilegeLevel};
+pub use protection::X86_64Protection;
 pub use trap_entry::X86_64TrapEntry;
 pub use exception::X86_64ExceptionFrame;
 pub use clock::X86_64ClockArch;

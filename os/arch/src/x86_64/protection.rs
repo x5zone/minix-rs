@@ -32,16 +32,8 @@
 //! | `load` (make protection effective) | `lgdt` (GDTR) + `ltr` (TR) + reload segment registers |
 //! | `init_ap` (AP startup) | Per-CPU TSS/GDT entry, load selectors (no global GDT sync) |
 
-use crate::protection::{ProtectionArch, Privilege};
+use crate::protection::ProtectionArch;
 use minix_types::{MAX_CPUS, VirBytes};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct X86PrivilegeLevel(u8);
-
-impl X86PrivilegeLevel {
-    pub(crate) const RING0: Self = Self(0);
-    pub(crate) const RING3: Self = Self(3);
-}
 
 const GDT_NULL_INDEX: usize = 0;
 const GDT_KERN_CS_INDEX: usize = 1;
@@ -352,25 +344,6 @@ fn ist_stack_top(slot: usize, cpu_id: usize) -> u64 {
 }
 
 impl ProtectionArch for X86_64Protection {
-    type PrivilegeLevel = X86PrivilegeLevel;
-
-    const KERNEL_PRIVILEGE: X86PrivilegeLevel = X86PrivilegeLevel::RING0;
-    const USER_PRIVILEGE: X86PrivilegeLevel = X86PrivilegeLevel::RING3;
-
-    fn to_privilege(level: X86PrivilegeLevel) -> Privilege {
-        match level {
-            X86PrivilegeLevel::RING0 => Privilege::Kernel,
-            _ => Privilege::User,
-        }
-    }
-
-    fn from_privilege(privilege: Privilege) -> X86PrivilegeLevel {
-        match privilege {
-            Privilege::Kernel => X86PrivilegeLevel::RING0,
-            Privilege::User => X86PrivilegeLevel::RING3,
-        }
-    }
-
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
         let mut prot = Self {
             gdt: [0u64; GDT_ENTRIES],
@@ -608,26 +581,6 @@ mod tests {
             core::mem::offset_of!(Tss64, iobase),
             102,
             "iobase at offset 102"
-        );
-    }
-
-    #[test]
-    fn privilege_level_roundtrip() {
-        assert_eq!(
-            X86_64Protection::to_privilege(X86PrivilegeLevel::RING0),
-            crate::protection::Privilege::Kernel
-        );
-        assert_eq!(
-            X86_64Protection::to_privilege(X86PrivilegeLevel::RING3),
-            crate::protection::Privilege::User
-        );
-        assert_eq!(
-            X86_64Protection::from_privilege(crate::protection::Privilege::Kernel),
-            X86PrivilegeLevel::RING0
-        );
-        assert_eq!(
-            X86_64Protection::from_privilege(crate::protection::Privilege::User),
-            X86PrivilegeLevel::RING3
         );
     }
 

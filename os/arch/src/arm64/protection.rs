@@ -39,27 +39,9 @@
 //!
 //! C: prot_init() — earm/protect.c:77
 
-use crate::protection::{ProtectionArch, Privilege};
+use crate::protection::ProtectionArch;
 use minix_types::VirBytes;
 use core::arch::asm;
-
-/// ARM64 privilege level representation.
-///
-/// ARM64 uses Exception Levels (EL) for privilege separation.
-/// Only EL0 (user) and EL1 (kernel) are used by Minix-RS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AArch64PrivilegeLevel(u8);
-
-impl AArch64PrivilegeLevel {
-    /// Exception Level 1 — kernel/supervisor mode.
-    pub const EL1: Self = Self(1);
-    /// Exception Level 0 — user/unprivileged mode.
-    pub const EL0: Self = Self(0);
-
-    pub(crate) const fn get(self) -> u8 {
-        self.0
-    }
-}
 
 /// ARM64 protection state.
 ///
@@ -118,25 +100,6 @@ fn set_entry_sp(base: VirBytes) {
 }
 
 impl ProtectionArch for AArch64Protection {
-    type PrivilegeLevel = AArch64PrivilegeLevel;
-
-    const KERNEL_PRIVILEGE: AArch64PrivilegeLevel = AArch64PrivilegeLevel::EL1;
-    const USER_PRIVILEGE: AArch64PrivilegeLevel = AArch64PrivilegeLevel::EL0;
-
-    fn to_privilege(level: AArch64PrivilegeLevel) -> Privilege {
-        match level {
-            AArch64PrivilegeLevel::EL1 => Privilege::Kernel,
-            _ => Privilege::User,
-        }
-    }
-
-    fn from_privilege(privilege: Privilege) -> AArch64PrivilegeLevel {
-        match privilege {
-            Privilege::Kernel => AArch64PrivilegeLevel::EL1,
-            Privilege::User => AArch64PrivilegeLevel::EL0,
-        }
-    }
-
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
         // EL1h model (`SPSel=1`): `SP_EL1` *is* the active stack pointer. The
         // encoding is architecturally accessible from EL1 (HCR_EL2.TSP=0);
@@ -214,26 +177,6 @@ impl ProtectionArch for AArch64Protection {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn privilege_level_roundtrip() {
-        assert_eq!(
-            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL1),
-            Privilege::Kernel
-        );
-        assert_eq!(
-            AArch64Protection::to_privilege(AArch64PrivilegeLevel::EL0),
-            Privilege::User
-        );
-        assert_eq!(
-            AArch64Protection::from_privilege(Privilege::Kernel),
-            AArch64PrivilegeLevel::EL1
-        );
-        assert_eq!(
-            AArch64Protection::from_privilege(Privilege::User),
-            AArch64PrivilegeLevel::EL0
-        );
-    }
 
     #[test]
     fn protection_has_cpu_count() {

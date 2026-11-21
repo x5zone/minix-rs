@@ -19,7 +19,7 @@ pub mod tlb;
 pub mod cache_sync;
 
 pub use paging::Riscv64Paging;
-pub use protection::{Riscv64Protection, Riscv64PrivilegeLevel};
+pub use protection::Riscv64Protection;
 pub use trap_entry::Riscv64TrapEntry;
 pub use exception::Riscv64ExceptionFrame;
 pub use clock::Riscv64ClockArch;

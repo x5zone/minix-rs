@@ -50,7 +50,7 @@
 //! `csrrw sp, sscratch, sp` instruction is the canonical first
 //! instruction of any RISC-V trap handler.
 
-use crate::protection::{ProtectionArch, Privilege};
+use crate::protection::ProtectionArch;
 use minix_types::VirBytes;
 use core::arch::asm;
 
@@ -76,24 +76,6 @@ pub(crate) fn set_entry_stack_base(base: VirBytes) {
     }
 }
 
-/// RISC-V privilege level representation.
-///
-/// RISC-V uses two privilege modes for OS operation:
-/// S-mode (supervisor) and U-mode (user).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Riscv64PrivilegeLevel(u8);
-
-impl Riscv64PrivilegeLevel {
-    /// Supervisor mode — kernel privilege level.
-    pub const S_MODE: Self = Self(1);
-    /// User mode — unprivileged level.
-    pub const U_MODE: Self = Self(0);
-
-    pub(crate) const fn get(self) -> u8 {
-        self.0
-    }
-}
-
 /// RISC-V 64-bit protection state.
 ///
 /// On RISC-V, the primary protection configuration is:
@@ -110,25 +92,6 @@ pub struct Riscv64Protection {
 }
 
 impl ProtectionArch for Riscv64Protection {
-    type PrivilegeLevel = Riscv64PrivilegeLevel;
-
-    const KERNEL_PRIVILEGE: Riscv64PrivilegeLevel = Riscv64PrivilegeLevel::S_MODE;
-    const USER_PRIVILEGE: Riscv64PrivilegeLevel = Riscv64PrivilegeLevel::U_MODE;
-
-    fn to_privilege(level: Riscv64PrivilegeLevel) -> Privilege {
-        match level {
-            Riscv64PrivilegeLevel::S_MODE => Privilege::Kernel,
-            _ => Privilege::User,
-        }
-    }
-
-    fn from_privilege(privilege: Privilege) -> Riscv64PrivilegeLevel {
-        match privilege {
-            Privilege::Kernel => Riscv64PrivilegeLevel::S_MODE,
-            Privilege::User => Riscv64PrivilegeLevel::U_MODE,
-        }
-    }
-
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
         // Per-hart `sscratch` only; there is no shared cell to keep in
         // sync. `cpu_id` is implicit in the CSR each hart writes.
@@ -180,26 +143,6 @@ impl ProtectionArch for Riscv64Protection {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn privilege_level_roundtrip() {
-        assert_eq!(
-            Riscv64Protection::to_privilege(Riscv64PrivilegeLevel::S_MODE),
-            Privilege::Kernel
-        );
-        assert_eq!(
-            Riscv64Protection::to_privilege(Riscv64PrivilegeLevel::U_MODE),
-            Privilege::User
-        );
-        assert_eq!(
-            Riscv64Protection::from_privilege(Privilege::Kernel),
-            Riscv64PrivilegeLevel::S_MODE
-        );
-        assert_eq!(
-            Riscv64Protection::from_privilege(Privilege::User),
-            Riscv64PrivilegeLevel::U_MODE
-        );
-    }
 
     #[test]
     fn protection_has_cpu_count() {

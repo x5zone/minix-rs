@@ -20,29 +20,27 @@
 //! make the architecture boundaries visible at the call site, violating
 //! the "OS code is architecture-agnostic" rule.
 //!
-//! # What is abstracted (the 5 OS-level concerns)
+//! # What is abstracted (the 4 OS-level concerns)
 //!
-//! 1. **Privilege level representation** (`PrivilegeLevel` associated type)
-//!    — OS cares about "kernel vs user", not Ring/EL/Mode encodings
-//! 2. **Establish protection** (`init`)
+//! 1. **Establish protection** (`init`)
 //!    — OS says "set up protection for this CPU"; arch decides the
 //!    mechanism (GDT/CSR registers/exception vector base)
-//! 3. **Switch kernel stack** (`set_kernel_stack`)
+//! 2. **Switch kernel stack** (`set_kernel_stack`)
 //!    — OS says "when transitioning to kernel, use this stack"; arch
 //!    decides where to store it (TSS.sp0, SP_EL1, sscratch)
-//! 4. **Make protection effective** (`load`)
+//! 3. **Make protection effective** (`load`)
 //!    — OS says "write the protection config to hardware"; arch decides
 //!    the register writes (lgdt/ltr, msr, csrw)
-//! 5. **AP (application processor) startup** (`init_ap`)
+//! 4. **AP (application processor) startup** (`init_ap`)
 //!    — OS says "initialize a new CPU the same way as BSP"; arch handles
 //!    per-CPU differences (AP doesn't need global GDT sync)
 //!
 //! # Design rationale in design doc
 //!
 //! See `rewrite-notes/01-stage-kernel/03-kmain-cstart.md`:
-//! - §3.2 (two-trait split, associated `PrivilegeLevel`, OS-semantic method
-//!   names) — why the two traits are separate and why methods describe OS
-//!   needs rather than architecture concepts
+//! - §3.2 (two-trait split, OS-semantic method names) — why the two traits
+//!   are separate and why methods describe OS needs rather than architecture
+//!   concepts
 //! - §1.2 (the three questions from the CPU perspective) — the OS-level
 //!   questions the trait answers
 //! - §3.1 (why x86 still keeps a GDT/TSS) — the TSS descriptor must be
@@ -56,23 +54,6 @@ use minix_types::VirBytes;
 // entries), but is re-exported here because some protection code references it.
 pub use crate::trap_entry::InterruptVector;
 
-/// Common privilege level enum for architecture-agnostic OS code.
-///
-/// All supported architectures use exactly two privilege levels:
-/// kernel (supervisor) and user. This enum provides a unified
-/// representation that OS code can use without knowing the
-/// architecture-specific encoding.
-///
-/// C: INTR_PRIVILEGE(0) / USER_PRIVILEGE(3) — archconst.h:33-34
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Privilege {
-    /// Kernel / supervisor privilege level.
-    /// x86-64: Ring 0; ARM64: EL1; RISC-V: S-mode.
-    Kernel,
-    /// User / unprivileged level.
-    /// x86-64: Ring 3; ARM64: EL0; RISC-V: U-mode.
-    User,
-}
 
 /// Architecture abstraction for hardware protection mechanisms.
 ///
@@ -102,28 +83,6 @@ pub enum Privilege {
 ///
 /// C: prot_init() — protect.c:321
 pub trait ProtectionArch: Sized {
-    /// Architecture-specific privilege level representation.
-    ///
-    /// x86-64: Ring 0 (Kernel) / Ring 3 (User) — encoded in segment
-    ///         selector RPL field and descriptor DPL field.
-    /// ARM64:  EL1 (Kernel) / EL0 (User) — encoded in SPSR_EL1.M.
-    /// RISC-V: S-mode (Kernel) / U-mode (User) — encoded in sstatus.SPP.
-    type PrivilegeLevel: Copy + Eq + core::fmt::Debug;
-
-    /// Kernel privilege level.
-    /// x86-64: Ring 0; ARM64: EL1; RISC-V: S-mode.
-    const KERNEL_PRIVILEGE: Self::PrivilegeLevel;
-
-    /// User privilege level.
-    /// x86-64: Ring 3; ARM64: EL0; RISC-V: U-mode.
-    const USER_PRIVILEGE: Self::PrivilegeLevel;
-
-    /// Convert architecture-specific privilege level to common enum.
-    fn to_privilege(level: Self::PrivilegeLevel) -> Privilege;
-
-    /// Convert common privilege enum to architecture-specific level.
-    fn from_privilege(privilege: Privilege) -> Self::PrivilegeLevel;
-
     /// Initialize protection structures for the boot CPU (BSP).
     ///
     /// Called once during `cstart()`, before `TrapEntryArch::init()`.
@@ -199,32 +158,12 @@ pub trait ProtectionArch: Sized {
 
 /// Mock implementation for testing — no hardware interaction.
 ///
-/// All methods are no-ops. `PrivilegeLevel` uses `u8` to match x86-64's
-/// ring encoding (0=kernel, 3=user) for simplicity.
+/// All methods are no-ops.
 #[cfg(feature = "runtime-window")]
 pub struct MockProtection;
 
 #[cfg(feature = "runtime-window")]
 impl ProtectionArch for MockProtection {
-    type PrivilegeLevel = u8;
-    const KERNEL_PRIVILEGE: u8 = 0;
-    const USER_PRIVILEGE: u8 = 3;
-
-    fn to_privilege(level: u8) -> Privilege {
-        if level == 0 {
-            Privilege::Kernel
-        } else {
-            Privilege::User
-        }
-    }
-
-    fn from_privilege(privilege: Privilege) -> u8 {
-        match privilege {
-            Privilege::Kernel => 0,
-            Privilege::User => 3,
-        }
-    }
-
     fn init(_cpu_id: u32, _kernel_stack_top: VirBytes) -> Self {
         Self
     }

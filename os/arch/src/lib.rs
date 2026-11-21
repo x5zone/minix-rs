@@ -100,7 +100,7 @@ pub use arch::boot_dm::{
 pub use pte_walk_arch::PteWalkArch;
 #[cfg(feature = "runtime-window")]
 pub use pte_walk_arch::MockPteWalk;
-pub use protection::{ProtectionArch, Privilege, InterruptVector};
+pub use protection::{ProtectionArch, InterruptVector};
 #[cfg(feature = "runtime-window")]
 pub use protection::MockProtection;
 pub use trap_entry::TrapEntryArch;
