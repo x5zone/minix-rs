@@ -192,8 +192,11 @@ pub fn set_psci_conduit_smc(smc: bool) {
 ///
 /// Must be set to the distributor **physical** base via `set_gicd_base`
 /// (which routes it to the high-half alias) before any `send_sched_ipi`
-/// call. Until then it is 0 and IPI sends must not be attempted.
-static mut GICD_BASE: usize = 0;
+/// call. Until then it is 0 and IPI sends must not be attempted. The
+/// atomic gives the boot-time store and the IPI-read Acquire/Release pair;
+/// it does not make an unset base usable.
+static GICD_BASE: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
 /// Record the GIC distributor base address.
 ///
@@ -205,9 +208,9 @@ static mut GICD_BASE: usize = 0;
 ///
 /// # Safety
 ///
-/// Writes to a `static mut`. The caller must ensure no other CPU is
-/// concurrently reading `GICD_BASE` (typically called single-threaded
-/// during early boot before APs are released).
+/// The caller must ensure this runs during single-threaded boot before APs
+/// are released; the atomic store publishes the translated base to later
+/// readers.
 #[inline]
 #[allow(dead_code)]
 pub(crate) unsafe fn set_gicd_base(base: usize) {
@@ -218,22 +221,23 @@ pub(crate) unsafe fn set_gicd_base(base: usize) {
     // the "not set" sentinel (see this function's description) and keeps its
     // original value without going through translate (a physical `0` falls
     // outside the window and would trigger a const-assert).
-    GICD_BASE = if base == 0 {
+    let translated = if base == 0 {
         0
     } else {
         minix_platform::arch::aarch64::mmio_translate(base as u64) as usize
     };
+    GICD_BASE.store(translated, core::sync::atomic::Ordering::Release);
 }
 
 /// Read the GIC distributor base address.
 ///
 /// # Safety
 ///
-/// Reads a `static mut`. Safe in practice once `arch_init` has populated
-/// it; the read itself is non-tearing on aarch64.
+/// Caller must have run `set_gicd_base` first; the Acquire load pairs with
+/// the boot-time Release store.
 #[inline]
 unsafe fn gicd_base() -> usize {
-    let base = GICD_BASE;
+    let base = GICD_BASE.load(core::sync::atomic::Ordering::Acquire);
     // A zero base used to turn the first SGI send into a store at 0xF00
     // (GICD_SGIR) or a read at 0 (ARE probe) and a translation-fault panic
     // in the middle of `sched_enqueue_with`. Fail at the wiring point

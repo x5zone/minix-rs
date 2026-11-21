@@ -461,7 +461,7 @@ impl InterruptRouter for X86_64InterruptController {
             .downcast_ref::<ApicDesc>()
             .expect("X86_64InterruptController::new: expected ApicDesc");
         Self {
-            nr_irq_vectors: (apic.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            nr_irq_vectors: (desc.nr_irqs() as usize).min(NR_IRQ_VECTORS),
             lapic_base: apic.lapic_base,
             ioapic_base: apic.ioapic_base,
         }

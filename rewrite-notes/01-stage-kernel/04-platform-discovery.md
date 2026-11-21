@@ -1199,7 +1199,7 @@ pub trait TimerDesc: Send + Sync + fmt::Debug + Any {
 | "IRQ 向量空间有多大" | trait 方法 `nr_irqs()`，经 vtable | 每次调用 |
 | "`lapic_base` 是多少" | arch 层 `as_any().downcast_ref::<ApicDesc>()` | 构造实例时一次 |
 
-`nr_irqs` 报的是 IRQ 向量空间的容量（消费方据此钳制，§4.8 的 `min(NR_IRQ_VECTORS)`），不是控制器引脚数；x86 的 IOAPIC 引脚数是 `IOAPIC_NUM_PINS = 24`，不由 `nr_irqs` 表达（§2.6、R04-T10）。
+`nr_irqs` 的口径按架构区分：x86-64/aarch64 报内核向量表容量（64），不是硬件的源数；riscv64 报 PLIC 的 `riscv,ndev` 源数；消费方统一钳制到 `min(NR_IRQ_VECTORS)`（§4.8）。x86 的 IOAPIC 引脚数是 `IOAPIC_NUM_PINS = 24`，不由 `nr_irqs` 表达（§2.6、R04-T10）。
 
 `os/plat/src/riscv64/interrupt.rs:fn new` 的 downcast 是这条分工的样本：
 
@@ -1212,7 +1212,7 @@ pub trait TimerDesc: Send + Sync + fmt::Debug + Any {
         Self {
             plic_base: plic.plic_base,
             plic_va_base: plic.plic_base,
-            nr_irqs: (plic.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            nr_irqs: (desc.nr_irqs() as usize).min(NR_IRQ_VECTORS),
             context: plic.context as usize,
         }
     }
@@ -1266,7 +1266,7 @@ RISC-V 的时钟实例是搬运的样本：
             mtime_addr: clint.mtime_addr,
             mtimecmp_base: clint.mtimecmp_base,
             mtimecmp_stride: clint.mtimecmp_stride,
-            freq: clint.freq,
+            freq: desc.frequency(),
         }
     }
 ```
@@ -2160,7 +2160,7 @@ aarch64 的中断控制器多一步地址翻译：
             gicr_base: minix_platform::arch::aarch64::mmio_translate(gicv3.gicr_base as u64)
                 as usize,
             gicr_stride: gicv3.gicr_stride,
-            nr_irqs: (gicv3.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            nr_irqs: (desc.nr_irqs() as usize).min(NR_IRQ_VECTORS),
         }
     }
 ```

@@ -172,7 +172,7 @@ impl ClockArch for X86_64ClockArch {
             .downcast_ref::<PitDesc>()
             .expect("X86_64ClockArch::new: expected PitDesc");
         Self {
-            pit_base_freq: pit.pit_base_freq,
+            pit_base_freq: desc.frequency() as u32,
         }
     }
 

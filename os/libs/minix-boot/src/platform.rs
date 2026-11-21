@@ -405,7 +405,12 @@ pub enum PsciConduit {
 /// - `Gicv3Desc` (ARM64): GICv3 distributor + redistributor
 /// - `PlicDesc` (RISC-V): PLIC
 pub trait InterruptControllerDesc: Send + Sync + fmt::Debug + Any {
-    /// Number of IRQ sources supported.
+    /// Number of IRQ vectors/sources the architecture can represent.
+    ///
+    /// Semantics are per-architecture: x86-64/aarch64 report the kernel
+    /// vector-table capacity (64), not the controller's hardware source
+    /// count; riscv64 reports the PLIC source count from firmware
+    /// (`riscv,ndev`). Consumers must clamp to `NR_IRQ_VECTORS`.
     fn nr_irqs(&self) -> u32;
     /// `Any` support for arch-layer downcast.
     ///

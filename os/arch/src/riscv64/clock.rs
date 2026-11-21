@@ -117,7 +117,7 @@ impl ClockArch for Riscv64ClockArch {
             mtime_addr: clint.mtime_addr,
             mtimecmp_base: clint.mtimecmp_base,
             mtimecmp_stride: clint.mtimecmp_stride,
-            freq: clint.freq,
+            freq: desc.frequency(),
         }
     }
 

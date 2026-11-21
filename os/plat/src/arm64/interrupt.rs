@@ -261,7 +261,7 @@ impl InterruptRouter for AArch64InterruptController {
             gicr_base: minix_platform::arch::aarch64::mmio_translate(gicv3.gicr_base as u64)
                 as usize,
             gicr_stride: gicv3.gicr_stride,
-            nr_irqs: (gicv3.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            nr_irqs: (desc.nr_irqs() as usize).min(NR_IRQ_VECTORS),
         }
     }
 

@@ -115,7 +115,7 @@ impl InterruptRouter for Riscv64InterruptController {
         Self {
             plic_base: plic.plic_base,
             plic_va_base: plic.plic_base,
-            nr_irqs: (plic.nr_irqs as usize).min(NR_IRQ_VECTORS),
+            nr_irqs: (desc.nr_irqs() as usize).min(NR_IRQ_VECTORS),
             context: plic.context as usize,
         }
     }
