@@ -53,7 +53,7 @@ use crate::x86_64::trap_entry::X86_64TrapEntry;
 use core::cell::UnsafeCell;
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicPtr, Ordering};
-use minix_types::VirBytes;
+use minix_types::{MAX_CPUS, VirBytes};
 
 // ── Dispatcher registration gate ──
 //
@@ -658,7 +658,7 @@ const GS_AREA_CPU_ID: u64 = 0x10;
 /// `UnsafeCell` + a manual `Sync` replaces `static mut`: the only writer is
 /// `program_gs` on the target CPU, before its GS_BASE MSR points at the
 /// area (single-writer by ordering); after boot the entry stub only reads it.
-struct GsAreas(UnsafeCell<[GsArea; 8]>);
+struct GsAreas(UnsafeCell<[GsArea; MAX_CPUS]>);
 
 // SAFETY: see the type comment — writes happen only in the single-threaded
 // per-CPU bring-up window, and reads are stable after `program_gs`.
@@ -668,7 +668,7 @@ static GS_AREAS: GsAreas = GsAreas(UnsafeCell::new([const { GsArea {
     kernel_stack_top: 0,
     user_rsp: 0,
     cpu_id: 0,
-} }; 8]));
+} }; MAX_CPUS]));
 
 /// IA32_GS_BASE / IA32_KERNEL_GS_BASE (SDM Vol. 4 §2.2 — the swapgs pair).
 const MSR_IA32_GS_BASE: u32 = 0xC000_0101;
@@ -682,6 +682,12 @@ const MSR_IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 /// mode exists: `swapgs` has nothing to swap, and the stub reads
 /// the kernel view at entry.
 pub fn program_gs(cpu_id: u32, kernel_stack_top: VirBytes) {
+    assert!(
+        (cpu_id as usize) < MAX_CPUS,
+        "program_gs: cpu id {} >= MAX_CPUS {}",
+        cpu_id,
+        MAX_CPUS
+    );
     // SAFETY: the GS area for this cpu is written before the CPU's own
     // MSRs point at it and before any entry path can run on this CPU
     // (no CPL3 code before the scheduler hands out user contexts) —

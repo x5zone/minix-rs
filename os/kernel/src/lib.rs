@@ -2102,6 +2102,16 @@ pub fn init_smp_state() {
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
         let topo = platform_desc().cpu_topology();
+        // The same configuration bound `smp_init` enforces must hold here:
+        // this runs first and indexes the fixed per-CPU state with the
+        // topology's logical ids. Panic with the names rather than letting
+        // the first out-of-bounds index surface as a bare Rust message.
+        assert!(
+            topo.nr_cpus as usize <= smp::MAX_CPUS,
+            "init_smp_state: topology reports {} CPUs, MAX_CPUS is {}",
+            topo.nr_cpus,
+            smp::MAX_CPUS
+        );
         // The DTB/ACPI `bsp_id` is a hint, not the truth: OpenSBI may hand
         // control to any hart (QEMU -smp 4 has booted hart 1 and hart 2), and
         // the entry election cell records the real one. Resolve it here,
@@ -2111,6 +2121,12 @@ pub fn init_smp_state() {
         let bsp_logical = (0..topo.nr_cpus as usize)
             .find(|&i| topo.cpus[i].hw_id == bsp_hw)
             .unwrap_or(topo.bsp_id as usize) as u32;
+        assert!(
+            (bsp_logical as usize) < smp::MAX_CPUS,
+            "init_smp_state: BSP logical id {} >= MAX_CPUS {}",
+            bsp_logical,
+            smp::MAX_CPUS
+        );
         let mut state = smp::SmpState::with_ncpus(
             topo.nr_cpus.max(1),
             crate::proc::CpuId::new_unchecked(bsp_logical),

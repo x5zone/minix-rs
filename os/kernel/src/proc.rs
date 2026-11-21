@@ -464,14 +464,15 @@ impl Quantum {
     }
 }
 
-/// Maximum number of CPUs (must match `smp::MAX_CPUS`).
+/// Maximum number of CPUs.
 ///
-/// Kept here to avoid a circular `proc` → `smp` → `proc` import when
-/// `CpuMask` needs the array size.
+/// Re-exported from `minix-types` so `CpuMask` and `CpuId` see the same
+/// single definition as `smp` and the arch protection tables. The
+/// re-export avoids the former `proc` → `smp` → `proc` import cycle.
 ///
 /// Defined BEFORE `CpuId` because `CpuId::new()` references it in a
 /// `const fn`.
-pub const MAX_CPUS: usize = 32;
+pub use minix_types::MAX_CPUS;
 
 /// CPU identifier (newtype for type safety).
 ///

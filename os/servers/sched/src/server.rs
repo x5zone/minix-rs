@@ -39,10 +39,11 @@ use minix_types::{
 };
 
 /// Ledger capacity. C: `CONFIG_MAX_CPUS` (`schedproc.h:15` falls back to 1
-/// without CONFIG_SMP; the kernel's own bound is 32,
-/// `os/kernel/src/smp.rs:61`). Slots past the topology's count are never
-/// touched — [`crate::cpu::pick`] only reads what exists.
-pub const MAX_CPUS: usize = 32;
+/// without CONFIG_SMP). Re-exported from `minix-types` so the scheduler
+/// ledger and the kernel per-CPU tables cannot drift. Slots past the
+/// topology's count are never touched — [`crate::cpu::pick`] only reads what
+/// exists.
+pub use minix_types::MAX_CPUS;
 
 /// Consecutive receive failures before the loop declares the transport
 /// broken. C panics on the first failure (`main.c:39-40`); the bound is the

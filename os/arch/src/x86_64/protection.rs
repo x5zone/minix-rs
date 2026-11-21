@@ -33,7 +33,7 @@
 //! | `init_ap` (AP startup) | Per-CPU TSS/GDT entry, load selectors (no global GDT sync) |
 
 use crate::protection::{ProtectionArch, Privilege};
-use minix_types::VirBytes;
+use minix_types::{MAX_CPUS, VirBytes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct X86PrivilegeLevel(u8);
@@ -80,7 +80,9 @@ pub(crate) const USER_DS_SELECTOR: u16 = ((GDT_USER_DS_INDEX * 8) | 3) as u16;
 /// sysret64 loads SS = anchor+8 (user data) and CS = anchor+16 (user code).
 pub(crate) const USER_STAR_ANCHOR_SELECTOR: u16 = ((GDT_USER_ANCHOR_INDEX * 8) | 3) as u16;
 
-const MAX_CPUS: usize = 8;
+// `MAX_CPUS` comes from `minix-types` (single definition shared with the
+// kernel SMP/proc tables). The GDT must therefore reserve one 16-byte TSS
+// descriptor pair per possible CPU, not the former private cap of 8.
 
 const GDT_ENTRIES: usize = GDT_TSS_FIRST_INDEX + MAX_CPUS * GDT_SLOTS_PER_TSS;
 

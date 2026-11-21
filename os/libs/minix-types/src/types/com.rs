@@ -37,6 +37,23 @@ pub const MAX_NR_TASKS: usize = 1023;
 /// (determined by endpoint generation mechanism).
 pub const NR_PROCS: usize = 256;
 
+/// Maximum number of CPUs supported by the kernel.
+///
+/// C: `CONFIG_MAX_CPUS` — the kernel build configuration. C's `kernel.h`
+/// default is 1 unless the build overrides it; this build chooses 32 for
+/// SMP.
+///
+/// This is the single source for every fixed-size per-CPU array: the kernel
+/// SMP/proc tables and the x86-64 protection tables (GDT TSS slots, TSS
+/// array, GS areas) all derive from it. A topology that reports more CPUs
+/// than this is a boot-time configuration error, not something to truncate
+/// silently.
+pub const MAX_CPUS: usize = 32;
+
+// `CpuMask` and the SMP online/boot-ack masks are u64; a wider MAX_CPUS
+// would make `1u64 << MAX_CPUS` overflow. Keep the bound at the mask width.
+const _: () = assert!(MAX_CPUS <= 64, "MAX_CPUS must fit the u64 CPU masks");
+
 /// Maximum number of system services (server/driver slots).
 ///
 /// Corresponds to Minix3's `NR_SYS_PROCS` (defined in `config.h` as

@@ -772,7 +772,7 @@ TSS 的字段级去留（对 `include/arch_proto.h` 的 [`tss_s`](minix3/minix/k
 
 GDT 的槽位对照（两张表的长度也一并现算）：
 
-| 槽 | C（i386，`CONFIG_MAX_CPUS`=1） | Rust（x86-64，`MAX_CPUS`=8） |
+| 槽 | C（i386，`CONFIG_MAX_CPUS`=1） | Rust（x86-64，`MAX_CPUS`=32） |
 |---|---|---|
 | 0 | 空 | 空 |
 | 1 | 内核 CS | 内核 CS |
@@ -781,7 +781,7 @@ GDT 的槽位对照（两张表的长度也一并现算）：
 | 4 | 用户 DS | 用户 DS |
 | 5 | LDT 占位 | 用户 CS |
 | 6 起 | 每 CPU 一个 TSS 槽 | 每 CPU 两个槽（16 字节 TSS 描述符） |
-| 表长 | `TSS_INDEX(CONFIG_MAX_CPUS)`（这里是 7） | `GDT_TSS_FIRST_INDEX + MAX_CPUS * GDT_SLOTS_PER_TSS`（6 + 8 × 2 = 22） |
+| 表长 | `TSS_INDEX(CONFIG_MAX_CPUS)`（这里是 7） | `GDT_TSS_FIRST_INDEX + MAX_CPUS * GDT_SLOTS_PER_TSS`（6 + 32 × 2 = 70） |
 
 第 3 槽的变化不止是槽号平移：64 位的用户段在这里多插了一个无人选择的副本。它存在的原因是 `sysret64` 取选择子的规则——返回时 CS 取 STAR 高 16 位加 16、SS 取加 8，因此 STAR 的高位要指向 anchor 槽本身——用户 CS 在它之后两格（`CS = STAR+16`、`SS = STAR+8`；源码注释把 anchor、用户 DS、用户 CS 这组连续三格写作 "THREE slots"）。§4.3 会把这条规则与一次真实的失败记录对上。
 

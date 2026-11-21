@@ -57,8 +57,11 @@ use crate::sched::Scheduler;
 // ── Constants ──
 
 /// Maximum number of CPUs.
-/// C: `CONFIG_MAX_CPUS` — config.h
-pub const MAX_CPUS: usize = 32;
+///
+/// Single definition lives in `minix-types` (`CONFIG_MAX_CPUS` equivalent);
+/// this re-export keeps the existing `crate::smp::MAX_CPUS` call sites and
+/// makes the kernel tables and the x86 protection tables share one bound.
+pub use minix_types::MAX_CPUS;
 
 // ── CPU flags ──
 
@@ -411,6 +414,12 @@ impl SmpState {
 
     /// Create SmpState with a specified number of CPUs.
     pub fn with_ncpus(ncpus: u32, bsp_cpu_id: CpuId) -> Self {
+        assert!(
+            bsp_cpu_id.index() < MAX_CPUS,
+            "SmpState::with_ncpus: BSP logical id {} >= MAX_CPUS {}",
+            bsp_cpu_id.index(),
+            MAX_CPUS
+        );
         let ncpus = ncpus.clamp(1, MAX_CPUS as u32);
         let mut state = Self {
             ncpus,
@@ -1107,6 +1116,23 @@ fn warn_ap_boot_timeout(hw_id: u64) {
 }
 
 pub fn smp_init() {
+    // Configuration truth: every per-CPU table is sized by `MAX_CPUS`
+    // (kernel SMP/proc arrays and the x86 protection tables). A topology
+    // that reports more CPUs than the build supports is a boot-time
+    // configuration error — truncating it would silently leave the extra
+    // CPUs without a TSS/GS/stack slot. Check once, before any arch block
+    // indexes those tables.
+    {
+        use minix_platform::platform_desc;
+        let topo = platform_desc().cpu_topology();
+        assert!(
+            topo.nr_cpus as usize <= MAX_CPUS,
+            "smp_init: topology reports {} CPUs, MAX_CPUS is {}",
+            topo.nr_cpus,
+            MAX_CPUS
+        );
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
         use minix_arch::arch::ap_early_entry::ApBootstrap;
@@ -1582,7 +1608,7 @@ const AP_KERNEL_STACK_SIZE: usize = 0x4000;
     target_arch = "riscv64",
     target_arch = "aarch64"
 ))]
-const AP_STACK_COUNT: usize = 8;
+const AP_STACK_COUNT: usize = MAX_CPUS;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "riscv64",
