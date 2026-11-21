@@ -172,6 +172,12 @@ pub(crate) struct PlacementPool {
     pub bump_start: u64,
     /// One past the last byte of the caller's bump region.
     pub bump_end: u64,
+    /// Kernel image physical span `[kern_start, kern_end)`. Module pages must
+    /// stay outside it; before this field existed the placement had no
+    /// relation to the kernel span, so a too-low pool base could hand out a
+    /// page inside a running image.
+    pub kern_start: u64,
+    pub kern_end: u64,
 }
 
 /// Consume the first `NR_BOOT_MODULES` table entries at their contract
@@ -252,6 +258,17 @@ where
         }
         let pages = len.div_ceil(4096);
         let dest = bump_alloc_pages(pages)?;
+        // The pool was supposed to sit clear of the kernel image; assert it
+        // on every take rather than trusting the constant relation alone.
+        let dest_end = dest
+            .checked_add((pages as u64) * 4096)
+            .expect("place_modules: module destination overflows");
+        assert!(
+            dest_end <= pool.kern_start || dest >= pool.kern_end,
+            "place_modules: module page [0x{dest:x}, 0x{dest_end:x}) overlaps the kernel image [0x{:x}, 0x{:x})",
+            pool.kern_start,
+            pool.kern_end
+        );
         // SAFETY: the source passed the full-width memmap gate and does not
         // overlap the bump pool; `dest` is exclusive bump space and the copy
         // length is within both ranges.
@@ -451,6 +468,8 @@ where
                 names: names_pool,
                 bump_start: params.bump_start,
                 bump_end: params.bump_end,
+                kern_start: params.kern_phys_base,
+                kern_end: params.kern_phys_base + params.kern_size,
             },
             module_table,
             &mut bump_alloc_pages,

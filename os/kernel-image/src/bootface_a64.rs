@@ -106,6 +106,10 @@ static BUMP_NEXT: AtomicU64 = AtomicU64::new(BUMP_BASE);
 
 const _: () = assert!(BUMP_BASE % minix_boot::BUMP_PAGE_SIZE == 0);
 const _: () = assert!(BUMP_SIZE % minix_boot::BUMP_PAGE_SIZE == 0);
+// The module pool must start after the 4 MiB kernel image; otherwise the
+// first module take lands inside the running image. The runtime check in
+// `place_modules` is the second gate.
+const _: () = assert!(KERN_PHYS_BASE + KERN_SIZE <= BUMP_BASE);
 
 /// Allocate `num_pages` pages; a zero-page request is refused by
 /// `BumpRegion::alloc_pages` (it would hand out duplicate addresses and break
