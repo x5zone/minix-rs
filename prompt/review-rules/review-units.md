@@ -81,6 +81,8 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 ```bash
 # 首次：按当前标题树建状态
 python3 tools/review-units.py init rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+# 整篇 survey 完成后记录基线（之后才允许确认轮抽样）
+python3 tools/review-units.py baseline rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 
 # 每轮开始：校验状态与正文一致，列出本轮该审的单元
 python3 tools/review-units.py check <doc>

@@ -186,6 +186,7 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
         "stage": stage,
         "edition": edition,
         "updated_commit": head_commit(),
+        "baseline_full_survey": False,
         "units": [new_unit(u) for u in units],
         "t3": {"passed": False, "evidence": "", "at_commit": ""},
     }
@@ -474,9 +475,8 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
     if ratio < 0.2:
         print("抽样比例不得低于 0.2（review-units.md §五）", file=sys.stderr)
         return 2
-    if all(not u.get("frozen") and int(u.get("t1_rounds", 0)) == 0
-           and int(u.get("t2_rounds", 0)) == 0 for u in units):
-        print("首个 edition 的全单元仍为 pending：应整篇 survey，不抽样", file=sys.stderr)
+    if not data.get("baseline_full_survey"):
+        print("首个 edition 尚未完成整篇 survey（先跑 `review-units.py baseline`）", file=sys.stderr)
         return 1
     dirty = [u for u in units if not u.get("frozen")]
     frozen = [u for u in units if u.get("frozen")]
@@ -493,6 +493,14 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
     print("## frozen-sample")
     for u in picked:
         print(f"{u['id']} {u['heading']}")
+    return 0
+
+
+def cmd_baseline(doc: Path, state_path: Path) -> int:
+    data = load_state(state_path)
+    data["baseline_full_survey"] = True
+    save_state(state_path, data)
+    print("baseline: 首个 edition 的整篇 survey 已记录")
     return 0
 
 
@@ -544,8 +552,9 @@ def self_test() -> int:
         data = load_state(sp)
         assert len(data["units"]) == 5, len(data["units"])
         assert cmd_check(doc, sp) == 0
-        assert cmd_sample(doc, sp, 0.2, "x") == 1   # 首 edition 不抽样
+        assert cmd_sample(doc, sp, 0.2, "x") == 1   # 首 edition 不抽查
         assert cmd_sample(doc, sp, 0.1, "x") == 2   # 比例下限
+        assert cmd_baseline(doc, sp) == 0
         # 章 1 T1 通过；两节通过并冻结；章冻结
         assert cmd_mark(doc, sp, "1", "t1", False, True, False, "") == 0
         assert cmd_mark(doc, sp, "1.1", "t2", False, True, True, "") == 0
@@ -590,7 +599,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="单元级 review 状态机（V3.9）")
     ap.add_argument("--self-test", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
-    for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats"):
+    for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats", "baseline"):
         p = sub.add_parser(name)
         p.add_argument("doc", nargs="?")
         p.add_argument("--doc", dest="doc_opt", help="文档路径（与位置参数二选一）")
@@ -650,6 +659,8 @@ def main() -> int:
         return cmd_sample(doc, sp, args.ratio, args.seed)
     if args.cmd == "gate":
         return cmd_gate(doc, sp, args.ok, args.evidence)
+    if args.cmd == "baseline":
+        return cmd_baseline(doc, sp)
     if args.cmd == "stats":
         return cmd_stats(doc, sp)
     return 2
