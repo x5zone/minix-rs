@@ -101,6 +101,20 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 
 ---
 
+## 四点五、TODO 单一账本（V3.7）
+
+1. **规范源** = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。
+   每条字段：`id/stage/doc/title/status/severity/kind/origin/evidence/defer`。
+2. **旧 todo markdown 冻结为 archive**：`01-todo.md`、各 stage `todo.md`、`OPEN-DEBT.md`、
+   `suggestions.md`、`follow-ups.md` 不再作为「当前欠账」的判据；只迁**open** 项，closed 历史
+   留在旧文件。当前并发清理结束、D01 CONVERGED 时执行冻结（加归档头）。
+3. **新发现的 TODO 一律写入账本**，不得再往旧 markdown 追加。
+4. **门**：`python3 tools/todo-ledger.py check --doc <doc> --fail-on-open`——当前篇
+   `status: open` 必须为 0；`closed` 必须有证据；`defer-approved` 必须有四要素。
+5. **反假收敛**：`01-todo.md` 里的「已批准待实施」不再算闭环——它必须在账本里是
+   `open`（继续做）或 `defer-approved`（有你的亲笔四项）。这是「CONVERGED 但 todo 还有」
+   的制度性修复。
+
 ## 五、收敛重定义
 
 `CONVERGED` 自本文件生效日起表示**出版就绪**，必须同时满足：
@@ -108,6 +122,7 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 - G1–G9（`review-evals.md` §6A，其中 G3/G9 按本文件收窄）；
 - **G10 文档出版**：当前篇 `doc-publication-check.py` 零命中；
 - **G11 代码出版**：当前篇关联代码 `code-publication-check.py` 零命中；
+- **G12 TODO 账本**：`todo-ledger.py check --doc <当前篇> --fail-on-open` 通过（open = 0）；
 - **零欠账**：`OPEN-DEBT` 无 `[OPEN]`，且无任何未获 `defer-approved` 的 ②/⑥/SUGG。
 
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE` 不再等于出版就绪；它们只是过程状态。

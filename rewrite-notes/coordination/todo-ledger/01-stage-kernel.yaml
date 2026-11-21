@@ -1,0 +1,247 @@
+# TODO 单一账本（V3.7）——规范源；旧 todo markdown 仅为归档。
+# 字段：id/stage/doc/title/status/severity/kind/origin/evidence/defer
+# status: open | closed | rejected | defer-approved
+# defer-approved 必须带 decision/approved/until/consequence 四项。
+- id: D01-F-R34-01
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: check-layout.sh 的 L9 按架构选择 bootface.rs / bootface_a64.rs（与 D02-F11 同项）
+  status: open
+  severity: P1
+  kind: code
+  origin: D-107 / D01 §三.1
+  evidence: ''
+- id: D01-I-5
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: x86 ACPI RSDP → RSDT/XSDT → MADT 路径确认与 OVMF 实测
+  status: open
+  severity: P1
+  kind: code
+  origin: D-107 / D01 §三.2
+  evidence: ''
+- id: D01-T-10
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: riscv64 U-Boot 真实链接入 run_all.sh/CI，6/6 路标
+  status: open
+  severity: P1
+  kind: code
+  origin: D-107 / D01 §三.3
+  evidence: ''
+- id: D01-I-29-impl
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: UEFI 内存图分类器落地四门（② 真机证据半挂）
+  status: open
+  severity: P1
+  kind: code
+  origin: D-107 / 01-todo 总览
+  evidence: ''
+- id: D01-C1
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: C1 十项按 D-107 批准后的实施核查
+  status: open
+  severity: P2
+  kind: design
+  origin: D-107 / D01 §三.4
+  evidence: ''
+- id: D01-I-29-8
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: I-29-8 十项按 D-107 批准后的实施核查
+  status: open
+  severity: P2
+  kind: design
+  origin: D-107 / D01 §三.4
+  evidence: ''
+- id: D01-SUGG-RD34-D2-01
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板建议 RD34-DESIGN-D2-01（原「不实施（建议级）」）
+  status: open
+  severity: P3
+  kind: design
+  origin: R34 suggestions
+  evidence: ''
+- id: D01-SUGG-RD34-D2-06
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板建议 RD34-DESIGN-D2-06（原「不实施（建议级）」）
+  status: open
+  severity: P3
+  kind: design
+  origin: R34 suggestions
+  evidence: ''
+- id: D01-SUGG-RD34-D2-07
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板建议 RD34-DESIGN-D2-07（原「不实施（建议级）」）
+  status: open
+  severity: P3
+  kind: design
+  origin: R34 suggestions
+  evidence: ''
+- id: D01-SUGG-RD34-D2-08
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板建议 RD34-DESIGN-D2-08（原「不实施（建议级）」）
+  status: open
+  severity: P3
+  kind: design
+  origin: R34 suggestions
+  evidence: ''
+- id: D01-SUGG-RD34-D2-09
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板建议 RD34-DESIGN-D2-09（原「不实施（建议级）」）
+  status: open
+  severity: P3
+  kind: design
+  origin: R34 suggestions
+  evidence: ''
+- id: D01-SUGG-RD34-D2-10
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板建议 RD34-DESIGN-D2-10（原「不实施（建议级）」）
+  status: open
+  severity: P3
+  kind: design
+  origin: R34 suggestions
+  evidence: ''
+- id: D01-SUGG-RD34-D2-11
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 面板建议 RD34-DESIGN-D2-11（原「不实施（建议级）」）
+  status: open
+  severity: P3
+  kind: design
+  origin: R34 suggestions
+  evidence: ''
+- id: D02-D2-06
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 删除三份 arch link.ld 与 link_ld_lockstep.rs，清理引用（D-107 裁决）
+  status: open
+  severity: P1
+  kind: code
+  origin: D-107 / D02 §三.1
+  evidence: ''
+- id: D02-D2-04
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: build_kernel_info 改收 &BootReport，删 12 处 from_raw_parts
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.2
+  evidence: ''
+- id: D02-F01
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: jump_to_kmain 删除 stack_top 形参（3 impl + 4 调用点）
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.3
+  evidence: ''
+- id: D02-F04
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: buffer/phys 两版装载循环抽共享区间计算 + 一致性测试
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.4
+  evidence: ''
+- id: D02-F05
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 引入 KernelImage/ValidatedKernelImage 值对象，删除裸前提
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.5
+  evidence: ''
+- id: D02-F06
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: x86 生产链接脚本补 2 MiB 收口 ASSERT；check-layout all 验收
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.6
+  evidence: ''
+- id: D02-F08
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 抽 bootface 共享流程，两薄壳只留常量/入口
+  status: open
+  severity: P1
+  kind: code
+  origin: D-107 / D02 §三.7
+  evidence: ''
+- id: D02-F11
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: L9 架构选择（与 D01-F-R34-01 同一次修复）
+  status: open
+  severity: P1
+  kind: code
+  origin: D-107 / D02 §三.8
+  evidence: ''
+- id: D02-R02-T01
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 段归属/k_initial_stktop 落段的机械断言或 check-layout 静态检查
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.9
+  evidence: ''
+- id: D02-R02-T03
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: riscv64 载体 PC 高半判据与 delta 路径断言 + QEMU 实测
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.10
+  evidence: ''
+- id: D02-R02-T04
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: 生产 kmain 入口 ABI 栈形检查扩到生产入口
+  status: open
+  severity: P2
+  kind: code
+  origin: D-107 / D02 §三.11
+  evidence: ''
+- id: D02-SUGG-32
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: D02 建议桶 32 条编号建议逐条 implemented/already-fixed/dup-of
+  status: open
+  severity: P3
+  kind: design
+  origin: D02 suggestions
+  evidence: ''
+- id: D02-SUGG-5
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: D02 5 条 FACT 未编号建议逐条结清
+  status: open
+  severity: P3
+  kind: design
+  origin: D02 suggestions
+  evidence: ''
+- id: D02-SUGG-3
+  stage: 01-stage-kernel
+  doc: 02-higher-half-kernel
+  title: D02 3 条设计 P3 逐条结清
+  status: open
+  severity: P3
+  kind: design
+  origin: D02 suggestions
+  evidence: ''

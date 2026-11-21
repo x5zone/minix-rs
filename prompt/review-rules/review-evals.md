@@ -679,6 +679,7 @@ G8  本轮关闭（ROUND-CLOSED）：open = 0 且 certify 新准入 = 0
 G9  ⑥ DESIGN 项全部实施（**V3.7：必须在轮内实施；「转下一设计批」出口关闭**）
 G10 文档出版：当前篇 `tools/doc-publication-check.py` 零命中（DP-1..DP-5）
 G11 代码出版：当前篇关联代码 `tools/code-publication-check.py` 零命中（CP-1..CP-6）
+G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 通过（open = 0）
 ```
 
 **V3.7 出版标准（2026-11-21 用户裁决）**：G10/G11 与 `prompt/review-rules/review-publication.md`

@@ -68,7 +68,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **真值优先序**：`Minix3 C 源码行为 > 设计契约 > Rust 实现 > 设计/技术文档 > AI 分析`。拿不准就去 `minix3/` 读原始 C 代码
 - **三档术语**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：文档 + 设计 + 代码）
 - **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史（`tools/doc-publication-check.py`），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
-- **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇
+- **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`），旧 todo markdown 冻结为归档
 - **P0 六类**：P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing
 - **⛔ 显式调用技能**：必须通过 Skill 工具真正调用技能，scan.md 的 Skill Invocation Log 只记实际调用；"规则已加载"不算调用
 - **⛔ Gate 证据强度分级**：L1 工具输出（A/D/E 门必需）、L2 手工 grep（B/C 可接受）、L3 推断（视为 FAIL，除非写明 `MANUAL_FALLBACK` 理由）。**没有附命令与输出的「✅ 通过」一律作废**

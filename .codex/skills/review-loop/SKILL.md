@@ -81,7 +81,11 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 ```bash
 python3 tools/doc-publication-check.py <当前篇文档>
 python3 tools/code-publication-check.py $(cat runs/<stage>/<doc>/related-code.txt | tr '\n' ' ')
+python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open
 ```
+
+第三条读的是 `rewrite-notes/coordination/todo-ledger/<stage>.yaml`——**TODO 的单一源**。
+`01-todo.md` 等旧文件在冻结前只是工作副本，不作为欠账判据。
 
 - 有命中 → **本轮的 L0 阶段先清出版门**，清到零再派面板；不得「带着历史叙事开轮」，
   否则面板会收敛在脏文档上（D01/D02 的历史教训）。
