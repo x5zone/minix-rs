@@ -1,14 +1,14 @@
 //! RISC-V 64-bit platform descriptor brand-name structs and QEMU virt fallback.
 //!
 //! All RISC-V-specific hardware descriptor types live here. The upper layer
-//! (`minix-boot`) sees only the `InterruptControllerDesc` / `TimerDesc` /
-//! `ConsoleDesc` traits; the concrete `PlicDesc` / `ClintDesc` /
-//! `Riscv64ConsoleDesc` types are visible only to RISC-V consumer code.
+//! (`minix-boot`) sees only the `InterruptControllerDesc` / `TimerDesc`
+//! traits; the concrete `PlicDesc` / `ClintDesc` types are visible only to
+//! RISC-V consumer code.
 
 use core::fmt;
 
 use minix_boot::{
-    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
+    ArchMiscDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
     PlatformDesc, PlatformSource, TimerDesc,
 };
 
@@ -56,50 +56,6 @@ impl TimerDesc for ClintDesc {
     }
 }
 
-/// RISC-V console descriptor.
-///
-/// RISC-V QEMU virt may use either SBI ecall console (default, no MMIO) or
-/// an MMIO UART (ns16550a / SiFive UART). This enum holds the runtime-detected
-/// console kind. Brand names (`Sbi`, `Mmio`) are confined to this arch module.
-#[derive(Debug, Clone, Copy)]
-pub enum Riscv64ConsoleKind {
-    /// SBI ecall console (no MMIO — uses SBI console putchar/getchar calls).
-    Sbi,
-    /// MMIO UART (ns16550a or SiFive UART).
-    Mmio { mmio_base: usize },
-}
-
-/// RISC-V console descriptor — wraps the runtime-detected console kind.
-#[derive(Debug, Clone, Copy)]
-pub struct Riscv64ConsoleDesc {
-    kind: Riscv64ConsoleKind,
-}
-
-impl Riscv64ConsoleDesc {
-    /// Construct an SBI console descriptor.
-    pub const fn sbi() -> Self {
-        Self {
-            kind: Riscv64ConsoleKind::Sbi,
-        }
-    }
-    /// Construct an MMIO UART console descriptor.
-    pub const fn mmio(mmio_base: usize) -> Self {
-        Self {
-            kind: Riscv64ConsoleKind::Mmio { mmio_base },
-        }
-    }
-    /// Access the console kind (for arch-layer downcast consumers).
-    pub fn kind(&self) -> Riscv64ConsoleKind {
-        self.kind
-    }
-}
-
-impl ConsoleDesc for Riscv64ConsoleDesc {
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-}
-
 // ── QEMU `virt` fallback descriptor (riscv64) ──
 
 /// QEMU `virt` machine descriptor — riscv64 hardcoded fallback.
@@ -109,7 +65,6 @@ impl ConsoleDesc for Riscv64ConsoleDesc {
 pub struct QemuVirtDesc {
     ic: PlicDesc,
     timer: ClintDesc,
-    console: Riscv64ConsoleDesc,
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
 }
@@ -129,7 +84,6 @@ impl QemuVirtDesc {
                 mtimecmp_stride: 8,
                 freq: 10_000_000,
             },
-            console: Riscv64ConsoleDesc::sbi(),
             cpu_topology: CpuTopology {
                 nr_cpus: 4,
                 bsp_id: 0,
@@ -145,16 +99,9 @@ impl QemuVirtDesc {
 
 impl Default for QemuVirtDesc {
     fn default() -> Self {
-        // `cpus` needs runtime initialization for per-CPU mtimecmp_addr fields.
         let mut d = Self::new();
-        const MTIMECMP_BASE: usize = 0x200_4000;
-        const MTIMECMP_STRIDE: usize = 8;
         for i in 0..d.cpu_topology.nr_cpus as usize {
-            d.cpu_topology.cpus[i] = CpuInfo {
-                hw_id: i as u64,
-                gicr_base: None,
-                mtimecmp_addr: Some(MTIMECMP_BASE + i * MTIMECMP_STRIDE),
-            };
+            d.cpu_topology.cpus[i] = CpuInfo { hw_id: i as u64 };
         }
         d
     }
@@ -166,9 +113,6 @@ impl PlatformDesc for QemuVirtDesc {
     }
     fn timer(&self) -> &dyn TimerDesc {
         &self.timer
-    }
-    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
-        Some(&self.console)
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology
@@ -222,9 +166,6 @@ mod tests {
         let d = QemuVirtDesc::default();
         let t = d.cpu_topology();
         assert_eq!(t.nr_cpus, 4);
-        assert_eq!(t.cpus[0].mtimecmp_addr, Some(0x200_4000));
-        assert_eq!(t.cpus[1].mtimecmp_addr, Some(0x200_4008));
-        assert_eq!(t.cpus[3].mtimecmp_addr, Some(0x200_4018));
     }
 }
 

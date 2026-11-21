@@ -298,13 +298,11 @@ pub struct CpuInfo {
     /// - x86-64: APIC ID
     /// - ARM64: MPIDR_EL1.Aff0
     /// - RISC-V: hart ID
+    ///
+    /// Per-CPU private MMIO addresses (GICR frame, CLINT mtimecmp) are
+    /// derived by their controllers from the descriptor's base + this id;
+    /// they are not duplicated here.
     pub hw_id: u64,
-    /// ARM64 GICv3: this CPU's Redistributor base
-    /// (`gicr_base + hw_id * gicr_stride`).
-    pub gicr_base: Option<usize>,
-    /// RISC-V CLINT: this hart's mtimecmp address
-    /// (`mtimecmp_base + hart_id * mtimecmp_stride`).
-    pub mtimecmp_addr: Option<usize>,
 }
 
 impl CpuInfo {
@@ -314,11 +312,7 @@ impl CpuInfo {
     /// cannot call `CpuInfo::default()`. This method provides the same value
     /// as a `const fn`.
     pub const fn zero() -> Self {
-        Self {
-            hw_id: 0,
-            gicr_base: None,
-            mtimecmp_addr: None,
-        }
+        Self { hw_id: 0 }
     }
 }
 
@@ -352,8 +346,6 @@ pub trait PlatformDesc: Send + Sync + fmt::Debug {
     fn interrupt_controller(&self) -> &dyn InterruptControllerDesc;
     /// Timer descriptor.
     fn timer(&self) -> &dyn TimerDesc;
-    /// Early console descriptor (optional — used before proper console init).
-    fn early_console(&self) -> Option<&dyn ConsoleDesc>;
     /// CPU topology (core count, per-CPU info — SMP-ready, single-core for now).
     fn cpu_topology(&self) -> CpuTopology;
     /// Architecture miscellany (ACPI table pointer, PMU enable, ...).
@@ -438,18 +430,6 @@ pub trait TimerDesc: Send + Sync + fmt::Debug + Any {
     fn as_any(&self) -> &dyn Any;
 }
 
-/// Early console descriptor — describes the mechanism, not the brand.
-///
-/// # Implementors (all in `minix-platform/src/arch/`)
-///
-/// - `IsaSerialDesc` (x86-64): ISA serial port I/O
-/// - `MmioSerialDesc` (ARM64): MMIO UART (PL011)
-/// - `SbiConsoleDesc` (RISC-V): SBI ecall console
-pub trait ConsoleDesc: Send + Sync + fmt::Debug + Any {
-    /// `Any` support for arch-layer downcast (see `InterruptControllerDesc`).
-    fn as_any(&self) -> &dyn Any;
-}
-
 // ── Errors ──
 
 /// Error returned when parsing a platform descriptor source fails.
@@ -522,8 +502,6 @@ mod tests {
     fn test_cpu_info_default() {
         let c = CpuInfo::default();
         assert_eq!(c.hw_id, 0);
-        assert_eq!(c.gicr_base, None);
-        assert_eq!(c.mtimecmp_addr, None);
     }
 
     #[test]

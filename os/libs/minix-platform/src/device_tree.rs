@@ -49,9 +49,9 @@ use core::fmt;
 // to arches that actually support DTB.
 
 #[cfg(target_arch = "aarch64")]
-use crate::arch::aarch64::{ArmGenericTimerDesc, Gicv3Desc, MmioSerialDesc};
+use crate::arch::aarch64::{ArmGenericTimerDesc, Gicv3Desc};
 #[cfg(target_arch = "riscv64")]
-use crate::arch::riscv64::{ClintDesc, PlicDesc, Riscv64ConsoleDesc};
+use crate::arch::riscv64::{ClintDesc, PlicDesc};
 
 /// Parsed DTB descriptor — owns all extracted hardware parameters.
 ///
@@ -75,11 +75,6 @@ pub struct DeviceTreeDesc {
     /// on legacy CLINT platforms and on non-RISC-V DTBs where the node
     /// never matches).
     sswi_setip_base: Option<usize>,
-    /// Early console descriptor (optional).
-    #[cfg(target_arch = "riscv64")]
-    console: Option<Riscv64ConsoleDesc>,
-    #[cfg(target_arch = "aarch64")]
-    console: Option<MmioSerialDesc>,
     /// CPU topology.
     cpu_topology: CpuTopology,
     /// Architecture miscellany.
@@ -95,7 +90,6 @@ impl fmt::Debug for DeviceTreeDesc {
             .field("ic", &self.ic)
             .field("timer", &self.timer)
             .field("sswi_setip_base", &self.sswi_setip_base)
-            .field("console", &self.console)
             .field("cpu_topology", &self.cpu_topology)
             .finish_non_exhaustive()
     }
@@ -161,7 +155,6 @@ impl DeviceTreeDesc {
     fn from_fdt(fdt: &fdt::Fdt<'_>) -> Result<Self, DtParseError> {
         let ic = Self::parse_interrupt_controller(fdt)?;
         let timer = Self::parse_timer(fdt)?;
-        let console = Self::parse_console(fdt);
         let cpu_topology = Self::parse_cpu_topology(fdt);
         let arch_misc = ArchMiscDesc::default();
         let sswi_setip_base = Self::parse_sswi(fdt);
@@ -178,7 +171,6 @@ impl DeviceTreeDesc {
         Ok(Self {
             ic,
             timer,
-            console,
             cpu_topology,
             arch_misc,
             sswi_setip_base,
@@ -412,33 +404,6 @@ impl DeviceTreeDesc {
         Some(base)
     }
 
-    // ── Console extraction ──
-
-    #[cfg(target_arch = "riscv64")]
-    fn parse_console(fdt: &fdt::Fdt<'_>) -> Option<Riscv64ConsoleDesc> {
-        // RISC-V QEMU virt uses SBI console by default (no MMIO UART in
-        // the standard DTB). If a UART node exists, prefer MMIO.
-        if let Some(uart) = fdt.find_compatible(&["ns16550a", "sifive,uart0"]) {
-            if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
-                return Some(Riscv64ConsoleDesc::mmio(base.starting_address as usize));
-            }
-        }
-        Some(Riscv64ConsoleDesc::sbi())
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn parse_console(fdt: &fdt::Fdt<'_>) -> Option<MmioSerialDesc> {
-        // ARM64 QEMU virt uses PL011 UART at 0x0900_0000.
-        if let Some(uart) = fdt.find_compatible(&["arm,pl011", "arm,primecell"]) {
-            if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
-                return Some(MmioSerialDesc {
-                    mmio_base: base.starting_address as usize,
-                });
-            }
-        }
-        None
-    }
-
     // ── CPU topology extraction ──
 
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
@@ -475,28 +440,7 @@ impl DeviceTreeDesc {
                 bsp_id = hw_id as u32;
             }
 
-            // Architecture-specific per-CPU fields.
-            #[cfg(target_arch = "aarch64")]
-            let gicr_base = match Self::parse_gic(fdt) {
-                Ok(g) => Some(g.gicr_base + (hw_id as usize) * g.gicr_stride),
-                Err(_) => None,
-            };
-            #[cfg(not(target_arch = "aarch64"))]
-            let gicr_base = None;
-
-            #[cfg(target_arch = "riscv64")]
-            let mtimecmp_addr = match Self::parse_timer(fdt) {
-                Ok(c) => Some(c.mtimecmp_base + (hw_id as usize) * c.mtimecmp_stride),
-                Err(_) => None,
-            };
-            #[cfg(not(target_arch = "riscv64"))]
-            let mtimecmp_addr = None;
-
-            cpus[nr_cpus as usize] = CpuInfo {
-                hw_id,
-                gicr_base,
-                mtimecmp_addr,
-            };
+            cpus[nr_cpus as usize] = CpuInfo { hw_id };
             nr_cpus += 1;
         }
 
@@ -523,9 +467,6 @@ impl PlatformDesc for DeviceTreeDesc {
     }
     fn timer(&self) -> &dyn TimerDesc {
         &self.timer
-    }
-    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
-        self.console.as_ref().map(|c| c as &dyn ConsoleDesc)
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology

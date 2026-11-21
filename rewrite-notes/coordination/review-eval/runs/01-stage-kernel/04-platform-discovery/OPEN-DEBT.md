@@ -6,4 +6,4 @@
 | R04-T13 | P1 | [CLOSED] 已实施：`minix-platform` 新增 `table_chain_windows`，`push_platform_windows` 对 RSDP source 在分页前注册根表、前置表签名与 MADT 表体的精确窗口；`minix-platform --lib` 19/0，`kernel --features mock` 866/0/8；残留的「D-055 延期判决账行缺失」是流程账问题，不是本缺陷未修 |
 
 （r7 注记：本行曾引用「D-055 回归」作批准来源，但 D-055 判决内容不含此延期——判决行缺失；本行已按实施关闭，判决账行缺失的流程问题另行补账）
-| R3-design-batch | P2 | **用户批准 2026-11-20（代理裁决 D-070）延期至下一 design batch**：RD04-DESIGN-D2-01/02/03 三项设计 P2（[DEL] early_console/ConsoleDesc 零消费者死链、[DEL] CpuInfo.gicr_base/mtimecmp_addr 只写不读、[MODERN] enable_sched_sgi_for_cpu 的 bsp_id hint 与 elected_bsp_hw_id 选举分叉）与 6 条设计 P3、ARCH 提案 RD04-A1（PSCI conduit）。确认轮不实施 ⑥（§3.6），登记后销账 |
+| R3-design-batch | P2 | [CLOSED] 三项设计 P2 已实施：early_console/ConsoleDesc 死链删除、CpuInfo.gicr_base/mtimecmp_addr 删除（控制器按 hw_id 推导）、enable_sched_sgi_for_cpu 改用 elected_bsp_hw_id；6 条设计 P3 与 RD04-A1 按原裁决保留登记。证据见 `os/libs/minix-boot/src/platform.rs`、`os/libs/minix-platform/src/{device_tree,acpi}.rs`、`os/kernel/src/lib.rs`；boot 185/0、platform 19/0、kernel mock 866/0/8。 |

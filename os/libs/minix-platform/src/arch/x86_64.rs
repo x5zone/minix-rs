@@ -1,12 +1,12 @@
 //! x86-64 platform descriptor brand-name structs and QEMU virt fallback.
 //!
 //! All x86-64-specific hardware descriptor types live here. The upper layer
-//! (`minix-boot`) sees only the `InterruptControllerDesc` / `TimerDesc` /
-//! `ConsoleDesc` traits; the concrete `ApicDesc` / `PitDesc` / `IsaSerialDesc`
-//! types are visible only to x86-64 consumer code (which downcasts via `Any`).
+//! (`minix-boot`) sees only the `InterruptControllerDesc` / `TimerDesc`
+//! traits; the concrete `ApicDesc` / `PitDesc` types are visible only to
+//! x86-64 consumer code (which downcasts via `Any`).
 
 use minix_boot::{
-    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
+    ArchMiscDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
     PlatformDesc, PlatformSource, TimerDesc,
 };
 
@@ -55,19 +55,6 @@ impl TimerDesc for PitDesc {
     }
 }
 
-/// x86-64 ISA serial port (COM1) descriptor.
-#[derive(Debug, Clone, Copy)]
-pub struct IsaSerialDesc {
-    /// I/O port base (default `0x3F8` for COM1).
-    pub port_base: u16,
-}
-
-impl ConsoleDesc for IsaSerialDesc {
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-}
-
 // ── QEMU `virt` fallback descriptor (x86-64) ──
 
 /// QEMU `virt` machine descriptor — x86-64 hardcoded fallback.
@@ -81,7 +68,6 @@ impl ConsoleDesc for IsaSerialDesc {
 pub struct QemuVirtDesc {
     ic: ApicDesc,
     timer: PitDesc,
-    console: IsaSerialDesc,
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
 }
@@ -98,7 +84,6 @@ impl QemuVirtDesc {
             timer: PitDesc {
                 pit_base_freq: 1_193_182,
             },
-            console: IsaSerialDesc { port_base: 0x3F8 },
             cpu_topology: CpuTopology {
                 nr_cpus: 4,
                 bsp_id: 0,
@@ -118,11 +103,7 @@ impl Default for QemuVirtDesc {
         let mut d = Self::new();
         // QEMU q35 with `-smp 4` assigns APIC IDs 0..3 by default.
         for i in 0..d.cpu_topology.nr_cpus as usize {
-            d.cpu_topology.cpus[i] = CpuInfo {
-                hw_id: i as u64,
-                gicr_base: None,
-                mtimecmp_addr: None,
-            };
+            d.cpu_topology.cpus[i] = CpuInfo { hw_id: i as u64 };
         }
         d
     }
@@ -134,9 +115,6 @@ impl PlatformDesc for QemuVirtDesc {
     }
     fn timer(&self) -> &dyn TimerDesc {
         &self.timer
-    }
-    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
-        Some(&self.console)
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology

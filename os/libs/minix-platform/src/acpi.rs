@@ -40,7 +40,7 @@
 //! - No other CPU is concurrently writing to the ACPI table memory.
 
 #[cfg(target_arch = "x86_64")]
-use crate::arch::x86_64::{ApicDesc, IsaSerialDesc, PitDesc};
+use crate::arch::x86_64::{ApicDesc, PitDesc};
 #[cfg(target_arch = "aarch64")]
 use crate::arch::aarch64::{ArmGenericTimerDesc, Gicv3Desc};
 use crate::desc::*;
@@ -142,7 +142,7 @@ struct MadtEntryHeader {
 ///
 /// Constructed via [`AcpiDesc::parse`] (production). After construction, the
 /// ACPI tables are no longer needed — all values are stored as concrete x86-64
-/// structs (`ApicDesc`, `PitDesc`, `IsaSerialDesc`) implementing the
+/// structs (`ApicDesc`, `PitDesc`) implementing the
 /// sub-descriptor traits.
 #[derive(Clone, Copy)]
 pub struct AcpiDesc {
@@ -154,8 +154,6 @@ pub struct AcpiDesc {
     timer: PitDesc,
     #[cfg(target_arch = "aarch64")]
     timer: ArmGenericTimerDesc,
-    #[cfg(target_arch = "x86_64")]
-    console: Option<IsaSerialDesc>,
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
 }
@@ -169,7 +167,6 @@ impl fmt::Debug for AcpiDesc {
         }
         #[cfg(target_arch = "x86_64")]
         {
-            dbg.field("console", &self.console);
         }
         dbg.field("cpu_topology", &self.cpu_topology).finish_non_exhaustive()
     }
@@ -265,10 +262,7 @@ impl AcpiDesc {
                 pit_base_freq: 1_193_182,
             };
 
-            // Early console: COM1 (0x3F8) — standard PC AT serial port.
-            let console = Some(IsaSerialDesc { port_base: 0x3F8 });
-
-            Ok(Self { ic, timer, console, cpu_topology, arch_misc })
+            Ok(Self { ic, timer, cpu_topology, arch_misc })
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -287,9 +281,6 @@ impl AcpiDesc {
             // (same rationale as the DTB path).
             let timer = ArmGenericTimerDesc;
 
-            // aarch64 early console is a hardcoded PL011 in minix-plat; the
-            // descriptor carries no console (see PlatformDesc::early_console).
-
             Ok(Self { ic, timer, cpu_topology, arch_misc })
         }
     }
@@ -299,10 +290,9 @@ impl AcpiDesc {
     pub fn from_parsed(
         ic: ApicDesc,
         timer: PitDesc,
-        console: Option<IsaSerialDesc>,
         cpu_topology: CpuTopology,
     ) -> Self {
-        Self { ic, timer, console, cpu_topology, arch_misc: ArchMiscDesc::default() }
+        Self { ic, timer, cpu_topology, arch_misc: ArchMiscDesc::default() }
     }
 }
 
@@ -312,17 +302,6 @@ impl PlatformDesc for AcpiDesc {
     }
     fn timer(&self) -> &dyn TimerDesc {
         &self.timer
-    }
-    #[cfg(target_arch = "x86_64")]
-    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
-        self.console.as_ref().map(|c| c as &dyn ConsoleDesc)
-    }
-    #[cfg(target_arch = "aarch64")]
-    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
-        // aarch64: early console is a hardcoded PL011 in `minix-plat`
-        // (0x0900_0000); it does not depend on platform discovery, so the
-        // ACPI descriptor carries no console.
-        None
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology
@@ -677,11 +656,7 @@ unsafe fn parse_madt(
                         if nr_cpus == 0 {
                             bsp_id = apic_id;
                         }
-                        cpus[nr_cpus as usize] = CpuInfo {
-                            hw_id,
-                            gicr_base: None,
-                            mtimecmp_addr: None,
-                        };
+                        cpus[nr_cpus as usize] = CpuInfo { hw_id };
                         nr_cpus += 1;
                     }
                 }
@@ -705,11 +680,7 @@ unsafe fn parse_madt(
                         if nr_cpus == 0 {
                             bsp_id = apic_id;
                         }
-                        cpus[nr_cpus as usize] = CpuInfo {
-                            hw_id,
-                            gicr_base: None,
-                            mtimecmp_addr: None,
-                        };
+                        cpus[nr_cpus as usize] = CpuInfo { hw_id };
                         nr_cpus += 1;
                     }
                 }
@@ -741,14 +712,7 @@ unsafe fn parse_madt(
                         if nr_cpus == 0 {
                             bsp_id = hw_id as u32;
                         }
-                        cpus[nr_cpus as usize] = CpuInfo {
-                            hw_id,
-                            // Per-CPU redistributor base is filled after the
-                            // loop from the GICR region base + index * stride
-                            // (mirrors the DTB path, device_tree.rs:414).
-                            gicr_base: None,
-                            mtimecmp_addr: None,
-                        };
+                        cpus[nr_cpus as usize] = CpuInfo { hw_id };
                         nr_cpus += 1;
                     }
                 }
@@ -809,24 +773,8 @@ unsafe fn parse_madt(
 
     // If no CPUs were found in the MADT, default to single-core.
     if nr_cpus == 0 {
-        cpus[0] = CpuInfo { hw_id: 0, gicr_base: None, mtimecmp_addr: None };
+        cpus[0] = CpuInfo { hw_id: 0 };
         nr_cpus = 1;
-    }
-
-    // aarch64: derive each enabled CPU's redistributor base from the GICR
-    // region base, using the GICv3 per-frame stride (SGI_base 64 KiB + RD_base
-    // 64 KiB = 128 KiB). QEMU virt indexes redistributors by physical CPU
-    // position and its GICC UID equals that position, so hw_id is a safe stride
-    // multiplier (mirrors the DTB path, device_tree.rs:414). The GICv3 driver
-    // programs the BSP via Gicv3Desc::gicr_base (frame 0); these per-CPU values
-    // are what SMP redistributor bring-up will read. Only filled when a GICR
-    // region base was actually discovered (gicr_base != 0).
-    #[cfg(target_arch = "aarch64")]
-    if gicr_base != 0 {
-        const GICR_STRIDE: usize = 0x2_0000;
-        for i in 0..nr_cpus as usize {
-            cpus[i].gicr_base = Some(gicr_base + (cpus[i].hw_id as usize) * GICR_STRIDE);
-        }
     }
 
     Ok(MadtResult {
@@ -1016,8 +964,7 @@ mod tests {
         let timer = PitDesc {
             pit_base_freq: 1_193_182,
         };
-        let console = Some(IsaSerialDesc { port_base: 0x3F8 });
-        let desc = AcpiDesc::from_parsed(ic, timer, console, CpuTopology::default());
+        let desc = AcpiDesc::from_parsed(ic, timer, CpuTopology::default());
         assert_eq!(desc.source(), PlatformSource::Acpi);
         // Downcast via Any to verify the concrete type.
         let ic_ref = desc.interrupt_controller();

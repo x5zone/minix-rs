@@ -2700,7 +2700,14 @@ pub fn init_clock_and_interrupts() {
     // C2D-A64SGI on the C board). The clamp keeps all processes on the BSP,
     // so this is the only CPU that can currently receive one.
     #[cfg(target_arch = "aarch64")]
-    crate::irq_manager::enable_sched_sgi_for_cpu(pd.cpu_topology().bsp_id as usize);
+    {
+        // Use the election truth, not the firmware's first-record `bsp_id`:
+        // the same BSP identity drives init_smp_state/init_protection, and
+        // the SGI set-enable bit must land on the CPU actually running the
+        // kernel (§4.9). `elected_bsp_hw_id` falls back to `bsp_id`.
+        let topo = pd.cpu_topology();
+        crate::irq_manager::enable_sched_sgi_for_cpu(elected_bsp_hw_id(&topo) as usize);
+    }
 
     // Step 3: Architecture-specific initialization.
     // C: arch_init() — arch_system.c:246 / earm/arch_system.c:101

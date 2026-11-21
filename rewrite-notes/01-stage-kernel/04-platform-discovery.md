@@ -1105,7 +1105,6 @@ C 的 x86 与 ARM 走两套完全不同的代码：x86 有 ACPI 解析器（`acp
 pub trait PlatformDesc: Send + Sync + fmt::Debug {
     fn interrupt_controller(&self) -> &dyn InterruptControllerDesc;
     fn timer(&self) -> &dyn TimerDesc;
-    fn early_console(&self) -> Option<&dyn ConsoleDesc>;
     fn cpu_topology(&self) -> CpuTopology;
     fn arch_misc(&self) -> ArchMiscDesc;
     fn source(&self) -> PlatformSource;
@@ -1114,7 +1113,7 @@ pub trait PlatformDesc: Send + Sync + fmt::Debug {
 }
 ```
 
-八个方法里有六个是必需的，两个**带默认实现**（`sswi_setip_base()` 返回 `None`、`psci_conduit()` 返回 `None`）。这两个是"只有部分来源能回答的问题"：ACLINT SSWI 是 RISC-V 的能力（`[ARCH: K-2]`；`os/libs/minix-platform/src/device_tree.rs:fn parse_sswi` 从 DTB 的 `riscv,aclint-sswi` 节点读基址），PSCI 调用通道是 ARM64 的能力（从 DTB 的 `/psci/method` 属性读 `hvc`/`smc`）。回答不了的来源用默认值表示"没有这个能力"，接口因此不需要为每种来源准备答案。`psci_conduit()` 的消费者在 SMP 的 AP 拉起路径上：aarch64 用它在 `hvc` 与 `smc` 之间选 PSCI 调用通道（`os/kernel/src/smp.rs` 读值后传给 `os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc`）。`sswi_setip_base()` 有两处消费者：riscv64 的 AP 拉起用它给目标核写 ACLINT SSWI 的 SETIP 寄存器（`os/arch/src/riscv64/smp.rs`），`sys_schedctl` 的 CPU 亲和钳制也读它（`os/kernel/src/sched.rs`）。本篇只把这两个值解析出来存进描述符，消费与后果见 `16-smp.md`（尚未重生成）与 `11-scheduling-primitives.md`。
+七个方法里有五个是必需的，两个**带默认实现**（`sswi_setip_base()` 返回 `None`、`psci_conduit()` 返回 `None`）。这两个是"只有部分来源能回答的问题"：ACLINT SSWI 是 RISC-V 的能力（`[ARCH: K-2]`；`os/libs/minix-platform/src/device_tree.rs:fn parse_sswi` 从 DTB 的 `riscv,aclint-sswi` 节点读基址），PSCI 调用通道是 ARM64 的能力（从 DTB 的 `/psci/method` 属性读 `hvc`/`smc`）。回答不了的来源用默认值表示"没有这个能力"，接口因此不需要为每种来源准备答案。`psci_conduit()` 的消费者在 SMP 的 AP 拉起路径上：aarch64 用它在 `hvc` 与 `smc` 之间选 PSCI 调用通道（`os/kernel/src/smp.rs` 读值后传给 `os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc`）。`sswi_setip_base()` 有两处消费者：riscv64 的 AP 拉起用它给目标核写 ACLINT SSWI 的 SETIP 寄存器（`os/arch/src/riscv64/smp.rs`），`sys_schedctl` 的 CPU 亲和钳制也读它（`os/kernel/src/sched.rs`）。本篇只把这两个值解析出来存进描述符，消费与后果见 `16-smp.md`（尚未重生成）与 `11-scheduling-primitives.md`。
 
 接口之下，**存储仍是 enum**：`PlatformSource` 是 `DeviceTree` / `Acpi` / `QemuVirt` 三个变体的诊断标签（`os/libs/minix-boot/src/platform.rs:enum PlatformSource`），只用于回答"这份描述从哪种格式来"，不作控制输入（§4.7 的反模式）。
 
@@ -1140,16 +1139,16 @@ pub enum PlatformDescEnum {
 |---|---|---|
 | 接口（消费方看到的） | `trait PlatformDesc` | 几乎不变：新增来源不改它 |
 | 存储（描述符本体） | `PlatformDescEnum` 三选一 | 新增来源加一个变体 |
-| 分派（每个方法的转发） | `impl PlatformDesc for PlatformDescEnum` 的 8 个转发方法（22 条 `Self::…` 匹配）＋ `Debug` 实现（3 条），合计 25 条 | 新增来源时每条转发各加一臂 |
+| 分派（每个方法的转发） | `impl PlatformDesc for PlatformDescEnum` 的 7 个转发方法＋ `Debug` 实现，合计 22 条 `Self::…` 匹配 | 新增来源时每条转发各加一臂 |
 
 那 25 条的复算命令与口径：
 
 ```bash
 $ rg -o 'Self::(DeviceTree|Acpi|QemuVirt)' os/libs/minix-platform/src/global.rs | wc -l
-25
+22
 ```
 
-口径 = **条**（`Self::…` 变体匹配算一条；不含构造点，也不含 `psci_conduit()` 的 `_ => None` 兜底臂——含兜底臂则 26）。这 25 条分布在 `Debug` 实现（3 条）与八个转发方法（22 条）里。这里要分清两件事：**消费方只认接口**成立；**维护方只有一处分支**不成立——`PlatformDescEnum` 自己就是那张 25 条的分派表。
+口径 = **条**（`Self::…` 变体匹配算一条；不含构造点，也不含 `psci_conduit()` 的 `_ => None` 兜底臂）。这 22 条分布在 `Debug` 实现与七个转发方法里。这里要分清两件事：**消费方只认接口**成立；**维护方只有一处分支**不成立——`PlatformDescEnum` 自己就是那张 25 条的分派表。
 
 改成 `Box<dyn PlatformDesc>` 会坏在哪：`os/libs/minix-platform/src/lib.rs` 是 `#![no_std]`，全局是 `static PLATFORM: Frozen<PlatformContext>`，引导早期还没有分配器（堆尚未建立），`Box::new` 无处可取内存。`os/libs/minix-platform/src/global.rs` 的 enum 文档把这条理由写在"为什么不用 `Box<dyn PlatformDesc>`"一段里（`no_std`——避免引导期依赖分配器；enum 分派零开销、不经 vtable——这两条是源注释的原话，「省掉每描述符一次堆分配」是本文的推论，不是源注释原文）。这不是"多花一点开销"的取舍，而是当前阶段不可用。
 
@@ -1157,12 +1156,12 @@ $ rg -o 'Self::(DeviceTree|Acpi|QemuVirt)' os/libs/minix-platform/src/global.rs 
 
 ### 3.3 子描述符：品牌枚举退到 arch 模块，接口只谈能力（→§2.5、§2.6）
 
-C 的结构体字段名就是硬件名。`minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_ioapic` 的字段是 `id`/`__reserved`/`address`/`global_int_base`——名字绑定在一种具体控制器上。Rust 的上一版把这种绑定写进了公共 API：子描述符是 enum，变体名直接是 `Apic`/`Gicv3`/`Plic`（中断控制器）、`Pit`/`ArmGenericTimer`/`Clint`（定时器）、`IsaSerial`/`MmioSerial`/`SbiConsole`（控制台），字段名也直接暴露寄存器布局（`gicr_stride`、`mtimecmp_stride`）。这些名字出现在 `KernelInfo` 的公共 API 表面上。
+C 的结构体字段名就是硬件名。`minix3/minix/kernel/arch/i386/acpi.h:acpi_madt_ioapic` 的字段是 `id`/`__reserved`/`address`/`global_int_base`——名字绑定在一种具体控制器上。Rust 的上一版把这种绑定写进了公共 API：子描述符是 enum，变体名直接是 `Apic`/`Gicv3`/`Plic`（中断控制器）、`Pit`/`ArmGenericTimer`/`Clint`（定时器）、`IsaSerial`/`MmioSerial`/`SbiConsole`（控制台；该组随后整体删除），字段名也直接暴露寄存器布局（`gicr_stride`、`mtimecmp_stride`）。这些名字出现在 `KernelInfo` 的公共 API 表面上。
 
-改造后它们变成带 `Any` 的 trait：
+改造后它们变成带 `Any` 的 trait（`ConsoleDesc` 后来因零消费者整体删除，只剩两个 trait）：
 
 ```rust
-// os/libs/minix-boot/src/platform.rs —— 节选（三个 trait 的签名与关键注释）
+// os/libs/minix-boot/src/platform.rs —— 节选（两个 trait 的签名与关键注释）
 pub trait InterruptControllerDesc: Send + Sync + fmt::Debug + Any {
     /// Number of IRQ sources supported.
     fn nr_irqs(&self) -> u32;
@@ -1181,20 +1180,17 @@ pub trait TimerDesc: Send + Sync + fmt::Debug + Any {
     fn as_any(&self) -> &dyn Any;
 }
 
-pub trait ConsoleDesc: Send + Sync + fmt::Debug + Any {
-    fn as_any(&self) -> &dyn Any;
-}
 ```
 
 `as_any()` 被声明为必需方法、不提供默认实现，原因是一条类型约束而不是风格选择：trait 定义里的 `self: &Self` 不保证 `Self: Sized`，而 `&Self → &dyn Any` 需要它；在 impl 块里 `Self` 是具体 sized 类型，转换才合法（同一段注释即此内容）。
 
 品牌名 struct 退到 `minix-platform/src/arch/<arch>.rs`。每个 struct 的字段（`os/libs/minix-platform/src/arch/`）：
 
-| 架构 | 中断控制器 | 定时器 | 控制台 |
-|---|---|---|---|
-| x86-64 | `ApicDesc { lapic_base: usize, ioapic_base: usize, nr_irqs: u32 }` | `PitDesc { pit_base_freq: u32 }` | `IsaSerialDesc { port_base: u16 }` |
-| aarch64 | `Gicv3Desc { gicd_base: usize, gicr_base: usize, gicr_stride: usize, nr_irqs: u32 }` | `ArmGenericTimerDesc`（无字段） | `MmioSerialDesc { mmio_base: usize }` |
-| riscv64 | `PlicDesc { plic_base: usize, nr_irqs: u32, context: u32 }` | `ClintDesc { mtime_addr: usize, mtimecmp_base: usize, mtimecmp_stride: usize, freq: u64 }` | `Riscv64ConsoleDesc { kind: Riscv64ConsoleKind }`（枚举 `Sbi` / `Mmio { mmio_base }`） |
+| 架构 | 中断控制器 | 定时器 |
+|---|---|---|
+| x86-64 | `ApicDesc { lapic_base: usize, ioapic_base: usize, nr_irqs: u32 }` | `PitDesc { pit_base_freq: u32 }` |
+| aarch64 | `Gicv3Desc { gicd_base: usize, gicr_base: usize, gicr_stride: usize, nr_irqs: u32 }` | `ArmGenericTimerDesc`（无字段） |
+| riscv64 | `PlicDesc { plic_base: usize, nr_irqs: u32, context: u32 }` | `ClintDesc { mtime_addr: usize, mtimecmp_base: usize, mtimecmp_stride: usize, freq: u64 }` |
 
 上层与 arch 层的分工是：
 
@@ -1275,7 +1271,7 @@ RISC-V 的时钟实例是搬运的样本：
     }
 ```
 
-`ClockArch` 的实例是**瞬态**的（文档注释写明"每个调用点从 `platform_desc().timer()` 构造一个实例，用完即弃"），所以实例化没有引入"必须长期保存实例"的负担。真正被长期保存的是中断控制器实例——`os/kernel/src/lib.rs:fn init_clock_and_interrupts` 把它移进全局 `IRQ_MANAGER`。riscv64 这三个 CLINT 字段当前不参与 MMIO：`read_ticks` 走 `time` CSR（`os/arch/src/riscv64/clock.rs:fn read_time_csr`），`init_timer`/`stop_local_timer` 走 SBI `TIME` ecall；per-CPU 的 `mtimecmp_addr` 也只存在于描述符与单测断言里（§4.8）。
+`ClockArch` 的实例是**瞬态**的（文档注释写明"每个调用点从 `platform_desc().timer()` 构造一个实例，用完即弃"），所以实例化没有引入"必须长期保存实例"的负担。真正被长期保存的是中断控制器实例——`os/kernel/src/lib.rs:fn init_clock_and_interrupts` 把它移进全局 `IRQ_MANAGER`。riscv64 这三个 CLINT 字段当前不参与 MMIO：`read_ticks` 走 `time` CSR（`os/arch/src/riscv64/clock.rs:fn read_time_csr`），`init_timer`/`stop_local_timer` 走 SBI `TIME` ecall；per-CPU 的 mtimecmp 地址由消费者按 `mtimecmp_base + hw_id * stride` 推导，不再往 `CpuInfo` 存第二份（§4.8）。
 
 实例化与全局变量相比的差别不在"少一次 load"，而在可变性与并发可见性：`lapic_addr` 是 `static`，任何代码都可以再写它，读者无法从类型上知道"这个值在启动后不再变"；实例字段在 freeze 后不再被 `&mut self` 方法重写；freeze 之后、`intr.init()` 之前有一个显式例外——riscv64 的 `set_plic_va_base` 重写 `plic_va_base`。`init_timer` 等 `&mut self` 方法只操作硬件寄存器。读者拿到 `&self` 就知道描述符字段不会再变。
 
@@ -1317,11 +1313,11 @@ fn qemu_fallback_or_panic(reason: &str) -> PlatformDescEnum {
 
 三份 `QemuVirtDesc` 里的值全部是 QEMU virt 的机器布局（`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`）：
 
-| 架构 | 中断控制器 | 定时器 | 控制台 | 拓扑 |
-|---|---|---|---|---|
-| x86-64 | `ApicDesc { lapic_base: 0xFEE0_0000, ioapic_base: 0xFEC0_0000, nr_irqs: 64 }` | `PitDesc { pit_base_freq: 1_193_182 }` | `IsaSerialDesc { port_base: 0x3F8 }` | `nr_cpus: 4` |
-| aarch64 | `Gicv3Desc { gicd_base: 0x0800_0000, gicr_base: 0x080A_0000, gicr_stride: 0x2_0000, nr_irqs: 64 }` | `ArmGenericTimerDesc` | `MmioSerialDesc { mmio_base: 0x0900_0000 }` | `nr_cpus: 4` |
-| riscv64 | `PlicDesc { plic_base: 0x0C00_0000, nr_irqs: 64, context: 1 }` | `ClintDesc { mtime_addr: 0x200_BFF8, mtimecmp_base: 0x200_4000, mtimecmp_stride: 8, freq: 10_000_000 }` | `Riscv64ConsoleDesc::sbi()` | `nr_cpus: 4` |
+| 架构 | 中断控制器 | 定时器 | 拓扑 |
+|---|---|---|---|
+| x86-64 | `ApicDesc { lapic_base: 0xFEE0_0000, ioapic_base: 0xFEC0_0000, nr_irqs: 64 }` | `PitDesc { pit_base_freq: 1_193_182 }` | `nr_cpus: 4` |
+| aarch64 | `Gicv3Desc { gicd_base: 0x0800_0000, gicr_base: 0x080A_0000, gicr_stride: 0x2_0000, nr_irqs: 64 }` | `ArmGenericTimerDesc` | `nr_cpus: 4` |
+| riscv64 | `PlicDesc { plic_base: 0x0C00_0000, nr_irqs: 64, context: 1 }` | `ClintDesc { mtime_addr: 0x200_BFF8, mtimecmp_base: 0x200_4000, mtimecmp_stride: 8, freq: 10_000_000 }` | `nr_cpus: 4` |
 
 场景与触发判定：
 
@@ -1484,7 +1480,7 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
 | IOAPIC 基址 | 有（MADT 的 IOAPIC 记录） | 描述符（`ApicDesc.ioapic_base`） |
 | GICD / GICR 基址 | 有（设备树 `reg` 属性；aarch64 的 ACPI 路径读 GICD/GICR 记录） | 描述符（`Gicv3Desc`） |
 | PLIC / CLINT 基址 | 有（设备树 `reg` 属性） | 描述符（`PlicDesc` / `ClintDesc`） |
-| 早期控制台基址 | 有（ACPI 的 SPCR 表；设备树里的串口节点） | 描述符里有这一项（`ConsoleDesc`），但活路径不读它——早期控制台走各架构自己的模块（§1.5 的边界事实）。写入侧：x86-64 的 `AcpiDesc` 不解析 SPCR，`IsaSerialDesc.port_base` 是 COM1 常量 `0x3F8`（`os/libs/minix-platform/src/acpi.rs:fn parse`；aarch64 的 `AcpiDesc` 返回 `None`，早期控制台用 `minix-plat` 的 PL011 常量） |
+| 早期控制台基址 | 有（ACPI 的 SPCR 表；设备树里的串口节点） | **已删除**：`ConsoleDesc`/`early_console()` 无活消费者，整条描述链已移除；早期控制台在 `minix-plat` 层用自己的常量（x86 COM1、aarch64 PL011、riscv64 SBI/MMIO），不读平台描述符（§1.5 的边界事实） |
 
 判据是"有没有协议报告机制"，不是"值会不会变"。LAPIC 基址进描述符不是因为它会变（绝大多数机器上它不变），而是因为存在报告它的协议；PIT 端口不进描述符不是因为它不变，而是因为不存在任何报告它的协议。
 
@@ -1502,7 +1498,7 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
 |---|---|---|---|---|
 | eager parsing：`DeviceTreeDesc` 一次性提取所有字段 | `Fdt<'a>` 不能进 `'static` 全局；固件内存在启动窗口后回收 | 存 `Fdt` 借用 → 悬挂读，否决 | 解析多走一遍树 | §4.5 |
 | per-arch 文件切分：`QemuVirtDesc` 三份 | 方法体零 `#[cfg]`；字段不退化 | 单文件 + 方法体 `#[cfg]` → 字段并集，否决 | 三份常量需同步 | §4.6 |
-| `const fn new()` 与 `Default` 分工 | `#[derive(Default)]` 不是 `const fn`；per-CPU 地址需循环 | 全 `const` → 不能在 `new()` 填 per-CPU 字段，否决 | 多一个 `CpuInfo::zero()` | §4.6 |
+| `const fn new()` 与 `Default` 分工 | `#[derive(Default)]` 不是 `const fn`；per-CPU `hw_id` 需循环填充 | 全 `const` → 不能在 `new()` 填 per-CPU 值，否决 | 多一个 `CpuInfo::zero()` | §4.6 |
 | 三个零基址/零 stride 断言先于 `mmio_translate` | 缺基址要精准诊断，不能被窗口断言抢先 | 先翻译 → 泛化 panic，否决 | 三条重复检查 | §4.8 |
 | 地址三语义：描述符 PA / 实例 VA / MMIO 操作数 | 三种消费者看到的地址不同（物理、别名、窗口 VA） | 统一成一种地址 → 切根后失效或语义错，否决 | 每个 arch 一条注入路径 | §4.8 |
 | riscv64 伪向量 0 | S 模式定时器是核本地中断，不经 PLIC | 分配 PLIC 线号 → 不存在，否决 | 分发路径要保留保留号 | §4.8 |
@@ -1812,7 +1808,7 @@ const MADT_TYPE_GICC: u8 = 11;
 const MADT_TYPE_GICR: u8 = 14;
 ```
 
-ACPI 路径的 per-CPU GICR 基址是推导出来的：`gicr_base + hw_id × 0x2_0000`（`os/libs/minix-platform/src/acpi.rs` 的 GICR 段），其中 `hw_id` 取 GICC 的 Processor UID。QEMU virt 的 UID 等于 redistributor 帧索引，所以这条公式在 QEMU 上成立；非 QEMU 固件没有承诺 UID 与帧索引一一对应。这条假设登记为 R04-T11。
+ACPI 路径的 per-CPU GICR 基址由控制器实例推导：`gicr_base + hw_id × 0x2_0000`（`os/plat/src/arm64/interrupt.rs` 的 `gicr_base_for`），其中 `hw_id` 取 GICC 的 Processor UID。`CpuInfo` 不再保存这份派生态。QEMU virt 的 UID 等于 redistributor 帧索引，所以这条公式在 QEMU 上成立；非 QEMU 固件没有承诺 UID 与帧索引一一对应。这条假设登记为 R04-T11。
 
 遍历结束后 aarch64 过一道决策函数：
 
@@ -1861,7 +1857,6 @@ fn check_gic_madt(
     fn from_fdt(fdt: &fdt::Fdt<'_>) -> Result<Self, DtParseError> {
         let ic = Self::parse_interrupt_controller(fdt)?;
         let timer = Self::parse_timer(fdt)?;
-        let console = Self::parse_console(fdt);
         let cpu_topology = Self::parse_cpu_topology(fdt);
         let arch_misc = ArchMiscDesc::default();
         let sswi_setip_base = Self::parse_sswi(fdt);
@@ -1878,7 +1873,6 @@ fn check_gic_madt(
         Ok(Self {
             ic,
             timer,
-            console,
             cpu_topology,
             arch_misc,
             sswi_setip_base,
@@ -1887,7 +1881,7 @@ fn check_gic_madt(
     }
 ```
 
-七行提取对应描述符的七个字段（`ic` / `timer` / `console` / `cpu_topology` / `arch_misc` / `sswi_setip_base` / `psci_conduit`）。为什么必须这样提取，`os/libs/minix-platform/src/device_tree.rs` 的模块注释把理由写全：
+六行提取对应描述符的六个字段（`ic` / `timer` / `cpu_topology` / `arch_misc` / `sswi_setip_base` / `psci_conduit`）。为什么必须这样提取，`os/libs/minix-platform/src/device_tree.rs` 的模块注释把理由写全：
 
 ```text
 // os/libs/minix-platform/src/device_tree.rs —— 节选（模块文档）
@@ -1929,7 +1923,6 @@ fn check_gic_madt(
 | `ic`（aarch64：`Gicv3Desc`） | `compatible` 匹配 `arm,gic-v3`；`reg` 两格分别是 GICD 与 GICR | 节点或 `reg` 缺失 → `Err`；`gicr_stride` 与 `nr_irqs` 是常量 |
 | `timer`（riscv64：`ClintDesc`） | CLINT 节点 `reg` 首格作基址，`mtime` = 基址 + `0xBFF8`，`mtimecmp` = 基址 + `0x4000`；频率取 `/cpus/timebase-frequency` | 节点缺失时改用 ACLINT MTIMER 节点（两个 `reg` 格）；频率缺失 → `Err` |
 | `timer`（aarch64） | 只确认存在（`ArmGenericTimerDesc` 无字段） | 频率运行时从 `CNTFRQ_EL0` 读 |
-| `console` | riscv64：`ns16550a` / `sifive,uart0` 节点存在则取 `reg` 首格，否则 `Riscv64ConsoleDesc::sbi()`；aarch64：`arm,pl011` / `arm,primecell` 节点 | 节点缺失 → `None`（riscv64 例外，回落到 SBI） |
 | `cpu_topology` | 遍历所有节点，按节点名 `@` 前的部分与 `cpu` 精确相等过滤（`n.name.split('@').next() == Some("cpu")`），`reg` 首格作 `hw_id` | 无 CPU 节点 → `CpuTopology::default()`（单核） |
 | `sswi_setip_base` | `compatible` 匹配 `riscv,aclint-sswi`，取 `reg` 首格 | 缺失 → `None`（正常） |
 | `psci_conduit` | `/psci` 节点的 `method` 属性，`"hvc"` / `"smc"` | 缺失或值不认识 → `None` |
@@ -1955,7 +1948,7 @@ CPU 拓扑的提取走 `all_nodes` 过滤而不是 `Fdt::cpus()`：
         for cpu in fdt.all_nodes().filter(|n| n.name.split('@').next() == Some("cpu")) {
 ```
 
-每个 CPU 的 `hw_id` 直读 `reg` 首格（`#address-cells` 为 1 或 2 两种形态都认），per-CPU 私有地址按架构计算：aarch64 是 `gicr_base + hw_id * gicr_stride`；riscv64 是 `mtimecmp_base + hw_id * mtimecmp_stride`，`mtimecmp_base` 来自 `parse_timer`（先 CLINT、再 ACLINT MTIMER），因此 `aclint=on` 的形态也能算出每 hart 的比较器地址。
+每个 CPU 的 `hw_id` 直读 `reg` 首格（`#address-cells` 为 1 或 2 两种形态都认）。per-CPU 私有 MMIO 地址不再存进 `CpuInfo`：aarch64 的 GICR 帧与 riscv64 的 mtimecmp 都由控制器实例从描述符基址 + `hw_id` 推导（`gicr_base + hw_id * gicr_stride` / `mtimecmp_base + hw_id * mtimecmp_stride`），避免第二份真相。
 
 ### 4.6 QemuVirtDesc：三份 per-arch 常量表（→3.5、3.8）
 
@@ -1979,7 +1972,6 @@ pub use crate::arch::riscv64::QemuVirtDesc;
 pub struct QemuVirtDesc {
     ic: PlicDesc,
     timer: ClintDesc,
-    console: Riscv64ConsoleDesc,
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
 }
@@ -1999,7 +1991,6 @@ impl QemuVirtDesc {
                 mtimecmp_stride: 8,
                 freq: 10_000_000,
             },
-            console: Riscv64ConsoleDesc::sbi(),
             cpu_topology: CpuTopology {
                 nr_cpus: 4,
                 bsp_id: 0,
@@ -2023,7 +2014,6 @@ impl QemuVirtDesc {
 | `pit_base_freq: 1_193_182` | 8254 的输入时钟频率（ISA 设备常量；进描述符的理由见 §3.8 的边界注） |
 | `lapic_base: 0xFEE0_0000` | ISA 默认值，但有报告协议（§3.8 的判据） |
 | `gicr_stride: 0x2_0000` | GICv3 的每帧跨度（RD_base 64 KiB + SGI_base 64 KiB） |
-| `mmio_base: 0x0900_0000` | QEMU virt 的 PL011 地址（真实板子不同） |
 | `nr_cpus: 4` | 测试配置（QEMU `-smp 4`） |
 
 `new()` 与 `default()` 的分工由 `const fn` 的语言限制逼出来：
@@ -2032,25 +2022,16 @@ impl QemuVirtDesc {
 // os/libs/minix-platform/src/arch/riscv64.rs:impl Default for QemuVirtDesc —— 逐字引用
 impl Default for QemuVirtDesc {
     fn default() -> Self {
-        // `cpus` needs runtime initialization for per-CPU mtimecmp_addr fields.
         let mut d = Self::new();
-        const MTIMECMP_BASE: usize = 0x200_4000;
-        const MTIMECMP_STRIDE: usize = 8;
         for i in 0..d.cpu_topology.nr_cpus as usize {
-            d.cpu_topology.cpus[i] = CpuInfo {
-                hw_id: i as u64,
-                gicr_base: None,
-                mtimecmp_addr: Some(MTIMECMP_BASE + i * MTIMECMP_STRIDE),
-            };
+            d.cpu_topology.cpus[i] = CpuInfo { hw_id: i as u64 };
         }
         d
     }
 }
 ```
 
-（这段是逐字引用：`Default` 用两个局部常量，而不是读 `d.timer.mtimecmp_base` / `d.timer.mtimecmp_stride`；两处常量若漂移，per-CPU 地址与 `timer` 字段就会不一致。）
-
-`#[derive(Default)]` 生成的 `default()` 不是 `const fn`，所以 `const fn new()` 里不能调 `CpuInfo::default()`——源码因此提供了 `CpuInfo::zero()` 这个 `const fn`（`os/libs/minix-boot/src/platform.rs:fn zero`，注释写明"`#[derive(Default)]` 生成的是非 const 的 `default()`，所以 `const fn` 不能调它"）。per-CPU 私有地址需要循环填充，只能放在非 const 的 `default()` 里。调用点规则：运行时兜底与测试都用 `default()`（`qemu_fallback_or_panic` 与三个 per-arch 测试模块）；`new()` 目前只被三个 `default()` 实现内部调用（它仍是 `pub const fn`，可供 `const` 上下文使用）——在 riscv64 上它产生的四颗 CPU 是 `CpuInfo::zero()`（`hw_id: 0`、`mtimecmp_addr: None`），不能直接当作运行时描述符。
+`#[derive(Default)]` 生成的 `default()` 不是 `const fn`，所以 `const fn new()` 里不能调 `CpuInfo::default()`——源码因此提供了 `CpuInfo::zero()` 这个 `const fn`（`os/libs/minix-boot/src/platform.rs:fn zero`，注释写明"`#[derive(Default)]` 生成的是非 const 的 `default()`，所以 `const fn` 不能调它"）。per-CPU `hw_id` 需要循环填充，只能放在非 const 的 `default()` 里。调用点规则：运行时兜底与测试都用 `default()`（`qemu_fallback_or_panic` 与三个 per-arch 测试模块）；`new()` 目前只被三个 `default()` 实现内部调用（它仍是 `pub const fn`，可供 `const` 上下文使用）——`new()` 产生的四颗 CPU 是 `CpuInfo::zero()`（`hw_id: 0`），不能直接当作运行时描述符。
 
 `#[cfg]` 的分布：
 
@@ -2360,7 +2341,7 @@ C 行为到 Rust 重表达的四类汇总：
 | 保留 | 四组硬件参数的概念划分；"发现必须早于消费"这条时序；多来源顺序尝试的**动机形状**可上溯 C（`acpi_get_table_base` 的按签名顺序查找）——机制本身（有序切片、失败续源）为新增（§1.6） |
 | 改型 | 发现结果的发布结构：从 `machine` 的单一字段改为一个描述符（八个方法，其中六个必需 + 两个可选能力）；CPU 拓扑从两个数（`ncpus` + `bsp_id`）扩展为带 per-CPU 私有地址的数组；"来源"从隐式变成显式的 `source()` |
 | 淘汰 | `padding` / `board_id` 两个字段的语义（位置保留、值恒 0）；C 的"发现跑两次"（Rust 只解析一次，见 §4.1） |
-| 新增 | 有序多来源切片 `platform_sources`；不透明 kind 标签；`Frozen` 的冻结协议；`CpuInfo` 的 per-CPU 私有地址；`sswi_setip_base()` 与 `psci_conduit()` 两个可选能力；`MAX_CPUS` 定长数组（`no_std` 无堆） |
+| 新增 | 有序多来源切片 `platform_sources`；不透明 kind 标签；`Frozen` 的冻结协议；`CpuInfo` 的 `hw_id`；`sswi_setip_base()` 与 `psci_conduit()` 两个可选能力；`MAX_CPUS` 定长数组（`no_std` 无堆） |
 
 `no_std` 约束在本篇落成三条：`minix-platform` crate 是 `#![no_std]`（`os/libs/minix-platform/src/lib.rs`）；解析结果进 `static`（一次性冻结，不释放）；描述符的字段是固定大小——`CpuTopology` 用 `[CpuInfo; MAX_CPUS]` 数组，`MAX_CPUS = 64`（`os/libs/minix-boot/src/platform.rs:const MAX_CPUS`），这个常量同时决定 `parse_cpu_topology` 与 `parse_madt` 的 CPU 收集上限。
 

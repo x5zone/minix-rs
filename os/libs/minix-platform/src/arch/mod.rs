@@ -1,9 +1,8 @@
 //! Architecture-specific platform descriptor implementations.
 //!
 //! Brand-name structs (`ApicDesc`, `Gicv3Desc`, `PlicDesc`, `PitDesc`,
-//! `ArmGenericTimerDesc`, `ClintDesc`, `IsaSerialDesc`, `MmioSerialDesc`,
-//! `SbiConsoleDesc`) live in the per-arch submodules. Upper layers see only
-//! the traits (`InterruptControllerDesc`, `TimerDesc`, `ConsoleDesc`) defined
+//! `ArmGenericTimerDesc`, `ClintDesc`) live in the per-arch submodules. Upper
+//! layers see only the traits (`InterruptControllerDesc`, `TimerDesc`) defined
 //! in `minix-boot::platform` — brand names never leak across arch boundaries.
 //!
 //! # Open-closed principle

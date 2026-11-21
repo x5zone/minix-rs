@@ -12,7 +12,7 @@
 //!
 //! - **Root trait + sub-trait abstractions**: `PlatformDesc` is a trait
 //!   (supports `&dyn` and mock); sub-descriptors (`InterruptControllerDesc`,
-//!   `TimerDesc`, `ConsoleDesc`) are also traits with `Any` downcast support.
+//!   `TimerDesc`) are also traits with `Any` downcast support.
 //!   Brand-name structs (`ApicDesc`, `Gicv3Desc`, ...) live in [`arch`]
 //!   submodules and are invisible to upper layers.
 //! - **Three sources unified**: `DeviceTreeDesc` (ARM/RISC-V),

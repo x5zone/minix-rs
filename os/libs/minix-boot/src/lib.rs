@@ -40,7 +40,7 @@ pub use memmap_source::{
     audit_source_coverage_for, dtb_covers_conventional, startup_record,
 };
 pub use platform::{
-    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, DTB, InterruptControllerDesc, MAX_CPUS,
+    ArchMiscDesc, CpuInfo, CpuTopology, DTB, InterruptControllerDesc, MAX_CPUS,
     PlatformDesc, PlatformDescKind, PlatformDescSource, PlatformParseError, PlatformSource, RSDP,
     TimerDesc, dtb_total_size, rsdp_total_size,
 };

@@ -2,11 +2,11 @@
 //!
 //! All ARM64-specific hardware descriptor types live here. The upper layer
 //! (`minix-boot`) sees only the `InterruptControllerDesc` / `TimerDesc` /
-//! `ConsoleDesc` traits; the concrete `Gicv3Desc` / `ArmGenericTimerDesc` /
+//! traits; the concrete `Gicv3Desc` / `ArmGenericTimerDesc` /
 //! `MmioSerialDesc` types are visible only to ARM64 consumer code.
 
 use minix_boot::{
-    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
+    ArchMiscDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
     PlatformDesc, PlatformSource, TimerDesc,
 };
 
@@ -95,19 +95,6 @@ impl TimerDesc for ArmGenericTimerDesc {
     }
 }
 
-/// ARM64 MMIO UART (PL011) descriptor.
-#[derive(Debug, Clone, Copy)]
-pub struct MmioSerialDesc {
-    /// UART MMIO base address.
-    pub mmio_base: usize,
-}
-
-impl ConsoleDesc for MmioSerialDesc {
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-}
-
 // ── QEMU `virt` fallback descriptor (aarch64) ──
 
 /// QEMU `virt` machine descriptor — aarch64 hardcoded fallback.
@@ -117,7 +104,6 @@ impl ConsoleDesc for MmioSerialDesc {
 pub struct QemuVirtDesc {
     ic: Gicv3Desc,
     timer: ArmGenericTimerDesc,
-    console: MmioSerialDesc,
     cpu_topology: CpuTopology,
     arch_misc: ArchMiscDesc,
 }
@@ -133,7 +119,6 @@ impl QemuVirtDesc {
                 nr_irqs: 64,
             },
             timer: ArmGenericTimerDesc,
-            console: MmioSerialDesc { mmio_base: 0x0900_0000 },
             cpu_topology: CpuTopology {
                 nr_cpus: 4,
                 bsp_id: 0,
@@ -149,16 +134,9 @@ impl QemuVirtDesc {
 
 impl Default for QemuVirtDesc {
     fn default() -> Self {
-        // `cpus` needs runtime initialization for per-CPU gicr_base fields.
         let mut d = Self::new();
-        const GICR_BASE: usize = 0x080A_0000;
-        const GICR_STRIDE: usize = 0x2_0000;
         for i in 0..d.cpu_topology.nr_cpus as usize {
-            d.cpu_topology.cpus[i] = CpuInfo {
-                hw_id: i as u64,
-                gicr_base: Some(GICR_BASE + i * GICR_STRIDE),
-                mtimecmp_addr: None,
-            };
+            d.cpu_topology.cpus[i] = CpuInfo { hw_id: i as u64 };
         }
         d
     }
@@ -170,9 +148,6 @@ impl PlatformDesc for QemuVirtDesc {
     }
     fn timer(&self) -> &dyn TimerDesc {
         &self.timer
-    }
-    fn early_console(&self) -> Option<&dyn ConsoleDesc> {
-        Some(&self.console)
     }
     fn cpu_topology(&self) -> CpuTopology {
         self.cpu_topology
@@ -210,9 +185,6 @@ mod tests {
         let d = QemuVirtDesc::default();
         let t = d.cpu_topology();
         assert_eq!(t.nr_cpus, 4);
-        assert_eq!(t.cpus[0].gicr_base, Some(0x080A_0000));
-        assert_eq!(t.cpus[1].gicr_base, Some(0x080C_0000));
-        assert_eq!(t.cpus[3].gicr_base, Some(0x0810_0000));
     }
 }
 

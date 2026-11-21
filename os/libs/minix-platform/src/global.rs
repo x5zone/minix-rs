@@ -66,9 +66,6 @@ impl PlatformDesc for PlatformContext {
     fn timer(&self) -> &dyn crate::desc::TimerDesc {
         self.desc.timer()
     }
-    fn early_console(&self) -> Option<&dyn crate::desc::ConsoleDesc> {
-        self.desc.early_console()
-    }
     fn cpu_topology(&self) -> crate::desc::CpuTopology {
         self.desc.cpu_topology()
     }
@@ -146,15 +143,6 @@ impl PlatformDesc for PlatformDescEnum {
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(d) => d.timer(),
             Self::QemuVirt(d) => d.timer(),
-        }
-    }
-    fn early_console(&self) -> Option<&dyn crate::desc::ConsoleDesc> {
-        match self {
-            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-            Self::DeviceTree(d) => d.early_console(),
-            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-            Self::Acpi(d) => d.early_console(),
-            Self::QemuVirt(d) => d.early_console(),
         }
     }
     fn cpu_topology(&self) -> crate::desc::CpuTopology {
@@ -311,16 +299,14 @@ mod tests {
         assert_eq!(e.source(), crate::desc::PlatformSource::QemuVirt);
 
         // Verify dispatch reaches QemuVirtDesc methods. The interrupt/timer
-        // methods return `&dyn ...` (always present), console returns
-        // `Option<&dyn>` (may or may not be set), and cpu_topology returns
+        // methods return `&dyn ...` (always present); cpu_topology returns
         // the struct by value.
         let ic: &dyn crate::desc::InterruptControllerDesc = e.interrupt_controller();
         let timer: &dyn crate::desc::TimerDesc = e.timer();
-        let console: Option<&dyn crate::desc::ConsoleDesc> = e.early_console();
         let topo: minix_boot::CpuTopology = e.cpu_topology();
         // Use each binding to ensure the compiler doesn't optimize the
         // dispatch calls away (verifying the vtables are wired correctly).
-        let _ = (ic, timer, console, topo);
+        let _ = (ic, timer, topo);
 
         // Verify CPU topology: QemuVirtDesc default mirrors QEMU `-smp 4`
         // (matches per-arch tests in `arch/{x86_64,aarch64,riscv64}.rs`).
