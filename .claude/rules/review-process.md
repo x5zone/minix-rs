@@ -96,7 +96,7 @@ Output: | File | Doc Reference | Exists? | Line Range |
 
 ### Step 1.0 锚点解析（符号锚点校验，anchor-resolve；2026-09-18 D5 改写收编原 1.0a~1.0g）
 
-> **背景**：原 1.0a~1.0g 是七步行号/锚点族检查（行号抽样、自动化行号脚本 Proposal #7/#13、Rust idiom 同步、路径约定、"参见"范围、注释 doc 归属、注释行号漂移、forward reference）。第四轮裁定：**行号是 AI 的校验脚手架，不是目标**——漂移问题用符号锚点结构性消灭，机械项降级为卫生项，本节由七步收编为一步（原 `tools/review-line-check.sh` 行号自动化方案作废）。
+> **背景**：行号是 AI 的校验脚手架，不是目标；漂移用符号锚点结构性消灭，机械项降级为卫生项。本节只保留当前的一步检查。
 > **职责划分**：符号锚点解析与存在性 → 本步（`tools/anchor-resolve.sh`）；路径约定（`os/` 前缀）→ review-doc-checklist §2.4c（模式 74）；文档 Rust 代码块 idiom（`static mut` 等）→ review-doc-checklist §2.4b（模式 73）+ 文档 Rust 代码块逐块审查（`tools/doc-snippet-extract.sh`）；代码注释 doc 归属 → 模式 76（按卫生项处理）；forward reference 透明声明核对保留在 §2.2 引用验证中执行。
 
 **锚点约定**（写入正式文档与中间产物）：
@@ -667,40 +667,6 @@ Output in scan.md tail:
 - **⚠️ 规则更新（NEW 2026-08-14）**：上述"review 即 PASS，强制交付"已废弃，改为**漏检自检**（Step 7.1 规则 4）。未来首次 0 发现必须先抽 3 项重跑确认无遗漏，再交付。
 
 **关联**：详见 `prompt/skill/review-process-skill.md §Step 7.1` + `prompt/skill/review-patterns-skill.md §模式 66 RCPD`（已被 doc 07 主动应用，避免引入漂移风险）。
-
-### Step 7.1.1 修复成本估算（NEW 2026-07-30）
-
-> **目的**：决定"立即修 vs 移入 backlog"时，需要量化每个 P1/P2 的修复成本。
-
-**估算公式**：
-```
-总修复成本 = Σ (P1_i × cost_P1) + Σ (P2_i × cost_P2)
-cost_P1 = 5 min  # 单个 P1 doc-code 修复
-cost_P2 = 2 min  # 单个 P2 行号/表达式修正
-```
-
-**示例**：
-- 3 P1 + 6 P2 → 3×5 + 6×2 = 27 min
-- 0 P1 + 1 P2 → 0 + 2 = 2 min（立即修）
-- 5 P1 + 10 P2 → 25 + 20 = 45 min（按修复成本排优先级）
-
-**输出**（追加到 scan.md `### 收敛成本评估` 段）：
-```
-- 本轮新发现: P0=X, P1=Y, P2=Z
-- 修复成本估算: ~N 分钟
-- 优先级: 立即修 / 部分修+backlog / 全部 backlog
-```
-
-**决策矩阵**：
-
-| 条件 | 决策 |
-|------|------|
-| 修复成本 ≤ 30 min + 全是 doc-code | 立即修（当前 session） |
-| 修复成本 30-60 min + 含设计偏离 | 部分修 + backlog（OQ 上交） |
-| 修复成本 > 60 min + 含架构决策 | 全部 backlog（仅记录） |
-| 修复成本任意 + 含 P0 安全/内存 | **必须**立即修 |
-
-**关联**：本次 review (01-boot-shim-bootstrap 2026-07-30) 修复成本 ~50 分钟（3 P1 + 6 P2），全部 doc-code 无安全/内存，按"立即修"决策。
 
 ---
 

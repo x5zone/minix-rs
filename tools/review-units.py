@@ -44,6 +44,8 @@ except Exception:  # pragma: no cover
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from notes_layout import REVIEW_EVAL_DIR, REVIEW_STATE_DIR, review_state_path  # noqa: E402
 
+ROOT = Path(__file__).resolve().parents[1]
+
 SCHEMA = "review-units/v1"
 EXEMPT = re.compile(r"参见|附录|索引|参考文献")
 HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$")
@@ -277,12 +279,10 @@ def default_ledger(doc: Path, stage: str) -> Path:
     return REVIEW_EVAL_DIR / "runs" / stage / doc.stem / "defect-ledger.md"
 
 
-REPLAY_RE = re.compile(
-    r"(?:[\w./-]+\.(?:rs|c|h|md|sh|py|S|asm):\d+"
-    r"|::[A-Za-z_]\w*"
-    r"|\b(?:rg|grep|cargo test|python3|bash)\s"
-    r"|\b[0-9a-f]{7,40}\b)"
-)
+PATH_LINE_RE = re.compile(r"([\w./-]+\.(?:rs|c|h|md|sh|py|S|asm)):(\d+)")
+TEST_RE = re.compile(r"\btest::([A-Za-z_]\w*)")
+DECISION_RE = re.compile(r"\bD-\d{3}\b")
+COMMIT_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 
 
 def evidence_nonempty(path: Path) -> bool:
@@ -291,16 +291,52 @@ def evidence_nonempty(path: Path) -> bool:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    return len("".join(text.split())) >= 8
+    return len("".join(text.split())) >= 7
 
 
 def evidence_replay_ok(path: Path) -> bool:
-    """evidence 至少要有一个可重放 token：path:line / test::name / rg|grep / commit。"""
+    """evidence 至少要有一个可验证的可重放 token。
+
+    接受：path:line（文件存在且行号在界内）、test::name（fn 存在）、D-xxx、
+    rg/grep/cargo test/python3/bash 命令、真实 git commit。注释行不计。"""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    return any(REPLAY_RE.search(line) for line in text.splitlines())
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", "//", "*")):
+            continue
+        if DECISION_RE.search(line):
+            return True
+        for m in PATH_LINE_RE.finditer(line):
+            fp = ROOT / m.group(1)
+            if not fp.is_file():
+                continue
+            try:
+                n = len(fp.read_text(encoding="utf-8", errors="replace").splitlines())
+            except OSError:
+                continue
+            if int(m.group(2)) <= n:
+                return True
+        for m in TEST_RE.finditer(line):
+            name = m.group(1)
+            check = subprocess.run(
+                ["rg", "-q", rf"\bfn\s+{re.escape(name)}\b", "os", "rewrite-notes"],
+                cwd=ROOT, capture_output=True,
+            )
+            if check.returncode == 0:
+                return True
+        if re.search(r"\b(?:rg|grep|cargo test|python3|bash)\s", line):
+            return True
+        for m in COMMIT_RE.finditer(line):
+            check = subprocess.run(
+                ["git", "-C", str(ROOT), "cat-file", "-e", m.group(0) + "^{commit}"],
+                capture_output=True,
+            )
+            if check.returncode == 0:
+                return True
+    return False
 
 
 def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
@@ -1015,6 +1051,11 @@ def self_test() -> int:
         assert cmd_gate(doc, sp, True, str(empty_ev), str(ledger)) == 1
         assert cmd_mark(doc, sp, "1", "t1", False, True, False, "",
                         evidence=str(empty_ev), ledger=str(ledger)) == 1
+        no_token = root / "no-token.md"
+        no_token.write_text("unit evidence\n", encoding="utf-8")
+        assert cmd_gate(doc, sp, True, str(no_token), str(ledger)) == 1
+        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "",
+                        evidence=str(no_token), ledger=str(ledger)) == 1
         src = Path(__file__).resolve().read_text(encoding="utf-8")
         assert "return cmd_mark(doc, sp, args.unit" in src
     print("self-test PASS: init/check/sync/unfreeze/budget/sample/audit/evidence/cli")

@@ -73,7 +73,7 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 ## 六、与既有规则的关系
 
 - **G1–G13 不变**；新增 **G14**：`tools/review-units.py check --doc <当前篇>` 与
-  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、T3 通过（evidence 非空）。
+  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、T3 通过（evidence 含可重放 token）。
 - **四态模型不变**：修改轮仍无收敛声明权；`CONVERGED` 只由确认轮宣告。
 - **新 edition 与历史 run**：edition 变化会重置 `eval-trace` 的 `sealed_at`/确认轮计数；
   历史轮仍留在 run 目录，`--round` 只查当前轮。若要让全历史审计也绿，需在 `DECISIONS.md`

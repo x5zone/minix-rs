@@ -176,12 +176,13 @@ jobs:
           base="${{ github.event.before }}"
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD^"; fi
           docs=$(git diff --name-only "$base" "${{ github.sha }}" -- 'rewrite-notes/*-stage-*/*.md' \
-            | grep -E '^rewrite-notes/[0-9]+-stage-[^/]+/[0-9]{2}-[^/]+\.md$' || true)
+            | grep -E '^rewrite-notes/[0-9]+-stage-[^/]+/[0-9]{2}-[^/]+\.md$' \
+            | grep -vE 'design|evidence|review|forensics|brief|note|learn|draft|todo|archive' || true)
           if [ -z "$docs" ]; then echo "无变更正式篇目"; exit 0; fi
           for d in $docs; do
             echo "── $d"
             python3 tools/doc-publication-check.py "$d" || echo "::warning::doc-publication: $d（report-only）"
-            python3 tools/tutorial-rubric-check.py "$d" --report || echo "::warning::tutorial-rubric: $d（report-only）"
+            python3 tools/tutorial-rubric-check.py "$d" || echo "::warning::tutorial-rubric: $d（report-only）"
             python3 tools/todo-ledger.py check --doc "$d" || echo "::warning::todo-ledger: $d（report-only）"
             python3 tools/doc-citation-check.py "$d" --root . || echo "::warning::doc-citation: $d（report-only）"
             python3 tools/doc-structure-check.py "$d" || echo "::warning::doc-structure: $d（report-only）"

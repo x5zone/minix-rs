@@ -448,8 +448,9 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
             print(f"[FAIL] D4: gate-evidence artifact 不存在：{', '.join(missing_artifacts)}")
         else:
             print("[PASS] D4: gate-evidence artifact 路径全部存在（或 none）")
-        if "## Resume Point" in text:
-            missing_resume = [sec for sec in ("### 必跑命令", "### 指针") if sec not in text]
+        if re.search(r"(?m)^## Resume Point\b", text):
+            required_resume = ("### 当前断点", "### 下一 session 启动协议", "### 指针", "### 必跑命令")
+            missing_resume = [sec for sec in required_resume if sec not in text]
             if "eval-trace-check.py" not in text:
                 missing_resume.append("eval-trace-check.py")
             if missing_resume:
