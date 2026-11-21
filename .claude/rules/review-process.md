@@ -31,7 +31,7 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 - Gate E: `rg "fn {name}"` for each test function.
 - Gate G: VERIFY-CHECK.md path + sampling consistency percentage.
 
-**Evidence strength**: L1 (tool/grep output) required for A/D/E; L1 or L2 for B/C; L3 inference = FAIL unless `MANUAL_FALLBACK` justified.
+**Evidence strength**: L1 required for A/D/E/G10–G13；B/C/D-6/G/H 最低 L2；L3 只允许 B/C/D-6/H 且附 `MANUAL_FALLBACK`。以 `prompt/review-rules/review-process.md` 的 Gate 注册表为准。
 
 **深度模式 rounds 动态化**（新增，2026-07-16）：根据文档行数决定分阶段轮次，避免小文档过度分阶段、大文档一轮过载。
 

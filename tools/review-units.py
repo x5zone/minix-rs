@@ -208,7 +208,9 @@ def _symbol_body(text: str, kind: str, name: str) -> tuple[str | None, bool]:
     if not m:
         return None, kind in (None, "c")
     if kind in ("const", "static", "type"):
-        return sha(text[m.start():].splitlines()[0]), False
+        seg = text[m.start():]
+        semi = seg.find(";")
+        return sha(seg[: semi + 1] if semi >= 0 else seg.splitlines()[0]), False
     return _brace_hash(text, m.start()), False
 
 

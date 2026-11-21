@@ -38,7 +38,7 @@ Minix3 C source behavior > design contract > Rust code (os/) > design/technical 
 - **P0-design-missing**: design 缺关键决策（如未定义 trait 方法签名）
 - **P0-design-wrong**: design 决策技术错误（如不安全抽象）
 - **P0-test-missing**: design 要求测试但代码无
-- **P1**: Architecture diff unstated, design without basis, dev-journal style (✅❌🚧), doc-code mismatch, pub misuse, **detail imprecision** (wrong hardware claim in comment, context leak in universal struct, silently dropped returns, leaks without rationale, dubious comment reasons), **P1-design-missing** (链路断裂), **P1-docStyle / teaching-artifact carrying gap** (mechanism doc's C-source-analysis or implementation chapter with zero real code fences, or diagnosis chapter with zero reproducible commands — Layer 1, blocking; enforcement `review-cmds.md` §一 gate #9 + `tools/doc-code-density-check.sh`)
+- **P1**: Architecture diff unstated, design without basis, dev-journal style (✅❌🚧), doc-code mismatch, pub misuse, **detail imprecision** (wrong hardware claim in comment, context leak in universal struct, silently dropped returns, leaks without rationale, dubious comment reasons), **P1-design-missing** (链路断裂), **P1-docStyle / teaching-artifact carrying gap** (mechanism doc's C-source-analysis or implementation chapter with zero real code fences, or diagnosis chapter with zero reproducible commands — correctness-blocking; enforcement `review-cmds.md` §一 gate #9 + `tools/doc-code-density-check.sh`)
 - **P2**: Readability, naming, cross-refs, diagram quality
 
 ## Design First 原则
@@ -163,11 +163,11 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 | 01-boot-shim-bootstrap (07-30) | Pattern #73 | 0 | 3 | 8 | 50 min | 71.4% → 100% | — |
 | 02-higher-half-kernel (07-30) | Pattern #74 | 0 | 1 | 4 | 13 min | 57.1% → 100% | — |
 | 03-kmain-cstart (07-31) | n/a（验证 #74 有效）| 0 | 0 | 10 | 15 min | 37.5% → 100% | — |
-| 04-platform-discovery (07-31) | Pattern #75 + Step 0.3.3 首次触发 | 0 | 0 | 2 (+2 顺带) | 4 min | 71.4% → 100% | — |
+| 04-platform-discovery (07-31) | Pattern #75 | 0 | 0 | 2 (+2 顺带) | 4 min | 71.4% → 100% | — |
 | 05-clock-interrupt-init (07-31) | Pattern #76 + Step 1.0e + §2.4g | 0 | 4 | 4 | 28 min | 62.5% → 100% | — |
 | 06-proc-init-boot-proc (07-31) | n/a（验证累积改进 + 反向偏移建议）| 0 | 0 | 6 | 12 min | 50% → 100% | — |
 | 07-cross-space-init (07-31) | n/a（验证累积改进 + §2.4i/§2.4j 首次跑 + Zero-bias）| 0 | 0 | 0 | 0 min | 100% ✅ | **Zero-bias #1** |
-| 08-system-init-boot-finish (07-31) | Pattern #77 + Step 1.0f + Step Double-check | 0 | 0 | 3 | 6 min | 87.5% → 100% | **首个三 snapshot 全齐 + Double-check** |
+| 08-system-init-boot-finish (07-31) | Pattern #77 + Step 1.0f + Step Double-check | 0 | 0 | 3 | 6 min | 87.5% → 100% | **Double-check** |
 | 09-vm-boot-protocol (07-31) | n/a（验证累积改进 + Zero-bias #2 + Perfect Link）| 0 | 0 | 0 | 0 min | 100% ✅ | **Zero-bias #2 + Perfect Link + Perfect line refs** |
 | **10-switch-to-user (07-31)** | **n/a（验证累积改进 + Hidden Folder Convention + Double-check）** | **0** | **0** | **2** | **4 min** | **75% → 100%** | **首个 Hidden Folder Convention 完全合规 doc** |
 
@@ -184,7 +184,6 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 - **#15 测试总数末段补充（§2.4j）**（NEW 2026-07-31，Doc 06 review）：✅ **已落地（Doc 07 验证成功）**
 - **#16 Step 7.1 触发停止规则 3**（NEW 2026-07-31，Doc 07 review；**2026-08-14 更新为漏检自检**）：✅ 已应用（zero-bias 时触发漏检自检，原"强制交付"已废弃）
 - **#17 Pattern #66 RCPD doc 主动应用**（NEW 2026-07-31，Doc 07 review）：✅ Doc 07 §5.4 显式标注
-- **#18 Step 0.3.3 outline-review 批量补齐**（NEW 2026-07-31，Doc 07 review）：⏸ 待用户确认后统一触发 user-confirmed review（doc 04/05/06/07 都缺失）
 - **#19 Pattern #77 Code Comment Line Drift**（NEW 2026-07-31，Doc 08 review）：✅ 已落地 + Step 1.0f 已加 review-process.md
 - **#20 Step 1.0f 代码注释行号漂移检查**（NEW 2026-07-31，Doc 08 review）：✅ 已落地（Pattern #77 配套）
 - **#21 Zero-bias 里程碑 #2 + Perfect Link**（NEW 2026-07-31，Doc 09 review）：✅ Doc 09 review 触发 Step 7.1 规则 4（第二次）+ 首次 perfect line refs（16/16 全行号零偏差）+ 首次 perfect vertical link（15/15 全链路完整）
@@ -197,7 +196,6 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 3. **行号漂移是结构性弱点**：7 个 doc 累计 25+ 处 P2 偏移（含反向偏移）——已由 D5 符号锚点迁移收敛（2026-09-18，4,684 处转符号锚点；残留按卫生项处理）
 4. **"安静的"doc 可能反映 review 走流程不深入**：doc 03 0 P1 不一定意味着 doc 完美——下次对 0 P1 doc 做反向抽查（Proposal #9）→ **Doc 07 验证：0 P1 不等于 review 不深入，而是累积改进极致效果**
 5. **Step 1.0a 漏检"参见"范围引用**：本次 04 doc review 即因此漏检 2 处 L831/L883 → 已加 **Step 1.0d + Pattern #75**（Proposal #10）
-6. **Step 0.3.3 嵌入生成连续 4 次触发**：04/05/06/07 doc outline-review.v*.md 都缺失，自审路径工作正常（Gate H.6 修复）—— 但**自审不构成用户确认**，后续需 user-confirmed review 复核（建议批量补齐，Proposal #18）
 7. **代码注释 doc 归属系统性过时**：05 doc review 发现 `(covered in NN)` 注释错位（3 处）+ `see XX-doc.md` 引用旧 doc 命名（9+ 处）—— **Pattern #76 实质化**（之前 4 次 review 未深入代码注释交叉）→ 已加 **Step 1.0e + Pattern #76**（Proposal #11）
 8. **跨 crate const 重复定义盲点**：DEFAULT_HZ 在 os/arch + os/kernel 两 crate 独立定义（不会编译错误）→ 已加 **"权威位置"段说明**（Proposal #12）
 9. **行号反向偏移是系统性问题（NEW；D5 收敛注记 2026-09-18）**：06 doc review 发现 6 处反向偏移（-7/-9/-13），代码增量后 doc 未同步 → 原方案 Step 1.0a-自动/auto_resync_line 已作废，由 **D5 符号锚点迁移**结构性消除（Proposal #13 已按符号锚点方案落地）
@@ -206,7 +204,7 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 12. **Zero-bias 里程碑（NEW, Doc 07）**：7 次 review 中**首次** 0 P0/P1/P2（review 即 PASS）—— 累积改进极致效果 + **触发 Step 7.1 停止规则 4**（**2026-08-14 更新为漏检自检**：原"强制交付"已废弃，改为抽 3 项重跑确认无遗漏再交付）
 13. **Doc 主动应用 Pattern #66 RCPD（NEW, Doc 07）**：doc 07 §5.4 显式声明"不引用 syscall_copy.rs 行号避免漂移传播"—— **首个 doc 主动标注已应用 review pattern**，doc 作者已具备 review pattern 意识
 14. **代码注释 doc 复述传递性 drift（NEW, Doc 08）**：08 doc review 发现 3 处 P2 行号偏移全部源自 `lib.rs:1170/1181/1193` 的代码注释错误（不是 doc 错）—— doc §4.6 复述了错误注释。**根因诊断**：必须修代码注释（root cause）+ 同步修所有复述的 doc（避免传递性 drift）→ **Pattern #77 + Step 1.0f**（Proposal #19/#20，已落地）
-15. **首个 doc 三 snapshot 全齐（NEW, Doc 08）**：08 review 是 8 次 review 中**首个** tool scan ✅ PASS（outline + outline-review + design 都真实存在）—— 卓越设计维护的标志 + 不需要 Step 0.3.3 嵌入生成
+15. **08 review 首次 tool scan PASS（NEW, Doc 08）**：制品与 Gate 证据一次通过，未出现补生成。
 16. **Zero-bias 里程碑 #2 + Perfect Link（NEW, Doc 09）**：09 review 是 9 次 review 中**第二个** zero-bias（继 Doc 07 后）+ **首次 perfect line refs（16/16 全行号零偏差）+ 首次 perfect vertical link（15/15 全链路完整）**—— 累积改进极致效果
 17. **Step 1.0f 主动验证首次应用（NEW, Doc 09）**：Pattern #77 检查无新 drift（仅 backlog 9+ 处旧 doc 命名）—— 累积改进已固化为系统自动检查
 18. **Hidden Folder Convention + forward reference 验证（NEW, Doc 10）**：10 review 首个完全合规 doc（无 design/tmp_design 引用）+ §4.1 trap_return.rs forward reference 透明声明（合规）

@@ -68,7 +68,7 @@ Maintain state in the tool-specific STATE.md path above. Details: [process-skill
 **Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, 0 new P1 (V3.7) | **Gate G** VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | **all Blocker Gates passed** with gate-evidence attached（列表见 `review-process.md` 注册表）.
 
 ## ⛔ Blocker Gates (must all pass for Final Review)
-- **Gate 0**（NEW, 2026-07-16 扩为 9 锚段）: 制品完整性 — 标准路径文件齐全 + scan.md 含 9 个 grep 可验锚段（Skill Invocation Log / Blocker Gates Status / **Step 0: 预检结果**（`§Step 0: 预检结果` 段必须含关联代码清单——`tools/doc-code-map.sh` 输出或等价表，B4.2 2026-09-18） / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory）。缺 `Step 0: 预检结果` 段 → 触发**模式 69 PSMD**。
+- **Gate 0**（NEW, 2026-07-16 扩为 9 锚段）: 制品完整性 — 标准路径文件齐全 + scan.md 含 9 个 grep 可验锚段（Skill Invocation Log / Blocker Gates Status / **Step 0: 预检结果**（`§Step 0: 预检结果` 段必须含关联代码清单——`tools/doc-code-map.sh` 输出或等价表，B4.2 2026-09-18） / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory）。缺 `Step 0: 预检结果` 段 → Gate 0 FAIL。
 - **Gate A**: coverage-extract.py run + SYMBOLS.md 落盘 + scan.md 附 `gate-evidence-A` 块（命令 + stdout + artifact 路径）。L1 证据必须。
 - **Gate B**: Top 5 behavior-contract table (**8 字段 × 5 函数**：函数名 / C 行为 / Rust 行为 / 差异类型 / 严重度 / C 证据 / Rust 证据 / Reviewer 备注)。
 - **Gate C**: 5-element Precision Check table produced.
@@ -76,13 +76,13 @@ Maintain state in the tool-specific STATE.md path above. Details: [process-skill
 - **Gate D-6**: structure.md generated + 12-section review table (doc review only).
 - **Gate E**: §5 test names grep-verified (if doc has §5).
 - **Gate G**（NEW）: Step 5.6 VERIFY-CHECK.md 已产出 + 判定 PASS（一致性 ≥ 90%）。CONCERN/FAIL 不得标 CONVERGED。
-- **Gate H**（2026-07-16 扩）: design 门控（**所有 review 模式必检**）。**不允许 N/A / [SIMPLIFIED] / "复用其他文档 design"** — 都是模式 69 PSMD 触发。详见 [process-skill §Gate H](../review-process-skill/SKILL.md)。
+- **Gate H**: H.2–H.5 设计语义（**所有 review 模式必检**）；无 design 文档时用 C 源码矩阵或 N/A + 理由，快照存在性不是 Gate。详见 [process-skill §Gate H](../review-process-skill/SKILL.md)。
 
-**Evidence rule**: For every Gate, attach the actual command + output snippet in `gate-evidence-{X}` block. "Gate passed" without evidence is invalid. 证据强度分级：L1（工具自动输出，Gate A/D/E 必须）/ L2（手动 grep）/ L3（语义推断，视为 FAIL）。
+**Evidence rule**: For every Gate, attach the actual command + output snippet in `gate-evidence-{X}` block, first line `level: L1|L2|L3`. "Gate passed" without evidence is invalid. L1 required for A/D/E/G10–G13; L2 for B/C/D-6/G/H; L3 only B/C/D-6/H with `MANUAL_FALLBACK`.
 
 ## Review Process
 Execute Steps 0-7 in order. Full details in [process-skill](../review-process-skill/SKILL.md). Mandatory artifacts:
-1. Scope + time budget + STATE.md read + **Step 0 预检（模式 69 PSMD 必跑）**.
+1. Scope + time budget + STATE.md read + **Step 0 预检（verify-check --preflight + review-state-validate）**.
 2. **Step 0.5: structure.md generation + skeleton review (doc review mandatory) → Gate D-6**.
 3. Ground Truth source file list verified with `rg`.
 4. Coverage Enumeration (Step 1.5) → Gate A.
@@ -105,7 +105,7 @@ Begin every review with:
 - **Target**: `path/to/doc.md` + `path/to/code.rs`
 - **Same-dir docs**: `path/to/same-dir/*.md`
 - **Loaded Skills**: [list each invoked Skill]
-- **Step 0 预检**: design + outline（**全模式强制**）— 必跑 4 条 `ls meta/design/{stage}/{NN}-*.md`，结果写入 scan.md `§Step 0: 预检结果`。缺失执行 Step 0.3：outline→0.3.2，outline-review→0.3.3（AI 自审），design→0.3.4（不中断）。详见 [process-skill](../review-process-skill/SKILL.md)。
+- **Step 0 预检**: 跑 `verify-check.py --preflight` 与 `review-state-validate.py`，结果写入 scan.md `§Step 0: 预检结果`；design/outline 是可选输入，缺失不补、不影响 Gate H。详见 [process-skill](../review-process-skill/SKILL.md)。
 ```
 
 ## Output Template

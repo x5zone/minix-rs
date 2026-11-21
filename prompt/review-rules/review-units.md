@@ -61,7 +61,7 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
   标题、顺序、层级变化解冻该章（T1）与受影响子节；`deps` 变化把下游单元标为 `reopened`。
 - **锚点正文变化（V3.10）**：`sync` 重算冻结单元的 `anchor_hashes`；任一符号体变化、缺失或变成 `impl` → 解冻并置 `reopened: true` + `stale: true`。旧状态里没有 `anchor_hashes` 的冻结单元在 `check`/`sync` 时强制重开。
 - **批量失效（V3.10）**：`review-units.py invalidate <doc> --from <commit>` 对比 `git diff --name-only <commit>..HEAD`，任何冻结单元的锚点文件在 diff 中 → 解冻并置 `reopened`/`stale`。
-- 冻结单元不再进入 L1 面板；只进入确认轮的抽样。冻结不是「永远不读」——确认轮仍会抽 20%。
+- 冻结单元不再进入 L1 面板；只进入确认轮的抽样。冻结不是「永远不读」——确认轮按直锚/fallback 抽 10%/20%。
 - 任何对冻结节的修改都必须先 `sync --unfreeze` 留痕，禁止手改状态文件绕过。
 
 ## 五、每轮读什么
@@ -142,7 +142,7 @@ python3 tools/review-units.py sample <doc> --seed $(git rev-parse HEAD)
 
 - **只按节读、不读骨架**：两节各自自洽，合起来却重复或矛盾。所以每轮必须读标题树与跨节承诺；
   T2 的读者 C 读整篇。
-- **冻结即遗忘**：冻结单元被后续修改悄然破坏。所以有 hash 校验与 20% 确认抽样；发现即解冻，
+- **冻结即遗忘**：冻结单元被后续修改悄然破坏。所以有 hash 校验与 10%/20% 确认抽样；发现即解冻，
   不许用「它已经冻结」驳回证据。
 - **单元预算当 edition 预算**：一个单元 2 轮用完就以为整篇可以收口。篇级 3 edition 与 G1–G14
   仍要全过。

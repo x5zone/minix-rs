@@ -53,8 +53,8 @@ Rewrite（重写）
 
 | 概念 | 在传统 review 中 | 在 Minix-RS 中 |
 |------|---------------|---------------|
-| design 文档 | 参考 | **强制约束（design.md 非 bagging / design-final.md bagging）** |
-| design 缺失 | 不关心 | **P0-design-missing（阻断 review）** |
+| design 文档 | 参考 | **可选对照输入**（有则对照，无则用 C 源码矩阵） |
+| design 缺失 | 不关心 | **不阻断**（H.2/H.3 用 C 源码矩阵或 N/A + 理由） |
 | design 错误（漏概念） | 不常见 | **P0-design-wrong（触发 design Refactor）** |
 | design 更新 | 自由 | **必须 review** |
 
@@ -67,7 +67,6 @@ Rewrite（重写）
 **Refactor 触发条件**：
 - **code Refactor 触发**（P0-design-deviation）：Step 1.6.2 一致性 < 80% 但 design 本身正确（修复 code 回到 design 路径）
 - **design Refactor 触发**（P0-design-missing/wrong）：
-  - Step 0 design 预检 `design.md/design-final.md: 缺失`（**主入口，前移自 Step 1.6**）
   - Step 2 发现 Minix3 核心概念在 design 中无对应
   - Step 3.5 发现 design 未覆盖的纵向链路
   - Step 1.6.3 Minix3 对齐检查发现 design-wrong
@@ -759,10 +758,10 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 ### §4.5 收敛判据：统一使用 G1–G14
 
-普通 review 与 `review-loop` 共用一套出口判据：`review-evals.md` §6A 的四态模型与 G1–G14。不再有 Layer 1/2 两套分层，也不再有“另加 Layer 2 四项 ≥80%”的平行门槛。
+普通 review 与 `review-loop` 共用一套出口判据：`review-evals.md` §6A 的四态模型与 G1–G14。
 
 - **正确性**：P0 六类全部修完；Blocker Gates 全 PASS（列表见 `review-process.md` 注册表）。
-- **卓越性缺口**：按 G2 的 P1/P2 处理，不再单列 Layer 2 维度。教学深度、文档组织、design-first API、架构演进等检查项如果发现问题，仍按 P1/P2 入 Issue List 并当轮处置。
+- **卓越性缺口**：按 G2 的 P1/P2 处理。教学深度、文档组织、design-first API、架构演进等检查项如果发现问题，仍按 P1/P2 入 Issue List 并当轮处置。
 - **统一出口**：G1–G14 的具体定义、四态与证据要求只在 `review-evals.md` §6A 维护；本文件不复制门列表。
 
 | 阈值项 | 值 | 出处 |
@@ -863,7 +862,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 - **目标文档**：`path/to/doc.md`
 - **关联 Rust 代码**：`path/to/code.rs`（如适用）
 - **同目录文档范围**：`path/to/same-dir/*.md`（用于跨文档检查）
-- **执行步骤**：按 §0.2 各模式对应 Step 执行（Step 0 design 预检所有模式强制）
+- **执行步骤**：按 §0.2 各模式对应 Step 执行（Step 0 预检所有模式强制）
 ```
 
 ### 0.2 Review 模式说明

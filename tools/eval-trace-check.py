@@ -1365,6 +1365,12 @@ C1_GREEN_EVIDENCE_RE = re.compile(
     r"[1-9]\d*\s*(?:个)?(?:命中|匹配)|ok\b",
     re.IGNORECASE,
 )
+C1_COMMAND_RE = re.compile(
+    r"cargo\s+test|(?:^|\s)(?:rg|grep)\s|python3\s+tools/|bash\s+tools/|"
+    r"\.(?:sh|py)\b|test::[A-Za-z_]",
+    re.IGNORECASE,
+)
+C1_NEGATION_RE = re.compile(r"not\s+(?:fail|failed|ok|pass)|未失败|不是失败")
 
 
 def _section_round(section: str) -> int | None:
@@ -1478,11 +1484,11 @@ def check_c1_red_green(
         green_ev = row.get("green_evidence", "").strip()
         if red_cmd.lower() in PLACEHOLDERS:
             report.fail("c1-red-green", f"{fid} 是 P0 代码/测试项，`red_cmd` 为空或占位")
-        elif not ROW_LEVEL_TOKEN_RE.search(red_cmd):
+        elif not C1_COMMAND_RE.search(red_cmd):
             report.fail(
                 "c1-red-green",
                 f"{fid} 的 `red_cmd` 不是可重放命令（需 cargo test / rg / grep / "
-                "脚本或 path:line）",
+                "脚本或 test::name）",
             )
         if green_cmd.lower() in PLACEHOLDERS:
             report.fail(
@@ -1500,11 +1506,11 @@ def check_c1_red_green(
                 f"{fid} 的 `red_evidence` 为空或过短（需记录红态输出：FAIL/exit!=0/"
                 "0 命中）",
             )
-        elif not C1_RED_EVIDENCE_RE.search(red_ev):
+        elif C1_NEGATION_RE.search(red_ev) or not C1_RED_EVIDENCE_RE.search(red_ev):
             report.fail(
                 "c1-red-green",
                 f"{fid} 的 `red_evidence` 没有红态标记（需 FAIL / failed / "
-                "exit != 0 / 0 命中 / not found / error）",
+                "exit != 0 / 0 命中 / not found / error；不接受 not failed）",
             )
         if green_ev.lower() in PLACEHOLDERS or len(green_ev) < 8:
             report.fail(
@@ -1512,11 +1518,11 @@ def check_c1_red_green(
                 f"{fid} 的 `green_evidence` 为空或过短（需记录绿态输出：PASS/"
                 "exit 0/命中）",
             )
-        elif not C1_GREEN_EVIDENCE_RE.search(green_ev):
+        elif C1_NEGATION_RE.search(green_ev) or not C1_GREEN_EVIDENCE_RE.search(green_ev):
             report.fail(
                 "c1-red-green",
                 f"{fid} 的 `green_evidence` 没有绿态标记（需 PASS / ok / exit 0 / "
-                "命中 / test result: ok）",
+                "命中 / test result: ok；不接受 not ok）",
             )
 
 
@@ -3398,6 +3404,20 @@ def _c1_self_test() -> int:
     )
     if not run(mismatch).failed:
         print("self-test FAIL: C1 红绿命令不同没有被判 FAIL")
+        return 1
+    negation = (
+        "| RD-001 | FACT-01 | R1 | fact | P0 | P0-code-bug | ① | 修 | E1 | "
+        "`cargo test x` | `cargo test x` | not failed | `cargo test x` | not ok |\n"
+    )
+    if not run(negation).failed:
+        print("self-test FAIL: C1 否定句证据没有被判 FAIL")
+        return 1
+    path_only = (
+        "| RD-001 | FACT-01 | R1 | fact | P0 | P0-code-bug | ① | 修 | E1 | "
+        "`os/a.rs:12` | FAILED | `os/a.rs:12` | ok |\n"
+    )
+    if not run(path_only).failed:
+        print("self-test FAIL: C1 用 path:line 冒充命令没有被判 FAIL")
         return 1
     grandfather = (
         "| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | "

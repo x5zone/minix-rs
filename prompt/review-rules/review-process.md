@@ -93,7 +93,7 @@
 
 | Gate | 语义 | 权威定义位置 | 证据分级 / 通过标准 |
 |---|---|---|---|
-| **Gate 0** | scan.md 制品完整性（9 个 grep 锚段；预检段必含关联代码清单，B4.2） | prompt/skill/review-agent-ide.md §Gate 0；锚段清单 prompt/skill/review-process-skill.md §Step 0 产物 | L1；缺任一锚段 → FAIL（模式 69） |
+| **Gate 0** | scan.md 制品完整性（9 个 grep 锚段；预检段必含关联代码清单，B4.2） | prompt/skill/review-agent-ide.md §Gate 0；锚段清单 prompt/skill/review-process-skill.md §Step 0 产物 | L1；缺任一锚段 → FAIL |
 | **Gate A** | 覆盖率穷举强制运行 | review-coverage-skill.md §0 + 本文件 Step 1.5 | L1（工具输出必须附 gate-evidence-A）；PARTIAL → FAIL；AI 语义列须填满（`tools/coverage-extract/coverage-extract.py --check-filled <SYMBOLS.md>` exit0，残留 `_待AI补充_` = FAIL） |
 | **Gate B** | Top5 行为契约表（8 字段 × 5 函数） | review-core-semantics.md §Gate B + 本文件 Step 2 | L2；3 语义偏移 + 2 覆盖缺口 |
 | **Gate C** | 细节精确性（Precision Check） | review-code-checklist.md §15 + 本文件 Step 3.5 | L2；5 meta-rules 表 |
@@ -963,7 +963,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
 
 ---
 
-- **中间产物**：执行模式 + 范围声明 + 时间预算声明（或省略说明） + 状态恢复摘要 + **design + outline 预检结果（PASS / OUTLINE_MISSING / DESIGN_MISSING / ALL_MISSING）** + **TODO 验证结果表（若执行 Step 0.7）** + **Path Existence Validation 表（若执行 Step 0.7.1）**
+- **中间产物**：执行模式 + 范围声明 + 时间预算声明（或省略说明） + 状态恢复摘要 + **Step 0 预检结果（STATE/scan/structure/SYMBOLS/VERIFY-CHECK + 关联代码清单）** + **TODO 验证结果表（若执行 Step 0.7）** + **Path Existence Validation 表（若执行 Step 0.7.1）**
 
 ### Step 1: Ground Truth Lookup（源码定位）
 
@@ -1594,7 +1594,7 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 
 ### 收敛判定（统一 G1–G14）
 
-Step 5.5 不再使用 Layer 1/2 双层表。出口判据只有一套：P0 六类全部修完 +
+Step 5.5 的出口判据只有一套：P0 六类全部修完 +
 Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全 PASS；卓越性缺口按 G2 的 P1/P2
 入 Issue List 并当轮处置。G1–G14 的定义与四态模型只在 `review-evals.md` §6A
 维护，本文件不复制门列表。
@@ -2000,7 +2000,7 @@ P0/P1 重大修复：先更新 outline 对应小节 → 基于 outline 重写正
 
 ### §一.附录 D：分阶段 Review（H–K）与 Profile R 别名
 
-> 旧 `review-profiles.md` 已退役；本附录保留仍需执行的分阶段检查序列，以及 Profile R 的别名映射。A–G/O/P/AG 的旧别名对账在 `review-cmds.md` §八。
+> 本附录保留仍需执行的分阶段检查序列，以及 Profile R 的别名映射。A–G/O/P/AG 的旧别名对账在 `review-cmds.md` §八。
 
 **Profile H（阶段 1：Ch1&2 准确性）**：核心 + 文档检查清单（§2.1–§2.3、§2.5、§2.7、§2.8）+ 错误模式 1–9。检查概念准确性、C 引用、数据结构覆盖、架构演进说明、图表、C 源码覆盖。输出 P0 概念/引用/覆盖错误 + P1 架构差异。
 

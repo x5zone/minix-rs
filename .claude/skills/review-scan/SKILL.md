@@ -56,7 +56,7 @@ You are a review orchestrator. Load the canonical rule file for each phase and e
 
 ## Phase 6: Excellence Checks
 
-调用 `review-excellence-skill`，按 `review-doc-excellence.md` 与 `review-code-excellence.md` 执行。卓越性缺口按 G2 的 P1/P2 入 Issue List；不设 Layer 2 门槛。正确性 P0/P1 未清零时先修，不进入卓越性扩张。
+调用 `review-excellence-skill`，按 `review-doc-excellence.md` 与 `review-code-excellence.md` 执行。卓越性缺口按 G2 的 P1/P2 入 Issue List；不另设卓越性门槛。正确性 P0/P1 未清零时先修，不进入卓越性扩张。
 
 ## Phase 7: Process & Verification
 

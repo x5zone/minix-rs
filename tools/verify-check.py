@@ -260,9 +260,12 @@ def check_gate_evidence_blocks(scan_text):
         block_content = match.group(1)
         missing_kw = [kw for kw in keywords if kw not in block_content]
         missing_kw += gate_block_extra_missing(gate, block_content)
-        level_match = re.search(r"(?m)^\s*level:\s*(L[123])\b", block_content)
+        first_line = next(
+            (ln.strip() for ln in block_content.splitlines() if ln.strip()), ""
+        )
+        level_match = re.match(r"level:\s*(L[123])\b", first_line)
         if not level_match:
-            missing_kw.append("level: L1/L2/L3")
+            missing_kw.append("level: L1/L2/L3（必须是证据块首行）")
         else:
             level = level_match.group(1)
             minimum = GATE_MIN_LEVEL.get(gate, "L2")
@@ -603,6 +606,12 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
             print("[PASS] STATE 预检: review-state-validate.py 通过")
     if scan_path:
         text = scan_path.read_text(encoding="utf-8", errors="replace")
+        skill_errors = check_skill_invocation_log(text)
+        if skill_errors:
+            failures += 1
+            print("[FAIL] Skill Invocation Log: " + "; ".join(skill_errors))
+        else:
+            print("[PASS] Skill Invocation Log: 表体与技能名可解析")
         if "关联代码清单" not in text:
             failures += 1
             print("[FAIL] B4.1: scan.md §Step 0 预检结果缺「关联代码清单」")

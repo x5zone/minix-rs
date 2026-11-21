@@ -417,7 +417,7 @@ Step 4: Cross-Document Check (正确性)
   ↓
 Step 4.5: Test Verification（正确性，Gate E）
   ↓
-卓越性检查（本文件；问题按 G2 的 P1/P2 入 Issue List，不设 Layer 2 门槛）
+卓越性检查（本文件；问题按 G2 的 P1/P2 入 Issue List，不另设卓越性门槛）
   ↓
 Step 5: Final Review Output
 ```

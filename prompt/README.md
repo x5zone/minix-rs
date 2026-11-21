@@ -13,7 +13,7 @@ prompt/
 ├── review-rules/                — 规则规范源（唯一权威）
 ├── skill/                       — Skill 适配层源
 │   ├── cmds/                    — 6 个任务命令薄壳
-│   ├── review-scan/             — review-scan 编排器（SKILL.md + checks/）
+│   ├── review-scan/             — review-scan 编排器（薄 SKILL.md，规范源在 review-rules/）
 │   ├── review-agent-ide.md      — Trae Agent 提示词（路由器）
 │   ├── review-agent-trigger.md  — Trae Agent 触发描述
 │   └── review-*-skill.md        — 9 个领域 Skill + review-loop
@@ -43,7 +43,7 @@ prompt/
 | `review-units.md` | 单元级 review V3.9：`###` 节冻结、T1/T2/T3 三轨、G14 |
 | `review-panel.md` | review-loop 独立面板：角色、材料隔离、归因 |
 | `review-evals.md` | review-loop 评测：G1–G14、§6A 四态收敛模型 |
-| `review-cmds.md` §八 | 旧 Profile A–K/O/P/R/AG 别名对账（原 `review-profiles.md` 已退役） |
+| `review-cmds.md` §八 | 旧 Profile A–K/O/P/R/AG 别名对账 |
 
 ## 三、skill/（适配层）
 
@@ -51,7 +51,7 @@ prompt/
   `review-patterns-skill`、`review-process-skill`、`review-core-semantics-skill`、
   `review-coverage-skill`、`review-excellence-skill`、`review-implementation-skill`、
   `review-socratic-skill`、`review-loop`。
-- **编排器**：`review-scan/SKILL.md` + `checks/{doc,code,patterns,process,excellence}.md`。
+- **编排器**：`review-scan/SKILL.md`（薄编排器，逐阶段加载 `review-rules/` 的规范源）。
 - **任务命令薄壳**：`cmds/{full-review,style-fix,code-excellence,test-audit,todo-fix,style-bible}/SKILL.md`。
 - **Trae Agent**：`review-agent-ide.md`（路由器，字符预算由 lint 的 L15 把守）与
   `review-agent-trigger.md`（触发描述）。

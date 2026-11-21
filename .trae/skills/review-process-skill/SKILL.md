@@ -596,16 +596,15 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 ## Step 1.6: 设计对齐检查（Design Alignment）— **Gate H**
 
 > **前提**：所有 review 模式都执行此步骤；快速/构造模式只可裁剪内容检查，不能跳过 Gate H。
-> **注**：design 存在性预检已在 Step 0 完成，此处为正式一致性检查。
-> **目的**：验证当前 Rust 实现的 trait/类型/架构是否与 design.md（非 bagging）/ design-final.md（bagging）一致。
+> **注**：design 文档是可选输入，存在性不是 Gate；没有时 H.2/H.3 直接用 C 源码矩阵。
+> **目的**：验证当前 Rust 实现的 trait/类型/架构是否与 design 文档一致（有文档时），或与 C 源码语义一致（无文档时）。
 
-**Step 1.6.1**：design 存在性确认（Step 0 预检的复核）
+**Step 1.6.1**：design 文档输入（可选）
 ```bash
-# 持久化可复用快照（位置：{tree}/meta/design/{stage}/，保留所有历史版本）
-ls {tree}/meta/design/{stage}/{NN}-design.v*.md       # 非 bagging（任意版本命中）
-ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
+ls {tree}/meta/design/{stage}/{NN}-design.v*.md       # 可选
+ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # 可选
 ```
-> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `{tree}/meta/design/{stage}/`。
+> 命中则作为对照输入；未命中不阻断。
 
 **Step 1.6.2**：design ↔ code 一致性矩阵
 
@@ -1006,18 +1005,9 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 
 详见 [review-rules/review-process.md §一.附录 A](../../../prompt/review-rules/review-process.md)。
 
-#### 收敛判定：双层 Layer 模型
+#### 收敛判定：统一 G1–G14
 
-| 层级 | 目标 | 通过条件 | 状态标记 |
-|------|------|---------|---------|
-| **正确性** | C → Rust 语义对齐 | P0 修复 + Blocker Gates（注册表）+ Step 5.6 | NOT_CONVERGED if FAIL |
-| **Layer 2（Excellence）** | redox/textbook 级质量 | §4.3.5 + §4.4 + §16.5 + §2.0 架构演进 ≥80% | NOT_CONVERGED（卓越性项登记并处置） |
-
-**关键判定**：
-- 必须先 1 后 2（正确性优先）
-- Layer 1 FAIL → NOT CONVERGED（强制修复）
-- Layer 1 PASS + Layer 2 PARTIAL → NOT CONVERGED（卓越性项登记并处置）
-- Layer 1 PASS + Layer 2 PASS → 完全 CONVERGED
+出口判据只有一套：P0 六类全部修完 + Blocker Gates（按注册表）全 PASS；卓越性缺口按 G2 的 P1/P2 入 Issue List 并当轮处置。G1–G14 的定义与四态模型只在 `review-evals.md` §6A 维护，本 skill 不复制门列表。
 
 详见 [review-rules/review-process.md §三 状态管理与收敛判断](../../../prompt/review-rules/review-process.md)。
 
@@ -1149,7 +1139,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - [ ] **Gate H**: H.2–H.5 语义项已给出矩阵/证据（无 design 文档时用 C 源码矩阵或 N/A + 理由）
 - [ ] Step 5 维度覆盖自检表格已输出
 - [ ] Step 5 最弱项自检 8 个问题已确认（含 Blocker Gates + Design 对齐检查，v6）
-- [ ] **Layer 1/2 双层判定已输出**
+- [ ] **收敛判定已按 G1–G14 输出**
 - [ ] Step 5 时间预算评估已输出
 - [ ] **Skill Invocation Log** 已输出
 - [ ] Step 5.5 STATE.md 和 scan.md 已写入（NOT 10 个维度文件）
