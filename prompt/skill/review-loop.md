@@ -88,7 +88,7 @@ python3 tools/tutorial-rubric-check.py <当前篇>
 
 第三条读的是 `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`——**TODO 的单一源**。
 01/02 旧 todo 文件已迁移删除；其余 stage 迁移前仍是输入。账本是新发现的唯一写入面，closed 历史靠 git + `origin_commit` 追溯。
-`--fail-on-open` 同时检查 `blocked: true`：**存在待裁项时本轮不得 CONVERGED**，必须停下来问用户。
+`--fail-on-open` 同时检查 `blocked: true`：**存在待裁项时本轮不得 CONVERGED**，必须走 `prompt/me.md` 裁决——能判的判（写 `deputy-log.md`），不能判的准备案件卷阻断。
 SUGG（P3）也记在这本账里，轮内必须清零。
 **Review 期间关联代码冻结**（V3.8）：面板 survey 与 certify 不得写 `os/`；本轮台账内的修复按 L3 实施后重设基线；设计批级改动回 Manuscript（`review-publication.md` §四.6）。
 

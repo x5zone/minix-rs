@@ -57,7 +57,7 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
    修复权限仅限本轮新准入项、不实施 ⑥、每个 CANDIDATE 最多 2 次、不占 §7.5 修改预算）。修改轮（full/structural）没有收敛声明权——最多 `ROUND-CLOSED` /
    `CONVERGENCE-CANDIDATE`；R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，其收口按
    certify 阶段执行。
-10. **写 schema 标记**：`loop.md §0` 必须写当前生效版本的 schema。**新开篇目写 `WORKFLOW-VERSIONS.md` 版本表最后一行的 schema 列（当前 `V3.9`）**
+10. **写 schema 标记**：`loop.md §0` 必须写当前生效版本的 schema。**新开篇目写 `WORKFLOW-VERSIONS.md` 版本表最后一行的 schema 列（当前 `V3.10`）**
    （门只对该版本的 schema 起生效；写旧值 = 新门静默失效）；02–04 已 FREEZE 的轮次保持各自历史标记
    （01 现行 `V3.3 from R31`，02/03/04 `V3.3 from R1`），不追溯、不改写。已在旧
    schema 下立基线又需切新版的（如 05 的 R1 §0 已写 V3.3）：面板启动前更正 §0 的
@@ -88,7 +88,7 @@ python3 tools/tutorial-rubric-check.py <当前篇>
 
 第三条读的是 `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`——**TODO 的单一源**。
 01/02 旧 todo 文件已迁移删除；其余 stage 迁移前仍是输入。账本是新发现的唯一写入面，closed 历史靠 git + `origin_commit` 追溯。
-`--fail-on-open` 同时检查 `blocked: true`：**存在待裁项时本轮不得 CONVERGED**，必须停下来问用户。
+`--fail-on-open` 同时检查 `blocked: true`：**存在待裁项时本轮不得 CONVERGED**，必须走 `prompt/me.md` 裁决——能判的判（写 `deputy-log.md`），不能判的准备案件卷阻断。
 SUGG（P3）也记在这本账里，轮内必须清零。
 **Review 期间关联代码冻结**（V3.8）：面板 survey 与 certify 不得写 `os/`；本轮台账内的修复按 L3 实施后重设基线；设计批级改动回 Manuscript（`review-publication.md` §四.6）。
 
