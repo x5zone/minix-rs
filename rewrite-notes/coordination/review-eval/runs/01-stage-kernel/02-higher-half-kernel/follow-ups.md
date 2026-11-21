@@ -15,7 +15,7 @@
 | D02-F10a | READER-A 10 条 | A-01/02/03/04/05/06/07/09/11/12：反例不可达、`push 0`、四条前置条件、gdb 命令、载荷存活、保护结构状态 | 闭环轮；优先 A-01/A-02（反例不可达）与 A-05（载荷存活表述） |
 | D02-F10b | READER-B 13 条 | B-01/02/03/05/06/07/08/09/10/11/12/13/14：职责重叠、外部事实未锚、标题与正文、容量段、重复句 | 教学债批次；优先 B-01/B-03/B-07 |
 | D02-F10c | READER-C 11 条 | C-04/06/07/08/09/11/12/13/14/16：悬空反例、两套机制表、四条路径、panic 前缀、外部符号、角色互换、2 MiB 档 | 闭环轮；优先 C-04/C-08/C-11 |
-| D02-F11 | DESIGN-12 | `check-layout.sh` L9 只对 riscv64 做等值对账；aarch64 `bootface_a64.rs` 的 `KERN_SIZE` 只有上界断言 | code/test batch：L9 按架构选文件，riscv64 读 `bootface.rs`、aarch64 读 `bootface_a64.rs` |
+| D02-F11 | DESIGN-12 | `check-layout.sh` L9 只对 riscv64 做等值对账；aarch64 `bootface_a64.rs` 的 `KERN_SIZE` 只有上界断言 | ✅ CLOSED（按 `D-107`）：L9 按架构选文件，三架构 `check-layout.sh all` PASS |
 | D02-F12 | 复验 | `cargo test -p minix-arch` 的测试模块编译失败（沿用 D01-F01） | test-audit / code-excellence 批次 |
 
 ## R1 设计 P3（suggestions，不阻断）
@@ -46,7 +46,7 @@
 | D02-F08 | OPEN（用户裁决：抽共享） | 抽 bootface 共享流程，两薄壳只留常量/入口；D-107 |
 | D02-F09 | WONTFIX（拒绝项/分类项） | 保留 `Paging`/`HugePages`/`BootArch`，翻译残留清单作为 code-excellence 输入 |
 | D02-F10 | OPEN（用户裁决：全部实现） | 读者 36 条全部实现；D-107 取消“建议不实施”出口 |
-| D02-F11 | OPEN | 与 D01 `F-R34-01` 同项：L9 对 aarch64 `KERN_SIZE` 的构建期对账 |
+| D02-F11 | CLOSED | 与 D01 `F-R34-01` 同项已实施：L9 三架构等值对账；证据 `bash os/kernel-image/check-layout.sh all` → 三条 L9 PASS |
 | D02-F12 | CLOSED | `cargo test -p minix-arch` 已由 D03 的测试卫生批修好（266/0） |
 
 ### D02 §5.3 测试缺口（R02-T）

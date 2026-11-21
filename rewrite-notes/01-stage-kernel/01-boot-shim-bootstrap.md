@@ -1650,7 +1650,7 @@ pub struct KernelInfo {
 
 这四层的边界不能混谈：把第 1 层的 MapKey 纪律带入第 3 层的政策讨论（"反正退出前不能改"），或者把第 4 层的 DM 覆盖要求塞进第 3 层的分类判据（"要映射所以得进保留表"），都会让错误的层次为另一个层次的约束背锅。
 
-**"升为字段"行的一个设计细节：为什么三个布局数字由 shim 从 ELF 算出，而不是由调用者传入**。设想把接口改成 `prepare_boot(storage, kern_virt_base, kern_phys_base, kern_size, bump_pages)`。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，"把内核映射到高地址"那一步会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。让 shim 自己解析镜像，"数字与镜像一致"就不再是调用者的责任，而是唯一数据来源（镜像本身）的自然结果。**两个直核面是例外**：`bootface`/`bootface_a64` 用自己文件里的 `KERN_VIRT_BASE`/`KERN_PHYS_BASE`/`KERN_SIZE` 常量，不从 ELF 头解析；它们与镜像布局的一致性：riscv64 直核面的跨距由 `check-layout.sh` 的 L9 对账，aarch64 直核面目前只有 L0/L3 的间接基址对账与 `aarch64.ld` 的一条上界 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)`，跨距没有与 riscv64 L9 等价的等值对账（缺口登记见 `rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/OPEN-DEBT.md` 的 F-R34-01）。源码注释记录过这类常量漂移导致高半只映射半个镜像、`kern_stack_top` 落进 `.bss` 的静默损坏。因此“三个数字来自镜像”只对三条 v1 发送腿成立，直核面是“常量 + 部分构建期对账”的另一条来源。
+**"升为字段"行的一个设计细节：为什么三个布局数字由 shim 从 ELF 算出，而不是由调用者传入**。设想把接口改成 `prepare_boot(storage, kern_virt_base, kern_phys_base, kern_size, bump_pages)`。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，"把内核映射到高地址"那一步会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。让 shim 自己解析镜像，"数字与镜像一致"就不再是调用者的责任，而是唯一数据来源（镜像本身）的自然结果。**两个直核面是例外**：`bootface`/`bootface_a64` 用自己文件里的 `KERN_VIRT_BASE`/`KERN_PHYS_BASE`/`KERN_SIZE` 常量，不从 ELF 头解析；它们与镜像布局的一致性：三架构直核面的跨距都由 `check-layout.sh` 的 L9 对账——x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`，并保留 `aarch64.ld` 的上界 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)` 作为链接期双保险。源码注释记录过这类常量漂移导致高半只映射半个镜像、`kern_stack_top` 落进 `.bss` 的静默损坏。因此“三个数字来自镜像”只对三条 v1 发送腿成立，直核面是“常量 + 部分构建期对账”的另一条来源。
 
 #### 3.4.2 旧字段台账与外部面：`kinfo_t` 的 22 个字段去哪了
 
@@ -2684,7 +2684,7 @@ pub fn build_kernel_info(
 |---|---|---|
 | `memmap` | builder（直核面调用）；v1 接收侧由 wire 解码后填同一结构 | 见 §3.4.1 的 `memmap` 行：UEFI 用配对循环最后一次成功 `GetMemoryMap` 的 conventional 列表；U-Boot 走 `argv[0]`（`bootelf -p` 参数通道的首个参数 = DTB 物理地址，由 shim 在 boot.scr 里传入；不是进程 argv），riscv64 直核走 `a1`，aarch64 直核从固定 `DTB_PA = DRAM_BASE` 读（无入参）；同一份解析在 minix-boot |
 | `reserved_regions` | 调用方 | 见 §3.4.1 的 `reserved_regions` 行：UEFI 用 `ReservedMapped` 列表（`Excluded`/`DevicePath`/`Side` 不进），U-Boot/riscv 直核用 DTB 以 `KERN_PHYS_BASE` 裁剪的保留段，aarch64 直核用 `fw_end = 0` 关闭固件前缀裁剪 |
-| `kern_virt_base` / `kern_phys_base` / `kern_size` | 装载函数 | ELF 各 PT_LOAD 段的 `min(vaddr)` / `min(paddr)` / `max(paddr+memsz) - min(paddr)`；装载器另断言 `e_entry == min(vaddr)`（UEFI 与 U-Boot 两条 loader 各一处），直核面由 `KERN_*` 常量提供；riscv64 跨距由 L9 对账，aarch64 跨距暂无等价断言（`rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/OPEN-DEBT.md` 的 F-R34-01） |
+| `kern_virt_base` / `kern_phys_base` / `kern_size` | 装载函数 | ELF 各 PT_LOAD 段的 `min(vaddr)` / `min(paddr)` / `max(paddr+memsz) - min(paddr)`；装载器另断言 `e_entry == min(vaddr)`（UEFI 与 U-Boot 两条 loader 各一处），直核面由 `KERN_*` 常量提供；三架构跨距均由 L9 对账（按架构选 `bootface.rs`/`bootface_a64.rs`） |
 | `user_sp`（v10 起不再是字段） | 消费点直接取常量 | `minix_types::USER_STACK_TOP` 单一权威常量；`arch_boot` 的用户栈映射、`build_vm_handoff` 的 `user_sp`、`fill_kerninfo_page` 的 `kui_user_sp` 与 `GET_KINFO` 的 `user_sp` 都读它 |
 | `kern_stack_top`（v10 起不再是字段） | 访问器派生 | `KernelInfo::kern_stack_top()` = `kern_virt_base + kern_size`——**镜像尾**（末段 memsz 端点，Rust 链接脚本在 `.bss` 末尾 `ALIGN(0x200000)` 收口后的地址；与 C 的 `_kern_size` 不可混用）。它与 `kernel_boot_stack_top` 的区别、收口填充与清零语义见下表后的 bullets |
 | `syscall_entry`（v10 起不再是字段） | 消费点直接取函数 | 实际门地址只由各架构的 `syscall_entry_va()` 提供（C 的 `kinfo_t` 也没有这个字段） |
@@ -3170,7 +3170,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | M7 | 分配器"写一次"（§3.8） | 二次 `register` 在两种构建档都 fail-closed（panic），第一个注册者不会被替换 | 宿主测试 | **已覆盖**：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` / `register_free` 各一：两种构建档都 `assert!` 停止，`catch_unwind` 断言 panic 后指针不变）；[`pt_alloc_concurrent.rs`](os/arch/tests/pt_alloc_concurrent.rs) 1 条（barrier 双写者恰好一个赢家、输者 panic） | TODO-02（已关闭，见 5.3） |
 | M8 | 落地区容量与 fail-fast（§4.5） | 超过容量时快速失败而非截断 | 宿主测试 | **已覆盖**：落地区行为（`test_store_kernel_info_lands_firmware_slices`）+ 六枚超容量负控（`test_store_kernel_info_rejects_{reserved,memmap,boot_module,platform,param,source}_overflow`） | TODO-03（已关闭，见 5.3） |
 | M9 | bump 分配器（§3.8/§4.2） | 顺序推进、耗尽拒绝、页对齐、reinit 后归位、跨镜像区间自洽 | 宿主测试 | **已覆盖**：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条 | — |
-| M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十条主编号（L0–L8 全架构 + L9 仅 riscv64） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
+| M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十条主编号（L0–L9 全架构） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
 | M11 | 模块顺序契约（§4.3） | 12 项按 `MODULE_NAMES` 顺序返回、缺件 panic；装载与模块顺序的四道防线 A/B/C/D：A 文件字节区间不与任何目标 LMA 相交（`first_source_destination_overlap`）、B 目标 LMA 两两不相交（`first_overlapping_pair`）、C 模块×内核跨度（`alloc_module_pages`/`assert_modules_clear_of_kernel`，见 §4.3）、D 接收侧复核（`KernelInfo::validate`：模块×模块 + 内核×模块；内核×模块与 C 故意重复） | 宿主测试＋真机前置检查 | **已覆盖**：`loader.rs` 顺序/缺件测试＋真机链的 `mdir` 前置；A/B/C/D 的映射见 §4.3 与 §4.9 | — |
 | M12 | EBS 阶段边界（§4.1） | EBS 之后不再出现固件调用；裸串口路标仍输出 | 真机＋静态检查 | **部分覆盖**：x86 shim 与 riscv64 U-Boot shim 门脚本各自断言 `[raw] entering kernel image v1`；aarch64 门没有这一行，通过条件见 §5.2.3 的 aarch64 行（两条固定标记 + 第三变体之一）；x86 的五条标记含 `entering scheduler`；退出本身那条与 `[raw] arena=…` 仍靠日志人工看。静态检查：`os/boot-shim/tests/ebs_boundary_audit.rs` 对生产入口的配对循环成功标记之后切片断言零 `uefi::`/分配/释放/drop；另对 `ebs_pair.rs` 整模块只断言零 `uefi::`（分配/释放/drop 未做模块级审计）；带三枚注入负控与注释豁免自检 | TODO-04（已关闭，见 5.3；TODO-04 指 EBS 后的文本级审计，门链标记覆盖是另一件事） |
 | M13 | UEFI 侧快照函数（§4.2：`build_memmaps`、`assert_bootstrap_outside_memmap` 等） | 两列表对"可分配 / 保留"两档互斥且完备（`Excluded`/`DevicePath`/`Side` 按设计不进表）；root/bump 不与 free 列表相交 | 宿主测试→真机 | **已覆盖（可测面）**：`assert_bootstrap_outside_memmap` 的 5 条宿主测试；`ebs_map::tests::classified_tables_are_disjoint_and_expected` 覆盖同一分类的 free/reserved 表互斥与计数；`build_memmaps` 生产不调用；其单表包装 `build_memmap()` 被 2 个测试内核直接调用（`test-memmap` / `test-memmap-aarch64`），加上 12 个调用 `exit_boot_services_and_classify()` 的测试内核共 14 个可执行调用点（另有 1 个文件只在注释里提及，按文件计 15），`alloc_root_page`/`alloc_bump_region` 的调用点单根（Boot Services），宿主无法构造——这三项按设计排除，不是开放缺口 | TODO-07（已关闭，见 5.3） |
@@ -3281,7 +3281,7 @@ $ echo $?
 0     # 全部断言通过；1 = 任一断言失败；2 = 用法/环境错误
 ```
 
-断言清单（脚本头部注释逐条列出 L0–L8；L9 的说明在实现处、只在 riscv64 分支执行）：
+断言清单（脚本头部注释逐条列出 L0–L8；L9 的说明在实现处，三架构均执行、按架构选 direct face）：
 
 | 断言 | 检查什么 | 防哪种漂移 |
 |---|---|---|
@@ -3294,7 +3294,7 @@ $ echo $?
 | L6 | 入口等于首段 VMA，且 `_start` 符号等于入口、落在首段内 | 入口符号与段布局脱节 |
 | L7 | 引导栈符号存在、跨度 64KiB、落在末段内（不检查自顶向下方向）——这是宿主侧的弱检查；sp 初值与数组顶的真实关系（含收口填充余量）由 ld 脚本的排布保证，见 §4.4 字段表 `kern_stack_top` 行 | 栈符号与镜像范围脱节 |
 | L8 | `minix_kernel::arch_boot` 符号在镜像里 | `--gc-sections`/归档粒度把内核启动图裁出镜像 |
-| L9（riscv64） | ELF 实测跨距 = `bootface.rs` 里的 `KERN_SIZE` | 镜像布局常量与自引导面的期望值漂移 |
+| L9（全架构） | ELF 实测跨距 = 对应 direct face 的 `KERN_SIZE`（x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`） | 镜像布局常量与自引导面的期望值漂移 |
 
 L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 保证"两套地址之间只有一个偏移量"这件事对每个段都成立，L5 保证"选出的页尺寸"有一个可用的档位。L8 是"链接保留"的可观测证据——`KERNEL_ENTRY_ANCHOR` 持有 `arch_boot` 的函数指针，链接脚本 `KEEP` 该节，两者一起挡住裁剪。
 

@@ -245,20 +245,23 @@ $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")"
     check L8 "minix_kernel::arch_boot 在镜像里（命中 $n_anchor 个符号）" \
         "$([ "$n_anchor" -ge 1 ] && echo 1 || echo 0)"
 
-    # L9（NK4-C 续-88，CodeReview BLOCKER-1）：riscv64 镜像跨距对账——
-    # 本脚本 ELF 实测跨距（末段 VMA+memsz − 首段 VMA）↔ bootface.rs 的
-    # `KERN_SIZE` 字面量。`IMAGE_HEAP` 等段体增删会移动跨距，bootface 硬写
-    # 的常量需同步，没这条闸就会静默漂移（高半少映半张镜像级别的坏）。
-    if [ "$arch" = "riscv64" ]; then
-        local span_rs span_dec ok9
-        span_rs="$(grep -oE 'const KERN_SIZE: u64 = 0x[0-9a-fA-F_]+;' \
-            "$SCRIPT_DIR/src/bootface.rs" 2>/dev/null | head -1 | \
-            sed 's/.*= 0x\(.*\);/\1/' | tr -d '_')"
-        span_dec="$(printf '%x' "$span")"
-        ok9=0
-        if [ -n "$span_rs" ] && [ "$((16#$span_rs))" = "$((span))" ]; then ok9=1; fi
-        check L9 "跨距对账：ELF 实测 0x$span_dec = bootface.rs KERN_SIZE 0x${span_rs:-无}" "$ok9"
-    fi
+    # L9（NK4-C 续-88，CodeReview BLOCKER-1；D-107 F-R34-01/D02-F11 扩到
+    # 三架构）：镜像跨距对账——本脚本 ELF 实测跨距（末段 VMA+memsz −
+    # 首段 VMA）↔ 对应 direct face 的 `KERN_SIZE` 字面量。x86_64/riscv64
+    # 用 bootface.rs，aarch64 用 bootface_a64.rs。`IMAGE_HEAP` 等段体增删
+    # 会移动跨距，硬写常量需同步，没这条闸就会静默漂移。
+    local face span_rs span_dec ok9
+    case "$arch" in
+        aarch64) face="src/bootface_a64.rs" ;;
+        *)       face="src/bootface.rs" ;;
+    esac
+    span_rs="$(grep -oE 'const KERN_SIZE: u64 = 0x[0-9a-fA-F_]+;' \
+        "$SCRIPT_DIR/$face" 2>/dev/null | head -1 | \
+        sed 's/.*= 0x\(.*\);$/\1/' | tr -d '_')"
+    span_dec="$(printf '%x' "$span")"
+    ok9=0
+    if [ -n "$span_rs" ] && [ "$((16#$span_rs))" = "$((span))" ]; then ok9=1; fi
+    check L9 "跨距对账（$face）：ELF 实测 0x$span_dec = KERN_SIZE 0x${span_rs:-无}" "$ok9"
 }
 
 case "$WHICH" in
