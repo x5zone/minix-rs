@@ -317,7 +317,7 @@
   stage: 02-stage-vm
   doc: 02-stage-vm
   title: P2：优化与重构
-  status: open
+  status: historical
   severity: P2
   kind: code
   origin: rewrite-notes/02-stage-vm/draft/TODO.md:211
@@ -325,17 +325,13 @@
   origin_line: 211
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: prose-open
-  evidence: rg InPlaceOption -> only draft/01-vmproc-struct.md:613/617 + checklist.md:757 (no code); vmproc.rs:40/45 still
-    MaybeUninit+bool (decision registered 02-vmproc-struct.md:367-372 D3); panic=abort os/Cargo.toml:303/306 kills the unwind
-    suggestion; lib.rs:78 vmproc is pub(crate) (visibility done); dyn MemType still used region/vir_region.rs:102, mmap.rs:383
-    (12-memtype.md:363 registers trait+dyn as ARCH, no perf decision)
-  verified_by: subagent:b4
+  evidence: draft/TODO.md:193-201 的 P2 小节；逐项展开见 D02-P2-* 行。
+  verified_by: agent:regression
   verified_at: '2026-11-21'
   aliases:
   - PROSE-TODO-P2
   scope: stage
-  note: 4/5 sub-items closed/decided; enum-dispatch-vs-dyn remains unimplemented and only registered as an ARCH choice - needs
-    an explicit DECISIONS entry (implement or reject). Non-blocking P2.
+  note: 5 项已逐条展开：3 项 open、2 项可见性复查合并为 1 项 closed。
 - id: D02-PROSE-TODO-TODO
   stage: 02-stage-vm
   doc: 02-stage-vm
@@ -473,3 +469,79 @@
   - VMO-ACPI-EXT
   scope: stage
   note: 原 §8.4 backlog 行；QEMU virt x86_64 够用，真实硬件移植前不实施
+- id: D02-P2-INPLACE-OPT
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 评估 InPlaceOption<T> 替换 MaybeUninit+bool 初始化模式
+  status: open
+  severity: P3
+  kind: code
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:197
+  origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
+  origin_line: 197
+  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  legacy_status: open
+  evidence: '`rg InPlaceOption os/` → 0 命中；初始化仍用 MaybeUninit+bool'
+  verified_by: agent:regression
+  verified_at: '2026-11-21'
+  aliases:
+  - INPLACE-OPT
+  scope: stage
+  note: 原 P2 小节第 1 项
+- id: D02-P2-VM-PANIC
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: VM 专用 panic：支持栈展开以获取 Drop 位置
+  status: open
+  severity: P3
+  kind: code
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:198
+  origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
+  origin_line: 198
+  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  legacy_status: open
+  evidence: '`os/servers/vm/src` 无 panic_handler / 展开支持；panic 走 minix-rt 公共处理器'
+  verified_by: agent:regression
+  verified_at: '2026-11-21'
+  aliases:
+  - VM-PANIC
+  scope: stage
+  note: 原 P2 小节第 2 项
+- id: D02-P2-MEMTYPE-DISPATCH
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 用 enum dispatch 替代 dyn MemType（缺页频发时的虚调用开销）
+  status: open
+  severity: P2
+  kind: design
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:201
+  origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
+  origin_line: 201
+  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  legacy_status: open
+  evidence: '`dyn MemType` 仍在用：vir_region.rs:102/145、mmap.rs:383、cache_handlers.rs:242'
+  verified_by: agent:regression
+  verified_at: '2026-11-21'
+  aliases:
+  - MEMTYPE-DISPATCH
+  scope: stage
+  note: 原 P2 小节第 5 项
+- id: D02-P2-VISIBILITY
+  stage: 02-stage-vm
+  doc: 02-stage-vm
+  title: 复查 vmproc / table 模块可见性（VmFlags、VM_PROC_COUNT 是否该降级）
+  status: closed
+  severity: P3
+  kind: code
+  origin: rewrite-notes/02-stage-vm/draft/TODO.md:199
+  origin_file: rewrite-notes/02-stage-vm/draft/TODO.md
+  origin_line: 199
+  origin_commit: 416e4e151b42c63faef0e35115a5070efa80ed6b
+  legacy_status: open
+  evidence: 现状已降级：vmproc/mod.rs:63-69 子模块全为私有，VmFlags 与 VmProcTable 仅 pub(crate) 再导出；无更宽暴露
+  verified_by: agent:regression
+  verified_at: '2026-11-21'
+  aliases:
+  - VISIBILITY
+  scope: stage
+  note: 原 P2 小节第 3、4 项合并；复查完成
