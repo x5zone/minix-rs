@@ -304,7 +304,11 @@ fn resume_additive<A: BootArch, H: crate::boot::HigherHalf>(
 ) -> ! {
     // Validate KernelInfo + (idempotently) register the resumed bump allocator
     // and pt_alloc. This helper touches no page table — safe on a live root.
-    let support = boot_validate_and_prepare::<A>(BootScalars::from_kernel_info(kernel_info));
+    let support = boot_validate_and_prepare::<A>(
+        kernel_info.kern_virt_base,
+        kernel_info.kern_phys_base,
+        kernel_info.kern_size,
+    );
     let layout = DirectMapLayout::<A>::from_arch();
     let dm = plan_dm_policy::<A>(&support, &layout)
         .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
@@ -396,7 +400,7 @@ macro_rules! boot_stage {
     )
 ))]
 #[derive(Debug, Clone, Copy)]
-pub struct PreparedJump {
+struct PreparedJump {
     /// Virtual entry of the standalone image's `_start`.
     pub entry: VirBytes,
     /// Physical base of the handoff arena (the `x0`/`rbx`/`a0` handoff value).
@@ -424,11 +428,11 @@ pub struct PreparedJump {
     )
 ))]
 
-pub fn prepare_kernel_image_v1(
+fn prepare_kernel_image_v1(
     arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
-    shim_windows: &[(u64, u64)],
+    shim_windows: &[PhysRange],
 ) -> PreparedJump {
     let arena_pa = arena_pa.0;
     // riscv64 has no `BootArchImpl` alias at module scope (its direct boot
@@ -443,7 +447,11 @@ pub fn prepare_kernel_image_v1(
     unsafe {
         core::arch::asm!("cli", options(nomem, nostack));
     }
-    let support = boot_validate_and_prepare::<BootArchImpl>(BootScalars::from_report(report));
+    let support = boot_validate_and_prepare::<BootArchImpl>(
+        report.kern_virt_base,
+        report.kern_phys_base,
+        report.kern_size,
+    );
     let layout = DirectMapLayout::<BootArchImpl>::from_arch();
     let kernel_layout = KernelLayout {
         virtual_base: report.kern_virt_base.0,
@@ -459,8 +467,8 @@ pub fn prepare_kernel_image_v1(
     // The Direct Map is established later by the kernel and covers everything
     // else; nothing outside these windows is disturbed before then.
     let mut windows = BootWindows::new();
-    for &(start, end) in shim_windows {
-        windows.push(start, end);
+    for range in shim_windows {
+        windows.push(range.start().0, range.end().0);
     }
     push_common_boot_windows(
         &mut windows,
@@ -526,7 +534,7 @@ pub fn enter_kernel_image_v1(
     arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
-    shim_windows: &[(u64, u64)],
+    shim_windows: &[PhysRange],
 ) -> ! {
     let jump = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
     jump_kernel_image_v1(jump)
@@ -545,7 +553,7 @@ pub fn enter_kernel_image_v1(
         target_arch = "riscv64"
     )
 ))]
-pub fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
+fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
     // Destructure into the two bare `u64`s the asm arms need. The names stay
     // in one place so a future reader cannot reorder them by accident.
     let PreparedJump {
@@ -847,45 +855,10 @@ fn require_boot_region<A: BootArch>(region: Option<(u64, u64)>) -> (u64, u64) {
 /// passive-error surface; a struct literal must write the name and the value
 /// on the same line, which makes it an active one.
 ///
-/// Three call sites each copied the same fields out of either a `KernelInfo`
-/// or a `BootReport`. The named constructors below collapse that into one
-/// "name + value on the same line" pairing per source, and the field set is
-/// the same for both sources (they are the only two shapes the scalars ever
-/// arrive in: the v1 senders' report and the direct-core faces' info).
-///
-/// Since wire v10 (D-062 / I-31) `kern_stack_top` is no longer a field
-/// anywhere: it is `kern_virt_base + kern_size`, so the struct carries three
-/// fields and `boot_validate_and_prepare` derives the fourth locally.
-#[derive(Debug, Clone, Copy)]
-struct BootScalars {
+fn boot_validate_and_prepare<A: BootArch>(
     kern_virt_base: VirBytes,
     kern_phys_base: PhysBytes,
     kern_size: u64,
-}
-
-impl BootScalars {
-    /// From the receive-side `KernelInfo` (both direct-core faces and the v1
-    /// receiver land here).
-    fn from_kernel_info(info: &KernelInfo) -> Self {
-        Self {
-            kern_virt_base: info.kern_virt_base,
-            kern_phys_base: info.kern_phys_base,
-            kern_size: info.kern_size,
-        }
-    }
-
-    /// From the sender-side `BootReport` (the three v1 sending legs).
-    fn from_report(report: &minix_boot::BootReport<'_>) -> Self {
-        Self {
-            kern_virt_base: report.kern_virt_base,
-            kern_phys_base: report.kern_phys_base,
-            kern_size: report.kern_size,
-        }
-    }
-}
-
-fn boot_validate_and_prepare<A: BootArch>(
-    scalars: BootScalars,
 ) -> BootPageSupport<A> {
     // Per-assertion markers (boot-visibility diagnostics; same approach as
     // the arch_boot entry).
@@ -901,9 +874,9 @@ fn boot_validate_and_prepare<A: BootArch>(
     vmark!("kernel: v0 enter\n");
     // `validate()` is called later in `kmain`; the assertions here are
     // defense-in-depth — they fail-fast before paging setup begins.
-    let kv = scalars.kern_virt_base.0;
-    let kp = scalars.kern_phys_base.0;
-    let ks = scalars.kern_size;
+    let kv = kern_virt_base.0;
+    let kp = kern_phys_base.0;
+    let ks = kern_size;
     // Derived, not received (wire v10 / D-062). `checked_add` because a
     // wrapping `kern_virt_base + kern_size` means the image span itself is
     // corrupt, and the alignment check below would then be applied to a
@@ -977,7 +950,11 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     // Step 0: validate KernelInfo, register the allocator, and collect the
     // platform's page-size facts (no choice yet).
     boot_stage!("kernel: entering validate\n");
-    let support = boot_validate_and_prepare::<A>(BootScalars::from_kernel_info(kernel_info));
+    let support = boot_validate_and_prepare::<A>(
+        kernel_info.kern_virt_base,
+        kernel_info.kern_phys_base,
+        kernel_info.kern_size,
+    );
     boot_stage!("kernel: step0 validate ok\n");
 
     // One policy for both consumers: the kernel image mapping and the Direct

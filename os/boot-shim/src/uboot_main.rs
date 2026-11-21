@@ -58,6 +58,7 @@ use boot_shim::opensbi_helpers::{
 static BOOT_STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
 use boot_shim::{raw_serial, raw_serial_line};
 use minix_boot::{ARENA_CAP, Serializer};
+use minix_types::{PhysBytes, PhysRange};
 
 extern crate alloc;
 
@@ -525,7 +526,8 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // leave the 64 KiB stack outside the window (the 2 MiB Step-1 rounding
     // happens to cover it today, but that is an accident, not a contract).
     let shim_end = core::ptr::addr_of!(UBOOT_SHIM_STACK_TOP) as u64;
-    let shim_windows = [(SHIM_LINK_BASE, shim_end)];
+    let shim_windows = [PhysRange::new(PhysBytes(SHIM_LINK_BASE), PhysBytes(shim_end))
+        .expect("shim window is ordered")];
     minix_kernel::enter_kernel_image_v1(arena_pa, &result.report, result.root_page, &shim_windows)
 }
 

@@ -17,7 +17,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use minix_arch::boot_dm_admissible_end;
 use minix_boot::{DTB, MemoryRegion, PlatformDescSource, RSDP};
-use minix_types::PhysBytes;
+use minix_types::{PhysBytes, PhysRange};
 use uefi::Guid;
 use uefi::boot::{self, AllocateType};
 use uefi::fs::FileSystem;
@@ -1252,16 +1252,23 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     crate::raw_serial(" res=");
     raw_serial_number(classification.reserved as u64);
     crate::raw_serial("\r\nboot-shim: [raw] entering kernel image v1\r\n");
-    let mut shim_windows = [(0u64, 0u64); 3];
+    let empty = PhysRange::new(PhysBytes(0), PhysBytes(0)).expect("empty PhysRange");
+    let mut shim_windows = [empty; 3];
     let mut shim_window_n = 0usize;
-    shim_windows[shim_window_n] = shim_image;
+    shim_windows[shim_window_n] = PhysRange::new(PhysBytes(shim_image.0), PhysBytes(shim_image.1))
+        .expect("shim image window is ordered");
     shim_window_n += 1;
-    shim_windows[shim_window_n] = shim_stack;
+    shim_windows[shim_window_n] = PhysRange::new(PhysBytes(shim_stack.0), PhysBytes(shim_stack.1))
+        .expect("shim stack window is ordered");
     shim_window_n += 1;
     if let Some(blob) = &dumpdtb_blob {
         if !blob.is_empty() {
             let start = blob.as_ptr() as u64;
-            shim_windows[shim_window_n] = (start, start + blob.len() as u64);
+            shim_windows[shim_window_n] = PhysRange::new(
+                PhysBytes(start),
+                PhysBytes(start + blob.len() as u64),
+            )
+            .expect("dtb blob window is ordered");
             shim_window_n += 1;
         }
     }

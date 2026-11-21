@@ -147,7 +147,7 @@ pub struct KernelInfo {
     pub authority: RamAuthority,
 }
 
-/// Validation strictness for [`KernelInfo::validate_at`].
+/// Validation strictness for [`KernelInfo::validate_impl_inner`].
 ///
     /// Replaces the two-`bool` encoding that allowed four combinations
     /// but only three were semantically valid.
@@ -168,7 +168,7 @@ impl ValidationLevel {
     fn requires_boot_modules(self) -> bool {
         !matches!(self, Self::BeforeTables)
     }
-    fn requires_startup_kernel_record(self) -> bool {
+    fn requires_kernel_span_coverage(self) -> bool {
         matches!(self, Self::Strict)
     }
     fn is_strict(self) -> bool {
@@ -215,12 +215,7 @@ impl KernelInfo {
     /// This is a fail-fast contract: boot-shim bugs that produce invalid
     /// `KernelInfo` are unrecoverable.
     pub fn validate(&self) {
-        self.validate_at(ValidationLevel::Standard);
-    }
-
-    /// Unified validation entry point.
-    fn validate_at(&self, level: ValidationLevel) {
-        self.validate_impl_inner(&level);
+        self.validate_impl_inner(&ValidationLevel::Standard);
     }
 
     /// Structural gate for entries that run before the first page-table
@@ -230,7 +225,7 @@ impl KernelInfo {
     /// not the init-server image). Production still runs the full
     /// [`Self::validate`] at `kmain`.
     pub fn validate_before_tables(&self) {
-        self.validate_at(ValidationLevel::BeforeTables);
+        self.validate_impl_inner(&ValidationLevel::BeforeTables);
     }
 
     /// Production handoff gate: exactly [`Self::validate`], plus the
@@ -246,7 +241,7 @@ impl KernelInfo {
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
     pub fn validate_requiring_sources(&self) {
-        self.validate_at(ValidationLevel::Strict);
+        self.validate_impl_inner(&ValidationLevel::Strict);
     }
 
     fn validate_impl_inner(&self, level: &ValidationLevel) {
@@ -499,7 +494,7 @@ impl KernelInfo {
         // image's physical span. Every production leg writes
         // it; a missing record means a producer regression, not an empty-list
         // corner case.
-        if level.requires_startup_kernel_record() {
+        if level.requires_kernel_span_coverage() {
             // The kernel span must be covered by a `memmap` or
             // `reserved_regions` span. All five legs satisfy this (UEFI legs
             // claim the span as `ReservedMapped`; the U-Boot shim and the two
