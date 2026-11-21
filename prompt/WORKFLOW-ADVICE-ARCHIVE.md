@@ -230,7 +230,7 @@ state-validate 计数口径、R12-D3 余项 SYMBOLS 标签冲突、R13-D2 Per-Do
 
 | 文件 | 内容 | 承接 |
 |---|---|---|
-| `R1`–`R5-V36-ADVERSARIAL-2026-11-20.md` | V3.6 五轮对抗原始分诊表 | `V3.6-USABILITY-REPORT.md` 汇总 |
+| `R1`–`R5-V36-ADVERSARIAL-2026-11-20.md` | V3.6 五轮对抗原始分诊表 | 结论已进 `WORKFLOW-VERSIONS.md` 与规则源；原文见 git 历史 |
 | `R6-V36-ADVERSARIAL-2026-11-21.md` | 第六轮对抗记录 | 同上 |
 | `V35-TRAIL-DEFECTS.md` | V3.5 轨迹分析（6 门缺陷 + 6 流程缺陷） | `WORKFLOW-VERSIONS.md` 已摘录 |
 | `SESSION-CHANGES-2026-11-18.md` | 单次会话变更日志 | `git log` |
@@ -238,3 +238,10 @@ state-validate 计数口径、R12-D3 余项 SYMBOLS 标签冲突、R13-D2 Per-Do
 | `WORKFLOW-REVIEW-2026-11-21.md` | V3.7/V3.8 的诊断原稿 | `review-publication.md` / `review-tutorial-rubric.md` |
 | `code-review-subagent.md` | 外部 skill 讨论与冷读素材 | `BLIND-SPOTS.md` / `WORKFLOW-VERSIONS.md` 已摘录 |
 | `HANDOFF-V36.md` | 2026-11-20 会话交接 | 已过时（V3.6 五轮完成、V3.7/V3.8 已落规则） |
+
+## 七、2026-11-21 第二批（2 份）
+
+| 文件 | 内容 | 承接 |
+|---|---|---|
+| `V3.6-USABILITY-REPORT.md` | V3.6 可用性报告（已入库） | 结论已进 V3.7/V3.8 规则；原文见 git 历史 |
+| `review-loop-r26-r29-report.md` | R26–R29 外部评审包（**从未入库**） | 已删除，全文不可恢复；run 轨迹中的 3 处引用随之失效 |

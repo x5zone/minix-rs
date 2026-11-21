@@ -21,7 +21,6 @@ prompt/
 ├── WORKFLOW-ADVICE-ARCHIVE.md   — 历史删档承接与出处（非规则）
 ├── DOC-ITER-WORKFLOW.md         — 文档迭代统一规格（review-panel P-READER 引用）
 ├── EXECUTE-D01-D06-CONVERGENCE.md — 执行入口（非规则）
-├── V3.6-USABILITY-REPORT.md     — 历史可用性报告（非规则）
 └── TODO-MIGRATION-2026-11-21.md — 01/02 旧 TODO 迁移记录（非规则）
 ```
 
@@ -131,5 +130,4 @@ CI 的 `rules-consistency.yml` 在 `prompt/`、`.claude/`、`.codex/`、`.trae/`
 2. **派生文件不手改**：改源后重新生成；手改会在下一次同步时被覆盖，并让门变红。
 3. **新增规则要有真实案例**：目标文件、期望效果、回归风险、替代或合并了哪个旧装置；
    没有替代对象的纯新增必须说明旧装置为何接不住。
-4. **过程报告不是规则**：`WORKFLOW-*.md`、`V3.6-USABILITY-REPORT.md`、迁移记录等
-   只作存档与溯源，不参与门禁判定。
+4. **过程报告不是规则**：`WORKFLOW-*.md`、迁移记录等只作存档与溯源，不参与门禁判定。
