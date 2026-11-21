@@ -151,7 +151,7 @@ description: "设计→实施 验证技能。验证 Rust 代码正确实现 desi
 
 ## Design-First 视角
 
-> 配合 [review-profiles.md Profile R](../../../prompt/review-rules/review-profiles.md) 使用。
+> 配合 [review-process.md §设计优先模式](../../../prompt/review-rules/review-process.md) 使用。
 
 **Design-First Review 模式下，本 skill 的执行差异**：
 1. **审查重点变化**：从"代码是否符合 design"扩展到"design 本身是否完整、正确、可实现"

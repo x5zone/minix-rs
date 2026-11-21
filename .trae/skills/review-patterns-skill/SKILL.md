@@ -846,17 +846,6 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 
 **规则**：Step 0.7.3 doc chapter context awareness 强制；报告前必须明确"这是 Ch2 C 展示问题还是 Ch4 Rust 实现问题"。
 
-### 模式 69: 缺失 per-doc 快照（Per-doc Snapshot Missing, PSMD）
-
-**定义**：AI 以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过 design + outline 预检，导致 scan.md 标 CONVERGED 但 `{NN}-outline.v*.md` / `{NN}-design.v*.md` 实际缺失。
-
-**判定信号**：
-- AI 跳过 `ls {tree}/meta/design/{stage}/{NN}-*.v*.md` 命令
-- scan.md Block Gates 把 Gate H 标 "N/A" / "[SIMPLIFIED]" 而非 PASS/FAIL
-- 用"已有 CONVERGED 状态"或"复用 03/04 design"为由跳过预检
-
-**规则**：P0-process-violation。Step 0 硬阻断强制 4 条 `ls`；缺失 → Step 0.3 嵌入生成（不中断 review）；禁止跨文档复用快照。
-
 ### 模式 70: 跨轮状态陈旧（Cross-Turn Outdated Staleness, CTOS）
 
 **定义**：TODO 列表跨多轮 review 累积，部分 TODO 前提已失效但未被检测，导致 AI 采纳全部 TODO 为真。
@@ -872,18 +861,13 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 
 ### 模式 71: 决策泛化误用（Decision Over-Generalization, DOG）
 
-**定义**：AI 把"X 文档豁免"用户决策泛化到"Y/Z 文档"。
+**定义**：用户对文档 A 的豁免被 AI 套到文档 B，而 B 没有获得裁决。
 
 **判定信号**：
-- AI 把"X 文档豁免"泛化到"Y 文档"
-- 没有任何豁免记录在 STATE.md，但 AI 声称"已有 CONVERGED 状态"
-- 用户决策仅指明"X"，但 AI 把范围扩大到"X+Y+Z"
+- 以“某篇已批准”为由跳过另一篇的门或修复项
+- 豁免没有具体范围（文档、条目、到期条件）
 
-**规则**：
-- (a) 决策仅适用当时对象：用户决策"X 不回填"仅对 X 有效，不可泛化
-- (b) 豁免必须显式记录：豁免必须在 STATE.md `§豁免列表` 段登记
-- (c) 泛化必须询问：AI 认为需要类似豁免时，必须先询问用户
-- (d) "CONVERGED 状态"不是豁免依据：CONVERGED 是结果状态，不是豁免资格
+**规则**：豁免只作用于被点名的那篇文档/那一项；换文档或换条目必须重新取得裁决，并把范围写进 STATE.md 或判决账。
 
 ### 模式 72: 跨章节步骤数不一致（Cross-Section Step Count Mismatch, CSSCM）（NEW 2026-07-17）
 
@@ -1308,7 +1292,7 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 
 | Step | 最相关模式 | 模式主题 |
 |------|-----------|---------|
-| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 69 PSMD, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/快照缺失/TODO 陈旧/决策泛化 |
+| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/TODO 陈旧/决策泛化 |
 | Step 0.5（structure.md） | 1-15（文档错误）, A/B/C（跨文档） | 文档基础错误 + 跨文档联动 |
 | Step 1（C 源码） | 5（代码与文档不一致）, 11（设计与实现脱节）, 78 CSBU | C-Rust 语义对齐 + C bug 标注 |
 | Step 1.5（覆盖率） | — | 覆盖率由 coverage-extract.py 穷举，模式 1-15 兜底 |
@@ -1374,7 +1358,7 @@ rg -ln "#\[cfg\(target_arch" os/ | grep -v "^os/arch/"
 
 | Step | 最相关模式 | 模式主题 |
 |------|-----------|---------|
-| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 69 PSMD, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/快照缺失/TODO 陈旧/决策泛化 |
+| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/TODO 陈旧/决策泛化 |
 | Step 0.5（structure.md） | 1-15（文档错误）, A/B/C（跨文档） | 文档基础错误 + 跨文档联动 |
 | Step 1（C 源码） | 5（代码与文档不一致）, 11（设计与实现脱节）, 78 CSBU | C-Rust 语义对齐 + C bug 标注 |
 | Step 1.5（覆盖率） | — | 覆盖率由 coverage-extract.py 穷举，模式 1-15 兜底 |

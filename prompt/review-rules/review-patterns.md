@@ -5,7 +5,7 @@
 
 ## 模式编号索引（2026-09-05 清淤时加入，随新增模式维护）
 
-**总量：86 个检查模式 = 83 个编号模式（1-60、63-85，61/62 合并入 60 保留空号）+ A/B/C 三个字母模式**。历史文档中"79 个模式"的宣称对应加入 79-83 之前的状态（76 编号 + A/B/C）。"模式 64 扩展"（禁用词清单）复用编号 64，不计独立编号。
+**总量：85 个检查模式 = 82 个编号模式（1-60、63-68、70-85；61/62 合并入 60，69 为退役空号）+ A/B/C 三个字母模式**。历史文档中"79 个模式"的宣称对应加入 79-83 之前的状态（76 编号 + A/B/C）。"模式 64 扩展"（禁用词清单）复用编号 64，不计独立编号。
 
 | 编号段 | 所在节 | 主题域 |
 |---|---|---|
@@ -19,7 +19,7 @@
 | 48-78 | 八、叙事与概念错误模式 | 叙事/概念/流程漂移（含 63-72 流程族、73-78 文档漂移族） |
 | 79-85 | 九、架构抽象与锚点纪律模式（2026-09-05 新增；84 为 2026-09-18 H3 增补） | trait 边界/YAGNI/mock 隔离/cfg 泄漏/锚点纪律/未标注反模式示例 |
 
-> 编号检索是主要路径；编号说明（61/62 空号、64 扩展不占号）见 §八 内的"编号说明"。
+> 编号检索是主要路径；编号说明（61/62/69 空号、64 扩展不占号）见 §八 内的"编号说明"。
 
 ---
 
@@ -1184,7 +1184,7 @@ struct VmProc {
 
 ---
 
-> **编号说明**：模式 61-62 在演进过程中合并至模式 60（诚实显式 TODO），编号保留不补，以便历史 review 报告中的"模式 61/62"引用可追溯。模式 66 原插入位置靠前，2026-09-05 清淤时已移至 65 之后按数字序排列。"模式 64 扩展"（禁用词清单）复用编号 64，不计为新编号。
+> **编号说明**：模式 61-62 在演进过程中合并至模式 60（诚实显式 TODO），模式 69（快照缺失）随快照门退役，编号保留不补，以便历史 review 报告中的引用可追溯。模式 66 原插入位置靠前，2026-09-05 清淤时已移至 65 之后按数字序排列。"模式 64 扩展"（禁用词清单）复用编号 64，不计为新编号。
 ### 模式 63: Design-Missing 反模式
 
 > **背景**：在 Minix-RS Rust 重写场景下，design 本身是核心交付物。如果 review 流程只发现实现问题而漏掉 design 缺失，会反复局部修复却始终漏掉核心概念。
@@ -1437,54 +1437,6 @@ grep -c "unsafe" {CODE_FILE}
 - 模式 67 (CFNOC)：关注 AI 报告引用的概念对象真实性
 - 模式 68 (DSC)：关注 AI 报告引用的章节上下文真实性
 
-### 模式 69: 缺失 per-doc 快照（Per-doc Snapshot Missing, PSMD）（NEW 2026-07-16）
-
-```markdown
-❌ 错误：AI 进入 Step 0 后以"已有 CONVERGED 状态"/"incremental review"/"复用 03/04 design"等理由
-        跳过 design + outline 预检（ls {NN}-outline.v*.md / {NN}-design.v*.md）
-        结果：scan.md Block Gates 表把 Gate H 标 "N/A" / "[SIMPLIFIED]"，但实际：
-        - 06-proc-init-boot-proc.md 自 R2 (2026-06-23) CONVERGED 后从未生成 {06}-outline.v*.md 或 {06}-design.v*.md
-        - 04/05 类似（Session #11 复盘发现）
-        - 错误标"CONVERGED"但流程违反 review-process.md §Step 0 强制规则
-
-✅ 正确：硬阻断 + Step 0 预检表 + 工具支持
-        1. Step 0 启动时**必须**跑 4 条 ls 命令，结果写入 scan.md `§Step 0: 预检结果` 段
-        2. 缺失判定 + 嵌入生成（2026-07-17）：
-           - outline.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.2 嵌入生成
-           - outline-review.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.3 嵌入生成（AI 自审）
-           - design.v*.md 缺失 → Gate H.1 FAIL → Step 0.3.4 嵌入生成
-         3. 工具 `tools/design-coverage-check.sh {stage}` 自动扫描所有 stage 的 meta/design/<stage>/，输出缺失报告
-         4. scan.md Resume Point 必含 `ls meta/design/<stage>/` 命令（避免续 session 跳过）
-```
-
-**判定**：
-- AI 跳过 `ls meta/design/{stage}/{NN}-*.md` 命令 → 模式 69 触发
-- scan.md Block Gates 把 Gate H 标 "N/A" / "[SIMPLIFIED]" 而非 PASS/FAIL → 模式 69 触发
-- 用"已有 CONVERGED 状态"/"incremental review"为由跳过预检 → 模式 69 触发（P0-process-violation）
-- 用"复用 03/04 design"为由跳过预检 → 模式 69 触发（P0-process-violation，禁止跨文档复用）
-
-**规则草案**：
-- (a) **所有 review 模式强制预检**：Step 0 启动时**必须**跑 4 条 `ls` 命令
-- (b) **缺失即 FAIL**：无任何"复用"或"豁免"借口（除用户显式一次性豁免）
-- (c) **存在旧快照也必须重新评估**：v2 快照语义要求每次 review 重新执行 Step 0.3 产出 `.v{N+1}.md`
-- (d) **scan.md 必须含 `§Step 0: 预检结果` 段**：不可省略
-- (e) **决策记录豁免仅一次性**：Session #11 用户决策"04/05 不回填"仅适用当时已 CONVERGED 的 04/05，不可泛化
-
-**建议落地**：
-- [review-process.md §Step 0 硬阻断规则](../review-rules/review-process.md) NEW 2026-07-16
-- 工具：`tools/design-coverage-check.sh {stage}`（Session #12 落地）
-- 工具：`python3 tools/todo-ledger.py check`（模式 70 配套；v2 账本）
-
-**来源案例**：
-- **Session #12 (06-proc-init-boot-proc.md)**：R12 review 时发现 `.design/` 目录只有 01/02/03 快照，06 完全没有；Session #11 模式 69 发现 04/05 缺失时已记录此为 P0-process-violation，但缺少硬阻断机制导致 Session #12 仍跳过预检。
-- **Session #11 (04/05 复盘)**：模式 69 首次发现 — 04/05 自 CONVERGED 后从未生成 {04/05}-outline.v*.md / {04/05}-design.v*.md。
-
-**与现有模式的关系**：
-- 模式 66 (RCPD)：关注 TODO 描述引用的代码路径真实性
-- 模式 67 (CFNOC)：关注 AI 报告引用的概念对象真实性
-- 模式 68 (DSC)：关注 AI 报告引用的章节上下文真实性
-- **模式 69 (PSMD)**：关注 review 流程本身的元数据完整性（快照存在性 + 跨文档独立性）
-
 ### 模式 70: 跨轮状态陈旧（Cross-Turn Outdated Staleness, CTOS）（NEW 2026-07-16）
 
 ```markdown
@@ -1529,46 +1481,22 @@ grep -c "unsafe" {CODE_FILE}
 - 模式 66 (RCPD)：关注 TODO 描述引用的**代码路径**真实性
 - 模式 67 (CFNOC)：关注 AI 报告引用的**概念对象**真实性
 - 模式 68 (DSC)：关注 AI 报告引用的**章节上下文**真实性
-- 模式 69 (PSMD)：关注 review **流程元数据**完整性（快照存在性）
 - **模式 70 (CTOS)**：关注 TODO 列表**跨轮时间一致性**（前提失效检测）
 - **66 + 70 互补**：66 关注"代码路径在不在"，70 关注"前提状态对不对"
 
-### 模式 71: 决策泛化误用（Decision Over-Generalization, DOG）（NEW 2026-07-16）
+### 模式 71: 决策泛化误用（Decision Over-Generalization, DOG）
 
 ```markdown
-❌ 错误：AI 在 Session #11 收到用户决策"04/05 不回填 design 快照"，
-        Session #12 启动时**错误泛化**为"06 也有 CONVERGED 状态 → 也跳过 design 预检"
-        实际：用户决策仅适用于 04/05，06 是新 review 文档，**不能泛化**
-        结果：Session #12 跳过 design 预检 → 06 缺快照但 scan.md 标 CONVERGED → 模式 69 PSMD 触发
+❌ 错误：用户对文档 A 说“这一项本轮不改”，AI 把同一豁免套到文档 B，
+        理由是“A 也 CONVERGED 了”。豁免没有写到 B。
 
-✅ 正确：决策记录豁免的强约束
-        1. 用户决策"X 不回填"仅适用于当时已 CONVERGED 的 X，不可泛化到后续 review 的其他文档
-        2. 任何"已有 CONVERGED 状态"豁免必须满足：
-           a) 用户当时显式说"该 doc 豁免"
-           b) 豁免仅对该 doc 有效
-           c) 豁免记录在 STATE.md `§豁免列表` 段
-        3. AI 不得自行泛化用户决策；如认为某文档需要类似豁免，必须先询问用户
+✅ 正确：豁免只作用于被点名的那篇文档/那一项；换文档或换条目必须重新取得裁决，
+        并把范围写进 STATE.md 或判决账。
 ```
 
 **判定**：
-- AI 把"X 文档豁免"泛化到"Y 文档" → 模式 71 触发
-- 没有任何豁免记录在 STATE.md，但 AI 声称"已有 CONVERGED 状态" → 模式 71 触发
-- 用户决策仅指明"X"，但 AI 把范围扩大到"X+Y+Z" → 模式 71 触发
-
-**规则草案**：
-- (a) **决策仅适用当时对象**：用户决策"X 不回填"仅对 X 有效，不可泛化
-- (b) **豁免必须显式记录**：豁免必须在 STATE.md `§豁免列表` 段登记
-- (c) **泛化必须询问**：AI 认为需要类似豁免时，必须先询问用户
-- (d) **"CONVERGED 状态"不是豁免依据**：CONVERGED 是结果状态，不是豁免资格
-
-**来源案例**：
-- **Session #12**：用户 Session #11 决策"04/05 不回填"被错误泛化到 06，导致 06 缺 design 快照但仍标 CONVERGED。
-
-**与现有模式的关系**：
-- 模式 69 (PSMD)：关注 review **流程元数据**完整性
-- **模式 71 (DOG)**：关注 review **决策范围约束**（泛化误用）
-- **69 + 71 互补**：69 关注"硬阻断是否被执行"，71 关注"豁免决策是否被正确理解"
-- 三者构成"AI claim verification 三元组"：路径 + 概念 + 章节
+- 用“某篇已批准”为由跳过另一篇的门或修复项 → 模式 71 触发。
+- 豁免没有具体范围（文档、条目、到期条件）→ 不可执行，按未批准处理。
 
 ### 模式 72: 跨章节步骤数不一致（Cross-Section Step Count Mismatch, CSSCM）（NEW 2026-07-17）
 
@@ -2141,7 +2069,7 @@ rg -ln "#\[cfg\(target_arch" os/ | grep -v "^os/arch/"
 
 | Step | 最相关模式 | 模式主题 |
 |------|-----------|---------|
-| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 69 PSMD, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/快照缺失/TODO 陈旧/决策泛化 |
+| Step 0（预检） | 66 RCPD, 67 CFNOC, 68 DSC, 70 CTOS, 71 DOG | 路径漂移/claim 未验/章节误判/TODO 陈旧/决策泛化 |
 | Step 0.5（structure.md） | 1-15（文档错误）, A/B/C（跨文档） | 文档基础错误 + 跨文档联动 |
 | Step 1（C 源码） | 5（代码与文档不一致）, 11（设计与实现脱节）, 78 CSBU | C-Rust 语义对齐 + C bug 标注 |
 | Step 1.5（覆盖率） | — | 覆盖率由 coverage-extract.py 穷举，模式 1-15 兜底 |

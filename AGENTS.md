@@ -83,7 +83,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 ## Review Workflow
 
 1. **声明 scope**：目标文件、模式（doc / code / full）、STATE.md 状态；doc 模式同时用 `tools/review-units.py next <doc>` 声明本轮 T1/T2 单元。状态目录按 `{stage}` 分组且三工具隔离：`.review/{tool}/{stage}/`（Trae 用 `scans/` 扁平结构，Claude 与 Codex 用 `{doc-stem}/` 子目录）
-2. **Step 0 硬阻断预检**（所有模式强制）：4 条 `ls {tree}/meta/design/{stage}/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；快照缺失 → 对应 Gate FAIL → Step 0.3 嵌入生成（不中断 review、不标 N/A、不许复用他篇快照）。缺失却标 CONVERGED → P0-process-violation（模式 69）
+2. **Step 0 硬阻断预检**（所有模式强制）：STATE 预检（`review-state-validate.py`）+ 制品存在性（scan/structure/SYMBOLS/VERIFY-CHECK，由 `verify-check.py --preflight` 检查）+ 关联代码清单。design/outline 快照是**可选写作输入**，不再要求 `ls` 四条快照、不再做快照覆盖检查，缺失也不补生成；Gate H 只查 H.2–H.5 的语义一致性。
 3. **Blocker Gates**（0 / A / B / C / D / D-6 / D-Impl / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
 4. **产出**：scan.md（单文件汇总：Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List / structure 摘要）+ structure.md（文档 review 的 12 节骨架分析）+ SYMBOLS.md（覆盖率穷举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED）
 5. **修复原则**：P0 全修完才可 CONVERGED；文档与代码保持同步；严格遵守 `prompt/review-rules/fix-guard.md`
@@ -98,4 +98,4 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 **Review workflow 试点循环（2026-11-07 新增）**：`review-loop` 是文档加关联代码的固定循环与流程评测入口，源在 `prompt/skill/review-loop.md`，规范源为 `prompt/review-rules/review-panel.md` 与 `prompt/review-rules/review-evals.md`，数据在 `rewrite-notes/meta/coordination/review-eval/`。它不是第七个任务命令，复用上面六个命令；普通 review 不走它。试点批次：`01-stage-kernel` 的 01–10 篇，之后 `02-stage-vm` 与 `03-stage-rs` 的 01–10 篇。
 
-> **一致性约定**：`.trae/skills/`、`.codex/skills/` 与 `.claude/skills/review-scan/` 全部由 `prompt/skill/` 经 `tools/generate-derived-skills.sh` 生成（编排器源在 `prompt/skill/review-scan/`，运行时差异用 `<!-- @if:claude -->` / `<!-- @if:codex -->` 条件块表达，Claude 专有的 `allowed-tools` 字段只进 Claude 份）；只有 `.claude/rules/*` 三份运行时副本属手工同步。改完源必须跑：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh` → `tools/diff-trae-skills.sh --only-diff`，四条全绿才算改完。这四道门已由 `.github/workflows/rules-consistency.yml` 在 CI 常驻执行（连同门自身的 `--self-test` 与各工具自测：文风/锚点/承载门/引用对账/迁移/unsafe/模式/断链），不依赖任何人记得跑。
+> **一致性约定**：`.trae/skills/`、`.codex/skills/` 与 `.claude/skills/review-scan/` 全部由 `prompt/skill/` 经 `tools/generate-derived-skills.sh` 生成（编排器源在 `prompt/skill/review-scan/`，运行时差异用 `<!-- @if:claude -->` / `<!-- @if:codex -->` 条件块表达，Claude 专有的 `allowed-tools` 字段只进 Claude 份）；只有 `.claude/rules/*` 三份运行时副本属手工同步。改完源必须跑：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh`，三条全绿才算改完。这三道门已由 `.github/workflows/rules-consistency.yml` 在 CI 常驻执行（连同门自身的 `--self-test` 与各工具自测：文风/锚点/承载门/引用对账/迁移/unsafe/模式/断链），不依赖任何人记得跑。

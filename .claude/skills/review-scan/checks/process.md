@@ -14,11 +14,11 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 | **D-6** | Step 0.5 structure.md Skeleton Review (doc review only) | structure.md generated + 12-section review table + failures in Issue List | DRAFT, no STATE.md write (doc review) |
 | **E** | Step 4.5 Test Verification | §5 each test function grep-verified (if doc has §5) | DRAFT, no STATE.md write |
 | **G** | Step 5.6 VERIFY-CHECK | VERIFY-CHECK.md produced + verdict PASS (consistency ≥ 90%) | DRAFT, NOT CONVERGED |
-| **H** | Step 1.6 Design + outline Alignment Check | 所有 review 模式必检：H.1 `design.md`（非 bagging）/ `design-final.md`（bagging）存在 + design 对齐检查 + design 缺口清单 + P0-design-missing 全处置 + **H.6 outline.md 存在 + doc↔outline 无 P0 偏离**（方案 D 新增） | DRAFT, no STATE.md write |
+| **H** | Step 1.6 Design Alignment Check | 所有 review 模式必检：H.2 一致性 ≥80% + H.3 Minix3 对齐无 P0 缺失 + H.4 无 design-wrong + H.5 Refactor 类型区分；无 design 文档时用 C 源码矩阵或 N/A + 理由。快照存在性不是 Gate。 | DRAFT, no STATE.md write |
 
 **Any Gate failed → scan.md marked DRAFT, STATE.md NOT updated.**
 
-**⛔ Gate H 不允许 N/A 判定**：每篇文档都必须通过 Gate H 全部 6 项检查。不允许"本文档复用其他文档 design，Gate H N/A"——这是 P0-process-violation。若本文档无专属 design.md，必须**执行 Step 0.3 嵌入生成**（2026-07-17 变更：原"切换 Design-First 模式生成"改为"Step 0.3 嵌入生成"），而不是标 N/A 跳过。
+**Gate H 的 N/A 规则**：无 design 文档不是造假理由，也不是 FAIL；H.2/H.3 改用 C 源码矩阵，纯概念文档可 N/A + 具体理由。
 
 **Gate Evidence Rule**: For every Gate, attach the actual command + output snippet in a `gate-evidence-{X}` block in scan.md. "✅ Gate passed" without evidence is invalid.
 - Gate 0: Artifact Inventory table with expected vs actual paths + sizes.
@@ -251,55 +251,20 @@ Output: SYMBOLS.md path + P0 gaps + ARCH marks.
 > **Purpose**: 验证 review 对象（doc/code）与 design 的一致性 + design 本身的完整性 + 可实现性。
 > **Note**: design 存在性预检已在 Step 0 完成（见下方 Step 0 design 预检）。此处为正式一致性检查。
 
-**Step 0 design + outline 预检**（**所有 review 模式强制，2026-07-16 扩；原"Profile R/C/I/H-K only"已废除**）：前移自 Step 1.6，**v2 可复用快照语义**：
-```bash
-# 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
-ls {tree}/meta/design/{stage}/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
-ls {tree}/meta/design/{stage}/{NN}-outline-review.v*.md # outline 评审快照
-ls {tree}/meta/design/{stage}/{NN}-design.v*.md         # 非 bagging code 设计快照
-ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md   # bagging
-# 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-cat {tree}/meta/design/{stage}/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
-# 工具支持（NEW，Session #12 落地）
-tools/design-coverage-check.sh {stage} [--stage {stage}]           # 自动扫描所有 stage 缺失报告
-```
-- **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
-- **无旧快照** → 首次走 Step 0.3 流程，产出 `.v1.md`。
-- **⛔ 禁止"复用其他文档 design"判定**：每篇文档必须有**本编号**的快照（`{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` / `{NN}-design.v*.md`，`{NN}` = 本文档编号，如 `02`）。不允许"02 文档复用 01-design.md"——快照是 per-doc 的，不是 per-module 或 per-stage 的。违反 → P0-process-violation
-- **Forbidden snapshot sources** (P0-process-violation): `tmp_design_and_todo/`, `/tmp/`, doc §3 inline design (**circular argument**: §3 is review target, cannot be snapshot source), unprefixed `design.md`/`outline.md` (must have `{NN}-` prefix), **其他编号文档的快照**（如 02 文档复用 01-design.md）——每篇文档必须独立，禁止跨文档复用，**把旧快照当作 ground truth**（快照是 input，不是 output）。
-- **v2 产物区分**（方案 D 演进）：**可复用快照**（outline / outline-review / design）每次 review **重新执行 Step 0.3 流程**产出新版本（`.v{N+1}.md`），**保留所有历史版本**不覆盖——旧快照作为参考输入，新快照作为该轮 review 的依据。**脚手架产物**（structure / design-structure / SYMBOLS / VERIFY-CHECK）每次 review 重新生成，不复用。
-
-### ⛔ Step 0 硬阻断规则（所有 review 模式强制，NEW 2026-07-16，模式 69 + 71 配套）
-
-> **背景**：Session #12 (06-proc-init-boot-proc) 复盘发现 — 即使 Step 0 已写"design 预检强制"，AI 仍会因"已有 CONVERGED 状态"/"incremental review"等理由**错误跳过预检**。Session #11 模式 69 (PSMD) 发现 04/05 缺快照时已记录此为 P0-process-violation，但缺少硬阻断机制。
-
-**判定**（强制）：
-1. **必须跑 4 条 `ls` + 工具扫描**：每次 Step 0 启动时**必须**执行 4 条 `ls` + `tools/design-coverage-check.sh {stage}`（无论何种 review 模式）。
-2. **缺失判定 + 嵌入生成（NEW 2026-07-17）**：
-   - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **执行 Step 0.3.2 生成**（不中断 review）
-   - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL**（⚠️ 2026-07-17 从 WARN 升级，根因：原 WARN 导致 AI 总跳过 outline-review）→ **执行 Step 0.3.3 生成**（AI 自审，不需用户确认）
-   - `design.v*.md` 缺失 → **Gate H.1 FAIL** → **执行 Step 0.3.4 生成**（不中断 review）
-   - **核心变更**：原"缺失 → 阻断 + 触发附录 C（中断）"改为"缺失 → Step 0.3 嵌入生成 → 继续 review"
-   - **不允许**以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"等理由跳过 — 这些都是模式 69 (PSMD) 触发的 P0-process-violation
-3. **存在旧快照时**：仍必须执行 v2 评估（重新执行 Step 0.3 产出 `.v{N+1}.md`）。旧快照的角色仅是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
-4. **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一；该段必须含**关联代码清单**子小节（B4.2 2026-09-18））：
-   ```markdown
-   ## Step 0: 预检结果（design + outline 完整性，NEW 2026-07-16）
-   | 检查项 | ls 命令 | 结果 | 判定 |
-   |--------|---------|------|------|
-   | outline 快照 | `ls meta/design/{stage}/{NN}-outline.v*.md` | `06-outline.v1.md` ✅ | ✅ 存在（旧版作参考，Step 0.3.2 重新评估） |
-   | outline-review 快照 | `ls meta/design/{stage}/{NN}-outline-review.v*.md` | （无）| ❌ **缺失 → Gate H.6 FAIL → Step 0.3.3 生成** |
-   | design 快照 | `ls meta/design/{stage}/{NN}-design.v*.md` | （无）| ❌ **缺失 → Gate H.1 FAIL → Step 0.3.4 生成** |
-   ```
-5. **决策记录豁免**（仅限一次性用户明确豁免）：Session #11 用户决策"04/05 不回填"**仅适用于当时已 CONVERGED 的 04/05**，**不可泛化**到 06/07/08/...（**模式 71 DOG 触发**）。豁免必须登记在 STATE.md `§豁免列表` 段。
+**Step 0 预检**（所有 review 模式）：
+- 跑 `python3 tools/verify-check.py --preflight` 检查 STATE/scan/structure/SYMBOLS/VERIFY-CHECK 与关联代码清单。
+- 跑 `python3 tools/review-state-validate.py --state <STATE.md> --scan <scan.md> --strict`。
+- design/outline 快照是可选输入：不要求 `ls` 四条，不因缺失补生成，也不影响 Gate H。
+- scan.md 必须含 `§Step 0: 预检结果` 段（Gate 0 锚段，9 个之一）；该段必须含**关联代码清单**子小节（B4.2 2026-09-18）。
+- 豁免必须登记在 STATE.md `§豁免列表` 段，不可泛化（模式 71 DOG）。
 
 ### TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）
 
 > 当 review 输入包含外部 TODO 清单（当前形态：各 stage 的 todo.md / {NN}-todo.md；历史案例如 tmp_design_and_todo/ 下文件，该临时目录已删除），且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。Session #12 实测：8 个 TODO-06 中 3 个 (37.5%) 是误报。
 >
 > **详见**：[prompt/review-rules/review-process.md §Step 0.7.4 TODO Staleness Check](../../../../prompt/review-rules/review-process.md) + [prompt/review-rules/review-patterns.md 模式 70](../../../../prompt/review-rules/review-patterns.md)。
-- **命名区分**：`-structure.md` = review 骨架（Step 0.5 产物，12 节）；`-design-structure.md` = design 前序（Step 0.3.1 产物，知识点全集，脚手架）。两者内容完全不同，禁止混淆。`{NN}-outline.v{N}.md` 是可复用快照（带版本号），不是脚手架。
-- **Step 0.5.3 doc ↔ outline 对齐检查**（方案 D 新增）：`outline.v{N}.md` 存在时，对照**最新版本快照**检查文档正文偏离（遗漏/多余/顺序错位），输出偏离矩阵。P0 偏离 = 核心概念遗漏。快照缺失 → Gate H.6 FAIL。
+- **命名区分**：`structure.md` = review 骨架（Step 0.5 产物，12 节）；`design-structure.md` 是旧的设计脚手架，已不再由 review 生成。
+- **Step 0.5.3 doc ↔ outline 对齐检查**：作者提供 outline 时，对照 outline 检查文档正文偏离（遗漏/多余/顺序错位），输出偏离矩阵。P0 偏离 = 核心概念遗漏。没有 outline 时跳过，不影响 Gate H。
 
 **偏离类型**：遗漏（坏）/ 多余（需评估）/ 顺序错位（需评估）
 **严重度**：P0（核心概念遗漏）/ P1（非核心遗漏或坏偏离多余）/ P2（好偏离多余或轻微错位）
@@ -389,7 +354,7 @@ Step 1.6.4 IN_DESIGN 状态（替代 DEFERRED 逃避）：
 - 月度审计：清理过期 IN_DESIGN 项
 
 Output: gate-evidence-H 块（命令 + 检查表 + 缺口清单 + IN_DESIGN 状态）。
-> ⛔ **Gate H**: H.1 design.md/design-final.md 存在 + 6 项检查 + 缺口清单 + P0-design-missing 全处置。Failure → scan.md DRAFT。
+> **Gate H**: H.2–H.5 语义检查 + 缺口清单 + P0-design-missing 全处置。Failure → scan.md DRAFT。
 
 ## Step 2: Diff Extraction — Gate B
 Identify **Top 5** divergences: 3 语义偏移 + 2 覆盖缺口 (from SYMBOLS.md).

@@ -212,7 +212,7 @@
 ### §4.4 补充：文档组织合理性检查矩阵（13 项）
 
 > 教训回顾：再次列出大纲，思考整体组织、思考教学性、概念全面覆盖。
-> **引用**：文档重写工作流 Step 2.1 章节结构作为组织标准（见 [review-process.md §Step 0.3.2 生成 outline.md](review-process.md)）。
+> **引用**：以本文档自己的写作大纲（若有）作为组织标准；没有大纲时按 review.md §4.4 的直接判据。
 
 **组织合理性检查矩阵**：
 
@@ -345,7 +345,7 @@ Step 4: Cross-Document Check (正确性)
   ↓
 Step 4.5: Test Verification（正确性，Gate E）
   ↓
-卓越性检查（Layer 2 ← 本文件，见 review.md §4.5，非 Blocker Gate）
+卓越性检查（本文件；问题按 G2 的 P1/P2 入 Issue List，不设 Layer 2 门槛）
   ↓
 Step 5: Final Review Output
 ```

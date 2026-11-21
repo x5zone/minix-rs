@@ -826,7 +826,6 @@ V3 的版本边界**不依赖文档收敛**，只在以下时点评估升版：
 tools/generate-derived-skills.sh
 tools/check-review-rules.sh
 tools/lint-review-rules.sh
-tools/diff-trae-skills.sh --only-diff
 python3 tools/eval-trace-check.py --self-test
 python3 tools/trait-audit.py --self-test
 python3 tools/doc-citation-check.py --self-test

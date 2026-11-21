@@ -1,4 +1,4 @@
-Use this agent to review docs/code in Minix-RS (Rust semantic reconstruction of Minix3). Verifies 8 domains: Minix3 source behavior, doc link consistency (Ch1→Ch2→Ch3→Ch4), HW abstraction (trait-based, no register/PTE leaks), no_std, SMP/BKL concurrency, C-Rust semantic alignment (IPC/lifetime/error/permission/address space), coverage enumeration (machine + AI), and excellence assessment. Routes to specialized skills: doc, code, patterns, process, core-semantics, excellence, coverage, socratic. Profiles: A/B/G (constructive) / D (quick) / C/H-K (deep) / **R (Design-First)** — triggers when design exists but is wrong, the review target is a design doc, or design ↔ code alignment fails (Gate H). Missing snapshots are handled inline by Step 0.3, not by switching modes. New modes (2026-07-16): workflow evaluation/optimization, fix review findings, Step 0 design snapshot backfill (模式 69 PSMD), TODO staleness check (模式 70 CTOS), decision over-generalization (模式 71 DOG).
+Use this agent to review docs/code in Minix-RS (Rust semantic reconstruction of Minix3). Verifies 8 domains: Minix3 source behavior, doc link consistency (Ch1→Ch2→Ch3→Ch4), HW abstraction (trait-based, no register/PTE leaks), no_std, SMP/BKL concurrency, C-Rust semantic alignment (IPC/lifetime/error/permission/address space), coverage enumeration (machine + AI), and excellence assessment. Routes to specialized skills: doc, code, patterns, process, core-semantics, excellence, coverage, socratic. Profiles: A/B/G (constructive) / D (quick) / C/H-K (deep) / **R (Design-First)** — triggers when design exists but is wrong, the review target is a design doc, or design ↔ code alignment fails (Gate H). Design/outline snapshots are optional inputs, not gates. New modes: workflow evaluation/optimization, fix review findings, TODO staleness check (模式 70 CTOS), decision over-generalization (模式 71 DOG).
 <example>
   Context: User wants a markdown doc reviewed for accuracy against Minix3 source.
   user: "Please review src/vm/memory.md"
@@ -52,10 +52,10 @@ Use this agent to review docs/code in Minix-RS (Rust semantic reconstruction of 
 <example>
   Context: User wants to evaluate the review workflow for issues/optimizations after a session ends.
   user: "工作流有没有问题？" / "优化 review 工作流" / "判断当前 review 工作流是否有可优化的地方"
-  assistant: "I'll analyze the review workflow, identify gaps (e.g. 模式 69 PSMD/70 CTOS/71 DOG), and propose optimizations with concrete fixes to prompt/ files"
+  assistant: "I'll analyze the review workflow, identify gaps (e.g. 模式 70 CTOS/71 DOG), and propose optimizations with concrete fixes to prompt/ files"
 </example>
 <example>
-  Context: User wants to backfill missing design/outline snapshots after discovering a doc never generated them.
-  user: "06 缺 design 快照，补一下" / "追溯生成 06 outline.md"
-  assistant: "I'll run design-coverage-check.sh, then execute Step 0.3 embedded generation (outline→outline-review→design, 独立推导非复用)"
+  Context: User wants to start a review and asks what Step 0 checks.
+  user: "开始 review 06" / "Step 0 要检查什么"
+  assistant: "I'll run verify-check.py --preflight and review-state-validate.py; design/outline snapshots are optional inputs, not gates."
 </example>

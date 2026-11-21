@@ -3,7 +3,7 @@
 > 项目入口是根目录 `AGENTS.md`；本目录只存规范源与派生源。运行时副本
 > （`.claude/`、`.codex/`、`.trae/`、`.agents/`）不得手写新规则。
 >
-> 改动顺序固定：**改这里 → 生成派生件 → 跑四道门 → 提交**。
+> 改动顺序固定：**改这里 → 生成派生件 → 跑三道门 → 提交**。
 
 ## 一、目录
 
@@ -19,12 +19,7 @@ prompt/
 │   └── review-*-skill.md        — 9 个领域 Skill + review-loop
 ├── WORKFLOW-OPEN-ITEMS.md       — 裁决与开放项存档（含被规则引用的 F-A/F-B/F-C 格式定义）
 ├── WORKFLOW-ADVICE-ARCHIVE.md   — 历史删档承接与出处（非规则）
-├── DOC-ITER-WORKFLOW.md         — 文档迭代统一规格（review-panel P-READER 引用）
 ├── EXECUTE-D01-D06-CONVERGENCE.md — V3.9 执行入口指针（非规则；V3.5 手册已归档）
-├── TODO-MIGRATION-2026-11-21.md — 01/02 旧 TODO 迁移记录（非规则）
-├── META-UNITS-2026-11-21.md     — 单元模型 meta 报告（非规则）
-├── V3.9-REGRESSION-REVIEW-2026-11-21.md — V3.9 回归 review 报告（非规则）
-└── WORKFLOW-AUDIT-2026-11-21.md  — 工作流审计报告（非规则）
 ```
 
 `tmp/` 是会话产物与取证目录，整域不入库；`rewrite-notes/` 是文档与协作账本树。
@@ -48,7 +43,7 @@ prompt/
 | `review-units.md` | 单元级 review V3.9：`###` 节冻结、T1/T2/T3 三轨、G14 |
 | `review-panel.md` | review-loop 独立面板：角色、材料隔离、归因 |
 | `review-evals.md` | review-loop 评测：G1–G14、§6A 四态收敛模型 |
-| `review-profiles.md` | 旧 Profile A–K/O/P/R/AG 的组合配置（保留为别名对照） |
+| `review-cmds.md` §八 | 旧 Profile A–K/O/P/R/AG 别名对账（原 `review-profiles.md` 已退役） |
 
 ## 三、skill/（适配层）
 
@@ -76,7 +71,7 @@ prompt/
 | `review.md` 苏格拉底追问 | `review-socratic-skill` |
 | `review-panel.md` + `review-evals.md` + `review-units.md` | `review-loop` |
 | `review-cmds.md` | `cmds/*/SKILL.md` |
-| `review.md` + `review-profiles.md` | `review-agent-ide.md` / `review-agent-trigger.md` |
+| `review.md` + `review-cmds.md` §八 | `review-agent-ide.md` / `review-agent-trigger.md` |
 
 Skill 是规则的适配层（frontmatter、触发条件、输出模板），**不会自动同步文本**：
 `check-review-rules.sh` 的计数检查只能捕获结构性漂移，段落内文字漂移由 review 保证。
@@ -97,13 +92,12 @@ Skill 是规则的适配层（frontmatter、触发条件、输出模板），**�
 `.trae` 不使用 review-scan 编排器，走 review-agent 定义；`.codex` 与 `.claude`
 使用同一份 review-scan 源。
 
-## 五、改完必跑的四道门
+## 五、改完必跑的三道门
 
 ```bash
 tools/generate-derived-skills.sh          # 重新生成 .trae/ 与 .codex/
 bash tools/check-review-rules.sh          # 源与派生件一致性、计数、引用
 bash tools/lint-review-rules.sh           # 字符预算、frontmatter、软链、元规则锚点
-bash tools/diff-trae-skills.sh --only-diff # Trae 派生件逐文件差异
 ```
 
 只想检查漂移、不写文件：`tools/generate-derived-skills.sh --check`（退出码 0 = 无漂移）。

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # review-init.sh — Minix-RS Review 初始化助手
 #
-# 用法: review-init.sh {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]
+# 用法: review-init.sh {tool} {doc-path} [agent] [--require-multi-agent] [--size-adaptive]
 # 例:   review-init.sh trae rewrite-notes/01-stage-kernel/03-kmain-cstart.md glm
-#       review-init.sh trae rewrite-notes/02-stage-vm/04-vmproc-struct.md kimi --design-policy strict --require-multi-agent
+#       review-init.sh trae rewrite-notes/02-stage-vm/04-vmproc-struct.md kimi --require-multi-agent
 #
 # 功能:
 #   1. 从 doc-path 自动计算 {tree} / {stage} / {doc-stem}
@@ -11,8 +11,7 @@
 #   3. 输出 Derived Paths 表格供 agent 在 Step 0 引用
 #   4. 若 STATE.md 已存在，运行 review-state-validate.py 预检
 #   5. 若 STATE.md 不存在，生成空 STATE.md 骨架
-#   6. **NEW 2026-07-16**: Design 存在性预检（按 --design-policy 决定 strict/optional/required）
-#   7. **NEW 2026-07-16**: --require-multi-agent 强制验证 Gate G 必须 multi-agent
+##   7. **NEW 2026-07-16**: --require-multi-agent 强制验证 Gate G 必须 multi-agent
 #   8. **NEW 2026-07-16**: --size-adaptive 输出 size-adaptive round 推荐
 #
 # 路径布局（2026-10-07 notes 迁移后：module 层退役，{stage} 顶替它做状态目录键）:
@@ -41,19 +40,15 @@ SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR_SELF/notes-layout.conf"
 
 # ===== 默认值 =====
-DESIGN_POLICY="strict"           # strict | optional | required
 REQUIRE_MULTI_AGENT="false"       # true | false
 SIZE_ADAPTIVE="false"             # true | false
 
 # ===== 参数校验 + 解析 =====
 if [[ $# -lt 2 ]]; then
-    echo "用法: $0 {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]" >&2
+    echo "用法: $0 {tool} {doc-path} [agent] [--require-multi-agent] [--size-adaptive]" >&2
     echo "  tool     = trae | claude | codex | zcode | qoder" >&2
     echo "  doc-path = 相对项目根的文档路径（如 {tree}/{stage}/{doc}.md，tree = ${NOTES_TREES[*]}）" >&2
     echo "  agent    = AI 标识（Trae: glm/kimi/ds/qwen/seed；Claude 可省略）" >&2
-    echo "  --design-policy   = strict（默认；缺失 design 记录 Gate H FAIL，继续由 review 内部 Step 0.3 嵌入生成）" >&2
-    echo "                      | optional（缺失 design 仅警告，不阻断；仍须生成本编号快照）" >&2
-    echo "                      | required（缺失 design 则立即报错退出）" >&2
     echo "  --require-multi-agent = 报告 P0≥1 时强制多 agent 验证 Gate G" >&2
     echo "  --size-adaptive    = 输出 size-adaptive round 推荐（>1000 行文档分轮）" >&2
     exit 1
@@ -63,10 +58,6 @@ fi
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --design-policy)
-            DESIGN_POLICY="$2"
-            shift 2
-            ;;
         --require-multi-agent)
             REQUIRE_MULTI_AGENT="true"
             shift
@@ -102,10 +93,6 @@ if [[ "$TOOL" != "trae" && "$TOOL" != "claude" && "$TOOL" != "codex" && "$TOOL" 
     exit 1
 fi
 
-if [[ ! "$DESIGN_POLICY" =~ ^(strict|optional|required)$ ]]; then
-    echo "❌ --design-policy 必须是 strict / optional / required，得到: $DESIGN_POLICY" >&2
-    exit 1
-fi
 
 # ===== 定位项目根 =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -267,53 +254,6 @@ else
     echo "ℹ️ STATE.md 不存在，生成骨架..."
     generate_state_skeleton "$STATE_FILE" "$TOOL" "$MODULE"
     echo "✅ 已生成: $STATE_FILE"
-fi
-
-# ===== Design 存在性预检（NEW 2026-07-16）=====
-# 触发条件：所有 review 模式；review-process.md §Step 0 必须做
-echo ""
-echo "=== Design 预检（NEW Step 0 requirement）==="
-# 提取 doc 编号前两位（如 03-kmain-cstart → 03），用于匹配 {NN}-design.v{N}.md 模式
-DOC_NN="$(echo "$DOC_STEM" | cut -d- -f1)"
-DESIGN_DIR="$TREE/meta/design/$STAGE"
-if [[ -d "$DESIGN_DIR" ]]; then
-    DESIGN_FILES=$(ls "$DESIGN_DIR"/"${DOC_NN}"-design*.md 2>/dev/null || true)
-    if [[ -n "$DESIGN_FILES" ]]; then
-        echo "✅ Design 已存在（policy=$DESIGN_POLICY）："
-        echo "$DESIGN_FILES" | sed 's/^/   /'
-    else
-        case "$DESIGN_POLICY" in
-            strict)
-                echo "⛔ Design MISSING（policy=strict）：$DESIGN_DIR/${DOC_NN}-design.v*.md"
-                echo "   下一步：启动 review 后，AI 将自动执行 Step 0.3 嵌入生成（design-structure → outline → outline-review → design）"
-                echo "   详见：prompt/review-rules/review-process.md §Step 0.3 缺失即生成"
-                echo "   继续进入 review；Step 0.3 必须在 review 内生成本编号快照，Gate H 暂记 FAIL"
-                ;;
-            optional)
-                echo "⚠️  Design MISSING（policy=optional）：$DESIGN_DIR/${DOC_NN}-design.v*.md"
-                echo "   将仅 WARN 不阻断 review；仍须通过 Step 0.3 生成本编号快照，禁止跨文档复用 design"
-                ;;
-            required)
-                echo "⛔ Design REQUIRED（policy=required）但缺失：$DESIGN_DIR/${DOC_NN}-design.v*.md"
-                echo "   立即退出。请先生成 design 后再 review。"
-                exit 2
-                ;;
-        esac
-    fi
-else
-    echo "⚠️ Design 目录不存在：$DESIGN_DIR"
-    case "$DESIGN_POLICY" in
-        strict)
-            echo "   policy=strict：继续进入 review；Step 0.3 必须生成本编号快照，Gate H 暂记 FAIL"
-            ;;
-        optional)
-            echo "   policy=optional，仅警告不阻断；仍须生成本编号快照"
-            ;;
-        required)
-            echo "   立即退出。"
-            exit 2
-            ;;
-    esac
 fi
 
 # ===== Multi-Agent 提示（NEW 2026-07-16）=====

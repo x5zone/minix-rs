@@ -116,11 +116,11 @@ gaps=$(echo "$nums" | awk 'NR>1 && $1 != prev + 1 && !($1 == 63 && prev == 60) {
 l5b_ok="true"
 for g in $gaps; do
   case "$g" in
-    "60->63") : ;;  # 61/62 合并入 60（有记录的空号）
+    "60->63"|"68->70") : ;;  # 61/62 合并入 60；69 退役（有记录的空号）
     *) l5b_ok="false"; fail "L5b 未记录的模式编号断裂: $g" ;;
   esac
 done
-[ "$l5b_ok" = "true" ] && ok "L5b 模式编号断裂仅限已记录的 61/62"
+[ "$l5b_ok" = "true" ] && ok "L5b 模式编号断裂仅限已记录的 61/62/69"
 total=$(echo "$nums" | sort -un | wc -l)
 # 宣称的数字从索引行读出来，不写死在脚本里：新增模式时只需改文档，不必同时改代码。
 # grep 无命中时（宣称行被删或改写）必须显式报错，不能让 set -e 把整个脚本静默带走。
@@ -180,7 +180,7 @@ import re
 from pathlib import Path
 lib = Path("prompt/review-rules/review-patterns.md").read_text(encoding="utf-8")
 defined = {int(n) for n in re.findall(r"^### 模式\s*([0-9]+)", lib, re.M)}
-allowed = defined | {61, 62}
+allowed = defined | {61, 62, 69}
 mx = max(defined)
 SCAN = ["prompt", ".claude", ".codex", ".trae", ".agents", "AGENTS.md"]
 bad = []
@@ -266,7 +266,7 @@ from pathlib import Path
 lib = Path("prompt/review-rules/review-patterns.md").read_text(encoding="utf-8")
 defined = {int(n) for n in re.findall(r"^### 模式\s*([0-9]+)(?![0-9A-Za-z])", lib, re.M)}
 defined |= {int(n) for n in re.findall(r"^### 模式\s*([0-9]+)(?![0-9A-Za-z]) 扩展", lib, re.M)}
-allowed_gap = {61, 62}
+allowed_gap = {61, 62, 69}
 bad = []
 for a, b in re.findall(r"\|\s*([0-9]{1,3})-([0-9]{1,3})\s*\|", lib):
     for n in range(int(a), int(b) + 1):
@@ -347,7 +347,6 @@ ok "L8 .agents/skills/ 软链检查完成"
 grep -q "⛔ 新增规则元规则" prompt/review-rules/review-process.md || fail "L9 review-process.md 缺新增规则元规则"
 grep -q "### 检查项注册表" prompt/review-rules/review-process.md || fail "L9 review-process.md 缺检查项注册表"
 grep -q "### Gate 权威注册表" prompt/review-rules/review-process.md || fail "L9 review-process.md 缺 Gate 权威注册表"
-grep -q "现役入口变更" prompt/review-rules/review-profiles.md || fail "L9 review-profiles.md 缺 cmd 入口迁移声明"
 ok "L9 元规则与注册表锚点检查完成"
 
 echo "== lint-review-rules 完成：$errors 个失败 =="

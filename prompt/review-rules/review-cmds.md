@@ -1,7 +1,7 @@
 # Review 任务命令规范（review-cmds）
 
 > **定位**：面向任务的一级调度入口。一个 cmd = 一个单一目标 + 明确范围 + 明确边界。
-> **来源**：`AI-chats/cmds.md` 的 21 条实际用法归纳（2026-09-05）+ [review-profiles.md](review-profiles.md) 对账（对账表见 §八）。
+> **来源**：`AI-chats/cmds.md` 的 21 条实际用法归纳（2026-09-05）+ 旧 Profile 对账（见 §八）。
 >
 > **元原则：注意力是 review 质量的第一约束。** 给 AI 一次布置多个目标，每个目标的完成质量都会下降
 > （实证：① 章节级 review 优于整文档 review；② 单一目标 cmd 优于多目标混合——这正是"明明有那么多
@@ -71,7 +71,7 @@
 **硬约束**：命令确定后，该命令要求的技能必须**真的通过工具调用**（Skill Invocation Log 记实际调用），
 "读过规则/我记得内容"不算调用。
 
-**生成新文档的 outline-first 硬约束**（doc-optim bagging 2026-10）：为某 stage **新写**一篇正式文档时，写正文前必须产出**该文档自己的结构大纲**，其中每节登记一栏“代码放置计划”（预定贴哪个 C 函数 / 哪段 Rust、节选行数、目的）+ 勾选调用图/辨析/三架构对照/诊断；大纲经自审再写正文。**旧 `draft/*` 与旧 `meta/design/<stage>/{num}` 快照一律仅作思路参考、不作本篇结构契约**：不得以“已存在历史快照”为由跳过本步（历史快照可能属上一代文档、且可能落后于代码——Gate H 对“新文档”的判据是“本篇自带新 outline 且经自审”，不是“快照齐全”）。**新大纲的持久化落点唯一**：写进 `meta/design/{stage}/{NN}-outline.v{N+1}.md`（+ 同名 outline-review），使 Gate H.6 的 `ls meta/design/{stage}/{NN}-outline.v*.md` 直接命中该新大纲；`.review/{tool}/{stage}/…` 下只放生成期工作稿，不作 H.6 的比较对象（否则两址并存、H.6 永远只能glob到旧快照）。
+**生成新文档的 outline-first 写作约束**（doc-optim bagging 2026-10）：为某 stage **新写**一篇正式文档时，写正文前必须先产出**该文档自己的结构大纲**，其中每节登记一栏“代码放置计划”（预定贴哪个 C 函数 / 哪段 Rust、节选行数、目的）+ 勾选调用图/辨析/三架构对照/诊断；大纲经自审再写正文。**旧 `draft/*` 与旧 `meta/design/<stage>/{num}` 快照一律仅作思路参考、不作本篇结构契约**——历史快照可能属上一代文档、且可能落后于代码。大纲写在哪里由作者决定（常见 `meta/design/{stage}/{NN}-outline.v{N+1}.md`），review 不检查它是否存在，也不把它作为 Gate H 条件；Gate H 只查 H.2–H.5 的语义一致性。
 
 
 ## 二、cmd `full-review`（文档+代码 全面 review + 修复 + 覆盖度）
@@ -224,7 +224,7 @@
 
 ## 八、Profile 对账表（旧 → 现役）
 
-> 旧 Profile ID **保留为别名**（历史 STATE.md / scan.md 中的"Profile C"等引用可追溯）；新任务一律用 cmd 入口。review-profiles.md 只作历史别名；加载细则以本文件 §一与两份 checklist 为准。
+> 旧 Profile ID **保留为别名**（历史 STATE.md / scan.md 中的"Profile C"等引用可追溯）；新任务一律用 cmd 入口。加载细则以本文件 §一与两份 checklist 为准。
 
 | 旧 Profile | 一句话 | 去向 |
 |---|---|---|
@@ -238,7 +238,7 @@
 | H/I/J/K | 分阶段完整 review | `full-review`（scope=doc）分轮执行，轮次划分沿用 H-K 定义 |
 | O | 卓越性专项 | **拆分**：文档卓越 → `style-fix`；代码卓越 → `code-excellence` |
 | P | 覆盖率专项 | `full-review`（scope=dir/range，coverage 模块强制） |
-| R | Design-First review | `full-review`（Step 0.3 / 1.6 / Gate H 生效路径） |
+| R | Design-First review | `full-review`（修 design / 1.6 / Gate H 生效路径） |
 | AG | 自动生成文档检查 | `full-review`（scope=doc，仅基础正确性维度） |
 
 **缺口填补记录**：文风修复（原无）、测试专项（原无）、TODO 修复（原无）——分别由 `style-fix` / `test-audit` / `todo-fix` 补上，这是本次重组的主增量。

@@ -41,13 +41,13 @@ You are a review orchestrator. Your job is to execute checks domain by domain, i
 | **D-6** | Phase 2.5 structure.md Skeleton Review (doc review only) | structure.md generated + 12-section review table + failures in Issue List | DRAFT, no STATE.md write (doc review) |
 | **E** | Phase 7 Step 4.5 Test Verification | §5 each test function grep-verified (if doc has §5) | DRAFT, no STATE.md write |
 | **G** | Phase 9 VERIFY-CHECK | VERIFY-CHECK.md produced + verdict PASS (consistency ≥ 90%) | DRAFT, NOT CONVERGED |
-| **H** | Phase 2.6 Design Alignment Check | **所有 review 模式必检（2026-07-16 扩；原"仅完整/深度/设计优先"已废除）**：H.1 `design.md`（非 bagging）/ `design-final.md`（bagging）存在 + design 对齐检查 + design 缺口清单 + P0-design-missing 全处置 + **H.6 outline.md 存在 + doc↔outline 无 P0 偏离**。**不允许 N/A / [SIMPLIFIED] / "复用其他文档 design"**（**模式 69 PSMD 触发**） | DRAFT, no STATE.md write |
+| **H** | Phase 2.6 Design Alignment Check | **所有 review 模式必检**：H.2 一致性 ≥80% + H.3 Minix3 对齐无 P0 缺失 + H.4 无 design-wrong + H.5 Refactor 类型区分；无 design 文档时用 C 源码矩阵或 N/A + 理由。快照存在性不是 Gate。 | DRAFT, no STATE.md write |
 
 **Any Gate failed → scan.md marked DRAFT, STATE.md NOT updated.**
 
-**⛔ Gate H 不允许 N/A 判定（2026-07-16 强化；2026-07-17 更新）**：每篇文档都必须通过 Gate H 全部 6 项检查。若本文档无专属 design.md / outline.md / outline-review.md，必须**执行 Step 0.3 嵌入生成**（不切换模式，不中断 review），不得标 N/A 跳过（违反 = P0-process-violation + 模式 69 PSMD 触发）。原"切换 Design-First 模式生成"已废除——Design-First 仅用于 design-wrong（design 存在但有错误），不用于缺失场景。
+**Gate H 的 N/A 规则**：无 design 文档不是造假理由，也不是 FAIL；H.2/H.3 改用 C 源码矩阵，纯概念文档可 N/A + 具体理由。
 
-**Gate Evidence Rule**: For every Gate, attach the actual command + output snippet in a `gate-evidence-{X}` block in scan.md. "✅ Gate passed" without evidence is invalid. Evidence strength: L1 (tool/grep output) required for A/D/E; L1 or L2 for B/C; L3 inference = FAIL unless `MANUAL_FALLBACK` justified.
+**Gate Evidence Rule**: For every Gate, attach the actual command + output snippet in a `gate-evidence-{X}` block in scan.md, with a first line `level: L1|L2|L3`. "✅ Gate passed" without evidence is invalid. L1 (tool output) required for A/D/E/G10–G13; L2 for B/C/D-6/G/H; L3 only B/C/D-6/H with `MANUAL_FALLBACK` reason.
 
 ## Skill Invocation Log (mandatory in scan.md)
 scan.md must include this section:
@@ -84,30 +84,12 @@ Missing this section → scan.md marked DRAFT.
    - `$DOC_STEM` = target doc basename without extension. Codex has no bagging agent suffix.
    - Use `tools/review-init.sh codex {doc-path}` to auto-compute paths and mkdir.
 <!-- @endif -->
-4. **⛔ Step 0 硬阻断预检（NEW 2026-07-16，所有 review 模式强制，模式 69 PSMD + 71 DOG 配套）**：
-   - **必须跑 4 条 `ls`**（无论何种 review 模式）：
-     ```bash
-     ls rewrite-notes/meta/design/$STAGE/$NN-outline.v*.md
-     ls rewrite-notes/meta/design/$STAGE/$NN-outline-review.v*.md
-     ls rewrite-notes/meta/design/$STAGE/$NN-design.v*.md
-     ls rewrite-notes/meta/design/$STAGE/$NN-design-final.v*.md  # bagging only
-     ```
-   - **必须跑工具扫描**：
-     ```bash
-     tools/design-coverage-check.sh $STAGE
-     ```
-   - **缺失判定 + 嵌入生成（2026-07-17）**：
-     - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.2 嵌入生成**（不中断 review）
-     - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.3 嵌入生成**（AI 自审）
-     - `design.v*.md` 缺失 → **Gate H.1 FAIL** → **Step 0.3.4 嵌入生成**（不中断 review）
-     - 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过
-<!-- @if:claude -->
-   - **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL；该段必须含**关联代码清单**子小节（B4.2 2026-09-18））
-<!-- @endif -->
-<!-- @if:codex -->
-   - **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL）；该段必须含**关联代码清单**子小节（B4.2 2026-09-18）
-<!-- @endif -->
-   - **豁免必须登记在 STATE.md `§豁免列表` 段，不可泛化**（模式 71 DOG）
+4. **Step 0 预检（所有 review 模式）**：
+   - 跑 `python3 tools/verify-check.py --preflight` 检查 STATE/scan/structure/SYMBOLS/VERIFY-CHECK 与关联代码清单。
+   - 跑 `python3 tools/review-state-validate.py --state <STATE.md> --scan <scan.md> --strict`。
+   - design/outline 快照是可选输入：不要求 `ls` 四条，不因缺失补生成，也不影响 Gate H。
+   - scan.md 必须含 `§Step 0: 预检结果` 段（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL）；该段必须含**关联代码清单**子小节（B4.2 2026-09-18）。
+   - 豁免必须登记在 STATE.md `§豁免列表` 段，不可泛化（模式 71 DOG）。
 
 ---
 
@@ -211,13 +193,12 @@ Phase 2.6.3 IN_DESIGN 状态（替代 DEFERRED 逃避）：
 - 时间上限：7 天警告、30 天清理
 - 月度审计：清理过期 IN_DESIGN 项
 
-Phase 2.6.4 outline 对齐检查（H.6，方案 D 新增）：
-- 检查 `{tree}/meta/design/{stage}/{NN}-outline.v*.md` 是否存在（持久化可复用快照，任一版本命中）
-- 对照 Step 0.5.3 的 outline 偏离矩阵，确认无 P0 偏离（核心概念遗漏）
-- outline 快照缺失 → Gate H.6 FAIL，建议补生成 outline（走 Step 0.3.2-0.3.3）
+Phase 2.6.4 大纲对照（可选）：
+- 作者提供 outline 时，对照 Step 0.5.3 的偏离矩阵，确认无 P0 偏离。
+- 没有 outline 时跳过，不影响 Gate H。
 
-Output: gate-evidence-H 块。
-> ⛔ **Gate H**: 6 项 design 检查 + 缺口清单 + P0-design-missing 全处置 + **H.6 outline 对齐无 P0 偏离**。Failure → scan.md DRAFT。
+Output: gate-evidence-H 块（`level: L2` 或 L3 + `MANUAL_FALLBACK`）。
+> **Gate H**: H.2–H.5 语义检查 + 缺口清单 + P0-design-missing 全处置。Failure → scan.md DRAFT。
 > 详见 `prompt/review-rules/review-process.md` §Step 1.6 + `prompt/skill/review-patterns-skill.md` §X.5 Pattern 63 Design-Missing。
 
 ---

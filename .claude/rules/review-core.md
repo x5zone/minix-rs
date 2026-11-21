@@ -46,7 +46,7 @@ Minix3 C source behavior > design contract > Rust code (os/) > design/technical 
 - **方案 D（outline 升格）**：三类持久化交付物并存于 `.design/` 子目录——`{NN}-outline.md`（doc 结构契约）、`{NN}-outline-review.md`（outline 批准证据）、`{NN}-design.md`/`{NN}-design-final.md`（code 设计契约）。outline 与 design 对称：design 是 code 的契约，outline 是 doc 的契约。
 - **判定优先级链**：`Minix3 源码行为 > design doc > Rust 代码 > 设计/技术文档`
 - 当 Minix3/design/code/doc 冲突时按上链判定（详见 [review-core-semantics.md §1.5](../../prompt/review-rules/review-core-semantics.md)）
-- **Profile R（设计优先模式 Review）**：`review xxx-design.md`（非 bagging）/ `review xxx-design-final.md`（bagging）时加载，或 review 中发现 P0-design-wrong 时触发；验证 design 完整性 + 可实现性 + design ↔ code 一致性 + outline ↔ doc 对齐。**注意（2026-07-17）**：design/outline/outline-review **缺失**场景不再触发 Design-First，而是由 **Step 0.3 嵌入生成**处理（不切换模式）。Design-First 仅用于 design **存在但有错误**（design-wrong）场景。
+- **Profile R（设计优先模式 Review）**：`review xxx-design.md`（非 bagging）/ `review xxx-design-final.md`（bagging）时加载，或 review 中发现 P0-design-wrong 时触发；验证 design 完整性 + 可实现性 + design ↔ code 一致性 + outline ↔ doc 对齐。**注意（V3.10）**：design/outline **不存在**时不触发 Design-First，也不补生成；H.2/H.3 改用 C 源码矩阵或 N/A + 理由。Design-First 仅用于 design **存在但有错误**（design-wrong）场景。
 
 ## ⛔ MANDATORY: Explicit Skill Invocation
 
@@ -119,7 +119,6 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 - **66 RCPD** (Reference Code Path Drift): TODO/issue 描述引用的 `file:line` 已不存在（重构/重命名）→ Step 0.7.1 path existence validation 必跑
 - **67 CFNOC** (C Function Name vs OS Concept Confusion): 把 C 函数名（如 `proc_init`）误读为 OS 概念对象（如 `Process`）→ Step 0.7.2 AI claim grep verification 必跑
 - **68 DSC** (Doc Section Confusion): 把 Ch2 C 源码展示误判为 Ch4 Rust 实现问题 → Step 0.7.3 doc chapter context awareness 必跑
-- **69 PSMD** (Per-doc Snapshot Missing): per-doc design/outline 快照缺失但 scan.md 标 CONVERGED → **Step 0 硬阻断** + `tools/design-coverage-check.sh`
 - **70 CTOS** (Cross-Turn Outdated Staleness): TODO 列表跨轮状态陈旧（37.5% 误报率）→ Step 0.7.4 TODO staleness check 必跑
 - **71 DOG** (Decision Over-Generalization): 把"X 文档豁免"用户决策泛化到"Y/Z 文档" → STATE.md §豁免列表 + 不可泛化原则
 - **72 CSSCM** (Cross-Section Step Count Mismatch, NEW 2026-07-17): 文档 §2 C 分析步骤数 ≠ §4 Rust 实现步骤数且无差异说明表 → P1；差异表必须分类（架构演进/设计决策/已知缺口/C bug）+ 附 C 行号。检查命令：`rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" {doc}`
@@ -132,21 +131,19 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 
 > **本清单是子集，不是全量模式库**：这里只列 Claude 会话高频要查的 48–78 一族，模式 79–85（架构抽象、锚点纪律、伪统一、未标注反模式示例）不在本文件里。全量权威清单在 `prompt/review-rules/review-patterns.md`；review 时需要其它族**必须调用 `review-patterns-skill`**，不得因为本文件里没有就当作该模式不存在。
 
-## ⛔ Step 0 硬阻断（所有 review 模式强制，NEW 2026-07-16）
+## Step 0 预检（所有 review 模式强制）
 
-> 每次 review 启动时**必须**执行：
-> 1. 4 条 `ls {tree}/{stage}/.design/{NN}-*.v*.md`（结果写入 scan.md `§Step 0: 预检结果` 段）
-> 2. `tools/design-coverage-check.sh {stage}`（自动扫描所有 stage 缺失报告）
-> 3. **缺失判定 + 嵌入生成（2026-07-17）**：`outline.v*.md` 缺失 → Gate H.6 FAIL → **Step 0.3.2 嵌入生成**；`outline-review.v*.md` 缺失 → Gate H.6 FAIL → **Step 0.3.3 嵌入生成**（AI 自审）；`design.v*.md` 缺失 → Gate H.1 FAIL → **Step 0.3.4 嵌入生成**。**不中断 review，不切换模式**（原"阻断 Step 1 + 触发 Design-First"已废除）。
-> 4. 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过（**模式 69 PSMD 触发**）
-> 5. 豁免必须登记在 STATE.md `§豁免列表` 段，**不可泛化**（**模式 71 DOG 触发**）
->
-> **详见**：`.claude/rules/review-process.md §Step 0 硬阻断规则` + `prompt/review-rules/review-patterns.md 模式 69/71`
+> 每次 review 启动时执行：
+> 1. `python3 tools/verify-check.py --preflight`（STATE/scan/structure/SYMBOLS/VERIFY-CHECK + 关联代码清单）
+> 2. `python3 tools/review-state-validate.py --state <STATE.md> --scan <scan.md> --strict`
+> 3. scan.md 必须含 `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一；该段必须含关联代码清单，B4.2）
+> 4. design/outline 快照是可选输入：不要求 `ls` 四条，不因缺失补生成，也不影响 Gate H
+> 5. 豁免必须登记在 STATE.md `§豁免列表` 段，**不可泛化**（模式 71 DOG）
 
 ## Review Workflow
 1. Always start by declaring scope: target file, mode (doc/code/full), estimated time (optional), **STATE.md status** (see tool-isolated path below)
 2. **Read correct STATE.md path**: Trae IDE → `.review/trae/{stage}/STATE.md`; Claude Code Runtime → `.review/claude/{stage}/STATE.md`; Codex CLI → `.review/codex/{stage}/STATE.md`. These paths are **isolated** — never share STATE/scan/SYMBOLS/structure/VERIFY-CHECK between tools. If the **same tool** has conflicting STATE.md copies, log divergence in scan.md and ask user which is authoritative.
-3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls .design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一；该段必须含关联代码清单，B4.2 2026-09-18）
+3. **Step 0 预检**：跑 `verify-check.py --preflight` 与 `review-state-validate.py --state … --scan … --strict`；结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一；该段必须含关联代码清单，B4.2 2026-09-18）
 4. Execute checks ONE AT A TIME — never batch them mentally
 5. Output a progress checklist showing each check as done/undone
 6. Collect all findings into a review report at the end

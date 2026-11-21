@@ -518,7 +518,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 | **苏格拉底追问（专项，非 Profile）** | [review-socratic-skill.md](../skill/review-socratic-skill.md) | 当 Review 发现可疑点时通过追问引导澄清 |
 | **实施验证（专项，2026-06-22 新增）** | [review-implementation-skill.md](../skill/review-implementation-skill.md) | 设计 → 代码 实施验证（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试覆盖边界） |
 
-> 详细 Profile 配置（含 Profile A–K/O/P/R/AG）见 [review-profiles.md](review-profiles.md)
+> 旧 Profile 别名对账见 [review-cmds.md §八](review-cmds.md)
 
 ---
 
@@ -542,7 +542,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 | 维度 | 检查项 |
 |------|--------|
-| 文档 | 架构差异未说明；设计决策缺乏依据；章节链路断裂；开发记录风格（"已实现/待实现"、✅❌🚧、"实现清单"等进度追踪式表述）；**教学构件承载缺失**（机制文档的 C 源码分析章/实现章无节选码、诊断章无可复制命令 = **P1-docStyle**，属 Layer 1 阻断收敛，见 `review-cmds.md` §一 通用门 #9 + `tools/doc-code-density-check.sh`） |
+| 文档 | 架构差异未说明；设计决策缺乏依据；章节链路断裂；开发记录风格（"已实现/待实现"、✅❌🚧、"实现清单"等进度追踪式表述）；**教学构件承载缺失**（机制文档的 C 源码分析章/实现章无节选码、诊断章无可复制命令 = **P1-docStyle**，属正确性阻断，见 `review-cmds.md` §一 通用门 #9 + `tools/doc-code-density-check.sh`） |
 | 代码 | typestate 无效；pub 滥用；模块职责不清；所有权混乱；代码与文档设计不一致；硬件未抽象为 trait；叶函数语义不对齐且未注释说明（§14.2）；C 有实现但 Rust 缺失覆盖（§14.3）；代码注释引用错误 C 源码（§14.4） |
 
 ### P2 - 改善性检查（可选修复）
@@ -753,57 +753,29 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
   - 后续动作：design Refactor 必须（先修正 design 再修 code）
 ```
 
-> **配套机制**：Design Feedback §8 + Gate H（[review-process.md §Gate H](review-process.md)）+ Profile R（[review-profiles.md §Profile R](review-profiles.md)）。
+> **配套机制**：Design Feedback §8 + Gate H（[review-process.md §Gate H](review-process.md)）+ Profile R（[review-process.md §设计优先模式](review-process.md)）。
 
 ---
 
-### §4.5 正确性 vs 卓越性分层（Layer 1/2）
+### §4.5 收敛判据：统一使用 G1–G14
 
-> 目标：规则集兼顾正确性与卓越性
-> **命名说明**：原方案用"Gate C/E"命名，但 review-process.md 已占用 Gate C（Precision Check）与 Gate E（§5 测试验证），易冲突。改用 **Layer 1/2** 分层，**不属于 Blocker Gates**，仅作为 CONVERGED 的分层判定。
+普通 review 与 `review-loop` 共用一套出口判据：`review-evals.md` §6A 的四态模型与 G1–G14。不再有 Layer 1/2 两套分层，也不再有“另加 Layer 2 四项 ≥80%”的平行门槛。
 
-> **2026-08-15 修复 D-P1-2（统一阈值参考表）**：
+- **正确性**：P0 六类全部修完；Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全 PASS。
+- **卓越性缺口**：按 G2 的 P1/P2 处理，不再单列 Layer 2 维度。教学深度、文档组织、design-first API、架构演进等检查项如果发现问题，仍按 P1/P2 入 Issue List 并当轮处置。
+- **统一出口**：G1–G14 的具体定义、四态与证据要求只在 `review-evals.md` §6A 维护；本文件不复制门列表。
 
 | 阈值项 | 值 | 出处 |
 |--------|----|----|
 | Gate H.2 design ↔ code 一致性 | ≥ 80% | review-process.md §Gate H（H.2 定义） |
 | Step 5.6 抽样验证一致性 | ≥ 90% | review-process.md §Step 5.6 |
-| Layer 2 标准（4 项每项）| ≥ 80% | review.md §4.5 |
 | Step 1.6.4 DESIGN_DIVERGED 阈值 | ≥ 30% | review-process.md §Step 1.6.4 |
 | §0 P0 必检清单 5 项 | 100%（每项必须为 ✅）| review-patterns.md §0（Gate D 严格标准） |
 | Step 7.1 轮次阈值 | 3 个修改轮（跨 edition 累计） | review-process.md §Step 7.1 |
 | Step 7.1 P1 边际递减 | 连续 2 轮 ≤ 1 = 停止寻找新问题（非收敛判据） | review-process.md §Step 7.1 |
 | Step 7.1 成本/收益比 | 当前轮耗时 > 上一轮 80% 且加权新发现 < 上一轮 20% | review-process.md §Step 7.1 |
-| Layer 1 PASS = 所有 P0 修完 + Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全 PASS | — | review.md §4.5 |
 
-> **判定统一原则**（2026-08-15 修复）：所有阈值以本表为准；任何规则文件中的阈值与本表冲突 → 视为 bug 并修复本表，或在原文件中加交叉引用。
-
-**双层 Layer 模型**：
-
-| 层级 | 目标 | 进入条件 | 通过条件 | 不通过后果 |
-|------|------|---------|---------|-----------|
-| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/design-missing/design-wrong/test-missing 修复完成 + Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全部 PASS | CONVERGED 阻断 |
-| **Layer 2（Excellence）** | 提升代码/文档到 redox/textbook 级 | Layer 1 PASS | §4.3.5 Design 视角教学深度 + §4.4 文档组织合理性 + §16.5 design-first API + §2.0 架构演进维度 ≥80% | 阻断 CONVERGED（卓越性项登记并处置） |
-
-**关键判定**：
-- **必须先 1 后 2**：没有正确性，卓越性无从谈起
-- **Layer 1 不通过 → Layer 2 不评估**：直接阻断 CONVERGED
-- **Layer 1 通过但 Layer 2 不通过 → NOT CONVERGED**：卓越性项登记并处置；不存在 warning/pending 态（V3.7 零欠账）
-- **Layer 1 和 Layer 2 都通过 → 完全 CONVERGED**
-- **轨道边界**：Layer 2 四项 ≥80% 是**普通 review** 的 CONVERGED 判据；`review-loop` 轨道以 `review-evals.md` §6A 的 G1–G14 为准（G13/G14 已覆盖教学与单元），不重复 Layer 2。
-
-**CONVERGED 判定流程**：
-1. 列出 Layer 1 各项检查结果（6 项 P0 类别 + Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H）
-2. 列出 Layer 2 各项维度检查结果（§4.3.5、§4.4、§16.5、§2.0 架构演进）
-3. 判定：
-   - Layer 1 FAIL → NOT CONVERGED（强制修复）
-   - Layer 1 PASS + Layer 2 PASS → CONVERGED
-   - Layer 1 PASS + Layer 2 PARTIAL → NOT CONVERGED（卓越性项登记并处置）
-   - Layer 1 PASS + Layer 2 FAIL → NOT CONVERGED（卓越性项登记并处置）
-
-**配套修订**：[review-process.md §三 状态管理与收敛判断](review-process.md) 增加双层 Layer 判定。
-
----
+> **判定统一原则**：所有阈值以本表为准；任何规则文件中的阈值与本表冲突 → 视为 bug 并修复本表，或在原文件中加交叉引用。
 
 ## 结构化输出格式（可选，用于自动化）
 
@@ -876,7 +848,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 > 在开始任何 Review 之前，AI **必须先声明 Review 范围**，然后再加载规则集执行。这步防止 AI 在范围不清的情况下开始检查。
 
 > **2026-08-15 修复 D-P1-3（术语统一）**：规则集使用三个相关但不同的概念术语：
-> - **Profile**（[review-profiles.md](review-profiles.md)）：历史别名；加载细则以 `review-cmds.md` §一与 checklist 为准——决定加载哪些规则文件（核心/文档检查清单/代码检查清单/错误模式/核心语义/卓越性等）
+> - **Profile**（[review-cmds.md §八](review-cmds.md)）：历史别名；加载细则以 `review-cmds.md` §一与 checklist 为准——决定加载哪些规则文件（核心/文档检查清单/代码检查清单/错误模式/核心语义/卓越性等）
 > - **Mode**（本节 §0.2）：**范围裁剪**——决定 review 范围（仅 Ch1&2 / 完整文档 / 文档+代码）
 > - **Task**：**用户实际任务**——AI 接受的具体指令（如 "review 04-platform-discovery.md 的 Ch3"）
 > - **关系**：Task 由用户给出 → Mode 由 Task 推导 → Profile 由 Mode + Task 推导。三者可独立选择，但需一致（如 Task=完整 review + Mode=C → Profile=C 全模块加载；Task=快速过审 + Mode=C → Profile=D 仅核心加载）
@@ -898,7 +870,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 #### 模式 A：局部 Review（仅 Ch1&2）
 
-> **2026-08-15 修复 C-P1-11（避免命名冲突）**：本节"模式 A/B/C" 与 [review-profiles.md](review-profiles.md) "Profile A/B/C" 命名相同但含义不同。本节"模式"指**范围裁剪**（局部/文档/完整），review-profiles.md "Profile" 指**模块加载策略**（文档/代码/完整/快速）。两者正交，可任意组合（如 Profile D 快速 Review + 模式 C 完整范围）。AI 看到 "Profile A" 时应理解为 review-profiles.md 的"文档 Review Profile"，看到"模式 A"时是本节的"局部 Review 模式"。
+> **命名区分**：本节“模式 A/B/C”指**范围裁剪**（局部/文档/完整）；旧 Profile A/B/C 指**模块加载策略**，已退役为 `review-cmds.md` §八 的别名。两者正交，可任意组合。
 
 - **适用场景**：用户指定「只 review 第一章和第二章」
 - **检查范围**：
@@ -907,7 +879,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
   - 数据结构覆盖完整性（§2.3）
   - C 源码覆盖完整性（§2.8）
 - **不检查**：Ch3 设计决策、Ch4 实现、链路验证、代码一致性
-- **执行步骤**：Step 0（design 预检，强制）+ Step 1（源码定位）+ Step 3（一致性检查），无需 Step 2/2.5/4/6
+- **执行步骤**：Step 0（状态与产物检查）+ Step 1（源码定位）+ Step 3（一致性检查），无需 Step 2/2.5/4/6
 - **输出**：仅输出 P0 概念/引用错误和 P1 覆盖不足问题
 
 #### 模式 B：文档 Review（完整文档）
@@ -951,7 +923,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 - [review-code-checklist.md](review-code-checklist.md) — 代码检查清单（§1-§15，含 §14 C-Rust 语义对齐 + §15 细节精确性 = Gate C）
 - [review-patterns.md](review-patterns.md) — 常见错误模式（文档 + 代码 + 跨文档）
 - [review-process.md](review-process.md) — AI 强制步骤 + 工具命令
-- [review-profiles.md](review-profiles.md) — 历史任务组合别名（加载细则见 review-cmds §一）
+- [review-cmds.md](review-cmds.md) §八 — 旧任务组合别名（新任务用 cmd 入口）
 - [review-core-semantics.md](review-core-semantics.md) — 核心语义对齐（行为契约表 + IPC/生命周期契约模板）
 - [review-doc-excellence.md](review-doc-excellence.md) — 文档卓越性（§4.1-§4.4）
 - [review-code-excellence.md](review-code-excellence.md) — 代码卓越性（§16-§21）

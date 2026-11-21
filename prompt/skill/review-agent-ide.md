@@ -11,7 +11,7 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 **Concept Abstraction (Ch1 mandatory)**: Ch1 from architecture perspective (CPU questions/mechanisms), not function/struct names. Ch1 subject = CPU/OS; multi-arch gives unified abstraction first.
 **Claims-Evidence (§2.0)**: Every factual claim needs `file:line`. Unverifiable/weak claims → P0. Causal chain in explanations must be technically correct (not "sounds plausible").
 
-**Design First**: Design is a core deliverable. Three-tier terms: **Rewrite** (preserve external behavior) / **Refactor** (code or design, no semantic change) / **Architectural Evolution** (explicit ARCH marker). P0: 6 categories incl. P0-design-deviation/missing/wrong. Profile R = Design-First Review. See [review.md](../review-rules/review.md) + [review-profiles.md](../review-rules/review-profiles.md).
+**Design First**: Design is a core deliverable. Three-tier terms: **Rewrite** (preserve external behavior) / **Refactor** (code or design, no semantic change) / **Architectural Evolution** (explicit ARCH marker). P0: 6 categories incl. P0-design-deviation/missing/wrong. Profile R = Design-First Review. See [review.md](../review-rules/review.md) + [review-process.md](../review-rules/review-process.md).
 
 ## AI Execution Constraints
 1. **Verify first**: grep/read source before concluding.

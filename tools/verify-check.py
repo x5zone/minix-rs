@@ -33,6 +33,7 @@ import re
 import sys
 import random
 import argparse
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -539,10 +540,9 @@ def resume_point_missing(text: str, scan_path: Path | None = None) -> list[str]:
 
 
 def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
-    """review 启动前的 7 组产物存在性检查（原 review-gate-check.sh 的合并入口）。"""
+    """review 启动前的 5 组产物存在性检查（原 review-gate-check.sh 的合并入口）。"""
     nn_match = re.match(r"(\d+)", doc_stem)
     nn = nn_match.group(1) if nn_match else doc_stem
-    design_dir = ROOT / "rewrite-notes" / "meta" / "design" / stage
     base = ROOT / ".review" / tool / stage
     docdir = base / doc_stem
     if tool == "trae":
@@ -563,9 +563,6 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
     verify = next((p for p in (docdir / "VERIFY-CHECK.md", base / "VERIFY-CHECK.md",
                                base / f"VERIFY-CHECK-{nn}.md") if p.is_file()), None)
     groups = [
-        ("Gate H.1 design 快照", sorted(design_dir.glob(f"{nn}-design*.v*.md"))),
-        ("Gate H.6 outline 快照", sorted(design_dir.glob(f"{nn}-outline.v*.md"))),
-        ("Gate H.6 outline-review 快照", sorted(design_dir.glob(f"{nn}-outline-review.v*.md"))),
         ("STATE.md", [base / "STATE.md"] if (base / "STATE.md").is_file() else []),
         ("scan.md", [scan] if scan and scan.is_file() else []),
         ("structure.md", [structure] if structure and structure.is_file() else []),
@@ -586,6 +583,24 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
             failures += 1
             print(f"[FAIL] {name}: 缺失")
     scan_path = scan if scan and scan.is_file() else None
+    state_path = base / "STATE.md"
+    if state_path.is_file():
+        cmd = [
+            sys.executable,
+            str(ROOT / "tools" / "review-state-validate.py"),
+            "--state",
+            str(state_path),
+            "--strict",
+        ]
+        if scan_path:
+            cmd += ["--scan", str(scan_path)]
+        state_check = subprocess.run(cmd, capture_output=True, text=True)
+        if state_check.returncode != 0:
+            failures += 1
+            print("[FAIL] STATE 预检: review-state-validate.py 未通过")
+            print((state_check.stdout + state_check.stderr).strip()[:800])
+        else:
+            print("[PASS] STATE 预检: review-state-validate.py 通过")
     if scan_path:
         text = scan_path.read_text(encoding="utf-8", errors="replace")
         if "关联代码清单" not in text:
@@ -622,7 +637,7 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
     if failures:
         print(f"preflight: FAIL（{failures} 项）")
         return 1
-    print("preflight: PASS（7 组产物 + scan 内容级检查）")
+    print("preflight: PASS（5 组产物 + scan 内容级检查）")
     return 0
 
 
@@ -708,7 +723,7 @@ def main():
     parser.add_argument(
         '--preflight',
         action='store_true',
-        help='检查 7 组 review 产物是否存在（原 review-gate-check.sh）'
+        help='检查 5 组 review 产物是否存在（原 review-gate-check.sh）'
     )
     parser.add_argument('--tool', default='zcode', help='运行时：trae/claude/codex/zcode/qoder')
     parser.add_argument('--stage', help='stage 目录名，如 01-stage-kernel')

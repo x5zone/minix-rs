@@ -81,16 +81,14 @@ jobs:
           python3 -c 'import yaml' || { echo "::error::缺少 PyYAML（python3-yaml）"; exit 1; }
           echo "工具 OK：$(git --version | head -1) / $(gawk --version | head -1) / $(python3 --version)"
 
-      - name: 四道一致性门（源 → 三端派生）
+      - name: 三道一致性门（源 → 三端派生）
         run: |
-          echo '── 1/4 规则文本自检（L1-L17）──'
+          echo '── 1/3 规则文本自检（L1-L17）──'
           bash tools/lint-review-rules.sh || { echo '::error::gate failed: lint-review-rules'; exit 1; }
-          echo '── 2/4 规范源与运行时引用一致 ──'
+          echo '── 2/3 规范源与运行时引用一致（含 Trae 适配）──'
           bash tools/check-review-rules.sh || { echo '::error::gate failed: check-review-rules'; exit 1; }
-          echo '── 3/4 派生件与源无漂移（含 review-scan 编排器 12 个文件）──'
+          echo '── 3/3 派生件与源无漂移（含 review-scan 编排器 12 个文件）──'
           bash tools/generate-derived-skills.sh --check || { echo '::error::gate failed: generate-derived-skills --check'; exit 1; }
-          echo '── 4/4 Trae 适配逐文件对照 ──'
-          bash tools/diff-trae-skills.sh --only-diff || { echo '::error::gate failed: diff-trae-skills'; exit 1; }
 
       - name: 仓库级门禁（模式门全量 + 命令层边界守卫）
         # 这两个门早已存在但不在任何闸上，所以长期「红着入库」无人拦：

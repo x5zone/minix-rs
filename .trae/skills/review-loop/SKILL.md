@@ -37,16 +37,11 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 2. 记录文档 sha256 与行数：`sha256sum <doc>`、`wc -l <doc>`。
 3. 跑 Step 0 硬预检：
    ```bash
-   ls rewrite-notes/meta/design/<stage>/<NN>-outline.v*.md
-   ls rewrite-notes/meta/design/<stage>/<NN>-outline-review.v*.md
-   ls rewrite-notes/meta/design/<stage>/<NN>-design.v*.md
-   ls rewrite-notes/meta/design/<stage>/<NN>-design-final.v*.md
-   tools/design-coverage-check.sh <stage>
    python3 tools/review-units.py fingerprint <doc> --code-list runs/<stage>/<doc>/related-code.txt
    ```
    `structure: same` → 复用上轮 structure.md（scan 记 `structure_reused`）；`code: same` →
    复用上轮 SYMBOLS.md（Gate A 记 `coverage_reused`），没有代码改动就不重跑覆盖率。
-   缺失时按 `review-process.md` Step 0.3 嵌入生成，不中断循环。
+   design/outline 是可选输入，缺失不补、不影响 L0 启动。
 4. 关联代码清单：`tools/doc-code-map.sh <doc> --check`；有缺失先登记，不进入 L1。
 5. 初始化 review 状态：`tools/review-init.sh zcode <doc>`。
 5b. 单元状态：`python3 tools/review-units.py check <doc>`；首次先 `init`。`next` 的输出是本轮
@@ -333,7 +328,7 @@ G14：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 �
 
 **同一根因连续两次修复仍复发** → 生成 `STUCK-REPORT.md` → 标记该根因 `STUCK` → 交用户裁决；不得用第 3 次措辞修复打补丁，也不得把复发计成“新发现”。
 
-`meta PASS` 不是文档收敛；`CONVERGED` 只看 §6A（普通 review 的 Layer 2 判据不适用于本轨道）。meta 的 `NOT PASS` 记流程缺陷，不阻止文档关闭。
+`meta PASS` 不是文档收敛；`CONVERGED` 只看 §6A。meta 的 `NOT PASS` 记流程缺陷，不阻止文档关闭。
 
 **FREEZE 后回归审计（V3.4 最小内核，§4h；载体 `REGRESSION.md` + FREEZE 追加回归节）**：进下一篇 L0 前必须完成一次独立回归
 审查（D-055 两墙口径）；回归轮的全部发现必须入 `defect-ledger.md` 行级账并在
@@ -360,7 +355,6 @@ G14：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 �
    tools/generate-derived-skills.sh
    tools/check-review-rules.sh
    tools/lint-review-rules.sh
-   tools/diff-trae-skills.sh --only-diff
    python3 tools/eval-trace-check.py --self-test
    python3 tools/trait-audit.py --self-test
    python3 tools/doc-citation-check.py --self-test
