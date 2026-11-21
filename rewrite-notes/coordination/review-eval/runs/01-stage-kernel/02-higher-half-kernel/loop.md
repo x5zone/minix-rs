@@ -360,3 +360,60 @@
 
 - 三问：① 不变量是「确认轮必须在最终工作树上 certify 新准入 = 0，且每个修改点有独立回读」；② 前提是 R1 已 ROUND-CLOSED（成立）；③ 证据是 `certify/round3-certify.md` 的逐条读数与六门读数。
 - 资源重读：盲区属「流程类」（确认轮的设计项降级），查 `prompt/resources/fresh-eyes-review`；无新检测模式，记 BLIND-SPOTS 候选。
+
+## R4 确认轮（V3.4；R3-design-batch 实施后的基线重开）
+
+### R4 §0 基线
+
+- 轮型：`confirmation`；edition `V3.4`；schema `V3.4 from R3`（延续）。
+- 重开依据：`FREEZE.md` 重开条件第 2 条（设计批实施后基线改变）+ 用户 2026-11-21 指令（review loop D02 直至收敛，代裁授权）。R3-design-batch 的 ELF 装载面已在 I-45..I-48（D-082..D-089）落码，另外 wire v10/D-062 删除了 `KernelInfo` 的派生字段；D02 文档在 R3 后未改，关联代码已移动。
+- 基线提交：`79f910acd`（R4 预门同步之后）；工作树仅三个审查前已存在的未跟踪文件（D01 同款），无源码/文档改动。
+- 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
+- 文档基线 sha256：`46a3497a40658daff0496baeb71ade5b9f188ddb21f8c5cf774f0dc3c5ddb4ab`
+- 行数：1289
+- 设计快照：`02-outline.v4.md`、`02-outline-review.v4.md`、`02-design.v3.md` 齐备；`design-coverage-check.sh 01-stage-kernel` ALL DOCS COMPLETE。
+- 关联代码：`doc-code-map.sh --check` 30/30；清单见 `related-code.txt`（R3 时点 28 项，当前 30 项）。
+- 语料条目：D02（`CORPUS.md` 第二节，地址空间 / higher-half）；盲区重点 B-01..B-13。
+- 范围声明：本篇范围 = higher-half 链接布局、双地址、成对跳转与 ELF 装载边界 + 30 个关联文件 + 本轮修复触碰的文件。不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
+- R4 预门（`79f910acd`）：citation 修 4 个引用块后 `blocks=32 checked=25 failed=0 skipped=4 warned=3`；anchor 55/55 zero-def=0 multi-def=0；structure/ref/style（error=0）/density 通过；doc-code-map 30/30；`--stale-lines e6b63f3aa --strict` PASS；`--from-diff` 仅通用词 WARN。
+- 预门修复内容（commit `79f910acd`）：§3.3 栈顶从字段改为 `KernelInfo::kern_stack_top()` 派生访问器；`compute_kernel_layout` 改 `seg_result?`（I-48/D-084）；`load_segments_into_phys_memory` 改 `Result<Vec<_>>` 收集说明；bootface 的 `build_kernel_info` 删 `startup_objects` 参数；§4.9 与测试载体描述同步。
+- follow-ups（L0 步骤 8）：R3-design-batch 的 11 条设计项中，D2-01（store 别名）按 D-083/D-071 未实施（用户要求只记账）；D2-02（SegmentIter fail-open）/D2-03（Safety 文档）/D2-04（buffer 计数）已由 I-45/I-46/I-47/I-48 落码；其余由 I-33/I-36 的 ELF 修剪面覆盖或仍待设计批。无未批准 ② 带入本轮。
+
+### R4 §1 面板
+
+- 角色与材料（六角色全量，均独立子 agent；读者 A/B/C 独立，未合并——文档 1289 行 ≥ 500）：
+  - P-FACT：文档 + 30 个关联文件 + 决策摘要 + follow-ups；12 条 FINDING + 5 条 SUGGESTION。
+  - P-DESIGN-D2：§3/§4 + 关联代码 + trait-audit + AGENTS.md；D1 停跑（D-024），基线为「文档主张 ↔ 源码事实」，记 VARIANCE。10 条 FINDING，0 ARCH。
+  - P-READER-A/B/C：只读文档 + 读者画像；A 2 FINDING + 11 SUGG、B 6 + 15 SUGG、C 6 + 11 SUGG。
+  - P-REFUTE：文档 + 源码 + 设计快照；6 条 CLAIM（阻断 2 / 反证失败 4）。
+- 缩编：无读者合并；D1 停跑（D-024）+ D2 回退形态，记 VARIANCE。
+- 技能调用 VARIANCE：运行时仍无 `review-process-skill`/`review-doc-skill`；主 agent 直接加载规范源，只实际调用 `review-loop`。
+- 模型：同一模型（opencode-go-chat/deepseek-v4.1-flash）的独立冷启动实例；无跨模型复核。
+- 起止：2026-11-21 约 09:30–10:20（并行；各角色 20–35 分钟）；无降档/升档，无 10 分钟重试。
+- 原始输出：`tmp/review-eval/01-stage-kernel/02-higher-half-kernel/panel/round4/`；制品入库 `panel/round4/` + `INDEX.md`（6 文件，FINDING 36 / SUGGESTION 37 / CLAIM 6）；`panel-index.py --check` 通过。
+- 工作树：面板运行前后只有预门同步的文档改动与三个既有未跟踪文件；面板只写 tmp。
+
+### R4 §2 发现
+
+- 79 个 ID 承载产出：FINDING 36（fact 12、design-d2 10、reader-a 2、reader-b 6、reader-c 6）+ 编号 SUGGESTION 37（reader-a 11、reader-b 15、reader-c 11）+ CLAIM 6；另有 5 条 fact 未编号建议。
+- 严重度（FINDING）：P0 = 4、P1 = 4、P2 = 19、P3 = 9；CLAIM 阻断 2（P1）、反证失败 4。
+- 最高簇：§3.2 ELF 迭代器仍写 I-48 之前的 fail-open（FACT-01/02/06、D2-01、reader A-01/B-03/C-01、REFUTE-05 独立同根）；v1 arena 七载荷（FACT-04/D2-03/REFUTE-06）；测试账 27/31/135 与测试名（FACT-05/06/D2-10）；kern_stack_top 字段残留（FACT-12/B-04/C-03/C-05）；`.lrodata` 孤儿（D2-05）。
+
+### R4 §3 归因
+
+- 根因：79 个（RD-R4-001..079，逐 ID 立根因；跨角色同根由 action/evidence 组文本表达）。
+- 冻结决策检查：D-062（v10 字段删除）、D-082（ELF 修剪）、D-084（SegmentIter Err）、D-089（buffer 两循环）为修复依据；D2-04/D2-06 是新设计项，D-105/D-106 批准延期 `R4-design-batch`；无 re-litigation。
+- 范围：全部 in-scope；无 adjacent 阻塞。
+- 设计项：D2-04（BootReport 复用）与 D2-06（arch link.ld 去留）按 §3.6 不实施 ⑥，登记 OPEN-DEBT；D2-07/08/09 为 P3 建议。
+- 读者项：P1/P2 按 ④ 本轮修；B-05/B-06 是 P3，连同全部 SUGGESTION 进 suggestions。
+- 自引入：0。
+
+### R4 §4 修复
+
+- 预门批：commit `79f910acd`——§3.3 栈顶访问器、compute_kernel_layout/load_segments 的 I-48 形状、bootface 去 startup 参数、§4.9 同步。
+- 批一：commit `ca5830fd5`——§3.2 迭代器/12 变体、五类用途、v1 六载荷、测试账、§3.4/§4.5 字段残留、§5.2 载体、BUMP_NEXT、ARM 证据、GDB delta、第 3 行指针、`.lrodata` 归并；D-105/D-106 延期。
+- 批二：`fix(02)` 引文标注提交——mpx.S/kernel.lds 尾部省略、loader 引文头、store 注释归属、InvalidSegment 序数、riscv 行号。
+- 机械门（最终 HEAD）：anchor 54/54 zero-def=0 multi-def=0；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30。
+- 行为门：`check-layout.sh all` PASS（L0–L9；x86 L3a=4 个 PT_LOAD）；`test-sysboot.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS；`readelf -lW x86_64/kernel | grep -c '^  LOAD'` → 4。
+- 未实施（②）：D2-04 → D-105、D2-06 → D-106，均落 `R4-design-batch`（OPEN-DEBT）。
+- 未实施（P3 SUGG）：D2-07/08/09 与全部面板建议 → `suggestions.md` R4 段。

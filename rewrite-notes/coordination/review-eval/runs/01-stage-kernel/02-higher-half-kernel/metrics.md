@@ -93,3 +93,26 @@
 - 重构: 提出 11 / 接受 11 / 实施 0 / 登记 11
 - 成本: agent 8（六角色 + certify + 复核）/ token 未采集 / 耗时 约 4 小时
 - 回读与回归: 文档六门绿（anchor 55/55、citation checked=25 failed=0、structure/ref/style error=0/density 通过、doc-code-map 29/29）；独立回执 certify/round3-certify.md（首轮 19 条 14 CLOSED / 5 STILL-BROKEN，5 条按证据改正后复核）
+
+## R4 确认轮
+
+- 发现总数: 79（FINDING 36 + 编号 SUGGESTION 37 + CLAIM 6；另有 5 条 fact 未编号建议，单列）
+- 唯一根因数: 79（RD-R4-001..079，逐 ID 立根因）
+- 本轮新准入: 79
+- certify 新准入: 0（round4-fact/round4-reader 回执全 CLOSED 后复读；同根残项不计新根）
+- 重复合并: 0（逐 ID；跨角色同根由 action/evidence 组文本表达）
+- 自引入: 0
+- 处置: ① 19 / ② 2 / ④ 12 / ⑤ 0 / ⑥ 0 / FP 4 / SUGG 42
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 2（D-105 D2-04、D-106 D2-06 延期 R4-design-batch）
+- ARCH 提案: 0
+- 用户否决: 0
+- edition: V3.4
+- re-litigation: 0
+- adjacent 阻塞: 0
+- 重构: 提出 2 / 接受 2 / 实施 0 / 登记 2
+- 减法: 提案 10 / 采纳 3（D2 SUBTRACTION-TABLE）
+- 成本: agent 8（6 面板 + 2 certify）/ token 未采集 / 耗时 约 5 小时
+- 回读与回归: 文档六门绿（anchor 54/54、citation checked=24 failed=0、structure/ref/style error=0/density、doc-code-map 30/30）；check-layout all PASS（x86 PT_LOAD 5→4）；test-sysboot PASS、test-riscv64-uboot-shim 6/6 PASS；minix-elf 27/0、boot-shim 146/0、minix-kernel mock 866/0/8
