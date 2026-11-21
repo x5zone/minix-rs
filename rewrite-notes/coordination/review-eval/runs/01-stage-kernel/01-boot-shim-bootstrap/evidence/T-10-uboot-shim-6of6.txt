@@ -1,0 +1,17 @@
+# T-10 — riscv64 U-Boot → boot-shim → kernel-uboot，6/6 路标
+
+- 日期：2026-11-21
+- 命令：`bash os/qemu-tests/test-riscv64-uboot-shim.sh`
+- 读数：
+  `== Stage 1: build products ==`
+  `== Stage 2: DTB dump ==`
+  `== Stage 3: staging layout (uboot_layout mirror) ==`
+  `== Stage 4: FAT disk ==`
+  `== Stage 5: U-Boot chain (timeout 240s) ==`
+  `RESULT: PASS (D-73 U-Boot → boot-shim → kernel-uboot full chain: 6/6 markers, entering scheduler)`
+  exit 0
+- 附加：`bash os/qemu-tests/test-riscv64-uboot.sh` 在本机 U-Boot
+  2025.10 上按脚本既有判定 SKIP（exit 2），原因见脚本头：该版本 `bootelf`
+  的 `-d`/argv 形态不可用；不冒充 PASS。
+- 集成：`run_all.sh` 的 riscv64 段已加 shim（必过）与 hello（SKIP 容忍）
+  两个 special-protocol 块；CI `riscv64-uboot` job 同形，shim 必过。

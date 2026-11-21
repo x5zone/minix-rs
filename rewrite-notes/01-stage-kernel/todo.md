@@ -207,7 +207,7 @@ T-5（QEMU CI：`.github/workflows/qemu-tests.yml`，23 测试 22 PASS，唯一 
 | T-3 | ~~init/load 顺序约束测试~~ ✅ S-12（gate↔stub 覆盖互查 + 未注册分发 assert 机制 + BKL 已持 debug_assert；extern "C" 边界 panic-abort 使专门的违序 hosted 测试不可行——机制由 assert 本体承载） | S-12 ✅ |
 | T-4 | ~~init_ap 路径验证~~ ✅ S-4/S-12（test-smp-aps 硬件 L2/L4 + hosted 布局测试族） | S-12 ✅ |
 | T-8 | E2E grant 剩余 QEMU 半 5 个（间接链 ELOOP/magic 重定向/跨进程拷贝/vm_lookup/vm_memset——宿主 PTE walk 必然 Suspended 无法到达断言） | T-5 QEMU CI 承接 |
-| T-10 | riscv64 真实启动链（U-Boot fatload→bootelf）集成 | 允许开放（`PD-15` 已裁放弃；本机 U-Boot 2025.10 `bootelf` 无 `-d`/argv，固定槽需独立 LMA 产物——实测见 D-73 §2.8） |
+| T-10 | riscv64 真实启动链（U-Boot fatload→bootelf）集成 | ✅ CLOSED（按 `D-107`）：`test-riscv64-uboot-shim.sh` 6/6 路标 PASS（U-Boot→boot-shim→kernel-uboot→entering scheduler）；`test-riscv64-uboot.sh` 在本机 U-Boot 2025.10 上按脚本既有判定 SKIP（该版本 `bootelf` 无 argv）；两脚本已接入 `run_all.sh`，CI `riscv64-uboot` job 跑 hello（SKIP 容忍）与 shim（必过） |
 
 ### 7.4 文档任务 / 改进方向（I 系）
 

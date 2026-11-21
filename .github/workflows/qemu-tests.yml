@@ -65,7 +65,7 @@ jobs:
   # may present. ubuntu-latest carries every prerequisite via apt.
   riscv64-uboot:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -83,8 +83,18 @@ jobs:
         working-directory: os
         run: cargo build -p hello-boot-riscv64 --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release
 
-      - name: Run U-Boot boot chain test
-        run: bash os/qemu-tests/test-riscv64-uboot.sh
+      - name: Run U-Boot hello chain (host SKIP allowed)
+        run: |
+          set +e
+          bash os/qemu-tests/test-riscv64-uboot.sh
+          rc=$?
+          set -e
+          # 0 = PASS, 2 = host U-Boot cannot load boot.scr/argv (documented
+          # skill in the script); 1 is a real failure.
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]
+
+      - name: Run U-Boot shim chain (6/6 markers)
+        run: bash os/qemu-tests/test-riscv64-uboot-shim.sh
 
   # NK4 OQ-1（回归评审 20260922 PART2）：三架构内核生产形态 build 门。
   # 「公共路径 x86 取证代码打断跨架构编译」在本弧线发生过两次

@@ -293,6 +293,23 @@ if command -v qemu-system-riscv64 &>/dev/null; then
     if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
     elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-timer-irq-riscv64: skipped)"
     else FAIL=$((FAIL + 1)); fi
+
+    # ── T-10: riscv64 real U-Boot chain (D-73). The shim script is the
+    # authoritative 6/6-marker gate; the plain hello-boot chain is the
+    # older lane and SKIPs on host U-Boot builds that dropped bootelf argv.
+    echo "--- Running: test-riscv64-uboot-shim (special: 6/6 markers) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-riscv64-uboot-shim.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-riscv64-uboot-shim: skipped)"
+    else FAIL=$((FAIL + 1)); fi
+
+    echo "--- Running: test-riscv64-uboot (special: U-Boot hello chain; host SKIP allowed) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-riscv64-uboot.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-riscv64-uboot: skipped on this host U-Boot)"
+    else FAIL=$((FAIL + 1)); fi
 fi
 
 echo ""

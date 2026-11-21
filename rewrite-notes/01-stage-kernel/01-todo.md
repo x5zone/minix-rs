@@ -3029,7 +3029,7 @@ cargo test -p minix-boot                             # 含 boot_storage 自身�
 - **I-1**（kernel 独立 ELF 构建接入 xtask）原 DEFERRED 的解除前置「入口交接 ABI 设计 + boot-shim 终局跳转」已由 T2 v9 全套裁决补齐——不再独立登记，随批次五实施（bin 目标 + build.rs 一并）。
 - **I-5**（ACPI RSDP）✅ **CLOSED（按 `D-107`）**：x86 UEFI 配置表 → RSDP → XSDT/RSDT → MADT 路径已实测——`test-smp-topo` 在 OVMF 下读到 `RSDP @ 0x777e000`、`nr_cpus=4`、`TEST_RESULT: PASS`；证据 `evidence/I-5-acpi-ovmf.txt`。`external-evidence-waived`：QEMU/OVMF 读数收口，不声称物理机实测。
 - **`VmBootHandoff`**（`os/libs/minix-types/src/types/boot.rs`）是内核→VM 的运行期上层交接、带 magic/version，属另一层契约，**不在 01 篇射程**。
-- **T-10**（riscv64 U-Boot 真实启动链集成）在 todo.md §7.3，非 01 篇正文登记（§7.4 有引用），随 CI 窗口处理。
+- **T-10**（riscv64 U-Boot 真实启动链集成）✅ **CLOSED（按 `D-107`）**：`test-riscv64-uboot-shim.sh` 6/6 路标 PASS；`test-riscv64-uboot.sh` 在本机 U-Boot 2025.10 上按脚本既有判定 SKIP；两脚本已入 `run_all.sh` 与 CI `riscv64-uboot`。
 
 ---
 
