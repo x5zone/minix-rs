@@ -207,6 +207,10 @@ def check_skill_invocation_log(scan_text):
     “规则已加载 / 计划调用”这类未实际调用的措辞。它不能证明运行时的确调用了
     Skill 工具（那需要运行时事件），但能挡住空表和自造技能名。
     """
+    if re.search(r"(?m)^## Skill Invocation Log\b", scan_text) and not re.search(
+        r"(?m)^## Skill Invocation Log\s*$", scan_text
+    ):
+        return ["Skill Invocation Log 标题后不得加后缀（必须是 `## Skill Invocation Log`）"]
     m = re.search(
         r"(?ms)^## Skill Invocation Log\s*$(.*?)(?=^## |\Z)", scan_text
     )
@@ -217,6 +221,13 @@ def check_skill_invocation_log(scan_text):
     if re.search(r"规则已加载|计划调用|待调用|拟调用", body):
         errors.append("Skill Invocation Log 含未实际调用的措辞（规则已加载/计划调用/待调用）")
     lines = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("|")]
+    if len(lines) < 2:
+        errors.append("Skill Invocation Log 没有表头/分隔行")
+        return errors
+    sep = [c.strip() for c in lines[1].strip("|").split("|")]
+    if not all(re.fullmatch(r":?-{2,}:?", c) for c in sep if c):
+        errors.append("Skill Invocation Log 表头后缺分隔行")
+        return errors
     if len(lines) < 3:
         errors.append("Skill Invocation Log 没有数据行")
         return errors
@@ -278,6 +289,17 @@ def check_gate_evidence_blocks(scan_text):
                     missing_kw.append("L3 需 `MANUAL_FALLBACK: <理由>`")
             elif LEVEL_RANK[level] < LEVEL_RANK[minimum]:
                 missing_kw.append(f"证据级别 {level} 低于 Gate {gate} 的最低级别 {minimum}")
+            if level == "L1":
+                if not re.search(
+                    r"(?m)^\s*[\$>]?\s*(?:rg|grep|cargo|python3\s+tools/|bash\s+tools/|\./tools/|[\w./-]+\.(?:py|sh))",
+                    block_content,
+                ):
+                    missing_kw.append("L1 需命令+输出（块内找不到工具命令）")
+                if not re.search(r"exit\s*\d|stdout|输出|PASS|FAIL|命中|\d+\s*(?:处|个|行)", block_content):
+                    missing_kw.append("L1 需输出/exit code（块内只有命令或关键字）")
+            elif level == "L2":
+                if not re.search(r"(?m)^\s*[\$>]?\s*(?:rg|grep)\s", block_content):
+                    missing_kw.append("L2 需手工 grep 命令")
         results[gate] = {
             "exists": True,
             "keywords_ok": len(missing_kw) == 0,
@@ -497,11 +519,17 @@ def _section_body(text: str, heading: str) -> str:
 def _validate_resume_pointers(section: str, scan_path: Path | None) -> list[str]:
     """C4：`### 指针` 里的 `path:line` 必须指向真实文件和真实行号。"""
     errors: list[str] = []
-    refs = re.findall(
-        r"`?([A-Za-z0-9_./-]+\.(?:md|rs|py|sh|ya?ml)):(\d+)`?", section
-    )
+    refs = []
+    for m in re.finditer(
+        r"`?([A-Za-z0-9_./-]+\.(?:md|rs|py|sh|ya?ml)):([^`\s|)]+)`?", section
+    ):
+        raw, line_text = m.group(1), m.group(2)
+        if not re.fullmatch(r"\d+", line_text):
+            errors.append(f"指针行号格式非法: {raw}:{line_text}")
+            continue
+        refs.append((raw, line_text))
     if not refs:
-        return ["指针段没有 `path:line` 形式的可核验指针"]
+        return errors + ["指针段没有 `path:line` 形式的可核验指针"]
     for raw, line_text in refs:
         line_no = int(line_text)
         candidates = []

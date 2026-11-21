@@ -158,7 +158,7 @@ def parse_units(doc: Path) -> list[dict]:
 
 
 ANCHOR_RE = re.compile(
-    r"`?((?:os|minix3)/[\w./-]+\.(?:rs|c|h)):"
+    r"`?((?:[A-Za-z0-9_.-]+/)+[\w./-]+\.(?:rs|c|h)):"
     r"(?:(fn|struct|enum|trait|const|static|type|impl)\s+)?"
     r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)`?"
 )
@@ -716,6 +716,28 @@ def cmd_check(doc: Path, state_path: Path) -> int:
     if reopened:
         save_state(state_path, data)
         print(f"[WARN] {reopened} 个旧冻结单元无锚点凭据，已强制重开")
+    stale = 0
+    cur = {u["id"]: u for u in current}
+    for u in data.get("units", []):
+        if not u.get("frozen") or "anchor_hashes" not in u:
+            continue
+        c = cur.get(u["id"])
+        if c is None:
+            continue
+        _, hashes, status, _ = analyze_anchors(c.get("_text", ""))
+        if status in ("missing", "impl") or hashes != (u.get("anchor_hashes") or {}):
+            u["frozen"] = False
+            u["frozen_at"] = None
+            u["reopened"] = True
+            u["stale"] = True
+            if u["level"] == 3:
+                u["t2_state"] = "pending"
+            else:
+                u["t1_state"] = "pending"
+            stale += 1
+    if stale:
+        save_state(state_path, data)
+        print(f"[WARN] {stale} 个冻结单元锚点正文已变，已强制重开")
     errors, warnings = validate(data, current)
     for w in warnings:
         print(f"[WARN] {w}")
@@ -1060,14 +1082,16 @@ def cmd_invalidate(doc: Path, state_path: Path, rev: str) -> int:
     if check.returncode != 0:
         print(f"不是有效 commit：{rev}", file=sys.stderr)
         return 2
-    diff = subprocess.run(
-        ["git", "-C", str(ROOT), "diff", "--name-only", f"{rev}..HEAD"],
-        capture_output=True, text=True,
-    )
-    if diff.returncode != 0:
-        print(diff.stderr.strip(), file=sys.stderr)
-        return 1
-    changed = {line.strip() for line in diff.stdout.splitlines() if line.strip()}
+    changed: set[str] = set()
+    for spec in (f"{rev}..HEAD", "HEAD", "--cached"):
+        args = ["git", "-C", str(ROOT), "diff", "--name-only"]
+        if spec != "HEAD":
+            args.append(spec)
+        diff = subprocess.run(args, capture_output=True, text=True)
+        if diff.returncode != 0:
+            print(diff.stderr.strip(), file=sys.stderr)
+            return 1
+        changed.update(line.strip() for line in diff.stdout.splitlines() if line.strip())
     hit = 0
     for u in data["units"]:
         if not u.get("frozen"):

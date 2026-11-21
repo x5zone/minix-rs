@@ -300,7 +300,11 @@ def _prefix_of(token: str) -> str | None:
 
 
 def parse_ledger(
-    text: str, report: Report, v3: bool = False, v3_from_round: int | None = None
+    text: str,
+    report: Report,
+    v3: bool = False,
+    v3_from_round: int | None = None,
+    c1_required: bool = False,
 ) -> tuple[
     list[str],
     dict[str, dict],
@@ -401,6 +405,7 @@ def parse_ledger(
                         )
                     )
                 )
+                current["c1_required"] = bool(c1_required)
                 if current["v3_scope"] and (current["root"] < 0 or current["origin"] < 0):
                     report.fail(
                         "ledger",
@@ -457,6 +462,17 @@ def parse_ledger(
         severity = cells[current["sev"]].strip() if current["sev"] >= 0 else ""
         role = cells[current["role"]].strip() if current["role"] >= 0 else ""
         category = cells[current["cat"]].strip() if current["cat"] >= 0 else ""
+        if (
+            current.get("c1_required")
+            and not current.get("c1_schema")
+            and severity.upper().startswith("P0")
+            and C1_CATEGORY_RE.search(category)
+        ):
+            report.fail(
+                "c1-red-green",
+                f"{'、'.join(row_ids)}: V3.10+ 台账表缺 C1 四列"
+                "（red_cmd / red_evidence / green_cmd / green_evidence）",
+            )
         red_cmd = (
             cells[current["red_cmd"]].strip() if current["red_cmd"] >= 0 else ""
         )
@@ -1366,8 +1382,8 @@ C1_GREEN_EVIDENCE_RE = re.compile(
     re.IGNORECASE,
 )
 C1_COMMAND_RE = re.compile(
-    r"cargo\s+test|(?:^|\s)(?:rg|grep)\s|python3\s+tools/|bash\s+tools/|"
-    r"\.(?:sh|py)\b|test::[A-Za-z_]",
+    r"^\s*`?\s*(?:cargo\s+test|rg\s|grep\s|python3\s+tools/|"
+    r"bash\s+tools/|[\w./-]+\.(?:sh|py)\b|test::[A-Za-z_])",
     re.IGNORECASE,
 )
 C1_NEGATION_RE = re.compile(r"not\s+(?:fail|failed|ok|pass)|未失败|不是失败")
@@ -1527,8 +1543,11 @@ def check_c1_red_green(
 
 
 def _norm_command(text: str) -> str:
-    """Normalize a command cell for same-command comparison."""
-    return re.sub(r"\s+", " ", text.replace("`", "").replace("\\|", "|")).strip()
+    """Strip only the cell's outer backticks; keep quoted content exact."""
+    t = text.strip().replace("\\|", "|")
+    if len(t) >= 2 and t.startswith("`") and t.endswith("`"):
+        t = t[1:-1]
+    return t.strip()
 
 
 def audit_template_sections(ledger_text: str, report: Report) -> None:
@@ -2924,7 +2943,13 @@ def check_run_dir(
             section_ids,
             section_classes,
             root_rows,
-        ) = parse_ledger(ledger_text, report, v3=v3, v3_from_round=schema_start)
+        ) = parse_ledger(
+            ledger_text,
+            report,
+            v3=v3,
+            v3_from_round=schema_start,
+            c1_required=(schema_version(loop_text) or (0, 0)) >= (3, 10),
+        )
         if (schema_version(loop_text) or (0, 0)) >= (3, 2):
             enforce_adjacent_only_dispositions(ledger_rows, report, schema_start)
         # V3.3 additions: four-state lifecycle, confirmation rounds, reader-P3

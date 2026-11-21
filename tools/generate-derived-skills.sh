@@ -52,7 +52,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---- review-scan 编排器：多运行时同源派生（2026-10-07 收编进规范源）----
-# 源 = prompt/skill/review-scan/（SKILL.md + 5 个 checks/*.md），内含条件块与标记：
+# 源 = prompt/skill/review-scan/（薄 SKILL.md），内含条件块与标记：
 #   <!-- @if:claude --> ... <!-- @endif -->   只进 .claude 派生件
 #   <!-- @if:codex -->  ... <!-- @endif -->   只进 .codex 派生件
 #   @@RT@@     → .claude / .codex（运行时目录前缀）

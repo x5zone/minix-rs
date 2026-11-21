@@ -168,9 +168,9 @@ for f in subprocess.check_output(["git", "ls-files", "*.md"], text=True).splitli
         continue
     text = open(f, encoding="utf-8", errors="replace").read()
     for lineno, line in enumerate(text.splitlines(), 1):
-        if re.search(r"Gate\s+0/A/B|Gate\s+A/B/C/D|D-6/D-Impl", line) or re.search(r"Blocker Gates\D{0,10}(?:[0-9A-Z-]+/){3,}", line):
+        if re.search(r"Gate\s+0\s*/\s*A|Gate\s+A\s*/\s*B|D-6/D-Impl", line) or re.search(r"Blocker Gates\D{0,10}(?:[0-9A-Z-]+/){3,}", line):
             bad.append(f"{f}:{lineno}: 门清单应改为指针 :: {line.strip()[:80]}")
-        elif re.match(r"\|\s*\*\*Gate [A-Z0-9]", line):
+        elif re.match(r"\s*\|\s*(?:\*\*)?Gate [A-Z0-9](?![.\w])", line) and re.search(r"通过|标准|必检|L[123]|证据|检查项", line):
             bad.append(f"{f}:{lineno}: 门定义表应只在 review-process.md :: {line.strip()[:80]}")
 print("\n".join(bad))
 PYGATE

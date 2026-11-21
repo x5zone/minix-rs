@@ -11,6 +11,7 @@
 prompt/
 ├── README.md                    — 本文件：目录、派生关系与同步门
 ├── review-rules/                — 规则规范源（唯一权威）
+├── resources/                   — 只读素材；正式规则不得引用
 ├── skill/                       — Skill 适配层源
 │   ├── cmds/                    — 6 个任务命令薄壳
 │   ├── review-scan/             — review-scan 编排器（薄 SKILL.md，规范源在 review-rules/）
@@ -24,7 +25,7 @@ prompt/
 
 `tmp/` 是会话产物与取证目录，整域不入库；`rewrite-notes/` 是文档与协作账本树。
 
-## 二、review-rules/（16 个文件）
+## 二、review-rules/（15 个文件）
 
 | 文件 | 职责 |
 |---|---|
