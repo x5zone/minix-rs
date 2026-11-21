@@ -1,6 +1,6 @@
 ---
 name: review-process-skill
-description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 Step 0.5 structure.md 骨架评审、Step 3.5a 纵向链路检查、Step 3.5b 因果链抽样验证）、Blocker Gates（0/A/B/C/D/D-6/D-Impl/E/G/H — 2026-08-15 修复 C-P0-2 明确 Gate H 属于 Blocker Gates）、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。 用在进入 review 执行阶段、需要 Step 0-7 强制流程与 Blocker Gates 证据格式之时。
+description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 Step 0.5 structure.md 骨架评审、Step 3.5a 纵向链路检查、Step 3.5b 因果链抽样验证）、Blocker Gates（见 `review-process.md` Gate 注册表）、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。 用在进入 review 执行阶段、需要 Step 0-7 强制流程与 Blocker Gates 证据格式之时。
 ---
 
 # Minix-RS Review 执行流程
@@ -45,7 +45,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
 | 文档行数 | rounds 数 | 每 round 范围 | 理由 |
 |---------|----------|--------------|------|
 | < 500 行 | 1 round（全量） | Step 0-7 一轮完成 | 小文档单轮可完成，无需分阶段 |
-| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Gate 0/A/B/C/D/D-6/E/**H**）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
+| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Blocker Gates，按注册表）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
 | > 1500 行 | 4 rounds | R1: 正确性（Step 0-4）<br>R2: 卓越性（Step 5 + excellence）<br>R3: patterns 对照<br>R4: 跨文档 + Gate G 收敛 | 大文档需 4 轮，避免单轮 context 过载 |
 
 **判定规则**：默认按行数查表；用户明确要求"深度全面 full-review"时按 2 rounds 起步（不强制 4 rounds），避免过度分阶段。
@@ -985,7 +985,7 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 - [ ] P0 收敛：最近 Pass 新增 P0 = 0
 - [ ] P1 收敛：最近 Pass 新增 P1 = 0（V3.7）
 - [ ] 独立验证：**Gate G** VERIFY-CHECK = PASS（**必须完成，不能跳过**）
-- [ ] Blocker Gates：0/A/B/C/D/D-6/D-Impl/E/G/H 全部通过，且每个 Gate 都有 gate-evidence 附件
+- [ ] Blocker Gates 全部通过（按 `review-process.md` 注册表），且每个 Gate 都有 gate-evidence 附件
 
 **当前状态**：CONVERGED / NOT_CONVERGED (N phases remaining)
 **下一步**：[下一阶段名称] 或 [执行独立验证] 或 [审查已收敛，可结束]
@@ -1010,7 +1010,7 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 
 | 层级 | 目标 | 通过条件 | 状态标记 |
 |------|------|---------|---------|
-| **Layer 1（Correctness）** | C → Rust 语义对齐 | P0 修复 + Gate H + Gate 0/A/B/C/D/D-6/D-Impl/E/G/H + Step 5.6 | NOT_CONVERGED if FAIL |
+| **正确性** | C → Rust 语义对齐 | P0 修复 + Blocker Gates（注册表）+ Step 5.6 | NOT_CONVERGED if FAIL |
 | **Layer 2（Excellence）** | redox/textbook 级质量 | §4.3.5 + §4.4 + §16.5 + §2.0 架构演进 ≥80% | NOT_CONVERGED（卓越性项登记并处置） |
 
 **关键判定**：
@@ -1039,7 +1039,7 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 3. **反向验证**：对每个抽样问题——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号，验证是否都在文档/检查覆盖
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有已标记 COMPLETE 但实际未完成的维度
-6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 0/A/B/C/D/D-6/D-Impl/E/G/H 全部 Gate（含 gate-evidence 块）
+6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了注册表内的全部 Gate（含 gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK。同 agent 验证时必须基于 grep 命令重放（非语义回忆），并在 VERIFY-CHECK.md 中标注"同 agent 验证，已重放 grep 命令"。
 
 **中间产物**（写入 `.review/trae/{stage}/VERIFY-CHECK.md`）：
@@ -1049,7 +1049,7 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 **抽样一致性**：X/Y = Z%
 **遗漏检查**：N 符号抽样，M 遗漏
 **收敛验证**：K/10 维度可信
-**Blocker Gates 复验**：0/A/B/C/D/D-6/E/G/**H** 全部真实通过? ✅/❌（2026-08-15 修复 C-P0-2）
+**Blocker Gates 复验**：注册表内全部 Gate 真实通过? ✅/❌
 **验证 agent**：[agent name] / 同 agent（已重放 grep 命令）
 
 | 抽样问题 | scan.md 判定 | 独立重新判定 | 一致? |

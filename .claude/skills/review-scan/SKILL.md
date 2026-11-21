@@ -1,339 +1,82 @@
 ---
 name: review-scan
-description: Scan a rewrite-notes/ directory. Execute coverage + doc + code + patterns + excellence checks across 5 domain files, write a review report with convergence status. Use when user says "review" or "scan" or "check" a directory of documentation.
+description: Scan a rewrite-notes/ directory. Execute coverage + doc + code + patterns + excellence checks using the canonical rule files, write a review report with convergence status. Use when user says "review" or "scan" or "check" a directory of documentation.
 allowed-tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Review Scan — Orchestrator
 
-You are a review orchestrator. Your job is to execute checks domain by domain, in strict order. Do NOT batch them mentally.
+You are a review orchestrator. Load the canonical rule file for each phase and execute it; this file does not restate the checks.
+## MANDATORY RULES
 
-## ⛔ MANDATORY RULES (read before starting)
+1. **Explicit Skill Invocation**：每个领域开始前用 `Skill` 工具真正调用对应技能（`review-doc-skill` / `review-code-skill` / `review-patterns-skill` / `review-process-skill` / `review-core-semantics-skill` / `review-excellence-skill` / `review-coverage-skill` / `review-socratic-skill`）。scan.md 的 Skill Invocation Log 只记实际调用。
+2. **先读后判**：每个判定先 grep/read 取得证据，再下结论。
+3. **证据分级**：判定标 `[DIRECT]`（grep 输出）/ `[MEDIUM]`（名称匹配，语义待确认）/ `[INFERRED]`（推断，标“待确认”）。Gate 证据块的级别按 `review-process.md` Gate 注册表。
+4. **零输出禁令**：某检查 0 发现时写“Checked N items, found 0 issues”，禁止留空；零输出检查按 `review-process.md` §零输出复跑重跑。
+5. **一次一域**：完成一个领域并写入 scan.md 后再开下一个，不并行记忆。
 
-1. **Explicit Skill Invocation**: You MUST invoke Skill tools explicitly via the available `Skill` function. NEVER rely on "rules already loaded" or "context already has it". For each review domain (doc/code/patterns/process/core-semantics/excellence/coverage/socratic), invoke the corresponding Skill before executing its checks. The Skill Invocation Log in scan.md must reflect actual Skill tool calls.
-2. **先读后判（Read-before-Judge）**：每个判定必须先执行 grep/read 验证，再下结论。禁止凭印象判断。
-3. **Evidence 分级**：每个判定标注 [DIRECT/MEDIUM/INFERRED]。
-   - [DIRECT] grep 直接验证（有明确输出）
-   - [MEDIUM] 名称匹配但语义需进一步确认
-   - [INFERRED] 基于上下文推断（需标注"待确认"）
-4. **零输出禁令**：如果检查发现 0 个问题，必须写"Checked N items, found 0 issues"。禁止留空。
-5. **证据强制**：每个检查必须包含 grep count、file count 或 line number range 作为证据。
-6. **Attention Decay 警告**：每完成一个领域后暂停，重读规则 #1 和 #4。
-7. **You MUST read each domain file before executing it.** Do NOT assume content.
-8. **You MUST output the result of each domain BEFORE moving to the next.**
+## 规范源（按阶段加载，不复制）
 
-## ⛔ Blocker Gates (must pass before Final Review output)
+| 阶段 | 规范源 |
+|---|---|
+| 范围 / Step 0 | `prompt/review-rules/review-process.md` §Step 0；`prompt/skill/review-process-skill.md` |
+| 覆盖率 | `prompt/skill/review-coverage-skill.md` |
+| 文档正确性 | `prompt/review-rules/review-doc-checklist.md` |
+| 代码正确性 | `prompt/review-rules/review-code-checklist.md` |
+| 错误模式 | `prompt/review-rules/review-patterns.md`（全量）+ `prompt/skill/review-patterns-skill.md`（适配） |
+| 卓越性 | `prompt/review-rules/review-doc-excellence.md` + `prompt/review-rules/review-code-excellence.md` |
+| 收敛 / 出版 | `prompt/review-rules/review-evals.md` §6A（G1–G14）+ `prompt/review-rules/review-publication.md` |
+| Gate 证据 | `prompt/review-rules/review-process.md` Gate 注册表 + scan 契约 |
 
-| Gate | Check | Pass Criteria | Fail Consequence |
-|------|-------|---------------|------------------|
-| **0** | Artifact Inventory | Standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains 9 grep-verifiable anchor sections | DRAFT, no STATE.md write |
-| **A** | Phase 2 Coverage Enumeration | coverage-extract.py executed + SYMBOLS.md on disk + `gate-evidence-A` block | DRAFT, no STATE.md write |
-| **B** | Phase 7 Step 2 Diff Extraction | Top 5 behavior contract table (3 语义偏移 + 2 覆盖缺口, **8 fields × 5 funcs**) | DRAFT, no STATE.md write |
-| **C** | Phase 7 Step 3.5 Precision Check | 5 meta-rules check table output | DRAFT, no STATE.md write |
-| **D** | P0 Mandatory Checklist (patterns §0) | 5 items answered (✅/❌ + grep evidence); PARTIAL/⚠️/"部分通过" = ❌ FAIL | DRAFT, no STATE.md write |
-| **D-6** | Phase 2.5 structure.md Skeleton Review (doc review only) | structure.md generated + 12-section review table + failures in Issue List | DRAFT, no STATE.md write (doc review) |
-| **E** | Phase 7 Step 4.5 Test Verification | §5 each test function grep-verified (if doc has §5) | DRAFT, no STATE.md write |
-| **G** | Phase 9 VERIFY-CHECK | VERIFY-CHECK.md produced + verdict PASS (consistency ≥ 90%) | DRAFT, NOT CONVERGED |
-| **H** | Phase 2.6 Design Alignment Check | **所有 review 模式必检**：H.2 一致性 ≥80% + H.3 Minix3 对齐无 P0 缺失 + H.4 无 design-wrong + H.5 Refactor 类型区分；无 design 文档时用 C 源码矩阵或 N/A + 理由。快照存在性不是 Gate。 | DRAFT, no STATE.md write |
+## Phase 1: Scope + Step 0
 
-**Any Gate failed → scan.md marked DRAFT, STATE.md NOT updated.**
+1. `ls $ARGUMENTS`，输出“Found N .md files, M .rs files.”
+2. 读取工具隔离的 STATE.md：
+   - Claude → `.review/claude/$STAGE/STATE.md`
+   `$STAGE` = 文档路径在笔记树根下的第一级目录；`$DOC_STEM` = 文档 basename。
+3. 跑 `python3 tools/verify-check.py --preflight` 与 `python3 tools/review-state-validate.py --state <STATE.md> --scan <scan.md> --strict`。
+4. scan.md 必须含 `## Step 0: 预检结果`（含关联代码清单）与 `## Skill Invocation Log`（真实调用表）。
+5. design/outline 快照是可选输入：不要求 `ls` 四条，不因缺失补生成，也不影响 Gate H。
 
-**Gate H 的 N/A 规则**：无 design 文档不是造假理由，也不是 FAIL；H.2/H.3 改用 C 源码矩阵，纯概念文档可 N/A + 具体理由。
+## Phase 2: Coverage
 
-**Gate Evidence Rule**: For every Gate, attach the actual command + output snippet in a `gate-evidence-{X}` block in scan.md, with a first line `level: L1|L2|L3`. "✅ Gate passed" without evidence is invalid. L1 (tool output) required for A/D/E/G10–G13; L2 for B/C/D-6/G/H; L3 only B/C/D-6/H with `MANUAL_FALLBACK` reason.
+调用 `review-coverage-skill`，按 `prompt/skill/review-coverage-skill.md` 运行 `coverage-extract.py`，生成 SYMBOLS.md。命令、stdout 与 exit code 写入 `gate-evidence-A`（`level: L1`）。脚本不可用 → PARTIAL，不得标 PASS。
 
-## Skill Invocation Log (mandatory in scan.md)
-scan.md must include this section:
-```
-## Skill Invocation Log
-| # | Skill | 调用时机 | 关键产出 |
-|---|-------|---------|---------|
-| 1 | review-doc-skill | Phase 3 | §6 概念准确性表 |
-| 2 | review-code-skill | Phase 4 | 代码质量审查 |
-```
-Missing this section → scan.md marked DRAFT.
+## Phase 3: Doc Checks
 
----
+调用 `review-doc-skill`，按 `prompt/review-rules/review-doc-checklist.md` 逐项执行；证据写入 scan.md Issue List 与 gate-evidence 块。不要另造检查清单。
 
-## Phase 1: Scope
-1. `ls $ARGUMENTS` — list all `.md` and `.rs` files in the target directory
-2. Output: "Found N .md files, M .rs files. Starting review."
-3. **Read correct STATE.md path** (tool-isolated; never share intermediate results between Trae and Claude):
-   - **Trae IDE** → `.review/trae/$STAGE/STATE.md` (project root `.review/`)
-   - **Claude Code Runtime** → `.review/claude/$STAGE/STATE.md` (project root `.review/`)
-   - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
-   - `$STAGE` = first directory under the notes tree root (`rewrite-notes/`/`redesign-notes/`/`study-notes/`) in the target doc path; also the state-directory grouping key (`.review/{tool}/{stage}/`). The old module layer between tree root and stage retired in the 2026-10-07 notes migration (see `rewrite-notes/MIGRATION.md`). `$STAGE` is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
-   - `$DOC_STEM` = target doc basename without extension; `$AGENT` = model id (Trae: glm/kimi/...; Claude: m3/...).
-   - Use `tools/review-init.sh claude {doc-path}` to auto-compute paths and mkdir.
-4. **Step 0 预检（所有 review 模式）**：
-   - 跑 `python3 tools/verify-check.py --preflight` 检查 STATE/scan/structure/SYMBOLS/VERIFY-CHECK 与关联代码清单。
-   - 跑 `python3 tools/review-state-validate.py --state <STATE.md> --scan <scan.md> --strict`。
-   - design/outline 快照是可选输入：不要求 `ls` 四条，不因缺失补生成，也不影响 Gate H。
-   - scan.md 必须含 `§Step 0: 预检结果` 段（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL）；该段必须含**关联代码清单**子小节（B4.2 2026-09-18）。
-   - 豁免必须登记在 STATE.md `§豁免列表` 段，不可泛化（模式 71 DOG）。
+## Phase 4: Code Checks
 
----
+调用 `review-code-skill`，按 `prompt/review-rules/review-code-checklist.md` 逐项执行。C↔Rust 语义对齐、执行模型、no_std 证据不足时按 P0/P1 入 Issue List。
 
-## Phase 2: Coverage Enumeration (DO THIS FIRST, once for the whole directory)
+## Phase 5: Pattern Checks
 
-> Derive from the user's target:
-> - `$DOC_DIR` = the directory the user wants reviewed (e.g. `rewrite-notes/01-stage-kernel`)
-> - `$MINIX3_MODULE` = the Minix3 module name (e.g. `kernel`, `vm`, `pm`, `vfs`)
-> - `$C_DIR` = `minix3/minix/kernel` if `$MINIX3_MODULE == kernel`; otherwise `minix3/minix/servers/$MINIX3_MODULE`
-> - `$TARGET_DOC` = basename if the user names a single `.md` file; otherwise leave empty for module-level coverage
-> - **Output paths are hardcoded to `.review/claude/` — this is the Claude Code Runtime Skill; do NOT use a `$TOOL` variable.**
->
-> See `checks/process.md` §Step 1.5 for detailed coverage rules.
+调用 `review-patterns-skill`，对照 `prompt/review-rules/review-patterns.md` 的 P0 六类与模式库。模式编号引用必须能在模式库中找到；已退役编号（61/62/69）不作现行判据。
 
-Execute the coverage-extract script to generate SYMBOLS.md. **Gate A evidence rule**: write command + stdout into a `gate-evidence-A` block in scan.md; script unavailable → PARTIAL (≠ PASS).
-```bash
-# Module-level
-python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
-  --rust-dir os --c-dir $C_DIR \
-  --output .review/claude/$STAGE/scans/SYMBOLS.md
+## Phase 6: Excellence Checks
 
-# Doc-specific review (recommended when user names one doc)
-python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
-  --rust-dir os --c-dir $C_DIR \
-  --doc-file $TARGET_DOC \
-  --semantic-map tools/coverage-extract/$MINIX3_MODULE-semantic-map.json \
-  --output .review/claude/$STAGE/$DOC_STEM/SYMBOLS.md
-```
-- `--rust-dir os` scans the entire `os/` tree to avoid missing cross-crate symbols.
-- `--c-dir` must be `minix3/minix/servers/$MINIX3_MODULE` for server modules and `minix3/minix/kernel` for the kernel module.
-- `--semantic-map` is required for C→Rust rewrite; without it Rust coverage will be near 0% due to name mismatch.
-- `--doc-file` ensures two docs in the same module do not produce identical coverage numbers.
-- If Rust coverage is 0%, first check `--rust-dir`/`--semantic-map` correctness before treating it as a real gap.
+调用 `review-excellence-skill`，按 `review-doc-excellence.md` 与 `review-code-excellence.md` 执行。卓越性缺口按 G2 的 P1/P2 入 Issue List；不设 Layer 2 门槛。正确性 P0/P1 未清零时先修，不进入卓越性扩张。
 
-Then AI supplements 5 semantic judgments (each with evidence level):
-1. Rust correspondence confirmation
-2. Architecture evolution marking (ARCH)
-3. Semantic ownership determination
-4. Behavior contract table (core functions)
-5. Test coverage supplement
+## Phase 7: Process & Verification
 
-Output: SYMBOLS.md + coverage statistics + P0 gaps + ARCH marks.
+调用 `review-process-skill`，按 `prompt/review-rules/review-process.md` 执行 Step 1.6 / 2 / 3.5 / 3.6 / 4.5 / 5.6 / 5.7 / 7.1：
 
----
-
-## Phase 2.5: structure.md Skeleton Review (Doc Review Only, Gate D-6)
-
-> **Purpose**: Verify "what the reader reads" (orthogonal to correctness which verifies "what the doc says"). Both must pass.
-> **Precondition**: Only for doc review (`.md` files). Skip for pure code review.
-> **Template**: `prompt/skill/review-process-skill.md` §Step 0.5.
-
-Generate `structure.md` (12 sections, saved alongside scan.md):
-1. **主题思想（一句话）** — doc in one sentence; cannot say → P1
-2. **目标读者** — beginner/intermediate/advanced + prerequisites; undeclared → P1
-3. **叙事主语** — prot_init()/CPU/reader/OS (pick one + evidence); subject=function name → P1
-4. **驱动方向** — WHY→WHAT→HOW / WHAT→HOW / HOW-only; HOW-only in Ch1 → P1
-5. **文档大纲** — H2 outline with page numbers; Ch1 outline = function names → P1
-6. **核心概念清单** — list core concepts; missing core concepts → P1
-7. **跨架构统一抽象** — multi-arch docs only: unified abstraction first; missing → P1
-8. **双向闭环** — entry mechanism covers both entry AND return; one-way → P1
-9. **叙事弧** — problem→solution→verification arc; missing → P2
-10. **元注释** — author narrating writing strategy in body text; >5 instances → P1
-11. **裸概念复述** — reader can retell core concept after reading Ch1; cannot → P1
-12. **纵向链路映射** — Ch1 concept ↔ Ch2 C code ↔ Ch3 design ↔ Ch4 impl; broken link → P1
-
-Output: structure.md + 12-section review table + failures written to Issue List.
-
-> ⛔ **Gate D-6**: structure.md generated + 12-section review table complete + failures in Issue List. Failure → scan.md DRAFT.
-
----
-
-## Phase 2.6: Design + outline Alignment Check — Gate H
-
-> **Precondition**: 所有 review 模式都执行。Profile D/A/G 可以裁剪内容检查，但不能跳过 Step 0 预检或 Gate H。
-> **Purpose**: 验证 review 对象（doc/code）与 design 的一致性 + design 本身完整性 + 可实现性 + **outline ↔ doc 对齐**（方案 D 新增）。
-
-Phase 2.6.1 design 对齐检查（6 项）：
-1. doc/code 中的命名是否与 design 一致？
-2. doc/code 中的 trait 定义是否在 design 中有完整方法签名？
-3. doc/code 中的错误码策略是否与 design 一致？
-4. doc/code 中的不变量是否在 design 中有显式声明？
-5. doc/code 中的架构演进是否标注 ARCH？
-6. doc/code 中的 unsafe 边界是否与 design 中的安全论证一致？
-
-Phase 2.6.2 design 缺口清单（P0-design-missing）：
-- 列出所有 "design 缺但 doc/code 需要" 的项
-- 每项必须：(a) 给出补充 design 的章节引用，或 (b) 标记 IN_DESIGN 进入 Review 中断协议
-
-Phase 2.6.3 IN_DESIGN 状态（替代 DEFERRED 逃避）：
-- IN_DESIGN = 主动承认需要先 design，非逃避
-- 时间上限：7 天警告、30 天清理
-- 月度审计：清理过期 IN_DESIGN 项
-
-Phase 2.6.4 大纲对照（可选）：
-- 作者提供 outline 时，对照 Step 0.5.3 的偏离矩阵，确认无 P0 偏离。
-- 没有 outline 时跳过，不影响 Gate H。
-
-Output: gate-evidence-H 块（`level: L2` 或 L3 + `MANUAL_FALLBACK`）。
-> **Gate H**: H.2–H.5 语义检查 + 缺口清单 + P0-design-missing 全处置。Failure → scan.md DRAFT。
-> 详见 `prompt/review-rules/review-process.md` §Step 1.6 + `prompt/skill/review-patterns-skill.md` §X.5 Pattern 63 Design-Missing。
-
----
-
-## Phase 3: Doc Checks (for each .md file)
-
-Read: `.claude/skills/review-scan/checks/doc.md`
-
-Execute 16 doc checks IN ORDER. After each check, mark it done.
-- Check 00: Claims-Evidence Tracing
-- Check 01: Concept Accuracy
-- Check 02: C Code Reference Verification
-- Check 03: Data Structure Coverage
-- Check 04: Document-Code Consistency
-- Check 05: Architecture Evolution
-- Check 06: Cross References
-- Check 07: Diagram Quality
-- Check 08: C Source Coverage (enhanced by Phase 2 SYMBOLS.md)
-- Check 09: Design Decision Quality
-- Check 10: Chapter Link Validation
-- Check 11: Document Style
-- Check 12: Skip/Fake Check Detection (meta, run after all others)
-- Check 13: Ch1 Mandatory Skeleton (concept-driven, not implementation-driven)
-- Check 14: Explanation Causal Chain Validation (P0 — causal explanations must be technically correct)
-- Check 15: Author Intent Transparency (Ch3 decisions must have rationale)
-
-> ⛔ ATTENTION DECAY: After Check 06, pause and re-read MANDATORY RULES #1 and #3.
-
----
-
-## Phase 4: Code Checks (for each .rs file)
-
-Read: `.claude/skills/review-scan/checks/code.md`
-
-Execute 16 code checks IN ORDER:
-- Check 01: Rewrite Quality
-- Check 02: Hardware Abstraction
-- Check 03: Trait Design Quality
-- Check 04: Type Safety
-- Check 05: Execution Model & Concurrency
-- Check 06: Memory Model
-- Check 07: Module Design & pub Hygiene
-- Check 08: Naming & Traceability
-- Check 09: Testing
-- Check 10: Comments & Documentation
-- Check 11: 64-bit Assumptions
-- Check 12: Complexity & Engineering Judgment
-- Check 13: no_std Compliance
-- Check 14: Design-Code Consistency
-- Check 15: C-Rust Semantic Alignment
-- Check 16: Precision Check
-
-> ⛔ ATTENTION DECAY: Code checks are at HIGH RISK of being skipped. After Check 08, pause and re-read MANDATORY RULES #1 and #3.
-
----
-
-## Phase 5: Pattern Checks (for each .md and .rs file)
-
-Read: `.claude/skills/review-scan/checks/patterns.md`
-
-Execute 9 pattern categories:
-- §0 P0 必检清单（Gate D，5 项）
-- 文档错误模式（15 个，1-15）
-- 跨文档联动错误模式（3 个，A-C）
-- 代码错误模式（10 基础 + 4 内核 SMP + 5 跨阶段通用，16-34）
-- 测试错误模式（6 个，35-40）
-- 卓越性错误模式（8 个，41-47 + 84 未标注反模式示例）
-- 叙事与概念错误模式（13 个，48-60）— 因果链编造(48)为 P0
-- Design-First 反模式（63-65）
-- Review 流程反模式（66-78）
-
----
-
-## Phase 6: Excellence Checks (after correctness gate passed)
-
-Read: `.claude/skills/review-scan/checks/excellence.md`
-
-> **Precondition**: Only execute if Phase 2-5 found 0 new P0 and 0 new P1 (V3.7).
-> Excellence checks pursue "better", not "correct".
-
-Execute:
-- §4.1-4.5 文档卓越性（叙事结构 / 读者体验 / 教学深度 / 可维护性 / 概念教学 Ch1 专项）+ **H1 读者复述测试**（structure.md §11 必答产物，复述不通过 → 教学类 P1）
-- §16-21 代码卓越性（API设计 / 表达力 / 性能 / 代码即文档 / 可测试性 / 测试质量）+ **H2 非法态封堵清单**（§16.6；核心状态机逐条，封不住关键非法态 → 设计类 P1）+ **H3 文档代码块审查**（checks/doc.md Check 16；未标注反模式 → P1）
-- **A1 过程痕迹扫描**（checks/doc.md Check 18：`tools/doc-style-lint.sh --diff` 零 error）+ **D2 unsafe 审计**（`tools/unsafe-audit.sh --diff` 零新增裸 unsafe；存量基线 `tools/unsafe-baseline.txt`）
-
----
-
-## Phase 7: Process & Meta-Check
-
-Read: `.claude/skills/review-scan/checks/process.md`
-
-Execute:
-- Step 0.5: structure.md Skeleton Review (Gate D-6, doc review only)
-- Step 2: Diff Extraction (Top 5: 3 语义偏移 + 2 覆盖缺口, 8-field behavior contract table)
-- Step 2.5: Link Validation (if applicable)
-- Step 3.5: Precision Check (Gate C)
-- Step 3.5a: Vertical Link Check (doc review only — Ch1 concept ↔ Ch3 design ↔ Ch4 impl ↔ Ch5 test)
-- Step 3.5b: Causal Chain Sampling (doc review only — verify Ch2 "why this design" explanations)
-- **Step 3.6: 关联代码维度检查（文档 review 强制，B3.3）** — 输入 Step 0 关联代码清单（`tools/doc-code-map.sh`）；至少覆盖 code-checklist §1/§2/§4/§8/§13/§14；产物维度×文件×结论×证据表 + `gate-evidence-code` 块（固定行：代码可读性增量 G1/G4 + 非法态封堵 H2 + 文档代码块审查 H3 + unsafe 审计 D2）；无发现也要写明
-- Step 4: Cross-Document Check
-- **Step 4.5: Test Verification (Gate E)** — grep each §5 test function
-- Step 5.5: State Write & Convergence
-- Step 5.6: Review Verification Protocol (if converged)
-- **Step 5.7: Rule Discovery (mandatory)** — answer ✅/❌ + draft if ✅
-- **Step 7.1: Convergence Cost Warning (mandatory)** — stop modifying at 3 modification rounds (cross-edition) / P1≤1 for 2 rounds stops searching (status still per publication) / cost>80% benefit<20%
-- Step 6: Action Item Generation
-- Step 7: Self-Check Checklist
-- Meta-Check: Skip/Fake Check Detection
-
----
+- Gate H 只查 H.2–H.5 语义项；无 design 文档时用 C 源码矩阵或 N/A + 理由。
+- `gate-evidence-{X}` 块首行写 `level: L1|L2|L3`；最低级别按 Gate 注册表，L3 只允许 B/C/D-6/H 且附 `MANUAL_FALLBACK`。
+- Step 5.6 产出 VERIFY-CHECK.md；consistency ≥90% 才可 CONVERGED。
+- Step 5.7 必答 Rule Discovery；Step 7.1 按 3 轮硬上限停止修改。
 
 ## Phase 8: Report
 
-After ALL checks are done, collect findings into:
-- File: tool-specific scan path
-  - Claude default: `.review/claude/$STAGE/$DOC_STEM/scan.md`
-  - Trae default: `.review/trae/$STAGE/scans/$DOC_STEM-$AGENT-scan.md`
-  - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `rewrite-notes/$STAGE/$DOC_STEM-trae-review.md`; Claude report: `rewrite-notes/$STAGE/$DOC_STEM-claude-report.md`).
-- Format: Summary (P0=N, P1=M, P2=K) + per-domain findings + full progress checklist
-- **Must include**: Skill Invocation Log + Blocker Gates pass status WITH evidence + Artifact Inventory + Severity Reconciliation
+把全部发现写进单份 scan.md：
+- Claude 默认：`.review/claude/$STAGE/$DOC_STEM/scan.md`
+- 必含：Skill Invocation Log、Blocker Gates 状态及 gate-evidence、Step 0 预检结果、Issue List、Artifact Inventory、Severity Reconciliation。
 
----
+## Phase 9: State + Convergence
 
-## Phase 9: State Write & Convergence
-
-1. Create/update tool-specific STATE.md (never share intermediate results between Trae and Claude):
-   - **Trae IDE** → `.review/trae/$STAGE/STATE.md`
-   - **Claude Code Runtime** → `.review/claude/$STAGE/STATE.md`
-2. **Sync new P0/P1/P2** from scan.md into STATE.md Open lists; move fixed issues to Closed Issues with scan/date.
-3. Update `SYMBOLS.md` (Step 1.5 machine output) to matching path:
-   - Trae: `.review/trae/$STAGE/scans/$DOC_STEM-$AGENT-SYMBOLS.md`
-   - Claude: `.review/claude/$STAGE/$DOC_STEM/SYMBOLS.md`
-4. **All dimension results → scan.md single file** (NOT 10 dimension check files). Dual-write if user explicitly specified output path.
-5. Generate VERIFY-CHECK.md **before declaring CONVERGED**:
-   - Trae: `.review/trae/$STAGE/VERIFY-CHECK.md`
-   - Claude: `.review/claude/$STAGE/VERIFY-CHECK.md`
-6. Output convergence assessment: CONVERGED / NOT_CONVERGED
-7. Output **Artifact Inventory** and **Severity Reconciliation** tables in scan.md (Gate 0 requirements).
-
-STATE.md contents:
-   - Phase progress
-   - Findings counts (P0/P1/P2)
-   - Convergence status
-   - Coverage Status section (from Phase 2)
-   - **Blocker Gates**: 0✅ A✅ B✅ C✅ D✅ D-6✅ E✅ G✅ H✅ (all with evidence)
-
-**Convergence criteria**:
-- All dims COMPLETE in scan.md
-- P0 new=0, P1 new=0 (V3.7; no backlog exit)
-- **Gate G: VERIFY-CHECK.md=PASS** (mandatory; do NOT mark CONVERGED without it)
-- All P0 fixed+verified (or WONTFIX+reason)
-- **Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H (incl. D-6 for doc review) all passed with gate-evidence attached**
-- **Publication gates G10-G14** (`review-publication.md` §五): doc/code/todo/rubric/units all green before CONVERGED
-
----
-
-## Domain File Mapping (5 files replace 31 checks)
-
-| Domain File | Replaces | Checks |
-|-------------|----------|--------|
-| `doc.md` | 文档检查清单 | 16 doc correctness checks (Check 00-15) |
-| `code.md` | code/01-16 (16 files) | 16 code correctness checks |
-| `patterns.md` | patterns/* (3 files) | 15 doc + 3 cross + 19 code patterns |
-| `excellence.md` | new | 5 doc + 6 code excellence checks |
-| `process.md` | review-process + skip-check | Step 0-7 + meta-check + Coverage Enumeration |
-
-> **Note**: The original 31 individual check files in `doc/`, `code/`, `patterns/` subdirectories are superseded by the 5 domain files above. They are kept for reference but should not be loaded by the orchestrator. Coverage Enumeration is executed in **Phase 2** of this orchestrator and detailed in `checks/process.md` §Step 1.5.
+1. 更新工具专属 STATE.md（只写自己工具的目录）。
+2. 把 scan.md 的 P0/P1/P2 同步到 STATE Open/Closed 列表。
+3. 生成/更新 VERIFY-CHECK.md；未生成不得标 CONVERGED。
+4. 出口判据只按 `review-evals.md` §6A 的 G1–G14 与 `review-publication.md` 的出版门；普通 review 与 review-loop 共用这一套。
+5. 输出 CONVERGED / NOT CONVERGED，并附 Gate 证据与 Artifact Inventory。

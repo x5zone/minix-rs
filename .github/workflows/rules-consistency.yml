@@ -87,7 +87,7 @@ jobs:
           bash tools/lint-review-rules.sh || { echo '::error::gate failed: lint-review-rules'; exit 1; }
           echo '── 2/3 规范源与运行时引用一致（含 Trae 适配）──'
           bash tools/check-review-rules.sh || { echo '::error::gate failed: check-review-rules'; exit 1; }
-          echo '── 3/3 派生件与源无漂移（含 review-scan 编排器 12 个文件）──'
+          echo '── 3/3 派生件与源无漂移（含 review-scan 编排器）──'
           bash tools/generate-derived-skills.sh --check || { echo '::error::gate failed: generate-derived-skills --check'; exit 1; }
 
       - name: 仓库级门禁（模式门全量 + 命令层边界守卫）

@@ -761,7 +761,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 普通 review 与 `review-loop` 共用一套出口判据：`review-evals.md` §6A 的四态模型与 G1–G14。不再有 Layer 1/2 两套分层，也不再有“另加 Layer 2 四项 ≥80%”的平行门槛。
 
-- **正确性**：P0 六类全部修完；Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全 PASS。
+- **正确性**：P0 六类全部修完；Blocker Gates 全 PASS（列表见 `review-process.md` 注册表）。
 - **卓越性缺口**：按 G2 的 P1/P2 处理，不再单列 Layer 2 维度。教学深度、文档组织、design-first API、架构演进等检查项如果发现问题，仍按 P1/P2 入 Issue List 并当轮处置。
 - **统一出口**：G1–G14 的具体定义、四态与证据要求只在 `review-evals.md` §6A 维护；本文件不复制门列表。
 

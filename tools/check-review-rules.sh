@@ -147,31 +147,54 @@ rg -q '9 个 grep 可验锚段' prompt/skill/review-process-skill.md \
   || fail "source process skill has stale Gate 0 anchor count"
 rg -q '\{tree\}/meta/design/\{stage\}/' prompt/review-rules/review-process.md \
   || fail "source process rules do not use meta/design"
+
+# 门列表单一来源：Blocker 门表只在 review-process.md，命令门表只在 review-cmds.md，
+# G1–G14 只在 review-evals.md。其他文件写门时只能给指针，不能抄门清单/门表。
+GATE_LIST_OUT=$(python3 - <<'PYGATE'
+import re, subprocess
+allowed = {
+    "prompt/review-rules/review-process.md",
+    "prompt/review-rules/review-cmds.md",
+    "prompt/review-rules/review-evals.md",
+}
+bad = []
+prefixes = ("prompt/", ".claude/", ".codex/", ".trae/", ".agents/")
+for f in subprocess.check_output(["git", "ls-files", "*.md"], text=True).splitlines():
+    if f in allowed or not __import__("os").path.exists(f):
+        continue
+    if not (f == "AGENTS.md" or f.startswith(prefixes)):
+        continue
+    if f.startswith("prompt/WORKFLOW-") or f.startswith("prompt/V3.9-") or f.startswith("prompt/META-"):
+        continue
+    text = open(f, encoding="utf-8", errors="replace").read()
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if re.search(r"Gate\s+0/A/B|Gate\s+A/B/C/D|D-6/D-Impl", line) or re.search(r"Blocker Gates\D{0,10}(?:[0-9A-Z-]+/){3,}", line):
+            bad.append(f"{f}:{lineno}: 门清单应改为指针 :: {line.strip()[:80]}")
+        elif re.match(r"\|\s*\*\*Gate [A-Z0-9]", line):
+            bad.append(f"{f}:{lineno}: 门定义表应只在 review-process.md :: {line.strip()[:80]}")
+print("\n".join(bad))
+PYGATE
+)
+if [ -n "$GATE_LIST_OUT" ]; then
+  printf '%s\n' "$GATE_LIST_OUT" | head -12 | sed 's/^/    ✗ /' >&2
+  fail "门清单/门表出现在非规范源文件（只允许指针）"
+else
+  printf 'OK: 门列表单一来源检查通过\n'
+fi
+
 python3 tools/notes_layout.py >/dev/null || fail "notes_layout.py 与 notes-layout.conf 路径不一致"
 
 # .claude layer validation (NEW 2026-08-15, meta-review F-B5-F14; 2026-10-07 收编改造).
 # review-scan 不再是「手工维护的例外」：规范源在 prompt/skill/review-scan/，
 # .claude 与 .codex 两份由 tools/generate-derived-skills.sh 按条件块裁剪生成。
-# 下面除了存在性断言，还要求规范源六个文件齐备；派生一致性由 generate-derived-skills.sh --check 把关。
-for rel in SKILL.md checks/patterns.md checks/process.md checks/doc.md checks/code.md checks/excellence.md; do
+# 下面除了存在性断言，还要求编排器规范源齐备；派生一致性由 generate-derived-skills.sh --check 把关。
+for rel in SKILL.md; do
   [[ -f "prompt/skill/review-scan/$rel" ]] || fail "missing review-scan source: prompt/skill/review-scan/$rel"
 done
 for f in .claude/rules/review-core.md .claude/rules/review-process.md .claude/rules/fix-guard.md \
          .claude/skills/review-scan/SKILL.md .claude/skills/review-implementation-skill/SKILL.md; do
   [[ -f "$f" ]] || fail "missing .claude file: $f"
 done
-for check in doc code patterns process excellence; do
-  [[ -f ".claude/skills/review-scan/checks/${check}.md" ]] || fail "missing .claude checks/${check}.md"
-  [[ -f ".codex/skills/review-scan/checks/${check}.md" ]] || fail "missing .codex checks/${check}.md"
-done
-rg -q 'Check 01: Rewrite 质量' .claude/skills/review-scan/checks/code.md \
-  || fail "checks/code.md is not a code checklist (regression of F-B3-F1)"
-rg -q 'Check 01: Rewrite 质量' .codex/skills/review-scan/checks/code.md \
-  || fail ".codex checks/code.md is not a code checklist"
-rg -q 'spin_loop' .claude/skills/review-scan/checks/patterns.md \
-  || fail ".claude patterns.md §0 item 4 missing spin_loop (C-P1-3)"
-rg -q 'Step 5\.4 L3 grep|Step 5\.5 测试总数' .claude/rules/review-process.md .claude/skills/review-scan/checks/process.md \
-  && fail "conflicting Step 5.4/5.5 numbering in .claude (should use §2.4i/§2.4j)"
 # D5（2026-09-18）：Step 1.0b 已收编进 §Step 1.0 锚点解析（职责迁至 doc-checklist §2.4b），标题数应为 0；保留守卫防其作为独立步骤复活
 [[ "$(grep -c '^### Step 1\.0b' .claude/rules/review-process.md)" -le 1 ]] \
   || fail ".claude review-process.md has duplicate Step 1.0b heading"

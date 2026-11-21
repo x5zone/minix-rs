@@ -38,7 +38,7 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 | 文档行数 | rounds 数 | 每 round 范围 | 理由 |
 |---------|----------|--------------|------|
 | < 500 行 | 1 round（全量） | Step 0-7 一轮完成 | 小文档单轮可完成，无需分阶段 |
-| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Gate 0/A/B/C/D/D-6/E/H）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
+| 500-1500 行 | 2 rounds | R1: 正确性（Step 0-4 + Blocker Gates，按注册表）<br>R2: 卓越性（Step 5 + Gate G + patterns/excellence） | 中等文档分两轮：先保正确性，再求卓越 |
 | > 1500 行 | 4 rounds | R1: 正确性（Step 0-4）<br>R2: 卓越性（Step 5 + excellence）<br>R3: patterns 对照<br>R4: 跨文档 + Gate G 收敛 | 大文档需 4 轮，避免单轮 context 过载 |
 
 **判定规则**：默认按行数查表；用户明确要求"深度全面 full-review"时按 2 rounds 起步（不强制 4 rounds），避免过度分阶段。
@@ -456,7 +456,7 @@ STATE.md format:
 3. P1 new = 0 (V3.7)
 4. **Gate G: VERIFY-CHECK.md = PASS** (mandatory; do NOT mark CONVERGED without it)
 5. All P0 in scan.md fixed+verified (or WONTFIX+reason)
-6. **Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H all passed with gate-evidence attached**
+6. **All Blocker Gates passed with gate-evidence attached**（列表见 `prompt/review-rules/review-process.md` 注册表）
 
 ## Step 5.6: Review Verification Protocol（独立验证，强制，Gate G）
 
@@ -470,7 +470,7 @@ STATE.md format:
 3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
-6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A/B/C/D/D-6/D-Impl/E/G/H 是否都附带真实证据（gate-evidence 块）
+6. **Blocker Gates 复验**：检查注册表内每个 Gate 是否都附带真实证据（gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK（如 trae 内 glm 的 scan 由 kimi/ds 验证）。同 agent 验证时必须基于 grep 命令重放（非语义回忆），降低同 agent 系统性盲区风险。跨 agent 验证结果记入 VERIFY-CHECK.md 的"验证局限说明"段。
 8. **输出判定**：
    - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过

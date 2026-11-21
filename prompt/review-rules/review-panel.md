@@ -573,7 +573,7 @@ A/B/C 合并成一个 agent，并在报告里只标 `VARIANCE`；这是**降档*
 
 | 面板角色 | 复用的现有装置 | 不替代什么 |
 |---|---|---|
-| P-FACT | `full-review` 的 Step 0–4.5 只读形态、Gate A/B/C/D/D-6/E/H、Doc Code Sync 七项、`tools/anchor-resolve.sh`、`tools/doc-code-map.sh`、`tools/doc-style-lint.sh`、`tools/doc-ref-check.sh`、`tools/doc-code-density-check.sh` | 不替代主 agent 的修复与 Gate 0 状态写入 |
+| P-FACT | `full-review` 的 Step 0–4.5 只读形态、Blocker Gates（按 `review-process.md` 注册表）、Doc Code Sync 七项、`tools/anchor-resolve.sh`、`tools/doc-code-map.sh`、`tools/doc-style-lint.sh`、`tools/doc-ref-check.sh`、`tools/doc-code-density-check.sh` | 不替代主 agent 的修复与 Gate 0 状态写入 |
 | P-DESIGN | `review-excellence-skill` 的代码卓越性维度、`tools/trait-audit.py` | 不替代 `code-excellence` 命令；面板只提方案，重构由主 agent 在限额内执行 |
 | P-READER | 本文件 §4.4 的 V5 冷读团与 V2 盲测学生 | 不替代事实核对；读者不读源码 |
 | P-REFUTE | `review-socratic-skill` 的追问话术、外部对抗审查的 Corroborate/Refute 姿态 | 不替代证据裁决 |

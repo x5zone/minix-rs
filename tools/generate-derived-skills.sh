@@ -59,7 +59,7 @@ done
 #   @@REVDIR@@ → .review/claude / .review/codex（状态目录，三工具隔离）
 # 收编前的事实：编排器只存在于 .claude/ 与 .codex/ 两份手抄件、无规范源，本脚本原先还写着
 # 「review-scan 由 .claude/ 独立维护，不在此生成」——运行时端当了源，漂移无人守。
-SCAN_FILES=(SKILL.md checks/patterns.md checks/process.md checks/doc.md checks/code.md checks/excellence.md)
+SCAN_FILES=(SKILL.md)
 
 render_scan() {  # render_scan <src> <which> → 渲染结果写标准输出
   local src="$1" which="$2"
