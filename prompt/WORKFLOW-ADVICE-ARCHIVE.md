@@ -221,3 +221,20 @@ state-validate 计数口径、R12-D3 余项 SYMBOLS 标签冲突、R13-D2 Per-Do
    `AI-chats/GPT-workflow-optim-begin.md`（**仍在库**，勿混淆）。
 5. **跨轮状态**：doc-iter 轮次的活状态由 `rewrite-notes/coordination/DOC-ITER-LEDGER.md`（入库）与
    `tmp/doc-iter/`（不入库）承接，不依赖本文；本台账 W-15 指向本文。
+
+## 六、2026-11-21 清理批次（12 份过程文件删档）
+
+> 口径与 §一相同：已入库文件靠 git 历史回捞，不再保留工作副本。
+> 取回方式：`git show <删除提交>^:prompt/<文件名>`；删除提交可用
+> `git log --diff-filter=D -- prompt/<文件名>` 查到。
+
+| 文件 | 内容 | 承接 |
+|---|---|---|
+| `R1`–`R5-V36-ADVERSARIAL-2026-11-20.md` | V3.6 五轮对抗原始分诊表 | `V3.6-USABILITY-REPORT.md` 汇总 |
+| `R6-V36-ADVERSARIAL-2026-11-21.md` | 第六轮对抗记录 | 同上 |
+| `V35-TRAIL-DEFECTS.md` | V3.5 轨迹分析（6 门缺陷 + 6 流程缺陷） | `WORKFLOW-VERSIONS.md` 已摘录 |
+| `SESSION-CHANGES-2026-11-18.md` | 单次会话变更日志 | `git log` |
+| `review-loop-process-review-2026-11-17.md` | 六轮流程体检报告 | `review-eval/DECISIONS.md` D-056 |
+| `WORKFLOW-REVIEW-2026-11-21.md` | V3.7/V3.8 的诊断原稿 | `review-publication.md` / `review-tutorial-rubric.md` |
+| `code-review-subagent.md` | 外部 skill 讨论与冷读素材 | `BLIND-SPOTS.md` / `WORKFLOW-VERSIONS.md` 已摘录 |
+| `HANDOFF-V36.md` | 2026-11-20 会话交接 | 已过时（V3.6 五轮完成、V3.7/V3.8 已落规则） |
