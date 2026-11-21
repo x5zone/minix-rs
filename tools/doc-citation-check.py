@@ -265,6 +265,20 @@ def symbol_present(source: str, kind: str | None, name: str) -> bool:
     return False
 
 
+def declared_source_symbols(notes: str | None) -> list[str]:
+    """`source-symbol:` names listed in a rewritten block's annotation."""
+    if not notes:
+        return []
+    match = re.search(r"source-symbol\s*[:：]\s*([^;；]*)", notes)
+    if not match:
+        return []
+    return [
+        name
+        for name in re.findall(r"[A-Za-z_][A-Za-z0-9_:]*", match.group(1))
+        if name
+    ]
+
+
 def check_block(block: dict, root: Path) -> dict:
     annotation = block["annotation"]
     if annotation is None:
@@ -326,14 +340,41 @@ def check_block(block: dict, root: Path) -> dict:
         word in notes for word in ("改写", "示意", "反例", "重排", "译述")
     )
     if rewrite_declared:
+        # R36-FACT-A-S2：改写块仍需证明符号真的存在。没有 `source-symbol:`
+        # 时只能是 WARN（无法机械核对）；给了名字却找不到就是 FAIL。
+        symbols = declared_source_symbols(notes)
+        if not symbols:
+            return {
+                "status": "WARN",
+                "location": location,
+                "kind": kind,
+                "reason": "声明为非逐字引文且未给 source-symbol，符号存在性未核对",
+                "mode": "structure-only(declared-rewrite)",
+            }
+        missing = [
+            name
+            for name in symbols
+            if not any(
+                re.search(rf"\b{re.escape(name.split('::')[-1])}\b", source)
+                for source in sources
+            )
+        ]
+        if missing:
+            return {
+                "status": "FAIL",
+                "location": location,
+                "kind": kind,
+                "reason": f"source-symbol 在源码中不存在: {', '.join(missing)}",
+                "mode": "rewrite-symbol-missing",
+            }
         # r8（对抗判例）：声明式豁免此前计为 checked，虚高「引文已对账」读数——
         # 改为 WARN：不阻断，但覆盖率只数真正逐行对账的块。
         return {
             "status": "WARN",
             "location": location,
             "kind": kind,
-            "reason": "声明为非逐字引文（structure-only），未做逐行对账",
-            "mode": "structure-only(declared-rewrite)",
+            "reason": "声明为非逐字引文；source-symbol 已核对，内容未逐行对账",
+            "mode": "structure-only(declared-rewrite,source-symbol-ok)",
         }
 
     # Per-line token existence: whitespace, line wrapping and
@@ -513,6 +554,39 @@ def self_test() -> int:
         # r8 判别：声明式豁免必须计 WARN、不计 checked（否则虚高覆盖率）。
         if not any(r["status"] == "WARN" for r in dr_results):
             print("self-test FAIL: structure-only 块未计 WARN（覆盖率虚高）")
+            return 1
+
+        # R36-FACT-A-S2：改写块可以用 source-symbol 证明符号仍存在；
+        # 名字找不到时必须 FAIL，不能继续以“改写”豁免。
+        rewrite_symbol_ok = root / "rewrite_symbol_ok.md"
+        rewrite_symbol_ok.write_text(
+            "```rust\n"
+            "// 节选（改写：压成一行；source-symbol: foo），os/lib.rs:fn foo。\n"
+            "foo_with_defaults(1, 2);\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        rs_results, code = check_doc(rewrite_symbol_ok, root)
+        if code != 0:
+            print("self-test FAIL: source-symbol 存在的改写块被误拦")
+            return 1
+        if not any(
+            r.get("mode") == "structure-only(declared-rewrite,source-symbol-ok)"
+            for r in rs_results
+        ):
+            print("self-test FAIL: source-symbol 核对未进入读数")
+            return 1
+        rewrite_symbol_bad = root / "rewrite_symbol_bad.md"
+        rewrite_symbol_bad.write_text(
+            "```rust\n"
+            "// 节选（改写：压成一行；source-symbol: ghost），os/lib.rs:fn foo。\n"
+            "foo_with_defaults(1, 2);\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        _, code = check_doc(rewrite_symbol_bad, root)
+        if code == 0:
+            print("self-test FAIL: source-symbol 指向不存在的符号未被拦截")
             return 1
 
         # V3.4：C 侧三种形态。
