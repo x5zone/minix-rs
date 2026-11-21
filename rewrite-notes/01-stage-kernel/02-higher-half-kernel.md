@@ -455,7 +455,7 @@ pub struct LoadSegment {
 | `e_phoff` / `e_phentsize` / `e_phnum` | 32 / 54 / 56 | `SegmentIter::new` 的表范围检查与步进 |
 | `p_type` / `p_flags` / `p_offset` / `p_vaddr` / `p_paddr` / `p_filesz` / `p_memsz` / `p_align` | 0 / 4 / 8 / 16 / 24 / 32 / 40 / 48 | `parse_phdr` 逐字段读取 |
 
-迭代器在 `next()` 里做类型过滤与范围检查，命中这些条件时 `continue`（不产出该段）；但 `SegmentIter::new` 与 `parse_phdr` 的表范围算式是未检查加法，畸形输入会 panic 而不是 `Err`（代码修复登记设计批 D2-01）（`lib.rs` 的 [`impl Iterator for SegmentIter`](os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter)）：
+迭代器在 `next()` 里做类型过滤与范围检查：只有非 `PT_LOAD` 类型过滤走 `continue`（正常过滤），其余表项范围与段形失败都以 `Some(Err(..))` 浮出（I-48/D-084）。`SegmentIter::new` 与 `parse_phdr` 的表范围算式仍是未检查加法（D2-01：debug 下 panic，release 下可能回绕后再由 `next()` 报 `Err`）（`lib.rs` 的 [`impl Iterator for SegmentIter`](os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter)）：
 
 ```rust
 /* 节选（保留 next() 的类型过滤与四类 Err 返回；注释有改写；省略号处为返回值构造），os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter。 */
@@ -577,7 +577,7 @@ pub trait HigherHalf {
 
 | 前置条件 | 谁保证 | 违反时的落点 |
 |---|---|---|
-| 分页已启用、两套映射已建立 | 调用者（direct 面是 `arch_boot_finish` 里 `arch_boot_impl` 的返回点；v1 面是 `resume_after_v1_decode`） | 取指或压栈落在无映射地址 |
+| 分页已启用、两套映射已建立 | 调用者（direct 面是 `arch_boot_finish` 里 `arch_boot_impl` 的返回点；v1 面是 `resume_after_v1_decode`（三架构同名壳，公共体 `resume_additive`）） | 取指或压栈落在无映射地址 |
 | 跳转传入的指针与 `kmain` 消费的副本 | 调用者保证传入地址可读；生产 `kmain` 第一条语句即遮蔽为 `.bss` 副本，形参只做交接、不解引用；测试载体若直接解引用则需自行保证 | 生产路径解引用副本时页错误；载体解引用形参时页错误 |
 | `stack_top` 16 字节对齐 | 断言覆盖 `boot_validate_and_prepare` 现算的 `kern_stack_top`（与 `kinfo.kern_stack_top()` 同值）；形参由两个调用点的写法保证（都传 `kinfo.kern_stack_top()`），不是断言保证 | 入口处需要对齐的指令 |
 | 不返回 | 类型：`-> !` 让"返回"在编译期不成立 | 无法表达（不返回是签名的一部分） |
