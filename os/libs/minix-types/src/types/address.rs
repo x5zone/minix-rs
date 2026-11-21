@@ -187,11 +187,13 @@ impl PhysBytes {
     }
 }
 
-/// Physical address range, half-open `[start, end)`.
+/// Internal physical address range, half-open `[start, end)`.
 ///
-/// Constructor rejects `end < start`, so an inverted range is not
-/// representable. Use this instead of passing `(base, len)` or `(base, end)`
-/// pairs whose argument order is not type-checked.
+/// Constructor rejects `end < start`; `start == end` is a valid empty
+/// range. This is the internal boot-window type, not a wire or syscall ABI
+/// representation: `MemoryRegion` and `kpriv::MemRange` keep their external
+/// shapes. Use this instead of passing `(base, len)` or `(base, end)` pairs
+/// whose argument order is not type-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PhysRange {
     start: PhysBytes,

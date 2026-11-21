@@ -1,7 +1,7 @@
 # 01 · 引导交接：载荷、内存账与五条生产腿
 
 > 本篇的轴是**跨边界传递的数据**：`KernelInfo` 的字段、两张内存表与来源记录、bootstrap 区间与分配器、校验门链，以及把载荷送出去的五条生产腿。
-> 镜像本身的链接布局、ELF 摆放、运行期映射与换栈进入归 02 篇；本篇在接缝处只留一句指针。
+> 链接布局、ELF 摆放、运行期映射的完整机制与换栈进入归 02 篇；本篇 §4.8 只给 Direct Map 的启动期概念入口。
 
 ## 1. 概述
 
@@ -91,7 +91,8 @@ C 侧没有“交接结构”这个类型名，但形状相同：`struct kinfo` 
 
 | 内容 | 归属 |
 |---|---|
-| 链接布局、ELF 摆放、运行期映射、换栈进入 | `02-higher-half-kernel.md` |
+| 链接布局、ELF 摆放、运行期映射的完整机制、换栈进入 | `02-higher-half-kernel.md` |
+| Direct Map 的启动期概念入口（建立位置与“可访问≠可分配”） | 本篇 §4.8；完整布局/策略归独立内存管理主题 |
 | `kmain` 之后的保护结构 | `03-kmain-cstart.md` |
 | 平台描述符解析、时钟与中断控制器 | `04-platform-discovery.md`、`05-clock-interrupt-init.md` |
 | VM 接手后的内存账生命周期（§2.4.2 的下游交代） | `02-stage-vm/` 的启动交接与页表初始化篇 |
@@ -1706,7 +1707,7 @@ x86_64 的 `arch_boot` 只做诊断打印并调用 `arch_boot_finish::<X86_64Boo
 
 ```rust
 // 代码引用（保留稳定的公共入口、窗口构造、建根调用与 aarch64 跳转臂；错误消息、SAFETY 注释与 x86/riscv 跳转臂有省略；`PreparedJump` 保留定义原文，略去 `#[cfg]` 与 `#[derive]` 两行），os/kernel/src/lib.rs:fn enter_kernel_image_v1 + fn prepare_kernel_image_v1 + fn jump_kernel_image_v1 + struct PreparedJump。
-pub struct PreparedJump {
+struct PreparedJump {
     /// Virtual entry of the standalone image's `_start`.
     pub entry: VirBytes,
     /// Physical base of the handoff arena (the `x0`/`rbx`/`a0` handoff value).
@@ -1716,7 +1717,7 @@ pub fn enter_kernel_image_v1(
     arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
-    shim_windows: &[(u64, u64)],
+    shim_windows: &[PhysRange],
 ) -> ! {
     let jump = prepare_kernel_image_v1(arena_pa, report, root_page, shim_windows);
     jump_kernel_image_v1(jump)
@@ -1726,15 +1727,15 @@ pub fn prepare_kernel_image_v1(
     arena_pa: PhysBytes,
     report: &minix_boot::BootReport<'_>,
     root_page: PhysBytes,
-    shim_windows: &[(u64, u64)],
+    shim_windows: &[PhysRange],
 ) -> PreparedJump {
     let arena_pa = arena_pa.0;
     // ……（riscv64 cfg 别名、x86 cli、Step 0、policy 选择见源文件）……
     let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
         .expect("enter_kernel_image_v1: bump region not registered");
     let mut windows = BootWindows::new();
-    for &(start, end) in shim_windows {
-        windows.push(start, end);
+    for range in shim_windows {
+        windows.push(range.start().0, range.end().0);
     }
     push_common_boot_windows(
         &mut windows,
@@ -1765,7 +1766,7 @@ pub fn prepare_kernel_image_v1(
     }
 }
 
-pub fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
+fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
     let PreparedJump {
         entry: VirBytes(entry),
         arena_pa: PhysBytes(arena_pa),
@@ -1805,7 +1806,7 @@ pub fn jump_kernel_image_v1(jump: PreparedJump) -> ! {
 /// instruction fetch would fault.
 ```
 
-引文里的 `establish the direct map` 就是 02 篇的 4.3 节 的 Step 4；本篇按 §1.4 的边界不展开该机制，只保留引文中的时序位置。`new_from_page` 的真实签名是 `new_from_page(root_page, channel: PteChannel)`：根的清零与后续 PTE 访问必须走调用方声明的写视图——bootstrap 建根用 `PteChannel::Identity`（Direct Map 尚未建立），运行期进程根用 `KernelDm`，VM 自有根用 `VmDm`。引文省略了该参数，但“清零活动根”的结论不变：三个通道只是同一根的不同写入口。
+引文里的 `establish the direct map` 就是 02 篇的 4.3 节 的 Step 4；本篇 §4.8 只保留启动期概念入口，完整机制归独立内存管理主题；这里只保留引文中的时序位置。`new_from_page` 的真实签名是 `new_from_page(root_page, channel: PteChannel)`：根的清零与后续 PTE 访问必须走调用方声明的写视图——bootstrap 建根用 `PteChannel::Identity`（Direct Map 尚未建立），运行期进程根用 `KernelDm`，VM 自有根用 `VmDm`。引文省略了该参数，但“清零活动根”的结论不变：三个通道只是同一根的不同写入口。
 
 riscv64 上是**直核自引导形态**的出生地：内核镜像自己就是引导体——在没有 U-Boot 与文件系统的 `-kernel` 场景里，入口是 [`main.rs`](os/kernel-image/src/main.rs) 按架构分道的 `rust_image_main`，riscv64 的实现是 [`fn bootface`](<os/kernel-image/src/bootface.rs:fn bootface>)（aarch64 的对应面是 `bootface_a64.rs` 的 [`fn bootface_a64`](<os/kernel-image/src/bootface_a64.rs:fn bootface_a64>)，只在该架构构建时编译），从设备树解析内存、按 `BootFileTable` 取模块——模块来源只有表这一条，表的**地址**只有 DTB `/chosen` 的 `opensbi,boot-file-table` 属性一条通道（仓库内六个脚本——`test-atf-riscv64`、`test-cmd-smoke-riscv64`、`test-kernel-image-riscv64-bootface`、`test-riscv64-boot-full`、`test-smp-aps-aarch64`、`test-smp-aps-riscv64`——都用 `fdtput` 注入表址）。此前的备用 `a2` 参数通道在 D01 裁决项 3 中删除（仓内从未有生产者：QEMU/OpenSBI 只约定 `a0`/`a1`）；表址先过 `in_memmap_range` 再过魔数，失败即 halt。细节在 `bootface.rs` 的入口段，本篇不展开。
 
@@ -1905,7 +1906,7 @@ $ grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kerne
 
 UEFI 入口是固件加载 `.efi` 后调用的那个函数。它只做一件事：调用 `prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)`，把后续工作交给这个函数。后者内部再分三段：准备（读内核 ELF 并预订其 LMA 跨度 → 分配根页表页与 bump 区 → 拷贝段与装载模块 → 平台源与参数 → 分配 arena 并序列化非内存图载荷）、退出固件服务（配对循环里分类最终内存图并调 `ExitBootServices`）、交接（提交分类计数、构造报告并复核、激活自举根、补运行期字段、跳独立镜像）。入口本身不返回。
 
-本章的 Step 编号在这里立住（02 篇的 4.3 节 与 §6.1 共用）：Step 0 校验与分配器注册检查（`boot_alloc_region()` 为 `None` 即停机；当前没有"从 memmap 切 256 页"的兜底：`boot_alloc_region()` 为 `None` 即停机）；Step 1 恒等映射；Step 2 内核高半映射（2b 高半设备别名、2c 设备窗口页）；Step 3 开分页（`enable`）；Step 4 DM 覆盖（本篇不展开，边界见 §1.4）。
+本章的 Step 编号在这里立住（02 篇的 4.3 节 与 §6.1 共用）：Step 0 校验与分配器注册检查（`boot_alloc_region()` 为 `None` 即停机；当前没有"从 memmap 切 256 页"的兜底：`boot_alloc_region()` 为 `None` 即停机）；Step 1 恒等映射；Step 2 内核高半映射（2b 高半设备别名、2c 设备窗口页）；Step 3 开分页（`enable`）；Step 4 DM 覆盖（概念入口见 §4.8；完整布局/策略归独立内存管理主题）。
 
 先给两条固件路径一张总览图——本章后面各节再逐段展开，这张表只负责导航：
 
@@ -2319,12 +2320,11 @@ pub fn build_kernel_info(
 `boot_validate_and_prepare` 是这份结构在内核侧的入口校验（pre-table 与 postconditions 门已先读过部分字段），它在建表之前先做校验：
 
 ```rust
-// 节选（保留校验段；尺寸阶梯与诊断路标宏略去——阶梯的代码与解码在 02 篇的 3.4 节；`kern_stack_top` 的 16 字节对齐断言省略；注释省略，分配器注册检查以省略号代替），os/kernel/src/lib.rs:fn boot_validate_and_prepare。签名是 fn boot_validate_and_prepare<A: BootArch>(scalars: BootScalars)。
-    let kv = scalars.kern_virt_base.0;
-    let kp = scalars.kern_phys_base.0;
-    let ks = scalars.kern_size;
-    // 派生，非入参（wire v10 / D-062）：四个位置实参在 I-38 收成一个
-    // `BootScalars`，`kern_stack_top` 在函数内由两个镜像跨度字段算出。
+// 节选（保留校验段；尺寸阶梯与诊断路标宏略去——阶梯的代码与解码在 02 篇的 3.4 节；`kern_stack_top` 的 16 字节对齐断言省略；注释省略，分配器注册检查以省略号代替），os/kernel/src/lib.rs:fn boot_validate_and_prepare。签名是 fn boot_validate_and_prepare<A: BootArch>(kern_virt_base: VirBytes, kern_phys_base: PhysBytes, kern_size: u64)。
+    let kv = kern_virt_base.0;
+    let kp = kern_phys_base.0;
+    let ks = kern_size;
+    // 派生，非入参：`kern_stack_top` 在函数内由两个镜像跨度字段算出。
     let kern_stack_top =
         VirBytes(kv.checked_add(ks).expect("arch_boot: kern_virt_base + kern_size overflows u64"));
 
@@ -2349,7 +2349,7 @@ pub fn build_kernel_info(
 
 1. `boot_validate_and_prepare`（建表前）：`ks > 0`、两个基址页对齐、boot bump 区间已注册（`boot_alloc_region()` 非 `None`，否则停机；`pt_alloc` 由本函数按 `is_registered()` 守卫注册，不是 fail-closed）、页大小能力。物理上限不在这个函数里查——窗口表由调用方随后组装，组装完调 `BootWindows::check(phys_addr_limit)` 逐窗比较 `end <= phys_addr_limit`，并把返回的 `CheckedWindows` 交给建根函数。
 
-**窗口类型的边界规则**（裸地址对与类型化地址对之间的取舍）：裸 `(u64, u64)` 只允许出现在固件/分配器边界——`enter_kernel_image_v1`/`prepare_kernel_image_v1` 的 `shim_windows` 形参、`boot_alloc_region()` 的返回值、U-Boot 主函数把 `BootPrepareResult.bump` 拆成两个数交给 `init_boot_pt_alloc` 的那一处；进入内核内部一律 `PhysRange`。`BootWindows::push` 是转换点：`PhysRange::new` 拒绝反向区间，`push` 自己拒绝空区间（`start < end`），两条负控都有宿主测试（`boot_windows_reject_reversed_ranges` / `boot_windows_reject_empty_ranges`）。`EMPTY_PHYS_RANGE` 只是未用槽的填充哨兵，`as_slice` 只暴露已提交前缀，不会把它当成窗口。
+**窗口类型的边界规则**（裸地址对与类型化地址对之间的取舍）：裸 `(u64, u64)` 只允许出现在固件/分配器边界——`boot_alloc_region()` 的返回值、U-Boot 主函数把 `BootPrepareResult.bump` 拆成两个数交给 `init_boot_pt_alloc` 的那一处；`enter_kernel_image_v1` 的 `shim_windows` 已是 `&[PhysRange]`。进入内核内部一律 `PhysRange`。`BootWindows::push` 是转换点：`PhysRange::new` 拒绝反向区间，`push` 自己拒绝空区间（`start < end`），两条负控都有宿主测试（`boot_windows_reject_reversed_ranges` / `boot_windows_reject_empty_ranges`）。`EMPTY_PHYS_RANGE` 只是未用槽的填充哨兵，`as_slice` 只暴露已提交前缀，不会把它当成窗口。
 2. `validate_before_tables`（pre-table gate）：`kern_size != 0`、`memmap` 非空、`param_buf.len() <= 1024`——它**不查** `boot_modules` 非空（QEMU 测试内核合法携带空模块表）。这里只列与 boot 路径直接相关的项，**不是完整清单**：共享校验体 `validate_impl_inner` 还检查 `platform_sources` 的空址/kind/溢出、两表升序与两两不相交、非零长度与页对齐等，完整清单以源码为准。
 3. `check_boot_postconditions`：镜像地址下限（`kern_virt_base > u32::MAX`）。v10（设计裁决）之后只剩一条可被剩余字段证伪的关系——`kern_virt_base` 必须大于 `u32::MAX`（4 GiB 门；这不是各架构的用户/内核分界，而是“内核不能在 4 GiB 以下”的保守下界）；“`syscall_entry` 落在镜像跨度内 / `kern_stack_top` 不越过跨度上界 / 用户栈不越入内核半区”三条读取派生字段的断言随字段一起删除（用派生值重算同一条等式只是重抄，不构成检查）。
 4. `KernelInfo::validate`（`kmain` 入口）与生产腿的 `validate_requiring_sources`（strict 变体）：前者复核非地址不变量、检查生产内核的 `boot_modules` 非空，并复核内核镜像与各模块、模块与模块的半开区间不重叠（相切放行；跨度加法用 `checked_add`，防 release 回绕把判断变成恒真）；非 strict 在 `source_records` 非空时也查“来源记录覆盖投影内存图”（条件性检查，见 §3.2）。`ValidationLevel` 三档是 `BeforeTables`/`Standard`/`Strict`；`Strict` 不带载荷，`authority` 从 `KernelInfo.authority` 读取，`validate_requiring_sources()` 无参。后者按结构体自带的 `authority` 要求 `source_records` 覆盖投影内存图，并要求内核物理跨度落在某条 `memmap` 或 `reserved_regions` 区间内（v10 之前这条由 `startup_objects` 的一条记录回答；该字段与分区已随设计裁决删除）。
@@ -2560,6 +2560,16 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
 这张表里 `alloc_lowest` 一行标的是"暂未移植"，意思是**当前 64 位路径不需要按原样移植**：`alloc_lowest` 的服务对象（把 16 位启动代码放到 1MB 以下）属于 AP 启动，而 64 位侧的对应机制（AP 停车邮箱 + 启动记录）在 [`smp.rs`](os/kernel/src/smp.rs) 与 [`main.rs`](os/kernel-image/src/main.rs) 的 `park` 段里，不经过"从记录最低处分配"这条路径。若 SMP 篇的低地址分配需求最终出现，它应以新机制重新实现，而不是把 C 的 `alloc_lowest` 原样搬过来；这条未闭环项归 SMP 篇，不是当前的缺陷。
 
 静态页表池为什么不能原样搬到 64 位，见 §3.4 的分配器换手推演；本节只保留 `alloc_pagetable` 的对照行，不重复那段推导。
+
+### 4.8 交接后的 Direct Map（概念入口）
+
+**Direct Map 是内核访问物理内存的一种映射方式**：内核为一定的物理地址范围建立固定的虚拟地址窗口，使内核能够通过该窗口访问对应的物理页。
+
+在本篇的启动路径里，Direct Map 覆盖建立发生在启动信息存储之后、进入 `kmain` 之前：`store_kernel_info` → `arch_boot_impl`（其中的 Direct Map 相关步骤是 `build_bootstrap_root_and_enable` → `establish_boot_dm`）→ `jump_to_kmain`。`establish_boot_dm` 在已经活动的 bootstrap 页表根上追加映射，不重新创建或替换根页表。
+
+**能够通过 Direct Map 访问，不代表该物理页可以分配给 VM。** VM 的可分配集合还要考虑固件内存分类、Direct Map 的覆盖范围，以及启动期间已经占用的物理页。未被 Direct Map 覆盖的候选内存不能进入 VM 自由表，否则 VM 分配出的页面可能无法被内核正常访问。
+
+Direct Map 的完整布局、覆盖策略及其在物理内存管理中的作用，属于独立的内存管理主题；本节只介绍它在启动交接中的位置与作用。
 
 ---
 ---

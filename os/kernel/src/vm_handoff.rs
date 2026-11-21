@@ -305,6 +305,10 @@ pub(crate) struct FreeRangeSet {
     len: usize,
 }
 
+/// Private `FreeRangeSet` representation: sorted, pairwise disjoint,
+/// page-aligned half-open ranges. Kept local to this module; it is not a
+/// wire or ABI type, and a future local simplification is acceptable only
+/// if it removes this type without adding Option/conversion overhead.
 #[derive(Clone, Copy)]
 struct MemRange {
     base: u64,

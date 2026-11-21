@@ -506,6 +506,16 @@ impl SourceRange {
 /// physical one. An end of `2^64` is representable at the record layer;
 /// whether a projection can deliver it is a separate question answered by
 /// `projectable_end()` and the refusal at each projection site.
+///
+/// **This is the forensic provenance layer, not the automatic-audit input
+/// table.** The audit reads `kind`/`range`/`address_domain`/`input_object`;
+/// the remaining fields preserve raw firmware facts (type, attributes,
+/// virtual start, snapshot identity, local source index) so a failed boot
+/// can still explain why a range was classified as it was. Absence of a
+/// normal-path reader is not evidence that a field is dead. Keep the 72 B
+/// layout and wire v11 unchanged; reopen a field only with measured arena
+/// pressure and field-by-field proof that it has no independent diagnostic
+/// value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRecord {
     /// Stable within one input object; cross-input references need

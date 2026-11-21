@@ -569,6 +569,12 @@ impl KernelInfo {
     }
 }
 
+/// Boot wire / semantic-table entry for one physical region.
+///
+/// This is the external representation shared by `KernelInfo`, the v1
+/// handoff wire, VM classification and DM coverage. Its `base + len`
+/// shape, wire width and zero-length/overflow handling are protocol
+/// contract; do not replace it with the internal `PhysRange` type.
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
     pub base: PhysBytes,

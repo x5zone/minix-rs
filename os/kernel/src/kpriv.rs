@@ -35,6 +35,11 @@ impl IoRange {
     }
 }
 
+/// User-visible syscall ABI range (`struct minix_mem_range`).
+///
+/// `limit` is the inclusive upper bound, matching the C layout that
+/// `copy_struct_from_user` reads. This is an external contract, not an
+/// internal interval type; do not replace it with `PhysRange`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemRange {
     pub base: u64,

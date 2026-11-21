@@ -75,7 +75,7 @@ units:
   level: 3
   parent: '1'
   order: 5
-  text_sha: a2709944d990768a3c11cc4f8320410cf734e8aef518eaeaa81a5106fb2a88e4
+  text_sha: 44d8887b6a1107704ac1776f41d0f27dedd7486f8b5a56cdd319b91a3f82c4f4
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -331,7 +331,7 @@ units:
   level: 3
   parent: '3'
   order: 21
-  text_sha: a76cf2b318576e3bba6f65bc415396f57ef4d22cc054313ecdaa476c3eab0535
+  text_sha: d578e1872c3bb45d54f8a5308e01588ca5beb44349b41db65695297821b0d425
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -363,7 +363,7 @@ units:
   level: 2
   parent: null
   order: 23
-  text_sha: d2a81959bef18d0feda1041f32b585c633d041bc3c9b3429d2943ecb7c02dd9f
+  text_sha: ad97219175a2c9a459cf2d2edaff6df4488a140137f18cd03bd4d016f6868ab8
   t1_state: pending
   t1_rounds: 0
   t2_state: n/a
@@ -379,7 +379,7 @@ units:
   level: 3
   parent: '4'
   order: 24
-  text_sha: 01a9f8b5f4fa32f37e66f4bd2cf9be0d1f01757ae402ec9e5380a9e1aed6f987
+  text_sha: 87cb550ababf579608390daa2eb3bbccbe42520c5e72f0049e5ba2897f059fb3
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -427,7 +427,7 @@ units:
   level: 3
   parent: '4'
   order: 27
-  text_sha: b27195c1206effdb675d819c5b2495398a1074936742af63ecb22c1525121b25
+  text_sha: 122a4293b6974a312b29db8560a2712c584bb40491f5e47402e08a44a4e958b9
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -475,7 +475,7 @@ units:
   level: 3
   parent: '4'
   order: 30
-  text_sha: 0a78be7fee1b970363ea85df91a5b9c84a2e487448ce8ea082bc7f45a43df497
+  text_sha: 6451287a0878c1f8032d51d5145b8ccfc59d35b833a59361fa64fe8553a7ae69
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -794,6 +794,27 @@ units:
   parent: '2'
   order: 13
   text_sha: f0f49577f42837eb31810708c2bb2e45bb480588803d95d2ed432e1a22a2bc3f
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+- id: '4.8'
+  heading: 4.8 交接后的 Direct Map（概念入口）
+  level: 3
+  parent: '4'
+  order: 36
+  text_sha: e6cfbb8a985b6f83747d6407a1de84b13f62a7a2666260e0ad1dfa9168a123c7
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
