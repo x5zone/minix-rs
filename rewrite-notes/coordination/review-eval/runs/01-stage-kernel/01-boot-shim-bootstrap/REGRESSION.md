@@ -386,3 +386,15 @@ $ awk 'NR>=63 && NR<=85 {print NR": "$0}' minix3/minix/kernel/arch/i386/pg_utils
 | 5 | `certify 新准入 = 0` 无字段可复算 | loop §5 补计算口径：certify 输入闭集 = 21+12 个修改点，回执全 CLOSED、无新增修改点，故准入根因数 0；台账无 certify 角色行是该口径的结果 | 口径说明见 loop §5 |
 
 补修后重新实测：`--round R31/R32/R33/R34/R35` 五轮逐轮 PASS；anchor 108/108、citation `checked=29 failed=0`、doc-code-map 54/54、panel-index 7 文件哈希一致。
+
+## R36 回归审计（2026-11-21，D-055 两墙 / §4h）
+
+- 审计者：独立冷启动子 agent（未参与 R36 面板/修复/certify）；报告 `tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/regression-r36.md`（结论 FAIL → 整改后复读 PASS）。
+- 审计对象：R36 冻结轨迹包（FREEZE 附加节、loop/metrics/ledger/OPEN-DEBT/suggestions、certify、panel/round36），不是文档正文再评审。
+- 首轮 PASS 7 项 / FAIL 2 项（记录一致性）：
+  - FAIL-4：ledger 的 store 调用点与 higher-half 证据串不可按原文重放（文档实际写「生产路径有两个」「kern_virt_base > u32::MAX」）；已改证据串并复跑。
+  - FAIL-9：loop 的 re-litigation/B-05/06/08 分流、certify 基线、SUGGESTION 33 vs INDEX 25 三处口径不一致；已改 loop §3/L6.5/§1 与 suggestions。
+- 整改后复读：四类 8 项全部 PASS；`--round R36` 仍 PASS（12/24/0）；冻结记录与 HEAD `f485a58b7` 一致。
+- 非阻断残余（记录，不修）：R-02 certify pass2 的 `bootface.rs:145-146` 行号随注释改动漂移 1 行；R-03 FACT-B-05 在 pass3 正文仍标 STILL-BROKEN，但同文件末节「残项复读」与最终汇总 44/44 CLOSED 已覆盖；R-04 FREEZE 的修复链概括与 meta 的概述粒度不同，不是事实冲突。R-01 已补 suggestions 的 B-09/C-06 记录。
+- 局限：同 agent 审计，无跨模型复核；未跑 QEMU；审计包内没有带 R36/D01 标记的 QEMU 串口日志（sysboot/riscv 门的 PASS 以脚本输出为据，aarch64 为已知 A2 遗留）。
+- 结论：**回归通过，D01 维持 CONVERGED**（新基线 sha `1c0d9de4…`、HEAD 轨迹 `f485a58b7` 之后）。

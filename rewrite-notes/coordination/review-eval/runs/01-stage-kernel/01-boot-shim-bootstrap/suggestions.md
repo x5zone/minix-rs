@@ -136,3 +136,6 @@
 | R36-FACT-B-S2 | fact-b SUGG 2 | §6.3 shim 栈来源 | 已在本轮顺手修 |
 | R36-FACT-B-S3 | fact-b SUGG 3 | §4.4 引文头补对齐断言省略 | 下一轮文风 |
 | R36-FACT-B-S4 | fact-b SUGG 4 | §6.1 step4 限定 aarch64 接收腿 | 已在本轮顺手修 |
+
+- **READER-B-09（P3，已顺手修，保留记录）**：§1.1 已补系统任务/AP/DM 定义；R36 台账行记为 SUGG。
+- **READER-C-06（P3，已顺手修，保留记录）**：§3.4.2 已改「下一个冷取指页错误」；R36 台账行记为 SUGG。
