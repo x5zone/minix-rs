@@ -68,7 +68,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **⛔ 抽象语义，不描述机制（本项目的第一原则）**：区分「OS 语义对象」与「硬件承载对象」。同一层的代码拥有同一语义，不同层的差异待在该待的地方——优美不是让三个实现长得像，而是让接口根本看不见硬件差异。判据三问、边界条款（arch trait 自身可谈硬件名；启动契约不在射程内；禁止为漂亮提前改契约）见 `prompt/review-rules/review-core-semantics.md` 与模式库的对应总括模式
 - **真值优先序**：`Minix3 C 源码行为 > 设计契约 > Rust 实现 > 设计/技术文档 > AI 分析`。拿不准就去 `minix3/` 读原始 C 代码
 - **三档术语**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：文档 + 设计 + 代码）
-- **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史（`tools/doc-publication-check.py`），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
+- **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史/待办（`tools/doc-publication-check.py` DP-1..DP-6；用户本人笔记只允许放 `<!-- user-note: … -->` 注释块），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
 - **⛔ 教程就绪（V3.8）**：每章必须有学习目标、前置概念、最小可运行示例、失败对照、小结、术语定义（`tools/tutorial-rubric-check.py`）；缺任一项 = P1，不得 CONVERGED
 - **⛔ 轮次硬上限（V3.8）**：同一篇最多 3 个修改轮（跨 edition 累计）；未收敛即强制整节重写，不开第 4 轮；重写后只允许 1 次确认轮
 - **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`），旧 todo markdown 冻结为归档

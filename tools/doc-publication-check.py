@@ -15,6 +15,8 @@
   DP-4 编号图例：出现「编号图例」本身即违规（它是 DP-1 的产物）
   DP-5 迭代叙事：旧版/旧形态/原实现/最初/曾经/后来/删除前/已删除/不再使用/改成/替代/
        升级为/废弃/放弃/回退到/修复前/已修复…
+  DP-6 待办与临时疑问：TODO/FIXME/XXX/待办/待定/待确认/待核实/待补充/疑问/存疑
+       豁免：HTML 注释块（<!-- user-note: … -->）——用户本人的临时笔记只允许放这里
        豁免：反事实设计句（含 如果/若/假设/可以设计 + 会/不会/不能/反而），
        或显式标记 `<!-- publication-ok: counterfactual -->`。
 
@@ -55,6 +57,7 @@ PROCESS_PATTERNS = (
     ("DP-1", re.compile(r"\bI-\d+\b")),
     ("DP-1", re.compile(r"\bF-R\d{1,2}-\d+\b")),
     ("DP-1", re.compile(r"\bDESIGN-[A-Za-z0-9-]+\b")),
+    ("DP-1", re.compile(r"\bTODO-\d+\b")),
     ("DP-1", re.compile(r"\bR(?:1[3-9]|[2-9]\d)\b")),
     ("DP-1", re.compile(r"\bT\d{1,2}\b")),
     ("DP-1", re.compile(r"\bPhase [A-Z](?:\.\d+)?\b")),
@@ -64,6 +67,7 @@ INTERMEDIATE_RE = re.compile(
     r"\.design/|(?<![\w/])runs/|DECISIONS\.md|OPEN-DEBT|(?<![\w/])prompt/|(?<![\w/])tmp/|coordination/"
 )
 LEGEND_RE = re.compile(r"编号图例")
+TODO_RE = re.compile(r"\b(?:TODO|FIXME|XXX)\b|待办|待定|待确认|待核实|待补充|疑问|存疑")
 ITER_RE = re.compile(
     r"旧版|旧形态|旧实现|原实现|前版|原先|最初|曾经|后来|过去|当年|当初|删除前|已删除|"
     r"已被删除|不再使用|改成|替代|替换为|升级为|废弃|放弃|回退到|修复前|已修复"
@@ -89,7 +93,18 @@ def iter_formal_docs() -> list[Path]:
 def scan_doc(path: Path) -> list[dict]:
     hits: list[dict] = []
     in_fence = False
+    in_comment = False
     for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        # V3.8 DP-6：HTML 注释块豁免——用户本人的临时笔记只能放这里。
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+        if "<!--" in line:
+            if "-->" not in line[line.index("<!--") + 4:]:
+                in_comment = True
+            # 同一行内闭合的注释也整行跳过（注释内容不对读者可见）
+            continue
         if FENCE_RE.match(line):
             in_fence = not in_fence
             continue
@@ -103,6 +118,9 @@ def scan_doc(path: Path) -> list[dict]:
             hits.append({"kind": "DP-3", "line": i, "text": stripped, "token": m.group(0)})
         if LEGEND_RE.search(line):
             hits.append({"kind": "DP-4", "line": i, "text": stripped, "token": "编号图例"})
+        m_todo = TODO_RE.search(line)
+        if m_todo:
+            hits.append({"kind": "DP-6", "line": i, "text": stripped, "token": m_todo.group(0)})
         if ITER_RE.search(line) and OK_MARK not in line and not COUNTERFACTUAL_RE.search(line):
             hits.append(
                 {"kind": "DP-5", "line": i, "text": stripped,
@@ -202,13 +220,27 @@ def self_test() -> int:
         if not need.issubset(kinds):
             print(f"self-test FAIL: 违规文档漏检类别 {need - kinds}（实际 {kinds}）")
             return 1
+        # DP-6：可见 TODO 命中；HTML 注释内豁免；代码块内豁免
+        todo_bad = root / "todo_bad.md"
+        todo_bad.write_text("TODO: 以后补\n", encoding="utf-8")
+        if not any(h["kind"] == "DP-6" for h in scan_doc(todo_bad)):
+            print("self-test FAIL: 可见 TODO 未被拦截")
+            return 1
+        todo_ok = root / "todo_ok.md"
+        todo_ok.write_text(
+            "<!-- user-note: TODO 这里我还没想清楚 -->\n正文\n```\nTODO 在代码里不属文档正文\n```\n",
+            encoding="utf-8",
+        )
+        if scan_doc(todo_ok):
+            print(f"self-test FAIL: 注释/代码块内的 TODO 被误判 {scan_doc(todo_ok)}")
+            return 1
         # 代码块豁免
         fenced = root / "fenced.md"
         fenced.write_text("```\nR36 D-061 5ed051a53 旧版\n```\n", encoding="utf-8")
         if scan_doc(fenced):
             print("self-test FAIL: 代码块未豁免")
             return 1
-    print("self-test PASS: 过程编号/中间引用/图例/迭代叙事全检；反事实句与代码块豁免")
+    print("self-test PASS: 过程编号/中间引用/图例/迭代叙事/待办全检；反事实句/代码块/用户批注豁免")
     return 0
 
 

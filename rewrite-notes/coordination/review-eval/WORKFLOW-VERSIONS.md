@@ -845,3 +845,18 @@ D 号唯一性与引用存在性门（p5）、style-lint 对 runs/DECISIONS 日�
 
 **首次实测（2026-11-21）**：D01 六章全部缺 TR-1..TR-6（0/6 通过）；确认它是工程文档而非教程。
 `tutorial-rubric-check.py --self-test` PASS；四门全绿。
+
+
+### V3.8-r2 正式文档禁 TODO（2026-11-21，用户质询）
+
+- **DP-6**：正式文档可见的 `TODO/FIXME/XXX/待办/待定/待确认/待核实/待补充/疑问/存疑` 一律 FAIL；
+  `TODO-nn` 同时按 DP-1 过程编号处理。
+- **agent 不得在正式文档记录 TODO**：待做事项进 `coordination/todo-ledger/<stage>.yaml`；
+  有教学价值的替代方案写成设计决策对比段（「如果采用它会怎样，所以不采用」）。
+- **用户本人批注**：只允许放在 HTML 注释块 `<!-- user-note: … -->`（渲染不可见，检测器豁免）；
+  可见的 TODO/疑问无法区分作者，一律按 agent 产物处理。
+- **旧规则清理**：`review-doc-checklist.md` 原「Ch3 有更好替代方案应以 TODO 段落记录」
+  「TODO 允许保留」「Ch4 未实现应标 TODO」三处已改；Sync-4 改为「残留待办即 P1，转账本并删除」。
+
+**首次实测**：D01 命中 5 处（`F-R23-05 / TODO-02`、`§5.5 TODO-09`、整节「5.5 TODO 交接」、
+「这条待办归 SMP 篇」、`§5.5 TODO-08`）；D02 命中 0 处可见 TODO（代码块内 FIXME 豁免）。

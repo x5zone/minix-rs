@@ -28,6 +28,7 @@ evidence / backlog / history / learn / brief / note 等辅助件）。
 | **DP-3** | **不引用中间产物**：`.design/`、`runs/`、`DECISIONS.md`、`OPEN-DEBT`、`prompt/`、`tmp/`、`coordination/` | 命中即 FAIL。允许：正式文档互链、`os/…` 代码路径、`minix3/…` C 源路径 |
 | **DP-4** | **不出现「编号图例」** | 命中即 FAIL——图例本身是 DP-1 违规的产物，不是解法 |
 | **DP-5** | **不出现迭代历史**：旧版/旧形态/旧实现/原实现/前版/原先/最初/曾经/后来/过去/当年/当初/删除前/已删除/已被删除/不再使用/改成/替代/替换为/升级为/废弃/放弃/回退到/修复前/已修复 | 命中即 FAIL |
+| **DP-6** | **不出现待办与临时疑问**：`TODO` / `FIXME` / `XXX` / 待办 / 待定 / 待确认 / 待核实 / 待补充 / 疑问 / 存疑 | 命中即 FAIL。**agent 不得在正式文档里记录 TODO**：待做事项进 `coordination/todo-ledger/<stage>.yaml`；有教学价值的替代方案写成设计决策对比段（「如果采用它会怎样，所以不采用」），不是 TODO |
 
 **DP-5 的唯一豁免形态：反事实设计讨论。** 历史若真有教学价值，必须改写成：
 
@@ -40,8 +41,13 @@ evidence / backlog / history / learn / brief / note 等辅助件）。
 「会 / 不会 / 不能 / 反而」；不含时间副词（最初/曾经/后来/过去/当年/当初）与已完成标记
 （已删除/修复前/已修复）。也可用显式标记 `<!-- publication-ok: counterfactual -->`。
 
+**DP-6 与用户批注**：用户本人可以在正式文档里留临时笔记/疑惑，但**只能**放在
+HTML 注释块内（`<!-- user-note: … -->`）——渲染后读者看不见，检测器也豁免它。**agent 不得
+写这类注释**；可见的 TODO/疑问一律视为 agent 产物，命中即 FAIL。若笔记需要长期保留，放
+`tmp/` 或对应的 `-notes.md`（辅助件），不要放正式篇目。
+
 **检测器**：`python3 tools/doc-publication-check.py <doc>`（零容忍；不带基线）。
-规则实现见 `tools/doc-publication-check.py` 的 DP-1..DP-5 与 `--self-test`。
+规则实现见 `tools/doc-publication-check.py` 的 DP-1..DP-6 与 `--self-test`。
 
 ---
 
