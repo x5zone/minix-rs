@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -5534,6 +5535,50 @@ def self_test() -> int:
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0
 
+def check_units_state(path: Path, run_dir: Path, report: Report) -> None:
+    """G14：单元状态必须通过 review-units.py check；T3 通过时不得有未冻结单元。"""
+    if not path.is_file():
+        report.fail("G14", f"单元状态不存在：{path}")
+        return
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"^doc:\s*(.+?)\s*$", text, re.MULTILINE)
+    if not m:
+        report.fail("G14", "单元状态缺少 doc 字段")
+        return
+    doc = m.group(1).strip("'\"")
+    tool = Path(__file__).resolve().parent / "review-units.py"
+    check = subprocess.run(
+        [sys.executable, str(tool), "check", "--doc", doc],
+        capture_output=True, text=True,
+    )
+    if check.returncode != 0:
+        report.fail("G14", (check.stdout + check.stderr).strip()[:500])
+        return
+    audit = subprocess.run(
+        [sys.executable, str(tool), "audit", "--doc", doc],
+        capture_output=True, text=True,
+    )
+    if audit.returncode != 0:
+        report.fail("G14", (audit.stdout + audit.stderr).strip()[:500])
+        return
+    stats = subprocess.run(
+        [sys.executable, str(tool), "stats", "--doc", doc],
+        capture_output=True, text=True,
+    )
+    out = stats.stdout.strip()
+    report.ok("G14", out.splitlines()[0] if out else "unit state OK")
+    metrics = run_dir / "metrics.md"
+    if metrics.is_file():
+        text_m = metrics.read_text(encoding="utf-8")
+        mods = len(re.findall(r"^-\s*轮型\s*[:：]\s*(?:full|structural)\b", text_m, re.MULTILINE))
+        if mods > 3 and not re.search(r"重写例外|rewrite-exception", text_m):
+            report.fail("G14", f"文档级修改轮 {mods} > 3 且无重写例外判决")
+    if "t3=PASS" in out:
+        mm = re.search(r"frozen=(\d+)/(\d+)", out)
+        if mm and mm.group(1) != mm.group(2):
+            report.fail("G14", f"T3 已 PASS 但仍有未冻结单元：frozen={mm.group(1)}/{mm.group(2)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="review-loop 轨迹完整性检查",
@@ -5559,6 +5604,10 @@ def main() -> int:
         "--todo-file",
         help="同时核对该文档的旧 todo 台账（如 <stage>/todo.md；01/02 已迁 YAML）",
     )
+    parser.add_argument(
+        "--units",
+        help="单元状态 YAML（G14：调用 review-units.py check/stats 校验）",
+    )
     parser.add_argument("--self-test", action="store_true", help="运行内置自测")
     args = parser.parse_args()
 
@@ -5574,6 +5623,8 @@ def main() -> int:
     )
     if args.todo_file:
         check_todo_ledger(Path(args.todo_file), report)
+    if args.units:
+        check_units_state(Path(args.units), Path(args.run_dir), report)
     print_report(report, args.json)
     return 1 if report.failed else 0
 

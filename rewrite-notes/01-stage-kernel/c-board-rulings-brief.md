@@ -143,14 +143,14 @@ Minix3 的 C 原版**没有**这个概念：内核映射是单一的、粗粒度
 
 | 断言 | 锚点 |
 |---|---|
-| 被否试形的实测记录与还原读数 | `rewrite-notes/coordination/PARALLEL-20261018-C-KERN-QEMU.md` 行 C11 与台账 SD-12 行 |
+| 被否试形的实测记录与还原读数 | `rewrite-notes/meta/coordination/PARALLEL-20261018-C-KERN-QEMU.md` 行 C11 与台账 SD-12 行 |
 | 甲乙两案的裁决申请原文 | 同文件附录一 |
 | x86 crt0 对齐、其余架构裸跳 | `os/libs/minix-rt/src/crt0.rs`（x86 臂 `and rsp,-16`） |
 | C 原版入口桩裸跳 | `minix3/lib/csu/arch/aarch64/crt0.S`、`minix3/lib/csu/arch/riscv/crt0.S` |
 | 用户栈顶常量 | `os/libs/minix-types/src/types/boot.rs` 的 `USER_STACK_TOP` |
 | split_huge 真机使用 | `os/arch/src/riscv64/paging.rs` 的 `split_huge`（引导期 ELF 装载驱逐路径） |
-| A6/A9 审计判定 | `rewrite-notes/coordination/TODO-LEDGER-OPEN.md` 地址常量审计行；A6 跨线登记见 C 板 §6 |
-| W^X 登记出处 | `rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md` SD-12 行 |
+| A6/A9 审计判定 | `rewrite-notes/meta/coordination/TODO-LEDGER-OPEN.md` 地址常量审计行；A6 跨线登记见 C 板 §6 |
+| W^X 登记出处 | `rewrite-notes/meta/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md` SD-12 行 |
 | bootstrap 哨兵字段现状 | `os/libs/minix-boot/src/kernel_info.rs` 的 `KernelInfo`；消费守卫 `os/kernel/src/lib.rs` 的 reclaim guard |
 
 ## 7. 第三方评审裁决回填

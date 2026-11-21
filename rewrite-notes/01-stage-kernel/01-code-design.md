@@ -305,7 +305,7 @@ wire 解码不得经由 `'static` 伪造：`KernelInfo` 的切片字段是 `&'st
 
 aarch64 走跨镜像的原因是结构性缺陷取证：内核内联在 PE 低地址执行时，第一次进程根切换（换 TTBR0 + `tlbi alle1is`）会摧毁内核自己的取指映射（真机取证：`elr`/`vbar` 钉死在 `0x43e0_xxxx`）。修复是方案 A：boot-shim 建表开分页后**绝对跳**进独立 `kernel.elf` 的高半入口（高半映射住永不切换的 TTBR1），此后整个内核在高地址执行、对根切换免疫。
 
-跨镜像交换的语义裁决已完成——coordination 台账裁决原文（`rewrite-notes/coordination/TODO-LEDGER-DONE.md` §2）：
+跨镜像交换的语义裁决已完成——coordination 台账裁决原文（`rewrite-notes/meta/coordination/TODO-LEDGER-DONE.md` §2）：
 
 > | `OQ-N6` | 自举载体的双镜像交换采「每进程独立根」原语；「加栈顶参数」的快案被否（段面互撞与零隔离是结构性缺陷） | 已裁，实施待领 |
 
@@ -686,6 +686,6 @@ wire 布局验证必须是**构建门禁**，不是文档里的布局表：每�
 ## 附：本文未收录的裁决主题（指针）
 
 - **大页能力/选页策略/启动 DM 安装的四层抽象**（D-59）：`boot-dm-hugepage-design.md`（仓库内，独立线程迭代中的专门设计文件；含目标设计、五阶段迁移计划与测试矩阵）。
-- **OQ-N6 裁决上下文**：`rewrite-notes/coordination/TODO-LEDGER-DONE.md` §2（「每进程独立根」原语与被否的「加栈顶参数」快案）。
+- **OQ-N6 裁决上下文**：`rewrite-notes/meta/coordination/TODO-LEDGER-DONE.md` §2（「每进程独立根」原语与被否的「加栈顶参数」快案）。
 - **x86 内核独立镜像的布局产出**：`os/kernel-image/x86_64.ld` 与 `check-layout.sh` L0–L9（已就绪，T2 只裁交接协议）。
 - **UEFI 规范事实**（首轮评审核对官方文档确认）：`EFI_LOADED_IMAGE_PROTOCOL` 的 `LoadOptions`/`LoadOptionsSize` 字段；`EFI_LOAD_OPTION.OptionalData` 为二进制缓冲区、不保证文本编码（T3 §3.2 的依据）。

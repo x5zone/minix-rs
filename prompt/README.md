@@ -120,8 +120,8 @@ CI 的 `rules-consistency.yml` 在 `prompt/`、`.claude/`、`.codex/`、`.trae/`
 | 产物 | 位置 |
 |---|---|
 | Review 状态与 scan/structure/SYMBOLS/独立验证报告 | `.review/{tool}/{stage}/`（三工具隔离） |
-| review-loop 轨迹、面板、冻结决策 | `rewrite-notes/coordination/review-eval/` |
-| TODO 单一账本 | `rewrite-notes/coordination/todo-ledger/<stage>.yaml` |
+| review-loop 轨迹、面板、冻结决策 | `rewrite-notes/meta/coordination/review-eval/` |
+| TODO 单一账本 | `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml` |
 | 会话日志、镜像、一次性取证 | `tmp/<功能子目录>/`（不入库） |
 
 ## 七、维护边界

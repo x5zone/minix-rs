@@ -3,7 +3,7 @@
 > **并发任务板三块（`2026-10-18` 切分，领地互斥）**：`PARALLEL-20261018-A-CMD.md`（三线 命令面 `os/commands/`，owner `qoder`）、`PARALLEL-20261018-B-LIBDRV.md`（二线 `os/libs/` 逐 crate 与 `os/drivers/`，owner `zcode-ds`）、`PARALLEL-20261018-C-KERN-QEMU.md`（一线 `os/kernel`/`arch`/`plat`/`boot-shim`/`qemu-tests`/`os/libs/minix-boot`，owner `zcode-glm`，**并持有真机窗**）。三块板各自自带任务表、禁碰清单、门配方与收尾顺序；跨板要动别人领地时先登记进 C 板 §6 的跨界登记行。切分依据是 `CONCURRENT-WORK-PROTOCOL.md` §2 的四线所有权清单。
 
 
-本目录管三件事：**待办在哪里记、结论在哪里裁、过程在哪里查**。`2026-11-22` 起随 `rewrite-notes/meta/` 布局迁入，含 `todo-ledger/` 与 `review-eval/` 两个子目录。下面是操作规则；历史台账（`TODO-LEDGER-*`）只读保留。
+本目录管三件事：**待办在哪里记、结论在哪里裁、过程在哪里查**。`2026-11-21` 起随 `rewrite-notes/meta/` 布局迁入，含 `todo-ledger/` 与 `review-eval/` 两个子目录。下面是操作规则；历史台账（`TODO-LEDGER-*`）只读保留。
 
 ## 先回答两个操作问题
 
@@ -24,7 +24,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `TODO-LEDGER-INDEX.md` | 总入口。不装条目，只回答：谁对什么有解释权、28 个文件各自的处置、编号如何归一到同一件事、下一轮如何增量接入。含 §1 文件处置表、§2 编号归一映射、§3 六值状态词表、§4 机器可判据表、§6 增量接入协议。 |
+| `TODO-LEDGER-INDEX.md` | 总入口。不装条目，只回答：谁对什么有解释权、28 个历史文件各自的处置、编号如何归一到同一件事、下一轮如何增量接入。含 §1 文件处置表、§2 编号归一映射、§3 六值状态词表、§4 机器可判据表、§6 增量接入协议。 |
 | `TODO-LEDGER-OPEN.md` | 未完成总账。§1 内核与多核、§2 三架构齐平余件、§3 结构债未闭、§4 跨阶段 `E-*`、§5 并行编排 `C-*`、§6 十八份阶段待办索引、§7 测试门对账、§8 卫生项。 |
 | `TODO-LEDGER-DONE.md` | 已完成存证。§1 代码坐实的 `closed`（回勾账面滞后用）、§2 已裁决执行表（`PD-01`—`PD-34`、`OQ-N1`—`OQ-N6`）、§3 正当差异与排除项（防重查，下一轮不许当缺口修平）。 |
 
@@ -79,4 +79,4 @@
 
 ## 被删文件的回捞
 
-清理前 76 个文件，删除 54 个（评审类 19、会话类 28、案卷类 4、其余 3），删除前已在快照入库。按文件名取回：`git log --diff-filter=D --summary -- rewrite-notes/meta/coordination/<文件名>` 找到删除提交，再 `git show <删除提交>^:rewrite-notes/meta/coordination/<文件名>`。处置明细见 `TODO-LEDGER-INDEX.md` §1。
+2026-10-08 归并后为 28 个文件；2026-11-21 实测顶层 36 个（含后续新增）。早期清理的逐文件处置见 `TODO-LEDGER-INDEX.md` §1，本文不再用旧算术。按文件名取回：`git log --diff-filter=D --summary -- rewrite-notes/meta/coordination/<文件名>` 找到删除提交，再 `git show <删除提交>^:rewrite-notes/meta/coordination/<文件名>`。处置明细见 `TODO-LEDGER-INDEX.md` §1。

@@ -56,7 +56,7 @@ tools/               — 门禁与构建脚本（路径真源：tools/notes-layo
 tmp/                 — 会话产物与取证，整域不入库（evidence/ log/ bin/ nk4a/ 等）
 ```
 
-三棵笔记树于 2026-10-07 取代旧的 notes 伞目录，并剥掉 rewrite 分区下那层已废弃的模块目录：正式稿路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。2026-11-22 起过程元数据（todo 账本、review 轨迹、设计快照）统一在 `rewrite-notes/meta/`；`draft/` 与 `archive/` 暂留 stage 目录，待稿件稳定后删除。旧→新逐文件对照见 `rewrite-notes/MIGRATION.md`。
+三棵笔记树于 2026-10-07 取代旧的 notes 伞目录，并剥掉 rewrite 分区下那层已废弃的模块目录：正式稿路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。2026-11-21 起过程元数据（todo 账本、review 轨迹、设计快照）统一在 `rewrite-notes/meta/`；`draft/` 与 `archive/` 暂留 stage 目录，待稿件稳定后删除。旧→新逐文件对照见 `rewrite-notes/MIGRATION.md`。
 
 **中间产物目录约定**：`rewrite-notes/meta/`（todo 账本、review 轨迹、设计快照；原各 stage 的 `.design/` 已迁入 `meta/design/<stage>/`）与已废弃的 `tmp_design_and_todo/` 视为中间产物，**正式文档绝不引用**（引用即 P0-process-violation）；正式文档必须自包含，引用指向文档、代码、C 源的绝对路径。会话产物（日志、镜像、评审证据）一律进 `tmp/` 的功能子目录，仓库根不允许散落文件——细则见 `prompt/WORKFLOW-OPEN-ITEMS.md` F-C。
 

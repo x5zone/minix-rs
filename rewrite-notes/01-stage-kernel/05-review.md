@@ -495,7 +495,7 @@ python3 tools/verify-check.py --scan .review/zcode/01-stage-kernel/05-clock-inte
 | R2 文档哈希 | `f6d4b6440aa378175cb2e761cd0e59437b1c8765b85f47adae099e3bec14cd52` |
 | R2 文档行数 | 2196 行 / 177098 字节 |
 | 修复文件 | 05 正文；`os/plat/src/x86_64/interrupt.rs`；`os/kernel/src/irq_manager.rs`；`os/kernel/src/lib.rs`；`os/plat/src/interrupt.rs`；`os/arch/src/arch/{clock,timer_irq_gate}.rs`；`os/arch/src/x86_64/{clock,timer_irq_gate}.rs`；`os/arch/src/riscv64/timer_irq_gate.rs` |
-| 未触碰 | `AI-chats/daily.todo.md`、`rewrite-notes/coordination/PENDING-DECISIONS-CROSS-BOARD-20261102.md`、04 review 产物 |
+| 未触碰 | `AI-chats/daily.todo.md`、`rewrite-notes/meta/coordination/PENDING-DECISIONS-CROSS-BOARD-20261102.md`、04 review 产物 |
 
 ### 17.2 修复台账（33/33）
 

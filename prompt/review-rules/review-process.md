@@ -125,7 +125,8 @@
    `tools/review-units.py stats <doc>` 的输出与本轮 T1/T2 单元列表；它不是 Gate G 的 9 个锚段，
    但 G14 以状态文件为准。
 6. **Gate G 产物由该脚本生成后再填人工段**，不要手写整份 VERIFY-CHECK：
-   `python3 tools/verify-check.py --scan {scan.md} --state {STATE.md} --symbols {SYMBOLS.md} --sample-ratio 0.5 --seed N --output {VERIFY-CHECK.md}`
+   `python3 tools/verify-check.py --scan {scan.md} --state {STATE.md} --symbols {SYMBOLS.md} --units {units.yaml} --sample-ratio 0.2 --seed N --output {VERIFY-CHECK.md}`
+   （整篇 survey 仍用 0.5；单元模式用 0.2 + `--units`）
    （`--seed` 必填以让抽样可复现；报告头会如实打印抽样比例与种子。）
 
 
@@ -687,6 +688,10 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 > - **判定标准**：若"旧版 X → 新版 Y"在一段/一节中用 ≥3 句展开 → 迭代叙事（P1）；若仅在表格中列出 "v{N-1}: X | v{N}: Y | 原因: Z"（每项一行）→ 合规
 
 ### Step 0.5: 生成 structure.md 并评审骨架（文档 Review 强制）
+
+> **单元模式复用（V3.9）**：`review-units.py fingerprint` 报 `structure: same` 时，复用上轮
+> structure.md 并在 scan.md 记 `structure_reused: <commit>`；只对脏章重新评审。`code: same` 时
+> Gate A 复用上轮 SYMBOLS.md，记 `coverage_reused`。两者都必须有 fingerprint 输出作证据。
 
 > **核心原则**：reviewer 必须先提取文档骨架并评审，再执行正确性检查。
 > 正确性检查验证"文档说了什么"，structure.md 验证"读者读到了什么"。两者正交。
@@ -1299,7 +1304,9 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 
 **执行步骤**：
 
-1. **机器生成 SYMBOLS.md 骨架**（**强制运行**，见 Gate A 强制运行规则；不允许"语义范围手动验证"代替）：
+1. **机器生成 SYMBOLS.md 骨架**（**强制运行**，见 Gate A 强制运行规则；不允许"语义范围手动验证"代替）。
+   单元模式下 `fingerprint` 报 `code: same` 时可复用上轮 SYMBOLS，但必须在 scan.md 记
+   `coverage_reused` 与 fingerprint 输出；代码 hash 变化则必须重跑。
    ```bash
    # 模块级 — 服务器模块（vm / pm / vfs / rs / ds / inet ...）
    #   注：脚本第一参数 {minix3-module} 是 Minix3 模块名；--output 路径里的 {stage} 是评审状态目录键（笔记树根下第一级目录名）

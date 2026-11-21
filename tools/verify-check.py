@@ -346,6 +346,10 @@ def main():
         help='随机抽样种子（可复现）'
     )
     parser.add_argument(
+        '--units',
+        help='单元状态 YAML（V3.9：要求 scan.md 含 ## Unit Ledger）'
+    )
+    parser.add_argument(
         '--self-check',
         action='store_true',
         help='VERIFY-SELF 模式：仅输出机械化检查结果，不生成 VERIFY-CHECK.md'
@@ -361,6 +365,17 @@ def main():
 
     # 1. Gate 0 锚段检查
     gate0_missing = check_gate0_anchors(scan_text)
+
+    # 1b. G14 单元账本锚段（仅在传入 --units 时要求）
+    units_missing = False
+    if args.units:
+        up = Path(args.units).resolve()
+        if not up.exists():
+            print(f"❌ 单元状态不存在: {up}", file=sys.stderr)
+            units_missing = True
+        elif "## Unit Ledger" not in scan_text:
+            print("❌ scan.md 缺 `## Unit Ledger`（V3.9 G14）", file=sys.stderr)
+            units_missing = True
 
     # 2. Gate 证据块检查
     gate_evidence_results = check_gate_evidence_blocks(scan_text)
@@ -394,6 +409,9 @@ def main():
         else:
             print("✅ 9 个锚段齐全")
         print()
+        print("--- Unit Ledger ---")
+        print("✅ 含 `## Unit Ledger`" if args.units and not units_missing else ("❌ 缺失" if args.units else "ℹ️ 未启用"))
+        print()
         print("--- Gate 证据块 ---")
         for gate in sorted(gate_evidence_results.keys()):
             r = gate_evidence_results[gate]
@@ -407,7 +425,7 @@ def main():
             print(f"抽样 ID: {[i[0] for i in sampled_issues]}")
         print()
         # 自检判定
-        if gate0_missing or any(not r["exists"] or not r["keywords_ok"] for r in gate_evidence_results.values()):
+        if gate0_missing or units_missing or any(not r["exists"] or not r["keywords_ok"] for r in gate_evidence_results.values()):
             print("❌ VERIFY-SELF FAIL — 机械化检查未过，需修复 Gate 证据")
             return 1
         print("✅ VERIFY-SELF PASS — 机械化检查全过，可进入 VERIFY-CROSS")

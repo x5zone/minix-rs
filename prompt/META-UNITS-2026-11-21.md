@@ -1,4 +1,4 @@
-# meta 目录与单元级 review（2026-11-22）
+# meta 目录与单元级 review（2026-11-21）
 
 ## 一、为什么做
 
@@ -59,8 +59,9 @@ Python 工具使用，并由 `notes_layout.py` 自测与 `check-review-rules.sh`
 ## 五、验证读数
 
 - `python3 tools/todo-ledger.py check` → OK（01: 39 条 open 19 / blocked 4；02: 28 条 open 17 / blocked 5；coordination: 46 条 open 37）。
-- `python3 tools/notes-link-check.py rewrite-notes/` → 151 处断链；正式稿 0 处，全部为 review-eval
-  run 制品与历史工作文档的存量；迁移后正式稿与外部 coordination 链接无新增断链。
+- `python3 tools/notes-link-check.py rewrite-notes/` → 151 处断链；其中正式稿 7 处
+  （02/24、04/19、05/11、05/12、09/02 的存量），其余为 review-eval run 制品与历史工作文档；
+  迁移后正式稿与外部 coordination 链接无新增断链。
 - `python3 tools/doc-structure-check.py rewrite-notes/meta/coordination/review-eval` → 274 文件、117 处存量表结构问题；路径有效，非空扫描。
 - `bash tools/design-coverage-check.sh 01-stage-kernel` → ALL DOCS COMPLETE。
 - `python3 tools/review-units.py --self-test` → PASS；`check` 01 篇 → OK（41 单元、0 冻结）。

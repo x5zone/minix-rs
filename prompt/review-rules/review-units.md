@@ -40,8 +40,10 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 
 ## 三、预算
 
-- 每个单元每轨最多 **2 个修改轮**（`t1_rounds` / `t2_rounds`）。第 3 个修改轮只有两个合法出口：
-  用户明确批准，或该节**整节重写**（`rewritten: true`，计数重置，但一个 edition 内只允许一次）。
+- 每个单元每轨最多 **2 个修改轮**（`t1_rounds` / `t2_rounds`），按 edition 计。
+  新 edition 用 `review-units.py new-edition` 归档旧计数并重置；不要 `init --force`。
+  第 3 个修改轮只有两个合法出口：用户明确批准，或该节**整节重写**
+  （`rewritten: true`，计数重置，但一个 edition 内只允许一次）。
 - **干净通过不耗预算**：只有产生并实施了修改的轮次才 `+1`。
 - 篇级仍受 3 edition 上限约束；单元预算不替代也不放宽它。
 - 同一根因跨单元复发时，仍按 `review-evals.md` §4.0b 的「第二次出现必须结构性重写」处理，
@@ -49,7 +51,9 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 
 ## 四、冻结与解冻
 
-- 冻结条件：该单元 `open = 0`、`certify 新准入 = 0`、机械门通过、正文 hash 与冻结时一致。
+- 冻结条件：`review-units.py audit` 显示该单元 `open = 0`、`certify 新准入 = 0`、
+  V3.9 run 的 `defect-ledger.md` 必须带 `单元` 列（否则 audit 直接失败）、
+  `mark --pass/--freeze` 带存在的 `--evidence` 文件、正文 hash 与冻结时一致。
 - 正文变化：`tools/review-units.py sync` 比较 hash。节正文变化只解冻该节（T2）；
   标题、顺序、层级变化解冻该章（T1）与受影响子节；`deps` 变化把下游单元标为 `reopened`。
 - 冻结单元不再进入 L1 面板；只进入确认轮的抽样。冻结不是「永远不读」——确认轮仍会抽 20%。
@@ -68,13 +72,17 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 
 ## 六、与既有规则的关系
 
-- **G1–G13 不变**；新增 **G14**：`tools/review-units.py check --doc <当前篇>` 退出 0，
-  且全部单元 `frozen`、T3 通过。
+- **G1–G13 不变**；新增 **G14**：`tools/review-units.py check --doc <当前篇>` 与
+  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、T3 通过（evidence 文件存在）。
 - **四态模型不变**：修改轮仍无收敛声明权；`CONVERGED` 只由确认轮宣告。
+- **新 edition 与历史 run**：edition 变化会重置 `eval-trace` 的 `sealed_at`/确认轮计数；
+  历史轮仍留在 run 目录，`--round` 只查当前轮。若要让全历史审计也绿，需在 `DECISIONS.md`
+  落重开判决行，或把旧 run 归档到 `review-eval/archive/` 并在新 run 里从 R1 开始。
 - **代码冻结不变**：进入 L1 后任何 `os/` 改动 = 中止本轮。
 - **零欠账不变**：每个单元的 `open` 与 TODO 账本一致；blocked 待裁项存在时不得冻结该单元所在的章。
-- **面板阈值**：`review-panel.md` §七 的档位按**本次实际派发的单元**行数判断；首 edition 的整篇
-  survey 仍按整篇行数判断。读者 C 在 T2 中仍读整篇（防止跨节矛盾被切碎），A/B 只读被派单元。
+- **面板配置**：整篇 survey 用 `review-panel.md` §七 **表 A**；单元轮用 **表 B**
+  （T1 = P-FACT + B + D2；T2 = A + C + P-FACT 定点；T3 = P-FACT + RB + 机械门）。
+  A/B 按脏单元派发，C 每轮只派一个、读整篇；首 edition 不要按单元拆成多轮。
 
 ## 七、工具
 
@@ -82,18 +90,25 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 # 首次：按当前标题树建状态
 python3 tools/review-units.py init rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 # 整篇 survey 完成后记录基线（之后才允许确认轮抽样）
-python3 tools/review-units.py baseline rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+python3 tools/review-units.py baseline rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md --evidence runs/<stage>/<doc>/metrics.md
+
+# 单元 open 审计（默认读 run 目录 defect-ledger.md 的 `单元` 列）
+python3 tools/review-units.py audit --doc <doc>
+# 结构/代码指纹：same 时复用上轮 structure.md / SYMBOLS.md
+python3 tools/review-units.py fingerprint --doc <doc> --code-list runs/<stage>/<doc>/related-code.txt
+# 新 edition：归档旧计数、保留冻结（--unfreeze-all 才全部重置）
+python3 tools/review-units.py new-edition <doc> --edition V3.10
 
 # 每轮开始：校验状态与正文一致，列出本轮该审的单元
 python3 tools/review-units.py check <doc>
 python3 tools/review-units.py next <doc>
 
-# 修复/通过：只动被审单元
+# 修复/通过：pass/freeze 必须带 open=0 的 evidence 文件
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --fix
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze --evidence <file>
 
 # 第 3 轮的两种合法出口
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --approve   # 用户批准
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --approve --evidence <DECISIONS 行摘录>
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --rewrite   # 整节重写
 
 # 跨节依赖：上游改动时下游标 reopened
@@ -104,6 +119,11 @@ python3 tools/review-units.py sync <doc> --unfreeze --prune
 
 # T3 通过（全部单元冻结后）
 python3 tools/review-units.py gate <doc> --pass --evidence runs/<stage>/<doc>/certify/round<N>-gates.md
+
+# 确认轮：开始 → 修复（不占修改轮）→ 重新冻结 → 结束
+python3 tools/review-units.py begin-confirmation <doc>
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --confirm-fix
+python3 tools/review-units.py end-confirmation <doc>
 
 # 确认轮抽样（首 edition 拒绝；ratio ≥0.2；同 seed 同集合）
 python3 tools/review-units.py sample <doc> --ratio 0.2 --seed $(git rev-parse HEAD)

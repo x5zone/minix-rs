@@ -320,9 +320,10 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
 账）。台账必须有以下列（V3 起）：
 
 ```markdown
-| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+| 根因 ID | 发现 ID | 单元 | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 ```
 
+- `单元`：V3.9+ 必填，写 `###` 节 ID（如 `2.3`）或章 ID；旧 run 可缺列，`eval-trace` 按表头兼容。
 - `根因 ID`：稳定编号（`RD-001` 起），跨轮不变；同一根因的多个面板发现共用一行，
   在 `发现 ID` 列用顿号列出。
 - `origin`：根因首次出现的轮次（`R<N>` 或 `E<N>/R<N>`）；复发时写
@@ -667,7 +668,8 @@ G4  读者验收清单（§4.0e）项 = 0 待修；改动段冷读回执齐全
 G5  FP 有源码/测试/文档原文反证；⑤ = 0；② 相邻范围有用户批准与日期
     （V3.2：同篇待裁决项不得写 ②，见 §4.1a）
 G6  五门 + 机械门（citation/symbol-drift/anchor/doc-code-map/structure/ref/style/density）
-    + cargo test（含 minix-arch）+ 必要 QEMU 全绿
+    + cargo test（含 minix-arch）+ 必要 QEMU 全绿；单元模式下 fingerprint 报 `code: same`
+    时，SYMBOLS/覆盖率可按 `coverage_reused` 复用（必须有 fingerprint 输出）
 G7  台账/metrics 恒等：根因 ID 唯一、origin 完整（自引入记引入轮，§4.0c）、
     severity 与面板标题同步（§3.3）、未闭环数与 metrics 一致（含 OPEN-DEBT，
     §4.0f）、每个 ①/④/⑥ 有可重放复验（100%，不抽样）；改动触及 `&mut`/`'static`/
@@ -709,7 +711,9 @@ V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性�
 
 - **修改轮没有收敛声明权**：full/structural 轮的 agent 不得宣告 CONVERGED，最多
   ROUND-CLOSED / CONVERGENCE-CANDIDATE（`eval-trace-check.py` 机械检查）。
-- **确认轮**：覆盖未冻结单元 + ≥20% 冻结单元（seed = 最终 commit）+ 骨架；首个 edition 或
+- **确认轮**：`review-units.py begin-confirmation` 开始；修复用 `--confirm-fix`（不占修改轮），
+  修复后重新 `--pass --freeze`，`end-confirmation` 通过后才允许 `gate --pass`。
+  覆盖未冻结单元 + ≥20% 冻结单元（seed = 最终 commit）+ 骨架；首个 edition 或
   未冻结单元 >30% 时按整篇 survey。修复权限 = 本轮新准入的 P0/P1/P2 事实与
   同步项；不实施 ⑥、不扩大重构范围；P3 走 §4.0c 严重度门槛。每个 CONVERGENCE-CANDIDATE 最多 2 次（跨 edition 重开不累计）：
   第 1 次新准入 > 0 时在确认轮内修完再确认一次；仍 > 0 或出现结构性新根因 →
@@ -817,7 +821,8 @@ bash tools/doc-symbol-drift.sh --self-test
 
 ### 7.5 3 轮修改窗口与确认轮（V3.3 修订）
 
-每个 edition 在同一篇文档上最多跑 **3 轮修改事务**（full / structural）。**确认轮
+同一篇文档最多跑 **3 轮修改事务**（full / structural），**跨 edition 累计**（V3.8 起）。
+每个 edition 内的 3 轮试验窗口仍保留为更早的警告层，不是独立预算。**确认轮
 不占修改预算**：最后一个修改事务 ROUND-CLOSED 后，edition 进入
 CONVERGENCE-CANDIDATE，由确认轮收口（§6A 四态模型），每个 CANDIDATE 最多 2 次。第 3 轮必须
 是**结构轮**：按 `EDITION-RETRO.md` 重写被反复报的段/小节，并在最终 HEAD 跑
@@ -828,7 +833,8 @@ citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 
 2. 写 `EDITION-RETRO.md`：唯一新增根因数、自引入数、重复率、修复批量、机械门命中、
    哪些规则从未命中；
 3. 下一个边界必须处理最大阻塞项，或回退到上一 edition；
-4. 不得在第 4 个修改事务继续用同一 edition 跑同一篇。
+4. 第 4 个修改事务禁止；唯一例外是 `DECISIONS.md` 的 `rewrite-exception` 判决行，
+   且必须在 metrics 里写 `重写例外: <判决 ID>`。
 
 **单元预算（V3.9，与 edition 预算并行）**：每个 `###`/`##` 单元每轨最多 2 个修改轮
 （`review-units.md` §三）；第 3 轮需用户批准或整节重写。单元预算耗尽不等于 edition

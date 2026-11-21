@@ -12,7 +12,13 @@
   review-units.py next <doc> [--track t1|t2|t3]
   review-units.py mark <doc> --unit ID --track t1|t2 (--fix|--pass) [--freeze] [--note TEXT]
   review-units.py sample <doc> [--ratio 0.2] [--seed STR]
-  review-units.py gate <doc> (--pass|--fail) [--evidence PATH]
+  review-units.py gate <doc> (--pass|--fail) --evidence PATH [--ledger PATH]
+  review-units.py audit <doc> [--ledger PATH]
+  review-units.py fingerprint <doc> [--code-list PATH] [--update]
+  review-units.py baseline <doc> --evidence PATH
+  review-units.py new-edition <doc> --edition V3.x [--unfreeze-all]
+  review-units.py begin-confirmation <doc>
+  review-units.py end-confirmation <doc>
   review-units.py stats <doc>
   review-units.py --self-test
 
@@ -36,7 +42,7 @@ except Exception:  # pragma: no cover
     raise SystemExit(2)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from notes_layout import REVIEW_STATE_DIR, review_state_path  # noqa: E402
+from notes_layout import REVIEW_EVAL_DIR, REVIEW_STATE_DIR, review_state_path  # noqa: E402
 
 SCHEMA = "review-units/v1"
 EXEMPT = re.compile(r"参见|附录|索引|参考文献")
@@ -74,7 +80,15 @@ def read_doc(doc: Path) -> list[str]:
 def parse_units(doc: Path) -> list[dict]:
     lines = read_doc(doc)
     heads: list[tuple[int, int, str]] = []
+    fence: str | None = None
     for i, line in enumerate(lines):
+        s = line.lstrip()
+        if s.startswith("```") or s.startswith("~~~"):
+            mark = s[:3]
+            fence = None if fence == mark else (fence or mark)
+            continue
+        if fence:
+            continue
         m = HEAD_RE.match(line)
         if m:
             heads.append((i, len(m.group(1)), m.group(2).strip()))
@@ -179,6 +193,11 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
     if state_path.is_file() and not force:
         print(f"状态已存在：{state_path}（要重建加 --force）", file=sys.stderr)
         return 2
+    if state_path.is_file() and force:
+        old = load_state(state_path)
+        if old.get("t3", {}).get("passed") or any(u.get("frozen") for u in old.get("units", [])):
+            print("已冻结/已过 T3 的状态不得 init --force；请用 new-edition", file=sys.stderr)
+            return 2
     units = parse_units(doc)
     data = {
         "schema": SCHEMA,
@@ -187,6 +206,7 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
         "edition": edition,
         "updated_commit": head_commit(),
         "baseline_full_survey": False,
+        "confirmation": {"active": False, "fixes": 0},
         "units": [new_unit(u) for u in units],
         "t3": {"passed": False, "evidence": "", "at_commit": ""},
     }
@@ -195,9 +215,198 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
     return 0
 
 
+def cmd_new_edition(doc: Path, state_path: Path, edition: str, unfreeze_all: bool) -> int:
+    data = load_state(state_path)
+    old = data.get("edition", "?")
+    if edition == old:
+        print(f"edition 已是 {edition}", file=sys.stderr)
+        return 2
+    archive = state_path.parent / "editions" / f"{old}.yaml"
+    save_state(archive, data)
+    data["edition"] = edition
+    data["baseline_full_survey"] = False
+    data["confirmation"] = {"active": False, "fixes": 0}
+    for u in data["units"]:
+        u["t1_rounds"] = 0
+        u["t2_rounds"] = 0
+        u["rewritten"] = False
+        u["user_approved"] = False
+        u["reopened"] = False
+        if unfreeze_all:
+            u["frozen"] = False
+            u["frozen_at"] = None
+            if u["level"] == 2:
+                u["t1_state"] = "pending"
+            else:
+                u["t2_state"] = "pending"
+    save_state(state_path, data)
+    print(f"new-edition: {old} → {edition}（归档 {archive}；{'全部解冻' if unfreeze_all else '保留冻结'}）")
+    return 0
+
+
+def cmd_begin_confirmation(doc: Path, state_path: Path) -> int:
+    data = load_state(state_path)
+    if not all_chapters_frozen(data):
+        print("[FAIL] 章尚未全部冻结，不能开始确认轮", file=sys.stderr)
+        return 1
+    data.setdefault("confirmation", {})
+    data["confirmation"] = {"active": True, "fixes": 0}
+    save_state(state_path, data)
+    print("confirmation: begin")
+    return 0
+
+
+def cmd_end_confirmation(doc: Path, state_path: Path) -> int:
+    data = load_state(state_path)
+    errors, _ = validate(data, parse_units(doc))
+    if errors:
+        for e in errors:
+            print(f"[FAIL] {e}")
+        return 1
+    if not all_chapters_frozen(data):
+        print("[FAIL] 仍有未冻结单元，不能结束确认轮", file=sys.stderr)
+        return 1
+    data.setdefault("confirmation", {})
+    data["confirmation"]["active"] = False
+    save_state(state_path, data)
+    print("confirmation: end")
+    return 0
+
+
+def default_ledger(doc: Path, stage: str) -> Path:
+    return REVIEW_EVAL_DIR / "runs" / stage / doc.stem / "defect-ledger.md"
+
+
+def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
+    """解析 defect-ledger 的 `单元` 列，返回 {unit_id: open_count} 与错误。"""
+    if not path.is_file():
+        return {}, [f"ledger 不存在：{path}"]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    counts: dict[str, int] = {}
+    errors: list[str] = []
+    header: list[str] | None = None
+    idx: dict[str, int] = {}
+    found_unit_table = False
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        is_sep = nxt.startswith("|") and all(re.fullmatch(r":?-{2,}:?", c.strip()) for c in nxt.strip("|").split("|") if c.strip())
+        if is_sep:
+            header = cells
+            idx = {}
+            for name in ("发现 ID", "单元", "处置类", "处置", "复验"):
+                if name in cells:
+                    idx[name] = cells.index(name)
+            if "单元" not in idx:
+                header = None
+                idx = {}
+                continue
+            found_unit_table = True
+            continue
+        if header is None:
+            continue
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells):
+            continue
+        def cell(name: str) -> str:
+            j = idx.get(name, -1)
+            return cells[j] if 0 <= j < len(cells) else ""
+        units = [u.strip("` ") for u in re.split(r"[、,，]", cell("单元")) if u.strip("` ")]
+        if not units:
+            errors.append(f"ledger 行无单元归属：{cell('发现 ID') or i + 1}")
+            continue
+        cls = cell("处置类")
+        disp = cell("处置")
+        ver = cell("复验")
+        open_row = False
+        if cls in ("FP", "SUGG", "③", "false-positive"):
+            open_row = False
+        elif cls == "⑤":
+            open_row = True
+        elif cls in ("①", "④", "⑥"):
+            open_row = bool(re.search(r"未修|待修|未实施|未完成|TODO", ver))
+        elif cls == "②":
+            open_row = not bool(re.search(r"用户批准\s*[:：]?\s*\d{4}-\d{2}-\d{2}", disp))
+        else:
+            open_row = True
+        if open_row:
+            for u in units:
+                counts[u] = counts.get(u, 0) + 1
+    if not found_unit_table:
+        errors.append(f"ledger 没有带 `单元` 列的表（V3.9+ 必须）：{path}")
+    return counts, errors
+
+
+def cmd_audit(doc: Path, state_path: Path, ledger: str | None) -> int:
+    data = load_state(state_path)
+    path = Path(ledger) if ledger else default_ledger(doc, data["stage"])
+    counts, errors = ledger_open_by_unit(path)
+    for e in errors:
+        print(f"[FAIL] {e}")
+    bad = 0
+    for u in data["units"]:
+        n = counts.get(u["id"], 0)
+        print(f"{u['id']}: open={n}")
+        bad += n
+    if bad or errors:
+        print(f"review-units audit: FAIL（open={bad}）")
+        return 1
+    print("review-units audit: OK（全部单元 open=0）")
+    return 0
+
+
+def structure_fingerprint(doc: Path) -> str:
+    units = parse_units(doc)
+    parts = []
+    for u in units:
+        if u["level"] == 2:
+            parts.append(f"{u['id']}:{u['heading']}:{u['text_sha']}")
+    return sha("|".join(parts))
+
+
+def code_fingerprint(path: Path | None) -> str:
+    if not path or not path.is_file():
+        return ""
+    h = hashlib.sha256()
+    files = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        p = Path(s)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.is_file():
+            files.append(p)
+    for p in sorted(files):
+        h.update(str(p).encode())
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def cmd_fingerprint(doc: Path, state_path: Path, code_list: str | None, update: bool) -> int:
+    data = load_state(state_path)
+    s = structure_fingerprint(doc)
+    cpath = Path(code_list) if code_list else None
+    c = code_fingerprint(cpath)
+    old_s = data.get("structure_sha", "")
+    old_c = data.get("code_sha", "")
+    print(f"structure: {'same' if old_s == s else 'changed'}")
+    print(f"code: {'same' if c and old_c == c else ('changed' if c else 'unavailable')}")
+    if update:
+        data["structure_sha"] = s
+        data["code_sha"] = c
+        save_state(state_path, data)
+    return 0
+
+
 def all_chapters_frozen(data: dict) -> bool:
-    chapters = [u for u in data["units"] if u["level"] == 2]
-    return bool(chapters) and all(u.get("frozen") for u in chapters)
+    units = data.get("units", [])
+    return bool(units) and any(u["level"] == 2 for u in units) and all(
+        u.get("frozen") for u in units
+    )
 
 
 def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
@@ -249,7 +458,10 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
                     errors.append(f"{uid}: 冻结章的 t1_state 必须是 passed")
                 children = [x for x in data["units"] if x.get("parent") == uid]
                 if children and not all(x.get("frozen") for x in children):
-                    errors.append(f"{uid}: 章冻结但仍有未冻结子节")
+                    if data.get("confirmation", {}).get("active"):
+                        warnings.append(f"{uid}: 确认轮中章冻结、子节待重新冻结")
+                    else:
+                        errors.append(f"{uid}: 章冻结但仍有未冻结子节")
                 if not children and s.get("t2_state") != "frozen":
                     errors.append(f"{uid}: 无子节的章冻结时 t2_state 必须是 frozen")
     t3 = data.get("t3", {})
@@ -328,6 +540,8 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
                 print(f"[WARN] {u['id']}: 已解冻（正文变化）")
             elif u["level"] == 3 and u.get("t2_state") == "passed":
                 u["t2_state"] = "pending"
+            elif u["level"] == 2 and u.get("t1_state") == "passed":
+                u["t1_state"] = "pending"
             for other in data["units"]:
                 if u["id"] in (other.get("deps") or []) and not other.get("reopened"):
                     other["reopened"] = True
@@ -343,7 +557,13 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
     missing = [u["id"] for u in data["units"] if u["id"] not in cu]
     for uid in missing:
         print(f"[WARN] 状态中的单元在正文中不存在：{uid}")
+    if missing and prune and not only:
+        print("[FAIL] --prune 必须与 --unit 同用，禁止一次删除多个单元", file=sys.stderr)
+        return 1
     if missing and prune:
+        if only is not None and only not in missing:
+            print(f"[FAIL] --unit {only} 不是缺失单元；缺失：{missing}", file=sys.stderr)
+            return 1
         drop = set(missing)
         frozen_missing = [u["id"] for u in data["units"] if u["id"] in drop and u.get("frozen")]
         if frozen_missing and not unfreeze:
@@ -352,6 +572,9 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
         data["units"] = [u for u in data["units"] if u["id"] not in drop]
         print(f"[WARN] 已删除 {len(drop)} 个正文中不存在的单元")
         changed += len(drop)
+        save_state(state_path, data)
+        # prune 改变了子节标题树，父章 hash 必须同批更新
+        return cmd_sync(doc, state_path, unfreeze, None, False)
     data["updated_commit"] = head_commit()
     save_state(state_path, data)
     print(f"sync: {changed} 处更新")
@@ -390,12 +613,32 @@ def cmd_next(doc: Path, state_path: Path, track: str | None) -> int:
 def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
              passed: bool, freeze: bool, note: str,
              rewrite: bool = False, approve: bool = False,
-             deps: str | None = None) -> int:
+             deps: str | None = None, confirm_fix: bool = False,
+             evidence: str | None = None, ledger: str | None = None) -> int:
     data = load_state(state_path)
     unit = next((u for u in data["units"] if u["id"] == uid), None)
     if not unit:
         print(f"找不到单元：{uid}", file=sys.stderr)
         return 2
+    if confirm_fix:
+        conf = data.get("confirmation", {})
+        if not conf.get("active"):
+            print("当前不在确认轮；--confirm-fix 仅用于确认轮", file=sys.stderr)
+            return 1
+        if int(conf.get("fixes", 0)) >= 2:
+            print("[FAIL] 确认轮修复已达 2 次上限", file=sys.stderr)
+            return 1
+        unit["frozen"] = False
+        unit["frozen_at"] = None
+        if unit["level"] == 3:
+            unit["t2_state"] = "pending"
+        else:
+            unit["t1_state"] = "pending"
+        conf["fixes"] = int(conf.get("fixes", 0)) + 1
+        unit["note"] = note or unit.get("note", "")
+        save_state(state_path, data)
+        print(f"confirm-fix: {uid}（不占修改轮；确认轮修复 {conf['fixes']}/2）")
+        return 0
     has_children = any(x.get("parent") == uid for x in data["units"])
     if track == "t1" and unit["level"] != 2:
         print("t1 只适用于 ## 章单元", file=sys.stderr)
@@ -420,6 +663,23 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
             unit["frozen_at"] = None
     if approve:
         unit["user_approved"] = True
+    if (passed or freeze or rewrite or approve) and not evidence:
+        print("[FAIL] pass/freeze/rewrite/approve 必须带 --evidence 文件", file=sys.stderr)
+        return 1
+    if (passed or freeze or rewrite or approve) and evidence and not Path(evidence).is_file():
+        print(f"[FAIL] evidence 文件不存在：{evidence}", file=sys.stderr)
+        return 1
+    if passed or freeze:
+        lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
+        counts, errs = ledger_open_by_unit(lpath)
+        if errs:
+            for e in errs:
+                print(f"[FAIL] {e}")
+            return 1
+        if counts.get(uid, 0) > 0:
+            print(f"[FAIL] {uid} 仍有 {counts[uid]} 条 open finding；先销账再 pass/freeze", file=sys.stderr)
+            return 1
+        unit["evidence"] = evidence
     if fix:
         unit[rounds] = int(unit.get(rounds, 0)) + 1
         if unit[rounds] > MAX_ROUNDS and not (unit.get("rewritten") or unit.get("user_approved")):
@@ -489,7 +749,8 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
     n = math.ceil(len(frozen) * ratio) if frozen else 0
     picked = ranked[:n]
     if len(dirty) > 0.3 * max(1, len(units)):
-        print(f"[WARN] 未冻结单元 {len(dirty)}/{len(units)} > 30%，应按 review-units.md §五回退整篇 survey")
+        print(f"[FAIL] 未冻结单元 {len(dirty)}/{len(units)} > 30%；按 review-units.md §五回退整篇 survey，不抽样")
+        return 1
     print("## dirty")
     for u in dirty:
         print(f"{u['id']} {u['heading']}")
@@ -499,15 +760,19 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
     return 0
 
 
-def cmd_baseline(doc: Path, state_path: Path) -> int:
+def cmd_baseline(doc: Path, state_path: Path, evidence: str | None) -> int:
+    if not evidence or not Path(evidence).is_file():
+        print("baseline 必须带 --evidence（整篇 survey 的 metrics/scan 产物）", file=sys.stderr)
+        return 1
     data = load_state(state_path)
     data["baseline_full_survey"] = True
+    data["baseline_evidence"] = evidence
     save_state(state_path, data)
     print("baseline: 首个 edition 的整篇 survey 已记录")
     return 0
 
 
-def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str) -> int:
+def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str | None = None) -> int:
     data = load_state(state_path)
     errors, _ = validate(data, parse_units(doc))
     if ok and errors:
@@ -515,9 +780,28 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str) -> int:
             print(f"[FAIL] {e}")
         print("[FAIL] 状态未通过 check，T3 不得通过", file=sys.stderr)
         return 1
+    if ok and data.get("confirmation", {}).get("active"):
+        print("[FAIL] 确认轮尚未结束，T3 不得通过", file=sys.stderr)
+        return 1
+    if ok and not evidence:
+        print("[FAIL] gate --pass 必须带 --evidence 文件", file=sys.stderr)
+        return 1
+    if ok and not Path(evidence).is_file():
+        print(f"[FAIL] evidence 文件不存在：{evidence}", file=sys.stderr)
+        return 1
     if ok and not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结的章，T3 不得通过", file=sys.stderr)
         return 1
+    if ok:
+        lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
+        counts, errs = ledger_open_by_unit(lpath)
+        if errs:
+            for e in errs:
+                print(f"[FAIL] {e}")
+            return 1
+        if any(counts.get(u["id"], 0) > 0 for u in data["units"]):
+            print("[FAIL] 仍有单元 open finding，T3 不得通过", file=sys.stderr)
+            return 1
     data["t3"] = {"passed": ok, "evidence": evidence, "at_commit": head_commit()}
     save_state(state_path, data)
     print(f"gate T3: {'PASS' if ok else 'FAIL'}")
@@ -551,20 +835,47 @@ def self_test() -> int:
             encoding="utf-8",
         )
         sp = root / "state.yaml"
+        ev = root / "evidence.md"
+        ev.write_text("unit evidence\n", encoding="utf-8")
+        ledger = root / "ledger.md"
+        ledger.write_text(
+            "| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n"
+            "|---|---|---|---|---|\n",
+            encoding="utf-8",
+        )
+
+        def mk(uid, track, fix=False, passed=False, freeze=False, note=""):
+            return cmd_mark(doc, sp, uid, track, fix, passed, freeze, note,
+                            evidence=str(ev), ledger=str(ledger))
+
         assert cmd_init(doc, sp, "01-stage-kernel", "V3.9", False) == 0
         data = load_state(sp)
         assert len(data["units"]) == 5, len(data["units"])
         assert cmd_check(doc, sp) == 0
+        assert cmd_audit(doc, sp, str(ledger)) == 0
+        ledger.write_text(
+            "| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n"
+            "|---|---|---|---|---|\n"
+            "| F1 | 1.1 | ① | x | 未修 |\n",
+            encoding="utf-8",
+        )
+        assert cmd_audit(doc, sp, str(ledger)) == 1
+        ledger.write_text(
+            "| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n"
+            "|---|---|---|---|---|\n",
+            encoding="utf-8",
+        )
+        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "", ledger=str(ledger)) == 1  # 缺 evidence
         assert cmd_sample(doc, sp, 0.2, "x") == 1   # 首 edition 不抽查
         assert cmd_sample(doc, sp, 0.1, "x") == 2   # 比例下限
-        assert cmd_baseline(doc, sp) == 0
+        assert cmd_baseline(doc, sp, str(ev)) == 0
         # 章 1 T1 通过；两节通过并冻结；章冻结
-        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "") == 0
-        assert cmd_mark(doc, sp, "1.1", "t2", False, True, True, "") == 0
-        assert cmd_mark(doc, sp, "1.2", "t2", False, True, True, "") == 0
-        assert cmd_mark(doc, sp, "1", "t1", False, True, True, "") == 0
-        assert cmd_mark(doc, sp, "1.1", "t1", True, False, False, "") == 2  # t1 只用于章
-        assert cmd_mark(doc, sp, "2", "t2", False, True, True, "") == 2     # 章冻结只走 t1
+        assert mk("1", "t1", False, True, False, "") == 0
+        assert mk("1.1", "t2", False, True, True, "") == 0
+        assert mk("1.2", "t2", False, True, True, "") == 0
+        assert mk("1", "t1", False, True, True, "") == 0
+        assert mk("1.1", "t1", True, False, False, "") == 2  # t1 只用于章
+        assert mk("2", "t2", False, True, True, "") == 2     # 章冻结只走 t1
         # 修改冻结节：check 失败，sync 无 --unfreeze 失败，带 --unfreeze 成功
         doc.write_text(doc.read_text(encoding="utf-8").replace("内容一。", "内容一改。"), encoding="utf-8")
         assert cmd_check(doc, sp) == 1
@@ -581,19 +892,40 @@ def self_test() -> int:
         assert all(not u.get("frozen") for u in d["units"])
         assert cmd_check(doc, sp) == 0
         # 预算：连续 fix 第 3 次被拦
-        assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 0
-        assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 0
-        assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 1
+        assert mk("1.1", "t2", True, False, False, "") == 0
+        assert mk("1.1", "t2", True, False, False, "") == 0
+        assert mk("1.1", "t2", True, False, False, "") == 1
         # 删除一节：sync --prune 收口
         txt = doc.read_text(encoding="utf-8")
-        txt = txt.split("### 1.2 第二节")[0].rstrip() + "\n"
+        txt = txt.replace("### 1.2 第二节\n\n内容二。\n\n", "")
         doc.write_text(txt, encoding="utf-8")
-        assert cmd_sync(doc, sp, True, None, True) == 0
+        assert cmd_sync(doc, sp, True, None, True) == 1  # prune 必须带 --unit
+        assert cmd_sync(doc, sp, True, "1.2", True) == 0
         assert cmd_check(doc, sp) == 0
+        # 全部冻结后再抽样；首 edition 已 baseline
+        assert mk("1", "t1", False, True, False, "") == 0
+        assert mk("2", "t1", False, True, False, "") == 0
+        assert mk("1.1", "t2", False, True, True, "") == 0
+        assert mk("2.1", "t2", False, True, True, "") == 0
+        assert mk("1", "t1", False, True, True, "") == 0
+        assert mk("2", "t1", False, True, True, "") == 0
         # 抽样确定性
         out1 = cmd_sample(doc, sp, 0.2, "abc")
         out2 = cmd_sample(doc, sp, 0.2, "abc")
         assert out1 == 0 and out2 == 0
+        # 新 edition：归档旧计数、保留冻结；确认轮修复不占修改轮
+        assert cmd_new_edition(doc, sp, "V3.10", False) == 0
+        d = load_state(sp)
+        assert d["edition"] == "V3.10" and d["confirmation"]["active"] is False
+        assert all(u["t2_rounds"] == 0 and u["t1_rounds"] == 0 for u in d["units"])
+        assert any(u.get("frozen") for u in d["units"])
+        assert cmd_begin_confirmation(doc, sp) == 0
+        assert cmd_mark(doc, sp, "1.1", "t2", False, False, False, "",
+                        confirm_fix=True, evidence=str(ev), ledger=str(ledger)) == 0
+        assert cmd_end_confirmation(doc, sp) == 1  # 仍有未冻结子节
+        assert mk("1.1", "t2", False, True, True, "") == 0
+        assert cmd_end_confirmation(doc, sp) == 0
+        assert cmd_gate(doc, sp, True, str(ev), str(ledger)) == 0
     print("self-test PASS: init/check/sync/unfreeze/budget/sample")
     return 0
 
@@ -602,13 +934,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="单元级 review 状态机（V3.9）")
     ap.add_argument("--self-test", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
-    for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats", "baseline"):
+    for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats",
+                 "baseline", "new-edition", "begin-confirmation", "end-confirmation", "audit", "fingerprint"):
         p = sub.add_parser(name)
         p.add_argument("doc", nargs="?")
         p.add_argument("--doc", dest="doc_opt", help="文档路径（与位置参数二选一）")
     sub.choices["init"].add_argument("--stage")
     sub.choices["init"].add_argument("--edition", default="V3.9")
     sub.choices["init"].add_argument("--force", action="store_true")
+    sub.choices["baseline"].add_argument("--evidence", default=None)
+    sub.choices["new-edition"].add_argument("--edition", required=True)
+    sub.choices["new-edition"].add_argument("--unfreeze-all", action="store_true")
+    sub.choices["audit"].add_argument("--ledger", default=None)
+    sub.choices["fingerprint"].add_argument("--code-list", default=None)
+    sub.choices["fingerprint"].add_argument("--update", action="store_true")
     sub.choices["sync"].add_argument("--unfreeze", action="store_true")
     sub.choices["sync"].add_argument("--unit")
     sub.choices["sync"].add_argument("--prune", action="store_true")
@@ -623,6 +962,9 @@ def main() -> int:
     m.add_argument("--rewrite", action="store_true")
     m.add_argument("--approve", action="store_true")
     m.add_argument("--deps", default=None, help="逗号分隔的上游单元 ID")
+    m.add_argument("--confirm-fix", action="store_true", help="确认轮修复：解冻但不占修改轮")
+    m.add_argument("--evidence", default=None, help="pass/freeze 的复核证据文件")
+    m.add_argument("--ledger", default=None, help="defect-ledger 路径（默认按 run 目录推导）")
     m.add_argument("--note", default="")
     s = sub.choices["sample"]
     s.add_argument("--ratio", type=float, default=0.2)
@@ -632,6 +974,7 @@ def main() -> int:
     gg.add_argument("--pass", dest="ok", action="store_true")
     gg.add_argument("--fail", dest="ok", action="store_false")
     ga.add_argument("--evidence", default="")
+    ga.add_argument("--ledger", default=None)
 
     args = ap.parse_args()
     if args.self_test:
@@ -657,13 +1000,23 @@ def main() -> int:
     if args.cmd == "next":
         return cmd_next(doc, sp, args.track)
     if args.cmd == "mark":
-        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve, args.deps)
+        return mk(args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve, args.deps, args.confirm_fix, args.evidence, args.ledger)
     if args.cmd == "sample":
         return cmd_sample(doc, sp, args.ratio, args.seed)
     if args.cmd == "gate":
-        return cmd_gate(doc, sp, args.ok, args.evidence)
+        return cmd_gate(doc, sp, args.ok, args.evidence, args.ledger)
     if args.cmd == "baseline":
-        return cmd_baseline(doc, sp)
+        return cmd_baseline(doc, sp, args.evidence)
+    if args.cmd == "new-edition":
+        return cmd_new_edition(doc, sp, args.edition, args.unfreeze_all)
+    if args.cmd == "begin-confirmation":
+        return cmd_begin_confirmation(doc, sp)
+    if args.cmd == "end-confirmation":
+        return cmd_end_confirmation(doc, sp)
+    if args.cmd == "audit":
+        return cmd_audit(doc, sp, args.ledger)
+    if args.cmd == "fingerprint":
+        return cmd_fingerprint(doc, sp, args.code_list, args.update)
     if args.cmd == "stats":
         return cmd_stats(doc, sp)
     return 2

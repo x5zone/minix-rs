@@ -85,8 +85,8 @@
 - `rg` 旧文件名（排除 `tmp/`、历史记录、迁移工具本身）→ 编号正式文档仅 `09-vm-boot-protocol.md`
   §4.1 的 2 处（已登记为 P1 漂移）；其余命中均为 `checklist.md`、`doc_rerank_*`、
   `misc/legacy-notes-todo.md` 等历史工作文档的散文溯源。
-- `python3 tools/notes-link-check.py rewrite-notes/` → 226 处断链，全部为 review-eval
-  run 制品与 18 阶段旧文档的存量问题；本次删除未新增断链。
+- `python3 tools/notes-link-check.py rewrite-notes/` → 226 处断链，含 7 处正式稿存量
+  （02/24、04/19、05/11、05/12、09/02）与 review-eval run 制品；本次删除未新增断链。
 - `python3 tools/eval-trace-check.py ... --round R37` / `--round R5` → 均因「CONVERGED 后
   再开轮」判 FAIL；该轨迹问题在迁移前已存在，run 制品未被本次改动触碰。
 - `cargo check -p minix-kernel --features mock`、`-p minix-sched`、`-p minix-vm` → 全部 rc=0。

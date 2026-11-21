@@ -2763,7 +2763,7 @@ boot-shim 三目标由 QEMU 脚本与 xtask image 构建链覆盖               
 [svc] fatal: not an SVC ec=0x24 esr=0x92000047 elr=0x140003628 far=0x7ffffffff000
 ```
 
-**基线对照**：在会话起点 `537f5c16b` 的独立工作树重跑同一脚本，得到逐字同签名（同 `elr`/`esr`/`far`）→ 既有红，不是本轮改动引入。该测试此前曾在全量套件中全绿，历史见 `rewrite-notes/coordination/PARALLEL-20261018-C-KERN-QEMU.md`。
+**基线对照**：在会话起点 `537f5c16b` 的独立工作树重跑同一脚本，得到逐字同签名（同 `elr`/`esr`/`far`）→ 既有红，不是本轮改动引入。该测试此前曾在全量套件中全绿，历史见 `rewrite-notes/meta/coordination/PARALLEL-20261018-C-KERN-QEMU.md`。
 
 ### 覆盖边界（未走到的分支）
 

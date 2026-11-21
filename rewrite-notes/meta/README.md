@@ -15,9 +15,9 @@
 | `coordination/` | 跨会话协作记录：决策、案卷、worklog、历史台账；其中 `todo-ledger/` 是 TODO 单一账本，`review-eval/` 是 review 轨迹与评测数据 |
 | `coordination/todo-ledger/` | 每 stage 一本 `<stage>.yaml`，由 `tools/todo-ledger.py` 校验 |
 | `coordination/review-eval/` | review-loop 的 runs、面板制品、指标与 `DECISIONS.md` |
-| `design/<stage>/` | 各篇的设计快照（outline / design / design-final）。本地态，已被 `.gitignore` 排除，缺失时由 Step 0.3 重新生成 |
+| `design/<stage>/` | 各篇的设计快照（outline / design / design-final）。除 01/02 的 4 个冻结快照入库外均为本地态；`.gitignore` 排除整目录，缺失时由 Step 0.3 重新生成 |
 | `review/state/<stage>/<doc>.yaml` | 单元级 review 状态：`###` 节的冻结状态、轮次预算、T1/T2/T3 轨道（规则见 `prompt/review-rules/review-units.md`） |
 
 ## 迁移来源
 
-2026-11-22 之前，过程产物散在 `rewrite-notes/coordination/` 与各 stage 的 `.design/`。逐路径对照见 `rewrite-notes/MIGRATION.md` 的「2026-11-22 meta 迁移」节。
+2026-11-21 之前，过程产物散在 `rewrite-notes/coordination/` 与各 stage 的 `.design/`。逐路径对照见 `rewrite-notes/MIGRATION.md` 的「2026-11-21 meta 迁移」节。

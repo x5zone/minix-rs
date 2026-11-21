@@ -148,7 +148,7 @@ PD-22 是一条已冻结的裁决（本项目裁决编号族的一员），把"�
 | riscv PLIC MMIO 访问（VA=PA） | `os/plat/src/riscv64/interrupt.rs`（`Riscv64InterruptController::plic_read32/plic_write32`，`PLIC_CLAIM + context*0x1000`） |
 | x86 LAPIC EOI（VA=PA） | `os/plat/src/x86_64/interrupt.rs:fn lapic_eoi`、`fn lapic_write`（base 0xFEE00000 来自 MSR） |
 | aarch64 系统寄存器接口 + TTBR1 钉死 | `os/arch/src/lib.rs`（aarch64 恒等表空注释）；`os/kernel/src/lib.rs` Step 2b 注释（"TTBR1 is pinned to the bootstrap root and never switched"） |
-| PD-22 冻结原文 | `rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md:362`（SD-12 条目） |
+| PD-22 冻结原文 | `rewrite-notes/meta/coordination/STRUCTURAL-DEBT-REGISTER-20261008.md:362`（SD-12 条目） |
 | 第①步落地记录 | `rewrite-notes/01-stage-kernel/c-board-rulings-brief.md` §10–§12；C 板 C11 行 |
 | PLIC 窗重放的动机（SEI/EI 腿 Load fault 修复） | C 板 C17 行第二片注记；`os/arch/src/arch/paging.rs` 段四注释 |
 

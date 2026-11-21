@@ -21,9 +21,9 @@ git status --porcelain | grep -v '^??' | wc -l  # 期望 0
 3. `prompt/review-rules/review-evals.md` — 轨迹/指标/处置/收敛契约
 4. `prompt/review-rules/review-panel.md` — 面板协议（档位表 §七）
 5. `prompt/review-rules/fix-guard.md` — 修复守则
-6. `rewrite-notes/coordination/review-eval/WORKFLOW-VERSIONS.md` — 版本链（末尾三节：V3.4/V3.4-r26/V3.5）
-7. `rewrite-notes/coordination/review-eval/DECISIONS.md` — 判决账（D-055/D-056/D-057/D-058）
-8. `rewrite-notes/coordination/review-eval/CORPUS.md` — 语料条目
+6. `rewrite-notes/meta/coordination/review-eval/WORKFLOW-VERSIONS.md` — 版本链（末尾三节：V3.4/V3.4-r26/V3.5）
+7. `rewrite-notes/meta/coordination/review-eval/DECISIONS.md` — 判决账（D-055/D-056/D-057/D-058）
+8. `rewrite-notes/meta/coordination/review-eval/CORPUS.md` — 语料条目
 
 **当前流程版本**：V3.5（= V3.3 + D-055 两墙 + V3.4 最小内核 + r7–r27 修正 + 制品链）。
 
@@ -105,7 +105,7 @@ python3 tools/eval-trace-check.py runs/01-stage-kernel/<doc> --round R<N>
 
 ## 全部完成后
 
-写汇总报告到 `rewrite-notes/coordination/review-eval/meta/V3.5-execution-summary.md`，内容包括：
+写汇总报告到 `rewrite-notes/meta/coordination/review-eval/meta/V3.5-execution-summary.md`，内容包括：
 - 六篇的轮数、发现数、P0 数、FP 数、收敛状态
 - 制品链实战表现（INDEX 哈希是否一致、certify 回执质量）
 - 门误报/漏报统计
