@@ -138,7 +138,13 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
 | 1 | review-doc-skill | Step 3 | §6 概念准确性表 |
 | 2 | review-code-skill | Step 5 | 代码质量审查 |
 ```
-未含此章节 → scan.md 标记 DRAFT。
+未含此章节 → scan.md 标记 DRAFT。表体由 `tools/verify-check.py` 检查：至少一行、
+`Skill` / `调用时机` / `关键产出` 三列齐全、技能名必须是已注册的技能（见
+`prompt/skill/`），且不得用“规则已加载 / 计划调用”替代实际调用记录。
+
+**Gate 证据分级（V3.10）**：每个 `gate-evidence-{X}` 块首行写 `level: L1|L2|L3`；
+L1 必须有命令与输出，L2 必须有手工 grep 命中，L3 只允许 B/C/D-6/H 且附
+`MANUAL_FALLBACK: <理由>`。最低级别见 `review-process.md` 的 Gate 注册表。
 
 ---
 

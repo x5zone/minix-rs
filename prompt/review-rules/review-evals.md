@@ -116,7 +116,22 @@ tmp/review-eval/<stage>/<doc-stem>/logs/
 | 发现 ID | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 ```
 
+V3.10 起，台账表可以追加 C1 红绿四列（列名固定，按此顺序）：
+
+```markdown
+| red_cmd | red_evidence | green_cmd | green_evidence |
+```
+
 规则：
+
+- C1 四列是**按表启用**的：没有这四列的历史表整体豁免；一旦表头声明四列，
+  表内每条 `严重度` 为 `P0` 且 `类别` 为 `P0-code-bug` / `P0-test-missing` 的行
+  必须四项全填，`green_cmd` 必须与 `red_cmd` 是同一条命令（只许复制，不许换测试名
+  或参数）。
+- `red_evidence` 记录准入时的红态输出（`FAIL` / `exit != 0` / `0 命中`），
+  `green_evidence` 记录修复后的绿态输出（`PASS` / `exit 0` / 命中）；两者都由
+  `eval-trace-check.py` 的 `c1-red-green` 检查，不接受“已修”“见 §N”这类散文。
+- 旧 edition 的台账不加四列即可继续按原 schema 读取；新 edition 的台账必须加。
 
 - `发现 ID` 必须与面板报告里的 `## FINDING <ID>` 完全一致；一行可以放多个 ID，用顿号或逗号分隔；
 - `严重度` 必须与面板 `## FINDING <ID>（P<N>…）` 标题机械同步（V3.3）：R30 曾把面板的
@@ -322,6 +337,12 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
 ```markdown
 | 根因 ID | 发现 ID | 单元 | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
 ```
+
+V3.10 起，新 edition 的台账在 `复验` 后追加 C1 四列：
+`red_cmd | red_evidence | green_cmd | green_evidence`。`严重度 P0` 且
+`类别` 为 `P0-code-bug` / `P0-test-missing` 的行四项必填，`green_cmd` 与
+`red_cmd` 必须是同一条命令。旧 edition 的既有表可以不带四列（按表豁免，
+见 §3.3）。
 
 - `单元`：V3.9+ 必填，写 `###` 节 ID（如 `2.3`）或章 ID；旧 run 可缺列，`eval-trace` 按表头兼容。
 - `根因 ID`：稳定编号（`RD-001` 起），跨轮不变；同一根因的多个面板发现共用一行，

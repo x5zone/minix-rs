@@ -210,7 +210,7 @@ python3 tools/review-units.py audit --doc rewrite-notes/01-stage-kernel/01-boot-
 | 轮次 | 子 agent | 结论 | 处置 |
 |---|---|---|---|
 | Round 1 | inventory / mechanical / consistency | inventory P1 1（AGENTS `16-smp.md` 路径）+ P2 5；mechanical P0 2（review-scan 旧收口、`.claude` backlog 矩阵）+ P1 6；consistency P0 2（CI 过滤误伤全树、Resume 载体分叉）+ P1 2 | 全部修复；提交 `ddd766a09`、`f12edf0fa` |
-| Round 2 | subtraction / regression | subtraction P0 1（跨 edition 3 轮无工具 FAIL）+ P1 6；regression P1 6（selector 误伤 compress-archive、D-999 幻影、散文 token、C1 未传播、C1 时序、Resume 否定/围栏） | 全部修复；提交 `f7adb2578`、`d0143876c`；仅 R2-11 重复告警留 P2 |
+| Round 2 | subtraction / regression | subtraction P0 1（跨 edition 3 轮无工具 FAIL）+ P1 6；regression P1 6（selector 误伤 compress-archive、幻影判决号、散文 token、C1 未传播、C1 时序、Resume 否定/围栏） | 全部修复；提交 `f7adb2578`、`d0143876c`；仅 R2-11 重复告警留 P2 |
 | Round 3 | 主 agent 确认 | 新增 P0 = 0，新增 P1 = 0，新增 P2 = 1 | **cycle 2 收敛（带已知残余）** |
 
 关键修复：

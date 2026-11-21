@@ -102,8 +102,15 @@
 | **Gate D-6** | structure.md 生成 + 12 节评审 | 本文件 Step 0.5 | L2；失败进 Issue List |
 | **Gate D-Impl** | 设计→代码实施验证 | review-implementation-skill.md §Gate D-Impl | L2；Fix Phase / 设计一致性专项 |
 | **Gate E** | §5 测试章节 grep 验证 | 本文件 Step 4.5 | L1；doc 无 §5 时 N/A + 原因 |
-| **Gate G** | VERIFY-CHECK 独立验证 | 本文件 Step 5.6 | consistency ≥ 90% PASS；CONCERN/FAIL 不得 CONVERGED |
+| **Gate G** | VERIFY-CHECK 独立验证 | 本文件 Step 5.6 | L2；consistency ≥ 90% PASS；CONCERN/FAIL 不得 CONVERGED |
 | **Gate H** | design/outline 门控（H.1-H.6） | 本文件 §Gate H | L2；不允许 N/A；缺快照 → Step 0.3 嵌入生成 |
+
+**证据分级与最低级别（V3.10）**：每个 `gate-evidence-{X}` 块正文首行必须写
+`level: L1` / `level: L2` / `level: L3`。L1 = 工具输出（命令 + stdout/exit code），
+L2 = 手工 grep（命令 + 命中行），L3 = 推断。注册表的最低级别：
+A / D / E / G10 / G11 / G12 / G13 必须 L1；B / C / D-6 / G / H 默认 L2。
+L3 只允许 B / C / D-6 / H，且必须写 `MANUAL_FALLBACK: <为什么只能推断>`；
+其余门写 L3 直接 FAIL。没有 `level:` 行 = FAIL——空口“✅ 通过”不再算证据。
 
 
 #### scan.md 的机械契约（由 `tools/verify-check.py` 强制，此前只写在脚本里，规范源未提）
@@ -116,7 +123,8 @@
    `## Step 1: C Source Ground Truth Lookup`、`## Step 1.5: Coverage Enumeration`、`## Step 2: Diff Extraction`、
    `## Step 3.5: Precision Check`、`## Issue List`、`## Artifact Inventory`
 2. **Gate 证据块**必须是围栏块，围栏首行写 ` ```gate-evidence-{X} `（X = A/B/C/D/D-6/E/G/H/G10/G11/G12/G13），
-   且含该门的必备关键字：A 需 `coverage-extract.py` 与 `Coverage Summary`；B 需 `行为契约`；
+   块内首行写 `level: L1|L2|L3`（最低级别见 Gate 注册表），且含该门的必备关键字：
+   A 需 `coverage-extract.py` 与 `Coverage Summary`；B 需 `行为契约`；
    D 需 ≥5 条 `rg`/`grep`；E 需 `fn test_*` 或 `N/A`+理由；G 需 `consistency NN%` 且 ≥90；
    G10/G11 需出版工具的 0 命中/exit 0；G12 需 `open=0`/OK；G13 需 0 缺项。
    （写成 `### gate-evidence-A` 标题不算，验证器只认围栏块。D-Impl 的证据在 Fix Phase /

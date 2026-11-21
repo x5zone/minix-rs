@@ -50,6 +50,26 @@ GATE0_ANCHORS = [
     "## Artifact Inventory",
 ]
 
+# ===== Gate 证据分级 =====
+# L1 = 工具输出；L2 = 手工 grep；L3 = 推断。注册表给出每门的最低级别；
+# A/D/E/G10–G13 必须有 L1；L3 仅 B/C/D-6/H 允许，且必须写 MANUAL_FALLBACK 理由。
+GATE_MIN_LEVEL = {
+    "A": "L1",
+    "B": "L2",
+    "C": "L2",
+    "D": "L1",
+    "D-6": "L2",
+    "E": "L1",
+    "G": "L2",
+    "H": "L2",
+    "G10": "L1",
+    "G11": "L1",
+    "G12": "L1",
+    "G13": "L1",
+}
+GATE_L3_ALLOWED = {"B", "C", "D-6", "H"}
+LEVEL_RANK = {"L1": 3, "L2": 2, "L3": 1}
+
 # ===== Gate 证据块关键字 =====
 GATE_EVIDENCE_KEYWORDS = {
     "A": ["coverage-extract.py", "Coverage Summary"],
@@ -156,6 +176,71 @@ def check_gate0_anchors(scan_text):
     return missing
 
 
+KNOWN_SKILLS = {
+    "review-agent-ide",
+    "review-agent-trigger",
+    "review-code-skill",
+    "review-core-semantics-skill",
+    "review-coverage-skill",
+    "review-doc-skill",
+    "review-excellence-skill",
+    "review-implementation-skill",
+    "review-loop",
+    "review-patterns-skill",
+    "review-process-skill",
+    "review-scan",
+    "review-socratic-skill",
+    "full-review",
+    "style-fix",
+    "code-excellence",
+    "test-audit",
+    "todo-fix",
+    "style-bible",
+}
+
+
+def check_skill_invocation_log(scan_text):
+    """校验 Skill Invocation Log 的表体，而不只是标题存在。
+
+    这是形状检查：表格列、至少一行、Skill 名在已注册技能集合内、且没有
+    “规则已加载 / 计划调用”这类未实际调用的措辞。它不能证明运行时的确调用了
+    Skill 工具（那需要运行时事件），但能挡住空表和自造技能名。
+    """
+    m = re.search(
+        r"(?ms)^## Skill Invocation Log\s*$(.*?)(?=^## |\Z)", scan_text
+    )
+    if not m:
+        return []  # 锚段缺失由 check_gate0_anchors 报
+    body = m.group(1)
+    errors = []
+    if re.search(r"规则已加载|计划调用|待调用|拟调用", body):
+        errors.append("Skill Invocation Log 含未实际调用的措辞（规则已加载/计划调用/待调用）")
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("|")]
+    if len(lines) < 3:
+        errors.append("Skill Invocation Log 没有数据行")
+        return errors
+    header = [c.strip().strip("`") for c in lines[0].strip("|").split("|")]
+    for required in ("Skill", "调用时机", "关键产出"):
+        if required not in header:
+            errors.append(f"Skill Invocation Log 表头缺 `{required}` 列")
+    if len(header) < 3:
+        return errors
+    skill_idx = header.index("Skill") if "Skill" in header else -1
+    if skill_idx < 0:
+        return errors
+    for line in lines[2:]:
+        cells = [c.strip().strip("`") for c in line.strip("|").split("|")]
+        if len(cells) <= skill_idx:
+            errors.append(f"Skill Invocation Log 行列数不足: {line}")
+            continue
+        name = cells[skill_idx]
+        if not name:
+            errors.append("Skill Invocation Log 有空的 Skill 名")
+        elif name not in KNOWN_SKILLS:
+            errors.append(f"Skill Invocation Log 里的技能名未注册: {name}")
+    return errors
+
+
 def check_gate_evidence_blocks(scan_text):
     """检查每个 Gate 的 gate-evidence-{X} 块是否存在且含关键字。"""
     results = {}
@@ -174,6 +259,21 @@ def check_gate_evidence_blocks(scan_text):
         block_content = match.group(1)
         missing_kw = [kw for kw in keywords if kw not in block_content]
         missing_kw += gate_block_extra_missing(gate, block_content)
+        level_match = re.search(r"(?m)^\s*level:\s*(L[123])\b", block_content)
+        if not level_match:
+            missing_kw.append("level: L1/L2/L3")
+        else:
+            level = level_match.group(1)
+            minimum = GATE_MIN_LEVEL.get(gate, "L2")
+            if level == "L3":
+                if gate not in GATE_L3_ALLOWED:
+                    missing_kw.append(f"Gate {gate} 不允许 L3 推断证据")
+                elif not re.search(
+                    r"MANUAL_FALLBACK\s*[:：]\s*\S+", block_content
+                ):
+                    missing_kw.append("L3 需 `MANUAL_FALLBACK: <理由>`")
+            elif LEVEL_RANK[level] < LEVEL_RANK[minimum]:
+                missing_kw.append(f"证据级别 {level} 低于 Gate {gate} 的最低级别 {minimum}")
         results[gate] = {
             "exists": True,
             "keywords_ok": len(missing_kw) == 0,
@@ -390,7 +490,39 @@ def _section_body(text: str, heading: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def resume_point_missing(text: str) -> list[str]:
+def _validate_resume_pointers(section: str, scan_path: Path | None) -> list[str]:
+    """C4：`### 指针` 里的 `path:line` 必须指向真实文件和真实行号。"""
+    errors: list[str] = []
+    refs = re.findall(
+        r"`?([A-Za-z0-9_./-]+\.(?:md|rs|py|sh|ya?ml)):(\d+)`?", section
+    )
+    if not refs:
+        return ["指针段没有 `path:line` 形式的可核验指针"]
+    for raw, line_text in refs:
+        line_no = int(line_text)
+        candidates = []
+        p = Path(raw)
+        if p.is_absolute():
+            candidates.append(p)
+        else:
+            if scan_path is not None:
+                candidates.append(scan_path.parent / raw)
+            candidates.append(ROOT / raw)
+        found = next((c for c in candidates if c.is_file()), None)
+        if found is None:
+            errors.append(f"指针文件不存在: {raw}")
+            continue
+        try:
+            count = len(found.read_text(encoding="utf-8", errors="replace").splitlines())
+        except OSError as exc:
+            errors.append(f"指针文件不可读: {raw}（{exc}）")
+            continue
+        if line_no < 1 or line_no > count:
+            errors.append(f"指针行号越界: {raw}:{line_no}（文件共 {count} 行）")
+    return errors
+
+
+def resume_point_missing(text: str, scan_path: Path | None = None) -> list[str]:
     clean = _outside_fences(text)
     if not re.search(r"(?m)^## Resume Point\b", clean):
         return []
@@ -402,6 +534,7 @@ def resume_point_missing(text: str) -> list[str]:
     for cmd in ("--preflight", "eval-trace-check.py", "todo-ledger.py"):
         if cmd not in clean:
             missing.append(cmd)
+    missing += _validate_resume_pointers(_section_body(clean, "### 指针"), scan_path)
     return missing
 
 
@@ -480,7 +613,7 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
             print(f"[FAIL] D4: gate-evidence artifact 不存在：{', '.join(missing_artifacts)}")
         else:
             print("[PASS] D4: gate-evidence artifact 路径全部存在（或 none）")
-        missing_resume = resume_point_missing(text)
+        missing_resume = resume_point_missing(text, scan_path)
         if missing_resume:
             failures += 1
             print(f"[FAIL] Resume Point 缺/空：{', '.join(missing_resume)}")
@@ -606,6 +739,7 @@ def main():
 
     # 1. Gate 0 锚段检查
     gate0_missing = check_gate0_anchors(scan_text)
+    gate0_missing += check_skill_invocation_log(scan_text)
 
     # 1b. G14 单元账本锚段（仅在传入 --units 时要求）
     units_missing = False

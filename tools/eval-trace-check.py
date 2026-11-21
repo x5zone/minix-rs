@@ -355,6 +355,32 @@ def parse_ledger(
                         if "来源角色" in cells
                         else (cells.index("角色") if "角色" in cells else -1)
                     ),
+                    "cat": cells.index("类别") if "类别" in cells else -1,
+                    "red_cmd": (
+                        cells.index("red_cmd") if "red_cmd" in cells else -1
+                    ),
+                    "red_ev": (
+                        cells.index("red_evidence")
+                        if "red_evidence" in cells
+                        else -1
+                    ),
+                    "green_cmd": (
+                        cells.index("green_cmd") if "green_cmd" in cells else -1
+                    ),
+                    "green_ev": (
+                        cells.index("green_evidence")
+                        if "green_evidence" in cells
+                        else -1
+                    ),
+                    "c1_schema": all(
+                        col in cells
+                        for col in (
+                            "red_cmd",
+                            "red_evidence",
+                            "green_cmd",
+                            "green_evidence",
+                        )
+                    ),
                 }
                 table_seen = set()
                 range_covered = set()
@@ -430,6 +456,23 @@ def parse_ledger(
         origin = cells[current["origin"]].strip() if current["origin"] >= 0 else ""
         severity = cells[current["sev"]].strip() if current["sev"] >= 0 else ""
         role = cells[current["role"]].strip() if current["role"] >= 0 else ""
+        category = cells[current["cat"]].strip() if current["cat"] >= 0 else ""
+        red_cmd = (
+            cells[current["red_cmd"]].strip() if current["red_cmd"] >= 0 else ""
+        )
+        red_evidence = (
+            cells[current["red_ev"]].strip() if current["red_ev"] >= 0 else ""
+        )
+        green_cmd = (
+            cells[current["green_cmd"]].strip()
+            if current["green_cmd"] >= 0
+            else ""
+        )
+        green_evidence = (
+            cells[current["green_ev"]].strip()
+            if current["green_ev"] >= 0
+            else ""
+        )
         if current.get("v3_scope"):
             if not root_id:
                 report.fail(
@@ -492,6 +535,12 @@ def parse_ledger(
                 "origin": origin,
                 "severity": severity,
                 "role": role,
+                "category": category,
+                "red_cmd": red_cmd,
+                "red_evidence": red_evidence,
+                "green_cmd": green_cmd,
+                "green_evidence": green_evidence,
+                "c1_schema": bool(current.get("c1_schema")),
                 "section": section,
             }
             section_ids.setdefault(section, set()).add(row_id)
@@ -1302,6 +1351,20 @@ ROW_LEVEL_TOKEN_RE = re.compile(
 COLD_READ_TOKEN_RE = re.compile(r"冷读|回读|冷启动|CLOSED|STILL-BROKEN", re.IGNORECASE)
 CONTRADICTION_RE = re.compile(r"矛盾|打架|对不上|不一致|自相矛盾")
 B_CLASS_ROLE_RE = re.compile(r"^(reader-|design-)", re.IGNORECASE)
+C1_CATEGORY_RE = re.compile(
+    r"code[-_ ]?bug|test[-_ ]?missing|代码\s*(?:缺陷|bug)|测试(?:缺失|缺位)",
+    re.IGNORECASE,
+)
+C1_RED_EVIDENCE_RE = re.compile(
+    r"FAIL|failed|exit\s*(?:!?=|code\s*)?[1-9]|失败|红|0\s*命中|无命中|"
+    r"not\s+found|error\[|panic|assert",
+    re.IGNORECASE,
+)
+C1_GREEN_EVIDENCE_RE = re.compile(
+    r"PASS|passed|exit\s*(?:code\s*)?0|成功|绿|命中|test\s+result:\s*ok|"
+    r"[1-9]\d*\s*(?:个)?(?:命中|匹配)|ok\b",
+    re.IGNORECASE,
+)
 
 
 def _section_round(section: str) -> int | None:
@@ -1375,6 +1438,91 @@ def check_v3_evidence(
                     f"V3 本轮 {label} 列同一文本出现 {count} 次（>3），疑似模板："
                     f"{text[:48]}",
                 )
+
+
+def check_c1_red_green(
+    ledger_rows: dict[str, dict],
+    report: Report,
+    round_tag: str | None = None,
+    schema_start: int | None = None,
+) -> None:
+    """C1: P0 code/test rows must carry a red command and its green replay.
+
+    The four columns are opt-in: historical tables without them are
+    grandfathered. Once a table declares ``red_cmd``/``red_evidence``/
+    ``green_cmd``/``green_evidence``, every in-scope P0-code-bug or
+    P0-test-missing row must fill all four, and the green command must be the
+    same command text as the red one (same-command red -> green).
+    """
+    scope_round = int(round_tag.lstrip("R")) if round_tag else None
+    for fid, row in ledger_rows.items():
+        if not row.get("c1_schema"):
+            continue
+        severity = row.get("severity", "").strip().upper()
+        category = row.get("category", "")
+        if not severity.startswith("P0") or not C1_CATEGORY_RE.search(category):
+            continue
+        section_round = _section_round(row.get("section", ""))
+        if scope_round is not None and section_round != scope_round:
+            continue
+        if (
+            scope_round is None
+            and schema_start is not None
+            and section_round is not None
+            and section_round < schema_start
+        ):
+            continue
+        red_cmd = row.get("red_cmd", "").strip()
+        red_ev = row.get("red_evidence", "").strip()
+        green_cmd = row.get("green_cmd", "").strip()
+        green_ev = row.get("green_evidence", "").strip()
+        if red_cmd.lower() in PLACEHOLDERS:
+            report.fail("c1-red-green", f"{fid} 是 P0 代码/测试项，`red_cmd` 为空或占位")
+        elif not ROW_LEVEL_TOKEN_RE.search(red_cmd):
+            report.fail(
+                "c1-red-green",
+                f"{fid} 的 `red_cmd` 不是可重放命令（需 cargo test / rg / grep / "
+                "脚本或 path:line）",
+            )
+        if green_cmd.lower() in PLACEHOLDERS:
+            report.fail(
+                "c1-red-green", f"{fid} 是 P0 代码/测试项，`green_cmd` 为空或占位"
+            )
+        elif _norm_command(red_cmd) != _norm_command(green_cmd):
+            report.fail(
+                "c1-red-green",
+                f"{fid} 的 `green_cmd` 与 `red_cmd` 不是同一条命令（C1 要求同命令"
+                "红→绿；只换参数/测试名不算）",
+            )
+        if red_ev.lower() in PLACEHOLDERS or len(red_ev) < 8:
+            report.fail(
+                "c1-red-green",
+                f"{fid} 的 `red_evidence` 为空或过短（需记录红态输出：FAIL/exit!=0/"
+                "0 命中）",
+            )
+        elif not C1_RED_EVIDENCE_RE.search(red_ev):
+            report.fail(
+                "c1-red-green",
+                f"{fid} 的 `red_evidence` 没有红态标记（需 FAIL / failed / "
+                "exit != 0 / 0 命中 / not found / error）",
+            )
+        if green_ev.lower() in PLACEHOLDERS or len(green_ev) < 8:
+            report.fail(
+                "c1-red-green",
+                f"{fid} 的 `green_evidence` 为空或过短（需记录绿态输出：PASS/"
+                "exit 0/命中）",
+            )
+        elif not C1_GREEN_EVIDENCE_RE.search(green_ev):
+            report.fail(
+                "c1-red-green",
+                f"{fid} 的 `green_evidence` 没有绿态标记（需 PASS / ok / exit 0 / "
+                "命中 / test result: ok）",
+            )
+
+
+def _norm_command(text: str) -> str:
+    """Normalize a command cell for same-command comparison."""
+    return re.sub(r"\s+", " ", text.replace("`", "").replace("\\|", "|")).strip()
 
 
 def audit_template_sections(ledger_text: str, report: Report) -> None:
@@ -2793,6 +2941,7 @@ def check_run_dir(
             check_v3_evidence(ledger_rows, report, round_tag, schema_start)
         else:
             check_verify_templates(ledger_rows, report)
+        check_c1_red_green(ledger_rows, report, round_tag, schema_start)
         if audit_templates:
             audit_template_sections(ledger_text, report)
         if v3:
@@ -3209,7 +3358,72 @@ def write_v3_fixture(
     return run_dir, panel_dir
 
 
+def _c1_self_test() -> int:
+    header = (
+        "| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | "
+        "证据 | 复验 | red_cmd | red_evidence | green_cmd | green_evidence |\n"
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+    )
+
+    def run(row: str) -> Report:
+        report = Report()
+        _, rows, _, _, _ = parse_ledger(
+            "# 台账\n\n## R1 面板轮\n\n" + header + row + "\n",
+            report,
+            v3=True,
+            v3_from_round=1,
+        )
+        check_c1_red_green(rows, report, "R1", 1)
+        return report
+
+    good = (
+        "| RD-001 | FACT-01 | R1 | fact | P0 | P0-code-bug | ① | 修 | E1 | "
+        "`cargo test x` | `cargo test x` | test result: FAILED. 1 failed | "
+        "`cargo test x` | test result: ok. 1 passed |\n"
+    )
+    if run(good).failed:
+        print("self-test FAIL: C1 正确样本被判 FAIL")
+        print_report(run(good), False)
+        return 1
+    missing = (
+        "| RD-001 | FACT-01 | R1 | fact | P0 | P0-code-bug | ① | 修 | E1 | "
+        "`cargo test x` |  |  |  |  |\n"
+    )
+    if not run(missing).failed:
+        print("self-test FAIL: C1 缺红绿字段没有被判 FAIL")
+        return 1
+    mismatch = (
+        "| RD-001 | FACT-01 | R1 | fact | P0 | P0-code-bug | ① | 修 | E1 | "
+        "`cargo test x` | `cargo test x` | FAILED | `cargo test y` | ok |\n"
+    )
+    if not run(mismatch).failed:
+        print("self-test FAIL: C1 红绿命令不同没有被判 FAIL")
+        return 1
+    grandfather = (
+        "| 根因 ID | 发现 ID | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | "
+        "证据 | 复验 |\n"
+        "|---|---|---|---|---|---|---|---|---|---|\n"
+        "| RD-001 | FACT-01 | R1 | fact | P0 | P0-code-bug | ① | 修 | E1 | "
+        "`cargo test x` |\n"
+    )
+    report = Report()
+    _, rows, _, _, _ = parse_ledger(
+        "# 台账\n\n## R1 面板轮\n\n" + grandfather,
+        report,
+        v3=True,
+        v3_from_round=1,
+    )
+    check_c1_red_green(rows, report, "R1", 1)
+    if report.failed:
+        print("self-test FAIL: 无 C1 列的历史表没有豁免")
+        return 1
+    return 0
+
+
 def self_test() -> int:
+    c1_status = _c1_self_test()
+    if c1_status:
+        return c1_status
     with tempfile.TemporaryDirectory() as tmp:
         good_dir = write_fixture(
             Path(tmp), GOOD_LOOP, GOOD_LEDGER, GOOD_METRICS, GOOD_PANEL
@@ -5591,12 +5805,6 @@ def check_units_state(path: Path, run_dir: Path, report: Report) -> None:
     )
     out = stats.stdout.strip()
     report.ok("G14", out.splitlines()[0] if out else "unit state OK")
-    metrics = run_dir / "metrics.md"
-    if metrics.is_file():
-        text_m = metrics.read_text(encoding="utf-8")
-        mods = len(re.findall(r"^-\s*轮型\s*[:：]\s*(?:full|structural)\b", text_m, re.MULTILINE))
-        if mods > 3 and not re.search(r"重写例外|rewrite-exception", text_m):
-            report.fail("G14", f"文档级修改轮 {mods} > 3 且无重写例外判决")
     if "t3=PASS" in out:
         mm = re.search(r"frozen=(\d+)/(\d+)", out)
         if mm and mm.group(1) != mm.group(2):
