@@ -6244,24 +6244,20 @@ mod tests {
 
     // ── HigherHalf trait unit tests ──
 
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::sync::atomic::Ordering;
 
-    /// Global flag to verify that HigherHalf::jump_to_kmain was invoked.
-    static HIGHER_HALF_CALLED: AtomicBool = AtomicBool::new(false);
-
-    /// Mock HigherHalf: sets a global flag when jump_to_kmain is called.
-    /// The real trait has `fn jump_to_kmain(kinfo: &KernelInfo) -> !` (no &self),
-    /// so we use a static flag instead of a struct.
+    /// Mock HigherHalf: satisfies the trait without performing a real jump.
+    /// The real trait has `fn jump_to_kmain(kinfo: &KernelInfo) -> !` (no
+    /// `&self`), so there is no instance state to observe; the mock just
+    /// spins.
     struct MockHigherHalf;
 
     impl boot::HigherHalf for MockHigherHalf {
         /// # Safety
         ///
-        /// Test mock — does not actually perform a stack jump.
-        /// Safe to call in any test context because it only stores to an
-        /// AtomicBool and enters an infinite loop.
+        /// Test mock — does not actually perform a stack jump; it only enters
+        /// an infinite spin loop.
         unsafe fn jump_to_kmain(_kinfo: &KernelInfo) -> ! {
-            HIGHER_HALF_CALLED.store(true, Ordering::SeqCst);
             // Don't actually jump — spin for test purposes.
             loop {
                 core::hint::spin_loop();

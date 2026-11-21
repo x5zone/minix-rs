@@ -104,10 +104,6 @@ pub fn plan_kernel_mapping<A: BootArch>(
     if layout.size == 0 {
         return Err(KernelMapError::InvalidKernelLayout);
     }
-    let virtual_end = layout
-        .virtual_base
-        .checked_add(layout.size)
-        .ok_or(KernelMapError::InvalidKernelLayout)?;
     let physical_end = layout
         .physical_base
         .checked_add(layout.size)
@@ -117,7 +113,6 @@ pub fn plan_kernel_mapping<A: BootArch>(
     {
         return Err(KernelMapError::InvalidKernelLayout);
     }
-    let _ = virtual_end;
 
     let preferred = support.preferred();
     let fallback = support.fallback();

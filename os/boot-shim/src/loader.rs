@@ -1286,7 +1286,6 @@ mod tests {
             paddr,
             filesz: memsz,
             memsz,
-            align: 0x1000,
             flags: 5, // PF_R | PF_X
         }
     }

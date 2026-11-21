@@ -120,8 +120,6 @@ pub struct Elf64Phdr {
     pub p_filesz: u64,
     /// p_memsz — segment size in memory (≥ p_filesz; BSS = memsz - filesz)
     pub p_memsz: u64,
-    /// p_align — segment alignment (0 or 1 means no alignment constraint)
-    pub p_align: u64,
 }
 
 /// A loadable segment extracted from an ELF binary.
@@ -146,8 +144,6 @@ pub struct LoadSegment {
     pub filesz: u64,
     /// Total memory size (filesz + BSS).
     pub memsz: u64,
-    /// Segment alignment.
-    pub align: u64,
     /// Segment flags (PF_R=4, PF_W=2, PF_X=1).
     pub flags: u32,
 }
@@ -282,7 +278,7 @@ fn parse_phdr(image: &[u8], offset: usize, entsize: u16) -> Result<Elf64Phdr, El
     //   offset 24: p_paddr  (u64)
     //   offset 32: p_filesz (u64)
     //   offset 40: p_memsz  (u64)
-    //   offset 48: p_align  (u64)
+    //   offset 48: p_align  (u64, not consumed: no reader needs it)
     let p_type = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
     let p_flags = u32::from_le_bytes([d[4], d[5], d[6], d[7]]);
     let p_offset = u64::from_le_bytes([
@@ -300,10 +296,6 @@ fn parse_phdr(image: &[u8], offset: usize, entsize: u16) -> Result<Elf64Phdr, El
     let p_memsz = u64::from_le_bytes([
         d[40], d[41], d[42], d[43], d[44], d[45], d[46], d[47],
     ]);
-    let p_align = u64::from_le_bytes([
-        d[48], d[49], d[50], d[51], d[52], d[53], d[54], d[55],
-    ]);
-
     Ok(Elf64Phdr {
         p_type,
         p_flags,
@@ -312,7 +304,6 @@ fn parse_phdr(image: &[u8], offset: usize, entsize: u16) -> Result<Elf64Phdr, El
         p_paddr,
         p_filesz,
         p_memsz,
-        p_align,
     })
 }
 
@@ -438,7 +429,6 @@ impl<'a> Iterator for SegmentIter<'a> {
                 offset: phdr.p_offset,
                 filesz: phdr.p_filesz,
                 memsz: phdr.p_memsz,
-                align: phdr.p_align,
                 flags: phdr.p_flags,
             }));
         }
@@ -504,7 +494,7 @@ mod tests {
     ///
     /// Contains one PT_LOAD segment:
     ///   p_offset=0x1000, p_vaddr=0xFFFFFFFF80000000, p_paddr=0x200000,
-    ///   p_filesz=0x1000, p_memsz=0x2000, p_align=0x1000
+    ///   p_filesz=0x1000, p_memsz=0x2000
     fn build_test_elf() -> [u8; 0x2000] {
         let mut image = [0u8; 0x2000];
 
@@ -585,7 +575,7 @@ mod tests {
     #[test]
     fn test_segment_iter_valid() {
         let image = build_test_elf();
-        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, align: 0, flags: 0 }; MAX_TEST_SEGMENTS];
+        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, flags: 0 }; MAX_TEST_SEGMENTS];
         let count = collect_segments(&mut segment_iter(&image).unwrap(), &mut buf);
         assert_eq!(count, 1);
         assert_eq!(buf[0].paddr, 0x200000);
@@ -593,7 +583,6 @@ mod tests {
         assert_eq!(buf[0].offset, 0x1000);
         assert_eq!(buf[0].filesz, 0x1000);
         assert_eq!(buf[0].memsz, 0x2000);
-        assert_eq!(buf[0].align, 0x1000);
         assert_eq!(buf[0].flags, 5);
     }
 
@@ -601,7 +590,7 @@ mod tests {
     fn test_segment_iter_no_pt_load() {
         let mut image = build_test_elf();
         image[64..68].copy_from_slice(&0u32.to_le_bytes()); // PT_NULL
-        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, align: 0, flags: 0 }; MAX_TEST_SEGMENTS];
+        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, flags: 0 }; MAX_TEST_SEGMENTS];
         let count = collect_segments(&mut segment_iter(&image).unwrap(), &mut buf);
         assert_eq!(count, 0);
     }
@@ -660,7 +649,7 @@ mod tests {
         ph2[40..48].copy_from_slice(&0x2000u64.to_le_bytes());
         ph2[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
 
-        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, align: 0, flags: 0 }; MAX_TEST_SEGMENTS];
+        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, flags: 0 }; MAX_TEST_SEGMENTS];
         let count = collect_segments(&mut segment_iter(&image).unwrap(), &mut buf);
         assert_eq!(count, 2);
         assert_eq!(buf[0].paddr, 0x400000);
@@ -967,7 +956,7 @@ mod tests {
         ph3[40..48].copy_from_slice(&0x800u64.to_le_bytes());
         ph3[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
 
-        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, align: 0, flags: 0 }; MAX_TEST_SEGMENTS];
+        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, flags: 0 }; MAX_TEST_SEGMENTS];
         let count = collect_segments(&mut segment_iter(&image).unwrap(), &mut buf);
         assert_eq!(count, 3);
         assert_eq!(buf[0].flags, 5); // PF_R|PF_X
@@ -1093,7 +1082,7 @@ mod tests {
         ph[40..48].copy_from_slice(&0x1000u64.to_le_bytes()); // p_memsz = 4K (pure BSS)
         ph[48..56].copy_from_slice(&0x1000u64.to_le_bytes());
 
-        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, align: 0, flags: 0 }; MAX_TEST_SEGMENTS];
+        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, flags: 0 }; MAX_TEST_SEGMENTS];
         let count = collect_segments(&mut segment_iter(&image).unwrap(), &mut buf);
         assert_eq!(count, 1);
         assert_eq!(buf[0].filesz, 0);
@@ -1140,7 +1129,7 @@ mod tests {
         ph3[4..8].copy_from_slice(&6u32.to_le_bytes());
         ph3[48..56].copy_from_slice(&0x10u64.to_le_bytes());
 
-        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, align: 0, flags: 0 }; MAX_TEST_SEGMENTS];
+        let mut buf = [LoadSegment { paddr: 0, vaddr: 0, offset: 0, filesz: 0, memsz: 0, flags: 0 }; MAX_TEST_SEGMENTS];
         let count = collect_segments(&mut segment_iter(&image).unwrap(), &mut buf);
         assert_eq!(count, 1);
         assert_eq!(buf[0].paddr, 0x200000);

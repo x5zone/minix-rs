@@ -442,7 +442,7 @@ pub struct LoadSegment {
 }
 ```
 
-字段只保留本仓要读的：`Elf64Ehdr` 丢了 `e_ident`、`e_version`、`e_flags`、`e_shoff`、`e_shentsize`、`e_shnum`、`e_shstrndx`、`e_ehsize`（`e_ident` 的前 6 个字节由 `parse_ehdr` 单独检查，不放进结构体）；`Elf64Phdr` 保留了 `p_align` 但当前没有读者。
+字段只保留本仓要读的：`Elf64Ehdr` 丢了 `e_ident`、`e_version`、`e_flags`、`e_shoff`、`e_shentsize`、`e_shnum`、`e_shstrndx`、`e_ehsize`（`e_ident` 的前 6 个字节由 `parse_ehdr` 单独检查，不放进结构体）；`Elf64Phdr` 与 `LoadSegment` 也不保留 `p_align`：本仓没有消费者，多存一份只会让读者以为有对齐契约。
 
 这些字段在文件里的字节位置写在解析函数里，`lib.rs` 的 [`fn parse_ehdr`](os/libs/minix-elf/src/lib.rs:fn parse_ehdr) 与 `:fn parse_phdr` 逐字段用 `from_le_bytes` 读：
 
@@ -452,7 +452,7 @@ pub struct LoadSegment {
 | `e_machine` | 18 | `parse_ehdr`（`machine_type` 一侧的调用方另取） |
 | `e_entry` | 24 | `parse_ehdr` → `SegmentIter::ehdr()` |
 | `e_phoff` / `e_phentsize` / `e_phnum` | 32 / 54 / 56 | `SegmentIter::new` 的表范围检查与步进 |
-| `p_type` / `p_flags` / `p_offset` / `p_vaddr` / `p_paddr` / `p_filesz` / `p_memsz` / `p_align` | 0 / 4 / 8 / 16 / 24 / 32 / 40 / 48 | `parse_phdr` 逐字段读取 |
+| `p_type` / `p_flags` / `p_offset` / `p_vaddr` / `p_paddr` / `p_filesz` / `p_memsz` | 0 / 4 / 8 / 16 / 24 / 32 / 40 | `parse_phdr` 逐字段读取（`p_align` 在偏移 48，无读者，不读） |
 
 迭代器在 `next()` 里做类型过滤与范围检查：只有非 `PT_LOAD` 类型过滤走 `continue`（正常过滤），其余表项范围与段形失败都以 `Some(Err(..))` 浮出（I-48/D-084）。`SegmentIter::new` 与 `parse_phdr` 的表范围算式仍是未检查加法（D2-01：debug 下 panic，release 下可能回绕后再由 `next()` 报 `Err`）（`lib.rs` 的 [`impl Iterator for SegmentIter`](os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter)）：
 
@@ -512,8 +512,6 @@ pub struct LoadSegment {
 | `offset` 与 `filesz` | 拷贝来源与长度 | 拷贝来源与长度 |
 | `memsz` | BSS 清零的上界（`memsz - filesz` 个字节） | 段的页数上界，页内余量也清零 |
 | `flags` | 不使用（内核镜像的权限由内核建表时自己定） | 转成页表权限（`elf_flags_to_page_flags`） |
-| `align` | 不使用 | 不使用 |
-
 同一份解析结果、四种去向，差异全部来自"这一侧是谁在摆放"。
 
 **把迭代器的步进从 `e_phentsize` 改成结构体大小会怎样**：ELF 规范里 `e_phentsize` 是文件自己声明的表项大小，允许大于结构体的最小尺寸（56 字节）。用 `size_of::<Elf64Phdr>()` 步进，在表项恰好 56 字节的产物上结果相同；一旦某个链接器写出更宽的表项，第 2 项起的读位置全部落在错误偏移上，`p_type` 读到的是上一个表项尾巴的内容，症状是"段数对得上、地址全错"或"某些段被当成非 `PT_LOAD` 跳掉"。依据：`SegmentIter::next` 的 `offset` 计算式是 `e_phoff + index * e_phentsize`，而 `parse_phdr` 的越界检查用的也是 `entsize`。
@@ -1246,7 +1244,7 @@ gdb <被调试的工件>
 - 第一组：`readelf -hW` 的 `Type:` 行应为 `EXEC`（不是 `DYN`），`Entry point address:` 应等于首段虚拟地址；`readelf -lW` 的所有 `LOAD` 行两列地址之差一致（= 高半平移量），首段 `PhysAddr` 等于脚本里的物理基址。
 - 第二组：`grep -c ': AT('` 对三份生产脚本各输出 4。这条读数必须带口径：把模式放宽成 `AT(` 会把注释里的字样算进来（x86_64 仍 4、另两份各 5）。两条 `printf` 分别输出 `961` 与 `0xf0000000`。
 - 第三组：全绿时最后一行是 `CHECK-LAYOUT=PASS（x86_64）`、退出码 0；任一断言失败时对应行是 `  [Ln] FAIL …` 且最后一行 `CHECK-LAYOUT=FAIL（…）`。
-- 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not at the architecture's entry alignment`、`FP not zero` 三者之一），而 `INFO: PC not at high address (expected in test kernel)` 是参考信息行、不参与成败判定，别把它读成失败原因（它只在失败分支里出现；x86_64 与 aarch64 的低地址进入会带上它，riscv64 的载体 PC 在高半、不会出现这一行）；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
+- 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not at the architecture's entry alignment`、`FP not zero`，riscv64 另有 `PC not at high address (riscv64 delta path broken)`），而 x86_64/aarch64 的 `INFO: PC not at high address (expected in test kernel)` 是参考信息行、不参与成败判定，别把它读成失败原因（它只在失败分支里出现；riscv64 不打印这一行，PC 低半在 riscv64 是 `FAIL`）；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
 - 第五组：断在 `kmain` 后 `$rip` 应等于该腿的入口值——v1 send/receive 与自引导 direct leg 下等于 `nm <工件> | grep kmain` 的符号值（高半）；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址；**riscv64 测试载体不是 `nm` 值本身**：它链接在物理地址上，`$rip` = `nm` 值 + `delta`（`delta = kern_virt_base − kern_phys_base`），例如加载基址 `0x80200000` 时 `nm` 给出 `0x80200160`，而 `$rip` 是 `0xffffffc000000160`；`$rsp` 应落在该架构的 `kern_virt_base` 之上（x86_64 `0xffff8000…`、aarch64 `0xffff8000…`、riscv64 `0xffffffc0…`）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
 
 ---
