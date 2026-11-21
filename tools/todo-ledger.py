@@ -233,8 +233,12 @@ def check_rows(
                 stats["v2_rows"] = stats.get("v2_rows", 0) + 1
             if r.get("status") == "open" and _row_in_scope(r, doc, scope):
                 stats["open_total"] = stats.get("open_total", 0) + 1
+                kind = str(r.get("kind", "?"))
+                kd = stats.setdefault("by_kind", {}).setdefault(kind, [0, 0])
+                kd[0] += 1
                 if has_ref:
                     stats["open_with_refs"] = stats.get("open_with_refs", 0) + 1
+                    kd[1] += 1
                 else:
                     stats.setdefault("no_ref_ids", []).append(str(r.get("id")))
         if r.get("status") == "open" and _row_in_scope(r, doc, scope):
@@ -585,22 +589,27 @@ def cmd_check(args) -> int:
     if args.doc and getattr(args, "scope", "doc") == "doc" and matched == 0:
         print(f"todo-ledger check: --doc `{args.doc}` 匹配 0 行（doc 名或路径写错？）")
         return 1
+    ot = stats.get("open_total", 0)
+    ow = stats.get("open_with_refs", 0)
+    pct = (100.0 * ow / ot) if ot else 100.0
+    print(f"[覆盖] open={ot}，带可解析 ref={ow}（{pct:.1f}%），v2 行={stats.get('v2_rows', 0)}"
+          + ("（--strict-refs）" if getattr(args, "strict_refs", False) else ""))
+    bk = stats.get("by_kind", {})
+    if bk:
+        tag = "strong" if getattr(args, "strict_refs", False) else "weak"
+        print(f"[覆盖:kind:{tag}] " + "，".join(
+            f"{k} {v[1]}/{v[0]}" for k, v in sorted(bk.items())))
+    if getattr(args, "strict_refs", False) and ow < ot:
+        missing = stats.get("no_ref_ids", [])
+        print(f"todo-ledger check: {ot - ow} 条 open 缺 refs：{', '.join(missing[:12])}"
+              + (" …" if len(missing) > 12 else ""))
+        return 1
     if all_errors:
         print(f"todo-ledger check: {len(all_errors)} 处错误")
         return 1
     if args.fail_on_open and all_blocked:
         print(f"todo-ledger check: 当前范围有 {all_blocked} 条 blocked 待裁项——"
               "绝不允许收敛（即使代裁授权也不得自行决定）")
-        return 1
-    ot = stats.get("open_total", 0)
-    ow = stats.get("open_with_refs", 0)
-    pct = (100.0 * ow / ot) if ot else 100.0
-    print(f"[覆盖] open={ot}，带可解析 ref={ow}（{pct:.1f}%），v2 行={stats.get('v2_rows', 0)}"
-          + ("（--strict-refs）" if getattr(args, "strict_refs", False) else ""))
-    if getattr(args, "strict_refs", False) and ow < ot:
-        missing = stats.get("no_ref_ids", [])
-        print(f"todo-ledger check: {ot - ow} 条 open 缺 refs：{', '.join(missing[:12])}"
-              + (" …" if len(missing) > 12 else ""))
         return 1
     if args.fail_on_open and all_open:
         print(f"todo-ledger check: 当前范围仍有 {all_open} 条 open（零欠账要求 0）")

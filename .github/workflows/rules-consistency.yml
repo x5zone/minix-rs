@@ -65,20 +65,20 @@ jobs:
       - name: 确认工具齐备（缺哪个就直接报错，不要让门静默跳过）
         run: |
           for t in git rg python3 awk gawk sed grep; do
-            command -v "$t" >/dev/null 2>&1 || { echo "❌ 缺少必需工具：$t" >&2; exit 1; }
+            command -v "$t" >/dev/null 2>&1 || { echo "::error::缺少必需工具：$t"; exit 1; }
           done
           echo "工具 OK：$(git --version | head -1) / $(gawk --version | head -1) / $(python3 --version)"
 
       - name: 四道一致性门（源 → 三端派生）
         run: |
           echo '── 1/4 规则文本自检（L1-L17）──'
-          bash tools/lint-review-rules.sh
+          bash tools/lint-review-rules.sh || { echo '::error::gate failed: lint-review-rules'; exit 1; }
           echo '── 2/4 规范源与运行时引用一致 ──'
-          bash tools/check-review-rules.sh
+          bash tools/check-review-rules.sh || { echo '::error::gate failed: check-review-rules'; exit 1; }
           echo '── 3/4 派生件与源无漂移（含 review-scan 编排器 12 个文件）──'
-          bash tools/generate-derived-skills.sh --check
+          bash tools/generate-derived-skills.sh --check || { echo '::error::gate failed: generate-derived-skills --check'; exit 1; }
           echo '── 4/4 Trae 适配逐文件对照 ──'
-          bash tools/diff-trae-skills.sh --only-diff
+          bash tools/diff-trae-skills.sh --only-diff || { echo '::error::gate failed: diff-trae-skills'; exit 1; }
 
       - name: 仓库级门禁（模式门全量 + 命令层边界守卫）
         # 这两个门早已存在但不在任何闸上，所以长期「红着入库」无人拦：
@@ -87,8 +87,8 @@ jobs:
         # 能接进来是因为它俩已被归零：边界守卫 2026-10-12 翻绿（C-84），
         # P8 的 57 个 CRLF 文件也已全部归一（C-85、C-86）。
         run: |
-          bash tools/pattern-gate.sh
-          bash tools/check-command-boundary.sh
+          bash tools/pattern-gate.sh || { echo '::error::gate failed: pattern-gate'; exit 1; }
+          bash tools/check-command-boundary.sh || { echo '::error::gate failed: check-command-boundary'; exit 1; }
 
       - name: 门自身的正反向断言
         run: bash tools/lint-review-rules.sh --self-test
@@ -119,7 +119,7 @@ jobs:
         run: |
           python3 tools/doc-structure-check.py \
             rewrite-notes/meta/coordination/review-eval/*.md \
-            rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+            rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md || { echo '::error::gate failed: doc-structure (live artifacts)'; exit 1; }
 
       - name: 文档引文逐行对账门（V3.2）
         # `代码引用` 与 `节选` 块的每个代码行都必须在源码中找得到（节选只许
@@ -128,7 +128,7 @@ jobs:
         # 一类 P0 的机械替代。
         run: |
           python3 tools/doc-citation-check.py \
-            rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md --root .
+            rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md --root . || { echo '::error::gate failed: doc-citation'; exit 1; }
 
       - name: 架构门测试计数门（SD-34 防回长：宿主跑不到的 #[test] 不许静默增减）
         run: |
