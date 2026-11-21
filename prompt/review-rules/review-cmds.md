@@ -43,6 +43,7 @@
 | 8 | **Ground Truth 链** | Minix3 C 源码 > design doc > Rust 代码 > 技术文档；冲突时先判哪边对，不默认改代码 | review.md §优先级链 |
 | 9 | **教学构件承载门**（机制类文档） | 承载章按**内容**识别（章体内有 C/Rust 符号锚点）、不按标题词。**阻断项（客观可判）**：① C 源码分析章/实现章 **无 C/Rust 语言围栏的节选码**（ASCII 图/表不算码）= P1-docStyle；② 失败/诊断章 **无可复制命令围栏** = P1-docStyle。**读数项（不自动阻断、交 review 逐条判定或登记豁免）**：三架构对照 / 调用图 / 源码级辨析。降级键 = **该章自身** < 20 行或标 `<!-- doc-code-density: exempt reason=... -->`（不用全文行数——全文长短与"该不该贴码"无因果）。机器读数 `tools/doc-code-density-check.sh`（report 恒 exit0、`--check` 命中阻断项才 exit1；存量只报告）。 **`P1-docStyle` = 文档教学构件承载缺失类正确性缺陷（属 Layer 1，阻断 CONVERGED，计入 STATE Open P1）** | doc-optim bagging（2026-10）+ doc-commit-review 二修；§六 第 9/10 条 |
 
+| 10 | **出版门（V3.7）** | 正式篇目跑 `tools/doc-publication-check.py`（DP-1..DP-5）、生产代码跑 `tools/code-publication-check.py`（CP-1..CP-6）；**零命中才可继续**。二者是 CONVERGED 的 G10/G11 | `review-publication.md` |
 ---
 
 ## 一b、任务路由决策树（新会话第一眼该看这里）

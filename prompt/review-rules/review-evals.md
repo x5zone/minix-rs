@@ -676,9 +676,15 @@ G7  台账/metrics 恒等：根因 ID 唯一、origin 完整（自引入记引�
     代码批→文档同步清单（--stale-lines/--from-diff --strict）零命中
 G8  本轮关闭（ROUND-CLOSED）：open = 0 且 certify 新准入 = 0
     （重复、FP、suggestions、非阻断 backlog 不计）
-G9  ⑥ DESIGN 项全部实施（修改轮内实施，或按 §4.0f 登记并销账；确认轮内
-    不得实施 ⑥——设计项登记 OPEN-DEBT 到下一个设计批；未实施不得记 FP/②）
+G9  ⑥ DESIGN 项全部实施（**V3.7：必须在轮内实施；「转下一设计批」出口关闭**）
+G10 文档出版：当前篇 `tools/doc-publication-check.py` 零命中（DP-1..DP-5）
+G11 代码出版：当前篇关联代码 `tools/code-publication-check.py` 零命中（CP-1..CP-6）
 ```
+
+**V3.7 出版标准（2026-11-21 用户裁决）**：G10/G11 与 `prompt/review-rules/review-publication.md`
+为准；该文件同时关闭 `②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 作为延期出口——任何发现必须
+当轮修完，唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 +
+不做后果）。`CONVERGED` 自此表示**出版就绪**，不是「本轮发现清零」。
 
 V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性作为收敛门。meta 的
 `PASS`/`NOT PASS` 是流程质量指标；它 FAIL 时记录流程缺陷并在 edition 边界处理，

@@ -74,6 +74,19 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
 不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
 ```
 
+## L0.9 出版门前置（V3.7，开轮前强制）
+
+开轮前必须对**当前篇**与**其关联代码**跑出版门，零命中才允许进入 L1：
+
+```bash
+python3 tools/doc-publication-check.py <当前篇文档>
+python3 tools/code-publication-check.py $(cat runs/<stage>/<doc>/related-code.txt | tr '\n' ' ')
+```
+
+- 有命中 → **本轮的 L0 阶段先清出版门**，清到零再派面板；不得「带着历史叙事开轮」，
+  否则面板会收敛在脏文档上（D01/D02 的历史教训）。
+- 出版门不清零，本轮最多 `ROUND-CLOSED`，不得 `CONVERGED`。
+
 ## L1 独立审查面板
 
 按 `review-panel.md` 第三节选择角色，按第七节决定是否缩编。**档位唯一源是

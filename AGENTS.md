@@ -22,6 +22,7 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 | 3 | `prompt/review-rules/fix-guard.md` | 修复守则（动手前 5 件事、一次一条、修后留痕） |
 | 4 | `prompt/review-rules/review-cmds.md` | 6 个任务命令入口与不可裁剪的通用强制门 |
 | 5 | `prompt/review-rules/review-patterns.md` | 模式库（含 P0 必检清单与验证命令） |
+| 5.5 | `prompt/review-rules/review-publication.md` | **出版标准（V3.7）**：DP-1..DP-5 文档、CP-1..CP-6 代码、零欠账（禁 defer）、顺序迭代 |
 | 6 | `prompt/README.md` | 三端同步机制：改了源必须同步哪些文件、跑哪些校验 |
 
 运行时副本 `.claude/rules/review-core.md`、`.claude/rules/review-process.md`、`.claude/rules/fix-guard.md`
@@ -66,6 +67,8 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **⛔ 抽象语义，不描述机制（本项目的第一原则）**：区分「OS 语义对象」与「硬件承载对象」。同一层的代码拥有同一语义，不同层的差异待在该待的地方——优美不是让三个实现长得像，而是让接口根本看不见硬件差异。判据三问、边界条款（arch trait 自身可谈硬件名；启动契约不在射程内；禁止为漂亮提前改契约）见 `prompt/review-rules/review-core-semantics.md` 与模式库的对应总括模式
 - **真值优先序**：`Minix3 C 源码行为 > 设计契约 > Rust 实现 > 设计/技术文档 > AI 分析`。拿不准就去 `minix3/` 读原始 C 代码
 - **三档术语**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：文档 + 设计 + 代码）
+- **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史（`tools/doc-publication-check.py`），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
+- **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇 CONVERGED 前不得开下一篇，前序 FREEZE 篇改动需用户批准
 - **P0 六类**：P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing
 - **⛔ 显式调用技能**：必须通过 Skill 工具真正调用技能，scan.md 的 Skill Invocation Log 只记实际调用；"规则已加载"不算调用
 - **⛔ Gate 证据强度分级**：L1 工具输出（A/D/E 门必需）、L2 手工 grep（B/C 可接受）、L3 推断（视为 FAIL，除非写明 `MANUAL_FALLBACK` 理由）。**没有附命令与输出的「✅ 通过」一律作废**

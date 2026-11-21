@@ -5,6 +5,12 @@
 
 ---
 
+
+> **⛔ 出版门前置（V3.7）**：本清单的任何检查开始前，当前篇必须通过
+> `python3 tools/doc-publication-check.py <doc>`（DP-1..DP-5 零命中）。出版门未过 =
+> 文档还不具备被 review 的资格；先清出版门，再谈内容。
+> 规则源：`prompt/review-rules/review-publication.md`。
+
 ## 1. 文档结构规范
 
 每篇文档应遵循以下**灵活结构**：

@@ -5,6 +5,11 @@
 
 ---
 
+
+> **⛔ 出版门前置（V3.7）**：本清单的任何检查开始前，关联代码必须通过
+> `python3 tools/code-publication-check.py <files…>`（CP-1..CP-6 零命中）。
+> 规则源：`prompt/review-rules/review-publication.md`。
+
 ## 1. Rewrite 质量检查
 
 > 这是最核心的维度。发现 Translate 味道必须指出。
