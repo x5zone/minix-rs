@@ -172,15 +172,13 @@ jobs:
           python3 tools/doc-publication-check.py --self-test
           python3 tools/tutorial-rubric-check.py --self-test
           python3 tools/todo-ledger.py --self-test
+          bash tools/publication-changed-docs.sh --self-test
       - name: 变更篇目报告（存量 burn-down，不阻断）
         # 先用 report-only 收集存量；存量清零后删除 `|| echo` 的兜底，改为阻断。
         run: |
           base="${{ github.event.before }}"
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD^"; fi
-          docs=$(git diff --name-only "$base" "${{ github.sha }}" -- 'rewrite-notes/*-stage-*/*.md' \
-            | grep -E '^rewrite-notes/[0-9]+-stage-[^/]+/[0-9]{2}-[^/]+\.md$' \
-            | grep -vE '/(draft|archive)/' \
-            | grep -vE '/([^/]*(design|evidence|review|forensics|brief|note|learn|todo|archive)[^/]*\.md)$' || true)
+          docs=$(bash tools/publication-changed-docs.sh "$base" "${{ github.sha }}")
           if [ -z "$docs" ]; then echo "无变更正式篇目"; exit 0; fi
           for d in $docs; do
             echo "── $d"

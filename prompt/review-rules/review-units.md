@@ -42,6 +42,8 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 
 - 每个单元每轨最多 **2 个修改轮**（`t1_rounds` / `t2_rounds`），按 edition 计。
   新 edition 用 `review-units.py new-edition` 归档旧计数并重置；不要 `init --force`。
+  **这不重置篇级 3 个修改轮**：篇级上限跨 edition 累计（`review-evals.md` §7.5），
+  `new-edition` 只清单元计数，不清篇章预算。
   第 3 个修改轮只有两个合法出口：用户明确批准，或该节**整节重写**
   （`rewritten: true`，计数重置，但一个 edition 内只允许一次）。
 - **干净通过不耗预算**：只有产生并实施了修改的轮次才 `+1`。

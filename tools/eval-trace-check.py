@@ -1544,6 +1544,13 @@ def check_edition_trial(
     # 门读数 `试验窗口 5/3` PASS）。超限本身即须边界评估，与未闭环无关；
     # 未闭环 > 0 只是额外加重。改为：rounds > 3 → WARN（超限），
     # rounds == 3 and last_open > 0 → WARN（窗口用尽且未收口）。
+    total_rounds = sum(stat["rounds"] for stat in stats.values())
+    if total_rounds > 3 and not re.search(r"重写例外|rewrite-exception", text):
+        report.fail(
+            "edition-trial",
+            f"本篇跨 edition 累计 {total_rounds} 个修改轮（§7.5 硬上限 3，"
+            "跨 edition 累计）；无 rewrite-exception 判决行不得继续开轮",
+        )
     for edition, stat in stats.items():
         if stat["rounds"] > 3:
             report.warn(

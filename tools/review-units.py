@@ -333,7 +333,12 @@ def evidence_replay_ok(path: Path) -> bool:
                 )
             if check.returncode == 0:
                 return True
-        if re.search(r"\b(?:rg|grep|cargo test|python3|bash)\s", line):
+        tool_cmd = re.search(r"\b(?:bash|python3)\s+(tools/[\w./-]+)", line)
+        if tool_cmd and (ROOT / tool_cmd.group(1)).is_file():
+            return True
+        if "cargo test " in line:
+            return True
+        if re.search(r"\b(?:rg|grep)\s+[\"']?\S", line):
             return True
         for m in COMMIT_RE.finditer(line):
             check = subprocess.run(
