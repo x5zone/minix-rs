@@ -45,8 +45,11 @@ PROCESS_RES = (
     re.compile(r"\bR(?:1[3-9]|[2-9]\d)\b"),
     # 提交号候选：7–40 位十六进制，且至少含一个 a–f 字母。纯数字的
     # `0170000` 这类常量是十进制值，不是提交号；若允许纯数字，门会把
-    # 正常的内存偏移/容量全判成过程编号。
-    re.compile(r"\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b"),
+    # 正常的内存偏移/容量全判成过程编号。`0b…`/`0o…` 是二进制/八进制
+    # 字面量，也不是提交号。
+    re.compile(
+        r"\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])(?!0[bB])(?!0[oO])[0-9a-f]{7,40}\b"
+    ),
 )
 ITER_RE = re.compile(
     r"\b(?:formerly|previously|originally|was removed|were removed|removed in|"
@@ -276,6 +279,7 @@ def self_test() -> int:
         hexfile = root / "hex.rs"
         hexfile.write_text(
             "// 0170000 是十进制偏移，不是提交号\n"
+            "// 0b010000 是二进制字面量，不是提交号\n"
             "// c9f4e544c 是提交号\n"
             "fn f() {}\n",
             encoding="utf-8",
@@ -283,6 +287,9 @@ def self_test() -> int:
         hex_tokens = {h["token"] for h in scan_file(hexfile) if h["kind"] == "CP-3"}
         if "0170000" in hex_tokens:
             print("self-test FAIL: 纯十进制常量被当成十六进制提交号")
+            return 1
+        if "0b010000" in hex_tokens:
+            print("self-test FAIL: 二进制字面量被当成十六进制提交号")
             return 1
         if "c9f4e544c" not in hex_tokens:
             print("self-test FAIL: 真实十六进制提交号未被检出")

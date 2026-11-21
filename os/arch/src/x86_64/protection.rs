@@ -454,7 +454,7 @@ impl X86_64Protection {
         // `ltr` sets the TSS descriptor type to busy (1011) in memory.
         // Check the target slot before touching GDTR: a second load would
         // otherwise fault at `ltr` with a bare #GP, and the caller would
-        // have no name for the mistake (D-102).
+        // have no name for the mistake.
         let gdt_idx = GDT_TSS_FIRST_INDEX + idx * GDT_SLOTS_PER_TSS;
         let tss_access = ((self.gdt[gdt_idx] >> 40) & 0xFF) as u8;
         assert!(

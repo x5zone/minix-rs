@@ -171,8 +171,9 @@ static ALLOCATOR: boot_shim::uefi_helpers::UefiPoolAllocator =
 
 #[entry]
 fn main() -> Status {
-    // I-43 二层修复：UEFI 固件把 PE 加载到运行期地址——内核的恒等窗口
-    // 必须覆盖真实镜像而非硬编码基址（BOOT-SCOPE 2a 之后窗口是最小的）。
+    // UEFI firmware loads the PE at its runtime address: the kernel's
+    // identity window must cover the real image, not a hard-coded base
+    // (after BOOT-SCOPE 2a the window is minimal).
     let (image_lo, image_hi) = uefi_helpers::shim_image_window();
     let image_base = image_lo & !0x001F_FFFF;
     let image_end = (image_hi + 0x001F_FFFF) & !0x001F_FFFF;
@@ -260,7 +261,7 @@ fn main() -> Status {
 
     // To safely access SP_EL1, we need to:
     // 1. Save current SP to SP_EL0
-    // 2. Switch to SP_EL0 (SPSel=0) so SP_EL1 is no longer the active SP
+    // 2. Switch to SP_EL0 (SPSel=0) so SP_EL1 is not the active SP
     // 3. Read/write SP_EL1
     // 4. Switch back to SP_EL1 (SPSel=1)
     //
@@ -332,8 +333,9 @@ fn main() -> Status {
 
 
 
-    // I-29-impl 门④（路径 A）：保留退出函数返回的最终内存图并立即分类——
-    // 分类所依据的图 = 退出所用的图（设计文档 §2.7）。
+    // Gate 4 (path A): keep the final map returned by the exit function and
+    // classify it immediately — the map used for classification is the map
+    // used for exit (design doc §2.7).
     let (memmap, _reserved_regions) = uefi_helpers::exit_boot_services_and_classify();
     let kernel_info = KernelInfo {
         memmap,

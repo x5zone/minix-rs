@@ -91,3 +91,20 @@
 - 重构: 提出 5 / 接受 5 / 实施 0 / 登记 5
 - 成本: agent 9（六角色 + certify 首轮 + 复核）/ token 未采集 / 耗时 约 3.5 小时
 - 回读与回归: 文档六门绿（anchor 75/75、citation checked=32 failed=0、structure/ref/style error=0/density 通过、doc-code-map 21/21）；独立回执 certify/round3-certify.md（首轮 6/2，改 3 处后 8/0 PASS）
+
+## R39 确认轮（V3.10）
+
+- 发现总数: 13
+- 唯一根因数: 13
+- 本轮新准入: 13
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 2（D2 的 GDB 配方分两次补齐、D4 的组标题，均 P1/P3，已修）
+- 处置: ① 13 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0
+- 确认轮修复: 2/2 批次（第一批 8 单元、第二批 6.2；含 D2 同缺陷补修）
+- 抽样: 9/44 冻结单元（20%；含 fallback/none 锚点）
+- 回读与回归: 文档七门绿（anchor 75/75、citation 32 checked/0 failed、structure/ref/style error=0/density、publication/tutorial 0 新增）；code-publication 22 文件 0 命中；cargo：minix-arch 266/0、minix-kernel mock 866/0/8、minix-elf 27/0；QEMU：test-protection x86_64/aarch64/riscv64 三腿 PASS

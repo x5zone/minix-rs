@@ -298,3 +298,21 @@
 | RD-R3-27 | CLAIM-11、CLAIM-12、CLAIM-13 | R3 | refute | P3 | claim | FP | 反证失败（主张成立） | 源码原文核对：apic.h:90-91 的 0xF0=timer/0xF1=sched、archconst.h:45 的 COPROC_SEG_VECTOR=9、STUB_VECTORS 41 项现算逐行吻合（panel/round3/refute.md 的 RD03-CLAIM-11/12/13） | panel/round3/refute.md 的 RD03-CLAIM-11/12/13（源码原文核对：apic.h:90-91 的 0xF0/0xF1、archconst.h:45 的 COPROC_SEG_VECTOR=9、STUB_VECTORS 41 项现算逐行吻合） | CLAIM-11/12/13 反证失败即主张成立，逐条源码锚见同文件各 CLAIM 的「证据」行 
 | RD-R3-28 | CLAIM-14、CLAIM-15 | R3 | refute | P3 | claim | FP | 反证失败（主张成立） | 源码原文核对：arch/protection.rs:99-101 与 arch/trap_entry.rs:109-111 的契约注释、STAR/LSTAR/SFMASK/EFER 写入次序、arm64 无 SP_EL1 写点、riscv64 trap_stub.rs:536 的 csrrw（panel/round3/refute.md 的 RD03-CLAIM-14/15） | panel/round3/refute.md 的 RD03-CLAIM-14/15（源码原文核对：arch/protection.rs:99-101 与 arch/trap_entry.rs:109-111 的契约注释、STAR/LSTAR/SFMASK/EFER 次序、arm64 无 SP_EL1 写点、riscv64 trap_stub.rs:536 的 csrrw） | CLAIM-14/15 反证失败即主张成立（E1），逐条锚见同文件 
 | RD-R3-29 | CLAIM-16 | R3 | refute | P2 | claim | ① | 已修：非阻断（is_trap 双来源，文档半边已修） | panel/round3/ 的 claim | CLAIM-16 等 1 条的改动由 certify/round3-certify.md 对应条目回读确认 |
+
+## R39 确认轮（2026-11-22）
+
+| ID | 来源 | 节 | 轮 | 角色 | 严重度 | 类别 | 处置 | 修复 | 证据 | 状态 | — | — | — | — |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| RD-R39-001 | CONFIRM-D1 | 6.2 | R39 | cold-confirm | P1 | 文档/计数 | ① | 测试计数改为 16/13/12/0/1/3/0/1/7 | 重放 `grep -c '#\[test\]'` 九文件 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-002 | CONFIRM-D2 | 6.2 | R39 | cold-confirm | P1 | 文档/可执行性 | ① | GDB 组改生产 ELF + `target remote` + `hbreak` | 符号 `0xffff800000206330`；`-S` 下软件断点不可写高半 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-003 | CONFIRM-D3 | 6.2 | R39 | cold-confirm | P1 | 文档/工件 | ① | `break init_protection` 改生产 ELF 的 `hbreak minix_kernel::init_protection` | `gdb -ex 'info functions init_protection'` 命中 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-004 | CONFIRM-D4 | 6.2 | R39 | cold-confirm | P1 | 文档/命令 | ① | `info registers gdtr idtr tr` 改 `monitor info registers` | GDB 无 gdtr/idtr 寄存器名 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-005 | CONFIRM-D5 | 6.2 | R39 | cold-confirm | P2 | 文档/工件 | ① | 预期 GDT 基址改为生产 ELF 高半；不再用 test-protection 栈上实例 | 生产 ELF GDT 在高半 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-006 | CONFIRM-D6 | 5.3 | R39 | cold-confirm | P1 | 文档/覆盖 | ① | 改为“无负向测试；正向顺序钉见 init_protection_order_pin.rs” | 文件存在，断言 57-90 行 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-007 | CONFIRM-D7 | 5.3 | R39 | cold-confirm | P2 | 文档/覆盖 | ① | `fn init` 改为 256 空占位；41 真门由 `install_trap_stubs` 装 | `trap_entry.rs:188-200` | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-008 | CONFIRM-D8 | 3.5 | R39 | cold-confirm | P2 | 文档/跨篇指针 | ① | §3.9 改 §3.4.3；freepde 处置改为字段删除/报告位 0/DM 走查 | 01 §3.4.3 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-009 | CONFIRM-D9 | 4.0 | R39 | cold-confirm | P2 | 文档/语义 | ① | `ltr` 改为必须可用 1001；高半丢失潜伏到首次 CPL3 读 sp0 | §2.5/§3.1 对照 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-010 | CONFIRM-D10 | 1.0 | R39 | cold-confirm | P2 | 文档/术语 | ① | “第一次行使特权”统一为 lgdt/lidt/lldt/ltr 装载动作 | §1.3 对照 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-011 | CONFIRM-D11 | 3.5 | R39 | cold-confirm | P3 | 文档/行号 | ① | BOOT_IDENTITY_MAP_END 217→221 | `grep -n` 221 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-012 | CONFIRM-D12 | 3.5 | R39 | cold-confirm | P3 | 文档/跨篇指针 | ① | 02 篇 §4.4→§4.3 | 02 篇 4.3 标题 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-013 | CONFIRM-D13 | 5.3/5.4 | R39 | cold-confirm | P3 | 文档/过程编号 | ① | 去掉 R03- 前缀，改“缺口N” | `grep -n 'R03'` 无命中 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |

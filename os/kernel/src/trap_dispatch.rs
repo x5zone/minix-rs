@@ -336,8 +336,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // context at this arm's entry, so preemption recovery is safe.
         if irq == minix_plat::TIMER_IRQ.get() {
             // Generic-arm tick counter (the clock arm's `tick k=` only covers
-            // the dedicated stub path; this arm's ticks were previously
-            // invisible).
+            // the dedicated stub path; this counter makes this arm's ticks
+            // visible).
             #[cfg(not(feature = "mock"))]
             {
                 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
@@ -1012,9 +1012,9 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         // C do_sync_ipc's `(message *) r3` — the caller's message buffer
         // reaches the engine through `p_delivermsg_vir` (C mini_receive
         // stores m_buff_usr there, proc.c:983; the syscall-leg kernel_call
-        // stores m_user, system.c:141). The door previously dropped rbx, so
-        // a parked receiver's wake delivery copied the message to a stale
-        // syscall buffer and the receive buffer kept its pre-call content
+        // stores m_user, system.c:141). Dropping rbx here copies a parked
+        // receiver's wake delivery to a stale syscall buffer and leaves the
+        // receive buffer with its pre-call content
         // (rx read Message::default poison, then its
         // sendnb(m_source) failed with EDEADSRCDST on the garbage source).
         // SENDA carries the table pointer in rbx instead (p_defer.r3 above).
@@ -1287,7 +1287,7 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                 // → p_next[nr] points at itself → after vm_memreq_get pops
                 // the head, head falls back onto the self-linked node and
                 // never becomes None → was_empty stays false forever → later
-                // requesters' inserts no longer wake VM, and VM waits in
+                // requesters' inserts never wake VM, and VM waits in
                 // RECEIVING = a stable deadlock. Parking dequeue, insertion
                 // and notification are all owned by finish; this arm only
                 // adds the SYSCALL-leg-specific context save
@@ -1886,7 +1886,7 @@ unsafe fn riscv64_pagefault_body(
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
     // Two diagnostic probes were rolled out this round — both had already
     // been hollowed out into pure counter increments plus empty `if` bodies
-    // (their readers were removed earlier, leaving unread `LETHAL_PF`/`FA0_N`
+    // (their readers are gone, leaving unread `LETHAL_PF`/`FA0_N`
     // static counters), the same "empty-body remnant" family; removal
     // carries zero behavior risk and is unrelated to the main probe still
     // under investigation. The probes that still genuinely depend on it
@@ -2049,7 +2049,7 @@ fn riscv64_timer_arm() {
     // owns the lock, else spin-acquire it even when a peer holds it.
     let acquired = crate::smp::bkl_lock_or_inherit();
     // C context_stop_idle: a tick landing on a halted hart clears the idle
-    // flag and restarts its local timer (the riscv arm previously only ran
+    // flag and restarts its local timer (the riscv arm otherwise runs only
     // the quantum check, leaving a woken AP's one-shot masked).
     crate::context_stop_idle_current();
     {
@@ -3099,7 +3099,7 @@ unsafe fn aarch64_pagefault_body(
                 crate::smp::bkl_unlock();
             }
             // `cause_signal` sets RTS_SIGNALED (rts_set dequeues the
-            // process), so it is no longer runnable — `eret`-ing back would
+            // process), so it is not runnable — `eret`-ing back would
             // resume a descheduled context and livelock the same fault on
             // the single core. Park instead: the scheduler runs the signal
             // manager, which resolves delivery (x86 twin ends in

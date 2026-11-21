@@ -90,3 +90,14 @@
 - **门复跑（修复后工作树）**：`anchor-resolve --check` 75/75（zero-def=0 / multi-def=0）；`doc-code-map --check` 21/21；`doc-ref-check --check` 通过；`doc-code-density-check --check` 承载门阻断项通过；`doc-style-lint --diff` error=0。
 - **新文档 sha256**：`1e6037125cf95a79ef940a94be6356243392ae1d8135c697595d0b1cfcb1a22f`（1396 行）。R3 修复后记录值 `64659b6c…` 自此被本行取代。
 - **性质**：事实同步修复（Doc Code Sync），非轮次重开、不改任何实质结论；`CONVERGED` 状态维持。重开条件不变（见上文「重开条件」）。
+
+## R39 确认轮（V3.10，append-only；2026-11-22）
+
+- 轮结果：`CONVERGED`。
+- 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`，sha256 `5b142de24f009880fffc78818af6913be8150af31374632e80d57187fd6354f7`，1688 行。
+- 单元账本：44/44 frozen、reopened=0、stale=0、T3 PASS；`audit` 全部单元 open=0。
+- 确认轮：9 个冻结单元抽样；13 条发现（4 P1 + 6 P2 + 3 P3）全部修复，`DELTA: PASS`；修复 2/2 批次，未开新修改轮。
+- 文档七门：publication/tutorial 0 新增；structure/ref/style/density 通过；citation `32 checked/0 failed`；anchor 75/75；doc-code-map 22/22。
+- 代码门：22 个 related-code code-publication 0 命中、CJK 0；minix-arch 266/0、minix-kernel mock 866/0/8、minix-elf 27/0。
+- 真机：test-protection x86_64/aarch64/riscv64 三腿 PASS。
+- 账本：D03 TODO 匹配 0 行，无未闭环项。

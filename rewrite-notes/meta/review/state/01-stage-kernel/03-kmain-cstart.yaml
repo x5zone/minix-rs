@@ -1,0 +1,1158 @@
+# 单元级 review 状态（V3.9）——规范源 prompt/review-rules/review-units.md
+# 由 tools/review-units.py 维护；冻结状态禁止手改。
+schema: review-units/v1
+doc: rewrite-notes/01-stage-kernel/03-kmain-cstart.md
+stage: 01-stage-kernel
+edition: V3.9
+baseline_full_survey: true
+confirmation:
+  active: false
+  fixes: 2
+units:
+- id: '1'
+  heading: 1. 概述
+  level: 2
+  parent: null
+  order: 1
+  text_sha: 1bbaf57f9b528e090c19947cfcd380ae0efe1fe68a5dc0c7c651e7c690926d83
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '1.0'
+  heading: 1.0 本章导读
+  level: 3
+  parent: '1'
+  order: 2
+  text_sha: c1e6eaaa9dcff43957dfb2e52634a8052aeccf57d1bcd82d200d51cf65a6bbed
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '1.1'
+  heading: 1.1 02 篇交出的状态：三份答案仍由引导方提供
+  level: 3
+  parent: '1'
+  order: 3
+  text_sha: 0fcbe57dd2c5241b829aa2b8d0eb084a12b9f5d871aa7f7bf909ab913b4b2e02
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn init_protection
+  - minix3/minix/kernel/arch/i386/protect.c:prot_init
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+    minix3/minix/kernel/arch/i386/protect.c:prot_init: 1283da91873a4982dceab3150a070c25041635575c702fa0d9beb477d6e10242
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '1.2'
+  heading: 1.2 三张表与四类入口
+  level: 3
+  parent: '1'
+  order: 4
+  text_sha: 2c1b175f464ab0bd51d7317387d4d8f0ce7fea9dfc87872731c49efe2a754dd4
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors: a808ae78cc05966a1beaa0ba0b99469c8fe30d90091b5023dcae2884158c08a5
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '1.3'
+  heading: 1.3 "第一次行使特权"指什么
+  level: 3
+  parent: '1'
+  order: 5
+  text_sha: cb1f4f53b0e076f909ad1bd0406d385abd70e6a375065d0b9a77e8996368e920
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging
+  - minix3/minix/kernel/arch/i386/protect.c:prot_init
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging: 207a8b246d46d0208d297b7f5e1597cdc58a7132a8158954ed50a37f73451893
+    minix3/minix/kernel/arch/i386/protect.c:prot_init: 1283da91873a4982dceab3150a070c25041635575c702fa0d9beb477d6e10242
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '1.4'
+  heading: 1.4 本篇范围与可以安全跳过的内容
+  level: 3
+  parent: '1'
+  order: 6
+  text_sha: 722cfec7bcc1cdbbebf595ee73029bd84d22f61647340088029e0cbea74afb11
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2'
+  heading: 2. C 源码分析
+  level: 2
+  parent: null
+  order: 7
+  text_sha: 788a649102ea39b646d995cb090a88f6eb9cd7e7da78f33fddde2ed22492e537
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.0'
+  heading: 2.0 本章导读
+  level: 3
+  parent: '2'
+  order: 8
+  text_sha: eb972b18610ab646fef8fc8f4f64df312913325ade0cb299e0860b071c941420
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.1'
+  heading: 2.1 kmain 入口的五步
+  level: 3
+  parent: '2'
+  order: 9
+  text_sha: 0d91d9c1f4b3606921edccd2b89f06b8c5256c55e83a2fa0f76b0788967f2997
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/main.c:kmain
+  - minix3/minix/kernel/main.c:bsp_finish_booting
+  - minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest
+  - minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc
+  anchor_hashes:
+    minix3/minix/kernel/main.c:kmain: 4df08484b4891aa12e8f14fa174edadfde2f9961482866ec9b8de8eb2d3b62c1
+    minix3/minix/kernel/main.c:bsp_finish_booting: d6f46fe0fa87921991faabdb761fe8f7f888d72090e4f70ebcf7db9cc4b948f8
+    minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest: 051f4b7233589ccf801e525d0f41312d8041fe68693c9b14c431a550f7f87d83
+    minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc: a82607f3dd75b45a95143a47af990ec23deb41bdc0e1d78c930d81a4c122fecf
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.2'
+  heading: 2.2 cstart 的调用序列与顺序不变量
+  level: 3
+  parent: '2'
+  order: 10
+  text_sha: b3de4ab465b40609be146603b58b47d2e0343cb12dc769c2eeed911afe9aa8f5
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/main.c:cstart
+  - minix3/minix/kernel/clock.c:init_clock
+  - minix3/minix/kernel/arch/i386/i8259.c:intr_init
+  anchor_hashes:
+    minix3/minix/kernel/main.c:cstart: 8fef63d7539db97cc5826de2cb7cc7023f397c1932945dd732bd2da25817bca3
+    minix3/minix/kernel/clock.c:init_clock: 32c3ab2f243700b06fe45df3661f7d99f71c1302822687e09c667aa477ea0314
+    minix3/minix/kernel/arch/i386/i8259.c:intr_init: e3cf7a5c04dd9250f2550604f21d9e79ab2b81d8eb20b008c7bb21b0d7f51dec
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.3'
+  heading: 2.3 prot_init：五类动作与两张表的容量
+  level: 3
+  parent: '2'
+  order: 11
+  text_sha: 6e0d6f4f0584f70694cb31f135c4c6378248ef53f1f9a7d7b6324bd5b7d34040
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/protect.c:prot_init
+  - minix3/minix/kernel/arch/i386/protect.c:init_param_dataseg
+  - minix3/minix/kernel/arch/i386/protect.c:init_codeseg
+  - minix3/minix/kernel/arch/i386/protect.c:idt_copy_vectors
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/protect.c:prot_init: 1283da91873a4982dceab3150a070c25041635575c702fa0d9beb477d6e10242
+    minix3/minix/kernel/arch/i386/protect.c:init_param_dataseg: 83d76c0777f91fd083f08855336d0ba12929cdb594b284955e2918d096b9b248
+    minix3/minix/kernel/arch/i386/protect.c:init_codeseg: b4d0fc9b39dbad8155e6df7eb1e1b432b2fdae0654e41e5e56dc710dab14faf6
+    minix3/minix/kernel/arch/i386/protect.c:idt_copy_vectors: 958c37b1d0afa176e99e185a7bfe1a8d00dbb7c611402db983da114bbfb0d19e
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.4'
+  heading: 2.4 tss_init：一条描述符、一个结构体、两条系统调用路径
+  level: 3
+  parent: '2'
+  order: 12
+  text_sha: 44c4ad32d21089db375c7cf8fc700f24cb1c57d891bf2382851de57d573652bb
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/protect.c:tss_init
+  - minix3/minix/kernel/arch/i386/arch_system.c:arch_finish_switch_to_user
+  - minix3/minix/kernel/arch/i386/arch_system.c:arch_init
+  - minix3/minix/kernel/arch/i386/arch_smp.c:tss_init_all
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/protect.c:tss_init: 59305398d86cb20e34887b5e748d7c71b1d52521abad3747be3f2fbf6fc6a4d1
+    minix3/minix/kernel/arch/i386/arch_system.c:arch_finish_switch_to_user: 23eaee06075f42d1159efe6f042323901e633b1d25b1e3852e304510c27b02b3
+    minix3/minix/kernel/arch/i386/arch_system.c:arch_init: 15988cf0df904de276c69f9e491dd4e5d2e993b60428b4d83eb1c25162125134
+    minix3/minix/kernel/arch/i386/arch_smp.c:tss_init_all: 14e614bb1eeb213ce7845f0f884b9a74757957a61565a7d0bce1979f1633fb66
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.5'
+  heading: 2.5 prot_load_selectors：让表生效的一串指令
+  level: 3
+  parent: '2'
+  order: 13
+  text_sha: f2bbda714d0b55c164e3e00b06b3fd66d0206dc6c7f98e7136a79e7633fea429
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors
+  - os/arch/src/arch/protection.rs:trait ProtectionArch
+  - os/arch/src/x86_64/protection.rs:fn load_with_tss
+  - minix3/minix/kernel/arch/i386/protect.c:prot_init
+  - minix3/minix/kernel/arch/i386/protect.c:idt_init
+  - minix3/minix/kernel/arch/i386/protect.c:idt_copy_vectors
+  - minix3/minix/kernel/arch/i386/protect.c:int_gate
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors: a808ae78cc05966a1beaa0ba0b99469c8fe30d90091b5023dcae2884158c08a5
+    os/arch/src/arch/protection.rs:trait ProtectionArch: 12dc6dd13aedc501d1d2282c4d5a149ea004c3d15c138477a07515889aaf256e
+    os/arch/src/x86_64/protection.rs:fn load_with_tss: 57c79634c42da103d7087f7febcf4b8c1d5decb750875a0dc76cf387490af841
+    minix3/minix/kernel/arch/i386/protect.c:prot_init: 1283da91873a4982dceab3150a070c25041635575c702fa0d9beb477d6e10242
+    minix3/minix/kernel/arch/i386/protect.c:idt_init: 3f2ebd84167e4420f2e1a8f167b6a196bcf1f53e77c3dd66648db8094fdc2ac6
+    minix3/minix/kernel/arch/i386/protect.c:idt_copy_vectors: 958c37b1d0afa176e99e185a7bfe1a8d00dbb7c611402db983da114bbfb0d19e
+    minix3/minix/kernel/arch/i386/protect.c:int_gate: 6f890d75ab2cb7f63cf6a20766de71539bda6f80cb5f4a088c6fe4a63fbc8b53
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.6'
+  heading: 2.6 重建页表：四个调用、一条理由与一条约束、两份 vir2phys
+  level: 3
+  parent: '2'
+  order: 14
+  text_sha: 0f27fbb7c2b5f47e032c08dbbcce8d5dd2d020a7214ab3a4e43c9af3777ec821
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/pre_init.c:pre_init
+  - minix3/minix/kernel/arch/i386/protect.c:prot_init
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity
+  - minix3/minix/servers/vm/pagetable.c:pt_init
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_load
+  - minix3/minix/kernel/arch/i386/protect.c:vir2phys
+  - minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/pre_init.c:pre_init: d0c5e39fdc4fe171c1cdfea49772540b6fe8af832b505d2da5e6f5cf22591533
+    minix3/minix/kernel/arch/i386/protect.c:prot_init: 1283da91873a4982dceab3150a070c25041635575c702fa0d9beb477d6e10242
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity: b85796fe22184a23036ffe1b1b0fb92db7b706a090c135c33a40a47b64b5ef87
+    minix3/minix/servers/vm/pagetable.c:pt_init: d14c799874074bc14164fc41f41882cbb88c4d367422c990f9db61b058554cce
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel: 9c5e6eccc0852c22cd8a145f4edb8b5ced107a3264ef89b74b2d2aff51665843
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_load: d2c0e06e3f4c51d94a835d85a18b408d2c4b716a550e03535481dc8e4f3c9abd
+    minix3/minix/kernel/arch/i386/protect.c:vir2phys: f324a96493f4bc96ad95e9938465387b581ac8a320e0121e2696e4a00b328b91
+    minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc: 2b1079d72764ce027ec8f0903475df74aa2d4f9ba2c05a957adf47270905765d
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.7'
+  heading: 2.7 earm 的 protect.c：另一份独立实现
+  level: 3
+  parent: '2'
+  order: 15
+  text_sha: 9aceae4eb333481f97da0d8790089635681c7252d0ac48031480343fa47bc00c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/earm/protect.c:prot_init
+  - minix3/minix/kernel/arch/earm/arch_system.c:arch_init
+  - minix3/minix/kernel/arch/earm/protect.c:tss_init
+  - minix3/minix/kernel/arch/earm/arch_system.c:arch_finish_switch_to_user
+  anchor_hashes:
+    minix3/minix/kernel/arch/earm/protect.c:prot_init: e15ce4a4b2b0b4fce368bc10c89a604ba253760ee8be1f91817cacee2182fcc1
+    minix3/minix/kernel/arch/earm/arch_system.c:arch_init: 912ad64ccf3a3771fe3741e5b21dedc93b57faa3bb74261bb8bef3f9c2fd4f63
+    minix3/minix/kernel/arch/earm/protect.c:tss_init: f0b4307e7a796d4a5d6f0f4707f323dac4c9281eb120580005ee1284b92217a7
+    minix3/minix/kernel/arch/earm/arch_system.c:arch_finish_switch_to_user: ff65c05f2ded24eeeaa5ca545776a9f5d2eb2b3cf81f6736d729e9ce386a2830
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '2.8'
+  heading: 2.8 本章归纳
+  level: 3
+  parent: '2'
+  order: 16
+  text_sha: 7d8e75930eac7ee9f0508dc2770e8099e7db9e5f91602cec1e3bc48dde759edd
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3'
+  heading: 3. Rust 设计决策
+  level: 2
+  parent: null
+  order: 17
+  text_sha: d6d81aa687834e349784591eab2476021ca50347c48e2a60ff0d5cf6004ec471
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.0'
+  heading: 3.0 本章导读
+  level: 3
+  parent: '3'
+  order: 18
+  text_sha: be8a6b46c09727f341a6df9b5177da9c7abb47f40718563b24c7d8ad2e653920
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.1'
+  heading: 3.1 64 位下三张表的去留（→§2.3、§2.4、§2.6）
+  level: 3
+  parent: '3'
+  order: 19
+  text_sha: 4be76c2e1f71182ca7d5d8a000cd6dd8d6d284da447e3a6f4aa0582245b9c2c1
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/protection.rs:struct Tss64
+  - os/arch/src/x86_64/protection.rs:const GDT_USER_ANCHOR_INDEX
+  - os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu
+  anchor_hashes:
+    os/arch/src/x86_64/protection.rs:struct Tss64: 66dd70849527aab1e23ceea53904c238bed11476c4e468849173e1cc64899fc9
+    os/arch/src/x86_64/protection.rs:const GDT_USER_ANCHOR_INDEX: 1c62b27a5a409487b3e5303e4f58157eba9ab656a3e454052d89a77c1a1c64c8
+    os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu: 7304a8115633f01c3ff7e4b5b86554ea82ed39174ab56d3c32dc794092e5041d
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.2'
+  heading: 3.2 一条真实的顺序依赖拆出两个 trait（→§2.4、§2.5）
+  level: 3
+  parent: '3'
+  order: 20
+  text_sha: 698f059fcfdabc3c3d6b7a4fa46a2db940b86421e50e4e6b286b276468077f6f
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/protect.c:int_gate
+  - os/arch/src/arch/protection.rs:trait ProtectionArch
+  - os/arch/src/arch/trap_entry.rs:trait TrapEntryArch
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/protect.c:int_gate: 6f890d75ab2cb7f63cf6a20766de71539bda6f80cb5f4a088c6fe4a63fbc8b53
+    os/arch/src/arch/protection.rs:trait ProtectionArch: 12dc6dd13aedc501d1d2282c4d5a149ea004c3d15c138477a07515889aaf256e
+    os/arch/src/arch/trap_entry.rs:trait TrapEntryArch: 2733336bb0491fee8f4a201618df79eddbb7d57c1bc351a59911a70e2c1f0df0
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.3'
+  heading: 3.3 表装进 static 再 load：地址稳定成为接口外的契约（→§2.4）
+  level: 3
+  parent: '3'
+  order: 21
+  text_sha: 1cf13fad487a7d79d9993b0adccfed71a3e6b5e3a232b71bb32b37776f54dbc3
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn init_protection
+  - os/arch/src/x86_64/protection.rs:struct X86_64Protection
+  - os/arch/src/x86_64/trap_entry.rs:fn load
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+    os/arch/src/x86_64/protection.rs:struct X86_64Protection: 54320438ea118e94749e3f5197a46bce76c7bc48fc384a535d8ae5be5c65ee7c
+    os/arch/src/x86_64/trap_entry.rs:fn load: 54735c96f8c6fc4c9773f0dd38d95efa285f116c1692c51e185cd598cbbcbfec
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.4'
+  heading: 3.4 用户态入口：能力探测换成一条路径 + 内核自己的标签（→§2.4）
+  level: 3
+  parent: '3'
+  order: 22
+  text_sha: 4866cdf1ba193e749df02540234b0736d0000997832f5fff182df6994f7747ec
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/trap_stub.rs:fn syscall_entry_va
+  - os/arch/src/x86_64/trap_entry.rs:fn configure_syscall
+  - os/arch/src/x86_64/trap_stub.rs:struct GsArea
+  - os/arch/src/x86_64/trap_stub.rs:fn write_syscall_msrs
+  anchor_hashes:
+    os/arch/src/x86_64/trap_stub.rs:fn syscall_entry_va: 6f443b9a9d3989a1acc37bb951873f6a8510090661b72607f116fb6b6750b719
+    os/arch/src/x86_64/trap_entry.rs:fn configure_syscall: f96305c69bc13bed427848e5dd6fcfaac0876da974866907ac0f26afdc582022
+    os/arch/src/x86_64/trap_stub.rs:struct GsArea: 92d435fc9973545e56b5c47869aad74c3b091682a41eb414600328c419a86c88
+    os/arch/src/x86_64/trap_stub.rs:fn write_syscall_msrs: 78d988698706ec4518a935af3962b079eba8730672412efaaf619e3bc9e2d30b
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.5'
+  heading: 3.5 页表重建的淘汰与恒等段的继续服役（→§2.6）
+  level: 3
+  parent: '3'
+  order: 23
+  text_sha: 1a3ddd4ce253534355668c030f722dda0894cec469c46ad640f8e96e33c57052
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn arch_boot_impl
+  - os/kernel/src/lib.rs:fn init_protection
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn arch_boot_impl: 0a3d95793877ab1669654ab3faedfbdc1ba16d3e1a68face3e2291206985a61d
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.6'
+  heading: 3.6 把 cstart 拆成两个里程碑（→§2.2）
+  level: 3
+  parent: '3'
+  order: 24
+  text_sha: 34583ffe73ebfc66e0141fa453e968612c436896d4a6508af9034ca85f1d8360
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn init_protection
+  - os/kernel/src/lib.rs:fn kmain
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+    os/kernel/src/lib.rs:fn kmain: 69480a0dcab7d1b886da7f83d4d66ae60d13614fc49af53b1b23be4ecefe4425
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '3.7'
+  heading: 3.7 门在第一次 load 之前就有真入口（→§2.5）
+  level: 3
+  parent: '3'
+  order: 25
+  text_sha: 7fcf5dc3e61f4ae38298c824e9bd1788ad48e71022ac5311edfb98b0b918802a
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/trap_entry.rs:fn gate_present
+  - os/kernel/src/lib.rs:fn init_protection
+  - os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers
+  anchor_hashes:
+    os/arch/src/x86_64/trap_entry.rs:fn gate_present: 8d0af10abf09a70f5bee4e94673d127d35606f354d03fbd8bd7a6de905f17fc9
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+    os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers: e9c3f07a3754a223738a52465616f451080b660cc76032cbe3cf24fb0cb4b660
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4'
+  heading: 4. 实现详解
+  level: 2
+  parent: null
+  order: 26
+  text_sha: 392d525801eb2ddc6be4e02e76ad75926dd9d346ba5ea67569016700d394ef92
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.0'
+  heading: 4.0 本章导读
+  level: 3
+  parent: '4'
+  order: 27
+  text_sha: 9a3efaf2a324930e6d2c698c48aef2eff438b0b47eef668cdf0cd6bedc63a6cf
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.1'
+  heading: 4.1 kmain 阶段 A 的落地（→3.6）
+  level: 3
+  parent: '4'
+  order: 28
+  text_sha: 0ab6b737413da1b506919668354f32aed4c3364ee37ea6c78a81eafd657b9345
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn kernel_info
+  - os/kernel/src/lib.rs:fn kmain
+  - os/kernel/src/lib.rs:fn store_kernel_info
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn kernel_info: 3ee5d9fde1be861b0510cff9d41b9029166d8d52e9e9c8b08f1d805e5ffdc80a
+    os/kernel/src/lib.rs:fn kmain: 69480a0dcab7d1b886da7f83d4d66ae60d13614fc49af53b1b23be4ecefe4425
+    os/kernel/src/lib.rs:fn store_kernel_info: f0bbc0b9181c3bdd62e4b50d00756ea4f014ab1cb3385f5c1d3d03acadd2eeed
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.2'
+  heading: 4.2 init_protection 的逐步落地（→3.2、3.3、3.7）
+  level: 3
+  parent: '4'
+  order: 29
+  text_sha: 0deec26337c869acaaaf6453608b5425d137c492ed245f1a5eb23c0d40d5a792
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn init_protection
+  - os/arch/src/x86_64/trap_entry.rs:fn configure_syscall
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+    os/arch/src/x86_64/trap_entry.rs:fn configure_syscall: f96305c69bc13bed427848e5dd6fcfaac0876da974866907ac0f26afdc582022
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.3'
+  heading: 4.3 x86_64 的 GDT 与 TSS 装填（→3.1、3.3）
+  level: 3
+  parent: '4'
+  order: 30
+  text_sha: 69291e9dcc3e73bb594441bae98dc401d5d92123bd78e2f951ea56a723e3a53b
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/protection.rs:const KERN_CS_ACCESS
+  - os/arch/src/x86_64/protection.rs:const GDT_USER_ANCHOR_INDEX
+  - os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu
+  - os/arch/src/x86_64/protection.rs:fn load_with_tss
+  anchor_hashes:
+    os/arch/src/x86_64/protection.rs:const KERN_CS_ACCESS: 0ea5017c405f5f17aacd5c03d7d63a3349762751c6124c35783b7b55be11471f
+    os/arch/src/x86_64/protection.rs:const GDT_USER_ANCHOR_INDEX: 1c62b27a5a409487b3e5303e4f58157eba9ab656a3e454052d89a77c1a1c64c8
+    os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu: 7304a8115633f01c3ff7e4b5b86554ea82ed39174ab56d3c32dc794092e5041d
+    os/arch/src/x86_64/protection.rs:fn load_with_tss: 57c79634c42da103d7087f7febcf4b8c1d5decb750875a0dc76cf387490af841
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.4'
+  heading: 4.4 IDT 的装填与门覆盖（→3.2、3.7）
+  level: 3
+  parent: '4'
+  order: 31
+  text_sha: a66b90821a691e6cac95126a4f6ba2e42ac549b13417ea32fd7ece840f9d22fd
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/trap_entry.rs:fn init
+  - os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers
+  anchor_hashes:
+    os/arch/src/x86_64/trap_entry.rs:fn init: 73090f1e93fbbb6b17eac33b340e11411bfe01ecfcd8587d6fa1ff4175d2567a
+    os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers: e9c3f07a3754a223738a52465616f451080b660cc76032cbe3cf24fb0cb4b660
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.5'
+  heading: 4.5 系统调用入口与 per-CPU 数据的落地（→3.4）
+  level: 3
+  parent: '4'
+  order: 32
+  text_sha: a3bfde66a4ec7358f149c11f0df80f136693a0718dbc21ab8380412e98609cfd
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/trap_entry.rs:fn configure_syscall
+  - os/arch/src/x86_64/trap_stub.rs:static x86_syscall_entry
+  anchor_hashes:
+    os/arch/src/x86_64/trap_entry.rs:fn configure_syscall: f96305c69bc13bed427848e5dd6fcfaac0876da974866907ac0f26afdc582022
+    os/arch/src/x86_64/trap_stub.rs:static x86_syscall_entry: 15c38770272e4728b62c7c6831b607b96a4100858395890ed902eff0342ca0b9
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.6'
+  heading: 4.6 aarch64 与 riscv64 的落地（→3.1、3.3）
+  level: 3
+  parent: '4'
+  order: 33
+  text_sha: ff9451b7968fd11c8c6b52cd5331ca1a7f5279a3963b91721197e61cf4f69d8e
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/arm64/protection.rs:fn init
+  - os/arch/src/arm64/trap_entry.rs:fn load
+  - os/arch/src/riscv64/protection.rs:fn set_entry_stack_base
+  - os/arch/src/arm64/protection.rs:fn set_entry_sp
+  anchor_hashes:
+    os/arch/src/arm64/protection.rs:fn init: 82fc37d2eabe9dd52aa2f2e0c1b321b77108ea50763b837d965be72097efc005
+    os/arch/src/arm64/trap_entry.rs:fn load: cd6aa4dc7e5d7d59a292cb7b8dcd4182c11f30f3ac7cf938614cc2182480db64
+    os/arch/src/riscv64/protection.rs:fn set_entry_stack_base: 200a03c3b81758f69fd477bb23649796f940b719828686962d4eda2b15da71f4
+    os/arch/src/arm64/protection.rs:fn set_entry_sp: ccf400592958e6476d1423177ebbd06045b2fe1bad26fff55134b7faf7c4d40f
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '4.7'
+  heading: 4.7 与 Minix3 C 的对照（→§2.1–§2.7）
+  level: 3
+  parent: '4'
+  order: 34
+  text_sha: ee56c6f46f0b796aa7b1d419f97494b87ddf923725c9e8d20f5e5ee0f9d51625
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn store_kernel_info
+  - os/kernel/src/lib.rs:fn init_protection
+  - os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu
+  - os/arch/src/x86_64/trap_stub.rs:struct GsArea
+  - os/arch/src/x86_64/protection.rs:fn load_with_tss
+  - os/kernel/src/lib.rs:fn arch_boot_impl
+  - os/arch/src/x86_64/trap_stub.rs:const STUB_VECTORS
+  - os/kernel/src/lib.rs:fn init_clock_and_interrupts
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn store_kernel_info: f0bbc0b9181c3bdd62e4b50d00756ea4f014ab1cb3385f5c1d3d03acadd2eeed
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+    os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu: 7304a8115633f01c3ff7e4b5b86554ea82ed39174ab56d3c32dc794092e5041d
+    os/arch/src/x86_64/trap_stub.rs:struct GsArea: 92d435fc9973545e56b5c47869aad74c3b091682a41eb414600328c419a86c88
+    os/arch/src/x86_64/protection.rs:fn load_with_tss: 57c79634c42da103d7087f7febcf4b8c1d5decb750875a0dc76cf387490af841
+    os/kernel/src/lib.rs:fn arch_boot_impl: 0a3d95793877ab1669654ab3faedfbdc1ba16d3e1a68face3e2291206985a61d
+    os/arch/src/x86_64/trap_stub.rs:const STUB_VECTORS: 795cca6fd313f24f34d0edfae8aea6662a4d0927ffd6dd3ad63dc00c398d39aa
+    os/kernel/src/lib.rs:fn init_clock_and_interrupts: 637154b3863adf75857120a995b73c499037f07c7982ec28efbc9e249a7d2c86
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '5'
+  heading: 5. 测试要点
+  level: 2
+  parent: null
+  order: 35
+  text_sha: 426b5ba3a4e78b60643c2b30d52c7f78593587041ba4195151674aa13f5384c9
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '5.0'
+  heading: 5.0 本章导读
+  level: 3
+  parent: '5'
+  order: 36
+  text_sha: c1354dca311a58b27e1897f45f85d631d2c1f49b3d7b15123b26fc08406371b9
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '5.1'
+  heading: 5.1 宿主：arch crate 的单元测试（→4.3、4.4）
+  level: 3
+  parent: '5'
+  order: 37
+  text_sha: ba133094ab55c5421c46fb93047459f75e5c4a684c62c6e53d9c0f362de8b5f8
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '5.2'
+  heading: 5.2 真机：test-protection 三架构（→4.2、4.6）
+  level: 3
+  parent: '5'
+  order: 38
+  text_sha: e3897ea922c898a1e48c9fd54ff520bfa5e15e7e54f38731fca3312bdf10f108
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '5.3'
+  heading: 5.3 测试缺口
+  level: 3
+  parent: '5'
+  order: 39
+  text_sha: 61ca15fbc7b7cb3c482581b94ea94bac95d76a45e1f87c6b1d8ffb706e39bcf4
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/trap_entry.rs:fn init
+  anchor_hashes:
+    os/arch/src/x86_64/trap_entry.rs:fn init: 73090f1e93fbbb6b17eac33b340e11411bfe01ecfcd8587d6fa1ff4175d2567a
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '5.4'
+  heading: 5.4 机制 → 需要证明什么（反转核对表）
+  level: 3
+  parent: '5'
+  order: 40
+  text_sha: dde2dd24657b0fb24257d60150f845ca34e937da1276c687cb14d651472ce7f5
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '6'
+  heading: 6. 诊断
+  level: 2
+  parent: null
+  order: 41
+  text_sha: 0fccc77b998321a0ac350eaff45a6473408339df4246f010fffad227f9ed41c9
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '6.0'
+  heading: 6.0 本章导读
+  level: 3
+  parent: '6'
+  order: 42
+  text_sha: e4a45f9d0b817c9ea86452cce54cd6be78d7c753dfd6b70a336dcc6cdb300746
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '6.1'
+  heading: 6.1 症状 → 怀疑对象 → 确认命令
+  level: 3
+  parent: '6'
+  order: 43
+  text_sha: a7a76ff9eceb3b37e600b1088e664461a14d711bdaad37541e1608890faefdf8
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/arm64/protection.rs:fn init
+  - os/arch/src/riscv64/protection.rs:fn set_entry_stack_base
+  anchor_hashes:
+    os/arch/src/arm64/protection.rs:fn init: 82fc37d2eabe9dd52aa2f2e0c1b321b77108ea50763b837d965be72097efc005
+    os/arch/src/riscv64/protection.rs:fn set_entry_stack_base: 200a03c3b81758f69fd477bb23649796f940b719828686962d4eda2b15da71f4
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+- id: '6.2'
+  heading: 6.2 可复制命令
+  level: 3
+  parent: '6'
+  order: 44
+  text_sha: 7549d73959e512f983ae28f8ced9ae6ac06c856e06bcfc19e2b42ee51b5c3c79
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: D03 确认轮第二批：GDB hbreak、去掉 TR 预期、§6.1 改 monitor
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+t3:
+  passed: true
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
+  at_commit: 5a19eef5b5336d357f12196042fbfdb5a41e5e5e
+baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/03-kmain-cstart/certify/round39-gates.md
