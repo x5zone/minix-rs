@@ -142,8 +142,12 @@ impl<'a> Serializer<'a> {
         self.write_envelope_scalars(report.kern_virt_base.0, report.kern_phys_base.0, report.kern_size)
     }
 
-    /// Write the protocol header and the kernel scalars (receiver-side
-    /// `KernelInfo` form; direct-core legs still use it).
+    /// Test-only `KernelInfo` form of [`Self::write_envelope_report`].
+    ///
+    /// Production senders all build a `BootReport`; the two direct-core
+    /// faces do not call the envelope writer at all. Keeping this behind
+    /// `cfg(test)` prevents a future sender from bypassing the report shape.
+    #[cfg(test)]
     pub fn write_envelope(&mut self, info: &KernelInfo) -> Result<(), HandoffV1WriteError> {
         self.write_envelope_scalars(info.kern_virt_base.0, info.kern_phys_base.0, info.kern_size)
     }
