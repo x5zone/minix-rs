@@ -97,7 +97,6 @@ pub fn claims_from_records(
             SourceKind::ReservedNoMap | SourceKind::MrbEntry => ExpectedEfiType::Reserved,
             SourceKind::Memory
             | SourceKind::FirmwarePrefix
-            | SourceKind::StartupObject
             | SourceKind::UefiExcluded => continue,
         };
         let raw_start = record.range.start;

@@ -37,7 +37,7 @@ pub use kernel_info::*;
 pub use memmap_source::{
     AddressDomain, DTB_SOURCE_CAP, DtbMemoryMap, EMPTY_SOURCE_RECORD, InputObjectId, PhysicalRange,
     SourceAuditError, SourceKind, SourceOrigin, SourceRange, SourceRecord, audit_source_coverage,
-    audit_source_coverage_for, dtb_covers_conventional, startup_record,
+    audit_source_coverage_for, dtb_covers_conventional,
 };
 pub use platform::{
     ArchMiscDesc, CpuInfo, CpuTopology, DTB, InterruptControllerDesc, MAX_CPUS,

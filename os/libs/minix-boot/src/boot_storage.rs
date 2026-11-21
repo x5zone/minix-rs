@@ -32,7 +32,7 @@ use crate::handoff_v1::{
     WIRE_MEMMAP_CAP, WIRE_MODULE_CAP, WIRE_PARAM_CAP, WIRE_PLATFORM_CAP, WIRE_RESERVED_CAP,
 };
 use crate::kernel_info::{BootModule, MemoryRegion};
-use crate::memmap_source::{startup_record, SourceRecord, DTB_SOURCE_CAP};
+use crate::memmap_source::{SourceRecord, DTB_SOURCE_CAP, EMPTY_SOURCE_RECORD};
 use crate::platform::{DTB, PlatformDescSource};
 
 const _: () = assert!(PARAM_BUF_CAP == WIRE_PARAM_CAP);
@@ -52,7 +52,7 @@ const ZERO_MODULE: BootModule = BootModule {
 /// live prefix (`*_len`), so its contents are irrelevant.
 const ZERO_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, PhysBytes(0));
 
-const ZERO_RECORD: SourceRecord = startup_record(0, 0, 0);
+const ZERO_RECORD: SourceRecord = EMPTY_SOURCE_RECORD;
 
 /// The two map-table counts, named so a swap is a struct-literal typo.
 ///

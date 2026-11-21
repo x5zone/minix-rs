@@ -109,7 +109,7 @@ impl WireSourceRecord {
     pub const KIND_RESERVED_REUSABLE: u8 = 5;
     /// A structurally valid descriptor outside both ordinary tables.
     pub const KIND_UEFI_EXCLUDED: u8 = 7;
-    pub const KIND_STARTUP_OBJECT: u8 = 6;
+    // Kind 6 (startup object) is retired with the v10 startup-object set.
 
     /// `SourceOrigin` tags. Values are protocol constants: never renumber.
     pub const ORIGIN_MEMORY_NODE: u8 = 0;
@@ -118,7 +118,7 @@ impl WireSourceRecord {
     pub const ORIGIN_RESERVED_MEMORY_CHILD: u8 = 3;
     /// The final `GetMemoryMap` snapshot; `a` is the descriptor index.
     pub const ORIGIN_UEFI_DESCRIPTOR: u8 = 4;
-    pub const ORIGIN_STARTUP_OBJECT: u8 = 5;
+    // Origin 5 (startup object) is retired with the v10 startup-object set.
 
     /// Encode one record. Total: every `PhysicalRange` is representable
     /// (`start` is 64-bit, `end_exclusive` splits into two halves).
@@ -131,7 +131,6 @@ impl WireSourceRecord {
             SourceKind::ReservedOrdinary => Self::KIND_RESERVED_ORDINARY,
             SourceKind::ReservedReusable => Self::KIND_RESERVED_REUSABLE,
             SourceKind::UefiExcluded => Self::KIND_UEFI_EXCLUDED,
-            SourceKind::StartupObject => Self::KIND_STARTUP_OBJECT,
         };
         let (origin_tag, a, b, cut) = match record.origin {
             SourceOrigin::MemoryNode { node, reg } => (Self::ORIGIN_MEMORY_NODE, node, reg, 0),
@@ -143,7 +142,6 @@ impl WireSourceRecord {
                 (Self::ORIGIN_RESERVED_MEMORY_CHILD, node, reg, 0)
             }
             SourceOrigin::UefiDescriptor { index } => (Self::ORIGIN_UEFI_DESCRIPTOR, index, 0, 0),
-            SourceOrigin::StartupObject(index) => (Self::ORIGIN_STARTUP_OBJECT, index, 0, 0),
         };
         Self {
             start: record.range.start,
@@ -182,7 +180,6 @@ impl WireSourceRecord {
             Self::KIND_RESERVED_ORDINARY => SourceKind::ReservedOrdinary,
             Self::KIND_RESERVED_REUSABLE => SourceKind::ReservedReusable,
             Self::KIND_UEFI_EXCLUDED => SourceKind::UefiExcluded,
-            Self::KIND_STARTUP_OBJECT => SourceKind::StartupObject,
             _ => return None,
         };
         let origin = match self.origin_tag {
@@ -200,16 +197,15 @@ impl WireSourceRecord {
                 reg: self.b,
             },
             Self::ORIGIN_UEFI_DESCRIPTOR => SourceOrigin::UefiDescriptor { index: self.a },
-            Self::ORIGIN_STARTUP_OBJECT => SourceOrigin::StartupObject(self.a),
             _ => return None,
         };
         // Reject payload words the encoder leaves at zero, so one record has
         // exactly one wire image (a receiver can compare images).
         let payload_ok = match origin {
             SourceOrigin::FirmwarePrefix { .. } => self.b == 0,
-            SourceOrigin::MrbEntry(_)
-            | SourceOrigin::UefiDescriptor { .. }
-            | SourceOrigin::StartupObject(_) => self.b == 0 && self.cut == 0,
+            SourceOrigin::MrbEntry(_) | SourceOrigin::UefiDescriptor { .. } => {
+                self.b == 0 && self.cut == 0
+            }
             SourceOrigin::MemoryNode { .. } | SourceOrigin::ReservedMemoryChild { .. } => {
                 self.cut == 0
             }
@@ -225,8 +221,7 @@ impl WireSourceRecord {
                     return None;
                 }
             }
-            crate::memmap_source::InputObjectId::UefiMemoryMap
-            | crate::memmap_source::InputObjectId::StartupObjects => {
+            crate::memmap_source::InputObjectId::UefiMemoryMap => {
                 // `a` carries the descriptor / object index (origin payload);
                 // the explicit local source id must agree with it, and only the
                 // DTB-only words may stay zero.

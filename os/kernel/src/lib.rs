@@ -6195,7 +6195,7 @@ mod tests {
     fn test_store_kernel_info_rejects_source_overflow() {
         let _boot = crate::test_sync::lock_boot_globals();
         static OVERFLOW: [minix_boot::SourceRecord; crate::globals::SOURCE_RECORD_STORE_LEN + 1] =
-            [minix_boot::startup_record(0, 0, 0); crate::globals::SOURCE_RECORD_STORE_LEN + 1];
+            [minix_boot::EMPTY_SOURCE_RECORD; crate::globals::SOURCE_RECORD_STORE_LEN + 1];
         let mut info = minimal_store_info();
         info.memmap_sources = &OVERFLOW;
         store_kernel_info(&info);
