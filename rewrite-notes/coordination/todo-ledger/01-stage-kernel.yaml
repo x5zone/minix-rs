@@ -403,7 +403,7 @@
   kind: design
   origin: rewrite-notes/01-stage-kernel/endpoint_todo.md:506
   origin_file: rewrite-notes/01-stage-kernel/endpoint_todo.md
-  origin_line: 506
+  origin_line: 462
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: prose-open
   evidence: endpoint_todo.md:462-468 §11.2 列出 06-proc-init-boot-proc.md、06-todo.md、12-ipc-core.md、99-global-concepts.md；ls
@@ -433,6 +433,7 @@
   - endpoint_todo--11.2-文档清单
   scope: stage
   note: 仅历史盘点，不是开放项
+  merged_into: D01-PROSE-PROSE-endpoint_todo-11-2
 - id: D01-PROSE-endpoint_todo-Q1-Q10
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -440,9 +441,9 @@
   status: open
   severity: P2
   kind: design
-  origin: rewrite-notes/01-stage-kernel/endpoint_todo.md:487-555
+  origin: rewrite-notes/01-stage-kernel/endpoint_todo.md:487
   origin_file: rewrite-notes/01-stage-kernel/endpoint_todo.md
-  origin_line: 1
+  origin_line: 487
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
   legacy_status: blocked
   evidence: §12 十问（方案选择/SHIFT 位宽/IPC 影响/64 位重排/解耦形式/上游兼容/成本/不可逆性/术语/阶段策略）无裁决；os/libs/minix-types/src/types/endpoint.rs:17
@@ -451,6 +452,7 @@
   verified_at: '2026-11-21'
   aliases:
   - endpoint_todo-Q1-Q10
+  - endpoint_todo Q1-Q10
   scope: stage
   note: 需用户设计裁决；代码当前保持 Minix3 语义，可视为范围冻结但未被显式裁决
   blocked: true
@@ -736,3 +738,42 @@
   - DOCSYNC-VM-WARM
   scope: doc
   note: 迁移回归发现；属文档-代码同步缺陷，按当前篇 review 流程修
+- id: D01-RUN-R37-03
+  stage: 01-stage-kernel
+  doc: 01-boot-shim-bootstrap
+  title: 'R37 follow-ups 的外部 D-107 线程哨兵（原 blocked: true）'
+  status: closed
+  severity: P1
+  kind: design
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md:139
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/follow-ups.md
+  origin_line: 139
+  origin_commit: 308b878496a6f40a4f99b1d7032216c0420a1c38
+  legacy_status: blocked
+  evidence: follow-ups.md:139 的 blocked:true 指 D-107 外部线程；线程已收口（db7f0278d/d512c82d0），用户 2026-11-21 确认可迁。
+  verified_by: user
+  verified_at: '2026-11-21'
+  aliases:
+  - F-R37-03
+  scope: doc
+  note: 随 D-107 收口关闭；与 D01-EXTERNAL-D107 哨兵同批。
+- id: D01-PROSE-06-DESIGN-SNAP
+  stage: 01-stage-kernel
+  doc: 06-proc-init-boot-proc
+  title: 06 篇设计快照漂移：.design 只有 v1，且头注仍用旧路径与 MAX_PROCS=256
+  status: open
+  severity: P2
+  kind: doc
+  origin: rewrite-notes/01-stage-kernel/draft/06-todo.md:584
+  origin_file: rewrite-notes/01-stage-kernel/draft/06-todo.md
+  origin_line: 584
+  origin_commit: 308b878496a6f40a4f99b1d7032216c0420a1c38
+  legacy_status: open
+  evidence: '`ls rewrite-notes/01-stage-kernel/.design/06-*` → 仅 design.v1 与 outline v1-v3；design.v1 头注仍写 notes/rewrite/fork-syscall-rewrite/...
+    旧路径与 MAX_PROCS=256；design-coverage-check 只查存在性。'
+  verified_by: subagent:b6
+  verified_at: '2026-11-21'
+  aliases:
+  - 06-DESIGN-SNAP
+  scope: doc
+  note: 若重开 06 篇 review，快照需先对齐；不影响当前篇。

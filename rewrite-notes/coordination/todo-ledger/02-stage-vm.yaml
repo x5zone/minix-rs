@@ -545,3 +545,22 @@
   - VISIBILITY
   scope: stage
   note: 原 P2 小节第 3、4 项合并；复查完成
+- id: D02-RUN-R5-03
+  stage: 02-stage-vm
+  doc: 02-higher-half-kernel
+  title: 'R5 follow-ups 的外部 D-107 线程哨兵（原 blocked: true）'
+  status: closed
+  severity: P1
+  kind: design
+  origin: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md:67
+  origin_file: rewrite-notes/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/follow-ups.md
+  origin_line: 67
+  origin_commit: 308b878496a6f40a4f99b1d7032216c0420a1c38
+  legacy_status: blocked
+  evidence: follow-ups.md:67 的 blocked:true 指 D-107 外部线程；线程已收口（db7f0278d/d512c82d0），用户 2026-11-21 确认可迁。
+  verified_by: user
+  verified_at: '2026-11-21'
+  aliases:
+  - F-R5-03
+  scope: doc
+  note: 随 D-107 收口关闭；与 D02-EXTERNAL-D107 哨兵同批。
