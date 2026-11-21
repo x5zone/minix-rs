@@ -103,6 +103,7 @@ SECTIONS
            获得对齐。收口属于末段 memsz，boot-shim 的 BSS 清零与
            kern_size 计算都以末段 memsz 端点为准。 */
         . = ALIGN(0x200000);
+        __image_end = .;
     }
 
     /DISCARD/ :
@@ -119,7 +120,9 @@ SECTIONS
    memsz，即 .bss 结尾按 2MiB 收口后的值）超过该字面量，内核 .bss 的尾部
    （含来源记录、模块表与参数 landing pad）会落在保留窗口之外，VM 引导分配器
    可能把内核 .bss 页发出去。链接期直接失败，不留运行时隐患。
-   判据用收口前的 __bss_end：跨度以 2MiB 对齐，__bss_end 不超过 4MiB 时对齐
-   后的跨度必然 ≤ 4MiB。 */
-ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000,
+   判据用收口后的 __image_end：它与 KERN_SIZE 的比较是直接比较，不再依赖
+   “收口会把跨度向上取整”这条推理。 */
+ASSERT(__image_end - KERNEL_VIRT_BASE <= 0x400000,
        "kernel-image memsz exceeds KERN_SIZE (0x400000) — update KERN_SIZE in src/bootface.rs / bootface_a64.rs")
+ASSERT((__image_end - KERNEL_VIRT_BASE) % 0x200000 == 0,
+       "kernel image span is not 2 MiB aligned — the .bss ALIGN(0x200000) closure is missing")

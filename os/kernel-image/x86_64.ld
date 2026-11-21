@@ -96,6 +96,7 @@ SECTIONS
            收口属于末段 memsz，boot-shim 的 BSS 清零与 kern_size 计算都以
            末段 memsz 端点为准。 */
         . = ALIGN(0x200000);
+        __image_end = .;
     }
 
     /DISCARD/ :
@@ -105,3 +106,14 @@ SECTIONS
         *(.note .note.*)
     }
 }
+
+/* 自引导形态把固定的 KERN_SIZE = 0x40_0000 交给 KernelInfo（src/bootface*.rs），
+   分类阶段按这个字面量扣减内核映像、DM 覆盖也按它取窗：若映像跨度超过该
+   字面量，内核 .bss 的尾部会落在保留窗口之外。链接期直接失败，不留运行时
+   隐患。判据用收口后的 __image_end；x86_64 的首段 VMA 是
+   `KERNEL_HIGH_BASE + KERNEL_PHYS_BASE`（见脚本头部与 check-layout L3b），
+   所以减的是这个和，而不是单独的 KERNEL_HIGH_BASE。 */
+ASSERT(__image_end - (KERNEL_HIGH_BASE + KERNEL_PHYS_BASE) <= 0x400000,
+       "kernel-image memsz exceeds KERN_SIZE (0x400000) — update KERN_SIZE in src/bootface.rs")
+ASSERT((__image_end - (KERNEL_HIGH_BASE + KERNEL_PHYS_BASE)) % 0x200000 == 0,
+       "kernel image span is not 2 MiB aligned — the .bss ALIGN(0x200000) closure is missing")

@@ -644,7 +644,7 @@ let page_size = if preferred.supported() && layout_satisfies(preferred.size(), l
         . = ALIGN(0x200000);
 ```
 
-这条语句在 `.bss` 的括号里，所以它加出来的是**末段的 `memsz`**。装载方算 `kern_size` 用的是"末段 `paddr + memsz`"，因此收口的长度直接进 `kern_size`；`kern_stack_top = kern_virt_base + kern_size` 也因此拿到同一个对齐。三个量（`kern_size`、`kern_stack_top`、映射循环的上界）由这一条 `ALIGN` 同时决定。
+这条语句在 `.bss` 的括号里，所以它加出来的是**末段的 `memsz`**。装载方算 `kern_size` 用的是"末段 `paddr + memsz`"，因此收口的长度直接进 `kern_size`；`kern_stack_top = kern_virt_base + kern_size` 也因此拿到同一个对齐。三个量（`kern_size`、`kern_stack_top`、映射循环的上界）由这一条 `ALIGN` 同时决定。三份脚本在收口之后各记一个 `__image_end`，并在 `SECTIONS` 之外用两条 `ASSERT` 把这件事钉在链接期：一条查 `__image_end` 减首段 VMA 不超过 `KERN_SIZE`（0x400000），另一条查该差值是 2MiB 的整数倍——后者正是“收口语句还在”的机械证据，删掉 `ALIGN` 就不再是运行期才 panic。x86_64 的首段 VMA 是 `KERNEL_HIGH_BASE + KERNEL_PHYS_BASE`，所以它的断言减这个和；aarch64/riscv64 减 `KERNEL_VIRT_BASE`。
 
 RISC-V 自引导面把跨距写成了常量 `0x40_0000`（4 MiB，`bootface.rs` 的 [`const KERN_SIZE`](os/kernel-image/src/bootface.rs:const KERN_SIZE)），并在 `arch_boot` 之前使用；`check-layout.sh` 的 L9 拿 `readelf` 实测的跨距与这个常量对账（§5.3）。工件当前跨距以 L9 的实测输出为准，不以常量注释里的说法为准。
 
@@ -752,7 +752,7 @@ RISC-V 自引导面把跨距写成了常量 `0x40_0000`（4 MiB，`bootface.rs` 
     }
 ```
 
-三份脚本的差异集中在五处：基址常量；`.sdata`/`.srodata`/`.sdata2`/`.sbss` 这几个 RISC-V 小数据优化产生的拆分节（[`riscv64.ld`](os/kernel-image/riscv64.ld) 把它们分别归入 `.rodata`/`.data`/`.bss`，注释写明落到 `.bss` 会丢掉文件内容）；riscv64 的 `/DISCARD/` 多一条 `.riscv.attributes`；x86_64 的 `.text` 额外收 `.ap_early_entry` 与 `.ltext`，且没有 `OUTPUT_ARCH`；链接期跨距断言（`aarch64.ld` 与 `riscv64.ld` 各一条 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000, ...)`，`x86_64.ld` 没有）。aarch64 与 x86_64 的段序与其余收段相同，差异只在基址、`AT` 表达式和 x86_64 这两条专属条目。
+三份脚本的差异集中在五处：基址常量；`.sdata`/`.srodata`/`.sdata2`/`.sbss` 这几个 RISC-V 小数据优化产生的拆分节（[`riscv64.ld`](os/kernel-image/riscv64.ld) 把它们分别归入 `.rodata`/`.data`/`.bss`，注释写明落到 `.bss` 会丢掉文件内容）；riscv64 的 `/DISCARD/` 多一条 `.riscv.attributes`；x86_64 的 `.text` 额外收 `.ap_early_entry` 与 `.ltext`，且没有 `OUTPUT_ARCH`；链接期跨距断言（三份脚本各两条：上界 `__image_end - 首段 VMA <= 0x400000` 与收口对齐 `(... % 0x200000 == 0)`；x86_64 的首段 VMA 写作 `KERNEL_HIGH_BASE + KERNEL_PHYS_BASE`，aarch64/riscv64 写作 `KERNEL_VIRT_BASE`）。aarch64 与 x86_64 的段序与其余收段相同，差异只在基址、`AT` 表达式和 x86_64 这两条专属条目。
 
 riscv64 的基址常量不是自由选择。Sv39 的虚拟地址是 39 位再按 bit 38 符号扩展到 64 位，规范要求 bits[63:39] 全为 0 或全为 1；把地址右移 30 位再取低 9 位得到顶层页表下标 VPN[2]：
 
