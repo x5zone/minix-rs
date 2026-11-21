@@ -388,6 +388,8 @@
   - P-REFUTE：文档 + 源码 + 设计快照；6 条 CLAIM（阻断 2 / 反证失败 4）。
 - 缩编：无读者合并；D1 停跑（D-024）+ D2 回退形态，记 VARIANCE。
 - 技能调用 VARIANCE：运行时仍无 `review-process-skill`/`review-doc-skill`；主 agent 直接加载规范源，只实际调用 `review-loop`。
+- 材料隔离 VARIANCE：P-FACT 自述一次全仓 `rg` 扫到 `panel/round*` 与旧 review 的文件名/片段（声明未采用）；按 B-16/B-19，“声明未采用”不等于“未接触”，记 VARIANCE，不升级为 DEGRADED（结论未采信历史材料）。读者 B 读了 `review-evals.md` §4.0e，读者 A 明确拒绝、读者 C 视其为禁读，三份材料矩阵不对称，同记 VARIANCE。
+- 未编号建议：P-FACT 另有 5 条 `## SUGGESTION` 没有 ASCII ID，`panel-index.py` 按固定形状计数，INDEX 因此记 fact 的 SUGGESTION 为 0；这 5 条已在本文件 `suggestions.md` 以事后编号 `FACT-S1..S5` 登记，但不进 79 个 ID（B-72）。
 - 模型：同一模型（opencode-go-chat/deepseek-v4.1-flash）的独立冷启动实例；无跨模型复核。
 - 起止：2026-11-21 约 09:30–10:20（并行；各角色 20–35 分钟）；无降档/升档，无 10 分钟重试。
 - 原始输出：`tmp/review-eval/01-stage-kernel/02-higher-half-kernel/panel/round4/`；制品入库 `panel/round4/` + `INDEX.md`（6 文件，FINDING 36 / SUGGESTION 37 / CLAIM 6）；`panel-index.py --check` 通过。
@@ -396,24 +398,77 @@
 ### R4 §2 发现
 
 - 79 个 ID 承载产出：FINDING 36（fact 12、design-d2 10、reader-a 2、reader-b 6、reader-c 6）+ 编号 SUGGESTION 37（reader-a 11、reader-b 15、reader-c 11）+ CLAIM 6；另有 5 条 fact 未编号建议。
-- 严重度（FINDING）：P0 = 4、P1 = 4、P2 = 19、P3 = 9；CLAIM 阻断 2（P1）、反证失败 4。
+- 严重度（FINDING 36）：P0 = 4、P1 = 5、P2 = 20、P3 = 7；CLAIM 阻断 2（P1）、反证失败 4。5 条 P3 FINDING（DESIGN-D2-07/08/09、READER-B-05/B-06）按 G3 分流为 SUGG 行，不与 P0–P2 混算修复队列。
+- 语义去重（台账外口径）：79 个 ID 聚成约 47 个缺陷根（含 4 条主张维持为 51 个主题），至少 28 个 ID 是跨角色/同根重复；最重簇为 §3.2 迭代器 8 个 ID、测试账/载体 6 个、v1 载荷/栈字段/表格行各 3 个。逐簇明细见 `metrics.md` 的「R4 语义聚簇」段。
 - 最高簇：§3.2 ELF 迭代器仍写 I-48 之前的 fail-open（FACT-01/02/06、D2-01、reader A-01/B-03/C-01、REFUTE-05 独立同根）；v1 arena 七载荷（FACT-04/D2-03/REFUTE-06）；测试账 27/31/135 与测试名（FACT-05/06/D2-10）；kern_stack_top 字段残留（FACT-12/B-04/C-03/C-05）；`.lrodata` 孤儿（D2-05）。
 
 ### R4 §3 归因
 
-- 根因：79 个（RD-R4-001..079，逐 ID 立根因；跨角色同根由 action/evidence 组文本表达）。
-- 冻结决策检查：D-062（v10 字段删除）、D-082（ELF 修剪）、D-084（SegmentIter Err）、D-089（buffer 两循环）为修复依据；D2-04/D2-06 是新设计项，D-105/D-106 批准延期 `R4-design-batch`；无 re-litigation。
+- 根因：79 个 ID（RD-R4-001..079，逐 ID 立根因；跨角色同根由 action/evidence 组文本表达）；按语义聚簇约 47 个缺陷根，重复合并 28。
+- 冻结决策检查：D-062（v10 字段删除）、D-082（ELF 修剪）、D-084（SegmentIter Err）、D-089（buffer 两循环）为修复依据；D2-04/D2-06 是新设计项，D-105/D-106 批准延期 `R4-design-batch`；无 re-litigation（D-064 的 `prepare_boot` 参数化未被重提）。
 - 范围：全部 in-scope；无 adjacent 阻塞。
-- 设计项：D2-04（BootReport 复用）与 D2-06（arch link.ld 去留）按 §3.6 不实施 ⑥，登记 OPEN-DEBT；D2-07/08/09 为 P3 建议。
+- 设计项：D2-04（BootReport 复用）与 D2-06（arch link.ld 去留）按 §3.6 不实施 ⑥，登记 OPEN-DEBT；D2-07/08/09 为 P3 建议。D2-06 与 `R3-design-batch` 的「arch link.ld 无读者」以及 V1 的 `D02-F03` 同源，本行是迁移登记而非第三次新根因；D2-07 同样 `dup-of` V1 `DESIGN-03`/`D02-F01`。
+- D2-05 的权限说明：`.lrodata` 孤儿节是 P2 代码缺陷（真实链接风险：链接器版本决定布局），不是 §3.6 的 ⑥ 设计项；按确认轮的 P2 事实修复权限实施，不占用设计批额度。D2-04/D2-06 才是需要设计批的签名/文件去留项。
+- 授权来源：D-105/D-106 是代理裁决，授权来源为用户 2026-11-21 会话中的 review-loop D02 代裁指令（本文件 R4 §0 记录），不借用 D01 R36 的授权；`DECISIONS.md` 与台账的批准行已按此改写。
 - 读者项：P1/P2 按 ④ 本轮修；B-05/B-06 是 P3，连同全部 SUGGESTION 进 suggestions。
-- 自引入：0。
+- 自引入：2（均在本轮修复）。其一：批一改了 §3.2 题句下的代码块却留下旧题句，制造同节自相矛盾（`certify-r4-pass1-fact.md` 首轮抓到，commit `d9ceba0cb` 修）；其二：批一在 §5.1 新写「三类畸形」，实际迭代器覆盖四个 `ElfError` 变体（`round4-fact.md` 观察段抓到，本轮改为「四类畸形」并列出变体）。第二条是 certify 判定集外修复，按 §5 记为 post-certify P3。
 
 ### R4 §4 修复
 
 - 预门批：commit `79f910acd`——§3.3 栈顶访问器、compute_kernel_layout/load_segments 的 I-48 形状、bootface 去 startup 参数、§4.9 同步。
 - 批一：commit `ca5830fd5`——§3.2 迭代器/12 变体、五类用途、v1 六载荷、测试账、§3.4/§4.5 字段残留、§5.2 载体、BUMP_NEXT、ARM 证据、GDB delta、第 3 行指针、`.lrodata` 归并；D-105/D-106 延期。
 - 批二：`fix(02)` 引文标注提交——mpx.S/kernel.lds 尾部省略、loader 引文头、store 注释归属、InvalidSegment 序数、riscv 行号。
-- 机械门（最终 HEAD）：anchor 54/54 zero-def=0 multi-def=0；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30。
+- 批三（post-certify P3，meta 清理）：§5.1 证明列「三类畸形」改为「四类畸形」并列出 `PhdrOutOfBounds`、`PhdrEntryTooSmall`、`SegmentOutOfBounds`、`FileszExceedsMemsz`；该行不在两轮 certify 的 18/12 个修改点内，属判定集外精度修复，改后文档 sha256 `48630c90b2a9e1eb2b2814f93ad61d44de0c8a6c634d4835ca25692c602eb781`、1294 行，已用源码 `minix-elf` 的四个 Err 出口逐条复核。
+- 机械门（最终工作树）：anchor 54/54 zero-def=0 multi-def=0；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30。
 - 行为门：`check-layout.sh all` PASS（L0–L9；x86 L3a=4 个 PT_LOAD）；`test-sysboot.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS；`readelf -lW x86_64/kernel | grep -c '^  LOAD'` → 4。
+- 可引导镜像门（meta 第九问补丁）：`cd os && cargo run -q -p xtask -- image --arch x86_64 -r` 重建生产镜像后，从 `os/target/image/x86_64/minix.img` 解出 `::/EFI/minix/kernel.elf`，与 `target/image/x86_64/staging/EFI/minix/kernel.elf` 的 sha256 同为 `fca5b85f202eb7ca03d38d2f8d26636400a768a02c41cd323cb9e507bca8efe2`；`readelf -lW` 的 `LOAD` 行数 4、`readelf -SW` 的 `lrodata` 命中 0。此前 meta 读到的旧镜像（5 LOAD / 986 `.lrodata`）已被本次重建替换。
 - 未实施（②）：D2-04 → D-105、D2-06 → D-106，均落 `R4-design-batch`（OPEN-DEBT）。
 - 未实施（P3 SUGG）：D2-07/08/09 与全部面板建议 → `suggestions.md` R4 段。
+
+### R4 §5 复验
+
+- 独立冷读一（事实/设计/代码）：`certify/round4-fact.md` 第二轮 18/18 CLOSED（第一轮 15/18，5 条同源残项全部是 §3.2 line 458 的旧题句；修后复读）。第一轮回执是 `certify/certify-r4-pass1-fact.md`，不是旧引用的 `round4-fact-pass1.md`（文件名以目录实存为准）。
+- 独立冷读二（读者）：`certify/round4-reader.md` 第三轮 12/12 CLOSED（第一轮 10/12、第二轮 11/12，残项 A-01/B-03 同源于 §3.2 题句，C-05 为 `.lrodata` 旧工件的 LMA 说明；修后复读）。第一轮回执是 `certify/certify-r4-pass1-reader.md`；第二轮回执未单独留档，只在 hand-back 摘要里记了 11/12，属 B-73 的命名/留档缺口。
+- post-certify P3：批三改了 §5.1 的「三类→四类畸形」，该行不在两轮 certify 的判定集内；已按 `minix-elf` 源码的四个 Err 出口（`PhdrOutOfBounds`/`PhdrEntryTooSmall`/`SegmentOutOfBounds`/`FileszExceedsMemsz`）逐条复核，未再派发整篇冷读。最终文档 sha 因此从 `2ca9a9cd7` 基线的 `9f9ec2e7…` 变为 `48630c90…`；这是 P3 精度修复，不改变 18/12 个判定点的结论。
+- 台账重放：每行 ①/④ 的复验列给 grep/test/readelf/commit 或冷读回执；`python3 tools/eval-trace-check.py --round R4 <run-dir>` 最终 PASS（coverage/round-close/metrics/open-debt/severity 全过；2 个 WARN 是既有模板项）。
+- 机械门（最终 HEAD `2ca9a9cd7`）：anchor 54/54 zero-def=0 multi-def=0；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30。
+- 行为门：`check-layout.sh all` PASS（L0–L9，x86 L3a=4）；`test-sysboot.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS；`readelf -lW os/target/x86_64-unknown-none/release/kernel | grep -c '^  LOAD'` → 4；旧 staging 工件 5 行已作为历史读数记入 §4.1。
+- 所有权/写后读顺序：`.lrodata` 归并只改链接脚本的输入节匹配，不改变任何 Rust 所有权；`KernelInfo` 的 `kern_stack_top()` 为只读派生；`.lrodata` 旧孤儿的 LMA 继承已用旧工件 readelf 读数与 GNU ld 2.42 最小复现交叉核实。
+- 改写段 vs C/源码再推演（G7）：本轮改写的 §3.2 迭代器/错误模型逐条对 `minix-elf` 源码（12 变体、6 处 `return Some(Err)`、唯一 `continue` 在非 `PT_LOAD`）；v1 六载荷对 `handoff_v1_read` 的六个 `*_byte_len` 与六个 `decode_*`；测试账对 `cargo --list` 的 27/31/135。
+- 代码块分类：citation 24 个逐字/改写块逐块对账；4 个 WARN 为声明改写块，已人工核对并由 certify 覆盖。
+
+### R4 §6 指标
+
+- 与 `metrics.md` 的 `## R4 确认轮` 块一致：发现总数 79、唯一根因数 79（ID 口径）、语义根因数约 47、本轮新准入 79、certify 新准入 0（三轮回执的 STILL-BROKEN 都是同根修复不完整，最终 fact 18/18 + reader 12/12 CLOSED）、处置 ① 19 / ② 2 / ④ 12 / FP 4 / SUGG 42、未闭环 0。
+- 严重度：FINDING 36 为 P0 4 / P1 5 / P2 20 / P3 7；5 条 P3 FINDING 按 G3 进 SUGG 桶。
+- FP 语义：`FP 4` 全部是 `CLAIM-01..04` 的「反证失败、主张维持」，不是误报；本轮真正的误报 FINDING = 0。`FP` 是工具既有桶名，语义在 metrics 里并列写清，避免与「精度」指标混淆。
+- 自引入：2（均轮内修复；见 §3 与 §5 的 post-certify P3）。
+- 可引导镜像：重建后镜像内 kernel 与 staging 同哈希 `fca5b85f…`，4 LOAD / 0 `.lrodata`（详见 §4）。
+- 轮型 `confirmation`；轮结果 `CONVERGED`。
+
+### R4 §7 状态
+
+- `CONVERGED`。前提：R4 是确认轮，最终工作树上 `certify 新准入 = 0`；OPEN-DEBT 的 `R4-design-batch`（D2-04/D2-06）有 D-105/D-106 与 2026-11-21 日期，按 §4.0f 出口 2 销账。
+- 限制照旧：`CONVERGED` 的含义是「确认轮口径下没有 open 项 + 无未销账债务」，不是零未知缺陷保证。
+
+### R4 §8 给 meta-review 的不确定点
+
+1. 面板与三轮 certify 均为同一模型；无跨模型复核。
+2. `.lrodata` 归并改动了三架构链接脚本并重建工件；check-layout all、test-sysboot、riscv U-Boot 6/6 已跑，但 aarch64 的 `test-rt-birth-aarch64` 仍有已知 A2 user-chain 遗留（D01 轨道），不能作为本轮绿门。
+3. D2-04（BootReport 复用）与 D2-06（无读者 arch link.ld 去留）是 P2 设计项，确认轮不实施 ⑥，D-105/D-106 批准延期；下一设计批会再次移动基线。
+4. `KernelInfo::kern_stack_top()` 的派生公式只在访问器一处，但 `boot_validate_and_prepare` 为对齐断言保留了一次本地展开；D2-10 已把 §3.3 的“公式只留访问器一处”改成“生产消费点经访问器 + 断言本地展开”。
+5. 测试计数 27/31/135 是默认特性下的 `--list` 读数；`--features test-all` 为 146。文档已写清两档口径。
+6. C-05 的“GNU ld 对孤儿段继承 LMA 平移”由 reader certify 在 `/tmp` 用 ld 2.42 最小复现，但仓库旧工件只保留一个 staging ELF 样例；不是全量链接器矩阵。
+7. 独立 meta（`meta/02-higher-half-kernel-r4.md`）判本轮总体 FLAT、运行质量 NOT PASS，主要指向轨迹/去重轴：79 个 ID 的语义重复、FP 语义、严重度分布、制品未入库、FREEZE 未追加、盲区回写无工件、可引导镜像仍嵌旧内核。上述各项已在本轮收口：语义根因数与重复合并入 metrics、严重度改 4/5/20/7、FP 语义并列说明、四份 certify 回执与 loop 变更提交、FREEZE 追加 R4、BLIND-SPOTS 新增 B-69..B-75、镜像重建后 4 LOAD/0 `.lrodata`。
+8. meta 的第 9 项（行为门止于内核 ELF、不到可引导镜像）已按建议补一条手工门记录，但没有新增自动脚本；`minix.img` 的一致性目前靠本轮重建命令与哈希比对，不是 CI 常驻断言（B-71 仍 OPEN）。
+9. meta 抽样的 41 个 ID 中，5 条 SUGG 的处置已过期（A-S03/A-S06/B-S11/B-S14/C-S10(a)），4 条 CLAIM 的 FP 类别是工具桶名与语义的错位。本轮已把 5 条 SUGG 标成「已由 FINDING 修复覆盖（dup-of）」，但 CLAIM 的桶名未改（改桶名会破坏工具契约），只在 metrics/loop 里写清语义。
+
+### L6
+
+- 同 agent 收口（收敛时点，独立 meta 另见 `meta/02-higher-half-kernel-r4.md`）。流程质量记录：本轮的最重问题全部来自 R3 之后的代码移动（I-45..I-48、v10），而文档 sha 未变——说明“文档未改”不等于“基线未变”，FREEZE 的重开条件必须在每次设计批实施后主动检查。三轮 certify 才清完 §3.2 的一行旧题句，与 D01 同型。
+- 流程质量结论：`IMPROVED`（相对 R3：首次在 D02 上主动用 stale-line/citation 预门抓到 4 个引用块，并在面板外修掉 `.lrodata` 的真实链接风险）。
+
+### L6.5
+
+- 三问：① 不变量是「确认轮在最终工作树上 certify 新准入=0，且每个 ①/④ 有独立回读」；② 前提是 R4 面板与三轮 certify 以最终 HEAD 为闭集（面板 79f910acd，最终 2ca9a9cd7；最终回执覆盖最终工作树）；③ 证据是 `round4-fact.md` 18/18、`round4-reader.md` 12/12、六门与行为门。
+- 资源重读：盲区属“流程/基线类”（设计批后文档未动但代码移动），按 L6.5 查 `prompt/resources/fresh-eyes-review` 的“changed contract counterparts by content”检测模式；已实际回写 `BLIND-SPOTS.md` 的 B-69..B-75（语义去重、制品入库、镜像门、未编号建议、回执命名、检索材料面、严重度对账），并修正此前只有宣称、没有工件的 B-68 扩展句。

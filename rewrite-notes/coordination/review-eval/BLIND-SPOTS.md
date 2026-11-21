@@ -548,3 +548,60 @@ meta R23 复核后新增四条；复发的旧条目只记证据，不改其 OPEN
 - **期望探测器**：L3 的 fix-scope 生成器按根因列出制品类别并逐类 grep；L4 certify 对每个根因做“同根制品 grep 归零”；工具支持 `(round, finding-id)` 键而非裸 ID。
 - **状态**：OPEN
 - **检测证据**：R36 三轮 certify（fact pass1 6 STILL-BROKEN、pass2 1、pass3 残项复读）与 meta `meta/01-boot-shim-bootstrap-r36.md` 的 Scope/Trace 两问。
+- **扩展（2026-11-21 回写）**：设计批实施后，即使目标文档 sha 未变，也必须重跑 `--stale-lines` 与 citation 门——D02 R4 的 §3.2 旧题句就是「文档 sha 未变、关联代码已移动」造成的；只比对文档 sha 不足以判断基线未变。
+
+## B-69 语义去重回归：唯一根因数按 ID 计数（V3.4 确认轮）
+
+- **类别**：指标 / 去重
+- **历史证据**：D02 R4 的 `metrics.md` 写「唯一根因数 79 / 重复合并 0」，实际 79 个 ID 聚簇后约 47 个缺陷根，至少 28 个 ID 是跨角色或同根重复（§3.2 迭代器 8 个、测试账 6 个、v1 载荷/栈字段/表格行各 3 个）。R3 曾用「95 ID / 37 根因」的聚簇口径。
+- **为什么当时没发现**：`eval-trace-check.py` 只核对 `唯一根因数` 与根因 ID 数相等，不核对语义聚簇；台账没有 `dup-of` 字段。
+- **期望探测器**：metrics 增 `语义根因数` 与 `语义重复合并`；台账允许/要求 `dup-of`；或恢复 R3 的聚簇 ID。R4 已并列记录 47/28，但字段仍是叙述而非工具断言。
+- **状态**：OPEN
+
+## B-70 制品链“入库”只查文件存在，不查 git 跟踪（V3.4 确认轮）
+
+- **类别**：流程 / 轨迹完整性
+- **历史证据**：D02 R4 的四份 certify 回执（`round4-fact.md`、`round4-reader.md`、`certify-r4-pass1-fact.md`、`certify-r4-pass1-reader.md`）在 meta 复核时仍是 `git status` 的 `??` 未跟踪文件；`loop.md` 的 R4 §5–§8 未提交，`FREEZE.md` 没有 R4 节；`eval-trace-check.py --round R4` 仍 PASS。
+- **为什么当时没发现**：工具只查路径存在与内容形状，不查 `git ls-files` / `git status --porcelain`。
+- **期望探测器**：轮关闭时 `certify-artifact` 用 `git ls-files` 判「已入库」；`FREEZE.md` 必须有本轮终态行；`git status` 不得有该 run 的未跟踪制品。
+- **状态**：OPEN（R4 已由人工提交收口，工具缺口仍在）
+
+## B-71 行为门止于内核 ELF，不到可引导镜像（V3.4 确认轮）
+
+- **类别**：验证 / 行为门
+- **历史证据**：D02 R4 的 `.lrodata` 修复只验证 `target/<arch>/release/kernel`（4 LOAD）；`test-sysboot` 构建另一颗测试内核；`os/target/image/x86_64/minix.img` 在 meta 复核时仍是旧镜像（5 LOAD / 986 `.lrodata`，与旧 staging 同哈希）。用 `SKIP_BUILD=1` 跑镜像级测试或直接引导会拿到旧布局。
+- **为什么当时没发现**：`check-layout`、`readelf`、`test-sysboot` 各自成立，但没有一条把「生产链接脚本 → 内核 ELF → xtask 装机 → minix.img → boot-shim 读取」串成可判的链。
+- **期望探测器**：链接脚本变更后跑 `xtask image --arch <arch>`，解出 `/EFI/minix/kernel.elf` 并断言其哈希等于当前 `target/<arch>/release/kernel`，再跑 `test-shim-bootmarks-x86`/`test-sysboot`。R4 已手工重建并记录 4 LOAD/0 `.lrodata`，尚无 CI 常驻断言。
+- **状态**：OPEN
+
+## B-72 未编号 SUGGESTION 逃逸（V3.4 确认轮）
+
+- **类别**：面板 / 轨迹完整性
+- **历史证据**：D02 R4 的 `panel/round4/fact.md` 有 5 条 `## SUGGESTION` 没有 ASCII ID；`panel-index.py` 按 `## SUGGESTION <ID>` 计数，INDEX 记 fact 的 SUGGESTION 为 0；这 5 条只进了 `suggestions.md`，没有台账行。
+- **为什么当时没发现**：INDEX 与台账都以固定 ID 形状为准；无 ID 的建议不触发孤儿检查。
+- **期望探测器**：`panel-index` 对无编号建议给 WARN；或要求每条建议有 ASCII ID；`suggestions.md` 的事后编号（R4 的 `FACT-S1..S5`）不能替代面板 ID。
+- **状态**：OPEN
+
+## B-73 历史回执命名与引用对不上（V3.4 确认轮）
+
+- **类别**：轨迹完整性 / 命名
+- **历史证据**：D02 R4 的 `loop.md` 引用 `round4-fact-pass1.md`，实际文件是 `certify-r4-pass1-fact.md`；reader 的 pass2 回执未单独留档（只在 hand-back 摘要记 11/12）；最终回执标题写「第二次/第三次」但文件名不带轮次。
+- **为什么当时没发现**：工具只查路径存在，不校验 loop 引用与实际文件名的对应；历史回执与最终回执只靠文件名区分。
+- **期望探测器**：回执文件名固定为 `round<N>-<face>-pass<M>.md` 与 `round<N>-<face>-final.md`；loop 的引用用 glob 校验；缺 pass 回执必须在 loop 明说。
+- **状态**：OPEN（R4 已在 loop §5 改正引用并注明 pass2 缺失）
+
+## B-74 全局检索把历史评审带进材料面（V3.4 确认轮）
+
+- **类别**：隔离 / 材料矩阵
+- **历史证据**：D02 R4 的 `panel/round4/fact.md` 自述一次全仓 `rg` 扫到 `panel/round*` 与旧 review 的文件名/片段（声明未采用）；`loop.md` R4 §1 起初没有记 VARIANCE。读者 B 读了 `review-evals.md` §4.0e，读者 A/C 未读，材料矩阵不对称。
+- **为什么当时没发现**：B-16/B-19 只覆盖「作者前置区」与「检索输出也算材料面」，没有强制 rg 排除评审目录；材料矩阵没有按角色记录实际读过的规则文件。
+- **期望探测器**：FACT/DESIGN 的 `rg` 必须带 `--glob '!rewrite-notes/coordination/**'`（或等价排除）；面板自述的检索输出记入材料矩阵；读者角色读过的规则文件逐项列出，不对称即记 VARIANCE。
+- **状态**：OPEN（R4 §1 已补记 VARIANCE）
+
+## B-75 严重度分布无人对账（V3.4 确认轮）
+
+- **类别**：指标 / 台账一致性
+- **历史证据**：D02 R4 的 `loop.md` §2 写「P0 = 4、P1 = 4、P2 = 19、P3 = 9」，按台账 36 条 FINDING 逐行聚合是 4/5/20/7；metrics 没有严重度键，工具不对账。
+- **为什么当时没发现**：`eval-trace-check.py` 只核对处置桶之和与台账聚合，不核对严重度分布；loop 的 prose 不在工具解析面。
+- **期望探测器**：metrics 增 `严重度: P0/P1/P2/P3` 行；工具按台账逐 ID 聚合对账；loop 的严重度句与 metrics 同源。R4 已改 4/5/20/7 并加 metrics 行，字段尚未成为工具断言。
+- **状态**：OPEN
