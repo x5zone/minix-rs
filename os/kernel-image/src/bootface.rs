@@ -143,7 +143,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // One-shot landing storage. Every `'static` slice this face hands to
     // `KernelInfo` points into this storage; a second entry would overwrite
     // them and create aliasing mutable references (UB). One guard now covers
-    // modules, platform source, parameter buffer and startup records.
+    // modules, platform source, parameter buffer, memory tables and source records.
     static STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
     let storage = STORAGE.take();
 
@@ -450,7 +450,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
 //    into physical bump pages, zero heap) ──
 
 /// Unified landing storage for the direct-boot face (DESIGN-09): modules,
-/// platform source, parameter buffer and startup records all live here.
+/// platform source, parameter buffer, memory tables and source records live here.
 /// One `static mut` plus one one-shot guard replaces four separate landing
 /// areas; `new()` is not all-zero, so this lands in `.data` rather than
 /// zero-fill `.bss`. The size bound is asserted in `bootface_common`.

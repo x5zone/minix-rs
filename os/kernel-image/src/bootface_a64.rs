@@ -137,7 +137,7 @@ fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
 // ── boot-time static slots (the boot face writes them exclusively, then read-only) ──
 
 /// Unified landing storage (DESIGN-09): modules, platform source, parameter
-/// buffer and startup records. One `static mut` plus one one-shot guard
+/// buffer, memory tables and source records. One `static mut` plus one one-shot guard
 /// replaces four separate landing areas; `new()` is not all-zero, so this
 /// lands in `.data` rather than zero-fill `.bss`. The size bound is asserted
 /// in `bootface_common`.

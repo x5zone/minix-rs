@@ -297,8 +297,7 @@ pub struct BootReport<'a> {
     /// leg the classifier writes the records straight into the wire, so this
     /// slice is empty and the wire is the only authority.
     pub memmap_sources: &'a [SourceRecord],
-    /// Startup-object records (kernel + modules + bootstrap allocations).
-    /// Empty on the UEFI leg for the same reason as `memmap_sources`.
+    // v10 (D-062) removed the startup-object slice; no field remains here.
 
     pub kern_virt_base: VirBytes,
     pub kern_phys_base: PhysBytes,

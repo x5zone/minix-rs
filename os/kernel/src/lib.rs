@@ -1594,7 +1594,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         // for the whole run — and hand the global copy that pointer.
         // `ptr::copy` (not `copy_nonoverlapping`) because a partially
         // overlapping source would be UB under the latter; the exact
-        // same-address case (kmain re-stores the global copy) is skipped by
+        // same-address case (resume_additive re-stores the decoded slices) is skipped by
         // the equality guard below.
         let store = &mut *crate::globals::RESERVED_REGION_STORE.get();
         let src = kernel_info.reserved_regions;

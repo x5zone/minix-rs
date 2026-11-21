@@ -558,15 +558,17 @@ impl KernelInfo {
         // that just recomputed the same expression would be a tautology, and
         // a `USER_STACK_TOP` check would compare a compile-time constant with
         // itself. What still has to hold is the one relation that the
-        // remaining fields can falsify: the kernel image must lie in the
-        // higher half, which is the property the user/kernel split rests on.
+        // remaining fields can falsify: the kernel image must sit above
+        // 4 GiB (u32::MAX). That is a coarse lower bound, not the
+        // per-architecture user/kernel split (the layout constants carry
+        // the latter).
         //
         // The syscall-entry placement check moved with its single source:
         // `syscall_entry_va()` is now the only authority (it always was for
         // execution; the field was only a mirror).
         assert!(
             self.kern_virt_base.0 > u64::from(u32::MAX),
-            "KernelInfo postcond: kern_virt_base (0x{:x}) 不在 higher half",
+            "KernelInfo postcond: kern_virt_base (0x{:x}) 不大于 u32::MAX（4 GiB 下限）",
             self.kern_virt_base.0
         );
     }
@@ -960,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "不在 higher half")]
+    #[should_panic(expected = "不大于 u32::MAX")]
     fn test_boot_postconditions_reject_low_virtual_base() {
         // v10 (D-062) removed the three derived-scalar relations this gate used
         // to read; the remaining assertion is the higher-half property. This is
