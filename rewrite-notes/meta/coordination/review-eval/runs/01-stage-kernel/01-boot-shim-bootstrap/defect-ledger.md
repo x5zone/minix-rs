@@ -2623,3 +2623,8 @@
 | RD-R38-025 | DESIGN-11 | 3.7 | R38 | design-d2 | P2 | 文档/锚点 | ① | `globals.rs` 写者改 `resume_additive`，§3.7 改 `report_static` | design-d2 对读 `globals.rs:275` 与 §3.7 | CLOSED；panel/round38/design-d2.md:116；`rg 'prepare_kernel_image_v1.*v1 leg|BootStorageCell::take' os/kernel/src/globals.rs doc` 归零 | — | — | — | — |
 
 **R38 未闭环**：10 条（RD-R38-015..024）。
+| RD-R38-027 | FACT-02 | 3.4.1、4.3 | R38 | fact | P1 | 文档/引文 | ① | 删除四个代码引用块内插入的 F-R23-05/R18 D-4/D-082（I-36）编号 | fact.md FACT-02；`rg` 源码零命中 | CLOSED；panel/round38/fact.md:44；`rg 'F-R23-05|R18 D-4|D-082（I-36）' doc` 归零 | — | — | — | — |
+| RD-R38-028 | FACT-03 | 3.2.4、5.3 | R38 | fact | P2 | 文档/证据 | ① | 把“本仓探针排除候选①”降为“无归档探针，候选①②均未排除” | fact.md FACT-03；全仓零命中探针 | CLOSED；panel/round38/fact.md:62；`rg '本仓探针初步排除' doc` 归零 | — | — | — | — |
+| RD-R38-029 | FACT-04 | 2.6、3.5 | R38 | fact | P2 | 文档/计数 | ① | 统一 `place_modules` 为四道输入门 + 三条断言（含条目数与目标页） | fact.md FACT-04；源码 7 处检查 | CLOSED；panel/round38/fact.md:79；`rg '四道门' doc` 归零 | — | — | — | — |
+| RD-R38-030 | FACT-05 | 3.5、4.2、4.7 | R38 | fact | P2 | 文档/防线归属 | ① | 防线 C 限定 UEFI 腿；U-Boot 腿改编译期上界 + root/bump 复查 | fact.md FACT-05；`assert_modules_clear_of_kernel` 仅 uefi_helpers | CLOSED；panel/round38/fact.md:92；`rg 'assert_modules_clear_of_kernel' doc` 限定 UEFI | — | — | — | — |
+| RD-R38-031 | FACT-06 | 4.2.2 | R38 | fact | P2 | 文档/覆盖缺口 | ① | §4.2.2 补整图级拒绝：OverlapsDescriptor + 四类容量上限 | fact.md FACT-06；`classify` 源码有整图拒绝 | CLOSED；panel/round38/fact.md:105；`rg 'OverlapsDescriptor' doc` 命中 | — | — | — | — |

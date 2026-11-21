@@ -187,7 +187,7 @@ units:
   level: 3
   parent: '2'
   order: 12
-  text_sha: 6ec4caad3ff2fd0e9545f6abb2339822af61058eb1aa53a339e39ae68e772956
+  text_sha: 7493bc8e3f897091512f50f25257471c82f36d01f844b68e5015897737677ac5
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -267,7 +267,7 @@ units:
   level: 3
   parent: '3'
   order: 17
-  text_sha: 3f5ecc4177c6f335d459e544b59126919283c93741e612f3374d09f4e4d3c1c5
+  text_sha: a6f28def8e3fd46e086d98cede803d7455cebcde2571587f589d1585820e6246
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -299,7 +299,7 @@ units:
   level: 3
   parent: '3'
   order: 19
-  text_sha: 263968b8b315df763f684e79a7f7f6d0e61ded4c03aef57b0fbe4d3a8ee3fc6d
+  text_sha: 169148643d4a9918d9e37c588f4fb7edd28de0bbf7ab4e565b5cfb231b5ce1da
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -315,7 +315,7 @@ units:
   level: 3
   parent: '3'
   order: 20
-  text_sha: 39d42c9c46c84a5d5a0cd874615f8c21dcd2f3b2c12e2f92b01c9cfa9b735637
+  text_sha: 751cf0822dcf3bf55e624a49af6dce6a99610a298f6443ddc5226be7e39e0320
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -395,7 +395,7 @@ units:
   level: 3
   parent: '4'
   order: 25
-  text_sha: e65a5802d1d5ed364653dca2e22337e9fe33b345b9b56ddc902e5ed6f3e7bfe5
+  text_sha: e7702701adee03c6e1c876b692fb4000e4164814638e1e1d45e1b1e81c6457dc
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -411,7 +411,7 @@ units:
   level: 3
   parent: '4'
   order: 26
-  text_sha: 87b5f2e4b193de420b3e773a3b56d722a97f05983f9125ad89be075d2b0779bc
+  text_sha: aa95f55dc0732ff3a21d3582d8d0d20e43bd93db067bb8047803d138fc8f7f51
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -475,7 +475,7 @@ units:
   level: 3
   parent: '4'
   order: 30
-  text_sha: 7e309bbf76f3a4f74379fd6e2cdbd148bd53f4ed08b959336a340cf75534a9d2
+  text_sha: 0a78be7fee1b970363ea85df91a5b9c84a2e487448ce8ea082bc7f45a43df497
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -539,7 +539,7 @@ units:
   level: 3
   parent: '5'
   order: 34
-  text_sha: 09884c52b7775e627f701e13bd31972b65cc2a6570ca7e742d7e00e5fa4df5ab
+  text_sha: bdc6ba09aadb257ca194138ccb03e70179c1accde33778df8987d33a1ec2d292
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
