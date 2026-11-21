@@ -1147,11 +1147,11 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 三条断言各对应 §4.3 的一条指令：`sp_ok` 对应"切栈"（栈指针落在高半地址空间）、`sp_aligned` 对应"对齐"（x86_64 检查 `RSP ≡ 8 (mod 16)`，即 `(RSP+8)` 为 16 的倍数；aarch64/riscv64 检查 `SP ≡ 0 (mod 16)`，AAPCS64/RISC-V ABI 要求 SP 16 字节对齐）、`fp_zero` 对应"清帧指针"。捕获方式按架构写在裸函数 `kmain` 的 `naked_asm!` 里（x86_64 用 `mov rdx, rsp` 与 `lea r8, [rip]`，aarch64 用 `mov x1, sp` 与 `adr x2, .`，riscv64 用 `mv a1, sp` 与 `auipc a2, 0`）。
 
-**PC 不在成败判定里**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构可高可低，只打印、不判定；`PC 不在高半` 时该行打印成 `INFO`，它只在失败分支里出现、不会出现在 PASS 输出中。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_phys_base: PhysBytes(image_base)`、`kern_size: image_end - image_base`（镜像窗口按 2 MiB 取整后的跨度）），栈顶由 `kern_stack_top()` 现算，也就是 §3.3 的算式在测试形态下的取值。
+**PC 不在成败判定里**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构分开判定：x86_64 与 aarch64 只打印（`PC 不在高半` 时输出 `INFO`，只在失败分支里出现）；riscv64 把 `pc_at_high` 并入 PASS 条件，PC 落在低半即 `FAIL: PC not at high address (riscv64 delta path broken)`——这正是 `delta` 路径的机械判据（`kmain_verify` 的 `pc_ok` 分支，`target_arch = "riscv64"`）。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_phys_base: PhysBytes(image_base)`、`kern_size: image_end - image_base`（镜像窗口按 2 MiB 取整后的跨度）），栈顶由 `kern_stack_top()` 现算，也就是 §3.3 的算式在测试形态下的取值。
 
 运行方式与判定标记：`os/qemu-tests/run_qemu.sh` 用 `-serial file:` 收串口、用 `strings | grep '### TEST_RESULT: PASS'` 判定（`os/qemu-tests/run_qemu.sh` 的判定段），退出码里 `SKIP` 与 `FAIL` 分开（0 表示 PASS 或 SKIP，1 表示失败）。测试本身的输出形如 `### TEST_RESULT: PASS test-higher-half ###`。
 
-**把 PC 也加进成败判定会怎样**：x86_64 与 aarch64 的载体按低地址进入、PC 常驻低半，这条断言在这两个架构上恒红；而 riscv64 侧它恒绿（PC 本来就该到高半）。同一条断言在两处常红、一处常绿，红色成为常态之后，`sp_ok`/`sp_aligned`/`fp_zero` 三条真正的失败会淹没在同一条常红里——而这三条恰好是"镜像被装低、按高半进入"这条链上唯一能证明交接完成的读数。（想盯 `delta` 路径的读者：riscv64 载体的 PC 读数已在高半，给它加一条 PC 判据即可直接覆盖那条路径——见 §5.4 的 R02-T03。）
+**把 PC 无条件加进成败判定会怎样**：x86_64 与 aarch64 的载体按低地址进入、PC 常驻低半，这条断言在这两个架构上恒红；红色成为常态之后，`sp_ok`/`sp_aligned`/`fp_zero` 三条真正的失败会淹没在同一条常红里。因此判据按架构分开：这两个架构仍只打印 `INFO`，riscv64 才把 PC 高半并入 PASS 条件——在 riscv64 上它不会恒红，因为 `delta` 路径正常时 PC 就该落在高半；它一旦恒红，说明 `delta` 补偿坏了，这正是要抓的故障。
 
 ### 5.3 布局契约与 01 篇断言体系的分工（回指 01 篇 §5.2）
 
@@ -1170,14 +1170,14 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 | M5 | Rust 生产脚本的判据（§3.1） | 生产脚本有 `AT()` 且常量与预期表一致 | 已覆盖 | L0/L3c/L4；无读者的 arch `link.ld` 形态已按 `D-107` 删除 |
 | M6 | ELF 解析器的五道校验与 12 个变体（§3.2） | 每种畸形输入返回对应变体 | 已覆盖 | minix-elf 27 测试（五道校验/迭代器/字段/仿真）；`NoLoadSegments`、`InvalidSegment`、`TargetBufferTooSmall` 由 boot-shim loader 的测试覆盖，不在 minix-elf 的 27 个里 |
 | M7 | 按 `p_paddr` 摆放与 BSS 清零（§4.2） | 段体写到 `paddr`；NOBITS 区清零；重叠拒绝 | 部分覆盖 | loader 的 32 个测试中 28 个直接相关（`bss_zeroed`、`rejects_overlapping`、三个新守卫等，名单见 §5.1）；**`p_paddr` 物理写入只有真机链**，宿主只跑 buffer 孪生 |
-| M8 | 三架构成对跳转的指令序列（§4.3） | 切栈+跳转按序、对齐、清帧指针、`delta` 处理 | 部分覆盖 | 真机载体三架构（`sp_ok`/`sp_aligned`/`fp_zero` 三断言）；**PC 判据缺——x86_64/aarch64 按低地址进入不可判，riscv64 载体 PC 已在高半、可判而未判；`delta` 路径无断言** → **R02-T03（射程：给 riscv64 载体加 PC 判据即可）** |
+| M8 | 三架构成对跳转的指令序列（§4.3） | 切栈+跳转按序、对齐、清帧指针、`delta` 处理 | 已覆盖 | 真机载体三架构（`sp_ok`/`sp_aligned`/`fp_zero`）；riscv64 另把 `pc_at_high` 并入 PASS 条件（R02-T03），低 PC 即报 `delta path broken` |
 | M9 | 从装载到 `kmain` 的合流（§4.4） | 两条生产路径各自到达 `kmain` 并完成跳转 | 部分覆盖 | direct 面（riscv64 自引导）走 `arch_boot_impl`；v1 send/receive 走 `arch_boot_resume_v1`/`resume_after_v1_decode`，不经过 `arch_boot_impl`；两条都到 `kmain`，但入口不同 |
 | M10 | 镜像跨距的 2MiB 收口（§3.5） | 跨距 2MiB 对齐、与 `bootface` 常量一致 | 已覆盖 | L5/L9（L9 三架构，按架构选 `bootface.rs`/`bootface_a64.rs`） |
 | M11 | 交接的寄存器约定（§4.3、§4.4） | `kinfo` 经 `.bss` 副本交接（形参按 ABI 传入 RDI/X0/A0，生产 `kmain` 第一条语句即遮蔽为全局副本） | 部分覆盖 | NK4-A 的寄存器覆写修复与注释；**行为性，无自动断言** |
 | M12 | 布局断言的持续成立（§5.3） | L0–L10 全过 | 已覆盖（手工复跑） | `check-layout.sh` 三架构实跑（本轮复跑全 PASS）；这是一次性复跑，不是常驻 CI 断言 |
 | M13 | 生产 `kmain` 入口的 ABI 栈形（§3.4、§4.3） | x86_64 `call` 前 RSP 16 对齐、入口 `RSP ≡ 8 (mod 16)`；aarch64/riscv64 入口 SP 16 字节对齐 | 部分覆盖 | x86_64 asm 加 `sub rsp, 8`；`kmain_verify` 的 `sp_aligned` 按架构检查（x86 8、aarch64/riscv 0）；**该断言只在 qemu_test 载体执行** → **R02-T04** |
 
-**新 TODO（对源码/测试 workflow 的需求输入）**：`R02-T03`（`delta` 路径的真机断言——riscv64 载体已按高半 VMA 进入，给它加一条 PC 高半判据即可覆盖；其余形态另议）｜`R02-T04`（生产 `kmain` 入口的 ABI 栈形：把 `sp_aligned` 的架构相关检查从 qemu_test 载体扩到生产入口，或在 `kmain` 序言前加断言）。
+**新 TODO（对源码/测试 workflow 的需求输入）**：`R02-T04`（生产 `kmain` 入口的 ABI 栈形：把 `sp_aligned` 的架构相关检查从 qemu_test 载体扩到生产入口，或在 `kmain` 序言前加断言）。
 
 ---
 

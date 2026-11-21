@@ -2349,17 +2349,29 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 
     // Note: PC check is architecture-dependent. In the real kernel, kmain
     // is linked at a high virtual address, so PC >= kern_high. In QEMU
-    // test kernels, UEFI/OpenSBI loads the test binary at a low address,
-    // so PC may not be in the high range. We check PC only for informational
-    // purposes — the key invariants are SP at high address + SP aligned + FP zero.
+    // test kernels, x86_64/aarch64 UEFI loads the test binary at a low
+    // address, so PC may not be in the high range; those two keep PC as
+    // informational. The riscv64 carrier is different: its direct leg adds
+    // `delta` before `jalr`, so entering kmain at a low PC means the delta
+    // path is broken — PC is a required condition there.
     let pc_at_high = pc >= kern_high;
 
-    if sp_ok && sp_aligned && fp_zero {
+    #[cfg(target_arch = "riscv64")]
+    let pc_ok = pc_at_high;
+    #[cfg(not(target_arch = "riscv64"))]
+    let pc_ok = true;
+
+    if sp_ok && sp_aligned && fp_zero && pc_ok {
         Console::write_str("### TEST_RESULT: PASS test-higher-half ###\n");
     } else {
         if !sp_ok {
             Console::write_str("  FAIL: SP not at high address\n");
         }
+        #[cfg(target_arch = "riscv64")]
+        if !pc_at_high {
+            Console::write_str("  FAIL: PC not at high address (riscv64 delta path broken)\n");
+        }
+        #[cfg(not(target_arch = "riscv64"))]
         if !pc_at_high {
             Console::write_str("  INFO: PC not at high address (expected in test kernel)\n");
         }
