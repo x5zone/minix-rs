@@ -277,6 +277,14 @@ def default_ledger(doc: Path, stage: str) -> Path:
     return REVIEW_EVAL_DIR / "runs" / stage / doc.stem / "defect-ledger.md"
 
 
+REPLAY_RE = re.compile(
+    r"(?:[\w./-]+\.(?:rs|c|h|md|sh|py|S|asm):\d+"
+    r"|::[A-Za-z_]\w*"
+    r"|\b(?:rg|grep|cargo test|python3|bash)\s"
+    r"|\b[0-9a-f]{7,40}\b)"
+)
+
+
 def evidence_nonempty(path: Path) -> bool:
     """evidence 至少要有一行内容；空文件或纯空白不算证据。"""
     try:
@@ -284,6 +292,15 @@ def evidence_nonempty(path: Path) -> bool:
     except OSError:
         return False
     return len("".join(text.split())) >= 8
+
+
+def evidence_replay_ok(path: Path) -> bool:
+    """evidence 至少要有一个可重放 token：path:line / test::name / rg|grep / commit。"""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(REPLAY_RE.search(line) for line in text.splitlines())
 
 
 def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
@@ -703,6 +720,9 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
     if (passed or freeze or rewrite or approve) and evidence and not evidence_nonempty(Path(evidence)):
         print(f"[FAIL] evidence 文件为空或不可读：{evidence}", file=sys.stderr)
         return 1
+    if (passed or freeze or rewrite or approve) and evidence and not evidence_replay_ok(Path(evidence)):
+        print(f"[FAIL] evidence 缺可重放 token（path:line / test::name / rg|grep / commit）：{evidence}", file=sys.stderr)
+        return 1
     if passed or freeze:
         lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
         counts, errs = ledger_open_by_unit(lpath)
@@ -798,6 +818,9 @@ def cmd_baseline(doc: Path, state_path: Path, evidence: str | None) -> int:
     if not evidence or not Path(evidence).is_file():
         print("baseline 必须带 --evidence（整篇 survey 的 metrics/scan 产物）", file=sys.stderr)
         return 1
+    if not evidence_replay_ok(Path(evidence)):
+        print("baseline evidence 缺可重放 token（path:line / test::name / rg|grep / commit）", file=sys.stderr)
+        return 1
     data = load_state(state_path)
     data["baseline_full_survey"] = True
     data["baseline_evidence"] = evidence
@@ -825,6 +848,9 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str |
         return 1
     if ok and not evidence_nonempty(Path(evidence)):
         print(f"[FAIL] evidence 文件为空或不可读：{evidence}", file=sys.stderr)
+        return 1
+    if ok and not evidence_replay_ok(Path(evidence)):
+        print(f"[FAIL] evidence 缺可重放 token（path:line / test::name / rg|grep / commit）：{evidence}", file=sys.stderr)
         return 1
     if ok and not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结的章，T3 不得通过", file=sys.stderr)
@@ -873,7 +899,7 @@ def self_test() -> int:
         )
         sp = root / "state.yaml"
         ev = root / "evidence.md"
-        ev.write_text("unit evidence\n", encoding="utf-8")
+        ev.write_text("rg -n 'fn demo' os/  # unit evidence\n", encoding="utf-8")
         ledger = root / "ledger.md"
         ledger.write_text(
             "| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n"

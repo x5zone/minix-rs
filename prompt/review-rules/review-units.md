@@ -53,7 +53,7 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 
 - 冻结条件：`review-units.py audit` 显示该单元 `open = 0`、`certify 新准入 = 0`、
   `defect-ledger.md` 中**存在 open 行的表**必须带 `单元` 列（全部 closed 的历史段不追溯；audit 只对无法归属的 open 行报错）、
-  `mark --pass/--freeze` 带非空 `--evidence` 文件（至少一行可重放命令/输出）、正文 hash 与冻结时一致。
+  `mark --pass/--freeze` 带非空 `--evidence` 文件（至少一个可重放 token：`path:line` / `test::name` / `rg|grep` / commit）、正文 hash 与冻结时一致。
 - 正文变化：`tools/review-units.py sync` 比较 hash。节正文变化只解冻该节（T2）；
   标题、顺序、层级变化解冻该章（T1）与受影响子节；`deps` 变化把下游单元标为 `reopened`。
 - 冻结单元不再进入 L1 面板；只进入确认轮的抽样。冻结不是「永远不读」——确认轮仍会抽 20%。
@@ -103,7 +103,7 @@ python3 tools/review-units.py new-edition <doc> --edition V3.10
 python3 tools/review-units.py check <doc>
 python3 tools/review-units.py next <doc>
 
-# 修复/通过：pass/freeze 必须带 open=0 且非空的 evidence 文件
+# 修复/通过：pass/freeze 必须带 open=0 且含可重放 token 的 evidence 文件
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --fix
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze --evidence <file>
 

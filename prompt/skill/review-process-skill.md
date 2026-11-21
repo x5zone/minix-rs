@@ -604,7 +604,7 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
 
 ### Step 1.0 锚点解析（符号锚点校验，anchor-resolve；2026-09-18 D5 改写收编原 1.0a~1.0g）
 
-> **背景**：原 1.0a~1.0g 是七步行号/锚点族检查（行号抽样、自动化行号脚本 Proposal #7/#13、Rust idiom 同步、路径约定、"参见"范围、注释 doc 归属、注释行号漂移、forward reference）。第四轮裁定：**行号是 AI 的校验脚手架，不是目标**——漂移问题用符号锚点结构性消灭，机械项降级为卫生项，本节由七步收编为一步（原 `tools/review-line-check.sh` 行号自动化方案作废）。
+> **背景**：行号是 AI 的校验脚手架，不是目标；漂移用符号锚点结构性消灭，机械项降级为卫生项。本节只保留当前的一步检查。
 > **职责划分**：符号锚点解析与存在性 → 本步（`tools/anchor-resolve.sh`）；路径约定（`os/` 前缀）→ review-doc-checklist §2.4c（模式 74）；文档 Rust 代码块 idiom（`static mut` 等）→ review-doc-checklist §2.4b（模式 73）+ 文档 Rust 代码块逐块审查（`tools/doc-snippet-extract.sh`）；代码注释 doc 归属 → 模式 76（按卫生项处理）；forward reference 透明声明核对保留在 §2.2 引用验证中执行。
 
 **锚点约定**（写入正式文档与中间产物）：

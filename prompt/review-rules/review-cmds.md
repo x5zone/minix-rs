@@ -8,7 +8,7 @@
 > review 规则，一个 full-review 就该完事"却不 work 的原因）。因此：
 > ① 每个 cmd 只做一件事；② 默认范围是 chapter（章节）级；③ 跨 cmd 组合由用户显式串联，系统不隐式展开。
 >
-> **与 Profile 的关系**：Profile 是"规则模块加载矩阵"（机器视图），cmd 是"任务入口"（人的视图）。
+> **与 Profile 的关系**：旧 Profile 是任务分型别名（历史视图），cmd 是任务入口；加载细则以本文件 §一与两份 checklist 为准。
 > 本文件的 §八 给出旧 Profile → 新 cmd 的对账；新任务一律从 cmd 入口进入，旧 Profile ID 保留为别名。
 
 ---
@@ -224,7 +224,7 @@
 
 ## 八、Profile 对账表（旧 → 现役）
 
-> 旧 Profile ID **保留为别名**（历史 STATE.md / scan.md 中的"Profile C"等引用可追溯）；新任务一律用 cmd 入口。review-profiles.md 中的模块加载矩阵仍是 cmd 加载规则的细节来源。
+> 旧 Profile ID **保留为别名**（历史 STATE.md / scan.md 中的"Profile C"等引用可追溯）；新任务一律用 cmd 入口。review-profiles.md 只作历史别名；加载细则以本文件 §一与两份 checklist 为准。
 
 | 旧 Profile | 一句话 | 去向 |
 |---|---|---|

@@ -20,7 +20,7 @@ prompt/
 ├── WORKFLOW-OPEN-ITEMS.md       — 裁决与开放项存档（非规则）
 ├── WORKFLOW-ADVICE-ARCHIVE.md   — 历史删档承接与出处（非规则）
 ├── DOC-ITER-WORKFLOW.md         — 文档迭代统一规格（review-panel P-READER 引用）
-├── EXECUTE-D01-D06-CONVERGENCE.md — 执行入口（非规则）
+├── EXECUTE-D01-D06-CONVERGENCE.md — V3.9 执行入口指针（非规则；V3.5 手册已归档）
 ├── TODO-MIGRATION-2026-11-21.md — 01/02 旧 TODO 迁移记录（非规则）
 ├── META-UNITS-2026-11-21.md     — 单元模型 meta 报告（非规则）
 ├── V3.9-REGRESSION-REVIEW-2026-11-21.md — V3.9 回归 review 报告（非规则）

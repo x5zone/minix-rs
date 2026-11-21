@@ -339,13 +339,16 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
   `根因 ID` 数；`本轮新准入` = 本轮 `origin` 首次出现的根因数。三个数分开报，禁止用
   一个数冒充另一个。
 
-**准入判据**（四条全满足才进台账）：
+**准入判据**（五条全满足才进台账）：
 
 1. **位置**：能落到文档节号、源码符号、测试名或命令输出；
 2. **判据**：能映射到一条规则、检查清单项或读者验收清单项
    （`review-doc-checklist.md`、`review-code-checklist.md`、§4.0e 或 `DECISIONS.md`）；
 3. **证据**：E1/E2 级证据，或 E3 级完整推理链；纯“我觉得可以更好”不满足；
 4. **反证**：写了“若我错了”的具体反例或检索路径。
+5. **先红后绿**（仅 `P0-code-bug` / `P0-test-missing`）：附当前 HEAD 上 `exit != 0` 的判别命令
+   （测试名 / `rg` 归零 / 复现脚本），修复后用**同一命令**复跑 `exit == 0`；两条输出都进台账。
+   纯文档事实错误不适用本条。
 
 不满足四条的，面板可以照报，但主 agent 记入
 `runs/<stage>/<doc-stem>/suggestions.md`。**SUGG 行的适用范围（V3.4-r8，与工具
@@ -770,7 +773,7 @@ V3 的版本边界**不依赖文档收敛**，只在以下时点评估升版：
 
 - 每一轮关闭后（`open=0` 且 certify 通过）可以评估一次；
 - 每篇 FREEZE 之后；
-- 同一 edition 在同一篇上连续 3 轮未收敛 → 强制 edition 评估（§7.5）；
+- 同一篇跨 edition 累计 3 个修改轮仍未收敛 → 强制 edition 评估（§7.5）；
 - 出现被证实的 Critical/High 盲区。
 
 完整 survey 之前，先在**最终 HEAD** 跑 `doc-citation-check.py` / `anchor-resolve.sh` /
@@ -826,9 +829,9 @@ CONVERGENCE-CANDIDATE，由确认轮收口（§6A 四态模型），每个 CANDI
 citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 轮结束仍 `open>0`，
 或第 3 轮本身仍是线级补丁：
 
-1. 判该 edition `NOT CONVERGING`；
-2. 写 `EDITION-RETRO.md`：唯一新增根因数、自引入数、重复率、修复批量、机械门命中、
-   哪些规则从未命中；
+1. 写 `EDITION-RETRO.md`（唯一新增根因数、自引入数、重复率、修复批量、机械门命中、
+   哪些规则从未命中），并按它整节重写被反复报的段/小节（不开第 4 个修改轮）；
+2. 重写后只允许 1 次确认轮；确认轮仍 `open>0` → 判该 edition `NOT CONVERGING`；
 3. 下一个边界必须处理最大阻塞项，或回退到上一 edition；
 4. 第 4 个修改事务禁止；唯一例外是 `DECISIONS.md` 的 `rewrite-exception` 判决行，
    且必须在 metrics 里写 `重写例外: <判决 ID>`。
@@ -846,18 +849,7 @@ citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 
 这不是“放弃文档”：文档在下一个 edition 下继续，目标仍是收敛；被淘汰的是**不能
 收敛的规则版本**，不是文档。
 
-**V3.8 硬上限与强制重写（2026-11-21 用户裁决）**：
-
-- **同一篇最多 3 个修改轮，跨 edition 累计。** 不再按 edition 分开计；换 edition 不是绕过
-  上限的方式。第 4 个修改轮**禁止**；唯一例外是用户 `DECISIONS.md` 的 `rewrite-exception`
-  判决行，且必须写明「为什么重写不可行」。
-- **第 3 轮结束仍未收敛 → 强制重写**：不再开第 4 轮，转入 Manuscript 阶段，按
-  `review-tutorial-rubric.md` 与 `review-publication.md` **整节重写**失败章节（不是线级补丁）。
-- **重写后只允许 1 次确认轮**（不占修改轮预算）；确认轮仍不收敛 → 停止，交用户裁决，
-  不得自动开轮。
-- **代码冻结**：Review 期间关联代码冻结（见 `review-publication.md` §四.6）；重写期间落地的
-  设计批必须在重写开始前完成，重写开始后的 `os/` 改动必须对应重写批，并重设基线、重跑受影响门。
-
+**代码冻结**：Review 期间关联代码冻结（见 `review-publication.md` §四.6）；重写期间落地的设计批必须在重写开始前完成，重写开始后的 `os/` 改动必须对应重写批，并重设基线、重跑受影响门。
 ### 7.6 中途变更
 
 规则变更不得发生在轮次中途。确需中途变更：当前轮标 `INVALIDATED`，在新 edition 下

@@ -1264,7 +1264,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 
 ### Step 1.0 锚点解析（符号锚点校验，anchor-resolve；2026-09-18 D5 改写收编原 1.0a~1.0g）
 
-> **背景**：原 1.0a~1.0g 是七步行号/锚点族检查（行号抽样、自动化行号脚本 Proposal #7/#13、Rust idiom 同步、路径约定、"参见"范围、注释 doc 归属、注释行号漂移、forward reference）。第四轮裁定：**行号是 AI 的校验脚手架，不是目标**——漂移问题用符号锚点结构性消灭，机械项降级为卫生项，本节由七步收编为一步（原 `tools/review-line-check.sh` 行号自动化方案作废）。
+> **背景**：行号是 AI 的校验脚手架，不是目标；漂移用符号锚点结构性消灭，机械项降级为卫生项。本节只保留当前的一步检查。
 > **职责划分**：符号锚点解析与存在性 → 本步（`tools/anchor-resolve.sh`）；路径约定（`os/` 前缀）→ review-doc-checklist §2.4c（模式 74）；文档 Rust 代码块 idiom（`static mut` 等）→ review-doc-checklist §2.4b（模式 73）+ 文档 Rust 代码块逐块审查（`tools/doc-snippet-extract.sh`）；代码注释 doc 归属 → 模式 76（按卫生项处理）；forward reference 透明声明核对保留在 §2.2 引用验证中执行。
 
 **锚点约定**（写入正式文档与中间产物）：
@@ -2162,41 +2162,39 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 
 **中断时强制动作**（当前 session 必须在 scan.md 末尾写入 Resume Point 段）：
 
-```markdown
+````markdown
 ## Resume Point（跨 session 续审入口，下一 session 必读）
 
 ### 当前断点
 - **Session**: #{N}（{日期}，{中断原因}）
-- **完成度**: {已完成的 Step 列表}
-- **未完成**: {待执行的 Step 列表}（对应 Gate {X/Y/Z}）
+- **完成度**: 见 scan.md `## Blocker Gates Status`
+- **未完成**: 见 scan.md `## Issue List` 的 open 行 + STATE.md Convergence Checklist
 
 ### 下一 session 启动协议
-1. **必读文件**（按顺序）：
-   - 本 scan.md（了解已完成的 Step + 已发现的 Issue）
-   - design.md（若 Gate H 已 PASS，作为 review 依据）
-   - design 前序脚手架（design-structure.md / outline.md）——design 已生成时不重读
-   - 被审文档 + 关联 Rust 代码（按需读取，避免一次性耗尽上下文）
-   - C 源码（按需读取）
-2. **跳过**: 已完成的 Step 不重做；design 前序脚手架（若 Gate H 已 PASS）不重读
-3. **从 {下一 Step} 开始**: {下一 Step 描述}
+1. 必读（按顺序）：scan.md（Issue List + Gate Status）、STATE.md、design.md（若 Gate H PASS）、
+   被审文档与关联代码（按需读取，避免一次性耗尽上下文）。
+2. 跳过：已完成的 Step；Gate H PASS 后的 design 脚手架不重读。
+3. 从 `{下一 Step}` 开始：{下一 Step 描述}。
 
-### 已发现 Issue（下一 session 继续追踪）
-| # | 优先级 | 位置 | 问题 |
-|---|--------|------|------|
-| ... | ... | ... | ... |
+### 指针
+- Issue 清单：`scan.md` `## Issue List` 第 {start}–{end} 行
+- Gate 状态：`scan.md` `## Blocker Gates Status` 第 {start}–{end} 行
+- 待执行 Step：`STATE.md` `Convergence Checklist` 未勾选项
 
-### 下一 session Step 执行清单
-- [ ] Step {N}: {描述}
-- [ ] Step {N+1}: {描述}
-- [ ] ...
-- [ ] 更新 STATE.md 状态为 CONVERGED（若所有 Gate 通过）
+### 必跑命令（缺一不可）
+```bash
+python3 tools/verify-check.py --preflight --tool {tool} --stage {stage} --doc-stem {doc-stem} --agent {agent}
+python3 tools/verify-check.py --scan {scan} --state {state} --symbols {symbols} --units {units} --sample-ratio 0.2 --seed {seed}
+python3 tools/eval-trace-check.py {run_dir} --round R{N} --units {units}
+python3 tools/todo-ledger.py check --doc {doc} --fail-on-open
 ```
+````
 
 **Resume Point 必含字段**（缺一不可，缺失 = P1 流程违规）：
-1. **当前断点**：Session 编号 + 中断原因 + 完成/未完成 Step 列表
+1. **当前断点**：Session 编号 + 中断原因
 2. **下一 session 启动协议**：必读文件清单 + 跳过项 + 起始 Step
-3. **已发现 Issue 清单**：编号 + 优先级 + 位置 + 问题（含 file:line）
-4. **Step 执行清单**：待执行 Step 的 checkbox 列表
+3. **指针段**：Issue List / Gate Status 的行号范围 + STATE.md 未勾选 Step
+4. **必跑命令段**：preflight、verify-check、eval-trace、todo-ledger 四条命令
 
 **下一 session 启动检查**（必须执行）：
 1. 读取 scan.md 末尾 Resume Point 段
