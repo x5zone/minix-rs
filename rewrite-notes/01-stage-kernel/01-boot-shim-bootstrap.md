@@ -128,7 +128,7 @@ C 的这四样分别落在 `pre_init.c` 与 `pg_utils.c` 两个文件里：收�
 
 （表里与下文反复出现的一个名字先在这里立住：**boot-shim** 是重写把"引导准备"搬出去的那个独立可执行体（§1.1 首次出现处已给简称，这里补正式定义）——它的产物形态与两个接口见 §3.2。**直核**指不经独立 boot-shim、固件直接跳进内核镜像的启动方式；两个直核面的实现见 §3.3/§3.7。）各条启动路径的当前接线状态集中在 §3.1.1 的"唯一权威表"，其余各节再提到接线状态都指向那里。
 
-本篇用到的编号不止一套，先给一张**主要编号索引**；细节在对应定义节解释，本表只给索引（防线 A–D、布局档 L0–L9、M4 的六入口各占一行；各计法的成员与差异以 §3.7 为准）：
+本篇用到的编号不止一套，先给一张**主要编号索引**；细节在对应定义节解释，本表只给索引（防线 A–D、布局档 L0–L10、M4 的六入口各占一行；各计法的成员与差异以 §3.7 为准）：
 
 > **计数约定**：正文单独说“五条腿”时一律指 §3.7 的“五条生产腿”；说“五条门链”时指 §5.2.3 的真机门链。两个“5”成员不同（前者含 aarch64 直核面、不含直载测试链；后者含直载测试链、不含 aarch64 直核面），跨节比较前先按 §3.7 的术语对账表换算。
 
@@ -142,7 +142,7 @@ C 的这四样分别落在 `pre_init.c` 与 `pg_utils.c` 两个文件里：收�
 | 生产腿 5（本篇主计数） | 五条生产腿；“腿”的定义在 §3.2，形态 3 / 协议段（交接面）4 / 三类链 6 / 架构×链五行 5 / 门链 5 等其余计法见 §3.7 的术语对账表 | §3.2（定义）/ §3.7（计法） | §3.1.1、§4.8、§5.2.3 |
 | M1–M17 | 机制到证据的对照 | §5.1 | §5.1（状态）/ §5.3（TODO 详情） |
 | 防线 A–D | 装载与模块重叠的四道防线（A/B 守 ELF 段装载，C/D 守模块重叠：A 源×目标、B 目标 LMA 间、C 模块×内核、D 接收侧复核（模块×模块 + 内核×模块；内核×模块与 C 故意重复）） | §4.3 / §4.9 | §5.1 M11 |
-| L0–L9 | 内核镜像布局校验档 | §5.2.2 | §5.2.2 |
+| L0–L10 | 内核镜像布局校验档（L10 为 C 侧段归属） | §5.2.2 | §5.2.2 |
 | 六入口 | M4 深拷序的六个入口委托壳 | §5.1 M4 / §5.3 TODO-01 | §5.1、§5.3 |
 > **编号图例**：正文里的 `D01-Fnn`、`R2`/`Round 1`、`R14`–`R24` 等（含 R20–R24）是评审批次号，`F-R<nn>-<nn>`、`DESIGN-<nn>`、`D-<nnn>`、`D2-<nn>`、`BOOT-SCOPE <n><letter>`、`Phase <letter>` 是裁决/过程出处索引（只用于回查，跳过不影响结论；正文不再把评审轮次当时间锚点），`D-1`/`D-4`/`D01 裁决项 3` 是当轮设计/裁决编号，`T2`、`Phase A.2` 是过程代号；`A+D` 指 §4.2.1 动作 2 的顺序（先读 ELF、预订 LMA 跨度，再分配 root/bump、拷贝段；LMA 是装载地址，正式定义见 §3.5），`裁决 A` 指删除 `BootShim` trait 的裁决（唯一实现是 U-Boot 腿的 `RiscvUbootBootShim`，见 §3.1.1/§3.2；trait 本身已在 R23 删除）；都不是源码符号；它们只作出处索引，跳过不影响结论。需要回查时：字段删除→§3.5/§3.9、扣减换手→§3.8 定义/§4.7 读法、GET_KINFO 载荷→§3.4.2。**"字段删除"** 是本文对一次设计裁决的简称：删除 `KernelInfo` 的 `bootstrap_start/len` 与 `free_upper_idx` 三个字段，论证见 §3.5 与 §3.9。
 
@@ -3105,7 +3105,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 
 两处实现现状：
 
-- x86_64 的独立镜像入口已实现（接线状态见 §3.1.1）：`rust_image_main(arena_pa)` 从 `rbx` 取 arena 基址，调用 `arch_boot_resume_v1`；`_start` trampoline 按源码次序执行 `cli`、`cld`、清 `.bss`（只碰 rdi/rcx）、设栈、把 `rbx` 转进 SysV 第一参数 `rdi`、再 `call rust_image_main`。内核镜像的产出与布局校验仍由 `check-layout.sh` 的 L0–L9 守住。
+- x86_64 的独立镜像入口已实现（接线状态见 §3.1.1）：`rust_image_main(arena_pa)` 从 `rbx` 取 arena 基址，调用 `arch_boot_resume_v1`；`_start` trampoline 按源码次序执行 `cli`、`cld`、清 `.bss`（只碰 rdi/rcx）、设栈、把 `rbx` 转进 SysV 第一参数 `rdi`、再 `call rust_image_main`。内核镜像的产出与布局校验仍由 `check-layout.sh` 的 L0–L10 守住。
 - riscv64 在 QEMU `-kernel` 直核场景下镜像按物理基址视图执行（源码注释把这一实测事实记作 `medany`）。"两基址相等"发生在哪类产物要说准：**QEMU 直核测试内核**按 VMA=LMA 平铺链接（如 `test-paging-enable-riscv64` 的 `link.ld`，其位置计数器一行即 `. = 0x80200000`——VMA=LMA 平铺），`kern_virt_base == kern_phys_base`，§4.6 的 Step 2 守卫（相等即跳过 Step 2）就是为它们写的；**生产直核镜像**与 U-Boot 接收镜像共用高半 VMA 的 `riscv64.ld`，两基址不等、守卫走正常分支。生产链（`bootface` + 文件系统 + 高半链接）走的是另一套布局。U-Boot 链的 `kernel-image`（启用 `fw-riscv64-uboot`）接收镜像与直核镜像共用同一份 `riscv64.ld`（高半 VMA `0xFFFFFFC000000000`、物理装载基址 `0x80200000`），差别只在入口分道特性与交给它的第一个参数；shim 侧则是一片独立的物理链接产物（VMA=LMA，见 `os/boot-shim/riscv64-uboot.ld`）。两条布局的基址常量以链接脚本为准，复算命令：`grep -n 'KERNEL_VIRT_BASE\|KERNEL_PHYS_BASE\|ENTRY' os/kernel-image/*.ld`（该命令对三份脚本各命中若干行，这里只摘 riscv64 的三个值： `KERNEL_VIRT_BASE = 0xFFFFFFC000000000`、`KERNEL_PHYS_BASE = 0x80200000`、`ENTRY(_start)`）。
 
 **让 riscv64 照搬 x86_64 的「一个镜像 + 空指针诚实失败」形态会怎样**（问题不在“建表/跳转次序”——两者都先建根再跳；差别在入口参数通道）。三条架构现在都按**交付形态分构建产物**：aarch64 的盘面产物（`fw-aarch64-uefi-recv`）只编 v1 接收臂、直核产物（`fw-aarch64-none`）只编自引导臂，盘面产物里的 `arena_pa == 0` 只作诚实失败；riscv64 的 `fw-riscv64-uboot` 接收镜像同理（`a0` 为零只作诚实失败），直核产物只编 `bootface`。x86_64 没有直核面，`0` 只作诚实失败。riscv64 的直核入口（`rust_image_main(boot_hart, dtb_phys)`）没有"交接指针"这个入参——直核场景只给 hartid 与 DTB，表址从 DTB `/chosen` 取；若照搬 x86_64 的「一个镜像承载两种形态」而不补一条分道，空指针解引用会发生在 `early_console` 初始化之前（主语限定为**非 U-Boot 特性**的 riscv64 直核入口——`fw-riscv64-uboot` 构建的接收臂有 `arena_pa` 入参，这个反事实只适用于直核形态，串口上没有任何输出）。反过来，若 aarch64 退回内联执行，撞的是 §3.7 第一处替代做法已经推演过的同一个问题（TTBR0 被换掉、取指映射作废），现场证据（`elr`/`vbar` 钉在同一低地址）也在那里。
@@ -3160,7 +3160,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 | M7 | 分配器"写一次"（§3.8） | 二次 `register` 在两种构建档都 fail-closed（panic），第一个注册者不会被替换 | 宿主测试 | **已覆盖**：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` / `register_free` 各一：两种构建档都 `assert!` 停止，`catch_unwind` 断言 panic 后指针不变）；[`pt_alloc_concurrent.rs`](os/arch/tests/pt_alloc_concurrent.rs) 1 条（barrier 双写者恰好一个赢家、输者 panic） | TODO-02（已关闭，见 5.3） |
 | M8 | 落地区容量与 fail-fast（§4.5） | 超过容量时快速失败而非截断 | 宿主测试 | **已覆盖**：落地区行为（`test_store_kernel_info_lands_firmware_slices`）+ 六枚超容量负控（`test_store_kernel_info_rejects_{reserved,memmap,boot_module,platform,param,source}_overflow`） | TODO-03（已关闭，见 5.3） |
 | M9 | bump 分配器（§3.8/§4.2） | 顺序推进、耗尽拒绝、页对齐、reinit 后归位、跨镜像区间自洽 | 宿主测试 | **已覆盖**：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条 | — |
-| M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十条主编号（L0–L9 全架构） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
+| M10 | 布局契约（§5.2 与 §3.6） | L0–L10 十一条主编号（L0–L9 全架构，L10 查 C 侧段归属） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
 | M11 | 模块顺序契约（§4.3） | 12 项按 `MODULE_NAMES` 顺序返回、缺件 panic；装载与模块顺序的四道防线 A/B/C/D：A 文件字节区间不与任何目标 LMA 相交（`first_source_destination_overlap`）、B 目标 LMA 两两不相交（`first_overlapping_pair`）、C 模块×内核跨度（`alloc_module_pages`/`assert_modules_clear_of_kernel`，见 §4.3）、D 接收侧复核（`KernelInfo::validate`：模块×模块 + 内核×模块；内核×模块与 C 故意重复） | 宿主测试＋真机前置检查 | **已覆盖**：`loader.rs` 顺序/缺件测试＋真机链的 `mdir` 前置；A/B/C/D 的映射见 §4.3 与 §4.9 | — |
 | M12 | EBS 阶段边界（§4.1） | EBS 之后不再出现固件调用；裸串口路标仍输出 | 真机＋静态检查 | **部分覆盖**：x86 shim 与 riscv64 U-Boot shim 门脚本各自断言 `[raw] entering kernel image v1`；aarch64 门没有这一行，通过条件见 §5.2.3 的 aarch64 行（两条固定标记 + 第三变体之一）；x86 的五条标记含 `entering scheduler`；退出本身那条与 `[raw] arena=…` 仍靠日志人工看。静态检查：`os/boot-shim/tests/ebs_boundary_audit.rs` 对生产入口的配对循环成功标记之后切片断言零 `uefi::`/分配/释放/drop；另对 `ebs_pair.rs` 整模块只断言零 `uefi::`（分配/释放/drop 未做模块级审计）；带三枚注入负控与注释豁免自检 | TODO-04（已关闭，见 5.3；TODO-04 指 EBS 后的文本级审计，门链标记覆盖是另一件事） |
 | M13 | UEFI 侧快照函数（§4.2：`build_memmaps`、`assert_bootstrap_outside_memmap` 等） | 两列表对"可分配 / 保留"两档互斥且完备（`Excluded`/`DevicePath`/`Side` 按设计不进表）；root/bump 不与 free 列表相交 | 宿主测试→真机 | **已覆盖（可测面）**：`assert_bootstrap_outside_memmap` 的 5 条宿主测试；`ebs_map::tests::classified_tables_are_disjoint_and_expected` 覆盖同一分类的 free/reserved 表互斥与计数；`build_memmaps` 生产不调用；其单表包装 `build_memmap()` 被 2 个测试内核直接调用（`test-memmap` / `test-memmap-aarch64`），加上 12 个调用 `exit_boot_services_and_classify()` 的测试内核共 14 个可执行调用点（另有 1 个文件只在注释里提及，按文件计 15），`alloc_root_page`/`alloc_bump_region` 的调用点单根（Boot Services），宿主无法构造——这三项按设计排除，不是开放缺口 | TODO-07（已关闭，见 5.3） |
@@ -3285,6 +3285,7 @@ $ echo $?
 | L7 | 引导栈符号存在、跨度 64KiB、落在末段内（不检查自顶向下方向）——这是宿主侧的弱检查；sp 初值与数组顶的真实关系（含收口填充余量）由 ld 脚本的排布保证，见 §4.4 字段表 `kern_stack_top` 行 | 栈符号与镜像范围脱节 |
 | L8 | `minix_kernel::arch_boot` 符号在镜像里 | `--gc-sections`/归档粒度把内核启动图裁出镜像 |
 | L9（全架构） | ELF 实测跨距 = 对应 direct face 的 `KERN_SIZE`（x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`） | 镜像布局常量与自引导面的期望值漂移 |
+| L10（C 侧，x86_64/all 时输出） | `Makefile.inc` 的 `.for unpaged_obj` 名单含 `head.o`/`pre_init.o`/`pg_utils.o`/`klib.o` 且不含 `mpx.o`；`kernel.lds` 有 `.unpaged_text`/`.unpaged_data`/`.unpaged_bss` 三个收段；`mpx.S` 定义 `k_initial_stktop`、`head.S` 引用它 | 改名名单与收段规则脱节，`k_initial_stktop` 被误收进低地址 unpaged 段 |
 
 L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 保证"两套地址之间只有一个偏移量"这件事对每个段都成立，L5 保证"选出的页尺寸"有一个可用的档位。L8 是"链接保留"的可观测证据——`KERNEL_ENTRY_ANCHOR` 持有 `arch_boot` 的函数指针，链接脚本 `KEEP` 该节，两者一起挡住裁剪。
 

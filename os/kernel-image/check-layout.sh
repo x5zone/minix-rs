@@ -42,6 +42,37 @@ command -v nm >/dev/null || { echo "缺 nm" >&2; exit 2; }
 
 FAIL=0
 hex2dec() { echo $((16#$1)); }   # bash 自带 64 位整数运算，不依赖 gawk
+REPO_ROOT="$(dirname "$OS_ROOT")"
+
+# L10（R02-T01）：C 侧两段式布局的段归属。判据是 Makefile.inc 的
+# `.for unpaged_obj` 名单与 kernel.lds 的 `unpaged_*.o` 收段规则之间的
+# 机械对账：head.o/pre_init.o 在名单里，mpx.o 不在——后者因此落在高半
+# .text/.bss，`k_initial_stktop`（mpx.S 定义、head.S 立栈时引用）也就
+# 落在高半。`__k_unpaged_` 前缀在这里是手写标签，不作为归属证据。
+check_c_unpaged() {
+    local mk="$REPO_ROOT/minix3/minix/kernel/arch/i386/Makefile.inc"
+    local lds="$REPO_ROOT/minix3/minix/kernel/arch/i386/kernel.lds"
+    local mpx="$REPO_ROOT/minix3/minix/kernel/arch/i386/mpx.S"
+    local head="$REPO_ROOT/minix3/minix/kernel/arch/i386/head.S"
+    local block ok=1 why=""
+    block="$(sed -n '/^\.for unpaged_obj in /,/^$/p' "$mk")"
+    if [ -z "$block" ]; then ok=0; why+=" 名单缺失"; fi
+    for obj in head.o pre_init.o pg_utils.o klib.o; do
+        grep -qE "(^|[[:space:]\\\\])${obj//./\\.}([[:space:]\\\\]|$)" <<<"$block" \
+            || { ok=0; why+=" 缺${obj}"; }
+    done
+    if grep -qE '(^|[[:space:]\\])mpx\.o([[:space:]\\]|$)' <<<"$block"; then
+        ok=0; why+=" mpx.o误入名单"
+    fi
+    for sec in '.unpaged_text' '.unpaged_data' '.unpaged_bss'; do
+        grep -qF "$sec" "$lds" || { ok=0; why+=" 缺${sec}"; }
+    done
+    grep -qF 'LABEL(__k_unpaged_k_initial_stktop)' "$mpx" \
+        || { ok=0; why+=" 缺栈顶标签"; }
+    grep -qE 'mov[[:space:]]+\$k_initial_stktop,[[:space:]]*%esp' "$head" \
+        || { ok=0; why+=" head.S未引用栈顶"; }
+    check L10 "C 段归属：mpx.o 不在 unpaged 名单，k_initial_stktop 落高半（${why:-名单与收段规则一致}）" "$ok"
+}
 
 # check <编号> <说明> <条件 0/1>
 check() {
@@ -264,11 +295,13 @@ $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")"
     check L9 "跨距对账（$face）：ELF 实测 0x$span_dec = KERN_SIZE 0x${span_rs:-无}" "$ok9"
 }
 
+# L10 检的是 C 侧 x86-32 源码，与 WHICH 的 Rust 架构无关；只在跑 x86_64
+# 或 all 时输出，避免 aarch64/riscv64 单架构复跑出现无意义的重复行。
 case "$WHICH" in
-    x86_64)  check_arch x86_64 ;;
+    x86_64)  check_c_unpaged; check_arch x86_64 ;;
     aarch64) check_arch aarch64 ;;
     riscv64) check_arch riscv64 ;;
-    all)     check_arch x86_64; check_arch aarch64; check_arch riscv64 ;;
+    all)     check_c_unpaged; check_arch x86_64; check_arch aarch64; check_arch riscv64 ;;
 esac
 
 if [ "$FAIL" = 0 ]; then
