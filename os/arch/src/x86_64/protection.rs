@@ -112,6 +112,10 @@ const USER_DS_ACCESS: u8 = 0xF2; // Present|DPL3|Data|Write
 // TSS descriptor access byte (Intel SDM Vol. 3A §7.2.3)
 // Bits: Present(7) | DPL(6:5) | 0(4) | Type=1001(3:0) = 64-bit TSS
 const TSS64_ACCESS: u8 = 0x89; // Present|DPL0|64-bit TSS
+// `ltr` sets the type field to 1011 (busy) in memory. A second load on
+// the same descriptor is a `#GP` with no useful context, so the loader
+// checks this before `lgdt` and names the real cause.
+const TSS64_BUSY_TYPE: u8 = 0x0B;
 
 // Granularity byte encoding (Intel SDM Vol. 3A §3.4.5)
 // Only the upper 4 bits of byte 6 (G/D/B/L/AVL); Limit[19:16] is
@@ -479,6 +483,19 @@ impl ProtectionArch for X86_64Protection {
 impl X86_64Protection {
     /// Shared load sequence: lgdt + reload CS/DS/ES/SS + ltr(cpu).
     fn load_with_tss(&self, cpu_id: u32) {
+        let idx = cpu_id as usize;
+        assert!(idx < MAX_CPUS, "cpu_id {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
+        // `ltr` sets the TSS descriptor type to busy (1011) in memory.
+        // Check the target slot before touching GDTR: a second load would
+        // otherwise fault at `ltr` with a bare #GP, and the caller would
+        // have no name for the mistake (D-102).
+        let gdt_idx = GDT_TSS_FIRST_INDEX + idx * GDT_SLOTS_PER_TSS;
+        let tss_access = ((self.gdt[gdt_idx] >> 40) & 0xFF) as u8;
+        assert!(
+            (tss_access & 0x0F) != TSS64_BUSY_TYPE,
+            "load called twice: TSS descriptor busy (cpu {})",
+            cpu_id
+        );
         let gdtr = DescTablePtr {
             limit: (core::mem::size_of_val(&self.gdt) - 1) as u16,
             base: self.gdt.as_ptr() as u64,
@@ -684,6 +701,17 @@ mod tests {
         let s_bit = (TSS64_ACCESS >> 4) & 1;
         assert_eq!(s_bit, 0, "TSS is a system descriptor (S=0)");
         assert_eq!(type_field, 0x9, "Type must be 1001 (64-bit TSS available)");
+    }
+
+    #[test]
+    #[should_panic(expected = "load called twice: TSS descriptor busy")]
+    fn load_rejects_busy_tss_descriptor() {
+        let mut prot = X86_64Protection::init(0, VirBytes::new(0x8000));
+        let gdt_idx = GDT_TSS_FIRST_INDEX;
+        prot.gdt[gdt_idx] = (prot.gdt[gdt_idx] & !(0xFFu64 << 40))
+            | (((TSS64_ACCESS & 0xF0) | TSS64_BUSY_TYPE) as u64) << 40;
+        // The guard fires before lgdt/ltr, so this is host-safe.
+        prot.load_with_tss(0);
     }
 
     #[test]

@@ -173,6 +173,13 @@ pub trait ProtectionArch: Sized {
     /// After this call, the CPU enforces the protection boundaries
     /// defined by the initialized structures.
     ///
+    /// Called once per CPU on its resident instance. x86-64: `ltr` marks
+    /// the TSS descriptor busy in memory; a second `load()` on the same
+    /// instance raises #GP at `ltr` (the x86-64 loader intercepts this
+    /// before `lgdt` and reports the named cause), while loading a
+    /// different instance silently swaps GDTR/TR (production has one
+    /// resident instance; carriers must not load multiple instances).
+    ///
     /// C: prot_load_selectors() — protect.c:298
     ///    (lgdt, lldt, ltr, reload CS/DS/ES/FS/GS/SS)
     fn load(&self);

@@ -530,6 +530,8 @@ void prot_load_selectors(void)
 
 这个函数的源码注释给出两条事实。第一条是复用关系："called by both prot_init by the BSP and the early AP booting code in mpx.S by secondary CPU's"。AP 侧的调用点在 [`i386/mpx.S`](minix3/minix/kernel/arch/i386/mpx.S)（该文件里由 `ENTRY(startup_ap_32)` 宏展开的那个入口），它在保护模式里先用 `_C_LABEL(k_boot_stktop) - 4` 当临时栈，再调这个函数，之后才跳进 `smp_ap_boot`。第二条是差异范围："everything is set up the same except for the TSS that is per-CPU"——同一串指令两边都跑，差别只在 `ltr` 用哪个选择子（`booting_cpu` 这个静态变量决定——它定义在 [`i386/protect.c`](minix3/minix/kernel/arch/i386/protect.c)，AP 启动路径在 [`i386/arch_smp.c`](minix3/minix/kernel/arch/i386/arch_smp.c) 里把它置成本 CPU 号）。这两条合起来说明这个函数不能按"BSP 专用初始化"读，它是一段被两条路径共用的"把描述符表寄存器换成本内核的表"的动作。
 
+`ltr` 还有一条容易被忽略的写回：装载成功时，CPU 会把该 TSS 描述符的 type 从 1001（可用）改成 1011（busy），改的是内存里的 GDT 表项，不是 TR 里的私有副本。因此同一个实例第二次调 `load()` 会在 `ltr` 处撞上 busy 描述符而 #GP；换一个实例装载则会静默换掉 GDTR/TR，留下两套保护状态各自以为自己生效。Rust 侧的 [`fn load`](os/arch/src/arch/protection.rs:trait ProtectionArch) 把「每个 CPU 的常驻实例只装载一次」写进 trait 契约；[`fn load_with_tss`](os/arch/src/x86_64/protection.rs:fn load_with_tss) 在 `lgdt` 之前读目标槽的 access 字节，命中 busy 就带名停机，把无上下文的 #GP 换成 "load called twice: TSS descriptor busy"。
+
 动作的次序有依赖，不是任意排列：
 
 1. `x86_lgdt(&gdt_desc)`——GDTR 指向新表。此后 CS 仍持有引导方的旧选择子，CPU 继续按**已缓存的旧代码段描述符**取指（Rust 侧同一事实的记录见 `os/arch/src/x86_64/protection.rs` 的 "continues using the old CS descriptor"）。这个中间态在**取指轴**上安全，因为缓存描述符在重载前一直有效；但**异常递送轴**在这个窗口内不设防：IDTR 仍指向引导方的 IDT，而 GDTR 已换——若此窗口内来一次异常，CPU 按旧 IDT 递送，门选择子却要经新 GDTR 查表，正是 §3.2 反事实的错配方向。所以这一步的「安全」只对取指成立，窗口终点也不是 `prot_init` 入口而是其内部的 `idt_reload`（第 3 步）。直到第 6 步远跳，CS 才换成新表里的内核代码段选择子。
