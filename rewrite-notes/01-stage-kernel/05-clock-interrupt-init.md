@@ -103,7 +103,7 @@ CPU 侧的"意外"分两类，本篇只需要其中一类能用的判据：
 | 时钟中断怎么到 CPU | PIT 输出接 8259A IRQ0；8259A 的 INT 接 IOAPIC 输入 2，由 IOAPIC 转成向量送 LAPIC | EL1 非安全物理定时器产生 PPI，经 GIC 的 redistributor 与 CPU 接口送 CPU | S 模式定时器中断：`mtime >= mtimecmp` 置起 `sip.STIP`，由 `sie.STIE` 使能后直接进入 S 模式的陷阱入口 |
 | 中断控制器 | Rust 用 LAPIC + IOAPIC（8259A 仅作 PIT 到 IOAPIC 输入 2 的转接）；C 可在 8259A 与 APIC 形态间选 | GICv3：Distributor + Redistributor + CPU 接口 | PLIC：外部设备中断的仲裁与使能 |
 | 定时器寄存器 | PIT divisor（I/O 端口 0x40/0x43） | `CNTP_CVAL_EL0` / `CNTP_CTL_EL0` | `mtimecmp`（每 hart 一份） |
-| 架构杂项 | 内核栈指针、TSS、串口、ACPI、APIC、内存裁剪 | 内核栈指针、TSS、PMU、板级初始化 | 无 S 模式写法（PMP 由固件承担）；定时器与 IPI 使能位归 `TimerIrqGate` 与 SMP（§3.5、§4.6） |
+| 架构杂项 | 内核栈指针、TSS、串口、ACPI、APIC、内存裁剪 | 内核栈指针、TSS、板级初始化（PMU 分支已删） | 无 S 模式写法（PMP 由固件承担）；定时器与 IPI 使能位归 `TimerIrqGate` 与 SMP（§3.5、§4.6） |
 | Minix3 C 的覆盖 | 有（`arch/i386`） | 有，但目标是 32 位 ARM：OMAP INTC 与 BSP timer | 无对应实现 |
 
 最后一行是关键前提。Minix3 C 只覆盖两种架构，RISC-V 这一列没有对应的 C 实现；ARM 那一列在 C 里是 32 位机器（OMAP3 的 INTC 与私有定时器），不是本篇实现所对的机器。
@@ -919,7 +919,7 @@ trait 的文档注释把边界写死在一句话里：`ArchInit` 是**阶段 tra
 | APIC / GIC / PLIC 的初始化 | `InterruptRouter::init` | 是"中断控制器这台外设"自身 |
 | COM1 / PL011 / SBI 控制台 | `EarlyConsole` | 是"输出设备"自身 |
 | 内存裁剪 | 不进来（§3.6） | 属于内存管理，不是硬件初始化 |
-| ACPI 表地址、PMU 使能、FPEN、GICD base 播种 | `ArchInit` | 本身就没有跨架构一致性 |
+| ACPI 表地址、FPEN、GICD base 播种 | `ArchInit` | 本身就没有跨架构一致性 |
 
 最后一条判据的作用是把两类东西分开：`ArchInit` 里放的是"**本身就没有**跨架构一致性"的杂项，不是"所有架构都不同"的东西。两者的差别在于后者里常常藏着可以被抽象出来的公共语义——串口就是一个例子：三个架构的早期输出都是"一个字节一个字节地写"，差异只在寄存器位置，于是它有自己的 trait（[`early_console.rs`](os/plat/src/early_console.rs)）。本篇只用它的"能打字"这一面（§6.2 的命令输出就是它在打）；它的完整编程（串口初始化序列、FIFO 设置、为什么要在 `prot_init` 之前就能输出）属控制台与外设驱动主题（`16-drivers` 方向；串口芯片的寄存器级展开在该 stage 的终端驱动篇与后续架构文档），本篇不展开。
 
@@ -1618,10 +1618,10 @@ x86-64 的 `new()` 只把 ACPI 表地址收进实例字段，`init()` 的函数�
 
 三条注释各说明一件事：内核栈由链接脚本处理（C 的 `k_stacks = &k_stacks_start` 在 Rust 里是链接器符号）；ACPI 表解析尚未实现（QEMU virt 不依赖它，物理机需要另做，见 §5.4 的缺口表）；APIC 初始化已经归控制器（§3.3/§3.5 的边界判据）。
 
-aarch64 的 `init()` 有三个动作：一个直核链所需的 FPEN 写、一个由描述符门控的 PMU 初始化，以及一个把 GICD base 播种到 SGI 发送路径的静态量。
+aarch64 的 `init()` 有两个动作：一个直核链所需的 FPEN 写，以及一个把 GICD base 播种到 SGI 发送路径的静态量。原 PMU 初始化分支已删除：所有平台描述符的 `pmu_cycle_counter` 都是 `false`，该分支不可达。
 
 ```rust
-// os/arch/src/arm64/arch_init.rs:fn init —— 节选（三块动作；长注释删节）
+// os/arch/src/arm64/arch_init.rs:fn init —— 节选（两块动作；长注释删节）
     fn init(&mut self) {
         // 0. CPACR_EL1.FPEN = 0b11, matching the direct-kernel chain.
         ...
@@ -1632,18 +1632,7 @@ aarch64 的 `init()` 有三个动作：一个直核链所需的 FPEN 写、一�
             core::arch::asm!("msr cpacr_el1, {}", in(reg) cpacr);
         }
 
-        // 1. Enable PMU cycle counter for user mode access
-        if self.pmu_cycle_counter {
-            unsafe {
-                // Enable PMU counter hardware and reset counters
-                let pmcr: u64 = 0x7; // E + C + P bits
-                core::arch::asm!("msr pmcr_el0, {}", in(reg) pmcr);
-                core::arch::asm!("msr pmcntenset_el0, {}", in(reg) 0x8000_0000u64);
-                core::arch::asm!("msr pmuserenr_el0, {}", in(reg) 0x1u64);
-            }
-        }
-
-        // 2. Board-specific initialization: seed the GICD base used by the
+        // 1. Board-specific initialization: seed the GICD base used by the
         // zero-sized SGI send path. Without it the first scheduler IPI
         // reads/writes a null-derived MMIO address (faults at 0xF00).
         let controller = minix_platform::platform_desc().interrupt_controller();
@@ -1658,7 +1647,7 @@ aarch64 的 `init()` 有三个动作：一个直核链所需的 FPEN 写、一�
 
 FPEN 写不是 C ARM `arch_init` 的动作：C 的 32 位 ARM 端口没有这个寄存器写，这一行是 64 位直核链的补充。它的理由是自引导链下固件留下的 `CPACR_EL1.FPEN` 可能是 `0b00`，而预编译的 core 里存在 NEON 的 `memset` 残差，`kmain` 之后第一次 4 字节 `memset` 就会触发未定义指令类异常；UEFI 链上的同一份代码从未暴露过这个问题，是因为 AAVMF 固件把 FPEN 留成了 `0b11`。这行写入与固件的遗留值等价，UEFI 链上重复写是幂等的。
 
-PMU 三个寄存器与 C 的三条 `MCR`（§2.5）不是逐位相同：`PMCR_EL0 = 0x7`（E+C+P），C 是 C+E（0x5）；`PMCNTENSET_EL0 = 0x8000_0000`（使能 cycle counter）、`PMUSERENR_EL0 = 0x1`（允许 EL0 访问）与 C 相同。差别是门控：C 无条件执行，Rust 由 `ArchMiscDesc` 的 `pmu_cycle_counter` 决定，而当前所有平台描述符（含 QEMU virt）都是 `false`，因此这段在本阶段实际不执行。
+原 PMU 三个寄存器（`PMCR_EL0`/`PMCNTENSET_EL0`/`PMUSERENR_EL0`）的 Rust 分支已删除：`ArchMiscDesc.pmu_cycle_counter` 在所有生产者里都是 `false`，分支不可达；若将来要从固件描述里真正打开 PMU，需要先给生产者一个真值来源，再恢复这段编程。
 
 第三个动作容易被漏掉，因为它的发送端在 `smp.rs` 而不是 `arch_init.rs`：调度 SGI 的发送 trait 是零尺寸实现，拿不到控制器实例，只能把 GICD base 放在静态量里；`arch_init` 从同一个 `Gicv3Desc` 播种这个静态量。没有这次播种，首次 scheduler IPI 会读到一个由空指针派生出的 MMIO 地址；aarch64 完整镜像上，`GICD_SGIR` 路径会在 `0xF00` 处 fault。
 
