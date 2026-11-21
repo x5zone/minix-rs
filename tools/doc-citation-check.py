@@ -414,6 +414,22 @@ def check_block(block: dict, root: Path) -> dict:
 
 
 def check_doc(doc: Path, root: Path, verbose: bool = False) -> tuple[list[dict], int]:
+    # Archived snapshots under `draft/` are frozen history: they must not be
+    # edited to track later source changes. The live documents carry the
+    # current evidence contract; checking an archive against today's source
+    # would force exactly the history rewrite the archive exists to prevent.
+    if "draft" in doc.parts:
+        return (
+            [
+                {
+                    "status": "SKIP",
+                    "location": "archive",
+                    "kind": "归档",
+                    "reason": "draft/ 下的历史快照不做逐行源码对账",
+                }
+            ],
+            0,
+        )
     text = read_text(doc)
     blocks = parse_blocks(text)
     results = [check_block(block, root) for block in blocks]
