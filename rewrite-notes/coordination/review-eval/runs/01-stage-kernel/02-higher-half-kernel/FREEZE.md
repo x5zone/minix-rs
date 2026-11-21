@@ -72,7 +72,7 @@
 - 冻结日期：2026-11-21
 - 工作流 edition：V3.4（schema `V3.4 from R3`）
 - 确认轮：R4（`轮型: confirmation`）；轮结果 `CONVERGED`
-- 轨迹提交：`7ff9de6c1`（四份 certify 回执、loop §5–§8、metrics/ledger/suggestions/OPEN-DEBT、meta 报告与 BLIND-SPOTS B-69..B-75）；本 FREEZE 节随后单独提交
+- 轨迹提交：`7ff9de6c1`（四份 certify 回执、loop §5–§8、metrics/ledger/suggestions/OPEN-DEBT、meta 报告与 BLIND-SPOTS B-69..B-75）；本 FREEZE 节提交 `06ffa1c60`；回归审计与台账表格修复见 `REGRESSION.md` 的 R4 节（后续提交）
 - 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`
 - 文档行数：1294
 - 文档 sha256：`48630c90b2a9e1eb2b2814f93ad61d44de0c8a6c634d4835ca25692c602eb781`
@@ -87,6 +87,7 @@
 - post-certify P3：§5.1 的「三类畸形」改为「四类畸形」并列出 `PhdrOutOfBounds`/`PhdrEntryTooSmall`/`SegmentOutOfBounds`/`FileszExceedsMemsz`；该行不在 18/12 个判定点内，改后文档 sha 为 `48630c90…`，已按源码四个 Err 出口复核。它使 `自引入 = 2`（两条均轮内修复）。
 - 文档六门：anchor `54/54 zero-def=0 multi-def=0`；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30；`--stale-lines HEAD --strict` PASS。
 - 行为门：`check-layout.sh all` PASS（L0–L9；x86 L3a=4 个 PT_LOAD）；`test-sysboot.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS；`minix-elf` 27/0、`boot-shim` 146/0、`minix-kernel --features mock` 866/0/8。
+- 独立回归审计（§4h）：`REGRESSION.md` 的 R4 节，冷启动只读 agent 逐项 13/13 PASS；唯一格式问题（RD-R4-017 的未转义 `|`）已在同节提交修复，未影响任何门读数。
 - 可引导镜像门：`cd os && cargo run -q -p xtask -- image --arch x86_64 -r` 重建后，从 `os/target/image/x86_64/minix.img` 解出 `::/EFI/minix/kernel.elf`，与 staging 同哈希 `fca5b85f202eb7ca03d38d2f8d26636400a768a02c41cd323cb9e507bca8efe2`；4 个 `LOAD`、0 个 `.lrodata`。meta 读到的旧镜像（5 LOAD / 986 `.lrodata`）已被替换。
 
 ## R4 未解决事项（不阻断，已登记）

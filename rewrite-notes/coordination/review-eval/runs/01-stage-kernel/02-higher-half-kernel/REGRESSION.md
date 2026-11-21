@@ -189,6 +189,33 @@ $ grep -n '^## CLAIM' rewrite-notes/coordination/review-eval/runs/01-stage-kerne
 149:## CLAIM 15
 152:## CLAIM 16
 
+## R4 独立回归审计（2026-11-21，D-055 两墙口径）
+
+- 审计者：冷启动只读子 agent（未参与 R4 面板、修复、三轮 certify 与 meta）；只读，唯一写入是主 agent 事后追加本节。
+- 对象：最终工作树 `06ffa1c60` 之后的 D02 R4 轨迹与制品，不重审文档技术内容。
+- 方法：13 项逐项实跑；镜像用 `mtype` 流式读取并以 sha256/ELF 解析做等价验证（未写 `/tmp` 文件）；台账按实际表头（第 5 列严重度、第 6 列类别、第 7 列处置类）复算。
+
+| # | 审计项 | 判定 | 关键读数 |
+|---:|---|---|---|
+| 1 | 工作树洁净 | PASS | 仅 3 个既有无关未跟踪文件；D02 run 与文档无未提交/未跟踪 |
+| 2 | 文档 sha/行数/畸形措辞 | PASS | `48630c90…`、1294 行；`三类畸形` 0 命中；`四类畸形` 命中并列出四个变体 |
+| 3 | 文档七门 | PASS | citation 32/24/0/4/4；anchor 54/54；structure/ref/style/density/code-map 30/30 |
+| 4 | R4 轨迹门 | PASS | PASS 11 / WARN 2 / FAIL 0 |
+| 5 | 台账 79 行与聚合 | PASS | 79 行；处置 ①19/②2/④12/FP4/SUGG42；FINDING 语义口径 4/5/20/7 |
+| 6 | metrics R4 块 | PASS | 79；严重度 4/5/20/7；语义根 47；重复合并 28；自引入 2；FP 语义说明在 |
+| 7 | 5 条过期 SUGG | PASS | 五行均含 `dup-of`/「已由…覆盖」，无「待登记」 |
+| 8 | suggestions 三态 | PASS | 「已由发现解决（5 条）」；`FACT-S1..S5`、`FACT-OBS-01` |
+| 9 | BLIND-SPOTS | PASS | B-69..B-75 七节；B-68 有「扩展（2026-11-21 回写）」 |
+| 10 | DECISIONS/OPEN-DEBT | PASS | D-105/D-106 授权来源为 review-loop D02；D-106 标同源；无字面 `\n` |
+| 11 | FREEZE R4 | PASS | sha/1294、certify 18/18 + 12/12、镜像哈希、4 LOAD/0 `.lrodata`、债务、重开条件 |
+| 12 | 镜像一致性 | PASS | staging 与镜像内 kernel 同为 `fca5b85f…`；LOAD=4；`lrodata`=0 |
+| 13 | 提交与跟踪 | PASS | `06ffa1c60`、`7ff9de6c1`；四份 certify、meta r4、FREEZE 均已 `git ls-files` |
+
+- 审计抓到的唯一格式问题：`defect-ledger.md` 的 RD-R4-017 行「复验」格内有一个未转义的 `|`，把该行切成 11 个内容格（表头 10 列）。已改为 `）。grep -c`，改后该行与表头同为 12 个 `|` 分隔段（含首尾空段）。它不影响 79 行计数、处置聚合或任何门读数。
+- 非阻断方法偏差：审计提示里的列号偏移一列（实际严重度第 5 列、类别第 6 列、处置类第 7 列）；审计者已按实际表头复算并在报告中说明。
+- **总判定：PASS（13/13）。** 没有阻断性不一致；唯一格式问题已在本节同一提交修复。
+- 限制：同模型冷读，无跨模型复核；未跑 QEMU 与完整测试套件；镜像验证用流式读而非 `mcopy` 落盘；文档技术结论仍以 R4 六角色面板与两轮 certify 为输入。
+
 $ grep -h '^## FINDING.*（P1）' panel/round3/reader-a.md panel/round3/reader-b.md panel/round3/reader-c.md | wc -l
 7
 $ grep -h '^## SUGGESTION' -A5 panel/round3/reader-a.md panel/round3/reader-b.md panel/round3/reader-c.md | grep -c '严重度.*P1'
