@@ -941,7 +941,7 @@ C 的 `cstart` 把四次调用放在一个函数里；Rust 按"哪一步之后�
 
 ### 3.7 门在第一次 load 之前就有真入口（→§2.5）
 
-C 把真实处理函数地址（`mpx.S` 里的标签）在填 IDT 时一次写入；Rust 侧的门类型有**两个写点**：`X86_64TrapEntry::init` 先把 8 个异常/软中断门写成 trap gate（`is_trap=true`，见 §4.4），随后 `install_trap_stubs` 经 `set_handler` 整条重写为中断门——生产路径上活的是后者，只装 init 元数据、不调 `install_trap_stubs` 的测试载体才会看到 trap gate（x86_64 的 DPL 取自 `user_accessible(vector)`；`is_trap` 参数在 41 门上恒传 `false`（全为中断门），不是逐向量判定的），`TrapEntryArch::init()` 写的元数据在生产路径上被这次重写覆盖；`load()` 在安装之后。当前实现存在两个 DPL 来源（init 的表与 `user_accessible`），以 `set_handler` 为准，元数据是待清理的死数据。
+C 把真实处理函数地址（`mpx.S` 里的标签）在填 IDT 时一次写入；Rust 侧把写门收成一个写点：`X86_64TrapEntry::init` 只建 256 条**不存在**的占位项（handler/DPL/IST/type 全 0），`install_idt_handlers` 在 `load()` 之前经 `set_handler` 一次写齐 41 条门。`set_handler` 是唯一写者：DPL 取自 `user_accessible(vector)`、IST 取自 NMI/#DF 表（2→IST1、8→IST2）、类型恒为中断门。安装后立即对 41 条门断言 DPL/IST/type，并核对 gate presence 与 stub 覆盖相等；不再有 init 元数据与 installer 的第二来源。
 
 | 项 | 选择 | 否掉什么 | 代价 |
 |---|---|---|---|
@@ -1076,25 +1076,26 @@ TSS 的装填在 `setup_tss_for_cpu`：
 
 ### 4.4 IDT 的装填与门覆盖（→3.2、3.7）
 
-`X86_64TrapEntry::init` 逐条写门。异常区每条的 DPL 按 C 的 `gate_table_exceptions[]` 对齐（两条异常带 DPL=3：向量 3/4）；IST 是 64 位新增——C 的 32 位表没有该字段（§2.5），引文注释里的 "parity" 指这两个向量与 C 的异常表条目集合对齐（C 也有 NMI/#DF），不是 DPL 口径。本实现里两条走 IST（2 走 IST1、8 走 IST2）。软中断区 32–35 全部 DPL=3；PIC 区用一个循环覆盖 0x50–0x57 与 0x70–0x77；最后三个单独向量是 0xFF（LAPIC 伪中断）、0xF0（调度 IPI）、0xF1（LAPIC 本地定时器）。节选里 `set_gate` 的五个参数依次是（签名见 `trap_entry.rs` 的 [`fn set_gate`](os/arch/src/x86_64/trap_entry.rs:fn set_gate)）：向量号、handler 地址、DPL、IST 索引、`is_trap`——PIC 行的 `(0x50 + irq, 0, 0, 0, false)` 即 handler 占位 0（真入口稍后由 `install_idt_handlers` 写入）、DPL=0、IST=0、中断门（`false` 表示非陷阱门）。
+`X86_64TrapEntry::init` 只建占位表：256 条 `IdtEntry64::empty()`，所有字段 0，`gate_present` 全 false。真正的 41 条门由 `install_idt_handlers` 在 `load()` 之前写齐；`set_handler` 是唯一写者：DPL 由 `user_accessible(vector)` 决定（3/4/32–35 为 DPL=3），IST 由 NMI/#DF 表决定（2→IST1、8→IST2），类型恒为中断门。C 的 39 条门清单对照不变：异常区含 DPL=3 的 3/4，软中断区 32–35 全 DPL=3，PIC 区覆盖 0x50–0x57 与 0x70–0x77，最后三个单独向量是 0xFF、0xF0、0xF1。
 
 ```rust
-/* 节选（保留 PIC 循环与三个单个向量；异常与软中断的门清单在节选段之前，省略号处为说明注释），os/arch/src/x86_64/trap_entry.rs:fn init。 */
-        for irq in 0..8 {
-            entry.set_gate(0x50 + irq, 0, 0, 0, false); // master PIC
-            entry.set_gate(0x70 + irq, 0, 0, 0, false); // slave PIC
+/* 代码引用，os/arch/src/x86_64/trap_entry.rs:fn init（整函数）。 */
+    fn init() -> Self {
+        // Placeholder table: every entry is absent (handler/dpl/ist/type all
+        // zero). `install_idt_handlers` is the sole writer of the 41 real
+        // gates, immediately before `load()`; `set_handler` writes all
+        // metadata (DPL from `user_accessible`, IST from the NMI/#DF table,
+        // type always an interrupt gate), so there is no second metadata
+        // source to drift.
+        Self {
+            idt: [IdtEntry64::empty(); IDT_ENTRIES],
         }
-        ...
-        entry.set_gate(0xFF, 0, 0, 0, false);
-        ...
-        entry.set_gate(0xF0, 0, 0, 0, false);
-        ...
-        entry.set_gate(0xF1, 0, 0, 0, false);
+    }
 ```
 
 `IdtEntry64` 的七个字段与 C 的 `gatedesc_s` 对照：`offset_low`/`offset_mid`/`offset_high` 三段拼出 64 位入口地址（C 只有两段）、`selector`、`ist`（C 没有）、`p_dpl_type`（存在位+DPL+门类型）、`_reserved`。`fn new` 里 `ist & 0x7` 与 `dpl & 0x3` 两处掩码是硬件字段宽度的反映。
 
-真正的入口由 `install_idt_handlers` 写入：
+真正的入口由 `install_idt_handlers` 写入；它同时是安装后的表断言点：
 
 ```rust
 /* 代码引用，os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers（整函数）。 */
@@ -1103,27 +1104,43 @@ pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
     while i < STUB_VECTORS.len() {
         let (vector, _) = STUB_VECTORS[i];
         let handler = stub_va(vector).expect("STUB_VECTORS entry without a stub symbol");
+        // `set_handler` is the sole writer of the gate metadata: DPL comes
+        // from `user_accessible`, IST from the NMI/#DF table, type is always
+        // an interrupt gate [ARCH: IST replaces i386 same-stack nesting].
         entry.set_handler(
             InterruptVector::new(vector),
             handler,
             user_accessible(vector),
         );
-        // C gate_table_exceptions parity: NMI and #DF run on dedicated IST
-        // stacks (IST1/IST2, programmed into the per-CPU TSS) — a
-        // gate with IST≠0 must not have it flattened by set_handler.
-        match vector {
-            2 => entry.set_gate_ist(2, 1),
-            8 => entry.set_gate_ist(8, 2),
-            _ => {}
-        }
+        let expected_dpl = if user_accessible(vector) { 3 } else { 0 };
+        let expected_ist = match vector {
+            2 => 1,
+            8 => 2,
+            _ => 0,
+        };
+        let (dpl, ist, kind) = entry.gate_metadata(vector);
+        assert_eq!(dpl, expected_dpl, "vector {vector:#04x}: DPL != user_accessible");
+        assert_eq!(ist, expected_ist, "vector {vector:#04x}: IST table mismatch");
+        assert_eq!(kind, GATE_TYPE_INTERRUPT, "vector {vector:#04x}: not an interrupt gate");
         i += 1;
+    }
+    // Post-install coverage: exactly the stub vectors are present. A gate
+    // outside the table (or a missing stub) would otherwise reach `load()`
+    // and fault with no useful context.
+    for vector in 0..=u8::MAX {
+        assert_eq!(
+            entry.gate_present(vector),
+            has_stub(vector),
+            "vector {vector:#04x}: gate presence != stub coverage"
+        );
     }
 }
 ```
 
+`set_handler` 写门时把 IST 一起写：向量 2 写 1、向量 8 写 2、其余写 0。硬件按 `TSS.ist[ist-1]` 取值，所以实际用到的是 TSS 的 `ist[0]`/`ist[1]`（`setup_tss_for_cpu` 只填这两格）。`STUB_VECTORS` 的每项还带一个“是否由 CPU 压入错误码”的布尔值，但布尔值只被宿主测试 `test_errcode_classification_matches_sdm` 使用；汇编入口由 `TRAPSTUB vec err` 字面量实例化，不读这个布尔值。
 `set_handler` 写门时 IST 一律写 0（它没有 IST 参数），随后 2/8 两个向量由 `set_gate_ist` 恢复——这两条是 NMI 与双故障，门里写的 IST 号是 1 与 2，硬件按 `TSS.ist[ist-1]` 取值，所以实际用到的是 TSS 的 `ist[0]`/`ist[1]`（`setup_tss_for_cpu` 只填这两格）。`STUB_VECTORS` 的每项还带一个“是否由 CPU 压入错误码”的布尔值，但布尔值只被宿主测试 `test_errcode_classification_matches_sdm` 使用；汇编入口由 `TRAPSTUB vec err` 字面量实例化，不读这个布尔值。
 
-**让 `set_handler` 写完门就完事、不做 IST 恢复会怎样**：门里 IST 字段为 0 的含义是"这类异常在当前栈上递送"；NMI 的用途之一是打断已经跑飞的代码、双故障的本意是"当前栈已经不可用时的最后一道门"。双故障门落回坏栈上递送，CPU 连最后的诊断机会都没有，直接三重故障。依据：`:fn set_gate_ist` 的存在与 `:fn install_idt_handlers` 里 `match vector { 2 ..., 8 ... }` 两行。
+**让 `set_handler` 只写 handler/DPL、把 IST 留给安装后的第二次写会怎样**：门里 IST=0 的含义是"这类异常在当前栈上递送"；NMI 的用途之一是打断已经跑飞的代码、双故障的本意是"当前栈已经不可用时的最后一道门"。双故障门落回坏栈上递送，CPU 连最后的诊断机会都没有，直接三重故障。单写者把 IST 映射放进 `set_handler`，安装后立即断言 2/8 的 IST 与门类型；漏写会在安装点停机，而不是等到第一次 NMI。
 
 ### 4.5 系统调用入口与 per-CPU 数据的落地（→3.4）
 
@@ -1236,7 +1253,7 @@ os/arch/src/riscv64/trap_stub.rs: 7
 
 这 9 个文件是与本篇直接相关的子集（合计 55：按「行首 `#[test]` 属性」口径逐文件 `grep -c`，并把 `riscv64/trap_stub.rs` 的一条注释命中剔除；不是按锚点去重）；arch crate 全量 `src/**/*.rs` 按「行首 `#[test]` 属性」口径是 373 个/54 文件（若把行内与注释形态也计入，src 侧 grep 会读到 374 处/54 文件；`os/arch/tests` 侧宽口径另有 95 处/21 文件；本文只采用行首属性口径），`os/arch/tests/*.rs` 另有 87 个/21 文件。
 
-x86_64 的 16 个保护测试里与本篇直接相关的几类：TSS 布局（`tss64_size_is_104_bytes`、`tss64_offsets_correct`）、描述符位组合（`gdt_descriptors_have_correct_dpl`、`gdt_descriptors_are_flat_mode`、`tss_descriptor_is_64bit`）、描述符与结构体地址的一致性（`tss_descriptor_high_half_carries_base_above_4gib`、`init_creates_tss_descriptor_in_gdt`）、`sp0` 算术（`set_kernel_stack_updates_sp0`、`init_sets_tss_sp0_below_reserved_area`）。13 个 trap 测试 = 9 条 `init` 门表元数据 + 2 条 `set_handler` + 2 条结构布局；9 条 init 测的异常区存在性、保留向量非存在、软中断 DPL=3、PIC 区 DPL=0、NMI/#DF 的 IST 随后会被 `install_trap_stubs` 覆盖；post-install 的 41 门与 `set_gate_ist` 没有直接断言（设计批 D2-06）；`user_accessible` 的谓词与 DPL 已有直接断言（`test_user_accessible_gate_set` 测谓词本身、`set_handler_sets_dpl_correctly` 测 set_handler 写入的 DPL），但 post-install 的 41 门状态与 `set_gate_ist` 仍无断言（设计批 D2-06）。IPC 门（向量 33）由 `install_trap_stubs` 装 stub，不再单列门测试。11 个 trap_stub 测试里有一条覆盖检查，把 `STUB_VECTORS` 与 `X86_64TrapEntry::init` 标记的门对齐核验。
+x86_64 的 16 个保护测试里与本篇直接相关的几类：TSS 布局（`tss64_size_is_104_bytes`、`tss64_offsets_correct`）、描述符位组合（`gdt_descriptors_have_correct_dpl`、`gdt_descriptors_are_flat_mode`、`tss_descriptor_is_64bit`）、描述符与结构体地址的一致性（`tss_descriptor_high_half_carries_base_above_4gib`、`init_creates_tss_descriptor_in_gdt`）、`sp0` 算术（`set_kernel_stack_updates_sp0`、`init_sets_tss_sp0_below_reserved_area`）。13 个 trap 测试 = 9 条门表测试（1 条 `init` 全占位 + 1 条保留向量 + 7 条 `install_idt_handlers` 后的 DPL/IST/类型）+ 2 条 `set_handler` + 2 条结构布局；`install_idt_handlers` 在生产路径上对 41 条门逐门断言 DPL/IST/类型，并核对 gate presence 与 stub 覆盖相等；`user_accessible` 的谓词与 DPL 另有 `test_user_accessible_gate_set` 与 `set_handler_sets_dpl_correctly` 两条直接断言。IPC 门（向量 33）由 `install_trap_stubs` 装 stub，不再单列门测试。11 个 trap_stub 测试里的覆盖检查改为先调 `install_idt_handlers` 再对 `STUB_VECTORS` 与 gate presence 核验。
 
 aarch64 与 riscv64 侧的数字对应的是浅测试：两份 `protection.rs` 各 2 条（`privilege_level_roundtrip`、`protection_has_cpu_count`）、两份 `trap_entry.rs` 各 1 条 trait 边界断言（`aarch64_trap_entry_arch_impl_satisfies_trait_bound` 与 `riscv64_trap_entry_arch_impl_satisfies_trait_bound`）。两份 `trap_stub.rs` 各 3 与 6 条（`grep` 的 7 含一条注释命中），覆盖向量表布局与入口腿的静态断言。它们证明的是枚举往返、结构体字段与表布局，不覆盖 §4.6 的寄存器语义——那部分只能在真机上读（§5.2）。
 
@@ -1278,7 +1295,7 @@ x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protec
 
 | # | 机制（正文位置） | 需要证明什么（可观测断言） | 覆盖状态 | 现有证据 |
 |---|---|---|---|---|
-| M1 | 三张表的建表（§2.3–§2.5） | GDT 槽位/访问字节/DPL；TSS 描述符两半与字段；IDT 门字段与分布 | 部分覆盖 | 宿主：16 个保护测试 + 13 个 init 门表测试；post-install 的 41 门状态与 `set_gate_ist` 无直接断言（`user_accessible` 的谓词与 DPL 已有直接断言，见 §5.1；设计批 D2-06） |
+| M1 | 三张表的建表（§2.3–§2.5） | GDT 槽位/访问字节/DPL；TSS 描述符两半与字段；IDT 门字段与分布 | 部分覆盖 | 宿主：16 个保护测试 + 13 个门表测试（含 `install_idt_handlers` 的 41 门 DPL/IST/type 断言） |
 | M2 | 一次装载让表生效（§2.5） | 装载后 GDTR/IDTR/TR 指向内核自己的表 | 已覆盖（x86_64/riscv64 走生产 trait；aarch64 是探针） | 真机 `test-protection`：x86_64 读 GDTR/IDTR/TR/CS/DS；riscv64 读 `stvec`/`sscratch`；**aarch64 是独立探针**（自己写 `VBAR_EL1`/`DAIF`，不调 `TrapEntryArch::load`） |
 | M3 | 门入口覆盖不变量（§3.7） | 41 个向量写齐；present 门 ↔ stub 一一对应；`load()` 在装齐之后 | 部分覆盖 | 宿主 `test_stub_coverage_matches_idt_gates`（正向）；`test-user-trap` 走生产 `init_protection` 以 CPL3 `int $0x21`（十进制 33）进门（真机正向）；**负向（先 load 后装门）无载体** → §5.3 缺口行；**R03-T01** |
 | M4 | 系统调用入口 MSR（§4.5） | STAR/LSTAR/SFMASK/EFER 的值与写入次序；AP 上重写 | 部分覆盖 | 宿主不覆盖 MSR 面；x86 载体在 `configure_syscall` 后用 `rdmsr` 校验 STAR/LSTAR/SFMASK/EFER.SCE；**AP 侧重写仍是行为性、无自动断言** → **R03-T03**；QEMU 未跑 |

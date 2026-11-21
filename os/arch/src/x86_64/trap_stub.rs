@@ -49,7 +49,7 @@
 //! order is safe by construction.
 
 use crate::trap_entry::{InterruptVector, TrapEntryArch};
-use crate::x86_64::trap_entry::X86_64TrapEntry;
+use crate::x86_64::trap_entry::{GATE_TYPE_INTERRUPT, X86_64TrapEntry};
 use core::cell::UnsafeCell;
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -615,21 +615,35 @@ pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
     while i < STUB_VECTORS.len() {
         let (vector, _) = STUB_VECTORS[i];
         let handler = stub_va(vector).expect("STUB_VECTORS entry without a stub symbol");
+        // `set_handler` is the sole writer of the gate metadata: DPL comes
+        // from `user_accessible`, IST from the NMI/#DF table, type is always
+        // an interrupt gate [ARCH: IST replaces i386 same-stack nesting].
         entry.set_handler(
             InterruptVector::new(vector),
             handler,
             user_accessible(vector),
         );
-        // Gate metadata (vector/DPL/kind) follows C's gate_table_exceptions;
-        // the dedicated stacks are the long-mode mechanism difference
-        // [ARCH: IST replaces i386 same-stack nesting]: NMI and #DF must not
-        // have their IST flattened by set_handler.
-        match vector {
-            2 => entry.set_gate_ist(2, 1),
-            8 => entry.set_gate_ist(8, 2),
-            _ => {}
-        }
+        let expected_dpl = if user_accessible(vector) { 3 } else { 0 };
+        let expected_ist = match vector {
+            2 => 1,
+            8 => 2,
+            _ => 0,
+        };
+        let (dpl, ist, kind) = entry.gate_metadata(vector);
+        assert_eq!(dpl, expected_dpl, "vector {vector:#04x}: DPL != user_accessible");
+        assert_eq!(ist, expected_ist, "vector {vector:#04x}: IST table mismatch");
+        assert_eq!(kind, GATE_TYPE_INTERRUPT, "vector {vector:#04x}: not an interrupt gate");
         i += 1;
+    }
+    // Post-install coverage: exactly the stub vectors are present. A gate
+    // outside the table (or a missing stub) would otherwise reach `load()`
+    // and fault with no useful context.
+    for vector in 0..=u8::MAX {
+        assert_eq!(
+            entry.gate_present(vector),
+            has_stub(vector),
+            "vector {vector:#04x}: gate presence != stub coverage"
+        );
     }
 }
 
@@ -776,7 +790,8 @@ mod tests {
         // Every present IDT gate must have a stub, and vice versa — this is
         // the "no empty vector / empty handler" stage invariant's compile-
         // time half. Reserved long-mode vectors 9/15 must have neither.
-        let entry = X86_64TrapEntry::init();
+        let mut entry = X86_64TrapEntry::init();
+        install_idt_handlers(&mut entry);
         for vector in 0..=u8::MAX {
             let present = entry.gate_present(vector);
             assert_eq!(

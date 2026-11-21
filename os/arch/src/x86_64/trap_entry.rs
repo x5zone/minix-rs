@@ -48,8 +48,7 @@ use minix_types::VirBytes;
 
 // IDT gate type encoding (p_dpl_type field bits 0-3)
 // Intel SDM Vol. 3A §6.14.1: IDT Gate Descriptors
-const GATE_TYPE_INTERRUPT: u8 = 0xE; // Interrupt gate (IF auto-cleared)
-const GATE_TYPE_TRAP: u8 = 0xF;      // Trap gate (IF not modified)
+pub(crate) const GATE_TYPE_INTERRUPT: u8 = 0xE; // Interrupt gate (IF auto-cleared)
 const GATE_PRESENT: u8 = 0x80;       // Gate descriptor present bit
 
 // MSR addresses for SYSCALL/SYSRET configuration
@@ -91,8 +90,8 @@ impl IdtEntry64 {
         }
     }
 
-    fn new(handler: u64, selector: u16, dpl: u8, ist: u8, is_trap: bool) -> Self {
-        let type_bits = if is_trap { GATE_TYPE_TRAP } else { GATE_TYPE_INTERRUPT };
+    fn new(handler: u64, selector: u16, dpl: u8, ist: u8) -> Self {
+        let type_bits = GATE_TYPE_INTERRUPT;
         Self {
             offset_low: (handler & 0xFFFF) as u16,
             selector,
@@ -118,32 +117,8 @@ pub struct X86_64TrapEntry {
 }
 
 impl X86_64TrapEntry {
-    fn set_gate(
-        &mut self,
-        vector: u8,
-        handler: u64,
-        dpl: u8,
-        ist: u8,
-        is_trap: bool,
-    ) {
-        self.idt[vector as usize] = IdtEntry64::new(
-            handler,
-            KERN_CS_SELECTOR,
-            dpl,
-            ist,
-            is_trap,
-        );
-    }
-
-    /// Set only the IST field of an existing gate (0-7).
-    ///
-    /// `set_handler` writes IST=0; NMI (vector 2, IST1) and #DF (vector 8,
-    /// IST2) get their IST re-applied after stub installation, now that the
-    /// per-CPU TSS programs the IST arrays. The dedicated stack is a
-    /// long-mode mechanism difference, not a C parity claim:
-    /// [ARCH: IST replaces i386 same-stack nesting].
-    pub(crate) fn set_gate_ist(&mut self, vector: u8, ist: u8) {
-        self.idt[vector as usize].ist = ist & 0x7;
+    fn set_gate(&mut self, vector: u8, handler: u64, dpl: u8, ist: u8) {
+        self.idt[vector as usize] = IdtEntry64::new(handler, KERN_CS_SELECTOR, dpl, ist);
     }
 
     /// Whether `vector` carries a present gate in this table.
@@ -153,6 +128,18 @@ impl X86_64TrapEntry {
     /// table may go live via `load()`.
     pub fn gate_present(&self, vector: u8) -> bool {
         self.idt[vector as usize].p_dpl_type & GATE_PRESENT != 0
+    }
+
+    /// Read back a gate's `(dpl, ist, type)` fields.
+    ///
+    /// The installer uses this to assert the single-writer postcondition:
+    /// after it writes all 41 gates, every DPL comes from
+    /// `user_accessible`, every IST from the NMI/#DF table, and every type
+    /// is an interrupt gate. Fields are byte-sized, so reading through the
+    /// packed entry is aligned.
+    pub(crate) fn gate_metadata(&self, vector: u8) -> (u8, u8, u8) {
+        let gate = &self.idt[vector as usize];
+        ((gate.p_dpl_type >> 5) & 0x3, gate.ist & 0x7, gate.p_dpl_type & 0x0F)
     }
 }
 
@@ -197,70 +184,15 @@ pub(crate) unsafe fn rdmsr(msr: u32) -> u64 { unsafe {
 
 impl TrapEntryArch for X86_64TrapEntry {
     fn init() -> Self {
-        let mut entry = Self {
+        // Placeholder table: every entry is absent (handler/dpl/ist/type all
+        // zero). `install_idt_handlers` is the sole writer of the 41 real
+        // gates, immediately before `load()`; `set_handler` writes all
+        // metadata (DPL from `user_accessible`, IST from the NMI/#DF table,
+        // type always an interrupt gate), so there is no second metadata
+        // source to drift.
+        Self {
             idt: [IdtEntry64::empty(); IDT_ENTRIES],
-        };
-
-        // Handler addresses are placeholder 0 — must be set to actual trap
-        // handler entry points before `load()` is called. The DPL and IST
-        // values here match the C gate_table_exceptions[] / gate_table_pic[]
-        // configuration (protect.c:107-152; interrupt.h:31-35). The IST
-        // fields are the long-mode mechanism difference
-        // [ARCH: IST replaces i386 same-stack nesting].
-        //
-        // x86-64 exception vectors (0-14, 16-19):
-        //   vectors 9 and 15 are reserved in 64-bit mode and intentionally omitted.
-        entry.set_gate(0, 0, 0, 0, true);   // #DE divide error
-        entry.set_gate(1, 0, 0, 0, true);   // #DB debug
-        entry.set_gate(2, 0, 0, 1, false);  // NMI — IST1
-        entry.set_gate(3, 0, 3, 0, true);   // #BP breakpoint (user)
-        entry.set_gate(4, 0, 3, 0, true);   // #OF overflow (user)
-        entry.set_gate(5, 0, 0, 0, false);  // #BR bounds check
-        entry.set_gate(6, 0, 0, 0, false);  // #UD invalid opcode
-        entry.set_gate(7, 0, 0, 0, false);  // #NM device not available
-        entry.set_gate(8, 0, 0, 2, false);  // #DF double fault — IST2
-        entry.set_gate(10, 0, 0, 0, false); // #TS invalid TSS
-        entry.set_gate(11, 0, 0, 0, false); // #NP segment not present
-        entry.set_gate(12, 0, 0, 0, false); // #SS stack fault
-        entry.set_gate(13, 0, 0, 0, false); // #GP general protection
-        entry.set_gate(14, 0, 0, 0, false); // #PF page fault
-        entry.set_gate(16, 0, 0, 0, false); // #MF x87 FPE
-        entry.set_gate(17, 0, 0, 0, false); // #AC alignment check
-        entry.set_gate(18, 0, 0, 0, false); // #MC machine check
-        entry.set_gate(19, 0, 0, 0, false); // #XM SIMD FPE
-
-        // Soft-int syscall / IPC vectors (user-accessible).
-        // C: KERN_CALL_VECTOR_ORIG=32, IPC_VECTOR_ORIG=33,
-        //    KERN_CALL_VECTOR_UM=34, IPC_VECTOR_UM=35 (interrupt.h:31-35).
-        entry.set_gate(32, 0, 3, 0, true);
-        entry.set_gate(33, 0, 3, 0, true);
-        entry.set_gate(34, 0, 3, 0, true);
-        entry.set_gate(35, 0, 3, 0, true);
-
-        // 8259A PIC hardware interrupt vectors.
-        // C: VECTOR(irq) = (irq < 8 ? 0x50 : 0x70) + (irq & 7)
-        //    → vectors 0x50-0x57 (80-87) and 0x70-0x77 (112-119).
-        //    DPL = INTR_PRIVILEGE = 0.
-        for irq in 0..8 {
-            entry.set_gate(0x50 + irq, 0, 0, 0, false); // master PIC
-            entry.set_gate(0x70 + irq, 0, 0, 0, false); // slave PIC
         }
-
-        // LAPIC spurious interrupt (vector 0xFF). C registers a dedicated
-        // handler for it in APIC mode (apic.c apic_spurious_interrupt);
-        // without the gate, a spurious interrupt would triple-fault.
-        entry.set_gate(0xFF, 0, 0, 0, false);
-
-        // Inter-processor interrupt: scheduler. C: SMP_SCHED_IPI
-        // vector gate in apic_idt_init (arch_clock.c/apic.c).
-        entry.set_gate(0xF0, 0, 0, 0, false);
-
-        // LAPIC local timer (C apic.c:913 int_gate_idt for
-        // APIC_TIMER_INT_VECTOR): per-CPU one-shot tick gate. Unmasked
-        // by the LVT entry itself, re-armed by the handler every tick.
-        entry.set_gate(0xF1, 0, 0, 0, false);
-
-        entry
     }
 
     fn configure_syscall(&mut self, entry_point: VirBytes) {
@@ -339,8 +271,17 @@ impl TrapEntryArch for X86_64TrapEntry {
         handler: VirBytes,
         user_accessible: bool,
     ) {
+        // Sole writer of every gate field: handler, DPL, IST and type.
+        // The installer passes the canonical `user_accessible(vector)` and
+        // this function maps NMI/#DF to IST1/IST2. `init()` writes only
+        // absent placeholders.
         let dpl = if user_accessible { 3 } else { 0 };
-        self.set_gate(vector.get(), handler.get(), dpl, 0, false);
+        let ist = match vector.get() {
+            2 => 1,
+            8 => 2,
+            _ => 0,
+        };
+        self.set_gate(vector.get(), handler.get(), dpl, ist);
     }
 }
 
@@ -409,13 +350,13 @@ mod tests {
     }
 
     #[test]
-    fn idt_init_sets_exception_gates() {
+    fn idt_init_writes_only_placeholders() {
         let entry = X86_64TrapEntry::init();
-        // Verify that exception vectors are present (p_dpl_type has present bit).
-        // Vectors 9 and 15 are reserved in 64-bit mode and intentionally omitted.
-        for &vec in &[0u8, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19] {
-            let p = entry.idt[vec as usize].p_dpl_type;
-            assert_ne!(p & GATE_PRESENT, 0, "Vector {} must be present", vec);
+        for vector in 0..=u8::MAX {
+            assert!(
+                !entry.gate_present(vector),
+                "init() must not install a live gate (vector {vector:#04x})"
+            );
         }
     }
 
@@ -424,75 +365,87 @@ mod tests {
         let entry = X86_64TrapEntry::init();
         // Vectors 9 and 15 are reserved in x86-64 long mode.
         for &vec in &[9u8, 15] {
-            let p = entry.idt[vec as usize].p_dpl_type;
-            assert_eq!(p & GATE_PRESENT, 0, "Vector {} must NOT be present (reserved)", vec);
+            assert!(
+                !entry.gate_present(vec),
+                "Vector {} must NOT be present (reserved)",
+                vec
+            );
         }
     }
 
+    fn installed() -> X86_64TrapEntry {
+        let mut entry = X86_64TrapEntry::init();
+        crate::x86_64::trap_stub::install_idt_handlers(&mut entry);
+        entry
+    }
+
     #[test]
-    fn idt_init_sets_syscall_ipc_vectors() {
-        let entry = X86_64TrapEntry::init();
+    fn install_sets_syscall_ipc_vectors() {
+        let entry = installed();
         // KERN_CALL_VECTOR_ORIG=32, IPC_VECTOR_ORIG=33,
         // KERN_CALL_VECTOR_UM=34, IPC_VECTOR_UM=35.
         for &vec in &[32u8, 33, 34, 35] {
-            let p = entry.idt[vec as usize].p_dpl_type;
-            assert_ne!(p & GATE_PRESENT, 0, "Syscall/IPC vector {} must be present", vec);
-            let dpl = (p >> 5) & 0x3;
+            let (dpl, _ist, kind) = entry.gate_metadata(vec);
+            assert!(entry.gate_present(vec), "Syscall/IPC vector {} must be present", vec);
             assert_eq!(dpl, 3, "Syscall/IPC vector {} must be user-accessible (DPL=3)", vec);
+            assert_eq!(kind, GATE_TYPE_INTERRUPT, "vector {} must be an interrupt gate", vec);
         }
     }
 
     #[test]
-    fn idt_init_sets_pic_vectors() {
-        let entry = X86_64TrapEntry::init();
+    fn install_sets_pic_vectors() {
+        let entry = installed();
         // C: VECTOR(irq) = (irq < 8 ? 0x50 : 0x70) + (irq & 7)
         for irq in 0..8u8 {
             for &base in &[0x50u8, 0x70] {
                 let vec = base + irq;
-                let p = entry.idt[vec as usize].p_dpl_type;
-                assert_ne!(p & GATE_PRESENT, 0, "PIC vector {} must be present", vec);
-                let dpl = (p >> 5) & 0x3;
+                let (dpl, ist, kind) = entry.gate_metadata(vec);
+                assert!(entry.gate_present(vec), "PIC vector {} must be present", vec);
                 assert_eq!(dpl, 0, "PIC vector {} must be kernel-only (DPL=0)", vec);
+                assert_eq!(ist, 0, "PIC vector {} must not use IST", vec);
+                assert_eq!(kind, GATE_TYPE_INTERRUPT, "vector {} must be an interrupt gate", vec);
             }
         }
     }
 
     #[test]
-    fn idt_init_breakpoint_has_dpl3() {
+    fn install_breakpoint_has_dpl3() {
         // Breakpoint (INT3, vector 3) must be DPL=3 so user mode can trigger it.
-        let entry = X86_64TrapEntry::init();
-        let dpl = (entry.idt[3].p_dpl_type >> 5) & 0x3;
+        let entry = installed();
+        let (dpl, _ist, _kind) = entry.gate_metadata(3);
         assert_eq!(dpl, 3, "Breakpoint (vector 3) must have DPL=3");
     }
 
     #[test]
-    fn idt_init_overflow_has_dpl3() {
+    fn install_overflow_has_dpl3() {
         // Overflow (INTO, vector 4) must be DPL=3 so user mode can trigger it.
-        let entry = X86_64TrapEntry::init();
-        let dpl = (entry.idt[4].p_dpl_type >> 5) & 0x3;
+        let entry = installed();
+        let (dpl, _ist, _kind) = entry.gate_metadata(4);
         assert_eq!(dpl, 3, "Overflow (vector 4) must have DPL=3");
     }
 
     #[test]
-    fn idt_init_double_fault_uses_ist2() {
-        // Double fault (vector 8) uses IST=2 per C gate_table_exceptions[].
-        let entry = X86_64TrapEntry::init();
-        assert_eq!(entry.idt[8].ist, 2, "Double fault must use IST2");
+    fn install_double_fault_uses_ist2() {
+        // Double fault (vector 8) uses IST=2 per the NMI/#DF table.
+        let entry = installed();
+        let (_dpl, ist, _kind) = entry.gate_metadata(8);
+        assert_eq!(ist, 2, "Double fault must use IST2");
     }
 
     #[test]
-    fn idt_init_nmi_uses_ist1() {
-        // NMI (vector 2) uses IST=1 per C gate_table_exceptions[].
-        let entry = X86_64TrapEntry::init();
-        assert_eq!(entry.idt[2].ist, 1, "NMI must use IST1");
+    fn install_nmi_uses_ist1() {
+        // NMI (vector 2) uses IST=1 per the NMI/#DF table.
+        let entry = installed();
+        let (_dpl, ist, _kind) = entry.gate_metadata(2);
+        assert_eq!(ist, 1, "NMI must use IST1");
     }
 
     #[test]
-    fn idt_init_kernel_exceptions_have_dpl0() {
+    fn install_kernel_exceptions_have_dpl0() {
         // Most exceptions (0,1,5,6,7,8,10-14,16-19) must have DPL=0.
-        let entry = X86_64TrapEntry::init();
-        for &vec in &[0u8, 1, 5, 6, 7, 10, 11, 12, 13, 14, 16, 17, 18, 19] {
-            let dpl = (entry.idt[vec as usize].p_dpl_type >> 5) & 0x3;
+        let entry = installed();
+        for &vec in &[0u8, 1, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19] {
+            let (dpl, _ist, _kind) = entry.gate_metadata(vec);
             assert_eq!(dpl, 0, "Vector {} must have DPL=0", vec);
         }
     }
