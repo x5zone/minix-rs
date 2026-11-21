@@ -210,7 +210,7 @@ pub unsafe fn pair_and_classify(
             // ordinary tables are invisible to the kernel by design, so name
             // their count here rather than leaving the omission to be inferred.
             if classification.side != 0 {
-                // Post-EBS: the UEFI formatter is no longer a valid output
+                // Post-EBS: the UEFI formatter is not a valid output
                 // path. Use the raw serial channel documented in
                 // `lib.rs::raw_serial`; the count is printed without
                 // allocation so this branch is safe after boot services end.

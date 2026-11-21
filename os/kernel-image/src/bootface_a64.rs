@@ -28,8 +28,8 @@
 //! - QEMU `arm_load_dtb` places the DTB at the RAM base (`info->dtb_start =
 //!   loader_start`, anchored in hw/arm/boot.c's ELF arm) = the fixed value
 //!   [`DTB_PA`].
-//! - The direct-kernel and UEFI-receive forms are separate build products
-//!   (D-061): the direct product's entry ignores `x0` and calls this face;
+//! - The direct-kernel and UEFI-receive forms are separate build products:
+//!   the direct product's entry ignores `x0` and calls this face;
 //!   the UEFI-receive product passes the physical address of the
 //!   `BootHandoffV1` arena in `x0` and treats `x0 == 0` as an honest halt,
 //!   not as a form switch.
@@ -136,7 +136,7 @@ fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
 // ── Entry ──────────────────────────────────────────────────────
 
 /// aarch64 self-boot face entry (the aarch64 `_start` in `main.rs` zeroes
-/// .bss, establishes the stack, selects the form at build time (D-061),
+/// .bss, establishes the stack, selects the form at build time,
 /// then `bl`s into here).
 pub extern "C" fn bootface_a64() -> ! {
     say("### minix-rs kernel image: aarch64 self-boot (NK4-C sec-406)\n");

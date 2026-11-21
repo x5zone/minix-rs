@@ -182,8 +182,8 @@ pub struct CpuLocal {
     /// C: `tsc_per_state[CONFIG_MAX_CPUS][CPUSTATES]` (arch_clock.c:43) —
     /// context_stop adds the just-consumed TSC delta into the state bucket
     /// (arch_clock.c:340), and `get_cpu_ticks` divides by `tsc_per_tick`
-    /// for GET_CPU_TICKS. Previously this was implicitly global-zero —
-    /// `getinfo_cpu_ticks` returned zeros.
+    /// for GET_CPU_TICKS. The array starts at global zero, so
+    /// `getinfo_cpu_ticks` returns zeros until `context_stop` accumulates.
     pub tsc_per_state: [u64; crate::misc::MINIX_CPUSTATES],
     /// This CPU has entered the shared scheduling loop (set once at
     /// `scheduler_loop` entry; the test reads it per-CPU from the BSP).
@@ -216,16 +216,15 @@ impl CpuLocal {
 
     /// Mark this CPU as currently running `nr`.
     ///
-    /// This primitive no longer writes `bill_ptr`. In
+    /// This primitive does not write `bill_ptr`. In
     /// C, every `bill_ptr` write is BILLABLE-gated at its call site
     /// (`proc.c:186-188` in `idle`, `proc.c:1808-1809` in `pick_proc`;
     /// the boot write `main.c:56` targets idle, whose privilege carries
     /// BILLABLE). Billing is therefore call-site policy, and this crate's
     /// gated billing paths are `ProcessTable::set_bill_to_idle`,
     /// `pick_and_bill` and `idle` — all of which check `is_billable`.
-    /// An unconditional write here (the earlier behavior) would have
-    /// billed non-billable processes the moment a future caller reused
-    /// this primitive.
+    /// An unconditional write here would bill non-billable processes the
+    /// moment a caller reused this primitive.
     pub fn set_running(&mut self, nr: ProcNr) {
         self.proc_ptr = Some(nr);
     }
@@ -1224,13 +1223,9 @@ pub fn smp_init() {
         smp.wait_for_aps::<CurrentSmpArch>();
     }
 
-    // riscv64 already has its own wiring block (cfg(riscv64) below), and only
-    // aarch64 had none left — before that block existed riscv64 also fired this
-    // warning spuriously (the cfg range had not been narrowed along with the
-    // wiring). All three architectures (x86_64/riscv64/aarch64) now have their
-    // own wiring blocks, so this warning block no longer has a reachable target
-    // architecture — a newly wired architecture owns its block, and the global
-    // warning is no longer used.
+    // Every architecture (x86_64/riscv64/aarch64) owns its own wiring block
+    // below; a newly wired architecture adds its block here rather than
+    // relying on a global fallback warning.
 
     /// aarch64 half: with multiple CPUs configured, wake secondary cores
     /// through PSCI CPU_ON — the stub (ap_early_entry) reads the record,

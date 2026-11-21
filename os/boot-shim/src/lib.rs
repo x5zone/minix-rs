@@ -1,12 +1,11 @@
 //! Boot shim — bridges firmware (UEFI/OpenSBI/...) to the bare-metal kernel.
 //!
 //! The boot-prep entry on the U-Boot leg is
-//! `opensbi_helpers::prepare_boot`, a plain function (the single-impl
-//! `BootShim` trait was removed, F-R17-01). The kernel does **not** go
+//! `opensbi_helpers::prepare_boot`, a plain function (one implementation,
+//! so there is no trait). The kernel does **not** go
 //! through it at all — its real entry surface is
-//! `arch_boot(&KernelInfo, root_page)` / `enter_kernel_image_v1` (see doc 01
-//! §3.2 for the honest division of labor: only the U-Boot leg's production
-//! path calls `prepare_boot`).
+//! `arch_boot(&KernelInfo, root_page)` / `enter_kernel_image_v1`: only the
+//! U-Boot leg's production path calls `prepare_boot`.
 //!
 //! Feature gates in `Cargo.toml` select which firmware helpers get compiled;
 //! the shared loading logic in `loader.rs` is firmware-agnostic, while

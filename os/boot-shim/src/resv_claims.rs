@@ -304,11 +304,11 @@ pub fn capture(bytes: &[u8], source: (u64, u64)) -> Result<(), ClaimError> {
     let Ok(fdt) = fdt::Fdt::new(bytes) else {
         return Ok(());
     };
-    // D-086（I-33-丙）：owned 形态——数组在调用者栈上，不写 `DTB_*` 静态
+    // owned 形态——数组在调用者栈上，不写 `DTB_*` 静态
     // 表、不撞 `DTB_COLLECT_TAKEN` 守卫。capture 在 EBS 配对循环的每个
     // attempt 都会跑（UEFI 规范允许 `ExitBootServices` 首次返回
     // `EFI_INVALID_PARAMETER` 要求重试），`'static` 形态的第二次 collect
-    // 在真机 attempt 2 必然 panic——这是丙要消除的生产隐患。
+    // 在真机 attempt 2 必然 panic——owned 形态从结构上排除了这个隐患。
     let Ok(owned) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect_owned() else {
         return Ok(());
     };

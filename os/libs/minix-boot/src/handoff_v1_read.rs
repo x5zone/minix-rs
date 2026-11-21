@@ -66,8 +66,8 @@ pub enum HandoffV1ReadError {
 
 /// Verified envelope scalars, copied out of the arena by value.
 ///
-/// v10 dropped `user_sp` / `kern_stack_top` / `syscall_entry` (D-062): the
-/// receiver derives the first two (`USER_STACK_TOP` and
+/// The envelope does not carry `user_sp` / `kern_stack_top` /
+/// `syscall_entry`: the receiver derives the first two (`USER_STACK_TOP` and
 /// `kern_virt_base + kern_size`) and takes the syscall entry from
 /// `syscall_entry_va()` like every other consumer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

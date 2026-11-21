@@ -158,19 +158,20 @@ pub fn vm_pmm_free_regions() -> ([MemoryRegion; VM_BOOT_HANDOFF_MAX_REGIONS], us
     (out, count)
 }
 
-/// Cut a consumed span `[start, end)` out of the published A2 free list
-/// (R2 fix, D-081 / I-44): a multi-image loader that allocated frames from
+/// Cut a consumed span `[start, end)` out of the published A2 free list:
+/// a multi-image loader that allocated frames from
 /// [`vm_pmm_free_regions`] must remove them from the published list, or
 /// the next consumer sees spent frames and overwrites the earlier image's
 /// memory. C parity: `pg_alloc_page` consumers walk the **mutated**
-/// memmap (pg_utils.c:138-160) — the Rust snapshot now mutates too.
+/// memmap (pg_utils.c:138-160) — the Rust snapshot mutates too.
 ///
-/// Entries are trimmed or removed in place; the count shrinks when whole
-/// entries vanish. Single-threaded boot (no scheduler yet) — plain writes.
+/// Entries are trimmed in place or dropped whole; the count shrinks when
+/// whole entries vanish. Single-threaded boot (no scheduler yet) — plain
+/// writes.
 pub fn cut_consumed_span(start: u64, end: u64) {
     assert!(start < end, "cut_consumed_span: empty/reversed span");
     // SAFETY: single-threaded boot; the write-once publication at
-    // classification is followed by this R2 mutation (one per loader),
+    // classification is followed by this mutation (one per loader),
     // and readers run after it on the same thread.
     let slot = unsafe { &mut *VM_PMM_FREE.get() };
     let mut count = VM_PMM_FREE_COUNT.load(Ordering::Acquire);
@@ -702,8 +703,8 @@ pub fn build_vm_handoff(
         // E-BOOTFRAME: VM builds boot-proc initial stacks downward from
         // this value. C: execi->stack_high = kernel_boot_info.user_sp
         // (main.c:372); kinfo.user_sp = USR_STACKTOP (pre_init.c:156).
-        // v10 (D-062): derived from the compile-time constant, not received
-        // — every producer filled the field with exactly this value.
+        // Derived from the compile-time constant, not received: every
+        // producer fills the field with exactly this value.
         user_sp: minix_types::USER_STACK_TOP,
         is_first_time: 1,
         free_region_count: classification.free_region_count as u32,

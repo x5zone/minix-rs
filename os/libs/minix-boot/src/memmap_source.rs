@@ -6,8 +6,8 @@
 //! conventional (the PMM may allocate from it directly) and reserved (touched
 //! through the Direct Map at run time but never reallocated). Each chain's own
 //! firmware shape (UEFI `GetMemoryMap`, DTB `/memory`) stays inside its own
-//! collector and does not leak into consumers (previously the opensbi leg handed
-//! the kernel a "hard-coded single QEMU virt DRAM region" directly — exactly the
+//! collector and does not leak into consumers (a hard-coded single QEMU virt
+//! DRAM region must not be delivered to the kernel directly — it is exactly the
 //! leak this contract closes).
 //!
 //! The contract is carried by the **result shape** that [`DtbMemoryMap::collect`]
@@ -153,21 +153,14 @@ pub enum DtbMemMapError {
     TooManySourceRecords,
 }
 
-// I-33-乙 (D-086): the four process-wide `'static` tables (`DTB_FREE` /
-// `DTB_RESERVED` / `DTB_SOURCES` / `DTB_PANORAMA`), their counters, the
-// `DTB_COLLECT_TAKEN` one-shot guard, `commit_static`, `collect_inner` and
-// the three `'static` entry points are gone. Their last two production
-// consumers were converted to the owned form — `resv_claims::capture`
-// (I-33-丙) and the two direct-core bootfaces (I-33-甲) — so every
-// collection now lands on the caller's stack via `collect_owned`, and the
-// guard's "one `'static` collect per boot face" premise holds trivially:
-// there is no `'static` collect left to re-enter.
+// Every collection lands on the caller's stack via `collect_owned`; there is
+// no process-wide `'static` table, so there is no one-shot guard to re-enter
+// and no "one `'static` collect per boot face" rule to enforce.
 
 /// One collection, in caller-owned storage.
 ///
-/// `collect_owned` projects this onto the caller's stack. The former split
-/// ("one `'static` consumer + several short-lived ones") collapsed when the
-/// last `'static` consumers converted to the owned form (I-33-丙/甲/乙).
+/// `collect_owned` projects this onto the caller's stack, so long-lived and
+/// short-lived consumers share one collection shape.
 struct DtbArrays {
     free: [MemoryRegion; DTB_MEMMAP_MAX],
     free_n: usize,
@@ -191,11 +184,10 @@ pub struct DtbMapOwned {
     reserved_len: usize,
     sources: [SourceRecord; DTB_SOURCE_MAX],
     sources_len: usize,
-    /// Unclipped `/memory` panorama (I-33-丙 / D-086): the EBS-side
+    /// Unclipped `/memory` panorama: the EBS-side
     /// reservation cross-check (`resv_claims::capture`) needs it, and the
-    /// owned form is the only shape that can serve a second collection on
-    /// the same boot face — the `'static` entry points would trip the
-    /// `DTB_COLLECT_TAKEN` guard on UEFI's standard EBS-retry attempt 2.
+    /// owned form serves a second collection on the same boot face — a
+    /// process-wide guard would trip on UEFI's standard EBS-retry attempt 2.
     panorama: [MemoryRegion; DTB_MEMMAP_MAX],
     panorama_len: usize,
 }
@@ -224,10 +216,9 @@ impl DtbMapOwned {
     }
 }
 
-// I-33-乙 (D-086): the `DTB_COLLECT_TAKEN` one-shot guard and the
-// `DTB_FREE_N` / `DTB_RESERVED_N` counters went with the static tables —
 // `collect_owned` writes nothing process-wide, so "re-entry overwrites a
-// live `'static` slice" is no longer a representable hazard.
+// live `'static` slice" is not a representable hazard and there is no
+// one-shot guard to trip.
 
 /// Capacity of the source-record buffer. The bound comes from the **input**
 /// caps this collector enforces, not from the projection tables: `/memory`
@@ -633,11 +624,9 @@ impl InputObjectId {
     }
 }
 
-// I-33-乙 (D-086): the `DTB_SOURCES` / `DTB_PANORAMA` tables and their
-// counters went with the other two static tables — source records and the
-// panorama ride on the caller's stack inside `DtbMapOwned`. The panorama's
-// role is unchanged: the deduplicated `/memory` view the UEFI
-// static-reservation type cross-check uses to decide which reservation
+// Source records and the panorama ride on the caller's stack inside
+// `DtbMapOwned`. The panorama's role: the deduplicated `/memory` view the
+// UEFI static-reservation type cross-check uses to decide which reservation
 // pages claim RAM at all.
 
 /// Clip the part of `[start, start+len)` that falls inside the resident
@@ -647,8 +636,7 @@ impl InputObjectId {
 /// remainder).
 ///
 /// A pure function — the compile-time guards at the bottom of this module pin
-/// down its single-character mutations (the arithmetic was migrated from the
-/// original bootface `clip_firmware`; with `fw_end` parameterized, the riscv64
+/// down its single-character mutations. With `fw_end` parameterized, the riscv64
 /// bootface leg and the U-Boot shim leg pass `KERN_PHYS_BASE`, and only the
 /// aarch64 direct leg passes 0 = no clipping; the **aarch64 UEFI leg also
 /// passes 0** — UEFI legs clip at classification time instead, not by fw_end).
@@ -900,12 +888,9 @@ impl DtbMemoryMap<'_> {
     /// firmware tables use it to tell a RAM reservation from an out-of-RAM
     /// declaration.
     ///
-    /// I-33-乙 (D-086): this is the only collection entry point. The former
-    /// `'static` forms (`collect` / `collect_with_panorama` /
-    /// `collect_with_sources`, plus `collect_inner` / `commit_static` and
-    /// the four process-wide tables they wrote) are gone — every consumer
-    /// now owns its tables on the stack, so the former one-shot guard's
-    /// "re-entry overwrites a live `'static` slice" hazard cannot occur.
+    /// This is the only collection entry point: every consumer owns its
+    /// tables on the stack, so "re-entry overwrites a live `'static` slice"
+    /// cannot occur.
     pub fn collect_owned(&self) -> Result<DtbMapOwned, DtbMemMapError> {
         let arrays = self.collect_arrays()?;
         Ok(DtbMapOwned {
@@ -964,7 +949,7 @@ impl DtbMemoryMap<'_> {
         //    instruction and are never reallocated.
         let mut memory_node_ordinal: u16 = 0;
         for node in self.fdt.all_nodes() {
-            // `/memory` or `/memory@80000000` (the unit-address variant).
+            // `/memory` or its unit-address variant (`/memory@` + a hex address).
             if node.name.split('@').next() != Some("memory") {
                 continue;
             }

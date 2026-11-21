@@ -102,8 +102,8 @@ pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>)
     // registers in its own address space.)
     //
     // Write-once is enforced in both profiles. A second registration is a
-    // boot bug: silently keeping the first allocator hides a wiring error
-    // (F-R23-05), so fail closed in release too.
+    // boot bug: silently keeping the first allocator hides a wiring error,
+    // so fail closed in release too.
     let claimed = PT_CLAIMED.swap(true, Ordering::AcqRel);
     assert!(!claimed, "pt_alloc::register called twice");
     // SAFETY: the `PT_CLAIMED` swap above admits exactly one writer; the

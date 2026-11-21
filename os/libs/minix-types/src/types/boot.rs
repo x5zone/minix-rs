@@ -47,56 +47,18 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 
 /// `VmBootHandoff::version` — handoff layout version.
 ///
-/// Version history:
-/// - 1: `root_paddr` only (A1 identity hand-off).
-/// - 2: full boot contract — free regions (A2 classification), the
-///   LiveBootstrap deduction record, reserved modules, the boot image
-///   table and the kernel footprint.
-/// - 3: kernel text/data span for per-process kernel mappings.
-/// - 4: `user_sp` — the initial user stack top, C `kinfo.user_sp`
-///   (pre_init.c:156). VM builds every boot process's initial stack
-///   frame downward from it (E-BOOTFRAME; C exec_bootproc reads the
-///   same value out of `kernel_boot_info`, main.c:372).
-/// - 5: `kern_dm_vbase` / `kern_dm_pages` — the kernel Direct Map
-///   window's real VA base and PA coverage. Version ≤ 4
-///   handoffs carried hardcoded sentinels here (wrong base + 4-page
-///   window): a process page table built from them left nearly the
-///   whole Direct Map not-present, so kernel physical-memory access
-///   after a CR3 switch to such a table was broken (the sentinel-era
-///   tables are unusable either way — see v6 for what actually killed
-///   the first switch). The kernel now computes both from the same
-///   candidate union `establish_boot_dm` maps
-///   (`dm_coverage::kernel_dm_pa_end`).
-/// - 6: `kern_ident` / `kern_ident_count` — the kernel runtime
-///   identity windows (version 6). Boot forensics
-///   established the real first-switch death cause: the kernel is
-///   statically linked into the UEFI boot-shim PE image and EXECUTES
-///   from the firmware-relocated low addresses (text ~0x1dac_xxxx,
-///   GDT/IDT/TSS ~0x1db9_xxxx after `mov cr3` succeeded, the very
-///   next instruction fetch at IP == CR2 hit a not-present page →
-///   #PF → #DF → triple fault). The higher-half standalone
-///   kernel.elf copy is loaded but never executed, so the v3+
-///   kern_* image span alone leaves the live code and tables
-///   unmapped in every VM-built page table. v6 ships the occupied
-///   (non-conventional) physical regions snapshotted from the UEFI
-///   memory map so `map_kernel` replays them identity (VA = PA,
-///   supervisor-only) into every process page table.
-/// - 7: `kerninfo_pa` — the kernel-information page's physical address.
-///   VM maps it read-only at [`KERNINFO_USER_VA`] in every new root;
-///   the kernel no longer injects the mapping in `vmctl_set_addr_space`.
-///   With the x86 independent-image cut, at v7 the kernel executed from its
-///   high-half image, so `kern_ident` carried only the architecture MMIO
-///   identity ranges (the link-in low windows had retired).
-/// - 8: `VM_BOOT_HANDOFF_MAX_DEDUCTED` 32 → 47; the struct-size change
-///   deliberately breaks the v7 layout. From v8 on `kern_ident` is always
-///   empty: the producer retired identity windows (PD-22 step 2 final), and
-///   VM rejects a non-empty field (check-and-reject). (The kernel-side
-///   `vm_boot_exclusions` list is internal to first-allocation protection;
-///   it is not a handoff field.)
-/// - 9: `kern_ident` / `kern_ident_count` / `VM_BOOT_HANDOFF_MAX_IDENT`
-///   removed. The field had been always empty since v8; carrying 1 KiB of
-///   zeros only kept the v8 struct size. The struct shrinks and the exact
-///   version check rejects v8 senders.
+/// The version is compared exactly: a sender and a receiver built for
+/// different layouts must not interoperate, even where one layout is a
+/// superset of the other.
+///
+/// This version's layout carries: the address-space identity hand-off
+/// (`root_paddr`), the kernel-information page's physical address
+/// (`kerninfo_pa`), the resource hand-off (`free_regions` + `deducted`),
+/// the reserved `modules`, the boot image table (`boot_procs`), the kernel
+/// image span and its allocation accounting, the kernel Direct Map window
+/// (`kern_dm_vbase` / `kern_dm_pages`) and `user_sp`. It carries no
+/// identity-window list: the kernel runs from its high-half image, and VM
+/// builds every process root without VA=PA mappings.
 pub const VM_BOOT_HANDOFF_VERSION: u32 = 9;
 
 /// Maximum free-region entries the handoff page carries.
@@ -359,13 +321,13 @@ pub struct VmBootHandoff {
 impl VmBootHandoff {
     /// Kernel layout for per-process kernel mappings.
     ///
-    /// `Some` for version ≥ 3 handoffs (the kernel reports its text/data
-    /// span); `None` for version ≤ 2 — the consumer keeps its historical
-    /// fallback (VM: the mock `KernelLayout` constants + a warning).
+    /// `Some` when the handoff carries the kernel text/data span
+    /// (version ≥ 3); `None` when it does not (version ≤ 2) — the consumer
+    /// then keeps the mock `KernelLayout` constants and warns.
     ///
-    /// The Direct Map window is the kernel's real one only from version
-    /// 5 on: v3/v4 handoffs carry no DM fields and this function
-    /// returns the historical sentinels, which are wrong on real
+    /// The Direct Map window is the kernel's real one only for version ≥ 5:
+    /// older handoffs carry no DM fields and this function returns the
+    /// sentinels `0xFFFF_8000_0000_0000` / 4 pages, which are wrong on real
     /// hardware (base off by one PML4 slot, 4-page coverage). That is
     /// unreachable in production — [`Self::validate`] hard-asserts the
     /// exact current version — so the sentinels only ever surface in
@@ -377,7 +339,7 @@ impl VmBootHandoff {
         let (dm_vbase, dm_pages) = if self.version >= 5 {
             (self.kern_dm_vbase, self.kern_dm_pages as usize)
         } else {
-            (0xFFFF_8000_0000_0000, 4) // legacy sentinels (see doc)
+            (0xFFFF_8000_0000_0000, 4) // old-version sentinels (see doc)
         };
         Some(KernelLayout::new(
             self.kern_virt_base,
@@ -451,8 +413,8 @@ const _: () = assert!(
 /// Kernel memory layout parameters used to map the kernel into each
 /// process's page table.
 ///
-/// Replaces the hardcoded constants previously guarded by the
-/// `hardcoded_kernel_layout` feature (hardcoded kernel layout fix). The kernel layout is
+/// Replaces the hardcoded constants guarded by the
+/// `hardcoded_kernel_layout` feature. The kernel layout is
 /// determined once at boot (by the boot-shim/bootface from the kernel ELF
 /// and each architecture's linker script) and shared across all user processes — the kernel mapping
 /// is identical in every page table.
@@ -706,7 +668,7 @@ mod tests {
             assert_eq!(l.kernel_text_pbase, 0x100_0000);
             assert_eq!(l.kernel_text_pages, 24);
             assert_eq!(l.kernel_data_pages, 0);
-            // v3 has no DM fields — the historical sentinels surface
+            // v3 has no DM fields — the sentinels surface
             // (host-test shape only; production validate() pins the
             // current version).
             assert_eq!(l.dm_vbase, 0xFFFF_8000_0000_0000);

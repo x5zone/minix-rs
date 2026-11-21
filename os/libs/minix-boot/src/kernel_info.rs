@@ -18,11 +18,11 @@ use crate::platform::PlatformDescSource;
 // toolchain-defined anyway.
 #[derive(Clone, Copy)]
 pub struct KernelInfo {
-    /// Free physical memory regions — **not** pre-filtered (D01-R5 D2-14).
+    /// Free physical memory regions — **not** pre-filtered.
     /// What lands here per leg: the kernel image is in this list on the
     /// self-boot legs (its LMAs are carved from conventional RAM) and absent
     /// on UEFI legs, where `reserve_kernel_span` claims its span as
-    /// `LOADER_DATA` before any other allocation (D01-R13 A). Module blobs are
+    /// `LOADER_DATA` before any other allocation. Module blobs are
     /// in it on the U-Boot / direct-core legs (bump pages) but absent on UEFI
     /// legs (`LOADER_DATA`). Each consumer deducts the occupied ranges it must
     /// not touch (see the `memmap()` accessor for the per-consumer split).
@@ -31,16 +31,12 @@ pub struct KernelInfo {
 
     /// Memory the classifier marked `ReservedMapped` — non-conventional,
     /// firmware-retained, usable through the Direct Map but not allocatable.
-    /// Two historical uses:
+    /// Uses:
     ///
-    /// 1. The inline x86 identity window (kernel linked into the boot-shim
-    ///    PE, executed at low physical addresses). Retired with the
-    ///    independent-image split: `vm_handoff`'s kern_ident input now
-    ///    returns empty for this leg.
-    /// 2. Firmware allocations the kernel may reach through the Direct Map
+    /// 1. Firmware allocations the kernel may reach through the Direct Map
     ///    (loader data, kernel stack, ACPI tables, LOADER_DATA allocations
-    ///    including the bump region and module blobs). This is still
-    ///    consumed as DM coverage source 4 (`dm_coverage.rs`).
+    ///    including the bump region and module blobs). Consumed as DM coverage
+    ///    source 4 (`dm_coverage.rs`).
     ///
     /// What each production leg passes here:
     ///
@@ -145,16 +141,16 @@ pub struct KernelInfo {
     /// Bound at construction, not at validation: the wire decoder copies
     /// `BootHandoffV1::ram_authority`, the direct-core legs pass
     /// [`RamAuthority::DTB`], and the UEFI legs pass [`RamAuthority::UEFI`]. [`Self::validate_requiring_sources`]
-    /// reads this field instead of taking a caller-supplied parameter
-    /// (F-R17-04), so the projection and its authority cannot be paired by a
+    /// reads this field instead of taking a caller-supplied parameter,
+    /// so the projection and its authority cannot be paired by a
     /// separate argument at the consumer boundary.
     pub authority: RamAuthority,
 }
 
 /// Validation strictness for [`KernelInfo::validate_at`].
 ///
-/// Replaces the previous two-`bool` encoding that allowed four combinations
-/// but only three were semantically valid (R17 DESIGN-12).
+    /// Replaces the two-`bool` encoding that allowed four combinations
+    /// but only three were semantically valid.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ValidationLevel {
     /// QEMU bootstrap test kernels: no boot modules, no source records.
@@ -183,11 +179,11 @@ impl ValidationLevel {
 impl KernelInfo {
     /// The kernel's initial stack top, derived from the image span.
     ///
-    /// v10 (D-062) removed `kern_stack_top` from both the wire and this
-    /// struct: every producing leg computed it as `kern_virt_base + kern_size`
+    /// Neither the wire nor this struct carries `kern_stack_top`: every
+    /// producing leg computes it as `kern_virt_base + kern_size`
     /// (the loader places the boot stack at the image tail; `bootface`'s `.ld`
     /// pins `KERN_STACK_TOP` to the same expression), so carrying it across
-    /// the hop was restating an arithmetic identity on both ends.
+    /// the hop would restate an arithmetic identity on both ends.
     ///
     /// # Panics
     ///
@@ -222,7 +218,7 @@ impl KernelInfo {
         self.validate_at(ValidationLevel::Standard);
     }
 
-    /// Unified validation entry point (R17 DESIGN-12).
+    /// Unified validation entry point.
     fn validate_at(&self, level: ValidationLevel) {
         self.validate_impl_inner(&level);
     }
@@ -317,7 +313,7 @@ impl KernelInfo {
             }
         }
 
-        // Cross-table disjointness (R16 DESIGN-10): a page that appears in
+        // Cross-table disjointness: a page that appears in
         // both the allocatable list and the never-reallocate list is a
         // producer bug that would let the PMM hand out a reserved frame.
         // Both lists are sorted (checked above), so a merge-walk suffices.
@@ -348,8 +344,8 @@ impl KernelInfo {
             }
         }
 
-        // Kernel image vs module spans, and module-vs-module spans
-        // (R18 DESIGN-D2-10). The producer asserts this before copying, but the
+        // Kernel image vs module spans, and module-vs-module spans.
+        // The producer asserts this before copying, but the
         // receive side re-checks the same half-open predicate: a hand-crafted
         // wire payload must not be able to place a module over the kernel it is
         // about to run. Touching is legal (`[a,b)` and `[b,c)`).
@@ -449,15 +445,14 @@ impl KernelInfo {
         //    The lenient gate audits whatever records are present.
         if level.is_strict() {
             let authority = self.authority;
-            // v10 (D-062) removed the three derived-value equalities that
-            // used to live here. They asserted `user_sp == USER_STACK_TOP`,
-            // `syscall_entry == kern_virt_base` and
-            // `kern_stack_top == kern_virt_base + kern_size` — all three
-            // restated an identity that the receiver now derives instead of
-            // receiving, so there is no wire value left to forge.
+            // The wire carries no derived-value equalities to check: the
+            // receiver derives `user_sp`, `syscall_entry` and
+            // `kern_stack_top` from `USER_STACK_TOP` / `kern_virt_base` /
+            // `kern_virt_base + kern_size`, so there is no wire value left to
+            // forge.
             // The module name is positional identity, not a display label:
             // a forged wire must not pair position 6's image with position 7's
-            // name (DESIGN-02).
+            // name.
             for (i, module) in self.boot_modules.iter().enumerate() {
                 assert!(
                     i < MODULE_NAMES.len() && module.name == MODULE_NAMES[i],
@@ -500,18 +495,15 @@ impl KernelInfo {
             }
         }
 
-        // Startup-object canonical set (D01-F07): at least one record must
-        // cover the kernel image's physical span. Every production leg writes
+        // Kernel-image coverage: at least one record must cover the kernel
+        // image's physical span. Every production leg writes
         // it; a missing record means a producer regression, not an empty-list
         // corner case.
         if level.requires_startup_kernel_record() {
-            // v10 (D-062) replaced the startup-object `any()` check with an
-            // equivalent test over data that is already on the wire: the
-            // kernel span must be covered by a `memmap` or `reserved_regions`
-            // span. The five legs were verified to satisfy this before the
-            // partition was removed (UEFI legs claim the span as
-            // `ReservedMapped`; the U-Boot shim and the two direct-core legs
-            // get it from the DTB `/memory` projection).
+            // The kernel span must be covered by a `memmap` or
+            // `reserved_regions` span. All five legs satisfy this (UEFI legs
+            // claim the span as `ReservedMapped`; the U-Boot shim and the two
+            // direct-core legs get it from the DTB `/memory` projection).
             let kern_lo = self.kern_phys_base.0;
             let kern_hi = kern_lo
                 .checked_add(self.kern_size)
@@ -545,15 +537,14 @@ impl KernelInfo {
 
     /// **Boot-postcondition check shared by every boot form.**
     ///
-    /// The five historical boot forms each produce `KernelInfo` from a
+    /// The five boot forms each produce `KernelInfo` from a
     /// different firmware surface, so their absolute addresses differ; what
     /// can be checked in one place is the relation every form must satisfy.
-    /// v10 (D-062) removed the three derived-scalar relations (`user_sp` /
-    /// `syscall_entry` / `kern_stack_top`) together with their fields; the
-    /// one remaining relation is the coarse lower bound `kern_virt_base >
-    /// u32::MAX` (the kernel must not sit below 4 GiB). The per-architecture
-    /// user/kernel split is carried by the layout constants, not by this
-    /// gate.
+    /// That relation is the coarse lower bound `kern_virt_base > u32::MAX`
+    /// (the kernel must not sit below 4 GiB). The derived scalars `user_sp` /
+    /// `syscall_entry` / `kern_stack_top` are not wire fields, so there is no
+    /// equality to check; the per-architecture user/kernel split is carried
+    /// by the layout constants, not by this gate.
     ///
     /// Complementary to [`Self::validate`]: `validate` checks non-address
     /// invariants (kern_size/alignment/non-empty/param_buf bound), while
@@ -565,20 +556,16 @@ impl KernelInfo {
     /// Any failing postcondition fails fast (there is no recovery surface
     /// during boot; same weight as `validate`).
     pub fn check_boot_postconditions(&self) {
-        // v10 (D-062) removed the three scalars these four assertions used to
-        // read, so they are gone with their data source rather than rewritten
-        // against derived values — a check on `kern_virt_base + kern_size`
-        // that just recomputed the same expression would be a tautology, and
-        // a `USER_STACK_TOP` check would compare a compile-time constant with
-        // itself. What still has to hold is the one relation that the
-        // remaining fields can falsify: the kernel image must sit above
-        // 4 GiB (u32::MAX). That is a coarse lower bound, not the
+        // Only the lower bound is checked here. A check on
+        // `kern_virt_base + kern_size` would recompute the same expression as
+        // a tautology, and a `USER_STACK_TOP` check would compare a
+        // compile-time constant with itself. The kernel image must sit above
+        // 4 GiB (u32::MAX): a coarse lower bound, not the
         // per-architecture user/kernel split (the layout constants carry
         // the latter).
         //
-        // The syscall-entry placement check moved with its single source:
-        // `syscall_entry_va()` is now the only authority (it always was for
-        // execution; the field was only a mirror).
+        // The syscall-entry placement check has one authority:
+        // `syscall_entry_va()`.
         assert!(
             self.kern_virt_base.0 > u64::from(u32::MAX),
             "KernelInfo postcond: kern_virt_base (0x{:x}) 不大于 u32::MAX（4 GiB 下限）",

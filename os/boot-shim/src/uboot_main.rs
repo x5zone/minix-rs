@@ -53,7 +53,7 @@ use boot_shim::opensbi_helpers::{
     BOOT_FILE_PATH_MAX, BOOT_FILE_TABLE_MAX_ENTRIES, BootFileEntry, BootFileTable, prepare_boot,
 };
 
-/// The U-Boot sender's caller-owned semantic storage (R18 D-1 stage 2).
+/// The U-Boot sender's caller-owned semantic storage.
 /// Single-threaded boot; see `boot_shim::BootStorageCell`.
 static BOOT_STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
 use boot_shim::{raw_serial, raw_serial_line};
@@ -78,8 +78,8 @@ const SHIM_LINK_BASE: u64 = 0x8450_0000;
 // The shim's Rust surface needs a heap only for short-lived path strings
 // (`build_module_path` builds 12 `String`s) and two diagnostic `format!`
 // calls. File contents are borrowed (`FileBytes::Borrowed`), not read into
-// `Vec`s, and `prepare_boot` writes the caller's `BootStorage`, so the old
-// 16 MiB "kernel + modules read into Vecs" rationale no longer applies.
+// `Vec`s, and `prepare_boot` writes the caller's `BootStorage`, so the
+// "kernel + modules read into Vecs" allocation shape does not apply.
 // 64 KiB covers the actual use with headroom; the image `.lbss` and the
 // identity window shrink accordingly.
 const SHIM_HEAP_LEN: usize = 64 * 1024;
@@ -513,8 +513,8 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     serializer
         .write_sources(result.report.source_records)
         .expect("too many memory-map source records for the handoff arena");
-    // v10 (D-062) removed the startup-object partition; the kernel span
-    // coverage check it fed is now answered by the map tables.
+    // No startup-object partition is written: the kernel span
+    // coverage check it fed is answered by the map tables.
 
     raw_serial_line("boot-shim: [raw] entering kernel image v1");
     // SAFETY: the bootstrap root was enabled by `enter_kernel_image_v1`

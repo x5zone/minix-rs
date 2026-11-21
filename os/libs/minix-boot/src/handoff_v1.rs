@@ -262,32 +262,19 @@ pub const BOOT_HANDOFF_V1_MAGIC: u32 = 0x4D4E_5848;
 
 /// Protocol version of the envelope defined in this module.
 ///
-/// 2 = the source-record partition (`source_records`) joined the wire image:
-/// the per-descriptor provenance of the memory map now crosses the first hop
-/// instead of being dropped on the sending side. A v1 receiver would ignore
-/// the new partition and a v1 sender would leave it empty, so the version is
-/// compared exactly, not as a minimum.
+/// The version is compared exactly, not as a minimum: a receiver built for a
+/// different layout must reject the arena in both directions, because a
+/// newer layout can drop fields that a superset check would still accept.
 ///
-/// 8 = the `free_upper_idx` / `bootstrap_start` / `bootstrap_len` scalars
-/// left the envelope (D01-F03): all producers wrote the "none" forms
-/// (sentinel / 0 / 0), the kernel-side consumer of `free_upper_idx` was
-/// the GET_KINFO report which fills 0 anyway, and the bootstrap reclaim
-/// does not exist in the Rust port. Envelope shrinks 184 → 160 bytes.
-///
-/// 9 = the arena's semantic work partition (two `MemoryRegion` tables, 6144
-/// B) was deleted (R18 D-2): the sender keeps its semantic tables in its own
-/// `BootStorage` and the wire is the only representation in the arena. The
-/// source and startup partitions move down by 6144 B and the arena shrinks
-/// from nine pages to eight. This is a layout change, so a v8 receiver must
-/// reject a v9 arena and vice versa — the comparison stays exact.
-///
-/// 10 = the three derived scalars (`user_sp`, `kern_stack_top`,
-/// `syscall_entry`) and the startup-object partition left the envelope
-/// (D-062): every producer wrote `USER_STACK_TOP` / `kern_virt_base +
-/// kern_size` / `kern_virt_base`, and the only startup reader was a strict
-/// gate now answered by the memory-map tables. Envelope shrinks 160 → 128
-/// bytes and the startup arena partition (20 × 72 = 1440 B) is retired, so
-/// a v9 receiver must reject a v10 arena and vice versa.
+/// This version's layout: a 128-byte envelope; the wire carries the
+/// memory-map pair, boot modules, platform sources and the param buffer,
+/// followed by the source-record partition. The three derived scalars
+/// (`user_sp`, `kern_stack_top`, `syscall_entry`), the startup-object
+/// partition, and the `free_upper_idx` / `bootstrap_start` /
+/// `bootstrap_len` scalars are not on the wire: every producer would write
+/// `USER_STACK_TOP` / `kern_virt_base + kern_size` / `kern_virt_base` for the
+/// first three, the kernel derives `free_upper_idx` itself (the GET_KINFO
+/// report fills 0), and the Rust port has no bootstrap reclaim.
 pub const BOOT_HANDOFF_V1_VERSION: u32 = 10;
 
 /// The handoff envelope. Lives at the start of the handoff arena; the
@@ -391,7 +378,7 @@ pub const WIRE_PARAM_OFFSET: usize = WIRE_PLATFORM_OFFSET + WIRE_PLATFORM_CAP * 
 pub const WIRE_END: usize = WIRE_PARAM_OFFSET + WIRE_PARAM_CAP;
 
 /// Source-record partition: follows the wire payload directly. The sender's
-/// semantic tables live in its own `BootStorage` (R18 D-2), so the arena
+/// semantic tables live in its own `BootStorage`, so the arena
 /// carries no second representation of the map.
 pub const WIRE_SOURCES_OFFSET: usize = WIRE_END;
 pub const WIRE_SOURCES_END: usize =

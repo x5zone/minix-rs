@@ -403,7 +403,7 @@ where
         }
     };
 
-    // I-33-甲 (D-086): owned form — the arrays live on this face's stack and
+    // Owned form — the arrays live on this face's stack and
     // are committed into `storage` after the fill stages below; the
     // collector's `'static` tables are not written.
     let owned = DtbMemoryMap::new(&fdt, params.fw_end)

@@ -57,7 +57,7 @@ const ZERO_RECORD: SourceRecord = EMPTY_SOURCE_RECORD;
 /// The two map-table counts, named so a swap is a struct-literal typo.
 ///
 /// [`BootStorage::fill_map_tables`] takes this back from the classifier: both
-/// tables come from one pass, so committing them must be one step (D-067).
+/// tables come from one pass, so committing them must be one step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapCounts {
     pub memmap: usize,
@@ -71,7 +71,7 @@ pub struct MapCounts {
 /// method commits that count before returning. **Write and commit are one
 /// step**, so a report can only ever see a committed prefix — there is no
 /// "slots written, length not committed" half-state to intercept, and
-/// therefore no dirty flag (D-067 / I-34).
+/// therefore no dirty flag.
 ///
 /// The map pair is the exception in shape only: [`Self::fill_map_tables`]
 /// hands out both tables and takes back a [`MapCounts`], because the
@@ -135,8 +135,7 @@ impl BootStorage {
     /// committed together: a caller that updated one count alone would expose
     /// a report whose tables disagreed. The closure returns a [`MapCounts`]
     /// with both counts written out by field name, so a swap of the two
-    /// numbers is a struct-literal typo rather than a positional one
-    /// (D-067 / I-34).
+    /// numbers is a struct-literal typo rather than a positional one.
     pub fn fill_map_tables<F>(&mut self, write: F)
     where
         F: FnOnce(&mut [MemoryRegion], &mut [MemoryRegion]) -> MapCounts,
@@ -256,7 +255,7 @@ impl BootStorage {
         kern_phys_base: PhysBytes,
         kern_size: u64,
     ) -> BootReport<'_> {
-        // No dirty-flag assertion here any more (D-067 / I-34): every family
+        // No dirty-flag assertion is needed: every family
         // is filled and committed in one `fill_*` call, so "slots written,
         // length not committed" is not a representable state.
         BootReport {
@@ -297,17 +296,17 @@ pub struct BootReport<'a> {
     /// leg the classifier writes the records straight into the wire, so this
     /// slice is empty and the wire is the only authority.
     pub source_records: &'a [SourceRecord],
-    // v10 (D-062) removed the startup-object slice; no field remains here.
+    // No startup-object slice: every startup-object value is a pure
+    // restatement the kernel derives from the compile-time constants.
 
     pub kern_virt_base: VirBytes,
     pub kern_phys_base: PhysBytes,
     pub kern_size: u64,
-    // D-085（I-41）: no `user_sp` / `kern_stack_top` / `syscall_entry` here —
-    // the same pure restatements D-062 dropped from the wire, surviving on
-    // the shim-side struct because v10's sweep missed the non-wire type.
-    // Zero production readers (verified pre-adjudication): `user_sp` is the
-    // `minix_types::USER_STACK_TOP` constant, `syscall_entry` has
-    // `syscall_entry_va()`, and `kern_stack_top` has no shim-side meaning.
+    // No `user_sp` / `kern_stack_top` / `syscall_entry` here: these are pure
+    // restatements the wire does not carry. Nothing in production reads
+    // them: `user_sp` is the `minix_types::USER_STACK_TOP` constant,
+    // `syscall_entry` has `syscall_entry_va()`, and `kern_stack_top` has no
+    // shim-side meaning.
 }
 
 #[cfg(test)]

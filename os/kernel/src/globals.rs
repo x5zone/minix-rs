@@ -3,8 +3,7 @@
 //!
 //! Every process-global lives here: the `SyncUnsafeCell` wrapper, the
 //! sealed `BklProtected` trait with its approved-type list (the friction
-//! point for wrapping a new type), and the 24 statics themselves
-//! (13 originally, 11 more collected in later).
+//! point for wrapping a new type), and the 24 statics themselves.
 //! Accessor families (`*_with` / `*_boot_unchecked` / raw) stay in
 //! `lib.rs` — they are the crate's API surface and consume these via
 //! re-export, so the audit point for "what globals exist" and the

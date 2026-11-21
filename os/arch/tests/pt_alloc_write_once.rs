@@ -1,5 +1,5 @@
 //! Write-once contract for the page-table allocator singletons: a second
-//! `register` / `register_free` must abort in **all** build profiles (F-R23-05).
+//! `register` / `register_free` must abort in **all** build profiles.
 //!
 //! This lives in `tests/` on purpose: the singleton state is process-global,
 //! and the in-crate test binary already registers an allocator for the

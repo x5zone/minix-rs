@@ -98,7 +98,7 @@ const PAGE_SIZE: u64 = 4096;
 /// 7. kernel-window reserved regions
 ///
 /// Pass 1 (preflight) and pass 2 (install) MUST traverse this same sequence;
-/// extracting it here guarantees they cannot drift apart (R17 DESIGN-06).
+/// extracting it here guarantees they cannot drift apart.
 /// `kernel_dm_pa_end` derives its upper bound from the same candidate set.
 fn for_each_dm_candidate<A: BootArch, F>(
     kernel_info: &KernelInfo,

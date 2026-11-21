@@ -5,7 +5,7 @@
 //! envelope first, then the wire partition (memmap / reserved regions / boot
 //! modules / platform sources / param bytes) and the independent record
 //! partition (`write_sources` for the provenance records). The wire is the
-//! only map representation in the arena (R18 D-2); the sender's semantic
+//! only map representation in the arena; the sender's semantic
 //! tables live in its own `BootStorage` and the receiver decodes the wire into
 //! its own `.bss`.
 //!
@@ -155,9 +155,9 @@ impl<'a> Serializer<'a> {
 
     /// Write the protocol header and the three kernel scalars.
     ///
-    /// v10 dropped `user_sp` / `kern_stack_top` / `syscall_entry` (D-062):
-    /// the first two are derivable on both sides, the third was a producer's
-    /// restatement of `kern_virt_base` that no consumer read.
+    /// The envelope does not carry `user_sp` / `kern_stack_top` /
+    /// `syscall_entry`: the first two are derivable on both sides, and the
+    /// third is a restatement of `kern_virt_base` that no consumer reads.
     fn write_envelope_scalars(
         &mut self,
         kern_virt_base: u64,

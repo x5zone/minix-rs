@@ -203,13 +203,12 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
         // and not concurrently modified.
         let slice =
             unsafe { slice::from_raw_parts(entry.phys_addr as *const u8, entry.len as usize) };
-        // D-082（I-36）：`read` 只处理字节来源，不做任何 ELF 语义。表里的
-        // `entry.len` 已是 `build_shim_table` 用 `staged_elf_used_len` 算出
-        // 的修剪值（「表存的是槽容量」是登记时的误判，已核实推翻）——这里
-        // 再跑 `segment_iter` 是对已修剪数据的幂等无效功。模块装载层的唯一
-        // 修剪点在 `loader::load_boot_modules_into`（`elf_file_end`）。
-        // U-Boot staged the file in RAM; hand out a borrow instead of a copy
-        // (R18 D-4). The table is written once before the shim runs and is
+        // `read` 只处理字节来源，不做任何 ELF 语义。表里的
+        // `entry.len` 已是 `build_shim_table` 用 `staged_elf_used_len` 算出的
+        // 修剪值——这里再跑 `segment_iter` 是对已修剪数据的幂等无效功。模块
+        // 装载层的唯一修剪点在 `loader::load_boot_modules_into`（`elf_file_end`）。
+        // U-Boot staged the file in RAM; hand out a borrow instead of a copy.
+        // The table is written once before the shim runs and is
         // not modified while the bytes are in use.
         Some(crate::loader::FileBytes::Borrowed(slice))
     }
@@ -222,21 +221,18 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 /// Mirrors the UEFI production entry step by step; the only differences are how
 /// firmware-specific services are accessed:
 /// - Memory map → `DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect_owned()` (DTB `/memory`;
-///   missing DTB halts; I-33-甲/乙 unified every DTB consumer onto the owned
-///   form).
+///   missing DTB halts; every DTB consumer uses the owned form).
 /// - Page allocation → tiny bump allocator (no UEFI `AllocatePages`).
 /// - File access → [`UbootFileLoader`] over a `BootFileTable`.
 /// - Exit firmware services → nothing to do; U-Boot has already handed
 ///   over and we never call back.
 ///
-/// # Naming (D-73)
+/// # Naming
 ///
 /// The three roles are kept apart: **U-Boot** is the loader (it stages the
 /// files and hands over via `bootelf`), **OpenSBI** is the S-mode runtime
 /// service provider this leg inherits, and *this function* is the Minix-RS
-/// boot shim that builds its own `BootFileTable` in `.bss`. The retired
-/// `RiscvUbootBootShim` type fused "loader" and "runtime provider" into one
-/// name (F-R17-01).
+/// boot shim that builds its own `BootFileTable` in `.bss`.
 pub fn prepare_boot<'a>(
     storage: &'a mut minix_boot::BootStorage,
     bump_pages: usize,
@@ -290,8 +286,8 @@ pub fn prepare_boot<'a>(
         let fdt =
             fdt::Fdt::new(bytes).expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
         // Owned tables: the storage below is the only owner, so the leg
-        // does not keep the collector's `'static` tables alive (R18 D-1
-        // stage 2). The source records ride along.
+        // keeps no `'static` collector tables alive. The source records
+        // ride along.
         let owned = minix_boot::DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
             .collect_owned()
             .expect("boot-shim: DTB memmap rejected (capacity or reservation shape) — halting");
@@ -356,7 +352,7 @@ pub fn prepare_boot<'a>(
     );
 
     let kern = loader::load_kernel_with_loader_gated(&file_loader, |layout| {
-        // Pre-copy gate (D-5 / F-R16-01): the ELF program headers give the
+        // Pre-copy gate: the ELF program headers give the
         // kernel's LMA span before any segment byte is written. Refusing
         // an overlap here is the only point where the pool can still be
         // protected — a post-copy assertion would report the damage after
@@ -393,7 +389,7 @@ pub fn prepare_boot<'a>(
         }
     }
     // The loader writes straight into the storage's module slots; no
-    // `Box::leak` and no `'static` slice (R18 D-1 stage 2).
+    // `Box::leak` and no `'static` slice.
     let module_len =
         storage.fill_modules(|slots| {
         loader::load_boot_modules_into(&file_loader, alloc_module_pages, slots)
@@ -414,8 +410,8 @@ pub fn prepare_boot<'a>(
     });
 
     // The handoff arena: the next bump pages after the module landings, inside
-    // the same pool. (v10 / D-062 removed the startup-object set that used to
-    // be written here; its one reader is served by the map tables.)
+    // the same pool. Its contents are the map tables; no startup-object set
+    // is written here.
     let arena_pa = bump_alloc_pages(minix_boot::ARENA_CAP / 4096)
         .expect("boot-shim: out of bump memory (arena)");
 
@@ -458,8 +454,7 @@ pub unsafe fn install_boot_file_table(addr: u64) {
     // silently overwrite and lose track. The check is an unconditional
     // `assert!` so it fails closed in release too — `FileBytes::Borrowed`
     // relies on this table's address stability, and the sibling installers
-    // (`BootStorageCell::take`, `pt_alloc::register`) already check in
-    // both builds (D-064).
+    // (`BootStorageCell::take`, `pt_alloc::register`) check in both builds.
     // SAFETY: single-writer during early boot before secondary harts run.
     assert!(
         BOOT_FILE_TABLE_PTR == 0,
@@ -508,7 +503,7 @@ static mut DTB_PTR: u64 = 0;
 /// if non-zero. The blob must remain valid for the entire boot-shim lifetime.
 pub unsafe fn install_dtb_ptr(addr: u64) {
     // SAFETY: single-writer during early boot before secondary harts run.
-    // `assert!` for release parity with the sibling installers (D-064): a
+    // `assert!` for release parity with the sibling installers: a
     // second install would silently swap the blob every consumer reads.
     assert!(DTB_PTR == 0, "install_dtb_ptr called twice");
     unsafe {

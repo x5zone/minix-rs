@@ -1,4 +1,4 @@
-//! Concurrent double-registration pressure (F-R18-04).
+//! Concurrent double-registration pressure.
 //!
 //! `PT_CLAIMED.swap` is the only writer admission; this test starts two
 //! threads at a barrier and proves exactly one registration survives, even

@@ -86,7 +86,7 @@ pub struct KernelLoadResult {
 /// Bytes of one boot file, as either a borrow of loader-owned storage or an
 /// owned read buffer.
 ///
-/// The explicit enum is the R18 D-4 contract: the loader says which side owns
+/// The explicit enum states ownership: the loader says which side owns
 /// the bytes instead of forcing every read to copy into a `Vec`. The U-Boot
 /// leg already holds the file in RAM (U-Boot `fatload`ed it), so it returns
 /// [`FileBytes::Borrowed`]; the UEFI leg must read through the firmware
@@ -259,9 +259,9 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelImage<'_>, minix_e
     while let Some(seg_result) = iter.next() {
         // A malformed program header (truncated segment, unreadable phdr,
         // filesz > memsz) means the image cannot be trusted for a boot
-        // layout: bubbling the error up beats the old silent skip, which
-        // produced a smaller-but-bootable layout (I-48 / D-084). The
-        // filesz > memsz overwrite guard now lives inside the iterator, so
+        // layout: the load fails with the precise error instead of
+        // producing a smaller-but-bootable layout. The
+        // filesz > memsz overwrite guard lives inside the iterator, so
         // every consumer gets it without a per-caller check.
         let seg = seg_result?;
         found_load = true;
@@ -298,9 +298,9 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelImage<'_>, minix_e
 /// File offset one past the last PT_LOAD's file bytes — the runtime file
 /// length of an ELF image (kernel or module).
 ///
-/// D-082（I-36）: the ELF trim lives here, the only layer of module loading
+/// The ELF trim lives here, the only layer of module loading
 /// that legitimately needs ELF semantics. `None` = not an ELF, no PT_LOAD,
-/// a malformed program header (I-48 `Err` item), or an all-zero file end —
+/// a malformed program header, or an all-zero file end —
 /// the caller keeps the full length: a non-ELF payload must not be
 /// shortened by an ELF rule, and a malformed image is the runtime parser's
 /// to reject.
@@ -325,25 +325,25 @@ fn elf_file_end(data: &[u8]) -> Option<usize> {
 /// [`load_segments_into_phys_memory`] to write directly to physical
 /// addresses.
 ///
-/// I-47 / D-089 (乙): restructured after C's `libexec_load_elf`
+/// Follows C's `libexec_load_elf`
 /// (`minix3/minix/lib/libexec/exec_elf.c:127`) two-loop shape —
 ///
 /// 1. **Sanity-check loop** (C: "sanity check binary before wiping out
 ///    the target process", `:160-165`): every segment is collected and
 ///    checked against the buffer *before any byte is written*. A malformed
-///    program header (I-48 `Err` item) or a segment whose destination
+///    program header (an `Err` item) or a segment whose destination
 ///    extent does not fit in `[0, buf.len())` fails the whole load with
 ///    the precise error — nothing is half-loaded.
 /// 2. **Load loop** (C: `clearproc` + per-segment copy/clear): copy file
 ///    bytes, zero-fill `[filesz, memsz)`, count.
 ///
 /// Returns the number of segments loaded. Shared with the physical-memory
-/// loader: segment-shape validation (I-48 iterator), destination/source span
+/// loader: segment-shape validation (the iterator), destination/source span
 /// derivation (`segment_spans`, including checked arithmetic), BSS
 /// zero-fill. Not shared: the physical-address overlap gates and the
 /// pointer-width copy (this loader writes a caller-owned buffer at a
 /// caller-chosen base; segments below `buf_base_paddr` are skipped as a
-/// fixture error, matching the pre-I-47 behavior).
+/// fixture error).
 pub fn load_segments_into_buffer(
     elf_data: &[u8],
     buf: &mut [u8],
@@ -444,17 +444,14 @@ fn segment_spans(seg: &minix_elf::LoadSegment) -> Result<SegmentSpans, minix_elf
 /// during boot, and the kernel linker script guarantees non-overlapping
 /// LMA placement.
 ///
-/// Segment-shape validation is built in since I-48 (D-084): the iterator
+/// Segment-shape validation is built into the iterator: it
 /// self-checks `filesz > memsz` (`FileszExceedsMemsz`), phdr-table
 /// arithmetic (`PhdrOutOfBounds`) and file bytes past the image end
 /// (`SegmentOutOfBounds`), and every consumer — this function included —
-/// surfaces those as `Err` before any write. (D-088 rewrote the previous
-/// wording, which still claimed the function "does not reject `filesz >
-/// memsz`" — that stopped being true when the guard moved into the
-/// iterator.) The caller's remaining obligation is the physical one below,
-/// not segment-shape validation.
+/// surfaces those as `Err` before any write. The caller's remaining
+/// obligation is the physical one below, not segment-shape validation.
 ///
-/// Overlap detection now runs one step earlier: [`KernelImage::validate`]
+/// Overlap detection runs one step earlier: [`KernelImage::validate`]
 /// rejects PT_LOAD segments that overlap in physical memory and panics when
 /// any segment's file-byte range overlaps any segment's destination span
 /// (the copy/BSS zero-fill would otherwise corrupt the source buffer
@@ -587,8 +584,9 @@ const ZERO_MODULE: BootModule = BootModule {
 ///
 /// `out` must have at least `MODULE_NAMES.len()` slots; the caller commits the
 /// returned count to its [`minix_boot::BootStorage`]. Writing into the
-/// caller's storage is what removes the `Box::leak` from the UEFI leg (R18
-/// D-1): the loader no longer has to hand back a `'static` slice.
+/// caller's storage keeps the UEFI leg free of `Box::leak`: the loader
+/// hands modules back through the caller's slots, so no `'static` slice is
+/// needed.
 pub fn load_boot_modules_into<L: FileLoader>(
     loader: &L,
     alloc_pages: PageAllocator,
@@ -613,14 +611,14 @@ pub fn load_boot_modules_into<L: FileLoader>(
         });
         let data = data.as_slice();
 
-        // D-082（I-36）：修剪到 ELF 的运行期文件长度（最后一个 PT_LOAD 的
+        // 修剪到 ELF 的运行期文件长度（最后一个 PT_LOAD 的
         // 文件尾）——这是模块装载里唯一需要 ELF 语义的层，两条腿的输入在
         // 此统一：U-Boot 腿的 `entry.len` 已是 `staged_elf_used_len` 的修剪
-        // 值（此处幂等），UEFI 腿是固件给出的确切文件长度（从此开始修剪），
-        // `BootModule.len` 从此跨腿一致。非 ELF 或畸形镜像保持全长
-        // （fail-safe：运行期解析者会拒绝它）。前置验证（36 个模块 ELF =
-        // 12 × 3 架构）：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC 内容，
-        // 裁掉的只有 .comment/.symtab/.debug_*。
+        // 值（此处幂等），UEFI 腿是固件给出的确切文件长度（在此修剪），
+        // `BootModule.len` 因此跨腿一致。非 ELF 或畸形镜像保持全长
+        // （fail-safe：运行期解析者会拒绝它）。对 36 个模块 ELF（12 × 3
+        // 架构）的核对结果是：最后 PT_LOAD 文件尾之后无非 NOBITS 的 ALLOC
+        // 内容，裁掉的只有 .comment/.symtab/.debug_*。
         let used = elf_file_end(data).unwrap_or(data.len());
         let data = &data[..used];
 

@@ -186,11 +186,11 @@ impl core::fmt::Display for PageTableError {
 /// THP split/merge, migration entries), this trait can be extended or a new
 /// `PagingLevel` trait can be introduced.
 /// Which Direct Map window PTE pages are reached through, pinned at
-/// handle construction (D-081 / I-44: lifted from the three per-arch
-/// private enums — all three were identical `KernelDm | VmDm`).
+/// handle construction. One type serves all three architectures because
+/// the channel set is identical (`KernelDm | VmDm`).
 ///
 /// Production kernels use [`PteChannel::KernelDm`]; the VM-context handle
-/// (former `adopt_active_root`, merged into `from_active_root`) uses
+/// ([`Paging::from_active_root`]) uses
 /// [`PteChannel::VmDm`] because the supervisor-only kernel window is
 /// unreachable from user space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,9 +203,9 @@ pub enum PteChannel {
     /// firmware/bootstrap identity windows cover the page — the
     /// `build_bootstrap_root_and_enable` stage (Steps 1–3) constructs the
     /// bootstrap root itself from a `pt_alloc`/UEFI-allocated frame inside
-    /// the declared windows, before the Direct Map exists (I-59 A' /
-    /// D-094: the two `new_from_page` production call sites face opposite
-    /// DM states, so the constructor takes the channel from its caller).
+    /// the declared windows, before the Direct Map exists: the two
+    /// `new_from_page` production call sites face opposite DM states, so
+    /// the constructor takes the channel from its caller.
     Identity,
 }
 
@@ -245,7 +245,7 @@ pub trait Paging {
     /// Unlike `new()` (which allocates the root page internally via the
     /// kernel page allocator), this method takes a pre-allocated physical
     /// page from the caller. The implementation zero-fills it **through
-    /// `channel`** — I-59 A' (D-094): the two production call sites face
+    /// `channel`**: the two production call sites face
     /// opposite Direct-Map states, so the caller declares which access view
     /// is valid for the frame:
     ///
@@ -359,7 +359,7 @@ pub trait Paging {
     /// Whether `va` lies in this architecture's supervisor (kernel) half —
     /// the half that `inherit_supervisor_half` shares with the source root.
     ///
-    /// D-081 / I-44 range guard: an `Inherited` handle must never write
+    /// Range guard: an `Inherited` handle must never write
     /// here, because the entries are shared with the source root's tree.
     fn is_supervisor_va(&self, va: VirBytes) -> bool;
 
@@ -368,7 +368,7 @@ pub trait Paging {
     /// Reads the private `PagingState`; the trait cannot see impl fields.
     fn is_inherited(&self) -> bool;
 
-    /// Range guard for every write entry (D-081 / I-44 §4ter.3): an
+    /// Range guard for every write entry: an
     /// `Inherited` handle must not modify the shared supervisor half.
     ///
     /// Endpoint-only check is sufficient: a range entirely below the
@@ -416,7 +416,7 @@ pub trait Paging {
     /// both logically and hardware-atomic in our single-threaded model.
     ///
     /// Returns the old physical address and flags if a mapping was replaced,
-    /// or `None` if the virtual address was previously unmapped.
+    /// or `None` if the virtual address is not mapped.
     fn remap(&mut self, vaddr: VirBytes, paddr: PhysBytes, flags: PageFlags)
         -> Result<Option<(PhysBytes, PageFlags)>, PageTableError>;
 
@@ -470,16 +470,6 @@ pub trait Paging {
 
     fn root_paddr(&self) -> PhysBytes;
 
-
-
-    /// The former `unsafe fn switch(&self)` member was removed: the kernel
-    /// switches roots through `TlbArch::set_active_root` (kernel/src/lib.rs:3103),
-    /// and no concrete caller of this member existed on any of the three
-    /// architectures (only Mock referenced itself), so it was a superseded dead
-    /// contract surface.
-    /// [ARCH: trait-surface refactor, no semantic change; all three impls
-    /// removed in the same batch.]
-    ///
     /// Flush TLB entries associated with this page table.
     ///
     /// Without ASID, equivalent to a global TLB flush.
@@ -523,10 +513,10 @@ pub trait Paging {
         pages: usize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
-        // D-081 / I-44: whole-range endpoint guard (inlined — these default
+        // Whole-range endpoint guard (inlined — these default
         // methods keep the trait object-safe, so the guard helper is not
         // callable here). Batch atomicity: check everything before the
-        // first modification (§5.4 item 5).
+        // first modification.
         if self.is_inherited() && pages > 0 {
             let end = VirBytes(vaddr_start.0 + (pages as u64) * (Self::PAGE_SIZE as u64) - 1);
             assert!(
@@ -571,8 +561,8 @@ pub trait Paging {
         vaddr_start: VirBytes,
         pages: usize,
     ) -> Result<(), PageTableError> {
-        // D-081 / I-44: whole-range endpoint guard before the first unmap
-        // (batch atomicity, §5.4 item 5).
+        // Whole-range endpoint guard before the first unmap
+        // (batch atomicity).
         if self.is_inherited() && pages > 0 {
             let end = VirBytes(vaddr_start.0 + (pages as u64) * (Self::PAGE_SIZE as u64) - 1);
             assert!(
@@ -788,11 +778,9 @@ pub fn map_kernel<P: Paging + HugePages>(
         }
     }
 
-    // The former identity-window replay (segment 4) is retired: handoff v9
-    // removed `kern_ident`, so `KernelLayout` no longer has a window list
-    // and there is no parameter to assert empty. The device window below is
-    // the only MMIO segment in a process root; VA=PA mappings must not
-    // exist here.
+    // The device window below is the only MMIO segment in a process root;
+    // `KernelLayout` carries no identity-window list, so VA=PA mappings
+    // must not exist here.
     //
     // Every MMIO region from the device description is mapped at its
     // reserved high-half slot (`DEVICE_VA_BASE + slot * STRIDE`)

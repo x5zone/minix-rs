@@ -142,7 +142,7 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
     if flags.contains(PageFlags::NO_CACHE) { pte |= X64PteFlags::PCD; }
     // DEVICE is the strongest cache policy: PWT|PCD yields uncached
     // write-through behaviour for MMIO. The LAPIC/IO-APIC windows therefore
-    // no longer depend on firmware MTRRs being correct (TODO-10).
+    // do not depend on firmware MTRRs being correct.
     if flags.contains(PageFlags::DEVICE) {
         pte |= X64PteFlags::PWT | X64PteFlags::PCD;
     }
@@ -276,7 +276,7 @@ pub struct X86_64Paging {
     root_paddr: u64,
     /// PTE access channel pinned at construction (see [`PteChannel`]).
     channel: PteChannel,
-    /// Ownership state (D-081 / I-44): private; only the constructors and
+    /// Ownership state: private; only the constructors and
     /// `inherit_supervisor_half` transition it.
     state: PagingState,
 }
@@ -631,13 +631,13 @@ impl Paging for X86_64Paging {
         // during boot). The page must not be aliased by any other live
         // reference. phys_to_ptr converts the physical address to a virtual
         // address using the UEFI identity mapping.
-        // I-59 A' (D-094): the caller declares the access channel — the two
+        // The caller declares the access channel — the two
         // production call sites face opposite DM states (bootstrap root
         // construction runs BEFORE the Direct Map exists and passes
         // `Identity`; `load_process_elf`'s per-process root runs AFTER and
         // passes `KernelDm`). The zeroing goes through the same channel the
         // handle's later operations will use, so "zero via identity, then
-        // write via KDM" can no longer disagree.
+        // write via KDM" cannot disagree.
         let ptr = unsafe { channel_to_ptr(root_page.0, channel) };
         // SAFETY: ptr points to a 4KB-aligned, 512-entry PML4 table.
         // write_bytes zeroes all entries, marking them "not present".
@@ -679,7 +679,7 @@ impl Paging for X86_64Paging {
     }
 
     fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
-        // D-081 / I-44 entry assertions: only a freshly wrapped External
+        // Entry assertions: only a freshly wrapped External
         // root may inherit (a second inherit would overwrite shared
         // entries), and every supervisor slot of the target must be blank
         // — checked by full 64-bit slot value, not just the Present bit,
@@ -723,13 +723,13 @@ impl Paging for X86_64Paging {
     }
 
     unsafe fn enable(&self) -> PhysBytes {
-        // I-29-16 (三架构 WB 合同, x86 腿)：本项目不编程 IA32_PAT，全部
+        // 三架构 WB 合同（x86 腿）：本项目不编程 IA32_PAT，全部
         // RAM 叶子依赖 PAT0 = Write-Back 的默认编码（PA0 = 0x6）。固件
         // （或一个未来的分页用户）改写 PAT0 会让「普通 WB 映射」的承诺
         // 静默失效，所以在每次 enable 时读取并断言——PAT 是每-CPU MSR，
         // enable 也是每-CPU 路径，二者覆盖面一致。MTRR 的默认覆盖
         // （ Uncached/Write-Protect 变异）在此不校验：QEMU virt 不含 MTRR
-        // 变异条目，真机校验属 I-29-16 的真机证据责任。
+        // 变异条目，真机校验由三架构 WB 合同承担。
         {
             const MSR_IA32_PAT: u32 = 0x277;
             const PAT0_WB: u64 = 0x6; // PA0 encoding: WB
@@ -825,7 +825,7 @@ impl Paging for X86_64Paging {
     }
 
     unsafe fn destroy(self) {
-        // D-081 / I-44: the ownership assertion runs before ANY memory
+        // The ownership assertion runs before ANY memory
         // operation — zeroing or freeing an externally managed root would
         // wipe a live page table (External) or the shared supervisor half
         // (Inherited).
@@ -836,11 +836,11 @@ impl Paging for X86_64Paging {
         );
         // Full four-level reclaim when a pt_free function is
         // registered (the VM process-exit path — C pagetable.c:1427-1437
-        // `pt_free` parity, previously "accept the intermediate-table
-        // leak"). Without pt_free (boot-stage tables
-        // with no allocator domain), keep the zero-root-only legacy shape:
-        // zero the root PML4 to prevent use-after-free if the physical
-        // page is reused, and leave intermediates unreclaimed.
+        // `pt_free` parity: intermediate tables are freed, not leaked).
+        // Without pt_free (boot-stage tables with no allocator domain),
+        // only the root is reclaimed: zero the root PML4 to prevent
+        // use-after-free if the physical page is reused, and leave
+        // intermediates in place.
         //
         // SAFETY: the handle's Direct Map channel must be active;
         // root_paddr is the physical address of our PML4 page. The exit
@@ -1275,8 +1275,8 @@ impl HugePages for X86_64Paging {
         // PS bit (bit 7) is the same for both 1GB (PDPT.PS) and 2MB (PD.PS) pages.
         let huge_flag = X64PteFlags::PS.bits();
 
-        // All table access goes through the handle's pinned channel
-        // (I-59 A' / E5(d)): a VM handle writes its own tables through the
+        // All table access goes through the handle's pinned channel:
+        // a VM handle writes its own tables through the
         // VM Direct Map at CPL3, where the bare identity VA is unmapped.
         let i4 = pml4_index(vaddr.0) as u64;
         let e4 = unsafe { read_pte_dm(self.root_paddr + i4 * 8, self.channel) };

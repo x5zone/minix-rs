@@ -2090,10 +2090,9 @@ impl VmServer {
                 None => true,
             };
             if acl_denied {
-                // FIX (VMA-1): Previously `let _ = (c, source);` silently
-                // dropped the ACL denial event, making production
-                // misbehaviour unobservable. Now we record the denial
-                // through a feature-gated audit channel:
+                // The ACL denial must be observable in production and in
+                // tests, so it is recorded through a feature-gated audit
+                // channel:
                 //
                 //   * `cargo test`           → eprintln! to test stderr
                 //   * `--features vm_acl_audit` → no_std sink
@@ -2280,8 +2279,8 @@ impl VmServer {
             .is_some_and(|r| r.is_writable());
         if request.write && !seg_writable {
             // C: pagefaults.c:112-116 — the SIGSEGV + CLEAR_PAGEFAULT close
-            // (originally two inline blocks identical to pf_fail_segv;
-            // extracted for sharing without a semantic change).
+            // is shared with `pf_fail_segv`; the extraction keeps the same
+            // semantics.
             self.pf_fail_segv(proc_endpoint);
             return VmReply::Error(VmError::AccessViolation);
         }
@@ -2384,7 +2383,7 @@ impl VmServer {
                 }
                 VmReply::Ok
             }
-            Err(e) => {
+            Err(_e) => {
                 // C pagefaults.c:144-151 — a service failure is the same
                 // "cannot be served" terminal case: SIGSEGV plus clearing the
                 // pending bit (the old implementation returned Error and left
@@ -2551,10 +2550,8 @@ struct RprocEntry {
 }
 
 impl RprocEntry {
-    // Unreachable until E-RSWIRE (the fake-success caller
-    // `Ok(RprocTab::empty())` died; the wire decoder will construct real
-    // entries). Kept + pinned by tests as the D8 stub shape.
-    #[allow(dead_code)]
+    // Empty-row template used to build the boot table before the RS_INIT
+    // snapshot overwrites each row.
     const EMPTY: Self = Self {
         in_use: false,
         endpoint: Endpoint::NONE,

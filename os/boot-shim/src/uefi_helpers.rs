@@ -49,7 +49,7 @@ fn record_kernel_span(kern: &loader::KernelLoadResult) {
     KERNEL_SPAN_LO.store(kern.kern_phys_base.0, Ordering::Relaxed);
 }
 
-/// Reserve the kernel image's physical LMA span with the firmware (D01-R13 A).
+/// Reserve the kernel image's physical LMA span with the firmware.
 ///
 /// The kernel segments are written straight to their ELF physical LMAs, which
 /// firmware does not know are occupied: they stay `EfiConventionalMemory` and
@@ -123,7 +123,7 @@ use core::ffi::c_void;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use minix_boot::{ARENA_CAP, Serializer};
 
-/// The UEFI sender's caller-owned semantic tables (R18 D-1). One boot, one
+/// The UEFI sender's caller-owned semantic tables. One boot, one
 /// writer; the wire image is encoded from this storage and the kernel entry
 /// borrows it through a `BootReport`.
 static UEFI_BOOT_STORAGE: crate::BootStorageCell = crate::BootStorageCell::new();
@@ -387,10 +387,10 @@ fn collect_param_buf_into(out: &mut [u8; minix_boot::PARAM_BUF_CAP]) -> minix_bo
 ///
 /// - every bootstrap allocation happens **before** the snapshot, so no
 ///   shim page is labelled CONVENTIONAL; and
-/// - the snapshot's own buffer stays allocated until handoff (I-29-9;
-///   the six-step probe showed the third-party `MemoryMapOwned` Drop
-///   returns its pages to CONVENTIONAL, so the buffer is explicitly
-///   leaked below instead of being dropped with the local).
+/// - the snapshot's own buffer stays allocated until handoff: the
+///   third-party `MemoryMapOwned` Drop returns its pages to CONVENTIONAL,
+///   so the buffer is explicitly leaked below instead of being dropped
+///   with the local.
 const EMPTY_REGION: MemoryRegion = MemoryRegion {
     base: PhysBytes(0),
     len: 0,
@@ -463,19 +463,19 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let buffer =
         unsafe { core::slice::from_raw_parts(base as *const u8, descriptor_size * entries) };
 
-    // I-29-9 six-step probe verdict (OVMF, 2026-11-21): dropping the local
-    // `MemoryMapOwned` calls `free_pool`, and the very next `GetMemoryMap`
-    // reports the buffer's pages as CONVENTIONAL again — so a snapshot that
-    // classified them as LOADER_DATA would over-report memory that is free
-    // by handoff time. Keep the buffer alive instead (the same contract the
-    // production leg's `alloc_map_buffer` states: "never freed until
-    // ExitBootServices"), making the snapshot's label true for the whole
-    // run. This is a one-shot leak by design, not an oversight.
+    // Dropping the local `MemoryMapOwned` calls `free_pool`, and the very
+    // next `GetMemoryMap` reports the buffer's pages as CONVENTIONAL again
+    // — so a snapshot that classified them as LOADER_DATA would over-report
+    // memory that is free by handoff time. Keep the buffer alive instead
+    // (the same contract the production leg's `alloc_map_buffer` states:
+    // "never freed until ExitBootServices"), making the snapshot's label
+    // true for the whole run. This is a one-shot leak by design, not an
+    // oversight.
     core::mem::forget(mmap);
 
-    // D-081 / I-44 门④（路径 A 前置重构）：分类逻辑整体抽到
-    // `classify_map_bytes_into_test_tables`，本函数只保留退出前的读图半——
-    // 退出后的分类由 `exit_boot_services_and_classify` 走同一分类器。
+    // 分类逻辑整体抽到 `classify_map_bytes_into_test_tables`，本函数只保留
+    // 退出前的读图半——退出后的分类由 `exit_boot_services_and_classify`
+    // 走同一分类器。
     self::classify_map_bytes_into_test_tables(
         buffer,
         buffer.len(),
@@ -484,13 +484,13 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     )
 }
 
-/// Classify raw descriptor bytes into the one-shot test tables (path A,
-/// I-29 prototype ②): the ONLY classifier in the tree runs on whatever
+/// Classify raw descriptor bytes into the one-shot test tables: the ONLY
+/// classifier in the tree runs on whatever
 /// bytes it is handed — pre-exit (`build_memmaps`) or post-exit
 /// (`exit_boot_services_and_classify`) — so "分类所依据的图 = 退出所用的图"
 /// holds by construction on the post-exit path.
 ///
-/// Fail contract (design doc §2.7 前提二): on the post-exit path every
+/// Fail contract: on the post-exit path every
 /// classification failure is fail-stop — panic (raw early console + halt
 /// via the carrier's panic handler), never a return into UEFI boot services.
 ///
@@ -595,6 +595,9 @@ fn pa_limit() -> u64 {
 }
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 fn pa_limit() -> u64 {
+    // This target has no UEFI boot face, so no code reaches the map
+    // classifier.
+    // unreachable because only aarch64 and x86_64 boot via UEFI.
     unreachable!("no UEFI memory map to classify on this target")
 }
 
@@ -679,7 +682,7 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
 
 // ── handoff-v1 producer ────────────────────────────────────────────────
 //
-// The UEFI legs no longer snapshot the map and hand over a `BootHandoff`
+// The UEFI legs do not snapshot the map and hand over a `BootHandoff`
 // blob. They allocate one handoff arena on the loader-data pages, serialize
 // the T1 protocol into it, classify the final map inside the EBS pairing
 // loop, build the bootstrap root, patch the runtime fields in place and jump
@@ -965,11 +968,11 @@ fn load_dumpdtb_blob(file_loader: &dyn FileLoader) -> Option<Vec<u8>> {
 /// minimal boot identity map must cover it because the shim keeps executing
 /// here until the high-half jump.
 ///
-/// `pub`（I-43 二层）：直核引导载体（UEFI 测试内核）与生产 shim 走同一
+/// `pub`：直核引导载体（UEFI 测试内核）与生产 shim 走同一
 /// 最小窗口机制，也必须声明同一精确足迹——载体的 `kern_phys_base`/
-/// `kern_size` 用它派生，不再猜（`main` 锚点 + 固定 2 MiB 的写法罩不住
-/// 带 2 MiB `.bss` 堆的大载体，test-proc-init 实证：过 enable() 后在
-/// step4 前静默三重故障）。
+/// `kern_size` 由它派生，不靠猜测：`main` 锚点 + 固定 2 MiB 的写法罩不住
+/// 带 2 MiB `.bss` 堆的大载体，test-proc-init 会在过 enable() 后、
+/// step4 前静默三重故障。
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub fn shim_image_window() -> (u64, u64) {
     let (base, size) = boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
@@ -1012,7 +1015,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // firmware facts it needs while Boot Services are still available.
     let shim_image = shim_image_window();
     let shim_stack = shim_stack_window();
-    // D (D01-R13): read the kernel ELF first, then claim its LMA span with
+    // Read the kernel ELF first, then claim its LMA span with
     // firmware, and only then allocate root/bump. Every later firmware
     // allocation (modules, arena, pool buffers) is thereby unable to return a
     // page inside the kernel image, and no bootstrap page can be placed under
@@ -1222,18 +1225,18 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     let classification = classification.expect("the pairing loop returns only on success");
     crate::raw_serial("boot-shim: [raw] boot services exited (paired)\r\n");
 
-    // v10 (D-062) removed the startup-object partition: its only reader was
-    // a strict-gate check that the kernel span is covered, which the map
-    // tables now answer directly.
+    // No startup-object partition is written: its only would-be reader, a
+    // strict gate that the kernel span is covered, is answered directly by
+    // the map tables.
 
     // The classifier's counts are the same numbers the wire descriptors would
     // report (commit asserts counts == written). Use them directly; decoding
-    // our own wire here added a needless post-EBS failure path (DESIGN-07).
+    // our own wire here would add a needless post-EBS failure path.
 
     let mut report = storage.report(kern.kern_virt_base, kern.kern_phys_base, kern.kern_size);
     // The classifier wrote the source records directly into the wire; the
-    // storage slice is intentionally empty on this leg. (The startup-object
-    // partition was removed in v10 / D-062.)
+    // storage slice is intentionally empty on this leg, and no
+    // startup-object partition is written.
     cross_validate_config_dtb(report.platform_sources, report.memmap);
     // The classification must have marked every bootstrap allocation as
     // non-conventional; a containment here would hand live pages to the VM PMM.
@@ -1272,7 +1275,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
 
 /// Exit UEFI boot services.
 ///
-/// After this call, UEFI boot services (AllocatePages, etc.) are no longer
+/// After this call, UEFI boot services (AllocatePages, etc.) are not
 /// available. The caller must have completed all UEFI allocations before
 /// calling this.
 #[cfg(feature = "qemu-test-kernels")]
@@ -1288,15 +1291,14 @@ pub fn exit_boot_services() {
     }
 }
 
-/// Exit boot services and classify the **post-exit** memory map (path A,
-/// I-29 prototype ② / gate ④).
+/// Exit boot services and classify the **post-exit** memory map.
 ///
 /// The `uefi` crate's `exit_boot_services` already implements the paired
 /// sequence — allocate buffer → `GetMemoryMap` → `ExitBootServices` with
 /// the same key — and returns the resulting `MemoryMapOwned`. This helper
-/// **keeps** that value (the old `exit_boot_services()` discarded it with
-/// `let _mmap`), hands its raw bytes to the one production classifier, and
-/// writes the result into the one-shot test tables. The classification
+/// **keeps** that value (unlike `exit_boot_services()`, which discards it
+/// with `let _mmap`), hands its raw bytes to the one production classifier,
+/// and writes the result into the one-shot test tables. The classification
 /// therefore runs on exactly the map the firmware validated at exit —
 /// "分类所依据的图 = 退出所用的图" holds by construction, and post-exit
 /// allocations (there are none — the carrier has already allocated) cannot

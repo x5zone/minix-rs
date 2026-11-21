@@ -8,12 +8,10 @@
 //! Server's `kmessages_dmp` (dmp_kernel.c:60-93) replays the ring from
 //! `(km_next - km_size) mod SIZE`.
 //!
-//! The ring was previously absent: an earlier evolution replaced the C kmess
-//! consumption path with direct EarlyConsole output (write-and-discard). This
-//! module restores the recordable buffer so `GET_KMESSAGES` (04 §4.1) has a
-//! data source, while console output continues unchanged: recording and
-//! display run in parallel (C's `kputc` under DEBUG_SERIAL writes both,
-//! utility.c:64-75).
+//! The ring is a recordable buffer: kernel diagnostics go to `EarlyConsole`
+//! and into this ring in parallel, so `GET_KMESSAGES` (04 §4.1) has a
+//! data source while console output stays write-and-display (C's `kputc`
+//! under DEBUG_SERIAL writes both, utility.c:64-75).
 //!
 //! Concurrency: writes happen with the BKL held (all diagnostic paths in
 //! minix-rs run under it, matching C's implicit single-printf-at-a-time).

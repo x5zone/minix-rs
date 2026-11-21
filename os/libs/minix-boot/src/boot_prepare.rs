@@ -22,7 +22,7 @@ use minix_types::{PhysBytes, PhysRange};
 /// the same address space**. The cross-image authority is the wire protocol
 /// `BootHandoffV1` ([`crate::handoff_v1`]); the report is the sender-side
 /// semantic view the wire is encoded from. Its lifetime is tied to the
-/// caller's storage, so it cannot outlive the owner (R18 D-1).
+/// caller's storage, so it cannot outlive the owner.
 pub struct BootPrepareResult<'a> {
     pub report: BootReport<'a>,
     pub root_page: PhysBytes,
