@@ -168,11 +168,85 @@ pub trait FileLoader {
 /// to `num_pages` contiguous, writable pages reserved for module data.
 pub type PageAllocator = fn(num_pages: usize) -> Option<u64>;
 
+/// Parsed kernel ELF: the segment table, the original bytes, and the layout
+/// computed from them.
+///
+/// The bytes and segments travel together so a caller cannot compute a
+/// layout from one image and then copy segments out of another. Loading is a
+/// separate step behind [`KernelImage::validate`]: only a
+/// [`ValidatedKernelImage`] is accepted by the physical-address loader.
+pub struct KernelImage<'a> {
+    elf_data: &'a [u8],
+    segments: Vec<minix_elf::LoadSegment>,
+    layout: KernelLoadResult,
+}
+
+impl<'a> KernelImage<'a> {
+    /// The computed layout (bases, span, entry point).
+    pub fn layout(&self) -> KernelLoadResult {
+        self.layout
+    }
+
+    /// Check the destination-side invariants that do not depend on the
+    /// destination memory's contents: no two PT_LOAD destinations overlap,
+    /// and no destination span covers any segment's file bytes.
+    ///
+    /// On success the returned value is the only ticket accepted by
+    /// [`load_segments_into_phys_memory`].
+    pub fn validate(self) -> Result<ValidatedKernelImage<'a>, minix_elf::ElfError> {
+        if first_overlapping_pair(&self.segments).is_some() {
+            return Err(minix_elf::ElfError::InvalidSegment);
+        }
+        // D01-R9: the ELF bytes live in one heap allocation; under the boot
+        // identity map the pointer value is physical. Any segment's
+        // destination span (including its BSS zero-fill) must stay clear of
+        // *every* segment's file bytes, not just its own: a cross-segment
+        // overlap silently corrupts the source mid-load.
+        let src_base = self.elf_data.as_ptr() as u64;
+        if let Some((src_idx, dst_idx)) = first_source_destination_overlap(src_base, &self.segments)
+        {
+            panic!(
+                "boot-shim: kernel ELF segment {src_idx} source overlaps segment {dst_idx} destination LMA"
+            );
+        }
+        Ok(ValidatedKernelImage(self))
+    }
+}
+
+impl core::ops::Deref for KernelImage<'_> {
+    type Target = KernelLoadResult;
+    fn deref(&self) -> &Self::Target {
+        &self.layout
+    }
+}
+
+/// A [`KernelImage`] whose destination invariants have been checked.
+///
+/// The inner value is private: [`KernelImage::validate`] is the only
+/// constructor, so handing this type to the loader is evidence that the
+/// overlap gates ran.
+pub struct ValidatedKernelImage<'a>(KernelImage<'a>);
+
+impl ValidatedKernelImage<'_> {
+    /// The computed layout (bases, span, entry point).
+    pub fn layout(&self) -> KernelLoadResult {
+        self.0.layout
+    }
+}
+
+impl core::ops::Deref for ValidatedKernelImage<'_> {
+    type Target = KernelLoadResult;
+    fn deref(&self) -> &Self::Target {
+        &self.0.layout
+    }
+}
+
 /// Parse an ELF image and compute kernel base addresses and size.
 ///
 /// Pure function — does not touch memory. Used by both firmware paths
-/// and by unit tests.
-pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_elf::ElfError> {
+/// and by unit tests. The returned value owns the parsed segment table and
+/// borrows the image bytes; call [`KernelImage::validate`] before loading.
+pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelImage<'_>, minix_elf::ElfError> {
     let mut iter = minix_elf::segment_iter(elf_data)?;
     let entry_point = iter.ehdr().e_entry;
 
@@ -180,6 +254,7 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
     let mut kern_virt_base = u64::MAX;
     let mut kern_end_phys = 0u64;
     let mut found_load = false;
+    let mut segments = Vec::new();
 
     while let Some(seg_result) = iter.next() {
         // A malformed program header (truncated segment, unreadable phdr,
@@ -197,6 +272,7 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
         kern_phys_base = kern_phys_base.min(seg.paddr);
         kern_virt_base = kern_virt_base.min(seg.vaddr);
         kern_end_phys = kern_end_phys.max(seg_end);
+        segments.push(seg);
     }
 
     if !found_load {
@@ -207,11 +283,15 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
         .checked_sub(kern_phys_base)
         .ok_or(minix_elf::ElfError::InvalidSegment)?;
 
-    Ok(KernelLoadResult {
-        kern_phys_base: PhysBytes(kern_phys_base),
-        kern_virt_base: VirBytes(kern_virt_base),
-        kern_size,
-        entry_point,
+    Ok(KernelImage {
+        elf_data,
+        segments,
+        layout: KernelLoadResult {
+            kern_phys_base: PhysBytes(kern_phys_base),
+            kern_virt_base: VirBytes(kern_virt_base),
+            kern_size,
+            entry_point,
+        },
     })
 }
 
@@ -374,41 +454,25 @@ fn segment_spans(seg: &minix_elf::LoadSegment) -> Result<SegmentSpans, minix_elf
 /// iterator.) The caller's remaining obligation is the physical one below,
 /// not segment-shape validation.
 ///
-/// Overlap detection: this function rejects ELFs whose PT_LOAD segments
-/// overlap in physical memory, and panics when any segment's file-byte range
-/// overlaps any segment's destination span (the copy/BSS zero-fill would
-/// otherwise corrupt the source buffer mid-load). Without this, a buggy or
+/// Overlap detection now runs one step earlier: [`KernelImage::validate`]
+/// rejects PT_LOAD segments that overlap in physical memory and panics when
+/// any segment's file-byte range overlaps any segment's destination span
+/// (the copy/BSS zero-fill would otherwise corrupt the source buffer
+/// mid-load). This function accepts only a [`ValidatedKernelImage`], so the
+/// type itself is the evidence that those gates ran; without them a buggy or
 /// maliciously crafted ELF would silently overwrite earlier segments or the
 /// heap buffer it is read from.
-pub unsafe fn load_segments_into_phys_memory(elf_data: &[u8]) -> Result<(), minix_elf::ElfError> {
-    let iter = minix_elf::segment_iter(elf_data)?;
-    // Explicit `Result` collection (I-48 / D-084): a bare `collect()` on a
-    // `Result`-item iterator would silently keep `Err` entries as
-    // `Vec<Result<..>>` — the same "malformed looks like fewer segments"
-    // disease one layer down.
-    let segments: Vec<_> = iter.collect::<Result<Vec<_>, minix_elf::ElfError>>()?;
-    if let Some(_) = first_overlapping_pair(&segments) {
-        return Err(minix_elf::ElfError::InvalidSegment);
-    }
-    // D01-R9: the ELF bytes live in one heap allocation; under the boot
-    // identity map the pointer value is physical. Any segment's destination
-    // span (including its BSS zero-fill) must stay clear of *every* segment's
-    // file bytes, not just its own: a cross-segment overlap is the same UB
-    // and silently corrupts the source mid-load.
-    let src_base = elf_data.as_ptr() as u64;
-    if let Some((src_idx, dst_idx)) = first_source_destination_overlap(src_base, &segments) {
-        panic!(
-            "boot-shim: kernel ELF segment {src_idx} source overlaps segment {dst_idx} destination LMA"
-        );
-    }
-    for seg in &segments {
+pub unsafe fn load_segments_into_phys_memory(
+    image: &ValidatedKernelImage<'_>,
+) -> Result<(), minix_elf::ElfError> {
+    for seg in &image.0.segments {
         let spans = segment_spans(seg)?;
         let file_len = usize::try_from(spans.file_end - spans.dst_start)
             .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
         let bss_len = usize::try_from(spans.mem_end - spans.file_end)
             .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
         let dest = spans.dst_start as *mut u8;
-        let src = &elf_data[spans.src_start..spans.src_end];
+        let src = &image.0.elf_data[spans.src_start..spans.src_end];
         unsafe {
             dest.copy_from_nonoverlapping(src.as_ptr(), file_len);
             if bss_len > 0 {
@@ -494,22 +558,23 @@ pub fn load_kernel_with_loader_gated<L: FileLoader, G: FnOnce(&KernelLoadResult)
     layout_gate: G,
 ) -> Result<KernelLoadResult, minix_elf::ElfError> {
     let elf_data = loader.read_required(KERNEL_PATH);
-    let layout = compute_kernel_layout(elf_data.as_slice())?;
+    let image = compute_kernel_layout(elf_data.as_slice())?;
     // The jump target is `kern_virt_base` (the lowest PT_LOAD VMA), not
     // `entry_point`; cross-check the ELF header here so a link-script or
     // section-order change fails loudly instead of jumping into the wrong
     // address after the page-table switch. `check-layout.sh` also guards
     // this, but the loader is the last place that sees `e_entry`.
     assert_eq!(
-        layout.entry_point, layout.kern_virt_base.0,
+        image.entry_point, image.kern_virt_base.0,
         "boot-shim: ELF entry does not equal the first PT_LOAD VMA"
     );
-    layout_gate(&layout);
+    let image = image.validate()?;
+    layout_gate(&image);
     // SAFETY: see `load_segments_into_phys_memory`. Both firmware paths
     // satisfy the contract: physical RAM is identity-mapped at this stage,
     // and the kernel linker script reserves non-overlapping LMA range.
-    unsafe { load_segments_into_phys_memory(elf_data.as_slice())? };
-    Ok(layout)
+    unsafe { load_segments_into_phys_memory(&image)? };
+    Ok(image.layout())
 }
 
 const ZERO_MODULE: BootModule = BootModule {
@@ -827,10 +892,10 @@ mod tests {
     #[test]
     fn test_load_segments_into_phys_memory_rejects_truncated_mid_segment() {
         let elf = build_two_segment_elf_second_truncated();
-        let result = unsafe { load_segments_into_phys_memory(&elf) };
+        let result = compute_kernel_layout(&elf).and_then(|image| image.validate().map(|_| ()));
         assert!(
             matches!(result, Err(minix_elf::ElfError::SegmentOutOfBounds)),
-            "truncated second segment must fail the physical load"
+            "truncated second segment must fail before the physical load"
         );
     }
 
@@ -923,11 +988,15 @@ mod tests {
             .expect("buffer covers the whole segment extent");
         assert_eq!(count, 1);
 
+        let image = compute_kernel_layout(&elf)
+            .expect("synthetic ELF has a computable layout")
+            .validate()
+            .expect("distinct allocations keep source and destination disjoint");
         // SAFETY: `phys_base` is the start of the live `phys` allocation above
         // and its extent (`0xC00`) matches the segment's `memsz`; the ELF
         // lives in a different allocation, so the source/destination overlap
         // gate is satisfied.
-        unsafe { load_segments_into_phys_memory(&elf) }
+        unsafe { load_segments_into_phys_memory(&image) }
             .expect("physical loader accepts the same synthetic image");
 
         assert_eq!(buffer, phys, "both loaders must produce identical bytes");
@@ -961,20 +1030,22 @@ mod tests {
     }
 
     /// T-9: the `InvalidSegment` error variant (in `compute_kernel_layout`
-    /// and `load_segments_into_phys_memory`) had no test
-    /// constructing it. The overlap guard runs *before* the copy loop, so
-    /// calling the real loader with overlapping segments returns
-    /// `Err(InvalidSegment)` without dereferencing the (unmapped) segment
-    /// addresses — safe to invoke in a unit test. The `first_overlapping_pair`
-    /// predicate that drives it already has dedicated tests; this one pins
-    /// the variant is actually produced by `load_segments_into_phys_memory`.
+    /// and `KernelImage::validate`) had no test constructing it. The overlap
+    /// guard runs before any copy, so validating an image with overlapping
+    /// segments returns `Err(InvalidSegment)` without dereferencing the
+    /// (unmapped) segment addresses — safe to invoke in a unit test. The
+    /// `first_overlapping_pair` predicate that drives it already has
+    /// dedicated tests; this one pins the variant is actually produced on the
+    /// physical-load path.
     #[test]
     fn test_load_segments_into_phys_memory_rejects_overlapping_elf() {
         let elf = build_overlapping_elf();
-        let result = unsafe { load_segments_into_phys_memory(&elf) };
+        let result = compute_kernel_layout(&elf)
+            .expect("the ELF iterator accepts two structurally valid segments")
+            .validate();
         assert!(
             matches!(result, Err(minix_elf::ElfError::InvalidSegment)),
-            "two overlapping PT_LOAD segments must fail with InvalidSegment"
+            "two overlapping PT_LOAD segments must fail validation with InvalidSegment"
         );
     }
 
@@ -992,12 +1063,14 @@ mod tests {
         // source range inside the same allocation.
         elf[64 + 24..64 + 32].copy_from_slice(&(base + 0x1400).to_le_bytes());
         let before = elf.clone();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            load_segments_into_phys_memory(&elf)
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compute_kernel_layout(&elf)
+                .expect("the image is structurally valid")
+                .validate()
         }));
         assert!(
             result.is_err(),
-            "a destination overlapping the ELF source must halt the loader"
+            "a destination overlapping the ELF source must halt validation"
         );
         assert_eq!(
             elf, before,

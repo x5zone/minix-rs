@@ -806,7 +806,7 @@ VPN[2] = (vaddr >> 30) & 0x1FF
 
 ```rust
 /* 节选（保留函数体；循环体内注释压缩/改写），os/boot-shim/src/loader.rs:fn compute_kernel_layout。 */
-pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_elf::ElfError> {
+pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelImage<'_>, minix_elf::ElfError> {
     let mut iter = minix_elf::segment_iter(elf_data)?;
     let entry_point = iter.ehdr().e_entry;
 
@@ -814,6 +814,7 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
     let mut kern_virt_base = u64::MAX;
     let mut kern_end_phys = 0u64;
     let mut found_load = false;
+    let mut segments = Vec::new();
 
     while let Some(seg_result) = iter.next() {
         // I-48 / D-084: a malformed program header is an `Err` item, not a
@@ -827,6 +828,7 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
         kern_phys_base = kern_phys_base.min(seg.paddr);
         kern_virt_base = kern_virt_base.min(seg.vaddr);
         kern_end_phys = kern_end_phys.max(seg_end);
+        segments.push(seg);
     }
 
     if !found_load {
@@ -837,38 +839,36 @@ pub fn compute_kernel_layout(elf_data: &[u8]) -> Result<KernelLoadResult, minix_
         .checked_sub(kern_phys_base)
         .ok_or(minix_elf::ElfError::InvalidSegment)?;
 
-    Ok(KernelLoadResult {
-        kern_phys_base: PhysBytes(kern_phys_base),
-        kern_virt_base: VirBytes(kern_virt_base),
-        kern_size,
-        entry_point,
+    Ok(KernelImage {
+        elf_data,
+        segments,
+        layout: KernelLoadResult {
+            kern_phys_base: PhysBytes(kern_phys_base),
+            kern_virt_base: VirBytes(kern_virt_base),
+            kern_size,
+            entry_point,
+        },
     })
 }
 ```
 
-逐段解码：两个初值是遍历取极值的写法（`u64::MAX` 与 0）；循环体内先取 `seg_result?`（I-48 / D-084：畸形程序头由迭代器以 `Err` 项浮出，`filesz > memsz` 的守卫也已收进迭代器），再用 `checked_add`/`checked_sub` 把地址溢出与长度下溢变成 `InvalidSegment`，而不是在 release 下静默回绕；`vaddr` 与 `paddr` 各取一次最小值——它们不是同一个数算两遍，而是两份独立的数据（§3.1 的字段对应表）；`kern_size` 用物理侧的最大端点减物理侧的最小起点，虚拟侧只用最小值。跨距与基址都在这个函数里定下，之后不再重算。`found_load` 的用途是把"一个可加载段都没有"变成 `NoLoadSegments`，而不是返回一组极值初值（`u64::MAX` 做基址的后果会推迟到建表时）。
+逐段解码：两个初值是遍历取极值的写法（`u64::MAX` 与 0）；循环体内先取 `seg_result?`（I-48 / D-084：畸形程序头由迭代器以 `Err` 项浮出，`filesz > memsz` 的守卫也已收进迭代器），再用 `checked_add`/`checked_sub` 把地址溢出与长度下溢变成 `InvalidSegment`，而不是在 release 下静默回绕；`vaddr` 与 `paddr` 各取一次最小值——它们不是同一个数算两遍，而是两份独立的数据（§3.1 的字段对应表）；`kern_size` 用物理侧的最大端点减物理侧的最小起点，虚拟侧只用最小值。跨距与基址都在这个函数里定下，之后不再重算。`found_load` 的用途是把"一个可加载段都没有"变成 `NoLoadSegments`，而不是返回一组极值初值（`u64::MAX` 做基址的后果会推迟到建表时）。返回值从裸的布局结构改成 `KernelImage<'a>`：它同时持有原始字节的切片与这一次解析出的段表，调用者无法拿 A 镜像算出的布局去装载 B 镜像的字节；布局仍可按值取出（`layout()`，或经 `Deref` 直接读字段）。
 
 最后是摆放（`loader.rs` 的 [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory)）：
 
 ```rust
-/* 节选（保留函数体主干；源/目标重叠检查段以 `...` 省略），os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory。 */
+/* 节选（保留函数体），os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory。 */
 pub unsafe fn load_segments_into_phys_memory(
-    elf_data: &[u8],
+    image: &ValidatedKernelImage<'_>,
 ) -> Result<(), minix_elf::ElfError> {
-    let iter = minix_elf::segment_iter(elf_data)?;
-    let segments: Vec<_> = iter.collect::<Result<Vec<_>, minix_elf::ElfError>>()?;
-    if let Some(_) = first_overlapping_pair(&segments) {
-        return Err(minix_elf::ElfError::InvalidSegment);
-    }
-    ...
-    for seg in &segments {
+    for seg in &image.0.segments {
         let spans = segment_spans(seg)?;
         let file_len = usize::try_from(spans.file_end - spans.dst_start)
             .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
         let bss_len = usize::try_from(spans.mem_end - spans.file_end)
             .map_err(|_| minix_elf::ElfError::InvalidSegment)?;
         let dest = spans.dst_start as *mut u8;
-        let src = &elf_data[spans.src_start..spans.src_end];
+        let src = &image.0.elf_data[spans.src_start..spans.src_end];
         unsafe {
             dest.copy_from_nonoverlapping(src.as_ptr(), file_len);
             if bss_len > 0 {
@@ -881,9 +881,9 @@ pub unsafe fn load_segments_into_phys_memory(
 }
 ```
 
-四件事按顺序：先把迭代器收进 `Result<Vec<_>, _>`（I-48 / D-084：裸 `collect()` 会把 `Err` 项当成元素留在 `Vec<Result<..>>` 里，同一“畸形看起来像少段”的病下移一层；后面还要两两比较，不能边迭代边比较）；再做段间重叠检测（`loader.rs` 的 [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) 用半开区间判交叠：`a.paddr < b_end && b.paddr < a_end`，相邻不算重叠）；再做源/目标重叠检测（[`fn first_source_destination_overlap`](os/boot-shim/src/loader.rs:fn first_source_destination_overlap)，命中即 panic——段目标跨度覆盖任何段的 ELF 文件字节都会在装载中破坏源；这是 panic 而不是返回值，与段间重叠的 `InvalidSegment` 不对称）；最后逐段按 `paddr` 拷贝 `filesz` 字节并清零 `[filesz, memsz)`。注意"清零"的条件是 `memsz > filesz`——`filesz == memsz` 的段（例如 `.text`）不会被额外写零，`filesz == 0` 的段（`.bss`）只清零。
+装载前的校验分成值对象的两步。`compute_kernel_layout` 只做纯解析：把段迭代器一次收进 `Result<Vec<_>, _>`（I-48 / D-084：裸 `collect()` 会把 `Err` 项当成元素留在 `Vec<Result<..>>` 里，同一“畸形看起来像少段”的病下移一层），同时算基址与跨距，产出 `KernelImage`。`KernelImage::validate` 再跑两道目标侧检查：段间重叠（`loader.rs` 的 [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) 用半开区间判交叠：`a.paddr < b_end && b.paddr < a_end`，相邻不算重叠）与源/目标重叠（[`fn first_source_destination_overlap`](os/boot-shim/src/loader.rs:fn first_source_destination_overlap)，命中即 panic——段目标跨度覆盖任何段的 ELF 文件字节都会在装载中破坏源；这是 panic 而不是返回值，与段间重叠的 `InvalidSegment` 不对称）。校验通过才得到 `ValidatedKernelImage`，它的构造器私有，所以摆放入口拿到这个类型就等于拿到了“两道检查已经跑过”的证据；布局不再是“调用者记得先算”的口头约定。最后逐段按 `paddr` 拷贝 `filesz` 字节并清零 `[filesz, memsz)`。注意"清零"的条件是 `memsz > filesz`——`filesz == memsz` 的段（例如 `.text`）不会被额外写零，`filesz == 0` 的段（`.bss`）只清零。
 
-可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.4 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 的装载器测试族与下一段的覆盖边界。`filesz > memsz` 已由迭代器拒绝；`paddr + filesz`、`paddr + memsz` 与源区间 `offset + filesz` 的溢出由两版共用的 `segment_spans` 拒绝，不再只靠调用者先跑 `compute_kernel_layout`。缓冲区版在 I-47 后是两循环（先验后写，超界返回 `TargetBufferTooSmall`），物理地址版仍是“先收集再写 + 段间/源目标重叠检查”；两者共享段形校验、区间推导与 BSS 清零，不共享目标边界策略。宿主测试 `test_buffer_and_phys_loaders_share_segment_spans` 用同一份 ELF 分别走两版，逐字节比对拷贝区与清零区。直接调用这个 `pub unsafe fn` 的读者仍必须先校验布局（覆盖边界见 §5.1 末段）。
+可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.4 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 的装载器测试族与下一段的覆盖边界。`filesz > memsz` 已由迭代器拒绝；`paddr + filesz`、`paddr + memsz` 与源区间 `offset + filesz` 的溢出由两版共用的 `segment_spans` 拒绝，不再只靠调用者先跑 `compute_kernel_layout`。缓冲区版在 I-47 后是两循环（先验后写，超界返回 `TargetBufferTooSmall`），物理地址版是“解析成 `KernelImage`、`validate` 后只接受 `ValidatedKernelImage`、再写”；两者共享段形校验、区间推导与 BSS 清零，不共享目标边界策略。宿主测试 `test_buffer_and_phys_loaders_share_segment_spans` 用同一份 ELF 分别走两版，逐字节比对拷贝区与清零区。直接调用这个 `pub unsafe fn` 的读者仍必须先校验布局（覆盖边界见 §5.1 末段）。
 
 **把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面的 `BootStorageCell`（`STORAGE`）初值非零、落在 `.data`；`bootface_a64.rs` 的 bump 游标 `static BUMP_NEXT: AtomicU64` 初值为 `BUMP_BASE`（非零），也落在 `.data`，所以它们不是这个例子的成员。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
 
@@ -1121,7 +1121,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 | 段字段 | `test_segment_with_zero_filesz`、`test_mixed_pt_load_and_other`、`test_segment_flags`、`test_entry_point`、`test_machine_type` | 字段取值的忠实性（含 `filesz == 0` 与混合段序） |
 | 装载仿真 | `test_kernel_load_simulation_single_segment`、`test_kernel_load_simulation_two_segments`、`test_kernel_load_simulation_with_bss_segment`、`test_segment_copy_and_bss_fill` | 用解析结果做一次"拷贝 + 清零"，逐字节核对 |
 
-`os/boot-shim` 的 `loader.rs` 部分有 31 个测试（复算：`grep -c '#\[test\]' os/boot-shim/src/loader.rs` 输出 31；运行：`cd os && cargo test -p boot-shim --lib` 在默认特性下共 135 个测试，其中 31 个属于 `loader::tests`），与本节直接相关的有 27 条，代表项如下：`test_compute_kernel_layout_from_mock_elf`（布局三个量的取值）、`test_read_required_panics_on_missing_kernel`（缺内核文件是 panic 而不是继续）、`test_bss_region_is_zeroed_after_load`（BSS 清零的结果逐字节核对）、`test_load_segments_into_phys_memory_rejects_overlapping_elf`（重叠段被拒）、`test_compute_kernel_layout_rejects_filesz_greater_than_memsz`（`filesz > memsz` 被拒）、`test_compute_kernel_layout_rejects_paddr_memsz_overflow`（地址溢出被拒）、`test_compute_kernel_layout_zero_size_segment_yields_zero_kern_size`（零长段边界），六个 `first_overlapping_pair_*`（区间判交叠：不相交、真重叠、相邻不算、零长度被忽略、首个命中、空表——见下段）、`test_elf_file_end_{returns_last_load_file_end,non_elf_is_none,malformed_segment_is_none}`、`test_load_boot_modules_into_trims_elf_to_file_end`、`test_compute_kernel_layout_rejects_truncated_mid_segment` 与三条 `load_segments_into_buffer_*`。
+`os/boot-shim` 的 `loader.rs` 部分有 32 个测试（复算：`grep -c '#\[test\]' os/boot-shim/src/loader.rs` 输出 32；运行：`cd os && cargo test -p boot-shim --lib` 在默认特性下共 136 个测试，其中 32 个属于 `loader::tests`），与本节直接相关的有 28 条，代表项如下：`test_compute_kernel_layout_from_mock_elf`（布局三个量的取值）、`test_read_required_panics_on_missing_kernel`（缺内核文件是 panic 而不是继续）、`test_bss_region_is_zeroed_after_load`（BSS 清零的结果逐字节核对）、`test_buffer_and_phys_loaders_share_segment_spans`（两版装载器逐字节一致）、`test_load_segments_into_phys_memory_rejects_overlapping_elf`（重叠段在 `validate` 被拒）、`test_compute_kernel_layout_rejects_filesz_greater_than_memsz`（`filesz > memsz` 被拒）、`test_compute_kernel_layout_rejects_paddr_memsz_overflow`（地址溢出被拒）、`test_compute_kernel_layout_zero_size_segment_yields_zero_kern_size`（零长段边界），六个 `first_overlapping_pair_*`（区间判交叠：不相交、真重叠、相邻不算、零长度被忽略、首个命中、空表——见下段）、`test_elf_file_end_{returns_last_load_file_end,non_elf_is_none,malformed_segment_is_none}`、`test_load_boot_modules_into_trims_elf_to_file_end`、`test_compute_kernel_layout_rejects_truncated_mid_segment` 与三条 `load_segments_into_buffer_*`。
 
 这些测试覆盖三类对象，各自走的路径不同：`test_bss_region_is_zeroed_after_load` 直接调用孪生函数 `load_segments_into_buffer`，逐字节核对三件事——`[0, filesz)` 保留文件字节、`[filesz, memsz)` 清零、`memsz` 之后一个哨兵字节不被触碰（判据是两种预填充值 0xAB 与 0xCC）；`test_compute_kernel_layout_from_mock_elf` 直接调用 `compute_kernel_layout`，测试文件里写明了原因（大意：不能在单元测试里做那次物理内存拷贝）；六个 `first_overlapping_pair_*` 直接调纯函数（不相交、真重叠、相邻不算、零长度被忽略、首个命中、空表）。模块那一侧的三条测试走 `load_boot_modules_into` 加一个模拟分配器，它的地址指向测试期间不释放的静态 `Mutex<Vec<Vec<u8>>>` 缓冲区——同一文件里的注释写明（大意）"绝不在单元测试里写真实物理内存"。
 

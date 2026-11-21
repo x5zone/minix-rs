@@ -1023,12 +1023,17 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     #[cfg(target_arch = "x86_64")]
     let dumpdtb_blob: Option<Vec<u8>> = None;
     let elf_data = file_loader.read_required(loader::KERNEL_PATH);
-    let layout = loader::compute_kernel_layout(elf_data.as_slice()).expect(
-        "Failed to parse kernel ELF from ESP — check that the ESP contains \
-         /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
-         not mounted the FAT partition, or the build did not embed the \
-         kernel binary into the ESP image",
-    );
+    let layout = loader::compute_kernel_layout(elf_data.as_slice())
+        .expect(
+            "Failed to parse kernel ELF from ESP — check that the ESP contains \
+             /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
+             not mounted the FAT partition, or the build did not embed the \
+             kernel binary into the ESP image",
+        )
+        .validate()
+        .expect(
+            "Kernel ELF segment destinations overlap each other or the source bytes — refusing to load",
+        );
     assert_eq!(
         layout.entry_point, layout.kern_virt_base.0,
         "boot-shim: ELF entry does not equal the first PT_LOAD VMA"
@@ -1049,12 +1054,12 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     // The in-shim kernel copy uses this region for the bootstrap root pages;
     // the same triple travels in the envelope so the image resumes it.
     minix_kernel::boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
-    // SAFETY: the span is reserved above and identity-mapped; the source and
-    // destination overlap gate runs inside.
-    unsafe { loader::load_segments_into_phys_memory(elf_data.as_slice()) }.expect(
+    // SAFETY: the span is reserved above and identity-mapped; the validated
+    // image has already cleared the source/destination overlap gate.
+    unsafe { loader::load_segments_into_phys_memory(&layout) }.expect(
         "Failed to copy kernel ELF segments into their LMAs — the span was reserved but the copy range is malformed",
     );
-    let kern = layout;
+    let kern = layout.layout();
     uefi::println!("boot-shim: kernel loaded (entry staged)");
     // Same-family check (D01-R7): root/bump were allocated before the kernel
     // copy, so they must not sit inside the kernel's LMA span.
