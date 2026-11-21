@@ -114,10 +114,11 @@ jobs:
           bash tools/doc-symbol-drift.sh --self-test
 
       - name: 表结构与内部 .md 链接门（P-2）
-        # 只扫受版本管理的评审产物与试点篇目：历史笔记树的存量表格形态不在本轮范围。
+        # 只扫活账与试点篇目：review-eval/runs/** 是历史轮轨迹，其旧表 schema 不在追溯范围；
+        # 当前 run 开始时把该 run 目录加入本步。
         run: |
           python3 tools/doc-structure-check.py \
-            rewrite-notes/meta/coordination/review-eval \
+            rewrite-notes/meta/coordination/review-eval/*.md \
             rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 
       - name: 文档引文逐行对账门（V3.2）
