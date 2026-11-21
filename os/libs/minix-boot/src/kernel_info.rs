@@ -10,14 +10,12 @@ use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
 
-// `#[repr(C)]` pins the field order and each field's offset for debuggability
-// and for a future FFI boundary. It is NOT a cross-image layout contract:
-// after handoff v9 the sender writes `BootReport` into the wire and the
-// receiver reconstructs `KernelInfo` in its own `.bss`; neither image reads
-// this struct from the other's memory. The `&'static [T]` fields' internal
-// (ptr, len) order is toolchain-defined, which is another reason this type
-// must not be used as an ABI.
-#[repr(C)]
+// `KernelInfo` is an in-process value, not a cross-image ABI: after handoff
+// v1 the sender writes `BootReport` into the wire and the receiver
+// reconstructs this struct in its own `.bss`; neither image reads this struct
+// from the other's memory. Deliberately no `#[repr(C)]`: field order is not a
+// contract, and the `&'static [T]` fields' internal (ptr, len) order is
+// toolchain-defined anyway.
 #[derive(Clone, Copy)]
 pub struct KernelInfo {
     /// Free physical memory regions — **not** pre-filtered (D01-R5 D2-14).
@@ -590,7 +588,6 @@ impl KernelInfo {
     }
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
     pub base: PhysBytes,
@@ -629,7 +626,6 @@ pub const MODULE_NAMES: [&str; NR_BOOT_MODULES] = [
     "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
 ];
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BootModule {
     pub name: &'static str,
