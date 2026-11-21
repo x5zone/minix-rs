@@ -29,6 +29,7 @@ on:
       - 'rewrite-notes/02-stage-vm/**'
       - 'rewrite-notes/03-stage-rs/**'
       - 'rewrite-notes/meta/coordination/review-eval/**'
+      - 'rewrite-notes/meta/coordination/todo-ledger/**'
       - 'AGENTS.md'
       - 'README.md'
       - '.gitignore'
@@ -48,6 +49,7 @@ on:
       - 'rewrite-notes/02-stage-vm/**'
       - 'rewrite-notes/03-stage-rs/**'
       - 'rewrite-notes/meta/coordination/review-eval/**'
+      - 'rewrite-notes/meta/coordination/todo-ledger/**'
       - 'AGENTS.md'
       - 'README.md'
       - '.gitignore'
@@ -177,7 +179,8 @@ jobs:
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD^"; fi
           docs=$(git diff --name-only "$base" "${{ github.sha }}" -- 'rewrite-notes/*-stage-*/*.md' \
             | grep -E '^rewrite-notes/[0-9]+-stage-[^/]+/[0-9]{2}-[^/]+\.md$' \
-            | grep -vE 'design|evidence|review|forensics|brief|note|learn|draft|todo|archive' || true)
+            | grep -vE '/(draft|archive)/' \
+            | grep -vE '/([^/]*(design|evidence|review|forensics|brief|note|learn|todo|archive)[^/]*\.md)$' || true)
           if [ -z "$docs" ]; then echo "无变更正式篇目"; exit 0; fi
           for d in $docs; do
             echo "── $d"

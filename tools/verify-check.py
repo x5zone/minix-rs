@@ -451,8 +451,9 @@ def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
         if re.search(r"(?m)^## Resume Point\b", text):
             required_resume = ("### 当前断点", "### 下一 session 启动协议", "### 指针", "### 必跑命令")
             missing_resume = [sec for sec in required_resume if sec not in text]
-            if "eval-trace-check.py" not in text:
-                missing_resume.append("eval-trace-check.py")
+            for cmd in ("verify-check.py", "eval-trace-check.py", "todo-ledger.py"):
+                if cmd not in text:
+                    missing_resume.append(cmd)
             if missing_resume:
                 failures += 1
                 print(f"[FAIL] Resume Point 缺：{', '.join(missing_resume)}")

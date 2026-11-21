@@ -518,7 +518,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 | **苏格拉底追问（专项，非 Profile）** | [review-socratic-skill.md](../skill/review-socratic-skill.md) | 当 Review 发现可疑点时通过追问引导澄清 |
 | **实施验证（专项，2026-06-22 新增）** | [review-implementation-skill.md](../skill/review-implementation-skill.md) | 设计 → 代码 实施验证（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试覆盖边界） |
 
-> 详细 Profile 配置（含全部 Profile A~P + R + AG）见 [review-profiles.md](review-profiles.md)
+> 详细 Profile 配置（含 Profile A–K/O/P/R/AG）见 [review-profiles.md](review-profiles.md)
 
 ---
 
@@ -876,7 +876,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 > 在开始任何 Review 之前，AI **必须先声明 Review 范围**，然后再加载规则集执行。这步防止 AI 在范围不清的情况下开始检查。
 
 > **2026-08-15 修复 D-P1-3（术语统一）**：规则集使用三个相关但不同的概念术语：
-> - **Profile**（[review-profiles.md](review-profiles.md)）：**模块加载策略**——决定加载哪些规则文件（核心/文档检查清单/代码检查清单/错误模式/核心语义/卓越性等）
+> - **Profile**（[review-profiles.md](review-profiles.md)）：历史别名；加载细则以 `review-cmds.md` §一与 checklist 为准——决定加载哪些规则文件（核心/文档检查清单/代码检查清单/错误模式/核心语义/卓越性等）
 > - **Mode**（本节 §0.2）：**范围裁剪**——决定 review 范围（仅 Ch1&2 / 完整文档 / 文档+代码）
 > - **Task**：**用户实际任务**——AI 接受的具体指令（如 "review 04-platform-discovery.md 的 Ch3"）
 > - **关系**：Task 由用户给出 → Mode 由 Task 推导 → Profile 由 Mode + Task 推导。三者可独立选择，但需一致（如 Task=完整 review + Mode=C → Profile=C 全模块加载；Task=快速过审 + Mode=C → Profile=D 仅核心加载）
@@ -951,7 +951,7 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 - [review-code-checklist.md](review-code-checklist.md) — 代码检查清单（§1-§15，含 §14 C-Rust 语义对齐 + §15 细节精确性 = Gate C）
 - [review-patterns.md](review-patterns.md) — 常见错误模式（文档 + 代码 + 跨文档）
 - [review-process.md](review-process.md) — AI 强制步骤 + 工具命令
-- [review-profiles.md](review-profiles.md) — 任务组合配置（按需加载策略）
+- [review-profiles.md](review-profiles.md) — 历史任务组合别名（加载细则见 review-cmds §一）
 - [review-core-semantics.md](review-core-semantics.md) — 核心语义对齐（行为契约表 + IPC/生命周期契约模板）
 - [review-doc-excellence.md](review-doc-excellence.md) — 文档卓越性（§4.1-§4.4）
 - [review-code-excellence.md](review-code-excellence.md) — 代码卓越性（§16-§21）

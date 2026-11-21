@@ -321,10 +321,16 @@ def evidence_replay_ok(path: Path) -> bool:
                 return True
         for m in TEST_RE.finditer(line):
             name = m.group(1)
-            check = subprocess.run(
-                ["rg", "-q", rf"\bfn\s+{re.escape(name)}\b", "os", "rewrite-notes"],
-                cwd=ROOT, capture_output=True,
-            )
+            try:
+                check = subprocess.run(
+                    ["rg", "-q", rf"\bfn\s+{re.escape(name)}\b", "os", "rewrite-notes"],
+                    cwd=ROOT, capture_output=True,
+                )
+            except FileNotFoundError:
+                check = subprocess.run(
+                    ["grep", "-rq", rf"fn\s\+{re.escape(name)}\b", "os", "rewrite-notes"],
+                    cwd=ROOT, capture_output=True,
+                )
             if check.returncode == 0:
                 return True
         if re.search(r"\b(?:rg|grep|cargo test|python3|bash)\s", line):

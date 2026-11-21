@@ -1454,7 +1454,7 @@ grep -c "unsafe" {CODE_FILE}
            - outline-review.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.3 嵌入生成（AI 自审）
            - design.v*.md 缺失 → Gate H.1 FAIL → Step 0.3.4 嵌入生成
          3. 工具 `tools/design-coverage-check.sh {stage}` 自动扫描所有 stage 的 meta/design/<stage>/，输出缺失报告
-         4. STATE.md Resume Point 必含 `ls meta/design/<stage>/` 命令（避免续 session 跳过）
+         4. scan.md Resume Point 必含 `ls meta/design/<stage>/` 命令（避免续 session 跳过）
 ```
 
 **判定**：

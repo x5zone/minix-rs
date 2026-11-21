@@ -223,43 +223,9 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
   > 4. **工具支持**：`tools/design-coverage-check.sh {stage}`（NEW）自动扫描所有 stage，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
   > 5. **决策记录豁免**：仅一次性用户明确豁免；豁免必须登记在 STATE.md `§豁免列表` 段；**不可泛化**（模式 71 DOG）。
 
-### Step 0 Resume Point 模板（多 session 续审强制，NEW 2026-07-16）
-  > **目的**：避免续 session 跳过 Step 0 预检，导致快照缺失但 scan.md 标 CONVERGED。Session #12 真实案例：续 session 时仅读取了 5 个必读文件清单，没把 `ls design/` 列为强制预检。
-  >
-  > **模板**（写入 STATE.md `## Resume Point` 段）：
-  > ```markdown
-  > ## Resume Point（续 session 必读 + 必跑）
-  > ### 必读文件清单（顺序）
-  > 1. `.review/codex/{stage}/STATE.md`（本文件）
-  > 2. `.review/codex/{stage}/scans/workflow-improvement-suggestions.md`
-  > 3. TODO 账本（`rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`；旧 stage `todo.md` 已迁移删除；历史案例如 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）
-  > 4. `{tree}/{stage}/{target-doc}.md`
-  > 5. 上一个 CONVERGED 文档的 scan
-  >
-  > ### 必跑预检命令（不可跳过）
-  > ```bash
-  > # 1. STATE 校验
-  > tools/review-state-validate.py --state .review/codex/{stage}/STATE.md
-  >
-  > # 2. design 预检（模式 69 PSMD 配套）
-  > ls {tree}/meta/design/{stage}/{NN}-outline.v*.md
-  > ls {tree}/meta/design/{stage}/{NN}-outline-review.v*.md
-  > ls {tree}/meta/design/{stage}/{NN}-design.v*.md
-  > ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md
-  >
-  > # 3. design 全局扫描（可选，工具支持）
-  > tools/design-coverage-check.sh {stage}
-  >
-  > # 4. TODO staleness check（若 TODO 数 > 5）
-  > python3 tools/todo-ledger.py check  # v2 账本
-  > ```
-  >
-  > ### 豁免列表（仅一次性用户明确豁免，模式 71 DOG）
-  > | Doc | 豁免项 | 豁免原因 | 用户确认日期 |
-  > |-----|--------|---------|------------|
-  > | 04-platform-discovery | 缺 design.md | 用户决策"04/05 不回填"（仅适用 04/05）| 2026-06-30 |
-  >
-  > **⛔ 不可泛化**：用户对 X 的豁免仅适用 X，**不可**推广到 Y/Z。AI 认为需要类似豁免时必须先询问用户。
+### Step 0 Resume Point 模板（多 session 续审强制）
+
+> 唯一模板见 `prompt/review-rules/review-process.md` §一.附录 A.2：指针段（Issue List / Gate Status 行号 + STATE 未勾选 Step）+ 必跑命令段。写入 `scan.md` 的 `## Resume Point`；`verify-check.py --preflight` 校验四段齐全。
 
 - **TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）**：
   > 当 review 输入包含外部 TODO 清单（当前形态：各 stage 的 todo.md / {NN}-todo.md；历史案例如 tmp_design_and_todo/ 下文件，该目录已删除），且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。详见 [review-rules/review-process.md §Step 0.7.4](../../../prompt/review-rules/review-process.md)。

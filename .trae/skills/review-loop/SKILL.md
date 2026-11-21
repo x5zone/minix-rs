@@ -349,7 +349,7 @@ G14：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 �
 
 ### 7d. 工作流升版
 
-版本边界**不依赖文档收敛**，在每个轮次关闭后、每篇 FREEZE 后、或同一 edition 连续 3 轮未收敛时执行。**同一篇文档最多 3 个 edition（K=3，V3.3 软上限）**：超出后继续迭代必须在 `DECISIONS.md` 判决账落一行（理由 + 范围 + 日期），把"无限换规则重试"变成显式决定：
+版本边界**不依赖文档收敛**，在每个轮次关闭后、每篇 FREEZE 后、或同一篇跨 edition 累计 3 个修改轮仍未收敛时执行。**同一篇文档最多 3 个 edition（K=3，V3.3 软上限）**：超出后继续迭代必须在 `DECISIONS.md` 判决账落一行（理由 + 范围 + 日期），把"无限换规则重试"变成显式决定：
 
 1. 跑版本边界回归：`CORPUS.md` 的 R01–R12 与 T01–T08。
 2. 汇总本轮与前几轮的指标，写 `meta/boundary-V<n>.md`；必须给 `唯一根因数`、`自引入数`、`重复合并数`、机械门命中、规则命中率。
@@ -370,7 +370,7 @@ G14：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 �
 6. 全绿后提交；未全绿不升版。
 7. 连续两篇证明某条新规无效果或制造误报，回退并记录。
 8. **3 轮试验**：同一篇（跨 edition 累计）第 3 个修改轮仍 `open>0`：先按 `EDITION-RETRO.md` 整节重写（不开第 4 个修改轮），重写后只允许 1 次确认轮；确认轮仍 `open>0` → 判 `NOT CONVERGING`；下一个边界处理最大阻塞项或回退。
-9. **第 3 轮必须是结构轮**：按 `EDITION-RETRO.md` 重写被反复报的段/小节，并在最终 HEAD 跑 citation/anchor/symbol-drift 机械再对账；若第 3 轮仍是线级补丁或仍 `open>0`，同样判 `NOT CONVERGING`。
+9. **第 3 轮必须是结构轮**：按 `EDITION-RETRO.md` 重写被反复报的段/小节，并在最终 HEAD 跑 citation/anchor/symbol-drift 机械再对账；若第 3 轮仍是线级补丁，先按第 8 条整节重写；重写后确认轮仍 `open>0` 才判 `NOT CONVERGING`。
 10. **设计快照是历史输入**：审查合同 = 文档 + 源码 + `DECISIONS.md`；`meta/design/<stage>/*.md` 与文档/源码冲突时以文档/源码为准，不得把旧快照条款当作“文档偏离合同”。
 
 ## 每篇的提交

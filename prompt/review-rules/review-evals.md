@@ -822,7 +822,7 @@ bash tools/doc-symbol-drift.sh --self-test
 ### 7.5 3 轮修改窗口与确认轮（V3.3 修订）
 
 同一篇文档最多跑 **3 轮修改事务**（full / structural），**跨 edition 累计**（V3.8 起）。
-每个 edition 内的 3 轮试验窗口仍保留为更早的警告层，不是独立预算。**确认轮
+每个 edition 内的 3 轮试验窗口只作更早的警告层（仅提示、不单独阻断），不是独立预算。**确认轮
 不占修改预算**：最后一个修改事务 ROUND-CLOSED 后，edition 进入
 CONVERGENCE-CANDIDATE，由确认轮收口（§6A 四态模型），每个 CANDIDATE 最多 2 次。第 3 轮必须
 是**结构轮**：按 `EDITION-RETRO.md` 重写被反复报的段/小节，并在最终 HEAD 跑
