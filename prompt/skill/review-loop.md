@@ -57,7 +57,7 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
    修复权限仅限本轮新准入项、不实施 ⑥、每个 CANDIDATE 最多 2 次、不占 §7.5 修改预算）。修改轮（full/structural）没有收敛声明权——最多 `ROUND-CLOSED` /
    `CONVERGENCE-CANDIDATE`；R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，其收口按
    certify 阶段执行。
-10. **写 schema 标记**：`loop.md §0` 必须写当前生效版本的 schema。**新开篇目写 `WORKFLOW-VERSIONS.md` 版本表最后一行的 schema 列（当前 `V3.9`）**
+10. **写 schema 标记**：`loop.md §0` 必须写当前生效版本的 schema。**新开篇目写 `WORKFLOW-VERSIONS.md` 版本表最后一行的 schema 列（当前 `V3.10`）**
    （门只对该版本的 schema 起生效；写旧值 = 新门静默失效）；02–04 已 FREEZE 的轮次保持各自历史标记
    （01 现行 `V3.3 from R31`，02/03/04 `V3.3 from R1`），不追溯、不改写。已在旧
    schema 下立基线又需切新版的（如 05 的 R1 §0 已写 V3.3）：面板启动前更正 §0 的

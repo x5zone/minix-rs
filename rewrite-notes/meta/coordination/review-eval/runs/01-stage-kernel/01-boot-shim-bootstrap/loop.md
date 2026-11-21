@@ -2314,3 +2314,20 @@ RB24 首轮 13 项逐项处置：
 
 - 三问：① 本轮不变量 = 新轴文档的每条主张有来源/去向，且四条不变量在正文可核；② 基线 = `cf79b63e5`，最终文档 sha/行数见 §0 与 `FREEZE.md`；③ 证据 = 46 条台账、四份 certify、九门读数与 `--round R37`。
 - 资源重读：本轮盲区属“重写后的事实/结构”类，查 `prompt/resources/fresh-eyes-review`；已确认“独立回读必须换实例、不能只 grep 旧串”这条检测模式有效，无新增可移植模式。
+
+
+## R38 V3.10 新 edition（full；含 L0.9 出版门清理）
+
+### R38 §0 基线
+
+- 起始 HEAD：`cca29cf65def992d076269b611a3c25f0b982d27`
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 文档 sha256：`3f7759143a0cb7b7d1716627d720298e1e506871a09a4f312644b10083fe9e2c`；行数 2941（教程导读补齐后）
+- 轮型：`full`
+- edition：`V3.10`；schema：`V3.10`
+- 授权：D-108（R37 不追认，D01 新 edition 重开）；D-109（I-19 按重写关闭）
+- 重写例外：D-108（用户批准跨 edition 新开，非规避 3 轮上限）
+- 范围：D01 正文 + `related-code.txt` 的 48 个文件
+- 关联代码清单：`tools/doc-code-map.sh` 48/48 存在
+- 本轮单元：T1/T2 全 41 单元（首 edition full survey）；T3 否
+- L0.9 出版门：doc-publication PASS；code-publication 126 处新增；tutorial-rubric 6/6 章缺 TR-1..TR-5；todo-ledger `--fail-on-open` 待清

@@ -3,7 +3,7 @@
 schema: review-units/v1
 doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 stage: 01-stage-kernel
-edition: V3.9
+edition: V3.10
 updated_commit: e11f74d909cb7d8605996a4ef6465d749c257daf
 units:
 - id: '1'
@@ -20,6 +20,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '1.1'
   heading: 1.1 内核接手时拿到什么
   level: 3
@@ -34,6 +36,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '1.2'
   heading: 1.2 四条不变量 I1–I4
   level: 3
@@ -48,6 +52,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '1.3'
   heading: 1.3 与 Minix3 的对应
   level: 3
@@ -62,6 +68,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '1.4'
   heading: 1.4 范围、术语与接缝
   level: 3
@@ -76,6 +84,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2'
   heading: 2. C 源码分析
   level: 2
@@ -90,6 +100,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.1'
   heading: 2.1 引导器契约与启动信息
   level: 3
@@ -104,6 +116,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.2'
   heading: 2.2 `head.S` 入口：`multiboot_init` 与 `load_stack_start → pre_init`
   level: 3
@@ -118,6 +132,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.3'
   heading: 2.3 `get_parameters`：把别人的数据变成自己的记录
   level: 3
@@ -132,6 +148,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.4'
   heading: 2.4 内存账：`add_memmap`/`cut_memmap` 与条目来源
   level: 3
@@ -146,6 +164,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.5'
   heading: 2.5 `overlaps` 与 `kern_mod`：内核把自己算成第 M+1 个模块
   level: 3
@@ -160,6 +180,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.6'
   heading: 2.6 模块装载的检查与失败模式
   level: 3
@@ -174,6 +196,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.7'
   heading: 2.7 ARM32 对照：自己造一份 multiboot
   level: 3
@@ -188,6 +212,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '2.8'
   heading: 2.8 本章归纳：C 交付物的形状
   level: 3
@@ -202,6 +228,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3'
   heading: 3. Rust 设计决策
   level: 2
@@ -216,6 +244,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3.1'
   heading: 3.1 协议换代：固件接口替换 Multiboot
   level: 3
@@ -230,6 +260,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3.2'
   heading: 3.2 按值交接：`KernelInfo` wire 与字段台账（I1）
   level: 3
@@ -244,6 +276,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3.3'
   heading: 3.3 两张内存表与来源记录（I2）
   level: 3
@@ -258,6 +292,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3.4'
   heading: 3.4 bootstrap 区间与分配器换手
   level: 3
@@ -272,6 +308,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3.5'
   heading: 3.5 取件抽象与 crate 依赖方向
   level: 3
@@ -286,6 +324,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3.6'
   heading: 3.6 五条生产腿与发送侧（接缝定义）
   level: 3
@@ -300,6 +340,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '3.7'
   heading: 3.7 所有权与校验门链（I3/I4）
   level: 3
@@ -314,6 +356,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4'
   heading: 4. 实现详解
   level: 2
@@ -328,6 +372,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4.1'
   heading: 4.1 入口与调用链
   level: 3
@@ -342,6 +388,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4.2'
   heading: 4.2 UEFI 路径：九个动作与产出归属
   level: 3
@@ -356,6 +404,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4.3'
   heading: 4.3 两种文件来源共用的取件函数
   level: 3
@@ -370,6 +420,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4.4'
   heading: 4.4 `KernelInfo` 构造的两条产出入径
   level: 3
@@ -384,6 +436,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4.5'
   heading: 4.5 `store_kernel_info` 的六个落地区
   level: 3
@@ -398,6 +452,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4.6'
   heading: 4.6 arena 与分配器换手的落地
   level: 3
@@ -412,6 +468,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '4.7'
   heading: 4.7 与 Minix3 C 的函数落点对照
   level: 3
@@ -426,6 +484,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '5'
   heading: 5. 测试：四条不变量各自的证据
   level: 2
@@ -440,6 +500,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '5.1'
   heading: 5.1 四条不变量的证据矩阵
   level: 3
@@ -454,6 +516,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '5.2'
   heading: 5.2 宿主测试的边界
   level: 3
@@ -468,6 +532,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '5.3'
   heading: 5.3 机制 → 需要证明什么
   level: 3
@@ -482,6 +548,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '5.4'
   heading: 5.4 真机门链
   level: 3
@@ -496,6 +564,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '5.5'
   heading: 5.5 未闭环项交接
   level: 3
@@ -510,6 +580,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '6'
   heading: 6. 诊断
   level: 2
@@ -524,6 +596,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '6.1'
   heading: 6.1 EBS 分界与裸串口通道内的两种写法
   level: 3
@@ -538,6 +612,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '6.2'
   heading: 6.2 panic 路径：从静默到可读
   level: 3
@@ -552,6 +628,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '6.3'
   heading: 6.3 典型失败模式与诊断信号
   level: 3
@@ -566,6 +644,8 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 - id: '6.4'
   heading: 6.4 可复制命令
   level: 3
@@ -580,7 +660,13 @@ units:
   frozen_at: null
   rewritten: false
   note: ''
+  user_approved: false
+  reopened: false
 t3:
   passed: false
   evidence: ''
   at_commit: ''
+baseline_full_survey: false
+confirmation:
+  active: false
+  fixes: 0

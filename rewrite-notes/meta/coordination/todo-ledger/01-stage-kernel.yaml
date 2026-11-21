@@ -98,15 +98,15 @@
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
   title: §3–§6 讲解条续扫「只报事实不报道理」（§2 已扫 40 条修 4；§3–§6 约 90 条待过）
-  status: open
+  status: closed
   severity: P2
   kind: code
   origin: rewrite-notes/01-stage-kernel/01-todo.md:3008
   origin_file: rewrite-notes/01-stage-kernel/01-todo.md
   origin_line: 3008
   origin_commit: 8cda239e4f129f20a4c432b7bf6d72acbed6424a
-  evidence: 'No replayable per-item record: only the closure sentence at 01-todo.md:3022 (''~90 条，修 4 条纯事实条目''); the 3582-line
-    doc targeted by the item has been replaced by the current 2673-line doc (headings differ).'
+  evidence: 2026-11-22 用户裁决：2026 全篇重写已取代旧 §3–§6 的 90 条讲解条清单；旧清单目标不存在，无逐条回执可补。证据：01-boot-shim-bootstrap.md 当前 2673 行（sha256
+    665230eb…），章节结构已重写；D-108 将 R37 标 INVALIDATED 并以 V3.9 新 edition 重开。
   verified_by: subagent:b1
   verified_at: '2026-11-21'
   aliases:
@@ -115,10 +115,7 @@
   note: 'Decision needed: accept the 2026 full rewrite as I-19''s closure (the old §3-§6 90-item sweep target no longer exists),
     or reopen the sweep against the new 2673-line doc. No replayable per-item record exists beyond the closure sentence at
     01-todo.md:3022.'
-  blocked: true
-  blocked_reason: 'Decision needed: accept the 2026 full rewrite as I-19''s closure (the old §3-§6 90-item sweep target no
-    longer exists), or reopen the sweep against the new 2673-line doc. No replayable per-item record exists beyond the closure
-    sentence at 01-todo.md:3022.'
+  blocked: false
   refs:
     code: []
     docs:
@@ -132,6 +129,9 @@
       unit: '6'
     tests: []
     decisions: []
+  lifecycle:
+    updated: '2026-11-22'
+    closed_by: D-109
 - id: D01-I-25
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
