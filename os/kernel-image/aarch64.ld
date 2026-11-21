@@ -59,7 +59,7 @@ SECTIONS
         /* 内核启动图锚点（src/main.rs KERNEL_ENTRY_ANCHOR）：KEEP 防
            --gc-sections 把无引用静态连同整个内核启动图一起裁掉。 */
         KEEP(*(.rodata.kernel_anchor))
-        *(.rodata .rodata.*)
+        *(.rodata .rodata.* .lrodata .lrodata.*)
     }
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)

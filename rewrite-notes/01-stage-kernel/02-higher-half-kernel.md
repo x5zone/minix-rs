@@ -320,9 +320,9 @@ Rust 侧不再用链接符号给出 `kmain` 用的栈顶（入口 `_start` 仍�
 |---|---|---|
 | 链接布局 | `kernel.lds` 的三行常量与 `AT()` 表达式 | 带 `AT()` 的普通段：符号值高一侧、装载地址低一侧，差是 `_kern_offset`；`unpaged_*` 三段的符号值与装载地址都在低侧 |
 | 装载摆放 | `Makefile.inc` 的改名规则 + 装载器按 `p_paddr` 写段体 | 段体落在低一侧；哪些对象进低一侧由改名名单决定 |
-| 成对跳转 | x86-32：`head.S` 的四行（设栈、压终止槽、压参数、相对 `call`）；ARM32：`head.S` 的设栈 + `ldr`/`bx` | x86-32 的设栈携带绝对值、跳转携带相对位移；ARM32 两者都是绝对值；i386 侧已按 §2.4 证据落地，ARM 侧按同一判据、改名名单与 `.data` 收段证据待补 |
+| 成对跳转 | x86-32：`head.S` 的四行（设栈、压终止槽、压参数、相对 `call`）；ARM32：`head.S` 的设栈 + `ldr`/`bx` | x86-32 的设栈携带绝对值、跳转携带相对位移；ARM32 两者都是绝对值；i386 侧已按 §2.4 证据落地，ARM 侧同一判据也已静态核实：`earm/Makefile.inc` 的改名名单不含 `mpx.o`、`earm/mpx.S:265-272` 在 `.bss` 后切回 `.data`、`earm/kernel.lds` 的 `.unpaged_data` 只收 `unpaged_*.o`，故 `k_initial_stack` 落在高半 `.data` |
 
-影响本章三个动作结论的差异只在这三处：入口段的段名（ARM 多一个 `.startup`）、跳转指令的写法（x86 用相对 `call`，ARM 用字面量池取值的 `bx`）、`k_initial_stack` 的段归属（i386 在 `.bss`，`earm/mpx.S` 在 `.data`）（§2.2 还列了物理基址取值与改名名单两处差异，它们不改变三个动作的结论）。两边的语义相同：先设栈、再跳转；i386 侧两个动作指向同一侧，ARM 侧按同一判据、`.data` 收段证据待补。
+影响本章三个动作结论的差异只在这三处：入口段的段名（ARM 多一个 `.startup`）、跳转指令的写法（x86 用相对 `call`，ARM 用字面量池取值的 `bx`）、`k_initial_stack` 的段归属（i386 在 `.bss`，`earm/mpx.S` 在 `.data`）（§2.2 还列了物理基址取值与改名名单两处差异，它们不改变三个动作的结论）。两边的语义相同：先设栈、再跳转；i386 侧两个动作指向同一侧，ARM 侧同一判据已由上述三处源码核实。
 
 ---
 
@@ -362,7 +362,7 @@ SECTIONS
 
 三种形态的判据归结为一件事：**有谁按 `p_paddr` 摆放到与符号地址不同的位置，才需要低地址的 LMA；摆放位置与符号地址一致（或没有读者）时，一套地址就够。**
 
-**生产交接形态（v1 handoff）**：UEFI（x86_64/aarch64）与 riscv64 的 U-Boot 腿都走 `prepare_and_enter_kernel_image`/`prepare_boot` → `enter_kernel_image_v1` → 独立镜像 `_start` → `arch_boot_resume_v1`。接收侧只做 additive 阶段：把 arena 里的七块载荷（memmap/reserved/modules/platform/param/sources/startup）落进本镜像 `.bss`、记录已活动根、建 Direct Map 覆盖，然后跳 `kmain`；它不重建 bootstrap 根，因为 `new_from_page` 会把正在使用的活动根清零。direct 面（riscv64 自引导、aarch64 direct-core）走 `bootface`/`bootface_a64` → `arch_boot` → `arch_boot_impl`，在物理视图里建根、开分页、建 DM；riscv64 再用条件 delta 跳 `kmain`，aarch64 用 `ldr` 的绝对值跳。测试载体分两类，不是一个视图：x86_64/aarch64 测试载体走 inline `arch_boot`、是低地址视图；riscv64 测试载体虽然也直接调 `arch_boot`，但它链接在物理地址上、`direct leg` 加 `delta`，跳转完成时 PC 落在高半 VMA（下表第 5 行）。两类都不是生产路径。
+**生产交接形态（v1 handoff）**：UEFI（x86_64/aarch64）与 riscv64 的 U-Boot 腿都走 `prepare_and_enter_kernel_image`/`prepare_boot` → `enter_kernel_image_v1` → 独立镜像 `_start` → `arch_boot_resume_v1`。接收侧只做 additive 阶段：把 arena 里的六块载荷（memmap/reserved/modules/platform/param/sources）落进本镜像 `.bss`、记录已活动根、建 Direct Map 覆盖，然后跳 `kmain`；它不重建 bootstrap 根，因为 `new_from_page` 会把正在使用的活动根清零。direct 面（riscv64 自引导、aarch64 direct-core）走 `bootface`/`bootface_a64` → `arch_boot` → `arch_boot_impl`，在物理视图里建根、开分页、建 DM；riscv64 再用条件 delta 跳 `kmain`，aarch64 用 `ldr` 的绝对值跳。测试载体分两类，不是一个视图：x86_64/aarch64 测试载体走 inline `arch_boot`、是低地址视图；riscv64 测试载体虽然也直接调 `arch_boot`，但它链接在物理地址上、`direct leg` 加 `delta`，跳转完成时 PC 落在高半 VMA（下表第 3 行）。两类都不是生产路径。
 
 三套分类不是同一件事，后面的表按这张登记表换算：
 
@@ -404,9 +404,9 @@ x86_64 的 `kern_virt_base` 不是 `KERNEL_HIGH_BASE` 本身：首段 VMA 是 `K
 
 ### 3.2 ELF 解析器自建（→§2.1）
 
-C 侧的负担：装载器要按 `p_paddr` 摆放、按 `p_memsz - p_filesz` 清零，这些都是 ELF 程序头里的字段；C 侧外部 multiboot 装载器（如 GRUB）读它们，树内 boot monitor 走 `LOADADDR(p_vaddr)` 的低 27 位，内核自己一行解析代码都没有。Rust 侧不存在 C 那种「内核代码之外、由另一个程序按 `p_paddr` 摆放镜像」的角色——Rust 的 boot-shim 与内核镜像分属两个可执行体，装载发生在 shim 内、由 shim 自己按 `p_paddr` 摆放（§3.1 的表把 shim 记为装载方），所以这些字段由 shim 自己读，内核侧一行解析代码也没有。需要的字段只有几个：`p_paddr`、`p_vaddr`、`p_offset`、`p_filesz`、`p_memsz`、`p_flags`（`p_flags` 在装载内核镜像时用不到，在装载用户 ELF 时要用，见本节末的处置表）。符号表、重定位、section header 都不在射程内。
+C 侧的负担：装载器要按 `p_paddr` 摆放、按 `p_memsz - p_filesz` 清零，这些都是 ELF 程序头里的字段；C 侧外部 multiboot 装载器（如 GRUB）读它们，树内 boot monitor 走 `LOADADDR(p_vaddr)` 的低 27 位，内核自己一行解析代码都没有。Rust 侧把 C 内联在引导器里的这段解析搬到独立 boot-shim：boot-shim 与内核镜像分属两个可执行体，装载发生在 shim 内、由 shim 自己按 `p_paddr` 摆放（§3.1 的表把 shim 记为装载方）。因此这些字段由 shim 用本节的共享解析器读，内核侧一行解析代码也没有；与 C 的差别不在“有没有外部装载者”，而在装载者是本仓代码、与内核共用同一份解析器。需要的字段只有几个：`p_paddr`、`p_vaddr`、`p_offset`、`p_filesz`、`p_memsz`、`p_flags`（`p_flags` 在装载内核镜像时用不到，在装载用户 ELF 时要用，见本节末的处置表）。符号表、重定位、section header 都不在射程内。
 
-解析器放在 `os/libs/minix-elf`，是一个独立 crate，被五个 crate 依赖（复算：`grep -rl 'minix-elf =' os/*/Cargo.toml os/*/*/Cargo.toml` 输出 `os/arch/Cargo.toml`、`os/boot-shim/Cargo.toml`、`os/servers/vfs/Cargo.toml`、`os/servers/vm/Cargo.toml`、`os/servers/rs/Cargo.toml` 五行）。用途按调用点分四类：boot-shim 用它装载**内核镜像**（模块是按原字节整块拷贝的，不经解析——`loader.rs` 的 [`fn load_boot_modules_into`](os/boot-shim/src/loader.rs:fn load_boot_modules_into) 里没有段迭代）；`boot.rs` 的 [`fn load_vm_elf`](os/arch/src/arch/boot.rs:fn load_vm_elf) 用它把用户 ELF 逐页映射进进程地址空间；[`trap_api.rs`](os/servers/rs/src/trap_api.rs) 的 exec 路径用它读段与入口点；[`vm_server.rs`](os/servers/vm/src/vm_server.rs) 的 bootstrap 装载用 `entry_point` 与 `segment_iter` 取入口与段表。vfs 的 exec 路径只在常量上借用它（`ET_EXEC`/`PT_LOAD`），表头解析是 [`exec_worker.rs`](os/servers/vfs/src/exec_worker.rs) 自带的 `ElfHead`。同一份"段迭代"语义被多个调用方共用，是它成为共享 crate 而不是某个模块内部实现的理由。
+解析器放在 `os/libs/minix-elf`，是一个独立 crate，被五个 crate 依赖（复算：`grep -rl 'minix-elf =' os/*/Cargo.toml os/*/*/Cargo.toml` 输出 `os/arch/Cargo.toml`、`os/boot-shim/Cargo.toml`、`os/servers/vfs/Cargo.toml`、`os/servers/vm/Cargo.toml`、`os/servers/rs/Cargo.toml` 五行）。用途按调用点分五类：boot-shim 用它装载**内核镜像**（按 `p_paddr` 逐段摆放），并用 `elf_file_end` 把模块 ELF 修剪到最后一个 `PT_LOAD` 的文件尾后整块拷贝（D-082/I-36；不重定位、不逐段映射）；`boot.rs` 的 [`fn load_vm_elf`](os/arch/src/arch/boot.rs:fn load_vm_elf) 用它把用户 ELF 逐页映射进进程地址空间；[`trap_api.rs`](os/servers/rs/src/trap_api.rs) 的 exec 路径用它读段与入口点；[`vm_server.rs`](os/servers/vm/src/vm_server.rs) 的 bootstrap 装载用 `entry_point` 与 `segment_iter` 取入口与段表。vfs 的 exec 路径只在常量上借用它（`ET_EXEC`/`PT_LOAD`），表头解析是 [`exec_worker.rs`](os/servers/vfs/src/exec_worker.rs) 自带的 `ElfHead`。同一份"段迭代"语义被多个调用方共用，是它成为共享 crate 而不是某个模块内部实现的理由。
 
 取舍表：
 
@@ -457,38 +457,41 @@ pub struct LoadSegment {
 迭代器在 `next()` 里做类型过滤与范围检查，命中这些条件时 `continue`（不产出该段）；但 `SegmentIter::new` 与 `parse_phdr` 的表范围算式是未检查加法，畸形输入会 panic 而不是 `Err`（代码修复登记设计批 D2-01）（`lib.rs` 的 [`impl Iterator for SegmentIter`](os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter)）：
 
 ```rust
-/* 节选（保留 next() 的循环体与防御性 continue；注释有改写；省略号处为返回值的构造），os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter。 */
+/* 节选（保留 next() 的类型过滤与四类 Err 返回；注释有改写；省略号处为返回值构造），os/libs/minix-elf/src/lib.rs:impl Iterator for SegmentIter。 */
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < self.ehdr.e_phnum {
             let Some(entry_off) = (self.index as usize)
                 .checked_mul(self.ehdr.e_phentsize as usize)
             else {
                 self.index += 1;
-                continue;
+                return Some(Err(ElfError::PhdrOutOfBounds));
             };
             let Some(offset) = (self.ehdr.e_phoff as usize).checked_add(entry_off) else {
                 self.index += 1;
-                continue;
+                return Some(Err(ElfError::PhdrOutOfBounds));
             };
             self.index += 1;
 
-            // 防御性解析：表项越界/太小时跳过
+            // 表项越界/太小是畸形，不是过滤：以 Err 项浮出（I-48/D-084）
             let phdr = match parse_phdr(self.image, offset, self.ehdr.e_phentsize) {
                 Ok(p) => p,
-                Err(_) => continue,
+                Err(e) => return Some(Err(e)),
             };
 
             if phdr.p_type != PT_LOAD {
-                continue;
+                continue; // 非可加载段是正常过滤
             }
 
-            // Validate segment data fits within image
+            // 段文件字节必须落在镜像内；越界是畸形，以 Err 项浮出
             let Some(seg_end) = (phdr.p_offset as usize).checked_add(phdr.p_filesz as usize)
             else {
-                continue;
+                return Some(Err(ElfError::SegmentOutOfBounds));
             };
             if seg_end > self.image.len() {
-                continue;
+                return Some(Err(ElfError::SegmentOutOfBounds));
+            }
+            if phdr.p_filesz > phdr.p_memsz {
+                return Some(Err(ElfError::FileszExceedsMemsz));
             }
             ...
         }
@@ -496,9 +499,9 @@ pub struct LoadSegment {
     }
 ```
 
-这些 `continue` 分三类语义：第一类是防御性表项计算/解析（`checked_mul`/`checked_add` 溢出、表项越界或太小时跳过，正常产物不会触发），第二类按段类型过滤（非 `PT_LOAD` 不是可加载段，跳过是正常现象），第三类是越界检查，它的动作也是跳过——一个段声明的文件数据超出了镜像长度时，迭代器不报错、不截断，直接不产出这个段。调用方看到的是"段比预期少"，而不是"段坏了"。这一点在多段镜像里要留意：`compute_kernel_layout` 只对收到的段取最小值，少一段意味着算出的布局范围可能偏小。这是已知设计缺口（设计批 D2-05）：引导路径应 fail-closed，而不是把“段比预期少”交给调用方猜；当前文档如实记录行为，不把它当作安全保证。
+迭代器只把**非 `PT_LOAD` 类型**当作正常过滤（`continue`）；其余畸形一律以 `Some(Err(..))` 浮出：表项偏移溢出/越界是 `PhdrOutOfBounds`，`parse_phdr` 失败按具体变体返回，段文件字节越界是 `SegmentOutOfBounds`，`filesz > memsz` 是 `FileszExceedsMemsz`（I-48/D-084）。调用方必须在第一个 `Err` 上短路：`compute_kernel_layout` 用 `seg_result?`，`load_segments_into_phys_memory` 用 `collect::<Result<Vec<_>, _>>()?`。`SegmentIter::new` 与 `parse_phdr` 的表范围算式仍是未检查加法（D2-01 的真实残留：debug 下 panic，release 下可能回绕后再由 `next()` 报 `Err`），但“畸形段被静默跳过”这个旧缺口已经关闭；仍然开着的是“消费者若忽略 `Err` 项会继续遍历坏镜像”，所以每个调用点都必须短路。
 
-错误分类是枚举而不是整数（`lib.rs` 的 [`enum ElfError`](os/libs/minix-elf/src/lib.rs:enum ElfError)）：`TooShort`、`BadMagic`、`Not64Bit`、`NotLittleEndian`、`NotExecutable`、`PhdrOutOfBounds`、`PhdrEntryTooSmall`、`NoLoadSegments`、`InvalidSegment`，共九个变体。前五个来自文件头的五道检查（长度、魔术、类、字节序、类型），第六第七个来自程序头表的范围与表项大小检查，第八个只有一侧会报（迭代器本身不报"一个 `PT_LOAD` 都没有"），第九个 `InvalidSegment` 不是单一原因：`filesz > memsz`、`paddr + memsz` 溢出、`kern_end_phys - kern_phys_base` 下溢、物理区间重叠都会返回它。前七个在 [`lib.rs`](os/libs/minix-elf/src/lib.rs) 的测试族里；`NoLoadSegments` 与四个 `InvalidSegment` 判断点由 [`loader.rs`](os/boot-shim/src/loader.rs) 产生，重叠有 `test_first_overlapping_pair_*`、`NoLoadSegments` 有 `test_compute_kernel_layout_rejects_image_without_load_segments`，新增的 `filesz > memsz`/溢出/零长边界三测试见 §5.1 的测试清单（`kern_end - kern_base` 的 `checked_sub` 是防御性分支：至少有一个段时 `max(paddr+memsz) >= min(paddr)`，正常输入走不到它）。`InvalidSegment` 的归一化会丢失错误现场（哪一段、哪个地址），源/目标重叠又走 panic 而非返回值；把解析错误与装载错误分层属于设计批 D2-06。
+错误分类是枚举而不是整数（`lib.rs` 的 [`enum ElfError`](os/libs/minix-elf/src/lib.rs:enum ElfError)），共 **12 个变体**，按产生层分四组：文件头五道 → `TooShort`、`BadMagic`、`Not64Bit`、`NotLittleEndian`、`NotExecutable`；程序头表两道 → `PhdrOutOfBounds`、`PhdrEntryTooSmall`；迭代器段形两道 → `SegmentOutOfBounds`、`FileszExceedsMemsz`；loader 三道 → `NoLoadSegments`、`InvalidSegment`、`TargetBufferTooSmall { needed_end, buf_len }`。`filesz > memsz` 自 I-48/D-084 起由迭代器返回 `FileszExceedsMemsz`，不再走 `InvalidSegment`；loader 侧生产代码里返回 `InvalidSegment` 的点是三个：`paddr + memsz` 的 `checked_add`、`kern_end_phys - kern_phys_base` 的 `checked_sub`、段间物理重叠；源/目标重叠仍走 panic（与段间重叠的 `InvalidSegment` 不对称，是 D01-R9 的故意选择）。`TargetBufferTooSmall` 由缓冲区装载器在 I-47/D-089 的两循环里产生（先验后写，不半装载）。`InvalidSegment` 的归一化仍会丢失“哪一段/哪个地址”的现场；把解析错误与装载错误进一步分层属于设计批 D2-06。
 
 `LoadSegment` 的字段在两个装载场景下的用法不同，这张表把每个字段的去向列全：
 
@@ -519,7 +522,7 @@ pub struct LoadSegment {
 
 C 侧的负担：`k_initial_stktop` 是一个链接符号，`head.S` 用一条绝对立即数指令把它的值写进 `%esp`（§2.3）。这个做法把"栈顶是多少"与"链接脚本怎么摆段"绑在一起：换一个布局，符号值跟着变。Rust 侧如果照搬，内核就要在源码里声明一个外部链接符号，而"内核被链接进谁"有三种形态（§3.1）——符号的值在每种形态下由不同的脚本决定，且测试载体根本没有这个符号。
 
-改成按值派生：交接仍然只带两个基元值——`KernelInfo.kern_virt_base` 与 `KernelInfo.kern_size`；栈顶由消费点在需要时现算（`kernel_info.rs` 的 [`impl KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo) 的 [`fn kern_stack_top`](<os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top>)）。v10（D-062）之前这里曾是一个独立字段 `kern_stack_top`，每腿都要填 `kern_virt_base + kern_size`；字段与三个派生标量一起删除，公式只留下访问器这一份，不再需要发送侧/接收侧锁步：
+改成按值派生：栈顶派生只需要两个值——`KernelInfo.kern_virt_base` 与 `KernelInfo.kern_size`（wire 另带 `kern_phys_base` 作为第三个布局标量；它不是栈顶算式的一部分）；栈顶由消费点在需要时现算（`kernel_info.rs` 的 [`impl KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo) 的 [`fn kern_stack_top`](<os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top>)）。v10（D-062）之前这里曾是一个独立字段 `kern_stack_top`，每腿都要填 `kern_virt_base + kern_size`；字段与三个派生标量一起删除，公式只留下访问器这一份，不再需要发送侧/接收侧锁步：
 
 ```rust
 /* 节选（保留访问器体），os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo。 */
@@ -575,13 +578,13 @@ pub trait HigherHalf {
 |---|---|---|
 | 分页已启用、两套映射已建立 | 调用者（direct 面是 `arch_boot_finish` 里 `arch_boot_impl` 的返回点；v1 面是 `resume_after_v1_decode`） | 取指或压栈落在无映射地址 |
 | 跳转传入的指针与 `kmain` 消费的副本 | 调用者保证传入地址可读；生产 `kmain` 第一条语句即遮蔽为 `.bss` 副本，形参只做交接、不解引用；测试载体若直接解引用则需自行保证 | 生产路径解引用副本时页错误；载体解引用形参时页错误 |
-| `stack_top` 16 字节对齐 | 断言只覆盖 `kinfo.kern_stack_top`；形参由两个调用点的写法保证（都传该字段），不是断言保证 | 入口处需要对齐的指令 |
+| `stack_top` 16 字节对齐 | 断言覆盖 `boot_validate_and_prepare` 现算的 `kern_stack_top`（与 `kinfo.kern_stack_top()` 同值）；形参由两个调用点的写法保证（都传 `kinfo.kern_stack_top()`），不是断言保证 | 入口处需要对齐的指令 |
 | 不返回 | 类型：`-> !` 让"返回"在编译期不成立 | 无法表达（不返回是签名的一部分） |
 | 只调用一次 | 调用者（Safety 段的第四条写明；类型系统不区分调用次数） | 第二次调用会在已经切过去的栈上再切一次，落点不可预期 |
 
-`stack_top` 参数当前是可表示的冗余值：两个生产调用点都从 `kinfo.kern_stack_top` 取值，单独传一个不同的值不会被类型或代码检查拦住；把它并回 `kinfo` 属于设计批（D2-04），不影响当前契约。
+`stack_top` 参数当前是可表示的冗余值：两个生产调用点都从 `kinfo.kern_stack_top()` 取值，单独传一个不同的值不会被类型或代码检查拦住；把它改为从 `kinfo` 现算、删除形参属于设计批（D2-04），不影响当前契约。
 
-三架构的实现各自放在自己的模块里（`higher_half.rs` 的 [`struct X86_64HigherHalf`](os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf)、`higher_half.rs` 的 [`struct AArch64HigherHalf`](os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf)、`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf)），`arch_boot` 的三份 `#[cfg]` 分支各自调用自己那一份，§4.3 逐条对照。
+三架构的实现各自放在自己的模块里（`higher_half.rs` 的 [`struct X86_64HigherHalf`](os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf)、`higher_half.rs` 的 [`struct AArch64HigherHalf`](os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf)、`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf)）：两个生产调用点（`arch_boot_finish`、`resume_additive`）各自经 `arch_boot` 的三份 `#[cfg]` 分支选中本架构实现，所以“两个调用点”与“三份实现分支”不是同一个计数；§4.3 逐条对照。
 
 取舍表：
 
@@ -596,7 +599,7 @@ pub trait HigherHalf {
 
 表里四条是调用者要保证的；还有一条是链接布局的前提：“调用点的执行地址 = 链接地址”。x86_64 的 `call` 要求它，代码不做运行时检查，靠链接布局保证；aarch64 的 `ldr` 取链接期绝对值，但 literal 读取是 PC 相对的，同一镜像内 literal 与代码一起被摆放，所以不需要调用点 = 链接地址；riscv64 的 `la` 是 PC 相对，direct leg 不满足它，所以实现用 `auipc/bltu` 读当前 PC，在低于 `kern_virt_base` 时补 `delta`。这不是“实现内部处理”的三合一：x86_64 侧没有检查，riscv64 侧才有显式补偿；把它写成调用者前置条件会把 riscv64 的实现细节推给调用者，所以留在实现里，但 x86_64 的链接期前提必须单独说清。
 
-再算一次对齐这笔账（x86_64）：`mov rsp, stack_top` 之后 RSP = stack_top；`and rsp, -16` 对已经 16 字节对齐的值是空操作；`push 0` 减 8，`sub rsp, 8` 再减 8，使 `call` 前的 RSP 回到 16 字节边界；`call` 压返回地址再减 8，进入 `kmain` 时 RSP = stack_top − 24，即 8 mod 16——这正是 System V 在函数入口要求的 `(RSP + 8)` 为 16 的倍数。生产 `kmain` 是普通 Rust 函数（`naked_asm!` 只用于 `qemu_test` 载体），所以这条 psABI 对齐是必须的；`sp_aligned` 断言相应检查 `sp & 0xF == 8`。`and rsp, -16` 与 `sub rsp, 8` 一起把这条不变量钉在本地，而不是修补上游。真正会坏的有两种情形：①三者都去掉时，一个非 16 对齐的 `stack_top` 会一路传到 `kmain`；②**只去掉 `sub rsp, 8` 也会坏**——按上面的算式，`push 0` 之后 `and` 不再有作用，`call` 前 RSP 是 8 mod 16；`call` 压返回地址后入口 RSP 变成 0 mod 16，而 System V 要求入口 `(RSP+8) % 16 == 0` 即 RSP ≡ 8 mod 16，正好违反。`and` 只修正上游的 `stack_top`，`sub` 才是补 `call` 那 8 字节的那一步。
+再算一次对齐这笔账（x86_64）：`mov rsp, stack_top` 之后 RSP = stack_top；`and rsp, -16` 对已经 16 字节对齐的值是空操作；`push 0` 减 8，`sub rsp, 8` 再减 8，使 `call` 前的 RSP 回到 16 字节边界；`call` 压返回地址再减 8，进入 `kmain` 时 RSP = stack_top − 24，即 8 mod 16——这正是 System V 在函数入口要求的 `(RSP + 8)` 为 16 的倍数。生产 `kmain` 是普通 Rust 函数（`naked_asm!` 只用于 `qemu_test` 载体），所以这条 psABI 对齐是必须的；`sp_aligned` 断言相应检查 `sp & 0xF == 8`。`and rsp, -16` 与 `sub rsp, 8` 一起把这条不变量钉在本地，而不是修补上游。真正会坏的有三种情形：①三者都去掉时，一个非 16 对齐的 `stack_top` 会一路传到 `kmain`；②**只去掉 `sub rsp, 8` 也会坏**——按上面的算式，`push 0` 之后 `and` 不再有作用，`call` 前 RSP 是 8 mod 16；`call` 压返回地址后入口 RSP 变成 0 mod 16，而 System V 要求入口 `(RSP+8) % 16 == 0` 即 RSP ≡ 8 mod 16，正好违反。`and` 只修正上游的 `stack_top`，`sub` 才是补 `call` 那 8 字节的那一步；③**只去掉 `push 0`** 时终止槽缺失，且 `call` 前 RSP 由 `and` 后的 16 边界直接减 8（`call` 压返回地址），入口 RSP 变成 0 mod 16，同样违反 System V 的 `(RSP+8) % 16 == 0`，`sp_aligned` 会在真机上当场红。
 
 ### 3.5 镜像跨距收口：布局要满足映射粒度（→§2.2）
 
@@ -699,7 +702,7 @@ RISC-V 自引导面把跨距写成了常量 `0x40_0000`（4 MiB，`bootface.rs` 
         /* 内核启动图锚点（src/main.rs KERNEL_ENTRY_ANCHOR）：KEEP 防
            --gc-sections 把无引用静态连同整个内核启动图一起裁掉。 */
         KEEP(*(.rodata.kernel_anchor))
-        *(.rodata .rodata.*)
+        *(.rodata .rodata.* .lrodata .lrodata.*)
     }
 ```
 
@@ -733,7 +736,7 @@ RISC-V 自引导面把跨距写成了常量 `0x40_0000`（4 MiB，`bootface.rs` 
     }
 ```
 
-- 两处通配里各多收了一个族：`.data` 收了 `.ldata`（rustc 对大块数据做的拆分节），`.bss` 收了 `.lbss`（同一族的 BSS 拆分节）。两者都容易被漏掉；脚本注释记录过漏匹配的后果，但落点由链接器版本决定：孤儿节可能落在收口之前（不破坏 L5），也可能落在收口之后（把跨距推成非 2MiB 整数倍，L5 才红）。x86_64 工件的 `.lrodata.*` 就是未被 `.rodata` 通配收走的孤儿，但它落在收口之前，所以 L5 仍通过——不能把"漏收 ⇒ L5 必红"当成断言。
+- 三处通配各多收了一个族：`.rodata` 收 `.lrodata`、`.data` 收 `.ldata`、`.bss` 收 `.lbss`（rustc 对大块数据的只读/可写/BSS 拆分节）。三者都容易被漏掉；脚本注释记录过漏匹配的后果，但落点由链接器版本决定：孤儿节可能落在收口之前（不破坏 L5），也可能落在收口之后（把跨距推成非 2MiB 整数倍，L5 才红）。R4 之前 x86_64 工件的 `.lrodata.*` 就是未被 `.rodata` 通配收走的孤儿（986 个节、独立成一个 `PT_LOAD`，因落在收口之前而让 L5 通过）；本轮把三份脚本的归并补齐后，x86_64 的 `PT_LOAD` 从 5 个回到 4 个。
 - `.bss` 里的三个符号各有用处：`__bss_start`/`__bss_end` 是入口汇编清零循环的边界（[`main.rs`](os/kernel-image/src/main.rs) 的 x86_64 序列用 `lea rdi, [rip + __bss_start]` 到 `lea rcx, [rip + __bss_end]`）；`kernel_boot_stack_bottom`/`kernel_boot_stack_top` 是 §3.3 说的 64 KiB 入口栈。
 - 末尾 `. = ALIGN(0x200000)` 落在 `.bss` 的括号里，加的是末段 `memsz`（§3.5）。
 - 上面这四个符号（`__bss_start`、`__bss_end`、`kernel_boot_stack_bottom`、`kernel_boot_stack_top`）都是普通符号，不是 `PROVIDE`：引用它们的程序如果编译了、而符号不存在，链接期就失败（[`main.rs`](os/kernel-image/src/main.rs) 的注释把这条写作 fail-fast）。
@@ -877,9 +880,9 @@ pub unsafe fn load_segments_into_phys_memory(
 
 四件事按顺序：先把迭代器收进 `Result<Vec<_>, _>`（I-48 / D-084：裸 `collect()` 会把 `Err` 项当成元素留在 `Vec<Result<..>>` 里，同一“畸形看起来像少段”的病下移一层；后面还要两两比较，不能边迭代边比较）；再做段间重叠检测（`loader.rs` 的 [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) 用半开区间判交叠：`a.paddr < b_end && b.paddr < a_end`，相邻不算重叠）；再做源/目标重叠检测（[`fn first_source_destination_overlap`](os/boot-shim/src/loader.rs:fn first_source_destination_overlap)，命中即 panic——段目标跨度覆盖任何段的 ELF 文件字节都会在装载中破坏源；这是 panic 而不是返回值，与段间重叠的 `InvalidSegment` 不对称）；最后逐段按 `paddr` 拷贝 `filesz` 字节并清零 `[filesz, memsz)`。注意"清零"的条件是 `memsz > filesz`——`filesz == memsz` 的段（例如 `.text`）不会被额外写零，`filesz == 0` 的段（`.bss`）只清零。
 
-可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.4 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`file_end <= buf.len()` 与 `mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 与 follow-ups 的 D02-F04。`filesz > memsz` 已由迭代器拒绝；`paddr + memsz` 溢出仍由调用者先跑 `compute_kernel_layout` 保证。缓冲区版在 I-47 后是两循环（先验后写，超界返回 `TargetBufferTooSmall`），物理地址版仍是“先收集再写 + 段间/源目标重叠检查”；两者共享段形校验与 BSS 清零，不共享目标边界策略。直接调用这个 `pub unsafe fn` 的读者仍必须先校验布局（D02-F05）。
+可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.4 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`file_end <= buf.len()` 与 `mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 的装载器测试族与下一段的覆盖边界。`filesz > memsz` 已由迭代器拒绝；`paddr + memsz` 溢出仍由调用者先跑 `compute_kernel_layout` 保证。缓冲区版在 I-47 后是两循环（先验后写，超界返回 `TargetBufferTooSmall`），物理地址版仍是“先收集再写 + 段间/源目标重叠检查”；两者共享段形校验与 BSS 清零，不共享目标边界策略。直接调用这个 `pub unsafe fn` 的读者仍必须先校验布局（覆盖边界见 §5.1 末段）。
 
-**把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面的 `BootStorageCell`（`STORAGE`）初值非零、落在 `.data`；`bootface_a64.rs` 的 bump 游标 `BUMP_PTR` 初值为 `BUMP_BASE`（非零），也落在 `.data`，所以它们不是这个例子的成员。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
+**把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面的 `BootStorageCell`（`STORAGE`）初值非零、落在 `.data`；`bootface_a64.rs` 的 bump 游标 `static BUMP_NEXT: AtomicU64` 初值为 `BUMP_BASE`（非零），也落在 `.data`，所以它们不是这个例子的成员。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
 
 **去掉重叠检测会怎样（第二处）**：一个 `p_paddr` 区间交叠的 ELF（链接脚本写错、或工具链改布局）会让后一个段覆盖前一个段的字节，没有任何报错；后一个段覆盖前一个段的字节是数据损坏，不是 `copy_from_nonoverlapping` 的 UB——该函数的契约是单次调用的 `src`/`dest` 不相交；源/目标重叠另由 `first_source_destination_overlap` panic 拦住。段间重叠检测把前者变成 `ElfError::InvalidSegment`，与 §3.2 的错误枚举里那第九个变体对上。
 
@@ -1015,7 +1018,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 生产路径 A（v1 send/receive：UEFI x86_64/aarch64、riscv64 U-Boot）
   固件 → boot-shim main → prepare_and_enter_kernel_image / prepare_boot
         → minix_elf 解析 → 按 p_paddr 写段体、清零 BSS
-        → 读 12 个模块 → 组 KernelInfo（carrier）→ 写 v1 arena（信封与 memmap/reserved/modules/platform/param/sources/startup 分区）
+        → 读 12 个模块 → 组 KernelInfo（carrier）→ 写 v1 arena（信封与 memmap/reserved/modules/platform/param/sources 六个分区）
         → ExitBootServices 配对循环 → enter_kernel_image_v1（建 bootstrap 根、补运行期字段）
         → 独立镜像 _start（清 .bss、立栈）→ rust_image_main
         → arch_boot_resume_v1（解码 arena、落 .bss、记录活动根、建 DM）
@@ -1096,7 +1099,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 | `head.S` 的成对动作：设栈 + 跳转（C 侧四行，§2.3） | [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 与三份内联汇编实现 | 改型 | 收进 trait 契约；栈对齐、屏障、执行视图差值三件事各自显式 |
 | —— | `check-layout.sh` 的 L0–L9 宿主断言 | 新增 | C 侧由 Makefile 与链接脚本的常量约束，没有独立断言脚本 |
 
-三行"改型/新增"的共同点：把 C 里靠"位置相邻、文档说明、读者经验"维持的约束，换成一种可以被工具或类型系统检查的形式——脚本不变量进断言脚本，栈顶值进结构体字段，跳转前提进 `unsafe` 契约。
+三行"改型/新增"的共同点：把 C 里靠"位置相邻、文档说明、读者经验"维持的约束，换成一种可以被工具或类型系统检查的形式——脚本不变量进断言脚本，栈顶值进派生访问器，跳转前提进 `unsafe` 契约。
 
 **把 C 的两段式布局照搬进 Rust 会怎样**（给内核镜像也加一个低地址的 unpaged 段，把"分页开启前要执行的代码"放进去）：Rust 侧已经没有"由同一个装载器把整个镜像放到物理地址上、再从低地址开始执行"的形态。v1 路径的 boot-shim 已经建好根并把镜像按 `p_paddr` 摆放，进入镜像是高半 VMA；direct 面的入口汇编在低物理地址执行、自己建根。把一段"分页前代码"放进按高 VMA 链接的低地址段，在 v1 会把取指引到高 VMA（映射已建，但段体在低地址，语义错位）；在 direct 面则与入口汇编的 PC 相对寻址冲突。C 的两段式能成立，是因为 GRUB 按 LMA 把整个镜像放到物理地址、低地址段与建表代码在同一个镜像里；Rust 侧这两件事被拆给了 boot-shim 与入口汇编（`01-boot-shim-bootstrap.md` §3.7 的交接形态）。
 
@@ -1106,20 +1109,20 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 ### 5.1 宿主：解析器与装载器的单元测试（→4.2）
 
-§4.2 那条链上每个环节都有宿主测试，分属两个 crate。
+§4.2 那条链的解析、布局与缓冲区语义每个环节都有宿主测试，分属两个 crate。
 
-`os/libs/minix-elf` 的 23 个测试（复算：`grep -c '    fn test_' os/libs/minix-elf/src/lib.rs` 输出 23；运行：`cd os && cargo test -p minix-elf`）按对象分四族：
+`os/libs/minix-elf` 的 27 个测试（复算：`grep -c '    fn test_' os/libs/minix-elf/src/lib.rs` 输出 27；运行：`cd os && cargo test -p minix-elf`）按对象分四族：
 
 | 族 | 测试名 | 证明什么 |
 |---|---|---|
 | 文件头五道校验 | `test_parse_ehdr_valid`、`test_parse_ehdr_bad_magic`、`test_parse_ehdr_too_short`、`test_parse_ehdr_not_64bit`、`test_parse_ehdr_not_le`、`test_parse_ehdr_not_executable` | 每种畸形输入各返回对应的 `ElfError` 变体 |
-| 迭代器行为 | `test_segment_iter_valid`、`test_segment_iter_no_pt_load`、`test_segment_iter_two_segments`、`test_segment_iter_phdr_out_of_bounds`、`test_segment_iter_phdr_entry_too_small`、`test_segment_iter_skips_segment_data_out_of_bounds`、`test_segment_iter_empty_image`、`test_segment_iter_header_only` | 表范围检查、按类型过滤、越界段被跳过 |
+| 迭代器行为 | `test_segment_iter_valid`、`test_segment_iter_no_pt_load`、`test_segment_iter_two_segments`、`test_segment_iter_phdr_out_of_bounds`、`test_segment_iter_phdr_entry_too_small`、`test_segment_iter_empty_image`、`test_segment_iter_header_only`、`test_segment_iter_reports_segment_data_out_of_bounds`、`test_segment_iter_filesz_exceeds_memsz_is_err`、`test_segment_iter_rejects_filesz_greater_than_memsz`、`test_segment_iter_truncated_mid_segment_is_err`、`test_segment_iter_non_load_filter_stays_silent` | 表范围检查、非 `PT_LOAD` 过滤、三类畸形以 `Err` 返回（I-48/D-084） |
 | 段字段 | `test_segment_with_zero_filesz`、`test_mixed_pt_load_and_other`、`test_segment_flags`、`test_entry_point`、`test_machine_type` | 字段取值的忠实性（含 `filesz == 0` 与混合段序） |
 | 装载仿真 | `test_kernel_load_simulation_single_segment`、`test_kernel_load_simulation_two_segments`、`test_kernel_load_simulation_with_bss_segment`、`test_segment_copy_and_bss_fill` | 用解析结果做一次"拷贝 + 清零"，逐字节核对 |
 
-`os/boot-shim` 的 `loader.rs` 部分有 22 个测试（复算：`grep -c '#\[test\]' os/boot-shim/src/loader.rs` 输出 22；运行：`cd os && cargo test -p boot-shim --lib` 在默认特性下共 125 个测试，其中 22 个属于 `loader::tests`），其中与本节直接相关的是十三个：`test_compute_kernel_layout_from_mock_elf`（布局三个量的取值）、`test_read_required_panics_on_missing_kernel`（缺内核文件是 panic 而不是继续）、`test_bss_region_is_zeroed_after_load`（BSS 清零的结果逐字节核对）、`test_load_segments_into_phys_memory_rejects_overlapping_elf`（重叠段被拒）、`test_compute_kernel_layout_rejects_filesz_greater_than_memsz`（`filesz > memsz` 被拒）、`test_compute_kernel_layout_rejects_paddr_memsz_overflow`（地址溢出被拒）、`test_compute_kernel_layout_zero_size_segment_yields_zero_kern_size`（零长段边界），以及六个 `first_overlapping_pair_*`（区间判交叠：不相交、真重叠、相邻不算、零长度被忽略、首个命中、空表——见下段）。
+`os/boot-shim` 的 `loader.rs` 部分有 31 个测试（复算：`grep -c '#\[test\]' os/boot-shim/src/loader.rs` 输出 31；运行：`cd os && cargo test -p boot-shim --lib` 在默认特性下共 135 个测试，其中 31 个属于 `loader::tests`），与本节直接相关的有 27 条，代表项如下：`test_compute_kernel_layout_from_mock_elf`（布局三个量的取值）、`test_read_required_panics_on_missing_kernel`（缺内核文件是 panic 而不是继续）、`test_bss_region_is_zeroed_after_load`（BSS 清零的结果逐字节核对）、`test_load_segments_into_phys_memory_rejects_overlapping_elf`（重叠段被拒）、`test_compute_kernel_layout_rejects_filesz_greater_than_memsz`（`filesz > memsz` 被拒）、`test_compute_kernel_layout_rejects_paddr_memsz_overflow`（地址溢出被拒）、`test_compute_kernel_layout_zero_size_segment_yields_zero_kern_size`（零长段边界），六个 `first_overlapping_pair_*`（区间判交叠：不相交、真重叠、相邻不算、零长度被忽略、首个命中、空表——见下段）、`test_elf_file_end_{returns_last_load_file_end,non_elf_is_none,malformed_segment_is_none}`、`test_load_boot_modules_into_trims_elf_to_file_end`、`test_compute_kernel_layout_rejects_truncated_mid_segment` 与三条 `load_segments_into_buffer_*`。
 
-这些测试覆盖三类对象，各自走的路径不同：`test_bss_region_is_zeroed_after_load` 直接调用孪生函数 `load_segments_into_buffer`，逐字节核对三件事——`[0, filesz)` 保留文件字节、`[filesz, memsz)` 清零、`memsz` 之后一个哨兵字节不被触碰（判据是两种预填充值 0xAB 与 0xCC）；`test_compute_kernel_layout_from_mock_elf` 直接调用 `compute_kernel_layout`，测试文件里写明了原因（大意：不能在单元测试里做那次物理内存拷贝）；六个 `first_overlapping_pair_*` 直接调纯函数（不相交、真重叠、相邻不算、零长度被忽略、首个命中、空表）。模块那一侧的两条测试走 `load_boot_modules_into` 加一个模拟分配器，它的地址指向测试期间不释放的静态 `Mutex<Vec<Vec<u8>>>` 缓冲区——同一文件里的注释写明（大意）"绝不在单元测试里写真实物理内存"。
+这些测试覆盖三类对象，各自走的路径不同：`test_bss_region_is_zeroed_after_load` 直接调用孪生函数 `load_segments_into_buffer`，逐字节核对三件事——`[0, filesz)` 保留文件字节、`[filesz, memsz)` 清零、`memsz` 之后一个哨兵字节不被触碰（判据是两种预填充值 0xAB 与 0xCC）；`test_compute_kernel_layout_from_mock_elf` 直接调用 `compute_kernel_layout`，测试文件里写明了原因（大意：不能在单元测试里做那次物理内存拷贝）；六个 `first_overlapping_pair_*` 直接调纯函数（不相交、真重叠、相邻不算、零长度被忽略、首个命中、空表）。模块那一侧的三条测试走 `load_boot_modules_into` 加一个模拟分配器，它的地址指向测试期间不释放的静态 `Mutex<Vec<Vec<u8>>>` 缓冲区——同一文件里的注释写明（大意）"绝不在单元测试里写真实物理内存"。
 
 因此宿主测试证明的是"解析出的字段、拷贝与清零的语义、区间判交叠"，不证明"按 `p_paddr` 写物理地址"这一步：那一步的唯一执行者是 `load_segments_into_phys_memory`，它的目标地址来自 ELF，在宿主上无法安全执行，留给真机链。这条分界也解释了为什么孪生函数存在——把可测的语义从不可测的那一步里剥出来。
 
@@ -1145,7 +1148,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 三条断言各对应 §4.3 的一条指令：`sp_ok` 对应"切栈"（栈指针落在高半地址空间）、`sp_aligned` 对应"对齐"（x86_64 检查 `RSP ≡ 8 (mod 16)`，即 `(RSP+8)` 为 16 的倍数；aarch64/riscv64 检查 `SP ≡ 0 (mod 16)`，AAPCS64/RISC-V ABI 要求 SP 16 字节对齐）、`fp_zero` 对应"清帧指针"。捕获方式按架构写在裸函数 `kmain` 的 `naked_asm!` 里（x86_64 用 `mov rdx, rsp` 与 `lea r8, [rip]`，aarch64 用 `mov x1, sp` 与 `adr x2, .`，riscv64 用 `mv a1, sp` 与 `auipc a2, 0`）。
 
-**PC 不在成败判定里**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构可高可低，只打印、不判定；`PC 不在高半` 时该行打印成 `INFO`，它只在失败分支里出现、不会出现在 PASS 输出中。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_size: 0x200_000`、`kern_size: 0x200_000`），栈顶由 `kern_stack_top()` 现算为两者之和，也就是 §3.3 的算式在测试形态下的取值。
+**PC 不在成败判定里**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构可高可低，只打印、不判定；`PC 不在高半` 时该行打印成 `INFO`，它只在失败分支里出现、不会出现在 PASS 输出中。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_phys_base: PhysBytes(image_base)`、`kern_size: image_end - image_base`（镜像窗口按 2 MiB 取整后的跨度）），栈顶由 `kern_stack_top()` 现算，也就是 §3.3 的算式在测试形态下的取值。
 
 运行方式与判定标记：`os/qemu-tests/run_qemu.sh` 用 `-serial file:` 收串口、用 `strings | grep '### TEST_RESULT: PASS'` 判定（`os/qemu-tests/run_qemu.sh` 的判定段），退出码里 `SKIP` 与 `FAIL` 分开（0 表示 PASS 或 SKIP，1 表示失败）。测试本身的输出形如 `### TEST_RESULT: PASS test-higher-half ###`。
 
@@ -1166,8 +1169,8 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 | M3 | `head.S` 的成对换栈跳转（§2.3） | 设栈+跳转的次序、位移与绝对值各自的前提 | 部分覆盖 | 真机链（§5.2 三断言覆盖结果）；**C 侧次序本身无自动断言** |
 | M4 | `k_initial_stktop` 落段（§2.4） | 栈符号落在高半段、栈区不与其他内容重叠 | 部分覆盖 | **无自动断言**；L7 检查的是 Rust `kernel_boot_stack_*`（64 KiB、末段内），不是 C `k_initial_stktop`；C 侧落段只有静态阅读 → **R02-T01** |
 | M5 | Rust 三种脚本形态的判据（§3.1） | 生产脚本有 `AT()` 且常量与预期表一致；arch link.ld 无链接读者 | **部分覆盖** | 「生产脚本有 `AT()` 且常量一致」由 L0/L3c/L4 与 `os/kernel/tests/link_ld_lockstep.rs` 覆盖；「arch link.ld 无链接读者」只有一次性的 `grep` 证据（§3.1 自述锁步测试「不证明这些脚本被链接」），没有测试钉住 |
-| M6 | ELF 解析器的五道校验与九个变体（§3.2） | 每种畸形输入返回对应变体 | 已覆盖 | minix-elf 23 测试（五道校验/迭代器/字段/仿真）；`NoLoadSegments` 与 `InvalidSegment` 由 boot-shim loader 的测试覆盖，不在 minix-elf 的 23 个里 |
-| M7 | 按 `p_paddr` 摆放与 BSS 清零（§4.2） | 段体写到 `paddr`；NOBITS 区清零；重叠拒绝 | 部分覆盖 | loader 的 22 个测试中 13 个直接相关（`bss_zeroed`、`rejects_overlapping`、三个新守卫等，名单见 §5.1）；**`p_paddr` 物理写入只有真机链**，宿主只跑 buffer 孪生 |
+| M6 | ELF 解析器的五道校验与 12 个变体（§3.2） | 每种畸形输入返回对应变体 | 已覆盖 | minix-elf 27 测试（五道校验/迭代器/字段/仿真）；`NoLoadSegments`、`InvalidSegment`、`TargetBufferTooSmall` 由 boot-shim loader 的测试覆盖，不在 minix-elf 的 27 个里 |
+| M7 | 按 `p_paddr` 摆放与 BSS 清零（§4.2） | 段体写到 `paddr`；NOBITS 区清零；重叠拒绝 | 部分覆盖 | loader 的 31 个测试中 27 个直接相关（`bss_zeroed`、`rejects_overlapping`、三个新守卫等，名单见 §5.1）；**`p_paddr` 物理写入只有真机链**，宿主只跑 buffer 孪生 |
 | M8 | 三架构成对跳转的指令序列（§4.3） | 切栈+跳转按序、对齐、清帧指针、`delta` 处理 | 部分覆盖 | 真机载体三架构（`sp_ok`/`sp_aligned`/`fp_zero` 三断言）；**PC 判据缺——x86_64/aarch64 按低地址进入不可判，riscv64 载体 PC 已在高半、可判而未判；`delta` 路径无断言** → **R02-T03（射程：给 riscv64 载体加 PC 判据即可）** |
 | M9 | 从装载到 `kmain` 的合流（§4.4） | 两条生产路径各自到达 `kmain` 并完成跳转 | 部分覆盖 | direct 面（riscv64 自引导）走 `arch_boot_impl`；v1 send/receive 走 `arch_boot_resume_v1`/`resume_after_v1_decode`，不经过 `arch_boot_impl`；两条都到 `kmain`，但入口不同 |
 | M10 | 镜像跨距的 2MiB 收口（§3.5） | 跨距 2MiB 对齐、与 `bootface` 常量一致 | 部分覆盖（aarch64 侧只有上界断言，无等值对账） | L5/L9（L9 仅 riscv64 分支） |
@@ -1200,9 +1203,10 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 readelf -hW  os/target/x86_64-unknown-none/release/kernel     # Type: EXEC；Entry point address
 readelf -lW  os/target/x86_64-unknown-none/release/kernel     # LOAD 行的 VMA/LMA/Filesz/Memsz
 # 关键行：所有 LOAD 行的第三列（VirtAddr）与第四列（PhysAddr）之差一致（L4 断言的这一条）。
-#         当前工件的 LOAD 行数：x86_64 5 行、aarch64 与 riscv64 各 4 行（复算：readelf -lW <工件> | grep -c '^  LOAD'）。
-#         x86_64 多出的一行来自编译器产生的只读节 .lrodata.* 独立成段：5 行依次是 .text（RX）、.lrodata.*（R）、
-#         .rodata 含 .eh_frame_hdr（R）、.data（RW）、.bss（RW、NOBITS）；逐段对名：readelf -lW <工件> | sed -n '/Section to Segment/,$p'。
+#         当前工件的 LOAD 行数：三架构各 4 行（x86_64 的 .lrodata.* 已在 R4 收进 .rodata；
+#         复算：readelf -lW <工件> | grep -c '^  LOAD'）。
+#         4 行依次是 .text（RX）、.rodata（R，含 .lrodata 与 .eh_frame_hdr）、.data（RW）、.bss（RW、NOBITS）；
+#         逐段对名：readelf -lW <工件> | sed -n '/Section to Segment/,$p'。
 #         首段 PhysAddr 应当是链接脚本里的 KERNEL_PHYS_BASE。
 
 # 第二组：脚本里的常量与表达式
@@ -1245,7 +1249,7 @@ gdb <被调试的工件>
 - 第二组：`grep -c ': AT('` 对三份生产脚本各输出 4、对 `os/kernel/src/arch/*/link.ld` 各输出 0。这条读数必须带口径：把模式放宽成 `AT(` 会把注释里的字样算进来，x86_64 的 arch 脚本会从 0 变 2。两条 `printf` 分别输出 `961` 与 `0xf0000000`。
 - 第三组：全绿时最后一行是 `CHECK-LAYOUT=PASS（x86_64）`、退出码 0；任一断言失败时对应行是 `  [Ln] FAIL …` 且最后一行 `CHECK-LAYOUT=FAIL（…）`。
 - 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not at the architecture's entry alignment`、`FP not zero` 三者之一），而 `INFO: PC not at high address (expected in test kernel)` 是参考信息行、不参与成败判定，别把它读成失败原因（它只在失败分支里出现；x86_64 与 aarch64 的低地址进入会带上它，riscv64 的载体 PC 在高半、不会出现这一行）；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
-- 第五组：断在 `kmain` 后 `$rip` 应等于该腿的入口值——v1 send/receive 与自引导 direct leg 下等于 `nm <工件> | grep kmain` 的符号值（高半）；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址；**riscv64 测试载体不是 `nm` 值本身**：它链接在物理地址上，`$rip` = `nm` 值 + `delta`（`delta = kern_virt_base − kern_phys_base`），例如加载基址 `0x80200000` 时 `nm` 给出 `0x80200160`，而 `$rip` 是 `0xffffffc000200160`；`$rsp` 应落在该架构的 `kern_virt_base` 之上（x86_64 `0xffff8000…`、aarch64 `0xffff8000…`、riscv64 `0xffffffc0…`）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
+- 第五组：断在 `kmain` 后 `$rip` 应等于该腿的入口值——v1 send/receive 与自引导 direct leg 下等于 `nm <工件> | grep kmain` 的符号值（高半）；x86_64/aarch64 测试载体内联形态下是垫片镜像里的低地址；**riscv64 测试载体不是 `nm` 值本身**：它链接在物理地址上，`$rip` = `nm` 值 + `delta`（`delta = kern_virt_base − kern_phys_base`），例如加载基址 `0x80200000` 时 `nm` 给出 `0x80200160`，而 `$rip` 是 `0xffffffc000000160`；`$rsp` 应落在该架构的 `kern_virt_base` 之上（x86_64 `0xffff8000…`、aarch64 `0xffff8000…`、riscv64 `0xffffffc0…`）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
 
 ---
 

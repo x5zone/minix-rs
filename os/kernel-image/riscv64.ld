@@ -65,7 +65,7 @@ SECTIONS
         KEEP(*(.rodata.kernel_anchor))
         /* .srodata/.sdata2 = riscv 小数据优化里的只读那一半（gp 相对寻址），
            必须归可执行只读段：落到 .bss（NOBITS）会丢掉文件内容。 */
-        *(.rodata .rodata.* .srodata .srodata.* .sdata2 .sdata2.*)
+        *(.rodata .rodata.* .lrodata .lrodata.* .srodata .srodata.* .sdata2 .sdata2.*)
     }
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)
