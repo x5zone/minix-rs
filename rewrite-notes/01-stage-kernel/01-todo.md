@@ -4,7 +4,7 @@
 
 > **D01 九线程收口状态（2026-11-21 晚）**：A1 ✅ 六断言 PASS（载体分配器 I-61 + 内核镜像 DM source 5 + 镜像期堆指针 bug I-62；`test-sysboot.sh` PASS）；A2 ✅ elr 符号级归因（`faffb52bc`，memset+0x6c；sp 污染源挂 rt-birth 链专项）；B1 ✅ 门② QEMU 证据固化 + 真机验收清单（48f7bb6f9）；B2 ✅ I-29-9 六步探针 OVMF 实测 RECLAIMED → `build_memmaps` 快照缓冲不释放（145782520）；B3 ✅ E-VMTLB `-d int` 动态读数 0 #PF（b814bb0a8）；C1 ✅ I-29-8 裁决材料 10 项（bc356dc33，待用户批准）；D1 ✅ D-59 覆盖损失门（eb94e06bc + 无堆化 02a5c347a）；E1 ✅ riscv bump(256) 核实（87687b8ac）；F ✅ 射程外确认——I-5 维持 DEFERRED（物理机 x86_64 ACPI RSDP，三家族 QEMU virt 不依赖），T-10 登记在 `todo.md` §7.3（§7.4 引用），随 CI 窗口处理。**挂真机门链**：I-29-16 真机证据半、I-29-9 真机重复观察、D-59 真机读数。**唯一待外部输入**：C1 的十项批准。
 
-> **本次清零核实修正**：C1/I-29-8 十项已获用户批准；I-29-16/I-29-9/D-59 的真机证据按用户裁决以现有 QEMU/OVMF 读数收口（`external-evidence-waived`）；D01 唯一仍 OPEN 的代码项是 `F-R34-01`（已补入 §1 表，与 D02-F11 同项）；R34/R35/WIRE/ARCH/BOOTSTORAGE/I35 等 OPEN-DEBT 行按已落码事实关闭。P3 建议按 D-107 全部实现，不再保留“登记不实施”作为未清出口。
+> **本次清零核实修正**：C1/I-29-8 十项已获用户批准；I-29-16/I-29-9/D-59 的真机证据按用户裁决以现有 QEMU/OVMF 读数收口（`external-evidence-waived`）；`F-R34-01` 已随 D-107 落码（L9 三架构等值对账，与 D02-F11 同项）；R34/R35/WIRE/ARCH/BOOTSTORAGE/I35 等 OPEN-DEBT 行按已落码事实关闭。P3 建议按 D-107 全部实现，不再保留“登记不实施”作为未清出口。
 
 > **来源与方法**：本文件归拢 `01-boot-shim-bootstrap.md`（下称「01 篇」）射程内的**全部** todo 项——代码项与文档项都含，凡该篇 §7.3 关联代码清单与正文 TODO 标记涉及的条目一律在册。三个来源：
 > ① **本会话九轮外部评审终态**：`01-code-design.md` v2→v9外部评审迭代至冻结；七份调查报告 `01-forensics-round3.md` 至 `01-forensics-round9.md`——**T1–T5 设计已冻结（v9）**，原「待裁决」条目全部拿到裁决，剩余工作收敛为实施、直修与文档同步；
@@ -162,7 +162,7 @@ kernel 探针（ipc-probe/ipc-err/diagctl 系/chunk-zero/xwalk/dmw-guard/imgsrc�
 
 ### 2.6 独立线 —— D-59（`boot-dm-hugepage-design.md`，不进 01-code-design）
 
-- 设计文档已定稿（2,249 行；五轮评审收尾；lint 0 error）；**待实施**，迁移五阶段（先启动选页 → `PageSize`/能力 API → 事实/规划拆分与策略 → `map_huge`/SMP/预检 → 机械重命名）。
+- 设计文档已定稿（2,249 行；五轮评审收尾；lint 0 error）；**已按 D-107 收口**，迁移五阶段（先启动选页 → `PageSize`/能力 API → 事实/规划拆分与策略 → `map_huge`/SMP/预检 → 机械重命名）。
 - 开放问题（§10）现状：大多已决（`BootDmInstaller` 封口、物理上界路线 A + 统一取小、MMU 模式变更时重算）；剩小项 = `test-support` feature 打包方式、`DmPagePolicy` 构造边界、`KernelLayout::from_info` 取舍、`supports_huge_page` 命名——随实施定。
 - **验收门（2026-11-21 代码闭合，真机证明挂真机门链）**：候选区间整段丢弃的覆盖损失（reserved 与候选部分重叠时非重叠尾部失去 kernel-DM 叶子）。实施：`os/kernel/src/dm_coverage.rs` 新增区间差集（最终形态 `subtract_into`，`reserved` 侧由 `reserved_piece_count` 逐描述符产出余段）——memmap ∪ bootstrap 树 ∪ boot modules 为高优先级候选（原样保留），每个 reserved 描述符只安装**与其不重叠的余段**（头尾两段），余段两两不交、满足 `install_boot_dm_range` 的 `AlreadyMapped` 拒绝条件。集合级不变量在主机侧由 `test_reserved_regions_candidates_union` 钉住（模块重叠段的非重叠尾部 `[0x1de5_0000, 0x1000)` 存活）；真机侧「所有有资格映射的字节都被保留」的读数仍挂在真机门链，不以主机测试替代。**同日 A1 收口追加 source 5**：内核镜像跨度（`kern_phys_base`/`kern_size`）作为独立候选源（优先级低于 memmap/树/模块、高于 reserved；`kernel_dm_pa_end` 同步），修复合成 KernelInfo 场景下镜像页无 DM 叶子导致的 `dispatch_diagctl` DstPageFault；主机测试 `test_kernel_image_candidates_fill_dm_gap` 钉住镜像余段与 reserved 去重。**最终形态（同日收口）**：差集改为无堆分配实现（`subtract_into` + `kernel_image_pieces` + `reserved_piece_count`，`MAX_DM_PIECES = 160`，超预算 fail-closed），不再在 `arch_boot` 阶段使用 `Vec`；曾用的 Vec 版 `subtract_range` 已删除（两侧发现并修复了镜像期堆的指针 bug：I-62）。
 - 与 01 篇的交点：TODO-05（2 MiB 回退档真机启动）随本条实施 + NK1 一并验。
@@ -244,7 +244,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 ### I-29（本轮新登记）UEFI 内存图分类双份实现：`classify_map` 与 `build_memmaps`
 
-> **状态拆分（D-069，用户 2026-11-20）**：本条在总览里拆成两行——`I-29（设计）` 已完成（v12 冻结），`I-29-impl（实施）` 待实施。本节的冻结内容仍是设计部分的权威记录；实施按四个验收门推进，四个门与执行序列见本节末的「正式冻结宣告」与「v11 剩余工作」两段。
+> **状态拆分（D-069，用户 2026-11-20）**：本条在总览里拆成两行——`I-29（设计）` 已完成（v12 冻结），`I-29-impl（实施）` 已实施。本节的冻结内容仍是设计部分的权威记录；实施按四个验收门推进，四个门与执行序列见本节末的「正式冻结宣告」与「v11 剩余工作」两段。
 
 > **I-29-impl 实施补记（门④路径 A 落地）**：
 >
@@ -385,7 +385,7 @@ grep -n "boot_alloc_region" os/kernel/src/vm_handoff.rs | head -3
 
 ### I-33（已拆为三项·全部实施完毕）直核腿统一到 owned 路径，删第二套静态表
 
-**裁决**：用户 2026-11-20，判决行 `D-065`。**状态：已批准待实施**。来源：`RD34-DESIGN-D2-03`（P2，[MODERN]）。用户表述：「统一总是我的最优选」。
+**裁决**：用户 2026-11-20，判决行 `D-065`。**状态：✅ 已实施（D-107 清零批）**。来源：`RD34-DESIGN-D2-03`（P2，[MODERN]）。用户表述：「统一总是我的最优选」。
 
 **现状**：`DtbMemoryMap` 有三个输出入口，五条腿分成两套。
 
@@ -610,7 +610,7 @@ cargo test -p boot-shim --features test-all
 
 ### I-32（已实施）U-Boot 腿两个安装型全局：检查强度对齐
 
-**裁决**：用户 2026-11-20，判决行 `D-064`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `R34-design-batch` 行已注记。来源：`RD34-DESIGN-D2-02`（P2）。
+**裁决**：用户 2026-11-20，判决行 `D-064`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**——`OPEN-DEBT.md` 的 `R34-design-batch` 行已注记。来源：`RD34-DESIGN-D2-02`（P2）。
 
 **做法（路线 B）**：把两个 `debug_assert!` 改成 `assert!`，并给 `DTB_PTR` 补同形检查；结构不动。
 
@@ -675,11 +675,11 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 
 **范围外发现（不修，留记录）**：`globals.rs:545` 的 `IPC_FILTER_POOL` 注释失真属 D-071 的 (b) 并账项，裁决归入 I-35；`Frozen` 的 `unsafe impl<T: Send> Sync` 缺 `T: Sync` 属 D04 的 `D04-design-batch`（DESIGN-01），均未在本条改动中触碰。
 
-**本条在确认轮结束后由用户单独指示实施**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥，故在 2026 年 11 月 20 日之前一直是「已裁决待实施」。
+**本条在确认轮结束后由用户单独指示实施**：D01 的 R35 是确认轮，按 §3.6 确认轮不实施 ⑥，故在 2026 年 11 月 20 日之前一直未动；D-107 清零批已按裁决落码。
 
 ### I-31（已实施 + 多轮补漏）wire v10：删除三个字段/分区
 
-**裁决**：用户 2026-11-20，判决行 `D-062`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `WIRE-v10-batch` 行同步。
+**裁决**：用户 2026-11-20，判决行 `D-062`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**——`OPEN-DEBT.md` 的 `WIRE-v10-batch` 行同步。
 
 **一次升版三条**（`BOOT_HANDOFF_V1_VERSION` 9→10；`VM_BOOT_HANDOFF_VERSION` 是另一个独立计数器，本批不动）：
 
@@ -794,7 +794,7 @@ pub unsafe fn install_boot_file_table(addr: u64) {
 
 ### I-30（已实施）aarch64 形态判别改链接期分叉
 
-**裁决**：用户 2026-11-19 选择「向 riscv64 看齐」，判决行 `D-061`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——裁决本身已生效，实施尚未开始；`OPEN-DEBT.md` 的 `ARCH-01-aarch64-link-split` 行同步。
+**裁决**：用户 2026-11-19 选择「向 riscv64 看齐」，判决行 `D-061`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**——裁决已生效并由 D-107 清零批落码；`OPEN-DEBT.md` 的 `ARCH-01-aarch64-link-split` 行已关闭。
 
 **现状（为什么这是个问题）**：`os/kernel-image/src/main.rs:376-382` 的 aarch64 入口用一个运行期判断分流两条腿：
 
@@ -929,9 +929,9 @@ L1422/L2624「还没裁决/尚未定案」→「OQ-N6 已裁（每进程独立�
 
 
 
-### I-35（部分实施·(b) 注释项已落，(a) 四步待实施）`KERNEL_INFO` 的 write-once 承诺与二次写 + 两处注释失真
+### I-35（✅ 已实施）`KERNEL_INFO` 的 write-once 承诺与二次写 + 两处注释失真
 
-**裁决**：用户 2026-11-20，判决行 `D-071`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户明确要求「只记账不实施」）。来源：`R34/DESIGN-D2-05`（P2，[MODERN]）。**编号注记**：本条是 `I-35`，与本节下方的 `D-71`（`BootForm::source_path`，已修）不是一回事——后者是历史编号，前者是 2026-11-20 的判决行。
+**裁决**：用户 2026-11-20，判决行 `D-071`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**（用户明确要求「只记账不实施」）。来源：`R34/DESIGN-D2-05`（P2，[MODERN]）。**编号注记**：本条是 `I-35`，与本节下方的 `D-71`（`BootForm::source_path`，已修）不是一回事——后者是历史编号，前者是 2026-11-20 的判决行。
 
 **现状（为什么这是个问题）**：`globals.rs:271-277` 的 `KERNEL_INFO` 承诺两句话——「stored once during kmain, read-only thereafter」与「Only written once during boot (single-threaded, before BKL needed)」。实际每条生产腿写两次：`arch_boot_finish:225`（或 v1 接收腿的 `resume_additive:352`）一次，`kmain:1738` 再一次。
 
@@ -1045,7 +1045,7 @@ D-071 把本条拆成三项，其中两项已有归属：`Frozen::freeze` 随 I-
 
 ### I-39（已实施）`KernelInfo` 的空 getter 段与恒真测试
 
-**裁决**：用户 2026-11-20，判决行 `D-077`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**。**实施顺序：先于 I-31**。来源：`R35/DESIGN-D2-06`（P2，[DEL]）。
+**裁决**：用户 2026-11-20，判决行 `D-077`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**。**实施顺序：先于 I-31**。来源：`R35/DESIGN-D2-06`（P2，[DEL]）。
 
 **现状（三处残骸，均已核实）**：
 
@@ -1165,7 +1165,7 @@ cargo test -p minix-boot && cargo test -p minix-kernel --features mock
 
 ### I-38（已实施）`boot_validate_and_prepare` 的四个位置实参改 `BootScalars`
 
-**裁决**：用户 2026-11-20，判决行 `D-074`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户批准方案，本条只记账）。**前置依赖：I-31（D-062）**。来源：`R35/DESIGN-D2-04`（P2，[MODERN]）。
+**裁决**：用户 2026-11-20，判决行 `D-074`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**（用户批准方案，本条只记账）。**前置依赖：I-31（D-062）**。来源：`R35/DESIGN-D2-04`（P2，[MODERN]）。
 
 **为什么有前置依赖（I-31 先做）**：
 
@@ -1521,7 +1521,7 @@ cargo check --workspace --all-targets  # 三架构 0 error
 
 ### I-37（已实施）`prepare_kernel_image_v1` / `jump_kernel_image_v1` 的裸 `u64` 对改 `PreparedJump`
 
-**裁决**：用户 2026-11-20，判决行 `D-073`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**（用户「按照你的建议来」即批准方案；本条为记账，不实施）。来源：`R35/DESIGN-D2-07`（P3，[MODERN]）。
+**裁决**：用户 2026-11-20，判决行 `D-073`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**（用户「按照你的建议来」即批准方案；本条为记账，不实施）。来源：`R35/DESIGN-D2-07`（P3，[MODERN]）。
 
 **现状（为什么这是个问题）**：
 
@@ -1630,7 +1630,7 @@ D-073 的四步全部落地，另有两处 mini review 的修正：
 
 ### I-36（✅ 已实施）`FileLoader` 的 ELF 修剪上移（+ 一次核查事故记录）
 
-**来源**：`R35/DESIGN-D2-05`（P2，[MODERN]）。**状态：已裁决（D-082），待实施**——裁决内容见本节「裁决（D-082…）」段。
+**来源**：`R35/DESIGN-D2-05`（P2，[MODERN]）。**状态：✅ 已实施（D-107 清零批）**——裁决内容见本节「裁决（D-082…）」段。
 
 **核查事故（必须记录在此，防复发）**：2026-11-20 主 agent 在讨论 B2 残项时曾向用户报告「D2-05 已实施（`uboot_main.rs` 已无 `segment_iter`），待回勾销账」。**该判断是错的**：
 
@@ -2034,7 +2034,7 @@ cargo check --workspace --all-targets
 
 ### I-34（✅ 已实施）`BootStorage` 半提交防护：删 `map_dirty`，改用 `fill_*` 闭包 + `MapCounts`
 
-**裁决**：用户 2026-11-20，判决行 `D-067`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：已批准待实施**——`OPEN-DEBT.md` 的 `BOOTSTORAGE-fill-api` 行同步。来源：`R35/DESIGN-D2-02`（P2，[MODERN]）。
+**裁决**：用户 2026-11-20，判决行 `D-067`（`rewrite-notes/coordination/review-eval/DECISIONS.md`）。**状态：✅ 已实施（D-107 清零批）**——`OPEN-DEBT.md` 的 `BOOTSTORAGE-fill-api` 行同步。来源：`R35/DESIGN-D2-02`（P2，[MODERN]）。
 
 **现状（为什么这是个问题）**：`BootStorage` 存七类载荷，每族都是「槽数组 + 一个 `usize` 长度」两个独立事实。唯一的一致性防护是 `map_dirty`，它只覆盖内存图两族；其余五族（modules / platform / param / sources / startup）没有任何拦截。文档 `01-boot-shim-bootstrap.md:1767` 却写「报告永远看不到未写槽」，同一段 `:1769` 又如实写「其余五族……没有 `map_dirty` 级的 report 拦截」——两句互相拆台。
 
