@@ -59,16 +59,10 @@
 //! are already in RAM — reading and copying directly saves a layer and is not
 //! bound by heap width).
 
-use core::slice;
-
 use crate::bootface_common;
-use minix_boot::{
-    BootModule, DTB, DtbMemoryMap, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource,
-};
-use minix_types::{PhysBytes, VirBytes};
+use minix_boot::NR_BOOT_MODULES;
 
-use boot_shim::build_kernel_info;
-use boot_shim::opensbi_helpers::{BootFileTable, bump_alloc_pages, bump_end_bound, bump_pool_base};
+use boot_shim::opensbi_helpers::{bump_alloc_pages, bump_end_bound, bump_pool_base};
 
 use crate::early_console;
 
@@ -83,10 +77,8 @@ use crate::early_console;
 // `store_kernel_info` reads it on the physical-address leg, os/kernel/src/lib.rs:fn store_kernel_info).
 const _: () = assert!(NR_BOOT_MODULES == 12);
 
-// The name pool/slot width and the pure-function gates (`be_cell`/
-// `in_memmap*`/`table_magic_ok`/`fdt_table_pa`) are shared by both self-boot
-// faces and live in `bootface_common`.
-use crate::bootface_common::{fdt_table_pa, in_memmap_range, table_magic_ok};
+// The name pool, the pure-function gates and the shared boot flow live in
+// `bootface_common`.
 
 // ── Layout contract constants (same source as riscv64.ld; check-layout.sh
 //    L0/L9/A1 reconcile them with the real board's `Domain0 Next Address`
@@ -124,15 +116,6 @@ const KERN_SIZE: u64 = 0x40_0000;
 /// cap of the early two-stage copy were replaced by "copy directly from source
 /// + full-width `in_memmap_range` gate"; see `place_modules`.
 
-/// Page-table bump region size: 1 MiB (256 pages, same width as the boot-shim
-/// library fallback). Under QEMU virt's single-region memmap the intermediate
-/// tables for Sv39 root + identity low half + high half + two DM windows
-/// measured below this; pool exhaustion takes an explicit halt arm (no
-/// `.expect` — the panic render path carries baked-VMA format pieces, which
-/// under the physical address view hits exactly the invariant pinned in this
-/// module).
-const PT_BUMP_PAGES: usize = 256;
-
 // ── Entry ───────────────────────────────────────────────────────
 
 /// Rust-side entry of the self-boot form (`main.rs` riscv64 `_start` zeroes
@@ -140,17 +123,6 @@ const PT_BUMP_PAGES: usize = 256;
 /// the RV64 ABI, and `call` does not touch them). The spare `a2` channel was
 /// retired: no in-repo producer ever set it.
 pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
-    // One-shot landing storage. Every `'static` slice this face hands to
-    // `KernelInfo` points into this storage; a second entry would overwrite
-    // them and create aliasing mutable references (UB). One guard now covers
-    // modules, platform source, parameter buffer, memory tables and source records.
-    static STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
-    let storage = STORAGE.take();
-
-    // Touch the anchor: reference it once on the running path so the kernel
-    // boot graph is pulled into the link at archive-member granularity (the
-    // linker script KEEP is the second safeguard).
-    core::hint::black_box(crate::KERNEL_ENTRY_ANCHOR as usize);
     say("### minix-rs kernel image: riscv64 self-boot (NK4-C jia-an)\n");
     say("  boot hart 0x");
     say_hex(boot_hart);
@@ -158,253 +130,26 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     say_hex(dtb_pa);
     say("\n");
 
-    // 1. DTB → memmap (the OpenSBI spec guarantees a1 carries the DTB; zero
-    //    means the firmware configuration is abnormal, so halt honestly).
     if dtb_pa == 0 {
         say("### minix-rs kernel image: OpenSBI passed no DTB in a1 — halting\n");
         crate::halt();
     }
-    // The specification requires an 8-byte aligned blob; refuse the shape
-    // before the first dereference rather than parsing it silently.
-    if !minix_boot::dtb_blob_aligned(dtb_pa) {
-        say("### minix-rs kernel image: DTB pointer not 8-byte aligned — halting\n");
-        crate::halt();
-    }
-    // SAFETY: `dtb_pa` is the physical address of the FDT that OpenSBI places
-    // in high DRAM (spec promise, confirmed on the firmware console as
-    // `Domain0 Next Arg1`); it is readable in the satp=0 identity view. Do not
-    // build a slice from an assumed 2MiB window (its tail would run past the
-    // top of DRAM): read the fixed 40B header for totalsize first, and only
-    // after `fdt_bounded` proves the whole blob lies inside memmap build a
-    // slice of the real width.
-    // SAFETY: 40B header — `dtb_pa` is non-zero and OpenSBI guarantees the
-    // blob is in DRAM; reading the first 40B only takes the magic/length
-    // fields; the real use range is pinned by the range gate below.
-    let head = unsafe { slice::from_raw_parts(dtb_pa as *const u8, 40) };
-    if u32::from_be_bytes(head[0..4].try_into().unwrap_or([0; 4])) != 0xd00d_feed {
-        say("### minix-rs kernel image: DTB magic bad — halting\n");
-        crate::halt();
-    }
-    let fdt_total = u32::from_be_bytes(head[4..8].try_into().unwrap_or([0; 4])) as usize;
-    if fdt_total < 40
-        || !bootface_common::dtb_bounded(dtb_pa, fdt_total, DRAM_BASE, KERN_PHYS_BASE, KERN_SIZE)
-    {
-        say("### minix-rs kernel image: DTB blob escapes DRAM bound — halting\n");
-        crate::halt();
-    }
-    let fdt_bytes = unsafe { slice::from_raw_parts(dtb_pa as *const u8, fdt_total) };
-    if minix_boot::fdt_layout::validate(dtb_pa, fdt_bytes).is_err() {
-        say("### minix-rs kernel image: DTB container invalid — halting\n");
-        crate::halt();
-    }
-    let fdt = match fdt::Fdt::new(fdt_bytes) {
-        Ok(f) => f,
-        Err(_) => {
-            say("### minix-rs kernel image: DTB parse failed — halting\n");
-            crate::halt();
-        }
-    };
 
-    // The memmap source goes through `DtbMemoryMap` (minix-boot); the firmware
-    // reserved-region clipping semantics are unchanged (fw_end =
-    // KERN_PHYS_BASE, a functional trim pinned on real hardware).
-    // I-33-甲 (D-086): owned form — the arrays live on this face's stack and
-    // are committed into `storage` after the fill stages below; the
-    // collector's `'static` tables are not written (U-Boot-leg shape). The
-    // source records are held, not discarded: `audit_source_coverage`
-    // refuses to boot when a projected span has no record behind it.
-    let owned = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE)
-        .collect_owned()
-        .expect("bootface: DTB memmap rejected (capacity or reservation shape) — halting");
-    minix_boot::audit_source_coverage(owned.free(), owned.reserved(), owned.sources())
-        .expect("bootface: a projected span has no source record — halting");
-    let memmap = owned.free();
-    let reserved = owned.reserved();
-    let sources = owned.sources();
-    if memmap.is_empty() {
-        say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
-        crate::halt();
-    }
-    say("  memmap regions 0x");
-    say_hex(memmap.len() as u64);
-    say(" first 0x");
-    say_hex(memmap[0].base.0);
-    say("+0x");
-    say_hex(memmap[0].len as u64);
-    say("\n");
-
-    // 2. BootFileTable: the DTB /chosen channel must pass the DRAM bound gate
-    //    and then the magic gate before dereference (reading a hartid or a
-    //    garbage pointer directly is a Load fault; the discipline established
-    //    by real-hardware and U-Boot forensics).
-    let chosen_pa = fdt_table_pa(&fdt);
-    let table_pa = chosen_pa
-        .into_iter()
-        .find(|pa| in_memmap_range(memmap, *pa, core::mem::size_of::<BootFileTable>() as u64) && table_magic_ok(*pa));
-    let Some(table_pa) = table_pa else {
-        say(
-            "### minix-rs kernel image: no BootFileTable (chosen) — module channel not wired, halting\n",
-        );
-        crate::halt();
-    };
-    say("  boot file table pa 0x");
-    say_hex(table_pa);
-    say("\n");
-    // SAFETY: the preceding `table_magic_ok` already checked the magic inside
-    // the `in_memmap_range(pa, size_of::<BootFileTable>())` bound; QEMU's
-    // direct-load staging (or the host injection
-    // tool) places the table in physical RAM exclusive to the boot phase, and
-    // this face is its first and only reader (single hart, no concurrent
-    // writers).
-    let table = unsafe { &*(table_pa as *const BootFileTable) };
-
-    // 3. Bump physical pool (boot-shim library `MODULE_REGION_BASE` lane: 32MiB
-    //    starting at DRAM+32M, `BUMP_END <= boot_dm_admissible_end()` proven at
-    //    compile time): root page → page-table bump region → name pool, in that
-    //    order with no overlap; module page takes come after.
-    //    Every path goes through Option plus an honest halt, leaving no
-    //    `.expect`/panic leg (the panic render path carries baked-VMA fmt
-    //    pieces, which under the physical-address view hits exactly that
-    //    invariant).
-    let pool_exhaust = "### minix-rs kernel image: bump pool exhausted — halting\n";
-    let Some(cur_root) = bump_alloc_pages(1) else {
-        say(pool_exhaust);
-        crate::halt()
-    };
-    let root_page = PhysBytes(cur_root);
-    let Some(pt_base) = bump_alloc_pages(PT_BUMP_PAGES) else {
-        say(pool_exhaust);
-        crate::halt()
-    };
-    let pt_end = pt_base + (PT_BUMP_PAGES as u64) * 4096;
-    // Name pool: one physical-address bump page, 12 slots of 16B (see the view
-    // discussion in `place_modules`).
-    let Some(names_pool) = bump_alloc_pages(1) else {
-        say(pool_exhaust);
-        crate::halt()
-    };
-    minix_kernel::boot_alloc::init_boot_pt_alloc(pt_base, pt_end);
-    // Registration happens in `boot_validate_and_prepare` under its
-    // `is_registered()` guard, before the first page-table allocation; a
-    // second registration here would hide ordering errors (DESIGN-09).
-    say("  root 0x");
-    say_hex(root_page.0);
-    say(" pt bump 0x");
-    say_hex(pt_base);
-    say("..0x");
-    say_hex(pt_end);
-    say("\n");
-
-    // 4. 12 modules: locate the table (basename check) → copy each source
-    //    straight into bump pages (the source has passed the disjointness gate
-    //    against the pool, so `copy_nonoverlapping` cannot overlap).
-    storage.fill_modules(|module_table| {
-        if bootface_common::place_modules(
-            table,
-            memmap,
-            bootface_common::PlacementPool {
-                names: names_pool,
-                bump_start: bump_pool_base(),
-                bump_end: bump_end_bound(),
-            },
-            module_table,
-            bump_alloc_pages,
-            say,
-            say_hex,
-        )
-        .is_none()
-        {
-            say("### minix-rs kernel image: module placement failed — halting\n");
-            crate::halt();
-        }
-        NR_BOOT_MODULES
-    });
-    say("  boot modules placed 12\n");
-
-    // 5. Platform descriptor source: riscv has only the DTB (same lane as the
-    //    boot-shim library; the slot lives in .data, avoiding the heap leak
-    //    surface).
-    // SAFETY: a single hart on the boot face; written once, then read-only
-    // (from the next step on).
-    // SAFETY: the DTB is still in the identity/firmware mapping; this face
-    // runs before paging is enabled.
-    let dtb_len = unsafe { minix_boot::dtb_total_size(PhysBytes(dtb_pa)) };
-    storage.fill_platform(|slots| {
-        slots[0] = PlatformDescSource::with_optional_len(DTB, PhysBytes(dtb_pa), dtb_len);
-        1
-    });
-
-    // T3: the direct-boot parameter source is the standard firmware channel,
-    // DTB `/chosen/bootargs` (QEMU `-append` fills it).
-    // `fill_param` commits the byte count; the pointer for the later
-    // `build_kernel_info` and the diagnostic text are captured inside.
-    let mut param_ptr = core::ptr::null::<u8>();
-    storage.fill_param(|out| {
-        let input = crate::bootface_common::fdt_bootargs(&fdt).unwrap_or("");
-        let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, out);
-        say("  param_buf bytes=");
-        say_hex(stats.bytes as u64);
-        say(" rejected=");
-        say_hex(stats.rejected as u64);
-        say(" dropped=");
-        say_hex(stats.dropped as u64);
-        if stats.bytes > 0 {
-            let end = out[..stats.bytes]
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(stats.bytes);
-            if let Ok(text) = core::str::from_utf8(&out[..end]) {
-                say(" first=");
-                say(text);
-            }
-        }
-        say("\n");
-        param_ptr = out.as_ptr();
-        stats.bytes
-    });
-
-    // 6. KernelInfo (boot-shim `build_kernel_info` lane) + the real arch_boot
-    //    gate (validate → build root → DM → jump_to_kmain, never returning to
-    //    this face).
-    //
-    // I-33-甲 (D-086): commit the owned map tables into `storage` — the
-    // storage is the only owner, and the `&'static` slices `build_kernel_info`
-    // consumes point into the same landing store as the module / platform /
-    // parameter views below. The consumer-boundary audit inside
-    // `KernelInfo::validate` re-checks the pairing, so the handover is not a
-    // promise but a verified fact.
-    storage.fill_map_tables(|memmap_slots, reserved_slots| {
-        memmap_slots[..memmap.len()].copy_from_slice(memmap);
-        reserved_slots[..reserved.len()].copy_from_slice(reserved);
-        minix_boot::MapCounts {
-            memmap: memmap.len(),
-            reserved: reserved.len(),
-        }
-    });
-    storage.fill_memmap_sources(|source_slots| {
-        source_slots[..sources.len()].copy_from_slice(sources);
-        sources.len()
-    });
-    // v10 (D-062) removed the startup-object set that used to be pushed here:
-    // its single reader (a strict-gate coverage check) is now answered by the
-    // map tables, and the kernel span is already in `memmap` on this leg.
-
-    // End the one-shot `&mut` borrow, then publish the named view from the
-    // static cell. The slices inside `BootReport` are `'static` by the
-    // storage contract; no `from_raw_parts` laundering remains here.
-    let _ = storage;
-    let report = STORAGE.report_static(
-        VirBytes(KERN_VIRT_BASE),
-        PhysBytes(KERN_PHYS_BASE),
-        KERN_SIZE,
-    );
-    let kernel_info: KernelInfo = build_kernel_info(
-        &report,
-        minix_boot::InputObjectId::DtbBootInput,
-    );
-    kernel_info.validate_requiring_sources();
-    say("  calling arch_boot (validate gate)\n");
-    minix_kernel::arch_boot(&kernel_info, root_page)
+    bootface_common::run_self_boot(
+        bootface_common::SelfBootParams {
+            dtb_pa,
+            dram_base: DRAM_BASE,
+            fw_end: KERN_PHYS_BASE,
+            kern_phys_base: KERN_PHYS_BASE,
+            kern_virt_base: KERN_VIRT_BASE,
+            kern_size: KERN_SIZE,
+            bump_start: bump_pool_base(),
+            bump_end: bump_end_bound(),
+        },
+        bump_alloc_pages,
+        say,
+        say_hex,
+    )
 }
 
 // ── DTB face ────────────────────────────────────────────────────

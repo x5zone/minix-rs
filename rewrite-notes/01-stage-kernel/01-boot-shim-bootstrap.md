@@ -1501,7 +1501,7 @@ pub trait FileLoader {
 }
 ```
 
-`read_required` 是**内核 ELF 取件**的致命落点：它把"文件不存在"从 `None` 变成一个带路径的 panic。启动模块走 §4.3 的 `read + unwrap_or_else(panic!)`，是第二个致命落点，错误消息格式与 `read_required` 不同；两者都是 fail-closed，`read` 本身只返回 `Option`，不决定致命性。两个实现各自只提供 `read`：UEFI 走 `SimpleFileSystem`（并把正斜杠转成 UEFI 要求的分隔符），U-Boot 走预先落在 RAM 里的 `BootFileTable`。除此之外的装载逻辑（解析、段拷贝、模块页分配、结构体构造）在两个 boot-shim 实现族之间只有一份；两个直核面共用 `bootface_common::place_modules`，入口流程壳各一份（下文展开）。两个实现都在 `read` 里只处理字节来源，错误折成 `Option` 交给各自的调用方。
+`read_required` 是**内核 ELF 取件**的致命落点：它把"文件不存在"从 `None` 变成一个带路径的 panic。启动模块走 §4.3 的 `read + unwrap_or_else(panic!)`，是第二个致命落点，错误消息格式与 `read_required` 不同；两者都是 fail-closed，`read` 本身只返回 `Option`，不决定致命性。两个实现各自只提供 `read`：UEFI 走 `SimpleFileSystem`（并把正斜杠转成 UEFI 要求的分隔符），U-Boot 走预先落在 RAM 里的 `BootFileTable`。除此之外的装载逻辑（解析、段拷贝、模块页分配、结构体构造）在两个 boot-shim 实现族之间只有一份；两个直核面共用 `bootface_common` 的 `place_modules` 与 `run_self_boot`，`bootface.rs`/`bootface_a64.rs` 只剩本架构常量、入口横幅与各自的 console（下文展开）。两个实现都在 `read` 里只处理字节来源，错误折成 `Option` 交给各自的调用方。
 
 ```rust
 // 代码引用（保留读取路径；注释有删节；一处英文注释译为中文），os/boot-shim/src/uefi_helpers.rs:impl FileLoader for UefiFileLoader。
@@ -1517,9 +1517,9 @@ impl FileLoader for UefiFileLoader {
 }
 ```
 
-U-Boot 侧的实现见 §4.3 的 `entry_path_eq` 与 `UbootFileLoader`；两条 `read` 的差别在字节来源，U-Boot 侧的生产者在 `build_shim_table` 里按最后一个 PT_LOAD 的文件尾修剪槽长度（kernel 槽 2 MiB、模块槽 1 MiB；超过槽容量时打印 `truncating` 后按槽容量写入长度，即**截断后继续**，不是停机），loader 的二次修剪对已在槽内的输入是 no-op，对非 ELF 回退整槽的输入才生效；`read_required` 与全部装载逻辑完全共用。范围要说准：这里的“只有一份”指**两个 boot-shim 实现族之间**；两个直核面不走 `FileLoader`，但共用 `bootface_common::place_modules` 的同一份放置逻辑，入口流程壳仍各一份。
+U-Boot 侧的实现见 §4.3 的 `entry_path_eq` 与 `UbootFileLoader`；两条 `read` 的差别在字节来源，U-Boot 侧的生产者在 `build_shim_table` 里按最后一个 PT_LOAD 的文件尾修剪槽长度（kernel 槽 2 MiB、模块槽 1 MiB；超过槽容量时打印 `truncating` 后按槽容量写入长度，即**截断后继续**，不是停机），loader 的二次修剪对已在槽内的输入是 no-op，对非 ELF 回退整槽的输入才生效；`read_required` 与全部装载逻辑完全共用。范围要说准：这里的“只有一份”指**两个 boot-shim 实现族之间**；两个直核面不走 `FileLoader`，但共用 `bootface_common` 的 `place_modules` 与 `run_self_boot`；入口壳只负责常量、横幅与 console 选择。
 
-`bootface_common` 不是只把函数搬了个家，它把两个直核面共同的模块放置约束集中到一处：`NAME_SLOT = 16`、`NAME_POOL` 是 12 个 16 B 槽，`place_modules` 依次检查条目数 ≥ 12、每槽 basename 与 `NAME_POOL[i]` 相等、长度非零、源区间整段落在 memmap 的单个区间内、源区间不与 bump 池相交；通过后才按槽分配 bump 页、拷贝、清页尾、写入名字池。另有编译期 `const _` 把 `NAME_POOL[i]` 与 `boot_shim::loader::MODULE_NAMES[i]` 逐字节比较，两个直核腿的名字顺序漂移会直接变成编译错误。`PlacementPool` 存在的理由不是打包参数：三个相邻的裸 `u64`（名字池地址、bump 起点、bump 终点）互换后仍能编译并产生“看似合理”的放置，结构体的命名字段把这类调用点错误挡在编译期。两条调用腿的差异只落在 `PlacementPool`（名字池地址、bump 起止）与 `alloc_pages`/`say`/`say_hex` 回调上：riscv64 用 `0x8200_0000..0x8400_0000`，aarch64 用 `0x4400_0000..0x4600_0000`，容量同为 32 MiB。
+`bootface_common` 不是只把函数搬了个家，它把两个直核面共同的模块放置约束集中到一处：`NAME_SLOT = 16`、`NAME_POOL` 是 12 个 16 B 槽，`place_modules` 依次检查条目数 ≥ 12、每槽 basename 与 `NAME_POOL[i]` 相等、长度非零、源区间整段落在 memmap 的单个区间内、源区间不与 bump 池相交；通过后才按槽分配 bump 页、拷贝、清页尾、写入名字池。另有编译期 `const _` 把 `NAME_POOL[i]` 与 `boot_shim::loader::MODULE_NAMES[i]` 逐字节比较，两个直核腿的名字顺序漂移会直接变成编译错误。`PlacementPool` 存在的理由不是打包参数：三个相邻的裸 `u64`（名字池地址、bump 起点、bump 终点）互换后仍能编译并产生“看似合理”的放置，结构体的命名字段把这类调用点错误挡在编译期。两条调用腿的差异只落在 `PlacementPool`（名字池地址、bump 起止）与 `alloc_pages`/`say`/`say_hex` 回调上：riscv64 用 `0x8200_0000..0x8400_0000`，aarch64 用 `0x4400_0000..0x4600_0000`，容量同为 32 MiB。模块放置之外的流程（DTB 校验、memmap 收集、表址闸、bump 取页、平台源、参数缓冲、`KernelInfo` 组装）也在同一份 `run_self_boot` 里，两壳不再各存一份顺序相同的代码。
 
 去掉 trait 后，实际成立、且不依赖 trait 的收益有这几条：
 
@@ -1570,7 +1570,7 @@ kernel-image ─┬─→ minix-kernel （arch_boot / arch_boot_resume_v1；直�
 
 **问题一：共享类型为什么住 `minix-boot`**。真正**跨两侧**引用的是 `KernelInfo`（内核经 `arch_boot` 读它，直核面与接收侧构造它）与 `BootReport`（`minix-kernel` 的 `enter_kernel_image_v1`/`prepare_kernel_image_v1` 以 `&minix_boot::BootReport<'_>` 为参数）；`BootStorage`/`BootPrepareResult` 是引导侧的接口类型。放在同一库是为了让这些签名不把 boot-shim 可执行体或固件实现拖进内核依赖面，而不是因为“内核完全不引用引导侧类型”。若 `KernelInfo` 定义住在引导层，内核引用它就得依赖 boot-shim——反向依赖、且把固件实现拖进内核依赖面；若住在内核里，共享库 `minix-boot` 就得反向依赖 `minix-kernel`，与已存在的 `minix-kernel → minix-boot` 成环（boot-shim → minix-kernel 本身不是环——依赖图里本来就有，boot-shim 调 `enter_kernel_image_v1`）。所以这层定义下沉到不含 UEFI/SBI 固件实现、但共享参数归一化与 DTB 解析等实现的 `minix-boot`（依赖表是 `minix-types` 与 `fdt`），谁依赖它都不会被拖进固件代码。这条边界不是风格洁癖：`os/kernel/Cargo.toml` 的依赖表里没有 boot-shim、也没有 uefi，用上面那条 `sed` 就能一次验证。
 
-**问题二（完整形态论证归 §3.1 例外条款与 §3.7；此处只给与依赖方向有关的结论）：riscv64/aarch64 上的引导面为什么长成"内核镜像自举"**。背景见 §3.1 表后的引用段：RISC-V 与 ARM 的 `-kernel` 极简装机（QEMU `-kernel` 模拟的是真实硬件的这种装载方式）下，下一级镜像直接进 RAM、固件跳过去，固件与内核之间没有"装载与被装载"的分界，独立 boot-shim 没有存在位置。于是两个架构的引导准备各自由 `kernel-image` 自带的引导面承担——riscv64 是 `bootface`（[`bootface.rs`](os/kernel-image/src/bootface.rs)），aarch64 是 `bootface_a64`（[`bootface_a64.rs`](os/kernel-image/src/bootface_a64.rs)），流程逐段同构（DTB 解内存 → 取件表 → bump 池（bump 池 = 一段只前进不回收的线性分配器：从区间起点逐页发放，游标只增不减，耗尽即拒绝）→ 模块 → `KernelInfo` → 同一个 `arch_boot`）。两者都复用 boot-shim 的**库函数**，但不是独立引导器产物；这一形态的固件对话走 DTB 与 PSCI/DMB（DMB = 数据内存屏障）一类的裸协议，`kernel-image` 与 `minix-kernel` 两个 crate 都不依赖 `uefi`，单向边界原样成立。它的定位是**平行的装机面**：与 UEFI 独立 shim 共享同一套取件库；内核引导收敛层按腿分两处（直核 `arch_boot_finish`、跨镜像 `arch_boot_resume_v1`，最终同落 `jump_to_kmain`，见 §3.7/§4.8）——统一发生在层内（类型、取件库、收敛层），引导形态层不造伪统一（memmap 源统一下沉的裁决，三形态对照见 §3.7）。
+**问题二（完整形态论证归 §3.1 例外条款与 §3.7；此处只给与依赖方向有关的结论）：riscv64/aarch64 上的引导面为什么长成"内核镜像自举"**。背景见 §3.1 表后的引用段：RISC-V 与 ARM 的 `-kernel` 极简装机（QEMU `-kernel` 模拟的是真实硬件的这种装载方式）下，下一级镜像直接进 RAM、固件跳过去，固件与内核之间没有"装载与被装载"的分界，独立 boot-shim 没有存在位置。于是两个架构的引导准备各自由 `kernel-image` 自带的引导面承担——riscv64 是 `bootface`（[`bootface.rs`](os/kernel-image/src/bootface.rs)），aarch64 是 `bootface_a64`（[`bootface_a64.rs`](os/kernel-image/src/bootface_a64.rs)），流程由 `bootface_common::run_self_boot` 承载（DTB 解内存 → 取件表 → bump 池（bump 池 = 一段只前进不回收的线性分配器：从区间起点逐页发放，游标只增不减，耗尽即拒绝）→ 模块 → `KernelInfo` → 同一个 `arch_boot`）。两者都复用 boot-shim 的**库函数**，但不是独立引导器产物；这一形态的固件对话走 DTB 与 PSCI/DMB（DMB = 数据内存屏障）一类的裸协议，`kernel-image` 与 `minix-kernel` 两个 crate 都不依赖 `uefi`，单向边界原样成立。它的定位是**平行的装机面**：与 UEFI 独立 shim 共享同一套取件库；内核引导收敛层按腿分两处（直核 `arch_boot_finish`、跨镜像 `arch_boot_resume_v1`，最终同落 `jump_to_kmain`，见 §3.7/§4.8）——统一发生在层内（类型、取件库、收敛层），引导形态层不造伪统一（memmap 源统一下沉的裁决，三形态对照见 §3.7）。
 
 **如果让 `minix-kernel` 直接依赖 boot-shim 会怎样**（动机多半是"想复用 `BootPrepareResult` 的定义"）：复用类型走 `minix-boot` 即可，不必依赖引导层（问题一已答）。剩下的否决理由是本节标题本身：**内核不该认识固件形态**——屏蔽固件差异正是 boot-shim（或 bootface）存在的意义。"riscv64 编译不过"（UEFI 目标只有 x86_64/aarch64/i686，riscv64 暂不支持）不构成独立论据，换 opensbi feature 就能过；否决理由从头到尾只有依赖方向一条。
 
@@ -1650,7 +1650,7 @@ pub struct KernelInfo {
 
 这四层的边界不能混谈：把第 1 层的 MapKey 纪律带入第 3 层的政策讨论（"反正退出前不能改"），或者把第 4 层的 DM 覆盖要求塞进第 3 层的分类判据（"要映射所以得进保留表"），都会让错误的层次为另一个层次的约束背锅。
 
-**"升为字段"行的一个设计细节：为什么三个布局数字由 shim 从 ELF 算出，而不是由调用者传入**。设想把接口改成 `prepare_boot(storage, kern_virt_base, kern_phys_base, kern_size, bump_pages)`。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，"把内核映射到高地址"那一步会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。让 shim 自己解析镜像，"数字与镜像一致"就不再是调用者的责任，而是唯一数据来源（镜像本身）的自然结果。**两个直核面是例外**：`bootface`/`bootface_a64` 用自己文件里的 `KERN_VIRT_BASE`/`KERN_PHYS_BASE`/`KERN_SIZE` 常量，不从 ELF 头解析；它们与镜像布局的一致性：三架构直核面的跨距都由 `check-layout.sh` 的 L9 对账——x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`，并保留 `aarch64.ld` 的上界 `ASSERT(__bss_end - KERNEL_VIRT_BASE <= 0x400000)` 作为链接期双保险。源码注释记录过这类常量漂移导致高半只映射半个镜像、`kern_stack_top` 落进 `.bss` 的静默损坏。因此“三个数字来自镜像”只对三条 v1 发送腿成立，直核面是“常量 + 部分构建期对账”的另一条来源。
+**"升为字段"行的一个设计细节：为什么三个布局数字由 shim 从 ELF 算出，而不是由调用者传入**。设想把接口改成 `prepare_boot(storage, kern_virt_base, kern_phys_base, kern_size, bump_pages)`。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，"把内核映射到高地址"那一步会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。让 shim 自己解析镜像，"数字与镜像一致"就不再是调用者的责任，而是唯一数据来源（镜像本身）的自然结果。**两个直核面是例外**：`bootface`/`bootface_a64` 用自己文件里的 `KERN_VIRT_BASE`/`KERN_PHYS_BASE`/`KERN_SIZE` 常量，不从 ELF 头解析；它们与镜像布局的一致性：三架构直核面的跨距都由 `check-layout.sh` 的 L9 对账——x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`，链接期另有双保险：三份 `.ld` 都断言 `__image_end - 首段 VMA <= 0x400000` 且该差值是 2MiB 的整数倍（aarch64/riscv64 减 `KERNEL_VIRT_BASE`，x86_64 减 `KERNEL_HIGH_BASE + KERNEL_PHYS_BASE`）。源码注释记录过这类常量漂移导致高半只映射半个镜像、`kern_stack_top` 落进 `.bss` 的静默损坏。因此“三个数字来自镜像”只对三条 v1 发送腿成立，直核面是“常量 + 部分构建期对账”的另一条来源。
 
 #### 3.4.2 旧字段台账与外部面：`kinfo_t` 的 22 个字段去哪了
 
@@ -1966,7 +1966,7 @@ where
     register_panic_diagnostic();
     arch_boot_impl::<A>(kinfo, root_page);
     // ……（省略 SAFETY 注释，见源文件）……
-    unsafe { H::jump_to_kmain(kinfo, kinfo.kern_stack_top()) }
+    unsafe { H::jump_to_kmain(kinfo) }
 }
 ```
 
@@ -2650,29 +2650,19 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 ```rust
 // 代码引用（略去函数文档注释与 `minix_boot::` 路径限定符；`minix_types::` 只在 `USER_STACK_TOP` 一处保留以标明常量归属；`minix_boot::InputObjectId` 保留以标出权威类型；代码内注释有删节与改述），os/boot-shim/src/lib.rs:fn build_kernel_info。
 pub fn build_kernel_info(
-    memmap: &'static [MemoryRegion],
-    reserved_regions: &'static [MemoryRegion],
-    kern_virt_base: VirBytes,
-    kern_phys_base: PhysBytes,
-    kern_size: u64,
-    boot_modules: &'static [BootModule],
-    platform_sources: &'static [PlatformDescSource],
-    param_buf: &'static [u8],
-    memmap_sources: &'static [SourceRecord],
+    report: &minix_boot::BootReport<'static>,
     authority: minix_boot::InputObjectId,
-) -> KernelInfo {
-    KernelInfo {
-        memmap,
-        reserved_regions,
-        memmap_sources,
-        kern_virt_base,
-        kern_phys_base,
-        kern_size,
-        // Per-arch user stack top; the single authority is
-        // `minix_types::USER_STACK_TOP`.
-        boot_modules,
-        platform_sources,
-        param_buf,   // 〔编注〕各路径 normalizer 的产物；空切片等价于 C 的 `param_buf[0] == '\0'`
+) -> minix_boot::KernelInfo {
+    minix_boot::KernelInfo {
+        memmap: report.memmap,
+        reserved_regions: report.reserved_regions,
+        memmap_sources: report.memmap_sources,
+        kern_virt_base: report.kern_virt_base,
+        kern_phys_base: report.kern_phys_base,
+        kern_size: report.kern_size,
+        boot_modules: report.boot_modules,
+        platform_sources: report.platform_sources,
+        param_buf: report.param_buf,
         authority,
     }
 }
@@ -3027,7 +3017,7 @@ Step 3 的 `enable()` 在 x86-64 上做四件事：
     }
 ```
 
-- `init(base, end)` 把游标置回 `base`：跨镜像腿由 boot-shim 在进入内核之前设定区间（UEFI 两条路径都在 `prepare_and_enter_kernel_image` 内；U-Boot shim 在 `prepare_boot` 返回后）；两个直核面在自己的 `bootface`/`bootface_a64` 里**只初始化 bump 区间**，注册发生在随后调用的 `boot_validate_and_prepare`（`is_registered()` 守卫）。`minix-kernel` 自身不再调用 `init`：Step 0 看到 `boot_alloc_region()` 为 `None` 时直接停机。
+- `init(base, end)` 把游标置回 `base`：跨镜像腿由 boot-shim 在进入内核之前设定区间（UEFI 两条路径都在 `prepare_and_enter_kernel_image` 内；U-Boot shim 在 `prepare_boot` 返回后）；两个直核面经共用的 `run_self_boot` **只初始化 bump 区间**，注册发生在随后调用的 `boot_validate_and_prepare`（`is_registered()` 守卫）。`minix-kernel` 自身不再调用 `init`：Step 0 看到 `boot_alloc_region()` 为 `None` 时直接停机。
 - `resume(base, next, end)` 从"已被消耗到的位置"继续：跨镜像路径必须用这一种，因为接收侧链接的是这份分配器的另一份副本（`resume` 的文档注释写明了这一点）。跨镜像接收侧的 `arch_boot_resume_v1`（三架构同一入口）在解码信封后、进入本架构委托壳之前调用它；委托壳的分派见 §4.8。
 
 两种方式的次序约束：跨镜像路径上必须先 `resume_boot_pt_alloc`、再进各架构委托壳——三架构都经 `resume_after_v1_decode`（三个同名 cfg 壳最终都转 `os/kernel/src/lib.rs:fn resume_additive`），其中 aarch64 的壳再转 `arch_boot_resume_high_half`，x86_64 与 riscv64 的壳直接转 `resume_additive`。顺序反了的话，Step 0 会看到 `boot_alloc_region()` 为 `None`——兜底已删，后果是 fail-closed 停机，而不是把游标重置回某段 memmap 的起点。
@@ -3103,7 +3093,7 @@ fn rust_image_main(arena_pa: usize) -> ! {
 |---|---|---|---|---|
 | x86_64 | boot-shim | boot-shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`rbx`） | 独立镜像高半 `_start` |
 | aarch64（UEFI 链） | boot-shim | boot-shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`x0`） | 独立镜像高半 `_start` |
-| aarch64（直核） | 内核镜像自身（[`bootface_a64`](<os/kernel-image/src/bootface_a64.rs:fn bootface_a64>)） | 内核镜像自身（`arch_boot` → `enable`） | 无入参（直核产物 `fw-aarch64-none` 的入口只编 `bootface_a64` 臂、忽略传入值；UEFI 接收产物 `fw-aarch64-uefi-recv` 的 `x0 == 0` 只作诚实停机——D-061，DTB 从 RAM 基址固定位置读）；模块来源是 `BootFileTable`，表址只有 DTB `/chosen` 的 `opensbi,boot-file-table` 属性一条通道（由 `bootface_a64` 的 DTB 解析给出，与 riscv64 直核面同名属性；取件库复用 opensbi_helpers——§3.2 断言的证据落点） | 独立镜像 `_start` |
+| aarch64（直核） | 内核镜像自身（[`bootface_a64`](<os/kernel-image/src/bootface_a64.rs:fn bootface_a64>)） | 内核镜像自身（`arch_boot` → `enable`） | 无入参（直核产物 `fw-aarch64-none` 的入口只编 `bootface_a64` 臂、忽略传入值；UEFI 接收产物 `fw-aarch64-uefi-recv` 的 `x0 == 0` 只作诚实停机——D-061，DTB 从 RAM 基址固定位置读）；模块来源是 `BootFileTable`，表址只有 DTB `/chosen` 的 `opensbi,boot-file-table` 属性一条通道（由 `run_self_boot` 的 DTB 解析给出，与 riscv64 直核面同名属性；取件库复用 opensbi_helpers——§3.2 断言的证据落点） | 独立镜像 `_start` |
 | riscv64（`-kernel` 直核） | 内核镜像自身（`bootface`） | 内核镜像自身（`arch_boot` → `enable`） | `a0`=hartid、`a1`=DTB；表址只从 DTB `/chosen` 的 `opensbi,boot-file-table` 属性取；原有备用 `a2` 参数通道已在 D01 裁决项 3 删除（仓内从未有生产者） | 独立镜像 `_start` |
 | riscv64（U-Boot 一族 / shim 生产腿） | `riscv64-uboot-shim` | shim（`enter_kernel_image_v1` 内的 `enable`） | `BootHandoffV1` arena 物理地址（`a0`） | 独立镜像高半 `_start` |
 
