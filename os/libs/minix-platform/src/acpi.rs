@@ -587,7 +587,13 @@ unsafe fn parse_madt(
             4,
         )
     };
-    let lapic_base = u32_le_from_slice(lapic_addr_bytes) as usize;
+    // ACPI 6.x: a zero Local APIC Address means "use the default
+    // 0xFEE0_0000" (the field may be zeroed when the LAPIC is not
+    // memory-mapped). Do not carry a zero base into ApicDesc.
+    let lapic_base = match u32_le_from_slice(lapic_addr_bytes) {
+        0 => 0xFEE0_0000usize,
+        addr => addr as usize,
+    };
 
     // Iterate over interrupt controller structures.
     #[cfg(target_arch = "x86_64")]

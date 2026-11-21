@@ -1762,7 +1762,10 @@ MADT 的解析是遍历骨架加记录分派：
         return Err(AcpiParseError::BadChecksum);
     }
     ...
-    let lapic_base = u32_le_from_slice(lapic_addr_bytes) as usize;
+    let lapic_base = match u32_le_from_slice(lapic_addr_bytes) {
+        0 => 0xFEE0_0000usize,
+        addr => addr as usize,
+    };
     ...
     let mut offset = madt_header_size;
     while offset + core::mem::size_of::<MadtEntryHeader>() <= madt_len {
@@ -1774,7 +1777,7 @@ MADT 的解析是遍历骨架加记录分派：
         }
 ```
 
-`lapic_base` 这一行就是 §2.5 里 C 没做的那一步：从 MADT 表头读出 Local APIC Address。遍历的两道闸（`entry_len` 不小于记录头长度、`offset + entry_len` 不越界）是 C 的 `acpi_madt_get_typed_item` 没有的（§2.4）。
+`lapic_base` 这里就是 §2.5 里 C 没做的那一步：从 MADT 表头读出 Local APIC Address；表头为 0 时按 ACPI 6.x 取默认 `0xFEE0_0000`，不把零基址带进描述符。遍历的两道闸（`entry_len` 不小于记录头长度、`offset + entry_len` 不越界）是 C 的 `acpi_madt_get_typed_item` 没有的（§2.4）。
 
 MADT 记录类型：Rust 侧定义六个常量，C 侧声明十一个、实际处理两个（复算见 §6.2 #8）：
 
@@ -1902,13 +1905,12 @@ fn check_gic_madt(
 
 ```text
 // os/libs/minix-platform/src/device_tree.rs —— 节选（模块文档 Safety 段；原文写 low 4 GB，是旧前提，现行实现见正文）
-//! - Early boot identity mapping covers the physical address: during boot
-//!   the kernel enables paging with an identity mapping over the low 4 GB
-//!   (C `pg_identity()` semantics, `os/kernel/src/lib.rs:fn arch_boot_impl`), and the
-//!   DTB lives in static firmware memory far below that bound — so the raw
-//!   physical address can be dereferenced as a virtual address (VA == PA).
-//!   If a future path hands a DTB above the identity-mapped range, `parse`
-//!   must be preceded by a temporary mapping.
+//! - Boot identity windows cover the physical address: the kernel enables
+//!   paging with the minimal windows registered from
+//!   `KernelInfo.platform_sources` (not a fixed low-4-GiB identity map), and
+//!   the DTB must fall inside one of them so the raw physical address can be
+//!   dereferenced as a virtual address (VA == PA). A path that hands a DTB
+//!   outside those windows must map it temporarily first.
 ```
 
 同一份约束在 C 侧的表现就是 §2.4 的 `acpi_phys2vir`：`vm_running` 为假时把物理地址原样返回，为真时直接 panic；两侧说的是同一件事——"把任意物理地址当虚拟地址用"只在启动窗口内成立。
@@ -1920,6 +1922,7 @@ fn check_gic_madt(
 | 字段 | 来源 | 缺省/失败 |
 |---|---|---|
 | `ic`（riscv64：`PlicDesc`） | `compatible` 匹配 `riscv,plic0` / `sifive,plic-1.0.0`；基址取 `reg` 首格；线数取 `riscv,ndev` 属性 | 节点找不到或 `reg` 缺失 → `Err`；`riscv,ndev` 缺失 → 64 |
+| `PlicDesc.context` | 当前硬编码为 1（QEMU virt 的 S-mode context 假设；DTB 未报告它） | 非 QEMU 固件可能不同，登记为与 R04-T11 同级的假设 |
 | `ic`（aarch64：`Gicv3Desc`） | `compatible` 匹配 `arm,gic-v3`；`reg` 两格分别是 GICD 与 GICR | 节点或 `reg` 缺失 → `Err`；`gicr_stride` 与 `nr_irqs` 是常量 |
 | `timer`（riscv64：`ClintDesc`） | CLINT 节点 `reg` 首格作基址，`mtime` = 基址 + `0xBFF8`，`mtimecmp` = 基址 + `0x4000`；频率取 `/cpus/timebase-frequency` | 节点缺失时改用 ACLINT MTIMER 节点（两个 `reg` 格）；频率缺失 → `Err` |
 | `timer`（aarch64） | 只确认存在（`ArmGenericTimerDesc` 无字段） | 频率运行时从 `CNTFRQ_EL0` 读 |
