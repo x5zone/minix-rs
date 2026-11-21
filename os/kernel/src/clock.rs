@@ -275,8 +275,13 @@ pub fn cpu_load_with(section: &crate::smp::BklSection<'_>) -> u32 {
 
 /// Set the calibrated TSC frequency (cycles per millisecond).
 ///
-/// Called once during boot after TSC calibration completes.
 /// C: `tsc_per_ms[cpuid] = ...` — set in `boot_cpu_init_timer()`.
+///
+/// Calibration is not ported yet: there is no production caller, so
+/// `TSC_PER_MS` stays 0 and `ms_to_cpu_time`/`cpu_time_to_ms` use
+/// `DEFAULT_TSC_PER_MS` (1 GHz assumption). A platform or test may seed
+/// this once a TSC calibration source exists; until then this is the
+/// explicit no-calibration trade-off, not a silently dead setter.
 pub fn set_tsc_per_ms(cycles_per_ms: u64) {
     TSC_PER_MS.store(cycles_per_ms, Ordering::Release);
 }

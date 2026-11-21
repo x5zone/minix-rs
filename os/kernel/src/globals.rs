@@ -666,6 +666,11 @@ pub(crate) static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 =
 /// TSC cycles per millisecond, calibrated during boot (standalone
 /// calibration constant — NOT a mirror; single source).
 /// C: `tsc_per_ms[cpuid]` — kernel/proc.h. Per-CPU values arrive with SMP.
+///
+/// Stays 0 today: `set_tsc_per_ms` has no production caller (TSC
+/// calibration is not ported), so consumers fall back to
+/// `DEFAULT_TSC_PER_MS` (1 GHz). This is the explicit no-calibration
+/// state; see `clock::set_tsc_per_ms` for the trade-off.
 pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // Statistical-profiling state (C: sprof_ep / sprof_info_addr_vir /

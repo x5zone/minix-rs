@@ -1960,6 +1960,18 @@ fn riscv64_swi_arm() {
 /// convention as the timer arm); source enabling is chosen by the first
 /// device driver through the IRQ manager's unmask (this arm is the channel,
 /// it does not enable sources itself).
+/// Convert a controller source id into the `IrqVector` lane.
+///
+/// `IrqVector` is a `u8`; a PLIC/GIC source id above 255 is a configuration
+/// error, not something to truncate into a different (possibly TIMER_IRQ)
+/// line. Fail loudly at the conversion point.
+fn irq_vector_from_source(id: u32) -> minix_plat::IrqVector {
+    match u8::try_from(id) {
+        Ok(v) => minix_plat::IrqVector::new(v),
+        Err(_) => panic!("IRQ source {id} exceeds the u8 IrqVector space"),
+    }
+}
+
 #[cfg(target_arch = "riscv64")]
 fn riscv64_external_arm() {
     use core::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
@@ -1967,7 +1979,7 @@ fn riscv64_external_arm() {
     let Some(id) = crate::irq_manager::claim_hardware_irq() else {
         return; // claim=0: spurious interrupt (no source), swallowed silently per the timer convention
     };
-    let irq = minix_plat::IrqVector::new(id as u8);
+    let irq = irq_vector_from_source(id);
     match crate::irq_manager::dispatch_claimed_hardware_irq(irq, Some(id)) {
         Ok(()) => {
             let n = ACKS.fetch_add(1, AtomicOrd::AcqRel);
@@ -2579,7 +2591,7 @@ pub unsafe extern "C" fn aarch64_kernel_body(
                 if is_timer {
                     crate::clock::local_tick(crate::clock::current_cpuid());
                 }
-                let irq = minix_plat::IrqVector::new(id as u8);
+                let irq = irq_vector_from_source(id);
                 match crate::irq_manager::dispatch_claimed_hardware_irq(irq, claimed) {
                     Ok(()) => {}
                     Err(crate::irq_manager::IrqError::Spurious(line)) => {
