@@ -539,6 +539,15 @@ _SUBTRACTION_PLACEHOLDERS = {
 }
 
 
+def _strip_bold(text: str) -> str:
+    """V3.6-r7：去掉行内 markdown 强调标记，供字段标签匹配。
+
+    实跑轨迹（D02 R4）里面板把必填字段写成 `- **三问**：…`，而门只认
+    `- 三问：…`——10 条 FINDING 的字段全部"不存在"。字段匹配前统一规范化。
+    """
+    return re.sub(r"\*\*|__", "", text)
+
+
 def _split_panel_blocks(text: str) -> list[str]:
     """V3.6-r5：按 `## `/`### `/`#### ` 标题切块，跳过围栏代码块内的伪标题。
 
@@ -606,12 +615,18 @@ def _count_adopted_rows(text: str) -> int:
             r"^(?:无提案|无|未提出|—|–|N/A|none)(?:[（(]|$|\s)", cells[0], re.IGNORECASE
         ):
             continue
+        def _is_adopted(cell: str) -> bool:
+            # V3.6-r7：实跑里面板写 `采（DESIGN-D2-04）` / `否（延后）`——
+            # 按**前缀**判：是/采/采纳/adopted/yes 算采纳；否/不是/未采纳/需… 不算。
+            v = cell.strip().lower()
+            if v.startswith(("否", "不是", "未采纳", "需", "no", "n/")):
+                return False
+            return v.startswith(("是", "采", "adopted", "yes"))
+
         if adopt_idx is not None:
-            if adopt_idx < len(cells) and cells[adopt_idx].strip().lower() in {
-                "是", "采纳", "adopted", "yes"
-            }:
+            if adopt_idx < len(cells) and _is_adopted(cells[adopt_idx]):
                 rows += 1
-        elif any(c.strip().lower() in {"是", "采纳", "adopted", "yes"} for c in cells):
+        elif any(_is_adopted(c) for c in cells):
             rows += 1
     return rows
 
@@ -720,7 +735,7 @@ def check_subtraction(
         #      有括注——原正则 `-\s*三问\s*[:：]` 不匹配，**照模板写反而被判无提案**；
         #   ② 正则跨 FINDING 块（`.*?` 可越过 `## FINDING` 标题），前一块借用后一块的字段；
         #   ③ 围栏代码块里的 `## ARCH-PROPOSAL` 被当成真提案。
-        _blocks = _split_panel_blocks(d2_text)
+        _blocks = _split_panel_blocks(_strip_bold(d2_text))
         _has_add = False
         for _blk in _blocks:
             if not re.match(r"^#{2,4}\s*(?:FINDING|ARCH-PROPOSAL)\b", _blk):
@@ -728,7 +743,9 @@ def check_subtraction(
             if re.search(r"^##\s+ARCH-PROPOSAL\b", _blk, re.MULTILINE):
                 _has_add = True
                 break
-            if re.search(r"^-\s*三问[^\n]{0,40}[:：]", _blk, re.MULTILINE):
+            if re.search(
+                r"^-\s*三问[^\n]{0,60}[:：]", _strip_bold(_blk), re.MULTILINE
+            ):
                 _has_add = True
                 break
         if _no_prop and not _has_add:
@@ -755,7 +772,19 @@ def check_subtraction(
                 "无法判定是否存在加法提案（V3.6 契约：二者必居其一）",
             )
     # r6-e2e：`## ARCH-PROPOSAL` 段数与 metrics 的 `ARCH 提案` 对账（不再隐形）。
-    _arch_n = len(re.findall(r"^##\s+ARCH-PROPOSAL\b", d2_text, re.MULTILINE))
+    _arch_n = 0
+    for _m_arch in re.finditer(
+        r"^##\s+ARCH-PROPOSAL\b(.*?)(?=^##\s|\Z)",
+        d2_text,
+        re.MULTILINE | re.DOTALL,
+    ):
+        _body = _m_arch.group(1)
+        # V3.6-r7：`## ARCH-PROPOSAL` 段写「本轮无 ARCH 提案」是合法零——
+        # 原实现把段标题本身计为 1 条提案，与 metrics 的 `ARCH 提案: 0` 打架。
+        if re.search(r"无\s*ARCH|本轮无\s*ARCH|无\s*ARCH-PROPOSAL", _body[:200]):
+            continue
+        if len(_body.strip()) >= 20:
+            _arch_n += 1
     _mb_full = _pick_metric_block(metrics_text, report, round_tag, strict=True)[1]
     _arch_claim = re.search(r"^-\s*ARCH\s*提案\s*[:：]\s*(\d+)", _mb_full, re.MULTILINE)
     if _arch_n and (_arch_claim is None or int(_arch_claim.group(1)) < _arch_n):
@@ -2650,9 +2679,14 @@ def check_run_dir(
         and round_tag_override
         and (_v36_from is None or _round_no6 is None or _round_no6 >= _v36_from)
     )
-    if _v36_in_scope:
+    # V3.6-r7（实跑判例：D01 R36 / D02 R4）：两篇 V3.4 edition 的文档按新版
+    # panel brief 产出了 `## SUBTRACTION-TABLE`、三问字段与 `减法:` 键，但
+    # schema 仍是 V3.4 → 减法门整条不执行，`提案 8 / 采纳 4` 从未被校验。
+    # 改为**制品驱动**：只要该轮的 D2 里有减法表，就按 V3.6 契约校验——
+    # 「既然产出了这个产物，它就要被检查」。无减法表的旧轮不受影响。
+    _d2_path = None
+    if round_tag_override:
         _rk6 = round_tag_override.lstrip("R").lstrip("0") or "0"
-        _d2_path = None
         for _cand in (
             run_dir / "panel" / f"round{_rk6}" / "design-d2.md",
             (panel_dir / "design-d2.md") if panel_dir else None,
@@ -2660,6 +2694,11 @@ def check_run_dir(
             if _cand is not None and _cand.is_file():
                 _d2_path = _cand
                 break
+    _has_sub_table = bool(
+        _d2_path is not None
+        and re.search(r"^##\s+SUBTRACTION-TABLE\b", _d2_path.read_text(encoding="utf-8"), re.MULTILINE)
+    )
+    if _v36_in_scope or _has_sub_table:
         if metrics_text is not None:
             # V3.6-r1-F2（判例）：D2 缺失不得静默跳过。原实现在
             # `_d2_path is None` 时**整条减法门不执行**——metrics 可以自报
@@ -2686,6 +2725,23 @@ def check_run_dir(
                     report,
                     round_tag_override,
                 )
+                # V3.6-r7：**混合态提示**——轮里产出了减法表，但 schema 仍是
+                # V3.4，回执可能没写 `- 遗留 P0` 声明（D01 R36 即如此，D02 R4 写了）。
+                # 同一契约在两条并发线程里执行不一致，用 WARN 暴露，不追溯阻断。
+                if _has_sub_table and not v36_doc_flag:
+                    _rk_w = round_tag_override.lstrip("R").lstrip("0") or "0"
+                    _certs_w = sorted((run_dir / "certify").glob(f"round{_rk_w}-*.md"))
+                    _has_decl = any(
+                        re.search(r"^-\s*遗留\s*P0", c.read_text(encoding="utf-8"), re.MULTILINE)
+                        for c in _certs_w
+                    )
+                    if _certs_w and not _has_decl:
+                        report.warn(
+                            "subtraction",
+                            "该轮产出了 SUBTRACTION-TABLE 但 certify 回执无 "
+                            "`- 遗留 P0: <n> / P1: <n>` 声明（V3.6 契约；schema 仍为 "
+                            "V3.4，仅提示——同一契约在不同线程执行不一致）",
+                        )
 
     if loop_text is not None:
         check_loop_sections(loop_text, report, round_tag)
