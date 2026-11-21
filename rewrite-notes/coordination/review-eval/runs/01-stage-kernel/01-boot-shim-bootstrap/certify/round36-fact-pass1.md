@@ -69,3 +69,5 @@
   非 44 项内的相邻残留（不改变上述判定）：`os/kernel/src/lib.rs:1597` 的注释仍写“the exact same-address case (kmain re-stores the global copy)”，与 D-071/`kmain` 不再调用的现行代码冲突；`os/libs/minix-boot/src/boot_storage.rs:300-301` 在 `BootReport` 的 `memmap_sources` 之后留着一条没有对应字段的“Startup-object records”注释；`os/kernel-image/src/bootface_a64.rs:140` 的 `BootStorage` 注释仍写“and startup records”。这三处是 v10/D-071 删除传播未清干净的源码注释，代码行为不受影响。
 
 - 局限：同模型冷启动、未跑 QEMU、未做跨模型复核。测试证据仅到 `cargo test --list` 的计数与新负控单测 `test_boot_postconditions_reject_low_virtual_base`（`1 passed`）；未跑 `test-sysboot`、`test-riscv64-uboot-shim` 6/6 或完整测试套件，因此 `test-sysboot PASS`、`test-riscv64-uboot-shim 6/6 PASS` 两条台账结论本轮没有独立复核。`minix-boot 185/0` 只核对了列表数与单测，没有跑完整 185 条。
+
+- 历史回执：本 pass 的结论以正文汇总为准（pass1 38 CLOSED/6 STILL-BROKEN、pass2 43/1）；本轮最终结论 CLOSED/PASS（44/44，见 `round36-fact.md`）。

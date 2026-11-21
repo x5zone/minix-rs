@@ -2172,7 +2172,7 @@ RB24 首轮 13 项逐项处置：
 - 根因：93 个（RD-R36-001..093；逐 ID 立根因，R35 同形）。跨角色同根关系（wire 版本、v10 删除、测试账等）由每行 action/evidence 的组文本表达，不另并根。另有 8 条 fact 角色未编号建议单列，不参与根因分档。
 - 冻结决策检查：D-061（aarch64 编译期分叉）、D-062（wire v10）、D-067（fill API）、D-071（kmain 不重存）、D-086（单所有权）均为本轮修复的依据；无 re-litigation。D2-05 是新设计项，未在旧账本中裁决过。
 - 范围：全部 in-scope；无 adjacent 阻塞。
-- 设计项：D2-05（安装型全局参数化）按确认轮 §3.6 不实施 ⑥，批准延期 `R36-design-batch`（D-104，用户批准日期 2026-11-21）；D2-03/D2-09 为 P3 建议，进 suggestions。
+- 设计项：D2-05（安装型全局参数化）命中 D-064（2026-11-20 已采路线 B、否决参数化），判 re-litigation，记 FP；不实施、不立延期债。D2-03/D2-09 为 P3 建议，进 suggestions。
 - 读者项：P1/P2 且造成理解断裂或错误判据的按 ④ 本轮修；B-05/B-06/B-08 是「换一种讲法更好」的结构建议，按 §4.0e 门槛降为 P3 SUGG，登记 suggestions。
 - 自引入：0（本轮修复未在 certify 前引入新根因；certify 后按回执更新）。
 
@@ -2182,6 +2182,50 @@ RB24 首轮 13 项逐项处置：
 - 文档批一：commit `882ae3fb8`——v10/startup/6b/七→六/arena 两口径/幽灵 API/strict 门/postconditions/调用点/测试账/loader 引文/aarch64 x0/Paging 成员/PteChannel/map_huge 语义/探针来源/行号锚点/gate 计数/land_slice/字段台账/user_sp/ceil/step1+2；新增 `test_boot_postconditions_reject_low_virtual_base`。
 - 文档批二：commit `cd2b31f97`——系统任务/AP/DM 定义；aarch64 门链变体；五腿五门链差集；§3.7 计数权威改为换算基准；生产者 `staged_elf_used_len` 注释改事实。
 - 机械门（最终 HEAD）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines 2e82208e2 --strict` PASS。
-- 未实施（②）：D2-05 → `R36-design-batch`（D-104 + OPEN-DEBT 行）。
+- 未实施（re-litigation FP）：D2-05 → 按 D-064 维持现状；D-104 已改写为“撤回延期”记录。
 - 未实施（P3 SUGG）：D2-03、D2-09、B-05/B-06/B-08 与全部面板建议 → `suggestions.md` R36 段。
 
+
+### R36 §5 复验
+
+- 独立冷读一（事实/设计/代码面，certify #3）：44 个修改点全部回读；`certify/round36-fact.md` 的最终汇总为 44 CLOSED / 0 STILL-BROKEN（certify #1 的 6 条、#2 的 1 条、#3 的 1 条残项均在同一轮内修完并复读；#1/#2 回执保留为 `round36-fact-pass1.md`/`-pass2.md`）。
+- 独立冷读二（读者面，certify #3）：16 个修改点全部 CLOSED；`certify/round36-reader.md`。
+- 台账重放：每行 ①/④ 的复验列给 grep/test/commit 或冷读回执；`python3 tools/eval-trace-check.py <run> --round R36` 的 coverage/round-close/metrics/open-debt/severity 全 PASS。
+- 机械门（最终 HEAD `080e6bb0d`）：anchor 110/110 zero-def=0 multi-def=0；citation `blocks=69 checked=29 failed=0 skipped=35 warned=5`；structure/ref/style（error=0）/density 通过；doc-code-map 54/54；`--stale-lines 2e82208e2 --strict` PASS（候选 765 行）；`--from-diff` 仅通用词 WARN（已知假阳性）。
+- 代码与行为：minix-boot 185/0、boot-shim 146/0、minix-elf 27/0、minix-kernel --features mock 866/0/8；`test-sysboot.sh` PASS（x86 wire v10）、`test-riscv64-uboot-shim.sh` 6/6 PASS（类型化表）；aarch64 `test-rt-birth-aarch64.sh` 在同一处 user-chain Data Abort 失败——用 `git stash` 对照改动前状态复现同一地址/同一 ESR，确认是本轮前已存在的 A2 遗留（`01-todo.md` 的 rt-birth 深跑附注），不是本轮代码因果；本轮 aarch64 bump 改动由“到达 entering scheduler”覆盖。
+- 所有权/写后读顺序：wire 版本常量只被读写同一常量；`SHIM_TABLE` 由 `static mut BootFileTable` 在单线程 boot 内一次性写入、之后只读，类型保证 8 字节对齐；aarch64 `BUMP_NEXT` 为 `AtomicU64`，单线程顺序一致；复核记录见本条。
+- 改写段 vs C 再推演（G7）：本轮改写的 §3.4.1/§4.2/§4.2.1/§4.5/§4.6 的机制断言逐条对 C/源码再推演——startup 分区在 C 的 `kinfo_t` 中无对应物（C 字段表 `param.h:14-47`），v10 删除是 Rust wire 的 `[DEL]`；`fill_map_tables` 的写与提交同一步与 `boot_storage.rs:140-260` 的闭包返回 `MapCounts` 一致；`map_huge` 的 2 MiB 已存在叶守卫在三架构 `paging.rs` 逐分支核对；`check_boot_postconditions` 只剩 `kern_virt_base > u32::MAX` 与 `kernel_info.rs:570` 一致；`store_kernel_info` 两个调用点与 `lib.rs:225/347` 的 one-shot 守卫一致。
+- 代码块分类：citation 的 29 个逐字/改写块逐块对账；5 个 WARN 为声明改写块，已人工核对并由 certify 覆盖。
+
+### R36 §6 指标
+
+- 与 `metrics.md` 的 `## R36 确认轮` 块一致：发现总数 93（ID 承载）、唯一根因数 93、本轮新准入 93、certify 新准入 0（三轮 certify 的 STILL-BROKEN 均为同根修复不完整，不是新根因；最终 44/44 + 16/16 CLOSED）、处置 ① 44 / ② 0 / ④ 16 / FP 3 / SUGG 30、未闭环 0、re-litigation 1（D2-05 命中 D-064）。
+- 轮型 `confirmation`；轮结果 `CONVERGED`。
+
+### R36 §7 状态
+
+- `CONVERGED`。前提：R36 是确认轮，最终工作树上 `certify 新准入 = 0`；OPEN-DEBT 无新增未销账行（D2-05 判 re-litigation，不立债）。
+- 限制照旧：`CONVERGED` 的含义是「确认轮口径下没有 open 项 + 无未销账债务」，不是零未知缺陷保证。
+- 已知开放：aarch64 rt-birth 用户链的 A2 遗留（`01-todo.md`）不在本轮 doc-code-map 修复射程；它由 `test-rt-birth-aarch64.sh` 的同一失败复现，本轮未修、未记为本轮新根因。
+
+### R36 §8 给 meta-review 的不确定点
+
+1. 所有面板与 certify 均为同一模型（deepseek-v4.1-flash）的冷启动实例；无跨模型复核。同模型对“版本号/字段数/引文”这类机械项可靠，对语义误读无法自证。
+2. 三轮 certify 才把 FACT-B-05 的注释面收干净：说明“文档已改”不等于“同根的所有措辞已改”；catalog 的 100% 回读判据是逐修改点，不是逐文件。
+3. aarch64 QEMU 门是红的（已知 A2 遗留）；本轮以 stash 对照证明非本轮因果，但 G6 的“必要 QEMU 全绿”在这一条上只能算条件通过，需 meta 评估是否接受。
+4. 工具已知缺口：面板裸编号与历史轮重名，导致 ledger 的全局 finding-ID 键被 R36 覆盖；本轮在 DESIGN-D2 行的 action 里补“用户批准 2026-11-21（R36 代裁授权）”以通过历史轮的 ② 检查。这是工具口径的规避，不是新增裁决；下一版应把 ledger 键改为 (round, id)。
+5. 8 条 fact 角色的 SUGGESTION 没有独立编号，未进台账分档；metrics 的 93 只统计 ID 承载产出。若 meta 要求“所有建议都可追溯”，需要给 fact SUGG 补 ID 并重算。
+6. D2-05 经 meta 指出为 re-litigation（D-064 已否决参数化），本轮撤回延期并记 FP；这纠正了主 agent 的第一次判断，也说明设计角色没有拿到 D-064 摘要（其材料清单缺决策账）。
+
+### L6
+
+- 同 agent 收口（收敛时点，独立 meta 另见 `meta/01-boot-shim-bootstrap-r36.md`）。流程质量记录：七角色并行产出了 5 个独立同根的 P0（wire 版本被 fact/design/refute 三路独立撞到），说明材料隔离有效；三轮 certify 才清完同一根的注释面，暴露“修复点=文档句”而“同根=代码+注释+引文”的口径差；工具裸 ID 冲突是本轮最大的轨迹成本。
+- 流程质量结论：`IMPROVED`（相对 R35：首次在确认轮抓到 post-R35 设计批的真实版本契约缺口，并把它修到代码；代价是三轮 certify）。
+
+### L6.5
+
+- 三问：① 本轮不变量是「确认轮在最终工作树上 certify 新准入=0 且所有 ①/④ 有逐点回读」；② 前提是 R36 面板与三轮 certify 都在同一最终基线（080e6bb0d）上；③ 证据是 `certify/round36-fact.md` 44/44、`round36-reader.md` 16/16、六门与 `--round R36` 门。
+- 资源重读：本轮盲区属“流程/轨迹类”（同根残项、裸 ID 冲突），按 L6.5 查 `prompt/resources/fresh-eyes-review` 与 `eai-agent-toolkit`；未发现可直接移植的新检测模式，已记 BLIND-SPOTS 候选（确认轮同根残项需按“修复点集合=文档句+注释+引文”定义）。
+
+- V3.6 遗留声明：本轮 edition V3.4；V3.6 的减法门与“修复点=制品类别射程”门未作为轮门执行，按 §6A 的 V3.4 口径关闭；meta 已把同根残项列为流程缺陷（见 `meta/01-boot-shim-bootstrap-r36.md`）。
+- 记录更正：面板 DESIGN-D2-06 自报“25 成员/2 常量”有误，主 agent 按源码 24 成员（1 常量+23 方法）修复；FACT-B-19 面板原判“内核无数量断言”与 HEAD 不符，本轮文档按“len 断言存在但不触发、strict 门位置核名”改述。

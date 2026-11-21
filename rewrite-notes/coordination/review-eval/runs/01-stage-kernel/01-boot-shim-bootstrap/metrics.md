@@ -4,7 +4,7 @@
 
 - 发现总数: 87
 - 处置: ① 26 / ② 3 / ③ 10 / ④ 48 / ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 8 / 接受 8 / 实施 8 / 登记 4
 - 成本: agent 7 / token 未采集 / 耗时 约 2.5 小时（面板 + 修复）
@@ -13,7 +13,7 @@
 
 - 发现总数: 98（文档缺陷 86 + D1 方案否决 12；按角色：FACT 12 主条 + 9 次级；READER-A 20；READER-B 20；READER-C 18；REFUTE 6 主张；DESIGN-D2 13 条）
 - 处置: ① 21（FACT 16、REFUTE 4、DESIGN-D2-10 1）/ ② 0 / ③ 21（FACT 5、READER-B-15、READER-C-10、REFUTE 2、DESIGN-D2 12）/ ④ 56（READER-A 20、READER-B 19、READER-C 17）/ ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（`KernelInfo::validate` 增加内核×模块×模块半开区间复核）
 - 成本: agent 7（fact / reader A/B/C / refute / design D1 / design D2）/ token 未采集 / 耗时 约 4 小时（面板 + 修复 + 三门）
@@ -23,7 +23,7 @@
 
 - 发现总数: 80（FACT 6；READER-A 20；READER-B 20；READER-C 15；REFUTE 7；DESIGN-D2 12）
 - 处置: ① 13 / ② 0 / ③ 14 / ④ 53 / ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（`KernelInfo::validate` 跨度 `checked_add`）
 - 成本: agent 7 / token 未采集 / 耗时 约 45 分钟（面板 + 修复 + 三门，不含排队）
@@ -33,7 +33,7 @@
 
 - 发现总数: 64（FACT 3；READER-A 20；READER-B 20；READER-C 8；REFUTE 6；DESIGN-D2 7）
 - 处置: ① 12 / ② 3 / ③ 1 / ④ 48 / ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 1 / 接受 1 / 实施 1 / 登记 0（六处跨度加法 checked_add）
 - 成本: agent 7 / token 未采集 / 耗时 约 40 分钟（面板 + 修复 + 三门）
@@ -43,7 +43,7 @@
 
 - 发现总数: 63（READER-A 20；READER-B 20；READER-C 11；REFUTE 7；DESIGN-D2 5；P-FACT MISSING）
 - 处置: ① 14 / ② 3 / ③ 3 / ④ 43 / ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 6 / token 未采集 / 耗时 约 50 分钟
@@ -53,7 +53,7 @@
 
 - 发现总数: 67（FACT-A 3；FACT-B 2；READER-A 20；READER-B 20；READER-C 10；REFUTE 7 条主张；DESIGN-D2 5）
 - 处置: ① 9 / ② 3 / ③ 5 / ④ 50 / ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 7 / token 未采集 / 耗时 约 55 分钟
@@ -63,7 +63,7 @@
 
 - 发现总数: 110（FACT-A 7；FACT-B 17；READER-A 24；READER-B 20；READER-C 20；REFUTE 6 条主张；DESIGN-D2 16）
 - 处置: ① 61 / ② 3 / ③ 6 / ④ 40 / ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 8 / 接受 5 / 实施 5 / 登记 3（bootface 合并、kern_ident 删除、pt_alloc release 语义转 R24；wire 偏移与 landing helper 本轮已实施）
 - 成本: agent 7 / token 未采集 / 耗时 约 4 小时（面板 + 修复 + 三门）
@@ -73,7 +73,7 @@
 
 - 发现总数: 118（FACT-A 15；FACT-B 21；READER-A 20；READER-B 20；READER-C 20；REFUTE 6 条主张；DESIGN-D2 16）
 - 处置: ① 114 / ② 0 / ③ 4 / ④ 0 / ⑤ 0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 4 / 接受 3 / 实施 3 / 登记 0（`ident_regions` 死接口删除、公共窗口 helper、`PlacementPool`；bootface 整段合并不做）
 - 成本: agent 7 / token 未采集 / 耗时 约 2 小时（面板 + 修复 + 宿主/QEMU）
@@ -87,7 +87,7 @@
 - certify 新准入: 0
 - 新 in-scope 真缺陷: 0
 - 轮型: discovery
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 3 / 接受 3 / 实施 3（`PlatformDescSource` 可选长度、`map_kernel` 收 `KernelLayout`、`CheckedWindows`/`PhysRange`/直核 `BootStorage` 三项 DESIGN-02/09/10 已落码）
 - 成本: agent 7 / token 未采集 / 耗时 约 2 小时（面板 + P0/P1 修复 + 宿主/QEMU）
@@ -106,7 +106,7 @@
 - 未闭环: 0
 - 轮型: full
 - edition: V3.0
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 12 / 接受 12 / 实施 1 / 登记 11（D2-06 已实施；D2-01..05、D2-07..12 经代理裁决转入 R27 code batch）
 - 成本: agent 7 / token 未采集 / 耗时 约 3 小时（面板 + 归因 + 修复 + 验证）
@@ -124,7 +124,7 @@
 - 未闭环: 0
 - 轮型: full
 - edition: V3.1
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 4 / 接受 4 / 实施 4（D2-16 返回值统一、D2-17 窗口边界负控、D2-18 双所有者声明、D2-19 `.data` 口径）
 - 成本: agent 1（结构轮不重开全量面板）/ token 未采集 / 耗时 约 2 小时（结构重写 + 机械门 + 宿主/QEMU 复核）
@@ -143,7 +143,7 @@
 - 未闭环: 0
 - 轮型: full
 - edition: V3.1
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 9 / 接受 9 / 实施 9（D2-20..28 全部落码）
 - 成本: agent 6（FACT-A/B、READER A/B/C、DESIGN-D2）/ token 未采集 / 耗时 约 3 小时（面板 + P1/P2 修复 + 复核）
@@ -162,7 +162,7 @@
 - 未闭环: 0
 - 轮型: full
 - edition: V3.1
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 8 / 接受 8 / 实施 8（D2-29..36；含 entry_point 交叉校验、BootStorage push 提交断言、依赖图修正）
 - 成本: agent 6 / token 未采集 / 耗时 约 3 小时（面板 + 修复 + 复核）
@@ -185,7 +185,7 @@
 - 用户否决: 0
 - 轮型: full
 - edition: V3.1
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 7 / 接受 7 / 实施 0（D2-01..07 记为文档改进方向，不阻塞本轮）
 - 成本: agent 6 / token 未采集 / 耗时 约 2.5 小时
@@ -207,7 +207,7 @@
 - 用户否决: 0
 - 轮型: full
 - edition: V3.1
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 8 / 接受 8 / 实施 3（D2-01 栈窗口修复、D2-02 DTB 排序、D2-03 死标志清理）
 - 成本: agent 6 / token 未采集 / 耗时 约 2 小时
@@ -229,7 +229,7 @@
 - 用户否决: 0
 - 轮型: confirmation
 - edition: V3.3
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 4 / 接受 4 / 实施 0 / 登记 4
 - 成本: agent 8 / token 未采集 / 耗时 约 4 小时
@@ -251,7 +251,7 @@
 - ARCH 提案: 0
 - 用户否决: 0
 - edition: V3.3
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 1（独立冷读）/ token 未采集 / 耗时 约 3 小时
@@ -273,7 +273,7 @@
 - ARCH 提案: 1（ARCH-PROPOSAL-01：aarch64 `arena_pa == 0` 形态判别改链接期分叉，待用户裁决）
 - 用户否决: 0
 - edition: V3.4
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 13 / 接受 13 / 实施 0 / 登记 13
 - 成本: agent 8（六角色 + 两次 certify）/ token 未采集 / 耗时 约 5 小时
@@ -287,17 +287,17 @@
 - certify 新准入: 0（round36-fact 与 round36-reader 两份独立回执全 CLOSED；无新增修改点）
 - 重复合并: 0（逐 ID 立根因；8 条未编号 fact 建议另计）
 - 自引入: 0（certify 回执未发现本轮修复引入的新根因）
-- 处置: ① 44 / ② 1 / ④ 16 / ⑤ 0 / ⑥ 0 / FP 2 / SUGG 30
+- 处置: ① 44 / ② 0 / ④ 16 / ⑤ 0 / ⑥ 0 / FP 3 / SUGG 30
 - 未闭环: 0
 - 轮型: confirmation
 - 轮结果: CONVERGED
-- 代裁决: 1（D-104：批准 D2-05 延期到 R36-design-batch）
+- 代裁决: 1（D-104 修正：D2-05 判 re-litigation，采 D-064 路线 B，撤回延期）
 - ARCH 提案: 0
 - 用户否决: 0
 - edition: V3.4
-- re-litigation: 0
+- re-litigation: 1（DESIGN-D2-05 命中 D-064）
 - adjacent 阻塞: 0
 - 重构: 提出 1 / 接受 1 / 实施 0 / 登记 1
 - 减法: 提案 8 / 采纳 4（D2 SUBTRACTION-TABLE）
-- 成本: agent 9（7 面板 + 2 certify）/ token 未采集 / 耗时 约 6 小时
+- 成本: agent 13（7 面板 + 6 次 certify 回执）/ token 未采集 / 耗时 约 7 小时
 - 回读与回归: 文档六门绿（anchor 110/110、citation checked=29 failed=0、structure/ref/style error=0/density、doc-code-map 54/54）；`--stale-lines 2e82208e2 --strict` PASS；minix-boot 185/0、boot-shim 146/0、minix-elf 27/0、kernel mock 866/0/8；test-sysboot PASS、test-riscv64-uboot-shim 6/6 PASS；aarch64 rt-birth 门在同一处 user-chain Data Abort（stash 对照，已知 A2 遗留，非本轮因果）

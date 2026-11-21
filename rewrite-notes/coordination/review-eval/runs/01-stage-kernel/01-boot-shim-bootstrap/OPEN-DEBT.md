@@ -46,4 +46,3 @@
 | BOOTSTORAGE-fill-api | P2 | **用户批准 2026-11-20（用户裁决 D-067）批准实施、可立即开工**：`BootStorage` 半提交防护改造——删 `map_dirty`（borrow checker 已禁掉「边写边读」，该字段防错了对象）；五族改用 `fill_*` 闭包（闭包返回实际写入量并当场提交，可内置断言）；内存图两族改用 `fill_map_tables` + 新增 `MapCounts { memmap, reserved }` 值对象；`ParamStats` 的 pub 字段不动。详见 `01-todo.md` 的 I-34 |
 | I35-write-once | P2 | **用户批准 2026-11-20（用户裁决 D-071）批准实施、可立即开工，但用户明确要求「不实施、只记账」**：`KERNEL_INFO` 的 write-once 承诺与实际二次写（删 `kmain:1738` 冗余 store + 形参改 `_kernel_info` + `store_kernel_info` 加一次性 assert + 注释改事实）；`Frozen::freeze` 的 `debug_assert!` 并入 I-32（D-064）；`IPC_FILTER_POOL` 注释改「初始化一次，BKL 下可变」。全仓 11 处 write-once 承诺的审计结论见 `01-todo.md` 的 I-35 |
 | — | — | F-R18-01 已实施；R14/READER-A-16 为 adjacent，见 `follow-ups.md` |
-| R36-design-batch | P2 | **用户批准 2026-11-21（代理裁决 D-104）延期至下一 design batch**：RD36-DESIGN-D2-05（U-Boot 腿 `prepare_boot` 的两个安装型全局参数化，删 `DTB_PTR`/`BOOT_FILE_TABLE_PTR` 与两个 `install_*`；或退一步改 `AtomicU64` 并补 0 值写一次漏洞）。确认轮不实施 ⑥（§3.6），登记后销账；下一 batch 在 D02 循环前评估 |

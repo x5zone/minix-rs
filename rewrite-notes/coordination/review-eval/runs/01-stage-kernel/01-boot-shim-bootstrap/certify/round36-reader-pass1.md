@@ -25,3 +25,5 @@
   - READER-C-05：CLOSED — §4.5 的引文头现在写“四个切片落地区收敛到 `land_slice`；保留 helper、四处调用、仍内联的模块名/param 两块与指针回填”，引文里恰好是四次 `land_slice(...)` 调用（`reserved_regions`、`memmap`、`platform_sources`、`memmap_sources`），模块名与 param 两块仍内联；容量表开头写“六个落地区、一个名字池”，并把 `STARTUP_RECORD_STORE` 单独标成“**v10 已删除**”。读者能把“四处调用 + 两块内联 = 六个落地区”对上，不再遇到“五处调用只显示四处”或“第七个落地区凭空消失”的缺口。
 - 汇总：CLOSED 12 / STILL-BROKEN 4
 - 局限：同模型冷启动、只读文档（未读 panel/round36、minix3/、os/ 或历史评审，未用源码替作者补全）；引用计数 29/29、测试通过数等台账结论未在本轮独立复核；本报告只判断读者面文本的自洽性与可读性。
+
+- 历史回执：本 pass 的结论以正文汇总为准（pass1 12 CLOSED/4 STILL-BROKEN、pass2/pass3 16/16）；本轮最终结论 CLOSED/PASS（16/16，见 `round36-reader.md`）。

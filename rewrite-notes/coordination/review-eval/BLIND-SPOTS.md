@@ -539,3 +539,12 @@ meta R23 复核后新增四条；复发的旧条目只记证据，不改其 OPEN
 - **为什么当时没发现**：`eval-trace-check.py` 只检查处置类 token 与复验列非空，模板句可通过。
 - **期望探测器**：删除 ③；误报只能 `FP` 且 `证据` 列必须含源码/测试/文档原文反证；② 必须有“用户批准 + YYYY-MM-DD”；⑤/未批准 ② 计入未闭环；R25+ `metrics.md` 必须有 `未闭环: 0`。
 - **状态**：CLOSED（V2.3，2026-11-10）；工具自测含 ③ 拦截与 FP 反证拦截。
+
+## B-68 同根修复的制品类别射程无人负责（V3.4 确认轮）
+
+- **类别**：流程 / 轨迹完整性
+- **历史证据**：D01 R36 的 FACT-B-05 在三轮 certify 中反复以同根残项出现（文档句已改，源码 docstring/测试注释/引理注释仍在）；`check_boot_postconditions`、`land_slice`/`store_kernel_info`、`bootface_a64` 的 x0 注释、`handoff_v1_read` 的悬空 WIRE_STARTUP_CAP 注释都是同一例。见 `runs/01-stage-kernel/01-boot-shim-bootstrap/certify/round36-*.md`。
+- **为什么当时没发现**：修复清单按“面板发现的最小修复=一句话”建，角色与工具都没有“同根的所有制品类别（文档句/源码 docstring/测试注释/引文/锚点/测试名）”清单；certify 只按修改点回读，不按根因扫制品。
+- **期望探测器**：L3 的 fix-scope 生成器按根因列出制品类别并逐类 grep；L4 certify 对每个根因做“同根制品 grep 归零”；工具支持 `(round, finding-id)` 键而非裸 ID。
+- **状态**：OPEN
+- **检测证据**：R36 三轮 certify（fact pass1 6 STILL-BROKEN、pass2 1、pass3 残项复读）与 meta `meta/01-boot-shim-bootstrap-r36.md` 的 Scope/Trace 两问。

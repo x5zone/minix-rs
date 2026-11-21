@@ -126,3 +126,16 @@
 - **READER-C S01–S05**：§2.5「第一次」悬空指代；评审过程工件（OPEN-DEBT/suggestions/F-R34-01）进正文；设计稿指针缺路径；§7.1 `smp_gpt_v3.md` 自指；交接寄存器事实六处重复。
 - **DESIGN-D2-03（P3）**：删 `startup_record()` 与无生产者的 Startup 枚举分支，wire 数值保留为保留位；用 `EMPTY_SOURCE_RECORD` 替 `ZERO_RECORD`。
 - **DESIGN-D2-09（P3）**：`PAIR_STORAGE` 与 `resv_claims` 的五个 `static mut` 改调用方局部 + `&mut`；需先实测 boot-shim 栈余量（约 11 KiB）。
+
+### R36 建议编号（便于追溯）
+
+| 建议 ID | 来源 | 内容摘要 | 去向 |
+|---|---|---|---|
+| R36-FACT-A-S1 | fact-a SUGG 1 | 手写 `file:line` 锚点纪律 | 下一 edition 锚点门 |
+| R36-FACT-A-S2 | fact-a SUGG 2 | 改写/示意引文块的符号存在性检查 | 工具候选 |
+| R36-FACT-A-S3 | fact-a SUGG 3 | §2.4.2 VM 回收限定为其余 11 个模块 | 下一轮文风/事实 |
+| R36-FACT-A-S4 | fact-a SUGG 4 | v10 术语双关拆分 | 已在 R36-01 部分落地 |
+| R36-FACT-B-S1 | fact-b SUGG 1 | §6.4 U-Boot 接收镜像措辞 | 已在本轮顺手修 |
+| R36-FACT-B-S2 | fact-b SUGG 2 | §6.3 shim 栈来源 | 已在本轮顺手修 |
+| R36-FACT-B-S3 | fact-b SUGG 3 | §4.4 引文头补对齐断言省略 | 下一轮文风 |
+| R36-FACT-B-S4 | fact-b SUGG 4 | §6.1 step4 限定 aarch64 接收腿 | 已在本轮顺手修 |
