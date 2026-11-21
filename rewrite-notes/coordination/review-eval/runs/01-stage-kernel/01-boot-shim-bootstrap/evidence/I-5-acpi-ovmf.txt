@@ -1,0 +1,22 @@
+# I-5 — x86 ACPI RSDP → RSDT/XSDT → MADT，OVMF 实测
+
+- 日期：2026-11-21
+- 基线：当前工作树（D-107 清零批）
+- 构建：
+  `cd os && cargo build --release -p test-smp-topo --target x86_64-unknown-uefi --features fw-x86-uefi`
+- 运行：
+  `os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-smp-topo.efi`
+- 串口读数（去 ANSI 控制序列）：
+  `### test_smp_topo: discovering topology (RSDP → MADT)...`
+  `  RSDP @ 0x000000000777e000`
+  `  nr_cpus = 0x0000000000000004, bsp hw_id = 0x0000000000000000`
+  `  cpu[0x0] hw_id = 0x0 (BSP)`
+  `  cpu[0x1] hw_id = 0x1`
+  `  cpu[0x2] hw_id = 0x2`
+  `  cpu[0x3] hw_id = 0x3`
+  `### TEST_RESULT: PASS test-smp-topo ###`
+- 结论：OVMF 配置表提供 ACPI 2.0 RSDP；`find_platform_sources_into` 取到
+  `0x777e000`，`AcpiDesc::parse` 经 XSDT/RSDT 找到 MADT 并解析出 4 个
+  enabled CPU。I-5 的“RSDP 搜索/表解析路径”在现有 QEMU/OVMF 环境实测成立。
+- 口径：这是 QEMU/OVMF 证据，不是物理机实测；按 D-107 以现有
+  QEMU/OVMF 读数收口，标 `external-evidence-waived`。
