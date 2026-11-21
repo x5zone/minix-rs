@@ -862,6 +862,7 @@ fn elf_flags_to_page_flags(elf_flags: u32) -> crate::paging::PageFlags {
 mod tests {
     use super::*;
     use crate::paging::PageFlags;
+    use alloc::{boxed::Box, vec};
 
     #[test]
     fn entry_spec_kernel_task_all_none() {

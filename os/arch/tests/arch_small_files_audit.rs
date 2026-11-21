@@ -33,23 +33,15 @@ fn arm64_fpu_state_geometry_is_frozen() {
 // ── protection (privilege mapping on both architectures) ──
 
 #[test]
-fn protection_privilege_mapping_is_frozen() {
+fn protection_privilege_mapping_stays_deleted() {
     let a64 = include_str!("../src/arm64/protection.rs");
     let rv = include_str!("../src/riscv64/protection.rs");
-    // arm64: EL1→Kernel, EL0→User; riscv64: S_MODE→Kernel, U_MODE→User.
-    for (src, kernel, user) in [
-        (a64, "AArch64PrivilegeLevel::EL1", "AArch64PrivilegeLevel::EL0"),
-        (rv, "Riscv64PrivilegeLevel::S_MODE", "Riscv64PrivilegeLevel::U_MODE"),
-    ] {
-        assert!(
-            src.contains(&format!("to_privilege({kernel})")),
-            "特权级→Privilege 映射漂移：{kernel} 腿"
-        );
-        assert!(
-            src.contains(&format!("to_privilege({user})")),
-            "特权级→Privilege 映射漂移：{user} 腿"
-        );
-        assert!(src.contains("Privilege::Kernel") && src.contains("Privilege::User"));
+    // The Privilege/PrivilegeLevel family had no production consumer and was
+    // deleted (D-103 P2-1). Keep it deleted: a future consumer must design a
+    // real mapping from its own差异 rather than reviving this placeholder.
+    for src in [a64, rv] {
+        assert!(!src.contains("to_privilege"), "Privilege mapping revived");
+        assert!(!src.contains("PrivilegeLevel"), "PrivilegeLevel associated type revived");
     }
 }
 

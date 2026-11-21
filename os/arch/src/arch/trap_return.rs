@@ -139,10 +139,10 @@ pub trait TrapReturnArch {
 /// on the host loud and diagnosable instead of silently corrupting the test
 /// process. Host tests never trigger it: they exercise the scheduling
 /// *stages* (pick, requeue, address-space switch, finish) individually.
-#[cfg(feature = "runtime-window")]
+#[cfg(any(feature = "runtime-window", test))]
 pub struct MockTrapReturn;
 
-#[cfg(feature = "runtime-window")]
+#[cfg(any(feature = "runtime-window", test))]
 impl TrapReturnArch for MockTrapReturn {
     // The mock build has no per-arch frame of its own; reuse the x86-64
     // frame/context types, which are plain data and compile on any host
@@ -165,7 +165,7 @@ impl TrapReturnArch for MockTrapReturn {
 }
 
 /// Last `(cpu_id, stack_top)` recorded by [`MockTrapReturn::prepare_user_return`].
-#[cfg(feature = "runtime-window")]
+#[cfg(any(feature = "runtime-window", test))]
 pub fn mock_prepare_user_return_last() -> (u32, u64) {
     (
         MOCK_PREPARE_CPU.load(core::sync::atomic::Ordering::Acquire),
@@ -173,10 +173,10 @@ pub fn mock_prepare_user_return_last() -> (u32, u64) {
     )
 }
 
-#[cfg(feature = "runtime-window")]
+#[cfg(any(feature = "runtime-window", test))]
 static MOCK_PREPARE_CPU: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
-#[cfg(feature = "runtime-window")]
+#[cfg(any(feature = "runtime-window", test))]
 static MOCK_PREPARE_STACK: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 

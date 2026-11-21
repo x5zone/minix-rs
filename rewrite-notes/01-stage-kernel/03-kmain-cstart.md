@@ -1251,7 +1251,7 @@ os/arch/src/riscv64/trap_entry.rs: 1
 os/arch/src/riscv64/trap_stub.rs: 7
 ```
 
-这 9 个文件是与本篇直接相关的子集（合计 55：按「行首 `#[test]` 属性」口径逐文件 `grep -c`，并把 `riscv64/trap_stub.rs` 的一条注释命中剔除；不是按锚点去重）；arch crate 全量 `src/**/*.rs` 按「行首 `#[test]` 属性」口径是 373 个/54 文件（若把行内与注释形态也计入，src 侧 grep 会读到 374 处/54 文件；`os/arch/tests` 侧宽口径另有 95 处/21 文件；本文只采用行首属性口径），`os/arch/tests/*.rs` 另有 87 个/21 文件。
+这 9 个文件是与本篇直接相关的子集（按 `#[test]` 属性统计，不是按锚点去重）；arch crate 全量 `src/**/*.rs` 按 `#[test]` 属性口径是 378 个/54 文件，`cargo test -p minix-arch --lib -- --list` 实际列出 266 个可运行测试（默认形态 266/0），`cargo test -p minix-arch -- --list` 含 `os/arch/tests` 共 355 个；`os/arch/tests/*.rs` 静态属性 87 个/21 文件。静态属性数高于 `--list` 是因为部分测试被 `#[cfg]` 门住或属于门内 inventory，实际可运行数以 `--list` 为准。
 
 x86_64 的 16 个保护测试里与本篇直接相关的几类：TSS 布局（`tss64_size_is_104_bytes`、`tss64_offsets_correct`）、描述符位组合（`gdt_descriptors_have_correct_dpl`、`gdt_descriptors_are_flat_mode`、`tss_descriptor_is_64bit`）、描述符与结构体地址的一致性（`tss_descriptor_high_half_carries_base_above_4gib`、`init_creates_tss_descriptor_in_gdt`）、`sp0` 算术（`set_kernel_stack_updates_sp0`、`init_sets_tss_sp0_below_reserved_area`）。13 个 trap 测试 = 9 条门表测试（1 条 `init` 全占位 + 1 条保留向量 + 7 条 `install_idt_handlers` 后的 DPL/IST/类型）+ 2 条 `set_handler` + 2 条结构布局；`install_idt_handlers` 在生产路径上对 41 条门逐门断言 DPL/IST/类型，并核对 gate presence 与 stub 覆盖相等；`user_accessible` 的谓词与 DPL 另有 `test_user_accessible_gate_set` 与 `set_handler_sets_dpl_correctly` 两条直接断言。IPC 门（向量 33）由 `install_trap_stubs` 装 stub，不再单列门测试。11 个 trap_stub 测试里的覆盖检查改为先调 `install_idt_handlers` 再对 `STUB_VECTORS` 与 gate presence 核验。
 

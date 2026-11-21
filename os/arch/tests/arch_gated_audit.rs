@@ -4,7 +4,7 @@
 //! The modules under `os/arch/src/{arm64,riscv64}` and
 //! `os/plat/src/{arm64,riscv64}` are gated wholesale behind
 //! `#[cfg(target_arch = …)]`, so the host (x86_64) `cargo test` never
-//! compiles them — the 86 `#[test]`s inside the gates never run yet report
+//! compiles them — the gated `#[test]`s inside the gates never run yet report
 //! green (a reachability-discipline trap this project has hit twice). This
 //! audit turns the "invisible unknown set" into a "frozen known set that goes
 //! red on drift":
@@ -75,7 +75,7 @@ const FROZEN: &[(&str, &[&str])] = &[
     ),
     (
         "arch/src/arm64/protection.rs",
-        &["privilege_level_roundtrip", "protection_has_cpu_count"],
+        &["protection_has_cpu_count"],
     ),
     (
         "arch/src/arm64/signal.rs",
@@ -149,7 +149,7 @@ const FROZEN: &[(&str, &[&str])] = &[
     ),
     (
         "arch/src/riscv64/protection.rs",
-        &["privilege_level_roundtrip", "protection_has_cpu_count"],
+        &["protection_has_cpu_count"],
     ),
     (
         "arch/src/riscv64/signal.rs",
@@ -266,12 +266,13 @@ fn gated_test_inventory_matches_frozen_manifest() {
 
 #[test]
 fn frozen_manifest_total_is_known() {
-    // Total-count sentinel: 86 (frozen 2026-10-06). If someone adds a gated
+    // Total-count sentinel: 84 (updated after deleting the two Privilege
+    // roundtrip tests; the gated set is otherwise unchanged). If someone adds a gated
     // test and forgets the manifest, the previous test reports the per-file
     // difference; if someone renames a whole file so the read fails, the
     // previous test panics; this one backstops the manifest key count itself.
     let files: usize = FROZEN.len();
     let tests: usize = FROZEN.iter().map(|(_, v)| v.len()).sum();
     assert_eq!(files, 20, "受审计文件数");
-    assert_eq!(tests, 86, "受审计门内测试总数（2026-10-06 冻结值）");
+    assert_eq!(tests, 84, "受审计门内测试总数（Privilege roundtrip 删除后）");
 }

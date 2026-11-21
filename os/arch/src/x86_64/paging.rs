@@ -201,13 +201,13 @@ fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
         PteChannel::KernelDm => {
             X86_64DirectMap::kernel_phys_to_virt(PhysBytes(phys)).0 as *mut u64
         }
-        #[cfg(not(all(test, feature = "runtime-window")))]
+        #[cfg(not(test))]
         PteChannel::VmDm => X86_64DirectMap::vm_phys_to_virt(PhysBytes(phys)).0 as *mut u64,
         // In this crate's own test build (mock feature), the VM
         // window routes through MockDirectMap so tests can point it at
         // real leaked memory via `set_mock_vm_base` — mirroring the
         // VM-side test funnel. Production keeps the x86_64 constant base.
-        #[cfg(all(test, feature = "runtime-window"))]
+        #[cfg(test)]
         PteChannel::VmDm => {
             crate::arch::direct_map::MockDirectMap::vm_phys_to_virt(PhysBytes(phys)).0
                 as *mut u64
@@ -1641,6 +1641,7 @@ unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::String;
 
     /// D-081 / I-44 §5.4 item 3 + the "assertion before mutation" proof:
     /// destroying an External handle whose root_paddr points at *unmapped*

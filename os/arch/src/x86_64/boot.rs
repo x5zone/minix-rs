@@ -448,6 +448,7 @@ impl StacktraceArch for X86_64CpuContextArch {
 mod stacktrace_tests {
     use super::*;
     use crate::arch::stacktrace::{StacktraceArch, MAX_STACK_FRAMES};
+    use alloc::{vec, vec::Vec};
 
     /// Look up a word in a fake stack slice: `(addr, value)` pairs.
     /// Returns `None` for addresses not present (simulates an unmapped

@@ -732,6 +732,7 @@ impl<D: crate::arch::direct_map::DirectMapArch> PhysAccess for D {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     fn page_aligned_region(start: u64, end: u64) -> VmBootRegion {
         VmBootRegion::new(PhysBytes(start), PhysBytes(end))
@@ -1194,11 +1195,10 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "VmBootAllocator::new: empty regions")]
     fn allocator_new_panics_on_empty_regions() {
         let regions: VmBootRegions<2> = VmBootRegions::empty();
-        let result =
-            std::panic::catch_unwind(|| VmBootAllocator::new(regions));
-        assert!(result.is_err());
+        VmBootAllocator::new(regions);
     }
 
     // -------- PhysAccess --------

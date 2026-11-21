@@ -18,6 +18,10 @@
 
 extern crate alloc;
 
+// Host test builds link std for `catch_unwind`/`Mutex`; production stays no_std.
+#[cfg(test)]
+extern crate std;
+
 pub mod arch;
 
 #[cfg(target_arch = "x86_64")]

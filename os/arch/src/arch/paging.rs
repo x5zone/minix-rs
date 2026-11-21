@@ -827,10 +827,11 @@ pub fn map_kernel<P: Paging + HugePages>(
 /// **Thread model**: Not concurrency-safe. The `mappings` field uses `BTreeMap`
 /// without locking, designed for single-threaded testing only (`#[cfg(test)]`).
 /// Multi-threaded tests require external synchronization.
-#[cfg(feature = "runtime-window")]
+#[cfg(any(feature = "runtime-window", test))]
 pub mod mock {
     use super::*;
     use crate::paging_ext::PageSize;
+    use alloc::format;
     use alloc::collections::BTreeMap;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
