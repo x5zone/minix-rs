@@ -1,0 +1,542 @@
+#!/usr/bin/env python3
+"""review-units.py — 单元级 review 状态机（V3.9）
+
+规范源：prompt/review-rules/review-units.md。
+单元：`##` = T1 章单元；`###` = T2 节单元；无 `###` 的 `##` 两者兼任。
+状态文件：rewrite-notes/meta/review/state/<stage>/<doc-stem>.yaml。
+
+用法：
+  review-units.py init <doc> [--stage S] [--edition V3.9] [--force]
+  review-units.py check <doc>
+  review-units.py sync <doc> [--unfreeze] [--unit ID]
+  review-units.py next <doc> [--track t1|t2|t3]
+  review-units.py mark <doc> --unit ID --track t1|t2 (--fix|--pass) [--freeze] [--note TEXT]
+  review-units.py sample <doc> [--ratio 0.2] [--seed STR]
+  review-units.py gate <doc> (--pass|--fail) [--evidence PATH]
+  review-units.py stats <doc>
+  review-units.py --self-test
+
+退出码：0 通过；1 校验失败；2 用法错误。
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import math
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+try:
+    import yaml
+except Exception:  # pragma: no cover
+    print("需要 PyYAML（python3 -m pip install pyyaml）", file=sys.stderr)
+    raise SystemExit(2)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from notes_layout import REVIEW_STATE_DIR, review_state_path  # noqa: E402
+
+SCHEMA = "review-units/v1"
+EXEMPT = re.compile(r"参见|附录|索引|参考文献")
+HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$")
+NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)[.、]?\s")
+MAX_ROUNDS = 2
+
+
+def sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def stage_of(doc: Path) -> str:
+    for part in doc.parts:
+        if re.fullmatch(r"\d{2}-stage-[^/]+", part):
+            return part
+    raise SystemExit(f"无法从路径识别 stage：{doc}")
+
+
+def read_doc(doc: Path) -> list[str]:
+    if not doc.is_file():
+        raise SystemExit(f"文档不存在：{doc}")
+    return doc.read_text(encoding="utf-8").splitlines(keepends=True)
+
+
+def parse_units(doc: Path) -> list[dict]:
+    lines = read_doc(doc)
+    heads: list[tuple[int, int, str]] = []
+    for i, line in enumerate(lines):
+        m = HEAD_RE.match(line)
+        if m:
+            heads.append((i, len(m.group(1)), m.group(2).strip()))
+    units: list[dict] = []
+    chapter_ids: list[str] = []
+    order = 0
+    for idx, (start, level, title) in enumerate(heads):
+        if level == 2 and EXEMPT.search(title):
+            chapter_ids.append("__exempt__")
+            continue
+        if level == 3 and chapter_ids and chapter_ids[-1] == "__exempt__":
+            continue
+        # 计算区间
+        end = len(lines)
+        for j in range(idx + 1, len(heads)):
+            if heads[j][1] <= level:
+                end = heads[j][0]
+                break
+        body_start = start + 1
+        if level == 2:
+            own_end = end
+            for j in range(idx + 1, len(heads)):
+                if heads[j][1] <= 3:
+                    own_end = heads[j][0]
+                    break
+            own_text = "".join(lines[body_start:own_end])
+            children = [
+                h[2] for h in heads[idx + 1:]
+                if h[1] == 3 and h[0] < end
+            ]
+            body = own_text + "\n" + "\n".join(children)
+            if not own_text.strip(" \t\n-—*") and not children:
+                continue
+        else:
+            body = "".join(lines[start:end])
+            if not body[body.find("\n") + 1:].strip(" \t\n-—*"):
+                continue
+        order += 1
+        m = NUM_RE.match(title)
+        uid = m.group(1) if m else f"u-{order}"
+        if level == 2:
+            chapter_ids.append(uid)
+            parent = None
+        else:
+            parent = chapter_ids[-1] if chapter_ids else None
+        units.append({
+            "id": uid,
+            "heading": title,
+            "level": level,
+            "parent": parent,
+            "order": order,
+            "text_sha": sha(body),
+        })
+    # 去重：重复编号追加 order 后缀
+    seen: set[str] = set()
+    for u in units:
+        base = u["id"]
+        n = 2
+        while u["id"] in seen:
+            u["id"] = f"{base}-{n}"
+            n += 1
+        seen.add(u["id"])
+    return units
+
+
+def new_unit(u: dict) -> dict:
+    rec = dict(u)
+    if u["level"] == 2:
+        rec.update(t1_state="pending", t1_rounds=0, t2_state="n/a", t2_rounds=0)
+    else:
+        rec.update(t1_state="n/a", t1_rounds=0, t2_state="pending", t2_rounds=0)
+    rec.update(frozen=False, frozen_at=None, rewritten=False, note="")
+    return rec
+
+
+def load_state(path: Path) -> dict:
+    if not path.is_file():
+        raise SystemExit(f"状态文件不存在：{path}（先跑 init）")
+    text = path.read_text(encoding="utf-8")
+    body = "".join(l for l in text.splitlines(True) if not l.startswith("#"))
+    data = yaml.safe_load(body)
+    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+        raise SystemExit(f"状态文件 schema 不是 {SCHEMA}：{path}")
+    return data
+
+
+def save_state(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# 单元级 review 状态（V3.9）——规范源 prompt/review-rules/review-units.md\n"
+        "# 由 tools/review-units.py 维护；冻结状态禁止手改。\n"
+    )
+    path.write_text(
+        header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120),
+        encoding="utf-8",
+    )
+
+
+def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool) -> int:
+    if state_path.is_file() and not force:
+        print(f"状态已存在：{state_path}（要重建加 --force）", file=sys.stderr)
+        return 2
+    units = parse_units(doc)
+    data = {
+        "schema": SCHEMA,
+        "doc": str(doc.relative_to(Path.cwd())) if doc.is_relative_to(Path.cwd()) else str(doc),
+        "stage": stage,
+        "edition": edition,
+        "updated_commit": "",
+        "units": [new_unit(u) for u in units],
+        "t3": {"passed": False, "evidence": "", "at_commit": ""},
+    }
+    save_state(state_path, data)
+    print(f"init: {len(units)} 个单元 → {state_path}")
+    return 0
+
+
+def all_chapters_frozen(data: dict) -> bool:
+    chapters = [u for u in data["units"] if u["level"] == 2]
+    return bool(chapters) and all(u.get("frozen") for u in chapters)
+
+
+def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    st = {u["id"]: u for u in data.get("units", [])}
+    cu = {u["id"]: u for u in current}
+    for uid in sorted(set(cu) - set(st)):
+        errors.append(f"新单元未入状态：{uid} {cu[uid]['heading']}（跑 sync）")
+    for uid in sorted(set(st) - set(cu)):
+        errors.append(f"状态中的单元在正文中不存在：{uid} {st[uid].get('heading','')}（跑 sync）")
+    for uid in sorted(set(st) & set(cu)):
+        s, c = st[uid], cu[uid]
+        if s.get("heading") != c["heading"]:
+            errors.append(f"标题漂移：{uid} 状态={s.get('heading')!r} 正文={c['heading']!r}（跑 sync）")
+        if s.get("text_sha") != c["text_sha"]:
+            if s.get("frozen"):
+                errors.append(f"冻结单元正文已变：{uid}（先 sync --unfreeze）")
+            else:
+                warnings.append(f"正文已变：{uid}（跑 sync 更新 hash）")
+        if s.get("t1_state") not in ("pending", "passed", "n/a"):
+            errors.append(f"{uid}: 非法 t1_state={s.get('t1_state')}")
+        if s.get("t2_state") not in ("pending", "passed", "frozen", "n/a"):
+            errors.append(f"{uid}: 非法 t2_state={s.get('t2_state')}")
+        for track in ("t1", "t2"):
+            n = int(s.get(f"{track}_rounds", 0))
+            if n > MAX_ROUNDS and not s.get("rewritten"):
+                errors.append(f"{uid}: {track}_rounds={n} 超过 {MAX_ROUNDS}（需用户批准或整节重写）")
+        if s.get("frozen"):
+            if s["level"] == 3:
+                if s.get("t2_state") != "frozen":
+                    errors.append(f"{uid}: 冻结节的 t2_state 必须是 frozen")
+                parent = st.get(s.get("parent") or "")
+                if parent and parent.get("t1_state") != "passed":
+                    errors.append(f"{uid}: 父章 {parent['id']} 的 T1 未通过，子节不得冻结")
+            else:
+                if s.get("t1_state") != "passed":
+                    errors.append(f"{uid}: 冻结章的 t1_state 必须是 passed")
+                children = [x for x in data["units"] if x.get("parent") == uid]
+                if children and not all(x.get("frozen") for x in children):
+                    errors.append(f"{uid}: 章冻结但仍有未冻结子节")
+                if not children and s.get("t2_state") != "frozen":
+                    errors.append(f"{uid}: 无子节的章冻结时 t2_state 必须是 frozen")
+    t3 = data.get("t3", {})
+    if t3.get("passed") and not all_chapters_frozen(data):
+        errors.append("T3 已通过但仍有未冻结的章")
+    if all_chapters_frozen(data) and not t3.get("passed"):
+        warnings.append("全部章已冻结；T3 尚未通过")
+    return errors, warnings
+
+
+def cmd_check(doc: Path, state_path: Path) -> int:
+    data = load_state(state_path)
+    current = parse_units(doc)
+    errors, warnings = validate(data, current)
+    for w in warnings:
+        print(f"[WARN] {w}")
+    for e in errors:
+        print(f"[FAIL] {e}")
+    frozen = sum(1 for u in data["units"] if u.get("frozen"))
+    print(f"units={len(data['units'])} frozen={frozen} chapters={sum(1 for u in data['units'] if u['level']==2)}")
+    if errors:
+        print("review-units check: FAIL")
+        return 1
+    print("review-units check: OK")
+    return 0
+
+
+def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None) -> int:
+    data = load_state(state_path)
+    current = parse_units(doc)
+    cu = {u["id"]: u for u in current}
+    changed = 0
+    for u in data["units"]:
+        if only and u["id"] != only:
+            continue
+        c = cu.get(u["id"])
+        if not c:
+            continue
+        if c["heading"] != u.get("heading"):
+            u["heading"] = c["heading"]
+            u["level"] = c["level"]
+            u["parent"] = c["parent"]
+            if u.get("frozen") and not unfreeze:
+                print(f"[FAIL] {u['id']}: 标题漂移且已冻结；加 --unfreeze 才可接受", file=sys.stderr)
+                return 1
+            if u["level"] == 2:
+                u["t1_state"] = "pending"
+            else:
+                u["t2_state"] = "pending"
+            changed += 1
+        if c["text_sha"] != u.get("text_sha"):
+            if u.get("frozen") and not unfreeze:
+                print(f"[FAIL] {u['id']}: 冻结单元正文已变；加 --unfreeze 才可接受", file=sys.stderr)
+                return 1
+            u["text_sha"] = c["text_sha"]
+            if u.get("frozen"):
+                u["frozen"] = False
+                u["frozen_at"] = None
+                if u["level"] == 3:
+                    u["t2_state"] = "pending"
+                    parent = next((x for x in data["units"] if x["id"] == u.get("parent")), None)
+                    if parent and parent.get("frozen"):
+                        parent["frozen"] = False
+                        parent["frozen_at"] = None
+                        print(f"[WARN] 父章 {parent['id']}: 因子节解冻而解除冻结")
+                else:
+                    u["t1_state"] = "pending"
+                print(f"[WARN] {u['id']}: 已解冻（正文变化）")
+            elif u["level"] == 3 and u.get("t2_state") == "passed":
+                u["t2_state"] = "pending"
+            changed += 1
+    # 新单元：追加；缺失单元保留并报警
+    known = {u["id"] for u in data["units"]}
+    for c in current:
+        if c["id"] not in known:
+            data["units"].append(new_unit(c))
+            print(f"[WARN] 新增单元 {c['id']} {c['heading']}")
+            changed += 1
+    missing = [u["id"] for u in data["units"] if u["id"] not in cu]
+    for uid in missing:
+        print(f"[WARN] 状态中的单元在正文中不存在：{uid}")
+    data["updated_commit"] = ""
+    save_state(state_path, data)
+    print(f"sync: {changed} 处更新")
+    return 0
+
+
+def cmd_next(doc: Path, state_path: Path, track: str | None) -> int:
+    data = load_state(state_path)
+    current = parse_units(doc)
+    errors, _ = validate(data, current)
+    if errors:
+        for e in errors:
+            print(f"[FAIL] {e}")
+        print("先跑 check/sync，再取 next")
+        return 1
+    units = data["units"]
+    lines = []
+    if track in (None, "t1"):
+        for u in units:
+            if u["level"] == 2 and u.get("t1_state") == "pending":
+                lines.append(f"T1 {u['id']} {u['heading']}")
+    if track in (None, "t2"):
+        for u in units:
+            if u["level"] == 3 and u.get("t2_state") in ("pending", "passed") and not u.get("frozen"):
+                lines.append(f"T2 {u['id']} {u['heading']}")
+    if track in (None, "t3"):
+        if all_chapters_frozen(data) and not data.get("t3", {}).get("passed"):
+            lines.append("T3 <doc> 出版/代码同步门")
+    if not lines:
+        print("没有待审单元（全部冻结且 T3 已通过）")
+    else:
+        print("\n".join(lines))
+    return 0
+
+
+def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
+             passed: bool, freeze: bool, note: str) -> int:
+    data = load_state(state_path)
+    unit = next((u for u in data["units"] if u["id"] == uid), None)
+    if not unit:
+        print(f"找不到单元：{uid}", file=sys.stderr)
+        return 2
+    key = f"{track}_state"
+    rounds = f"{track}_rounds"
+    if fix:
+        unit[rounds] = int(unit.get(rounds, 0)) + 1
+        if unit[rounds] > MAX_ROUNDS and not unit.get("rewritten"):
+            print(f"[FAIL] {uid}: {rounds}={unit[rounds]} 超过 {MAX_ROUNDS}；需用户批准或 --rewrite", file=sys.stderr)
+            return 1
+        unit[key] = "pending"
+        if unit.get("frozen"):
+            unit["frozen"] = False
+            unit["frozen_at"] = None
+    if passed:
+        if track == "t1" and unit["level"] != 2:
+            print("t1 只适用于 ## 章单元", file=sys.stderr)
+            return 2
+        unit[key] = "passed"
+    if freeze:
+        if not passed:
+            print("--freeze 需要与 --pass 同用", file=sys.stderr)
+            return 2
+        if unit["level"] == 3:
+            parent = next((u for u in data["units"] if u["id"] == unit.get("parent")), None)
+            if parent and parent.get("t1_state") != "passed":
+                print(f"[FAIL] 父章 {parent['id']} 的 T1 未通过，子节不得冻结", file=sys.stderr)
+                return 1
+            unit["t2_state"] = "frozen"
+        else:
+            children = [u for u in data["units"] if u.get("parent") == uid]
+            if children and not all(c.get("frozen") for c in children):
+                print(f"[FAIL] {uid}: 仍有未冻结子节", file=sys.stderr)
+                return 1
+            if not children:
+                unit["t2_state"] = "frozen"
+            unit["t1_state"] = "passed"
+        unit["frozen"] = True
+        unit["frozen_at"] = "HEAD"
+    if note:
+        unit["note"] = note
+    save_state(state_path, data)
+    print(f"mark: {uid} {track} fix={fix} pass={passed} freeze={freeze}")
+    return 0
+
+
+def cmd_sample(doc: Path, state_path: Path, ratio: float, seed: str) -> int:
+    data = load_state(state_path)
+    units = data["units"]
+    dirty = [u for u in units if not u.get("frozen")]
+    frozen = [u for u in units if u.get("frozen")]
+    if not seed:
+        seed = "HEAD"
+    ranked = sorted(frozen, key=lambda u: hashlib.sha256(f"{seed}:{u['id']}".encode()).hexdigest())
+    n = math.ceil(len(frozen) * ratio) if frozen else 0
+    picked = ranked[:n]
+    if len(dirty) > 0.3 * max(1, len(units)):
+        print(f"[WARN] 未冻结单元 {len(dirty)}/{len(units)} > 30%，应按 review-units.md §五回退整篇 survey")
+    print("## dirty")
+    for u in dirty:
+        print(f"{u['id']} {u['heading']}")
+    print("## frozen-sample")
+    for u in picked:
+        print(f"{u['id']} {u['heading']}")
+    return 0
+
+
+def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str) -> int:
+    data = load_state(state_path)
+    if ok and not all_chapters_frozen(data):
+        print("[FAIL] 仍有未冻结的章，T3 不得通过", file=sys.stderr)
+        return 1
+    data["t3"] = {"passed": ok, "evidence": evidence, "at_commit": "HEAD"}
+    save_state(state_path, data)
+    print(f"gate T3: {'PASS' if ok else 'FAIL'}")
+    return 0
+
+
+def cmd_stats(doc: Path, state_path: Path) -> int:
+    data = load_state(state_path)
+    units = data["units"]
+    chapters = [u for u in units if u["level"] == 2]
+    sections = [u for u in units if u["level"] == 3]
+    frozen = sum(1 for u in units if u.get("frozen"))
+    print(f"chapters={len(chapters)} sections={len(sections)} frozen={frozen}/{len(units)}")
+    print(f"t1_pending={sum(1 for u in chapters if u.get('t1_state')=='pending')} "
+          f"t2_pending={sum(1 for u in sections if u.get('t2_state')=='pending')} "
+          f"t3={'PASS' if data.get('t3',{}).get('passed') else 'pending'}")
+    return 0
+
+
+def self_test() -> int:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        doc = root / "01-stage-kernel/01-demo.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            "# demo\n\n"
+            "## 1. 第一章\n\n引子。\n\n"
+            "### 1.1 第一节\n\n内容一。\n\n"
+            "### 1.2 第二节\n\n内容二。\n\n"
+            "## 2. 第二章\n\n### 2.1 第三节\n\n内容三。\n",
+            encoding="utf-8",
+        )
+        sp = root / "state.yaml"
+        assert cmd_init(doc, sp, "01-stage-kernel", "V3.9", False) == 0
+        data = load_state(sp)
+        assert len(data["units"]) == 5, len(data["units"])
+        assert cmd_check(doc, sp) == 0
+        # 章 1 T1 通过；两节通过并冻结；章冻结
+        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "") == 0
+        assert cmd_mark(doc, sp, "1.1", "t2", False, True, True, "") == 0
+        assert cmd_mark(doc, sp, "1.2", "t2", False, True, True, "") == 0
+        assert cmd_mark(doc, sp, "1", "t1", False, True, True, "") == 0
+        # 修改冻结节：check 失败，sync 无 --unfreeze 失败，带 --unfreeze 成功
+        doc.write_text(doc.read_text(encoding="utf-8").replace("内容一。", "内容一改。"), encoding="utf-8")
+        assert cmd_check(doc, sp) == 1
+        assert cmd_sync(doc, sp, False, None) == 1
+        assert cmd_sync(doc, sp, True, None) == 0
+        assert cmd_check(doc, sp) == 0
+        # 预算：连续 fix 第 3 次被拦
+        assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 0
+        assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 0
+        assert cmd_mark(doc, sp, "1.1", "t2", True, False, False, "") == 1
+        # 抽样确定性
+        out1 = cmd_sample(doc, sp, 0.2, "abc")
+        out2 = cmd_sample(doc, sp, 0.2, "abc")
+        assert out1 == 0 and out2 == 0
+    print("self-test PASS: init/check/sync/unfreeze/budget/sample")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="单元级 review 状态机（V3.9）")
+    ap.add_argument("--self-test", action="store_true")
+    sub = ap.add_subparsers(dest="cmd")
+    for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats"):
+        p = sub.add_parser(name)
+        p.add_argument("doc")
+    sub.choices["init"].add_argument("--stage")
+    sub.choices["init"].add_argument("--edition", default="V3.9")
+    sub.choices["init"].add_argument("--force", action="store_true")
+    sub.choices["sync"].add_argument("--unfreeze", action="store_true")
+    sub.choices["sync"].add_argument("--unit")
+    sub.choices["next"].add_argument("--track", choices=("t1", "t2", "t3"))
+    m = sub.choices["mark"]
+    m.add_argument("--unit", required=True)
+    m.add_argument("--track", required=True, choices=("t1", "t2"))
+    g = m.add_mutually_exclusive_group(required=True)
+    g.add_argument("--fix", action="store_true")
+    g.add_argument("--pass", dest="passed", action="store_true")
+    m.add_argument("--freeze", action="store_true")
+    m.add_argument("--note", default="")
+    s = sub.choices["sample"]
+    s.add_argument("--ratio", type=float, default=0.2)
+    s.add_argument("--seed", default="")
+    ga = sub.choices["gate"]
+    gg = ga.add_mutually_exclusive_group(required=True)
+    gg.add_argument("--pass", dest="ok", action="store_true")
+    gg.add_argument("--fail", dest="ok", action="store_false")
+    ga.add_argument("--evidence", default="")
+
+    args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    if not args.cmd:
+        ap.print_help()
+        return 2
+    doc = Path(args.doc)
+    if not doc.is_absolute():
+        doc = (Path.cwd() / doc).resolve()
+    stage = getattr(args, "stage", None) or stage_of(doc)
+    sp = review_state_path(stage, doc.stem)
+    if args.cmd == "init":
+        return cmd_init(doc, sp, stage, args.edition, args.force)
+    if args.cmd == "check":
+        return cmd_check(doc, sp)
+    if args.cmd == "sync":
+        return cmd_sync(doc, sp, args.unfreeze, args.unit)
+    if args.cmd == "next":
+        return cmd_next(doc, sp, args.track)
+    if args.cmd == "mark":
+        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note)
+    if args.cmd == "sample":
+        return cmd_sample(doc, sp, args.ratio, args.seed)
+    if args.cmd == "gate":
+        return cmd_gate(doc, sp, args.ok, args.evidence)
+    if args.cmd == "stats":
+        return cmd_stats(doc, sp)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

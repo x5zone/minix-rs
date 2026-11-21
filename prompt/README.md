@@ -43,8 +43,9 @@ prompt/
 | `review-code-excellence.md` | 代码卓越性：API、表达力、性能、可测试性 |
 | `review-publication.md` | 出版标准 V3.7：DP-1..DP-6、CP-1..CP-6、零欠账、顺序迭代 |
 | `review-tutorial-rubric.md` | 教程 rubric V3.8：TR-1..TR-6 与 G13 |
+| `review-units.md` | 单元级 review V3.9：`###` 节冻结、T1/T2/T3 三轨、G14 |
 | `review-panel.md` | review-loop 独立面板：角色、材料隔离、归因 |
-| `review-evals.md` | review-loop 评测：G1–G13、§6A 四态收敛模型 |
+| `review-evals.md` | review-loop 评测：G1–G14、§6A 四态收敛模型 |
 | `review-profiles.md` | 旧 Profile A–P/R/AG 的组合配置（保留为别名对照） |
 
 ## 三、skill/（适配层）
@@ -71,7 +72,7 @@ prompt/
 | `review-process.md` §覆盖率穷举 | `review-coverage-skill` |
 | `review-process.md` §实施验证 | `review-implementation-skill` |
 | `review.md` 苏格拉底追问 | `review-socratic-skill` |
-| `review-panel.md` + `review-evals.md` | `review-loop` |
+| `review-panel.md` + `review-evals.md` + `review-units.md` | `review-loop` |
 | `review-cmds.md` | `cmds/*/SKILL.md` |
 | `review.md` + `review-profiles.md` | `review-agent-ide.md` / `review-agent-trigger.md` |
 

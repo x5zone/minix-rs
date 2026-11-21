@@ -46,6 +46,8 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
    缺失时按 `review-process.md` Step 0.3 嵌入生成，不中断循环。
 4. 关联代码清单：`tools/doc-code-map.sh <doc> --check`；有缺失先登记，不进入 L1。
 5. 初始化 review 状态：`tools/review-init.sh zcode <doc>`。
+5b. 单元状态：`python3 tools/review-units.py check <doc>`；首次先 `init`。`next` 的输出是本轮
+    L1 的派发范围（`review-units.md` §五）。首 edition 的 full survey 仍读整篇。
 6. 写 `runs/<stage>/<doc-stem>/loop.md §0`：commit、sha256、行数、范围、关联代码、语料条目 ID。
 7. 02/03 阶段先读 `review-eval/doc-set/` 的对账简报；没有简报就先做对账，不进入 L1。
 8. **读 follow-ups（V3 只核对已批准项）**：V3 的上一轮必须已关闭，理论上没有“未修”项。读 `runs/<stage>/<doc-stem>/follow-ups.md` 中用户批准的 ②（带日期）与上一轮 `suggestions.md`，确认目的地是否已落地；不得把未批准 ② 或 ⑤ 带入新轮。V2.5 过渡轮仍按旧口径分“顺手修/核销清单”，但同样不得把未批准项带进下一轮。首轮没有前轮 follow-ups 时跳过此步。**上一 V1/V2 轮未关闭、遗留大量未批准旧 ② 时**（05 篇的 72 条旧 ② 在 R1 台账与 follow-ups 两处）：在 §0 列出存量清单并请用户裁决去留（补批准日期 / 转 ⑤ 取证 / 明确丢弃）；不得静默带入新轮，也不得静默丢弃。补日期仅限确有当时批准记录的项，不得事后追认。
@@ -71,7 +73,8 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 ```text
 本篇范围 = <文档主题> + 以下关联代码：
 <doc-code-map 清单>
-不在范围 = 相邻模块、未列入清单的文件、下一批次的结构性重构。
+本轮单元 = T1: <章 ID 列表>；T2: <节 ID 列表>；T3: <是否到篇级门>
+不在范围 = 相邻模块、未列入清单的文件、冻结单元（除非进入确认轮抽样）。
 ```
 
 ## L0.9 出版门前置（V3.7，开轮前强制）
@@ -106,7 +109,9 @@ D1 触发三口径——执行者会用到先读到的那份）**。不可让与
 `DECISIONS.md` D-024（D1 停跑）——档位表判应派而 D-024 命中时，在 loop §1 记
 VARIANCE 并引用 D-024，未裁决前默认不派。
 
-V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派全量角色；fix 之后的 certify 阶段只派定点回读：P-FACT 只查本轮修复 hunk 涉及的符号/常量/引文，READER 只读改动段及邻句（不读全文），RB 审最终 HEAD（含本轮全部修复提交）。certify 不重开全量 READER A/B/C，不派 DESIGN 全量；发现的新问题进**本轮**台账，在本轮内修完，不得用下一轮承接。
+V3 没有独立的验证轮。每轮的 survey 阶段按 `review-units.py next` 的单元范围派角色：
+首 edition 的 full survey 读整篇；后续轮只派未冻结单元（T2 的读者 C 仍读整篇以防跨节矛盾）。
+fix 之后的 certify 阶段只派定点回读：P-FACT 只查本轮修复 hunk 涉及的符号/常量/引文，READER 只读改动段及邻句（不读全文），RB 审最终 HEAD（含本轮全部修复提交）。certify 不重开全量 READER A/B/C，不派 DESIGN 全量；发现的新问题进**本轮**台账，在本轮内修完，不得用下一轮承接。
 
 派发方式：
 
@@ -173,6 +178,9 @@ V3 没有独立的验证轮。每轮的 survey 阶段按上面的默认配置派
 5. 若本步实施了跨 crate 的设计变更（`wire` 版本、所有权限定、ABI 布局等），旧轮次的收敛结论只对旧基线成立：实施后必须重新固定基线（提交号 + 文档行数/sha256 + 测试计数），重跑受影响门与 QEMU，再判断 G8/G9；不得用旧轮次的“零新增”宣告当前基线收敛。
 
 ## L4 收口认证（certify）
+
+单元级收口：对每个被审单元 `review-units.py mark --track t1|t2 --pass`，满足条件后 `--freeze`；
+全部章冻结后才跑 T3（`gate --pass --evidence ...`）。冻结单元不再进本轮面板。
 
 V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是闭集：本轮全部修复 hunk、
 本轮未闭环项、受影响的章节与代码。不得用“随机 20% 未改章节”重新发现全文。
@@ -291,19 +299,20 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 2. **100% 复验**：每个根因都有复验，不是抽样；`复验` 列不能是模板句。
 3. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）。
 4. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）。
-5. `eval-trace-check.py --round R<N>` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、本轮 L6/L6.5 收口小节；`未闭环` 与台账实际数一致）。**文档级 todo 账本另跑** `python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open`（旧 `<NN>-todo.md` 已迁移删除，不再走 `--todo-file`）；`允许开放` 不是合法处置类，必须映射为 ②（用户批准 + 日期）或 ⑤（取证路径 / 阻塞），未映射的按未闭环计。
-6. **轮关闭条件**：`未闭环=0` 且 `certify 新准入=0`。修改轮（full/structural）关闭
+5. `review-units.py check <doc>` 退出 0，且本轮被审单元都已 `mark`、预算未超。
+6. `eval-trace-check.py --round R<N>` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、本轮 L6/L6.5 收口小节；`未闭环` 与台账实际数一致）。**文档级 todo 账本另跑** `python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open`（旧 `<NN>-todo.md` 已迁移删除，不再走 `--todo-file`）；`允许开放` 不是合法处置类，必须映射为 ②（用户批准 + 日期）或 ⑤（取证路径 / 阻塞），未映射的按未闭环计。
+7. **轮关闭条件**：`未闭环=0` 且 `certify 新准入=0`。修改轮（full/structural）关闭
    写 `ROUND-CLOSED` / 进入 `CONVERGENCE-CANDIDATE`——**不得宣告 CONVERGED**
    （收敛声明权只在确认轮，§6A 四态模型；R26/R30 两次假阳性判例）。
    `OPEN-DEBT.md` 是未闭环的一部分（§4.0f）：有未销账行 = 本轮不关闭，只有两个
    出口（实施附证据 / 判决账行），逾期行逐条点名。
-7. **下一轮**：只能在上一轮关闭后开；修改轮之后是确认轮或下一个修改事务
+8. **下一轮**：只能在上一轮关闭后开；修改轮之后是确认轮或下一个修改事务
    （§7.5 预算内），不得用缩减轮承接。上一轮未闭环 >0（含 OPEN-DEBT 未销账）时
    禁止出现下一轮小节。确认轮的权限与退出条件见 §6A：只修本轮新准入项、不实施 ⑥、
    每个 CANDIDATE 最多 2 次（edition 更替或批准重开后重新计数）；`certify 新准入=0` 才可宣告 `CONVERGED`。
-8. **edition 不变**：本轮内不得改规则；确需变更按 `review-evals.md` §7.6 把本轮标 `INVALIDATED` 后在新 edition 重开。
-9. **3 轮试验窗口**：同一 edition 在同一篇上第 3 轮仍 `open>0`，判 `NOT CONVERGING`，写 `EDITION-RETRO.md`，不得开第 4 轮。
-10. **轮内 certify 上限**：同一轮第 3 次 certify 仍有新准入根因 → 本轮标 `BLOCKED`，写 `STUCK-REPORT.md`；解除按 `review-evals.md` §4.0b 的两级分流（第一级独立冷读仲裁，第二级用户病因讨论且结论落判决账）；不得第 4 次 certify，也不得开下一轮。
+9. **edition 不变**：本轮内不得改规则；确需变更按 `review-evals.md` §7.6 把本轮标 `INVALIDATED` 后在新 edition 重开。
+10. **3 轮试验窗口**：同一 edition 在同一篇上第 3 轮仍 `open>0`，判 `NOT CONVERGING`，写 `EDITION-RETRO.md`，不得开第 4 轮。
+11. **轮内 certify 上限**：同一轮第 3 次 certify 仍有新准入根因 → 本轮标 `BLOCKED`，写 `STUCK-REPORT.md`；解除按 `review-evals.md` §4.0b 的两级分流（第一级独立冷读仲裁，第二级用户病因讨论且结论落判决账）；不得第 4 次 certify，也不得开下一轮。
 
 ## L7 收敛检查与工作流升版
 
@@ -311,8 +320,9 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 
 按 `review-evals.md` §6A 的四态模型执行（V3.3）：修改轮（full/structural）只能产出
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`；**`CONVERGED` 只能由确认轮宣告**——
-确认轮全量 survey、修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项、不实施 ⑥，
-`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
+确认轮覆盖未冻结单元 + ≥20% 冻结单元（首 edition 或 >30% 脏单元时整篇）、
+修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项、不实施 ⑥，
+`review-units.py check` 退出 0（全部单元 frozen、T3 通过）、`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
 `未闭环=0`、`certify 新准入=0`、100% 复验证据、确认轮轮次号），进下一篇。
 确认轮发现结构性新根因、或第 2 次确认仍 `新准入>0` → 该 edition `NOT CONVERGING`
 回边界裁决；不得开第 3 次确认，也不得重开全量修改轮。

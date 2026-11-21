@@ -276,9 +276,10 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
 
 1. **下一轮只能在上一轮关闭后开**。上一轮 `open>0` 时禁止出现下一轮小节；这条由
    `eval-trace-check.py` 机械检查。
-2. **每轮都从完整 survey 开始**（`structural` 轮按轮种定义以该 edition 已落盘报告为
-   survey 输入，见 §4.0b 轮种段；确认轮仍是全量 survey）。不存在“只查修复 hunk”的缩减轮；认证是同一轮的
-   certify 阶段，不是新轮。R26 如果存在，就是新一轮完整 review。
+2. **每轮覆盖 = 未冻结单元 + 依赖闭包**（`review-units.md` §五）。首个 edition 的 full survey
+   仍读整篇；后续轮只读未冻结单元；确认轮读未冻结单元 + ≥20% 冻结样本 + 骨架。脏单元 >30%
+   或 T1 发现跨章结构问题时回退整篇。不存在“只查修复 hunk”的缩减轮；认证是同一轮的 certify
+   阶段，不是新轮。R26 如果存在，就是新一轮完整 review。
 3. **轮内可以多次 fix→certify**，但不得重开全量面板；certify 只读本轮改动段、
    未闭环项与受影响章节。第 2 次 certify 仍有新准入缺陷 → 继续在本轮修，不新开轮；
    同一根因连续两次修复后仍复发 → 该根因升级为设计问题，按 ⑥ 处理并记录原因。
@@ -655,7 +656,7 @@ L0 已经声明范围。每条发现再标一次：
 
 ### 6A. 文档收敛（V3，每篇的出口门）
 
-一篇文档判 `CONVERGED` 需同时满足以下九条。全满足才进下一篇；不过就在本轮内继续修。
+一篇文档判 `CONVERGED` 需同时满足以下各条。全满足才进下一篇；不过就在本轮内继续修。
 
 ```
 G1  in-scope P0 = 0
@@ -682,6 +683,8 @@ G11 代码出版：当前篇关联代码 `tools/code-publication-check.py` 零�
 G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
     （open = 0 且 blocked = 0；blocked 待裁项存在时禁止收敛）
 G13 教程 rubric：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）
+G14 单元账本：`tools/review-units.py check --doc <当前篇>` 退出 0，全部 `##` 章与 `###` 节
+    frozen，且 T3 通过（`review-units.md`；旧 FREEZE 篇目 grandfather，不追溯）
 ```
 
 **V3.7 出版标准（2026-11-21 用户裁决）**：G10/G11 与 `prompt/review-rules/review-publication.md`
@@ -701,12 +704,13 @@ V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性�
 |---|---|---|
 | `ROUND-CLOSED` | 本轮准入根因全部处置，100% 复验与机械门通过（G1–G9 的 open 部分） | 修改轮（full/structural）的 certify |
 | `CONVERGENCE-CANDIDATE` | 最近一个修改轮 ROUND-CLOSED，等待确认轮 | 修改轮关闭时自动进入，无动作 |
-| `CONVERGED` | 确认轮在最终工作树上 `certify 新准入 = 0`，且 OPEN-DEBT 无未销账行 | **只由确认轮出口给出** |
+| `CONVERGED` | 确认轮在最终工作树上 `certify 新准入 = 0`，G1–G14 全过（含全部单元 frozen），且 OPEN-DEBT 无未销账行 | **只由确认轮出口给出** |
 | `FREEZE-WITH-BACKLOG` | 预算用尽或决定停止，仍有未解决事项或证据缺口 | 用户裁决 |
 
 - **修改轮没有收敛声明权**：full/structural 轮的 agent 不得宣告 CONVERGED，最多
   ROUND-CLOSED / CONVERGENCE-CANDIDATE（`eval-trace-check.py` 机械检查）。
-- **确认轮**：全量 survey（六个角色），修复权限 = 本轮新准入的 P0/P1/P2 事实与
+- **确认轮**：覆盖未冻结单元 + ≥20% 冻结单元（seed = 最终 commit）+ 骨架；首个 edition 或
+  未冻结单元 >30% 时按整篇 survey。修复权限 = 本轮新准入的 P0/P1/P2 事实与
   同步项；不实施 ⑥、不扩大重构范围；P3 走 §4.0c 严重度门槛。每个 CONVERGENCE-CANDIDATE 最多 2 次（跨 edition 重开不累计）：
   第 1 次新准入 > 0 时在确认轮内修完再确认一次；仍 > 0 或出现结构性新根因 →
   `NOT CONVERGING` 回 edition 边界。确认轮不占 §7.5 的修改预算。
@@ -825,6 +829,10 @@ citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 
    哪些规则从未命中；
 3. 下一个边界必须处理最大阻塞项，或回退到上一 edition；
 4. 不得在第 4 个修改事务继续用同一 edition 跑同一篇。
+
+**单元预算（V3.9，与 edition 预算并行）**：每个 `###`/`##` 单元每轨最多 2 个修改轮
+（`review-units.md` §三）；第 3 轮需用户批准或整节重写。单元预算耗尽不等于 edition
+预算耗尽，反之亦然：篇级仍受本条 3 轮与 K=3 约束。冻结单元不占后续轮的面板输入。
 
 **同篇 edition 上限（K=3，V3.3）**：同一篇文档最多经历 3 个 edition（软上限）。
 超出后继续迭代必须在 `DECISIONS.md` 判决账落一行（理由 + 范围 + 日期），把

@@ -121,7 +121,10 @@
 3. **Issue List 表格首列必须是 `P[012]-标识` 形式的编号**（如 `P1-docHdrField`），第二列写 `P0/P1/P2`；
    用 `F1`、`#3` 之类编号会让验证器提取到 0 个 issue，反向验证随即空转（抽样表一片空白却报告"已抽样"）。
 4. **Gate G 是两趟**：首跑 `verify-check.py` 会因 scan.md 缺 `gate-evidence-G` 块判 `VERIFY-SELF FAIL`——这是设计使然（证据块的内容来自它自己生成的 VERIFY-CHECK）。先出骨架、回填 `gate-evidence-G`、再复跑自检即 PASS。
-5. **Gate G 产物由该脚本生成后再填人工段**，不要手写整份 VERIFY-CHECK：
+5. **Unit Ledger 段（doc 模式）**：scan.md 必须含 `## Unit Ledger`，内容为
+   `tools/review-units.py stats <doc>` 的输出与本轮 T1/T2 单元列表；它不是 Gate G 的 9 个锚段，
+   但 G14 以状态文件为准。
+6. **Gate G 产物由该脚本生成后再填人工段**，不要手写整份 VERIFY-CHECK：
    `python3 tools/verify-check.py --scan {scan.md} --state {STATE.md} --symbols {SYMBOLS.md} --sample-ratio 0.5 --seed N --output {VERIFY-CHECK.md}`
    （`--seed` 必填以让抽样可复现；报告头会如实打印抽样比例与种子。）
 
@@ -427,6 +430,8 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
 
 - 按 [§〇 执行模式选择](#〇执行模式选择构造--快速--深度--设计优先) 确定执行模式（构造/快速/深度/设计优先）
 - 按 [review.md §Review 启动：范围声明](review.md) 声明 Review 模式和范围
+- **单元范围（doc 模式）**：`tools/review-units.py check <doc>` 通过后，用 `next` 声明本轮
+  T1/T2 单元；首 edition 的 full survey 仍读整篇（`review-units.md` §五）
 - 声明时间预算（可选；按 [review.md §时间预算参考](review.md#时间预算参考)）
   - **分阶段时间预算**（新增，2026-07-16）：若执行 Step 0.7 TODO 验证，时间预算分两阶段声明：
     - **TODO 验证阶段**：按 TODO 数 × 5 分钟预估（含 grep 验证 + 误报否定 + 真实修复）
@@ -1711,6 +1716,9 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md   # bagging
 - **必须包含**：维度覆盖自检表格、最弱项自检、时间预算评估
 
 ### Step 5.5: 状态写入与收敛判断
+
+> **G14（V3.9）**：doc 模式收敛前必须 `tools/review-units.py check --doc <当前篇>` 退出 0，
+> 全部单元 frozen 且 T3 通过；旧 FREEZE 篇目 grandfather。
 
 > **目的**：将当前 phase 的验证结果持久化写入工具对应的路径，并判断是否收敛。
 

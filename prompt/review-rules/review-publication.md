@@ -149,6 +149,7 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 `CONVERGED` 自本文件生效日起表示**出版就绪**，必须同时满足：
 
 - G1–G9（`review-evals.md` §6A，其中 G3/G9 按本文件收窄）；
+- **G14 单元账本**：`tools/review-units.py check --doc <当前篇>` 退出 0，全部单元 frozen，T3 通过；
 - **G10 文档出版**：当前篇 `doc-publication-check.py` 零命中；
 - **G11 代码出版**：当前篇关联代码 `code-publication-check.py` 零命中；
 - **G12 TODO 账本**：`todo-ledger.py check --doc <当前篇> --fail-on-open` 通过

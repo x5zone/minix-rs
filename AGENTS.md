@@ -24,6 +24,7 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 | 5 | `prompt/review-rules/review-patterns.md` | 模式库（含 P0 必检清单与验证命令） |
 | 5.5 | `prompt/review-rules/review-publication.md` | **出版标准（V3.7）**：DP-1..DP-5 文档、CP-1..CP-6 代码、零欠账（禁 defer）、顺序迭代、Review 期间代码冻结 |
 | 5.6 | `prompt/review-rules/review-tutorial-rubric.md` | **教程 rubric（V3.8）**：TR-1..TR-6（目标/前置/示例/失败对照/小结/术语），G13 |
+| 5.7 | `prompt/review-rules/review-units.md` | **单元级 review（V3.9）**：`###` 节冻结、T1/T2/T3 三轨、G14、确认轮抽样 |
 | 6 | `prompt/README.md` | 三端同步机制：改了源必须同步哪些文件、跑哪些校验 |
 
 运行时副本 `.claude/rules/review-core.md`、`.claude/rules/review-process.md`、`.claude/rules/fix-guard.md`

@@ -101,6 +101,8 @@ jobs:
           python3 tools/notes-link-check.py --self-test
           python3 tools/doc-structure-check.py --self-test
           python3 tools/eval-trace-check.py --self-test
+          python3 tools/review-units.py --self-test
+          python3 tools/notes_layout.py
           python3 tools/trait-audit.py --self-test
           python3 tools/doc-citation-check.py --self-test
           bash tools/doc-symbol-drift.sh --self-test
