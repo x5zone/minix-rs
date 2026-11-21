@@ -1052,16 +1052,13 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 ```rust
 /* 节选（保留 KernelInfo 组装与 arch_boot 调用；省略号处为 DTB 解析、模块表、模块装载），os/kernel-image/src/bootface.rs:fn bootface。 */
-    let kernel_info: KernelInfo = build_kernel_info(
-        memmap,
-        reserved,
+    let report = STORAGE.report_static(
         VirBytes(KERN_VIRT_BASE),
         PhysBytes(KERN_PHYS_BASE),
         KERN_SIZE,
-        modules,
-        platform_sources,
-        param_buf,
-        sources,
+    );
+    let kernel_info: KernelInfo = build_kernel_info(
+        &report,
         minix_boot::InputObjectId::DtbBootInput,
     );
     ...

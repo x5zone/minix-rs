@@ -389,47 +389,17 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64) -> ! {
     // its single reader (a strict-gate coverage check) is now answered by the
     // map tables, and the kernel span is already in `memmap` on this leg.
 
-    // Capture the live prefixes, then end the only `&mut` to the one-shot
-    // storage. From here on the slices are read-only; creating them after
-    // every write is what keeps the `&'static` views from aliasing a later
-    // `&mut` (DESIGN-D2-13).
-    let modules_ptr = storage.boot_modules().as_ptr();
-    let modules_len = storage.boot_modules().len();
-    let platform_ptr = storage.platform_sources().as_ptr();
-    let platform_len = storage.platform_sources().len();
-    let memmap_ptr = storage.memmap().as_ptr();
-    let memmap_len = storage.memmap().len();
-    let reserved_ptr = storage.reserved_regions().as_ptr();
-    let reserved_len = storage.reserved_regions().len();
-    let sources_ptr = storage.memmap_sources().as_ptr();
-    let sources_len = storage.memmap_sources().len();
+    // End the one-shot `&mut` borrow, then publish the named view from the
+    // static cell. The slices inside `BootReport` are `'static` by the
+    // storage contract; no `from_raw_parts` laundering remains here.
     let _ = storage;
-
-    // SAFETY: `BOOT_STORAGE` is a one-shot static whose writer has finished;
-    // no mutation follows, and the pointers cover the committed prefixes.
-    let modules: &'static [BootModule] =
-        unsafe { core::slice::from_raw_parts(modules_ptr, modules_len) };
-    let platform_sources: &'static [PlatformDescSource] =
-        unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) };
-    let memmap: &'static [minix_boot::MemoryRegion] =
-        unsafe { core::slice::from_raw_parts(memmap_ptr, memmap_len) };
-    let reserved: &'static [minix_boot::MemoryRegion] =
-        unsafe { core::slice::from_raw_parts(reserved_ptr, reserved_len) };
-    let sources: &'static [minix_boot::SourceRecord] =
-        unsafe { core::slice::from_raw_parts(sources_ptr, sources_len) };
-    let param_len = storage.param_buf().len();
-    let param_buf: &'static [u8] =
-        unsafe { core::slice::from_raw_parts(param_ptr, param_len) };
-    let kernel_info: KernelInfo = build_kernel_info(
-        memmap,
-        reserved,
+    let report = STORAGE.report_static(
         VirBytes(KERN_VIRT_BASE),
         PhysBytes(KERN_PHYS_BASE),
         KERN_SIZE,
-        modules,
-        platform_sources,
-        param_buf,
-        sources,
+    );
+    let kernel_info: KernelInfo = build_kernel_info(
+        &report,
         minix_boot::InputObjectId::DtbBootInput,
     );
     kernel_info.validate_requiring_sources();

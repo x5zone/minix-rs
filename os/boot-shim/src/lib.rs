@@ -102,28 +102,27 @@ pub use minix_elf;
 /// startup-object slice. Consumers derive them from `KernelInfo` instead
 /// (`KernelInfo::kern_stack_top()`, `minix_types::USER_STACK_TOP`,
 /// `syscall_entry_va()`).
+/// Build the receiver-side `KernelInfo` from the sender's named view.
+///
+/// Taking `&BootReport<'static>` instead of ten positional slices removes
+/// the two same-typed `&[MemoryRegion]` arguments that could be swapped
+/// silently, and makes the lifetime source explicit: the report's slices
+/// are already `'static` (the one-shot boot storage), so no
+/// `from_raw_parts` laundering is needed at the call sites (D2-04).
 pub fn build_kernel_info(
-    memmap: &'static [minix_boot::MemoryRegion],
-    reserved_regions: &'static [minix_boot::MemoryRegion],
-    kern_virt_base: minix_types::VirBytes,
-    kern_phys_base: minix_types::PhysBytes,
-    kern_size: u64,
-    boot_modules: &'static [minix_boot::BootModule],
-    platform_sources: &'static [minix_boot::PlatformDescSource],
-    param_buf: &'static [u8],
-    memmap_sources: &'static [minix_boot::SourceRecord],
+    report: &minix_boot::BootReport<'static>,
     authority: minix_boot::InputObjectId,
 ) -> minix_boot::KernelInfo {
     minix_boot::KernelInfo {
-        memmap,
-        reserved_regions,
-        memmap_sources,
-        kern_virt_base,
-        kern_phys_base,
-        kern_size,
-        boot_modules,
-        platform_sources,
-        param_buf,
+        memmap: report.memmap,
+        reserved_regions: report.reserved_regions,
+        memmap_sources: report.memmap_sources,
+        kern_virt_base: report.kern_virt_base,
+        kern_phys_base: report.kern_phys_base,
+        kern_size: report.kern_size,
+        boot_modules: report.boot_modules,
+        platform_sources: report.platform_sources,
+        param_buf: report.param_buf,
         authority,
     }
 }
@@ -166,6 +165,27 @@ impl BootStorageCell {
         // SAFETY: the one-shot flag above proves no other `&mut` was handed
         // out; the boot contract keeps every access on one thread.
         unsafe { &mut *self.storage.get() }
+    }
+}
+
+impl BootStorageCell {
+    /// Publish the filled storage as a `'static` borrowed view.
+    ///
+    /// The cell is a boot-time static: all `fill_*` calls have completed and
+    /// no mutation follows, so handing out a `'static` view is the same
+    /// one-shot contract as [`Self::take`]. This is the only lifetime bridge;
+    /// callers build `KernelInfo` from the named `BootReport` fields instead
+    /// of re-creating `'static` slices with `from_raw_parts`.
+    pub fn report_static(
+        &'static self,
+        kern_virt_base: minix_types::VirBytes,
+        kern_phys_base: minix_types::PhysBytes,
+        kern_size: u64,
+    ) -> minix_boot::BootReport<'static> {
+        // SAFETY: one-shot boot cell; fills are complete before this call,
+        // and the boot contract forbids mutation after the report is taken.
+        let storage: &'static minix_boot::BootStorage = unsafe { &*self.storage.get() };
+        storage.report(kern_virt_base, kern_phys_base, kern_size)
     }
 }
 

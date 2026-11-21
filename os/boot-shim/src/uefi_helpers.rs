@@ -1405,18 +1405,18 @@ mod tests {
             len: 0x1000,
         }];
 
-        let info = build_kernel_info(
-            &MEMMAP,
-            &RESERVED,
-            VirBytes(0xFFFFFFFF80000000),
-            PhysBytes(0x200000),
-            0x100_000,
-            &MODULES,
-            &[], // platform_sources (empty = no source)
-            &[], // param_buf (no source in this unit test)
-            &[], // memmap_sources
-            minix_boot::InputObjectId::UefiMemoryMap,
-        );
+        let report = minix_boot::BootReport {
+            memmap: &MEMMAP,
+            reserved_regions: &RESERVED,
+            boot_modules: &MODULES,
+            platform_sources: &[], // empty = no source
+            param_buf: &[],        // no source in this unit test
+            memmap_sources: &[],
+            kern_virt_base: VirBytes(0xFFFFFFFF80000000),
+            kern_phys_base: PhysBytes(0x200000),
+            kern_size: 0x100_000,
+        };
+        let info = build_kernel_info(&report, minix_boot::InputObjectId::UefiMemoryMap);
 
         assert_eq!(info.reserved_regions.len(), 1);
         assert_eq!(info.reserved_regions[0].base, PhysBytes(0x1da0_0000));

@@ -748,18 +748,18 @@ mod tests {
 
     #[test]
     fn test_build_kernel_info_uses_riscv64_user_sp() {
-        let info = build_kernel_info(
-            &[],
-            &[],
-            VirBytes(0xFFFF_FFFF_8000_0000),
-            PhysBytes(0x8000_0000),
-            0x100_000,
-            &[],
-            &[], // platform_sources (empty = no source)
-            &[], // param_buf (no source in this unit test)
-            &[], // memmap_sources
-            minix_boot::InputObjectId::DtbBootInput,
-        );
+        let report = minix_boot::BootReport {
+            memmap: &[],
+            reserved_regions: &[],
+            boot_modules: &[],
+            platform_sources: &[], // empty = no source
+            param_buf: &[],        // no source in this unit test
+            memmap_sources: &[],
+            kern_virt_base: VirBytes(0xFFFF_FFFF_8000_0000),
+            kern_phys_base: PhysBytes(0x8000_0000),
+            kern_size: 0x100_000,
+        };
+        let info = build_kernel_info(&report, minix_boot::InputObjectId::DtbBootInput);
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit
         // value; the Sv39 value range is pinned on riscv64 targets by
@@ -804,22 +804,21 @@ mod tests {
     /// `build_kernel_info` maps the fields exactly from the inputs.
     #[test]
     fn test_build_kernel_info_riscv64_fields_match_input() {
-        let modules: &'static [minix_boot::BootModule] = &[];
-        let info = build_kernel_info(
-            &[MemoryRegion {
+        let report = minix_boot::BootReport {
+            memmap: &[MemoryRegion {
                 base: PhysBytes(0x8000_0000),
                 len: 0x80_0000,
             }],
-            &[],
-            VirBytes(0xFFFF_FFFF_8000_0000),
-            PhysBytes(0x8000_0000),
-            0x100_000,
-            modules,
-            &[],
-            &[],
-            &[],
-            minix_boot::InputObjectId::DtbBootInput,
-        );
+            reserved_regions: &[],
+            boot_modules: &[],
+            platform_sources: &[],
+            param_buf: &[],
+            memmap_sources: &[],
+            kern_virt_base: VirBytes(0xFFFF_FFFF_8000_0000),
+            kern_phys_base: PhysBytes(0x8000_0000),
+            kern_size: 0x100_000,
+        };
+        let info = build_kernel_info(&report, minix_boot::InputObjectId::DtbBootInput);
         // memmap
         assert_eq!(info.memmap.len(), 1);
         assert_eq!(info.memmap[0].base, PhysBytes(0x8000_0000));
