@@ -429,7 +429,7 @@
 
 - 独立冷读一（事实/设计/代码）：`certify/round4-fact.md` 第二轮 18/18 CLOSED（第一轮 15/18，5 条同源残项全部是 §3.2 line 458 的旧题句；修后复读）。第一轮回执是 `certify/certify-r4-pass1-fact.md`，不是旧引用的 `round4-fact-pass1.md`（文件名以目录实存为准）。
 - 独立冷读二（读者）：`certify/round4-reader.md` 第三轮 12/12 CLOSED（第一轮 10/12、第二轮 11/12，残项 A-01/B-03 同源于 §3.2 题句，C-05 为 `.lrodata` 旧工件的 LMA 说明；修后复读）。第一轮回执是 `certify/certify-r4-pass1-reader.md`；第二轮回执未单独留档，只在 hand-back 摘要里记了 11/12，属 B-73 的命名/留档缺口。
-- post-certify P3：批三改了 §5.1 的「三类→四类畸形」，该行不在两轮 certify 的判定集内；已按 `minix-elf` 源码的四个 Err 出口（`PhdrOutOfBounds`/`PhdrEntryTooSmall`/`SegmentOutOfBounds`/`FileszExceedsMemsz`）逐条复核，未再派发整篇冷读。最终文档 sha 因此从 `2ca9a9cd7` 基线的 `9f9ec2e7…` 变为 `48630c90…`；这是 P3 精度修复，不改变 18/12 个判定点的结论。
+- post-certify P3：批三改了 §5.1 的「三类→四类畸形」，该行不在两轮 certify 的判定集内；已派发一次只读单行复核 `certify/round4-postfix-line1120.md`（4/4 CLOSED：4 个 Err 变体与 `minix-elf` 源码逐字一致，12 个测试名全部存在），未重跑整篇冷读。最终文档 sha 因此从 `2ca9a9cd7` 基线的 `9f9ec2e7…` 变为 `48630c90…`；这是 P3 精度修复，不改变 18/12 个判定点的结论。
 - 台账重放：每行 ①/④ 的复验列给 grep/test/readelf/commit 或冷读回执；`python3 tools/eval-trace-check.py --round R4 <run-dir>` 最终 PASS（coverage/round-close/metrics/open-debt/severity 全过；2 个 WARN 是既有模板项）。
 - 机械门（最终 HEAD `2ca9a9cd7`）：anchor 54/54 zero-def=0 multi-def=0；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30。
 - 行为门：`check-layout.sh all` PASS（L0–L9，x86 L3a=4）；`test-sysboot.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS；`readelf -lW os/target/x86_64-unknown-none/release/kernel | grep -c '^  LOAD'` → 4；旧 staging 工件 5 行已作为历史读数记入 §4.1。

@@ -84,7 +84,7 @@
 - 台账：79 个 ID（RD-R4-001..079），处置 ① 19 / ② 2 / ④ 12 / FP 4 / SUGG 42；`未闭环 = 0`；`certify 新准入 = 0`。语义聚簇约 47 个缺陷根（含 4 条主张维持为 51 个主题），至少 28 个 ID 是跨角色或同根重复。
 - 严重度（FINDING 36）：P0 4 / P1 5 / P2 20 / P3 7；5 条 P3 FINDING（DESIGN-D2-07/08/09、READER-B-05/B-06）按 G3 分流 SUGG。
 - 独立 certify：事实/设计/代码面 `certify/round4-fact.md` 18/18 CLOSED（第一轮 `certify-r4-pass1-fact.md` 15/18）；读者面 `certify/round4-reader.md` 12/12 CLOSED（第一轮 `certify-r4-pass1-reader.md` 10/12，第二轮 11/12 未单独留档，属 B-73）。三轮残项同源于 §3.2 的一行旧题句与 §4.1 的 `.lrodata` LMA 说明。
-- post-certify P3：§5.1 的「三类畸形」改为「四类畸形」并列出 `PhdrOutOfBounds`/`PhdrEntryTooSmall`/`SegmentOutOfBounds`/`FileszExceedsMemsz`；该行不在 18/12 个判定点内，改后文档 sha 为 `48630c90…`，已按源码四个 Err 出口复核。它使 `自引入 = 2`（两条均轮内修复）。
+- post-certify P3：§5.1 的「三类畸形」改为「四类畸形」并列出 `PhdrOutOfBounds`/`PhdrEntryTooSmall`/`SegmentOutOfBounds`/`FileszExceedsMemsz`；该行不在 18/12 个判定点内，改后文档 sha 为 `48630c90…`，已由冷启动单行复核 `certify/round4-postfix-line1120.md` 判 4/4 CLOSED（变体名与源码逐字一致、12 个测试名全部存在）。它使 `自引入 = 2`（两条均轮内修复）。
 - 文档六门：anchor `54/54 zero-def=0 multi-def=0`；citation `blocks=32 checked=24 failed=0 skipped=4 warned=4`；structure/ref/style（error=0）/density 通过；doc-code-map 30/30；`--stale-lines HEAD --strict` PASS。
 - 行为门：`check-layout.sh all` PASS（L0–L9；x86 L3a=4 个 PT_LOAD）；`test-sysboot.sh` PASS；`test-riscv64-uboot-shim.sh` 6/6 PASS；`minix-elf` 27/0、`boot-shim` 146/0、`minix-kernel --features mock` 866/0/8。
 - 独立回归审计（§4h）：`REGRESSION.md` 的 R4 节，冷启动只读 agent 逐项 13/13 PASS；唯一格式问题（RD-R4-017 的未转义 `|`）已在同节提交修复，未影响任何门读数。
