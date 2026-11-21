@@ -568,7 +568,7 @@ impl<W: RegisterWindow> AudioHooks for Cs4281<W> {
     }
 
     fn resume(&mut self, chan: i32) -> i32 {
-        // C `drv_resume` (`cs4281.c:669-673`).
+        // C `drv_resume` (`cs4281.c:666-670`).
         self.set_paused(chan, false);
         0
     }

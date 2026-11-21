@@ -151,7 +151,7 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 5. Output a progress checklist showing each check as done/undone
 6. Collect all findings into a review report at the end
 7. **After all checks**: write STATE.md and convergence assessment
-8. **Verify Blocker Gates 0/A/B/C/D/D-6/E/G/H all passed WITH EVIDENCE** before marking scan.md as Final. Gate A/D/E evidence must be L1 (tool/grep output); Gate B/C may be L1 or L2; L3 inference counts as FAIL unless `MANUAL_FALLBACK` is justified.
+8. **Verify Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H all passed WITH EVIDENCE** before marking scan.md as Final. Gate A/D/E evidence must be L1 (tool/grep output); Gate B/C may be L1 or L2; L3 inference counts as FAIL unless `MANUAL_FALLBACK` is justified.
 
 ## ⛔ Review 累积改进追踪（NEW 2026-07-31）
 

@@ -65,7 +65,7 @@ pub struct VfsBackend;
 
 impl FileBackend for VfsBackend {
     fn copyfd(&mut self, user_endpoint: i32, fd: i32) -> Result<i32, i32> {
-        // The VFS backcall (`copyfd.c:7-19`); the server-side protocol
+        // The VFS backcall (`copyfd.c:6-16`); the server-side protocol
         // answers the new descriptor as the reply type.
         minix_sys::vfs::copyfd_via(
             &DirectTrapTransport,

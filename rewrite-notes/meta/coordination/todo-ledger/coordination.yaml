@@ -1,8 +1,12 @@
-# TODO 单一账本（V3.7 / V3.8-r2）——规范源；旧 todo markdown 已迁移后删除。
+# TODO 单一账本（V3.7 / v2 refs 扩展）——规范源；01/02 旧 todo 已迁移，其余 stage 迁移前仍是输入。
+# v2 新增：refs{code,docs,tests,decisions} / relations{blocked_by,duplicates,supersedes}
+#          / lifecycle{created,updated,closed_by}；不存行号。
 # 字段：id/stage/doc/title/status/severity/kind/origin/evidence/defer/
 #       merged_into/legacy_status/origin_file/origin_line/origin_commit/
 #       verified_by/verified_at/aliases/scope/blocked/blocked_reason
 # status: open | closed | rejected | defer-approved | historical
+# scope: doc（默认）| stage；blocked=true 必须带 blocked_reason。
+# defer-approved 必须带 decision/approved/until/consequence 四项。
 - id: COORD-ARCH-TODO-LEDGER-DONE
   stage: coordination
   doc: coordination
@@ -43,6 +47,12 @@
   - C-17
   scope: stage
   note: 三条腿生产传输已实现并有宿主测，但无驱动入口调用；按行的自定判据『只在测试里存在不等于闭』，故 open。
+  refs:
+    code:
+    - path: os/libs/minix-sys/src/devman_client.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-C-46
   stage: coordination
   doc: coordination
@@ -490,6 +500,12 @@
   - PD-07
   scope: stage
   note: PD-07 采乙（不统一形态、补共同 boot postcondition）：SD-1 已落，SD-3 per-arch 最后一根线与 SD-4 linker/load 地址常量清扫仍在案，故 open。
+  refs:
+    code:
+    - path: os/kernel/src/lib.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-PD-08--test-count-mismatch-L148
   stage: coordination
   doc: coordination
@@ -530,6 +546,13 @@
   - S-6
   scope: stage
   note: 行内裁决『BKL 下按核分队退化为单队列、记账取代实现』已被 K2 落地与 11 篇 §3.3 推翻；裁决形态已失效且无未竟工作，判 historical（而非 closed：原裁决并未被执行）。
+  refs:
+    code:
+    - path: os/kernel/src/proc_table.rs
+    docs:
+    - path: rewrite-notes/01-stage-kernel/11-scheduling-primitives.md
+    tests: []
+    decisions: []
 - id: COORD-SD-10
   stage: coordination
   doc: coordination
@@ -550,6 +573,12 @@
   - SD-10
   scope: stage
   note: 仪器多轮零命中只证明该暴露面边际收益低，不证明写者不存在；PD-16 未结案，行仍 open。
+  refs:
+    code:
+    - path: os/arch/src/ptwb.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-SD-11
   stage: coordination
   doc: coordination
@@ -632,6 +661,12 @@
   - SD-22
   scope: stage
   note: H5 只闭 riscv PteRead/Write/Zero 三臂；PD-21 第二层硬件位（PAN/SUM/SMAP）与两项余量未落，故 open。
+  refs:
+    code:
+    - path: os/kernel/src/syscall.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-SD-23
   stage: coordination
   doc: coordination
@@ -653,6 +688,14 @@
   - SD-23
   scope: stage
   note: 代码半已闭；31 篇 draft（尚未重生成）仍滞后称主体『不实现』，跨进程保存路真机验收挂 E5/C6，故 open。
+  refs:
+    code:
+    - path: os/kernel/src/trap_dispatch.rs
+    docs:
+    - path: rewrite-notes/01-stage-kernel/14-exception-interrupt.md
+    - path: rewrite-notes/01-stage-kernel/draft/31-fpu-context-switching.md
+    tests: []
+    decisions: []
 - id: COORD-SD-24
   stage: coordination
   doc: coordination
@@ -675,6 +718,12 @@
   scope: stage
   note: 行文（2026-10-18）称『钳位本身仍在生效』已被 C2E/C2ESSWI 推翻；但行定义的最后前置 PD-16 跨核内存腐蚀仍未结案，故不是 closed。非 blocked：不需用户裁决。 b5 note 的 dup at
     :150 是误报：:150 是 AP LAPIC 定时器行，仅引用 SD-24。
+  refs:
+    code:
+    - path: os/kernel/src/sched.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-SD-24--arm1--idle-clear-L18
   stage: coordination
   doc: coordination
@@ -775,6 +824,12 @@
   - SD-36
   scope: stage
   note: H5 物理地址边界校验已落，但 vmddm 架构分叉的处置（去/留）定在问题乙（PD-16）结案时裁；故 open。
+  refs:
+    code:
+    - path: os/servers/vm/src/vmdm_bridge.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-SD-38
   stage: coordination
   doc: coordination
@@ -816,6 +871,13 @@
   - SD-39
   scope: stage
   note: b5 ID 抽取错位：行主体=E6/E7（调用包装与协议面扩充，open），SD-39 仅作『信号集位宽已落地』引用；SD-39 本体已闭（DONE:132），E6/E7 仍 open。
+  refs:
+    code:
+    - path: os/kernel/src/proc.rs
+    - path: os/libs/minix-types/src/ipc/message.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-SD-40
   stage: coordination
   doc: coordination
@@ -860,6 +922,12 @@
   scope: stage
   note: 行点名的 riscv SWI/EI 臂、aarch64 生成中断臂、两架构用户同步异常→信号执行腿均已落码；但余『首源触发读数』（首个 PLIC 设备源 unmask 后 EI 臂真机点火）未取，属本行未闭的验收面，故按 open
     遗留（SDR:1003 亦记 open(pre-SMP)）。
+  refs:
+    code:
+    - path: os/kernel/src/trap_dispatch.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: COORD-STAGE-01-L125
   stage: coordination
   doc: coordination

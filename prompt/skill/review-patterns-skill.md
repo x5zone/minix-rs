@@ -851,7 +851,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 **定义**：AI 以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过 design + outline 预检，导致 scan.md 标 CONVERGED 但 `{NN}-outline.v*.md` / `{NN}-design.v*.md` 实际缺失。
 
 **判定信号**：
-- AI 跳过 `ls .design/{NN}-*.v*.md` 命令
+- AI 跳过 `ls {tree}/meta/design/{stage}/{NN}-*.v*.md` 命令
 - scan.md Block Gates 把 Gate H 标 "N/A" / "[SIMPLIFIED]" 而非 PASS/FAIL
 - 用"已有 CONVERGED 状态"或"复用 03/04 design"为由跳过预检
 
@@ -866,7 +866,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 - TODO 描述引用"TODO-XX-N 未修复"但当前 rg 0 命中
 - TODO 描述引用"待 X 完成"但当前 X 已存在
 
-**规则**：Step 0.7.4 TODO staleness check 强制。前提失效 → 标"前提失效" + 严重度降级（P0→P1，P1→P2，P2→误报）。**批量工具**：`tools/todo-staleness-check.sh {todo-file}`。
+**规则**：Step 0.7.4 TODO staleness check 强制。前提失效 → 标"前提失效" + 严重度降级（P0→P1，P1→P2，P2→误报）。**批量工具**：`python3 tools/todo-ledger.py check`。
 
 **TODO 强制格式**：`[P0/P1/P2] [code/doc] [factual/design] 问题描述 (file:line) (基于状态) (修复方案)`，缺字段 → TODO 不可信。
 
@@ -1261,7 +1261,7 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 - 验证：`rg "// MINIX3 BUG:" os/ --type rust`
 - 来源：region.c:841 ev_reference 忽略、enter_queue 写错进程、anon_pagefault 内存泄漏
 
-## §X.7 架构抽象与锚点纪律模式（模式 79-83，NEW 2026-09-05）
+## §X.7 架构抽象与锚点纪律模式（模式 79-85，NEW 2026-09-05）
 
 > 完整定义/反例：[review-patterns.md §九](../review-rules/review-patterns.md)。反例源：05-clock-interrupt-init.md §4.7.1。
 

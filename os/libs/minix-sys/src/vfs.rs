@@ -229,7 +229,7 @@ pub fn fsync_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
 }
 
 /// Steal a descriptor between two processes (C: `copyfd`,
-/// `minix3/minix/lib/libsys/copyfd.c:7-19` — `_taskcall(VFS_PROC_NR,
+/// `minix3/minix/lib/libsys/copyfd.c:6-16` — `_taskcall(VFS_PROC_NR,
 /// VFS_COPYFD, &m)` with `mess_lsys_vfs_copyfd {endpt, fd, what}` at the
 /// payload's first three words).
 ///

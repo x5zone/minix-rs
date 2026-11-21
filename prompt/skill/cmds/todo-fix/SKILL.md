@@ -19,6 +19,7 @@ description: "从 todo.md 选一个 stub/deferred/待修项完整实现：先讲
 ⛔ 修复顺序 P0→P1→P2。⛔ 不顺手修旁边的 TODO（记录不执行）。
 
 ## 强制门
+> 完整清单见 `prompt/review-rules/review-cmds.md` §一（十条，任何 cmd 不得裁剪；含出版门 G10/G11、rubric G13、单元门 G14）。本节只列本命令增量门。
 fix-guard（读±5行/grep确认/单条修复/写fix-status）+ translate 防线 + 测试名对账门。
 
 ## 产物

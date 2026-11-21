@@ -620,10 +620,10 @@ STATE.md format:
 **Convergence criteria** (all must pass):
 1. All dimensions marked COMPLETE in scan.md
 2. P0 new = 0 in latest full pass
-3. P1 new ≤ 1
+3. P1 new = 0 (V3.7)
 4. **Gate G: VERIFY-CHECK.md = PASS** (mandatory; do NOT mark CONVERGED without it)
 5. All P0 in scan.md fixed+verified (or WONTFIX+reason)
-6. **Blocker Gates 0/A/B/C/D/D-6/E/G/H all passed with gate-evidence attached**
+6. **Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H all passed with gate-evidence attached**
 
 ## Step 5.6: Review Verification Protocol（独立验证，强制，Gate G）
 
@@ -637,7 +637,7 @@ STATE.md format:
 3. **反向验证**：对每个抽样问题，独立重新验证——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
-6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A/B/C/D/D-6/E/G/H 是否都附带真实证据（gate-evidence 块）
+6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A/B/C/D/D-6/D-Impl/E/G/H 是否都附带真实证据（gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK（如 trae 内 glm 的 scan 由 kimi/ds 验证）。同 agent 验证时必须基于 grep 命令重放（非语义回忆），降低同 agent 系统性盲区风险。跨 agent 验证结果记入 VERIFY-CHECK.md 的"验证局限说明"段。
 8. **输出判定**：
    - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过
@@ -686,7 +686,7 @@ This makes the rule set self-evolving — patterns discovered in one review feed
 
 ## Step 7.1: Convergence Cost Warning (Mandatory)
 To prevent over-convergence (chasing P1→0 across many rounds at cost exceeding benefit), stop and deliver when ANY of these trigger:
-1. **Round threshold**: same doc reviewed ≥5 rounds → force deliver, remaining P1/P2 → backlog
+1. **Round threshold**: 3 modification rounds (cross-edition) → stop modifying and rewrite the section; no backlog delivery
 2. **P1 marginal decay**: two consecutive rounds with new P1 ≤ 1 → converged, remaining P1 → backlog
 3. **Cost/benefit ratio** (2026-08-15 A-P1-3 weighted): current round cost >80% of previous but weighted new findings <20% → stop
    - **Weighted formula**: `weighted_new = P0_count * 10 + P1_count * 3 + P2_count * 1`
@@ -701,7 +701,7 @@ Output in scan.md tail:
 - 当前轮次: N
 - 本轮新发现: P0=X, P1=Y, P2=Z
 - 触发停止规则: [1/2/3/无]
-- 决定: 继续收敛 / 强制交付（剩余转 backlog）
+- 决定: 继续收敛 / 停止寻找新问题并交付（状态按 §五 判定，不转 backlog）
 ```
 
 **Zero-bias milestone 案例（Doc 07 review, 2026-07-31）**：

@@ -21,12 +21,15 @@ prompt/
 ├── WORKFLOW-ADVICE-ARCHIVE.md   — 历史删档承接与出处（非规则）
 ├── DOC-ITER-WORKFLOW.md         — 文档迭代统一规格（review-panel P-READER 引用）
 ├── EXECUTE-D01-D06-CONVERGENCE.md — 执行入口（非规则）
-└── TODO-MIGRATION-2026-11-21.md — 01/02 旧 TODO 迁移记录（非规则）
+├── TODO-MIGRATION-2026-11-21.md — 01/02 旧 TODO 迁移记录（非规则）
+├── META-UNITS-2026-11-21.md     — 单元模型 meta 报告（非规则）
+├── V3.9-REGRESSION-REVIEW-2026-11-21.md — V3.9 回归 review 报告（非规则）
+└── WORKFLOW-AUDIT-2026-11-21.md  — 工作流审计报告（非规则）
 ```
 
 `tmp/` 是会话产物与取证目录，整域不入库；`rewrite-notes/` 是文档与协作账本树。
 
-## 二、review-rules/（15 个文件）
+## 二、review-rules/（16 个文件）
 
 | 文件 | 职责 |
 |---|---|
@@ -45,7 +48,7 @@ prompt/
 | `review-units.md` | 单元级 review V3.9：`###` 节冻结、T1/T2/T3 三轨、G14 |
 | `review-panel.md` | review-loop 独立面板：角色、材料隔离、归因 |
 | `review-evals.md` | review-loop 评测：G1–G14、§6A 四态收敛模型 |
-| `review-profiles.md` | 旧 Profile A–P/R/AG 的组合配置（保留为别名对照） |
+| `review-profiles.md` | 旧 Profile A–K/O/P/R/AG 的组合配置（保留为别名对照） |
 
 ## 三、skill/（适配层）
 
@@ -106,7 +109,7 @@ bash tools/diff-trae-skills.sh --only-diff # Trae 派生件逐文件差异
 只想检查漂移、不写文件：`tools/generate-derived-skills.sh --check`（退出码 0 = 无漂移）。
 
 CI 的 `rules-consistency.yml` 在 `prompt/`、`.claude/`、`.codex/`、`.trae/`、`.agents/`、
-`tools/`、`AGENTS.md` 变更时自动跑上述门，并跑各工具的 `--self-test` 与
+`tools/`、`AGENTS.md`、`README.md`、`.gitignore`、`.github/workflows/**` 变更时自动跑上述门，并跑各工具的 `--self-test` 与
 `lint-review-rules.sh --self-test`，不依赖人工记得执行。
 
 **硬限制（由 lint 把守，不在文档里抄当前读数）**：

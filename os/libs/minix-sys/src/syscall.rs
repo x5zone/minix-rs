@@ -651,7 +651,7 @@ pub const VUA_READ: i32 = 0x01;
 pub const VUA_WRITE: i32 = 0x02;
 
 /// SYS_VUMAP: map one grant into a physical vector (C: libsys `sys_vumap`,
-/// `sys_vumap.c:7-40`; kernel `do_vumap.c`).
+/// `sys_vumap.c:6-34`; kernel `do_vumap.c`).
 ///
 /// The input vector is fixed at a single element `{grant, size}` — the only
 /// shape used by the sole caller in the C tree (vbox's `store_pages`), so it is
@@ -1765,7 +1765,7 @@ mod tests {
 
     #[test]
     fn test_sys_vumap_encodes_request_and_decodes_pcount() {
-        // C: libsys sys_vumap.c:14-38 — the request arm fills endpt/vaddr/vcount/
+        // C: libsys sys_vumap.c:14-34 — the request arm fills endpt/vaddr/vcount/
         // offset/access/paddr/pmax, and the reply fills
         // m_krn_lsys_sys_vumap.pcount. The single-element input vector is the
         // shape of the tree's only caller (vbox store_pages).

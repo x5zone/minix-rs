@@ -20,7 +20,6 @@
 用法：
   python3 tools/code-publication-check.py                  # 默认：os/ 下全部跟踪的 .rs
   python3 tools/code-publication-check.py FILE [FILE...]
-  python3 tools/code-publication-check.py --update-baseline
   python3 tools/code-publication-check.py --self-test
 """
 from __future__ import annotations
@@ -132,26 +131,19 @@ def load_baseline(path: Path) -> set[str]:
     return {ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()}
 
 
-def run(files: list[Path], baseline: Path, update: bool) -> int:
+def run(files: list[Path], baseline: Path) -> int:
     known = load_baseline(baseline)
     new_hits: list[tuple[Path, dict]] = []
     known_count = 0
-    all_keys: list[str] = []
     per_kind: dict[str, int] = {}
     for f in files:
         for hit in scan_file(f):
             k = key_for(f, hit)
-            all_keys.append(k)
             per_kind[hit["kind"]] = per_kind.get(hit["kind"], 0) + 1
             if k in known:
                 known_count += 1
             else:
                 new_hits.append((f, hit))
-    if update:
-        baseline.parent.mkdir(parents=True, exist_ok=True)
-        baseline.write_text("\n".join(sorted(set(all_keys))) + "\n", encoding="utf-8")
-        print(f"baseline 写入 {baseline}（{len(set(all_keys))} 条）")
-        return 0
     print(f"[统计] 扫描 {len(files)} 个 .rs；命中 " +
           "  ".join(f"{k}={v}" for k, v in sorted(per_kind.items())))
     if known_count:
@@ -214,13 +206,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="生产代码出版标准门（V3.7 CP-1..CP-6）")
     ap.add_argument("files", nargs="*")
     ap.add_argument("--baseline", default=str(DEFAULT_BASELINE))
-    ap.add_argument("--update-baseline", action="store_true")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
     files = [Path(f) for f in args.files] if args.files else tracked_rs()
-    return run(files, Path(args.baseline), args.update_baseline)
+    return run(files, Path(args.baseline))
 
 
 if __name__ == "__main__":

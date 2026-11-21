@@ -11,7 +11,7 @@
 > 开放项台账（`prompt/WORKFLOW-OPEN-ITEMS.md` 的 W-1/W-6/W-7/W-8/W-9/W-12 与 R5；W-12 为登记项——链接目标含空格的渲染破坏，乙形态唯一双门通过但三项待核，**其裁决前 S5 链接化动作不得对 Rust `:kind Name` 锚点采用 P1b 形态**）——全部并入本规格的规则表，
 > 不另立一套。若其中的纪律后续要并入规范源，按 `prompt/README.md` 三端同步流程执行。
 > **落盘**：轮次包与过程产物进 `tmp/doc-iter/`（F-C 纪律：仓库根不散落文件）。
-> **可恢复的最小记录**：`rewrite-notes/coordination/DOC-ITER-LEDGER.md`（入库，见 §五·5.1）。
+> **可恢复的最小记录**：`rewrite-notes/meta/coordination/DOC-ITER-LEDGER.md`（入库，见 §五·5.1）。
 
 ## 〇、开工前必读（执行会话照单读，不凭记忆）
 
@@ -21,7 +21,7 @@
 4. `prompt/WORKFLOW-OPEN-ITEMS.md` 的 W-1（增量阻断+存量报告口径）、W-6（读者视角装置）、
    W-7/W-9（中文惯用法与受控比喻）、W-8（反事实构件纪律）。
 5. 目标文档及其 §7 关联源码清单（存量兼容：头部字段）列出的 C 真值源与 Rust 实现（真值优先序：C 源码 > 设计契约 > Rust 实现 > 文档）。
-6. `rewrite-notes/coordination/DOC-ITER-LEDGER.md`（本工作流的跨会话状态：上一轮基线/结果 commit、
+6. `rewrite-notes/meta/coordination/DOC-ITER-LEDGER.md`（本工作流的跨会话状态：上一轮基线/结果 commit、
    审阅状态、已接受的规则变更、轮次包定位）；若本篇已有缺陷闭环台账
    （`tmp/doc-iter/<doc-slug>/defect-ledger.md`），先读它对齐未闭环项。
 
@@ -58,7 +58,7 @@
 **冻结**：按 §九 第三道理门判定；冻结后其余篇目按冻结版本执行、GPT 审阅降频为抽检。
 
 **会话模型**：任一步骤可冷启动。状态全部在文件里：本文件（workflow 版本）+ 轮次包 +
-`rewrite-notes/coordination/DOC-ITER-LEDGER.md`（入库的最小记录）+ `tmp/doc-iter/LEDGER.md`
+`rewrite-notes/meta/coordination/DOC-ITER-LEDGER.md`（入库的最小记录）+ `tmp/doc-iter/LEDGER.md`
 （进程细节）+ git 提交。
 
 **轮次对象**：任意文档路径（stage-agnostic）。首批：`rewrite-notes/01-stage-kernel/` 的 01~14
@@ -316,7 +316,7 @@ C14（交付版 vs 冷读版）、C39（基线 vs 交付版）、C10 增强（�
 ### S5 打包与提交
 
 按 §五 模板装配 `tmp/doc-iter/<doc-slug>/round-NN.md`；更新 `tmp/doc-iter/LEDGER.md` 与
-入库台账 `rewrite-notes/coordination/DOC-ITER-LEDGER.md`（最小可恢复记录）。
+入库台账 `rewrite-notes/meta/coordination/DOC-ITER-LEDGER.md`（最小可恢复记录）。
 
 提交纪律（仓库可能同时有其它会话的改动在制——并发现场）：
 
@@ -488,7 +488,7 @@ v0.6 的 C10 增强在两轮里都没跑——11 R01 包内留旧快照差 18，
 纯机械清理（引号/尾巴/套路句）标 L 系列编号；删除类改动必须能对上规则理由（C1 保护的承载物除外——
 删除承载物属违规，须在 §1 变更记录里说明为何不违反）。
 
-### 5.1 可提交的最小记录（`rewrite-notes/coordination/DOC-ITER-LEDGER.md`）
+### 5.1 可提交的最小记录（`rewrite-notes/meta/coordination/DOC-ITER-LEDGER.md`）
 
 每轮结束后更新，内容最小集：目标文档 / 基线与结果 commit / workflow 版本 / 审阅状态 /
 已接受与待裁决的规则变更 / 轮次包定位。大型包体继续留在 `tmp/`；恢复完整审阅现场时依包文件。
@@ -735,7 +735,7 @@ Round 04 外部评审的「R05 附加收集要求」按"只记录、不直接改
 6. 真值源按主张类型选择（F5），注释/文档/规范冲突保留记录。
 7. 轮次包：验收标准只保留一个权威定义（§六，包内不另附副本）；报告**整个包的 token 数**；
    保持单文件交付不变。
-8. 冷启动恢复：新增入库台账 `rewrite-notes/coordination/DOC-ITER-LEDGER.md`（最小可恢复记录）；
+8. 冷启动恢复：新增入库台账 `rewrite-notes/meta/coordination/DOC-ITER-LEDGER.md`（最小可恢复记录）；
    入口 A/B 定位为「共享规则 + 两套执行流程」，A 的完整重做延后。
 
 **S2/S4 装置升级**：S2.0 结构审阅升为编辑前的第一件事（五问）；新增 V5「独立结构审阅」装置；

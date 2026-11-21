@@ -5535,6 +5535,23 @@ def self_test() -> int:
     print("self-test PASS: 正确样本通过，缺陷样本被拦截")
     return 0
 
+def derive_units_state(run_dir: Path) -> Path | None:
+    """从 runs/<stage>/<doc-stem> 推导 rewrite-notes/meta/review/state/<stage>/<doc-stem>.yaml。"""
+    parts = run_dir.resolve().parts
+    try:
+        i = parts.index("runs")
+    except ValueError:
+        return None
+    if i + 2 >= len(parts):
+        return None
+    stage, stem = parts[i + 1], parts[i + 2]
+    for base in [run_dir.resolve()] + list(run_dir.resolve().parents):
+        if (base / ".git").exists():
+            candidate = base / "rewrite-notes/meta/review/state" / stage / f"{stem}.yaml"
+            return candidate if candidate.is_file() else None
+    return None
+
+
 def check_units_state(path: Path, run_dir: Path, report: Report) -> None:
     """G14：单元状态必须通过 review-units.py check；T3 通过时不得有未冻结单元。"""
     if not path.is_file():
@@ -5623,8 +5640,13 @@ def main() -> int:
     )
     if args.todo_file:
         check_todo_ledger(Path(args.todo_file), report)
-    if args.units:
-        check_units_state(Path(args.units), Path(args.run_dir), report)
+    units_path = Path(args.units) if args.units else None
+    if units_path is None and args.round_tag:
+        units_path = derive_units_state(Path(args.run_dir))
+        if units_path is None:
+            report.fail("G14", "无法定位单元状态；当前轮必须用 --units 指定")
+    if units_path:
+        check_units_state(units_path, Path(args.run_dir), report)
     print_report(report, args.json)
     return 1 if report.failed else 0
 

@@ -28,6 +28,9 @@ on:
       - 'rewrite-notes/01-stage-kernel/**'
       - 'rewrite-notes/meta/coordination/review-eval/**'
       - 'AGENTS.md'
+      - 'README.md'
+      - '.gitignore'
+      - '.github/workflows/**'
       - 'opencode.json'
       - '.github/workflows/rules-consistency.yml'
   pull_request:
@@ -42,6 +45,9 @@ on:
       - 'rewrite-notes/01-stage-kernel/**'
       - 'rewrite-notes/meta/coordination/review-eval/**'
       - 'AGENTS.md'
+      - 'README.md'
+      - '.gitignore'
+      - '.github/workflows/**'
       - 'opencode.json'
       - '.github/workflows/rules-consistency.yml'
   workflow_dispatch:

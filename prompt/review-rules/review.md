@@ -771,10 +771,10 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 | Layer 2 标准（4 项每项）| ≥ 80% | review.md §4.5 |
 | Step 1.6.4 DESIGN_DIVERGED 阈值 | ≥ 30% | review-process.md §Step 1.6.4 |
 | §0 P0 必检清单 5 项 | 100%（每项必须为 ✅）| review-patterns.md §0（Gate D 严格标准） |
-| Step 7.1 轮次阈值 | ≥ 5 轮 | review-process.md §Step 7.1 |
-| Step 7.1 P1 边际递减 | 连续 2 轮 ≤ 1 | review-process.md §Step 7.1 |
+| Step 7.1 轮次阈值 | 3 个修改轮（跨 edition 累计） | review-process.md §Step 7.1 |
+| Step 7.1 P1 边际递减 | 连续 2 轮 ≤ 1 = 停止寻找新问题（非收敛判据） | review-process.md §Step 7.1 |
 | Step 7.1 成本/收益比 | 当前轮耗时 > 上一轮 80% 且加权新发现 < 上一轮 20% | review-process.md §Step 7.1 |
-| Layer 1 PASS = 所有 P0 修完 + Blocker Gates 0/A/B/C/D/D-6/E/G/H 全 PASS | — | review.md §4.5 |
+| Layer 1 PASS = 所有 P0 修完 + Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全 PASS | — | review.md §4.5 |
 
 > **判定统一原则**（2026-08-15 修复）：所有阈值以本表为准；任何规则文件中的阈值与本表冲突 → 视为 bug 并修复本表，或在原文件中加交叉引用。
 
@@ -782,23 +782,24 @@ AI 可在 Review 开始时估算时间预算，并在结束时对比实际耗时
 
 | 层级 | 目标 | 进入条件 | 通过条件 | 不通过后果 |
 |------|------|---------|---------|-----------|
-| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/design-missing/design-wrong/test-missing 修复完成 + Blocker Gates 0/A/B/C/D/D-6/E/G/H 全部 PASS | CONVERGED 阻断 |
-| **Layer 2（Excellence）** | 提升代码/文档到 redox/textbook 级 | Layer 1 PASS | §4.3.5 Design 视角教学深度 + §4.4 文档组织合理性 + §16.5 design-first API + §2.0 架构演进维度 ≥80% | 允许 CONVERGED 但标记 excellence-pending |
+| **Layer 1（Correctness）** | 确保 C 源码 → Rust 实现的语义对齐 | review 开始 | 所有 P0-fact/code-bug/design-deviation/design-missing/design-wrong/test-missing 修复完成 + Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全部 PASS | CONVERGED 阻断 |
+| **Layer 2（Excellence）** | 提升代码/文档到 redox/textbook 级 | Layer 1 PASS | §4.3.5 Design 视角教学深度 + §4.4 文档组织合理性 + §16.5 design-first API + §2.0 架构演进维度 ≥80% | 阻断 CONVERGED（卓越性项登记并处置） |
 
 **关键判定**：
 - **必须先 1 后 2**：没有正确性，卓越性无从谈起
 - **Layer 1 不通过 → Layer 2 不评估**：直接阻断 CONVERGED
-- **Layer 1 通过但 Layer 2 不通过 → 允许 CONVERGED**（PARTIAL → with warning / FAIL → with excellence-pending tag）：excellence 可后续迭代
+- **Layer 1 通过但 Layer 2 不通过 → NOT CONVERGED**：卓越性项登记并处置；不存在 warning/pending 态（V3.7 零欠账）
 - **Layer 1 和 Layer 2 都通过 → 完全 CONVERGED**
+- **轨道边界**：Layer 2 四项 ≥80% 是**普通 review** 的 CONVERGED 判据；`review-loop` 轨道以 `review-evals.md` §6A 的 G1–G14 为准（G13/G14 已覆盖教学与单元），不重复 Layer 2。
 
 **CONVERGED 判定流程**：
-1. 列出 Layer 1 各项检查结果（6 项 P0 类别 + Blocker Gates 0/A/B/C/D/D-6/E/G/H）
+1. 列出 Layer 1 各项检查结果（6 项 P0 类别 + Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H）
 2. 列出 Layer 2 各项维度检查结果（§4.3.5、§4.4、§16.5、§2.0 架构演进）
 3. 判定：
    - Layer 1 FAIL → NOT CONVERGED（强制修复）
    - Layer 1 PASS + Layer 2 PASS → CONVERGED
-   - Layer 1 PASS + Layer 2 PARTIAL → CONVERGED with warning
-   - Layer 1 PASS + Layer 2 FAIL → CONVERGED with excellence-pending tag
+   - Layer 1 PASS + Layer 2 PARTIAL → NOT CONVERGED（卓越性项登记并处置）
+   - Layer 1 PASS + Layer 2 FAIL → NOT CONVERGED（卓越性项登记并处置）
 
 **配套修订**：[review-process.md §三 状态管理与收敛判断](review-process.md) 增加双层 Layer 判定。
 

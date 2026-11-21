@@ -111,7 +111,7 @@ pub fn init<B: Backdoor>(backdoor: &mut B, share: &str) -> Result<Connection, Er
     Ok(Connection { conn, root })
 }
 
-/// C `vboxfs_cleanup` (`vboxfs.c:100-114`): unmap the folder, then close
+/// C `vboxfs_cleanup` (`vboxfs.c:88-98`): unmap the folder, then close
 /// the connection; both results are ignored.
 pub fn cleanup<B: Backdoor>(backdoor: &mut B, connection: &Connection) {
     let mut params = [Param::U32(connection.root)];

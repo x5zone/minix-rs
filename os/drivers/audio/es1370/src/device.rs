@@ -409,7 +409,7 @@ impl<P: PortIo> Es1370<P> {
             DSPIOPAUSE => self.pause(chan),
             DSPIORESUME => self.resume(chan),
             MIXIOGETVOLUME | MIXIOSETVOLUME => {
-                // `get_set_volume` (`es1370.c:650-659`): only the mixer
+                // `get_set_volume` (`es1370.c:645-654`): only the mixer
                 // sub-device has a codec to talk to, and the payload
                 // length is reported before the gate.
                 *len = VolumeLevel::SIZE as i32;

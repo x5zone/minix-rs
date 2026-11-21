@@ -65,7 +65,7 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 ## Convergence and State Tracking
 Maintain state in the tool-specific STATE.md path above. Details: [process-skill](../review-process-skill/SKILL.md).
 
-**Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, ≤1 new P1 | **Gate G** VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | **Blocker Gates 0/A/B/C/D/D-6/E/G/H all passed** with gate-evidence attached.
+**Convergence Criteria** (all): mandatory Steps complete | latest pass: 0 new P0, 0 new P1 (V3.7) | **Gate G** VERIFY-CHECK = PASS | all P0 fixed/WONTFIX | SYMBOLS.md coverage complete | **Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H all passed** with gate-evidence attached.
 
 ## ⛔ Blocker Gates (must all pass for Final Review)
 - **Gate 0**（NEW, 2026-07-16 扩为 9 锚段）: 制品完整性 — 标准路径文件齐全 + scan.md 含 9 个 grep 可验锚段（Skill Invocation Log / Blocker Gates Status / **Step 0: 预检结果**（`§Step 0: 预检结果` 段必须含关联代码清单——`tools/doc-code-map.sh` 输出或等价表，B4.2 2026-09-18） / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory）。缺 `Step 0: 预检结果` 段 → 触发**模式 69 PSMD**。
@@ -128,4 +128,4 @@ Use the template in [process-skill](../review-process-skill/SKILL.md). Must incl
 **Coverage**: run coverage-extract.py first; use `--semantic-map` for C→Rust rewrite; use `--doc-file` for per-doc stats; AI supplements 5 judgments.
 **Excellence**: after correctness gate; doc narrative/term def; code API/precise errors/DI; test L1/L2/L3.
 **structure.md**: generate before correctness check; 12 sections; Gate D-6; verifies "what reader reads" not "what doc says".
-**Patterns**: 86 个模式，重点检查 P0/因果链/Ch1 叙事/Design-First/流程漂移/架构抽象与锚点纪律（79-84）。
+**Patterns**: 86 个模式，重点检查 P0/因果链/Ch1 叙事/Design-First/流程漂移/架构抽象与锚点纪律（79-85）。

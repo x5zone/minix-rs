@@ -69,7 +69,7 @@ description: "Minix-RS 文档 Review 检查清单。包含文档结构规范、�
 **读者复述测试执行方法**（1.3，2026-09-18 H1 提级）：
 1. 审阅者**合上代码**，用机制语言写一段 Ch1 复述（一页以内，写进 structure.md §11）——不是把 Ch1 抄一遍，也不是把函数名换成 [XXX] 的替换游戏
 2. 判定：能说出"这个机制解决什么矛盾、状态怎么转、边界在哪" → ✅
-3. 说不出 → 教学类 P1（新增/触碰章节必须修复或写明延期理由；存量登记 backlog）
+3. 说不出 → 教学类 P1（新增/触碰章节必须修复或写明延期理由；存量登记 TODO 账本（kind: doc））
 4. 允许标注"复述在 X 处卡住"——卡点即教学缺陷线索，写入 scan.md（单列）
 
 ---
@@ -517,7 +517,7 @@ sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/a
 
 **已知场景**：
 - Doc 05 (07-31) 发现 `os/kernel/src/lib.rs:294/298/314` 3 处 `(covered in NN)` 注释错位（已修）
-- 同时发现 9+ 处 `see XX-doc.md` 引用旧 doc 命名（超出本次 review scope，记录到 backlog）
+- 同时发现 9+ 处 `see XX-doc.md` 引用旧 doc 命名（超出本次 review scope，记录到 TODO 账本（kind: doc））
 
 ### 2.4i L3 grep 证据主动验证（NEW 2026-07-31, Doc 06 review）
 
@@ -651,7 +651,7 @@ done
 2. 逐决策验证可追溯性（在 Ch1&2 搜索依据）
 3. 验证场景覆盖（Ch2 的每个错误场景 Ch3 是否有对应设计）
 4. 验证 no_std 兼容性
-5. **trait/类型抽象质量交叉核对（NEW 2026-09-05，对应 code-checklist §2.5 判据 + 模式 79-82）**：
+5. **trait/类型抽象质量交叉核对（NEW 2026-09-05，对应 code-checklist §2.5 判据 + 模式 79-85）**：
    - 多态必要性：`rg "impl .*{TraitName}" {rust_dir}` → 是否 ≥2 个行为不同的实现（三架构真差异，非"未实现的一致"）
    - 划分维度：trait 成员由能力差异决定，不由调用时序决定（模式 79）
    - 假想差异：仅为 mock 预建、无真实第二实现路径 → P2（模式 80）

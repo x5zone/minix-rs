@@ -67,7 +67,7 @@
 | 0.7.1 | Path Existence Validation（RCPD） | 输入含 TODO/路径引用 | `ls`/`test -f` 逐条 | 2026-07-16 |
 | 0.7.2 | AI Claim Grep Verification（CFNOC） | AI claim 含概念对象 | `rg` claim 关键词 | 2026-07-16 |
 | 0.7.3 | Doc Chapter Context Awareness（DSC） | AI 报告涉 Ch2/Ch4 归属 | 章节上下文核对 | 2026-07-16 |
-| 0.7.4 | TODO Staleness Check（CTOS） | 外部 TODO 清单 >5 条且含时间敏感词 | todo-staleness-check.sh | 2026-07-16 |
+| 0.7.4 | TODO Staleness Check（CTOS） | 外部 TODO 清单 >5 条且含时间敏感词 | `todo-ledger.py check`（origin_file FAIL / origin_line WARN） | 2026-07-16；2026-11-21 换账本门 |
 | 1.0 | 锚点解析（符号锚点 + 卫生项分层；D5 改写收编原 1.0a~1.0g 七步行号族） | doc review，引用代码位置 | `tools/anchor-resolve.sh --check {doc}`；0 定义 → P0-fact；多定义 → 补 impl 限定；行号只允许工具派生 `（Lnnn，工具生成）` | 2026-09-18 |
 | 4.5a | 测试数量偏差检查 | doc 声称测试数 | `cargo test` 对账（>50% 偏差 → P1） | 2026-07-30 |
 | 3.6 | 关联代码维度检查（doc-code-map + 代码维度 + gate-evidence-code） | full-review 入口、编号文档 | 维度表 + gate-evidence-code 块 | 2026-09-18 |
@@ -95,9 +95,9 @@
 | Gate | 语义 | 权威定义位置 | 证据分级 / 通过标准 |
 |---|---|---|---|
 | **Gate 0** | scan.md 制品完整性（9 个 grep 锚段；预检段必含关联代码清单，B4.2） | prompt/skill/review-agent-ide.md §Gate 0；锚段清单 prompt/skill/review-process-skill.md §Step 0 产物 | L1；缺任一锚段 → FAIL（模式 69） |
-| **Gate A** | 覆盖率穷举强制运行 | review-coverage-skill.md §0 + 本文件 Step 1.5 | L1（工具输出必须附 gate-evidence-A）；PARTIAL → FAIL；AI 语义列须填满（`coverage-extract.py --check-filled <SYMBOLS.md>` exit0，残留 `_待AI补充_` = FAIL） |
+| **Gate A** | 覆盖率穷举强制运行 | review-coverage-skill.md §0 + 本文件 Step 1.5 | L1（工具输出必须附 gate-evidence-A）；PARTIAL → FAIL；AI 语义列须填满（`tools/coverage-extract/coverage-extract.py --check-filled <SYMBOLS.md>` exit0，残留 `_待AI补充_` = FAIL） |
 | **Gate B** | Top5 行为契约表（8 字段 × 5 函数） | review-core-semantics.md §Gate B + 本文件 Step 2 | L2；3 语义偏移 + 2 覆盖缺口 |
-| **Gate C** | 细节精确性（Precision Check） | review.md §15 + 本文件 Step 3.5 | L2；5 meta-rules 表 |
+| **Gate C** | 细节精确性（Precision Check） | review-code-checklist.md §15 + 本文件 Step 3.5 | L2；5 meta-rules 表 |
 | **Gate D** | P0 必检清单 5 项 | review-patterns.md §0 + 本文件 | L1（每项 grep 证据）；PARTIAL/⚠️ = ❌ |
 | **Gate D-6** | structure.md 生成 + 12 节评审 | 本文件 Step 0.5 | L2；失败进 Issue List |
 | **Gate D-Impl** | 设计→代码实施验证 | review-implementation-skill.md §Gate D-Impl | L2；Fix Phase / 设计一致性专项 |
@@ -115,9 +115,12 @@
    `## Skill Invocation Log`、`## Blocker Gates Status`、`## Step 0: 预检结果`、
    `## Step 1: C Source Ground Truth Lookup`、`## Step 1.5: Coverage Enumeration`、`## Step 2: Diff Extraction`、
    `## Step 3.5: Precision Check`、`## Issue List`、`## Artifact Inventory`
-2. **Gate 证据块**必须是围栏块，围栏首行写 ` ```gate-evidence-{X} `（X = A/B/C/D/D-6/E/G/H），
-   且含该门的必备关键字：A 需 `coverage-extract.py` 与 `Coverage Summary`；B 需 `行为契约`。
-   （写成 `### gate-evidence-A` 标题不算，验证器只认围栏块。）
+2. **Gate 证据块**必须是围栏块，围栏首行写 ` ```gate-evidence-{X} `（X = A/B/C/D/D-6/E/G/H/G10/G11/G12/G13），
+   且含该门的必备关键字：A 需 `coverage-extract.py` 与 `Coverage Summary`；B 需 `行为契约`；
+   D 需 ≥5 条 `rg`/`grep`；E 需 `fn test_*` 或 `N/A`+理由；G 需 `consistency NN%` 且 ≥90；
+   G10/G11 需出版工具的 0 命中/exit 0；G12 需 `open=0`/OK；G13 需 0 缺项。
+   （写成 `### gate-evidence-A` 标题不算，验证器只认围栏块。D-Impl 的证据在 Fix Phase /
+   设计一致性专项报告，不强制 scan 块。）
 3. **Issue List 表格首列必须是 `P[012]-标识` 形式的编号**（如 `P1-docHdrField`），第二列写 `P0/P1/P2`；
    用 `F1`、`#3` 之类编号会让验证器提取到 0 个 issue，反向验证随即空转（抽样表一片空白却报告"已抽样"）。
 4. **Gate G 是两趟**：首跑 `verify-check.py` 会因 scan.md 缺 `gate-evidence-G` 块判 `VERIFY-SELF FAIL`——这是设计使然（证据块的内容来自它自己生成的 VERIFY-CHECK）。先出骨架、回填 `gate-evidence-G`、再复跑自检即 PASS。
@@ -140,7 +143,7 @@
 
 | 口号 | review 阶段对应 | 强制要求 |
 |------|----------------|---------|
-| 先穷举 | Step 1.5 覆盖率穷举 | 必须用 coverage-extract.py |
+| 先穷举 | Step 1.5 覆盖率穷举 | 必须用 `tools/coverage-extract/coverage-extract.py` |
 | 再组织 | Step 1.6 design 对齐 | design.md 必查（Step 0 预检）|
 | 先本质 | Step 0.5 structure 评审 | Ch1 必须有灵魂本质 |
 | 再实现 | Step 2 差异提取 | design 优先于 code |
@@ -183,7 +186,9 @@
 
 **判定规则**：默认按行数查表；用户明确要求"深度全面 full-review"时按 2 rounds 起步（不强制 4 rounds），避免过度分阶段。
 
-**工具协助**（NEW 2026-07-16）：用 `tools/review-init.sh {tool} {doc-path} {agent} --size-adaptive` 自动统计文档行数 + 输出推荐 rounds。每个 session 启动时建议默认加 `--size-adaptive`。
+**工具协助**（NEW 2026-07-16）：用 `tools/review-init.sh {tool} {doc-path} {agent} --size-adaptive` 自动统计文档行数 + 输出推荐 rounds。每个 session 启动时建议默认加 `--size-adaptive`。产物齐全性用
+`python3 tools/verify-check.py --preflight --tool {tool} --stage {stage} --doc-stem {doc-stem} --agent {agent}`
+一次检查（7 组产物 + B4.1 关联代码清单/gate-evidence-code + D4 artifact 存在性）。
 
 > **2026-08-15 修复 B-P1-4（超大规模文档策略）**：> 3000 行的超大规模文档按以下策略处理：
 > - **优先分章节拆解**：单章 ≤ 1500 行时按章节独立 review，最后合并
@@ -766,7 +771,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 > 审阅者**自己写**一段"不看代码、不用函数名，用机制语言复述 Ch1"的结论（一页以内），
 > 直接写进本节（不是把 Ch1 抄一遍）。判断标准 = 能否说出
 > "这个机制解决什么矛盾、状态怎么转、边界在哪"。允许标注"复述在 X 处卡住"（卡点即教学缺陷线索）。
-> 复述不通过 → **教学类 P1**：新增/触碰章节必须修复或写明延期理由；存量章节登记 backlog；
+> 复述不通过 → **教学类 P1**：新增/触碰章节必须修复或写明延期理由；存量章节登记 TODO 账本（kind: doc）；
 > 复述结论与卡点在 scan.md §structure.md 评审与 Issue List 显著位置单列。
 
 ## 12. 纵向链路映射
@@ -1084,8 +1089,8 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 - ✅ 结论：T2 严重度 P0 → P1 降级，触发 doc §11 重写而非 code 修复
 
 **自动化建议**（未来工具）：
-- `tools/todo-staleness-check.sh <todo 文件>` 扫描待办清单里的 `file:line` 是否仍存在 → 输出陈旧项报告
-  （本项曾写作 `tools/todo-reference-validate.sh`，该脚本从未存在；todo-staleness-check.sh 就是它的实现，2026-10-07 更正）
+- `python3 tools/todo-ledger.py check` 对 YAML 账本的 `origin_file` 做存在性 FAIL、`origin_line` 做超界 WARN；
+  `--strict-refs` 进一步解析 `refs` 的符号/文档单元/测试/判决行。旧 markdown `todo.md` 在迁移前不做 file:line 自动对账，人工判定。
 - 可与 `coverage-extract.py` 配合使用，输出"已删除引用 + 已变更引用"两个清单
 
 #### Step 0.7.2: AI Claim Grep Verification（NEW 2026-07-16，模式 67 CFNOC 配套）
@@ -1204,7 +1209,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
    - ✅ **前提成立** + 描述准确 → 正常 TODO 验证流程
    - ⚠️ **前提偏差**（部分已修复/部分阻塞）→ 修正前提，TODO 重新分类
    - ❌ **前提失效**（已修复/已接通/不存在）→ 标"前提失效，TODO 不适用" + 严重度自动降级（P0→P1，P1→P2，P2→误报）
-4. **批量模式**：当 TODO 数 ≥ 10 时，先跑 `tools/todo-staleness-check.sh {todo-file}`（NEW），自动扫描所有 TODO 的前提依赖并输出 staleness 报告。
+4. **批量模式**：当 TODO 数 ≥ 10 时，先跑 `python3 tools/todo-ledger.py check`（v2 账本）或对未迁移 markdown 人工核对前提依赖，输出 staleness 报告。
 
 **强制格式**（scan.md §Step 0.7.4 必须含此表）：
 
@@ -1742,11 +1747,12 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md   # bagging
 **收敛终止条件**（全部满足才算审查完成）：
 1. scan.md 中所有维度章节标记 COMPLETE
 2. 最近一次完整 Pass 中，P0 新增数量 = 0
-3. 最近一次完整 Pass 中，P1 新增数量 ≤ 1
+3. 最近一次完整 Pass 中，P1 新增数量 = 0（V3.7 出版标准 §三.1；不得以 ≤1 判收敛）
 4. **Gate G 独立验证（VERIFY-CHECK.md）结果为 PASS**（**必须完成，不能跳过**）
 5. scan.md / STATE.md 中所有 P0 已被修复并验证通过
 6. SYMBOLS.md 覆盖率穷举完成
-7. **Blocker Gates 0/A/B/C/D/D-6/E/G/H 全部通过且有 gate-evidence 附件**（2026-08-15 修复 C-P0-2：明确 Gate H 属于 Blocker Gates 之一，所有 review 模式必检）
+7. **Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 全部通过且有 gate-evidence 附件**（2026-08-15 修复 C-P0-2：明确 Gate H 属于 Blocker Gates 之一，所有 review 模式必检）
+8. **出版与零欠账门**：`review-publication.md` §五 的 G10–G14 与零欠账全部通过（V3.7；任何命令不得裁剪）
 
 ### Gate H: design 门控
 
@@ -1901,10 +1907,10 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 
 | 层级 | 收敛条件 | 状态标记 |
 |------|---------|---------|
-| **Layer 1（Correctness）FAIL** | 任何 P0 未修复或 Gates 0/A/B/C/D/D-6/E/G/H 未通过 | **NOT CONVERGED**（强制修复）|
+| **Layer 1（Correctness）FAIL** | 任何 P0 未修复或 Gates 0/A/B/C/D/D-6/D-Impl/E/G/H 未通过 | **NOT CONVERGED**（强制修复）|
 | **Layer 1 PASS + Layer 2 PASS** | §4.3.5 / §4.4 / §16.5 / §2.0 全部 ≥ 80% | **CONVERGED** |
-| **Layer 1 PASS + Layer 2 PARTIAL** | 4 项中 1-2 项不足 80% | **CONVERGED with warning** |
-| **Layer 1 PASS + Layer 2 FAIL** | 4 项中 ≥3 项严重不足 | **CONVERGED with excellence-pending tag** |
+| **Layer 1 PASS + Layer 2 PARTIAL** | 4 项中 1-2 项不足 80% | **NOT CONVERGED**（卓越性项登记并处置；无 warning 态） |
+| **Layer 1 PASS + Layer 2 FAIL** | 4 项中 ≥3 项严重不足 | **NOT CONVERGED**（卓越性项登记并处置；无 pending 态） |
 
 ### Step 5.6: Review Verification Protocol（独立验证，强制）
 
@@ -1919,14 +1925,15 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
    - **2026-08-15 修复 C-P1-5（明确抽样方法）**：AI 无内置"随机"，使用**分层抽样**替代——从 Issue List 中按 P0/P1/P2 比例各取头 20% + 尾 20% + 中间 20%。例如 Issue List 共 20 条（P0=3, P1=12, P2=5）→ P0 取第 1 条 + 最后 1 条 = 2 条；P1 取第 1/6/12 条 = 3 条；P2 取第 1 条 = 1 条，合计 6 条（30%）。**禁止**仅抽 P0（应全层级覆盖）
 4. **遗漏检查**：抽样 20% 的源码符号（函数/结构体/宏），验证是否都在文档/检查中覆盖了
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有"标记 COMPLETE 但实际未完成"的维度
-6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A/B/C/D/D-6/E/G/H 是否都附带真实证据（gate-evidence 块）
+6. **Blocker Gates 复验**：检查 scan.md 中 Gate 0/A/B/C/D/D-6/D-Impl/E/G/H 是否都附带真实证据（gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK（如 trae 内 glm 的 scan 由 kimi/ds 验证）。同 agent 验证时必须基于 grep 命令重放（非语义回忆），降低同 agent 系统性盲区风险。跨 agent 验证结果记入 VERIFY-CHECK.md 的"验证局限说明"段。
 8. **输出判定**：
    - **PASS**：抽样验证一致性 ≥ 90%，无遗漏 key symbols，收敛状态可信，Gates 真实通过
    - **CONCERN**：抽样验证一致性 70-90% → 特定维度需重新审查
    - **FAIL**：抽样验证一致性 < 70% 或发现关键遗漏 → 整体重新审查
 
-**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{stage}/VERIFY-CHECK.md`; Claude: `.review/claude/{stage}/VERIFY-CHECK.md`）。VERIFY-CHECK.md 必须包含"验证局限说明"段，标注验证者（同 agent / 跨 agent）及验证方法（grep 重放 / 语义回忆）。
+**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{stage}/VERIFY-CHECK.md`; Claude: `.review/claude/{stage}/VERIFY-CHECK.md`）。VERIFY-CHECK.md 必须包含"验证局限说明"段，标注验证者（同 agent / 跨 agent）及验证方法（grep 重放 / 语义回忆）。填完 §2.1 表后，跑
+`python3 tools/verify-check.py --finalize {VERIFY-CHECK.md}`：仍有（待填）或一致性 <90% 返回非 0，不得标记 CONVERGED。
 
 **Multi-Agent 强制规则（NEW 2026-07-16）**：
 
@@ -2066,8 +2073,8 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 > 来源：用户反馈
 
 **判定规则**（任一触发即应停止并交付）：
-1. **轮次阈值**：同一文档累计 review ≥ 5 轮 → 强制交付当前结果，剩余 P1/P2 转为 backlog
-2. **P1 边际递减**：连续 2 轮新发现 P1 ≤ 1 → 视为收敛，剩余 P1 转为 backlog
+1. **轮次阈值**：同一篇修改轮达到 3 轮（V3.8 硬上限，跨 edition 累计）→ 停止修改、整节重写；不得以 backlog 交付（`review-publication.md` §三）
+2. **P1 边际递减**：连续 2 轮新发现 P1 ≤ 1 → 停止继续寻找新问题并交付；状态仍按 §五 判定（P1 = 0 才可 CONVERGED），不得转 backlog
 3. **成本/收益比**（2026-08-15 修复 A-P1-3 加权定义）：当前轮 review 耗时 > 上一轮 80% 但加权新发现问题 < 上一轮 20% → 停止
    - **加权公式**：`weighted_new = P0_count * 10 + P1_count * 3 + P2_count * 1`
    - **首轮不适用**：第一轮 review 没有"上一轮"基准，自动跳过此条
@@ -2081,7 +2088,7 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 - 当前轮次: N
 - 本轮新发现: P0=X, P1=Y, P2=Z
 - 触发停止规则: [1/2/3/无]
-- 决定: 继续收敛 / 强制交付（剩余转 backlog）
+- 决定: 继续收敛 / 停止寻找新问题并交付（状态按 §五 判定，不转 backlog）
 ```
 
 ---
@@ -2531,5 +2538,5 @@ rg "SYMBOL_NAME" minix3/minix/ --type c --type h -n
 ### 4. 修复结束标准
 - 本次计划修复的所有 P0 已修复并验证。
 - 未修复的 P0 必须标记为 `WONTFIX` 并给出不可辩驳的理由（如架构演进明确替代）。
-- 最新一次完整 Pass：新增 P0 = 0，新增 P1 ≤ 1。
+- 最新一次完整 Pass：新增 P0 = 0，新增 P1 = 0。
 - 完成 VERIFY-CHECK.md 后才可标记 **CONVERGED**。

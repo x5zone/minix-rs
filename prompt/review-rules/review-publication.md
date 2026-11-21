@@ -10,7 +10,7 @@
 
 ---
 
-## 一、文档出版标准（DP-1..DP-5）
+## 一、文档出版标准（DP-1..DP-6）
 
 > **标号的定位（2026-11-21 用户重申）**：标号（D-061 / I-29 / R36 / F-R34-01）**完全服务于
 > 项目管理，对读者没有任何意义，是中间结果**。标号引用的内容若有教学价值，**只能**改写成
@@ -118,10 +118,11 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
    制造新的「已写死但已过期」的后续文档——那正是返工的来源。顺序迭代的约束只针对
    **已批准的前序篇**，不针对未来。
 6. **Review 期间代码冻结（V3.8，用户 2026-11-21 裁决）**：当前篇进入 Review（面板 survey）
-   后，其关联代码（`related-code.txt`）冻结。任何 `os/` 改动 = **中止本轮**，回到 Manuscript
-   阶段把改动落地、重设基线，再重新开轮。设计批必须在 Manuscript 阶段之前完成。
-   唯一例外：用户 D 行明确批准「本轮内必须改代码」，且写明为什么不能推迟；该轮随后按新基线
-   重跑全部机械门。
+   后，其关联代码（`related-code.txt`）冻结：**面板 survey 与 certify 阶段不得写 `os/`**。
+   本轮台账内已判定的修复（L3/L3.5）是唯一常规例外；每批修复后必须重设基线（提交号 +
+   文档行数/sha256 + 测试计数）并重跑受影响的机械门。**设计批级改动**（跨 crate 的 `wire`
+   版本、所有权/借用模型、ABI 布局等）不在轮内实施：中止本轮，回到 Manuscript 阶段落地、
+   重设基线，再重新开轮。`os/` 的无关改动一律判违规。
 7. **为什么冻结**：D01 的 109 次 post-freeze `os/` 改动是三次假收敛的直接原因——文档在追一个
    正在施工、施工图还在改的工地。冻结把「写作」与「验收」分开，是章节级收敛的前提。
 
@@ -130,16 +131,31 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 ## 四点五、TODO 单一账本（V3.7）
 
 1. **规范源** = `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`（每 stage 一个，入库）。
-   每条字段：`id/stage/doc/title/status/severity/kind/origin/evidence/defer`。
-2. **旧 todo markdown 已迁移删除（2026-11-21）**：`01-todo.md`、stage `todo.md`、
-   `smp_todo.md`、`endpoint_todo.md`、`draft/*`、`archive/*` 的 open 项已迁入 YAML，
-   文件已删除；closed 历史靠 git 历史 + 每条 `origin_commit` 追溯。
+   每条字段：`id/stage/doc/title/status/severity/kind/origin/evidence/defer`；v2 追加
+   `refs{code,docs,tests,decisions}`、`relations{blocked_by,duplicates,supersedes}`、
+   `lifecycle{created,updated,closed_by}`。**不存行号**：代码用 `path:symbol`，文档用
+   `review-units` 的单元 ID（`ch 3.4.2`），行号由 `todo-ledger.py check` 运行时解析。
+   `origin_file/origin_line` 是来源快照，不是活引用。open/blocked 项至少有一个**强 ref**（code `path:symbol`、docs `path#unit`、test 或
+   decision）；仅路径的 ref 只算弱引用。`--strict-refs` 会对缺口 exit 1，但在迁移覆盖率未达 80% 前**不把它作为
+   CONVERGED 的阻断门**（只出覆盖率报告）。Phase 2 门槛按 kind 分档：`code`/`doc`
+   强 ref ≥80%；`design`/`arch` 允许 `docs#unit` 或 `decision`；`stage: coordination`
+   或 `scope: stage` 允许 `decision` 或 `blocked_reason`。coordination 另跑
+   `check --scope coordination --fail-on-open` 项目级门。
+2. **TODO 载体（2026-11-21）**：01/02 的 `01-todo.md`、stage `todo.md`、`smp_todo.md`、
+   `endpoint_todo.md`、`draft/*`、`archive/*` 的 open 项已迁入 YAML 并删除旧文件；其余
+   stage 的 `todo.md` 尚未迁移，迁移前仍是输入，新发现一律写 YAML 账本。closed 历史靠
+   git 历史 + 每条 `origin_commit` 追溯。
    **轨迹制品（`OPEN-DEBT.md` / `suggestions.md` / `follow-ups.md`）原位保留**，只迁其中的
    open 项，不删除——它们是 `eval-trace-check.py` 的证据链。
    **外部线程执行过的清单（D-107）已按用户确认收口**；两条哨兵已转 `closed`。
 3. **新发现的 TODO 一律写入账本**，不得再往旧 markdown 追加。
 4. **门**：`python3 tools/todo-ledger.py check --doc <doc> --fail-on-open`——当前篇
    `status: open` 必须为 0；`closed` 必须有证据；`defer-approved` 必须有四要素。
+   引用漂移检查：`check --strict-refs` 会解析 `refs` 的文件/符号/文档单元/测试/判决行，
+   并检查 `relations` 的悬空 ID 与环路；查询用
+   `todo-ledger.py query --file/--symbol/--doc-unit/--status`。
+   **跨阶段账本**：`check --scope coordination --fail-on-open` 作为项目级门，不计入单篇
+   G12，但项目收尾时必须为 0——否则 coordination 的 open 会再次成为隐藏欠账。
 5. **反假收敛**：旧 todo 文件（已删除）里的「已批准待实施」不再算闭环——它必须在账本里是
    `open`（继续做）或 `defer-approved`（有你的亲笔四项）。这是「CONVERGED 但 todo 还有」
    的制度性修复。
@@ -157,5 +173,8 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 - **G12 TODO 账本**：`todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
   （open = 0 且 blocked = 0——待裁项存在时禁止收敛）；
 - **零欠账**：`OPEN-DEBT` 无 `[OPEN]`，且无任何未获 `defer-approved` 的 ②/⑥/SUGG。
+- **普通 review 另加 Layer 2 四项 ≥80%**（`review.md` §4.5）；`review-loop` 轨道以 G1–G14 为准，不重复 Layer 2。
+
+四门证据写入 scan.md 的 `gate-evidence-G10`..`gate-evidence-G13` 围栏块（工具名 + 0 命中/exit 0 + 计数），由 `tools/verify-check.py --self-check` 强制；缺块即 Gate 0 FAIL。
 
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE` 不再等于出版就绪；它们只是过程状态。

@@ -58,6 +58,14 @@ def subsection_bodies(chapter: str) -> list[tuple[str, str]]:
     return out
 
 
+PLACEHOLDER = re.compile(r"^\s*[（(]\s*空\s*[）)]\s*$")
+
+
+def _meaningful_len(text: str) -> int:
+    lines = [ln for ln in text.splitlines() if not PLACEHOLDER.match(ln)]
+    return len(re.sub(r"\s+", "", "\n".join(lines)))
+
+
 def check_chapter(title: str, body: str, has_glossary: bool) -> list[str]:
     missing: list[str] = []
     subs = subsection_bodies(body)
@@ -70,22 +78,26 @@ def check_chapter(title: str, body: str, has_glossary: bool) -> list[str]:
     for k in NEED:
         if have[k] is None:
             missing.append(f"{k}（关键词 {PATTERNS[k].pattern.split('|')[0]}…）")
+        elif k in ("TR-1", "TR-2", "TR-4") and _meaningful_len(have[k][1]) < 20:
+            missing.append(f"{k}（正文不足 20 字或只有占位）")
     # TR-3：示例节必须含围栏代码块或编号步骤
     if have["TR-3"] is not None:
         sb = have["TR-3"][1]
         if "```" not in sb and not re.search(r"^\s*(?:\d+[.)]|[-*]\s+\d+)", sb, re.MULTILINE):
             missing.append("TR-3（示例节无代码块/编号步骤）")
-    # TR-5：小结条目 1–5
+    # TR-5：小结条目 1–5，且每条有内容
     if have["TR-5"] is not None:
         items = [
             ln for ln in have["TR-5"][1].splitlines()
-            if re.match(r"^\s*(?:[-*]|\d+[.)])\s+", ln)
+            if re.match(r"^\s*(?:[-*]|\d+[.)])\s+\S", ln)
         ]
         if not (1 <= len(items) <= 5):
-            missing.append(f"TR-5（小结条目 {len(items)}，要求 1–5）")
-    # TR-6：篇末术语表或章内术语小节
+            missing.append(f"TR-5（小结条目 {len(items)}，要求 1–5 且有内容）")
+    # TR-6：篇末术语表或章内术语小节，且正文非空
     if not has_glossary and have["TR-6"] is None:
         missing.append("TR-6（无篇末术语表，也无章内术语小节）")
+    elif have["TR-6"] is not None and _meaningful_len(have["TR-6"][1]) < 20:
+        missing.append("TR-6（术语节正文不足 20 字）")
     return missing
 
 
@@ -99,8 +111,13 @@ def run(doc: Path, report_only: bool) -> int:
     )
     failures = 0
     checked = 0
+    short = 0
     for title, body in chapters:
-        if SKIP_TITLE.search(title) or len(body.splitlines()) < 20:
+        if SKIP_TITLE.search(title):
+            continue
+        if len(body.splitlines()) < 20:
+            short += 1
+            print(f"[WARN] {title}: 整章不足 20 行，跳过 rubric 判定")
             continue
         checked += 1
         missing = check_chapter(title, body, has_glossary)
@@ -111,9 +128,13 @@ def run(doc: Path, report_only: bool) -> int:
         if missing:
             failures += 1
             print(f"[FAIL] {title}: 缺 " + "；".join(missing))
-    print(f"tutorial-rubric-check: 检查 {checked} 章，{failures} 章缺项（{doc}）")
+    print(f"tutorial-rubric-check: 检查 {checked} 章，{failures} 章缺项"
+          + (f"，{short} 章因过短跳过" if short else "") + f"（{doc}）")
     if report_only:
         return 0
+    if checked == 0:
+        print("tutorial-rubric-check: 没有可判定章（全部 <20 行或均被跳过）", file=sys.stderr)
+        return 2
     return 1 if failures else 0
 
 
@@ -126,11 +147,11 @@ def self_test() -> int:
 
 ### 学习目标
 
-- 能说出启动第一阶段做什么
+- 能说出启动第一阶段需要先建立根页表，再打开分页，最后跳转到内核入口。
 
 ### 前置概念
 
-- 无（开篇）
+- 无（开篇）：读者只需要知道虚拟地址和页表这两个词，不要求读过前章。
 
 ### 最小示例
 
@@ -148,17 +169,17 @@ fn main() { boot(); }
 
 ### 术语
 
-- **根表**：顶层页表
+- **根表**：顶层页表，页表树的起点；内核通过它把虚拟地址翻译成物理地址。
 
 ## 2. 下一章
 
 ### 学习目标
 
-- 能解释跳转
+- 能解释从低地址启动到高半区内核入口的跳转步骤与前提条件。
 
 ### 前置概念
 
-- 第 1 章的根表
+- 第 1 章建立的根表，以及分页开启后虚拟地址到物理地址的映射关系。
 
 ### 最小示例
 
@@ -168,7 +189,7 @@ jmp entry
 
 ### 失败对照
 
-如果先清栈会丢返回地址，所以先保存。
+如果先清栈再保存返回地址，跳转后就找不到返回路径，所以先保存寄存器再跳转。
 
 ### 小结
 

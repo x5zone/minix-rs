@@ -609,7 +609,7 @@ impl<P: PortIo> AudioHooks for Als4000<P> {
     }
 
     fn resume(&mut self, chan: i32) -> i32 {
-        // C `drv_resume` (`als4000.c:636-641`) is the start sequence for
+        // C `drv_resume` (`als4000.c:635-639`) is the start sequence for
         // the channel's direction.
         match self.start_channel(chan) {
             Ok(()) => 0,

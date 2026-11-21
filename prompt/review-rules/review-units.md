@@ -4,7 +4,7 @@
 > 后段轮次的大部分输入是已经不再变化的章节。本文件把 review 的**覆盖单位**从「整篇」降到
 > 「`###` 节」，并允许已稳定的节退出循环。
 >
-> **不改变的东西**：G1–G13、四态模型、确认轮、代码冻结、零欠账、3 edition 上限全部保留；
+> **不改变的东西**：G1–G13、四态模型、确认轮、代码冻结、零欠账、3 edition 上限全部保留（本文件另加 G14）；
 > 本文件只改变「每一轮读什么」，不改变「什么算收敛」。
 
 ## 一、单元与轨道
@@ -52,8 +52,8 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 ## 四、冻结与解冻
 
 - 冻结条件：`review-units.py audit` 显示该单元 `open = 0`、`certify 新准入 = 0`、
-  V3.9 run 的 `defect-ledger.md` 必须带 `单元` 列（否则 audit 直接失败）、
-  `mark --pass/--freeze` 带存在的 `--evidence` 文件、正文 hash 与冻结时一致。
+  `defect-ledger.md` 中**存在 open 行的表**必须带 `单元` 列（全部 closed 的历史段不追溯；audit 只对无法归属的 open 行报错）、
+  `mark --pass/--freeze` 带非空 `--evidence` 文件（至少一行可重放命令/输出）、正文 hash 与冻结时一致。
 - 正文变化：`tools/review-units.py sync` 比较 hash。节正文变化只解冻该节（T2）；
   标题、顺序、层级变化解冻该章（T1）与受影响子节；`deps` 变化把下游单元标为 `reopened`。
 - 冻结单元不再进入 L1 面板；只进入确认轮的抽样。冻结不是「永远不读」——确认轮仍会抽 20%。
@@ -73,12 +73,12 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 ## 六、与既有规则的关系
 
 - **G1–G13 不变**；新增 **G14**：`tools/review-units.py check --doc <当前篇>` 与
-  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、T3 通过（evidence 文件存在）。
+  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、T3 通过（evidence 非空）。
 - **四态模型不变**：修改轮仍无收敛声明权；`CONVERGED` 只由确认轮宣告。
 - **新 edition 与历史 run**：edition 变化会重置 `eval-trace` 的 `sealed_at`/确认轮计数；
   历史轮仍留在 run 目录，`--round` 只查当前轮。若要让全历史审计也绿，需在 `DECISIONS.md`
   落重开判决行，或把旧 run 归档到 `review-eval/archive/` 并在新 run 里从 R1 开始。
-- **代码冻结不变**：进入 L1 后任何 `os/` 改动 = 中止本轮。
+- **代码冻结不变**：面板 survey 与 certify 阶段不得写 `os/`；本轮台账内的修复按 L3 实施后重设基线，设计批级改动回 Manuscript（`review-publication.md` §四.6）。
 - **零欠账不变**：每个单元的 `open` 与 TODO 账本一致；blocked 待裁项存在时不得冻结该单元所在的章。
 - **面板配置**：整篇 survey 用 `review-panel.md` §七 **表 A**；单元轮用 **表 B**
   （T1 = P-FACT + B + D2；T2 = A + C + P-FACT 定点；T3 = P-FACT + RB + 机械门）。
@@ -103,7 +103,7 @@ python3 tools/review-units.py new-edition <doc> --edition V3.10
 python3 tools/review-units.py check <doc>
 python3 tools/review-units.py next <doc>
 
-# 修复/通过：pass/freeze 必须带 open=0 的 evidence 文件
+# 修复/通过：pass/freeze 必须带 open=0 且非空的 evidence 文件
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --fix
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze --evidence <file>
 

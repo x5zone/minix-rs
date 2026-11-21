@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""doc-publication-check.py — 正式文档出版标准门（V3.7 / DP-1..DP-5）
+"""doc-publication-check.py — 正式文档出版标准门（V3.7 / DP-1..DP-6）
 
 用户的出版标准（2026-11-21 裁决，原话要点）：
   1. 正式文档必须自包含自解释；只允许引用正式文档、代码路径、C 源；
@@ -22,7 +22,6 @@
 
 基线机制（与 pattern-gate.sh 同构）：存量违规不阻断并发工作；新增即红。
   --baseline <file>  默认 tools/publication-baseline/doc.txt
-  --update-baseline  把当前全部命中写入基线（只应在用户批准后执行）
   --self-test        正反例判别矩阵
 
 用法：
@@ -143,27 +142,20 @@ def load_baseline(path: Path) -> set[str]:
     return {ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()}
 
 
-def run(docs: list[Path], baseline: Path, update: bool) -> int:
+def run(docs: list[Path], baseline: Path) -> int:
     known = load_baseline(baseline)
     new_hits: list[tuple[Path, dict]] = []
     known_count = 0
-    all_keys: list[str] = []
     per_doc: dict[Path, dict[str, int]] = {}
     for doc in docs:
         for hit in scan_doc(doc):
             k = key_for(doc, hit)
-            all_keys.append(k)
             per_doc.setdefault(doc, {}).setdefault(hit["kind"], 0)
             per_doc[doc][hit["kind"]] += 1
             if k in known:
                 known_count += 1
             else:
                 new_hits.append((doc, hit))
-    if update:
-        baseline.parent.mkdir(parents=True, exist_ok=True)
-        baseline.write_text("\n".join(sorted(set(all_keys))) + "\n", encoding="utf-8")
-        print(f"baseline 写入 {baseline}（{len(set(all_keys))} 条）")
-        return 0
     # 报告
     for doc in docs:
         counts = per_doc.get(doc, {})
@@ -245,16 +237,15 @@ def self_test() -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="正式文档出版标准门（V3.7 DP-1..DP-5）")
+    ap = argparse.ArgumentParser(description="正式文档出版标准门（V3.7 DP-1..DP-6）")
     ap.add_argument("files", nargs="*")
     ap.add_argument("--baseline", default=str(DEFAULT_BASELINE))
-    ap.add_argument("--update-baseline", action="store_true")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
     docs = [Path(f) for f in args.files] if args.files else iter_formal_docs()
-    return run(docs, Path(args.baseline), args.update_baseline)
+    return run(docs, Path(args.baseline))
 
 
 if __name__ == "__main__":

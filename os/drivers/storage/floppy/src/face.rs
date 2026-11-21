@@ -6,7 +6,7 @@
 //! (`floppy.c:422-427`), `f_do_open` (`floppy.c:1249-1306`: the density
 //! decoded from the minor, the format-device gate, and the experimental
 //! media detection through `test_read`), `f_do_close`
-//! (`floppy.c:1308-1314`: a no-op), `f_geometry` (`floppy.c:1348-1356`),
+//! (`floppy.c:1308-1314`: a no-op), `f_geometry` (`floppy.c:1348-1355`),
 //! and the sector loop of `f_transfer` (`floppy.c:444-...`: the offset and
 //! length gates, the EOF clip, the format-device leg, and the per-sector
 //! retry).
@@ -338,7 +338,7 @@ impl<L: FdcLeg> BlockDriver for FloppyFace<L> {
     }
 
     fn geometry(&mut self, minor: DeviceMinor) -> Option<PartitionGeometry> {
-        // C `f_geometry` (`floppy.c:1348-1356`).
+        // C `f_geometry` (`floppy.c:1348-1355`).
         let (drive, extent) = self.prepare(minor.0 as i32)?;
         let density = &DENSITIES[self.drives[drive].density as usize];
         Some(PartitionGeometry {

@@ -2,7 +2,7 @@
 //! interception points.
 //!
 //! C correspondence: `fbd.c`'s `fbd_transfer` chooser (`fbd.c:396-442`)
-//! and `rule.c`'s three hooks (`rule.c:151-215`), with the per-action
+//! and `rule.c`'s three hooks (`rule.c:151-184`), with the per-action
 //! arithmetic in [`crate::rules`]. The control requests and the
 //! open/close forwarding live in [`crate::service`]: they need the
 //! downstream endpoint, which the service resolves at startup.
@@ -230,7 +230,7 @@ impl FbdFace {
         let result: i32 = status;
         let _ = flags;
 
-        // Post hook (`rule_post_hook`, `rule.c:186-215`).
+        // Post hook (`rule_post_hook`, `rule.c:177-184`).
         let mut result = result;
         if hooks & POST_HOOK != 0 {
             for rule in table.iter() {
@@ -295,7 +295,7 @@ fn client_grant(
 
 /// Whether a rule fires for this request, without the lifetime side
 /// effects `rule_match` performs (the hooks run after `find_rules` has
-/// already spent them, `rule.c:151-215`).
+/// already spent them, `rule.c:151-184`).
 fn fires(rule: &FaultRule, pos: u64, size: u64, flag: u32) -> bool {
     let until = if rule.end == 0 { pos + size } else { rule.end };
     rule.start < pos + size && until > pos && (rule.flags & flag) != 0

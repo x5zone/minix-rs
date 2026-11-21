@@ -1,8 +1,12 @@
-# TODO 单一账本（V3.7 / V3.8-r2）——规范源；旧 todo markdown 已迁移后删除。
+# TODO 单一账本（V3.7 / v2 refs 扩展）——规范源；01/02 旧 todo 已迁移，其余 stage 迁移前仍是输入。
+# v2 新增：refs{code,docs,tests,decisions} / relations{blocked_by,duplicates,supersedes}
+#          / lifecycle{created,updated,closed_by}；不存行号。
 # 字段：id/stage/doc/title/status/severity/kind/origin/evidence/defer/
 #       merged_into/legacy_status/origin_file/origin_line/origin_commit/
 #       verified_by/verified_at/aliases/scope/blocked/blocked_reason
 # status: open | closed | rejected | defer-approved | historical
+# scope: doc（默认）| stage；blocked=true 必须带 blocked_reason。
+# defer-approved 必须带 decision/approved/until/consequence 四项。
 - id: D01-D-062
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -22,6 +26,14 @@
   scope: doc
   note: Row id is decision D-062; the line is the retained I-34 historical note. It is a placeholder record, not a TODO. Content
     promised by the title ('本条与 D-062 / D-065 的关系') is absent.
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions:
+    - D-062
+    - D-065
 - id: D01-EXTERNAL-D107
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -37,6 +49,13 @@
   verified_at: '2026-11-21'
   scope: doc
   note: 线程已收口；若后续发现残留，重开本行并转 open
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions:
+    - D-107
 - id: D01-I-18
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -57,6 +76,24 @@
   scope: doc
   note: 'Source line 3022 claims ✅ 已改（§4/§6 补章头导语）but HEAD lacks intros for §1/§3/§4/§5. Label-vs-reality contradiction: the
     rewrite dropped them.'
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '1'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '3'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '4'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '5'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '6'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '3.4'
+    tests: []
+    decisions: []
 - id: D01-I-19
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -82,6 +119,19 @@
   blocked_reason: 'Decision needed: accept the 2026 full rewrite as I-19''s closure (the old §3-§6 90-item sweep target no
     longer exists), or reopen the sweep against the new 2673-line doc. No replayable per-item record exists beyond the closure
     sentence at 01-todo.md:3022.'
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '3'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '4'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '5'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '6'
+    tests: []
+    decisions: []
 - id: D01-I-25
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -103,6 +153,14 @@
   scope: doc
   note: Source line 97 claims ✅ 全仓完成（CJK=0、广义锚点=0）but HEAD has 233 CJK comment lines and 301 process-anchor comment lines,
     many added after the 2026-10-30 closure. Strong label-vs-reality contradiction.
+  refs:
+    code:
+    - path: os/arch/src/arm64/paging.rs
+    - path: os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable/src/main.rs
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-I-29-11
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -121,6 +179,12 @@
   - I-29-11
   scope: doc
   note: DTB reserved-memory/no-map 源策略仍待与后续 I-29 轮次对账
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-I-29-12
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -143,6 +207,12 @@
   note: Duplicate. I-30 exists in the source at line 89 and is the canonical item; I-29-12 is a second registration of the
     same doc task.
   merged_into: D01-I-30
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-I-30
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -161,6 +231,12 @@
   - I-30
   scope: doc
   note: 01-todo.md:89 已关闭；I-29-12 的合并目标（内存图四层责任）
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-I-43
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -179,6 +255,12 @@
   - I-43
   scope: doc
   note: test-rt-birth-riscv64 bump(256)/re-entry 残项（b1-missed 报告）
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-I-53
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -201,6 +283,17 @@
   scope: doc
   note: Original 'CPL3 fault routed as kernel exception' diagnosis was retracted (D-093), not fixed; parent record only. Header
     ✅ agrees; body still has stale '待裁决的方向' at line 2652.
+  refs:
+    code:
+    - path: os/arch/src/x86_64/exception.rs
+    - path: os/kernel/src/trap_dispatch.rs
+    - path: os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-faultloop/src/main.rs
+    - path: os/qemu-tests/test-paging-faultloop.sh
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions:
+    - D-093
 - id: D01-RUN-R14-04
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -221,6 +314,16 @@
   - R14-04
   scope: doc
   note: 延期目标 D02 已 CONVERGED（02 run FREEZE.md）但未交付「DM 覆盖建立」一节；01/02 现互相指向，文档无归属；违反零欠账（无 DECISIONS defer-approved 判决行），需用户重新定归属
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '1.4'
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '4.6'
+    tests: []
+    decisions: []
 - id: D01-RUN-R37-01
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -240,6 +343,12 @@
   - R37-01
   scope: doc
   note: 与 follow-up 记载的 48 文件/126 处一致（related-code.txt 实际 50 行）；全仓裸跑为 770 处新增；os/ 冻结未修
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-RUN-R37-02
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -259,6 +368,12 @@
   - R37-02
   scope: doc
   note: follow-up 写「6/6 章缺 TR-1..TR-6」；实测 TR-6 未报（篇末术语表已存在），缺项实为 TR-1..TR-5
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-RUN-R37-04
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -278,6 +393,14 @@
   - R37-04
   scope: doc
   note: §5.4 五条链本轮无重放证据；follow-up 自述「不拿历史读数冒充本轮证据」；属证据义务不是代码缺陷
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+      unit: '5.4'
+    tests: []
+    decisions: []
 - id: D01-RUN-R37-05
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -296,6 +419,12 @@
   - R37-05
   scope: doc
   note: 方法论缺口，只能由一次跨工具只读复核销账，非代码/文档缺陷
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-rt-birth-sp
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -314,6 +443,12 @@
   - rt-birth-sp
   scope: doc
   note: A2 的 sp 污染源仍挂 rt-birth 链专项（无 ID）
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: D01-PROSE-PROSE-06-todo
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -334,6 +469,12 @@
   - PROSE-06-todo
   scope: stage
   note: 822 行整篇为 06 的设计/重构 spec 与三轮 oc-review 记录；无逐条可执行项；run 目录无 FREEZE.md 但有 ROUND-CLOSED 提交
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md
+    tests: []
+    decisions: []
 - id: D01-PROSE-PROSE-06-todo-06-todo-md-9-A1-A15
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -394,6 +535,12 @@
   scope: stage
   note: 真实开放项：§12 Q1-Q10（SHIFT/64 位/解耦、上游兼容、成本、不可逆性、三档术语）从无裁决；文件头「已封账」只依据 grep '☐|DEFERRED|open' 零命中，是标记检查不是决策；代码保持 Minix3
     语义，可视为范围冻结但未被显式裁决
+  refs:
+    code:
+    - path: os/libs/minix-types/src/types/endpoint.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: D01-PROSE-PROSE-endpoint_todo-11-2
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -457,6 +604,12 @@
   note: 需用户设计裁决；代码当前保持 Minix3 语义，可视为范围冻结但未被显式裁决
   blocked: true
   blocked_reason: 需用户设计裁决；代码当前保持 Minix3 语义，可视为范围冻结但未被显式裁决
+  refs:
+    code:
+    - path: os/libs/minix-types/src/types/endpoint.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: K01-E5
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -478,6 +631,12 @@
   scope: stage
   note: 'Design half delivered (edge1 K3), execution half missing. Status open, not closed: the smoke test itself does not
     exist.'
+  refs:
+    code:
+    - path: os/kernel/src/proc.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: K01-RULE-BUILT-NOT-WIRED
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -524,6 +683,14 @@
   blocked: true
   blocked_reason: '核实未决：Ladder half is closed per §5/§22. Residual is the §8 risk''s first-check: which code proves [0x5000,
     image_end) is not in the free map / reserved by boot-shim? Needs a decision, not a new implementation.'
+  refs:
+    code:
+    - path: os/arch/src/x86_64/ap_early_entry.rs
+    - path: os/kernel/src/smp.rs
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions: []
 - id: K01-S-8
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -565,6 +732,13 @@
   - T-8
   scope: stage
   note: Genuinely open QEMU half (5 E2E grant cases). Not blocked on user; needs new QEMU test kernel work in a T-5 CI batch.
+  refs:
+    code:
+    - path: os/kernel/src/syscall_copy.rs
+    docs: []
+    tests:
+    - test_dispatch_safememset_valid_setup_suspends_on_grant_read
+    decisions: []
 - id: K01-W-1
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -584,6 +758,12 @@
   - W-1
   scope: stage
   note: Design-exclusion record with rationale, not an open task; must stay as a non-gap memo to prevent re-discovery.
+  refs:
+    code:
+    - path: os/kernel/src/misc.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: K01-W-10
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -606,6 +786,12 @@
   note: 'Row ID is the batch label W-10, not the registered item: the payload I-21 is closed, but W-10 itself is still an
     open coordination-level doc refactor tracked in prompt/WORKFLOW-OPEN-ITEMS.md. Kept open so the migration does not drop
     it.'
+  refs:
+    code: []
+    docs:
+    - path: prompt/WORKFLOW-OPEN-ITEMS.md
+    tests: []
+    decisions: []
 - id: K01-W-2
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -625,6 +811,13 @@
   - W-2
   scope: stage
   note: Design-exclusion record, not a task.
+  refs:
+    code:
+    - path: os/kernel/src/kerninfo.rs
+    - path: os/servers/is/src/acquire.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: K01-W-3
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -644,6 +837,12 @@
   - W-3
   scope: stage
   note: Design-exclusion record; rationale-based, no code action.
+  refs:
+    code:
+    - path: os/kernel/src/debug.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: K01-W-4
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -662,6 +861,12 @@
   - W-4
   scope: stage
   note: Design-exclusion record, not a task.
+  refs:
+    code:
+    - path: os/kernel/src/misc.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: K01-W-5
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -699,6 +904,12 @@
   - W-6
   scope: stage
   note: Design-exclusion record; behavior matches C, not a gap.
+  refs:
+    code:
+    - path: os/kernel/src/syscall.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: K01-W-7
   stage: 01-stage-kernel
   doc: 01-stage-kernel
@@ -718,6 +929,12 @@
   - W-7
   scope: stage
   note: Design-exclusion record (ARCH evolution), not a task.
+  refs:
+    code:
+    - path: os/kernel/src/kmess.rs
+    docs: []
+    tests: []
+    decisions: []
 - id: D01-DOCSYNC-VM-WARM
   stage: 01-stage-kernel
   doc: 09-vm-boot-protocol
@@ -738,6 +955,14 @@
   - DOCSYNC-VM-WARM
   scope: doc
   note: 迁移回归发现；属文档-代码同步缺陷，按当前篇 review 流程修
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md
+    - path: rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md
+      unit: '4.1'
+    tests: []
+    decisions: []
 - id: D01-RUN-R37-03
   stage: 01-stage-kernel
   doc: 01-boot-shim-bootstrap
@@ -757,6 +982,13 @@
   - F-R37-03
   scope: doc
   note: 随 D-107 收口关闭；与 D01-EXTERNAL-D107 哨兵同批。
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+    tests: []
+    decisions:
+    - D-107
 - id: D01-PROSE-06-DESIGN-SNAP
   stage: 01-stage-kernel
   doc: 06-proc-init-boot-proc
@@ -777,3 +1009,9 @@
   - 06-DESIGN-SNAP
   scope: doc
   note: 若重开 06 篇 review，快照需先对齐；不影响当前篇。
+  refs:
+    code: []
+    docs:
+    - path: rewrite-notes/meta/design/01-stage-kernel/06-design.v1.md
+    tests: []
+    decisions: []

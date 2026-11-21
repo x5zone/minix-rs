@@ -46,7 +46,7 @@
 每轮轨迹必须含**判决与收口记录**（2026-11-09 用户裁决 P-1 晋升）：
 
 - `### L6` 小节：meta 结论与 BLIND-SPOT-DELTA；
-- `### L6.5` 小节：资源重读三问三去处（检测模式 → BLIND-SPOTS；流程改进 → 候选规则表，不当轮实施；立即可用清单 → 下一轮修复批）；
+- `### L6.5` 小节：模式重读三问三去处（检测模式 → BLIND-SPOTS；流程改进 → 候选规则表，不当轮实施；立即可用清单 → 下一轮修复批）；
 - **判决字段**（8 字段，`reviewer_verdict` 与 `user_decision` 分列，不得覆盖独立回读的 NOT PASS）：`decision_id` / `reviewer_verdict` / `user_decision` / `decision_reason` / `scope` / `implementation_status` / `evidence` / `reopen_condition`。
 
 ### 3.2 目录（历史格式）
@@ -124,7 +124,7 @@ tmp/review-eval/<stage>/<doc-stem>/logs/
 - `处置类` 只能是 `①` / `②` / `④` / `⑤` / `⑥` / `FP` / `SUGG`（V3.3 起，见下条），或对应的英文标记 `fix` / `transfer` / `wording` / `insufficient` / `refactor` / `false-positive`；
 - **`③` 已删除，不再接受**。误报只能写 `FP`，且 `证据` 列必须给出源码、测试或文档原文的反证；没有反证的“误报”按 `⑤` 未闭环处理，不得当作已处置。**`SUGG`（V3.3 起）为合法处置类**（**形状契约，V3.4-r11**：面板标头必须是
 `##/### SUGGESTION <ASCII-ID>`（ID 字符集与 FINDING 同，含下划线）——与 FINDING 同规则；
-无 ID 的聚合段落是散文，不计入 INDEX/发现总数/覆盖率）：限读者/设计角色的 P3 建议与准入判据不全的读者/设计项——以 SUGG 行入台账、计入 metrics 的 `SUGG` 键与发现总数（七项之和），不参与 G1–G9；FACT/DESIGN 事实类证据不足写 `⑤`（V3.4-r8 与工具对齐）；
+无 ID 的聚合段落是散文，不计入 INDEX/发现总数/覆盖率）：限读者/设计角色的 P3 建议与准入判据不全的读者/设计项——以 SUGG 行入台账、计入 metrics 的 `SUGG` 键与发现总数（七项之和），参与 CONVERGED 判定（`review-publication.md` §三.6）；FACT/DESIGN 事实类证据不足写 `⑤`（V3.4-r8 与工具对齐）；
 - `处置类` 为 `①` / `④` / `⑥` 的行，`复验` 必须非空，且不能是 `TBD`、`待定`、`-`；
 - `处置类` 为 `②` 的行，`处置` 必须含“用户批准”和 `YYYY-MM-DD` 日期、去向批次/篇目；缺一项即按未批准计，阻断本轮关闭；
 - `处置类` 为 `⑤` 的行，`处置` 必须写“还缺什么证据、去哪里取、谁负责”，且本轮不得判 `CONVERGED`；
@@ -166,7 +166,7 @@ R25 收口时必须额外写 `- certify 新准入: 0`。
   `本轮新准入` = 本轮 `origin` 首次出现的根因数；`certify 新准入` = certify 阶段首次
   出现的准入根因数。三个数分开报，禁止用一个数冒充另一个；
 - `未闭环` 必须等于台账本轮逐行实际未闭环数（`⑤` + 未获用户批准的 `②` + 复验写“未修/待修/未实施”的 `①/④/⑥`）；`eval-trace-check.py` 会把声明值与台账聚合值交叉校验，手填 0 掩盖未修行直接 FAIL。本轮关闭时必须为 0；
-- 轮次关账命令是 `eval-trace-check.py <run-dir> --round R<N>`：只检查该轮的覆盖、收口与未闭环。不带 `--round` 是全历史归档审计，历史轮次的旧格式/stale 面板不阻断当前轮，但不得删除历史证据来“变绿”；
+- 轮次关账命令是 `eval-trace-check.py <run-dir> --round R<N>`（`--units` 省略时按 run 目录自动定位单元状态；定位不到 = G14 FAIL）：只检查该轮的覆盖、收口与未闭环。不带 `--round` 是全历史归档审计，历史轮次的旧格式/stale 面板不阻断当前轮，但不得删除历史证据来“变绿”；
 - V3 的 `轮型` 只能是 `full` / `structural` / `confirmation`；出现 `discovery`/`verification` 即 FAIL。V2.5 过渡轮按旧键检查；
 - `re-litigation` 是命中冻结决策且无新证据的发现数；
 - `adjacent 阻塞` 是相邻问题被当成当前阻塞的发现数，目标为 0；
@@ -233,7 +233,7 @@ python3 tools/doc-structure-check.py <doc.md>
 
 ### 4.0 全修原则
 
-范围内确认为真缺陷的发现——不论严重度是 P0、P1、P2 还是读者体验项——**一律本轮修**。不允许无档期转出。P-DESIGN 发现的可实施代码改进标 ⑥ 本轮实施（见 4.1）；确需跨 crate 协调的，在 `OPEN-DEBT.md` 立独立项目（带负责人与截止轮次），不得留评审欠账。每篇文档必须在收敛门通过后才进入下一篇；收敛门的第一条就是 `in-scope 待修 = 0`。`OPEN-DEBT.md` 只登记跨 crate 独立项目；`adjacent` 项登记在 `follow-ups.md` 并按 §4.2 不阻塞收敛——不得把相邻项写成 `OPEN-DEBT` 来阻塞本篇。
+范围内确认为真缺陷的发现——不论严重度是 P0、P1、P2 还是读者体验项——**一律本轮修**。不允许无档期转出。P-DESIGN 发现的可实施代码改进标 ⑥ 本轮实施（见 4.1）；确需跨 crate 协调的，按 `review-publication.md` §四.6 中止本轮回 Manuscript 实施，不得登记 `OPEN-DEBT.md` 转出。每篇文档必须在收敛门通过后才进入下一篇；收敛门的第一条就是 `in-scope 待修 = 0`。`OPEN-DEBT.md` 不再作为「下一批再做」的登记簿（`review-publication.md` §三）；`adjacent` 项登记在 `follow-ups.md` 并按 §4.2 处理——不得把相邻项写成 `OPEN-DEBT` 来阻塞本篇。
 
 **架构级实施会使旧轮次的收敛结论失效。** 一旦本轮以 ⑥ 实施了跨 crate 的设计变更（`wire` 版本、所有权/借用模型、ABI 布局、分配器分区等），此前轮次的“零新增”只对**旧基线**成立：代码已经大改，旧结论不能拿来给新代码背书。此时必须重新固定基线（提交、文档行数/sha256、测试计数）、重跑受影响的文档门/宿主测试/QEMU，再判断 G8/G9；不允许用旧轮次结论宣告当前基线收敛，也不允许为了保留“已收敛”而推迟设计实施。
 
@@ -350,16 +350,13 @@ V3 删除 `discovery` / `verification` 两种轮型。**一轮 = 一次完整的
 不满足四条的，面板可以照报，但主 agent 记入
 `runs/<stage>/<doc-stem>/suggestions.md`。**SUGG 行的适用范围（V3.4-r8，与工具
 `check_v33_admission` 一致）**：读者/设计角色的 P3 建议，或读者/设计项准入判据
-不全者——以 SUGG 行入台账登记、计入 metrics 的 `SUGG` 键与发现总数，不进阻断集、
-不阻塞收敛。FACT/DESIGN 的事实类证据不足写 `⑤`（不得用 SUGG 逃避未闭环）。
+不全者——以 SUGG 行入台账登记、计入 metrics 的 `SUGG` 键与发现总数；不阻断过程，但**阻断 CONVERGED**（`review-publication.md` §三.6）。FACT/DESIGN 的事实类证据不足写 `⑤`（不得用 SUGG 逃避未闭环）。
 `suggestions.md` 每条给位置、建议、为什么暂不修；下一次 edition 边界可以
-把其中反复出现的模式晋升为规则或读者验收清单项。这是“读者偏好”的合法出口，不是
-`③` 桶的复活：suggestions 不声称是缺陷，也不参与 G1–G9。
+把其中反复出现的模式晋升为规则或读者验收清单项。`suggestions.md` 只作历史归档；未获 WONTFIX 的项按 `review-publication.md` §三.6 在轮内清零，不再是合法延期出口。
 
 **读者/设计项的严重度门槛（V3.3）**：READER 与 DESIGN 角色的 P3 发现默认不满足准入判据第 2 条——
 "措辞/指针/计数枚举可以更好"不等于"读者卡住无法继续"。只有读者明确**卡住无法继续**
-（理解路径断裂、必须外部知识才能往下读）的 P3 才准入台账，且按非阻断 backlog 处理、
-不参与 G1–G8；其余一律 `suggestions.md`。R30 的台账 70% 是 P3、R31 仍产出约 28 条
+（理解路径断裂、必须外部知识才能往下读）的 P3 才准入台账，且按 `review-publication.md` §五 在轮内清零、参与 CONVERGED 判定；其余一律 `suggestions.md`。R30 的台账 70% 是 P3、R31 仍产出约 28 条
 P3，而 §6A 旧 G3 要求"准入 P3 = 0"——这是不可达判据，本条取代它。
 
 ### 4.0d 修复批次与 100% 复验（V3）
@@ -439,7 +436,7 @@ P3，而 §6A 旧 G3 要求"准入 P3 = 0"——这是不可达判据，本条�
 |---|---|---|
 | ① | 范围内真缺陷，本轮修（P0/P1/P2 一律） | 修复文件、修复方法、回归测试、反向验证、复验命令、fix-scope（点名位置逐处回读） |
 | ② | 相邻范围转出（V3.2 收紧：仅此一种） | **只允许真正的相邻范围**（其他篇目/其他模块/其他 edition 范围）。**必须带批准**：`② 相邻：目标 <篇名/模块>；修于 <哪一轮/L0 清债>；用户批准 YYYY-MM-DD；理由 <为什么不在本轮>`。缺批准或缺日期即按未批准计，阻断本轮关闭。同篇内的待裁决项不得写 ②（见 §4.1a） |
-| ④ | 读者验收清单内的体验项 | **本轮修**——只接收 §4.0e 清单内的项；措辞、结构、教学载体缺失、读者理解障碍按清单逐条验收。清单外偏好记 `suggestions.md`，并以 SUGG 行入台账（计入 SUGG 键与发现总数，不参与 G1–G9） |
+| ④ | 读者验收清单内的体验项 | **本轮修**——只接收 §4.0e 清单内的项；措辞、结构、教学载体缺失、读者理解障碍按清单逐条验收。清单外偏好记 `suggestions.md`，并以 SUGG 行入台账（计入 SUGG 键与发现总数，参与 CONVERGED 判定） |
 | ⑤ | 证据不足 | 还缺什么证据、去哪里取、谁负责；本轮不得关闭 |
 | ⑥ | 设计/代码重构——本轮实施 | **P-DESIGN 发现的可实施改进**：改哪些文件、设计取舍、测试计划、与文档的同步点。改完后同步 Ch3/Ch4/§5。未实施不得记 `FP` 或 `②` |
 | FP | 反证成立（不是缺陷） | 必须写源码、测试或文档原文的反证；无证据按 `⑤` 未闭环处理。`FP` 不计入修复数，也不得用来承接“作者取舍/待裁决/未实施” |
@@ -678,14 +675,14 @@ G7  台账/metrics 恒等：根因 ID 唯一、origin 完整（自引入记引�
     两份页目录判例：重写段是下轮 P0 的最大来源）——缺记录 = G7 FAIL；
     代码批→文档同步清单（--stale-lines/--from-diff --strict）零命中
 G8  本轮关闭（ROUND-CLOSED）：open = 0 且 certify 新准入 = 0
-    （重复、FP、suggestions、非阻断 backlog 不计）
-G9  ⑥ DESIGN 项全部实施（**V3.7：必须在轮内实施；「转下一设计批」出口关闭**）
-G10 文档出版：当前篇 `tools/doc-publication-check.py` 零命中（DP-1..DP-5）
+    （重复、FP 不计；suggestions 的 SUGG 行仍按 §三.6 计入 CONVERGED 清零）
+G9  ⑥ DESIGN 项全部实施（**V3.7：必须在轮内实施；「转下一设计批」出口关闭**；本轮台账内的修复在 L3/L3.5 实施后重设基线，设计批级改动按 `review-publication.md` §四.6 中止本轮、在 Manuscript 实施后重开）
+G10 文档出版：当前篇 `tools/doc-publication-check.py` 零命中（DP-1..DP-6）
 G11 代码出版：当前篇关联代码 `tools/code-publication-check.py` 零命中（CP-1..CP-6）
 G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
     （open = 0 且 blocked = 0；blocked 待裁项存在时禁止收敛）
 G13 教程 rubric：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）
-G14 单元账本：`tools/review-units.py check --doc <当前篇>` 退出 0，全部 `##` 章与 `###` 节
+G14 单元账本：`tools/review-units.py check --doc <当前篇>` 与 `audit --doc <当前篇>` 退出 0，全部 `##` 章与 `###` 节
     frozen，且 T3 通过（`review-units.md`；旧 FREEZE 篇目指 `runs/*/FREEZE.md`，不追溯）
 ```
 
@@ -704,7 +701,7 @@ V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性�
 
 | 状态 | 含义 | 谁能宣告 |
 |---|---|---|
-| `ROUND-CLOSED` | 本轮准入根因全部处置，100% 复验与机械门通过（G1–G9 的 open 部分） | 修改轮（full/structural）的 certify |
+| `ROUND-CLOSED` | 本轮准入根因全部处置，100% 复验与机械门通过（G1–G14 中与修改轮相关的部分） | 修改轮（full/structural）的 certify |
 | `CONVERGENCE-CANDIDATE` | 最近一个修改轮 ROUND-CLOSED，等待确认轮 | 修改轮关闭时自动进入，无动作 |
 | `CONVERGED` | 确认轮在最终工作树上 `certify 新准入 = 0`，G1–G14 全过（含全部单元 frozen），且 OPEN-DEBT 无未销账行 | **只由确认轮出口给出** |
 | `FREEZE-WITH-BACKLOG` | 预算用尽或决定停止，仍有未解决事项或证据缺口 | 用户裁决 |
@@ -859,7 +856,7 @@ citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 
 - **重写后只允许 1 次确认轮**（不占修改轮预算）；确认轮仍不收敛 → 停止，交用户裁决，
   不得自动开轮。
 - **代码冻结**：Review 期间关联代码冻结（见 `review-publication.md` §四.6）；重写期间落地的
-  设计批必须在重写开始前完成，重写开始后任何 `os/` 改动 = 中止并重设基线。
+  设计批必须在重写开始前完成，重写开始后的 `os/` 改动必须对应重写批，并重设基线、重跑受影响门。
 
 ### 7.6 中途变更
 

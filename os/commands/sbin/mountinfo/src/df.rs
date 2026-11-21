@@ -20,7 +20,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use minix_fileops::humanize::{HN_AUTOSCALE, HN_B, HN_DECIMAL, HN_NOSPACE, humanize_number};
-use minix_types::{StatvfsBuf, statvfs_off};
+use minix_sys::{StatvfsBuf, statvfs_off};
 
 /// The block sizes `df`'s option letters select (`df.c:99-121`).
 pub const BLOCK_512: u64 = 512;

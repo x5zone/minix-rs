@@ -50,13 +50,13 @@ strip_test_modules() {
 while IFS=: read -r file line rest; do
   [ -n "$file" ] || continue
   fail "command file imports minix_types directly: $file:$line$rest"
-done < <(strip_test_modules | grep "minix_types" || true)
+done < <(strip_test_modules | sed 's://.*$::' | grep "minix_types" || true)
 
 # 2. Direct IPC / server-protocol reach-through from the command layer.
 while IFS=: read -r file line rest; do
   [ -n "$file" ] || continue
   fail "command file reaches into the libsys/IPC layer: $file:$line$rest"
-done < <(strip_test_modules | grep -E "minix_sys::ipc|minix_sys :: ipc|use minix_sys::\{[^}]*\bipc\b" || true)
+done < <(strip_test_modules | sed 's://.*$::' | grep -E "minix_sys::ipc|minix_sys :: ipc|use minix_sys::\{[^}]*\bipc\b" || true)
 
 if [ "$errors" -eq 0 ]; then
   printf 'OK: command layer dependency boundary clean (99-global-concepts.md §1).\n'

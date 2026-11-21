@@ -1,6 +1,6 @@
 ---
 name: review-process-skill
-description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 Step 0.5 structure.md 骨架评审、Step 3.5a 纵向链路检查、Step 3.5b 因果链抽样验证）、Blocker Gates（0/A/B/C/D/D-6/E/G/H — 2026-08-15 修复 C-P0-2 明确 Gate H 属于 Blocker Gates）、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。 用在进入 review 执行阶段、需要 Step 0-7 强制流程与 Blocker Gates 证据格式之时。
+description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 Step 0.5 structure.md 骨架评审、Step 3.5a 纵向链路检查、Step 3.5b 因果链抽样验证）、Blocker Gates（0/A/B/C/D/D-6/D-Impl/E/G/H — 2026-08-15 修复 C-P0-2 明确 Gate H 属于 Blocker Gates）、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。 用在进入 review 执行阶段、需要 Step 0-7 强制流程与 Blocker Gates 证据格式之时。
 ---
 
 # Minix-RS Review 执行流程
@@ -251,7 +251,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > tools/design-coverage-check.sh {stage}
   >
   > # 4. TODO staleness check（若 TODO 数 > 5）
-  > tools/todo-staleness-check.sh {todo-file}  # NEW
+  > python3 tools/todo-ledger.py check  # v2 账本
   > ```
   >
   > ### 豁免列表（仅一次性用户明确豁免，模式 71 DOG）
@@ -264,7 +264,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
 - **TODO Staleness Check（NEW 2026-07-16，模式 70 CTOS 配套）**：
   > 当 review 输入包含外部 TODO 清单（当前形态：各 stage 的 todo.md / {NN}-todo.md；历史案例如 tmp_design_and_todo/ 下文件，该目录已删除），且 TODO 数 > 5 或含"基于..."/"依赖..."等时间敏感词 → **必须先跑 staleness check**（Step 0.7.4）。详见 [review-rules/review-process.md §Step 0.7.4](../../../prompt/review-rules/review-process.md)。
   >
-  > **工具支持**（未来实施）：`tools/todo-staleness-check.sh {todo-file}` 自动扫描所有 TODO 的前提依赖并输出 staleness 报告。
+  > **工具支持**：`python3 tools/todo-ledger.py check`；`--strict-refs` 解析 refs 的符号/单元/测试/判决行。
 
 - **路径变量与统一布局**（项目根 `.review/` 下分 `trae/` 与 `claude/`）：
   - `{tree}` = 目标文档所在的笔记树根：`rewrite-notes`、`redesign-notes`、`study-notes`（目录名读自 `tools/notes-layout.conf`）。
@@ -419,7 +419,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
 > 审阅者**自己写**一段"不看代码、不用函数名，用机制语言复述 Ch1"的结论（一页以内），
 > 直接写进本节（不是把 Ch1 抄一遍）。判断标准 = 能否说出
 > "这个机制解决什么矛盾、状态怎么转、边界在哪"。允许标注"复述在 X 处卡住"（卡点即教学缺陷线索）。
-> 复述不通过 → **教学类 P1**：新增/触碰章节必须修复或写明延期理由；存量章节登记 backlog；
+> 复述不通过 → **教学类 P1**：新增/触碰章节必须修复或写明延期理由；存量章节登记 TODO 账本（kind: doc）；
 > 复述结论与卡点在 scan.md §structure.md 评审与 Issue List 显著位置单列。
 
 ## 12. 纵向链路映射
@@ -1100,9 +1100,9 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 
 - [ ] 全维度覆盖：10/10 维度 COMPLETE
 - [ ] P0 收敛：最近 Pass 新增 P0 = 0
-- [ ] P1 收敛：最近 Pass 新增 P1 ≤ 1
+- [ ] P1 收敛：最近 Pass 新增 P1 = 0（V3.7）
 - [ ] 独立验证：**Gate G** VERIFY-CHECK = PASS（**必须完成，不能跳过**）
-- [ ] Blocker Gates：0/A/B/C/D/D-6/E/G/H 全部通过，且每个 Gate 都有 gate-evidence 附件
+- [ ] Blocker Gates：0/A/B/C/D/D-6/D-Impl/E/G/H 全部通过，且每个 Gate 都有 gate-evidence 附件
 
 **当前状态**：CONVERGED / NOT_CONVERGED (N phases remaining)
 **下一步**：[下一阶段名称] 或 [执行独立验证] 或 [审查已收敛，可结束]
@@ -1127,13 +1127,13 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 
 | 层级 | 目标 | 通过条件 | 状态标记 |
 |------|------|---------|---------|
-| **Layer 1（Correctness）** | C → Rust 语义对齐 | P0 修复 + Gate H + Gate 0/A/B/C/D/D-6/E/G/H + Step 5.6 | NOT_CONVERGED if FAIL |
-| **Layer 2（Excellence）** | redox/textbook 级质量 | §4.3.5 + §4.4 + §16.5 + §2.0 架构演进 ≥80% | allowed CONVERGED w/ warning if PARTIAL |
+| **Layer 1（Correctness）** | C → Rust 语义对齐 | P0 修复 + Gate H + Gate 0/A/B/C/D/D-6/D-Impl/E/G/H + Step 5.6 | NOT_CONVERGED if FAIL |
+| **Layer 2（Excellence）** | redox/textbook 级质量 | §4.3.5 + §4.4 + §16.5 + §2.0 架构演进 ≥80% | NOT_CONVERGED（卓越性项登记并处置） |
 
 **关键判定**：
 - 必须先 1 后 2（正确性优先）
 - Layer 1 FAIL → NOT CONVERGED（强制修复）
-- Layer 1 PASS + Layer 2 PARTIAL → CONVERGED with warning
+- Layer 1 PASS + Layer 2 PARTIAL → NOT CONVERGED（卓越性项登记并处置）
 - Layer 1 PASS + Layer 2 PASS → 完全 CONVERGED
 
 详见 [review-rules/review-process.md §三 状态管理与收敛判断](../../../prompt/review-rules/review-process.md)。
@@ -1156,7 +1156,7 @@ ls {tree}/meta/design/{stage}/{NN}-design-final.v*.md # bagging
 3. **反向验证**：对每个抽样问题——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号，验证是否都在文档/检查覆盖
 5. **收敛验证**：检查 STATE.md 的 Convergence Checklist 是否有已标记 COMPLETE 但实际未完成的维度
-6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 0/A/B/C/D/D-6/E/G/H 全部 Gate（含 gate-evidence 块）
+6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 0/A/B/C/D/D-6/D-Impl/E/G/H 全部 Gate（含 gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK。同 agent 验证时必须基于 grep 命令重放（非语义回忆），并在 VERIFY-CHECK.md 中标注"同 agent 验证，已重放 grep 命令"。
 
 **中间产物**（写入 `.review/trae/{stage}/VERIFY-CHECK.md`）：
@@ -1287,8 +1287,8 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 > **详见**：[review-rules/review-process.md §Step 7.1](../../../prompt/review-rules/review-process.md)。
 
 **判定规则**（任一触发即应停止并交付）：
-1. **轮次阈值**：同一文档累计 review ≥ 5 轮 → 强制交付当前结果，剩余 P1/P2 转为 backlog
-2. **P1 边际递减**：连续 2 轮新发现 P1 ≤ 1 → 视为收敛，剩余 P1 转为 backlog
+1. **轮次阈值**：同一篇修改轮达到 3 轮（V3.8 硬上限，跨 edition 累计）→ 停止修改、整节重写；不得以 backlog 交付（`review-publication.md` §三）
+2. **P1 边际递减**：连续 2 轮新发现 P1 ≤ 1 → 停止继续寻找新问题并交付；状态仍按 §五 判定（P1 = 0 才可 CONVERGED），不得转 backlog
 3. **成本/收益比**（2026-08-15 修复 A-P1-3 加权定义）：当前轮 review 耗时 > 上一轮 80% 但加权新发现问题 < 上一轮 20% → 停止
    - **加权公式**：`weighted_new = P0_count * 10 + P1_count * 3 + P2_count * 1`
    - **首轮不适用**：第一轮 review 没有"上一轮"基准，自动跳过此条
@@ -1302,7 +1302,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 - 当前轮次: N
 - 本轮新发现: P0=X, P1=Y, P2=Z
 - 触发停止规则: [1/2/3/无]
-- 决定: 继续收敛 / 强制交付（剩余转 backlog）
+- 决定: 继续收敛 / 停止寻找新问题并交付（状态按 §五 判定，不转 backlog）
 ```
 
 ---
@@ -1407,5 +1407,5 @@ rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type ru
 ### 4. 修复结束标准
 - 本次计划修复的所有 P0 已修复并验证。
 - 未修复的 P0 必须标记为 `WONTFIX` 并给出不可辩驳的理由（如架构演进明确替代）。
-- 最新一次完整 Pass：新增 P0 = 0，新增 P1 ≤ 1。
+- 最新一次完整 Pass：新增 P0 = 0，新增 P1 = 0。
 - 完成 VERIFY-CHECK.md 后才可标记 **CONVERGED**。

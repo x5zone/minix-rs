@@ -54,13 +54,61 @@ GATE0_ANCHORS = [
 GATE_EVIDENCE_KEYWORDS = {
     "A": ["coverage-extract.py", "Coverage Summary"],
     "B": ["行为契约"],  # 8 字段 × 5 函数
-    "C": [],  # Precision Check 表
-    "D": [],  # 5 项 P0 必检 rg 命令
-    "D-6": [],  # structure.md 评审表
-    "E": [],  # 测试函数 grep
-    "G": [],  # VERIFY-CHECK 路径
+    "C": [],  # Precision Check 表；另由结构判据要求 meta-rule/L459
+    "D": [],  # 5 项 P0 必检 rg 命令；另由结构判据要求 >=5 条
+    "D-6": [],  # structure.md 评审表；另由结构判据要求 structure.md
+    "E": [],  # 测试函数 grep；另由结构判据要求 fn test_* 或 N/A+理由
+    "G": [],  # VERIFY-CHECK 路径；另由结构判据解析 consistency >=90%
     "H": [],  # design + outline 对齐
+    "G10": ["doc-publication-check.py"],
+    "G11": ["code-publication-check.py"],
+    "G12": ["todo-ledger.py"],
+    "G13": ["tutorial-rubric-check.py"],
 }
+
+
+def gate_block_extra_missing(gate: str, content: str) -> list[str]:
+    """Gate 证据块的结构判据：空围栏/warning 态不能冒充通过。"""
+    extra: list[str] = []
+    if gate == "C":
+        if not re.search(r"meta-rule|L459|Precision", content, re.I):
+            extra.append("Precision/meta-rule 判据")
+    elif gate == "D":
+        cmds = [ln for ln in content.splitlines()
+                if re.match(r"\s*(?:\$\s*)?(rg|grep)\s", ln)]
+        if len(cmds) < 5:
+            extra.append(f"至少 5 条 rg/grep 命令（当前 {len(cmds)}）")
+    elif gate == "D-6":
+        if "structure.md" not in content:
+            extra.append("structure.md 评审表")
+    elif gate == "E":
+        has_fn = re.search(r"\bfn\s+test_\w+", content) is not None
+        has_na = "N/A" in content and re.search(r"[：:]\s*\S", content) is not None
+        if not (has_fn or has_na):
+            extra.append("fn test_* 命中或 N/A+理由")
+    elif gate == "G":
+        m = re.search(r"consistency\D{0,12}(\d+(?:\.\d+)?)\s*%", content, re.I)
+        if not m:
+            extra.append("consistency NN%")
+        elif float(m.group(1)) < 90:
+            extra.append(f"consistency {m.group(1)}% < 90%")
+    elif gate == "H":
+        low = content.lower()
+        if "design" not in low or "outline" not in low:
+            extra.append("design + outline 对齐")
+    elif gate == "G10":
+        if not re.search(r"0 处|无新增违规|exit\s*0", content):
+            extra.append("doc-publication 的 0 命中/exit 0 输出")
+    elif gate == "G11":
+        if not re.search(r"0 处|无新增违规|exit\s*0", content):
+            extra.append("code-publication 的 0 命中/exit 0 输出")
+    elif gate == "G12":
+        if not re.search(r"open\s*=\s*0|todo-ledger check: OK|exit\s*0", content):
+            extra.append("todo-ledger 的 open=0/OK 输出")
+    elif gate == "G13":
+        if not re.search(r"0 章缺项|0 缺项|exit\s*0", content):
+            extra.append("tutorial-rubric 的 0 缺项/exit 0 输出")
+    return extra
 
 # ===== Issue 提取模式 =====
 # 匹配 Issue List 表格行: | P1-1 | P1 | L459 | ... |
@@ -125,6 +173,7 @@ def check_gate_evidence_blocks(scan_text):
             continue
         block_content = match.group(1)
         missing_kw = [kw for kw in keywords if kw not in block_content]
+        missing_kw += gate_block_extra_missing(gate, block_content)
         results[gate] = {
             "exists": True,
             "keywords_ok": len(missing_kw) == 0,
@@ -312,14 +361,145 @@ def generate_verify_check_md(
 
 # ===== 主入口 =====
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _latest_snapshot(hits: list[Path]) -> Path | None:
+    if not hits:
+        return None
+    def key(p: Path) -> int:
+        m = re.search(r"\.v(\d+)\.md$", p.name)
+        return int(m.group(1)) if m else -1
+    return sorted(hits, key=key)[-1]
+
+
+def cmd_preflight(tool: str, stage: str, doc_stem: str, agent: str) -> int:
+    """review 启动前的 7 组产物存在性检查（原 review-gate-check.sh 的合并入口）。"""
+    nn_match = re.match(r"(\d+)", doc_stem)
+    nn = nn_match.group(1) if nn_match else doc_stem
+    design_dir = ROOT / "rewrite-notes" / "meta" / "design" / stage
+    base = ROOT / ".review" / tool / stage
+    docdir = base / doc_stem
+    if tool == "trae":
+        scans = base / "scans"
+        def scan_artifact(kind: str) -> Path | None:
+            direct = scans / f"{doc_stem}-{agent}-{kind}.md"
+            if direct.is_file():
+                return direct
+            hits = sorted(scans.glob(f"{doc_stem}-*-{agent}-{kind}.md"))
+            return hits[0] if hits else None
+        scan = scan_artifact("scan")
+        structure = scan_artifact("structure")
+        symbols = scan_artifact("SYMBOLS")
+    else:
+        scan = docdir / "scan.md"
+        structure = docdir / "structure.md"
+        symbols = docdir / "SYMBOLS.md"
+    verify = next((p for p in (docdir / "VERIFY-CHECK.md", base / "VERIFY-CHECK.md",
+                               base / f"VERIFY-CHECK-{nn}.md") if p.is_file()), None)
+    groups = [
+        ("Gate H.1 design 快照", sorted(design_dir.glob(f"{nn}-design*.v*.md"))),
+        ("Gate H.6 outline 快照", sorted(design_dir.glob(f"{nn}-outline.v*.md"))),
+        ("Gate H.6 outline-review 快照", sorted(design_dir.glob(f"{nn}-outline-review.v*.md"))),
+        ("STATE.md", [base / "STATE.md"] if (base / "STATE.md").is_file() else []),
+        ("scan.md", [scan] if scan and scan.is_file() else []),
+        ("structure.md", [structure] if structure and structure.is_file() else []),
+        ("SYMBOLS.md", [symbols] if symbols and symbols.is_file() else []),
+        ("Gate G VERIFY-CHECK.md", [verify] if verify else []),
+    ]
+    print(f"=== Review Preflight ===\ntool={tool} stage={stage} doc-stem={doc_stem} agent={agent}")
+    failures = 0
+    for name, hits in groups:
+        if hits:
+            shown = _latest_snapshot(hits) or hits[0]
+            try:
+                shown = shown.relative_to(ROOT)
+            except ValueError:
+                pass
+            print(f"[PASS] {name}: {shown}")
+        else:
+            failures += 1
+            print(f"[FAIL] {name}: 缺失")
+    scan_path = scan if scan and scan.is_file() else None
+    if scan_path:
+        text = scan_path.read_text(encoding="utf-8", errors="replace")
+        if "关联代码清单" not in text:
+            failures += 1
+            print("[FAIL] B4.1: scan.md §Step 0 预检结果缺「关联代码清单」")
+        else:
+            print("[PASS] B4.1: 关联代码清单存在")
+        if "gate-evidence-code" not in text:
+            failures += 1
+            print("[FAIL] B4.1: scan.md 缺 gate-evidence-code 块（或 N/A + 理由）")
+        else:
+            print("[PASS] B4.1: gate-evidence-code 块存在")
+        missing_artifacts = []
+        for m in re.finditer(r"^artifact:\s*(\S+)", text, re.MULTILINE):
+            art = m.group(1).strip().strip("（）()")
+            if not art or art == "none":
+                continue
+            ap = Path(art)
+            if not ap.is_absolute():
+                ap = ROOT / ap
+            if not ap.exists():
+                missing_artifacts.append(art)
+        if missing_artifacts:
+            failures += 1
+            print(f"[FAIL] D4: gate-evidence artifact 不存在：{', '.join(missing_artifacts)}")
+        else:
+            print("[PASS] D4: gate-evidence artifact 路径全部存在（或 none）")
+    if failures:
+        print(f"preflight: FAIL（{failures} 项）")
+        return 1
+    print("preflight: PASS（7 组产物 + scan 内容级检查）")
+    return 0
+
+
+def cmd_finalize(path: Path) -> int:
+    """从已填的 §2.1 Issue 反向验证表计算 Gate G 一致性；拒绝残留（待填）。"""
+    if not path.is_file():
+        print(f"finalize: 文件不存在：{path}", file=sys.stderr)
+        return 2
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"### 2\.1 Issue 反向验证表(.*?)(?=\n### |\n## |\Z)", text, re.S)
+    if not m:
+        print("finalize: 找不到 §2.1 Issue 反向验证表", file=sys.stderr)
+        return 1
+    rows: list[list[str]] = []
+    for line in m.group(1).splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 5:
+            continue
+        if cells[0] in ("Issue ID", "---------") or set(cells[0]) <= {"-", ":"}:
+            continue
+        rows.append(cells)
+    if not rows:
+        print("finalize: §2.1 没有可判定的 issue 行", file=sys.stderr)
+        return 1
+    for i, cells in enumerate(rows, 1):
+        if any("待填" in c for c in cells):
+            print(f"finalize: §2.1 第 {i} 行仍有（待填）", file=sys.stderr)
+            return 1
+    ok_values = {"是", "✅", "一致", "yes", "Y", "ok", "OK"}
+    matches = sum(1 for cells in rows if cells[3] in ok_values)
+    total = len(rows)
+    pct = matches * 100.0 / total
+    text = re.sub(r"^- 一致 issue 数: .*$", f"- 一致 issue 数: {matches}", text, flags=re.M)
+    text = re.sub(r"^- 一致性: .*$", f"- 一致性: {pct:.1f}%", text, flags=re.M)
+    path.write_text(text, encoding="utf-8")
+    print(f"finalize: 一致 {matches}/{total} = {pct:.1f}%")
+    return 0 if pct >= 90.0 else 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Minix-RS Review 独立验证（Gate G）辅助脚本'
     )
     parser.add_argument(
         '--scan',
-        required=True,
-        help='scan.md 文件路径'
+        help='scan.md 文件路径（--preflight/--finalize 时不需要）'
     )
     parser.add_argument(
         '--state',
@@ -354,7 +534,30 @@ def main():
         action='store_true',
         help='VERIFY-SELF 模式：仅输出机械化检查结果，不生成 VERIFY-CHECK.md'
     )
+    parser.add_argument(
+        '--preflight',
+        action='store_true',
+        help='检查 7 组 review 产物是否存在（原 review-gate-check.sh）'
+    )
+    parser.add_argument('--tool', default='zcode', help='运行时：trae/claude/codex/zcode/qoder')
+    parser.add_argument('--stage', help='stage 目录名，如 01-stage-kernel')
+    parser.add_argument('--doc-stem', help='文档 stem，如 01-boot-shim-bootstrap')
+    parser.add_argument('--agent', default='glm', help='Trae 扁平布局的 agent 名')
+    parser.add_argument(
+        '--finalize',
+        metavar='VERIFY_CHECK_MD',
+        help='从已填的 §2.1 表计算一致性并写回 §4.1'
+    )
     args = parser.parse_args()
+
+    if args.preflight:
+        if not args.stage or not args.doc_stem:
+            parser.error("--preflight 需要 --stage 与 --doc-stem")
+        return cmd_preflight(args.tool, args.stage, args.doc_stem, args.agent)
+    if args.finalize:
+        return cmd_finalize(Path(args.finalize))
+    if not args.scan:
+        parser.error("--scan 必填（除非使用 --preflight/--finalize）")
 
     scan_path = Path(args.scan).resolve()
     if not scan_path.exists():

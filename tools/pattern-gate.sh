@@ -161,7 +161,7 @@ P2_TESTS=(
   test_reserved_regions_candidates_union                # NK4-C 续-51 boot DM 保留区三源并集（source-4 验证链）
   test_reserved_kernel_dm_installs_gap_leaf             # NK4-C 续-51 内核 DM 保留区间隙叶
   test_establish_boot_dm_reserved_is_kernel_window_only # NK4-C 续-51 boot DM 保留仅内核窗口
-  test_clamp_cpu_to_bsp_transitional_guard              # NK4-C 续-73 过渡守卫钳 schedctl cpu→BSP（CONTRACT 债在案）
+  # test_clamp_cpu_to_bsp_transitional_guard 已随 BSP 亲和钳制撤除（3626b52d5 / 9e1618f09 / dcf99d197），不再要求存在。
   riscv_pf_error_code_matches_the_aarch64_lane_table    # NK4-C 续-76b riscv PFEC 跨腿等值表（S2；裸值断言改语义表）
   test_brk_extends_containing_region_c_like             # NK4-C 续-279m brk 真源直译（C 契约含相邻 region 内增长）
   test_brk_far_neighbor_still_grows                     # NK4-C 续-279m brk 跨空洞邻居仍可增长

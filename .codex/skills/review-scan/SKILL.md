@@ -259,7 +259,7 @@ Execute 9 pattern categories:
 
 Read: `.codex/skills/review-scan/checks/excellence.md`
 
-> **Precondition**: Only execute if Phase 2-5 found 0 new P0 and ≤1 new P1.
+> **Precondition**: Only execute if Phase 2-5 found 0 new P0 and 0 new P1 (V3.7).
 > Excellence checks pursue "better", not "correct".
 
 Execute:
@@ -286,7 +286,7 @@ Execute:
 - Step 5.5: State Write & Convergence
 - Step 5.6: Review Verification Protocol (if converged)
 - **Step 5.7: Rule Discovery (mandatory)** — answer ✅/❌ + draft if ✅
-- **Step 7.1: Convergence Cost Warning (mandatory)** — stop if ≥5 rounds / P1≤1 for 2 rounds / cost>80% benefit<20%
+- **Step 7.1: Convergence Cost Warning (mandatory)** — stop modifying at 3 modification rounds (cross-edition) / P1≤1 for 2 rounds stops searching (status still per publication) / cost>80% benefit<20%
 - Step 6: Action Item Generation
 - Step 7: Self-Check Checklist
 - Meta-Check: Skip/Fake Check Detection
@@ -326,10 +326,11 @@ STATE.md contents:
 
 **Convergence criteria**:
 - All dims COMPLETE in scan.md
-- P0 new=0, P1 new≤1
+- P0 new=0, P1 new=0 (V3.7; no backlog exit)
 - **Gate G: VERIFY-CHECK.md=PASS** (mandatory; do NOT mark CONVERGED without it)
 - All P0 fixed+verified (or WONTFIX+reason)
-- **Blocker Gates 0/A/B/C/D/D-6/E/G/H (incl. D-6 for doc review) all passed with gate-evidence attached**
+- **Blocker Gates 0/A/B/C/D/D-6/D-Impl/E/G/H (incl. D-6 for doc review) all passed with gate-evidence attached**
+- **Publication gates G10-G14** (`review-publication.md` §五): doc/code/todo/rubric/units all green before CONVERGED
 
 ---
 

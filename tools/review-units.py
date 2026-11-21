@@ -277,8 +277,21 @@ def default_ledger(doc: Path, stage: str) -> Path:
     return REVIEW_EVAL_DIR / "runs" / stage / doc.stem / "defect-ledger.md"
 
 
+def evidence_nonempty(path: Path) -> bool:
+    """evidence 至少要有一行内容；空文件或纯空白不算证据。"""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return len("".join(text.split())) >= 8
+
+
 def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
-    """解析 defect-ledger 的 `单元` 列，返回 {unit_id: open_count} 与错误。"""
+    """解析 defect-ledger 的 `单元` 列，返回 {unit_id: open_count} 与错误。
+
+    V3.9+ 台账段（`##` 标题或 `- edition:` 行标 V3.9 及以上）必须有 `单元` 列；
+    旧 edition 段不追溯。完全没有可解析的处置表（需 `处置类` 与 `复验` 列）时
+    仍报错，防止空台账冒充 open=0。"""
     if not path.is_file():
         return {}, [f"ledger 不存在：{path}"]
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -287,7 +300,18 @@ def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
     header: list[str] | None = None
     idx: dict[str, int] = {}
     found_unit_table = False
+    found_defect_table = False
+    section_requires_unit = False
     for i, line in enumerate(lines):
+        if line.startswith("## "):
+            m = re.search(r"V(\d+)\.(\d+)", line)
+            if m:
+                section_requires_unit = (int(m.group(1)), int(m.group(2))) >= (3, 9)
+            continue
+        m_ed = re.match(r"\s*-\s*edition:\s*V(\d+)\.(\d+)", line)
+        if m_ed:
+            section_requires_unit = (int(m_ed.group(1)), int(m_ed.group(2))) >= (3, 9)
+            continue
         s = line.strip()
         if not s.startswith("|"):
             continue
@@ -300,7 +324,14 @@ def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
             for name in ("发现 ID", "单元", "处置类", "处置", "复验"):
                 if name in cells:
                     idx[name] = cells.index(name)
+            if not ("处置类" in idx and "复验" in idx):
+                header = None
+                idx = {}
+                continue
+            found_defect_table = True
             if "单元" not in idx:
+                if section_requires_unit:
+                    errors.append(f"V3.9+ 台账段缺少 `单元` 列（open 行无法归属）：{path}")
                 header = None
                 idx = {}
                 continue
@@ -334,8 +365,8 @@ def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
         if open_row:
             for u in units:
                 counts[u] = counts.get(u, 0) + 1
-    if not found_unit_table:
-        errors.append(f"ledger 没有带 `单元` 列的表（V3.9+ 必须）：{path}")
+    if not found_defect_table:
+        errors.append(f"ledger 没有可解析的处置表（需 `处置类` 与 `复验` 列）：{path}")
     return counts, errors
 
 
@@ -669,6 +700,9 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
     if (passed or freeze or rewrite or approve) and evidence and not Path(evidence).is_file():
         print(f"[FAIL] evidence 文件不存在：{evidence}", file=sys.stderr)
         return 1
+    if (passed or freeze or rewrite or approve) and evidence and not evidence_nonempty(Path(evidence)):
+        print(f"[FAIL] evidence 文件为空或不可读：{evidence}", file=sys.stderr)
+        return 1
     if passed or freeze:
         lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
         counts, errs = ledger_open_by_unit(lpath)
@@ -788,6 +822,9 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str |
         return 1
     if ok and not Path(evidence).is_file():
         print(f"[FAIL] evidence 文件不存在：{evidence}", file=sys.stderr)
+        return 1
+    if ok and not evidence_nonempty(Path(evidence)):
+        print(f"[FAIL] evidence 文件为空或不可读：{evidence}", file=sys.stderr)
         return 1
     if ok and not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结的章，T3 不得通过", file=sys.stderr)
@@ -926,7 +963,35 @@ def self_test() -> int:
         assert mk("1.1", "t2", False, True, True, "") == 0
         assert cmd_end_confirmation(doc, sp) == 0
         assert cmd_gate(doc, sp, True, str(ev), str(ledger)) == 0
-    print("self-test PASS: init/check/sync/unfreeze/budget/sample")
+        # V3.9 单元列：全部 closed 的历史表不追溯；open 行缺单元必须报错
+        legacy_ok = root / "legacy-closed.md"
+        legacy_ok.write_text(
+            "| 发现 ID | 处置类 | 处置 | 复验 |\n"
+            "|---|---|---|---|\n"
+            "| X-1 | ① | 已修 | grep -n x doc |\n",
+            encoding="utf-8",
+        )
+        counts, errs = ledger_open_by_unit(legacy_ok)
+        assert not errs and not counts
+        legacy_open = root / "legacy-open.md"
+        legacy_open.write_text(
+            "## R99 测试轮（V3.9）\n\n"
+            "| 发现 ID | 处置类 | 处置 | 复验 |\n"
+            "|---|---|---|---|\n"
+            "| X-2 | ⑤ | 取证不足 | 未修 |\n",
+            encoding="utf-8",
+        )
+        counts, errs = ledger_open_by_unit(legacy_open)
+        assert errs and not counts
+        # CLI dispatch：mark 必须真正走 cmd_mark，不得再出现局部名缺失
+        empty_ev = root / "empty-evidence.md"
+        empty_ev.write_text("   \n", encoding="utf-8")
+        assert cmd_gate(doc, sp, True, str(empty_ev), str(ledger)) == 1
+        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "",
+                        evidence=str(empty_ev), ledger=str(ledger)) == 1
+        src = Path(__file__).resolve().read_text(encoding="utf-8")
+        assert "return cmd_mark(doc, sp, args.unit" in src
+    print("self-test PASS: init/check/sync/unfreeze/budget/sample/audit/evidence/cli")
     return 0
 
 
@@ -1000,7 +1065,7 @@ def main() -> int:
     if args.cmd == "next":
         return cmd_next(doc, sp, args.track)
     if args.cmd == "mark":
-        return mk(args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve, args.deps, args.confirm_fix, args.evidence, args.ledger)
+        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve, args.deps, args.confirm_fix, args.evidence, args.ledger)
     if args.cmd == "sample":
         return cmd_sample(doc, sp, args.ratio, args.seed)
     if args.cmd == "gate":

@@ -22,7 +22,7 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 | 3 | `prompt/review-rules/fix-guard.md` | 修复守则（动手前 5 件事、一次一条、修后留痕） |
 | 4 | `prompt/review-rules/review-cmds.md` | 6 个任务命令入口与不可裁剪的通用强制门 |
 | 5 | `prompt/review-rules/review-patterns.md` | 模式库（含 P0 必检清单与验证命令） |
-| 5.5 | `prompt/review-rules/review-publication.md` | **出版标准（V3.7）**：DP-1..DP-5 文档、CP-1..CP-6 代码、零欠账（禁 defer）、顺序迭代、Review 期间代码冻结 |
+| 5.5 | `prompt/review-rules/review-publication.md` | **出版标准（V3.7）**：DP-1..DP-6 文档、CP-1..CP-6 代码、零欠账（禁 defer）、顺序迭代、Review 期间代码冻结 |
 | 5.6 | `prompt/review-rules/review-tutorial-rubric.md` | **教程 rubric（V3.8）**：TR-1..TR-6（目标/前置/示例/失败对照/小结/术语），G13 |
 | 5.7 | `prompt/review-rules/review-units.md` | **单元级 review（V3.9）**：`###` 节冻结、T1/T2/T3 三轨、G14、确认轮抽样 |
 | 6 | `prompt/README.md` | 三端同步机制：改了源必须同步哪些文件、跑哪些校验 |
@@ -69,6 +69,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **⛔ 抽象语义，不描述机制（本项目的第一原则）**：区分「OS 语义对象」与「硬件承载对象」。同一层的代码拥有同一语义，不同层的差异待在该待的地方——优美不是让三个实现长得像，而是让接口根本看不见硬件差异。判据三问、边界条款（arch trait 自身可谈硬件名；启动契约不在射程内；禁止为漂亮提前改契约）见 `prompt/review-rules/review-core-semantics.md` 与模式库的对应总括模式
 - **真值优先序**：`Minix3 C 源码行为 > 设计契约 > Rust 实现 > 设计/技术文档 > AI 分析`。拿不准就去 `minix3/` 读原始 C 代码
 - **三档术语**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：文档 + 设计 + 代码）
+- **⛔ 仓库级 CI 门**：`pattern-gate` / `check-command-boundary` / `arch-gated-test-count` 见 `.github/workflows/rules-consistency.yml`；`prompt/` 不重抄其检查项。
 - **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史/待办（`tools/doc-publication-check.py` DP-1..DP-6；用户本人笔记只允许放 `<!-- user-note: … -->` 注释块），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
 - **⛔ 教程就绪（V3.8）**：每章必须有学习目标、前置概念、最小可运行示例、失败对照、小结、术语定义（`tools/tutorial-rubric-check.py`）；缺任一项 = P1，不得 CONVERGED
 - **⛔ 轮次硬上限（V3.8）**：同一篇最多 3 个修改轮（跨 edition 累计）；未收敛即强制整节重写，不开第 4 轮；重写后只允许 1 次确认轮
@@ -83,15 +84,15 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 1. **声明 scope**：目标文件、模式（doc / code / full）、STATE.md 状态；doc 模式同时用 `tools/review-units.py next <doc>` 声明本轮 T1/T2 单元。状态目录按 `{stage}` 分组且三工具隔离：`.review/{tool}/{stage}/`（Trae 用 `scans/` 扁平结构，Claude 与 Codex 用 `{doc-stem}/` 子目录）
 2. **Step 0 硬阻断预检**（所有模式强制）：4 条 `ls {tree}/meta/design/{stage}/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；快照缺失 → 对应 Gate FAIL → Step 0.3 嵌入生成（不中断 review、不标 N/A、不许复用他篇快照）。缺失却标 CONVERGED → P0-process-violation（模式 69）
-3. **Blocker Gates**（0 / A / B / C / D / D-6 / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
+3. **Blocker Gates**（0 / A / B / C / D / D-6 / D-Impl / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
 4. **产出**：scan.md（单文件汇总：Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List / structure 摘要）+ structure.md（文档 review 的 12 节骨架分析）+ SYMBOLS.md（覆盖率穷举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED）
 5. **修复原则**：P0 全修完才可 CONVERGED；文档与代码保持同步；严格遵守 `prompt/review-rules/fix-guard.md`
-6. **收敛停止**（Step 7.1）：同篇 ≥5 轮强制交付 / 连续两轮新增 P1 ≤ 1 视为收敛 / 本轮成本 > 上一轮 80% 而新发现 < 20% 停止 / 首轮零发现触漏检自检（随机抽 3 项重跑，仍零发现才交付）。**本条只适用于普通 review 命令；review-loop 轨道的收敛判定以 `review-evals.md` §6A 四态模型为准**（V3.4-r8 消歧，不得混用两套收敛定义）
+6. **收敛停止**（Step 7.1）：同篇修改轮达 3 轮即停止修改并整节重写（V3.8 硬上限，跨 edition 累计） / 连续两轮新增 P1 ≤ 1 停止寻找新问题（状态仍按出版标准判定） / 本轮成本 > 上一轮 80% 而新发现 < 20% 停止 / 首轮零发现触漏检自检（随机抽 3 项重跑，仍零发现才交付）。**本条只适用于普通 review 命令；review-loop 轨道的收敛判定以 `review-evals.md` §6A 四态模型为准**（V3.4-r8 消歧，不得混用两套收敛定义）
 7. **每次 review 必答 Step 5.7 Rule Discovery**（是否发现新模式）——规则集靠此自演进
 
 ## 任务命令与技能
 
-任务一律先走**决策树**再落命令：`prompt/review-rules/review-cmds.md` §一b 给「任务性质 → 命令 → 技能」的路由树（新会话第一眼该看它，别先看名字最像的技能）。6 个命令入口：`full-review`、`style-fix`、`code-excellence`、`test-audit`、`todo-fix`、`style-bible`。旧 Profile A–P / R / AG 保留为别名，对账表见该文件 §八。**通用强制门任何命令都不可裁剪**：锚点纪律门、测试名对账门、文风门、translate 防线、fix-guard、文档-代码同步、教学构件承载门（机制文档的分析/实现章无码、诊断章无命令 = P1，`tools/doc-code-density-check.sh`）。
+任务一律先走**决策树**再落命令：`prompt/review-rules/review-cmds.md` §一b 给「任务性质 → 命令 → 技能」的路由树（新会话第一眼该看它，别先看名字最像的技能）。6 个命令入口：`full-review`、`style-fix`、`code-excellence`、`test-audit`、`todo-fix`、`style-bible`。旧 Profile A–K / O / P / R / AG 保留为别名，对账表见该文件 §八。**通用强制门任何命令都不可裁剪**：锚点纪律门、测试名对账门、文风门、translate 防线、fix-guard、文档-代码同步、教学构件承载门（机制文档的分析/实现章无码、诊断章无命令 = P1，`tools/doc-code-density-check.sh`）。
 
 技能清单与调用时机见 `.codex/skills/`、`.claude/skills/`、`.trae/skills/`；源在 `prompt/skill/`（9 个领域技能、`review-scan` 与 `review-loop` 两个编排器）。
 

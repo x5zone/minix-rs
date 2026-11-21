@@ -37,13 +37,13 @@
 | 3 | **文风门**（文档类 cmd） | 技术博客文风；禁黑话/缩写/文言文/压缩简写；禁开发文档味 | §六 style-bible + 模式 64 |
 > **过程痕迹禁入正文（A1.1，2026-09-18）**：正文禁 review 编号/日期/修复史/写作策略元注释/流程工具术语；触碰正式文档的修复必须通过 `tools/doc-style-lint.sh --diff`（零 error 命中才算完成）；详见 §六 第 7/8 条。
 | 4 | **translate 防线**（代码类 cmd） | 对照 Redox / Linux / OS 理论 / Rust 社区最佳实践；禁止 1:1 翻译 C 结构 | 模式 16/17/65 + review.md §Rewrite |
-| 5 | **fix-guard**（修复类动作） | 修前读目标行 ±5 行、grep 确认现状、一次只修一条、修后 grep 验证 + 写 fix-status | [fix-guard](../../.claude/rules/fix-guard.md) |
+| 5 | **fix-guard**（修复类动作） | 修前读目标行 ±5 行、grep 确认现状、一次只修一条、修后 grep 验证 + 写 fix-status | [fix-guard](fix-guard.md) |
 | 6 | **文档-代码同步** | 改代码必同步文档（Ch3/Ch4/§5），改文档涉及实现断言必核对代码 | review.md §双向闭环 |
 | 7 | **产物标注** | 每修一项标注一项（scan.md / todo.md / 修复文档），避免"修没修说不清" | review-process.md §修复阶段 |
 | 8 | **Ground Truth 链** | Minix3 C 源码 > design doc > Rust 代码 > 技术文档；冲突时先判哪边对，不默认改代码 | review.md §优先级链 |
 | 9 | **教学构件承载门**（机制类文档） | 承载章按**内容**识别（章体内有 C/Rust 符号锚点）、不按标题词。**阻断项（客观可判）**：① C 源码分析章/实现章 **无 C/Rust 语言围栏的节选码**（ASCII 图/表不算码）= P1-docStyle；② 失败/诊断章 **无可复制命令围栏** = P1-docStyle。**读数项（不自动阻断、交 review 逐条判定或登记豁免）**：三架构对照 / 调用图 / 源码级辨析。降级键 = **该章自身** < 20 行或标 `<!-- doc-code-density: exempt reason=... -->`（不用全文行数——全文长短与"该不该贴码"无因果）。机器读数 `tools/doc-code-density-check.sh`（report 恒 exit0、`--check` 命中阻断项才 exit1；存量只报告）。 **`P1-docStyle` = 文档教学构件承载缺失类正确性缺陷（属 Layer 1，阻断 CONVERGED，计入 STATE Open P1）** | doc-optim bagging（2026-10）+ doc-commit-review 二修；§六 第 9/10 条 |
 
-| 10 | **出版门（V3.7）** | 正式篇目跑 `tools/doc-publication-check.py`（DP-1..DP-5）、生产代码跑 `tools/code-publication-check.py`（CP-1..CP-6）；**零命中才可继续**。二者是 CONVERGED 的 G10/G11 | `review-publication.md` |
+| 10 | **出版门（V3.7）** | 正式篇目跑 `tools/doc-publication-check.py`（DP-1..DP-6）、生产代码跑 `tools/code-publication-check.py`（CP-1..CP-6）；**零命中才可继续**。二者是 CONVERGED 的 G10/G11 | `review-publication.md` |
 ---
 
 ## 一b、任务路由决策树（新会话第一眼该看这里）
@@ -87,7 +87,7 @@
 | scope | 制品 | Gates |
 |---|---|---|
 | `section` / `chapter` | 产物写入对话或 `{doc-stem}-claude-report.md`；SYMBOLS 限定章节涉及符号子集 | B/C/D/E/H 中适用于本章节者；Gate 0/STATE 简化为对话内声明 |
-| `doc` | 完整 scan.md + VERIFY-CHECK.md + STATE.md | 0/A/B/C/D/D-6/E/G/H |
+| `doc` | 完整 scan.md + VERIFY-CHECK.md + STATE.md | 0/A/B/C/D/D-6/D-Impl/E/G/H |
 | `range` / `dir` | review-scan 编排器接管，逐 doc 出制品 | 同 doc + Gate A 强制 |
 
 **不做边界（明确排除，发现即记录、不当场做）**：
@@ -132,7 +132,7 @@
 
 **scope**：`file` / `module` / `dir`（卓越性审视按模块组织，逐文件落地）
 
-**加载模块**：review-code-checklist + review-code-excellence（§16-21）+ review-patterns（16-29 代码族 + **79-82 架构抽象族**）+ review.md（Rewrite / Refactor / [ARCH] 三层术语）。
+**加载模块**：review-code-checklist + review-code-excellence（§16-21）+ review-patterns（16-29 代码族 + **79-85 架构抽象族**）+ review.md（Rewrite / Refactor / [ARCH] 三层术语）。
 
 **执行**：
 1. **分层审视**：整体架构 → 模块边界 → trait 设计 → 函数实现；每层问"如果今天重写会怎么设计"。
@@ -202,23 +202,23 @@
 
 ## 七、cmd `todo-fix`（修一个 TODO）
 
-**目标**：从 todo.md 选一个 stub / deferred / 待修项，完整实现并收尾。
+**目标**：从 `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml` 的 open 项选一个 stub / deferred / 待修项，完整实现并收尾。
 
 **scope**：**单 TODO**。一次只修一个；批量必须用户显式说"修 N 个"。
 
-**加载模块**：review.md + fix-guard + 按 TODO 主题动态加载——代码类：code-checklist + patterns（16-29 + 79-82）；文档类：doc-checklist + patterns（64 族）；测试类：test-audit 5 维门。
+**加载模块**：review.md + fix-guard + 按 TODO 主题动态加载——代码类：code-checklist + patterns（16-29 + 79-85）；文档类：doc-checklist + patterns（64 族）；测试类：test-audit 5 维门。
 
 **执行**（三段式，顺序固定）：
 1. **讲明白**：这个 TODO 是什么、为什么需要修（背景 + 现状 grep 证据）。
 2. **讲怎么修**：思考多个设计方案，对比 Linux / Redox / OS 理论最佳实践，优中选优，给出选择理由。
-3. **实施**：代码 + 文档 + 测试一并修改；`cargo test -p {crate}` 通过；重跑受影响 Gate；todo.md 标注已完成；git commit。
+3. **实施**：代码 + 文档 + 测试一并修改；`cargo test -p {crate}` 通过；重跑受影响 Gate；账本 `status: closed`（附证据）；git commit。
 
 **硬约束**：
 - ⛔ **DEFERRED 不是修复**。把 TODO 改成 DEFERRED 充数 = 糊弄（P0-process-violation）。降级为 DEFERRED 必须给出"依赖未解除"的具体论证（哪个子系统、哪个条目阻塞）并登记到 todo 的 DEFERRED 区。
 - ⛔ 修复顺序 P0 → P1 → P2；P0 未清不得标 CONVERGED。
 - ⛔ 不顺手修旁边的 TODO（发现 → 记录不执行，保持单目标）。
 
-**产物**：实现代码 + 文档同步 + 测试 + todo.md 标注 + commit。
+**产物**：实现代码 + 文档同步 + 测试 + 账本状态更新 + commit。
 
 ---
 
@@ -230,7 +230,7 @@
 |---|---|---|
 | A | 新文档审阅 | `full-review`（scope=doc，构造模式） |
 | B | 代码 PR 质量 | `full-review`（scope=doc，代码侧重） |
-| C | 完整 review（<300 行） | `full-review`（scope=doc） |
+| C | 完整 review（行数阈值见 review-process 决策树） | `full-review`（scope=doc） |
 | D | 快速口诀扫描 | `full-review`（scope=chapter，快速模式） |
 | E | 跨文档联动 | 并入 `full-review`（scope=range）Step 4 |
 | F | 链路验证专项 | 并入 `full-review`（scope=doc）Step 3.5a |

@@ -32,7 +32,7 @@
 
 > **2026-08-15 修复 C-P1-3（0 impl 优先于测试覆盖）**：当 trait 0 impl 时，即便有测试覆盖，仍判 P0（trait 无任何实现 = 死代码 / 虚构）。判定优先级：**0 impl → P0 > 测试覆盖度判定**。判定流程：(a) 先检查 trait 是否有 ≥1 impl？否 → P0 死代码；(b) 有 impl → 检查测试覆盖度，0 测试覆盖 → P0-test-missing，< 3 测试 → P1。
 | **3** | 文档声明的函数是否在声明的文件中？ | `rg "fn {name}" {file}` | 文档说"在 file.rs 中定义 fn foo"，但 grep 无结果→P0（虚构位置）；找到但 signature 完全不符也按未通过处理 | P0 |
-| **4** | 核心算法是否是 stub？ | `rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `todo!`/`unimplemented!`/`unreachable!`/`spin_loop!` → P0（实现缺失）；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性。**V3.6-r2 边界（与 C-31 / `review-code-excellence.md` §17.2 对齐）**：可信链（本仓其他模块 → 内核）上的 fail-fast `assert!`/`panic!` 是**刻意选择的正确形态**——只要不变式在**现场**写明（断言消息或紧邻注释写出「拒绝什么、为什么拒绝」），即视为已满足本项的可接受性论证；**不要求改成 `Result` 或新增类型，也不得与 §17.2 给出相反判级** | P0/P1 |
+| **4** | 核心算法是否是 stub？ | `rg "spin_loop\|todo!\|unimplemented!\|unreachable!\|panic!" {rust_dir} --type rust -n` | 文档描述的算法在代码中体现为 `todo!`/`unimplemented!`/`unreachable!`/`spin_loop!` → P0（实现缺失）；非 test 代码中的 `panic!` 若表示功能未实现或本不应触发却可能触发 → 按 stub / 未处理路径处理，需在注释中论证其不可达性或可接受性。**V3.6-r2 边界（与 C-31 / `review-code-excellence.md` §17 章内 3.2 Execute 对齐）**：可信链（本仓其他模块 → 内核）上的 fail-fast `assert!`/`panic!` 是**刻意选择的正确形态**——只要不变式在**现场**写明（断言消息或紧邻注释写出「拒绝什么、为什么拒绝」），即视为已满足本项的可接受性论证；**不要求改成 `Result` 或新增类型，也不得与 §17.2 给出相反判级** | P0/P1 |
 | **5** | 文档 §4 签名是否与实际一致？ | 逐函数对比 `rg "fn {name}" {file}` 输出 vs 文档 §4 | 参数/返回值/可见性/泛型约束不一致→P0（签名偏移）；有一项不符即整项 ❌ | P0 |
 
 **严格通过标准**：
@@ -1347,7 +1347,7 @@ grep -c "unsafe" {CODE_FILE}
 
 **建议落地**：
 - [review-process.md §Step 0.7.1](../review-rules/review-process.md) 新增 path existence validation 子步骤
-- 工具：`tools/todo-staleness-check.sh <todo 文件>`（**已实现**，检查待办里的 `file:line` 是否仍存在）
+- 工具：`python3 tools/todo-ledger.py check`（检查 YAML 账本的 `origin_file` 是否存在、`origin_line` 是否超界）
 - Session #8+ 每个 review 必跑 Step 0.7.1
 
 **来源案例**：
@@ -1473,7 +1473,7 @@ grep -c "unsafe" {CODE_FILE}
 **建议落地**：
 - [review-process.md §Step 0 硬阻断规则](../review-rules/review-process.md) NEW 2026-07-16
 - 工具：`tools/design-coverage-check.sh {stage}`（Session #12 落地）
-- 工具：`tools/todo-staleness-check.sh {todo-file}`（NEW，模式 70 配套）
+- 工具：`python3 tools/todo-ledger.py check`（模式 70 配套；v2 账本）
 
 **来源案例**：
 - **Session #12 (06-proc-init-boot-proc.md)**：R12 review 时发现 `.design/` 目录只有 01/02/03 快照，06 完全没有；Session #11 模式 69 发现 04/05 缺失时已记录此为 P0-process-violation，但缺少硬阻断机制导致 Session #12 仍跳过预检。
@@ -1498,7 +1498,7 @@ grep -c "unsafe" {CODE_FILE}
 ✅ 正确：TODO staleness check（Step 0.7.4 强制）
         1. 对每个 TODO 描述中的"基于状态"前提（如"X 阻塞"/"Y 未实现"），用 `rg` 验证当前状态
         2. 前提失效 → 标"前提失效，TODO 不适用" + 严重度自动降级（与模式 66 RCPD 同规则）
-        3. 批量模式：`tools/todo-staleness-check.sh {todo-file}` 自动扫描
+        3. 批量模式：`python3 tools/todo-ledger.py check` 自动扫描
 ```
 
 **判定**：
@@ -1511,12 +1511,12 @@ grep -c "unsafe" {CODE_FILE}
 - (a) **触发条件**：TODO 数 > 5 + 含时间敏感词 → 必须跑 Step 0.7.4
 - (b) **前提验证**：每个 TODO 的"基于状态"前提必须用 `rg` 验证当前状态
 - (c) **严重度降级**：P0 + 前提失效 → P1，P1 + 前提失效 → P2，P2 + 前提失效 → 误报
-- (d) **批量工具**：`tools/todo-staleness-check.sh {todo-file}` 自动输出 staleness 报告
+- (d) **批量工具**：`python3 tools/todo-ledger.py check` 自动输出 staleness 报告
 - (e) **TODO 强制格式**：`[P0/P1/P2] [code/doc] [factual/design] 问题描述 (file:line) (基于状态) (修复方案)`，缺字段 → TODO 不可信
 
 **建议落地**：
 - [review-process.md §Step 0.7.4 TODO Staleness Check](../review-rules/review-process.md) NEW 2026-07-16
-- 工具：`tools/todo-staleness-check.sh {todo-file}`（已落地 2026-07-17）
+- 工具：`python3 tools/todo-ledger.py check`（v2 账本；2026-11-21 换门）
 
 **来源案例**：
 - **Session #12 (06-proc-init-boot-proc.md)**：历史输入 `tmp_design_and_todo/0108-todo-final.md`（该临时目录已删除）中 8 个 TODO-06 经 staleness check 后：
