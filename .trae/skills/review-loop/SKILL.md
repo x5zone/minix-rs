@@ -86,6 +86,8 @@ python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open
 
 第三条读的是 `rewrite-notes/coordination/todo-ledger/<stage>.yaml`——**TODO 的单一源**。
 `01-todo.md` 等旧文件在冻结前只是工作副本，不作为欠账判据。
+`--fail-on-open` 同时检查 `blocked: true`：**存在待裁项时本轮不得 CONVERGED**，必须停下来问用户。
+SUGG（P3）也记在这本账里，轮内必须清零。
 
 - 有命中 → **本轮的 L0 阶段先清出版门**，清到零再派面板；不得「带着历史叙事开轮」，
   否则面板会收敛在脏文档上（D01/D02 的历史教训）。

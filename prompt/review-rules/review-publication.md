@@ -12,6 +12,12 @@
 
 ## 一、文档出版标准（DP-1..DP-5）
 
+> **标号的定位（2026-11-21 用户重申）**：标号（D-061 / I-29 / R36 / F-R34-01）**完全服务于
+> 项目管理，对读者没有任何意义，是中间结果**。标号引用的内容若有教学价值，**只能**改写成
+> 自包含的对比段——「如果这样做，哪里不好，所以这里直接这样做」；**绝不允许出现历史史书**
+> （「最初…后来删除」「已废弃」）。DP-1 与 DP-5 是这条的机械判据，DP-5 的反事实豁免是唯一
+> 合法教学形态。
+
 正式篇目 = `rewrite-notes/<stage>/NN-<slug>.md`（排除 review / todo / design / forensics /
 evidence / backlog / history / learn / brief / note 等辅助件）。
 
@@ -77,6 +83,13 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 4. `suggestions.md` 只允许收**用户明确拒绝**的项（对应 `WONTFIX` 判决行）；不存在
    「建议级」这个中间态。
 5. **设计项（⑥）必须在轮内实施**；实施不了的，就是本轮不收敛，而不是登记后关闭。
+6. **SUGG 必须在轮内清零。** 读者/设计的 P3 建议不阻断过程，但**阻断 CONVERGED**：
+   轮内能修的直接修；不能修的必须升级为正式 finding 并给出处置。不允许「本轮报收敛、
+   SUG 留在 suggestions 无人问津」。**V3.7 起 SUGG 写入 TODO 账本**
+   （`severity: P3`、`kind: design`），`suggestions.md` 只作历史归档。
+7. **待裁项必须阻断。** 当前篇存在「即使有代裁授权、agent 也无法决断」的事项时，必须写进
+   TODO 账本并标 `blocked: true` + `blocked_reason`；**有 blocked 项时任何轮不得 CONVERGED**，
+   必须停下来问用户。不允许把待裁项写成「已批准待实施」或「随下一批」。
 
 ---
 
@@ -108,6 +121,9 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 2. **旧 todo markdown 冻结为 archive**：`01-todo.md`、各 stage `todo.md`、`OPEN-DEBT.md`、
    `suggestions.md`、`follow-ups.md` 不再作为「当前欠账」的判据；只迁**open** 项，closed 历史
    留在旧文件。当前并发清理结束、D01 CONVERGED 时执行冻结（加归档头）。
+   **外部线程正在执行的清单（D-107 的 D01 13 项 / D02 14 项）按历史 todo 处理，不逐条收集**；
+   只需为每篇留一个 `blocked: true` 哨兵（`D01/D02-EXTERNAL-D107`），线程完成并经用户确认后
+   关闭哨兵。这样既不重复收集，又不会在外部工作未完成时误判收敛。
 3. **新发现的 TODO 一律写入账本**，不得再往旧 markdown 追加。
 4. **门**：`python3 tools/todo-ledger.py check --doc <doc> --fail-on-open`——当前篇
    `status: open` 必须为 0；`closed` 必须有证据；`defer-approved` 必须有四要素。
@@ -122,7 +138,8 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 - G1–G9（`review-evals.md` §6A，其中 G3/G9 按本文件收窄）；
 - **G10 文档出版**：当前篇 `doc-publication-check.py` 零命中；
 - **G11 代码出版**：当前篇关联代码 `code-publication-check.py` 零命中；
-- **G12 TODO 账本**：`todo-ledger.py check --doc <当前篇> --fail-on-open` 通过（open = 0）；
+- **G12 TODO 账本**：`todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
+  （open = 0 且 blocked = 0——待裁项存在时禁止收敛）；
 - **零欠账**：`OPEN-DEBT` 无 `[OPEN]`，且无任何未获 `defer-approved` 的 ②/⑥/SUGG。
 
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE` 不再等于出版就绪；它们只是过程状态。

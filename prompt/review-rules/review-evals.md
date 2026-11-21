@@ -660,8 +660,8 @@ L0 已经声明范围。每条发现再标一次：
 ```
 G1  in-scope P0 = 0
 G2  in-scope P1 = 0
-G3  in-scope P2 = 0；读者 P3 不入台账（默认 suggestions，见 §4.0c 严重度门槛）；
-    通过「读者卡住」测试的 P3 按非阻断 backlog 处理，不参与收敛判定（V3.3）
+G3  in-scope P2 = 0；读者/设计 P3 与 SUGG **必须在轮内清零**（V3.7：不阻断过程，
+    但阻断 CONVERGED；不得留到下一轮或长期挂在 suggestions）
 G4  读者验收清单（§4.0e）项 = 0 待修；改动段冷读回执齐全
 G5  FP 有源码/测试/文档原文反证；⑤ = 0；② 相邻范围有用户批准与日期
     （V3.2：同篇待裁决项不得写 ②，见 §4.1a）
@@ -679,7 +679,8 @@ G8  本轮关闭（ROUND-CLOSED）：open = 0 且 certify 新准入 = 0
 G9  ⑥ DESIGN 项全部实施（**V3.7：必须在轮内实施；「转下一设计批」出口关闭**）
 G10 文档出版：当前篇 `tools/doc-publication-check.py` 零命中（DP-1..DP-5）
 G11 代码出版：当前篇关联代码 `tools/code-publication-check.py` 零命中（CP-1..CP-6）
-G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 通过（open = 0）
+G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
+    （open = 0 且 blocked = 0；blocked 待裁项存在时禁止收敛）
 ```
 
 **V3.7 出版标准（2026-11-21 用户裁决）**：G10/G11 与 `prompt/review-rules/review-publication.md`

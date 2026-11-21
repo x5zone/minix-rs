@@ -809,3 +809,15 @@ D 号唯一性与引用存在性门（p5）、style-lint 对 runs/DECISIONS 日�
 126，D02 文档 43 / 关联代码 73。存量以基线机制管理（`--update-baseline`），每篇迭代时必须清到 0。
 
 **判定**：V3.7 生效；D01/D02 的 CONVERGED 状态按新定义**不再成立**，需按出版门清零后重判。
+
+
+### V3.7-r2 三处收紧（2026-11-21，用户重申）
+
+| 项 | 规则 | 判据 |
+|---|---|---|
+| 标号定位 | 标号只服务项目管理，对读者无意义；有教学价值的内容只能改写成自包含对比段（「如果这样做，哪里不好」），禁止历史史书 | DP-1/DP-5；DP-5 反事实豁免是唯一教学形态 |
+| 待裁阻断 | 即使有代裁授权、agent 无法决断的事项必须进账本 `blocked: true` + `blocked_reason`；**存在 blocked 项时任何轮不得 CONVERGED**，必须停下问用户 | `todo-ledger.py check --fail-on-open` 同时检查 blocked |
+| SUG 清零 | 每轮 SUG（读者/设计 P3）必须在轮内清零；不阻断过程，但阻断 CONVERGED；V3.7 起写入 TODO 账本，`suggestions.md` 仅历史 | §6A G3 改写 + 账本 `severity: P3` |
+
+**历史 todo 处置**：外部线程正在执行的 D-107 清单（D01 13 / D02 14）按历史 todo 处理，不逐条
+收集；每篇只留一个 `blocked: true` 哨兵（`D01/D02-EXTERNAL-D107`），线程完成并经用户确认后关闭。

@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER_DIR = ROOT / "rewrite-notes/coordination/todo-ledger"
-STATUSES = {"open", "closed", "rejected", "defer-approved"}
+STATUSES = {"open", "closed", "rejected", "defer-approved", "historical"}
 SEVERITIES = {"P0", "P1", "P2", "P3"}
 KINDS = {"code", "doc", "design", "arch"}
 REQUIRED = ("id", "stage", "doc", "title", "status", "severity", "kind")
@@ -62,11 +62,12 @@ def save(path: Path, rows: list[dict]) -> None:
     path.write_text(header + body, encoding="utf-8")
 
 
-def check_rows(rows: list[dict], doc: str | None) -> tuple[list[str], list[str], int]:
+def check_rows(rows: list[dict], doc: str | None) -> tuple[list[str], list[str], int, int]:
     errors: list[str] = []
     warnings: list[str] = []
     seen: set[str] = set()
     open_count = 0
+    blocked_count = 0
     for i, r in enumerate(rows, 1):
         where = f"#{i} {r.get('id', '<no id>')}"
         for k in REQUIRED:
@@ -95,9 +96,17 @@ def check_rows(rows: list[dict], doc: str | None) -> tuple[list[str], list[str],
                     errors.append(f"{where}: defer-approved 缺 defer.{k}")
             if d.get("decision") and not re.search(r"D-\d{3}", str(d["decision"])):
                 errors.append(f"{where}: defer.decision 必须是 D-xxx")
+        # V3.7-r2：待裁项必须显式 blocked，且必须有理由。
+        if r.get("blocked"):
+            if not str(r.get("blocked_reason", "")).strip():
+                errors.append(f"{where}: blocked=true 缺 blocked_reason")
+            if r.get("status") not in ("open", "historical"):
+                errors.append(f"{where}: blocked=true 的 status 必须是 open 或 historical")
+            if doc is None or r.get("doc") == doc:
+                blocked_count += 1
         if r.get("status") == "open" and (doc is None or r.get("doc") == doc):
             open_count += 1
-    return errors, warnings, open_count
+    return errors, warnings, open_count, blocked_count
 
 
 def cmd_check(args) -> int:
@@ -107,17 +116,23 @@ def cmd_check(args) -> int:
         return 2
     all_errors: list[str] = []
     all_open = 0
+    all_blocked = 0
     for f in files:
         rows = load(f)
-        errors, _, open_count = check_rows(rows, args.doc)
+        errors, _, open_count, blocked_count = check_rows(rows, args.doc)
         all_errors += [f"{f.name}: {e}" for e in errors]
         all_open += open_count
-        print(f"[账本] {f.name}: {len(rows)} 条，open={open_count}"
+        all_blocked += blocked_count
+        print(f"[账本] {f.name}: {len(rows)} 条，open={open_count}，blocked={blocked_count}"
               + (f"（doc={args.doc}）" if args.doc else ""))
     for e in all_errors:
         print(f"[FAIL] {e}")
     if all_errors:
         print(f"todo-ledger check: {len(all_errors)} 处错误")
+        return 1
+    if args.fail_on_open and all_blocked:
+        print(f"todo-ledger check: 当前范围有 {all_blocked} 条 blocked 待裁项——"
+              "绝不允许收敛（即使代裁授权也不得自行决定）")
         return 1
     if args.fail_on_open and all_open:
         print(f"todo-ledger check: 当前范围仍有 {all_open} 条 open（零欠账要求 0）")
@@ -223,7 +238,7 @@ def self_test() -> int:
          "defer": {"decision": "D-107", "approved": "2026-11-21",
                    "until": "出现第三调用者", "consequence": "…"}},
     ]
-    errors, _, _ = check_rows(good, None)
+    errors, _, _, _ = check_rows(good, None)
     if errors:
         print(f"self-test FAIL: 合规账本被判错 {errors}")
         return 1
@@ -235,7 +250,7 @@ def self_test() -> int:
         {"id": "X-2", "stage": "s", "doc": "d", "title": "t", "status": "defer-approved",
          "severity": "P2", "kind": "code", "defer": {"decision": "D-1"}},
     ]
-    errors, _, open_count = check_rows(bad, "d")
+    errors, _, open_count, _bc = check_rows(bad, "d")
     need = ["缺 evidence", "ID 重复", "severity 非法", "kind 非法", "defer-approved 缺"]
     miss = [n for n in need if not any(n in e for e in errors)]
     if miss:
@@ -244,7 +259,20 @@ def self_test() -> int:
     if open_count != 1:
         print(f"self-test FAIL: open 计数错（{open_count}，应 1）")
         return 1
-    print("self-test PASS: 字段/重复/closed 证据/rejected D 行/defer 四要素/open 计数 均正确")
+    blocked = [{"id": "B-1", "stage": "s", "doc": "d", "title": "待裁",
+                "status": "open", "severity": "P1", "kind": "arch",
+                "blocked": True, "blocked_reason": "用户未定"}]
+    e2, _, o2, b2 = check_rows(blocked, "d")
+    if e2 or o2 != 1 or b2 != 1:
+        print(f"self-test FAIL: blocked 计数错（errors={e2} open={o2} blocked={b2}）")
+        return 1
+    e3, _, _, _ = check_rows(
+        [{"id": "B-2", "stage": "s", "doc": "d", "title": "x", "status": "open",
+          "severity": "P1", "kind": "arch", "blocked": True}], "d")
+    if not any("blocked_reason" in e for e in e3):
+        print("self-test FAIL: blocked 缺理由未拦截")
+        return 1
+    print("self-test PASS: 字段/重复/closed 证据/rejected D 行/defer 四要素/blocked/open 计数 均正确")
     return 0
 
 
