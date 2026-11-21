@@ -6,7 +6,7 @@
 |---|---|---|---|---|---|
 | design-d1.md | dda8e553d8e5f3067ad44e4ec1f745874d5847507be2fbec33a88dc5f0a76a49 | 0 | 0 | 0 | no-finding |
 | design-d2.md | 8b61c7f73415160a3f0ecf69d5d395f46fd49d83b15113d1836c65b5754f28c6 | 11 | 0 | 0 | finding |
-| fact.md | 92498de335e6a88098149e77fe7a2c6928a43923ed5e73570e054996908f872a | 1 | 0 | 0 | finding |
+| fact.md | 051f3467505ac688b28ea96c67149c3cf4e97932c9b10f7c3e7d2b65a306cefb | 6 | 0 | 0 | finding |
 | reader-a.md | a5fb5990e1707e552b7e68b622336a50e3fc4966fce6da6eadf9f613d8be5f26 | 3 | 0 | 0 | finding |
 | reader-b.md | f97c25705de3601cdeb3146862d8376fb28323d394f2d20174551fe999e66fa3 | 3 | 0 | 0 | finding |
 | reader-c.md | c32189fbcfbefa44942e90a8576bde4020085cddb1fb6dbf6db68c119b99b602 | 5 | 0 | 0 | finding |
