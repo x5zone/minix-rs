@@ -108,6 +108,11 @@ pub trait ProtectionArch: Sized {
     /// overwrite another CPU's entry stack (the riscv64 SMP bug this
     /// contract now forbids).
     ///
+    /// Architecture grading: x86-64's TSS lives in memory, so `cpu_id` may
+    /// name any CPU (the BSP writes an AP's `sp0` before the SIPI);
+    /// aarch64/riscv64 write only the calling CPU's register state, so
+    /// `cpu_id` must equal the current CPU (those implementations ignore it).
+    ///
     /// C: tss_init() sets tss.sp0 — protect.c:175
     fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes);
 

@@ -836,6 +836,25 @@ mod tests {
     }
 
     #[test]
+    fn test_all_errcode_stubs_do_not_normalize() {
+        // The TRAPSTUB literals are the true source of the errcode
+        // classification; STUB_VECTORS/has_errcode only mirror it. Pin every
+        // local EC vector at the byte level so a `TRAPSTUB 8 0` drift cannot
+        // hide behind the mirror-pair test.
+        for &vector in &[8u8, 10, 11, 12, 13, 14, 17] {
+            let stub = stub_va(vector).expect("errcode vector must have a stub");
+            let bytes = unsafe {
+                core::slice::from_raw_parts(stub.get() as *const u8, 2)
+            };
+            assert_eq!(
+                bytes,
+                &[0x6A, vector],
+                "stub {vector:#04x}: errcode stub must open with push imm8 vector, not push 0"
+            );
+        }
+    }
+
+    #[test]
     fn test_syscall_entry_opens_with_swapgs() {
         // v3 #11: the first swapgs in the kernel is the SYSCALL entry stub, and
         // it must be the first instruction at LSTAR.
