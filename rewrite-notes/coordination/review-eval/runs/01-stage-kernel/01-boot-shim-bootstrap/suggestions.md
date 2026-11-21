@@ -12,7 +12,7 @@
 | P-READER-A（5） | [CLOSED] implemented | §2.8 五条 bullet、§3.4.3 `repr(C)` 边界、§2.4 交叉引用、§4.5 容量分组、§1.3 导航句均已按建议改写 |
 | P-READER-B（8） | [CLOSED] implemented | 标题/缩写表/术语展开/`rootdevname` 导语/`本文`与`本篇`统一等 8 条已落文 |
 | P-READER-C（10） | [CLOSED] implemented | 表格摘要、全局计数口径、unpaged 因果、`deducted` 由来、GB/GiB 统一等 10 条已落文 |
-| P-DESIGN-D2-01 `PlatformDescSource.len==0` 哨兵 | [CLOSED] decided | 保留零长度哨兵：wire 无 `Option` 标签，构造器拒绝非零 `len`；语义已在 §3.4.1 写成“空 = 无长度” |
+| P-DESIGN-D2-01 `PlatformDescSource.len==0` 哨兵 | [CLOSED] already-fixed | 零长度是唯一合法空值，构造器拒绝非零 `len`；wire 无 `Option` 标签，语义已在 §3.4.1 写成“空 = 无长度” |
 | P-DESIGN-D2-02 `KernelInfo`/`MemoryRegion`/`BootModule` 的 `repr(C)` | [CLOSED] implemented | 提交 `74ea87c44`（D2-09）删除三处属性；§3.4.3 改“进程内结构不做 ABI” |
 | P-DESIGN-D2-03 `BootFileTable` C 布局 | [CLOSED] dup-of | U-Boot 交接表的 wire 布局要求，不能改；字段偏移由 `boot_shim` 与 U-Boot 两侧共享常量锁定 |
 | P-DESIGN-D2-04 `MODULE_NAMES`/`NAME_POOL` 双表 | [CLOSED] implemented | `NAME_POOL` 改为 `build_name_pool()` 从 `MODULE_NAMES` 派生，提交 `925c19fc0` 前的 R34 批 |
