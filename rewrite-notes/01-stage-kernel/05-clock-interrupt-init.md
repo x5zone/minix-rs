@@ -1670,7 +1670,7 @@ riscv64 的 `init()` 是空的，理由写在注释里：
 
 这里有一处与 C 形态最不同的地方：C 的 x86 `arch_init` 有六件事（§2.4），ARM-32 的 `arch_init` 也有栈/TSS/PMU/板级四件（§2.5），而 riscv64 的 `init()` 什么都不做——原因是它能做的那些写入不属于 S 模式。注释里的现场读数（`scause=2`、`stval=0x3b051073` 是 `csrw pmpaddr0` 的编码）说明这不是"暂时没写"，而是"这个动作在 S 模式下没有合法形式"。
 
-**把 aarch64 的 `pmu_cycle_counter` 门控去掉、无条件使能 PMU 会怎样**：这个门控的值来自平台描述符，`false` 的含义是"这台机器的描述里没有承诺这个能力"；无条件写 `PMUSERENR_EL0.EN = 1` 会把一个未在描述中承诺的能力开放给 EL0，而上面的时钟状态与异常处理都没有为"用户态读 cycle counter"准备任何约束。落到对象：`pmuserenr_el0` 的 bit 0、`ArchMiscDesc` 的该字段、描述符在三个平台上的取值。依据：`arch_init.rs` 的 [`fn init`](os/arch/src/arm64/arch_init.rs:fn init) 的门控与 `arch_init.rs` 的 [`trait ArchInit`](os/arch/src/arch/arch_init.rs:trait ArchInit) 的实例化说明。
+**PMU 使能分支为什么删掉**：`ArchMiscDesc.pmu_cycle_counter` 在三个平台描述符里都填 `false`，门控分支不可达；保留一段只有 `false` 输入的死代码，会让读者误以为"这台机器当前在使能 PMU"。要恢复 PMU，先给生产者一个真值来源（例如固件描述承诺 PMU 能力），再恢复 `PMCR_EL0`/`PMCNTENSET_EL0`/`PMUSERENR_EL0` 的写；不要在门控仍恒 `false` 时把分支加回来。依据：`arch/src/arm64/arch_init.rs` 的现状与 `ArchMiscDesc` 的三个生产者。
 
 ### 4.7 `boot_init_timer`：编程、注册、放行（→3.7）
 
@@ -2038,7 +2038,7 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 | M8 | `intr_init` 十次写（§2.3） | 实参序列、全屏蔽结束态、**位级写入** | 部分覆盖 | §6.2 命令 2/3 静态核；**位级未证** → **R05-T01** |
 | M9 | x86 APIC 建立与门表重建（§2.4） | LAPIC 使能、RTE 编程、IDT 重载 | 部分覆盖 | 载体隐含（tick 到达）；**RTE/门表位级未证** → **R05-T01** |
 | M10 | x86-64 ACPI 表解析（§4.6） | RSDP 搜索 + MADT 解析 | **未覆盖**（实现只存地址不解析；QEMU virt 不依赖） | → **R05-T02**（物理机路径） |
-| M11 | aarch64 PMU 使能（§4.6） | PMCR/PMCNTENSET/PMUSERENR 写 | **未覆盖**（描述符全 `false`，段不执行） | → **R05-T03**（需承诺 PMU 的机器） |
+| M11 | aarch64 PMU 使能（§4.6） | PMCR/PMCNTENSET/PMUSERENR 写 | **分支已删**（描述符全 `false`，无生产者） | → **R05-T03**（恢复分支后需承诺 PMU 的机器） |
 | M12 | riscv64 `mtimecmp` 直接 MMIO 写（§4.3） | MMIO 路径对照 SBI | **未覆盖**（实现走 SBI；MMIO 被 PMP 挡——刻意不走） | → **R05-T04**（M 模式参与的环境） |
 | M13 | 定时器三段（编程/注册/放行）（§3.7、§4.7） | 三架构编程 + 注册 + 门打开 → tick 到达 | 已覆盖 | 三架构载体 `test-timer-irq` 实跑 PASS（PASS = uptime 5 ticks） |
 | M14 | x86 第四段 `pic_init`（§4.7） | 8259A ICW 重映射 + IMR 放行 | 部分覆盖 | 载体隐含；位级同 M8 → **R05-T01** |
@@ -2047,7 +2047,7 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 | M17 | 关中断窗口与中断风暴的真机表现（§3.7 推演 3） | 门先于源打开 → 风暴/停摆 | **未覆盖**（宿主无法注入） | → **R05-T06**（故障注入变体） |
 | M18 | tick 六步语义（§1.4 范围外） | 推进/记账/定时器/alarm/负载 | 范围外 | 属 `15-clock-timer` |
 
-**新 TODO（对源码/测试 workflow 的需求输入）**：`R05-T01`（位级真值：8259A ICW 序列、IOAPIC RTE、GICD/GICR、PLIC 位图的 GDB/MMIO 单步核对——覆盖 M8/M9/M14）｜`R05-T02`（x86-64 ACPI 表解析补实现或明确豁免）｜`R05-T03`（aarch64 PMU 使能在承诺该能力的平台上验证）｜`R05-T04`（riscv64 MMIO 路径在 M 模式环境验证或保持 SBI 唯一通道）｜`R05-T05`（时钟处理函数的用户态上下文行为——随调度链文档）｜`R05-T06`（关中断窗口/风暴的故障注入载体变体）。
+**新 TODO（对源码/测试 workflow 的需求输入）**：`R05-T01`（位级真值：8259A ICW 序列、IOAPIC RTE、GICD/GICR、PLIC 位图的 GDB/MMIO 单步核对——覆盖 M8/M9/M14）｜`R05-T02`（x86-64 ACPI 表解析补实现或明确豁免）｜`R05-T03`（若恢复 aarch64 PMU 分支，在承诺该能力的平台上验证）｜`R05-T04`（riscv64 MMIO 路径在 M 模式环境验证或保持 SBI 唯一通道）｜`R05-T05`（时钟处理函数的用户态上下文行为——随调度链文档）｜`R05-T06`（关中断窗口/风暴的故障注入载体变体）。
 
 ### 5.4 缺口与诚实披露
 
@@ -2057,7 +2057,7 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 |---|---|---|
 | 寄存器写入的位级真值（8259A 的 ICW 序列、GICD/GICR 的每个偏移、PLIC 的位图布局） | 单元测试没有硬件；QEMU 载体只断言最终效果（tick 到达），不断言中间写入 | GDB 单步 + MMIO 读取（`-s -S` 起 QEMU，在各段之间读寄存器），或真机 |
 | x86-64 的 ACPI 表解析 | `X86_64ArchInit::init` 目前只存地址、不解析（§4.6） | 物理机启动路径；MADT 的解析已在平台发现侧（[04-platform-discovery.md](04-platform-discovery.md)） |
-| aarch64 的 PMU 使能 | 所有平台描述符的 `pmu_cycle_counter` 都是 `false`，这段代码当前不执行 | 需要一台在描述里承诺 PMU 的机器 |
+| aarch64 的 PMU 使能 | 分支已删除：所有平台描述符的 `pmu_cycle_counter` 都是 `false`，没有可达输入 | 恢复前需要一台在描述里承诺 PMU 的机器与一个真值生产者 |
 | riscv64 的 `mtimecmp` 直接 MMIO 写 | 实现走 SBI ecall，MMIO 路径被 PMP 挡（§4.3） | OpenSBI 之外的环境，或 M 模式参与 |
 | 时钟处理函数在用户态上下文里的行为 | 载体不进调度器（§5.2） | 需要 CPL3 与调度循环（后续文档） |
 | 关中断窗口与中断风暴的真机表现 | 宿主无法注入中断 | QEMU 载体的故障注入变体 |
