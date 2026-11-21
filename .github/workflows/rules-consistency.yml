@@ -103,7 +103,13 @@ jobs:
         run: |
           run_self() {
             echo "── $*"
-            "$@" || { echo "::error::self-test failed: $*"; exit 1; }
+            if ! "$@" > /tmp/selftest.log 2>&1; then
+              tail -8 /tmp/selftest.log | while IFS= read -r line; do
+                echo "::error::$line"
+              done
+              echo "::error::self-test failed: $*"
+              exit 1
+            fi
           }
           run_self bash tools/doc-style-lint.sh --self-test
           run_self bash tools/anchor-resolve.sh --self-test
