@@ -31,3 +31,29 @@
 | RD1-DESIGN-D2-11 | - 位置：`/home/xzhao/github/minix-rs/os/kernel/src/arch/x86_64/link.ld`、`aarch64/link.ld`、`riscv64/link.ld`（三份均不在 27 文件内，仅按文档与测试引用判断）；`/home/xzhao/github/minix-rs/ | 不实施（建议级） |
 | RD1-DESIGN-D2-12 | - 位置：`/home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs:119-121`、`679-695`、`467-481`；`os/boot-shim/src/loader.rs:519-560` | 不实施（建议级） |
 | RD1-DESIGN-D2-15 | - 位置：`/home/xzhao/github/minix-rs/os/libs/minix-boot/src/kernel_info.rs:187-266`；`os/kernel/src/lib.rs:217-233`；`os/kernel-image/src/bootface.rs:440`；测试载体 `os/q | 不实施（建议级） |
+
+## 本次状态核实（D-107 清零口径）
+
+| ID | 当前状态 | 说明 |
+|---|---|---|
+| D02-F01 | OPEN | `jump_to_kmain(kinfo, stack_top)` 仍保留冗余形参；清零批删除第二个参数并改 3 impl/4 调用点 |
+| D02-F02 | CLOSED（对象消失） | wire v10 / D-062 删除 `kern_stack_top` 字段，等式校验不再有 wire 对象 |
+| D02-F03 | 并入 R4 D2-06 | 三份 arch `link.ld` 按 D-107 删除，连同 `link_ld_lockstep.rs` |
+| D02-F04 | OPEN | buffer/phys 两版循环仍各写一份；清零批抽共享区间纯函数 |
+| D02-F05 | OPEN | 物理装载仍无 `KernelImage`/已验证类型前置；清零批引入已验证值对象 |
+| D02-F06 | OPEN | x86 生产链接脚本仍无 2 MiB 收口 `ASSERT`；清零批补并跑 `check-layout all` |
+| D02-F07 | CLOSED | `resume_additive` 已把三条 additive-resume 收成泛型 |
+| D02-F08 | OPEN（用户裁决：抽共享） | 抽 bootface 共享流程，两薄壳只留常量/入口；D-107 |
+| D02-F09 | WONTFIX（拒绝项/分类项） | 保留 `Paging`/`HugePages`/`BootArch`，翻译残留清单作为 code-excellence 输入 |
+| D02-F10 | OPEN（用户裁决：全部实现） | 读者 36 条全部实现；D-107 取消“建议不实施”出口 |
+| D02-F11 | OPEN | 与 D01 `F-R34-01` 同项：L9 对 aarch64 `KERN_SIZE` 的构建期对账 |
+| D02-F12 | CLOSED | `cargo test -p minix-arch` 已由 D03 的测试卫生批修好（266/0） |
+
+### D02 §5.3 测试缺口（R02-T）
+
+| ID | 当前状态 | 验收 |
+|---|---|---|
+| R02-T01 | OPEN | 段归属 / `k_initial_stktop` 落段的机械断言或静态检查 |
+| R02-T02 | CLOSED | `link_ld_lockstep.rs` 已接住；按 D-107 将随 D2-06 删除，删除后由生产脚本门替代 |
+| R02-T03 | OPEN | riscv64 载体 PC 高半判据 + `delta` 路径断言 |
+| R02-T04 | OPEN | 生产 `kmain` 入口 ABI 栈形的架构相关断言 |

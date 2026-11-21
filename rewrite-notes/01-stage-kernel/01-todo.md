@@ -4,6 +4,8 @@
 
 > **D01 九线程收口状态（2026-11-21 晚）**：A1 ✅ 六断言 PASS（载体分配器 I-61 + 内核镜像 DM source 5 + 镜像期堆指针 bug I-62；`test-sysboot.sh` PASS）；A2 ✅ elr 符号级归因（`faffb52bc`，memset+0x6c；sp 污染源挂 rt-birth 链专项）；B1 ✅ 门② QEMU 证据固化 + 真机验收清单（48f7bb6f9）；B2 ✅ I-29-9 六步探针 OVMF 实测 RECLAIMED → `build_memmaps` 快照缓冲不释放（145782520）；B3 ✅ E-VMTLB `-d int` 动态读数 0 #PF（b814bb0a8）；C1 ✅ I-29-8 裁决材料 10 项（bc356dc33，待用户批准）；D1 ✅ D-59 覆盖损失门（eb94e06bc + 无堆化 02a5c347a）；E1 ✅ riscv bump(256) 核实（87687b8ac）；F ✅ 射程外确认——I-5 维持 DEFERRED（物理机 x86_64 ACPI RSDP，三家族 QEMU virt 不依赖），T-10 登记在 `todo.md` §7.3（§7.4 引用），随 CI 窗口处理。**挂真机门链**：I-29-16 真机证据半、I-29-9 真机重复观察、D-59 真机读数。**唯一待外部输入**：C1 的十项批准。
 
+> **本次清零核实修正**：C1/I-29-8 十项已获用户批准；I-29-16/I-29-9/D-59 的真机证据按用户裁决以现有 QEMU/OVMF 读数收口（`external-evidence-waived`）；D01 唯一仍 OPEN 的代码项是 `F-R34-01`（已补入 §1 表，与 D02-F11 同项）；R34/R35/WIRE/ARCH/BOOTSTORAGE/I35 等 OPEN-DEBT 行按已落码事实关闭。P3 建议按 D-107 全部实现，不再保留“登记不实施”作为未清出口。
+
 > **来源与方法**：本文件归拢 `01-boot-shim-bootstrap.md`（下称「01 篇」）射程内的**全部** todo 项——代码项与文档项都含，凡该篇 §7.3 关联代码清单与正文 TODO 标记涉及的条目一律在册。三个来源：
 > ① **本会话九轮外部评审终态**：`01-code-design.md` v2→v9外部评审迭代至冻结；七份调查报告 `01-forensics-round3.md` 至 `01-forensics-round9.md`——**T1–T5 设计已冻结（v9）**，原「待裁决」条目全部拿到裁决，剩余工作收敛为实施、直修与文档同步；
 > ② **stage 权威台账** `todo.md` §7（D/I/T 系条目的现状读数、修法、DoD、现算命令以其为权威，本文件只给摘要 + 指针 + 状态）；
@@ -39,6 +41,7 @@
 | I-28（本轮新登记） | `MemoryMapSource` trait 无多态消费者（无泛型约束、无 `dyn`；两个 impl 无活消费者） | 设计裁决 | ✅ **closed（本批落码，grep 判据归零，真机门 `cd os/qemu-tests && bash run_all.sh` → 37 passed / 2 failed / 0 skipped / 0 build failures（本树现跑；两条红 `test-smp-aps`/`test-smp-ipi` 在同一台机器上用**未改动的 rewrite 尖子 `2b72a1e62` 重新构建同一载体**复现同一 `### PANIC … arch/src/x86_64/protection.rs:0x1c3`，判为既有、非本批引入））**：删除 trait 与空占位，保留 `DtbMemoryMap` 具体实现与内存图语义说明，正式 supersede I-22（supersede 记录属实施动作，随原型批执行） | §3 |
 | I-29（设计） | UEFI 内存图分类双份实现；分类判据用地址代替类型；`Attribute` 未读且三架构缓存属性机制各不相同 | 设计裁决 + 测试改造 | ✅ **设计完成（v12 冻结）**：唯一解析/分类规则、零分配 + 预分配输出、`ram_top` 删除、方案 A、PA/DM 两合同、`DescriptorRef` 含 Attribute、side list 语义、五步裁决顺序（I-29-17）全部冻结。**本节只覆盖设计部分；实施见下一行 I-29-impl** | §3 |
 | I-29-impl（实施中：四门代码全落——①③④过验收，②真机证据半挂真机门链） | 按 v12 冻结设计把分类器落地并过四个验收门 | 代码实施 | **门④路径 A 已落**：`classify_map_bytes_into_test_tables`（唯一分类器抽出）+ `exit_boot_services_and_classify`（保留退出返回的 MemoryMapOwned、退出后分类）+ 12 条 UEFI 测试内核迁移到路径 A 流程；曾阻塞门链验证的 I-43 x86 载体 `enable()` 静默停已由 I-43 二层专项关闭（2026-11-20，hello-boot 新鲜二进制 PASS）。✅ **门④端到端六项验收已过（2026-11-21，§2.7 六项逐项核实 + hello-boot 端到端 PASS）**。✅ **门②（三架构 WB 合同，I-29-16）代码半已落（2026-11-20，`172567f65`）**：x86 `enable()` 读 IA32_PAT 断言 PA0=WB / aarch64 `flags_to_pte` AttrIndx 唯一映射点合同 / riscv PMA 前提声明，三架构生产 target 各 0 error；剩真机证据半——QEMU 不模拟缓存属性失败（x86 PAT/MTRR 恒 WB、riscv virt PMA 恒 WB、aarch64 MAIR 全通），属模拟器能力边界非代码缺口，挂真机门链。逐门证据见 §3 的 I-29-impl 补记与门②落地表 | §3 |
+| **F-R34-01（本次核实新增）** | aarch64 `bootface_a64.rs` 的 `KERN_SIZE` 缺 L9 等价构建期断言；`kernel-image/check-layout.sh` 的 L9 仍只覆盖 riscv64。与 D02-F11 同一项 | 构建门/代码 | ⏳ **OPEN** | 清零批：L9 按架构选 `bootface.rs`/`bootface_a64.rs`，`check-layout.sh all` 验收 |
 | I-34（已实施） | `BootStorage` 半提交防护：删 `map_dirty`，改 `fill_*` 闭包 + `MapCounts` | 代码改造 | ✅ **已实施（2026 年 11 月 20 日）**：六族 `fill_*` + `MapCounts`；`map_dirty` 与四个单表入口删除，25 处生产调用点重写；**五条 QEMU 门链全 PASS**。mini review 报出 `push_*` 死子系统（登记 I-42）。内容见 §3 的 I-34 | §3 |
 | I-44（✅ 全部实施完毕：步①–⑤ + E/R1/R2 全关闭） | 页表页归还的所有权模型（原 `R35/DESIGN-D2-11`）：问题 C/D 成立、问题 B 撤回；设计收束为一个 `PagingState` 三态 + 五条入口断言 | 代码改造 | ✅ **五步全部落地**：① 状态字段与构造函数迁移 ② destroy 入口断言 ③ 继承路径 ④ 写入口范围保护 + 三架构测试 ⑤ E（四调用点三问）+ R1（四问）+ **R2（`cut_consumed_span` 切除法）**。**R2 端到端验收（2026-11-21，阻塞解除后完成）**：`test-sysboot` 新鲜载体（I-43 二层 + I-59 A' 后越过原 fault 点）加 pre/post-cut 对照读数——pre `n=2 bytes=0x7ba7000`，post `n=2 bytes=0x774f000`，`tx_frames=0x458000`——**post = pre − tx_frames 精确相等**，cut 在真实载体上精确裁剪 TX 消耗的全部字节、region 数不变（两 region trim 未整删）。宿主 free_set_cut_* 单测族全绿。边界重申不变：E/R1 的 `-d int` 级动态取证留给首个真机/SMP 门。**E/R1 动态读数补充（2026-11-21 复跑）**：`test-rt-birth` x86 全程 `-d int` **0 次 #PF**（0 `check_exception`），与 2026-11-21 首轮 6686 行记录一致；证据 `tmp/evidence/b3-rtb-x86-int.log`。详见 §3 的 I-44 | §3 的 I-44 |
 | I-42（已实施） | `BootStorage` 的 `push_*` 死子系统——**射程核实后只剩 `BootStorageFull`**（前两个符号已不存在） | 代码删除 | ✅ **已实施（2026 年 11 月 20 日，D-080 采 A）**：删 `boot_storage.rs` 的注释与 struct、`lib.rs` 的 re-export。否决 B（D-067 已定 `fill_*` 方向，留着就是两套可不一致事实）| §3 的 I-42 |
@@ -2325,7 +2328,7 @@ r2 post-cut free n=0x0000000000000002 bytes=0x000000000774f000 tx_frames=0x00000
 - **aarch64（UEFI 真机）**：① 启动到调度器；② 读 MAIR_EL1 应为 `0xFF`；③ 抽查一个 RAM 叶子的 AttrIndx=0（Normal WBWA）与一个 DEVICE 叶子 AttrIndx=1；④ 记录该 SoC 的 memory attribute/PMA 文档口径。
 - **riscv64（U-Boot/OpenSBI 真机）**：① 启动到调度器；② 核对板级 PMA：DDR 区间声明为可缓存；③ 确认 `menvcfg.PBMTE=0`（本项目不使能 Svpbmt，PTE[62:61]=0 走 PMA）；④ 记录「Sv39 无强制 WB 取值、WB 依赖 PMA」的前提与板级证据。
 
-### I-29-8 属性策略矩阵——裁决材料（C1，2026-11-21；待用户逐项批准）
+### I-29-8 属性策略矩阵——裁决材料（C1；已按 D-107 全部批准）
 
 **材料边界**：政策全文已冻结在 `01-design-note-memmap-consolidation.md` §2.5.7.1（类型）、§2.5.7.6（属性）、§2.5.7.7（穷尽表 + 五步顺序）、§2.5.7.8（side list）；本节只给「需要用户点头的决策点 + 现状对照」，不重复全文。**实现现状**：五步顺序已逐条落进 `os/boot-shim/src/ebs_map.rs:fn adjudicate`（步骤编号与设计一致：未知/ISA → 拒绝启动 → 类型强制 → 独立属性 → WB 准入），`Disposition` 已含 `Allocate`/`ReservedMapped`/`Side`/`Excluded`/`DevicePath`。
 
