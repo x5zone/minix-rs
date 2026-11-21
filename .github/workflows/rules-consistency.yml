@@ -100,23 +100,27 @@ jobs:
 
       - name: 门禁工具自测（文风门 / 锚点门 / 承载门 / unsafe 审计 / 模式门 / 断链门 / 表结构门 / clippy 棘轮）
         run: |
-          bash tools/doc-style-lint.sh --self-test
-          bash tools/anchor-resolve.sh --self-test
-          bash tools/doc-code-map.sh --self-test
-          bash tools/doc-code-density-check.sh --self-test
-          bash tools/doc-ref-check.sh --self-test
-          bash tools/anchor-migrate.sh --self-test
-          bash tools/unsafe-audit.sh --self-test
-          bash tools/pattern-gate.sh --self-test
-          bash tools/check-clippy-ratchet.sh --self-test
-          python3 tools/notes-link-check.py --self-test
-          python3 tools/doc-structure-check.py --self-test
-          python3 tools/eval-trace-check.py --self-test
-          python3 tools/review-units.py --self-test
-          python3 tools/notes_layout.py
-          python3 tools/trait-audit.py --self-test
-          python3 tools/doc-citation-check.py --self-test
-          bash tools/doc-symbol-drift.sh --self-test
+          run_self() {
+            echo "── $*"
+            "$@" || { echo "::error::self-test failed: $*"; exit 1; }
+          }
+          run_self bash tools/doc-style-lint.sh --self-test
+          run_self bash tools/anchor-resolve.sh --self-test
+          run_self bash tools/doc-code-map.sh --self-test
+          run_self bash tools/doc-code-density-check.sh --self-test
+          run_self bash tools/doc-ref-check.sh --self-test
+          run_self bash tools/anchor-migrate.sh --self-test
+          run_self bash tools/unsafe-audit.sh --self-test
+          run_self bash tools/pattern-gate.sh --self-test
+          run_self bash tools/check-clippy-ratchet.sh --self-test
+          run_self python3 tools/notes-link-check.py --self-test
+          run_self python3 tools/doc-structure-check.py --self-test
+          run_self python3 tools/eval-trace-check.py --self-test
+          run_self python3 tools/review-units.py --self-test
+          run_self python3 tools/notes_layout.py
+          run_self python3 tools/trait-audit.py --self-test
+          run_self python3 tools/doc-citation-check.py --self-test
+          run_self bash tools/doc-symbol-drift.sh --self-test
 
       - name: 表结构与内部 .md 链接门（P-2）
         # 只扫活账与试点篇目：review-eval/runs/** 是历史轮轨迹，其旧表 schema 不在追溯范围；
