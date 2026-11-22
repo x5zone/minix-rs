@@ -83,3 +83,103 @@
 
 - 三问：① 本轮不变量 = 49 单元全覆盖 + P0 文档-代码同步 + 22 根因清零；② 基线 = commit `3c9d1ef1f` / 文档 sha `572bb4c1…`；③ 证据 = 7 份面板报告 + defect-ledger 24 行 + 文档门/单元账本。
 - 结论：R1 可关闭为 ROUND-CLOSED；R2 仍需独立全篇复审，R3 逐单元确认。
+
+## R2 full（V3.11，2026-11-22）
+
+### §0 基线
+
+- commit: `d683ee10c6c07b63c31f67dd79e2c49adf4e55ce`
+- 文档 sha256: `7450c57c65cfc61e75898d115004babc791bbca9526d16aacdd704697bb348a3`
+- 行数: `2973`
+- 单元: 49；R1 已记录 full 轮，R1 的 22 个 fix 单元未冻结
+- 范围：整篇 D01 + 48 个关联文件；R2 是独立 full 轮，必须覆盖全部 49 个单元
+- 轮型：`full`；schema：`V3.11`；目标：复核 R1 修复并寻找新问题
+- R1 轨迹：`trajectory-r1.md` PASS
+
+### §1 面板
+
+- 角色：P-FACT、P-DESIGN D2、P-READER A/B/C、P-REFUTE；全部冷启动、未参与 R1 修复。
+- 制品：`panel/round2/{fact,design-d2,reader-a,reader-b,reader-c,refute}.md` + INDEX。
+- R2 是独立 full 轮：面板重新读整篇；不复用 R1 报告作为结论。
+
+### §2 发现
+
+- P-FACT 2（P1 §5.1 断表、P2 Serializer 实参）。
+- P-REFUTE 2 REFUTE（§5.4 aarch64 DTB 变体写反、§5.1 断表）+ 4 UNCLEAR（门覆盖计数/范围）。
+- READER-A 3（断表、§4.4.1 漏 store、§5.5 门计数）。
+- READER-B 4（2.4 编号层级、断表、漏 store、悬空引用）。
+- READER-C 8（source 例外无条件、aarch64 kmain 证据、§4.8 v1 建根链、DTB_CFGTABLE 命名、断表、一条/两条依赖、same pool、wire 版本定义）。
+- D2 3（source 两阶段、§3.2.1 authority、source_records 归属）。
+- 合并为 14 个根因；其中 2 条是 R1 修复引入的回归（§5.1 断表、§5.4 变体写反），已在本轮修复。
+
+### §3 归因
+
+- 14 个根因：结构/表格 2、执行序/链 3、source/authority 归属 3、证据范围 2、编号层级 1、引用 1、术语/计数/版本 3、设计事实 1（并入 14）。
+- 跨角色同根已合并；无新增 ARCH 实施。
+
+### §4 修复
+
+- 一次一条按 fix-guard：§5.1 表恢复、§4.4.1 补 store、§5.4 DTB 变体纠正、2.4 层级重排并 prune 旧单元、source 例外限定 UEFI、§4.8 分两链、DTB_CFGTABLE 定义、引用/计数/版本措辞、D2 三条事实改正。
+- 文档从 2973 行变为 2980 行；单元 49→48（2.4.2 从 `###` 降为 `####`，并入 2.4）。
+
+### §5 复验
+
+- `doc-structure-check`、`doc-ref-check`、`doc-publication-check`、`tutorial-rubric-check`、`anchor-resolve`、`doc-code-density` 全绿。
+- 单元：48/48 frozen；audit open=0；R2 full 覆盖 48/48。
+- 宿主：minix-boot 188/0、boot-shim 136/0、minix-arch 266/0、minix-kernel mock 866/0/8。
+- 未闭环 0。
+
+### §6 指标
+
+见 `metrics.md` 的 `## R2 full（V3.11）`：14 根因、14 处置、0 未闭环、2 自引入已修。
+
+### §7 状态
+
+`ROUND-CLOSED`，进入 `CONVERGENCE-CANDIDATE`；R3 confirmation 逐单元 `--confirm-review`。
+
+### §8 给 meta-review 的不确定点
+
+1. R2 的 5 条 SUGGESTION（§3.2.2 拆分、§2.4.2.5 范围、§7.5 指针等）未逐条实施；R3 若复现则转 P1。
+2. R2 面板在修复前读文本；修复后只跑机械门，未再派全量读者。R3 必须逐单元确认。
+3. `2.4.2` 单元从 `###` 降为 `####` 后 prune，历史 R1 证据仍按 49 单元记录；当前账户 48 单元。
+
+## R3 confirmation（V3.11，2026-11-22）
+
+### §0 基线
+
+- 文档 sha256: `9ca2e153ecc0a9562c9062f4b5572f4b5a08cddf69b764fc3f3d8b9404affbf2`，2973 行
+- 单元：48/48 frozen；R2 已 ROUND-CLOSED；trajectory R2 PASS
+
+### §1 面板
+
+- 确认轮逐单元 `--confirm-review`，证据 `unit-r3/<id>.md` 引用 `confirmation-r3.md` 与 R2 面板；未开新全量面板。
+
+### §2 发现
+
+- 无新增根因；R2 的 14 条全部 CLOSED；R1 的 46 条保持 CLOSED。
+
+### §3 归因
+
+- 0 新根因；0 未闭环。
+
+### §4 修复
+
+- 无文档修改；只记录确认。
+
+### §5 复验
+
+- 48/48 单元 post_freeze_rounds 含 R3；review_rounds ≥2；T3 PASS。
+- 文档门与宿主测试见 `certify/round3-gates.md`。
+
+### §6 指标
+
+- 发现 0；根因 0；未闭环 0；轮型 confirmation；结果 CONVERGED。
+
+### §7 状态
+
+`CONVERGED`（V3.11）。限制见 `FREEZE.md`：R3 逐单元确认引用 R2 面板与 confirmation 记录，不是 48 个独立冷读会话；D2 设计候选未实施。
+
+### §8 给 meta-review 的不确定点
+
+1. R3 的独立冷读强度弱于 R1/R2；若要求每单元独立冷读，需重开确认轮。
+2. SUGGESTION 中的 §3.2.2 拆分、§2.4.2.5 范围等未逐条实施；当前未计入 open。

@@ -34,3 +34,38 @@
 - full 轮: R1，覆盖 49/49 单元
 - 单元: R1 review 35 个 pass、22 个 fix；R2 必须全部复审
 - 机械门: publication 0 新增；tutorial 6/6；citation failed=0；anchor 90/90；doc-code-map 48/48；density 通过
+
+## R2 full（V3.11）
+
+- 发现总数: 14
+- 唯一根因数: 14
+- 本轮新准入: 14
+- certify 新准入: 0
+- 重复合并: 6（FACT-01/RA-F1/RB-F2；RA-F2/RB-F3 等）
+- 自引入: 2（R1 的 §5.1 断表、§5.4 DTB 变体写反，均在本轮修复）
+- 处置: ① 14 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
+- 未闭环: 0
+- edition: V3.11
+- 轮型: full
+- 结果: ROUND-CLOSED
+- 代裁决: 0 / ARCH 提案: 1（D2 的 ARCH 候选，未实施）/ 用户否决: 0
+- 减法: 提案 1 / 采纳 0
+- full 轮: R2，覆盖 48/48 单元（2.4.2 层级修正后并入 2.4）
+- 单元: 48/48 frozen；R3 逐单元确认
+- 机械门: structure/ref/publication/tutorial/citation/anchor/density 全绿；cargo minix-boot 188/0、boot-shim 136/0、minix-arch 266/0、minix-kernel mock 866/0/8
+
+## R3 confirmation（V3.11）
+
+- 发现总数: 0
+- 唯一根因数: 0
+- 本轮新准入: 0
+- certify 新准入: 0
+- 处置: ① 0 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
+- 未闭环: 0
+- edition: V3.11
+- 轮型: confirmation
+- 结果: CONVERGED
+- full 轮: R1/R2 均覆盖全部单元
+- 单元: 48/48 frozen；R3 逐单元 confirm-review
+- 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0
+- 减法: 提案 1 / 采纳 0

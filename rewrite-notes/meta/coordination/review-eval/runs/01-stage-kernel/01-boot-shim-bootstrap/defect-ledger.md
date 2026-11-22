@@ -42,3 +42,22 @@
 | RD-R1-024-13 | CLAIM-13 | 1.2 | R1 | P-REFUTE | P3 | 反证核对 | ① | CLAIM-13 结论 CONFIRM；证据核对完成 | panel/round1/refute.md:166 | panel/round1/refute.md:166；rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1 CLOSED |
 | RD-R1-024-14 | CLAIM-14 | 1.2 | R1 | P-REFUTE | P3 | 反证核对 | ① | CLAIM-14 结论 CONFIRM；证据核对完成 | panel/round1/refute.md:179 | panel/round1/refute.md:179；rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1 CLOSED |
 | RD-R1-024-15 | CLAIM-15 | 1.2 | R1 | P-REFUTE | P3 | 反证核对 | ① | CLAIM-15 结论 UNCLEAR；并入 RD-R1-007 | panel/round1/refute.md:193 | panel/round1/refute.md:193；rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md:1 CLOSED |
+
+## R2 full（V3.11，2026-11-22）
+
+| 根因 ID | 发现 ID | 单元 | origin | 来源角色 | 严重度 | 类别 | 处置类 | 处置 | 证据 | 复验 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RD-R2-001 | FACT-01、RA-F1、RB-F2 | 5.1 | R2 | P-FACT | P1 | 文档/结构 | ① | §5.1 证据矩阵断表 | doc-structure-check 通过；表格 4 行连续 | doc-structure-check 通过；rg 门覆盖提示在表前 |
+| RD-R2-002 | FACT-02 | 4.4 | R2 | P-FACT | P2 | 文档/符号 | ① | Serializer 实参改 `InputObjectId::UefiMemoryMap`，接收侧解码为 `RamAuthority::UEFI` | handoff_v1_write.rs:112-115；uefi_helpers.rs:1131 | rg `InputObjectId::UefiMemoryMap` 命中 |
+| RD-R2-003 | REFUTE-CLAIM-09 | 5.4 | R2 | P-REFUTE | P1 | 文档/证据门 | ① | aarch64 默认无 DTB 看 memmap source；DTB_CFGTABLE=1 看 DTB preflight failed（存在但不可用） | test-shim-bootmarks-aarch64.sh 的 MARK3/MARK_DTB_REFUSED | rg `DTB_CFGTABLE=1` 定义与判据命中 |
+| RD-R2-004 | RA-F2、RB-F3 | 4.4 | R2 | READER-A/B | P1 | 文档/执行序 | ① | §4.4.1 直核链补 `store_kernel_info` | §3.7 直核先 store 后 validate | rg `store_kernel_info`（`arch_boot_finish`）在 4.4.1 命中 |
+| RD-R2-005 | RB-F1 | 2.4 | R2 | READER-B | P1 | 文档/编号层级 | ① | `2.4.1` 编号 + `2.4.2` 降为四级、子节五级；状态 prune 旧单元 | doc-structure/ref 通过；units 48 | 统计 units=48；`#### 2.4.1`/`#### 2.4.2` 层级正确 |
+| RD-R2-006 | RB-F4 | 2.2 | R2 | READER-B | P2 | 文档/引用 | ① | `§1.1`/`§2.2` 悬空引用改指本节/§3.4.1 | doc-ref-check 通过 | rg 新引用命中 |
+| RD-R2-007 | RC-C2-01 | 3.2 | R2 | READER-C | P1 | 文档/范围 | ① | source 例外限定 UEFI 腿；U-Boot shim 仍写 BootStorage 40 槽 | §3.7/§4.5 对照 | rg `UEFI 腿的 source 分区例外` 命中 |
+| RD-R2-008 | RC-C2-02 | 5.1 | R2 | READER-C | P2 | 文档/证据范围 | ① | §5.1 走到 kmain 限定 x86 UEFI 与 riscv U-Boot shim；aarch64 只到发送侧 | §5.4 判据对照 | rg `aarch64 UEFI 的判据只到发送侧分类点` 命中 |
+| RD-R2-009 | RC-C2-03 | 4.8 | R2 | READER-C | P2 | 文档/调用链 | ① | §4.8 分直核面与 v1 接收面两链；v1 不建根 | §3.6 `resume_additive` 注释 | rg `不调用 arch_boot_impl` 命中 |
+| RD-R2-010 | RC-C2-04 | 5.4 | R2 | READER-C | P2 | 文档/术语 | ① | 定义 `DTB_CFGTABLE=1` 为存在但不可用的拒绝分支 | §5.4 表前定义 | rg `DTB_CFGTABLE=1` 定义命中 |
+| RD-R2-011 | RC-C2-06 | 2.3 | R2 | READER-C | P3 | 文档/计数 | ① | “两条依赖”改为“一条依赖 + 否定边界” | §1.1 对照 | rg `一条依赖（外加一条否定边界` 命中 |
+| RD-R2-012 | RC-C2-07 | 3.6 | R2 | READER-C | P3 | 文档/指代 | ① | same pool 与两个独立游标合并说明 | §3.5.1/§3.6/§4.6 对照 | rg `same pool` 桥接句命中 |
+| RD-R2-013 | RC-C2-08 | 3.2 | R2 | READER-C | P3 | 文档/版本定义 | ① | 信封版本定义扩为信封或 arena wire 布局 | §3.2.3 定义句 | rg `信封或 arena` 命中 |
+| RD-R2-014 | D2-F1/F2/F3 | 3.2、4.4 | R2 | P-DESIGN-D2 | P1 | 文档/事实 | ① | UEFI source 两阶段写入、§3.2.1 authority、source_records 经 BootReport | ebs_pair.rs:194-250；lib.rs:111-127 | rg `push_dtb_sources`/`经 BootReport 提供` 命中 |
