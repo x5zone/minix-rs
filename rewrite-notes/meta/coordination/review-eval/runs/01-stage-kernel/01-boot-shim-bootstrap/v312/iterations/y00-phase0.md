@@ -58,3 +58,4 @@
 - 等计划对抗审查返回；无 P0/P1 后启动 D01 R1 面板（fact、reader-a、reader-b、reader-c、design-d2、refute）。
 - 面板前立事件：角色级 + 逐单元 T1/T2；面板报告写 `v312/panel/round1/`。
 - 本轮修改轮只写 `ROUND-CLOSED`，不写 `CONVERGED`。
+- checkpoint commit：`02eaf6898`（Phase 0 基线）。
