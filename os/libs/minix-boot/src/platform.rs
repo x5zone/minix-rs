@@ -107,11 +107,11 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2);
 
 /// Platform descriptor source — an opaque handle carried in `KernelInfo`.
 ///
-/// The upper layer sees `(kind, phys_addr, len)` and dispatches on `kind` to
-/// the appropriate parser. `len` is the blob extent in bytes when the
-/// producer knows it (DTB `totalsize`, ACPI RSDP `length`); `0` means the
-/// producer did not record a length and the consumer must fall back to the
-/// address's 2 MiB piece.
+/// The upper layer sees `(kind, phys_addr, len)` where `len` is
+/// `Option<NonZeroU32>`, and dispatches on `kind` to the appropriate parser.
+/// `len` is `Some(blob extent in bytes)` when the producer knows it (DTB
+/// `totalsize`, ACPI RSDP `length`); `None` means the producer did not record
+/// a length and the consumer must fall back to the address's 2 MiB piece.
 ///
 /// # Multiple sources (DTB + RSDP coexistence)
 ///

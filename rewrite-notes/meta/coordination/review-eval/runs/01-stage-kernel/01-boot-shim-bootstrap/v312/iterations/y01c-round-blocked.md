@@ -3,7 +3,9 @@
 - 时间：2026-11-23
 - 轮型：full（修改轮）
 - 轮结果：**BLOCKED**（不宣告 `ROUND-CLOSED` / `CONVERGED`）
-- 当前文档：2,979 行；sha256 `c9f2952333486d20f5af48164421a07aae9a4b0809841d790918cd9e0657cb3c`
+- 当前文档：2,979 行；最终 sha256 `75c04e8d9ef1fecc9403e229ac593c67d07c62b55060848c0991ba0305c06e80`
+  （收尾清理了 verifier 残留：`LMA/VMA` 指针改指 §1.0 术语与 §3.4；`platform.rs` 结构体注释
+  从 `0` 改为 `None`）
 
 ## 一、这一轮做了什么
 
