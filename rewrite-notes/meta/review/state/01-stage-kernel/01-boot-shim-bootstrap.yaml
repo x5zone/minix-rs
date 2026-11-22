@@ -11,7 +11,12 @@ full_rounds:
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/r1-v312/full-r1.md
   evidence_sha: 3afe979231f000a01fc4d28970f80692f3cf8a1612ecc97059da158239ee33e5
   commit: cdd0d1c777042b048bd9fdfac3e5102b95dac869
-trajectory_reviews: []
+trajectory_reviews:
+- round: 1
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/certify/y01b-trajectory.md
+  evidence_sha: 2701eac653bae0b062a602e92e58b30526e1a18baa92bc5630f1d4694d415646
+  verdict: PASS
+  commit: 6ec30c206f035344b79476fe6e2da328baef6b23
 baseline_full_survey: true
 confirmation:
   active: false

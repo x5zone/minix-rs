@@ -22,7 +22,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-FINDING_RE = re.compile(r"^##\s+FINDING\b", re.MULTILINE)
+FINDING_RE = re.compile(
+    r"^#{2,3}\s+FINDING\s+[A-Za-z][A-Za-z0-9_-]*", re.MULTILINE
+)  # 与 v312-closure-check 的 panel_findings 同形：##/### + ASCII ID；
+# 不把 `## FINDING（仅列…）` 这类分组标题算成一条发现。
 SUGG_RE = re.compile(
     r"^#{2,3}\s+SUGGESTION\s+[A-Za-z][A-Za-z0-9_-]*", re.MULTILINE
 )  # V3.4-r12：与门同形（##/### + ASCII ID 含下划线）

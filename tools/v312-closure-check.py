@@ -149,6 +149,12 @@ def self_test() -> int:
         text = "## R0 账户初始化\n- 唯一根因数: 0\n\n## R1 full（V3.12）\n- 唯一根因数: 34\n"
         assert "34" in (metrics_block(text, 1) or ""), metrics_block(text, 1)
         assert "0" in (metrics_block(text, 0) or ""), metrics_block(text, 0)
+        # A note that merely mentions the token must not satisfy the close-out key.
+        assert not re.search(
+            r"^-\s*轮结果\s*[:：]\s*ROUND-CLOSED\s*$",
+            "- 轮结果: ROUND-OPEN\n说明：ROUND-CLOSED 待独立复验",
+            re.MULTILINE,
+        )
         assert not refute_ok(panel, "进入 R2 前需补 P-REFUTE/VARIANCE。")
         assert refute_ok(panel, "P-REFUTE VARIANCE: 本轮不做，理由见 §8。")
         (panel / "refute.md").write_text("## FINDING REFUTE-01（P0）\n", encoding="utf-8")
@@ -207,8 +213,8 @@ def main() -> int:
     for k in METRIC_KEYS:
         if not re.search(rf"^-\s*{re.escape(k)}\s*[:：]", block, re.MULTILINE):
             fail(errs, f"metrics.md R{args.round} 缺 `- {k}:`")
-    if "ROUND-CLOSED" not in block:
-        fail(errs, f"metrics.md R{args.round} 未写 `ROUND-CLOSED`")
+    if not re.search(r"^-\s*轮结果\s*[:：]\s*ROUND-CLOSED\s*$", block, re.MULTILINE):
+        fail(errs, f"metrics.md R{args.round} 未写 `- 轮结果: ROUND-CLOSED`")
     # panel roles (round subdir)
     panel = run / "panel" / f"round{args.round}"
     missing = [r for r in ROLES if not (panel / r).is_file()]

@@ -1087,7 +1087,7 @@ def unit_scope_ok(text: str, uid: str) -> bool:
 def doc_scope_ok(text: str, doc: Path) -> bool:
     """Evidence must name exactly one document account: this one (V3.11)."""
     vals = [m.group(1).strip("` ") for m in
-            re.finditer(r"(?mi)^\s*(?:DOC|文档)\s*[:：]?\s*(\S+)", text)]
+            re.finditer(r"(?mi)^\s*(?:DOC|文档)(?:\s+|[:：])\s*(\S+)", text)]
     if len(vals) != 1:
         return False
     val = vals[0]
