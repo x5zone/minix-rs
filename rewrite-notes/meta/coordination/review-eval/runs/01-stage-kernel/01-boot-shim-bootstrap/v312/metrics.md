@@ -13,6 +13,8 @@
 - 轮型: full
 - 轮结果: ROUND-OPEN
 - 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0
+- ARCH 提案: 0
+- 用户否决: 0
 - edition: V3.12
 - re-litigation: 0
 - adjacent 阻塞: 0
