@@ -741,17 +741,18 @@ V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性�
 
 | 状态 | 含义 | 谁能宣告 |
 |---|---|---|
-| `ROUND-CLOSED` | 本轮准入根因全部处置，100% 复验与机械门通过（G1–G14 中与修改轮相关的部分） | 修改轮（full/structural）的 certify |
+| `ROUND-CLOSED` | 本轮准入根因全部处置，100% 复验与机械门通过（G1–G17 中与修改轮相关的部分） | 修改轮（full/structural）的 certify |
 | `CONVERGENCE-CANDIDATE` | 最近一个修改轮 ROUND-CLOSED，等待确认轮 | 修改轮关闭时自动进入，无动作 |
-| `CONVERGED` | 确认轮在最终工作树上 `certify 新准入 = 0`，G1–G14 全过（含全部单元 frozen），且 OPEN-DEBT 无未销账行 | **只由确认轮出口给出** |
+| `CONVERGED` | 确认轮在最终工作树上 `certify 新准入 = 0`，G1–G17 全过（含全部单元 frozen、每单元 2 次 review、至少 2 个 full 轮、每轮 trajectory PASS），且 OPEN-DEBT 无未销账行 | **只由确认轮出口给出** |
 | `FREEZE-WITH-BACKLOG` | 预算用尽或决定停止，仍有未解决事项或证据缺口 | 用户裁决 |
 
 - **修改轮没有收敛声明权**：full/structural 轮的 agent 不得宣告 CONVERGED，最多
   ROUND-CLOSED / CONVERGENCE-CANDIDATE（`eval-trace-check.py` 机械检查）。
 - **确认轮**：`review-units.py begin-confirmation` 开始；修复用 `--confirm-fix`（不占修改轮），
   修复后重新 `--pass --freeze`，`end-confirmation` 通过后才允许 `gate --pass`。
-  覆盖未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%；seed = 最终 commit）+ 骨架；首个 edition 或
-  未冻结单元 >30% 时按整篇 survey。修复权限 = 本轮新准入的 P0/P1/P2 事实与
+  覆盖未冻结单元 + 骨架；V3.11 起**每个冻结单元都要一次 `--confirm-review`**，抽样只用于
+  决定额外深读，不替代逐单元确认。首个 edition 或未冻结单元 >30% 时按整篇 survey。
+  修复权限 = 本轮新准入的 P0/P1/P2 事实与
   同步项；不实施 ⑥、不扩大重构范围；P3 走 §4.0c 严重度门槛。每个 CONVERGENCE-CANDIDATE 最多 2 次（跨 edition 重开不累计）：
   第 1 次新准入 > 0 时在确认轮内修完再确认一次；仍 > 0 或出现结构性新根因 →
   `NOT CONVERGING` 回 edition 边界。确认轮不占 §7.5 的修改预算。
@@ -875,6 +876,9 @@ citation/anchor/symbol-drift 机械再对账；不得继续线级补丁。第 3 
 **单元预算（V3.9，与 edition 预算并行）**：每个 `###`/`##` 单元每轨最多 2 个修改轮
 （`review-units.md` §三）；第 3 轮需用户批准或整节重写。单元预算耗尽不等于 edition
 预算耗尽，反之亦然：篇级仍受本条 3 轮与 K=3 约束。冻结单元不占后续轮的面板输入。
+**V3.11 另加每单元至少 2 次 review**（冻结前 1 次、冻结后确认轮 1 次）；这两次 review
+不占修改预算，但缺一次就不得 `CONVERGED`。每篇另需至少 2 个 full 轮，full 轮覆盖全部
+单元，不能以“冻结了”为由跳过。
 
 **同篇 edition 上限（K=3，V3.3）**：同一篇文档最多经历 3 个 edition（软上限）。
 超出后继续迭代必须在 `DECISIONS.md` 判决账落一行（理由 + 范围 + 日期），把

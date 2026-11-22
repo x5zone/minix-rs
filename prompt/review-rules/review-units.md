@@ -20,6 +20,8 @@
   - `units[]`：每个单元的 `review_rounds` 与 `post_freeze_rounds`。
 - **跨篇引用禁止**：D01 的 `R39` 只能写在 D01 账户；D02 的轮次必须从自己的 `round` 取号。
   引用裁决时必须带裁决的适用范围（doc / stage / repo），D-114 这类 D01 专用裁决不得给 D02 背书。
+- **状态文件也绑定 doc**：`review-units.py` 校验状态里的 `doc` 字段与当前文档一致；复制状态文件
+  到另一篇即拒绝。证据文件必须恰好一条 `DOC <当前篇>`，写两条 `DOC` 也拒绝。
 
 ## 二、单元与轨道
 
@@ -38,18 +40,18 @@
 ### 3.1 每篇至少 2 个 full 轮
 
 - 第 1 个 full 轮用 `baseline --evidence`；第 2 个及以后用 `full-round --evidence`。
-- full 轮必须覆盖**全部单元**，包括已冻结单元；证据文件必须含 `FULL-ROUND` 标记，并为每个单元写
-  `UNIT <id>`。缺一个单元即 FAIL。
+- full 轮必须覆盖**全部单元**，包括已冻结单元；证据文件必须含 `FULL-ROUND` 标记、
+  `DOC <当前篇>` 账户绑定，并为每个单元写 `UNIT <id>`。缺一个单元或缺 DOC 即 FAIL。
 - full 轮不得用确认轮抽样、冻结单元豁免或“上轮已读”替代；每个 full 轮都是独立产物，
   同一份 evidence 不得复用于两个 full 轮。
 - `gate --pass` 要求 `len(full_rounds) >= 2`；不足时最多 `ROUND-CLOSED`。
 
 ### 3.2 每个单元至少 2 次 review
 
-- 第一次：冻结前的 T1/T2 review。`mark --pass --evidence <unit-file>`，证据文件必须**只点名**
-  该单元（`UNIT <id>`），且含可重放 token。
+- 第一次：冻结前的 T1/T2 review。`mark --pass --evidence <unit-file>`，证据文件必须含
+  `DOC <当前篇>` 并**只点名**该单元（`UNIT <id>`），且含可重放 token。
 - 第二次：冻结后的确认 review。确认轮内 `mark --confirm-review --evidence <unit-file>`，
-  证据同样只点名该单元；不改单元正文，只记录复核。
+  证据同样含 `DOC` 且只点名该单元；不改单元正文，只记录复核。
 - `mark --freeze` 要求当前轮已有该单元的 `review_rounds` 记录；不允许“先冻结、后补读”。
 - `end-confirmation` 要求每个单元 `len(review_rounds) >= 2` 且 `post_freeze_rounds` 非空。
 - **禁止批量冻结**：一份含多个 `UNIT` 的通用证据只能用于 full 轮，不能用于任何单元的
@@ -58,7 +60,9 @@
 ### 3.3 每轮结束后必须 trajectory review
 
 - 每个 full 轮和确认轮结束后，必须写独立的轨迹复核文件，含 `TRAJECTORY-REVIEW`、
-  被复核轮次 `R<N>`、证据与结论；用 `trajectory-review --round N --evidence <file> --verdict PASS|FAIL` 入账。
+  被复核轮次 `R<N>`、`DOC <当前篇>`、证据与结论；用
+  `trajectory-review --round N --evidence <file> --verdict PASS|FAIL` 入账。
+  一份 evidence 只能点名一个轮次；同一 hash 不得复用于另一轮。
 - 开下一个 full 轮前，上一 full 轮必须有 `PASS`；开确认轮前，最后一个 full 轮必须有 `PASS`；
   `gate --pass` 前，所有 full 轮与确认轮都必须有 `PASS`。
 - `FAIL` 的轨迹复核会阻断下一轮/收敛；修复后重新复核，不允许覆盖成 `PASS` 而不留原因。
@@ -101,6 +105,9 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 - **批量失效**：`invalidate --from <commit>` 对比 `git diff --name-only`，冻结单元的锚点文件变化
   → 解冻并置 `reopened`/`stale`。
 - 任何对冻结节的修改都必须先 `sync --unfreeze` 或 `--confirm-fix` 留痕，禁止手改状态文件绕过。
+  **正文/锚点变化导致解冻时，该单元的 `review_rounds` 与 `post_freeze_rounds` 必须清空**；
+  旧确认不能给新正文背书。确认轮内的 `--confirm-fix` 只清当前确认轮的记录，随后必须重新
+  `--pass --freeze` 并再做一次 `--confirm-review`。
 
 ## 五、预算
 

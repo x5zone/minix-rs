@@ -281,6 +281,12 @@ def new_unit(u: dict) -> dict:
     return rec
 
 
+def invalidate_unit_reviews(unit: dict) -> None:
+    """Content changed: old reviews are about old text and must not count (V3.11)."""
+    unit["review_rounds"] = []
+    unit["post_freeze_rounds"] = []
+
+
 def load_state(path: Path) -> dict:
     if not path.is_file():
         print(f"状态文件不存在：{path}（先跑 init）", file=sys.stderr)
@@ -291,6 +297,19 @@ def load_state(path: Path) -> dict:
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         print(f"状态文件 schema 不是 {SCHEMA}：{path}", file=sys.stderr)
         raise SystemExit(2)
+    return data
+
+
+def state_doc_ok(data: dict, doc: Path) -> bool:
+    rec = Path(str(data.get("doc", "")))
+    return rec.name in {doc.name, doc.stem + ".md"} or rec.stem == doc.stem
+
+
+def load_state_for(path: Path, doc: Path) -> dict:
+    data = load_state(path)
+    if not state_doc_ok(data, doc):
+        print(f"[FAIL] 状态文件属于 {data.get('doc')}，不能用于 {doc}；账户已串篇", file=sys.stderr)
+        raise SystemExit(1)
     return data
 
 
@@ -336,11 +355,15 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
 
 
 def cmd_new_edition(doc: Path, state_path: Path, edition: str, unfreeze_all: bool) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     old = data.get("edition", "?")
     if edition == old:
         print(f"edition 已是 {edition}", file=sys.stderr)
         return 2
+    if not unfreeze_all:
+        print("[FAIL] V3.11 新 edition 必须 --unfreeze-all：旧冻结与旧 review 计数不能带入新账户",
+              file=sys.stderr)
+        return 1
     archive = state_path.parent / "editions" / f"{old}.yaml"
     save_state(archive, data)
     data["edition"] = edition
@@ -371,16 +394,19 @@ def cmd_new_edition(doc: Path, state_path: Path, edition: str, unfreeze_all: boo
 
 
 def cmd_begin_confirmation(doc: Path, state_path: Path) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
+    if data.get("confirmation", {}).get("active"):
+        print("[FAIL] 确认轮已 active；不得再次 begin-confirmation", file=sys.stderr)
+        return 1
     if len(data.get("full_rounds", [])) < 2:
         print("[FAIL] V3.11 要求至少 2 个 full 轮，才能开始确认轮", file=sys.stderr)
         return 1
     if not all_chapters_frozen(data):
         print("[FAIL] 章尚未全部冻结，不能开始确认轮", file=sys.stderr)
         return 1
-    last_full = max(int(r["n"]) for r in data["full_rounds"])
-    if not trajectory_pass(data, last_full):
-        print(f"[FAIL] full 轮 R{last_full} 尚无 PASS 的 trajectory review；先复核轨迹", file=sys.stderr)
+    last_round = int(data.get("round", 0))
+    if not trajectory_pass(data, last_round):
+        print(f"[FAIL] 上一轮 R{last_round} 尚无 PASS 的 trajectory review；先复核轨迹", file=sys.stderr)
         return 1
     data["round"] = int(data.get("round", 0)) + 1
     data["confirmation"] = {
@@ -395,7 +421,7 @@ def cmd_begin_confirmation(doc: Path, state_path: Path) -> int:
 
 
 def cmd_end_confirmation(doc: Path, state_path: Path) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     errors, _ = validate(data, parse_units(doc))
     if errors:
         for e in errors:
@@ -408,13 +434,16 @@ def cmd_end_confirmation(doc: Path, state_path: Path) -> int:
     if not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结单元，不能结束确认轮", file=sys.stderr)
         return 1
-    bad_reviews = [u["id"] for u in data["units"] if len(u.get("review_rounds", [])) < 2]
+    current = int(conf.get("round", 0))
+    bad_reviews = [u["id"] for u in data["units"]
+                   if len(u.get("review_rounds", [])) < 2 or current not in u.get("review_rounds", [])]
     if bad_reviews:
-        print(f"[FAIL] 单元 review 不足 2 轮：{', '.join(bad_reviews)}", file=sys.stderr)
+        print(f"[FAIL] 单元本轮 review 不足或未记录 R{current}：{', '.join(bad_reviews)}", file=sys.stderr)
         return 1
-    bad_post = [u["id"] for u in data["units"] if not u.get("post_freeze_rounds")]
+    bad_post = [u["id"] for u in data["units"]
+                if current not in u.get("post_freeze_rounds", [])]
     if bad_post:
-        print(f"[FAIL] 冻结后确认 review 缺失：{', '.join(bad_post)}", file=sys.stderr)
+        print(f"[FAIL] 本轮冻结后确认 review 缺失 R{current}：{', '.join(bad_post)}", file=sys.stderr)
         return 1
     conf["active"] = False
     conf["completed"] = True
@@ -539,11 +568,49 @@ def unit_scope_ok(text: str, uid: str) -> bool:
     return {m.group(1) for m in UNIT_SCOPE_RE.finditer(text)} == {uid}
 
 
-def full_round_coverage_errors(data: dict, text: str) -> list[str]:
+def doc_scope_ok(text: str, doc: Path) -> bool:
+    """Evidence must name exactly one document account: this one (V3.11)."""
+    vals = [m.group(1).strip("` ") for m in
+            re.finditer(r"(?mi)^\s*(?:DOC|文档)\s*[:：]?\s*(\S+)", text)]
+    if len(vals) != 1:
+        return False
+    val = vals[0]
+    return val in {str(doc), doc.name, doc.stem} or Path(val).name in {doc.name, doc.stem}
+
+
+def decision_scope_errors(text: str, doc: Path) -> list[str]:
+    """Reject a doc-scoped decision cited by another document's account (V3.11)."""
+    if not DECISIONS_PATH.is_file():
+        return []
+    cited = set(DECISION_RE.findall(text))
+    if not cited:
+        return []
+    rows: dict[str, str] = {}
+    for line in DECISIONS_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"^\|\s*(D-\d{3})\b", line)
+        if not m:
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 5:
+            rows[m.group(1)] = cells[4]
+    errors: list[str] = []
+    for did in sorted(cited):
+        scope = rows.get(did, "")
+        m = re.search(r"\bD(\d{2})\b", scope)
+        if m and not doc.stem.startswith(m.group(1) + "-"):
+            errors.append(f"{did} 的 scope 是 D{m.group(1)}，不能用于 {doc.name}")
+    return errors
+
+
+def full_round_coverage_errors(data: dict, text: str, doc: Path | None = None) -> list[str]:
     """A full round must cover every unit, including frozen ones (V3.11)."""
     errors: list[str] = []
     if not FULL_ROUND_RE.search(text):
         errors.append("full-round evidence 缺少 `FULL-ROUND` 标记")
+    if doc is not None:
+        if not doc_scope_ok(text, doc):
+            errors.append(f"full-round evidence 缺少 `DOC {doc.name}` 账户绑定")
+        errors.extend(decision_scope_errors(text, doc))
     missing = [u["id"] for u in data.get("units", []) if not unit_present(text, u["id"])]
     if missing:
         errors.append(f"full-round evidence 未覆盖单元：{', '.join(missing)}")
@@ -564,7 +631,7 @@ def trajectory_pass(data: dict, n: int) -> bool:
 
 def record_full_round(data: dict, evidence: Path, n: int | None = None) -> tuple[bool, str]:
     text = evidence_text(evidence)
-    errors = full_round_coverage_errors(data, text)
+    errors = full_round_coverage_errors(data, text, Path(data.get("doc", "")))
     if errors:
         return False, "；".join(errors)
     if not evidence_replay_ok(evidence):
@@ -673,7 +740,7 @@ def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
 
 
 def cmd_audit(doc: Path, state_path: Path, ledger: str | None) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     path = Path(ledger) if ledger else default_ledger(doc, data["stage"])
     counts, errors = ledger_open_by_unit(path)
     for e in errors:
@@ -720,7 +787,7 @@ def code_fingerprint(path: Path | None) -> str:
 
 
 def cmd_fingerprint(doc: Path, state_path: Path, code_list: str | None, update: bool) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     s = structure_fingerprint(doc)
     cpath = Path(code_list) if code_list else None
     c = code_fingerprint(cpath)
@@ -826,7 +893,7 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
 
 
 def cmd_check(doc: Path, state_path: Path) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     current = parse_units(doc)
     reopened = 0
     for u in data.get("units", []):
@@ -835,6 +902,7 @@ def cmd_check(doc: Path, state_path: Path) -> int:
             u["frozen_at"] = None
             u["reopened"] = True
             u["stale"] = True
+            invalidate_unit_reviews(u)
             if u["level"] == 3:
                 u["t2_state"] = "pending"
             else:
@@ -857,6 +925,7 @@ def cmd_check(doc: Path, state_path: Path) -> int:
             u["frozen_at"] = None
             u["reopened"] = True
             u["stale"] = True
+            invalidate_unit_reviews(u)
             if u["level"] == 3:
                 u["t2_state"] = "pending"
             else:
@@ -880,7 +949,7 @@ def cmd_check(doc: Path, state_path: Path) -> int:
 
 
 def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prune: bool = False) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     current = parse_units(doc)
     cu = {u["id"]: u for u in current}
     changed = 0
@@ -896,6 +965,7 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
                 u["frozen_at"] = None
                 u["reopened"] = True
                 u["stale"] = True
+                invalidate_unit_reviews(u)
                 if u["level"] == 3:
                     u["t2_state"] = "pending"
                 else:
@@ -909,6 +979,7 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
                     u["frozen_at"] = None
                     u["reopened"] = True
                     u["stale"] = True
+                    invalidate_unit_reviews(u)
                     if u["level"] == 3:
                         u["t2_state"] = "pending"
                     else:
@@ -926,10 +997,12 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
                 u["t1_state"] = "pending"
                 u["frozen"] = False
                 u["frozen_at"] = None
+                invalidate_unit_reviews(u)
                 for child in data["units"]:
                     if child.get("parent") == u["id"]:
                         child["frozen"] = False
                         child["frozen_at"] = None
+                        invalidate_unit_reviews(child)
                         if child.get("t2_state") == "frozen":
                             child["t2_state"] = "passed"
             else:
@@ -943,12 +1016,14 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
             if u.get("frozen"):
                 u["frozen"] = False
                 u["frozen_at"] = None
+                invalidate_unit_reviews(u)
                 if u["level"] == 3:
                     u["t2_state"] = "pending"
                     parent = next((x for x in data["units"] if x["id"] == u.get("parent")), None)
                     if parent and parent.get("frozen"):
                         parent["frozen"] = False
                         parent["frozen_at"] = None
+                        invalidate_unit_reviews(parent)
                         print(f"[WARN] 父章 {parent['id']}: 因子节解冻而解除冻结")
                 else:
                     u["t1_state"] = "pending"
@@ -996,7 +1071,7 @@ def cmd_sync(doc: Path, state_path: Path, unfreeze: bool, only: str | None, prun
 
 
 def cmd_next(doc: Path, state_path: Path, track: str | None) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     current = parse_units(doc)
     errors, _ = validate(data, current)
     if errors:
@@ -1030,7 +1105,7 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
              deps: str | None = None, confirm_fix: bool = False,
              confirm_review: bool = False,
              evidence: str | None = None, ledger: str | None = None) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     unit = next((u for u in data["units"] if u["id"] == uid), None)
     if not unit:
         print(f"找不到单元：{uid}", file=sys.stderr)
@@ -1049,6 +1124,13 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
         text = evidence_text(Path(evidence))
         if not unit_scope_ok(text, uid):
             print(f"[FAIL] evidence 未点名 `UNIT {uid}`；一份通用证据不能给多个单元确认", file=sys.stderr)
+            return 1
+        if not doc_scope_ok(text, doc):
+            print(f"[FAIL] evidence 缺少 `DOC {doc.name}` 账户绑定；不能拿别篇证据确认", file=sys.stderr)
+            return 1
+        scoped = decision_scope_errors(text, doc)
+        if scoped:
+            print(f"[FAIL] {'；'.join(scoped)}", file=sys.stderr)
             return 1
         if not evidence_replay_ok(Path(evidence)):
             print("[FAIL] evidence 缺可重放 token", file=sys.stderr)
@@ -1125,9 +1207,18 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
     if (passed or freeze or rewrite or approve) and evidence and not evidence_replay_ok(Path(evidence)):
         print(f"[FAIL] evidence 缺可重放 token（path:line / test::name / rg|grep / commit）：{evidence}", file=sys.stderr)
         return 1
-    if (passed or freeze or rewrite or approve) and evidence and not unit_scope_ok(evidence_text(Path(evidence)), uid):
-        print(f"[FAIL] evidence 未点名 `UNIT {uid}`；V3.11 禁止一份通用证据给多个单元背书", file=sys.stderr)
-        return 1
+    if (passed or freeze or rewrite or approve) and evidence:
+        text = evidence_text(Path(evidence))
+        if not unit_scope_ok(text, uid):
+            print(f"[FAIL] evidence 未点名 `UNIT {uid}`；V3.11 禁止一份通用证据给多个单元背书", file=sys.stderr)
+            return 1
+        if not doc_scope_ok(text, doc):
+            print(f"[FAIL] evidence 缺少 `DOC {doc.name}` 账户绑定；不能拿别篇证据给本篇背书", file=sys.stderr)
+            return 1
+        scoped = decision_scope_errors(text, doc)
+        if scoped:
+            print(f"[FAIL] {'；'.join(scoped)}", file=sys.stderr)
+            return 1
     if passed or freeze:
         lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
         counts, errs = ledger_open_by_unit(lpath)
@@ -1219,7 +1310,7 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
 
 
 def cmd_sample(doc: Path, state_path: Path, ratio: float | None, seed: str) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     units = data["units"]
     dirty = [u for u in units if not u.get("frozen")]
     frozen = [u for u in units if u.get("frozen")]
@@ -1255,7 +1346,7 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float | None, seed: str) -> i
 
 def cmd_invalidate(doc: Path, state_path: Path, rev: str) -> int:
     """Reopen frozen units whose direct anchor target changed since REV."""
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     check = subprocess.run(
         ["git", "-C", str(ROOT), "cat-file", "-e", rev + "^{commit}"],
         capture_output=True,
@@ -1283,6 +1374,7 @@ def cmd_invalidate(doc: Path, state_path: Path, rev: str) -> int:
             u["frozen_at"] = None
             u["reopened"] = True
             u["stale"] = True
+            invalidate_unit_reviews(u)
             if u["level"] == 3:
                 u["t2_state"] = "pending"
             else:
@@ -1297,7 +1389,7 @@ def cmd_baseline(doc: Path, state_path: Path, evidence: str | None) -> int:
     if not evidence or not Path(evidence).is_file():
         print("baseline 必须带 --evidence（第 1 个 full 轮的整篇 survey 产物）", file=sys.stderr)
         return 1
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     if data.get("full_rounds"):
         print("[FAIL] 已有 full 轮；后续 full 轮用 `full-round`，不要重复 baseline", file=sys.stderr)
         return 1
@@ -1315,7 +1407,7 @@ def cmd_full_round(doc: Path, state_path: Path, evidence: str | None) -> int:
     if not evidence or not Path(evidence).is_file():
         print("full-round 必须带 --evidence（整篇 survey 的独立产物）", file=sys.stderr)
         return 1
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     if not data.get("full_rounds"):
         print("[FAIL] 第 1 个 full 轮用 baseline", file=sys.stderr)
         return 1
@@ -1336,14 +1428,14 @@ def cmd_full_round(doc: Path, state_path: Path, evidence: str | None) -> int:
 
 
 def cmd_trajectory_review(doc: Path, state_path: Path, round_n: int,
-                          evidence: str | None, verdict: str) -> int:
+                          evidence: str | None, verdict: str, reason: str = "") -> int:
     if not evidence or not Path(evidence).is_file():
         print("trajectory-review 必须带 --evidence 文件", file=sys.stderr)
         return 1
     if not evidence_replay_ok(Path(evidence)):
         print("[FAIL] trajectory evidence 缺可重放 token", file=sys.stderr)
         return 1
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     if round_n < 1 or round_n > int(data.get("round", 0)):
         print(f"[FAIL] trajectory review 的轮次 R{round_n} 不在 1..R{data.get('round', 0)}", file=sys.stderr)
         return 1
@@ -1351,26 +1443,48 @@ def cmd_trajectory_review(doc: Path, state_path: Path, round_n: int,
     if not TRAJECTORY_RE.search(text):
         print("[FAIL] evidence 缺少 `TRAJECTORY-REVIEW` 标记", file=sys.stderr)
         return 1
-    if not re.search(rf"(?mi)\bR{round_n}\b", text):
-        print(f"[FAIL] evidence 未点名被复核的轮次 R{round_n}", file=sys.stderr)
+    if not doc_scope_ok(text, doc):
+        print(f"[FAIL] trajectory evidence 缺少 `DOC {doc.name}` 账户绑定", file=sys.stderr)
+        return 1
+    marked = re.findall(r"(?mi)TRAJECTORY-REVIEW\s*(?:R)?\s*(\d+)", text)
+    if set(marked) != {str(round_n)}:
+        print(f"[FAIL] trajectory evidence 必须只点名 R{round_n}；实际 {marked}", file=sys.stderr)
+        return 1
+    digest = sha(text)
+    if any(r.get("evidence_sha") == digest for r in data.get("trajectory_reviews", [])):
+        print("[FAIL] 同一份 trajectory evidence 不能给两个轮次复用", file=sys.stderr)
         return 1
     verdict = verdict.upper()
     data.setdefault("trajectory_reviews", [])
-    data["trajectory_reviews"] = [r for r in data["trajectory_reviews"] if int(r.get("round", -1)) != round_n]
-    data["trajectory_reviews"].append({
+    old = trajectory_for(data, round_n)
+    if old and old.get("verdict") == "PASS" and verdict == "PASS":
+        print(f"[FAIL] R{round_n} 已有 PASS 的 trajectory review，不重复记账", file=sys.stderr)
+        return 1
+    if old and old.get("verdict") == "FAIL" and verdict == "PASS" and not reason.strip():
+        print(f"[FAIL] R{round_n} 原为 FAIL，改判 PASS 必须用 --reason 写明修复/复核依据",
+              file=sys.stderr)
+        return 1
+    data["trajectory_reviews"] = [r for r in data["trajectory_reviews"]
+                                  if int(r.get("round", -1)) != round_n]
+    rec = {
         "round": round_n,
         "evidence": str(evidence),
         "evidence_sha": sha(text),
         "verdict": verdict,
         "commit": head_commit(),
-    })
+    }
+    if reason:
+        rec["reason"] = reason
+    if old:
+        rec["supersedes"] = old.get("evidence_sha", "")
+    data["trajectory_reviews"].append(rec)
     save_state(state_path, data)
-    print(f"trajectory-review: R{round_n} {verdict}")
+    print(f"trajectory-review: R{round_n} {verdict}" + ("（改判，已记 reason）" if reason else ""))
     return 0 if verdict == "PASS" else 1
 
 
 def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str | None = None) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     if ok:
         if len(data.get("full_rounds", [])) < 2:
             print(f"[FAIL] V3.11 要求至少 2 个 full 轮；当前 {len(data.get('full_rounds', []))}", file=sys.stderr)
@@ -1379,16 +1493,18 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str |
         if not conf.get("completed"):
             print("[FAIL] 确认轮尚未完成；V3.11 不允许跳过冻结后确认", file=sys.stderr)
             return 1
-        bad_reviews = [u["id"] for u in data["units"] if len(u.get("review_rounds", [])) < 2]
+        current = int(conf.get("round", 0))
+        bad_reviews = [u["id"] for u in data["units"]
+                       if len(u.get("review_rounds", [])) < 2 or current not in u.get("review_rounds", [])]
         if bad_reviews:
-            print(f"[FAIL] 单元 review 不足 2 轮：{', '.join(bad_reviews)}", file=sys.stderr)
+            print(f"[FAIL] 单元 review 不足 2 轮或未记录 R{current}：{', '.join(bad_reviews)}", file=sys.stderr)
             return 1
-        bad_post = [u["id"] for u in data["units"] if not u.get("post_freeze_rounds")]
+        bad_post = [u["id"] for u in data["units"]
+                    if current not in u.get("post_freeze_rounds", [])]
         if bad_post:
-            print(f"[FAIL] 单元缺冻结后确认 review：{', '.join(bad_post)}", file=sys.stderr)
+            print(f"[FAIL] 单元缺本轮冻结后确认 review R{current}：{', '.join(bad_post)}", file=sys.stderr)
             return 1
-        expected = [int(r["n"]) for r in data["full_rounds"]] + [int(conf.get("round", 0))]
-        for n in expected:
+        for n in range(1, int(data.get("round", 0)) + 1):
             if not trajectory_pass(data, n):
                 print(f"[FAIL] 轮次 R{n} 缺 PASS 的 trajectory review", file=sys.stderr)
                 return 1
@@ -1437,7 +1553,7 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str |
 
 
 def cmd_stats(doc: Path, state_path: Path) -> int:
-    data = load_state(state_path)
+    data = load_state_for(state_path, doc)
     units = data["units"]
     chapters = [u for u in units if u["level"] == 2]
     sections = [u for u in units if u["level"] == 3]
@@ -1490,10 +1606,10 @@ def _anchor_self_test(root: Path) -> None:
         ids = ["3", "3.1", "3.2", "3.3", "3.4"]
         def ev(uid: str) -> Path:
             p = root / f"ev-{uid}.md"
-            p.write_text(f"UNIT {uid}\nrg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
+            p.write_text(f"UNIT {uid}\nDOC 02-anchor.md\nrg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
             return p
         ev_all = root / "ev-all.md"
-        ev_all.write_text("FULL-ROUND R1\n" + "\n".join(f"UNIT {u}" for u in ids)
+        ev_all.write_text("FULL-ROUND R1\nDOC 02-anchor.md\n" + "\n".join(f"UNIT {u}" for u in ids)
                           + "\nrg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
         assert cmd_init(doc, sp, "01-stage-kernel", "V3.11", False) == 0
         assert cmd_baseline(doc, sp, str(ev_all)) == 0
@@ -1576,14 +1692,14 @@ def self_test() -> int:
 
         def full_ev(n: int, omit: str | None = None) -> Path:
             p = root / f"full-{n}.md"
-            body = [f"FULL-ROUND R{n}", "rg -n 'demo' os/"]
+            body = [f"FULL-ROUND R{n}", "DOC 01-demo.md", "rg -n 'demo' os/"]
             body += [f"UNIT {u}" for u in ids if u != omit]
             p.write_text("\n".join(body) + "\n", encoding="utf-8")
             return p
 
         def unit_ev(uid: str) -> Path:
             p = root / f"unit-{uid}.md"
-            p.write_text(f"UNIT {uid}\nrg -n 'demo' os/\n", encoding="utf-8")
+            p.write_text(f"UNIT {uid}\nDOC 01-demo.md\nrg -n 'demo' os/\n", encoding="utf-8")
             return p
 
         def generic_ev() -> Path:
@@ -1591,10 +1707,10 @@ def self_test() -> int:
             p.write_text("rg -n 'demo' os/\n", encoding="utf-8")
             return p
 
-        def traj_ev(n: int) -> Path:
-            p = root / f"traj-{n}.md"
-            p.write_text(f"TRAJECTORY-REVIEW R{n}\nrg -n 'demo' rewrite-notes/\n",
-                         encoding="utf-8")
+        def traj_ev(n: int, suffix: str = "") -> Path:
+            p = root / f"traj-{n}{suffix}.md"
+            p.write_text(f"TRAJECTORY-REVIEW R{n}\nDOC 01-demo.md\n{suffix}\n"
+                         "rg -n 'demo' rewrite-notes/\n", encoding="utf-8")
             return p
 
         def mk(uid, track, fix=False, passed=False, freeze=False, ev=None):
@@ -1619,6 +1735,7 @@ def self_test() -> int:
         # 第 2 个 full 轮前必须有 R1 的 trajectory review
         assert cmd_full_round(doc, sp, str(full_ev(2))) == 1
         assert cmd_trajectory_review(doc, sp, 1, str(traj_ev(1)), "PASS") == 0
+        assert cmd_trajectory_review(doc, sp, 1, str(traj_ev(1)), "PASS") == 1  # 不重复记账
         assert cmd_full_round(doc, sp, str(full_ev(2))) == 0
         assert cmd_full_round(doc, sp, str(full_ev(2))) == 1  # 同一份证据不得复用
         data = load_state(sp)
@@ -1641,9 +1758,11 @@ def self_test() -> int:
         assert all(u.get("frozen") for u in data["units"])
         assert all(len(u.get("review_rounds", [])) == 1 for u in data["units"])
 
-        # 确认轮前必须有 R2 的 trajectory review
+        # 确认轮前必须有 R2 的 trajectory review；FAIL 改判 PASS 必须写 reason
         assert cmd_begin_confirmation(doc, sp) == 1
-        assert cmd_trajectory_review(doc, sp, 2, str(traj_ev(2)), "PASS") == 0
+        assert cmd_trajectory_review(doc, sp, 2, str(traj_ev(2)), "FAIL") == 1
+        assert cmd_trajectory_review(doc, sp, 2, str(traj_ev(2, "-retry")), "PASS") == 1
+        assert cmd_trajectory_review(doc, sp, 2, str(traj_ev(2, "-fixed")), "PASS", "修正了证据缺口") == 0
         assert cmd_begin_confirmation(doc, sp) == 0
         data = load_state(sp)
         assert data["round"] == 3 and data["confirmation"]["round"] == 3
@@ -1659,6 +1778,7 @@ def self_test() -> int:
         assert all(u.get("post_freeze_rounds") == [3] for u in data["units"])
         assert all(len(u.get("review_rounds", [])) == 2 for u in data["units"])
         assert cmd_end_confirmation(doc, sp) == 0
+        assert cmd_trajectory_review(doc, sp, 3, str(traj_ev(3)), "PASS") == 0
 
         # 确认轮修复会撤销当前轮的 review，必须重新冻结并确认
         assert cmd_begin_confirmation(doc, sp) == 0
@@ -1681,9 +1801,17 @@ def self_test() -> int:
 
         # 收敛门：full=2、每单元 2 次 review、确认轮完成、每轮 trajectory PASS
         assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 1
-        assert cmd_trajectory_review(doc, sp, 3, str(traj_ev(3)), "PASS") == 0
         assert cmd_trajectory_review(doc, sp, 4, str(traj_ev(4)), "PASS") == 0
         assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 0
+
+        # 冻结后改正文：旧 review / 旧确认必须失效
+        doc.write_text(doc.read_text().replace("内容一。", "内容一改。"), encoding="utf-8")
+        assert cmd_check(doc, sp) == 1
+        assert cmd_sync(doc, sp, True, None) == 0
+        d = load_state(sp)
+        u = next(x for x in d["units"] if x["id"] == "1.1")
+        assert not u["review_rounds"] and not u["post_freeze_rounds"]
+        assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 1
 
         # 新 edition 按篇重置账户，不继承旧轮次/计数
         assert cmd_new_edition(doc, sp, "V3.12", True) == 0
@@ -1693,6 +1821,31 @@ def self_test() -> int:
         assert all(not u["review_rounds"] and not u["post_freeze_rounds"] for u in data["units"])
         assert all(not u.get("frozen") for u in data["units"])
         assert cmd_check(doc, sp) == 0
+
+        # 第二篇是独立账户：不能继承第一篇的轮次/计数
+        doc2 = root / "01-stage-kernel/02-other.md"
+        doc2.write_text("# other\n\n## 1. 另一章\n\n### 1.1 另一节\n\n内容。\n",
+                        encoding="utf-8")
+        sp2 = root / "other-state.yaml"
+        assert cmd_init(doc2, sp2, "01-stage-kernel", "V3.11", False) == 0
+        ev2 = root / "full-other.md"
+        ev2.write_text("FULL-ROUND R1\nDOC 02-other.md\nUNIT 1\nUNIT 1.1\nrg -n 'other' rewrite-notes/\n",
+                       encoding="utf-8")
+        assert cmd_baseline(doc2, sp2, str(ev2)) == 0
+        d2 = load_state(sp2)
+        d1 = load_state(sp)
+        assert d2["round"] == 1 and d1["round"] == 0
+        assert len(d2["full_rounds"]) == 1 and d1["full_rounds"] == []
+        assert not state_doc_ok(d1, doc2) and not state_doc_ok(d2, doc)
+        # D01 专用裁决不能给 D02 账户背书
+        cross = root / "cross-decision.md"
+        cross.write_text("UNIT 1\nDOC 02-other.md\nD-114\nrg -n 'other' rewrite-notes/\n",
+                         encoding="utf-8")
+        ledger2 = root / "ledger2.md"
+        ledger2.write_text("| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n|---|---|---|---|---|\n",
+                           encoding="utf-8")
+        assert cmd_mark(doc2, sp2, "1", "t1", False, True, False, "",
+                        evidence=str(cross), ledger=str(ledger2)) == 1
 
         # 空证据 / 无 token 仍被拒
         empty_ev = root / "empty.md"
@@ -1723,6 +1876,7 @@ def main() -> int:
     tr.add_argument("--round", dest="trajectory_round", type=int, required=True)
     tr.add_argument("--evidence", required=True)
     tr.add_argument("--verdict", choices=("PASS", "FAIL", "pass", "fail"), default="PASS")
+    tr.add_argument("--reason", default="", help="FAIL 改判 PASS 时必填")
     sub.choices["invalidate"].add_argument("--from", dest="from_rev", required=True)
     sub.choices["new-edition"].add_argument("--edition", required=True)
     sub.choices["new-edition"].add_argument("--unfreeze-all", action="store_true")
@@ -1797,7 +1951,8 @@ def main() -> int:
     if args.cmd == "full-round":
         return cmd_full_round(doc, sp, args.evidence)
     if args.cmd == "trajectory-review":
-        return cmd_trajectory_review(doc, sp, args.trajectory_round, args.evidence, args.verdict)
+        return cmd_trajectory_review(doc, sp, args.trajectory_round, args.evidence,
+                                     args.verdict, args.reason)
     if args.cmd == "new-edition":
         return cmd_new_edition(doc, sp, args.edition, args.unfreeze_all)
     if args.cmd == "begin-confirmation":

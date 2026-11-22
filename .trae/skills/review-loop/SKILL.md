@@ -53,7 +53,7 @@ description: 文档+关联代码的固定 review 循环与工作流评测：L0 �
 9. **定轮型与 edition**：`loop.md §0` 必须写 `轮型: full|structural|confirmation` 与
    `edition: V3.x`。`full` = 完整 survey 交易；`structural` = survey 输入取上一轮
    已落盘报告的结构收口轮（不重开面板）；`confirmation` = 确认轮（§6A 四态模型，
-   按 §七 表 B 覆盖未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%）；首 edition 或 >30% 脏单元时用表 A 整篇；
+   按 §七 表 B 覆盖未冻结单元 + 骨架；V3.11 起每个冻结单元都要一次 `--confirm-review`（抽样只用于额外深读，不能替代逐单元确认）；首 edition 或 >30% 脏单元时用表 A 整篇；
    修复权限仅限本轮新准入项、不实施 ⑥、每个 CANDIDATE 最多 2 次、不占 §7.5 修改预算）。修改轮（full/structural）没有收敛声明权——最多 `ROUND-CLOSED` /
    `CONVERGENCE-CANDIDATE`；R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，其收口按
    certify 阶段执行。
@@ -105,11 +105,11 @@ python3 tools/review-units.py init <doc> --edition V3.11
 python3 tools/review-units.py stats <doc>          # round / full_rounds / units_review_lt2
 ```
 
-- 第 1 个 full 轮：`baseline --evidence <full-r1.md>`；证据必须含 `FULL-ROUND` 与全部 `UNIT <id>`。
+- 第 1 个 full 轮：`baseline --evidence <full-r1.md>`；证据必须含 `FULL-ROUND`、`DOC <当前篇>` 与全部 `UNIT <id>`。
 - 第 2 个 full 轮：先 `trajectory-review --round 1 --evidence <trajectory-r1.md> --verdict PASS`，
   再 `full-round --evidence <full-r2.md>`。
-- 每个单元：冻结前 `mark --pass --evidence <unit-<id>.md>`（证据只点名该单元），冻结后确认轮
-  `mark --confirm-review --evidence <unit-<id>-confirm.md>`。
+- 每个单元：冻结前 `mark --pass --evidence <unit-<id>.md>`（证据含 `DOC` 且只点名该单元），
+  冻结后确认轮 `mark --confirm-review --evidence <unit-<id>-confirm.md>`（同样含 `DOC`）。
 - 确认轮：`begin-confirmation` → 逐单元 `--confirm-review` → `end-confirmation`。
 - 每轮结束（full 或 confirmation）必须写独立轨迹复核；`FAIL` 阻断下一轮。
 - 收敛前 `gate --pass` 必须满足 G15/G16/G17；缺一只能 `ROUND-CLOSED`。
@@ -345,7 +345,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 
 按 `review-evals.md` §6A 的四态模型执行（V3.3）：修改轮（full/structural）只能产出
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`；**`CONVERGED` 只能由确认轮宣告**——
-确认轮覆盖未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%；首 edition 或 >30% 脏单元时整篇）、
+确认轮覆盖未冻结单元 + 骨架；V3.11 起每个冻结单元都要一次 `--confirm-review`（抽样只用于额外深读，不能替代逐单元确认；首 edition 或 >30% 脏单元时整篇）、
 修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项、不实施 ⑥（发现 ⑥ = NOT CONVERGED 回修改轮），
 G14–G17：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 通过、每个单元至少 2 次 review、冻结后确认 nonempty、至少 2 个 full 轮、每轮有 PASS 的 trajectory review、evidence 含可重放 token）、`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
 `未闭环=0`、`certify 新准入=0`、100% 复验证据、确认轮轮次号），进下一篇。

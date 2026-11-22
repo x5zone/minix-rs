@@ -41,9 +41,9 @@ prompt/
 | `review-code-excellence.md` | 代码卓越性：API、表达力、性能、可测试性 |
 | `review-publication.md` | 出版标准 V3.7：DP-1..DP-6、CP-1..CP-6、零欠账、顺序迭代 |
 | `review-tutorial-rubric.md` | 教程 rubric V3.8：TR-1..TR-6 与 G13 |
-| `review-units.md` | 单元级 review V3.9：`###` 节冻结、T1/T2/T3 三轨、G14 |
+| `review-units.md` | 单元级 review V3.11：每篇独立账户、至少 2 轮 full、每单元至少 2 次 review、G14–G17 |
 | `review-panel.md` | review-loop 独立面板：角色、材料隔离、归因 |
-| `review-evals.md` | review-loop 评测：G1–G14、§6A 四态收敛模型 |
+| `review-evals.md` | review-loop 评测：G1–G17、§6A 四态收敛模型 |
 | `review-cmds.md` §八 | 旧 Profile A–K/O/P/R/AG 别名对账 |
 
 ## 三、skill/（适配层）
