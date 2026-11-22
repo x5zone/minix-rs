@@ -251,7 +251,7 @@ def analyze_anchors(text: str) -> tuple[list[str], dict[str, str], str, list[str
     """Extract direct code anchors, hash their bodies, classify anchor quality.
 
     Returns (refs, hashes, status, errors). status: direct / fallback / none /
-    missing / impl. Freeze refuses missing and impl; sample uses 10% only when
+    missing / impl. Freeze refuses missing and impl; sample uses 20% for extra deep reads.
     every unit is direct.
     """
     refs: list[str] = []
@@ -1787,12 +1787,11 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float | None, seed: str) -> i
     units = data["units"]
     dirty = [u for u in units if not u.get("frozen")]
     frozen = [u for u in units if u.get("frozen")]
-    all_direct = bool(frozen) and all(u.get("anchor_status") == "direct" for u in frozen)
-    minimum = 0.1 if all_direct else 0.2
+    minimum = 0.2
     if ratio is None:
         ratio = minimum
     if ratio < minimum:
-        print(f"抽样比例不得低于 {minimum:.0%}（{'全部直锚' if all_direct else '含 fallback/无锚'}；review-units.md §五）", file=sys.stderr)
+        print(f"抽样比例不得低于 {minimum:.0%}（V3.12 额外深读下限；逐单元确认已是 100%；review-units.md §六）", file=sys.stderr)
         return 2
     if len(data.get("full_rounds", [])) < 2:
         print("[FAIL] V3.11 的确认轮抽样要求至少 2 个 full 轮", file=sys.stderr)
