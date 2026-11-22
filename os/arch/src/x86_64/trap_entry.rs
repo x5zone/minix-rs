@@ -36,7 +36,7 @@
 //!
 //! | OS concern (trait method) | x86-64 mechanism (this file's impl) |
 //! |---------------------------|--------------------------------------|
-//! | `init` (install trap entry) | Fill IDT with gate_table_exceptions[] and gate_table_pic[] (handler addresses, DPL, IST) |
+//! | `init` (placeholder IDT) | Build all-absent IDT; `install_trap_stubs`/`set_handler` write the real gates (handler, DPL, IST) |
 //! | `configure_syscall` (syscall entry) | Write LSTAR MSR + STAR MSR + SFMASK; enable EFER.SCE |
 //! | `load` (make trap entry effective) | `lidt` (IDTR) |
 //! | `load_ap` (AP trap entry) | Per-CPU IDT reload (each AP needs its own IDTR if IDT layout differs) |

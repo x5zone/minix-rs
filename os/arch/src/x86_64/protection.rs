@@ -247,7 +247,8 @@ impl X86_64Protection {
 
         // IST1 (NMI) / IST2 (#DF): the gate metadata (vector, DPL, trap/
         // interrupt kind) matches C's gate_table_exceptions; the dedicated
-        // stack is a long-mode mechanism difference, not a C parity claim:
+        // stack is a long-mode mechanism difference [ARCH: IST replaces i386
+        // same-stack nesting], not a C parity claim:
         // C's 32-bit TSS has no IST field and NMI/#DF nest on the
         // interrupted stack. Consumers locate the interrupted RSP from the
         // frame; a C watchdog-style `push %esp` shape must be rewritten if

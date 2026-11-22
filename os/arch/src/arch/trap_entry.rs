@@ -112,13 +112,13 @@ pub const IPC_VECTOR: InterruptVector             = InterruptVector(33);
 ///
 /// C: idt_init() — protect.c:260
 pub trait TrapEntryArch: Sized {
-    /// Initialize the trap entry table with architecture-specific handlers.
+    /// Initialize the trap entry table with architecture-specific placeholders.
     ///
-    /// Fills the table with handler addresses for CPU exceptions,
-    /// hardware interrupts, and system call vectors.
+    /// Builds an all-absent table; `install_trap_stubs`/`set_handler` are the
+    /// sole writers of real gate metadata (handler, DPL, IST, gate type).
     ///
     /// C: idt_init() — protect.c:260
-    ///    (fills IDT with gate_table_exceptions[] and gate_table_pic[])
+    ///    (C writes gate_table_exceptions[] and gate_table_pic[] directly)
     fn init() -> Self;
 
     /// Configure the system call entry mechanism.

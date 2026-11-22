@@ -164,7 +164,7 @@ $ grep -n 'void prot_init' minix3/minix/kernel/arch/i386/protect.c
 
 #### 失败对照
 
-如果 `cstart` 把 `prot_load_selectors` 排到门装载之前，CPU 会用尚未生效的 GDT 选择子继续执行：`lgdt` 之后第一次取指就可能 #GP；如果 `tss_init` 排在 `ltr` 之后，`ltr` 读到的描述符仍是空槽，第一次 CPL3→CPL0 会在 `sp0=0` 上取栈。顺序不是风格，是 CPU 状态机的前置条件。
+如果 `cstart` 把 `prot_load_selectors` 排到门装载之前，CPU 会用尚未生效的 GDT 选择子继续执行：`lgdt` 之后取指仍使用缓存的旧 CS 描述符，所以取指轴暂时安全；真正的 #GP 出现在远跳重载 CS 之后（新描述符位错），或 `ltr` 对空槽当场报 #NP/#GP。若 `tss_init` 排在 `ltr` 之后，`ltr` 读到的描述符通常是空槽，失败点是 `ltr` 本身；只有该槽残留一条可用 TSS 描述符时，才会潜伏到第一次 CPL3→CPL0 在 `sp0=0` 上取栈。顺序不是风格，是 CPU 状态机的前置条件。
 
 #### 小结
 
@@ -585,7 +585,7 @@ ENTRY(ipc_entry_syscall_cpu ## cpu)			;\
 
 **把 `sp0` 直接写成 `kernel_stack`、不减两个保留字会怎样**：错位的第一步在 `tss_init` 自己——CPU 号写在 `sp0 + sizeof(reg_t)`，不减时这个写点落到栈顶**之上**，越出这段栈、写进相邻对象（`mpx.S` 里 `k_boot_stack` 的栈顶之后是对齐到 `K_STACK_SIZE` 的 `k_stacks_start` 与每 CPU 两页的内核栈数组）；随后 `cpuid` 宏读 `K_STACK_SIZE` 边界下的一格时，那格已不是 CPU 号（真正的写点被推到了栈外），读回的是别的字节。硬件转场的压栈本身仍落在栈内——错位的是"栈顶两格归内核专用"这条约定，以及依赖它的读取。依据：`:tss_init` 的减法与写点、[`i386/mpx.S`](minix3/minix/kernel/arch/i386/mpx.S) 的 `.bss` 排布、`:arch_finish_switch_to_user` 写 `sp0` 处的约定、[`include/arch_smp.h`](minix3/minix/kernel/arch/i386/include/arch_smp.h) 的 `cpuid` 宏。
 
-`tss_init` 的调用跨度可以用末尾的 grep 核：i386 在 `prot_init` 里用 `&k_boot_stktop` 调它，而 `arch_init` 里还有第二次调用（非 SMP 构建，参数是 `get_k_stack_top(0)`），SMP 构建则在 `smp_init` 的路径上对所有 CPU 各调一次（`i386/arch_system.c` 的 [`arch_init`](minix3/minix/kernel/arch/i386/arch_system.c:arch_init)、`i386/arch_smp.c` 的 [`tss_init_all`](minix3/minix/kernel/arch/i386/arch_smp.c:tss_init_all)）。两次调用的差别在参数：第一次指向 `.bss` 里那块固定的 `k_boot_stack`，第二次指向 `k_stacks` 数组里按 CPU 编号切分的两页式栈（[`include/arch_proto.h`](minix3/minix/kernel/arch/i386/include/arch_proto.h) 的 `get_k_stack_top` 宏）。`tss_init` 的返回值（`SEG_SELECTOR(index)`）在 C 树的五个调用点全部被丢弃（复算：`grep -rn "tss_init(" minix3/minix/kernel/ | grep -v "int tss_init"` 命中五处——`arch/earm/arch_system.c:113`、`arch/i386/protect.c:338`、`arch/i386/include/arch_smp.h:18`（宏内）、`arch/i386/arch_smp.c:272`、`arch/i386/arch_system.c:256`）；TR 装的选择子在 §2.5 由 `TSS_SELECTOR(booting_cpu)` 现算，不经过这个返回值。这条跨度说明"TSS 初始化"不是一个一次性动作：`prot_init` 先给它一个能用的临时栈，运行期栈的登记在后续步骤完成。本篇只把这条线索指出来，`arch_init` 与 `smp_init` 的内部不在这里展开。
+`tss_init` 的调用跨度可以用末尾的 grep 核：i386 在 `prot_init` 里用 `&k_boot_stktop` 调它，而 `arch_init` 里还有第二次调用（非 SMP 构建，参数是 `get_k_stack_top(0)`），SMP 构建则在 `smp_init` 的路径上对所有 CPU 各调一次（`i386/arch_system.c` 的 [`arch_init`](minix3/minix/kernel/arch/i386/arch_system.c:arch_init)、`i386/arch_smp.c` 的 [`tss_init_all`](minix3/minix/kernel/arch/i386/arch_smp.c:tss_init_all)）。两次调用的差别在参数：第一次指向 `.bss` 里那块固定的 `k_boot_stack`，第二次指向 `k_stacks` 数组里按 CPU 编号切分的两页式栈（[`include/arch_proto.h`](minix3/minix/kernel/arch/i386/include/arch_proto.h) 的 `get_k_stack_top` 宏）。`tss_init` 的返回值（`SEG_SELECTOR(index)`）在 C 树的五处命中全部被丢弃（四处调用 + 一处宏内复用；复算：`grep -rn "tss_init(" minix3/minix/kernel/ | grep -v "int tss_init"` 命中五处——`arch/earm/arch_system.c:113`、`arch/i386/protect.c:338`、`arch/i386/include/arch_smp.h:18`（宏内）、`arch/i386/arch_smp.c:272`、`arch/i386/arch_system.c:256`）；TR 装的选择子在 §2.5 由 `TSS_SELECTOR(booting_cpu)` 现算，不经过这个返回值。这条跨度说明"TSS 初始化"不是一个一次性动作：`prot_init` 先给它一个能用的临时栈，运行期栈的登记在后续步骤完成。本篇只把这条线索指出来，`arch_init` 与 `smp_init` 的内部不在这里展开。
 
 ### 2.5 prot_load_selectors：让表生效的一串指令
 
@@ -622,7 +622,7 @@ void prot_load_selectors(void)
 
 1. `x86_lgdt(&gdt_desc)`——GDTR 指向新表。此后 CS 仍持有引导方的旧选择子，CPU 继续按**已缓存的旧代码段描述符**取指（Rust 侧同一事实的记录见 `os/arch/src/x86_64/protection.rs` 的 "continues using the old CS descriptor"）。这个中间态在**取指轴**上安全，因为缓存描述符在重载前一直有效；但**异常递送轴**在这个窗口内不设防：IDTR 仍指向引导方的 IDT，而 GDTR 已换——若此窗口内来一次异常，CPU 按旧 IDT 递送，门选择子却要经新 GDTR 查表，正是 §3.2 反事实的错配方向。所以这一步的「安全」只对取指成立，窗口终点也不是 `prot_init` 入口而是其内部的 `idt_reload`（第 3 步）。直到第 6 步远跳，CS 才换成新表里的内核代码段选择子。
 
-   §3.2 的反事实不同，两者不可类比：那里**门表已换、段表未换**，门里的选择子是按新表写的，CPU 却仍用旧 GDTR 去查它——错配在"门的选择子 vs GDTR"之间；本处临时态是"CS 的缓存描述符 vs GDTR"，被缓存描述符兜住。
+   §3.2 的反事实在**取指轴**上不可类比：那里**门表已换、段表未换**，门里的选择子是按新表写的，CPU 却仍用旧 GDTR 去查它；本处取指轴是"CS 的缓存描述符 vs GDTR"，被缓存描述符兜住。但**异常递送轴**与 §3.2 同型：旧 IDT 的门选择子经新 GDTR 解析，窗口终点是 `idt_reload`，这一段仍要防。
 
 2. `idt_init()`——**填**IDT。它会遍历两张门表逐条写门。
 3. `idt_reload()`——`lidt`，把 IDTR 指向新表。
@@ -885,7 +885,7 @@ $ grep -n 'fn load_with_tss' os/arch/src/x86_64/protection.rs
 |---|---|---|---|
 | GDT 与段描述符 | 保留，槽位按长模式重排 | 直接搬用 C 的槽号 | 用户 CS/DS 位置变化，STAR 的取值随之变（§4.3） |
 | TSS | 保留，换成 64 位布局（16 字节描述符 + `ist[7]`） | 32 位 TSS 布局 | 描述符占两个 GDT 槽；IST 数组要有可用的栈地址（§4.3）。IST 落专用栈是 [ARCH: IST 取代 i386 同栈嵌套]：C 的 32 位 TSS 无 IST 字段，NMI/#DF 在被中断栈上嵌套；长模式用 IST1/IST2 切专用栈，消费方从帧内保存的 RSP 定位原栈 |
-| LDT | 淘汰 | `lldt` 与第 5 槽占位 | 长模式不使用 LDT（x86 GDT 无 LDT 描述符，`load_with_tss` 尾注的 "LDT descriptor is filled in the GDT" 是旧方案残留）；C 的 LDT 占位没有对应物 |
+| LDT | 淘汰 | `lldt` 与第 5 槽占位 | 长模式不使用 LDT（x86 GDT 无 LDT 描述符，`load_with_tss` 不执行 `lldt`）；C 的 LDT 占位没有对应物 |
 | IDT | 保留，门换成 16 字节并增加 IST 字段 | 8 字节门 | 两条走 IST 的向量（NMI/#DF，其余向量 IST=0）的栈选择成为显式配置 |
 | 页表重建段 | 淘汰 | 在 `init_protection` 里重建 | 重建所服务的读者改由 01/02 篇的建表满足（§3.5） |
 
@@ -1092,7 +1092,7 @@ $ sed -n '/const STUB_VECTORS/,/^];/p' os/arch/src/x86_64/trap_stub.rs | grep -c
 
 41 = 18（异常，0–8、10–14、16–19，跳过长模式保留的 9/15）+ 4（软中断 32–35）+ 16（PIC 的 0x50–0x57 与 0x70–0x77）+ 3（0xF0 调度 IPI、0xF1 LAPIC 本地定时器、0xFF 伪中断）。C 侧的 39 = 16 + 23，其中 23 条门含向量 9（`COPROC_SEG_VECTOR`，[`include/archconst.h`](minix3/minix/kernel/arch/i386/include/archconst.h)）、不含向量 15。Rust 比 C 少 1 条异常（向量 9）、多 3 条 LAPIC/调度相关向量：41 = 39 − 1 + 3。这条对照只对 `prot_init`/`idt_init` 完成时成立；APIC/SMP 路径用 `gate_table_ioapic` 的 64 条门（0x50–0x8F）替换 16 条 PIC 门，再加 spurious/错误向量：39 − 16 + 64 + 3/5 = 90/92（3 与 5 的差来自 `CONFIG_SMP` 的 0xF1/0xF2）。Rust 侧 IDT 仍是 41 门：IOAPIC 只路由 16 条 ISA IRQ，pins ≥16 屏蔽，没有 64 门表；C 的 0xF0=timer/0xF1=sched，Rust 相反（0xF0=sched/0xF1=timer），对照时按各自编号读。
 
-**先 `load()` 再装门入口会怎样**：窗口内到达的异常或中断会走门里偏移 0 的入口——在那个地址上取指，取到的要么是空内存要么是别人；`lidt` 只保证 CPU 找得到门，不保证门有效。Rust 把这条顺序写成纪律与检查：`install_trap_stubs` 在 `load()` 之前一次写齐 41 个入口；`gate_present` 提供"某向量是否已有门"的读数（`trap_entry.rs` 的 [`fn gate_present`](os/arch/src/x86_64/trap_entry.rs:fn gate_present) 的注释："the stub installer cross-checks its coverage against this before the table may go live via `load()`"——执行这条交叉核对的是宿主测试 `test_stub_coverage_matches_idt_gates`，见 §5.1；`load()` 本身不检查，真机载体不调 `install_trap_stubs`（§5.2）、门里保持占位 0 也能通过，说明 `load()` 本身不检查门有效性；§5.3 的补法是**新增装载前守卫**（在 `load()` 之前显式断言 `gate_present` 覆盖全部向量），不是在 `load()` 内部加断言）。依据：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 里 `install_trap_stubs` 在 `load` 之前、[`lib.rs`](os/arch/src/lib.rs) 里 `install_trap_stubs` 的 x86_64 分支转发到 `trap_stub.rs` 的 [`fn install_idt_handlers`](os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers) 的遍历，以及 `:fn test_stub_coverage_matches_idt_gates`。
+**先 `load()` 再装门入口会怎样**：窗口内到达的异常或中断会走门里偏移 0 的入口——在那个地址上取指，取到的要么是空内存要么是别人；`lidt` 只保证 CPU 找得到门，不保证门有效。Rust 把这条顺序写成纪律与检查：`install_trap_stubs` 在 `load()` 之前一次写齐 41 个入口；`gate_present` 提供"某向量是否已有门"的读数（`trap_entry.rs` 的 [`fn gate_present`](os/arch/src/x86_64/trap_entry.rs:fn gate_present) 的注释："the stub installer cross-checks its coverage against this before the table may go live via `load()`"——执行这条交叉核对的是宿主测试 `test_stub_coverage_matches_idt_gates`，见 §5.1；`load()` 本身不检查；真机载体 `test-protection` 在 `load` 之前调用 `install_trap_stubs`（§5.2），门里不是占位 0，说明 `load()` 本身不检查门有效性；§5.3 的补法是**新增装载前守卫**（在 `load()` 之前显式断言 `gate_present` 覆盖全部向量），不是在 `load()` 内部加断言）。依据：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 里 `install_trap_stubs` 在 `load` 之前、[`lib.rs`](os/arch/src/lib.rs) 里 `install_trap_stubs` 的 x86_64 分支转发到 `trap_stub.rs` 的 [`fn install_idt_handlers`](os/arch/src/x86_64/trap_stub.rs:fn install_idt_handlers) 的遍历，以及 `:fn test_stub_coverage_matches_idt_gates`。
 
 ---
 
@@ -1143,7 +1143,7 @@ $ grep -n 'fn load_with_tss' os/arch/src/x86_64/protection.rs
 
 ### 4.1 kmain 阶段 A 的落地（→3.6）
 
-C 的 阶段 A 五步在 Rust 侧有一处结构性变化：全局副本不是“拷贝结构体”，而是把启动信息的七个 slice（代码字段名：`reserved_regions`、`memmap`、`boot_modules`、`platform_sources`、`param_buf`、`memmap_sources`、`startup_objects`）落进 `.bss` 里的固定存储，再发布一个全局 `KernelInfo`；函数末尾的 `let mut k = *kernel_info` 仍然拷贝结构体本身。这一步的动因写在 `kmain` 入口的注释里（同文件的可锚定落点：`lib.rs` 的 [`fn kernel_info`](os/kernel/src/lib.rs:fn kernel_info) 与 `:fn store_kernel_info`）：入口的参数引用被编译器 spill 到内核栈之后再读回，栈槽遭别名覆写，经参数读到的字段全是 `.rdata` ASCII 垃圾。因此 `kmain` 的第一个动作是改从全局槽取引用：
+C 的 阶段 A 五步在 Rust 侧有一处结构性变化：全局副本不是“拷贝结构体”，而是把启动信息的七个 slice（代码字段名：`reserved_regions`、`memmap`、`boot_modules`、`platform_sources`、`param_buf`、`memmap_sources`、`startup_objects`）落进 `.bss` 里的固定存储，再发布一个全局 `KernelInfo`；函数末尾的 `let mut k = *kernel_info` 仍然拷贝结构体本身。这一步的动因写在 `kmain` 入口的注释里（同文件的可锚定落点：`lib.rs` 的 [`fn kernel_info`](os/kernel/src/lib.rs:fn kernel_info) 与 `:fn store_kernel_info`）：入口的参数引用被编译器 spill 到内核栈之后再读回，栈槽遭别名覆写，经参数读到的字段全是 `.rdata` ASCII 垃圾。**覆写者在当前仓库没有单独定位**；这条按“入口尽早深拷”的预防性不变量处理，证据强度与未排除候选见 01 篇 §3.2.4/§5.3，不声称已证机制。因此 `kmain` 的第一个动作是改从全局槽取引用：
 
 ```rust
 /* 节选（保留入口取值；诊断输出块与说明注释省略），os/kernel/src/lib.rs:fn kmain。 */
@@ -1162,7 +1162,7 @@ C 的“把内核镜像自己也切一刀”在 Rust 侧由 `vm_handoff::classif
 `init_protection` 同时对三个决策负责：
 
 ```rust
-/* 节选（保留 BSP 选举、保护结构、门装配与装载的次序；省略号处为 `register_current_arch` 的说明注释；段间说明注释按节选略去），os/kernel/src/lib.rs:fn init_protection。 */
+/* 节选（保留 BSP 选举、保护结构、门装配与装载的次序；省略号处为 `program_entry_base` 调用、Step 2 说明注释与 `register_current_arch` 说明注释；段间说明注释按节选略去），os/kernel/src/lib.rs:fn init_protection。 */
     let topo = minix_platform::platform_desc().cpu_topology();
     let bsp_hw = elected_bsp_hw_id(&topo);
     let bsp_logical = (0..topo.nr_cpus as usize)
@@ -1257,7 +1257,7 @@ TSS 的装填在 `setup_tss_for_cpu`：
 
 ### 4.4 IDT 的装填与门覆盖（→3.2、3.7）
 
-`X86_64TrapEntry::init` 只建占位表：256 条 `IdtEntry64::empty()`，所有字段 0，`gate_present` 全 false。真正的 41 条门由 `install_idt_handlers` 在 `load()` 之前写齐；`set_handler` 是唯一写者：DPL 由 `user_accessible(vector)` 决定（3/4/32–35 为 DPL=3），IST 由 NMI/#DF 表决定（2→IST1、8→IST2），类型恒为中断门。C 的 39 条门清单对照不变：异常区含 DPL=3 的 3/4，软中断区 32–35 全 DPL=3，PIC 区覆盖 0x50–0x57 与 0x70–0x77，最后三个单独向量是 0xFF、0xF0、0xF1。
+`X86_64TrapEntry::init` 只建占位表：256 条 `IdtEntry64::empty()`，所有字段 0，`gate_present` 全 false。真正的 41 条门由 `install_idt_handlers` 在 `load()` 之前写齐；`set_handler` 是唯一写者：DPL 由 `user_accessible(vector)` 决定（3/4/32–35 为 DPL=3），IST 由 NMI/#DF 表决定（2→IST1、8→IST2），类型恒为中断门。C 的 39 条门是 16 条 PIC + 23 条异常/软中断，**不含** 0xFF/0xF0/0xF1；Rust 在这 39 条基础上少一条向量 9、加 0xFF/0xF0/0xF1 三个 LAPIC/调度向量，共 41 条。C 侧异常区含 DPL=3 的 3/4，软中断区 32–35 全 DPL=3，PIC 区覆盖 0x50–0x57 与 0x70–0x77。
 
 ```rust
 /* 代码引用，os/arch/src/x86_64/trap_entry.rs:fn init（整函数）。 */
@@ -1319,7 +1319,7 @@ pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
 ```
 
 `set_handler` 写门时把 IST 一起写：向量 2 写 1、向量 8 写 2、其余写 0。硬件按 `TSS.ist[ist-1]` 取值，所以实际用到的是 TSS 的 `ist[0]`/`ist[1]`（`setup_tss_for_cpu` 只填这两格）。`STUB_VECTORS` 的每项还带一个“是否由 CPU 压入错误码”的布尔值，但布尔值只被宿主测试 `test_errcode_classification_matches_sdm` 使用；汇编入口由 `TRAPSTUB vec err` 字面量实例化，不读这个布尔值。
-`set_handler` 写门时 IST 一律写 0（它没有 IST 参数），随后 2/8 两个向量由 `set_gate_ist` 恢复——这两条是 NMI 与双故障，门里写的 IST 号是 1 与 2，硬件按 `TSS.ist[ist-1]` 取值，所以实际用到的是 TSS 的 `ist[0]`/`ist[1]`（`setup_tss_for_cpu` 只填这两格）。`STUB_VECTORS` 的每项还带一个“是否由 CPU 压入错误码”的布尔值，但布尔值只被宿主测试 `test_errcode_classification_matches_sdm` 使用；汇编入口由 `TRAPSTUB vec err` 字面量实例化，不读这个布尔值。
+`set_handler` 自己把 IST 一起写：向量 2 写 1、向量 8 写 2、其余写 0；仓内没有 `set_gate_ist`。硬件按 `TSS.ist[ist-1]` 取值，所以实际用到的是 TSS 的 `ist[0]`/`ist[1]`（`setup_tss_for_cpu` 只填这两格）。`STUB_VECTORS` 的每项还带一个“是否由 CPU 压入错误码”的布尔值，但布尔值只被宿主测试 `test_errcode_classification_matches_sdm` 使用；汇编入口由 `TRAPSTUB vec err` 字面量实例化，不读这个布尔值。
 
 **让 `set_handler` 只写 handler/DPL、把 IST 留给安装后的第二次写会怎样**：门里 IST=0 的含义是"这类异常在当前栈上递送"；NMI 的用途之一是打断已经跑飞的代码、双故障的本意是"当前栈已经不可用时的最后一道门"。双故障门落回坏栈上递送，CPU 连最后的诊断机会都没有，直接三重故障。单写者把 IST 映射放进 `set_handler`，安装后立即断言 2/8 的 IST 与门类型；漏写会在安装点停机，而不是等到第一次 NMI。
 
@@ -1403,7 +1403,7 @@ pub(crate) fn set_entry_stack_base(base: VirBytes) {
 | `tss_init` 的 `sp0` 与栈顶保留字 | [`fn setup_tss_for_cpu`](os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu) + `:fn stamp_cpu_id` | 保留（宽度随 64 位） | 保留字从 2×4 字节变 2×8 字节 |
 | `_cpufeature(SYSENTER/SYSCALL)` + 两套入口 | `:fn configure_syscall` 只装 SYSCALL | 淘汰 SYSENTER | 长模式不提供 SYSENTER |
 | per-CPU 入口标签 + `k_percpu_stacks` | [`struct GsArea`](os/arch/src/x86_64/trap_stub.rs:struct GsArea) + `:fn program_gs` | 改型 | 入口从 GS 区取栈顶 |
-| `prot_load_selectors` 的 `lldt` | [`fn load_with_tss`](os/arch/src/x86_64/protection.rs:fn load_with_tss) 注释说明不执行 `lldt` | 淘汰 | 长模式不使用 LDT（x86 GDT 无 LDT 描述符，`load_with_tss` 尾注的 "LDT descriptor is filled in the GDT" 是旧方案残留） |
+| `prot_load_selectors` 的 `lldt` | [`fn load_with_tss`](os/arch/src/x86_64/protection.rs:fn load_with_tss) 注释说明不执行 `lldt` | 淘汰 | 长模式不使用 LDT（x86 GDT 无 LDT 描述符，`load_with_tss` 不执行 `lldt`） |
 | 重建页表（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`） | [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 建一次 | 淘汰重建 | §3.5 |
 | `prot_init_done` 标志 | x86-64：全局 `Option` + `with_protection`/`with_trap_entry` 的 panic 契约；aarch64/riscv64：无状态实现（accessor 造哑实例） | 改型（x86 限定） | 未初始化在 x86 是确定失败点；non-x86 不进入全局 |
 | `gate_table_*` 39 条门 | [`const STUB_VECTORS`](os/arch/src/x86_64/trap_stub.rs:const STUB_VECTORS) 41 项 + `:fn install_idt_handlers` | 改型 | 长模式保留 9/15、增加 LAPIC/调度向量（PIC 对照；APIC 路径另加 IOAPIC 门） |
@@ -1478,7 +1478,7 @@ os/arch/src/riscv64/trap_stub.rs: 7
 
 x86_64 的 16 个保护测试里与本篇直接相关的几类：TSS 布局（`tss64_size_is_104_bytes`、`tss64_offsets_correct`）、描述符位组合（`gdt_descriptors_have_correct_dpl`、`gdt_descriptors_are_flat_mode`、`tss_descriptor_is_64bit`）、描述符与结构体地址的一致性（`tss_descriptor_high_half_carries_base_above_4gib`、`init_creates_tss_descriptor_in_gdt`）、`sp0` 算术（`set_kernel_stack_updates_sp0`、`init_sets_tss_sp0_below_reserved_area`）。13 个 trap 测试 = 9 条门表测试（1 条 `init` 全占位 + 1 条保留向量 + 7 条 `install_idt_handlers` 后的 DPL/IST/类型）+ 2 条 `set_handler` + 2 条结构布局；`install_idt_handlers` 在生产路径上对 41 条门逐门断言 DPL/IST/类型，并核对 gate presence 与 stub 覆盖相等；`user_accessible` 的谓词与 DPL 另有 `test_user_accessible_gate_set` 与 `set_handler_sets_dpl_correctly` 两条直接断言。IPC 门（向量 33）由 `install_trap_stubs` 装 stub，不再单列门测试。12 个 trap_stub 测试里的覆盖检查改为先调 `install_idt_handlers` 再对 `STUB_VECTORS` 与 gate presence 核验。
 
-三条启动顺序源码钉在 `os/kernel/tests/init_protection_order_pin.rs`：`store_protection → refresh_descriptors → load → program_entry_base`、`install_trap_stubs → trap.load`、`smp_init` 的 `set_kernel_stack → boot_ap`。宿主不能执行 `lgdt`/`ltr`/`lidt`，源码序是这里诚实的仪器；顺序反排即红。
+四条启动顺序源码钉在 `os/kernel/tests/init_protection_order_pin.rs`：`store_protection → refresh_descriptors → load → program_entry_base`、`install_trap_stubs → trap.load`、`smp_init` 的 `set_kernel_stack → boot_ap`，以及 BSP 逻辑号只来自 `elected_bsp_hw_id`（`bsp_identity_has_one_source`）。宿主不能执行 `lgdt`/`ltr`/`lidt`，源码序是这里诚实的仪器；顺序反排即红。
 
 aarch64 与 riscv64 侧的数字对应的是浅测试：两份 `protection.rs` 在 `cpu_count` 自证测试删除后没有宿主测试（状态是 ZST，由静态 accessor 与真机载体覆盖）、两份 `trap_entry.rs` 各 1 条 trait 边界断言（`aarch64_trap_entry_arch_impl_satisfies_trait_bound` 与 `riscv64_trap_entry_arch_impl_satisfies_trait_bound`）。两份 `trap_stub.rs` 各 3 与 6 条（`grep` 的 7 含一条注释命中），覆盖向量表布局与入口腿的静态断言。它们证明的是枚举往返、结构体字段与表布局，不覆盖 §4.6 的寄存器语义——那部分只能在真机上读（§5.2）。
 
@@ -1587,7 +1587,7 @@ $ qemu-system-x86_64 ... -d int,cpu_reset -D /tmp/qemu_int.log
 |---|---|---|
 | `init_protection` 之前任何异常即三重故障 | 引导方 IDTR/GDT 随 `ExitBootServices` 失效 | QEMU `-d int,cpu_reset` 的 `check_exception` 行；QEMU monitor `info registers` 读 GDT/IDT 的 base/limit（GDB 没有 `gdtr`/`idtr` 寄存器名） |
 | 进入 `kmain` 后第一次压栈失败，故障地址是低地址 | 栈未切换（02 篇 §4.3）或 `kern_stack_top` 值错 | 读入口的 `rsp` 与 `kern_stack_top`，比对高半范围 |
-| `lgdt` 之后取指 #GP | 新 GDT 的段描述符位组合错，或选择子指向的槽没填 | GDB `monitor info registers` 看 GDT/IDT 的 base/limit；测试载体按 §5.2 读 CS/DS 的 RPL |
+| 远跳/CS 重载后取指 #GP，或 `ltr` 报 #GP | 新 GDT 的段描述符位组合错，或选择子指向的槽没填 | GDB `monitor info registers` 看 GDT/IDT 的 base/limit；测试载体按 §5.2 读 CS/DS 的 RPL |
 | `ltr` 报 #GP，或第一次用户态进入时缺页在 `sp0=0` | TSS 描述符不在 GDT、描述符高半丢失、或实例被移动后未重建描述符 | 读 TR（`str`）；核 `refresh_descriptors` 是否在 `load` 前执行 |
 | 第一次 `syscall` 落 0 或 #GP(0x28) | LSTAR 未写 / STAR anchor 槽位错 | 核 `configure_syscall` 的次序；核 GDT 槽位与 `USER_STAR_ANCHOR_SELECTOR` 的取值（0x28 对应受限场景见 §4.3） |
 | IDT 装载后异常跳 0 | 门里入口为 0（未装 stub）、或漏装某个向量 | 核 `install_trap_stubs` 是否在 `load` 之前；核 `STUB_VECTORS` 是否覆盖该向量 |
