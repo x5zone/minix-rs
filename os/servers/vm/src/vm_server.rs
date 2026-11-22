@@ -2698,7 +2698,7 @@ mod tests {
     /// constructor lands params.user_sp verbatim into
     /// `VmContext.user_sp` — no conversion or literal substitution is
     /// allowed anywhere on the source chain. The kernel-side origin (the
-    /// user_sp produced by `build_kernel_info`) is already pinned by the
+    /// user_sp produced by the boot handoff's `KernelInfo`) is already pinned by the
     /// boot-shim host tests (the two `info.user_sp == USER_STACK_TOP`
     /// assertions in opensbi_helpers); with this VM-side seam the source
     /// chain is closed end to end.

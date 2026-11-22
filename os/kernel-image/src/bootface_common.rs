@@ -7,16 +7,14 @@
 //! as [`SelfBootParams`], and the `say`/`say_hex` pair stays in each shell
 //! because its console implementation differs by arch.
 
-use boot_shim::build_kernel_info;
 use minix_boot::{
-    BootModule, DTB, DtbMemoryMap, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource,
+    BootModule, DTB, DtbMemoryMap, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource,
 };
 use minix_types::{PhysBytes, VirBytes};
 
-/// The direct-boot face owns one `BootStorage` in `.data` (its `new()` value
-/// is not all-zero, so it is loadable data rather than zero-fill `.bss`);
-/// keep the landing footprint bounded so a capacity increase does not
-/// silently eat boot-time image data.
+/// The direct-boot face keeps its sender-side `BootStorage` on the boot
+/// stack; keep the footprint bounded so a capacity increase does not silently
+/// overflow the boot stack.
 const _: () = assert!(core::mem::size_of::<minix_boot::BootStorage>() <= 16 * 1024);
 
 /// `place_modules` writes `NR_BOOT_MODULES` slots; the storage's module
@@ -350,12 +348,10 @@ where
     S: Fn(&str),
     H: Fn(u64),
 {
-    // One-shot landing storage shared by both faces (only one is compiled
-    // into a given image). Every `'static` slice handed to `KernelInfo`
-    // points here; a second entry would overwrite them (UB under Rust
-    // aliasing), so `take()` is the guard.
-    static STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
-    let storage = STORAGE.take();
+    // Sender-side semantic storage. It lives on this `-> !` frame; the
+    // receiver lands the slices into the kernel's `.bss` before any page
+    // table is built, so no `'static` sender view is needed.
+    let mut storage = minix_boot::BootStorage::new();
 
     // Touch the anchor once on the running path so the kernel boot graph is
     // pulled into the link at archive-member granularity (the linker script
@@ -547,17 +543,16 @@ where
         sources.len()
     });
 
-    // End the one-shot `&mut` borrow, then publish the named static view.
-    let _ = storage;
-    let report = STORAGE.report_static(
+    // Publish a borrowed view of the filled storage and hand it to the
+    // receiver. The receiver deep-copies every slice into its own `.bss` and
+    // only then constructs the unique `KernelInfo<'static>`.
+    let report = storage.report(
         VirBytes(params.kern_virt_base),
         PhysBytes(params.kern_phys_base),
         params.kern_size,
     );
-    let kernel_info: KernelInfo =
-        build_kernel_info(&report, minix_boot::RamAuthority::DTB);
-    kernel_info.validate_requiring_sources();
+    report.validate_requiring_sources(minix_boot::RamAuthority::DTB);
     say("  calling arch_boot (validate gate)\n");
-    minix_kernel::arch_boot(&kernel_info, root_page)
+    minix_kernel::arch_boot(&report, minix_boot::RamAuthority::DTB, root_page)
 }
 

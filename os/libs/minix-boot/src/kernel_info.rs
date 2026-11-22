@@ -6,6 +6,7 @@
 use minix_types::{PhysBytes, VirBytes};
 
 use crate::memmap_source::{InputObjectId, RamAuthority, SourceAuditError, SourceRecord};
+use crate::boot_storage::BootReport;
 use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
@@ -177,6 +178,47 @@ impl ValidationLevel {
     }
 }
 
+/// Read-only view of the fields every `KernelInfo` validation step needs.
+///
+/// `KernelInfo` is the receiver-owned `'static` form; `BootReport<'_>` is the
+/// sender-side borrowed form. Both feed the same validation code so the two
+/// forms cannot drift.
+pub trait KernelInfoView {
+    fn memmap(&self) -> &[MemoryRegion];
+    fn reserved_regions(&self) -> &[MemoryRegion];
+    fn boot_modules(&self) -> &[BootModule];
+    fn platform_sources(&self) -> &[PlatformDescSource];
+    fn param_buf(&self) -> &[u8];
+    fn source_records(&self) -> &[SourceRecord];
+    fn kern_virt_base(&self) -> VirBytes;
+    fn kern_phys_base(&self) -> PhysBytes;
+    fn kern_size(&self) -> u64;
+}
+
+impl KernelInfoView for KernelInfo {
+    fn memmap(&self) -> &[MemoryRegion] { self.memmap }
+    fn reserved_regions(&self) -> &[MemoryRegion] { self.reserved_regions }
+    fn boot_modules(&self) -> &[BootModule] { self.boot_modules }
+    fn platform_sources(&self) -> &[PlatformDescSource] { self.platform_sources }
+    fn param_buf(&self) -> &[u8] { self.param_buf }
+    fn source_records(&self) -> &[SourceRecord] { self.source_records }
+    fn kern_virt_base(&self) -> VirBytes { self.kern_virt_base }
+    fn kern_phys_base(&self) -> PhysBytes { self.kern_phys_base }
+    fn kern_size(&self) -> u64 { self.kern_size }
+}
+
+impl KernelInfoView for BootReport<'_> {
+    fn memmap(&self) -> &[MemoryRegion] { self.memmap }
+    fn reserved_regions(&self) -> &[MemoryRegion] { self.reserved_regions }
+    fn boot_modules(&self) -> &[BootModule] { self.boot_modules }
+    fn platform_sources(&self) -> &[PlatformDescSource] { self.platform_sources }
+    fn param_buf(&self) -> &[u8] { self.param_buf }
+    fn source_records(&self) -> &[SourceRecord] { self.source_records }
+    fn kern_virt_base(&self) -> VirBytes { self.kern_virt_base }
+    fn kern_phys_base(&self) -> PhysBytes { self.kern_phys_base }
+    fn kern_size(&self) -> u64 { self.kern_size }
+}
+
 impl KernelInfo {
     /// The kernel's initial stack top, derived from the image span.
     ///
@@ -216,7 +258,7 @@ impl KernelInfo {
     /// This is a fail-fast contract: boot-shim bugs that produce invalid
     /// `KernelInfo` are unrecoverable.
     pub fn validate(&self) {
-        self.validate_impl_inner(&ValidationLevel::Standard);
+        KernelInfo::validate_view(self, self.authority, &ValidationLevel::Standard);
     }
 
     /// Structural gate for entries that run before the first page-table
@@ -226,7 +268,7 @@ impl KernelInfo {
     /// not the init-server image). Production still runs the full
     /// [`Self::validate`] at `kmain`.
     pub fn validate_before_tables(&self) {
-        self.validate_impl_inner(&ValidationLevel::BeforeTables);
+        KernelInfo::validate_view(self, self.authority, &ValidationLevel::BeforeTables);
     }
 
     /// Production handoff gate: exactly [`Self::validate`], plus the
@@ -242,19 +284,19 @@ impl KernelInfo {
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
     pub fn validate_requiring_sources(&self) {
-        self.validate_impl_inner(&ValidationLevel::Strict);
+        KernelInfo::validate_view(self, self.authority, &ValidationLevel::Strict);
     }
 
-    fn validate_impl_inner(&self, level: &ValidationLevel) {
+    fn validate_view<V: KernelInfoView>(view: &V, authority: RamAuthority, level: &ValidationLevel) {
         // 1. Kernel size must be non-zero.
         assert!(
-            self.kern_size > 0,
+            view.kern_size() > 0,
             "KernelInfo: kern_size must be non-zero (boot-shim did not load kernel?)"
         );
 
         // 4. At least one free memory region.
         assert!(
-            !self.memmap.is_empty(),
+            !view.memmap().is_empty(),
             "KernelInfo: memmap must not be empty (no free memory?)"
         );
 
@@ -262,7 +304,7 @@ impl KernelInfo {
         // before the Direct Map exists: reject null addresses, a zero kind
         // tag, and a blob span that overflows instead of letting the parser
         // fault on forged boot input (RD4B-DESIGN-D2-05).
-        for (i, source) in self.platform_sources.iter().enumerate() {
+        for (i, source) in view.platform_sources().iter().enumerate() {
             assert!(
                 source.phys_addr().0 != 0,
                 "KernelInfo: platform_sources[{i}] has a null physical address"
@@ -286,7 +328,7 @@ impl KernelInfo {
         // so this repository accepts only the sorted subset — an unordered
         // (legal but pathological) DTB fails closed here rather than being
         // silently absorbed by one consumer and not another.
-        for (list_name, list) in [("memmap", self.memmap), ("reserved_regions", self.reserved_regions)] {
+        for (list_name, list) in [("memmap", view.memmap()), ("reserved_regions", view.reserved_regions())] {
             for w in list.windows(2) {
                 assert!(
                     w[0].base.0 < w[1].base.0,
@@ -315,26 +357,26 @@ impl KernelInfo {
         // Both lists are sorted (checked above), so a merge-walk suffices.
         {
             let (mut mi, mut ri) = (0usize, 0usize);
-            while mi < self.memmap.len() && ri < self.reserved_regions.len() {
-                let m_end = self.memmap[mi]
+            while mi < view.memmap().len() && ri < view.reserved_regions().len() {
+                let m_end = view.memmap()[mi]
                     .base
                     .0
-                    .checked_add(self.memmap[mi].len as u64)
+                    .checked_add(view.memmap()[mi].len as u64)
                     .expect("KernelInfo: memmap span overflows u64");
-                let r_end = self.reserved_regions[ri]
+                let r_end = view.reserved_regions()[ri]
                     .base
                     .0
-                    .checked_add(self.reserved_regions[ri].len as u64)
+                    .checked_add(view.reserved_regions()[ri].len as u64)
                     .expect("KernelInfo: reserved span overflows u64");
-                if m_end <= self.reserved_regions[ri].base.0 {
+                if m_end <= view.reserved_regions()[ri].base.0 {
                     mi += 1;
-                } else if r_end <= self.memmap[mi].base.0 {
+                } else if r_end <= view.memmap()[mi].base.0 {
                     ri += 1;
                 } else {
                     panic!(
                         "KernelInfo: memmap[{}] ([0x{:x},+0x{:x})) overlaps reserved_regions[{}] ([0x{:x},+0x{:x})) — producer bug",
-                        mi, self.memmap[mi].base.0, self.memmap[mi].len,
-                        ri, self.reserved_regions[ri].base.0, self.reserved_regions[ri].len,
+                        mi, view.memmap()[mi].base.0, view.memmap()[mi].len,
+                        ri, view.reserved_regions()[ri].base.0, view.reserved_regions()[ri].len,
                     );
                 }
             }
@@ -346,14 +388,14 @@ impl KernelInfo {
         // wire payload must not be able to place a module over the kernel it is
         // about to run. Touching is legal (`[a,b)` and `[b,c)`).
         {
-            let kbase = self.kern_phys_base.0;
+            let kbase = view.kern_phys_base().0;
             // Release builds do not enable overflow checks; a forged
             // `kern_size` must fail here rather than wrap the end below the
             // base and turn the predicate into a tautology.
             let kend = kbase
-                .checked_add(self.kern_size)
+                .checked_add(view.kern_size())
                 .expect("KernelInfo: kernel span overflows u64");
-            for (i, m) in self.boot_modules.iter().enumerate() {
+            for (i, m) in view.boot_modules().iter().enumerate() {
                 let mb = m.start.0;
                 let me = mb
                     .checked_add(m.len as u64)
@@ -363,7 +405,7 @@ impl KernelInfo {
                     "KernelInfo: boot_modules[{}] ({}) [0x{:x},0x{:x}) 与内核镜像 [0x{:x},0x{:x}) 相交",
                     i, m.name, mb, me, kbase, kend
                 );
-                for (j, prev) in self.boot_modules[..i].iter().enumerate() {
+                for (j, prev) in view.boot_modules()[..i].iter().enumerate() {
                     let pb = prev.start.0;
                     let pe = pb
                         .checked_add(prev.len as u64)
@@ -380,7 +422,7 @@ impl KernelInfo {
         // 4a. All memory regions must be non-empty and page-aligned.
         //     DESIGN-09 (D01): zero-length or unaligned entries would be
         //     silently skipped by consumers, hiding boot-shim bugs.
-        for (i, r) in self.memmap.iter().enumerate() {
+        for (i, r) in view.memmap().iter().enumerate() {
             r.base.0
                 .checked_add(r.len as u64)
                 .unwrap_or_else(|| panic!("KernelInfo: memmap[{}] span overflows u64", i));
@@ -396,7 +438,7 @@ impl KernelInfo {
                 i, r.len
             );
         }
-        for (i, r) in self.reserved_regions.iter().enumerate() {
+        for (i, r) in view.reserved_regions().iter().enumerate() {
             r.base.0
                 .checked_add(r.len as u64)
                 .unwrap_or_else(|| panic!("KernelInfo: reserved_regions[{}] span overflows u64", i));
@@ -417,7 +459,7 @@ impl KernelInfo {
         //    bootstrap test kernels hand over no init-server image.
         if level.requires_boot_modules() {
             assert!(
-                !self.boot_modules.is_empty(),
+                !view.boot_modules().is_empty(),
                 "KernelInfo: boot_modules must not be empty (no init servers?)"
             );
         }
@@ -429,9 +471,9 @@ impl KernelInfo {
         //    we enforce the same upper bound at validation time.
         const MULTIBOOT_PARAM_BUF_SIZE: usize = 1024;
         assert!(
-            self.param_buf.len() <= MULTIBOOT_PARAM_BUF_SIZE,
+            view.param_buf().len() <= MULTIBOOT_PARAM_BUF_SIZE,
             "KernelInfo: param_buf length {} exceeds MULTIBOOT_PARAM_BUF_SIZE ({})",
-            self.param_buf.len(),
+            view.param_buf().len(),
             MULTIBOOT_PARAM_BUF_SIZE
         );
 
@@ -440,7 +482,7 @@ impl KernelInfo {
         //    authority is a fail-stop, never a fallback to the other input.
         //    The lenient gate audits whatever records are present.
         if level.is_strict() {
-            let authority = self.authority;
+            let authority = authority;
             // The wire carries no derived-value equalities to check: the
             // receiver derives `user_sp`, `syscall_entry` and
             // `kern_stack_top` from `USER_STACK_TOP` / `kern_virt_base` /
@@ -449,7 +491,7 @@ impl KernelInfo {
             // The module name is positional identity, not a display label:
             // a forged wire must not pair position 6's image with position 7's
             // name.
-            for (i, module) in self.boot_modules.iter().enumerate() {
+            for (i, module) in view.boot_modules().iter().enumerate() {
                 assert!(
                     i < MODULE_NAMES.len() && module.name == MODULE_NAMES[i],
                     "KernelInfo: boot_modules[{i}] name {:?} does not match the canonical position {:?}",
@@ -458,31 +500,31 @@ impl KernelInfo {
                 );
             }
             assert!(
-                !self.source_records.is_empty(),
+                !view.source_records().is_empty(),
                 "KernelInfo: production handoff carries no memory-map source records"
             );
             assert!(
-                self.source_records
+                view.source_records()
                     .iter()
                     .any(|r| r.input_object == authority.input_object()),
                 "KernelInfo: declared RAM authority {authority:?} has no source records — refusing to fall back to another input"
             );
             match crate::memmap_source::audit_source_coverage_for(
-                self.memmap,
-                self.reserved_regions,
-                self.source_records,
-                Some(self.authority.input_object()),
+                view.memmap(),
+                view.reserved_regions(),
+                view.source_records(),
+                Some(authority.input_object()),
             ) {
                 Ok(()) => {}
                 Err(error) => panic!(
                     "KernelInfo: declared RAM authority {authority:?} does not cover the projected map: {error:?}"
                 ),
             }
-        } else if !self.source_records.is_empty() {
+        } else if !view.source_records().is_empty() {
             match crate::memmap_source::audit_source_coverage(
-                self.memmap,
-                self.reserved_regions,
-                self.source_records,
+                view.memmap(),
+                view.reserved_regions(),
+                view.source_records(),
             ) {
                 Ok(()) => {}
                 Err(error) => {
@@ -500,9 +542,9 @@ impl KernelInfo {
             // `reserved_regions` span. All five legs satisfy this (UEFI legs
             // claim the span as `ReservedMapped`; the U-Boot shim and the two
             // direct-core legs get it from the DTB `/memory` projection).
-            let kern_lo = self.kern_phys_base.0;
+            let kern_lo = view.kern_phys_base().0;
             let kern_hi = kern_lo
-                .checked_add(self.kern_size)
+                .checked_add(view.kern_size())
                 .expect("KernelInfo: kernel span overflows u64");
             let covered = |spans: &[MemoryRegion]| {
                 spans.iter().any(|r| {
@@ -511,7 +553,7 @@ impl KernelInfo {
                 })
             };
             assert!(
-                covered(self.memmap) || covered(self.reserved_regions),
+                covered(view.memmap()) || covered(view.reserved_regions()),
                 "KernelInfo: the kernel image span [{kern_lo:#x}, {kern_hi:#x}) must lie in a memmap or reserved_regions span (v10 derives this from the map tables)"
             );
         }
@@ -552,21 +594,46 @@ impl KernelInfo {
     /// Any failing postcondition fails fast (there is no recovery surface
     /// during boot; same weight as `validate`).
     pub fn check_boot_postconditions(&self) {
-        // Only the lower bound is checked here. A check on
-        // `kern_virt_base + kern_size` would recompute the same expression as
-        // a tautology, and a `USER_STACK_TOP` check would compare a
-        // compile-time constant with itself. The kernel image must sit above
-        // 4 GiB (u32::MAX): a coarse lower bound, not the
-        // per-architecture user/kernel split (the layout constants carry
-        // the latter).
-        //
-        // The syscall-entry placement check has one authority:
-        // `syscall_entry_va()`.
-        assert!(
-            self.kern_virt_base.0 > u64::from(u32::MAX),
-            "KernelInfo postcond: kern_virt_base (0x{:x}) 不大于 u32::MAX（4 GiB 下限）",
-            self.kern_virt_base.0
-        );
+        check_boot_postconditions_view(self);
+    }
+}
+
+fn check_boot_postconditions_view<V: KernelInfoView>(view: &V) {
+    // Only the lower bound is checked here. A check on
+    // `kern_virt_base + kern_size` would recompute the same expression as
+    // a tautology, and a `USER_STACK_TOP` check would compare a
+    // compile-time constant with itself. The kernel image must sit above
+    // 4 GiB (u32::MAX): a coarse lower bound, not the
+    // per-architecture user/kernel split (the layout constants carry
+    // the latter).
+    //
+    // The syscall-entry placement check has one authority:
+    // `syscall_entry_va()`.
+    assert!(
+        view.kern_virt_base().0 > u64::from(u32::MAX),
+        "KernelInfo postcond: kern_virt_base (0x{:x}) 不大于 u32::MAX（4 GiB 下限）",
+        view.kern_virt_base().0
+    );
+}
+
+impl BootReport<'_> {
+    /// Validate the sender's borrowed view with the same invariants as the
+    /// receiver-owned `KernelInfo`. `authority` is supplied by the leg because
+    /// the report itself carries no authority field.
+    pub fn validate(&self, authority: RamAuthority) {
+        KernelInfo::validate_view(self, authority, &ValidationLevel::Standard);
+    }
+
+    pub fn validate_before_tables(&self, authority: RamAuthority) {
+        KernelInfo::validate_view(self, authority, &ValidationLevel::BeforeTables);
+    }
+
+    pub fn validate_requiring_sources(&self, authority: RamAuthority) {
+        KernelInfo::validate_view(self, authority, &ValidationLevel::Strict);
+    }
+
+    pub fn check_boot_postconditions(&self) {
+        check_boot_postconditions_view(self);
     }
 }
 

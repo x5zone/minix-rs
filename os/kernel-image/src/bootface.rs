@@ -30,11 +30,12 @@
 //!    (`MODULE_NAMES` = the 12 names in C `table.c:44-64`; position is
 //!    primary, checking the in-table name against the expected literal is
 //!    secondary).
-//! 3. **real arch_boot gate**: build `KernelInfo` (reusing the boot-shim
-//!    library's `build_kernel_info` lane: Sv39 `user_sp`; the old bootstrap
-//!    reclaim interval was deleted with D01-F03), then call
-//!    `minix_kernel::arch_boot` — which
-//!    runs through `validate()` and `jump_to_kmain`; that is the half none of
+//! 3. **real arch_boot gate**: build a borrowed `BootReport<'_>` (Sv39
+//!    `user_sp` comes from the boot constants; the old bootstrap reclaim
+//!    interval was deleted with D01-F03), then call `minix_kernel::arch_boot`
+//!    — the receiver lands the report into its `.bss`, constructs the unique
+//!    `KernelInfo<'static>`, and only then runs `validate()` /
+//!    `jump_to_kmain`; that is the half none of
 //!    the three in-repo carriers (hello-boot / test-rt-birth etc.) ever
 //!    exercised.
 //!

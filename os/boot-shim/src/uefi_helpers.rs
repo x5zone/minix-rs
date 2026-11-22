@@ -123,10 +123,9 @@ use core::ffi::c_void;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use minix_boot::{ARENA_CAP, Serializer};
 
-/// The UEFI sender's caller-owned semantic tables. One boot, one
-/// writer; the wire image is encoded from this storage and the kernel entry
-/// borrows it through a `BootReport`.
-static UEFI_BOOT_STORAGE: crate::BootStorageCell = crate::BootStorageCell::new();
+/// The UEFI sender's caller-owned semantic tables. One boot, one writer;
+/// the wire image is encoded from this storage and the kernel entry borrows
+/// it through a `BootReport`.
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
 ///
@@ -1084,7 +1083,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
         kern.kern_phys_base.0,
         kern.kern_phys_base.0.saturating_add(kern.kern_size),
     );
-    let storage = UEFI_BOOT_STORAGE.take();
+    let mut storage = minix_boot::BootStorage::new();
     storage.fill_modules(|slots| {
         loader::load_boot_modules_into(&file_loader, alloc_module_pages, slots)
     });
@@ -1398,18 +1397,34 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    //! UEFI-side tests focus on `build_kernel_info` plumbing — the heavy
+    //! UEFI-side tests focus on `KernelInfo` field plumbing — the heavy
     //! lifting (ELF parsing, segment copy, module loading) is exercised
     //! by `loader::tests` against a mock file loader, so all firmware
     //! impls share the same coverage.
 
     use super::*;
-    use crate::build_kernel_info;
+    fn test_kernel_info(
+        report: &minix_boot::BootReport<'static>,
+        authority: minix_boot::RamAuthority,
+    ) -> minix_boot::KernelInfo {
+        minix_boot::KernelInfo {
+            memmap: report.memmap,
+            reserved_regions: report.reserved_regions,
+            source_records: report.source_records,
+            kern_virt_base: report.kern_virt_base,
+            kern_phys_base: report.kern_phys_base,
+            kern_size: report.kern_size,
+            boot_modules: report.boot_modules,
+            platform_sources: report.platform_sources,
+            param_buf: report.param_buf,
+            authority,
+        }
+    }
     use minix_boot::BootModule;
     use minix_types::VirBytes;
 
     #[test]
-    fn test_build_kernel_info_fields() {
+    fn test_boot_report_fields() {
         static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
             base: PhysBytes(0x10_0000),
             len: 0x1000,
@@ -1435,7 +1450,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x100_000,
         };
-        let info = build_kernel_info(&report, minix_boot::RamAuthority::UEFI);
+        let info = test_kernel_info(&report, minix_boot::RamAuthority::UEFI);
 
         assert_eq!(info.reserved_regions.len(), 1);
         assert_eq!(info.reserved_regions[0].base, PhysBytes(0x1da0_0000));

@@ -66,12 +66,15 @@ fn kernel_entries_store_before_any_page_allocation() {
         // and carry no store of their own — their ordering contract is pinned
         // inside the helpers above. Helper bodies must hold store < alloc.
         if marker.contains("fn arch_boot_finish") || marker.contains("fn resume_additive") {
-            let store = body.find("store_kernel_info(").unwrap_or_else(|| {
-                panic!("M4 pin: {marker} never calls store_kernel_info")
-            });
+            let store = body
+                .find("store_boot_report(")
+                .or_else(|| body.find("store_kernel_info("))
+                .unwrap_or_else(|| {
+                    panic!("M4 pin: {marker} never calls store_boot_report/store_kernel_info")
+                });
             assert!(
                 store < alloc,
-                "M4 pin: {marker} reaches {alloc_site} before store_kernel_info \
+                "M4 pin: {marker} reaches {alloc_site} before the .bss store \
                  (deep copy must precede the first page allocation)"
             );
         }

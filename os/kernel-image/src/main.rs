@@ -88,7 +88,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::alloc::{GlobalAlloc, Layout};
 
-use minix_boot::KernelInfo;
+use minix_boot::{BootReport, RamAuthority};
 use minix_types::PhysBytes;
 
 // The early console picks a board implementation per architecture (all three
@@ -104,14 +104,15 @@ use minix_plat::x86_64::early_console;
 
 // ── Kernel boot graph anchor ──────────────────────────────────────
 //
-// The type is the contract: `arch_boot(&KernelInfo, PhysBytes) -> !` is the
-// kernel boot surface shared by the v1 send/receive production path, the
-// direct-boot faces (`bootface`/`bootface_a64`), and the test carriers. The
-// anchor is pinned by the link script's `KEEP(*(.rodata.kernel_anchor))`.
+// The type is the contract: `arch_boot(&BootReport<'_>, RamAuthority,
+// PhysBytes) -> !` is the kernel boot surface shared by the v1 send/receive
+// production path, the direct-boot faces (`bootface`/`bootface_a64`), and the
+// test carriers. The anchor is pinned by the link script's
+// `KEEP(*(.rodata.kernel_anchor))`.
 
 #[used]
 #[unsafe(link_section = ".rodata.kernel_anchor")]
-static KERNEL_ENTRY_ANCHOR: fn(&KernelInfo, PhysBytes) -> ! = minix_kernel::arch_boot;
+static KERNEL_ENTRY_ANCHOR: fn(&BootReport<'_>, RamAuthority, PhysBytes) -> ! = minix_kernel::arch_boot;
 
 // ── Entry (global_asm: set up the stack first, then enter the Rust surface) ──
 //

@@ -54,8 +54,7 @@ use boot_shim::opensbi_helpers::{
 };
 
 /// The U-Boot sender's caller-owned semantic storage.
-/// Single-threaded boot; see `boot_shim::BootStorageCell`.
-static BOOT_STORAGE: boot_shim::BootStorageCell = boot_shim::BootStorageCell::new();
+/// Single-threaded boot; the storage lives on this `-> !` frame.
 use boot_shim::{raw_serial, raw_serial_line};
 use minix_boot::{ARENA_CAP, Serializer};
 use minix_types::{PhysBytes, PhysRange};
@@ -473,7 +472,8 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     // + semantic tables (memmap/reserved/sources/param/startup from the argv
     // DTB), all written into the caller-owned storage. The bump pool lives at
     // 0x82000000-0x84000000 (existing constants; inside the measured free band).
-    let result = prepare_boot(BOOT_STORAGE.take(), boot_shim::BOOT_PT_BUMP_PAGES);
+    let mut storage = minix_boot::BootStorage::new();
+    let result = prepare_boot(&mut storage, boot_shim::BOOT_PT_BUMP_PAGES);
     raw_serial_line("boot-shim: kernel + 12 modules loaded (d73)");
 
     // The bootstrap root's PT pages come from the reserved region prepare_boot

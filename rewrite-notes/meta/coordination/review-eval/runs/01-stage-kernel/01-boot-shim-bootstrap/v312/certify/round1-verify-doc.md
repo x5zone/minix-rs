@@ -147,11 +147,11 @@ Residual（非阻断，且不在 R1-14 台账处置的点名范围内）：同�
 
 源码侧核对：
 
-- `os/libs/minix-boot/src/platform.rs:122-131`：`#[repr(C)]` 的 `PlatformDescSource` 字段为 `kind`、`len: Option<core::num::NonZeroU32>`、`phys_addr`；`:133` 有 `size_of::<PlatformDescSource>() == 16` 的编译期断言。
+- `os/libs/minix-boot/src/platform.rs:122-131`：`#[repr(C)]` 的 `PlatformDescSource` 字段为 `kind`、`len: Option<core::num::NonZeroU32>`、`phys_addr`；`:132` 有 `size_of::<PlatformDescSource>() == 16` 的编译期断言。
 - `with_len`（`:147-150`）收 `core::num::NonZeroU32`；`with_optional_len`（`:161-172`）把 `Some(0)` 与 `None` 都落到 `new()` 的 `len: None`。
 - 写侧 `os/libs/minix-boot/src/handoff_v1_write.rs:244`：`put_u32(..., source.len().map_or(0, |n| n.get()))`，即 `None → 0`、`Some(n) → n.get()`。
 - 读侧 `os/libs/minix-boot/src/handoff_v1_read.rs:311`：`PlatformDescSource::with_optional_len(kind, PhysBytes(addr), Some(len))`，wire 的 0 经 `with_optional_len` 还原为 `None`。
-- wire 结构 `os/libs/minix-boot/src/handoff_v1.rs:64-68`：`WirePlatformDescSource { kind: u32, len: u32, addr: u64 }`；`:402` 有 16 B/8 B 对齐断言。
+- wire 结构 `os/libs/minix-boot/src/handoff_v1.rs:64-68`：`WirePlatformDescSource { kind: u32, len: u32, addr: u64 }`；`:402-403` 有 16 B 大小与 8 B 对齐断言。
 
 一致性结论：
 

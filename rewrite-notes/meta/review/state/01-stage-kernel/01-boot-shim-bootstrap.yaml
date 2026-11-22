@@ -47,7 +47,7 @@ units:
   level: 3
   parent: '1'
   order: 2
-  text_sha: f1997b9fd304ed15e3616a341812f87688c1e6be8226917481d761ebf828d59d
+  text_sha: 1d86a5a27707a69bcc3cf9cdb8cc2b3b13ad5f31df69e7e9a4566d3bfcd021cc
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -93,7 +93,7 @@ units:
   level: 3
   parent: '1'
   order: 4
-  text_sha: 0132c1fd886b99030ddb6640c065713b4c845ee0ce6e663a54a2972a0e5d50f2
+  text_sha: c3e0e198a7f41ac60ca2d0e1e99440d68d2200963147608bae0373fe108884cf
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -116,7 +116,7 @@ units:
   level: 3
   parent: '1'
   order: 5
-  text_sha: bc313fe7241e713ac5fc6db0f051db784285e530f57d3a5437555e4456bb11e9
+  text_sha: 74d6d0df95813832a96e98e5116cea6cc7936fd7f5df12d335de8071bca1e3f9
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -139,7 +139,7 @@ units:
   level: 3
   parent: '1'
   order: 6
-  text_sha: 44d8887b6a1107704ac1776f41d0f27dedd7486f8b5a56cdd319b91a3f82c4f4
+  text_sha: bfe76f24fb6ac613a732f3877cfe4bf8e209ab5f75839a51d9a0440af2c1b55c
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -185,7 +185,7 @@ units:
   level: 3
   parent: '2'
   order: 8
-  text_sha: bdb4172374cc82cadfa09421350576228edcbe732f5f3755e68fd3ac82061c88
+  text_sha: 4694eb55faa9cf3753191f165c91b740d11466a8a3046db89a455321871f18db
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -231,7 +231,7 @@ units:
   level: 3
   parent: '2'
   order: 10
-  text_sha: 5303fe79185778a7f6e7cd5b685c52e8f067c5e3f8b235530980eb0373c72e77
+  text_sha: 2097ed1573bc863f381d4015f78b6896d77f6c79ad070c5d223ef9acd58e1854
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -254,7 +254,7 @@ units:
   level: 3
   parent: '2'
   order: 11
-  text_sha: 9a6639968a6e3197ea6f043a9374b6fcb1cd0609f0c775bbbe04c51096200935
+  text_sha: 58f5de0d27137f61368c057e5eb56cbcc317b233646aeedaa763cb71f3925fa7
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -277,7 +277,7 @@ units:
   level: 3
   parent: '2'
   order: 12
-  text_sha: 19950222052b2e71c2d2a28fa39fe00b51074e8eaf6c15034f5ffc9607269972
+  text_sha: 02f278fa06deb86bfef26c4a50f8a2de5dcf37a364f3d6235550334c6dfa73c2
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -369,7 +369,7 @@ units:
   level: 3
   parent: '2'
   order: 16
-  text_sha: 07fd227ab79ae8f6c2a08a4bb1ee0ac4dfa43dd4bd818de443e82babc00472df
+  text_sha: 4e08050df2ccd5d50c24df30be0d249f292590f6b1b5e335b9eea0494d9f6099
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -415,7 +415,7 @@ units:
   level: 3
   parent: '3'
   order: 18
-  text_sha: 3a1f6ca2f66af5a80471df842f44a9b9b2199fc36f122b0cdf818c1c5cd9fa9f
+  text_sha: 0aadf5f901e58ae195ef84fff73e657a0ad8a199674bb67df2cb9b5d2edc5e69
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -461,7 +461,7 @@ units:
   level: 3
   parent: '3'
   order: 20
-  text_sha: 2d6a95c12d9f80ae348d2e0fcd34666114dca971baf0b023f589ce01a6d606d9
+  text_sha: 816bb10379e7e147a8d9a0ebc690d7cef11db6edd2e9733ad9447c05f4a973f0
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -484,7 +484,7 @@ units:
   level: 3
   parent: '3'
   order: 21
-  text_sha: 3f8111be522c8d38c1d8d08ada804d3c50daad6b47c03c105e4bdfc1cd5bd5cf
+  text_sha: fe107241c6fb259f69a3de285acb669210dd352c129e673fef65a239b755ca4c
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -507,7 +507,7 @@ units:
   level: 3
   parent: '3'
   order: 22
-  text_sha: 1929db2d8d00cc167a93833f9fd8eb56b1eda109c309589ed9493e3ad8d5b2cb
+  text_sha: 50179c62c92d4ebdb6d3fa63c4af55867b9163291c5f46a8cd7c0f09989a26ad
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -530,7 +530,7 @@ units:
   level: 3
   parent: '3'
   order: 23
-  text_sha: 6de37f763e42600adf282a84bb42bda318aa02bb20e10728d9b90d3a9f6c65cf
+  text_sha: 8b95a66f0a59108b8a77e14e68e8be9ddc095d57d47bc5828373d53454db2b15
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -553,7 +553,7 @@ units:
   level: 3
   parent: '3'
   order: 24
-  text_sha: a3c2b3ccf078f888a340f3e405e0bb731ac2f7613e6ddd388587f8600e33d13b
+  text_sha: 1a94820e2f4ceff11238f8bbba2c13e815718889f9f7768ecec5549f737ea1d8
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -576,7 +576,7 @@ units:
   level: 3
   parent: '3'
   order: 25
-  text_sha: bfd37fea14974f233ba6e7e3dd06d55eabc1e8e2e97dd32c6559e75851d156cd
+  text_sha: 3330eef303fa2d70f14aa0f901431acfd4162ad3cb77b4cfda8f9c1b02863b70
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -599,7 +599,7 @@ units:
   level: 2
   parent: null
   order: 26
-  text_sha: 7afe92b0e7d9ae4e747e2939cd9280fa38e3b12c322c72156e761d94e743f11f
+  text_sha: 27319dbb025316462db953a6ff9249ecb978ab1a67e9bb168471a07b8a04aa6e
   t1_state: pending
   t1_rounds: 0
   t2_state: n/a
@@ -622,7 +622,7 @@ units:
   level: 3
   parent: '4'
   order: 27
-  text_sha: 772169ed4ae69a9efdd5bad98555e897dc83edc288cab79ad8ca33d2c4e5b4f9
+  text_sha: e296239c41458120beed48af928673751bbc32e4c8dbb06ae650c75e26247101
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -645,7 +645,7 @@ units:
   level: 3
   parent: '4'
   order: 28
-  text_sha: ce4156b2754fbaa6de382f7ac884fea568e9c35436d5e8ca74155c1c9a03fb33
+  text_sha: ec2bc2dd169ed575a09b6a3ca24947e575087207d1c585bc7af38ba059f7f51e
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -668,7 +668,7 @@ units:
   level: 3
   parent: '4'
   order: 29
-  text_sha: aa31f5f385c5742689c3c5c86c1c17972cd99d582f36ad5b030876a197b88bfb
+  text_sha: 0a36051b3da8739e805b0c2a6cddc0527a6d32d0dcfeb28c7acd7fe438ad3480
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -710,11 +710,11 @@ units:
   review_rounds: []
   post_freeze_rounds: []
 - id: '4.4'
-  heading: 4.4 `KernelInfo` 构造的两条产出入径
+  heading: 4.4 五条腿的 `BootReport<'_>` 发送视图与接收侧 `KernelInfo` 构造
   level: 3
   parent: '4'
   order: 31
-  text_sha: 3f3a1b2012152047fd59f74e04541190ca2faf6c75bcc0331cf3e668fc4be2c6
+  text_sha: 18bf3f340d8a597fe2930473030482cd44d440bd6da8b7bf497ad9dc6d57aec1
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -733,11 +733,11 @@ units:
   review_rounds: []
   post_freeze_rounds: []
 - id: '4.5'
-  heading: 4.5 `store_kernel_info` 的六个落地区
+  heading: 4.5 `store_boot_report`/`store_kernel_info` 的六个落地区
   level: 3
   parent: '4'
   order: 32
-  text_sha: 3e0751b9fd9d387e52f8266b8c1f846b0f3b34f51df9f1dba32794d37fe98a05
+  text_sha: bd626a93d084f46bcdf9a546783753d2603deced5603e1512c6de0771e321b0e
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -760,7 +760,7 @@ units:
   level: 3
   parent: '4'
   order: 33
-  text_sha: e127288d2fe1fa370ddb636137c97cc491baeaf8a35ff25fd94ae86ef0811527
+  text_sha: 74f4d6583e0626e9ae191d9567d1184063e964bcfaf32f5a52e209c98da3798d
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -783,7 +783,7 @@ units:
   level: 3
   parent: '4'
   order: 34
-  text_sha: 70d746e917460f368145f69c7bc149cbf71c76fbd94b2046214d938ca9b61c9c
+  text_sha: 97a0cea13e2a6ba8fba8d431d77b30fd494477af394360fb5397b723fec67266
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -806,7 +806,7 @@ units:
   level: 3
   parent: '4'
   order: 35
-  text_sha: 8ebfa7f4a88c2ca3e72c1cfb661a0661be529cd8ed775fbf3cdfedfa5395b37f
+  text_sha: 1a105fc277828ef46d3fed51c43e01fb893c1d52ffdbe5ec2a83a9a196f2d148
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -875,7 +875,7 @@ units:
   level: 3
   parent: '5'
   order: 38
-  text_sha: 56fc3f7900c28b879ce8da096e1c3df605fd0411913af28c206590b592c803c0
+  text_sha: 849bc2252fa8c2b237e73d1a6aaa485ccd2064e94408f6166b4ecbf44eacbdcb
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -921,7 +921,7 @@ units:
   level: 3
   parent: '5'
   order: 40
-  text_sha: 219e0e57ee58cb1d175fc15e86c368cfc8050dfb17dbb39fd4cb70355bf8b424
+  text_sha: ab7cb79eeab44f3e89741d022369871093180af0e1b58135abcbfd142ec327ea
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -944,7 +944,7 @@ units:
   level: 3
   parent: '5'
   order: 41
-  text_sha: 1394020de09a8d21e9023cd53c7969eee591fe0cdc9c61dd06619e25996c7d5f
+  text_sha: 486af644f8db277df0fbba5863e2741d51f1e1a04584366248860514d213b735
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -967,7 +967,7 @@ units:
   level: 3
   parent: '5'
   order: 42
-  text_sha: 4ecafa6f94be3b2ec7c0f3525ea49887b40c4333fbc88bba37ad5e43babb89e7
+  text_sha: 7cf1f9e64d9d73acbbc74c4ae74edf5a82aa323d2551144ad9469e9e1e579d0f
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -990,7 +990,7 @@ units:
   level: 2
   parent: null
   order: 43
-  text_sha: b83c43908468dc201241c41e63152c959a0888a594ab13e15d3504ce33050561
+  text_sha: ee57696bb805a27a19b299015c4b7bbe18e46cde510a9cbafb8155b24ba720f7
   t1_state: pending
   t1_rounds: 0
   t2_state: n/a
@@ -1032,11 +1032,11 @@ units:
   review_rounds: []
   post_freeze_rounds: []
 - id: '6.1'
-  heading: 6.1 EBS 分界与裸串口通道内的两种写法
+  heading: 6.1 EBS 分界、两种裸串口写法与里程碑清单
   level: 3
   parent: '6'
   order: 45
-  text_sha: 22ee27f94eeeb64a8c34d4e1d968ae903e15298ba4bd50d665ec2a9f6514b9d0
+  text_sha: e46f8a2c2e9e4a964a30a39fda81de2477c424b15e54bebbd86244bd0227a2cc
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
@@ -1105,7 +1105,7 @@ units:
   level: 3
   parent: '6'
   order: 48
-  text_sha: 70a6f95c009e421708e5a685aecc47dd676201d1d3ec7736e47d94a928f2833d
+  text_sha: 00205b5e5bafc26e6e8cea56ccc0af56a4c0798497849e2b1a39519ce0b5f36c
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending

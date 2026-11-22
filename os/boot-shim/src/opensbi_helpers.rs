@@ -458,7 +458,7 @@ pub unsafe fn install_boot_file_table(addr: u64) {
     // silently overwrite and lose track. The check is an unconditional
     // `assert!` so it fails closed in release too — `FileBytes::Borrowed`
     // relies on this table's address stability, and the sibling installers
-    // (`BootStorageCell::take`, `pt_alloc::register`) check in both builds.
+    // (the one-shot storage fill, `pt_alloc::register`) check in both builds.
     // SAFETY: single-writer during early boot before secondary harts run.
     assert!(
         BOOT_FILE_TABLE_PTR == 0,
@@ -632,7 +632,23 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_kernel_info;
+    fn test_kernel_info(
+        report: &minix_boot::BootReport<'static>,
+        authority: minix_boot::RamAuthority,
+    ) -> minix_boot::KernelInfo {
+        minix_boot::KernelInfo {
+            memmap: report.memmap,
+            reserved_regions: report.reserved_regions,
+            source_records: report.source_records,
+            kern_virt_base: report.kern_virt_base,
+            kern_phys_base: report.kern_phys_base,
+            kern_size: report.kern_size,
+            boot_modules: report.boot_modules,
+            platform_sources: report.platform_sources,
+            param_buf: report.param_buf,
+            authority,
+        }
+    }
     use minix_boot::MemoryRegion;
     use minix_types::VirBytes;
     use alloc::vec;
@@ -750,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_kernel_info_uses_riscv64_user_sp() {
+    fn test_boot_report_uses_riscv64_user_sp() {
         let report = minix_boot::BootReport {
             memmap: &[],
             reserved_regions: &[],
@@ -762,7 +778,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,
         };
-        let info = build_kernel_info(&report, minix_boot::RamAuthority::DTB);
+        let info = test_kernel_info(&report, minix_boot::RamAuthority::DTB);
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit
         // value; the Sv39 value range is pinned on riscv64 targets by
@@ -804,9 +820,9 @@ mod tests {
     // monitoring; see 01-boot-shim-bootstrap.md §5.1.1 B.
     // ─────────────────────────────────────────────────────────────────
 
-    /// `build_kernel_info` maps the fields exactly from the inputs.
+    /// The test helper maps the fields exactly from the inputs.
     #[test]
-    fn test_build_kernel_info_riscv64_fields_match_input() {
+    fn test_boot_report_riscv64_fields_match_input() {
         let report = minix_boot::BootReport {
             memmap: &[MemoryRegion {
                 base: PhysBytes(0x8000_0000),
@@ -821,7 +837,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,
         };
-        let info = build_kernel_info(&report, minix_boot::RamAuthority::DTB);
+        let info = test_kernel_info(&report, minix_boot::RamAuthority::DTB);
         // memmap
         assert_eq!(info.memmap.len(), 1);
         assert_eq!(info.memmap[0].base, PhysBytes(0x8000_0000));

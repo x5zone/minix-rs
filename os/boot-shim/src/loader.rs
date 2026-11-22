@@ -1168,12 +1168,12 @@ mod tests {
 
     // Bump allocator backed by a Vec so we never write to real physical
     // memory in unit tests: the returned address points into a leaked Vec
-    // kept alive in STORAGE for the duration of the test.
+    // kept alive in LEAKED_BUFFERS for the duration of the test.
     use std::sync::Mutex;
-    static STORAGE: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+    static LEAKED_BUFFERS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
     fn mock_alloc(num_pages: usize) -> Option<u64> {
-        let mut storage = STORAGE.lock().unwrap();
+        let mut storage = LEAKED_BUFFERS.lock().unwrap();
         let mut buf = vec![0u8; num_pages * 4096];
         let addr = buf.as_mut_ptr() as u64;
         storage.push(buf);

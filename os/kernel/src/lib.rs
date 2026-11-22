@@ -206,12 +206,17 @@ pub use core::panic::PanicInfo;
 
 // ── Boot entry points ──
 
-/// Common tail of every direct `arch_boot` entry: land `KernelInfo` into the
-/// kernel `.bss` copy, register the panic diagnostic, build/enable the
-/// bootstrap root, then perform the higher-half jump. Keeping this in one
-/// generic helper avoids three drifting copies of the same sequence.
+/// Common tail of every direct `arch_boot` entry: validate the sender's
+/// borrowed report, land it into the kernel `.bss` copy, register the panic
+/// diagnostic, build/enable the bootstrap root, then perform the higher-half
+/// jump. Keeping this in one generic helper avoids three drifting copies of
+/// the same sequence.
 #[cfg(not(feature = "mock"))]
-fn arch_boot_finish<A, H>(kernel_info: &KernelInfo, root_page: PhysBytes) -> !
+fn arch_boot_finish<A, H>(
+    report: &minix_boot::BootReport<'_>,
+    authority: minix_boot::RamAuthority,
+    root_page: PhysBytes,
+) -> !
 where
     A: BootArch,
     H: crate::boot::HigherHalf,
@@ -220,9 +225,9 @@ where
     // reach the mapping machinery and only surface later at kmain. The
     // pre-table gate skips the boot_modules non-empty check because QEMU
     // bootstrap test kernels legally carry no init-server image.
-    kernel_info.validate_before_tables();
-    kernel_info.check_boot_postconditions();
-    let kinfo = store_kernel_info(kernel_info);
+    report.validate_before_tables(authority);
+    report.check_boot_postconditions();
+    let kinfo = store_boot_report(report, authority);
     register_panic_diagnostic();
     arch_boot_impl::<A>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity and
@@ -236,40 +241,36 @@ where
 /// Selects the correct `Paging` implementation at compile time, then performs
 /// the higher-half transition via the `HigherHalf` trait.
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+pub fn arch_boot(
+    report: &minix_boot::BootReport<'_>,
+    authority: minix_boot::RamAuthority,
+    root_page: PhysBytes,
+) -> ! {
     use crate::x86_64::higher_half::X86_64HigherHalf;
-    // Boot-visibility fix (root cause): KernelInfo is taken by value into the
-    // kernel .bss global at fn entry, and everything afterwards (building page
-    // tables, jumping to kmain) uses a reference to the global copy. The
-    // original implementation handed the shim-stack `&KernelInfo` straight to
-    // kmain through a `noreturn` asm `in("rdi")` — in x86-64 System V RDI is
-    // caller-saved, and BOOTX64.EFI's codegen reused the entry RDI across the
-    // intervening call, so after the callee overwrote the register kmain
-    // received a .rdata string address (observed: kinfo=0x1ddda2ee, exactly
-    // the "…jumping to kmain\n" string start plus its length); validate read
-    // ASCII garbage and panicked. The global copy's address is a link-time
-    // RIP-relative constant, handed over through no register at all.
-    // Kernel-side first marker (EarlyConsole=COM1, the same port as
-    // boot-shim's raw_serial; EBS has passed, no concurrent writers).
+    // The direct-core sender passes a borrowed report; the receiver lands the
+    // slices into this image's `.bss` and jumps on the global copy. No
+    // reference crosses the `noreturn` asm call in a caller-saved register.
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot entered\n");
     }
     arch_boot_finish::<minix_arch::arch::boot_arch::X86_64BootArch, X86_64HigherHalf>(
-        kernel_info,
+        report,
+        authority,
         root_page,
     )
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
-pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+pub fn arch_boot(
+    report: &minix_boot::BootReport<'_>,
+    authority: minix_boot::RamAuthority,
+    root_page: PhysBytes,
+) -> ! {
     use crate::aarch64::higher_half::AArch64HigherHalf;
-    // Same as x86_64: take KernelInfo by value into the kernel .bss global at
-    // entry; jumps and page-table builds all use the global copy, eliminating
-    // any reference handed across a `noreturn` asm call in a caller-saved
-    // register (x0 on aarch64).
     arch_boot_finish::<minix_arch::arch::boot_arch::AArch64BootArch, AArch64HigherHalf>(
-        kernel_info,
+        report,
+        authority,
         root_page,
     )
 }
@@ -792,14 +793,15 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+pub fn arch_boot(
+    report: &minix_boot::BootReport<'_>,
+    authority: minix_boot::RamAuthority,
+    root_page: PhysBytes,
+) -> ! {
     use crate::riscv64::higher_half::Riscv64HigherHalf;
-    // Same as x86_64: take KernelInfo by value into the kernel .bss global at
-    // entry; jumps and page-table builds all use the global copy, eliminating
-    // any reference handed across a `noreturn` asm call in a caller-saved
-    // register (a0 on riscv64).
     arch_boot_finish::<minix_arch::arch::boot_arch::Riscv64BootArch, Riscv64HigherHalf>(
-        kernel_info,
+        report,
+        authority,
         root_page,
     )
 }
@@ -1556,7 +1558,27 @@ fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
 /// The returned reference points at the `.bss` global, not at the caller's
 /// input. The slot is written exactly once per leg: a second
 /// store panics instead of updating the slot in place.
+/// Stores the receiver-owned `KernelInfo` into the process-global slot.
+///
+/// Kept for the v1 receiver (`resume_additive`), which already decoded the
+/// wire slices into this image's landing stores.
 pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
+    land_and_store(kernel_info, kernel_info.authority)
+}
+
+/// Stores a sender-side `BootReport<'_>` and produces the unique
+/// `KernelInfo<'static>` backed by this image's `.bss` landing stores.
+pub(crate) fn store_boot_report(
+    report: &minix_boot::BootReport<'_>,
+    authority: minix_boot::RamAuthority,
+) -> &'static KernelInfo {
+    land_and_store(report, authority)
+}
+
+fn land_and_store<V: minix_boot::KernelInfoView>(
+    view: &V,
+    authority: minix_boot::RamAuthority,
+) -> &'static KernelInfo {
     // The slot is written exactly once per leg, before kmain. A second
     // store would overwrite a live `&'static KernelInfo` handed out to
     // earlier readers — fail closed instead of silently aliasing.
@@ -1581,7 +1603,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         // same-address case (resume_additive re-stores the decoded slices) is skipped by
         // the equality guard below.
         let store = &mut *crate::globals::RESERVED_REGION_STORE.get();
-        let src = kernel_info.reserved_regions;
+        let src = view.reserved_regions();
         land_slice(src, store, "reserved_regions");
         // The same disease takes the `memmap` and
         // `boot_modules` payloads — both live in the boot-shim's UEFI-pool
@@ -1593,11 +1615,11 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         // the global copy; module names go into a fixed byte pool, copied
         // strlcpy-style (15-byte bound, same as `vm_handoff::copy_name`).
         let mstore = &mut *crate::globals::MEMMAP_REGION_STORE.get();
-        let msrc = kernel_info.memmap;
+        let msrc = view.memmap();
         land_slice(msrc, mstore, "memmap");
         let bstore = &mut *crate::globals::BOOT_MODULE_STORE.get();
         let bnames = crate::globals::BOOT_MODULE_NAME_STORE.get();
-        let bsrc = kernel_info.boot_modules;
+        let bsrc = view.boot_modules();
         assert!(
             bsrc.len() <= bstore.len(),
             "store_kernel_info: boot_modules exceeds the .bss landing pad"
@@ -1640,10 +1662,10 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         // in the same firmware pool as the three payloads above, so they get
         // the same landing treatment.
         let pstore = &mut *crate::globals::PLATFORM_SOURCE_STORE.get();
-        let psrc = kernel_info.platform_sources;
+        let psrc = view.platform_sources();
         land_slice(psrc, pstore, "platform_sources");
         let param = &mut *crate::globals::PARAM_BUF_STORE.get();
-        let csrc = kernel_info.param_buf;
+        let csrc = view.param_buf();
         assert!(
             csrc.len() <= param.len(),
             "store_kernel_info: param_buf exceeds the .bss landing pad"
@@ -1661,9 +1683,20 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
         // There is no startup-object class: its only reader was a strict-gate
         // check, which the map tables now serve.
         let sstore = &mut *crate::globals::SOURCE_RECORD_STORE.get();
-        let ssrc = kernel_info.source_records;
+        let ssrc = view.source_records();
         land_slice(ssrc, sstore, "source_records");
-        let mut k = *kernel_info;
+        let mut k = KernelInfo {
+            memmap: &[],
+            reserved_regions: &[],
+            boot_modules: &[],
+            platform_sources: &[],
+            param_buf: &[],
+            source_records: &[],
+            kern_virt_base: view.kern_virt_base(),
+            kern_phys_base: view.kern_phys_base(),
+            kern_size: view.kern_size(),
+            authority,
+        };
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
         k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());
         k.boot_modules = core::slice::from_raw_parts(bstore.as_ptr(), bsrc.len());
