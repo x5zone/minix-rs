@@ -1,13 +1,19 @@
-# 单元级 review 状态（V3.9）——规范源 prompt/review-rules/review-units.md
+# 单元级 review 状态（V3.11）——规范源 prompt/review-rules/review-units.md
 # 由 tools/review-units.py 维护；冻结状态禁止手改。
-schema: review-units/v1
+# 每篇一个独立账户：round / edition / full_rounds / trajectory_reviews 不得跨篇复用。
+schema: review-units/v2
 doc: rewrite-notes/01-stage-kernel/04-platform-discovery.md
 stage: 01-stage-kernel
-edition: V3.9
-baseline_full_survey: true
+edition: V3.11
+round: 0
+full_rounds: []
+trajectory_reviews: []
+baseline_full_survey: false
 confirmation:
   active: false
-  fixes: 1
+  completed: false
+  round: 0
+  fixes: 0
 units:
 - id: '1'
   heading: 1. 概述
@@ -15,12 +21,12 @@ units:
   parent: null
   order: 1
   text_sha: 2c0ba18e4958354377ccb5439cbf721dddcfdcbe82c5a30c3618b9a45dbf3142
-  t1_state: passed
+  t1_state: pending
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -30,7 +36,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.0'
   heading: 1.0 本章导读
   level: 3
@@ -39,10 +46,10 @@ units:
   text_sha: d42bcd01113532cfd0f72253d658f8b43cc345cae30995a5df6d26168e625a46
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -52,7 +59,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.1'
   heading: 1.1 内核开机要问硬件的四组问题
   level: 3
@@ -61,30 +69,21 @@ units:
   text_sha: a5d2c7d9c5dfa90879f458fef4011da3a55d00c1adf74b3fb53533b588f07d4c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics
-  - minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify
-  - minix3/minix/kernel/arch/i386/arch_smp.c:discover_cpus
-  - minix3/minix/kernel/arch/i386/arch_system.c:ser_init
-  - minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics: 888eabe29aca9a9c2ebbbe0a902faef3aa4625fbe085bf33474e7dc732e5a6e8
-    minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify: 150b782e2ec619151ad5d98504b6ba91461fc2cbe7ddb3cd0672b05bb2f7236b
-    minix3/minix/kernel/arch/i386/arch_smp.c:discover_cpus: 7de549f0423073c87a4e27c058ceb546fc2c6ffa9750084039349db0112ef807
-    minix3/minix/kernel/arch/i386/arch_system.c:ser_init: 771a4ccf8fe8aaa16340855c43040458037cdf564480a4880a7d0526df3e920d
-    minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init: 898b40a6085e04d70cebbe77c57e310b7bd231ae8a5be3b75c329226dec189ea
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.2'
   heading: 1.2 同一组问题，三种固件三种答法
   level: 3
@@ -93,22 +92,21 @@ units:
   text_sha: a4990360c7d53440c9cd377a179b645d1441ac65a580410ff52f98ede92ee807
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_check_signature
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_check_signature: f0e33afcb3c76642608ea28bc42054b95fd17dcc9a42902f2465f0b07c0ee94f
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.3'
   heading: 1.3 描述只在启动窗口里存在
   level: 3
@@ -117,22 +115,21 @@ units:
   text_sha: a920c241e40bbb1c192d6e1701475c09fa9ac249fe61edd1a8505033ea8ecd37
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_phys2vir
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_phys2vir: 8c6f75276d0773e52cf4a3e1915f153ab2437e80565581bf2af2299de1096da1
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.4'
   heading: 1.4 发现要跨过哪几道关口
   level: 3
@@ -141,24 +138,21 @@ units:
   text_sha: e5372c3591cff0f3bf136958e78c01ca73b1d544b19f108b8769059db99733d0
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_init
-  - minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_init: fc41343f5ddfdfd5d99df8b9e45714dde193a4530854602fb2cfa39e26c3e9c0
-    minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init: 898b40a6085e04d70cebbe77c57e310b7bd231ae8a5be3b75c329226dec189ea
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.5'
   heading: 1.5 本篇范围与可以安全跳过的内容
   level: 3
@@ -167,10 +161,10 @@ units:
   text_sha: f8d037b2c533ad55eef78573498237993715149536c9ba7ac6ab5febc25d5a6e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -180,7 +174,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.6'
   heading: 1.6 本篇的 C 侧覆盖边界
   level: 3
@@ -189,10 +184,10 @@ units:
   text_sha: dc387f399d36a1ce625b3c1d5bfae483c1f89a6a7c4bdfccc9b6ad5dfc9f0d8c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -202,19 +197,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2'
   heading: 2. C 源码分析
   level: 2
   parent: null
   order: 9
   text_sha: fc0e4c749d1802a7a335646a98bdcb529158f80bada8ca4e0fb925bb71dc5997
-  t1_state: passed
+  t1_state: pending
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -224,7 +220,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.0'
   heading: 2.0 本章导读
   level: 3
@@ -233,10 +230,10 @@ units:
   text_sha: 7f0f07655ed59deaf073c67c0830a672778e43574c364c67d825142b3f4fae0d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -246,7 +243,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.1'
   heading: 2.1 cstart 的调用序里，发现被放在哪一格
   level: 3
@@ -255,32 +253,21 @@ units:
   text_sha: 86e422d18f21e22c1cdbc276dd41419bc2e37b20f5bce22ec6dbf90698aadec3
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/main.c:cstart
-  - minix3/minix/kernel/arch/i386/arch_system.c:arch_init
-  - minix3/minix/kernel/clock.c:init_clock
-  - minix3/minix/kernel/arch/i386/i8259.c:intr_init
-  - minix3/minix/kernel/arch/i386/apic.c:detect_ioapics
-  - minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init
-  anchor_hashes:
-    minix3/minix/kernel/main.c:cstart: 8fef63d7539db97cc5826de2cb7cc7023f397c1932945dd732bd2da25817bca3
-    minix3/minix/kernel/arch/i386/arch_system.c:arch_init: 15988cf0df904de276c69f9e491dd4e5d2e993b60428b4d83eb1c25162125134
-    minix3/minix/kernel/clock.c:init_clock: 32c3ab2f243700b06fe45df3661f7d99f71c1302822687e09c667aa477ea0314
-    minix3/minix/kernel/arch/i386/i8259.c:intr_init: e3cf7a5c04dd9250f2550604f21d9e79ab2b81d8eb20b008c7bb21b0d7f51dec
-    minix3/minix/kernel/arch/i386/apic.c:detect_ioapics: 0c95f71560e768242b28a5a81aafce75af693047ac14c90554cb2920e552c77a
-    minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init: 898b40a6085e04d70cebbe77c57e310b7bd231ae8a5be3b75c329226dec189ea
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.2'
   heading: 2.2 get_acpi_rsdp：两次扫描与只算 20 字节的校验和
   level: 3
@@ -289,24 +276,21 @@ units:
   text_sha: 29a529b5d7f81864336075c1e6c4b82e83afacbe032421079ce0b64e71f376a4
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.c:get_acpi_rsdp
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_rsdp_test
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.c:get_acpi_rsdp: 14a4db273f66f45378aebad6694e476d158583a2e424b6bc031e17594e1b8b05
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_rsdp_test: 4f2dad60088f26fec58ced6523d52f670bd45aa4fc1a500270ba789f29e30a38
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.3'
   heading: 2.3 acpi_read_sdt_at 与 sdt_count：一张 32 位表索引
   level: 3
@@ -315,26 +299,21 @@ units:
   text_sha: 16679effbb4c53fee3b44f1afc70341a3b832dfb3863635c17de92e5fa3638fe
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.h:struct acpi_rsdp
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_init
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_read_sdt_at
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.h:struct acpi_rsdp: a78103edb21f8fed875eeb4a179447b00550f9be3a8894283418d9b9c85b7ea8
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_init: fc41343f5ddfdfd5d99df8b9e45714dde193a4530854602fb2cfa39e26c3e9c0
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_read_sdt_at: d8c63b653a4ab5a033c3a14bcb5e0f98abbc8f7aeca9c8c5977e58d402f5d24b
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.4'
   heading: 2.4 MADT 记录的游标遍历与 CPU 拓扑的雏形
   level: 3
@@ -343,28 +322,21 @@ units:
   text_sha: ad8d10540a6316971d81c95f89986e0f260ed1b0412dec6db147589b9cf7d4b6
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_madt_get_typed_item
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_get_lapic_next
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_phys2vir
-  - minix3/minix/kernel/arch/i386/arch_smp.c:discover_cpus
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_madt_get_typed_item: 59e9d03e7bf0a6ba02da8edd3f8f7b88629809dcb559c5da4c6a465bebeded77
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_get_lapic_next: ed59ad7153b8f8f6904684362aba8507b68739e2b3c08767b570aa4f85a0a0c1
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_phys2vir: 8c6f75276d0773e52cf4a3e1915f153ab2437e80565581bf2af2299de1096da1
-    minix3/minix/kernel/arch/i386/arch_smp.c:discover_cpus: 7de549f0423073c87a4e27c058ceb546fc2c6ffa9750084039349db0112ef807
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.5'
   heading: 2.5 LAPIC 基址：C 只发现了半格
   level: 3
@@ -373,32 +345,21 @@ units:
   text_sha: 27a4a7a8454e26d0dadb215669192e413c8e7b6bbf4af9ca210b6196f0fa9c5e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.h:struct acpi_madt_hdr
-  - minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init
-  - minix3/minix/kernel/arch/i386/arch_smp.c:smp_init
-  - minix3/minix/kernel/arch/i386/apic.c:lapic_enable_in_msr
-  - os/plat/src/x86_64/interrupt.rs:fn init_lapic
-  - os/kernel/src/lib.rs:fn init_clock_and_interrupts
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.h:struct acpi_madt_hdr: 1f170b2d826a8606c12df638da8b88aa8c3ddb861d4a372977f1017db5513012
-    minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init: 898b40a6085e04d70cebbe77c57e310b7bd231ae8a5be3b75c329226dec189ea
-    minix3/minix/kernel/arch/i386/arch_smp.c:smp_init: a79764f279f644b65b764c0f18358e92bb0dc6f8e4f3d6f577d490e0ca450c85
-    minix3/minix/kernel/arch/i386/apic.c:lapic_enable_in_msr: bcb97d7c87263459ae8e625734cf2fae456ac94f9ce22416c91fbc6773a426b2
-    os/plat/src/x86_64/interrupt.rs:fn init_lapic: f5ee5254ead245ef21cca008e74925a7f380f9d3a507d0e01f4b9f05641b98b6
-    os/kernel/src/lib.rs:fn init_clock_and_interrupts: 637154b3863adf75857120a995b73c499037f07c7982ec28efbc9e249a7d2c86
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.6'
   heading: 2.6 IOAPIC 引脚数：表给基址、硬件给规模
   level: 3
@@ -407,26 +368,21 @@ units:
   text_sha: 9010cd7cef8fab04a8ac4c5a3fb52f8c45430fdf7a94e525dd13ca6b07373903
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics
-  - os/libs/minix-platform/src/arch/x86_64.rs:struct ApicDesc
-  - os/plat/src/x86_64/interrupt.rs:const IOAPIC_NUM_PINS
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/apic.c:acpi_get_ioapics: 888eabe29aca9a9c2ebbbe0a902faef3aa4625fbe085bf33474e7dc732e5a6e8
-    os/libs/minix-platform/src/arch/x86_64.rs:struct ApicDesc: 0bdcbb9e4cd817bcac0971ff82556b94c9389d362df895460cc67b962b09bd4b
-    os/plat/src/x86_64/interrupt.rs:const IOAPIC_NUM_PINS: 1a58d9eca7ddf5f828844197a200f84c0aa9b62e89c33c259afaf3df139b6bca
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.7'
   heading: 2.7 acpi_init 的调用点在配置之间怎么选
   level: 3
@@ -435,22 +391,21 @@ units:
   text_sha: 9f5f159b5cc5bf4a034cfed964994c9cbf045988ed99bef84eae6fbaccb8ea49
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_init
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_init: fc41343f5ddfdfd5d99df8b9e45714dde193a4530854602fb2cfa39e26c3e9c0
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.8'
   heading: 2.8 发现结果往哪放：machine 结构
   level: 3
@@ -459,22 +414,21 @@ units:
   text_sha: e4498f3d60fc233d541ee11125cec56f19f160cdc1e0b25aeafd749ac7324bbe
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/include/minix/type.h:struct machine
-  anchor_hashes:
-    minix3/minix/include/minix/type.h:struct machine: d50eb5a164e2310b22a488cf39c246c8da61b79915b23fe7cf2a0ea4764ce8af
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.9'
   heading: 2.9 ARM 侧：板级常量、板号位域与启动参数
   level: 3
@@ -483,32 +437,21 @@ units:
   text_sha: 3935ec2992a616f8c328f6bb9d2392c4bdb53d1b52815716b2682331996b4b7f
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/main.c:bsp_finish_booting
-  - minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify
-  - minix3/minix/kernel/arch/earm/bsp/ti/omap_init.c:bsp_init
-  - minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init
-  - minix3/minix/kernel/main.c:kmain
-  - minix3/minix/kernel/arch/earm/arch_clock.c:init_local_timer
-  anchor_hashes:
-    minix3/minix/kernel/main.c:bsp_finish_booting: d6f46fe0fa87921991faabdb761fe8f7f888d72090e4f70ebcf7db9cc4b948f8
-    minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify: 150b782e2ec619151ad5d98504b6ba91461fc2cbe7ddb3cd0672b05bb2f7236b
-    minix3/minix/kernel/arch/earm/bsp/ti/omap_init.c:bsp_init: b04ddd811016aa041073c152f12a160f188769e44fb94199695cc09a65924200
-    minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init: 26fc0285c4feae34f24703433752b77d8e20358cb8292f060cdf8a53d8dfcda7
-    minix3/minix/kernel/main.c:kmain: 4df08484b4891aa12e8f14fa174edadfde2f9961482866ec9b8de8eb2d3b62c1
-    minix3/minix/kernel/arch/earm/arch_clock.c:init_local_timer: da95f3c9ddf057fc1c1bad1424798e59202c631d7d270303609594e85045da9f
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.10'
   heading: 2.10 本章归纳
   level: 3
@@ -517,10 +460,10 @@ units:
   text_sha: bac0edcba4e73a2cf86541563ea007b23d2458d8b570cbd891ae75a528c86ff5
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -530,19 +473,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3'
   heading: 3. Rust 设计决策
   level: 2
   parent: null
   order: 21
   text_sha: 2622860cdce02d830a25f960ae44f99b4c1557d5d3752bffc67ba23b024b9c56
-  t1_state: passed
+  t1_state: pending
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -552,7 +496,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.0'
   heading: 3.0 本章导读
   level: 3
@@ -561,10 +506,10 @@ units:
   text_sha: 3a613861f61dfb06108ecea8555857553228c0628d37c0b897c50ce6527a13ad
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -574,7 +519,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.1'
   heading: 3.1 解析职责的切分：boot-shim 只定位，kernel 自己解析（→§2.1、§2.8）
   level: 3
@@ -583,26 +529,21 @@ units:
   text_sha: abd96fed2f1cb47a7e2ace749c9a925d67eba8a971f3dc13fc350b28a0fe74b9
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/acpi.c:acpi_init
-  - minix3/minix/kernel/arch/i386/arch_system.c:arch_init
-  - os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/acpi.c:acpi_init: fc41343f5ddfdfd5d99df8b9e45714dde193a4530854602fb2cfa39e26c3e9c0
-    minix3/minix/kernel/arch/i386/arch_system.c:arch_init: 15988cf0df904de276c69f9e491dd4e5d2e993b60428b4d83eb1c25162125134
-    os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo: a43479783760f23a8aa09a1c9093b6b8019f23bb6d40741e97e95827d4807ec4
-  anchor_status: fallback
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.2'
   heading: 3.2 三个来源一个接口：trait 做接口、enum 做存储（→§2.9）
   level: 3
@@ -611,28 +552,21 @@ units:
   text_sha: 1f54ab112395177e2acaf76d28c26fd3c3f1c67c923e63b401080f1ea19d6a2d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/device_tree.rs:fn parse_sswi
-  - os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc
-  - os/libs/minix-boot/src/platform.rs:enum PlatformSource
-  - os/libs/minix-platform/src/global.rs:enum PlatformDescEnum
-  anchor_hashes:
-    os/libs/minix-platform/src/device_tree.rs:fn parse_sswi: 1a6fc156f9dcd94c7c34517dfc94aa68348ed87e170423790caa8e1f2de882e1
-    os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc: d594e58b15b4be3b1c693666708c001aaa53af02b4bf599c0cffe32b354016d3
-    os/libs/minix-boot/src/platform.rs:enum PlatformSource: d15ace8b475731f0903af1d292d56182073859c4dcbdbfa359841b83ecb528b0
-    os/libs/minix-platform/src/global.rs:enum PlatformDescEnum: 017e7c5421eaf08f6f04931e20c98c0cf33f4fc23e009fb9ed2f7372989e6218
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.3'
   heading: 3.3 子描述符：品牌枚举退到 arch 模块，接口只谈能力（→§2.5、§2.6）
   level: 3
@@ -641,24 +575,21 @@ units:
   text_sha: 54dc88071dcc1a03248eb80cbd23167876f1b42408edf28c3bb2e572f72cb57c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/plat/src/riscv64/interrupt.rs:fn new
-  - os/plat/src/interrupt.rs:const NR_IRQ_VECTORS
-  anchor_hashes:
-    os/plat/src/riscv64/interrupt.rs:fn new: eb2c624c0115469b572b5f3c931455fc284139b7ea626c5ce9bcc9a6ae0f6459
-    os/plat/src/interrupt.rs:const NR_IRQ_VECTORS: 5d3e1f21af69959b49102c210ab87b91e5d578c4b25ffda72a716b0f1c75d053
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.4'
   heading: 3.4 描述符的值搬进实例字段（→§2.5、§2.6）
   level: 3
@@ -667,28 +598,21 @@ units:
   text_sha: c308bd1c0879dbe60d6662d5ca46d5196c4d0c2f6fa70cddd0d9cb3e5690e6bc
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/arch/src/arch/clock.rs:trait ClockArch
-  - os/arch/src/riscv64/clock.rs:fn new
-  - os/kernel/src/lib.rs:fn init_clock_and_interrupts
-  - os/arch/src/riscv64/clock.rs:fn read_time_csr
-  anchor_hashes:
-    os/arch/src/arch/clock.rs:trait ClockArch: e93c783e55829795eb12afa3f5e5c7be2ea054ae6a955efaa32ada7ebcde53fa
-    os/arch/src/riscv64/clock.rs:fn new: f76b02b9c3d36b1d0d22695c711dfa760d7fad93e5b6a7ed1022e0d781e5e57e
-    os/kernel/src/lib.rs:fn init_clock_and_interrupts: 637154b3863adf75857120a995b73c499037f07c7982ec28efbc9e249a7d2c86
-    os/arch/src/riscv64/clock.rs:fn read_time_csr: 049981d20e4533991d15c54c51e0f52301a0843523235d1de421e144686d821b
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.5'
   heading: 3.5 找不到描述时的兜底与它的代价（→§2.2、§2.7）
   level: 3
@@ -697,24 +621,21 @@ units:
   text_sha: 4ff752297aaae4ba16e0c0371f9d79d7c2072c9b1b7847d45e8572fb8c77d692
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/global.rs:fn qemu_fallback_or_panic
-  - os/libs/minix-platform/src/arch/aarch64.rs:fn mmio_translate
-  anchor_hashes:
-    os/libs/minix-platform/src/global.rs:fn qemu_fallback_or_panic: 4505b809b51aa65e670bcee0c05cb4c5b0885d2f05a95ac249801c7fdd729674
-    os/libs/minix-platform/src/arch/aarch64.rs:fn mmio_translate: c3a48d213d8f2781cca9e375d63034bb5c204e3c3521f478ceebe77edc060a56
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.6'
   heading: 3.6 多来源的交接：不透明标签 + 有序切片（→§2.8）
   level: 3
@@ -723,24 +644,21 @@ units:
   text_sha: f353e8b6666652b52f4854ea2aee44df2fc8eb3047fdc4792dd6e3e31f9f299c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-boot/src/platform.rs:struct PlatformDescSource
-  - os/libs/minix-types/src/types/address.rs:struct PhysBytes
-  anchor_hashes:
-    os/libs/minix-boot/src/platform.rs:struct PlatformDescSource: 091d37fa4c4e73e4fb02210eb01db616f9355027bf17615a3f5a14fd54123a57
-    os/libs/minix-types/src/types/address.rs:struct PhysBytes: bb906c2b5c3f374fa3160a66422b228100d7d98e237d9cfb1a1e7c7293e8b4f6
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.7'
   heading: 3.7 全局存储：从 AssumeSyncCell 到 Frozen（→§2.8）
   level: 3
@@ -749,24 +667,21 @@ units:
   text_sha: 37e1fa9aa986d6303915889eb65e62d8ae1a80d1c1343a39d935c9612880f404
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-types/src/types/cell.rs:struct Frozen
-  - os/libs/minix-platform/src/global.rs:static PLATFORM
-  anchor_hashes:
-    os/libs/minix-types/src/types/cell.rs:struct Frozen: 40ea30f395711eb03a310c71489ca9a72ab6a99c929a1ce530b43d3f86e8d43e
-    os/libs/minix-platform/src/global.rs:static PLATFORM: a9575377cc93aaab14e9c1c5487503de3bc2c09861a39080fd4315a46dc7f248
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.8'
   heading: 3.8 常量迁移的判别规则（→§2.5、§2.9）
   level: 3
@@ -775,10 +690,10 @@ units:
   text_sha: b55d10b0e49fe2b419f48e774bd8a7d20705c51ba025798fb6b79d4c54f364f6
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -788,7 +703,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.9'
   heading: 3.9 实现层设计决定的索引（→§4.4–§4.8）
   level: 3
@@ -797,10 +713,10 @@ units:
   text_sha: 5acde5936bc8b6ba65ebef88ffe695e88da2b93221ffc4d499a4a6317717fa24
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -810,19 +726,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4'
   heading: 4. 实现详解
   level: 2
   parent: null
   order: 32
   text_sha: a85515818eea7990ca662e2be87daf67a97d2db9d1f769617834dda6954fa844
-  t1_state: passed
+  t1_state: pending
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -832,7 +749,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.0'
   heading: 4.0 本章导读
   level: 3
@@ -841,10 +759,10 @@ units:
   text_sha: d36071cc09a7057b2d81a72643ac40665d32726eeb71c9649168d0a5eea05feb
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -853,8 +771,9 @@ units:
   anchor_refs: []
   anchor_hashes: {}
   anchor_status: none
-  note: D04 确认轮第一批：aarch64 顺序/C 链事实/计数/早期控制台/伪引文等 15 条
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.1'
   heading: 4.1 kmain 阶段 A.5：发现被提到所有消费者之前（→3.1、3.7）
   level: 3
@@ -863,34 +782,21 @@ units:
   text_sha: 80d476998f445337831329c37a5dd67f535dd49110651a9e540756fda534ace7
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/kernel/src/lib.rs:fn kmain
-  - os/plat/src/x86_64/interrupt.rs:fn pic_init
-  - os/plat/src/interrupt.rs:trait InterruptRouter
-  - os/arch/src/arch/clock.rs:trait ClockArch
-  - os/kernel/src/lib.rs:fn init_smp_state
-  - os/kernel/src/lib.rs:fn init_clock_and_interrupts
-  - os/kernel/src/lib.rs:fn init_protection
-  anchor_hashes:
-    os/kernel/src/lib.rs:fn kmain: 69480a0dcab7d1b886da7f83d4d66ae60d13614fc49af53b1b23be4ecefe4425
-    os/plat/src/x86_64/interrupt.rs:fn pic_init: e7b2da57b8ef5f58f1d2097f04dea179e7d40caddbe67f156a3a6ad7a74328e5
-    os/plat/src/interrupt.rs:trait InterruptRouter: ee6e2d32a7f7ff529722b425b6f45762c730affb7ccbbc0fc0231ccd12daea48
-    os/arch/src/arch/clock.rs:trait ClockArch: e93c783e55829795eb12afa3f5e5c7be2ea054ae6a955efaa32ada7ebcde53fa
-    os/kernel/src/lib.rs:fn init_smp_state: 9d32377f486cc15aed312f3ab51b6b93d2fcbd2515326461b3bc1397ac460cfc
-    os/kernel/src/lib.rs:fn init_clock_and_interrupts: 637154b3863adf75857120a995b73c499037f07c7982ec28efbc9e249a7d2c86
-    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.2'
   heading: 4.2 boot-shim 侧：find_platform_sources_into 的三架构扫描（→3.6）
   level: 3
@@ -899,24 +805,21 @@ units:
   text_sha: 9b6cc4d35485f47b1429f88666c9bffdb5bcc2bfeab68b21bbd4d2a82eda5000
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into
-  - os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot
-  anchor_hashes:
-    os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into: 5c5b8d5cf5283cdf6ad16d127a85ef419ac8d672585fc2c0b1d71c8ca8128d6d
-    os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot: b5db384377b4c7554d6f4ad13e9fd6c067562b33db4e28c55a144b1d2b7ba958
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.3'
   heading: 4.3 分派：parse_by_kind 与它的构造点（→3.6）
   level: 3
@@ -925,30 +828,21 @@ units:
   text_sha: b625ff1f2d7b92cfe616fffa2c0a5dd672e63574d8ab21e6eb1224f721c56e68
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/kind.rs:fn parse_by_kind
-  - os/libs/minix-boot/src/platform.rs:const DTB
-  - os/libs/minix-platform/src/device_tree.rs:fn parse
-  - os/libs/minix-platform/src/acpi.rs:fn parse
-  - os/libs/minix-boot/src/platform.rs:enum PlatformParseError
-  anchor_hashes:
-    os/libs/minix-platform/src/kind.rs:fn parse_by_kind: ed313f83336ee0da94add99662a2fb007ca89d0ba8d8f8ae517a56d305add5c8
-    os/libs/minix-boot/src/platform.rs:const DTB: fd2eddf4b549a4707bcb34740789c22ae4eae502ba5e94352a128d7ab9dbdf5f
-    os/libs/minix-platform/src/device_tree.rs:fn parse: 958e59925e04eacddb78f916fa02e1ae09e623c635710ed6f5b7798dfb755f9c
-    os/libs/minix-platform/src/acpi.rs:fn parse: 926c6a8255d6eea9acd7e87bdbc5ed90f655fc59dfc8a110098c1f8b6eeab09f
-    os/libs/minix-boot/src/platform.rs:enum PlatformParseError: 6b2297c60486645b149ea4616558d475031594d1a432e0b6f98fbbc483605bf6
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.4'
   heading: 4.4 ACPI 解析器（→3.3、3.8）
   level: 3
@@ -957,30 +851,21 @@ units:
   text_sha: 89a7ac1b01578ef3e1e0097d9c5b1722c68e18fa17942aea2cbd7b25723eb992
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/acpi.rs:fn parse
-  - os/libs/minix-platform/src/acpi.rs:enum AcpiParseError
-  - os/libs/minix-platform/src/acpi.rs:fn parse_madt
-  - os/libs/minix-platform/src/acpi.rs:fn check_gic_madt
-  - os/libs/minix-platform/src/acpi.rs:fn test_check_gic_madt_decision_table
-  anchor_hashes:
-    os/libs/minix-platform/src/acpi.rs:fn parse: 926c6a8255d6eea9acd7e87bdbc5ed90f655fc59dfc8a110098c1f8b6eeab09f
-    os/libs/minix-platform/src/acpi.rs:enum AcpiParseError: a37c161f54ab524364102fc7afe40e381a5bd6a0602de839d2796ff5371434cf
-    os/libs/minix-platform/src/acpi.rs:fn parse_madt: 280a11096da4bd2a18f8a445981e2093b6c422bb47878885ded557ea6fe32f37
-    os/libs/minix-platform/src/acpi.rs:fn check_gic_madt: 4c6990bf4e27e5ee011306d992603baf78dbeefd9f89383943d23fd668cd1d16
-    os/libs/minix-platform/src/acpi.rs:fn test_check_gic_madt_decision_table: c966da228525b9890cd987f3bd34af9fabed4176ddea7f78240d5bb1f42f11c4
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.5'
   heading: 4.5 设备树解析器（→3.3、3.4）
   level: 3
@@ -989,32 +874,21 @@ units:
   text_sha: b98442ce79b597db59d3abc54fa462f7bbd931b8a603727a2e8dd98f72e7bc41
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/device_tree.rs:fn from_fdt
-  - os/libs/minix-platform/src/device_tree.rs:fn parse
-  - os/kernel/src/lib.rs:fn arch_boot_impl
-  - os/libs/minix-platform/src/global.rs:static PLATFORM
-  - os/libs/minix-platform/src/device_tree.rs:fn parse_aclint_mtimer
-  - os/libs/minix-platform/src/device_tree.rs:fn parse_cpu_topology
-  anchor_hashes:
-    os/libs/minix-platform/src/device_tree.rs:fn from_fdt: d1f36b730d204f677918d320d3f24a08580c257daf90d1830a384368f6dcc61d
-    os/libs/minix-platform/src/device_tree.rs:fn parse: 958e59925e04eacddb78f916fa02e1ae09e623c635710ed6f5b7798dfb755f9c
-    os/kernel/src/lib.rs:fn arch_boot_impl: 0a3d95793877ab1669654ab3faedfbdc1ba16d3e1a68face3e2291206985a61d
-    os/libs/minix-platform/src/global.rs:static PLATFORM: a9575377cc93aaab14e9c1c5487503de3bc2c09861a39080fd4315a46dc7f248
-    os/libs/minix-platform/src/device_tree.rs:fn parse_aclint_mtimer: 937e08ae3de13a1311a44147e3686f4bf5950998bda0ff82d6590fe32360d585
-    os/libs/minix-platform/src/device_tree.rs:fn parse_cpu_topology: f743f30897f7e7d30e3adf0723af4f69a0302ebad2ec65fad4bead913379b5aa
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.6'
   heading: 4.6 QemuVirtDesc：三份 per-arch 常量表（→3.5、3.8）
   level: 3
@@ -1023,24 +897,21 @@ units:
   text_sha: 43e0adaa03990ef4acb821528b89d4608aed522caf312f89c2c47421c00442f4
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-boot/src/platform.rs:fn zero
-  - os/libs/minix-platform/src/global.rs:enum PlatformDescEnum
-  anchor_hashes:
-    os/libs/minix-boot/src/platform.rs:fn zero: 0b77736b06fced3e29ce5c04ce36883202d2ee0b90b6ae5f65231a5ad0ab52cf
-    os/libs/minix-platform/src/global.rs:enum PlatformDescEnum: 017e7c5421eaf08f6f04931e20c98c0cf33f4fc23e009fb9ed2f7372989e6218
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.7'
   heading: 4.7 全局写入与读取（→3.7）
   level: 3
@@ -1049,28 +920,21 @@ units:
   text_sha: 5ad6bf11c52464fc5cdc34dacc60d723a0e7fe0bd72ad7fb71ccd5e953a7cee4
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/global.rs:fn init_from_kinfo
-  - os/libs/minix-platform/src/global.rs:enum PlatformDescEnum
-  - os/kernel/src/smp.rs:fn smp_init
-  - os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc
-  anchor_hashes:
-    os/libs/minix-platform/src/global.rs:fn init_from_kinfo: 4686bcfa7bad60d83b896ecc53148b8d030979a2e6b211b2261854510804118e
-    os/libs/minix-platform/src/global.rs:enum PlatformDescEnum: 017e7c5421eaf08f6f04931e20c98c0cf33f4fc23e009fb9ed2f7372989e6218
-    os/kernel/src/smp.rs:fn smp_init: 0c42407829e0576fe80554319257205e64084afecaa89589e905bdca845d6b52
-    os/arch/src/arm64/smp.rs:fn set_psci_conduit_smc: d594e58b15b4be3b1c693666708c001aaa53af02b4bf599c0cffe32b354016d3
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.8'
   heading: 4.8 消费侧：三个构造点（两处 downcast）与三条地址注入路径（→3.3、3.4）
   level: 3
@@ -1079,28 +943,21 @@ units:
   text_sha: 8eb419a6532a20f429381be83ed4bcb3fa7c025886c7f317732bf137b014f76e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/arch/src/x86_64/arch_init.rs:struct X86_64ArchInit
-  - os/plat/src/arm64/interrupt.rs:fn new
-  - os/libs/minix-platform/src/arch/aarch64.rs:fn mmio_translate
-  - os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ
-  anchor_hashes:
-    os/arch/src/x86_64/arch_init.rs:struct X86_64ArchInit: c445fc4ef6277eda1c069cdf98ee382df982c32adecc52104dfde53d9e73d512
-    os/plat/src/arm64/interrupt.rs:fn new: 88069ee5ec29e30a9d21c2e296f6865f77e61aaf99943b7b5a94c8adcaa87417
-    os/libs/minix-platform/src/arch/aarch64.rs:fn mmio_translate: c3a48d213d8f2781cca9e375d63034bb5c204e3c3521f478ceebe77edc060a56
-    os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ: ccbe2a9ced384c800d40b362d9ce53c19741d0ccb336ffcb657cb2a114650e5c
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.9'
   heading: 4.9 拓扑的消费：SMP 状态、GS 槽位与 GET_MACHINE（→3.2、3.4）
   level: 3
@@ -1109,30 +966,21 @@ units:
   text_sha: a038c50c1093469133cb1062f1cba52c255e1772a6388631b69843f5db9879a6
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/kernel/src/lib.rs:fn init_smp_state
-  - os/kernel/src/lib.rs:fn init_protection
-  - os/libs/minix-boot/src/platform.rs:struct CpuTopology
-  - os/kernel/src/misc.rs:fn getinfo_machine
-  - os/servers/sched/src/sef.rs:struct MachineInfo
-  anchor_hashes:
-    os/kernel/src/lib.rs:fn init_smp_state: 9d32377f486cc15aed312f3ab51b6b93d2fcbd2515326461b3bc1397ac460cfc
-    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
-    os/libs/minix-boot/src/platform.rs:struct CpuTopology: 0e196d3c26c6b57af008bc6545179d268fd564ea6654b12820c0cfc4a1dcf486
-    os/kernel/src/misc.rs:fn getinfo_machine: 07ac389c0af4bd482ada28fa7b197c58b033e8b95ac37924289e333f6fc1a9a1
-    os/servers/sched/src/sef.rs:struct MachineInfo: 1c053bb46277c10391d15e7be778fdf1c13c7943d831a997fd528bb83a4fe552
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.10'
   heading: 4.10 与 C 的对照：struct machine 六字段的去向（对账附录，→2.8）
   level: 3
@@ -1141,36 +989,21 @@ units:
   text_sha: 693632edecea38972c76674952ae2d1ff81b028554c6b99551883014cb4c172e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/kernel/src/misc.rs:struct MachineStruct
-  - os/kernel/src/lib.rs:fn init_smp_state
-  - os/kernel/src/misc.rs:fn getinfo_machine
-  - os/kernel/src/lib.rs:fn init_protection
-  - os/drivers/power/acpi/src/service.rs:fn scan_devices
-  - os/libs/minix-platform/src/acpi.rs:fn parse
-  - os/drivers/power/acpi/src/service.rs:fn init
-  - os/libs/minix-boot/src/platform.rs:const MAX_CPUS
-  anchor_hashes:
-    os/kernel/src/misc.rs:struct MachineStruct: 1df5190839997854c048cc1d9e6ca73477ead7af5235059472b07b963b5d9be0
-    os/kernel/src/lib.rs:fn init_smp_state: 9d32377f486cc15aed312f3ab51b6b93d2fcbd2515326461b3bc1397ac460cfc
-    os/kernel/src/misc.rs:fn getinfo_machine: 07ac389c0af4bd482ada28fa7b197c58b033e8b95ac37924289e333f6fc1a9a1
-    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
-    os/drivers/power/acpi/src/service.rs:fn scan_devices: 30357bf22ca809c9c0aeb158ab9663fea9ea4401f89fe46efec6d6bb552795c4
-    os/libs/minix-platform/src/acpi.rs:fn parse: 926c6a8255d6eea9acd7e87bdbc5ed90f655fc59dfc8a110098c1f8b6eeab09f
-    os/drivers/power/acpi/src/service.rs:fn init: 349d334ea9c1dfd7bea4059df5ffd71ba7be4b8ce4fca3a1dcca516cf5d31f02
-    os/libs/minix-boot/src/platform.rs:const MAX_CPUS: 0080318e247fd555c2b661625b1e4b432d518bc4539ca56606c544a9318c2e0c
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.11'
   heading: 4.11 三架构端到端六段表（→3.1、3.2、4.2–4.9）
   level: 3
@@ -1179,10 +1012,10 @@ units:
   text_sha: aac17a5494dc00f43ee589ae493c723208182a0f41655cc0ea65d0107d06eee3
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1192,19 +1025,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '5'
   heading: 5. 测试要点
   level: 2
   parent: null
   order: 45
   text_sha: 5ebeabaa556a6c8aca3c64cf1b193d7bff6032d311847555160bad492a2c96d6
-  t1_state: passed
+  t1_state: pending
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1214,7 +1048,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '5.0'
   heading: 5.0 本章导读
   level: 3
@@ -1223,10 +1058,10 @@ units:
   text_sha: dfd7122777d28ce44d5f6742d385210045f622314ea1b8f5fbb3e4270334ab78
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1236,7 +1071,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '5.1'
   heading: 5.1 宿主：两个解析器与 QemuVirt 常量的输入从哪来
   level: 3
@@ -1245,22 +1081,21 @@ units:
   text_sha: d67f21abbbedf58aa965525b58be5353a89dbd250ce04d64d3c51133511d79f7
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/acpi.rs:fn test_parse_synthetic_acpi
-  anchor_hashes:
-    os/libs/minix-platform/src/acpi.rs:fn test_parse_synthetic_acpi: 014be1f1c8994dab798a7088e151066940be1b76f54674258652d01001829562
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '5.2'
   heading: 5.2 真机：test-smp-topo 三架构的同一份契约
   level: 3
@@ -1269,22 +1104,21 @@ units:
   text_sha: f60d83b06cda9d38a001d842dcb94ef137005035cc6d6ca6bc9d29f539a025e8
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/plat/src/x86_64/early_console.rs:fn write_hex
-  anchor_hashes:
-    os/plat/src/x86_64/early_console.rs:fn write_hex: 8af0c3778ee61fceda127f089aabbeea0eb7bb88011e0d6a3b78190e35b3c0d6
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '5.3'
   heading: 5.3 测试缺口与 `&[]` 的口径
   level: 3
@@ -1293,24 +1127,21 @@ units:
   text_sha: 6d249f466f1f75f10c58928db3221ca4b5d0495e44d28c801562595ab69beebe
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into
-  - os/libs/minix-platform/src/kind.rs:fn parse_by_kind
-  anchor_hashes:
-    os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources_into: 5c5b8d5cf5283cdf6ad16d127a85ef419ac8d672585fc2c0b1d71c8ca8128d6d
-    os/libs/minix-platform/src/kind.rs:fn parse_by_kind: ed313f83336ee0da94add99662a2fb007ca89d0ba8d8f8ae517a56d305add5c8
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '5.4'
   heading: 5.4 机制 → 需要证明什么（反转核对表）
   level: 3
@@ -1319,10 +1150,10 @@ units:
   text_sha: 2759ec967e89cdd5043c5ee1f9d58ec85e0fb4d6cd43d94e2f1c28cc37e75bc8
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1332,19 +1163,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '6'
   heading: 6. 诊断
   level: 2
   parent: null
   order: 51
   text_sha: 9073a7357e62bfb82f8eaea4a85aa88300a64de8134c353d579be76993e5dd03
-  t1_state: passed
+  t1_state: pending
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1354,7 +1186,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '6.0'
   heading: 6.0 本章导读
   level: 3
@@ -1363,10 +1196,10 @@ units:
   text_sha: 7c894f68a24abe27c65a350b94dd912062c02edd620a50a83d927cba0ce5e975
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1376,7 +1209,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '6.1'
   heading: 6.1 症状 → 怀疑对象 → 确认命令
   level: 3
@@ -1385,36 +1219,10 @@ units:
   text_sha: 9fbcd524055c291de369b8b27e0323da3e15c69372b9ebcb4452c030b375bf17
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/libs/minix-platform/src/global.rs:fn platform_desc
-  - os/libs/minix-types/src/types/cell.rs:fn freeze
-  anchor_hashes:
-    os/libs/minix-platform/src/global.rs:fn platform_desc: cee36d00418cfa5bcb36ec69029b6514a312b4b8ea556ea69d529ba46d199411
-    os/libs/minix-types/src/types/cell.rs:fn freeze: df91f130302301975932e5560d8bcb6d8bac25ebe5f56a0da251d81411fa5a6b
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
-- id: '6.2'
-  heading: 6.2 可复制命令与预期输出
-  level: 3
-  parent: '6'
-  order: 54
-  text_sha: 67da572e66d0fae908991479f02dc4ecacccd2564d8313fabf1394fab818afbf
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 1321567ba29f6797bf00172b60ca7beedf973a44
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1424,9 +1232,32 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '6.2'
+  heading: 6.2 可复制命令与预期输出
+  level: 3
+  parent: '6'
+  order: 54
+  text_sha: 67da572e66d0fae908991479f02dc4ecacccd2564d8313fabf1394fab818afbf
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 t3:
-  passed: true
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
-  at_commit: 1321567ba29f6797bf00172b60ca7beedf973a44
-baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/04-platform-discovery/certify/round39-gates.md
+  passed: false
+  evidence: ''
+  at_commit: ''

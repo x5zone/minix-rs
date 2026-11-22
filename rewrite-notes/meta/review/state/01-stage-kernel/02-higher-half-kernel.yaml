@@ -1,13 +1,19 @@
-# 单元级 review 状态（V3.9）——规范源 prompt/review-rules/review-units.md
+# 单元级 review 状态（V3.11）——规范源 prompt/review-rules/review-units.md
 # 由 tools/review-units.py 维护；冻结状态禁止手改。
-schema: review-units/v1
+# 每篇一个独立账户：round / edition / full_rounds / trajectory_reviews 不得跨篇复用。
+schema: review-units/v2
 doc: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
 stage: 01-stage-kernel
-edition: V3.9
-baseline_full_survey: true
+edition: V3.11
+round: 0
+full_rounds: []
+trajectory_reviews: []
+baseline_full_survey: false
 confirmation:
   active: false
-  fixes: 2
+  completed: false
+  round: 0
+  fixes: 0
 units:
 - id: '1'
   heading: 1. 概述
@@ -15,12 +21,12 @@ units:
   parent: null
   order: 1
   text_sha: cf21af760309f40e806b25d8da781d280a2e13abb6df2077408ca1cd5cdc4605
-  t1_state: passed
+  t1_state: pending
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -30,883 +36,8 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '1.1'
-  heading: 1.1 镜像的四个时刻
-  level: 3
-  parent: '1'
-  order: 2
-  text_sha: 7e71fb3326a11d813352c68eee4322c8ff549f2ae034326b5db564022a2f2ea7
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '1.2'
-  heading: 1.2 四条不变量 J1–J4
-  level: 3
-  parent: '1'
-  order: 3
-  text_sha: 6bedc136370a8e06abbfe4ad78a07b5ad2b59d7861917f5a12420f368dd3b926
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '1.3'
-  heading: 1.3 范围与接缝
-  level: 3
-  parent: '1'
-  order: 4
-  text_sha: 2d79b0aa2828386f086bf7b19654a87d2906cf2dfdcebd73b1bc761e19212ebc
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '2'
-  heading: 2. C 源码分析
-  level: 2
-  parent: null
-  order: 5
-  text_sha: 769cd5142578cc9e091af0111ecb92e2a4fa7128d43508d0436179ec2e107a73
-  t1_state: passed
-  t1_rounds: 0
-  t2_state: n/a
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '2.1'
-  heading: 2.1 kernel.lds：双地址与 `AT()`
-  level: 3
-  parent: '2'
-  order: 6
-  text_sha: 075465850294592dbefbe2ef33cf42cbad9d51b0cc03dcfd4f2fe65bb6396eea
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '2.2'
-  heading: 2.2 两段式布局：unpaged 段与高半段
-  level: 3
-  parent: '2'
-  order: 7
-  text_sha: e8c43ff17817a48764ef68a9e230fcfc54daedd1ce808a7b6a08c987ef0d9056
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel
-  - minix3/minix/kernel/arch/i386/pre_init.c:pre_init
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel: 9c5e6eccc0852c22cd8a145f4edb8b5ced107a3264ef89b74b2d2aff51665843
-    minix3/minix/kernel/arch/i386/pre_init.c:pre_init: d0c5e39fdc4fe171c1cdfea49772540b6fe8af832b505d2da5e6f5cf22591533
-  anchor_status: fallback
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '2.3'
-  heading: 2.3 `head.S`：一次跳转里的两种寻址
-  level: 3
-  parent: '2'
-  order: 8
-  text_sha: 095c3f0f1f086f2bf653b0e6250cd165d646175d944d2d7e15c2cd66e2ba9077
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/lib/libsys/stacktrace.c:util_stacktrace
-  - minix3/minix/kernel/arch/i386/exception.c:proc_stacktrace_execute
-  - os/arch/src/arch/stacktrace.rs:walk_frames_from
-  anchor_hashes:
-    minix3/minix/lib/libsys/stacktrace.c:util_stacktrace: 2b0a9425cd4c7bf118a8cc84b6097581c1e7090c628a127d66aa6d894cd48fef
-    minix3/minix/kernel/arch/i386/exception.c:proc_stacktrace_execute: fb1492e73eeb0a4bfbe7f6d732dd8e9fe843e8171028cd11f435175cc3869f2e
-    os/arch/src/arch/stacktrace.rs:walk_frames_from: 862be4c723420e6dab1cf1e74ffc23d66288eaf76741845fe8ea8e238d00f626
-  anchor_status: fallback
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '2.4'
-  heading: 2.4 建表五步与位表
-  level: 3
-  parent: '2'
-  order: 9
-  text_sha: 96b2f8cbe4118af086df48a5b963a1747d3b78a3fc5654144fd1caff39956e0d
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/pre_init.c:pre_init
-  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear
-  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity
-  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel
-  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_load
-  - minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/pre_init.c:pre_init: d0c5e39fdc4fe171c1cdfea49772540b6fe8af832b505d2da5e6f5cf22591533
-    minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear: 16135705c32347ad5f464d878ab44601cd458e76fdcecf262de824984101c341
-    minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity: b85796fe22184a23036ffe1b1b0fb92db7b706a090c135c33a40a47b64b5ef87
-    minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel: 9c5e6eccc0852c22cd8a145f4edb8b5ced107a3264ef89b74b2d2aff51665843
-    minix3/minix/kernel/arch/i386/pg_utils.c:pg_load: d2c0e06e3f4c51d94a835d85a18b408d2c4b716a550e03535481dc8e4f3c9abd
-    minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging: 207a8b246d46d0208d297b7f5e1597cdc58a7132a8158954ed50a37f73451893
-  anchor_status: fallback
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '2.5'
-  heading: 2.5 `k_initial_stktop` 落在哪一段
-  level: 3
-  parent: '2'
-  order: 10
-  text_sha: 572da95441791d31fa7a7167ab18c757f150b6dd42b3c2128115f390bad060ee
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/main.c:kmain
-  anchor_hashes:
-    minix3/minix/kernel/main.c:kmain: 4df08484b4891aa12e8f14fa174edadfde2f9961482866ec9b8de8eb2d3b62c1
-  anchor_status: fallback
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '2.6'
-  heading: 2.6 本章归纳：C 的“布局-摆放-映射-进入”四段
-  level: 3
-  parent: '2'
-  order: 11
-  text_sha: 866c4f9f800fc2d63acf5e756b18cae594ab88ac3cffb5536990176122717c82
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3'
-  heading: 3. Rust 设计决策
-  level: 2
-  parent: null
-  order: 12
-  text_sha: 6ca324a60d7b4b7e57fbf3a1d720ab9198b15f42e15c1b24057c6d8508986929
-  t1_state: passed
-  t1_rounds: 0
-  t2_state: n/a
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.1'
-  heading: 3.1 链接脚本按“谁按装载地址摆放”分三种形态
-  level: 3
-  parent: '3'
-  order: 13
-  text_sha: 62b601f247aa667f61bb8e37cad01a6a545f21dca3222136fd6420bbaf13d036
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
-  - os/boot-shim/src/loader.rs:fn compute_kernel_layout
-  anchor_hashes:
-    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
-    os/boot-shim/src/loader.rs:fn compute_kernel_layout: 94875b5c60cb5c1ea7a8b86ad294489c9fb8f301cf572e2441ea472dbccd9243
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.2'
-  heading: 3.2 ELF 解析器自建
-  level: 3
-  parent: '3'
-  order: 14
-  text_sha: 9798265b49c55378c6b3fd45cd7e321627efc0ccb62154f802caad5114ae4a78
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/arch/src/arch/boot.rs:fn load_vm_elf
-  - os/libs/minix-elf/src/lib.rs:struct Elf64Ehdr
-  - os/libs/minix-elf/src/lib.rs:fn parse_ehdr
-  - os/libs/minix-elf/src/lib.rs:fn next
-  - os/libs/minix-elf/src/lib.rs:enum ElfError
-  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
-  - os/arch/src/arch/boot.rs:fn load_elf_into
-  anchor_hashes:
-    os/arch/src/arch/boot.rs:fn load_vm_elf: ad121875cfc73abe3b8e80b728ac740b064b4c17882bd073f792ae534e7719d6
-    os/libs/minix-elf/src/lib.rs:struct Elf64Ehdr: 6f674351898209aac52885dda866bfa1a8aa09151d3182d33dbc6f7d53626df5
-    os/libs/minix-elf/src/lib.rs:fn parse_ehdr: cacfc4e473527cbb4cdff86ccf5dcf6ff627b09362c3d2ad5c9bfef4cbf7d3eb
-    os/libs/minix-elf/src/lib.rs:fn next: cbd1dbf5cb1ac82d9e9babec91b31e96c4c54dec3e7d52caf77dcb0d708807f0
-    os/libs/minix-elf/src/lib.rs:enum ElfError: 4633888242c8d94d976d1282ed40980fadad79551a08eec2c22e5fc48f5f7e15
-    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
-    os/arch/src/arch/boot.rs:fn load_elf_into: f1e3473103392ac9af1bc56e00393605222d6cb79837e93fb0cb2a359cec3746
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.3'
-  heading: 3.3 栈顶从链接符号变成派生值
-  level: 3
-  parent: '3'
-  order: 15
-  text_sha: b48b7d4301b4f6061d711a8b699beef5fa2f7e8e58a0c2c397f337d8c5711a9f
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top
-  - os/boot-shim/src/loader.rs:fn compute_kernel_layout
-  - os/kernel/src/lib.rs:fn boot_validate_and_prepare
-  - os/kernel-image/src/bootface.rs:const KERN_SIZE
-  anchor_hashes:
-    os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top: 04728d9467812ab7f834e138fec37a80572fe80f374f70ff7603456a85d6ceba
-    os/boot-shim/src/loader.rs:fn compute_kernel_layout: 94875b5c60cb5c1ea7a8b86ad294489c9fb8f301cf572e2441ea472dbccd9243
-    os/kernel/src/lib.rs:fn boot_validate_and_prepare: 24c965ee66be4daedeb3e89011dd072768d1f16c397f95a4d5f9c3acf23400d2
-    os/kernel-image/src/bootface.rs:const KERN_SIZE: 9251d41b2d0b93a1b083c6c6237d6c15e7275d11ae6d0707197c4849f21781e7
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.4'
-  heading: 3.4 `HUGE_PAGE_SIZE` 与大页能力进扩展 trait
-  level: 3
-  parent: '3'
-  order: 16
-  text_sha: 386b94010404a6c18288b82527a1ef8459b39dba3623fb8e9bdf0c944229b69e
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/arch/src/arch/paging_ext.rs:trait HugePages
-  - os/arch/src/x86_64/paging.rs:fn map_huge
-  anchor_hashes:
-    os/arch/src/arch/paging_ext.rs:trait HugePages: e64838507a32ac6aea7245f86ae4ab8e9bcda1e98f486d5184a9af610a293efc
-    os/arch/src/x86_64/paging.rs:fn map_huge: bbe6a2e1b4e0762594714a46591b18ef4a1a2b07150dcf20f8bc63943b7c9220
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.5'
-  heading: 3.5 镜像跨距收口：布局要满足映射粒度
-  level: 3
-  parent: '3'
-  order: 17
-  text_sha: ea7b5855bd04f33d1e3f6c17f7e3609544d09b24b96363f9d0d753db8ea8e901
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel
-  - os/kernel/src/boot_policy.rs:fn plan_kernel_mapping
-  - os/kernel-image/src/bootface.rs:const KERN_SIZE
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel: 9c5e6eccc0852c22cd8a145f4edb8b5ced107a3264ef89b74b2d2aff51665843
-    os/kernel/src/boot_policy.rs:fn plan_kernel_mapping: a5a4cccd4c47b36212b75706fa40a6d4fce1dd2f69eb22c5da40e44061a0bc3f
-    os/kernel-image/src/bootface.rs:const KERN_SIZE: 9251d41b2d0b93a1b083c6c6237d6c15e7275d11ae6d0707197c4849f21781e7
-  anchor_status: fallback
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.6'
-  heading: 3.6 自举根与映射建立的设计（J3）
-  level: 3
-  parent: '3'
-  order: 18
-  text_sha: 3ee84a3452a9ba6d172c3173692c69e0bef7843308771d5e30f7ae74212990a6
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.7'
-  heading: 3.7 成对的换栈与跳转收进一个 trait 契约
-  level: 3
-  parent: '3'
-  order: 19
-  text_sha: 4a3a70b38ab06dc2bdb53a4497a54bf0482e22331478aa6cad6fd60f85433392
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel/src/boot/higher_half.rs:trait HigherHalf
-  - os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf
-  - os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf
-  - os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf
-  anchor_hashes:
-    os/kernel/src/boot/higher_half.rs:trait HigherHalf: 0d8b54c0ced5d5bc01413d92a3c2fcc4e45c19938f1ba4af32821f7ba18de9a3
-    os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf: b27263c076ca1d511575e6363f4f04b60626ee93ca52b882012a1da9b8867f02
-    os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf: 4e14d65188eb5029cec130064eaa2221eb0617d2e4e692fbee59c737381296da
-    os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf: f96cbb4904d2f4da8a925f13b220ddf1b319e0074e908fd585e06b8fecccfe87
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '3.8'
-  heading: 3.8 接收侧两条路径（J4）
-  level: 3
-  parent: '3'
-  order: 20
-  text_sha: 9ac8c032ef80242e98bc15f987fcaa35b3519d31f1dfc6c5c058fc56c0da9d7d
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel/src/lib.rs:fn arch_boot_resume_v1
-  - os/kernel/src/lib.rs:fn resume_additive
-  - os/kernel/src/lib.rs:fn arch_boot_impl
-  - os/kernel/src/lib.rs:fn arch_boot_finish
-  anchor_hashes:
-    os/kernel/src/lib.rs:fn arch_boot_resume_v1: d425bad342bf0338dc653ee74a087a9dc917a5699bb86ab0c7a62e469eae7b37
-    os/kernel/src/lib.rs:fn resume_additive: d5aebcdbe0e0cef7de6471f4d16e98d5cea903f13784ce717980ff1df22ab3a2
-    os/kernel/src/lib.rs:fn arch_boot_impl: 0a3d95793877ab1669654ab3faedfbdc1ba16d3e1a68face3e2291206985a61d
-    os/kernel/src/lib.rs:fn arch_boot_finish: d4ba308b8b60ef275c7c140016c38d9b8c332e359d297091effb9af5d2366f15
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '4'
-  heading: 4. 实现详解
-  level: 2
-  parent: null
-  order: 21
-  text_sha: 3ccf2761363ca40d8b20e4de88dd161936478019365f08c7bdafd4ce92336d66
-  t1_state: passed
-  t1_rounds: 0
-  t2_state: n/a
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '4.1'
-  heading: 4.1 链接脚本的落地
-  level: 3
-  parent: '4'
-  order: 22
-  text_sha: 4947b19cc4691c4ab8500c530d18833d1d2ad5d92bec713a1adcd2fd34c21b0d
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel-image/src/main.rs:static KERNEL_ENTRY_ANCHOR
-  anchor_hashes:
-    os/kernel-image/src/main.rs:static KERNEL_ENTRY_ANCHOR: d12713ef7ff1413251a002b444aedb0454b1e120caa35712a5f2f1d432c74da7
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '4.2'
-  heading: 4.2 ELF 解析与按装载地址摆放
-  level: 3
-  parent: '4'
-  order: 23
-  text_sha: 4232761b6f76a0605402a4281e418205de90227bc79408f5a664613be26a19d2
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/libs/minix-elf/src/lib.rs:fn parse_ehdr
-  - os/boot-shim/src/loader.rs:fn compute_kernel_layout
-  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
-  - os/boot-shim/src/loader.rs:fn first_overlapping_pair
-  - os/boot-shim/src/loader.rs:fn first_source_destination_overlap
-  - os/boot-shim/src/loader.rs:fn load_segments_into_buffer
-  anchor_hashes:
-    os/libs/minix-elf/src/lib.rs:fn parse_ehdr: cacfc4e473527cbb4cdff86ccf5dcf6ff627b09362c3d2ad5c9bfef4cbf7d3eb
-    os/boot-shim/src/loader.rs:fn compute_kernel_layout: 94875b5c60cb5c1ea7a8b86ad294489c9fb8f301cf572e2441ea472dbccd9243
-    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
-    os/boot-shim/src/loader.rs:fn first_overlapping_pair: a25d9c1e593077a2b18312a101386db03176d8296c6674bedf6f688d902ec2c3
-    os/boot-shim/src/loader.rs:fn first_source_destination_overlap: f63a4ba42d97593b48e9478f77832a745fa6c3d5b1589dc9e79277ffb725f305
-    os/boot-shim/src/loader.rs:fn load_segments_into_buffer: 0cc9702addc1e698f1f21f451b969892e06fec4b2e289b249090e4f0f3522940
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '4.3'
-  heading: 4.3 自举根的建立与开启
-  level: 3
-  parent: '4'
-  order: 24
-  text_sha: d668c72523917110bf27b421c786c17cc0a81d39d456c99d4157c92743198c74
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable
-  - os/arch/src/x86_64/paging.rs:fn enable
-  anchor_hashes:
-    os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable: 0e13392375d788541ba740da4ecce59e55aace1cec17557588601aeb622913d4
-    os/arch/src/x86_64/paging.rs:fn enable: 913266ee6f30a932170b27b3b13ce5af9478c58339cda845545a7e3804c0d9c1
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '4.4'
-  heading: 4.4 三架构的成对跳转
-  level: 3
-  parent: '4'
-  order: 25
-  text_sha: 832011f1166d7843d471bafd20d25769a3a2cb278339e20d28d5c7ef5f756f2c
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf
-  - os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf
-  - os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf
-  - os/kernel/src/arch/riscv64/higher_half.rs:fn jump_to_kmain
-  anchor_hashes:
-    os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf: b27263c076ca1d511575e6363f4f04b60626ee93ca52b882012a1da9b8867f02
-    os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf: 4e14d65188eb5029cec130064eaa2221eb0617d2e4e692fbee59c737381296da
-    os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf: f96cbb4904d2f4da8a925f13b220ddf1b319e0074e908fd585e06b8fecccfe87
-    os/kernel/src/arch/riscv64/higher_half.rs:fn jump_to_kmain: 8c9cb2fa91fe0d2d755b9949edd892d7387dfc474c25166d375b76623eca9506
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '4.5'
-  heading: 4.5 从装载到 `kmain` 的完整路径
-  level: 3
-  parent: '4'
-  order: 26
-  text_sha: e727d07132e16c835994aa710c2dce70fe95dc4f2c9dce2f13ca72b5b841f0df
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel-image/src/bootface_common.rs:fn run_self_boot
-  - os/boot-shim/src/lib.rs:fn build_kernel_info
-  - os/kernel-image/src/bootface_common.rs:fn place_modules
-  - os/kernel/src/lib.rs:fn store_kernel_info
-  - os/kernel/src/boot/higher_half.rs:trait HigherHalf
-  - os/kernel/src/lib.rs:fn kmain_verify
-  - os/kernel/src/lib.rs:fn init_protection
-  - os/kernel-image/src/main.rs:fn rust_image_main
-  - os/kernel-image/src/bootface_a64.rs:fn bootface_a64
-  - os/kernel/src/lib.rs:fn arch_boot_finish
-  anchor_hashes:
-    os/kernel-image/src/bootface_common.rs:fn run_self_boot: 2bfc8dba547d53471b906762ab9cce46eb98c9ee6edfc4860932ab4a08b1f7a6
-    os/boot-shim/src/lib.rs:fn build_kernel_info: e80e808aaa684c5c2087ae8d8ced76237e818c88e5c87034886968fbc6d38027
-    os/kernel-image/src/bootface_common.rs:fn place_modules: ce57c687d91c5f530b852c3184f2e794a93050f229b3a1f27f4cc738400b93c6
-    os/kernel/src/lib.rs:fn store_kernel_info: f0bbc0b9181c3bdd62e4b50d00756ea4f014ab1cb3385f5c1d3d03acadd2eeed
-    os/kernel/src/boot/higher_half.rs:trait HigherHalf: 0d8b54c0ced5d5bc01413d92a3c2fcc4e45c19938f1ba4af32821f7ba18de9a3
-    os/kernel/src/lib.rs:fn kmain_verify: 486f591b34f1724699346a351c7007816898bfc1c4d43172f719611f62e50df3
-    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
-    os/kernel-image/src/main.rs:fn rust_image_main: 0ac13f12ac2bfdeb72f17a29633036dd561b4f1d6fcc123075f068d249183f5d
-    os/kernel-image/src/bootface_a64.rs:fn bootface_a64: 661bf2cce6161dcc8119d238713cac180997298fa321ea9f6c316afb991a7acb
-    os/kernel/src/lib.rs:fn arch_boot_finish: d4ba308b8b60ef275c7c140016c38d9b8c332e359d297091effb9af5d2366f15
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '4.6'
-  heading: 4.6 与 Minix3 C 的对照
-  level: 3
-  parent: '4'
-  order: 27
-  text_sha: 9ddab060e1da8991747657eb05e05b51a00c7f6c5de663cb0602c09d1f11349c
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
-  - os/kernel/src/boot/higher_half.rs:trait HigherHalf
-  anchor_hashes:
-    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
-    os/kernel/src/boot/higher_half.rs:trait HigherHalf: 0d8b54c0ced5d5bc01413d92a3c2fcc4e45c19938f1ba4af32821f7ba18de9a3
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '5'
-  heading: 5. 测试
-  level: 2
-  parent: null
-  order: 28
-  text_sha: 01c9110d24c82c46760499e9208910cd65546f2b0b4b051448ccfa7646609a12
-  t1_state: passed
-  t1_rounds: 0
-  t2_state: n/a
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '5.1'
-  heading: 5.1 宿主：解析器、装载器与建表
-  level: 3
-  parent: '5'
-  order: 29
-  text_sha: 6da1b6dcc837fc0d52dc660e6cb89d0ee8397ba159e55ceeeae320684c8259d2
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '5.2'
-  heading: 5.2 布局契约 L0–L10（唯一权威清单；L10 仅 x86_64/all 输出）
-  level: 3
-  parent: '5'
-  order: 30
-  text_sha: 7659e5cd42ba389a1d3db532378019bc871a4ff455b73f620ed11cc18f738753
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '5.3'
-  heading: 5.3 真机：`test-higher-half` 与入口面
-  level: 3
-  parent: '5'
-  order: 31
-  text_sha: 8b4f78802d6cdcd0086493d7e385f8ec6119156e55c714a76a73e71b3c89295d
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel/src/lib.rs:fn kmain_verify
-  anchor_hashes:
-    os/kernel/src/lib.rs:fn kmain_verify: 486f591b34f1724699346a351c7007816898bfc1c4d43172f719611f62e50df3
-  anchor_status: direct
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '5.4'
-  heading: 5.4 机制 → 需要证明什么（反转核对表）
-  level: 3
-  parent: '5'
-  order: 32
-  text_sha: 15557a3ff91abf8de1c3458b76e1f05780b7fba513d8047d56f1e9553d1de3c4
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '6'
-  heading: 6. 诊断
-  level: 2
-  parent: null
-  order: 33
-  text_sha: 5ba3db60a94c99bbc1cf0c1c157fff87249ad8b2f1a9a1238a1e02ed0df10a36
-  t1_state: passed
-  t1_rounds: 0
-  t2_state: n/a
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '6.1'
-  heading: 6.1 症状 → 怀疑对象 → 确认命令
-  level: 3
-  parent: '6'
-  order: 34
-  text_sha: 95ee646d176970ac4e93057962f817f1cf1a8fed06c5ac1fb4d41ac22cc5d8ff
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-- id: '6.2'
-  heading: 6.2 可复制命令
-  level: 3
-  parent: '6'
-  order: 35
-  text_sha: 704b2b72b88ac065e2d5a9efdde526023eb3a8a1633ea205ca349f9af9587600
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: D02 确认轮第二批：riscv64 GDB 示例改用 test-higher-half-riscv64 并给出高半断点地址
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '1.0'
   heading: 1.0 本章导读
   level: 3
@@ -915,10 +46,10 @@ units:
   text_sha: b48e3de0d5b241172e8ecbd75740e3d8c8fb6618dda208a29be3ce3785e15ac3
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -928,7 +59,100 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '1.1'
+  heading: 1.1 镜像的四个时刻
+  level: 3
+  parent: '1'
+  order: 3
+  text_sha: 7e71fb3326a11d813352c68eee4322c8ff549f2ae034326b5db564022a2f2ea7
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '1.2'
+  heading: 1.2 四条不变量 J1–J4
+  level: 3
+  parent: '1'
+  order: 4
+  text_sha: 6bedc136370a8e06abbfe4ad78a07b5ad2b59d7861917f5a12420f368dd3b926
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '1.3'
+  heading: 1.3 范围与接缝
+  level: 3
+  parent: '1'
+  order: 5
+  text_sha: 2d79b0aa2828386f086bf7b19654a87d2906cf2dfdcebd73b1bc761e19212ebc
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '2'
+  heading: 2. C 源码分析
+  level: 2
+  parent: null
+  order: 6
+  text_sha: 769cd5142578cc9e091af0111ecb92e2a4fa7128d43508d0436179ec2e107a73
+  t1_state: pending
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '2.0'
   heading: 2.0 本章导读
   level: 3
@@ -937,10 +161,10 @@ units:
   text_sha: 93b5f0978c3277db81d917f43c75bddfb0d8129866c2c976c5eb89a6ce3b9a2b
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -950,7 +174,169 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '2.1'
+  heading: 2.1 kernel.lds：双地址与 `AT()`
+  level: 3
+  parent: '2'
+  order: 8
+  text_sha: 075465850294592dbefbe2ef33cf42cbad9d51b0cc03dcfd4f2fe65bb6396eea
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '2.2'
+  heading: 2.2 两段式布局：unpaged 段与高半段
+  level: 3
+  parent: '2'
+  order: 9
+  text_sha: e8c43ff17817a48764ef68a9e230fcfc54daedd1ce808a7b6a08c987ef0d9056
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '2.3'
+  heading: 2.3 `head.S`：一次跳转里的两种寻址
+  level: 3
+  parent: '2'
+  order: 10
+  text_sha: 095c3f0f1f086f2bf653b0e6250cd165d646175d944d2d7e15c2cd66e2ba9077
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '2.4'
+  heading: 2.4 建表五步与位表
+  level: 3
+  parent: '2'
+  order: 11
+  text_sha: 96b2f8cbe4118af086df48a5b963a1747d3b78a3fc5654144fd1caff39956e0d
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '2.5'
+  heading: 2.5 `k_initial_stktop` 落在哪一段
+  level: 3
+  parent: '2'
+  order: 12
+  text_sha: 572da95441791d31fa7a7167ab18c757f150b6dd42b3c2128115f390bad060ee
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '2.6'
+  heading: 2.6 本章归纳：C 的“布局-摆放-映射-进入”四段
+  level: 3
+  parent: '2'
+  order: 13
+  text_sha: 866c4f9f800fc2d63acf5e756b18cae594ab88ac3cffb5536990176122717c82
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3'
+  heading: 3. Rust 设计决策
+  level: 2
+  parent: null
+  order: 14
+  text_sha: 6ca324a60d7b4b7e57fbf3a1d720ab9198b15f42e15c1b24057c6d8508986929
+  t1_state: pending
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '3.0'
   heading: 3.0 本章导读
   level: 3
@@ -959,10 +345,10 @@ units:
   text_sha: c13082350a29776dec7044f2ae409d84b56c37a5ba7d90a9b90e4b67f745b05e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -972,7 +358,215 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.1'
+  heading: 3.1 链接脚本按“谁按装载地址摆放”分三种形态
+  level: 3
+  parent: '3'
+  order: 16
+  text_sha: 62b601f247aa667f61bb8e37cad01a6a545f21dca3222136fd6420bbaf13d036
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.2'
+  heading: 3.2 ELF 解析器自建
+  level: 3
+  parent: '3'
+  order: 17
+  text_sha: 9798265b49c55378c6b3fd45cd7e321627efc0ccb62154f802caad5114ae4a78
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.3'
+  heading: 3.3 栈顶从链接符号变成派生值
+  level: 3
+  parent: '3'
+  order: 18
+  text_sha: b48b7d4301b4f6061d711a8b699beef5fa2f7e8e58a0c2c397f337d8c5711a9f
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.4'
+  heading: 3.4 `HUGE_PAGE_SIZE` 与大页能力进扩展 trait
+  level: 3
+  parent: '3'
+  order: 19
+  text_sha: 386b94010404a6c18288b82527a1ef8459b39dba3623fb8e9bdf0c944229b69e
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.5'
+  heading: 3.5 镜像跨距收口：布局要满足映射粒度
+  level: 3
+  parent: '3'
+  order: 20
+  text_sha: ea7b5855bd04f33d1e3f6c17f7e3609544d09b24b96363f9d0d753db8ea8e901
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.6'
+  heading: 3.6 自举根与映射建立的设计（J3）
+  level: 3
+  parent: '3'
+  order: 21
+  text_sha: 3ee84a3452a9ba6d172c3173692c69e0bef7843308771d5e30f7ae74212990a6
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.7'
+  heading: 3.7 成对的换栈与跳转收进一个 trait 契约
+  level: 3
+  parent: '3'
+  order: 22
+  text_sha: 4a3a70b38ab06dc2bdb53a4497a54bf0482e22331478aa6cad6fd60f85433392
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '3.8'
+  heading: 3.8 接收侧两条路径（J4）
+  level: 3
+  parent: '3'
+  order: 23
+  text_sha: 9ac8c032ef80242e98bc15f987fcaa35b3519d31f1dfc6c5c058fc56c0da9d7d
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '4'
+  heading: 4. 实现详解
+  level: 2
+  parent: null
+  order: 24
+  text_sha: 3ccf2761363ca40d8b20e4de88dd161936478019365f08c7bdafd4ce92336d66
+  t1_state: pending
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '4.0'
   heading: 4.0 本章导读
   level: 3
@@ -981,10 +575,10 @@ units:
   text_sha: ab521748a20adfa0f7ea995cf09e3b2446a9ccf4a6fdb3f564e2d36cb28decaf
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -994,7 +588,169 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '4.1'
+  heading: 4.1 链接脚本的落地
+  level: 3
+  parent: '4'
+  order: 26
+  text_sha: 4947b19cc4691c4ab8500c530d18833d1d2ad5d92bec713a1adcd2fd34c21b0d
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '4.2'
+  heading: 4.2 ELF 解析与按装载地址摆放
+  level: 3
+  parent: '4'
+  order: 27
+  text_sha: 4232761b6f76a0605402a4281e418205de90227bc79408f5a664613be26a19d2
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '4.3'
+  heading: 4.3 自举根的建立与开启
+  level: 3
+  parent: '4'
+  order: 28
+  text_sha: d668c72523917110bf27b421c786c17cc0a81d39d456c99d4157c92743198c74
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '4.4'
+  heading: 4.4 三架构的成对跳转
+  level: 3
+  parent: '4'
+  order: 29
+  text_sha: 832011f1166d7843d471bafd20d25769a3a2cb278339e20d28d5c7ef5f756f2c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '4.5'
+  heading: 4.5 从装载到 `kmain` 的完整路径
+  level: 3
+  parent: '4'
+  order: 30
+  text_sha: e727d07132e16c835994aa710c2dce70fe95dc4f2c9dce2f13ca72b5b841f0df
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '4.6'
+  heading: 4.6 与 Minix3 C 的对照
+  level: 3
+  parent: '4'
+  order: 31
+  text_sha: 9ddab060e1da8991747657eb05e05b51a00c7f6c5de663cb0602c09d1f11349c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '5'
+  heading: 5. 测试
+  level: 2
+  parent: null
+  order: 32
+  text_sha: 01c9110d24c82c46760499e9208910cd65546f2b0b4b051448ccfa7646609a12
+  t1_state: pending
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '5.0'
   heading: 5.0 本章导读
   level: 3
@@ -1003,10 +759,10 @@ units:
   text_sha: 5d40dc0f5abde24c935cd502206a28b207bdf7aac3286ce1a3c9e5fb9a0ef907
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1016,7 +772,123 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '5.1'
+  heading: 5.1 宿主：解析器、装载器与建表
+  level: 3
+  parent: '5'
+  order: 34
+  text_sha: 6da1b6dcc837fc0d52dc660e6cb89d0ee8397ba159e55ceeeae320684c8259d2
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '5.2'
+  heading: 5.2 布局契约 L0–L10（唯一权威清单；L10 仅 x86_64/all 输出）
+  level: 3
+  parent: '5'
+  order: 35
+  text_sha: 7659e5cd42ba389a1d3db532378019bc871a4ff455b73f620ed11cc18f738753
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '5.3'
+  heading: 5.3 真机：`test-higher-half` 与入口面
+  level: 3
+  parent: '5'
+  order: 36
+  text_sha: 8b4f78802d6cdcd0086493d7e385f8ec6119156e55c714a76a73e71b3c89295d
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '5.4'
+  heading: 5.4 机制 → 需要证明什么（反转核对表）
+  level: 3
+  parent: '5'
+  order: 37
+  text_sha: 15557a3ff91abf8de1c3458b76e1f05780b7fba513d8047d56f1e9553d1de3c4
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '6'
+  heading: 6. 诊断
+  level: 2
+  parent: null
+  order: 38
+  text_sha: 5ba3db60a94c99bbc1cf0c1c157fff87249ad8b2f1a9a1238a1e02ed0df10a36
+  t1_state: pending
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 - id: '6.0'
   heading: 6.0 本章导读
   level: 3
@@ -1025,10 +897,10 @@ units:
   text_sha: ffdf29cdbd94bcd0a403fb18c3da20df1ac6754bfdcd06627051df7e84bddbc5
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 24d948d5b8ffd248ff4c937b83dc1ce34ea25479
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -1038,9 +910,55 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '6.1'
+  heading: 6.1 症状 → 怀疑对象 → 确认命令
+  level: 3
+  parent: '6'
+  order: 40
+  text_sha: 95ee646d176970ac4e93057962f817f1cf1a8fed06c5ac1fb4d41ac22cc5d8ff
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
+- id: '6.2'
+  heading: 6.2 可复制命令
+  level: 3
+  parent: '6'
+  order: 41
+  text_sha: 704b2b72b88ac065e2d5a9efdde526023eb3a8a1633ea205ca349f9af9587600
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: pending
+  t2_rounds: 0
+  frozen: false
+  frozen_at: null
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds: []
+  post_freeze_rounds: []
 t3:
-  passed: true
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
-  at_commit: 4ced7b33efe284bbbf15297bc94d73ce9bd0894c
-baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round39-gates.md
+  passed: false
+  evidence: ''
+  at_commit: ''

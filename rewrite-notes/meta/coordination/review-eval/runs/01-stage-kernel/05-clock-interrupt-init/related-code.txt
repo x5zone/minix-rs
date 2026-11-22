@@ -20,6 +20,7 @@ os/kernel/src/clock.rs
 os/kernel/src/globals.rs
 os/kernel/src/irq_manager.rs
 os/kernel/src/lib.rs
+os/kernel/src/misc.rs
 os/libs/minix-platform/src/arch/x86_64.rs
 os/plat/src/arm64/interrupt.rs
 os/plat/src/early_console.rs

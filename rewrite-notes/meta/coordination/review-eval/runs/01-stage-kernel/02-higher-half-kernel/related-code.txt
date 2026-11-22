@@ -1,6 +1,9 @@
 os/arch/src/arch/boot.rs
 os/arch/src/arch/direct_map.rs
 os/arch/src/arch/stacktrace.rs
+os/arch/src/lib.rs
+os/arch/src/riscv64/paging.rs
+os/arch/src/x86_64/paging.rs
 os/boot-shim/src/lib.rs
 os/boot-shim/src/loader.rs
 os/boot-shim/src/main.rs

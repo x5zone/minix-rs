@@ -16,6 +16,7 @@ os/kernel/src/globals.rs
 os/kernel/src/lib.rs
 os/kernel/src/smp.rs
 os/kernel/src/trap_dispatch.rs
+os/kernel/tests/init_protection_order_pin.rs
 os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs
 os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs
 os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs

@@ -10,9 +10,9 @@ os/arch/src/x86_64/arch_init.rs
 os/arch/src/x86_64/clock.rs
 os/boot-shim/src/ebs_pair.rs
 os/boot-shim/src/opensbi_helpers.rs
+os/boot-shim/src/resv_claims.rs
 os/boot-shim/src/uefi_helpers.rs
 os/drivers/power/acpi/src/service.rs
-os/kernel-image/src/bootface_a64.rs
 os/kernel/src/dm_coverage.rs
 os/kernel/src/kerninfo.rs
 os/kernel/src/lib.rs
@@ -24,6 +24,7 @@ os/kernel/src/vm_handoff.rs
 os/kernel/tests/boot_integration.rs
 os/libs/minix-boot/src/handoff_v1_write.rs
 os/libs/minix-boot/src/kernel_info.rs
+os/libs/minix-boot/src/memmap_source.rs
 os/libs/minix-boot/src/platform.rs
 os/libs/minix-platform/src/acpi.rs
 os/libs/minix-platform/src/arch/aarch64.rs

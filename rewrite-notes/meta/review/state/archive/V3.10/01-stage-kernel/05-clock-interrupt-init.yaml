@@ -1,0 +1,1304 @@
+# 单元级 review 状态（V3.9）——规范源 prompt/review-rules/review-units.md
+# 由 tools/review-units.py 维护；冻结状态禁止手改。
+schema: review-units/v1
+doc: rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md
+stage: 01-stage-kernel
+edition: V3.9
+baseline_full_survey: true
+confirmation:
+  active: false
+  fixes: 1
+units:
+- id: '1'
+  heading: 1. 概述
+  level: 2
+  parent: null
+  order: 1
+  text_sha: 8e3417c217baa1d301449d0dd109d79bf045f3613d62585654bc6cd95ea96447
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '1.0'
+  heading: 1.0 本章导读
+  level: 3
+  parent: '1'
+  order: 2
+  text_sha: c65a68f4d868e88d88ebcf5d625c2634feeec1d298987bfee2c0147e3d4588e1
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '1.1'
+  heading: 1.1 03 篇之后缺的三样东西
+  level: 3
+  parent: '1'
+  order: 3
+  text_sha: ac645d56d486aec4a97af669491582a919b3c7f6d824693cbdfc26690bccaf3c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/main.c:cstart
+  - minix3/minix/kernel/arch/i386/arch_system.c:arch_init
+  - minix3/minix/kernel/clock.c:init_clock
+  - minix3/minix/kernel/clock.c:load_update
+  - minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer
+  - minix3/minix/kernel/clock.c:boot_cpu_init_timer
+  - minix3/minix/kernel/main.c:bsp_finish_booting
+  anchor_hashes:
+    minix3/minix/kernel/main.c:cstart: 8fef63d7539db97cc5826de2cb7cc7023f397c1932945dd732bd2da25817bca3
+    minix3/minix/kernel/arch/i386/arch_system.c:arch_init: 15988cf0df904de276c69f9e491dd4e5d2e993b60428b4d83eb1c25162125134
+    minix3/minix/kernel/clock.c:init_clock: 32c3ab2f243700b06fe45df3661f7d99f71c1302822687e09c667aa477ea0314
+    minix3/minix/kernel/clock.c:load_update: 1449aba1dab5bdc514bf13025027b41c1b622406741a02f8ec8d7a1f26a71174
+    minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer: eb1b09383a8ee94e610300d11fcb00784501d493130f18d9c832068d28539cce
+    minix3/minix/kernel/clock.c:boot_cpu_init_timer: a2e164682eaf863d8ad4816902060cb784d700577873be841caecad6267533bb
+    minix3/minix/kernel/main.c:bsp_finish_booting: d6f46fe0fa87921991faabdb761fe8f7f888d72090e4f70ebcf7db9cc4b948f8
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '1.2'
+  heading: 1.2 中断控制器在这条链上做什么
+  level: 3
+  parent: '1'
+  order: 4
+  text_sha: 8dc77a21c5ab03e52609c623c6efec8c9073c22f4c80c6ba5f84fbbf47eee1bc
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/interrupt.c:irq_handle
+  anchor_hashes:
+    minix3/minix/kernel/interrupt.c:irq_handle: e0d47d206b1068935b6c0743687f5032127c49cf856b739806940a32720a2755
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '1.3'
+  heading: 1.3 三架构的时钟源、控制器与架构杂项
+  level: 3
+  parent: '1'
+  order: 5
+  text_sha: 48828cd66719c02b514b16512b890737bc8f544cf917fb07a84917d8d06225c1
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '1.4'
+  heading: 1.4 本篇范围与可以安全跳过的内容
+  level: 3
+  parent: '1'
+  order: 6
+  text_sha: 25e698145daa73ae0bcb5daf4bbd438e7531be3d13bc00206f6f97cd51ca48d9
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2'
+  heading: 2. C 源码分析
+  level: 2
+  parent: null
+  order: 7
+  text_sha: c517f78326513fde841d1ea18b7f8cdc01a59fa03e2347aad939bb93441c4f80
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.0'
+  heading: 2.0 本章导读
+  level: 3
+  parent: '2'
+  order: 8
+  text_sha: 2b6482fb61c85d8ed1920831fee02f044346b9f70b6f3aa5c0bd4b855bcf3a6f
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.1'
+  heading: 2.1 cstart 的三行调用与它们之间的准备
+  level: 3
+  parent: '2'
+  order: 9
+  text_sha: 1a37124858bd0e41c6a98459f74b5f70d4764150f33c9226a0503ce9de2694e8
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/main.c:cstart
+  - minix3/minix/kernel/main.c:get_value
+  anchor_hashes:
+    minix3/minix/kernel/main.c:cstart: 8fef63d7539db97cc5826de2cb7cc7023f397c1932945dd732bd2da25817bca3
+    minix3/minix/kernel/main.c:get_value: e0c0757751f97ae284315dc6b9127119d5f889040d3941990144be4617f25b7a
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.2'
+  heading: 2.2 init_clock：只清软件状态
+  level: 3
+  parent: '2'
+  order: 10
+  text_sha: 495d006e8bc09df6b6479d692a539f9c59b2dbb04dfcf90e0f7cfe1805fc9351
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/clock.c:init_clock
+  - minix3/minix/kernel/clock.c:load_update
+  - minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer
+  anchor_hashes:
+    minix3/minix/kernel/clock.c:init_clock: 32c3ab2f243700b06fe45df3661f7d99f71c1302822687e09c667aa477ea0314
+    minix3/minix/kernel/clock.c:load_update: 1449aba1dab5bdc514bf13025027b41c1b622406741a02f8ec8d7a1f26a71174
+    minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer: eb1b09383a8ee94e610300d11fcb00784501d493130f18d9c832068d28539cce
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.3'
+  heading: 2.3 intr_init 的十次 outb（源码 12 行）
+  level: 3
+  parent: '2'
+  order: 11
+  text_sha: 572c0340d18250829494913fcbbaea94f2af35ee9225ebd8f001aabcf832a4b5
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/i8259.c:intr_init
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/i8259.c:intr_init: e3cf7a5c04dd9250f2550604f21d9e79ab2b81d8eb20b008c7bb21b0d7f51dec
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.4'
+  heading: 2.4 arch_init：x86 的六件事与它对 system_hz 的依赖
+  level: 3
+  parent: '2'
+  order: 12
+  text_sha: 6f208afe02e0b75af9a57763645d7c9abe57b428da25f679d7ff0959837384c9
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/i386/arch_system.c:arch_init
+  - minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init
+  anchor_hashes:
+    minix3/minix/kernel/arch/i386/arch_system.c:arch_init: 15988cf0df904de276c69f9e491dd4e5d2e993b60428b4d83eb1c25162125134
+    minix3/minix/kernel/arch/i386/apic.c:apic_single_cpu_init: 898b40a6085e04d70cebbe77c57e310b7bd231ae8a5be3b75c329226dec189ea
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.5'
+  heading: 2.5 ARM 一侧的同一格：`arch_init` 与 `intr_init` 的另一种答法
+  level: 3
+  parent: '2'
+  order: 13
+  text_sha: d7b74da365be72ccb1faae1bf57079dea53d6b46aeea02c27743927b3ee4a05c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/earm/arch_system.c:arch_init
+  - minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init
+  - minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler
+  - minix3/minix/kernel/arch/earm/arch_clock.c:register_local_timer_handler
+  - minix3/minix/kernel/interrupt.c:irq_handle
+  anchor_hashes:
+    minix3/minix/kernel/arch/earm/arch_system.c:arch_init: 912ad64ccf3a3771fe3741e5b21dedc93b57faa3bb74261bb8bef3f9c2fd4f63
+    minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init: 26fc0285c4feae34f24703433752b77d8e20358cb8292f060cdf8a53d8dfcda7
+    minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler: 3c2354c978df125b54fa8d87725b793c8ab75dd8c3f26d33f7df67d319d585b1
+    minix3/minix/kernel/arch/earm/arch_clock.c:register_local_timer_handler: 60ab0816817b6147134ba009ca4a82aac38a98bed6553322285a8e025bce6a49
+    minix3/minix/kernel/interrupt.c:irq_handle: e0d47d206b1068935b6c0743687f5032127c49cf856b739806940a32720a2755
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.6'
+  heading: 2.6 持久 tick 源不在 cstart 里：`boot_cpu_init_timer` 的三段与它的位置（APIC 形态另有一段 PIT 校准窗口）
+  level: 3
+  parent: '2'
+  order: 14
+  text_sha: 9d54ae9943989af701fe58182502db3b75d4658c04a3c8b2ca2115a9f36bd7fb
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/clock.c:boot_cpu_init_timer
+  - minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer
+  - minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer
+  - minix3/minix/kernel/arch/i386/arch_clock.c:estimate_cpu_freq
+  - minix3/minix/kernel/arch/i386/arch_clock.c:register_local_timer_handler
+  - minix3/minix/kernel/interrupt.c:put_irq_handler
+  - minix3/minix/kernel/main.c:bsp_finish_booting
+  anchor_hashes:
+    minix3/minix/kernel/clock.c:boot_cpu_init_timer: a2e164682eaf863d8ad4816902060cb784d700577873be841caecad6267533bb
+    minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer: eb1b09383a8ee94e610300d11fcb00784501d493130f18d9c832068d28539cce
+    minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer: 62c0b47a4ff47de8a02511d15f6d38ca0bea2c53a3ae0827ac0ecab1a4737a40
+    minix3/minix/kernel/arch/i386/arch_clock.c:estimate_cpu_freq: 0f9c98b19cbabc335bd8f8d7513011e55005355260d496e2811688c7821d8398
+    minix3/minix/kernel/arch/i386/arch_clock.c:register_local_timer_handler: 4248ecb206519a74c2035b2a5a97d8d3531bff04a3dd3dfdfb5aa7a0a1430011
+    minix3/minix/kernel/interrupt.c:put_irq_handler: ebaacb95558c4e184fe8ef95e9a029d0d289b78eec566656e185c2f27d1263b6
+    minix3/minix/kernel/main.c:bsp_finish_booting: d6f46fe0fa87921991faabdb761fe8f7f888d72090e4f70ebcf7db9cc4b948f8
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '2.7'
+  heading: 2.7 本章归纳
+  level: 3
+  parent: '2'
+  order: 15
+  text_sha: f029dcf74f570ca42d551ae233339fef355c380f4acc3a8989e23196f81c20f3
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3'
+  heading: 3. Rust 设计决策
+  level: 2
+  parent: null
+  order: 16
+  text_sha: 628a42982fcd2d7cc0a662edb84fcd0ec65e5ac0bc086e51af46950b6da09e1f
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.0'
+  heading: 3.0 本章导读
+  level: 3
+  parent: '3'
+  order: 17
+  text_sha: e83fcb94226211e047a064131799ef93162455092fe68b8267f71d7930e1b7d7
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: D05 确认轮：TimerIrqGate 单方法、4.7 唯一编排点、6.0 学习目标去 GDB
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.1'
+  heading: 3.1 决策：ClockArch —— 把软件状态与硬件定时器分开（→§2.2、§2.6）
+  level: 3
+  parent: '3'
+  order: 18
+  text_sha: d68143d0fe37f89e402042476f88e335ef162baffe851de6764b6109f6002822
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/clock.c:init_clock
+  - minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer
+  - os/arch/src/arch/clock.rs:trait ClockArch
+  - os/kernel/src/lib.rs:fn boot_init_timer
+  - os/kernel/src/clock.rs:fn local_tick
+  anchor_hashes:
+    minix3/minix/kernel/clock.c:init_clock: 32c3ab2f243700b06fe45df3661f7d99f71c1302822687e09c667aa477ea0314
+    minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer: eb1b09383a8ee94e610300d11fcb00784501d493130f18d9c832068d28539cce
+    os/arch/src/arch/clock.rs:trait ClockArch: e93c783e55829795eb12afa3f5e5c7be2ea054ae6a955efaa32ada7ebcde53fa
+    os/kernel/src/lib.rs:fn boot_init_timer: cb959e585460b3a9d7e9834d28a8386a525cbb95c63e8bb2f4d568a723c57554
+    os/kernel/src/clock.rs:fn local_tick: d10737fbb4d2d2bc8a3349945c4638dad5efd06daf500f8c894dd63882a45be6
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.2'
+  heading: 3.2 决策：DEFAULT_HZ 用编译时常量，范围的守卫留在构造器（→§2.2）
+  level: 3
+  parent: '3'
+  order: 19
+  text_sha: da737f63b4c645206e618bd2d99978a9d23af2f093757f93050463fa812a6606
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/arch/clock.rs:const DEFAULT_HZ
+  - os/kernel/src/clock.rs:fn with_hz
+  - os/kernel/src/lib.rs:fn boot_init_timer
+  anchor_hashes:
+    os/arch/src/arch/clock.rs:const DEFAULT_HZ: 0a503e13332528238b19b18fc3be20d809d466ce5aef2a9fc0849d4c67be0603
+    os/kernel/src/clock.rs:fn with_hz: c60b5d65a52362c99237738f2622ed410ee5887b21b3360dc446645cb2c09c60
+    os/kernel/src/lib.rs:fn boot_init_timer: cb959e585460b3a9d7e9834d28a8386a525cbb95c63e8bb2f4d568a723c57554
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.3'
+  heading: 3.3 决策：把控制器拆成 InterruptRouter 与 PerCpuInterruptUnit（→§2.3、§2.5）
+  level: 3
+  parent: '3'
+  order: 20
+  text_sha: 029dcb0b057ed4bd61ba8a9e20c7cdb72ad7fd1373bd3a50601a29102b973e63
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/plat/src/interrupt.rs:trait InterruptRouter
+  - os/plat/src/interrupt.rs:trait PerCpuInterruptUnit
+  - os/plat/src/riscv64/interrupt.rs:const PLIC_COMPLETE
+  anchor_hashes:
+    os/plat/src/interrupt.rs:trait InterruptRouter: ee6e2d32a7f7ff529722b425b6f45762c730affb7ccbbc0fc0231ccd12daea48
+    os/plat/src/interrupt.rs:trait PerCpuInterruptUnit: 799e2f1a9bb0bc06bf189600529ac28d632da7fd6395a126ec80b29c24df0cda
+    os/plat/src/riscv64/interrupt.rs:const PLIC_COMPLETE: 9e508c599237e9f62bdb248878c5ee03dd5ae71830b9528a7b10e0e9b0e13177
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.4'
+  heading: 3.4 决策：控制器的归宿是全局 `IRQ_MANAGER`（→§2.4）
+  level: 3
+  parent: '3'
+  order: 21
+  text_sha: 0b839877a4e1ef441b1ba9a127b614942d4d90a95408412dd220b3efe4db9edc
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn init_clock_and_interrupts
+  - os/kernel/src/irq_manager.rs:struct IrqManager
+  - os/kernel/src/lib.rs:fn irq_manager_boot_unchecked
+  - os/kernel/src/lib.rs:fn irq_manager_with
+  - os/kernel/src/lib.rs:fn clock_state_with
+  - os/kernel/src/lib.rs:fn clock_state_boot_unchecked
+  - os/plat/src/arm64/interrupt.rs:fn claim
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn init_clock_and_interrupts: 637154b3863adf75857120a995b73c499037f07c7982ec28efbc9e249a7d2c86
+    os/kernel/src/irq_manager.rs:struct IrqManager: 1f74e34b46c79044c9bd4caed691de4253f584bf383fc7a0c8bb20b15be2929c
+    os/kernel/src/lib.rs:fn irq_manager_boot_unchecked: 45d90d5410c2b66e2eb81d23e8635cdef3b8841aa12a3ef385b98d66436704bf
+    os/kernel/src/lib.rs:fn irq_manager_with: 05b94aed1cebc6c436909ff3a22c6606cfc34e10561861bd81e614dca9e1b7d3
+    os/kernel/src/lib.rs:fn clock_state_with: b8dcbd4f71140fcac6979aad3af33c49572dc8b464c4c4f80594525e5f7fa572
+    os/kernel/src/lib.rs:fn clock_state_boot_unchecked: 4391b8c3a433a68916b8cfa6cd60880848c2fa38b7555d65a9aa6c131e5e3f85
+    os/plat/src/arm64/interrupt.rs:fn claim: 9e53cb2c831f81c884261a96d098ca9bb981a6bd685b66f23542efeaa09bee7d
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.5'
+  heading: 3.5 决策：ArchInit 是阶段 trait（→§2.4、§2.5）
+  level: 3
+  parent: '3'
+  order: 22
+  text_sha: 8b2d8291551342450efa434943caf4162206efc36deb19acfc5836c07067a2ca
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/arch/arch_init.rs:trait ArchInit
+  - os/arch/src/riscv64/arch_init.rs:fn init
+  - os/arch/src/riscv64/timer_irq_gate.rs:fn enable_timer_irq
+  anchor_hashes:
+    os/arch/src/arch/arch_init.rs:trait ArchInit: 5de6763affd485c99f4d800bdae26a052cc6d7dd917bd18fffb6952db2991f92
+    os/arch/src/riscv64/arch_init.rs:fn init: bc0b7ffaa2fb002da3eadcfa5724c68b5870847fef5646b2bd30f76225c9fd14
+    os/arch/src/riscv64/timer_irq_gate.rs:fn enable_timer_irq: f3f5c3eb8153bc5b06a86de5c5671c42c34435cd272c460e4f5e3ca71068dec9
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.6'
+  heading: 3.6 决策：内存裁剪不进 `ArchInit`（→§2.4）
+  level: 3
+  parent: '3'
+  order: 23
+  text_sha: b5cb39f298ea2176ab49c8108d85187900cf02775bf0dffbbb54e759f6301eb0
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/arch_init.rs:fn init
+  anchor_hashes:
+    os/arch/src/x86_64/arch_init.rs:fn init: 4e25f9422aeb9c0aff532f9efd653f398516cdb7585a3cafb29be0ad43f4bd10
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.7'
+  heading: 3.7 决策：定时器的"编程、注册、放行"三段分离（→§2.6）
+  level: 3
+  parent: '3'
+  order: 24
+  text_sha: ef04c3bcd10a131d998abadf51ba8355e03b9c01407ea61cd52b132a10e661e5
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn boot_init_timer
+  - os/arch/src/arch/timer_irq_gate.rs:trait TimerIrqGate
+  - os/arch/src/x86_64/timer_irq_gate.rs:struct X86_64TimerIrqGate
+  - os/kernel/src/irq_manager.rs:fn dispatch_claimed
+  - os/arch/src/arm64/clock.rs:fn init_timer
+  - os/arch/src/riscv64/clock.rs:fn init_timer
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn boot_init_timer: cb959e585460b3a9d7e9834d28a8386a525cbb95c63e8bb2f4d568a723c57554
+    os/arch/src/arch/timer_irq_gate.rs:trait TimerIrqGate: aea3974154416a1b4e9f15e71e95e9428f22c6b0ffd6b9f248b61cba4dfad2e5
+    os/arch/src/x86_64/timer_irq_gate.rs:struct X86_64TimerIrqGate: 76e9961682cc62d5142d994893a3464ed5a257d457a7ee72112ca17d6afa189f
+    os/kernel/src/irq_manager.rs:fn dispatch_claimed: 4950142dc8d9b5492503744f9ebcf9aa20cb300d4fbe43a892faf06487b589e7
+    os/arch/src/arm64/clock.rs:fn init_timer: 2a3812fddf4c3c0df024d5756efa08a3a7384a5935b7a476b20f3ab3e7a9baee
+    os/arch/src/riscv64/clock.rs:fn init_timer: aba06b784ed31fbfd54a6cbc4d47ab6c5cc2657d8ff44ac0e3282742118650f2
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '3.8'
+  heading: 3.8 决策：三架构差异与三档术语的落点（→§2.5）
+  level: 3
+  parent: '3'
+  order: 25
+  text_sha: 76e5873b6f822f422efd75d9a1995e61f1ae3df2605d549e60245067462f6692
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init
+  - minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler
+  - os/arch/src/arch/clock.rs:const DEFAULT_HZ
+  - os/arch/src/riscv64/clock.rs:fn read_ticks
+  anchor_hashes:
+    minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init: 26fc0285c4feae34f24703433752b77d8e20358cb8292f060cdf8a53d8dfcda7
+    minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler: 3c2354c978df125b54fa8d87725b793c8ab75dd8c3f26d33f7df67d319d585b1
+    os/arch/src/arch/clock.rs:const DEFAULT_HZ: 0a503e13332528238b19b18fc3be20d809d466ce5aef2a9fc0849d4c67be0603
+    os/arch/src/riscv64/clock.rs:fn read_ticks: fff52d4917df081da5905524e62978c2a6043f8e41985ae992415396d439384e
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4'
+  heading: 4. 实现详解
+  level: 2
+  parent: null
+  order: 26
+  text_sha: 2302dc523f14e5d41708e7d05c18f869eb7a9340c1070ee37d1d981d4c632ae0
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.0'
+  heading: 4.0 本章导读
+  level: 3
+  parent: '4'
+  order: 27
+  text_sha: 6174ce7f4ce9fa3c889b8ac4ad3beccf81bcd2e7b5d4ad893e90a6e8532ed637
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.1'
+  heading: 4.1 `init_clock_and_interrupts` 的逐步走查（→3.1、3.3、3.4、3.5）
+  level: 3
+  parent: '4'
+  order: 28
+  text_sha: 1df1328b891e1a84ede2a38721a82b0c1ea7d7b9891e97f46623b4b4b627d1fe
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn init_clock_and_interrupts
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn init_clock_and_interrupts: 637154b3863adf75857120a995b73c499037f07c7982ec28efbc9e249a7d2c86
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.2'
+  heading: 4.2 `ClockState`：软件状态的形状（→3.1、3.2）
+  level: 3
+  parent: '4'
+  order: 29
+  text_sha: 8bf27cc4ab14278cb9092b2e4b884c2b04c57805bdee613dc3ff1d94e40b77e2
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/clock.rs:struct ClockState
+  - minix3/minix/kernel/clock.c:timer_int_handler
+  - os/kernel/src/clock.rs:fn new_for_cpu
+  - os/kernel/src/clock.rs:fn tick_bsp
+  - os/kernel/src/clock.rs:fn set_alarm_timer
+  - os/kernel/src/clock.rs:fn tick_with
+  anchor_hashes:
+    os/kernel/src/clock.rs:struct ClockState: d0d4917d32a1cac78af97066a28f54185ab5eb12259d36e2c5532f85f1a63db0
+    minix3/minix/kernel/clock.c:timer_int_handler: b7fc40fe7e97a1cc049e3e6c268f4da38d9273ef0cbc224744a2a5cd6c565695
+    os/kernel/src/clock.rs:fn new_for_cpu: 90c39fc8f97baabe8baa10a878b5adc2cb3062f72b02cb99de1f545f8b0aa315
+    os/kernel/src/clock.rs:fn tick_bsp: 9c66a5dada6ae2b5b221f7fe9cc23ce1c4e6fd15ced0f0a8c8ef5bd1f0be355b
+    os/kernel/src/clock.rs:fn set_alarm_timer: a122be74ec4f0d8f936a52eba58aa48dbc9c38041a8be73809524f521d7350e6
+    os/kernel/src/clock.rs:fn tick_with: 954dd6176af94cd384e3c8835f320ffa0dfce60e0e8dd9530eee0b8a27dcaee1
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.3'
+  heading: 4.3 `ClockArch` 的三架构实现（→3.1）
+  level: 3
+  parent: '4'
+  order: 30
+  text_sha: b06029ee2e3475f8a71bd6aee44d33e08228c3edc11d3290adbfca38182a9a61
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/clock.rs:fn init_timer
+  - minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer
+  - os/libs/minix-platform/src/arch/x86_64.rs:struct PitDesc
+  - os/arch/src/arm64/clock.rs:fn init_timer
+  - os/arch/src/arm64/clock.rs:fn rearm_next_tick
+  - os/arch/src/riscv64/clock.rs:fn init_timer
+  - os/arch/src/riscv64/clock.rs:fn sbi_set_timer
+  anchor_hashes:
+    os/arch/src/x86_64/clock.rs:fn init_timer: 08235080a5e56b508f8f8115205fa7df498669f5221b864a17af037d98c8b6cd
+    minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer: 62c0b47a4ff47de8a02511d15f6d38ca0bea2c53a3ae0827ac0ecab1a4737a40
+    os/libs/minix-platform/src/arch/x86_64.rs:struct PitDesc: 2950e68defee3b07a363d5bbeacc8c2fcb49ebae2ab76751e4f7892abc1a727e
+    os/arch/src/arm64/clock.rs:fn init_timer: 2a3812fddf4c3c0df024d5756efa08a3a7384a5935b7a476b20f3ab3e7a9baee
+    os/arch/src/arm64/clock.rs:fn rearm_next_tick: 7f5ead07e5dc4ac7ff6703a238f331dbd849b5fbd267821eb3d23aae5eb26b1d
+    os/arch/src/riscv64/clock.rs:fn init_timer: aba06b784ed31fbfd54a6cbc4d47ab6c5cc2657d8ff44ac0e3282742118650f2
+    os/arch/src/riscv64/clock.rs:fn sbi_set_timer: d165d767c895f0eeacad68f16670b9a4c842fde40d25c4e13dc516232777de32
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.4'
+  heading: 4.4 `InterruptRouter` 的三架构实现（→3.3、3.8）
+  level: 3
+  parent: '4'
+  order: 31
+  text_sha: 3de24bd62c9e3a74610df6d87b74494504c4dab07e1ca6c92e5e024eef91dd2d
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/plat/src/x86_64/interrupt.rs:fn init_lapic
+  - os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin
+  - os/plat/src/arm64/interrupt.rs:fn init_distributor
+  - os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME
+  - os/plat/src/riscv64/interrupt.rs:fn init
+  - os/plat/src/x86_64/interrupt.rs:fn mask_all
+  - os/plat/src/arm64/interrupt.rs:fn mask_all
+  - os/plat/src/riscv64/interrupt.rs:fn mask_all
+  - os/plat/src/arm64/interrupt.rs:fn init_redistributor
+  anchor_hashes:
+    os/plat/src/x86_64/interrupt.rs:fn init_lapic: f5ee5254ead245ef21cca008e74925a7f380f9d3a507d0e01f4b9f05641b98b6
+    os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin: 708fc62761a4ce8cf347c14403d42fc2552f80553e682f06a7ab01b7ad029272
+    os/plat/src/arm64/interrupt.rs:fn init_distributor: 54391fffe2f4d239848f4d76bacc086bad10eb5b83450457cd1f792510ee3c36
+    os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME: c80eac11197963818de552dc128afd58df29da6e0fe7351e659b190bf5c25487
+    os/plat/src/riscv64/interrupt.rs:fn init: e685a38cd46ff4fbaf404e5620bb4e948813e3f45355f147e18a670d42998848
+    os/plat/src/x86_64/interrupt.rs:fn mask_all: 0b544ee7f31bcedb4b099d30188cbe76a8990a8ab53f3e33ccf50e0eac3e658c
+    os/plat/src/arm64/interrupt.rs:fn mask_all: 9571aac45b4eeac0630befa4a2e568370bb2a90e2f53c1b977c9bb80ab7fe4b8
+    os/plat/src/riscv64/interrupt.rs:fn mask_all: 18b9999ef23413435e575fe999302d9669ffb1032b835330b2f583220e27c1b6
+    os/plat/src/arm64/interrupt.rs:fn init_redistributor: 8f73b0d4bb23c53ecb71e81a19b7df9107888808024634c492af090103654402
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.5'
+  heading: 4.5 `PerCpuInterruptUnit`：claim/complete 的三种回答（→3.3）
+  level: 3
+  parent: '4'
+  order: 32
+  text_sha: ac9f79df89438a71fa02ae7ac9db6aa552d796935b5fef86abb9ddb3f2726595
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/plat/src/x86_64/interrupt.rs:fn claim
+  - os/plat/src/arm64/interrupt.rs:fn claim
+  - os/plat/src/riscv64/interrupt.rs:fn claim_context
+  - os/kernel/src/irq_manager.rs:fn dispatch_claimed
+  anchor_hashes:
+    os/plat/src/x86_64/interrupt.rs:fn claim: 237b300dc34069b37b1035f4961503073df303f962585aff560b1740954e82d9
+    os/plat/src/arm64/interrupt.rs:fn claim: 9e53cb2c831f81c884261a96d098ca9bb981a6bd685b66f23542efeaa09bee7d
+    os/plat/src/riscv64/interrupt.rs:fn claim_context: eebd2df3d6ea2948f4112a7f93c0be28fc0b8f67d17d4685a1cdd08531beee14
+    os/kernel/src/irq_manager.rs:fn dispatch_claimed: 4950142dc8d9b5492503744f9ebcf9aa20cb300d4fbe43a892faf06487b589e7
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.6'
+  heading: 4.6 `ArchInit` 的三架构实现（→3.5、3.6）
+  level: 3
+  parent: '4'
+  order: 33
+  text_sha: 075b6aed165af7455d4678a835a04203ca0753b5b1c27e174d11cb3951bdbf9c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/x86_64/arch_init.rs:fn init
+  - os/arch/src/arm64/arch_init.rs:fn init
+  - os/arch/src/riscv64/arch_init.rs:fn init
+  anchor_hashes:
+    os/arch/src/x86_64/arch_init.rs:fn init: 4e25f9422aeb9c0aff532f9efd653f398516cdb7585a3cafb29be0ad43f4bd10
+    os/arch/src/arm64/arch_init.rs:fn init: ea0c2c5d8da7cff821e3f7f74582579842a1db68928cf17d295a03143bcf4b30
+    os/arch/src/riscv64/arch_init.rs:fn init: bc0b7ffaa2fb002da3eadcfa5724c68b5870847fef5646b2bd30f76225c9fd14
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.7'
+  heading: 4.7 `boot_init_timer`：编程、注册、放行（→3.7）
+  level: 3
+  parent: '4'
+  order: 34
+  text_sha: 908e9cbe88f1393e9483d9ab3082af897ab176668593e4dc6267fa8c7a69d4b5
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn boot_init_timer
+  - os/kernel/src/clock.rs:fn clock_irq_handler
+  - os/plat/src/x86_64/interrupt.rs:fn pic_init
+  - os/kernel/src/lib.rs:fn bsp_finish_booting
+  - os/arch/src/x86_64/trap_return.rs:const IF_MASK
+  - os/plat/src/arm64/interrupt.rs:fn init_redistributor
+  - os/plat/src/arm64/interrupt.rs:fn init_cpu_interface
+  - os/kernel/src/irq_manager.rs:fn register_hook
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn boot_init_timer: cb959e585460b3a9d7e9834d28a8386a525cbb95c63e8bb2f4d568a723c57554
+    os/kernel/src/clock.rs:fn clock_irq_handler: a053998f902206e3c7ede7c5cb428e7688f7bea3c83f95c6664990a7e9543218
+    os/plat/src/x86_64/interrupt.rs:fn pic_init: e7b2da57b8ef5f58f1d2097f04dea179e7d40caddbe67f156a3a6ad7a74328e5
+    os/kernel/src/lib.rs:fn bsp_finish_booting: 6891fea29254759880b1d6e12a91b29d02f26e95a7784fea4bdb561c117074be
+    os/arch/src/x86_64/trap_return.rs:const IF_MASK: 4f26559d557b7e97399cbb467e48a269697c32d9ee1e0856930deacef605854e
+    os/plat/src/arm64/interrupt.rs:fn init_redistributor: 8f73b0d4bb23c53ecb71e81a19b7df9107888808024634c492af090103654402
+    os/plat/src/arm64/interrupt.rs:fn init_cpu_interface: 1a6f83a2fc2104390b2f5d980a6ab931874c0971bba9755c8900722da4cee490
+    os/kernel/src/irq_manager.rs:fn register_hook: b17afc9d9a17d81b8563fd765c14c534a3b84f3eb4d9aaade1b69eb417ac2aa7
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.8'
+  heading: 4.8 `IrqManager::register_hook` 的注册路径（→3.3、3.4、3.7）
+  level: 3
+  parent: '4'
+  order: 35
+  text_sha: af72bdaf2e4eba23b28b9b8049bf05958854c450a211101fc1c29a850795fb93
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/irq_manager.rs:fn register_hook_at_slot
+  - minix3/minix/kernel/interrupt.c:put_irq_handler
+  anchor_hashes:
+    os/kernel/src/irq_manager.rs:fn register_hook_at_slot: 9c8e1a733650b5933bacd0154dde6f3342c6bea8953d1eb950111e01856729a6
+    minix3/minix/kernel/interrupt.c:put_irq_handler: ebaacb95558c4e184fe8ef95e9a029d0d289b78eec566656e185c2f27d1263b6
+  anchor_status: fallback
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.9'
+  heading: 4.9 三架构 `TIMER_IRQ` 的取值与硬件理由（→3.8）
+  level: 3
+  parent: '4'
+  order: 36
+  text_sha: a1e7a5ce9896a73338aa0cff1302fec6761ae380f69142483a551213908903b5
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/plat/src/lib.rs:const TIMER_IRQ
+  - os/plat/src/x86_64/interrupt.rs:const TIMER_IRQ
+  - os/plat/src/arm64/interrupt.rs:const TIMER_IRQ
+  - os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ
+  - os/plat/src/riscv64/interrupt.rs:fn mask
+  anchor_hashes:
+    os/plat/src/lib.rs:const TIMER_IRQ: a73756adcae4e08b78d4761df39d4ec8e1a095eebdfe4e9d9d5888039c4f5472
+    os/plat/src/x86_64/interrupt.rs:const TIMER_IRQ: ccbe2a9ced384c800d40b362d9ce53c19741d0ccb336ffcb657cb2a114650e5c
+    os/plat/src/arm64/interrupt.rs:const TIMER_IRQ: 46bb87ed8ca2bf4f6c150ebfbd761885a6dbb0ea227bd497186064688d9a4796
+    os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ: ccbe2a9ced384c800d40b362d9ce53c19741d0ccb336ffcb657cb2a114650e5c
+    os/plat/src/riscv64/interrupt.rs:fn mask: e9cde97d7d4268c387a49ec03c58116cbbacf89b722c340390512b5e985662bc
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '4.10'
+  heading: 4.10 全局存储与访问契约（→3.4）
+  level: 3
+  parent: '4'
+  order: 37
+  text_sha: d1d0d85f937f7b4e2fef3c967d6088b643b6b0f00fe9c0a20899558f9e47d451
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn irq_manager_boot_unchecked
+  - os/kernel/src/lib.rs:fn irq_manager_with
+  - os/kernel/src/lib.rs:fn clock_state_boot_unchecked
+  - os/kernel/src/lib.rs:fn clock_state_with
+  - os/kernel/src/lib.rs:fn try_smp_state
+  - os/kernel/src/lib.rs:fn smp_state_with
+  - os/kernel/src/clock.rs:fn clock_irq_handler
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn irq_manager_boot_unchecked: 45d90d5410c2b66e2eb81d23e8635cdef3b8841aa12a3ef385b98d66436704bf
+    os/kernel/src/lib.rs:fn irq_manager_with: 05b94aed1cebc6c436909ff3a22c6606cfc34e10561861bd81e614dca9e1b7d3
+    os/kernel/src/lib.rs:fn clock_state_boot_unchecked: 4391b8c3a433a68916b8cfa6cd60880848c2fa38b7555d65a9aa6c131e5e3f85
+    os/kernel/src/lib.rs:fn clock_state_with: b8dcbd4f71140fcac6979aad3af33c49572dc8b464c4c4f80594525e5f7fa572
+    os/kernel/src/lib.rs:fn try_smp_state: 6fe041f0e579f34cfd6b643f3fcf6ebe2170104d2ede0af549c32e8a97e91f91
+    os/kernel/src/lib.rs:fn smp_state_with: c6acdff2b9d3a838db2e8e98707226c5c8372d5dad69d41f9ee21a0d8162bf92
+    os/kernel/src/clock.rs:fn clock_irq_handler: a053998f902206e3c7ede7c5cb428e7688f7bea3c83f95c6664990a7e9543218
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '5'
+  heading: 5. 测试要点
+  level: 2
+  parent: null
+  order: 38
+  text_sha: 42b18c8d60875a6d5d1fe6b8226aaf0ab5ac2293015abc07b2b01667fbd74328
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '5.0'
+  heading: 5.0 本章导读
+  level: 3
+  parent: '5'
+  order: 39
+  text_sha: b64a379fa20896b5ee0c678cdf004084d24203abe7ecf1b24d12d178016f0093
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '5.1'
+  heading: 5.1 宿主测试：读数与口径
+  level: 3
+  parent: '5'
+  order: 40
+  text_sha: 1c7d14017644d3a91e2e1910a6139edc2f4ca8b55355cfa8f229b0dfc8af7695
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '5.2'
+  heading: 5.2 真机（QEMU）载体：`test-timer-irq`
+  level: 3
+  parent: '5'
+  order: 41
+  text_sha: bbe84b546e3123f2757dc12a31336d7b63e3ce1d3542f4c3313d002385c356b2
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '5.3'
+  heading: 5.3 机制 → 需要证明什么（反转核对表）
+  level: 3
+  parent: '5'
+  order: 42
+  text_sha: be38dbcdeb61dd638da56c8b051438ba3eb897764157f5f653b4a4fc8adf3333
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '5.4'
+  heading: 5.4 缺口与诚实披露
+  level: 3
+  parent: '5'
+  order: 43
+  text_sha: a50d3ba545d528c2cd268e2fe303bfdce7db8ae514dae85ec365a81d26042413
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '6'
+  heading: 6. 诊断
+  level: 2
+  parent: null
+  order: 44
+  text_sha: 9073a7357e62bfb82f8eaea4a85aa88300a64de8134c353d579be76993e5dd03
+  t1_state: passed
+  t1_rounds: 0
+  t2_state: n/a
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '6.0'
+  heading: 6.0 本章导读
+  level: 3
+  parent: '6'
+  order: 45
+  text_sha: 23146d475fa394db5578ebcde9692f3e2aa5e1ce320d45354b0700b2de87d9fc
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '6.1'
+  heading: 6.1 症状 → 怀疑对象 → 确认命令
+  level: 3
+  parent: '6'
+  order: 46
+  text_sha: 1d9e4066ac3c30d5395d84d89ad8c1fbfa852bc483e34a6fd4fe8e9d7bc49450
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/irq_manager.rs:fn register_hook_at_slot
+  - os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin
+  - os/kernel/src/lib.rs:fn boot_init_timer
+  - os/arch/src/arm64/clock.rs:fn rearm_next_tick
+  - os/arch/src/riscv64/clock.rs:fn local_timer_eoi
+  - os/kernel/src/clock.rs:fn local_tick
+  - os/arch/src/arm64/clock.rs:fn init_timer
+  - os/arch/src/riscv64/arch_init.rs:fn init
+  - os/plat/src/arm64/interrupt.rs:fn init_redistributor
+  - os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME
+  - os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ
+  - os/kernel/src/lib.rs:fn init_clock_and_interrupts
+  - os/kernel/src/lib.rs:fn clock_state_with
+  - os/arch/src/x86_64/clock.rs:fn init_timer
+  - os/plat/src/x86_64/interrupt.rs:fn ioapic_route_and_mask
+  anchor_hashes:
+    os/kernel/src/irq_manager.rs:fn register_hook_at_slot: 9c8e1a733650b5933bacd0154dde6f3342c6bea8953d1eb950111e01856729a6
+    os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin: 708fc62761a4ce8cf347c14403d42fc2552f80553e682f06a7ab01b7ad029272
+    os/kernel/src/lib.rs:fn boot_init_timer: cb959e585460b3a9d7e9834d28a8386a525cbb95c63e8bb2f4d568a723c57554
+    os/arch/src/arm64/clock.rs:fn rearm_next_tick: 7f5ead07e5dc4ac7ff6703a238f331dbd849b5fbd267821eb3d23aae5eb26b1d
+    os/arch/src/riscv64/clock.rs:fn local_timer_eoi: 0d623749a147ed6d71dd90a3212709a97b12cfbc228995036fd59fcb2cf57a46
+    os/kernel/src/clock.rs:fn local_tick: d10737fbb4d2d2bc8a3349945c4638dad5efd06daf500f8c894dd63882a45be6
+    os/arch/src/arm64/clock.rs:fn init_timer: 2a3812fddf4c3c0df024d5756efa08a3a7384a5935b7a476b20f3ab3e7a9baee
+    os/arch/src/riscv64/arch_init.rs:fn init: bc0b7ffaa2fb002da3eadcfa5724c68b5870847fef5646b2bd30f76225c9fd14
+    os/plat/src/arm64/interrupt.rs:fn init_redistributor: 8f73b0d4bb23c53ecb71e81a19b7df9107888808024634c492af090103654402
+    os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME: c80eac11197963818de552dc128afd58df29da6e0fe7351e659b190bf5c25487
+    os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ: ccbe2a9ced384c800d40b362d9ce53c19741d0ccb336ffcb657cb2a114650e5c
+    os/kernel/src/lib.rs:fn init_clock_and_interrupts: 637154b3863adf75857120a995b73c499037f07c7982ec28efbc9e249a7d2c86
+    os/kernel/src/lib.rs:fn clock_state_with: b8dcbd4f71140fcac6979aad3af33c49572dc8b464c4c4f80594525e5f7fa572
+    os/arch/src/x86_64/clock.rs:fn init_timer: 08235080a5e56b508f8f8115205fa7df498669f5221b864a17af037d98c8b6cd
+    os/plat/src/x86_64/interrupt.rs:fn ioapic_route_and_mask: 7f8b179ce45bd345c3bc517e887b3364df05f6561d55a2ca50a635f83c4377df
+  anchor_status: direct
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+- id: '6.2'
+  heading: 6.2 可复制命令与预期输出
+  level: 3
+  parent: '6'
+  order: 47
+  text_sha: da482071b434e322f03af959c7c1b4ed74dbb2e08ae1c0892b97d1d6301f2129
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+t3:
+  passed: true
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
+  at_commit: 731994fd1e0e79b2584bcc65f8adfd0eec221eda
+baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/05-clock-interrupt-init/certify/round39-gates.md
