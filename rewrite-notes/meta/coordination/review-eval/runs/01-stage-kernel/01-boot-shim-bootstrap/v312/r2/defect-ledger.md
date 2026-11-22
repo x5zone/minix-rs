@@ -17,7 +17,7 @@
 | READER-C-03 | 3.4.1 | ① | §3.4.1 的生产镜像清单补 aarch64 直核 `fw-aarch64-none`，判据结论覆盖五条生产腿。 | rg -n 'aarch64 直核镜像 `fw-aarch64-none`' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-07 | R2 |
 | READER-B-01 | 2.1 | ① | §2.1 的 load_mods 反序段拆成“正常分配”与“模块表分配失败”两句。 | rg -n '正常分配下反序：表仍会建' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-08 | R2 |
 | DESIGN-01 | 3.6, 4.3 | ⑤ | 待作者裁决：是否把 `MODULE_NAMES` 与 `BOOT_MODULE_PROC_NRS` 合并成一张 `{name, proc_nr}` 表。案件卷 `R2-DESIGN-CASE.md`。 | 待裁决；当前两张表的位置关系由 §4.3 反事实与测试描述覆盖 | R2-11 | DESIGN-D2 R2 |
-| DESIGN-02 | 3.2, 4.4.2 | ⑤ | 待作者裁决：`kmain` 的 `validate()` 是否改 `validate_requiring_sources()`。案件卷 `R2-DESIGN-CASE.md`。 | 待裁决；当前 `kmain` 走非 strict `validate()` | R2-12 | DESIGN-D2 R2 |
+| DESIGN-02 | 3.2, 4.4 | ⑤ | 待作者裁决：`kmain` 的 `validate()` 是否改 `validate_requiring_sources()`。案件卷 `R2-DESIGN-CASE.md`。 | 待裁决；当前 `kmain` 走非 strict `validate()` | R2-12 | DESIGN-D2 R2 |
 | READER-A-05 | 3.5.1 | ① | §3.5.1 的 `prepare_boot` 统一为“不属于任何 trait 的自由函数”。 | rg -n '`prepare_boot` 是不属于任何 trait 的自由函数' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-13 | R2 |
 | READER-A-06 | 3.2.1 | ① | §3.2.1 的字段计数补全 16 → 13 → 14 → 10 链条。 | rg -n '字段计数的完整链条是 16' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-14 | R2 |
 | READER-C-04 | 4.5 | ① | §4.5 的 wrapper 引文注明“一次性守卫在 land_and_store 入口，本引文省略”。 | rg -n '一次性守卫在 land_and_store 入口' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-15 | R2 |
@@ -29,10 +29,10 @@
 | READER-C-10 | 5.1 | ① | §5.1 补四个计数的成员集合（生产腿/门链/有门链的腿/aarch64 直核 SMP 门）。 | rg -n '四个计数的成员不同' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-21 | R2 |
 | DESIGN-03 | 3.7 | ① | §3.7 的“半提交 → 第二次 fill panic”改为“重复提交 → 第二次 fill panic；半提交不可表示”。 | rg -n '重复提交 → 走 `fill_\*` 的腿第二次调用 panic' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-22 | DESIGN-D2 R2 |
 | DESIGN-04 | kernel_info.rs | ① | `KernelInfo::source_audit()` 改为 `#[cfg(test)]`；两个 `Default` 保留（idiomatic，删除会新增 `clippy::new_without_default`，判 FP）。 | rg -n -B1 'pub fn source_audit' os/libs/minix-boot/src/kernel_info.rs（期望 1，上一行为 `#[cfg(test)]`）；`rg -n 'impl Default for (BootStorage|BootAlloc)' os`（期望 2，保留） | R2-23 | DESIGN-D2 R2 |
-| DESIGN-05 | handoff_v1_write.rs, uboot_main.rs | ① | 删除三处 startup 分区/记录残留注释；`(d73)` 串口串保留（QEMU 脚本依赖），记 FP。 | rg -n 'deliberately \*not\* cleared|named by a startup record|param/startup' os/libs/minix-boot/src/handoff_v1_write.rs os/boot-shim/src/uboot_main.rs（期望 0） | R2-24 | DESIGN-D2 R2 |
+| DESIGN-05 | handoff_v1_write.rs, uboot_main.rs | ① | 删除三处 startup 分区/记录残留注释；`(d73)` 串口串保留（QEMU 脚本依赖；该串非缺陷，不作 FP 行计数）。 | rg -n 'deliberately \*not\* cleared|named by a startup record|param/startup' os/libs/minix-boot/src/handoff_v1_write.rs os/boot-shim/src/uboot_main.rs（期望 0） | R2-24 | DESIGN-D2 R2 |
 | FACT-01 | 3.4.2, 4.2 | ① | 两处“代码引用/节选”块注明代码表达式按语义重排、非逐字。 | rg -n '代码行按语义重排，非逐字|代码表达式也按语义重排' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 2） | R2-25 | P-FACT R2 |
 | REFUTE-02 | 1.2, 5.1 | ① | I4 明确限定为接收侧；v1 发送侧 `prepare_kernel_image_v1` 的窗口消费不在门链内。 | rg -n '校验先于消费（接收侧）' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-26 | P-REFUTE R2 |
-| REFUTE-06 | 1.4, 3.7 | ① | §1.4 栈顶分工补“名字与初始分工归 02、01 只展开接收侧语义”；§3.7 的 `fill_source_records` 改为 U-Boot shim 与两个直核腿使用、UEFI 腿不走。 | rg -n 'names 与初始分工归 02|`fill_source_records` 在 U-Boot shim 与两个直核腿使用' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 ≥1） | R2-27 | P-REFUTE R2 |
+| REFUTE-06 | 1.4, 3.7 | ① | §1.4 栈顶分工补“名字与初始分工归 02、01 只展开接收侧语义”；§3.7 的 `fill_source_records` 改为 U-Boot shim 与两个直核腿使用、UEFI 腿不走。 | rg -n '名字与初始分工归 02|`fill_source_records` 在 U-Boot shim 与两个直核腿使用' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 ≥1） | R2-27 | P-REFUTE R2 |
 
 ## P-REFUTE 附加
 

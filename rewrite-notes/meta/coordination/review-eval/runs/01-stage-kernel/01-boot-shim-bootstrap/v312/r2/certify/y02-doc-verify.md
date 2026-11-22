@@ -1,15 +1,15 @@
 # y02 R2 文档独立复验（D01 R2）
 
-VERDICT: **FAIL**
+VERDICT: **PASS（复检 `fcc992c6` 后；初检 `34bee52f` 为 FAIL，原因与逐条证据保留在下文）**
 
 - 时间：2026-11-23（本机 CST）
 - 目标文档：`/home/xzhao/github/minix-rs/rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
-- 文档 sha256：`34bee52fc837f16f4f9685fa2cc3d34ee311fad66ceaad70dfa2b6527aced55c`（2,951 行；与任务给定基线一致）
+- 文档 sha256：初检 `34bee52fc837f16f4f9685fa2cc3d34ee311fad66ceaad70dfa2b6527aced55c`（2,951 行；与任务给定基线一致）；复检 `fcc992c685e841ae0441fa0280afa2f7c2a716f69b34cd9fb4334cae6fe155d7`（2,951 行，见文末复检节）
 - 基线 commit：`76ac760b4`；修复 commit：`11a33354c`
 - 台账：`rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/defect-ledger.md`（25 行：① 23、⑤ 2）
 - 面板：同 run `panel/round2/`（6 份报告，INDEX 记录 25 FINDING）
 - 方法：只读文档、台账、面板与源码；独立重跑台账的每条 `复验` 命令与 8 个文档门；未修改目标文档或任何代码。唯一写入是本报告。复验前后文档 sha 不变。
-- 协调层说明（2026-11-23）：R2 台账 `open=3`（DESIGN-01/02 的 ⑤ 行）是预期状态；**本报告的 FAIL 不以 open 数或“⑤ 仍 open”为依据**，两个 `⑤` 行本身判 PASS（保持 open 且指向案件卷）。FAIL 的依据只有下文 N-01、N-02、N-03 三处：R2-13 的新段落内矛盾、R2-23 的新未用导入警告、R2-23/R2-24 的 `复验` 命令不成立。
+- 协调层说明（2026-11-23）：R2 台账 `open=3`（DESIGN-01/02 的 ⑤ 行）是预期状态；**初检的 FAIL 不以 open 数或“⑤ 仍 open”为依据**，两个 `⑤` 行本身判 PASS（保持 open 且指向案件卷）。初检 FAIL 的依据只有下文 N-01、N-02、N-03 三处：R2-13 的新段落内矛盾、R2-23 的新未用导入警告、R2-23/R2-24 的 `复验` 命令不成立；这三处在复检 `fcc992c6` 上已闭合，见文末。
 - 工作区并发写入说明：复验期间出现未跟踪文件 `…/v312/r2/R2-COLD-READ-CASE.md`（非本 verifier 创建）；本报告不依赖它。冷读 NOT-READY 由另案记录，不在本报告射程。
 
 ## 总判定依据
@@ -20,7 +20,7 @@ VERDICT: **FAIL**
 2. **R2-13 的修复引入新的段落内矛盾**：`§3.5.1` 改写后同一句写“理由有三条”，随后用分号列出四项；并且该段仍把 `RiscvUbootBootShim` 写成“唯一实现”，而该类型与 `BootShim` trait 在当前 `os/` 中均不存在（新发现 N-01，P3）。
 3. 两个 `⑤` 行处置正确：DESIGN-01/02 保持 open，指向 `R2-DESIGN-CASE.md`；代码与文档都没有假装修完（源码仍是两张表、`kmain` 仍走非 strict `validate()`）。
 
-因此本报告给 **FAIL**：不是 8 个文档门失败，而是“23 个 `①` 全部落地 + 每条 `复验` 可重放”这一台账级断言不成立。若只修台账命令与 N-01/N-02，文档内容侧不阻断。
+因此初检（`34bee52f`）给 **FAIL**：不是 8 个文档门失败，而是“23 个 `①` 全部落地 + 每条 `复验` 可重放”这一台账级断言不成立。**协调层随后修复了这三处阻断**；复检（`fcc992c6`）确认 N-01/N-02 与 R2-23/R2-24 的台账命令均已闭合，最终判定改为 **PASS**，逐条证据见文末“复检（fcc992c6）”节。R2 仍因 ⑤ 设计裁决保持 `BLOCKED`，本 PASS 只覆盖文档/代码内容侧。
 
 ## 逐根因
 
@@ -89,7 +89,7 @@ VERDICT: **FAIL**
 
 ## 新发现
 
-### N-01（P3，P0-fact 类内容）：§3.5.1 改写后“三条理由”实为四条，且引用不存在的 `RiscvUbootBootShim`/`BootShim` trait
+### N-01（P3，P0-fact 类内容；复检已清）：§3.5.1 改写后“三条理由”实为四条，且引用不存在的 `RiscvUbootBootShim`/`BootShim` trait
 
 - 位置：`DOC` L1549。
 - 证据：
@@ -98,21 +98,21 @@ VERDICT: **FAIL**
 - 影响：读者会去找一个不存在的类型/ trait；该段把已删除 trait 的“唯一实现”理由与现行自由函数设计混在同一句，正好落入出版标准禁止的“旧形态叙事”（虽然机械 publication 门因无编号/无时间词未命中）。
 - 最小修复：整段重写为现状陈述，例如“`prepare_boot` 是 `opensbi_helpers` 的自由函数，由 `uboot_main` 直接调用；没有对象分派，也没有需要保留的 trait 接缝。测试接缝由 `FileLoader` 提供。”删掉 `RiscvUbootBootShim`/`dyn BootShim`/“单实现 trait”这些已不存在对象的叙述；若要保留设计史的教学价值，改写成反事实（“若曾抽成单实现 trait，它既不是接缝也不是扩展点，因此不值得保留”），并同步把“理由有三条”改成实际条数。
 
-### N-02（P3，代码清理）：`source_audit` 改 `#[cfg(test)]` 后留下未用导入警告
+### N-02（P3，代码清理；复检已清）：`source_audit` 改 `#[cfg(test)]` 后留下未用导入警告
 
 - 位置：`os/libs/minix-boot/src/kernel_info.rs:8`、`:561`。
 - 证据：`cd os && cargo check -p minix-boot --offline --message-format short` → `libs/minix-boot/src/kernel_info.rs:8:28: warning: unused imports: InputObjectId and SourceAuditError`。`SourceAuditError` 的唯一使用点是 L561 的 `#[cfg(test)] pub fn source_audit`（测试调用 L776）；基线该方法非 `cfg(test)`，因此 `SourceAuditError` 不是未用导入，这条警告是本次修复新引入的。`InputObjectId` 的未用导入在基线就存在（测试用全限定路径），不归本次。
 - 影响：非测试构建的警告面扩大；`check-clippy-ratchet` 若只看 clippy 不一定抓 rustc 的 unused_imports，但代码出版标准要求干净。
 - 最小修复：把 `SourceAuditError` 从顶层 `use` 移到测试模块，或在方法签名写 `crate::memmap_source::SourceAuditError`；同时顺手把 `InputObjectId` 的存量未用导入清掉（可另记，不混入本条判定）。
 
-### N-03（P3，台账/证据完整性）：两条 `复验` 命令的期望值与处置不一致，另有编号/指针瑕疵
+### N-03（P3，台账/证据完整性；R2-23/R2-24 命令复检时已改，剩余项见文末）：两条 `复验` 命令的期望值与处置不一致，另有编号/指针瑕疵
 
 - R2-23：`复验` 期望 0，但处置明确允许 `#[cfg(test)]` 保留 `pub fn source_audit`，两者互斥。应改为两条：`rg -n '#\[cfg\(test\)\]\n *pub fn source_audit' -U os/libs/minix-boot/src/kernel_info.rs` 期望 1（或改用直接删除并把测试一并处理），加 `rg -n 'impl Default for BootStorage|impl Default for BootAlloc' os` 期望 0。
 - R2-24：`复验` 期望 0，但 `uboot_main.rs:517` 的“No startup-object partition is written”是基线就存在的准确注释，`handoff_v1_write.rs:391` 是改写后的准确现状句；真正的三处误导性残留（`uboot_main.rs:485`、`prepare_boot` 的 startup 段、`handoff_v1_write.rs:391` 的旧句）已清零。应把 `复验` 改成针对旧串的窄模式（如 `rg -n 'named by a startup|startup from the argv|deliberately \*not\* cleared' …` 期望 0），或在文档/代码里统一改为“v10 无 startup 分区”的措辞并接受非零命中。
 - R2-27：`复验` 第一支写 `names 与初始分工归 02`，文档 L115 实际是“名字与初始分工归 02”，该支永不命中；第二支命中，行判定仍成立。应改中文“名字”。
 - R2-12：`单元` 列写 `4.4.2`，但文档只有 §4.4 与 §4.4.1，没有 §4.4.2（`rg -n '^#### 4\.' DOC` 只返回 4.2.1/4.2.2/4.4.1）。案件卷/面板也沿用了这个不存在的节号。
 - 台账行号跳过 R2-09/R2-10；25 个 FINDING 对应 25 行无遗漏，但“逐条 R2-01..R2-27”的机械遍历会出现空号。
-- 台账 R2-24 记 `(d73)` 为 FP，但 `metrics.md` 的 `处置: … FP 0` 与 `未闭环: 2`、`loop.md` §7 的“台账 open=3”互相不一致（前者说 FP 0，后者说 open 3；实际 open 是两条 ⑤）。`metrics.md` 的 `自引入: 3` 也没有明细，按 `review-evals.md` §4.0c 自引入缺陷的 `origin` 应记引入轮；这属于本轮轨迹的元数据风险。
+- 台账 R2-24 记 `(d73)` 为 FP，但 `metrics.md` 与台账头部的 `处置: … FP 0` 没有把该子项计入。协调层确认 `open=3` 是预期状态，因此本报告不把 open 计数或 FP 口径差列为判定依据，只记作元数据口径风险。`metrics.md` 的 `自引入: 3` 也没有明细，按 `review-evals.md` §4.0c 自引入缺陷的 `origin` 应记引入轮。
 
 ## D1/D2 案件卷
 
@@ -130,3 +130,30 @@ VERDICT: **FAIL**
 - “§3.4.1 enum”在文中没有 `enum` 关键字；本报告按 READER-C-03 的“生产镜像枚举”理解并核过。若任务原意是另一对象，需要再指认。
 - `R2-23` 的 `cfg(test)` 方案依赖测试模块能访问 `source_audit`；当前 `cargo check` 只证非测试构建可编译（带警告），未重跑 `cargo test -p minix-boot --lib`。台账/loop 记录的 188/0 是修复者读数，本 verifier 未重放。
 - 工作区在复验期间有并发写入（新增未跟踪 `R2-COLD-READ-CASE.md`）；本报告不依赖其内容。
+
+## 复检（fcc992c6）
+
+RECHECK: **PASS**
+
+- 新文档 sha256：`fcc992c685e841ae0441fa0280afa2f7c2a716f69b34cd9fb4334cae6fe155d7`（2,951 行），与协调层给定一致。相对初检，`git diff HEAD -- DOC` 只改 §3.5.1 两行：段内“理由有三条”→“理由有两条”、删去 `RiscvUbootBootShim`/`BootShim` 提及、签名补生命周期。
+- **N-01 PASS**：
+  - `rg -n 'RiscvUbootBootShim|BootShim' DOC` → exit 1（0 命中）。
+  - `rg -n '理由有两条' DOC` → L1549，1 处；两个分号项为“没有 `dyn` 分派，`prepare_boot` 是自由函数，不参与对象分派”与“测试接缝实际由 `FileLoader` 提供，不是任何引导 trait”，与“两条”一致。
+  - `rg -n -F "签名是 \`prepare_boot<'a>(&'a mut BootStorage, bump_pages) -> BootPrepareResult<'a>\`" DOC` → L1551；源码 `os/boot-shim/src/opensbi_helpers.rs:241-244` 的 `storage: &'a mut minix_boot::BootStorage, bump_pages: usize) -> minix_boot::BootPrepareResult<'a>` 与之一致。
+- **N-02 PASS**：
+  - `sed -n '8,10p' os/libs/minix-boot/src/kernel_info.rs` → `use crate::memmap_source::{InputObjectId, RamAuthority, SourceRecord};` 加 `#[cfg(test)] use crate::memmap_source::SourceAuditError;`。
+  - `cd os && cargo check -p minix-boot --offline --message-format short` → exit 0；只剩 `kernel_info.rs:8:28: warning: unused import: InputObjectId`（基线既有，非本次引入）与 `memmap_source.rs:39`（基线既有）；`SourceAuditError` 警告消失。
+  - `cargo clippy -p minix-boot --offline --message-format short` → exit 0；两个 `Default` 恢复后没有新增 `new_without_default`，输出中的 8 条为存量。
+- **R2-23 台账命令 PASS**：
+  - `rg -n -B1 'pub fn source_audit' os/libs/minix-boot/src/kernel_info.rs` → `562- #[cfg(test)]`、`563: pub fn source_audit`（1 处；上一行即 `#[cfg(test)]`）。
+  - `rg -n 'impl Default for (BootStorage|BootAlloc)' os` → 2 处（`os/libs/minix-boot/src/boot_storage.rs:108`、`os/kernel/src/boot_alloc.rs:41`），与“期望 2，保留”一致。
+- **R2-24 台账命令 PASS**：
+  - `rg -n 'deliberately \*not\* cleared|named by a startup record|param/startup' os/libs/minix-boot/src/handoff_v1_write.rs os/boot-shim/src/uboot_main.rs` → exit 1（0 命中），与“期望 0”一致。
+- 变更段未新增/删除锚点、代码块、章节标题或容量数字；按协调层“无需重跑 8 门全部”的要求，补跑三个廉价门作回归：`AWK=gawk tools/doc-ref-check.sh DOC` → `✅ 内部章节引用均可解析`；`tools/doc-style-lint.sh DOC` → `error级=0`；`python3 tools/doc-publication-check.py DOC` → `无新增违规`。anchor/code-map/rubric/citation/density 的初检读数仍适用于同一文档主体。
+- 复检后仍存在的非阻断元数据项（不改变 PASS）：
+  - 台账头部仍写 `FP 0`，而 R2-23 行把两个 `Default` 标为 FP（子项）；建议把口径统一成“R2-23 主体 ①、`Default` 子项 FP”，或把 FP 计 1。
+  - `metrics.md` 的 `自引入: 3` 仍无明细；按 `review-evals.md` §4.0c 应给引入轮与条目。
+  - 协调层确认 `open=3` 是预期状态；本报告不把 open 计数作为判定项。
+  - R2 仍 `BLOCKED` 于 DESIGN-01/02 的作者裁决；本 PASS 不表示 `CONVERGED`。
+
+`RECHECK: PASS` 的含义仅限：初检列出的三处阻断（N-01、N-02、R2-23/R2-24 复验命令）在 `fcc992c6` 上已闭合；8 门初检读数与“两个 ⑤ 保持 open”的结论不变。

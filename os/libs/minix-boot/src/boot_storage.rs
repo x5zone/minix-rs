@@ -283,7 +283,6 @@ impl BootStorage {
     }
 }
 
-
 /// Borrowed semantic view of a [`BootStorage`] plus the kernel scalars.
 ///
 /// This is what a v1 sender passes to the kernel entry. The kernel image's

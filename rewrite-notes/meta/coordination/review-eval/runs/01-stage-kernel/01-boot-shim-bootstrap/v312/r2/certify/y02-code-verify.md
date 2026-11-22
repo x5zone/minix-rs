@@ -161,3 +161,142 @@ N5（观察，非缺陷）：`(d73)` 仍是生产串口输出里的过程编号�
 - `rustfmt --check` 的其余差异是存量，不计入本轮；N4 只列本轮新引入的两个空行。
 - 未对照 `minix3/` C 源码复核行为基线：本轮没有语义改动，C 真值对账归事实面板。
 - QEMU 未跑：三处注释与两处 API 面清理不改变运行时行为；`(d73)` 串未动，真机门依赖不变。
+
+## 复检（N1/N2/N4）
+
+RECHECK: FAIL
+
+（唯一未闭合项是 N4 的两处连续空行；N1、N2、N3 与全部构建/测试读数通过。删掉两个空行即可翻 PASS。）
+
+- 复检时间：2026-11-23 07:00 CST
+- 基线：commit `11a33354c` + 工作区未提交修复（`git diff HEAD -- os/` → 3 files, +15/−1；`git status --porcelain -- os/` 只有这三个文件）。修复尚未提交，下面读数以工作区源码为准。
+
+### N1（clippy `new_without_default`）— 已修（PASS）
+
+```
+$ rg -n -A4 'impl Default for (BootStorage|BootAlloc)' os
+os/kernel/src/boot_alloc.rs:41:impl Default for BootAlloc {
+os/libs/minix-boot/src/boot_storage.rs:108:impl Default for BootStorage {
+（两处都恢复为 `fn default() -> Self { Self::new() }`，插在各自 `new()` 的 impl 之前）
+
+$ cargo clippy -p minix-boot -p minix-kernel
+warning: `minix-boot` (lib) generated 8 warnings
+warning: `minix-kernel` (lib) generated 130 warnings
+Finished `dev` profile ...        （exit 0）
+
+$ grep -c new_without_default /tmp/y02-r2/recheck-clippy.log
+0
+```
+
+两条 `new_without_default` 消失，两个 crate 的警告数从 9/131 回到 8/130（与父提交的构造推算一致）。工作区全量按同一口径推算回落 2 条（366 → 364）；仍高于旧基线 341 的 23 条是存量，与本轮无关。N1 的处置（DESIGN-04 的 Default 部分判 FP）已写进台账第 31 行。
+
+### N2（`SourceAuditError` 未用导入）— 已修（PASS）
+
+```
+$ sed -n '5,12p' os/libs/minix-boot/src/kernel_info.rs
+use crate::memmap_source::{InputObjectId, RamAuthority, SourceRecord};
+#[cfg(test)]
+use crate::memmap_source::SourceAuditError;
+use crate::boot_storage::BootReport;
+
+$ cargo clippy -p minix-boot -p minix-kernel | grep SourceAuditError
+（无输出）
+```
+
+非 test 构建不再报 `SourceAuditError` 未用；剩下的 `unused import: InputObjectId`（`kernel_info.rs:8`）是改前就有的存量（HEAD~1 同样命中），不属于本轮新增项。N2 闭合。
+
+### N3（台账复验口径）— 已修（PASS）
+
+台账第 31/32 行已改成可判定口径，逐条执行：
+
+```
+$ rg -n -B1 'pub fn source_audit' os/libs/minix-boot/src/kernel_info.rs
+562-    #[cfg(test)]
+563:    pub fn source_audit(&self) -> Option<SourceAuditError>       （1 命中，上一行正是 cfg(test)）
+
+$ rg -n 'impl Default for (BootStorage|BootAlloc)' os
+os/kernel/src/boot_alloc.rs:41
+os/libs/minix-boot/src/boot_storage.rs:108                         （2 命中，与「保留」一致）
+
+$ rg -n 'deliberately \*not\* cleared|named by a startup record|param/startup' \
+    os/libs/minix-boot/src/handoff_v1_write.rs os/boot-shim/src/uboot_main.rs
+（无输出，exit 1）                                                （0 命中，与期望一致）
+```
+
+### N4（删除点连续空行）— 未修（FAIL）
+
+用户说明「删除点空行已清」，但工作区源码里两处连续空行仍在：
+
+```
+$ awk '/^$/{c++; if(c==2) print "double blank starts at line " NR-1; next} {c=0}' \
+    os/libs/minix-boot/src/boot_storage.rs
+double blank starts at line 285
+
+$ awk '/^$/{c++; if(c==2) print "double blank starts at line " NR-1; next} {c=0}' \
+    os/kernel/src/boot_alloc.rs
+double blank starts at line 163
+
+$ sed -n '283,288p' os/libs/minix-boot/src/boot_storage.rs | cat -A
+    }$
+}$
+$
+$
+/// Borrowed semantic view of a [`BootStorage`] plus the kernel scalars.$
+
+$ sed -n '160,166p' os/kernel/src/boot_alloc.rs | cat -A
+        Ok((PhysBytes(pa), VirBytes(pa)))$
+    }$
+}$
+$
+$
+// ── Global instance (production path) ──$
+```
+
+原因：修复把 `Default` impl 插回了 `impl BootStorage`/`impl BootAlloc` 之前（108/41 行），没有触碰主 impl 末尾原来的删除点，于是 R2 留下的 285-286 与 163-164 两个空行原样保留。对照 `git show 5b8325437:...` 的父提交：两文件在该位置都只有 1 个空行，确认这是 R2 引入、复检未清。最小修复：各删 1 个空行（`boot_storage.rs` 删 285 或 286；`boot_alloc.rs` 删 163 或 164）。
+
+### 复检读数（全部在 docker minix-ci:1.94、`-m 2g -j 1`、cwd=`os/` 下重跑）
+
+| 命令 | 读数 |
+|---|---|
+| `cargo test -p minix-boot --lib` | `ok. 188 passed; 0 failed; 0 ignored` |
+| `cargo test -p minix-kernel --features mock --lib` | `ok. 866 passed; 0 failed; 8 ignored` |
+| `cargo check -p minix-kernel` | `Finished dev profile`，0 error，`minix-kernel (lib) 87 warnings` |
+| `cargo clippy -p minix-boot -p minix-kernel` | exit 0；minix-boot 8 warnings、minix-kernel 130 warnings；`new_without_default` 0 命中、`SourceAuditError` 0 命中 |
+
+行为面：复检只恢复两个 `Default` impl 并拆分一个 test-only 导入，没有任何运行时代码路径变化；`source_audit` 仍为 `#[cfg(test)]`，三处 startup 注释仍为否定式，`(d73)` 未动。
+
+## RECHECK2（N4 空行）
+
+RECHECK2: PASS
+
+- 时间：2026-11-23 07:10 CST
+- 基线：HEAD `039b03d0e`（N1/N2/N3 修复与首版本报告已入库）+ 工作区仅剩 N4 的空行删除。`git diff HEAD --stat -- os/` → 2 files changed, 2 deletions(-)，且 `git diff HEAD -- os/` 的两条 hunk 都只是删除一个空行，没有别的源码改动。
+- 要求只核这两处，读数如下。
+
+```
+$ awk '/^$/{c++; if(c==2) print "double blank starts at line " NR-1; next} {c=0}' \
+    os/libs/minix-boot/src/boot_storage.rs
+（无输出）
+
+$ awk '/^$/{c++; if(c==2) print "double blank starts at line " NR-1; next} {c=0}' \
+    os/kernel/src/boot_alloc.rs
+（无输出）
+```
+
+```
+$ sed -n '282,287p' os/libs/minix-boot/src/boot_storage.rs | cat -A
+        }$
+    }$
+}$
+$
+/// Borrowed semantic view of a [`BootStorage`] plus the kernel scalars.$
+
+$ sed -n '160,165p' os/kernel/src/boot_alloc.rs | cat -A
+        Ok((PhysBytes(pa), VirBytes(pa)))$
+    }$
+}$
+$
+// ── Global instance (production path) ──$
+```
+
+两处都从「`}` + 两个空行 + 后续项」变成「`}` + 一个空行 + 后续项」，`awk` 零命中、`cat -A` 各只有一行 `$`。与父提交 `5b8325437` 的同位置形态一致。N4 闭合；上一节的 `RECHECK: FAIL` 所指标的已消除，本节的 PASS 覆盖该结论。

@@ -62,7 +62,9 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 
 ### §5 复验
 
-- 待独立 doc/code verifier 回；当前文档 sha `34bee52f…`（2,951 行）。
+- 独立 doc verifier：初检 FAIL（台账 R2-23/24 命令 + N-01/N-02），修复后 `RECHECK: PASS`
+  （doc `fcc992c6…`，2,951 行）；8 门读数不变，两个 ⑤ 保持 open。
+- 独立 code verifier：PASS；N1/N2/N3 复检 PASS，N4 空行已修，等 `RECHECK2`。
 - 冷读：`HARD-REJECTIONS: 4`、`VERDICT: NOT-READY`（`../../cold-read/y02-d01-r2.md`）；
   四个硬阻断是结构性的（实现节选不可跟随、版本历史混入正文、多套编号/计数、权威表式交叉引用），
   案件卷 `R2-COLD-READ-CASE.md`。R1 的 READY 不再代表当前文档。

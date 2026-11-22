@@ -161,7 +161,6 @@ impl BootAlloc {
     }
 }
 
-
 // ── Global instance (production path) ──
 
 static BOOT_ALLOC: BootAlloc = BootAlloc::new();
