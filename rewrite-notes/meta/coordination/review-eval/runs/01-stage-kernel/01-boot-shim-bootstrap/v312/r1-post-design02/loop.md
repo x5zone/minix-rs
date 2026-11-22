@@ -25,7 +25,37 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 
 ### §1 面板
 
-待本轮填写。计划 6 角色；每个角色 fresh、互不可见；报告写 `panel/round1/`。
+本轮 R1 是 DESIGN-02（b）落地后的 full survey，文档 2,946 行，启动链高风险，按
+`review-panel.md` 表 A 启 6 角色；每个角色 fresh、互不可见。
+
+- `P-FACT`：全文 + `related-code.txt`（49 个 Rust 文件）+ D-024/D-047/D-062/D-116/D-117/D-119
+  一行裁决；不读历史面板/台账/结论。
+- `READER-A`：全文 + 读者画像 + §4.0e 十条；不读源码、其他文档、学习范围表、历史评审。
+- `READER-B`：同 A，角色为结构编辑。
+- `READER-C`：同 A，角色为因果一致性；R1 不是 G18，不给学习范围表。
+- `DESIGN-D2`：Ch3/Ch4 + 49 个关联 Rust 文件（按锚点）+ `trait-audit.json`
+  + AGENTS 约束 + D-047/D-062/D-110/D-111/D-112/D-119；D1 停跑，记
+  `VARIANCE: D-024`；不读作者解释/历史评审/其他面板输出。
+- `P-REFUTE`：全文 + 关联源码 + `SCOPE.md` + 相关 DECISIONS 一行裁决；
+  不读作者结论/历史评审/其他面板输出。
+
+输入隔离：读者 A/B/C 不拿学习范围表；面板子 agent 只写
+`tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/v312-r1-post-design02/<role>.md`，
+不写仓库文件；面板前后各跑一次 `git status --porcelain`，有新改动即丢弃重跑。
+
+事件（`event plan` 于 2026-11-23，doc sha `996ff161…`，target commit `df3441a57…`）：
+
+- P-FACT `REV-20261123-36BA35EA`；READER-A `REV-20261123-B792E52E`；
+  READER-B `REV-20261123-8899DFE0`；READER-C `REV-20261123-D9196E35`；
+  DESIGN-D2 `REV-20261123-80E27F98`；P-REFUTE `REV-20261123-92A2BD16`。
+- 映射表：`tmp/review-loop/01-stage/evidence/y01b-event-map-role.csv`；
+  面板完成后由 `tmp/review-loop/01-stage/bin/complete-panel-events-post.sh` 逐个
+  `event complete`，报告副本加调度绑定 `DOC` 行后写入 `panel/round1/`。
+- 面板派发前 `git status --porcelain`：仅 `events.csv` 由本步骤 `event plan` 修改；
+  两个未跟踪文件保持不变（`tmp/review-loop/01-stage/evidence/y01-post-design02-pre-panel.txt`）。
+- 面板提示词：`tmp/review-loop/01-stage/panel-prompts-post/{fact,reader-a,reader-b,reader-c,design-d2,refute}.md`。
+- 独立设计批复核：`tmp/review-loop/01-stage/panel-prompts-post/design02-verifier.md`，
+  报告写 `tmp/review-loop/01-stage/certify/design02-verify.md`，与面板并行、不共享结论。
 
 ### §2 发现
 
