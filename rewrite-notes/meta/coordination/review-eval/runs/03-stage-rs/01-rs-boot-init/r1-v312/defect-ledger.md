@@ -22,7 +22,7 @@
 | R1-13（FACT-05） | 1 | ① | `run()` 返回 `Result<(), Errno>`；main 对 Err panic | `rg -n 'pub fn run' rewrite-notes/03-stage-rs/01-rs-boot-init.md` |
 | R1-14（FACT-07/C-02/A-13） | 1 | ① | 测试基线统一 359/0；三模块 42 项（boot 37/table 3/sef 2）；361 个 #[test] 含 2 个 feature-gated | `rg -n '359|361|42 项' rewrite-notes/03-stage-rs/01-rs-boot-init.md` |
 | R1-15（FACT-08/C-10） | 1 | ① | 修正 step_order 与 gid 测试描述为测试体实际行为 | `rg -n 'test_init_fresh_step_order|gid=1' rewrite-notes/03-stage-rs/01-rs-boot-init.md` |
-| R1-16（FACT-09/C-11） | 1 | ① | self_update 补 update 参数；注明 init_fresh 当前未调用、默认 Rust 少 C 的自升级尾步 | `rg -n 'self_update' rewrite-notes/03-stage-rs/01-rs-boot-init.md` |
+| R1-16（FACT-09/C-11/D2-01） | 1 | ① | self_update 补 update 参数；feature 打开时 init_fresh 末尾调用，默认 feature 关闭故默认 Rust 少 C 的自升级尾步 | `rg -n 'self_update' rewrite-notes/03-stage-rs/01-rs-boot-init.md`；`cargo check -p minix-rs --features live-update` |
 | R1-17（FACT-10/C-24） | 1 | ① | 注明 C priv 未命中 panic 不可达；计数只查基数，集合对齐在 Step 1 | `rg -n '不可达|计数' rewrite-notes/03-stage-rs/01-rs-boot-init.md` |
 | R1-18（FACT-11） | 1 | ① | step0 描述删 env_parse；rs_verbose 由 main.rs 的 parse_rs_verbose 读取 | `rg -n 'parse_rs_verbose' rewrite-notes/03-stage-rs/01-rs-boot-init.md` |
 | R1-19（FACT-12） | 1 | ① | 修 rs.h:191、id.rs 路径、内核 boot 表端点锚点、Grant 类型 | `rg -n 'rs.h:191|minix-types/src/types/id.rs' rewrite-notes/03-stage-rs/01-rs-boot-init.md` |

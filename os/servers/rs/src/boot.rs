@@ -893,6 +893,10 @@ pub struct BootInit<'a> {
     /// Number of init-ready messages still expected (Step 2 → Step 3).
     /// C: `nr_uncaught_init_srvs` — main.c:349-406.
     nr_uncaught_init_srvs: usize,
+    /// C: `rupdate` — main.c:192 (`RUPDATE_INIT`). Carried into runtime
+    /// state so a feature-enabled boot self-upgrade and the later LU
+    /// handlers share one object.
+    update: crate::live_update::UpdateState,
 }
 
 impl<'a> BootInit<'a> {
@@ -906,6 +910,7 @@ impl<'a> BootInit<'a> {
             shutting_down: false,
             system_hz: 0,
             nr_uncaught_init_srvs: 0,
+            update: crate::live_update::UpdateState::default(),
         }
     }
 
@@ -925,7 +930,7 @@ impl<'a> BootInit<'a> {
             shutting_down: self.shutting_down,
             system_hz: self.system_hz,
             nr_uncaught_init_srvs: self.nr_uncaught_init_srvs,
-            update: Default::default(),
+            update: self.update,
         }
     }
 

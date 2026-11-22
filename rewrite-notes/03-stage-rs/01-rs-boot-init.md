@@ -821,7 +821,7 @@ fn self_update(&mut self, sys: &mut dyn KernelApi, update: &mut UpdateState) -> 
 
 - 默认关的理由：RS 自升级依赖 `srv_fork`/`update_service`/`cleanup_service`/`vm_memctl` 等机制，其语义归 10/15/16/18；在机制落地前，feature 关闭时该流程**不编译**（fail-closed，不产生半吊子代码路径）。
 - 打开 feature 后，`self_update` 内部按 §2.3.7 调用链编排（`clone_slot`/`srv_fork`/`update_service`/`cpf_reload`/`cleanup_service`/`vm_memctl pin` / `privctl SET_SYS`+`sched_init_proc`+`YIELD`），各步骤机制标注归属 10/15/16/18。
-- 当前 `init_fresh` 末尾没有调用 `self_update`，它只由 feature 测试覆盖；默认 Rust boot 比 C 默认 yes 少这一尾步，这是接 18 前的已知差异。
+- feature 打开时 `init_fresh` 末尾调用 `self_update`；feature 默认关，因此默认 Rust boot 比 C 默认 yes 少这一尾步，这是当前默认构建的行为差异。
 
 ### 3.7 rinit grant 创建点的表达（对应 §2.3.1，grant 分工）
 
@@ -958,9 +958,9 @@ impl RsServer {
   - `step0_prepare`：`get_hz`（`rs_verbose` 由 `main.rs` 的 `parse_rs_verbose` 读取后注入，不在 step0）、`RUPDATE_INIT` 等价（`RupdateState::default()`）、`sys_getimage` 等价（`tables.image` 已注入）→ 计数核对（`validate_tables`，对应 main.c:225-227）→ 表重置（`slots` 重建，对应 main.c:230-237）→ rproctab 授权创建（§3.7，main.c:185-189；Rust 侧表重置先行——授权钉的是 wire 镜像地址，行内容 step1 才填；已落地）。
   - `step1_set_attrs`：遍历 priv 表（对应 main.c:244），每项 `lookup_image/sys/dev` + 填充 `ServiceSlot` 属性；`endpoint == RS || endpoint == VM` 跳过 `privctl(SET_SYS)`（对应 main.c:285-291，RS/VM 例外）；其余经 `privctl(SET_SYS)` + `getpriv`。priv/send mask/call mask 的**完整构造**归 03/05，本模块只做调用编排。
   - `step2_allow_run`：遍历 priv 表；RS/VM → `init_service`（12 语义已接线——`mark_initializing` 三时间戳 + RS 自身 `ROOT_SYS_PROC` 早退不发消息、VM/普通服务经 `IpcApi::asynsend` 缝发出 `RS_INIT`，生产面 ENOSYS fail-closed、mock 记录全载荷）；普通服务 → `sched_init_proc` + `privctl(ALLOW)` + `init_service` + `SF_SYNCH_BOOT` 分支（同步 catch / 累积计数，对应 main.c:375-398）。
-  - `step3_catch_init_ready`：循环调用 `catch_boot_init_ready`（12 机制，receive 缝已接线）。
+  - `step3_catch_init_ready`：循环调用 `catch_boot_init_ready`（12 机制，receive 缝已接线）。当前经 `IpcApi::receive` 只收 init-ready；`sef_receive_status` 对信号/控制消息的拦截未复刻，12 落地时补。
   - `step4_finish`：逐服务 `getnpid` 写 `pid`（对应 main.c:413-431）+ `setalarm(RS_DELTA_T)`（对应 main.c:433）。
-  - `self_update`（`#[cfg(feature = "live-update")]`）：§3.6 调用链编排（clone_slot/srv_fork/update_service/cpf_reload/cleanup_service/vm_memctl/privctl YIELD，各步骤归属 10/15/16/18）。
+  - `self_update`（`#[cfg(feature = "live-update")]`，`init_fresh` 末尾调用）：§3.6 调用链编排（clone_slot/srv_fork/update_service/cpf_reload/cleanup_service/vm_memctl/privctl YIELD，各步骤归属 10/15/16/18）。
 
 ### 4.5 `os/servers/rs/src/sef.rs`（对应 §2.2，SEF 回调抽象）
 

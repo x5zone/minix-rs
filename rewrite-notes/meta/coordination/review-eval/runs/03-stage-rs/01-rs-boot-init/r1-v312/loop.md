@@ -64,4 +64,4 @@ review-units audit: 全部单元 open=0
 
 1. DESIGN-D2 大范围 agent 超时；窄复核只覆盖 BootTables/BootInit/KernelApi/feature 四项。
 2. `self_update` 当前无生产调用点；默认 Rust boot 比 C 默认 yes 少自升级尾步，接 18 时补。
-3. Step 3 的生产 `IpcApi` 未接线时是 ENOSYS 占位，不是 C 的阻塞等待；12 落地后恢复。
+3. Step 3 的生产 `IpcApi` 未接线时是 ENOSYS 占位；且当前 `IpcApi::receive` 未复刻 `sef_receive_status` 的信号/控制消息拦截，12 落地时补。
