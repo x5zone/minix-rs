@@ -1,4 +1,4 @@
-# D02 FREEZE —— 02-higher-half-kernel（CONVERGED）
+# D02 FREEZE —— 02-higher-half-kernel（历史 CONVERGED；当前 CONVERGENCE-CANDIDATE；R39 宣告作废）
 
 - 冻结日期：2026-11-12
 - 工作流 edition：V3.3
@@ -144,7 +144,9 @@
 
 ## R39 确认轮（V3.10，append-only；2026-11-22）
 
-- 轮结果：`CONVERGED`。
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
+- 轮结果：`INVALIDATED`（原写 `CONVERGED`）。
 - 文档：`rewrite-notes/01-stage-kernel/02-higher-half-kernel.md`，sha256 `b34ae2fd7d8b74145cb2e6b56e061cb0b10472862f1fa36fb7335cecb397d7b0`，2108 行。
 - 单元账本：41/41 frozen、reopened=0、stale=0、T3 PASS；`audit` 全部单元 open=0。
 - 确认轮：9 个冻结单元抽样；7 条发现（1 P1 + 5 P2 + 1 P3）全部修复，两轮 `DELTA: PASS`；修复 2/2 批次，未开新修改轮。

@@ -73,6 +73,8 @@
 
 ## R39 确认轮（V3.10）
 
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
 - 发现总数: 4（3 面板 + 1 测试载体）
 - 唯一根因数: 4
 - 本轮新准入: 4
@@ -82,7 +84,7 @@
 - 处置: ① 4 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
 - 未闭环: 0
 - 轮型: confirmation
-- 轮结果: CONVERGED
+- 轮结果: INVALIDATED（原写 CONVERGED）
 - 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0
 - 确认轮修复: 2/2 批次（第一批 3.0、第二批同缺陷补修）
 - 抽样: 10/47 冻结单元（21%）

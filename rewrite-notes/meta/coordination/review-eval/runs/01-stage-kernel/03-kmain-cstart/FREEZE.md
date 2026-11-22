@@ -1,4 +1,4 @@
-# D03 FREEZE —— 03-kmain-cstart（CONVERGED）
+# D03 FREEZE —— 03-kmain-cstart（历史 CONVERGED；当前 CONVERGENCE-CANDIDATE；R39 宣告作废）
 
 - 冻结日期：2026-11-12
 - 工作流 edition：V3.3
@@ -93,7 +93,9 @@
 
 ## R39 确认轮（V3.10，append-only；2026-11-22）
 
-- 轮结果：`CONVERGED`。
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
+- 轮结果：`INVALIDATED`（原写 `CONVERGED`）。
 - 文档：`rewrite-notes/01-stage-kernel/03-kmain-cstart.md`，sha256 `5b142de24f009880fffc78818af6913be8150af31374632e80d57187fd6354f7`，1688 行。
 - 单元账本：44/44 frozen、reopened=0、stale=0、T3 PASS；`audit` 全部单元 open=0。
 - 确认轮：9 个冻结单元抽样；13 条发现（4 P1 + 6 P2 + 3 P3）全部修复，`DELTA: PASS`；修复 2/2 批次，未开新修改轮。

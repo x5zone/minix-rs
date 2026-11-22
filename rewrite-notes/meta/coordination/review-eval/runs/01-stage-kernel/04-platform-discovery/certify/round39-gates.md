@@ -1,6 +1,8 @@
 # D04 确认轮机械门证据（2026-11-22）
 
-裁决依据：D-114
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
+裁决依据：无（原写 D-114 无效；D-114 仅适用于 D01 的 48 个关联文件）
 
 ## 文档门
 

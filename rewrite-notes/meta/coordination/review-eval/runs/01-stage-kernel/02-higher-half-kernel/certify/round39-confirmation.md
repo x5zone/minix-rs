@@ -1,5 +1,7 @@
 # D02 R39 确认轮记录（2026-11-22）
 
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
 ## 范围与抽样
 
 - 冷启动审阅者，不参与修复；抽样 `review-units.py sample <doc> --seed <HEAD>`，9 个冻结单元：

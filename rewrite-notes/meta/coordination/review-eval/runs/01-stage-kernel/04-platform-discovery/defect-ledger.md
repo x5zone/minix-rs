@@ -260,6 +260,8 @@
 
 ## R39 确认轮（2026-11-22）
 
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
 | ID | 来源 | 节 | 轮 | 角色 | 严重度 | 类别 | 处置 | 修复 | 证据 | 状态 | — | — | — | — |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | RD-R39-001 | CONFIRM-D1 | 4.0 | R39 | cold-confirm | P1 | 文档/顺序 | ① | aarch64 小结改“先 DTB 后 ACPI” | uefi_helpers.rs DTB 循环在 ACPI 前 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |

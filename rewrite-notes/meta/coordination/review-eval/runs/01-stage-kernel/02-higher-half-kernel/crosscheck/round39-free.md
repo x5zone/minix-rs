@@ -1,5 +1,7 @@
 # D02 跨模型复核（2026-11-22）
 
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
 - 模型：`opencode/hy4-flash-free`（免费端点，独立于当前 ZCode 的 `deepseek-v4.1-flash`）；`--agent plan` 只读。
 - 断言包：`tmp/d02-crosscheck/brief.md`；原始输出 `tmp/d02-crosscheck/out-hy4.log`。
 - 范围：5 条断言（C i386 链接脚本、x86_64 生产链接脚本、check-layout L4/L5、J3 证据边界、test-higher-half 判据）。

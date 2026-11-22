@@ -560,9 +560,11 @@
 
 ### R39 确认轮（V3.10，2026-11-22）
 
+> **INVALIDATED（2026-11-22）**：本文件中的 R39 是 D01 的轮次，不是本篇轮次；D-114 仅适用于 D01。原“CONVERGED”宣告作废，状态为 CONVERGENCE-CANDIDATE。纠正记录见 `rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
+
 - L0.9：tutorial 6/6 0 缺项；30 个 related-code CP-3/CP-4 归零、CJK 0；TODO open=0；D02 旧 blocked 4 条由冷启动 me-agent 裁决（C-04/F10/F10b historical、F10a 补 target remote 后关闭）。
 - 单元账本：41/41 冻结、T3 PASS；9 个冻结单元抽样（3.5、4.0、4.5、5.3、6.2、3、5、3.0、5.2）。
 - 确认轮发现 7 条（1 P1 + 5 P2 + 1 P3）：两处跨篇指针、§6.2 GDB 组不可执行、§5.2 L0–L8/L10 三收段、§3 调用图表述。D1–D7 修复后两轮增量复核 `DELTA: PASS`。
 - 确认轮修复 2/2 批次，未开新修改轮；`defect-ledger.md` 新增 `RD-R39-001..007` 全部 CLOSED。
 - 机械门：文档七门绿、anchor 65/65、code-publication 30/30=0、TODO 0；cargo 四包全绿；QEMU 三腿 + check-layout PASS。
-- 轮结果：`CONVERGED`。文档 sha256 `b34ae2fd…`，2108 行。
+- 轮结果：`INVALIDATED`（原写 `CONVERGED`）。文档 sha256 `b34ae2fd…`，2108 行。
