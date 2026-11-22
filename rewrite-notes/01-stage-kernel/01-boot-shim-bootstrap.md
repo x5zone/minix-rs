@@ -2376,7 +2376,7 @@ pub trait KernelInfoView {
 
 #### 4.4.1 门链与逐腿执行序
 
-腿间实际执行序要说清：直核面是 **strict（`validate_requiring_sources`，两个 `bootface` 在调 `arch_boot` 之前显式调用）→ pre-table（2）→ postconditions（3）→ `store_boot_report`（`arch_boot_finish`，完整落一次）→ boot_validate（1，`arch_boot_impl` 开头）→ kmain validate**；v1 接收面是 **strict → postconditions（3）→ `resume_boot_pt_alloc` → boot_validate（1，`resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 `validate` → `check_boot_postconditions` 复核**，且**不经过** pre-table（`resume_additive` 体内没有 `validate_before_tables`）。接收面的 3 有可见调用点：`arch_boot_resume_v1` 在 `kinfo.validate_requiring_sources()` 之后、`boot_alloc::resume_boot_pt_alloc` 之前调用 `kinfo.check_boot_postconditions()`。下表按门列 bug 类，不按时间排序。
+腿间实际执行序要说清：直核面是 **strict（`validate_requiring_sources`，两个 `bootface` 在调 `arch_boot` 之前显式调用）→ pre-table（2）→ postconditions（3）→ `store_boot_report`（`arch_boot_finish`，完整落一次）→ boot_validate（1，`arch_boot_impl` 开头）→ kmain validate → `check_boot_postconditions` 复核**；v1 接收面是 **strict → postconditions（3）→ `resume_boot_pt_alloc` → boot_validate（1，`resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 `validate` → `check_boot_postconditions` 复核**，且**不经过** pre-table（`resume_additive` 体内没有 `validate_before_tables`）。接收面的 3 有可见调用点：`arch_boot_resume_v1` 在 `kinfo.validate_requiring_sources()` 之后、`boot_alloc::resume_boot_pt_alloc` 之前调用 `kinfo.check_boot_postconditions()`。下表按门列 bug 类，不按时间排序。
 
 下表按门列出各校验点挡的 bug 类（共十三行：十二行是门、一行是“规划期（不是门）”；门列有五个命名门加一个共享校验体；上面的编号链仍是四项）（同名项在不同门重复挡是故意冗余；`validate_before_tables` 即 §3.6 注释里的 pre-table gate）：
 

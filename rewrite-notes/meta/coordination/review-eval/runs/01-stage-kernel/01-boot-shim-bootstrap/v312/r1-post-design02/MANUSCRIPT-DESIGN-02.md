@@ -85,7 +85,8 @@
 - [x] `minix-boot`、`boot-shim`、`minix-kernel --features mock` 测试全绿
 - [x] 启动链 QEMU 门（x86 UEFI、aarch64 UEFI、riscv64 U-Boot shim、riscv64 bootface）PASS
 - [x] 文档 §3.2/§3.7/§4.4 与相关符号表同步
-- [ ] 独立 verifier 复核：**FAIL**（`certify/design02-verify.md`）；待修项见下节
+- [x] 独立 verifier 复核：**PASS（修复后）**；首次 FAIL 的两项阻断已修复并复核，
+      见 `certify/design02-verify.md`、`certify/y01b-code-verify.md`
 - [x] 基线重设并重开 R1（新 run 目录、新 baseline、6 角色面板已准备）
 
 ## 独立 verifier 后续（2026-11-23 05:12）
@@ -106,3 +107,12 @@
 残留风险（不阻断本次验收，但记录）：四条 QEMU 日志未硬绑定 commit；新的直核接收路径
 没有一条启动门真正跑到；16 KiB 栈上 `BootStorage` 余量未实测；`validate_view` 等价性只做
 人工 diff。上述两项阻断在面板完成后按 R1 代码/文档批修复，再由独立 verifier 复核。
+
+## 复核结论（2026-11-23 05:55）
+
+- 两项阻断已在后续 R1 批次修复：文档 §4.4/§4.0 的 store 口径、`validate_impl_inner` 旧符号、
+  source_records 行；三个 `test-higher-half*` 载体改为 `BootReport` + 三参数 `arch_boot`。
+- 独立 doc verifier：PASS（36/36 根因；3 个 P3 复检 PASS）；独立 code verifier：PASS（10/10）。
+- 三支 QEMU 载体在修复 commit 上重跑 PASS，日志头绑定 `bb3b6e56a`。
+- 残留风险：四条启动链日志仍未全部绑定 commit；16 KiB 栈上 `BootStorage` 在启动路径上的
+  余量只由 `test-higher-half*` 三支直核测试覆盖；`validate_view` 等价性为逐项人工 diff。

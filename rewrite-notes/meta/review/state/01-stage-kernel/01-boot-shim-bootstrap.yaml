@@ -771,7 +771,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: bb3b6e56a0f71d51e11955cfc66b5f5be9d7c5e5
+  frozen_at: cc4fb347660f68757ce3841da40bbc0fea94016e
   rewritten: false
   user_approved: false
   deps: []
@@ -780,7 +780,7 @@ units:
   anchor_refs: []
   anchor_hashes: {}
   anchor_status: none
-  note: R1 post-DESIGN-02 + final P3
+  note: R1 cold-read gate fix
   review_rounds:
   - 1
   post_freeze_rounds: []
@@ -906,13 +906,13 @@ units:
   level: 3
   parent: '4'
   order: 31
-  text_sha: e311f258a52afdbdb08f65fb752c0dcf8a68b2eabc6aaa6d3a302c3d874c3654
+  text_sha: 25e4563421433d527f2c04930a3281212b2169773d3c409f2bfed0bffbd7426e
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bb3b6e56a0f71d51e11955cfc66b5f5be9d7c5e5
+  frozen_at: cc4fb347660f68757ce3841da40bbc0fea94016e
   rewritten: false
   user_approved: false
   deps: []
@@ -929,7 +929,7 @@ units:
     os/kernel/src/arch/riscv64/higher_half.rs:jump_to_kmain: 934a82e927bbb1545ac10bedf1bc609404a92fafffd62a831df1c891f4190aaf
     os/kernel/src/lib.rs:fn boot_validate_and_prepare: 24c965ee66be4daedeb3e89011dd072768d1f16c397f95a4d5f9c3acf23400d2
   anchor_status: fallback
-  note: R1 post-DESIGN-02 panel + doc verifier
+  note: R1 cold-read gate fix
   review_rounds:
   - 1
   post_freeze_rounds: []

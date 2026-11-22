@@ -151,3 +151,17 @@ RECHECK: PASS
 3 处 P3 修复全部落地，受影响前后文无新矛盾；5 个机械门读数与修复前一致（citation 的 `skipped=30` 是既有工具识别缺口，非本次改动引入）。本轮未产生新的 P0/P1/P2/P3 发现。
 
 遗留提示（不改变 RECHECK 结论）：文档相对 HEAD 尚未提交；若后续以提交固化，需把新 sha 与 3 处改动一并纳入同一 commit，避免 certify 记录与工作区状态脱节。
+
+## RECHECK2
+
+RECHECK2: PASS
+
+- 时间：2026-11-23（本机 CST）
+- 文档 sha256：`19c0ad9a306cc1e950b657ad6c6d1c34f3a0aa18256f238b048e7dbd9efc83dc`；行数 2951（与 RECHECK 同，未增删行）。
+- 变更范围：仅 `DOC:2379`（§4.4.1 首段）直核链在 `kmain validate` 后补 `→ check_boot_postconditions 复核`；`git diff HEAD` 对该文件只有这一行的一处替换。
+- 对照结果：
+  - §4.4.1 新直核链：`… → boot_validate（1，arch_boot_impl 开头）→ kmain validate → check_boot_postconditions 复核`；v1 链末尾也含 `… → kmain 的 validate → check_boot_postconditions 复核`，两条链现在对称。
+  - §3.7（`DOC:1849`）的直核链与 v1 链均已含 `kmain` 后的复核，与 §4.4.1 改后文本一致。
+  - 代码：`os/kernel/src/lib.rs:1864` 为 `kernel_info.validate();`，`:1873` 为 `kernel_info.check_boot_postconditions();`；`:1868-1872` 的注释明确说明 `kmain` 是五条启动形态的共同终点（“kmain is the single common end point of all five boot forms”），因此在 `kmain` 补复核对直核与 v1 都成立。
+- §4.4.1 同节其余文字（编号说明“共十三行…”、下表按门列 bug 类）不描述链路顺序，未受影响；未发现新矛盾。
+- 本轮按要求未重跑机械门。

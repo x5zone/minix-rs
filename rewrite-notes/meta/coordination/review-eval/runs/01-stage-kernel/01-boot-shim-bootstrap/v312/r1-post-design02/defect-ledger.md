@@ -49,6 +49,8 @@
 | CERTIFY-03 | 4.0 | ① | 独立 doc verifier N-2：§4.0 小结与“落地区”术语改为 v1 解码进 `.bss`、`store_kernel_info` 只做同址包装，不再说它负责深拷。 | rg -n '`store_kernel_info` 只做同址包装' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R1-38 | doc verifier |
 | CERTIFY-04 | 1.4 | ① | 独立 doc verifier N-3：删除 §1.4 的“编号约定”过程编号段（I-/D-/D2-/R02-T 只用于回查台账，不应进正式正文）。 | rg -n '编号约定.*I-<nn>' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 0） | R1-39 | doc verifier |
 
+| CERTIFY-05 | 4.4 | ① | 冷读 B1：§3.7 与 §4.4.1 的直核面/v1 链最后一次 `check_boot_postconditions` 复核归属不对称；在 §4.4.1 直核链补同样的复核，两条链现在对称。 | rg -n 'kmain validate → `check_boot_postconditions` 复核' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 ≥1） | R1-40 | cold read |
+
 ## P-REFUTE 附加
 
 | claim ID | 结果 | 处置 | 根因 |

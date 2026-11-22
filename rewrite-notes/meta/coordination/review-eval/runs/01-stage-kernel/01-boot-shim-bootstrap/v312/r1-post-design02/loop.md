@@ -20,7 +20,7 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 
 - 本轮是 DESIGN-02（b）落地后的新 R1；旧 R1 的基线（doc 2,979 行、sha `75c04e8…`）已作废。
 - 新基线：doc 2,946 行，sha `996ff161…`，commit `cdd0d1c77`；48 单元全部未冻结。
-- 修复后文档：2,951 行，sha `f707a4e5a38b5a4544592231ea724215a06bc1179fd4f25ee41db47afc1f5e3d`，
+- 修复后文档：2,951 行，sha `19c0ad9a306cc1e950b657ad6c6d1c34f3a0aa18256f238b048e7dbd9efc83dc`，
   commit `bb3b6e56a`（本轮修复批）加最终 P3 文档批（§3.7 v1 链、§4.0 落地区措辞、删除 §1.4 过程编号段）。
 - `baseline --evidence r1-v312/full-r1.md` 已记录 R1；scope 保持作者/代确认内容。
 - 关联代码清单由 `doc-code-map.sh --format=plain` 重新生成，49 个文件（旧清单漏了 `ap_early_entry.rs`、`proc_table.rs`、`trap_api.rs`）。
@@ -104,18 +104,36 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 - 设计批独立 verifier（2026-11-23 05:12）：**FAIL**。`certify/design02-verify.md`。
   两项阻断：(a) §4.4 旧符号 `validate_impl_inner` 与“v1 腿统一走 `store_boot_report`”的
   错误概括，代码/Cargo 注释同步债；(b) 三个 `test-higher-half*` QEMU 载体 E0061。
-  两项均在 D-119 授权内，待面板报告到齐后与面板发现一起修复、再复核。
-- 面板与修复的单元级复验待本轮后续填写。
+  两项均已在 `bb3b6e56a` 修复；三个载体在 `bb3b6e56a` 上重跑 QEMU，均 `TEST_RESULT: PASS`。
+- 独立 doc verifier：**PASS**（36/36 根因逐条核过；8 个机械门 exit 0），
+  3 个 P3 新发现（v1 链第二次 postconditions、§4.0 落地区措辞、§1.4 过程编号段）随后修复，
+  `RECHECK: PASS`（doc sha `f707a4e5…`）。报告 `certify/y01b-doc-verify.md`。
+- 独立 code verifier：**PASS**（10/10；旧符号 0、测试 188/136/866、三载体构建与 QEMU 全 PASS、
+  `validate_view` 等价性仅新增 strict 不可达 `expect`）。报告 `certify/y01b-code-verify.md`。
+- 台账 `open=0`；48/48 单元冻结；`event verify --fresh` OK；
+  `v312-closure-check --round 1` **PASS**。
+- 冷读：beginner-me 报告待回；R1 不以冷读替代独立 verifier。
 
 ### §6 指标
 
-- `metrics.md`：发现总数 36、唯一根因数 36、重复合并 4、certify 新准入 1、自引入 1、
-  未闭环 0；轮结果待独立复验与关账后写。
+- `metrics.md`：发现总数 36、唯一根因数 39、重复合并 4、certify 新准入 4、自引入 1、
+  未闭环 0；轮结果 `ROUND-CLOSED`。
 
 ### §7 状态
 
-待本轮填写。修改轮最多写 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`，不写 `CONVERGED`。
+- `ROUND-CLOSED`（修改轮；修改轮不得写 `CONVERGED`）。
+- 48/48 单元冻结，`t1_pending=0`、`t2_pending=0`、`reopened=0`、`stale=0`；
+  台账 `open=0`；`v312-closure-check --round 1` PASS。
+- 下一步：R2 full（第二 full 轮，逐单元复审；`units_review_lt2=48` 需在 R2 归零），
+  然后确认轮 + G18 冷读；当前没有 `CONVERGED` 结论。
 
 ### §8 给 meta-review 的不确定点
 
-待本轮填写。
+- SUGGESTION 26 条：部分修、部分 FP（理由在台账 `## 建议`）；结构性拆分（§2.4.2.5/§4.3）
+  与部分历史叙事留待 R2，不在本轮冒充完成。
+- `DESIGN-08` 的 `PlatformDescSource` `repr(C)` 形状锁按现状保留（FP，非缺陷）；若作者要减法，
+  需另立设计批并同步 §3.2.3。
+- P-FACT 指出 15 个 C/asm/ld 引文块使用多行标注，`doc-citation-check` 计为 SKIP；
+  文档侧已人工逐行核对，工具识别缺口记 `WF-09`，待工具修复。
+- 冷读只作学习性验收参考；G18 整篇冷读与学习范围表作者追认仍待确认轮。
+- 09:00 峰值前若未完成 R2，按用户指示暂停并交接，不把 R1 `ROUND-CLOSED` 写成 `CONVERGED`。
