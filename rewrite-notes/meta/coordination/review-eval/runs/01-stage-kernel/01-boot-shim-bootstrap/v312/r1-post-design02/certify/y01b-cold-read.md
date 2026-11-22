@@ -114,7 +114,8 @@ VERDICT: READY
 
 ### 更新后的判断
 
-- `HARD-REJECTIONS: 0`
-- `VERDICT: READY`
+RECHECK: PASS
+HARD-REJECTIONS: 0
+VERDICT: READY
 
 正文第 5 件任务里“不够于‘校验到底什么时候跑’”一段是旧版判断，以本节为准：按当前两条对称的门链，我可以记住“两次 `check_boot_postconditions` + `kmain` 的 `validate` + 第二次复核”，测试与诊断这条学习任务的材料现在够用。其余四件任务的判断不变。

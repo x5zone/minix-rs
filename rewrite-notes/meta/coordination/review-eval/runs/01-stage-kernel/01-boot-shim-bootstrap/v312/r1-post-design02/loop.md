@@ -112,7 +112,8 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
   `validate_view` 等价性仅新增 strict 不可达 `expect`）。报告 `certify/y01b-code-verify.md`。
 - 台账 `open=0`；48/48 单元冻结；`event verify --fresh` OK；
   `v312-closure-check --round 1` **PASS**。
-- 冷读：beginner-me 报告待回；R1 不以冷读替代独立 verifier。
+- 冷读：beginner-me 复检 `HARD-REJECTIONS: 0`、`VERDICT: READY`（doc sha `19c0ad9a…`）；
+  报告 `certify/y01b-cold-read.md`。R1 不以冷读替代独立 verifier。
 
 ### §6 指标
 
