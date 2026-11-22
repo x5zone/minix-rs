@@ -592,7 +592,7 @@ LABEL(k_boot_stktop)
 
 i386 侧的结论是落点在高一侧：`k_initial_stktop` 的值是 0xF04xxxxx 一段的某个地址。这条依据链只在本篇给全：`01-boot-shim-bootstrap.md` 的 1.4 节 只交代边界并声明落点判定归本篇，它的 §2.8 直接引用本篇的结论，两篇的结论一致。名字上带 `__k_unpaged_` 字样**不是**判据：这个字样在定义处是手写的，在引用处是 `objcopy` 加的，两处都不是"它进了 unpaged 段"的证据；把它当线索会得出相反的结论。
 
-**假设栈定义落在 `.unpaged_bss`（低一侧）会怎样**：`head.S` 把 `%esp` 设成低地址值，`kmain` 在高地址执行而栈在低地址。在“栈定义落在 `.unpaged_bss`”这个假设下，栈所在的物理页属于 `_kern_unpaged_start..end`（即 `bootstrap_start/len`），引导结束后会被 `add_memmap` 交回空闲内存。恒等映射在 `pg_identity` 生效期间还在，所以首次访问不会立刻页错误；等恒等映射在后续切根时不再保留，或该物理页被复用之后，才表现为静默损坏。第二重后果与第一重同源：`.unpaged_bss` 覆盖的那段物理内存会被交回空闲内存——`kernel/main.c` 的 [`kmain`](minix3/minix/kernel/main.c:kmain) 在 `system_init()` 之后调用 `add_memmap(&kinfo, kinfo.bootstrap_start, kinfo.bootstrap_len)`，源码注释写明 `The bootstrap phase is over, so we can add the physical memory used for it to the free list.`。栈所在的页会进入空闲链，被下一次分配拿走；同时 `pg_mapkernel` 只映射 `[kern_vir_start, kern_vir_start + kern_kernlen)`，不覆盖低地址这一段。两件事叠起来：栈的可用性依赖恒等映射在切根前仍有效，又依赖这段物理内存不被复用；前者在后续切根时不再成立，后者在 `add_memmap` 后随时可能发生。
+**假设栈定义落在 `.unpaged_bss`（低一侧）会怎样**：`head.S` 把 `%esp` 设成低地址值，`kmain` 在高地址执行而栈在低地址。在“栈定义落在 `.unpaged_bss`”这个假设下，栈所在的物理页属于 `_kern_unpaged_start..end`（即 `bootstrap_start/len`），引导结束后会被 `add_memmap` 交回空闲内存。恒等映射在 `pg_identity` 生效期间还在，所以首次访问不会立刻页错误；恒等映射在后续切根时被移除之后，第一次访问是页错误；若映射仍指向该物理页、而页内容被复用作别的用途，才是静默损坏。两种后果不要合并成一种。第二重后果与第一重同源：`.unpaged_bss` 覆盖的那段物理内存会被交回空闲内存——`kernel/main.c` 的 [`kmain`](minix3/minix/kernel/main.c:kmain) 在 `system_init()` 之后调用 `add_memmap(&kinfo, kinfo.bootstrap_start, kinfo.bootstrap_len)`，源码注释写明 `The bootstrap phase is over, so we can add the physical memory used for it to the free list.`。栈所在的页会进入空闲链，被下一次分配拿走；同时 `pg_mapkernel` 只映射 `[kern_vir_start, kern_vir_start + kern_kernlen)`，不覆盖低地址这一段。两件事叠起来：栈的可用性依赖恒等映射在切根前仍有效，又依赖这段物理内存不被复用；前者在后续切根时不再成立，后者在 `add_memmap` 后随时可能发生。
 
 Rust 侧不再用链接符号给出 `kmain` 用的栈顶（入口 `_start` 仍用 `kernel_boot_stack_top`），改为由接收方从 `kern_virt_base + kern_size` 现算（访问器 `KernelInfo::kern_stack_top()`，决策见 §3.3）。
 
@@ -915,7 +915,7 @@ pub trait HugePages: Paging {
 }
 ```
 
-这里没有默认实现，也没有第二个能力入口：每个架构必须显式回答自己的页大小能力（x86-64 在 `supports_huge_page` 内查 `CPUID.80000001H:EDX.GBPAGES`，ARM64/RISC-V 按自己的翻译模式回答）。能力事实由 `BootPageSupport` 快照收集，选页由纯规划函数完成，`map_huge` 只执行已经验证过的写入。
+这里没有默认实现，也没有第二个能力入口：每个架构必须显式回答自己的页大小能力（x86-64 在 `supports_huge_page` 内查 `CPUID.80000001H:EDX.GBPAGES`，ARM64/RISC-V 按自己的翻译模式回答）。能力事实由 `BootPageSupport` 快照收集，内核镜像的选页由纯规划函数完成，`map_huge` 对这段映射只执行已经验证过的写入。Step 1 的恒等窗口是另一条路：它按文件级常量 `PageSize::MIB_2` 分片，不经 `BootPageSupport`/`supports_huge_page`；当前三架构的 4 KiB 翻译模式都支持 2 MiB 块，所以这条硬编码成立，但它不是“策略层已验证”的一部分。
 
 四条理由（1）–（4），逐条对应可检查的事实：
 
@@ -1056,16 +1056,17 @@ pub trait HigherHalf {
 }
 ```
 
-方法上方的 Safety 段列了三条前置条件：①分页已启用且恒等映射与内核高映射都已建立；②`kinfo` 在高地址有效可访问；③只从引导 CPU 调用一次。栈顶不再是形参：三份实现都在函数体里用 `kinfo.kern_stack_top()` 现算，与 `kmain` 收到的启动信息同源。下表按顺序对上这三条（第 1、2、4 行），第 3 行记的是**返回类型**（`-> !`）——它与三条并列，但**不是前置条件**：
+方法上方的 Safety 段列了三条前置条件：①分页已启用且恒等映射与内核高映射都已建立；②`kinfo` 在跳转这一刻的活动视图里可读（v1 接收面是高地址引用，直核面在分页开启前传物理视图引用；生产 `kmain` 只比较指针、不解引用，消费的是 `.bss` 副本）；③只从引导 CPU 调用一次。栈顶不再是形参：三份实现都在函数体里用 `kinfo.kern_stack_top()` 现算，与 `kmain` 收到的启动信息同源。下表按顺序对上这三条（第 1、2、4 行），第 3 行记的是**返回类型**（`-> !`）——它与三条并列，但**不是前置条件**：
 
 | 前置条件 | 谁保证 | 违反时的落点 |
 |---|---|---|
 | 分页已启用、两套映射已建立 | 调用者（direct 面是 `arch_boot_finish` 里 `arch_boot_impl` 的返回点；v1 面是 `resume_after_v1_decode`（三架构同名壳，公共体 `resume_additive`）） | 取指或压栈落在无映射地址 |
 | 跳转传入的指针与 `kmain` 消费的副本 | 调用者保证传入地址可读；生产 `kmain` 第一条语句即遮蔽为 `.bss` 副本，形参只做交接、不解引用；测试载体若直接解引用则需自行保证 | 生产路径解引用副本时页错误；载体解引用形参时页错误 |
 | 不返回 | 类型：`-> !` 让"返回"在编译期不成立 | 无法表达（不返回是签名的一部分） |
+| 栈顶 16 字节对齐 | `boot_validate_and_prepare` 断言来源值；三份实现另在本地断言 asm 入口 ABI（x86_64 另查 `(top − 24) ≡ 8 (mod 16)`） | 未对齐时 `call`/`ret` 的 psABI/AAPCS64 前提破坏 |
 | 只调用一次 | 调用者（Safety 段的第三条写明；类型系统不区分调用次数） | 第二次调用会在已经切换的栈上再切一次，落点不可预期 |
 
-栈顶的 16 字节对齐不再是调用者要传对的值：`boot_validate_and_prepare` 的断言覆盖现算的 `kern_stack_top`，三份实现拿到的就是同一个值（`kinfo.kern_stack_top()`），形参与断言可能各说各话的那条缝已经消掉。删除形参的动机是“第二来源”：只要它还以参数形式存在，一个与 `kinfo` 不一致的值在类型上完全合法，编译器和测试都不会拦住。
+栈顶的 16 字节对齐不再是调用者要传对的值：`boot_validate_and_prepare` 的断言覆盖现算的 `kern_stack_top`，三份实现拿到的就是同一个值（`kinfo.kern_stack_top()`），形参与断言可能各说各话的那条缝已经消掉。三份实现另在本地断言 `stack_top & 0xF == 0`（x86_64 另查 `(stack_top − 24) ≡ 8 (mod 16)`）：上游断言查“来源值对齐”，本地断言查“asm 入口 ABI”，两处职责不同，不是同一不变量的重复。删除形参的动机是“第二来源”：只要它还以参数形式存在，一个与 `kinfo` 不一致的值在类型上完全合法，编译器和测试都不会拦住。
 
 三架构的实现各自放在自己的模块里（`higher_half.rs` 的 [`struct X86_64HigherHalf`](os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf)、`higher_half.rs` 的 [`struct AArch64HigherHalf`](os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf)、`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf)）：两个生产调用点（`arch_boot_finish`、`resume_additive`）各自按所在腿选中本架构实现：直核家族经 `arch_boot` 的三份 `#[cfg]` 分支，v1 接收家族经 `arch_boot_resume_high_half` 或 `resume_after_v1_decode` 的泛型体；所以“两个调用点”与“三份实现分支”不是同一个计数；§4.4 逐条对照。
 
@@ -1384,7 +1385,7 @@ pub unsafe fn load_segments_into_phys_memory(
 
 沿用 01 篇的 4.1 节 立的 Step 编号（本节展开 Step 1–3；Step 4 的 DM 覆盖本篇不展开，边界见 01 篇的 1.4 节；01 篇的 6.1 节 用它排路标）。这套编号与 §2.4 描述的 C 两级页表流程（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`/`vm_enable_paging` 五步）**不是同一个体系**：C 的五步是 32 位两级页表的建表顺序，Rust 的 Step 0–4 是 4 级页表的启动阶段编号（多出校验与 DM 两段、没有独立的 `pg_load`）。五步在 Rust 侧的落点：`pg_clear` 并入根页清零（`new_from_page`）、`pg_identity` 并入 Step 1、`pg_mapkernel` 并入 Step 2、`pg_load` 并入 `enable` 的 `mov cr3`、`vm_enable_paging` 即 Step 3。
 
-Step 1 与 Step 2 是两段映射循环；aarch64 另有 Step 2b（设备 MMIO 窗口的高半别名）；Step 2c 是三架构共用的一段附属步骤（编号 2c 不占主步序号；x86/riscv 的 `device_window_regions()` 非空，aarch64 的这张表为空故为 no-op）。Step 1 的范围判据是**调用方给出的 boot identity 窗口表**，Step 2 是内核镜像的 LMA 跨度：
+Step 1 与 Step 2 是两段映射循环；aarch64 另有 Step 2b（设备 MMIO 窗口的高半别名）；Step 2c 是三架构共用的一段附属步骤（编号 2c 不占主步序号；x86/riscv 的 `device_window_regions()` 非空，aarch64 的这张表为空故为 no-op）。Step 1 的范围判据是**调用方给出的 boot identity 窗口表**，Step 2 是内核镜像的 LMA 跨度。下面的代码是直核面的 `build_bootstrap_root_and_enable`；v1 接收面不走这个函数，只做 `resume_additive` 的追加。
 
 ```rust
 // 节选（保留 Step 1/2 的循环体；注释、#[allow] 与运行期断言有删节），
@@ -1892,7 +1893,7 @@ $ echo $?
 | L9（全架构） | ELF 实测跨距 = 共享的 `KERN_SIZE` 常量副本（x86_64/riscv64 读 `bootface.rs`，aarch64 读 `bootface_a64.rs`；x86_64 无直核面） | 镜像布局常量与自引导面的期望值漂移 |
 | L10（C 侧，x86_64/all 时输出） | `Makefile.inc` 的 `.for unpaged_obj` 名单含 `head.o`/`pre_init.o`/`pg_utils.o`/`klib.o` 且不含 `mpx.o`；`kernel.lds` 有 `.unpaged_text`/`.unpaged_data`/`.unpaged_bss` 三个收段；`mpx.S` 定义 `k_initial_stktop`、`head.S` 引用它 | 改名名单与收段规则脱节，`k_initial_stktop` 被误收进低地址 unpaged 段 |
 
-L3 的子断言：L3a = 首段 VMA/LMA 等于该架构预期基址；L3b = 按脚本基址常量算出的预期首段 VMA 与实测首段 VMA 相等；L3c = 首段 LMA 等于预期装载基址（x86_64 为 `0x200000`）。L6 的子断言：L6a = 入口等于首段 VMA；L6b = `_start` 符号等于入口且落在首段内。
+L3 的子断言：L3a = `PT_LOAD` 段数 ≥ 1；L3b = 首段 VMA 等于按脚本基址常量算出的预期值；L3c = 首段 LMA 等于预期装载基址（x86_64 为 `0x200000`）。L6 的子断言：L6a = 入口等于预期入口；L6b = `_start` 符号等于入口；L6c = 入口落在首段 `[VMA, VMA+memsz)` 内。
 
 L4 与 L5 分别对应本篇 §2.1 的段平移结论与 §3.5 的大页阶梯：L4 保证"两套地址之间只有一个偏移量"这件事对每个段都成立，L5 保证"选出的页尺寸"有一个可用的档位。L8 是"链接保留"的可观测证据——`KERNEL_ENTRY_ANCHOR` 持有 `arch_boot` 的函数指针，链接脚本 `KEEP` 该节，两者一起挡住裁剪。
 
@@ -1941,10 +1942,10 @@ L4 与 L5 分别对应本篇 §2.1 的段平移结论与 §3.5 的大页阶梯�
 | M9 | 从装载到 `kmain` 的合流（§4.5） | 两条生产路径各自到达 `kmain` 并完成跳转 | 部分覆盖 | 路径与代码落点已给出；**“到达 `kmain`”本身没有独立断言**，真机门只证明启动链走到调度器，不区分入口路径 |
 | M10 | 镜像跨距的 2MiB 收口（§3.5） | 跨距 2MiB 对齐、与 `bootface` 常量一致 | 已覆盖 | L5/L9（L9 三架构，按架构选 `bootface.rs`/`bootface_a64.rs`） |
 | M11 | 交接的寄存器约定（§4.4、§4.5） | `kinfo` 经 `.bss` 副本交接（形参按 ABI 传入 RDI/X0/A0，生产 `kmain` 第一条语句即遮蔽为全局副本） | 部分覆盖 | NK4-A 的寄存器覆写修复与注释；**行为性，无自动断言** |
-| M12 | 布局断言的持续成立（§5.2） | L0–L10 全过 | 已覆盖（手工复跑） | `check-layout.sh` 三架构实跑（本轮复跑全 PASS）；这是一次性复跑，不是常驻 CI 断言 |
+| M12 | 布局断言的持续成立（§5.2） | L0–L10 全过 | 已覆盖（一次性手工，非常驻） | `check-layout.sh` 三架构实跑（本轮复跑全 PASS）；这是一次性复跑，不是常驻 CI 断言 |
 | M13 | 生产 `kmain` 入口的 ABI 栈形（§3.7、§4.4） | x86_64 `call` 前 RSP 16 对齐、入口 `RSP ≡ 8 (mod 16)`；aarch64/riscv64 入口 SP 16 字节对齐 | 已覆盖 | 三份 `jump_to_kmain` 在生产路径上断言 `kern_stack_top` 16 字节对齐，x86_64 另断言 `(stack_top − 24) ≡ 8 (mod 16)`；`kmain_verify` 的 `sp_aligned` 仍在载体侧复核入口值 |
 
-本节列出的机制都有对应证据或明确的证据边界；M3/M7/M9 的“部分覆盖”是已登记边界，不是未登记缺口；下一次新增机制时继续按同一格式补行。
+本节列出的机制都有对应证据或明确的证据边界；M1/M3/M4/M7/M9/M11 的“部分覆盖”是已登记边界，不是未登记缺口；下一次新增机制时继续按同一格式补行。
 
 ---
 ## 6. 诊断
@@ -1971,7 +1972,7 @@ L4 与 L5 分别对应本篇 §2.1 的段平移结论与 §3.5 的大页阶梯�
 # 静态布局：先排除 LMA/VMA 与跨距问题（§6.2）
 $ bash os/kernel-image/check-layout.sh all
 # 单个工件的段头：对照 p_vaddr / p_paddr / memsz（§6.2）
-$ readelf -lW os/target/x86_64-unknown-none/release/kernel-image
+$ readelf -lW os/target/x86_64-unknown-none/release/kernel
 ```
 
 第一条给出布局级结论，第二条给出单段读数；先静态、后动态，能避免把映射问题误判成链接问题。
@@ -1997,7 +1998,7 @@ $ readelf -lW os/target/x86_64-unknown-none/release/kernel-image
 
 | 症状（可观察到的现象） | 怀疑对象 | 确认动作 |
 |---|---|---|
-| 取指失败、故障地址是低地址（出现时刻三选一：分页开启后立刻／恒等映射被移除时／首次切地址空间后——三个时刻的区分见 §2.4、§2.3、§4.3 与 §4.4 的反向推演） | 恒等映射被移除而 PC 仍在低半（§4.4 的 riscv64 `delta` 缺失）；或恒等映射从未建立 | 读 QEMU 异常日志里的故障地址与出错类型；核对该架构 `higher_half.rs` 的跳转目标算式 |
+| 取指失败、故障地址是低地址（出现时刻三选一：分页开启后立刻／恒等映射被移除时／首次切地址空间后——三个时刻的区分：分页开启后立刻见 §4.3；恒等映射被移除见 §4.4 其二；C 侧对照见 §2.3/§2.4） | 恒等映射被移除而 PC 仍在低半（§4.4 的 riscv64 `delta` 缺失）；或恒等映射从未建立 | 读 QEMU 异常日志里的故障地址与出错类型；核对该架构 `higher_half.rs` 的跳转目标算式 |
 | 分页开启后立刻取指失败，故障地址是高地址 | 高半映射未建立或范围不足（`kern_vir_base`/`kern_size` 与 `map_huge` 的范围；不是 `AT()`——`AT()` 只改 `p_paddr`） | `readelf -lW` 看 `p_vaddr`/`memsz`；`check-layout.sh` 的 L3b/L5；核对 `arch_boot_impl` 的 Step 2 |
 | 内核镜像里某段的内容像另一段 | `AT()` 用了常量表达式，且链接器未拒绝 LMA 重叠（旧工具链产出的镜像） | `readelf -lW` 看多个 `LOAD` 行的 `p_paddr` 是否相同（§2.1 反向推演）；现行 GNU ld 会在链接期先报 LMA 重叠，当前工件根本产不出来 |
 | 进入 `kmain` 后初期无异常、随后数据静默损坏 | 栈指针未切换（§2.3 的“只跳不切”），栈仍在低侧别名上 | 在 `kmain` 入口打印 SP 与 `kern_stack_top`；SP 落在低半即命中 |

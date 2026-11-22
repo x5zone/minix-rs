@@ -63,3 +63,101 @@
 1. R1 面板在修复前读文本；修复后只跑机械门，R2 必须重读。
 2. D2 的根 typestate/EnterTarget 是设计候选，未实施；不进入文档修复。
 3. READER 的 SUGGESTION 未逐条实施；R2 若复现再升级。
+
+## R2 full（V3.11，2026-11-22）
+
+### §0 基线
+
+- commit: `1a4359c094b1a7086a1d0579d6e5fd3398f7a56a`
+- 文档 sha256: `7f20e42504274212171520c83d9ff7cbb9d46cbdf9db90191217a677fc787b08`
+- 行数: `2111`
+- 单元: 41；R1 的 9 个 fix 单元未冻结
+- 范围：整篇 D02 + 30 个关联文件；R2 是独立 full 轮，覆盖 41/41
+- 轮型: `full`；schema/edition: `V3.11`
+- R1 轨迹: `trajectory-r1.md` PASS
+
+### §1 面板
+
+- 角色：P-FACT、P-DESIGN D2、P-READER A/B/C、P-REFUTE；全部冷启动、未参与 R1 修复。
+- 制品：`panel/round2/{fact,design-d2,reader-a,reader-b,reader-c,refute}.md`。
+- R2 是独立 full 轮：面板重读整篇，重点复核 R1 的 9 个 fix 单元。
+
+### §2 发现
+
+- P-FACT：2 P1（L3a 定义、L6b/L6c 漏列）+ 2 SUGG。
+- P-REFUTE：12 CONFIRM / 1 REFUTE（L3/L6）/ 1 UNCLEAR（136 测试未实跑）。
+- READER-A：1 FINDING（§6.0 工件名）+ 12 SUGG。
+- READER-B：3 FINDING（§5.4 漏 M1/M4/M11、L3a/L3c、§4.3 主语）。
+- READER-C：2 FINDING（§2.5 后果合并、§5.4 六个部分覆盖）。
+- D2：5 FINDING（2 P1：map_huge 验证范围、kinfo 前置条件；3 P2）+ 1 ARCH。
+- 合并 9 个根因；2 条是 R1 修复引入的回归。
+
+### §3 归因
+
+- 9 根因：L3/L6 事实 1、§5.4 边界 1、§2.5 后果 1、工件名 1、§4.3 主语 1、D2 设计事实 4。
+- 跨角色同根：L3/L6（FACT/REFUTE/B）、§5.4（B/C）、§2.5（C）。
+
+### §4 修复
+
+- 逐条按 fix-guard：L3a/L6b/L6c 按脚本改写、§5.4 六个部分覆盖全列、§2.5 两种后果拆分、§6.0 工件名、§4.3 主语、§3.4 map_huge 范围、§3.7 kinfo 前置条件与对齐断言行、HUGE_PAGE_SIZE 两消费者。
+- 代码只改三份 `higher_half.rs` 的 SAFETY 注释（高地址→当前活动视图），已 `cargo check -p minix-kernel --features mock` 通过。
+
+### §5 复验
+
+- 文档门全绿；单元 41/41 frozen；audit open=0。
+- `cargo check -p minix-kernel --features mock` 通过（54 warnings，非本轮新增）。
+
+### §6 指标
+
+见 `metrics.md` 的 `## R2 full（V3.11）`：9 根因、9 ①、0 未闭环、2 自引入已修。
+
+### §7 状态
+
+`ROUND-CLOSED`，进入 `CONVERGENCE-CANDIDATE`；R3 逐单元确认。
+
+### §8 给 meta-review 的不确定点
+
+1. R2 面板在修复前读文本；修复后只跑机械门与 cargo check，未重派全量读者。
+2. D2 的 SelectedSize 类型是设计候选，未实施。
+3. 三份 SAFETY 注释改为“当前活动视图”，与文档 §3.7 同步；行为未变。
+
+## R3 confirmation（V3.11，2026-11-22）
+
+### §0 基线
+
+- 文档 sha256: `5c6ecdb08b624542e82bd88d01356b105dead0faaa238ccefd8c9198a7891c66`，2112 行
+- 单元：41/41 frozen；R2 ROUND-CLOSED；trajectory R2 PASS
+
+### §1 面板
+
+- 逐单元 `--confirm-review`；证据 `unit-r3/<id>.md` 引用 `confirmation-r3.md` 与 R2 面板；未开新全量面板。
+
+### §2 发现
+
+- 0 新根因；R2 9 条、R1 12 条全部 CLOSED。
+
+### §3 归因
+
+- 0 新根因；0 未闭环。
+
+### §4 修复
+
+- 无文档修改；只记录确认。
+
+### §5 复验
+
+- 41/41 单元 post_freeze_rounds 含 R3；review_rounds ≥2；T3 PASS。
+- 文档/代码门见 `certify/round3-gates.md`。
+
+### §6 指标
+
+- 发现 0；根因 0；未闭环 0；轮型 confirmation；结果 CONVERGED。
+
+### §7 状态
+
+`CONVERGED`（V3.11）。限制见 `FREEZE.md`。
+
+### §8 给 meta-review 的不确定点
+
+1. R3 逐单元确认仍引用 R2 面板，不是 41 个独立冷读会话。
+2. D2 的 SelectedSize/根 typestate 是设计候选，未实施。

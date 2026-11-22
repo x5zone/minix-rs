@@ -37,9 +37,10 @@ impl HigherHalf for AArch64HigherHalf {
         );
         // SAFETY: Caller guarantees paging is enabled with both identity
         // and kernel high mappings, and that `kinfo` is valid and accessible
-        // at a high address. The stack top derived from `kinfo` is asserted
-        // 16-byte-aligned by boot validation. This is called exactly once
-        // from the boot CPU.
+        // in the current address view at the jump (v1 receive passes a high
+        // address; direct-core passes the physical-view reference). The
+        // stack top derived from `kinfo` is asserted 16-byte-aligned by boot
+        // validation. This is called exactly once from the boot CPU.
         //
         // The inline asm performs the same sequence as Minix3 head.S:
         //   mov sp, stack_top       // switch stack to high address
