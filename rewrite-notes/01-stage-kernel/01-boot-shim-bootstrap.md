@@ -5,6 +5,8 @@
 
 ## 1. 概述
 
+引导器把控制权交给内核时，真正交出的不是一条跳转指令，而是一组必须同时成立的事实：哪些物理内存可用、内核被放在哪里、交接结构在哪里、哪些区域必须排除。任何一项丢失或含义变化，内核都会在还没有能力报错的时候停住。本章先把这三份数据、四条不变量和本篇的边界讲清楚，给后面的 C 分析与 Rust 设计一个共同的判断标准。
+
 ### 1.0 本章导读
 
 #### 学习目标
@@ -45,6 +47,16 @@ $ grep -n 'pub fn store_kernel_info' os/kernel/src/lib.rs
 - **`KernelInfo`**：按值交接的载荷结构；三条 v1 腿跨镜像时序列化进 wire，两个直核腿同镜像也深拷进接收方 `.bss`。
 - **wire**：跨镜像交接协议里按固定字节宽度写进 arena 的那份表示，与进程内结构相对。
 - **五条生产腿**：两条 UEFI 链、riscv64 U-Boot shim、两个直核面。
+- **腿 / 生产腿**：一条完整启动路径 = 一个引导面 + 它交付的内核镜像；主计数是 5。
+- **直核面**：kernel-image 与 boot-shim 在同一镜像内直接调用 `arch_boot`，不跨镜像。
+- **v1 腿**：跨镜像交接的三条路径，使用 wire 协议；与“直核面”相对。
+- **落地区**：内核 `.bss` 中接收 `KernelInfo` 切片的六个定长存储区。
+- **门链**：`validate_requiring_sources`、`validate_before_tables`、`check_boot_postconditions`、`boot_validate_and_prepare`、`KernelInfo::validate` 组成的校验顺序。
+- **Direct Map**：内核虚拟地址到物理地址的线性映射窗口；启动时用它直接读取 boot 映像与 handoff 页。
+
+> **启动路径计数口径**：生产腿 5 = 2 条 UEFI + 1 条 riscv64 U-Boot shim + 2 个直核面；
+> 其中 v1 发送腿 3、直核腿 2。三类链 6 含直载测试链，真机门链 5 不含 aarch64 直核。
+> 正文使用子计数时会带限定词，避免把 3 或 2 误读成主计数。
 - **框 1 / 框 2**：C 侧旧称，分别指可用内存清单与内核位置记录。
 - **`PT_LOAD` / LMA / VMA**：`PT_LOAD` 是 ELF 程序头里需要装载的段；`p_paddr` 是装载地址（LMA），`p_vaddr` 是执行地址（VMA）。
 - **`p_filesz` / `p_memsz`**：段在文件里的字节数与在内存里的字节数；两者之差是 `.bss` 清零范围。
@@ -111,6 +123,8 @@ D1–D5 只在本篇定义（02 不使用 D 编号）：D1 = 内存清单先于�
 ---
 
 ## 2. C 源码分析
+
+第 1 章给出了交接必须保住的三份数据和四条不变量。要判断 Rust 版本是否真的保住了它们，先得看 Minix3 自己怎么做：`boot.cfg` 怎样安排引导器动作，`head.S` 怎样进入 `pre_init`，`get_parameters` 怎样把 `mbi` 变成 `kinfo`，`add_memmap`/`cut_memmap` 又怎样把别人的内存图裁成自己的记录。本章沿这条 C 调用链走一遍，并在 ARM32 上做一次对照。
 
 ### 2.0 本章导读
 
@@ -261,7 +275,7 @@ multiboot_init:
 
 5. `push %ebx` / `push %eax` / `call pre_init`：i386 的 C 调用约定下第一个参数落在最低地址，所以第二个参数（`multiboot_info` 地址）先压，第一个参数（魔术值）后压。`pre_init(u32_t magic, u32_t ebx)` 的两个形参就位。引文里的 `_C_LABEL(pre_init)` 是 Minix3 的汇编宏（定义在 `minix3/sys/arch/i386/include/asm.h`）：ELF 目标上直接展开为 C 符号名，非 ELF 目标上给 C 符号加 `_` 前缀；本仓是 ELF，所以这里可读作 `call pre_init`。
 
-第 4 条的空位与第 5 条的 `push %ebx`、`push %eax`、以及 `call` 推入的返回地址一起，合计 16 字节（4 个双字）；`load_stack_start` 本身按 4096 对齐，这条对齐不是当前链接顺序下的巧合，而是一整条可以逐环验证的构建保证：`i386/Makefile.inc` 的 `.for unpaged_obj in head.o pre_init.o …` 把 `head.o` 固定在 unpaged 对象列表的首位（[Makefile.inc](minix3/minix/kernel/arch/i386/Makefile.inc) 51 行起），该列表经 `OBJS.kernel += ${UNPAGED_OBJS}`（同文件 83 行）按原序进入链接命令行；`kernel.lds` 的 `.unpaged_data ALIGN(4096) : { unpaged_*.o(.data .rodata*) }`（[`kernel.lds`](minix3/minix/kernel/arch/i386/kernel.lds) 18 行）按命令行顺序收输入节，所以 head.o 的 `.data` 是 `.unpaged_data` 的第一个输入节，起点就是 `ALIGN(4096)` 的输出段起点；而 head.o 的 `.data` 以 `load_stack: .space 4096` 开头（[`head.S`](minix3/minix/kernel/arch/i386/head.S) 93–96 行），`load_stack_start` 落在段起点加 4096——仍是 4096 边界。中间还有一步改名：链接模式收的是 `unpaged_*.o`，而对象列表写的是 `head.o`；构建规则把该列表里的每个对象复制/改名为 `unpaged_<name>.o` 后再交给链接器（同一个 `objcopy --prefix-symbols` 批次处理符号前缀，§2.2 已引）。没有这一步，“head.o 在列表首位”接不到“`.unpaged_data` 的第一个输入节”。
+第 4 条的空位与第 5 条的 `push %ebx`、`push %eax`、以及 `call` 推入的返回地址一起，合计 16 字节（4 个双字）；`load_stack_start` 本身按 4096 对齐，这条对齐不是当前链接顺序下的巧合，而是一整条可以逐环验证的构建保证：`i386/Makefile.inc` 的 `.for unpaged_obj in head.o pre_init.o …` 把 `head.o` 固定在 unpaged 对象列表的首位（[Makefile.inc](minix3/minix/kernel/arch/i386/Makefile.inc) 51 行起），该列表经 `OBJS.kernel += ${UNPAGED_OBJS}`（同文件 83 行）按原序进入链接命令行；`kernel.lds` 的 `.unpaged_data ALIGN(4096) : { unpaged_*.o(.data .rodata*) }`（[`kernel.lds`](minix3/minix/kernel/arch/i386/kernel.lds) 18 行）按命令行顺序收输入节，所以 head.o 的 `.data` 是 `.unpaged_data` 的第一个输入节，起点就是 `ALIGN(4096)` 的输出段起点；而 head.o 的 `.data` 以 `load_stack: .space 4096` 开头（[`head.S`](minix3/minix/kernel/arch/i386/head.S) 93–96 行），`load_stack_start` 落在段起点加 4096——仍是 4096 边界。中间还有一步改名：链接模式收的是 `unpaged_*.o`，而对象列表写的是 `head.o`；构建规则把该列表里的每个对象复制/改名为 `unpaged_<name>.o` 后再交给链接器（同一批 `objcopy --prefix-symbols` 处理符号前缀；构建链的完整说明见 §3.4.1）。没有这一步，“head.o 在列表首位”接不到“`.unpaged_data` 的第一个输入节”。
 
 于是 `pre_init` 入口处的栈指针落在 16 字节边界上——这不是 ABI 的目标形态。这一行源码的注释只写 `/* make usable stack */`，不涉及对齐。（Rust 侧的入口对齐与构建目标细节见 02 篇的 4.3 节，本段只判 C。）i386 SysV ABI 要求的是**入口处 `%esp + 4` 是 16 的倍数**（等价于 `%esp ≡ 12 (mod 16)`，因为 `call` 已压入 4 字节返回地址）；从 4096 对齐的栈顶算起，达到 `≡ 12` 需要 20 字节，而这段布局只压了 16 字节，给出的是 `%esp ≡ 0 (mod 16)`——比标准 ABI 少一次 push。**结论**：C 原作的入口栈对齐不满足 SysV 约定；按当前 GCC 的默认假设，`pre_init` 很可能没有生成依赖栈对齐的 SSE 访问；本项目没有保存反汇编证据，因此这条只能作为风险提示（换编译器/优化档可能改变），不是设计选择。Rust 侧不继承这个问题（入口 asm 显式对齐；构建目标与 SSE 细节见 02 篇的 4.3 节）。
 6. 到此为止是本篇的范围。下一行 `mov $k_initial_stktop, %esp` 与随后的 `call kmain` 属于换栈与跳转，归 `02-higher-half-kernel.md` §2.3；`k_initial_stktop` 落在哪一段属于它的 §2.4——本篇只在 §2.2、02 篇的 4.3 节、§2.8、§7.5 与 §1.4 这条边界声明里引用那个结论，不重复那套判据（为什么本篇接得住这个结论，见 §1.4）。
@@ -272,7 +286,7 @@ multiboot_init:
 
 **把两条 `push` 对调会怎样**：i386 约定下最低地址就是第一个参数，没有另一种写法。对调之后 `pre_init(magic, ebx)` 收到 `magic = ebx`（`multiboot_info` 的物理地址，一个看起来完全合法的数字），`ebx` 收到 `0x2BADB002`。`pre_init()` 最顶端那条 `assert(magic == MULTIBOOT_INFO_MAGIC)` 当场失败，走 2.1 末尾那条链：屏幕刷出 panic 与诊断缓冲、等一个按键才复位（串口这个出口此时不会出声——`do_serial_debug` 要等命令行解析才可能被置起来，而这条断言排在解析之前）。误诊的方向在这里：这条断言只打印失败的表达式本身（形如 `assert "magic == MULTIBOOT_INFO_MAGIC" failed`），并不打印值；而此刻 `magic` 里躺着的是 `ebx` 送来的地址——一个看起来完全合法的数字。不核对两条 `push` 的次序，容易往"数据结构坏了"的方向查。
 
-标题里的“三个配套教学点”就是上面这三段：**SysV 栈对齐**（入口 `%esp ≡ 0` 而非 ABI 要求的 `≡ 12`）、**`.data` 与 `.bss` 的差别**（`load_stack` 为什么要自带 4096 个零字节）、**两条 `push` 对调**（参数顺序写反后断言能停住但打印不出值）。
+上面这三段就是本节要讲的三个配套教学点：**SysV 栈对齐**（入口 `%esp ≡ 0` 而非 ABI 要求的 `≡ 12`）、**`.data` 与 `.bss` 的差别**（`load_stack` 为什么要自带 4096 个零字节）、**两条 `push` 对调**（参数顺序写反后断言能停住但打印不出值）。
 ### 2.3 `get_parameters`：把别人的数据变成自己的记录
 
 `i386/pre_init.c` 的 [`get_parameters`](minix3/minix/kernel/arch/i386/pre_init.c:get_parameters) 是收集阶段的正文。它做的第一件容易被跳过的事是**整份拷贝**：不长期持有引导器给的指针，而是把整个结构体复制进自己的全局 `kinfo`。
@@ -1017,6 +1031,8 @@ ARM32 的主要差异是第 1 步（`setup_mbi`）与 MMU 寄存器；`overlaps`
 
 ## 3. Rust 设计决策
 
+看完 C 侧的做法，问题变成：三套架构、五种引导形态，Rust 版本应该共用什么、又必须分开什么。直接照搬 `kinfo` 全局和 Multiboot 协议会把固件细节带进内核；每个架构各写一套协议又会让同一语义分叉。本章按 I1–I4 说明这套交接协议为什么这样切分，以及 `KernelInfo`、两张内存表、bootstrap 区间和五条生产腿各自承担什么。
+
 ### 3.0 本章导读
 
 #### 学习目标
@@ -1178,7 +1194,7 @@ pub struct KernelInfo {
 
 **权威与内存图绑定**。`authority` 记录这份内存图是从哪个输入对象投影出来的：`RamAuthority::DTB`（设备树）或 `RamAuthority::UEFI`（`GetMemoryMap` 快照）；`RamAuthority` 内部包一个 `InputObjectId`；`InputObjectId` 现在只有 DTB/UEFI 两个变体，`StartupObjects` 与 `startup_record()` 已随 v10 删除，wire 标签 2（输入对象）、6（kind）与 5（origin）只作保留位。它由构造点写入——wire 解码把 [`BootHandoffV1`](os/libs/minix-boot/src/handoff_v1.rs) 信封里的 `ram_authority` 复制进来：两个直核面在 `build_kernel_info` 调用点传 `RamAuthority::DTB`，两条 UEFI 腿发送侧在 `Serializer::new` 里声明 `InputObjectId::UefiMemoryMap`、接收侧由 `decode_envelope` 解码为 `RamAuthority::UEFI`；riscv64 U-Boot shim 发送侧声明 `InputObjectId::DtbBootInput`、接收侧解码为 `RamAuthority::DTB`（它从 DTB `/memory` 取表，没有 EBS 快照）。`validate_requiring_sources()` 因此不再收参数，直接读字段。改之前权威是调用方的另一个实参，`KernelInfo` 与权威在类型上可以任意配对；混合记录表里"DTB 记录 + 声明 UEFI 权威"这类错配只会在下一次覆盖审计时才暴露。把权威放进结构体没有让错误的构造变得不可能（构造点仍可传错），但它把"图和它的声明"变成同一个值，解码路径不再有两个可以接反的参数。
 
-**先讲清前两格装的是什么：内存图交付成两张表**。`KernelInfo` 携带内存信息只用两个列表，形状固定，来源不固定：
+**先讲清 `memmap` 与 `reserved_regions` 两行装的是什么：内存图交付成两张表**。`KernelInfo` 携带内存信息只用两个列表，形状固定，来源不固定：
 
 | 列表 | 语义 | 内核侧怎么用 |
 |---|---|---|
@@ -1634,7 +1650,7 @@ kernel-image ─┬─→ minix-kernel （arch_boot / arch_boot_resume_v1；直�
               ┄→ boot-shim（仅 riscv64/aarch64 target；依赖的是库，不是引导器产物）
 ```
 
-（图只画主边；条件依赖与 leaf crates 以下方四份依赖表为准，其中 `kernel-image ┄→ boot-shim` 仅 riscv64/aarch64 target 生效。`boot-shim → minix-kernel` 的调用面只有 `enter_kernel_image_v1` 与 `boot_alloc::init_boot_pt_alloc`；`arch_boot` 是 `kernel-image` 两个直核面的入口，不由 boot-shim 调用，图上的括号已按这个分工标注。两个名字看起来相近，但指的不是同一个东西：**boot-shim** 是可执行体 crate，**minix-boot** 是共享库 crate——标题里"内核不依赖 boot-shim"说的是不依赖前者这个*可执行体*；图中 `minix-kernel → minix-boot` 是对*库*的依赖，二者不矛盾。）
+（图只画主边；条件依赖与 leaf crates 以下方四份依赖表为准，其中 `kernel-image ┄→ boot-shim` 仅 riscv64/aarch64 target 生效。`boot-shim → minix-kernel` 的调用面只有 `enter_kernel_image_v1` 与 `boot_alloc::init_boot_pt_alloc`；`arch_boot` 是 `kernel-image` 两个直核面的入口，不由 boot-shim 调用，图上的括号已按这个分工标注。两个名字看起来相近，但指的不是同一个东西：**boot-shim** 是可执行体 crate，**minix-boot** 是共享库 crate——§3.5 的单向依赖结论说的是不依赖前者这个*可执行体*；图中 `minix-kernel → minix-boot` 是对*库*的依赖，二者不矛盾。）
 
 依据是四份依赖表（boot-shim / kernel / minix-boot / kernel-image 四个 manifest；命令：`sed -n '/^\[dependencies\]/,/^\[/p' os/kernel/Cargo.toml`（输出中无 `boot-shim` 也无 `uefi`，即证否定；全仓四 manifest 的依赖表见下方四行（`os/kernel` 的 `bitflags` 从略））。文中另提到的 `minix-elf` 是 boot-shim 的普通依赖，不单列成表）：
 
@@ -1843,6 +1859,8 @@ I3 与 I4 在实现上是两条相邻的检查：**载荷先落到自己的存�
 ---
 
 ## 4. 实现详解
+
+第 3 章定下了协议和数据形状，本章看它们在代码里怎样落地：UEFI 的两条链从哪里进入，九个动作按什么顺序执行，`KernelInfo` 从哪两条路径产出，`store_kernel_info` 把切片深拷到哪六个落地区，以及各道校验门在什么时候拦住错误。读完后，读者应能把一次真实启动映射回这条调用链。
 
 ### 4.0 本章导读
 
@@ -2578,6 +2596,8 @@ Direct Map 的完整布局、覆盖策略及其在物理内存管理中的作用
 ---
 
 ## 5. 测试：四条不变量各自的证据
+
+机制讲完，剩下的问题是：凭什么相信它真的成立。四条不变量不能靠“代码看起来对”来证明，也不能用一条证据替另一条背书。本章把 I1–I4 各自的宿主证据、负控和真机门分开列出来，并明确每条证据不证明什么；这样读者看到一处绿灯时，知道它覆盖了哪一段，而不是把整条链当成已经证明。
 
 ### 5.0 本章导读
 
