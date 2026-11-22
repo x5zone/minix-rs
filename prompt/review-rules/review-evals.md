@@ -708,7 +708,23 @@ G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 
 G13 教程 rubric：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）
 G14 单元账本：`tools/review-units.py check --doc <当前篇>` 与 `audit --doc <当前篇>` 退出 0，全部 `##` 章与 `###` 节
     frozen，且 T3 通过（`review-units.md`；旧 FREEZE 篇目指 `runs/*/FREEZE.md`，不追溯）
+G15 每单元至少 2 次 review：`review_rounds >= 2`，且 `post_freeze_rounds` 非空；
+    证据文件只点名该单元（`UNIT <id>`），一份通用证据不得给多个单元背书
+G16 每篇至少 2 个 full 轮：`full_rounds >= 2`；每个 full 轮的 evidence 覆盖全部单元
+    （含冻结单元），同一 evidence 不得跨轮复用
+G17 每轮轨迹复核：本篇每个 full 轮与确认轮都有 `PASS` 的 `trajectory_reviews`；
+    缺一个不得 CONVERGED
 ```
+
+**V3.11 严格账户模型（2026-11-22 用户裁决）**：每篇文档是一个独立账户，`edition`、`round`、
+`full_rounds`、`trajectory_reviews` 都写在该篇状态文件内；D01 的轮次号、D-114 这类 doc 级裁决
+不得给 D02 背书。每篇至少 **2 个 full 轮**，每个 full 轮覆盖全部单元（包括冻结单元）；
+每个单元至少 **2 次 review**（冻结前 1 次、冻结后确认轮 1 次），证据文件必须只点名该单元；
+每轮结束必须有独立的 `trajectory-review`。G15/G16/G17 是硬门，缺一项只能最多 `ROUND-CLOSED`。
+轮次号必须从本篇 `loop.md` / `review-units.py stats` 取，不得手写或跨篇复用；
+引用裁决时必须校验裁决的适用范围（doc / stage / repo）。实测判例：D02–D05 曾把 D01 的 R39
+与 D-114 当成 stage 级通行证，导致四篇没有当前 edition full survey 就宣告 CONVERGED；
+纠正记录见 `runs/01-stage-kernel/ROUND-IDENTITY-CORRECTION.md`。
 
 **V3.7 出版标准（2026-11-21 用户裁决）**：G10/G11 与 `prompt/review-rules/review-publication.md`
 为准；该文件同时关闭 `②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 作为延期出口——任何发现必须

@@ -1,13 +1,27 @@
-# 单元级 review：按节冻结与三轨分工（V3.9）
+# 单元级 review：每篇独立账户与单元子键（V3.11）
 
-> **解决的问题**：整篇 review 的每一轮都重读全文，稳定章节随轮次反复消耗面板；D01 的 28 轮里，
-> 后段轮次的大部分输入是已经不再变化的章节。本文件把 review 的**覆盖单位**从「整篇」降到
-> 「`###` 节」，并允许已稳定的节退出循环。
+> **解决的问题**：整篇 review 的每一轮都重读全文，稳定章节随轮次反复消耗面板；更严重的是，
+> 跨篇复用轮次号或裁决会让 D02 花掉 D01 的账。V3.11 把 review 账本改成
+> **每篇一个独立账户，每个 `##`/`###` 单元一个子键**，任何轮次、裁决、证据都必须在
+> 该篇账户内闭合。
 >
-> **不改变的东西**：G1–G13、四态模型、确认轮、代码冻结、零欠账、3 edition 上限全部保留（本文件另加 G14）；
-> 本文件只改变「每一轮读什么」，不改变「什么算收敛」。
+> **不改变的东西**：G1–G14、四态模型、确认轮、代码冻结、零欠账、3 edition 上限全部保留；
+> 本文件另加 G15/G16/G17。V3.11 只改变“账怎么记、每篇至少审几轮”，不改变“什么算缺陷”。
 
-## 一、单元与轨道
+## 一、账户模型
+
+- 每篇文档一个状态文件：`rewrite-notes/meta/review/state/<stage>/<doc-stem>.yaml`。
+- 账户键 = 文档路径；子键 = 单元 ID（`##` 章、`###` 节）。
+- 账户内字段：
+  - `edition`：本篇当前规则版本（V3.11 起独立记录，不得从别篇继承）；
+  - `round`：本篇本地轮次，从 0 开始，只在本篇递增；
+  - `full_rounds`：本篇已完成的 full 轮列表（每项带 `n`、`evidence`、`evidence_sha`、`commit`）；
+  - `trajectory_reviews`：每轮结束后的轨迹复核（`round`、`evidence`、`verdict`、`commit`）；
+  - `units[]`：每个单元的 `review_rounds` 与 `post_freeze_rounds`。
+- **跨篇引用禁止**：D01 的 `R39` 只能写在 D01 账户；D02 的轮次必须从自己的 `round` 取号。
+  引用裁决时必须带裁决的适用范围（doc / stage / repo），D-114 这类 D01 专用裁决不得给 D02 背书。
+
+## 二、单元与轨道
 
 | 单元 | 取哪一级标题 | 轨道 | 检查什么 |
 |---|---|---|---|
@@ -16,10 +30,47 @@
 | 篇 | 整篇 | **T3 出版/代码同步** | DP-1..DP-6、CP-1..CP-6、符号覆盖、TODO 账本、测试/真机门 |
 
 - 没有 `###` 的 `##` 同时是 T1 与 T2 单元。
-- `参见` / `附录` / `索引` / `参考文献` 章不建单元；正文中的空节（只有标题与分隔线）不建单元。
+- `参见` / `附录` / `索引` / `参考文献` 章不建单元；正文中的空节不建单元。
 - 单元 ID 优先取标题编号（`1.2`），无编号时取 `u-<顺序>-<slug>`；稳定 ID 写入状态文件，禁止自动重编号。
 
-## 二、状态机
+## 三、硬门槛（V3.11）
+
+### 3.1 每篇至少 2 个 full 轮
+
+- 第 1 个 full 轮用 `baseline --evidence`；第 2 个及以后用 `full-round --evidence`。
+- full 轮必须覆盖**全部单元**，包括已冻结单元；证据文件必须含 `FULL-ROUND` 标记，并为每个单元写
+  `UNIT <id>`。缺一个单元即 FAIL。
+- full 轮不得用确认轮抽样、冻结单元豁免或“上轮已读”替代；每个 full 轮都是独立产物，
+  同一份 evidence 不得复用于两个 full 轮。
+- `gate --pass` 要求 `len(full_rounds) >= 2`；不足时最多 `ROUND-CLOSED`。
+
+### 3.2 每个单元至少 2 次 review
+
+- 第一次：冻结前的 T1/T2 review。`mark --pass --evidence <unit-file>`，证据文件必须**只点名**
+  该单元（`UNIT <id>`），且含可重放 token。
+- 第二次：冻结后的确认 review。确认轮内 `mark --confirm-review --evidence <unit-file>`，
+  证据同样只点名该单元；不改单元正文，只记录复核。
+- `mark --freeze` 要求当前轮已有该单元的 `review_rounds` 记录；不允许“先冻结、后补读”。
+- `end-confirmation` 要求每个单元 `len(review_rounds) >= 2` 且 `post_freeze_rounds` 非空。
+- **禁止批量冻结**：一份含多个 `UNIT` 的通用证据只能用于 full 轮，不能用于任何单元的
+  `--pass/--freeze/--confirm-review`。`review-units.py` 对多单元证据直接 FAIL。
+
+### 3.3 每轮结束后必须 trajectory review
+
+- 每个 full 轮和确认轮结束后，必须写独立的轨迹复核文件，含 `TRAJECTORY-REVIEW`、
+  被复核轮次 `R<N>`、证据与结论；用 `trajectory-review --round N --evidence <file> --verdict PASS|FAIL` 入账。
+- 开下一个 full 轮前，上一 full 轮必须有 `PASS`；开确认轮前，最后一个 full 轮必须有 `PASS`；
+  `gate --pass` 前，所有 full 轮与确认轮都必须有 `PASS`。
+- `FAIL` 的轨迹复核会阻断下一轮/收敛；修复后重新复核，不允许覆盖成 `PASS` 而不留原因。
+
+### 3.4 轮次与版本的独立性
+
+- `new-edition` 只在本篇账户内归档旧计数；不得用另一篇的 edition、round 或 full 轮数。
+- 同一篇的 edition 上限仍是 3（`review-evals.md` §7.5）；跨篇不累计，也不互相抵扣。
+- 任何“本轮已经审过”的声明，必须能在本篇账户的 `review_rounds`/`full_rounds` 找到对应记录；
+  找不到 = 没审过，不能凑数。
+
+## 四、状态机与冻结
 
 节单元：
 
@@ -35,115 +86,96 @@ pending → (T2 通过) → passed → (父章 T1 通过) → frozen
 pending → (T1 通过) → passed → (全部子节 frozen) → frozen
 ```
 
-篇级：全部章 `frozen` 且 `T3` 通过，才允许进入确认轮；确认轮通过后才是 `CONVERGED`。
-`CONVERGED` / `ROUND-CLOSED` 不写进单元状态——单元状态只描述稿件，不描述轮次结论。
+篇级：全部章 `frozen`、至少 2 个 full 轮、每个单元至少 2 次 review、T3 通过，才允许进入确认轮；
+确认轮通过后才是 `CONVERGED`。`CONVERGED` / `ROUND-CLOSED` 不写进单元状态。
 
-## 三、预算
+- 冻结条件：`audit` 显示该单元 `open = 0`；`mark --pass/--freeze` 带**只点名该单元**的 evidence；
+  正文 hash 与冻结时一致；锚点状态不是 `missing`/`impl`。
+- **锚点凭据（V3.10 保留）**：冻结时抽取直锚（`path:fn NAME` / `struct` / `enum` / `trait` /
+  `const` / `static` / `type`），对符号体算 sha256 写入 `anchor_hashes`；`anchor_status` 记
+  `direct` / `fallback` / `none`。缺失符号或 `impl Type::method` 锚点拒绝冻结；C 锚点算 `fallback`。
+- 正文变化：`sync` 比较 hash；节正文变化只解冻该节，标题/顺序/层级变化解冻该章与受影响子节；
+  `deps` 变化把下游标 `reopened`。
+- **锚点正文变化**：`sync` 重算冻结单元的 `anchor_hashes`；任一符号体变化、缺失或变成 `impl`
+  → 解冻并置 `reopened: true` + `stale: true`。旧状态没有 `anchor_hashes` 的冻结单元强制重开。
+- **批量失效**：`invalidate --from <commit>` 对比 `git diff --name-only`，冻结单元的锚点文件变化
+  → 解冻并置 `reopened`/`stale`。
+- 任何对冻结节的修改都必须先 `sync --unfreeze` 或 `--confirm-fix` 留痕，禁止手改状态文件绕过。
 
-- 每个单元每轨最多 **2 个修改轮**（`t1_rounds` / `t2_rounds`），按 edition 计。
-  新 edition 用 `review-units.py new-edition` 归档旧计数并重置；不要 `init --force`。
-  **这不重置篇级 3 个修改轮**：篇级上限跨 edition 累计（`review-evals.md` §7.5），
-  `new-edition` 只清单元计数，不清篇章预算。
-  第 3 个修改轮只有两个合法出口：用户明确批准，或该节**整节重写**
-  （`rewritten: true`，计数重置，但一个 edition 内只允许一次）。
-- **干净通过不耗预算**：只有产生并实施了修改的轮次才 `+1`。
-- 篇级仍受 3 edition 上限约束；单元预算不替代也不放宽它。
-- 同一根因跨单元复发时，仍按 `review-evals.md` §4.0b 的「第二次出现必须结构性重写」处理，
-  不因为换了单元就重新计第一次。
+## 五、预算
 
-## 四、冻结与解冻
+- 每个单元每轨最多 **2 个修改轮**（`t1_rounds` / `t2_rounds`），按 edition 计；干净通过不耗预算。
+- 第 3 个修改轮只有两个合法出口：用户明确批准，或该节整节重写（`rewritten: true`，一个 edition
+  只允许一次）。
+- 篇级仍受 3 个修改轮与 3 个 edition 上限约束；单元预算不替代也不放宽它。
+- 同一根因跨单元复发时，仍按 `review-evals.md` §4.0b 的“第二次出现必须结构性重写”处理。
 
-- 冻结条件：`review-units.py audit` 显示该单元 `open = 0`、`certify 新准入 = 0`、
-  `defect-ledger.md` 中**存在 open 行的表**必须带 `单元` 列（全部 closed 的历史段不追溯；audit 只对无法归属的 open 行报错）、
-  `mark --pass/--freeze` 带非空 `--evidence` 文件（至少一个可重放 token：`path:line` / `test::name` / `rg|grep` / 真实 commit / `D-xxx`）、正文 hash 与冻结时一致。
-- **锚点凭据（V3.10）**：冻结时从单元正文抽取直锚（`path:fn NAME` / `struct` / `enum` / `trait` / `const` / `static` / `type`），对每个符号的**符号体**算 sha256 并写入 `anchor_hashes`；`anchor_status` 记 `direct` / `fallback` / `none`。缺失符号或 `impl Type::method` 锚点**拒绝冻结**（先改成可解析的 `fn`/`struct` 直锚）；C 锚点算 `fallback`，允许冻结。
-- 正文变化：`tools/review-units.py sync` 比较 hash。节正文变化只解冻该节（T2）；
-  标题、顺序、层级变化解冻该章（T1）与受影响子节；`deps` 变化把下游单元标为 `reopened`。
-- **锚点正文变化（V3.10）**：`sync` 重算冻结单元的 `anchor_hashes`；任一符号体变化、缺失或变成 `impl` → 解冻并置 `reopened: true` + `stale: true`。旧状态里没有 `anchor_hashes` 的冻结单元在 `check`/`sync` 时强制重开。
-- **批量失效（V3.10）**：`review-units.py invalidate <doc> --from <commit>` 对比 `git diff --name-only <commit>..HEAD`，任何冻结单元的锚点文件在 diff 中 → 解冻并置 `reopened`/`stale`。
-- 冻结单元不再进入 L1 面板；只进入确认轮的抽样。冻结不是「永远不读」——确认轮按直锚/fallback 抽 10%/20%。
-- 任何对冻结节的修改都必须先 `sync --unfreeze` 留痕，禁止手改状态文件绕过。
-
-## 五、每轮读什么
+## 六、每轮读什么
 
 | 轮种 | 覆盖范围 |
 |---|---|
-| 首个 edition 的 full survey | 整篇（沿用现有面板档位），建立基线 |
-| 后续 full / structural | 全部未冻结单元 + 依赖闭包；冻结单元不重读 |
-| confirmation | 全部未冻结单元 + 冻结单元抽样（seed = 最终 commit）+ 骨架（标题树与跨节承诺）；不做全文逐句通读。抽样比例：全部冻结单元 `anchor_status=direct` 时 **≥10%**；含 `fallback`/`none` 时 **≥20%** |
-| 回退条件 | 未冻结单元 > 30%，或 T1 发现跨章结构问题，或用户要求 → 回到整篇 survey |
+| full（第 1 或第 2 个） | 整篇全部单元，包括已冻结单元；不许抽样 |
+| confirmation | 未冻结单元 + **每个冻结单元一次冻结后确认 review** + 骨架；不做全文逐句通读，但每个单元必须留下 `UNIT <id>` 证据 |
+| 回退条件 | 未冻结单元 > 30%，或 T1 发现跨章结构问题，或用户要求 → 回到 full |
 
-确认轮仍由未参与本轮修复的冷启动 agent 执行；抽样只减少阅读量，不降低独立性。
+确认轮仍由未参与本轮修复的冷启动 agent 执行；冻结后确认 review 是硬要求，不是抽样替代品。
 
-## 六、与既有规则的关系
+## 七、与既有规则的关系
 
-- **G1–G13 不变**；新增 **G14**：`tools/review-units.py check --doc <当前篇>` 与
-  `audit --doc <当前篇>` 退出 0，全部单元 `frozen`、`reopened=0`、`stale=0`、T3 通过（evidence 含可重放 token）。
-- **四态模型不变**：修改轮仍无收敛声明权；`CONVERGED` 只由确认轮宣告。
-- **新 edition 与历史 run**：edition 变化会重置 `eval-trace` 的 `sealed_at`/确认轮计数；
-  历史轮仍留在 run 目录，`--round` 只查当前轮。若要让全历史审计也绿，需在 `DECISIONS.md`
-  落重开判决行，或把旧 run 归档到 `review-eval/archive/` 并在新 run 里从 R1 开始。
-- **代码冻结不变**：面板 survey 与 certify 阶段不得写 `os/`；本轮台账内的修复按 L3 实施后重设基线，设计批级改动回 Manuscript（`review-publication.md` §四.6）。
-- **零欠账不变**：每个单元的 `open` 与 TODO 账本一致；blocked 待裁项存在时不得冻结该单元所在的章。
-- **面板配置**：整篇 survey 用 `review-panel.md` §七 **表 A**；单元轮用 **表 B**
-  （T1 = P-FACT + B + D2；T2 = A + C + P-FACT 定点；T3 = P-FACT + RB + 机械门）。
-  A/B 按脏单元派发，C 每轮只派一个、读整篇；首 edition 不要按单元拆成多轮。
+- **G1–G14 不变**；新增：
+  - **G15**：`review-units.py check --doc <当前篇>` 与 `audit --doc <当前篇>` 退出 0，全部单元
+    `frozen`、`reopened=0`、`stale=0`、T3 通过，且每个单元 `review_rounds >= 2`、
+    `post_freeze_rounds` 非空。
+  - **G16**：本篇 `full_rounds >= 2`；每个 full 轮的 evidence 覆盖全部单元；同一 evidence
+    不得跨轮复用。
+  - **G17**：本篇每个 full 轮与确认轮都有 `PASS` 的 `trajectory_reviews`；缺一个不得 CONVERGED。
+- **四态模型不变**：修改轮无收敛声明权；`CONVERGED` 只由确认轮宣告。
+- **代码冻结不变**：面板 survey 与 certify 阶段不得写 `os/`；本轮台账内的修复按 L3 实施后
+  重设基线，设计批级改动回 Manuscript（`review-publication.md` §四.6）。
+- **零欠账不变**：每个单元的 `open` 与 TODO 账本一致；blocked 待裁项存在时不得冻结该单元所在章。
+- **面板配置**：整篇 full 用 `review-panel.md` §七表 A；确认轮用表 B，但冻结单元的
+  `--confirm-review` 必须逐单元留证，不能用抽样结果替代。
 
-## 七、工具
+## 八、工具
 
 ```bash
-# 首次：按当前标题树建状态
+# 首次：按当前标题树建账户
 python3 tools/review-units.py init rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
-# 整篇 survey 完成后记录基线（之后才允许确认轮抽样）
-python3 tools/review-units.py baseline rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md --evidence runs/<stage>/<doc>/metrics.md
 
-# 单元 open 审计（默认读 run 目录 defect-ledger.md 的 `单元` 列）
-python3 tools/review-units.py audit --doc <doc>
-# 结构/代码指纹：same 时复用上轮 structure.md / SYMBOLS.md
-python3 tools/review-units.py fingerprint --doc <doc> --code-list runs/<stage>/<doc>/related-code.txt
-# 新 edition：归档旧计数、保留冻结（--unfreeze-all 才全部重置）
-python3 tools/review-units.py new-edition <doc> --edition V3.10
+# 第 1 个 full 轮：整篇 survey，evidence 必须含 FULL-ROUND 与全部 UNIT
+python3 tools/review-units.py baseline <doc> --evidence runs/<stage>/<doc>/metrics-full-r1.md
 
-# 每轮开始：校验状态与正文一致，列出本轮该审的单元
-python3 tools/review-units.py check <doc>
-python3 tools/review-units.py next <doc>
+# 第 2 个 full 轮：先复核 R1 轨迹，再记录独立 full 产物
+python3 tools/review-units.py trajectory-review <doc> --round 1 --evidence runs/<stage>/<doc>/trajectory-r1.md --verdict PASS
+python3 tools/review-units.py full-round <doc> --evidence runs/<stage>/<doc>/metrics-full-r2.md
 
-# 修复/通过：pass/freeze 必须带 open=0 且含可重放 token 的 evidence 文件
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --fix
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze --evidence <file>
+# 单元 review：evidence 只能点名该单元
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --evidence runs/<stage>/<doc>/unit-2.3.md
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --pass --freeze --evidence runs/<stage>/<doc>/unit-2.3.md
 
-# 第 3 轮的两种合法出口
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --approve --evidence <DECISIONS 行摘录>
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --rewrite --evidence <file>   # 整节重写
-
-# 跨节依赖：上游改动时下游标 reopened
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --deps 2.1,2.2
-
-# 删除/合并小节后：先解冻再 prune（不静默丢单元）
-python3 tools/review-units.py sync <doc> --unfreeze --prune
-# 锚点批量失效：从某个 commit 起改过的锚点文件
-python3 tools/review-units.py invalidate <doc> --from <commit>
-
-# T3 通过（全部单元冻结后）
-python3 tools/review-units.py gate <doc> --pass --evidence runs/<stage>/<doc>/certify/round<N>-gates.md
-
-# 确认轮：开始 → 修复（不占修改轮）→ 重新冻结 → 结束
+# 确认轮：每个冻结单元都要一次 confirm-review
 python3 tools/review-units.py begin-confirmation <doc>
-python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --confirm-fix
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --confirm-review --evidence runs/<stage>/<doc>/unit-2.3-confirm.md
 python3 tools/review-units.py end-confirmation <doc>
 
-# 确认轮抽样（首 edition 拒绝；ratio ≥0.2；同 seed 同集合）
-python3 tools/review-units.py sample <doc> --seed $(git rev-parse HEAD)
+# 确认轮修复：解冻、修复、重新冻结、重新 confirm-review
+python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --confirm-fix
+
+# T3 与收敛
+python3 tools/review-units.py gate <doc> --pass --evidence runs/<stage>/<doc>/gates-final.md
+python3 tools/review-units.py trajectory-review <doc> --round 3 --evidence runs/<stage>/<doc>/trajectory-r3.md --verdict PASS
 ```
 
 状态文件：`rewrite-notes/meta/review/state/<stage>/<doc-stem>.yaml`。
+`stats` 会输出 `round`、`full_rounds`、`trajectory_reviews`、`units_review_lt2`、`units_post_freeze_0`。
 
-## 八、失败对照
+## 九、失败对照
 
-- **只按节读、不读骨架**：两节各自自洽，合起来却重复或矛盾。所以每轮必须读标题树与跨节承诺；
-  T2 的读者 C 读整篇。
-- **冻结即遗忘**：冻结单元被后续修改悄然破坏。所以有 hash 校验与 10%/20% 确认抽样；发现即解冻，
-  不许用「它已经冻结」驳回证据。
-- **单元预算当 edition 预算**：一个单元 2 轮用完就以为整篇可以收口。篇级 3 edition 与 G1–G14
-  仍要全过。
-- **用抽样代替确认轮**：抽样是确认轮的读法，不是取消确认轮。修改轮仍不得宣告 `CONVERGED`。
+- **跨篇借账**：D02 用了 D01 的 R39 或 D-114。账户模型下这是越界；工具按 `doc` 定位状态文件，
+  引用裁决必须校验适用范围。
+- **只按节读、不读骨架**：两节各自自洽，合起来却重复或矛盾。full 轮必须读标题树与跨节承诺；
+  确认轮的读者 C 读整篇。
+- **冻结即遗忘**：冻结单元被后续修改悄然破坏。有 hash 校验与逐单元 confirm-review；发现即解冻。
+- **一份证据冻结全篇**：通用 evidence 没有 `UNIT <id>` 或含多个 `UNIT`，工具直接 FAIL。
+- **用抽样代替确认轮**：抽样是确认轮的读法，不是取消确认轮；修改轮仍不得宣告 `CONVERGED`。
+- **一轮 full 就收敛**：V3.11 至少 2 个 full 轮；不足时最多 `ROUND-CLOSED`。

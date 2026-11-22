@@ -57,7 +57,7 @@ description: "文档+关联代码的固定 review 循环与工作流评测：L0 
    修复权限仅限本轮新准入项、不实施 ⑥、每个 CANDIDATE 最多 2 次、不占 §7.5 修改预算）。修改轮（full/structural）没有收敛声明权——最多 `ROUND-CLOSED` /
    `CONVERGENCE-CANDIDATE`；R25 是 V2.5 过渡轮，仍写 `轮型: discovery`，其收口按
    certify 阶段执行。
-10. **写 schema 标记**：`loop.md §0` 必须写当前生效版本的 schema。**新开篇目写 `WORKFLOW-VERSIONS.md` 版本表最后一行的 schema 列（当前 `V3.10`）**
+10. **写 schema 标记**：`loop.md §0` 必须写当前生效版本的 schema。**新开篇目写 `WORKFLOW-VERSIONS.md` 版本表最后一行的 schema 列（当前 `V3.11`）**
    （门只对该版本的 schema 起生效；写旧值 = 新门静默失效）；02–04 已 FREEZE 的轮次保持各自历史标记
    （01 现行 `V3.3 from R31`，02/03/04 `V3.3 from R1`），不追溯、不改写。已在旧
    schema 下立基线又需切新版的（如 05 的 R1 §0 已写 V3.3）：面板启动前更正 §0 的
@@ -95,6 +95,29 @@ SUGG（P3）也记在这本账里，轮内必须清零。
 - 有命中 → **本轮的 L0 阶段先清出版门**，清到零再派面板；不得「带着历史叙事开轮」，
   否则面板会收敛在脏文档上（D01/D02 的历史教训）。
 - 出版门不清零，本轮最多 `ROUND-CLOSED`，不得 `CONVERGED`。
+
+## L0.95 V3.11 独立账户与轨迹复核（开轮前强制）
+
+每篇文档一个独立账户，禁止跨篇借轮次、借裁决、借证据：
+
+```bash
+python3 tools/review-units.py init <doc> --edition V3.11
+python3 tools/review-units.py stats <doc>          # round / full_rounds / units_review_lt2
+```
+
+- 第 1 个 full 轮：`baseline --evidence <full-r1.md>`；证据必须含 `FULL-ROUND` 与全部 `UNIT <id>`。
+- 第 2 个 full 轮：先 `trajectory-review --round 1 --evidence <trajectory-r1.md> --verdict PASS`，
+  再 `full-round --evidence <full-r2.md>`。
+- 每个单元：冻结前 `mark --pass --evidence <unit-<id>.md>`（证据只点名该单元），冻结后确认轮
+  `mark --confirm-review --evidence <unit-<id>-confirm.md>`。
+- 确认轮：`begin-confirmation` → 逐单元 `--confirm-review` → `end-confirmation`。
+- 每轮结束（full 或 confirmation）必须写独立轨迹复核；`FAIL` 阻断下一轮。
+- 收敛前 `gate --pass` 必须满足 G15/G16/G17；缺一只能 `ROUND-CLOSED`。
+
+固定节奏：`D01 R1 full → D01 轨迹复核 R1 → D01 R2 full → D01 轨迹复核 R2 →
+D01 R3 confirmation → D01 轨迹复核 R3 → 判定收敛 → 进入 D02`。D02 从自己的 R1 开始，
+不得复用 D01 的 R 号或裁决；D03 的 ARCH 待决由 me-agent 按 `prompt/me.md` 裁决，
+拿不准或属 `[ARCH]` 时直接阻断并落案件卷。
 
 ## L1 独立审查面板
 
@@ -297,9 +320,11 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 2. **100% 复验**：每个根因都有复验，不是抽样；`复验` 列不能是模板句。
 3. RBn 结论已入账（写进 `defect-ledger.md` 并计入未闭环，不能只写在 loop/RB 报告里）。
 4. ② 转出/拖欠已获**用户明确批准**并落账（未经批准的拖欠按未修计，阻断收敛）。
-5. **G14（单元账本）**：`review-units.py check <doc>` 与 `audit <doc>` 退出 0，全部单元 frozen、
-   T3 通过（evidence 含可重放 token），且本轮被审单元都已 `mark`、预算未超。确认轮先
-   `begin-confirmation`，修复用 `--confirm-fix`，`end-confirmation` 通过后才 `gate --pass`。
+5. **G14–G17（单元账本与账户）**：`review-units.py check <doc>` 与 `audit <doc>` 退出 0；
+   全部单元 frozen、T3 通过；每个单元 `review_rounds >= 2` 且 `post_freeze_rounds` 非空；
+   本篇 `full_rounds >= 2`；每个 full 轮覆盖全部单元；每个 full/confirmation 轮都有 PASS 的
+   `trajectory_reviews`。确认轮先 `begin-confirmation`，逐单元 `--confirm-review`，
+   修复用 `--confirm-fix`，`end-confirmation` 通过后才 `gate --pass`。
 6. `eval-trace-check.py --round R<N> --units <meta/review/state/...yaml>` 退出码 0（含 ①/④/⑥ 证据、FP 反证、② 批准、未闭环=0、本轮 L6/L6.5 收口小节；`未闭环` 与台账实际数一致）。**文档级 todo 账本另跑** `python3 tools/todo-ledger.py check --doc <当前篇> --fail-on-open`（旧 `<NN>-todo.md` 已迁移删除，不再走 `--todo-file`）；`允许开放` 不是合法处置类，必须映射为 ②（用户批准 + 日期）或 ⑤（取证路径 / 阻塞），未映射的按未闭环计。
 7. **轮关闭条件**：`未闭环=0` 且 `certify 新准入=0`。修改轮（full/structural）关闭
    写 `ROUND-CLOSED` / 进入 `CONVERGENCE-CANDIDATE`——**不得宣告 CONVERGED**
@@ -322,7 +347,7 @@ V3 的 certify 是**同一轮的关闭阶段**，不是新轮。认证输入是�
 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`；**`CONVERGED` 只能由确认轮宣告**——
 确认轮覆盖未冻结单元 + 冻结样本（全直锚 ≥10%，含 fallback/无锚 ≥20%；首 edition 或 >30% 脏单元时整篇）、
 修复权限仅限本轮新准入的 P0/P1/P2 事实与同步项、不实施 ⑥（发现 ⑥ = NOT CONVERGED 回修改轮），
-G14：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 通过、evidence 含可重放 token）、`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
+G14–G17：`review-units.py check` 与 `audit` 退出 0（全部单元 frozen、T3 通过、每个单元至少 2 次 review、冻结后确认 nonempty、至少 2 个 full 轮、每轮有 PASS 的 trajectory review、evidence 含可重放 token）、`certify 新准入=0` 且 OPEN-DEBT 无未销账行 → 写 `FREEZE.md`（HEAD、文档 sha、
 `未闭环=0`、`certify 新准入=0`、100% 复验证据、确认轮轮次号），进下一篇。
 确认轮发现结构性新根因、或第 2 次确认仍 `新准入>0` → 该 edition `NOT CONVERGING`
 回边界裁决；不得开第 3 次确认，也不得重开全量修改轮。

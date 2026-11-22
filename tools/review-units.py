@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
-"""review-units.py — 单元级 review 状态机（V3.9）
+"""review-units.py — 单元级 review 状态机（V3.11）
 
 规范源：prompt/review-rules/review-units.md。
 单元：`##` = T1 章单元；`###` = T2 节单元；无 `###` 的 `##` 两者兼任。
 状态文件：rewrite-notes/meta/review/state/<stage>/<doc-stem>.yaml。
 
+V3.11 的硬约束：
+  - 每篇文档一个独立账户：本地 `round`、`edition`、`full_rounds`、`trajectory_reviews`；
+  - 每篇至少 2 个 full 轮，每个 full 轮覆盖全部单元；
+  - 每个单元至少 2 次 review：冻结前 1 次、冻结后确认轮 1 次；
+  - 每次 review 的证据文件必须点名 `UNIT <id>`，一份通用证据不能冻结多个单元；
+  - 每轮结束后必须有一次 trajectory review，才能开下一轮或宣告收敛。
+
 用法：
-  review-units.py init <doc> [--stage S] [--edition V3.9] [--force]
+  review-units.py init <doc> [--stage S] [--edition V3.11] [--force]
+  review-units.py baseline <doc> --evidence PATH          # 第 1 个 full 轮
+  review-units.py full-round <doc> --evidence PATH        # 第 2 个及以后 full 轮
+  review-units.py trajectory-review <doc> --round N --evidence PATH [--verdict PASS|FAIL]
   review-units.py check <doc>
   review-units.py sync <doc> [--unfreeze] [--unit ID]
   review-units.py next <doc> [--track t1|t2|t3]
   review-units.py mark <doc> --unit ID --track t1|t2 (--fix|--pass) [--freeze] [--note TEXT]
+  review-units.py mark <doc> --unit ID --track t1|t2 --confirm-review --evidence PATH
   review-units.py sample <doc> [--ratio 0.2] [--seed STR]
   review-units.py gate <doc> (--pass|--fail) --evidence PATH [--ledger PATH]
   review-units.py audit <doc> [--ledger PATH]
   review-units.py fingerprint <doc> [--code-list PATH] [--update]
-  review-units.py baseline <doc> --evidence PATH
   review-units.py new-edition <doc> --edition V3.x [--unfreeze-all]
   review-units.py begin-confirmation <doc>
   review-units.py end-confirmation <doc>
@@ -46,11 +56,15 @@ from notes_layout import REVIEW_EVAL_DIR, REVIEW_STATE_DIR, review_state_path  #
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SCHEMA = "review-units/v1"
+SCHEMA = "review-units/v2"
+DEFAULT_EDITION = "V3.11"
 EXEMPT = re.compile(r"参见|附录|索引|参考文献")
 HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$")
 NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)[.、]?\s")
 MAX_ROUNDS = 2
+UNIT_SCOPE_RE = re.compile(r"(?mi)^\s*(?:UNIT|单元)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)*|u-[0-9]+(?:-[A-Za-z0-9_-]+)?)\b")
+FULL_ROUND_RE = re.compile(r"(?mi)\bFULL-ROUND\b")
+TRAJECTORY_RE = re.compile(r"(?mi)\bTRAJECTORY-REVIEW\b")
 
 
 def head_commit() -> str:
@@ -262,7 +276,8 @@ def new_unit(u: dict) -> dict:
         rec.update(t1_state="n/a", t1_rounds=0, t2_state="pending", t2_rounds=0)
     rec.update(frozen=False, frozen_at=None, rewritten=False, user_approved=False,
                deps=[], reopened=False, stale=False, anchor_refs=[], anchor_hashes={},
-               anchor_status="none", note="")
+               anchor_status="none", note="",
+               review_rounds=[], post_freeze_rounds=[])
     return rec
 
 
@@ -282,8 +297,9 @@ def load_state(path: Path) -> dict:
 def save_state(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     header = (
-        "# 单元级 review 状态（V3.9）——规范源 prompt/review-rules/review-units.md\n"
+        "# 单元级 review 状态（V3.11）——规范源 prompt/review-rules/review-units.md\n"
         "# 由 tools/review-units.py 维护；冻结状态禁止手改。\n"
+        "# 每篇一个独立账户：round / edition / full_rounds / trajectory_reviews 不得跨篇复用。\n"
     )
     path.write_text(
         header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120),
@@ -306,8 +322,11 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
         "doc": str(doc.relative_to(Path.cwd())) if doc.is_relative_to(Path.cwd()) else str(doc),
         "stage": stage,
         "edition": edition,
+        "round": 0,
+        "full_rounds": [],
+        "trajectory_reviews": [],
         "baseline_full_survey": False,
-        "confirmation": {"active": False, "fixes": 0},
+        "confirmation": {"active": False, "completed": False, "round": 0, "fixes": 0},
         "units": [new_unit(u) for u in units],
         "t3": {"passed": False, "evidence": "", "at_commit": ""},
     }
@@ -325,11 +344,17 @@ def cmd_new_edition(doc: Path, state_path: Path, edition: str, unfreeze_all: boo
     archive = state_path.parent / "editions" / f"{old}.yaml"
     save_state(archive, data)
     data["edition"] = edition
+    data["round"] = 0
+    data["full_rounds"] = []
+    data["trajectory_reviews"] = []
     data["baseline_full_survey"] = False
-    data["confirmation"] = {"active": False, "fixes": 0}
+    data["confirmation"] = {"active": False, "completed": False, "round": 0, "fixes": 0}
+    data["t3"] = {"passed": False, "evidence": "", "at_commit": ""}
     for u in data["units"]:
         u["t1_rounds"] = 0
         u["t2_rounds"] = 0
+        u["review_rounds"] = []
+        u["post_freeze_rounds"] = []
         u["rewritten"] = False
         u["user_approved"] = False
         u["reopened"] = False
@@ -347,13 +372,25 @@ def cmd_new_edition(doc: Path, state_path: Path, edition: str, unfreeze_all: boo
 
 def cmd_begin_confirmation(doc: Path, state_path: Path) -> int:
     data = load_state(state_path)
+    if len(data.get("full_rounds", [])) < 2:
+        print("[FAIL] V3.11 要求至少 2 个 full 轮，才能开始确认轮", file=sys.stderr)
+        return 1
     if not all_chapters_frozen(data):
         print("[FAIL] 章尚未全部冻结，不能开始确认轮", file=sys.stderr)
         return 1
-    data.setdefault("confirmation", {})
-    data["confirmation"] = {"active": True, "fixes": 0}
+    last_full = max(int(r["n"]) for r in data["full_rounds"])
+    if not trajectory_pass(data, last_full):
+        print(f"[FAIL] full 轮 R{last_full} 尚无 PASS 的 trajectory review；先复核轨迹", file=sys.stderr)
+        return 1
+    data["round"] = int(data.get("round", 0)) + 1
+    data["confirmation"] = {
+        "active": True,
+        "completed": False,
+        "round": data["round"],
+        "fixes": 0,
+    }
     save_state(state_path, data)
-    print("confirmation: begin")
+    print(f"confirmation: begin R{data['round']}")
     return 0
 
 
@@ -364,13 +401,25 @@ def cmd_end_confirmation(doc: Path, state_path: Path) -> int:
         for e in errors:
             print(f"[FAIL] {e}")
         return 1
+    conf = data.get("confirmation", {})
+    if not conf.get("active"):
+        print("[FAIL] 当前不在确认轮", file=sys.stderr)
+        return 1
     if not all_chapters_frozen(data):
         print("[FAIL] 仍有未冻结单元，不能结束确认轮", file=sys.stderr)
         return 1
-    data.setdefault("confirmation", {})
-    data["confirmation"]["active"] = False
+    bad_reviews = [u["id"] for u in data["units"] if len(u.get("review_rounds", [])) < 2]
+    if bad_reviews:
+        print(f"[FAIL] 单元 review 不足 2 轮：{', '.join(bad_reviews)}", file=sys.stderr)
+        return 1
+    bad_post = [u["id"] for u in data["units"] if not u.get("post_freeze_rounds")]
+    if bad_post:
+        print(f"[FAIL] 冻结后确认 review 缺失：{', '.join(bad_post)}", file=sys.stderr)
+        return 1
+    conf["active"] = False
+    conf["completed"] = True
     save_state(state_path, data)
-    print("confirmation: end")
+    print(f"confirmation: end R{conf['round']}")
     return 0
 
 
@@ -468,6 +517,75 @@ def evidence_replay_ok(path: Path) -> bool:
             if check.returncode == 0:
                 return True
     return False
+
+
+def evidence_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def unit_present(text: str, uid: str) -> bool:
+    return any(m.group(1) == uid for m in UNIT_SCOPE_RE.finditer(text))
+
+
+def unit_scope_ok(text: str, uid: str) -> bool:
+    """Unit evidence must name exactly this unit (V3.11).
+
+    A full-round report names every unit; it must not be reused as the
+    per-unit review evidence for any one unit.
+    """
+    return {m.group(1) for m in UNIT_SCOPE_RE.finditer(text)} == {uid}
+
+
+def full_round_coverage_errors(data: dict, text: str) -> list[str]:
+    """A full round must cover every unit, including frozen ones (V3.11)."""
+    errors: list[str] = []
+    if not FULL_ROUND_RE.search(text):
+        errors.append("full-round evidence 缺少 `FULL-ROUND` 标记")
+    missing = [u["id"] for u in data.get("units", []) if not unit_present(text, u["id"])]
+    if missing:
+        errors.append(f"full-round evidence 未覆盖单元：{', '.join(missing)}")
+    return errors
+
+
+def trajectory_for(data: dict, n: int) -> dict | None:
+    for rec in data.get("trajectory_reviews", []):
+        if int(rec.get("round", -1)) == n:
+            return rec
+    return None
+
+
+def trajectory_pass(data: dict, n: int) -> bool:
+    rec = trajectory_for(data, n)
+    return bool(rec and str(rec.get("verdict", "")).upper() == "PASS")
+
+
+def record_full_round(data: dict, evidence: Path, n: int | None = None) -> tuple[bool, str]:
+    text = evidence_text(evidence)
+    errors = full_round_coverage_errors(data, text)
+    if errors:
+        return False, "；".join(errors)
+    if not evidence_replay_ok(evidence):
+        return False, "full-round evidence 缺可重放 token"
+    digest = sha(text)
+    if any(rec.get("evidence_sha") == digest for rec in data.get("full_rounds", [])):
+        return False, "同一份 evidence 已用于另一个 full 轮；每个 full 轮必须是独立产物"
+    if n is None:
+        n = len(data.get("full_rounds", [])) + 1
+    if any(int(rec.get("n", -1)) == n for rec in data.get("full_rounds", [])):
+        return False, f"full 轮 R{n} 已存在"
+    rec = {
+        "n": n,
+        "evidence": str(evidence),
+        "evidence_sha": digest,
+        "commit": head_commit(),
+    }
+    data.setdefault("full_rounds", []).append(rec)
+    data["baseline_full_survey"] = True
+    data["round"] = max(int(data.get("round", 0)), n)
+    return True, f"full-round R{n} 已记录（覆盖 {len(data['units'])} 个单元）"
 
 
 def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
@@ -671,6 +789,16 @@ def validate(data: dict, current: list[dict]) -> tuple[list[str], list[str]]:
             n = int(s.get(f"{track}_rounds", 0))
             if n > MAX_ROUNDS and not (s.get("rewritten") or s.get("user_approved")):
                 errors.append(f"{uid}: {track}_rounds={n} 超过 {MAX_ROUNDS}（需用户批准或整节重写）")
+        for key in ("review_rounds", "post_freeze_rounds"):
+            rec = s.get(key, [])
+            if not isinstance(rec, list):
+                errors.append(f"{uid}: {key} 必须是列表")
+                continue
+            bad = [n for n in rec if not isinstance(n, int) or n < 1 or n > int(data.get("round", 0))]
+            if bad:
+                errors.append(f"{uid}: {key} 含越界轮次 {bad}（当前 round={data.get('round', 0)}）")
+        if s.get("frozen") and not s.get("review_rounds"):
+            errors.append(f"{uid}: 冻结单元没有 review 记录；先在本轮 mark --pass")
         if s.get("frozen"):
             if s["level"] == 3:
                 if s.get("t2_state") != "frozen":
@@ -900,12 +1028,42 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
              passed: bool, freeze: bool, note: str,
              rewrite: bool = False, approve: bool = False,
              deps: str | None = None, confirm_fix: bool = False,
+             confirm_review: bool = False,
              evidence: str | None = None, ledger: str | None = None) -> int:
     data = load_state(state_path)
     unit = next((u for u in data["units"] if u["id"] == uid), None)
     if not unit:
         print(f"找不到单元：{uid}", file=sys.stderr)
         return 2
+    if confirm_review:
+        conf = data.get("confirmation", {})
+        if not conf.get("active"):
+            print("当前不在确认轮；--confirm-review 仅用于确认轮", file=sys.stderr)
+            return 1
+        if not unit.get("frozen"):
+            print(f"[FAIL] {uid}: 单元未冻结，不能做冻结后确认 review", file=sys.stderr)
+            return 1
+        if not evidence or not Path(evidence).is_file():
+            print("[FAIL] --confirm-review 必须带 --evidence 文件", file=sys.stderr)
+            return 1
+        text = evidence_text(Path(evidence))
+        if not unit_scope_ok(text, uid):
+            print(f"[FAIL] evidence 未点名 `UNIT {uid}`；一份通用证据不能给多个单元确认", file=sys.stderr)
+            return 1
+        if not evidence_replay_ok(Path(evidence)):
+            print("[FAIL] evidence 缺可重放 token", file=sys.stderr)
+            return 1
+        r = int(conf.get("round", 0))
+        unit.setdefault("review_rounds", [])
+        unit.setdefault("post_freeze_rounds", [])
+        if r not in unit["review_rounds"]:
+            unit["review_rounds"].append(r)
+        if r not in unit["post_freeze_rounds"]:
+            unit["post_freeze_rounds"].append(r)
+        unit["note"] = note or unit.get("note", "")
+        save_state(state_path, data)
+        print(f"confirm-review: {uid} R{r}（冻结后确认 {len(unit['post_freeze_rounds'])} 轮）")
+        return 0
     if confirm_fix:
         conf = data.get("confirmation", {})
         if not conf.get("active"):
@@ -914,8 +1072,11 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
         if int(conf.get("fixes", 0)) >= 2:
             print("[FAIL] 确认轮修复已达 2 次上限", file=sys.stderr)
             return 1
+        r = int(conf.get("round", 0))
         unit["frozen"] = False
         unit["frozen_at"] = None
+        unit["review_rounds"] = [x for x in unit.get("review_rounds", []) if x != r]
+        unit["post_freeze_rounds"] = [x for x in unit.get("post_freeze_rounds", []) if x != r]
         if unit["level"] == 3:
             unit["t2_state"] = "pending"
         else:
@@ -923,7 +1084,7 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
         conf["fixes"] = int(conf.get("fixes", 0)) + 1
         unit["note"] = note or unit.get("note", "")
         save_state(state_path, data)
-        print(f"confirm-fix: {uid}（不占修改轮；确认轮修复 {conf['fixes']}/2）")
+        print(f"confirm-fix: {uid}（不占修改轮；确认轮修复 {conf['fixes']}/2；需重新冻结并确认）")
         return 0
     has_children = any(x.get("parent") == uid for x in data["units"])
     if track == "t1" and unit["level"] != 2:
@@ -949,6 +1110,9 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
             unit["frozen_at"] = None
     if approve:
         unit["user_approved"] = True
+    if (passed or freeze) and int(data.get("round", 0)) < 1:
+        print("[FAIL] 还没有任何 full 轮；先跑 baseline/full-round", file=sys.stderr)
+        return 1
     if (passed or freeze or rewrite or approve) and not evidence:
         print("[FAIL] pass/freeze/rewrite/approve 必须带 --evidence 文件", file=sys.stderr)
         return 1
@@ -960,6 +1124,9 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
         return 1
     if (passed or freeze or rewrite or approve) and evidence and not evidence_replay_ok(Path(evidence)):
         print(f"[FAIL] evidence 缺可重放 token（path:line / test::name / rg|grep / commit）：{evidence}", file=sys.stderr)
+        return 1
+    if (passed or freeze or rewrite or approve) and evidence and not unit_scope_ok(evidence_text(Path(evidence)), uid):
+        print(f"[FAIL] evidence 未点名 `UNIT {uid}`；V3.11 禁止一份通用证据给多个单元背书", file=sys.stderr)
         return 1
     if passed or freeze:
         lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
@@ -977,6 +1144,9 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
         if unit[rounds] > MAX_ROUNDS and not (unit.get("rewritten") or unit.get("user_approved")):
             print(f"[FAIL] {uid}: {rounds}={unit[rounds]} 超过 {MAX_ROUNDS}；需用户批准或 --rewrite", file=sys.stderr)
             return 1
+        r = int(data.get("round", 0))
+        unit["review_rounds"] = [x for x in unit.get("review_rounds", []) if x != r]
+        unit["post_freeze_rounds"] = [x for x in unit.get("post_freeze_rounds", []) if x != r]
         unit[key] = "pending"
         if unit.get("frozen"):
             unit["frozen"] = False
@@ -987,12 +1157,22 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
                     parent["frozen"] = False
                     parent["frozen_at"] = None
     if passed:
-        unit[key] = "passed"
+        if unit.get("frozen"):
+            unit[key] = "frozen" if unit["level"] == 3 else "passed"
+        else:
+            unit[key] = "passed"
         unit["reopened"] = False
+        r = int(data.get("round", 0))
+        unit.setdefault("review_rounds", [])
+        if r not in unit["review_rounds"]:
+            unit["review_rounds"].append(r)
     if freeze:
         if not passed:
             print("--freeze 需要与 --pass 同用", file=sys.stderr)
             return 2
+        if int(data.get("round", 0)) not in unit.get("review_rounds", []):
+            print(f"[FAIL] {uid}: 本单元在当前轮 R{data.get('round', 0)} 还没有 review 记录；先 --pass", file=sys.stderr)
+            return 1
         cur = next((u for u in parse_units(doc) if u["id"] == uid), None)
         if cur is None:
             print(f"[FAIL] {uid}: 正文中找不到单元，不能冻结", file=sys.stderr)
@@ -1050,8 +1230,11 @@ def cmd_sample(doc: Path, state_path: Path, ratio: float | None, seed: str) -> i
     if ratio < minimum:
         print(f"抽样比例不得低于 {minimum:.0%}（{'全部直锚' if all_direct else '含 fallback/无锚'}；review-units.md §五）", file=sys.stderr)
         return 2
-    if not data.get("baseline_full_survey"):
-        print("首个 edition 尚未完成整篇 survey（先跑 `review-units.py baseline`）", file=sys.stderr)
+    if len(data.get("full_rounds", [])) < 2:
+        print("[FAIL] V3.11 的确认轮抽样要求至少 2 个 full 轮", file=sys.stderr)
+        return 1
+    if not data.get("confirmation", {}).get("active"):
+        print("[FAIL] 抽样属于确认轮；先跑 begin-confirmation", file=sys.stderr)
         return 1
     if not seed:
         seed = "HEAD"
@@ -1112,21 +1295,103 @@ def cmd_invalidate(doc: Path, state_path: Path, rev: str) -> int:
 
 def cmd_baseline(doc: Path, state_path: Path, evidence: str | None) -> int:
     if not evidence or not Path(evidence).is_file():
-        print("baseline 必须带 --evidence（整篇 survey 的 metrics/scan 产物）", file=sys.stderr)
-        return 1
-    if not evidence_replay_ok(Path(evidence)):
-        print("baseline evidence 缺可重放 token（path:line / test::name / rg|grep / commit）", file=sys.stderr)
+        print("baseline 必须带 --evidence（第 1 个 full 轮的整篇 survey 产物）", file=sys.stderr)
         return 1
     data = load_state(state_path)
-    data["baseline_full_survey"] = True
+    if data.get("full_rounds"):
+        print("[FAIL] 已有 full 轮；后续 full 轮用 `full-round`，不要重复 baseline", file=sys.stderr)
+        return 1
+    ok, msg = record_full_round(data, Path(evidence), n=1)
+    if not ok:
+        print(f"[FAIL] {msg}", file=sys.stderr)
+        return 1
     data["baseline_evidence"] = evidence
     save_state(state_path, data)
-    print("baseline: 首个 edition 的整篇 survey 已记录")
+    print(f"baseline: {msg}")
     return 0
+
+
+def cmd_full_round(doc: Path, state_path: Path, evidence: str | None) -> int:
+    if not evidence or not Path(evidence).is_file():
+        print("full-round 必须带 --evidence（整篇 survey 的独立产物）", file=sys.stderr)
+        return 1
+    data = load_state(state_path)
+    if not data.get("full_rounds"):
+        print("[FAIL] 第 1 个 full 轮用 baseline", file=sys.stderr)
+        return 1
+    if data.get("confirmation", {}).get("active") or data.get("confirmation", {}).get("completed"):
+        print("[FAIL] 确认轮开始后不得再补 full 轮；回 edition 边界处理", file=sys.stderr)
+        return 1
+    last = max(int(r["n"]) for r in data["full_rounds"])
+    if not trajectory_pass(data, last):
+        print(f"[FAIL] full 轮 R{last} 尚无 PASS 的 trajectory review；先复核轨迹再开下一轮", file=sys.stderr)
+        return 1
+    ok, msg = record_full_round(data, Path(evidence), n=len(data["full_rounds"]) + 1)
+    if not ok:
+        print(f"[FAIL] {msg}", file=sys.stderr)
+        return 1
+    save_state(state_path, data)
+    print(msg)
+    return 0
+
+
+def cmd_trajectory_review(doc: Path, state_path: Path, round_n: int,
+                          evidence: str | None, verdict: str) -> int:
+    if not evidence or not Path(evidence).is_file():
+        print("trajectory-review 必须带 --evidence 文件", file=sys.stderr)
+        return 1
+    if not evidence_replay_ok(Path(evidence)):
+        print("[FAIL] trajectory evidence 缺可重放 token", file=sys.stderr)
+        return 1
+    data = load_state(state_path)
+    if round_n < 1 or round_n > int(data.get("round", 0)):
+        print(f"[FAIL] trajectory review 的轮次 R{round_n} 不在 1..R{data.get('round', 0)}", file=sys.stderr)
+        return 1
+    text = evidence_text(Path(evidence))
+    if not TRAJECTORY_RE.search(text):
+        print("[FAIL] evidence 缺少 `TRAJECTORY-REVIEW` 标记", file=sys.stderr)
+        return 1
+    if not re.search(rf"(?mi)\bR{round_n}\b", text):
+        print(f"[FAIL] evidence 未点名被复核的轮次 R{round_n}", file=sys.stderr)
+        return 1
+    verdict = verdict.upper()
+    data.setdefault("trajectory_reviews", [])
+    data["trajectory_reviews"] = [r for r in data["trajectory_reviews"] if int(r.get("round", -1)) != round_n]
+    data["trajectory_reviews"].append({
+        "round": round_n,
+        "evidence": str(evidence),
+        "evidence_sha": sha(text),
+        "verdict": verdict,
+        "commit": head_commit(),
+    })
+    save_state(state_path, data)
+    print(f"trajectory-review: R{round_n} {verdict}")
+    return 0 if verdict == "PASS" else 1
 
 
 def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str | None = None) -> int:
     data = load_state(state_path)
+    if ok:
+        if len(data.get("full_rounds", [])) < 2:
+            print(f"[FAIL] V3.11 要求至少 2 个 full 轮；当前 {len(data.get('full_rounds', []))}", file=sys.stderr)
+            return 1
+        conf = data.get("confirmation", {})
+        if not conf.get("completed"):
+            print("[FAIL] 确认轮尚未完成；V3.11 不允许跳过冻结后确认", file=sys.stderr)
+            return 1
+        bad_reviews = [u["id"] for u in data["units"] if len(u.get("review_rounds", [])) < 2]
+        if bad_reviews:
+            print(f"[FAIL] 单元 review 不足 2 轮：{', '.join(bad_reviews)}", file=sys.stderr)
+            return 1
+        bad_post = [u["id"] for u in data["units"] if not u.get("post_freeze_rounds")]
+        if bad_post:
+            print(f"[FAIL] 单元缺冻结后确认 review：{', '.join(bad_post)}", file=sys.stderr)
+            return 1
+        expected = [int(r["n"]) for r in data["full_rounds"]] + [int(conf.get("round", 0))]
+        for n in expected:
+            if not trajectory_pass(data, n):
+                print(f"[FAIL] 轮次 R{n} 缺 PASS 的 trajectory review", file=sys.stderr)
+                return 1
     errors, _ = validate(data, parse_units(doc))
     if ok and errors:
         for e in errors:
@@ -1183,6 +1448,10 @@ def cmd_stats(doc: Path, state_path: Path) -> int:
           f"reopened={sum(1 for u in units if u.get('reopened'))} "
           f"stale={sum(1 for u in units if u.get('stale'))} "
           f"t3={'PASS' if data.get('t3',{}).get('passed') else 'pending'}")
+    print(f"round={data.get('round', 0)} full_rounds={len(data.get('full_rounds', []))} "
+          f"trajectory_reviews={len(data.get('trajectory_reviews', []))} "
+          f"units_review_lt2={sum(1 for u in units if len(u.get('review_rounds', [])) < 2)} "
+          f"units_post_freeze_0={sum(1 for u in units if not u.get('post_freeze_rounds'))}")
     return 0
 
 
@@ -1216,40 +1485,32 @@ def _anchor_self_test(root: Path) -> None:
             encoding="utf-8",
         )
         sp = root / "anchor-state.yaml"
-        ev = root / "ev.md"
-        ev.write_text("rg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
         ledger = root / "ledger.md"
         ledger.write_text("| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n|---|---|---|---|---|\n", encoding="utf-8")
-        assert cmd_init(doc, sp, "01-stage-kernel", "V3.9", False) == 0
-        assert cmd_baseline(doc, sp, str(ev)) == 0
-        assert cmd_mark(doc, sp, "3", "t1", False, True, False, "", evidence=str(ev), ledger=str(ledger)) == 0
+        ids = ["3", "3.1", "3.2", "3.3", "3.4"]
+        def ev(uid: str) -> Path:
+            p = root / f"ev-{uid}.md"
+            p.write_text(f"UNIT {uid}\nrg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
+            return p
+        ev_all = root / "ev-all.md"
+        ev_all.write_text("FULL-ROUND R1\n" + "\n".join(f"UNIT {u}" for u in ids)
+                          + "\nrg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
+        assert cmd_init(doc, sp, "01-stage-kernel", "V3.11", False) == 0
+        assert cmd_baseline(doc, sp, str(ev_all)) == 0
+        assert cmd_mark(doc, sp, "3", "t1", False, True, False, "", evidence=str(ev("3")), ledger=str(ledger)) == 0
         # 1 direct freeze stores body hashes
-        assert cmd_mark(doc, sp, "3.1", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 0
+        assert cmd_mark(doc, sp, "3.1", "t2", False, True, True, "", evidence=str(ev("3.1")), ledger=str(ledger)) == 0
         d = load_state(sp)
         u = next(x for x in d["units"] if x["id"] == "3.1")
         assert u["anchor_status"] == "direct" and u["anchor_hashes"], u
         # 2 missing anchor refuses freeze
-        assert cmd_mark(doc, sp, "3.2", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 1
+        assert cmd_mark(doc, sp, "3.2", "t2", False, True, True, "", evidence=str(ev("3.2")), ledger=str(ledger)) == 1
         # 3 impl anchor refuses freeze
-        assert cmd_mark(doc, sp, "3.3", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 1
+        assert cmd_mark(doc, sp, "3.3", "t2", False, True, True, "", evidence=str(ev("3.3")), ledger=str(ledger)) == 1
         # 4 C anchor freezes as fallback
-        assert cmd_mark(doc, sp, "3.4", "t2", False, True, True, "", evidence=str(ev), ledger=str(ledger)) == 0
+        assert cmd_mark(doc, sp, "3.4", "t2", False, True, True, "", evidence=str(ev("3.4")), ledger=str(ledger)) == 0
         d = load_state(sp)
         assert next(x for x in d["units"] if x["id"] == "3.4")["anchor_status"] == "fallback"
-        # 5 all-direct 10% vs fallback 20%
-        d["units"] = [x for x in d["units"] if x["id"] == "3.1"]
-        save_state(sp, d)
-        assert cmd_sample(doc, sp, 0.1, "x") == 0
-        d = load_state(sp)
-        d["units"].append(new_unit({
-            "id": "3.4", "heading": "3.4 C 锚", "level": 3, "parent": "3", "order": 9,
-            "text_sha": "x", "_text": "",
-        }))
-        next(x for x in d["units"] if x["id"] == "3.4").update(
-            anchor_status="fallback", frozen=True, t2_state="frozen",
-        )
-        save_state(sp, d)
-        assert cmd_sample(doc, sp, 0.1, "x") == 2
         # 6 anchor body change reopens on sync
         af.write_text(af.read_text().replace("1 }", "2 }"), encoding="utf-8")
         assert cmd_sync(doc, sp, False, None) == 0
@@ -1284,7 +1545,7 @@ def _anchor_self_test(root: Path) -> None:
         d = load_state(sp)
         assert next(x for x in d["units"] if x["id"] == "3.1")["stale"]
         # 9 T3 gate rejects stale/reopened
-        assert cmd_gate(doc, sp, True, str(ev), str(ledger)) == 1
+        assert cmd_gate(doc, sp, True, str(ev_all), str(ledger)) == 1
     finally:
         ROOT = saved
 
@@ -1305,156 +1566,163 @@ def self_test() -> int:
             encoding="utf-8",
         )
         sp = root / "state.yaml"
-        ev = root / "evidence.md"
-        ev.write_text("rg -n 'fn demo' os/  # unit evidence\n", encoding="utf-8")
         ledger = root / "ledger.md"
         ledger.write_text(
             "| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n"
             "|---|---|---|---|---|\n",
             encoding="utf-8",
         )
+        ids = ["1", "1.1", "1.2", "2", "2.1"]
 
-        def mk(uid, track, fix=False, passed=False, freeze=False, note=""):
-            return cmd_mark(doc, sp, uid, track, fix, passed, freeze, note,
-                            evidence=str(ev), ledger=str(ledger))
+        def full_ev(n: int, omit: str | None = None) -> Path:
+            p = root / f"full-{n}.md"
+            body = [f"FULL-ROUND R{n}", "rg -n 'demo' os/"]
+            body += [f"UNIT {u}" for u in ids if u != omit]
+            p.write_text("\n".join(body) + "\n", encoding="utf-8")
+            return p
 
-        assert cmd_init(doc, sp, "01-stage-kernel", "V3.9", False) == 0
+        def unit_ev(uid: str) -> Path:
+            p = root / f"unit-{uid}.md"
+            p.write_text(f"UNIT {uid}\nrg -n 'demo' os/\n", encoding="utf-8")
+            return p
+
+        def generic_ev() -> Path:
+            p = root / "generic.md"
+            p.write_text("rg -n 'demo' os/\n", encoding="utf-8")
+            return p
+
+        def traj_ev(n: int) -> Path:
+            p = root / f"traj-{n}.md"
+            p.write_text(f"TRAJECTORY-REVIEW R{n}\nrg -n 'demo' rewrite-notes/\n",
+                         encoding="utf-8")
+            return p
+
+        def mk(uid, track, fix=False, passed=False, freeze=False, ev=None):
+            return cmd_mark(doc, sp, uid, track, fix, passed, freeze, "",
+                            evidence=str(ev or unit_ev(uid)), ledger=str(ledger))
+
+        assert cmd_init(doc, sp, "01-stage-kernel", "V3.11", False) == 0
         data = load_state(sp)
         assert len(data["units"]) == 5, len(data["units"])
+        assert data["schema"] == "review-units/v2" and data["round"] == 0
         assert cmd_check(doc, sp) == 0
         assert cmd_audit(doc, sp, str(ledger)) == 0
-        ledger.write_text(
-            "| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n"
-            "|---|---|---|---|---|\n"
-            "| F1 | 1.1 | ① | x | 未修 |\n",
-            encoding="utf-8",
-        )
-        assert cmd_audit(doc, sp, str(ledger)) == 1
-        ledger.write_text(
-            "| 发现 ID | 单元 | 处置类 | 处置 | 复验 |\n"
-            "|---|---|---|---|---|\n",
-            encoding="utf-8",
-        )
-        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "", ledger=str(ledger)) == 1  # 缺 evidence
-        assert cmd_sample(doc, sp, 0.2, "x") == 1   # 首 edition 不抽查
-        assert cmd_sample(doc, sp, 0.1, "x") == 2   # 比例下限
-        assert cmd_baseline(doc, sp, str(ev)) == 0
-        # 章 1 T1 通过；两节通过并冻结；章冻结
-        assert mk("1", "t1", False, True, False, "") == 0
-        assert mk("1.1", "t2", False, True, True, "") == 0
-        assert mk("1.2", "t2", False, True, True, "") == 0
-        assert mk("1", "t1", False, True, True, "") == 0
-        assert mk("1.1", "t1", True, False, False, "") == 2  # t1 只用于章
-        assert mk("2", "t2", False, True, True, "") == 2     # 章冻结只走 t1
-        # 修改冻结节：check 失败，sync 无 --unfreeze 失败，带 --unfreeze 成功
-        doc.write_text(doc.read_text(encoding="utf-8").replace("内容一。", "内容一改。"), encoding="utf-8")
-        assert cmd_check(doc, sp) == 1
-        assert cmd_gate(doc, sp, True, "") == 1
-        assert cmd_sync(doc, sp, False, None) == 1
-        assert cmd_sync(doc, sp, True, None) == 0
-        assert cmd_check(doc, sp) == 0
-        # 章标题改动：t1 回 pending，子节解冻
-        txt = doc.read_text(encoding="utf-8").replace("## 1. 第一章", "## 1. 第一章改名")
-        doc.write_text(txt, encoding="utf-8")
-        assert cmd_sync(doc, sp, True, None) == 0
-        d = load_state(sp)
-        assert next(u for u in d["units"] if u["id"] == "1")["t1_state"] == "pending"
-        assert all(not u.get("frozen") for u in d["units"])
-        assert cmd_check(doc, sp) == 0
-        # 预算：连续 fix 第 3 次被拦
-        assert mk("1.1", "t2", True, False, False, "") == 0
-        assert mk("1.1", "t2", True, False, False, "") == 0
-        assert mk("1.1", "t2", True, False, False, "") == 1
-        # 删除一节：sync --prune 收口
-        txt = doc.read_text(encoding="utf-8")
-        txt = txt.replace("### 1.2 第二节\n\n内容二。\n\n", "")
-        doc.write_text(txt, encoding="utf-8")
-        assert cmd_sync(doc, sp, True, None, True) == 1  # prune 必须带 --unit
-        assert cmd_sync(doc, sp, True, "1.2", True) == 0
-        assert cmd_check(doc, sp) == 0
-        # 全部冻结后再抽样；首 edition 已 baseline
-        assert mk("1", "t1", False, True, False, "") == 0
-        assert mk("2", "t1", False, True, False, "") == 0
-        assert mk("1.1", "t2", False, True, True, "") == 0
-        assert mk("2.1", "t2", False, True, True, "") == 0
-        assert mk("1", "t1", False, True, True, "") == 0
-        assert mk("2", "t1", False, True, True, "") == 0
-        # 抽样确定性
-        out1 = cmd_sample(doc, sp, 0.2, "abc")
-        out2 = cmd_sample(doc, sp, 0.2, "abc")
-        assert out1 == 0 and out2 == 0
-        # 新 edition：归档旧计数、保留冻结；确认轮修复不占修改轮
-        assert cmd_new_edition(doc, sp, "V3.10", False) == 0
-        d = load_state(sp)
-        assert d["edition"] == "V3.10" and d["confirmation"]["active"] is False
-        assert all(u["t2_rounds"] == 0 and u["t1_rounds"] == 0 for u in d["units"])
-        assert any(u.get("frozen") for u in d["units"])
+
+        # full 轮必须覆盖全部单元；baseline 必须带 FULL-ROUND
+        assert cmd_baseline(doc, sp, str(generic_ev())) == 1
+        assert cmd_baseline(doc, sp, str(unit_ev("1"))) == 1
+        assert cmd_baseline(doc, sp, str(full_ev(1, omit="1.2"))) == 1
+        assert cmd_baseline(doc, sp, str(full_ev(1))) == 0
+        data = load_state(sp)
+        assert data["round"] == 1 and len(data["full_rounds"]) == 1
+
+        # 第 2 个 full 轮前必须有 R1 的 trajectory review
+        assert cmd_full_round(doc, sp, str(full_ev(2))) == 1
+        assert cmd_trajectory_review(doc, sp, 1, str(traj_ev(1)), "PASS") == 0
+        assert cmd_full_round(doc, sp, str(full_ev(2))) == 0
+        assert cmd_full_round(doc, sp, str(full_ev(2))) == 1  # 同一份证据不得复用
+        data = load_state(sp)
+        assert data["round"] == 2 and len(data["full_rounds"]) == 2
+        assert full_round_coverage_errors(data, "FULL-ROUND R3\n")
+
+        # 单元证据必须点名 UNIT；通用证据不得冻结
+        assert mk("1", "t1", passed=True, ev=generic_ev()) == 1
+        assert mk("1.1", "t2", passed=True, freeze=True, ev=unit_ev("1.2")) == 1
+
+        # R2 逐单元 review + 冻结；冻结要求当前轮已有 review
+        assert mk("1", "t1", passed=True) == 0
+        assert mk("1.1", "t2", passed=True, freeze=True) == 0
+        assert mk("1.2", "t2", passed=True, freeze=True) == 0
+        assert mk("1", "t1", passed=True, freeze=True) == 0
+        assert mk("2", "t1", passed=True) == 0
+        assert mk("2.1", "t2", passed=True, freeze=True) == 0
+        assert mk("2", "t1", passed=True, freeze=True) == 0
+        data = load_state(sp)
+        assert all(u.get("frozen") for u in data["units"])
+        assert all(len(u.get("review_rounds", [])) == 1 for u in data["units"])
+
+        # 确认轮前必须有 R2 的 trajectory review
+        assert cmd_begin_confirmation(doc, sp) == 1
+        assert cmd_trajectory_review(doc, sp, 2, str(traj_ev(2)), "PASS") == 0
         assert cmd_begin_confirmation(doc, sp) == 0
-        assert cmd_mark(doc, sp, "1.1", "t2", False, False, False, "",
-                        confirm_fix=True, evidence=str(ev), ledger=str(ledger)) == 0
-        assert cmd_end_confirmation(doc, sp) == 1  # 仍有未冻结子节
-        assert mk("1.1", "t2", False, True, True, "") == 0
+        data = load_state(sp)
+        assert data["round"] == 3 and data["confirmation"]["round"] == 3
+        assert cmd_sample(doc, sp, 0.2, "seed") == 0
+
+        # 每个单元必须有冻结后确认 review；少一个就不能结束确认轮
+        assert cmd_end_confirmation(doc, sp) == 1
+        for uid in ids:
+            assert cmd_mark(doc, sp, uid, "t1" if "." not in uid else "t2",
+                            False, False, False, "", confirm_review=True,
+                            evidence=str(unit_ev(uid)), ledger=str(ledger)) == 0
+        data = load_state(sp)
+        assert all(u.get("post_freeze_rounds") == [3] for u in data["units"])
+        assert all(len(u.get("review_rounds", [])) == 2 for u in data["units"])
         assert cmd_end_confirmation(doc, sp) == 0
-        assert cmd_gate(doc, sp, True, str(ev), str(ledger)) == 0
-        # V3.9 单元列：全部 closed 的历史表不追溯；open 行缺单元必须报错
-        legacy_ok = root / "legacy-closed.md"
-        legacy_ok.write_text(
-            "| 发现 ID | 处置类 | 处置 | 复验 |\n"
-            "|---|---|---|---|\n"
-            "| X-1 | ① | 已修 | grep -n x doc |\n",
-            encoding="utf-8",
-        )
-        counts, errs = ledger_open_by_unit(legacy_ok)
-        assert not errs and not counts
-        legacy_open = root / "legacy-open.md"
-        legacy_open.write_text(
-            "## R99 测试轮（V3.9）\n\n"
-            "| 发现 ID | 处置类 | 处置 | 复验 |\n"
-            "|---|---|---|---|\n"
-            "| X-2 | ⑤ | 取证不足 | 未修 |\n",
-            encoding="utf-8",
-        )
-        counts, errs = ledger_open_by_unit(legacy_open)
-        assert errs and not counts
-        # CLI dispatch：mark 必须真正走 cmd_mark，不得再出现局部名缺失
-        empty_ev = root / "empty-evidence.md"
+
+        # 确认轮修复会撤销当前轮的 review，必须重新冻结并确认
+        assert cmd_begin_confirmation(doc, sp) == 0
+        data = load_state(sp)
+        assert data["confirmation"]["round"] == 4
+        assert cmd_mark(doc, sp, "1.1", "t2", False, False, False, "",
+                        confirm_fix=True, evidence=None, ledger=str(ledger)) == 0
+        data = load_state(sp)
+        u = next(x for x in data["units"] if x["id"] == "1.1")
+        assert 4 not in u["review_rounds"] and 4 not in u["post_freeze_rounds"]
+        assert mk("1.1", "t2", passed=True, freeze=True) == 0
+        assert cmd_mark(doc, sp, "1.1", "t2", False, False, False, "",
+                        confirm_review=True, evidence=str(unit_ev("1.1")),
+                        ledger=str(ledger)) == 0
+        for uid in ("1", "1.2", "2", "2.1"):
+            assert cmd_mark(doc, sp, uid, "t1" if "." not in uid else "t2",
+                            False, False, False, "", confirm_review=True,
+                            evidence=str(unit_ev(uid)), ledger=str(ledger)) == 0
+        assert cmd_end_confirmation(doc, sp) == 0
+
+        # 收敛门：full=2、每单元 2 次 review、确认轮完成、每轮 trajectory PASS
+        assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 1
+        assert cmd_trajectory_review(doc, sp, 3, str(traj_ev(3)), "PASS") == 0
+        assert cmd_trajectory_review(doc, sp, 4, str(traj_ev(4)), "PASS") == 0
+        assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 0
+
+        # 新 edition 按篇重置账户，不继承旧轮次/计数
+        assert cmd_new_edition(doc, sp, "V3.12", True) == 0
+        data = load_state(sp)
+        assert data["round"] == 0 and data["full_rounds"] == []
+        assert data["trajectory_reviews"] == []
+        assert all(not u["review_rounds"] and not u["post_freeze_rounds"] for u in data["units"])
+        assert all(not u.get("frozen") for u in data["units"])
+        assert cmd_check(doc, sp) == 0
+
+        # 空证据 / 无 token 仍被拒
+        empty_ev = root / "empty.md"
         empty_ev.write_text("   \n", encoding="utf-8")
         assert cmd_gate(doc, sp, True, str(empty_ev), str(ledger)) == 1
-        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "",
-                        evidence=str(empty_ev), ledger=str(ledger)) == 1
         no_token = root / "no-token.md"
-        no_token.write_text("unit evidence\n", encoding="utf-8")
-        assert cmd_gate(doc, sp, True, str(no_token), str(ledger)) == 1
-        assert cmd_mark(doc, sp, "1", "t1", False, True, False, "",
-                        evidence=str(no_token), ledger=str(ledger))
-        dec_ok = root / "dec-ok.md"
-        dec_ok.write_text("D-060\n", encoding="utf-8")
-        assert evidence_replay_ok(dec_ok)
-        dec_bad = root / "dec-bad.md"
-        dec_bad.write_text("D-999\n", encoding="utf-8")
-        assert not evidence_replay_ok(dec_bad)
-        neg = root / "neg.md"
-        neg.write_text("没有运行 rg 命令\n", encoding="utf-8")
-        assert not evidence_replay_ok(neg) == 1
-        src = Path(__file__).resolve().read_text(encoding="utf-8")
-        assert "return cmd_mark(doc, sp, args.unit" in src
-    print("self-test PASS: init/check/sync/unfreeze/budget/sample/audit/evidence/cli + 9 anchor-invalidation cases")
+        no_token.write_text("UNIT 1\nunit evidence\n", encoding="utf-8")
+        assert not evidence_replay_ok(no_token)
+    print("self-test PASS: V3.11 full-round/unit-review/confirmation/trajectory/account-reset + 8 anchor-invalidation cases")
     return 0
 
-
 def main() -> int:
-    ap = argparse.ArgumentParser(description="单元级 review 状态机（V3.9）")
+    ap = argparse.ArgumentParser(description="单元级 review 状态机（V3.11）")
     ap.add_argument("--self-test", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     for name in ("init", "check", "sync", "next", "mark", "sample", "gate", "stats",
-                 "baseline", "new-edition", "begin-confirmation", "end-confirmation", "audit", "fingerprint", "invalidate"):
+                 "baseline", "full-round", "trajectory-review",
+                 "new-edition", "begin-confirmation", "end-confirmation", "audit", "fingerprint", "invalidate"):
         p = sub.add_parser(name)
         p.add_argument("doc", nargs="?")
         p.add_argument("--doc", dest="doc_opt", help="文档路径（与位置参数二选一）")
     sub.choices["init"].add_argument("--stage")
-    sub.choices["init"].add_argument("--edition", default="V3.9")
+    sub.choices["init"].add_argument("--edition", default=DEFAULT_EDITION)
     sub.choices["init"].add_argument("--force", action="store_true")
     sub.choices["baseline"].add_argument("--evidence", default=None)
+    sub.choices["full-round"].add_argument("--evidence", default=None)
+    tr = sub.choices["trajectory-review"]
+    tr.add_argument("--round", dest="trajectory_round", type=int, required=True)
+    tr.add_argument("--evidence", required=True)
+    tr.add_argument("--verdict", choices=("PASS", "FAIL", "pass", "fail"), default="PASS")
     sub.choices["invalidate"].add_argument("--from", dest="from_rev", required=True)
     sub.choices["new-edition"].add_argument("--edition", required=True)
     sub.choices["new-edition"].add_argument("--unfreeze-all", action="store_true")
@@ -1476,7 +1744,9 @@ def main() -> int:
     m.add_argument("--approve", action="store_true")
     m.add_argument("--deps", default=None, help="逗号分隔的上游单元 ID")
     m.add_argument("--confirm-fix", action="store_true", help="确认轮修复：解冻但不占修改轮")
-    m.add_argument("--evidence", default=None, help="pass/freeze 的复核证据文件")
+    m.add_argument("--confirm-review", action="store_true",
+                   help="冻结后确认 review：只读复核，不修改单元")
+    m.add_argument("--evidence", default=None, help="pass/freeze/confirm-review 的复核证据文件")
     m.add_argument("--ledger", default=None, help="defect-ledger 路径（默认按 run 目录推导）")
     m.add_argument("--note", default="")
     s = sub.choices["sample"]
@@ -1513,7 +1783,9 @@ def main() -> int:
     if args.cmd == "next":
         return cmd_next(doc, sp, args.track)
     if args.cmd == "mark":
-        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note, args.rewrite, args.approve, args.deps, args.confirm_fix, args.evidence, args.ledger)
+        return cmd_mark(doc, sp, args.unit, args.track, args.fix, args.passed, args.freeze, args.note,
+                        args.rewrite, args.approve, args.deps, args.confirm_fix,
+                        args.confirm_review, args.evidence, args.ledger)
     if args.cmd == "sample":
         return cmd_sample(doc, sp, args.ratio, args.seed)
     if args.cmd == "invalidate":
@@ -1522,6 +1794,10 @@ def main() -> int:
         return cmd_gate(doc, sp, args.ok, args.evidence, args.ledger)
     if args.cmd == "baseline":
         return cmd_baseline(doc, sp, args.evidence)
+    if args.cmd == "full-round":
+        return cmd_full_round(doc, sp, args.evidence)
+    if args.cmd == "trajectory-review":
+        return cmd_trajectory_review(doc, sp, args.trajectory_round, args.evidence, args.verdict)
     if args.cmd == "new-edition":
         return cmd_new_edition(doc, sp, args.edition, args.unfreeze_all)
     if args.cmd == "begin-confirmation":

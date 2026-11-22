@@ -21,6 +21,7 @@
 | **V3.8** | **2026-11-21** | **教程就绪 + 硬预算 + 代码冻结（用户裁决）**：教程 rubric TR-1..TR-6（学习目标/前置/最小示例/失败对照/小结/术语；无练习）进 G13；同一篇 3 个修改轮跨 edition 累计、未收敛强制整节重写、重写后仅 1 次确认轮；Review 期间关联代码冻结 | 用户 2026-11-21 三项裁决（接受冻结/接受硬上限/rubric 去练习）；D01 28 轮 1336 条发现 3 次假收敛的复盘 | 见 V3.8 减法账本 | `tutorial-rubric-check.py --self-test` + 四门 | 生效 |
 | **V3.9** | **2026-11-21** | **单元级 review（用户裁决）**：`###` 节与 `##` 章建单元状态，T1 结构/T2 行文/T3 出版三轨；每单元每轨 2 个修改轮，冻结后不再重读；确认轮读未冻结单元 + ≥20% 冻结样本；新增 G14 与 `tools/review-units.py` | 用户指出整篇 loop token 成本过高、早期章节早已稳定；D01 28 轮重复通读复盘 | 见 V3.9 减法账本 | `review-units.py --self-test` + 四门 | 生效（新开 edition 标 `schema: V3.9`） |
 | **V3.10** | **2026-11-22** | **门可验证性收紧 + 锚点失效**：C1 红绿四列（V3.10+ 台账缺列即 FAIL）、Gate 证据 `level:` 首行与 L1 命令/输出分离、Skill 日志表体、Resume 指针行号、单元冻结存符号体哈希与 `invalidate --from`、条件 10%/20% 抽样、G14 `reopened=0/stale=0`；门表三处单一来源，review-scan 收敛为薄 SKILL | 2026-11-22 用户批准执行批；Cycle 3 对抗审计 A01–A10/C01–C10 | 见 V3.10 减法账本 | `eval-trace-check --self-test` / `review-units --self-test` / 四门 | 生效（新开 edition 标 `schema: V3.10`） |
+| **V3.11** | **2026-11-22** | **严格账户模型**：每篇独立 `edition`/`round`/`full_rounds`/`trajectory_reviews`；每篇至少 2 个 full 轮，full 轮覆盖全部单元；每个单元至少 2 次 review（冻结前 + 冻结后确认）；单元证据必须只点名 `UNIT <id>`；每轮结束必须 `trajectory-review`；新增 G15/G16/G17。作废 D02–D05 的 R39 借用与 D-114 越界引用 | D02–D05 把 D01 的 R39/D-114 当 stage 级通行证，且在无当前 edition full survey 时宣告 CONVERGED；用户 2026-11-22 裁决“每篇独立账户、至少两轮 full、每单元两轮 review、彻底重置” | 见 V3.11 减法账本 | `review-units.py --self-test` + 四门 + 3 轮 workflow 复核 | 生效（所有篇从 R0 重开） |
 
 ### V2 执行状态（D04 复核）
 
@@ -871,6 +872,19 @@ D 号唯一性与引用存在性门（p5）、style-lint 对 runs/DECISIONS 日�
 | V3.10 | review-scan 薄 SKILL | 替代 5 个 checks/ 共 2,156 行 | 净减 2,057 行；规范源单一 |
 | V3.10 | 锚点符号体哈希 + `invalidate` | 替代「正文 hash 只看文字、代码变了不知道」 | 无净增状态字段；失效可机械发现 |
 | V3.10 | 条件 10%/20% 抽样 | 替代固定 20% | 全直锚篇目确认轮输入减半 |
+
+### V3.11 减法账本
+
+| 版本 | 装置 | 替代 / 合并 | 减法 |
+|---|---|---|---|
+| V3.11 | 每篇独立账户 | 替代 stage 级轮次/裁决借用 | 删除跨篇复用轮次号与裁决的出口；D02 不再能花 D01 的 R39 |
+| V3.11 | 每篇 ≥2 个 full 轮 | 替代“旧 edition full survey + 一次确认” | 删除“旧 survey 给新 edition 背书”的出口 |
+| V3.11 | 每单元 ≥2 次 review + 冻结后确认 | 替代“批量冻结 + 抽样确认” | 删除“一份通用证据冻结全篇”的出口 |
+| V3.11 | 单元证据只点名一个 UNIT | 替代批量证据 | 冻结/确认的每个单元必须有独立产物 |
+| V3.11 | 每轮 trajectory-review | 替代“轮次关闭即进入下一轮” | 删除“只跑 review、不复核 review 过程”的出口 |
+
+**首次实测（2026-11-22）**：`review-units.py --self-test` 覆盖 full 轮覆盖、重复证据拒绝、
+通用证据拒绝、2 次 review、冻结后确认、trajectory 门、account reset；四门与工具自测见同步门读数。
 
 ### V3.8-r2 正式文档禁 TODO（2026-11-21，用户质询）
 
