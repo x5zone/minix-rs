@@ -85,5 +85,24 @@
 - [x] `minix-boot`、`boot-shim`、`minix-kernel --features mock` 测试全绿
 - [x] 启动链 QEMU 门（x86 UEFI、aarch64 UEFI、riscv64 U-Boot shim、riscv64 bootface）PASS
 - [x] 文档 §3.2/§3.7/§4.4 与相关符号表同步
-- [ ] 独立 verifier 复核（待本轮新 R1/设计批复核）
+- [ ] 独立 verifier 复核：**FAIL**（`certify/design02-verify.md`）；待修项见下节
 - [x] 基线重设并重开 R1（新 run 目录、新 baseline、6 角色面板已准备）
+
+## 独立 verifier 后续（2026-11-23 05:12）
+
+独立 verifier 判定 **FAIL**，两项阻断：
+
+1. **文档同步未完成**：§4.4 `:2368` 仍是旧符号 `validate_impl_inner`；`:2284` 的
+   “接收侧统一走 `store_boot_report`”与代码及 §4.4.1/§4.5 矛盾（三条 v1 腿走
+   `arch_boot_resume_v1` → `store_kernel_info`，只有两个直核腿走 `store_boot_report`）；
+   `:2324` 的 `source_records` 行同样把 v1 落地写错。代码与 `Cargo.toml` 还留有旧签名/旧
+   API 注释（`boot-shim/src/lib.rs:7/91`、`opensbi_helpers.rs:36`、`kernel/src/lib.rs:1553`、
+   `kernel_info.rs:152`、`kernel-image/Cargo.toml:52/61`）。
+2. **三个 QEMU 测试载体编译回归**：`test-higher-half`、`test-higher-half-aarch64`、
+   `test-higher-half-riscv64` 仍以两参数调用 `arch_boot(&kernel_info, root_page)`，
+   报 E0061；`os/qemu-tests/run_all.sh` 与 `.github/workflows/qemu-tests.yml` 的 build 段
+   会红。修复在 D-119 允许的“测试固定装置”范围内。
+
+残留风险（不阻断本次验收，但记录）：四条 QEMU 日志未硬绑定 commit；新的直核接收路径
+没有一条启动门真正跑到；16 KiB 栈上 `BootStorage` 余量未实测；`validate_view` 等价性只做
+人工 diff。上述两项阻断在面板完成后按 R1 代码/文档批修复，再由独立 verifier 复核。

@@ -75,7 +75,11 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 
 ### §5 复验
 
-待本轮填写。
+- 设计批独立 verifier（2026-11-23 05:12）：**FAIL**。`certify/design02-verify.md`。
+  两项阻断：(a) §4.4 旧符号 `validate_impl_inner` 与“v1 腿统一走 `store_boot_report`”的
+  错误概括，代码/Cargo 注释同步债；(b) 三个 `test-higher-half*` QEMU 载体 E0061。
+  两项均在 D-119 授权内，待面板报告到齐后与面板发现一起修复、再复核。
+- 面板与修复的单元级复验待本轮后续填写。
 
 ### §6 指标
 
