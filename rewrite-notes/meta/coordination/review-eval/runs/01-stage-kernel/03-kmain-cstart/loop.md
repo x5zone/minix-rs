@@ -81,3 +81,87 @@
 - R1 已 `ROUND-CLOSED`、44/44 覆盖、trajectory R1 PASS；R2 不能拿 R1 报告替代。
 - 解除条件见 `STUCK-REPORT.md`。
 - 状态：`BLOCKED`；不得 `CONVERGED`，不得进入 D04。
+
+### §1 面板
+
+- 六角色全部落盘（D1/D2 之外的四份曾在等待窗口后到达；STUCK-REPORT 已标 UNBLOCKED）。
+- R2 是独立 full 轮：面板重读整篇，重点复核 R1 的 13 个 fix 单元。
+
+### §2 发现
+
+- D2：1 P0（虚构 `KernelInfo.syscall_entry`）+2 P1（gate_present 引文、重复段）+2 P2。
+- READER-A：5（重复段、GsArea、内部编号、aarch64 栈链、§4.6 句子）。
+- READER-B：0 FINDING，12 SUGG。
+- READER-C：8（IST 表、LDT、tss_init busy、重复、暴露面、向量 33、GP 0x28、代价列）。
+- P-REFUTE：12 CONFIRM / 3 REFUTE（重复段、arch tests 87→86、SP_EL1/TSP）。
+- P-FACT：1 P1（重复段）+2 P2（§2.8 指针、链接文字）。
+- 合并 16 个根因；P0 1 条。
+
+### §3 归因
+
+- 16 根因：事实/引文 4、IST/门 2、LDT/TSS 2、重复/编号 2、安全/向量/数值 3、栈链/句子 2、计数/TSP 2、ZST 1。
+- 跨角色同根：IST（C/D2）、重复段（A/C/D2/FACT）、LDT（C/D2）、SP_EL1（C/REFUTE）。
+
+### §4 修复
+
+- 删除 syscall_entry 行；gate_present 引文改实义；IST 表行改单写者；LDT 空选择子；tss_init busy 补段；删除重复 IST 段；暴露面改“不新增”；向量 32/33 分开；#GP 0x2B；GsArea 字段归属；内部编号；aarch64 栈链；§4.6 句子；arch 86；TSP 分配置；LDT/ZST 措辞。
+- 代码只改注释（trap_entry.rs），`cargo check -p minix-arch` 通过。
+
+### §5 复验
+
+- 文档门全绿；单元 44/44 frozen；audit open=0；cargo check minix-arch 通过。
+
+### §6 指标
+
+见 `metrics.md` 的 `## R2 full（V3.11）`：16 根因、16 ①、0 未闭环、3 自引入已修。
+
+### §7 状态
+
+`ROUND-CLOSED`，进入 `CONVERGENCE-CANDIDATE`；R3 逐单元确认。
+
+### §8 给 meta-review 的不确定点
+
+1. R2 面板在修复前读文本；修复后只跑机械门/cargo check，未重派全量读者。
+2. D2 的 refresh 无条件化是设计候选，未实施。
+3. STUCK-REPORT 的“面板缺失”在等待后失效，已追加 UNBLOCKED。
+
+## R3 confirmation（V3.11，2026-11-22）
+
+### §0 基线
+
+- 文档 sha256: `9ad016031f4dac20d15067a085c95601fec6fa7d165568558a6d77abbd647975`，1689 行
+- 单元：44/44 frozen；R2 ROUND-CLOSED；trajectory R2 PASS
+
+### §1 面板
+
+- 逐单元 `--confirm-review`；证据 `unit-r3/<id>.md` 引用 `confirmation-r3.md` 与 R2 面板。
+
+### §2 发现
+
+- 0 新根因；R2 16 条、R1 15 条全部 CLOSED。
+
+### §3 归因
+
+- 0 新根因；0 未闭环。
+
+### §4 修复
+
+- 无文档修改；只记录确认。
+
+### §5 复验
+
+- 44/44 单元 post_freeze_rounds 含 R3；review_rounds ≥2；T3 PASS。
+- 文档/代码门见 `certify/round3-gates.md`。
+
+### §6 指标
+
+- 发现 0；根因 0；未闭环 0；轮型 confirmation；结果 CONVERGED。
+
+### §7 状态
+
+`CONVERGED`（V3.11）。限制见 `FREEZE.md`。
+
+### §8 给 meta-review 的不确定点
+
+1. R3 逐单元确认仍引用 R2 面板，不是 44 个独立冷读会话。
+2. R2 六角色晚到后已解除 STUCK；STUCK-REPORT 追加 UNBLOCKED 记录。
