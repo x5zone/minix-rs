@@ -1,0 +1,41 @@
+# 学习范围表（review-scope/v1）——规范源 prompt/review-rules/review-tutorial-rubric.md
+# 只能由作者确认；冷读学生按本表判断能否完成学习任务。
+schema: review-scope/v1
+doc: rewrite-notes/03-stage-rs/01-rs-boot-init.md
+stage: 03-stage-rs
+edition: V3.12
+confirmed: false
+confirmed_by: ''
+confirmed_at: ''
+reader_profile: 具备 C 语言阅读能力、操作系统启动的基本概念、Rust 语法与所有权基础、物理地址/虚拟地址/页表的基本概念。不默认具备本项目内部类型、三架构启动路径，以及尚未在前置章节讲授的内部设计契约。
+items:
+- id: S1
+  topic: 1. 概念：引导自举——RS 如何"在别人依赖它之前，先把自己启动好"
+  requirement: ''
+  chapters:
+  - '1'
+- id: S2
+  topic: 2. C 源码分析
+  requirement: ''
+  chapters:
+  - '2'
+- id: S3
+  topic: 3. Rust 设计决策
+  requirement: ''
+  chapters:
+  - '3'
+- id: S4
+  topic: 4. 实现详解
+  requirement: ''
+  chapters:
+  - '4'
+- id: S5
+  topic: 5. 测试要点
+  requirement: ''
+  chapters:
+  - '5'
+- id: S6
+  topic: 6. 过渡
+  requirement: ''
+  chapters:
+  - '6'
