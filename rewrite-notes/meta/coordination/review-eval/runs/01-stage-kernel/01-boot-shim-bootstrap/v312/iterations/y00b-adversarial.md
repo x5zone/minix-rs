@@ -33,4 +33,4 @@
 ## 结果
 
 - 修正已写入 `PLAN.md` §15，并从 y01 起生效。
-- 本简报的 checkpoint commit 记录在 `STATUS.md`；y01 面板按修正后的协议派发。
+- 本简报的 checkpoint commit：`c9dd5f189`；y01 面板按修正后的协议派发。
