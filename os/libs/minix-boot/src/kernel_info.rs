@@ -5,7 +5,9 @@
 
 use minix_types::{PhysBytes, VirBytes};
 
-use crate::memmap_source::{InputObjectId, RamAuthority, SourceAuditError, SourceRecord};
+use crate::memmap_source::{InputObjectId, RamAuthority, SourceRecord};
+#[cfg(test)]
+use crate::memmap_source::SourceAuditError;
 use crate::boot_storage::BootReport;
 use crate::platform::PlatformDescSource;
 

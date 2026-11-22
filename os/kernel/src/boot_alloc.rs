@@ -38,6 +38,12 @@ pub struct BootAlloc {
     end: AtomicU64,
 }
 
+impl Default for BootAlloc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BootAlloc {
     /// Create an empty allocator (zero-length range → all allocations fail).
     pub const fn new() -> Self {

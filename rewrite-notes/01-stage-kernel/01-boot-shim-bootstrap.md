@@ -1546,9 +1546,9 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 
 C 里"同一串函数名、两套实现"的机制见 §2.7：两种架构各自写 `head.S` 与 `pre_init.c`，靠命名与语义约定保持一致，编译期不会检查它们是否真的对应。
 
-U-Boot 腿的引导准备入口是普通函数 `prepare_boot`，不使用单实现 trait 做抽象。理由有三条：唯一实现是 U-Boot 腿的 `RiscvUbootBootShim`；没有 `dyn BootShim`；`prepare_boot` 是不属于任何 trait 的自由函数，不参与对象分派；测试接缝实际由 `FileLoader` 提供，不是它。单实现 trait 既不是接缝，也不是已经验证过的扩展点，留着只会让"换固件"的承诺看起来比证据强。
+U-Boot 腿的引导准备入口是普通函数 `prepare_boot`，不使用单实现 trait 做抽象。理由有两条：没有 `dyn` 分派，`prepare_boot` 是自由函数，不参与对象分派；测试接缝实际由 `FileLoader` 提供，不是任何引导 trait。单实现 trait 既不是接缝，也不是已经验证过的扩展点，留着只会让"换固件"的承诺看起来比证据强。
 
-现在 U-Boot 腿的入口是一条普通函数：[`fn prepare_boot`](<os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot>)，由 [`fn uboot_main`](<os/boot-shim/src/uboot_main.rs:fn uboot_main>) 直接调用，签名是 `prepare_boot(&mut BootStorage, bump_pages) -> BootPrepareResult<'a>`。UEFI 生产入口 `prepare_and_enter_kernel_image` 仍是独立入口（§3.6）；两个直核面复用 opensbi_helpers 的库函数，同样不经过它。未来若真出现第二条固件腿，等第二个实现落地时再按两个真实实现提炼接口，而不是先猜一个。
+现在 U-Boot 腿的入口是一条普通函数：[`fn prepare_boot`](<os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot>)，由 [`fn uboot_main`](<os/boot-shim/src/uboot_main.rs:fn uboot_main>) 直接调用，签名是 `prepare_boot<'a>(&'a mut BootStorage, bump_pages) -> BootPrepareResult<'a>`。UEFI 生产入口 `prepare_and_enter_kernel_image` 仍是独立入口（§3.6）；两个直核面复用 opensbi_helpers 的库函数，同样不经过它。未来若真出现第二条固件腿，等第二个实现落地时再按两个真实实现提炼接口，而不是先猜一个。
 
 ```rust
 // 节选（`report` 字段后的中文旁注为编者加注），os/libs/minix-boot/src/boot_prepare.rs:struct BootPrepareResult。

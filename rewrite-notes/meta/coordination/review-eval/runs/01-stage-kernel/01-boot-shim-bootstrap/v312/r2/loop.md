@@ -63,6 +63,9 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 ### §5 复验
 
 - 待独立 doc/code verifier 回；当前文档 sha `34bee52f…`（2,951 行）。
+- 冷读：`HARD-REJECTIONS: 4`、`VERDICT: NOT-READY`（`../../cold-read/y02-d01-r2.md`）；
+  四个硬阻断是结构性的（实现节选不可跟随、版本历史混入正文、多套编号/计数、权威表式交叉引用），
+  案件卷 `R2-COLD-READ-CASE.md`。R1 的 READY 不再代表当前文档。
 - 8 个文档门在修复后自测：anchor 86/86、code-map 49/49、ref/style/publication 通过、
   citation failed=0、rubric 0 缺项、density 通过。
 - R2 关账不宣告：台账 `open=3`（D1/D2 的 ⑤ 行），R2 为 `BLOCKED`。
@@ -74,7 +77,8 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 ### §7 状态
 
 - `BLOCKED`：25 个 FINDING 中 23 个 `①` 已修，2 个 `⑤` 设计项待作者裁决
-  （`R2-DESIGN-CASE.md`）。48/48 单元仍冻结；不写 `ROUND-CLOSED`/`CONVERGED`。
+  （`R2-DESIGN-CASE.md`）；冷读 `NOT-READY`（4 个硬阻断，`R2-COLD-READ-CASE.md`）。
+  48/48 单元仍冻结；不写 `ROUND-CLOSED`/`CONVERGED`。
 
 ### §8 给 meta-review 的不确定点
 
@@ -82,4 +86,6 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 - 26 条 SUGGESTION 只处理了与 P2/P3 同段/同口径的项，纯风格与结构性拆分留 R3；不冒充完成。
 - 面板目录 `panel/round2/` 原有 2026-11-08 旧轮同名报告，已移 `archive-nov8/`；
   R2 只采用 2026-11-23 的六份报告，DIA 需按 mtime/内容复核。
+- R3 需要结构轮：现役快速参考、wire 布局表、历史移附录、端到端图/门×腿矩阵、计数术语表；
+  见 `R2-COLD-READ-CASE.md`。R3 前先裁 DESIGN-01/02 或明确允许并行。
 - 09:00 峰值前若未裁决，R2 保持 `BLOCKED` 并写交接，不把未做项写成收敛。

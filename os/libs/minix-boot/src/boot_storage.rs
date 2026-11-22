@@ -105,6 +105,12 @@ pub struct BootStorage {
     sources_committed: bool,
 }
 
+impl Default for BootStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BootStorage {
     /// An empty storage. Const-constructible for a static; because `new()`
     /// contains non-zero defaults, such a static lands in `.data`, not `.bss`.
