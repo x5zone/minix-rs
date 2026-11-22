@@ -20,6 +20,7 @@
 - full 轮: 1（R1）
 - 单元: 39/39 frozen
 - trajectory: R1 PASS
+- 事件: `event verify --fresh` 39/39 OK
 - 测试: `cargo test -p minix-rs --lib` 359 passed / 0 failed
 - 文档门: publication 0、rubric 0、style 0、ref 通过、density 通过
 - 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0

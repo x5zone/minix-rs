@@ -50,7 +50,7 @@ review-units audit: 全部单元 open=0
 
 ### §5 轨迹
 
-`trajectory-r1.md`：R1 PASS。
+`trajectory-r1.md`：R1 PASS；`event verify --fresh` 39/39 OK。
 
 ### §6 指标
 
