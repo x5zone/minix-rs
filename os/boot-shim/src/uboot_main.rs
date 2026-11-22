@@ -469,8 +469,8 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     }
 
     // prepare_boot: root page + PT region + kernel copy + 12 module landings
-    // + semantic tables (memmap/reserved/sources/param/startup from the argv
-    // DTB), all written into the caller-owned storage. The bump pool lives at
+    // + semantic tables (memmap/reserved/sources/param from the argv DTB),
+    // all written into the caller-owned storage. The bump pool lives at
     // 0x82000000-0x84000000 (existing constants; inside the measured free band).
     let mut storage = minix_boot::BootStorage::new();
     let result = prepare_boot(&mut storage, boot_shim::BOOT_PT_BUMP_PAGES);
@@ -482,7 +482,7 @@ fn uboot_main(argc: usize, argv: *const *const u8) -> ! {
     minix_kernel::boot_alloc::init_boot_pt_alloc(result.bump.start().0, result.bump.end().0);
 
     // The v1 arena was allocated inside prepare_boot (same pool, after the
-    // module landings) and named by a startup record there. The bootstrap root
+    // module landings) and is described by the v1 envelope. The bootstrap root
     // identity-maps it once enabled.
     let arena_pa = result.arena_pa;
     // SAFETY: fresh bump pages below the identity bound; nothing else writes

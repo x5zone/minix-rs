@@ -155,11 +155,6 @@ impl BootAlloc {
     }
 }
 
-impl Default for BootAlloc {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 // ── Global instance (production path) ──
 

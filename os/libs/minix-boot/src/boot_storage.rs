@@ -277,11 +277,6 @@ impl BootStorage {
     }
 }
 
-impl Default for BootStorage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Borrowed semantic view of a [`BootStorage`] plus the kernel scalars.
 ///

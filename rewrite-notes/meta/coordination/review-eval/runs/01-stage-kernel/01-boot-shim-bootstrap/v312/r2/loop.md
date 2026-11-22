@@ -25,35 +25,61 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 
 ### §1 面板
 
-- 6 角色 fresh，报告写 `panel/round2/`；输入与 R1 相同，但文档为最终版、面板需重点复核
-  R1 的 40 个根因是否仍成立，并寻找新问题。
+- 6 角色 fresh，报告写 `tmp/review-eval/.../panel/round2/`；输入与 R1 相同，但文档为最终版、
+  面板需重点复核 R1 的 40 个根因是否仍成立，并寻找新问题。
 - 提示词：`tmp/review-loop/01-stage/panel-prompts-r2/`。
-- 事件：round 2 的 6 个角色事件在面板前 plan、报告后 complete。
+- 事件：`REV-...-47C4309B`（P-FACT）、`8CBD8DD9`（READER-A）、`672B9CAB`（READER-B）、
+  `B7C16930`（READER-C）、`4F23B33E`（DESIGN-D2）、`0A485143`（P-REFUTE），均 round 2。
+- 目录卫生：`panel/round2/` 下有 2026-11-08 的旧轮同名报告；已移到 `archive-nov8/`，
+  R2 只接受 2026-11-23 写入的角色报告，DIA 需按 mtime/内容复核。
 
 ### §2 发现
 
-待本轮填写。
+- 6 角色：P-FACT 1、READER-A 6、READER-B 3、READER-C 10、DESIGN-D2 5；
+  P-REFUTE 0 FINDING，6 条 CLAIM（2 条 P2 观察、4 条反证失败）。
+- 合计 25 FINDING：P0 0 / P1 0 / P2 11 / P3 14；另有 26 条 SUGGESTION。
+- 主要 P2：§4.8 v1 链与 §3.7/§4.4.1 相反；§4.5 “arch_boot 第一步深拷”与门链相反；
+  §4.1 `BootWindows` 指针落空；§3.1 PE/COFF 与 kernel.elf 冲突；§3.2 三形态命名；
+  §1.1 依赖计数；§3.4.1 生产镜像清单缺 aarch64；§2.1 load_mods 两种失败情形混写；
+  DESIGN-01/02 两个设计项（待作者）。
 
 ### §3 归因
 
-待本轮填写。
+- 面板 25 FINDING → 23 个文档/代码根因；P-REFUTE 2 条观察各占根因；台账 25 个 `R2-*`。
+- 关键合并：`READER-A-02`/`READER-B-02` → R2-01；`READER-A-01`/`READER-B-03` → R2-03。
+- `DESIGN-01`/`DESIGN-02` 属设计方向，标 `⑤`，案件卷 `R2-DESIGN-CASE.md`，不代作者裁决。
 
 ### §4 修复
 
-待本轮填写。
+- 文档：§1.1/§2.1/§3.1/§3.2/§3.2.1/§3.2.2/§3.2.3/§3.4.1/§3.5.1/§3.6/§3.7/§4.1/§4.5/
+  §4.6/§4.8/§5.1/§6.1 的 23 个 `①` 根因已修；两处引文块声明代码级重排。
+- 代码：`source_audit` 改 `#[cfg(test)]`；删除两个无消费者 `Default`；清 startup 残留注释
+  （保留 QEMU 脚本依赖的 `(d73)` 串口串）。
+- 未修：`DESIGN-01`（合并 MODULE_NAMES/BOOT_MODULE_PROC_NRS）与 `DESIGN-02`
+  （`kmain` 改 strict），等作者选 A/B。
+- 测试：minix-boot 188/0；boot-shim 136/0；minix-kernel mock 866/0/8；
+  `cargo check -p minix-kernel` 通过。
 
 ### §5 复验
 
-待本轮填写。
+- 待独立 doc/code verifier 回；当前文档 sha `34bee52f…`（2,951 行）。
+- 8 个文档门在修复后自测：anchor 86/86、code-map 49/49、ref/style/publication 通过、
+  citation failed=0、rubric 0 缺项、density 通过。
+- R2 关账不宣告：台账 `open=3`（D1/D2 的 ⑤ 行），R2 为 `BLOCKED`。
 
 ### §6 指标
 
-待本轮填写；对应 `metrics.md` 的 `## R2` 块。
+- `metrics.md`：发现总数 25、唯一根因数 25、重复合并 2、未闭环 2、轮结果 `BLOCKED`。
 
 ### §7 状态
 
-待本轮填写。修改轮最多写 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`。
+- `BLOCKED`：25 个 FINDING 中 23 个 `①` 已修，2 个 `⑤` 设计项待作者裁决
+  （`R2-DESIGN-CASE.md`）。48/48 单元仍冻结；不写 `ROUND-CLOSED`/`CONVERGED`。
 
 ### §8 给 meta-review 的不确定点
 
-待本轮填写。
+- `DESIGN-01`/`DESIGN-02` 是否在 D01 内做，需作者按案件卷裁决；me-agent 不代决。
+- 26 条 SUGGESTION 只处理了与 P2/P3 同段/同口径的项，纯风格与结构性拆分留 R3；不冒充完成。
+- 面板目录 `panel/round2/` 原有 2026-11-08 旧轮同名报告，已移 `archive-nov8/`；
+  R2 只采用 2026-11-23 的六份报告，DIA 需按 mtime/内容复核。
+- 09:00 峰值前若未裁决，R2 保持 `BLOCKED` 并写交接，不把未做项写成收敛。

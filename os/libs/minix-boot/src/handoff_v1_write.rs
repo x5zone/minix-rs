@@ -388,9 +388,8 @@ impl<'a> Serializer<'a> {
         for byte in &mut self.arena[WIRE_SOURCES_OFFSET..WIRE_SOURCES_END] {
             *byte = 0;
         }
-        // The startup-object partition is deliberately *not* cleared: those
-        // records describe the image layout, not the classification paired
-        // with a MapKey, and a retry must not lose them.
+        // v10 has no startup-object partition; the cleared ranges cover every
+        // writable partition a retry can rewrite.
         self.wire_memmap_n = 0;
         self.reserved_n = 0;
         self.sources_n = 0;

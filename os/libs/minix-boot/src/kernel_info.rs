@@ -555,7 +555,9 @@ impl KernelInfo {
     }
 
     /// One-line description of the audit failure for diagnostics, or `None`
-    /// when the records cover both projections.
+    /// when the records cover both projections. Test-only: production uses
+    /// `validate_view`'s strict or conditional audit.
+    #[cfg(test)]
     pub fn source_audit(&self) -> Option<SourceAuditError> {
         if self.source_records.is_empty() {
             return None;
