@@ -74,3 +74,10 @@
 - 行数: 1688
 - 单元: 44；R1 的 13 个 fix 单元未冻结
 - 轮型: full；schema/edition: V3.11；R1 轨迹 PASS
+
+## R2 full（BLOCKED，2026-11-22）
+
+- 派发六角色后，`panel/round2/` 在等待窗口内没有任何角色报告落盘。
+- R1 已 `ROUND-CLOSED`、44/44 覆盖、trajectory R1 PASS；R2 不能拿 R1 报告替代。
+- 解除条件见 `STUCK-REPORT.md`。
+- 状态：`BLOCKED`；不得 `CONVERGED`，不得进入 D04。
