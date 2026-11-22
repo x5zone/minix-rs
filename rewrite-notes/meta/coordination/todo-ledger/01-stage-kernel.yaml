@@ -1072,8 +1072,8 @@
   status: open
   severity: P2
   kind: code
-  origin: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/FREEZE.md:71
-  origin_file: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/FREEZE.md
+  origin: rewrite-notes/meta/coordination/review-eval/archive/V3.10/01-stage-kernel-runs/01-boot-shim-bootstrap/FREEZE.md:71
+  origin_file: rewrite-notes/meta/coordination/review-eval/archive/V3.10/01-stage-kernel-runs/01-boot-shim-bootstrap/FREEZE.md
   origin_line: 71
   evidence: '2026-11-22 复核：`bash os/qemu-tests/test-rt-birth.sh` → FAIL，用户进程 8 在 0x140003254 取指后 SIGSEGV（`cause_sig: sig manager
     8 gets lethal signal 11`）；在 c9f4e544c 的 独立 worktree 复跑得到同一日志，确认非本轮因果。`bash os/qemu-tests/test-rt-birth-aarch64.sh` → FAIL，EL0
