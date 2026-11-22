@@ -124,10 +124,12 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2);
 #[derive(Clone, Copy)]
 pub struct PlatformDescSource {
     kind: PlatformDescKind,
-    /// Blob length in bytes; 0 = unknown/legacy producer.
-    len: u32,
+    /// Blob length in bytes; `None` = unknown/legacy producer.
+    len: Option<core::num::NonZeroU32>,
     phys_addr: PhysBytes,
 }
+
+const _: () = assert!(core::mem::size_of::<PlatformDescSource>() == 16);
 
 impl PlatformDescSource {
     /// Construct a source handle without a known length. Called by tests and
@@ -136,29 +138,36 @@ impl PlatformDescSource {
     pub const fn new(kind: PlatformDescKind, phys_addr: PhysBytes) -> Self {
         Self {
             kind,
-            len: 0,
+            len: None,
             phys_addr,
         }
     }
 
-    /// Construct a source handle with the blob's byte length.
-    pub const fn with_len(kind: PlatformDescKind, phys_addr: PhysBytes, len: u32) -> Self {
+    /// Construct a source handle with a non-zero blob length.
+    pub const fn with_len(
+        kind: PlatformDescKind,
+        phys_addr: PhysBytes,
+        len: core::num::NonZeroU32,
+    ) -> Self {
         Self {
             kind,
-            len,
+            len: Some(len),
             phys_addr,
         }
     }
 
     /// Construct from an optional probed length; `None` (header unreadable)
-    /// falls back to the legacy `len = 0` form.
+    /// or `Some(0)` falls back to the unknown-length form.
     pub const fn with_optional_len(
         kind: PlatformDescKind,
         phys_addr: PhysBytes,
         len: Option<u32>,
     ) -> Self {
         match len {
-            Some(len) => Self::with_len(kind, phys_addr, len),
+            Some(n) => match core::num::NonZeroU32::new(n) {
+                Some(nz) => Self::with_len(kind, phys_addr, nz),
+                None => Self::new(kind, phys_addr),
+            },
             None => Self::new(kind, phys_addr),
         }
     }
@@ -171,13 +180,9 @@ impl PlatformDescSource {
     pub fn phys_addr(&self) -> PhysBytes {
         self.phys_addr
     }
-    /// Blob length in bytes; 0 when the producer did not record one.
-    pub fn len(&self) -> u32 {
+    /// Blob length in bytes; `None` when the producer did not record one.
+    pub fn len(&self) -> Option<core::num::NonZeroU32> {
         self.len
-    }
-    /// Whether the producer recorded an explicit length.
-    pub fn has_len(&self) -> bool {
-        self.len != 0
     }
 }
 

@@ -25,7 +25,8 @@ pub struct KernelInfo {
     /// `LOADER_DATA` before any other allocation. Module blobs are
     /// in it on the U-Boot / direct-core legs (bump pages) but absent on UEFI
     /// legs (`LOADER_DATA`). Each consumer deducts the occupied ranges it must
-    /// not touch (see the `memmap()` accessor for the per-consumer split).
+    /// not touch (see `vm_handoff::classify` and `vm_boot_exclusions` for the
+    /// per-consumer split).
     /// C: kinfo.memmap[] — pg_utils.c add_memmap/cut_memmap
     pub memmap: &'static [MemoryRegion],
 
@@ -273,7 +274,7 @@ impl KernelInfo {
             source
                 .phys_addr()
                 .0
-                .checked_add(source.len() as u64)
+                .checked_add(source.len().map_or(0, |n| n.get()) as u64)
                 .unwrap_or_else(|| {
                     panic!("KernelInfo: platform_sources[{i}] span overflows u64")
                 });

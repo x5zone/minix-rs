@@ -257,26 +257,6 @@ pub enum SourceKind {
     UefiExcluded,
 }
 
-/// Whether a record is declared by the input object or derived by this project.
-/// The distinction matters for audit: a derived prefix must not read as a
-/// firmware-declared reservation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceClass {
-    /// Declared by the input object itself (`/memory`, `reg`, MRB entry).
-    InputDeclaration,
-    /// Derived from an input fact plus a boot parameter (`firmware_reserve_end`).
-    DerivedReservation,
-}
-
-impl SourceKind {
-    pub const fn class(self) -> SourceClass {
-        match self {
-            SourceKind::FirmwarePrefix => SourceClass::DerivedReservation,
-            _ => SourceClass::InputDeclaration,
-        }
-    }
-}
-
 /// Where inside the input object a record came from. Two declarations of the
 /// same range must stay distinguishable, so identity is not the byte range.
 /// Ordinals are 0-based in document order: `node` counts matching nodes only
@@ -484,28 +464,20 @@ impl SourceRange {
     pub const fn len(self) -> u128 {
         self.end_exclusive - self.start as u128
     }
-
-    /// The range as a physical range, only in the physical address domain.
-    pub const fn physical(self, domain: AddressDomain) -> Option<PhysicalRange> {
-        match domain {
-            AddressDomain::Physical => Some(PhysicalRange::new(self.start, self.end_exclusive)),
-            AddressDomain::Virtual | AddressDomain::UefiMmioPortSpace => None,
-        }
-    }
 }
 
 /// One physical range carried by the source layer. For input declarations
-/// (`class() == InputDeclaration`) the range is the declared extent, byte for
-/// byte; for a derived reservation (`FirmwarePrefix`) it is the **derived**
+/// (`kind` other than `FirmwarePrefix`) the range is the declared extent, byte
+/// for byte; for a derived reservation (`FirmwarePrefix`) it is the **derived**
 /// extent `M_i ∩ [0, F)`. No page range is stored here — `/memory` projects
 /// inward (`FullPages`) while reservations project outward, so a single
 /// precomputed page extent would bake one consumer's rule into every consumer.
 /// The field is a [`SourceRange`] (numeric start/end), not a `PhysicalRange`:
-/// only the physical address domain converts, via
-/// [`SourceRecord::physical_range`], so an I/O-port range cannot pose as a
-/// physical one. An end of `2^64` is representable at the record layer;
-/// whether a projection can deliver it is a separate question answered by
-/// `projectable_end()` and the refusal at each projection site.
+/// the record keeps the numeric range and its [`AddressDomain`], and each
+/// projection checks the domain before it builds a physical page set. An end
+/// of `2^64` is representable at the record layer; whether a projection can
+/// deliver it is a separate question answered by `projectable_end()` and the
+/// refusal at each projection site.
 ///
 /// **This is the forensic provenance layer, not the automatic-audit input
 /// table.** The audit reads `kind`/`range`/`address_domain`/`input_object`;
@@ -542,14 +514,6 @@ pub struct SourceRecord {
     /// role classification — the two must not be confused: `LOADER_DATA` and
     /// `ACPI_RECLAIM` share a role but not a type.
     pub raw_type: u32,
-}
-
-impl SourceRecord {
-    /// The record's range as a physical range; `None` when its address domain
-    /// is not physical. Only this conversion may feed physical page sets.
-    pub const fn physical_range(&self) -> Option<PhysicalRange> {
-        self.range.physical(self.address_domain)
-    }
 }
 
 /// Address space of a [`SourceRecord`] range. v1 records are physical only;
@@ -2038,7 +2002,6 @@ mod tests {
             .iter()
             .find(|r| r.kind == SourceKind::FirmwarePrefix)
             .expect("prefix record exists");
-        assert_eq!(prefix.kind.class(), SourceClass::DerivedReservation);
         let SourceOrigin::FirmwarePrefix { memory_id, cut } = prefix.origin else {
             panic!("prefix origin must name its source record");
         };
@@ -2049,7 +2012,6 @@ mod tests {
             .expect("prefix points at a live record");
         assert_eq!(memory.kind, SourceKind::Memory);
         assert_eq!(memory.range.start, prefix.range.start);
-        assert_eq!(memory.kind.class(), SourceClass::InputDeclaration);
     }
 
     /// Blob whose root holds `/memory` nodes carrying **several `reg` tuples
@@ -2380,7 +2342,7 @@ mod tests {
         assert_eq!(sources.len(), 5, "2 memory + 1 MRB + 2 reservations");
         let mut origins: Vec<_> = sources
             .iter()
-            .filter(|r| r.kind.class() == SourceClass::InputDeclaration)
+            .filter(|r| r.kind != SourceKind::FirmwarePrefix)
             .map(|r| r.origin)
             .collect();
         origins.sort_by_key(|o| match o {
@@ -2554,22 +2516,17 @@ mod tests {
     }
 
     #[test]
-    fn source_range_converts_only_in_the_physical_domain() {
+    fn source_range_keeps_domain_and_numeric_extent() {
         let range = SourceRange::new(0x3f8, 0x13f8);
-        assert_eq!(
-            range.physical(AddressDomain::Physical),
-            Some(PhysicalRange::new(0x3f8, 0x13f8))
-        );
-        assert_eq!(range.physical(AddressDomain::Virtual), None);
-        assert_eq!(range.physical(AddressDomain::UefiMmioPortSpace), None);
-
         let record = SourceRecord {
             kind: SourceKind::UefiExcluded,
             range,
             address_domain: AddressDomain::UefiMmioPortSpace,
             ..EMPTY_SOURCE_RECORD
         };
-        assert!(record.physical_range().is_none());
+        assert_eq!(record.range.start, 0x3f8);
+        assert_eq!(record.range.end_exclusive, 0x13f8);
+        assert_eq!(record.address_domain, AddressDomain::UefiMmioPortSpace);
     }
 
     #[test]

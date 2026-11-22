@@ -86,8 +86,8 @@ pub use minix_boot::BootPrepareResult;
 pub use minix_elf;
 
 /// Single construction surface for the `KernelInfo` a boot surface hands
-/// over. Every boot leg calls this function; no leg carries its own
-/// parameter list.
+/// over. The two direct-core legs call this function; the three v1 legs
+/// decode the wire on the receiver and do not call it.
 ///
 /// `reserved_regions` is the surface's non-conventional list (UEFI-classified
 /// firmware memory, DTB-clipped firmware ranges); pass `&[]` when the surface

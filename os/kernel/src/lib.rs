@@ -643,14 +643,11 @@ unsafe extern "sysv64" {
 /// The decode below is the **last read of the arena**. Every payload is
 /// copied into a `.bss` store, and `KernelInfo`'s slices point at those
 /// stores, not at the arena; `arena_pa` is not retained. The VM free-page
-/// list is published much later, in `kmain` → `build_vm_handoff`, which is
-/// strictly after this function. Therefore:
+/// list is published later in `kmain` (the earliest reissuer is
+/// `VmBootAllocator`), strictly after this function. Therefore:
 ///
 /// - `LastRead(arena) ≺ Publish(VMFreePages)`, so arena frames that the
 ///   classification leaves in the conventional map may be reissued to VM;
-/// - the arena is still named by a startup-object record (identity, not
-///   liveness) and stays in the boot handoff's deduction inputs if a leg
-///   classifies it as occupied;
 /// - if a future change needs to read the arena after the jump, it must move
 ///   this function's decode boundary or add the arena to the deduction —
 ///   otherwise the VM can hand out a live wire image.
@@ -1213,11 +1210,11 @@ fn push_platform_windows(
 ) {
     for source in sources {
         let start = source.phys_addr().0;
-        if source.has_len() {
+        if let Some(len) = source.len() {
             windows.push(
                 start,
                 start
-                    .checked_add(source.len() as u64)
+                    .checked_add(len.get() as u64)
                     .expect("boot window: platform blob overflows u64"),
             );
         } else {
@@ -5895,7 +5892,7 @@ mod tests {
         let source = minix_boot::PlatformDescSource::with_len(
             minix_boot::DTB,
             PhysBytes(0x0800_1234),
-            0x4000,
+            core::num::NonZeroU32::new(0x4000).unwrap(),
         );
         let mut windows = BootWindows::new();
         push_platform_windows(&mut windows, &[source]);

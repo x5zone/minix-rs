@@ -308,7 +308,7 @@ pub fn decode_platform_sources(
         let kind = PlatformDescKind::new(read_u32(arena, off));
         let len = read_u32(arena, off + 4);
         let addr = read_u64(arena, off + 8);
-        *slot = PlatformDescSource::with_len(kind, PhysBytes(addr), len);
+        *slot = PlatformDescSource::with_optional_len(kind, PhysBytes(addr), Some(len));
     }
     Ok(count)
 }
