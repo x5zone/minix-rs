@@ -5,12 +5,16 @@ schema: review-units/v2
 doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 stage: 01-stage-kernel
 edition: V3.12
-round: 1
+round: 2
 full_rounds:
 - n: 1
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/r1-v312/full-r1.md
   evidence_sha: 3afe979231f000a01fc4d28970f80692f3cf8a1612ecc97059da158239ee33e5
   commit: cdd0d1c777042b048bd9fdfac3e5102b95dac869
+- n: 2
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/full-r2.md
+  evidence_sha: 941b50f699dce7e09e6715f93bf6c724fe576b0e9abe0b449557e69ef3108fff
+  commit: 76ac760b43a4c5ca057b39988a1b9bca3ecd6feb
 trajectory_reviews:
 - round: 1
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/certify/y01b-trajectory.md
