@@ -4,38 +4,40 @@ schema: review-scope/v1
 doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 stage: 01-stage-kernel
 edition: V3.12
-confirmed: false
-confirmed_by: ''
-confirmed_at: ''
+confirmed: true
+confirmed_by: me-agent-deputy
+confirmed_at: '2026-11-23T02:39:15'
 reader_profile: 具备 C 语言阅读能力、操作系统启动的基本概念、Rust 语法与所有权基础、物理地址/虚拟地址/页表的基本概念。不默认具备本项目内部类型、三架构启动路径，以及尚未在前置章节讲授的内部设计契约。
 items:
 - id: S1
   topic: 1. 概述
-  requirement: ''
+  requirement: 学完能说出引导器交给内核的三份数据及其消费者；能用 I1–I4 四条不变量判断一次交接是否成立；能说出 pre_init 与 head.S 上本篇与 02 篇的接缝。
   chapters:
   - '1'
 - id: S2
   topic: 2. C 源码分析
-  requirement: ''
+  requirement: 学完能按 boot.cfg 的指令次序、head.S 的入口与 pre_init 的调用树复述 C 侧从引导器到 kinfo 的交接路径；能解释 add_memmap/cut_memmap/overlaps 如何把引导器数据变成内核记录；能指出
+    D1/D2/D4 的 C 证据锚点，并说明 D3/D5 为何归 02 篇。
   chapters:
   - '2'
 - id: S3
   topic: 3. Rust 设计决策
-  requirement: ''
+  requirement: 学完能说明三个架构为什么共用一套交接协议；能按 I1–I4 解释 KernelInfo 字段取舍、两张内存表与 SourceRecord、bootstrap 区间与分配器换手；能说出五条生产腿各自的通道形态与校验门顺序。
   chapters:
   - '3'
 - id: S4
   topic: 4. 实现详解
-  requirement: ''
+  requirement: 学完能沿 main → prepare_and_enter_kernel_image → enter_kernel_image_v1 → arch_boot_resume_v1 走完两条 UEFI 链；能说出九动作表里读文件、ExitBootServices、提交分类计数与跳转各在哪一步；能指出
+    KernelInfo 两条产出入径、六个落地区与门链的实际执行序。
   chapters:
   - '4'
 - id: S5
   topic: 5. 测试：四条不变量各自的证据
-  requirement: ''
+  requirement: 学完能按 I1–I4 说出每条不变量各自的宿主证据与真机证据，并说出每条证据“不证明什么”；能用真机门脚本的关键路标判断一条链走到了哪一步。
   chapters:
   - '5'
 - id: S6
   topic: 6. 诊断
-  requirement: ''
+  requirement: 学完能按 ExitBootServices 分界判断一条输出该走固件控制台还是裸串口；能用里程碑清单把 boot-shim 的动作切开并定位串口停在哪一段；能按“看输出 → 看异常 → 看页表走查”三层抓现场。
   chapters:
   - '6'

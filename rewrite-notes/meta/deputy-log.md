@@ -443,3 +443,15 @@
 
 - R5 defect-ledger 的 C 组 ID 错位：`RD-R5-030/032/034` 的来源 ID 与 panel/round5 对不上（实质已修）；按现行 edition 做一次台账 ID 校正，不重开 review。
 - §3.5 的 aarch64 物理基址已内联为 `0x40200000`（另列 riscv64 `0x80200000`、x86_64 `0x200000`），满足教学自包含。
+
+---
+
+## D01 学习范围表代确认（2026-11-23，me-agent 冷启动，仅加载 prompt/me.md + 案件卷）
+
+- **decision**：CONFIRM。D01 V3.12 学习范围表草案（S1–S6 + reader_profile）与文档边界一致；不扩大、不缩小。
+- **basis**：`prompt/me.md` §我允许代裁的范围 第 1/4 项；作者对本次单一事项的明示授权；只做边界一致性核对，不新增教学方向。
+- **evidence**：`tmp/review-loop/01-stage/cases/scope-d01.md` 与 `.../scope-d01-decision.md`；草案六章目标逐条对上边界（`pre_init`/第一次 `head.S` 跳转留本篇；`pg_*`/第二次跳转归 02；第 7 章不进 48 单元）。
+- **最强反方**：`prompt/me.md` 不允许代裁教学范围，确认本身可能越权。裁决：作者明确授权本案；判决只核对一致性且可逆，记为代裁待追认。
+- **回退动作**：作者推翻 → 判决标 SUPERSEDED，scope 回到未确认，重开确认；只否定某一条 → 最小修正该条后重新确认。
+- **追认状态**：代裁待追认。作者追认后转入 `DECISIONS.md`；追认前不得把 CONVERGED 当作最终出版结论。
+- **执行**：`review-units.py scope confirm <doc> --by me-agent-deputy`（`confirmed_by` 如实写代理身份，不写 author）。
