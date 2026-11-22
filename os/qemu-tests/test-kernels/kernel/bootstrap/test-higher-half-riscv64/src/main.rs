@@ -20,7 +20,7 @@ use minix_plat::riscv64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{KernelInfo, MemoryRegion};
+use minix_boot::{BootReport, MemoryRegion, RamAuthority};
 
 // ── Global allocator (bump allocator on a static heap) ──
 use core::alloc::{GlobalAlloc, Layout};
@@ -122,8 +122,9 @@ pub extern "C" fn rust_main() -> ! {
     // 4MB gives us 2MB for code + 2MB for stack/heap, all mapped.
     let kern_size: u64 = 0x400_000; // 4MB (2 × 2MB huge pages)
 
-    let kernel_info = KernelInfo {
+    let report = BootReport {
         memmap,
+        reserved_regions: &[],
         kern_virt_base: VirBytes(kern_virt_base),
         kern_phys_base: PhysBytes(DRAM_BASE),
         kern_size,
@@ -131,9 +132,7 @@ pub extern "C" fn rust_main() -> ! {
         boot_modules: &[],
         platform_sources: &[],
         param_buf: &[],
-        reserved_regions: &[],
         source_records: &[],
-        authority: minix_boot::RamAuthority::DTB,
     };
 
 
@@ -143,7 +142,7 @@ pub extern "C" fn rust_main() -> ! {
 
     // 3. arch_boot performs identity map + kernel map + enable MMU,
     //    then calls HigherHalf::jump_to_kmain → kmain (qemu_test).
-    minix_kernel::arch_boot(&kernel_info, root_page);
+    minix_kernel::arch_boot(&report, RamAuthority::DTB, root_page);
 
     // NOTREACHED — arch_boot calls HigherHalf::jump_to_kmain which never returns.
 }

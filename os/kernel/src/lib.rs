@@ -225,7 +225,7 @@ where
     // reach the mapping machinery and only surface later at kmain. The
     // pre-table gate skips the boot_modules non-empty check because QEMU
     // bootstrap test kernels legally carry no init-server image.
-    report.validate_before_tables(authority);
+    report.validate_before_tables();
     report.check_boot_postconditions();
     let kinfo = store_boot_report(report, authority);
     register_panic_diagnostic();
@@ -1547,27 +1547,24 @@ fn land_slice<T: Copy>(src: &[T], dst: &mut [T], what: &str) {
     }
 }
 
-/// Stores the boot `KernelInfo` into the process-global slot and returns a
-/// reference into that slot.
+/// Stores the receiver-owned `KernelInfo` into the process-global slot and
+/// returns a reference into that slot.
 ///
-/// Production has two call sites: `arch_boot_finish` (a real copy) and
-/// `resume_additive` (same-address skip). `kmain` reads the slot through
-/// `kernel_info()` and does not re-store; bootstrap test kernels that bypass
-/// kmain call this explicitly before any consumer of [`KERNEL_INFO`].
+/// The v1 receiver's `resume_additive` calls this after decoding the wire
+/// slices into this image's landing stores; the source and destination are
+/// then at the same address, so the copy is skipped. Bootstrap test kernels
+/// that bypass `kmain` call this explicitly before any consumer of
+/// [`KERNEL_INFO`].
 ///
 /// The returned reference points at the `.bss` global, not at the caller's
 /// input. The slot is written exactly once per leg: a second
 /// store panics instead of updating the slot in place.
-/// Stores the receiver-owned `KernelInfo` into the process-global slot.
-///
-/// Kept for the v1 receiver (`resume_additive`), which already decoded the
-/// wire slices into this image's landing stores.
 pub fn store_kernel_info(kernel_info: &KernelInfo) -> &'static KernelInfo {
     land_and_store(kernel_info, kernel_info.authority)
 }
 
 /// Stores a sender-side `BootReport<'_>` and produces the unique
-/// `KernelInfo<'static>` backed by this image's `.bss` landing stores.
+/// `KernelInfo` backed by this image's `.bss` landing stores.
 pub(crate) fn store_boot_report(
     report: &minix_boot::BootReport<'_>,
     authority: minix_boot::RamAuthority,

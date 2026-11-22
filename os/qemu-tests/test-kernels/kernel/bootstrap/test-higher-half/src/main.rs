@@ -16,7 +16,7 @@ use minix_plat::x86_64::early_console;
 use minix_kernel::boot_alloc;
 use minix_arch::pt_alloc;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{KernelInfo};
+use minix_boot::{BootReport, RamAuthority};
 use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
@@ -49,18 +49,17 @@ fn main() -> Status {
     // Gate 4 (path A): keep the final map returned by the exit function and
     // classify it immediately — the map used for classification is the map
     // used for exit (design doc §2.7).
-    let (memmap, _reserved_regions) = uefi_helpers::exit_boot_services_and_classify();
-    let kernel_info = KernelInfo {
+    let (memmap, reserved_regions) = uefi_helpers::exit_boot_services_and_classify();
+    let report = BootReport {
         memmap,
+        reserved_regions,
         kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
         kern_phys_base: PhysBytes(image_base),
         kern_size: image_end - image_base,
         boot_modules: &[],
         platform_sources: &[],
         param_buf: &[],
-        reserved_regions: &[],
         source_records: &[],
-        authority: minix_boot::RamAuthority::UEFI,
     };
 
     // 2. Register boot-stage page table allocator
@@ -72,7 +71,7 @@ fn main() -> Status {
     //    address and calls kmain. kmain (qemu_test) verifies SP/PC/FP
     //    invariants and prints TEST_RESULT.
     //    This function never returns.
-    minix_kernel::arch_boot(&kernel_info, root_page);
+    minix_kernel::arch_boot(&report, RamAuthority::UEFI, root_page);
 }
 
 #[panic_handler]

@@ -1403,23 +1403,6 @@ mod tests {
     //! impls share the same coverage.
 
     use super::*;
-    fn test_kernel_info(
-        report: &minix_boot::BootReport<'static>,
-        authority: minix_boot::RamAuthority,
-    ) -> minix_boot::KernelInfo {
-        minix_boot::KernelInfo {
-            memmap: report.memmap,
-            reserved_regions: report.reserved_regions,
-            source_records: report.source_records,
-            kern_virt_base: report.kern_virt_base,
-            kern_phys_base: report.kern_phys_base,
-            kern_size: report.kern_size,
-            boot_modules: report.boot_modules,
-            platform_sources: report.platform_sources,
-            param_buf: report.param_buf,
-            authority,
-        }
-    }
     use minix_boot::BootModule;
     use minix_types::VirBytes;
 
@@ -1450,18 +1433,16 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x100_000,
         };
-        let info = test_kernel_info(&report, minix_boot::RamAuthority::UEFI);
+        assert_eq!(report.reserved_regions.len(), 1);
+        assert_eq!(report.reserved_regions[0].base, PhysBytes(0x1da0_0000));
 
-        assert_eq!(info.reserved_regions.len(), 1);
-        assert_eq!(info.reserved_regions[0].base, PhysBytes(0x1da0_0000));
-
-        assert_eq!(info.kern_virt_base, VirBytes(0xFFFFFFFF80000000));
-        assert_eq!(info.kern_phys_base, PhysBytes(0x200000));
-        assert_eq!(info.kern_size, 0x100_000);
-        assert_eq!(info.memmap.len(), 1);
-        assert_eq!(info.boot_modules.len(), 1);
-        assert_eq!(info.boot_modules[0].name, "vm");
-        assert!(info.platform_sources.is_empty());
+        assert_eq!(report.kern_virt_base, VirBytes(0xFFFFFFFF80000000));
+        assert_eq!(report.kern_phys_base, PhysBytes(0x200000));
+        assert_eq!(report.kern_size, 0x100_000);
+        assert_eq!(report.memmap.len(), 1);
+        assert_eq!(report.boot_modules.len(), 1);
+        assert_eq!(report.boot_modules[0].name, "vm");
+        assert!(report.platform_sources.is_empty());
     }
 
     /// Disjoint and exactly-abutting ranges are accepted — the predicate is

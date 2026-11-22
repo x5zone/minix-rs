@@ -33,8 +33,9 @@
 //!
 //! Inside the boot-shim, [`UbootFileLoader`] looks files up in that table.
 //! Once it has the bytes, the rest of the loading pipeline
-//! (parse ELF, copy segments, place modules, build `KernelInfo`) is the
-//! exact same code as the UEFI path — see [`crate::loader`].
+//! (parse ELF, copy segments, place modules, build the borrowed
+//! `BootReport`) is the exact same code as the UEFI path — see
+//! [`crate::loader`].
 //!
 //! ## Why not embed everything in the boot-shim?
 //!
@@ -632,23 +633,6 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn test_kernel_info(
-        report: &minix_boot::BootReport<'static>,
-        authority: minix_boot::RamAuthority,
-    ) -> minix_boot::KernelInfo {
-        minix_boot::KernelInfo {
-            memmap: report.memmap,
-            reserved_regions: report.reserved_regions,
-            source_records: report.source_records,
-            kern_virt_base: report.kern_virt_base,
-            kern_phys_base: report.kern_phys_base,
-            kern_size: report.kern_size,
-            boot_modules: report.boot_modules,
-            platform_sources: report.platform_sources,
-            param_buf: report.param_buf,
-            authority,
-        }
-    }
     use minix_boot::MemoryRegion;
     use minix_types::VirBytes;
     use alloc::vec;
@@ -778,13 +762,12 @@ mod tests {
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,
         };
-        let info = test_kernel_info(&report, minix_boot::RamAuthority::DTB);
         // Wiring assertion: the builder must publish the single authority
         // constant itself (host tests take the non-riscv branch = the 48-bit
         // value; the Sv39 value range is pinned on riscv64 targets by
         // minix_types' compile-time invariant).
-        assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
-        assert!(info.platform_sources.is_empty());
+        assert_eq!(report.kern_phys_base, PhysBytes(0x8000_0000));
+        assert!(report.platform_sources.is_empty());
     }
 
     #[test]
@@ -837,25 +820,24 @@ mod tests {
             kern_phys_base: PhysBytes(0x8000_0000),
             kern_size: 0x100_000,
         };
-        let info = test_kernel_info(&report, minix_boot::RamAuthority::DTB);
         // memmap
-        assert_eq!(info.memmap.len(), 1);
-        assert_eq!(info.memmap[0].base, PhysBytes(0x8000_0000));
-        assert_eq!(info.memmap[0].len, 0x80_0000);
+        assert_eq!(report.memmap.len(), 1);
+        assert_eq!(report.memmap[0].base, PhysBytes(0x8000_0000));
+        assert_eq!(report.memmap[0].len, 0x80_0000);
         // kern_* fields
-        assert_eq!(info.kern_virt_base, VirBytes(0xFFFF_FFFF_8000_0000));
-        assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
-        assert_eq!(info.kern_size, 0x100_000);
+        assert_eq!(report.kern_virt_base, VirBytes(0xFFFF_FFFF_8000_0000));
+        assert_eq!(report.kern_phys_base, PhysBytes(0x8000_0000));
+        assert_eq!(report.kern_size, 0x100_000);
         // Derived fields (v10 / D-062): `kern_stack_top` is an accessor,
         // `user_sp` is the compile-time constant, and the syscall entry comes
         // from `syscall_entry_va()` — none of them is carried on the wire.
         assert_eq!(
-            info.kern_stack_top(),
-            VirBytes(0xFFFF_FFFF_8000_0000u64 + 0x100_000)
+            report.kern_virt_base.0 + report.kern_size,
+            0xFFFF_FFFF_8000_0000u64 + 0x100_000
         );
         // module + platform_sources
-        assert_eq!(info.boot_modules.len(), 0);
-        assert!(info.platform_sources.is_empty());
+        assert_eq!(report.boot_modules.len(), 0);
+        assert!(report.platform_sources.is_empty());
     }
 
     // The bootstrap over-reclaim regression (D01-F03): C's

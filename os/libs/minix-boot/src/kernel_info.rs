@@ -149,10 +149,10 @@ pub struct KernelInfo {
     pub authority: RamAuthority,
 }
 
-/// Validation strictness for [`KernelInfo::validate_impl_inner`].
+/// Validation strictness for the shared `validate_view` body.
 ///
-    /// Replaces the two-`bool` encoding that allowed four combinations
-    /// but only three were semantically valid.
+/// Replaces the two-`bool` encoding that allowed four combinations
+/// but only three were semantically valid.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ValidationLevel {
     /// QEMU bootstrap test kernels: no boot modules, no source records.
@@ -258,17 +258,7 @@ impl KernelInfo {
     /// This is a fail-fast contract: boot-shim bugs that produce invalid
     /// `KernelInfo` are unrecoverable.
     pub fn validate(&self) {
-        KernelInfo::validate_view(self, self.authority, &ValidationLevel::Standard);
-    }
-
-    /// Structural gate for entries that run before the first page-table
-    /// allocation. Same invariants as [`Self::validate`] except the
-    /// `boot_modules` non-empty check: QEMU bootstrap test kernels legally
-    /// hand over an empty module list (they exercise the mapping machinery,
-    /// not the init-server image). Production still runs the full
-    /// [`Self::validate`] at `kmain`.
-    pub fn validate_before_tables(&self) {
-        KernelInfo::validate_view(self, self.authority, &ValidationLevel::BeforeTables);
+        KernelInfo::validate_view(self, None, &ValidationLevel::Standard);
     }
 
     /// Production handoff gate: exactly [`Self::validate`], plus the
@@ -276,18 +266,22 @@ impl KernelInfo {
     ///
     /// Every production leg writes one record per projected input unit, so an
     /// empty partition means a producer regression. Hand-built test kernels
-    /// (`os/qemu-tests` fixtures) use [`Self::validate_before_tables`] or call
-    /// `arch_boot_impl` directly; the strict gate is for surfaces that know
-    /// the wire contract was in force.
+    /// (`os/qemu-tests` fixtures) use `validate_before_tables` on the sender's
+    /// `BootReport` or call `arch_boot_impl` directly; the strict gate is for
+    /// surfaces that know the wire contract was in force.
     ///
     /// Strict production gate: the leg's declared RAM authority must have
     /// records, and those records must explain the projection. A missing
     /// authority is a fail-stop — never a fallback to the other input.
     pub fn validate_requiring_sources(&self) {
-        KernelInfo::validate_view(self, self.authority, &ValidationLevel::Strict);
+        KernelInfo::validate_view(self, Some(self.authority), &ValidationLevel::Strict);
     }
 
-    fn validate_view<V: KernelInfoView>(view: &V, authority: RamAuthority, level: &ValidationLevel) {
+    fn validate_view<V: KernelInfoView>(
+        view: &V,
+        authority: Option<RamAuthority>,
+        level: &ValidationLevel,
+    ) {
         // 1. Kernel size must be non-zero.
         assert!(
             view.kern_size() > 0,
@@ -482,7 +476,8 @@ impl KernelInfo {
         //    authority is a fail-stop, never a fallback to the other input.
         //    The lenient gate audits whatever records are present.
         if level.is_strict() {
-            let authority = authority;
+            let authority = authority
+                .expect("KernelInfo: strict validation requires a declared RAM authority");
             // The wire carries no derived-value equalities to check: the
             // receiver derives `user_sp`, `syscall_entry` and
             // `kern_stack_top` from `USER_STACK_TOP` / `kern_virt_base` /
@@ -617,19 +612,15 @@ fn check_boot_postconditions_view<V: KernelInfoView>(view: &V) {
 }
 
 impl BootReport<'_> {
-    /// Validate the sender's borrowed view with the same invariants as the
-    /// receiver-owned `KernelInfo`. `authority` is supplied by the leg because
-    /// the report itself carries no authority field.
-    pub fn validate(&self, authority: RamAuthority) {
-        KernelInfo::validate_view(self, authority, &ValidationLevel::Standard);
-    }
-
-    pub fn validate_before_tables(&self, authority: RamAuthority) {
-        KernelInfo::validate_view(self, authority, &ValidationLevel::BeforeTables);
+    /// Pre-table gate for the sender's borrowed view. `BeforeTables` does not
+    /// consult the RAM authority; the strict entry below takes it explicitly
+    /// because the report carries no authority field.
+    pub fn validate_before_tables(&self) {
+        KernelInfo::validate_view(self, None, &ValidationLevel::BeforeTables);
     }
 
     pub fn validate_requiring_sources(&self, authority: RamAuthority) {
-        KernelInfo::validate_view(self, authority, &ValidationLevel::Strict);
+        KernelInfo::validate_view(self, Some(authority), &ValidationLevel::Strict);
     }
 
     pub fn check_boot_postconditions(&self) {

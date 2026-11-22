@@ -504,7 +504,6 @@ where
     });
 
     // T3: DTB `/chosen/bootargs` is the direct-boot parameter source.
-    let mut param_ptr = core::ptr::null::<u8>();
     storage.fill_param(|out| {
         let input = fdt_bootargs(&fdt).unwrap_or("");
         let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, out);
@@ -525,7 +524,6 @@ where
             }
         }
         say("\n");
-        param_ptr = out.as_ptr();
         stats.bytes
     });
 
@@ -545,7 +543,7 @@ where
 
     // Publish a borrowed view of the filled storage and hand it to the
     // receiver. The receiver deep-copies every slice into its own `.bss` and
-    // only then constructs the unique `KernelInfo<'static>`.
+    // only then constructs the unique `KernelInfo`.
     let report = storage.report(
         VirBytes(params.kern_virt_base),
         PhysBytes(params.kern_phys_base),

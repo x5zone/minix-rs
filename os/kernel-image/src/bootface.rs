@@ -34,8 +34,8 @@
 //!    `user_sp` comes from the boot constants; the old bootstrap reclaim
 //!    interval was deleted with D01-F03), then call `minix_kernel::arch_boot`
 //!    — the receiver lands the report into its `.bss`, constructs the unique
-//!    `KernelInfo<'static>`, and only then runs `validate()` /
-//!    `jump_to_kmain`; that is the half none of
+//!    `KernelInfo` (its slice fields are `&'static [T]`), and only then runs
+//!    `validate()` / `jump_to_kmain`; that is the half none of
 //!    the three in-repo carriers (hello-boot / test-rt-birth etc.) ever
 //!    exercised.
 //!

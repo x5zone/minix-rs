@@ -40,7 +40,7 @@ A Rust rewrite of the Minix3 microkernel operating system.
 | `arch/` | `minix-arch` | Hardware abstraction layer: CPU ISA traits + board-level device traits |
 | `boot-shim/` | `boot-shim` | Firmware bridge: UEFI/OpenSBI → kernel handoff |
 | `libs/minix-types/` | `minix-types` | Cross-service protocol types (Endpoint, Pid, Message, errno) |
-| `libs/minix-boot/` | `minix-boot` | Boot protocol types (KernelInfo, BootShim trait) |
+| `libs/minix-boot/` | `minix-boot` | Boot protocol types (KernelInfo, BootStorage/BootReport, wire v1) |
 | `libs/minix-elf/` | `minix-elf` | Minimal ELF64 parser (zero-allocation, no_std) |
 | `libs/minix-sys/` | `minix-sys` | User-space syscall + IPC runtime — implemented (send/receive/notify, fork/exec, per-server client modules) |
 | `libs/minix-rt/` | `minix-rt` | User-space runtime — implemented (crt0, allocator + VM_BRK supplier, panic handler) |

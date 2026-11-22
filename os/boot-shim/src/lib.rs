@@ -4,7 +4,8 @@
 //! `opensbi_helpers::prepare_boot`, a plain function (one implementation,
 //! so there is no trait). The kernel does **not** go
 //! through it at all — its real entry surface is
-//! `arch_boot(&KernelInfo, root_page)` / `enter_kernel_image_v1`: only the
+//! `arch_boot(&BootReport<'_>, RamAuthority, PhysBytes)` /
+//! `enter_kernel_image_v1`: only the
 //! U-Boot leg's production path calls `prepare_boot`.
 //!
 //! Feature gates in `Cargo.toml` select which firmware helpers get compiled;
@@ -88,9 +89,11 @@ pub use minix_elf;
 // ── Shared, firmware-agnostic loading logic ──
 //
 // The kernel/module loading pipeline is identical for every firmware
-// (parse ELF → copy segments → place modules → build KernelInfo). The
-// only thing that differs is how raw file bytes are obtained, captured by// the `FileLoader` trait. Both `uefi_helpers` and `opensbi_helpers`
-// implement this trait and reuse the same shared loader functions.
+// (parse ELF → copy segments → place modules → build the borrowed
+// `BootReport`). The only thing that differs is how raw file bytes are
+// obtained, captured by the `FileLoader` trait. Both `uefi_helpers` and
+// `opensbi_helpers` implement this trait and reuse the same shared loader
+// functions.
 pub mod loader;
 
 #[cfg(test)]
