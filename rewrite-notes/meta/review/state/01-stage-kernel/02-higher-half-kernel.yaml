@@ -5,10 +5,19 @@ schema: review-units/v2
 doc: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
 stage: 01-stage-kernel
 edition: V3.11
-round: 0
-full_rounds: []
-trajectory_reviews: []
-baseline_full_survey: false
+round: 1
+full_rounds:
+- n: 1
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/metrics-full-r1.md
+  evidence_sha: b946520433a456fa14461b96dcda683f329dde2024fcc58ac851e28b823f6e95
+  commit: 6ac2da259ccabd981453fb6701eea1bb4a81ac97
+trajectory_reviews:
+- round: 1
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/trajectory-r1.md
+  evidence_sha: 4bd2d8be064dd8003c34ea1b6c9cb29a82247f8ede4390596a905970076f12d0
+  verdict: PASS
+  commit: 6ac2da259ccabd981453fb6701eea1bb4a81ac97
+baseline_full_survey: true
 confirmation:
   active: false
   completed: false
@@ -21,7 +30,7 @@ units:
   parent: null
   order: 1
   text_sha: cf21af760309f40e806b25d8da781d280a2e13abb6df2077408ca1cd5cdc4605
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -36,8 +45,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/1.md
 - id: '1.0'
   heading: 1.0 本章导读
   level: 3
@@ -46,7 +57,7 @@ units:
   text_sha: b48e3de0d5b241172e8ecbd75740e3d8c8fb6618dda208a29be3ce3785e15ac3
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -59,18 +70,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/1.0.md
 - id: '1.1'
   heading: 1.1 镜像的四个时刻
   level: 3
   parent: '1'
   order: 3
-  text_sha: 7e71fb3326a11d813352c68eee4322c8ff549f2ae034326b5db564022a2f2ea7
+  text_sha: 8f9e40c7468845ebc4c259561dd8cc119b6392e69001ad075926b20bf281f199
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -92,7 +105,7 @@ units:
   text_sha: 6bedc136370a8e06abbfe4ad78a07b5ad2b59d7861917f5a12420f368dd3b926
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -105,8 +118,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/1.2.md
 - id: '1.3'
   heading: 1.3 范围与接缝
   level: 3
@@ -115,7 +130,7 @@ units:
   text_sha: 2d79b0aa2828386f086bf7b19654a87d2906cf2dfdcebd73b1bc761e19212ebc
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -128,15 +143,17 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/1.3.md
 - id: '2'
   heading: 2. C 源码分析
   level: 2
   parent: null
   order: 6
   text_sha: 769cd5142578cc9e091af0111ecb92e2a4fa7128d43508d0436179ec2e107a73
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -151,8 +168,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/2.md
 - id: '2.0'
   heading: 2.0 本章导读
   level: 3
@@ -161,7 +180,7 @@ units:
   text_sha: 93b5f0978c3277db81d917f43c75bddfb0d8129866c2c976c5eb89a6ce3b9a2b
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -174,8 +193,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/2.0.md
 - id: '2.1'
   heading: 2.1 kernel.lds：双地址与 `AT()`
   level: 3
@@ -184,7 +205,7 @@ units:
   text_sha: 075465850294592dbefbe2ef33cf42cbad9d51b0cc03dcfd4f2fe65bb6396eea
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -197,8 +218,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/2.1.md
 - id: '2.2'
   heading: 2.2 两段式布局：unpaged 段与高半段
   level: 3
@@ -207,7 +230,7 @@ units:
   text_sha: e8c43ff17817a48764ef68a9e230fcfc54daedd1ce808a7b6a08c987ef0d9056
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -220,8 +243,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/2.2.md
 - id: '2.3'
   heading: 2.3 `head.S`：一次跳转里的两种寻址
   level: 3
@@ -230,7 +255,7 @@ units:
   text_sha: 095c3f0f1f086f2bf653b0e6250cd165d646175d944d2d7e15c2cd66e2ba9077
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -243,8 +268,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/2.3.md
 - id: '2.4'
   heading: 2.4 建表五步与位表
   level: 3
@@ -253,7 +280,7 @@ units:
   text_sha: 96b2f8cbe4118af086df48a5b963a1747d3b78a3fc5654144fd1caff39956e0d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -266,18 +293,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/2.4.md
 - id: '2.5'
   heading: 2.5 `k_initial_stktop` 落在哪一段
   level: 3
   parent: '2'
   order: 12
-  text_sha: 572da95441791d31fa7a7167ab18c757f150b6dd42b3c2128115f390bad060ee
+  text_sha: 28d1f5d3027a8f4d0062070909879f40b42990fb52e0bae889cbe737d8aa63a1
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -299,7 +328,7 @@ units:
   text_sha: 866c4f9f800fc2d63acf5e756b18cae594ab88ac3cffb5536990176122717c82
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -312,15 +341,17 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/2.6.md
 - id: '3'
   heading: 3. Rust 设计决策
   level: 2
   parent: null
   order: 14
   text_sha: 6ca324a60d7b4b7e57fbf3a1d720ab9198b15f42e15c1b24057c6d8508986929
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -335,8 +366,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.md
 - id: '3.0'
   heading: 3.0 本章导读
   level: 3
@@ -345,7 +378,7 @@ units:
   text_sha: c13082350a29776dec7044f2ae409d84b56c37a5ba7d90a9b90e4b67f745b05e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -358,18 +391,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.0.md
 - id: '3.1'
   heading: 3.1 链接脚本按“谁按装载地址摆放”分三种形态
   level: 3
   parent: '3'
   order: 16
-  text_sha: 62b601f247aa667f61bb8e37cad01a6a545f21dca3222136fd6420bbaf13d036
+  text_sha: fcd43239178b88c1cec9006ed6df0a94e80eb77c9cfa58f41b3519796847691c
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -388,11 +423,11 @@ units:
   level: 3
   parent: '3'
   order: 17
-  text_sha: 9798265b49c55378c6b3fd45cd7e321627efc0ccb62154f802caad5114ae4a78
+  text_sha: d64bcdac01324da92debcebf4f7608689a104704c633e2ee43337210ea91ff0c
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -414,7 +449,7 @@ units:
   text_sha: b48b7d4301b4f6061d711a8b699beef5fa2f7e8e58a0c2c397f337d8c5711a9f
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -427,8 +462,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.3.md
 - id: '3.4'
   heading: 3.4 `HUGE_PAGE_SIZE` 与大页能力进扩展 trait
   level: 3
@@ -437,7 +474,7 @@ units:
   text_sha: 386b94010404a6c18288b82527a1ef8459b39dba3623fb8e9bdf0c944229b69e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -450,8 +487,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.4.md
 - id: '3.5'
   heading: 3.5 镜像跨距收口：布局要满足映射粒度
   level: 3
@@ -460,7 +499,7 @@ units:
   text_sha: ea7b5855bd04f33d1e3f6c17f7e3609544d09b24b96363f9d0d753db8ea8e901
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -473,8 +512,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.5.md
 - id: '3.6'
   heading: 3.6 自举根与映射建立的设计（J3）
   level: 3
@@ -483,7 +524,7 @@ units:
   text_sha: 3ee84a3452a9ba6d172c3173692c69e0bef7843308771d5e30f7ae74212990a6
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -496,8 +537,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.6.md
 - id: '3.7'
   heading: 3.7 成对的换栈与跳转收进一个 trait 契约
   level: 3
@@ -506,7 +549,7 @@ units:
   text_sha: 4a3a70b38ab06dc2bdb53a4497a54bf0482e22331478aa6cad6fd60f85433392
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -519,8 +562,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.7.md
 - id: '3.8'
   heading: 3.8 接收侧两条路径（J4）
   level: 3
@@ -529,7 +574,7 @@ units:
   text_sha: 9ac8c032ef80242e98bc15f987fcaa35b3519d31f1dfc6c5c058fc56c0da9d7d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -542,15 +587,17 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/3.8.md
 - id: '4'
   heading: 4. 实现详解
   level: 2
   parent: null
   order: 24
   text_sha: 3ccf2761363ca40d8b20e4de88dd161936478019365f08c7bdafd4ce92336d66
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -565,18 +612,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/4.md
 - id: '4.0'
   heading: 4.0 本章导读
   level: 3
   parent: '4'
   order: 25
-  text_sha: ab521748a20adfa0f7ea995cf09e3b2446a9ccf4a6fdb3f564e2d36cb28decaf
+  text_sha: 8e60ffa7905ea3b55eb3d5cd1ec610287e57f98150c9a8f4ddb77a93f9029ac7
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -598,7 +647,7 @@ units:
   text_sha: 4947b19cc4691c4ab8500c530d18833d1d2ad5d92bec713a1adcd2fd34c21b0d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -611,8 +660,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/4.1.md
 - id: '4.2'
   heading: 4.2 ELF 解析与按装载地址摆放
   level: 3
@@ -621,7 +672,7 @@ units:
   text_sha: 4232761b6f76a0605402a4281e418205de90227bc79408f5a664613be26a19d2
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -634,8 +685,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/4.2.md
 - id: '4.3'
   heading: 4.3 自举根的建立与开启
   level: 3
@@ -645,7 +698,7 @@ units:
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -667,7 +720,7 @@ units:
   text_sha: 832011f1166d7843d471bafd20d25769a3a2cb278339e20d28d5c7ef5f756f2c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -680,8 +733,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/4.4.md
 - id: '4.5'
   heading: 4.5 从装载到 `kmain` 的完整路径
   level: 3
@@ -690,7 +745,7 @@ units:
   text_sha: e727d07132e16c835994aa710c2dce70fe95dc4f2c9dce2f13ca72b5b841f0df
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -703,8 +758,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/4.5.md
 - id: '4.6'
   heading: 4.6 与 Minix3 C 的对照
   level: 3
@@ -713,7 +770,7 @@ units:
   text_sha: 9ddab060e1da8991747657eb05e05b51a00c7f6c5de663cb0602c09d1f11349c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -726,15 +783,17 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/4.6.md
 - id: '5'
   heading: 5. 测试
   level: 2
   parent: null
   order: 32
   text_sha: 01c9110d24c82c46760499e9208910cd65546f2b0b4b051448ccfa7646609a12
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -749,8 +808,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/5.md
 - id: '5.0'
   heading: 5.0 本章导读
   level: 3
@@ -759,7 +820,7 @@ units:
   text_sha: 5d40dc0f5abde24c935cd502206a28b207bdf7aac3286ce1a3c9e5fb9a0ef907
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -772,8 +833,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/5.0.md
 - id: '5.1'
   heading: 5.1 宿主：解析器、装载器与建表
   level: 3
@@ -782,7 +845,7 @@ units:
   text_sha: 6da1b6dcc837fc0d52dc660e6cb89d0ee8397ba159e55ceeeae320684c8259d2
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -795,18 +858,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/5.1.md
 - id: '5.2'
   heading: 5.2 布局契约 L0–L10（唯一权威清单；L10 仅 x86_64/all 输出）
   level: 3
   parent: '5'
   order: 35
-  text_sha: 7659e5cd42ba389a1d3db532378019bc871a4ff455b73f620ed11cc18f738753
+  text_sha: 0abbc2c7e53862dc3781f0ef2e6f948561c0b13e2d97062c822eba17cca5b225
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -828,7 +893,7 @@ units:
   text_sha: 8b4f78802d6cdcd0086493d7e385f8ec6119156e55c714a76a73e71b3c89295d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -841,18 +906,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/5.3.md
 - id: '5.4'
   heading: 5.4 机制 → 需要证明什么（反转核对表）
   level: 3
   parent: '5'
   order: 37
-  text_sha: 15557a3ff91abf8de1c3458b76e1f05780b7fba513d8047d56f1e9553d1de3c4
+  text_sha: 38a321b65e826d149ad8849c7e8151970edc6018bd922a1ecc5cd4dc7da50191
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -872,7 +939,7 @@ units:
   parent: null
   order: 38
   text_sha: 5ba3db60a94c99bbc1cf0c1c157fff87249ad8b2f1a9a1238a1e02ed0df10a36
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -887,8 +954,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/6.md
 - id: '6.0'
   heading: 6.0 本章导读
   level: 3
@@ -897,7 +966,7 @@ units:
   text_sha: ffdf29cdbd94bcd0a403fb18c3da20df1ac6754bfdcd06627051df7e84bddbc5
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -910,18 +979,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/6.0.md
 - id: '6.1'
   heading: 6.1 症状 → 怀疑对象 → 确认命令
   level: 3
   parent: '6'
   order: 40
-  text_sha: 95ee646d176970ac4e93057962f817f1cf1a8fed06c5ac1fb4d41ac22cc5d8ff
+  text_sha: 706d10221cd1200f097555670844785251d98c6c5c5a631c4dc998ea5a0c2a2f
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -943,7 +1014,7 @@ units:
   text_sha: 704b2b72b88ac065e2d5a9efdde526023eb3a8a1633ea205ca349f9af9587600
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -956,9 +1027,14 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r1/6.2.md
 t3:
   passed: false
   evidence: ''
   at_commit: ''
+structure_sha: c907171fbbb8dd3a4bfb7294bf7b140fba9c936617812fcc17d5913c6fd3fe42
+code_sha: 780ecd8c3e9a3d44781e050c2ae6dcac05596d1ff45b9b2898a13a0daf169853
+baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/metrics-full-r1.md
