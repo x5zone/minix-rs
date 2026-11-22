@@ -2,7 +2,7 @@
 
 - 文档：`rewrite-notes/03-stage-rs/01-rs-boot-init.md`
 - 行数：1116
-- sha256：`4b4a8bcae96e394671b74cc7057376f09a3bdeec35dbc3fae5c126236424da3b`
+- sha256：`cab3ec73b92085634ce4d3f2c2e56da86fa423ad44fbf9a4cd9e45d9ba12c593`
 - edition：V3.12；round 0 → 1
 - 轮型：full（整篇 survey）
 - 单元：39（6 章 + 33 节），全部未冻结
