@@ -52,6 +52,13 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 `tmp/review-loop/01-stage/evidence/y01-event-map-role.csv`）；面板报告完成后逐个
 `event complete`。逐单元最终事件在修复/回读后另立，不复用面板 review_id。
 
+- 事件 ID（2026-11-23）：P-FACT `REV-20261123-584030D8`；READER-A `REV-20261123-EAA8B5CB`；
+  READER-B `REV-20261123-0D275715`；READER-C `REV-20261123-69AA1B93`；
+  DESIGN-D2 `REV-20261123-19A348EB`；P-REFUTE `REV-20261123-8027B6CB`。
+- 面板派发前 `git status --porcelain`：仅 `events.csv` 由本步骤 `event plan` 修改；
+  两个未跟踪文件保持不变。面板子 agent 只写 `tmp/.../panel/v312-r1/`。
+- 面板提示词：`tmp/review-loop/01-stage/panel-prompts/{fact,reader-a,reader-b,reader-c,design-d2,refute}.md`。
+
 ### §2 发现
 
 待本轮填写。
