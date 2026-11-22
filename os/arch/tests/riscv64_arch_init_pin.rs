@@ -18,7 +18,7 @@
 //!      first timer-interrupt carrier: scause=2, stval=`csrw pmpaddr0`); that
 //!      allow-all intent is satisfied by the OpenSBI firmware Domain0
 //!      delegating S/U;
-//!    - `sie = STIE | SSIE` (0x22) was removed — opening the S-mode timer gate
+//!    - `sie = STIE | SSIE` (0x22) is absent — opening the S-mode timer gate
 //!      early arms interrupt sources that have no handler yet; STIE is now
 //!      claimed by `TimerIrqGate::enable_timer_irq`, and SSIE belongs to the SMP
 //!      IPI bring-up.

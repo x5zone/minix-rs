@@ -232,7 +232,7 @@ fn main() -> Status {
             start: PhysBytes(core::ptr::addr_of!(VM_ELF_STUB) as usize as u64),
             len: 64,
         };
-        // Publish the whole 12-slot array (D-081-A): the name-only slots carry
+        // Publish the whole 12-slot array: the name-only slots carry
         // `PLACEHOLDER_SPAN` (real RAM, never `[0x0,0x0)`), and
         // `init_proc_and_boot` asserts the production `NR_BOOT_MODULES == 12`
         // contract (main.c:160-162) — a `[8..9]` prefix cannot ever satisfy it.

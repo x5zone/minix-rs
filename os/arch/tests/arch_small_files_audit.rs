@@ -36,9 +36,9 @@ fn arm64_fpu_state_geometry_is_frozen() {
 fn protection_privilege_mapping_stays_deleted() {
     let a64 = include_str!("../src/arm64/protection.rs");
     let rv = include_str!("../src/riscv64/protection.rs");
-    // The Privilege/PrivilegeLevel family had no production consumer and was
-    // deleted (D-103 P2-1). Keep it deleted: a future consumer must design a
-    // real mapping from its own差异 rather than reviving this placeholder.
+    // The Privilege/PrivilegeLevel family has no production consumer and is
+    // absent. A future consumer must design a real mapping from its own
+    // differences rather than reviving this placeholder.
     for src in [a64, rv] {
         assert!(!src.contains("to_privilege"), "Privilege mapping revived");
         assert!(!src.contains("PrivilegeLevel"), "PrivilegeLevel associated type revived");

@@ -172,3 +172,12 @@
 | RD-R2-26 | RD05R2-RC-S13、RD05R2-RC-S14 | R2 | reader-c | P3 | suggestion | SUGG | 读者/设计 P3（§4.0c 门槛，不阻断）：RD05R2-RC-S13 | panel/round2/ 的 suggestion | RD05R2-RC-S13 等 2 条已登记 suggestions.md 的 R2 段 |
 | RD-R2-27 | CLAIM-21、CLAIM-22、CLAIM-26 | R2 | refute | P2 | claim | ① | 已修：非阻断（C main.c USE_APIC 块的 no_apic 缺省=config_no_apic=1（形态条件已写入 §1.4）；污染清单的落地链已补 cpu_freq 间接项） | 已修：§1.4 已写形态条件与 cpu_freq 间接落地链 | CLAIM-21 等 3 条的改动由 certify/round2-certify.md 对应条目回读确认 |
 | RD-R2-28 | CLAIM-23、CLAIM-24、CLAIM-25 | R2 | refute | P3 | claim | FP | 反证失败（主张成立） | 源码原文核对：intr_init 十次写与全屏蔽 | CLAIM-23 反证失败即主张成立 |
+
+## R39 确认轮（2026-11-22）
+
+| ID | 来源 | 节 | 轮 | 角色 | 严重度 | 类别 | 处置 | 修复 | 证据 | 状态 | — | — | — | — |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| RD-R39-001 | CONFIRM-D1 | 3.0/3.7/4.7 | R39 | cold-confirm | P1 | 文档/事实 | ① | `TimerIrqGate` 统一为单方法 `enable_timer_irq`；关闭不存在、注册不在 trait | timer_irq_gate.rs 单方法 | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-002 | CONFIRM-D2 | 4.7 | R39 | cold-confirm | P2 | 文档/措辞 | ① | “全篇唯一硬件函数”改“boot 路径唯一编排点”；MMIO 在 init_timer/EOI | x86_64/clock.rs init_timer；local_tick EOI | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-003 | CONFIRM-D3 | 6.0 | R39 | cold-confirm | P3 | 文档/教学 | ① | 学习目标/前置概念去 GDB，改 grep/源码/QEMU 日志 | §6.2 命令集无 GDB | CLOSED；`certify/round39-confirmation.md` | — | — | — | — |
+| RD-R39-004 | GATE-D05 | 5.2 | R39 | cold-confirm | P1 | 测试/载体 | ① | timer-irq-riscv64 改高半基址、跳过 VM ELF；UART selftest 等 LSR.DR 再清 LOOP | riscv 连跑 4 次 PASS | CLOSED；`certify/round39-gates.md` | — | — | — | — |

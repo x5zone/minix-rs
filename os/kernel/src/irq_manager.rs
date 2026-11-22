@@ -1065,11 +1065,11 @@ fn generic_notify_handler(ctx: &mut IrqHookContext) -> IrqAction {
 
 // Note: Exception dispatch (exception_handler / pagefault / ex_data[]) lives
 // in `arch::ExceptionDispatcher` — see `os/arch/src/arch/exception_dispatcher.rs`
-// and `os/arch/src/arch/exception.rs`. The earlier in-tree duplicate
+// and `os/arch/src/arch/exception.rs`. The in-tree duplicate
 // (EXCEPTION_TABLE / PageFaultInfo / handle_exception / ExceptionAction /
-// TimerAction) was removed during the 14-exception-interrupt rewrite — it
-// duplicated the arch path with weaker typing (raw `u32` signal numbers
-// instead of `ExceptionSignal` enum) and described non-existent traits.
+// TimerAction) is absent: it duplicated the arch path with weaker typing
+// (raw `u32` signal numbers instead of `ExceptionSignal` enum) and described
+// non-existent traits.
 
 #[cfg(test)]
 mod tests {

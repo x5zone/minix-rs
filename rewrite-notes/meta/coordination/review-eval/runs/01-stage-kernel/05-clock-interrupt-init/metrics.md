@@ -70,3 +70,20 @@
 - 重构: 提出 0 / 接受 0 / 实施 0 / 登记 0
 - 成本: agent 9（六角色 + certify）/ token 未采集 / 耗时 约 3 小时
 - 回读与回归: 文档六门绿（anchor 105/105、citation checked=43 failed=0、structure/ref/style error=0/density 通过、doc-code-map 33/33）；`cargo check -p minix-arch` 绿；独立回执 certify/round2-certify.md（8/8 CLOSED 首轮即 PASS）
+
+## R39 确认轮（V3.10）
+
+- 发现总数: 4（3 面板 + 1 测试载体）
+- 唯一根因数: 4
+- 本轮新准入: 4
+- certify 新准入: 0
+- 重复合并: 0
+- 自引入: 1（D1 的第四处残留，P1，已修）
+- 处置: ① 4 / ② 0 / ④ 0 / ⑤ 0 / ⑥ 0 / FP 0 / SUGG 0
+- 未闭环: 0
+- 轮型: confirmation
+- 轮结果: CONVERGED
+- 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0
+- 确认轮修复: 2/2 批次（第一批 3.0、第二批同缺陷补修）
+- 抽样: 10/47 冻结单元（21%）
+- 回读与回归: 文档七门绿（anchor 100/100、citation 43 checked/0 failed、structure/ref/style error=0/density、publication/tutorial 0 新增）；code-publication 33 文件 0 命中；cargo：minix-arch 266/0、minix-kernel mock 866/0/8；QEMU：test-timer-irq 三架构 PASS，riscv64 连跑 4 次 PASS

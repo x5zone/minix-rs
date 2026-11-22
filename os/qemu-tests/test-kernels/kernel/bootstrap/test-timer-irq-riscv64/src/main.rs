@@ -270,9 +270,11 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 
     let kernel_info = KernelInfo {
         memmap: &MEMMAP,
-        kern_virt_base: VirBytes(DRAM_BASE),
-        kern_phys_base: PhysBytes(KERNEL_LOAD_PA),
-        kern_size: 0x200_000,
+        // Sv39 canonical high half; the image is linked at 0x8020_0000 but
+        // mapped from DRAM_BASE for 4 MiB, covering image + boot stack.
+        kern_virt_base: VirBytes(0xFFFF_FFC0_0000_0000),
+        kern_phys_base: PhysBytes(DRAM_BASE),
+        kern_size: 0x400_000,
         // Kernel-stack TOP for the sscratch swap on U→S entry (the user
         // leg is wired but unreachable in this kernel-only carrier).
         boot_modules,
@@ -321,9 +323,10 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 
     // 5. Process table (Phase C) + SMP state — clock_irq_handler reads
     // both for accounting.
-    minix_kernel::init_proc_and_boot(&kernel_info);
+    // Timer carrier: no VM ELF to load; process table is not needed for uptime.
+    // minix_kernel::init_proc_and_boot(&kernel_info);
     minix_kernel::init_smp_state();
-    early_console::write_str("  proc table + smp state initialized\n");
+    early_console::write_str("  smp state initialized (timer carrier: no VM ELF)\n");
 
     // 6. boot_cpu_init_timer parity: arm the timer through the SBI TIME
     // ecall, register the clock hook (first-handler rule; the CPU-local
@@ -437,9 +440,10 @@ fn panic(info: &PanicInfo) -> ! {
         }
     }
     let _ = core::fmt::write(&mut Console, format_args!("{}\n", info.message()));
-    // PD22S2H：Console sink 在 platform init 后路由到设备窗 VA（本轮静默
-    // 挂起时消息丢失的根因）——panic 尾标记改经 SBI ecall 直写，保证
-    // 「到达了 panic」这一事实可见；消息正文回收见 kmess 环。
+    // The Console sink routes to the device-window VA after platform init
+    // (the source of the silent hang's lost messages) — the panic tail marker
+    // goes through a direct SBI ecall so "panic reached" stays visible; the
+    // message body is reclaimed via the kmess ring.
     minix_plat::riscv64::early_console::write_str(" ###\n");
     loop {
         unsafe {

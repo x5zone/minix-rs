@@ -262,3 +262,12 @@
 
 - 三问：① 不变量是「确认轮在最终工作树上 certify 新准入 = 0」；② 前提是 R1 ROUND-CLOSED；③ 证据是 certify 回执 8/0 与六门读数。
 - 资源重读：查 `fresh-eyes-review`；无新检测模式，并入既有候选。
+
+### R39 确认轮（V3.10，2026-11-22）
+
+- L0.9：tutorial 6/6；doc-publication 57 处归零；33 个 related-code CP 注释清零、CJK 0；TODO 账本无 D05 行。
+- 单元账本：47/47 冻结、T3 PASS；10 个冻结单元抽样。
+- 确认轮发现 4 条（3 面板 + 1 测试载体）：`TimerIrqGate` 单方法残留、4.7“唯一硬件函数”过强、6.0 GDB 教学承诺、timer-irq-riscv64 基址/UART 竞态。修复后 `DELTA: PASS`。
+- 确认轮修复 2/2 批次，未开新修改轮；`defect-ledger.md` 新增 `RD-R39-001..004` 全部 CLOSED。
+- 机械门：文档七门绿、anchor 100/100、code-publication 33/33=0；QEMU test-timer-irq 三腿 PASS（riscv 连跑 4 次）。
+- 轮结果：`CONVERGED`。文档 sha256 `d9c34bf0…`，2456 行。

@@ -706,8 +706,8 @@ pub(crate) fn decrement_quantum_in_with_delta(
 
 /// Default clock tick frequency in Hz — re-exported from the arch crate
 /// (`minix_arch::arch::clock::DEFAULT_HZ`) so the value has a single
-/// authoritative definition; the former independent copy here carried a
-/// "avoid a cross-crate dependency" rationale that no longer holds (the
+/// authoritative definition; an independent copy here would carry an
+/// "avoid a cross-crate dependency" rationale that does not hold (the
 /// kernel unconditionally depends on minix-arch). C:
 /// `DEFAULT_HZ` — include/arch/i386/include/archconst.h:4 (60) / earm (1000);
 /// Architecture-evolution annotation: [ARCH: K-3] (doc
@@ -1297,8 +1297,8 @@ impl ClockState {
     ///
     /// This is the sole tick path: expired alarm timers are dispatched
     /// inline via `on_expired` (BSP only), so no intermediate collection
-    /// is allocated. The old `tick()`/`TimerTickResult` Vec-returning API
-    /// was removed for the kernel zero-heap discipline (2026-08-31):
+    /// is allocated. The `tick()`/`TimerTickResult` Vec-returning API is
+    /// absent by the kernel zero-heap discipline:
     /// a `Vec<TimerAction>` return would make the production interrupt
     /// path allocate. Tests collect callbacks into local `Vec`s instead
     /// (test builds may allocate).
@@ -1477,9 +1477,8 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
     // (irq_manager.rs) witnesses from. The `IrqHandler` fn-pointer
     // signature cannot carry a witness parameter (same constraint as
     // `KernelNotifier::notify_hardware`), so the root re-takes it here;
-    // debug builds assert the lock. This is NOT a boot path: previously
-    // these accesses went through `*_boot_unchecked` accessors
-    // whose contract is "single-threaded init before BKL exists", which a
+    // debug builds assert the lock. This is NOT a boot path: `*_boot_unchecked`
+    // accessors assume "single-threaded init before BKL exists", which a
     // runtime timer IRQ violates.
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let table = crate::proc_table_with(&section);
@@ -1555,7 +1554,7 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
     });
 
     // Deliver alarm notifications from the CLOCK source (post-tick — the
-    // notify needs the process slice, which the tick no longer borrows).
+    // notify needs the process slice, which the tick does not borrow).
     // C: an expired alarm wakes the owner through `notify()`, whose
     // `RTS_UNSET(..., RTS_RECEIVING)` carries the enqueue half (proc.h).
     // `mini_notify_core` here is the primitive slice clear with no

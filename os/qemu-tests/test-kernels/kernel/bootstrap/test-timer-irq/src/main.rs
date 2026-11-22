@@ -179,8 +179,9 @@ const PASS_TICKS: u64 = 5;
 
 #[entry]
 fn main() -> Status {
-    // I-43 二层修复：UEFI 固件把 PE 加载到运行期地址——内核的恒等窗口
-    // 必须覆盖真实镜像而非硬编码基址（BOOT-SCOPE 2a 之后窗口是最小的）。
+    // UEFI firmware loads the PE at its runtime address: the kernel's
+    // identity window must cover the real image, not a hard-coded base
+    // (after BOOT-SCOPE 2a the window is minimal).
     let (image_lo, image_hi) = uefi_helpers::shim_image_window();
     let image_base = image_lo & !0x001F_FFFF;
     let image_end = (image_hi + 0x001F_FFFF) & !0x001F_FFFF;

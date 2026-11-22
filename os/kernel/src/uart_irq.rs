@@ -144,6 +144,14 @@ pub fn enable_uart_rx_selftest(expected: u8) {
     // spurious RX sources for the hook (third-layer lesson from the first
     // bring-up).
     uart_write(0, expected);
+    // Wait for the looped-back byte to reach RDR (LSR.DR) before clearing
+    // LOOP; clearing too early can drop the RX edge before the PLIC samples
+    // it, which made the riscv64 first-source carrier flaky.
+    for _ in 0..10_000 {
+        if uart_read(5) & 0x01 != 0 {
+            break;
+        }
+    }
     uart_write(4, mcr & !0x10);
     uart_write(0, expected);
 }

@@ -27,3 +27,14 @@
 - `--round R1` 与 `--round R2` 均 PASS；anchor 105/105；citation `checked=43 failed=0`；structure/ref/style(error=0)/density 通过；doc-code-map 33/33；`panel-index --check` 两个 round 目录哈希一致。
 - 限制：`CONVERGED` = 确认轮口径下无 open 项 + 无未销账债务，不是零未知缺陷保证。
 - 重开条件：新 P0/P1 证据；design batch 实施改变基线；用户明确要求。
+
+## R39 确认轮（V3.10，append-only；2026-11-22）
+
+- 轮结果：`CONVERGED`。
+- 文档：`rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md`，sha256 `d9c34bf07f0ada5c3d4bd067c7ffbc1ea0bb293568a479943ca42db1adc3a194`，2456 行。
+- 单元账本：47/47 frozen、reopened=0、stale=0、T3 PASS；`audit` 全部单元 open=0。
+- 确认轮：10 个冻结单元抽样；3 条面板发现（1 P1 + 1 P2 + 1 P3）全部修复，`DELTA: PASS`；确认轮修复 2/2 批次。
+- 文档七门：publication/tutorial 0 新增；structure/ref/style/density 通过；citation `43 checked/0 failed`；anchor 100/100；doc-code-map 33/33。
+- 代码门：33 个 related-code code-publication 0 命中、CJK 0；minix-arch 266/0、minix-kernel mock 866/0/8。
+- 真机：test-timer-irq x86_64/aarch64 PASS；riscv64 连续 4 次 PASS（UART loopback 采样竞态已修）。
+- 账本：D05 TODO 匹配 0 行，无未闭环项。

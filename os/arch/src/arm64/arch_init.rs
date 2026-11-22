@@ -1,8 +1,8 @@
 //! ARM64 (aarch64) architecture-specific initialization
 //!
 //! Implements `ArchInit` for ARM64: CPACR_EL1.FPEN and the GIC
-//! distributor seed. The PMU-enable branch was removed with
-//! `ArchMiscDesc.pmu_cycle_counter`: no producer ever set it true.
+//! distributor seed. There is no PMU-enable branch: every producer leaves
+//! `ArchMiscDesc.pmu_cycle_counter` false.
 //!
 //! C: arch_init() — earm/arch_system.c:101-132
 
