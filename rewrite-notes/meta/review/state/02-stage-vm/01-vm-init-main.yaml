@@ -35,7 +35,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -48,7 +48,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/1.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.md
 - id: '1.0'
   heading: 1.0 本章要解决的问题
   level: 3
@@ -60,7 +60,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -73,7 +73,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/1.0.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.0.md
 - id: '1.1'
   heading: 1.1 启动链的核心问题：VM 的"鸡生蛋"
   level: 3
@@ -85,7 +85,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -98,7 +98,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/1.1.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.1.md
 - id: '1.2'
   heading: 1.2 初始化依赖链图
   level: 3
@@ -110,7 +110,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -123,7 +123,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/1.2.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.2.md
 - id: '1.3'
   heading: 1.3 SEF 生命周期是什么
   level: 3
@@ -135,7 +135,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -148,7 +148,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/1.3.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.3.md
 - id: '1.4'
   heading: 1.4 执行模型四条前提
   level: 3
@@ -160,7 +160,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -173,7 +173,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/1.4.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.4.md
 - id: '1.5'
   heading: 1.5 本章回顾
   level: 3
@@ -185,7 +185,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -198,7 +198,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/1.5.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.5.md
 - id: '2'
   heading: 2. C 源码分析
   level: 2
@@ -210,7 +210,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -223,7 +223,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.md
 - id: '2.0'
   heading: 2.0 本章要回答的问题
   level: 3
@@ -235,7 +235,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -248,7 +248,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.0.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.0.md
 - id: '2.1'
   heading: 2.1 main()：入口、is_first_time 门控、主循环（main.c:93-194）
   level: 3
@@ -260,7 +260,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -273,7 +273,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.1.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.1.md
 - id: '2.2'
   heading: 2.2 init_vm()：完整初始化链（main.c:428-587）
   level: 3
@@ -285,7 +285,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -298,7 +298,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.2.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.2.md
 - id: '2.3'
   heading: 2.3 init_proc() 与 exec_bootproc()（main.c:262-291、331-417）
   level: 3
@@ -310,7 +310,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -323,7 +323,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.3.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.3.md
 - id: '2.4'
   heading: 2.4 SEF 生命周期（main.c:219-260、592-754；sef_init.c）
   level: 3
@@ -335,7 +335,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -352,7 +352,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.4.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.4.md
 - id: '2.5'
   heading: 2.5 map_service()（main.c:755-768）
   level: 3
@@ -364,7 +364,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -377,7 +377,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.5.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.5.md
 - id: '2.6'
   heading: 2.6 VM 自身 libc 接口边界（utility.c:361-420）
   level: 3
@@ -389,7 +389,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -402,7 +402,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.6.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.6.md
 - id: '2.7'
   heading: 2.7 本章回顾
   level: 3
@@ -414,7 +414,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -427,7 +427,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/2.7.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.7.md
 - id: '3'
   heading: 3. Rust 设计决策
   level: 2
@@ -439,7 +439,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -452,7 +452,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.md
 - id: '3.0'
   heading: 3.0 本章要回答的问题
   level: 3
@@ -464,7 +464,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -477,7 +477,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.0.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.0.md
 - id: '3.1'
   heading: 3.1 启动契约显式化：BootParams（对应 §2.2.1）
   level: 3
@@ -489,7 +489,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -502,7 +502,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.1.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.1.md
 - id: '3.2'
   heading: 3.2 is_first_time 的表达与 init 门控（对应 §2.1）
   level: 3
@@ -514,7 +514,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -527,7 +527,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.2.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.2.md
 - id: '3.3'
   heading: 3.3 init() 分阶段与 C 的逐行对应（对应 §2.2）
   level: 3
@@ -539,7 +539,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -552,7 +552,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.3.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.3.md
 - id: '3.4'
   heading: 3.4 SEF 简化：rs_handshake + do_sef_init_request（对应 §2.4）
   level: 3
@@ -564,7 +564,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -581,7 +581,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.4.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.4.md
 - id: '3.5'
   heading: 3.5 exec_bootproc 的 Rust 策略（对应 §2.3.2）
   level: 3
@@ -593,7 +593,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -606,7 +606,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.5.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.5.md
 - id: '3.6'
   heading: 3.6 mem_add_total_pages → global::add_total_pages（对应 §2.2.5）
   level: 3
@@ -618,7 +618,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -631,7 +631,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.6.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.6.md
 - id: '3.7'
   heading: 3.7 VM 自身内存：无 libc mmap（对应 §2.6，ARCH 注记）
   level: 3
@@ -643,7 +643,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -656,7 +656,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.7.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.7.md
 - id: '3.8'
   heading: 3.8 CALLMAP → 编译时 match（对应 §2.2.7）
   level: 3
@@ -668,7 +668,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -681,7 +681,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.8.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.8.md
 - id: '3.9'
   heading: 3.9 本阶段 ARCH 决定
   level: 3
@@ -693,7 +693,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -706,7 +706,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.9.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.9.md
 - id: '3.10'
   heading: 3.10 本章回顾
   level: 3
@@ -718,7 +718,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -731,7 +731,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/3.10.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.10.md
 - id: '4'
   heading: 4. 实现详解
   level: 2
@@ -743,7 +743,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -756,7 +756,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/4.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.md
 - id: '4.0'
   heading: 4.0 本章要回答的问题
   level: 3
@@ -768,7 +768,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -781,7 +781,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/4.0.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.0.md
 - id: '4.1'
   heading: 4.1 `os/servers/vm/src/boot.rs`（对应 §3.1、§3.6）
   level: 3
@@ -793,7 +793,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -806,7 +806,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/4.1.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.1.md
 - id: '4.2'
   heading: 4.2 `os/servers/vm/src/main.rs`（对应 §3.2）
   level: 3
@@ -818,7 +818,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -831,7 +831,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/4.2.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.2.md
 - id: '4.3'
   heading: 4.3 `os/servers/vm/src/global.rs`（对应 §3.6）
   level: 3
@@ -843,7 +843,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -856,7 +856,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/4.3.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.3.md
 - id: '4.4'
   heading: 4.4 `os/servers/vm/src/vm_server.rs`（对应 §3.3-§3.5）
   level: 3
@@ -868,7 +868,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -881,7 +881,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/4.4.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.4.md
 - id: '4.5'
   heading: 4.5 本章回顾
   level: 3
@@ -893,7 +893,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -906,7 +906,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/4.5.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.5.md
 - id: '5'
   heading: 5. 测试要点
   level: 2
@@ -918,7 +918,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -931,7 +931,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/5.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.md
 - id: '5.0'
   heading: 5.0 本章要回答的问题
   level: 3
@@ -943,7 +943,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -956,7 +956,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/5.0.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.0.md
 - id: '5.1'
   heading: 5.1 boot.rs 测试（§3.1、§3.6）
   level: 3
@@ -968,7 +968,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -981,7 +981,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/5.1.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.1.md
 - id: '5.2'
   heading: 5.2 vm_server.rs 测试（§3.2-§3.5）
   level: 3
@@ -993,7 +993,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -1006,7 +1006,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/5.2.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.2.md
 - id: '5.3'
   heading: 5.3 当前基线没有失败项
   level: 3
@@ -1018,7 +1018,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -1031,7 +1031,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/5.3.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.3.md
 - id: '5.4'
   heading: 5.4 真机门清单
   level: 3
@@ -1043,7 +1043,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -1056,7 +1056,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/5.4.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.4.md
 - id: '5.5'
   heading: 5.5 本章回顾
   level: 3
@@ -1068,7 +1068,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -1081,7 +1081,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/5.5.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.5.md
 - id: '6'
   heading: 6. 过渡
   level: 2
@@ -1093,7 +1093,7 @@ units:
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: bf36be0f33fffe76dea2fcc8423f24b872b47671
+  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
   rewritten: false
   user_approved: false
   deps: []
@@ -1106,7 +1106,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1/6.md
+  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/6.md
 t3:
   passed: false
   evidence: ''

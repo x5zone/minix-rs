@@ -21,6 +21,7 @@
 - full 轮: 1（R1）
 - 单元: 43/43 frozen；每单元独立 UNIT 证据
 - trajectory: R1 PASS
+- 事件: `event verify --fresh` events=43 completed=43 fresh_only=1 → OK
 - 代码: `cargo test -p minix-vm --lib` 549 passed / 0 failed
 - 文档门: publication 0、rubric 0、style 0、ref 通过、density 通过
 - 代裁决: 0 / ARCH 提案: 0 / 用户否决: 0

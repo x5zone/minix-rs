@@ -48,7 +48,7 @@ review-units audit: 全部单元 open=0
 
 ### §5 轨迹
 
-`trajectory-r1.md`：R1 PASS。面板覆盖、归因、修复复验、单元账均自洽。
+`trajectory-r1.md`：R1 PASS。面板覆盖、归因、修复复验、单元账均自洽；`event verify --fresh` 43/43 OK。
 
 ### §6 指标
 
