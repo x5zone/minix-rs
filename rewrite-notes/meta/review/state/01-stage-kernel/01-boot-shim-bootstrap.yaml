@@ -8,9 +8,9 @@ edition: V3.12
 round: 1
 full_rounds:
 - n: 1
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-v312/full-r1.md
-  evidence_sha: fd8c3ab21a1751abf3791248613c445e82cec37390501d3fe68d60997f13e3d9
-  commit: 64f76309fe3393f9884f797335e582412f18480f
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/r1-v312/full-r1.md
+  evidence_sha: 3afe979231f000a01fc4d28970f80692f3cf8a1612ecc97059da158239ee33e5
+  commit: cdd0d1c777042b048bd9fdfac3e5102b95dac869
 trajectory_reviews: []
 baseline_full_survey: true
 confirmation:
@@ -1127,4 +1127,4 @@ t3:
   passed: false
   evidence: ''
   at_commit: ''
-baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-v312/full-r1.md
+baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/r1-v312/full-r1.md

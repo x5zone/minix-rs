@@ -93,10 +93,9 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 
 ### §7 状态
 
-- `BLOCKED`：唯一 open 根因 `R1-24`（DESIGN-02），按 §四.6 不在轮内实施；等待作者裁决（A 设计批 / B `defer-approved` / C FP；A/B 见 `DESIGN-02-CASE.md`）。
-- 未写 `FREEZE.md`；未宣告 `ROUND-CLOSED` / `CONVERGED`；48 单元未冻结；确认轮未开始。
-- `event verify --fresh`：6 个角色事件中 5 条因正文修复变 stale；最终单元事件需在 R2 或裁决后重立。
-- `review-units.py audit --ledger ...`：open=3（3.2 / 3.7 / 4.4，均来自 `R1-24`）。
+- `INVALIDATED`（D-119）：旧 R1 被 Manuscript DESIGN-02 设计批按 `review-publication.md` §四.6 中止；旧 48 FINDING / 40 根因 / 单元证据保留为历史，不继承到新基线。
+- 旧状态保留：`R1-24` 曾是唯一 open 根因；未写 `FREEZE.md`；未宣告 `ROUND-CLOSED` / `CONVERGED`；48 单元未冻结。
+- 新 R1：`v312/r1-post-design02/loop.md`，基线 commit `cdd0d1c77`，doc sha `996ff161…`，2,946 行。
 
 ### §8 给 meta-review 的不确定点
 
