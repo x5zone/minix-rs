@@ -263,13 +263,21 @@ impl<'a> BootParams<'a> {
     pub fn extra_pages(&self) -> usize {
         let mut pages: u64 = 0;
 
-        // C: main.c:485-489 — the loop bound is `mods_with_kernel - 1`,
-        // i.e. the last module entry is deliberately excluded.
-        let charged_modules = self.modules.len().saturating_sub(1);
-        for m in &self.modules[..charged_modules] {
+        // C: main.c:485-489 charges every entry in `module_list` except
+        // the kernel pseudo-entry appended by pre_init. The handoff list is
+        // already "every module except VM's" and contains no kernel entry
+        // (vm_handoff.rs), so every entry here is a real reserved module;
+        // the old `saturating_sub(1)` dropped a real module.
+        for m in self.modules {
             let len = round_up_page(m.len);
             pages += len / CLICK_SIZE as u64;
         }
+
+        // The VM image is the one boot module the handoff list omits; C's
+        // module loop charged it because VM's module was still in
+        // `kernel_boot_info.module_list`. `vm_allocated_bytes` is the
+        // kernel-reported size of that image.
+        pages += round_up_page(self.vm_allocated_bytes) / CLICK_SIZE as u64;
 
         // C: main.c:492-495 — kernel_allocated_bytes_dynamic is already
         // page-rounded by the kernel; static is rounded up here.
@@ -526,12 +534,13 @@ mod tests {
 
     #[test]
     fn test_boot_params_extra_pages_modules() {
-        // C: main.c:485-489 — each module (except the last entry) is
-        // charged rounded up to a page.
+        // C: main.c:485-489 — every reserved module is charged rounded up
+        // to a page. The handoff list has no kernel pseudo-entry and omits
+        // VM's module, so all three are real modules.
         let modules = [
             BootModule { start_addr: 0x1000, len: PAGE as u64 },        // 1 page
             BootModule { start_addr: 0x2000, len: PAGE as u64 + 1 },    // 2 pages
-            BootModule { start_addr: 0x4000, len: 999 },                // excluded (last)
+            BootModule { start_addr: 0x4000, len: 999 },                // 1 page
         ];
         let params = BootParams {
             root_paddr: PhysBytes(0x900_000),
@@ -546,7 +555,27 @@ mod tests {
             kernel_layout: None,
             user_sp: VirBytes(minix_types::USER_STACK_TOP),
         };
-        assert_eq!(params.extra_pages(), 3);
+        assert_eq!(params.extra_pages(), 4);
+    }
+
+    #[test]
+    fn test_boot_params_extra_pages_vm_image() {
+        // The handoff module list omits VM's image; its bytes are charged
+        // through vm_allocated_bytes (C charged VM's module in module_list).
+        let params = BootParams {
+            root_paddr: PhysBytes(0x900_000),
+            kerninfo_pa: PhysBytes(0x901_000),
+            total_pages: 0,
+            free_regions: &[],
+            boot_procs: &[],
+            modules: &[],
+            kernel_allocated: KernelAllocated::ZERO,
+            vm_allocated_bytes: PAGE as u64 + 1,
+            is_first_time: true,
+            kernel_layout: None,
+            user_sp: VirBytes(minix_types::USER_STACK_TOP),
+        };
+        assert_eq!(params.extra_pages(), 2);
     }
 
     #[test]

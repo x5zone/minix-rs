@@ -823,7 +823,13 @@ impl VmServer {
     /// init_proc(VM_PROC_NR) — main.c:262-283, called at main.c:474.
     fn init_vm_slot(&self) {
         let table = self.ctx.proc_table; // the ctx field is the global alias; one spelling
-        if let Some(ip) = self.boot_procs.iter().find(|ip| ip.proc_nr == VM_PROC_NR) {
+        let found = self.boot_procs.iter().find(|ip| ip.proc_nr == VM_PROC_NR);
+        // C: init_proc panics with "no init_proc" when the slot is missing
+        // (main.c:262-286). Test constructors intentionally omit boot_procs,
+        // so the loud stop is production-only.
+        #[cfg(not(test))]
+        let found = Some(found.expect("init_vm_slot: VM boot image missing (C: no init_proc)"));
+        if let Some(ip) = found {
             // E5(d) waypoint: the VM slot is the only init_proc call whose
             // progress the U-Boot riscv chain currently stops inside.
             crate::e5d_diag("e5d: init_vm_slot enter\n");
@@ -4230,7 +4236,8 @@ mod tests {
     #[test]
     fn test_vm_server_init_accounts_boot_memory() {
         with_test_mock_base(|| {
-            // C: main.c:485-491 — modules except the last entry are charged.
+            // C: main.c:485-491 — every reserved module is charged; the
+            // handoff list has no kernel pseudo-entry and omits VM's module.
             let modules = [
                 BootModule {
                     start_addr: 0x2000,
@@ -4239,14 +4246,14 @@ mod tests {
                 BootModule {
                     start_addr: 0x3000,
                     len: 1,
-                }, // excluded (last)
+                }, // 1 page
             ];
             let regions = test_free_regions();
             let mut server = VmServer::new_with_boot_params(boot_params(&regions, &[], &modules));
             server.init();
-            // global::init() reset the total to the allocator total; the
-            // single charged module adds exactly 1 page.
-            assert_eq!(crate::global::total_pages(), TEST_TOTAL_PAGES + 1);
+            // global::init() reset the total to the allocator total; both
+            // charged modules add one page each.
+            assert_eq!(crate::global::total_pages(), TEST_TOTAL_PAGES + 2);
         });
     }
 
