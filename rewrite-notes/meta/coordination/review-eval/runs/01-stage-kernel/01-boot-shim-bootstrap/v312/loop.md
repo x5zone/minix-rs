@@ -16,6 +16,8 @@ VARIANCE: ZCode 运行时没有 `review-process-skill`/`review-doc-skill` 细粒
 遗留状态: `.review/zcode/01-stage-kernel/STATE.md` 预检 FAIL（引用不存在的 02-review.md/05-review.md，Open 列表与 scan.md 不一致）；该文件是旧 review 系统产物，V3.12 不使用，记录不修历史，避免污染本轮账户
 L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 / tutorial-rubric 6 章 0 缺项（TR-0 五章已补）
 机械门: anchor 90/90；ref 可解析；density 通过；citation failed=0/warned=4；doc-code-map 48/48
+对抗审查: `tmp/review-loop/01-stage/audit/plan-adversarial.md` → FAIL(10)；PA-01..PA-10 处置见
+`tmp/review-loop/01-stage/PLAN.md` §15，从 y01 起生效
 
 ### §0 基线
 
@@ -27,8 +29,28 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 
 ### §1 面板
 
-待本轮填写。计划角色：`fact`、`reader-a`、`reader-b`、`reader-c`、`design-d2`、`refute`。
-读者角色不读 Rust 源码；设计角色不先看现有实现；P-REFUTE 只看高风险断言。
+本轮 R1 是 full survey，文档 2,983 行（≥500），启动链高风险，按 `review-panel.md` 表 A：
+读者 A/B/C 各自独立读全文；P-REFUTE 强制启动；设计角色因 D-024 停跑 D1，只跑 D2，
+采用「文档 Ch3/Ch4 主张 ↔ 源码事实」回退。
+
+- `P-FACT`：文档全文 + `related-code.txt`（48 个 Rust 文件，约 54,933 行，按文档锚点选择性读）
+  + D-024/D-047/D-062/D-116/D-117 一行裁决；不读历史面板/台账/结论。
+- `READER-A`：文档全文 + 读者画像 + §4.0e 十条；不读源码、其他文档、学习范围表、历史评审。
+- `READER-B`：同 A，角色为结构编辑。
+- `READER-C`：同 A，角色为因果一致性；R1 不是 G18，不给学习范围表。
+- `DESIGN-D2`：文档 Ch3/Ch4 + 48 个关联 Rust 文件（按锚点）+ `trait-audit.json`
+  + AGENTS 约束 + D-047/D-062/D-110/D-111/D-112 一行裁决；D1 停跑，记
+  `VARIANCE: D-024`；不读作者解释/历史评审/其他面板输出。
+- `P-REFUTE`：文档全文 + 关联源码 + `v312/SCOPE.md` + 相关 DECISIONS 一行裁决；
+  不读作者结论/历史评审/其他面板输出。
+
+输入隔离：读者 A/B/C 不拿学习范围表（学习范围表只给确认轮 G18 与 beginner-me）；
+面板子 agent 只写 `tmp/review-eval/01-stage-kernel/01-boot-shim-bootstrap/panel/v312-r1/<role>.md`，
+不写仓库文件；面板前后各跑一次 `git status --porcelain`，有新改动即丢弃重跑。
+
+事件：面板前由主 agent `event plan` 六个角色级事件（见
+`tmp/review-loop/01-stage/evidence/y01-event-map-role.csv`）；面板报告完成后逐个
+`event complete`。逐单元最终事件在修复/回读后另立，不复用面板 review_id。
 
 ### §2 发现
 
