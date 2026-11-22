@@ -43,6 +43,7 @@ os/libs/minix-types/src/types/boot.rs
 os/libs/minix-types/src/types/kerninfo.rs
 os/libs/minix-types/src/types/kinfo.rs
 os/plat/src/early_console.rs
+os/servers/rs/src/trap_api.rs
 os/servers/vm/src/alloc_page.rs
 os/servers/vm/src/boot.rs
 os/servers/vm/src/vm_server.rs

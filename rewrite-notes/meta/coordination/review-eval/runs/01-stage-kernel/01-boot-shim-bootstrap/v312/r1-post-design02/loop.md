@@ -56,6 +56,10 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 - 面板提示词：`tmp/review-loop/01-stage/panel-prompts-post/{fact,reader-a,reader-b,reader-c,design-d2,refute}.md`。
 - 独立设计批复核：`tmp/review-loop/01-stage/panel-prompts-post/design02-verifier.md`，
   报告写 `tmp/review-loop/01-stage/certify/design02-verify.md`，与面板并行、不共享结论。
+- 输入修正（05:10）：派发时 `related-code.txt` 仍是 Phase 0 的 48 条旧表，缺
+  `os/servers/rs/src/trap_api.rs`（文档 §1.4 引用其 `:223-230`、`:430`）。已用
+  `doc-code-map.sh --format=plain` 重新生成为 49 条，并请 P-FACT 补查该文件；
+  P-FACT 的补查若改变结论，记入本轮台账。其余角色按派发时的 48 条输入完成，R2 用 49 条全套。
 
 ### §2 发现
 
