@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""review-units.py — 单元级 review 状态机（V3.11）
+"""review-units.py — 单元级 review 状态机（V3.12）
 
 规范源：prompt/review-rules/review-units.md。
 单元：`##` = T1 章单元；`###` = T2 节单元；无 `###` 的 `##` 两者兼任。
@@ -30,6 +30,10 @@ V3.11 的硬约束：
   review-units.py begin-confirmation <doc>
   review-units.py end-confirmation <doc>
   review-units.py stats <doc>
+  review-units.py event plan <doc> --round N --type TYPE --units IDS --reviewer R
+  review-units.py event complete <doc> --review-id REV-... --report PATH --result PASS|FAIL
+  review-units.py event verify <doc> [--fresh]
+  review-units.py scope init|show|confirm <doc> [--by author]
   review-units.py --self-test
 
 退出码：0 通过；1 校验失败；2 用法错误。
@@ -37,8 +41,12 @@ V3.11 的硬约束：
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import math
+import os
+import uuid
+from datetime import datetime
 import re
 import subprocess
 import sys
@@ -52,12 +60,12 @@ except Exception:  # pragma: no cover
     raise SystemExit(2)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from notes_layout import REVIEW_EVAL_DIR, REVIEW_STATE_DIR, review_state_path  # noqa: E402
+from notes_layout import REVIEW_EVAL_DIR, REVIEW_STATE_DIR as DEFAULT_STATE_DIR  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
 SCHEMA = "review-units/v2"
-DEFAULT_EDITION = "V3.11"
+DEFAULT_EDITION = "V3.12"
 EXEMPT = re.compile(r"参见|附录|索引|参考文献")
 HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$")
 NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)[.、]?\s")
@@ -65,6 +73,17 @@ MAX_ROUNDS = 2
 UNIT_SCOPE_RE = re.compile(r"(?mi)^\s*(?:UNIT|单元)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)*|u-[0-9]+(?:-[A-Za-z0-9_-]+)?)\b")
 FULL_ROUND_RE = re.compile(r"(?mi)\bFULL-ROUND\b")
 TRAJECTORY_RE = re.compile(r"(?mi)\bTRAJECTORY-REVIEW\b")
+HARD_REJECTION_RE = re.compile(r"(?mi)^\s*(?:HARD-REJECTIONS?|硬劝退)\s*[:：]\s*(\d+)\b")
+EVENTS_SCHEMA = "review-events/v1"
+EVENTS_FIELDS = ["review_id", "doc_id", "edition", "round", "review_type", "unit_ids",
+                 "reviewer", "target_commit", "doc_sha", "report_path", "report_sha", "status"]
+EVENT_TYPES = {"T1-chapter", "T2-section", "full", "confirmation", "student-cold-read", "chinese-edit"}
+EVENT_STATUS = {"planned", "completed-pass", "completed-fail"}
+SCOPE_SCHEMA = "review-scope/v1"
+STATE_DIR = Path(os.environ.get("REVIEW_STATE_DIR", str(DEFAULT_STATE_DIR)))
+REVIEW_META_DIR = Path(os.environ.get("REVIEW_META_DIR", str(STATE_DIR.parent)))
+EVENTS_PATH = REVIEW_META_DIR / "events.csv"
+SCOPE_DIR = REVIEW_META_DIR / "scope"
 
 
 def head_commit() -> str:
@@ -316,7 +335,7 @@ def load_state_for(path: Path, doc: Path) -> dict:
 def save_state(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     header = (
-        "# 单元级 review 状态（V3.11）——规范源 prompt/review-rules/review-units.md\n"
+        "# 单元级 review 状态（V3.12）——规范源 prompt/review-rules/review-units.md\n"
         "# 由 tools/review-units.py 维护；冻结状态禁止手改。\n"
         "# 每篇一个独立账户：round / edition / full_rounds / trajectory_reviews 不得跨篇复用。\n"
     )
@@ -324,6 +343,453 @@ def save_state(path: Path, data: dict) -> None:
         header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120),
         encoding="utf-8",
     )
+
+
+
+def _set_review_meta_for_test(path: Path) -> tuple:
+    """Self-test 用：把 events/scope 落到临时目录，避免污染仓库账本。"""
+    global REVIEW_META_DIR, EVENTS_PATH, SCOPE_DIR
+    old = (REVIEW_META_DIR, EVENTS_PATH, SCOPE_DIR)
+    REVIEW_META_DIR = path
+    EVENTS_PATH = path / "events.csv"
+    SCOPE_DIR = path / "scope"
+    return old
+
+
+def _restore_review_meta(old: tuple) -> None:
+    global REVIEW_META_DIR, EVENTS_PATH, SCOPE_DIR
+    REVIEW_META_DIR, EVENTS_PATH, SCOPE_DIR = old
+
+
+def _doc_id(doc: Path) -> str:
+    return f"{stage_of(doc)}/{doc.stem}"
+
+
+def _doc_sha(doc: Path) -> str:
+    return hashlib.sha256(doc.read_bytes()).hexdigest()
+
+
+def _round_of(row: dict) -> int:
+    try:
+        return int(row.get("round", "0"))
+    except ValueError:
+        return -1
+
+
+def load_event_rows() -> list[dict]:
+    """读原始事件行（追加写历史，不合并）。"""
+    if not EVENTS_PATH.is_file():
+        return []
+    with EVENTS_PATH.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames != EVENTS_FIELDS:
+            raise ValueError(f"events.csv 表头不符：{reader.fieldnames}")
+        rows = []
+        for n, row in enumerate(reader, 2):
+            if None in row or any(row.get(k) is None for k in EVENTS_FIELDS):
+                raise ValueError(f"events.csv 第 {n} 行列数不齐")
+            if row["status"] not in EVENT_STATUS:
+                raise ValueError(f"events.csv 第 {n} 行 status 非法：{row['status']}")
+            rows.append({k: row[k] for k in EVENTS_FIELDS})
+        return rows
+
+
+def effective_events() -> list[dict]:
+    """同一 review_id 的后写行覆盖前写行；返回按首次出现顺序的有效事件。"""
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    for row in load_event_rows():
+        rid = row["review_id"]
+        if rid not in merged:
+            order.append(rid)
+        merged[rid] = row
+    return [merged[rid] for rid in order]
+
+
+def append_event(row: dict) -> None:
+    missing = [k for k in EVENTS_FIELDS if k not in row]
+    extra = [k for k in row if k not in EVENTS_FIELDS]
+    if missing or extra:
+        raise ValueError(f"event 行列不齐：缺 {missing}，多 {extra}")
+    EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    exists = EVENTS_PATH.is_file() and EVENTS_PATH.stat().st_size > 0
+    with EVENTS_PATH.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=EVENTS_FIELDS, lineterminator="\n")
+        if not exists:
+            writer.writeheader()
+        writer.writerow({k: row[k] for k in EVENTS_FIELDS})
+
+
+def _unit_ids_of(row: dict) -> list[str]:
+    return [x for x in row.get("unit_ids", "").split(";") if x]
+
+
+def _git_ancestor(target: str) -> bool:
+    if not target or target == "no-git":
+        return True
+    try:
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", target, "HEAD"],
+                           capture_output=True, text=True)
+    except OSError:
+        return False
+    return r.returncode == 0
+
+
+def _doc_changed_since(target: str, doc: Path) -> bool:
+    if not target or target == "no-git" or not doc.is_relative_to(ROOT):
+        return False
+    try:
+        rel = str(doc.relative_to(ROOT))
+        r = subprocess.run(["git", "diff", "--name-only", f"{target}..HEAD", "--", rel],
+                           capture_output=True, text=True)
+    except OSError:
+        return True
+    return bool(r.stdout.strip())
+
+
+def event_fresh(row: dict, doc: Path) -> bool:
+    """报告必须针对当前文档内容，且目标 commit 之后文档没有改过。"""
+    return (
+        row.get("doc_id") == _doc_id(doc)
+        and row.get("doc_sha") == _doc_sha(doc)
+        and _git_ancestor(row.get("target_commit", ""))
+        and not _doc_changed_since(row.get("target_commit", ""), doc)
+    )
+
+
+def completed_events(doc: Path) -> list[dict]:
+    return [r for r in effective_events()
+            if r["doc_id"] == _doc_id(doc) and r["status"] == "completed-pass"]
+
+
+def require_unit_event(doc: Path, round_n: int, uid: str, track: str, action: str) -> bool:
+    kinds = {"T1-chapter", "full"} if track == "t1" else {"T2-section", "full"}
+    for row in completed_events(doc):
+        if (_round_of(row) == round_n and row["review_type"] in kinds
+                and uid in _unit_ids_of(row) and event_fresh(row, doc)):
+            return True
+    print(f"[FAIL] {uid}: 当前轮 R{round_n} 没有已完成的 {action} 审查事件覆盖该单元", file=sys.stderr)
+    print("       先 event plan 预登记，再 event complete 提交报告；状态转换不得脱离事件记录", file=sys.stderr)
+    return False
+
+
+def require_confirmation_event(doc: Path, round_n: int, uid: str) -> bool:
+    for row in completed_events(doc):
+        if (_round_of(row) == round_n and row["review_type"] == "confirmation"
+                and uid in _unit_ids_of(row) and event_fresh(row, doc)):
+            return True
+    print(f"[FAIL] {uid}: 当前确认轮 R{round_n} 没有已完成的 confirmation 事件覆盖该单元", file=sys.stderr)
+    return False
+
+
+def event_integrity_errors(doc: Path, fresh_only: bool = False, round_n: int | None = None) -> list[str]:
+    errors: list[str] = []
+    try:
+        rows = load_event_rows()
+    except ValueError as e:
+        return [str(e)]
+    seen_rid: set[str] = set()
+    seen_report: dict[str, str] = {}
+    for n, row in enumerate(rows, 2):
+        rid = row["review_id"]
+        if not rid:
+            errors.append(f"events.csv 第 {n} 行缺 review_id")
+        if row["doc_id"] == _doc_id(doc):
+            if row["review_type"] not in EVENT_TYPES:
+                errors.append(f"{rid}: review_type 非法 {row['review_type']}")
+            if row["status"].startswith("completed") and not row["report_sha"]:
+                errors.append(f"{rid}: completed 事件缺 report_sha")
+        if rid in seen_rid and row["status"].startswith("completed"):
+            # 追加完成行会重复 review_id；这合法。真正的重复由 report_sha 判。
+            pass
+        seen_rid.add(rid)
+    for row in effective_events():
+        if row["doc_id"] != _doc_id(doc) or not row["status"].startswith("completed"):
+            continue
+        if round_n is not None and _round_of(row) != round_n:
+            continue
+        rid = row["review_id"]
+        rp = ROOT / row["report_path"] if row["report_path"] else None
+        if not rp or not rp.is_file():
+            errors.append(f"{rid}: 报告不存在 {row['report_path']}")
+            continue
+        if hashlib.sha256(rp.read_bytes()).hexdigest() != row["report_sha"]:
+            errors.append(f"{rid}: report_sha 与报告内容不符")
+        if row["report_sha"] in seen_report:
+            errors.append(f"{rid}: report_sha 与 {seen_report[row['report_sha']]} 重复")
+        seen_report[row["report_sha"]] = rid
+        if fresh_only and not event_fresh(row, doc):
+            errors.append(f"{rid}: 事件不新鲜（doc_sha 或 target_commit 不匹配）")
+    return errors
+
+
+def _scope_path(doc: Path) -> Path:
+    return SCOPE_DIR / stage_of(doc) / f"{doc.stem}.yaml"
+
+
+def _write_scope_template(doc: Path, edition: str | None = None) -> Path:
+    path = _scope_path(doc)
+    if path.is_file():
+        return path
+    chapters = [u for u in parse_units(doc) if u["level"] == 2]
+    items = [{
+        "id": f"S{i}",
+        "topic": u["heading"],
+        "requirement": "",
+        "chapters": [u["id"]],
+    } for i, u in enumerate(chapters, 1)]
+    data = {
+        "schema": SCOPE_SCHEMA,
+        "doc": str(doc.relative_to(ROOT)) if doc.is_relative_to(ROOT) else str(doc),
+        "stage": stage_of(doc),
+        "edition": edition or DEFAULT_EDITION,
+        "confirmed": False,
+        "confirmed_by": "",
+        "confirmed_at": "",
+        "reader_profile": (
+            "具备 C 语言阅读能力、操作系统启动的基本概念、Rust 语法与所有权基础、"
+            "物理地址/虚拟地址/页表的基本概念。不默认具备本项目内部类型、三架构启动路径，"
+            "以及尚未在前置章节讲授的内部设计契约。"
+        ),
+        "items": items,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# 学习范围表（review-scope/v1）——规范源 prompt/review-rules/review-tutorial-rubric.md\n"
+        "# 只能由作者确认；冷读学生按本表判断能否完成学习任务。\n"
+        + yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120),
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_scope(doc: Path) -> dict | None:
+    path = _scope_path(doc)
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    body = "".join(l for l in text.splitlines(True) if not l.startswith("#"))
+    data = yaml.safe_load(body)
+    if not isinstance(data, dict) or data.get("schema") != SCOPE_SCHEMA:
+        raise ValueError(f"scope schema 不是 {SCOPE_SCHEMA}：{path}")
+    return data
+
+
+def scope_errors(doc: Path) -> list[str]:
+    try:
+        scope = load_scope(doc)
+    except ValueError as e:
+        return [str(e)]
+    if scope is None:
+        return [f"学习范围表不存在：{_scope_path(doc)}"]
+    errs: list[str] = []
+    if not scope.get("confirmed"):
+        errs.append("学习范围表尚未由作者确认（scope confirm --by author）")
+    items = scope.get("items") or []
+    if not items:
+        errs.append("学习范围表为空")
+    for item in items:
+        if not str(item.get("requirement", "")).strip():
+            errs.append(f"学习范围项 {item.get('id', '?')} 缺 requirement")
+    return errs
+
+
+def _cold_read_hard_rejections(report: Path) -> int | None:
+    text = report.read_text(encoding="utf-8", errors="replace")
+    vals = [int(m.group(1)) for m in HARD_REJECTION_RE.finditer(text)]
+    if not vals:
+        return None
+    if len(set(vals)) > 1:
+        return max(vals)
+    return vals[0]
+
+
+def gate_event_errors(data: dict, doc: Path) -> list[str]:
+    """V3.12：G18 冷读 + G19 事件链。任何一项不满足，不得 CONVERGED。"""
+    errs = scope_errors(doc)
+    all_ids = [u["id"] for u in data["units"]]
+    round_n = int(data.get("round", 0))
+    conf_rows = [r for r in completed_events(doc)
+                 if _round_of(r) == round_n and r["review_type"] == "confirmation"
+                 and event_fresh(r, doc)]
+    covered: set[str] = set()
+    for row in conf_rows:
+        covered.update(_unit_ids_of(row))
+    missing = [uid for uid in all_ids if uid not in covered]
+    if missing:
+        errs.append(f"确认轮 R{round_n} 的 confirmation 事件未覆盖全部单元：{', '.join(missing)}")
+    cold = [r for r in completed_events(doc)
+            if _round_of(r) == round_n and r["review_type"] == "student-cold-read"
+            and event_fresh(r, doc)]
+    if not cold:
+        errs.append(f"确认轮 R{round_n} 缺 student-cold-read 事件（G18）")
+    else:
+        row = cold[-1]
+        missing = [uid for uid in all_ids if uid not in _unit_ids_of(row)]
+        if missing:
+            errs.append(f"student-cold-read 未覆盖全部单元：{', '.join(missing)}")
+        report = ROOT / row["report_path"]
+        hard = _cold_read_hard_rejections(report) if report.is_file() else None
+        if hard is None:
+            errs.append("student-cold-read 报告缺 `HARD-REJECTIONS: <n>` 或 `硬劝退: <n>` 行")
+        elif hard > 0:
+            errs.append(f"student-cold-read 报告硬劝退 = {hard}；G18 不通过")
+    # 只要求本轮确认/冷读事件新鲜；历史轮次的事件是当时版本的有效记录。
+    errs.extend(event_integrity_errors(doc, fresh_only=True, round_n=round_n))
+    errs.extend(event_integrity_errors(doc, fresh_only=False))
+    return errs
+
+
+def cmd_event_plan(doc: Path, state_path: Path, round_n: int | None,
+                   review_type: str, units: str, reviewer: str) -> int:
+    data = load_state_for(state_path, doc)
+    if review_type not in EVENT_TYPES:
+        print(f"[FAIL] review_type 非法：{review_type}", file=sys.stderr)
+        return 2
+    if not reviewer.strip():
+        print("[FAIL] reviewer 不能为空", file=sys.stderr)
+        return 2
+    r = int(data.get("round", 0) if round_n is None else round_n)
+    if r < 0:
+        print("[FAIL] round 不能为负", file=sys.stderr)
+        return 2
+    conf = data.get("confirmation", {})
+    if review_type == "confirmation" and not (conf.get("active") and int(conf.get("round", 0)) == r):
+        print("[FAIL] confirmation 事件必须落在当前 active 的确认轮", file=sys.stderr)
+        return 1
+    known = [u["id"] for u in data["units"]]
+    if units.strip().lower() in ("", "all", "*"):
+        chosen = known
+    else:
+        chosen = [x.strip() for x in units.split(",") if x.strip()]
+    bad = [x for x in chosen if x not in known]
+    if bad:
+        print(f"[FAIL] 事件含不存在单元：{bad}", file=sys.stderr)
+        return 1
+    if not chosen:
+        print("[FAIL] 事件必须至少覆盖一个单元", file=sys.stderr)
+        return 1
+    if review_type == "student-cold-read" and set(chosen) != set(known):
+        print("[FAIL] student-cold-read 必须覆盖整篇全部单元", file=sys.stderr)
+        return 1
+    rid = f"REV-{datetime.now():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}"
+    row = {
+        "review_id": rid,
+        "doc_id": _doc_id(doc),
+        "edition": str(data.get("edition", "")),
+        "round": str(r),
+        "review_type": review_type,
+        "unit_ids": ";".join(chosen),
+        "reviewer": reviewer.strip(),
+        "target_commit": head_commit() or "no-git",
+        "doc_sha": _doc_sha(doc),
+        "report_path": "",
+        "report_sha": "",
+        "status": "planned",
+    }
+    append_event(row)
+    print(f"event plan: {rid} {review_type} R{r} units={len(chosen)}")
+    print(f"  complete: python3 tools/review-units.py event complete {doc} --review-id {rid} --report PATH --result PASS")
+    return 0
+
+
+def cmd_event_complete(doc: Path, state_path: Path, review_id: str,
+                       report: str, result: str) -> int:
+    load_state_for(state_path, doc)
+    rows = [r for r in effective_events() if r["review_id"] == review_id]
+    if not rows:
+        print(f"[FAIL] 找不到事件：{review_id}", file=sys.stderr)
+        return 1
+    row = rows[0]
+    if row["doc_id"] != _doc_id(doc):
+        print(f"[FAIL] 事件属于 {row['doc_id']}，不能提交给 {_doc_id(doc)}", file=sys.stderr)
+        return 1
+    if row["status"] != "planned":
+        print(f"[FAIL] 事件 {review_id} 已提交过（{row['status']}）", file=sys.stderr)
+        return 1
+    if result.upper() not in ("PASS", "FAIL"):
+        print("[FAIL] --result 只能是 PASS 或 FAIL", file=sys.stderr)
+        return 2
+    rp = Path(report)
+    if not rp.is_file() or rp.stat().st_size == 0:
+        print(f"[FAIL] 报告不存在或为空：{report}", file=sys.stderr)
+        return 1
+    text = rp.read_text(encoding="utf-8", errors="replace")
+    if not doc_scope_ok(text, doc):
+        print(f"[FAIL] 报告缺少 `DOC {doc.name}` 绑定", file=sys.stderr)
+        return 1
+    report_sha = hashlib.sha256(rp.read_bytes()).hexdigest()
+    for other in effective_events():
+        if (other["review_id"] != review_id and other["status"].startswith("completed")
+                and other["report_sha"] == report_sha):
+            print(f"[FAIL] 同一份报告已用于 {other['review_id']}；report_sha 不得重复", file=sys.stderr)
+            return 1
+    row = dict(row)
+    row["report_path"] = str(rp.relative_to(ROOT)) if rp.is_relative_to(ROOT) else str(rp)
+    row["report_sha"] = report_sha
+    row["status"] = "completed-pass" if result.upper() == "PASS" else "completed-fail"
+    append_event(row)
+    print(f"event complete: {review_id} {row['status']} report_sha={report_sha[:12]}")
+    return 0
+
+
+def cmd_event_verify(doc: Path, fresh_only: bool) -> int:
+    errs = event_integrity_errors(doc, fresh_only=fresh_only)
+    rows = [r for r in effective_events() if r["doc_id"] == _doc_id(doc)]
+    print(f"events={len(rows)} completed={sum(1 for r in rows if r['status'].startswith('completed'))} fresh_only={int(fresh_only)}")
+    for e in errs:
+        print(f"[FAIL] {e}", file=sys.stderr)
+    if errs:
+        return 1
+    print("event verify: OK")
+    return 0
+
+
+def cmd_scope_init(doc: Path, force: bool) -> int:
+    path = _scope_path(doc)
+    if path.is_file() and not force:
+        print(f"学习范围表已存在：{path}（要重建加 --force）", file=sys.stderr)
+        return 2
+    if path.is_file():
+        path.unlink()
+    path = _write_scope_template(doc)
+    print(f"scope init: {path}（请作者填写 requirement 后 scope confirm --by author）")
+    return 0
+
+
+def cmd_scope_confirm(doc: Path, by: str) -> int:
+    path = _scope_path(doc)
+    try:
+        scope = load_scope(doc)
+    except ValueError as e:
+        print(f"[FAIL] {e}", file=sys.stderr)
+        return 1
+    if scope is None:
+        print(f"[FAIL] 学习范围表不存在：{path}", file=sys.stderr)
+        return 1
+    if not by.strip():
+        print("[FAIL] --by 不能为空；学习范围只能由作者确认", file=sys.stderr)
+        return 2
+    scope["confirmed"] = True
+    scope["confirmed_by"] = by.strip()
+    scope["confirmed_at"] = datetime.now().isoformat(timespec="seconds")
+    path.write_text(
+        "# 学习范围表（review-scope/v1）——规范源 prompt/review-rules/review-tutorial-rubric.md\n"
+        "# 只能由作者确认；冷读学生按本表判断能否完成学习任务。\n"
+        + yaml.safe_dump(scope, allow_unicode=True, sort_keys=False, width=120),
+        encoding="utf-8",
+    )
+    print(f"scope confirm: {path} by={scope['confirmed_by']}")
+    return 0
+
+
+def cmd_scope_show(doc: Path) -> int:
+    path = _scope_path(doc)
+    if not path.is_file():
+        print(f"学习范围表不存在：{path}", file=sys.stderr)
+        return 1
+    print(path.read_text(encoding="utf-8"))
+    return 0
 
 
 def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool) -> int:
@@ -350,7 +816,9 @@ def cmd_init(doc: Path, state_path: Path, stage: str, edition: str, force: bool)
         "t3": {"passed": False, "evidence": "", "at_commit": ""},
     }
     save_state(state_path, data)
+    scope = _write_scope_template(doc, edition)
     print(f"init: {len(units)} 个单元 → {state_path}")
+    print(f"scope: {scope}（作者填写 requirement 后 scope confirm --by author）")
     return 0
 
 
@@ -1136,6 +1604,8 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
             print("[FAIL] evidence 缺可重放 token", file=sys.stderr)
             return 1
         r = int(conf.get("round", 0))
+        if not require_confirmation_event(doc, r, uid):
+            return 1
         unit.setdefault("review_rounds", [])
         unit.setdefault("post_freeze_rounds", [])
         if r not in unit["review_rounds"]:
@@ -1220,6 +1690,9 @@ def cmd_mark(doc: Path, state_path: Path, uid: str, track: str, fix: bool,
             print(f"[FAIL] {'；'.join(scoped)}", file=sys.stderr)
             return 1
     if passed or freeze:
+        if not require_unit_event(doc, int(data.get("round", 0)), uid, track,
+                                  "pass/freeze"):
+            return 1
         lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
         counts, errs = ledger_open_by_unit(lpath)
         if errs:
@@ -1537,6 +2010,12 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str |
         print(f"[FAIL] 存在 reopened/stale 单元，T3 不得通过：{bad}", file=sys.stderr)
         return 1
     if ok:
+        gate_errs = gate_event_errors(data, doc)
+        for e in gate_errs:
+            print(f"[FAIL] {e}", file=sys.stderr)
+        if gate_errs:
+            print("[FAIL] V3.12 事件链/G18 冷读未通过，T3 不得通过", file=sys.stderr)
+            return 1
         lpath = Path(ledger) if ledger else default_ledger(doc, data["stage"])
         counts, errs = ledger_open_by_unit(lpath)
         if errs:
@@ -1575,6 +2054,7 @@ def _anchor_self_test(root: Path) -> None:
     """Nine anchor-invalidation cases (run inside a temp ROOT)."""
     global ROOT
     saved = ROOT
+    saved_meta = _set_review_meta_for_test(root / "meta-review")
     try:
         root.mkdir(parents=True, exist_ok=True)
         ROOT = root
@@ -1611,19 +2091,30 @@ def _anchor_self_test(root: Path) -> None:
         ev_all = root / "ev-all.md"
         ev_all.write_text("FULL-ROUND R1\nDOC 02-anchor.md\n" + "\n".join(f"UNIT {u}" for u in ids)
                           + "\nrg -n 'alpha' os/kernel/src/anchors.rs\n", encoding="utf-8")
+        def evt(uid: str, track: str) -> None:
+            kind = "T1-chapter" if track == "t1" else "T2-section"
+            assert cmd_event_plan(doc, sp, None, kind, uid, "anchor-selftest") == 0
+            rid = effective_events()[-1]["review_id"]
+            assert cmd_event_complete(doc, sp, rid, str(ev(uid)), "PASS") == 0
+
         assert cmd_init(doc, sp, "01-stage-kernel", "V3.11", False) == 0
         assert cmd_baseline(doc, sp, str(ev_all)) == 0
+        evt("3", "t1")
         assert cmd_mark(doc, sp, "3", "t1", False, True, False, "", evidence=str(ev("3")), ledger=str(ledger)) == 0
         # 1 direct freeze stores body hashes
+        evt("3.1", "t2")
         assert cmd_mark(doc, sp, "3.1", "t2", False, True, True, "", evidence=str(ev("3.1")), ledger=str(ledger)) == 0
         d = load_state(sp)
         u = next(x for x in d["units"] if x["id"] == "3.1")
         assert u["anchor_status"] == "direct" and u["anchor_hashes"], u
         # 2 missing anchor refuses freeze
+        evt("3.2", "t2")
         assert cmd_mark(doc, sp, "3.2", "t2", False, True, True, "", evidence=str(ev("3.2")), ledger=str(ledger)) == 1
         # 3 impl anchor refuses freeze
+        evt("3.3", "t2")
         assert cmd_mark(doc, sp, "3.3", "t2", False, True, True, "", evidence=str(ev("3.3")), ledger=str(ledger)) == 1
         # 4 C anchor freezes as fallback
+        evt("3.4", "t2")
         assert cmd_mark(doc, sp, "3.4", "t2", False, True, True, "", evidence=str(ev("3.4")), ledger=str(ledger)) == 0
         d = load_state(sp)
         assert next(x for x in d["units"] if x["id"] == "3.4")["anchor_status"] == "fallback"
@@ -1664,6 +2155,7 @@ def _anchor_self_test(root: Path) -> None:
         assert cmd_gate(doc, sp, True, str(ev_all), str(ledger)) == 1
     finally:
         ROOT = saved
+        _restore_review_meta(saved_meta)
 
 
 def self_test() -> int:
@@ -1671,6 +2163,7 @@ def self_test() -> int:
         _anchor_self_test(Path(td) / "anchor-root")
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
+        saved_meta = _set_review_meta_for_test(root / "meta-review")
         doc = root / "01-stage-kernel/01-demo.md"
         doc.parent.mkdir(parents=True)
         doc.write_text(
@@ -1697,9 +2190,12 @@ def self_test() -> int:
             p.write_text("\n".join(body) + "\n", encoding="utf-8")
             return p
 
+        ev_counter = [0]
+
         def unit_ev(uid: str) -> Path:
-            p = root / f"unit-{uid}.md"
-            p.write_text(f"UNIT {uid}\nDOC 01-demo.md\nrg -n 'demo' os/\n", encoding="utf-8")
+            ev_counter[0] += 1
+            p = root / f"unit-{uid}-{ev_counter[0]}.md"
+            p.write_text(f"UNIT {uid}\nDOC 01-demo.md\nrg -n 'demo' os/\nrun {ev_counter[0]}\n", encoding="utf-8")
             return p
 
         def generic_ev() -> Path:
@@ -1713,7 +2209,44 @@ def self_test() -> int:
                          "rg -n 'demo' rewrite-notes/\n", encoding="utf-8")
             return p
 
+        def confirm_scope() -> None:
+            scope = load_scope(doc)
+            assert scope is not None
+            for item in scope["items"]:
+                if not item.get("requirement"):
+                    item["requirement"] = f"能解释 {item.get('topic', '本章')} 的核心机制"
+            path = _scope_path(doc)
+            path.write_text(
+                "# 学习范围表（review-scope/v1）\n"
+                + yaml.safe_dump(scope, allow_unicode=True, sort_keys=False, width=120),
+                encoding="utf-8",
+            )
+            assert cmd_scope_confirm(doc, "self-test-author") == 0
+
+        cold_counter = [0]
+
+        def cold_event(round_n: int) -> None:
+            cold_counter[0] += 1
+            assert cmd_event_plan(doc, sp, round_n, "student-cold-read", "all",
+                                  "READER-C") == 0
+            rid = effective_events()[-1]["review_id"]
+            rp = root / f"cold-{round_n}-{cold_counter[0]}.md"
+            rp.write_text(
+                "DOC 01-demo.md\nHARD-REJECTIONS: 0\n"
+                f"TRAJECTORY-REVIEW R{round_n}\nrun {cold_counter[0]}\n"
+                "rg -n 'demo' rewrite-notes/\n",
+                encoding="utf-8",
+            )
+            assert cmd_event_complete(doc, sp, rid, str(rp), "PASS") == 0
+
+        def evt(uid: str, kind: str, round_n: int | None = None) -> None:
+            assert cmd_event_plan(doc, sp, round_n, kind, uid, "self-test") == 0
+            rid = effective_events()[-1]["review_id"]
+            assert cmd_event_complete(doc, sp, rid, str(unit_ev(uid)), "PASS") == 0
+
         def mk(uid, track, fix=False, passed=False, freeze=False, ev=None):
+            if passed or freeze:
+                evt(uid, "T1-chapter" if track == "t1" else "T2-section")
             return cmd_mark(doc, sp, uid, track, fix, passed, freeze, "",
                             evidence=str(ev or unit_ev(uid)), ledger=str(ledger))
 
@@ -1771,6 +2304,7 @@ def self_test() -> int:
         # 每个单元必须有冻结后确认 review；少一个就不能结束确认轮
         assert cmd_end_confirmation(doc, sp) == 1
         for uid in ids:
+            evt(uid, "confirmation")
             assert cmd_mark(doc, sp, uid, "t1" if "." not in uid else "t2",
                             False, False, False, "", confirm_review=True,
                             evidence=str(unit_ev(uid)), ledger=str(ledger)) == 0
@@ -1790,10 +2324,12 @@ def self_test() -> int:
         u = next(x for x in data["units"] if x["id"] == "1.1")
         assert 4 not in u["review_rounds"] and 4 not in u["post_freeze_rounds"]
         assert mk("1.1", "t2", passed=True, freeze=True) == 0
+        evt("1.1", "confirmation")
         assert cmd_mark(doc, sp, "1.1", "t2", False, False, False, "",
                         confirm_review=True, evidence=str(unit_ev("1.1")),
                         ledger=str(ledger)) == 0
         for uid in ("1", "1.2", "2", "2.1"):
+            evt(uid, "confirmation")
             assert cmd_mark(doc, sp, uid, "t1" if "." not in uid else "t2",
                             False, False, False, "", confirm_review=True,
                             evidence=str(unit_ev(uid)), ledger=str(ledger)) == 0
@@ -1802,6 +2338,32 @@ def self_test() -> int:
         # 收敛门：full=2、每单元 2 次 review、确认轮完成、每轮 trajectory PASS
         assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 1
         assert cmd_trajectory_review(doc, sp, 4, str(traj_ev(4)), "PASS") == 0
+        confirm_scope()
+        cold_event(4)
+        assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 0
+
+        # V3.12 事件门负例：未知单元、错误 DOC、重复 report_sha、G18 硬劝退
+        assert cmd_event_plan(doc, sp, 4, "T1-chapter", "9.9", "self-test") == 1
+        assert cmd_event_plan(doc, sp, 4, "T1-chapter", "1", "self-test") == 0
+        rid_bad = effective_events()[-1]["review_id"]
+        bad_doc = root / "bad-doc.md"
+        bad_doc.write_text("DOC 99-wrong.md\nUNIT 1\nrg -n 'demo' os/\n", encoding="utf-8")
+        assert cmd_event_complete(doc, sp, rid_bad, str(bad_doc), "PASS") == 1
+        used = next(r for r in effective_events()
+                    if r["doc_id"] == _doc_id(doc) and r["status"].startswith("completed"))
+        assert cmd_event_plan(doc, sp, 4, "T1-chapter", "1", "self-test") == 0
+        rid_dup = effective_events()[-1]["review_id"]
+        assert cmd_event_complete(doc, sp, rid_dup,
+                                  str(ROOT / used["report_path"]), "PASS") == 1
+
+        assert cmd_event_plan(doc, sp, 4, "student-cold-read", "all", "READER-C") == 0
+        rid_bad_cold = effective_events()[-1]["review_id"]
+        bad_cold = root / "bad-cold.md"
+        bad_cold.write_text("DOC 01-demo.md\nHARD-REJECTIONS: 2\nrg -n 'demo' rewrite-notes/\n",
+                            encoding="utf-8")
+        assert cmd_event_complete(doc, sp, rid_bad_cold, str(bad_cold), "PASS") == 0
+        assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 1
+        cold_event(4)
         assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 0
 
         # 冻结后改正文：旧 review / 旧确认必须失效
@@ -1854,7 +2416,7 @@ def self_test() -> int:
         no_token = root / "no-token.md"
         no_token.write_text("UNIT 1\nunit evidence\n", encoding="utf-8")
         assert not evidence_replay_ok(no_token)
-    print("self-test PASS: V3.11 full-round/unit-review/confirmation/trajectory/account-reset + 8 anchor-invalidation cases")
+    print("self-test PASS: V3.12 full-round/unit-review/confirmation/trajectory/events/G18/account-reset + 8 anchor-invalidation cases")
     return 0
 
 def main() -> int:
@@ -1913,12 +2475,59 @@ def main() -> int:
     ga.add_argument("--evidence", default="")
     ga.add_argument("--ledger", default=None)
 
+    ev = sub.add_parser("event", help="审查事件预登记/提交/校验")
+    es = ev.add_subparsers(dest="event_cmd", required=True)
+    for name in ("plan", "complete", "verify"):
+        ep = es.add_parser(name)
+        ep.add_argument("doc", nargs="?")
+        ep.add_argument("--doc", dest="doc_opt")
+    es.choices["plan"].add_argument("--round", dest="event_round", type=int, default=None)
+    es.choices["plan"].add_argument("--type", dest="event_type", required=True)
+    es.choices["plan"].add_argument("--units", default="all",
+                                    help="逗号分隔单元 ID；all = 全部单元")
+    es.choices["plan"].add_argument("--reviewer", required=True)
+    es.choices["complete"].add_argument("--review-id", required=True)
+    es.choices["complete"].add_argument("--report", required=True)
+    es.choices["complete"].add_argument("--result", default="PASS")
+    es.choices["verify"].add_argument("--fresh", action="store_true",
+                                      help="只认与当前文档版本一致的事件")
+
+    sc = sub.add_parser("scope", help="学习范围表（作者确认）")
+    ss = sc.add_subparsers(dest="scope_cmd", required=True)
+    for name in ("init", "confirm", "show"):
+        spp = ss.add_parser(name)
+        spp.add_argument("doc", nargs="?")
+        spp.add_argument("--doc", dest="doc_opt")
+    ss.choices["init"].add_argument("--force", action="store_true")
+    ss.choices["confirm"].add_argument("--by", required=True)
+
     args = ap.parse_args()
     if args.self_test:
         return self_test()
     if not args.cmd:
         ap.print_help()
         return 2
+    if args.cmd in ("event", "scope"):
+        raw = args.doc or getattr(args, "doc_opt", None)
+        if not raw:
+            print("缺少文档路径（位置参数或 --doc）", file=sys.stderr)
+            return 2
+        doc = Path(raw)
+        if not doc.is_absolute():
+            doc = (Path.cwd() / doc).resolve()
+        sp = STATE_DIR / stage_of(doc) / f"{doc.stem}.yaml"
+        if args.cmd == "event":
+            if args.event_cmd == "plan":
+                return cmd_event_plan(doc, sp, args.event_round, args.event_type,
+                                      args.units, args.reviewer)
+            if args.event_cmd == "complete":
+                return cmd_event_complete(doc, sp, args.review_id, args.report, args.result)
+            return cmd_event_verify(doc, args.fresh)
+        if args.scope_cmd == "init":
+            return cmd_scope_init(doc, args.force)
+        if args.scope_cmd == "confirm":
+            return cmd_scope_confirm(doc, args.by)
+        return cmd_scope_show(doc)
     raw_doc = args.doc or getattr(args, "doc_opt", None)
     if not raw_doc:
         print("缺少文档路径（位置参数或 --doc）", file=sys.stderr)
@@ -1927,7 +2536,7 @@ def main() -> int:
     if not doc.is_absolute():
         doc = (Path.cwd() / doc).resolve()
     stage = getattr(args, "stage", None) or stage_of(doc)
-    sp = review_state_path(stage, doc.stem)
+    sp = STATE_DIR / stage / f"{doc.stem}.yaml"
     if args.cmd == "init":
         return cmd_init(doc, sp, stage, args.edition, args.force)
     if args.cmd == "check":

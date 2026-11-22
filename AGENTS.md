@@ -23,8 +23,9 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 | 4 | `prompt/review-rules/review-cmds.md` | 6 个任务命令入口与不可裁剪的通用强制门 |
 | 5 | `prompt/review-rules/review-patterns.md` | 模式库（含 P0 必检清单与验证命令） |
 | 5.5 | `prompt/review-rules/review-publication.md` | **出版标准（V3.7）**：DP-1..DP-6 文档、CP-1..CP-6 代码、零欠账（禁 defer）、顺序迭代、Review 期间代码冻结 |
-| 5.6 | `prompt/review-rules/review-tutorial-rubric.md` | **教程 rubric（V3.8）**：TR-1..TR-6（目标/前置/示例/失败对照/小结/术语），G13 |
-| 5.7 | `prompt/review-rules/review-units.md` | **单元级 review（V3.11）**：每篇独立账户、至少 2 轮 full、每单元至少 2 次 review、冻结后确认、G14–G17 |
+| 5.6 | `prompt/review-rules/review-tutorial-rubric.md` | **教程 rubric（V3.12）**：TR-0..TR-6（问题入口/示例/失败对照/小结/术语），G13；G18 冷读 |
+| 5.7 | `prompt/review-rules/review-units.md` | **单元级 review（V3.12）**：每篇独立账户、至少 2 轮 full、每单元至少 2 次 review、审查事件、学习范围、G14–G19 |
+| 5.8 | `prompt/review-rules/review-me-agent.md` | **me agent 常驻裁决层（V3.12）**：输入边界、职责边界、案件卷顺序、G18 抗辩边界 |
 | 6 | `prompt/README.md` | 三端同步机制：改了源必须同步哪些文件、跑哪些校验 |
 
 运行时副本 `.claude/rules/review-core.md`、`.claude/rules/review-process.md`、`.claude/rules/fix-guard.md`
@@ -71,7 +72,9 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 - **三档术语**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：文档 + 设计 + 代码）
 - **⛔ 仓库级 CI 门**：`pattern-gate` / `check-command-boundary` / `arch-gated-test-count` 见 `.github/workflows/rules-consistency.yml`；`prompt/` 不重抄其检查项。
 - **⛔ 出版标准（V3.7）**：文档与代码都必须达到出版标准才可 CONVERGED——文档禁过程编号/中间产物引用/迭代历史/待办（`tools/doc-publication-check.py` DP-1..DP-6；用户本人笔记只允许放 `<!-- user-note: … -->` 注释块），代码禁占位实现/静默抑制/过程编号与迭代叙事注释（`tools/code-publication-check.py`）
-- **⛔ 教程就绪（V3.8）**：每章必须有学习目标、前置概念、最小可运行示例、失败对照、小结、术语定义（`tools/tutorial-rubric-check.py`）；缺任一项 = P1，不得 CONVERGED
+- **⛔ 教程就绪（V3.12）**：每章必须先有问题入口（TR-0），并有最小可运行示例、失败对照、小结、术语定义（`tools/tutorial-rubric-check.py`）；学习目标/前置知识由结构评审与 G18 判定，不再强制章首小节；缺项 = P1，不得 CONVERGED
+- **⛔ 可读性冷读（V3.12）**：确认轮必须新起独立 READER-C 做整篇冷读，学习范围表由作者确认，报告 `HARD-REJECTIONS: 0`（G18）；机械门全绿不能替代人工读得进去
+- **⛔ 审查事件（V3.12）**：单元 review 先 `review-units.py event plan/complete`，`mark`/`gate` 消费 `meta/review/events.csv`；旧版报告、跨篇报告、同一报告重复背书一律拒绝（G19）
 - **⛔ 轮次硬上限（V3.8）**：同一篇最多 3 个修改轮（跨 edition 累计）；未收敛即强制整节重写，不开第 4 轮；重写后只允许 1 次确认轮
 - **⛔ 零欠账（V3.7）**：不允许 defer。`②/⑥/SUGG/OPEN-DEBT/非阻断 backlog` 不再作为延期出口；唯一例外是 `DECISIONS.md` 的 `defer-approved` 判决行（日期 + 具体条目 + 到期条件 + 不做后果）。顺序迭代：当前篇及其之后的文档/代码可改（迭代 D01 = 全仓可改）；已批准的前序篇是冻结区，改动需用户人工批准；当前篇 CONVERGED 前不得开下一篇。TODO 单一账本 = `rewrite-notes/meta/coordination/todo-ledger/<stage>.yaml`（`tools/todo-ledger.py`）；01/02 旧 todo markdown 已迁移删除，其余 stage 迁移后同样删除
 - **P0 六类**：P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing

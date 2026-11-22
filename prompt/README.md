@@ -25,7 +25,7 @@ prompt/
 
 `tmp/` 是会话产物与取证目录，整域不入库；`rewrite-notes/` 是文档与协作账本树。
 
-## 二、review-rules/（15 个文件）
+## 二、review-rules/（16 个文件）
 
 | 文件 | 职责 |
 |---|---|
@@ -40,10 +40,11 @@ prompt/
 | `review-doc-excellence.md` | 文档卓越性：叙事、读者体验、教学深度 |
 | `review-code-excellence.md` | 代码卓越性：API、表达力、性能、可测试性 |
 | `review-publication.md` | 出版标准 V3.7：DP-1..DP-6、CP-1..CP-6、零欠账、顺序迭代 |
-| `review-tutorial-rubric.md` | 教程 rubric V3.8：TR-1..TR-6 与 G13 |
-| `review-units.md` | 单元级 review V3.11：每篇独立账户、至少 2 轮 full、每单元至少 2 次 review、G14–G17 |
+| `review-tutorial-rubric.md` | 教程 rubric V3.12：TR-0..TR-6、G13 与 G18 冷读 |
+| `review-units.md` | 单元级 review V3.12：每篇独立账户、至少 2 轮 full、每单元至少 2 次 review、审查事件、G14–G19 |
 | `review-panel.md` | review-loop 独立面板：角色、材料隔离、归因 |
-| `review-evals.md` | review-loop 评测：G1–G17、§6A 四态收敛模型 |
+| `review-me-agent.md` | Me Agent 常驻裁决层：输入边界、职责边界、案件卷顺序、G18 抗辩 |
+| `review-evals.md` | review-loop 评测：G1–G19、§6A 四态收敛模型 |
 | `review-cmds.md` §八 | 旧 Profile A–K/O/P/R/AG 别名对账 |
 
 ## 三、skill/（适配层）

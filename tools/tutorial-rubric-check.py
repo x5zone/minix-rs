@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""tutorial-rubric-check.py — 教程质量 rubric 检测器（V3.8 / TR-1..TR-6）
+"""tutorial-rubric-check.py — 教程质量 rubric 检测器（V3.12 / TR-0、TR-3..TR-6）
 
 规则源：`prompt/review-rules/review-tutorial-rubric.md`。
-本工具做**存在性与形状**检查（标题关键词、小节非空、示例含代码块、小结条数）；
+V3.12 起不再用标题关键词强迫章首出现「学习目标 / 前置概念」小节：
+TR-1 学习目标与 TR-2 前置知识由 structure.md §11 复述测试与 G18 冷读判定。
+本工具做**存在性与形状**检查（问题入口、示例含代码块、小结条数、术语表）；
 「前置概念是否真的在更早章节」「失败对照是否真的指出后果」仍需面板/人判定。
 
 判据（每个 `## ` 章；`参见/附录/索引/参考文献` 与 <20 行章豁免）：
-  TR-1 学习目标  标题含 学习目标|本章目标|读完本章|你将
-  TR-2 前置概念  标题含 前置|预备|前提
+  TR-0 问题入口  章内第一个非空内容必须是散文段落（非列表/表格/围栏代码），实义字符 ≥20
   TR-3 最小示例  标题含 示例|最小|可运行|动手，且该节含围栏代码块或编号步骤
   TR-4 失败对照  标题含 如果|失败|反例|错误做法|常见错误
   TR-5 小结      标题含 小结|总结|本章要点|要点回顾，条目 1–5
@@ -30,14 +31,14 @@ CHAPTER_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 SUB_RE = re.compile(r"^#{3,4}\s+(.+)$", re.MULTILINE)
 SKIP_TITLE = re.compile(r"参见|附录|索引|参考文献|后记|致谢")
 PATTERNS = {
-    "TR-1": re.compile(r"学习目标|本章目标|读完本章|你将"),
-    "TR-2": re.compile(r"前置|预备|前提"),
     "TR-3": re.compile(r"示例|最小|可运行|动手"),
     "TR-4": re.compile(r"如果|失败|反例|错误做法|常见错误"),
     "TR-5": re.compile(r"小结|总结|本章要点|要点回顾"),
     "TR-6": re.compile(r"术语|名词表"),
 }
-NEED = ("TR-1", "TR-2", "TR-3", "TR-4", "TR-5")
+NEED = ("TR-3", "TR-4", "TR-5")
+BAD_OPENERS = ("-", "*", "+", "|", "```", "~~~")
+PLACEHOLDER = re.compile(r"^\s*[（(]\s*空\s*[）)]\s*$")
 
 
 def split_chapters(text: str) -> list[tuple[str, str]]:
@@ -58,16 +59,33 @@ def subsection_bodies(chapter: str) -> list[tuple[str, str]]:
     return out
 
 
-PLACEHOLDER = re.compile(r"^\s*[（(]\s*空\s*[）)]\s*$")
-
-
 def _meaningful_len(text: str) -> int:
     lines = [ln for ln in text.splitlines() if not PLACEHOLDER.match(ln)]
     return len(re.sub(r"\s+", "", "\n".join(lines)))
 
 
+def _tr0_error(body: str) -> str | None:
+    """章内第一个非空内容必须是自然语言段落，不能是清单/表格/代码。"""
+    lines = body.splitlines()
+    first_sub = next((i for i, ln in enumerate(lines) if re.match(r"^###\s+", ln)), len(lines))
+    first = next((i for i in range(first_sub) if lines[i].strip()), None)
+    if first is None:
+        return "TR-0（章首没有问题入口段落）"
+    opener = lines[first].strip()
+    if opener.startswith(BAD_OPENERS):
+        return "TR-0（章首以清单/表格/代码开场，未先说明问题）"
+    chunk = "\n".join(ln for ln in lines[first:first_sub] if ln.strip())
+    chunk = re.sub(r"^\s*>\s?", "", chunk, flags=re.MULTILINE)
+    if _meaningful_len(chunk) < 20:
+        return "TR-0（问题入口不足 20 实义字符）"
+    return None
+
+
 def check_chapter(title: str, body: str, has_glossary: bool) -> list[str]:
     missing: list[str] = []
+    tr0 = _tr0_error(body)
+    if tr0:
+        missing.append(tr0)
     subs = subsection_bodies(body)
     have: dict[str, tuple[str, str] | None] = {k: None for k in PATTERNS}
     for k, pat in PATTERNS.items():
@@ -78,7 +96,7 @@ def check_chapter(title: str, body: str, has_glossary: bool) -> list[str]:
     for k in NEED:
         if have[k] is None:
             missing.append(f"{k}（关键词 {PATTERNS[k].pattern.split('|')[0]}…）")
-        elif k in ("TR-1", "TR-2", "TR-4") and _meaningful_len(have[k][1]) < 20:
+        elif k == "TR-4" and _meaningful_len(have[k][1]) < 20:
             missing.append(f"{k}（正文不足 20 字或只有占位）")
     # TR-3：示例节必须含围栏代码块或编号步骤
     if have["TR-3"] is not None:
@@ -145,13 +163,8 @@ def self_test() -> int:
 
 ## 1. 起步
 
-### 学习目标
-
-- 能说出启动第一阶段需要先建立根页表，再打开分页，最后跳转到内核入口。
-
-### 前置概念
-
-- 无（开篇）：读者只需要知道虚拟地址和页表这两个词，不要求读过前章。
+读者第一次打开机器时，最先遇到的问题是 CPU 还在实地址模式，而内核代码按高地址链接。
+本章先把这个问题讲清楚，再决定第一条跳转指令应该放在哪里。
 
 ### 最小示例
 
@@ -173,13 +186,7 @@ fn main() { boot(); }
 
 ## 2. 下一章
 
-### 学习目标
-
-- 能解释从低地址启动到高半区内核入口的跳转步骤与前提条件。
-
-### 前置概念
-
-- 第 1 章建立的根表，以及分页开启后虚拟地址到物理地址的映射关系。
+上一章只建了根表，还没有回答内核入口应该使用哪个栈。本章沿着这个缺口继续往下走。
 
 ### 最小示例
 
@@ -196,29 +203,28 @@ jmp entry
 - 先保存再跳
 """
     bad = (
-        "# 坏教程\n\n## 1. 只有叙述\n\n"
+        "# 坏教程\n\n## 1. 只有术语清单\n\n"
+        "- DirectMapLayout\n- plan_dm_policy\n- LiveBootstrap\n- source 4\n\n"
         + "这里讲了很多机制，但没有目标、没有示例、没有小结。\n" * 25
-        + "\n## 2. 有示例但无其它\n\n### 示例\n\n```rust\nfn x() {}\n```\n"
+        + "\n## 2. 有示例但无问题入口\n\n### 示例\n\n```rust\nfn x() {}\n```\n"
         + "补充叙述。\n" * 25
     )
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "good.md").write_text(good, encoding="utf-8")
         (root / "bad.md").write_text(bad, encoding="utf-8")
-        # 好文档：两章都齐（第 2 章术语由篇内第 1 章术语表满足）
         if run(root / "good.md", False) != 0:
             print("self-test FAIL: 合规文档被判红")
             return 1
-        # 坏文档：两章都缺项 → exit 1
         if run(root / "bad.md", False) == 0:
             print("self-test FAIL: 缺项文档未被拦截")
             return 1
-    print("self-test PASS: 合规文档通过；缺目标/前置/示例/对照/小结被拦截")
+    print("self-test PASS: 问题入口/示例/对照/小结齐备通过；清单开场与缺项被拦截")
     return 0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="教程质量 rubric 检测器（V3.8）")
+    ap = argparse.ArgumentParser(description="教程质量 rubric 检测器（V3.12）")
     ap.add_argument("doc", nargs="?")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--self-test", action="store_true")

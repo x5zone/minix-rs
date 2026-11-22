@@ -705,7 +705,8 @@ G10 文档出版：当前篇 `tools/doc-publication-check.py` 零命中（DP-1..
 G11 代码出版：当前篇关联代码 `tools/code-publication-check.py` 零命中（CP-1..CP-6）
 G12 TODO 账本：`tools/todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
     （open = 0 且 blocked = 0；blocked 待裁项存在时禁止收敛）
-G13 教程 rubric：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）
+G13 教程 rubric：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-0、TR-3..TR-6；
+    TR-1/TR-2 由结构评审与 G18 判定）
 G14 单元账本：`tools/review-units.py check --doc <当前篇>` 与 `audit --doc <当前篇>` 退出 0，全部 `##` 章与 `###` 节
     frozen，且 T3 通过（`review-units.md`；旧 FREEZE 篇目指 `runs/*/FREEZE.md`，不追溯）
 G15 每单元至少 2 次 review：`review_rounds >= 2`，且 `post_freeze_rounds` 非空；
@@ -714,13 +715,30 @@ G16 每篇至少 2 个 full 轮：`full_rounds >= 2`；每个 full 轮的 eviden
     （含冻结单元），同一 evidence 不得跨轮复用
 G17 每轮轨迹复核：本篇每个 full 轮与确认轮都有 `PASS` 的 `trajectory_reviews`；
     缺一个不得 CONVERGED
+G18 可读性冷读：学习范围表已由作者确认；确认轮内存在覆盖全部单元的
+    `student-cold-read` 事件，且报告 `HARD-REJECTIONS: 0`（或 `硬劝退: 0`）；
+    缺事件、漏单元、硬劝退 > 0 均不得 CONVERGED
+G19 审查事件链：`mark --pass`/`--confirm-review` 与 `gate --pass` 的前置事件校验通过；
+    `event verify` 无重复 report_sha、无跨篇/旧版冒充；事件字段由调度层产生，
+    Agent 只能提交 review_id / report_path / report_sha / result
 ```
+
+**V3.12 可读性与事件链（2026-11-22 作者裁决）**：新增 G18（可读性冷读）与 G19（审查事件链）。
+每篇文档在学习范围表（`meta/review/scope/<stage>/<doc-stem>.yaml`）中声明本篇要求读者掌握的内容，
+表只能由作者确认。确认轮其他验证完成后，必须新起一个独立 READER-C 做整篇冷读，
+按硬劝退定义报告；`HARD-REJECTIONS > 0` 不得 CONVERGED。审查事件写入
+`meta/review/events.csv`：调度层预登记 `review_id`/`doc_id`/`edition`/`round`/`review_type`/
+`target_commit`/`doc_sha`/`unit_ids`，Agent 完成后只提交报告与结果；`mark` 与 `gate`
+必须消费事件，不能绕开 CSV 直接写状态。
+
+**review-events 的诚实边界**：它记录审查行为的来源、输入范围和交付结果，
+不能从物理意义上证明模型逐字阅读并认真理解了所有内容。不得把它宣传成安全承诺。
 
 **V3.11 严格账户模型（2026-11-22 用户裁决）**：每篇文档是一个独立账户，`edition`、`round`、
 `full_rounds`、`trajectory_reviews` 都写在该篇状态文件内；D01 的轮次号、D-114 这类 doc 级裁决
 不得给 D02 背书。每篇至少 **2 个 full 轮**，每个 full 轮覆盖全部单元（包括冻结单元）；
 每个单元至少 **2 次 review**（冻结前 1 次、冻结后确认轮 1 次），证据文件必须只点名该单元；
-每轮结束必须有独立的 `trajectory-review`。G15/G16/G17 是硬门，缺一项只能最多 `ROUND-CLOSED`。
+每轮结束必须有独立的 `trajectory-review`。G15–G19 是硬门，缺一项只能最多 `ROUND-CLOSED`。
 轮次号必须从本篇 `loop.md` / `review-units.py stats` 取，不得手写或跨篇复用；
 引用裁决时必须校验裁决的适用范围（doc / stage / repo）。实测判例：D02–D05 曾把 D01 的 R39
 与 D-114 当成 stage 级通行证，导致四篇没有当前 edition full survey 就宣告 CONVERGED；
@@ -741,9 +759,9 @@ V3 不再要求“连续两轮零新增”，也不再把 meta 抽样一致性�
 
 | 状态 | 含义 | 谁能宣告 |
 |---|---|---|
-| `ROUND-CLOSED` | 本轮准入根因全部处置，100% 复验与机械门通过（G1–G17 中与修改轮相关的部分） | 修改轮（full/structural）的 certify |
+| `ROUND-CLOSED` | 本轮准入根因全部处置，100% 复验与机械门通过（G1–G19 中与修改轮相关的部分） | 修改轮（full/structural）的 certify |
 | `CONVERGENCE-CANDIDATE` | 最近一个修改轮 ROUND-CLOSED，等待确认轮 | 修改轮关闭时自动进入，无动作 |
-| `CONVERGED` | 确认轮在最终工作树上 `certify 新准入 = 0`，G1–G17 全过（含全部单元 frozen、每单元 2 次 review、至少 2 个 full 轮、每轮 trajectory PASS），且 OPEN-DEBT 无未销账行 | **只由确认轮出口给出** |
+| `CONVERGED` | 确认轮在最终工作树上 `certify 新准入 = 0`，G1–G19 全过（含全部单元 frozen、每单元 2 次 review、至少 2 个 full 轮、每轮 trajectory PASS），且 OPEN-DEBT 无未销账行 | **只由确认轮出口给出** |
 | `FREEZE-WITH-BACKLOG` | 预算用尽或决定停止，仍有未解决事项或证据缺口 | 用户裁决 |
 
 - **修改轮没有收敛声明权**：full/structural 轮的 agent 不得宣告 CONVERGED，最多

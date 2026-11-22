@@ -166,14 +166,20 @@ It was a wire field` 这样的注释只告诉他仓库的历史，不告诉他�
 `CONVERGED` 自本文件生效日起表示**出版就绪**，必须同时满足：
 
 - G1–G9（`review-evals.md` §6A，其中 G3/G9 按本文件收窄）；
-- **G13 教程 rubric**：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-1..TR-6）；
+- **G13 教程 rubric**：`tools/tutorial-rubric-check.py <当前篇>` 零缺项（TR-0、TR-3..TR-6；
+  TR-1/TR-2 由结构评审与 G18 判定）；
 - **G14 单元账本**：`tools/review-units.py check --doc <当前篇>` 与 `audit --doc <当前篇>` 退出 0，
   全部单元 frozen、`reopened=0`、`stale=0`、T3 通过（evidence 含可重放 token）；旧 FREEZE 篇目（`runs/*/FREEZE.md`）不追溯；
+- **G15–G17 单元账户**：每单元至少 2 次 review、每篇至少 2 个 full 轮、每轮 trajectory PASS；
+  详见 `review-units.md`；
 - **G10 文档出版**：当前篇 `doc-publication-check.py` 零命中；
 - **G11 代码出版**：当前篇关联代码 `code-publication-check.py` 零命中；
 - **G12 TODO 账本**：`todo-ledger.py check --doc <当前篇> --fail-on-open` 通过
   （open = 0 且 blocked = 0——待裁项存在时禁止收敛）；
 - **零欠账**：`OPEN-DEBT` 无 `[OPEN]`，且无任何未获 `defer-approved` 的 ②/⑥/SUGG。
+- **G18 可读性冷读**：学习范围表已由作者确认；确认轮 `student-cold-read` 覆盖全部单元，
+  报告 `HARD-REJECTIONS: 0`；
+- **G19 审查事件链**：`mark`/`gate` 的事件前置校验通过，`event verify` 无重复报告/跨篇/旧版冒充。
 - **卓越性缺口**按 G2 的 P1/P2 入 Issue List 并当轮处置；不另设卓越性门槛。
 
 G10–G14 证据写入 scan.md 的 `gate-evidence-G10`..`gate-evidence-G13` 围栏块（工具名 + 0 命中/exit 0 + 计数），由 `tools/verify-check.py --self-check` 强制；缺块即 Gate 0 FAIL。

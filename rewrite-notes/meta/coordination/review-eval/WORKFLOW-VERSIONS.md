@@ -22,6 +22,7 @@
 | **V3.9** | **2026-11-21** | **单元级 review（用户裁决）**：`###` 节与 `##` 章建单元状态，T1 结构/T2 行文/T3 出版三轨；每单元每轨 2 个修改轮，冻结后不再重读；确认轮读未冻结单元 + ≥20% 冻结样本；新增 G14 与 `tools/review-units.py` | 用户指出整篇 loop token 成本过高、早期章节早已稳定；D01 28 轮重复通读复盘 | 见 V3.9 减法账本 | `review-units.py --self-test` + 四门 | 生效（新开 edition 标 `schema: V3.9`） |
 | **V3.10** | **2026-11-22** | **门可验证性收紧 + 锚点失效**：C1 红绿四列（V3.10+ 台账缺列即 FAIL）、Gate 证据 `level:` 首行与 L1 命令/输出分离、Skill 日志表体、Resume 指针行号、单元冻结存符号体哈希与 `invalidate --from`、条件 10%/20% 抽样、G14 `reopened=0/stale=0`；门表三处单一来源，review-scan 收敛为薄 SKILL | 2026-11-22 用户批准执行批；Cycle 3 对抗审计 A01–A10/C01–C10 | 见 V3.10 减法账本 | `eval-trace-check --self-test` / `review-units --self-test` / 四门 | 生效（新开 edition 标 `schema: V3.10`） |
 | **V3.11** | **2026-11-22** | **严格账户模型**：每篇独立 `edition`/`round`/`full_rounds`/`trajectory_reviews`；每篇至少 2 个 full 轮，full 轮覆盖全部单元；每个单元至少 2 次 review（冻结前 + 冻结后确认）；单元证据必须只点名 `UNIT <id>`；每轮结束必须 `trajectory-review`；新增 G15/G16/G17。作废 D02–D05 的 R39 借用与 D-114 越界引用 | D02–D05 把 D01 的 R39/D-114 当 stage 级通行证，且在无当前 edition full survey 时宣告 CONVERGED；用户 2026-11-22 裁决“每篇独立账户、至少两轮 full、每单元两轮 review、彻底重置” | 见 V3.11 减法账本 | `review-units.py --self-test` + 四门 + 3 轮 workflow 复核 | 生效（所有篇从 R0 重开） |
+| **V3.12** | **2026-11-22** | **可读性门 + 审查事件链（作者裁决）**：G18 整篇冷读（学习范围表 + 硬劝退 = 0）、G19 review-events（`meta/review/events.csv`，调度层绑定 doc/round/commit/doc_sha）、`mark`/`gate` 消费事件；TR-0 问题入口，TR-1/TR-2 改为作者约束而非章首小节；me-agent 常驻裁决层接口 | 用户人工审阅 D01 后判定“我根本读不进去”，三篇 CONVERGED 全部撤销（D-116）；me-agent 提案 v3 | 见 V3.12 减法账本 | `review-units.py --self-test` + `tutorial-rubric-check.py --self-test` + 四门 + 3 轮复核（R1 一致 / R2 对抗 11/11 / R3 端到端 PASS） | 生效（新 edition 标 `schema: V3.12`） |
 
 ### V2 执行状态（D04 复核）
 
@@ -885,6 +886,20 @@ D 号唯一性与引用存在性门（p5）、style-lint 对 runs/DECISIONS 日�
 
 **首次实测（2026-11-22）**：`review-units.py --self-test` 覆盖 full 轮覆盖、重复证据拒绝、
 通用证据拒绝、2 次 review、冻结后确认、trajectory 门、account reset；四门与工具自测见同步门读数。
+
+### V3.12 减法账本
+
+| 版本 | 装置 | 替代 / 合并 | 减法 |
+|---|---|---|---|
+| V3.12 | G18 整篇冷读 | 替代“确认轮零新发现 = 可读” | 删除“机械门全绿即可宣告出版就绪”的出口 |
+| V3.12 | 学习范围表（作者确认） | 替代冷读 agent 自行推断范围 | 删除“冷读按自己想象扩张教学要求”的出口 |
+| V3.12 | review-events CSV | 替代口头/文件名推断审查来源 | 删除“报告换篇、旧版冒充、同报告两次背书”的出口 |
+| V3.12 | `mark`/`gate` 消费事件 | 替代“事件只做日志” | 删除“状态转换脱离审查记录”的出口 |
+| V3.12 | TR-0 问题入口 | 替代章首“学习目标/前置概念”关键词门 | 删除“为过 rubric 在开头堆内部术语”的出口 |
+
+**首次实测（2026-11-22）**：D03 用新 TR-0 检查，6 章中 5 章被命中“章首没有问题入口段落”，
+与用户“读不进去”的人工判断同向；`review-units.py --self-test` 覆盖事件重复报告、错误 DOC、
+未知单元、G18 硬劝退 > 0 与冷读缺失。
 
 ### V3.8-r2 正式文档禁 TODO（2026-11-21，用户质询）
 

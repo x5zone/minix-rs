@@ -1,4 +1,4 @@
-# 单元级 review：每篇独立账户与单元子键（V3.11）
+# 单元级 review：每篇独立账户、审查事件与可读性门（V3.12）
 
 > **解决的问题**：整篇 review 的每一轮都重读全文，稳定章节随轮次反复消耗面板；更严重的是，
 > 跨篇复用轮次号或裁决会让 D02 花掉 D01 的账。V3.11 把 review 账本改成
@@ -6,7 +6,8 @@
 > 该篇账户内闭合。
 >
 > **不改变的东西**：G1–G14、四态模型、确认轮、代码冻结、零欠账、3 edition 上限全部保留；
-> 本文件另加 G15/G16/G17。V3.11 只改变“账怎么记、每篇至少审几轮”，不改变“什么算缺陷”。
+> 本文件另加 G15–G19。V3.11 改变“账怎么记、每篇至少审几轮”，V3.12 增加
+> “审查事件必须可追溯、确认轮必须做整篇冷读”，不改变“什么算缺陷”。
 
 ## 一、账户模型
 
@@ -28,7 +29,7 @@
 | 单元 | 取哪一级标题 | 轨道 | 检查什么 |
 |---|---|---|---|
 | 章单元 | `##` | **T1 结构/语义** | 论证链、C 源锚点、设计语义、跨节承诺、章内小节边界 |
-| 节单元 | `###` | **T2 行文/教学** | TR-1..TR-6（在父章级判定）、文风、锚点句意、术语一致 |
+| 节单元 | `###` | **T2 行文/教学** | TR-0..TR-6（在父章级判定；TR-1/TR-2 由结构评审与 G18 判定）、文风、锚点句意、术语一致 |
 | 篇 | 整篇 | **T3 出版/代码同步** | DP-1..DP-6、CP-1..CP-6、符号覆盖、TODO 账本、测试/真机门 |
 
 - 没有 `###` 的 `##` 同时是 T1 与 T2 单元。
@@ -52,6 +53,10 @@
   `DOC <当前篇>` 并**只点名**该单元（`UNIT <id>`），且含可重放 token。
 - 第二次：冻结后的确认 review。确认轮内 `mark --confirm-review --evidence <unit-file>`，
   证据同样含 `DOC` 且只点名该单元；不改单元正文，只记录复核。
+- **事件前置（V3.12）**：`--pass`/`--freeze` 还要求当前轮存在覆盖该单元的已完成
+  `T1-chapter`/`T2-section`/`full` 事件；`--confirm-review` 要求当前确认轮存在覆盖该单元的
+  已完成 `confirmation` 事件。事件不新鲜（`doc_sha` 变了、`target_commit` 之后文档改过）
+  即拒绝。状态转换不得脱离 `meta/review/events.csv`。
 - `mark --freeze` 要求当前轮已有该单元的 `review_rounds` 记录；不允许“先冻结、后补读”。
 - `end-confirmation` 要求每个单元 `len(review_rounds) >= 2` 且 `post_freeze_rounds` 非空。
 - **禁止批量冻结**：一份含多个 `UNIT` 的通用证据只能用于 full 轮，不能用于任何单元的
@@ -73,6 +78,31 @@
 - 同一篇的 edition 上限仍是 3（`review-evals.md` §7.5）；跨篇不累计，也不互相抵扣。
 - 任何“本轮已经审过”的声明，必须能在本篇账户的 `review_rounds`/`full_rounds` 找到对应记录；
   找不到 = 没审过，不能凑数。
+
+### 3.5 审查事件链（V3.12）
+
+- 全局单表 `rewrite-notes/meta/review/events.csv`，追加写；同一 `review_id` 的后写行覆盖前写行，
+  旧行保留为审计历史。
+- 调度层预登记以下字段：`review_id`、`doc_id`、`edition`、`round`、`review_type`、
+  `unit_ids`、`reviewer`、`target_commit`、`doc_sha`。Agent 完成后只提交
+  `report_path`、`report_sha`、`result`（`event complete`）。
+- `unit_ids` 用分号分隔，不用 JSON 数组；ID 列一律按字符串比较。
+- `report_sha` 是去重键：同一份报告不得重复引用充当两次审查证据。同一文档版本由不同角色
+  各审一次是合法的（T1 与 T2 同版本并存）。
+- `doc_id` 必须是 `<stage>/<doc-stem>`；`doc_sha` 必须是当前文档内容指纹；
+  `target_commit` 之后当前文档不得再改。三条件任一不满足即“不新鲜”，不得支撑 `mark`/`gate`。
+- **诚实边界**：事件记录审查行为的来源、输入范围和交付结果，不声称能验证模型内部的
+  认知过程；不得把它宣传成安全承诺。
+
+### 3.6 学习范围与 G18 冷读（V3.12）
+
+- `init` 为每篇生成学习范围表 `rewrite-notes/meta/review/scope/<stage>/<doc-stem>.yaml`；
+  作者填写每项 `requirement` 后执行 `scope confirm --by author`。表随 edition 固定。
+- G18 冷读由**新的独立 READER-C 运行**执行：只给当前整篇文档、读者画像和学习范围表；
+  不给旧面板、缺陷清单、预期结论、源码或其他教程文档。
+- 冷读报告必须写 `HARD-REJECTIONS: <n>`（或 `硬劝退: <n>`）；`gate --pass` 要求当前轮
+  存在覆盖全部单元的 `student-cold-read` 事件，且 `n = 0`。
+- 硬劝退定义、读者画像、发现格式见 `review-tutorial-rubric.md` §四。
 
 ## 四、状态机与冻结
 
@@ -136,6 +166,10 @@ pending → (T1 通过) → passed → (全部子节 frozen) → frozen
   - **G16**：本篇 `full_rounds >= 2`；每个 full 轮的 evidence 覆盖全部单元；同一 evidence
     不得跨轮复用。
   - **G17**：本篇每个 full 轮与确认轮都有 `PASS` 的 `trajectory_reviews`；缺一个不得 CONVERGED。
+  - **G18**：学习范围表已确认；当前轮 `student-cold-read` 事件覆盖全部单元；
+    报告 `HARD-REJECTIONS: 0`。
+  - **G19**：`mark`/`gate` 的事件前置校验通过；`event verify` 无重复 `report_sha`、
+    无跨篇或旧版冒充。
 - **四态模型不变**：修改轮无收敛声明权；`CONVERGED` 只由确认轮宣告。
 - **代码冻结不变**：面板 survey 与 certify 阶段不得写 `os/`；本轮台账内的修复按 L3 实施后
   重设基线，设计批级改动回 Manuscript（`review-publication.md` §四.6）。
@@ -168,6 +202,17 @@ python3 tools/review-units.py end-confirmation <doc>
 # 确认轮修复：解冻、修复、重新冻结、重新 confirm-review
 python3 tools/review-units.py mark <doc> --unit 2.3 --track t2 --confirm-fix
 
+# 审查事件：先由调度层预登记，Agent 提交报告与结果
+python3 tools/review-units.py event plan <doc> --round 2 --type T2-section --units 2.3 --reviewer READER-A
+python3 tools/review-units.py event complete <doc> --review-id REV-... --report runs/<stage>/<doc>/panel/round2/reader-a.md --result PASS
+python3 tools/review-units.py event verify <doc> --fresh
+
+# 学习范围表与 G18 冷读
+python3 tools/review-units.py scope init <doc>
+python3 tools/review-units.py scope confirm <doc> --by author
+python3 tools/review-units.py event plan <doc> --round 3 --type student-cold-read --units all --reviewer READER-C
+python3 tools/review-units.py event complete <doc> --review-id REV-... --report runs/<stage>/<doc>/cold-read.md --result PASS
+
 # T3 与收敛
 python3 tools/review-units.py gate <doc> --pass --evidence runs/<stage>/<doc>/gates-final.md
 python3 tools/review-units.py trajectory-review <doc> --round 3 --evidence runs/<stage>/<doc>/trajectory-r3.md --verdict PASS
@@ -175,6 +220,10 @@ python3 tools/review-units.py trajectory-review <doc> --round 3 --evidence runs/
 
 状态文件：`rewrite-notes/meta/review/state/<stage>/<doc-stem>.yaml`。
 `stats` 会输出 `round`、`full_rounds`、`trajectory_reviews`、`units_review_lt2`、`units_post_freeze_0`。
+
+**测试夹具**：`REVIEW_STATE_DIR` 与 `REVIEW_META_DIR` 可把状态/事件/学习范围指向临时目录，
+只用于自测与对抗夹具。生产 review 不得设置这两个变量，否则账本会落到临时目录，
+`gate` 与 `event verify` 将看不到真实审查记录。
 
 ## 九、失败对照
 
@@ -186,3 +235,7 @@ python3 tools/review-units.py trajectory-review <doc> --round 3 --evidence runs/
 - **一份证据冻结全篇**：通用 evidence 没有 `UNIT <id>` 或含多个 `UNIT`，工具直接 FAIL。
 - **用抽样代替确认轮**：抽样是确认轮的读法，不是取消确认轮；修改轮仍不得宣告 `CONVERGED`。
 - **一轮 full 就收敛**：V3.11 至少 2 个 full 轮；不足时最多 `ROUND-CLOSED`。
+- **状态脱离事件**：直接 `mark --pass` 或 `gate --pass`，但 `events.csv` 没有覆盖该单元/
+  整篇的已完成事件。V3.12 直接拒绝；补事件不能伪造 `doc_sha` 或 `target_commit`。
+- **冷读走过场**：报告没有 `HARD-REJECTIONS` 行，或只覆盖部分单元，或硬劝退 > 0 仍想收敛。
+  G18 拒绝。

@@ -10,7 +10,8 @@
 > `python3 tools/doc-publication-check.py <doc>`（DP-1..DP-6 零命中）。出版门未过 =
 > 文档还不具备被 review 的资格；先清出版门，再谈内容。
 > **⛔ 教程 rubric 前置（V3.8）**：同时必须通过 `python3 tools/tutorial-rubric-check.py <doc>`
-> （TR-1..TR-6 零缺项）。规则源：`prompt/review-rules/review-publication.md` 与
+> （TR-0、TR-3..TR-6 零缺项；TR-1/TR-2 由结构评审与 G18 判定）。规则源：
+> `prompt/review-rules/review-publication.md` 与
 > `review-tutorial-rubric.md`。
 
 ## 1. 文档结构规范

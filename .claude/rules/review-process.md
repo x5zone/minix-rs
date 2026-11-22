@@ -136,6 +136,9 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 > **Template**: `prompt/skill/review-process-skill.md` §Step 0.5.
 
 Step 0.5.1 按 12 节模板生成 structure.md（概念文档全量 12 节，实现文档简化）：
+
+> **V3.12**：12 节是作者组织内容与评审者检查完整性的全局信息，**不要求集中呈现在正式章节开头**。
+> 正文按读者理解机制的顺序逐步引入：先说明问题，再在需要时引入概念、不变量和编号。
 1. **主题思想（一句话）** — doc in one sentence; cannot say → P1
 2. **目标读者** — beginner/intermediate/advanced + prerequisites; undeclared → P1
 3. **叙事主语** — prot_init()/CPU/reader/OS (pick one + evidence); subject=function name → P1
