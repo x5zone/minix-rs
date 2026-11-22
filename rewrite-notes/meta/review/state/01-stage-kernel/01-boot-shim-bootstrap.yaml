@@ -1538,9 +1538,9 @@ units:
   - 3
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/6.4.md
 t3:
-  passed: true
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/certify/round3-gates.md
-  at_commit: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  passed: false
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/USER-REVIEW-REVOKE-2026-11-22.md
+  at_commit: 778bf7dcdb19b77a0b0d5b59e988c442acd03ca8
 structure_sha: 320b335d7d5162063219b63411300e4e347e62306d33baf3e18e09c5889b7dee
 code_sha: 4432b5a6c09b4a9ee851e64deadeaa229a551e8d85ceb50d6ecd6e42f5e4633a
 baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/metrics-full-r1.md

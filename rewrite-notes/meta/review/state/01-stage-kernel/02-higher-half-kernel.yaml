@@ -1306,9 +1306,9 @@ units:
   - 3
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/6.2.md
 t3:
-  passed: true
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/certify/round3-gates.md
-  at_commit: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  passed: false
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/USER-REVIEW-REVOKE-2026-11-22.md
+  at_commit: 778bf7dcdb19b77a0b0d5b59e988c442acd03ca8
 structure_sha: c907171fbbb8dd3a4bfb7294bf7b140fba9c936617812fcc17d5913c6fd3fe42
 code_sha: 780ecd8c3e9a3d44781e050c2ae6dcac05596d1ff45b9b2898a13a0daf169853
 baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/metrics-full-r1.md

@@ -1563,7 +1563,7 @@ def cmd_stats(doc: Path, state_path: Path) -> int:
           f"t2_pending={sum(1 for u in sections if u.get('t2_state')=='pending')} "
           f"reopened={sum(1 for u in units if u.get('reopened'))} "
           f"stale={sum(1 for u in units if u.get('stale'))} "
-          f"t3={'PASS' if data.get('t3',{}).get('passed') else 'pending'}")
+          f"t3={'PASS' if data.get('t3',{}).get('passed') else ('FAIL' if data.get('t3') else 'pending')}")
     print(f"round={data.get('round', 0)} full_rounds={len(data.get('full_rounds', []))} "
           f"trajectory_reviews={len(data.get('trajectory_reviews', []))} "
           f"units_review_lt2={sum(1 for u in units if len(u.get('review_rounds', [])) < 2)} "

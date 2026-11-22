@@ -1,4 +1,4 @@
-# D02 FREEZE —— 02-higher-half-kernel（CONVERGED，V3.11）
+# D02 FREEZE —— 02-higher-half-kernel（NOT CONVERGED，V3.11；用户人工审阅否决）
 
 - 冻结日期：2026-11-22
 - 规则版本：V3.11
@@ -13,3 +13,10 @@
 - 机械门：publication/tutorial/structure/ref/style/citation/anchor/density/doc-code-map 全绿；code-publication 30/30=0
 - 代码：三份 `higher_half.rs` SAFETY 注释同步；`cargo check -p minix-kernel --features mock` 通过
 - 限制：R3 的逐单元确认证据引用 R2 面板与 `confirmation-r3.md`，不是 41 个独立冷读会话；D2 的 SelectedSize 是设计候选，未实施。
+
+## 用户人工审阅裁决（2026-11-22）
+
+- 用户原话：“我根本读不进去。”
+- 裁决：本篇 `CONVERGED` 撤销，状态改判 `NOT CONVERGED`（D-116）。
+- 保留：轮次、单元冻结、逐单元确认、trajectory PASS、T3 曾被机械门判 PASS——这些是历史事实，不再作为出版验收结论。
+- T3：`review-units.py gate --fail` 已覆盖为 FAIL；证据 `runs/01-stage-kernel/USER-REVIEW-REVOKE-2026-11-22.md`。

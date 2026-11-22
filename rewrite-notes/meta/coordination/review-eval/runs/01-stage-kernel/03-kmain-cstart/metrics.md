@@ -58,8 +58,9 @@
 - 未闭环: 0
 - edition: V3.11
 - 轮型: confirmation
-- 结果: CONVERGED
+- 结果: NOT CONVERGED（用户 2026-11-22 人工审阅否决；机械确认轮 0 新发现，不构成出版验收）
 - full 轮: R1/R2 均覆盖全部单元
 - 单元: 44/44 frozen；R3 逐单元 confirm-review
 - 代裁决: 0 / ARCH 提案: 1（未实施）/ 用户否决: 0
 - 减法: 提案 1 / 采纳 0
+- 最终状态: NOT CONVERGED（D-116；用户人工审阅否决）

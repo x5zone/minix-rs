@@ -173,11 +173,11 @@
 
 ### §6 指标
 
-- 发现 0；根因 0；未闭环 0；轮型 confirmation；结果 CONVERGED。
+- 发现 0；根因 0；未闭环 0；轮型 confirmation；机械结果 CONVERGED，但 2026-11-22 被用户人工审阅否决，最终状态 NOT CONVERGED（D-116）。
 
 ### §7 状态
 
-`CONVERGED`（V3.11）。限制见 `FREEZE.md`：R3 逐单元确认引用 R2 面板与 confirmation 记录，不是 48 个独立冷读会话；D2 设计候选未实施。
+最终状态 `NOT CONVERGED`（D-116：用户人工审阅 D01 后判定读不进去，D01–D03 一并撤销）。限制见 `FREEZE.md`：R3 逐单元确认引用 R2 面板与 confirmation 记录，不是 48 个独立冷读会话；D2 设计候选未实施。
 
 ### §8 给 meta-review 的不确定点
 
