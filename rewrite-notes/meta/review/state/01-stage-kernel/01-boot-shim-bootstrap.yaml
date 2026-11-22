@@ -5,10 +5,19 @@ schema: review-units/v2
 doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 stage: 01-stage-kernel
 edition: V3.11
-round: 0
-full_rounds: []
-trajectory_reviews: []
-baseline_full_survey: false
+round: 1
+full_rounds:
+- n: 1
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/metrics-full-r1.md
+  evidence_sha: 2cbcc9ccd2bc616b77d7dab1fc7252f5c3ca28fd817d560f52a62e218a0581f5
+  commit: 1bdb4dc6040e9c1438087595e7eb8a6ed844c900
+trajectory_reviews:
+- round: 1
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/trajectory-r1.md
+  evidence_sha: 9b3219f9a239f6d366e2aa810585cd4c6ce4c0026f2eb76cc8ed912218ad6b14
+  verdict: PASS
+  commit: 1bdb4dc6040e9c1438087595e7eb8a6ed844c900
+baseline_full_survey: true
 confirmation:
   active: false
   completed: false
@@ -21,7 +30,7 @@ units:
   parent: null
   order: 1
   text_sha: 6fc3cd83988f7647117022626949deb2d2c6e8c991ea6f382b5f05517038a1b1
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -36,18 +45,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/1.md
 - id: '1.0'
   heading: 1.0 本章导读
   level: 3
   parent: '1'
   order: 2
-  text_sha: 335152a233198daec5624eeccdf27ca09ae1f6489c9a52097f25a85eb41365f7
+  text_sha: 6c054e84b125e2e9f4f27aaaefa6f2e33463f96fa1862478ab7cdeae2d367f5d
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -66,11 +77,11 @@ units:
   level: 3
   parent: '1'
   order: 3
-  text_sha: 24f1f36e7351a6d33259d0142e674c41eabe8b8bdfcab5ac01ea093de60c59ca
+  text_sha: 9682be506b8ebc06b8f24b1de4fc20e1e041329718ed416f03e0443978133367
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -89,10 +100,10 @@ units:
   level: 3
   parent: '1'
   order: 4
-  text_sha: 11146f498189eea3777a2ef95363a32b6f094b4c71030249edd9ade6ab48b1c3
+  text_sha: 0132c1fd886b99030ddb6640c065713b4c845ee0ce6e663a54a2972a0e5d50f2
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -105,18 +116,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/1.2.md
 - id: '1.3'
   heading: 1.3 与 Minix3 的对应
   level: 3
   parent: '1'
   order: 5
-  text_sha: a4294843df7e8f0ce52932cc7d5845c688c291728b28bd605b0e8adc54121f32
+  text_sha: bc313fe7241e713ac5fc6db0f051db784285e530f57d3a5437555e4456bb11e9
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -138,7 +151,7 @@ units:
   text_sha: 44d8887b6a1107704ac1776f41d0f27dedd7486f8b5a56cdd319b91a3f82c4f4
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -151,15 +164,17 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/1.4.md
 - id: '2'
   heading: 2. C 源码分析
   level: 2
   parent: null
   order: 7
   text_sha: e6e4794135e8dd9184440cc231d6d48160c72b7d5c564664e33f914cda721817
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -174,18 +189,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/2.md
 - id: '2.0'
   heading: 2.0 本章导读
   level: 3
   parent: '2'
   order: 8
-  text_sha: 6d9873cb34ba006f93b9caa67eb738054720dc0f4dd7b9198e657919fba39d7e
+  text_sha: bdb4172374cc82cadfa09421350576228edcbe732f5f3755e68fd3ac82061c88
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -207,7 +224,7 @@ units:
   text_sha: 021678f1855491b2d29b83596eee788b0beb4afcb662f731a9790b65bc2ad99f
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -220,8 +237,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/2.1.md
 - id: '2.2'
   heading: 2.2 `head.S` 入口：`multiboot_init` 与 `load_stack_start → pre_init`
   level: 3
@@ -230,7 +249,7 @@ units:
   text_sha: 176679354d2e0249e77a24189c57de390ae2861d9f4cd410a3d6476100054e16
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -243,8 +262,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/2.2.md
 - id: '2.3'
   heading: 2.3 `get_parameters`：把别人的数据变成自己的记录
   level: 3
@@ -253,7 +274,7 @@ units:
   text_sha: 9a6639968a6e3197ea6f043a9374b6fcb1cd0609f0c775bbbe04c51096200935
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -266,8 +287,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/2.3.md
 - id: '2.4'
   heading: 2.4 内存账：`add_memmap`/`cut_memmap` 与条目来源
   level: 3
@@ -276,7 +299,7 @@ units:
   text_sha: a1d90864597e21a8bacbae1ac745d349d5206e41a53c0f82db82b6f1d474c5fd
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -289,18 +312,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/2.4.md
 - id: 2.4.2
   heading: 2.4.2 从记录里取址：两个消费者、两条取整规则与移交截断
   level: 3
   parent: '2'
   order: 13
-  text_sha: f0f49577f42837eb31810708c2bb2e45bb480588803d95d2ed432e1a22a2bc3f
+  text_sha: e5fa51c86b0ac3c0a0a2bf468f61a1274e6ce4e18a729c2a279618e2a1b44e82
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -322,7 +347,7 @@ units:
   text_sha: 4f63ce9616ca7d6f9416890272323e6b1c4312e92a238bae1a44fa08f87a9362
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -335,18 +360,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/2.5.md
 - id: '2.6'
   heading: 2.6 模块装载的检查与失败模式
   level: 3
   parent: '2'
   order: 15
-  text_sha: 7493bc8e3f897091512f50f25257471c82f36d01f844b68e5015897737677ac5
+  text_sha: b96548126e37163569d2b04323aba3a80e69b0a0cbe554b0c57ef69d9793f4ea
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -365,11 +392,11 @@ units:
   level: 3
   parent: '2'
   order: 16
-  text_sha: 9a61cc5530e7eeafad607bbce4df2538e7050a9717e51b7ce91558182d6ceaa9
+  text_sha: c3a6cb16810137cf47c2ada4b0cc3d2f3491b65b4bed8ff4bacf94885774886c
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -388,11 +415,11 @@ units:
   level: 3
   parent: '2'
   order: 17
-  text_sha: e70747a01cd698929c66666842cbc2a51b4838ce15f260b429e945c89d0c1579
+  text_sha: 07fd227ab79ae8f6c2a08a4bb1ee0ac4dfa43dd4bd818de443e82babc00472df
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -412,7 +439,7 @@ units:
   parent: null
   order: 18
   text_sha: 3d2d4ff3f8a1a80b6fc9e5c64b310857bbe2de0a478160ec53e99471a6987ffc
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -427,8 +454,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/3.md
 - id: '3.0'
   heading: 3.0 本章导读
   level: 3
@@ -437,7 +466,7 @@ units:
   text_sha: f56ab18d04a9d2e59448b0d3a545d268cb2efa5df2f68c31f3ce20d46f0956b0
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -450,8 +479,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/3.0.md
 - id: '3.1'
   heading: 3.1 协议换代：固件接口替换 Multiboot
   level: 3
@@ -460,7 +491,7 @@ units:
   text_sha: a730c101506176280848077c87816f803c5112dfe1e3ab1c3620aa6f415fb82c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -473,18 +504,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/3.1.md
 - id: '3.2'
   heading: 3.2 按值交接：`KernelInfo` wire 与字段台账（I1）
   level: 3
   parent: '3'
   order: 21
-  text_sha: 86d94d5fc8bb5435f17a0c1d6b673b3811aba0c7ed6c37d1aaa49f7d43e82142
+  text_sha: ede1f8052909614b5dd6cbf873601abe12c4e66f84aafc61e885a38df430d30b
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -506,7 +539,7 @@ units:
   text_sha: 3f8111be522c8d38c1d8d08ada804d3c50daad6b47c03c105e4bdfc1cd5bd5cf
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -519,18 +552,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/3.3.md
 - id: '3.4'
   heading: 3.4 bootstrap 区间与分配器换手
   level: 3
   parent: '3'
   order: 23
-  text_sha: 337836d8421d53267febb3281e4ea071c5a9d0f6bbb52fccf57ba4fe63c4d54e
+  text_sha: 1929db2d8d00cc167a93833f9fd8eb56b1eda109c309589ed9493e3ad8d5b2cb
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -552,7 +587,7 @@ units:
   text_sha: 6de37f763e42600adf282a84bb42bda318aa02bb20e10728d9b90d3a9f6c65cf
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -565,18 +600,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/3.5.md
 - id: '3.6'
   heading: 3.6 五条生产腿与发送侧（接缝定义）
   level: 3
   parent: '3'
   order: 25
-  text_sha: a48ee82d2532c8fb0565e86afcf35923f80329345c0bc3f27860c672585e275a
+  text_sha: a9cc233dbf5156ef5c63545244643e8975b2f02347ba5762fea8e066f370ca2b
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -599,7 +636,7 @@ units:
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -619,7 +656,7 @@ units:
   parent: null
   order: 27
   text_sha: ad97219175a2c9a459cf2d2edaff6df4488a140137f18cd03bd4d016f6868ab8
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -634,8 +671,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/4.md
 - id: '4.0'
   heading: 4.0 本章导读
   level: 3
@@ -644,7 +683,7 @@ units:
   text_sha: 772169ed4ae69a9efdd5bad98555e897dc83edc288cab79ad8ca33d2c4e5b4f9
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -657,18 +696,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/4.0.md
 - id: '4.1'
   heading: 4.1 入口与调用链
   level: 3
   parent: '4'
   order: 29
-  text_sha: 87cb550ababf579608390daa2eb3bbccbe42520c5e72f0049e5ba2897f059fb3
+  text_sha: ce4156b2754fbaa6de382f7ac884fea568e9c35436d5e8ca74155c1c9a03fb33
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -687,11 +728,11 @@ units:
   level: 3
   parent: '4'
   order: 30
-  text_sha: e7702701adee03c6e1c876b692fb4000e4164814638e1e1d45e1b1e81c6457dc
+  text_sha: aa31f5f385c5742689c3c5c86c1c17972cd99d582f36ad5b030876a197b88bfb
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -710,11 +751,11 @@ units:
   level: 3
   parent: '4'
   order: 31
-  text_sha: aa95f55dc0732ff3a21d3582d8d0d20e43bd93db067bb8047803d138fc8f7f51
+  text_sha: ef5e41a9737c14dbd241984fd79549f325892a3e6154fef5a5249e10393f9d0d
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -733,11 +774,11 @@ units:
   level: 3
   parent: '4'
   order: 32
-  text_sha: 122a4293b6974a312b29db8560a2712c584bb40491f5e47402e08a44a4e958b9
+  text_sha: 0858cfe64c8104a729f190fa91ea8192eb1859196f44f870748bb52635c8fbbc
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -759,7 +800,7 @@ units:
   text_sha: 3e0751b9fd9d387e52f8266b8c1f846b0f3b34f51df9f1dba32794d37fe98a05
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -772,18 +813,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/4.5.md
 - id: '4.6'
   heading: 4.6 arena 与分配器换手的落地
   level: 3
   parent: '4'
   order: 34
-  text_sha: a0c0ef32bd8249f32fe3f7110ae394f23427ee73de878325e7de0e1f192f7c4b
+  text_sha: e127288d2fe1fa370ddb636137c97cc491baeaf8a35ff25fd94ae86ef0811527
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -805,7 +848,7 @@ units:
   text_sha: 70d746e917460f368145f69c7bc149cbf71c76fbd94b2046214d938ca9b61c9c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -818,8 +861,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/4.7.md
 - id: '4.8'
   heading: 4.8 交接后的 Direct Map（概念入口）
   level: 3
@@ -828,7 +873,7 @@ units:
   text_sha: 8d72f43c5ddfb089f0fb947247e3a542d8cb1913131ccf45904923bdb47f63a5
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -841,15 +886,17 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/4.8.md
 - id: '5'
   heading: 5. 测试：四条不变量各自的证据
   level: 2
   parent: null
   order: 37
   text_sha: 5f421fccbbbdd6b9bcde56ce3d3fdc6e2ea2925316cac74911c9f365f78d21d6
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -864,18 +911,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/5.md
 - id: '5.0'
   heading: 5.0 本章导读
   level: 3
   parent: '5'
   order: 38
-  text_sha: 9f30a08d617cda5a361f791733241bccdcb6563660830ab496c0b4220d192e9f
+  text_sha: 6fa7b329a6bd30487ff74927e7124549af8eced85aa0d2d844d4c6689123475d
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -894,10 +943,10 @@ units:
   level: 3
   parent: '5'
   order: 39
-  text_sha: 9a06cea67000400134dd9da3ec506f34160c026f00541d567ab003f729f7b2bf
+  text_sha: 9af547d31f84bfda5e108fa9abc6a63e4adf1a40a8667e9cb1e58034bcfeda1c
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -910,18 +959,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/5.1.md
 - id: '5.2'
   heading: 5.2 宿主测试的边界
   level: 3
   parent: '5'
   order: 40
-  text_sha: 18c3566d81ca615d52311de6d0e70621298de4f347328b5574908222d11fef7e
+  text_sha: 4104f39f1c73d72e79a33176aab0007694e46bf0f338f183e01941c6b74eead0
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -943,7 +994,7 @@ units:
   text_sha: 219e0e57ee58cb1d175fc15e86c368cfc8050dfb17dbb39fd4cb70355bf8b424
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -956,18 +1007,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/5.3.md
 - id: '5.4'
   heading: 5.4 真机门链
   level: 3
   parent: '5'
   order: 42
-  text_sha: 1ac8fdae7698becc41f0e71d10dc213ca97a27af97a869f97dba3b6f5fbd1d01
+  text_sha: dab6a1845cc55c97a474de02907d28eaecd8b686a9958aa6ed3484d3893452eb
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -986,11 +1039,11 @@ units:
   level: 3
   parent: '5'
   order: 43
-  text_sha: 1dccb0cfa7e695ccabc154cfafaed4e1ea0da273a71b29e9f8a80f392e87d796
+  text_sha: 3091213bd0fead7a6a0900088ab7c817d2f1313758913068c169b45f33439f2b
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -1010,7 +1063,7 @@ units:
   parent: null
   order: 44
   text_sha: b83c43908468dc201241c41e63152c959a0888a594ab13e15d3504ce33050561
-  t1_state: pending
+  t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
@@ -1025,8 +1078,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/6.md
 - id: '6.0'
   heading: 6.0 本章导读
   level: 3
@@ -1035,7 +1090,7 @@ units:
   text_sha: 12753aeb1a1032cfff8d4fe6514c0d2620df319148b1e9210ba17af77b50944b
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -1048,18 +1103,20 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/6.0.md
 - id: '6.1'
   heading: 6.1 EBS 分界与裸串口通道内的两种写法
   level: 3
   parent: '6'
   order: 46
-  text_sha: 71b8c65469536e14fb47174d56354a555374cdf68888680d803a9e9573079825
+  text_sha: 22ee27f94eeeb64a8c34d4e1d968ae903e15298ba4bd50d665ec2a9f6514b9d0
   t1_state: n/a
   t1_rounds: 0
   t2_state: pending
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: false
   frozen_at: null
   rewritten: false
@@ -1081,7 +1138,7 @@ units:
   text_sha: 24f08b5225a052b7b522530cddaa17c85a46a2e39b86221f93716aea1a1745f6
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -1094,8 +1151,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/6.2.md
 - id: '6.3'
   heading: 6.3 典型失败模式与诊断信号
   level: 3
@@ -1104,7 +1163,7 @@ units:
   text_sha: 412eeb311371f544e5674ab9826aa7446c20386527080db1f521c8401d72956d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -1117,8 +1176,10 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/6.3.md
 - id: '6.4'
   heading: 6.4 可复制命令
   level: 3
@@ -1127,7 +1188,7 @@ units:
   text_sha: 70a6f95c009e421708e5a685aecc47dd676201d1d3ec7736e47d94a928f2833d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: pending
+  t2_state: passed
   t2_rounds: 0
   frozen: false
   frozen_at: null
@@ -1140,9 +1201,14 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds: []
+  review_rounds:
+  - 1
   post_freeze_rounds: []
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r1/6.4.md
 t3:
   passed: false
   evidence: ''
   at_commit: ''
+structure_sha: 320b335d7d5162063219b63411300e4e347e62306d33baf3e18e09c5889b7dee
+code_sha: 4432b5a6c09b4a9ee851e64deadeaa229a551e8d85ceb50d6ecd6e42f5e4633a
+baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/metrics-full-r1.md
