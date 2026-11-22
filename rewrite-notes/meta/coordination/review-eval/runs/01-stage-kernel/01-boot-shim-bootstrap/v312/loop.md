@@ -61,28 +61,47 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 
 ### §2 发现
 
-待本轮填写。
+- 面板 6 角色：P-FACT 3、READER-A 14、READER-B 12、READER-C 13、DESIGN-D2 6、P-REFUTE 0 FINDING（6 条 CLAIM 全部反证失败，附 4 条论证边界 P2）。
+- 合计 48 FINDING：P0 0 / P1 5 / P2 24 / P3 19；另有 36 SUGGESTION。
+- P1：DESIGN-01（`KinfoStruct.user_sp` 读者事实）、READER-B-01（memmap 槽位表与 panic 冲突）、READER-B-02（riscv64 判据）、READER-C-01（I4 与 §4.4.1 冲突）、READER-C-02（I4 证据不证明顺序）。
+- 原始报告在 `panel/round1/`；`INDEX.md` 由 `panel-index.py` 生成。
 
 ### §3 归因
 
-待本轮填写。
+- 根因合并：48 FINDING → 40 根因（`R1-01`..`R1-40`），重复合并 8。
+- 台账：`defect-ledger.md`；P-REFUTE 附加 6 行；36 条建议在 `## 建议` 节。
+- `R1-24`（DESIGN-02）按 `review-publication.md` §四.6 属设计批级，标 `⑥/BLOCKED`，案件卷见 `DESIGN-02-CASE.md`。
 
 ### §4 修复
 
-待本轮填写。
+- 文档批：`R1-01`..`R1-23`、`R1-25`..`R1-36`；代码批：`R1-37`..`R1-40`。
+- 已提交：`7a356f781`（文档批）、`9228fd512`（代码批 + `R1-40`）。
+- 测试：`cargo test -p minix-boot --lib` 188/0；`cargo test -p minix-kernel --features mock` 866/0/8（全部测试二进制 876/0/12）。
+- 建议：36 条中约 15 条已随修复落地；其余待 R2（本轮 `BLOCKED`，不宣告收敛）。
 
 ### §5 复验
 
-待本轮填写。
+- 文档 verifier：34/35 PASS；R1-14 的 `LOADER_DATA` 指针在复检中修正后整体 PASS（见 `certify/round1-verify-doc.md` 顶部复检更新与 §5）。
+- 代码 verifier：`R1-37`..`R1-40` 全部 PASS；`R1-41` 文档同步追加复核 PASS（`certify/round1-verify-code.md`）。
+- beginner-me 冷读：`HARD-REJECTIONS: 0`、`VERDICT: READY`（`certify/cold-read-y01.md`；读的版本 `b1a9bd6…`，当前 `c9f2952…`，两处小修不改变可读性结论）。
+- 文档门：rubric 0 缺项、publication 0 新增、anchor 90/90、ref OK、density OK、citation failed=0、style error=0；`review-units.py check` OK。
+- 未做：最终单元事件/冻结/确认轮；`v312-closure-check` 仍 FAIL 于 5 条 stale 事件、`frozen=0/48`、t1/t2 pending、`R1-24` audit open=3。
 
 ### §6 指标
 
-待本轮填写；对应 `metrics.md` 的 `## R1` 块。
+- `metrics.md`：发现总数 48、唯一根因数 40、重复合并 8、未闭环 1、轮结果 `BLOCKED`。
 
 ### §7 状态
 
-待本轮填写。修改轮最多写 `ROUND-CLOSED` / `CONVERGENCE-CANDIDATE`，不写 `CONVERGED`。
+- `BLOCKED`：唯一 open 根因 `R1-24`（DESIGN-02），按 §四.6 不在轮内实施；等待作者裁决（A 设计批 / B `defer-approved` / C FP；A/B 见 `DESIGN-02-CASE.md`）。
+- 未写 `FREEZE.md`；未宣告 `ROUND-CLOSED` / `CONVERGED`；48 单元未冻结；确认轮未开始。
+- `event verify --fresh`：6 个角色事件中 5 条因正文修复变 stale；最终单元事件需在 R2 或裁决后重立。
+- `review-units.py audit --ledger ...`：open=3（3.2 / 3.7 / 4.4，均来自 `R1-24`）。
 
 ### §8 给 meta-review 的不确定点
 
-待本轮填写。
+- 零欠账与 §四.6 的冲突：设计批级 P2 在轮内不能实施，但 V3.7 关闭了 ⑥ 延期出口；本轮选择 `BLOCKED` + 案件卷，不代批 defer。
+- 36 条建议只修了一部分；其余是否在 R2 继续、还是随 DESIGN-02 设计批一起处理，需要作者定。
+- 冷读的五项可选小修（§3.2 字段账、§2.4.2.3 评审口吻、§5.1 I3/I4 单元格、§3.6 计数表、三处过程台账）与其余建议待 R2。
+- 未冻结单元、未做最终单元事件、未跑确认轮；机械 `v312-closure-check` 仍应 FAIL。
+- PIA/DIA 未运行；本轮先以 verifier + 冷读收口，PIA/DIA 留待 DESIGN-02 裁决后与 R2 一起做。
