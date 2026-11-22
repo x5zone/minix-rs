@@ -21,7 +21,7 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 - 本轮是 DESIGN-02（b）落地后的新 R1；旧 R1 的基线（doc 2,979 行、sha `75c04e8…`）已作废。
 - 新基线：doc 2,946 行，sha `996ff161…`，commit `cdd0d1c77`；48 单元全部未冻结。
 - 修复后文档：2,951 行，sha `19c0ad9a306cc1e950b657ad6c6d1c34f3a0aa18256f238b048e7dbd9efc83dc`，
-  commit `bb3b6e56a`（本轮修复批）加最终 P3 文档批（§3.7 v1 链、§4.0 落地区措辞、删除 §1.4 过程编号段）。
+  commit `bb3b6e56a`（本轮修复批）加最终 P3/门链批 `dcc21a2c8`（§3.7/§4.4.1 v1/直核链、§4.0 落地区措辞、删除 §1.4 过程编号段），简报与冷读副本在 `43bea38a0`。
 - `baseline --evidence r1-v312/full-r1.md` 已记录 R1；scope 保持作者/代确认内容。
 - 关联代码清单由 `doc-code-map.sh --format=plain` 重新生成，49 个文件（旧清单漏了 `ap_early_entry.rs`、`proc_table.rs`、`trap_api.rs`）。
 
@@ -76,12 +76,13 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 ### §3 归因
 
 - 根因合并：36 panel FINDING → 32 个面板根因；P-REFUTE 观察与 DESIGN-02 verifier 的
-  QEMU 载体回归各占独立根因，台账共 36 个 `R1-*` 根因。
+  QEMU 载体回归、doc verifier 的 3 个 P3 与冷读门链修复各占独立根因，台账共 40 个 `R1-*` 根因。
 - 台账：`defect-ledger.md`；面板 36 个 ID 全覆盖，P-REFUTE 6 条在 `## P-REFUTE 附加`。
 - 关键合并：`READER-C-01`/`FACT-01`/`DESIGN-01` 合并为 R1-01；`READER-B-02`/`READER-A-05`
   合并为 R1-12；`READER-A-01`/`READER-A-02` 合并为 R1-15。
-- 唯一 certify 新准入：`CERTIFY-01`（三个 `test-higher-half*` 载体 E0061，DESIGN-02(b)
-  批次引入的测试固定装置回归），根因 R1-36。
+- certify 新准入 5 项：`CERTIFY-01`（三个 `test-higher-half*` 载体 E0061，DESIGN-02(b)
+  批次引入的测试固定装置回归，R1-36）、`CERTIFY-02..04`（doc verifier 的 3 个 P3，R1-37..39）、
+  `CERTIFY-05`（冷读发现的直核/v1 门链不对称，R1-40）。
 
 ### §4 修复
 
@@ -117,7 +118,7 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 
 ### §6 指标
 
-- `metrics.md`：发现总数 36、唯一根因数 39、重复合并 4、certify 新准入 4、自引入 1、
+- `metrics.md`：发现总数 36（只数面板 FINDING）、唯一根因数 40、重复合并 4、certify 新准入 5、自引入 1、
   未闭环 0；轮结果 `ROUND-CLOSED`。
 
 ### §7 状态
