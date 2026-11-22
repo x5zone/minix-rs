@@ -20,6 +20,8 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 
 - 本轮是 DESIGN-02（b）落地后的新 R1；旧 R1 的基线（doc 2,979 行、sha `75c04e8…`）已作废。
 - 新基线：doc 2,946 行，sha `996ff161…`，commit `cdd0d1c77`；48 单元全部未冻结。
+- 修复后文档：2,951 行，sha `f707a4e5a38b5a4544592231ea724215a06bc1179fd4f25ee41db47afc1f5e3d`，
+  commit `bb3b6e56a`（本轮修复批）加最终 P3 文档批（§3.7 v1 链、§4.0 落地区措辞、删除 §1.4 过程编号段）。
 - `baseline --evidence r1-v312/full-r1.md` 已记录 R1；scope 保持作者/代确认内容。
 - 关联代码清单由 `doc-code-map.sh --format=plain` 重新生成，49 个文件（旧清单漏了 `ap_early_entry.rs`、`proc_table.rs`、`trap_api.rs`）。
 
@@ -63,15 +65,39 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 
 ### §2 发现
 
-待本轮填写。
+- 面板 6 角色：P-FACT 1、READER-A 16、READER-B 4、READER-C 6、DESIGN-D2 9；
+  P-REFUTE 0 FINDING，6 条 CLAIM（2 条阻断、4 条非阻断/反证失败）。
+- 合计 36 FINDING：P0 0 / P1 3 / P2 18 / P3 15；另有 26 条 SUGGESTION。
+- P1：READER-C-01（v1 接收侧 store 入口与 §4.4 概括矛盾）、READER-C-02（v1 解码落盘与
+  `store_kernel_info` 包装调用两个事件未分开）、DESIGN-01（同一处“统一接收侧”的三处不实表述）。
+- 原始报告在 `panel/round1/`；`INDEX.md` 由 `panel-index.py` 生成。
+- 事件：6 个角色事件已 `completed-pass`（doc sha `996ff161…`）；逐单元最终事件在修复/回读后另立。
 
 ### §3 归因
 
-待本轮填写。
+- 根因合并：36 panel FINDING → 32 个面板根因；P-REFUTE 观察与 DESIGN-02 verifier 的
+  QEMU 载体回归各占独立根因，台账共 36 个 `R1-*` 根因。
+- 台账：`defect-ledger.md`；面板 36 个 ID 全覆盖，P-REFUTE 6 条在 `## P-REFUTE 附加`。
+- 关键合并：`READER-C-01`/`FACT-01`/`DESIGN-01` 合并为 R1-01；`READER-B-02`/`READER-A-05`
+  合并为 R1-12；`READER-A-01`/`READER-A-02` 合并为 R1-15。
+- 唯一 certify 新准入：`CERTIFY-01`（三个 `test-higher-half*` 载体 E0061，DESIGN-02(b)
+  批次引入的测试固定装置回归），根因 R1-36。
 
 ### §4 修复
 
-待本轮填写。
+- 文档批（`bb3b6e56a`）：§1/§2/§3/§4/§5/§7 的术语、计数、指针、门链、存储位置与重复段；
+  重点是把“接收侧统一走 `store_boot_report`”拆成 `land_and_store` 下的两个入口，并把 v1
+  “解码落盘”与 `store_kernel_info` 包装调用分成两个事件。
+- 代码批（同 commit）：`validate_view` 改收 `Option<RamAuthority>`；删除
+  `KernelInfo::validate_before_tables`、`BootReport::validate`、`param_ptr`、两份
+  `test_kernel_info` 脚手架；三个 `test-higher-half*` 改为 `BootReport` + 三参数
+  `arch_boot`；同步 `boot-shim`/`kernel`/`kernel-image` 注释与 `README`/`Cargo.toml`。
+- 测试：minix-boot 188/0；boot-shim 136/0；minix-kernel mock lib 866/0/8（全部二进制 0 failed）；
+  `cargo check -p minix-kernel`、`kernel-image` riscv64/aarch64 构建通过。
+- QEMU：三个 `test-higher-half*` 载体 release 构建后实跑，三支 PASS；日志
+  `tmp/review-loop/01-stage/evidence/y01b-qemu-*.log`（日志头记录了运行时的 HEAD，
+  代码修复在随后的 `bb3b6e56a`；两处仅注释差异，见 code verifier）。
+- 建议：26 条 SUGGESTION 全部在台账 `## 建议` 处置（修 / FP / 部分修）；未改项的理由已写。
 
 ### §5 复验
 
@@ -83,7 +109,8 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增（49 个 .rs）/ todo
 
 ### §6 指标
 
-待本轮填写；对应 `metrics.md` 的 `## R1` 块。
+- `metrics.md`：发现总数 36、唯一根因数 36、重复合并 4、certify 新准入 1、自引入 1、
+  未闭环 0；轮结果待独立复验与关账后写。
 
 ### §7 状态
 

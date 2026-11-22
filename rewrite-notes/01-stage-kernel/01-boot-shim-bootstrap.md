@@ -116,7 +116,6 @@ C 侧没有“交接结构”这个类型名，但形状相同：`struct kinfo` 
 
 D1–D5 只在本篇定义（02 不使用 D 编号）：D1 = 内存清单先于建表输入；D2 = 内核位置先于清单裁剪；D3 = 页表先于开分页；D4 = 交接结构先于 `kmain`；D5 = 恒等映射先于内核映射。D3/D5 的语义展开在 02 篇的 J3，本篇只保留它们的调用位置。
 
-**编号约定**：`I-<nn>` 是评审发现号，`D-<nnn>` 是裁决号，`D2-<nn>` 是设计批编号，`R02-T<nn>` 是测试缺口编号；它们只用于回查台账，读正文不必先查。
 ---
 
 ## 2. C 源码分析
@@ -1847,7 +1846,7 @@ I3 与 I4 在实现上是两条相邻的检查：**载荷先落到自己的存�
 
 所有权：`BootStorage` 拥有 U-Boot shim 腿上的六类载荷；UEFI 腿只拥有五类（四个 `fill_*` 调用：`fill_map_tables` 一次提交两表；`fill_source_records` 只在 U-Boot shim 腿使用）；UEFI 腿的 source 分区由两个阶段直写 wire：分类器先写 UEFI 记录，`authorize_and_copy` 随后用 `resv_claims::capture` 生成 DTB `/reserved-memory`/MRB 记录并经 `push_dtb_sources` 追加、二次 `finish_sources()`；storage 的 source 切片为空，不在这句的覆盖范围内；strict 审计按 authority 过滤，因此这批 DTB 记录不计入 UEFI 权威的覆盖；`fill_modules`/`fill_platform`/`fill_param`/`fill_map_tables`/`fill_source_records` 各自在闭包返回时提交计数，族内半提交状态不可表示；跨族半提交（例如只填了 modules 未填 map）由接收侧的 `memmap`/模块/来源覆盖检查兜住。`BootReport<'a>` 只是借用视图；跨镜像发送侧把它序列化进 wire，接收侧在自己的 `.bss` 重建切片。接收侧先把切片深拷进自己的 `.bss`，再构造唯一的 `KernelInfo`；`'static` 只由这些 `.bss` 落地区支撑，不从堆上“泄漏”出来。UEFI 腿的 source 记录由分类器与 DTB claims 两阶段直写 wire，不经过 `fill_source_records`；因此“第二次 fill 会 panic”只对实际走 `fill_*` 的腿成立。
 
-校验的逐腿顺序（§4.4.1 的权威表）：直核面 `validate_requiring_sources` → `validate_before_tables` → `check_boot_postconditions` → `store_boot_report` → `boot_validate_and_prepare` → `kmain` 的 `validate` → `check_boot_postconditions` 复核；v1 接收面 `validate_requiring_sources` → `check_boot_postconditions` → `resume_boot_pt_alloc` → `boot_validate_and_prepare`（在 `resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 `validate`，不经过 `validate_before_tables`。`check_boot_postconditions` 在 v10 之后只剩 `kern_virt_base > u32::MAX` 一条断言；镜像与模块、模块与模块的半开区间重叠在共享校验体 `validate_view` 里，三档都会跑。
+校验的逐腿顺序（§4.4.1 的权威表）：直核面 `validate_requiring_sources` → `validate_before_tables` → `check_boot_postconditions` → `store_boot_report` → `boot_validate_and_prepare` → `kmain` 的 `validate` → `check_boot_postconditions` 复核；v1 接收面 `validate_requiring_sources` → `check_boot_postconditions` → `resume_boot_pt_alloc` → `boot_validate_and_prepare`（在 `resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 `validate` → `check_boot_postconditions` 复核，不经过 `validate_before_tables`。`check_boot_postconditions` 在 v10 之后只剩 `kern_virt_base > u32::MAX` 一条断言；镜像与模块、模块与模块的半开区间重叠在共享校验体 `validate_view` 里，三档都会跑。
 
 四类错误各有落点：缺来源记录 → `FreeSpanWithoutMemorySource`；权威与记录不匹配 → “declared RAM authority … has no source records”；半提交 → 走 `fill_*` 的腿第二次调用 panic；跨镜像指针 → 接收侧读到零或 fault。
 
@@ -1891,13 +1890,13 @@ $ grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kerne
 - 入口骨架只有一句：`main` 把页表页预算交给 `prepare_and_enter_kernel_image`，后者不返回。
 - 九个动作按“准备 → 退出固件服务 → 交接”三段排列；读文件在 EBS 之前，跳转在 EBS 之后。
 - 两条 UEFI 链共用发送侧；接收端按架构从 `rbx`/`x0`/`a0` 取 arena 基址后汇入 `resume_additive`。
-- 五条腿的发送侧都只构造 `BootReport<'_>`；两个直核腿经 `store_boot_report`、三条 v1 腿经 `arch_boot_resume_v1` 解码后由 `store_kernel_info` 落 `.bss`，两条路径都生成唯一的 `KernelInfo`（切片字段为 `&'static [T]`）。
+- 五条腿的发送侧都只构造 `BootReport<'_>`；两个直核腿经 `store_boot_report`、三条 v1 腿经 `arch_boot_resume_v1` 解码进 `.bss`，随后由 `store_kernel_info` 包装调用（同址跳过复制），两条路径都生成唯一的 `KernelInfo`（切片字段为 `&'static [T]`）。
 - 六个落地区把切片深拷进内核 `.bss`，此后只使用这份副本。
 
 #### 术语
 
 - **九个动作**：`prepare_and_enter_kernel_image` 内部按序执行的九步，产出归属见 §4.2 的表。
-- **落地区**：内核 `.bss` 里的六个定长存储区，`store_kernel_info` 把 wire 解码后的切片拷进去。
+- **落地区**：内核 `.bss` 里的六个定长存储区；直核腿由 `store_boot_report` 深拷，v1 腿由 `arch_boot_resume_v1` 解码写入，`store_kernel_info` 只做同址包装。
 - **门链**：`validate_requiring_sources`、`validate_before_tables`、`check_boot_postconditions`、`boot_validate_and_prepare`、`KernelInfo::validate` 组成的校验次序。
 - **A+D**：先读 ELF 预订 LMA 跨度、再分配 root/bump、最后拷贝段的动作组合。
 

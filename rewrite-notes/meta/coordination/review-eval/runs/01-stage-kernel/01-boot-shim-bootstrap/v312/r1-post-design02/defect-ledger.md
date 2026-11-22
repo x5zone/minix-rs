@@ -45,6 +45,10 @@
 | REFUTE-06 | 2.1, 2.6 | ① | §2.1/§2.6 的 HAS_MODS 绝对句改为“正常分配下”；补模块表分配失败时提前返回、停在 HAS_MODS 断言。 | rg -n '正常分配下反序时' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 ≥1） | R1-35 | R1 |
 | CERTIFY-01 | 4.4 | ① | 修复 DESIGN-02(b) 引入的三个 QEMU 载体 E0061：test-higher-half、-aarch64、-riscv64 改为构造 `BootReport` 并调用三参数 `arch_boot`。 | cargo build -p test-higher-half --target x86_64-unknown-uefi --features fw-x86-uefi（exit 0）；cargo build -p test-higher-half-aarch64 --target aarch64-unknown-uefi --features fw-aarch64-uefi（exit 0）；cargo build -p test-higher-half-riscv64 --target riscv64gc-unknown-none-elf --features fw-riscv64-none（exit 0）；三支 QEMU 门 PASS（evidence/y01b-qemu-*.log） | R1-36 | DESIGN-02 verify |
 
+| CERTIFY-02 | 3.7 | ① | 独立 doc verifier N-1：§3.7 的 v1 链在 `kmain` validate 后补 `check_boot_postconditions` 复核，与 §4.4.1/代码 `lib.rs:1873` 对称。 | rg -n '`kmain` 的 `validate` → `check_boot_postconditions` 复核' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 ≥1） | R1-37 | doc verifier |
+| CERTIFY-03 | 4.0 | ① | 独立 doc verifier N-2：§4.0 小结与“落地区”术语改为 v1 解码进 `.bss`、`store_kernel_info` 只做同址包装，不再说它负责深拷。 | rg -n '`store_kernel_info` 只做同址包装' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R1-38 | doc verifier |
+| CERTIFY-04 | 1.4 | ① | 独立 doc verifier N-3：删除 §1.4 的“编号约定”过程编号段（I-/D-/D2-/R02-T 只用于回查台账，不应进正式正文）。 | rg -n '编号约定.*I-<nn>' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 0） | R1-39 | doc verifier |
+
 ## P-REFUTE 附加
 
 | claim ID | 结果 | 处置 | 根因 |
