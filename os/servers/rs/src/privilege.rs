@@ -424,6 +424,21 @@ impl Privilege {
     /// priv structure, so it is filled at the call site (boot.rs Step 1).
     pub fn boot_priv(flags: PrivFlags, endpoint_slot: i32) -> Privilege {
         let is_sys_proc = flags.contains(PrivFlags::SYS_PROC);
+        // main.c:278-280: `calls = SRV_OR_USR(rp, SRV_KC, USR_KC) == ALL_C
+        //   ? all_c : no_c` — SRV_KC=ALL_C for system services, USR_KC=NO_C
+        //   for user processes (priv.h:73-75). INIT is `USR_F` (table.c:28),
+        //   so it must get the empty mask, not ALL_C.
+        let k_call_mask = if is_sys_proc {
+            CallMask::from_calls(
+                CallMask::empty(),
+                &[ALL_C, NULL_C],
+                NR_SYS_CALLS,
+                KERNEL_CALL,
+            )
+            .expect("boot call list is a constant in range")
+        } else {
+            CallMask::empty()
+        };
         Privilege {
             id: PrivId::static_priv_id(endpoint_slot), // main.c:265-266
             flags,                                     // main.c:269
@@ -440,15 +455,7 @@ impl Privilege {
             // main.c:272-273: `ipc_to = SRV_OR_USR(rp, SRV_M, USR_M)` —
             //   both are ALL_M, so `fill_send_mask(mask, TRUE)` sets all bits.
             ipc_to: SysMap::all(),
-            // main.c:278-280: `calls = SRV_OR_USR(rp, SRV_KC, USR_KC) == ALL_C
-            //   ? all_c : no_c` — boot services use the SRV_KC=ALL_C branch.
-            k_call_mask: CallMask::from_calls(
-                CallMask::empty(),
-                &[ALL_C, NULL_C],
-                NR_SYS_CALLS,
-                KERNEL_CALL,
-            )
-            .expect("boot call list is a constant in range"),
+            k_call_mask,
             nr_io_range: 0,
             io_ranges: [IoRange::default(); NR_IO_RANGE],
             nr_irq: 0,
@@ -798,6 +805,10 @@ mod tests {
         assert!(!p.is_sys_proc());
         assert_eq!(p.trap_mask, TrapMask::USR_T);
         assert_eq!(p.sig_mgr, Endpoint::PM);
+        assert_eq!(
+            p.k_call_mask.0, 0,
+            "USR_KC=NO_C: INIT must not get an all-calls kernel mask (priv.h:73-75)"
+        );
     }
 
     #[test]

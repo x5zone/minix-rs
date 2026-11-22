@@ -71,13 +71,12 @@ impl SchedulerConfig {
         }
     }
 
-    /// Boot-time defaults for a boot image service.
+    /// Boot-time defaults for a system-service boot image entry.
     ///
     /// C: main.c:320-322 — `SRV_OR_USR(rp, SRV_SCH, USR_SCH)` with
     /// `SRV_SCH=KERNEL`, `SRV_Q=USER_Q`, `SRV_QT=USER_QUANTUM` (priv.h:88,
-    /// 93, 98). All boot priv entries are `SYS_PROC`, so the SRV_* arm wins;
-    /// `r_cpu` is left at the zero-initialized value (main.c:234, no explicit
-    /// assignment). `parent` is RS itself (utility.c:374).
+    /// 93, 98). `r_cpu` is left at the zero-initialized value (main.c:234,
+    /// no explicit assignment). `parent` is RS itself (utility.c:374).
     pub fn boot_defaults(endpoint: Endpoint) -> SchedulerConfig {
         SchedulerConfig {
             scheduler: Endpoint::KERNEL,
@@ -86,6 +85,31 @@ impl SchedulerConfig {
             priority: USER_Q,
             quantum: USER_QUANTUM,
             cpu: 0,
+        }
+    }
+
+    /// Boot-time defaults for a user-process entry (the INIT row, `USR_F`).
+    ///
+    /// C: main.c:320-322 — `USR_SCH=NONE` (priv.h:88), `USR_Q=USER_Q`,
+    /// `USR_QT=USER_QUANTUM`. `sched_init_proc` then short-circuits on
+    /// `NONE` without a kernel call (sched_start.c:57-60).
+    pub fn user_defaults(endpoint: Endpoint) -> SchedulerConfig {
+        SchedulerConfig {
+            scheduler: Endpoint::NONE,
+            endpoint,
+            parent: Endpoint::RS,
+            priority: USER_Q,
+            quantum: USER_QUANTUM,
+            cpu: 0,
+        }
+    }
+
+    /// Boot-time config selected by the `SRV_OR_USR` test on the priv flags.
+    pub fn boot_config(endpoint: Endpoint, is_sys_proc: bool) -> SchedulerConfig {
+        if is_sys_proc {
+            SchedulerConfig::boot_defaults(endpoint)
+        } else {
+            SchedulerConfig::user_defaults(endpoint)
         }
     }
 }

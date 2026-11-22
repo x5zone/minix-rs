@@ -273,11 +273,15 @@ impl<'a> BootParams<'a> {
             pages += len / CLICK_SIZE as u64;
         }
 
-        // The VM image is the one boot module the handoff list omits; C's
-        // module loop charged it because VM's module was still in
-        // `kernel_boot_info.module_list`. `vm_allocated_bytes` is the
-        // kernel-reported size of that image.
-        pages += round_up_page(self.vm_allocated_bytes) / CLICK_SIZE as u64;
+        // C: the kernel zeroes VM's module entry after copying the blob
+        // (`add_memmap` returns the blob, protect.c:449-454), so
+        // `main.c:485-489` computes `mod_end-mod_start+1 == 1` byte and
+        // `mem_add_total_pages(roundup(1)/PAGE) == 1` page for that row.
+        // `vm_allocated_bytes` is NOT part of `total_pages`: C only uses it
+        // for `get_usage_info_vm` (region.c:1366-1374); the frames it counts
+        // are already accounted through `kernel_allocated_bytes_dynamic`
+        // (pg_utils.c:82/154). Match C: charge the one zero-length row.
+        pages += 1;
 
         // C: main.c:492-495 — kernel_allocated_bytes_dynamic is already
         // page-rounded by the kernel; static is rounded up here.
@@ -536,7 +540,7 @@ mod tests {
     fn test_boot_params_extra_pages_modules() {
         // C: main.c:485-489 — every reserved module is charged rounded up
         // to a page. The handoff list has no kernel pseudo-entry and omits
-        // VM's module, so all three are real modules.
+        // VM's zeroed module row, which is the fixed 1-page row.
         let modules = [
             BootModule { start_addr: 0x1000, len: PAGE as u64 },        // 1 page
             BootModule { start_addr: 0x2000, len: PAGE as u64 + 1 },    // 2 pages
@@ -555,13 +559,14 @@ mod tests {
             kernel_layout: None,
             user_sp: VirBytes(minix_types::USER_STACK_TOP),
         };
-        assert_eq!(params.extra_pages(), 4);
+        assert_eq!(params.extra_pages(), 5);
     }
 
     #[test]
-    fn test_boot_params_extra_pages_vm_image() {
-        // The handoff module list omits VM's image; its bytes are charged
-        // through vm_allocated_bytes (C charged VM's module in module_list).
+    fn test_boot_params_extra_pages_vm_module_row() {
+        // C zeroes VM's module entry after the blob copy, so the main.c
+        // module loop charges exactly one page for that zero-length row.
+        // `vm_allocated_bytes` feeds usage stats, not `total_pages`.
         let params = BootParams {
             root_paddr: PhysBytes(0x900_000),
             kerninfo_pa: PhysBytes(0x901_000),
@@ -575,7 +580,7 @@ mod tests {
             kernel_layout: None,
             user_sp: VirBytes(minix_types::USER_STACK_TOP),
         };
-        assert_eq!(params.extra_pages(), 2);
+        assert_eq!(params.extra_pages(), 1);
     }
 
     #[test]
@@ -597,7 +602,7 @@ mod tests {
             kernel_layout: None,
             user_sp: VirBytes(minix_types::USER_STACK_TOP),
         };
-        assert_eq!(params.extra_pages(), 4);
+        assert_eq!(params.extra_pages(), 5);
     }
 
     /// A valid record for reconcile tests: covers the simple() root page.

@@ -1,5 +1,7 @@
 # 03-stage 01 R1 loop（V3.12）
 
+schema: V3.12 from R1
+
 ## R1 full
 
 ### §0 基线
@@ -17,7 +19,12 @@
 - DESIGN-D2：首个 agent 超时；窄复核 3 项（2 PASS / 1 FAIL），补 2 条。
 - 报告在 `panel/`。
 
-### §2 归因
+### §2 发现
+
+- 面板原始发现：84 条（五份报告）。
+- 归因前按根因合并，原始 ID 与根因组对应见 defect-ledger。
+
+### §3 归因
 
 84 条原始发现 → 24 个根因行。P0：
 1. Step 1 被写成“不向内核提交”，C 实际对非 RS/VM 服务调 `SYS_PRIV_SET_SYS` + `sys_getpriv`。
@@ -25,7 +32,7 @@
 3. 测试基线 208/29 与 359/41 互斥，且模块计数与实测不符。
 4. RS 的 SEF 入口路径写错：RS 走 `do_sef_rs_init()` 本地合成，不接收自己的 RS_INIT。
 
-### §3 修复
+### §4 修复
 
 - Step1/Step2/Step3 的范围与依赖重写；INIT（USR_F）不参加 RS_INIT 握手。
 - SEF 入口改为 `do_sef_rs_init`；其他服务才接收 RS_INIT。
@@ -35,7 +42,7 @@
 - 删除导航骨架、dispatch 细节、重复示例与 process ID；章节连续编号。
 - 39/39 单元冻结，defect-ledger open=0。
 
-### §4 复验
+### §5 复验
 
 ```text
 doc-publication-check: 无新增违规
@@ -48,7 +55,7 @@ review-units check: units=39 frozen=39
 review-units audit: 全部单元 open=0
 ```
 
-### §5 轨迹
+### §5 复验（轨迹复核）
 
 `trajectory-r1.md`：R1 PASS；`event verify --fresh` 39/39 OK。
 
@@ -60,8 +67,16 @@ review-units audit: 全部单元 open=0
 
 `ROUND-CLOSED`。不宣告 CONVERGED：还缺第 2 个 full 轮、确认轮、作者确认的学习范围与 G18 冷读。
 
-### §8 不确定点
+### §8 给 meta-review 的不确定点
 
 1. DESIGN-D2 大范围 agent 超时；窄复核只覆盖 BootTables/BootInit/KernelApi/feature 四项。
 2. `self_update` 当前无生产调用点；默认 Rust boot 比 C 默认 yes 少自升级尾步，接 18 时补。
 3. Step 3 的生产 `IpcApi` 未接线时是 ENOSYS 占位；且当前 `IpcApi::receive` 未复刻 `sef_receive_status` 的信号/控制消息拦截，12 落地时补。
+
+### L6
+
+本轮未开独立 meta；R1 面板与缺口已在 §1/§2 记录。
+
+### L6.5
+
+三问记录：① 本轮发现是否收敛？R1 后 open=0。② 是否有结构性新根因？有，已在 §4 修复。③ 是否进入下一轮？进入 R2 前需补 P-REFUTE/VARIANCE。

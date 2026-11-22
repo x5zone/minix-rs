@@ -622,7 +622,29 @@ impl SefCallbacks for RsServer {
             Errno::from(e)
         })?;
         // T1 handover: the boot state becomes the runtime state.
-        self.state = Some(self.boot.take().expect("boot machine present").into_state());
+        let mut state = self.boot.take().expect("boot machine present").into_state();
+        // C: `do_sef_rs_init` → `process_init` synthesizes an RS-to-RS
+        // RS_INIT after the fresh callback and calls `sef_cb_init_response`
+        // → `do_init_ready` (sef_init.c:113-120, main.c:591-609). That clears
+        // RsServer's own RS_INITIALIZING mark set by step 2's `init_service`
+        // (utility.c:19-31). Without it `another_initializing` stays true
+        // forever and the heartbeat watchdog never crashes a dead service.
+        let ticks = self.kernel.as_mut().get_ticks()?;
+        let rs_id = state
+            .table
+            .endpoint_slot(Endpoint::RS)
+            .expect("RS boot slot indexed");
+        let rs_flags = state.table.get(rs_id).flags;
+        let decision = do_init_ready(rs_flags, 0, false, 0, ticks);
+        debug_assert_eq!(
+            decision.outcome,
+            ReadyOutcome::FreshInitDone,
+            "RS self init-ready must take the fresh branch"
+        );
+        decision.mutations.apply(state.table.get_mut(rs_id));
+        let has_prev = state.table.get(rs_id).prev_rp.is_some();
+        end_srv_init(state.table.get_mut(rs_id), has_prev);
+        self.state = Some(state);
         Ok(0) // C: sef_startup() returns OK after the fresh init.
     }
 
@@ -2394,6 +2416,7 @@ mod signal_handler_tests {
         let _ = server.run();
     }
 
+    #[cfg(not(feature = "live-update"))]
     #[test]
     #[should_panic(expected = "boot machine present")]
     fn test_second_fresh_init_panics() {

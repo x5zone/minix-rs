@@ -30,7 +30,7 @@ use minix_types::{BootImage, Clock, Endpoint, Errno, GrantId, Message, Pid};
 
 use crate::privilege::{CallMask, PrivFlags};
 use crate::process_table::RProcTable;
-use crate::sched::SchedulerConfig;
+use crate::sched::{SchedAction, SchedulerConfig, sched_decision};
 use crate::service_slot::{SlotId, SysFlags};
 
 use crate::table::{
@@ -945,6 +945,17 @@ impl<'a> BootInit<'a> {
         self.step2_allow_run(sys)?;
         self.step3_catch_init_ready(sys)?;
         self.step4_finish(sys)?;
+        // C: main.c:436-491 (`USE_LIVEUPDATE`) — after the four steps and
+        // `sys_setalarm`, RS clones itself and live-updates into the replica.
+        // C has this on by default (`bsd.own.mk:1499`); the Rust feature is
+        // opt-in, but when it is on the boot tail must actually run.
+        #[cfg(feature = "live-update")]
+        {
+            let mut update = core::mem::take(&mut self.update);
+            let result = self.self_update(sys, &mut update);
+            self.update = update;
+            result?;
+        }
         Ok(())
     }
 
@@ -1105,10 +1116,30 @@ impl<'a> BootInit<'a> {
                 continue;
             }
             // C: sched_init_proc — main.c:376; sys_privctl(SYS_PRIV_ALLOW) — main.c:379.
-            sys.sched_init_proc(&SchedulerConfig::boot_defaults(priv_.endpoint))?;
+            // `sched_init_proc` reads the slot's scheduler: SRV_SCH=KERNEL for
+            // system services, USR_SCH=NONE for user processes (INIT), where
+            // `sched_start` short-circuits without a kernel call
+            // (sched_start.c:57-60).
+            let is_sys_proc = priv_.flags.contains(PrivFlags::SYS_PROC);
+            let cfg = {
+                let slot = self.table.get(id);
+                SchedulerConfig::from_slot(
+                    slot.scheduler,
+                    slot.pub_.endpoint,
+                    slot.priority,
+                    slot.quantum,
+                    slot.cpu,
+                )
+            };
+            match sched_decision(&cfg, is_sys_proc) {
+                SchedAction::Skip => {}
+                SchedAction::Start(cfg) => {
+                    sys.sched_init_proc(cfg)?;
+                }
+            }
             sys.privctl(priv_.endpoint, PrivCtlOp::Allow, None)?;
 
-            if priv_.flags.contains(PrivFlags::SYS_PROC) {
+            if is_sys_proc {
                 // C: init_service — main.c:387: mark initializing + send the
                 // RS_INIT message (asynsend seam, utility.c:62).
                 let mut asynsend = |ep: Endpoint, msg: &crate::ready::InitMessage| {
@@ -1504,18 +1535,27 @@ mod tests {
             .count();
         assert_eq!(set_sys, 10, "RS/VM skip SYS_PRIV_SET_SYS (main.c:285-291)");
 
-        // Step 2: sched_init_proc + SYS_PRIV_ALLOW for every non-RS/VM SYS_PROC.
-        let sched = sys
+        // Step 2: sched_init_proc + SYS_PRIV_ALLOW for every non-RS/VM
+        // SYS_PROC. INIT is USR_F, so `sched_init_proc` short-circuits on
+        // USR_SCH=NONE and sends no kernel call (sched_start.c:57-60).
+        let sched_eps: Vec<Endpoint> = sys
             .calls
             .iter()
-            .filter(|c| matches!(c, Call::SchedInitProc(_)))
-            .count();
+            .filter_map(|c| match c {
+                Call::SchedInitProc(ep) => Some(*ep),
+                _ => None,
+            })
+            .collect();
         let allow = sys
             .calls
             .iter()
             .filter(|c| matches!(c, Call::PrivCtl(_, PrivCtlOp::Allow)))
             .count();
-        assert_eq!(sched, 10);
+        assert_eq!(sched_eps.len(), 9);
+        assert!(
+            !sched_eps.contains(&Endpoint::INIT),
+            "INIT must not get sys_schedctl (USR_SCH=NONE — priv.h:88)"
+        );
         assert_eq!(allow, 10);
 
         // Step 1: getpriv for all 12 services (RS/VM included) — main.c:293-296.
@@ -1609,6 +1649,13 @@ mod tests {
             let slot = boot.table.get(id);
             assert!(slot.flags.contains(RFlags::IN_USE | RFlags::ACTIVE));
             assert_eq!(slot.pub_.endpoint, *ep);
+            // C: SRV_SCH=KERNEL for system services; USR_SCH=NONE for INIT
+            // (priv.h:88, table.c:28).
+            if *ep == Endpoint::INIT {
+                assert_eq!(slot.scheduler, Endpoint::NONE);
+            } else {
+                assert_eq!(slot.scheduler, Endpoint::KERNEL);
+            }
         }
 
         // Non-boot slots stay vacant.
@@ -2844,6 +2891,39 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "live-update")]
+    #[test]
+    fn test_init_fresh_runs_self_update_tail() {
+        // C: main.c:436-491 under USE_LIVEUPDATE — the boot tail clones RS,
+        // forks the replica and swaps. With the mock's fail-closed
+        // `srv_fork` (ENOSYS), the tail must surface that error instead of
+        // silently skipping the step.
+        static IMAGE: &[BootImage] = &[boot_image(2, Endpoint::RS)];
+        let priv_table: &[BootImagePriv] = &[BootImagePriv {
+            endpoint: Endpoint::RS,
+            label: "rs",
+            flags: crate::privilege::RSYS_F,
+        }];
+        let sys_table: &[BootImageSys] = &[BootImageSys {
+            endpoint: Endpoint::RS,
+            flags: crate::service_slot::SRVR_SF,
+        }];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table: &[],
+        };
+        let mut sys = MockKernelApi::new(100);
+        let mut boot = BootInit::new(tables);
+        assert_eq!(
+            boot.init_fresh(&mut sys),
+            Err(BootError::Kernel(Errno::ENOSYS)),
+            "the live-update boot tail must call srv_fork, not skip it"
+        );
+    }
+
+    #[cfg(not(feature = "live-update"))]
     #[test]
     fn test_rs_server_handover_after_fresh_init() {
         // T1: after a completed fresh boot (RS-only table → zero pending
@@ -2886,6 +2966,19 @@ mod tests {
             state.table.endpoint_slot(Endpoint::RS),
             Some(SlotId::new(0))
         );
+        // C: `do_sef_rs_init` → `process_init` → `do_init_ready` clears the
+        // RS slot's RS_INITIALIZING before `sef_startup` returns
+        // (sef_init.c:113-120, request.c:514-529). A lingering flag would
+        // keep `another_initializing` true and disable crash/restart.
+        let rs = state
+            .table
+            .get(state.table.endpoint_slot(Endpoint::RS).expect("RS slot"));
+        assert!(
+            !rs.flags.contains(crate::service_slot::RFlags::INITIALIZING),
+            "RS must not stay INITIALIZING after fresh boot"
+        );
+        assert_eq!(rs.check_tm, 0);
+        assert_eq!(rs.alive_tm, 0);
         // The boot machine is consumed by the handover (no double ownership).
         assert!(server.boot.is_none());
         // E-3: the post-boot table is settled-consistent (all 12 boot rows

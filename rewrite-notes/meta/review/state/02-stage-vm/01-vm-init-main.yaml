@@ -35,7 +35,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -48,19 +48,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/1.md
 - id: '1.0'
   heading: 1.0 本章要解决的问题
   level: 3
   parent: '1'
   order: 2
-  text_sha: 8175f6cb3f104464a9954b502df734868961b19c997c73e37b45907188e8f379
+  text_sha: b8b8e8cd89301fc93ecb14a37bb43c8c7de76cd00aba38358ac8492317313f30
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -73,7 +73,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/1.0.md
 - id: '1.1'
   heading: 1.1 启动链的核心问题：VM 的"鸡生蛋"
   level: 3
@@ -104,13 +104,13 @@ units:
   level: 3
   parent: '1'
   order: 4
-  text_sha: fbe2cf6a57879c3991db0ee2d0482a6799ec48075ccece0739416058d69d7e89
+  text_sha: a617fe850281454f562cfff131081e07fa563fc6e0e1eeed41a3241980b47b89
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -123,7 +123,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.2.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/1.2.md
 - id: '1.3'
   heading: 1.3 SEF 生命周期是什么
   level: 3
@@ -154,13 +154,13 @@ units:
   level: 3
   parent: '1'
   order: 6
-  text_sha: 49490bcea0aa2ddb3a713f1befd0281a92ef3d16ef46ecb3e354ff55114f42e6
+  text_sha: 4dbf81d408f95de008d9627b797023c18af42093efe1b7e04b0731693db8f0fc
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -173,7 +173,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/1.4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/1.4.md
 - id: '1.5'
   heading: 1.5 本章回顾
   level: 3
@@ -204,13 +204,13 @@ units:
   level: 2
   parent: null
   order: 8
-  text_sha: 4bdc22238ad48026e3cd82eb58249657eb64a69cb0bfa60a6fc355ba76d439b8
+  text_sha: a2e5e6f9e0780e17045bca298405987bf8b1251d6b697d50f657845c20048998
   t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -223,19 +223,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/2.md
 - id: '2.0'
   heading: 2.0 本章要回答的问题
   level: 3
   parent: '2'
   order: 9
-  text_sha: f11e667691a7d0a956edcd49f3b0493c371943a646c0163bb67bdb420a5965b3
+  text_sha: 4ec176a10c55a85719b7ab148cf56e30a2639f05b2a828cff8e34c9bbfe7f5cd
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -248,7 +248,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/2.0.md
 - id: '2.1'
   heading: 2.1 main()：入口、is_first_time 门控、主循环（main.c:93-194）
   level: 3
@@ -279,13 +279,13 @@ units:
   level: 3
   parent: '2'
   order: 11
-  text_sha: 1d10d3d7e7944d8a368edd589a437559ff952087ee15d4e944c381858af892e8
+  text_sha: 6c941fe3ce34c3676bba705ed17f76ee9494aaa64fbceff866de337dbff99370
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -298,19 +298,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.2.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/2.2.md
 - id: '2.3'
-  heading: 2.3 init_proc() 与 exec_bootproc()（main.c:262-291、331-417）
+  heading: 2.3 init_proc() 与 exec_bootproc()（main.c:262-286、331-417）
   level: 3
   parent: '2'
   order: 12
-  text_sha: 1d0eccf048b17fba1409b3162c99ff919ed213a60f5fadc999c66808de04de3c
+  text_sha: c469e645fa92c13b50c1e69d72027ae276056903e55c9ab95284a28e729f51fe
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -323,19 +323,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.3.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/2.3.md
 - id: '2.4'
-  heading: 2.4 SEF 生命周期（main.c:219-260、592-754；sef_init.c）
+  heading: 2.4 SEF 生命周期（main.c:219-260、592-750；sef_init.c）
   level: 3
   parent: '2'
   order: 13
-  text_sha: 26be52a049e3c4dbf7a37d68081890d0f684d8fca9fb500606d706628861dee3
+  text_sha: 5bef165cad3731f8a49477bfd04816c2445dd26ed60233ac5d683c8d1df57d70
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -352,7 +352,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/2.4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/2.4.md
 - id: '2.5'
   heading: 2.5 map_service()（main.c:755-768）
   level: 3
@@ -439,7 +439,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -452,7 +452,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/3.md
 - id: '3.0'
   heading: 3.0 本章要回答的问题
   level: 3
@@ -483,13 +483,13 @@ units:
   level: 3
   parent: '3'
   order: 19
-  text_sha: 29e3d3e31797bb41cf227a533e4fbd441cf3335375fabea213a223080dfda08a
+  text_sha: c27aed6f145dc7df36d3fde7297023601edb6f8193f64bb849515830711b1544
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -502,7 +502,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.1.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/3.1.md
 - id: '3.2'
   heading: 3.2 is_first_time 的表达与 init 门控（对应 §2.1）
   level: 3
@@ -533,13 +533,13 @@ units:
   level: 3
   parent: '3'
   order: 21
-  text_sha: aa1c3390d6fecd285cd3b682bfdbbd9d236e87b1fe468688eb6d5b0ccadc67ad
+  text_sha: 2bb063ac6a08b370f776e07cc65c1df9df767eb9c178332e5d25c11c79b5dee8
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -552,19 +552,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.3.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/3.3.md
 - id: '3.4'
   heading: 3.4 SEF 简化：rs_handshake + do_sef_init_request（对应 §2.4）
   level: 3
   parent: '3'
   order: 22
-  text_sha: 08c26d5a78fc03b6148d879cfd49a5f38439be3a475f6e732605e60e11d61edc
+  text_sha: 235452c6942d4efbecd0ac6c2c9f61f9fbda8a6fbe0e075a606ea1cae52b83fd
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -581,19 +581,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/3.4.md
 - id: '3.5'
   heading: 3.5 exec_bootproc 的 Rust 策略（对应 §2.3.2）
   level: 3
   parent: '3'
   order: 23
-  text_sha: b207839b098a5658182199e0f6974b291d82d64a17dc35138ae36bd25fe187bb
+  text_sha: 3830edb1dcf2d8647824f00205e75a157dae038e4f428065bd4925358fd950a9
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -606,19 +606,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.5.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/3.5.md
 - id: '3.6'
   heading: 3.6 mem_add_total_pages → global::add_total_pages（对应 §2.2.5）
   level: 3
   parent: '3'
   order: 24
-  text_sha: ae5814d415af288a98ebd7828476a729c0d9b0fd813c1a0945130a649eda445c
+  text_sha: 1985caad38defb3ac2ba58fafe309f7b472beb5a9d2d67ecd4545ce265c2ceeb
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -631,7 +631,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.6.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/3.6.md
 - id: '3.7'
   heading: 3.7 VM 自身内存：无 libc mmap（对应 §2.6，ARCH 注记）
   level: 3
@@ -662,13 +662,13 @@ units:
   level: 3
   parent: '3'
   order: 26
-  text_sha: 2eba771697053cc5b8000e17ec2e5ec220ea225ae87bceecf0cd8c801b20c6d7
+  text_sha: 3b34d49cd5158564b2042f2e070c0d585b7e225f3d71d61ec45101dce28980a0
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -681,7 +681,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/3.8.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/3.8.md
 - id: '3.9'
   heading: 3.9 本阶段 ARCH 决定
   level: 3
@@ -743,7 +743,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -756,19 +756,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/4.md
 - id: '4.0'
   heading: 4.0 本章要回答的问题
   level: 3
   parent: '4'
   order: 30
-  text_sha: 24013d853245011c00926f7e93ed5b76f2431c0087cca49e645fe3f49f733337
+  text_sha: b2fa45c393937daa835cd6f310d5559c59aca5dcf4100ba4edc0ee948ee8688e
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -781,7 +781,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/4.0.md
 - id: '4.1'
   heading: 4.1 `os/servers/vm/src/boot.rs`（对应 §3.1、§3.6）
   level: 3
@@ -862,13 +862,13 @@ units:
   level: 3
   parent: '4'
   order: 34
-  text_sha: 12d8d69efd4227c2c8d4621e9f7df711d47dbd26f6a92795177f6fe1045208c7
+  text_sha: 969b2f3dc8bdbc94f64b88d43b8bf7485e7553b6ac65ad96b6fe72e5daba5f04
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -881,7 +881,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/4.4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/4.4.md
 - id: '4.5'
   heading: 4.5 本章回顾
   level: 3
@@ -918,7 +918,7 @@ units:
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -931,7 +931,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/5.md
 - id: '5.0'
   heading: 5.0 本章要回答的问题
   level: 3
@@ -962,13 +962,13 @@ units:
   level: 3
   parent: '5'
   order: 38
-  text_sha: d2f06b65c91baf6463c05c13dcbc23d13d2417aade4405bcacd2f56ff43fff91
+  text_sha: 106c10c20f6b80164b3fd8a5504608df1eb771bf5a8d0564220e4df9b1bbc1b0
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -981,19 +981,19 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.1.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/5.1.md
 - id: '5.2'
   heading: 5.2 vm_server.rs 测试（§3.2-§3.5）
   level: 3
   parent: '5'
   order: 39
-  text_sha: cb98da0ab2a9a9cc1d88ce072e4f8e44da4a42404a9677938a333790714668a0
+  text_sha: 8e95d88746a2ae22df6012102ef324061c57366d3832882e893dc5b5ed6cf69b
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -1006,7 +1006,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.2.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/5.2.md
 - id: '5.3'
   heading: 5.3 当前基线没有失败项
   level: 3
@@ -1037,13 +1037,13 @@ units:
   level: 3
   parent: '5'
   order: 41
-  text_sha: e95a2682aa4829d51d926b56235627074a388e0a856459fbb4766d691b18348a
+  text_sha: 12e528e5516bf7cbcde81f64cf086df9c354d060b8c6dea90b39be4a6a55cb8b
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: e5f3c7e3f62c94de2469a61dbca4eb7ca6679d87
+  frozen_at: aa2092aa4e29461e454e9aa95848f9c7173ba80f
   rewritten: false
   user_approved: false
   deps: []
@@ -1056,7 +1056,7 @@ units:
   review_rounds:
   - 1
   post_freeze_rounds: []
-  evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/r1-v312/unit-r1-final/5.4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/02-stage-vm/01-vm-init-main/panel/round1c/evidence/5.4.md
 - id: '5.5'
   heading: 5.5 本章回顾
   level: 3

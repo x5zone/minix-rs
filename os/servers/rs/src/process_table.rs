@@ -16,7 +16,7 @@
 use alloc::vec::Vec;
 use minix_types::{Clock, Endpoint, Errno, NR_PROCS, NR_TASKS, Pid, RprocpubSnap};
 
-use crate::privilege::Privilege;
+use crate::privilege::{PrivFlags, Privilege};
 use crate::service_slot::{Label, RFlags, RS_MAX_LABEL_LEN, ServiceSlot, SlotId, SysFlags};
 use crate::table::{BootImageDev, BootImagePriv, BootImageSys};
 
@@ -552,14 +552,16 @@ impl RProcTable {
         crate::service_create::rebuild_args(slot);
 
         // C: calls = SRV_OR_USR(rp, SRV_VC, USR_VC) == ALL_C ? all_c : no_c;
-        // fill_call_mask(...) — main.c:317-319. Boot entries are all SYS_PROC,
-        // so SRV_VC = ALL_C (priv.h:78-80) → the full mask.
+        // fill_call_mask(...) — main.c:317-319. Both SRV_VC and USR_VC are
+        // ALL_C (priv.h:78-80), so every boot row gets the full mask.
         slot.pub_.vm_call_mask = crate::privilege::CallMask::all();
 
         // C: rp->r_scheduler = SRV_OR_USR(rp, SRV_SCH, USR_SCH); ... — main.c:320-322.
-        // Boot services (SYS_PROC): SRV_SCH=KERNEL, SRV_Q=USER_Q=7,
-        // SRV_QT=USER_QUANTUM=200, cpu stays 0 (priv.h:88,93,98).
-        let sched = crate::sched::SchedulerConfig::boot_defaults(endpoint);
+        // System services: SRV_SCH=KERNEL; user processes (INIT, USR_F):
+        // USR_SCH=NONE (priv.h:88). Priority/quantum are USER_Q/USER_QUANTUM
+        // in both arms; cpu stays 0.
+        let is_sys_proc = priv_.flags.contains(PrivFlags::SYS_PROC);
+        let sched = crate::sched::SchedulerConfig::boot_config(endpoint, is_sys_proc);
         slot.scheduler = sched.scheduler;
         slot.priority = sched.priority;
         slot.quantum = sched.quantum;

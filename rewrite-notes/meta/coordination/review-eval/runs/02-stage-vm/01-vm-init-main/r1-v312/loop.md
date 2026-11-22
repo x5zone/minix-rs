@@ -1,5 +1,7 @@
 # 02-stage 01 R1 loop（V3.12）
 
+schema: V3.12 from R1
+
 ## R1 full（2026-11-22）
 
 ### §0 基线
@@ -17,7 +19,12 @@
 - P-FACT：窄口径定点复核（原大范围 agent 超时；同 agent fact-check 作 MANUAL_FALLBACK，后补 P-FACT 4 条）。
 - 五份报告在 `panel/`。
 
-### §2 归因
+### §2 发现
+
+- 面板原始发现：83 条（五份报告）。
+- 归因前按根因合并，原始 ID 与根因组对应见 defect-ledger。
+
+### §3 归因
 
 83 条原始发现 → 34 个根因行；见 `defect-ledger.md`。重点根因：
 1. `extra_pages()` 在 handoff 模块列表上沿用 C 的“排除末条”，丢掉真实模块与 VM 映像页（P0-code-bug）。
@@ -27,13 +34,13 @@
 5. SEF 只实现 fresh，`init_type` 未消费；异步回复应为 `asynsend`（P1）。
 6. `total_pages` 四口径混用、A2 reconcile 缺席、HeapArena/Direct Map 说反（P1）。
 
-### §3 修复
+### §4 修复
 
 - 代码：`boot.rs::extra_pages` 改为全部 handoff 模块 + VM 映像页；新增 VM 映像测试；`init_vm_slot` 生产缺 VM 条目时 panic。
 - 文档：§1 问题入口/术语/阶段映射；§2 C 证据与行号；§3 设计边界/ARCH/SEF/总页数；§4 入口/init 时序/失败对照；§5 测试基线/真机门；§6 过渡。
 - 单元：43/43 冻结，每单元独立 `UNIT` 证据；defect-ledger open=0。
 
-### §4 复验
+### §5 复验
 
 ```text
 doc-publication-check: 无新增违规
@@ -46,7 +53,7 @@ review-units check: units=43 frozen=43 chapters=6
 review-units audit: 全部单元 open=0
 ```
 
-### §5 轨迹
+### §5 复验（轨迹复核）
 
 `trajectory-r1.md`：R1 PASS。面板覆盖、归因、修复复验、单元账均自洽；`event verify --fresh` 43/43 OK。
 
@@ -58,8 +65,16 @@ review-units audit: 全部单元 open=0
 
 `ROUND-CLOSED`。不宣告 `CONVERGED`：还缺第 2 个 full 轮、确认轮、作者确认的学习范围与 G18 冷读。
 
-### §8 给下一轮的不确定点
+### §8 给 meta-review 的不确定点
 
 1. `WarmRun`/`WarmNoState`/`DoubleInit` 是诊断占位；接 LU 时必须重定义 slot 状态与 `mark_initialized`。
 2. 真机门尚无独立 VM 启动链断言；§5.4 只列 `e5d:` 路标与风险。
 3. P-FACT 大范围 agent 超时；fact-check 是同一 agent 的 `MANUAL_FALLBACK`，P-FACT 窄复核已补 6 PASS / 4 FINDING。
+
+### L6
+
+本轮未开独立 meta；R1 面板与缺口已在 §1/§2 记录。
+
+### L6.5
+
+三问记录：① 本轮发现是否收敛？R1 后 open=0。② 是否有结构性新根因？有，已在 §4 修复。③ 是否进入下一轮？进入 R2 前需补 P-REFUTE/VARIANCE。

@@ -4,7 +4,7 @@
 > **源码**: `minix3/minix/servers/rs/main.c`（834 行）、`minix3/minix/servers/rs/table.c`（50 行）；SEF 库位于 `minix3/minix/lib/libsys/sef*.c`
 > **Rust 模块**: `os/servers/rs/src/main.rs`、`os/servers/rs/src/lib.rs`（含 `table`/`boot`/`sef` 子模块；主循环 `dispatch` 归 06）
 > **前置**: `rewrite-notes/03-stage-rs/00-rs-overview.md`、`rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md`（boot 链）
-> **覆盖**: `main()`、`sef_local_startup()` 的 7 个回调注册、`sef_cb_init_fresh()` 四步 boot、`boot_image_*` 三表与查找、boot 尾部自升级的结果。机制细节归 02/03/05/12/16/18/20。
+> **覆盖**: `main()`、`sef_local_startup()` 的 7 个回调注册、`sef_cb_init_fresh()` 四步 boot、`boot_image_*` 三表与查找、boot 尾部自升级的调用契约（`live-update` feature 默认关）。机制细节归 02/03/05/12/16/18/20。
 
 ---
 
@@ -30,7 +30,7 @@ RS 是 boot 映像里的普通用户进程，却要在 PM/VFS/SCHED/DS 等成员
 
 ### 1.1 核心问题：RS 的"引导自举"
 
-先说清这是哪一张序。`minix3/minix/kernel/table.c` 第 44 行的 `struct boot_image image[NR_BOOT_PROCS]` 是 **登记序（模块摆放序）**：它把 DS 摆在第 1 个用户服务、RS 紧随其后（第 2），这张序由 GRUB 交来的模块顺序硬性决定。内核表头注释把数组序说成 NOTIFY 投递优先级的意图声明；实际的 NOTIFY 选择序以 kernel 侧代码为准，本文不展开。登记序跟“谁先启动运行”是两码事：真正决定谁先跑的是 `minix3/minix/kernel/main.c:kmain` 的 **可调度序**——除内核任务外，第一个能运行的用户服务是 **VM**，RS 作为 root system process 紧随其后（其余进程连 RS 自己都被 `RTS_VMINHIBIT` 抑制，等 VM 建好页表才放行）。RS 的独特地位来自它是“给其余 boot 成员授权放行、按需读盘加载非 boot 服务”的那个角色——PM/VFS/SCHED/DS 等确实都依赖它拿运行许可与初始化——而不是来自它在数组里排第几。但反过来，RS 启动时自己什么设施都没有：
+先说清这是哪一张序。`minix3/minix/kernel/table.c:44` 的 `struct boot_image image[NR_BOOT_PROCS]` 是 **登记序（模块摆放序）**：它把 DS 摆在第 1 个用户服务、RS 紧随其后（第 2），这张序由 GRUB 交来的模块顺序硬性决定。内核表头注释把数组序说成 NOTIFY 投递优先级的意图声明；实际的 NOTIFY 选择序以 kernel 侧代码为准，本文不展开。登记序跟“谁先启动运行”是两码事：真正决定谁先跑的是 `minix3/minix/kernel/main.c:kmain` 的 **可调度序**——除内核任务外，第一个能运行的用户服务是 **VM**，RS 作为 root system process 紧随其后（其余进程连 RS 自己都被 `RTS_VMINHIBIT` 抑制，等 VM 建好页表才放行）。RS 的独特地位来自它是“给其余 boot 成员授权放行、按需读盘加载非 boot 服务”的那个角色——PM/VFS/SCHED/DS 等确实都依赖它拿运行许可与初始化——而不是来自它在数组里排第几。但反过来，RS 启动时自己什么设施都没有：
 
 ```
 RS 需要管理服务生命周期 → 服务需要 RS 允许才能运行 → RS 必须先启动
@@ -41,7 +41,7 @@ RS 要让服务运行 → 服务需要 priv/调度/初始许可 → 这些都是
 Minix3 的解法是**分阶段初始化**：`sef_cb_init_fresh()`（`main.c:158-494`）把 boot 拆成 4 步，每一步只依赖前一步已经建立的设施：
 
 1. **Step 1（`main.c:244-346`，四步注释在 main.c:239-243）——建立全表属性**：为 boot 映像中的每个服务在 RS 本地进程表中建立槽位，并准备好 priv/sys/dev 三方面属性（priv 结构、send mask、调度参数、命令串）。此时它把非 RS/VM 服务的 priv 结构提交内核（`SYS_PRIV_SET_SYS` + `sys_getpriv`），RS/VM 跳过 `SET_SYS`；sys/dev/命令/调度属性在本地准备。**Step 1 不放行**。
-2. **Step 2（`main.c:348-399`）——允许运行**：此时 `SYS_PROC` 服务的属性已就绪，RS 才通过 `sched_init_proc` + `sys_privctl(SYS_PRIV_ALLOW)` 让它们获得调度与运行许可，并发送 `RS_INIT` 初始化消息（RS/VM 例外：已在运行，直接 `init_service` 自模拟；INIT 是 `USR_F`，不参加 RS_INIT 握手）。
+2. **Step 2（`main.c:348-399`）——允许运行**：非 RS/VM 条目都先走 `sched_init_proc` + `sys_privctl(SYS_PRIV_ALLOW)`；其中 `SYS_PROC` 服务随后发送 `RS_INIT` 初始化消息。RS/VM 例外：已在运行，直接 `init_service` 自模拟。INIT 是 `USR_F`：槽里 `USR_SCH=NONE`，`sched_init_proc` 在发任何消息前短路，且它不参加 RS_INIT 握手。
 3. **Step 3（`main.c:401-407`）——收齐初始化完成**：收齐 Step 2 未同步收走的 `RS_INIT` ready（`SF_SYNCH_BOOT` 服务已在 Step 2 立即收；其余累积计数）。只覆盖 `SYS_PROC` 服务；INIT 是 `USR_F`，不参加 RS_INIT 握手。
 4. **Step 4（`main.c:409-433`）——补全协作信息**：向 PM 查询每个服务的 pid（`getnpid`），并设置周期检查闹钟（`sys_setalarm(RS_DELTA_T)`），之后进入主循环。
 
@@ -49,7 +49,7 @@ Minix3 的解法是**分阶段初始化**：`sef_cb_init_fresh()`（`main.c:158-
 
 ### 1.2 SEF 注册与四步 boot 的边界
 
-RS 的入口不是裸写 `main()`：它先通过 `sef_local_startup()` 把 7 个生命周期回调注册给 SEF。RS 是 `ROOT_SYS_PROC`，`sef_startup()` 走 `do_sef_rs_init()` 本地合成 fresh 信息并调用 `sef_cb_init_fresh()`，不等待自己发来的 `RS_INIT`；其他服务才走接收 `RS_INIT` 的路径。本文只讲 **RS 注册了哪些回调、`sef_cb_init_fresh()` 的四步做了什么**；SEF 的拦截循环、消息状态机和 LU 状态机归 `20-rs-sef-framework.md`，主循环分类归 `06-rs-main-loop.md`。
+RS 的入口不是裸写 `main()`：它先通过 `sef_local_startup()` 把 7 个生命周期回调注册给 SEF。RS 是 `ROOT_SYS_PROC`，`sef_startup()` 走 `do_sef_rs_init()` 本地合成 fresh 信息并调用 `sef_cb_init_fresh()`，不等待自己发来的 `RS_INIT`；其他服务才走接收 `RS_INIT` 的路径。`sef_cb_init_fresh()` 返回后，`process_init` 还会无条件用 RS 自身端点合成一条 `RS_INIT` 并调用 `sef_cb_init_response` → `do_init_ready`（sef_init.c:113-120、main.c:591-609）：这条本地 ready 清掉 RS 槽的 `RS_INITIALIZING`，让主循环不再把 RS 当成永远初始化中的服务。本文只讲 **RS 注册了哪些回调、`sef_cb_init_fresh()` 的四步做了什么、这条本地 ready 的后置状态**；SEF 的拦截循环、消息状态机和 LU 状态机归 `20-rs-sef-framework.md`，主循环分类归 `06-rs-main-loop.md`。
 
 #### 最小示例
 
@@ -362,7 +362,7 @@ static void sef_local_startup()
 - **priv 结构初始化**（main.c:258-280）：label、静态 priv id、flags、init flags、trap mask、send mask（`fill_send_mask` → 05）、sig mgr、call mask（kernel 侧）。**priv 结构字段语义归 03**。
 - **RS/VM 例外**（main.c:285-291）：`SYS_PRIV_SET_SYS` 对 RS/VM **跳过**——它们"已经在运行"（plan RS/VM 例外）。其余服务则把 priv 结构提交给 kernel。`sys_getpriv`（main.c:294）再同步回本地结构。
 - **sys/dev 属性**（main.c:301-306）：`sys_flags`（`SF_*` 全表在 `99-rs-global-concepts.md`）、`dev_nr`（主设备号）。
-- **命令/调度属性**（main.c:309-322）：`r_cmd`/`r_script`/`build_cmd_dep`（08）、`vm_call_mask`（VM 侧调用掩码）、`scheduler`/`priority`/`quantum`（03）。
+- **命令/调度属性**（main.c:309-322）：`r_cmd`/`r_script`/`build_cmd_dep`（08）、`vm_call_mask`（VM 侧调用掩码）、`scheduler`/`priority`/`quantum`（03）。内核调用掩码按 `SRV_OR_USR` 分支：`SRV_KC=ALL_C` 给系统服务，`USR_KC=NO_C` 给 INIT；Rust 的 `Privilege::boot_priv` 用 `SYS_PROC` 位选择同一分支，INIT 得到空掩码。
 - **slot 默认值 + 激活**（main.c:324-345）：四链指针清 NULL（四链指针）、`r_uid=0`、监控字段清 0、`RS_IN_USE | RS_ACTIVE` 激活、`rproc_ptr` 快速索引登记（快速索引）、`in_use=TRUE`。字段语义归 02。
 
 #### 2.3.4 Step 2：允许运行（main.c:348-399）
@@ -791,11 +791,7 @@ impl<T> KernelApi for T where T: SysApi + SchedApi + PmApi + VmApi + IpcApi {}
 `sched_init_proc` 的签名值得单独说明：C 的 `sched_start`（minix3/minix/lib/libsys/sched_start.c:sched_inherit）需要
 scheduler/priority/quantum/cpu 全部四个参数，且回写 `*newscheduler_e`（可能被转发到别的调度器），
 所以 Rust 侧收 `&SchedulerConfig`（sched.rs，携带全部参数）并返回 `Result<Endpoint, Errno>`。
-boot Step 2 用 `SchedulerConfig::boot_defaults` 构造（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/
-`SRV_QT=USER_QUANTUM=200`，priv.h:88,93,98 + config.h:69,74）；NONE 调度器短路
-（minix3/minix/lib/libsys/sched_start.c:sched_inherit）在纯函数 `sched::sched_decision` 内实现，不触面：
-`sched_decision(cfg, is_sys_proc) -> SchedAction::{Skip, Start(&cfg)}`，shell（boot Step 2 /
-19 接线）执行 `Start` → `sched_init_proc(cfg)` 并取回新调度器端点。
+boot Step 2 不再无条件用 `SchedulerConfig::boot_defaults`：它从槽里读 `r_scheduler`/priority/quantum/cpu（`SchedulerConfig::from_slot`），再用 `sched_decision(cfg, is_sys_proc)` 选择 `Skip`/`Start`。系统服务的槽是 `KERNEL`/`USER_Q=7`/`USER_QUANTUM=200`（priv.h:88,93,98 + config.h:69,74），走 `Start` → `sched_init_proc(cfg)`；INIT 的槽是 `USR_SCH=NONE`，走 `Skip`，不发内核调度调用（sched_start.c:57-60）。在这个纯函数里，NONE 短路和 SRV/USR 断言都不接触外部接口。
 
 理由：
 - **域拆分**：旧单体 trait 22 个方法把消息目标埋在方法名里。本拆分是对 域拆分 原草案（`PrivApi/SchedApi/PmApi/VmApi/IpcApi`）的显式修正：`privctl`/`getpriv` 的 C 面就是 `sys_*` 内核调用，单拆 `PrivApi` 会把一个传输面拆到两个 trait，对接线没有增量价值；而 sched 的传输目标确实是复合的（KERNEL→内核调用，否则→SCHED 消息），独立成面。对照 Redox：`redox_syscall` 每个 syscall 独立、用户态逻辑按 scheme 分层——域面是同一思想在 trait 上的表达。
@@ -1046,7 +1042,8 @@ $ cd os && cargo test -p minix-rs --lib
 | `test_step2_synch_boot_fails_closed` | `SF_SYNCH_BOOT` 服务同步 catch 未接线时 fail-closed（`Err(BootError::Kernel(ENOSYS))`，对应 main.c:390-392），不得静默跳过 sync |
 | `test_step2_init_service_marks_and_sends` | step2 全分支经 `init_service`——三槽 `INITIALIZING` + `alive_tm`/`check_tm`（utility.c:19-21）；RS 自身零发送（ROOT_SYS_PROC 早退，utility.c:29-31）、VM/PM 各收一条 `RS_INIT`（逐字段断言：FRESH/gid=1/old=NONE/restarts=1）；计数 = 2（main.c:362-399） |
 | `test_step3_vm_init_roundtrip_clears_initializing` | step2 发出 → mock inbox 脚本 VM 的 ready 回包 → step3 catch 清 `INITIALIZING`、计数归零，且对 VM 零同步 reply（main.c:812-815） |
-| `test_rs_server_handover_after_fresh_init` | fresh boot 完成后运行时状态归 server 所有（`state()` 可达 table/hz/shutting_down），machine 快照随 boot→run 交接存活；boot 机器被消费（无双重所有权） |
+| `test_rs_server_handover_after_fresh_init` | fresh boot 完成后运行时状态归 server 所有（`state()` 可达 table/hz/shutting_down），machine 快照随 boot→run 交接存活；boot 机器被消费（无双重所有权）；RS 槽已清 `INITIALIZING`（`do_init_ready` 自 ready，request.c:514-529） |
+| `test_init_fresh_runs_self_update_tail` | `live-update` feature 打开时 `init_fresh` 末尾确实调用 `self_update`；mock `srv_fork` fail-closed 时 boot 返回 `ENOSYS`，不静默跳过尾步（main.c:436-491） |
 | `test_boot_slot_populates_s2_fields` | boot slot 携带 cmd/args/argc/vm_call_mask/scheduler/priority/quantum/alive_tm（对应 main.c:308-333，07/09/10 依赖） |
 
 ### 5.3 sef.rs / dispatch.rs 测试（§2.2/§2.1，SEF 回调抽象）
@@ -1064,7 +1061,7 @@ $ cd os && cargo test -p minix-rs --lib
 
 ### 5.4 测试总数
 
-`cargo test -p minix-rs --lib` 实测 **359 passed / 0 failed**。全 crate 的 `#[test]` 属性共 361 个，其中 2 个受 `live-update` feature 门控、默认不运行。01 范围三模块共 42 项：boot.rs 37、table.rs 3、sef.rs 2；dispatch.rs 8 项归 06；其余为 02–19 模块的测试。
+`cargo test -p minix-rs --lib` 实测 **359 passed / 0 failed**；`--features live-update` 为 360 passed / 0 failed。全 crate 的 `#[test]` 属性共 362 个，其中 3 个受 `live-update` feature 门控、默认不运行。01 范围三模块共 45 项：boot.rs 40、table.rs 3、sef.rs 2；dispatch.rs 8 项归 06；其余为 02–19 模块的测试。
 
 ### 5.5 本章回顾
 

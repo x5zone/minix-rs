@@ -35,10 +35,10 @@
 把启动链的入口和初始化函数先定位出来：
 
 ```bash
-$ grep -n 'int main(void)\|static void init_vm\|static int is_first_time' minix3/minix/servers/vm/main.c
+$ grep -n '^int main(void)$\|^void init_vm(void)$\|^static int is_first_time' minix3/minix/servers/vm/main.c
 79:static int is_first_time(void)
 93:int main(void)
-428:static void init_vm(void)
+428:void init_vm(void)
 ```
 
 #### 失败对照
@@ -85,7 +85,7 @@ main()  main.c:93
   │          ├─ mem_add_total_pages()     main.c:485-495（模块 + 内核占用校准）
   │          ├─ boot 进程循环             main.c:498-520（init_proc + exec_bootproc + free_mem）
   │          ├─ CALLMAP 注册              main.c:522-575
-  │          └─ num_vm_instances + 标记   main.c:577-579
+  │          └─ num_vm_instances + 标记   main.c:577-586（含 SEF 特殊映射区）
   │
   ├─ sef_local_startup()                  main.c:106（SEF 回调注册 + sef_startup）
   │
@@ -119,10 +119,10 @@ SEF（System Event Framework，`minix3/minix/lib/libsys/sef.c`）是 Minix3 服�
 
 启动顺序不是随意的工程习惯，它受 VM 的执行模型约束。四条前提贯穿本篇，后续章节只引用不复述：
 
-1. **单线程事件循环**。C 的 `main()` 在 `while(TRUE)` 里收消息、分发、回复（`main.c:110-192`）；Rust 的 `VmServer::run` 是同一形状（`vm_server.rs:1693`）。VM 内部不需要锁，也不能把某个等待点写成“另一个线程会推进”。
+1. **单线程事件循环**。C 的 `main()` 在 `while(TRUE)` 里收消息、分发、回复（`main.c:110-192`）；Rust 的 `VmServer::run` 是同一形状（`vm_server.rs:1692`）。VM 内部不需要锁，也不能把某个等待点写成“另一个线程会推进”。
 2. **VM 自己不能缺页**。VM 是页错误的处理者，它的元数据（进程表、页表、分配器位图）必须在访问前已经映射。C 用保留页池避免“分配页表页时还要先分配页表页”的循环（`pagetable.c:48-57` 的 spare pages 注释）；Rust 用 Direct Map 与预分配窗口承担同一职责（`07-pagetable-struct.md`）。
 3. **只改不在运行的进程**。VM 修改的是别的进程的地址空间；被修改的进程必须处于阻塞或未运行状态，否则会出现“一边改页表、一边执行”的竞争。主循环的消息顺序与 IPC 阻塞语义保证这一点（`15-ipc-dispatch.md`）。
-4. **启动期 fail-fast**。`init_vm()` 与 `exec_bootproc()` 没有降级路径：`sys_getkinfo` 失败、内存图或模块表为空、boot 进程装载失败都直接 panic（`main.c:442-452`、`main.c:504`）；Rust 二进制以 `panic = "abort"` 构建（`os/Cargo.toml:303`）。RS_INIT 是 `init_vm()` 之后的握手，属于协议失败而非启动链内部失败，见 §3.4。
+4. **启动期 fail-fast**。`init_vm()` 与 `exec_bootproc()` 没有降级路径：`sys_getkinfo` 失败、内存图或模块表为空、boot 条目缺 `start_addr`（`main.c:504` 的断言）都直接 panic；ELF 装载失败在 `main.c:383-385` panic（`main.c:442-452` 是前两项的断言）。Rust 二进制以 `panic = "abort"` 构建（`os/Cargo.toml:303`）。RS_INIT 是 `init_vm()` 之后的握手，属于协议失败而非启动链内部失败，见 §3.4。
 
 四条前提解释了后面两个反复出现的“为什么”：为什么 `pt_init()` 要先于 `__minix_init()`（前提 2：VM 自己不能缺页），为什么 RS_INIT 不能在启动期同步等待（前提 1：单线程事件循环）。
 
@@ -161,15 +161,15 @@ SEF（System Event Framework，`minix3/minix/lib/libsys/sef.c`）是 Minix3 服�
 先看入口与门控的实际形状。
 
 ```bash
-$ grep -n 'static void init_vm\|static struct vmproc \*init_proc\|static void exec_bootproc' minix3/minix/servers/vm/main.c
-428:static void init_vm(void)
+$ grep -n '^void init_vm(void)$\|^static struct vmproc \*init_proc\|^static void exec_bootproc' minix3/minix/servers/vm/main.c
 262:static struct vmproc *init_proc(endpoint_t ep_nr)
 331:static void exec_bootproc(struct vmproc *vmp, struct boot_image *ip)
+428:void init_vm(void)
 ```
 
 #### 失败对照
 
-如果把 `memset(vmproc, 0, ...)` 挪到 `init_proc()` 之后，`init_proc()` 读到的 `VMF_INUSE` 可能来自上一次实例，`assert(!(vmp->vm_flags & VMF_INUSE))` 会误判或漏判；所以清表必须发生在任何槽操作之前（`main.c:458-462`、`main.c:354`）。
+如果把 `memset(vmproc, 0, ...)` 挪到 `init_proc()` 之后，`init_proc()` 读到的 `VMF_INUSE` 可能来自上一次实例，`assert(!(vmp->vm_flags & VMF_INUSE))` 会误判或漏判；所以清表必须发生在任何槽操作之前（`main.c:458-462`、`main.c:276`）。
 
 ### 2.1 main()：入口、is_first_time 门控、主循环（main.c:93-194）
 
@@ -253,17 +253,17 @@ map_region_init();
 mem_init(mem_chunks);
 ```
 
-- `get_mem_chunks()`（utility.c:44-79）：把 `kernel_boot_info.memmap[]` 的字节偏移/长度转换为 click（4K）对齐的 `struct memory` 块，起始向上取整、结束向下取整。它必须先于 `memset` 与 `mem_init`，因为后面两张表都消费这组块。
+- `get_mem_chunks()`（utility.c:44-79）：把 `kernel_boot_info.memmap[]` 的字节偏移/长度转换为 click（4K）对齐的 `struct memory` 块，起始向上取整、结束向下取整。它必须先于 `mem_init`，因为只有 `mem_init` 消费这组块；`memset(vmproc)`、`acl_init()` 与 `map_region_init()` 都不读 `mem_chunks`。
 - `memset(vmproc, 0, ...)` + `vm_slot = i`：进程表全清零（清掉所有 `VMF_INUSE`），并写入槽号。`vmproc` 结构语义归 `02-vmproc-struct.md`，查找语义归 `03-vmproc-table.md`。
-- `acl_init()`：ACL 数据结构初始化（`04-acl.md`）。
-- `map_region_init()`：区域管理初始化（`13-region-mapping.md`）。
+- `acl_init()`（acl.c:21-30）：遍历全部 `vmproc` 槽写 `vm_acl = NO_ACL`（-1），再清空静态的 `acl_mask`/`acl_inuse`。它必须在 `memset` 之后：清零会把 `vm_acl` 写成 0，只有这一遍能恢复“无 ACL”哨兵；若提前调用，会被随后的清零抹掉。ACL 语义归 `04-acl.md`。
+- `map_region_init()`（region.c:36-38）：当前是空函数，顺序上没有依赖；它排在 `memset` 之后只是让所有进程表相关初始化都落在清零之后。区域映射语义归 `13-region-mapping.md`。
 - `mem_init(mem_chunks)`（alloc.c:306-334）：用内存块建立空闲页位图，同时累加 `total_pages = Σ chunks[i].size`（alloc.c:319-331）。位图本身是文件级静态数组 `free_pages_bitmap`（alloc.c:35），不需要保留页池，所以它可以早于 `pt_init()`；保留页池是页表分配器的启动储备，在 `pt_init()` 才建立。物理内存分配器语义归 `05-physical-memory.md`、`06-page-allocator.md`。
 
 #### 2.2.3 VM 自身槽与页表（main.c:474-475）
 
 ```c
 /* Architecture-dependent initialization. */
-init_proc(VM_PROC_NR);     /* 474 — 定义于 main.c:262-291 */
+init_proc(VM_PROC_NR);     /* 474 — 定义于 main.c:262-286 */
 pt_init();                 /* 475 — 定义于 pagetable.c */
 ```
 
@@ -311,7 +311,7 @@ void mem_add_total_pages(int pages)
 
 语义：`mem_init()` 时 `total_pages` 只统计了空闲块；内核的空闲链表**不含** boot 模块（它们是已占用的 blob），所以分配器需要知道真实物理内存更大。校准分两笔：
 
-1. **模块表**（main.c:485-490）：每个模块 `mod_end - mod_start + 1` 向上取整到页后计入。注意循环上界是 `mods_with_kernel - 1`——**最后一个条目被刻意排除**：它是内核自身的伪模块条目（`pre_init.c:198-200` 把内核登记为 `module_list[kern_mod]`，`mods_with_kernel = mi_mods_count + 1`），其占用在下一笔（内核自身）单独收费，避免重复计入。Rust 交接页的模块列表已经排除 VM 模块、也不含内核伪条目，因此 Rust 对列表全部条目计费，并单独补 VM 映像页（见 §3.6）。
+1. **模块表**（main.c:485-490）：每个模块 `mod_end - mod_start + 1` 向上取整到页后计入。注意循环上界是 `mods_with_kernel - 1`——**最后一个条目被刻意排除**：它是内核自身的伪模块条目（`pre_init.c:196-199` 把内核登记为 `module_list[kern_mod]`，`mods_with_kernel = mi_mods_count + 1`），其占用在下一笔（内核自身）单独收费，避免重复计入。VM 自己的模块条目在 VM 启动前已被内核清零（`protect.c:449-454` 把 blob 还回 memmap 并把 `mod_start`/`mod_end` 置 0），所以这一行只贡献 `0-0+1` 向上取整后的 **1 页**；`vm_allocated_bytes` 不参与这笔账，它只服务 `get_usage_info_vm`（region.c:1366-1374）。Rust 交接页的模块列表已经排除 VM 模块、也不含内核伪条目，因此 Rust 对列表全部条目计费，并为被清零的 VM 条目补 **1 页**（见 §3.6）。
 2. **内核自身占用**（main.c:492-495）：`kernel_allocated_bytes`（静态）向上取整 + `kernel_allocated_bytes_dynamic`（动态，内核已按页对齐）后计入。
 
 #### 2.2.6 boot 进程循环（main.c:498-520）
@@ -341,6 +341,8 @@ for (ip = &kernel_boot_info.boot_procs[0];
 
 - 每个非 VM 的 boot 进程（PM/VFS/RS/DS/...）先建槽（`init_proc`），再通过 `exec_bootproc` 从内存中的 ELF blob 建立地址空间并启动，最后把 blob 占用的物理内存归还分配器。
 - VM 自身已由内核建好页表（`pt_init()` 处理），这里跳过。
+
+这个循环排在 `__minix_init` 与 `mem_add_total_pages` 之后、`CALLMAP` 之前，是 C 的源码顺序，不是硬依赖；真正的前置依赖是 `pt_init()` 建立的页表设施与 `mem_init()` 的位图——`pt_init_done=1` 之后，boot 进程的页目录/页表页由 `alloc_mem()` 从位图供给，保留页池只服务自映射的递归分配。`exec_bootproc()` 最后一步清 `VMCTL_BOOTINHIBIT_CLEAR`，把 boot 进程交给内核调度。`mem_add_total_pages` 只是记账，不构成分配门，所以它放在循环前只是记账顺序；`CALLMAP` 只需在主循环之前，C 把它放在循环后，是因为 boot 进程的 `exec` 不查 `vm_calls`，而主循环一进来就会查。
 
 #### 2.2.7 CALLMAP 注册（main.c:522-575）
 
@@ -382,11 +384,11 @@ CALLMAP(VM_FORGETCACHEPAGE, do_forgetcache);
 CALLMAP(VM_CLEARCACHE, do_clearcache);
 /* getrusage */
 CALLMAP(VM_GETRUSAGE, do_getrusage);
-/* 其余 23 项略；NR_VM_CALLS = 49 */
+/* 以上 26 项即 C 的全部注册；NR_VM_CALLS = 49，其余 23 个调用号未注册，主循环返回 ENOSYS */
 ```
 
-- `vm_calls[]` 是 `NR_VM_CALLS`（`minix3/minix/include/minix/com.h` 第 769 行，值为 **49**）项的函数指针表；`CALLNUMBER(c)`（main.c:54-58）把调用号从 `VM_RQ_BASE` 归一到零基下标，越界返回 -1。
-- 分发语义（5 优先级 + ACL）归 `15-ipc-dispatch.md`；本文档只记录"注册发生在 init_vm 尾部"。CALLMAP 必须在 boot 进程循环之后，因为 boot 进程的 `exec` 不查 `vm_calls`，而主循环一进来就会查。
+- `vm_calls[]` 是 `NR_VM_CALLS`（`minix3/minix/include/minix/com.h:769`，值为 **49**）项的函数指针表；`CALLNUMBER(c)`（main.c:57-59）把调用号从 `VM_RQ_BASE` 归一到零基下标，越界返回 -1。
+- 分发语义（5 优先级 + ACL）归 `15-ipc-dispatch.md`；本文档只记录"注册发生在 init_vm 尾部"。CALLMAP 只需在主循环之前；C 把它排在 boot 进程循环之后，是因为 boot 进程的 `exec` 不查 `vm_calls`，而主循环一进来就会查。
 
 #### 2.2.8 VM 实例标记（main.c:577-586）
 
@@ -403,9 +405,9 @@ s = sef_llvm_add_special_mem_region((void*)VM_OWN_HEAPBASE,
 - `VMF_VM_INSTANCE` 标记 VM 槽，供 `clear_proc`/`swap_proc_slot` 识别。
 - `sef_llvm_add_special_mem_region`：告知 SEF Live Update 状态传输器，VM 堆区到 mmap 顶区是特殊映射区（"`%MMAP_ALL`"）。
 
-### 2.3 init_proc() 与 exec_bootproc()（main.c:262-291、331-417）
+### 2.3 init_proc() 与 exec_bootproc()（main.c:262-286、331-417）
 
-#### 2.3.1 init_proc()（main.c:262-291）
+#### 2.3.1 init_proc()（main.c:262-286）
 
 ```c
 static struct vmproc *init_proc(endpoint_t ep_nr)
@@ -453,9 +455,9 @@ static struct vmproc *init_proc(endpoint_t ep_nr)
 4. **栈建立**：`minix_stack_params` + `minix_stack_fill` 生成初始栈（main.c:388-398），`handle_memory_once` 映射栈区（main.c:400-402），`sys_datacopy` 拷贝栈内容（main.c:404-406）。
 5. **交付执行**：`sys_exec(endpoint, sp, progname, pc, psp)`（main.c:408-412）+ `sys_vmctl(VMCTL_BOOTINHIBIT_CLEAR)`（main.c:415-416）解除启动抑制。
 
-### 2.4 SEF 生命周期（main.c:219-260、592-754；sef_init.c）
+### 2.4 SEF 生命周期（main.c:219-260、592-750；sef_init.c）
 
-#### 2.4.1 sef_local_startup()（main.c:219-240）
+#### 2.4.1 sef_local_startup()（main.c:219-239）
 
 ```c
 static void sef_local_startup(void)
@@ -537,10 +539,10 @@ int sef_cb_init_response_rs_asyn_once(message *m_ptr)   /* sef_init.c:471-483 */
 #### 2.4.4 LU/restart 回调（main.c:196-217、592-730）
 
 - `sef_cb_lu_state_changed`（main.c:196-217）：LU 失败进入 `SEF_LU_STATE_NULL` 时，重新绑定页表、清 map cache、调整进程引用。
-- `sef_cb_init_vm_multi_lu`（main.c:592-676）：多组件更新时构建 IPC 白名单过滤（只允许 RS/正在更新的服务的 `VM_BRK`/`VM_INFO`），并对 `SF_VM_UPDATE` 服务执行 `do_rs_update`。它不是独立注册的回调，而是由 `sef_cb_init_lu_restart` 在末尾直接调用（main.c:725）。
-- `sef_cb_init_lu_restart`（main.c:677-730）：`SEF_CB_INIT_LU_DEFAULT` 状态迁移 → `swap_proc_slot` + `swap_proc_dyn_data` 交换新旧 VM 实例状态 → `pt_bind` 重绑 → `adjust_proc_refs` → multi-LU。
+- `sef_cb_init_vm_multi_lu`（main.c:592-672）：多组件更新时构建 IPC 白名单过滤（只允许 RS/正在更新的服务的 `VM_BRK`/`VM_INFO`），并对 `SF_VM_UPDATE` 服务执行 `do_rs_update`。它不是独立注册的回调，而是由 `sef_cb_init_lu_restart` 在末尾直接调用（main.c:725）。
+- `sef_cb_init_lu_restart`（main.c:677-726）：`SEF_CB_INIT_LU_DEFAULT` 状态迁移 → `swap_proc_slot` + `swap_proc_dyn_data` 交换新旧 VM 实例状态 → `pt_bind` 重绑 → `adjust_proc_refs` → multi-LU。
 
-#### 2.4.5 sef_cb_signal_handler()（main.c:731-754）
+#### 2.4.5 sef_cb_signal_handler()（main.c:731-750）
 
 ```c
 static void sef_cb_signal_handler(int signo)
@@ -663,13 +665,13 @@ pub struct BootParams<'a> {
 理由：
 - **可见性**：构造参数显式暴露启动依赖，`VmServer::new_with_boot_params` 的签名即文档。
 - **可测性**：测试用 `BootParams::simple()` 构造单区域、无模块的参数，无需伪造全局。
-- **与 C 的差异（ARCH 注记）**：C 的 `kernel_boot_info` 是一个全局结构；Rust 把其中与启动链直接相关的字段（根页表、内核信息页、内核布局、初始栈顶、VM 映像占用）收进 `BootParams`，由 `read_boot_params()` 从内核交接页一次读出。页表模块消费 `kernel_layout`，但字段仍归启动契约，避免再引入一个隐式全局。
+- **与 C 的差异（ARCH 注记）**：C 的 `kernel_boot_info` 是一个全局结构；Rust 把其中与启动链直接相关的字段（根页表、内核信息页、内核布局、初始栈顶、VM 加载占用）收进 `BootParams`，由 `read_boot_params()` 从内核交接页一次读出。页表模块消费 `kernel_layout`，但字段仍归启动契约，避免再引入一个隐式全局。`vm_allocated_bytes` 保留为 usage 统计口径，不参与 `total_pages`。
 
 `validate()` 复刻 C 的 sanity 检查（main.c:451-452）并补充交接页约束：根页表非零且页对齐、内核信息页页对齐、空闲区域非空且各自合法、`total_pages` 等于最高可用页号 + 1、boot 进程号在表容量内、VM 槽不重复。C 的 `assert(mods_with_kernel > 0)` 在 Rust 中**不强制**：单元测试构造无模块参数；生产 boot 协议保证模块表非空（已在 `boot.rs` 文档注释中说明）。
 
 #### 3.1.1 A2 消费边界：adopt 与 reconcile
 
-`read_boot_params()` 读出交接页后不只做 `validate()`：它先 `handoff.validate()`，再原样 adopt `free_regions`（不在这里裁剪掉任何“看起来不该存在”的区间），随后调用 `reconcile()` 复核内核的分类记录（`boot.rs:374-470`）。四条断言是：
+`read_boot_params()` 读出交接页后不只做 `validate()`：它先 `handoff.validate()`，再原样 adopt `free_regions`（不在这里裁剪掉任何“看起来不该存在”的区间），构造后先 `params.validate()`，随后调用 `reconcile()` 复核内核的分类记录（调用点 `boot.rs:387`，函数本体 `boot.rs:433-482`）。四条断言是：
 
 - 扣减记录 `deducted` 非空；
 - 引导页表根落在扣减记录内；
@@ -719,7 +721,7 @@ match boot_route(params.is_first_time) {
 | `memset(vmproc,0)` + `vm_slot=i`（main.c:458-462） | 编译期 `[AssumeSyncCell::new(VmProc::vacant()); N]`；`get_empty()` 写 `vm_slot` | 编译期 / 槽激活时 |
 | `acl_init()`（main.c:465） | `AclState::Uninitialized` 编译期默认 | 编译期 |
 | `map_region_init()`（main.c:468） | `RegionMap::new()`（惰性，每进程初始化时） | `init_regions()` 时 |
-| `init_proc(VM_PROC_NR)`（main.c:474） | `VmServer::init_vm_slot()` → `EmptySlot::activate` + `set_boot` | `init()` Phase 2a |
+| `init_proc(VM_PROC_NR)`（main.c:474） | `VmServer::init_vm_slot()` → `init_proc()`：`EmptySlot::activate` + `init_page_table` + `init_regions` + `set_boot` | `init()` Phase 2a |
 | `pt_init()`（main.c:475） | 结构变化 [ARCH: A1]：C 建自己的页表并预置保留页池；Rust 的 `init_vm_self_pt()` adopt 内核引导根（`root_paddr`），不依赖 VM 槽，故在构造期完成 | `new_with_boot_params`（非 test） |
 | `__minix_init()`（main.c:480） | `transport.mark_initialized()` 打开 IPC 就绪门；系统调用本体仍依赖 `minix-sys` 的内核 IPC 原语 | `init()` 末尾 |
 | `mem_add_total_pages`（main.c:485-495） | `VmServer::account_boot_memory()` → `global::add_total_pages` | `init()` Phase 2b |
@@ -737,10 +739,10 @@ SEF 是 Minix3 服务端的启动/热更新框架；它仍通过 RS 的 `rprocta
 | SEF 组件 | C 中的必要性 | Rust 下的处理 |
 |---------|-------------|--------------|
 | `sef_startup()` + `sef_cb_init_fresh`（main.c:241-260） | C 的服务初始化走 RS_INIT + rproctab；SEF 提供框架状态机 | 保留协议、去掉框架：`VmServer::rs_handshake()`——`ipc_call_rs_init()` 取 rproctab → 逐条 `acl_set`（等价 `map_service`） |
-| `do_sef_init_request` + `sef_cb_init_response`（minix3/minix/lib/libsys/sef_init.c:do_sef_init_request） | 主循环 RS_INIT 分支 | 主循环优先级 2 直接调 `rs_handshake()`：成功 → `sef_init_reply(OK)` 出生应答后 `Suspend`；失败 → 先回 `sef_init_reply(errno)`，再丢弃请求、计数并审计。C 在 main.c:151 panic；Rust 选择让 VM 存活并把错误交给 RS [ARCH: A-14]。这条豁免以当前生产只走 `ColdInit` 为前提：`init_vm()` 已完成、没有半初始化状态需要回滚，RS 可以按启动失败处理。若将来接入 `WarmRun`，RS_INIT 失败的策略必须重新定义。 |
+| `do_sef_init_request` + `sef_cb_init_response`（minix3/minix/lib/libsys/sef_init.c:do_sef_init_request） | 主循环 RS_INIT 分支 | 主循环优先级 2 直接调 `rs_handshake()`：成功 → `sef_init_reply(OK)` 出生应答后 `Suspend`；失败 → 先按 `VmError::to_errno()` 回 `sef_init_reply`，再丢弃请求、计数并审计。C 在 main.c:151 panic；Rust 选择让 VM 存活并把错误交给 RS [ARCH: A-14]。这条豁免以当前生产只走 `ColdInit` 为前提（`init_vm()` 已完成），且 `rs_handshake()` 先校验全部 rproctab 行、再一次性写 ACL：中途失败不会留下部分 ACL，因此没有半初始化状态需要回滚。若将来接入 `WarmRun`，RS_INIT 失败的策略必须重新定义。 |
 | `sef_cb_init_response_rs_asyn_once`（minix3/minix/lib/libsys/sef_init.c:sef_cb_init_response_rs_asyn_once） | 避免启动死锁 | 出生/失败应答经 `IpcTransport::asynsend` 单臂发出；同步 `send` 在 RS 仍处 PAGEFAULT\|SENDING 时会形成 EDEADLOCK，不能替换 |
 | `sef_cb_init_lu_restart` / `sef_cb_lu_state_changed` / `sef_cb_init_vm_multi_lu`（main.c:196-217,592-730） | Live Update 状态机 | `rs.rs` 的 `handle_rs_prepare`/`handle_rs_update` 已预留入口；swap_proc_slot 等 LU 语义归 `25-rs-services.md` |
-| `sef_cb_signal_handler`（main.c:731-754） | 信号经 IPC 通知送达 | 主循环把收到的号码经 `VmServer::effective_kernel_signal` 换算后交 `handle_signal`；`SIGKMEM` 转 `do_memory`。换算原因见下表后的三步说明 |
+| `sef_cb_signal_handler`（main.c:731-750） | 信号经 IPC 通知送达 | 主循环把收到的号码经 `VmServer::effective_kernel_signal` 换算后交 `handle_signal`；`SIGKMEM` 转 `do_memory`。换算原因见下表后的三步说明 |
 
 信号路径分三步读：
 
@@ -761,7 +763,7 @@ SEF 是 Minix3 服务端的启动/热更新框架；它仍通过 RS 的 `rprocta
 | 栈建立（`minix_stack_*`） | 已实现：`install_boot_stack` 用 `minix_sys::stack::stack_params` 定尺寸、`stack_fill` 布局 argc/argv/envp/ps_strings，建立 4 MiB 栈区并经 `handle_memory_once` 映射校验，帧字节经 Direct Map 写入；`sys_exec` 使用真实 `vsp`/`ps_str`。唯一余项是 `name_ptr = 0` | `vm_server.rs` / `minix-sys::stack` |
 | `sys_exec` | 已有实现：`KernelGateway::sys_exec`（wire：`MessLsysKrnSysExec{endpt,ip,stack,name,ps_str}`，m_type=Syscall::Exec=1；内核 `dispatch_exec` 真实）；失败时 panic（boot 阶段 fail-fast） | `kernel_gateway.rs` |
 | `VMCTL_BOOTINHIBIT_CLEAR` | 已有实现：`KernelGateway` 经 `sys_vmctl` 发 `VMCTL_BOOTINHIBIT_CLEAR` | `09-vm-boot-protocol.md` |
-| 槽位建立（`init_proc` 等价） | 已有实现：`VmServer::init_boot_procs`；循环内调 `exec_bootproc` 并按 C main.c:513-516 释放映像 blob | 本文档 §4.4 |
+| 槽位建立（`init_proc` 等价） | 已有实现：`VmServer::init_boot_procs`；循环内调 `exec_bootproc` 并按 C main.c:516-519 释放映像 blob | 本文档 §4.4 |
 
 **当前实现边界**（本节唯一口径，§3.9 与 §4.4 都以此为准）：
 
@@ -769,7 +771,7 @@ SEF 是 Minix3 服务端的启动/热更新框架；它仍通过 RS 的 `rprocta
 |---|---|
 | `pt_new` / `pt_bind` / 页表建立 | 已实现（`init_page_table`，生产走 `CurrentPaging`） |
 | ELF 头读取、段装载、BSS 清零 | 已实现（`minix_elf` + Direct Map 直读映像） |
-| `minix_stack_*` 初始栈帧 | 未实现；`stack`/`ps_str` 以 0 上报 |
+| `minix_stack_*` 初始栈帧 | 已实现：`install_boot_stack` 生成 4 MiB 栈区并写 `ps_strings`；`sys_exec` 使用真实 `vsp`/`ps_str`，唯一余项是 `name_ptr = 0` |
 | `sys_exec` | 已实现（`KernelGateway::sys_exec`，真实 `vsp`/`ps_str`） |
 | `VMCTL_BOOTINHIBIT_CLEAR` | 已实现（`KernelGateway` 的 `sys_vmctl`） |
 | 映像 blob 释放 | 已实现（`init_boot_procs` 循环内） |
@@ -795,8 +797,9 @@ pub(crate) unsafe fn add_total_pages(pages: usize) {
 for m in self.modules {
     pages += round_up_page(m.len) / CLICK_SIZE;
 }
-// VM 映像不在 handoff 模块列表里，按内核报告的字节数单独补记。
-pages += round_up_page(self.vm_allocated_bytes) / CLICK_SIZE;
+// VM 模块条目在 C 里已被清零；main.c 的 `+1` 使这一行固定贡献 1 页。
+// `vm_allocated_bytes` 只服务 usage 统计，不计入 total_pages。
+pages += 1;
 
 // C: main.c:492-495 — 内核占用（static 向上取整 + dynamic）
 ```
@@ -808,7 +811,7 @@ pages += round_up_page(self.vm_allocated_bytes) / CLICK_SIZE;
 | `BootParams.total_pages` | 位图容量 = 最高物理页号 + 1 | `read_boot_params` | 分配器构造 |
 | `boot_usable_pages` | Σ 空闲区页数（C 的 `total_pages`） | `new_with_boot_params` | `global::init` |
 | `VmPageAllocator::total_pages()` | 后端总容量（位图/伙伴分配器自己的计数） | 分配器构造 | `PageFrames::new` |
-| `global::total_pages()` | 可用页 + boot 模块/VM 映像/内核额外页（C 的 `total_pages` + `mem_add_total_pages`） | `global::init` + `add_total_pages` | 统计与查询 |
+| `global::total_pages()` | 可用页 + boot 模块 + VM 清零条目 1 页 + 内核额外页（C 的 `total_pages` + `mem_add_total_pages`） | `global::init` + `add_total_pages` | 统计与查询 |
 
 `PageFrames` 是物理帧的元数据表（每帧状态与引用），不是分配器位图；它在 `PageFrames::new(total_phys)` 时按后端总容量建立。
 
@@ -825,7 +828,7 @@ C 的 utility.c 为 VM 自身 libc 实现 `mmap`/`munmap`/`_brk`（§2.6）。Ru
 
 ### 3.8 CALLMAP → 编译时 match（对应 §2.2.7）
 
-C 用运行时函数指针表（`memset` + 逐个 `CALLMAP`），因为 C 没有编译时分发。Rust 的 `MessageDispatcher::dispatch_by_number` 用 `match` 在编译期解析全部 49 个调用号（`NR_VM_CALLS` 已对齐 C 的 `com.h:769`），零成本跳转表 + 类型安全。分发细节归 `15-ipc-dispatch.md`。
+C 用运行时函数指针表（`memset` + 逐个 `CALLMAP`），因为 C 没有编译时分发。Rust 的 `MessageDispatcher::dispatch_by_number` 用 `match` 在编译期解析 49 个调用号空间（`NR_VM_CALLS` 已对齐 C 的 `com.h:769`）；其中 C 注册的 26 个调用有 handler，其余位置为 `None` 并返回 ENOSYS。分发细节归 `15-ipc-dispatch.md`。
 
 ### 3.9 本阶段 ARCH 决定
 
@@ -869,11 +872,12 @@ C 用运行时函数指针表（`memset` + 逐个 `CALLMAP`），因为 C 没有
 #### 最小示例
 
 ```bash
-$ grep -n 'fn real_main\|boot_route\|install_server\|pub fn init\|pub fn run' os/servers/vm/src/main.rs os/servers/vm/src/vm_server.rs
+$ grep -n 'fn real_main\|match boot_route\|pub fn install_server\|pub fn init(&mut self)\|pub fn run(&mut self)' os/servers/vm/src/main.rs os/servers/vm/src/vm_server.rs
 os/servers/vm/src/main.rs:41:fn real_main() -> ! {
 os/servers/vm/src/main.rs:81:        match boot_route(params.is_first_time) {
-os/servers/vm/src/vm_server.rs:649:    pub fn init(&mut self) {
-os/servers/vm/src/vm_server.rs:1693:    pub fn run(&mut self) -> ! {
+os/servers/vm/src/vm_server.rs:265:pub fn install_server(server: VmServer) -> Result<(), VmServer> {
+os/servers/vm/src/vm_server.rs:648:    pub fn init(&mut self) {
+os/servers/vm/src/vm_server.rs:1692:    pub fn run(&mut self) -> ! {
 ```
 
 #### 失败对照
@@ -971,7 +975,8 @@ pub fn init(&mut self) {
     // Phase 2c: boot 进程槽 — main.c:498-520
     self.init_boot_procs();
 
-    // Phase 2d: VM 实例标记 — main.c:577-579
+    // Phase 2d: VM 实例标记 — main.c:577-579；
+    // SEF 特殊映射区登记（main.c:582-583）当前未实现，归 25。
     self.mark_vm_instance();
 
     // C: __minix_init() — 打开 IPC 就绪门，主循环才能阻塞收消息。
@@ -992,7 +997,7 @@ A–E 的大阶段顺序不变，但 C 的 `init_proc(VM_PROC_NR)` → `pt_init`
 
 - 全局分配器注册——`init()` 开头对 `&mut self.ctx.page_alloc` 调 `register_page_alloc`；此时 server 已在 image slot 中，`relocate()` 随后原地替换分配器字段，注册指针仍然有效。
 - `init_global_state()`——`global::init(boot_usable_pages)` + `global::set_kernel_layout(...)`；总页数用 boot 可用页，而不是位图容量。
-- `init_vm_slot()`——从 `boot_procs` 找 `proc_nr == VM_PROC_NR` 的条目，`EmptySlot::activate(endpoint)` + `set_boot(ip)`，等价 C `init_proc`（main.c:262-291）。生产构建找不到条目时直接 panic（对应 C 的 `panic("no init_proc")`）；测试构造省略 `boot_procs`，测试分支保留跳过。
+- `init_vm_slot()`——从 `boot_procs` 找 `proc_nr == VM_PROC_NR` 的条目，调用 `init_proc()`：`EmptySlot::activate(endpoint)` + `init_page_table()`（槽页表）+ `init_regions()`（空区域表）+ `set_boot(ip)`，等价 C `init_proc`（main.c:262-286）。生产构建找不到条目时直接 panic（对应 C 的 `panic("no init_proc")`）；测试构造省略 `boot_procs`，测试分支保留跳过。
 - `account_boot_memory()`——`boot_extra_pages > 0` 时调用 `global::add_total_pages`（§3.6）。
 - 页帧表——`PageFrames::new(total_phys)` 必须在 `init_boot_procs()` 之前，因为 `exec_bootproc()` 分配段页时读取它。
 - `init_boot_procs()`——对每个非 VM、非负、endpoint 非 NONE 的 boot 条目建槽（等价 `init_proc`），并调用 `exec_bootproc()`；保留 C 的 `assert(start_addr != 0)`。`endpoint == NONE` 在 Rust 交接页里表示空槽，C 的 `boot_procs[]` 不会产生这种条目，因此这是交接表示层的差异，不改变 boot 进程的实际集合。
@@ -1055,7 +1060,7 @@ $ cd os && cargo test -p minix-vm --lib
 | `test_boot_params_validate_zero_root` | 根页表非零负控 |
 | `test_boot_params_extra_pages_modules` | handoff 模块全部计费（C main.c:485-490 的对应形状） |
 | `test_boot_params_extra_pages_kernel` | 内核占用校准（main.c:492-495） |
-| `test_boot_params_extra_pages_vm_image` | VM 映像不在 handoff 模块列表，按 `vm_allocated_bytes` 单独补记 |
+| `test_boot_params_extra_pages_vm_module_row` | VM 模块条目被清零后固定计 1 页（C main.c:485-490 的 `+1` 形状）；`vm_allocated_bytes` 不计入 |
 | `test_reconcile_accepts_consistent_record` | A2 扣减记录一致时通过 |
 | `test_adopt_free_regions_keeps_every_region_verbatim` | free_regions 原样 adopt，不裁剪 |
 | `test_reconcile_rejects_empty_record` | 空扣减记录负控 |
@@ -1073,12 +1078,13 @@ $ cd os && cargo test -p minix-vm --lib
 | `test_vm_server_init_with_boot_procs` | init 后 VM 槽 + boot 槽激活、VM_INSTANCE 标记（main.c:474,498-520,578-579） |
 | `test_vm_server_init_vm_instance_count` | `num_vm_instances` 增量（main.c:578） |
 | `test_vm_server_init_accounts_boot_memory` | `mem_add_total_pages` 调用点（main.c:485-490） |
+| `test_install_boot_stack_writes_frame_and_exec_values` | `install_boot_stack` 写帧、`sys_exec` 收到真实 `vsp`/`ps_str`（main.c:388-406） |
 | `test_run_once_rs_init_handshake_copies_and_maps_service` | RS_INIT 成功臂：取 rproctab 并写 ACL |
 | `test_run_once_rs_init_fails_closed_on_safecopy_error` | RS_INIT 失败臂：应答错误并丢弃请求 |
 
 其它既有测试（transid 族、页错误计数、进程生命周期等）与本文档范围不直接相关，但同属 `minix-vm` 基线。
 
-测试边界：`exec_bootproc` 在 test 构建中被 `#[cfg(not(test))]` 跳过，所以“页帧表先于 boot 进程循环”这条顺序没有宿主测试，只能由生产路径与真机门覆盖；`mark_initialized` 由 `test_vm_server_init` 的 `initialized` 断言间接覆盖。
+测试边界：`exec_bootproc` 的完整路径在 test 构建中被 `#[cfg(not(test))]` 跳过；其中初始栈帧子步骤由 `test_install_boot_stack_writes_frame_and_exec_values` 单独覆盖，其余装载顺序由生产路径与真机门覆盖；`mark_initialized` 由 `test_vm_server_init` 的 `initialized` 断言间接覆盖。
 
 ### 5.3 当前基线没有失败项
 
@@ -1093,10 +1099,11 @@ test result: ok. 549 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 ### 5.4 真机门清单
 
-宿主测试只能证明形状与负控；启动链是否真的走到主循环，要看真机路标。当前 `os/servers/vm/src/main.rs` 提供四段 `e5d:` 诊断输出，可作为门链的观察点：
+宿主测试只能证明形状与负控；启动链是否真的走到主循环，要看真机路标。当前 `os/servers/vm/src/main.rs` 提供四段 `e5d:` 输出加一段自测结果（共五行），可作为门链的观察点：
 
 | 阶段 | 可观测路标 | 代码位置 |
 |---|---|---|
+| 读启动参数前 | `e5d: before-read-boot-params` | `main.rs:59` |
 | 读到启动参数 | `e5d: boot-params-read` | `main.rs:64` |
 | 进入 VM 入口 | `e5d: vm-main-enter` | `main.rs:78` |
 | `init()` 完成 | `e5d: vm-init-done` | `main.rs:96` |

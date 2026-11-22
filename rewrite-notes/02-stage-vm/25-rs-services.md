@@ -2,9 +2,9 @@
 
 > **分类**: 阶段 8 — 跨服务协作（RS 服务：SET_PRIV / PREPARE / UPDATE / MEMCTL）
 > **源码**: `minix3/minix/servers/vm/rs.c`（全 391 行：`do_rs_set_priv` :34-66 / `do_rs_prepare` :71-145 / `do_rs_update` :150-213 / `rs_memctl_make_vm_instance` :218-276 / `rs_memctl_heap_prealloc` :281-295 / `rs_memctl_map_prealloc` :300-324 / `rs_memctl_get_prealloc_map` :329-344 / `do_rs_memctl` :349-390）+ 调用面（`main.c`：`map_service` :755-768、`sef_cb_init_fresh` rproctab 复制 :241-260（sys_safecopyfrom :246-250）、`adjust_proc_refs` 调用点 :215/:722；`utility.c`：`adjust_proc_refs` :477-492；`minix/rs.h`：`struct rprocpub` :165-183、`SF_VM_ROLLBACK` :198、`SF_VM_NOMMAP` :199、`IS_RPUB_BOOT_USR` :188；`minix/com.h`：请求码 :724/:736/:738/:766、MEMCTL 子请求 :741-745；`minix/ipc.h`：`mess_lsys_vm_update` :1529-1534）
-> **Rust 模块**: `os/servers/vm/src/rs.rs`（`RsError` :34 / `RsMemctlRequest` :72 / `RsMemctlResult` :81 / `RsUpdateResult` :87 / `RsUpdateFlags` :102 / `handle_rs_set_priv` :122 / `handle_rs_prepare` :168 / `handle_rs_update` :285 / `handle_rs_memctl` :339）+ `os/servers/vm/src/vm_server.rs`（`rs_handshake` :972 / `ipc_call_rs_init` :1245 / `RprocEntry` :1216 / `RprocTab` :1232 / `RsMemctlAddrLen` 回复编码 :1371——V11/T9 step 3：RS_INIT grant 经 `RsInit::decode_message` 贯通入握手，`ipc_call_rs_init` 由假成功 `Ok(empty)` 改为诚实 `NotImplemented`（E-RSWIRE 前）+ P2 失败 fail-closed）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_rs_set_priv` :829 / `dispatch_rs_prepare` :843 / `dispatch_rs_update` :858 / `dispatch_rs_memctl` :874 / CALLMAP 解码 :1062-1103 / `From<RsError>` :1284-1306）
+> **Rust 模块**: `os/servers/vm/src/rs.rs`（`RsError` :34 / `RsMemctlRequest` :72 / `RsMemctlResult` :81 / `RsUpdateResult` :87 / `RsUpdateFlags` :102 / `handle_rs_set_priv` :122 / `handle_rs_prepare` :168 / `handle_rs_update` :285 / `handle_rs_memctl` :339）+ `os/servers/vm/src/vm_server.rs`（`rs_handshake` :972 / `ipc_call_rs_init` :1245 / `RprocEntry` :1216 / `RprocTab` :1232 / `RsMemctlAddrLen` 回复编码 :1371——RS_INIT grant 经 `RsInit::decode_message` 贯通入握手，`ipc_call_rs_init` 由假成功 `Ok(empty)` 改为诚实 `NotImplemented`（E-RSWIRE 前）+ P2 失败 fail-closed）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_rs_set_priv` :829 / `dispatch_rs_prepare` :843 / `dispatch_rs_update` :858 / `dispatch_rs_memctl` :874 / CALLMAP 解码 :1062-1103 / `From<RsError>` :1284-1306）
 > **前置**: `15-ipc-dispatch.md`（主循环分发）、`22-vm-exit.md`（LU 后旧实例退出路径）
-> **说明**: 本文档管 **RS（Reincarnation Server）驱动的 live update 中 VM 的全部服务面**——4 个 IPC handler（权限设置、准备、更新、内存控制）、`RprocTab` 握手语义、`adjust_proc_refs`，以及 A-8 缺口契约（RS_PREPARE 第 5 步 / RS_UPDATE 切换未实现）。**不覆盖**：SEF 生命周期与 `map_service` 启动注册的完整叙事（01）、swap_proc_* / map_proc_dyn_data 机制本体（10）、ACL 位图语义（04）、主循环分发框架（15）、查询服务（26）。
+> **说明**: 本文档管 **RS（Reincarnation Server）驱动的 live update 中 VM 的全部服务面**——4 个 IPC handler（权限设置、准备、更新、内存控制）、`RprocTab` 握手语义、`adjust_proc_refs`、SEF 特殊映射区登记（`sef_llvm_add_special_mem_region` / `%MMAP_ALL`），以及 A-8 缺口契约（RS_PREPARE 第 5 步 / RS_UPDATE 切换未实现）。**不覆盖**：SEF 生命周期与 `map_service` 启动注册的完整叙事（01）、swap_proc_* / map_proc_dyn_data 机制本体（10）、ACL 位图语义（04）、主循环分发框架（15）、查询服务（26）。
 
 ---
 
@@ -416,7 +416,7 @@ C 的 5 步在 Rust 中分步落地（rs.rs:168-248）：
 
 **设计立场**：分步实现中每一步单独正确；由于 UPDATE fail-closed（`UpdateNotImplemented`，ENOSYS），部分成功的 PREPARE 不可能导致错误的 LU 切换——RS 的 LU 流程会在 UPDATE 处停止。
 
-### 3.7 UPDATE 七步全链落地（D6，V11/T13；真实内核流量挂 edge E2）
+### 3.7 UPDATE 七步全链落地（真实内核流量挂 edge E2）
 
 C 的 7 步全部有 Rust 对应（rs.rs `handle_rs_update`）：
 
@@ -425,12 +425,12 @@ C 的 7 步全部有 Rust 对应（rs.rs `handle_rs_update`）：
 | 1 | 验证端点 | `table.vm_isokendpt` | ✅ |
 | 2 | 非回滚非 NOMMAP + 目标带 PREALLOC_MAP → ENOSYS | `RsUpdateFlags::from_bits_truncate` + 区域扫描 | ✅ |
 | 3 | sys_update（内核切 endpoint） | `Gateway.sys_update`（wire：M1 m1i1=src/m1i2=dst/m1i3=ROLLBACK 位；kernel `dispatch_update` 已真实，pre-E2 trap 桩答 -EIO → `UpdateKernelFailed`） | ✅（通电→E2） |
-| 4 | swap_proc_slot | `VmProcTable::swap_slots`（表级交换 + endpoint 归还各自槽；typestate 副本 V11/T24 删除，03 文档 §3.6） | ✅ |
-| 5 | swap_proc_dyn_data | `share_mappings`（dst 为 VM 的就地共享）+ `map_proc_dyn_data`（非 VM/回滚方向的 CoW 转移，V11/T12） | ✅ |
+| 4 | swap_proc_slot | `VmProcTable::swap_slots`（表级交换 + endpoint 归还各自槽；不设 typestate 副本，03 文档 §3.6） | ✅ |
+| 5 | swap_proc_dyn_data | `share_mappings`（dst 为 VM 的就地共享）+ `map_proc_dyn_data`（非 VM/回滚方向的 CoW 转移） | ✅ |
 | 6 | pt_bind | **判定闭合（偏差登记）**：kernel `sys_update` 已切调度身份，页表存在槽内随交换走，VM 无需重绑（Fix #42 判定记录） | ✅（等价） |
-| 7 | 手动回复 + SUSPEND | 语义等价路线：handler 返回 `RsUpdateResult::Ok` → dispatcher 回 `VmReply::Ok`（单次回复）。C 的"手动 ipc_send OK + 返回 SUSPEND 抑制主循环二次回复"（rs.c:201-210）在 Rust 折叠为一条主循环回复路径；`RsUpdateResult` 无 Suspend 变体（V11/T24 删除骨架——若存在反而会丢掉 C 会发的那条回复） | ✅（等价） |
+| 7 | 手动回复 + SUSPEND | 语义等价路线：handler 返回 `RsUpdateResult::Ok` → dispatcher 回 `VmReply::Ok`（单次回复）。C 的"手动 ipc_send OK + 返回 SUSPEND 抑制主循环二次回复"（rs.c:201-210）在 Rust 折叠为一条主循环回复路径；`RsUpdateResult` 无 Suspend 变体（该骨架已删除——若存在反而会丢掉 C 会发的那条回复） | ✅（等价） |
 
-**设计理由**：第 1-2 步是纯验证（无副作用），提前实现让调用方在真正的 LU 落地前就能得到正确的 EINVAL/ENOSYS 反馈；第 3-7 步已随 V11/T13 落地，`RsError::UpdateKernelFailed` 保留内核原始 errno 供审计（经 VmError 边界坍缩为 EIO 的保真缺口登记于 02 todo §16.1 G-V12-4）。
+**设计理由**：第 1-2 步是纯验证（无副作用），提前实现让调用方在真正的 LU 落地前就能得到正确的 EINVAL/ENOSYS 反馈；第 3-7 步已落地，`RsError::UpdateKernelFailed` 保留内核原始 errno 供审计（经 VmError 边界坍缩为 EIO 的保真缺口登记于 02 todo §16.1 G-V12-4）。
 
 ### 3.8 MEMCTL 委托 brk/mmap（D7）
 
@@ -459,7 +459,7 @@ struct RprocTab { entries: [RprocEntry; 32] }
 
 - **32 槽**：握手 stub 的占位容量——与 C 的 `rprocpub[NR_SYS_PROCS]=64`（main.c:63，minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS）及 minix-rs 的 `NR_PROCS=256`（minix-types types/com.rs:36，`VM_PROC_COUNT=NR_PROCS+1=257`，vmproc/table.rs:41）均不同源；常量表只用于握手 stub 的条目形态，真实解码落地时以 minix-rs 的进程表容量为准（差异诚实标注）。
 - `is_user` 字段：C 的判定是 `IS_RPUB_BOOT_USR`（endpoint==INIT_PROC_NR）；Rust 由未来握手解码填充（当前 stub 恒 false）。
-- `rs_handshake`（os/servers/vm/src/vm_server.rs:const SIGKMEM（L972，工具生成））复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init(gid)` 取表 → 逐条 `acl_set`。**V11/T9 step 3 更正与诚实化**：①方向/源 P0-fact 修正——RS_INIT 由 RS 发往 VM（main.c:149），grant 经 `RsInit::decode_message`（minix-types，`m_rs_init` union 成员）从消息解出，safecopy 源是 `RS_PROC_NR`（main.c:246）而非 SELF；②`ipc_call_rs_init` 原返回 `Ok(RprocTab::empty())` 是**假成功**（每此握手静默注册零 ACL），现按 `NR_BOOT_PROCS` 行共享快照解码——行是 `minix_types::RprocpubSnap`（`[ARCH: A-4]`）的 `in_use`/`endpoint`/`vm_call_mask` 三字段面，RS 侧的授权镜像与 IS 的 `getsysinfo` 用同一行（C 的 `struct rprocpub` 字节镜像退役）；③握手失败在 P2 分支 fail-closed（drop+计数+审计，C 是 panic），pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`。
+- `rs_handshake`（os/servers/vm/src/vm_server.rs:const SIGKMEM（L972，工具生成））复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init(gid)` 取表 → 逐条 `acl_set`。**接口更正与诚实化**：①方向/源 P0-fact 修正——RS_INIT 由 RS 发往 VM（main.c:149），grant 经 `RsInit::decode_message`（minix-types，`m_rs_init` union 成员）从消息解出，safecopy 源是 `RS_PROC_NR`（main.c:246）而非 SELF；②`ipc_call_rs_init` 原返回 `Ok(RprocTab::empty())` 是**假成功**（每此握手静默注册零 ACL），现按 `NR_BOOT_PROCS` 行共享快照解码——行是 `minix_types::RprocpubSnap`（`[ARCH: A-4]`）的 `in_use`/`endpoint`/`vm_call_mask` 三字段面，RS 侧的授权镜像与 IS 的 `getsysinfo` 用同一行（C 的 `struct rprocpub` 字节镜像退役）；③握手失败在 P2 分支 fail-closed（drop+计数+审计，C 是 panic），pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`。
 
 ### 3.10 差异清单
 
@@ -591,6 +591,7 @@ plan.md §4 A-8 行：`rs.c` 全量实现 vs minix-rs `RS_PREPARE`/`RS_UPDATE` �
 | SET_PRIV 位图传输 | sys_datacopy 复制 call_mask | dispatcher 恒传 `mask=None`（user→默认 ACL，sys→EINVAL） | 内核 safecopy 机制 |
 | RS_INIT 握手取表 | sys_safecopyfrom rproctab | `ipc_call_rs_init` 返回空表 | IpcTransport / safecopy / Endpoint↔ProcNr |
 | MAP_PREALLOC 立即分配 | MF_PREALLOC → map_handle_memory 立即分配全部页 + 清 UNINITIALIZED | 仅标 `PREALLOC_MAP`，页仍惰性分配 | doc 20 backlog B1（06/13 范围） |
+| SEF 特殊映射区登记 | `sef_llvm_add_special_mem_region(VM_OWN_HEAPBASE, VM_OWN_MMAPTOP-VM_OWN_HEAPBASE, "%MMAP_ALL")` 把 VM 堆区告知 SEF 的 LU 状态传输器 | 无对应调用（01 §3.3 已记录） | SEF/RS_INIT 传输接线；VM 自更新（MAKE_VM 落地后） |
 
 **fail-closed 保证**：任何未落地路径都返回显式错误（ENOSYS/EPERM/EINVAL），绝不静默成功——RS 的 LU 流程必然在 UPDATE 处停止，不会进入错误的切换状态。
 

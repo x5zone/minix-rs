@@ -730,8 +730,9 @@ G19 审查事件链：`mark --pass`/`--confirm-review` 与 `gate --pass` 的前�
 表只能由作者确认。确认轮其他验证完成后，必须新起一个独立 READER-C 做整篇冷读，
 按硬劝退定义报告；`HARD-REJECTIONS > 0` 不得 CONVERGED。审查事件写入
 `meta/review/events.csv`：调度层预登记 `review_id`/`doc_id`/`edition`/`round`/`review_type`/
-`target_commit`/`doc_sha`/`unit_ids`，Agent 完成后只提交报告与结果；`mark` 与 `gate`
-必须消费事件，不能绕开 CSV 直接写状态。
+`target_commit`/`doc_sha`/`unit_ids`，`event complete` 计算被审单元的 `unit_sha`；Agent
+只提交报告与结果。新鲜度按 `unit_sha` 判，改无关单元不会作废其余单元的报告；`mark` 与
+`gate` 必须消费事件，不能绕开 CSV 直接写状态。
 
 **review-events 的诚实边界**：它记录审查行为的来源、输入范围和交付结果，
 不能从物理意义上证明模型逐字阅读并认真理解了所有内容。不得把它宣传成安全承诺。

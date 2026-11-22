@@ -34,8 +34,8 @@ units:
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -45,8 +45,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/1.md
 - id: '1.0'
@@ -79,13 +78,13 @@ units:
   level: 3
   parent: '1'
   order: 3
-  text_sha: 8d2f08806fa217b5790ba25467b59add739d78cf7c549cdfde0f18c448b789d5
+  text_sha: 9fea2b0f8613f0a5dbe2c802d98eb67deb5c43a5f6df164781554b497134ca18
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -97,8 +96,7 @@ units:
     minix3/minix/kernel/main.c:kmain: 4df08484b4891aa12e8f14fa174edadfde2f9961482866ec9b8de8eb2d3b62c1
   anchor_status: fallback
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/1.1.md
 - id: '1.2'
@@ -106,13 +104,13 @@ units:
   level: 3
   parent: '1'
   order: 4
-  text_sha: 11e47d8f5bc43d48927cd6dc8c7ea68e89fba831eac4b347139fdfebf5f61eea
+  text_sha: b3b21dd4846251e8d1626d42517fc229f678a7b7bfbf049fa92ac765666b7f93
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -122,8 +120,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/1.2.md
 - id: '1.3'
@@ -161,8 +158,8 @@ units:
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -172,8 +169,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/2.md
 - id: '2.0'
@@ -256,13 +252,13 @@ units:
   level: 3
   parent: '2'
   order: 10
-  text_sha: ec3fcd7ae3bf721b5e54638f65dec5466c30ff2bf1f68033eab780bc4385c9da
+  text_sha: 47513b0da753f9bd305a34f58fafb3969db14330d8b9e835c9d8f88ba66c44dc
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -272,8 +268,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/2.3.md
 - id: '2.4'
@@ -361,8 +356,8 @@ units:
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -372,8 +367,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/3.md
 - id: '3.0'
@@ -506,13 +500,13 @@ units:
   level: 3
   parent: '3'
   order: 20
-  text_sha: 86368a4912a634748be5b96a561962e5954105d4297847138256044f41da727f
+  text_sha: 8bdf82d1f943c374a39acf7890f2d909e0c30997fdf50da63a5ff9c9361d1ad6
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -528,8 +522,7 @@ units:
     minix3/minix/lib/libsys/sched_start.c:sched_inherit: e609004795a0c2c9ef798d1839bade885389e02525de76fd30be19a1fbaea678
   anchor_status: fallback
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/3.5.md
 - id: '3.6'
@@ -817,8 +810,8 @@ units:
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -828,8 +821,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/5.md
 - id: '5.0'
@@ -887,13 +879,13 @@ units:
   level: 3
   parent: '5'
   order: 35
-  text_sha: 69e93e5bc9c9b63669b57179a4da88f5d58c5c50f6bfa960d6ae8ded5223fc92
+  text_sha: 23fa632db572f9793c835523df7e33730759c9901f328f247212ca144e8f54ea
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -903,8 +895,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/5.2.md
 - id: '5.3'
@@ -937,13 +928,13 @@ units:
   level: 3
   parent: '5'
   order: 37
-  text_sha: 8be978808cbca61c39aa56532eaefb151610940973ec4b238e392eebb820883b
+  text_sha: 101c33fedfb43c3423537cb0ef32ccbd56c1190bfb285edfca5e92ea51da7dfa
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: 43476d6d4f67887f7bd404e7b243e0c0004a57aa
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -953,8 +944,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: ''
-  review_rounds:
-  - 1
+  review_rounds: []
   post_freeze_rounds: []
   evidence: /home/xzhao/github/minix-rs/rewrite-notes/meta/coordination/review-eval/runs/03-stage-rs/01-rs-boot-init/r1-v312/unit-r1-final/5.4.md
 - id: '5.5'

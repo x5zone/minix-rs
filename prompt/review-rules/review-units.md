@@ -55,8 +55,8 @@
   证据同样含 `DOC` 且只点名该单元；不改单元正文，只记录复核。
 - **事件前置（V3.12）**：`--pass`/`--freeze` 还要求当前轮存在覆盖该单元的已完成
   `T1-chapter`/`T2-section`/`full` 事件；`--confirm-review` 要求当前确认轮存在覆盖该单元的
-  已完成 `confirmation` 事件。事件不新鲜（`doc_sha` 变了、`target_commit` 之后文档改过）
-  即拒绝。状态转换不得脱离 `meta/review/events.csv`。
+  已完成 `confirmation` 事件。事件不新鲜（`unit_sha` 与当前单元正文不符、
+  `target_commit` 失效）即拒绝。状态转换不得脱离 `meta/review/events.csv`。
 - `mark --freeze` 要求当前轮已有该单元的 `review_rounds` 记录；不允许“先冻结、后补读”。
 - `end-confirmation` 要求每个单元 `len(review_rounds) >= 2` 且 `post_freeze_rounds` 非空。
 - **禁止批量冻结**：一份含多个 `UNIT` 的通用证据只能用于 full 轮，不能用于任何单元的
@@ -81,18 +81,28 @@
 
 ### 3.5 审查事件链（V3.12）
 
-- 全局单表 `rewrite-notes/meta/review/events.csv`，追加写；同一 `review_id` 的后写行覆盖前写行，
-  旧行保留为审计历史。
+- 全局单表 `rewrite-notes/meta/review/events.csv`，追加写；每行有单调递增的 `seq`，
+  同一 `review_id` 的后写行覆盖前写行（按 `seq` 合并，不依赖文件行序），旧行保留为审计历史。
 - 调度层预登记以下字段：`review_id`、`doc_id`、`edition`、`round`、`review_type`、
-  `unit_ids`、`reviewer`、`target_commit`、`doc_sha`。Agent 完成后只提交
-  `report_path`、`report_sha`、`result`（`event complete`）。
+  `unit_ids`、`reviewer`、`target_commit`、`doc_sha`；`event complete` 时由工具计算
+  `unit_sha`（被审单元正文指纹的合并哈希）并写回。Agent 只提交
+  `report_path`、`report_sha`、`result`。
 - `unit_ids` 用分号分隔，不用 JSON 数组；ID 列一律按字符串比较。
 - `report_sha` 是去重键：同一份报告不得重复引用充当两次审查证据。同一文档版本由不同角色
   各审一次是合法的（T1 与 T2 同版本并存）。
-- `doc_id` 必须是 `<stage>/<doc-stem>`；`doc_sha` 必须是当前文档内容指纹；
-  `target_commit` 之后当前文档不得再改。三条件任一不满足即“不新鲜”，不得支撑 `mark`/`gate`。
+- `doc_id` 必须是 `<stage>/<doc-stem>`。新鲜度按**单元**判定：`unit_sha` 与当前被审单元
+  的正文指纹一致，且 `target_commit` 是 HEAD 祖先，事件才新鲜；只改无关单元不会作废
+  其余 40 份报告。没有 `unit_sha` 的历史行退回整篇 `doc_sha` + `target_commit` 时间线判定。
+- **旧事件可被新事件取代**：同一单元已有更新且新鲜的已完成事件时，旧的 stale 行只作
+  历史保留，不再让 `event verify --fresh` 判红；未被任何新鲜事件覆盖的 stale 行仍然报错。
 - **诚实边界**：事件记录审查行为的来源、输入范围和交付结果，不声称能验证模型内部的
   认知过程；不得把它宣传成安全承诺。
+- **P-REFUTE 不计入面板缺陷数**：`panel/round<N>/refute.md` 的 `FINDING REFUTE-*` 走台账
+  `## P-REFUTE 附加` 表，逐 claim 给结果/处置；`v312-closure-check.py` 校验该表覆盖全部
+  REFUTE ID，但不把它们并入 `发现总数`。
+- **单轮关账**：`python3 tools/v312-closure-check.py <doc>` 检查 loop 九节、metrics 的 R 轮
+  键与 `ROUND-CLOSED`、五角色报告、refute/VARIANCE、panel FINDING 的台账覆盖、指标计数
+  与全冻结读数。它只判“这一轮记录自洽可关账”，不替代 CONVERGED 的 full/确认/G18 门。
 
 ### 3.6 学习范围与 G18 冷读（V3.12）
 

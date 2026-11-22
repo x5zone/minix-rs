@@ -139,6 +139,7 @@ jobs:
           run_self python3 tools/doc-structure-check.py --self-test
           run_self python3 tools/eval-trace-check.py --self-test
           run_self python3 tools/review-units.py --self-test
+          run_self python3 tools/v312-closure-check.py --self-test
           run_self python3 tools/notes_layout.py
           run_self python3 tools/trait-audit.py --self-test
           run_self python3 tools/doc-citation-check.py --self-test

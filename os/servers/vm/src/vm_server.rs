@@ -49,8 +49,7 @@ use minix_types::{
 };
 #[cfg(test)]
 use minix_types::{VmBrkIn, VmExitIn, VmForkIn};
-// VmContext.user_sp + install_boot_stack use VirBytes unconditionally
-// (E-BOOTFRAME); before that only test code needed it.
+// VmContext.user_sp + install_boot_stack use VirBytes unconditionally.
 use minix_types::VirBytes;
 
 /// The memory subsystem state the server drives: the physical-page
@@ -97,7 +96,7 @@ pub(crate) struct VmContext {
     /// (alloc.c).
     #[cfg(feature = "sanity_checks")]
     pub(crate) sanity_ticks: u32,
-    /// Initial user stack top (E-BOOTFRAME). C: `kernel_boot_info.user_sp`
+    /// Initial user stack top. C: `kernel_boot_info.user_sp`
     /// (glo.h; `kinfo.user_sp = USR_STACKTOP`, pre_init.c:156) —
     /// exec_bootproc builds boot-proc initial stacks downward from it
     /// (main.c:346-411).
@@ -668,7 +667,7 @@ impl VmServer {
         //   main.c:474-475  init_proc(VM_PROC_NR)+pt_init → init_vm_slot() + init_vm_self_pt() (new)
         //   main.c:480      __minix_init()              → mark_initialized() (real trap wiring → E1)
         //   main.c:485-495  mem_add_total_pages()       → account_boot_memory()
-        //   main.c:497-520  boot procs (exec_bootproc)  → init_boot_procs() + exec_bootproc (stack frame → E-BOOTFRAME)
+        //   main.c:497-520  boot procs (exec_bootproc)  → init_boot_procs() + exec_bootproc（含 install_boot_stack 栈帧）
         //   main.c:522-572  CALLMAP                     → compile-time match (MessageDispatcher)
         //   main.c:577-579  VM instance mark            → mark_vm_instance()
         //
@@ -711,9 +710,8 @@ impl VmServer {
         }
         crate::e5d_diag("e5d: vm-page-frames-done\n");
 
-        // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc
-        // landed; the initial stack frame ABI waits on edge
-        // E-BOOTFRAME).
+        // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc and
+        // the initial stack frame are implemented; `name_ptr` remains 0).
         self.init_boot_procs();
         crate::e5d_diag("e5d: vm-boot-procs-seeded\n");
 
@@ -842,10 +840,9 @@ impl VmServer {
     ///
     /// C also runs `exec_bootproc()` + `free_mem()` per boot process here;
     /// both are implemented (ELF segment loading through the
-    /// Direct Map + `Gateway::sys_exec`, blob freed back to the allocator).
-    /// The minimal initial stack frame is edge E-BOOTFRAME (VM↔libc↔kernel
-    /// shared ABI), so `stack`/`ps_str` report 0 until it lands; real
-    /// kernel traffic for `sys_exec` waits on edge E2.
+    /// Direct Map + `Gateway::sys_exec`, blob freed back to the allocator),
+    /// and `install_boot_stack` builds the initial argv/envp/ps_strings
+    /// frame. The only remaining `sys_exec` gap is `name_ptr = 0`.
     fn init_boot_procs(&mut self) {
         let table = self.ctx.proc_table; // one spelling (the same object)
         // Own a copy: exec_bootproc needs &mut self while iterating.
@@ -871,7 +868,7 @@ impl VmServer {
             #[cfg(not(test))]
             self.exec_bootproc(ip)
                 .unwrap_or_else(|e| panic!("exec_bootproc: {} failed: {e}", ip.name()));
-            // C: main.c:513-516 — the boot blob is consumed; free it back
+            // C: main.c:516-519 — the boot blob is consumed; free it back
             // to the allocator (page-aligned, length rounded up).
             #[cfg(not(test))]
             {
@@ -892,15 +889,11 @@ impl VmServer {
     /// **Implemented here**: `pt_new`/`pt_bind` equivalent (`init_page_table`,
     /// already run by `init_proc`), image read through the VM Direct Map
     /// (`start_addr` is physical), PT_LOAD segment regions with eagerly
-    /// materialized pages carrying the segment bytes, and the `sys_exec`
-    /// notification (`Gateway::sys_exec`; kernel `dispatch_exec` is real).
-    ///
-    /// **Edge E-BOOTFRAME** (edge_todo.md): the minimal initial stack frame
-    /// (C `minix_stack_params`/`minix_stack_fill` — argv/envp/ps_strings
-    /// byte-exact ABI, consumed by minix3 libc crt0 and the kernel's
-    /// `arch_proc_init`). That frame is a VM↔libc↔kernel shared contract;
-    /// until it lands, `stack`/`ps_str` are reported as 0 and the boot
-    /// proc's user start is gated on it.
+    /// materialized pages carrying the segment bytes, the initial stack
+    /// frame (`install_boot_stack` / `minix_sys::stack`, argv/envp/
+    /// ps_strings), and the `sys_exec` notification (`Gateway::sys_exec`;
+    /// kernel `dispatch_exec` is real). The only remaining `sys_exec` gap
+    /// is `name_ptr = 0`.
     ///
     /// # C reference
     ///
@@ -1147,7 +1140,7 @@ impl VmServer {
         self.install_boot_stack(ip.endpoint, ip.name(), entry)
     }
 
-    /// E-BOOTFRAME: build and install the initial stack frame for a boot
+    /// Build and install the initial stack frame for a boot
     /// process, then `sys_exec` with the real `stack`/`ps_str` values.
     ///
     /// C: main.c:346-411 — `minix_stack_params` sizes the frame,
@@ -2155,6 +2148,13 @@ impl VmServer {
 
         // 2. Register ACL for each boot service
         // C: for(i=0; i<NR_BOOT_PROCS; i++) if(rprocpub[i].in_use) map_service(&rprocpub[i]);
+        //
+        // Two passes: validate every row first, then apply. A mid-loop
+        // failure must not leave a partially written ACL set behind — the
+        // handler keeps VM alive on RS_INIT failure (A-14), so a half-written
+        // table would be observable to later requests.
+        let mut updates: alloc::vec::Vec<(minix_types::UserSlot, crate::acl::AclState)> =
+            alloc::vec::Vec::new();
         for entry in rproctab.iter() {
             if !entry.in_use {
                 continue;
@@ -2162,11 +2162,16 @@ impl VmServer {
             let slot = table
                 .vm_isokendpt(entry.endpoint)
                 .map_err(|_| VmError::InvalidProcess)?;
-            let mut proc = table.get_active(slot).ok_or(VmError::InvalidProcess)?;
+            let proc = table.get_active(slot).ok_or(VmError::InvalidProcess)?;
             let is_sys = !entry.is_user;
             let mask = Some(crate::acl::AclMask::from_bits_truncate(entry.call_mask));
             // C: acl_set(&vmproc[proc_nr], rpub->vm_call_mask, !IS_RPUB_BOOT_USR(rpub))
-            proc.set_acl(crate::acl::AclState::acl_set(is_sys, mask));
+            updates.push((slot, crate::acl::AclState::acl_set(is_sys, mask)));
+            drop(proc);
+        }
+        for (slot, acl) in updates {
+            let mut proc = table.get_active(slot).ok_or(VmError::InvalidProcess)?;
+            proc.set_acl(acl);
         }
         Ok(())
     }
@@ -4013,7 +4018,7 @@ mod tests {
         }
     }
 
-    /// E-BOOTFRAME: `install_boot_stack` builds the initial frame with the
+    /// `install_boot_stack` builds the initial frame with the
     /// `minix_sys::stack` builders, maps one stack page below `user_sp`,
     /// writes the frame bytes there, and hands `sys_exec` the real
     /// `stack`/`ps_str` (C: main.c:346-411). MockGateway captures the
@@ -4252,8 +4257,8 @@ mod tests {
             let mut server = VmServer::new_with_boot_params(boot_params(&regions, &[], &modules));
             server.init();
             // global::init() reset the total to the allocator total; both
-            // charged modules add one page each.
-            assert_eq!(crate::global::total_pages(), TEST_TOTAL_PAGES + 2);
+            // charged modules add one page each, plus the zeroed VM row.
+            assert_eq!(crate::global::total_pages(), TEST_TOTAL_PAGES + 3);
         });
     }
 

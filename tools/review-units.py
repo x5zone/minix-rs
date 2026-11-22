@@ -76,7 +76,8 @@ TRAJECTORY_RE = re.compile(r"(?mi)\bTRAJECTORY-REVIEW\b")
 HARD_REJECTION_RE = re.compile(r"(?mi)^\s*(?:HARD-REJECTIONS?|硬劝退)\s*[:：]\s*(\d+)\b")
 EVENTS_SCHEMA = "review-events/v1"
 EVENTS_FIELDS = ["review_id", "doc_id", "edition", "round", "review_type", "unit_ids",
-                 "reviewer", "target_commit", "doc_sha", "report_path", "report_sha", "status"]
+                 "reviewer", "target_commit", "doc_sha", "report_path", "report_sha", "status", "seq",
+                 "unit_sha"]
 EVENT_TYPES = {"T1-chapter", "T2-section", "full", "confirmation", "student-cold-read", "chinese-edit"}
 EVENT_STATUS = {"planned", "completed-pass", "completed-fail"}
 SCOPE_SCHEMA = "review-scope/v1"
@@ -113,7 +114,10 @@ def read_doc(doc: Path) -> list[str]:
 
 
 def parse_units(doc: Path) -> list[dict]:
-    lines = read_doc(doc)
+    return _parse_units_lines(read_doc(doc))
+
+
+def _parse_units_lines(lines: list[str]) -> list[dict]:
     heads: list[tuple[int, int, str]] = []
     fence: str | None = None
     for i, line in enumerate(lines):
@@ -395,18 +399,19 @@ def load_event_rows() -> list[dict]:
 
 
 def effective_events() -> list[dict]:
-    """同一 review_id 的后写行覆盖前写行；返回按首次出现顺序的有效事件。"""
+    """同一 review_id 的后写行覆盖前写行；按 seq 排序，避免依赖文件顺序。"""
+    rows = sorted(load_event_rows(), key=lambda r: int(r.get("seq", "0")))
     merged: dict[str, dict] = {}
-    order: list[str] = []
-    for row in load_event_rows():
-        rid = row["review_id"]
-        if rid not in merged:
-            order.append(rid)
-        merged[rid] = row
-    return [merged[rid] for rid in order]
+    for row in rows:
+        merged[row["review_id"]] = row
+    return list(merged.values())
 
 
 def append_event(row: dict) -> None:
+    row = dict(row)
+    if not row.get("seq"):
+        rows = load_event_rows()
+        row["seq"] = str(max((int(r.get("seq", "0")) for r in rows), default=0) + 1)
     missing = [k for k in EVENTS_FIELDS if k not in row]
     extra = [k for k in row if k not in EVENTS_FIELDS]
     if missing or extra:
@@ -447,12 +452,35 @@ def _doc_changed_since(target: str, doc: Path) -> bool:
     return bool(r.stdout.strip())
 
 
+def _unit_sha_map(doc: Path) -> dict[str, str]:
+    return {u["id"]: u["text_sha"] for u in parse_units(doc)}
+
+
+def units_sha(doc: Path, unit_ids: list[str]) -> str:
+    """被审单元的正文指纹；单元文本未变，旧报告仍然有效。
+
+    用单元级指纹而不是整篇 doc_sha，避免“改一个附录就作废全部 43 份报告”
+    的过度失效。整篇级一致性仍由文档门与结构指纹负责。
+    """
+    m = _unit_sha_map(doc)
+    if not unit_ids or any(uid not in m for uid in unit_ids):
+        return ""
+    payload = "\n".join(f"{uid}:{m[uid]}" for uid in sorted(unit_ids))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def event_fresh(row: dict, doc: Path) -> bool:
-    """报告必须针对当前文档内容，且目标 commit 之后文档没有改过。"""
+    """报告必须针对当前被审单元内容。
+
+    新事件带 `unit_sha`，按单元指纹判；旧事件没有该列时退回整篇 `doc_sha`
+    + git 时间线判定，保持历史账本可读。
+    """
+    if row.get("doc_id") != _doc_id(doc) or not _git_ancestor(row.get("target_commit", "")):
+        return False
+    if row.get("unit_sha"):
+        return row["unit_sha"] == units_sha(doc, _unit_ids_of(row))
     return (
-        row.get("doc_id") == _doc_id(doc)
-        and row.get("doc_sha") == _doc_sha(doc)
-        and _git_ancestor(row.get("target_commit", ""))
+        row.get("doc_sha") == _doc_sha(doc)
         and not _doc_changed_since(row.get("target_commit", ""), doc)
     )
 
@@ -503,6 +531,12 @@ def event_integrity_errors(doc: Path, fresh_only: bool = False, round_n: int | N
             # 追加完成行会重复 review_id；这合法。真正的重复由 report_sha 判。
             pass
         seen_rid.add(rid)
+    fresh_units: set[str] = set()
+    if fresh_only:
+        for r in effective_events():
+            if (r["doc_id"] == _doc_id(doc) and r["status"].startswith("completed")
+                    and event_fresh(r, doc)):
+                fresh_units.update(_unit_ids_of(r))
     for row in effective_events():
         if row["doc_id"] != _doc_id(doc) or not row["status"].startswith("completed"):
             continue
@@ -519,7 +553,12 @@ def event_integrity_errors(doc: Path, fresh_only: bool = False, round_n: int | N
             errors.append(f"{rid}: report_sha 与 {seen_report[row['report_sha']]} 重复")
         seen_report[row["report_sha"]] = rid
         if fresh_only and not event_fresh(row, doc):
-            errors.append(f"{rid}: 事件不新鲜（doc_sha 或 target_commit 不匹配）")
+            # 旧事件可以被同一批单元的新事件取代：只要每个被它覆盖的单元
+            # 都另有当前新鲜的已完成事件，就不把这条历史行当陈旧证据。
+            units = _unit_ids_of(row)
+            if units and all(u in fresh_units for u in units):
+                continue
+            errors.append(f"{rid}: 事件不新鲜（单元指纹或 target_commit 不匹配）")
     return errors
 
 
@@ -686,6 +725,7 @@ def cmd_event_plan(doc: Path, state_path: Path, round_n: int | None,
         "report_path": "",
         "report_sha": "",
         "status": "planned",
+        "unit_sha": "",
     }
     append_event(row)
     print(f"event plan: {rid} {review_type} R{r} units={len(chosen)}")
@@ -727,6 +767,11 @@ def cmd_event_complete(doc: Path, state_path: Path, review_id: str,
     row = dict(row)
     row["report_path"] = str(rp.relative_to(ROOT)) if rp.is_relative_to(ROOT) else str(rp)
     row["report_sha"] = report_sha
+    row["doc_sha"] = _doc_sha(doc)
+    row["unit_sha"] = units_sha(doc, _unit_ids_of(row))
+    if not row["unit_sha"]:
+        print(f"[FAIL] 事件 {review_id} 覆盖的单元不在当前正文中，无法计算单元指纹", file=sys.stderr)
+        return 1
     row["status"] = "completed-pass" if result.upper() == "PASS" else "completed-fail"
     append_event(row)
     print(f"event complete: {review_id} {row['status']} report_sha={report_sha[:12]}")
@@ -736,6 +781,9 @@ def cmd_event_complete(doc: Path, state_path: Path, review_id: str,
 def cmd_event_verify(doc: Path, fresh_only: bool) -> int:
     errs = event_integrity_errors(doc, fresh_only=fresh_only)
     rows = [r for r in effective_events() if r["doc_id"] == _doc_id(doc)]
+    data = load_state_for(STATE_DIR / stage_of(doc) / f"{doc.stem}.yaml", doc)
+    if int(data.get("round", 0)) >= 1 and not rows:
+        errs.append(f"活跃账户 round={data.get('round')} 但事件为 0；event verify 不得判 OK")
     print(f"events={len(rows)} completed={sum(1 for r in rows if r['status'].startswith('completed'))} fresh_only={int(fresh_only)}")
     for e in errs:
         print(f"[FAIL] {e}", file=sys.stderr)
@@ -1191,9 +1239,10 @@ def ledger_open_by_unit(path: Path) -> tuple[dict[str, int], list[str]]:
         open_row = False
         if cls in ("FP", "SUGG", "③", "false-positive"):
             open_row = False
-        elif cls == "⑤":
+        elif cls in ("⑤", "⑥"):
+            # ⑤ deferred / ⑥ open-debt are open by definition in V3.12.
             open_row = True
-        elif cls in ("①", "④", "⑥"):
+        elif cls in ("①", "④"):
             open_row = bool(re.search(r"未修|待修|未实施|未完成|TODO", ver))
         elif cls == "②":
             open_row = not bool(re.search(r"用户批准\s*[:：]?\s*\d{4}-\d{2}-\d{2}", disp))
@@ -2365,8 +2414,17 @@ def self_test() -> int:
         cold_event(4)
         assert cmd_gate(doc, sp, True, str(full_ev(2)), str(ledger)) == 0
 
+        # 单元级新鲜度：改一个子节只作废覆盖该子节的事件，不连坐父章
+        completed = [r for r in effective_events()
+                     if r["doc_id"] == _doc_id(doc) and r["status"] == "completed-pass"]
+        row_11 = next(r for r in completed if "1.1" in _unit_ids_of(r))
+        row_1 = next(r for r in completed
+                     if _unit_ids_of(r) == ["1"] and r["review_type"] == "T1-chapter")
+        assert event_fresh(row_11, doc) and event_fresh(row_1, doc)
         # 冻结后改正文：旧 review / 旧确认必须失效
         doc.write_text(doc.read_text().replace("内容一。", "内容一改。"), encoding="utf-8")
+        assert not event_fresh(row_11, doc)
+        assert event_fresh(row_1, doc)
         assert cmd_check(doc, sp) == 1
         assert cmd_sync(doc, sp, True, None) == 0
         d = load_state(sp)
@@ -2415,7 +2473,7 @@ def self_test() -> int:
         no_token = root / "no-token.md"
         no_token.write_text("UNIT 1\nunit evidence\n", encoding="utf-8")
         assert not evidence_replay_ok(no_token)
-    print("self-test PASS: V3.12 full-round/unit-review/confirmation/trajectory/events/G18/account-reset + 8 anchor-invalidation cases")
+    print("self-test PASS: V3.12 full-round/unit-review/confirmation/trajectory/events/unit-freshness/G18/account-reset + 8 anchor-invalidation cases")
     return 0
 
 def main() -> int:
