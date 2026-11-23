@@ -73,6 +73,27 @@ $ grep -n 'pub fn store_kernel_info' os/kernel/src/lib.rs
 
 三份数据之间还有一条**接缝**：`pre_init` 这个函数同时碰数据与镜像——`get_parameters` 把引导器的数据变成内核记录（属本篇），`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`/`vm_enable_paging` 五步建表（属 02 篇）。`head.S` 内有两次跳转：第一次是 `load_stack_start → pre_init`（属本篇），第二次是 `k_initial_stktop → kmain`（属 02 篇）。
 
+#### 1.1.1 现役交接速查
+
+先给现役形状，后面各章再讲理由与历史。`KernelInfo` 是接收侧进程内结构，共 10 个字段：
+
+| 字段 | 类型 | 发送侧谁填 | 接收侧谁读 | 为什么必须跨边界 |
+|---|---|---|---|---|
+| `memmap` | `&'static [MemoryRegion]` | UEFI conventional 列表 / DTB `/memory` | `vm_handoff::classify`、DM 覆盖 | 接收侧没有固件内存图，不能凭空导出 |
+| `reserved_regions` | `&'static [MemoryRegion]` | UEFI `ReservedMapped` / DTB 保留段 | DM 覆盖、VM 排除 | 同上；这些页可用但不可分配 |
+| `source_records` | `&'static [SourceRecord]` | 分类器或 DTB 收集器 | strict 覆盖审计 | 证明每个投影字节有来源 |
+| `kern_virt_base` | `VirBytes` | shim 解析 ELF / 直核常量 | 建表、栈顶派生 | 接收侧没有 ELF 头可读 |
+| `kern_phys_base` | `PhysBytes` | 同上 | 建表、镜像摆放校验 | 同上 |
+| `kern_size` | `u64` | 同上 | 建表、栈顶派生 | 同上 |
+| `boot_modules` | `&'static [BootModule]` | 装载器（12 项） | 进程表初始化 | 镜像由发送侧装载，接收侧只知道表 |
+| `platform_sources` | `&'static [PlatformDescSource]` | 固件配置表 / DTB | 平台发现 | 接收侧不再有固件协议 |
+| `param_buf` | `&'static [u8]` | 各腿 normalizer | `GET_MONPARAMS` | 命令行来自发送侧 |
+| `authority` | `RamAuthority` | 发送腿声明 | strict 审计 | 把“图”和“它的声明”绑成同一个值 |
+
+`BootReport<'_>` 是发送侧借用视图，九字段——就是上表去掉 `authority`；权威由腿在调用点另传。两个直核腿直接借用栈上 `BootStorage`，三条 v1 腿把它序列化进 arena；接收侧最后都落成同一组 `.bss` 落地区（§4.5）。
+
+**主计数**：五条生产腿 = 两条 UEFI 链 + U-Boot shim + 两个直核面；三种形态 = 同镜像内调用（已退役的测试形态）/ 跨镜像跳转 / 直核自引导；§5.4 的五条真机门链含直载测试链、不含 aarch64 直核。两个“五”的成员不同，后文按这个口径读。
+
 ### 1.2 四条不变量 I1–I4
 
 | ID | 不变量 | 可观测判据 | 破坏后的第一现场 |
@@ -1172,6 +1193,8 @@ pub struct KernelInfo {
 ```
 
 
+> 读法：现役字段速查在 §1.1.1；下面这段 `16 → 13 → 14 → 10` 是设计变迁账，第一次读可跳过，只记住“现役 10 个字段”。
+
 `kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs) 共 10 个字段。字段计数的完整链条是 16 → 13（去掉 `free_upper_idx`、`bootstrap_start`、`bootstrap_len` 三个，见 §3.4.1 与 §3.4.3）→ 14（加入 `authority`）；wire v10（设计裁决）再删掉 `startup_objects`（当时既是 `KernelInfo` 字段、也是 wire 分区与 builder 参数）、`user_sp`、`kern_stack_top`、`syscall_entry` 四个，落到 10。按与 C 的关系分成下面几类：
 
 读表前先立三个局部术语：`A+D`（完整定义见 §4.2.1 动作 2：先读 ELF 预订 LMA 跨度、再分配 root/bump、最后拷贝段）；`ReservedMapped` = 固件声明为保留、但运行期可经 Direct Map 访问的档；`Side` = 既不进 free list 也不进保留表的侧桶（§4.2.2 完整判定）。
@@ -1284,7 +1307,47 @@ C 的两个专用键在 Rust 侧的处置：`cttyline`/`cttybaud` 不再有专�
 
 #### 3.2.3 进程内结构不做 ABI 与 arena wire 协议
 
+> 版本变迁（可跳过）：现役信封版本是 10；下面 `7→8`、`8→9`、`9→10` 只用于解释 wire 形状为什么变化，不影响现役 10 字段/六分区的读法。
+
 `KernelInfo`、`MemoryRegion`、`BootModule` 都不使用 `#[repr(C)]`：字段顺序与切片内部 `(ptr, len)` 的顺序都不是契约。`PlatformDescSource` 是例外：它用 `#[repr(C)]` 只为钉住 16 B 句柄形状，字段顺序仍不是跨镜像 ABI（wire 用 `WirePlatformDescSource`）。它们只作为接收侧进程内结构使用（内核 `.bss` 副本、QEMU 测试内核；五条腿的发送侧只构造 `BootReport<'_>` 借用视图），不承担跨镜像布局契约。跨镜像三腿（两条 UEFI 产线 + riscv64 U-Boot shim）改用独立协议 `BootHandoffV1`：标量全部写成固定宽度，载荷放进一个八页 arena（arena：boot-shim 预留的一块定长物理内存，里面摆着 v1 交接协议的信封与各载荷分区，分区布局见本节末）的固定分区，描述符只记 `byte_len`——地址由 arena 基址加协议偏移推导，`(ptr, len)` 不再上线。协议有两层版本号，读时不要混：**协议身份**恒为 v1（`BOOT_HANDOFF_V1_MAGIC`/名字里的 v1，指"第一代交接协议"这个族）；**信封版本号**（`BOOT_HANDOFF_V1_VERSION`，当前 10）随信封或 arena 的 wire 布局变更递增、收发双方精确比对——本篇出现的"7→8"、"8→9"与"9→10"都是后者（"wire 版本"是同一计数器的另一个叫法；7→8、8→9 与 9→10 都指它）。本篇不带限定词的 `v9`/`v10` 一律指 wire 信封版本；`VmBootHandoff` 的版本写 `handoff vN`。同样，`source` 有两个限定用法：`source_records`/source 分区指出内存图来源记录（provenance），`platform_sources`/平台源指 DTB/RSDP 描述符来源；单说 source 时按上下文取前者，不用裸 source 指平台源。
+
+##### 3.2.3.1 wire 字节布局（v10）
+
+信封 `BootHandoffV1` 固定 128 B，字段偏移由 `handoff_v1.rs` 的 `envelope_offsets` 用 `offset_of!` 派生；下表是当前 v10 的读数。所有整数小端；`u64` 8 字节对齐，`u32` 4 字节对齐；偏移都相对 arena 基址。
+
+| 偏移 | 宽度 | 字段 |
+|---|---|---|
+| 0 | 4 | `magic` |
+| 4 | 4 | `version` |
+| 8 | 4 | `size` |
+| 12 | 4 | `ram_authority`（0 = DTB，1 = UEFI） |
+| 16 | 8 | `arena_len` |
+| 24 | 8 | `kern_virt_base` |
+| 32 | 8 | `kern_phys_base` |
+| 40 | 8 | `kern_size` |
+| 48 | 8 | `root_page`（运行期补） |
+| 56 | 8 | `bump_base`（运行期补） |
+| 64 | 8 | `bump_next`（运行期补） |
+| 72 | 8 | `bump_end`（运行期补） |
+| 80 | 8 | `memmap_byte_len` |
+| 88 | 8 | `reserved_regions_byte_len` |
+| 96 | 8 | `boot_modules_byte_len` |
+| 104 | 8 | `platform_sources_byte_len` |
+| 112 | 8 | `param_buf_byte_len` |
+| 120 | 8 | `sources_byte_len` |
+
+信封占 128 B，`ENVELOPE_CAP` 为 256 B；之后是固定分区（偏移/容量/元素）：
+
+| 分区 | 偏移 | 容量 | 元素宽度 |
+|---|---|---|---|
+| `memmap` | 256 | 128 项 | 16 B |
+| `reserved_regions` | 2304 | 256 项 | 16 B |
+| `boot_modules` | 6400 | 12 项 | 32 B（16 B 名字槽 + start + len） |
+| `platform_sources` | 6784 | 4 项 | 16 B |
+| `param_buf` | 6848 | 1024 B | 字节 |
+| `sources` | 7872 | 296 项 | 72 B |
+
+`WIRE_END = 7872`，`WIRE_SOURCES_END = 29184`；arena 总容量 `ARENA_CAP = 32768`，尾部设计余量 3584 B。描述符只记 `byte_len`，地址由“arena 基址 + 上表偏移”推导，wire 上没有任何指针。任何字段或分区变化都必须升 `BOOT_HANDOFF_V1_VERSION` 并同步收发两侧；当前信封版本是 10。
 
 ```rust
 // 代码引用（略去字段文档注释；ram_authority 行的编注为读者说明、不在源码；末尾 arena 分区注释为改述，源文件为英文原文且其 ARENA_CAP 文档另见），os/libs/minix-boot/src/handoff_v1.rs:struct BootHandoffV1。
@@ -1337,6 +1400,8 @@ arena 的分区是固定偏移：信封住首部，其后依次是内存图、�
 ### 3.4 bootstrap 区间、分配器换手与页目录槽位
 
 #### 3.4.1 `bootstrap_start/len`：从可回收区间到字段删除
+
+> 设计变迁（可跳过）：本节解释这两个字段为什么被删除；现役 `KernelInfo` 已没有它们（§1.1.1）。第一次读可先看段末的“判据结论”。
 
 C 的这两个字段装的是链接脚本导出的一小段内核镜像内区域的边界（2.3 已看到赋值）。这段区域的性质写在链接脚本里：
 
@@ -1904,6 +1969,35 @@ $ grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kerne
 
 UEFI 入口是固件加载 `.efi` 后调用的那个函数。它只做一件事：调用 `prepare_and_enter_kernel_image(boot_shim::BOOT_PT_BUMP_PAGES)`，把后续工作交给这个函数。后者内部再分三段：准备（读内核 ELF 并预订其 LMA 跨度 → 分配根页表页与 bump 区 → 拷贝段与装载模块 → 平台源与参数 → 分配 arena 并序列化非内存图载荷）、退出固件服务（配对循环里分类最终内存图并调 `ExitBootServices`）、交接（提交分类计数、构造报告并复核、激活自举根、补运行期字段、跳独立镜像）。入口本身不返回。
 
+下面这张图标的是 x86_64 UEFI 一条腿的完整路标；每一步的“谁写什么、过哪道门、失败落在哪”都在后面小节展开。
+
+```text
+UEFI 固件
+  │
+  ├─ boot-shim .efi main
+  │    └─ prepare_and_enter_kernel_image(BOOT_PT_BUMP_PAGES)
+  │         ├─ 准备：读 kernel.elf + 12 模块；分配 root/bump/arena；写平台源/参数
+  │         ├─ 退出固件服务：配对 GetMemoryMap/ExitBootServices；分类写 arena + BootStorage
+  │         └─ 交接：构造 BootReport；pre-table validate；postconditions；建根；开分页
+  │              └─ 跳 kernel.elf 高半入口
+  │
+  ├─ arch_boot_resume_v1
+  │    ├─ 解码六个分区进 .bss
+  │    ├─ strict validate_requiring_sources
+  │    ├─ check_boot_postconditions
+  │    └─ resume_additive
+  │         ├─ boot_validate_and_prepare
+  │         ├─ store_kernel_info（源与目标同址，跳过复制）
+  │         └─ establish_boot_dm
+  │
+  └─ kmain
+       ├─ strict validate_requiring_sources
+       ├─ check_boot_postconditions
+       └─ scheduler
+```
+
+失败落点：读文件失败在 shim 的 `read_required` panic；EBS 配对失败在配对循环重试/停机；结构校验失败在 `arch_boot_finish` 或 `resume_additive` 的断言；建表/开分页失败在 `arch_boot_impl` 的 halt；`kmain` 的 strict 门失败在进入 scheduler 之前 panic。直核腿把“跳 kernel.elf”换成“同镜像直接调 `arch_boot`”，其余门序相同（§4.4.1）。
+
 本章的 Step 编号在这里立住（02 篇的 4.3 节 与 §6.1 共用）：Step 0 校验与分配器注册检查（`boot_alloc_region()` 为 `None` 即停机；没有从 memmap 切 256 页的兜底，理由见本节末段）；Step 1 恒等映射；Step 2 内核高半映射（2b 高半设备别名、2c 设备窗口页）；Step 3 开分页（`enable`）；Step 4 DM 覆盖（概念入口见 §4.8；完整布局/策略归独立内存管理主题）。
 
 先给两条固件路径一张总览图——本章后面各节再逐段展开，这张表只负责导航：
@@ -1938,6 +2032,8 @@ fn main() -> Status {
 ### 4.2 UEFI 路径：九个动作与产出归属
 
 两条 UEFI 产线（x86_64 与 aarch64）共用同一个入口：`os/boot-shim/src/uefi_helpers.rs` 的 [`fn prepare_and_enter_kernel_image`](<os/boot-shim/src/uefi_helpers.rs:fn prepare_and_enter_kernel_image>)。它返回 `!`：建根、开分页、跳独立镜像，不返回 boot-shim。U-Boot 腿的入口是 `opensbi_helpers::prepare_boot`；UEFI 侧走自己的入口，两者不共享 trait。
+
+读下面的代码块时按“局部机制”读：块首已标节选/重排，未展开的分支不再要求读者去源码补全整条路径；端到端路标以 §4.1 的图为准。
 
 ```rust
 // 节选（保留顺序与关键约束；注释与排版有改写/删节，代码表达式也按语义重排、非逐字；source-symbol: prepare_and_enter_kernel_image；未展开段：参数统计的 `println`、`system_table`/`boot_services`/`ops` 构造、arena 的 `assert_range_clear_of_kernel`、`NeedBiggerBuffer` 扩容断言分支、`dumpdtb_blob` 的 `#[cfg]` 构造、入口与首段 VMA 的 `assert_eq!(layout.entry_point, layout.kern_virt_base.0, …)`），os/boot-shim/src/uefi_helpers.rs:fn prepare_and_enter_kernel_image。

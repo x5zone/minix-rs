@@ -5,7 +5,7 @@ schema: review-units/v2
 doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 stage: 01-stage-kernel
 edition: V3.12
-round: 2
+round: 3
 full_rounds:
 - n: 1
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/r1-v312/full-r1.md
@@ -15,6 +15,10 @@ full_rounds:
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/full-r2.md
   evidence_sha: 941b50f699dce7e09e6715f93bf6c724fe576b0e9abe0b449557e69ef3108fff
   commit: 76ac760b43a4c5ca057b39988a1b9bca3ecd6feb
+- n: 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/full-r3.md
+  evidence_sha: 4825f2bce8dfaf1110ad035952a87adc3554e08f3699795a79afd1bc38366b9e
+  commit: a6a94b942efddadf0d9aec1dc5918118f37feeed
 trajectory_reviews:
 - round: 1
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/certify/y01b-trajectory.md
@@ -43,8 +47,8 @@ units:
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -54,8 +58,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/1.md
 - id: '1.0'
@@ -89,13 +92,13 @@ units:
   level: 3
   parent: '1'
   order: 3
-  text_sha: 103a9601ba0050fdb9f46edeee46d2cee7edb456d8c7faf5c8e4332e11a12c7b
+  text_sha: 63642110003719f370041229e60fd3c18869ba0101a1778c7cf38761ff8dbb64
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -105,8 +108,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/1.1.md
 - id: '1.2'
@@ -504,8 +506,8 @@ units:
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -515,8 +517,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/3.md
 - id: '3.0'
@@ -579,13 +580,13 @@ units:
   level: 3
   parent: '3'
   order: 20
-  text_sha: 78e815d8b6236b4130f782cbf4076289504a7739bd3e73e63a170cfe550aac58
+  text_sha: 5e44109507614b3d23bd3c7cf3d12dfb05dde9ff991887579f6d9f17724dd78f
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -615,8 +616,7 @@ units:
     os/kernel/src/globals.rs:static RESERVED_REGION_STORE: dd2eb87443c8d21c9235bc5530fd471b8617fce494443afcab605e53f0302f23
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/3.2.md
 - id: '3.3'
@@ -650,13 +650,13 @@ units:
   level: 3
   parent: '3'
   order: 22
-  text_sha: 385b8ff15fe65ff4b53a1e91d6545f66653c417a4aa08da2ccd7989a7fb94637
+  text_sha: 0da73a2ed52c48c699fdaaaaf32afd4de1c7aaa0ea9fb2c7b3af9bd72ce4e64d
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -684,8 +684,7 @@ units:
     os/arch/src/riscv64/paging.rs:fn inherit_supervisor_half: e51075e45f0664d552c4c2a466c559921da92f5d533104c31e086bd421386912
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/3.4.md
 - id: '3.5'
@@ -795,8 +794,8 @@ units:
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -806,8 +805,7 @@ units:
   anchor_hashes: {}
   anchor_status: none
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/4.md
 - id: '4.0'
@@ -840,13 +838,13 @@ units:
   level: 3
   parent: '4'
   order: 28
-  text_sha: cb800dcbca510a476740231c058ac059570b5e43e1053af5aef5f1db7d13ae5b
+  text_sha: 07341556b3b7c913f131145cf50327b20fbb80e342324c8448d31162edf4f5d4
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -860,8 +858,7 @@ units:
     os/kernel/src/vm_handoff.rs:fn build_vm_handoff: 3d2d07bfb8ac8edcf8b0cc4c0d731b7a8724886dba69dc25fb8ecab24866a069
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/4.1.md
 - id: '4.2'
@@ -869,13 +866,13 @@ units:
   level: 3
   parent: '4'
   order: 29
-  text_sha: 919b18c33615986d6b0fc9ddb07e2c80574e1572e3e5f720e66a82f0a6454d97
+  text_sha: 19819f436843510fca5aabe64b911ffb25d24aa839d54a96c698386d3d3b74e9
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: b079fa0e3078ff67e2292737a42c13c4061cd11b
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
@@ -893,8 +890,7 @@ units:
     os/boot-shim/src/uefi_helpers.rs:fn build_memmaps: f93b620ed2b49c4689bb6edeefde7ce6293b3bca07dfa31e887e61c777104f6d
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 2
+  review_rounds: []
   post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/unit-evidence/4.2.md
 - id: '4.3'
