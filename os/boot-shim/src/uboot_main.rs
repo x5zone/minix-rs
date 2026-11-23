@@ -218,12 +218,6 @@ pub mod uboot_layout {
     }
     /// DTB staging (fatload target).
     pub const DTB_STAGE: u64 = 0x8c00_0000;
-    /// Boot module names in `MODULE_NAMES` order (must match
-    /// `boot_shim::loader::MODULE_NAMES` — single-source via the
-    /// compile-time assert in opensbi_helpers).
-    pub const MODULE_NAMES: &[&str] = &[
-        "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
-    ];
 }
 
 fn halt() -> ! {
@@ -271,8 +265,8 @@ fn parse_hex_arg(argc: usize, argv: *const *const u8, idx: usize) -> Option<u64>
     (digits > 0).then_some(value)
 }
 
-/// Boot module names (matches `loader::MODULE_NAMES`).
-const MODULE_NAMES: &[&str] = uboot_layout::MODULE_NAMES;
+/// Boot module names: the single authoritative table lives in `minix-boot`.
+const MODULE_NAMES: [&str; minix_boot::NR_BOOT_MODULES] = minix_boot::MODULE_NAMES;
 
 /// Module file staging address for the given index.
 fn module_file_stage(idx: usize) -> u64 {

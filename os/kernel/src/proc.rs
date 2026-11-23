@@ -100,28 +100,9 @@ pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS] = &[
 
 /// User-space boot module process numbers, in C's boot image order.
 ///
-/// `kernel_info.boot_modules[i]` is the i-th multiboot module, which
-/// corresponds to `image[NR_TASKS + i]` in C's table.c. The boot image
-/// order (DS, RS, PM, SCHED, VFS, MEM, TTY, MIB, VM, PFS, MFS, INIT) is
-/// **not** the same as the C proc numbers — each module keeps its fixed
-/// `com.h` number (PM=0, VFS=1, RS=2, MEM=3, SCHED=4, TTY=5, DS=6, MIB=7,
-/// VM=8, PFS=9, MFS=10, INIT=11). This array maps module index → C proc
-/// number, so booted servers end up with the C endpoints (gen=0: endpoint
-/// == proc number) that user-space servers use for addressing.
-pub const BOOT_MODULE_PROC_NRS: &[ProcNr; NR_BOOT_MODULES] = &[
-    ProcNr(6),  // DS_PROC_NR   (com.h: DS=6)
-    ProcNr(2),  // RS_PROC_NR   (com.h: RS=2)
-    ProcNr(0),  // PM_PROC_NR   (com.h: PM=0)
-    ProcNr(4),  // SCHED_PROC_NR (com.h: SCHED=4)
-    ProcNr(1),  // VFS_PROC_NR  (com.h: VFS=1)
-    ProcNr(3),  // MEM_PROC_NR  (com.h: MEM=3)
-    ProcNr(5),  // TTY_PROC_NR  (com.h: TTY=5)
-    ProcNr(7),  // MIB_PROC_NR
-    ProcNr(8),  // VM_PROC_NR
-    ProcNr(9),  // PFS_PROC_NR
-    ProcNr(10), // MFS_PROC_NR
-    ProcNr(11), // INIT_PROC_NR
-];
+/// Derived from the single authoritative `minix_boot::BOOT_MODULE_IDENTITIES`
+/// table (DESIGN-01, D-120); this is a re-export, not a second copy.
+pub use minix_boot::BOOT_MODULE_PROC_NRS;
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

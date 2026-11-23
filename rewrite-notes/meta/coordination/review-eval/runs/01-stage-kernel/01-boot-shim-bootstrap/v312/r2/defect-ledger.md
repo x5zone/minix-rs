@@ -4,7 +4,7 @@
 - 轮次: R2 full
 - 基线: doc sha `19c0ad9a…`（2,951 行），commit `76ac760b4`
 - 面板 FINDING 25：P2 11 / P3 14；P-REFUTE 2 个 P2 观察（其余反证失败）。
-- 处置：① 23 / ⑤ 2（DESIGN-01/02 待作者）/ FP 0（R2-23 的 Default 子项保留，不单列）；未闭环 2，轮结果 `BLOCKED`。
+- 处置：① 25 / ⑤ 0 / FP 0（R2-23 的 Default 子项保留，不单列）；未闭环 0（台账层）。轮结果 `BLOCKED` 只因 R2 冷读 `NOT-READY` 与 R3 结构轮未开。
 
 | 发现 ID | 单元 | 处置类 | 处置 | 复验 | 根因 ID | origin |
 |---|---|---|---|---|---|---|
@@ -16,8 +16,8 @@
 | READER-C-01 | 1.1, 2.3 | ① | §2.3 的“§1.1 那两条依赖”改为“那条依赖”。 | rg -n '这正是 §1.1 那条依赖的根据' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-06 | R2 |
 | READER-C-03 | 3.4.1 | ① | §3.4.1 的生产镜像清单补 aarch64 直核 `fw-aarch64-none`，判据结论覆盖五条生产腿。 | rg -n 'aarch64 直核镜像 `fw-aarch64-none`' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-07 | R2 |
 | READER-B-01 | 2.1 | ① | §2.1 的 load_mods 反序段拆成“正常分配”与“模块表分配失败”两句。 | rg -n '正常分配下反序：表仍会建' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-08 | R2 |
-| DESIGN-01 | 3.6, 4.3 | ⑤ | 待作者裁决：是否把 `MODULE_NAMES` 与 `BOOT_MODULE_PROC_NRS` 合并成一张 `{name, proc_nr}` 表。案件卷 `R2-DESIGN-CASE.md`。 | 待裁决；当前两张表的位置关系由 §4.3 反事实与测试描述覆盖 | R2-11 | DESIGN-D2 R2 |
-| DESIGN-02 | 3.2, 4.4 | ⑤ | 待作者裁决：`kmain` 的 `validate()` 是否改 `validate_requiring_sources()`。案件卷 `R2-DESIGN-CASE.md`。 | 待裁决；当前 `kmain` 走非 strict `validate()` | R2-12 | DESIGN-D2 R2 |
+| DESIGN-01 | 3.6, 4.3 | ① | 按 D-120 选 A：`minix-boot::BOOT_MODULE_IDENTITIES` 为唯一权威表；`MODULE_NAMES`/`BOOT_MODULE_PROC_NRS` 为 const 派生视图；`uboot_main` 第三份抄本删除；xtask order lock 改 typed 读取。 | `rg -n 'BOOT_MODULE_IDENTITIES' os/libs/minix-boot/src/kernel_info.rs`（期望 1）；`rg -n 'pub const BOOT_MODULE_PROC_NRS' os/kernel/src/proc.rs`（期望 0，re-export）；`cargo test -p xtask boot_module_order_matches_boot_shim_module_names`（PASS） | R2-11 | DESIGN-D2 R2 |
+| DESIGN-02 | 3.2, 4.4 | ① | 按 D-121 选 A：`kmain` 改 `validate_requiring_sources()`；宿主 DTB fixture 覆盖 `fw_end=0`/`0x8020_0000`；x86 UEFI 与 riscv64 U-Boot shim 启动门 PASS。 | `rg -n 'kernel_info.validate_requiring_sources\(\)' os/kernel/src/lib.rs`（期望 ≥2）；`cargo test -p minix-boot direct_core_dtb_fixture`（PASS）；`test-shim-bootmarks-x86.sh`/`test-riscv64-uboot-shim.sh`（PASS） | R2-12 | DESIGN-D2 R2 |
 | READER-A-05 | 3.5.1 | ① | §3.5.1 的 `prepare_boot` 统一为“不属于任何 trait 的自由函数”。 | rg -n '`prepare_boot` 是不属于任何 trait 的自由函数' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-13 | R2 |
 | READER-A-06 | 3.2.1 | ① | §3.2.1 的字段计数补全 16 → 13 → 14 → 10 链条。 | rg -n '字段计数的完整链条是 16' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-14 | R2 |
 | READER-C-04 | 4.5 | ① | §4.5 的 wrapper 引文注明“一次性守卫在 land_and_store 入口，本引文省略”。 | rg -n '一次性守卫在 land_and_store 入口' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md（期望 1） | R2-15 | R2 |

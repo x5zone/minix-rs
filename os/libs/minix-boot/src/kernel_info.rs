@@ -3,7 +3,7 @@
 //! Corresponds to Minix3's `kinfo_t` (minix/param.h, pre_init.c).
 //! Stripped of multiboot-specific fields — UEFI provides memory map directly.
 
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::{PhysBytes, ProcNr, VirBytes};
 
 use crate::memmap_source::{InputObjectId, RamAuthority, SourceRecord};
 #[cfg(test)]
@@ -666,14 +666,69 @@ pub struct MemoryRegion {
 /// C: `NR_BOOT_MODULES` — the user-module tail of `image[NR_BOOT_PROCS]`.
 pub const NR_BOOT_MODULES: usize = 12;
 
-/// Canonical boot-module order and names (DESIGN-02).
+/// One boot-module identity: install name plus the C process number it must
+/// receive. This is the single authoritative table (DESIGN-01, D-120).
+#[derive(Debug, Clone, Copy)]
+pub struct BootModuleIdentity {
+    pub name: &'static str,
+    pub proc_nr: ProcNr,
+}
+
+/// Canonical boot-module order, names and C proc numbers (DESIGN-01).
 ///
 /// This is the shared positional contract: boot-shim loads files in this
-/// order, the kernel binds positions to `BOOT_MODULE_PROC_NRS`, and the strict
-/// gate compares each `BootModule.name` against this table. The array length
-/// pins the count at compile time, so a count change fails both sides.
+/// order, the kernel binds positions to the same table, and the strict gate
+/// compares each `BootModule.name` against [`MODULE_NAMES`]. The array length
+/// pins the count at compile time. Authoritative C source:
+/// `minix3/minix/kernel/table.c:44-64` `image[]` user-space section; proc
+/// numbers from `minix3/minix/include/minix/com.h`.
+pub const BOOT_MODULE_IDENTITIES: [BootModuleIdentity; NR_BOOT_MODULES] = [
+    BootModuleIdentity { name: "ds", proc_nr: ProcNr(6) },
+    BootModuleIdentity { name: "rs", proc_nr: ProcNr(2) },
+    BootModuleIdentity { name: "pm", proc_nr: ProcNr(0) },
+    BootModuleIdentity { name: "sched", proc_nr: ProcNr(4) },
+    BootModuleIdentity { name: "vfs", proc_nr: ProcNr(1) },
+    BootModuleIdentity { name: "memory", proc_nr: ProcNr(3) },
+    BootModuleIdentity { name: "tty", proc_nr: ProcNr(5) },
+    BootModuleIdentity { name: "mib", proc_nr: ProcNr(7) },
+    BootModuleIdentity { name: "vm", proc_nr: ProcNr(8) },
+    BootModuleIdentity { name: "pfs", proc_nr: ProcNr(9) },
+    BootModuleIdentity { name: "mfs", proc_nr: ProcNr(10) },
+    BootModuleIdentity { name: "init", proc_nr: ProcNr(11) },
+];
+
+/// Derived name view of [`BOOT_MODULE_IDENTITIES`]. Kept as a separate const
+/// so existing consumers do not change.
 pub const MODULE_NAMES: [&str; NR_BOOT_MODULES] = [
-    "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
+    BOOT_MODULE_IDENTITIES[0].name,
+    BOOT_MODULE_IDENTITIES[1].name,
+    BOOT_MODULE_IDENTITIES[2].name,
+    BOOT_MODULE_IDENTITIES[3].name,
+    BOOT_MODULE_IDENTITIES[4].name,
+    BOOT_MODULE_IDENTITIES[5].name,
+    BOOT_MODULE_IDENTITIES[6].name,
+    BOOT_MODULE_IDENTITIES[7].name,
+    BOOT_MODULE_IDENTITIES[8].name,
+    BOOT_MODULE_IDENTITIES[9].name,
+    BOOT_MODULE_IDENTITIES[10].name,
+    BOOT_MODULE_IDENTITIES[11].name,
+];
+
+/// Derived process-number view of [`BOOT_MODULE_IDENTITIES`]. The kernel
+/// re-exports this table; no second copy of the numbers exists.
+pub const BOOT_MODULE_PROC_NRS: [ProcNr; NR_BOOT_MODULES] = [
+    BOOT_MODULE_IDENTITIES[0].proc_nr,
+    BOOT_MODULE_IDENTITIES[1].proc_nr,
+    BOOT_MODULE_IDENTITIES[2].proc_nr,
+    BOOT_MODULE_IDENTITIES[3].proc_nr,
+    BOOT_MODULE_IDENTITIES[4].proc_nr,
+    BOOT_MODULE_IDENTITIES[5].proc_nr,
+    BOOT_MODULE_IDENTITIES[6].proc_nr,
+    BOOT_MODULE_IDENTITIES[7].proc_nr,
+    BOOT_MODULE_IDENTITIES[8].proc_nr,
+    BOOT_MODULE_IDENTITIES[9].proc_nr,
+    BOOT_MODULE_IDENTITIES[10].proc_nr,
+    BOOT_MODULE_IDENTITIES[11].proc_nr,
 ];
 
 #[derive(Debug, Clone, Copy)]

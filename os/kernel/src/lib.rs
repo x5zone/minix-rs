@@ -1860,16 +1860,12 @@ pub fn kmain(_kernel_info: &KernelInfo) -> ! {
     }
     boot_stage!("kernel: kmain Phase A enter\n");
     // Phase A: Entry
-    // Validate KernelInfo invariants before any use.
-    kernel_info.validate();
-    // Cross-boot-form postcondition check. `validate()` only checks
-    // non-address invariants; this layer additionally checks the one
-    // remaining relation: `kern_virt_base > u32::MAX` (the image must not
-    // sit below 4 GiB). The derived-scalar relations (entry inside the
-    // image / user stack below the kernel base / kernel stack not landing in
-    // the user half) have no separate fields to read. kmain is the single
-    // common end point of all five boot forms, so calling it here applies to
-    // every form.
+    // Final strict gate (DESIGN-02, D-121): every production form already
+    // passed the leg-level strict gate, but `KernelInfo.authority` can only
+    // be re-audited after the receiver stored it. `kmain` is the single
+    // common end point of all five boot forms.
+    kernel_info.validate_requiring_sources();
+    // Cross-boot-form postcondition check: `kern_virt_base > u32::MAX`.
     kernel_info.check_boot_postconditions();
     boot_stage!("kernel: kmain A.1 validate ok\n");
 

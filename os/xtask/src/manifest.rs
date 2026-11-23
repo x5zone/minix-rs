@@ -122,37 +122,18 @@ mod tests {
         );
     }
 
-    /// Order lock: extract `MODULE_NAMES` from the boot-shim source text and
-    /// reconcile it position by position with this manifest. The kernel maps the
-    /// i-th module to `BOOT_MODULE_PROC_NRS[i]` (`os/kernel/src/lib.rs:1200-1203`);
-    /// one wrong slot in the install order starts the wrong process.
+    /// Order lock: read the single authoritative `minix_boot::MODULE_NAMES`
+    /// view and reconcile it position by position with this manifest. The
+    /// kernel binds the i-th module to `BOOT_MODULE_PROC_NRS[i]` from the same
+    /// authoritative table (DESIGN-01); one wrong install slot starts the
+    /// wrong process.
     #[test]
     fn boot_module_order_matches_boot_shim_module_names() {
-        let loader_rs = include_str!("../../boot-shim/src/loader.rs");
-        let start = loader_rs
-            .find("pub const MODULE_NAMES")
-            .unwrap_or_else(|| panic!("boot-shim loader.rs 里找不到 MODULE_NAMES"));
-        let array_start = loader_rs[start..]
-            .find("= &[")
-            .expect("MODULE_NAMES 应以 = &[..] 形式声明")
-            + start
-            + 3;
-        let array_end = array_start
-            + loader_rs[array_start..]
-                .find(']')
-                .expect("MODULE_NAMES 数组未闭合");
-        let body = &loader_rs[array_start..=array_end];
-        let names: Vec<&str> = body
-            .split('"')
-            .enumerate()
-            .filter(|(i, _)| i % 2 == 1)
-            .map(|(_, s)| s)
-            .collect();
-
+        let names: Vec<&str> = minix_boot::MODULE_NAMES.to_vec();
         let expected: Vec<&str> = BOOT_MODULES.iter().map(|m| m.module).collect();
         assert_eq!(
             names, expected,
-            "装机清单顺序必须与 boot-shim MODULE_NAMES 逐位一致（table.c:44-64 权威序）"
+            "装机清单顺序必须与 minix_boot::MODULE_NAMES 逐位一致（table.c:44-64 权威序）"
         );
     }
 

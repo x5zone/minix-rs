@@ -80,7 +80,7 @@ $ grep -n 'pub fn store_kernel_info' os/kernel/src/lib.rs
 | I1 | 值可跨镜像，发送侧虚拟地址指针/进程局部句柄不可 | 三条 v1 腿：wire 只写固定宽度标量与字节分区；五条腿共同：接收/消费侧从私有存储重建切片 | 接收侧读到发送侧堆上的地址；高半切换后结构上失效，真机观测到归零（机制未定，见 §3.2.4） |
 | I2 | 来源可追溯 | 每个投影字节有 `SourceRecord`；`audit_source_coverage` | `FreeSpanWithoutMemorySource` 或 `ReservedSpanWithoutSource` |
 | I3 | 所有权明确 | 每条腿内部单所有者：U-Boot shim 腿六类载荷归 `BootStorage`；UEFI 腿五类归 `BootStorage`，source 分区直写 wire（例外见 §3.7）；走 `fill_*` 的载荷一次提交（所有权实现见 §3.7 开头，bootstrap 换手见 §3.4） | 走 `fill_*` 的腿第二次 fill panic；slice 活过 backing 存储 |
-| I4 | 校验先于消费（接收侧） | 接收侧首次消费（建表/映射/分配）前的校验必须完成；`kmain` 入口的 `validate` 是消费后的复核门；各腿门集与顺序不同，见 §4.4 | 非法布局进入建表；消费到半提交的表 |
+| I4 | 校验先于消费（接收侧） | 接收侧首次消费（建表/映射/分配）前的校验必须完成；`kmain` 入口的 strict `validate_requiring_sources` 是消费后的复核门；各腿门集与顺序不同，见 §4.4 | 非法布局进入建表；消费到半提交的表 |
 
 第一次读到这些标识符时，可以先用下面的白话替换，精确定义在第 3 章：`BootStorage` = 发送侧自有的定长载荷存储（接收侧对应物是六个 `.bss` 落地区）；`SourceRecord` = “这段内存是谁给的”记录；`audit_source_coverage` = 检查每个可用字节都有来源；`fill_*` = 把一类载荷一次性写进 `BootStorage` 的闭包。这些名字不改变四条判据的读法，只影响“证据长什么样”。I1 禁止的是发送侧虚拟地址与进程局部句柄；物理地址是值，可以跨镜像（`PlatformDescSource` 携带的 DTB/RSDP 物理地址属于此类）。
 
@@ -1846,7 +1846,7 @@ I3 与 I4 在实现上是两条相邻的检查：**载荷先落到自己的存�
 
 所有权：`BootStorage` 拥有 U-Boot shim 腿上的六类载荷；UEFI 腿只拥有五类（四个 `fill_*` 调用：`fill_map_tables` 一次提交两表；`fill_source_records` 在 U-Boot shim 与两个直核腿使用，UEFI 腿不走它）；UEFI 腿的 source 分区由两个阶段直写 wire：分类器先写 UEFI 记录，`authorize_and_copy` 随后用 `resv_claims::capture` 生成 DTB `/reserved-memory`/MRB 记录并经 `push_dtb_sources` 追加、二次 `finish_sources()`；storage 的 source 切片为空，不在这句的覆盖范围内；strict 审计按 authority 过滤，因此这批 DTB 记录不计入 UEFI 权威的覆盖；`fill_modules`/`fill_platform`/`fill_param`/`fill_map_tables`/`fill_source_records` 各自在闭包返回时提交计数，族内半提交状态不可表示；跨族半提交（例如只填了 modules 未填 map）由接收侧的 `memmap`/模块/来源覆盖检查兜住。`BootReport<'a>` 只是借用视图；跨镜像发送侧把它序列化进 wire，接收侧在自己的 `.bss` 重建切片。接收侧先把切片深拷进自己的 `.bss`，再构造唯一的 `KernelInfo`；`'static` 只由这些 `.bss` 落地区支撑，不从堆上“泄漏”出来。UEFI 腿的 source 记录由分类器与 DTB claims 两阶段直写 wire，不经过 `fill_source_records`；因此“第二次 fill 会 panic”只对实际走 `fill_*` 的腿成立。
 
-校验的逐腿顺序（§4.4.1 的权威表）：直核面 `validate_requiring_sources` → `validate_before_tables` → `check_boot_postconditions` → `store_boot_report` → `boot_validate_and_prepare` → `kmain` 的 `validate` → `check_boot_postconditions` 复核；v1 接收面 `validate_requiring_sources` → `check_boot_postconditions` → `resume_boot_pt_alloc` → `boot_validate_and_prepare`（在 `resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 `validate` → `check_boot_postconditions` 复核，不经过 `validate_before_tables`。`check_boot_postconditions` 在 v10 之后只剩 `kern_virt_base > u32::MAX` 一条断言；镜像与模块、模块与模块的半开区间重叠在共享校验体 `validate_view` 里，三档都会跑。
+校验的逐腿顺序（§4.4.1 的权威表）：直核面 `validate_requiring_sources` → `validate_before_tables` → `check_boot_postconditions` → `store_boot_report` → `boot_validate_and_prepare` → `kmain` 的 strict `validate` → `check_boot_postconditions` 复核；v1 接收面 `validate_requiring_sources` → `check_boot_postconditions` → `resume_boot_pt_alloc` → `boot_validate_and_prepare`（在 `resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 strict `validate` → `check_boot_postconditions` 复核，不经过 `validate_before_tables`。`check_boot_postconditions` 在 v10 之后只剩 `kern_virt_base > u32::MAX` 一条断言；镜像与模块、模块与模块的半开区间重叠在共享校验体 `validate_view` 里，三档都会跑。
 
 四类错误各有落点：缺来源记录 → `FreeSpanWithoutMemorySource`；权威与记录不匹配 → “declared RAM authority … has no source records”；重复提交 → 走 `fill_*` 的腿第二次调用 panic；半提交（写而未提交）在现行 API 中不可表示；跨镜像指针 → 接收侧读到零或 fault。
 
@@ -1897,7 +1897,7 @@ $ grep -n 'boot_stage!\|### minix-rs kernel-image' os/kernel/src/lib.rs os/kerne
 
 - **九个动作**：`prepare_and_enter_kernel_image` 内部按序执行的九步，产出归属见 §4.2 的表。
 - **落地区**：内核 `.bss` 里的六个定长存储区；直核腿由 `store_boot_report` 深拷，v1 腿由 `arch_boot_resume_v1` 解码写入，`store_kernel_info` 只做同址包装。
-- **门链**：`validate_requiring_sources`、`validate_before_tables`、`check_boot_postconditions`、`boot_validate_and_prepare`、`KernelInfo::validate` 组成的校验次序。
+- **门链**：`validate_requiring_sources`、`validate_before_tables`、`check_boot_postconditions`、`boot_validate_and_prepare`、`KernelInfo::validate_requiring_sources` 组成的校验次序。
 - **A+D**：先读 ELF 预订 LMA 跨度、再分配 root/bump、最后拷贝段的动作组合。
 
 ### 4.1 入口与调用链
@@ -2167,16 +2167,18 @@ pub const KERNEL_PATH: &str = "/EFI/minix/kernel.elf";
 pub const DUMPDTB_PATH: &str = "/dumpdtb.dtb";
 pub const MODULES_DIR: &str = "/EFI/minix/modules";
 
-// 〔编注〕minix-boot：共享的规范名字表；数组长度在编译期钉住计数。
-pub const MODULE_NAMES: [&str; NR_BOOT_MODULES] = [
-    "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
-];
+// 〔编注〕minix-boot：唯一权威表（12 项，名称 + 进程号；完整表见源码）。
+pub const BOOT_MODULE_IDENTITIES: [BootModuleIdentity; NR_BOOT_MODULES] = [ ... ];
 
-// 〔编注〕boot-shim：只重导出同一份表，不另立第二份。
+// 〔编注〕两个派生视图：顺序与长度由权威表钉住，不另立抄本。
+pub const MODULE_NAMES: [&str; NR_BOOT_MODULES] = [ ... ];
+pub const BOOT_MODULE_PROC_NRS: [ProcNr; NR_BOOT_MODULES] = [ ... ];
+
+// 〔编注〕boot-shim：只重导出同一份派生视图，不另立第二份。
 pub use minix_boot::MODULE_NAMES;
 ```
 
-- 名字表有 12 项（复算：`sed -n '/pub const MODULE_NAMES/,/];/p' os/libs/minix-boot/src/kernel_info.rs | grep -o '"[a-z]*"' | wc -l` 输出 12），`NR_BOOT_MODULES = 12` 与表同住 `minix-boot`；boot-shim 与内核的 strict 门读同一份常量（设计项）。12 不是随手定的数：它等于 C `boot_image` 表的用户态段长度，少一项会有服务器没有启动名，多一项则没有对应的进程号可绑（C 侧 `NR_BOOT_PROCS` 与本篇的 `NR_BOOT_MODULES` 是同一张表的两个计数口径；每个名字绑哪个进程号，由表项自带的 `*_PROC_NR` 给出——[`kernel/table.c`](minix3/minix/kernel/table.c) 的 `{DS_PROC_NR, "ds"}` 等条目）。
+- 名字表有 12 项（复算：`sed -n '/pub const MODULE_NAMES/,/];/p' os/libs/minix-boot/src/kernel_info.rs | grep -o '"[a-z]*"' | wc -l` 输出 12），`NR_BOOT_MODULES = 12` 与表同住 `minix-boot`；boot-shim 与内核的 strict 门读同一份常量（设计项）。12 不是随手定的数：它等于 C `boot_image` 表的用户态段长度，少一项会有服务器没有启动名，多一项则没有对应的进程号可绑（C 侧 `NR_BOOT_PROCS` 与本篇的 `NR_BOOT_MODULES` 是同一张表的两个计数口径；每个名字绑哪个进程号，由 `BOOT_MODULE_IDENTITIES` 表项的 `proc_nr` 字段给出；`MODULE_NAMES` 与 `BOOT_MODULE_PROC_NRS` 都是该表的 const 派生视图——[`kernel/table.c`](minix3/minix/kernel/table.c) 的 `{DS_PROC_NR, "ds"}` 等条目）。
 - 顺序按 C 的 boot image 表（[`kernel/table.c`](minix3/minix/kernel/table.c) 里 `struct boot_image image[NR_BOOT_PROCS]` 的用户态段）排列：`ds, rs, pm, sched, vfs, memory, tty, mib, vm, pfs, mfs, init`。
 - **位置不是进程号**。内核把第 `i` 个模块绑定到 `BOOT_MODULE_PROC_NRS[i]`，而后者里的数字来自 `com.h`——例如 `ds` 在位置 0，进程号是 6。名字表这一行代码上方给了这条注解，它是顺序契约的一部分。
 
@@ -2372,11 +2374,11 @@ pub trait KernelInfoView {
 **窗口类型的边界规则**（裸地址对与类型化地址对之间的取舍）：裸 `(u64, u64)` 只允许出现在固件/分配器边界——`boot_alloc_region()` 的返回值、U-Boot 主函数把 `BootPrepareResult.bump` 拆成两个数交给 `init_boot_pt_alloc` 的那一处；`enter_kernel_image_v1` 的 `shim_windows` 已是 `&[PhysRange]`。进入内核内部一律 `PhysRange`。`BootWindows::push` 是转换点：`PhysRange::new` 拒绝反向区间，`push` 自己拒绝空区间（`start < end`），两条负控都有宿主测试（`boot_windows_reject_reversed_ranges` / `boot_windows_reject_empty_ranges`）。`EMPTY_PHYS_RANGE` 只是未用槽的填充哨兵，`as_slice` 只暴露已提交前缀，不会把它当成窗口。
 2. `validate_before_tables`（pre-table gate）：`kern_size != 0`、`memmap` 非空、`param_buf.len() <= 1024`——它**不查** `boot_modules` 非空（QEMU 测试内核合法携带空模块表）。这里只列与 boot 路径直接相关的项，**不是完整清单**：共享校验体 `validate_view` 还检查 `platform_sources` 的空址/kind/溢出、两表升序与两两不相交、非零长度与页对齐等，完整清单以源码为准。
 3. `check_boot_postconditions`：镜像地址下限（`kern_virt_base > u32::MAX`）。v10（设计裁决）之后只剩一条可被剩余字段证伪的关系——`kern_virt_base` 必须大于 `u32::MAX`（4 GiB 门；这不是各架构的用户/内核分界，而是“内核不能在 4 GiB 以下”的保守下界）；“`syscall_entry` 落在镜像跨度内 / `kern_stack_top` 不越过跨度上界 / 用户栈不越入内核半区”三条读取派生字段的断言随字段一起删除（用派生值重算同一条等式只是重抄，不构成检查）。
-4. `KernelInfo::validate`（`kmain` 入口）与生产腿的 `validate_requiring_sources`（strict 变体）：前者复核非地址不变量、检查生产内核的 `boot_modules` 非空，并复核内核镜像与各模块、模块与模块的半开区间不重叠（相切放行；跨度加法用 `checked_add`，防 release 回绕把判断变成恒真）；非 strict 在 `source_records` 非空时也查“来源记录覆盖投影内存图”（条件性检查，见 §3.2）。`ValidationLevel` 三档是 `BeforeTables`/`Standard`/`Strict`；`Strict` 不带载荷，`authority` 从 `KernelInfo.authority` 读取，`validate_requiring_sources()` 无参。后者按结构体自带的 `authority` 要求 `source_records` 覆盖投影内存图，并要求内核物理跨度落在某条 `memmap` 或 `reserved_regions` 区间内（v10 之前这条由 `startup_objects` 的一条记录回答；该字段与分区已随设计裁决删除）。
+4. `KernelInfo::validate_requiring_sources`（`kmain` 入口）与生产腿的 `validate_requiring_sources`（同一 strict 变体）：前者复核非地址不变量、检查生产内核的 `boot_modules` 非空，并复核内核镜像与各模块、模块与模块的半开区间不重叠（相切放行；跨度加法用 `checked_add`，防 release 回绕把判断变成恒真）；`KernelInfo::validate`（非 strict，保留给测试/诊断，`kmain` 不再调用）在 `source_records` 非空时也查“来源记录覆盖投影内存图”（条件性检查，见 §3.2）。`ValidationLevel` 三档是 `BeforeTables`/`Standard`/`Strict`；`Strict` 不带载荷，`authority` 从 `KernelInfo.authority` 读取，`validate_requiring_sources()` 无参。后者按结构体自带的 `authority` 要求 `source_records` 覆盖投影内存图，并要求内核物理跨度落在某条 `memmap` 或 `reserved_regions` 区间内（v10 之前这条由 `startup_objects` 的一条记录回答；该字段与分区已随设计裁决删除）。
 
 #### 4.4.1 门链与逐腿执行序
 
-腿间实际执行序要说清：直核面是 **strict（`validate_requiring_sources`，两个 `bootface` 在调 `arch_boot` 之前显式调用）→ pre-table（2）→ postconditions（3）→ `store_boot_report`（`arch_boot_finish`，完整落一次）→ boot_validate（1，`arch_boot_impl` 开头）→ kmain validate → `check_boot_postconditions` 复核**；v1 接收面是 **strict → postconditions（3）→ `resume_boot_pt_alloc` → boot_validate（1，`resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 `validate` → `check_boot_postconditions` 复核**，且**不经过** pre-table（`resume_additive` 体内没有 `validate_before_tables`）。接收面的 3 有可见调用点：`arch_boot_resume_v1` 在 `kinfo.validate_requiring_sources()` 之后、`boot_alloc::resume_boot_pt_alloc` 之前调用 `kinfo.check_boot_postconditions()`。下表按门列 bug 类，不按时间排序。
+腿间实际执行序要说清：直核面是 **strict（`validate_requiring_sources`，两个 `bootface` 在调 `arch_boot` 之前显式调用）→ pre-table（2）→ postconditions（3）→ `store_boot_report`（`arch_boot_finish`，完整落一次）→ boot_validate（1，`arch_boot_impl` 开头）→ kmain strict validate → `check_boot_postconditions` 复核**；v1 接收面是 **strict → postconditions（3）→ `resume_boot_pt_alloc` → boot_validate（1，`resume_additive` 内）→ … → `store_kernel_info` → `kmain` 的 strict `validate` → `check_boot_postconditions` 复核**，且**不经过** pre-table（`resume_additive` 体内没有 `validate_before_tables`）。接收面的 3 有可见调用点：`arch_boot_resume_v1` 在 `kinfo.validate_requiring_sources()` 之后、`boot_alloc::resume_boot_pt_alloc` 之前调用 `kinfo.check_boot_postconditions()`。下表按门列 bug 类，不按时间排序。
 
 下表按门列出各校验点挡的 bug 类（共十三行：十二行是门、一行是“规划期（不是门）”；门列有五个命名门加一个共享校验体；上面的编号链仍是四项）（同名项在不同门重复挡是故意冗余；`validate_before_tables` 即 §3.6 注释里的 pre-table gate）：
 
@@ -2390,7 +2392,7 @@ pub trait KernelInfoView {
 | `validate_before_tables` | `memmap` 非空 | 内存图丢了 |
 | `validate_before_tables` | `param_buf.len() <= 1024` | 参数缓冲超过 C 的固定容量 |
 | `check_boot_postconditions` | `kern_virt_base > u32::MAX`（4 GiB 门；v10 后唯一剩余的后置条件） | 内核镜像落进 4 GiB 以下，保守下界被破坏 |
-| `KernelInfo::validate`（`kmain` 入口） | 复核 `kern_size`/`memmap`/`param_buf` 非地址不变量；`boot_modules` 非空（生产内核的 `kmain` 路径；QEMU 测试内核不编译此入口，空模块表由 `validate_before_tables` 放行）；`source_records` 非空时另查来源覆盖（条件性，见 §3.2） | 同前几行，在更晚的入口再挡一次；模块装载失败 |
+| `KernelInfo::validate_requiring_sources`（`kmain` 入口） | 复核 `kern_size`/`memmap`/`param_buf` 非地址不变量、`boot_modules` 非空（生产内核的 `kmain` 路径；QEMU 测试内核不编译此入口）与 `source_records` 的权威覆盖；按存储后的 `KernelInfo.authority` 复核记录集与内核跨度覆盖 | 同前几行，在最终入口再挡一次；存储后的权威与记录错配 |
 | 共享校验体（`BeforeTables`/`Standard`/`Strict` 都跑；`kmain` 入口再跑一次） | `memmap` 与 `reserved_regions` 不相交 | 保留区被当成空闲页发出 |
 | 共享校验体（三档都跑；接收侧 strict 再复核一次） | 内核镜像与各模块、模块与模块按半开区间互不重叠（相切放行；跨度加法 `checked_add`） | 跨二进制载荷把模块放到内核或另一个模块身上（信任边界上的第二道复核） |
 | `validate_requiring_sources`（生产腿 strict；三条 v1 接收腿与两个直核面都调用） | 按 `KernelInfo.authority` 查 `source_records` 覆盖投影内存图；内核物理跨度落在某条 `memmap` 或 `reserved_regions` 区间内；按共享 `MODULE_NAMES` 的位置核对 `boot_modules[i].name` | 生产者漏写 provenance、声明了没有记录的权威、伪造了模块名，或内核跨度没有任何内存图记录解释 |

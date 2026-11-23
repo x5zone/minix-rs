@@ -3429,6 +3429,30 @@ mod tests {
             Err(DtbMemMapError::UnsupportedReservedDeclaration)
         ));
     }
+
+    #[test]
+    fn direct_core_dtb_fixture_projects_nonempty_sources_for_both_fw_end_forms() {
+        // Both direct-core faces consume this collector: aarch64 passes
+        // fw_end=0, riscv64 passes KERN_PHYS_BASE (0x8020_0000). The
+        // strict kmain gate (DESIGN-02) relies on both forms carrying
+        // non-empty provenance records.
+        for fw_end in [0u64, 0x8020_0000] {
+            let blob = build_fdt_ex(&[(0x8000_0000, 0x1000_0000)], false, &[], &[], 2);
+            let fdt = fdt::Fdt::new(&blob).expect("stub must parse");
+            let owned = DtbMemoryMap::new(&fdt, fw_end)
+                .collect_owned()
+                .expect("direct-core DTB map fits");
+            assert!(
+                !owned.sources().is_empty(),
+                "direct-core DTB fixture must project provenance records (fw_end={fw_end:#x})"
+            );
+            assert_eq!(
+                audit_source_coverage(owned.free(), owned.reserved(), owned.sources()),
+                Ok(()),
+                "direct-core DTB sources must cover both projections (fw_end={fw_end:#x})"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

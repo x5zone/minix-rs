@@ -41,13 +41,13 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 - 主要 P2：§4.8 v1 链与 §3.7/§4.4.1 相反；§4.5 “arch_boot 第一步深拷”与门链相反；
   §4.1 `BootWindows` 指针落空；§3.1 PE/COFF 与 kernel.elf 冲突；§3.2 三形态命名；
   §1.1 依赖计数；§3.4.1 生产镜像清单缺 aarch64；§2.1 load_mods 两种失败情形混写；
-  DESIGN-01/02 两个设计项（待作者）。
+  DESIGN-01/02 两个设计项（作者已裁决 A，D-120/D-121）。
 
 ### §3 归因
 
 - 面板 25 FINDING → 23 个文档/代码根因；P-REFUTE 2 条观察各占根因；台账 25 个 `R2-*`。
 - 关键合并：`READER-A-02`/`READER-B-02` → R2-01；`READER-A-01`/`READER-B-03` → R2-03。
-- `DESIGN-01`/`DESIGN-02` 属设计方向，标 `⑤`，案件卷 `R2-DESIGN-CASE.md`，不代作者裁决。
+- `DESIGN-01`/`DESIGN-02` 已由作者裁决选 A（D-120/D-121），标 `①` 并实施；不再 open。
 
 ### §4 修复
 
@@ -55,39 +55,41 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
   §4.6/§4.8/§5.1/§6.1 的 23 个 `①` 根因已修；两处引文块声明代码级重排。
 - 代码：`source_audit` 改 `#[cfg(test)]`；删除两个无消费者 `Default`；清 startup 残留注释
   （保留 QEMU 脚本依赖的 `(d73)` 串口串）。
-- 未修：`DESIGN-01`（合并 MODULE_NAMES/BOOT_MODULE_PROC_NRS）与 `DESIGN-02`
-  （`kmain` 改 strict），等作者选 A/B。
+- `DESIGN-01`：已按 D-120 合并为 `BOOT_MODULE_IDENTITIES` 权威表，两个 const 派生视图，
+  uboot 第三份抄本删除，xtask typed order lock 通过。
+- `DESIGN-02`：已按 D-121 把 `kmain` 改 strict；宿主 DTB fixture 覆盖两种 `fw_end`；
+  x86 UEFI 与 riscv64 U-Boot shim 启动门 PASS。
 - 测试：minix-boot 188/0；boot-shim 136/0；minix-kernel mock 866/0/8；
   `cargo check -p minix-kernel` 通过。
 
 ### §5 复验
 
 - 独立 doc verifier：初检 FAIL（台账 R2-23/24 命令 + N-01/N-02），修复后 `RECHECK: PASS`
-  （doc `fcc992c6…`，2,951 行）；8 门读数不变，两个 ⑤ 保持 open。
+  （doc `b99e2857…`，2,951 行）；8 门读数不变，旧 ⑤ 已关闭。
 - 独立 code verifier：PASS；N1/N2/N3 复检 PASS，N4 空行已修，等 `RECHECK2`。
 - 冷读：`HARD-REJECTIONS: 4`、`VERDICT: NOT-READY`（`../../cold-read/y02-d01-r2.md`）；
   四个硬阻断是结构性的（实现节选不可跟随、版本历史混入正文、多套编号/计数、权威表式交叉引用），
   案件卷 `R2-COLD-READ-CASE.md`。R1 的 READY 不再代表当前文档。
 - 8 个文档门在修复后自测：anchor 86/86、code-map 49/49、ref/style/publication 通过、
   citation failed=0、rubric 0 缺项、density 通过。
-- R2 关账不宣告：台账 `open=3`（D1/D2 的 ⑤ 行），R2 为 `BLOCKED`。
+- R2 关账不宣告：台账 `open=0`；`BLOCKED` 只因 R2 冷读 `NOT-READY` 与 R3 结构轮未开。
 
 ### §6 指标
 
-- `metrics.md`：发现总数 25、唯一根因数 25、重复合并 2、未闭环 2、轮结果 `BLOCKED`。
+- `metrics.md`：发现总数 25、唯一根因数 25、重复合并 2、未闭环 0、轮结果 `BLOCKED`（冷读/R3）。
 
 ### §7 状态
 
-- `BLOCKED`：25 个 FINDING 中 23 个 `①` 已修，2 个 `⑤` 设计项待作者裁决
-  （`R2-DESIGN-CASE.md`）；冷读 `NOT-READY`（4 个硬阻断，`R2-COLD-READ-CASE.md`）。
-  48/48 单元仍冻结；不写 `ROUND-CLOSED`/`CONVERGED`。
+- `BLOCKED`：25 个 FINDING 全部 `①` 已修/裁决（D-120/D-121）；台账 `open=0`。
+  **但 R2 冷读仍 `NOT-READY`（4 个结构阻断，`R2-COLD-READ-CASE.md`）**，
+  R3 结构轮未开；48/48 单元仍冻结；不写 `ROUND-CLOSED`/`CONVERGED`。
 
 ### §8 给 meta-review 的不确定点
 
-- `DESIGN-01`/`DESIGN-02` 是否在 D01 内做，需作者按案件卷裁决；me-agent 不代决。
+- `DESIGN-01`/`DESIGN-02` 已由作者裁决 A（D-120/D-121）；实现与证据见 §4。
 - 26 条 SUGGESTION 只处理了与 P2/P3 同段/同口径的项，纯风格与结构性拆分留 R3；不冒充完成。
 - 面板目录 `panel/round2/` 原有 2026-11-08 旧轮同名报告，已移 `archive-nov8/`；
   R2 只采用 2026-11-23 的六份报告，DIA 需按 mtime/内容复核。
 - R3 需要结构轮：现役快速参考、wire 布局表、历史移附录、端到端图/门×腿矩阵、计数术语表；
-  见 `R2-COLD-READ-CASE.md`。R3 前先裁 DESIGN-01/02 或明确允许并行。
+  见 `R2-COLD-READ-CASE.md`。R3 已获作者批准，下一步开结构轮。
 - 09:00 峰值前若未裁决，R2 保持 `BLOCKED` 并写交接，不把未做项写成收敛。
