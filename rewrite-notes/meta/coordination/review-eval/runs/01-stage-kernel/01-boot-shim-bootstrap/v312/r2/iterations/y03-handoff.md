@@ -5,22 +5,20 @@
 ## 一句话状态
 
 D01 的 R1 已 `ROUND-CLOSED`（48/48 冻结、独立 doc/code verifier PASS、R1 冷读 READY）；
-R2 full 已完成面板与 23/25 修复，但**卡在两个设计裁决**，且 R2 新人冷读判 `NOT-READY`
-（4 个结构性硬阻断）。因此 D01 现在**不能宣告 `CONVERGED`**，R2 保持 `BLOCKED`。
+R2 full 也已 `ROUND-CLOSED`：25/25 面板发现与设计裁决 D-120/D-121（均选 A）已落地，
+台账 `open=0`、48/48 冻结、`v312-closure-check --round 2` PASS、R2 trajectory PASS。
+但 R2 新人冷读判 `NOT-READY`（4 个结构性硬阻断），R3 结构轮尚未开始。
+因此 D01 现在**不能宣告 `CONVERGED`**；R3 是下一轮。
 
-## 需要你做的两个裁决
+## 设计裁决：已完成（A/A）
 
-案件卷：`rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2/R2-DESIGN-CASE.md`
-
-1. **DESIGN-01**：是否把 `minix-boot::MODULE_NAMES` 与 `kernel::BOOT_MODULE_PROC_NRS` 合并成
-   一张 `{name, proc_nr}` 表？
-   - A：合并（净减一张表，关掉两表错位面；需改常量形状与引用）。
-   - B：保留两张表，加一条宿主测试钉住 12 对值。
-2. **DESIGN-02**：是否把 `kmain` 的 `validate()` 改成 `validate_requiring_sources()`？
-   - A：改（1 行，终门按 `KernelInfo.authority` 复核；QEMU 测试内核不编译 `kmain`）。
-   - B：保持非 strict，只在文档写明终门不做权威审计。
-
-两项都属 R2 P2；裁决前不写 `ROUND-CLOSED`/`CONVERGED`。
+- `DECISIONS.md` D-120：DESIGN-01 选 A。`minix-boot::BOOT_MODULE_IDENTITIES` 为唯一权威表；
+  `MODULE_NAMES`/`BOOT_MODULE_PROC_NRS` 保留 const 派生视图；`uboot_main` 第三份抄本删除；
+  `xtask` order lock 改 typed 读取。独立抄本 2→1，不宣称常量个数字面 -1。
+- `DECISIONS.md` D-121：DESIGN-02 选 A。`kmain` 改 `validate_requiring_sources()`；
+  宿主 DTB fixture 覆盖 `fw_end=0` 与 `0x8020_0000`；x86 UEFI 与 riscv64 U-Boot shim 启动门 PASS。
+- 实现 commit：`7d6835aa5`；文档同步 `5ce3f9144`/`b079fa0e3`；R2 关账 `bc60fb26d`，终态 `166366a89`。
+- 设计批独立 verifier：`certify/y03-design-verify.md` PASS，`RECHECK: PASS`（doc `cbc105c7…`）。
 
 ## 第二件事：R3 必须是结构轮
 
@@ -43,10 +41,11 @@ R3 建议：现役 `KernelInfo` 字段表、wire 字节布局表、历史移附�
   冷读 `HARD-REJECTIONS: 0 / READY`、trajectory `RECHECK: PASS`。
 - R2（doc `34bee52f`，2,951 行）：25 个 FINDING（P2 11/P3 14）；23 个 `①` 已修；
   `DESIGN-01/02` 两个 `⑤` 待裁；R2 冷读 4 个硬阻断。
-- 测试：minix-boot 188/0；boot-shim 136/0；minix-kernel mock 866/0/8；
+- 测试：minix-boot 189/0；boot-shim 136/0；minix-kernel mock 866/0/8；xtask manifest 4/4；
   `cargo check -p minix-kernel` 通过；R1 三支 `test-higher-half*` QEMU PASS。
 - 8 个文档门在 R2 修复后全绿（anchor 86/86、code-map 49/49、ref/style/pub/rubric/density OK、
   citation failed=0）。
+- R2 后 `units_review_lt2=31`：R3 必须覆盖这 31 个改过的单元，确认轮前达到 ≥2 轮。
 - 关键 commit：`76ac760b4`（R1 收口/工具修复）、`5b8325437`（R2 开轮）、
   `11a33354c`（R2 文档/代码批）。
 - 两个未跟踪文件仍未纳入：`rewrite-notes/01-stage-kernel/01-design-learn.md`、
@@ -64,7 +63,13 @@ R3 建议：现役 `KernelInfo` 字段表、wire 字节布局表、历史移附�
 
 ## 建议的下一步
 
-1. 你裁决 DESIGN-01/02（A/B）。
-2. 批准 R3 结构轮（或先只批结构、设计项另排）。
-3. R3 收口后做确认轮 + G18 全篇冷读；G18 要求 `HARD-REJECTIONS: 0` 才能 `CONVERGED`。
-4. 09:00 后进入峰值计费，任务已按要求停在这个自然边界。
+1. R3 结构轮（已获批准）：现役字段表、wire 布局表、历史移附录、端到端图/门×腿矩阵、计数术语表。
+2. R3 收口后做确认轮 + G18 全篇冷读；G18 要求 `HARD-REJECTIONS: 0` 才能 `CONVERGED`。
+3. 14:00 进入峰值计费，任务停在这个自然边界；18:00 后重启。R2 已关账，R3 从结构改写开始。
+
+### R3 开轮前要做的账务
+
+1. 为结构轮建立新的 edition/round 账户（按 `review-units.md` 的 structural round 规则），
+   不要直接把 R2 的 `ROUND-CLOSED` 改成 `CONVERGED`。
+2. R3 的输入是 `R2-COLD-READ-CASE.md` 的四个硬阻断；完成后必须再跑一次独立冷读。
+3. R3 覆盖 31 个 `units_review_lt2=1` 的单元；确认轮前每个单元 ≥2 轮有效 review。
