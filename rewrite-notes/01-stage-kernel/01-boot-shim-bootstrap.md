@@ -2162,7 +2162,7 @@ pub fn alloc_root_page() -> PhysBytes {
 模块契约是本篇里最容易在改动时踩坏的东西：三条 v1 发送腿（两条 UEFI 链 + U-Boot shim）的“顺序”部分没有编译期检查，只能靠装载顺序、运行期断言与测试兜住；两个直核腿另有 `NAME_POOL` 与 `MODULE_NAMES` 的编译期逐字节对账（本节末）。装载期防线是 A/B/C 三道（接收侧另有 D，共四道）：**A** 每个段的文件字节区间与该段及**所有**段的目标 LMA 区间不相交（`first_source_destination_overlap`）；**B** 各段的目标 LMA 区间两两不相交（`first_overlapping_pair`）；**C** 模块区间不落进内核物理跨度：两条 UEFI 腿用 `alloc_module_pages` 拷贝前拒绝 + `assert_modules_clear_of_kernel` 装载后复查；U-Boot shim 腿用编译期 `KERNEL_MAX_LMA_END <= MODULE_REGION_BASE` 与 root/bump 复查。文件字节区间彼此之间的重叠不查——只读拷贝无害。任一条命中即 halt。Rust 侧的 A/B 是 ELF 装载新增的两道防线（守内核自身 PT_LOAD 段，本节）；C/D 才是 C 的 `overlaps`（§2.5）两类检查的落点：C 守模块 vs 内核跨度（§4.2 的 `record_kernel_span`、`alloc_module_pages`、`assert_modules_clear_of_kernel`），D 在接收侧重查同一对关系并追加模块 vs 模块（`KernelInfo::validate` 的两段断言——内核跨度那段与 C 故意重复，因为接收侧不能信任发送侧已查；§4.4）。
 
 ```rust
-// 代码引用（文档注释的说明段整段略去，块内不保留省略号），os/boot-shim/src/loader.rs 与 os/libs/minix-boot/src/kernel_info.rs。
+// 结构节选（保留常量名与形状；数组元素以 ... 省略；完整 12 项见源码），os/boot-shim/src/loader.rs 与 os/libs/minix-boot/src/kernel_info.rs。
 pub const KERNEL_PATH: &str = "/EFI/minix/kernel.elf";
 pub const DUMPDTB_PATH: &str = "/dumpdtb.dtb";
 pub const MODULES_DIR: &str = "/EFI/minix/modules";

@@ -81,8 +81,8 @@ pub mod proc_nr {
 ///
 /// The value's single source of truth is `minix_boot::NR_BOOT_MODULES`, shared
 /// with boot-shim so a count change fails to compile on both sides at once
-/// (`BOOT_MODULE_PROC_NRS` below is typed `&[ProcNr; NR_BOOT_MODULES]`; the
-/// boot-shim `MODULE_NAMES` asserts against the same const).
+/// (`BOOT_MODULE_PROC_NRS` is a re-export of the same derived view; the
+/// boot-shim `MODULE_NAMES` is derived from the same authoritative table).
 pub use minix_boot::NR_BOOT_MODULES;
 pub const NR_BOOT_PROCS: usize = crate::proc_table::NR_TASKS + NR_BOOT_MODULES;
 
