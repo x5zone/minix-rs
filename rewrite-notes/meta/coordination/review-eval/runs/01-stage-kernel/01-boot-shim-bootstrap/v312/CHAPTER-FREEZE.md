@@ -214,3 +214,43 @@ VERDICT: FROZEN
 - Ch3 正文在本轮后视为只读；下游发现矛盾只定向重开相关单元。
 - 不得把三形态（设计轴）与五条生产腿（当前接线）当同一计数；不得把直载测试链算成生产腿。
 - D01 评审门 `CONVERGED` 不因本章 post-CONVERGED 回归而重置。
+
+## Ch6 诊断
+
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 章切片：`v312/chapter-slices/ch6-735a9c5d.md`（`tools/extract-chapter-slice.py` 产出，纯章正文）
+- sha256：`735a9c5d37c7ad393a79995bb2769f4458f3fbd41e8ffad2634d7d91bc0af250`
+- 行数：227
+- outline：`rewrite-notes/meta/design/01-stage-kernel/01-outline.v7.md`
+- 摘要：`v312/summaries/ch6-summary.md`（53 行，锚点机械校验 PASS）
+- 摘要验证：`v312/summaries/ch6-summary-verification.md` — `VERDICT: FAITHFUL`（2026-11-24）
+- 事件：`chapter-review` REV-20261124-D132E622 / `summary-faithful` REV-20261124-249C8A0A / `chapter-freeze` REV-20261124-911940F7
+- 冻结日期：2026-11-24
+
+### 六视角
+
+| 视角 | 报告 | 结论 |
+|---|---|---|
+| beginner-me | `v312/chapters/ch6/beginner-me.md` | READY / HARD 0（735a9c） |
+| G18 | `v312/chapters/ch6/g18.md` | READY / HARD 0（735a9c；`MANUAL_FALLBACK`，独立 subagent 停滞） |
+| editor | `v312/chapters/ch6/editor.md` | READABLE / HARD 0（735a9c） |
+| navigator | `v312/chapters/ch6/navigator.md` | READABLE / HARD 0（735a9c） |
+| reference | `v312/chapters/ch6/reference.md` | READABLE / HARD 0（735a9c；`MANUAL_FALLBACK`） |
+| instructional | `v312/chapters/ch6/instructional.md` | READABLE / HARD 0（735a9c） |
+
+### 版本差
+
+- 六视角全部绑定 735a9c；其中 G18 与参考视角因 subagent 队列连续停滞，由主线程只读复核并显式标注 `MANUAL_FALLBACK`，其余四视角为独立 subagent 报告。
+
+### 允许下游引用
+
+- EBS 前后两条通道与 `raw_serial`/`raw_serial_line` 差异；里程碑表、三档停点与 `step1+2` 的发送侧归属。
+- panic 四约束、诊断钩子的两份 `.bss` 与两侧注册点。
+- 典型失败模式表（C 两条、Rust 取件/分配/v1 解码/自举页/大页阶梯/切页/WB/Side/KernelInfo 全零）。
+- 三层诊断命令：门脚本、`-d int,mmu`、GDB `target remote :1234`；aarch64 直核不在五门内的边界。
+
+### 禁止修改
+
+- Ch6 正文在本轮后视为只读；下游发现矛盾只定向重开相关单元。
+- 不得把 `step1+2` 当成接收端已起的信号；不得把 aarch64 直核的 SMP 交付写成走到 `kmain`。
+- D01 评审门 `CONVERGED` 不因本章 post-CONVERGED 回归而重置。

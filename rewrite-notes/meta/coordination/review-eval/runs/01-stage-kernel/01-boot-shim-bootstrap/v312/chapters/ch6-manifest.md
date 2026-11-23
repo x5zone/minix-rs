@@ -1,0 +1,9 @@
+DOC: 01-boot-shim-bootstrap.md
+VERDICT: PASS
+REPORTS:
+- beginner-me.md 59116c35c15458ffecdcfdb4c56587aab3efab81589ccccb786e174d36758dd8
+- g18.md 7f6be7040a4831af05ddf1fad00a38eede332331de0ad666351b5d17f628e0fb
+- editor.md ff750f429904da5176dd0e33bc24f4b07341c134faf1a6a0cc135c57bf673cd8
+- navigator.md 16c4a7730c5023a4bc59494144c55dcb9360307cf5b5a1fb19a865111c59f37b
+- reference.md 68caa0a4bc505c850c0e7164737c3061bf22547b76d011dddbd9e54a48f9b8aa
+- instructional.md 93e59e640da74c01515b36576dbd2d024497de06212df03e7aae0b1ccb02ad28
