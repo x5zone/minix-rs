@@ -59,17 +59,104 @@ def subsection_bodies(chapter: str) -> list[tuple[str, str]]:
     return out
 
 
+N0_RE = re.compile(r"^###\s+(\d+)\.0\b", re.MULTILINE)
+H3_RE = re.compile(r"^###\s+", re.MULTILINE)
+H4_RE = re.compile(r"^####\s+(.+)$", re.MULTILINE)
+TERM_RE = re.compile(r"术语|名词表")
+SUMMARY_RE = re.compile(r"小结|总结|本章要点|要点回顾")
+N0_ALLOWED = ("问题入口", "前置概念")
+
+
+def _n0_body(chapter: str) -> tuple[int, int] | None:
+    m = N0_RE.search(chapter)
+    if not m:
+        return None
+    start = m.end()
+    nxt = H3_RE.search(chapter, start)
+    return start, (nxt.start() if nxt else len(chapter))
+
+
+def n0_errors(chapter: str) -> list[str]:
+    """规则一：N.0 只保留问题入口与前置概念两个子节，术语不得在其中。"""
+    span = _n0_body(chapter)
+    if span is None:
+        return []
+    start, end = span
+    subs = [m.group(1).strip() for m in H4_RE.finditer(chapter, start, end)]
+    errs: list[str] = []
+    if len(subs) > 2:
+        errs.append(f"N.0 有 {len(subs)} 个子节（要求 ≤2）")
+    allowed = [s for s in subs if any(k in s for k in N0_ALLOWED)]
+    if len(allowed) != len(subs):
+        extra = [s for s in subs if s not in allowed]
+        errs.append("N.0 含非入门子节：" + "、".join(extra))
+    if any(TERM_RE.search(s) for s in subs):
+        errs.append("N.0 内含术语小节（应移到章末或行内）")
+    return errs
+
+
+def placement_errors(chapter: str) -> list[str]:
+    """规则一：小结在章末（术语可紧随），术语不在 N.0 内。"""
+    errs: list[str] = []
+    marks = [(m.start(), m.group(1).strip()) for m in H4_RE.finditer(chapter)]
+    sum_pos = [p for p, t in marks if SUMMARY_RE.search(t)]
+    term_pos = [p for p, t in marks if TERM_RE.search(t)]
+    if sum_pos:
+        last_sum = max(sum_pos)
+        after = [t for p, t in marks if p > last_sum and not TERM_RE.search(t)]
+        if after:
+            errs.append("小结之后仍有非术语小节：" + "、".join(after[:3]))
+    span = _n0_body(chapter)
+    if span is not None and term_pos:
+        start, end = span
+        if any(start <= p < end for p in term_pos):
+            errs.append("术语小节位于 N.0 内")
+    return errs
+
+
+def long_paragraph_warnings(chapter: str) -> list[str]:
+    """报告项：单段 >500 实义字符。跳过标题/列表/表格/围栏代码。"""
+    warns: list[str] = []
+    in_fence = False
+    block: list[str] = []
+    for line in chapter.splitlines() + [""]:
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if not stripped:
+            if block:
+                text = "".join(block)
+                if not re.match(r"^(?:[-*+]|\d+[.)]|\||<|>)", text) and _meaningful_len(text) > 500:
+                    warns.append(text[:36] + "…")
+                block = []
+            continue
+        if re.match(r"^#{1,6}\s+", stripped) or re.match(r"^(?:[-*+]|\d+[.)]|\|)", stripped):
+            if block:
+                block = []
+            continue
+        block.append(stripped)
+    return warns
+
+
 def _meaningful_len(text: str) -> int:
     lines = [ln for ln in text.splitlines() if not PLACEHOLDER.match(ln)]
     return len(re.sub(r"\s+", "", "\n".join(lines)))
 
 
 def _tr0_error(body: str) -> str | None:
-    """章内第一个非空内容必须是自然语言段落，不能是清单/表格/代码。"""
+    """章内第一个非空内容必须是自然语言段落，或 N.0 的“问题入口”子节。"""
     lines = body.splitlines()
     first_sub = next((i for i, ln in enumerate(lines) if re.match(r"^###\s+", ln)), len(lines))
     first = next((i for i in range(first_sub) if lines[i].strip()), None)
     if first is None:
+        # N.0 结构：章首直接进入 ### N.0，问题入口以 #### 问题入口 承载。
+        m = re.search(r"^####\s+问题入口\s*$(.*?)(?=^####\s|^###\s|\Z)",
+                      body, re.MULTILINE | re.DOTALL)
+        if m and _meaningful_len(m.group(1)) >= 20:
+            return None
         return "TR-0（章首没有问题入口段落）"
     opener = lines[first].strip()
     if opener.startswith(BAD_OPENERS):
@@ -86,6 +173,8 @@ def check_chapter(title: str, body: str, has_glossary: bool) -> list[str]:
     tr0 = _tr0_error(body)
     if tr0:
         missing.append(tr0)
+    missing.extend(n0_errors(body))
+    missing.extend(placement_errors(body))
     subs = subsection_bodies(body)
     have: dict[str, tuple[str, str] | None] = {k: None for k in PATTERNS}
     for k, pat in PATTERNS.items():
@@ -143,6 +232,8 @@ def run(doc: Path, report_only: bool) -> int:
         density = len(re.findall(r"^###\s+", body, re.MULTILINE)) / max(1, nlines) * 100
         if nlines >= 100 and density > 8:
             print(f"[WARN] {title}: 概念密度 {density:.1f} 个三级小节/100 行（>8）")
+        for snippet in long_paragraph_warnings(body):
+            print(f"[WARN] {title}: 单段超过 500 实义字符（{snippet}）")
         if missing:
             failures += 1
             print(f"[FAIL] {title}: 缺 " + "；".join(missing))
