@@ -221,6 +221,21 @@ impl KernelInfoView for BootReport<'_> {
     fn kern_size(&self) -> u64 { self.kern_size }
 }
 
+/// Whether `records` contains at least one record from `authority`'s input
+/// object.
+///
+/// The direct-core legs pass the report and the RAM authority as two separate
+/// arguments; `arch_boot_finish` uses this predicate to bind them before the
+/// authority is published into the stored `KernelInfo`.
+pub fn authority_has_source_record(
+    records: &[SourceRecord],
+    authority: RamAuthority,
+) -> bool {
+    records
+        .iter()
+        .any(|record| record.input_object == authority.input_object())
+}
+
 impl KernelInfo {
     /// The kernel's initial stack top, derived from the image span.
     ///
@@ -244,7 +259,11 @@ impl KernelInfo {
         )
     }
 
-    /// Validate kernel-info invariants. Called by `kmain` at entry.
+    /// Validate kernel-info invariants (lenient/test gate).
+    ///
+    /// Production entry points call [`Self::validate_requiring_sources`]
+    /// instead: it adds the authority-bound source-coverage audit and the
+    /// module-name/position checks.
     ///
     /// `KernelInfo` fields remain `pub` for cross-crate
     /// access (boot-shim constructs, kernel reads, tests assert), but this
@@ -1109,5 +1128,28 @@ mod tests {
         let mut info = make_valid_info();
         info.kern_virt_base = VirBytes(0x1000_0000);
         info.check_boot_postconditions();
+    }
+
+    #[test]
+    fn authority_binding_requires_a_record_from_the_declared_input() {
+        use crate::memmap_source::{AddressDomain, SourceKind, SourceOrigin, SourceRange};
+
+        let dtb_record = SourceRecord {
+            id: 0,
+            kind: SourceKind::Memory,
+            origin: SourceOrigin::MemoryNode { node: 0, reg: 0 },
+            range: SourceRange::new(0, 0x1000),
+            input_object: InputObjectId::DtbBootInput,
+            local_source: 0,
+            snapshot_id: 0,
+            attribute: 0,
+            virtual_start: 0,
+            address_domain: AddressDomain::Physical,
+            raw_type: 0,
+        };
+
+        assert!(authority_has_source_record(&[dtb_record], RamAuthority::DTB));
+        assert!(!authority_has_source_record(&[dtb_record], RamAuthority::UEFI));
+        assert!(!authority_has_source_record(&[], RamAuthority::DTB));
     }
 }

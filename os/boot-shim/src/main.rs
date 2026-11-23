@@ -60,7 +60,7 @@ fn main() -> Status {
     // VM". The whole-region deduction in vm_handoff matters on the self-boot
     // legs, where the pool is carved from conventional RAM.
     // The shim builds the bootstrap root itself, serializes the v1 handoff
-    // arena (address space, seven payload partitions, pairing loop) and
+    // arena (address space, six payload partitions, pairing loop) and
     // absolutely jumps into the standalone high-half `kernel.elf` `_start`. aarch64
     // passes the arena in `x0`; x86-64 passes it in `rbx` (the image
     // trampoline moves it to `rdi`). riscv64's independent shim leg

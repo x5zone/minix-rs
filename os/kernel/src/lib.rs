@@ -227,6 +227,16 @@ where
     // bootstrap test kernels legally carry no init-server image.
     report.validate_before_tables();
     report.check_boot_postconditions();
+    // Trust-chain: the report's provenance and the authority stored beside it
+    // are two arguments. Bind them before publishing, so a mismatched pair
+    // fails before any page table is built rather than at the kmain re-audit.
+    // Empty-record test kernels legitimately take the lenient path.
+    if !report.source_records.is_empty() {
+        assert!(
+            minix_boot::authority_has_source_record(report.source_records, authority),
+            "arch_boot_finish: stored RAM authority has no matching source record"
+        );
+    }
     let kinfo = store_boot_report(report, authority);
     register_panic_diagnostic();
     arch_boot_impl::<A>(kinfo, root_page);
@@ -632,7 +642,7 @@ unsafe extern "sysv64" {
 }
 
 /// T1 2c/3b receiver-side entry: read the v1 arena through the identity
-/// window, land all seven payloads into this image's `.bss` stores, rebuild
+/// window, land all six payloads into this image's `.bss` stores, rebuild
 /// `KernelInfo`, then resume the additive high-half boot.
 ///
 /// The bootstrap root is already live (the shim built it); this entry must
@@ -1817,47 +1827,22 @@ fn harden_kernel_text() {
 ///
 /// C: main.c:115-147
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
-pub fn kmain(_kernel_info: &KernelInfo) -> ! {
+pub fn kmain(kernel_info: &KernelInfo) -> ! {
     use minix_platform::platform_desc;
 
-    // Root-cause fix on the consuming side: switch to the KernelInfo copy that
-    // arch_boot stored in the .bss global; stop trusting the `kernel_info`
-    // parameter reference that lands on the kernel stack. Evidence: the entry
-    // RDI was already correct (the jump uses the .bss RIP-relative address)
-    // and the global slot's content bootstrap_len==0 was intact; but the
-    // parameter reference was spilled by the compiler to the kernel stack
-    // (near kern_stack_top) and reloaded from a stack slot corrupted by
-    // aliasing/overwrites — every field read through the parameter was .rdata
-    // ASCII garbage, so validate panicked. The global slot lives in .bss, does
-    // not go through that stack area, and is the only trustworthy source.
-    // This shadow can be deleted once the diagnostics below confirm it.
-    let kernel_info: &KernelInfo =
+    // The handoff contract passes the stored `.bss` copy as the first
+    // argument; the global accessor names the same slot. Bind the two handles
+    // once here so a caller that passes a different value fails before any
+    // phase runs. Field reads below use the global slot: it is the copy the
+    // boot path stores exactly once, and `store_kernel_info`'s one-shot guard
+    // makes a second publication a panic.
+    let stored: &KernelInfo =
         crate::kernel_info().expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
-    // Evidence capture (temporary, v3): read RDI in entry asm (the real
-    // handoff value) plus the global slot pointer, the current RSP and the
-    // bootstrap_len read through the slot.
-    // x86_64 gate: rdi/rdx are the x86 SysV handoff registers (aarch64 uses
-    // x0, riscv64 uses a0); bare asm without an arch gate breaks the
-    // aarch64/riscv64 carrier builds.
-    #[cfg(target_arch = "x86_64")]
-    {
-        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
-        let entry_rdi: u64;
-        unsafe {
-            core::arch::asm!("mov {}, rdi", out(reg) entry_rdi, options(nomem, nostack, preserves_flags));
-        }
-        let rsp: u64;
-        unsafe {
-            core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, pure));
-        }
-        Console::write_str("kernel: preA rdi=");
-        Console::write_hex(entry_rdi);
-        Console::write_str(" kinfo=");
-        Console::write_hex(kernel_info as *const minix_boot::KernelInfo as u64);
-        Console::write_str(" rsp=");
-        Console::write_hex(rsp);
-        Console::write_str("\n");
-    }
+    assert!(
+        core::ptr::eq(kernel_info, stored),
+        "kmain: KernelInfo argument and KERNEL_INFO global must be the same .bss copy"
+    );
+    let kernel_info: &KernelInfo = stored;
     boot_stage!("kernel: kmain Phase A enter\n");
     // Phase A: Entry
     // Final strict gate (DESIGN-02, D-121): every production form already

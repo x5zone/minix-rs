@@ -37,11 +37,11 @@
 //! # Mirror relationship with the riscv bootface
 //!
 //! The flow is section-by-section isomorphic (DTB→memmap→BootFileTable→bump
-//! pool→12 modules→KernelInfo→`minix_kernel::arch_boot`). This file is
-//! self-contained (bootface.rs is gated behind riscv64 cfg and an aarch64 build
-//! does not compile it); deduplication convergence after both gates are green is
-//! left to a separate cleanup increment, reconciling line by line against the two
-//! serial outputs.
+//! pool→12 modules→`BootReport<'_>`→`minix_kernel::arch_boot`; the receiver
+//! lands the report and builds `KernelInfo`). This file is self-contained
+//! (bootface.rs is gated behind riscv64 cfg and an aarch64 build does not
+//! compile it); the shared flow lives in `bootface_common`, and this file
+//! keeps the aarch64 entry constants and banner.
 //!
 //! # String discipline (inherited from the riscv half)
 //!

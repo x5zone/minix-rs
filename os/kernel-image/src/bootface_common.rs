@@ -331,7 +331,8 @@ pub(crate) struct SelfBootParams {
 }
 
 /// The shared self-boot flow: DTB → memmap → table → bump pages → modules →
-/// platform source → parameter buffer → `KernelInfo` → `arch_boot`.
+/// platform source → parameter buffer → `BootReport<'_>` → `arch_boot` (the
+/// receiver lands the report and builds `KernelInfo`).
 ///
 /// The two thin faces print their own banner (their console and literal
 /// discipline differ) and then call this with their constants. Everything
@@ -527,7 +528,8 @@ where
         stats.bytes
     });
 
-    // 6. KernelInfo plus the real arch_boot gate.
+    // 6. BootReport plus the real arch_boot gate (the receiver lands it and
+    // builds KernelInfo).
     storage.fill_map_tables(|memmap_slots, reserved_slots| {
         memmap_slots[..memmap.len()].copy_from_slice(memmap);
         reserved_slots[..reserved.len()].copy_from_slice(reserved);

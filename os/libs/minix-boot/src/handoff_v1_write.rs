@@ -100,9 +100,6 @@ pub struct Serializer<'a> {
     arena: &'a mut [u8],
     wire_memmap_n: usize,
     reserved_n: usize,
-    modules_n: usize,
-    platform_n: usize,
-    param_n: usize,
     sources_n: usize,
 }
 
@@ -125,9 +122,6 @@ impl<'a> Serializer<'a> {
             arena,
             wire_memmap_n: 0,
             reserved_n: 0,
-            modules_n: 0,
-            platform_n: 0,
-            param_n: 0,
             sources_n: 0,
         })
     }
@@ -221,7 +215,6 @@ impl<'a> Serializer<'a> {
             put_u64(self.arena, off + 16, module.start.0);
             put_u64(self.arena, off + 24, module.len as u64);
         }
-        self.modules_n = modules.len();
         put_u64(
             self.arena,
             offsets::MODULES_BYTE_LEN,
@@ -244,7 +237,6 @@ impl<'a> Serializer<'a> {
             put_u32(self.arena, off + 4, source.len().map_or(0, |n| n.get()));
             put_u64(self.arena, off + 8, source.phys_addr().0);
         }
-        self.platform_n = sources.len();
         put_u64(
             self.arena,
             offsets::PLATFORM_BYTE_LEN,
@@ -259,11 +251,10 @@ impl<'a> Serializer<'a> {
             return Err(HandoffV1WriteError::ParamTooLong);
         }
         // The partition is fixed-size; a second, shorter write must not leave
-        // the previous tail visible past `param_n` (defensive: current
-        // callers write once).
+        // the previous tail visible past the new byte length (defensive:
+        // current callers write once).
         self.arena[WIRE_PARAM_OFFSET..WIRE_PARAM_OFFSET + WIRE_PARAM_CAP].fill(0);
         self.arena[WIRE_PARAM_OFFSET..WIRE_PARAM_OFFSET + bytes.len()].copy_from_slice(bytes);
-        self.param_n = bytes.len();
         put_u64(self.arena, offsets::PARAM_BYTE_LEN, bytes.len() as u64);
         Ok(())
     }

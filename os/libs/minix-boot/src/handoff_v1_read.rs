@@ -922,7 +922,7 @@ mod tests {
     /// The arena holds nothing that outlives the decode.
     ///
     /// `arch_boot_resume_v1` runs this exact sequence — envelope, then the
-    /// seven payloads into kernel-owned landing buffers — and the `KernelInfo`
+    /// six payloads into kernel-owned landing buffers — and the `KernelInfo`
     /// the kernel keeps afterwards is built from those buffers, never from
     /// arena bytes. So the arena's last read happens before the kernel's
     /// first VM allocation, and the pages it occupies (loader data on the
