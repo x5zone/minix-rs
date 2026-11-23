@@ -2582,7 +2582,7 @@ $ cargo test -p minix-boot --lib
 $ cargo test -p minix-kernel --features mock --lib
 ```
 
-预期分别全绿；§5.2 记录的读数是 188/0 与 866/0/8。
+预期分别全绿；§5.2 记录的读数是 189/0 与 866/0/8。
 
 #### 失败对照
 
@@ -2616,7 +2616,7 @@ $ cargo test -p minix-kernel --features mock --lib
 
 ### 5.2 宿主测试的边界
 
-宿主测试的边界：`cargo test -p minix-boot --lib` 188/0、`-p boot-shim --lib` 136/0、`-p minix-kernel --features mock --lib` 866/0/8、`-p minix-elf --lib` 27/0。真机门：`test-shim-bootmarks-x86.sh` 与 `test-riscv64-uboot-shim.sh` 为发送/接收全链；`test-kernel-image-riscv64-bootface` 直核；aarch64 直核由 `test-smp-aps-aarch64` 到 boot/SMP 标记（其后的用户链 Data Abort 是已登记的 A2 遗留，不作为本表的通过证据）。
+宿主测试的边界：`cargo test -p minix-boot --lib` 189/0、`-p boot-shim --lib` 136/0、`-p minix-kernel --features mock --lib` 866/0/8、`-p minix-elf --lib` 27/0。真机门：`test-shim-bootmarks-x86.sh` 与 `test-riscv64-uboot-shim.sh` 为发送/接收全链；`test-kernel-image-riscv64-bootface` 直核；aarch64 直核由 `test-smp-aps-aarch64` 到 boot/SMP 标记（其后的用户链 Data Abort 是已登记的 A2 遗留，不作为本表的通过证据）。
 
 ### 5.3 机制 → 需要证明什么
 

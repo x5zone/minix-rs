@@ -2,7 +2,7 @@
 
 - 日期：2026-11-23
 - 来源：`v312/r2/panel/round2/design-d2.md`
-- 状态：**待作者裁决**；me-agent 不代替作者决定设计方向。
+- 状态：**已由作者裁决（2026-11-23 12:00）：DESIGN-01=A，DESIGN-02=A**；实现见 `DECISIONS.md` D-120/D-121 与 commit `7d6835aa5`。
 
 ## DESIGN-01（P2，[MODERN]）：合并两张模块身份表
 
@@ -31,7 +31,7 @@
 - 不做的后果：未来第三条直核腿或重构把两处常量写岔，`KernelInfo` 可带着错配权威进入
   `kmain`，直到后续严格审计才暴露。
 
-## 请求裁决
+## 裁决结果
 
-请作者对 DESIGN-01、DESIGN-02 分别选 A/B（或明确不做）。两项都属 R2 P2；在裁决前 R2 保持
-`BLOCKED`，不把 `ROUND-CLOSED` 或 `CONVERGED` 写给 D01。
+作者选 **DESIGN-01=A、DESIGN-02=A**（2026-11-23 12:00）。实现与验证见 `DECISIONS.md`
+D-120/D-121；R2 台账两项已从 ⑤ 转 ①。R2 仍因冷读 `NOT-READY`/R3 未开而 `BLOCKED`。

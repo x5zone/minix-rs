@@ -65,7 +65,7 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 ### §5 复验
 
 - 独立 doc verifier：初检 FAIL（台账 R2-23/24 命令 + N-01/N-02），修复后 `RECHECK: PASS`
-  （doc `53f61e06…`，2,951 行）；8 门读数不变，旧 ⑤ 已关闭。
+  （doc `d035c692…`，2,951 行）；8 门读数不变，旧 ⑤ 已关闭。
 - 独立 code verifier：PASS；N1/N2/N3 复检 PASS，N4 空行已修，等 `RECHECK2`。
 - 冷读：`HARD-REJECTIONS: 4`、`VERDICT: NOT-READY`（`../../cold-read/y02-d01-r2.md`）；
   四个硬阻断是结构性的（实现节选不可跟随、版本历史混入正文、多套编号/计数、权威表式交叉引用），
