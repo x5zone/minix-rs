@@ -80,9 +80,10 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 
 ### §7 状态
 
-- `BLOCKED`：25 个 FINDING 全部 `①` 已修/裁决（D-120/D-121）；台账 `open=0`。
-  **但 R2 冷读仍 `NOT-READY`（4 个结构阻断，`R2-COLD-READ-CASE.md`）**，
-  R3 结构轮未开；48/48 单元仍冻结；不写 `ROUND-CLOSED`/`CONVERGED`。
+- `ROUND-CLOSED`：25 个 FINDING 全部 `①` 已修/裁决（D-120/D-121）；台账 `open=0`；
+  `units_review_lt2=0`，48/48 冻结。
+- **R2 冷读仍 `NOT-READY`（4 个结构阻断，`R2-COLD-READ-CASE.md`）**，这是 R3 的输入，
+  不是 R2 未闭环的 FINDING；不写 `CONVERGED`，下一轮是 R3 结构轮。
 
 ### §8 给 meta-review 的不确定点
 
