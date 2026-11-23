@@ -5,7 +5,7 @@
   CHAPTER-FREEZE.md ↔ 章切片快照 ↔ 六视角 manifest ↔ events.csv。
 
 约定：
-- `CHAPTER-FREEZE.md` 每个 `## ChN` 节写 `sha256: <64hex>`、`摘要：<path>`；
+- `CHAPTER-FREEZE.md` 每个 `## ChN` 节写 `sha256: <64hex>`、`章切片：<path>`、`摘要：<path>`；
 - `v312/chapter-slices/chN-*.md` 是切片快照，sha 必须与 freeze 记录一致；
 - `v312/chapters/chN-manifest.md` 是六视角 manifest：
     VERDICT: PASS
@@ -100,6 +100,9 @@ def check_event_report(row: dict, run_dir: Path, label: str, errs: list[str]) ->
         errs.append(f"{label} 报告不存在：{raw}")
         return None
     want = str(row.get("report_sha") or "").strip()
+    status = str(row.get("status") or "")
+    if not status.startswith("completed-pass"):
+        errs.append(f"{label} 最新事件不是 completed-pass：{status}")
     if not want:
         errs.append(f"{label} 事件缺 report_sha")
     elif sha(rp) != want:
@@ -163,7 +166,7 @@ def check(doc: Path, run_dir: Path, events: Path, only: int | None) -> list[str]
                         continue
                     if p.name not in listed_names:
                         errs.append(f"Ch{n} 报告未登记到 manifest：{p.name}")
-        # summary path declared in freeze
+        # summary / slice path declared in freeze
         sm = re.search(r"摘要：\s*`([^`]+)`", sec)
         if not sm:
             errs.append(f"Ch{n} 节缺 `摘要：` 路径")
@@ -171,6 +174,13 @@ def check(doc: Path, run_dir: Path, events: Path, only: int | None) -> list[str]
             sp = resolve_path(sm.group(1), run_dir)
             if not sp.is_file():
                 errs.append(f"Ch{n} 摘要文件不存在：{sm.group(1)}")
+        sl = re.search(r"章切片：\s*`([^`]+)`", sec)
+        if not sl:
+            errs.append(f"Ch{n} 节缺 `章切片：` 路径")
+        else:
+            sp = resolve_path(sl.group(1), run_dir)
+            if not sp.is_file():
+                errs.append(f"Ch{n} 章切片文件不存在：{sl.group(1)}")
         # events
         cr = find_event(rows, n, "chapter-review")
         if not cr:
@@ -220,7 +230,7 @@ def self_test() -> int:
         summ = run / "summaries" / "ch1-summary-verification.md"
         summ.write_text("DOC: doc.md\nVERDICT: FAITHFUL\n", encoding="utf-8")
         freeze = run / "CHAPTER-FREEZE.md"
-        freeze.write_text(f"# freeze\n\nVERDICT: FROZEN\n\n## Ch1 概述\n- sha256: {h}\n- 摘要：`{summ}`\n",
+        freeze.write_text(f"# freeze\n\nVERDICT: FROZEN\n\n## Ch1 概述\n- sha256: {h}\n- 章切片：`{sl}`\n- 摘要：`{summ}`\n",
                           encoding="utf-8")
         ev = root / "events.csv"
         with ev.open("w", newline="", encoding="utf-8") as f:
@@ -240,6 +250,13 @@ def self_test() -> int:
         if check(doc, run, ev, 1):
             print("self-test FAIL: 合法冻结被判红：" + "; ".join(check(doc, run, ev, 1)[:2]), file=sys.stderr)
             return 1
+        # negative: missing summary path
+        good_freeze = freeze.read_text(encoding="utf-8")
+        freeze.write_text(good_freeze.replace(f"- 摘要：`{summ}`", "- 摘要：`/nonexistent/summary.md`"),
+                          encoding="utf-8")
+        if not any("摘要文件不存在" in e for e in check(doc, run, ev, 1)):
+            print("self-test FAIL: 摘要路径缺失未被拦截", file=sys.stderr); return 1
+        freeze.write_text(good_freeze, encoding="utf-8")
         # negative: extra unregistered report
         extra = run / "chapters" / "ch1" / "extra.md"
         extra.write_text("x", encoding="utf-8")
@@ -260,13 +277,26 @@ def self_test() -> int:
                 r["report_sha"] = sha(summ)
         with ev.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+        # negative: latest event is completed-fail
+        for r in rows:
+            if r["review_type"] == "summary-faithful":
+                r["status"] = "completed-fail"
+        with ev.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+        if not any("不是 completed-pass" in e for e in check(doc, run, ev, 1)):
+            print("self-test FAIL: 最新 completed-fail 未被拦截", file=sys.stderr); return 1
+        for r in rows:
+            if r["review_type"] == "summary-faithful":
+                r["status"] = "completed-pass"
+        with ev.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
         # negative: missing event
         rows = [r for r in event_rows(ev) if r["review_type"] != "summary-faithful"]
         with ev.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
         if not any("summary-faithful" in e for e in check(doc, run, ev, 1)):
             print("self-test FAIL: 缺 summary-faithful 未被拦截", file=sys.stderr); return 1
-    print("self-test PASS: 冻结对账、未登记报告、缺事件均按预期")
+    print("self-test PASS: 冻结对账、摘要/章切片路径、report_sha、latest-fail、未登记报告、缺事件均按预期")
     return 0
 
 

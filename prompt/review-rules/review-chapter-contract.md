@@ -57,7 +57,7 @@ Outline review 只批准边界与节序，不评审正文。`tools/outline-contr
   `DOC`、`CHAPTER`、`HARD-REJECTIONS`、`VERDICT`，不冒充全篇 G18。
 - **冻结条件**：本章六视角 6/6；Ch1 另加理论事实核对，Ch2 另加 fact 门。
   任何一票不过 → 修根因，不冻结、不进入下一章。
-- 冻结后写 `CHAPTER-FREEZE.md`（章 sha、单元哈希、六报告路径、允许下游引用/禁止修改范围）；
+- 冻结后写 `CHAPTER-FREEZE.md`（章 sha、`章切片：` 路径、`摘要：` 路径、六报告路径、允许下游引用/禁止修改范围）；
   同时写 `runs/<stage>/<doc>/v312/summaries/chN-summary.md`（50–80 行，每条带原文锚点；
   内容按本章类型给下游：Ch1 问题模型/I1–I4/三类数据，Ch2 C 行为表与锚点，Ch3 设计契约与差异，
   Ch4 代码路径/落地区/门链，Ch5 证据矩阵，Ch6 现象→路标→命令）。

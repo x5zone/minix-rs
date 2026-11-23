@@ -124,6 +124,16 @@ def list_chapters(doc: Path) -> int:
     if not marks:
         print("extract-chapter-slice: FAIL：找不到章", file=sys.stderr)
         return 1
+    nums = [n for _, n, _ in marks]
+    dup = sorted({n for n in nums if nums.count(n) > 1})
+    if dup:
+        print("extract-chapter-slice: FAIL：章号重复：" + "、".join(str(n) for n in dup), file=sys.stderr)
+        return 1
+    missing = [n for n in range(1, max(nums) + 1) if n not in nums]
+    if missing:
+        print("extract-chapter-slice: FAIL：章号序列不完整，缺：" + "、".join(str(n) for n in missing),
+              file=sys.stderr)
+        return 1
     for _, n, title in marks:
         print(f"{n}\t{title}")
     return 0
@@ -192,6 +202,12 @@ def self_test() -> int:
             else:
                 print(f"self-test FAIL: {name} 未报错", file=sys.stderr)
                 return 1
+        if list_chapters(root / "good.md") != 0:
+            print("self-test FAIL: --list 对合法文档报错", file=sys.stderr)
+            return 1
+        if list_chapters(root / "missing.md") != 1:
+            print("self-test FAIL: --list 未拦截缺章", file=sys.stderr)
+            return 1
         try:
             extract(good, 9)
         except ValueError as exc:

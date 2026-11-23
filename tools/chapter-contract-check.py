@@ -167,13 +167,6 @@ def strip_fences(body: str) -> str:
     return "\n".join(out)
 
 
-def _term_pattern(term: str) -> re.Pattern[str]:
-    if term in PREFIX_TERMS:
-        return re.compile(r"(?<![A-Za-z0-9_])" + re.escape(term) + r"[A-Za-z0-9_]*")
-    flags = re.IGNORECASE if term in CASELESS_TERMS else 0
-    return re.compile(r"(?<![A-Za-z0-9_])" + re.escape(term) + r"(?![A-Za-z0-9_])", flags)
-
-
 def hit_terms(body: str, terms: list[str], include_fences: bool = False,
               caseless_extra: set[str] | None = None) -> list[str]:
     text = body if include_fences else strip_fences(body)
@@ -193,7 +186,7 @@ def hit_terms(body: str, terms: list[str], include_fences: bool = False,
         pat = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(term) + suffix, flags)
         if pat.search(text):
             hits.append(term)
-    return hits
+    return list(dict.fromkeys(hits))
 
 
 def check(doc: Path) -> tuple[list[str], list[str]]:
