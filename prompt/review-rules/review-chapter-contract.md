@@ -47,16 +47,22 @@ Outline review 只批准边界与节序，不评审正文。`tools/outline-contr
 
 ## 三、章切片与冻结
 
-- 章级 review 前按 `## N.` 从主文档切出 `tmp/review-loop/01-stage/chapters/<doc>/chN.md`；
-  reviewer 只拿 `本章切片 + 本章契约 + 上一章一页回顾 + scope 本章条目`，不拿整篇。
-- 章级六视角：beginner-me、G18、编辑、导航者、效率读者（brief 文件名 `reference.md`）、教学设计师；另有 Reader-B 结构报告。G18 章级变体只覆盖
-  本章单元，固定输出头 `DOC`、`CHAPTER`、`HARD-REJECTIONS`、`VERDICT`，不冒充全篇 G18。
+- 章级 review 前必须用 `tools/extract-chapter-slice.py` 从主文档切出
+  `tmp/review-loop/01-stage/chapters/<doc>/chN.md`；不得手写切片，也不得把整篇传给章级 reviewer。
+- 六视角（beginner-me、G18、编辑、导航者、效率读者、教学设计师）只拿
+  `本章切片 + 本章契约 + 上一章摘要 + scope 本章条目`；Reader-B 另拿 outline 做节序对账。
+  正确性 review（Ch2 fact、Ch3 设计一致性、Ch4 代码事实）可定向读源码，但同样不读整篇；
+  最终整篇六视角是唯一的全文读。
+- 章级六视角：G18 章级变体只覆盖本章单元，固定输出头
+  `DOC`、`CHAPTER`、`HARD-REJECTIONS`、`VERDICT`，不冒充全篇 G18。
 - **冻结条件**：本章六视角 6/6；Ch1 另加理论事实核对，Ch2 另加 fact 门。
   任何一票不过 → 修根因，不冻结、不进入下一章。
 - 冻结后写 `CHAPTER-FREEZE.md`（章 sha、单元哈希、六报告路径、允许下游引用/禁止修改范围）；
+  同时写 `runs/<stage>/<doc>/v312/summaries/chN-summary.md`（50–80 行，每条带原文锚点；
+  内容按本章类型给下游：Ch1 问题模型/I1–I4/三类数据，Ch2 C 行为表与锚点，Ch3 设计契约与差异，
+  Ch4 代码路径/落地区/门链，Ch5 证据矩阵，Ch6 现象→路标→命令）。
+- 下游只拿上游摘要 + 本章，不读上游全文；摘要不够时定向读源码，不重读上游整章。
   下游发现矛盾只定向重开相关单元并重跑对应视角，不整章重读。
-- Ch1/Ch2 冻结时生成“一页接口摘要”（每概念一行定义 + 原文锚点）；Ch3/Ch4 reviewer 只拿
-  摘要 + outline + 设计合同 + 冻结代码 + 本章。
 
 ## 四、整篇六视角
 

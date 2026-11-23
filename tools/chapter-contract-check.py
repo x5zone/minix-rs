@@ -32,7 +32,7 @@ CH2_RUST = [
     "KernelInfo", "BootReport", "BootStorage", "KernelInfoView", "RamAuthority",
     "SourceRecord", "BootPrepareResult", "BootAlloc", "BumpRegion", "MemMap",
     "arch_boot", "store_boot_report", "store_kernel_info", "prepare_boot",
-    "run_self_boot", "kernel_info", "land_and_store", ".rs",
+    "run_self_boot", "kernel_info", "land_and_store", "MODULE_NAMES", "boot_modules", ".rs",
 ]
 
 CH4_WARN = [

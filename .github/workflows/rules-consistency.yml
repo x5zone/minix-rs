@@ -154,14 +154,18 @@ jobs:
             rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md || { echo '::error::gate failed: doc-structure (live artifacts)'; exit 1; }
 
       - name: 章契约门（V3.13）
-        # 迁移期只跑自测、brief schema 与受版管理的 Ch1 切片 fixture；
-        # D01/D02 的 Ch1/Ch3 去漂移完成后，再把两篇活文档加到这里。
+        # D01 Ch1 已去漂移，加入活文档切片检查；D02 仍只受版管理 fixture 覆盖。
         run: |
           python3 tools/chapter-contract-check.py --self-test
           python3 tools/outline-contract-check.py --self-test
           python3 tools/chapter-brief-check.py --self-test
+          python3 tools/extract-chapter-slice.py --self-test
           python3 tools/chapter-brief-check.py prompt/review-panel-chapters
           python3 tools/chapter-contract-check.py prompt/review-panel-chapters/fixtures/ch1-slice.md
+          slice_dir=$(mktemp -d)
+          python3 tools/extract-chapter-slice.py rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md --chapter 1 --out "$slice_dir"
+          python3 tools/chapter-contract-check.py "$slice_dir/ch1.md"
+          rm -rf "$slice_dir"
 
       - name: 文档引文逐行对账门（V3.2）
         # `代码引用` 与 `节选` 块的每个代码行都必须在源码中找得到（节选只许
