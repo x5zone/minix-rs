@@ -9,7 +9,7 @@ edition: V3.12
 结构轮输入行数: 3049
 修复后 sha256: 67440cd885aad0e808cd5d76905323872b08b1c35849566b976c123d84dff6e8
 修复后行数: 3085
-单元: 48（6 章 + 42 节）；面板后 29 个单元因正文变化解冻并清空旧 review，R3 复验后重新冻结
+单元: 48（6 章 + 42 节）；面板后 29 个单元解冻并清空旧 review（23 个正文变化节 + 5 个父章 + 4.7 锚点级联），R3 复验后重新冻结
 run 目录: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3
 范围: `SCOPE.md`；关联代码 `related-code.txt` 49 个文件
 学习范围: `meta/review/scope/01-stage-kernel/01-boot-shim-bootstrap.yaml`（me-agent 代确认，待作者追认）
@@ -23,7 +23,7 @@ L0.9: doc-publication 0 新增 / tutorial-rubric 0 缺项 / code-publication 0 �
 - 结构改写：§1.1.1 现役字段速查、§3.2.3.1 wire 字节布局、§3.4.1/§3.2.1 历史标注、
   §4.1 端到端路标图、§4.2 代码节选读法、§1.0 主计数。
 - 48 单元全部进入 R3 full survey；结构改写明细见 `STRUCTURAL-REWRITE.md`。
-- 修复后 doc 3,085 行，sha `67440cd8…`；面板后 29 个单元因正文变化解冻，复验后重新冻结。
+- 修复后 doc 3,085 行，sha `67440cd8…`；面板后 29 个单元解冻（23 节 + 5 父章 + 4.7 锚点级联），复验后重新冻结。
 
 ### §1 面板
 
