@@ -16,6 +16,8 @@ HEADER_COMMON = ("DOC", "CHAPTER", "VERDICT")
 READER_B_SECTIONS = ("我重建的结构", "与实际节序的对比", "本章越界")
 REQUIRED_ROLES = ("beginner-me.md", "g18.md", "editor.md", "navigator.md", "instructional.md", "reader-b.md")
 REFERENCE_ROLES = ("reference.md", "efficiency.md")
+SIX_VIEW_INPUTS = ("本章切片", "本章契约", "上一章", "scope")
+READER_B_INPUTS = SIX_VIEW_INPUTS + ("outline",)
 
 
 def check_dir(d: Path) -> list[str]:
@@ -42,6 +44,13 @@ def check_dir(d: Path) -> list[str]:
             for sec in READER_B_SECTIONS:
                 if sec not in text:
                     errs.append(f"reader-b.md 缺节：{sec}")
+            for token in READER_B_INPUTS:
+                if token not in text:
+                    errs.append(f"reader-b.md 缺输入限定：{token}")
+        elif f.name in REQUIRED_ROLES or f.name in REFERENCE_ROLES:
+            for token in SIX_VIEW_INPUTS:
+                if token not in text:
+                    errs.append(f"{f.name} 缺输入限定：{token}")
     return errs
 
 
@@ -50,8 +59,15 @@ def self_test() -> int:
         d = Path(td)
         for name in ("beginner-me.md", "g18.md", "editor.md", "navigator.md", "instructional.md", "reference.md"):
             extra = "HARD-REJECTIONS\n" if name in ("g18.md", "beginner-me.md") else ""
-            (d / name).write_text("DOC\nCHAPTER\n" + extra + "VERDICT\n", encoding="utf-8")
-        (d / "reader-b.md").write_text("DOC\nCHAPTER\nVERDICT\n我重建的结构\n与实际节序的对比\n本章越界\n", encoding="utf-8")
+            (d / name).write_text(
+                "本章切片 本章契约 上一章 scope\nDOC\nCHAPTER\n" + extra + "VERDICT\n",
+                encoding="utf-8",
+            )
+        (d / "reader-b.md").write_text(
+            "本章切片 本章契约 上一章 scope outline\nDOC\nCHAPTER\nVERDICT\n"
+            "我重建的结构\n与实际节序的对比\n本章越界\n",
+            encoding="utf-8",
+        )
         if check_dir(d):
             print("self-test FAIL: 合法 brief 被判红", file=sys.stderr)
             return 1
@@ -59,7 +75,23 @@ def self_test() -> int:
         if not check_dir(d):
             print("self-test FAIL: 缺节 reader-b 被判绿", file=sys.stderr)
             return 1
-    print("self-test PASS: 输出头与 Reader-B 三节检查")
+        (d / "reader-b.md").write_text(
+            "本章切片 本章契约 上一章 scope\nDOC\nCHAPTER\nVERDICT\n"
+            "我重建的结构\n与实际节序的对比\n本章越界\n",
+            encoding="utf-8",
+        )
+        if not any("reader-b.md 缺输入限定：outline" in e for e in check_dir(d)):
+            print("self-test FAIL: reader-b 缺 outline 未被拦截", file=sys.stderr)
+            return 1
+        (d / "navigator.md").write_text("本章切片 本章契约 上一章\nDOC\nCHAPTER\nVERDICT\n", encoding="utf-8")
+        if not any("navigator.md 缺输入限定：scope" in e for e in check_dir(d)):
+            print("self-test FAIL: navigator 缺 scope 未被拦截", file=sys.stderr)
+            return 1
+        (d / "navigator.md").write_text("本章切片 上一章 scope\nDOC\nCHAPTER\nVERDICT\n", encoding="utf-8")
+        if not any("navigator.md 缺输入限定：本章契约" in e for e in check_dir(d)):
+            print("self-test FAIL: navigator 缺本章契约未被拦截", file=sys.stderr)
+            return 1
+    print("self-test PASS: 输出头、Reader-B 三节、六视角四件输入与 Reader-B outline")
     return 0
 
 
