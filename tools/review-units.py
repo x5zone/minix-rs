@@ -78,7 +78,8 @@ EVENTS_SCHEMA = "review-events/v1"
 EVENTS_FIELDS = ["review_id", "doc_id", "edition", "round", "review_type", "unit_ids",
                  "reviewer", "target_commit", "doc_sha", "report_path", "report_sha", "status", "seq",
                  "unit_sha"]
-EVENT_TYPES = {"T1-chapter", "T2-section", "full", "confirmation", "student-cold-read", "chinese-edit"}
+EVENT_TYPES = {"T1-chapter", "T2-section", "full", "confirmation", "student-cold-read", "chinese-edit",
+               "chapter-review", "summary-faithful", "chapter-freeze"}
 EVENT_STATUS = {"planned", "completed-pass", "completed-fail"}
 SCOPE_SCHEMA = "review-scope/v1"
 STATE_DIR = Path(os.environ.get("REVIEW_STATE_DIR", str(DEFAULT_STATE_DIR)))
@@ -531,6 +532,13 @@ def event_integrity_errors(doc: Path, fresh_only: bool = False, round_n: int | N
             # 追加完成行会重复 review_id；这合法。真正的重复由 report_sha 判。
             pass
         seen_rid.add(rid)
+    global_seen: dict[str, str] = {}
+    for row in effective_events():
+        if row["status"].startswith("completed") and row["report_sha"]:
+            prev = global_seen.get(row["report_sha"])
+            if prev:
+                errors.append(f"{row['review_id']}: report_sha 与全局 {prev} 重复")
+            global_seen[row["report_sha"]] = row["review_id"]
     fresh_units: set[str] = set()
     if fresh_only:
         for r in effective_events():
@@ -758,6 +766,16 @@ def cmd_event_complete(doc: Path, state_path: Path, review_id: str,
     if not doc_scope_ok(text, doc):
         print(f"[FAIL] 报告缺少 `DOC {doc.name}` 绑定", file=sys.stderr)
         return 1
+    rt = row["review_type"]
+    if rt == "chapter-review" and ("VERDICT: PASS" not in text or "REPORTS:" not in text):
+        print("[FAIL] chapter-review 报告必须是 VERDICT: PASS 的 manifest，并列出 REPORTS", file=sys.stderr)
+        return 1
+    if rt == "summary-faithful" and "VERDICT: FAITHFUL" not in text:
+        print("[FAIL] summary-faithful 报告必须含 VERDICT: FAITHFUL", file=sys.stderr)
+        return 1
+    if rt == "chapter-freeze" and "VERDICT: FROZEN" not in text:
+        print("[FAIL] chapter-freeze 报告必须含 VERDICT: FROZEN", file=sys.stderr)
+        return 1
     report_sha = hashlib.sha256(rp.read_bytes()).hexdigest()
     for other in effective_events():
         if (other["review_id"] != review_id and other["status"].startswith("completed")
@@ -911,6 +929,12 @@ def cmd_new_edition(doc: Path, state_path: Path, edition: str, unfreeze_all: boo
 
 def cmd_begin_confirmation(doc: Path, state_path: Path) -> int:
     data = load_state_for(state_path, doc)
+    errors, _ = validate(data, parse_units(doc))
+    if errors:
+        for e in errors:
+            print(f"[FAIL] {e}", file=sys.stderr)
+        print("[FAIL] 正文/状态未通过 validate，不得开始确认轮", file=sys.stderr)
+        return 1
     if data.get("confirmation", {}).get("active"):
         print("[FAIL] 确认轮已 active；不得再次 begin-confirmation", file=sys.stderr)
         return 1
@@ -2081,6 +2105,7 @@ def cmd_gate(doc: Path, state_path: Path, ok: bool, evidence: str, ledger: str |
 
 def cmd_stats(doc: Path, state_path: Path) -> int:
     data = load_state_for(state_path, doc)
+    errors, _ = validate(data, parse_units(doc))
     units = data["units"]
     chapters = [u for u in units if u["level"] == 2]
     sections = [u for u in units if u["level"] == 3]
@@ -2090,7 +2115,7 @@ def cmd_stats(doc: Path, state_path: Path) -> int:
           f"t2_pending={sum(1 for u in sections if u.get('t2_state')=='pending')} "
           f"reopened={sum(1 for u in units if u.get('reopened'))} "
           f"stale={sum(1 for u in units if u.get('stale'))} "
-          f"t3={'PASS' if data.get('t3',{}).get('passed') else ('FAIL' if data.get('t3') else 'pending')}")
+          f"t3={('PASS(STALE)' if errors else 'PASS') if data.get('t3',{}).get('passed') else ('FAIL' if data.get('t3') else 'pending')}")
     print(f"round={data.get('round', 0)} full_rounds={len(data.get('full_rounds', []))} "
           f"trajectory_reviews={len(data.get('trajectory_reviews', []))} "
           f"units_review_lt2={sum(1 for u in units if len(u.get('review_rounds', [])) < 2)} "

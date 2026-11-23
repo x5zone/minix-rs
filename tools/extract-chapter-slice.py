@@ -24,27 +24,38 @@ from pathlib import Path
 
 CHAPTER_RE = re.compile(r"^##\s+(\d+)\.(?!\d)")
 H2_RE = re.compile(r"^##\s+")
-FENCE_RE = re.compile(r"^\s*(```|~~~)")
+FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+FENCE_CLOSE_RE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
+
+
+def _fence_open(line: str):
+    m = FENCE_OPEN_RE.match(line)
+    return (m.group(1)[0], len(m.group(1))) if m else None
+
+
+def _fence_close(line: str, ch: str, ln: int) -> bool:
+    m = FENCE_CLOSE_RE.match(line)
+    return bool(m and m.group(1)[0] == ch and len(m.group(1)) >= ln)
 
 
 def scan(doc: str) -> tuple[list[tuple[int, int, str]], bool]:
     """返回 [(行号, 章号, 标题), ...] 与围栏是否闭合；只认围栏外标题。"""
     lines = doc.splitlines()
     marks: list[tuple[int, int, str]] = []
-    in_fence = False
-    closed = True
+    ch = None
+    ln = 0
     for i, line in enumerate(lines):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        m = CHAPTER_RE.match(line)
-        if m:
-            marks.append((i, int(m.group(1)), line.strip()))
-    if in_fence:
-        closed = False
-    return marks, closed
+        if ch is None:
+            op = _fence_open(line)
+            if op:
+                ch, ln = op
+                continue
+            m = CHAPTER_RE.match(line)
+            if m:
+                marks.append((i, int(m.group(1)), line.strip()))
+        elif _fence_close(line, ch, ln):
+            ch = None
+    return marks, ch is None
 
 
 def extract(doc: str, chapter: int) -> str:
@@ -57,20 +68,28 @@ def extract(doc: str, chapter: int) -> str:
     dup = sorted({n for n in nums if nums.count(n) > 1})
     if dup:
         raise ValueError("章号重复：" + "、".join(str(n) for n in dup))
+    missing = [n for n in range(1, max(nums) + 1) if n not in nums]
+    if missing:
+        raise ValueError("章号序列不完整，缺：" + "、".join(str(n) for n in missing))
     hit = [m for m in marks if m[1] == chapter]
     if not hit:
         raise ValueError(f"找不到第 {chapter} 章；现有章号：{nums}")
     start = hit[0][0]
     end = len(doc.splitlines())
     lines = doc.splitlines()
-    in_fence = False
+    ch = None
+    ln = 0
     for i in range(start + 1, len(lines)):
-        if FENCE_RE.match(lines[i]):
-            in_fence = not in_fence
-            continue
-        if not in_fence and H2_RE.match(lines[i]):
-            end = i
-            break
+        if ch is None:
+            op = _fence_open(lines[i])
+            if op:
+                ch, ln = op
+                continue
+            if H2_RE.match(lines[i]):
+                end = i
+                break
+        elif _fence_close(lines[i], ch, ln):
+            ch = None
     body = "\n".join(lines[start:end]).rstrip()
     return body + "\n"
 
@@ -138,12 +157,14 @@ def self_test() -> int:
     no_ch = "# 无章\n\n只有前言。\n"
     unclosed = "## 1. 章\n\n```md\n没有闭合\n"
     dup = "## 1. 甲\n\n## 1. 乙\n"
+    missing = "## 1. 甲\n\n## 3. 丙\n"
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "good.md").write_text(good, encoding="utf-8")
         (root / "no.md").write_text(no_ch, encoding="utf-8")
         (root / "unclosed.md").write_text(unclosed, encoding="utf-8")
         (root / "dup.md").write_text(dup, encoding="utf-8")
+        (root / "missing.md").write_text(missing, encoding="utf-8")
         ch1 = extract(good, 1)
         assert ch1.startswith("## 1. 概述"), ch1
         assert "围栏里的假章" in ch1  # 围栏内 `## 2.` 不切章，仍属第一章正文
@@ -161,7 +182,7 @@ def self_test() -> int:
         if (out / "ch2.md").read_text(encoding="utf-8") != ch2:
             print("self-test FAIL: 文件内容与 extract 不一致", file=sys.stderr)
             return 1
-        for name, needle in (("no.md", "找不到"), ("unclosed.md", "围栏"), ("dup.md", "重复")):
+        for name, needle in (("no.md", "找不到"), ("unclosed.md", "围栏"), ("dup.md", "重复"), ("missing.md", "序列不完整")):
             try:
                 extract((root / name).read_text(encoding="utf-8"), 1)
             except ValueError as exc:

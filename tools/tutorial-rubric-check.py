@@ -41,12 +41,35 @@ BAD_OPENERS = ("-", "*", "+", "|", "```", "~~~")
 PLACEHOLDER = re.compile(r"^\s*[（(]\s*空\s*[）)]\s*$")
 
 
+FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+FENCE_CLOSE_RE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
+
+
 def split_chapters(text: str) -> list[tuple[str, str]]:
-    marks = list(CHAPTER_RE.finditer(text))
+    """围栏感知的 `## ` 切章；围栏里的 `##` 不算章。"""
+    lines = text.splitlines(keepends=True)
+    marks: list[tuple[int, str]] = []
+    ch = None
+    ln = 0
+    off = 0
+    for line in lines:
+        if ch is None:
+            m = FENCE_OPEN_RE.match(line)
+            if m:
+                ch = m.group(1)[0]; ln = len(m.group(1))
+            elif re.match(r"^##\s+", line):
+                marks.append((off, line[2:].strip()))
+        else:
+            m = FENCE_CLOSE_RE.match(line)
+            if m and m.group(1)[0] == ch and len(m.group(1)) >= ln:
+                ch = None
+        off += len(line)
     out: list[tuple[str, str]] = []
-    for i, m in enumerate(marks):
-        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
-        out.append((m.group(1).strip(), text[m.end():end]))
+    for i, (pos, title) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
+        nl = text.find("\n", pos)
+        body_start = nl + 1 if nl >= 0 else len(text)
+        out.append((title, text[body_start:end]))
     return out
 
 

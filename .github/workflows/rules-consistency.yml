@@ -160,6 +160,8 @@ jobs:
           python3 tools/outline-contract-check.py --self-test
           python3 tools/chapter-brief-check.py --self-test
           python3 tools/extract-chapter-slice.py --self-test
+          python3 tools/chapter-freeze-check.py --self-test
+          python3 tools/summary-anchor-check.py --self-test
           python3 tools/chapter-brief-check.py prompt/review-panel-chapters
           python3 tools/chapter-contract-check.py prompt/review-panel-chapters/fixtures/ch1-slice.md
           slice_dir=$(mktemp -d)

@@ -375,15 +375,15 @@ units:
   text_sha: cc40f61d62dd0a21239b7343ece544bd67ac03c1cf6fab5378628826261bc926
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: ea18db20ec2998a3d9ebd7c4493e4f97157d1cc1
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
-  reopened: false
-  stale: false
+  reopened: true
+  stale: true
   anchor_refs:
   - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
   - minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page
@@ -408,11 +408,8 @@ units:
     minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc: a82607f3dd75b45a95143a47af990ec23deb41bdc0e1d78c930d81a4c122fecf
   anchor_status: fallback
   note: R2 final
-  review_rounds:
-  - 3
-  - 4
-  post_freeze_rounds:
-  - 4
+  review_rounds: []
+  post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/unit-evidence/2.4.md
 - id: '2.5'
   heading: 2.5 `overlaps` 与 `kern_mod`：内核把自己算成第 M+1 个模块
@@ -422,15 +419,15 @@ units:
   text_sha: 4fb014b45b2958e80e3b2e061b7930aefc0b4e488b37ab06e2a2c40a3b9c73fe
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: ea18db20ec2998a3d9ebd7c4493e4f97157d1cc1
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
-  reopened: false
-  stale: false
+  reopened: true
+  stale: true
   anchor_refs:
   - minix3/minix/kernel/arch/i386/pre_init.c:overlaps
   - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
@@ -439,11 +436,8 @@ units:
     minix3/minix/kernel/arch/i386/pre_init.c:get_parameters: a2c376ae1f8e23f33dde62da0154117b5430421a9f24e6ef0e57ec1d3ee6aa55
   anchor_status: fallback
   note: R2 final
-  review_rounds:
-  - 3
-  - 4
-  post_freeze_rounds:
-  - 4
+  review_rounds: []
+  post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/unit-evidence/2.5.md
 - id: '2.6'
   heading: 2.6 模块装载的检查与失败模式
@@ -604,15 +598,15 @@ units:
   text_sha: d628f8e18a5fa04efd8be62561a1b5da839d7c97dafe875e26833964812fa21e
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: ea18db20ec2998a3d9ebd7c4493e4f97157d1cc1
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
-  reopened: false
-  stale: false
+  reopened: true
+  stale: true
   anchor_refs:
   - os/boot-shim/src/uefi_helpers.rs:fn exit_boot_services
   - os/boot-shim/src/uboot_main.rs:fn uboot_main
@@ -621,12 +615,8 @@ units:
     os/boot-shim/src/uboot_main.rs:fn uboot_main: 4b4996e030e5d1aebec58c05c39f2f3437065ee3b0c896940eec7364cba141ec
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 2
-  - 3
-  - 4
-  post_freeze_rounds:
-  - 4
+  review_rounds: []
+  post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/unit-evidence/3.1.md
 - id: '3.2'
   heading: 3.2 按值交接：`KernelInfo` wire 与字段台账（I1）
@@ -636,15 +626,15 @@ units:
   text_sha: ac12cef7f1432b7f5dfedda9a198a062469f77b92d35546ae014d760be8393d7
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: ea18db20ec2998a3d9ebd7c4493e4f97157d1cc1
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
-  reopened: false
-  stale: false
+  reopened: true
+  stale: true
   anchor_refs:
   - os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo
   - os/kernel/src/globals.rs:const MEMMAP_REGION_STORE_LEN
@@ -669,11 +659,8 @@ units:
     os/kernel/src/globals.rs:static RESERVED_REGION_STORE: dd2eb87443c8d21c9235bc5530fd471b8617fce494443afcab605e53f0302f23
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 3
-  - 4
-  post_freeze_rounds:
-  - 4
+  review_rounds: []
+  post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/unit-evidence/3.2.md
 - id: '3.3'
   heading: 3.3 两张内存表与来源记录（I2）
@@ -755,15 +742,15 @@ units:
   text_sha: 8dfad1f5c7eba54e52875d41ad08bbd46d4a5986f504952a331af56dc8a68174
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: ea18db20ec2998a3d9ebd7c4493e4f97157d1cc1
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
-  reopened: false
-  stale: false
+  reopened: true
+  stale: true
   anchor_refs:
   - os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot
   - os/boot-shim/src/uboot_main.rs:fn uboot_main
@@ -778,11 +765,8 @@ units:
     os/boot-shim/src/main.rs:fn main: bec8a3489e3907f25357c5f402c5a8722ef489f525def8fd98714cde74843430
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 3
-  - 4
-  post_freeze_rounds:
-  - 4
+  review_rounds: []
+  post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/unit-evidence/3.5.md
 - id: '3.6'
   heading: 3.6 五条生产腿与发送侧（接缝定义）
@@ -792,15 +776,15 @@ units:
   text_sha: 871c014f520e869c41a793371e615ef3a487c175d1578385fb0c91e33cffda03
   t1_state: n/a
   t1_rounds: 0
-  t2_state: frozen
+  t2_state: pending
   t2_rounds: 0
-  frozen: true
-  frozen_at: ea18db20ec2998a3d9ebd7c4493e4f97157d1cc1
+  frozen: false
+  frozen_at: null
   rewritten: false
   user_approved: false
   deps: []
-  reopened: false
-  stale: false
+  reopened: true
+  stale: true
   anchor_refs:
   - os/kernel/src/lib.rs:fn arch_boot_impl
   - os/kernel/src/lib.rs:fn arch_boot_finish
@@ -817,11 +801,8 @@ units:
     os/kernel-image/src/bootface_a64.rs:fn bootface_a64: 661bf2cce6161dcc8119d238713cac180997298fa321ea9f6c316afb991a7acb
   anchor_status: direct
   note: R2 final
-  review_rounds:
-  - 3
-  - 4
-  post_freeze_rounds:
-  - 4
+  review_rounds: []
+  post_freeze_rounds: []
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/unit-evidence/3.6.md
 - id: '3.7'
   heading: 3.7 所有权与校验门链（I3/I4）

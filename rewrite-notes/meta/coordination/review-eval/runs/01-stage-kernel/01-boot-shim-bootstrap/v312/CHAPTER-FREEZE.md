@@ -1,5 +1,9 @@
 # CHAPTER-FREEZE — D01 `01-boot-shim-bootstrap`
 
+DOC: 01-boot-shim-bootstrap.md
+
+VERDICT: FROZEN
+
 ## Ch1 概述
 
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
@@ -7,7 +11,9 @@
 - sha256：`10950802a1ca1ec4a424c14012aeb34bf43e1a2e762b1224cf7ac2f5ca7e07cc`
 - 行数：133
 - outline：`rewrite-notes/meta/design/01-stage-kernel/01-outline.v7.md`
-- 摘要：`v312/summaries/ch1-summary.md`（67 行，6 条锚点）
+- 摘要：`v312/summaries/ch1-summary.md`（74 行，9 条锚点）
+- 摘要验证：`v312/summaries/ch1-summary-verification.md` — `VERDICT: FAITHFUL`（2026-11-24）
+- 事件：`chapter-review` REV-20261124-B40002E6 / `summary-faithful` REV-20261124-7F878FAC / `chapter-freeze` REV-20261124-0FF649F8
 - 冻结日期：2026-11-24
 
 ### 六视角
