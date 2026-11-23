@@ -77,6 +77,9 @@ L0.9: doc-publication 0 新增 / tutorial-rubric 0 缺项 / code-publication 0 �
   均 `VERDICT: PASS` + `RECHECK: PASS`；汇总见 `fix-verify.md`（tmp 原件同内容）。
 - 关账：48/48 冻结、`t1_pending=t2_pending=reopened=stale=0`、`event verify --fresh` OK、
   `v312-closure-check --round 3` PASS。
+- 提交锚点：面板输入 `98b7cdaf…` 对应 `9f1327187`；修复后 `67440cd8…` 对应 `ea18db20e`。
+  六个面板事件 `target_commit=9f1327187`，R3 fix-verify 事件 `target_commit=ea18db20e`，
+  48 个单元 `frozen_at=ea18db20e`。
 
 ### §6 指标
 
