@@ -6,7 +6,7 @@ edition: V3.12
 文档: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 基线 commit: a6a94b942
 文档 sha256: 98b7cdaf4864d67d3da615bcab4fc9c18f9e7bb2f41f72d634cd47cd1a2333ea
-行数: 3047
+行数: 3049
 单元: 48（6 章 + 42 节），0 冻结（R3 改动后重新审）
 run 目录: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3
 范围: `SCOPE.md`；关联代码 `related-code.txt` 49 个文件
@@ -18,7 +18,7 @@ L0.9: doc-publication 0 新增 / tutorial-rubric 0 缺项 / code-publication 0 �
 
 ### §0 基线
 
-- R3 基线：doc 3,047 行，sha `98b7cdaf…`，commit `a6a94b942`。
+- R3 基线：doc 3,049 行，sha `98b7cdaf…`，commit `a6a94b942`。
 - 本轮先做结构改写：§1.1.1 现役字段速查、§3.2.3.1 wire 字节布局、§3.4.1/§3.2.1 历史标注、
   §4.1 端到端路标图、§4.2 代码节选读法、§1.0 主计数。
 - 48 单元全部进入 R3 full survey；R2 的 31 个只审一轮的单元在本轮补齐。
@@ -27,7 +27,8 @@ L0.9: doc-publication 0 新增 / tutorial-rubric 0 缺项 / code-publication 0 �
 
 - 6 角色 fresh，报告写 `panel/round3/`；提示词 `tmp/review-loop/01-stage/panel-prompts-r3/`。
 - 读者重点：结构改写后能否按 §1.1.1 + §4.1 图走完五个学习任务。
-- 事件：round 3 的 6 个角色事件在面板前 plan、报告后 complete。
+- 事件：P-FACT `REV-20261123-9D52DEAE`、READER-A `2770EC55`、READER-B `730DC86A`、
+  READER-C `3E5AAC6F`、DESIGN-D2 `EB0132C2`、P-REFUTE `EA2DEB65`，均 round 3。
 
 ### §2 发现
 
