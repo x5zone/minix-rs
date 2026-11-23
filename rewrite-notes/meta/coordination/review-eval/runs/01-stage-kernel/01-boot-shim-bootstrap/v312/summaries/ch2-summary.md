@@ -2,8 +2,8 @@
 
 - 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
 - 章：2. C 源码分析
-- 章切片（纯正文，extractor 产出）：`ch2-final-c3dba7e9.md`，sha256 `c3dba7e93323cdba1e7cc4a5a40263bdbe82bac1ae29a99338678af85edf1d7e`（907 行）；
-  复核快照 `ch2-final-08f0715e.md`（含 3 行 DOC/CHAPTER 头，sha `08f0715e…`）去掉头后与纯正文逐字一致。
+- 章切片（纯正文，extractor 产出）：`ch2-final-207a12ef.md`，sha256 `207a12effbb4712b60a91da79da9305149dde96fb68cf2d31769d7d0fa8eb8b3`（953 行）；
+  复核快照 `ch2-final-08f0715e.md` 是首轮 fact 的基线；207a12ef 是 G18/编辑/Reader-B 修复后的重排（2.5.1 模块归属移到 2.5 之后），事实点未改。
 - 用途：Ch3/Ch4 作者与 review 的上一章输入；不要求读 Ch2 全文。
 
 ## 关键 C 函数行为
@@ -29,7 +29,7 @@
 
 ## 模块与内存账
 
-- 模块计数：`NR_BOOT_MODULES = INIT_PROC_NR + 1 = 12`；`kmain` 硬检查
+- 模块计数与归属：`NR_BOOT_MODULES = INIT_PROC_NR + 1 = 12`；`kmain` 硬检查
   `NR_BOOT_MODULES == kinfo.mbi.mi_mods_count`；`image[NR_BOOT_PROCS]` 共 17 项
   （5 内核任务 + 12 用户态），不是 12 项模块表。
 - 内核把自己算成第 M+1 个模块；`overlaps` 检查与 `cut_memmap` 切除逐条交错。
