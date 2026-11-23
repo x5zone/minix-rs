@@ -1831,16 +1831,22 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     use minix_platform::platform_desc;
 
     // The handoff contract passes the stored `.bss` copy as the first
-    // argument; the global accessor names the same slot. Bind the two handles
-    // once here so a caller that passes a different value fails before any
-    // phase runs. Field reads below use the global slot: it is the copy the
-    // boot path stores exactly once, and `store_kernel_info`'s one-shot guard
-    // makes a second publication a panic.
+    // argument; the global accessor names the same slot. The direct-core legs
+    // call this function from the physical view, so the argument can be the
+    // physical alias of the same object while the global is the high-half
+    // alias; the v1 receive legs pass the high-half alias directly. Accept
+    // either alias of the same `.bss` copy, and reject any other pointer.
     let stored: &KernelInfo =
         crate::kernel_info().expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
+    let stored_addr = stored as *const KernelInfo as usize;
+    let arg_addr = kernel_info as *const KernelInfo as usize;
+    let delta = (stored.kern_virt_base.0 as usize)
+        .wrapping_sub(stored.kern_phys_base.0 as usize);
     assert!(
-        core::ptr::eq(kernel_info, stored),
-        "kmain: KernelInfo argument and KERNEL_INFO global must be the same .bss copy"
+        arg_addr == stored_addr
+            || arg_addr.wrapping_add(delta) == stored_addr
+            || arg_addr.wrapping_sub(delta) == stored_addr,
+        "kmain: KernelInfo argument must alias the same .bss copy (high-half or physical view)"
     );
     let kernel_info: &KernelInfo = stored;
     boot_stage!("kernel: kmain Phase A enter\n");
