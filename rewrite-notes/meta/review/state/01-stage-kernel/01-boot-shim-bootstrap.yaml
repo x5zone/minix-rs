@@ -5,7 +5,7 @@ schema: review-units/v2
 doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 stage: 01-stage-kernel
 edition: V3.12
-round: 3
+round: 4
 full_rounds:
 - n: 1
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r1-post-design02/r1-v312/full-r1.md
@@ -37,9 +37,9 @@ trajectory_reviews:
   commit: 20496779bd954b82068ffdd2d976258d77eb04d2
 baseline_full_survey: true
 confirmation:
-  active: false
+  active: true
   completed: false
-  round: 0
+  round: 4
   fixes: 0
 units:
 - id: '1'
