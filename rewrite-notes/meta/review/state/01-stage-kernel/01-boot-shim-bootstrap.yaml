@@ -30,6 +30,11 @@ trajectory_reviews:
   evidence_sha: c30f428077911012f58123f2851dace8298a6adde70b2ed57398af448e8f928e
   verdict: PASS
   commit: bc60fb26dd9802565bc6dc5368447c711cb4f8da
+- round: 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r3/trajectory-r3.md
+  evidence_sha: eeefe4ab0311a712be1914f8e7b4a717acdcaf1da3b7eefaaffd7e8fa4e05131
+  verdict: PASS
+  commit: 20496779bd954b82068ffdd2d976258d77eb04d2
 baseline_full_survey: true
 confirmation:
   active: false
