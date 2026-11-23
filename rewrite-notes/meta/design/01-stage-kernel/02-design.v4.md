@@ -23,6 +23,8 @@
 | J3 | 映射先于进入 | Step1 恒等/Step2 内核/Step2b/2c/Step3 enable | 开分页后取指 fault |
 | J4 | 换栈与跳转成对且不返回 | 三份 asm；`-> !`；SP/PC/FP 断言 | 返回地址在新栈；SP 低半 |
 
+`[ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4 GiB]`：J3 的 Step 1 只铺实际窗口（`BootWindows`），不继承 C 的低 4 GiB 全铺；Direct Map 在 Step 4 单独建立。三处标注：本文档、`os/arch/src/lib.rs:BOOT_IDENTITY_MAP_END`、`os/kernel/src/lib.rs` 的 Step 1–3 注释。
+
 ## Ch3. 决策清单
 
 | # | 决策 | 理由 | 当前落点 |

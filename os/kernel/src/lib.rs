@@ -1049,6 +1049,7 @@ pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysByte
     // Steps 1-3: build the bootstrap root (minimal identity windows + kernel
     // high half + the aarch64 MMIO window), enable paging, and record the
     // active root.
+    // [ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4 GiB]
     build_bootstrap_root_and_enable::<A>(root_page, &policy.kernel(), windows);
 
     // Step 4: Establish Direct Map coverage on the bootstrap root.

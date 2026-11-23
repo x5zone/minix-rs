@@ -218,6 +218,7 @@ pub type CurrentProtection = crate::riscv64::protection::Riscv64Protection;
 // `[0, END)` mapping; C's 4 GiB `pg_identity` is the 32-bit analogue, not the
 // Rust contract. Bootstrap allocations that must stay identity-write-reachable
 // (the page-table root, the boot bump region) have to sit below this end.
+// [ARCH: boot 最小恒等窗口；跨镜像腿不再铺低 4 GiB]
 pub const BOOT_IDENTITY_MAP_END: u64 = 0x1_0000_0000;
 
 /// Highest PA *end* any bootstrap-tree allocation (page-table root, boot

@@ -2,35 +2,35 @@
 # 由 tools/review-units.py 维护；冻结状态禁止手改。
 # 每篇一个独立账户：round / edition / full_rounds / trajectory_reviews 不得跨篇复用。
 schema: review-units/v2
-doc: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
+doc: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
 stage: 01-stage-kernel
 edition: V3.11
 round: 3
 full_rounds:
 - n: 1
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/metrics-full-r1.md
-  evidence_sha: 2cbcc9ccd2bc616b77d7dab1fc7252f5c3ca28fd817d560f52a62e218a0581f5
-  commit: 1bdb4dc6040e9c1438087595e7eb8a6ed844c900
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/metrics-full-r1.md
+  evidence_sha: b946520433a456fa14461b96dcda683f329dde2024fcc58ac851e28b823f6e95
+  commit: 6ac2da259ccabd981453fb6701eea1bb4a81ac97
 - n: 2
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/metrics-full-r2.md
-  evidence_sha: 9ddfc25872a380bdcaf542b59954ec91ff1eeb88104d1424deeb7c016bb8a1ba
-  commit: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/metrics-full-r2.md
+  evidence_sha: ff28d58df7b489af6630926189f25d6d86a0907e8bf2904455ec29e0c3be0a07
+  commit: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
 trajectory_reviews:
 - round: 1
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/trajectory-r1.md
-  evidence_sha: 9b3219f9a239f6d366e2aa810585cd4c6ce4c0026f2eb76cc8ed912218ad6b14
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/trajectory-r1.md
+  evidence_sha: 4bd2d8be064dd8003c34ea1b6c9cb29a82247f8ede4390596a905970076f12d0
   verdict: PASS
-  commit: 1bdb4dc6040e9c1438087595e7eb8a6ed844c900
+  commit: 6ac2da259ccabd981453fb6701eea1bb4a81ac97
 - round: 2
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/trajectory-r2.md
-  evidence_sha: 11bb88e6239634cd0c7c9b5d96f42fae8010d62e134fdbb4d3af332b4b7a9352
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/trajectory-r2.md
+  evidence_sha: e74e61f3f8d19dd13f5db7679ecba25d2dd30fe6cd1598ea3a6e8d909bae99a4
   verdict: PASS
-  commit: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  commit: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
 - round: 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/trajectory-r3.md
-  evidence_sha: 1bd53a41c3ecec94490038c3217e377c19ec0955a23b162ae17e7144d25fdf24
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/trajectory-r3.md
+  evidence_sha: f82ab635d6022b2c284f9b2e557f2f2b8f5b4516bb37d9870cc75991dc6a8126
   verdict: PASS
-  commit: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  commit: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
 baseline_full_survey: true
 confirmation:
   active: false
@@ -43,13 +43,13 @@ units:
   level: 2
   parent: null
   order: 1
-  text_sha: 6fc3cd83988f7647117022626949deb2d2c6e8c991ea6f382b5f05517038a1b1
+  text_sha: cf21af760309f40e806b25d8da781d280a2e13abb6df2077408ca1cd5cdc4605
   t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -65,19 +65,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/1.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/1.md
 - id: '1.0'
   heading: 1.0 本章导读
   level: 3
   parent: '1'
   order: 2
-  text_sha: f1997b9fd304ed15e3616a341812f87688c1e6be8226917481d761ebf828d59d
+  text_sha: b48e3de0d5b241172e8ecbd75740e3d8c8fb6618dda208a29be3ce3785e15ac3
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
-  t2_rounds: 1
+  t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -88,23 +88,24 @@ units:
   anchor_status: none
   note: ''
   review_rounds:
+  - 1
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/1.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/1.0.md
 - id: '1.1'
-  heading: 1.1 内核接手时拿到什么
+  heading: 1.1 镜像的四个时刻
   level: 3
   parent: '1'
   order: 3
-  text_sha: 9682be506b8ebc06b8f24b1de4fc20e1e041329718ed416f03e0443978133367
+  text_sha: 8f9e40c7468845ebc4c259561dd8cc119b6392e69001ad075926b20bf281f199
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 1
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -119,19 +120,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/1.1.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/1.1.md
 - id: '1.2'
-  heading: 1.2 四条不变量 I1–I4
+  heading: 1.2 四条不变量 J1–J4
   level: 3
   parent: '1'
   order: 4
-  text_sha: 0132c1fd886b99030ddb6640c065713b4c845ee0ce6e663a54a2972a0e5d50f2
+  text_sha: 6bedc136370a8e06abbfe4ad78a07b5ad2b59d7861917f5a12420f368dd3b926
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -147,46 +148,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/1.2.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/1.2.md
 - id: '1.3'
-  heading: 1.3 与 Minix3 的对应
+  heading: 1.3 范围与接缝
   level: 3
   parent: '1'
   order: 5
-  text_sha: bc313fe7241e713ac5fc6db0f051db784285e530f57d3a5437555e4456bb11e9
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/1.3.md
-- id: '1.4'
-  heading: 1.4 范围、术语与接缝
-  level: 3
-  parent: '1'
-  order: 6
-  text_sha: 44d8887b6a1107704ac1776f41d0f27dedd7486f8b5a56cdd319b91a3f82c4f4
+  text_sha: 2d79b0aa2828386f086bf7b19654a87d2906cf2dfdcebd73b1bc761e19212ebc
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -202,19 +176,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/1.4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/1.3.md
 - id: '2'
   heading: 2. C 源码分析
   level: 2
   parent: null
-  order: 7
-  text_sha: 852f5ca708f4bbc453262d96e779a93642cb42a6c620fc32b28c8df4f9cbed52
+  order: 6
+  text_sha: 769cd5142578cc9e091af0111ecb92e2a4fa7128d43508d0436179ec2e107a73
   t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -230,19 +204,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.md
 - id: '2.0'
   heading: 2.0 本章导读
   level: 3
   parent: '2'
-  order: 8
-  text_sha: bdb4172374cc82cadfa09421350576228edcbe732f5f3755e68fd3ac82061c88
+  order: 7
+  text_sha: 93b5f0978c3277db81d917f43c75bddfb0d8129866c2c976c5eb89a6ce3b9a2b
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
-  t2_rounds: 1
+  t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -253,38 +227,63 @@ units:
   anchor_status: none
   note: ''
   review_rounds:
+  - 1
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.0.md
 - id: '2.1'
-  heading: 2.1 引导器契约与启动信息
+  heading: 2.1 kernel.lds：双地址与 `AT()`
+  level: 3
+  parent: '2'
+  order: 8
+  text_sha: 075465850294592dbefbe2ef33cf42cbad9d51b0cc03dcfd4f2fe65bb6396eea
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds:
+  - 1
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.1.md
+- id: '2.2'
+  heading: 2.2 两段式布局：unpaged 段与高半段
   level: 3
   parent: '2'
   order: 9
-  text_sha: 021678f1855491b2d29b83596eee788b0beb4afcb662f731a9790b65bc2ad99f
+  text_sha: e8c43ff17817a48764ef68a9e230fcfc54daedd1ce808a7b6a08c987ef0d9056
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
   anchor_refs:
-  - minix3/sys/arch/i386/stand/lib/exec.c:exec_multiboot
-  - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
-  - minix3/minix/include/minix/param.h:struct kinfo
-  - minix3/sys/arch/i386/stand/boot/boot2.c:command_load_mods
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel
+  - minix3/minix/kernel/arch/i386/pre_init.c:pre_init
   anchor_hashes:
-    minix3/sys/arch/i386/stand/lib/exec.c:exec_multiboot: 592227a9b59d123a44e1ac884202c9321cbc5a7afbd8d1fe9aa8db5e3bac5e9e
-    minix3/minix/kernel/arch/i386/pre_init.c:get_parameters: a2c376ae1f8e23f33dde62da0154117b5430421a9f24e6ef0e57ec1d3ee6aa55
-    minix3/minix/include/minix/param.h:struct kinfo: b4f9a2e1770be832dae5b03c6d826f9bf571859a0a2f4af18847742d75ca2b0d
-    minix3/sys/arch/i386/stand/boot/boot2.c:command_load_mods: e768b4bc97d492e224dc2034253127cbe152a6ebf10479fbe1bf1805a875da39
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel: 9c5e6eccc0852c22cd8a145f4edb8b5ced107a3264ef89b74b2d2aff51665843
+    minix3/minix/kernel/arch/i386/pre_init.c:pre_init: d0c5e39fdc4fe171c1cdfea49772540b6fe8af832b505d2da5e6f5cf22591533
   anchor_status: fallback
   note: ''
   review_rounds:
@@ -293,27 +292,33 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.1.md
-- id: '2.2'
-  heading: 2.2 `head.S` 入口：`multiboot_init` 与 `load_stack_start → pre_init`
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.2.md
+- id: '2.3'
+  heading: 2.3 `head.S`：一次跳转里的两种寻址
   level: 3
   parent: '2'
   order: 10
-  text_sha: 5303fe79185778a7f6e7cd5b685c52e8f067c5e3f8b235530980eb0373c72e77
+  text_sha: 095c3f0f1f086f2bf653b0e6250cd165d646175d944d2d7e15c2cd66e2ba9077
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
+  anchor_refs:
+  - minix3/minix/lib/libsys/stacktrace.c:util_stacktrace
+  - minix3/minix/kernel/arch/i386/exception.c:proc_stacktrace_execute
+  - os/arch/src/arch/stacktrace.rs:walk_frames_from
+  anchor_hashes:
+    minix3/minix/lib/libsys/stacktrace.c:util_stacktrace: 2b0a9425cd4c7bf118a8cc84b6097581c1e7090c628a127d66aa6d894cd48fef
+    minix3/minix/kernel/arch/i386/exception.c:proc_stacktrace_execute: fb1492e73eeb0a4bfbe7f6d732dd8e9fe843e8171028cd11f435175cc3869f2e
+    os/arch/src/arch/stacktrace.rs:walk_frames_from: 862be4c723420e6dab1cf1e74ffc23d66288eaf76741845fe8ea8e238d00f626
+  anchor_status: fallback
   note: ''
   review_rounds:
   - 1
@@ -321,199 +326,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.2.md
-- id: '2.3'
-  heading: 2.3 `get_parameters`：把别人的数据变成自己的记录
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.3.md
+- id: '2.4'
+  heading: 2.4 建表五步与位表
   level: 3
   parent: '2'
   order: 11
-  text_sha: 9a6639968a6e3197ea6f043a9374b6fcb1cd0609f0c775bbbe04c51096200935
+  text_sha: 96b2f8cbe4118af086df48a5b963a1747d3b78a3fc5654144fd1caff39956e0d
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
-  - minix3/minix/include/minix/param.h:struct kinfo
-  - minix3/minix/kernel/arch/i386/pre_init.c:mb_set_param
-  - minix3/minix/servers/mib/kern.c:mib_kern_root_device
-  - minix3/minix/kernel/main.c:get_value
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/pre_init.c:get_parameters: a2c376ae1f8e23f33dde62da0154117b5430421a9f24e6ef0e57ec1d3ee6aa55
-    minix3/minix/include/minix/param.h:struct kinfo: b4f9a2e1770be832dae5b03c6d826f9bf571859a0a2f4af18847742d75ca2b0d
-    minix3/minix/kernel/arch/i386/pre_init.c:mb_set_param: b17cdd788bc39729b3c59dcc7df455674f08f417e280d7478fd166e45dbfd65c
-    minix3/minix/servers/mib/kern.c:mib_kern_root_device: 90b96a87b9d55b545ff0458e0060b156bc122f932bf17dacf07d01aa685fdf5b
-    minix3/minix/kernel/main.c:get_value: e0c0757751f97ae284315dc6b9127119d5f889040d3941990144be4617f25b7a
-  anchor_status: fallback
-  note: ''
-  review_rounds:
-  - 1
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.3.md
-- id: '2.4'
-  heading: 2.4 内存账：`add_memmap`/`cut_memmap` 与条目来源
-  level: 3
-  parent: '2'
-  order: 12
-  text_sha: 19950222052b2e71c2d2a28fa39fe00b51074e8eaf6c15034f5ffc9607269972
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
-  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page
-  - minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap
-  - minix3/minix/kernel/main.c:kmain
-  - minix3/minix/kernel/main.c:bsp_finish_booting
-  - minix3/minix/kernel/arch/i386/pg_utils.c:cut_memmap
-  - minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest
-  - minix3/minix/kernel/arch/i386/arch_smp.c:copy_trampoline
-  - minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc
-  - minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/pre_init.c:get_parameters: a2c376ae1f8e23f33dde62da0154117b5430421a9f24e6ef0e57ec1d3ee6aa55
-    minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page: aa765a5c315696fddb282577eff4ed97ea25093d3fc31979945d9c5e8cb3e947
-    minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap: a32c48f36782f6a06cccbb0602e286b9431cbc89657c1fc82abcc11317abeaf5
-    minix3/minix/kernel/main.c:kmain: 4df08484b4891aa12e8f14fa174edadfde2f9961482866ec9b8de8eb2d3b62c1
-    minix3/minix/kernel/main.c:bsp_finish_booting: d6f46fe0fa87921991faabdb761fe8f7f888d72090e4f70ebcf7db9cc4b948f8
-    minix3/minix/kernel/arch/i386/pg_utils.c:cut_memmap: 61372161ffdbbadfa57eeeb46b629145c1af5d1c68048cf20a8bfd0e93bb329a
-    minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest: 051f4b7233589ccf801e525d0f41312d8041fe68693c9b14c431a550f7f87d83
-    minix3/minix/kernel/arch/i386/arch_smp.c:copy_trampoline: d80a5b82b2af3a8541e110bf9a3b6abf4cbad18105fa1be15edf49fa0379b630
-    minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc: 2b1079d72764ce027ec8f0903475df74aa2d4f9ba2c05a957adf47270905765d
-    minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc: a82607f3dd75b45a95143a47af990ec23deb41bdc0e1d78c930d81a4c122fecf
-  anchor_status: fallback
-  note: ''
-  review_rounds:
-  - 1
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.4.md
-- id: '2.5'
-  heading: 2.5 `overlaps` 与 `kern_mod`：内核把自己算成第 M+1 个模块
-  level: 3
-  parent: '2'
-  order: 14
-  text_sha: 4f63ce9616ca7d6f9416890272323e6b1c4312e92a238bae1a44fa08f87a9362
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/pre_init.c:overlaps
-  - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/pre_init.c:overlaps: 19be7ebcf915b9adecbd11e5aa31744b86b44b1535304e7ace5d77bf94aca734
-    minix3/minix/kernel/arch/i386/pre_init.c:get_parameters: a2c376ae1f8e23f33dde62da0154117b5430421a9f24e6ef0e57ec1d3ee6aa55
-  anchor_status: fallback
-  note: ''
-  review_rounds:
-  - 1
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.5.md
-- id: '2.6'
-  heading: 2.6 模块装载的检查与失败模式
-  level: 3
-  parent: '2'
-  order: 15
-  text_sha: b96548126e37163569d2b04323aba3a80e69b0a0cbe554b0c57ef69d9793f4ea
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.6.md
-- id: '2.7'
-  heading: 2.7 ARM32 对照：自己造一份 multiboot
-  level: 3
-  parent: '2'
-  order: 16
-  text_sha: c3a6cb16810137cf47c2ada4b0cc3d2f3491b65b4bed8ff4bacf94885774886c
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/earm/pre_init.c:setup_mbi
-  - minix3/minix/kernel/arch/earm/pre_init.c:get_parameters
-  - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
-  - minix3/minix/kernel/arch/earm/pre_init.c:overlaps
-  anchor_hashes:
-    minix3/minix/kernel/arch/earm/pre_init.c:setup_mbi: 74b6528ed189d1a2c8b0668d7c25ab30e9cb40acb95af90045fc87e951f46a44
-    minix3/minix/kernel/arch/earm/pre_init.c:get_parameters: 4aff76b5207a726a0691afcdf2728ae9df7ae4341e1f54038c3ed69f459d2900
-    minix3/minix/kernel/arch/i386/pre_init.c:get_parameters: a2c376ae1f8e23f33dde62da0154117b5430421a9f24e6ef0e57ec1d3ee6aa55
-    minix3/minix/kernel/arch/earm/pre_init.c:overlaps: 236830d34f9a83055902edfd435dff62a11199e999659e5c3f2943a39cdf1f7d
-  anchor_status: fallback
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.7.md
-- id: '2.8'
-  heading: 2.8 本章归纳：C 交付物的形状
-  level: 3
-  parent: '2'
-  order: 17
-  text_sha: 07fd227ab79ae8f6c2a08a4bb1ee0ac4dfa43dd4bd818de443e82babc00472df
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -521,8 +346,48 @@ units:
   stale: false
   anchor_refs:
   - minix3/minix/kernel/arch/i386/pre_init.c:pre_init
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_load
+  - minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging
   anchor_hashes:
     minix3/minix/kernel/arch/i386/pre_init.c:pre_init: d0c5e39fdc4fe171c1cdfea49772540b6fe8af832b505d2da5e6f5cf22591533
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear: 16135705c32347ad5f464d878ab44601cd458e76fdcecf262de824984101c341
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity: b85796fe22184a23036ffe1b1b0fb92db7b706a090c135c33a40a47b64b5ef87
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel: 9c5e6eccc0852c22cd8a145f4edb8b5ced107a3264ef89b74b2d2aff51665843
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_load: d2c0e06e3f4c51d94a835d85a18b408d2c4b716a550e03535481dc8e4f3c9abd
+    minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging: 207a8b246d46d0208d297b7f5e1597cdc58a7132a8158954ed50a37f73451893
+  anchor_status: fallback
+  note: ''
+  review_rounds:
+  - 1
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.4.md
+- id: '2.5'
+  heading: 2.5 `k_initial_stktop` 落在哪一段
+  level: 3
+  parent: '2'
+  order: 12
+  text_sha: 136163f6a4b07e24440cd4286d6d18e814759d24d722ad8479c242e3c255bb0a
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 1
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - minix3/minix/kernel/main.c:kmain
+  anchor_hashes:
+    minix3/minix/kernel/main.c:kmain: 4df08484b4891aa12e8f14fa174edadfde2f9961482866ec9b8de8eb2d3b62c1
   anchor_status: fallback
   note: ''
   review_rounds:
@@ -530,19 +395,47 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/2.8.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.5.md
+- id: '2.6'
+  heading: 2.6 本章归纳：C 的“布局-摆放-映射-进入”四段
+  level: 3
+  parent: '2'
+  order: 13
+  text_sha: 866c4f9f800fc2d63acf5e756b18cae594ab88ac3cffb5536990176122717c82
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
+  note: ''
+  review_rounds:
+  - 1
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/2.6.md
 - id: '3'
   heading: 3. Rust 设计决策
   level: 2
   parent: null
-  order: 18
-  text_sha: 3d2d4ff3f8a1a80b6fc9e5c64b310857bbe2de0a478160ec53e99471a6987ffc
+  order: 14
+  text_sha: 6ca324a60d7b4b7e57fbf3a1d720ab9198b15f42e15c1b24057c6d8508986929
   t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -558,19 +451,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.md
 - id: '3.0'
   heading: 3.0 本章导读
   level: 3
   parent: '3'
-  order: 19
-  text_sha: 3a1f6ca2f66af5a80471df842f44a9b9b2199fc36f122b0cdf818c1c5cd9fa9f
+  order: 15
+  text_sha: c13082350a29776dec7044f2ae409d84b56c37a5ba7d90a9b90e4b67f745b05e
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -586,31 +479,173 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.0.md
 - id: '3.1'
-  heading: 3.1 协议换代：固件接口替换 Multiboot
+  heading: 3.1 链接脚本按“谁按装载地址摆放”分三种形态
+  level: 3
+  parent: '3'
+  order: 16
+  text_sha: fcd43239178b88c1cec9006ed6df0a94e80eb77c9cfa58f41b3519796847691c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 1
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
+  - os/boot-shim/src/loader.rs:fn compute_kernel_layout
+  anchor_hashes:
+    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
+    os/boot-shim/src/loader.rs:fn compute_kernel_layout: 94875b5c60cb5c1ea7a8b86ad294489c9fb8f301cf572e2441ea472dbccd9243
+  anchor_status: direct
+  note: ''
+  review_rounds:
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.1.md
+- id: '3.2'
+  heading: 3.2 ELF 解析器自建
+  level: 3
+  parent: '3'
+  order: 17
+  text_sha: d64bcdac01324da92debcebf4f7608689a104704c633e2ee43337210ea91ff0c
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 1
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/arch/boot.rs:fn load_vm_elf
+  - os/libs/minix-elf/src/lib.rs:struct Elf64Ehdr
+  - os/libs/minix-elf/src/lib.rs:fn parse_ehdr
+  - os/libs/minix-elf/src/lib.rs:fn next
+  - os/libs/minix-elf/src/lib.rs:enum ElfError
+  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
+  - os/arch/src/arch/boot.rs:fn load_elf_into
+  anchor_hashes:
+    os/arch/src/arch/boot.rs:fn load_vm_elf: ad121875cfc73abe3b8e80b728ac740b064b4c17882bd073f792ae534e7719d6
+    os/libs/minix-elf/src/lib.rs:struct Elf64Ehdr: 6f674351898209aac52885dda866bfa1a8aa09151d3182d33dbc6f7d53626df5
+    os/libs/minix-elf/src/lib.rs:fn parse_ehdr: cacfc4e473527cbb4cdff86ccf5dcf6ff627b09362c3d2ad5c9bfef4cbf7d3eb
+    os/libs/minix-elf/src/lib.rs:fn next: cbd1dbf5cb1ac82d9e9babec91b31e96c4c54dec3e7d52caf77dcb0d708807f0
+    os/libs/minix-elf/src/lib.rs:enum ElfError: 4633888242c8d94d976d1282ed40980fadad79551a08eec2c22e5fc48f5f7e15
+    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
+    os/arch/src/arch/boot.rs:fn load_elf_into: f1e3473103392ac9af1bc56e00393605222d6cb79837e93fb0cb2a359cec3746
+  anchor_status: direct
+  note: ''
+  review_rounds:
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.2.md
+- id: '3.3'
+  heading: 3.3 栈顶从链接符号变成派生值
+  level: 3
+  parent: '3'
+  order: 18
+  text_sha: b48b7d4301b4f6061d711a8b699beef5fa2f7e8e58a0c2c397f337d8c5711a9f
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top
+  - os/boot-shim/src/loader.rs:fn compute_kernel_layout
+  - os/kernel/src/lib.rs:fn boot_validate_and_prepare
+  - os/kernel-image/src/bootface.rs:const KERN_SIZE
+  anchor_hashes:
+    os/libs/minix-boot/src/kernel_info.rs:fn kern_stack_top: 04728d9467812ab7f834e138fec37a80572fe80f374f70ff7603456a85d6ceba
+    os/boot-shim/src/loader.rs:fn compute_kernel_layout: 94875b5c60cb5c1ea7a8b86ad294489c9fb8f301cf572e2441ea472dbccd9243
+    os/kernel/src/lib.rs:fn boot_validate_and_prepare: 24c965ee66be4daedeb3e89011dd072768d1f16c397f95a4d5f9c3acf23400d2
+    os/kernel-image/src/bootface.rs:const KERN_SIZE: 9251d41b2d0b93a1b083c6c6237d6c15e7275d11ae6d0707197c4849f21781e7
+  anchor_status: direct
+  note: ''
+  review_rounds:
+  - 1
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.3.md
+- id: '3.4'
+  heading: 3.4 `HUGE_PAGE_SIZE` 与大页能力进扩展 trait
+  level: 3
+  parent: '3'
+  order: 19
+  text_sha: 440b13094feccc60cab9e56ee8598d705f522583c42bbd5d5213a4902bfc6043
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/arch/src/arch/paging_ext.rs:trait HugePages
+  - os/arch/src/x86_64/paging.rs:fn map_huge
+  anchor_hashes:
+    os/arch/src/arch/paging_ext.rs:trait HugePages: e64838507a32ac6aea7245f86ae4ab8e9bcda1e98f486d5184a9af610a293efc
+    os/arch/src/x86_64/paging.rs:fn map_huge: bbe6a2e1b4e0762594714a46591b18ef4a1a2b07150dcf20f8bc63943b7c9220
+  anchor_status: direct
+  note: ''
+  review_rounds:
+  - 1
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.4.md
+- id: '3.5'
+  heading: 3.5 镜像跨距收口：布局要满足映射粒度
   level: 3
   parent: '3'
   order: 20
-  text_sha: a730c101506176280848077c87816f803c5112dfe1e3ab1c3620aa6f415fb82c
+  text_sha: ea7b5855bd04f33d1e3f6c17f7e3609544d09b24b96363f9d0d753db8ea8e901
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
   anchor_refs:
-  - os/boot-shim/src/uefi_helpers.rs:fn exit_boot_services
-  - os/boot-shim/src/uboot_main.rs:fn uboot_main
+  - minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel
+  - os/kernel/src/boot_policy.rs:fn plan_kernel_mapping
+  - os/kernel-image/src/bootface.rs:const KERN_SIZE
   anchor_hashes:
-    os/boot-shim/src/uefi_helpers.rs:fn exit_boot_services: c983d8cd96c7cfbea06088bb961314ad537225f1fa74fc27da3da779c5e578cb
-    os/boot-shim/src/uboot_main.rs:fn uboot_main: 0a7455f0f99a61c91169764b1ba1e9c4df6da97f345419f94afdcda729ef741c
-  anchor_status: direct
+    minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel: 9c5e6eccc0852c22cd8a145f4edb8b5ced107a3264ef89b74b2d2aff51665843
+    os/kernel/src/boot_policy.rs:fn plan_kernel_mapping: a5a4cccd4c47b36212b75706fa40a6d4fce1dd2f69eb22c5da40e44061a0bc3f
+    os/kernel-image/src/bootface.rs:const KERN_SIZE: 9251d41b2d0b93a1b083c6c6237d6c15e7275d11ae6d0707197c4849f21781e7
+  anchor_status: fallback
   note: ''
   review_rounds:
   - 1
@@ -618,76 +653,63 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.1.md
-- id: '3.2'
-  heading: 3.2 按值交接：`KernelInfo` wire 与字段台账（I1）
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.5.md
+- id: '3.6'
+  heading: 3.6 自举根与映射建立的设计（J3）
   level: 3
   parent: '3'
   order: 21
-  text_sha: 2d6a95c12d9f80ae348d2e0fcd34666114dca971baf0b023f589ce01a6d606d9
+  text_sha: 3ee84a3452a9ba6d172c3173692c69e0bef7843308771d5e30f7ae74212990a6
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
-  t2_rounds: 1
+  t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo
-  - os/kernel/src/globals.rs:const MEMMAP_REGION_STORE_LEN
-  - os/boot-shim/src/lib.rs:fn build_kernel_info
-  - os/kernel/src/lib.rs:fn register_panic_diagnostic
-  - os/libs/minix-types/src/types/boot.rs:const USER_STACK_TOP
-  - os/kernel/src/vm_handoff.rs:fn build_vm_handoff
-  - os/kernel/src/proc_table.rs:const NR_PROCS
-  - os/kernel/src/proc_table.rs:const NR_TASKS
-  - os/kernel/src/boot_alloc.rs:fn boot_alloc_used_bytes
-  - os/libs/minix-boot/src/handoff_v1.rs:struct BootHandoffV1
-  - os/kernel/src/globals.rs:static RESERVED_REGION_STORE
-  anchor_hashes:
-    os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo: a43479783760f23a8aa09a1c9093b6b8019f23bb6d40741e97e95827d4807ec4
-    os/kernel/src/globals.rs:const MEMMAP_REGION_STORE_LEN: 8d466d60459e759b14f98d6fb050cffcd7f4c64c836d76d5ba98addf8f21bbe9
-    os/boot-shim/src/lib.rs:fn build_kernel_info: e80e808aaa684c5c2087ae8d8ced76237e818c88e5c87034886968fbc6d38027
-    os/kernel/src/lib.rs:fn register_panic_diagnostic: 95501feb3c8a148943a5991285185a0c8d353ad51da7705ac468052369527d51
-    os/libs/minix-types/src/types/boot.rs:const USER_STACK_TOP: 41b09421f0103a7e2f9841c484dcbdf4d7284dec584f6bf4036199286059b06c
-    os/kernel/src/vm_handoff.rs:fn build_vm_handoff: 3d2d07bfb8ac8edcf8b0cc4c0d731b7a8724886dba69dc25fb8ecab24866a069
-    os/kernel/src/proc_table.rs:const NR_PROCS: c0e35362ac5b1a7c92d3806486c14fce8d5417f2b31c9f4ec333d0000b2d315b
-    os/kernel/src/proc_table.rs:const NR_TASKS: cabde2b5f6a0ea81cb1e8a2faad0dac479bb21fe6530676fb71599b25b93327d
-    os/kernel/src/boot_alloc.rs:fn boot_alloc_used_bytes: 607f6c8f3bd69d1e3567062a373c70b630969d526f777dd3d58c5148e14ea2d7
-    os/libs/minix-boot/src/handoff_v1.rs:struct BootHandoffV1: ceb0b03c7d7463507c3e270fcf9052cea632b627a7bf267757446b2a373e1669
-    os/kernel/src/globals.rs:static RESERVED_REGION_STORE: dd2eb87443c8d21c9235bc5530fd471b8617fce494443afcab605e53f0302f23
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
   review_rounds:
+  - 1
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.2.md
-- id: '3.3'
-  heading: 3.3 两张内存表与来源记录（I2）
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.6.md
+- id: '3.7'
+  heading: 3.7 成对的换栈与跳转收进一个 trait 契约
   level: 3
   parent: '3'
   order: 22
-  text_sha: 3f8111be522c8d38c1d8d08ada804d3c50daad6b47c03c105e4bdfc1cd5bd5cf
+  text_sha: 03ea6ad08a756c6d79d0c1409d48beb973d584608d4aca89bbe6747f7f34ac91
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
+  anchor_refs:
+  - os/kernel/src/boot/higher_half.rs:trait HigherHalf
+  - os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf
+  - os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf
+  - os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf
+  anchor_hashes:
+    os/kernel/src/boot/higher_half.rs:trait HigherHalf: 0d8b54c0ced5d5bc01413d92a3c2fcc4e45c19938f1ba4af32821f7ba18de9a3
+    os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf: cafc51dd1023054d1fca36ead588a41dafa6409e40baeb1fffd45796440b80a7
+    os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf: 9cfd73ba25aa5da884f0deb2d8a46af8aee5819688ef351edd2dd62b0a9f5c1c
+    os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf: b0e671df9a6aa41a63f082c681d2b36568b134299f371129844aa6008e0290b8
+  anchor_status: direct
   note: ''
   review_rounds:
   - 1
@@ -695,81 +717,34 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.3.md
-- id: '3.4'
-  heading: 3.4 bootstrap 区间与分配器换手
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.7.md
+- id: '3.8'
+  heading: 3.8 接收侧两条路径（J4）
   level: 3
   parent: '3'
   order: 23
-  text_sha: 1929db2d8d00cc167a93833f9fd8eb56b1eda109c309589ed9493e3ad8d5b2cb
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/arch/src/arch/pt_alloc.rs:fn register
-  - os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page
-  - os/kernel/src/boot_alloc.rs:fn alloc
-  - os/kernel/src/lib.rs:fn boot_validate_and_prepare
-  - os/kernel/src/vm_handoff.rs:fn build_vm_handoff
-  - os/kernel/src/vm_handoff.rs:fn classify
-  - os/arch/src/arm64/paging.rs:fn inherit_supervisor_half
-  - os/arch/src/x86_64/paging.rs:fn inherit_supervisor_half
-  - os/arch/src/riscv64/paging.rs:fn inherit_supervisor_half
-  anchor_hashes:
-    os/arch/src/arch/pt_alloc.rs:fn register: 4b20fc7b83f4ad7ab4bdfb218b353df129c43ba74387b4f7c16100a7bf55c847
-    os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page: 1bf84b620c3536eb1befb085d8b3d757f5d077905c18aaaa775c686fc7584e0c
-    os/kernel/src/boot_alloc.rs:fn alloc: 9e2c8fad6680a33c8d2dc3431d36c57b5a5346d89280bd29946961edc6bdbc0f
-    os/kernel/src/lib.rs:fn boot_validate_and_prepare: 24c965ee66be4daedeb3e89011dd072768d1f16c397f95a4d5f9c3acf23400d2
-    os/kernel/src/vm_handoff.rs:fn build_vm_handoff: 3d2d07bfb8ac8edcf8b0cc4c0d731b7a8724886dba69dc25fb8ecab24866a069
-    os/kernel/src/vm_handoff.rs:fn classify: 46dd8914dbbe1d651233caad10316ceb0827ea3b6f7d676d14d11c73771e892e
-    os/arch/src/arm64/paging.rs:fn inherit_supervisor_half: e1b2b4be6f40320e3c3da2e10f42c92125d489e305484500e9b285f6bd57a54e
-    os/arch/src/x86_64/paging.rs:fn inherit_supervisor_half: cd6cbfecf9808f809776a57286234f714dba7f53b0c679892541769ab6348351
-    os/arch/src/riscv64/paging.rs:fn inherit_supervisor_half: e51075e45f0664d552c4c2a466c559921da92f5d533104c31e086bd421386912
-  anchor_status: direct
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.4.md
-- id: '3.5'
-  heading: 3.5 取件抽象与 crate 依赖方向
-  level: 3
-  parent: '3'
-  order: 24
-  text_sha: 6de37f763e42600adf282a84bb42bda318aa02bb20e10728d9b90d3a9f6c65cf
+  text_sha: 9ac8c032ef80242e98bc15f987fcaa35b3519d31f1dfc6c5c058fc56c0da9d7d
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
   anchor_refs:
-  - os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot
-  - os/boot-shim/src/uboot_main.rs:fn uboot_main
-  - os/libs/minix-boot/src/boot_prepare.rs:struct BootPrepareResult
-  - os/boot-shim/src/loader.rs:trait FileLoader
-  - os/boot-shim/src/main.rs:fn main
+  - os/kernel/src/lib.rs:fn arch_boot_resume_v1
+  - os/kernel/src/lib.rs:fn resume_additive
+  - os/kernel/src/lib.rs:fn arch_boot_impl
+  - os/kernel/src/lib.rs:fn arch_boot_finish
   anchor_hashes:
-    os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot: b5db384377b4c7554d6f4ad13e9fd6c067562b33db4e28c55a144b1d2b7ba958
-    os/boot-shim/src/uboot_main.rs:fn uboot_main: 0a7455f0f99a61c91169764b1ba1e9c4df6da97f345419f94afdcda729ef741c
-    os/libs/minix-boot/src/boot_prepare.rs:struct BootPrepareResult: 6f0c712b86e5ee2112c9d69aaf471215077a535d250a56f7a6de4c73c38e91bd
-    os/boot-shim/src/loader.rs:trait FileLoader: 70518f6096f8829fd1030e850d5ba7617fb80514f4bae110e54bd23fb12abe9e
-    os/boot-shim/src/main.rs:fn main: 371598871b28432d4b70535ad1e070c6fda6e826a7e44d8595ab275d4b0d6a91
+    os/kernel/src/lib.rs:fn arch_boot_resume_v1: d425bad342bf0338dc653ee74a087a9dc917a5699bb86ab0c7a62e469eae7b37
+    os/kernel/src/lib.rs:fn resume_additive: d5aebcdbe0e0cef7de6471f4d16e98d5cea903f13784ce717980ff1df22ab3a2
+    os/kernel/src/lib.rs:fn arch_boot_impl: 0a3d95793877ab1669654ab3faedfbdc1ba16d3e1a68face3e2291206985a61d
+    os/kernel/src/lib.rs:fn arch_boot_finish: d4ba308b8b60ef275c7c140016c38d9b8c332e359d297091effb9af5d2366f15
   anchor_status: direct
   note: ''
   review_rounds:
@@ -778,85 +753,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.5.md
-- id: '3.6'
-  heading: 3.6 五条生产腿与发送侧（接缝定义）
-  level: 3
-  parent: '3'
-  order: 25
-  text_sha: a3c2b3ccf078f888a340f3e405e0bb731ac2f7613e6ddd388587f8600e33d13b
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel/src/lib.rs:fn arch_boot_impl
-  - os/kernel/src/lib.rs:fn arch_boot_finish
-  - os/kernel/src/lib.rs:fn enter_kernel_image_v1
-  - os/kernel/src/lib.rs:fn resume_additive
-  - os/kernel-image/src/bootface.rs:fn bootface
-  - os/kernel-image/src/bootface_a64.rs:fn bootface_a64
-  anchor_hashes:
-    os/kernel/src/lib.rs:fn arch_boot_impl: 0a3d95793877ab1669654ab3faedfbdc1ba16d3e1a68face3e2291206985a61d
-    os/kernel/src/lib.rs:fn arch_boot_finish: d4ba308b8b60ef275c7c140016c38d9b8c332e359d297091effb9af5d2366f15
-    os/kernel/src/lib.rs:fn enter_kernel_image_v1: 9642695d0eca71ecb4e7ff179eff9d44ce2eaec5bf2c13383b857ea2176f30a8
-    os/kernel/src/lib.rs:fn resume_additive: d5aebcdbe0e0cef7de6471f4d16e98d5cea903f13784ce717980ff1df22ab3a2
-    os/kernel-image/src/bootface.rs:fn bootface: e530e6b7557dd59b74b27fd2c8571737472700730950a8dfdac5158579998c4c
-    os/kernel-image/src/bootface_a64.rs:fn bootface_a64: 661bf2cce6161dcc8119d238713cac180997298fa321ea9f6c316afb991a7acb
-  anchor_status: direct
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.6.md
-- id: '3.7'
-  heading: 3.7 所有权与校验门链（I3/I4）
-  level: 3
-  parent: '3'
-  order: 26
-  text_sha: bfd37fea14974f233ba6e7e3dd06d55eabc1e8e2e97dd32c6559e75851d156cd
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/3.7.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/3.8.md
 - id: '4'
   heading: 4. 实现详解
   level: 2
   parent: null
-  order: 27
-  text_sha: ad97219175a2c9a459cf2d2edaff6df4488a140137f18cd03bd4d016f6868ab8
+  order: 24
+  text_sha: 3ccf2761363ca40d8b20e4de88dd161936478019365f08c7bdafd4ce92336d66
   t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -872,19 +781,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.md
 - id: '4.0'
   heading: 4.0 本章导读
   level: 3
   parent: '4'
-  order: 28
-  text_sha: 772169ed4ae69a9efdd5bad98555e897dc83edc288cab79ad8ca33d2c4e5b4f9
+  order: 25
+  text_sha: 8e60ffa7905ea3b55eb3d5cd1ec610287e57f98150c9a8f4ddb77a93f9029ac7
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
-  t2_rounds: 0
+  t2_rounds: 1
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -895,165 +804,219 @@ units:
   anchor_status: none
   note: ''
   review_rounds:
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.0.md
+- id: '4.1'
+  heading: 4.1 链接脚本的落地
+  level: 3
+  parent: '4'
+  order: 26
+  text_sha: 4947b19cc4691c4ab8500c530d18833d1d2ad5d92bec713a1adcd2fd34c21b0d
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel-image/src/main.rs:static KERNEL_ENTRY_ANCHOR
+  anchor_hashes:
+    os/kernel-image/src/main.rs:static KERNEL_ENTRY_ANCHOR: d12713ef7ff1413251a002b444aedb0454b1e120caa35712a5f2f1d432c74da7
+  anchor_status: direct
+  note: ''
+  review_rounds:
   - 1
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.0.md
-- id: '4.1'
-  heading: 4.1 入口与调用链
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.1.md
+- id: '4.2'
+  heading: 4.2 ELF 解析与按装载地址摆放
+  level: 3
+  parent: '4'
+  order: 27
+  text_sha: 4232761b6f76a0605402a4281e418205de90227bc79408f5a664613be26a19d2
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 0
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/libs/minix-elf/src/lib.rs:fn parse_ehdr
+  - os/boot-shim/src/loader.rs:fn compute_kernel_layout
+  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
+  - os/boot-shim/src/loader.rs:fn first_overlapping_pair
+  - os/boot-shim/src/loader.rs:fn first_source_destination_overlap
+  - os/boot-shim/src/loader.rs:fn load_segments_into_buffer
+  anchor_hashes:
+    os/libs/minix-elf/src/lib.rs:fn parse_ehdr: cacfc4e473527cbb4cdff86ccf5dcf6ff627b09362c3d2ad5c9bfef4cbf7d3eb
+    os/boot-shim/src/loader.rs:fn compute_kernel_layout: 94875b5c60cb5c1ea7a8b86ad294489c9fb8f301cf572e2441ea472dbccd9243
+    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
+    os/boot-shim/src/loader.rs:fn first_overlapping_pair: a25d9c1e593077a2b18312a101386db03176d8296c6674bedf6f688d902ec2c3
+    os/boot-shim/src/loader.rs:fn first_source_destination_overlap: f63a4ba42d97593b48e9478f77832a745fa6c3d5b1589dc9e79277ffb725f305
+    os/boot-shim/src/loader.rs:fn load_segments_into_buffer: 0cc9702addc1e698f1f21f451b969892e06fec4b2e289b249090e4f0f3522940
+  anchor_status: direct
+  note: ''
+  review_rounds:
+  - 1
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.2.md
+- id: '4.3'
+  heading: 4.3 自举根的建立与开启
+  level: 3
+  parent: '4'
+  order: 28
+  text_sha: 6bfebbf3ee5dc2d1fddfb49402a9256449a4ff339d3d5cb75c51c446936a4bac
+  t1_state: n/a
+  t1_rounds: 0
+  t2_state: frozen
+  t2_rounds: 1
+  frozen: true
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
+  rewritten: false
+  user_approved: false
+  deps: []
+  reopened: false
+  stale: false
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable
+  - os/arch/src/x86_64/paging.rs:fn enable
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable: 0e13392375d788541ba740da4ecce59e55aace1cec17557588601aeb622913d4
+    os/arch/src/x86_64/paging.rs:fn enable: 913266ee6f30a932170b27b3b13ce5af9478c58339cda845545a7e3804c0d9c1
+  anchor_status: direct
+  note: ''
+  review_rounds:
+  - 2
+  - 3
+  post_freeze_rounds:
+  - 3
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.3.md
+- id: '4.4'
+  heading: 4.4 三架构的成对跳转
   level: 3
   parent: '4'
   order: 29
-  text_sha: ce4156b2754fbaa6de382f7ac884fea568e9c35436d5e8ca74155c1c9a03fb33
+  text_sha: 832011f1166d7843d471bafd20d25769a3a2cb278339e20d28d5c7ef5f756f2c
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
-  t2_rounds: 1
+  t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
   anchor_refs:
-  - os/boot-shim/src/main.rs:fn main
-  - os/kernel/src/vm_handoff.rs:fn build_vm_handoff
+  - os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf
+  - os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf
+  - os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf
+  - os/kernel/src/arch/riscv64/higher_half.rs:fn jump_to_kmain
   anchor_hashes:
-    os/boot-shim/src/main.rs:fn main: 371598871b28432d4b70535ad1e070c6fda6e826a7e44d8595ab275d4b0d6a91
-    os/kernel/src/vm_handoff.rs:fn build_vm_handoff: 3d2d07bfb8ac8edcf8b0cc4c0d731b7a8724886dba69dc25fb8ecab24866a069
+    os/kernel/src/arch/x86_64/higher_half.rs:struct X86_64HigherHalf: cafc51dd1023054d1fca36ead588a41dafa6409e40baeb1fffd45796440b80a7
+    os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf: 9cfd73ba25aa5da884f0deb2d8a46af8aee5819688ef351edd2dd62b0a9f5c1c
+    os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64HigherHalf: b0e671df9a6aa41a63f082c681d2b36568b134299f371129844aa6008e0290b8
+    os/kernel/src/arch/riscv64/higher_half.rs:fn jump_to_kmain: 7da5731d0bd4441506d9a2bec0d44f563e104d5a942d528968b27ed318c4e15c
   anchor_status: direct
   note: ''
   review_rounds:
+  - 1
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.1.md
-- id: '4.2'
-  heading: 4.2 UEFI 路径：九个动作与产出归属
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.4.md
+- id: '4.5'
+  heading: 4.5 从装载到 `kmain` 的完整路径
   level: 3
   parent: '4'
   order: 30
-  text_sha: aa31f5f385c5742689c3c5c86c1c17972cd99d582f36ad5b030876a197b88bfb
+  text_sha: e727d07132e16c835994aa710c2dce70fe95dc4f2c9dce2f13ca72b5b841f0df
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
-  t2_rounds: 1
+  t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
   anchor_refs:
-  - os/boot-shim/src/uefi_helpers.rs:fn prepare_and_enter_kernel_image
-  - os/boot-shim/src/ebs_map.rs:fn classify
-  - os/boot-shim/src/ebs_map.rs:fn adjudicate
-  - os/boot-shim/src/uefi_helpers.rs:fn build_memmaps
+  - os/kernel-image/src/bootface_common.rs:fn run_self_boot
+  - os/boot-shim/src/lib.rs:fn build_kernel_info
+  - os/kernel-image/src/bootface_common.rs:fn place_modules
+  - os/kernel/src/lib.rs:fn store_kernel_info
+  - os/kernel/src/boot/higher_half.rs:trait HigherHalf
+  - os/kernel/src/lib.rs:fn kmain_verify
+  - os/kernel/src/lib.rs:fn init_protection
+  - os/kernel-image/src/main.rs:fn rust_image_main
+  - os/kernel-image/src/bootface_a64.rs:fn bootface_a64
+  - os/kernel/src/lib.rs:fn arch_boot_finish
   anchor_hashes:
-    os/boot-shim/src/uefi_helpers.rs:fn prepare_and_enter_kernel_image: a11ec6649ec3ae70b64175b4008c2e54bc029258dfd31258adfec2508be925c0
-    os/boot-shim/src/ebs_map.rs:fn classify: 937e3acdb654bdb85eded8f8a04e37c9517eb7c36e351b3ac378de75f9d62095
-    os/boot-shim/src/ebs_map.rs:fn adjudicate: 4de30f64e23e2febafda061566c0555d072e6c3d6e8a5b8682f0303ce7adc63e
-    os/boot-shim/src/uefi_helpers.rs:fn build_memmaps: f93b620ed2b49c4689bb6edeefde7ce6293b3bca07dfa31e887e61c777104f6d
+    os/kernel-image/src/bootface_common.rs:fn run_self_boot: 2bfc8dba547d53471b906762ab9cce46eb98c9ee6edfc4860932ab4a08b1f7a6
+    os/boot-shim/src/lib.rs:fn build_kernel_info: e80e808aaa684c5c2087ae8d8ced76237e818c88e5c87034886968fbc6d38027
+    os/kernel-image/src/bootface_common.rs:fn place_modules: ce57c687d91c5f530b852c3184f2e794a93050f229b3a1f27f4cc738400b93c6
+    os/kernel/src/lib.rs:fn store_kernel_info: f0bbc0b9181c3bdd62e4b50d00756ea4f014ab1cb3385f5c1d3d03acadd2eeed
+    os/kernel/src/boot/higher_half.rs:trait HigherHalf: 0d8b54c0ced5d5bc01413d92a3c2fcc4e45c19938f1ba4af32821f7ba18de9a3
+    os/kernel/src/lib.rs:fn kmain_verify: 486f591b34f1724699346a351c7007816898bfc1c4d43172f719611f62e50df3
+    os/kernel/src/lib.rs:fn init_protection: 179f3f1b1c4f094d34a9460d336cd1b18ef8e7b8030146c675eac50fa34af1a6
+    os/kernel-image/src/main.rs:fn rust_image_main: 0ac13f12ac2bfdeb72f17a29633036dd561b4f1d6fcc123075f068d249183f5d
+    os/kernel-image/src/bootface_a64.rs:fn bootface_a64: 661bf2cce6161dcc8119d238713cac180997298fa321ea9f6c316afb991a7acb
+    os/kernel/src/lib.rs:fn arch_boot_finish: d4ba308b8b60ef275c7c140016c38d9b8c332e359d297091effb9af5d2366f15
   anchor_status: direct
   note: ''
   review_rounds:
+  - 1
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.2.md
-- id: '4.3'
-  heading: 4.3 两种文件来源共用的取件函数
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.5.md
+- id: '4.6'
+  heading: 4.6 与 Minix3 C 的对照
   level: 3
   parent: '4'
   order: 31
-  text_sha: ef5e41a9737c14dbd241984fd79549f325892a3e6154fef5a5249e10393f9d0d
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/boot-shim/src/loader.rs:fn load_boot_modules_into
-  - os/boot-shim/src/opensbi_helpers.rs:fn entry_path_eq
-  anchor_hashes:
-    os/boot-shim/src/loader.rs:fn load_boot_modules_into: 0e617f29fa7958cdaff43c44fdad9e7427bd2101247627204765eddc6f670259
-    os/boot-shim/src/opensbi_helpers.rs:fn entry_path_eq: 2376da75a309e9a9fc7fb9a145c8dea7fd8571800400c26a12a9c7a8f0129545
-  anchor_status: direct
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.3.md
-- id: '4.4'
-  heading: 4.4 `KernelInfo` 构造的两条产出入径
-  level: 3
-  parent: '4'
-  order: 32
-  text_sha: 3f3a1b2012152047fd59f74e04541190ca2faf6c75bcc0331cf3e668fc4be2c6
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/boot-shim/src/lib.rs:fn build_kernel_info
-  - os/kernel/src/arch/riscv64/higher_half.rs:jump_to_kmain
-  - os/kernel/src/lib.rs:fn boot_validate_and_prepare
-  anchor_hashes:
-    os/boot-shim/src/lib.rs:fn build_kernel_info: e80e808aaa684c5c2087ae8d8ced76237e818c88e5c87034886968fbc6d38027
-    os/kernel/src/arch/riscv64/higher_half.rs:jump_to_kmain: ffb28ab996377e4cdb7914959fa3bf01a2cae223713d9368d9141358afa47ee8
-    os/kernel/src/lib.rs:fn boot_validate_and_prepare: 24c965ee66be4daedeb3e89011dd072768d1f16c397f95a4d5f9c3acf23400d2
-  anchor_status: fallback
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.4.md
-- id: '4.5'
-  heading: 4.5 `store_kernel_info` 的六个落地区
-  level: 3
-  parent: '4'
-  order: 33
-  text_sha: 3e0751b9fd9d387e52f8266b8c1f846b0f3b34f51df9f1dba32794d37fe98a05
+  text_sha: 9ddab060e1da8991747657eb05e05b51a00c7f6c5de663cb0602c09d1f11349c
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
   anchor_refs:
-  - os/kernel/src/lib.rs:fn store_kernel_info
-  - os/kernel/src/lib.rs:fn land_slice
+  - os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory
+  - os/kernel/src/boot/higher_half.rs:trait HigherHalf
   anchor_hashes:
-    os/kernel/src/lib.rs:fn store_kernel_info: f0bbc0b9181c3bdd62e4b50d00756ea4f014ab1cb3385f5c1d3d03acadd2eeed
-    os/kernel/src/lib.rs:fn land_slice: 77361819ef24c40781c3e66156cb2d94b60ac0ed4a41d436c96b89c00c64b2cc
+    os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory: 3c5a686b0bf64f4faedd99bb2ab7bd446567be35d65955d1bb466ee6019d16b3
+    os/kernel/src/boot/higher_half.rs:trait HigherHalf: 0d8b54c0ced5d5bc01413d92a3c2fcc4e45c19938f1ba4af32821f7ba18de9a3
   anchor_status: direct
   note: ''
   review_rounds:
@@ -1062,122 +1025,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.5.md
-- id: '4.6'
-  heading: 4.6 arena 与分配器换手的落地
-  level: 3
-  parent: '4'
-  order: 34
-  text_sha: e127288d2fe1fa370ddb636137c97cc491baeaf8a35ff25fd94ae86ef0811527
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/kernel/src/lib.rs:fn resume_additive
-  anchor_hashes:
-    os/kernel/src/lib.rs:fn resume_additive: d5aebcdbe0e0cef7de6471f4d16e98d5cea903f13784ce717980ff1df22ab3a2
-  anchor_status: direct
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.6.md
-- id: '4.7'
-  heading: 4.7 与 Minix3 C 的函数落点对照
-  level: 3
-  parent: '4'
-  order: 35
-  text_sha: 70d746e917460f368145f69c7bc149cbf71c76fbd94b2046214d938ca9b61c9c
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/boot-shim/src/main.rs:fn main
-  - os/libs/minix-boot/src/boot_params.rs:fn normalize_param_buf
-  - os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo
-  - os/arch/src/x86_64/ap_early_entry.rs:fn install_at
-  - os/arch/src/x86_64/paging.rs:fn new_from_page
-  - os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable
-  - os/arch/src/x86_64/paging.rs:fn enable
-  - os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page
-  - os/arch/src/x86_64/paging.rs:fn map
-  anchor_hashes:
-    os/boot-shim/src/main.rs:fn main: 371598871b28432d4b70535ad1e070c6fda6e826a7e44d8595ab275d4b0d6a91
-    os/libs/minix-boot/src/boot_params.rs:fn normalize_param_buf: 4d1d6dfa034db1744192755dacc1ca4cd3326ddb57cb693d97dd0ef8e88eb6d0
-    os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo: a43479783760f23a8aa09a1c9093b6b8019f23bb6d40741e97e95827d4807ec4
-    os/arch/src/x86_64/ap_early_entry.rs:fn install_at: 40b5e4661a6831765f8e636e49efd2874f0a518d94160ddd7297ff9d73cc230c
-    os/arch/src/x86_64/paging.rs:fn new_from_page: e7c02b3071c95f51d79fd163794923d32fc0317418db45a96932beb258f3cdd3
-    os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable: 0e13392375d788541ba740da4ecce59e55aace1cec17557588601aeb622913d4
-    os/arch/src/x86_64/paging.rs:fn enable: 913266ee6f30a932170b27b3b13ce5af9478c58339cda845545a7e3804c0d9c1
-    os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page: 1bf84b620c3536eb1befb085d8b3d757f5d077905c18aaaa775c686fc7584e0c
-    os/arch/src/x86_64/paging.rs:fn map: a4c79e6f98cc9d3f3208d72ac816ce45d974f5cbb239cec5892db04ca885a37f
-  anchor_status: direct
-  note: ''
-  review_rounds:
-  - 1
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.7.md
-- id: '4.8'
-  heading: 4.8 交接后的 Direct Map（概念入口）
-  level: 3
-  parent: '4'
-  order: 36
-  text_sha: 8ebfa7f4a88c2ca3e72c1cfb661a0661be529cd8ed775fbf3cdfedfa5395b37f
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  review_rounds:
-  - 1
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/4.8.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/4.6.md
 - id: '5'
-  heading: 5. 测试：四条不变量各自的证据
+  heading: 5. 测试
   level: 2
   parent: null
-  order: 37
-  text_sha: 5f421fccbbbdd6b9bcde56ce3d3fdc6e2ea2925316cac74911c9f365f78d21d6
+  order: 32
+  text_sha: 01c9110d24c82c46760499e9208910cd65546f2b0b4b051448ccfa7646609a12
   t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1193,19 +1053,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/5.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/5.md
 - id: '5.0'
   heading: 5.0 本章导读
   level: 3
   parent: '5'
-  order: 38
-  text_sha: 6fa7b329a6bd30487ff74927e7124549af8eced85aa0d2d844d4c6689123475d
+  order: 33
+  text_sha: 5d40dc0f5abde24c935cd502206a28b207bdf7aac3286ce1a3c9e5fb9a0ef907
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
-  t2_rounds: 1
+  t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1216,23 +1076,24 @@ units:
   anchor_status: none
   note: ''
   review_rounds:
+  - 1
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/5.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/5.0.md
 - id: '5.1'
-  heading: 5.1 四条不变量的证据矩阵
+  heading: 5.1 宿主：解析器、装载器与建表
   level: 3
   parent: '5'
-  order: 39
-  text_sha: 56fc3f7900c28b879ce8da096e1c3df605fd0411913af28c206590b592c803c0
+  order: 34
+  text_sha: 6da1b6dcc837fc0d52dc660e6cb89d0ee8397ba159e55ceeeae320684c8259d2
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1248,19 +1109,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/5.1.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/5.1.md
 - id: '5.2'
-  heading: 5.2 宿主测试的边界
+  heading: 5.2 布局契约 L0–L10（唯一权威清单；L10 仅 x86_64/all 输出）
   level: 3
   parent: '5'
-  order: 40
-  text_sha: 4104f39f1c73d72e79a33176aab0007694e46bf0f338f183e01941c6b74eead0
+  order: 35
+  text_sha: f837a0b69e01304e9664c9497d341864de13ef6039963cbb97f435b57a562ad3
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 1
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1275,27 +1136,29 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/5.2.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/5.2.md
 - id: '5.3'
-  heading: 5.3 机制 → 需要证明什么
+  heading: 5.3 真机：`test-higher-half` 与入口面
   level: 3
   parent: '5'
-  order: 41
-  text_sha: 219e0e57ee58cb1d175fc15e86c368cfc8050dfb17dbb39fd4cb70355bf8b424
+  order: 36
+  text_sha: 8b4f78802d6cdcd0086493d7e385f8ec6119156e55c714a76a73e71b3c89295d
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
+  anchor_refs:
+  - os/kernel/src/lib.rs:fn kmain_verify
+  anchor_hashes:
+    os/kernel/src/lib.rs:fn kmain_verify: 486f591b34f1724699346a351c7007816898bfc1c4d43172f719611f62e50df3
+  anchor_status: direct
   note: ''
   review_rounds:
   - 1
@@ -1303,19 +1166,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/5.3.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/5.3.md
 - id: '5.4'
-  heading: 5.4 真机门链
+  heading: 5.4 机制 → 需要证明什么（反转核对表）
   level: 3
   parent: '5'
-  order: 42
-  text_sha: 1394020de09a8d21e9023cd53c7969eee591fe0cdc9c61dd06619e25996c7d5f
+  order: 37
+  text_sha: 2edbb3f47c326cbe54254d609039fac54e816cf3eebd5249907ff78c61a37255
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 1
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1330,46 +1193,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/5.4.md
-- id: '5.5'
-  heading: 5.5 未闭环项交接
-  level: 3
-  parent: '5'
-  order: 43
-  text_sha: 4ecafa6f94be3b2ec7c0f3525ea49887b40c4333fbc88bba37ad5e43babb89e7
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 1
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs: []
-  anchor_hashes: {}
-  anchor_status: none
-  note: ''
-  review_rounds:
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/5.5.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/5.4.md
 - id: '6'
   heading: 6. 诊断
   level: 2
   parent: null
-  order: 44
-  text_sha: b83c43908468dc201241c41e63152c959a0888a594ab13e15d3504ce33050561
+  order: 38
+  text_sha: 5ba3db60a94c99bbc1cf0c1c157fff87249ad8b2f1a9a1238a1e02ed0df10a36
   t1_state: passed
   t1_rounds: 0
   t2_state: n/a
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1385,19 +1221,19 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/6.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/6.md
 - id: '6.0'
   heading: 6.0 本章导读
   level: 3
   parent: '6'
-  order: 45
-  text_sha: 12753aeb1a1032cfff8d4fe6514c0d2620df319148b1e9210ba17af77b50944b
+  order: 39
+  text_sha: bc18a791eb4d1eb35e1ac2f51364581dd1d8a29f1b166202c7f84de07712456c
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1413,114 +1249,46 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/6.0.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/6.0.md
 - id: '6.1'
-  heading: 6.1 EBS 分界与裸串口通道内的两种写法
+  heading: 6.1 症状 → 怀疑对象 → 确认命令
   level: 3
   parent: '6'
-  order: 46
-  text_sha: 22ee27f94eeeb64a8c34d4e1d968ae903e15298ba4bd50d665ec2a9f6514b9d0
+  order: 40
+  text_sha: 0a4b236b9416e61f05a0a0e60527f71366a2a1eb043bc7570fc644de01dc4f59
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 1
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
   reopened: false
   stale: false
-  anchor_refs:
-  - os/boot-shim/src/lib.rs:fn raw_serial
-  - os/kernel/src/lib.rs:fn boot_validate_and_prepare
-  - os/kernel/src/lib.rs:fn arch_boot_resume_high_half
-  anchor_hashes:
-    os/boot-shim/src/lib.rs:fn raw_serial: 44b65d8ece70536c3c6d377cededf687d57077b4ef5e68561085d7d8e8a81ac1
-    os/kernel/src/lib.rs:fn boot_validate_and_prepare: 24c965ee66be4daedeb3e89011dd072768d1f16c397f95a4d5f9c3acf23400d2
-    os/kernel/src/lib.rs:fn arch_boot_resume_high_half: 2ead54cc9fd1b978b9d8a87bb73204eba61ae9db1107a8dce1754d82312e3791
-  anchor_status: direct
+  anchor_refs: []
+  anchor_hashes: {}
+  anchor_status: none
   note: ''
   review_rounds:
   - 2
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/6.1.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/6.1.md
 - id: '6.2'
-  heading: 6.2 panic 路径：从静默到可读
+  heading: 6.2 可复制命令
   level: 3
   parent: '6'
-  order: 47
-  text_sha: 24f08b5225a052b7b522530cddaa17c85a46a2e39b86221f93716aea1a1745f6
+  order: 41
+  text_sha: 704b2b72b88ac065e2d5a9efdde526023eb3a8a1633ea205ca349f9af9587600
   t1_state: n/a
   t1_rounds: 0
   t2_state: frozen
   t2_rounds: 0
   frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - os/boot-shim/src/main.rs:fn panic
-  anchor_hashes:
-    os/boot-shim/src/main.rs:fn panic: 136abe98f4d883b9a83e019aea82e738854b3102e89ab7ff7576485415f3e921
-  anchor_status: direct
-  note: ''
-  review_rounds:
-  - 1
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/6.2.md
-- id: '6.3'
-  heading: 6.3 典型失败模式与诊断信号
-  level: 3
-  parent: '6'
-  order: 48
-  text_sha: 412eeb311371f544e5674ab9826aa7446c20386527080db1f521c8401d72956d
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
-  rewritten: false
-  user_approved: false
-  deps: []
-  reopened: false
-  stale: false
-  anchor_refs:
-  - minix3/minix/kernel/arch/i386/pre_init.c:get_parameters
-  - minix3/minix/kernel/arch/i386/pre_init.c:pre_init
-  anchor_hashes:
-    minix3/minix/kernel/arch/i386/pre_init.c:get_parameters: a2c376ae1f8e23f33dde62da0154117b5430421a9f24e6ef0e57ec1d3ee6aa55
-    minix3/minix/kernel/arch/i386/pre_init.c:pre_init: d0c5e39fdc4fe171c1cdfea49772540b6fe8af832b505d2da5e6f5cf22591533
-  anchor_status: fallback
-  note: ''
-  review_rounds:
-  - 1
-  - 2
-  - 3
-  post_freeze_rounds:
-  - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/6.3.md
-- id: '6.4'
-  heading: 6.4 可复制命令
-  level: 3
-  parent: '6'
-  order: 49
-  text_sha: 70a6f95c009e421708e5a685aecc47dd676201d1d3ec7736e47d94a928f2833d
-  t1_state: n/a
-  t1_rounds: 0
-  t2_state: frozen
-  t2_rounds: 0
-  frozen: true
-  frozen_at: d683ee10c6c07b63c31f67dd79e2c49adf4e55ce
+  frozen_at: 1a4359c094b1a7086a1d0579d6e5fd3398f7a56a
   rewritten: false
   user_approved: false
   deps: []
@@ -1536,11 +1304,11 @@ units:
   - 3
   post_freeze_rounds:
   - 3
-  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/unit-r2/6.4.md
+  evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/unit-r2/6.2.md
 t3:
   passed: false
   evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/USER-REVIEW-REVOKE-2026-11-22.md
   at_commit: 778bf7dcdb19b77a0b0d5b59e988c442acd03ca8
-structure_sha: 320b335d7d5162063219b63411300e4e347e62306d33baf3e18e09c5889b7dee
-code_sha: 4432b5a6c09b4a9ee851e64deadeaa229a551e8d85ceb50d6ecd6e42f5e4633a
-baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/metrics-full-r1.md
+structure_sha: c907171fbbb8dd3a4bfb7294bf7b140fba9c936617812fcc17d5913c6fd3fe42
+code_sha: 780ecd8c3e9a3d44781e050c2ae6dcac05596d1ff45b9b2898a13a0daf169853
+baseline_evidence: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/02-higher-half-kernel/metrics-full-r1.md

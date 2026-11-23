@@ -688,7 +688,7 @@ SECTIONS
 
 三份脚本的地址写法有两种：x86_64 的位置计数器起点是 `KERNEL_HIGH_BASE + KERNEL_PHYS_BASE`（首段的虚拟地址里直接含有物理基址，`AT` 表达式减去 `KERNEL_HIGH_BASE` 就得到物理地址）；aarch64 与 riscv64 的起点是 `KERNEL_VIRT_BASE`，`AT` 表达式写成 `AT(ADDR(sec) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)`（[`aarch64.ld`](os/kernel-image/aarch64.ld)、[`riscv64.ld`](os/kernel-image/riscv64.ld)）。两种写法保证的是同一条不变量：所有段的"虚拟地址 − 装载地址"相等。这条不变量由 `check-layout.sh` 的 L4 断言检查（断言清单在本篇的 5.2 节；本节只说它与 `AT()` 的因果关系）。
 
-`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld` 那套无生产链接读者的副本与只锁常量的 lockstep 测试都不在树内；生产布局只由 `os/kernel-image/*.ld` 承载。载体（QEMU 测试内核；其中一部分目录带自己的 `link.ld`，其余沿用工具链默认布局）在带脚本的形态下各自用单地址脚本，以合成的 `KernelInfo` 走进同一段引导代码。
+`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld` 那套无生产链接读者的副本与只锁常量的 lockstep 测试都不在树内；生产布局只由 `os/kernel-image/*.ld` 承载。载体（QEMU 测试内核；其中一部分目录带自己的 `link.ld`，其余沿用工具链默认布局）在带脚本的形态下各自用单地址脚本，以合成的 `BootReport<'_>` 走进同一段引导代码。
 
 第二种形态的实例在载体侧：[`link.ld`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/link.ld) 只有一套地址（`. = 0x80200000`），段没有 `AT()`，收尾一行 `__stack_top = . + 0x10000`。载体被固件放在低地址执行，不需要两套地址。第三种形态（没有链接脚本、沿用工具链默认布局）用于其余测试载体；它与第二种形态的共同点是只有一套地址，区别是脚本是否存在。
 
@@ -713,7 +713,7 @@ SECTIONS
 | 方案 | 选/否 | 代价 |
 |---|---|---|
 | 生产镜像：脚本用 `AT()` 给出低地址 LMA，交外部装载器摆放 | 选（`os/kernel-image/*.ld`） | 装载器必须按 `p_paddr` 写（[`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory) 就是这么写的）；脚本要维护"段间平移一致"这条不变量，并靠 `check-layout.sh` L4 兜住 |
-| 载体：脚本只给一套地址，x86_64/aarch64 载体在入口时于低地址执行（riscv64 载体低装高进，见上表第 3 行） | 选（测试载体） | 内核符号值与运行地址之间没有平移关系，`KernelInfo` 的基址必须由载体自己填对；riscv64 载体仍按 direct leg 加 `delta` |
+| 载体：脚本只给一套地址，x86_64/aarch64 载体在入口时于低地址执行（riscv64 载体低装高进，见上表第 3 行） | 选（测试载体） | 内核符号值与运行地址之间没有平移关系，`BootReport<'_>` 的基址必须由载体自己填对；riscv64 载体仍按 direct leg 加 `delta` |
 | 给载体形态的脚本写 `AT()` | 否 | 载体（测试内核）被固件或 `-kernel` 直接放在低地址执行，它自己不用 `p_paddr` 布局；写 `AT()` 只会多一套没有读者的地址。生产镜像（含 riscv64 的自引导形态）则必须有 `AT()`——它的 `p_paddr` 有读者：U-Boot 的 `bootelf` 读 `p_paddr` 摆放段体；`-kernel` 直载由固件/加载器按约定放置；OpenSBI 只负责跳转，不解析 ELF |
 | 用常量表达式而不是逐段表达式（`AT(KERNEL_PHYS_BASE)`） | 否 | 段之间在物理上互相覆盖，见 §2.1 的反向推演 |
 
@@ -881,7 +881,7 @@ Rust 侧还有第二个栈：链接脚本在 `.bss` 里预留的 64 KiB 引导�
 | 方案 | 选/否 | 代价 |
 |---|---|---|
 | 栈顶由接收方从 `kern_virt_base + kern_size` 派生（`KernelInfo::kern_stack_top()`） | 选 | 装载方只需把跨距算对（RISC-V 自引导面把跨距写成了常量，靠 L9 与 ELF 实测对账）；公式只留在访问器一处，三形态通用 |
-| 内核自己声明链接符号（照搬 C） | 否 | 符号值随链接形态变化；测试载体没有这个符号，合成 `KernelInfo` 的路径无法替换它 |
+| 内核自己声明链接符号（照搬 C） | 否 | 符号值随链接形态变化；测试载体没有这个符号，合成 `BootReport<'_>` 的路径无法替换它 |
 | 由内核在运行时从自己的段边界符号算 | 否 | 内核早期没有段边界信息（那是装载方读 ELF 才知道的），且这些符号的可见性依赖链接形态 |
 
 换栈这件事与栈的大小无关，与栈**运行期落在哪一侧**有关。C 侧可以直接比：`head.S` 的临时栈 `load_stack` 是 `.space 4096`，`mpx.S` 里给 `kmain` 用的 `k_initial_stack` 也是 `.space K_STACK_SIZE`（4KiB，§2.5）——两次设栈的容量相同，差别只在地址从低一侧换到高一侧。Rust 侧：入口 `_start` 的 64KiB 引导栈的链接符号 `kernel_boot_stack_bottom/top` 在 `.bss`、高半；`kmain` 用的 `kern_stack_top` 不是链接符号，而是消费点按 `kern_virt_base + kern_size` 现算的高半虚拟地址。运行期 `_start` 用 `lea rsp,[rip+...]`（x86_64）/`la sp,...`（riscv64），在物理视图下取到的是低物理地址，在高半视图下才是高 VMA；换栈的目的，是把 SP 从入口栈（可能仍在物理视图）移到镜像尾的高半栈，而不是笼统的“从低侧换到高侧”。
@@ -1204,7 +1204,7 @@ $ grep -n 'fn jump_to_kmain' os/kernel/src/boot/higher_half.rs
 ```
 
 - `KEEP(*(.text.boot))` 排在 `.text` 的第一位，而 `_start` 就在 `.text.boot` 里（[`main.rs`](os/kernel-image/src/main.rs) 的 `global_asm!`）。于是入口地址等于镜像首字节。这条等式在宿主上由两条断言合起来检查：L3b 比"按脚本基址常量算出的预期首段 VMA"与实测首段 VMA，L6a 比 `e_entry` 与同一个预期值。
-- `KEEP(*(.rodata.kernel_anchor))` 与 `static KERNEL_ENTRY_ANCHOR: fn(&KernelInfo, PhysBytes) -> ! = minix_kernel::arch_boot;`（`main.rs` 的 [`static KERNEL_ENTRY_ANCHOR`](os/kernel-image/src/main.rs:static KERNEL_ENTRY_ANCHOR)）是一对：一个持有内核启动面的函数指针，一个把该节钉住，防止 `--gc-sections` 或归档成员粒度裁剪把整个内核启动图裁出镜像。L8 断言 `minix_kernel::arch_boot` 的符号在镜像里，是这件事的可观测证据。
+- `KEEP(*(.rodata.kernel_anchor))` 与 `static KERNEL_ENTRY_ANCHOR: fn(&BootReport<'_>, RamAuthority, PhysBytes) -> ! = minix_kernel::arch_boot;`（`main.rs` 的 [`static KERNEL_ENTRY_ANCHOR`](os/kernel-image/src/main.rs:static KERNEL_ENTRY_ANCHOR)）是一对：一个持有内核启动面的函数指针，一个把该节钉住，防止 `--gc-sections` 或归档成员粒度裁剪把整个内核启动图裁出镜像。L8 断言 `minix_kernel::arch_boot` 的符号在镜像里，是这件事的可观测证据。
 
 `.data` 与 `.bss`：
 
@@ -1643,7 +1643,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 生产路径 A（v1 send/receive：UEFI x86_64/aarch64、riscv64 U-Boot）
   固件 → boot-shim main → prepare_and_enter_kernel_image / prepare_boot
         → minix_elf 解析 → 按 p_paddr 写段体、清零 BSS
-        → 读 12 个模块 → 组 KernelInfo（v1 交接载荷）→ 写 v1 arena（信封与 memmap/reserved/modules/platform/param/sources 六个分区）
+        → 读 12 个模块 → 组 BootReport<'_>（v1 交接载荷）→ 写 v1 arena（信封与 memmap/reserved/modules/platform/param/sources 六个分区）
         → ExitBootServices 配对循环 → enter_kernel_image_v1（建 bootstrap 根、补运行期字段）
         → 独立镜像 _start（清 .bss、立栈）→ rust_image_main
         → arch_boot_resume_v1（解码 arena、落 .bss、记录活动根、建 DM）
@@ -1652,7 +1652,7 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 生产路径 B（riscv64 自引导）
   OpenSBI → 镜像 _start（清 .bss、立栈）→ rust_image_main
         → bootface：读 a1 的 DTB → 解 memmap → 读模块表 → 模块字节搬进 bump 页
-        → 组 KernelInfo → minix_kernel::arch_boot
+        → 组 BootReport<'_> → minix_kernel::arch_boot
         → arch_boot_finish（校验 → arch_boot_impl（策略/Step1 恒等 → Step2 高半 → Step2b/2c 设备窗口 → Step3 开分页 → Step4 DM）→ HigherHalf::jump_to_kmain）
 
 测试路径（inline）
@@ -1926,7 +1926,7 @@ L4 与 L5 分别对应本篇 §2.1 的段平移结论与 §3.5 的大页阶梯�
 
 三条断言各对应 §4.4 的一条指令：`sp_ok` 对应"切栈"（栈指针落在高半地址空间）、`sp_aligned` 对应"对齐"（x86_64 检查 `RSP ≡ 8 (mod 16)`，即 `(RSP+8)` 为 16 的倍数；aarch64/riscv64 检查 `SP ≡ 0 (mod 16)`，AAPCS64/RISC-V ABI 要求 SP 16 字节对齐）、`fp_zero` 对应"清帧指针"。捕获方式按架构写在裸函数 `kmain` 的 `naked_asm!` 里（x86_64 用 `mov r9, rbp`、`lea r8, [rip]`、`mov rdx, rsp`；aarch64 用 `mov x3, x29`、`adr x2, .`、`mov x1, sp`；riscv64 用 `mv a3, s0`、`auipc a2, 0`、`mv a1, sp`）。
 
-**PC 不进入 x86_64/aarch64 的成败判定（riscv64 相反，见下）**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构分开判定：x86_64 与 aarch64 只打印（`PC 不在高半` 时输出 `INFO`，只在失败分支里出现）；riscv64 把 `pc_at_high` 并入 PASS 条件，PC 落在低半即 `FAIL: PC not at high address (riscv64 delta path broken)`——这正是 `delta` 路径的机械判据（`kmain_verify` 的 `pc_ok` 分支，`target_arch = "riscv64"`）。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_phys_base: PhysBytes(image_base)`、`kern_size: image_end - image_base`（镜像窗口按 2 MiB 取整后的跨度）），栈顶由 `kern_stack_top()` 现算，也就是 §3.3 的算式在测试形态下的取值。
+**PC 不进入 x86_64/aarch64 的成败判定（riscv64 相反，见下）**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，[`higher_half.rs`](os/kernel/src/arch/riscv64/higher_half.rs) 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构分开判定：x86_64 与 aarch64 只打印（`PC 不在高半` 时输出 `INFO`，只在失败分支里出现）；riscv64 把 `pc_at_high` 并入 PASS 条件，PC 落在低半即 `FAIL: PC not at high address (riscv64 delta path broken)`——这正是 `delta` 路径的机械判据（`kmain_verify` 的 `pc_ok` 分支，`target_arch = "riscv64"`）。测试载体的 `BootReport<'_>` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs) 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_phys_base: PhysBytes(image_base)`、`kern_size: image_end - image_base`（镜像窗口按 2 MiB 取整后的跨度）），栈顶由 `kern_stack_top()` 现算，也就是 §3.3 的算式在测试形态下的取值。
 
 运行方式与判定标记：`os/qemu-tests/run_qemu.sh` 用 `-serial file:` 收串口、用 `strings | grep '### TEST_RESULT: PASS'` 判定（`os/qemu-tests/run_qemu.sh` 的判定段），退出码里 `SKIP` 与 `FAIL` 分开（0 表示 PASS 或 SKIP，1 表示失败）。测试本身的输出形如 `### TEST_RESULT: PASS test-higher-half ###`。
 
