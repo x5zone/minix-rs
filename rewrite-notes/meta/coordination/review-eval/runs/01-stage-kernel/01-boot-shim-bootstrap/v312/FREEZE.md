@@ -24,7 +24,7 @@
 
 | 视角 | 报告 | 结论 |
 |---|---|---|
-| beginner-me | `cold-read/d01-beginner-v2.md`（重锚 9d6e18） | `HARD-REJECTIONS: 0 / READY` |
+| beginner-me | `cold-read/d01-beginner-v3.md`（9d6e18） | `HARD-REJECTIONS: 0 / READY` |
 | G18 READER-C | `cold-read/d01-g18-v2.md` | `HARD-REJECTIONS: 0 / READY` |
 | 编辑（取证腔/节奏） | `cold-read/editor-perspective-v3.md` | `NOT-READABLE`；体裁分歧见 `EDITOR-GENRE-CASE.md` |
 | 导航者 | `cold-read/navigator-perspective-v2.md` | `READABLE` |
