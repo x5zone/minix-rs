@@ -9,8 +9,8 @@
 
 | 项 | 值 |
 |---|---|
-| 文档 sha256 | `0b943d0c9540676a9b3d8cb237f73276ff575f9d475f1b878cf492dd0475c405`（规则一/二追溯 + 规则三/四/五回归后） |
-| 行数 | 3,107 |
+| 文档 sha256 | `9d6e18a57985c499b89efbaae4d2d67a52661a12f09f10b5ed576acaf3b369cc`（规则一/二追溯 + 规则三/四/五回归后） |
+| 行数 | 3,142 |
 | 代码基线 | `7ff12bca4`（`kmain` 物理/高半别名修复） |
 | 单元 | 48/48 冻结（state 记录） |
 | 学习范围 | `meta/review/scope/01-stage-kernel/01-boot-shim-bootstrap.yaml`，`confirmed_by=me-agent-deputy`（待作者追认） |
@@ -24,12 +24,12 @@
 
 | 视角 | 报告 | 结论 |
 |---|---|---|
-| beginner-me | `cold-read/y04-g18.md`（R4） | `HARD-REJECTIONS: 0 / READY` |
-| G18 READER-C | 同上 | `VERDICT: READY` |
-| 编辑（取证腔/节奏） | 待补 | 待补 |
-| 导航者 | 待补 | 待补 |
-| 效率读者 | 待补 | 待补 |
-| 教学设计师 | 待补 | 待补 |
+| beginner-me | `cold-read/d01-beginner-v2.md`（重锚 9d6e18） | `HARD-REJECTIONS: 0 / READY` |
+| G18 READER-C | `cold-read/d01-g18-v2.md` | `HARD-REJECTIONS: 0 / READY` |
+| 编辑（取证腔/节奏） | `cold-read/editor-perspective-v3.md` | `NOT-READABLE`；体裁分歧见 `EDITOR-GENRE-CASE.md` |
+| 导航者 | `cold-read/navigator-perspective-v2.md` | `READABLE` |
+| 效率读者 | `cold-read/reference-perspective-v2.md` | `READABLE` |
+| 教学设计师 | `cold-read/instructional-design-perspective-v2.md` | `READABLE` |
 
 ## 回归节（post-CONVERGED）
 
