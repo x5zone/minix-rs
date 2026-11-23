@@ -58,7 +58,8 @@ VERDICT: FROZEN
 - sha256：`a1b899d7446c81b58ff75a07e51fa8cd989fdcc5fd3032f7a37564dcf5d6000f`
 - 行数：440
 - outline：`rewrite-notes/meta/design/01-stage-kernel/01-outline.v7.md`
-- 摘要：`v312/summaries/ch4-summary.md`（生成后补验证门）
+- 摘要：`v312/summaries/ch4-summary.md`（52 行，锚点机械校验 PASS）
+- 摘要验证：`v312/summaries/ch4-summary-verification.md` — `VERDICT: FAITHFUL`（2026-11-24）
 - 事件：`chapter-review` REV-20261124-8914CFB2 / `summary-faithful` REV-20261124-0F31CBC8 / `chapter-freeze` REV-20261124-CA3722C3
 - 冻结日期：2026-11-24
 
