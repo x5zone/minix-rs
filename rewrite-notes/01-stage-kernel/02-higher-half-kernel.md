@@ -5,6 +5,8 @@
 
 ## 1. 概述
 
+同一份内核镜像在磁盘上只是一个 ELF 文件，但它要在四个不同时刻以四种身份出现：链接器看到的符号表、装载器写进物理内存的段体、页表建立后可访问的地址，以及最后跳进 `kmain` 的入口。本章要回答的核心问题是：这四个时刻之间靠什么保证不脱节？
+
 ### 1.0 本章导读
 
 #### 学习目标
@@ -98,6 +100,8 @@ J1 与 J2 是静态布局的性质，镜像还没运行就能检查；其中 J1 
 ---
 
 ## 2. C 源码分析
+
+C 侧的实现是这套镜像语义的真值来源：链接脚本、`head.S`、`pre_init` 与页表建立代码共同决定了段体落在哪里、符号值是多少、什么时候才能从高半取指。本章逐段读这些 C 代码，目的不是复述实现，而是把 Rust 侧要保住的外部行为与需要重新设计的内部机制分开。
 
 ### 2.0 本章导读
 
@@ -610,6 +614,8 @@ Rust 侧不再用链接符号给出 `kmain` 用的栈顶（入口 `_start` 仍�
 ---
 ## 3. Rust 设计决策
 
+Rust 侧不能照搬 C 的两份页目录与借槽机制：镜像仍是同一个 ELF，但建根、开分页、换栈的载体全变了。本章要回答的问题是：在保留 J1–J4 四条不变量的前提下，哪些 C 结构必须换、换到什么程度、换掉之后由谁承担原来的保证。
+
 ### 3.0 本章导读
 
 #### 学习目标
@@ -1109,6 +1115,8 @@ pub trait HigherHalf {
 
 ## 4. 实现详解
 
+设计章给出的是判断，实现章要回答“代码到底怎么走”。本章沿两条真实入口——UEFI 的跨镜像接收链与 riscv64/aarch64 的直核自引导链——把装载、建根、映射、换栈、跳转串成可逐步跟读的路径，并标出每一步失败时现场在哪里。
+
 ### 4.0 本章导读
 
 #### 学习目标
@@ -1377,7 +1385,7 @@ pub unsafe fn load_segments_into_phys_memory(
 
 可测的孪生是 `loader.rs` 的 [`fn load_segments_into_buffer`](os/boot-shim/src/loader.rs:fn load_segments_into_buffer)：同构的遍历与同样的两条动作，但目标是内存缓冲区、偏移按 `seg.paddr - buf_base_paddr` 折算。UEFI（x86-64/aarch64）与 OpenSBI U-Boot shim（riscv64）两条路径在生产代码里调用前者（直接写物理地址；"OpenSBI" 指 boot-shim 的 `opensbi_helpers.rs` 腿，不是 §4.5 路径 B 的直核 bootface——后者不重拷自己的段），宿主测试调用后者（写一块可检查的缓冲区）。两版不是同一份循环的薄包装：缓冲区版有目标长度上界（`mem_end <= buf.len()`），物理地址版有重叠检测而缓冲区版没有；这段差异是本篇承认的可测试性缺口，见 §5.1 的装载器测试族与下一段的覆盖边界。`filesz > memsz` 已由迭代器拒绝；`paddr + filesz`、`paddr + memsz` 与源区间 `offset + filesz` 的溢出由两版共用的 `segment_spans` 拒绝，不再只靠调用者先跑 `compute_kernel_layout`。缓冲区版是两循环（先验后写，超界返回 `TargetBufferTooSmall`），物理地址版是“解析成 `KernelImage`、`validate` 后只接受 `ValidatedKernelImage`、再写”；两者共享段形校验、区间推导与 BSS 清零，不共享目标边界策略。宿主测试 `test_buffer_and_phys_loaders_share_segment_spans` 用同一份 ELF 分别走两版，逐字节比对拷贝区与清零区。直接调用这个 `pub unsafe fn` 的读者仍必须先校验布局（覆盖边界见 §5.1 末段）。
 
-**把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面共用的 `bootface_common::run_self_boot` 里的 `BootStorageCell`（`STORAGE`）初值非零、落在 `.data`；`bootface_a64.rs` 的 bump 游标 `static BUMP_NEXT: AtomicU64` 初值为 `BUMP_BASE`（非零），也落在 `.data`，所以它们不是这个例子的成员。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
+**把 BSS 清零这一步从两个环节里都去掉会怎样**（装载方只拷 `filesz` 不写 NOBITS 区，入口汇编也不清）：内核镜像的 `.bss` 里住着镜像堆 `static mut IMAGE_HEAP`（[`main.rs`](os/kernel-image/src/main.rs)）以及内核侧的启动全局；这些格子里会是上一位使用者的字节。两个自引导面共用的 `bootface_common::run_self_boot` 把 `BootStorage` 放在调用方栈上，不产生 `.data` 静态；`bootface_a64.rs` 的 bump 游标 `static BUMP_NEXT: AtomicU64` 初值为 `BUMP_BASE`（非零），落在 `.data`，所以它不属于这个例子。这正是把两个环节都拆掉之后才会出现的形态：[`riscv64.ld`](os/kernel-image/riscv64.ld) 的注释记录过 OpenSBI 只按 `filesz` 写段体、不写 NOBITS 区这一实证，所以三份脚本都让入口汇编自己再清一遍（[`main.rs`](os/kernel-image/src/main.rs) 的注释把它写作"入口自持"）。两个环节各自都能单独成立，叠起来才是三架构一致的保证。
 
 **去掉重叠检测会怎样（第二处）**：一个 `p_paddr` 区间交叠的 ELF（链接脚本写错、或工具链改布局）会让后一个段覆盖前一个段的字节，没有任何报错；后一个段覆盖前一个段的字节是数据损坏，不是 `copy_from_nonoverlapping` 的 UB——该函数的契约是单次调用的 `src`/`dest` 不相交；源/目标重叠另由 `first_source_destination_overlap` panic 拦住。段间重叠检测把前者变成 `ElfError::InvalidSegment`，与 §3.2 的 12 个变体里 loader 侧那三道之一对上。
 
@@ -1661,27 +1669,26 @@ direct leg 里 `la` 算出的是符号的物理地址，`jalr` 会把 PC 留在�
 
 > aarch64 direct-core 的“低地址进入”来自固件按装载地址平移入口地址的装载行为，不在本仓链接脚本里；可用 QEMU `-d in_asm` 的第一条记录核对 `_start` 的入口 PC。
 
-自引导路径的正文在 `bootface_common.rs` 的 [`fn run_self_boot`](os/kernel-image/src/bootface_common.rs:fn run_self_boot)：从 DTB 解出 memmap、按模块表装载 12 个模块、组装 `KernelInfo` 这三步都在它里面，之后才调用内核的启动入口（`bootface.rs`/`bootface_a64.rs` 只传本架构常量与入口参数）：
+自引导路径的正文在 `bootface_common.rs` 的 [`fn run_self_boot`](os/kernel-image/src/bootface_common.rs:fn run_self_boot)：从 DTB 解出 memmap、按模块表装载 12 个模块、构造发送侧 `BootReport` 这三步都在它里面，之后才调用内核的启动入口（`bootface.rs`/`bootface_a64.rs` 只传本架构常量与入口参数）：
 
 ```rust
-/* 节选（保留 KernelInfo 组装与 arch_boot 调用；省略号处为 DTB 解析、模块表、模块装载），os/kernel-image/src/bootface_common.rs:fn run_self_boot。 */
-    let report = STORAGE.report_static(
+/* 节选（保留 BootReport 构造、发送侧 strict 与 arch_boot 调用；省略号处为 DTB 解析、模块表、模块装载），os/kernel-image/src/bootface_common.rs:fn run_self_boot。 */
+    let report = storage.report(
         VirBytes(params.kern_virt_base),
         PhysBytes(params.kern_phys_base),
         params.kern_size,
     );
-    let kernel_info: KernelInfo =
-        build_kernel_info(&report, minix_boot::RamAuthority::DTB);
+    report.validate_requiring_sources(minix_boot::RamAuthority::DTB);
     ...
     say("  calling arch_boot (validate gate)\n");
-    minix_kernel::arch_boot(&kernel_info, root_page)
+    minix_kernel::arch_boot(&report, minix_boot::RamAuthority::DTB, root_page)
 ```
 
-两个基址与跨距是常量（`KERN_VIRT_BASE`、`KERN_PHYS_BASE`、`KERN_SIZE`，与 `riscv64.ld` 同源，L9 对账），`KernelInfo` 由共享 builder [`fn build_kernel_info`](os/boot-shim/src/lib.rs:fn build_kernel_info) 组装；`reserved` 是 `DtbMemoryMap::new(&fdt, fw_end)` 裁剪出的非传统内存（riscv64 传 `KERN_PHYS_BASE`，aarch64 传 0），`param_buf` 是 `/chosen/bootargs` 经 `normalize_param_buf` 规范化后的字节。两个自引导面收成薄壳：`bootface.rs` 与 `bootface_a64.rs` 只保留本架构常量、入口横幅与各自的 console 实现，DTB 校验、memmap 收集、表址闸、bump 取页、模块摆放、平台源、参数缓冲、`KernelInfo` 组装与 `arch_boot` 调用全部走 `bootface_common` 的 [`fn run_self_boot`](os/kernel-image/src/bootface_common.rs:fn run_self_boot)。模块字节仍由 [`fn place_modules`](os/kernel-image/src/bootface_common.rs:fn place_modules) 搬运：源字节直接拷进 bump 页；不做整页清零，只把文件字节之后的尾部余量清零，名字槽从定长字节池拷进一页物理名字池——模块名以胖指针（`&str` 是"指针 + 长度"两个机器字，与单个地址不同）形式交给内核，指针必须指向物理视图可达的字节（这段的视图约束写在 `bootface.rs` 的模块文档里）。自引导镜像的早期代码在物理视图下靠 PC 相对寻址自洽（`la` 算出的值与当前 PC 同侧），只有最后跳 `kmain` 需要按 direct leg 加视图差值 `delta`（§4.4）。
+两个基址与跨距是常量（`KERN_VIRT_BASE`、`KERN_PHYS_BASE`、`KERN_SIZE`，与 `riscv64.ld` 同源，L9 对账），发送侧只构造 `BootReport<'_>` 借用视图（[`fn report`](os/libs/minix-boot/src/boot_storage.rs:fn report)），接收侧在 `arch_boot_finish` 里落 `.bss` 后构造唯一 `KernelInfo`；`reserved` 是 `DtbMemoryMap::new(&fdt, fw_end)` 裁剪出的非传统内存（riscv64 传 `KERN_PHYS_BASE`，aarch64 传 0），`param_buf` 是 `/chosen/bootargs` 经 `normalize_param_buf` 规范化后的字节。两个自引导面收成薄壳：`bootface.rs` 与 `bootface_a64.rs` 只保留本架构常量、入口横幅与各自的 console 实现，DTB 校验、memmap 收集、表址闸、bump 取页、模块摆放、平台源、参数缓冲、`BootReport` 组装与 `arch_boot` 调用全部走 `bootface_common` 的 [`fn run_self_boot`](os/kernel-image/src/bootface_common.rs:fn run_self_boot)。模块字节仍由 [`fn place_modules`](os/kernel-image/src/bootface_common.rs:fn place_modules) 搬运：源字节直接拷进 bump 页；不做整页清零，只把文件字节之后的尾部余量清零，名字槽从定长字节池拷进一页物理名字池——模块名以胖指针（`&str` 是"指针 + 长度"两个机器字，与单个地址不同）形式交给内核，指针必须指向物理视图可达的字节（这段的视图约束写在 `bootface.rs` 的模块文档里）。自引导镜像的早期代码在物理视图下靠 PC 相对寻址自洽（`la` 算出的值与当前 PC 同侧），只有最后跳 `kmain` 需要按 direct leg 加视图差值 `delta`（§4.4）。
 
 自引导路径与 v1 路径的分界写在 `bootface.rs` 的模块文档里：自引导镜像**不重拷自己的段**。v1 的 boot-shim 会把 `kernel.elf` 的段拷进物理内存并清 NOBITS；自引导镜像已经在运行，同样的动作会覆盖正在执行的代码与栈。它只搬**模块**，自己的段不动，`.bss` 清理由入口汇编完成（§4.2 的第一处反向推演——BSS 清零那一条——讲过为什么这一步不能省）。
 
-两条生产路径在 `kmain` 处合流，但不在 `arch_boot_impl`：v1 接收走 `arch_boot_resume_v1` → `resume_after_v1_decode`（记录活动根、落 `.bss`、建 DM），direct 走 `arch_boot_impl`（Step1 恒等 → Step2 高半 → Step2b/2c 设备窗口 → Step3 开分页 → Step4 DM）。两条路径在跳转前都把 `KernelInfo` 落进 `.bss` 副本，跳转时消费的是副本地址。副本落地的原因有两条：**载荷存活**——`reserved_regions`/`memmap`/`boot_modules` 原本指向 boot-shim 堆上的字节，高半切换后那块内存在活动根里没有映射，再读是页错误；历史真机上还出现过读回全零（01 篇的 3.2.4 节），两种结局都不能消费（`lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info) 函数体注释：`The reserved_regions payload lives in the boot-shim's UEFI-pool heap…`）；**交接路径**——早先把 shim 栈上的 `&KernelInfo` 经 `noreturn` asm 直传，随后改为全局副本的链接期 RIP 相对地址，指针仍按 ABI 传入 RDI/X0/A0，但生产 `kmain` 的第一条语句就把形参遮蔽为 `KERNEL_INFO` 全局副本，形参此后无读者，真正被消费的是副本地址。早期读数（`kmain` 收到的指针 `0x1ddda2ee` 与 `.rdata` 字符串常量地址相合）与 x86_64 的两块临时打印见 §6.1 的诊断注记。
+两条生产路径在 `kmain` 处合流，但不在 `arch_boot_impl`：v1 接收走 `arch_boot_resume_v1` → `resume_after_v1_decode`（记录活动根、落 `.bss`、建 DM），direct 走 `arch_boot_impl`（Step1 恒等 → Step2 高半 → Step2b/2c 设备窗口 → Step3 开分页 → Step4 DM）。两条路径在跳转前都把 `KernelInfo` 落进 `.bss` 副本，跳转时消费的是副本地址。副本落地的原因有两条：**载荷存活**——`reserved_regions`/`memmap`/`boot_modules` 原本指向 boot-shim 堆上的字节，高半切换后那块内存在活动根里没有映射，再读是页错误；历史真机上还出现过读回全零（01 篇的 3.2.4 节），两种结局都不能消费（落地区与一次性守卫见 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)）；**交接路径**——发送侧曾把 shim 栈上的 `&KernelInfo` 经 `noreturn` asm 直传，现行形状是接收侧先落 `.bss`、再由 `arch_boot_finish` 把同一副本地址交给 `jump_to_kmain`；生产 `kmain` 用 `ptr::eq` 断言形参与 `KERNEL_INFO` 同址，字段读取走全局副本（01 篇 §4.5）。
 
 **让自引导镜像照搬 v1 的做法、先把自己的段重新拷一遍会怎样**：目标区间就是它正在执行的代码与栈所在的物理内存：拷贝完成之前，正在执行的这段代码的字节已被改掉，下一条取指拿到的是新内容（或者被清零的 BSS）。这条分界在 [`bootface.rs`](os/kernel-image/src/bootface.rs) 的模块文档里点明。
 
@@ -1950,6 +1957,7 @@ L4 与 L5 分别对应本篇 §2.1 的段平移结论与 §3.5 的大页阶梯�
 ---
 ## 6. 诊断
 
+启动失败时，串口上通常只剩几行输出；如果不知道每条输出属于哪个阶段、下一个路标应该是什么，就很难把“没走到”与“走到了但报错”分开。本章按 EBS 分界、panic 路径、失败模式与可复制命令四层组织诊断，让读者能从一行输出反推它所在的位置。
 
 ### 6.0 本章导读
 

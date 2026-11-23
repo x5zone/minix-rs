@@ -1,0 +1,41 @@
+# 学习范围表（review-scope/v1）——规范源 prompt/review-rules/review-tutorial-rubric.md
+# 只能由作者确认；冷读学生按本表判断能否完成学习任务。
+schema: review-scope/v1
+doc: rewrite-notes/01-stage-kernel/02-higher-half-kernel.md
+stage: 01-stage-kernel
+edition: V3.12
+confirmed: true
+confirmed_by: me-agent-deputy
+confirmed_at: '2026-11-23T20:32:08'
+reader_profile: 具备 C 语言阅读能力、操作系统启动的基本概念、Rust 语法与所有权基础、物理地址/虚拟地址/页表的基本概念。不默认具备本项目内部类型、三架构启动路径，以及尚未在前置章节讲授的内部设计契约。
+items:
+- id: S1
+  topic: 1. 概述
+  requirement: 学完能说出内核镜像的四个时刻（链接、摆放、映射、进入）及每个时刻的输入与产物；能用 J1–J4 判断一次高半启动是否成立；能区分符号值与可访问地址。
+  chapters:
+  - '1'
+- id: S2
+  topic: 2. C 源码分析
+  requirement: 学完能按链接脚本、head.S 与 pre_init 复述 C 侧的装载摆放与进入高半；能解释 J1/J2 在 C 侧的按组读法；能指出 C 的两份页目录、静态页表池与借槽机制哪些被 Rust 替换。
+  chapters:
+  - '2'
+- id: S3
+  topic: 3. Rust 设计决策
+  requirement: 学完能说明三架构镜像形态为什么不同；能按 J1–J4 解释 Rust 的单一平移、2 MiB 收口、建根与 Step 0–4、换栈与跳转成对；能说出 Direct Map 与高半映射的分工。
+  chapters:
+  - '3'
+- id: S4
+  topic: 4. 实现详解
+  requirement: 学完能沿 UEFI 跨镜像接收链与 riscv64/aarch64 直核自引导链走完装载、建根、映射、换栈、跳转；能说出每条路径失败时的第一现场。
+  chapters:
+  - '4'
+- id: S5
+  topic: 5. 测试
+  requirement: 学完能按 J1–J4 说出每条不变量的宿主证据与真机证据，并说出每条证据“不证明什么”。
+  chapters:
+  - '5'
+- id: S6
+  topic: 6. 诊断
+  requirement: 学完能按 EBS 分界、panic 路径、失败模式与可复制命令定位一条启动链停在哪一段。
+  chapters:
+  - '6'
