@@ -50,3 +50,85 @@ VERDICT: FROZEN
 - Ch1 正文在本轮后视为只读；下游发现矛盾只定向重开相关单元并重跑对应视角，不整章重读。
 - 不得把 Ch1 的概念改写为项目类型名、协议名、字段表或代码块。
 - D01 评审门 `CONVERGED` 不因本章 post-CONVERGED 回归而重置；`review-units check` 的 stale 读数是预期。
+
+## Ch4 实现详解
+
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 章切片：`v312/chapter-slices/ch4-a1b899d7.md`（`tools/extract-chapter-slice.py` 产出，纯章正文）
+- sha256：`a1b899d7446c81b58ff75a07e51fa8cd989fdcc5fd3032f7a37564dcf5d6000f`
+- 行数：440
+- outline：`rewrite-notes/meta/design/01-stage-kernel/01-outline.v7.md`
+- 摘要：`v312/summaries/ch4-summary.md`（生成后补验证门）
+- 事件：`chapter-review` REV-20261124-8914CFB2 / `summary-faithful` REV-20261124-0F31CBC8 / `chapter-freeze` REV-20261124-CA3722C3
+- 冻结日期：2026-11-24
+
+### 六视角
+
+| 视角 | 报告 | 结论 |
+|---|---|---|
+| beginner-me | `v312/chapters/ch4/beginner-me.md` | READY / HARD 0（7cbb → 6581 delta 为 fact 修正） |
+| G18 | `v312/chapters/ch4/g18-final.md` | READY / HARD 0（6581 终审） |
+| editor | `v312/chapters/ch4/editor.md` | READABLE / HARD 0（667ad） |
+| navigator | `v312/chapters/ch4/navigator.md` | READABLE / HARD 0（f3f86） |
+| reference | `v312/chapters/ch4/reference.md` | READABLE / HARD 0（f3f86） |
+| instructional | `v312/chapters/ch4/instructional.md` | READABLE / HARD 0（f3f86） |
+
+### 附加
+
+- Reader-B：`v312/chapters/ch4/reader-b.md` — PASS / HARD 0（f3f86）。
+- 代码事实：`v312/chapters/ch4/fact.md` — PASS（6581f2；errors=0 notes=6，均为非阻断措辞/边界）。
+- 版本差：六视角报告绑定 9f8016/f3f86/667ad/7cbb；`6581f2` 相对这些版本只改 fact 两处（`tty`/`mib` 互换机制、最小示例预期 16/6 行）与“入口不共享函数、取件共用 `FileLoader`”，不改变可读性结论。G18 终审已直接读 `6581f2`。
+
+### 允许下游引用
+
+- 两条产出入径、九动作/十拍、六套编号、六落地区与门链逐腿执行序。
+- `BootReport<'_>` 九字段视图、`KernelInfoView` 深拷、`store_boot_report`/`store_kernel_info` 的落地区。
+- `BootAlloc::init`/`resume`、`pt_alloc::register`、arena 生命周期与 `FreeRangeSet` 扣除。
+- 失败现场索引：`read_required`、EBS 配对、`boot_validate_and_prepare`/`resume_additive`、建根 halt、`kmain` strict+postconditions。
+
+### 禁止修改
+
+- Ch4 正文在本轮后视为只读；下游发现矛盾只定向重开相关单元并重跑对应视角。
+- 不得在 Ch4 重论证第 3 章的设计取舍或重讲第 2 章的 C 行为。
+- D01 评审门 `CONVERGED` 不因本章 post-CONVERGED 回归而重置；`review-units check` 的 stale 读数是预期。
+
+## Ch2 C 源码分析
+
+- 文档：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`
+- 章切片：`v312/chapter-slices/ch2-672fc625.md`（`tools/extract-chapter-slice.py` 产出，纯章正文）
+- sha256：`672fc625b4170d98bf2d8fe7de62d6680056d6ec7229b3bf13230793f9050428`
+- 行数：434
+- outline：`rewrite-notes/meta/design/01-stage-kernel/01-outline.v7.md`
+- 摘要：`v312/summaries/ch2-summary.md`（54 行，锚点机械校验 PASS）
+- 摘要验证：`v312/summaries/ch2-summary-verification.md` — `VERDICT: FAITHFUL`（2026-11-24）
+- 事件：`chapter-review` REV-20261124-9C6A872C / `summary-faithful` REV-20261124-506770D0 / `chapter-freeze` REV-20261124-F9EE8846
+- 冻结日期：2026-11-24
+
+### 六视角
+
+| 视角 | 报告 | 结论 |
+|---|---|---|
+| beginner-me | `v312/chapters/ch2/beginner-me.md` | READY / HARD 0（f784；d08ba8→7de182 为 seam/事实修正） |
+| G18 | `v312/chapters/ch2/g18-final.md` | READY / HARD 0（47830a 终审；后续为 seam/事实修正） |
+| editor | `v312/chapters/ch2/editor.md` | READABLE / HARD 0（397a8c） |
+| navigator | `v312/chapters/ch2/navigator.md` | READABLE / HARD 0（397a8c） |
+| reference | `v312/chapters/ch2/reference.md` | READABLE / HARD 0（397a8c） |
+| instructional | `v312/chapters/ch2/instructional.md` | READABLE / HARD 0（397a8c；TR-2 已修） |
+
+### 附加
+
+- Reader-B：`v312/chapters/ch2/reader-b.md` — PASS / HARD 0（397a8c）。
+- 代码事实：`v312/chapters/ch2/fact.md` 的 2 个实质错误已修（`pg_alloc_page` 范围、`board` 删除表/首条提升），最终确认见 `fact-final.md`。
+- 版本差：六视角报告绑定 397a8c/f784/47830a；最终 `7de1821f` 相对这些版本的变化集中在：board 删除表语义、I2 无承载者、I3 发送侧/内核两步、I4 版本项无对应物、D1–D5 自足（删除假 §1.4 指针）、三类数据/接收方术语统一。G18 终审已直接读 47830a；后续差异为接缝修正，不改变“可跟读”结论。
+
+### 允许下游引用
+
+- C 的行为链：`boot.cfg` → boot2 → `head.S` → `pre_init` → `get_parameters` → `add_memmap`/`overlaps`/`cut_memmap` → 建表（下一篇）→ `kmain`。
+- `kinfo` 五组记录、`param_buf` 格式与删除扫描 off-by-one、两档内存图、`alloc_lowest` 参数错位、`overlaps` 半开区间、三层装载检查。
+- D1–D5 约束名与 D1/D2/D4 的本章证据；I1–I4 的 C 侧落点与 I2/版本项的缺口。
+
+### 禁止修改
+
+- Ch2 正文在本轮后视为只读；下游发现矛盾只定向重开相关单元并重跑对应视角。
+- 不得把 C 行为改写成 Rust 设计，也不得重讲 Ch1 的概念。
+- D01 评审门 `CONVERGED` 不因本章 post-CONVERGED 回归而重置；`review-units check` 的 stale 读数是预期。
