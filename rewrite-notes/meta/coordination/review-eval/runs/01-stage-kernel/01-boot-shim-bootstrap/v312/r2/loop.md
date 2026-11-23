@@ -6,7 +6,7 @@ edition: V3.12
 文档: rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md
 基线 commit: 76ac760b4
 文档 sha256: 19c0ad9a306cc1e950b657ad6c6d1c34f3a0aa18256f238b048e7dbd9efc83dc
-行数: 2951
+行数: 2953
 单元: 48（6 章 + 42 节），48 冻结
 run 目录: rewrite-notes/meta/coordination/review-eval/runs/01-stage-kernel/01-boot-shim-bootstrap/v312/r2
 范围: `SCOPE.md`；关联代码 `related-code.txt` 49 个文件
@@ -59,29 +59,32 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
   uboot 第三份抄本删除，xtask typed order lock 通过。
 - `DESIGN-02`：已按 D-121 把 `kmain` 改 strict；宿主 DTB fixture 覆盖两种 `fw_end`；
   x86 UEFI 与 riscv64 U-Boot shim 启动门 PASS。
-- 测试：minix-boot 188/0；boot-shim 136/0；minix-kernel mock 866/0/8；
+- 测试：minix-boot 189/0；boot-shim 136/0；minix-kernel mock 866/0/8；
   `cargo check -p minix-kernel` 通过。
 
 ### §5 复验
 
 - 独立 doc verifier：初检 FAIL（台账 R2-23/24 命令 + N-01/N-02），修复后 `RECHECK: PASS`
-  （doc `d035c692…`，2,951 行）；8 门读数不变，旧 ⑤ 已关闭。
-- 独立 code verifier：PASS；N1/N2/N3 复检 PASS，N4 空行已修，等 `RECHECK2`。
+  （doc `cbc105c7…`，2,953 行）；8 门读数不变，旧 ⑤ 已关闭。
+- 独立 code verifier：PASS；N1/N2/N3 复检 PASS，N4 空行复检 `RECHECK2: PASS`。
+- 设计批独立 verifier：PASS；`RECHECK: PASS`（doc `cbc105c7…`）。
+- R2 trajectory reviewer：PASS（`certify/y03-r2-trajectory.md`）。
 - 冷读：`HARD-REJECTIONS: 4`、`VERDICT: NOT-READY`（`../../cold-read/y02-d01-r2.md`）；
   四个硬阻断是结构性的（实现节选不可跟随、版本历史混入正文、多套编号/计数、权威表式交叉引用），
   案件卷 `R2-COLD-READ-CASE.md`。R1 的 READY 不再代表当前文档。
 - 8 个文档门在修复后自测：anchor 86/86、code-map 49/49、ref/style/publication 通过、
   citation failed=0、rubric 0 缺项、density 通过。
-- R2 关账不宣告：台账 `open=0`；`BLOCKED` 只因 R2 冷读 `NOT-READY` 与 R3 结构轮未开。
+- R2 关账：台账 `open=0`，`ROUND-CLOSED`；冷读 `NOT-READY` 是 R3 的输入，不是本轮未闭环项。
 
 ### §6 指标
 
-- `metrics.md`：发现总数 25、唯一根因数 25、重复合并 2、未闭环 0、轮结果 `BLOCKED`（冷读/R3）。
+- `metrics.md`：发现总数 25、唯一根因数 25、重复合并 2、未闭环 0、轮结果 `ROUND-CLOSED`。
 
 ### §7 状态
 
 - `ROUND-CLOSED`：25 个 FINDING 全部 `①` 已修/裁决（D-120/D-121）；台账 `open=0`；
-  `units_review_lt2=0`，48/48 冻结。
+  `units_review_lt2=31`（R2 后改过的 31 个单元只有 R2 一轮有效 review；48/48 冻结）。
+  R3 结构轮需把这些单元补到 ≥2 轮，确认轮前再复核。
 - **R2 冷读仍 `NOT-READY`（4 个结构阻断，`R2-COLD-READ-CASE.md`）**，这是 R3 的输入，
   不是 R2 未闭环的 FINDING；不写 `CONVERGED`，下一轮是 R3 结构轮。
 
@@ -89,8 +92,9 @@ L0.9: doc-publication 0 新增 / code-publication 0 新增 / todo-ledger open=0 
 
 - `DESIGN-01`/`DESIGN-02` 已由作者裁决 A（D-120/D-121）；实现与证据见 §4。
 - 26 条 SUGGESTION 只处理了与 P2/P3 同段/同口径的项，纯风格与结构性拆分留 R3；不冒充完成。
+- `units_review_lt2=31`：R2 改过的 31 个单元只有一轮有效 review；R3 必须覆盖这 31 个单元，确认轮前达到 ≥2。
 - 面板目录 `panel/round2/` 原有 2026-11-08 旧轮同名报告，已移 `archive-nov8/`；
   R2 只采用 2026-11-23 的六份报告，DIA 需按 mtime/内容复核。
 - R3 需要结构轮：现役快速参考、wire 布局表、历史移附录、端到端图/门×腿矩阵、计数术语表；
   见 `R2-COLD-READ-CASE.md`。R3 已获作者批准，下一步开结构轮。
-- 09:00 峰值前若未裁决，R2 保持 `BLOCKED` 并写交接，不把未做项写成收敛。
+- 14:00 峰值前写交接；R3 从结构改写开始。

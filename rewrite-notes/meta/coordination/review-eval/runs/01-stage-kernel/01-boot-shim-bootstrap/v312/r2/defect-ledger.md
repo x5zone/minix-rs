@@ -4,7 +4,7 @@
 - 轮次: R2 full
 - 基线: doc sha `19c0ad9a…`（2,951 行），commit `76ac760b4`
 - 面板 FINDING 25：P2 11 / P3 14；P-REFUTE 2 个 P2 观察（其余反证失败）。
-- 处置：① 25 / ⑤ 0 / FP 0（R2-23 的 Default 子项保留，不单列）；未闭环 0（台账层）。轮结果 `BLOCKED` 只因 R2 冷读 `NOT-READY` 与 R3 结构轮未开。
+- 处置：① 25 / ⑤ 0 / FP 0（R2-23 的 Default 子项保留，不单列）；未闭环 0（台账层）；根因 ID 跳号 R2-09/R2-10（25 个不同 ID）。轮结果 `ROUND-CLOSED`；R2 冷读 `NOT-READY` 是 R3 的输入，不是本轮未闭环的 FINDING。
 
 | 发现 ID | 单元 | 处置类 | 处置 | 复验 | 根因 ID | origin |
 |---|---|---|---|---|---|---|
