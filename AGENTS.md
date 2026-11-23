@@ -26,6 +26,7 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 | 5.6 | `prompt/review-rules/review-tutorial-rubric.md` | **教程 rubric（V3.12）**：TR-0..TR-6（问题入口/示例/失败对照/小结/术语），G13；G18 冷读 |
 | 5.7 | `prompt/review-rules/review-units.md` | **单元级 review（V3.12）**：每篇独立账户、至少 2 轮 full、每单元至少 2 次 review、审查事件、学习范围、G14–G19 |
 | 5.8 | `prompt/review-rules/review-me-agent.md` | **me agent 常驻裁决层（V3.12）**：输入边界、职责边界、案件卷顺序、G18 抗辩边界 |
+| 5.9 | `prompt/review-rules/review-chapter-contract.md` | **章契约与章级六视角（V3.13）**：Ch1–Ch6 边界、Ch1 抽象级不变量、outline 合同、章切片、CHAPTER-FREEZE |
 | 6 | `prompt/README.md` | 三端同步机制：改了源必须同步哪些文件、跑哪些校验 |
 
 运行时副本 `.claude/rules/review-core.md`、`.claude/rules/review-process.md`、`.claude/rules/fix-guard.md`

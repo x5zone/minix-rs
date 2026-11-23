@@ -11,6 +11,7 @@
 prompt/
 ├── README.md                    — 本文件：目录、派生关系与同步门
 ├── review-rules/                — 规则规范源（唯一权威）
+├── review-panel-chapters/       — 章级六视角 brief 与 Ch1 切片 fixture
 ├── resources/                   — 只读素材；正式规则不得引用
 ├── skill/                       — Skill 适配层源
 │   ├── cmds/                    — 6 个任务命令薄壳
@@ -25,7 +26,7 @@ prompt/
 
 `tmp/` 是会话产物与取证目录，整域不入库；`rewrite-notes/` 是文档与协作账本树。
 
-## 二、review-rules/（16 个文件）
+## 二、review-rules/（17 个文件）
 
 | 文件 | 职责 |
 |---|---|
@@ -43,6 +44,7 @@ prompt/
 | `review-tutorial-rubric.md` | 教程 rubric V3.12：TR-0..TR-6、G13 与 G18 冷读 |
 | `review-units.md` | 单元级 review V3.12：每篇独立账户、至少 2 轮 full、每单元至少 2 次 review、审查事件、G14–G19 |
 | `review-panel.md` | review-loop 独立面板：角色、材料隔离、归因 |
+| `review-chapter-contract.md` | 章契约与章级六视角 V3.13：Ch1–Ch6 边界、Ch1 抽象级不变量、outline 合同、章切片、CHAPTER-FREEZE |
 | `review-me-agent.md` | Me Agent 常驻裁决层：输入边界、职责边界、案件卷顺序、G18 抗辩 |
 | `review-evals.md` | review-loop 评测：G1–G19、§6A 四态收敛模型 |
 | `review-cmds.md` §八 | 旧 Profile A–K/O/P/R/AG 别名对账 |
