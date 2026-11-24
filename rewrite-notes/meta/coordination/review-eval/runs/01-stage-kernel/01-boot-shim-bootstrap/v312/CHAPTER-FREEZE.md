@@ -2,7 +2,7 @@
 
 DOC: 01-boot-shim-bootstrap.md
 
-> **REPAIR-STALE 2026-11-24**：正文已按 R1–R6 修改，当前 sha256 `5023b4543f55a1f37ed2105b4b70d617ebdcd50ce463484e6f1f9c3477abd5d2`（2020 行）。以下各章的 sha、章切片、六视角报告、摘要验证与事件均对应修复前版本；在受影响章重跑章级六视角、摘要门与冻结并更新本文件之前，本文件只作历史证据，不得作为当前正文的冻结凭证。修复记录见 `final/REPAIR-R1-R6.md`。
+> **REPAIR-STALE 2026-11-24**：正文已按 R1–R6 修改，当前 sha256 `b5ceb02cc8834e640711340d8e88808213e7d104e982084a5411a43fc55c5cff`（2020 行）。以下各章的 sha、章切片、六视角报告、摘要验证与事件均对应修复前版本；章级重跑已尝试：Ch2/Ch5/Ch6 出现新的 HARD，Ch1 报告因后续修复失效，Ch3 仍有 NEEDS-WORK；6/6 未达成。在受影响章修完并重跑六视角、摘要门与冻结之前，本文件只作历史证据，不得作为当前正文的冻结凭证。章级重跑记录见 `final/CHAPTER-REREVIEW.md`。修复记录见 `final/REPAIR-R1-R6.md`。
 
 VERDICT: FROZEN
 
