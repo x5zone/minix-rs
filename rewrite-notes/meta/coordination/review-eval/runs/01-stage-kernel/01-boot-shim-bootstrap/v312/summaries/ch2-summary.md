@@ -46,9 +46,9 @@ C 侧没有“交接协议”这个类型，却要把三类数据变成内核自
 
 - ARM32 入口同样叫 `MINIX`/`multiboot_init`，但参数走 `argc`/`argv`，没有 `magic`/`ebx`；`kinfo` 经 `r0` 返回。`setup_mbi` 先 `memset` 再自造 `mbi`，模块表是编译期常量，内存表只有一条硬编码区间，命令行取自 `bootargs`；ARM 头文件字段名不同，同构是调用序与语义上的，不是拼写上的。
 - ARM 的 `overlaps` 用闭区间（`<=`、无 `-1`）且宏捕获外层 `thismod`；槽距 8 MiB 通常不相切。例外是内核项作为第 M+1 个模块追加时未减一页，与 0 号模块的 30 MiB 间隔是 `[观测]` 构建事实；镜像长到 `0x1E00000` 字节时会相切并被误报。
-- §2.7 的四步结论是：只有第 1 步“接收引导参数”随架构不同，建立映射、开启分页、把启动信息交下去三步共用同一语义。x86-32 主链：`boot.cfg` → boot2 → `head.S` → `pre_init` → `get_parameters` → `add_memmap`/`overlaps`/`cut_memmap` → 建表与开分页（下一篇）→ `return &kinfo` → `kmain`。交付物是 `kinfo` 里的五组记录：`mbi`、`param_buf`、`memmap`/`mmap_size`/`mem_high_phys`、`module_list`/`mods_with_kernel`/`kern_mod`、`bootstrap_start`/`bootstrap_len`/`freepde_start`。没有单独的“可用内存总量”字段，总量由 `memmap[]` 前 `mmap_size` 条累加；`freepde_start` 不是交接数据，是建表返回的第一个空闲槽位号。
-- D1–D5 是约束名而不是执行序：D1/D2/D4 的证据在本章，D3/D5 的建表与开分页证据在下一篇的建表节。
+- §2.7 的四步结论是：只有第 1 步“接收引导参数”随架构不同，建立映射、开启分页、把启动信息交下去三步共用同一语义。x86-32 主链：`boot.cfg` → boot2 → `head.S` → `pre_init` → `get_parameters` → `add_memmap`/`overlaps`/`cut_memmap` → 建表与开分页（02 篇（镜像篇））→ `return &kinfo` → `kmain`。交付物是 `kinfo` 里的五组记录：`mbi`、`param_buf`、`memmap`/`mmap_size`/`mem_high_phys`、`module_list`/`mods_with_kernel`/`kern_mod`、`bootstrap_start`/`bootstrap_len`/`freepde_start`。没有单独的“可用内存总量”字段，总量由 `memmap[]` 前 `mmap_size` 条累加；`freepde_start` 不是交接数据，是建表返回的第一个空闲槽位号。
+- D1–D5 是约束名而不是执行序：D1/D2/D4 的证据在本章，D3/D5 的建表与开分页证据在 02 篇的建表节。
 - 对回 I1–I4：I1 由整份拷贝 `mbi`、命令行、模块表、内存图承载；I2 在 C 侧没有承载者——`memmap` 条目只有基址、长度、固定 `AVAILABLE` 标签，不记声明者与依据；I3 分两步：引导器一次填好 `mbi`（发送侧发布），内核整份拷贝后独占 `kinfo`，此后不再改；I4 由 `overlaps` 与断言承载，`cut_memmap` 是切除动作不是校验器；I4 的版本项也没有对应物（Multiboot info 无版本字段）；“镜像落在可用区间内”也没有独立检查（`cut_memmap` 对界外区间是空操作）。
-- 本章不证明：C 的记录不含来源 provenance；地址空间如何建立、页表如何开分页，归下一篇。
+- 本章不证明：C 的记录不含来源 provenance；地址空间如何建立、页表如何开分页，归 02 篇。
 
 下一章把这套 C 记录改写成设计契约：`KernelInfo` 按值交接、两张表加来源记录、门链先于消费；本章的 `kinfo` 字段形状与 I1–I4 结论是它的输入。

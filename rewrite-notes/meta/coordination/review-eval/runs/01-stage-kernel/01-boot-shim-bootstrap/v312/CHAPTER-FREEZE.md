@@ -2,6 +2,8 @@
 
 DOC: 01-boot-shim-bootstrap.md
 
+> **REPAIR-STALE 2026-11-24**：正文已按 R1–R6 修改，当前 sha256 `cba0360f8734a34bab95c11b32ec72b5083a193fd407ee167dd8793511275043`（2020 行）。以下各章的 sha、章切片、六视角报告、摘要验证与事件均对应修复前版本；在受影响章重跑章级六视角、摘要门与冻结并更新本文件之前，本文件只作历史证据，不得作为当前正文的冻结凭证。修复记录见 `final/REPAIR-R1-R6.md`。
+
 VERDICT: FROZEN
 
 ## Ch1 概述
