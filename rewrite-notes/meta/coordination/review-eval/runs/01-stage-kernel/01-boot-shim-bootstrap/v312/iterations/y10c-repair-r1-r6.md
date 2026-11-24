@@ -2,7 +2,7 @@
 
 DATE: 2026-11-24
 BEFORE: `c53a80075cbb8a74c4889af9b3dcd5309993065ec58d3676a463e8b3fbd6536c`（2019 行）
-AFTER: `cba0360f8734a34bab95c11b32ec72b5083a193fd407ee167dd8793511275043`（2020 行）
+AFTER: `5023b4543f55a1f37ed2105b4b70d617ebdcd50ce463484e6f1f9c3477abd5d2`（2020 行）
 
 ## 范围
 
@@ -19,8 +19,8 @@ AFTER: `cba0360f8734a34bab95c11b32ec72b5083a193fd407ee167dd8793511275043`（2020
 
 ## 同步
 
-- `summaries/ch1-summary.md`、`ch2-summary.md` 更新；ch1 摘要头指向 `ch1-8f85a593.md`。
-- 新增修复后章切片快照：Ch1 `8f85a593`、Ch2 `5adbbe1f`、Ch3 `848bfdf1`、Ch5 `4a4054b3`、Ch6 `90b309c3`；Ch4 未变（`a1b899d7`）。
+- `summaries/ch1-summary.md`、`ch2-summary.md` 更新；ch1 摘要头指向 `ch1-8ec90a1b.md`。
+- 修复后章切片快照：Ch1 `8ec90a1b`、Ch2 `5adbbe1f`、Ch3 `848bfdf1`、Ch5 `4a4054b3`、Ch6 `90b309c3`；Ch4 未变（`a1b899d7`）。
 - `CHAPTER-FREEZE.md` 加 `REPAIR-STALE` 注记：以下冻结记录只作历史证据。
 
 ## 门
@@ -33,6 +33,7 @@ AFTER: `cba0360f8734a34bab95c11b32ec72b5083a193fd407ee167dd8793511275043`（2020
 - `doc-ref-check.sh`：内部引用全解析。
 - `doc-code-density-check.sh`：承载门阻断项通过。
 - `summary-anchor-check.py`：六份摘要全 PASS。
+- 独立复核 `REPAIR-VERIFY.md`：R1–R6 全部 CLOSED，VERDICT PASS（R6-NOTE 非阻断）。
 
 ## 未做
 
